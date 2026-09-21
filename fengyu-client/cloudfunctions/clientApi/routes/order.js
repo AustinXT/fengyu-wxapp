@@ -1116,7 +1116,16 @@ function activePaymentIntentError(order) {
   err.activeMerchant = order._lakalaMerchant
   // 意图行的最后更新时刻，供「另一请求可能正在建单」的宽限期判断用
   err.activeUpdatedAt = order.updated_at
-  err.activeHasSnapshot = Boolean(order.lakala_payment_intent)
+  // ⚠️ 必须判「快照是否属于**当前这笔**意图」，不能只判非空（双谱系评审 round-13）：
+  // 快照按设计是不清空的（靠单号匹配自失效），所以旧场次的残留 JSON 会让这里误判成
+  // 「已有快照、不在创建窗口」→ 跳过宽限期 → 关掉另一个请求正在建的新场次。
+  err.activeHasSnapshot = (() => {
+    const raw = order.lakala_payment_intent
+    if (!raw) return false
+    const intent = typeof raw === 'string' ? safeParseJson(raw) : raw
+    if (!intent || typeof intent !== 'object' || Array.isArray(intent)) return false
+    return String(intent.outTradeNo || '') === String(order.lakala_out_order_no || '')
+  })()
   return err
 }
 
@@ -2919,6 +2928,14 @@ async function detail(ctx) {
   ctx.result = {
     order: {
       ...orderForClient,
+      // #214：本人是否持有活动中的支付意图（布尔，不含凭据）。
+      // checkout 页的「去支付」据此跳过 scanAdjust —— 意图活跃期改抵扣有服务端守卫，
+      // 不跳过的话这一步就被拒了，后面的 order.pay 根本执行不到（双谱系评审 round-13）。
+      has_active_payment_intent: Boolean(
+        String(order.lakala_out_order_no || '').trim()
+        && order.client_user_id
+        && order.client_user_id === userId
+      ),
       expire_at: expireAt,
       preferred_staff_name: preferredStaffName,
       coupon_name: couponName,

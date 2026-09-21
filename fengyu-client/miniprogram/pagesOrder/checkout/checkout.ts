@@ -97,6 +97,10 @@ Page({
     netBeforeCard: 0,             // 应抵扣部分（=总价-券），UI 显示用
     // 充值单分支：sale_order_type='充值单' 时隐藏商品/美容师/抵扣，只展示充值摘要
     isRecharge: false,
+    // #214：本人是否持有活动中的支付意图（由 order.detail 下发，不含凭据）。
+    // 为 true 时「去支付」跳过 scanAdjust —— 意图活跃期改抵扣有服务端守卫，
+    // 不跳过这一步就会被拒，后面的 order.pay 根本执行不到。
+    hasActivePaymentIntent: false,
     rechargeFaceValue: 0,
     rechargePayAmount: 0,
     rechargeBonus: 0,
@@ -288,6 +292,7 @@ Page({
         const discount = faceValue > 0 ? Math.round((payable / faceValue) * 100) / 100 : 1;
         const discountLabel = (discount * 10).toFixed(1).replace(/\.0$/, '') + ' 折';
         this.setData({
+          hasActivePaymentIntent: order.has_active_payment_intent === true,
           isRecharge: true,
           spuName: '充值卡',
           storeName: order.store_name || '',
@@ -318,6 +323,9 @@ Page({
       );
 
       this.setData({
+        // #214：本人是否持有活动中的支付意图（后端下发布尔，不含凭据）。
+        // 为 true 时「去支付」要跳过 scanAdjust，否则会被服务端守卫拒掉、付不了款。
+        hasActivePaymentIntent: order.has_active_payment_intent === true,
         spuName: items.length > 1
           ? `${items.length} 件商品`
           : (firstItem.product_name || ''),
@@ -677,7 +685,12 @@ Page({
         // 充值单不参与储值卡抵扣（loadExistingOrder 已强制 useCard/prepaidCardAmount=0），
         // 跳过 scanAdjust 同步——避免改写订单 prepaid_card_amount
         let balanceSnapshot: { updatedAt?: string } | null = null;
-        if (!this.data.isRecharge) {
+        // #214（round-13）：订单上已有本人活动中的支付意图时，必须跳过 scanAdjust——
+        // 意图活跃期改抵扣方案有服务端守卫，这一步会被 PAYMENT_INTENT_ACTIVE 拒掉，
+        // 后面的 order.pay 根本执行不到，顾客从订单详情点「去支付」就永远付不了。
+        // 抵扣方案此刻已经定死在那笔渠道单里，本来也不该改。
+        const hasActiveIntent = this.data.hasActivePaymentIntent === true;
+        if (!this.data.isRecharge && !hasActiveIntent) {
           // 把当前 UI 抵扣方案同步到 DB（confirmPrepaidFull / order.pay 读 DB 列计算 payable_amount）
           // paidAmount=0 时 paymentMethod 必须留空，后端会自动落 '无'
           const adjustRes = await callClientApi<{ balanceSnapshot?: { updatedAt?: string } | null }>(
