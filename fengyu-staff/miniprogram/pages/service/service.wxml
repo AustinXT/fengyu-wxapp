@@ -37,11 +37,15 @@
       bindtap="onItemTap"
       data-id="{{item.id}}"
     >
-      <!-- 卡片头：编号 + 状态 -->
+      <!-- 卡片头：编号 + 支援标识 + 状态 -->
       <view class="card-header">
         <text class="service-no">{{item.serviceOrderId}}</text>
-        <view class="status-tag status-tag--{{item.status === '待服务' ? 'pending' : item.status === '服务中' ? 'progress' : item.status === '待客户确认' ? 'awaiting' : 'done'}}">
-          {{item.status}}
+        <view class="header-tags">
+          <!-- 非本店单（#224）：标出开单门店，避免与本店单混淆 -->
+          <view wx:if="{{!item.inCurrentStore}}" class="support-tag">{{item.storeName || '其他门店'}}</view>
+          <view class="status-tag status-tag--{{item.status === '待服务' ? 'pending' : item.status === '服务中' ? 'progress' : item.status === '待客户确认' ? 'awaiting' : 'done'}}">
+            {{item.status}}
+          </view>
         </view>
       </view>
 
@@ -57,7 +61,7 @@
         class="card-item"
         wx:for="{{item.items}}"
         wx:for-item="si"
-        wx:key="saleItemId"
+        wx:key="serviceItemId"
       >
         <text class="item-name">{{si.itemName}}</text>
         <text class="item-spec">{{si.spec}}</text>
@@ -91,8 +95,10 @@
           catchtap="onCompleteService"
           data-id="{{item.id}}"
         >标记完成</van-button>
+        <!-- 代客户确认仍归开单门店店长（#224）：isManager 是页面级变量，非本店单必须显式排除，
+             否则店长外援会看到一个点了必报「不属于本门店」的按钮 -->
         <van-button
-          wx:elif="{{!isReadOnly && item.status === '待客户确认' && isManager}}"
+          wx:elif="{{!isReadOnly && item.status === '待客户确认' && isManager && item.inCurrentStore}}"
           type="primary"
           size="small"
           custom-class="btn-success"

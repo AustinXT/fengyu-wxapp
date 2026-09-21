@@ -49,6 +49,7 @@ const { assertEmployeesAssignableToStore } = require('../utils/employee-assignme
 const { classifySaleOrderDocumentType } = require('../utils/document-type')
 const { maskPhoneForAuth } = require('../utils/phone-visibility')
 const { isValidDate, normalizeListFilters, addDateRange } = require('../utils/list-filters')
+const { safePaging } = require('../utils/paging')
 const { assertPaymentAttributionReady } = require('../utils/attribution-guard')
 
 // 模块级缓存：saleOrderId → qrcodeUrl，避免轮询时重复生成
@@ -6821,8 +6822,9 @@ async function pickupRecordsList(ctx) {
     clientUserId,
   } = ctx.event.payload || {}
 
-  const limit = Math.max(1, Math.min(50, parseInt(pageSize, 10) || 20))
-  const offset = (Math.max(1, parseInt(page, 10) || 1) - 1) * limit
+  // 分页归一见 utils/paging.js 函数头（#240：原先 `parseInt('1e21',10) === 1` 会静默取错值，
+  // 且 page 侧在返回信封里又重算一遍 —— 两条独立归一路径天然会漂）。本接口上限 50。
+  const { safePage, safePageSize: limit, offset } = safePaging(page, pageSize, 20, 50)
 
   const conditions = []
   const params = []
@@ -6842,6 +6844,21 @@ async function pickupRecordsList(ctx) {
     params.push(clientUserId)
     idx++
   }
+  // #240：日期入参此前零校验，`startDate='abc'` 会直接绑进 `pr.created_at >= $n`
+  // → PG 22007 invalid_datetime_format → 全局 catch 降级成 {code:-1,'服务器内部错误'}。
+  // 与本 issue 的分页取整是同一类「非优雅降级」，且本接口的另外 5 个 list 兄弟
+  // （走 normalizeListFilters）早就有这三条校验 —— 这里是漏网的一处。
+  // 前端 `<picker mode="date">` 产出的正是 YYYY-MM-DD，既有调用不受影响。
+  if (startDate && !isValidDate(startDate)) {
+    throw new Error('INVALID_PARAMS: startDate 必须为 YYYY-MM-DD 格式')
+  }
+  if (endDate && !isValidDate(endDate)) {
+    throw new Error('INVALID_PARAMS: endDate 必须为 YYYY-MM-DD 格式')
+  }
+  if (startDate && endDate && startDate > endDate) {
+    throw new Error('INVALID_PARAMS: startDate 不能晚于 endDate')
+  }
+
   if (startDate) {
     conditions.push(`pr.created_at >= $${idx}`)
     params.push(startDate)
@@ -6918,7 +6935,7 @@ async function pickupRecordsList(ctx) {
       saleOrderId: r.sale_order_id || null,
     })),
     total: countRow[0]?.cnt ?? 0,
-    page: Math.max(1, parseInt(page, 10) || 1),
+    page: safePage,
     pageSize: limit,
   }
   return ctx.result
@@ -6970,9 +6987,10 @@ async function refundList(ctx) {
   await requireStaffBound()(ctx, async () => {})
 
   const { status, page = 1, pageSize = 20 } = ctx.event.payload || {}
-  const offset = (page - 1) * pageSize
+  // 分页归一见 utils/paging.js 函数头（#240：此处原先零校验，pageSize 直接进 LIMIT）
+  const { safePage, safePageSize, offset } = safePaging(page, pageSize, 20)
 
-  const params = [ctx.auth.effectiveStoreId, pageSize, offset]
+  const params = [ctx.auth.effectiveStoreId, safePageSize, offset]
   let whereExtra = ''
   if (status) {
     params.push(status)
@@ -7007,7 +7025,7 @@ async function refundList(ctx) {
     LIMIT $2 OFFSET $3
   `, params)
 
-  ctx.result = { refunds, page, pageSize }
+  ctx.result = { refunds, page: safePage, pageSize: safePageSize }
 }
 
 /**

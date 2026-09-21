@@ -528,11 +528,13 @@ async function todoList(ctx) {
   }
 
   // 待推进服务单
+  // 店长口径必须与 service.counts 店长分支逐字一致（#224）：店经理在服务单技能白名单内，
+  // 本人也可能作为外援被别店指派，两处若不同口径，工作台待办数与服务 Tab 角标会对不上。
   let serviceCount
   if (isManager) {
     serviceCount = await pg.query(
-      `SELECT COUNT(*) AS cnt FROM service_orders WHERE store_id = $1 AND status IN ('待服务', '服务中')`,
-      [effectiveStoreId]
+      `SELECT COUNT(*) AS cnt FROM service_orders WHERE (store_id = $1 OR assigned_employee_id = $2) AND status IN ('待服务', '服务中')`,
+      [effectiveStoreId, staffWfId]
     )
   } else {
     serviceCount = await pg.query(
