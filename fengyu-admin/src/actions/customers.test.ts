@@ -452,19 +452,38 @@ describe('updateCustomer — 校验 + scope + 错误处理', () => {
     expect(db.update).not.toHaveBeenCalled()
   })
 
-  it('绑定美容师：信息 oracle —— 不存在 / 他店 两条响应逐字相同且都零写入', async () => {
+  it('绑定美容师：信息 oracle —— 不存在 / 他店 两条的响应与全部副作用都等价', async () => {
+    // 不只比响应：查询次数、写入、审计日志、revalidate 都是可观测行为，
+    // 任何一项不对称都会重新成为「employeeId 是否存在」的信道。
+    const { revalidatePath } = await import('next/cache')
     ;(isAdminScope as any).mockReturnValue(false)
 
     ;(isInScope as any).mockReturnValue(true)
     mockBeforeThenEmployee([])
     const notFound = await updateCustomer('user-1', { boundEmployeeId: 'EMP-GHOST' })
+    const probeA = {
+      selects: (db.select as any).mock.calls.length,
+      updates: (db.update as any).mock.calls.length,
+      logs: (logUpdate as any).mock.calls.length,
+      revalidates: (revalidatePath as any).mock.calls.length,
+    }
 
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockSession)
+    ;(isAdminScope as any).mockReturnValue(false)
     ;(isInScope as any).mockReturnValue(false)
     mockBeforeThenEmployee([{ name: '门店B的美容师', storeId: 'store-2' }])
     const outOfScope = await updateCustomer('user-1', { boundEmployeeId: 'EMP-REAL-B' })
+    const probeB = {
+      selects: (db.select as any).mock.calls.length,
+      updates: (db.update as any).mock.calls.length,
+      logs: (logUpdate as any).mock.calls.length,
+      revalidates: (revalidatePath as any).mock.calls.length,
+    }
 
     expect(notFound).toEqual(outOfScope)
-    expect(db.update).not.toHaveBeenCalled()
+    expect(probeA).toEqual(probeB)
+    expect(probeA).toEqual({ selects: 2, updates: 0, logs: 0, revalidates: 0 })
     ;(isInScope as any).mockReturnValue(true)
   })
 
@@ -496,9 +515,61 @@ describe('updateCustomer — 校验 + scope + 错误处理', () => {
 
     expect(result.success).toBe(true)
     expect(db.update).toHaveBeenCalled()
-    // 姓名快照保持原样，不因解析失败被写成 null
-    expect(set).toHaveBeenCalledWith(expect.not.objectContaining({ boundEmployeeName: expect.anything() }))
+    // 两列都不能出现在 SET 里 —— 「写回同值」会变成竞态回滚通道：
+    // expectedUpdatedAt 可缺省，窗口内合法方把绑定改成 F 后，这条 UPDATE 会把 F 回滚成脏值，
+    // 而 logUpdate 拿请求开头的 before 比对、差异为零 → 审计看不见。
+    const setArg = set.mock.calls[0][0]
+    expect(setArg).not.toHaveProperty('boundEmployeeId')
+    expect(setArg).not.toHaveProperty('boundEmployeeName')
+    expect(setArg).toMatchObject({ notes: '改个备注' }) // 其它字段照常更新
     ;(isInScope as any).mockReturnValue(true)
+  })
+
+  it('绑定美容师：查询谓词必须是 employee_id = 请求值（防 where 被改空/改错列）', async () => {
+    // codex 谱系指出：mock 按「第几次查询」返回，谓词被改成 .where(undefined) 或错列时测试依然全绿。
+    // 这里直接断言传给 eq 的两个实参。
+    ;(isAdminScope as any).mockReturnValue(false)
+    ;(isInScope as any).mockReturnValue(true)
+    mockBeforeThenEmployee([{ name: '王美容师', storeId: 'store-1' }])
+    const where = vi.fn().mockResolvedValue({ count: 1 })
+    ;(db.update as any).mockReturnValue({ set: vi.fn().mockReturnValue({ where }) })
+
+    await updateCustomer('user-1', { boundEmployeeId: 'EMP-TARGET' })
+
+    expect(eq).toHaveBeenCalledWith('employee_id', 'EMP-TARGET')
+  })
+
+  it('绑定美容师：显式 undefined → 不更新该字段（与本 Action「undefined=不更新」规则一致）', async () => {
+    // 用 `'boundEmployeeId' in data` 判断会把显式 undefined 当成解绑、意外清空绑定。
+    ;(isInScope as any).mockReturnValue(true)
+    mockSelectBefore([{ userId: 'user-1', boundEmployeeId: 'EMP-1', boundEmployeeName: '王美容师' }])
+    const where = vi.fn().mockResolvedValue({ count: 1 })
+    const set = vi.fn().mockReturnValue({ where })
+    ;(db.update as any).mockReturnValue({ set })
+
+    const result = await updateCustomer('user-1', { notes: '改备注', boundEmployeeId: undefined })
+
+    expect(result.success).toBe(true)
+    const setArg = set.mock.calls[0][0]
+    expect(setArg).not.toHaveProperty('boundEmployeeId')
+    expect(setArg).not.toHaveProperty('boundEmployeeName')
+  })
+
+  it('绑定美容师：带首尾空白的 ID → 查询与写入都用归一后的值', async () => {
+    // 判空用 trim 却写回原值，会让 'EMP-1 ' 落库；该列靠应用层 JOIN（无 FK），
+    // 带空白的变体会让所有 ON bound_employee_id = 'EMP-1' 断裂。
+    ;(isAdminScope as any).mockReturnValue(false)
+    ;(isInScope as any).mockReturnValue(true)
+    mockBeforeThenEmployee([{ name: '王美容师', storeId: 'store-1' }])
+    const where = vi.fn().mockResolvedValue({ count: 1 })
+    const set = vi.fn().mockReturnValue({ where })
+    ;(db.update as any).mockReturnValue({ set })
+
+    const result = await updateCustomer('user-1', { boundEmployeeId: '  EMP-1  ' })
+
+    expect(result.success).toBe(true)
+    expect(eq).toHaveBeenCalledWith('employee_id', 'EMP-1')
+    expect(set).toHaveBeenCalledWith(expect.objectContaining({ boundEmployeeId: 'EMP-1' }))
   })
 
   it('绑定美容师：值变了 + 目标不合规 → 仍然拒绝（越权路径没被放宽）', async () => {
@@ -538,6 +609,24 @@ describe('updateCustomer — 校验 + scope + 错误处理', () => {
     expect(result.success).toBe(true)
     expect(set).toHaveBeenCalledWith(expect.objectContaining({
       boundEmployeeId: null,   // 不是 ''
+      boundEmployeeName: null,
+    }))
+  })
+
+  it('绑定美容师：纯空白串也按解绑处理，而不是报「请选择美容师」', async () => {
+    // 外层归一必须用 trim 判空：只写 `data.boundEmployeeId || null` 时 '   ' 是 truthy，
+    // 会被送进 helper 并撞上空值挡板 → 用户想解绑却收到「请选择美容师」。
+    ;(isInScope as any).mockReturnValue(true)
+    mockSelectBefore([{ userId: 'user-1', boundEmployeeId: 'EMP-1', boundEmployeeName: '王美容师' }])
+    const where = vi.fn().mockResolvedValue({ count: 1 })
+    const set = vi.fn().mockReturnValue({ where })
+    ;(db.update as any).mockReturnValue({ set })
+
+    const result = await updateCustomer('user-1', { boundEmployeeId: '   ' })
+
+    expect(result.success).toBe(true)
+    expect(set).toHaveBeenCalledWith(expect.objectContaining({
+      boundEmployeeId: null,
       boundEmployeeName: null,
     }))
   })
@@ -798,6 +887,58 @@ describe('createCustomer — 输入校验 + 错误处理', () => {
       boundEmployeeId: 'EMP-1',
       boundEmployeeName: '王美容师',
     }))
+  })
+
+  it('建档：信息 oracle —— 不存在 / 他店 两条的响应与全部副作用都等价', async () => {
+    const { revalidatePath } = await import('next/cache')
+    ;(isAdminScope as any).mockReturnValue(false)
+    ;(db.insert as any).mockReturnValue({ values: vi.fn().mockResolvedValue({}) })
+
+    ;(isInScope as any).mockReturnValue(true)
+    mockPhoneCheckThenEmployee([])
+    const notFound = await createCustomer({
+      name: '张三', phone: '13812345678', boundStoreId: 'store-1', boundEmployeeId: 'EMP-GHOST',
+    })
+    const probeA = {
+      selects: (db.select as any).mock.calls.length,
+      inserts: (db.insert as any).mock.calls.length,
+      revalidates: (revalidatePath as any).mock.calls.length,
+    }
+
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockSession)
+    ;(isAdminScope as any).mockReturnValue(false)
+    ;(db.insert as any).mockReturnValue({ values: vi.fn().mockResolvedValue({}) })
+    ;(isInScope as any).mockImplementation((_s: any, id: string) => id === 'store-1')
+    mockPhoneCheckThenEmployee([{ name: '门店B的美容师', storeId: 'store-2' }])
+    const outOfScope = await createCustomer({
+      name: '张三', phone: '13812345678', boundStoreId: 'store-1', boundEmployeeId: 'EMP-REAL-B',
+    })
+    const probeB = {
+      selects: (db.select as any).mock.calls.length,
+      inserts: (db.insert as any).mock.calls.length,
+      revalidates: (revalidatePath as any).mock.calls.length,
+    }
+
+    expect(notFound).toEqual(outOfScope)
+    expect(probeA).toEqual(probeB)
+    expect(probeA).toEqual({ selects: 2, inserts: 0, revalidates: 0 })
+    ;(isInScope as any).mockReturnValue(true)
+  })
+
+  it('建档时 boundStoreId 为空串 → 归一为 null，不造「非 admin 永不可见」的孤儿', async () => {
+    // scopeCondition 的 IN 永不匹配 ''，这种顾客建出来就只有 admin 看得见。
+    // 与 boundEmployeeId 的空串归一是同一条口径。
+    ;(isInScope as any).mockReturnValue(true)
+    ;(db.select as any).mockImplementation(makeSelectChain([]))
+    const values = vi.fn().mockResolvedValue({})
+    ;(db.insert as any).mockReturnValue({ values })
+
+    const result = await createCustomer({ name: '张三', phone: '13812345678', boundStoreId: '  ' })
+
+    expect(result.success).toBe(true)
+    expect(values).toHaveBeenCalledWith(expect.objectContaining({ boundStoreId: null }))
+    expect(isInScope).not.toHaveBeenCalled()
   })
 
   it('建档时 boundEmployeeId 为空串 → 归一为 null，不查员工表', async () => {
@@ -1313,6 +1454,30 @@ describe('assignCustomer — 校验 + scope + 审计', () => {
     expect(result).toEqual({ success: false, message: '员工不存在或无权分配' })
     expect(isInScope).not.toHaveBeenCalled()
     expect(db.update).not.toHaveBeenCalled()
+  })
+
+  it('带首尾空白的 employeeId → 查询与写入都用归一值（锁 helper 自身的 trim）', async () => {
+    // assignCustomer 把**原始入参**直接交给 helper（updateCustomer / createCustomer 在外层已归一），
+    // 所以只有这条路径能验证 helper 内部「判空与取值同源」。
+    // 判空 trim 却写回原值时，'EMP-1 ' 会落进无 FK 的列，
+    // 让所有 ON bound_employee_id = 'EMP-1' 的 JOIN 断裂。
+    ;(isAdminScope as any).mockReturnValue(false)
+    ;(isInScope as any).mockReturnValue(true)
+    ;(db.select as any).mockImplementation(makeSelectChain([{ name: '王美容师', storeId: 'store-1' }]))
+    const where = vi.fn().mockResolvedValue({ count: 1 })
+    const set = vi.fn().mockReturnValue({ where })
+    ;(db.update as any).mockReturnValue({ set })
+
+    const result = await assignCustomer('user-1', '  EMP-1  ')
+
+    expect(result.success).toBe(true)
+    expect(eq).toHaveBeenCalledWith('employee_id', 'EMP-1')
+    expect(set).toHaveBeenCalledWith(expect.objectContaining({ boundEmployeeId: 'EMP-1' }))
+    const { logOperation } = await import('@/lib/operation-log')
+    expect(logOperation).toHaveBeenCalledWith(
+      mockSession, 'customer.assign', 'customer', 'user-1',
+      expect.objectContaining({ employeeId: 'EMP-1' }),
+    )
   })
 
   it('空 employeeId → 在查库之前就拒绝（挡板已下沉进 helper）', async () => {

@@ -1146,20 +1146,24 @@ export const getCustomerServiceOrders = withPermission(
 async function resolveBoundEmployee(
   session: AuthSession,
   employeeId: string,
-): Promise<{ ok: true; name: string | null } | { ok: false; message: string }> {
-  // 空值挡板下沉到 helper（原先只有 assignCustomer 的调用方有，updateCustomer 没有）
-  if (!employeeId?.trim()) {
+): Promise<{ ok: true; employeeId: string; name: string | null } | { ok: false; message: string }> {
+  // 空值挡板下沉到 helper（原先只有 assignCustomer 的调用方有，updateCustomer 没有）。
+  // 判空与取值必须同源：只 trim 判空却写回原值，`'EMP-1 '` 会原样落库，
+  // 而该列靠应用层 JOIN（无 FK），带空白的变体会让所有 `ON bound_employee_id = 'EMP-1'` 断裂。
+  // 归一后的 ID 由返回值下发，三个调用方一律写 `resolved.employeeId`，不要再用自己的入参。
+  const normalized = employeeId?.trim()
+  if (!normalized) {
     return { ok: false, message: '请选择美容师' }
   }
   const [emp] = await db
     .select({ name: staffWechatUsers.name, storeId: staffWechatUsers.storeId })
     .from(staffWechatUsers)
-    .where(eq(staffWechatUsers.employeeId, employeeId))
+    .where(eq(staffWechatUsers.employeeId, normalized))
     .limit(1)
   if (!emp || !emp.storeId || !isInScope(session, emp.storeId)) {
     return { ok: false, message: '员工不存在或无权分配' }
   }
-  return { ok: true, name: emp.name ?? null }
+  return { ok: true, employeeId: normalized, name: emp.name ?? null }
 }
 
 export const updateCustomer = withPermission(
@@ -1263,19 +1267,39 @@ export const updateCustomer = withPermission(
    *    而下拉候选里根本没有那个脏值、用户无从自救。
    *    不变即无需重新授权；**改值仍必过闸**，越权路径没有被放宽。
    */
-  if ('boundEmployeeId' in data) {
-    const nextBoundEmployeeId = data.boundEmployeeId?.trim() ? data.boundEmployeeId : null
-    updateData.boundEmployeeId = nextBoundEmployeeId
+  // 用 `!== undefined` 而不是 `'boundEmployeeId' in data`：本 Action 的通用字段过滤
+  // （上面的 `filter(value !== undefined)`）已经确立了「显式 undefined = 不更新」的规则，
+  // 用 `in` 会让 `{ boundEmployeeId: undefined }` 落进归一化分支被当成解绑、意外清空绑定。
+  if (data.boundEmployeeId !== undefined) {
+    const nextBoundEmployeeId = data.boundEmployeeId?.trim() || null
     if (nextBoundEmployeeId === null) {
+      updateData.boundEmployeeId = null
       updateData.boundEmployeeName = null
     } else {
       const resolved = await resolveBoundEmployee(session, nextBoundEmployeeId)
       if (resolved.ok) {
+        updateData.boundEmployeeId = resolved.employeeId
         updateData.boundEmployeeName = resolved.name
       } else if (nextBoundEmployeeId !== before.boundEmployeeId) {
         return { success: false, message: resolved.message }
+      } else {
+        /*
+         * 值未变 + 存量脏值 → **两列都不碰**，而不是「写回同值」。
+         *
+         * 闸门 2 两个谱系独立命中：`updateData` 由上面的 `Object.fromEntries` 预先带入了
+         * `boundEmployeeId`，若不 delete，SET 子句里就带着这个未授权 ID。
+         * `expectedUpdatedAt` 是**可选**参数，缺省时 whereConditions 退化为
+         * `userId + scopeCond`、无任何并发守卫，于是：
+         *   ① 请求读到脏值 E → 因「值未变」放行
+         *   ② 窗口内合法方（总部修正 / 前台 assignCustomer / 转店流程）把绑定改成 F
+         *   ③ 本请求的 UPDATE 落地，把 F **回滚**成 E，且返回 success
+         *   ④ logUpdate 拿请求开头读到的 before(=E) 与 updateData(=E) 比对，差异为零
+         *      → 这次回滚在审计里完全不可见
+         * 反复重放即可让总部的修正永远无法持久。delete 掉在非并发下与写回同值等价，
+         * 是无语义损失的纯收紧。
+         */
+        delete updateData.boundEmployeeId
       }
-      // else：值未变 + 存量脏值 → 放行本次编辑，姓名快照保持原样（不写 null 制造新脏数据）
     }
   }
 
@@ -1359,7 +1383,8 @@ export const assignCustomer = withPermission(
   const scopeCond = scopeCondition(session, clientWechatUsers.boundStoreId)
   const result: any = await db
     .update(clientWechatUsers)
-    .set({ boundEmployeeId: employeeId, boundEmployeeName: resolved.name } as any)
+    // 写归一后的 resolved.employeeId，不是原始入参 —— 入参可能带首尾空白
+    .set({ boundEmployeeId: resolved.employeeId, boundEmployeeName: resolved.name } as any)
     .where(and(eq(clientWechatUsers.userId, userId), scopeCond))
 
   if ((result as any).count === 0) {
@@ -1367,13 +1392,13 @@ export const assignCustomer = withPermission(
   }
 
   await logOperation(session, 'customer.assign', 'customer', userId, {
-    employeeId,
+    employeeId: resolved.employeeId,
     employeeName: resolved.name,
   })
 
   const { revalidatePath } = await import('next/cache')
   revalidatePath(`/customers/${userId}`)
-  return { success: true, message: `已分配给 ${resolved.name ?? employeeId}` }
+  return { success: true, message: `已分配给 ${resolved.name ?? resolved.employeeId}` }
   },
 )
 
@@ -1420,8 +1445,12 @@ export const createCustomer = withPermission(
     return { success: false, message: '手机号格式不正确（需为 11 位手机号）' }
   }
 
-  // scope 隔离：非 admin 只能在自己 scope 内的门店创建顾客
-  if (data.boundStoreId && !isInScope(session, data.boundStoreId)) {
+  // scope 隔离：非 admin 只能在自己 scope 内的门店创建顾客。
+  // 空串同样归一为 null —— 否则 `''` 因 falsy 跳过 scope 校验后被 `?? null` 原样写入，
+  // 造出 `bound_store_id = ''` 的顾客：scopeCondition 的 IN 永不匹配，非 admin 从此看不见它。
+  // 与下面 boundEmployeeId 的归一是同一条口径，不能只做一半。
+  const nextBoundStoreId = data.boundStoreId?.trim() || null
+  if (nextBoundStoreId && !isInScope(session, nextBoundStoreId)) {
     return { success: false, message: '无权在该门店创建顾客' }
   }
 
@@ -1440,11 +1469,12 @@ export const createCustomer = withPermission(
   // 此前这里只 select 姓名、不校验存在性与 scope —— 与修复前的 updateCustomer 逐字同构，
   // 而 customer:create 与 customer:update 同属 manager + customer_mgr（同一批调用方），
   // 不堵这条等于「改」堵住了、「建」还开着。空串同样归一为 null，不留第三态。
-  const nextBoundEmployeeId = data.boundEmployeeId?.trim() ? data.boundEmployeeId : null
+  let nextBoundEmployeeId = data.boundEmployeeId?.trim() || null
   let boundEmployeeName: string | null = null
   if (nextBoundEmployeeId) {
     const resolved = await resolveBoundEmployee(session, nextBoundEmployeeId)
     if (!resolved.ok) return { success: false, message: resolved.message }
+    nextBoundEmployeeId = resolved.employeeId
     boundEmployeeName = resolved.name
   }
 
@@ -1457,7 +1487,7 @@ export const createCustomer = withPermission(
       userId,
       phone: data.phone,
       name: data.name,
-      boundStoreId: data.boundStoreId ?? null,
+      boundStoreId: nextBoundStoreId,
       boundEmployeeId: nextBoundEmployeeId,
       boundEmployeeName,
     })

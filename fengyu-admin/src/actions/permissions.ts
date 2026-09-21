@@ -302,6 +302,12 @@ export const assignRole = withAnyPermission(
    * 对 scope 外员工同样是可探测的信道。
    *
    * 在职判定排在可见性**之后**：对不可见的员工连「他已离职」都不该泄露。
+   *
+   * 失败通道的分层判据（本函数里 throw 与 return 混用，不是随意的）：
+   * **全局公共数据可以 throw**（角色定义 `:253`、组织节点 `:274` —— 任何持 permission:assign
+   * 的人本来就能列举它们，且 scopeId 在 :260-265 已被挡在自身 scope 内）；
+   * **敏感归属必须走合并 return**（本段的员工校验）。
+   * 后续维护者不要在员工侧加 throw —— 那会重新暴露「employeeId 是否存在」。
    */
   const [targetEmployee] = await db
     .select({
@@ -353,9 +359,13 @@ export const assignRole = withAnyPermission(
     // ⚠️ 必须按约束名收窄：permission_roles 另有 scope_id → org_nodes、
     // role → permission_role_definitions 两条 FK，只判 23503 会把「组织节点/角色定义被并发删除」
     // 误报成「员工不存在」—— 把原本响亮的 500 变成静默且主体错误的业务拒绝，排障指错方向。
-    // 判据取子串而非全名（全名 permission_roles_employee_id_staff_wechat_users_employee_id_fk
-    // 由 drizzle 生成规则决定，会随 schema 改名漂移），另两条 FK 名均不含 employee_id。
-    if (pgErrorCode(err) === '23503' && pgErrorConstraint(err)?.includes('employee_id')) {
+    // 判据取**前缀**而非全名或裸子串：全名
+    // `permission_roles_employee_id_staff_wechat_users_employee_id_fk` 由 drizzle 生成规则决定、
+    // 会随 schema 改名漂移；而裸 `includes('employee_id')` 在将来新增
+    // `created_by → staff_wechat_users.employee_id` 之类的 FK 时会把它也吞进来
+    // （那条约束名同样含 employee_id）。前缀锁死「引用列就是 employee_id」这一点。
+    if (pgErrorCode(err) === '23503'
+      && pgErrorConstraint(err)?.startsWith('permission_roles_employee_id_')) {
       return { success: false, message: '员工不存在或不在您的权限范围内' }
     }
     throw err

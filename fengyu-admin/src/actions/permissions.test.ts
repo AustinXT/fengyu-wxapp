@@ -20,7 +20,11 @@ vi.mock('@db/permission', () => ({
   },
   permissionRoles: {
     id: 'id',
-    employeeId: 'employee_id',
+    // ⚠️ 刻意与 staffWechatUsers.employeeId 的 mock 值（'employee_id'）区分开。
+    // 两表都写 'employee_id' 时，「被授权人查询用了正确谓词」那条断言会被
+    // 紧随其后的 existing 重复检查（同样 eq(permissionRoles.employeeId, ...)）满足 →
+    // 即使员工查询改成错列也恒真，断言锁不住任何东西（红检 T 实测）。
+    employeeId: 'pr_employee_id',
     role: 'role',
     scopeId: 'scope_id',
     createdBy: 'created_by',
@@ -90,7 +94,7 @@ vi.mock('drizzle-orm', () => ({
 import { getRoles, assignRole, revokeRole } from './permissions'
 import { db } from '@/db'
 import { getSession, hasRole } from '@/lib/auth'
-import { inArray } from 'drizzle-orm'
+import { inArray, eq } from 'drizzle-orm'
 import { countActiveAdmins } from '@/lib/admin-guard'
 import { logOperation } from '@/lib/operation-log'
 
@@ -666,6 +670,37 @@ describe('assignRole — AC-09 & scope constraint', () => {
 
     expect(result.success).toBe(true)
     expect(values).toHaveBeenCalledOnce()
+  })
+
+  it('被授权人查询的谓词必须是 employee_id = 请求值（防 where 被改空/改错列）', async () => {
+    // codex 谱系指出：mockAssignRoleSelects 按「第几次查询」返回，
+    // 谓词改成 .where(undefined) 或错列时测试依然全绿，而生产里
+    // FK 只保证「提交的 ID 真实存在」，不保证它就是被校验的那一个。
+    ;(getSession as any).mockResolvedValue(hrSession)
+    ;(hasRole as any).mockReturnValue(false)
+    mockAssignRoleSelects()
+    ;(db.insert as any).mockReturnValue({ values: vi.fn().mockResolvedValue({}) })
+
+    await assignRole({ employeeId: 'EMP-TARGET', role: 'manager', scopeId: 'market-1' })
+
+    expect(eq).toHaveBeenCalledWith('employee_id', 'EMP-TARGET')
+  })
+
+  it('created_by 式的 FK 23503（约束名含 employee_id 但引用列不是它）→ 照旧抛出', async () => {
+    // 判据用前缀而非裸 includes('employee_id')：将来若新增
+    // created_by → staff_wechat_users.employee_id 的 FK，其约束名同样含该子串。
+    ;(getSession as any).mockResolvedValue(hrSession)
+    ;(hasRole as any).mockReturnValue(false)
+    mockAssignRoleSelects()
+    const fkError = Object.assign(new Error('violates foreign key constraint'), {
+      code: '23503',
+      constraint_name: 'permission_roles_created_by_staff_wechat_users_employee_id_fk',
+    })
+    ;(db.insert as any).mockReturnValue({ values: vi.fn().mockRejectedValue(fkError) })
+
+    await expect(
+      assignRole({ employeeId: 'EMP-Y', role: 'manager', scopeId: 'market-1' }),
+    ).rejects.toThrow('violates foreign key constraint')
   })
 
   it('hr + 他市场门店员工（store 维度）→ 拒绝', async () => {
