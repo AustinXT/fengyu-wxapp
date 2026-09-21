@@ -28,6 +28,7 @@
  * 这份文件与 client 端的同名测试是**各端独立副本**（CLAUDE.md：禁止跨端共享代码目录）。
  */
 import fs from 'fs'
+import os from 'os'
 import path from 'path'
 
 const ROOT = path.resolve(__dirname, '../..')
@@ -293,23 +294,26 @@ describe('WXSS 文本截断有效性（#238）', () => {
     })
 
     test('hostTags 能跨过属性值里的 `>`（wx:if="{{a > b}}"）', () => {
-      const tmp = path.join(ROOT, '__tests__/compile/.tmp-hosttags.wxml')
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wxss-guard-'))
+      const tmp = path.join(dir, 'probe.wxml')
+      // 必须写在系统临时目录：写进仓库的 __tests__ 下会被并发跑的其它测试扫到
       fs.writeFileSync(tmp, '<text wx:if="{{item.n > 1}}" class="probe-cls">x</text>\n')
       try {
         expect(hostTags([tmp], 'probe-cls').has('text')).toBe(true)
       } finally {
-        fs.unlinkSync(tmp)
+        fs.rmSync(dir, { recursive: true, force: true })
       }
     })
 
     test('hostTags 的 class 匹配有边界（不把 foo-bar 当成 foo）', () => {
-      const tmp = path.join(ROOT, '__tests__/compile/.tmp-boundary.wxml')
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wxss-guard-'))
+      const tmp = path.join(dir, 'probe.wxml')
       fs.writeFileSync(tmp, '<view class="probe-cls-row"><text class="probe-cls">x</text></view>\n')
       try {
         expect([...hostTags([tmp], 'probe-cls')]).toEqual(['text'])
         expect([...hostTags([tmp], 'probe-cls-row')]).toEqual(['view'])
       } finally {
-        fs.unlinkSync(tmp)
+        fs.rmSync(dir, { recursive: true, force: true })
       }
     })
 
