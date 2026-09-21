@@ -59,10 +59,8 @@ module.exports.min = function(n) {
       >
         <swiper-item wx:for="{{banners}}" wx:key="id">
           <view class="banner-item" style="background: {{item.bgColor}};">
-            <!-- lazy-load 按 issue #231 验收标准补齐；但注意它在 <swiper> 内收益有限
-                 （微信文档限定其对 page / scroll-view 下的 image 生效，且本 swiper 开了
-                 circular + autoplay 会预渲染相邻帧）。真正压住内存的是服务端下发的
-                 imageMogr2 缩略规则：单张解码 11.9MB → 1.5MB。 -->
+            <!-- lazy-load 在 swiper 内收益有限（微信文档限定其对 page/scroll-view 下的
+                 image 生效）；真正压内存的是服务端下发的 imageMogr2 规则 -->
             <image wx:if="{{item.image}}" class="banner-image" src="{{item.image}}" mode="aspectFill" lazy-load />
           </view>
         </swiper-item>

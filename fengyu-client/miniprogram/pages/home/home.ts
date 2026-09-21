@@ -6,9 +6,6 @@ import { getIsMember } from "../../utils/member-pricing";
 
 const app = getApp<IAppOption>();
 
-// 原先这里有个 CDN_BASE 常量用来拼 banner URL。issue #231 把 URL 构造收回服务端后
-// 本页不再需要它 —— 前端不做任何图片 URL 拼接，拼一份就等于多一处会漂移的规则。
-
 interface Banner {
   id: string;
   title: string;
@@ -334,13 +331,8 @@ Page({
   // ===== 数据加载 =====
 
   async loadBanners() {
-    // URL 由云函数下发（issue #231）：banner 曾是全站唯一绕开 safeThumbUrl 的图片链路，
-    // 前端自己拼固定路径 = 原图直发（生产那张 3002×1039 解码 11.9MB）。
-    // 收回服务端后，下发的 URL 已带 imageMogr2 缩略规则与 ?v= 版本号，
-    // 后续调尺寸不需要小程序发版。
-    //
-    // 不在前端做任何 URL 拼接或兜底：拼不出合法 URL 时服务端返回空数组，
-    // 此时宁可不显示轮播，也不能退回未缩略的原图。
+    // URL 由云函数下发并已带 imageMogr2 规则 + ?v=（issue #231）。
+    // 前端不做任何拼接或兜底：服务端拼不出时返回空数组，宁可不显示轮播。
     try {
       const { images } = await callClientApi<{
         count: number;

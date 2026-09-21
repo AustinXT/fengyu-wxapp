@@ -27,79 +27,15 @@
 const COS_HOST_PATTERN = /\.tcb\.qcloud\.la$/i
 
 /**
- * CloudBase COS 下载域名 —— **写死实测值，不从任何外部数据推导**。
- *
- * 与前端 `miniprogram/utils/cloud-env.ts` 的 `COS_BASE` 同值、同理由：
- * 桶前缀是建桶时分配的，不能从 envId 推算。
- *
- * ⚠️ 为什么不从 `system_configs.banner_images` 取 origin（issue #231 评审指出）：
- * 那个值是 admin **上传当时**所在桶的 URL，而图片实际被 `reuploadToFixedPath`
- * 重传到 admin **当前** `CDN_BASE` 桶 —— 两者在环境切换后会不一致，
- * 而且都是 `.tcb.qcloud.la` 后缀，host 白名单**拦不住**，
- * 表现为首页整屏 404 破图且服务端毫无感知。
- * 同一个 `routes/config.js` 里 `fengyuguan` 的注释早就写明了这一点
- * （「不直接用 url，url 指向 admin 上传时所在桶，未必是本环境桶」）——
- * banner 一度走反了方向。
- *
- * 顺带消掉另一条：`banner_images` 是 admin 可写且无校验的字段，
- * 拿它当 host 来源等于让持 `system:config` 权限的账号能把**全量顾客的首页图源**
- * 指到任意同后缀的桶。
- */
-const COS_BASE = 'https://6665-fengyu-client-prod-d1cga6909c0ba-1406056527.tcb.qcloud.la'
-
-/**
- * 档位参数上界。box 是 contain 语义、**不放大**，取得过大等于完全不约束 ——
- * 「规则看着在、实际不生效」的又一种形态（`thumbnail/1e+21x1e+21` COS 直接原样返回原图）。
- *
- * ⚠️ 本 PR 只给新增的 `safeBannerThumbUrl` 用。给 `safeThumbUrl` /
- * `safeThumbUrlByArea` 补同样的上界是 issue #232（PR #275）的范围，
- * 那边取的也是 2000（与前端净化器 `cart.ts` 的 `SANITIZE_MAX_EDGE` 对齐）——
- * 两个 PR 取同一个值，merge 时不会留下两套口径。
- */
-const MAX_THUMB_BOX = 2000
-
-/**
- * 对象键白名单（默认）：两段、纯 ASCII、以图片扩展名结尾。
+ * 对象键白名单：两段、纯 ASCII、以图片扩展名结尾。
  * admin `path=` 模式上传生成的键形如 `store-covers/1789097186265-apa9p0.png`。
  * 详细理由见 parseProcessableUrl 里的注释。
+ *
+ * ⚠️ 端专属链路（如 banner 的三段固定键）**不要**放宽这条，
+ * 而是各自建更窄的白名单走 `parseProcessableUrl` 的 `objectKeyPattern` 参数
+ * —— 见 `utils/image-banner.js` 的做法。
  */
 const OBJECT_KEY_PATTERN = /^\/[\w-]+\/[\w.-]+\.(png|jpe?g|webp|gif)$/i
-
-/**
- * 首页 banner 的对象键白名单（issue #231）—— **比默认的两段键更严格**。
- *
- * banner 与其它图片链路有两处结构性不同：
- * 1. 键是**三段** `fengyu-client/banner/banner{N}.jpg`，过不了默认的两段白名单
- * 2. 文件名**固定**、覆盖式上传（admin `settings.ts` 的 `reuploadToFixedPath`），
- *    所以换图后 URL 不变，必须靠 `?v=` 破缓存
- *
- * 刻意**不**把默认白名单放宽成「2~3 段」来容纳它 —— 那条白名单是 #230 五轮 +
- * #232 两轮评审钉死的，且有多份副本；放宽会扩大
- * 「样式分隔符配成 `/` 时与正常键不可区分」这个已知限制的暴露面。
- *
- * ⚠️ 下一个要接入的三段键链路是**头像**（`avatars/staff/<id>/…`、`avatars/<openid>/…`，
- * 见 issue #233）。照此新建专属白名单，**不要**放宽默认的那条。
- *
- * ⚠️ 这里排除 `gif` 对 banner 是**无效防护**：admin 重传时目标路径的扩展名是
- * 字面量 `.jpg`（`settings.ts` 的模板串），GIF 字节也会存进 `banner1.jpg`。
- * 真要挡动图得在 admin 上传侧按 path 分流拒掉 `image/gif`。
- */
-const BANNER_OBJECT_KEY_PATTERN =
-  /^\/fengyu-client\/banner\/banner\d+\.(png|jpe?g|webp)$/i
-
-/**
- * 对象键白名单的**命名变体表**。
- *
- * `parseProcessableUrl` 只接受这里的键名，不接受裸正则（issue #231 评审指出）：
- * - 传裸正则等于给调用方开了一个放宽整条防线的口子（`/^\/.*$/` 就能全放行），
- *   而「参数只用来换一条同样是白名单的正则」这种约定代码层约束不了
- * - 裸正则还可能带 `g` 标志，`.test()` 对带 `g` 的正则是**有状态**的
- *   （`lastIndex` 让它隔次返回 false），表现成「偶数张 banner 随机消失」这类极难排查的故障
- */
-const OBJECT_KEY_VARIANTS = {
-  default: OBJECT_KEY_PATTERN,
-  banner: BANNER_OBJECT_KEY_PATTERN,
-}
 
 /**
  * 判断 hostname 是否属于可做数据万象处理的域名。
@@ -156,10 +92,9 @@ function decodeParamName(param) {
  * @param {string} url 原始图片 URL
  * @returns {URL|null} 通过校验的 URL 对象（query 尚未写入规则）；不通过返回 null
  */
-function parseProcessableUrl(url, keyVariant = 'default') {
-  const objectKeyPattern = OBJECT_KEY_VARIANTS[keyVariant]
-  // 未知变体名一律拒绝，而不是回退到默认 —— 回退会让拼错的变体名静默降级成另一条规则
-  if (!objectKeyPattern) return null
+function parseProcessableUrl(url, objectKeyPattern = OBJECT_KEY_PATTERN) {
+  // 只接受正则对象；传别的（含 undefined 以外的假值）一律拒绝，不静默回退到默认
+  if (!(objectKeyPattern instanceof RegExp) || objectKeyPattern.global) return null
 
   if (typeof url !== 'string' || url.trim() === '') return null
 
@@ -195,8 +130,8 @@ function parseProcessableUrl(url, keyVariant = 'default') {
   // 代码层与正常两段键不可区分。本项目 bucket 须保持默认分隔符 `!`、
   // 且不得配置含缩放规则的样式。
   //
-  // 走 OBJECT_KEY_VARIANTS 里的命名变体（issue #231 的 banner 是三段固定键）。
-  // 不接受裸正则，理由见该常量的注释。默认变体就是上面描述的两段键规则。
+  // 默认是上面那条两段键规则；端专属链路可传更窄的（见 image-banner.js）。
+  // ⚠️ 拒绝带 `g` 的正则：`.test()` 对它有状态（lastIndex），会隔次返回 false。
   if (!objectKeyPattern.test(parsed.pathname)) {
     return null
   }
@@ -279,55 +214,6 @@ function safeThumbUrlByArea(url, maxPixels) {
   return parsed.toString()
 }
 
-/**
- * 首页 banner 专用的缩略 URL（issue #231）。
- *
- * 与 {@link safeThumbUrl} 的两点不同，都源于 banner 链路的结构性差异：
- *
- * 1. **对象键走 {@link BANNER_OBJECT_KEY_PATTERN}**（三段固定键，比默认白名单更严）
- * 2. **在规则后追加 `&v=<version>`** —— banner 是覆盖式上传，换图后 URL 不变，
- *    丢了版本号客户端会长期拿到旧图。
- *    已对生产图实测：`?imageMogr2/thumbnail/1080x1080&v=175…` 与
- *    `?v=175…&imageMogr2/thumbnail/1080x1080` **两种顺序都正常缩略**（1080×374），
- *    规则与版本号可以共存。
- *
- * 追加 `&v=` 不违背「query 整串由服务端掌控」这条核心约定 —— 丢弃的是**外部传入**的
- * query，追加的是服务端自己算出来的版本号，最终 query 仍然完全由服务端决定。
- *
- * @param {string} url 原始 banner URL（host 仍走 COS 白名单校验）
- * @param {number} boxSize 目标 box 边长
- * @param {number} version 缓存版本号（system_configs.banner_count 的 updated_at 毫秒）
- * @returns {string|null} 处理后的 URL；无法保证缩略时返回 null
- */
-function safeBannerThumbUrl(url, boxSize, version) {
-  if (!Number.isInteger(boxSize) || boxSize <= 0) return null
-  // 上界与 safeThumbUrl 同口径：box 是 contain 语义、不放大，取得过大等于完全不约束
-  // （`thumbnail/1e+21x1e+21` 这种非法规则 COS 会直接原样返回原图 = 保护静默失效）
-  if (boxSize > MAX_THUMB_BOX) return null
-  // 版本号必须是非负整数。给不出版本号时**不降级下发**：
-  // 没有 `?v=` 的 banner URL 会被 CDN 长期缓存，换图不生效——
-  // 那是比"图略大"更难排查的故障，宁可走占位。
-  if (!Number.isInteger(version) || version < 0) return null
-
-  const parsed = parseProcessableUrl(url, 'banner')
-  if (!parsed) return null
-
-  parsed.search = `?imageMogr2/thumbnail/${boxSize}x${boxSize}&v=${version}`
-  return parsed.toString()
-}
-
-/**
- * 首页 banner 档位（issue #231）：满屏轮播，`.banner-swiper { height: 260rpx }` + aspectFill。
- *
- * 展示位宽约 686rpx（750 − 32×2 padding），3x 屏物理约 1180×447。
- * 生产 banner 实测 3002×1039（2.89:1 宽图），box 1080 输出 1080×374、解码 1.5MB
- * （原图 11.9MB），aspectFill 放大约 1.19 倍 —— 对照片类内容可接受。
- *
- * 与 STORE_DETAIL_THUMB_BOX / PRODUCT_THUMB_BOX_LARGE 同取 1080，不另立档位。
- * swiper 开了 `circular` + `autoplay` 会预渲染相邻帧，N 张时可能同时驻留 2~3 张：
- * 本档下 3 张 ≈ 4.5MB；若抬到 1280（放大 1.01 倍）则 3 张 ≈ 6.6MB，不值。
- */
-const BANNER_THUMB_BOX = 1080
 
 /**
  * 门店列表卡片：显示尺寸 160rpx，3x 屏约 240 物理像素，取 300 留余量。
@@ -408,11 +294,11 @@ const PRODUCT_DETAIL_IMAGE_MAX_COUNT = 9
 module.exports = {
   safeThumbUrl,
   safeThumbUrlByArea,
-  safeBannerThumbUrl,
   isProcessableHost,
-  COS_BASE,
-  BANNER_THUMB_BOX,
-  MAX_THUMB_BOX,
+  // 供同端的 image-* 兄弟模块复用（如 image-banner.js）。
+  // 它返回的是已过全部准入校验的 URL 对象，调用方只负责写自己的 search。
+  parseProcessableUrl,
+  OBJECT_KEY_PATTERN,
   STORE_LIST_THUMB_BOX,
   STORE_DETAIL_THUMB_BOX,
   PRODUCT_THUMB_BOX_SMALL,

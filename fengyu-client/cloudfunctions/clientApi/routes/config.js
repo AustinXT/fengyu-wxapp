@@ -9,7 +9,7 @@
 
 const pg = require('../db/pg')
 const { invalidateCache } = require('../utils/config')
-const { safeBannerThumbUrl, COS_BASE, BANNER_THUMB_BOX } = require('../utils/image')
+const { safeBannerThumbUrl, bannerSourceUrl } = require('../utils/image-banner')
 
 /**
  * 获取首页轮播图。
@@ -22,17 +22,14 @@ const { safeBannerThumbUrl, COS_BASE, BANNER_THUMB_BOX } = require('../utils/ima
  * 而首页是流量最高的页面、swiper 还会预渲染相邻帧。
  * 收回服务端后，后续调整尺寸不需要小程序发版（审核周期长）。
  *
- * ⚠️ 三个与其它链路不同的地方：
- * 1. **对象键是三段** `fengyu-client/banner/banner{N}.jpg`，过不了 `safeThumbUrl` 的
- *    两段白名单，所以走 `safeBannerThumbUrl`（专属白名单，比默认更严）
- * 2. **必须带 `?v=`**：banner 是覆盖式上传（admin `reuploadToFixedPath` 到固定文件名），
- *    换图后 URL 不变，丢了版本号客户端会长期拿到旧图
- * 3. **host 用写死的 `COS_BASE`，不从 `banner_images` 取**（见该常量注释）——
- *    那个值是 admin 上传**当时**所在桶，而图实际重传到 admin **当前**桶，
- *    两者可能不一致且同后缀、host 白名单拦不住
+ * banner 链路有三点与其它图片不同（对象键三段 / 覆盖式上传必须带 `?v=` /
+ * host 写死不从 `banner_images` 取），三条的完整论证见 `utils/image-banner.js`。
  *
- * `count`/`v` 仍返回：`v` 是缓存版本的单一来源；`count` 供排查时对照
- * （前端已改为只看 `images.length`，两者不一致即说明有 URL 被 fail-closed 掉了）。
+ * ⚠️ **`count`/`v` 必须保留，不要因为"新版前端不读了"就删**：
+ * 小程序是**存量客户端**——用户设备上跑的旧版 `home.ts` 仍在读这两个字段自行拼 URL。
+ * 删掉 = 所有还没更新的小程序首页轮播直接空白（比"图略大"严重得多的回归）。
+ * 等灰度覆盖后再议。
+ *
  * 无需认证，公开接口。
  */
 async function banners(ctx) {
@@ -71,30 +68,17 @@ async function banners(ctx) {
 const MAX_BANNER_COUNT = 20
 
 /**
- * 拼出固定路径的 banner URL 列表并施加缩略规则。
- *
- * 路径按 `count` 生成 `banner{N}.jpg`（`reuploadToFixedPath` 写入的固定名），
- * **不用** `banner_images` 里的随机名 —— 那是 admin 上传原件的键，同图不同键。
- * host 用写死的 `COS_BASE`，理由见该常量注释。
- *
- * 任何一条拼不出合法 URL（版本号非法、档位越界……）就整体返回 `[]`：
- * banner 是首屏展示位，宁可不显示也不下发未经缩略的原图。
+ * 按 `count` 拼出固定名 `banner{N}.jpg` 的缩略 URL 列表。
+ * 路径与 host 的口径见 `utils/image-banner.js`。
  */
 function buildBannerUrls(count, v) {
-  if (!count || count <= 0) return []
-
-  const effective = Math.min(count, MAX_BANNER_COUNT)
+  const n = Math.min(Math.max(count, 0), MAX_BANNER_COUNT)
   const urls = []
-  for (let i = 1; i <= effective; i += 1) {
-    const url = safeBannerThumbUrl(
-      `${COS_BASE}/fengyu-client/banner/banner${i}.jpg`,
-      BANNER_THUMB_BOX,
-      v
-    )
-    // 有一条不合规就整体放弃，避免前端拿到"缺了中间几张"的残缺轮播
+  for (let i = 1; i <= n; i += 1) {
+    const url = safeBannerThumbUrl(bannerSourceUrl(i), v)
     if (!url) {
-      // fail-closed 的影响面是**整个首屏轮播模块**消失（不像商品封面只是一张占位），
-      // 而前端对空数组不会进 catch —— 没有这行日志，服务端和前端都不会留下任何痕迹。
+      // 整体放弃而非跳过：宁可轮播整块不显示，也不给残缺序列。
+      // 前端对空数组不进 catch，没这行日志两端都不留痕。
       console.warn('[config.banners] fail-closed: 无法生成合法 banner URL', { count, v, i })
       return []
     }

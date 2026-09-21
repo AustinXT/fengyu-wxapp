@@ -4,6 +4,7 @@
  */
 
 import { createRequire } from 'node:module'
+import { getCosBase } from '../../utils/cloud-env'
 import {
   getCart,
   addToCart,
@@ -401,6 +402,18 @@ describe('issue #230：存量购物车快照的封面净化', () => {
 describe('issue #230：净化器与云函数构造器的闭环守护', () => {
   const req = createRequire(import.meta.url)
   const img = req('../../../cloudfunctions/clientApi/utils/image.js')
+  const imgBanner = req('../../../cloudfunctions/clientApi/utils/image-banner.js')
+
+  /**
+   * issue #231：banner 的桶地址在**两端各有一份字面量**
+   * （云函数 `utils/image-banner.js` 的 COS_BASE / 前端 `utils/cloud-env.ts` 的 COS_BASE）。
+   * 项目禁止跨端共享代码目录，一致性只能靠这条守 ——
+   * 两者不一致时，云函数会下发一个指向**另一个桶**的 URL：图要么 404、要么是旧图，
+   * 而 host 白名单只做后缀匹配、拦不住同后缀的桶，服务端毫无感知。
+   */
+  test('banner 桶地址两端同值（云函数下发的 host 必须等于前端 getCosBase）', () => {
+    expect(imgBanner.COS_BASE).toBe(getCosBase())
+  })
 
   const H = 'test-env-1300000000.tcb.qcloud.la'
 
