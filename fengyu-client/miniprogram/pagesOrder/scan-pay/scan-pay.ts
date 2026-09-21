@@ -706,7 +706,6 @@ Page({
     const attemptKey = `order.pay|${orderNo}|${attemptAmount}`;
     // #214（round-11）：同支付宝分支，不再用页面级缓存复用微信支付参数——
     // 服务端的场次复用会先查渠道状态，页面缓存会绕过这层校验。
-    const reusingWechatAttempt = false;
     let payParams = null as any;
     {
       const data = await callClientApi<{ paymentParams?: any }>('order.pay', payPayload);
@@ -720,9 +719,6 @@ Page({
     if (!payParams || !payParams.paySign) {
       Toast.fail('支付参数获取失败');
       return;
-    }
-    if (reusingWechatAttempt) {
-      await this.assertCachedAttemptCardBalance(Number(this.data.order?.pendingPrepaidCardAmount || 0));
     }
     await wx.requestPayment(payParams);
     this._wechatAttempt = null;
@@ -789,7 +785,6 @@ Page({
 
     // 微信：聚合主扫 wx.requestPayment（可叠加储值卡抵扣）
     const attemptKey = `order.repay.wechat|${orderNo}|${paidAmount}|${prepaidCardAmount}`;
-    const reusingWechatAttempt = false;
     let payParams = null as any;
     {
       const data = await callClientApi<{ paymentParams?: any }>('order.repay', {
@@ -808,9 +803,6 @@ Page({
     if (!payParams || !payParams.paySign) {
       Toast.fail('支付参数获取失败');
       return;
-    }
-    if (reusingWechatAttempt) {
-      await this.assertCachedAttemptCardBalance(prepaidCardAmount);
     }
     await wx.requestPayment(payParams);
     this._wechatAttempt = null;

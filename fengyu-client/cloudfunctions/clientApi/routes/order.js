@@ -650,6 +650,17 @@ const LAKALA_PAID_TRADE_STATES = ['SUCCESS', 'PART_REFUND', 'REFUND']
  */
 const CLOSEABLE_ORDER_STATUSES = ['待支付', '支付失败']
 
+/**
+ * 「渠道侧已收到钱」的统一错误。带结构化标记 `isPaymentAlreadySucceeded`，
+ * 调用方据此判断，不要去正则匹配错误文案——文案一重构，判断就会静默失效
+ * （双谱系评审 round-12）。
+ */
+function paymentAlreadySucceededError() {
+  const err = new Error('CONFLICT: PAYMENT_ALREADY_SUCCEEDED: 支付已成功，正在更新订单，请稍后刷新')
+  err.isPaymentAlreadySucceeded = true
+  return err
+}
+
 /** 与 payNotify 解析回调时的 `.toUpperCase()` 对齐，避免两端对同一笔单判定不一致。 */
 function normalizeTradeState(state) {
   return String(state || '').trim().toUpperCase()
@@ -664,6 +675,19 @@ function normalizeTradeState(state) {
  * ⚠️ 改这个值或改 cloudbaserc 的函数超时，要回头核对 staffApi 桥的 DEFAULT_TIMEOUT_MS。
  */
 const LAKALA_VOID_CALL_TIMEOUT_MS = 7000
+
+/**
+ * 作废 + 重建这条路径的总预算核算（双谱系评审 round-12 要求核对）：
+ *
+ *   reserve 事务(~1s) + 查单 7s + 关单 7s + 复核 7s + 二次 reserve(~1s) + 预下单 20s
+ *   ≈ 43s，落在 clientApi 的 60s 函数超时内。
+ *
+ * 支付宝路径的预下单是 15s、另加吱口令 6s(+1s 退避 +6s 重试)：
+ *   1 + 21 + 1 + 15 + 13 ≈ 51s，同样在 60s 内但余量更薄——这也是支付宝那两个常量
+ *   比微信更紧的原因。动任何一个超时常量都要回来重算这两条。
+ *
+ * 注意这是**最坏路径**：正常情况下拉卡拉单次往返 1~2s，整条路远达不到上限。
+ */
 
 /**
  * 预下单 / 吱口令的单次超时预算（双谱系评审 round-6）。
@@ -926,7 +950,7 @@ async function ensureReusedIntentStillPayable(orderNo, outTradeNo, merchant) {
 
   const state = normalizeTradeState(trade.tradeState)
   if (LAKALA_PAID_TRADE_STATES.includes(state)) {
-    throw new Error('CONFLICT: PAYMENT_ALREADY_SUCCEEDED: 支付已成功，正在更新订单，请稍后刷新')
+    throw paymentAlreadySucceededError()
   }
   if (LAKALA_RELEASABLE_TRADE_STATES.includes(state)) {
     // 渠道已终态：这笔场次再也付不了，留着它只会让顾客反复撞墙。释放后让调用方重建。
@@ -1014,7 +1038,7 @@ async function voidActiveLakalaPaymentIntent(orderNo, { outTradeNo, storeId, mer
   }
 
   if (LAKALA_PAID_TRADE_STATES.includes(state)) {
-    throw new Error('CONFLICT: PAYMENT_ALREADY_SUCCEEDED: 支付已成功，正在更新订单，请稍后刷新')
+    throw paymentAlreadySucceededError()
   }
 
   // 已是终态：渠道侧不可能再被支付，直接释放。
@@ -1061,7 +1085,7 @@ async function voidActiveLakalaPaymentIntent(orderNo, { outTradeNo, storeId, mer
     throw new Error('CONFLICT: PAYMENT_STATUS_UNCERTAIN: 暂时无法确认支付结果，请稍后重试')
   }
   if (LAKALA_PAID_TRADE_STATES.includes(recheckState)) {
-    throw new Error('CONFLICT: PAYMENT_ALREADY_SUCCEEDED: 支付已成功，正在更新订单，请稍后刷新')
+    throw paymentAlreadySucceededError()
   }
   if (!LAKALA_RELEASABLE_TRADE_STATES.includes(recheckState)) {
     console.warn('[order/voidIntent] 关单后仍非终态，保留意图:', orderNo, recheckState)
@@ -1304,7 +1328,7 @@ async function reserveDirectOnlinePaymentIntentWithTerminalRetry(options) {
       } catch (voidErr) {
         // 「已支付」要如实告诉顾客（比含糊的「请勿重复发起」准确得多）；
         // 其余情况（关不掉 / 查不准）保留原错误，语义不变。
-        if (/PAYMENT_ALREADY_SUCCEEDED/.test(String((voidErr && voidErr.message) || ''))) {
+        if (voidErr && voidErr.isPaymentAlreadySucceeded) {
           throw voidErr
         }
         console.warn('[order/reserveDirectOnlinePaymentIntent] 旧意图作废未完成，保留:',
