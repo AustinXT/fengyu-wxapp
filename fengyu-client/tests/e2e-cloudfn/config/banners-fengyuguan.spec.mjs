@@ -159,6 +159,10 @@ async function caseBannersCountClamped() {
   if (!Array.isArray(res.data.images) || res.data.images.length !== 20) {
     throw new Error(`expect images clamped to 20, got ${res.data.images?.length}`)
   }
+  // count 也必须 clamp —— 存量客户端读它自拼 URL，拿到 999999 会构造 99 万个对象
+  if (res.data.count !== 20) {
+    throw new Error(`expect count clamped to 20, got ${res.data.count}`)
+  }
   const bytes = JSON.stringify(res.data).length
   if (bytes > 10 * 1024) {
     throw new Error(`响应体应被 clamp 在 10KB 内，实际 ${(bytes / 1024).toFixed(1)}KB`)

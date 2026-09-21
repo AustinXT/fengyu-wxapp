@@ -296,8 +296,10 @@ describe('config.banners（issue #231）', () => {
       await routes.banners(ctx)
 
       expect(ctx.result.images).toHaveLength(20)
-      // count 原样回显（供排查对照），但不驱动出 99 万条 URL
-      expect(ctx.result.count).toBe(999999)
+      // ⚠️ `count` 也必须是 clamp 后的值。只 clamp 循环上界是不够的：
+      // 存量客户端读的正是这个 count，拿到 999999 会 Array.from({length:999999})
+      // 构造 99 万个 banner 对象 —— 服务端保护了自己却打挂旧版小程序。
+      expect(ctx.result.count).toBe(20)
       expect(JSON.stringify(ctx.result).length).toBeLessThan(10 * 1024)
     })
 

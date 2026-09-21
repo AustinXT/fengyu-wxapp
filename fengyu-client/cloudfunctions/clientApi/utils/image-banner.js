@@ -77,17 +77,23 @@ const BANNER_THUMB_BOX = 1080
  * 追加 `&v=` 不违背「query 整串由服务端掌控」这条核心约定：丢弃的是**外部传入**的
  * query，追加的是服务端自己算出来的版本号，最终 query 仍完全由服务端决定。
  *
- * @param {string} url 原始 banner URL（host 仍过 COS 白名单校验）
+ * **入参是序号而不是 URL**（评审指出）：banner 的 URL 完全由服务端构造，
+ * 没有理由接受外部传入的 URL —— 收窄入参就等于取消了「调用方传个宽泛 URL 进来」
+ * 这条路。白名单校验仍然保留，作为纵深防御：万一 `BANNER_KEY_DIR` 或
+ * `bannerSourceUrl` 被改坏，拼出的 URL 过不了自己的白名单，走 fail-closed 而不是下发脏值。
+ *
+ * @param {number} index banner 序号，从 1 起
  * @param {number} version 缓存版本号（`system_configs.banner_count` 的 updated_at 毫秒）
  * @returns {string|null} 处理后的 URL；无法保证缩略时返回 null
  */
-function safeBannerThumbUrl(url, version) {
+function safeBannerThumbUrl(index, version) {
+  if (!Number.isInteger(index) || index < 1) return null
   // 版本号必须是非负整数。给不出版本号时**不降级下发**：
   // 没有 `?v=` 的 banner URL 会被 CDN 长期缓存，换图不生效 ——
   // 那是比「图略大」更难排查的故障，宁可走占位。
   if (!Number.isInteger(version) || version < 0) return null
 
-  const parsed = parseProcessableUrl(url, BANNER_OBJECT_KEY_PATTERN)
+  const parsed = parseProcessableUrl(bannerSourceUrl(index), BANNER_OBJECT_KEY_PATTERN)
   if (!parsed) return null
 
   parsed.search = `?imageMogr2/thumbnail/${BANNER_THUMB_BOX}x${BANNER_THUMB_BOX}&v=${version}`

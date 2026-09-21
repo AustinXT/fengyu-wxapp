@@ -9,7 +9,7 @@
 
 const pg = require('../db/pg')
 const { invalidateCache } = require('../utils/config')
-const { safeBannerThumbUrl, bannerSourceUrl } = require('../utils/image-banner')
+const { safeBannerThumbUrl } = require('../utils/image-banner')
 
 /**
  * 获取首页轮播图。
@@ -50,7 +50,12 @@ async function banners(ctx) {
     v = Math.floor(Number(imgRow.v)) || 0
   }
 
-  ctx.result = { count, v, images: buildBannerUrls(count, v) }
+  // ⚠️ `count` 必须**同样 clamp 后**再下发。
+  // 只 clamp 循环上界是不够的：存量客户端读的正是这个 `count`，
+  // 拿到 999999 就会 `Array.from({length: 999999})` 构造 99 万个 banner 对象 ——
+  // 服务端把自己保护住了，却把旧版小程序打挂（评审指出的自相矛盾）。
+  const safeCount = Math.min(Math.max(count, 0), MAX_BANNER_COUNT)
+  ctx.result = { count: safeCount, v, images: buildBannerUrls(safeCount, v) }
 }
 
 /**
@@ -68,14 +73,13 @@ async function banners(ctx) {
 const MAX_BANNER_COUNT = 20
 
 /**
- * 按 `count` 拼出固定名 `banner{N}.jpg` 的缩略 URL 列表。
+ * 生成前 `count` 张 banner 的缩略 URL（`count` 须已 clamp）。
  * 路径与 host 的口径见 `utils/image-banner.js`。
  */
 function buildBannerUrls(count, v) {
-  const n = Math.min(Math.max(count, 0), MAX_BANNER_COUNT)
   const urls = []
-  for (let i = 1; i <= n; i += 1) {
-    const url = safeBannerThumbUrl(bannerSourceUrl(i), v)
+  for (let i = 1; i <= count; i += 1) {
+    const url = safeBannerThumbUrl(i, v)
     if (!url) {
       // 整体放弃而非跳过：宁可轮播整块不显示，也不给残缺序列。
       // 前端对空数组不进 catch，没这行日志两端都不留痕。

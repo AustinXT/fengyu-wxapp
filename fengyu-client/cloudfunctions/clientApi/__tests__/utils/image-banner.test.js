@@ -21,15 +21,31 @@ const {
   BANNER_THUMB_BOX,
 } = require('../../utils/image-banner')
 
+const { parseProcessableUrl } = require('../../utils/image')
+
 const HOST = 'https://6665-fengyu-client-prod-d1cga6909c0ba-1406056527.tcb.qcloud.la'
 const BANNER = `${HOST}/fengyu-client/banner/banner1.jpg`
 const V = 1756620894760
 
+/** 白名单是纵深防御（入参已收窄成序号），单独对它做形态测试 */
+const passesBannerKey = (url) =>
+  parseProcessableUrl(url, require('../../utils/image-banner').BANNER_OBJECT_KEY_PATTERN) !== null
+
 describe('safeBannerThumbUrl', () => {
   test('拼出 box 规则 + 版本号', () => {
-    expect(safeBannerThumbUrl(BANNER, V)).toBe(
+    expect(safeBannerThumbUrl(1, V)).toBe(
       `${BANNER}?imageMogr2/thumbnail/1080x1080&v=${V}`
     )
+  })
+
+  /**
+   * 入参是**序号**不是 URL（评审指出）：banner 的 URL 完全由服务端构造，
+   * 接受外部 URL 等于留一条「调用方传个宽泛的进来」的路。
+   */
+  test('序号非法一律 null', () => {
+    for (const bad of [0, -1, 1.5, NaN, '1', undefined, null, {}]) {
+      expect(safeBannerThumbUrl(bad, V)).toBeNull()
+    }
   })
 
   /**
@@ -38,25 +54,16 @@ describe('safeBannerThumbUrl', () => {
    * 两种顺序都生效。这里钉住输出形态，防止有人把 v 挪进规则串里。
    */
   test('版本号在规则之后，用 & 分隔，不混进规则串', () => {
-    const url = safeBannerThumbUrl(BANNER, V)
+    const url = safeBannerThumbUrl(1, V)
     expect(url).toContain('?imageMogr2/thumbnail/1080x1080&v=')
     // 规则本身不能被 v 污染（`thumbnail/1080x1080&v=...` 里的规则段必须干净）
     expect(url).toMatch(/\?imageMogr2\/thumbnail\/\d+x\d+&v=\d+$/)
   })
 
-  test('原 URL 上的 query 被整串丢弃后重拼（含旧的 ?v=）', () => {
-    expect(safeBannerThumbUrl(`${BANNER}?v=999`, V)).toBe(
-      `${BANNER}?imageMogr2/thumbnail/1080x1080&v=${V}`
-    )
-    // 放大通道不与服务端规则并存
-    expect(safeBannerThumbUrl(`${BANNER}?imageView2/1/w/50000`, V)).toBe(
-      `${BANNER}?imageMogr2/thumbnail/1080x1080&v=${V}`
-    )
-  })
-
-  test('幂等：二次施加不会拼出两段规则', () => {
-    const once = safeBannerThumbUrl(BANNER, V)
-    expect(safeBannerThumbUrl(once, V)).toBe(once)
+  test('源 URL 不带任何 query —— 规则完全由服务端决定', () => {
+    // 入参收窄成序号后，外部已无法把 query 带进来；这条钉住服务端自己也不会带
+    expect(bannerSourceUrl(1)).not.toContain('?')
+    expect(safeBannerThumbUrl(1, V).split('?')).toHaveLength(2)
   })
 
   /**
@@ -76,15 +83,14 @@ describe('safeBannerThumbUrl', () => {
       [`${HOST}/fengyu-client/banner/banner1.jpg!style`, '路径型图片样式'],
       [`${HOST}/fengyu-client/banner/sub/banner1.jpg`, '四段'],
     ]
-    test.each(rejected)('%s → null（%s）', (url) => {
-      expect(safeBannerThumbUrl(url, V)).toBeNull()
+    test.each(rejected)('%s → 过不了白名单（%s）', (url) => {
+      expect(passesBannerKey(url)).toBe(false)
     })
   })
 
   test('多张 banner 的序号都认', () => {
     for (const n of [1, 2, 9, 12]) {
-      expect(safeBannerThumbUrl(`${HOST}/fengyu-client/banner/banner${n}.jpg`, V))
-        .toContain(`banner${n}.jpg?imageMogr2/`)
+      expect(safeBannerThumbUrl(n, V)).toContain(`banner${n}.jpg?imageMogr2/`)
     }
   })
 
@@ -94,23 +100,21 @@ describe('safeBannerThumbUrl', () => {
    */
   test('版本号非法一律 null，不降级成无 v 的 URL', () => {
     for (const bad of [undefined, null, -1, 1.5, NaN, Infinity, '123', {}]) {
-      expect(safeBannerThumbUrl(BANNER, bad)).toBeNull()
+      expect(safeBannerThumbUrl(1, bad)).toBeNull()
     }
     // 0 是合法的（首次保存前 updated_at 可能取不到，此时 v=0 仍是确定值）
-    expect(safeBannerThumbUrl(BANNER, 0)).toContain('&v=0')
+    expect(safeBannerThumbUrl(1, 0)).toContain('&v=0')
   })
 
   test('非 COS 域名 / 非 http(s) 一律 null（与其它模式同一套 host 判据）', () => {
-    expect(safeBannerThumbUrl('https://evil.com/fengyu-client/banner/banner1.jpg', V)).toBeNull()
-    expect(safeBannerThumbUrl('cloud://env/fengyu-client/banner/banner1.jpg', V)).toBeNull()
-    // userinfo 伪装：hostname 实为 evil.com
-    expect(safeBannerThumbUrl(
-      'https://a.tcb.qcloud.la@evil.com/fengyu-client/banner/banner1.jpg', V
-    )).toBeNull()
+    // 入参已收窄成序号，这些形态只可能来自 COS_BASE 被改坏 —— 白名单是那道兜底
+    expect(passesBannerKey('https://evil.com/fengyu-client/banner/banner1.jpg')).toBe(false)
+    expect(passesBannerKey('cloud://env/fengyu-client/banner/banner1.jpg')).toBe(false)
+    expect(passesBannerKey('https://a.tcb.qcloud.la@evil.com/fengyu-client/banner/banner1.jpg')).toBe(false)
   })
 
   test('带 COS 签名的 URL 一律 null', () => {
-    expect(safeBannerThumbUrl(`${BANNER}?q-sign-algorithm=sha1&q-signature=abc`, V)).toBeNull()
+    expect(passesBannerKey(`${BANNER}?q-sign-algorithm=sha1&q-signature=abc`)).toBe(false)
   })
 })
 
@@ -153,7 +157,8 @@ describe('bannerSourceUrl 与白名单同源', () => {
    */
   test('自己生成的源 URL 必定过自己的白名单', () => {
     for (const n of [1, 2, 20]) {
-      expect(safeBannerThumbUrl(bannerSourceUrl(n), V)).not.toBeNull()
+      expect(passesBannerKey(bannerSourceUrl(n))).toBe(true)
+      expect(safeBannerThumbUrl(n, V)).not.toBeNull()
     }
   })
 
@@ -177,7 +182,7 @@ describe('默认路径白名单未被 banner 改动放宽（回归）', () => {
   })
 
   test('banner 白名单也不接受普通商品图', () => {
-    expect(safeBannerThumbUrl(`${HOST}/product-covers/a.png`, V)).toBeNull()
+    expect(passesBannerKey(`${HOST}/product-covers/a.png`)).toBe(false)
   })
 })
 
