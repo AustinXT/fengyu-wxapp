@@ -1131,101 +1131,172 @@ describe('syncLocations 漂移探测与 engine.ts 字面一致（副本守护）
  * 该断言是防未来新增专用服务复现此坑的前置守卫，其运行时行为规格由 engine.ts 侧的用例承载。
  */
 /**
- * 用 TypeScript AST 的 comment ranges **精确**剥离注释（用等长空白填充，字符下标与原文一一对应）。
+ * 副本守护改用 **AST 语义分析**，不再做文本/正则匹配。
  *
- * 最初用的是 `ts.createScanner` 逐 token 扫 —— 在小样上没问题，但 business.ts 里有大量
- * `sql\`…\`` 模板串，scanner 在模板与替换位之间会失步，后半个文件的注释就扫不出来了
- * （症状：断言拿到的「首条语句」是 `/**`）。基于 AST 节点取 leading/trailing comment ranges
- * 不受模板串影响。
+ * 前两版都是正则：剥注释 → 切函数体 → 匹配字面量。两个谱系在两轮里一共给出 10 种绕过，
+ * 每补一条正则下一轮又能找到新的（复合赋值、解构、括号赋值、跨行、字符串诱饵、
+ * 把整段成员塞进块注释使数组为空……）。最后一根稻草是 codex 第 2 轮的这条：
  *
- * 为什么不用「删块注释 + 删行注释」那两条朴素正则：它们不识别字符串 / 模板串 / 正则
- * 字面量，会误删真实代码 —— 而其中一个方向是**静默放行**（GLM 谱系实测）：
- * 本文件唯一的取反断言（区间内不得再赋值）会因为「某字符串里出现块注释起始符、
- * lazy 匹配一路吃到远处真实注释的结束符」把中间的真实再赋值整段吞掉，本该变红反而全绿。
- * 行注释那条同理：`const u = 'https://x'; targetOrgNodeId = source` 会被整行吃掉
- * （字符串里的双斜杠被当成行注释起点）。
+ *     const INTERNAL_SAME_NODE_DOC_TYPES = new Set<InventoryDocType>([
+ *       // 全部成员被整体注释掉
+ *     ])
  *
- * ⚠️ 顺带一个自指的坑：本段最初把那两条正则原样写进注释，其中的块注释结束符
- * 提前闭合了整个注释块，后面的 `g` 标志变成裸标识符 —— tsc 直接报 TS2304。
- * 在块注释里描述正则时不要写出结束符序列。
+ * 空数组里的注释**不属于任何节点的 leading/trailing comment range**，剥不掉；
+ * 而文本匹配照样能从注释里抠出全部成员 → 运行时集合为空而守护全绿（静默放行）。
  *
- * ⚠️ 词法守护的固有上限：把假的守卫文本放进字符串字面量仍能骗过任何正则匹配。
- * 真要防对抗只能上 AST 比对或行为测试；此处的威胁模型是「后来者无意中改坏」，不是对抗者。
+ * 结论是：这件事本来就该用 AST 做。下面所有断言都基于解析后的节点 ——
+ * 注释、字符串字面量里的诱饵、排版与换行一概不影响，语义变了才会红。
  */
-function stripComments(src: string): string {
-  const sf = ts.createSourceFile('probe.ts', src, ts.ScriptTarget.Latest, /* setParentNodes */ true)
-  const holes: Array<[number, number]> = []
-  const visit = (node: ts.Node) => {
-    for (const r of ts.getLeadingCommentRanges(src, node.getFullStart()) ?? []) holes.push([r.pos, r.end])
-    for (const r of ts.getTrailingCommentRanges(src, node.getEnd()) ?? []) holes.push([r.pos, r.end])
-    ts.forEachChild(node, visit)
-  }
-  visit(sf)
-
-  const chars = src.split('')
-  for (const [from, to] of holes) {
-    for (let i = from; i < to; i++) {
-      // 等长空白替换：保持下标不变，后面的「函数体切片 + 位置比较」才能沿用 AST 给的偏移
-      if (chars[i] !== '\n') chars[i] = ' '
-    }
-  }
-  return chars.join('')
+function parseFile(file: string): ts.SourceFile {
+  return ts.createSourceFile(
+    file, readFileSync(resolve(process.cwd(), file), 'utf8'), ts.ScriptTarget.Latest, true,
+  )
 }
 
-const SRC_CACHE = new Map<string, { raw: string; stripped: string }>()
-function readSource(file: string) {
-  let hit = SRC_CACHE.get(file)
-  if (!hit) {
-    const raw = readFileSync(resolve(process.cwd(), file), 'utf8')
-    hit = { raw, stripped: stripComments(raw) }
-    SRC_CACHE.set(file, hit)
-  }
-  return hit
-}
+/** 取顶层函数体。支持 `async function f()` 与 `export const f = HOF(…, async (…) => {…})` 两种形态 */
+function functionBodyNode(sf: ts.SourceFile, fnName: string): ts.Block {
+  let found: ts.Block | undefined
 
-/**
- * 取某个顶层函数的**函数体**（已剥注释）。
- *
- * 必须按函数切片而不是在整份文件上 `indexOf`：`engine.ts` 有三千多行，
- * 全文件首个 `let targetOrgNodeId =` 与首个 `if (INTERNAL_SAME_NODE...)` 完全可能落在
- * 不同函数里 —— 那样区间会横跨函数边界（误报），或真正的分支根本没被检查（漏报）。
- */
-function functionBody(file: string, fnName: string): string {
-  const { raw, stripped } = readSource(file)
-  const sf = ts.createSourceFile(file, raw, ts.ScriptTarget.Latest, true)
-  let range: { start: number; end: number } | null = null
-
-  /** 在子树里找第一个带函数体的实现（箭头函数 / 函数表达式） */
-  const firstFunctionBody = (node: ts.Node): ts.Node | null => {
-    let hit: ts.Node | null = null
+  /**
+   * HOF 形态取**参数最多**的那个函数实参，而不是深度优先的第一个 ——
+   * `withAnyPermission(() => perms, async (session, input) => {…})` 里第一个是权限回调，
+   * 盯着它就检查错了主体（codex P3）。
+   */
+  const pickImplementation = (node: ts.Node): ts.Block | undefined => {
+    const candidates: Array<ts.ArrowFunction | ts.FunctionExpression> = []
     const dig = (n: ts.Node) => {
-      if (hit) return
-      if ((ts.isArrowFunction(n) || ts.isFunctionExpression(n)) && n.body) { hit = n.body; return }
+      if (ts.isArrowFunction(n) || ts.isFunctionExpression(n)) candidates.push(n)
       ts.forEachChild(n, dig)
     }
     dig(node)
-    return hit
+    const best = candidates
+      .filter((c) => c.body && ts.isBlock(c.body))
+      .sort((a, b) => b.parameters.length - a.parameters.length)[0]
+    return best?.body as ts.Block | undefined
   }
 
   const visit = (node: ts.Node) => {
-    if (range) return
-    // 形态一：`async function insertDocHeader(...) { ... }`
+    if (found) return
     if (ts.isFunctionDeclaration(node) && node.name?.text === fnName && node.body) {
-      range = { start: node.body.getStart(sf), end: node.body.getEnd() }
+      found = node.body
       return
     }
-    // 形态二：`export const createInventoryCoreDoc = withAnyPermission(actions, async (...) => { ... })`
-    // —— 被 HOF 包一层，函数体藏在调用实参里，isFunctionDeclaration 找不到它。
     if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name)
         && node.name.text === fnName && node.initializer) {
-      const body = firstFunctionBody(node.initializer)
-      if (body) { range = { start: body.getStart(sf), end: body.getEnd() }; return }
+      found = pickImplementation(node.initializer)
+      if (found) return
     }
     ts.forEachChild(node, visit)
   }
   visit(sf)
-  expect(range, `${file} 未找到函数 ${fnName}`).toBeTruthy()
-  return stripped.slice(range!.start, range!.end)
+  expect(found, `${sf.fileName} 未找到函数 ${fnName}`).toBeTruthy()
+  return found!
+}
+
+/** 找 `if (INTERNAL_SAME_NODE_DOC_TYPES.has(input.docType)) { … }` 这个语句节点 */
+function sameNodeIfStatement(body: ts.Block): ts.IfStatement {
+  let hit: ts.IfStatement | undefined
+  const visit = (n: ts.Node) => {
+    if (hit) return
+    if (ts.isIfStatement(n) && n.expression.getText().replace(/\s+/g, '')
+        === 'INTERNAL_SAME_NODE_DOC_TYPES.has(input.docType)') {
+      hit = n
+      return
+    }
+    ts.forEachChild(n, visit)
+  }
+  visit(body)
+  expect(hit, '未找到 INTERNAL_SAME_NODE 分支').toBeTruthy()
+  return hit!
+}
+
+/**
+ * 分支体的**第一条语句**必须就是一致性断言，且它的 then 里真的 throw。
+ * 返回错误文案（供两份副本比对）；形状不符返回 null。
+ *
+ * 逐层核对 if 的条件、then 的内容与 throw 的实参 —— 不是「函数里某处有这段文本」。
+ * 老写法把「首行文本」与「函数里存在完整 guard」当成两次不相干的匹配，
+ * 于是可以先放一个条件相同但**空体**的 if、再归一化、再摆一个永不触发的完整 guard，三测全绿。
+ */
+function firstStatementGuardMessage(ifStmt: ts.IfStatement): string | null {
+  const then = ifStmt.thenStatement
+  if (!ts.isBlock(then) || then.statements.length === 0) return null
+  const first = then.statements[0]
+  if (!ts.isIfStatement(first)) return null
+
+  const cond = first.expression.getText().replace(/\s+/g, '')
+  if (cond !== 'sourceOrgNodeId&&targetOrgNodeId&&sourceOrgNodeId!==targetOrgNodeId') return null
+
+  let message: string | null = null
+  const findThrow = (n: ts.Node) => {
+    if (message !== null) return
+    if (ts.isThrowStatement(n) && n.expression && ts.isNewExpression(n.expression)) {
+      const args = n.expression.arguments ?? []
+      if (n.expression.expression.getText() === 'ApiError'
+          && args.length >= 2
+          && ts.isStringLiteral(args[0]) && args[0].text === 'INVALID_PARAMS'
+          && ts.isStringLiteral(args[1])) {
+        message = (args[1] as ts.StringLiteral).text
+      }
+    }
+    ts.forEachChild(n, findThrow)
+  }
+  findThrow(first.thenStatement)
+  return message
+}
+
+/**
+ * 从函数入口到给定位置之间，收集所有**对归属变量的赋值**（初始化不算）。
+ *
+ * AST 天然覆盖 `=` / `||=` / `??=` / `&&=` / `+=`、解构（数组与对象、含多行与括号包裹）、
+ * 以及 `input.targetOrgNodeId = …` 这种对入参属性的污染 —— 正则版为此补了三轮仍有漏网。
+ */
+function ownershipAssignmentsBefore(body: ts.Block, beforePos: number): string[] {
+  const NAMES = new Set(['sourceOrgNodeId', 'targetOrgNodeId'])
+  const hits: string[] = []
+
+  const namesInTarget = (target: ts.Node): string[] => {
+    const out: string[] = []
+    const dig = (n: ts.Node) => {
+      if (ts.isIdentifier(n) && NAMES.has(n.text)) out.push(n.text)
+      else if (ts.isPropertyAccessExpression(n) && NAMES.has(n.name.text)) out.push(n.name.text)
+      ts.forEachChild(n, dig)
+    }
+    dig(target)
+    return out
+  }
+
+  const visit = (n: ts.Node) => {
+    if (n.getStart() >= beforePos) return
+    if (ts.isBinaryExpression(n)
+        && n.operatorToken.kind >= ts.SyntaxKind.FirstAssignment
+        && n.operatorToken.kind <= ts.SyntaxKind.LastAssignment) {
+      for (const name of namesInTarget(n.left)) hits.push(`${name} ${n.operatorToken.getText()}`)
+    }
+    ts.forEachChild(n, visit)
+  }
+  ts.forEachChild(body, visit)
+  return hits
+}
+
+/** 读 `const X = new Set([...])` 的字符串成员（AST，注释里的字符串自然不算） */
+function setMembers(sf: ts.SourceFile, varName: string): string[] {
+  let members: string[] | undefined
+  const visit = (n: ts.Node) => {
+    if (members) return
+    if (ts.isVariableDeclaration(n) && ts.isIdentifier(n.name) && n.name.text === varName
+        && n.initializer && ts.isNewExpression(n.initializer)
+        && n.initializer.expression.getText() === 'Set') {
+      const arg = n.initializer.arguments?.[0]
+      if (arg && ts.isArrayLiteralExpression(arg)) {
+        members = arg.elements.filter(ts.isStringLiteral).map((e) => e.text)
+      }
+    }
+    ts.forEachChild(n, visit)
+  }
+  visit(sf)
+  expect(members, `${sf.fileName} 未找到 ${varName} 的 Set 初始化`).toBeTruthy()
+  return [...members!].sort()
 }
 
 const BUSINESS_TS = 'src/lib/inventory/business.ts'
@@ -1251,96 +1322,45 @@ const EXPECTED_INTERNAL_SAME_NODE: InventoryDocType[] = [
   '市场产品盘溢', '市场库存盘点', '期初库存', '院产品报损',
 ]
 
-function setItems(file: string, varName: string): string[] {
-  const block = readSource(file).stripped.match(
-    new RegExp(`const ${varName} = new Set(?:<[^>]+>)?\\(\\[([\\s\\S]*?)\\]\\)`),
-  )?.[1]
-  expect(block, `${file} 未找到 ${varName}`).toBeTruthy()
-  return Array.from(block!.matchAll(/'([^']+)'/g)).map((m) => m[1]).sort()
-}
-
 describe('insertDocHeader 同主体两端一致断言与 engine.ts 字面一致（副本守护）', () => {
-  const GUARD_RE =
-    /if \(sourceOrgNodeId && targetOrgNodeId && sourceOrgNodeId !== targetOrgNodeId\) \{\s*\n\s*throw new ApiError\('INVALID_PARAMS', '([^']+)'\)\s*\n\s*\}/
-
-  /**
-   * 断言的**文案**必须逐字一致。
-   *
-   * ⚠️ 不能写成「两边用同一条全字面量正则各 match 一次再 toBe 比较」—— 那样两个 match
-   * 结果在数学上必然相等，是恒真断言。这里让正则把文案做成捕获组，比的是捕获值。
-   */
-  it('两份副本都含该断言，且错误文案逐字相同', () => {
-    const [businessMsg, engineMsg] = SAME_NODE_HOSTS.map(([file, fn]) => {
-      const msg = functionBody(file, fn).match(GUARD_RE)?.[1]
-      expect(msg, `${file} 的 ${fn} 缺少同主体两端一致断言`).toBeTruthy()
+  it('两份副本的断言都是同主体分支首条语句，且错误文案逐字相同', () => {
+    const messages = SAME_NODE_HOSTS.map(([file, fn]) => {
+      const sf = parseFile(file)
+      const ifStmt = sameNodeIfStatement(functionBodyNode(sf, fn))
+      const msg = firstStatementGuardMessage(ifStmt)
+      expect(msg, `${file}#${fn} 的同主体分支首条语句不是「两端不一致则抛 INVALID_PARAMS」`).toBeTruthy()
       return msg
     })
-    expect(businessMsg).toBe(engineMsg)
+    expect(messages[0]).toBe(messages[1])
   })
 
   /**
-   * 断言必须是分支内**第一条语句**，**且**从函数入口到进入分支之间不许有任何对这两个
-   * 归属变量（或 input 上同名属性）的赋值。
+   * 函数入口 → 同主体分支之间不许有任何对归属变量的赋值（初始化除外）。
    *
-   * 三道都不能少，每一条都对应一个实测可绕的反例：
-   * - 只钉「分支内第一条语句」→ 在**分支之前**插
-   *   `if (INTERNAL_SAME_NODE_DOC_TYPES.has(input.docType) && source && target) target = source`。
-   * - 只钉「guard 下标 < 归一化赋值下标」→ 在 guard **之前**插等价归一化。
-   * - 区间只从 `let targetOrgNodeId =` 那一行起算 → 在**函数开头**（两次 load 之前）改
-   *   `input.targetOrgNodeId = input.sourceOrgNodeId`，两次查询解析出同值，守卫永不触发，
-   *   而污染点完全在受管区间之外。故区间起点取**函数入口**。
-   *
-   * 赋值模式覆盖 `=` / `||=` / `??=` / `&&=` / `+=` 与解构目标（`] =` / `} =`）——
-   * 只匹配裸 `=` 时上述复合赋值与解构全部漏报。
+   * 少了这条，在分支**之前**插一句等价归一化（`target = source` / `target ||= source` /
+   * 解构 / 污染 `input.targetOrgNodeId`）就能让断言永不成立，而 guard 文本还在、位置也还对。
    */
-  it('两份副本的断言都是同主体分支首条语句，且函数入口到分支之间没有抢先归一化', () => {
-    /**
-     * 两条规则，都用 lookbehind 排除 `const` / `let` / `var` 声明（初始化是允许的，再赋值不是）：
-     * ① 直接赋值与复合赋值 —— 只匹配裸 `=` 会让 `||=` / `??=` / `&&=` / `+=` 全部漏报；
-     *    不限定接收者，所以 `input.targetOrgNodeId = input.sourceOrgNodeId` 这种
-     *    「污染入参、让两次查询解析出同值」的写法同样会被抓到。
-     * ② 解构赋值目标里含这两个变量之一（`[sourceOrgNodeId, targetOrgNodeId] = [...]`）——
-     *    标识符后面跟的是 `,` 或 `]`，规则①抓不到。
-     *    ⚠️ 这条**不能**写成「任意 `] =` / `} =`」：那会把 `const { a } = b` 一并匹配（实测误报）。
-     */
-    const ASSIGN_RES = [
-      /(?<!\b(?:const|let|var)\s{1,4})\b(?:source|target)OrgNodeId\s*(?:\|\||\?\?|&&|\+|-)?=(?!=)/,
-      /(?<!\b(?:const|let|var)\s{1,4})[[{][^\n]{0,200}\b(?:source|target)OrgNodeId\b[^\n]{0,200}[\]}]\s*=(?!=)/,
-    ]
+  it('两份副本在进入同主体分支前都没有抢先归一化归属变量', () => {
     for (const [file, fn] of SAME_NODE_HOSTS) {
-      const body = functionBody(file, fn)
-
-      const branchAt = body.indexOf('if (INTERNAL_SAME_NODE_DOC_TYPES.has(input.docType)) {')
-      expect(branchAt, `${file}#${fn} 未找到同主体分支入口`).toBeGreaterThan(-1)
-
-      const branchBody = body.slice(branchAt).match(
-        /if \(INTERNAL_SAME_NODE_DOC_TYPES\.has\(input\.docType\)\) \{([\s\S]*?)\n(  |    )\}/,
-      )?.[1]
-      expect(branchBody, `${file}#${fn} 未找到同主体分支体`).toBeTruthy()
-      const firstStatement = branchBody!.split('\n').map((l) => l.trim()).filter(Boolean)[0]
-      expect(firstStatement, `${file}#${fn} 同主体分支的首条语句不是一致性断言`)
-        .toBe('if (sourceOrgNodeId && targetOrgNodeId && sourceOrgNodeId !== targetOrgNodeId) {')
-
-      // 函数入口 → 分支入口：只允许两个变量的**初始化**，不许任何再赋值
-      const beforeBranch = body.slice(0, branchAt)
-      for (const re of ASSIGN_RES) {
-        expect(beforeBranch, `${file}#${fn} 在进入同主体分支前改写了归属，断言会永不成立（命中 ${re}）`)
-          .not.toMatch(re)
-      }
+      const sf = parseFile(file)
+      const body = functionBodyNode(sf, fn)
+      const ifStmt = sameNodeIfStatement(body)
+      expect(
+        ownershipAssignmentsBefore(body, ifStmt.getStart()),
+        `${file}#${fn} 在进入同主体分支前改写了归属变量，断言会永不成立`,
+      ).toEqual([])
     }
   })
 
   /**
-   * 守了 3 行断言，还得守它**依赖的集合**。
-   *
-   * 两份 `INTERNAL_SAME_NODE_DOC_TYPES` 是独立副本（项目禁止抽取跨端共享目录）。
-   * 有人给 engine 那份加一个新的同主体类型却漏了 business 那份 → business 对该类型
-   * 退回「静默吃掉 target」的老行为，而上面两条守护**照样全绿**。
+   * 守了断言，还得守它**依赖的集合**。两份 `INTERNAL_SAME_NODE_DOC_TYPES` 是独立副本
+   * （项目禁止抽取跨端共享目录）。给 engine 那份加类型却漏了 business 那份 →
+   * business 对该类型退回「静默吃掉 target」的老行为，而上面两条守护照样全绿。
    */
   it('两份 INTERNAL_SAME_NODE_DOC_TYPES 都等于期望成员快照', () => {
     const expected = [...EXPECTED_INTERNAL_SAME_NODE].sort()
-    expect(setItems(BUSINESS_TS, 'INTERNAL_SAME_NODE_DOC_TYPES')).toEqual(expected)
-    expect(setItems(ENGINE_TS, 'INTERNAL_SAME_NODE_DOC_TYPES')).toEqual(expected)
+    expect(setMembers(parseFile(BUSINESS_TS), 'INTERNAL_SAME_NODE_DOC_TYPES')).toEqual(expected)
+    expect(setMembers(parseFile(ENGINE_TS), 'INTERNAL_SAME_NODE_DOC_TYPES')).toEqual(expected)
   })
 })
 
@@ -1352,40 +1372,86 @@ describe('insertDocHeader 同主体两端一致断言与 engine.ts 字面一致�
  */
 describe('assertGenericDocLocationRules 的 case 与通用类型白名单一一对应（#237）', () => {
   it('不含任何 SPECIALIZED 类型的 case，且覆盖全部通用类型', () => {
-    const fnBody = functionBody(ENGINE_TS, 'assertGenericDocLocationRules')
-    const switchBody = fnBody.match(/switch \(input\.docType\) \{([\s\S]*)\n  \}/)?.[1]
-    expect(switchBody, '未找到 assertGenericDocLocationRules 的 switch 体').toBeTruthy()
+    const sf = parseFile(ENGINE_TS)
+    const body = functionBodyNode(sf, 'assertGenericDocLocationRules')
+    let switchStmt: ts.SwitchStatement | undefined
+    const visit = (n: ts.Node) => {
+      if (switchStmt) return
+      if (ts.isSwitchStatement(n) && n.expression.getText() === 'input.docType') switchStmt = n
+      else ts.forEachChild(n, visit)
+    }
+    ts.forEachChild(body, visit)
+    expect(switchStmt, '未找到 switch (input.docType)').toBeTruthy()
 
-    const cases = Array.from(switchBody!.matchAll(/case '([^']+)':/g)).map((m) => m[1])
+    // 只取活的 CaseClause —— 注释掉的 case 不在 AST 里
+    const cases = switchStmt!.caseBlock.clauses
+      .filter(ts.isCaseClause)
+      .map((c) => (ts.isStringLiteral(c.expression) ? c.expression.text : c.expression.getText()))
     expect(new Set(cases).size, 'case 有重复').toBe(cases.length)
     expect(new Set(cases)).toEqual(new Set(INVENTORY_GENERIC_DOC_TYPES))
   })
 
   /**
-   * 上一条用集合相等比对，有一个误放行窗口：某类型若**同时**进 SPECIALIZED 与 GENERIC，
-   * `createInventoryCoreDoc` 仍会先一步拒掉它、它的 case 重新变成 dead，而测试全绿。
-   * 这条互斥断言比上一条更直接命中 #237 的根因（dead case 的来源就是集合归属搞混）。
+   * 集合相等有个误放行窗口：某类型若**同时**进 SPECIALIZED 与 GENERIC，
+   * `createInventoryCoreDoc` 仍会先一步拒掉它、它的 case 重新变 dead，而测试全绿。
+   * 这条互斥断言更直接命中 #237 的根因（dead case 的来源就是集合归属搞混）。
    */
   it('SPECIALIZED 与 INVENTORY_GENERIC 两个集合互斥', () => {
-    const specialized = new Set(setItems(ENGINE_TS, 'SPECIALIZED_DOC_TYPES'))
+    const specialized = new Set(setMembers(parseFile(ENGINE_TS), 'SPECIALIZED_DOC_TYPES'))
     const overlap = (INVENTORY_GENERIC_DOC_TYPES as readonly string[]).filter((t) => specialized.has(t))
     expect(overlap, '通用类型白名单里混进了专用类型').toEqual([])
   })
 
   /**
-   * 删掉 dead case 的**正确性前提**也得钉住（GLM 谱系 P3）：
-   * 「唯一调用点在更靠前处整体拒了 SPECIALIZED」。将来有人移除或挪后那条拒绝，
-   * `供应链采购入库` 等专用类型就会静默落入一个没有对应 case 的 switch ——
-   * 无位置校验、无报错、而上面两条守护照样全绿。
+   * 删掉 dead case 的**正确性前提**也得钉住：「唯一调用点在更靠前处**无条件**拒了 SPECIALIZED」。
+   *
+   * 三件事都要验，少一件就能假通过（codex 第 2 轮给了反例）：
+   * ① 那个 if 的 then 里**直接**有 throw —— 不是嵌在 `if (flag)` 里的条件 throw；
+   * ② throw 之前不能先调用 assertGenericDocLocationRules（否则「拒绝早于调用」是假的）；
+   * ③ 比的是 **throw 的位置**，不是 if 的起点。
    */
-  it('createInventoryCoreDoc 对 SPECIALIZED 的拒绝早于 assertGenericDocLocationRules 调用', () => {
-    const body = functionBody(ENGINE_TS, 'createInventoryCoreDoc')
-    const rejectAt = body.search(/if \(SPECIALIZED_DOC_TYPES\.has\(input\.docType\)\) \{[\s\S]{0,200}?throw new ApiError/)
-    const callAt = body.indexOf('assertGenericDocLocationRules(')
-    expect(rejectAt, 'createInventoryCoreDoc 不再拒绝 SPECIALIZED 类型').toBeGreaterThan(-1)
-    expect(callAt, '未找到 assertGenericDocLocationRules 调用').toBeGreaterThan(-1)
-    expect(rejectAt, 'SPECIALIZED 拒绝被挪到了通用位置规则之后，dead case 的删除前提失效')
-      .toBeLessThan(callAt)
+  it('createInventoryCoreDoc 对 SPECIALIZED 的拒绝是无条件的、且早于通用位置规则调用', () => {
+    const sf = parseFile(ENGINE_TS)
+    const body = functionBodyNode(sf, 'createInventoryCoreDoc')
+
+    let rejectIf: ts.IfStatement | undefined
+    let callPos = Infinity
+    const visit = (n: ts.Node) => {
+      if (ts.isIfStatement(n) && n.expression.getText().replace(/\s+/g, '')
+          === 'SPECIALIZED_DOC_TYPES.has(input.docType)' && !rejectIf) {
+        rejectIf = n
+      }
+      if (ts.isCallExpression(n) && n.expression.getText() === 'assertGenericDocLocationRules') {
+        callPos = Math.min(callPos, n.getStart())
+      }
+      ts.forEachChild(n, visit)
+    }
+    ts.forEachChild(body, visit)
+
+    expect(rejectIf, 'createInventoryCoreDoc 不再拒绝 SPECIALIZED 类型').toBeTruthy()
+    expect(callPos, '未找到 assertGenericDocLocationRules 调用').toBeLessThan(Infinity)
+
+    // ① then 的**直接**子语句里必须有 throw（`if (flag) throw` 这种条件 throw 不算）
+    const then = rejectIf!.thenStatement
+    const directStatements = ts.isBlock(then) ? Array.from(then.statements) : [then]
+    const throwStmt = directStatements.find(ts.isThrowStatement)
+    expect(throwStmt, 'SPECIALIZED 分支里没有无条件 throw').toBeTruthy()
+
+    // ② 该分支内不得先调用 assertGenericDocLocationRules
+    let callInsideBeforeThrow = false
+    const scanBranch = (n: ts.Node) => {
+      if (ts.isCallExpression(n) && n.expression.getText() === 'assertGenericDocLocationRules'
+          && n.getStart() < throwStmt!.getStart()) {
+        callInsideBeforeThrow = true
+      }
+      ts.forEachChild(n, scanBranch)
+    }
+    scanBranch(then)
+    expect(callInsideBeforeThrow, 'SPECIALIZED 分支在 throw 之前先调用了通用位置规则').toBe(false)
+
+    // ③ 比 throw 的位置，不是 if 的起点
+    expect(throwStmt!.getStart(), 'SPECIALIZED 拒绝被挪到了通用位置规则之后，dead case 的删除前提失效')
+      .toBeLessThan(callPos)
   })
 })
 
