@@ -857,10 +857,18 @@ async function confirm(ctx) {
   const now = new Date()
 
   let finalized = false
+  let finalStatus = null
   await pg.transaction(async (client) => {
     finalized = await finalizeServiceOrder(client, so, items, ctx, now)
     if (!finalized) {
-      // 已被其它入口（顾客本人）确认，事务内无副作用，视为幂等
+      // finalize 的状态守卫没命中：可能是顾客本人抢先确认了（→ 已完成），
+      // 也可能是开单门店在这期间取消了（→ 已取消）。回读一次真实状态，
+      // 否则并发取消会被报成「服务已完成（幂等）」，前端在刷新前一直显示错误终态。
+      const cur = await client.query(
+        'SELECT status FROM service_orders WHERE service_order_id = $1',
+        [serviceOrderId]
+      )
+      finalStatus = cur.rows[0]?.status || null
       return
     }
     // 审计日志（仅本入口真正完成时记；finalize 共享副本不含日志，归属 handler 层）
@@ -870,9 +878,14 @@ async function confirm(ctx) {
     })
   })
 
+  if (!finalized && finalStatus && finalStatus !== '已完成') {
+    // 状态已被并发操作改走（如开单门店取消），据实回报而不是谎称已完成
+    throw new Error(`CONFLICT: 服务单状态已变更为"${finalStatus}"，请刷新后重试`)
+  }
+
   ctx.result = {
     serviceOrderId,
-    status: '已完成',
+    status: finalized ? '已完成' : (finalStatus || '已完成'),
     message: finalized ? '服务已确认完成，次数已扣减' : '服务已完成（幂等）'
   }
 }
@@ -920,15 +933,16 @@ async function list(ctx) {
           AND COALESCE(search_o.customer_name, '') ILIKE $${nameParam} ESCAPE '\\'
       )`,
     ]
-    if (phoneKeyword) {
+    // 手机号匹配只对「能看到全号」的门店集开放（#224）：响应里跨店支援单的手机号是脱敏的，
+    // 若仍允许拿原始全号去匹配，外援可逐位枚举 keyword 观察目标单是否出现在结果中，
+    // 约 40 次请求就能还原被 **** 掩盖的 4 位，等于绕过脱敏。按姓名搜索不受影响。
+    const phoneStoreIds = phoneSearchStoreIds(ctx.auth)
+    if (phoneKeyword && phoneStoreIds.length > 0) {
       params.push(`%${phoneKeyword}%`)
       const phoneParam = params.length
-      // 手机号匹配只对本店单开放（#224）：响应里跨店支援单的手机号是脱敏的，
-      // 若仍允许拿原始全号去匹配，外援可逐位枚举 keyword 观察目标单是否出现在结果中，
-      // 约 40 次请求就能还原被 **** 掩盖的 4 位，等于绕过脱敏。按姓名搜索不受影响。
-      params.push(ctx.auth.effectiveStoreId)
+      params.push(phoneStoreIds)
       searchParts.push(
-        `(regexp_replace(COALESCE(wu.phone, ''), '[^0-9]', '', 'g') LIKE $${phoneParam} AND so.store_id = $${params.length})`
+        `(regexp_replace(COALESCE(wu.phone, ''), '[^0-9]', '', 'g') LIKE $${phoneParam} AND so.store_id = ANY($${params.length}::text[]))`
       )
     }
     conditions.push(`(${searchParts.join(' OR ')})`)
@@ -1015,19 +1029,23 @@ async function list(ctx) {
     }
   }
 
-  // 批量查询顾客姓名
+  // 批量查询顾客姓名与归属门店
+  // bound_store_id 是「店长特权」的第二条来源（顾客是我店的客户），detail 侧也用同一口径；
+  // 搭这趟已有的批量查询顺带取回，避免同一张单在列表脱敏、点进详情却是全号（#224）
   const clientUserIds = [...new Set(serviceOrders.map(s => s.client_user_id).filter(Boolean))]
   let customerNameMap = {}
+  const customerStoreMap = {}
   if (clientUserIds.length > 0) {
     for (const serviceOrder of serviceOrders) {
       if (serviceOrder.client_name) customerNameMap[serviceOrder.client_user_id] = serviceOrder.client_name
     }
     const nameRows = await pg.query(
-      `SELECT user_id, name FROM client_wechat_users WHERE user_id = ANY($1)`,
+      `SELECT user_id, name, bound_store_id FROM client_wechat_users WHERE user_id = ANY($1)`,
       [clientUserIds]
     )
     for (const r of nameRows) {
       if (r.name) customerNameMap[r.user_id] = r.name
+      if (r.bound_store_id) customerStoreMap[r.user_id] = r.bound_store_id
     }
     // 兜底从订单取
     const missingIds = clientUserIds.filter(id => !customerNameMap[id])
@@ -1051,7 +1069,9 @@ async function list(ctx) {
     id: so.service_order_id,
     serviceOrderId: so.service_order_id,
     customerName: customerNameMap[so.client_user_id] || '',
-    customerPhone: maskPhoneForOrder(ctx.auth, so),
+    customerPhone: maskPhoneForOrder(ctx.auth, so, customerStoreMap[so.client_user_id]
+      ? { bound_store_id: customerStoreMap[so.client_user_id] }
+      : null),
     staffName: staffNameMap[so.assigned_employee_id] || '',
     assignedStaffWfId: so.assigned_employee_id,
     status: so.status,
@@ -1153,9 +1173,14 @@ async function detail(ctx) {
     throw new Error('PERMISSION_DENIED: 无权查看该服务单')
   }
 
-  // 店长看非本店单时，特权可能来自「顾客是我的客户」这条来源，需要顾客归属才能判（#224）。
-  // 本店单与非店长都不必走这一步，上面的高频路径因此不会多一次查询。
-  if (isCurrentStoreManager(ctx.auth) && !isInCurrentStore(ctx.auth, so)) {
+  // 看非本店单时，店长特权可能来自「顾客是我的客户」这条来源，需要顾客归属才能判（#224）。
+  // 管理层分支同样要覆盖——它可能经「监管 scope 内」提前放行而跳过上面的兜底加载，
+  // 且 scopeStoreIds ⊋ managerStoreIds，单在 scope 内不等于在我管辖的门店内。
+  // 本店单与无店长角色的身份都不必走这一步，高频路径因此不会多一次查询。
+  const mayHaveManagerPrivilege = ctx.auth.loginLevel === 'management'
+    ? hasValidManagerRole(ctx.auth) && !managerCoversStore(ctx.auth, so.store_id)
+    : isCurrentStoreManager(ctx.auth) && !isInCurrentStore(ctx.auth, so)
+  if (mayHaveManagerPrivilege) {
     await loadCustomer()
   }
 
@@ -1392,13 +1417,33 @@ function maskPhoneForOrder(auth, so, customer) {
 function canReadFullPhone(auth, so, customer) {
   if (!auth) return false
   if (auth.loginLevel === 'management') {
-    if (!hasValidManagerRole(auth) || !Array.isArray(auth.managerStoreIds)) return false
-    return auth.managerStoreIds.includes(so.store_id)
-      || (!!customer && auth.managerStoreIds.includes(customer.bound_store_id))
+    if (!hasValidManagerRole(auth)) return false
+    return managerCoversStore(auth, so.store_id)
+      || (!!customer && managerCoversStore(auth, customer.bound_store_id))
   }
   if (!isCurrentStoreManager(auth)) return false
   return isInCurrentStore(auth, so)
     || (!!customer && !!customer.bound_store_id && customer.bound_store_id === auth.effectiveStoreId)
+}
+
+/** manager 角色是否覆盖该门店。**只看 managerStoreIds，绝不退回 scopeStoreIds**（见上方说明）。 */
+function managerCoversStore(auth, storeId) {
+  return Boolean(storeId) && Array.isArray(auth.managerStoreIds) && auth.managerStoreIds.includes(storeId)
+}
+
+/**
+ * 允许用原始手机号参与列表搜索的门店集合（#224）。
+ *
+ * 必须与 `canReadFullPhone` 的门店口径一致：响应脱敏、搜索却拿全号匹配，
+ * 等于开了个能逐位枚举还原隐藏 4 位的旁路。返回空数组表示该身份不得按手机号搜。
+ */
+function phoneSearchStoreIds(auth) {
+  if (!auth) return []
+  if (auth.loginLevel === 'management') {
+    if (!hasValidManagerRole(auth) || !Array.isArray(auth.managerStoreIds)) return []
+    return auth.managerStoreIds
+  }
+  return auth.effectiveStoreId ? [auth.effectiveStoreId] : []
 }
 
 /**
