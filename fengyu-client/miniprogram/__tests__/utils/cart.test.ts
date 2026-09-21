@@ -12,6 +12,7 @@ import {
   getCartCount,
   getCartTotal,
   setAllSelected,
+  sanitizeCoverImage,
   type CartItem,
 } from '../../utils/cart'
 
@@ -261,6 +262,28 @@ describe('issue #230：存量购物车快照的封面净化', () => {
       expect(getCart().items[0].coverImage).toBe('')
     })
 
+    test('全大写处理指令被拒 —— 数据万象大小写敏感，IMAGEMOGR2 不生效', () => {
+      // codex 第二轮命中：给整条正则加 /i 会放行这个构造，而它返回的是原图。
+      // 注意上一版的子串判断反而拒绝了它 —— 这条防止再退步一次。
+      seedStorage([{ skuId: 's1', price: 100, quantity: 1,
+        coverImage: `${COS}?IMAGEMOGR2/THUMBNAIL/400x400` }])
+      expect(getCart().items[0].coverImage).toBe('')
+    })
+
+    test('混合大小写指令同样被拒', () => {
+      seedStorage([{ skuId: 's1', price: 100, quantity: 1,
+        coverImage: `${COS}?ImageMogr2/Thumbnail/400x400` }])
+      expect(getCart().items[0].coverImage).toBe('')
+    })
+
+    test('零值档位被拒（腾讯云规定 1~10000，0x2000 会裂图）', () => {
+      for (const rule of ['0x2000', '0x0', '0@']) {
+        seedStorage([{ skuId: 's1', price: 100, quantity: 1,
+          coverImage: `${COS}?imageMogr2/thumbnail/${rule}` }])
+        expect(getCart().items[0].coverImage).toBe('')
+      }
+    })
+
     test('缩略参数后面还跟着别的 query', () => {
       seedStorage([{ skuId: 's1', price: 100, quantity: 1,
         coverImage: `${COS}?imageMogr2/thumbnail/400x400&imageView2/1/w/50000` }])
@@ -277,5 +300,50 @@ describe('issue #230：存量购物车快照的封面净化', () => {
     for (const item of getCart().items) {
       expect(item.coverImage).toBe('')
     }
+  })
+})
+
+/**
+ * issue #230 · 两端判据的**闭环守护**（GLM 第二轮 P2-1 提出）。
+ *
+ * 净化器是云函数 `safeThumbUrl` / `safeThumbUrlByArea` 的**镜像判据**，
+ * 两边各写一份就会漂移。GLM 实测出 4 处不对称：服务端接受 `http://`、FQDN 尾点、
+ * 非默认端口、`#fragment`，而前端正则当时全会误杀 —— 后果是**新加购**的条目
+ * 封面也静默变占位图（无报错，极难定位）。当时不可达只因生产 URL 恰好都规范。
+ *
+ * 本项目对 error-codes / refund-cascade 有 cross-end 字面量 snapshot 的惯例，
+ * 这里是等价物：把云函数**会下发的各种形态**喂给净化器，断言全部被接受。
+ * 任一端收紧/放宽而另一端没跟上，这组用例立刻转红。
+ *
+ * fixture 按云函数 `safeThumbUrl` 的实际输出形态构造（它用 URL 对象重建 URL，
+ * 故端口、尾点、fragment 都会原样保留在输出里）。
+ */
+describe('issue #230：净化器必须接受云函数的全部合法下发形态', () => {
+  const HOST = 'test-env-1300000000.tcb.qcloud.la'
+  // 三个档位对应 PRODUCT_THUMB_BOX_SMALL / _LARGE / _DETAIL_IMAGE_MAX_PIXELS
+  const RULES = ['imageMogr2/thumbnail/400x400', 'imageMogr2/thumbnail/1080x1080', 'imageMogr2/thumbnail/2250000@']
+
+  const SHAPES: Array<[string, string]> = [
+    ['https 常规', `https://${HOST}/product-covers/a.jpg`],
+    ['http（云函数 safeThumbUrl 接受 https?）', `http://${HOST}/product-covers/a.jpg`],
+    ['FQDN 尾点（云函数归一后放行）', `https://${HOST}./product-covers/a.jpg`],
+    ['非默认端口（云函数只校验 hostname）', `https://${HOST}:8443/product-covers/a.jpg`],
+    ['大写扩展名', `https://${HOST}/product-covers/UPPER.PNG`],
+    ['大写域名（DNS 不敏感）', `https://TEST-ENV-1300000000.TCB.QCLOUD.LA/product-covers/a.jpg`],
+    ['详情图目录 webp', `https://${HOST}/product-details/1789097186265-apa9p0.webp`],
+    ['jpeg 扩展名', `https://${HOST}/product-covers/a.jpeg`],
+  ]
+
+  for (const [name, base] of SHAPES) {
+    for (const rule of RULES) {
+      test(`接受：${name} + ${rule}`, () => {
+        expect(sanitizeCoverImage(`${base}?${rule}`)).toBe(`${base}?${rule}`)
+      })
+    }
+  }
+
+  test('接受：带 #fragment 的下发值（云函数不剥 hash，参数拼在 fragment 前）', () => {
+    const u = `https://${HOST}/product-covers/a.jpg?imageMogr2/thumbnail/400x400#sec`
+    expect(sanitizeCoverImage(u)).toBe(u)
   })
 })

@@ -51,26 +51,38 @@ export interface Cart {
 const SANITIZE_MAX_EDGE = 2000;
 const SANITIZE_MAX_AREA = 4000000;
 
+/** 把 URL 拆成 authority / path / query 三段，便于逐段用**各自正确的大小写规则**校验 */
+const URL_PARTS_PATTERN = /^(https?):\/\/([^/?#]+)(\/[^?#]*)\?(.*)$/i;
+
+/** 对象键形态：两段、纯 ASCII、图片扩展名。与云函数 `safeThumbUrl` 的白名单同形 */
+const OBJECT_KEY_PATTERN = /^\/[\w-]+\/[\w.-]+\.(?:png|jpe?g|webp|gif)$/i;
+
 /**
- * 只认「本项目 COS 域名 + 两段对象键 + query 恰好是一条缩略规则」这一种完整形态。
- *
- * ⚠️ **不能用 `url.includes('imageMogr2/thumbnail/')` 这种子串判断**：
- * `https://img.example.com/huge.png?x=imageMogr2/thumbnail/1080x1080` 会命中子串而被放行，
- * 但那个域名根本不执行数据万象，返回的是原图 —— 净化逻辑自身 fail-open 等于没做。
- * （双谱系评审独立指出，codex 给出了上面这个构造。）
+ * 处理指令白名单。**刻意不加 `/i`** —— 数据万象的处理指令是大小写敏感的，
+ * `?IMAGEMOGR2/THUMBNAIL/400x400` 不会被执行，请求退化成普通对象访问、返回原图。
+ * 对它做大小写折叠就是又一个 fail-open（codex 第二轮命中：上一版的子串判断反而拒绝了这个构造）。
  *
  * 末尾 `$` 锚定保证 query 里**只有**这一条规则，杜绝
  * `?imageMogr2/thumbnail/400x400|imageView2/1/w/50000` 这类管道链后段放大。
  */
-const THUMBED_COVER_PATTERN =
-  /^https:\/\/[\w-]+(?:\.[\w-]+)*\.tcb\.qcloud\.la\/[\w-]+\/[\w.-]+\.(?:png|jpe?g|webp|gif)\?imageMogr2\/thumbnail\/(\d+x\d+|\d+@)$/i;
+const THUMB_RULE_PATTERN = /^imageMogr2\/thumbnail\/(\d+x\d+|\d+@)$/;
 
-/** 档位数值本身也要卡：形态合法但 `10000x10000` 仍是 400MB 解码 */
+/**
+ * 档位数值本身也要卡：形态合法但 `10000x10000` 仍是 400MB 解码。
+ * 下界取 1 —— 腾讯云规定 Width/Height 为 1~10000，`0x2000` 是无效规则（会裂图）。
+ */
 function isSafeThumbRule(rule: string): boolean {
   const box = rule.match(/^(\d+)x(\d+)$/);
-  if (box) return Number(box[1]) <= SANITIZE_MAX_EDGE && Number(box[2]) <= SANITIZE_MAX_EDGE;
+  if (box) {
+    const w = Number(box[1]);
+    const h = Number(box[2]);
+    return w > 0 && h > 0 && w <= SANITIZE_MAX_EDGE && h <= SANITIZE_MAX_EDGE;
+  }
   const area = rule.match(/^(\d+)@$/);
-  if (area) return Number(area[1]) <= SANITIZE_MAX_AREA;
+  if (area) {
+    const a = Number(area[1]);
+    return a > 0 && a <= SANITIZE_MAX_AREA;
+  }
   return false;
 }
 
@@ -87,9 +99,29 @@ function isSafeThumbRule(rule: string): boolean {
  */
 export function sanitizeCoverImage(url: unknown): string {
   if (typeof url !== 'string') return '';
-  const matched = url.match(THUMBED_COVER_PATTERN);
-  if (!matched) return '';
-  return isSafeThumbRule(matched[1]) ? url : '';
+
+  // 先剥 fragment 再拆：云函数用 URL 对象重建 URL，源 URL 带 #frag 时
+  // 缩略参数会拼在 fragment 之前，整串以 fragment 结尾。不剥就会误杀合法下发值。
+  const parts = url.split('#')[0].match(URL_PARTS_PATTERN);
+  if (!parts) return '';
+  const [, , authority, path, query] = parts;
+
+  // 把可信域名塞进 userinfo 的伪装（`https://x.tcb.qcloud.la@evil.com/...`）
+  if (authority.indexOf('@') !== -1) return '';
+
+  // 域名大小写不敏感（DNS 语义），并去掉 FQDN 尾点——
+  // `a.tcb.qcloud.la.` 与 `a.tcb.qcloud.la` 等价，云函数侧同样做了归一。
+  // 端口一并剥掉：云函数只校验 hostname，非默认端口的 URL 它会照常下发。
+  const host = authority.split(':')[0].replace(/\.$/, '');
+  if (!/\.tcb\.qcloud\.la$/i.test(host)) return '';
+
+  if (!OBJECT_KEY_PATTERN.test(path)) return '';
+
+  // 处理指令**大小写敏感**（见 THUMB_RULE_PATTERN 注释）
+  const rule = query.match(THUMB_RULE_PATTERN);
+  if (!rule) return '';
+
+  return isSafeThumbRule(rule[1]) ? url : '';
 }
 
 /**
