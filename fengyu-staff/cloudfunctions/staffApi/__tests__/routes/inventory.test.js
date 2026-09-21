@@ -1513,15 +1513,12 @@ describe('inventory.approveDoc / rejectDoc 鉴权主体（#235）', () => {
     expect(approval.filter((t) => visible.has(t)).sort()).toEqual(['院产品报损', '院退货'])
 
     /**
-     * 等集断言只提供「改了会醒」的摩擦力；这条子集断言才是**机器验证**的那一半（GLM P3-1）：
-     * 可达审批面里的每个类型都必须是守卫支持的出库方向，否则守卫会在运行时 fail-closed
-     * 把它挡下 —— 与其等真机上抛 APPROVAL_DIRECTION_UNSUPPORTED，不如在这里就红。
+     * 这里**不再**加一条 `(STAFF_VISIBLE ∩ APPROVAL) ⊆ OUTBOUND`。
+     * 一度按 GLM 的建议加过，但 codex 指出它被上面那条全局的 `APPROVAL ⊆ OUTBOUND`
+     * **严格蕴含** —— 不存在只被它抓住的 mutant，纯属重复。
+     * 这条等集断言的作用是「改了会醒」的摩擦力（钉住泄漏分析与守卫可达性论证的适用域），
+     * 机器验证那一半由全局子集断言承担，两者分工明确。
      */
-    const outbound = new Set(setItems('OUTBOUND_DOC_TYPES'))
-    expect(
-      approval.filter((t) => visible.has(t)).filter((t) => !outbound.has(t)),
-      '可达审批面里出现了非出库方向的类型，方向守卫会在运行时把它拒掉',
-    ).toEqual([])
     // 且 LIST 必须是 Set 的派生，不能是手工维护的第二份（会静默漂移）
     expect(src).toMatch(/const STAFF_VISIBLE_DOC_TYPE_LIST = Array\.from\(STAFF_VISIBLE_DOC_TYPES\)/)
   })
@@ -1550,9 +1547,13 @@ describe('inventory.approveDoc / rejectDoc 鉴权主体（#235）', () => {
 
     // 入库方向的审批类型：属 APPROVAL、不属 OUTBOUND —— 必须 fail-closed
     const guard = makeGuard(new Set(['某入库审批类型']), new Set(['某出库类型']))
-    expect(() => guard('某入库审批类型')).toThrow('APPROVAL_DIRECTION_UNSUPPORTED')
+    // ⚠️ 必须锚定**一级前缀**：只匹配子串 'APPROVAL_…' 的话，把实现改成
+    // `PERMISSION_DENIED: APPROVAL_…`（甚至去掉一级前缀）测试照样绿，
+    // 而 API 的 code / errorType 已经变了（一级前缀走 9 项白名单，子标签只供日志归类）。
+    expect(() => guard('某入库审批类型'))
+      .toThrow(/^INVALID_STATE: APPROVAL_DIRECTION_UNSUPPORTED: /)
     // 完全不属 APPROVAL 的类型走另一条错误
-    expect(() => guard('无关类型')).toThrow('APPROVAL_NOT_REQUIRED')
+    expect(() => guard('无关类型')).toThrow(/^INVALID_STATE: APPROVAL_NOT_REQUIRED: /)
     // 同属两者 → 放行
     const ok = makeGuard(new Set(['出库审批类型']), new Set(['出库审批类型']))
     expect(() => ok('出库审批类型')).not.toThrow()
