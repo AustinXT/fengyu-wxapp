@@ -7194,6 +7194,29 @@ describe('提货查询门店范围', () => {
     expect(pg.query).not.toHaveBeenCalled()
   })
 
+  // ---------- #240 日期入参校验（同类「非优雅降级」的漏网处）----------
+  // 原先零校验：`startDate='abc'` 直接绑进 `pr.created_at >= $n` → PG 22007
+  // → 全局 catch 降级成 {code:-1,'服务器内部错误'}，而非 -400 INVALID_PARAMS。
+  test.each([
+    [{ startDate: 'abc' }, /INVALID_PARAMS.*startDate/],
+    [{ endDate: '26-08-01' }, /INVALID_PARAMS.*endDate/],
+    [{ startDate: '2026-02-30' }, /INVALID_PARAMS.*startDate/],
+    [{ startDate: '2026-08-27', endDate: '2026-08-26' }, /INVALID_PARAMS.*不能晚于/],
+  ])('#240 非法日期入参抛 INVALID_PARAMS 而非打到 PG：%#', async (payload, re) => {
+    const ctx = createManagerCtx(payload)
+    await expect(orderRoutes.pickupRecordsList(ctx)).rejects.toThrow(re)
+    // 关键：必须在发 SQL **之前**拦住
+    expect(pg.query).not.toHaveBeenCalled()
+  })
+
+  test('#240 合法 YYYY-MM-DD 仍正常进 SQL（前端 picker 的既有格式不受影响）', async () => {
+    const ctx = createManagerCtx({ startDate: '2026-08-01', endDate: '2026-08-31' })
+    pg.query.mockResolvedValueOnce([]).mockResolvedValueOnce([{ cnt: 0 }])
+    await orderRoutes.pickupRecordsList(ctx)
+    expect(pg.query.mock.calls[0][1]).toContain('2026-08-01')
+    expect(pg.query.mock.calls[0][1]).toContain('2026-08-31')
+  })
+
   // ---------- #240 分页归一（本接口上限 50，与其它接口的 100 不同）----------
   // 原先 `parseInt(pageSize,10) || 20`：`parseInt('1e21',10) === 1` 会**静默取错值**（不崩，
   // 但用户看到一页 1 条）；且 `page` 在算 offset 与返回信封里各归一一遍，两条路径天然会漂。

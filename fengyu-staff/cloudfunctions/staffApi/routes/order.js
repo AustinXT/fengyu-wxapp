@@ -6844,6 +6844,21 @@ async function pickupRecordsList(ctx) {
     params.push(clientUserId)
     idx++
   }
+  // #240：日期入参此前零校验，`startDate='abc'` 会直接绑进 `pr.created_at >= $n`
+  // → PG 22007 invalid_datetime_format → 全局 catch 降级成 {code:-1,'服务器内部错误'}。
+  // 与本 issue 的分页取整是同一类「非优雅降级」，且本接口的另外 5 个 list 兄弟
+  // （走 normalizeListFilters）早就有这三条校验 —— 这里是漏网的一处。
+  // 前端 `<picker mode="date">` 产出的正是 YYYY-MM-DD，既有调用不受影响。
+  if (startDate && !isValidDate(startDate)) {
+    throw new Error('INVALID_PARAMS: startDate 必须为 YYYY-MM-DD 格式')
+  }
+  if (endDate && !isValidDate(endDate)) {
+    throw new Error('INVALID_PARAMS: endDate 必须为 YYYY-MM-DD 格式')
+  }
+  if (startDate && endDate && startDate > endDate) {
+    throw new Error('INVALID_PARAMS: startDate 不能晚于 endDate')
+  }
+
   if (startDate) {
     conditions.push(`pr.created_at >= $${idx}`)
     params.push(startDate)
