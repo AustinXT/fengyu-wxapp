@@ -567,8 +567,10 @@ async function runPaymentReconcile() {
       if (!(payAmount > 0)) { skip++; continue }
       const paymentMethod = o.payment_method === '支付宝' ? '支付宝' : '微信'
       // 自调 payNotify main（event 入口）触发同款幂等入账；event.Type 非 Timer 不会再次进入本任务，无递归
+      // 函数名走 env：同一 env 内并存 payNotify(prod 库) 与 payNotifyDev(dev 库) 两份部署，
+      // 写死 'payNotify' 会让 Dev 实例拿 dev 库查出的订单号去调生产函数写 prod 库。
       const r = await cloud.callFunction({
-        name: 'payNotify',
+        name: process.env.PAYNOTIFY_FN_NAME || 'payNotify',
         data: {
           orderNo: o.lakala_out_order_no,
           transactionId: resp.tradeNo,

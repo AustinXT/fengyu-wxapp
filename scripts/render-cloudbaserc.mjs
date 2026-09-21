@@ -1,9 +1,17 @@
 #!/usr/bin/env node
 // 渲染 fengyu-{client,staff}/cloudbaserc.json
-// 输入：envs/<env>.env + fengyu-X/cloudbaserc.example.json
+// 输入：envs/<env>.env（+ envs/dev.env 作为 DEV_ 前缀叠加层）+ fengyu-X/cloudbaserc.example.json
 // 输出：fengyu-X/cloudbaserc.json (gitignored)
 //
 // Usage: node scripts/render-cloudbaserc.mjs <env>   # env = dev | prod
+//
+// 关于 DEV_ 前缀叠加层：
+//   CloudBase 环境收缩到单个 prod env 后，dev/prod 的数据库隔离靠「影子函数」实现——
+//   同一个 env 内并存 clientApi/clientApiDev 等两份部署，*Dev 的 envVariables 指向 dev 库。
+//   模板用 ${DEV_PG_CONNECTION_STRING} 这类前缀名引用 dev 侧取值，由本脚本从 envs/dev.env
+//   读入并加 DEV_ 前缀提供。这些键**只存在于渲染期内存**，不写进任何 .env 文件——
+//   scripts/check-env-shape.mjs 要求四个 env 文件键集与顺序逐字节一致，
+//   scripts/reconcile-env-files.mjs 又会把模板外的键静默删除，往 .env 里加键两边都过不去。
 
 import fs from 'node:fs'
 import path from 'node:path'
@@ -134,15 +142,35 @@ function render(side, vars) {
   console.log(`  ✓ fengyu-${side}/cloudbaserc.json`)
 }
 
+// --- dev 叠加层：供影子函数（*Dev）引用的 DEV_ 前缀变量 ---
+function loadDevOverlay() {
+  const devPath = path.join(ROOT, 'envs', 'dev.env')
+  if (!fs.existsSync(devPath)) return {}
+  // 必须在 dev.env 自己的命名空间内先解析 ${VAR} 再加前缀：
+  // dev.env 里有 LAKALA_NOTIFY_URL=${CLIENT_SERVICE_URL}/... 这类自引用，
+  // 若合并后才解析，${CLIENT_SERVICE_URL} 会被 prod 的同名值顶掉。
+  const devVars = resolveRefs(parseDotenv(fs.readFileSync(devPath, 'utf8')))
+  const out = {}
+  for (const [k, v] of Object.entries(devVars)) out[`DEV_${k}`] = v
+  return out
+}
+
 // --- main ---
 const raw = parseDotenv(fs.readFileSync(envPath, 'utf8'))
-const vars = resolveRefs(raw)
+// DEV_ 前缀与宿主键不冲突，合并顺序无关紧要；ENV_PROFILE 断言也不受 DEV_ENV_PROFILE 影响
+const vars = { ...resolveRefs(raw), ...loadDevOverlay() }
 
 // 必检字段（缺一项 abort）
 const required = ['ENV_PROFILE', 'PG_CONNECTION_STRING', 'CLIENT_ENV_ID', 'STAFF_ENV_ID']
 const missing = required.filter((k) => !vars[k])
 if (missing.length > 0) {
   console.error(`ERROR: envs/${env}.env missing required vars: ${missing.join(', ')}`)
+  process.exit(1)
+}
+
+// 影子函数的库指向是本方案的承重点，缺失即 fail-closed（而不是渲染出一个空连接串）
+if (!vars.DEV_PG_CONNECTION_STRING) {
+  console.error('ERROR: envs/dev.env 缺失或没有 PG_CONNECTION_STRING —— 影子函数(*Dev)无法确定 dev 库指向。')
   process.exit(1)
 }
 

@@ -3872,8 +3872,10 @@ async function confirmPayment(ctx) {
   const paymentMethod = order.payment_method === '支付宝' ? '支付宝' : '微信'
   let payNotifyResult
   try {
+    // 函数名走 env：同一 env 内并存 payNotify(prod 库) 与 payNotifyDev(dev 库) 两份部署，
+    // 写死 'payNotify' 会让 clientApiDev 拿 dev 库的订单号去调生产函数写 prod 库。
     const r = await cloud.callFunction({
-      name: 'payNotify',
+      name: process.env.PAYNOTIFY_FN_NAME || 'payNotify',
       data: {
         orderNo: order.lakala_out_order_no,
         transactionId: resp.tradeNo,
