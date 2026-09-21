@@ -48,12 +48,13 @@ describe('image 工具跨副本一致性守护', () => {
     // `readFileSync` 透明跟随 symlink —— 有人用软链"保持两端同步"的话字节断言恒绿，
     // 而软链恰恰是根 CLAUDE.md 明令禁止的跨端共享手段（用户已 veto）。
     //
-    // 用 realpath 比对而不是 `lstatSync(p).isSymbolicLink()`：后者只看文件本身，
-    // 把整个 `utils/` 目录软链过去照样漏（codex 第 2 轮指出）。
-    // realpath 会解开路径上**每一段**软链，任何一段是链接都会让两边解析到同一个真实路径。
-    for (const p of [staffPath, clientPath]) {
-      expect(fs.realpathSync(p)).toBe(path.resolve(p))
-    }
+    // 断言的是「**两端解析到两个不同的真实文件**」，而不是
+    // `lstatSync(p).isSymbolicLink() === false`（只看文件本身，软链整个 `utils/`
+    // 目录会漏）或 `realpathSync(p) === path.resolve(p)`（仓库本身位于软链路径下时
+    // ——`/tmp` → `/private/tmp`、把工作区放在软链目录里——会误红）。
+    // realpath 解开路径上每一段软链，所以无论链在文件还是任一层目录，
+    // 共享同一份内容时两边会塌成同一个真实路径。
+    expect(fs.realpathSync(staffPath)).not.toBe(fs.realpathSync(clientPath))
     expect(read(staffPath)).toBe(read(clientPath))
   })
 
@@ -182,8 +183,16 @@ describe('image 工具跨副本一致性守护', () => {
     // paths 必须覆盖守护实际读到的**全部**文件，否则「改了但不触发」等于没有守护：
     // - 两端 cloudfunctions（字节一致比对读两端的 utils/image.js 与 image.test.js）
     // - bundle-picker 组件（image-staff-bundle.test.js 读它的 wxml 断言 lazy-load/binderror）
+    // - client miniprogram（cart.test.ts 的闭环守护比对第三份副本的白名单与上界）
     expect(yml).toContain("- 'fengyu-staff/cloudfunctions/**/*.js'")
     expect(yml).toContain("- 'fengyu-client/cloudfunctions/**/*.js'")
     expect(yml).toContain("- 'fengyu-staff/miniprogram/components/bundle-picker/**'")
+    expect(yml).toContain("- 'fengyu-client/miniprogram/**'")
+
+    // 第三份副本的守护必须真有 job 跑，不能只有触发路径
+    // （光有 paths 没有 job = 触发了却不跑，比不触发更有欺骗性）
+    expect(yml).toMatch(
+      /working-directory: fengyu-client\/miniprogram\n\s*run: npx vitest run/
+    )
   })
 })
