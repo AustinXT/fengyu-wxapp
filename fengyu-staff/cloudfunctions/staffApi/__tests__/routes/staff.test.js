@@ -784,6 +784,12 @@ describe('staff.performanceDetail', () => {
     // 取**整条 ORDER BY 子句**（到语句末尾）而非子串存在性 —— 后者可以被
     // 「注释掉真 ORDER BY 再补一行同文本」骗过。
     // 只认**最外层（括号深度 0）**的 ORDER BY，并先剥掉 SQL 注释。
+    //
+    // 边界声明（刻意 fail-closed —— 下列情形一律返回 null 或不等值而**变红**，绝不放行）：
+    //   不支持 dollar-quote（`$$…$$`）、转义串（`E'\''`）、字符串内的 `--`、
+    //   双引号标识符、小写 `order by`、`DESC ,` 这类非常规格式。
+    //   本仓 SQL 都是手写模板且格式统一，误报红时人工确认一眼即可；
+    //   反过来放行才是真风险（#239 复活且无人察觉）。
     // 两个谱系各给了一种绕过，都被这个实现挡住：
     //   ① 内层 CTE 的注释里写着期望文本、真正的外层 ORDER BY 没 tie-break
     //      → 剥注释解决
@@ -805,8 +811,9 @@ describe('staff.performanceDetail', () => {
         else if (ch === ')') depth--
         else if (depth === 0 && stripped.startsWith('ORDER BY', i)) {
           const rest = stripped.slice(i + 'ORDER BY'.length)
+          // `$` 保证 search 必有命中，无需处理 -1
           const end = rest.search(/\n\s*(?:LIMIT|OFFSET)\b|\)|$/)
-          return rest.slice(0, end === -1 ? undefined : end).replace(/\s+/g, ' ').trim()
+          return rest.slice(0, end).replace(/\s+/g, ' ').trim()
         }
       }
       return null
