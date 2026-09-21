@@ -30,7 +30,10 @@ function cutoverQueryResult(sql, status = '已初始化') {
     : { rows: [{ status }], rowCount: 1 }
 }
 
-function mockTransactionClient(responses, { cutoverStatus = '已初始化', locationRow = null } = {}) {
+function mockTransactionClient(
+  responses,
+  { cutoverStatus = '已初始化', locationRow = null, locationRows = null } = {},
+) {
   const client = {
     query: vi.fn(async (sql, params = []) => {
       const text = String(sql)
@@ -40,6 +43,9 @@ function mockTransactionClient(responses, { cutoverStatus = '已初始化', loca
       if (text.includes('AS drifted')) return { rows: [], rowCount: 0 }
       if (text.includes('INSERT INTO inventory_locations')) return { rows: [], rowCount: 0 }
       if (text.includes('SELECT location_id, location_type, parent_location_id')) {
+        // locationRows：#251 用于构造「一个入参命中多行」的撞值场景。
+        // 默认分支恒返 1 行，事务内路径原本永远碰不到多行判定。
+        if (locationRows) return { rows: locationRows(params[0]) }
         return { rows: [locationRow ?? {
           location_id: params[0], org_node_id: params[0], location_type: '门店',
           parent_location_id: 'market-A', is_active: true,
@@ -1746,5 +1752,198 @@ describe('inventory 库存主体同步短路（migration 0009 触发器兜底）
       .map(([sql]) => String(sql))
       .filter((sql) => sql.includes('INSERT INTO inventory_locations'))
     expect(upserts).toHaveLength(2)
+  })
+})
+
+/**
+ * #251：`ensureInventoryLocation` 的主体解析必须确定。
+ *
+ * 查询是 `WHERE location_id = $1 OR org_node_id = $1`（有意的双 id 多态：调用方既可能
+ * 传 org_node_id，也可能经 fallback 链传 store_id）。两侧各自唯一，但**可以落在不同的两行**：
+ * 门店行是 `location_id = store_id` / `org_node_id = org-门店-*`（只有总部/市场行自指），
+ * 于是某个 store_id 恰好等于某个门店 org_nodes.id 时，两侧指向两个**不同门店**的库存主体。
+ * 原先无 ORDER BY 的 `LIMIT 1` 取哪行不保证稳定，两次独立调用可能拿到不同门店 —— 即
+ * 「按 A 鉴权、扣 B 的批次」。
+ *
+ * ⚠️ 与 issue #251 正文的归因不同：这与 `stores.org_node_id` 是否 unique 无关
+ *（该列早有 `stores_org_node_id_unique`，且 `inventory_locations.org_node_id` 也有
+ * `uq_inventory_locations_org`），「一个 org_node 挂两个 store」在库层面写不进去。
+ */
+describe('inventory 库存主体解析确定性（#251）', () => {
+  /**
+   * 撞值形态：某门店的 store_id 恰好等于另一个门店 org_nodes.id。
+   * 两行都是**门店**行（总部/市场行自指 `location_id = org_node_id`，
+   * 与行 Y 同值会违反 `uq_inventory_locations_org`，不可能共存）。
+   */
+  const collisionRows = (input, { yActive = true } = {}) => [
+    // 行 Y：另一个门店（store-B）的 org_node_id 恰好等于入参
+    {
+      location_id: 'store-B',
+      org_node_id: input,
+      location_type: '门店',
+      parent_location_id: 'market-A',
+      is_active: yActive,
+    },
+    // 行 X：某门店的 store_id 就是入参本身
+    {
+      location_id: input,
+      org_node_id: 'node-store-A',
+      location_type: '门店',
+      parent_location_id: 'market-A',
+      is_active: true,
+    },
+  ]
+
+  function storeCtx(auth = {}) {
+    return createCtx({
+      payload: {
+        docType: '门店报货',
+        storeId: 'store-001',
+        items: [{ skuId: 'sku-1', quantity: 1 }],
+      },
+      auth: {
+        roles: ['manager'],
+        roleBindings: [{ role: 'manager', scopeId: 'node-store-001', scopeType: '门店' }],
+        scopeStoreIds: ['store-001'],
+        effectiveStoreId: 'store-001',
+        ...auth,
+      },
+    })
+  }
+
+  function mockLocationQuery(rowsFor) {
+    pg.query.mockImplementation(async (query, params) => (
+      String(query).includes('SELECT location_id, location_type, parent_location_id')
+        ? rowsFor(params[0])
+        : []
+    ))
+  }
+
+  test('两侧命中不同的两行时抛 CONFLICT，不静默选一行', async () => {
+    const ctx = storeCtx()
+    mockLocationQuery((input) => collisionRows(input))
+
+    await expect(inventoryRoutes.createDoc(ctx)).rejects.toThrow(
+      'CONFLICT: LOCATION_ID_AMBIGUOUS: 库存主体标识冲突',
+    )
+    // 必须拦在事务之前：撞值时一个批次都不能动
+    expect(pg.transaction).not.toHaveBeenCalled()
+  })
+
+  test('事务内路径（approveDoc）撞值同样抛 CONFLICT，且不改单据状态', async () => {
+    // 事务分支走的是 `client.query(...).then(res => res.rows)`，与池分支返回形状不同，
+    // 必须单独钉住——helper 原本把主体查询硬编码成恒返 1 行，这条路径过去碰不到多行判定。
+    const ctx = createCtx({
+      payload: { id: 'DOC-COLLIDE', auditRemark: '撞值探测' },
+      auth: {
+        roles: ['finance'],
+        roleBindings: [{ role: 'finance', scopeId: 'market-A', scopeType: '市场' }],
+        scopeStoreIds: ['store-A'],
+        effectiveStoreId: null,
+      },
+    })
+    pg.query.mockImplementation(async (query) => (
+      String(query).includes('WITH RECURSIVE descendants') ? [{ store_id: 'store-A' }] : []
+    ))
+    const client = mockTransactionClient(
+      [{
+        rows: [{
+          id: 'DOC-COLLIDE',
+          doc_type: '院退货',
+          status: '待审批',
+          source_org_node_id: 'store-A',
+          target_org_node_id: null,
+        }],
+      }],
+      { locationRows: (input) => collisionRows(input) },
+    )
+
+    await expect(inventoryRoutes.approveDoc(ctx)).rejects.toThrow(
+      'CONFLICT: LOCATION_ID_AMBIGUOUS: 库存主体标识冲突',
+    )
+    // 事务中途抛错，单据状态与明细都不得被动过
+    expect(client.query.mock.calls.some(([sql]) => /UPDATE inventory_docs/.test(sql))).toBe(false)
+    expect(client.query.mock.calls.some(([sql]) => /FROM inventory_doc_items/.test(sql))).toBe(false)
+  })
+
+  test('撞值行中有一行已停用时不算歧义，按在用行正常解析', async () => {
+    // `syncInventoryLocations` 只 UPSERT 从不 DELETE，闭店门店会留下 is_active=false 的幽灵行。
+    // 让幽灵行参与歧义判定，会把与它撞值的在营门店整个锁死——而修复前的无序 LIMIT 1
+    // 反倒有一半概率正常，那是可用性倒退。
+    const ctx = storeCtx({ roles: ['customer_mgr'], roleBindings: [
+      { role: 'customer_mgr', scopeId: 'node-store-001', scopeType: '门店' },
+    ] })
+    mockLocationQuery((input) => collisionRows(input, { yActive: false }))
+
+    // 走到权限判定 = 主体解析已正常返回，没有被 CONFLICT 截断
+    await expect(inventoryRoutes.createDoc(ctx)).rejects.toThrow(
+      'PERMISSION_DENIED: 无库存写入权限',
+    )
+  })
+
+  test('唯一命中项已停用仍抛 INVALID_STATE（原语义不被撞值守卫吃掉）', async () => {
+    const ctx = storeCtx()
+    mockLocationQuery((input) => [{
+      location_id: input,
+      org_node_id: 'node-store-001',
+      location_type: '门店',
+      parent_location_id: 'market-A',
+      is_active: false,
+    }])
+
+    await expect(inventoryRoutes.createDoc(ctx)).rejects.toThrow(
+      'INVALID_STATE: 库存主体已停用',
+    )
+  })
+
+  test('【已知缺陷·锁当前行为】org_node_id 为空时会把 store_id 当组织节点兜底', async () => {
+    // 这条**不是**在断言正确行为，而是把现状钉住，避免它在别的改动里悄悄漂移。
+    //
+    // `row.org_node_id || locationId` 把入参（store_id）当组织节点 id 返回，而该值会被
+    // 写进 inventory_docs 的端点列 —— 那两列对 inventory_locations.org_node_id 有 FK。
+    // 正解是 fail-loud，但现网为空的主体行实测 0 且改动会牵动 13 个既有用例的 mock，
+    // 已在 routes/inventory.js 的注释里记录，留作独立 issue。
+    const ctx = storeCtx({ roles: ['customer_mgr'], roleBindings: [
+      { role: 'customer_mgr', scopeId: 'node-store-001', scopeType: '门店' },
+    ] })
+    mockLocationQuery((input) => [{
+      location_id: input,
+      org_node_id: null,
+      location_type: '门店',
+      parent_location_id: 'market-A',
+      is_active: true,
+    }])
+
+    // 没有因 org_node_id 为空而抛错，照常走到权限判定
+    await expect(inventoryRoutes.createDoc(ctx)).rejects.toThrow(
+      'PERMISSION_DENIED: 无库存写入权限',
+    )
+  })
+
+  test('主体查询带确定性排序与 LIMIT 2（防回退成无序 LIMIT 1）', async () => {
+    const ctx = storeCtx({ roles: ['customer_mgr'], roleBindings: [
+      { role: 'customer_mgr', scopeId: 'node-store-001', scopeType: '门店' },
+    ] })
+    mockLocationQuery((input) => [{
+      location_id: input,
+      org_node_id: 'node-store-001',
+      location_type: '门店',
+      parent_location_id: 'market-A',
+      is_active: true,
+    }])
+
+    await expect(inventoryRoutes.createDoc(ctx)).rejects.toThrow('PERMISSION_DENIED')
+
+    const call = pg.query.mock.calls.find(([sql]) => (
+      String(sql).includes('SELECT location_id, location_type, parent_location_id')
+    ))
+    const sql = String(call[0]).replace(/\s+/g, ' ')
+    // 按主键排序：只保证「同一入参两次调用必得同一行」，**不**声称语义正确
+    //（撞值时不存在正确的那一行——一半调用点传 org_node_id、另一半传 store_id，
+    // 固定任何优先级都会对另一半确定性地取错主体）。正确性由上面的 CONFLICT 保障。
+    expect(sql).toContain('ORDER BY location_id')
+    // 两侧各最多 1 行，2 是精确上界；回到 LIMIT 1 就永远看不见撞值
+    expect(sql).toContain('LIMIT 2')
+    expect(sql).not.toMatch(/LIMIT 1\b/)
   })
 })

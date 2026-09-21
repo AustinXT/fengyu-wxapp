@@ -464,6 +464,44 @@ function queryRows(client, sql, params) {
   return client ? client.query(sql, params).then((res) => res.rows) : pg.query(sql, params)
 }
 
+/**
+ * 按 location_id 或 org_node_id 取库存主体（#251）。
+ *
+ * `OR` 是**有意的双 id 多态查找**，不能删：调用方两种 id 都会传进来 ——
+ * `payload.sourceOrgNodeId` / `head.source_org_node_id` 是 org_node_id，而
+ * `resolveStaffCreateLocations` 的 fallback 链（`ctx.auth.effectiveStoreId`、
+ * `auth.inventoryStoreIds`）给的是 **store_id**。
+ *
+ * ⚠️ 但 OR 两侧**可以落在不同的两行上**，这正是 #251：
+ *   - `location_id` 是主键、`org_node_id` 有 `uq_inventory_locations_org`，各自最多 1 行；
+ *   - `syncInventoryLocations` 写的门店行是 `location_id = store_id`、`org_node_id = org-门店-*`
+ *     （只有总部/市场行自指），于是**某个 store_id 恰好等于某个 `type='门店'` 的 org_nodes.id**
+ *     时，行 X（by location_id）与行 Y（by org_node_id）是两个**不同门店**的主体。
+ *
+ * （X 若是总部/市场行则 `X.org_node_id = X.location_id = $1`，与 Y 同值会违反
+ * `uq_inventory_locations_org`，不可能共存 —— 所以撞值场景只有「门店 × 门店」一种。）
+ *
+ * 无 `ORDER BY` 的 `LIMIT 1` 在这种两行上取哪行不保证稳定，两次独立调用可能拿到不同门店，
+ * 于是「按 A 鉴权、扣 B 的批次」。故：
+ *
+ *   1. **`throw` 是唯一的正确性保障**：命中两行即 `CONFLICT`，不猜。
+ *      ⚠️ 别把它改软成「告警 + 取第一行」—— 撞值时**根本不存在语义正确的那一行**：
+ *      一半调用点传的是 org_node_id（`head.source_org_node_id` 等），另一半传的是 store_id
+ *      （`resolveStaffCreateLocations` 的 fallback 链：`payload.storeId`、`effectiveStoreId`、
+ *      `auth.inventoryStoreIds`，四项全是 store_id）。固定任何一侧优先，都会对另一半调用点
+ *      **确定性地**返回另一家门店 —— 稳定，但稳定地错，而且从此不再报错。
+ *   2. `ORDER BY location_id` 只保证**确定性**（消除 TOCTOU：同一入参两次调用必得同一行），
+ *      不声称语义正确。主键排序、非空、全序，不暗示任何 id 空间的优先级。
+ *   3. `LIMIT 2` —— 两侧各最多 1 行，2 是精确上界；回到 `LIMIT 1` 就永远看不见撞值。
+ *   4. 歧义只在**在用**主体之间判定：`syncInventoryLocations` 只 UPSERT 从不 DELETE，
+ *      闭店门店会留下 `is_active=false` 的幽灵行。让幽灵行参与判定，会把与它撞值的
+ *      在营门店整个锁死（而修复前的 `LIMIT 1` 反倒有一半概率正常）—— 那是可用性倒退。
+ *      admin 侧 `business.ts` 的同签名副本本来就带 `AND is_active = true`。
+ *
+ * 注：与 issue #251 正文的归因不同，这与 `stores.org_node_id` 是否 unique **无关**
+ * （`inventory_locations.org_node_id` 早已 UNIQUE，那条路径是 UPSERT 期 fail-loud）。
+ * 现网 dev/prod 双库实测撞值均为 0 行，本改动是加固。
+ */
 async function ensureInventoryLocation(locationId, requiredType = null, client = null) {
   await syncInventoryLocations(client)
   const rows = await queryRows(
@@ -471,15 +509,37 @@ async function ensureInventoryLocation(locationId, requiredType = null, client =
     `SELECT location_id, location_type, parent_location_id, is_active, org_node_id
        FROM inventory_locations
       WHERE location_id = $1 OR org_node_id = $1
-      LIMIT 1`,
+      ORDER BY location_id
+      LIMIT 2`,
     [locationId],
   )
   if (rows.length === 0) throw new Error('NOT_FOUND: 库存主体不存在')
-  const row = rows[0]
+  // 停用行不参与歧义判定，但仍保留「唯一命中项已停用 → INVALID_STATE」的原有语义。
+  const activeRows = rows.filter((row) => row.is_active !== false)
+  if (activeRows.length > 1) {
+    throw new Error('CONFLICT: LOCATION_ID_AMBIGUOUS: 库存主体标识冲突，请联系管理员')
+  }
+  const row = activeRows[0] || rows[0]
   if (row.is_active === false) throw new Error('INVALID_STATE: 库存主体已停用')
   if (requiredType && row.location_type !== requiredType) {
     throw new Error(`INVALID_PARAMS: 库存主体必须是${requiredType}`)
   }
+  /**
+   * ⚠️ 已知缺陷，**本次刻意不改**（#251 评审提出，范围外）：
+   *
+   * `org_node_id` 可空（`db/schema/inventory.ts` 无 `.notNull()`，来源 `stores.org_node_id`
+   * 同样可空）。这类行只能靠 `location_id = $1` 入选，而下面的 `|| locationId` 会把
+   * **入参的 store_id 当组织节点 id 返回**；返回值被 `resolveStaffCreateLocations`
+   * 取作 `sourceOrgNodeId` / `targetOrgNodeId` 写进 `inventory_docs` —— 那两列对
+   * `inventory_locations.org_node_id` 有 FK（`0039` 迁移），所以落库要么被 FK 挡下
+   * 报难懂的约束错，要么在撞值已存在时把错误主体钉进单据。正解是 fail-loud。
+   *
+   * 不在本 PR 改的原因：现网 dev/prod 实测 `org_node_id` 为空的主体行均为 **0**，
+   * 属理论缺陷；而改成抛错会打红 13 个既有用例（它们的 mock 行压根不带 `org_node_id`，
+   * 一直靠这个兜底跑过）。修它应当连同那批 mock 的保真度一起做，另开 issue。
+   *
+   * （`location_id` 那侧的兜底则是纯死代码：它是主键，不可能为空 —— 一并留待该 issue 清理。）
+   */
   return {
     ...row,
     location_id: row.location_id || locationId,
@@ -705,6 +765,18 @@ async function inventorySkuSnapshot(client, skuId) {
   }
 }
 
+/**
+ * ⚠️ 入参契约：`locationId` 必须是 `ensureInventoryLocation` 返回行的 `location_id`
+ * （已是主键值），**不能传 org_node_id**。
+ *
+ * 下面按 `location_id = $1` 单列查（主键，故确定、无 #251 的 OR 多态歧义），
+ * 但这依赖的是**上游契约**而非函数自身保证：门店行的 `location_id`(=store_id) 与
+ * `org_node_id`(=org-门店-*) 并不相等，一旦有人直传 `payload.sourceOrgNodeId`，
+ * 这里会静默命中 0 行、抛出误导性的「库存主体不存在」，而不是「SKU 不可在该主体使用」。
+ *
+ * 现有三处调用方都传的是 `<location>.location_id`（`ensureInventoryLotFromSku` 的第二参），
+ * 契约成立；新增调用点时务必沿用。
+ */
 async function assertSkuAvailableAtLocation(client, sku, locationId) {
   const sourceType = sku.source_type || '供应链'
   if (sourceType === '供应链') return
@@ -1653,9 +1725,14 @@ async function approveStoreReturnForRestock(client, head, ctx, auditRemark, acti
   }
   // #235：与 approveDoc 鉴权用的是同一个主体（出库方门店），由调用方传入复用。
   // ensureStoreLocation 内部还会跑一次 syncInventoryLocations，重复调用纯属浪费；
-  // 更要紧的是 ensureInventoryLocation 的查询是 `location_id = $1 OR org_node_id = $1 LIMIT 1`
-  // 且无 ORDER BY —— 同一 org_node 挂两个 store 时两次独立调用可能返回不同行，
-  // 那会变成「按 A 鉴权、扣 B 的批次」。复用同一结果把这个窗口一并关掉。
+  // 更要紧的是两次独立调用曾可能返回**不同门店**的主体，那会变成「按 A 鉴权、扣 B 的批次」。
+  // 复用同一结果把这个窗口一并关掉。
+  //
+  // ⚠️ 归因订正（#251）：该不确定性**不是**「同一 org_node 挂两个 store」造成的
+  //（`inventory_locations.org_node_id` 早有 UNIQUE，那条路径在 UPSERT 期就 fail-loud），
+  // 而是 `location_id = $1 OR org_node_id = $1` 的两侧可落在两行上 —— 详见
+  // `ensureInventoryLocation` 的函数注释。函数本身已在 #251 补了 ORDER BY + 撞值抛 CONFLICT，
+  // 这里的复用仍然保留：它同时省掉一次 syncInventoryLocations，且语义上就该是同一个主体。
   const sourceLocation = actingStore
   const targetLocation = await ensureInventoryLocation(targetOrgNodeId, '市场', client)
 

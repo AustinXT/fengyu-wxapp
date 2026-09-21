@@ -805,8 +805,36 @@ async function locationForRead(tx: Tx, endpointId: string): Promise<Location> {
   return loadLocation(tx, endpointId, false)
 }
 
+/**
+ * 按 location_id 或 org_node_id 取库存主体。
+ *
+ * `OR` 是**有意的双 id 多态查找**：调用方两种 id 都会传进来 ——
+ * `locationForUpdate(tx, input.sourceOrgNodeId)`（org_node_id）与
+ * `locationForUpdate(tx, storeId)`（store_id）并存。
+ *
+ * ⚠️ 但两侧**可以落在不同的两行上**（#251，与 staffApi `ensureInventoryLocation` 同签名）：
+ * `location_id` 是主键、`org_node_id` 有 `uq_inventory_locations_org`，各自最多 1 行；
+ * 而 `syncInventoryLocations` 写的门店行是 `location_id = store_id`、
+ * `org_node_id = org-门店-*`（只有总部/市场行自指）。于是**某个 store_id 恰好等于某个
+ * `type='门店'` 的 `org_nodes.id`** 时，两侧指向两个**不同门店**的库存主体。
+ *
+ * 原先既无 `ORDER BY` 也无 `LIMIT`、直接取 `[row]`，取哪行不保证稳定；结果又直接喂
+ * `assertLocationWritable` → `assertInventoryLocationInScope` ——「按 A 鉴权、扣 B 的批次」。
+ * 更重的是 `forUpdate` 分支会**把两行都锁上**，与只锁单行的
+ * `engine.ts` `orgNodeLocationIdForUpdate` 构成锁序分叉。
+ *
+ * 故与 staff 端同款两道闸：
+ *   1. **`throw` 是唯一正确性保障** —— 撞值时不存在语义正确的那一行（一半调用点传
+ *      org_node_id、另一半传 store_id，固定任何优先级都会对另一半确定性地取错主体）。
+ *      别改软成「取第一行」。
+ *   2. `ORDER BY location_id` 只保证确定性，不声称正确；`LIMIT 2` 是精确上界。
+ *
+ * ⚠️ 子句顺序：PG 要求 `LIMIT` 在 `FOR UPDATE` **之前**。
+ * 停用行由 `AND is_active = true` 在 WHERE 就滤掉，故歧义天然只在在用主体间判定
+ *（staff 端因保留「已停用」的差异化报错，是在 JS 侧过滤，两端语义一致、实现不同）。
+ */
 async function loadLocation(tx: Tx, endpointId: string, forUpdate: boolean): Promise<Location> {
-  const [row] = rows<{
+  const matched = rows<{
     location_id: string
     org_node_id: string
     location_type: LocationType
@@ -817,8 +845,14 @@ async function loadLocation(tx: Tx, endpointId: string, forUpdate: boolean): Pro
       FROM inventory_locations
      WHERE (location_id = ${endpointId} OR org_node_id = ${endpointId})
        AND is_active = true
+     ORDER BY location_id
+     LIMIT 2
      ${forUpdate ? sql`FOR UPDATE` : sql``}
   `))
+  if (matched.length > 1) {
+    throw new ApiError('CONFLICT', '库存主体标识冲突，请联系管理员')
+  }
+  const row = matched[0]
   if (!row) throw new ApiError('NOT_FOUND', '库存主体不存在或已停用')
   return {
     locationId: row.location_id,

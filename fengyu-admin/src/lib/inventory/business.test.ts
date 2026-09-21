@@ -1867,3 +1867,69 @@ describe('整单收货入口 receiveXxxInFull（#192）', () => {
       .rejects.toThrow('实收数量不能超过待收数量')
   })
 })
+
+/**
+ * #251：`loadLocation` 的 `location_id = X OR org_node_id = X` 是双 id 多态查找
+ *（`locationForUpdate(tx, input.sourceOrgNodeId)` 传 org_node_id、
+ * `locationForUpdate(tx, storeId)` 传 store_id，两种都存在）。
+ *
+ * 两侧各自唯一（`location_id` 主键 / `org_node_id` 有 `uq_inventory_locations_org`），
+ * 但**可以落在不同的两行上**：门店行是 `location_id = store_id` / `org_node_id = org-门店-*`
+ *（只有总部/市场行自指），所以某个 store_id 恰等于某个 `type='门店'` 的 `org_nodes.id` 时，
+ * 两侧指向两个**不同门店**的库存主体。原先既无 ORDER BY 也无 LIMIT、直接取首行，
+ * 结果又喂给 `assertLocationWritable` ——「按 A 鉴权、扣 B 的批次」。
+ *
+ * staffApi `ensureInventoryLocation` 是同签名副本，一致性由
+ * `staffApi/__tests__/routes/cross-end-inventory-snapshot.test.js` §6 守护。
+ */
+describe('库存主体解析确定性（#251）', () => {
+  it('一个入参命中两行时抛 CONFLICT，不静默选首行', async () => {
+    const txExecute = vi.fn().mockResolvedValueOnce([
+      // 行 Y：另一门店（S-OTHER）的 org_node_id 恰好等于入参
+      { location_id: 'S-OTHER', org_node_id: 'S1', location_type: '门店', name: '门店二', parent_location_id: 'M1' },
+      // 行 X：某门店的 store_id 就是入参本身
+      { location_id: 'S1', org_node_id: 'org-门店-1', location_type: '门店', name: '门店一', parent_location_id: 'M1' },
+    ])
+    vi.mocked(db.execute).mockResolvedValue([] as never)
+    vi.mocked(db.transaction).mockImplementationOnce(async (callback) => callback({
+      execute: initializedCutoverExecutor(txExecute),
+    } as never))
+
+    await expect(createReturnForRestock(SESSION, {
+      sourceOrgNodeId: 'S1',
+      targetOrgNodeId: 'M1',
+      items: [{ lotId: 1, quantity: 1 }],
+    } as never)).rejects.toThrow('库存主体标识冲突')
+
+    // 撞值必须拦在任何库存写入之前
+    const queries = txExecute.mock.calls.map(([query]) => renderSql(query)).join('\n')
+    expect(queries).not.toContain('inventory_stock_lots')
+    expect(queries).not.toContain('inventory_movements')
+  })
+
+  it('主体查询带确定性排序与 LIMIT 2', async () => {
+    const txExecute = vi.fn().mockResolvedValue([
+      { location_id: 'S1', org_node_id: 'org-门店-1', location_type: '门店', name: '门店一', parent_location_id: 'M1' },
+    ])
+    vi.mocked(db.execute).mockResolvedValue([] as never)
+    vi.mocked(db.transaction).mockImplementationOnce(async (callback) => callback({
+      execute: initializedCutoverExecutor(txExecute),
+    } as never))
+
+    await createReturnForRestock(SESSION, {
+      sourceOrgNodeId: 'S1',
+      targetOrgNodeId: 'M1',
+      items: [{ lotId: 1, quantity: 1 }],
+    } as never).catch(() => undefined)
+
+    const locationQuery = txExecute.mock.calls
+      .map(([query]) => renderSql(query))
+      .find((q) => q.includes('FROM inventory_locations'))
+    expect(locationQuery).toBeDefined()
+    const flat = String(locationQuery).replace(/\s+/g, ' ')
+    // 只保证确定性（同一入参两次调用必得同一行），不声称语义正确 ——
+    // 撞值时不存在正确的那一行，正确性由上面的 CONFLICT 保障。
+    expect(flat).toContain('ORDER BY location_id')
+    expect(flat).toContain('LIMIT 2')
+  })
+})

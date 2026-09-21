@@ -329,6 +329,84 @@ describe('PR #113 进销存单据组织端点跨端守护（staff / admin / sche
     })
   })
 
+  // #251：`location_id = <X> OR org_node_id = <X>` 的双 id 多态查找。
+  //
+  // 两侧各自唯一（`location_id` 是主键、`org_node_id` 有 `uq_inventory_locations_org`），
+  // 但**可以落在不同的两行上**：门店行是 `location_id = store_id` / `org_node_id = org-门店-*`
+  //（只有总部/市场行自指），所以某个 store_id 恰等于某个 `type='门店'` 的 org_nodes.id 时，
+  // 两侧指向两个**不同门店**的库存主体 → 取首行 = 「按 A 鉴权、扣 B 的批次」。
+  //
+  // ⚠️ 该签名全仓有**两份**，且一份在 admin：
+  //   - staff `ensureInventoryLocation`（routes/inventory.js）
+  //   - admin  `loadLocation`（lib/inventory/business.ts，20+ 处写路径走它，还带 FOR UPDATE）
+  // 初版守护只打在 engine.ts 上、漏了 business.ts，导致这条安全断言假绿 ——
+  // 所以下面的反向闸**必须同时扫两个 admin 文件**。
+  //
+  // 对照：admin `ensureOrgNodeLocation` / `orgNodeLocationIdForUpdate`（engine.ts）只按
+  // org_node_id 单列查，该列 UNIQUE ⇒ 最多一行、天然确定，是**刻意的非对称**，不需要两道闸。
+  describe('§6 库存主体解析确定性（#251）', () => {
+    const adminBusinessSrc = readFile(FILES.adminBusinessTs)
+    /** 归一空白后再断言：避免 prettier 换行 / 缩进变动造成误红。 */
+    const flat = (src) => src.replace(/\s+/g, ' ')
+
+    test('staff 侧 OR 多态查找必须带确定性排序 + LIMIT 2', () => {
+      expect(flat(staffSrc)).toContain(
+        'WHERE location_id = $1 OR org_node_id = $1 ORDER BY location_id LIMIT 2',
+      )
+    })
+
+    test('admin 侧 loadLocation 同样带确定性排序 + LIMIT 2', () => {
+      expect(flat(adminBusinessSrc)).toContain(
+        'WHERE (location_id = ${endpointId} OR org_node_id = ${endpointId})'
+        + ' AND is_active = true ORDER BY location_id LIMIT 2',
+      )
+    })
+
+    test('两端撞到两行都必须抛 CONFLICT（不静默选一行）', () => {
+      // staff：在用行 > 1 才算歧义（停用的幽灵行不参与）；admin：WHERE 已滤 is_active。
+      expect(flat(staffSrc)).toMatch(
+        /if \(activeRows\.length > 1\) \{ throw new Error\('CONFLICT: LOCATION_ID_AMBIGUOUS:/,
+      )
+      expect(flat(adminBusinessSrc)).toMatch(
+        /if \(matched\.length > 1\) \{ throw new ApiError\('CONFLICT',/,
+      )
+    })
+
+    test('admin engine.ts 仍按 org_node_id 单列（UNIQUE）解析，未引入 OR 多态', () => {
+      // 形参名用 \w+ 而非写死 orgNodeId：纯重命名不该让守护误红。
+      expect(flat(adminSrc)).toMatch(/\.where\(eq\(inventoryLocations\.orgNodeId, \w+\)\)/)
+      expect(flat(adminSrc)).toMatch(/FROM inventory_locations WHERE org_node_id = \$\{\w+\}/)
+    })
+
+    /**
+     * 反向闸：任何 admin 文件若**新引入**双 id 多态而没同步两道闸，这里必须红。
+     *
+     * 正则放宽以吃掉初版的三类假阴性：操作数反序、表别名前缀（`l.location_id`）、
+     * 参数不是 `${}` 直插（先存变量再拼）。engine.ts 当前应当一处都不命中；
+     * business.ts 命中的那一处必须同时满足上面「有 ORDER BY + LIMIT 2 + CONFLICT」三条。
+     */
+    test('admin 侧不得存在「无两道闸」的 OR 多态', () => {
+      const orPolymorphic = /(\w+\.)?location_id\s*=[^\n]*\bOR\b[^\n]*(\w+\.)?org_node_id|(\w+\.)?org_node_id\s*=[^\n]*\bOR\b[^\n]*(\w+\.)?location_id/g
+      const drizzleOr = /\bor\(\s*eq\(\s*\w+\.(locationId|orgNodeId)/g
+
+      expect(adminSrc.match(orPolymorphic)).toBeNull()
+      expect(adminSrc.match(drizzleOr)).toBeNull()
+      expect(adminBusinessSrc.match(drizzleOr)).toBeNull()
+      // business.ts 只允许 loadLocation 这一处 OR 多态；多出来的必须自证已加两道闸。
+      expect(adminBusinessSrc.match(orPolymorphic)).toHaveLength(1)
+    })
+
+    test('schema 权威锚：唯一性 + 可空性共同决定了上界与排序写法', () => {
+      // 前两条：`LIMIT 2` 是精确上界的依据。一旦被撤，两端的 2 都不再成立。
+      expect(schemaSrc).toMatch(/locationId: text\('location_id'\)\.primaryKey\(\)/)
+      expect(schemaSrc).toMatch(/uniqueIndex\('uq_inventory_locations_org'\)\.on\(table\.orgNodeId\)/)
+      // 第三条：org_node_id **可空**（无 .notNull()）。这正是不能拿
+      // `ORDER BY (org_node_id = $1) DESC` 当排序键的原因之一（NULL 比较得 NULL，
+      // 且 DESC 默认 NULLS FIRST），也是 `org_node_id || locationId` 兜底那个已知缺陷的前提。
+      expect(schemaSrc).toMatch(/orgNodeId: text\('org_node_id'\)\.references\(\(\) => orgNodes\.id\),/)
+    })
+  })
+
   describe('Snapshot 守护（提交后任一项漂移立即可见）', () => {
     test('单据类型集合与端点口径文本快照', () => {
       expect({
