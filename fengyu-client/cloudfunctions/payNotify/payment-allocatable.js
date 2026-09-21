@@ -61,7 +61,8 @@ async function capturePaymentAllocatables(client, { salePaymentId, saleOrderId, 
   }
 
   const itemsRes = await client.query(
-    `SELECT sale_item_id, sale_amount::numeric AS sale_amount, pending_received::numeric AS pending_received, sales_category
+    `SELECT sale_item_id, sale_amount::numeric AS sale_amount, pending_received::numeric AS pending_received,
+            waived_amount::numeric AS waived_amount, sales_category
        FROM sale_items
       WHERE sale_order_id = $1
         AND item_direction = '购买'
@@ -127,6 +128,14 @@ async function capturePaymentAllocatables(client, { salePaymentId, saleOrderId, 
       const prior = priorMap.get(i.sale_item_id) || 0
       const pending = Number(i.pending_received)
       const saleAmt = Number(i.sale_amount)
+      // #182：折抵退出的行（waived_amount > 0）债务已归零、剩余权益已注销，不得再吸收新款项。
+      // 它的 pending_received 被钉成「毛已付」作为 paid-sessions STEP 1 的预留依据，
+      // 若照常算 pendCap = pending − prior，在无历史 receipt 的老单上（prior = 0）会得到
+      // 一整笔产能，把本该落在真正欠款行上的回款分到已结清行 —— 钱记错归属，欠款行
+      // 少拿 receipt、paid_sessions 解锁不足。
+      if (Number(i.waived_amount) > 0) {
+        return { saleItemId: i.sale_item_id, pendCap: 0, saleCap: 0 }
+      }
       return {
         saleItemId: i.sale_item_id,
         pendCap: Math.max(0, roundCents(pending - prior)),
@@ -168,7 +177,10 @@ async function capturePaymentAllocatables(client, { salePaymentId, saleOrderId, 
         .map((i) => ({ saleItemId: i.sale_item_id, amount: (acc.get(i.sale_item_id) || 0) / 100 }))
         .filter((d) => d.amount > 0)
     } else {
-      perItem = [{ saleItemId: items[0].sale_item_id, amount: evt }]
+      // 两段产能都为 0 的兜底（订单已结清却又来了一笔款）。#182：优先落在**未被折抵**的行上 ——
+      // 折抵行的剩余权益已注销，把钱记到它头上既错归属又毫无意义。
+      const fallback = items.find((i) => !(Number(i.waived_amount) > 0)) || items[0]
+      perItem = [{ saleItemId: fallback.sale_item_id, amount: evt }]
     }
   }
 

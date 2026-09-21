@@ -290,10 +290,18 @@ export const saleItems = pgTable(
      * 该行应付金额（摊券后的权威行总额）。恒等式：疗程卡 sale_amount = unit_real_price × session_count；
      * 非卡 sale_amount = unit_real_price × quantity。unit_price/unit_real_price 均由 sale_amount 派生。
      *
-     * ⚠️ **家居「转出」行含余数时豁免该恒等式**（#145/#153）：折抵金额是「剩余已付」，
-     * 含不足一整件的已付余额——付 ¥450 折 4 件时转出行 `sale_amount = received = -450`，
-     * 而 `quantity(4) × unit_real_price(100) = 400`。sale_amount 必须等于实际折走的金额，
-     * 否则转换单差额会少算。**不要按该恒等式校验转出行**（写对账脚本时尤其注意）。
+     * ⚠️ **所有「转出」行一律豁免该恒等式**（家居 #145/#153，疗程卡 #182）：折抵金额是
+     * 「剩余已付」，含不足一整件/一整次的已付余额——家居付 ¥450 折 4 件时转出行
+     * `sale_amount = received = -450`，而 `quantity(4) × unit_real_price(100) = 400`；
+     * 疗程卡 1 次 ¥19800 只付 ¥14000 时转出行 `-14000` 而 `quantity(1) × 19800 = 19800`。
+     * sale_amount 必须等于实际折走的金额，否则转换单差额会少算。
+     * **不要按该恒等式校验转出行**（写对账脚本时尤其注意）。
+     *
+     * ⚠️ 另有一条运行时写入路径会**下调购买行的 sale_amount**：转换单折抵的「欠款归零」
+     * （#182，见 waived_amount 列）。下调量记在 waived_amount，原值 = sale_amount + waived_amount。
+     * 该路径**只改 sale_amount**，`unit_real_price` / `quantity` / `session_count` 保持原值，
+     * 因此这类行上「sale_amount = unit_real_price × 次数/件数」同样不再成立——按 unit × qty
+     * 反推行金额的对账或导出脚本必须改用 sale_amount + waived_amount，或按 waived_amount > 0 排除。
      */
     saleAmount: numeric("sale_amount", { precision: 10, scale: 2 }).notNull(),
     /**
@@ -336,6 +344,18 @@ export const saleItems = pgTable(
      *   可提/可退 = quantity − settled
      */
     pickedUpQuantity: integer("picked_up_quantity").default(0),
+    /**
+     * 转换单折抵时**豁免掉的该行欠款**（#182）。只由 `createConversion` / `createConversionOrder` 写入，
+     * 关闭待支付转换单的回滚路径必须 `sale_amount += waived_amount` 并把本列清零 —— 否则
+     * 「开转换单 → 关闭」会永久抹掉原单欠款。
+     *
+     * 语义：折抵 = 该行整体退出（剩余已付全额折走 + 剩余权益全部注销），因此原单该行不该继续挂欠款。
+     * 写入条件缺一不可：`sale_order_type <> '寄存单'`（寄存单 received=0，下调会把原价快照抹成 0）、
+     * `sale_amount > 0`、`received > 0`（否则新 sale_amount 落到 0，踩 `sale_amount <= 0` 的赠品全放分支）、
+     * `received < sale_amount`（overpay 行 received > sale_amount，不能反向上调应付）。
+     * 同一行可多次折抵累加。**不是退款**：退款一律走 sale_orders.refunded_amount 记账。
+     */
+    waivedAmount: numeric("waived_amount", { precision: 10, scale: 2 }).notNull().default("0"),
     /**
      * 已**退款**结算数量（家居产品用，原子累加；2026-09-18 #154 从 picked_up_quantity 拆出）。
      * NOT NULL：这是全新列、无历史 NULL，没有理由跟着 picked_up_quantity（历史 nullable）一起可空——
@@ -396,7 +416,16 @@ export const saleItems = pgTable(
       "chk_item_paid_sessions",
       sql`${table.paidSessions} IS NULL OR (${table.paidSessions} >= 0 AND ${table.paidSessions} <= ${table.sessionCount})`,
     ),
-    check("chk_item_quantity", sql`${table.quantity} > 0`),
+    /**
+     * 数量恒 > 0，**唯一例外是转出行**（#182）：疗程卡次数已用完 / 家居物理件已结算完、
+     * 只剩「不足一整次/一整件的已付余数」时，折抵仍要让顾客把这笔钱换走，此时转出行
+     * `quantity = 0` 而 `sale_amount = received = -余数`。购买 / 转入行仍必须 > 0。
+     */
+    check(
+      "chk_item_quantity",
+      sql`${table.quantity} > 0 OR (${table.itemDirection} = '转出' AND ${table.quantity} = 0)`,
+    ),
+    check("chk_item_waived_amount", sql`${table.waivedAmount} >= 0`),
     /**
      * #154：「已结算」不得超过购买件数。三列各自的写入点都带了同判据的 WHERE 守卫，
      * 但那是 8 份手抄；约束是同一条不变量的**唯一权威表达**，且不可能被绕过。

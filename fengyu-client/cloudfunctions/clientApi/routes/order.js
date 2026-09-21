@@ -2250,6 +2250,15 @@ async function cancel(ctx) {
 
   const order = orders[0]
 
+  // #182：转换单不能由顾客自行取消。关闭待支付转换单必须走 staff/admin 的
+  // rollbackPendingConversionOnClose——它要还原源卡次数、家居已结算数量，以及折抵时
+  // 下调的原单应付（waived_amount）。从这里直接置「已关闭」会绕过全部回滚，
+  // 源卡权益永久蒸发、原单欠款被永久抹掉。与 card.js 的 _closeExpiredPendingByUser
+  // 同一道闸门（它已显式排除转换单）。
+  if (order.sale_order_type === '转换单') {
+    throw new Error('INVALID_PARAMS: 转换单不支持自行取消，请联系门店处理')
+  }
+
   if (order.lakala_out_order_no) {
     // wx.requestPayment 失败/取消只发生在小程序侧，云函数不会自动获知；预下单时写入的
     // lakala_out_order_no 因此仍可能残留。取消前必须以渠道状态为准：仅 FAIL/CLOSE 是
@@ -2331,7 +2340,10 @@ async function cancel(ctx) {
        WHERE sale_order_id = $2
          AND client_user_id = $3
          AND status = ANY($4::order_status[])
-         AND lakala_out_order_no IS NULL`,
+         AND lakala_out_order_no IS NULL
+         -- #182 第二道闸门（函数入口已早退）：即便将来有人绕过入口校验，也不能从这里
+         -- 关掉转换单——那会跳过 rollbackPendingConversionOnClose 的次数/数量/欠款还原。
+         AND sale_order_type <> '转换单'`,
       [now, orderNo, userId, allowedStatusList]
     )
     if (updRes.rowCount !== 1) {

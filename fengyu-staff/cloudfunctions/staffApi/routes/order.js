@@ -2319,7 +2319,28 @@ async function confirmOffline(ctx) {
  * admin actions/orders.ts 有同义 SQL 副本；修改时保持语义一致。
  */
 async function rollbackPendingConversionOnClose(client, saleOrderId, now) {
-  // 0. 先用一条语句按全局 sale_item_id 顺序锁住本单引用的**全部**源行。
+  // 0a. 先锁**原单**（#182，与 createConversion 同一锁序）：本函数末尾要 UPDATE 原单的
+  // total_amount/status 还原欠款，若留到那时才锁，足迹就是 sale_items → sale_orders，
+  // 与入账路径（先锁 sale_orders）反向成环。按 sale_order_id 升序一次锁完。
+  await client.query(
+    `SELECT sale_order_id FROM sale_orders
+      WHERE sale_order_id IN (
+        SELECT DISTINCT src.sale_order_id
+          FROM sale_items src
+          JOIN (
+            SELECT DISTINCT ref_sale_item_id
+              FROM sale_items
+             WHERE sale_order_id = $1
+               AND item_direction = '转出'
+               AND ref_sale_item_id IS NOT NULL
+          ) refs ON refs.ref_sale_item_id = src.sale_item_id
+      )
+      ORDER BY sale_order_id
+      FOR UPDATE`,
+    [saleOrderId],
+  )
+
+  // 0. 再用一条语句按全局 sale_item_id 顺序锁住本单引用的**全部**源行。
   //    createConversion 折抵时是单语句 `ORDER BY si.sale_item_id ... FOR UPDATE OF si`（不分类型），
   //    若这里分「疗程卡段→家居段」两次加锁，混选转换单在家居行 id < 疗程卡行 id 时会形成反向锁序而死锁。
   await client.query(
@@ -2401,6 +2422,172 @@ async function rollbackPendingConversionOnClose(client, saleOrderId, now) {
     [saleOrderId, now],
   )
 
+  // #182 欠款归零的回滚。折抵时把原行应付下调到实收、差额记在**转出行**的 waived_amount 上
+  // （原行那份是累计值，归因不到具体转换单）。关单必须等量还回，否则
+  // 「开转换单 → 关闭」= 永久抹掉原单欠款。
+  const restoredWaive = await client.query(
+    `WITH waived AS (
+        SELECT ref_sale_item_id,
+               SUM(waived_amount::numeric) AS waived,
+               -- 原行 pending_received 快照（新口径下同一行只折一次，MAX 即该次快照）
+               MAX(pending_received::numeric) AS orig_pending
+          FROM sale_items
+         WHERE sale_order_id = $1
+           AND item_direction = '转出'
+           AND ref_sale_item_id IS NOT NULL
+         GROUP BY ref_sale_item_id
+        HAVING SUM(waived_amount::numeric) > 0
+      ),
+      locked_source AS (
+        SELECT src.sale_item_id, src.sale_order_id, waived.waived, waived.orig_pending
+          FROM sale_items src
+          JOIN waived ON waived.ref_sale_item_id = src.sale_item_id
+         -- 与上面两段回滚、以及 createConversion 折抵同一把升序锁序
+         ORDER BY src.sale_item_id
+         FOR UPDATE OF src
+      ),
+      restored AS (
+        UPDATE sale_items src
+           SET sale_amount = (src.sale_amount::numeric + locked_source.waived)::numeric(10, 2),
+               waived_amount = (src.waived_amount::numeric - locked_source.waived)::numeric(10, 2),
+               -- 还原折抵时被钉住的 pending_received，避免永久改写 Branch B 的分摊权重
+               pending_received = locked_source.orig_pending::numeric(10, 2),
+               updated_at = $2
+          FROM locked_source
+         WHERE src.sale_item_id = locked_source.sale_item_id
+           -- 自校验：原行累计豁免额必须够扣。不加这条就只能靠 GREATEST(0,…) 夹下界，
+           -- 而那会把「重复还原」静默吃掉（sale_amount 被 +Δ 两次、waived 只减到 0），
+           -- 破坏「原始应付 = sale_amount + waived_amount」恒等式且查无实据。
+           AND src.waived_amount::numeric >= locked_source.waived
+        RETURNING locked_source.sale_order_id, locked_source.sale_item_id, locked_source.waived
+      )
+      -- 按**行**返回：订单级还原量要逐行扣掉该行已退款额（与正向 orderWaiveAmount 同公式），
+      -- 直接把行级总额加回 total_amount 会把「已退给顾客的钱」变成假欠款。
+      -- ⚠ 必须从 waived（转出行归因凭据）**左连**出发，不能从 locked_source 出发：
+      -- locked_source 是内连接，源行若已不存在，这条归因会**整条消失**，下面的
+      -- restored_ok 检查也就看不见它 —— 权益已被前两段无条件加回、欠款却没还原。
+      -- restored_ok 单独一列：上面那道自校验 CAS 失败时 restored 只会**静默少行**。
+      SELECT w.ref_sale_item_id AS sale_item_id,
+             ls.sale_order_id,
+             w.waived,
+             (ls.sale_item_id IS NOT NULL) AS source_found,
+             (r.sale_item_id IS NOT NULL) AS restored_ok
+        FROM waived w
+        LEFT JOIN locked_source ls ON ls.sale_item_id = w.ref_sale_item_id
+        LEFT JOIN restored r ON r.sale_item_id = w.ref_sale_item_id
+       ORDER BY ls.sale_order_id, w.ref_sale_item_id`,
+    [saleOrderId, now],
+  )
+  if (restoredWaive.rows.some((r) => r.source_found !== true)) {
+    throw new Error('CONFLICT: 折抵的原订单明细已不存在，无法还原欠款')
+  }
+  if (restoredWaive.rows.some((r) => r.restored_ok !== true)) {
+    throw new Error('CONFLICT: 原订单的折抵豁免额已被改动，无法还原欠款，请刷新后重试')
+  }
+
+  // 逐行换算成订单级还原量：Σ max(0, 行级 waived − 该行已退款额)
+  const orderRestoreMap = new Map()
+  for (const orderId of [...new Set(restoredWaive.rows.map((r) => r.sale_order_id))].sort()) {
+    const refundedMap = await getPerItemRefundedMap(client, orderId)
+    let total = 0
+    for (const r of restoredWaive.rows) {
+      if (r.sale_order_id !== orderId) continue
+      const rowWaived = Math.round(Number(r.waived || 0) * 100) / 100
+      const refunded = Math.round(Number(refundedMap.get(r.sale_item_id) || 0) * 100) / 100
+      total += Math.max(0, Math.round((rowWaived - refunded) * 100) / 100)
+    }
+    orderRestoreMap.set(orderId, Math.round(total * 100) / 100)
+  }
+
+  for (const refOrderId of [...orderRestoreMap.keys()].sort()) {
+    const waived = orderRestoreMap.get(refOrderId)
+    if (!(waived > 0)) continue
+    const lockedOrder = await client.query(
+      `SELECT total_amount, received, prepaid_card_amount, pending_prepaid_card_amount,
+              status, sale_order_type
+         FROM sale_orders WHERE sale_order_id = $1 FOR UPDATE`,
+      [refOrderId],
+    )
+    // 前面的 CTE 已还原源行 sale_amount / waived_amount / pending_received，此时订单不存在
+    // 会留下「行已还原、单未还原」的永久不一致；必须让整笔关单事务回滚。
+    if (lockedOrder.rows.length === 0) {
+      throw new Error('CONFLICT: 原订单已不存在，无法还原折抵豁免的欠款')
+    }
+    const o = lockedOrder.rows[0]
+    const newTotal = Math.round((Number(o.total_amount || 0) + waived) * 100) / 100
+    const orderReceived = Math.round(Number(o.received || 0) * 100) / 100
+    const keepsPayable = ['销售单', '内部单', '转换单'].includes(o.sale_order_type)
+    const newPayable = keepsPayable
+      ? Math.max(0, Math.round((newTotal
+          - Number(o.prepaid_card_amount || 0)
+          - Number(o.pending_prepaid_card_amount || 0)) * 100) / 100)
+      : null
+    // 欠款恢复后从'已支付'退回'部分支付'；'已完成'是终态不回退
+    const targetStatus = o.status === '已支付' && orderReceived + 0.001 < newTotal
+      ? '部分支付'
+      : o.status
+    // CAS 与正向 6b 逐字对称（`AND status = $6 AND lakala_out_order_no IS NULL`）：本语句写
+    // status，缺 CAS 就是无守卫的状态机 UPDATE。行虽已在上一句 FOR UPDATE 持锁、并发写必须排队，
+    // 但在途在线支付（lakala_out_order_no 非空）意味着回调随时会按当前 total 结算，
+    // 此时改写 total/status 会与回调竞争 —— 宁可整笔关单失败让店员重试。
+    const updRestored = await client.query(
+      `UPDATE sale_orders
+          SET total_amount = $2,
+              payable_amount = COALESCE($3, payable_amount),
+              status = $4,
+              updated_at = $5
+        WHERE sale_order_id = $1
+          AND status = $6
+          AND lakala_out_order_no IS NULL`,
+      [refOrderId, newTotal, newPayable, targetStatus, now, o.status],
+    )
+    // 行已在上一句 FOR UPDATE 持锁，正常必为 1；为 0 = 原单在持锁期间消失（孤儿数据）或
+    // 有在途在线支付。此时源行 sale_amount 已还原而订单 total 未还原，必须显式抛出。
+    if (updRestored.rowCount === 0) {
+      throw new Error('CONFLICT: 原订单状态已变更或有在途支付，无法还原折抵豁免的欠款')
+    }
+  }
+
+  // 应付恢复 → paid_sessions 退回未满付。公式与 PAID_SESSIONS_RECALC_SQL 字面同源，
+  // 作用域收到本次还原的行（同单其它行未被改过）。
+  // ⚠ 必须**独立于订单级还原量**循环，与正向 6b 同一条对称纪律：订单级还原量为 0
+  // （行级豁免额全部来自已退款、本无真实欠款）时上面会 continue，但源行 sale_amount 已被
+  // CTE **无条件**还原 —— 不重算就会留下偏高的 paid_sessions（付清后退款 40% 的 10 次卡会
+  // 停在 10，正确值 6），把已退款的权益重新放出来。
+  for (const refOrderId of [...new Set(restoredWaive.rows.map((r) => r.sale_order_id))].sort()) {
+    const recalcRes = await client.query(
+      `UPDATE sale_items
+SET paid_sessions = CASE
+  WHEN sale_items.session_count IS NULL THEN NULL
+  WHEN op.total_amount <= 0 THEN sale_items.session_count
+  WHEN sale_items.sale_amount <= 0 THEN sale_items.session_count
+  ELSE LEAST(sale_items.session_count, FLOOR(sale_items.received::numeric * sale_items.session_count / sale_items.sale_amount::numeric)::integer)
+END,
+updated_at = NOW()
+FROM (SELECT total_amount FROM sale_orders WHERE sale_order_id = $2) op
+WHERE sale_items.sale_item_id IN (
+  SELECT out_item.ref_sale_item_id
+    FROM sale_items out_item
+   WHERE out_item.sale_order_id = $1
+     AND out_item.item_direction = '转出'
+     AND out_item.ref_sale_item_id IS NOT NULL
+     -- 必须与正向 6b 的作用域一致（只含真正被豁免过的行）。少了这条会把同单其它被折抵行
+     -- 一起重算——例如已全退、被 STEP 2.5 压成 paid_sessions=0 的 0 元赠品卡会命中
+     -- sale_amount <= 0 兜底重回满次数，而 paid_sessions 是「已退款卡从卡包消失」的唯一机制。
+     AND out_item.waived_amount::numeric > 0
+)
+  AND sale_items.sale_order_id = $2`,
+      [saleOrderId, refOrderId],
+    )
+    // 影响行数必为 >= 1：作用域来自「本单 waived_amount > 0 的转出行」，其源行刚被上面的 CTE
+    // 还原过、source_found / restored_ok 都已校验。为 0 只可能是 op 子查询取不到原单
+    // （孤儿数据）—— 此时源行金额已还原、paid_sessions 没还原，而下面还会把归因凭据清零，
+    // 必须显式抛出。订单级还原量为 0 的那条路径也走这里，不会被上面的 continue 绕过。
+    if (recalcRes.rowCount === 0) {
+      throw new Error('CONFLICT: 原订单已不存在，无法还原折抵行的已支付次数')
+    }
+  }
+
   await client.query(
     `UPDATE sale_items
         SET received = 0,
@@ -2412,6 +2599,9 @@ async function rollbackPendingConversionOnClose(client, saleOrderId, now) {
               WHEN session_count IS NULL THEN NULL
               ELSE 0
             END,
+            -- #182：归因额清零，让本函数对同一张转换单幂等。上面那道「CAS 失败即抛 CONFLICT」
+            -- 的自校验没有它就会把「已还原过」误判成「豁免额被外部改动」而报错。
+            waived_amount = 0,
             updated_at = $2
       WHERE sale_order_id = $1
         AND item_direction IN ('转出', '转入')`,
@@ -2977,9 +3167,17 @@ async function detail(ctx) {
           JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id
          WHERE out_item.ref_sale_item_id = si.sale_item_id
            AND out_item.item_direction = '转出'
-           AND out_item.product_type = '家居产品'
+           -- #182 刻意不限 out_item.product_type：疗程卡的已转走金额同样要从
+           -- overpay 里扣掉，否则折走的余数能再退一次；纯余数转出行(quantity=0)也必须计入。
            AND conv_order.status <> '已关闭'
-      ), 0) AS converted_amount
+      ), 0) AS converted_amount,
+      COALESCE((
+        SELECT SUM(out_item.quantity) FROM sale_items out_item
+          JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id
+         WHERE out_item.ref_sale_item_id = si.sale_item_id
+           AND out_item.item_direction = '转出'
+           AND conv_order.status <> '已关闭'
+      ), 0)::int AS converted_quantity
     FROM sale_items si
     LEFT JOIN product_skus ps ON ps.sku_id = si.sku_id
     WHERE si.sale_order_id = $1
@@ -3129,6 +3327,39 @@ async function reconcileOrderStatusAfterRefund(client, saleOrderId) {
           AND elem ->> 'refSaleItemId' <> 'OVERPAY'
         GROUP BY elem ->> 'refSaleItemId'
      ),
+     -- #182：已被转换单折走的数量不是「交付给顾客的服务/货」，必须从 consumed_value 里排除。
+     -- 折抵 = 整行退出会把 remaining_sessions 扣光 / picked_up_quantity 抬满，若不排除，
+     -- consumed_value 会膨胀成整行标价价值，retained_value 随之大于行实收 →
+     -- 同单其它行退款触发本函数时，已结清的折抵行会被误判回「部分支付」。
+     converted_qty AS (
+       SELECT out_item.ref_sale_item_id AS sale_item_id,
+              SUM(out_item.quantity) AS qty
+         FROM sale_items out_item
+         JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id
+        WHERE out_item.item_direction = '转出'
+          AND conv_order.status <> '已关闭'
+          AND out_item.ref_sale_item_id IN (
+            SELECT sale_item_id FROM sale_items WHERE sale_order_id = $1
+          )
+        GROUP BY out_item.ref_sale_item_id
+     ),
+     -- 已转走**金额**（与 converted_qty 同源、同过滤）。#154×#182：已转换那部分计入
+     -- consumed_value 时必须取转出行 received 的聚合，**不能用「已转换件数 × 单价」推算** ——
+     -- 折抵金额含余数时两者不等（折 4 件可能带走 ¥450 而非 ¥400），用件数推算会低估
+     -- retained_value；纯余数行（quantity=0 而金额>0）更会整笔漏掉。
+     -- ⚠ 刻意**不限 out_item.product_type**：疗程卡与纯余数转出行都必须计入（#182 不变量）。
+     converted_amt AS (
+       SELECT out_item.ref_sale_item_id AS sale_item_id,
+              SUM(GREATEST(0, -out_item.received::numeric)) AS amt
+         FROM sale_items out_item
+         JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id
+        WHERE out_item.item_direction = '转出'
+          AND conv_order.status <> '已关闭'
+          AND out_item.ref_sale_item_id IN (
+            SELECT sale_item_id FROM sale_items WHERE sale_order_id = $1
+          )
+        GROUP BY out_item.ref_sale_item_id
+     ),
      item_states AS (
        SELECT si.sale_item_id,
               si.received::numeric AS received,
@@ -3136,26 +3367,21 @@ async function reconcileOrderStatusAfterRefund(client, saleOrderId) {
               COALESCE(rr.refunded, 0) AS refunded,
               COALESCE(fr.full_refund, false) AS full_refund,
               CASE WHEN si.product_type = '疗程卡'
-                THEN GREATEST(0, COALESCE(si.session_count, 0) - COALESCE(si.remaining_sessions, 0)) * COALESCE(si.unit_real_price::numeric, 0)
-                -- #154：「已消耗」= 已提货金额 + **已转走金额**，不含已退款
-                -- （received 已扣过逐项退款，再扣一次就是重复扣减）。
-                -- ⚠ 已转走部分必须取转出行 received 的聚合，**不能用「已转换件数 × 单价」推算**：
-                -- 折抵金额含余数时两者不等（折 4 件可能带走 ¥450 而非 ¥400），用件数推算会低估
-                -- retained_value → overpay 余数虚高 → 多退（#145/#153 定下的口径，双谱系评审两轮命中）。
+                -- 疗程卡：先按**已转走次数**扣掉被折走的部分（折抵把 remaining_sessions 扣光，
+                -- (sc − remaining) 已含这 Q 次，不扣就双计），再加回实际折走**金额**。
+                THEN GREATEST(0, COALESCE(si.session_count, 0) - COALESCE(si.remaining_sessions, 0) - COALESCE(cq.qty, 0)) * COALESCE(si.unit_real_price::numeric, 0)
+                     + COALESCE(ca.amt, 0)
+                -- 家居：#154 拆列后 picked_up_quantity 只含**物理提货**（不再含已退款/已转换），
+                -- 故这里**不再减** cq.qty，改为加上已转走金额。「已消耗」仍不含已退款
+                -- （received 已由 paid-sessions STEP 1.5 扣过逐项退款，再扣一次顾客会少退）。
                 ELSE GREATEST(0, COALESCE(si.picked_up_quantity, 0)) * COALESCE(si.unit_real_price::numeric, 0)
-                     + COALESCE((
-                       SELECT SUM(GREATEST(0, -out_item.received::numeric))
-                         FROM sale_items out_item
-                         JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id
-                        WHERE out_item.ref_sale_item_id = si.sale_item_id
-                          AND out_item.item_direction = '转出'
-                          AND out_item.product_type = '家居产品'
-                          AND conv_order.status <> '已关闭'
-                    ), 0)
+                     + COALESCE(ca.amt, 0)
               END AS consumed_value
          FROM sale_items si
          LEFT JOIN receipt_refunds rr ON rr.sale_item_id = si.sale_item_id
          LEFT JOIN full_refunds fr ON fr.sale_item_id = si.sale_item_id
+         LEFT JOIN converted_qty cq ON cq.sale_item_id = si.sale_item_id
+         LEFT JOIN converted_amt ca ON ca.sale_item_id = si.sale_item_id
         WHERE si.sale_order_id = $1
           AND si.item_direction = '购买'
      ),
@@ -3282,8 +3508,17 @@ async function createRefund(ctx) {
                         JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id
                        WHERE out_item.ref_sale_item_id = si.sale_item_id
                          AND out_item.item_direction = '转出'
-                         AND out_item.product_type = '家居产品'
-                         AND conv_order.status <> '已关闭'), 0) AS converted_amount
+                         -- #182 刻意不限 out_item.product_type：疗程卡的已转走金额同样要从
+                         -- overpay 里扣掉，否则折走的余数能再退一次；纯余数转出行(quantity=0)也必须计入。
+                         AND conv_order.status <> '已关闭'), 0) AS converted_amount,
+            -- #182：疗程卡的已消耗价值要先按**已转走次数**扣减，再加已转走金额，
+            -- 否则 (session_count − remaining_sessions) 与 converted_amount 双计 → overpay 被钳成 0
+            COALESCE((SELECT SUM(out_item.quantity)
+                        FROM sale_items out_item
+                        JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id
+                       WHERE out_item.ref_sale_item_id = si.sale_item_id
+                         AND out_item.item_direction = '转出'
+                         AND conv_order.status <> '已关闭'), 0)::int AS converted_quantity
        FROM sale_items si
       WHERE si.sale_order_id = $1 AND si.item_direction = '购买'`,
     [refSaleOrderId]
@@ -3633,6 +3868,14 @@ async function approveRefund(ctx) {
       if (qty > 0) homeRefundQty.set(it.saleItemId, (homeRefundQty.get(it.saleItemId) || 0) + qty)
     }
     {
+      // #182 锁序：先锁本单（sale_orders），再锁源行（sale_items）。项目约定
+      // sale_orders → sale_order_payments，入账路径与 createConversion / 关单回滚都已统一为
+      // 先锁 sale_orders；approveRefund 原本是 sale_items → sale_orders（后续 cascade /
+      // recalcPaidSessionsForOrder 才更新订单行），与它们互为反向 → 40P01。
+      await client.query(
+        `SELECT sale_order_id FROM sale_orders WHERE sale_order_id = $1 FOR UPDATE`,
+        [refSaleOrderId],
+      )
       // 无条件锁：老退款单（无 note.items 且 ref_sale_item_id 为空）会让 homeRefundQty 为空，
       // 若因此跳过加锁就退回「createRefund 无锁定额 + cascade LEAST 静默封顶」的旧缺口。
       // 行锁本身即可把并发折抵挡在审批之外，成本也只是一条即将被更新的行的锁。
@@ -3641,6 +3884,7 @@ async function approveRefund(ctx) {
       // 的混选转换事务形成反向锁序而死锁。按 sale_item_id 升序，与 createConversion 的锁序一致。
       const lockedRows = await client.query(
         `SELECT sale_item_id, product_type, quantity, COALESCE(picked_up_quantity, 0) AS picked_up_quantity,
+                session_count, remaining_sessions, paid_sessions,
                 COALESCE(refunded_quantity, 0) AS refunded_quantity,
                 COALESCE(converted_quantity, 0) AS converted_quantity,
                 unit_real_price, received
@@ -3663,9 +3907,17 @@ async function approveRefund(ctx) {
                     JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id
                    WHERE out_item.ref_sale_item_id = si.sale_item_id
                      AND out_item.item_direction = '转出'
-                     AND out_item.product_type = '家居产品'
+                     -- #182 刻意不限 out_item.product_type：疗程卡的已转走金额同样要从
+                     -- overpay 里扣掉，否则折走的余数能再退一次；纯余数转出行(quantity=0)也必须计入。
                      AND conv_order.status <> '已关闭'
-                ), 0) AS converted_amount
+                ), 0) AS converted_amount,
+                COALESCE((
+                  SELECT SUM(out_item.quantity) FROM sale_items out_item
+                    JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id
+                   WHERE out_item.ref_sale_item_id = si.sale_item_id
+                     AND out_item.item_direction = '转出'
+                     AND conv_order.status <> '已关闭'
+                ), 0)::int AS converted_quantity
            FROM sale_items si
           WHERE si.sale_order_id = $1
             AND si.item_direction = '购买'`,
@@ -3673,8 +3925,13 @@ async function approveRefund(ctx) {
       )
       const consumedById = new Map(consumedRes.rows.map((c) => [c.sale_item_id, c]))
       for (const r of lockedRows.rows) {
-        if (r.product_type !== '家居产品') continue
-        const requested = homeRefundQty.get(r.sale_item_id) || 0
+        // #182：疗程卡也要进来做**余数**复核。疗程卡的可退次数由 cascadeRefund +
+        // recalcPaidSessionsForOrder 的 D3 守护把关，但 overpay 余数（received > sale_amount
+        // 的多收零头）现在可以被转换单折走，申请时合法的余数可能在审批前已经没了。
+        const isHome = r.product_type === '家居产品'
+        const isCard = r.product_type === '疗程卡'
+        if (!isHome && !isCard) continue
+        const requested = isHome ? (homeRefundQty.get(r.sale_item_id) || 0) : 0
         const requestedOverpay = homeOverpayAmt.get(r.sale_item_id) || 0
         if (requested <= 0 && requestedOverpay <= 0) continue
         // 与 calculateUnusedQuantity 同口径：折抵可能带走了剩余已付的全部金额却只占用
@@ -3685,22 +3942,32 @@ async function approveRefund(ctx) {
           product_type: r.product_type,
           quantity: r.quantity,
           picked_up_quantity: r.picked_up_quantity,
+          session_count: r.session_count,
+          remaining_sessions: r.remaining_sessions,
+          paid_sessions: r.paid_sessions,
           refunded_quantity: r.refunded_quantity,
-          converted_quantity: r.converted_quantity,
+          // ⚠ 刻意**不**把 r.converted_quantity（#154 的列）放进来：那一列按设计只维护家居，
+          // 疗程卡行恒 0；下面 converted_quantity 取的是锁后复算的**聚合**（覆盖两类、
+          // 且不限 product_type），是 refund helper 唯一正确的来源。
           unit_real_price: r.unit_real_price,
           received: r.received,
           picked_quantity: Number(r.picked_up_quantity || 0),
           converted_amount: c ? c.converted_amount : null,
+          converted_quantity: c ? c.converted_quantity : null,
         }
-        const refundable = calculateUnusedQuantity(lockedSrc)
-        if (requested > refundable) {
-          throw new Error('CONFLICT: HOME_PRODUCT_REFUNDABLE_CHANGED: 家居产品可退数量已变化（可能已被转换折抵或提货），请刷新后重新发起退款')
+        if (isHome) {
+          const refundable = calculateUnusedQuantity(lockedSrc)
+          if (requested > refundable) {
+            throw new Error('CONFLICT: HOME_PRODUCT_REFUNDABLE_CHANGED: 家居产品可退数量已变化（可能已被转换折抵或提货），请刷新后重新发起退款')
+          }
         }
         // 余数同样按锁内新快照复核：申请时的 ¥50 余数可能已被折抵带走
         if (requestedOverpay > 0) {
           const currentOverpay = Number(computeItemOverpayRemainders([lockedSrc]).get(r.sale_item_id) || 0)
           if (requestedOverpay > currentOverpay + 0.001) {
-            throw new Error('CONFLICT: HOME_PRODUCT_REFUNDABLE_CHANGED: 家居产品可退余数已变化（可能已被转换折抵或提货），请刷新后重新发起退款')
+            throw new Error(isHome
+              ? 'CONFLICT: HOME_PRODUCT_REFUNDABLE_CHANGED: 家居产品可退余数已变化（可能已被转换折抵或提货），请刷新后重新发起退款'
+              : 'CONFLICT: OVERPAY_REFUNDABLE_CHANGED: 可退余数已变化（可能已被转换折抵），请刷新后重新发起退款')
           }
         }
       }
@@ -4153,7 +4420,16 @@ async function createRepayment(ctx) {
       await client.query(
         `WITH repay (sale_item_id, delta) AS (VALUES ${repayValuesSql})
          UPDATE sale_items si
-         SET pending_received = COALESCE(rp.delta, 0),
+         SET pending_received = CASE
+             -- #182：折抵退出的行 pending_received 已被钉成「毛已付」，是 paid-sessions
+             -- STEP 1 Branch B 固定预留该行 received 的唯一依据。本语句是**覆盖式**的
+             -- （未选中的行会被写 0），一旦把折抵行也覆盖掉，预留归零 → 该行 received 掉到
+             -- targeted（通常 0），而它的 remaining_sessions 已注销为 0 →
+             -- (session_count − 0) > paid_sessions 永久违反 D3，原单从此回款/退款/回调全失败。
+             -- 触发条件很普通：同一原单里另一行发起定向回款即可。
+               WHEN si.waived_amount::numeric > 0 THEN si.pending_received
+               ELSE COALESCE(rp.delta, 0)
+             END,
              updated_at = NOW()
          FROM (SELECT sale_item_id FROM sale_items WHERE sale_order_id = $1 AND item_direction = '购买') ai
          LEFT JOIN repay rp ON rp.sale_item_id = ai.sale_item_id
@@ -4372,6 +4648,29 @@ async function createConversion(ctx) {
     // 生成 convOrderId（内部独占 advisory_xact_lock(hashtext('sale_order_id_gen'))）
     convOrderId = await generateOrderNo('FY-XSD-WX-', tx)
 
+    // 0b. 先锁**原单**（#182）。项目锁序约定 sale_orders → sale_order_payments，而既有入账路径
+    // （confirmOffline / createRepayment / payNotify）一律先锁 sale_orders、再由
+    // recalcPaidSessionsForOrder 更新 sale_items。6b 的欠款归零要锁原单，若等到那一步才锁，
+    // 本事务的足迹就是 sale_items → sale_orders，与入账路径互为反向，且中间隔着十余条语句
+    // （SKU/套餐/优惠券校验 + INSERT 订单 + 转出行 + 扣减），持锁窗口长、40P01 命中率高。
+    // 故在锁 sale_items **之前**按 sale_order_id 升序把涉及的原单一次性锁住，
+    // 把锁序统一回 sale_orders → sale_items；6b 里那次 FOR UPDATE 变成同事务重入，无额外代价。
+    const refOrderRes = await tx.query(
+      `SELECT DISTINCT sale_order_id FROM sale_items
+        WHERE sale_item_id = ANY($1)
+        ORDER BY sale_order_id`,
+      [convertOutSaleItemIds],
+    )
+    if (refOrderRes.rows.length > 0) {
+      await tx.query(
+        `SELECT sale_order_id FROM sale_orders
+          WHERE sale_order_id = ANY($1)
+          ORDER BY sale_order_id
+          FOR UPDATE`,
+        [refOrderRes.rows.map((r) => r.sale_order_id)],
+      )
+    }
+
     // 1. 锁候选卡。预扣汇总必须在独立查询中执行：PostgreSQL 不允许同层
     // GROUP BY/聚合查询使用 FOR UPDATE，也必须先取得此行锁才能与 service.start 串行。
     const heldResult = await tx.query(
@@ -4394,6 +4693,7 @@ async function createConversion(ctx) {
               si.unit_real_price,
               si.sale_amount,
               si.received,
+              si.pending_received,
               si.sales_category,
               si.service_fee,
               si.is_shengmei,
@@ -4418,51 +4718,59 @@ async function createConversion(ctx) {
     // 唤醒后 EvalPlanQual 只会刷新 si 自身的行版本，pickup_records 与转出行聚合仍是**旧快照**
     // （PG 文档明确：可见的是同一目标行的新版本，看不到其它行的并发变更）。
     // 两笔并发折抵会各自读到 converted_amount=0，把同一批已付价值折两遍（物理件数守卫拦不住）。
-    const homeSaleItemIds = heldResult.rows
-      .filter((r) => r.product_type === '家居产品')
-      .map((r) => r.sale_item_id)
-    if (homeSaleItemIds.length > 0) {
+    // ⚠ #182 起**疗程卡也走这条复算**：折抵额改「剩余已付」后同样依赖转出行聚合，
+    //   留在候选查询里算会和家居犯同一个并发错误。
     const deductibleResult = await tx.query(
       `SELECT si.sale_item_id,
+              -- 注销权益 Q：折抵 = 整行退出，一次带走该行**全部**剩余权益（#182）。
+              -- 疗程卡的服务预扣在 JS 侧另判（预扣次数不能被注销，否则服务单无法核销）。
+              -- #154：家居「未结算件数」= quantity − (已提货 + 已退款 + 已转换)。只减 picked_up
+              -- 会把已退款/已转换的件数当成还能折走，撞 chk_sale_item_settled_le_quantity。
+              CASE WHEN si.product_type = '疗程卡'
+                   THEN COALESCE(si.remaining_sessions, 0)
+                   ELSE GREATEST(0, si.quantity - (COALESCE(si.picked_up_quantity, 0) + COALESCE(si.refunded_quantity, 0) + COALESCE(si.converted_quantity, 0)))
+              END AS deductible_quantity,
+              -- 折抵额 A：寄存单与 0 元赠品行没有「实收」可言，维持物理口径（原价 × 剩余权益）；
+              -- 其余一律「剩余已付」——付多少折多少，含不足一整次/一整件的余数。
               CASE WHEN so.sale_order_type = '寄存单' OR si.sale_amount <= 0
-                   THEN GREATEST(0, si.quantity - (COALESCE(si.picked_up_quantity, 0) + COALESCE(si.refunded_quantity, 0) + COALESCE(si.converted_quantity, 0)))
-                   ELSE LEAST(
-                     GREATEST(0, si.quantity - (COALESCE(si.picked_up_quantity, 0) + COALESCE(si.refunded_quantity, 0) + COALESCE(si.converted_quantity, 0))),
-                     GREATEST(0, FLOOR(hpa.remaining_paid / NULLIF(si.unit_real_price::numeric, 0)))::int
+                   THEN si.unit_real_price::numeric * (
+                     CASE WHEN si.product_type = '疗程卡'
+                          THEN COALESCE(si.remaining_sessions, 0)
+                          ELSE GREATEST(0, si.quantity - (COALESCE(si.picked_up_quantity, 0) + COALESCE(si.refunded_quantity, 0) + COALESCE(si.converted_quantity, 0)))
+                     END
                    )
-              END AS home_deductible_quantity,
-              CASE WHEN so.sale_order_type = '寄存单' OR si.sale_amount <= 0
-                   THEN si.unit_real_price::numeric * GREATEST(0, si.quantity - (COALESCE(si.picked_up_quantity, 0) + COALESCE(si.refunded_quantity, 0) + COALESCE(si.converted_quantity, 0)))
-                   ELSE hpa.remaining_paid
-              END AS home_deductible_amount
+                   ELSE rp.remaining_paid
+              END AS deductible_amount
          FROM sale_items si
          JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
          CROSS JOIN LATERAL (
            SELECT GREATEST(0, si.received::numeric
-             - COALESCE(si.picked_up_quantity, 0) * si.unit_real_price::numeric
+             - CASE WHEN si.product_type = '疗程卡'
+                    THEN GREATEST(0, COALESCE(si.session_count, 0) - COALESCE(si.remaining_sessions, 0))::numeric * si.unit_real_price::numeric
+                    -- #154：已提货件数直读 picked_up_quantity 列（拆列后它恒等于
+                    -- SUM(pickup_records)，且随持锁行被 EvalPlanQual 刷新，比子查询更准）。
+                    ELSE COALESCE(si.picked_up_quantity, 0) * si.unit_real_price::numeric
+               END
              - COALESCE((
                  SELECT SUM(GREATEST(0, -out_item.received::numeric))
                    FROM sale_items out_item
                    JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id
                   WHERE out_item.ref_sale_item_id = si.sale_item_id
                     AND out_item.item_direction = '转出'
-                    AND out_item.product_type = '家居产品'
                     AND conv_order.status <> '已关闭'
                ), 0)
            ) AS remaining_paid
-         ) hpa
+         ) rp
         WHERE si.sale_item_id = ANY($1)`,
-      [homeSaleItemIds],
+      [convertOutSaleItemIds],
     )
     const deductibleBySaleItemId = new Map(
       deductibleResult.rows.map((r) => [r.sale_item_id, r]),
     )
     for (const row of heldResult.rows) {
-      if (row.product_type !== '家居产品') continue
       const d = deductibleBySaleItemId.get(row.sale_item_id)
-      row.home_deductible_quantity = d ? Number(d.home_deductible_quantity || 0) : 0
-      row.home_deductible_amount = d ? Number(d.home_deductible_amount || 0) : 0
-    }
+      row.deductible_quantity = d ? Number(d.deductible_quantity || 0) : 0
+      row.deductible_amount = d ? Number(d.deductible_amount || 0) : 0
     }
 
     const held = heldResult.rows
@@ -4510,6 +4818,18 @@ async function createConversion(ctx) {
       reservedResult.rows.map((row) => [row.sale_item_id, Number(row.total_reserved || 0)])
     )
 
+    // #182：Δ（欠款豁免额）必须扣掉**行级已退款额**。`received` 是行级**净**实收
+    // （paid-sessions STEP 1.5 已按逐项退款扣过），直接用 sale_amount − received 会把
+    // 「已经退给顾客的钱」也当成欠款豁免掉：原价 ¥100、已付 ¥100、已退 ¥40 →
+    // received=60 → 错误 Δ=40（真实欠款为 0）；订单 total 再减 40 后，按
+    // total − refunded_amount 统计的净额会从正确的 60 掉到 20，并污染报表 / 会员阈值 / 状态判定。
+    // 毛已付 = received + 行级已退款额，真实欠款 = sale_amount − 毛已付。
+    const refundedByItem = new Map()
+    for (const orderId of [...new Set(held.map((r) => r.sale_order_id))].sort()) {
+      const m = await getPerItemRefundedMap(tx, orderId)
+      for (const [k, v] of m) refundedByItem.set(k, v)
+    }
+
     let totalOut = 0
     const outItems = []
     for (const row of held) {
@@ -4522,33 +4842,80 @@ async function createConversion(ctx) {
       //   旧的「未提货数量全额折抵」会把未兑现价值洗成全额可提（dev 真库实证：
       //   10 件 ¥1000 只付 ¥400 → 折 ¥1000 换等额家居 → 新行 10 件全可提，欠款仍留原单）。
       //   疗程卡维持 #125 口径不变。
-      let qty = 0
-      let lineAmount = null   // 非空时覆盖 unit × qty（家居的金额含不足一件的已付余数）
-      if (productType === '疗程卡') {
-        const rem = Number(row.remaining_sessions || 0)
-        const reserved = reservedBySaleItemId.get(row.sale_item_id) || 0
-        const available = rem - reserved
-        if (available <= 0) {
-          throw new Error('INVALID_PARAMS: 部分卡可用次数不足（存在服务中预留）')
-        }
-        qty = available  // 折抵数量改为可用次数（扣除预扣）
-      } else if (productType === '家居产品') {
-        qty = Number(row.home_deductible_quantity || 0)
-        if (qty <= 0) {
-          throw new Error('INVALID_PARAMS: 部分家居产品没有已付清的整件可折抵')
-        }
-        lineAmount = Math.round(Number(row.home_deductible_amount || 0) * 100) / 100
-      } else {
+      // #182 统一口径：折抵额 = 该行「剩余已付」（含不足一整次/一整件的余数），
+      // 折抵数量 = 该行全部剩余权益（整行退出）。两者由锁内复算语句给出。
+      if (productType !== '疗程卡' && productType !== '家居产品') {
         throw new Error('INVALID_PARAMS: 所选行类型不支持折抵')
       }
+      let qty = Number(row.deductible_quantity || 0)
+      // lineAmount 恒生效：疗程卡不再按 unit × 次数估值（那会把未付的部分洗成资产），
+      // 家居沿用 #145/#153 的含余数金额。
+      const lineAmount = Math.round(Number(row.deductible_amount || 0) * 100) / 100
 
-      const amount = lineAmount != null ? lineAmount : Math.round(unit * qty * 100) / 100
+      if (productType === '疗程卡') {
+        const reserved = reservedBySaleItemId.get(row.sale_item_id) || 0
+        // 整行退出与「留几次给在途服务」互斥：钱已全额折走，留下的次数就是白送，
+        // 而把预扣一起注销又会让 service.confirm 的扣次守卫失败、服务单永久卡在
+        // 「待客户确认」且预扣不释放。故存在在途预扣时整行拒绝，请先完成/取消服务单。
+        if (reserved > 0) {
+          throw new Error('INVALID_STATE: CARD_RESERVED: 部分项目有服务进行中，请先完成或取消服务单后再折抵')
+        }
+      }
+
+      // 纯余数行（疗程卡次数已用完 / 家居物理件已结算完）Q=0 但 A>0，仍要放行——
+      // 让顾客把这笔不足一整次(件)的已付款换走，DB 侧已放宽 chk_item_quantity。
+      //
+      // ⚠ 本闸门必须与候选查询 WHERE **同口径**，宽一点都不行：
+      // 若写成 `qty <= 0 && lineAmount <= 0`，则「Q>0 且 A=0」会被放行——候选加载后顾客做了
+      // 一次服务核销（delivered 涨满、预扣随服务完成释放）就能构造出这个状态。后果是落一条
+      // sale_amount=received=0 的转出行、把剩余权益凭空注销（顾客一分钱没换走），又因 Δ=0
+      // 不走欠款归零，于是 (session_count − remaining_sessions) > paid_sessions 永久违反 D3，
+      // 该原单此后任何 recalc（回款/退款/支付回调）都抛 PAID_SESSIONS_UNDERFLOW 而彻底锁死。
+      // 寄存单与 0 元赠品行没有「实收」，它们的 A = 单价 × 权益（赠品单价为 0 → A 恒 0），
+      // 只能按**权益**放行，否则整行会被金额门静默剔除。
+      const isDepositOrGift = row.sale_order_type === '寄存单' || Number(row.sale_amount ?? 0) <= 0
+      if (isDepositOrGift ? qty <= 0 : lineAmount <= 0) {
+        throw new Error('INVALID_STATE: DEDUCTIBLE_EMPTY: 部分折抵项没有可折抵的已付金额')
+      }
+
+      const amount = lineAmount
       totalOut += amount
 
-      // 按折抵数量占原单比例扣减 service_fee（转出行为负数）
+      // #182 欠款归零额 Δ。三个守卫缺一不可：
+      //  - 寄存单：received 恒 0，sale_amount 是原价快照不是欠款，下调会把快照抹成 0
+      //  - received > 0：否则新 sale_amount 落到 0，踩 `sale_amount <= 0` 的赠品全放分支
+      //    （可提/可折变成物理全量），未付的货凭空解锁
+      //  - Δ > 0：overpay 行 received > sale_amount，不能反向上调应付
+      const refSaleAmount = Math.round(Number(row.sale_amount || 0) * 100) / 100
+      const refReceived = Math.round(Number(row.received || 0) * 100) / 100
+      const refRefunded = Math.round((Number(refundedByItem.get(row.sale_item_id) || 0)) * 100) / 100
+      // ⚠ 行级与订单级的下调额**不是同一个数**，必须分开：
+      //  · 行级 = sale_amount − 净实收。它的作用是让 paid_sessions 重算到满付，从而在
+      //    remaining_sessions 被注销为 0 后仍满足 D3。少扣这一截就会提交坏状态：
+      //    10 次卡 ¥1000 付清后退 4 次 → received=600 / paid_sessions=6，折抵后 remaining=0，
+      //    (10 − 0) > 6 立刻违反 D3，此后该单任何整单 recalc 都抛 PAID_SESSIONS_UNDERFLOW。
+      //  · 订单级 = 行级 − 行级已退款额，即**真实欠款**（毛已付 = 净实收 + 已退款）。
+      //    多扣这一截就是把已经退给顾客的钱又当欠款豁免一次，
+      //    按 total_amount − refunded_amount 统计的净额会被重复扣减。
+      const rowWaiveRaw = Math.round((refSaleAmount - refReceived) * 100) / 100
+      const orderWaiveRaw = Math.round((rowWaiveRaw - refRefunded) * 100) / 100
+      const waiveEligible = row.sale_order_type !== '寄存单'
+        && refSaleAmount > 0 && refReceived > 0
+      const waiveAmount = waiveEligible && rowWaiveRaw > 0 ? rowWaiveRaw : 0
+      const orderWaiveAmount = waiveEligible && orderWaiveRaw > 0 ? orderWaiveRaw : 0
+
+      // 按折抵数量占原行比例扣减 service_fee（转出行为负数）；纯余数行 qty=0 → 不扣手工费。
+      // ⚠ 分母必须与 qty 同量纲：service_fee 快照口径是 sku.service_fee × quantity(**张数**)，
+      // 而疗程卡的 qty 是**次数**。用张数作分母会把手工费放大 session_count 倍
+      // （1 张 10 次卡、fee=100、整行退出 qty=10 → -1000，服务提成基数被抹成负值）。
+      // 整行退出时 qty = session_count → 正好全额冲销该行手工费。
       const origServiceFee = Number(row.service_fee || 0)
-      const origQty = Number(row.quantity) || 1
-      const outServiceFee = -Math.round((origServiceFee * qty / origQty) * 100) / 100
+      const feeBase = productType === '疗程卡'
+        ? (Number(row.session_count) || 1)
+        : (Number(row.quantity) || 1)
+      const outServiceFee = qty > 0
+        ? -Math.round((origServiceFee * qty / feeBase) * 100) / 100
+        : 0
 
       outItems.push({
         refSaleItemId: row.sale_item_id,
@@ -4564,6 +4931,24 @@ async function createConversion(ctx) {
         serviceFee: outServiceFee,
         isShengmei: row.is_shengmei ?? null,
         isExperience: row.is_experience === true,
+        // #182 欠款归零用：原行/原单快照（行已持 FOR UPDATE，CAS 时作为期望值）+ 本次豁免额
+        refSaleOrderId: row.sale_order_id,
+        refSaleAmount,
+        // 行级下调额写在**转出行**的 waived_amount 上：原行那份是累计值，无法归因到具体转换单，
+        // 关闭待支付转换单时要靠转出行这份才能只还原本单的调整。
+        // 订单级下调额不单独存：它 = waived_amount − 该行已退款额，而折抵后该行 remaining=0、
+        // overpay 也已被折走 → 可退恒 0，已退款额自此冻结，回滚时按同一公式重算即可。
+        waiveAmount,
+        orderWaiveAmount,
+        // 欠款归零会把 pending_received 钉到该行**毛已付** = 净实收 + 该行已退款额。
+        // 必须是毛额：STEP 1 重建的是毛额语义，钉住值随后要经 STEP 1.5 扣一次退款才成净额。
+        // 钉成净实收会被 STEP 1.5 再扣一次（付清后退过款的行终值 = 净额 − 退款额 < 新应付）
+        // → paid_sessions 不满付，而 remaining_sessions 已注销为 0 → 永久违反 D3。
+        pinnedPendingReceived: Math.round((refReceived + refRefunded) * 100) / 100,
+        // 原行 pending_received 快照：关单回滚必须还原，否则历史行（原本 pending=0）的
+        // 分摊权重被永久改写，行级实收与 0040 视图 residual 随之漂移。
+        // 同样只能记在转出行上才归因得到本单。
+        refPendingReceived: Math.round(Number(row.pending_received ?? 0) * 100) / 100,
       })
     }
 
@@ -4955,8 +5340,8 @@ async function createConversion(ctx) {
           sale_item_id, sale_order_id, store_id, item_direction, ref_sale_item_id,
           sku_id, product_name, product_type,
           session_count, unit_price, quantity, unit_real_price, sale_amount, received,
-          sales_category, service_fee, is_shengmei, is_experience
-        ) VALUES ($1, $2, $3, '转出', $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`,
+          sales_category, service_fee, is_shengmei, is_experience, waived_amount, pending_received
+        ) VALUES ($1, $2, $3, '转出', $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)`,
         [
           saleItemId, convOrderId, storeId, d.refSaleItemId,
           d.skuId, d.productName, d.productType,
@@ -4967,6 +5352,11 @@ async function createConversion(ctx) {
           // 转出行镜像原 sale_items.is_experience：负 received × is_experience=true 与原订单
           // trial_amount 累计自洽，避免跃迁 SQL 被误判（2026-04-26 ticket）。
           d.isExperience === true,
+          // #182：本次为该行豁免掉的原单欠款，关单回滚靠它归因到本张转换单
+          d.waiveAmount,
+          // #182：原行 pending_received 快照。转出行自身不参与 STEP 1 的 caps（那里只取
+          // item_direction='购买' 的行），故借这一列存快照不影响任何既有计算。
+          d.refPendingReceived,
         ]
       )
       // 原子扣减原卡余量（幂等守卫：余量不足则 rowCount=0）。这里不能置 0：
@@ -5002,6 +5392,133 @@ async function createConversion(ctx) {
           throw new Error('INVALID_PARAMS: 家居产品可提数量变化，请重试')
         }
       }
+    }
+
+    // 6b. 欠款归零（#182）。折抵 = 该行整体退出，剩余已付全额折走、剩余权益全部注销，
+    // 原单该行不该再挂欠款。这**不是可选的善后**，而是注销权益的前置条件：
+    // D3 不变量 (session_count - remaining_sessions) <= paid_sessions 由
+    // recalcPaidSessionsForOrder 末尾按整单执法，若只把 remaining_sessions 扣光而不下调应付，
+    // 部分支付行立刻违反 D3 → 源订单从此无法回款、无法退款、payNotify 回调直接抛 CONFLICT。
+    // 应付下调到实收后 paid_sessions 重算恒为满付，D3 自动成立。
+    const waiveByOrder = new Map()
+    for (const d of outItems) {
+      // 两个下调额与守卫在转出行构建时已算好（见 waiveAmount / orderWaiveAmount）：
+      // waive = 行级（压到净实收，保 paid_sessions 满付 → D3）；订单级见下方 waiveByOrder。
+      const waive = d.waiveAmount
+      if (!(waive > 0)) continue
+
+      const updItem = await tx.query(
+        `UPDATE sale_items
+            SET sale_amount = sale_amount - $3,
+                waived_amount = waived_amount + $3,
+                -- 把「逐行实付草稿」钉到该行**毛已付**（净实收 + 该行已退款额）。这是 D3 的
+                -- 承重墙：STEP 1 Branch B 见 waived_amount > 0 就按本列**固定预留**该行的
+                -- received（不再丢进比例池），预留额同时从 untargeted 扣除 → 该行 received
+                -- 恒等于毛已付、同单其它行分到的钱不变；再由 STEP 1.5 扣掉该行退款额得到净额，
+                -- 恰好等于下调后的 sale_amount → paid_sessions 满付。
+                -- ⚠ 不能钉成净实收：STEP 1.5 会再扣一次退款，付清后退过款的行终值会低于
+                -- 新应付，而本行 remaining_sessions 已注销为 0 → 永久违反 D3，该订单此后
+                -- 回款/退款/支付回调全部抛 PAID_SESSIONS_UNDERFLOW。
+                pending_received = $5,
+                updated_at = $2
+          WHERE sale_item_id = $1
+            AND sale_amount = $4`,
+        [d.refSaleItemId, now, waive, d.refSaleAmount, d.pinnedPendingReceived],
+      )
+      if (updItem.rowCount === 0) {
+        throw new Error('CONFLICT: 原订单金额已变更，请刷新后重试')
+      }
+      // 订单级只累加**真实欠款**部分（行级那一截含已退款额，不能进 total_amount）
+      waiveByOrder.set(
+        d.refSaleOrderId,
+        Math.round(((waiveByOrder.get(d.refSaleOrderId) || 0) + d.orderWaiveAmount) * 100) / 100,
+      )
+      // 标记本行已豁免，供下方 paid_sessions 行级重算筛选
+    }
+
+    // 原单按 sale_order_id 排序处理，保持稳定锁序（多张卡可能分属不同原单）。
+    // 订单级下调额为 0（该行的差额全部来自已退款、并无真实欠款）时跳过——行级 sale_amount
+    // 与 paid_sessions 仍已在上面处理，D3 已成立，订单 total 本就不该动。
+    for (const refOrderId of [...waiveByOrder.keys()].sort()) {
+      const waiveTotal = waiveByOrder.get(refOrderId)
+      if (!(waiveTotal > 0)) continue
+      const lockedOrder = await tx.query(
+        `SELECT total_amount, received, prepaid_card_amount, pending_prepaid_card_amount,
+                status, paid_at, sale_order_type
+           FROM sale_orders WHERE sale_order_id = $1 FOR UPDATE`,
+        [refOrderId],
+      )
+      if (lockedOrder.rows.length === 0) {
+        throw new Error('CONFLICT: 原订单已不存在，请刷新后重试')
+      }
+      const o = lockedOrder.rows[0]
+      const newTotal = Math.round((Number(o.total_amount || 0) - waiveTotal) * 100) / 100
+      const orderReceived = Math.round(Number(o.received || 0) * 100) / 100
+      // payable 口径与 paid-sessions.js 的 ORDER_PREPAID_CARD_RECALC_SQL 一致（只对这三类单维护）
+      const keepsPayable = ['销售单', '内部单', '转换单'].includes(o.sale_order_type)
+      const newPayable = keepsPayable
+        ? Math.max(0, Math.round((newTotal
+            - Number(o.prepaid_card_amount || 0)
+            - Number(o.pending_prepaid_card_amount || 0)) * 100) / 100)
+        : null
+      // 结清判定基准 = total_amount（与 createRepayment 同锚）。只从'部分支付'向前推进，
+      // 已支付 / 已完成不回退。paid_at 只在原本为空时补：豁免不是收款，不能改写既有业绩日期。
+      const targetStatus = o.status === '部分支付' && orderReceived + 0.001 >= newTotal
+        ? '已支付'
+        : o.status
+
+      // ⚠ 刻意**不写 paid_at**：豁免不是收款。既有 reconcileOrderStatusAfterRefund 在推进
+      // 状态时会 `COALESCE(paid_at, NOW())`，但那条路径没有回滚；这里若照做，关单回滚时
+      // 无法区分「本次补的 paid_at」与「首付时原有的 paid_at」，清空会误删真实收款时间、
+      // 不清则部分支付单带着豁免那天的日期污染按 paid_at 归集的口径。不写即天然对称。
+      // 业绩归属读的是 performance_attribution_date（独立列，由首次支付流水 trigger 派生），
+      // 不受影响。
+      const updOrder = await tx.query(
+        `UPDATE sale_orders
+            SET total_amount = $2,
+                payable_amount = COALESCE($3, payable_amount),
+                status = $4,
+                updated_at = $5
+          WHERE sale_order_id = $1
+            AND status = $6
+            AND lakala_out_order_no IS NULL`,
+        [refOrderId, newTotal, newPayable, targetStatus, now, o.status],
+      )
+      if (updOrder.rowCount === 0) {
+        throw new Error('CONFLICT: 原订单状态已变更或有在途支付，请刷新后重试')
+      }
+
+    }
+
+    // 行级重算被折抵行的 paid_sessions。**必须独立于「订单级是否有真实欠款可扣」**：
+    // 付清后部分退款的行 orderWaive 为 0（差额全来自退款、并无欠款），但行级 sale_amount
+    // 仍被压到净实收，paid_sessions 必须跟着重算到满付，否则 remaining_sessions 已注销为 0
+    // 而 (session_count − 0) > paid_sessions → 提交坏状态，此后整单 recalc 必抛
+    // PAID_SESSIONS_UNDERFLOW。**刻意不跑整单 recalcPaidSessionsForOrder**：
+    // ① prod 实测 338 行 / 28 单本就违反 D3，整单守护会让这些单的折抵直接失败；
+    // ② 整单重算的 Branch B 会按新 sale_cap 重分行级 received，触发 0040 视图的 residual
+    //    凭空产出营业额事件。公式与 paid-sessions.js 的 PAID_SESSIONS_RECALC_SQL 字面同源，
+    //    仅把作用域从 sale_order_id 收到 sale_item_id。
+    const recalcTargets = new Map()
+    for (const d of outItems) {
+      if (!(d.waiveAmount > 0)) continue
+      if (!recalcTargets.has(d.refSaleOrderId)) recalcTargets.set(d.refSaleOrderId, [])
+      recalcTargets.get(d.refSaleOrderId).push(d.refSaleItemId)
+    }
+    for (const refOrderId of [...recalcTargets.keys()].sort()) {
+      await tx.query(
+        `UPDATE sale_items
+SET paid_sessions = CASE
+  WHEN sale_items.session_count IS NULL THEN NULL
+  WHEN op.total_amount <= 0 THEN sale_items.session_count
+  WHEN sale_items.sale_amount <= 0 THEN sale_items.session_count
+  ELSE LEAST(sale_items.session_count, FLOOR(sale_items.received::numeric * sale_items.session_count / sale_items.sale_amount::numeric)::integer)
+END,
+updated_at = NOW()
+FROM (SELECT total_amount FROM sale_orders WHERE sale_order_id = $2) op
+WHERE sale_items.sale_item_id = ANY($1)`,
+        [recalcTargets.get(refOrderId), refOrderId],
+      )
     }
 
     // 7. 转入行 × M（新卡；疗程卡按张落库并用 group_id 合并展示）
@@ -5216,12 +5733,10 @@ async function customerHeldCards(ctx) {
             si.remaining_sessions,
             si.paid_sessions,
             si.unit_price,
-            -- #145/#153 收紧：家居折抵以「剩余已付金额」为基准（见下方 home_paid LATERAL）。
-            -- 旧口径（未提数量全额折抵、不看付款进度）可把未兑现价值洗成全额可提：
-            -- 10 件 ¥1000 只付 ¥400 → 折 ¥1000 换等额家居 → 新行 10 件全可提，欠款仍留原单（dev 实证）。
-            CASE WHEN si.product_type = '家居产品' THEN hp.deductible_quantity
-                 ELSE GREATEST(0, si.quantity - (COALESCE(si.picked_up_quantity, 0) + COALESCE(si.refunded_quantity, 0) + COALESCE(si.converted_quantity, 0)))
-            END AS remaining_quantity,
+            -- #182：折抵 = 整行退出，故「可折抵数量」= 该行全部剩余权益（疗程卡剩余次数 /
+            -- 家居未结算件数），两类统一由 hp 给出；金额另按「剩余已付」算，两者不再互相推导。
+            -- #154 后家居那一支的未结算件数已是三列式（见 hp LATERAL）。
+            hp.deductible_quantity AS remaining_quantity,
             si.unit_real_price,
             si.sale_amount,
             si.received,
@@ -5234,49 +5749,49 @@ async function customerHeldCards(ctx) {
             ps.category_id,
             pc.category_name,
             pc.product_kind,
-            CASE
-              WHEN si.product_type = '疗程卡'
-                THEN si.unit_real_price * COALESCE(si.remaining_sessions, 0)
-              -- #145/#153 收紧：家居折抵金额 = 剩余已付金额，**含不足一整件的余数**
-              -- （用户拍板：件数向下取整、金额含余数，顾客付的钱一分不丢）。
-              WHEN si.product_type = '家居产品' THEN hp.deductible_amount
-              ELSE 0
-            END AS deductible_amount
+            -- #182：疗程卡与家居统一走「剩余已付」（含不足一整次/一整件的余数）。
+            -- 疗程卡旧口径 unit_real_price × remaining_sessions 会把**未付**的部分也折成资产：
+            -- 1 次 ¥19800 只付 ¥14000 时旧口径可折 ¥19800，配上欠款归零即每笔净亏 ¥5800。
+            COALESCE(hp.deductible_amount, 0) AS deductible_amount
      FROM sale_items si
      JOIN sale_orders so ON si.sale_order_id = so.sale_order_id
      LEFT JOIN product_skus ps ON ps.sku_id = si.sku_id
      LEFT JOIN product_categories pc ON pc.category_id = ps.category_id
-     -- #145/#153 家居折抵额度：以「剩余已付金额」为基准，四端字面同源。
-     -- 剩余已付 = 行实收 − 已提货金额 − **已转走金额**（从转出行 received 聚合，不是
-     -- 件数 × 单价——折抵金额含余数时两者不等，用件数推算会让多次折抵累计超过实收）。
+     -- 折抵额度（#145/#153 立口径，#182 统一到疗程卡）：四端字面同源。
+     -- 剩余已付 = 行实收 − 已交付价值 − **已转走金额**（从转出行 received 聚合，不是
+     -- 件数/次数 × 单价——折抵金额含余数时两者不等，用数量推算会让多次折抵累计超过实收）。
+     -- 已交付价值：疗程卡 = 已消费次数 × 单价；家居 = pickup_records 物理提货件数 × 单价。
      -- 退款不在此处扣：received 已由 paid-sessions STEP 1.5 扣过，再减一次就是重复扣减。
-     -- 只对家居行求值：疗程卡走 remaining_sessions 口径，拿到家居式折抵件数没有意义
-     -- （admin 对疗程卡的 remainingQty 返回 null，两端语义须一致）。
+     -- ⚠ 已转走金额的聚合**不限 product_type**：纯余数转出行（quantity=0）也必须被计入，
+     --   否则同一笔已付能被反复折走。
      LEFT JOIN LATERAL (
        SELECT
-         CASE WHEN si.product_type <> '家居产品' THEN NULL
-              WHEN so.sale_order_type = '寄存单' OR si.sale_amount <= 0
-              THEN GREATEST(0, si.quantity - (COALESCE(si.picked_up_quantity, 0) + COALESCE(si.refunded_quantity, 0) + COALESCE(si.converted_quantity, 0)))
-              ELSE LEAST(
-                GREATEST(0, si.quantity - (COALESCE(si.picked_up_quantity, 0) + COALESCE(si.refunded_quantity, 0) + COALESCE(si.converted_quantity, 0))),
-                GREATEST(0, FLOOR(hpa.remaining_paid / NULLIF(si.unit_real_price::numeric, 0)))::int
-              )
+         CASE WHEN si.product_type = '疗程卡'
+              THEN COALESCE(si.remaining_sessions, 0)
+              ELSE GREATEST(0, si.quantity - (COALESCE(si.picked_up_quantity, 0) + COALESCE(si.refunded_quantity, 0) + COALESCE(si.converted_quantity, 0)))
          END AS deductible_quantity,
-         CASE WHEN si.product_type <> '家居产品' THEN NULL
-              WHEN so.sale_order_type = '寄存单' OR si.sale_amount <= 0
-              THEN si.unit_real_price::numeric * GREATEST(0, si.quantity - (COALESCE(si.picked_up_quantity, 0) + COALESCE(si.refunded_quantity, 0) + COALESCE(si.converted_quantity, 0)))
+         CASE WHEN so.sale_order_type = '寄存单' OR si.sale_amount <= 0
+              THEN si.unit_real_price::numeric * (
+                CASE WHEN si.product_type = '疗程卡'
+                     THEN COALESCE(si.remaining_sessions, 0)
+                     ELSE GREATEST(0, si.quantity - (COALESCE(si.picked_up_quantity, 0) + COALESCE(si.refunded_quantity, 0) + COALESCE(si.converted_quantity, 0)))
+                END
+              )
               ELSE hpa.remaining_paid
          END AS deductible_amount
        FROM (
          SELECT GREATEST(0, si.received::numeric
-           - COALESCE(si.picked_up_quantity, 0) * si.unit_real_price::numeric
+           - CASE WHEN si.product_type = '疗程卡'
+                  THEN GREATEST(0, COALESCE(si.session_count, 0) - COALESCE(si.remaining_sessions, 0))::numeric * si.unit_real_price::numeric
+                  -- #154：已提货件数直读 picked_up_quantity 列（拆列后它恒等于 SUM(pickup_records)）。
+                  ELSE COALESCE(si.picked_up_quantity, 0) * si.unit_real_price::numeric
+             END
            - COALESCE((
                SELECT SUM(GREATEST(0, -out_item.received::numeric))
                  FROM sale_items out_item
                  JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id
                 WHERE out_item.ref_sale_item_id = si.sale_item_id
                   AND out_item.item_direction = '转出'
-                  AND out_item.product_type = '家居产品'
                   AND conv_order.status <> '已关闭'
              ), 0)
          ) AS remaining_paid
@@ -5289,15 +5804,22 @@ async function customerHeldCards(ctx) {
          OR (so.sale_order_type = '转换单' AND si.item_direction = '转入')
        )
        -- 2026-09-14 #125 甲方拍板：订单级「部分支付」也可折抵。与卡包列表口径统一
-       -- （admin cards.ts 的 CARD_ENTITLEMENT_ORDER_STATUSES 本就含「部分支付」），
-       -- 疗程卡与家居同时放开；欠款按方案 A 留在原单继续催收。
-       -- ⚠ #145/#153 对**家居**收紧：折抵以「已付未结算」为准（见 remaining_quantity 表达式），
-       --   疗程卡维持 #125 的 remaining_sessions 口径不变。
+       -- （admin cards.ts 的 CARD_ENTITLEMENT_ORDER_STATUSES 本就含「部分支付」）。
        AND so.status IN ('已支付', '部分支付', '已完成')
+       -- #182 改**金额口径**：只要该行还有「剩余已付」就能折，不再要求凑满一整次/一整件。
+       -- 这才是甲方要的「没有剩余次数但有余数的项目也能选到」；件数门槛曾把
+       -- 「1 件 ¥680 只付 ¥594」整行剔除（prod 3 行 ¥814），顾客的钱既折不掉也提不出。
+       -- 寄存单 / 0 元赠品行没有「实收」可言：它们的 A = 单价 × 权益，而赠品单价为 0 → A 恒 0，
+       -- 用金额门会把整行**静默剔除**（旧闸门 remaining_sessions > 0 是放行的）。故这两类按
+       -- **权益**放行，其余按**金额**放行。锁内闸门必须与此逐字同口径，否则宽的那一侧会放行
+       -- 「有权益但无钱」的行，凭空注销权益且不下调应付 → 永久违反 D3、订单锁死。
        AND (
-         (si.product_type = '疗程卡' AND COALESCE(si.remaining_sessions, 0) > 0)
-         OR (si.product_type = '家居产品' AND hp.deductible_quantity > 0)
+         CASE WHEN so.sale_order_type = '寄存单' OR si.sale_amount <= 0
+              THEN COALESCE(hp.deductible_quantity, 0) > 0
+              ELSE COALESCE(hp.deductible_amount, 0) > 0
+         END
        )
+       AND si.product_type IN ('疗程卡', '家居产品')
        -- 在途退款冻结：原订单存在 '待审批' 退款时排除整单的卡
        AND NOT EXISTS (
          SELECT 1 FROM sale_order_payments sop

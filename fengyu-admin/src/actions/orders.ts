@@ -451,6 +451,26 @@ function assertCanApproveDepositOrder(session: AuthSession): void {
  * staffApi/routes/order.js 有同义 SQL 副本；修改时保持语义一致。
  */
 async function rollbackPendingConversionOnClose(tx: OrderTx, saleOrderId: string): Promise<void> {
+  // 0a. 先锁**原单**（#182，与 createConversionOrder 同一锁序）：本函数末尾要 UPDATE 原单的
+  // total_amount/status 还原欠款，若留到那时才锁，足迹就是 sale_items → sale_orders，
+  // 与入账路径（先锁 sale_orders）反向成环。按 sale_order_id 升序一次锁完。
+  await tx.execute(sql`
+    SELECT sale_order_id FROM sale_orders
+     WHERE sale_order_id IN (
+       SELECT DISTINCT src.sale_order_id
+         FROM sale_items src
+         JOIN (
+           SELECT DISTINCT ref_sale_item_id
+             FROM sale_items
+            WHERE sale_order_id = ${saleOrderId}
+              AND item_direction = '转出'
+              AND ref_sale_item_id IS NOT NULL
+         ) refs ON refs.ref_sale_item_id = src.sale_item_id
+     )
+     ORDER BY sale_order_id
+     FOR UPDATE
+  `)
+
   // 0. 先用一条语句按全局 sale_item_id 顺序锁住本单引用的**全部**源行。
   //    createConversionOrder 折抵时是单语句 ORDER BY si.sale_item_id ... FOR UPDATE OF si（不分类型），
   //    若这里分「疗程卡段→家居段」两次加锁，混选转换单在家居行 id < 疗程卡行 id 时会形成反向锁序而死锁。
@@ -530,6 +550,193 @@ async function rollbackPendingConversionOnClose(tx: OrderTx, saleOrderId: string
      WHERE src.sale_item_id = locked_source.sale_item_id
   `)
 
+  // #182 欠款归零的回滚。折抵时把原行应付下调到实收、差额记在**转出行**的 waived_amount 上
+  // （原行那份是累计值，归因不到具体转换单）。关单必须等量还回，否则
+  // 「开转换单 → 关闭」= 永久抹掉原单欠款。与 staff rollbackPendingConversionOnClose 同源。
+  const restoredWaiveRaw = await tx.execute(sql`
+    WITH waived AS (
+      SELECT ref_sale_item_id,
+             SUM(waived_amount::numeric) AS waived,
+             -- 原行 pending_received 快照（新口径下同一行只折一次，MAX 即该次快照）
+             MAX(pending_received::numeric) AS orig_pending
+        FROM sale_items
+       WHERE sale_order_id = ${saleOrderId}
+         AND item_direction = '转出'
+         AND ref_sale_item_id IS NOT NULL
+       GROUP BY ref_sale_item_id
+      HAVING SUM(waived_amount::numeric) > 0
+    ),
+    locked_source AS (
+      SELECT src.sale_item_id, src.sale_order_id, waived.waived, waived.orig_pending
+        FROM sale_items src
+        JOIN waived ON waived.ref_sale_item_id = src.sale_item_id
+       ORDER BY src.sale_item_id
+       FOR UPDATE OF src
+    ),
+    restored AS (
+      UPDATE sale_items src
+         SET sale_amount = (src.sale_amount::numeric + locked_source.waived)::numeric(10, 2),
+             waived_amount = (src.waived_amount::numeric - locked_source.waived)::numeric(10, 2),
+             -- 还原折抵时被钉住的 pending_received，避免永久改写 Branch B 的分摊权重
+             pending_received = locked_source.orig_pending::numeric(10, 2),
+             updated_at = NOW()
+        FROM locked_source
+       WHERE src.sale_item_id = locked_source.sale_item_id
+         -- 自校验：原行累计豁免额必须够扣。只夹下界（GREATEST）会把「重复还原」静默吃掉
+         -- （sale_amount 被 +Δ 两次、waived 只减到 0），破坏「原始应付 = sale_amount + waived_amount」。
+         AND src.waived_amount::numeric >= locked_source.waived
+      RETURNING locked_source.sale_order_id, locked_source.sale_item_id, locked_source.waived
+    )
+    -- 按**行**返回：订单级还原量要逐行扣掉该行已退款额（与正向 orderWaiveAmount 同公式），
+    -- 直接把行级总额加回 total_amount 会把「已退给顾客的钱」变成假欠款。
+    -- ⚠ 必须从 waived（转出行归因凭据）**左连**出发，不能从 locked_source 出发：
+    -- locked_source 是内连接，源行若已不存在，这条归因会**整条消失**，下面的 restored_ok
+    -- 检查也就看不见它 —— 权益已被前两段无条件加回、欠款却没还原。
+    -- restored_ok 单独一列：上面那道自校验 CAS 失败时 restored 只会**静默少行**。
+    SELECT w.ref_sale_item_id AS sale_item_id,
+           ls.sale_order_id,
+           w.waived,
+           (ls.sale_item_id IS NOT NULL) AS source_found,
+           (r.sale_item_id IS NOT NULL) AS restored_ok
+      FROM waived w
+      LEFT JOIN locked_source ls ON ls.sale_item_id = w.ref_sale_item_id
+      LEFT JOIN restored r ON r.sale_item_id = w.ref_sale_item_id
+     ORDER BY ls.sale_order_id, w.ref_sale_item_id
+  `)
+  // 没有任何行被豁免过时这条语句返回空集；非数组一律按「无可还原」处理
+  const restoredWaive: Array<Record<string, unknown>> = Array.isArray(restoredWaiveRaw)
+    ? (restoredWaiveRaw as unknown as Array<Record<string, unknown>>)
+    : []
+  if (restoredWaive.some((r) => r.source_found !== true)) {
+    throw new ApiError('CONFLICT', 'SOURCE_ITEM_GONE: 折抵的原订单明细已不存在，无法还原欠款')
+  }
+  if (restoredWaive.some((r) => r.restored_ok !== true)) {
+    throw new ApiError('CONFLICT', 'WAIVE_CHANGED: 原订单的折抵豁免额已被改动，无法还原欠款，请刷新后重试')
+  }
+
+  // 逐行换算成订单级还原量：Σ max(0, 行级 waived − 该行已退款额)。
+  // SQL 与 lib/per-item-refund.ts 同源；事务体内必须走 tx。
+  const orderRestoreMap = new Map<string, number>()
+  for (const orderId of [...new Set(restoredWaive.map((r) => r.sale_order_id as string))].sort()) {
+    const refundedRows = (await tx.execute(sql`
+      WITH refund_items AS (
+        SELECT elem ->> 'refSaleItemId' AS sale_item_id,
+               COALESCE((elem ->> 'refundAmount')::numeric, 0) AS refund_amount
+        FROM sale_order_payments sop
+        CROSS JOIN LATERAL jsonb_array_elements(
+          CASE WHEN sop.note LIKE '{%'
+               THEN CASE WHEN jsonb_typeof((sop.note)::jsonb -> 'items') = 'array'
+                         THEN (sop.note)::jsonb -> 'items'
+                         ELSE '[]'::jsonb END
+               ELSE '[]'::jsonb END
+        ) AS elem
+        WHERE sop.sale_order_id = ${orderId}
+          AND sop.change_type = '退款'
+          AND sop.status = '已支付'
+          AND elem ->> 'refSaleItemId' IS NOT NULL
+          AND elem ->> 'refSaleItemId' <> 'OVERPAY'
+      )
+      SELECT sale_item_id, SUM(refund_amount) AS refunded
+        FROM refund_items GROUP BY sale_item_id
+    `)) as unknown as Array<Record<string, unknown>>
+    const refundedMap = new Map<string, number>(
+      (Array.isArray(refundedRows) ? refundedRows : []).map(
+        (r) => [r.sale_item_id as string, Number(r.refunded ?? 0)],
+      ),
+    )
+    let total = 0
+    for (const r of restoredWaive) {
+      if ((r.sale_order_id as string) !== orderId) continue
+      const rowWaived = Math.round(Number(r.waived ?? 0) * 100) / 100
+      const refunded = Math.round(Number(refundedMap.get(r.sale_item_id as string) ?? 0) * 100) / 100
+      total += Math.max(0, Math.round((rowWaived - refunded) * 100) / 100)
+    }
+    orderRestoreMap.set(orderId, Math.round(total * 100) / 100)
+  }
+
+  for (const refOrderId of [...orderRestoreMap.keys()].sort()) {
+    const waived = orderRestoreMap.get(refOrderId) as number
+    if (!(waived > 0)) continue
+    const lockedRows = (await tx.execute(sql`
+      SELECT total_amount, received, prepaid_card_amount, pending_prepaid_card_amount,
+             status, sale_order_type
+        FROM sale_orders WHERE sale_order_id = ${refOrderId} FOR UPDATE
+    `)) as unknown as Array<Record<string, unknown>>
+    const o = lockedRows[0]
+    // 前面的 CTE 已经还原了源行 sale_amount / waived_amount / pending_received，
+    // 此时订单不存在就会留下「行已还原、单未还原」的永久不一致；必须让整笔关单事务回滚。
+    if (!o) throw new ApiError('CONFLICT', 'ORDER_GONE: 原订单已不存在，无法还原折抵豁免的欠款')
+    const newTotal = Math.round((Number(o.total_amount ?? 0) + waived) * 100) / 100
+    const orderReceived = Math.round(Number(o.received ?? 0) * 100) / 100
+    const keepsPayable = ['销售单', '内部单', '转换单'].includes(o.sale_order_type as string)
+    const newPayable = keepsPayable
+      ? Math.max(0, Math.round((newTotal
+          - Number(o.prepaid_card_amount ?? 0)
+          - Number(o.pending_prepaid_card_amount ?? 0)) * 100) / 100)
+      : null
+    // 欠款恢复后从'已支付'退回'部分支付'；'已完成'是终态不回退
+    const targetStatus = o.status === '已支付' && orderReceived + 0.001 < newTotal
+      ? '部分支付'
+      : (o.status as string)
+    // CAS 与正向折抵的订单 UPDATE 逐字对称（`AND status = <旧值> AND lakala_out_order_no IS NULL`）：
+    // 本语句写 status，缺 CAS 就是无守卫的状态机 UPDATE。行虽已在上一句 FOR UPDATE 持锁，
+    // 但在途在线支付意味着回调随时会按当前 total 结算，此时改写 total/status 会与回调竞争 ——
+    // 宁可整笔关单失败让操作者重试。
+    const updRestored = await tx.execute(sql`
+      UPDATE sale_orders
+         SET total_amount = ${newTotal.toFixed(2)},
+             payable_amount = ${newPayable === null ? sql`payable_amount` : sql`${newPayable.toFixed(2)}`},
+             status = ${targetStatus}::order_status,
+             updated_at = NOW()
+       WHERE sale_order_id = ${refOrderId}
+         AND status = ${o.status as string}::order_status
+         AND lakala_out_order_no IS NULL
+    `)
+    // 行已在上一句 FOR UPDATE 持锁，正常必为 1；为 0 = 原单在持锁期间消失（孤儿数据）或
+    // 有在途在线支付。此时源行 sale_amount 已还原而订单 total 未还原，必须显式抛出。
+    if (rowsAffected(updRestored) === 0) {
+      throw new ApiError('CONFLICT', 'ORDER_GONE: 原订单状态已变更或有在途支付，无法还原折抵豁免的欠款')
+    }
+  }
+
+  // 应付恢复 → paid_sessions 退回未满付（公式与 PAID_SESSIONS_RECALC_SQL 同源）。
+  // ⚠ 必须**独立于订单级还原量**循环，与正向 6b 同一条对称纪律：订单级还原量为 0
+  // （行级豁免额全部来自已退款、本无真实欠款）时上面会 continue，但源行 sale_amount 已被
+  // CTE **无条件**还原 —— 不重算就会留下偏高的 paid_sessions（付清后退款 40% 的 10 次卡会
+  // 停在 10，正确值 6），把已退款的权益重新放出来。
+  for (const refOrderId of [...new Set(restoredWaive.map((r) => r.sale_order_id as string))].sort()) {
+    const recalcRes = await tx.execute(sql`
+      UPDATE sale_items
+         SET paid_sessions = CASE
+               WHEN sale_items.session_count IS NULL THEN NULL
+               WHEN op.total_amount <= 0 THEN sale_items.session_count
+               WHEN sale_items.sale_amount <= 0 THEN sale_items.session_count
+               ELSE LEAST(sale_items.session_count, FLOOR(sale_items.received::numeric * sale_items.session_count / sale_items.sale_amount::numeric)::integer)
+             END,
+             updated_at = NOW()
+        FROM (SELECT total_amount FROM sale_orders WHERE sale_order_id = ${refOrderId}) op
+       WHERE sale_items.sale_item_id IN (
+         SELECT out_item.ref_sale_item_id
+           FROM sale_items out_item
+          WHERE out_item.sale_order_id = ${saleOrderId}
+            AND out_item.item_direction = '转出'
+            AND out_item.ref_sale_item_id IS NOT NULL
+            -- 必须与正向作用域一致（只含真正被豁免过的行）。少了这条会把同单其它被折抵行
+            -- 一起重算——已全退、被 STEP 2.5 压成 paid_sessions=0 的 0 元赠品卡会命中
+            -- sale_amount <= 0 兜底重回满次数，而 paid_sessions 是「已退款卡消失」的唯一机制。
+            AND out_item.waived_amount::numeric > 0
+       )
+         AND sale_items.sale_order_id = ${refOrderId}
+    `)
+    // 影响行数必为 >= 1：作用域来自「本单 waived_amount > 0 的转出行」，其源行刚被上面的 CTE
+    // 还原过、source_found / restored_ok 都已校验。为 0 只可能是 op 子查询取不到原单
+    // （孤儿数据）—— 此时源行金额已还原、paid_sessions 没还原，而下面还会把归因凭据清零，
+    // 必须显式抛出。订单级还原量为 0 的那条路径也走这里，不会被上面的 continue 绕过。
+    if (rowsAffected(recalcRes) === 0) {
+      throw new ApiError('CONFLICT', 'ORDER_GONE: 原订单已不存在，无法还原折抵行的已支付次数')
+    }
+  }
+
   await tx.execute(sql`
     UPDATE sale_items
        SET received = 0,
@@ -541,6 +748,9 @@ async function rollbackPendingConversionOnClose(tx: OrderTx, saleOrderId: string
              WHEN session_count IS NULL THEN NULL
              ELSE 0
            END,
+           -- #182：归因额清零，让本函数对同一张转换单幂等。上面那道「CAS 失败即抛 CONFLICT」
+           -- 的自校验没有它就会把「已还原过」误判成「豁免额被外部改动」而报错。
+           waived_amount = 0,
            updated_at = NOW()
      WHERE sale_order_id = ${saleOrderId}
        AND item_direction IN ('转出', '转入')
@@ -5443,7 +5653,30 @@ export const createConversionOrder = withPermission(
 
   try {
     result = await db.transaction(async (tx) => {
-      // 1. 先锁住转出候选行；service.start 使用同一把 sale_items 行锁写预扣。
+      // 0b. 先锁**原单**（#182）。项目锁序约定 sale_orders → sale_order_payments，既有入账路径
+      // （confirmOffline / recordPayment / payNotify）一律先锁 sale_orders、再由
+      // recalcPaidSessionsForOrder 更新 sale_items。欠款归零那段要锁原单，若等到那时才锁，
+      // 本事务足迹就是 sale_items → sale_orders，与入账路径互为反向，中间还隔着十余条语句，
+      // 持锁窗口长、40P01 命中率高。故先按 sale_order_id 升序锁住涉及的原单，
+      // 把锁序统一回 sale_orders → sale_items；后面那次 FOR UPDATE 变成同事务重入。
+      const refOrderRows = (await tx.execute(sql`
+        SELECT DISTINCT sale_order_id FROM sale_items
+         WHERE sale_item_id IN (${sql.join(data.convertOutSaleItemIds.map((id) => sql`${id}`), sql`, `)})
+         ORDER BY sale_order_id
+      `)) as unknown as Array<Record<string, unknown>>
+      const refOrderIds = Array.isArray(refOrderRows)
+        ? refOrderRows.map((r) => r.sale_order_id as string)
+        : []
+      if (refOrderIds.length > 0) {
+        await tx.execute(sql`
+          SELECT sale_order_id FROM sale_orders
+           WHERE sale_order_id IN (${sql.join(refOrderIds.map((id) => sql`${id}`), sql`, `)})
+           ORDER BY sale_order_id
+           FOR UPDATE
+        `)
+      }
+
+      // 1. 再锁住转出候选行；service.start 使用同一把 sale_items 行锁写预扣。
       const heldRows = await tx.execute(sql`
         SELECT
           si.sale_item_id,
@@ -5463,6 +5696,7 @@ export const createConversionOrder = withPermission(
           si.unit_real_price,
           si.sale_amount,
           si.received,
+          si.pending_received,
           si.sales_category,
           COALESCE(si.is_shengmei, psk.is_shengmei) AS is_shengmei,
           si.service_fee,
@@ -5488,13 +5722,13 @@ export const createConversionOrder = withPermission(
       // `FOR UPDATE OF si` 只锁 sale_items：READ COMMITTED 下语句先取快照再等锁，
       // 唤醒后 EvalPlanQual 只刷新 si 自身的行版本，转出行聚合仍是旧快照
       // → 两笔并发折抵会各自读到 converted_amount=0，把同一批已付价值折两遍。
+      // ⚠ #182 起**疗程卡也走这条复算**：折抵额改「剩余已付」后同样依赖转出行聚合。
       //
       // #154：件数三列（picked_up / refunded / converted）都在 si 自己身上，EvalPlanQual 会刷新，
-      // 已随持锁查询一并取到，不再需要事后聚合 pickup_records —— 这条语句现在只为金额而存在。
-      const homeIds = held
-        .filter((row) => row.product_type === '家居产品')
-        .map((row) => row.sale_item_id as string)
-      if (homeIds.length > 0) {
+      // 已随持锁查询一并取到，不再需要事后聚合 pickup_records —— 这条语句现在只为**金额**而存在，
+      // 因此作用域必须覆盖**两类**（疗程卡也要扣已转走金额），不能像 #154 那样只取家居。
+      const deductibleIds = held.map((row) => row.sale_item_id as string)
+      if (deductibleIds.length > 0) {
         const consumedRows = (await tx.execute(sql`
           SELECT si.sale_item_id,
                  COALESCE((SELECT SUM(GREATEST(0, -out_item.received::numeric))
@@ -5502,14 +5736,12 @@ export const createConversionOrder = withPermission(
                              JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id
                             WHERE out_item.ref_sale_item_id = si.sale_item_id
                               AND out_item.item_direction = '转出'
-                              AND out_item.product_type = '家居产品'
                               AND conv_order.status <> '已关闭'), 0) AS home_converted_amount
             FROM sale_items si
-           WHERE si.sale_item_id IN (${sql.join(homeIds.map((id) => sql`${id}`), sql`, `)})
+           WHERE si.sale_item_id IN (${sql.join(deductibleIds.map((id) => sql`${id}`), sql`, `)})
         `)) as unknown as Array<Record<string, unknown>>
         const consumedById = new Map(consumedRows.map((r) => [r.sale_item_id as string, r]))
         for (const row of held) {
-          if (row.product_type !== '家居产品') continue
           const c = consumedById.get(row.sale_item_id as string)
           row.home_converted_amount = c?.home_converted_amount ?? 0
         }
@@ -5541,6 +5773,42 @@ export const createConversionOrder = withPermission(
       }
 
       let totalOut = 0
+      // #182：Δ（欠款豁免额）必须扣掉**行级已退款额**。`received` 是行级**净**实收
+      // （paid-sessions STEP 1.5 已按逐项退款扣过），直接用 sale_amount − received 会把
+      // 「已经退给顾客的钱」也当成欠款豁免掉：原价 ¥100 已付 ¥100 已退 ¥40 → received=60 →
+      // 错误 Δ=40（真实欠款为 0）；订单 total 再减 40 后 total − refunded_amount 的净额
+      // 从 60 掉到 20，污染报表 / 会员阈值 / 状态判定。SQL 与 lib/per-item-refund.ts 同源，
+      // 此处必须走 tx（事务体内不得有非-tx await）。
+      const refundedRows = (await tx.execute(sql`
+        WITH refund_items AS (
+          SELECT elem ->> 'refSaleItemId' AS sale_item_id,
+                 COALESCE((elem ->> 'refundAmount')::numeric, 0) AS refund_amount
+          FROM sale_order_payments sop
+          CROSS JOIN LATERAL jsonb_array_elements(
+            CASE WHEN sop.note LIKE '{%'
+                 THEN CASE WHEN jsonb_typeof((sop.note)::jsonb -> 'items') = 'array'
+                           THEN (sop.note)::jsonb -> 'items'
+                           ELSE '[]'::jsonb END
+                 ELSE '[]'::jsonb END
+          ) AS elem
+          WHERE sop.sale_order_id IN (
+                  SELECT DISTINCT sale_order_id FROM sale_items
+                   WHERE sale_item_id IN (${sql.join(data.convertOutSaleItemIds.map((id) => sql`${id}`), sql`, `)})
+                )
+            AND sop.change_type = '退款'
+            AND sop.status = '已支付'
+            AND elem ->> 'refSaleItemId' IS NOT NULL
+            AND elem ->> 'refSaleItemId' <> 'OVERPAY'
+        )
+        SELECT sale_item_id, SUM(refund_amount) AS refunded
+          FROM refund_items GROUP BY sale_item_id
+      `)) as unknown as Array<Record<string, unknown>>
+      const refundedByItem = new Map<string, number>(
+        (Array.isArray(refundedRows) ? refundedRows : []).map(
+          (r) => [r.sale_item_id as string, Number(r.refunded ?? 0)],
+        ),
+      )
+
       type OutItem = {
         refSaleItemId: string
         skuId: string | null
@@ -5555,6 +5823,15 @@ export const createConversionOrder = withPermission(
         serviceFee: number
         isExperience: boolean
         isShengmei: boolean | null
+        /** #182 欠款归零：原单 id / 原行应付快照（CAS 期望值）/ 本次豁免额 Δ / 原 pending 快照 */
+        refSaleOrderId: string
+        refSaleAmount: number
+        waiveAmount: number
+        /** 订单级真实欠款豁免额（= 行级 − 行级已退款额），只有它能进 total_amount */
+        orderWaiveAmount: number
+        /** 折抵后钉给 pending_received 的**毛已付**（净实收 + 该行已退款额） */
+        pinnedPendingReceived: number
+        refPendingReceived: number
       }
       const outItems: OutItem[] = []
 
@@ -5584,21 +5861,35 @@ export const createConversionOrder = withPermission(
         // 2026-09-14 #125：家居产品可作为折抵来源
         // ⚠ #145/#153 收紧：家居改按「已付未结算」折抵（件数向下取整、金额含余数，见 homeDeductible）。
         //   旧的「未提货数量全额折抵」会把未兑现价值洗成全额可提（dev 真库实证）。疗程卡口径不变。
+        // #182 统一口径：折抵额 = 该行「剩余已付」（含不足一整次/一整件的余数），
+        // 折抵数量 = 该行全部剩余权益（整行退出）。与 staff createConversion 同源。
+        if (productType !== '疗程卡' && productType !== '家居产品') {
+          throw new ApiError('INVALID_PARAMS', 'CARD_TYPE_INVALID: 所选行类型不支持折抵')
+        }
+        const toCents = (v: unknown) => Math.round((Number(v ?? 0) || 0) * 100)
+        const isDepositOrGift = row.sale_order_type === '寄存单' || Number(row.sale_amount ?? 0) <= 0
+        const unitCents = toCents(row.unit_real_price)
         let qty = 0
-        let lineAmount: number | null = null   // 非空时覆盖 unit × qty（家居金额含不足一件的已付余数）
+        let lineAmount = 0
         if (productType === '疗程卡') {
           const rem = Number(row.remaining_sessions ?? 0)
           const reserved = reservedBySaleItemId.get(row.sale_item_id as string) ?? 0
-          if (rem <= 0) {
-            throw new ApiError('INVALID_STATE', 'CARD_EXHAUSTED: 所选卡已耗尽，无法折抵')
+          // 整行退出与「留几次给在途服务」互斥：钱已全额折走，留下的次数就是白送，
+          // 而把预扣一起注销会让 service.confirm 的扣次守卫失败、服务单永久卡在
+          // 「待客户确认」且预扣不释放。故存在在途预扣时整行拒绝。
+          if (reserved > 0) {
+            throw new ApiError('INVALID_STATE', 'CARD_RESERVED: 所选项目有服务进行中，请先完成或取消服务单后再折抵')
           }
-          const available = rem - reserved
-          if (available <= 0) {
-            throw new ApiError('INVALID_STATE', 'CARD_RESERVED: 所选卡可用次数不足（存在服务中预留）')
-          }
-          qty = available  // 折抵数量改为可用次数（扣除预扣）
-        } else if (productType === '家居产品') {
-          // 锁内复算（候选列表可能已过期），与 staff createConversion 同源
+          qty = rem
+          const deliveredCents = Math.max(0, Number(row.session_count ?? 0) - rem) * unitCents
+          const remainingPaidCents = Math.max(
+            0,
+            toCents(row.received) - deliveredCents - toCents(row.home_converted_amount),
+          )
+          lineAmount = isDepositOrGift ? (unitCents * rem) / 100 : remainingPaidCents / 100
+        } else {
+          // 金额沿用 homeDeductible 的「剩余已付」；**件数不再取它的提货口径**，
+          // 整行退出带走全部未结算件（折后可提 = min(0, …) = 0，守恒仍成立）。
           const home = homeDeductible({
             saleOrderType: row.sale_order_type as string,
             quantity: Number(row.quantity ?? 0),
@@ -5610,21 +5901,56 @@ export const createConversionOrder = withPermission(
             received: row.received as string,
             unitRealPrice: row.unit_real_price as string,
           })
-          if (home.quantity <= 0) {
-            throw new ApiError('INVALID_STATE', 'HOME_PRODUCT_NO_PENDING: 所选家居产品没有已付清的整件可折抵')
-          }
-          qty = home.quantity
+          qty = Math.max(0, Number(row.quantity ?? 0) - Number(row.picked_up_quantity ?? 0))
           lineAmount = Math.round(home.amount * 100) / 100
-        } else {
-          throw new ApiError('INVALID_PARAMS', 'CARD_TYPE_INVALID: 所选行类型不支持折抵')
         }
 
-        const amount = lineAmount != null ? lineAmount : Math.round(unit * qty * 100) / 100
+        // 纯余数行（疗程卡次数已用完 / 家居物理件已结算完）Q=0 但 A>0 仍放行——
+        // 让顾客把这笔不足一整次(件)的已付款换走，DB 侧已放宽 chk_item_quantity。
+        //
+        // ⚠ 本闸门必须与 getCustomerHeldCards 的候选 WHERE **同口径**，宽一点都不行：
+        // 若写成 `qty <= 0 && lineAmount <= 0`，则「Q>0 且 A=0」会被放行——候选加载后一次
+        // 服务核销（delivered 涨满、预扣随服务完成释放）就能构造出来。后果是落一条 0 元转出行、
+        // 把剩余权益凭空注销（顾客一分钱没换走），又因 Δ=0 不走欠款归零，于是
+        // (session_count − remaining_sessions) > paid_sessions 永久违反 D3，该原单此后任何
+        // recalc（回款/退款/支付回调）都抛 PAID_SESSIONS_UNDERFLOW 而彻底锁死。
+        if (isDepositOrGift ? qty <= 0 : lineAmount <= 0) {
+          throw new ApiError('INVALID_STATE', 'DEDUCTIBLE_EMPTY: 所选折抵项没有可折抵的已付金额')
+        }
+
+        // #182 欠款归零额 Δ。三个守卫缺一不可：寄存单（received 恒 0，sale_amount 是
+        // 原价快照）、received > 0（否则新 sale_amount 落 0，踩 sale_amount<=0 的赠品
+        // 全放分支）、Δ > 0（overpay 行 received > sale_amount，不能反向上调应付）。
+        const refSaleAmount = Math.round(Number(row.sale_amount ?? 0) * 100) / 100
+        const refReceived = Math.round(Number(row.received ?? 0) * 100) / 100
+        const refRefunded = Math.round(
+          Number(refundedByItem.get(row.sale_item_id as string) ?? 0) * 100,
+        ) / 100
+        // ⚠ 行级与订单级的下调额**不是同一个数**：
+        //  · 行级 = sale_amount − 净实收，作用是让 paid_sessions 重算到满付，从而在
+        //    remaining_sessions 注销为 0 后仍满足 D3（10 次卡付清后退 4 次 → received=600 /
+        //    paid_sessions=6，折抵后 (10 − 0) > 6 会立刻违反 D3 并提交坏状态）。
+        //  · 订单级 = 行级 − 行级已退款额，即真实欠款；多扣就是把已退给顾客的钱
+        //    又当欠款豁免一次，total_amount − refunded_amount 的净额被重复扣减。
+        const rowWaiveRaw = Math.round((refSaleAmount - refReceived) * 100) / 100
+        const orderWaiveRaw = Math.round((rowWaiveRaw - refRefunded) * 100) / 100
+        const waiveEligible = row.sale_order_type !== '寄存单'
+          && refSaleAmount > 0 && refReceived > 0
+        const waiveAmount = waiveEligible && rowWaiveRaw > 0 ? rowWaiveRaw : 0
+        const orderWaiveAmount = waiveEligible && orderWaiveRaw > 0 ? orderWaiveRaw : 0
+
+        const amount = lineAmount
         totalOut += amount
-        // 按折抵数量比例扣减 service_fee（负值）
+        // 按折抵数量比例扣减 service_fee（负值）；纯余数行 qty=0 → 不扣手工费。
+        // ⚠ 分母必须与 qty 同量纲：service_fee 快照口径是 sku.service_fee × quantity(**张数**)，
+        // 而疗程卡的 qty 是**次数**。用张数作分母会把手工费放大 session_count 倍。
         const origServiceFee = Number(row.service_fee ?? 0)
-        const origQty = Number(row.quantity) || 1
-        const outServiceFee = -Math.round((origServiceFee * qty / origQty) * 100) / 100
+        const feeBase = productType === '疗程卡'
+          ? (Number(row.session_count) || 1)
+          : (Number(row.quantity) || 1)
+        const outServiceFee = qty > 0
+          ? -Math.round((origServiceFee * qty / feeBase) * 100) / 100
+          : 0
 
         outItems.push({
           refSaleItemId: row.sale_item_id as string,
@@ -5640,6 +5966,19 @@ export const createConversionOrder = withPermission(
           serviceFee: outServiceFee,
           isExperience: row.is_experience === true,
           isShengmei: (row.is_shengmei as boolean | null) ?? null,
+          // #182 欠款归零：Δ 同时写在转出行 waived_amount 上用于归因（原行那份是累计值）
+          refSaleOrderId: row.sale_order_id as string,
+          refSaleAmount,
+          waiveAmount,
+          orderWaiveAmount,
+          // 欠款归零会把 pending_received 钉到该行**毛已付** = 净实收 + 该行已退款额。
+          // 必须是毛额：STEP 1 重建的是毛额语义，钉住值随后要经 STEP 1.5 扣一次退款才成净额。
+          // 钉成净实收会被 STEP 1.5 再扣一次（付清后退过款的行终值 = 净额 − 退款额 < 新应付）
+          // → paid_sessions 不满付，而 remaining_sessions 已注销为 0 → 永久违反 D3。
+          pinnedPendingReceived: Math.round((refReceived + refRefunded) * 100) / 100,
+          // 原行 pending_received 快照：关单回滚必须还原，否则历史行（原本 pending=0）的
+          // 分摊权重被永久改写。
+          refPendingReceived: Math.round(Number(row.pending_received ?? 0) * 100) / 100,
         })
       }
 
@@ -6049,6 +6388,11 @@ export const createConversionOrder = withPermission(
           isExperience: out.isExperience,
           // 转出行镜像原 sale_items.is_shengmei（COALESCE product_skus 兜底）
           isShengmei: out.isShengmei,
+          // #182：本次为该行豁免掉的原单欠款，关单回滚靠它归因到本张转换单
+          waivedAmount: out.waiveAmount.toFixed(2),
+          // #182：原行 pending_received 快照。转出行自身不参与 STEP 1 的 caps（只取「购买」行），
+          // 故借这一列存快照不影响既有计算。
+          pendingReceived: out.refPendingReceived.toFixed(2),
         })
 
         // 原子扣减本次实际折抵的次数；服务中预扣仍留在源卡，供后续确认核销。
@@ -6084,6 +6428,120 @@ export const createConversionOrder = withPermission(
           // 裸 `.count === 0` 在 driver 变更/mock 漂移时会 undefined === 0 → 静默放行守卫。
           if (rowsAffected(upd) === 0) throw new ApiError('CONFLICT', 'HOME_PRODUCT_CONCURRENT_CHANGED: 家居产品可提数量变化，请重试')
         }
+      }
+
+      // 6b. 欠款归零（#182）。折抵 = 该行整体退出，原单该行不该再挂欠款。
+      // 这**不是可选的善后**，而是注销权益的前置条件：D3 不变量
+      // (session_count - remaining_sessions) <= paid_sessions 由 recalc 末尾按整单执法，
+      // 只扣 remaining_sessions 而不下调应付，部分支付行立刻违反 D3 → 源订单从此无法回款、
+      // 无法退款、payNotify 回调直接抛 CONFLICT。应付下调到实收后 paid_sessions 恒满付。
+      // 与 staff createConversion 同源。
+      const waiveByOrder = new Map<string, number>()
+      for (const out of outItems) {
+        const waive = out.waiveAmount
+        if (!(waive > 0)) continue
+        const updItem = await tx
+          .update(saleItems)
+          .set({
+            saleAmount: sql`${saleItems.saleAmount} - ${waive}`,
+            waivedAmount: sql`${saleItems.waivedAmount} + ${waive}`,
+            // 把「逐行实付草稿」钉到该行**毛已付**（净实收 + 该行已退款额）。这是 D3 的承重墙：
+            // STEP 1 Branch B 见 waived_amount > 0 就按本列**固定预留**该行的 received（不再丢进
+            // 比例池），预留额同时从 untargeted 扣除 → 该行 received 恒等于毛已付、同单其它行
+            // 分到的钱不变；再由 STEP 1.5 扣掉该行退款额得到净额，恰好等于下调后的 sale_amount。
+            // ⚠ 不能钉成净实收：STEP 1.5 会再扣一次退款，付清后退过款的行终值会低于新应付，
+            // 而本行 remaining_sessions 已注销为 0 → 永久违反 D3。
+            pendingReceived: out.pinnedPendingReceived.toFixed(2),
+            updatedAt: sql`NOW()`,
+          })
+          .where(and(
+            eq(saleItems.saleItemId, out.refSaleItemId),
+            sql`${saleItems.saleAmount} = ${out.refSaleAmount}`,
+          ))
+        if (rowsAffected(updItem) === 0) {
+          throw new ApiError('CONFLICT', 'ORDER_AMOUNT_CHANGED: 原订单金额已变更，请刷新后重试')
+        }
+        // 订单级只累加**真实欠款**部分（行级那一截含已退款额，不能进 total_amount）
+        waiveByOrder.set(
+          out.refSaleOrderId,
+          Math.round(((waiveByOrder.get(out.refSaleOrderId) ?? 0) + out.orderWaiveAmount) * 100) / 100,
+        )
+      }
+
+      // 原单按 sale_order_id 排序处理，保持稳定锁序（多张卡可能分属不同原单）
+      // 订单级下调额为 0（差额全部来自已退款、并无真实欠款）时跳过——行级 sale_amount 与
+      // paid_sessions 仍已处理、D3 已成立，订单 total 本就不该动。
+      for (const refOrderId of [...waiveByOrder.keys()].sort()) {
+        const waiveTotal = waiveByOrder.get(refOrderId) as number
+        if (!(waiveTotal > 0)) continue
+        const lockedOrderRows = (await tx.execute(sql`
+          SELECT total_amount, received, prepaid_card_amount, pending_prepaid_card_amount,
+                 status, sale_order_type
+            FROM sale_orders WHERE sale_order_id = ${refOrderId} FOR UPDATE
+        `)) as unknown as Array<Record<string, unknown>>
+        const o = lockedOrderRows[0]
+        if (!o) throw new ApiError('CONFLICT', 'ORDER_GONE: 原订单已不存在，请刷新后重试')
+        const newTotal = Math.round((Number(o.total_amount ?? 0) - waiveTotal) * 100) / 100
+        const orderReceived = Math.round(Number(o.received ?? 0) * 100) / 100
+        // payable 口径与 paid-sessions 的 ORDER_PREPAID_CARD_RECALC_SQL 一致（只对这三类单维护）
+        const keepsPayable = ['销售单', '内部单', '转换单'].includes(o.sale_order_type as string)
+        const newPayable = keepsPayable
+          ? Math.max(0, Math.round((newTotal
+              - Number(o.prepaid_card_amount ?? 0)
+              - Number(o.pending_prepaid_card_amount ?? 0)) * 100) / 100)
+          : null
+        // 结清判定基准 = total_amount（与 recordPayment 同锚）。只从'部分支付'向前推进。
+        // ⚠ 刻意**不写 paid_at**：豁免不是收款。既有 reconcileOrderStatusAfterRefund 推进状态时
+        // 会 COALESCE(paid_at, NOW())，但那条路径没有回滚；这里若照做，关单回滚无法区分
+        // 「本次补的」与「首付时原有的」paid_at，清空会误删真实收款时间、不清则部分支付单
+        // 带着豁免那天的日期。不写即天然对称。业绩归属读 performance_attribution_date，不受影响。
+        const targetStatus = o.status === '部分支付' && orderReceived + 0.001 >= newTotal
+          ? '已支付'
+          : (o.status as string)
+        const updOrderRes = await tx.execute(sql`
+          UPDATE sale_orders
+             SET total_amount = ${newTotal.toFixed(2)},
+                 payable_amount = ${newPayable === null ? sql`payable_amount` : sql`${newPayable.toFixed(2)}`},
+                 status = ${targetStatus}::order_status,
+                 updated_at = NOW()
+           WHERE sale_order_id = ${refOrderId}
+             AND status = ${o.status as string}::order_status
+             AND lakala_out_order_no IS NULL
+        `)
+        if (rowsAffected(updOrderRes) === 0) {
+          throw new ApiError('CONFLICT', 'ORDER_STATUS_CHANGED: 原订单状态已变更或有在途支付，请刷新后重试')
+        }
+
+      }
+
+      // 行级重算被折抵行的 paid_sessions。**必须独立于「订单级是否有真实欠款可扣」**：
+      // 付清后部分退款的行 orderWaive 为 0，但行级 sale_amount 仍被压到净实收，
+      // paid_sessions 必须跟着重算到满付，否则 remaining_sessions 已注销为 0 而
+      // (session_count − 0) > paid_sessions → 提交坏状态，此后整单 recalc 必抛
+      // PAID_SESSIONS_UNDERFLOW。**刻意不跑整单 recalcPaidSessionsForOrder**：
+      // ① prod 实测 338 行 / 28 单本就违反 D3，整单守护会让这些单的折抵直接失败；
+      // ② 整单重算的 Branch B 会按新 sale_cap 重分行级 received，触发 0040 视图 residual。
+      // 公式与 lib/paid-sessions.ts 的 PAID_SESSIONS_RECALC_SQL 同源，作用域收到 sale_item_id。
+      const recalcTargets = new Map<string, string[]>()
+      for (const out of outItems) {
+        if (!(out.waiveAmount > 0)) continue
+        if (!recalcTargets.has(out.refSaleOrderId)) recalcTargets.set(out.refSaleOrderId, [])
+        recalcTargets.get(out.refSaleOrderId)!.push(out.refSaleItemId)
+      }
+      for (const refOrderId of [...recalcTargets.keys()].sort()) {
+        const itemIds = recalcTargets.get(refOrderId) as string[]
+        await tx.execute(sql`
+          UPDATE sale_items
+             SET paid_sessions = CASE
+                   WHEN sale_items.session_count IS NULL THEN NULL
+                   WHEN op.total_amount <= 0 THEN sale_items.session_count
+                   WHEN sale_items.sale_amount <= 0 THEN sale_items.session_count
+                   ELSE LEAST(sale_items.session_count, FLOOR(sale_items.received::numeric * sale_items.session_count / sale_items.sale_amount::numeric)::integer)
+                 END,
+                 updated_at = NOW()
+            FROM (SELECT total_amount FROM sale_orders WHERE sale_order_id = ${refOrderId}) op
+           WHERE sale_items.sale_item_id IN (${sql.join(itemIds.map((id) => sql`${id}`), sql`, `)})
+        `)
       }
 
       // 7. 转入行：疗程卡逐张落库，group_id 仅用于展示合并与操作展开。
@@ -6229,7 +6687,14 @@ export const createConversionOrder = withPermission(
     if (m?.includes('CARD_DIRECTION_INVALID')) return { success: false, message: '所选行不是有效权益，不可折抵' }
     if (m?.includes('CARD_ORDER_STATUS_INVALID')) return { success: false, message: '原订单状态不允许转换' }
     if (m?.includes('CARD_EXHAUSTED')) return { success: false, message: '所选卡已耗尽，无法折抵' }
-    if (m?.includes('CARD_RESERVED')) return { success: false, message: '所选卡可用次数不足（存在服务中预留）' }
+    // #182：折抵 = 整行退出，与在途服务预扣互斥，文案改为要求先处理服务单
+    if (m?.includes('CARD_RESERVED')) return { success: false, message: '所选项目有服务进行中，请先完成或取消服务单后再折抵' }
+    // #182：既无剩余权益又无剩余已付金额（取代旧的「没有已付清的整件可折抵」，
+    // 不足一整件的余数现在可折）
+    if (m?.includes('DEDUCTIBLE_EMPTY')) return { success: false, message: '所选折抵项没有可折抵的已付金额' }
+    if (m?.includes('ORDER_AMOUNT_CHANGED')) return { success: false, message: '原订单金额已变更，请刷新后重试' }
+    if (m?.includes('ORDER_STATUS_CHANGED')) return { success: false, message: '原订单状态已变更或有在途支付，请刷新后重试' }
+    if (m?.includes('ORDER_GONE')) return { success: false, message: '原订单已不存在，请刷新后重试' }
     if (m?.includes('CARD_TYPE_INVALID')) return { success: false, message: '所选行类型不支持折抵' }
     if (m?.includes('CARD_CONCURRENT_CHANGED')) return { success: false, message: '卡状态变化，请重试' }
     if (m?.includes('ORDER_ID_GEN_FAILED')) return { success: false, message: '订单号生成失败，请稍后重试' }
@@ -7386,7 +7851,16 @@ export const recordPayment = withPermission(
         await tx.execute(sql`
           WITH repay (sale_item_id, delta) AS (VALUES ${repayValues})
           UPDATE sale_items si
-          SET pending_received = COALESCE(rp.delta, 0),
+          SET pending_received = CASE
+             -- #182：折抵退出的行 pending_received 已被钉成「毛已付」，是 paid-sessions
+                -- STEP 1 Branch B 固定预留该行 received 的唯一依据。本语句是**覆盖式**的
+                -- （未选中的行会被写 0），一旦把折抵行也覆盖掉，预留归零 → 该行 received 掉到
+                -- targeted（通常 0），而它的 remaining_sessions 已注销为 0 →
+                -- (session_count − 0) > paid_sessions 永久违反 D3，原单从此回款/退款/回调全失败。
+                -- 触发条件很普通：同一原单里另一行发起定向回款即可。
+                WHEN si.waived_amount::numeric > 0 THEN si.pending_received
+                ELSE COALESCE(rp.delta, 0)
+              END,
               updated_at = NOW()
           FROM (SELECT sale_item_id FROM sale_items WHERE sale_order_id = ${saleOrderId} AND item_direction = '购买') ai
           LEFT JOIN repay rp ON rp.sale_item_id = ai.sale_item_id

@@ -1299,13 +1299,36 @@ describe('转换单转入 received 重算 SQL 四端一致性守护', () => {
     expect(sqls.adminTs).toBe(sqls.staff)
   })
 
-  test('目标值必须为 min(转入总价, 转出旧卡价值 + 订单净到账)，并按稳定顺序吸收尾差', () => {
+  // 尾差处理已从「稳定顺序吸收」改为累计边界差，见下一条用例。
+  test('目标值必须为 min(转入总价, 转出旧卡价值 + 订单净到账)', () => {
     expect(sqls.staff).toContain("conversion_order.sale_order_type = '转换单'")
     expect(sqls.staff).toContain("out_item.item_direction = '转出'")
     expect(sqls.staff).toContain("si.item_direction = '转入'")
-    expect(sqls.staff).toMatch(/LEAST\(conversion_order\.in_total, conversion_order\.converted_value \+ conversion_order\.net_received\)/)
-    expect(sqls.staff).toMatch(/ROW_NUMBER\(\) OVER\s*\(ORDER BY si\.sale_item_id\)\s+AS rn/)
-    expect(sqls.staff).toContain('WHEN rn = item_count THEN target_received -')
+    // #182：target 要先扣掉「已退出转入行已占的实收」（waived_in_received），
+    // 否则被再次折抵的转入行会与其余行一起重分摊，received 被改小而 remaining 已注销 → 踩 D3。
+    expect(sqls.staff).toMatch(/LEAST\(conversion_order\.in_total, GREATEST\(0, conversion_order\.converted_value \+ conversion_order\.net_received - conversion_order\.waived_in_received\)\)/)
+    // #182：排除判据是「存在未关闭的转出行引用本行」，**不是** waived_amount > 0——
+    // 全额结清的转入行再被折抵时 Δ=0、不写 waived_amount，却同样已注销权益，
+    // 而本 SQL 是整额覆盖式重分摊，漏排除就会在 target 收缩时把它的 received 改小 → 踩 D3。
+    expect(sqls.staff).toContain("AND NOT EXISTS (SELECT 1 FROM sale_items conv_out")
+    expect(sqls.staff).toContain("conv_out.ref_sale_item_id = si.sale_item_id")
+    expect(sqls.staff).not.toContain("AND in_item.waived_amount::numeric = 0")
+  })
+
+  // #182：分摊必须用**累计比例的相邻边界差**（与 STEP 1.75 同手法），不得回到
+  // 「逐行 ROUND + 最后一行吸收尾差」：① 尾差可为负（target=0.02、四行等权，每行
+  // ROUND(0.005,2)=0.01，前三行已占 0.03）→ received 变负 → FLOOR(负) = -1 → 误抛 D3；
+  // ② 只把尾行钳到 0 又会让 Σ 超过 target（0.03 > 0.02），凭空膨胀转入行价值。
+  // 边界差同时保证「每行非负」与「Σ 精确等于 target」。
+  test("四端按累计比例的相邻边界差分摊（不得回到尾行吸差）", () => {
+    const boundary = /ROUND\(target_received \* cumulative_sale_amount \/ in_total, 2\)\s*-\s*ROUND\(target_received \* \(cumulative_sale_amount - item_sale_amount\) \/ in_total, 2\)/i
+    const cumulative = /SUM\(si\.sale_amount::numeric\) OVER \(\s*ORDER BY si\.sale_item_id\s*ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW\s*\) AS cumulative_sale_amount/i
+    for (const sql of [sqls.staff, sqls.client, sqls.payNotify, sqls.adminTs]) {
+      expect(sql).toMatch(boundary)
+      expect(sql).toMatch(cumulative)
+      expect(sql).not.toMatch(/rn = item_count/i)
+      expect(sql).not.toMatch(/provisional_received/i)
+    }
   })
 
   test('转换单转入 received SQL 文本快照', () => {
@@ -1487,6 +1510,27 @@ describe("STEP 1 received 分摊 SQL 四端字节同义守护", () => {
       expect(allocSqls.payNotify).toMatch(pattern)
       expect(allocSqls.adminTs).toMatch(pattern)
     })
+    // #182：折抵退出的行（waived_amount > 0）必须走**固定预留**——按 pending_received（毛已付）
+    // 预留、同时从 untargeted 扣除，且 pend_cap / sale_cap 归 0 不参与比例瀑布。
+    // 三种错误写法都踩过（详见 backend.pr.spec.md）：钉净实收 → STEP 1.5 二次扣退款；
+    // 丢回比例池 → untargeted < Σpend_cap 时被摊薄；事后单行抬下限 → Σ行级 > 订单级实收。
+    test("四端折抵退出行按 pending_received 固定预留（reserved）", () => {
+      const reserved = /CASE WHEN si\.waived_amount::numeric > 0\s*THEN GREATEST\(0,\s*si\.pending_received::numeric\s*-\s*COALESCE\(tg\.targeted,\s*0\)::numeric\)\s*ELSE 0 END AS reserved/i
+      for (const sql of [allocSqls.staff, allocSqls.client, allocSqls.payNotify, allocSqls.adminTs]) {
+        expect(sql).toMatch(reserved)
+        // 预留额从 untargeted 扣除（否则同单其它行会被多分、Σ行级 > 订单级实收）
+        expect(sql).toMatch(/- COALESCE\(SUM\(reserved\),\s*0\)::numeric\) AS untargeted/i)
+        // 预留额计入终值两条分支
+        expect(sql).toMatch(/THEN caps\.targeted \+ caps\.reserved/i)
+        expect(sql).toMatch(/ELSE caps\.targeted \+ caps\.reserved END/i)
+        // 折抵行不得参与比例瀑布
+        expect(sql).toMatch(/CASE WHEN si\.waived_amount::numeric > 0 THEN 0\s*ELSE GREATEST\(0,\s*si\.pending_received[\s\S]*?END AS pend_cap/i)
+        expect(sql).toMatch(/CASE WHEN si\.waived_amount::numeric > 0 THEN 0\s*ELSE GREATEST\(0,\s*si\.sale_amount[\s\S]*?END AS sale_cap/i)
+      }
+    })
+    // ⚠ 不得改成 (sale_amount + waived_amount)：放大上限会让退出行吸走本该给同单欠款行的回款
+    // （两行各 ¥100 各付 ¥50，A 折抵后再回款 ¥50：放大后分成 A=75/B=75，正确应为 A=50/B=100），
+    // 还可能让 B 少解锁权益甚至踩 D3。折抵行的 received 靠上面那条 reserved 预留保住。
     test("四端第二段产能 sale_cap = GREATEST(0, sale_amount - max(pending_received, targeted))（实付→应付余量，防冻结）", () => {
       const pattern = /GREATEST\(0,\s*si\.sale_amount::numeric\s*-\s*GREATEST\(si\.pending_received::numeric,\s*COALESCE\(tg\.targeted,\s*0\)::numeric\)\)/i
       expect(allocSqls.staff).toMatch(pattern)
@@ -2225,6 +2269,48 @@ describe('cross-end-sql-snapshot 反模式守护（防镜像 bug 字面锁定失
       )
     }
   })
+
+  // #182：折抵退出的行（waived_amount > 0）债务已归零、权益已注销，不得再吸收新款项。
+  // 它的 pending_received 被钉成「毛已付」作为 paid-sessions STEP 1 的预留依据，
+  // 若照常算 pendCap = pending − prior，无历史 receipt 的老单（prior = 0）会凭空得到
+  // 一整笔产能，把本该落在真正欠款行的回款分给已结清行。四端 JS/TS 派生逻辑同步守护
+  // （本段不是 SQL 字面量，只能按特征文本比对）。
+  test('四端款项分摊必须把折抵退出行的产能归零（且取数带 waived_amount）', () => {
+    const ENDS = [
+      ['staff', FILES.staffPaymentAllocatableJs],
+      ['client', FILES.clientPaymentAllocatableJs],
+      ['payNotify', FILES.payNotifyPaymentAllocatableJs],
+      ['admin', FILES.adminPaymentAllocatableTs],
+    ]
+    for (const [end, file] of ENDS) {
+      const text = readFile(file)
+      expect(text, `${end} 购买行取数缺 waived_amount，无法判断是否已折抵`)
+        .toContain('waived_amount::numeric AS waived_amount')
+      expect(text, `${end} 缺「折抵行产能归零」分支`)
+        .toMatch(/if \(Number\(i\.waived_amount\) > 0\) \{[\s\S]{0,120}pendCap: 0, saleCap: 0/)
+      // 两段产能均为 0 的兜底不得把钱落到折抵行上
+      expect(text, `${end} 兜底仍写死 items[0]，可能落到折抵行`)
+        .toMatch(/items\.find\(\(i\) => !\(Number\(i\.waived_amount\) > 0\)\) \|\| items\[0\]/)
+    }
+  })
+
+  // #182：折抵两道闸门的错误**分类**必须两端一致。都映射成 -400 不代表等价——
+  // 前端按 `errorType` 分支、日志按前缀归类，一端 INVALID_PARAMS / 一端 INVALID_STATE
+  // 就不是严格镜像。语义上两者都是「该行当前状态不允许折抵」，统一用 INVALID_STATE +
+  // 二级子标签（CARD_RESERVED / DEDUCTIBLE_EMPTY）。
+  test('折抵两道闸门的错误分类两端一致（INVALID_STATE + 同名子标签）', () => {
+    const staffText = readFile(FILES.staffOrderJs)
+    const adminText = readFile(FILES.adminOrdersTs)
+    for (const tag of ['CARD_RESERVED', 'DEDUCTIBLE_EMPTY']) {
+      expect(staffText, `staff 的 ${tag} 未用 INVALID_STATE + 子标签`)
+        .toContain(`INVALID_STATE: ${tag}:`)
+      expect(adminText, `admin 的 ${tag} 未用 INVALID_STATE`)
+        .toMatch(new RegExp(`ApiError\\('INVALID_STATE',\\s*'${tag}:`))
+      // 反向：不得再退回 INVALID_PARAMS
+      expect(staffText, `staff 的 ${tag} 仍存在 INVALID_PARAMS 分类`)
+        .not.toMatch(new RegExp(`INVALID_PARAMS: ${tag}`))
+    }
+  })
 })
 
 describe('家居产品部分支付权益跨端守护', () => {
@@ -2583,8 +2669,22 @@ describe('转换单换入家居产品可见可提跨端守护', () => {
       // 余数（overpay）同样要按**实际已转走金额**算：折抵带走的是剩余已付的实际金额
       // （付 ¥450 折 4 件带走 ¥450，而 4 × 100 = 400），用件数 × 单价会把差额 ¥50
       // 误判成多收余数再退一次（对抗审查实证）。
-      expect(src, `${end} overpay 未按实际已转走金额算`).toContain(
-        'Number(it.picked_quantity || 0) * unitRealPrice + (Number(it.converted_amount ?? 0) || 0)',
+      expect(src, `${end} overpay 家居分支未按实际已转走金额算`).toContain(
+        'Number(it.picked_quantity || 0) * unitRealPrice + convertedAmount',
+      )
+      // #182：疗程卡分支也必须扣掉已转走金额。overpay 场景（received > sale_amount）折走的是
+      // 余数这笔真实金额且不动 remaining_sessions，不扣它就能「折一次再退一次」。
+      // #182：疗程卡必须**先按已转走次数扣减**再加已转走金额。只加金额会与
+      // (session_count − remaining_sessions) 双计——历史转出行（received = −单价 × Q）上
+      // 双计会把 overpay 钳成 0，顾客的多收零头既退不出也折不到。
+      expect(src, `${end} overpay 疗程卡分支未按已转走次数先扣再加金额`).toContain(
+        'Math.max(0, Number(it.session_count || 0) - Number(it.remaining_sessions || 0) - convertedQuantity) * unitRealPrice + convertedAmount',
+      )
+      expect(src, `${end} overpay 未取已转走次数`).toContain(
+        'const convertedQuantity = Math.max(0, Number(it.converted_quantity ?? 0) || 0)',
+      )
+      expect(src, `${end} overpay 不得把疗程卡排除在已转走金额口径外`).not.toContain(
+        "const hasConsumedDetail = it.product_type !== '疗程卡'",
       )
     }
   })
@@ -2759,19 +2859,40 @@ describe('转换单换入家居产品可见可提跨端守护', () => {
   // 「已提货金额」的件数因子自 #154 起直读 si.picked_up_quantity：拆列前该列还含已退款/已转换，
   // 拿它当已提货件数会把退款件扣两次（received 已由 paid-sessions STEP 1.5 扣过），
   // 所以那时只能另外聚合 pickup_records；拆列后本列就是物理提货量，聚合反而多余且读不到锁内新值。
-  const REMAINING_PAID_EXPR = "GREATEST(0, si.received::numeric - COALESCE(si.picked_up_quantity, 0) * si.unit_real_price::numeric - COALESCE((SELECT SUM(GREATEST(0, -out_item.received::numeric)) FROM sale_items out_item JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id WHERE out_item.ref_sale_item_id = si.sale_item_id AND out_item.item_direction = '转出' AND out_item.product_type = '家居产品' AND conv_order.status <> '已关闭'), 0)) AS remaining_paid"
+  // ⚠ 已转走金额的聚合**不限 out_item.product_type**（#182）：疗程卡与纯余数转出行（quantity=0）
+  //   都必须计入，限类型会让同一笔已付被折两遍。
+  // ⚠ 写 SQL 时不要把续行以 `*` 开头：stripComments 的 /^[ \t]*\*.*$/gm（本意剥 JSDoc 续行）
+  //   会把整行删掉，归一化文本会凭空少一个乘法项，断言便对不上实现。
+  const REMAINING_PAID_EXPR = "SELECT GREATEST(0, si.received::numeric - CASE WHEN si.product_type = '疗程卡' THEN GREATEST(0, COALESCE(si.session_count, 0) - COALESCE(si.remaining_sessions, 0))::numeric * si.unit_real_price::numeric ELSE COALESCE(si.picked_up_quantity, 0) * si.unit_real_price::numeric END - COALESCE((SELECT SUM(GREATEST(0, -out_item.received::numeric)) FROM sale_items out_item JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id WHERE out_item.ref_sale_item_id = si.sale_item_id AND out_item.item_direction = '转出' AND conv_order.status <> '已关闭'), 0)) AS remaining_paid"
 
   test('家居折抵额度以「剩余已付金额」为基准，两处 staff 站点同源', () => {
     const staff = normalizeSql(stripComments(readFile(FILES.staffOrderJs)))
-    // customerHeldCards 候选 + createConversion 锁内复算
+    // customerHeldCards 候选 + createConversion 锁内复算。#182 起疗程卡与家居共用同一
+    // 表达式：已交付价值按 product_type 分支（疗程卡=已消费次数×单价 / 家居=物理提货×单价）。
     expect(staff.split(REMAINING_PAID_EXPR).length - 1, 'staff 剩余已付表达式站点数漂移').toBe(2)
+    // 折抵**数量**不得再用「剩余已付 / 单价 向下取整」：#182 改为整行退出（带走全部剩余权益），
+    // 向下取整那条口径曾把「1 件 ¥680 只付 ¥594」整行剔除（prod 3 行 ¥814）。
+    expect(staff, '折抵件数不得回退到「剩余已付 / 单价」向下取整').not.toContain(
+      'GREATEST(0, FLOOR(hpa.remaining_paid / NULLIF(si.unit_real_price::numeric, 0)))::int',
+    )
+    // 折抵数量表达式（疗程卡剩余次数 / 家居未结算件数）四处同源。
+    // #154：家居那一支必须是**三列式** —— 只减 picked_up 会把已退款/已转换的件数当成还能
+    // 折走，既撞 chk_sale_item_settled_le_quantity，也让已退款件数在候选里复活。
+    const QTY_EXPR = "CASE WHEN si.product_type = '疗程卡' THEN COALESCE(si.remaining_sessions, 0)"
+      + " ELSE GREATEST(0, si.quantity - (COALESCE(si.picked_up_quantity, 0)"
+      + " + COALESCE(si.refunded_quantity, 0) + COALESCE(si.converted_quantity, 0))) END"
     expect(
-      staff.split("GREATEST(0, FLOOR(hpa.remaining_paid / NULLIF(si.unit_real_price::numeric, 0)))::int").length - 1,
-      'staff 折抵件数（剩余已付 / 单价，向下取整）站点数漂移',
-    ).toBe(2)
-    // 不得回退到「未提货件数」或「件数 × 单价」口径
-    expect(staff, '折抵不得回退到未提货件数口径').not.toContain(
-      "OR (si.product_type = '家居产品' AND (si.quantity - COALESCE(si.picked_up_quantity, 0)) > 0)",
+      staff.split(QTY_EXPR).length - 1,
+      'staff 折抵数量表达式站点数漂移',
+    ).toBe(4)   // 候选 deductible_quantity + 候选寄存单分支 + 锁内 deductible_quantity + 锁内寄存单分支
+    // 反向：不得回退到只减 picked_up 的两列式
+    expect(staff, '折抵数量退回到只减 picked_up_quantity 的两列式').not.toContain(
+      "CASE WHEN si.product_type = '疗程卡' THEN COALESCE(si.remaining_sessions, 0) ELSE GREATEST(0, si.quantity - COALESCE(si.picked_up_quantity, 0)) END",
+    )
+    // 已转走金额的聚合**不得**再限 product_type：疗程卡与纯余数转出行(quantity=0)都要计入，
+    // 否则同一笔已付能被反复折走 / 折走后还能再退一次。
+    expect(staff, '折抵侧已转走金额聚合不得限 product_type').not.toContain(
+      "AND out_item.ref_sale_item_id = si.sale_item_id AND out_item.item_direction = '转出' AND out_item.product_type = '家居产品' AND conv_order.status <> '已关闭'), 0)) AS remaining_paid",
     )
     // 已转走金额必须来自转出行 received 聚合；写成「件数 × 单价」会在折抵含余数时失真。
     // （注意与上面的已提货项区分：那一项是 `... * si.unit_real_price::numeric` 后接减号，
@@ -2826,16 +2947,29 @@ describe('转换单换入家居产品可见可提跨端守护', () => {
   // ③ 「已消耗价值」：两端 SQL 必须是「已提货 + 已转换」，**不含已退款**
   //    （received 已由 paid-sessions STEP 1.5 扣过逐项退款，再算一次就是重复扣减，顾客少退）。
   test('consumed_value 双端同源：已提货按件数×单价，已转走按转出行 received 聚合', () => {
+    // #154×#182 合并：已转走金额改由 converted_amt CTE（与 converted_qty 同源、**不限
+    // out_item.product_type**）提供，两个分支共用 ca.amt —— 疗程卡也要扣已转走金额，
+    // 纯余数转出行（quantity=0）同样必须计入，限类型会让同一笔已付被折两遍。
+    // 疗程卡分支还要先按 cq.qty 扣掉被折走的次数再加回金额，否则与 (sc − remaining) 双计。
     const EXPR = 'ELSE GREATEST(0, COALESCE(si.picked_up_quantity, 0))'
       + ' * COALESCE(si.unit_real_price::numeric, 0)'
-      + " + COALESCE((SELECT SUM(GREATEST(0, -out_item.received::numeric)) FROM sale_items out_item"
-      + ' JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id'
-      + " WHERE out_item.ref_sale_item_id = si.sale_item_id AND out_item.item_direction = '转出'"
-      + " AND out_item.product_type = '家居产品' AND conv_order.status <> '已关闭'), 0)"
+      + ' + COALESCE(ca.amt, 0)'
       + ' END AS consumed_value'
+    const CARD_EXPR = 'THEN GREATEST(0, COALESCE(si.session_count, 0)'
+      + ' - COALESCE(si.remaining_sessions, 0) - COALESCE(cq.qty, 0))'
+      + ' * COALESCE(si.unit_real_price::numeric, 0) + COALESCE(ca.amt, 0)'
+    // ⚠ normalizeSql 还会把 `( ` 压成 `(`（见其实现），期望串里不能留那个空格
+    const AMT_CTE = 'converted_amt AS (SELECT out_item.ref_sale_item_id AS sale_item_id,'
+      + ' SUM(GREATEST(0, -out_item.received::numeric)) AS amt'
     for (const [end, file] of [['staff', FILES.staffOrderJs], ['admin', FILES.adminRefundsTs]]) {
       const src = normalizeSql(stripComments(readFile(file)))
-      expect(src, `${end} consumed_value 口径漂移`).toContain(EXPR)
+      expect(src, `${end} consumed_value 家居分支口径漂移`).toContain(EXPR)
+      expect(src, `${end} consumed_value 疗程卡分支未按已转走次数扣减再加金额`).toContain(CARD_EXPR)
+      expect(src, `${end} 缺 converted_amt CTE（已转走金额必须与 converted_qty 同源）`).toContain(AMT_CTE)
+      // #182 不变量：已转走金额的聚合不得限 product_type
+      expect(src, `${end} converted_amt 聚合限了 product_type`).not.toMatch(
+        /converted_amt AS \([^)]*product_type/,
+      )
       // 把已退款也算成已消耗 = 重复扣减（received 已由 paid-sessions STEP 1.5 扣过逐项退款）
       expect(src, `${end} consumed_value 把已退款也算进去了`).not.toContain(
         'COALESCE(si.refunded_quantity, 0)) * COALESCE(si.unit_real_price::numeric, 0) END AS consumed_value',

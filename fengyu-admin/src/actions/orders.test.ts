@@ -2175,6 +2175,206 @@ describe('closeOrder — 事务原子性（关闭 + 作废分配）', () => {
     expect(result.success).toBe(true)
   })
 
+  // #182 第 4 轮 P1-3：paid_sessions 重算曾被写在「订单级还原量 > 0」的循环内。
+  // 「付清后部分退款」的行订单级还原量为 0（那笔钱已退给顾客、不是欠款），但源行
+  // sale_amount 已被 CTE **无条件**还原 —— 不重算 paid_sessions 就会停在满付，
+  // 把已退款的权益重新放出来。与 staff 端同一条对称纪律。
+  it('欠款归零回滚：订单级还原量 = 0 时仍必须重算 paid_sessions（#182）', async () => {
+    mockSelectBefore([{
+      status: '待支付',
+      customerName: '顾客甲',
+      totalAmount: '200.00',
+      saleOrderType: '转换单',
+      storeId: 'store-1',
+    }])
+
+    ;(db.transaction as any).mockImplementation(async (fn: any) => {
+      const tx = {
+        update: vi.fn().mockReturnValue({
+          set: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue({ count: 1 }),
+          }),
+        }),
+        execute: vi.fn().mockImplementation(async (q: any) => {
+          const text: string = q?.__sqlText ?? ''
+          // 豁免还原 CTE（唯一带 orig_pending 的语句）
+          if (text.includes('orig_pending')) {
+            return [{
+              sale_order_id: 'src-1',
+              sale_item_id: 'item-1',
+              waived: '400.00',
+              source_found: true,
+              restored_ok: true,
+            }]
+          }
+          // 行级已退款额：400 全部已退 → 订单级还原量 = 0
+          if (text.includes('refund_items') && text.includes('GROUP BY sale_item_id')) {
+            return [{ sale_item_id: 'item-1', refunded: '400' }]
+          }
+          // paid_sessions 重算现在断言影响行数 >= 1（为 0 ⟺ 原单孤儿）
+          if (text.includes('SET paid_sessions = CASE') && text.includes('out_item.waived_amount')) {
+            return { count: 1 }
+          }
+          return {}
+        }),
+      }
+      const result = await fn(tx)
+      const sqlTexts = tx.execute.mock.calls.map((call: any[]) => call[0]?.__sqlText || '')
+      // 订单 total 不该动
+      expect(sqlTexts.some((t: string) =>
+        t.includes('UPDATE sale_orders') && t.includes('total_amount ='))).toBe(false)
+      // 还原那条 UPDATE 写 status，CAS 必须与 staff / 正向折抵对称（lint-cas-guards 也守这条）。
+      // 本用例走不到它，故只断言「一旦出现就必须带 CAS」——见下一条订单级 > 0 的用例。
+      // 但行级 paid_sessions 必须重算
+      expect(sqlTexts.some((t: string) =>
+        t.includes('SET paid_sessions = CASE')
+        && t.includes('out_item.waived_amount::numeric > 0'))).toBe(true)
+      return result
+    })
+
+    const result = await closeOrder('order-1')
+    expect(result.success).toBe(true)
+  })
+
+  // #182 第 4 轮 P2：自校验 CAS 失败时 restored 只会静默少行，而权益已被前两段无条件加回 →
+  // 「货已还给顾客、欠款仍被豁免」，必须整笔关单事务回滚。
+  it('欠款归零回滚：还原 CAS 失败（restored_ok=false）必须整笔失败（#182）', async () => {
+    mockSelectBefore([{
+      status: '待支付',
+      customerName: '顾客甲',
+      totalAmount: '200.00',
+      saleOrderType: '转换单',
+      storeId: 'store-1',
+    }])
+
+    ;(db.transaction as any).mockImplementation(async (fn: any) => {
+      const tx = {
+        update: vi.fn().mockReturnValue({
+          set: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue({ count: 1 }),
+          }),
+        }),
+        execute: vi.fn().mockImplementation(async (q: any) => {
+          const text: string = q?.__sqlText ?? ''
+          if (text.includes('orig_pending')) {
+            return [{
+              sale_order_id: 'src-1',
+              sale_item_id: 'item-1',
+              waived: '400.00',
+              source_found: true,
+              restored_ok: false,
+            }]
+          }
+          return {}
+        }),
+      }
+      return fn(tx)
+    })
+
+    const result = await closeOrder('order-1')
+    expect(result.success).toBe(false)
+    expect(result.message).toBe('关闭订单失败，请稍后重试')
+  })
+
+  // CI 的 lint-cas-guards 抓到过这条：回滚的订单 UPDATE 写 status 却没带 CAS。
+  it('欠款归零回滚：订单还原 UPDATE 必须带 status CAS + 在途支付闸门（#182）', async () => {
+    mockSelectBefore([{
+      status: '待支付',
+      customerName: '顾客甲',
+      totalAmount: '200.00',
+      saleOrderType: '转换单',
+      storeId: 'store-1',
+    }])
+
+    ;(db.transaction as any).mockImplementation(async (fn: any) => {
+      const tx = {
+        update: vi.fn().mockReturnValue({
+          set: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue({ count: 1 }),
+          }),
+        }),
+        execute: vi.fn().mockImplementation(async (q: any) => {
+          const text: string = q?.__sqlText ?? ''
+          if (text.includes('orig_pending')) {
+            return [{
+              sale_order_id: 'src-1',
+              sale_item_id: 'item-1',
+              waived: '400.00',
+              source_found: true,
+              restored_ok: true,
+            }]
+          }
+          // 无行级退款 → 订单级还原量 = 400 > 0，会走订单 UPDATE
+          if (text.includes('refund_items') && text.includes('GROUP BY sale_item_id')) {
+            return []
+          }
+          if (text.includes('SELECT total_amount, received, prepaid_card_amount')) {
+            return [{
+              total_amount: '1000.00',
+              received: '600.00',
+              prepaid_card_amount: '0.00',
+              pending_prepaid_card_amount: '0.00',
+              status: '已支付',
+              sale_order_type: '销售单',
+            }]
+          }
+          return { count: 1 }
+        }),
+      }
+      const result = await fn(tx)
+      const sqlTexts = tx.execute.mock.calls.map((call: any[]) => call[0]?.__sqlText || '')
+      const restoreUpdate = sqlTexts.find((t: string) =>
+        t.includes('UPDATE sale_orders') && t.includes('total_amount ='))
+      expect(restoreUpdate).toBeTruthy()
+      expect(restoreUpdate).toContain('AND status =')
+      expect(restoreUpdate).toContain('AND lakala_out_order_no IS NULL')
+      return result
+    })
+
+    const result = await closeOrder('order-1')
+    expect(result.success).toBe(true)
+  })
+
+  // #182 第 5 轮 P1-3：自校验若从 locked_source（内连接）出发，源行已被删时这条归因会
+  // **整条消失**，restored_ok 根本看不见它 —— 权益已被前两段无条件加回、欠款却没还原。
+  it('欠款归零回滚：源行已不存在（source_found=false）必须整笔失败（#182）', async () => {
+    mockSelectBefore([{
+      status: '待支付',
+      customerName: '顾客甲',
+      totalAmount: '200.00',
+      saleOrderType: '转换单',
+      storeId: 'store-1',
+    }])
+
+    ;(db.transaction as any).mockImplementation(async (fn: any) => {
+      const tx = {
+        update: vi.fn().mockReturnValue({
+          set: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue({ count: 1 }),
+          }),
+        }),
+        execute: vi.fn().mockImplementation(async (q: any) => {
+          const text: string = q?.__sqlText ?? ''
+          if (text.includes('orig_pending')) {
+            return [{
+              sale_order_id: null,
+              sale_item_id: 'item-1',
+              waived: '400.00',
+              source_found: false,
+              restored_ok: false,
+            }]
+          }
+          return {}
+        }),
+      }
+      return fn(tx)
+    })
+
+    const result = await closeOrder('order-1')
+    expect(result.success).toBe(false)
+    expect(result.message).toBe('关闭订单失败，请稍后重试')
+  })
+
   it('事务异常 → 返回友好错误', async () => {
     ;(db.transaction as any).mockRejectedValue(new Error('connection lost'))
     const result = await closeOrder('order-1')
@@ -3110,6 +3310,8 @@ describe('createConversionOrder — 事务路径：differ=0 / >0 / <0', () => {
   function mockConvTx(opts: {
     heldRows: any[]
     homeConsumedRows?: any[]
+    /** #182 欠款归零时锁原单读到的金额快照 */
+    waiveOrderRows?: any[]
     skuRows: any[]
     reservedRows?: any[]
     orderId?: string
@@ -3133,6 +3335,35 @@ describe('createConversionOrder — 事务路径：differ=0 / >0 / <0', () => {
             return opts.homeConsumedRows ?? [{
               sale_item_id: 'home-1', home_converted_amount: '0',
             }]
+          }
+          // #182 锁序：先查涉及原单（不加锁）→ 再按 sale_order_id 升序锁原单。
+          // 同样按特征识别，不占按序号的返回值。
+          if (text.includes('SELECT DISTINCT sale_order_id FROM sale_items')) {
+            executeSql.push(text)
+            return [{ sale_order_id: 'old-order' }]
+          }
+          if (text.includes('FROM sale_orders') && text.includes('ORDER BY sale_order_id') && text.includes('FOR UPDATE')) {
+            executeSql.push(text)
+            return [{ sale_order_id: 'old-order' }]
+          }
+          // #182 欠款归零的三条语句同样按特征识别，不占按序号的返回值。
+          // ⚠ UPDATE 必须返回带 count 的对象：rowsAffected 读 postgres.js RowList 的 .count，
+          // 返回裸数组会让实现里的 rowsAffected(...) === 0 守卫误报冲突。
+          if (text.includes('FROM sale_orders WHERE sale_order_id =') && text.includes('FOR UPDATE')) {
+            executeSql.push(text)
+            return opts.waiveOrderRows ?? [{
+              total_amount: '1000.00', received: '1000.00',
+              prepaid_card_amount: '0', pending_prepaid_card_amount: '0',
+              status: '部分支付', sale_order_type: '销售单',
+            }]
+          }
+          if (text.includes('UPDATE sale_orders') && text.includes('total_amount =')) {
+            executeSql.push(text)
+            return { count: 1 } as any
+          }
+          if (text.includes('SET paid_sessions =')) {
+            executeSql.push(text)
+            return { count: 1 } as any
           }
           execCall++
           executeSql.push(text)
@@ -3275,18 +3506,20 @@ describe('createConversionOrder — 事务路径：differ=0 / >0 / <0', () => {
     expect(JSON.stringify(result)).toContain('原订单状态不允许转换')
   })
 
-  it('#125/#145 没有已付清整件的家居行拒绝折抵', async () => {
+  it('#182 已全部结算且无剩余已付的家居行仍拒绝折抵', async () => {
     mockConvTx({
-      heldRows: [homeHeldRow({ quantity: 4, picked_up_quantity: 4 })],
+      // 4 件全部结算、实收已全额对应已提货 → 既无权益也无剩余已付
+      heldRows: [homeHeldRow({ quantity: 4, picked_up_quantity: 4, sale_amount: '400.00', received: '400.00' })],
+      homeConsumedRows: [{ sale_item_id: 'home-1', home_converted_amount: '0' }],
       skuRows: homeSkuRows,
     })
 
     const result = await createConversionOrder(homeConvData)
 
     expect(result.success).toBe(false)
-    // 子标签 HOME_PRODUCT_NO_PENDING 只进日志，用户看到的是中文正文（issue #133）
-    // #145/#153 收紧后文案随口径改为「没有已付清的整件可折抵」
-    expect(result.message).toBe('所选家居产品没有已付清的整件可折抵')
+    // 子标签 DEDUCTIBLE_EMPTY 只进日志，用户看到的是中文正文（issue #133）。
+    // #182 起「不足一整件」不再是拒绝理由（余数可折），只有「既无权益又无剩余已付」才拒。
+    expect(result.message).toBe('所选折抵项没有可折抵的已付金额')
   })
 
   it('#125 家居扣减 rowsAffected=0（并发被抢先）→ 冲突', async () => {
@@ -3600,13 +3833,19 @@ describe('createConversionOrder — 事务路径：differ=0 / >0 / <0', () => {
 
     const result = await createConversionOrder(baseConvData)
 
-    expect(result.success).toBe(true)
-    expect(result.totalOut).toBe(600)
-    expect(insertedItems.find((item) => item.itemDirection === '转出')?.quantity).toBe(3)
+    // #182：折抵改为「整行退出」后与在途服务预扣互斥——钱已全额折走却留下 2 次给服务，
+    // 那 2 次就是白送；而把预扣一起注销会让 service.confirm 的扣次守卫失败、
+    // 服务单永久卡在「待客户确认」且预扣不释放。故整行拒绝，要求先处理服务单。
+    expect(result.success).toBe(false)
+    expect(result.message).toBe('所选项目有服务进行中，请先完成或取消服务单后再折抵')
+    expect(insertedItems.some((item) => item.itemDirection === '转出')).toBe(false)
     const lockIndex = captured.executeSql.findIndex((text) => /FOR\s+UPDATE\s+OF\s+si/i.test(text))
     const reservedIndex = captured.executeSql.findIndex((text) => /FROM\s+service_items\s+sit/i.test(text))
     expect(lockIndex).toBeGreaterThanOrEqual(0)
-    expect(reservedIndex).toBe(lockIndex + 1)
+    // 锁行 → 折抵额度复算（#182 起疗程卡也走）→ 预扣汇总，三条各自独立的语句
+    const deductibleIndex = captured.executeSql.findIndex((text) => /home_converted_amount/i.test(text))
+    expect(deductibleIndex).toBe(lockIndex + 1)
+    expect(reservedIndex).toBe(lockIndex + 2)
     // 锁行查询不得混入服务预扣（那必须是独立的下一条查询），也不得在**顶层**聚合。
     // #145/#153 的家居折抵额度是标量子查询里的 SUM——每行一个值，不改变返回行数与锁定范围。
     expect(captured.executeSql[lockIndex]).not.toMatch(/service_items/i)
@@ -3615,6 +3854,37 @@ describe('createConversionOrder — 事务路径：differ=0 / >0 / <0', () => {
     expect(captured.executeSql[reservedIndex]).toMatch(/reserved_at\s+IS\s+NOT\s+NULL/i)
     expect(captured.executeSql[reservedIndex]).toMatch(/INNER\s+JOIN\s+service_orders\s+reserved_order/i)
     expect(captured.executeSql[reservedIndex]).toMatch(/reserved_order\.status\s+IN\s*\('服务中',\s*'待客户确认'\)/i)
+  })
+
+  // #182 F1：锁序必须与入账路径同向（sale_orders → sale_items）。欠款归零要在末尾锁原单，
+  // 若留到那时才锁，本事务足迹就是 sale_items → sale_orders，与 confirmOffline /
+  // recordPayment / payNotify（先锁 sale_orders）互为反向 → 40P01。
+  it('#182 锁序：先锁原单（sale_orders）再锁源行（sale_items）', async () => {
+    const captured = mockConvTx({
+      heldRows: [{
+        sale_item_id: 'card-1', sale_order_id: 'old-order', store_id: 'store-1', item_direction: '购买',
+        sku_id: 'sku-old-1', product_name: '老疗程',
+        product_type: '疗程卡', session_count: 1, remaining_sessions: 1,
+        quantity: 1, picked_up_quantity: 0, unit_price: '100.00',
+        unit_real_price: '100.00', sales_category: '自销自耗', service_fee: '0',
+        client_user_id: 'user-1', order_status: '已支付', product_kind: '护理项目',
+      }],
+      skuRows: [{
+        skuId: 'sku-new-1', price: '100.00', serviceFee: '0', sessionCount: 10,
+        productType: '疗程卡', salesCategory: '自销自耗',
+      }],
+    })
+
+    await createConversionOrder(baseConvData)
+
+    const refLookup = captured.executeSql.findIndex((t) => t.includes('SELECT DISTINCT sale_order_id FROM sale_items'))
+    const orderLock = captured.executeSql.findIndex((t) =>
+      t.includes('FROM sale_orders') && t.includes('ORDER BY sale_order_id') && t.includes('FOR UPDATE'))
+    const itemLock = captured.executeSql.findIndex((t) => /FOR\s+UPDATE\s+OF\s+si/i.test(t))
+    expect(refLookup).toBeGreaterThanOrEqual(0)
+    expect(orderLock).toBeGreaterThan(refLookup)
+    expect(itemLock).toBeGreaterThan(orderLock)
+    expect(captured.executeSql[orderLock]).toMatch(/ORDER BY sale_order_id\s+FOR UPDATE/)
   })
 
   it('全部次数被服务预留 → CARD_RESERVED 透出中文业务提示', async () => {
@@ -3635,7 +3905,7 @@ describe('createConversionOrder — 事务路径：differ=0 / >0 / <0', () => {
 
     expect(result).toEqual({
       success: false,
-      message: '所选卡可用次数不足（存在服务中预留）',
+      message: '所选项目有服务进行中，请先完成或取消服务单后再折抵',
     })
   })
 
@@ -3855,6 +4125,18 @@ describe('createConversionOrder — 事务路径：differ=0 / >0 / <0', () => {
           const text: string = sqlArg?.__sqlText ?? ''
           captured.execTexts.push(text)
           if (/FOR\s+UPDATE\s+OF\s+si/i.test(text)) return Promise.resolve(opts.heldRows)
+          // #182：折抵额度复算（锁后另起语句）对疗程卡也执行，必须返回数组
+          if (/home_converted_amount/i.test(text)) return Promise.resolve([])
+          // #182 欠款归零三条语句（本组用例的 heldRows 无欠款，实际不会触发，留作防御）
+          if (/FROM sale_orders WHERE sale_order_id =/.test(text) && /FOR UPDATE/.test(text)) {
+            return Promise.resolve([{
+              total_amount: '1000.00', received: '1000.00',
+              prepaid_card_amount: '0', pending_prepaid_card_amount: '0',
+              status: '部分支付', sale_order_type: '销售单',
+            }])
+          }
+          if (/UPDATE sale_orders/.test(text) && /total_amount =/.test(text)) return Promise.resolve({ count: 1 })
+          if (/SET paid_sessions =/.test(text)) return Promise.resolve({ count: 1 })
           if (/FROM\s+service_items\s+sit/i.test(text)) return Promise.resolve([])
           if (/pg_advisory_xact_lock/i.test(text)) return Promise.resolve([{ id: 'FY-XSD-WX-260521-0001' }])
           if (/SELECT\s+1\s+FROM\s+card_transactions/i.test(text) && /'扣款'/.test(text)) return Promise.resolve([])
@@ -4050,7 +4332,9 @@ describe('createConversionOrder — 异常路径', () => {
     expect(result.message).toContain('不属于当前门店')
   })
 
-  it('卡已耗尽（remaining_sessions=0）→ CARD_EXHAUSTED', async () => {
+  // #182：remaining_sessions=0 本身不再是拒绝理由（overpay 余数仍可折），
+  // 只有「既无剩余权益、又无剩余已付金额」才拒。此处 mock 未给 received → 余数 0。
+  it('卡既无剩余次数又无剩余已付 → DEDUCTIBLE_EMPTY', async () => {
     ;(db.transaction as any).mockImplementation(async (fn: any) => {
       const tx = {
         execute: vi.fn().mockResolvedValue([{
@@ -4066,7 +4350,7 @@ describe('createConversionOrder — 异常路径', () => {
     })
     const result = await createConversionOrder(baseConvData)
     expect(result.success).toBe(false)
-    expect(result.message).toContain('已耗尽')
+    expect(result.message).toBe('所选折抵项没有可折抵的已付金额')
   })
 
   it('部分卡不存在（held.length 不等于 input）→ CARD_NOT_FOUND', async () => {
@@ -4088,15 +4372,18 @@ describe('createConversionOrder — 异常路径', () => {
       const tx = {
         execute: vi.fn().mockImplementation(async () => {
           execCall++
-          if (execCall === 1) return [{
-            sale_item_id: 'card-1', store_id: 'store-1', item_direction: '购买',
+          // #182 锁序：1=查涉及原单（不加锁）、2=按 sale_order_id 升序锁原单
+          if (execCall === 1 || execCall === 2) return [{ sale_order_id: 'old-order' }]
+          if (execCall === 3) return [{
+            sale_item_id: 'card-1', sale_order_id: 'old-order', store_id: 'store-1', item_direction: '购买',
             product_type: '疗程卡', remaining_sessions: 5, unit_real_price: '100',
             client_user_id: 'user-1', order_status: '已支付', quantity: 1,
             picked_up_quantity: 0, unit_price: '100', service_fee: '0',
             session_count: 5, product_kind: '护理项目', sku_id: 'sku-old',
             product_name: 'xx', sales_category: '自销自耗',
           }]
-          if (execCall === 2) return []
+          // 4=折抵额度复算、5=预扣汇总
+          if (execCall === 4 || execCall === 5) return []
           return [{ id: 'FY-XSD-WX-260416-0001' }]
         }),
         select: vi.fn().mockReturnValue({
