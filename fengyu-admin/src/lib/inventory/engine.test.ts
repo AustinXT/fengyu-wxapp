@@ -434,7 +434,11 @@ describe('#200 建单 scope 按真正被改动的主体校验', () => {
     },
   } as never
 
-  /** ensureOrgNodeLocation 需要拿到完整行才会走到 scope 校验（缺 locationId 会先抛 NOT_FOUND） */
+  /**
+   * scope 校验现在**先于** `ensureOrgNodeLocation`（#200：否则「不存在 / 已停用 / 无权」
+   * 三种不同的错就成了探测无权节点状态的信道）。所以这个 mock 不再是走到鉴权的前提，
+   * 而是让鉴权通过后的那些用例能继续往下跑到事务。
+   */
   function locationRow(locationType: string) {
     return [{
       locationId: 'LOC-X',

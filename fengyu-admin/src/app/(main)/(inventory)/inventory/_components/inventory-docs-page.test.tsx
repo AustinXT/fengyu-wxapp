@@ -498,27 +498,36 @@ describe('#200 切换单据类型时复位主体字段', () => {
   })
 
   /**
-   * 批次不单独断言：主体被清空后批次框本就不可用，而重新选主体的 onChange 会再清一次
-   * lotId —— 「切类型时也清 lotId」那行代码在任何可观测路径上都锁不住，已作为冗余删除。
+   * 必须走 **target-only 提交** 来断言 payload —— 这是唯一能锁住「切类型清 lotId」的路径：
+   * 只有出库主体的 onChange 清 lotId，入库主体的不清。所以「切完类型只选入库主体就提交」
+   * 时，旧 lotId 会一路带进 payload，而同主体单据的服务端会把 target 归一成 source、
+   * 按出库批次锁定并写入它。只断言 DOM 上批次框显示为空是锁不住的（受控 select 的值
+   * 不在 options 里时本来就显示空，state 里那个旧 id 还在）。
    */
-  it('换类型后重新选回同一主体与 SKU，批次仍是未选状态', async () => {
+  it('换类型后只选入库主体就提交，payload 不得带上一张单的 lotId', async () => {
     vi.mocked(listInventoryLotOptions).mockResolvedValue([lot(11, 'SKU-1', 'B-001', 30)])
-    openWithTypes(['市场产品报损', '内部领用'])   // 两者都在 SOURCE_LOT_DOC_TYPES 里
+    vi.mocked(createInventoryCoreDoc).mockResolvedValue(undefined as never)
+    openWithTypes(['院顾客产品出库', '院产品报损'])
 
+    // 第一张单：选好出库主体 + SKU + 批次
     fireEvent.change(sourceSelect(), { target: { value: 'M1' } })
     fireEvent.change(skuSelect(), { target: { value: 'SKU-1' } })
     await waitFor(() => expect(lotSelect()).not.toBeDisabled())
     fireEvent.change(lotSelect(), { target: { value: '11' } })
     expect(lotSelect().value).toBe('11')
 
-    fireEvent.change(dialogSelect(/^市场产品报损$/), { target: { value: '内部领用' } })
+    // 切到同主体单据，然后**只动入库主体**（它的 onChange 不清 lotId）
+    fireEvent.change(dialogSelect(/^院顾客产品出库$/), { target: { value: '院产品报损' } })
     expect(sourceSelect().value).toBe('')
     expect(targetSelect().value).toBe('')
+    fireEvent.change(targetSelect(), { target: { value: 'M1' } })
+    fireEvent.change(within(screen.getByRole('dialog')).getByPlaceholderText('数量'), { target: { value: '2' } })
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: '提交' }))
 
-    fireEvent.change(sourceSelect(), { target: { value: 'M1' } })
-    fireEvent.change(skuSelect(), { target: { value: 'SKU-1' } })
-    await waitFor(() => expect(lotSelect()).not.toBeDisabled())
-    expect(lotSelect().value).toBe('')
+    await waitFor(() => expect(createInventoryCoreDoc).toHaveBeenCalledTimes(1))
+    const payload = vi.mocked(createInventoryCoreDoc).mock.calls[0][0]
+    expect(payload.docType).toBe('院产品报损')
+    expect(payload.items[0].lotId).toBeNull()
   })
 })
 
