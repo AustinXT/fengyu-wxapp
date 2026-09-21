@@ -1277,10 +1277,15 @@ export const updateCustomer = withPermission(
       updateData.boundEmployeeName = null
     } else {
       const resolved = await resolveBoundEmployee(session, nextBoundEmployeeId)
+      // 「值是否变了」必须拿**同样归一过**的两边比较。库里存的是未归一值：
+      // sync-workfine.js:509 只做了 `RTRIM(UDF_S_6444)`（**没有 LTRIM**），
+      // 所以 `' EMP-1'` 这种左带空白的值真实存在。拿归一后的新值去比未归一的旧值，
+      // 带空白的存量脏值会被判成「值已变」→ 又把整张表单锁死，等于 P1-1 的回归。
+      const beforeBoundEmployeeId = before.boundEmployeeId?.trim() || null
       if (resolved.ok) {
         updateData.boundEmployeeId = resolved.employeeId
         updateData.boundEmployeeName = resolved.name
-      } else if (nextBoundEmployeeId !== before.boundEmployeeId) {
+      } else if (nextBoundEmployeeId !== beforeBoundEmployeeId) {
         return { success: false, message: resolved.message }
       } else {
         /*
@@ -1327,6 +1332,16 @@ export const updateCustomer = withPermission(
       updateData.promoterEmployeeId = null
       updateData.promoterEmployeeName = null
     }
+  }
+
+  // 没有任何字段要写 → 直接当无操作成功返回。Drizzle 对空集合是**抛异常**的
+  // （`drizzle-orm/utils.js:91` 的 `throw new Error("No values to set")`），
+  // 会冒成 500。两条新路径会走到这里：只提交一个未变的存量脏 ID（上面 delete 掉了唯一字段）、
+  // 或只提交 `{ boundEmployeeId: undefined }`（被「undefined = 不更新」过滤掉）。
+  // 顾客的可见性在上面的 `before` 查询里已经校验过，此处返回成功不泄露任何东西；
+  // 零写入所以不记审计、不 revalidate。
+  if (Object.keys(updateData).length === 0) {
+    return { success: true, message: '顾客信息已更新' }
   }
 
   const whereConditions = expectedUpdatedAt
