@@ -14,7 +14,7 @@
  *   5. #254 覆盖域穷举：对三段 WHERE 谓词 + 段 2 的 CASE 落值建模后穷举输入组合，断言
  *      「每一行要么被某段命中并落到正确目标值，要么现值已等于应然值」。
  *      形态断言（1~4）只验 SQL 长什么样，验不出"漏没漏行"—— #254 就是这么溜过去的
- *   6. 函数体：`suspiciousBulkReset` 判据（mock db，7 个场景取自双谱系评审的反例）
+ *   6. 函数体：`suspiciousBulkReset` 判据（mock db 的场景表）
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
@@ -411,7 +411,8 @@ describe('cron-worker STEP customerStatus — customer_status 三段式 SQL', ()
    * 上面所有断言都打在 SQL 字符串与 JS 模型上，一条都没碰它 —— 把 `&&` 写成 `||`
    * 或把 `>` 写反，`vitest run src/cron` 照样全绿。
    *
-   * 下面的场景全部取自双谱系评审举出的真实反例，每个都曾是某一版判据的漏报点。
+   * 下面的场景分两类：一类取自双谱系评审举出的真实反例（每个都曾是某一版判据的漏报点），
+   * 一类是为杀死比较符变异（`>=` vs `>`）而构造的交叉边界。
    *
    * ⚠️ mock 必须用 postgres.js 的 `{ count: n }` 形状 —— 写成 node-postgres 的
    * `{ rowCount: n }` 会让 mock 漂移掩盖真实缺陷（本仓踩过，见 src/lib/pg-rows.ts 注释）。
