@@ -547,15 +547,21 @@ async function runPaymentReconcile() {
   // 丢失（回款覆写 lakala_out_order_no 但不动 sale_order_datetime，故 sale_order_datetime 锚不到回款）。
   // LIMIT 20 + 串行循环（每单 PG+HTTPS+callFunction）避免超 CloudBase Timer 超时；美容院单量小窗口内通常 0~2 单。
   //
-  // 排序取 DESC（#214）：窗口放宽到 2h 后，那些渠道侧查不到、永远判不出终态的「幽灵意图」
-  // 会在扫描集里滞留两小时；ASC 会让它们凭 updated_at 最老长期霸占每分钟仅 20 条的预算，
-  // 把真正需要补入账的新订单饿死——而本任务恰恰是「回调丢失」的资金安全网。新单优先。
+  // 排序取 DESC（#214）：窗口放宽后，渠道侧查不到、永远判不出终态的「幽灵意图」会在扫描集里
+  // 长期滞留；ASC 会让它们凭 updated_at 最老霸占每分钟仅 20 条的预算，把真正需要补入账的新
+  // 订单饿死——而本任务恰恰是「回调丢失」的资金安全网。新单优先。
+  //
+  // ⚠️ 上界 24h 仍是硬边界，**不是最终进度保证**（双谱系评审 round-3 指出）：查单服务或
+  // 定时器连续异常超过 24 小时时，期间已 SUCCESS 但回调丢失的订单会彻底掉出候选集，
+  // 钱到账却不入账。彻底解法是持久化游标/租约（给 sale_orders 加 last_reconcile_at 按它
+  // 轮转退避），需要新迁移与独立的批量调度逻辑，属独立可交付物。本次先把窗口从 30min
+  // 放宽到 24h（覆盖绝大多数短期异常），缺口已记入 PR 残余风险。
   const { rows } = await pg.query(
     `SELECT sale_order_id, store_id, lakala_out_order_no, payment_method
        FROM sale_orders
       WHERE lakala_out_order_no IS NOT NULL
         AND status IN ('待支付', '部分支付')
-        AND updated_at > now() - interval '2 hours'
+        AND updated_at > now() - interval '24 hours'
         AND updated_at < now() - interval '90 seconds'
       ORDER BY updated_at DESC
       LIMIT 20`)

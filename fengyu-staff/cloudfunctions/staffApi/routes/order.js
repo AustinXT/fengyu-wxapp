@@ -2736,7 +2736,12 @@ async function releaseOnlinePaymentIntentBeforeClose(ctx, saleOrderId) {
     return  // 无权操作：不碰渠道，让事务内抛 PERMISSION_DENIED
   }
 
-  await clientApiBridge.callClientApi('order.voidPaymentIntent', { saleOrderId })
+  // 带上预读到的单号：clientApi 侧据此校验「要关的还是同一笔」，避免在跨 env 往返期间
+  // 原意图已到账清锁、顾客又发起新意图时，误把新那笔合法支付关掉（双谱系评审 round-3）。
+  await clientApiBridge.callClientApi('order.voidPaymentIntent', {
+    saleOrderId,
+    expectedOutTradeNo: String(order.lakala_out_order_no),
+  })
 }
 
 /**
@@ -3391,9 +3396,14 @@ async function detail(ctx) {
       ? computeOverpayRemainder(order, purchaseItems)
       : 0
 
+  // #214：这里是 `SELECT o.*` 原样展开，新增的 lakala_payment_intent 里含 paySign /
+  // prepay_id 等支付凭据，只对归属顾客本人有意义，不该下发给员工端。
+  // clientApi 的 order.detail 有同款剥离，两端必须保持一致。
+  const { lakala_payment_intent: _omitPaymentIntent, ...orderForStaff } = order
+
   ctx.result = {
     order: {
-      ...order,
+      ...orderForStaff,
       coupon_name: couponName,
       // 营业额分配口径：仅销售单/转换单且非历史订单参与（与 allocation.js ALLOCATABLE_ORDER_TYPES 一致），控制详情页分配入口显隐
       allocatable: ['销售单', '转换单'].includes(order.sale_order_type) && order.legacy_source !== 'workfine',

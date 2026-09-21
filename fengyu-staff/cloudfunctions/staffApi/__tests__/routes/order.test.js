@@ -2473,8 +2473,10 @@ describe('order.close', () => {
       await orderRoutes.close(ctx)
 
       expect(ctx.result.status).toBe('已关闭')
+      // 必须带上预读到的单号，clientApi 侧据此拒绝「关到另一笔新意图」（TOCTOU 防线）
       expect(__mocks__.clientApiBridge.callClientApi).toHaveBeenCalledWith(
-        'order.voidPaymentIntent', { saleOrderId: 'FY-CLOSE-VOID' },
+        'order.voidPaymentIntent',
+        { saleOrderId: 'FY-CLOSE-VOID', expectedOutTradeNo: 'FY-CLOSE-VOID_500' },
       )
     })
 
@@ -3036,6 +3038,36 @@ describe('order.detail', () => {
 
     expect(ctx.result.order.sale_order_id).toBe('FY-001')
     expect(ctx.result.items).toHaveLength(1)
+  })
+
+  // #214：新增的 lakala_payment_intent 含 paySign / prepay_id，只对归属顾客本人有意义。
+  // 这里是 `SELECT o.*` 原样展开，漏剥离就会把支付凭据下发给员工端（双谱系评审 round-3）。
+  test('订单详情不得下发 lakala_payment_intent 支付凭据 (#214)', async () => {
+    const ctx = createManagerCtx({ saleOrderId: 'FY-001' })
+
+    pg.query
+      .mockResolvedValueOnce([{
+        sale_order_id: 'FY-001',
+        status: '待支付',
+        store_id: 'store-001',
+        preferred_employee_id: 'emp-b1',
+        client_phone: '138',
+        customer_name: '顾客A',
+        coupon_id: null,
+        lakala_out_order_no: 'FY-001_1700000000',
+        lakala_payment_intent: {
+          outTradeNo: 'FY-001_1700000000',
+          paymentParams: { package: 'prepay_id=secret', paySign: 'should-not-leak' },
+        },
+      }])
+      .mockResolvedValueOnce([{ name: '美容师A' }])
+      .mockResolvedValueOnce([{ sale_item_id: 'item-1' }])
+      .mockResolvedValueOnce([])
+
+    await orderRoutes.detail(ctx)
+
+    expect(ctx.result.order.lakala_payment_intent).toBeUndefined()
+    expect(JSON.stringify(ctx.result)).not.toContain('should-not-leak')
   })
 
   test('缺少 saleOrderId 时拒绝', async () => {

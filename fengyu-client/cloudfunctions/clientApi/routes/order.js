@@ -4381,9 +4381,12 @@ async function voidPaymentIntent(ctx) {
   if (!saleOrderId) {
     throw new Error('INVALID_PARAMS: 缺少 saleOrderId 参数')
   }
+  // 调用方预读到的意图单号。必须由调用方给出并在这里校验，不能让本接口
+  // 「读当前是哪笔就关哪笔」——见下方 TOCTOU 说明（双谱系评审 round-3）。
+  const expectedOutTradeNo = String(payload.expectedOutTradeNo || '').trim()
 
   const rows = await pg.query(
-    'SELECT sale_order_id, store_id, lakala_out_order_no FROM sale_orders WHERE sale_order_id = $1',
+    'SELECT sale_order_id, status, store_id, lakala_out_order_no FROM sale_orders WHERE sale_order_id = $1',
     [saleOrderId]
   )
   if (rows.length === 0) {
@@ -4393,6 +4396,18 @@ async function voidPaymentIntent(ctx) {
   if (!order.lakala_out_order_no) {
     ctx.result = { saleOrderId, result: 'noop' }
     return
+  }
+
+  // TOCTOU 防线：staffApi 预检时看到的是意图 A，但在跨 env 请求到达这里之前，A 可能已经
+  // 到账并清锁、顾客又发起了补款意图 B。若本接口只按订单号「关当前那笔」，就会把合法的 B
+  // 关掉——而 staff 侧事务随后会因订单已变「部分支付」拒绝关闭，最终订单没关成、顾客的
+  // 补款却被破坏。所以单号不匹配一律拒绝，绝不自动改为操作新意图。
+  if (expectedOutTradeNo && expectedOutTradeNo !== String(order.lakala_out_order_no)) {
+    throw new Error('CONFLICT: PAYMENT_INTENT_CHANGED: 支付场次已变化，请刷新后重试')
+  }
+  // 状态同样要在任何渠道调用之前复核（调用方的预检与这里之间可能已经变化）
+  if (!['待支付', '支付失败'].includes(order.status)) {
+    throw new Error('CONFLICT: PAYMENT_INTENT_CHANGED: 订单状态已变化，请刷新后重试')
   }
 
   const result = await voidActiveLakalaPaymentIntent(saleOrderId, {

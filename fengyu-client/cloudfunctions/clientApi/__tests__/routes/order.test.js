@@ -1979,6 +1979,69 @@ describe('order.cancel', () => {
   })
 })
 
+// ===== #214 跨 env 内部接口 order.voidPaymentIntent =====
+// 仅供 staffApi 经 HTTP 触发器 + HMAC 调用；staff 侧没有也不该有拉卡拉凭据。
+describe('order.voidPaymentIntent', () => {
+  function internalCtx(payload) {
+    const ctx = createBoundCtx(payload)
+    ctx.event._fromHttp = true
+    ctx.event._hmacVerified = true
+    return ctx
+  }
+
+  test('cloud.callFunction 直调（缺 HMAC 标记）→ PERMISSION_DENIED', async () => {
+    const ctx = createBoundCtx({ saleOrderId: 'FY-001' })
+    await expect(routes.voidPaymentIntent(ctx)).rejects.toThrow(/PERMISSION_DENIED/)
+  })
+
+  // TOCTOU 防线（双谱系评审 round-3）：staff 预检时看到的是意图 A，跨 env 请求到达前
+  // A 可能已到账清锁、顾客又发起了补款意图 B。按订单号「关当前那笔」会把合法的 B 关掉，
+  // 而 staff 事务随后因订单已变「部分支付」拒绝关闭 —— 订单没关成，顾客的补款却被破坏。
+  test('预读单号与当前意图不一致 → 拒绝，绝不改为操作新意图 (#214)', async () => {
+    pg.query.mockImplementation(async (sql) => {
+      if (/FROM sale_orders WHERE sale_order_id/.test(sql)) return [{
+        sale_order_id: 'FY-001', status: '待支付', store_id: 'store-1',
+        lakala_out_order_no: 'FY-001_NEW',
+      }]
+      return []
+    })
+
+    const ctx = internalCtx({ saleOrderId: 'FY-001', expectedOutTradeNo: 'FY-001_OLD' })
+    await expect(routes.voidPaymentIntent(ctx)).rejects.toThrow(/PAYMENT_INTENT_CHANGED/)
+    expect(__mocks__.lakalaClient.queryTrade).not.toHaveBeenCalled()
+    expect(__mocks__.lakalaClient.closeTrade).not.toHaveBeenCalled()
+  })
+
+  test('订单状态已变（已支付）→ 拒绝，不发任何渠道请求 (#214)', async () => {
+    pg.query.mockImplementation(async (sql) => {
+      if (/FROM sale_orders WHERE sale_order_id/.test(sql)) return [{
+        sale_order_id: 'FY-001', status: '已支付', store_id: 'store-1',
+        lakala_out_order_no: 'FY-001_1',
+      }]
+      return []
+    })
+
+    const ctx = internalCtx({ saleOrderId: 'FY-001', expectedOutTradeNo: 'FY-001_1' })
+    await expect(routes.voidPaymentIntent(ctx)).rejects.toThrow(/PAYMENT_INTENT_CHANGED/)
+    expect(__mocks__.lakalaClient.queryTrade).not.toHaveBeenCalled()
+  })
+
+  test('无活动意图 → noop，不发渠道请求', async () => {
+    pg.query.mockImplementation(async (sql) => {
+      if (/FROM sale_orders WHERE sale_order_id/.test(sql)) return [{
+        sale_order_id: 'FY-001', status: '待支付', store_id: 'store-1',
+        lakala_out_order_no: null,
+      }]
+      return []
+    })
+
+    const ctx = internalCtx({ saleOrderId: 'FY-001' })
+    await routes.voidPaymentIntent(ctx)
+    expect(ctx.result.result).toBe('noop')
+    expect(__mocks__.lakalaClient.queryTrade).not.toHaveBeenCalled()
+  })
+})
+
 describe('order.queryLakalaStatus', () => {
   const env = {
     LAKALA_API_BASE: 'https://x', LAKALA_APPID: 'OP', LAKALA_SERIAL_NO: 'sn',
