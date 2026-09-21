@@ -178,6 +178,7 @@ async function requestPreorder({
   notifyUrl,
   subAppid, openid,
   timeoutExpressMin = 10,
+  timeoutMs,
 }) {
   if (!merchantNo) throw new Error('INVALID_PARAMS: LAKALA_PREORDER_MERCHANT_NO_REQUIRED')
   if (!termNo) throw new Error('INVALID_PARAMS: LAKALA_PREORDER_TERM_NO_REQUIRED')  // 聚合主扫 term_no 必填
@@ -219,7 +220,7 @@ async function requestPreorder({
     reqData.acc_busi_fields = accBusi
   }
 
-  const resp = await request({ path: '/v3/labs/trans/preorder', reqData })
+  const resp = await request({ path: '/v3/labs/trans/preorder', reqData, timeoutMs })
   if (!resp.ok) {
     throw new Error(`INVALID_STATE: LAKALA_PREORDER_FAILED: ${resp.code} ${resp.msg || ''}`)
   }
@@ -281,6 +282,7 @@ async function requestAlipayShareCode({
   merchantNo, termNo, outTradeNo,
   totalAmountFen, requestIp,
   source, bizLink, sellerId, codeValidPeriodSec,
+  timeoutMs,
 }) {
   if (!merchantNo) throw new Error('INVALID_PARAMS: LAKALA_SHARE_CODE_MERCHANT_NO_REQUIRED')
   if (!termNo) throw new Error('INVALID_PARAMS: LAKALA_SHARE_CODE_TERM_NO_REQUIRED')
@@ -309,7 +311,7 @@ async function requestAlipayShareCode({
       await new Promise((r) => setTimeout(r, 1000))  // 1s 退避
     }
     try {
-      const resp = await request({ path: '/v3/labs/trans/share_code', reqData })
+      const resp = await request({ path: '/v3/labs/trans/share_code', reqData, timeoutMs })
       if (!resp.ok) {
         lastErr = new Error(`INVALID_STATE: LAKALA_SHARE_CODE_FAILED: ${resp.code} ${resp.msg || ''}`)
         continue
@@ -340,7 +342,7 @@ async function requestAlipayShareCode({
  *   raw: object
  * }>}
  */
-async function queryTrade({ merchantNo, termNo, outTradeNo, tradeNo }) {
+async function queryTrade({ merchantNo, termNo, outTradeNo, tradeNo, timeoutMs }) {
   if (!merchantNo) throw new Error('INVALID_PARAMS: LAKALA_QUERY_MERCHANT_NO_REQUIRED')
   if (!termNo) throw new Error('INVALID_PARAMS: LAKALA_QUERY_TERM_NO_REQUIRED')
   if (!outTradeNo && !tradeNo) throw new Error('INVALID_PARAMS: LAKALA_QUERY_OUT_TRADE_NO_OR_TRADE_NO_REQUIRED')
@@ -349,7 +351,7 @@ async function queryTrade({ merchantNo, termNo, outTradeNo, tradeNo }) {
   if (tradeNo) reqData.trade_no = tradeNo
   else reqData.out_trade_no = outTradeNo
 
-  const resp = await request({ path: '/v3/labs/query/tradequery', reqData })
+  const resp = await request({ path: '/v3/labs/query/tradequery', reqData, timeoutMs })
   const data = resp.resp_data || {}
   const accResp = data.acc_resp_fields || {}
   return {
@@ -366,6 +368,40 @@ async function queryTrade({ merchantNo, termNo, outTradeNo, tradeNo }) {
   }
 }
 
+/**
+ * 关单 /v3/labs/relation/close
+ *
+ * 把渠道侧尚未支付的单置为终态（trade_state=CLOSE），使其此后不可再被支付。
+ * 这是「顾客未付款可立即取消」的前提：不关单就本地关闭订单，顾客手机上残留的
+ * 支付面板仍可付款，payNotify 会因「非当前拉卡拉意图」拒绝入账 → 钱收了订单不动。
+ *
+ * ⚠️ 本接口**不返回**可信终态的保证：调用方必须在关单后再 queryTrade 复核为
+ * 可释放终态，复核不过一律不释放本地意图（fail-closed）。因此即使拉卡拉后续调整
+ * 字段规范导致本请求失败，也只会退回「关不掉、请稍后重试」的现状，不会制造资金窟窿。
+ *
+ * 字段按 relation 类接口的「原交易标识三选一」规则（与 /v3/labs/relation/refund 同族）：
+ * origin_trade_no > origin_out_trade_no，传其一即可。
+ */
+async function closeTrade({ merchantNo, termNo, outTradeNo, tradeNo, timeoutMs }) {
+  if (!merchantNo) throw new Error('INVALID_PARAMS: LAKALA_CLOSE_MERCHANT_NO_REQUIRED')
+  if (!termNo) throw new Error('INVALID_PARAMS: LAKALA_CLOSE_TERM_NO_REQUIRED')
+  if (!outTradeNo && !tradeNo) throw new Error('INVALID_PARAMS: LAKALA_CLOSE_OUT_TRADE_NO_OR_TRADE_NO_REQUIRED')
+
+  const reqData = { merchant_no: merchantNo, term_no: termNo }
+  if (tradeNo) reqData.origin_trade_no = tradeNo
+  else reqData.origin_out_trade_no = outTradeNo
+
+  const resp = await request({ path: '/v3/labs/relation/close', reqData, timeoutMs })
+  const data = resp.resp_data || {}
+  return {
+    ok: resp.ok,
+    code: resp.code,
+    msg: resp.msg,
+    tradeState: data.trade_state || '',
+    raw: data,
+  }
+}
+
 module.exports = {
   request,
   formatReqTime,
@@ -373,4 +409,5 @@ module.exports = {
   requestPreorder,
   requestAlipayShareCode,
   queryTrade,
+  closeTrade,
 }

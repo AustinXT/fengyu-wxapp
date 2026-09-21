@@ -110,7 +110,7 @@ module.exports.unit = function(total, divisor) {
         <view class="deduction-row__right">
           <van-switch
             checked="{{useCard}}"
-            disabled="{{cardBalance <= 0 || isRestrictedRepayment}}"
+            disabled="{{cardBalance <= 0 || isRestrictedRepayment || intentLocked}}"
             active-color="#C0322A"
             size="40rpx"
             bind:change="onUseCardChange"
@@ -119,6 +119,10 @@ module.exports.unit = function(total, divisor) {
       </view>
       <view wx:if="{{isRestrictedRepayment}}" class="deduction-tips">
         本次回款金额已由门店锁定，不支持追加储值卡抵扣
+      </view>
+      <!-- #214：复用进行中的支付场次时，抵扣方案与支付方式都已定死在那笔渠道单里 -->
+      <view wx:elif="{{intentLocked}}" class="deduction-tips">
+        本次支付已在进行中，抵扣方案不可更改；如需调整请先取消订单
       </view>
       <view wx:if="{{useCard && prepaidCardAmount > 0}}" class="deduction-row deduction-row--sub">
         <text class="deduction-row__sub-label">抵扣金额</text>
@@ -153,7 +157,7 @@ module.exports.unit = function(total, divisor) {
 
       <!-- 支付方式：仅 paid > 0 时展示 -->
       <view wx:if="{{showPayMethodGroup}}" class="pay-method-wrap">
-        <van-radio-group value="{{paymentMethod}}" bind:change="onPayMethodChange">
+        <van-radio-group value="{{paymentMethod}}" disabled="{{intentLocked}}" bind:change="onPayMethodChange">
           <van-cell-group inset>
             <van-cell title="微信支付" clickable bindtap="onPayMethodTap" data-method="微信">
               <van-icon slot="icon" name="wechat-pay" size="40rpx" color="#07C160" style="margin-right:16rpx" />
@@ -171,6 +175,13 @@ module.exports.unit = function(total, divisor) {
         </van-radio-group>
       </view>
       <view wx:else class="paid-section__hint">全额抵扣，无需选择支付方式</view>
+    </view>
+
+    <!-- 取消订单（#214：扫码进来的顾客此前只能绕回订单详情页才有取消入口）
+         仅「待支付」可取消：order.cancel 的 cancelableStatuses 就是这么定的，
+         对部分支付订单展示入口只会让顾客点完才收到「当前订单状态不允许取消」 -->
+    <view wx:if="{{order.status === '待支付'}}" class="cancel-row">
+      <text class="cancel-link" bindtap="onCancelOrder">取消订单</text>
     </view>
 
     <!-- 底部确认 -->

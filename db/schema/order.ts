@@ -143,6 +143,19 @@ export const saleOrders = pgTable(
      * 仅线上微信/支付宝走拉卡拉时写入；线下/储值卡为 NULL。
      */
     lakalaOutOrderNo: text("lakala_out_order_no"),
+    /**
+     * 最近一次预下单的支付场次快照，供顾客中途退出后「继续支付」复用（issue #214）。
+     *
+     * `{ outTradeNo, expiresAt, paymentMethod, payAmount, paymentParams }`
+     *
+     * 复用靠**匹配**而非清空：`lakala_out_order_no = NULL` 的清空点分散在 clientApi helper、
+     * payNotify 三处与各端 SQL，要求它们全部同步清空这一列必然漏。改为复用前校验
+     * `intent.outTradeNo === lakala_out_order_no`——单号对不上即自动失效，残留 jsonb 无害。
+     *
+     * `paymentParams` 含 paySign（支付凭据）：只回发给鉴权通过且 client_user_id 匹配的本人，
+     * 不写日志，不随 order.detail 下发。
+     */
+    lakalaPaymentIntent: jsonb("lakala_payment_intent"),
     allocationStatus: allocationStatusEnum("allocation_status"),
     /** 使用的券实例ID（关系由 user_coupons.used_sale_order_id 维护，不设反向 FK 避免循环引用） */
     couponId: text("coupon_id"),

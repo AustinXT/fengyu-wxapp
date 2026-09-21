@@ -6,6 +6,13 @@ vi.mock('@/lib/document-type', () => ({
 
 // 退款前置检查（orders.ts recordPayment 等调 hasPendingRefund）：
 // 默认 false（无退款审批中），让现有用例走正常分支；不 mock 会跑真实实现拿 mock 的 db 误判。
+// #214 关闭订单前向渠道关单：默认 isReady=false（等价改动前行为），
+// 需要覆盖真实关单分支的用例自行把它改成 true。
+vi.mock('@/lib/lakala-client', () => ({
+  isReady: vi.fn(() => false),
+  queryTrade: vi.fn(async () => ({ ok: true, tradeState: 'CREATE' })),
+  closeTrade: vi.fn(async () => ({ ok: true, tradeState: 'CLOSE' })),
+}))
 vi.mock('@/lib/refund-cascade', () => ({
   hasPendingRefund: vi.fn().mockResolvedValue(false),
   hasPendingRefundByServiceOrder: vi.fn().mockResolvedValue(false),
@@ -315,6 +322,7 @@ const usedOrderLevelColumn = () =>
     values.includes('performance_attribution_date'),
   )
 import { hasPendingRefund } from '@/lib/refund-cascade'
+import { isReady as lakalaIsReady, queryTrade, closeTrade } from '@/lib/lakala-client'
 
 const mockSession = {
   employeeId: 'EMP-001',
@@ -2078,7 +2086,7 @@ describe('closeOrder — 事务原子性（关闭 + 作废分配）', () => {
     expect(result.message).toContain('状态已变更')
   })
 
-  it('活动在线支付意图存在时原子拒绝关闭', async () => {
+  it('活动在线支付意图存在时原子拒绝关闭（拉卡拉未配置 → 退回改动前行为）', async () => {
     mockSelectBefore([{
       status: '待支付',
       customerName: '顾客甲',
@@ -2091,6 +2099,133 @@ describe('closeOrder — 事务原子性（关闭 + 作废分配）', () => {
 
     expect(result).toEqual({ success: false, message: '在线支付处理中，暂不能关闭订单' })
     expect(isNull).toHaveBeenCalledWith('lakala_out_order_no')
+  })
+
+  // ===== #214 关闭前主动向渠道关单 =====
+  // 顾客唤起支付后没付款，渠道单仍在有效期内，旧实现只能拒绝关闭（实测要等约 20 分钟）。
+  describe('#214 关闭前作废在线支付意图', () => {
+    beforeEach(() => {
+      ;(lakalaIsReady as any).mockReturnValue(true)
+    })
+
+    it('渠道未付款 → 关单 + 复核 CLOSE 后放行关闭', async () => {
+      mockSelectBefore([{
+        status: '待支付', customerName: '顾客甲', totalAmount: '200.00',
+        storeId: 'store-001', lakalaOutOrderNo: 'order-1_123',
+      }])
+      ;(queryTrade as any)
+        .mockResolvedValueOnce({ ok: true, tradeState: 'CREATE' })   // 首查：未付款
+        .mockResolvedValueOnce({ ok: true, tradeState: 'CLOSE' })    // 关单后复核
+      ;(db.execute as any)
+        .mockResolvedValueOnce([{ merchant_no: 'M1', term_no: 'T1', enabled: true }])  // 商户
+        .mockResolvedValueOnce([{ sale_order_id: 'order-1' }])                          // 释放意图
+      mockCloseTx(1)
+
+      const result = await closeOrder('order-1')
+
+      expect(result.success).toBe(true)
+      expect(closeTrade).toHaveBeenCalledWith(expect.objectContaining({
+        merchantNo: 'M1', termNo: 'T1', outTradeNo: 'order-1_123',
+      }))
+    })
+
+    it('渠道已 SUCCESS → 拒绝关闭，一条关单请求都不发', async () => {
+      mockSelectBefore([{
+        status: '待支付', customerName: '顾客甲', totalAmount: '200.00',
+        storeId: 'store-001', lakalaOutOrderNo: 'order-1_123',
+      }])
+      ;(queryTrade as any).mockResolvedValueOnce({ ok: true, tradeState: 'SUCCESS' })
+      ;(db.execute as any).mockResolvedValueOnce([{ merchant_no: 'M1', term_no: 'T1', enabled: true }])
+
+      const result = await closeOrder('order-1')
+
+      expect(result.success).toBe(false)
+      expect(result.message).toContain('支付已成功')
+      expect(closeTrade).not.toHaveBeenCalled()
+      expect(db.transaction).not.toHaveBeenCalled()
+    })
+
+    // fail-closed 主防线：关单发了但渠道仍可支付 → 绝不本地关闭，否则顾客残留的
+    // 支付面板付进来的钱会因 payNotify 的「非当前意图」校验无法入账。
+    it('关单后复核仍非终态 → 拒绝关闭', async () => {
+      mockSelectBefore([{
+        status: '待支付', customerName: '顾客甲', totalAmount: '200.00',
+        storeId: 'store-001', lakalaOutOrderNo: 'order-1_123',
+      }])
+      ;(queryTrade as any)
+        .mockResolvedValueOnce({ ok: true, tradeState: 'CREATE' })
+        .mockResolvedValueOnce({ ok: true, tradeState: 'CREATE' })
+      ;(db.execute as any).mockResolvedValueOnce([{ merchant_no: 'M1', term_no: 'T1', enabled: true }])
+
+      const result = await closeOrder('order-1')
+
+      expect(result.success).toBe(false)
+      expect(db.transaction).not.toHaveBeenCalled()
+    })
+
+    it('渠道 REVOKED（撤销）视为终态，无需关单即可放行', async () => {
+      mockSelectBefore([{
+        status: '待支付', customerName: '顾客甲', totalAmount: '200.00',
+        storeId: 'store-001', lakalaOutOrderNo: 'order-1_123',
+      }])
+      ;(queryTrade as any).mockResolvedValueOnce({ ok: true, tradeState: 'REVOKED' })
+      ;(db.execute as any)
+        .mockResolvedValueOnce([{ merchant_no: 'M1', term_no: 'T1', enabled: true }])
+        .mockResolvedValueOnce([{ sale_order_id: 'order-1' }])
+      mockCloseTx(1)
+
+      const result = await closeOrder('order-1')
+
+      expect(result.success).toBe(true)
+      expect(closeTrade).not.toHaveBeenCalled()
+    })
+
+    // 释放 CAS 的状态集合必须与 closeOrder 的 CAS（待支付 OR 支付失败）同源。
+    // 照抄 clientApi 的 ('待支付','部分支付') 会让「支付失败」单在渠道已被关掉之后
+    // 永远释放不了本地意图 → 这张单再也关不掉，提示还把店员引向无效重试。
+    it('支付失败状态的残留意图同样可释放并关闭', async () => {
+      mockSelectBefore([{
+        status: '支付失败', customerName: '顾客甲', totalAmount: '200.00',
+        storeId: 'store-001', lakalaOutOrderNo: 'order-1_123',
+      }])
+      ;(queryTrade as any).mockResolvedValueOnce({ ok: true, tradeState: 'CLOSE' })
+      ;(db.execute as any)
+        .mockResolvedValueOnce([{ merchant_no: 'M1', term_no: 'T1', enabled: true }])
+        .mockResolvedValueOnce([{ sale_order_id: 'order-1' }])
+      mockCloseTx(1)
+
+      const result = await closeOrder('order-1')
+
+      expect(result.success).toBe(true)
+    })
+
+    // 状态闸门排在关单之前：对一张已支付单点关闭，不该先去渠道查单甚至发关单请求
+    it('已支付订单不触发任何渠道调用', async () => {
+      mockSelectBefore([{
+        status: '已支付', customerName: '顾客甲', totalAmount: '200.00',
+        storeId: 'store-001', lakalaOutOrderNo: 'order-1_123',
+      }])
+      mockCloseTx(0)
+
+      await closeOrder('order-1')
+
+      expect(queryTrade).not.toHaveBeenCalled()
+      expect(closeTrade).not.toHaveBeenCalled()
+    })
+
+    it('查单异常 → 保留意图、拒绝关闭', async () => {
+      mockSelectBefore([{
+        status: '待支付', customerName: '顾客甲', totalAmount: '200.00',
+        storeId: 'store-001', lakalaOutOrderNo: 'order-1_123',
+      }])
+      ;(queryTrade as any).mockRejectedValueOnce(new Error('INVALID_STATE: LAKALA_TIMEOUT_30000ms'))
+      ;(db.execute as any).mockResolvedValueOnce([{ merchant_no: 'M1', term_no: 'T1', enabled: true }])
+
+      const result = await closeOrder('order-1')
+
+      expect(result.success).toBe(false)
+      expect(db.transaction).not.toHaveBeenCalled()
+    })
   })
 
   it('正常关闭（rowCount=1）→ 事务内两步均执行', async () => {
