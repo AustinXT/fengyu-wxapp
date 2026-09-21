@@ -15,6 +15,10 @@ interface ServiceItem {
   serviceTime: string;
   startTime: string | null;
   completedTime: string | null;
+  // 跨店支援单（#224）：单属于别的门店、指派给本人。isSupport 由云函数判定，前端只做展示
+  storeId: string | null;
+  storeName: string;
+  isSupport: boolean;
   items: Array<{
     itemName: string;
     spec: string;

@@ -37,11 +37,15 @@
       bindtap="onItemTap"
       data-id="{{item.id}}"
     >
-      <!-- 卡片头：编号 + 状态 -->
+      <!-- 卡片头：编号 + 支援标识 + 状态 -->
       <view class="card-header">
         <text class="service-no">{{item.serviceOrderId}}</text>
-        <view class="status-tag status-tag--{{item.status === '待服务' ? 'pending' : item.status === '服务中' ? 'progress' : item.status === '待客户确认' ? 'awaiting' : 'done'}}">
-          {{item.status}}
+        <view class="header-tags">
+          <!-- 跨店支援单（#224）：单开在别的门店、指派给本人 -->
+          <view wx:if="{{item.isSupport}}" class="support-tag">支援 · {{item.storeName}}</view>
+          <view class="status-tag status-tag--{{item.status === '待服务' ? 'pending' : item.status === '服务中' ? 'progress' : item.status === '待客户确认' ? 'awaiting' : 'done'}}">
+            {{item.status}}
+          </view>
         </view>
       </view>
 

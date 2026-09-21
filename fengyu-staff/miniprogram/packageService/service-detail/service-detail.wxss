@@ -22,6 +22,18 @@
 
 .service-no { font-size: 24rpx; color: var(--color-text-secondary); font-family: monospace; }
 
+.banner-right { display: flex; align-items: center; gap: 12rpx; }
+
+/* 跨店支援单标识（#224） */
+.support-tag {
+  padding: 4rpx 16rpx;
+  border-radius: 24rpx;
+  font-size: 22rpx;
+  font-weight: 500;
+  background: #F0F4FA;
+  color: #5E8BB3;
+}
+
 .section-group { margin-top: 24rpx; }
 
 .section-title-row {

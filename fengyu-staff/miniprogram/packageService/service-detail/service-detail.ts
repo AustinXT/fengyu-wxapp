@@ -15,6 +15,10 @@ interface ServiceDetail {
   completedTime: string | null;
   appointmentId: string | null;
   remark: string;
+  // 跨店支援单（#224）：单属于别的门店、指派给本人。取消仍归开单门店，故支援单不显示取消按钮
+  storeId: string | null;
+  storeName: string;
+  isSupport: boolean;
   items: Array<{
     saleItemId: string;
     itemName: string;

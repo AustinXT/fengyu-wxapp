@@ -28,6 +28,29 @@
   font-family: monospace;
 }
 
+.header-tags {
+  display: flex;
+  align-items: center;
+  gap: 8rpx;
+  flex-shrink: 0;
+}
+
+/* 跨店支援单标识（#224）：开单门店不是本人所属门店 */
+.support-tag {
+  display: inline-block;
+  padding: 4rpx 16rpx;
+  border-radius: 24rpx;
+  font-size: 22rpx;
+  font-weight: 500;
+  line-height: 1.5;
+  background: #F0F4FA;
+  color: #5E8BB3;
+  max-width: 240rpx;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 
 /* ===== 顾客信息 ===== */
 .card-customer {
