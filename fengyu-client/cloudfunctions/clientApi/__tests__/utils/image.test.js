@@ -92,13 +92,67 @@ describe('safeThumbUrl', () => {
     expect(result).toBe(`${COS_URL}?imageMogr2/thumbnail/300x300`)
   })
 
-  test('私有读签名参数必须保留，否则会 403', () => {
-    const signed = `${COS_URL}?q-sign-algorithm=sha1&q-ak=AKID&q-key-time=1&q-signature=abc`
+  // COS 私有读签名共 7 个认证参数，丢任意一个都会 403
+  test('私有读签名的全部 7 个参数都必须保留', () => {
+    const signed =
+      `${COS_URL}?q-sign-algorithm=sha1&q-ak=AKID&q-sign-time=1&q-key-time=1` +
+      `&q-header-list=host&q-url-param-list=&q-signature=abc`
     const result = safeThumbUrl(signed, 300)
-    expect(result).toContain('q-sign-algorithm=sha1')
-    expect(result).toContain('q-ak=AKID')
-    expect(result).toContain('q-key-time=1')
+
+    for (const param of [
+      'q-sign-algorithm=sha1',
+      'q-ak=AKID',
+      'q-sign-time=1',
+      'q-key-time=1',
+      'q-header-list=host',
+      'q-url-param-list=',
+      'q-signature=abc',
+    ]) {
+      expect(result).toContain(param)
+    }
     expect(result).toContain('imageMogr2/thumbnail/300x300')
+  })
+
+  test('临时密钥 URL 的安全令牌必须保留', () => {
+    const result = safeThumbUrl(
+      `${COS_URL}?q-signature=abc&x-cos-security-token=TOKEN123`,
+      300
+    )
+    expect(result).toContain('x-cos-security-token=TOKEN123')
+  })
+
+  /**
+   * 被签进签名的业务参数由 q-url-param-list 自己声明。只保留 q-url-param-list
+   * 本身、却把它列出的参数删掉，签名一样失效——白名单前缀列表覆盖不了这种动态声明。
+   */
+  test('q-url-param-list 声明的业务参数必须一并保留', () => {
+    const result = safeThumbUrl(
+      `${COS_URL}?q-url-param-list=response-content-disposition` +
+        `&response-content-disposition=inline&q-signature=abc`,
+      300
+    )
+    expect(result).toContain('q-url-param-list=response-content-disposition')
+    expect(result).toContain('response-content-disposition=inline')
+    expect(result).toContain('imageMogr2/thumbnail/300x300')
+  })
+
+  test('未被签名声明的同名业务参数仍然丢弃', () => {
+    const result = safeThumbUrl(
+      `${COS_URL}?q-url-param-list=&response-content-disposition=inline`,
+      300
+    )
+    expect(result).not.toContain('response-content-disposition=inline')
+  })
+
+  test('非法百分号编码不抛错且按非鉴权参数丢弃', () => {
+    const result = safeThumbUrl(`${COS_URL}?%ZZbad=1&imageView2/1/w/9999`, 300)
+    expect(result).toBe(`${COS_URL}?imageMogr2/thumbnail/300x300`)
+  })
+
+  test('编码变体的处理参数同样被丢弃', () => {
+    const result = safeThumbUrl(`${COS_URL}?%69mageMogr2/thumbnail/50000x`, 300)
+    expect(result).toBe(`${COS_URL}?imageMogr2/thumbnail/300x300`)
+    expect(result).not.toContain('50000')
   })
 
   // 以下输入都无法保证缩略，必须返回 null 让调用方渲染占位图，而不是下发原图

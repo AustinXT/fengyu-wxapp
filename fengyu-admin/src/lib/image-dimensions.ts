@@ -50,23 +50,37 @@ function parseGif(buf: Buffer): ImageDimensions | null {
   if (buf.length < 13) return null
   const sig = buf.toString("ascii", 0, 6)
   if (sig !== "GIF87a" && sig !== "GIF89a") return null
+
+  const scan = scanGifBlocks(buf)
+  // 单帧的 Image Descriptor 矩形可以声明得比逻辑屏幕(LSD)还大
+  // （LSD 100×100 而帧 65535×65535，LZW 高压缩下文件很小）。
+  // 规范要求解码器裁剪到逻辑屏幕，但这里按 fail-closed 取两者较大值。
   return {
-    width: buf.readUInt16LE(6),
-    height: buf.readUInt16LE(8),
-    animated: isAnimatedGif(buf),
+    width: Math.max(buf.readUInt16LE(6), scan.frameWidth),
+    height: Math.max(buf.readUInt16LE(8), scan.frameHeight),
+    animated: scan.animated,
   }
 }
 
+interface GifScan {
+  animated: boolean
+  /** 各帧 Image Descriptor 声明的最大宽度（可能大于逻辑屏幕） */
+  frameWidth: number
+  frameHeight: number
+}
+
 /**
- * 判断 GIF 是否多帧。
+ * 按块结构遍历 GIF，统计真实帧数并取各帧声明的最大尺寸。
  *
- * 必须按块结构遍历，不能直接扫 0x2C 字节：0x2C 在调色板和 LZW 压缩数据里会随机出现
+ * 必须按块遍历，不能直接扫 0x2C 字节：0x2C 在调色板和 LZW 压缩数据里会随机出现
  * （约 1/256 每字节），那样任何上千字节的**静态** GIF 都会被误判成动图。
+ * 也不能只扫前 N 字节：帧之前可以合法地塞进任意大的 Comment Extension。
  *
  * 结构：LSD(13B) → [全局颜色表] → 循环 { 0x21 扩展块 | 0x2C 图像块 | 0x3B 结束 }
- * 解析不下去（截断/畸形）时返回 true，方向为 fail-closed：宁可误拒也不放过多帧图。
+ * 解析不下去（截断/畸形）时判定为动图，方向 fail-closed：宁可误拒也不放过多帧图。
  */
-function isAnimatedGif(buf: Buffer): boolean {
+function scanGifBlocks(buf: Buffer): GifScan {
+  const bail: GifScan = { animated: true, frameWidth: 0, frameHeight: 0 }
   let offset = 13
 
   // 全局颜色表：packed 的最高位标记存在，低 3 位决定表大小
@@ -76,21 +90,31 @@ function isAnimatedGif(buf: Buffer): boolean {
   }
 
   let frames = 0
+  let frameWidth = 0
+  let frameHeight = 0
+
   while (offset < buf.length) {
     const block = buf[offset]
 
-    if (block === 0x3b) return false // Trailer：正常结束，且只数到 ≤1 帧
+    // Trailer：正常结束
+    if (block === 0x3b) {
+      return { animated: frames > 1, frameWidth, frameHeight }
+    }
+
     if (block === 0x21) {
       // 扩展块：1B 引导 + 1B label + 若干 sub-block
-      offset += 2
-      offset = skipGifSubBlocks(buf, offset)
-      if (offset < 0) return true
+      offset = skipGifSubBlocks(buf, offset + 2)
+      if (offset < 0) return bail
       continue
     }
+
     if (block === 0x2c) {
-      if (++frames > 1) return true
-      // Image Descriptor 共 10 字节，其中末字节 packed 标记局部颜色表
-      if (offset + 10 > buf.length) return true
+      frames++
+      // Image Descriptor 共 10 字节：left/top/width/height 各 2B + packed 1B
+      if (offset + 10 > buf.length) return bail
+      frameWidth = Math.max(frameWidth, buf.readUInt16LE(offset + 5))
+      frameHeight = Math.max(frameHeight, buf.readUInt16LE(offset + 7))
+
       const localPacked = buf[offset + 9]
       offset += 10
       if (localPacked & 0x80) {
@@ -98,15 +122,15 @@ function isAnimatedGif(buf: Buffer): boolean {
       }
       offset += 1 // LZW minimum code size
       offset = skipGifSubBlocks(buf, offset)
-      if (offset < 0) return true
+      if (offset < 0) return bail
       continue
     }
 
     // 遇到无法识别的块，结构已不可信
-    return true
+    return bail
   }
 
-  return frames > 1
+  return { animated: frames > 1, frameWidth, frameHeight }
 }
 
 /**
@@ -215,6 +239,9 @@ function parseWebp(buf: Buffer): ImageDimensions | null {
     // canvas 可以声明 100×100 而内嵌帧其实是 16000×16000。若解码端按帧尺寸分配位图，
     // 只信 canvas 就会读小放行。故取 canvas 与内嵌帧的较大者。
     const frame = parseWebpFrameAfterVp8x(buf)
+    // 结构不可信时必须整体判定失败：若退回 canvas 尺寸，等于用一个小尺寸放行了
+    // 一个我们根本没能力确认的容器
+    if (frame === "invalid") return null
     return {
       width: Math.max(width, frame?.width ?? 0),
       height: Math.max(height, frame?.height ?? 0),
@@ -227,9 +254,15 @@ function parseWebp(buf: Buffer): ImageDimensions | null {
 
 /**
  * 在 VP8X 之后按 chunk 链找首个 VP8 / VP8L 帧，读它自己声明的尺寸。
- * 找不到或结构不可信时返回 null（交由 canvas 尺寸兜底）。
+ *
+ * 三种返回值必须区分开：
+ * - `ImageDimensions`：找到帧，用它的尺寸
+ * - `null`：chunk 链走完但没有帧（合法，交由 canvas 尺寸兜底）
+ * - `"invalid"`：结构不可信（声明长度越界、帧头放不下等），调用方必须整体判定失败
  */
-function parseWebpFrameAfterVp8x(buf: Buffer): ImageDimensions | null {
+function parseWebpFrameAfterVp8x(
+  buf: Buffer
+): ImageDimensions | "invalid" | null {
   // RIFF(12) + VP8X header(8) + VP8X payload(10) = 30
   let offset = 30
 
@@ -238,10 +271,14 @@ function parseWebpFrameAfterVp8x(buf: Buffer): ImageDimensions | null {
     const chunkSize = buf.readUInt32LE(offset + 4)
     const body = offset + 8
 
+    // payload 必须严格落在 buffer 内，否则结构不可信
+    if (body + chunkSize > buf.length) return "invalid"
+
     if (chunkType === "VP8 ") {
-      if (body + 10 > buf.length) return null
+      // 帧头字段必须在本 chunk 声明的长度之内，不能跨界读进下一个 chunk
+      if (chunkSize < 10) return "invalid"
       if (buf[body + 3] !== 0x9d || buf[body + 4] !== 0x01 || buf[body + 5] !== 0x2a) {
-        return null
+        return "invalid"
       }
       return {
         width: buf.readUInt16LE(body + 6) & 0x3fff,
@@ -250,8 +287,8 @@ function parseWebpFrameAfterVp8x(buf: Buffer): ImageDimensions | null {
     }
 
     if (chunkType === "VP8L") {
-      if (body + 5 > buf.length) return null
-      if (buf[body] !== 0x2f) return null
+      if (chunkSize < 5) return "invalid"
+      if (buf[body] !== 0x2f) return "invalid"
       const bits = buf.readUInt32LE(body + 1)
       return {
         width: (bits & 0x3fff) + 1,
@@ -261,7 +298,7 @@ function parseWebpFrameAfterVp8x(buf: Buffer): ImageDimensions | null {
 
     // chunk 按偶数字节对齐
     const advance = 8 + chunkSize + (chunkSize % 2)
-    if (advance <= 8) return null // 防御：非递增即判定结构不可信
+    if (advance <= 8) return "invalid" // 防御：非递增即判定结构不可信
     offset += advance
   }
 

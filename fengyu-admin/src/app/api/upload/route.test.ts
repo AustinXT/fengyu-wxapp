@@ -32,15 +32,26 @@ function makePng(width: number, height: number): Buffer {
   return buf
 }
 
+/**
+ * 结构完整的两帧 GIF（每帧含 Image Descriptor + LZW sub-block 链 + trailer）。
+ * 用完整块结构而不是裸拼两个 Image Descriptor —— 否则这条测试证明的其实是
+ * 「畸形 GIF 被 fail-closed 拒绝」，而不是「合法两帧 GIF 从路由入口被拒」。
+ */
 function makeAnimatedGif(width: number, height: number): Buffer {
   const lsd = Buffer.alloc(13)
   lsd.write('GIF89a', 0, 'ascii')
   lsd.writeUInt16LE(width, 6)
   lsd.writeUInt16LE(height, 8)
-  const frames = [Buffer.alloc(10), Buffer.alloc(10)]
-  frames[0][0] = 0x2c
-  frames[1][0] = 0x2c
-  return Buffer.concat([lsd, ...frames])
+
+  const frame = Buffer.concat([
+    Buffer.from([0x2c]), // Image Separator
+    Buffer.from([0, 0, 0, 0]), // left / top
+    Buffer.from([width & 0xff, width >> 8, height & 0xff, height >> 8]),
+    Buffer.from([0x00]), // packed：无局部颜色表
+    Buffer.from([0x08, 0x01, 0x00, 0x00]), // LZW min code size + sub-block 链
+  ])
+
+  return Buffer.concat([lsd, frame, frame, Buffer.from([0x3b])])
 }
 
 function post(

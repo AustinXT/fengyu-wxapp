@@ -73,14 +73,28 @@ function makeApng(width: number, height: number): Buffer {
   return Buffer.concat([png, actl])
 }
 
-/** VP8X 声明一个 canvas 尺寸，内嵌 VP8 帧却是另一个（更大的）尺寸 */
+/**
+ * VP8X 声明一个 canvas 尺寸，内嵌 VP8 帧却是另一个（更大的）尺寸。
+ * @param extraChunk 在帧之前插入一个奇数长度的 metadata chunk，用于验证 padding 对齐
+ */
 function makeWebpVp8xWithFrame(
   canvasW: number,
   canvasH: number,
   frameW: number,
-  frameH: number
+  frameH: number,
+  extraChunk = false
 ): Buffer {
   const head = makeWebpVp8x(canvasW, canvasH)
+
+  const parts: Buffer[] = [head]
+  if (extraChunk) {
+    // 奇数长度 chunk（3 字节）必须补 1 字节 padding
+    const meta = Buffer.alloc(8 + 3 + 1)
+    meta.write("EXIF", 0, "ascii")
+    meta.writeUInt32LE(3, 4)
+    parts.push(meta)
+  }
+
   const chunk = Buffer.alloc(8 + 10)
   chunk.write("VP8 ", 0, "ascii")
   chunk.writeUInt32LE(10, 4)
@@ -89,7 +103,12 @@ function makeWebpVp8xWithFrame(
   chunk[8 + 5] = 0x2a
   chunk.writeUInt16LE(frameW, 8 + 6)
   chunk.writeUInt16LE(frameH, 8 + 8)
-  return Buffer.concat([head, chunk])
+  parts.push(chunk)
+
+  const out = Buffer.concat(parts)
+  // 修正 RIFF 声明长度（= 文件总长 - 8）
+  out.writeUInt32LE(out.length - 8, 4)
+  return out
 }
 
 /** 构造 JPEG：SOI + 一个无关 APP0 段 + SOF0 段 */
@@ -292,6 +311,34 @@ describe("getImageDimensions", () => {
       ).toMatchObject({ width: 640, height: 480, animated: false })
     })
 
+    /**
+     * 单帧 GIF 的 Image Descriptor 矩形可以声明得比逻辑屏幕大
+     * （LSD 100×100 而帧 65535×65535，LZW 高压缩下文件很小），
+     * 只校验 LSD 会让它四道检查全过。
+     */
+    it("帧矩形大于逻辑屏幕时按较大者判定", () => {
+      const lsd = Buffer.alloc(13)
+      lsd.write("GIF89a", 0, "ascii")
+      lsd.writeUInt16LE(100, 6)
+      lsd.writeUInt16LE(100, 8)
+
+      const desc = Buffer.alloc(10)
+      desc[0] = 0x2c
+      desc.writeUInt16LE(65535, 5)
+      desc.writeUInt16LE(65535, 7)
+
+      const gif = Buffer.concat([
+        lsd,
+        desc,
+        Buffer.from([0x08, 0x01, 0x00, 0x00]),
+        Buffer.from([0x3b]),
+      ])
+
+      const dim = getImageDimensions(gif)
+      expect(dim).toMatchObject({ width: 65535, height: 65535 })
+      expect(dim!.width * dim!.height).toBeGreaterThan(40_000_000)
+    })
+
     it("APNG 被识别为动图（acTL chunk）", () => {
       expect(getImageDimensions(makeApng(4000, 4000))).toMatchObject({
         width: 4000,
@@ -370,6 +417,25 @@ describe("getImageDimensions", () => {
       expect(
         getImageDimensions(makeWebpVp8xWithFrame(8000, 8000, 100, 100))
       ).toMatchObject({ width: 8000, height: 8000 })
+    })
+
+    it("帧前有奇数长度 metadata chunk 时 padding 对齐仍能找到帧", () => {
+      expect(
+        getImageDimensions(makeWebpVp8xWithFrame(100, 100, 9000, 9000, true))
+      ).toMatchObject({ width: 9000, height: 9000 })
+    })
+
+    it("chunk 声明长度越界时判定失败，不退回小 canvas 放行", () => {
+      const buf = makeWebpVp8xWithFrame(100, 100, 16000, 16000)
+      // 把 VP8 chunk 的声明长度改成远超剩余字节
+      buf.writeUInt32LE(99999, 34)
+      expect(getImageDimensions(buf)).toBeNull()
+    })
+
+    it("VP8 chunk 声明长度不足以容纳帧头时判定失败", () => {
+      const buf = makeWebpVp8xWithFrame(100, 100, 16000, 16000)
+      buf.writeUInt32LE(4, 34) // < 10，放不下帧头
+      expect(getImageDimensions(buf)).toBeNull()
     })
   })
 

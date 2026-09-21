@@ -25,6 +25,55 @@ function isProcessableHost(hostname) {
 }
 
 /**
+ * 判断一个 query 参数是否属于「鉴权必需、删了会 403」的那类。
+ *
+ * 光靠固定前缀列表补不全：COS V5 签名把哪些业务参数纳入签名，是由 `q-url-param-list`
+ * 自己声明的（分号分隔）。若只保留 `q-url-param-list=response-content-disposition`
+ * 而把真正的 `response-content-disposition=inline` 删掉，签名照样失效。
+ * 所以这里先读出它声明的参数名集合，再据此决定保留谁。
+ *
+ * @param {string} param 形如 `key=value` 的原始参数串
+ * @param {string[]} allParams 同一 URL 上的全部原始参数串
+ */
+function isAuthParam(param, allParams) {
+  const name = decodeParamName(param)
+
+  // q-* 是签名自身的字段；临时密钥 URL 还必须带安全令牌
+  if (name.startsWith('q-')) return true
+  if (name === 'x-cos-security-token') return true
+
+  // q-url-param-list 声明了哪些业务参数被签进了签名，这些同样不能动
+  const listParam = allParams.find(
+    (p) => decodeParamName(p) === 'q-url-param-list'
+  )
+  if (!listParam) return false
+
+  const signedNames = decodeURIComponentSafe(listParam.slice(listParam.indexOf('=') + 1))
+    .split(';')
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean)
+
+  return signedNames.includes(name)
+}
+
+/** 取参数名并归一（解码 + 小写），解码失败时退回原串 */
+function decodeParamName(param) {
+  const eq = param.indexOf('=')
+  const rawName = eq === -1 ? param : param.slice(0, eq)
+  return decodeURIComponentSafe(rawName).toLowerCase()
+}
+
+function decodeURIComponentSafe(value) {
+  try {
+    return decodeURIComponent(value)
+  } catch {
+    // 非法百分号编码：退回原串。这里只影响「是否认定为鉴权参数」，
+    // 退回原串会让它落到「非鉴权 → 丢弃」，方向是安全的
+    return value
+  }
+}
+
+/**
  * 生成可安全下发给小程序的缩略图 URL。
  *
  * **无法保证缩略的一律返回 null，而不是退回原图** —— 这是本模块的核心安全约定。
@@ -60,18 +109,13 @@ function safeThumbUrl(url, boxSize) {
   // 这类把可信域名塞进 userinfo 的 URL 会被误判为可信
   if (!isProcessableHost(parsed.hostname)) return null
 
-  // 丢弃原 URL 上的全部图片处理参数，只保留白名单内的参数，再拼服务端自己的规则。
+  // 丢弃原 URL 上的全部图片处理参数，只保留鉴权相关参数，再拼服务端自己的规则。
   //
   // 这里必须是白名单而不是「剥掉 imageMogr2」的黑名单：COS 还有与 imageMogr2 平级的
   // imageView2（mode 1 可把图放大到指定尺寸），黑名单漏掉它就等于留了个放大通道；
   // 而黑名单永远只挡得住已知参数名。最终生效的规则必须由服务端完全掌控。
-  //
-  // q-sign-* / q-ak / q-key-time 等是私有读签名参数，去掉会导致 403，必须留。
-  const KEEP_PREFIXES = ['q-sign', 'q-ak', 'q-key-time', 'q-url-param-list', 'sign=']
-  const kept = parsed.search
-    .replace(/^\?/, '')
-    .split('&')
-    .filter((p) => p !== '' && KEEP_PREFIXES.some((k) => p.startsWith(k)))
+  const rawParams = parsed.search.replace(/^\?/, '').split('&').filter(Boolean)
+  const kept = rawParams.filter((p) => isAuthParam(p, rawParams))
 
   kept.push(`imageMogr2/thumbnail/${boxSize}x${boxSize}`)
 
