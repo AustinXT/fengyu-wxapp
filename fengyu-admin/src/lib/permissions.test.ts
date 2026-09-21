@@ -24,7 +24,7 @@ vi.mock('@db/org', () => ({
   stores: { storeId: 'store_id', orgNodeId: 'org_node_id' },
 }))
 
-import { computeActions, requirePermission, requireAnyPermission, buildScopeWhere, DEFAULT_PERMISSION_MATRIX, ALL_ACTIONS, PermissionError, expandRoleScope, expandScopeStoreIds, expandScopeOrgNodeIds, isAdminScope, accessiblePermissionScopeIds, scopeCondition, employeeScopeCondition, isInScope, hasPermission, getPermissionMatrix, invalidatePermissionMatrixCache, canAccessAdmin, isDepositOrderApprover } from './permissions'
+import { computeActions, requirePermission, requireAnyPermission, buildScopeWhere, DEFAULT_PERMISSION_MATRIX, ALL_ACTIONS, PermissionError, expandRoleScope, expandScopeStoreIds, expandScopeOrgNodeIds, isAdminScope, accessiblePermissionScopeIds, scopeCondition, employeeScopeCondition, isInScope, isOrgNodeInScope, hasPermission, getPermissionMatrix, invalidatePermissionMatrixCache, canAccessAdmin, isDepositOrderApprover } from './permissions'
 import { scopeSessionToActions } from './action-scope'
 import type { AuthSession, RoleType } from './types'
 import { db } from '@/db'
@@ -703,6 +703,64 @@ describe('isInScope', () => {
       permissions: { actions: [], scopeStoreIds: [] },
     })
     expect(isInScope(session, 'S001')).toBe(false)
+  })
+})
+
+describe('isOrgNodeInScope — #228 员工调组织节点的判据', () => {
+  it('admin 任何组织节点都返回 true（即便 scopeOrgNodeIds 为空）', () => {
+    const session = mockSession({
+      roles: [{ role: 'admin', scopeId: 'hq-1', scopeType: '总部' }],
+      permissions: { actions: [], scopeStoreIds: [], scopeOrgNodeIds: [] },
+    })
+    expect(isOrgNodeInScope(session, 'ANY-NODE')).toBe(true)
+  })
+
+  it('非 admin 节点在 scopeOrgNodeIds 内返回 true', () => {
+    const session = mockSession({
+      roles: [{ role: 'manager', scopeId: 'm1', scopeType: '市场' }],
+      permissions: { actions: [], scopeStoreIds: [], scopeOrgNodeIds: ['m1', 'org-s1', 'org-s2'] },
+    })
+    expect(isOrgNodeInScope(session, 'org-s2')).toBe(true)
+  })
+
+  it('非 admin 节点不在 scopeOrgNodeIds 内返回 false', () => {
+    const session = mockSession({
+      roles: [{ role: 'manager', scopeId: 'm1', scopeType: '市场' }],
+      permissions: { actions: [], scopeStoreIds: [], scopeOrgNodeIds: ['m1', 'org-s1'] },
+    })
+    expect(isOrgNodeInScope(session, 'm2')).toBe(false)
+  })
+
+  it('非 admin 且 scopeOrgNodeIds 缺失 → 回退 scopeDeptNodeIds（旧会话）', () => {
+    const session = mockSession({
+      roles: [{ role: 'manager', scopeId: 's1', scopeType: '门店' }],
+      permissions: { actions: [], scopeStoreIds: [], scopeDeptNodeIds: ['D1'] },
+    })
+    expect(isOrgNodeInScope(session, 'D1')).toBe(true)
+    expect(isOrgNodeInScope(session, 'D2')).toBe(false)
+  })
+
+  it('非 admin 且两个集合都缺失 → 一律 false（fail-closed）', () => {
+    const session = mockSession({
+      roles: [{ role: 'manager', scopeId: 's1', scopeType: '门店' }],
+      permissions: { actions: [], scopeStoreIds: ['S001'] },
+    })
+    expect(isOrgNodeInScope(session, 'D1')).toBe(false)
+  })
+
+  /**
+   * 与 employeeScopeCondition 的 orgNodeIds 同源：两者一个判「入参新值可否写入」、
+   * 一个判「目标行是否可见」，口径分叉会造成静默错位（校验放行但 UPDATE 命中 0 行，或反之）。
+   * 这里用同一个 session 交叉验证两者对同一集合的解释一致。
+   */
+  it('与 employeeScopeCondition 同源：scopeOrgNodeIds 为空时两者都不认可任何节点', () => {
+    const session = mockSession({
+      roles: [{ role: 'manager', scopeId: 's1', scopeType: '门店' }],
+      permissions: { actions: [], scopeStoreIds: [], scopeOrgNodeIds: [] },
+    })
+    expect(isOrgNodeInScope(session, 'D1')).toBe(false)
+    // 双空 → employeeScopeCondition 给出 FALSE 条件（非 undefined，即不是"不过滤"）
+    expect(employeeScopeCondition(session, {} as any, {} as any)).toBeDefined()
   })
 })
 

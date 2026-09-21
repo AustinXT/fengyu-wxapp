@@ -10,7 +10,7 @@ import type { SQL } from 'drizzle-orm'
 import { alias } from 'drizzle-orm/pg-core'
 import { revalidatePath } from 'next/cache'
 import type { AllocationEmployeeCandidate, Employee } from '@/lib/types'
-import { scopeCondition, isInScope, requireAdmin, employeeScopeCondition } from '@/lib/permissions'
+import { scopeCondition, isInScope, isOrgNodeInScope, requireAdmin, employeeScopeCondition } from '@/lib/permissions'
 import { withPermission } from '@/lib/with-permission'
 import { logOperation, logUpdate } from '@/lib/operation-log'
 import { ApiError } from '@/lib/api-error'
@@ -766,6 +766,33 @@ export const updateEmployee = withPermission(
   // 获取旧值用于日志 diff + storeId 变更检测
   const [currentEmployee] = await db.select().from(staffWechatUsers).where(eq(staffWechatUsers.employeeId, employeeId)).limit(1)
   const oldStoreId = currentEmployee?.storeId ?? null
+  const oldOrgNodeId = currentEmployee?.orgNodeId ?? null
+
+  /**
+   * 归属变更的 scope 校验（#228）。
+   *
+   * 下面的 `scopeCond` 只约束**旧**记录在不在 scope 内，对 `data.storeId` / `data.orgNodeId`
+   * 这两个**新**值零校验 —— 于是一个只被授予单门店 scope 的 manager 可以把本店员工「调」到
+   * 系统内任意门店，而 §AFF-03 还会把该员工自身角色绑定的 `permission_roles.scope_id`
+   * 一并搬到目标门店。前端下拉只列 scope 内门店，但 Server Action 是可直调的安全边界。
+   *
+   * 必须放在这里而非函数开头：判「是否真的发生变更」需要先读到旧值。此处仍早于任何写入。
+   *
+   * 两处刻意的边界：
+   * ① 只在新值 `!== 旧值` 时校验 —— 编辑表单会把未改动的归属字段一并回传，
+   *    对 no-op 提交报「无权」是纯误伤。且旧值若不在 scope 内，`scopeCond` 会让 UPDATE 命中 0 行兜底。
+   * ② 新值为 `null`（清空归属）**不拦** —— 市场级 manager 把门店员工转为市场直属岗正是
+   *    「storeId 清空 + orgNodeId 设为市场节点」，拦掉会打挂这条合法路径。
+   *    「两端都清空使员工脱离所有非 admin 视野」是另一个口径问题，已单独报 issue，不在本次范围。
+   */
+  if (data.storeId !== undefined && data.storeId !== null && data.storeId !== oldStoreId
+      && !isInScope(session, data.storeId)) {
+    return { success: false, message: '无权将员工调至该门店' }
+  }
+  if (data.orgNodeId !== undefined && data.orgNodeId !== null && data.orgNodeId !== oldOrgNodeId
+      && !isOrgNodeInScope(session, data.orgNodeId)) {
+    return { success: false, message: '无权将员工调至该组织节点' }
+  }
 
   // 乐观锁 + scope 隔离：WHERE employee_id = $1 [AND updated_at = $2] [AND scope]
   const scopeCond = employeeScopeCondition(session, staffWechatUsers.storeId, staffWechatUsers.orgNodeId)

@@ -450,6 +450,27 @@ export function isInScope(session: AuthSession, storeId: string): boolean {
 }
 
 /**
+ * 检查指定组织节点是否在用户 scope 内（`isInScope` 的 org_node_id 对偶）
+ *
+ * admin → 始终 true。
+ *
+ * **口径必须与 `employeeScopeCondition` 的 orgNodeIds 完全一致**（含 `scopeDeptNodeIds`
+ * 旧会话回退）—— 二者一个负责「入参新值是否可写」、一个负责「目标行是否可见」，
+ * 口径一旦分叉就会出现「校验放行但 UPDATE 的 WHERE 匹配不到」或反之的静默错位。
+ *
+ * ⚠️ 不要与库存侧的 `inventoryScopedOrgNodeIds` / `assertOrgNodeVisible` 混用：那一套对
+ * 「总部」scope **刻意不展开后代**（市场退货必须由总部逐个授权审批），而这里的
+ * `scopeOrgNodeIds` 是含全部后代的展开集合。两套语义不同，各自服务不同的业务约束。
+ */
+export function isOrgNodeInScope(session: AuthSession, orgNodeId: string): boolean {
+  if (isAdminScope(session)) return true
+  const orgNodeIds = session.permissions.scopeOrgNodeIds
+    ?? session.permissions.scopeDeptNodeIds
+    ?? []
+  return orgNodeIds.includes(orgNodeId)
+}
+
+/**
  * Check if user has a specific permission action
  */
 export function hasPermission(session: AuthSession, action: string): boolean {

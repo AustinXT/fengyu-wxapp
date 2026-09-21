@@ -58,6 +58,7 @@ vi.mock('@/lib/permissions', () => ({
   scopeCondition: vi.fn(() => undefined),
   employeeScopeCondition: vi.fn(() => undefined),
   isInScope: vi.fn(() => true),
+  isOrgNodeInScope: vi.fn(() => true),
 }))
 
 vi.mock('@/lib/operation-log', () => ({
@@ -104,7 +105,7 @@ vi.mock('@/actions/skill-tags', () => ({
 import { createEmployee, updateEmployee, getAllocationEmployeeCandidates, getServiceStaffCandidates, getEmployees, getEmployeesPaginated, getOrgLevel2ForFilter, exportEmployees, searchEmployees } from './employees'
 import { db } from '@/db'
 import { getSession } from '@/lib/auth'
-import { isInScope } from '@/lib/permissions'
+import { isInScope, isOrgNodeInScope } from '@/lib/permissions'
 import { logOperation, logUpdate } from '@/lib/operation-log'
 import { eq, ilike, inArray, isNull, sql, gt } from 'drizzle-orm'
 import { countActiveAdmins, isAdminEmployee } from '@/lib/admin-guard'
@@ -497,6 +498,156 @@ describe('updateEmployee — 服务端输入校验 + 错误处理', () => {
 
     await expect(updateEmployee('FY-001', { isResigned: true })).rejects.toThrow('connection lost')
   })
+})
+
+// ── #228 员工调店/调组织节点的 scope 校验 ─────────────────────────────────────
+
+describe('updateEmployee — #228 归属变更必须落在 scope 内', () => {
+  /**
+   * `db.select` 第 1 次调用 = 读旧值（currentEmployee）。
+   * 这些用例都不传 phone，所以不存在「手机号唯一性校验」那次 select 抢在前面。
+   */
+  function mockCurrentEmployee(row: Record<string, unknown>) {
+    let call = 0
+    ;(db.select as any).mockImplementation(() => {
+      call++
+      const current = call
+      const limit = vi.fn().mockImplementation(() =>
+        Promise.resolve(current === 1 ? [row] : []),
+      )
+      const where = vi.fn().mockReturnValue({ limit })
+      const from = vi.fn().mockReturnValue({ where })
+      return { from }
+    })
+  }
+
+  function mockUpdateOk() {
+    const where = vi.fn().mockResolvedValue({ count: 1 })
+    const set = vi.fn().mockReturnValue({ where })
+    ;(db.update as any).mockReturnValue({ set })
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockSession)
+    ;(isInScope as any).mockReturnValue(true)
+    ;(isOrgNodeInScope as any).mockReturnValue(true)
+  })
+
+  /**
+   * 核心回归：断言**精确到本条修复的文案**，不写成「包含『无权』」的宽松匹配。
+   *
+   * ⚠️ #200 的教训：`updateEmployee` 里另有 `employeeScopeCondition` 拼进 UPDATE 的 WHERE，
+   * 越权调店在真库里也可能因旧记录不在 scope 而命中 0 行、退化成「员工不存在或无权修改」。
+   * 断言若放宽到「无权」二字，回退掉本条校验后测试会被那条兜底文案蒙混过关而依然全绿。
+   * 同时断言 `db.update` 完全没被调用 —— 锁住「校验早于任何写入」。
+   */
+  it('storeId 改到 scope 外门店 → 拒绝，且不发生任何 UPDATE', async () => {
+    mockCurrentEmployee({ storeId: 'store-A', orgNodeId: 'org-store-A' })
+    mockUpdateOk()
+    ;(isInScope as any).mockReturnValue(false)
+
+    const result = await updateEmployee('FY-001', { storeId: 'store-OTHER' })
+
+    expect(result.success).toBe(false)
+    expect(result.message).toBe('无权将员工调至该门店')
+    expect(isInScope).toHaveBeenCalledWith(mockSession, 'store-OTHER')
+    expect(db.update).not.toHaveBeenCalled()
+  })
+
+  it('orgNodeId 改到 scope 外组织节点 → 拒绝，且不发生任何 UPDATE', async () => {
+    mockCurrentEmployee({ storeId: null, orgNodeId: 'dept-A' })
+    mockUpdateOk()
+    ;(isOrgNodeInScope as any).mockReturnValue(false)
+
+    const result = await updateEmployee('FY-001', { orgNodeId: 'market-OTHER' })
+
+    expect(result.success).toBe(false)
+    expect(result.message).toBe('无权将员工调至该组织节点')
+    expect(isOrgNodeInScope).toHaveBeenCalledWith(mockSession, 'market-OTHER')
+    expect(db.update).not.toHaveBeenCalled()
+  })
+
+  it('storeId 合法但 orgNodeId 越界 → 仍被拒（两条校验都在，不是二选一）', async () => {
+    mockCurrentEmployee({ storeId: 'store-A', orgNodeId: 'org-store-A' })
+    mockUpdateOk()
+    ;(isInScope as any).mockReturnValue(true)
+    ;(isOrgNodeInScope as any).mockReturnValue(false)
+
+    const result = await updateEmployee('FY-001', { storeId: 'store-B', orgNodeId: 'dept-OTHER' })
+
+    expect(result.success).toBe(false)
+    expect(result.message).toBe('无权将员工调至该组织节点')
+    expect(db.update).not.toHaveBeenCalled()
+  })
+
+  it('storeId 改到 scope 内门店 → 放行', async () => {
+    mockCurrentEmployee({ storeId: 'store-A', orgNodeId: 'org-store-A' })
+    mockUpdateOk()
+
+    const result = await updateEmployee('FY-001', { storeId: 'store-B' })
+
+    expect(result.success).toBe(true)
+    expect(db.update).toHaveBeenCalled()
+  })
+
+  /**
+   * 边界①：编辑表单会把未改动的归属字段一并回传。对 no-op 提交报「无权」是纯误伤，
+   * 所以校验只在新值 !== 旧值时触发 —— 这里让 isInScope 恒 false，仍必须放行。
+   */
+  it('storeId 回传旧值（no-op）→ 不做 scope 校验，放行', async () => {
+    mockCurrentEmployee({ storeId: 'store-A', orgNodeId: 'org-store-A' })
+    mockUpdateOk()
+    ;(isInScope as any).mockReturnValue(false)
+
+    const result = await updateEmployee('FY-001', { storeId: 'store-A' })
+
+    expect(result.success).toBe(true)
+    expect(isInScope).not.toHaveBeenCalled()
+  })
+
+  it('orgNodeId 回传旧值（no-op）→ 不做 scope 校验，放行', async () => {
+    mockCurrentEmployee({ storeId: null, orgNodeId: 'dept-A' })
+    mockUpdateOk()
+    ;(isOrgNodeInScope as any).mockReturnValue(false)
+
+    const result = await updateEmployee('FY-001', { orgNodeId: 'dept-A' })
+
+    expect(result.success).toBe(true)
+    expect(isOrgNodeInScope).not.toHaveBeenCalled()
+  })
+
+  /**
+   * 边界②：清空归属不拦。市场级 manager 把门店员工转市场直属岗正是
+   * 「storeId 清空 + orgNodeId 设为市场节点」，拦掉 null 会打挂这条合法路径。
+   */
+  it('storeId 置 null（转市场直属岗）→ 不拦，且同批的 orgNodeId 仍按 scope 校验', async () => {
+    mockCurrentEmployee({ storeId: 'store-A', orgNodeId: 'org-store-A' })
+    mockUpdateOk()
+    ;(isInScope as any).mockReturnValue(false)
+    ;(isOrgNodeInScope as any).mockReturnValue(true)
+
+    const result = await updateEmployee('FY-001', { storeId: null, orgNodeId: 'market-1' })
+
+    expect(result.success).toBe(true)
+    // storeId=null 不进 isInScope；orgNodeId 才是这条路径真正要校验的那一端
+    expect(isInScope).not.toHaveBeenCalled()
+    expect(isOrgNodeInScope).toHaveBeenCalledWith(mockSession, 'market-1')
+  })
+
+  it('不涉及归属字段的编辑（改姓名）→ 两个判据都不调用', async () => {
+    mockCurrentEmployee({ storeId: 'store-A', orgNodeId: 'org-store-A' })
+    mockUpdateOk()
+
+    const result = await updateEmployee('FY-001', { name: '李四' })
+
+    expect(result.success).toBe(true)
+    expect(isInScope).not.toHaveBeenCalled()
+    expect(isOrgNodeInScope).not.toHaveBeenCalled()
+  })
+
+  // admin 不受限由 isInScope / isOrgNodeInScope 内部的 isAdminScope 短路保证；
+  // 本文件把这两个判据整体 mock 掉了，测不到那层语义 —— 其用例在 src/lib/permissions.test.ts。
 })
 
 describe('updateEmployee — §AFF-03 门店变更 scope 同步', () => {

@@ -33,6 +33,7 @@ vi.mock('@/lib/permissions', () => ({
   scopeCondition: vi.fn(() => undefined),
   employeeScopeCondition: vi.fn(() => undefined),
   isInScope: vi.fn(() => true),
+  isOrgNodeInScope: vi.fn(() => true),
 }))
 vi.mock('@/lib/operation-log', () => ({ logOperation: vi.fn(), logUpdate: vi.fn() }))
 vi.mock('@/lib/admin-guard', () => ({
