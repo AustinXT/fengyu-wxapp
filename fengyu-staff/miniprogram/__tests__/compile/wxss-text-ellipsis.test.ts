@@ -1,25 +1,23 @@
 /**
  * WXSS 文本截断有效性守护（#238）
  *
- * 微信小程序的 `<text>` 默认 `display: inline`，而 **inline 元素上 `text-overflow: ellipsis`
- * 完全不生效**（flex / min-width / max-width 同样不生效）。结果是：样式里写了截断，
- * 真机上长文本要么整行撑出屏幕、要么被硬裁切，没有「…」。
+ * `text-overflow: ellipsis` 只在元素是 **block container** 时生效。两种常见写法会让它静默失效：
  *
- * 这类缺陷**不会被任何现有测试抓到**（wxss 不参与编译检查、单测不渲染样式），
- * 也不会在短文本下暴露，只在真机 + 长数据时出现 —— #184 就是这么被发现的，
- * 随后全仓扫描又找出十几处同型。本测试把这条规则钉死，防止再次扩散。
+ *   ① 挂在 `<text>` 上且未声明 `display` —— 小程序 `<text>` 默认 `display: inline`，
+ *      inline 元素上 ellipsis（以及 flex / min-width / max-width）全都不生效。
+ *   ② 声明了 `display: flex` / `inline-flex` / `grid` —— flex/grid container **不是**
+ *      block container，写在它上面的 ellipsis 同样不生效；文字会被 `overflow: hidden`
+ *      硬裁切、没有「…」。这一类比 ① 更隐蔽，因为"写了 display"看上去像是已经处理过了。
  *
- * 判据：某个 class 声明了 `text-overflow`，且该 class 在同目录 wxml 里挂在 `<text>` 上
- *      → 它必须同时声明 `display`（`block` / `-webkit-box` / `flex` 等均可）。
- * 挂在 `<view>` 上的不受影响（块级元素天然生效）。
+ * 两类都不会被任何其它测试抓到（wxss 不参与编译检查、单测不渲染样式），
+ * 也不会在短文本下暴露，只在真机 + 长数据时出现。本测试把规则钉死。
  *
- * ⚠️ 判据是**显式化要求**，不等于「每条命中都是真 bug」：
- * CSS 规范（Display Module L3 §2.7 Automatic Box Type Transformations）规定
- * **flex container 的直接子元素其 display 会被 blockify**（inline → block）。
- * 本仓多数命中处的父容器恰好是 flex，理论上它们本就已是 block、ellipsis 本就生效。
- * 但这条依赖「父容器保持 flex」这个易被后续改动破坏的隐式前提 —— 父容器一旦从
- * flex 改成 block，截断会**静默失效**且没有任何报错。所以这里坚持要求显式声明，
- * 宁可多写一行也不依赖隐式转换。
+ * ⚠️ 关于 ① 的一个重要事实：CSS Display L3 §2.7 规定 **flex container 的流内直接子元素
+ * 其 display 会被 blockify**（inline → block）。本仓多数 `<text>` 的父容器恰好是 flex，
+ * 所以它们**本来就已经是 block**、ellipsis 本来就生效。
+ * 仍然坚持要求显式声明，是因为 blockify 依赖「父容器保持 flex」这个隐式前提 ——
+ * 父容器哪天从 flex 改成 block，截断会静默失效且没有任何报错。
+ * （② 则是真正会当场失效的缺陷，与 blockify 无关。）
  *
  * 这份文件与 client 端的同名测试是**各端独立副本**（CLAUDE.md：禁止跨端共享代码目录）。
  */
@@ -28,12 +26,47 @@ import path from 'path'
 
 const ROOT = path.resolve(__dirname, '../..')
 
+/** 能让 text-overflow 生效的 display 值（block container 或其等价物） */
+const BLOCK_CONTAINER = [
+  'block',
+  'inline-block',
+  'flow-root',
+  'list-item',
+  'table-cell',
+  '-webkit-box', // 多行截断的标准写法
+]
+/** 明确不是 block container —— 写了也白写 */
+const NOT_BLOCK_CONTAINER = ['flex', 'inline-flex', 'grid', 'inline-grid', 'contents', 'none']
+
+/**
+ * 已确认失效、但**不在 #238 授权范围内**的豁免项。
+ *
+ * 这四处是 `<view class="card-filter-picker">{{label}}</view>` —— view 直接承载文本，
+ * 却是 `display: flex; align-items: center`（为了配 `min-height: 64rpx` 做垂直居中）。
+ * flex container 不是 block container，所以它们的 ellipsis **今天就是死的**，
+ * 长的筛选项 label 会被 `overflow: hidden` 硬裁切、没有「…」。
+ *
+ * 不在本 PR 修的原因：正确修法是把 `display: flex; align-items: center` 换成
+ * `display: block; line-height: 64rpx`（单行 nowrap 下垂直居中等价），
+ * 这是**布局实现变更**而非「补一行 display」，四处副本都需要逐个截图确认，
+ * 超出 #238「只做 A 组」的授权范围 → 已在 issue #238 评论里登记，待单独 PR。
+ *
+ * ⚠️ 本清单是**自检**的：下面有一条测试断言「清单里的每一项今天仍然命中」，
+ * 所以一旦某项被修好或文件被删，测试会变红提醒你回来清理清单，不会静默腐烂。
+ */
+const KNOWN_BROKEN = [
+  'components/conversion-panel/conversion-panel.wxss|conv-card-filter-picker',
+  'packageCustomer/customer-detail/customer-detail.wxss|card-filter-picker',
+  'packageMgmt/mgmt-customer-detail/mgmt-customer-detail.wxss|card-filter-picker',
+  'packageService/service-create/service-create.wxss|card-filter-picker',
+]
+
 interface Rule {
   file: string
   line: number
-  selector: string
-  className: string | null
-  hasDisplay: boolean
+  classNames: string[]
+  display: string | null
+  hasLineClamp: boolean
 }
 
 function walk(dir: string, ext: string, acc: string[] = []): string[] {
@@ -46,40 +79,55 @@ function walk(dir: string, ext: string, acc: string[] = []): string[] {
   return acc
 }
 
-/** 取出所有声明了 text-overflow 的规则块 */
-function parseEllipsisRules(file: string): Rule[] {
-  const src = fs.readFileSync(file, 'utf-8')
+/** 剥掉 CSS 注释 —— 否则 body 里一句 `/* display: block *​/` 就能骗过判据 */
+function stripCssComments(src: string): string {
+  return src.replace(/\/\*[\s\S]*?\*\//g, ' ')
+}
+
+/** 取出所有声明了 text-overflow 或 -webkit-line-clamp 的规则块 */
+export function parseTruncationRules(rawSrc: string, file = '<inline>'): Rule[] {
+  const src = stripCssComments(rawSrc)
   const rules: Rule[] = []
   const re = /([^{}]+)\{([^{}]*)\}/g
   let m: RegExpExecArray | null
   while ((m = re.exec(src)) !== null) {
     const [, rawSel, body] = m
-    if (!/text-overflow/.test(body)) continue
-    const selector = rawSel.trim().replace(/\s+/g, ' ')
-    const classes = selector.match(/\.([A-Za-z0-9_-]+)/g)
+    const hasEllipsis = /text-overflow\s*:\s*ellipsis/.test(body)
+    const hasLineClamp = /-webkit-line-clamp/.test(body)
+    if (!hasEllipsis && !hasLineClamp) continue
+    // 同一块里可能有多个 display（后者覆盖前者，如 `display:block` 后跟 `display:-webkit-box`），
+    // 判据必须取**最后一个** —— 取第一个会把实际生效的 -webkit-box 误判成 block
+    const ds = [...body.matchAll(/(?:^|\n|;)\s*display\s*:\s*([^;]+)/g)]
     rules.push({
       file,
       line: src.slice(0, m.index).split('\n').length,
-      selector,
-      // 取选择器末尾的 class —— 它才是实际挂在元素上的那个
-      className: classes ? classes[classes.length - 1].slice(1) : null,
-      hasDisplay: /(^|\n|;)\s*display\s*:/.test(body) || /-webkit-box/.test(body),
+      // 分组选择器（`.a, .b { … }`）要取**全部** class，只取最后一个会漏
+      classNames: [...new Set((rawSel.match(/\.([A-Za-z0-9_-]+)/g) || []).map((c) => c.slice(1)))],
+      display: ds.length ? ds[ds.length - 1][1].trim() : null,
+      hasLineClamp,
     })
   }
   return rules
 }
 
-/** 该 class 在同目录 wxml 里被挂在哪些标签上 */
-function hostTags(dir: string, className: string): Set<string> {
+/**
+ * 某个 class 在哪些标签上被使用。
+ * 全局样式（app.wxss）的 class 可能用在任意页面，所以扫**全端** wxml；
+ * 页面/组件样式只扫同目录（小程序的组件样式是隔离的）。
+ */
+function hostTags(wxmlFiles: string[], className: string): Set<string> {
   const tags = new Set<string>()
-  for (const wxml of fs.readdirSync(dir).filter((f) => f.endsWith('.wxml'))) {
-    const src = fs.readFileSync(path.join(dir, wxml), 'utf-8')
-    const re = /<(\w[\w-]*)\b[^>]*class="([^"]*)"/g
+  // 属性值里可能出现 `>`（`wx:if="{{a > b}}"`），所以先整体吃掉带引号的属性值，
+  // 不能用 `[^>]*` —— 那会在第一个 `>` 处提前断开，漏掉后面的 class=""
+  const re = /<([\w-]+)((?:"[^"]*"|'[^']*'|[^>"'])*)>/g
+  const bound = (cls: string) => new RegExp(`(^|[\\s{}'"])${cls}($|[\\s{}'"])`)
+  for (const wxml of wxmlFiles) {
+    const src = fs.readFileSync(wxml, 'utf-8')
     let m: RegExpExecArray | null
     while ((m = re.exec(src)) !== null) {
-      const [, tag, classAttr] = m
-      // 边界匹配，避免 `.store-name` 命中 `store-name-row`
-      if (new RegExp(`(^|[\\s{}'"])${className}($|[\\s{}'"])`).test(classAttr)) tags.add(tag)
+      const [, tag, attrs] = m
+      const cm = /class="([^"]*)"/.exec(attrs)
+      if (cm && bound(className).test(cm[1])) tags.add(tag)
     }
   }
   return tags
@@ -87,49 +135,162 @@ function hostTags(dir: string, className: string): Set<string> {
 
 describe('WXSS 文本截断有效性（#238）', () => {
   const wxssFiles = walk(ROOT, '.wxss')
+  const allWxml = walk(ROOT, '.wxml')
 
-  test(`<text> 上的 text-overflow 必须配 display（扫描 ${wxssFiles.length} 个 wxss）`, () => {
+  /** 扫全端，返回 [未豁免的失效项, 命中豁免清单的项] */
+  function scanBroken(): [string[], string[]] {
     const broken: string[] = []
+    const exempted: string[] = []
 
     for (const file of wxssFiles) {
-      for (const rule of parseEllipsisRules(file)) {
-        if (rule.hasDisplay || !rule.className) continue
-        if (!hostTags(path.dirname(file), rule.className).has('text')) continue
-        broken.push(
-          `${path.relative(ROOT, file)}:${rule.line}  .${rule.className}` +
-            ' —— 挂在 <text> 上但缺 display，ellipsis 不会生效',
-        )
+      const isGlobal = path.dirname(file) === ROOT // app.wxss 等全局样式
+      const scopeWxml = isGlobal
+        ? allWxml
+        : allWxml.filter((w) => path.dirname(w) === path.dirname(file))
+      const rel = path.relative(ROOT, file)
+
+      for (const rule of parseTruncationRules(fs.readFileSync(file, 'utf-8'), file)) {
+        for (const cls of rule.classNames) {
+          const d = rule.display
+
+          // ② display 写了但不是 block container —— 无论挂在什么标签上都失效
+          if (d && NOT_BLOCK_CONTAINER.some((v) => d === v || d.startsWith(v))) {
+            const tags = hostTags(scopeWxml, cls)
+            if (tags.size === 0) continue // class 未被使用（死样式），不报
+            const msg =
+              `${rel}:${rule.line}  .${cls}  display:${d}` +
+              ` —— flex/grid container 不是 block container，ellipsis 不生效（宿主 <${[...tags].join('/')}>）`
+            ;(KNOWN_BROKEN.includes(`${rel}|${cls}`) ? exempted : broken).push(msg)
+            continue
+          }
+
+          // 多行截断必须配 -webkit-box
+          if (rule.hasLineClamp && !(d && d.includes('-webkit-box'))) {
+            broken.push(
+              `${rel}:${rule.line}  .${cls}` +
+                ' —— 用了 -webkit-line-clamp 但 display 不是 -webkit-box，多行截断不生效',
+            )
+            continue
+          }
+
+          // ① 没写 display 且挂在 <text> 上 —— inline 不生效
+          if (!d && hostTags(scopeWxml, cls).has('text')) {
+            broken.push(
+              `${rel}:${rule.line}  .${cls}` +
+                ' —— 挂在 <text> 上但缺 display，<text> 默认 inline，ellipsis 不生效',
+            )
+          }
+        }
       }
     }
 
+    return [broken, exempted]
+  }
+
+  test(`截断样式必须写在 block container 上（扫描 ${wxssFiles.length} 个 wxss）`, () => {
+    const [broken] = scanBroken()
     expect(
       broken,
-      `\n以下 class 的文本截断在真机上是失效的（<text> 默认 display:inline）：\n` +
+      `\n以下截断样式在真机上是失效的：\n` +
         broken.map((b) => `  · ${b}`).join('\n') +
-        `\n\n修法：给该 class 补 \`display: block;\`（多行截断用 \`-webkit-box\`）。\n` +
-        `⚠️ 若该 class 已写了 flex / min-width / max-width，补 display 后这些约束**才会开始生效**，\n` +
-        `   改完必须在开发者工具里确认布局没有反而被挤压。\n`,
+        `\n\n修法：\n` +
+        `  · 挂在 <text> 上缺 display → 补 \`display: block;\`\n` +
+        `  · display 是 flex/grid → 截断要挪到**承载文字的子元素**上（子元素记得加 min-width: 0），\n` +
+        `    或把该元素改成 block container（若它本来只是为了垂直居中，可用 line-height 替代）\n` +
+        `  · -webkit-line-clamp → 必须配 \`display: -webkit-box; -webkit-box-orient: vertical;\`\n`,
+    ).toEqual([])
+  })
+
+  // 豁免清单必须保持"活"的 —— 项目被修好 / 文件被删 / class 改名时立刻变红，
+  // 防止清单里堆着一堆早已不存在的条目，把真实新增的失效项也一起遮住。
+  test('豁免清单每一项今天仍然命中（清单不得腐烂）', () => {
+    const [, exempted] = scanBroken()
+    const hit = new Set(
+      exempted.map((e) => {
+        const [loc, rest] = e.split('  .')
+        return `${loc.split(':')[0]}|${rest.split(' ')[0]}`
+      }),
+    )
+    const stale = KNOWN_BROKEN.filter((k) => !hit.has(k))
+    expect(
+      stale,
+      `\n豁免清单里的这些项已不再命中（可能已被修好或文件已变动），请从 KNOWN_BROKEN 中删除：\n` +
+        stale.map((s) => `  · ${s}`).join('\n') + '\n',
     ).toEqual([])
   })
 
   test('对照组：已正确实现的写法不被误报', () => {
-    // revenue-allocation 的 .picker-member-name 是本端已带 display: block 的正例
+    // 本端已带 display: block 的正例
     const file = path.join(ROOT, 'packageOrder/revenue-allocation/revenue-allocation.wxss')
-    const rule = parseEllipsisRules(file).find((r) => r.className === 'picker-member-name')
+    const rule = parseTruncationRules(fs.readFileSync(file, 'utf-8')).find((r) =>
+      r.classNames.includes('picker-member-name'),
+    )
     expect(rule, 'picker-member-name 规则应存在（对照组失效说明扫描器坏了）').toBeTruthy()
-    expect(rule!.hasDisplay).toBe(true)
+    expect(rule!.display).toBe('block')
   })
 
-  test('扫描器自检：能识别出 <text> 宿主与缺失的 display', () => {
-    // 防「扫描器恒返回空集 → 测试恒绿」这类假绿
-    const totalRules = wxssFiles.reduce((n, f) => n + parseEllipsisRules(f).length, 0)
-    expect(totalRules, '全仓应扫到若干 text-overflow 规则，为 0 说明解析器坏了').toBeGreaterThan(5)
+  // 防「解析器退化 → 恒返回空集/恒 true → 测试恒绿」这类假绿。
+  // 用内联 fixture 直喂解析器，不依赖仓库现状。
+  describe('解析器自检（fixture 驱动，防假绿）', () => {
+    test('能识别出缺失的 display', () => {
+      const rules = parseTruncationRules('.a { overflow: hidden; text-overflow: ellipsis; }')
+      expect(rules).toHaveLength(1)
+      expect(rules[0].display).toBeNull()
+      expect(rules[0].classNames).toEqual(['a'])
+    })
 
-    const withText = wxssFiles.some((f) =>
-      parseEllipsisRules(f).some(
-        (r) => r.className && hostTags(path.dirname(f), r.className).has('text'),
-      ),
-    )
-    expect(withText, '应至少有一个 text-overflow class 挂在 <text> 上（否则宿主识别坏了）').toBe(true)
+    test('能识别出 display 的值（含 flex 这种"写了也白写"的）', () => {
+      expect(parseTruncationRules('.a { display: flex; text-overflow: ellipsis; }')[0].display).toBe('flex')
+      expect(parseTruncationRules('.a { display: block; text-overflow: ellipsis; }')[0].display).toBe('block')
+    })
+
+    test('注释里的 display 不算数（否则一句注释就能骗过判据）', () => {
+      const rules = parseTruncationRules('.a { /* display: block; */ text-overflow: ellipsis; }')
+      expect(rules[0].display).toBeNull()
+    })
+
+    test('分组选择器取全部 class，不只最后一个', () => {
+      const rules = parseTruncationRules('.a, .b, .c { text-overflow: ellipsis; }')
+      expect(rules[0].classNames.sort()).toEqual(['a', 'b', 'c'])
+    })
+
+    test('同块多个 display 取最后一个（CSS 后者覆盖前者）', () => {
+      const r = parseTruncationRules('.a { display: block; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; }')
+      expect(r[0].display).toBe('-webkit-box')
+    })
+
+    test('-webkit-line-clamp 也被纳入', () => {
+      const rules = parseTruncationRules('.a { display: -webkit-box; -webkit-line-clamp: 2; }')
+      expect(rules[0].hasLineClamp).toBe(true)
+    })
+
+    test('hostTags 能跨过属性值里的 `>`（wx:if="{{a > b}}"）', () => {
+      const tmp = path.join(ROOT, '__tests__/compile/.tmp-hosttags.wxml')
+      fs.writeFileSync(tmp, '<text wx:if="{{item.n > 1}}" class="probe-cls">x</text>\n')
+      try {
+        expect(hostTags([tmp], 'probe-cls').has('text')).toBe(true)
+      } finally {
+        fs.unlinkSync(tmp)
+      }
+    })
+
+    test('hostTags 的 class 匹配有边界（不把 foo-bar 当成 foo）', () => {
+      const tmp = path.join(ROOT, '__tests__/compile/.tmp-boundary.wxml')
+      fs.writeFileSync(tmp, '<view class="probe-cls-row"><text class="probe-cls">x</text></view>\n')
+      try {
+        expect([...hostTags([tmp], 'probe-cls')]).toEqual(['text'])
+        expect([...hostTags([tmp], 'probe-cls-row')]).toEqual(['view'])
+      } finally {
+        fs.unlinkSync(tmp)
+      }
+    })
+
+    test('全仓确实扫得到规则（为 0 说明 walk/解析坏了）', () => {
+      const total = wxssFiles.reduce(
+        (n, f) => n + parseTruncationRules(fs.readFileSync(f, 'utf-8')).length,
+        0,
+      )
+      expect(total).toBeGreaterThan(5)
+    })
   })
 })

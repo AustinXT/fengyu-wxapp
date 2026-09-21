@@ -284,6 +284,24 @@ page {
   border-radius: var(--radius-pill);
   border: 1rpx solid var(--color-border);
   max-width: 280rpx;
+  /* 截断写在子元素 .mgmt-scope-tag-value 上 —— 本元素是 inline-flex（flex container
+     不是 block container），text-overflow 写在这里不生效（#238）。overflow 保留：
+     配合 max-width 防止内容撑破 tag 边框。 */
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+/**
+ * 范围 tag 的值 —— 截断必须写在**这里**而不是父级 .mgmt-scope-tag 上（#238）：
+ * `text-overflow` 只作用于 block container，而 .mgmt-scope-tag 是 `inline-flex`
+ * （flex container 不是 block container）→ 写在它上面的 ellipsis **不生效**，
+ * 长市场名超过 max-width 时会被 `overflow: hidden` 硬裁切、没有「…」。
+ * `min-width: 0` 同样不可省：flex item 的 min-width 默认是 auto（= 内容固有宽度），
+ * 不置 0 的话它根本不会收缩，截断永远轮不到发生。
+ */
+.mgmt-scope-tag-value {
+  display: block;
+  min-width: 0;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
