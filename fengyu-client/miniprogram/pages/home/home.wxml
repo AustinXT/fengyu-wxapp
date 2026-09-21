@@ -245,10 +245,15 @@ module.exports.min = function(n) {
           <view wx:if="{{isLoading}}" class="load-more-hint">
             <van-loading size="20px" />
           </view>
+          <view wx:elif="{{!hasMore}}" class="load-more-hint">
+            <text class="load-more-text">没有更多了</text>
+          </view>
         </view>
 
-        <!-- 底部留白，确保单个商品也能触发滚动切换下一分类 -->
-        <view class="scroll-bottom-spacer" wx:if="{{spuList.length > 0}}" />
+        <!-- 底部留白：让单个商品的分类也能触发滚动切换下一分类。
+             还有下一页时不要它——否则用户滚过最后一张卡还得再滚 1.5 屏空白才触底，
+             且新一页插在留白之上，触底瞬间视野里仍是空白。 -->
+        <view class="scroll-bottom-spacer" wx:if="{{spuList.length > 0 && !hasMore}}" />
 
       </scroll-view>
     </view>

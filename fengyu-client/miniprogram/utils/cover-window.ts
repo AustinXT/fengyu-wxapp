@@ -20,9 +20,13 @@ const DEFAULT_MARGIN = 600
 const FLUSH_DELAY_MS = 50
 
 /**
- * fail-open 守护时长。observe 之后这么久一次回调都没收到，就判定 IntersectionObserver
- * 在当前环境不可用，退回改造前的行为（整列显示封面）并永久停用本模块。
- * 「商品图全白」比「多解码几张图」严重得多。
+ * fail-open 守护时长。observe 之后这么久一次回调都没收到，就退回改造前的行为
+ * （整列显示封面）——「商品图全白」比「多解码几张图」严重得多。
+ *
+ * ⚠️ 这种「静默」是**可恢复**的，只在本轮放开，下一次 refresh 仍会重新尝试建观察器。
+ * 因为零回调不等于 observer 不可用：目标滚动容器被 `wx:if` 切走（如 home 进入搜索模式）
+ * 时同样一个回调都收不到，若就此永久停用，用户退出搜索后解码硬上限会被整场会话关掉，
+ * 而且毫无痕迹。只有**工厂抛错**才是确定性的能力缺失，那种才永久停用。
  */
 const FALLBACK_DELAY_MS = 800
 
@@ -81,8 +85,10 @@ export function createCoverWindow(page: PageLike, options: CoverWindowOptions): 
   let pending: Record<number, boolean> = {};
   let flushTimer: ReturnType<typeof setTimeout> | null = null;
   let fallbackTimer: ReturnType<typeof setTimeout> | null = null;
-  let everGotCallback = false;
-  let disabled = false;
+  /** 本轮 refresh 是否收到过回调 —— 必须每轮重置，否则只有第一轮能触发 fail-open */
+  let gotCallbackThisRound = false;
+  /** 仅由「工厂抛错」置位：环境确定性不支持 IntersectionObserver，永久停用 */
+  let unsupported = false;
 
   function getList(): any[] | null {
     const list = page.data?.[options.listKey];
@@ -143,7 +149,7 @@ export function createCoverWindow(page: PageLike, options: CoverWindowOptions): 
   }
 
   function refresh() {
-    if (disabled) {
+    if (unsupported) {
       showAll();
       return;
     }
@@ -152,6 +158,7 @@ export function createCoverWindow(page: PageLike, options: CoverWindowOptions): 
     disconnect();
     clearTimers();
     pending = {};
+    gotCallbackThisRound = false;
 
     const list = getList();
     if (!list || list.length === 0) return;
@@ -161,15 +168,16 @@ export function createCoverWindow(page: PageLike, options: CoverWindowOptions): 
         .createIntersectionObserver(page as any, { observeAll: true })
         .relativeTo(options.scrollSelector, { top: margin, bottom: margin });
       observer.observe(options.slotSelector, (res) => {
-        everGotCallback = true;
+        gotCallbackThisRound = true;
         const idx = Number((res as any).dataset?.idx);
         if (!Number.isInteger(idx)) return;
         pending[idx] = res.intersectionRatio > 0;
         scheduleFlush();
       });
     } catch (err) {
+      // 工厂抛错 = 环境不支持，确定性的，永久停用
       console.warn('[cover-window] observer 创建失败，退回整列显示', err);
-      disabled = true;
+      unsupported = true;
       disconnect();
       showAll();
       return;
@@ -177,9 +185,9 @@ export function createCoverWindow(page: PageLike, options: CoverWindowOptions): 
 
     fallbackTimer = setTimeout(() => {
       fallbackTimer = null;
-      if (everGotCallback) return;
-      console.warn('[cover-window] 未收到相交回调，退回整列显示');
-      disabled = true;
+      if (gotCallbackThisRound) return;
+      // 只放开本轮，不置 unsupported —— 下次 refresh 仍会重新尝试
+      console.warn('[cover-window] 本轮未收到相交回调，暂退回整列显示');
       disconnect();
       showAll();
     }, FALLBACK_DELAY_MS);
@@ -189,6 +197,7 @@ export function createCoverWindow(page: PageLike, options: CoverWindowOptions): 
     clearTimers();
     disconnect();
     pending = {};
+    gotCallbackThisRound = false;
   }
 
   return { refresh, dispose };

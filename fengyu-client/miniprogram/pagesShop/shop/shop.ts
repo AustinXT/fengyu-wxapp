@@ -2,12 +2,13 @@
 import Toast from '@vant/weapp/toast/toast';
 import { addToCart, getCartCount, clearCart } from '../../utils/cart';
 import { callClientApi } from '../../utils/cloud';
-import { createCoverWindow, withInitialCoverVisible, type CoverWindow } from '../../utils/cover-window';
+import { createCoverWindow, type CoverWindow } from '../../utils/cover-window';
 import { getIsMember, priceView } from '../../utils/member-pricing';
+import { appendUniqueSpuRows, decorateSpuRows } from '../../utils/spu-list';
 
 const app = getApp<IAppOption>();
 
-/** issue #248：与云函数 PRODUCT_PAGE_SIZE_MAX(50) 同量级，实际由后端夹取 */
+/** issue #248：每页条数。后端 `PRODUCT_PAGE_SIZE_DEFAULT` 也是 20、上限 50，传大了会被夹取 */
 const PAGE_SIZE = 20;
 
 interface Category { category_id: string; category_name: string; category_order: number; }
@@ -55,6 +56,15 @@ Page({
   // 当前正在展示的分类 id（shopInit 下发的是权威值，不等于 categories[0]）
   _activeCategoryId: '',
 
+  /**
+   * 数据代次。每次整体重置缓存（切门店）都自增一次。
+   *
+   * 翻页请求是异步的：`prev` 在 `await` 之后才从 `_spuCache` 取，若期间缓存被清空，
+   * 回包会把「只有第 2 页」写回缓存并把游标推进到第 3 页 —— 第 1 页 20 条永久消失，
+   * 切门店时更会把旧门店的商品写进新门店缓存。只比对 categoryId 区分不了这种情况。
+   */
+  _dataEpoch: 0,
+
   // 防止 scrolltolower 连续触发
   _isLoadingNext: false,
 
@@ -81,15 +91,22 @@ Page({
     const storeName = app.globalData.boundStoreName || '';
     if (storeName !== this.data.boundStoreName) {
       clearCart();
-      this._spuCache = {};
-      this._pageState = {};
+      this._resetPaging();
       this._allCategories = [];
-      this._activeCategoryId = '';
       this.setData({ boundStoreName: storeName, activeCategoryIndex: 0, spuList: [], hasMore: false, cartCount: 0 });
       this.loadShopInit();
     } else {
       this.updateCartCount();
     }
+  },
+
+  /** 整体重置分页态。`_spuCache` 与 `_pageState` 必须同生共死，否则会拿旧游标翻新数据集 */
+  _resetPaging() {
+    this._spuCache = {};
+    this._pageState = {};
+    this._activeCategoryId = '';
+    this._isLoadingNext = false;
+    this._dataEpoch++;
   },
 
   onSelectStore() {
@@ -147,42 +164,47 @@ Page({
     wx.navigateTo({ url: '/pagesShop/shopping-cart/shopping-cart' });
   },
 
-  /** 会员价分流：会员看会员起价 + 划线标价起价；非会员只看标价起价 */
-  _decorate(rows: any[], startIndex: number): SpuItem[] {
-    const isMember = getIsMember();
-    return withInitialCoverVisible(
-      rows.map((spu: any) => ({
-        ...spu,
-        min_price: isMember ? (spu.priceFrom || '0') : (spu.listPriceFrom || spu.priceFrom || '0'),
-        strike_min_price: (isMember && Number(spu.listPriceFrom) > Number(spu.priceFrom)) ? spu.listPriceFrom : '',
-      })),
-      startIndex
-    ) as SpuItem[];
-  },
-
-  /** 列表内容变了就得重建相交观察（observeAll 不跟踪新增节点） */
-  _refreshCoverWindow() {
-    wx.nextTick(() => this._coverWindow?.refresh());
+  /**
+   * 列表内容变了就得重建相交观察（observeAll 不跟踪新增节点）。
+   *
+   * 必须挂在 setData 的**渲染完成回调**上：`wx.nextTick` 只保证「下一个时间片」，
+   * 不保证视图层已渲染；新节点还没上树就 observe，observeAll 只会拿到旧节点集合，
+   * 追加的那一页从此永远是占位图，且失败是静默的。
+   */
+  _setListData(patch: Record<string, any>) {
+    this.setData(patch, () => this._coverWindow?.refresh());
   },
 
   async loadShopInit() {
+    const epoch = this._dataEpoch;
     try {
       this.setData({ isLoading: true });
       const initData = await callClientApi<{
         categories: Category[]; spuList: any[];
         spuCategoryId?: string | null; nextCursor?: string | null; hasMore?: boolean;
       }>('product.shopInit', { limit: PAGE_SIZE });
+      if (epoch !== this._dataEpoch) return;
 
       const categories: Category[] = initData?.categories || [];
-      const listWithPrice = this._decorate(initData?.spuList || [], 0);
+      const listWithPrice = decorateSpuRows(initData?.spuList || [], getIsMember(), 0) as SpuItem[];
 
       this._allCategories = categories;
 
       // 这批商品归属哪个分类由后端下发（shopInit 取的是「第一个 group 下的首个二级分类」，
       // 不必然是 categories[0]）；游标必须挂在正确的分类上，否则「加载更多」会翻错分类
-      const activeId = initData?.spuCategoryId || categories[0]?.category_id || '';
+      const serverCatId = initData?.spuCategoryId || '';
+      const serverIndex = serverCatId
+        ? categories.findIndex(c => c.category_id === serverCatId)
+        : -1;
+      // 后端下发的分类不在 categories 里（理论上不可达）时显式回落到第一个分类并重新拉，
+      // 而不是用 Math.max(0, -1) 把下标和 _activeCategoryId 悄悄指到两个不同分类上
+      const activeIndex = serverIndex >= 0 ? serverIndex : 0;
+      const activeId = serverIndex >= 0 ? serverCatId : (categories[0]?.category_id || '');
       this._activeCategoryId = activeId;
-      if (activeId) {
+
+      // 只缓存「确实属于当前分类且有内容」的那批：空数组是 truthy，
+      // 无条件写进缓存会让该分类永远命中 `if (cached)` 分支、永久显示「暂无商品」且无法重试
+      if (activeId && serverIndex >= 0 && listWithPrice.length > 0) {
         this._spuCache[activeId] = listWithPrice;
         this._pageState[activeId] = {
           cursor: initData?.nextCursor ?? null,
@@ -190,19 +212,19 @@ Page({
         };
       }
 
-      const activeIndex = Math.max(0, categories.findIndex(c => c.category_id === activeId));
-      this.setData({
+      const usable = activeId && serverIndex >= 0;
+      this._setListData({
         categories,
         activeCategoryIndex: activeIndex,
-        spuList: listWithPrice,
-        hasMore: Boolean(initData?.hasMore),
+        spuList: usable ? listWithPrice : [],
+        hasMore: usable ? Boolean(initData?.hasMore) : false,
       });
-      this._refreshCoverWindow();
+      if (activeId && !usable) this.loadSpuList(activeId);
     } catch (err: any) {
       console.error('loadShopInit error:', err);
       Toast.fail(err?.message || '加载失败');
     } finally {
-      this.setData({ isLoading: false });
+      if (epoch === this._dataEpoch) this.setData({ isLoading: false });
     }
   },
 
@@ -217,14 +239,13 @@ Page({
 
     this._activeCategoryId = cat.category_id;
     const cached = this._spuCache[cat.category_id];
-    if (cached) {
+    if (cached && cached.length > 0) {
       // 切分类是整体替换而非追加，旧分类的图片节点随之释放
-      this.setData({
+      this._setListData({
         activeCategoryIndex: index,
         spuList: cached,
         hasMore: Boolean(this._pageState[cat.category_id]?.hasMore),
       });
-      this._refreshCoverWindow();
       return;
     }
 
@@ -246,6 +267,7 @@ Page({
   },
 
   async loadSpuList(categoryId: string, append = false) {
+    const epoch = this._dataEpoch;
     this.setData({ isLoading: true });
     try {
       const cursor = append ? this._pageState[categoryId]?.cursor ?? null : null;
@@ -254,9 +276,14 @@ Page({
         // cursor 为 null 时不传：云函数只把「缺省」当首页，显式 null 也接受，但别依赖
         cursor ? { categoryId, limit: PAGE_SIZE, cursor } : { categoryId, limit: PAGE_SIZE }
       );
+      // 代次变了说明缓存在请求飞行期间被整体重置（切门店）。此时 prev 已是空数组，
+      // 继续写下去会把「只有第 N 页」当第 1 页存起来、并把旧门店的商品塞进新门店缓存。
+      // 判定必须在写 _spuCache **之前**，不能只在 setData 之前。
+      if (epoch !== this._dataEpoch) return;
 
       const prev = append ? (this._spuCache[categoryId] || []) : [];
-      const listWithPrice = prev.concat(this._decorate(data?.spuList || [], prev.length));
+      const rows = decorateSpuRows(data?.spuList || [], getIsMember(), prev.length) as SpuItem[];
+      const listWithPrice = appendUniqueSpuRows(prev, rows);
 
       this._spuCache[categoryId] = listWithPrice;
       this._pageState[categoryId] = {
@@ -266,14 +293,18 @@ Page({
 
       // 仅在仍在看该分类时更新（翻页期间用户可能已切走）
       if (this._activeCategoryId === categoryId) {
-        this.setData({ spuList: listWithPrice, hasMore: Boolean(data?.hasMore) });
-        this._refreshCoverWindow();
+        this._setListData({ spuList: listWithPrice, hasMore: Boolean(data?.hasMore) });
       }
     } catch (err: any) {
       console.error('loadSpuList error:', err);
       Toast.fail(err?.message || '加载商品失败');
+      // 失败后把 hasMore 落下来：否则每次触底都会重发同一个失败请求
+      if (epoch === this._dataEpoch && this._pageState[categoryId]) {
+        this._pageState[categoryId].hasMore = false;
+        if (this._activeCategoryId === categoryId) this.setData({ hasMore: false });
+      }
     } finally {
-      this.setData({ isLoading: false });
+      if (epoch === this._dataEpoch) this.setData({ isLoading: false });
     }
   },
 

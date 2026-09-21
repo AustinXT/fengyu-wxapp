@@ -219,18 +219,49 @@ describe('createCoverWindow · fail-open', () => {
     expect((page.data.spuList as any[]).every(r => r.coverVisible)).toBe(true)
   })
 
-  test('fail-open 之后再 refresh 也保持整列显示，不再重建观察器', () => {
+  test('工厂抛错是确定性的能力缺失 → 永久停用，之后不再重建观察器', () => {
+    const page = makePage('spuList', 8)
+    const w = createCoverWindow(page as any, OPTS)
+    ;(wx as any).__setObserverFactoryThrows(true)
+    w.refresh()
+
+    ;(wx as any).__setObserverFactoryThrows(false)
+    w.refresh()
+
+    expect((wx as any).__getObservers()).toHaveLength(0)
+    expect((page.data.spuList as any[]).every(r => r.coverVisible)).toBe(true)
+  })
+
+  // 「零回调」不等于 observer 不可用：目标滚动容器被 wx:if 切走（home 进入搜索模式）时
+  // 同样一个回调都收不到。若就此永久停用，用户退出搜索后解码硬上限会被整场会话关掉。
+  test('零回调只放开本轮，下一次 refresh 仍重新尝试建观察器', () => {
     const page = makePage('spuList', 8)
     const w = createCoverWindow(page as any, OPTS)
     w.refresh()
     vi.advanceTimersByTime(FALLBACK_DELAY_MS)
+    expect((page.data.spuList as any[]).every(r => r.coverVisible)).toBe(true)
 
-    const countBefore = (wx as any).__getObservers().length
-    // 模拟翻页追加了新行
-    ;(page.data.spuList as any[]).push({ product_id: 'new', cover_image: 'u', coverVisible: false })
     w.refresh()
+    expect((wx as any).__getObservers()).toHaveLength(2)
 
-    expect((wx as any).__getObservers()).toHaveLength(countBefore)
+    // 新观察器正常工作：窗口外的卡片重新被卸载
+    emit(0, true)
+    for (let i = 1; i < 8; i++) emit(i, false)
+    vi.advanceTimersByTime(FLUSH_DELAY_MS)
+    expect((page.data.spuList as any[]).filter(r => r.coverVisible)).toHaveLength(1)
+  })
+
+  test('第一轮收到过回调，不妨碍后续某一轮零回调时再次 fail-open', () => {
+    const page = makePage('spuList', 8)
+    const w = createCoverWindow(page as any, OPTS)
+    w.refresh()
+    emit(0, true)
+    vi.advanceTimersByTime(FALLBACK_DELAY_MS + FLUSH_DELAY_MS)
+
+    // 第二轮一个回调都不给
+    w.refresh()
+    vi.advanceTimersByTime(FALLBACK_DELAY_MS)
+
     expect((page.data.spuList as any[]).every(r => r.coverVisible)).toBe(true)
   })
 })

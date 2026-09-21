@@ -3,7 +3,8 @@ import Toast from "@vant/weapp/toast/toast";
 import { getCartCount, clearCart } from "../../utils/cart";
 import { callClientApi } from "../../utils/cloud";
 import { getCosBase } from "../../utils/cloud-env";
-import { createCoverWindow, withInitialCoverVisible, type CoverWindow } from "../../utils/cover-window";
+import { createCoverWindow, type CoverWindow } from "../../utils/cover-window";
+import { appendUniqueSpuRows, decorateSpuRows } from "../../utils/spu-list";
 import { getIsMember } from "../../utils/member-pricing";
 
 const app = getApp<IAppOption>();
@@ -108,9 +109,19 @@ Page({
   _searchKeyword: "",
   _searchPageState: { cursor: null, hasMore: false } as PageState,
 
+  /**
+   * 数据代次。每次整体重置缓存（切门店 / 下拉刷新）都自增一次。
+   *
+   * 翻页请求是异步的：`prev` 在 `await` 之后才从 `_spuCache` 取，若期间缓存被清空，
+   * 回包会把「只有第 2 页」写回缓存并把游标推进到第 3 页 —— 第 1 页 20 条永久消失。
+   * 只比对 activeCategoryKey 区分不了「同一分类、数据集已被整体重置」。
+   */
+  _dataEpoch: 0,
+
   // 防止 scrolltolower 连续触发
   _isLoadingNext: false,
   _isLoadingSearchNext: false,
+  _nextCategoryTimer: null as ReturnType<typeof setTimeout> | null,
 
   // issue #248：两份列表各一个相交观察器（互斥渲染，但下标空间不同，不能共用选择器）
   _coverWindow: null as CoverWindow | null,
@@ -137,10 +148,35 @@ Page({
   },
 
   onUnload() {
+    this._teardownTimers();
     this._coverWindow?.dispose();
     this._searchCoverWindow?.dispose();
     this._coverWindow = null;
     this._searchCoverWindow = null;
+  },
+
+  /**
+   * home 是 tabBar 页，切到别的 tab 只触发 onHide 不触发 onUnload。
+   * 不在这里收摊的话，两个 IntersectionObserver 会在页面不可见时一直活着，
+   * 300ms 搜索防抖定时器还可能在页面隐藏后回调 setData。
+   */
+  onHide() {
+    this._teardownTimers();
+    this._coverWindow?.dispose();
+    this._searchCoverWindow?.dispose();
+  },
+
+  _teardownTimers() {
+    if (this._searchTimer) {
+      clearTimeout(this._searchTimer);
+      this._searchTimer = null;
+    }
+    if (this._nextCategoryTimer) {
+      clearTimeout(this._nextCategoryTimer);
+      this._nextCategoryTimer = null;
+    }
+    this._isLoadingNext = false;
+    this._isLoadingSearchNext = false;
   },
 
   onShow() {
@@ -148,12 +184,10 @@ Page({
     if (storeName !== this.data.boundStoreName) {
       // 切换门店时清空购物车和 SPU 缓存
       clearCart();
-      this._spuCache = {};
-      this._pageState = {};
+      this._resetPaging();
       this._allGroups = [];
       this._allCategories = [];
       this._allCategoryKeys = [];
-      this._resetSearchPaging();
       this.setData({
         boundStoreName: storeName,
         sidebarItems: [],
@@ -168,7 +202,18 @@ Page({
       this.loadShopInit();
     } else {
       this.updateCartCount();
+      // onHide 里 dispose 过，回到本页要把当前显示的那份列表重新接上观察器
+      this._refreshCoverWindow(this.data.isSearching ? "search" : "browse");
     }
+  },
+
+  /** 整体重置分页态。`_spuCache` 与 `_pageState` 必须同生共死，否则会拿旧游标翻新数据集 */
+  _resetPaging() {
+    this._spuCache = {};
+    this._pageState = {};
+    this._isLoadingNext = false;
+    this._dataEpoch++;
+    this._resetSearchPaging();
   },
 
   updateCartCount() {
@@ -176,14 +221,10 @@ Page({
   },
 
   onPullDownRefresh() {
-    // 退出搜索模式，重新加载全部数据
-    if (this.data.isSearching) {
-      this._resetSearchPaging();
-      this.setData({ isSearching: false, searchResults: [], searchValue: '' });
-    }
-    // 下拉刷新要真重来一次：清掉分页游标与累积行，否则会拿旧游标续翻
-    this._spuCache = {};
-    this._pageState = {};
+    // 退出搜索模式，重新加载全部数据；下拉刷新要真重来一次，
+    // 清掉分页游标与累积行，否则会拿旧游标续翻
+    this._resetPaging();
+    this.setData({ isSearching: false, searchResults: [], searchValue: '' });
     this.loadShopInit().finally(() => {
       wx.stopPullDownRefresh();
     });
@@ -203,10 +244,7 @@ Page({
 
     // 输入为空 → 立即退出搜索模式
     if (!value.trim()) {
-      if (this.data.isSearching) {
-        this._resetSearchPaging();
-        this.setData({ isSearching: false, searchResults: [], searchLoading: false });
-      }
+      this._exitSearch({ keepInput: true });
       return;
     }
 
@@ -225,13 +263,31 @@ Page({
     }
     const value = this.data.searchValue.trim();
     if (!value) {
-      if (this.data.isSearching) {
-        this._resetSearchPaging();
-        this.setData({ isSearching: false, searchResults: [] });
-      }
+      this._exitSearch({ keepInput: true });
       return;
     }
     await this._doSearch(value);
+  },
+
+  /**
+   * 退出搜索模式的唯一出口。
+   *
+   * `isSearching` 由 wxml 的 `wx:if/wx:else` 控制：进搜索会销毁 `.product-scroll`
+   * 与全部 `.spu-cover-slot`，退出时再重建。**必须在这里把浏览列表的观察器重新接上**，
+   * 否则新节点无人观察、`coverVisible` 冻结在进搜索之前的值；而进搜索时节点被移除，
+   * 旧 observer 多半已经以 `intersectionRatio=0` 回调把它们写成 false
+   * —— 回到浏览态就是整列占位图。
+   */
+  _exitSearch(opts: { keepInput?: boolean } = {}) {
+    if (this._searchTimer) {
+      clearTimeout(this._searchTimer);
+      this._searchTimer = null;
+    }
+    this._resetSearchPaging();
+    this._searchCoverWindow?.dispose();
+    const patch: Record<string, any> = { isSearching: false, searchResults: [], searchLoading: false };
+    if (!opts.keepInput) patch.searchValue = "";
+    this.setData(patch, () => this._coverWindow?.refresh());
   },
 
   _resetSearchPaging() {
@@ -240,25 +296,24 @@ Page({
     this._isLoadingSearchNext = false;
   },
 
-  /** 会员价分流：会员看会员起价 + 划线标价起价；非会员只看标价起价 */
-  _decorate(rows: any[], startIndex: number): SpuItem[] {
-    const isMember = getIsMember();
-    return withInitialCoverVisible(
-      rows.map((spu: any) => ({
-        ...spu,
-        min_price: isMember ? (spu.priceFrom || "0") : (spu.listPriceFrom || spu.priceFrom || "0"),
-        strike_min_price: (isMember && Number(spu.listPriceFrom) > Number(spu.priceFrom)) ? spu.listPriceFrom : "",
-      })),
-      startIndex
-    ) as SpuItem[];
+  /**
+   * 列表内容变了就得重建相交观察（observeAll 不跟踪新增节点）。
+   *
+   * 必须挂在 setData 的**渲染完成回调**上：`wx.nextTick` 只保证「下一个时间片」，
+   * 不保证视图层已渲染；新节点还没上树就 observe，observeAll 只会拿到旧节点集合，
+   * 追加的那一页从此永远是占位图，且失败是静默的。
+   */
+  _setListData(which: "browse" | "search", patch: Record<string, any>) {
+    this.setData(patch, () => this._refreshCoverWindow(which));
   },
 
-  /** 列表内容变了就得重建相交观察（observeAll 不跟踪新增节点） */
   _refreshCoverWindow(which: "browse" | "search") {
-    wx.nextTick(() => {
-      if (which === "search") this._searchCoverWindow?.refresh();
-      else this._coverWindow?.refresh();
-    });
+    // 两份列表由 wx:if/wx:else 互斥渲染。给不在场的那份重建观察器，
+    // 参照节点根本不存在 → 一个回调都收不到 → 会误触发 fail-open 把解码封顶放掉。
+    if (which === "browse" && this.data.isSearching) return;
+    if (which === "search" && !this.data.isSearching) return;
+    if (which === "search") this._searchCoverWindow?.refresh();
+    else this._coverWindow?.refresh();
   },
 
   /** 实际搜索执行；append=true 时翻本次搜索的下一页 */
@@ -276,25 +331,33 @@ Page({
           : { keyword: value, limit: PAGE_SIZE }
       );
 
-      // 防止旧搜索结果覆盖新搜索（用户可能已继续输入）
-      if (this.data.searchValue.trim() !== value) return;
+      // 防止旧搜索结果覆盖新搜索（用户可能已继续输入）。
+      // 早退也要把 loading 关掉，否则转圈会一直挂到下一次搜索完成。
+      if (this.data.searchValue.trim() !== value) {
+        this.setData({ searchLoading: false });
+        return;
+      }
 
       const prev = append ? this.data.searchResults : [];
-      const results = prev.concat(this._decorate(data?.spuList || [], prev.length));
+      const rows = decorateSpuRows(data?.spuList || [], getIsMember(), prev.length) as SpuItem[];
+      const results = appendUniqueSpuRows(prev, rows);
 
       this._searchKeyword = value;
       this._searchPageState = {
         cursor: data?.nextCursor ?? null,
         hasMore: Boolean(data?.hasMore),
       };
-      this.setData({ searchResults: results, searchLoading: false });
-      this._refreshCoverWindow("search");
+      this._setListData("search", { searchResults: results, searchLoading: false });
     } catch (err) {
       console.error("_doSearch error:", err);
       if (this.data.searchValue.trim() === value) {
-        // 翻页失败只停在已有结果上，别把用户已看到的清空
+        // 翻页失败只停在已有结果上，别把用户已看到的清空；
+        // 但要把 hasMore 落下来，否则每次触底都重发同一个失败请求
         this.setData(append ? { searchLoading: false } : { searchResults: [], searchLoading: false });
-        if (!append) this._resetSearchPaging();
+        if (append) this._searchPageState = { ...this._searchPageState, hasMore: false };
+        else this._resetSearchPaging();
+      } else {
+        this.setData({ searchLoading: false });
       }
     }
   },
@@ -311,12 +374,7 @@ Page({
   },
 
   onSearchClear() {
-    if (this._searchTimer) {
-      clearTimeout(this._searchTimer);
-      this._searchTimer = null;
-    }
-    this._resetSearchPaging();
-    this.setData({ isSearching: false, searchResults: [], searchValue: "" });
+    this._exitSearch();
   },
 
   // categoryKey 就是 category_id
@@ -402,18 +460,14 @@ Page({
     const cached = this._spuCache[categoryKey];
 
     // 切分类是整体替换而非追加，上一个分类的图片节点随之释放
-    this.setData({
+    this._setListData("browse", {
       activeCategoryKey: categoryKey,
       sidebarScrollIntoView: catItem.id,
       spuList: cached || [],
       hasMore: Boolean(this._pageState[categoryKey]?.hasMore),
     });
 
-    if (cached) {
-      this._refreshCoverWindow("browse");
-    } else {
-      this.loadSpuList(categoryKey);
-    }
+    if (!cached) this.loadSpuList(categoryKey);
   },
 
   /**
@@ -443,7 +497,8 @@ Page({
     this.switchToCategory(nextKey);
 
     // 防止连续触发
-    setTimeout(() => {
+    this._nextCategoryTimer = setTimeout(() => {
+      this._nextCategoryTimer = null;
       this._isLoadingNext = false;
     }, 500);
   },
@@ -473,16 +528,18 @@ Page({
   },
 
   async loadShopInit() {
+    const epoch = this._dataEpoch;
     try {
       this.setData({ isLoading: true, loadError: false });
       const initData = await callClientApi<{
         groups?: CategoryGroup[]; categories: Category[]; spuList: any[];
         spuCategoryId?: string | null; nextCursor?: string | null; hasMore?: boolean;
       }>("product.shopInit", { limit: PAGE_SIZE });
+      if (epoch !== this._dataEpoch) return;
 
       const groups: CategoryGroup[] = initData?.groups || [];
       const categories: Category[] = initData?.categories || [];
-      const listWithPrice = this._decorate(initData?.spuList || [], 0);
+      const listWithPrice = decorateSpuRows(initData?.spuList || [], getIsMember(), 0) as SpuItem[];
 
       this._allGroups = groups;
       this._allCategories = categories;
@@ -507,23 +564,20 @@ Page({
         };
       }
 
-      this.setData({
+      const cachedFirst = firstCatKey ? this._spuCache[firstCatKey] : undefined;
+      this._setListData("browse", {
         activeCategoryKey: firstCatKey,
-        spuList: firstCatKey ? (this._spuCache[firstCatKey] || []) : [],
+        spuList: cachedFirst || [],
         hasMore: Boolean(this._pageState[firstCatKey]?.hasMore),
       });
 
-      if (firstCatKey && !this._spuCache[firstCatKey]) {
-        this.loadSpuList(firstCatKey);
-      } else {
-        this._refreshCoverWindow("browse");
-      }
+      if (firstCatKey && !cachedFirst) this.loadSpuList(firstCatKey);
     } catch (err: any) {
       console.error("loadShopInit error:", err);
       Toast.fail(err?.message || "加载失败");
-      this.setData({ loadError: true });
+      if (epoch === this._dataEpoch) this.setData({ loadError: true });
     } finally {
-      this.setData({ isLoading: false });
+      if (epoch === this._dataEpoch) this.setData({ isLoading: false });
     }
   },
 
@@ -561,6 +615,7 @@ Page({
   },
 
   async loadSpuList(categoryKey: string, append = false) {
+    const epoch = this._dataEpoch;
     this.setData({ isLoading: true });
     const categoryId = this._findCategoryId(categoryKey);
     if (!categoryId) {
@@ -573,9 +628,14 @@ Page({
         "product.spuList",
         cursor ? { categoryId, limit: PAGE_SIZE, cursor } : { categoryId, limit: PAGE_SIZE }
       );
+      // 代次变了说明缓存在请求飞行期间被整体重置（下拉刷新 / 切门店）。此时 prev 已是空数组，
+      // 继续写下去会把「只有第 N 页」当第 1 页存起来、并把游标推进到第 N+1 页，
+      // 前面那些行就此永久消失。判定必须在写 _spuCache **之前**。
+      if (epoch !== this._dataEpoch) return;
 
       const prev = append ? (this._spuCache[categoryKey] || []) : [];
-      const listWithPrice = prev.concat(this._decorate(data?.spuList || [], prev.length));
+      const rows = decorateSpuRows(data?.spuList || [], getIsMember(), prev.length) as SpuItem[];
+      const listWithPrice = appendUniqueSpuRows(prev, rows);
 
       // 写入缓存 + 翻页进度
       this._spuCache[categoryKey] = listWithPrice;
@@ -586,14 +646,19 @@ Page({
 
       // 仅在仍在查看该分类时更新
       if (this.data.activeCategoryKey === categoryKey) {
-        this.setData({ spuList: listWithPrice, hasMore: Boolean(data?.hasMore) });
-        this._refreshCoverWindow("browse");
+        this._setListData("browse", { spuList: listWithPrice, hasMore: Boolean(data?.hasMore) });
       }
     } catch (err: any) {
       console.error("loadSpuList error:", err);
       Toast.fail(err?.message || "加载商品失败");
+      // 失败后把 hasMore 落下来：否则触底永远走「翻页」分支，
+      // 既切不到下一个分类（home 触底的第二段语义），又会每次触底重发同一个失败请求
+      if (epoch === this._dataEpoch && this._pageState[categoryKey]) {
+        this._pageState[categoryKey].hasMore = false;
+        if (this.data.activeCategoryKey === categoryKey) this.setData({ hasMore: false });
+      }
     } finally {
-      this.setData({ isLoading: false });
+      if (epoch === this._dataEpoch) this.setData({ isLoading: false });
     }
   },
 

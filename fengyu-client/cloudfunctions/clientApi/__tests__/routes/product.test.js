@@ -193,10 +193,19 @@ describe('product.search', () => {
 
 // ===== issue #248：商品列表硬分页（keyset 复合游标） =====
 describe('product 列表分页', () => {
-  const DEFAULT_PAGE_SIZE = 20
-  const MAX_PAGE_SIZE = 50
+  // 口径从路由模块直接取，不再抄一份字面量（实现调值时测试跟着走，不会静默漂移）
+  let DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, CURSOR_MAX_LENGTH
+  beforeEach(() => {
+    ;({
+      PRODUCT_PAGE_SIZE_DEFAULT: DEFAULT_PAGE_SIZE,
+      PRODUCT_PAGE_SIZE_MAX: MAX_PAGE_SIZE,
+      PRODUCT_CURSOR_MAX_LENGTH: CURSOR_MAX_LENGTH,
+    } = routes.__pageSizeCaliber)
+  })
 
   const decodeCursor = (c) => JSON.parse(Buffer.from(c, 'base64').toString('utf8'))
+  const makeCursor = (sortOrder, productId) =>
+    Buffer.from(JSON.stringify([sortOrder, productId]), 'utf8').toString('base64')
 
   /** 造 n 行商品；sortOrder 可传函数，用于构造 sort_order 重复的场景 */
   function makeProductRows(n, sortOrder = (i) => i + 1) {
@@ -269,9 +278,34 @@ describe('product 列表分页', () => {
     expect(decodeCursor(ctx.result.nextCursor)).toEqual([7, 'p20'])
   })
 
+  test('正好一页：pageSize 条时 hasMore=false（分界线）', async () => {
+    pg.query.mockResolvedValueOnce(makeProductRows(DEFAULT_PAGE_SIZE))
+    pg.query.mockResolvedValueOnce([])
+
+    const ctx = createBoundCtx({ categoryId: 'cat-1' })
+    await routes.spuList(ctx)
+
+    expect(ctx.result.spuList).toHaveLength(DEFAULT_PAGE_SIZE)
+    expect(ctx.result.hasMore).toBe(false)
+    expect(ctx.result.nextCursor).toBeNull()
+  })
+
+  test('limit=1 的逐条翻页语义', async () => {
+    pg.query.mockResolvedValueOnce(makeProductRows(2))
+    pg.query.mockResolvedValueOnce([])
+
+    const ctx = createBoundCtx({ categoryId: 'cat-1', limit: 1 })
+    await routes.spuList(ctx)
+
+    expect(pg.query.mock.calls[0][1]).toContain(2) // 探测行 = 1 + 1
+    expect(ctx.result.spuList).toHaveLength(1)
+    expect(ctx.result.hasMore).toBe(true)
+    expect(decodeCursor(ctx.result.nextCursor)).toEqual([1, 'p1'])
+  })
+
   test('传 cursor：SQL 用行值比较，参数显式转型', async () => {
     pg.query.mockResolvedValueOnce([])
-    const cursor = Buffer.from(JSON.stringify([7, 'p20']), 'utf8').toString('base64')
+    const cursor = makeCursor(7, 'p20')
 
     const ctx = createBoundCtx({ categoryId: 'cat-1', cursor })
     await routes.spuList(ctx)
@@ -293,7 +327,22 @@ describe('product 列表分页', () => {
     expect(params[params.length - 1]).toBe(MAX_PAGE_SIZE + 1)
   })
 
-  test.each([0, -1, 1.5, 'abc', {}])('非法 limit(%p) 抛 INVALID_PARAMS 且不打库', async (limit) => {
+  // limit 只收 number。`Number(raw)` 的隐式转换会把 true→1、['20']→20、'0x14'→20
+  // 静默接受（true 那条会让列表变成「每页 1 条」），而 {toString:null} 是合法 JSON
+  // 却会抛无前缀的 TypeError → 降级成 -1 而不是 -400。
+  test.each([
+    ['0', 0],
+    ['-1', -1],
+    ['小数', 1.5],
+    ['NaN', NaN],
+    ['Infinity', Infinity],
+    ['字符串数字', '20'],
+    ['十六进制字符串', '0x14'],
+    ['布尔 true', true],
+    ['单元素数组', [20]],
+    ['普通对象', {}],
+    ['toString 被遮蔽的对象', { toString: null }],
+  ])('非法 limit(%s) 抛 INVALID_PARAMS 且不打库', async (_label, limit) => {
     const ctx = createBoundCtx({ categoryId: 'cat-1', limit })
     await expect(routes.spuList(ctx)).rejects.toThrow(/^INVALID_PARAMS:/)
     expect(pg.query).not.toHaveBeenCalled()
@@ -307,10 +356,28 @@ describe('product 列表分页', () => {
     ['数组长度不对', Buffer.from(JSON.stringify([1]), 'utf8').toString('base64')],
     ['sort_order 非整数', Buffer.from(JSON.stringify(['x', 'p1']), 'utf8').toString('base64')],
     ['product_id 非字符串', Buffer.from(JSON.stringify([1, 2]), 'utf8').toString('base64')],
+    ['product_id 空串', Buffer.from(JSON.stringify([1, '']), 'utf8').toString('base64')],
+    // sort_order 是 int4，超范围会让 PG 抛 22003（无白名单前缀 → -1），且库已白打一次
+    ['int4 上溢', Buffer.from(JSON.stringify([2147483648, 'p1']), 'utf8').toString('base64')],
+    ['int4 下溢', Buffer.from(JSON.stringify([-2147483649, 'p1']), 'utf8').toString('base64')],
+    // 超长串不该走完 Buffer + JSON.parse 才被拒
+    ['超长串', 'A'.repeat(1024)],
   ])('畸形 cursor(%s) 抛 INVALID_PARAMS 且不打库', async (_label, cursor) => {
     const ctx = createBoundCtx({ categoryId: 'cat-1', cursor })
     await expect(routes.spuList(ctx)).rejects.toThrow(/^INVALID_PARAMS:/)
     expect(pg.query).not.toHaveBeenCalled()
+  })
+
+  test('int4 边界值本身合法（不误杀）', async () => {
+    pg.query.mockResolvedValueOnce([])
+    const ctx = createBoundCtx({ categoryId: 'cat-1', cursor: makeCursor(2147483647, 'p1') })
+    await routes.spuList(ctx)
+    expect(pg.query.mock.calls[0][1]).toContain(2147483647)
+  })
+
+  test('cursor 长度上限只卡超长串，正常游标远低于阈值', async () => {
+    const real = makeCursor(2147483647, 'prod-1786781954741')
+    expect(real.length).toBeLessThan(CURSOR_MAX_LENGTH)
   })
 
   test('缺省 cursor 才是首页：不传 / 传 null 都走无游标分支', async () => {
@@ -335,11 +402,41 @@ describe('product 列表分页', () => {
     expect(decodeCursor(ctx.result.nextCursor)).toEqual([5, 'p5'])
   })
 
-  test('search 空 keyword 返回完整分页壳', async () => {
-    const ctx = createBoundCtx({ keyword: '   ' })
+  // `(keyword || '').trim()` 对 `[]`（truthy）会抛 `trim is not a function` → 降级成 -1
+  test.each([
+    ['空格串', '   '],
+    ['空串', ''],
+    ['undefined', undefined],
+    ['null', null],
+    ['数字', 123],
+    ['空数组', []],
+    ['对象', {}],
+    ['布尔', true],
+  ])('search keyword=%s 返回完整分页壳且不打库', async (_label, keyword) => {
+    const ctx = createBoundCtx({ keyword })
     await routes.search(ctx)
 
     expect(ctx.result).toEqual({ spuList: [], nextCursor: null, hasMore: false })
+    expect(pg.query).not.toHaveBeenCalled()
+  })
+
+  // hotList 原先是 `const { limit = 6 }` 直进 LIMIT：解构默认值只对 undefined 生效，
+  // `{limit:null}` 会下发 `LIMIT NULL` —— 在 PG 里等于不限行数，而本接口下发 cover_image
+  test.each([
+    ['不传', undefined, 6],
+    ['null', null, 6],
+    ['正常值', 3, 3],
+    ['超上限', 9999, 50],
+  ])('hotList limit=%s → LIMIT %i', async (_label, limit, expected) => {
+    pg.query.mockResolvedValueOnce([])
+    const ctx = createBoundCtx(limit === undefined ? {} : { limit })
+    await routes.hotList(ctx)
+    expect(pg.query.mock.calls[0][1][0]).toBe(expected)
+  })
+
+  test('hotList 非法 limit 抛 INVALID_PARAMS 且不打库', async () => {
+    const ctx = createBoundCtx({ limit: 'abc' })
+    await expect(routes.hotList(ctx)).rejects.toThrow(/^INVALID_PARAMS:/)
     expect(pg.query).not.toHaveBeenCalled()
   })
 

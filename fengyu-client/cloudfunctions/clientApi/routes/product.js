@@ -204,13 +204,26 @@ async function categories(ctx) {
 const PRODUCT_PAGE_SIZE_DEFAULT = 20
 const PRODUCT_PAGE_SIZE_MAX = 50
 
+/**
+ * ⚠️ 这是本仓第 3 份分页入参归一实现，基准是
+ * `fengyu-staff/cloudfunctions/staffApi/utils/paging.js`（#240 修过 `Number()` 可抛的坑），
+ * 第 2 份是 `fengyu-admin/src/lib/export-pagination.ts`。
+ * 三者**语义不同、各自保留副本**（用户已 veto cloudfunctions-shared）：
+ * - admin：`limit == null` → 不分页返全量
+ * - staffApi：非法值回落默认，不抛
+ * - 本文件：非法值一律抛 `INVALID_PARAMS`（顾客端没有「全量」这个合法语义）
+ *
+ * 只收 `number`，不做隐式转换：`Number(raw)` 对 `true` 给 1、对 `['20']` 给 20、
+ * 对 `'0x14'` 给 20（全部静默接受），对 `{toString:null}`（合法 JSON）直接抛
+ * `TypeError: Cannot convert object to primitive value` —— 那条错误没有白名单前缀，
+ * 会被全局 catch 降级成 `{code:-1,'服务器内部错误'}` 而不是 -400。
+ */
 function normalizeProductPageSize(raw) {
   if (raw === undefined || raw === null) return PRODUCT_PAGE_SIZE_DEFAULT
-  const n = Number(raw)
-  if (!Number.isInteger(n) || n <= 0) {
+  if (typeof raw !== 'number' || !Number.isInteger(raw) || raw <= 0) {
     throw new Error('INVALID_PARAMS: limit 必须是正整数')
   }
-  return Math.min(n, PRODUCT_PAGE_SIZE_MAX)
+  return Math.min(raw, PRODUCT_PAGE_SIZE_MAX)
 }
 
 /**
@@ -220,6 +233,10 @@ function normalizeProductPageSize(raw) {
  * 故与主键 product_id 组成复合键，配合行值比较保证全序。
  * 对外是不透明 base64 串，前端只需原样回传。
  */
+const PRODUCT_CURSOR_MAX_LENGTH = 256
+const INT4_MIN = -2147483648
+const INT4_MAX = 2147483647
+
 function encodeProductCursor(row) {
   return Buffer.from(
     JSON.stringify([Number(row.sort_order), String(row.product_id)]),
@@ -228,9 +245,14 @@ function encodeProductCursor(row) {
 }
 
 function decodeProductCursor(raw) {
-  // 只有缺省才是「首页」；空串 / 0 / 对象一律视为畸形游标，别让它先白打一次库
+  // 缺省即「首页」。CloudBase payload 是 JSON，表达不出 undefined，
+  // 所以 null 与 undefined 在本接口**等价**视为首页；空串 / 0 / 对象一律视为畸形游标。
   if (raw === undefined || raw === null) return null
   if (typeof raw !== 'string' || raw === '') {
+    throw new Error('INVALID_PARAMS: cursor 不合法')
+  }
+  // 合法游标 base64 后 < 60 字符。先卡长度，别让 10MB 的串走完 Buffer + JSON.parse 才被拒。
+  if (raw.length > PRODUCT_CURSOR_MAX_LENGTH) {
     throw new Error('INVALID_PARAMS: cursor 不合法')
   }
   let parsed
@@ -245,6 +267,11 @@ function decodeProductCursor(raw) {
   }
   const [sortOrder, productId] = parsed
   if (!Number.isInteger(sortOrder) || typeof productId !== 'string' || productId === '') {
+    throw new Error('INVALID_PARAMS: cursor 不合法')
+  }
+  // sort_order 是 int4。超范围的值走到 `$n::int` 会让 PG 抛 22003，
+  // 那条错误没有白名单前缀 → 降级成 -1「服务器内部错误」，而且库已经白打了一次。
+  if (sortOrder < INT4_MIN || sortOrder > INT4_MAX) {
     throw new Error('INVALID_PARAMS: cursor 不合法')
   }
   return { sortOrder, productId }
@@ -385,7 +412,9 @@ async function spuList(ctx) {
  */
 async function search(ctx) {
   const { keyword, limit, cursor } = ctx.event.payload || {}
-  const kw = (keyword || '').trim()
+  // 非字符串一律当空关键词短路：`(keyword || '').trim()` 对 `[]`（truthy）会抛
+  // `trim is not a function` → 没有白名单前缀 → 降级成 -1 而不是走空结果分支
+  const kw = typeof keyword === 'string' ? keyword.trim() : ''
   if (!kw) {
     ctx.result = { spuList: [], nextCursor: null, hasMore: false }
     return
@@ -484,9 +513,17 @@ async function skuDetail(ctx) {
 /**
  * 热门推荐列表
  */
+const HOT_LIST_DEFAULT_LIMIT = 6
+
 async function hotList(ctx) {
-  const { limit = 6 } = ctx.event.payload || {}
-  const params = [limit]
+  const { limit } = ctx.event.payload || {}
+  // issue #248：原先是 `const { limit = 6 }` 直进 `LIMIT $1`。解构默认值只对 undefined 生效，
+  // 所以 `{limit:null}` 会下发 `LIMIT NULL` —— **在 PG 里等于不限行数**，而本接口下发 cover_image；
+  // `{limit:'abc'}` 则让 PG 抛 int8in 语法错。与列表接口共用同一套归一。
+  const pageSize = limit === undefined || limit === null
+    ? HOT_LIST_DEFAULT_LIMIT
+    : normalizeProductPageSize(limit)
+  const params = [pageSize]
   const productMarketScopeFilter = buildMarketScopeFilter(ctx.auth, params, 'p')
   const existsSkuMarketScopeFilter = buildCatalogSkuMarketScopeFilter(ctx.auth, params, 'sk')
 
@@ -710,4 +747,12 @@ module.exports = {
   hotList,
   shopInit,
   experienceCardList,
+  // 分页口径的单一来源。index.js 的 action 路由只按名字取上面那些函数，
+  // 多这一个键不会变成可调用 action；导出它是为了让测试断言权威值而不是再抄一份字面量。
+  __pageSizeCaliber: {
+    PRODUCT_PAGE_SIZE_DEFAULT,
+    PRODUCT_PAGE_SIZE_MAX,
+    HOT_LIST_DEFAULT_LIMIT,
+    PRODUCT_CURSOR_MAX_LENGTH,
+  },
 }
