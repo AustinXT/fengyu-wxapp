@@ -3166,7 +3166,9 @@ describe('order.qrcode', () => {
     // 实际需支付 = Σ商品实付(pending_received 500) − 储值卡抵扣(0) = 500
     expect(ctx.result.actualPayable).toBe(500)
     expect(ctx.result.items).toHaveLength(1)
-    expect(wxacode.generateWxacode).toHaveBeenCalledWith('FY-QR-001', expect.any(String), undefined)
+    // 第三参是经 effectiveEnvVersion 净化后的值：未传 _envVersion 时，
+    // 正式函数回落到自身部署身份 'release'（影子函数则恒为 'develop'，见 utils/wxacode.test.js）
+    expect(wxacode.generateWxacode).toHaveBeenCalledWith('FY-QR-001', expect.any(String), 'release')
     expect(pg.transaction).not.toHaveBeenCalled()
   })
 
