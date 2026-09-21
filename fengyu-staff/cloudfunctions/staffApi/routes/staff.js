@@ -744,6 +744,13 @@ async function performanceDetail(ctx) {
   // 同上：salesCategory 不进 SQL，汇总恒全量
   const svcParams = [targetEmployeeId, startDate, endDate.replace(/-/g, '/')]
 
+  // ⚠️ ORDER BY 末尾的 `sc.id DESC` 是唯一稳定的 tie-break 键，不可删（#239）：
+  // 本函数把 allocRows + svcRows 拼成 allItems 后在 **JS 里 sort + slice 做内存分页**，
+  // 而 page/pageSize 是入参 —— 每翻一页都是一次独立云函数调用 = 一次新的 SQL 执行。
+  // V8 的 Array.sort 稳定，同一个 date 的多行其相对顺序完全继承自 SQL 返回顺序；
+  // 只按 service_date 排序时 PG 不保证同日多行每次同序（并发写 / autovacuum / plan 变化
+  // 都会改变物理扫描顺序）→ 两次翻页切出的页可能重复或漏掉某条明细。
+  // 与上方销售侧 allocRows 的 `, spia.id DESC` 同思路；#181 的 customer.listByTag 是同一缺陷类。
   const svcRows = await pg.query(`
     SELECT
       sc.commission_amount,
@@ -774,7 +781,7 @@ async function performanceDetail(ctx) {
       AND so.status = '已完成'
       AND so.service_date >= $2
       AND so.service_date <= $3
-    ORDER BY so.service_date DESC
+    ORDER BY so.service_date DESC, sc.id DESC
   `, svcParams)
 
   // 固定 4 分类零填充打底：即使本期某分类无数据，前端也要能渲染 ¥0.00 的格子；
