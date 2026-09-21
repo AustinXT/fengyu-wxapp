@@ -220,6 +220,30 @@ function approvalMovementDirection(docType) {
   return APPROVAL_DOC_TYPES.has(docType) ? '出库' : null
 }
 
+/**
+ * 审批/驳回的鉴权主体判定（#235）。
+ *
+ * 原先两处都写 `source_org_node_id || target_org_node_id`，拿「第一个非空的主体」当代表值
+ * 去做 scope 判断，而不是按单据方向推导出**真正被扣减库存**的那一侧 —— 与 #200 修复前的
+ * `createInventoryCoreDoc` 是同一个反模式。
+ *
+ * 它今天不可利用，靠的是两个巧合：能走到这两个函数的类型 =
+ * `STAFF_VISIBLE_DOC_TYPES ∩ APPROVAL_DOC_TYPES` = {院退货, 院产品报损}，前者 source 恒非空、
+ * 后者是同主体单据；且 `ensureStoreLocation` 强制 location_type='门店'，市场级单据进不来。
+ * 一旦往任一集合里加入 source 可空或入库方向的类型，`||` 就会**无声**退化成按 target 鉴权。
+ *
+ * 这里刻意**不写入库分支**：`approvalMovementDirection` 当前对所有审批类型恒返回「出库」，
+ * 写一个 `direction === '入库' ? target : source` 的三元等于埋一段不可达代码——正是 #237
+ * 刚清理掉的那种东西（dead 分支会诱导后来者把它当活代码推理）。改为显式 fail-closed：
+ * 将来放开入库方向的审批类型时，这里会直接抛错，逼改代码的人回来补主体推导。
+ */
+function assertApprovalOutboundDirection(docType) {
+  const direction = approvalMovementDirection(docType)
+  if (!direction) throw new Error('INVALID_STATE: 该单据类型不需要审批')
+  if (direction !== '出库') throw new Error('INVALID_STATE: 该审批方向尚未支持，请先补全鉴权主体推导')
+  return direction
+}
+
 function roleBindingsForAction(auth, action) {
   return (auth.roleBindings || []).filter((rb) => (
     rb
@@ -1834,12 +1858,11 @@ async function approveDoc(ctx) {
     )
     const head = headRes.rows[0]
     if (!head) throw new Error('NOT_FOUND: 单据不存在')
-    const acting = head.source_org_node_id || head.target_org_node_id
-    const actingStore = await ensureStoreLocation(acting, client)
+    const direction = assertApprovalOutboundDirection(head.doc_type)
+    if (!head.source_org_node_id) throw new Error('INVALID_STATE: 待审批单据缺少出库主体')
+    const actingStore = await ensureStoreLocation(head.source_org_node_id, client)
     await assertApproverStoreScope(client, ctx.auth, actingStore.location_id)
     if (head.status !== '待审批') throw new Error('INVALID_STATE: 只有待审批单据可以审批')
-    const direction = approvalMovementDirection(head.doc_type)
-    if (!direction) throw new Error('INVALID_STATE: 该单据类型不需要审批')
     if (head.doc_type === '院退货') {
       await approveStoreReturnForRestock(client, head, ctx, auditRemark)
       return
@@ -1851,7 +1874,9 @@ async function approveDoc(ctx) {
      ORDER BY id`,
       [id],
     )
-    const sourceLocation = await ensureStoreLocation(head.source_org_node_id, client)
+    // 与上面鉴权用的是同一个主体（出库方），复用结果——ensureStoreLocation 内部还会跑一次
+    // syncInventoryLocations，重复调用纯属浪费。
+    const sourceLocation = actingStore
     for (const item of itemRes.rows) {
       if (!item.lot_id) throw new Error('INVALID_STATE: 审批出库明细缺少库存批次')
       const lot = await lockInventoryLotById(client, Number(item.lot_id), sourceLocation.location_id)
@@ -1899,11 +1924,11 @@ async function rejectDoc(ctx) {
     )
     const doc = headRes.rows[0]
     if (!doc) throw new Error('NOT_FOUND: 单据不存在')
-    const acting = doc.source_org_node_id || doc.target_org_node_id
-    const actingStore = await ensureStoreLocation(acting, client)
+    assertApprovalOutboundDirection(doc.doc_type)
+    if (!doc.source_org_node_id) throw new Error('INVALID_STATE: 待审批单据缺少出库主体')
+    const actingStore = await ensureStoreLocation(doc.source_org_node_id, client)
     await assertApproverStoreScope(client, ctx.auth, actingStore.location_id)
     if (doc.status !== '待审批') throw new Error('INVALID_STATE: 只有待审批单据可以驳回')
-    if (!approvalMovementDirection(doc.doc_type)) throw new Error('INVALID_STATE: 该单据类型不需要审批')
     if (doc.doc_type === '院退货') {
       await client.query(
         `UPDATE inventory_stock_reservations

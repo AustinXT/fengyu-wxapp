@@ -1217,6 +1217,126 @@ describe('inventory.approveDoc / rejectDoc 审批一致性', () => {
   })
 })
 
+/**
+ * #235：审批/驳回的鉴权主体必须按单据方向推导，不能用 `source || target` 取代表值。
+ *
+ * 旧写法 `const acting = source_org_node_id || target_org_node_id` 与 #200 修复前的
+ * `createInventoryCoreDoc` 是同一个反模式。它今天不可利用靠的是两个巧合
+ * （可达类型只有 {院退货, 院产品报损}，source 恒非空；ensureStoreLocation 强制门店类型），
+ * 一旦往 STAFF_VISIBLE_DOC_TYPES / APPROVAL_DOC_TYPES 里加入 source 可空的类型就会
+ * **无声**退化成按 target 鉴权。
+ *
+ * 这条不变量唯一能被测试区分新旧的路径就是「source 为空」：
+ * 旧代码会拿 target 去 assertApproverStoreScope（审批人对 target 有权 → 放行 → 越权），
+ * 新代码显式抛 INVALID_STATE。下面两条用例刻意把 target 设成审批人**有权**的主体，
+ * 使旧代码必然放行 —— 回退修复后它们必红。
+ */
+describe('inventory.approveDoc / rejectDoc 鉴权主体（#235）', () => {
+  /** 审批人对 market-A 有权；单据 source 为空、target 指向他有权的 store-A */
+  function approverCtx(id) {
+    return createCtx({
+      payload: { id, auditRemark: '越权探测' },
+      auth: {
+        roles: ['finance'],
+        roleBindings: [{ role: 'finance', scopeId: 'market-A', scopeType: '市场' }],
+        scopeStoreIds: ['store-A'],
+        effectiveStoreId: null,
+      },
+    })
+  }
+
+  function mockScopeExpansion() {
+    pg.query.mockImplementation(async (query, params) => {
+      const sql = String(query)
+      if (sql.includes('WITH RECURSIVE descendants')) return [{ store_id: 'store-A' }]
+      if (sql.includes('SELECT location_id, location_type, parent_location_id')) {
+        return [{
+          location_id: params[0], org_node_id: params[0], location_type: '门店',
+          parent_location_id: 'market-A', is_active: true,
+        }]
+      }
+      return []
+    })
+  }
+
+  test('approveDoc：待审批单缺出库主体 → 抛 INVALID_STATE，不退化成按 target 鉴权', async () => {
+    const ctx = approverCtx('DOC-NO-SOURCE')
+    mockScopeExpansion()
+    const client = mockTransactionClient([
+      {
+        rows: [{
+          id: 'DOC-NO-SOURCE',
+          doc_type: '院退货',
+          status: '待审批',
+          source_org_node_id: null,
+          // 审批人对 store-A 有权：旧代码 `source || target` 会取到它并放行
+          target_org_node_id: 'store-A',
+        }],
+      },
+    ])
+
+    await expect(inventoryRoutes.approveDoc(ctx)).rejects.toThrow(
+      'INVALID_STATE: 待审批单据缺少出库主体',
+    )
+    // 零副作用：既没读明细、也没改单据状态
+    expect(client.query.mock.calls.some(([sql]) => /FROM inventory_doc_items/.test(sql))).toBe(false)
+    expect(client.query.mock.calls.some(([sql]) => /UPDATE inventory_docs/.test(sql))).toBe(false)
+  })
+
+  test('rejectDoc：待审批单缺出库主体 → 抛 INVALID_STATE，不退化成按 target 鉴权', async () => {
+    const ctx = approverCtx('DOC-NO-SOURCE-R')
+    mockScopeExpansion()
+    const client = mockTransactionClient([
+      {
+        rows: [{
+          doc_type: '院退货',
+          status: '待审批',
+          source_org_node_id: null,
+          target_org_node_id: 'store-A',
+        }],
+      },
+    ])
+
+    await expect(inventoryRoutes.rejectDoc(ctx)).rejects.toThrow(
+      'INVALID_STATE: 待审批单据缺少出库主体',
+    )
+    expect(client.query.mock.calls.some(([sql]) => /UPDATE inventory_docs/.test(sql))).toBe(false)
+  })
+
+  /**
+   * 字面量守护：防复发。
+   *
+   * 上面两条只能锁住「source 为空」这一条可区分路径；`source || target` 这个写法本身
+   * 若以别的形式回潮（例如换个变量名、或在别处新增同款代表值取法），行为测试抓不到。
+   * 这条直接钉死源码里不许再出现该反模式。
+   */
+  test('源码中不存在 source_org_node_id || target_org_node_id 的代表值取法', () => {
+    const src = require('node:fs').readFileSync(
+      require('node:path').resolve(__dirname, '../../routes/inventory.js'),
+      'utf8',
+    )
+    // 必须先剥离注释：本文件的 #235 注释里原样引用了旧写法用于说明，否则这条恒红
+    const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '')
+    expect(code).not.toMatch(/source_org_node_id\s*\|\|\s*\w*\.?target_org_node_id/)
+  })
+
+  /**
+   * 方向守卫：刻意不写「入库 → 取 target」的分支（那会是不可达代码，正是 #237 清理的东西），
+   * 改为将来放开入库方向审批时直接 fail-closed。这条钉住守卫存在且是 fail-closed 形态。
+   */
+  test('审批方向守卫存在且为 fail-closed（非静默放行）', () => {
+    const src = require('node:fs').readFileSync(
+      require('node:path').resolve(__dirname, '../../routes/inventory.js'),
+      'utf8',
+    )
+    const fn = src.match(/function assertApprovalOutboundDirection\(docType\) \{[\s\S]*?\n\}/)?.[0]
+    expect(fn, '缺少 assertApprovalOutboundDirection 守卫').toBeTruthy()
+    expect(fn).toMatch(/if \(direction !== '出库'\) throw/)
+    // approveDoc / rejectDoc 都必须经过它
+    expect((src.match(/assertApprovalOutboundDirection\(/g) || []).length).toBe(3)
+  })
+})
+
 describe('inventory.confirmReceive v3 收货', () => {
   test('收货生成入库单时保留原报货单关联', async () => {
     const ctx = createCtx({
