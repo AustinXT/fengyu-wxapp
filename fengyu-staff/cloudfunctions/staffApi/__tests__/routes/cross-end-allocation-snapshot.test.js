@@ -190,8 +190,12 @@ describe('断言2：四端 capturePaymentAllocatables 关键不变片段（含 a
       expect(src, `${end} 缺转换单 items.length === 0 兜底分支`).toMatch(/items\.length === 0/)
       expect(src, `${end} 缺转换单 item_direction IN ('转出', '转入') 兜底`).toMatch(/item_direction IN \('转出', '转入'\)/)
       expect(src, `${end} 转换单兜底仍残留 LIMIT 1`).not.toMatch(/item_direction IN \('转出', '转入'\)[\s\S]{0,120}LIMIT 1/)
-      expect(src, `${end} 缺转换单 SELECT sale_amount（按比例摊需取 sale_amount）`).toMatch(/SELECT sale_item_id, sale_amount::numeric AS sale_amount, sales_category[\s\S]{0,120}item_direction IN \('转出', '转入'\)/)
-      expect(src, `${end} 缺转换单有符号最大余数法`).toMatch(/allocateSignedCents[\s\S]{0,240}weightCents:\s*Math\.round\(Number\(r\.sale_amount\) \* 100\)/)
+      // #182：转换单分支改为带别名取数并带出 converted_out（转入行可被再次整行折走）
+      expect(src, `${end} 缺转换单 SELECT sale_amount（按比例摊需取 sale_amount）`).toMatch(/SELECT si\.sale_item_id, si\.sale_amount::numeric AS sale_amount, si\.sales_category[\s\S]{0,1600}item_direction IN \('转出', '转入'\)/)
+      expect(src, `${end} 缺转换单有符号最大余数法`).toMatch(/allocateSignedCents[\s\S]{0,400}weightCents:[\s\S]{0,160}Math\.round\(Number\(r\.sale_amount\) \* 100\)/)
+      // 已退出的转入行权重必须归零（转出行的负权重要保留）
+      expect(src, `${end} 转换单分支未按 converted_out 归零转入行权重`)
+        .toMatch(/r\.converted_out === true && r\.item_direction === '转入'/)
     }
   })
 

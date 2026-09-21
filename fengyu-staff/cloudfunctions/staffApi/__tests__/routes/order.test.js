@@ -8314,7 +8314,7 @@ describe('order.close — 欠款归零的回滚（#182）', () => {
 
     const recalc = q.mock.calls.find(([sql]) =>
       String(sql).includes('SET paid_sessions = CASE')
-      && String(sql).includes("out_item.waived_amount::numeric > 0"))
+      && String(sql).includes("sale_items.sale_amount > 0"))
     expect(recalc).toBeTruthy()
   })
 
@@ -8332,7 +8332,7 @@ describe('order.close — 欠款归零的回滚（#182）', () => {
     // 但行级 paid_sessions 必须重算
     const recalc = q.mock.calls.find(([sql]) =>
       String(sql).includes('SET paid_sessions = CASE')
-      && String(sql).includes("out_item.waived_amount::numeric > 0"))
+      && String(sql).includes("sale_items.sale_amount > 0"))
     expect(recalc).toBeTruthy()
     expect(recalc[1]).toEqual(['FY-CONV-WAIVE-001', 'FY-SRC-001'])
   })
@@ -8460,7 +8460,7 @@ describe('order.close — 欠款归零的回滚（#182）', () => {
       if (text.includes('refund_items') && text.includes('GROUP BY sale_item_id')) {
         return { rows: [{ sale_item_id: 'ITEM-SRC-001', refunded: '400' }], rowCount: 1 }
       }
-      if (text.includes('SET paid_sessions = CASE') && text.includes('out_item.waived_amount')) {
+      if (text.includes('SET paid_sessions = CASE') && text.includes('out_item.ref_sale_item_id IS NOT NULL')) {
         return { rows: [], rowCount: 0 }
       }
       return defaultQueryResult(sql, params)

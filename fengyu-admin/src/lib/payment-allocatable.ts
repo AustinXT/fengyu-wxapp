@@ -106,7 +106,11 @@ export async function capturePaymentAllocatables(
               WHERE conv_out.ref_sale_item_id = si.sale_item_id
                 AND conv_out.item_direction = '转出'
                 AND conv_out_order.status <> '已关闭'
-           ) AS converted_out
+           )
+           -- ⚠ 还必须与「权益已耗尽」取合：#182 之前是**部分**折抵（源行仍留权益与欠款），
+           --   那些历史行同样有未关闭转出行。只看 EXISTS 会把它们的产能也归零 →
+           --   欠款永远收不进来。
+           AND (CASE WHEN si.product_type = '疗程卡' THEN COALESCE(si.remaining_sessions, 0) = 0 ELSE (COALESCE(si.picked_up_quantity, 0) + COALESCE(si.refunded_quantity, 0) + COALESCE(si.converted_quantity, 0)) >= si.quantity END) AS converted_out
       FROM sale_items si
      WHERE si.sale_order_id = ${saleOrderId}
        AND si.item_direction = '购买'
@@ -122,13 +126,23 @@ export async function capturePaymentAllocatables(
 
   if (items.length === 0) {
     const convRows = await tx.execute(sql`
-      SELECT sale_item_id, sale_amount::numeric AS sale_amount, sales_category
-        FROM sale_items
-       WHERE sale_order_id = ${saleOrderId}
-         AND item_direction IN ('转出', '转入')
-       ORDER BY sale_item_id
+      SELECT si.sale_item_id, si.sale_amount::numeric AS sale_amount, si.sales_category,
+             si.item_direction,
+             -- #182：**转入行也能被再次整行折走**。折走之后它不该再吸收本转换单的后续回款，
+             -- 否则 receipt / 营业额 / 提成都会落到已退出的行上。判据与销售单分支同源。
+             (EXISTS (SELECT 1 FROM sale_items conv_out JOIN sale_orders conv_out_order ON conv_out_order.sale_order_id = conv_out.sale_order_id WHERE conv_out.ref_sale_item_id = si.sale_item_id AND conv_out.item_direction = '转出' AND conv_out_order.status <> '已关闭') AND (CASE WHEN si.product_type = '疗程卡' THEN COALESCE(si.remaining_sessions, 0) = 0 ELSE (COALESCE(si.picked_up_quantity, 0) + COALESCE(si.refunded_quantity, 0) + COALESCE(si.converted_quantity, 0)) >= si.quantity END)) AS converted_out
+        FROM sale_items si
+       WHERE si.sale_order_id = ${saleOrderId}
+         AND si.item_direction IN ('转出', '转入')
+       ORDER BY si.sale_item_id
     `)
-    const rows = convRows as unknown as Array<{ sale_item_id: string; sale_amount: string | number; sales_category: string | null }>
+    const rows = convRows as unknown as Array<{
+      sale_item_id: string
+      sale_amount: string | number
+      sales_category: string | null
+      item_direction: string
+      converted_out: boolean | null
+    }>
     if (rows.length === 0) return []
 
     const convGuard = await tx.execute(sql`
@@ -138,9 +152,16 @@ export async function capturePaymentAllocatables(
          AND (allocation_status IS NULL OR allocation_status = '待分配')
     `)
     if ((convGuard as any).count === 0) return []
+    // 已退出的**转入**行权重归零（转出行的负权重保持不变：它是折走价值的记账，必须留着）。
+    // 全部转入行都退出时权重和 <= 0，allocateSignedCents 返回空 → 不写 receipt，符合预期。
     const perItem = allocateSignedCents(
       Math.round(evt * 100),
-      rows.map((r) => ({ saleItemId: r.sale_item_id, weightCents: Math.round(Number(r.sale_amount) * 100) })),
+      rows.map((r) => ({
+        saleItemId: r.sale_item_id,
+        weightCents: (r.converted_out === true && r.item_direction === '转入')
+          ? 0
+          : Math.round(Number(r.sale_amount) * 100),
+      })),
     )
 
     const catMap = new Map(rows.map((r) => [r.sale_item_id, r.sales_category]))

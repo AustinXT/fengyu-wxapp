@@ -564,7 +564,10 @@ async function rollbackPendingConversionOnClose(tx: OrderTx, saleOrderId: string
          AND item_direction = '转出'
          AND ref_sale_item_id IS NOT NULL
        GROUP BY ref_sale_item_id
-      HAVING SUM(waived_amount::numeric) > 0
+       -- ⚠ 刻意**不加** HAVING SUM(waived_amount) > 0：Δ_row 为 0（原行已付清 / overpay）的
+       --   折抵行 waived_amount 恒 0，但它的 pending_received 同样被钉过、同样必须还原 ——
+       --   漏掉这类行，关单后它的分摊权重被永久改写（固定预留依赖的就是这一列）。
+       --   waived 为 0 时下面的 sale_amount += 0 是无害的恒等写入。
     ),
     locked_source AS (
       SELECT src.sale_item_id, src.sale_order_id, waived.waived, waived.orig_pending
@@ -721,14 +724,15 @@ async function rollbackPendingConversionOnClose(tx: OrderTx, saleOrderId: string
           WHERE out_item.sale_order_id = ${saleOrderId}
             AND out_item.item_direction = '转出'
             AND out_item.ref_sale_item_id IS NOT NULL
-            -- 必须与正向作用域一致（只含真正被豁免过的行）。少了这条会把同单其它被折抵行
-            -- 一起重算——已全退、被 STEP 2.5 压成 paid_sessions=0 的 0 元赠品卡会命中
-            -- sale_amount <= 0 兜底重回满次数，而 paid_sessions 是「已退款卡消失」的唯一机制。
-            AND out_item.waived_amount::numeric > 0
        )
          AND sale_items.sale_order_id = ${refOrderId}
+         -- 作用域 = 本单转出行引用到的**全部**源行，含 Δ_row=0 的已付清/overpay 行。
+         -- ⚠ 排除 sale_amount <= 0 的行：已全退、被 STEP 2.5 压成 paid_sessions=0 的 0 元赠品卡
+         --   会命中 sale_amount <= 0 THEN session_count 兜底而重回满次数，
+         --   而 paid_sessions 是「已退款卡消失」的唯一机制。
+         AND sale_items.sale_amount > 0
     `)
-    // 影响行数必为 >= 1：作用域来自「本单 waived_amount > 0 的转出行」，其源行刚被上面的 CTE
+    // 影响行数必为 >= 1：作用域来自「本单转出行引用到的源行（sale_amount > 0）」，刚被上面的 CTE
     // 还原过、source_found / restored_ok 都已校验。为 0 只可能是 op 子查询取不到原单
     // （孤儿数据）—— 此时源行金额已还原、paid_sessions 没还原，而下面还会把归因凭据清零，
     // 必须显式抛出。订单级还原量为 0 的那条路径也走这里，不会被上面的 continue 绕过。
@@ -7880,7 +7884,8 @@ export const recordPayment = withPermission(
                         WHERE conv_out.ref_sale_item_id = si.sale_item_id
                           AND conv_out.item_direction = '转出'
                           AND conv_out_order.status <> '已关闭'
-                     ) THEN si.pending_received
+                     ) AND (CASE WHEN si.product_type = '疗程卡' THEN COALESCE(si.remaining_sessions, 0) = 0 ELSE (COALESCE(si.picked_up_quantity, 0) + COALESCE(si.refunded_quantity, 0) + COALESCE(si.converted_quantity, 0)) >= si.quantity END)
+                     THEN si.pending_received
                 ELSE COALESCE(rp.delta, 0)
               END,
               updated_at = NOW()

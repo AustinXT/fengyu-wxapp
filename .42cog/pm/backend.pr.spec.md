@@ -335,8 +335,24 @@
 > `0040` 视图的 residual 凭空产出营业额事件。绕开 STEP 0 就必须自己写 `payable_amount`，
 > 否则撞 cron 的 I5 资金不变量告警。
 
+> ⚠️ **「该行已折抵退出」的唯一判据 = 「存在未关闭的转出行引用本行」**与**「权益已耗尽」取合**
+> （疗程卡 `remaining_sessions = 0`；家居 `picked_up + refunded + converted >= quantity`）。
+> 两半都不能省：
+> - 不能只看 `waived_amount > 0` —— 原行**已付清**或 **overpay** 时 Δ_row = 0、不写
+>   `waived_amount`，但权益同样被整行注销；漏判这类行会让它被瀑布重新摊薄 → `remaining = 0` 而
+>   `paid_sessions < session_count` → **永久违反 D3**。
+> - 不能只看 EXISTS —— #182 之前是**部分**折抵（#125/#154：折 4/10 件，源行仍留权益与欠款），
+>   那些历史行同样有未关闭的转出行；只看 EXISTS 会把它们的产能也归零 →
+>   后续回款既解锁不了剩余权益、也收不回欠款（对**存量数据**的真实误伤）。
+> 该判据必须在**所有**站点逐字同源：四端 STEP 1 Branch B 的 reserved/pend_cap/sale_cap、
+> 四端 STEP 1.6 的三处排除（`NOT (EXISTS(...) AND 权益已耗尽)`，注意是**整体取反**）、
+> 四端 `payment-allocatable`（销售单分支的产能归零与兜底行选择 + **转换单分支**的转入行权重归零）、
+> 两端子项定向回款保护。
+> 残留取舍：历史部分折抵行若之后把剩余权益全部消耗完，也会被判成已退出；那时它已无权益可解锁，
+> 影响仅限「回款归属」而非 D3 或顾客权益。
+>
 > ⚠️ **已折抵退出的行在 STEP 1 Branch B 里走「固定预留」，不参与比例瀑布**。折抵时把
-> `pending_received` 钉到该行**毛已付**（净实收 + 该行已退款额）；Branch B 见 `waived_amount > 0`
+> `pending_received` 钉到该行**毛已付**（净实收 + 该行已退款额）；Branch B 见该行已退出
 > 就按这一列固定预留该行的 `received`（`pend_cap = sale_cap = 0`），预留额**同时从 `untargeted`
 > 扣除**，之后由 STEP 1.5 扣该行退款额得到净额 = 下调后的 `sale_amount` → `paid_sessions` 满付。
 > 三种错误写法都踩过：

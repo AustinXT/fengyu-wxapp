@@ -1310,7 +1310,11 @@ describe('转换单转入 received 重算 SQL 四端一致性守护', () => {
     // #182：排除判据是「存在未关闭的转出行引用本行」，**不是** waived_amount > 0——
     // 全额结清的转入行再被折抵时 Δ=0、不写 waived_amount，却同样已注销权益，
     // 而本 SQL 是整额覆盖式重分摊，漏排除就会在 target 收缩时把它的 received 改小 → 踩 D3。
-    expect(sqls.staff).toContain("AND NOT EXISTS (SELECT 1 FROM sale_items conv_out")
+    // #182 收紧：判据从裸 NOT EXISTS 改成 NOT (EXISTS(...) AND 权益已耗尽) —— 整体取反，
+    // 否则 #182 之前的**部分**折抵转入行（仍留权益）会被误排除出重分摊。
+    expect(sqls.staff).toContain("AND NOT (EXISTS (SELECT 1 FROM sale_items conv_out")
+    // 别名在 in_total / waived_in_received 处是 in_item、在 ranked 处是 si，两种都要接受
+    expect(sqls.staff).toMatch(/NOT \(EXISTS \([\s\S]{0,300}AND \(CASE WHEN (?:si|in_item)\.product_type = '疗程卡'[\s\S]{0,260}>= (?:si|in_item)\.quantity END\)/)
     expect(sqls.staff).toContain("conv_out.ref_sale_item_id = si.sale_item_id")
     expect(sqls.staff).not.toContain("AND in_item.waived_amount::numeric = 0")
   })
@@ -1518,15 +1522,23 @@ describe("STEP 1 received 分摊 SQL 四端字节同义守护", () => {
     //   原行已付清 / overpay 时 Δ_row = 0、不写 waived_amount，但权益同样被整行注销；
     //   漏掉这类行 → 被瀑布重新摊薄 → remaining=0 而 paid_sessions < session_count → 永久违反 D3。
     test("四端折抵退出行按 pending_received 固定预留（reserved），判据用未关闭转出行", () => {
-      const exited = "EXISTS (SELECT 1 FROM sale_items conv_out JOIN sale_orders conv_out_order"
+      // ⚠ 判据 = 「存在未关闭转出行」**与**「权益已耗尽」取合。少了后半句会误伤 #182 之前的
+      //   **部分**折抵历史行（源行仍留权益与欠款）：它们同样有未关闭转出行，被判成已退出后
+      //   三处产能全零 → 后续回款永远流不进去，欠款收不回、权益也解锁不了。
+      const exhausted = "(CASE WHEN si.product_type = '疗程卡'"
+        + " THEN COALESCE(si.remaining_sessions, 0) = 0"
+        + " ELSE (COALESCE(si.picked_up_quantity, 0) + COALESCE(si.refunded_quantity, 0)"
+        + " + COALESCE(si.converted_quantity, 0)) >= si.quantity END)"
+      const exited = "(EXISTS (SELECT 1 FROM sale_items conv_out JOIN sale_orders conv_out_order"
         + " ON conv_out_order.sale_order_id = conv_out.sale_order_id"
         + " WHERE conv_out.ref_sale_item_id = si.sale_item_id"
         + " AND conv_out.item_direction = '转出' AND conv_out_order.status <> '已关闭')"
-      const reserved = /CASE WHEN EXISTS \(SELECT 1 FROM sale_items conv_out[\s\S]*?\)\s*THEN GREATEST\(0,\s*si\.pending_received::numeric\s*-\s*COALESCE\(tg\.targeted,\s*0\)::numeric\)\s*ELSE 0 END AS reserved/i
+        + " AND " + exhausted + ")"
+      const reserved = /CASE WHEN \(EXISTS \(SELECT 1 FROM sale_items conv_out[\s\S]{0,600}?THEN GREATEST\(0,\s*si\.pending_received::numeric\s*-\s*COALESCE\(tg\.targeted,\s*0\)::numeric\)\s*ELSE 0 END AS reserved/i
       for (const sql of [allocSqls.staff, allocSqls.client, allocSqls.payNotify, allocSqls.adminTs]) {
         expect(sql).toMatch(reserved)
         // 三处（reserved / pend_cap / sale_cap）都必须用同一条 EXISTS 判据
-        expect(sql.split(exited).length - 1, 'reserved/pend_cap/sale_cap 三处判据未同源').toBe(3)
+        expect(sql.split(exhausted).length - 1, 'reserved/pend_cap/sale_cap 三处判据未同源').toBe(3)
         // 反向：不得回退到 waived_amount 判据
         expect(sql).not.toMatch(/CASE WHEN si\.waived_amount::numeric > 0/i)
         // 预留额从 untargeted 扣除（否则同单其它行会被多分、Σ行级 > 订单级实收）
@@ -2300,7 +2312,13 @@ describe('cross-end-sql-snapshot 反模式守护（防镜像 bug 字面锁定失
       expect(text, `${end} 购买行取数缺 converted_out，无法判断是否已折抵退出`)
         .toContain(') AS converted_out')
       expect(text, `${end} converted_out 判据不是「未关闭转出行」`)
-        .toMatch(/conv_out\.item_direction = '转出'[\s\S]{0,120}conv_out_order\.status <> '已关闭'[\s\S]{0,40}\) AS converted_out/)
+        .toMatch(/conv_out\.item_direction = '转出'[\s\S]{0,120}conv_out_order\.status <> '已关闭'/)
+      // 必须与「权益已耗尽」取合，否则误伤 #182 之前的部分折抵历史行
+      expect(text, `${end} converted_out 缺「权益已耗尽」合取`)
+        .toMatch(/AND \(CASE WHEN si\.product_type = '疗程卡' THEN COALESCE\(si\.remaining_sessions, 0\) = 0[\s\S]{0,200}>= si\.quantity END\) AS converted_out/)
+      // 转换单分支（转入行再被折走）同样要归零产能
+      expect(text, `${end} 转换单分支未按 converted_out 归零转入行权重`)
+        .toMatch(/r\.converted_out === true && r\.item_direction === '转入'/)
       expect(text, `${end} 缺「折抵行产能归零」分支`)
         .toMatch(/if \(i\.converted_out === true\) \{[\s\S]{0,120}pendCap: 0, saleCap: 0/)
       // 两段产能均为 0 的兜底不得把钱落到折抵行上

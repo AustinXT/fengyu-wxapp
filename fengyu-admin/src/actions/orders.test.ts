@@ -2212,7 +2212,7 @@ describe('closeOrder — 事务原子性（关闭 + 作废分配）', () => {
             return [{ sale_item_id: 'item-1', refunded: '400' }]
           }
           // paid_sessions 重算现在断言影响行数 >= 1（为 0 ⟺ 原单孤儿）
-          if (text.includes('SET paid_sessions = CASE') && text.includes('out_item.waived_amount')) {
+          if (text.includes('SET paid_sessions = CASE') && text.includes('out_item.ref_sale_item_id IS NOT NULL')) {
             return { count: 1 }
           }
           return {}
@@ -2228,7 +2228,7 @@ describe('closeOrder — 事务原子性（关闭 + 作废分配）', () => {
       // 但行级 paid_sessions 必须重算
       expect(sqlTexts.some((t: string) =>
         t.includes('SET paid_sessions = CASE')
-        && t.includes('out_item.waived_amount::numeric > 0'))).toBe(true)
+        && t.includes('sale_items.sale_amount > 0'))).toBe(true)
       return result
     })
 
