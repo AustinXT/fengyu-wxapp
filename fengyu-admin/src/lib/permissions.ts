@@ -461,6 +461,15 @@ export function isInScope(session: AuthSession, storeId: string): boolean {
  * ⚠️ 不要与库存侧的 `inventoryScopedOrgNodeIds` / `assertOrgNodeVisible` 混用：那一套对
  * 「总部」scope **刻意不展开后代**（市场退货必须由总部逐个授权审批），而这里的
  * `scopeOrgNodeIds` 是含全部后代的展开集合。两套语义不同，各自服务不同的业务约束。
+ *
+ * ⚠️ 另有 `lib/node-scope.ts` 的 `isNodeInScope`（org.ts 建/改节点、stores.ts 建门店在用）
+ * 与本函数前两级回退完全相同，**只有第三级不同**：它在两个集合都缺失时回退到
+ * `session.roles.map(r => r.scopeId)`（角色根节点自身），本函数回退到空集。
+ * 这不是疏忽，**恰恰是不能复用它的原因** —— 本函数与 `employeeScopeCondition` 服务于
+ * 同一次 `updateEmployee` 调用（一个判新值可否写入、一个拼进 UPDATE 的 WHERE），
+ * 而 `employeeScopeCondition` 的回退就是空集。改用 `isNodeInScope` 会在缺元数据的会话里
+ * 造出「校验放行 → UPDATE 命中 0 行 → 用户看到『员工不存在或无权修改』」的静默错位。
+ * 两者该不该统一（以及统一到哪一档）是独立议题，已另开 issue。
  */
 export function isOrgNodeInScope(session: AuthSession, orgNodeId: string): boolean {
   if (isAdminScope(session)) return true

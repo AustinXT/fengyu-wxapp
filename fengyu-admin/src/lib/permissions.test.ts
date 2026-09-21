@@ -749,18 +749,100 @@ describe('isOrgNodeInScope — #228 员工调组织节点的判据', () => {
   })
 
   /**
-   * 与 employeeScopeCondition 的 orgNodeIds 同源：两者一个判「入参新值可否写入」、
-   * 一个判「目标行是否可见」，口径分叉会造成静默错位（校验放行但 UPDATE 命中 0 行，或反之）。
-   * 这里用同一个 session 交叉验证两者对同一集合的解释一致。
+   * 与 `employeeScopeCondition` 的 orgNodeIds 同源：一个判「入参新值可否写入」、
+   * 一个拼进 UPDATE 的 WHERE 判「目标行是否可见」，口径分叉会造成静默错位
+   * （校验放行但 UPDATE 命中 0 行，或反之）。
+   *
+   * ⚠️ 不能用 `expect(employeeScopeCondition(...)).toBeDefined()` 来表达这件事 ——
+   * 该函数对**任何**非 admin session 都返回非 undefined（有 ids 就 inArray，双空就 `sql\`FALSE\``），
+   * 那个断言恒真：把 `?? scopeDeptNodeIds` 回退删掉（口径真的分叉了）它照样绿。
+   * 这里改为直接比对**两者实际采用的 id 集合**。
    */
-  it('与 employeeScopeCondition 同源：scopeOrgNodeIds 为空时两者都不认可任何节点', () => {
-    const session = mockSession({
+  it('与 employeeScopeCondition 取同一个 orgNodeIds 集合（含 scopeDeptNodeIds 回退）', () => {
+    const STORE_COL = { name: 'store_id' } as any
+    const ORG_COL = { name: 'org_node_id' } as any
+    const manager = (perms: Record<string, unknown>) => mockSession({
       roles: [{ role: 'manager', scopeId: 's1', scopeType: '门店' }],
-      permissions: { actions: [], scopeStoreIds: [], scopeOrgNodeIds: [] },
+      permissions: { actions: [], scopeStoreIds: [], ...perms } as any,
     })
-    expect(isOrgNodeInScope(session, 'D1')).toBe(false)
-    // 双空 → employeeScopeCondition 给出 FALSE 条件（非 undefined，即不是"不过滤"）
-    expect(employeeScopeCondition(session, {} as any, {} as any)).toBeDefined()
+
+    // 同一批 org 节点，一个走 scopeOrgNodeIds、一个走 scopeDeptNodeIds 回退
+    const viaOrgNodeIds = manager({ scopeOrgNodeIds: ['D1', 'D2'] })
+    const viaDeptNodeIds = manager({ scopeDeptNodeIds: ['D1', 'D2'] })
+
+    // ① isOrgNodeInScope 对两者判定一致
+    for (const s of [viaOrgNodeIds, viaDeptNodeIds]) {
+      expect(isOrgNodeInScope(s, 'D1')).toBe(true)
+      expect(isOrgNodeInScope(s, 'D2')).toBe(true)
+      expect(isOrgNodeInScope(s, 'D9')).toBe(false)
+    }
+
+    // ② employeeScopeCondition 也必须对两者产出**结构完全相同**的条件。
+    //    删掉任一侧的 `?? scopeDeptNodeIds` 回退 → 其中一个退化为空集 → 结构不同 → 本断言变红。
+    const condViaOrg = JSON.stringify(employeeScopeCondition(viaOrgNodeIds, STORE_COL, ORG_COL))
+    const condViaDept = JSON.stringify(employeeScopeCondition(viaDeptNodeIds, STORE_COL, ORG_COL))
+    expect(condViaDept).toBe(condViaOrg)
+
+    // ③ 且该条件确实携带了 isOrgNodeInScope 认可的那批 id（防两侧一起退化成空集也"相同"）
+    expect(condViaOrg).toContain(JSON.stringify(['D1', 'D2']))
+
+    // ④ scopeOrgNodeIds 存在即生效、不再回退 —— 空数组也是"存在"
+    const emptyOrgWins = manager({ scopeOrgNodeIds: [], scopeDeptNodeIds: ['D9'] })
+    expect(isOrgNodeInScope(emptyOrgWins, 'D9')).toBe(false)
+    expect(JSON.stringify(employeeScopeCondition(emptyOrgWins, STORE_COL, ORG_COL)))
+      .not.toContain('D9')
+
+    // ⑤ 两个集合都缺失 → fail-closed
+    const noMeta = manager({})
+    expect(isOrgNodeInScope(noMeta, 'D1')).toBe(false)
+  })
+})
+
+/**
+ * #228 AC5：市场级 manager 可在本市场辖下门店之间调动，跨市场被拒。
+ *
+ * 这条跨了两层 —— `expandRoleScope`（市场节点 → 辖下全部门店）与 `isInScope`（集合判断）。
+ * 两层各自都有测试，但**接缝**此前无人看守：`isInScope` 的既有用例全是手喂 scopeStoreIds。
+ */
+describe('expandRoleScope → isInScope 接缝（#228 AC5：市场级跨店调动）', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('市场级角色展开后含辖下全部门店，跨市场门店不在其中', async () => {
+    mockOrgTree(
+      [
+        { id: 'hq', parentId: null, type: '总部' },
+        { id: 'm1', parentId: 'hq', type: '市场' },
+        { id: 'm2', parentId: 'hq', type: '市场' },
+        { id: 'org-s5', parentId: 'm1', type: '门店' },
+        { id: 'org-s6', parentId: 'm1', type: '门店' },
+        { id: 'org-s7', parentId: 'm2', type: '门店' },
+      ],
+      [
+        { storeId: 'S005', orgNodeId: 'org-s5' },
+        { storeId: 'S006', orgNodeId: 'org-s6' },
+        { storeId: 'S007', orgNodeId: 'org-s7' },
+      ],
+    )
+
+    const roles = [{ role: 'manager', scopeId: 'm1', scopeType: '市场' }] as AuthSession['roles']
+    const { storeIds, orgNodeIds } = await expandRoleScope(roles)
+
+    const session = mockSession({
+      roles,
+      permissions: { actions: [], scopeStoreIds: storeIds, scopeOrgNodeIds: orgNodeIds },
+    })
+
+    // 本市场两家门店都能调
+    expect(isInScope(session, 'S005')).toBe(true)
+    expect(isInScope(session, 'S006')).toBe(true)
+    // 另一市场的门店不能
+    expect(isInScope(session, 'S007')).toBe(false)
+    // 组织节点维度同理
+    expect(isOrgNodeInScope(session, 'org-s6')).toBe(true)
+    expect(isOrgNodeInScope(session, 'org-s7')).toBe(false)
+    expect(isOrgNodeInScope(session, 'm2')).toBe(false)
   })
 })
 

@@ -10,7 +10,7 @@ import type { SQL } from 'drizzle-orm'
 import { alias } from 'drizzle-orm/pg-core'
 import { revalidatePath } from 'next/cache'
 import type { AllocationEmployeeCandidate, Employee } from '@/lib/types'
-import { scopeCondition, isInScope, isOrgNodeInScope, requireAdmin, employeeScopeCondition } from '@/lib/permissions'
+import { scopeCondition, isInScope, isOrgNodeInScope, isAdminScope, requireAdmin, employeeScopeCondition } from '@/lib/permissions'
 import { withPermission } from '@/lib/with-permission'
 import { logOperation, logUpdate } from '@/lib/operation-log'
 import { ApiError } from '@/lib/api-error'
@@ -608,6 +608,16 @@ export const createEmployee = withPermission(
   if (data.storeId && !isInScope(session, data.storeId)) {
     return { success: false, message: '无权在该门店创建员工' }
   }
+  /**
+   * #228：`orgNodeId` 同样要校验 —— 它和 `storeId` 是 `employeeScopeCondition` 的**两个并列维度**
+   * （`store_id ∈ scope` **OR** `org_node_id ∈ scope`），只挡一个等于没挡：
+   * 门店 manager 传 `{ storeId: null, orgNodeId: <别的市场节点> }` 就能在他人 scope 里凭空造出
+   * 一条员工记录 —— 目标市场的 manager 能看见并编辑它，创建者自己反而看不见。
+   * 只补 updateEmployee 而漏掉这里，等于堵了「搬运」却留着「凭空创建」。
+   */
+  if (data.orgNodeId && !isOrgNodeInScope(session, data.orgNodeId)) {
+    return { success: false, message: '无权在该组织节点下创建员工' }
+  }
 
   // 校验手机号唯一性（事务外，快速短路）
   if (data.phone) {
@@ -652,8 +662,9 @@ export const createEmployee = withPermission(
         name: data.name,
         gender: data.gender ?? null,
         idCard: data.idCard ?? null,
-        storeId: data.storeId ?? null,
-        orgNodeId: data.orgNodeId ?? null,
+        // #228：与上面 `data.storeId &&` 的 truthiness 校验口径一致，`''` 一律落 null
+        storeId: data.storeId || null,
+        orgNodeId: data.orgNodeId || null,
         positionName: data.positionName ?? null,
         avatarUrl: data.avatarUrl ?? null,
         birthday: data.birthday ?? null,
@@ -778,20 +789,37 @@ export const updateEmployee = withPermission(
    *
    * 必须放在这里而非函数开头：判「是否真的发生变更」需要先读到旧值。此处仍早于任何写入。
    *
-   * 两处刻意的边界：
+   * 空串归一为 null：前端 `employee-detail-page.tsx` 已做 `form.storeId || null`，但
+   * `createEmployee` 用的是 truthiness 判断（`data.storeId &&`），两边口径必须一致，
+   * 否则新调用方传 `''` 在 create 侧是「不填」、在 update 侧却撞出一句误导性的「无权…」。
+   */
+  const nextStoreId = data.storeId === undefined ? oldStoreId : (data.storeId || null)
+  const nextOrgNodeId = data.orgNodeId === undefined ? oldOrgNodeId : (data.orgNodeId || null)
+
+  /**
    * ① 只在新值 `!== 旧值` 时校验 —— 编辑表单会把未改动的归属字段一并回传，
    *    对 no-op 提交报「无权」是纯误伤。且旧值若不在 scope 内，`scopeCond` 会让 UPDATE 命中 0 行兜底。
-   * ② 新值为 `null`（清空归属）**不拦** —— 市场级 manager 把门店员工转为市场直属岗正是
-   *    「storeId 清空 + orgNodeId 设为市场节点」，拦掉会打挂这条合法路径。
-   *    「两端都清空使员工脱离所有非 admin 视野」是另一个口径问题，已单独报 issue，不在本次范围。
    */
-  if (data.storeId !== undefined && data.storeId !== null && data.storeId !== oldStoreId
-      && !isInScope(session, data.storeId)) {
+  if (nextStoreId !== oldStoreId && nextStoreId !== null && !isInScope(session, nextStoreId)) {
     return { success: false, message: '无权将员工调至该门店' }
   }
-  if (data.orgNodeId !== undefined && data.orgNodeId !== null && data.orgNodeId !== oldOrgNodeId
-      && !isOrgNodeInScope(session, data.orgNodeId)) {
+  if (nextOrgNodeId !== oldOrgNodeId && nextOrgNodeId !== null
+      && !isOrgNodeInScope(session, nextOrgNodeId)) {
     return { success: false, message: '无权将员工调至该组织节点' }
+  }
+  /**
+   * ② 单端清空放行（市场级 manager 把门店员工转市场直属岗正是「storeId 清空 + orgNodeId 设市场节点」），
+   *    但**两端同时为空要拦**：`employeeScopeCondition` 是 `store_id ∈ scope OR org_node_id ∈ scope`，
+   *    双空的行对所有非 admin 都不命中 —— 包括操作者自己，所以这一步**不可逆**（想改回去
+   *    UPDATE 会命中 0 行）。更要命的是 `permission_roles` 一字不动：清角色只发生在
+   *    `isResigned === true` 分支，§AFF-03 也只在 `data.storeId` truthy 时跑。
+   *    于是任何持 `employee:update` 的人都能把一个**仍持有效角色、仍能登录**的账号
+   *    从所有非 admin 的员工名册里永久抹掉 —— 这是审计盲区，不是显示问题。
+   *    只拦「本次把归属清空」这一动作；历史上就双空的存量员工照常可编辑其它字段。
+   *    admin 不受限。
+   */
+  if (!isAdminScope(session) && !nextStoreId && !nextOrgNodeId && (oldStoreId || oldOrgNodeId)) {
+    return { success: false, message: '员工必须归属门店或组织节点之一' }
   }
 
   // 乐观锁 + scope 隔离：WHERE employee_id = $1 [AND updated_at = $2] [AND scope]
@@ -811,6 +839,9 @@ export const updateEmployee = withPermission(
   // 请假字段空串归一为 null（清空请假区间）
   if (data.leaveStart !== undefined) updateData.leaveStart = data.leaveStart || null
   if (data.leaveEnd !== undefined) updateData.leaveEnd = data.leaveEnd || null
+  // #228：归属字段写库值必须与上面校验用的归一值一致，否则 `''` 会按 null 过校验却按 `''` 入库
+  if (data.storeId !== undefined) updateData.storeId = nextStoreId
+  if (data.orgNodeId !== undefined) updateData.orgNodeId = nextOrgNodeId
   if (data.isResigned !== undefined && data.resignedAt === undefined) {
     updateData.resignedAt = data.isResigned ? shanghaiToday() : null
   }
@@ -875,7 +906,7 @@ export const updateEmployee = withPermission(
 
   // §AFF-03：门店变更时同步更新 permission_roles scope
   // 仅更新 store 级别的 scope（旧门店 org_node → 新门店 org_node），不影响 market/headquarters 级 scope
-  if (data.storeId && oldStoreId && data.storeId !== oldStoreId) {
+  if (nextStoreId && oldStoreId && nextStoreId !== oldStoreId) {
     const [oldStore] = await db
       .select({ orgNodeId: stores.orgNodeId })
       .from(stores)
@@ -884,10 +915,27 @@ export const updateEmployee = withPermission(
     const [newStore] = await db
       .select({ orgNodeId: stores.orgNodeId })
       .from(stores)
-      .where(eq(stores.storeId, data.storeId))
+      .where(eq(stores.storeId, nextStoreId))
       .limit(1)
 
-    if (oldStore?.orgNodeId && newStore?.orgNodeId) {
+    /**
+     * #228：旧门店也必须在操作者 scope 内，否则这段会**越权改写 permission_roles**。
+     *
+     * `scopeCond` 是 `store_id ∈ scope` **OR** `org_node_id ∈ scope` —— 员工靠 org_node_id
+     * 命中即可通过，此时它的 `store_id` 完全可以指向操作者看不见的门店。于是：
+     * 一个只有 S1 的门店 manager，对「store_id=S9（外店）、org_node_id=orgS1（本店节点）」
+     * 的员工调用 `updateEmployee(E, { storeId: 'S1' })` —— 新门店校验通过、行也可见，
+     * 接着这段会执行 `UPDATE permission_roles SET scope_id=orgS1 WHERE scope_id=orgS9`：
+     * 既**剥夺**了该员工对 S9 的角色，又**授予**了他对 S1 的角色。而 manager
+     * 根本不持有 `permission:assign` / `permission:revoke`。
+     *
+     * 不在 scope 内就跳过同步（员工归属照改，只是不动那条角色绑定），留给有权者显式处理。
+     */
+    if (!isInScope(session, oldStoreId)) {
+      await logOperation(session, 'permission.scopeSync.skipped', 'permission_role', employeeId, {
+        reason: 'old_store_out_of_scope', oldStoreId, newStoreId: nextStoreId,
+      })
+    } else if (oldStore?.orgNodeId && newStore?.orgNodeId) {
       const scopeResult = await db
         .update(permissionRoles)
         .set({ scopeId: newStore.orgNodeId, updatedBy: session.employeeId })
@@ -898,7 +946,7 @@ export const updateEmployee = withPermission(
 
       if ((scopeResult as any).count > 0) {
         await logOperation(session, 'permission.scopeSync', 'permission_role', employeeId, {
-          oldStoreId, newStoreId: data.storeId,
+          oldStoreId, newStoreId: nextStoreId,
           oldScopeId: oldStore.orgNodeId, newScopeId: newStore.orgNodeId,
         })
       }
