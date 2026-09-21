@@ -93,6 +93,31 @@ describe('POST /api/upload 分辨率闸门', () => {
     expect(mocks.uploadFile).toHaveBeenCalledOnce()
   })
 
+  /**
+   * 对象键的扩展名必须由 MIME 决定而不是照抄原文件名：合法的 image/jpeg 可能叫 .jfif，
+   * 照抄会生成顾客端 safeThumbUrl 的键格式白名单不认的键，图片最终显示成占位图。
+   */
+  it('对象键扩展名按 MIME 归一，不照抄原文件名', async () => {
+    const fd = new FormData()
+    fd.append(
+      'file',
+      new File([new Uint8Array(makePng(800, 600))], 'photo.jfif', {
+        type: 'image/jpeg',
+      })
+    )
+    fd.append('path', 'store-covers')
+    const req = new NextRequest('http://localhost/api/upload', {
+      method: 'POST',
+      body: fd,
+    })
+    req.cookies.set('fy-admin-token', 'valid')
+
+    expect((await POST(req)).status).toBe(200)
+    const cloudPath = mocks.uploadFile.mock.calls[0][1] as string
+    expect(cloudPath).toMatch(/^store-covers\/\d+-[a-z0-9]+\.jpg$/)
+    expect(cloudPath).not.toContain('jfif')
+  })
+
   it('issue #213 肇事图（12576×12575）被拒且不上传', async () => {
     const res = await post(makePng(12576, 12575), { path: 'store-covers' })
     expect(res.status).toBe(400)

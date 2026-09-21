@@ -5,6 +5,14 @@ import { JWT_SECRET } from "@/lib/jwt-secret"
 import { getImageDimensions } from "@/lib/image-dimensions"
 
 const ALLOWED_TYPES = ["image/jpeg", "image/png", "image/webp", "image/gif"]
+
+/** 对象键扩展名由 MIME 决定，保证与顾客端 safeThumbUrl 的键格式白名单一致 */
+const EXT_BY_MIME: Record<string, string> = {
+  "image/jpeg": "jpg",
+  "image/png": "png",
+  "image/webp": "webp",
+  "image/gif": "gif",
+}
 const MAX_SIZE_DEFAULT = 5 * 1024 * 1024 // 5MB
 const MAX_SIZE_FENGYUGUAN = 20 * 1024 * 1024 // 20MB（凤御馆超长宣传图专用）
 const FENGYUGUAN_KEY = "images/fengyuguan.jpg"
@@ -83,7 +91,9 @@ export async function POST(req: NextRequest) {
     if (exactKey) {
       cloudPath = exactKey
     } else if (pathPrefix) {
-      const ext = file.name.split(".").pop() || "jpg"
+      // 扩展名按 MIME 映射，不照抄原文件名：合法的 image/jpeg 可能叫 .jfif / .jpe，
+      // 照抄会生成顾客端 safeThumbUrl 不认的对象键，图片最终显示成占位图
+      const ext = EXT_BY_MIME[file.type] ?? "jpg"
       const ts = Date.now()
       const rand = Math.random().toString(36).slice(2, 8)
       cloudPath = `${pathPrefix}/${ts}-${rand}.${ext}`

@@ -117,8 +117,10 @@ function safeThumbUrl(url, boxSize) {
   // `a.png-oversize` / `a.png_oversize` 这类用 `-`/`_` 作分隔符的形态，
   // 同时排除 SVG/PDF 等不该走图片管线的对象。
   //
-  // ⚠️ 剩余已知限制：若 bucket 把分隔符配成 `-`/`_` 且样式名本身以 `.png` 之类结尾，
-  // 代码层仍无法与正常键区分。本项目 bucket 须保持默认配置、不得配置含缩放规则的样式。
+  // ⚠️ 剩余已知限制：若 bucket 把分隔符配成 `-` / `_` / `/`，且样式名本身以图片扩展名结尾
+  // （`/` 的情形是 `store-covers` 为对象键、`oversize.png` 为样式名），
+  // 代码层与正常两段键不可区分。本项目 bucket 须保持默认分隔符 `!`、
+  // 且不得配置含缩放规则的样式。
   if (!/^\/[\w-]+\/[\w.-]+\.(png|jpe?g|webp|gif)$/i.test(parsed.pathname)) {
     return null
   }
