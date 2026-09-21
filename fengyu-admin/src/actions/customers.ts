@@ -1142,6 +1142,14 @@ export const getCustomerServiceOrders = withPermission(
  * ⚠️ 已知第四处写入未收敛：`mergeClientProfile` 从 orphan 行搬 `boundEmployeeId`
  * 而 orphan 行本身无 scope 校验。那里是「孤儿档案合并」语义（仅在源字段为空时搬历史值），
  * 「遇到 scope 外归属该拒绝合并 / 跳过该字段 / 照搬」属业务口径，待产品拍板后另行处理。
+ *
+ * ⚠️ **刻意不做「员工门店 == 顾客门店」的互查**（闸门 2 GLM 谱系提出）。
+ * 本函数只回答「这个员工对当前操作者可见吗」，顾客侧的可见性由调用方各自的 `scopeCond`
+ * / `isInScope(boundStoreId)` 负责 —— 两个主体各自对 session 过闸，但不互相校验。
+ * 于是多店权限者可以造出「B 店顾客挂 A 店美容师」的跨店组合。
+ * 这不是本 PR 引入的（三条路径一向如此），且「跨店绑定是否合法」是业务口径：
+ * 本系统本就有支援门店 / 出差 / 跨店服务的概念。要收紧需产品先拍板，已列 follow-up。
+ * 在此之前**不要**「顺手对齐」加上互查 —— 那会直接打断跨店支援的日常流程。
  */
 async function resolveBoundEmployee(
   session: AuthSession,
