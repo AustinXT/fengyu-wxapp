@@ -40,6 +40,8 @@ export default async function Page({
   const [locations, skus, suppliers, workflowDocs] = await Promise.all([
     listInventoryLocations(),
     listInventorySkus({ page: 1, pageSize: 100, onlyActive: true }),
+    // 刻意不传 pageSize：办理台的供应商下拉要的是整份名单，
+    // 跟着列表页分页走会把靠后的供应商静默漏掉（#135）。
     listInventorySuppliers({ onlyActive: true }),
     listInventoryCoreDocs({ page: 1, pageSize: 100 }),
   ])
@@ -64,7 +66,7 @@ export default async function Page({
           level={level}
           locations={locations}
           skuOptions={skus.data}
-          suppliers={suppliers}
+          suppliers={suppliers.data}
           workflowDocs={workflowDocs.data}
           canCreate={canCreate}
           canApprove={canApprove}

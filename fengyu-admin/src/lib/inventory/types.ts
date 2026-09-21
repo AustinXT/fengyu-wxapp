@@ -15,9 +15,12 @@ export type InventoryPromotionRuleType = (typeof INVENTORY_PROMOTION_RULE_TYPES)
 export const INVENTORY_DOC_TYPES = [
   '门店报货',
   '市场报货',
+  // 供应链跨市场汇总各市场报货需求（#193），是采购订单的来源之一。
+  '市场报货汇总',
   '品项公司报货需求',
+  // `供应链采购订单` 已于 #194 并入 `采购订单`（migration 0043 收敛存量、0044 收紧约束）。
+  // 市场链路与供应链链路的分流改看明细行 `market_id`：非空走品项公司发货、NULL 走供应链采购入库。
   '采购订单',
-  '供应链采购订单',
   '供应链采购入库',
   '品项公司发货',
   '市场采购入库',
@@ -441,6 +444,12 @@ export interface InventoryDocItemRow {
   skuName: string
   specName: string | null
   supplier: string | null
+  /** 行级供应商档案关联（#194）。 */
+  supplierId: string | null
+  /** 行级市场归属（#194）。NULL = 品项公司自用行，走供应链采购入库。 */
+  marketId: string | null
+  /** 行级市场名称，由 `marketId` 解析；解析不到时回落为 id 本身。 */
+  marketName: string | null
   productSeries: string | null
   batchNo: string
   expiryDate: string | null

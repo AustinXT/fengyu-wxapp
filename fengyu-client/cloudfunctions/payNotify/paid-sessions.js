@@ -123,7 +123,7 @@ const SALE_ITEMS_RECEIVED_ALLOC_SQL = `WITH tg AS (
  * 已支付退款流水 note.items[].refundAmount（按 refSaleItemId 聚合到行）→ received 变「净额」
  * （毛实收 − 该行被退）。效果：被退项详情自动减少、SUM(received)=净实收、paid_sessions 按项扣减。
  * note→jsonb 安全解析根除 22P02/25P02：① WHERE 仅 退款+已支付（reject='已作废'自动排除→自愈）；
- * ② public.try_jsonb（migration 0043）把非法 JSON 降级为 NULL 而非抛错；③ jsonb_typeof 兜 items 非数组。
+ * ② public.try_jsonb（migration 0045）把非法 JSON 降级为 NULL 而非抛错；③ jsonb_typeof 兜 items 非数组。
  * 仅 item_direction='购买' 行（与 STEP1 一致，不碰 convert_out/refund_out 负数行）；GREATEST(0) clamp。
  * 幂等：每次 recalc 先跑 STEP1 把 received 重置为毛额，本 STEP 再扣 → 多次结果一致。
  * 必须在 SALE_ITEMS_RECEIVED_ALLOC_SQL 之后、PAID_SESSIONS_RECALC_SQL 之前执行。

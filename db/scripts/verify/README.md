@@ -15,11 +15,11 @@ docker run --rm -d -p 55487:5432 \
   --name pg-187-verify postgres:16
 sleep 6
 
-# 2. 建最小 schema + 灌正负例，再 apply migration 0043 的 helper
+# 2. 建最小 schema + 灌正负例，再 apply migration 0045 的 helper
 docker cp db/scripts/verify/customer-type-fixtures.sql pg-187-verify:/tmp/s.sql
 docker exec pg-187-verify psql -U postgres -d fy187 -v ON_ERROR_STOP=1 -q -f /tmp/s.sql
 docker exec pg-187-verify psql -U postgres -d fy187 -v ON_ERROR_STOP=1 -q \
-  -c "$(sed 's/--> statement-breakpoint//' db/migrations/0043_try_cast_helpers.sql)"
+  -c "$(sed 's/--> statement-breakpoint//' db/migrations/0045_try_cast_helpers.sql)"
 
 # 3. 跑（从 staffApi 源码提取 CTE/CASE/两段归因，替换参数后执行）
 node db/scripts/verify/customer-type-sql.mjs

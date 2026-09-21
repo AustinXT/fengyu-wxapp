@@ -631,7 +631,7 @@ type AdminTx = Parameters<Parameters<typeof db.transaction>[0]>[0]
 /**
  * 顾客分类跃迁的订单级金额 CTE（#187）。产出每张已结清销售单的
  * non_trial / trial = 非体验 / 体验行的毛实收合计。
- * refund_by_item 用 public.try_jsonb / public.try_numeric（migration 0043）做安全转换：
+ * refund_by_item 用 public.try_jsonb / public.try_numeric（migration 0045）做安全转换：
  * 非法 JSON / 非数字文本降级为 NULL 而非抛 22P02。全仓退款 note 解析已统一此写法，LIKE 假守门已废除。
  * item_direction='购买' 与 STEP 1.5 扣减作用域一致；FILTER 聚合的 NULL 由 COALESCE 归零。
  */

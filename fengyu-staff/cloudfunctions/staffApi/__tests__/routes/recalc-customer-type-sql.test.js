@@ -254,7 +254,7 @@ describe('recalcCustomerType SQL 源文件守卫', () => {
 
         test('用 try_jsonb / try_numeric 安全转换，禁止裸 ::jsonb / ::numeric（根除 22P02）', () => {
           // LIKE 守门无法证明 JSON 合法：`{手工备注}`、`{"items":`（截断）都能通过却在 cast 处炸。
-          // migration 0043 的 PL/pgSQL helper 把失败降级成 NULL（版本无关，不依赖 PG16 pg_input_is_valid）。
+          // migration 0045 的 PL/pgSQL helper 把失败降级成 NULL（版本无关，不依赖 PG16 pg_input_is_valid）。
           // schema 限定：迁移账号与运行时账号 search_path 可能不同，public. 前缀消除解析歧义
           expect(cte).toContain("jsonb_typeof(public.try_jsonb(sop.note) -> 'items') = 'array'")
           expect(cte).toContain("public.try_jsonb(sop.note) -> 'items'")

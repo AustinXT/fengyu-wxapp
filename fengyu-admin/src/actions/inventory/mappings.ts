@@ -11,8 +11,15 @@ import { withPermission } from '@/lib/with-permission'
 
 export const listInventorySkuCompositions = withPermission(
   'inventory:stock_list',
-  async (_session, filters: { keyword?: string; status?: 'configured' | 'unconfigured' | 'invalid' } = {}) =>
-    listInventorySkuCompositionsImpl(filters),
+  async (
+    _session,
+    filters: {
+      keyword?: string
+      status?: 'configured' | 'unconfigured' | 'invalid'
+      page?: number
+      pageSize?: number
+    } = {},
+  ) => listInventorySkuCompositionsImpl(filters),
 )
 
 export const listInventorySkuCompositionOptions = withPermission(

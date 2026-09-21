@@ -502,13 +502,13 @@ async function refreshSpendingTier(client, clientUserId) {
  *   non_trial = Σ(非体验行毛实收)   trial = Σ(体验行毛实收)
  * 毛实收 = sale_items.received（STEP 1.5 扣退款后的净额）+ 该行逐项退款额 → 还原"曾经收到的钱"。
  *
- * refund_by_item 用 `try_jsonb` / `try_numeric`（migration 0043 新增的 PL/pgSQL helper）
+ * refund_by_item 用 `try_jsonb` / `try_numeric`（migration 0045 新增的 PL/pgSQL helper）
  * 做**版本无关的安全转换**：非法 JSON / 非数字文本一律降级为 NULL，由 COALESCE 兜底，
  * 而不是抛 22P02 回滚整个收款事务。
  * 这取代了原先 `note LIKE '{%'` 的纯文本守门——LIKE 无法证明 JSON 合法，
  * `{手工备注}`、`{"items":`（截断）都能通过守门却在 cast 处炸掉（#187 闸门 2 codex 两轮指出）。
  * PG16 的 `pg_input_is_valid()` 能做同样的事，但自托管生产库版本未统一，故走 helper 路线。
- * ⚠️ **部署顺序：必须先迁 0043 再部署本代码**，否则函数不存在会直接报错。
+ * ⚠️ **部署顺序：必须先迁 0045 再部署本代码**，否则函数不存在会直接报错。
  *
  * ⚠️ 展开范围额外限定在**参与判定的已结清销售单**（ro.status / ro.sale_order_type）：
  * 既避免白展开充值单/寄存单/转换单的退款 JSON，也把解析量收回到本就要读的订单集合内

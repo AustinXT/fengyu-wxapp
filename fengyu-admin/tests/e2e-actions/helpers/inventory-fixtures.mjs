@@ -253,28 +253,32 @@ export async function ensureInventoryFixture() {
   await pgQuery(
     `INSERT INTO inventory_skus (
        sku_id, product_code, product_name, spec_name, source_type,
+       supplier, supplier_id,
        retail_price, accounting_price, market_purchase_discount,
        market_purchase_price, market_purchase_price_mode,
        supply_chain_purchase_price, store_purchase_price,
        market_staff_purchase_price, item_company_purchase_price,
        is_reportable, is_active
-     ) VALUES ($1, $2, $3, '瓶', '供应链',
+     ) VALUES ($1, $2, $3, '瓶', '供应链', $5, $4,
        5980, 4000, 0.25, 1000, '公式', 800, 1200, 900, 850, true, true)
      ON CONFLICT (sku_id) DO UPDATE
        SET is_active = true, is_reportable = true,
+           supplier = $5, supplier_id = $4,
            market_purchase_price = 1000, store_purchase_price = 1200,
            supply_chain_purchase_price = 800, market_staff_purchase_price = 900`,
-    [SKU_SUPPLY, `${INS}-SC-001`, `${INS}_供应链产品`],
+    [SKU_SUPPLY, `${INS}-SC-001`, `${INS}_供应链产品`, SUPPLIER_ID, `${INS}_供应商1`],
   )
   await pgQuery(
     `INSERT INTO inventory_skus (
        sku_id, product_code, product_name, spec_name, source_type, owner_market_id,
+       supplier, supplier_id,
        market_purchase_price, store_purchase_price, is_reportable, is_active
-     ) VALUES ($1, $2, $3, '件', '市场自采', $4, 30, 40, true, true)
+     ) VALUES ($1, $2, $3, '件', '市场自采', $4, $6, $5, 30, 40, true, true)
      ON CONFLICT (sku_id) DO UPDATE
        SET is_active = true, is_reportable = true, owner_market_id = $4,
+           supplier = $6, supplier_id = $5,
            market_purchase_price = 30, store_purchase_price = 40`,
-    [SKU_SELF, `${INS}-SELF-001`, `${INS}_市场A自采品`, MKA_ORG],
+    [SKU_SELF, `${INS}-SELF-001`, `${INS}_市场A自采品`, MKA_ORG, SUPPLIER_ID, `${INS}_供应商1`],
   )
 
   // 福利方案：市场A 专属单品阶梯，报货 ≥5 每单位减 50（说明.md §2）
@@ -364,7 +368,7 @@ export async function lotQuantity(lotId) {
 export async function docHeader(docId) {
   const rows = await pgQuery(
     `SELECT id, doc_type, status, source_org_node_id, target_org_node_id,
-            market_id, total_quantity, total_amount
+            market_id, supplier_id, total_quantity, total_amount
        FROM inventory_docs WHERE id = $1`,
     [docId],
   )
@@ -374,6 +378,7 @@ export async function docHeader(docId) {
 export async function docItems(docId) {
   return pgQuery(
     `SELECT id, sku_id, is_gift, quantity, request_quantity, fulfilled_quantity,
+            supplier_id, market_id,
             standard_unit_price, unit_discount, actual_unit_price, amount,
             supply_chain_unit_cost, market_actual_unit_price, store_actual_unit_price, lot_id
        FROM inventory_doc_items WHERE doc_id = $1 ORDER BY id`,

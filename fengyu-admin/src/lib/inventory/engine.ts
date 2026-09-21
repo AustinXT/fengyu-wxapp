@@ -107,9 +107,10 @@ interface LockedLot {
 const DOC_PREFIX: Record<InventoryDocType, string> = {
   门店报货: 'DBH',
   市场报货: 'MBH',
+  市场报货汇总: 'MHZ',
   品项公司报货需求: 'ZBH',
+  // `供应链采购订单`（旧前缀 PCG）已并入 `采购订单`；存量单号保留 PCG-*，新单一律 CGD-*。
   采购订单: 'CGD',
-  供应链采购订单: 'PCG',
   供应链采购入库: 'GRK',
   品项公司发货: 'GFH',
   市场采购入库: 'MRK',
@@ -140,12 +141,37 @@ const DOC_PREFIX: Record<InventoryDocType, string> = {
   期初库存: 'QC',
 }
 
+/**
+ * 分页页长白名单。必须与各列表组件的 `PAGE_SIZE_OPTIONS` 一致 ——
+ * 两侧不同源时，`?size=7` 会让服务端每页 7 条而 UI 按 20 条算页数，
+ * 尾部数据翻到哪一页都够不到，且不会有任何报错。
+ */
+const PAGE_SIZE_WHITELIST = [10, 20, 50, 100]
+
+/**
+ * 页码归一化。`Math.max(1, page || 1)` 只兜得住 NaN 和 0，兜不住小数与 Infinity：
+ * - `?page=1.5` → offset 变成 `(1.5-1)*20 = 10`，返回第 11–30 条，
+ *   而客户端 `Pagination` 内部 `Math.floor` 后高亮的是第 1 页 ——
+ *   用户看到的既不是第 1 页也不是第 2 页，且翻页时会重复/跳过行
+ * - `?page=Infinity` → offset 为 Infinity，直接把 SQL 打挂
+ * 客户端已经 floor + clamp（pagination.tsx:23），服务端这里做同样的兜底。
+ */
+const MAX_PAGE = 1_000_000
+
+function normalizePage(value: number | undefined): number {
+  if (!Number.isFinite(value)) return 1
+  // 还要夹上界：`Number.isFinite` 放行 1e308 这种**有限但巨大**的值，
+  // 乘以页长之后 offset 会溢出成 Infinity，PG 直接拒绝 → 列表页 500。
+  // 100 万页 × 100 条/页 = 1 亿行，远超任何业务规模，夹到这里不会误伤真实翻页。
+  return Math.min(Math.max(1, Math.trunc(value as number)), MAX_PAGE)
+}
+
 const NO_MOVEMENT_DOC_TYPES = new Set<InventoryDocType>([
   '门店报货',
   '市场报货',
+  '市场报货汇总',
   '品项公司报货需求',
   '采购订单',
-  '供应链采购订单',
 ])
 const RECEIVE_REQUIRED_DOC_TYPES = new Set<InventoryDocType>([
   '品项公司发货',
@@ -200,9 +226,9 @@ const RECEIVE_INBOUND_TYPE: Partial<Record<InventoryDocType, InventoryDocType>> 
 const SPECIALIZED_DOC_TYPES = new Set<InventoryDocType>([
   '门店报货',
   '市场报货',
+  '市场报货汇总',
   '品项公司报货需求',
   '采购订单',
-  '供应链采购订单',
   '供应链采购入库',
   '品项公司发货',
   '市场采购入库',
@@ -1468,8 +1494,8 @@ export const listInventorySkus = withPermission(
     filters: { keyword?: string; sourceType?: InventorySkuSourceType; onlyActive?: boolean; page?: number; pageSize?: number } = {},
   ): Promise<{ data: InventorySkuRow[]; total: number }> => {
     await syncInventoryLocations()
-    const page = Math.max(1, filters.page || 1)
-    const pageSize = [10, 20, 50, 100].includes(filters.pageSize ?? 0) ? filters.pageSize! : 20
+    const page = normalizePage(filters.page)
+    const pageSize = PAGE_SIZE_WHITELIST.includes(filters.pageSize ?? 0) ? filters.pageSize! : 20
     const offset = (page - 1) * pageSize
     const conditions: (SQL | undefined)[] = []
     const scoped = await scopedLocationIds(session)
@@ -1650,8 +1676,13 @@ export const listInventorySkuCompositions = withPermission(
   'inventory:stock_list',
   async (
     _session,
-    filters: { keyword?: string; status?: 'configured' | 'unconfigured' | 'invalid' } = {},
-  ): Promise<InventoryCompositionRow[]> => {
+    filters: {
+      keyword?: string
+      status?: 'configured' | 'unconfigured' | 'invalid'
+      page?: number
+      pageSize?: number
+    } = {},
+  ): Promise<{ data: InventoryCompositionRow[]; total: number }> => {
     const [productRows, componentRows] = await Promise.all([
       db
         .select({
@@ -1696,7 +1727,7 @@ export const listInventorySkuCompositions = withPermission(
     }
 
     const keyword = filters.keyword?.trim().toLocaleLowerCase() ?? ''
-    return productRows
+    const filtered = productRows
       .map((product): InventoryCompositionRow => {
         const components = componentsByProduct.get(product.productSkuId) ?? []
         const configurationStatus = components.length === 0
@@ -1722,6 +1753,25 @@ export const listInventorySkuCompositions = withPermission(
           component.inventorySkuSpecName ?? '',
         ]),
       ].some((value) => value.toLocaleLowerCase().includes(keyword)))
+
+    // ⚠️ 这里是**内存切片**，不是 SQL 分页 —— 上面两个 filter 依赖的
+    // `configurationStatus` 是按 components 算出来的派生字段，keyword 还要搜到
+    // components 内部，都没法下推成 WHERE。所以 total 必须取过滤**之后**的长度，
+    // 而不是 productRows.length。
+    // 家居 SKU 是低基数主数据（dev 现有 101 行），全量取回可接受；
+    // 若将来量级上来，得先把 configurationStatus 物化到列上才谈得上真正的 SQL 分页。
+    // 同 listInventorySuppliers：给了 pageSize 就必须过白名单，page 用 `|| 1` 兜 NaN。
+    // 这一支尤其不能漏 —— `filtered.slice(NaN, NaN)` 返回**空数组**（ToInteger(NaN)=0），
+    // 而客户端 `Number(get('page','1')) || 1` 会认为自己在第 1 页、不触发越界自纠，
+    // 于是 `?page=abc` 会永久停在「空表 + 共 101 条」，用户只能手改 URL 才能出来。
+    const pageSize = filters.pageSize === undefined
+      ? undefined
+      : (PAGE_SIZE_WHITELIST.includes(filters.pageSize) ? filters.pageSize : 20)
+    const offset = (normalizePage(filters.page) - 1) * (pageSize ?? 0)
+    return {
+      data: pageSize ? filtered.slice(offset, offset + pageSize) : filtered,
+      total: filtered.length,
+    }
   },
 )
 
@@ -1880,8 +1930,8 @@ export const listInventoryLots = withPermission(
   ): Promise<{ data: InventoryLotRow[]; total: number; canViewPrice: boolean; priceVisibility: import('./types').InventoryPriceVisibility }> => {
     await syncInventoryLocations()
     const scoped = await scopedLocationIds(session)
-    const page = Math.max(1, filters.page || 1)
-    const pageSize = [10, 20, 50, 100].includes(filters.pageSize ?? 0) ? filters.pageSize! : 20
+    const page = normalizePage(filters.page)
+    const pageSize = PAGE_SIZE_WHITELIST.includes(filters.pageSize ?? 0) ? filters.pageSize! : 20
     const offset = (page - 1) * pageSize
     const conditions: (SQL | undefined)[] = []
     if (scoped !== null) {
@@ -2055,8 +2105,8 @@ export const listInventoryCoreDocs = withPermission(
   ): Promise<{ data: InventoryDocRow[]; total: number; canViewPrice: boolean; priceVisibility: import('./types').InventoryPriceVisibility }> => {
     await syncInventoryLocations()
     const scoped = inventoryScopedOrgNodeIds(session)
-    const page = Math.max(1, filters.page || 1)
-    const pageSize = [10, 20, 50, 100].includes(filters.pageSize ?? 0) ? filters.pageSize! : 20
+    const page = normalizePage(filters.page)
+    const pageSize = PAGE_SIZE_WHITELIST.includes(filters.pageSize ?? 0) ? filters.pageSize! : 20
     const offset = (page - 1) * pageSize
     const conditions: (SQL | undefined)[] = []
     if (scoped !== null) {
@@ -2292,6 +2342,12 @@ async function loadMarketReportFulfillmentProgress(
        WHERE item.doc_id = ${docId}
     ),
     purchase_links AS (
+      -- ⚠️ 这里**刻意不按 visible_docs 过滤采购单**（#194）。
+      -- 收敛后采购单可以汇总多个市场的行，单头因此没有 source/market 归属，
+      -- 市场 scope 看不见它；若在这里过滤，市场打开自己的报货单会看到「已采购 0」——
+      -- 收敛前采购单 source=该市场、天然可见，是本次改动引入的可见性回归。
+      -- 本 CTE 只把数量聚合回**已经过可见性校验的** root_items，不外泄采购单本身的任何内容
+      -- （单号、其它市场的明细都不出现在返回值里），所以放开这层过滤是安全的。
       SELECT
         doc_link.from_item_id AS root_item_id,
         doc_link.to_item_id AS purchase_item_id,
@@ -2299,23 +2355,48 @@ async function loadMarketReportFulfillmentProgress(
         FROM inventory_doc_links doc_link
         JOIN root_items root_item ON root_item.item_id = doc_link.from_item_id
         JOIN inventory_docs purchase_doc ON purchase_doc.id = doc_link.to_doc_id
-        JOIN visible_docs visible_purchase ON visible_purchase.id = purchase_doc.id
        WHERE doc_link.from_doc_id = ${docId}
          AND doc_link.relation_type = '市场报货采购订单'
-         AND purchase_doc.status = '已完成'
+         AND purchase_doc.status IN ('已完成', '待收货')
     ),
     purchase_totals AS (
       SELECT root_item_id, SUM(quantity) AS ordered_quantity
         FROM purchase_links
        GROUP BY root_item_id
     ),
+    -- 一条采购明细可以由**多个**来源行合并而来（#194），所以下游的发货/收货量必须
+    -- 按各来源在该采购行里的占比分摊，不能每个来源都记全量 ——
+    -- 来源 A 5 件、B 5 件合成采购行 10 件、实发 6 件时，不分摊会让 A 与 B 各显示 6，
+    -- 合计 12 件，凭空多出一倍。
+    --
+    -- ⚠️ 分母必须取该采购行的**全部**来源血缘，不能用 PARTITION BY 的窗口和：
+    -- purchase_links 已经被 from_doc_id 限定成「当前这张单」的血缘，
+    -- 窗口函数看不到同一采购行来自**其它来源单**的那部分，share 又会退回 1，
+    -- 跨单合并的场景照样重复计数。
+    purchase_share AS (
+      SELECT
+        purchase_link.root_item_id,
+        purchase_link.purchase_item_id,
+        purchase_link.quantity,
+        purchase_link.quantity / NULLIF(source_total.total_quantity, 0) AS share
+        FROM purchase_links purchase_link
+        JOIN LATERAL (
+          SELECT COALESCE(SUM(COALESCE(all_link.quantity, 0)), 0) AS total_quantity
+            FROM inventory_doc_links all_link
+           WHERE all_link.to_item_id = purchase_link.purchase_item_id
+             AND all_link.relation_type = '市场报货采购订单'
+        ) source_total ON true
+    ),
     shipment_links AS (
       SELECT
         purchase_link.root_item_id,
         doc_link.to_item_id AS shipment_item_id,
         doc_link.relation_type,
-        COALESCE(doc_link.quantity, 0) AS quantity
-        FROM purchase_links purchase_link
+        COALESCE(doc_link.quantity, 0) * COALESCE(purchase_link.share, 0) AS quantity,
+        -- 发货明细由采购行一对一产生，所以收货沿用采购层的占比即可。
+        -- 早先在这里按当前单据子集再归一化一次，等于把 share 重新拉回 1，白分摊了。
+        COALESCE(purchase_link.share, 0) AS share
+        FROM purchase_share purchase_link
         JOIN inventory_doc_links doc_link
           ON doc_link.from_item_id = purchase_link.purchase_item_id
         JOIN inventory_docs shipment_doc ON shipment_doc.id = doc_link.to_doc_id
@@ -2335,7 +2416,7 @@ async function loadMarketReportFulfillmentProgress(
       SELECT
         shipment_link.root_item_id,
         shipment_link.relation_type AS shipment_relation_type,
-        COALESCE(doc_link.quantity, 0) AS quantity
+        COALESCE(doc_link.quantity, 0) * COALESCE(shipment_link.share, 0) AS quantity
         FROM shipment_links shipment_link
         JOIN inventory_doc_links doc_link
           ON doc_link.from_item_id = shipment_link.shipment_item_id
@@ -2475,21 +2556,45 @@ async function loadItemCompanyRequestFulfillmentProgress(
          AND doc_link.relation_type = '品项公司报货采购订单'
          AND purchase_doc.status IN ('待收货', '已完成', '已取消')
     ),
+    -- 与市场报货那套同理：一条采购明细可由多张需求单的多行合并而来（#194），
+    -- 下游的入库量、以及已取消采购单残留的已下单量，都要按各来源在该采购行里的
+    -- 占比分摊，否则每个来源都会记到全量。
+    -- 分母要取该采购行的**全部**来源血缘 —— purchase_links 已被 from_doc_id
+    -- 限成当前这张需求单，窗口函数看不到别的来源单。
+    purchase_share AS (
+      SELECT
+        purchase_link.request_item_id,
+        purchase_link.purchase_item_id,
+        purchase_link.quantity,
+        purchase_link.purchase_status,
+        purchase_link.received_quantity,
+        purchase_link.quantity / NULLIF(source_total.total_quantity, 0) AS share
+        FROM purchase_links purchase_link
+        JOIN LATERAL (
+          SELECT COALESCE(SUM(COALESCE(all_link.quantity, 0)), 0) AS total_quantity
+            FROM inventory_doc_links all_link
+           WHERE all_link.to_item_id = purchase_link.purchase_item_id
+             AND all_link.relation_type = '品项公司报货采购订单'
+        ) source_total ON true
+    ),
     purchase_totals AS (
       SELECT
         request_item_id,
         SUM(CASE
-          WHEN purchase_status = '已取消' THEN LEAST(quantity, received_quantity)
+          -- 已取消的采购单只剩"实收那部分"仍占着需求额度，而这部分同样要按占比分给各来源：
+          -- A、B 各 5 件合成采购行 10 件、实收 6 件后关闭时，关闭逻辑给两边各留 3，
+          -- 这里若按 LEAST(5, 6) 逐条算就会各显示 5，与真实占用对不上。
+          WHEN purchase_status = '已取消' THEN LEAST(quantity, received_quantity * COALESCE(share, 0))
           ELSE quantity
         END) AS ordered_quantity
-        FROM purchase_links
+        FROM purchase_share
        GROUP BY request_item_id
     ),
     receipt_totals AS (
       SELECT
         purchase_link.request_item_id,
-        SUM(COALESCE(doc_link.quantity, 0)) AS received_quantity
-        FROM purchase_links purchase_link
+        SUM(COALESCE(doc_link.quantity, 0) * COALESCE(purchase_link.share, 0)) AS received_quantity
+        FROM purchase_share purchase_link
         JOIN inventory_doc_links doc_link
           ON doc_link.from_item_id = purchase_link.purchase_item_id
         JOIN inventory_docs receipt_doc ON receipt_doc.id = doc_link.to_doc_id
@@ -2527,7 +2632,7 @@ async function loadItemCompanyRequestFulfillmentProgress(
 async function loadSupplyChainPurchaseReceiptProgress(
   docId: string,
   scoped: string[] | null,
-): Promise<InventoryDocFulfillmentProgress> {
+): Promise<InventoryDocFulfillmentProgress | null> {
   const rows = await db.execute(sql`
     WITH visible_docs AS (${visibleInventoryDocsSql(scoped)}),
     purchase_items AS (
@@ -2536,6 +2641,7 @@ async function loadSupplyChainPurchaseReceiptProgress(
         JOIN inventory_docs purchase_doc ON purchase_doc.id = item.doc_id
         JOIN visible_docs visible_purchase ON visible_purchase.id = purchase_doc.id
        WHERE item.doc_id = ${docId}
+         AND item.market_id IS NULL
     ),
     receipt_totals AS (
       SELECT
@@ -2559,6 +2665,9 @@ async function loadSupplyChainPurchaseReceiptProgress(
       LEFT JOIN receipt_totals receipt_total ON receipt_total.purchase_item_id = purchase_item.item_id
      ORDER BY purchase_item.item_id
   `)
+  // 纯市场行的采购单在上面被 `market_id IS NULL` 过滤成空集，这里返回 null 而不是空进度，
+  // 避免详情页渲染出一张「已收货 0」的空表把市场行误导成待收货。
+  if (rows.length === 0) return null
   return {
     kind: '供应链采购收货',
     items: (rows as unknown as Array<{
@@ -2650,7 +2759,10 @@ async function loadInventoryDocFulfillmentProgress(
   if (docType === '品项公司报货需求') {
     return loadItemCompanyRequestFulfillmentProgress(docId, scoped)
   }
-  if (docType === '供应链采购订单') {
+  // 收敛后只剩 `采购订单` 一种类型，但收货进度只对**供应链行**（market_id IS NULL）有意义：
+  // 市场行走的是品项公司发货，不经供应链采购入库。纯市场单在下面的函数里会得到空 items 并返回 null，
+  // 与收敛前「市场链路采购单无履约进度」的行为一致。
+  if (docType === '采购订单') {
     return loadSupplyChainPurchaseReceiptProgress(docId, scoped)
   }
   if (docType === '品项公司发货' || docType === '分院配货') {
@@ -2705,6 +2817,18 @@ export const getInventoryCoreDocById = withPermission(
       loadInventoryDocLineage(id, scoped),
       loadInventoryDocFulfillmentProgress(head.docType, id, scoped),
     ])
+    // 采购订单与市场报货汇总把市场归属挂在明细行上（#193/#194），单头没有这个字段，
+    // 详情页要显示市场名就得按行解析一次。只在真有行级市场时才查。
+    const itemMarketIds = [...new Set(items.map((item) => item.marketId).filter((id): id is string => Boolean(id)))]
+    const itemMarketNameByOrgNodeId = new Map(
+      itemMarketIds.length > 0
+        ? (await db
+          .select({ orgNodeId: inventoryLocations.orgNodeId, name: inventoryLocations.name })
+          .from(inventoryLocations)
+          .where(inArray(inventoryLocations.orgNodeId, itemMarketIds))
+        ).map((row) => [row.orgNodeId, row.name])
+        : [],
+    )
     return {
       ...head,
       items: items.map((item) => ({
@@ -2716,6 +2840,11 @@ export const getInventoryCoreDocById = withPermission(
         skuName: item.skuName,
         specName: item.specName,
         supplier: item.supplier,
+        supplierId: item.supplierId,
+        marketId: item.marketId,
+        marketName: item.marketId
+          ? (itemMarketNameByOrgNodeId.get(item.marketId) ?? item.marketId)
+          : null,
         productSeries: item.productSeries,
         batchNo: item.batchNo,
         expiryDate: item.expiryDate,
@@ -3306,14 +3435,27 @@ function supplierRow(
   }
 }
 
+/**
+ * 供应商列表（#135 起返回 `{ data, total }`）。
+ *
+ * **`pageSize` 不给就不分页**，整份返回 —— 办理台的供应商下拉走的是同一个函数
+ * （operations/[level]/page.tsx），默认塞一个页长进去会把下拉静默截断，
+ * 用户在「自采产品入库」里就选不到排在后面的供应商了。
+ */
 export const listInventorySuppliers = withPermission(
   'inventory:stock_list',
   async (
     _session,
-    filters: { keyword?: string; onlyActive?: boolean } = {},
-  ): Promise<InventorySupplierRow[]> => {
+    filters: { keyword?: string; onlyActive?: boolean; page?: number; pageSize?: number } = {},
+  ): Promise<{ data: InventorySupplierRow[]; total: number }> => {
     const conditions: (SQL | undefined)[] = []
-    if (filters.onlyActive ?? true) conditions.push(eq(inventorySuppliers.isActive, true))
+    // 三态：undefined = 全部 / true = 仅启用 / false = 仅停用。
+    // 原写法用 `?? true` 兜底，把三态压成了二值 ——
+    // 「全部状态」(undefined) 变成只返回启用、「停用」(false) 变成返回全部，
+    // 页面上三个选项里有两个行为与标签不符，「停用」那档永远筛不出停用的供应商。
+    // 这是存量缺陷，但本次新增的「共 N 条」会把这个错误结果的数量白纸黑字印出来，顺手修。
+    if (filters.onlyActive === true) conditions.push(eq(inventorySuppliers.isActive, true))
+    else if (filters.onlyActive === false) conditions.push(eq(inventorySuppliers.isActive, false))
     if (filters.keyword) {
       const pattern = `%${filters.keyword.replace(/[%_]/g, '\\$&')}%`
       conditions.push(or(
@@ -3323,7 +3465,16 @@ export const listInventorySuppliers = withPermission(
       ))
     }
     const whereClause = conditions.length > 0 ? and(...conditions) : undefined
-    const rows = await db
+
+    // 总数**不能**在 leftJoin 之后 count：join 会把一个供应商放大成 N 行（N = 关联 SKU 数），
+    // 「共 N 条」会比实际行数大一截。筛选条件只涉及 inventory_suppliers 自身的列，
+    // 所以直接对主表单独 count 既准确又比 count(distinct) 便宜。
+    const [totalRow] = await db
+      .select({ total: sql<number>`cast(count(*) as int)` })
+      .from(inventorySuppliers)
+      .where(whereClause)
+
+    const query = db
       .select({
         supplier: inventorySuppliers,
         // 停用前要提示「仍有 N 个 SKU 在用」（#132）。含已停用的 SKU：
@@ -3335,7 +3486,22 @@ export const listInventorySuppliers = withPermission(
       .where(whereClause)
       .groupBy(inventorySuppliers.supplierId)
       .orderBy(asc(inventorySuppliers.name))
-    return rows.map((row) => supplierRow({ ...row.supplier, linkedSkuCount: row.linkedSkuCount }))
+
+    // pageSize 缺省仍是「不分页」（办理台下拉共用本函数），但**一旦给了值就必须过白名单**：
+    // `?size=7` 会让服务端每页 7 条而 UI 按 20 条算页数，尾部数据永远够不到；
+    // `?size=-5` 更糟 —— drizzle 会静默丢弃负 limit 却照发负 offset，PG 直接
+    // `OFFSET must not be negative`，生产脱敏后只剩一个通用 500 页。
+    // `page` 用 `|| 1` 而不是 `?? 1`：`?page=abc` 的 NaN 是 falsy，`??` 兜不住。
+    const pageSize = filters.pageSize === undefined
+      ? undefined
+      : (PAGE_SIZE_WHITELIST.includes(filters.pageSize) ? filters.pageSize : 20)
+    const rows = pageSize
+      ? await query.limit(pageSize).offset((normalizePage(filters.page) - 1) * pageSize)
+      : await query
+    return {
+      data: rows.map((row) => supplierRow({ ...row.supplier, linkedSkuCount: row.linkedSkuCount })),
+      total: totalRow?.total ?? 0,
+    }
   },
 )
 
@@ -3719,6 +3885,14 @@ async function promotionPlanRows(
   }))
 }
 
+/**
+ * 福利方案列表 —— **刻意保持全量返回**，分页在组件侧做（#135）。
+ *
+ * 这一页的关键词 / 市场 / 状态三个筛选都在客户端 useMemo 里算
+ * （inventory-promotions-page.tsx 的 filteredRows）。要是在这里先按页切 20 条、
+ * 再让客户端去筛，用户筛到的就只是当前页那 20 条里的匹配项，翻页还会看到不同结果 ——
+ * 分页必须发生在筛选**之后**。方案是低基数配置数据，全量返回代价可忽略。
+ */
 export const listInventoryPromotionPlans = withPermission(
   'inventory:stock_list',
   async (session): Promise<InventoryPromotionPlanRow[]> => promotionPlanRows(session),

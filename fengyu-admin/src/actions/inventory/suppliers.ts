@@ -12,8 +12,10 @@ import { withPermission } from '@/lib/with-permission'
 
 export const listInventorySuppliers = withPermission(
   'inventory:stock_list',
-  async (_session, filters: { keyword?: string; onlyActive?: boolean } = {}) =>
-    listInventorySuppliersImpl(filters),
+  async (
+    _session,
+    filters: { keyword?: string; onlyActive?: boolean; page?: number; pageSize?: number } = {},
+  ) => listInventorySuppliersImpl(filters),
 )
 
 export const countInventorySkusBySupplier = withPermission(

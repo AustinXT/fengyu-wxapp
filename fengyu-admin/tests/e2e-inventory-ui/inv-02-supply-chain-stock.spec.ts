@@ -5,7 +5,7 @@
  *   A. 门禁关闭态下走通用建单，断言写入被 fail-closed 拒绝
  *      （cutover.ts:49-51 抛 INVALID_STATE: 库存期初尚未导入并核验完成）
  *   B. 开闸（置「已初始化」，用户已确认开后不恢复），重建同一张单应成功
- *   C. 供应链备货：品项公司报货需求 → 供应链采购订单 → 供应链采购入库
+ *   C. 供应链备货：品项公司报货需求 → 采购订单（供应链行）→ 供应链采购入库
  *      —— 总部批次由此产生，是 INV-03 三级主链的前提
  *
  * ⚠️ 建单失败时 inventory-docs-page.tsx:402 走的是原生 alert()，不是 toast。
@@ -155,28 +155,44 @@ test('INV-02：门禁 fail-closed → 开闸 → 供应链备货', async ({ brow
     const reqMoves = psql(`SELECT count(*) FROM inventory_movements WHERE doc_id = ${sqlStr(reqId)}`)
     recordVerdict(verdicts, 'doc: 报货需求不产生库存流水（§报货不增减库存）', reqMoves === '0', reqMoves)
 
-    console.log('[INV-02] C-2: 供应链采购订单')
+    // #194：两张采购卡片合并为「采购订单」，来源改多选 checkbox，供应商按商品带出不再手选
+    console.log('[INV-02] C-2: 采购订单（供应链行）')
     await page.getByRole('button', { name: '关闭' }).click().catch(() => null)
-    await page.getByRole('button', { name: '供应链采购订单' }).click()
-    await expect(page.getByRole('heading', { name: '供应链采购订单' })).toBeVisible({ timeout: 15_000 })
+    await page.getByRole('button', { name: '采购订单' }).click()
+    await expect(page.getByRole('heading', { name: '采购订单' })).toBeVisible({ timeout: 15_000 })
 
     const PO_REMARK = `${NS}-供应链采购-${STAMP}`
-    await selectByLabel(page, '品项公司报货需求', { contains: reqId })
-    await page.waitForTimeout(1500)   // 选单后要拉明细
-    await selectByLabel(page, '供应商', { contains: inv01.supplierName })
+    const sourceRow = page.locator('label').filter({ hasText: reqId }).first()
+    await sourceRow.waitFor({ state: 'visible', timeout: 20_000 })
+    await sourceRow.locator('input[type="checkbox"]').check()
+    await page.waitForTimeout(1500)   // 勾选后要拉明细
     await selectByLabel(page, '供应链库存主体', { label: '品牌总部' })
     await fillByLabel(page, '采购数量', '100')
     await fillByLabel(page, '备注', PO_REMARK)
-    await page.getByRole('button', { name: '创建供应链采购订单' }).click()
-    await expect(page.getByText(/供应链采购订单已创建/)).toBeVisible({ timeout: 20_000 })
+    await page.locator('form').getByRole('button', { name: '创建采购订单', exact: true }).click()
+    await expect(page.getByText(/采购订单已创建/)).toBeVisible({ timeout: 20_000 })
 
     const poDoc = psql(
       `SELECT id || '|' || status || '|' || total_quantity::text
-         FROM inventory_docs WHERE doc_type = '供应链采购订单' AND remark = ${sqlStr(PO_REMARK)}`,
+         FROM inventory_docs WHERE doc_type = '采购订单' AND remark = ${sqlStr(PO_REMARK)}`,
     )
     const [poId, poStatus, poQty] = poDoc.split('|')
-    recordVerdict(verdicts, 'doc: 供应链采购订单落库', Boolean(poId), poId)
+    recordVerdict(verdicts, 'doc: 采购订单落库', Boolean(poId), poId)
     recordVerdict(verdicts, 'doc: 采购订单状态 = 待收货', poStatus === '待收货', poStatus)
+    // #194：供应商下沉到明细行，单头不再挂
+    recordVerdict(
+      verdicts,
+      'doc: 采购单头不挂供应商，明细行按商品带出',
+      psql(`SELECT COALESCE(supplier_id,'') FROM inventory_docs WHERE id = ${sqlStr(poId)}`) === ''
+        && psql(`SELECT count(*) FROM inventory_doc_items WHERE doc_id = ${sqlStr(poId)} AND supplier_id IS NOT NULL`) !== '0',
+      '单头空 / 行级有值',
+    )
+    recordVerdict(
+      verdicts,
+      'doc: 供应链行的 market_id 为空（据此走供应链入库而非发货）',
+      psql(`SELECT count(*) FROM inventory_doc_items WHERE doc_id = ${sqlStr(poId)} AND market_id IS NOT NULL`) === '0',
+      'market_id 全为空',
+    )
     recordVerdict(verdicts, 'doc: 采购数量 = 100', Number(poQty) === 100, poQty)
     const poLink = psql(
       `SELECT relation_type FROM inventory_doc_links
@@ -191,16 +207,21 @@ test('INV-02：门禁 fail-closed → 开闸 → 供应链备货', async ({ brow
 
     const GRK_REMARK = `${NS}-供应链入库-${STAMP}`
     const BATCH_NO = `${NS}-B${STAMP}`
-    await selectByLabel(page, '供应链采购订单', { contains: poId })
+    await selectByLabel(page, '采购订单', { contains: poId })
     await page.waitForTimeout(1500)
-    // 「供应链库存主体」在选定采购订单后 disabled={Boolean(doc)} —— 主体随单锁定，
-    // 不需要也不能再设置。这是个合理的交互设计，顺手记一条正向断言。
-    const lockedLocation = selectOf(page, '供应链库存主体')
+    // 「供应链库存主体」不可由操作人自由改：候选唯一时直接是只读展示（#189），
+    // 候选多个时也会在选定采购订单后 disabled={Boolean(doc)} 随单锁定。
+    // 两种形态都满足「主体不会与单据不一致」这条不变量，顺手记一条正向断言。
+    const fixedLocation = fixedOf(page, '供应链库存主体')
+    const isFixed = await fixedLocation.count() > 0
+    const lockedEvidence = isFixed
+      ? `fixed=${await fixedLocation.first().innerText()}`
+      : `disabled=${await selectOf(page, '供应链库存主体').isDisabled()}`
     recordVerdict(
       verdicts,
-      'UX-GOOD: 选定采购订单后库存主体自动锁定（防止主体与单据不一致）',
-      await lockedLocation.isDisabled(),
-      `disabled=${await lockedLocation.isDisabled()}`,
+      'UX-GOOD: 库存主体不可与单据不一致（唯一候选只读固定 / 多候选选单后锁定）',
+      isFixed || await selectOf(page, '供应链库存主体').isDisabled(),
+      lockedEvidence,
     )
     await fillByLabel(page, '实收数量', '100')
     await fillByLabel(page, '批号', BATCH_NO)
@@ -267,12 +288,17 @@ async function fillByLabel(page: import('@playwright/test').Page, labelText: str
 }
 
 /** 按 label 定位 <select> */
+function fieldOf(page: import('@playwright/test').Page, labelText: string) {
+  return page.locator('label').filter({ hasText: new RegExp(`^${escapeRe(labelText)}`) })
+}
+
 function selectOf(page: import('@playwright/test').Page, labelText: string) {
-  return page
-    .locator('label')
-    .filter({ hasText: new RegExp(`^${escapeRe(labelText)}`) })
-    .locator('select')
-    .first()
+  return fieldOf(page, labelText).locator('select').first()
+}
+
+/** 候选唯一时字段会降级成只读 `<output data-fixed-subject>`（#189） */
+function fixedOf(page: import('@playwright/test').Page, labelText: string) {
+  return fieldOf(page, labelText).locator('[data-fixed-subject]')
 }
 
 /**
@@ -296,6 +322,15 @@ async function selectByLabel(
   labelText: string,
   option: { label: string } | { contains: string },
 ) {
+  // 候选唯一的主体字段没有 select 可选，改为核对只读展示值（#189）。
+  // 先等两种形态任一渲染出来：hydration 未完成时两边都还不在，count() 会读到 0
+  // 而误判成「可选」，接着在一个永远不会出现的 select 上空等到超时。
+  const fixed = fixedOf(page, labelText)
+  await expect(fixed.or(selectOf(page, labelText)).first()).toBeVisible({ timeout: 20_000 })
+  if (await fixed.count() > 0) {
+    await expect(fixed.first()).toContainText('contains' in option ? option.contains : option.label)
+    return
+  }
   const sel = selectOf(page, labelText)
   if ('contains' in option) await selectContaining(sel, option.contains)
   else await sel.selectOption({ label: option.label })

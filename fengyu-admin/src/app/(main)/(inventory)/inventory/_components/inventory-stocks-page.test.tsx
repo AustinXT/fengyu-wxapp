@@ -69,6 +69,7 @@ describe('InventoryStocksPage', () => {
         rows={[]}
         total={0}
         canViewPrice={false}
+        priceVisibility="none"
         canExport
         locationFilterOptions={locationFilterOptions}
         selectedLocationId="M1"
@@ -89,6 +90,7 @@ describe('InventoryStocksPage', () => {
         rows={[LOT_ROW]}
         total={1}
         canViewPrice={false}
+        priceVisibility="none"
         canExport={false}
         locationFilterOptions={locationFilterOptions}
         selectedLocationId="M1"
@@ -113,6 +115,7 @@ describe('InventoryStocksPage', () => {
         rows={[LOT_ROW]}
         total={1}
         canViewPrice={false}
+        priceVisibility="none"
         canExport
         locationFilterOptions={locationFilterOptions}
         selectedLocationId="M1"
@@ -129,5 +132,52 @@ describe('InventoryStocksPage', () => {
     expect(headers).toContain('可用量')
     const availableColumn = call.columns.find((column) => column.header === '可用量')!
     expect(availableColumn.accessor(LOT_ROW)).toBe(7)
+  })
+
+  describe('价格列按档位裁剪（#135）', () => {
+    // 判据是 engine.ts `lotRow()` 的遮蔽口径：
+    //   marketActualUnitPrice → supplyVisible || marketVisible（即 !== 'none'）
+    //   storeActualUnitPrice  → **仅** marketVisible
+    // 原先用一个粗粒度 canViewPrice 同时控两列，只有 supply_chain_price_view 的角色
+    // 会看到「门店实际价」列头、整列恒为「—」（与 skus 页刚修掉的症状同源）。
+    function renderWith(priceVisibility: 'all' | 'supply_chain' | 'market' | 'none') {
+      return render(
+        <InventoryStocksPage
+          rows={[LOT_ROW]}
+          total={1}
+          canViewPrice={priceVisibility !== 'none'}
+          priceVisibility={priceVisibility}
+          canExport={false}
+          locationFilterOptions={locationFilterOptions}
+          selectedLocationId="S1"
+        />,
+      )
+    }
+    const header = (name: string) => screen.queryByRole('columnheader', { name })
+
+    it('supply_chain 档不渲染门店实际价列', () => {
+      renderWith('supply_chain')
+      expect(header('市场实际价')).toBeInTheDocument()
+      expect(header('门店实际价')).not.toBeInTheDocument()
+    })
+
+    it('market 档两列都渲染', () => {
+      renderWith('market')
+      expect(header('市场实际价')).toBeInTheDocument()
+      expect(header('门店实际价')).toBeInTheDocument()
+    })
+
+    it('all 档两列都渲染', () => {
+      renderWith('all')
+      expect(header('市场实际价')).toBeInTheDocument()
+      expect(header('门店实际价')).toBeInTheDocument()
+    })
+
+    it('none 档两列都不渲染，非价格列不受影响', () => {
+      renderWith('none')
+      expect(header('市场实际价')).not.toBeInTheDocument()
+      expect(header('门店实际价')).not.toBeInTheDocument()
+      expect(header('可用量')).toBeInTheDocument()
+    })
   })
 })

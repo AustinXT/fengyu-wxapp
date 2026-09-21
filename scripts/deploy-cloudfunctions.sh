@@ -188,7 +188,7 @@ assert_rc() {  # $1=side 目录  $2=期望 envId
 echo "  ✓ envId + PG host 校验通过（${ACTIVE}）"
 
 # ── DB 前置依赖闸：云函数 SQL 依赖的 DB 对象必须已迁到目标库（#187）──
-# 背景：云函数与 admin 的退款 JSON 解析统一走 migration 0043 的 public.try_jsonb /
+# 背景：云函数与 admin 的退款 JSON 解析统一走 migration 0045 的 public.try_jsonb /
 # public.try_numeric。若目标库漏迁就部署，所有解析退款 note 的收款路径都会报
 # `function public.try_jsonb(text) does not exist` —— 报错点在收款主链上，是生产事故。
 # 这里用目标环境自己的连接串做**只读**探测（Node pg，不依赖本机 psql）。
@@ -210,10 +210,10 @@ assert_db_prereqs() {
   _db_probe_unavailable() {  # $1=原因
     if [[ "$soft_fail" == "1" ]]; then
       echo "ERROR: prod 部署无法确认 DB 迁移状态（$1），拒绝继续。" >&2
-      echo "       请先确认 ${ACTIVE} 库已执行 db:migrate（0043_try_cast_helpers）。" >&2
+      echo "       请先确认 ${ACTIVE} 库已执行 db:migrate（0045_try_cast_helpers）。" >&2
       exit 1
     fi
-    echo "  ⚠️  $1，跳过 DB 前置依赖检查（${ACTIVE} 环境放行；部署前请自行确认已迁 0043）"
+    echo "  ⚠️  $1，跳过 DB 前置依赖检查（${ACTIVE} 环境放行；部署前请自行确认已迁 0045）"
     return 0
   }
 
@@ -252,7 +252,7 @@ assert_db_prereqs() {
 
   if [[ -n "${probe//[[:space:]]/}" ]]; then
     echo "ERROR: 目标库缺少云函数依赖的 DB 对象：${probe}" >&2
-    echo "       请先对 ${ACTIVE} 库执行 db:migrate（migration 0043_try_cast_helpers），再部署。" >&2
+    echo "       请先对 ${ACTIVE} 库执行 db:migrate（migration 0045_try_cast_helpers），再部署。" >&2
     echo "       参见 db/CLAUDE.md「schema 变更两个库都要迁」的目标断言流程。" >&2
     exit 1
   fi

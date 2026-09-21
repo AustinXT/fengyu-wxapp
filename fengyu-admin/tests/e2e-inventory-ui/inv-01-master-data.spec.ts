@@ -57,15 +57,17 @@ test('INV-01：基础档案建档 + 六价体系 + 公式价校验', async ({ br
     const supDialog = page.getByRole('dialog')
     await expect(supDialog.getByText('新建供应商')).toBeVisible({ timeout: 10_000 })
 
-    // UX-A11Y-01：供应商表单的 label 是游离的 <label>（无 htmlFor、未包裹 input），
-    // getByLabel 因此失效 —— 屏幕阅读器同样读不到字段名。只能按 DOM 顺序定位。
+    // UX-A11Y-01（#135 已修）：供应商表单原本是游离的 <label>（无 htmlFor、未包裹 input），
+    // getByLabel 因此失效，屏幕阅读器同样读不到字段名。现已改为 <label> 包裹控件。
+    // ⚠️ `*` 必须留在 label 文本里 —— 若改成独立的红色 span + sr-only「（必填）」，
+    // accessible name 会变成「供应商名称 （必填）」，这里就匹配不到了。
     const labelBound = await supDialog
       .getByLabel('供应商名称 *')
       .count()
       .catch(() => 0)
     recordVerdict(
       verdicts,
-      'UX-A11Y-01: 供应商表单 label 与控件已关联（期望 true，实测将失败）',
+      'UX-A11Y-01: 供应商表单 label 与控件已关联',
       labelBound > 0,
       `getByLabel 命中数=${labelBound}`,
     )
@@ -261,7 +263,17 @@ test('INV-01：基础档案建档 + 六价体系 + 公式价校验', async ({ br
       selfDialog.locator('label').filter({ hasText: labelRe }).first()
     await selfField(/^产品名称/).locator('input').fill(SKU_SELF_NAME)
     await selfField(/^来源/).locator('select').selectOption('市场自采')
-    await selfField(/^归属市场/).locator('select').selectOption({ label: TOPO.MARKET_NAME })
+    // 归属市场候选唯一时会自动选中并降级成只读（#189），那时没有 select 可选 —— 改为核对展示值。
+    const ownerMarketField = selfField(/^归属市场/)
+    // 先等两种形态任一渲染出来：自动上报落定前会有「已有 output、尚无 data-fixed-subject」
+    // 的过渡帧，此时 count() 读到 0 会误走 select 分支，然后空等一个永远不出现的下拉。
+    await expect(ownerMarketField.locator('select, [data-fixed-subject]').first())
+      .toBeVisible({ timeout: 20_000 })
+    if (await ownerMarketField.locator('[data-fixed-subject]').count() > 0) {
+      await expect(ownerMarketField.locator('[data-fixed-subject]')).toContainText(TOPO.MARKET_NAME)
+    } else {
+      await ownerMarketField.locator('select').selectOption({ label: TOPO.MARKET_NAME })
+    }
     await selfField(/^门店进货价/).locator('input').fill('300')
     await selfField(/^顾客零售价/).locator('input').fill('880')
     await selfDialog.getByRole('button', { name: /^保存|创建|确定$/ }).last().click()
@@ -316,7 +328,10 @@ test('INV-01：基础档案建档 + 六价体系 + 公式价校验', async ({ br
   // ⚠️ 修好一条就要从这里挪走，否则它会从「待修清单」悄悄变成「退化了也不报」：
   // UX-FIXED-01 / 01b 已由 #132 修复，现在是正式守护 —— 把供货商改回裸 Input
   // 或删掉 supplier_id 外键，本 spec 会直接红。UX-A11Y-01 仍挂起（#135）。
-  const PENDING_UX_CHECKS = ['UX-A11Y-01']
+  // #135 修完供应商表单的 label 关联后，UX-A11Y-01 已转为**正式守护**：
+  // 名单清空意味着任何 UX 判定失败都会让本 spec 直接红，不再进「已知缺陷」豁免。
+  // 往这里加条目前先确认它真的是「已登记待修」，而不是拿豁免掩盖回归。
+  const PENDING_UX_CHECKS: string[] = []
   const isPendingUx = (check: string) => PENDING_UX_CHECKS.some((prefix) => check.startsWith(prefix))
   const uxFindings = verdicts.filter((v) => v.verdict === 'FAIL' && isPendingUx(v.check))
   const functional = verdicts.filter((v) => v.verdict === 'FAIL' && !isPendingUx(v.check))
