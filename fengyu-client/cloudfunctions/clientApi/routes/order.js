@@ -530,6 +530,8 @@ async function createLakalaPreorder({
   subject, attach,
   // 仅用于预下单失败时的安全释放（需要按门店解析商户去查单/关单）
   storeId: storeIdForRelease,
+  // 单次预下单的超时预算；不传则用微信口径。支付宝要给吱口令那一跳让出预算
+  timeoutMs: preorderTimeoutMs,
 }) {
   const totalAmountFen = Math.round(payAmountYuan * 100)
   if (!outTradeNo) {
@@ -547,21 +549,32 @@ async function createLakalaPreorder({
       attach: attach || orderNo,
       subAppid, openid,
       timeoutExpressMin: LAKALA_PREORDER_TIMEOUT_MIN,
-      timeoutMs: LAKALA_PREORDER_TIMEOUT_MS,
+      timeoutMs: preorderTimeoutMs || LAKALA_PREORDER_TIMEOUT_MS,
     })
   } catch (err) {
     // 渠道明确回了业务失败码 → 确定没建单，直接本地释放，不必再跑一遍查单/关单。
+    //
+    // 状态集合是 ('待支付','部分支付')，**刻意不含 '支付失败'**：能走到预下单说明
+    // reserve 已经放行，而 reserve 只接受这两个状态（见其状态闸门）。与
+    // `releaseLakalaPaymentIntent`（含 '支付失败'，服务 staff/admin 的关单路径）用途不同。
     const definitelyNotCreated = err
       && /LAKALA_PREORDER_FAILED/.test(String(err.message || ''))
     if (definitelyNotCreated) {
-      await pg.query(
-        `UPDATE sale_orders
-         SET lakala_out_order_no = NULL, updated_at = NOW()
-         WHERE sale_order_id = $1
-           AND status IN ('待支付', '部分支付')
-           AND lakala_out_order_no = $2`,
-        [orderNo, outTradeNo]
-      )
+      // 释放失败不能盖掉真正的业务错误——那会让前端拿到一个无前缀的 DB 错误，
+      // 错误映射全乱（双谱系评审 round-7）
+      try {
+        await pg.query(
+          `UPDATE sale_orders
+           SET lakala_out_order_no = NULL, updated_at = NOW()
+           WHERE sale_order_id = $1
+             AND status IN ('待支付', '部分支付')
+             AND lakala_out_order_no = $2`,
+          [orderNo, outTradeNo]
+        )
+      } catch (releaseErr) {
+        console.warn('[order/preorder] 明确失败后的本地释放未完成，交由定时补偿兜底:',
+          orderNo, outTradeNo, releaseErr && releaseErr.message)
+      }
     } else {
       // 超时/网络异常：**不确定**渠道是否已建单。以前这里直接放着不管，留下「意图活跃
       // 但没有快照」的状态——顾客重试只会撞 PAYMENT_INTENT_ACTIVE，得等渠道超时 + 定时
@@ -574,8 +587,13 @@ async function createLakalaPreorder({
   }
 
   // 微信通道：校验拉卡拉返回的 app_id 与我方 subAppid 一致（防止拉卡拉商户绑定错误导致用户支付到别人账户）
+  //
+  // 这条抛错发生在预下单**成功之后**：渠道单已经建好、本地意图已占，但快照还没落。
+  // 不释放就又是「意图活跃但无快照」，顾客重试只会撞 PAYMENT_INTENT_ACTIVE
+  // （双谱系评审 round-7）。这笔单本来就不该被支付，安全释放正合适。
   if (accountType === 'WECHAT' && transType === '71') {
     if (subAppid && resp.lakalaAppId && resp.lakalaAppId !== subAppid) {
+      await releaseIntentAfterPreorderFailure(orderNo, outTradeNo, storeIdForRelease)
       throw new Error(`INVALID_STATE: LAKALA_APPID_MISMATCH: 拉卡拉返回 app_id=${resp.lakalaAppId} 与 sub_appid=${subAppid} 不一致`)
     }
   }
@@ -642,7 +660,16 @@ const LAKALA_VOID_CALL_TIMEOUT_MS = 7000
  * 正是安全释放本身要消灭的状态。
  */
 const LAKALA_PREORDER_TIMEOUT_MS = 20000
-const LAKALA_SHARE_CODE_TIMEOUT_MS = 8000
+
+/**
+ * 支付宝通道要多走一跳吱口令（且失败会自动重试一次），必须比微信更紧（双谱系评审 round-7）：
+ *   15s + (6s + 1s 退避 + 6s) + 释放 7s×3 = 49s，对 60s 函数超时留 11s。
+ * 用微信那套 20s/8s 会算到 58s——余量只剩 2s，扛不住冷启动 + PG 建连 + 十来次查询的开销，
+ * 而且最坏路径的几跳在网络劣化时高度相关（拉卡拉慢的时候，释放查询也慢），
+ * 不是可以相乘的独立小概率。释放跑不完就又留下「意图活跃但无快照」——它本该消灭的状态。
+ */
+const LAKALA_PREORDER_TIMEOUT_ALIPAY_MS = 15000
+const LAKALA_SHARE_CODE_TIMEOUT_MS = 6000
 
 /**
  * 复用旧支付场次的最小剩余有效期。低于这个值不复用——顾客还没输完密码渠道单就过期了，
@@ -3343,6 +3370,7 @@ async function alipayPay(ctx) {
       orderNo,
       outTradeNo: reservation.outTradeNo,
       storeId: reservation.storeId,
+      timeoutMs: LAKALA_PREORDER_TIMEOUT_ALIPAY_MS,
       merchantNo: reservation.merchant.merchantNo,
       termNo: reservation.merchant.termNo,
       payAmountYuan: reservation.payAmount,
@@ -4130,6 +4158,7 @@ async function repay(ctx) {
       orderNo: saleOrderId,
       outTradeNo: reservedOutTradeNo,
       storeId: repayStoreId,
+      timeoutMs: LAKALA_PREORDER_TIMEOUT_ALIPAY_MS,
       merchantNo: repayMerchant.merchantNo,
       termNo: repayMerchant.termNo,
       payAmountYuan: repayAmountInput,

@@ -37,7 +37,16 @@ function clearClientApiCache() {
 // 调用方传进来的 event —— 任何已登录顾客都能用 wx.cloud.callFunction 在 data 里塞这两个
 // 字段把断言骗过去，等于完全绕开 HMAC。来源证明不能放在调用方可控的数据里。
 describe('HTTP-only action 不可经 cloud.callFunction 调用', () => {
-  const HTTP_ONLY = ['auth.uploadStaffAvatar', 'order.voidPaymentIntent']
+  // 从 index.js 反向读出 allowlist 来驱动用例，而不是再抄一份常量：
+  // 抄一份的话，新增第三个 HTTP-only action 时伪造用例不会自动覆盖到它
+  // （源码扫描能保住安全性质，保不住行为覆盖）——双谱系评审 round-7。
+  const HTTP_ONLY = (() => {
+    const fs = require('fs')
+    const path = require('path')
+    const src = fs.readFileSync(path.resolve(__dirname, '../index.js'), 'utf8')
+    const m = src.match(/HTTP_ACTION_ALLOWLIST = new Set\(\[([^\]]*)\]\)/)
+    return m[1].split(',').map((x) => x.trim().replace(/^['"]|['"]$/g, '')).filter(Boolean)
+  })()
 
   test.each(HTTP_ONLY)('%s：伪造 _fromHttp/_hmacVerified 仍被拒绝', async (action) => {
     const { main } = require('../index')
