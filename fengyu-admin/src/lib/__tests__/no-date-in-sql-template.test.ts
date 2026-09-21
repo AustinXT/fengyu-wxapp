@@ -25,10 +25,18 @@ const ADMIN_ROOT = path.resolve(__dirname, '../../..')
 
 /**
  * 豁免：测试文件自身。`visit-points.test.ts` 的「对照组」用例**故意**把裸 Date 插进模板，
- * 用来证明 drizzle 确实不代为序列化（见该文件注释）。生产代码一律不豁免。
+ * 用来证明 drizzle 确实不代为序列化（见该文件注释）。
+ *
+ * 判据是「**该文件 import 了 vitest**」，不是路径。按 `__tests__/` 目录豁免会留一个洞：
+ * 有人把生产 helper 放进测试目录，它就永久免检了。
  */
-function isExempt(fileName: string): boolean {
-  return /\.test\.tsx?$/.test(fileName) || fileName.includes(`${path.sep}__tests__${path.sep}`)
+function isExempt(sf: ts.SourceFile): boolean {
+  return sf.statements.some(
+    (st) =>
+      ts.isImportDeclaration(st) &&
+      ts.isStringLiteral(st.moduleSpecifier) &&
+      st.moduleSpecifier.text === 'vitest',
+  )
 }
 
 interface Hit {
@@ -36,6 +44,32 @@ interface Hit {
   line: number
   expr: string
   type: string
+}
+
+/**
+ * tag 是否解析到 drizzle 的 `sql`。
+ *
+ * 用**符号**而非 `node.tag.getText() === 'sql'`：后者对 `import { sql as raw }` 与
+ * `drizzleOrm.sql` 两种写法都会判否，**整个模板被跳过**（守护静默失效）。
+ */
+function isDrizzleSqlTag(tag: ts.Node, checker: ts.TypeChecker): boolean {
+  let sym = checker.getSymbolAtLocation(tag)
+  if (sym && sym.flags & ts.SymbolFlags.Alias) sym = checker.getAliasedSymbol(sym)
+  return sym?.getName() === 'sql'
+}
+
+/**
+ * 类型里是否含 JS `Date`。按**符号名**判，不按 `typeToString()` 的正则：
+ *   - `Date | null` → 拆 union 后命中（正则也能命中，但靠的是巧合）
+ *   - `type Clock = Date` 这类别名 → 符号仍是 `Date`，命中；正则看到 "Clock" 会漏
+ *   - `SQL<Date>`（`sql<Date>\`\`` 片段，运行时安全）→ 符号是 `SQL`，不命中；
+ *     正则会把它误报
+ *   - `PgColumn<{…dataType:"date"…}>` 列引用（渲染成列名，安全）→ 符号是 `PgColumn`，不命中
+ *   - `any` → 无符号，不命中。静态判不了，属已知盲区（别在 sql`` 里 `as any`）
+ */
+function containsDateType(type: ts.Type): boolean {
+  const parts = type.isUnion() ? type.types : [type]
+  return parts.some((p) => ((p.getSymbol() ?? p.aliasSymbol)?.getName()) === 'Date')
 }
 
 function scanSqlTemplatesForDate(): Hit[] {
@@ -50,24 +84,22 @@ function scanSqlTemplatesForDate(): Hit[] {
   for (const sf of program.getSourceFiles()) {
     if (sf.isDeclarationFile) continue
     if (!sf.fileName.startsWith(path.join(ADMIN_ROOT, 'src') + path.sep)) continue
-    if (isExempt(sf.fileName)) continue
+    if (isExempt(sf)) continue
 
     const visit = (node: ts.Node): void => {
       if (
         ts.isTaggedTemplateExpression(node) &&
-        node.tag.getText(sf) === 'sql' &&
-        ts.isTemplateExpression(node.template)
+        ts.isTemplateExpression(node.template) &&
+        isDrizzleSqlTag(node.tag, checker)
       ) {
         for (const span of node.template.templateSpans) {
-          const typeName = checker.typeToString(checker.getTypeAtLocation(span.expression))
-          // 排除列引用：drizzle 的 PgColumn 泛型参数里带 dataType:"date"，字符串里也会出现 Date，
-          // 但那是列不是值，`${table.updatedAt}` 渲染成列名，安全。
-          if (/\bDate\b/.test(typeName) && !/PgColumn|Column</.test(typeName)) {
+          const type = checker.getTypeAtLocation(span.expression)
+          if (containsDateType(type)) {
             hits.push({
               file: path.relative(ADMIN_ROOT, sf.fileName),
               line: sf.getLineAndCharacterOfPosition(span.expression.getStart(sf)).line + 1,
               expr: span.expression.getText(sf),
-              type: typeName,
+              type: checker.typeToString(type),
             })
           }
         }
@@ -93,5 +125,6 @@ describe('禁止把 JS Date 插进 drizzle sql`` 模板（#253 回归守护）',
         : `发现 ${hits.length} 处把 Date 插进 sql\`\` 模板，运行时会抛 ERR_INVALID_ARG_TYPE：\n${report}\n` +
           `修法：改用 @/lib/db-time 的 nowTs() / beijingTs(d) / beijingBoundaryTs(dateStr, time)。`,
     ).toEqual([])
-  }, 30_000)
+    // CI 冷缓存下建 program 比本机慢得多，超时给到 60s（本机实测约 12s）。
+  }, 60_000)
 })

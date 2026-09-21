@@ -52,6 +52,25 @@ export function beijingTs(d: Date) {
 }
 
 /**
+ * **绝对时刻**（保留毫秒）：`'<ISO8601 带 Z>'::timestamptz`。
+ *
+ * 与 `beijingTs` 的分工：
+ *   - `beijingTs(d)` 走 `fmtDateTime` 落北京墙钟字面，**截断到秒**。适合"这一天/这个钟点"
+ *     这类墙钟语义（到期日、报表边界、按日归属的锚点）。
+ *   - `instantTs(d)` 直接绑 `toISOString()`（带 `Z`，PG 无歧义解析），**毫秒不丢**。适合
+ *     拿来做 `>=` / `<` **阈值比较**的时刻 —— 秒级截断会把比较窗口放宽最多 999ms，
+ *     落在金额口径上就是真金白银（见 `actions/refunds.ts` 的会员跌档超额扣除阈值）。
+ *
+ * 列自 migration 0076 起是 timestamptz(1184)，ISO+Z 与列语义直接对齐，无需 `AT TIME ZONE`。
+ */
+export function instantTs(d: Date) {
+  if (!(d instanceof Date) || Number.isNaN(d.getTime())) {
+    throw new TypeError(`instantTs 需要有效的 Date，收到：${String(d)}`)
+  }
+  return sql`${d.toISOString()}::timestamptz`
+}
+
+/**
  * 报表/列表筛选的日期边界：date input 串 'YYYY-MM-DD' + 时分秒 → 北京 timestamptz。
  *
  * 列表筛选 dateFrom/dateTo（或 startDate/endDate）来自 `<input type="date">`，是裸日期串；ES 规范按

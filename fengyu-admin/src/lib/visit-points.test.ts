@@ -108,12 +108,40 @@ describe('会员到店积分（admin）', () => {
     // 任一处回退裸 ${now} 这条即红。
     expect(params.some((p) => p instanceof Date)).toBe(false)
 
+    // 片段复用守护：beijingTs() 返回的同一个 SQL 对象在本条模板里被引用两次。
+    // drizzle 的 SQL 是不可变 chunk 树、序列化是纯遍历，两次引用 → 两个独立占位符 + 两份参数。
+    // 锁住参数总数与占位顺序，防止将来有人"优化"成复用一个占位符（会静默错位）。
+    expect(params).toEqual([
+      'client-001', 20, 'visit-points:client-001:2026-08-13',
+      '2026-08-13 18:00:00', 'client-001', '2026-08-13 18:00:00', 'client-001',
+    ])
+
     // 下面两条锁的是**选型**（I5：外部入参走 beijingTs 落北京墙钟），不是 #253 的不变量：
     // 改成 nowTs() / now.toISOString() 同样能修好 #253，但这两条会红。
     // 若哪天有意改选型，应同步改这两条断言，而不是删掉它们。
     // 两处时间写入（point_transactions.created_at、client_wechat_users.points_updated_at）都被包装：
     expect(params.filter((p) => p === '2026-08-13 18:00:00')).toHaveLength(2)
     expect(text.match(/AT TIME ZONE 'Asia\/Shanghai'/g)).toHaveLength(2)
+  })
+
+  // 补发场景：业务锚点回到历史服务日，但余额变更时间必须留在真实当下，
+  // 否则 points_updated_at 会倒退，按更新时间做增量同步/对账的下游会漏掉这次变更。
+  it('业务锚点与余额变更时间可分离，points_updated_at 不跟着锚点倒退', async () => {
+    const execute = vi.fn().mockResolvedValue([{ points_balance: 140 }])
+    await grantVisitPointsEntry(
+      { execute } as never,
+      'client-001',
+      '2026-08-13',
+      20,
+      new Date('2026-08-12T16:00:00.000Z'), // 锚点：北京 2026-08-13 00:00:00
+      new Date('2026-09-22T02:00:00.000Z'), // 余额变更：北京 2026-09-22 10:00:00
+    )
+
+    const { params } = compile(execute.mock.calls[0][0] as SQL)
+    // created_at 用锚点（出现 1 次），points_updated_at 用真实当下（出现 1 次）
+    expect(params.filter((p) => p === '2026-08-13 00:00:00')).toHaveLength(1)
+    expect(params.filter((p) => p === '2026-09-22 10:00:00')).toHaveLength(1)
+    expect(params.some((p) => p instanceof Date)).toBe(false)
   })
 
   // 对照组 = drizzle 0.45 行为快照 + 升级信号。
