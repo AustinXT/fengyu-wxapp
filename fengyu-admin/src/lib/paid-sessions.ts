@@ -91,8 +91,8 @@ export const FULL_REFUND_ZERO_AMOUNT_PAID_SESSIONS_SQL = `WITH full_refund_zero_
 /**
  * STEP 1.6：转换单转入行按已兑现价值重建 received。
  * 已兑现价值 = 转出旧卡价值 + 本单净到账，且封顶转入总价；多行按 sale_amount
- * 权重分摊，最后一行吸收分币尾差。这样待支付/部分支付转换单不会因创建时写入
- * 完整转入金额而提前解锁全部次数，结清时又恰好恢复完整转入价值。
+ * 权重、以累计比例的相邻边界差分摊（每行非负且 Σ 精确等于 target）。这样待支付/部分支付
+ * 转换单不会因创建时写入完整转入金额而提前解锁全部次数，结清时又恰好恢复完整转入价值。
  */
 export const CONVERSION_IN_ITEMS_RECEIVED_RECALC_SQL = `WITH conversion_order AS (
       SELECT so.sale_order_type,
@@ -102,12 +102,27 @@ export const CONVERSION_IN_ITEMS_RECEIVED_RECALC_SQL = `WITH conversion_order AS
                FROM sale_items out_item
                WHERE out_item.sale_order_id = $1 AND out_item.item_direction = '转出'
              ), 0)::numeric AS converted_value,
+             -- #182：**已被折走**的转入行（存在未关闭的转出行引用它）不参与重分摊。
+             -- 判据刻意不用 waived_amount > 0：全额结清的转入行再被折抵时 Δ = 0、不写
+             -- waived_amount，却同样已被注销权益（剩余次数归零），而本 SQL 是
+             -- **整额覆盖式**重分摊（SET received = allocated），一旦 target 收缩就会把它的
+             -- received 改小 → 立刻踩 D3。转出行引用才是「已被折走」的充分判据。
+             -- 关单回滚会还原（转出行随转换单置 '已关闭'）、删单会物理删掉转出行，两条路径下
+             -- 本判据都自动回归，无需额外清理。
              COALESCE((
                SELECT SUM(in_item.sale_amount::numeric)
                FROM sale_items in_item
                WHERE in_item.sale_order_id = $1 AND in_item.item_direction = '转入'
                  AND in_item.sale_amount::numeric > 0
-             ), 0)::numeric AS in_total
+                 AND NOT EXISTS (SELECT 1 FROM sale_items conv_out JOIN sale_orders conv_out_order ON conv_out_order.sale_order_id = conv_out.sale_order_id WHERE conv_out.ref_sale_item_id = in_item.sale_item_id AND conv_out.item_direction = '转出' AND conv_out_order.status <> '已关闭')
+             ), 0)::numeric AS in_total,
+             -- 已退出转入行占掉的实收，要从本轮可分配的 target 里扣除
+             COALESCE((
+               SELECT SUM(in_item.received::numeric)
+               FROM sale_items in_item
+               WHERE in_item.sale_order_id = $1 AND in_item.item_direction = '转入'
+                 AND EXISTS (SELECT 1 FROM sale_items conv_out JOIN sale_orders conv_out_order ON conv_out_order.sale_order_id = conv_out.sale_order_id WHERE conv_out.ref_sale_item_id = in_item.sale_item_id AND conv_out.item_direction = '转出' AND conv_out_order.status <> '已关闭')
+             ), 0)::numeric AS waived_in_received
       FROM sale_orders so
       WHERE so.sale_order_id = $1
     ),
@@ -116,29 +131,37 @@ export const CONVERSION_IN_ITEMS_RECEIVED_RECALC_SQL = `WITH conversion_order AS
              si.sale_amount::numeric AS item_sale_amount,
              conversion_order.in_total,
              LEAST(conversion_order.in_total,
-                   conversion_order.converted_value + conversion_order.net_received) AS target_received,
-             ROW_NUMBER() OVER (ORDER BY si.sale_item_id) AS rn,
-             COUNT(*) OVER () AS item_count
+                   GREATEST(0, conversion_order.converted_value + conversion_order.net_received
+                               - conversion_order.waived_in_received)) AS target_received,
+             SUM(si.sale_amount::numeric) OVER (
+               ORDER BY si.sale_item_id
+               ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+             ) AS cumulative_sale_amount
       FROM sale_items si
       CROSS JOIN conversion_order
       WHERE conversion_order.sale_order_type = '转换单'
         AND si.sale_order_id = $1
         AND si.item_direction = '转入'
         AND si.sale_amount::numeric > 0
-    ),
-    provisional AS (
-      SELECT ranked.*,
-             ROUND(target_received * item_sale_amount / in_total, 2) AS provisional_received
-      FROM ranked
-      WHERE in_total > 0
+        AND NOT EXISTS (SELECT 1 FROM sale_items conv_out JOIN sale_orders conv_out_order ON conv_out_order.sale_order_id = conv_out.sale_order_id WHERE conv_out.ref_sale_item_id = si.sale_item_id AND conv_out.item_direction = '转出' AND conv_out_order.status <> '已关闭')
     ),
     allocated AS (
+      -- 按**累计比例的相邻边界差**分摊（与 STEP 1.75 同一手法）。
+      -- 逐行 ROUND 后让最后一行吸收尾差的老写法有两个毛病：① 差额可为负
+      -- （target=0.02、四行等权，每行 ROUND(0.005,2)=0.01，前三行已占 0.03）→ received 变负
+      -- → FLOOR(负 × sc / sa) = -1 → 已消费 0 也满足 0 > -1 → 误抛 D3；② 只把尾行钳到 0
+      -- 又会让 Σ 超过 target（0.03 > 0.02），凭空膨胀转入行价值、提前解锁次数并污染营业额分配。
+      -- 边界差同时保证「每行非负」与「Σ 精确等于 target」：ROUND 对非负 target 单调不减，
+      -- 相邻差必 >= 0；首尾相消后合计 = ROUND(target, 2) - ROUND(0, 2)。
+      -- 「= target」的前提是 target 本身两位小数 —— 它的三个输入（so.received / refunded_amount /
+      -- sale_items.received、sale_amount）都是 numeric(10,2)，加减后仍是两位，故成立。
       SELECT sale_item_id,
-             CASE WHEN rn = item_count
-                    THEN target_received - COALESCE(SUM(provisional_received) FILTER (WHERE rn < item_count) OVER (), 0)
-                  ELSE provisional_received
-             END::numeric(10, 2) AS item_received
-      FROM provisional
+             (
+               ROUND(target_received * cumulative_sale_amount / in_total, 2)
+               - ROUND(target_received * (cumulative_sale_amount - item_sale_amount) / in_total, 2)
+             )::numeric(10, 2) AS item_received
+      FROM ranked
+      WHERE in_total > 0
     )
     UPDATE sale_items si
     SET received = allocated.item_received,
@@ -234,14 +257,33 @@ export async function recalcPaidSessionsForOrder(tx: AdminTx, saleOrderId: strin
       caps AS (
         SELECT si.sale_item_id,
                COALESCE(tg.targeted, 0)::numeric AS targeted,
-               GREATEST(0, si.pending_received::numeric - COALESCE(tg.targeted, 0)::numeric) AS pend_cap,
-               GREATEST(0, si.sale_amount::numeric - GREATEST(si.pending_received::numeric, COALESCE(tg.targeted, 0)::numeric)) AS sale_cap
+               -- #182 折抵退出的行（waived_amount > 0）：它的**毛已付**已经钉在 pending_received
+             -- 上（折抵时写入 = 净实收 + 该行已退款额），改为**固定预留**、等同于一笔定向支付，
+             -- 不再参与按比例的两段瀑布，预留额同时从 untargeted 扣除（见 agg）。
+             -- 两个都不能省：① 仍丢回比例池 → untargeted < Σpend_cap 时该行只拿到比例份额、
+             --   低于钉住值，而其 remaining_sessions 已注销为 0 → (session_count − 0) >
+             --   paid_sessions 立刻踩 D3，该单此后任何整单 recalc 全抛 UNDERFLOW；
+             -- ② 事后再单行抬回下限 → Σ行级 received 会超过订单级实收（凭空多出行级实收，
+             --   污染 0040 视图 residual），且同单其它行被少分。预留是唯一同时守住两者的写法。
+             CASE WHEN si.waived_amount::numeric > 0
+                  THEN GREATEST(0, si.pending_received::numeric - COALESCE(tg.targeted, 0)::numeric)
+                  ELSE 0 END AS reserved,
+             CASE WHEN si.waived_amount::numeric > 0 THEN 0
+                  ELSE GREATEST(0, si.pending_received::numeric - COALESCE(tg.targeted, 0)::numeric)
+             END AS pend_cap,
+             -- ⚠ 第二段产能不得改成 (sale_amount + waived_amount)：折抵行已结清，**不应**再参与
+             -- 第二段 untargeted 分配（否则会吸走本该给同单欠款行的回款：两行各原价 ¥100 各实收
+             -- ¥50，A 折抵后再回款 ¥50，若 A 仍有产能会分成 A=¥75/B=¥75，而正确结果是
+             -- A=¥50/B=¥100，还可能让 B 少解锁权益甚至踩 D3）。折抵行这里直接取 0。
+             CASE WHEN si.waived_amount::numeric > 0 THEN 0
+                  ELSE GREATEST(0, si.sale_amount::numeric - GREATEST(si.pending_received::numeric, COALESCE(tg.targeted, 0)::numeric))
+             END AS sale_cap
         FROM sale_items si
         LEFT JOIN tg ON tg.ref_sale_item_id = si.sale_item_id
         WHERE si.sale_order_id = ${saleOrderId} AND si.item_direction = '购买'
       ),
       agg AS (
-        SELECT GREATEST(0, (SELECT received FROM sale_orders WHERE sale_order_id = ${saleOrderId})::numeric - COALESCE((SELECT SUM(targeted) FROM tg), 0)::numeric) AS untargeted,
+        SELECT GREATEST(0, (SELECT received FROM sale_orders WHERE sale_order_id = ${saleOrderId})::numeric - COALESCE((SELECT SUM(targeted) FROM tg), 0)::numeric - COALESCE(SUM(reserved), 0)::numeric) AS untargeted,
                COALESCE(SUM(pend_cap), 0)::numeric AS pend_cap_total,
                COALESCE(SUM(sale_cap), 0)::numeric AS sale_cap_total
         FROM caps
@@ -249,7 +291,7 @@ export async function recalcPaidSessionsForOrder(tx: AdminTx, saleOrderId: strin
       UPDATE sale_items si
       SET received = CASE
             WHEN agg.pend_cap_total > 0 OR agg.sale_cap_total > 0
-              THEN caps.targeted
+              THEN caps.targeted + caps.reserved
                 + ROUND(
                     (CASE WHEN agg.pend_cap_total > 0
                           THEN LEAST(agg.untargeted, agg.pend_cap_total) * caps.pend_cap / agg.pend_cap_total
@@ -257,7 +299,7 @@ export async function recalcPaidSessionsForOrder(tx: AdminTx, saleOrderId: strin
                   + (CASE WHEN agg.sale_cap_total > 0 AND agg.untargeted > agg.pend_cap_total
                           THEN (agg.untargeted - agg.pend_cap_total) * caps.sale_cap / agg.sale_cap_total
                           ELSE 0 END), 2)
-            ELSE caps.targeted
+            ELSE caps.targeted + caps.reserved
           END,
           updated_at = NOW()
       FROM caps, agg
@@ -301,12 +343,27 @@ export async function recalcPaidSessionsForOrder(tx: AdminTx, saleOrderId: strin
                FROM sale_items out_item
                WHERE out_item.sale_order_id = ${saleOrderId} AND out_item.item_direction = '转出'
              ), 0)::numeric AS converted_value,
+             -- #182：**已被折走**的转入行（存在未关闭的转出行引用它）不参与重分摊。
+             -- 判据刻意不用 waived_amount > 0：全额结清的转入行再被折抵时 Δ = 0、不写
+             -- waived_amount，却同样已被注销权益（剩余次数归零），而本 SQL 是
+             -- **整额覆盖式**重分摊（SET received = allocated），一旦 target 收缩就会把它的
+             -- received 改小 → 立刻踩 D3。转出行引用才是「已被折走」的充分判据。
+             -- 关单回滚会还原（转出行随转换单置 '已关闭'）、删单会物理删掉转出行，两条路径下
+             -- 本判据都自动回归，无需额外清理。
              COALESCE((
                SELECT SUM(in_item.sale_amount::numeric)
                FROM sale_items in_item
                WHERE in_item.sale_order_id = ${saleOrderId} AND in_item.item_direction = '转入'
                  AND in_item.sale_amount::numeric > 0
-             ), 0)::numeric AS in_total
+                 AND NOT EXISTS (SELECT 1 FROM sale_items conv_out JOIN sale_orders conv_out_order ON conv_out_order.sale_order_id = conv_out.sale_order_id WHERE conv_out.ref_sale_item_id = in_item.sale_item_id AND conv_out.item_direction = '转出' AND conv_out_order.status <> '已关闭')
+             ), 0)::numeric AS in_total,
+             -- 已退出转入行占掉的实收，要从本轮可分配的 target 里扣除
+             COALESCE((
+               SELECT SUM(in_item.received::numeric)
+               FROM sale_items in_item
+               WHERE in_item.sale_order_id = ${saleOrderId} AND in_item.item_direction = '转入'
+                 AND EXISTS (SELECT 1 FROM sale_items conv_out JOIN sale_orders conv_out_order ON conv_out_order.sale_order_id = conv_out.sale_order_id WHERE conv_out.ref_sale_item_id = in_item.sale_item_id AND conv_out.item_direction = '转出' AND conv_out_order.status <> '已关闭')
+             ), 0)::numeric AS waived_in_received
       FROM sale_orders so
       WHERE so.sale_order_id = ${saleOrderId}
     ),
@@ -315,29 +372,37 @@ export async function recalcPaidSessionsForOrder(tx: AdminTx, saleOrderId: strin
              si.sale_amount::numeric AS item_sale_amount,
              conversion_order.in_total,
              LEAST(conversion_order.in_total,
-                   conversion_order.converted_value + conversion_order.net_received) AS target_received,
-             ROW_NUMBER() OVER (ORDER BY si.sale_item_id) AS rn,
-             COUNT(*) OVER () AS item_count
+                   GREATEST(0, conversion_order.converted_value + conversion_order.net_received
+                               - conversion_order.waived_in_received)) AS target_received,
+             SUM(si.sale_amount::numeric) OVER (
+               ORDER BY si.sale_item_id
+               ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+             ) AS cumulative_sale_amount
       FROM sale_items si
       CROSS JOIN conversion_order
       WHERE conversion_order.sale_order_type = '转换单'
         AND si.sale_order_id = ${saleOrderId}
         AND si.item_direction = '转入'
         AND si.sale_amount::numeric > 0
-    ),
-    provisional AS (
-      SELECT ranked.*,
-             ROUND(target_received * item_sale_amount / in_total, 2) AS provisional_received
-      FROM ranked
-      WHERE in_total > 0
+        AND NOT EXISTS (SELECT 1 FROM sale_items conv_out JOIN sale_orders conv_out_order ON conv_out_order.sale_order_id = conv_out.sale_order_id WHERE conv_out.ref_sale_item_id = si.sale_item_id AND conv_out.item_direction = '转出' AND conv_out_order.status <> '已关闭')
     ),
     allocated AS (
+      -- 按**累计比例的相邻边界差**分摊（与 STEP 1.75 同一手法）。
+      -- 逐行 ROUND 后让最后一行吸收尾差的老写法有两个毛病：① 差额可为负
+      -- （target=0.02、四行等权，每行 ROUND(0.005,2)=0.01，前三行已占 0.03）→ received 变负
+      -- → FLOOR(负 × sc / sa) = -1 → 已消费 0 也满足 0 > -1 → 误抛 D3；② 只把尾行钳到 0
+      -- 又会让 Σ 超过 target（0.03 > 0.02），凭空膨胀转入行价值、提前解锁次数并污染营业额分配。
+      -- 边界差同时保证「每行非负」与「Σ 精确等于 target」：ROUND 对非负 target 单调不减，
+      -- 相邻差必 >= 0；首尾相消后合计 = ROUND(target, 2) - ROUND(0, 2)。
+      -- 「= target」的前提是 target 本身两位小数 —— 它的三个输入（so.received / refunded_amount /
+      -- sale_items.received、sale_amount）都是 numeric(10,2)，加减后仍是两位，故成立。
       SELECT sale_item_id,
-             CASE WHEN rn = item_count
-                    THEN target_received - COALESCE(SUM(provisional_received) FILTER (WHERE rn < item_count) OVER (), 0)
-                  ELSE provisional_received
-             END::numeric(10, 2) AS item_received
-      FROM provisional
+             (
+               ROUND(target_received * cumulative_sale_amount / in_total, 2)
+               - ROUND(target_received * (cumulative_sale_amount - item_sale_amount) / in_total, 2)
+             )::numeric(10, 2) AS item_received
+      FROM ranked
+      WHERE in_total > 0
     )
     UPDATE sale_items si
     SET received = allocated.item_received,

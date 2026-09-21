@@ -258,16 +258,47 @@ async function main() {
     await pgQuery(`DELETE FROM sale_order_payments WHERE id = $1`, [ref.data.paymentId])
   }
 
-  // ── 7. 全部结算的家居行不进候选 ──
-  await pgQuery(`UPDATE sale_items SET picked_up_quantity = quantity WHERE sale_item_id = $1`, [srcItemId])
+  // ── 7. 既无剩余权益、也无剩余已付的家居行不进候选 ──
+  // ⚠ #182 起候选闸门是**金额**口径，所以这里必须构造账实一致的状态：真实业务中
+  // 10 盒全部结算（提 3 + 退 7）时，退款会把行 received 由 STEP 1.5 扣到 300，
+  // 剩余已付 = 300 − 已提货 300 = 0。只把 picked_up_quantity 抬满而不动 received，
+  // 造出的是「有钱没货」的账实不一致状态，那种状态按新口径会（正确地）被当作
+  // 纯余数行放行——见 7b。
+  await pgQuery(
+    `UPDATE sale_items SET picked_up_quantity = quantity, received = 300 WHERE sale_item_id = $1`,
+    [srcItemId])
   const held2 = await invokeStaffApi('order.customerHeldCards', {
     _testOpenid: TEST_MANAGER_OPENID,
     clientUserId: TEST_CLIENT_USER_ID,
   })
   check(held2.code === 0, `customerHeldCards(2) code=${held2.code} msg=${held2.message}`)
   check(Array.isArray(held2.data?.cards), 'customerHeldCards(2) 未返回 cards 数组')
-  const stillCandidate = (held2.data?.cards || []).some((c) => c.saleItemId === srcItemId)
-  check(!stillCandidate, '已全部结算的家居行不应出现在折抵候选中')
+  const stillCandidate = (held2.data?.cards || []).find((c) => c.saleItemId === srcItemId)
+  check(!stillCandidate,
+    '已全部结算、且剩余已付为 0 的家居行不应出现在折抵候选中'
+    + `（实际 deductibleAmount=${stillCandidate?.deductibleAmount}`
+    + ` remainingQuantity=${stillCandidate?.remainingQuantity}`
+    + ` received=${stillCandidate?.received} saleAmount=${stillCandidate?.saleAmount}`
+    + ` pickedUpQuantity=${stillCandidate?.pickedUpQuantity}）`)
+
+  // ── 7b. #182 纯余数行：没有剩余权益、但还有不足一整盒的已付余额 → 必须能选到 ──
+  // 这正是 issue #182 的核心场景（prod FY-XSD-WX-2608170136：1 件 ¥680 只付 ¥594）。
+  // 旧口径 FLOOR(50 / 100) = 0 → 整行被剔除，顾客的 ¥50 既折不掉也提不出。
+  await pgQuery(`UPDATE sale_items SET received = 350 WHERE sale_item_id = $1`, [srcItemId])
+  const held3 = await invokeStaffApi('order.customerHeldCards', {
+    _testOpenid: TEST_MANAGER_OPENID,
+    clientUserId: TEST_CLIENT_USER_ID,
+  })
+  check(held3.code === 0, `customerHeldCards(3) code=${held3.code} msg=${held3.message}`)
+  const remainderCard = (held3.data?.cards || []).find((c) => c.saleItemId === srcItemId)
+  check(!!remainderCard,
+    '#182 纯余数行（剩余已付 ¥50、无剩余件数）必须出现在折抵候选中')
+  if (remainderCard) {
+    check(remainderCard.deductibleAmount === '50.00',
+      `纯余数行折抵额应=50.00（350 − 已提 300），实际=${remainderCard.deductibleAmount}`)
+    check(Number(remainderCard.remainingQuantity) === 0,
+      `纯余数行可折件数应=0，实际=${remainderCard.remainingQuantity}`)
+  }
 
   if (errors.length) {
     rec(`  ✗ FAIL: ${errors.length} 项断言失败`)

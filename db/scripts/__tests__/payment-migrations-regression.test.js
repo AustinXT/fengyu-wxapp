@@ -18,6 +18,35 @@ function sha256(relativePath) {
   ).digest('hex')
 }
 
+/**
+ * journal 索引守护：守的是「已发布迁移不可被重写/改号」，**不是**「编号必须无空洞」。
+ *
+ * 0..PUBLISHED_THROUGH 这一段已发布，必须逐位对齐下标；之后新增的条目只要求 idx 严格递增。
+ *
+ * 放宽的理由（#154）：test 与 dev 两线的编号自 0039 起曾分叉，在一条线上取自然号会与另一线
+ * 撞名——本仓已为此踩坑两次。留出的空洞不会在后续产生二次冲突（drizzle 取「上一条 idx + 1」
+ * 作下一个号），但会被原来的 idx===index 写法误判成「重写了已发布迁移」。
+ *
+ * 2026-09-21（PR #204，test→main）：两线编号在这次合并里重新对齐，0..45 段已无空洞，
+ * #154 / #182 的两条改号落到 0046 / 0047。`PUBLISHED_THROUGH` 取 45 —— 即 main 上已发布的
+ * 最大号；本次新增的两条只受「严格递增」约束，下次发布后可再上调。
+ */
+const PUBLISHED_THROUGH = 45
+
+function assertJournalIndices(journal) {
+  journal.entries.forEach((entry, index) => {
+    if (entry.idx <= PUBLISHED_THROUGH) {
+      assert.equal(entry.idx, index, '已发布迁移（0..40）的 journal 索引必须连续，不能重写或改号')
+    }
+    if (index > 0) {
+      assert.ok(
+        entry.idx > journal.entries[index - 1].idx,
+        `journal 索引必须严格递增：第 ${index} 条 idx=${entry.idx} 未大于前一条 ${journal.entries[index - 1].idx}`,
+      )
+    }
+  })
+}
+
 function receiptTotals(sql) {
   const match = sql.match(/receipt_totals AS \(([\s\S]*?)\),\n  residuals AS/)
   assert.ok(match, '应存在 receipt_totals CTE')
@@ -377,9 +406,7 @@ test('0014 journal/snapshot 在合并迁移链中保持连续', () => {
   assert.equal(snapshot14.prevId, snapshot13.id)
   assert.equal(mergeEntry?.tag, '0028_merge-main-into-dev')
   assert.equal(snapshot28.prevId, snapshot14.id)
-  journal.entries.forEach((entry, index) => {
-    assert.equal(entry.idx, index, 'journal 索引必须连续，不能重写已发布迁移')
-  })
+  assertJournalIndices(journal)
 
   assert.notDeepEqual(
     snapshot14.views['public.sale_order_performance_events'],
@@ -436,9 +463,7 @@ test('0037 journal 与 snapshot 保持连续且只新增款项归属字段和索
 
   assert.equal(entry37?.tag, '0037_abandoned_talisman')
   assert.equal(snapshot37.prevId, snapshot36.id)
-  journal.entries.forEach((entry, index) => {
-    assert.equal(entry.idx, index, 'journal 索引必须连续，不能重写已发布迁移')
-  })
+  assertJournalIndices(journal)
   const columns = snapshot37.tables['public.sale_order_payments'].columns
   assert.equal(columns.performance_attribution_date.type, 'date')
   assert.equal(columns.performance_attribution_adjusted_at.type, 'timestamp with time zone')
@@ -480,9 +505,7 @@ test('0038 journal 与 snapshot 连续且除两个业绩视图外无 schema 漂�
 
   assert.equal(entry38?.tag, '0038_sync_mixed_payment_attribution')
   assert.equal(snapshot38.prevId, snapshot37.id)
-  journal.entries.forEach((entry, index) => {
-    assert.equal(entry.idx, index, 'journal 索引必须连续，不能重写已发布迁移')
-  })
+  assertJournalIndices(journal)
   for (const viewName of [
     'public.sale_order_performance_events',
     'public.sale_item_performance_events',
@@ -620,9 +643,7 @@ test('0041 journal 与 snapshot 连续且除两个业绩视图与该 CHECK 外�
 
   assert.equal(entry41?.tag, '0041_bizarre_wolfpack')
   assert.equal(snapshot41.prevId, snapshot40.id)
-  journal.entries.forEach((entry, index) => {
-    assert.equal(entry.idx, index, 'journal 索引必须连续，不能重写已发布迁移')
-  })
+  assertJournalIndices(journal)
   for (const viewName of [
     'public.sale_order_performance_events',
     'public.sale_item_performance_events',

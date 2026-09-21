@@ -252,10 +252,13 @@ export function ConversionPanel({
               {filteredHeldCards.map((c) => {
                 const count = selectedCount(c)
                 const checked = count > 0
-                const remainLabel =
-                  c.productType === '疗程卡'
-                    ? `剩 ${c.remainingSessions ?? 0} ${c.unit}`
-                    : `可折抵 ${c.remainingQty ?? 0} ${c.unit}`
+                // #182：折抵 = 整行退出，展示「注销多少权益」而非「剩余多少」。
+                // 数量为 0 的纯余数行（次数已用完 / 件已全提，只剩不足一整次(件)的已付余额）
+                // 单独提示，否则操作员会以为这行是空的、不敢选。
+                const remainQty = c.remainingQty ?? 0
+                const remainLabel = remainQty > 0
+                  ? `注销 ${remainQty} ${c.unit}`
+                  : `仅余额（无剩余${c.productType === '疗程卡' ? '次数' : '件数'}）`
                 return (
                   <label
                     key={c.groupKey}

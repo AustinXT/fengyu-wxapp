@@ -25,6 +25,7 @@
 | [009](arch/009_lakala-merchant-onboarding.md) | 2026-05-29 | 拉卡拉商户入网模块（admin 14 步 OpenAPI 流程 + N:1 商户绑定 + 费率全 admin 不可见） |
 | [010](arch/010_fengyu-analyst-independent-site.md) | 2026-07-21 | fengyu-analyst 独立分析站点技术方案（Next.js 独立部署 + 复用业务主库与 admin 账号权限） |
 | [011](arch/011_inventory-domain-v3.md) | 2026-09-02 | 进销存域 v3（三级统一 14+1 表 + 33 单据类型 + 独立角色三重 scope 强制 + 金额触发器单源 + 四档价格裁剪） |
+| [012](arch/012_split-picked-up-quantity-into-three-columns.md) | 2026-09-18 | sale_items.picked_up_quantity 三语义拆列（新增 refunded_quantity / converted_quantity） |
 
 ## ops — 生产操作
 

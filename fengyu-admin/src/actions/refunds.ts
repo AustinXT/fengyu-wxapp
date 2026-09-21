@@ -77,7 +77,12 @@ export interface RefundableItem {
   quantity: number
   sessionCount: number | null
   remainingSessions: number | null
+  /** 已物理提货件数（#154 拆列后 picked_up_quantity 只记提货） */
   pickedUpQuantity: number | null
+  /** 已退款结算件数（#154 新列） */
+  refundedQuantity: number | null
+  /** 已转换折抵件数（#154 新列） */
+  convertedQuantity: number | null
 }
 
 export interface GetRefundableResult {
@@ -241,6 +246,39 @@ async function reconcileOrderStatusAfterRefund(tx: RefundTx, saleOrderId: string
          AND elem ->> 'refSaleItemId' <> 'OVERPAY'
        GROUP BY elem ->> 'refSaleItemId'
     ),
+    -- #182：已被转换单折走的数量不是「交付给顾客的服务/货」，必须从 consumed_value 里排除。
+    -- 折抵 = 整行退出会把 remaining_sessions 扣光 / picked_up_quantity 抬满，若不排除，
+    -- consumed_value 会膨胀成整行标价价值，retained_value 随之大于行实收 →
+    -- 同单其它行退款触发本函数时，已结清的折抵行会被误判回「部分支付」。
+    converted_qty AS (
+      SELECT out_item.ref_sale_item_id AS sale_item_id,
+             SUM(out_item.quantity) AS qty
+        FROM sale_items out_item
+        JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id
+       WHERE out_item.item_direction = '转出'
+         AND conv_order.status <> '已关闭'
+         AND out_item.ref_sale_item_id IN (
+           SELECT sale_item_id FROM sale_items WHERE sale_order_id = ${saleOrderId}
+         )
+       GROUP BY out_item.ref_sale_item_id
+    ),
+    -- 已转走**金额**（与 converted_qty 同源、同过滤）。#154×#182：已转换那部分计入
+    -- consumed_value 时必须取转出行 received 的聚合，**不能用「已转换件数 × 单价」推算** ——
+    -- 折抵金额含余数时两者不等（折 4 件可能带走 ¥450 而非 ¥400），用件数推算会低估
+    -- retained_value；纯余数行（quantity=0 而金额>0）更会整笔漏掉。
+    -- ⚠ 刻意**不限 out_item.product_type**：疗程卡与纯余数转出行都必须计入（#182 不变量）。
+    converted_amt AS (
+      SELECT out_item.ref_sale_item_id AS sale_item_id,
+             SUM(GREATEST(0, -out_item.received::numeric)) AS amt
+        FROM sale_items out_item
+        JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id
+       WHERE out_item.item_direction = '转出'
+         AND conv_order.status <> '已关闭'
+         AND out_item.ref_sale_item_id IN (
+           SELECT sale_item_id FROM sale_items WHERE sale_order_id = ${saleOrderId}
+         )
+       GROUP BY out_item.ref_sale_item_id
+    ),
     item_states AS (
       SELECT si.sale_item_id,
              si.received::numeric AS received,
@@ -248,12 +286,21 @@ async function reconcileOrderStatusAfterRefund(tx: RefundTx, saleOrderId: string
              COALESCE(rr.refunded, 0) AS refunded,
              COALESCE(fr.full_refund, false) AS full_refund,
              CASE WHEN si.product_type = '疗程卡'
-               THEN GREATEST(0, COALESCE(si.session_count, 0) - COALESCE(si.remaining_sessions, 0)) * COALESCE(si.unit_real_price::numeric, 0)
+               -- 疗程卡：先按**已转走次数**扣掉被折走的部分（折抵把 remaining_sessions 扣光，
+               -- (sc − remaining) 已含这 Q 次，不扣就双计），再加回实际折走**金额**。
+               THEN GREATEST(0, COALESCE(si.session_count, 0) - COALESCE(si.remaining_sessions, 0) - COALESCE(cq.qty, 0)) * COALESCE(si.unit_real_price::numeric, 0)
+                    + COALESCE(ca.amt, 0)
+               -- 家居：#154 拆列后 picked_up_quantity 只含**物理提货**（不再含已退款/已转换），
+               -- 故这里**不再减** cq.qty，改为加上已转走金额。「已消耗」仍不含已退款
+               -- （received 已由 paid-sessions STEP 1.5 扣过逐项退款，再扣一次顾客会少退）。
                ELSE GREATEST(0, COALESCE(si.picked_up_quantity, 0)) * COALESCE(si.unit_real_price::numeric, 0)
+                    + COALESCE(ca.amt, 0)
              END AS consumed_value
         FROM sale_items si
         LEFT JOIN receipt_refunds rr ON rr.sale_item_id = si.sale_item_id
         LEFT JOIN full_refunds fr ON fr.sale_item_id = si.sale_item_id
+        LEFT JOIN converted_qty cq ON cq.sale_item_id = si.sale_item_id
+        LEFT JOIN converted_amt ca ON ca.sale_item_id = si.sale_item_id
        WHERE si.sale_order_id = ${saleOrderId}
          AND si.item_direction = '购买'
     ),
@@ -335,14 +382,17 @@ export const getRefundable = withAnyPermission(
       // #145/#153：家居可退数量受「剩余已付」封顶，需要 pickup_records 与转出行聚合
       // （折抵会带走剩余已付的全部金额却只占用向下取整的件数）。
       pickedQuantity: sql<number>`COALESCE((SELECT SUM(pr.pickup_quantity)::int FROM pickup_records pr WHERE pr.sale_item_id = ${saleItems.saleItemId}), 0)`,
-      convertedAmount: sql<string>`COALESCE((SELECT SUM(GREATEST(0, -out_item.received::numeric)) FROM sale_items out_item JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id WHERE out_item.ref_sale_item_id = ${saleItems.saleItemId} AND out_item.item_direction = '转出' AND out_item.product_type = '家居产品' AND conv_order.status <> '已关闭'), 0)`,
+      convertedAmount: sql<string>`COALESCE((SELECT SUM(GREATEST(0, -out_item.received::numeric)) FROM sale_items out_item JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id WHERE out_item.ref_sale_item_id = ${saleItems.saleItemId} AND out_item.item_direction = '转出' AND conv_order.status <> '已关闭'), 0)`,
+      // #182：疗程卡已消耗价值要先按已转走**次数**扣减，再加已转走金额，否则与
+      // (session_count − remaining_sessions) 双计 → overpay 被钳成 0
+      convertedQuantity: sql<number>`COALESCE((SELECT SUM(out_item.quantity) FROM sale_items out_item JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id WHERE out_item.ref_sale_item_id = ${saleItems.saleItemId} AND out_item.item_direction = '转出' AND conv_order.status <> '已关闭'), 0)::int`,
     })
     .from(saleItems)
     .leftJoin(productSkus, eq(saleItems.skuId, productSkus.skuId))
     .where(and(eq(saleItems.saleOrderId, saleOrderId), eq(saleItems.itemDirection, '购买')))
 
   // 先建 RefundSourceItem[]（computeOverpayRemainder 入参），再派生展示用 RefundableItem[]
-  const srcItems: RefundSourceItem[] = rows.map(({ item, pickedQuantity, convertedAmount }) => ({
+  const srcItems: RefundSourceItem[] = rows.map(({ item, pickedQuantity, convertedAmount, convertedQuantity }) => ({
     sale_item_id: item.saleItemId,
     sku_id: item.skuId,
     product_name: item.productName,
@@ -355,9 +405,13 @@ export const getRefundable = withAnyPermission(
     unit_real_price: item.unitRealPrice,
     sale_amount: item.saleAmount,
     received: item.received,
+    // #154×#182：本字段只保留**转出行聚合**那一份（覆盖疗程卡、且不限 product_type）；
+    //   sale_items.converted_quantity 列按设计只维护家居，疗程卡行恒 0，用它会漏扣。
     picked_up_quantity: item.pickedUpQuantity,
+    refunded_quantity: item.refundedQuantity,
     picked_quantity: Number(pickedQuantity ?? 0),
     converted_amount: convertedAmount,
+    converted_quantity: Number(convertedQuantity ?? 0),
     sales_category: item.salesCategory as SalesCategory | null,
     service_fee: item.serviceFee,
   }))
@@ -383,6 +437,8 @@ export const getRefundable = withAnyPermission(
       sessionCount: src.session_count,
       remainingSessions: src.remaining_sessions,
       pickedUpQuantity: src.picked_up_quantity,
+      refundedQuantity: src.refunded_quantity ?? 0,
+      convertedQuantity: src.converted_quantity ?? 0,
     }
   })
 
@@ -735,19 +791,24 @@ export const createRefund = withPermission(
     .select({
       item: saleItems,
       pickedQuantity: sql<number>`COALESCE((SELECT SUM(pr.pickup_quantity)::int FROM pickup_records pr WHERE pr.sale_item_id = ${saleItems.saleItemId}), 0)`,
-      convertedAmount: sql<string>`COALESCE((SELECT SUM(GREATEST(0, -out_item.received::numeric)) FROM sale_items out_item JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id WHERE out_item.ref_sale_item_id = ${saleItems.saleItemId} AND out_item.item_direction = '转出' AND out_item.product_type = '家居产品' AND conv_order.status <> '已关闭'), 0)`,
+      convertedAmount: sql<string>`COALESCE((SELECT SUM(GREATEST(0, -out_item.received::numeric)) FROM sale_items out_item JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id WHERE out_item.ref_sale_item_id = ${saleItems.saleItemId} AND out_item.item_direction = '转出' AND conv_order.status <> '已关闭'), 0)`,
+      // #182：疗程卡已消耗价值要先按已转走**次数**扣减，再加已转走金额，否则与
+      // (session_count − remaining_sessions) 双计 → overpay 被钳成 0
+      convertedQuantity: sql<number>`COALESCE((SELECT SUM(out_item.quantity) FROM sale_items out_item JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id WHERE out_item.ref_sale_item_id = ${saleItems.saleItemId} AND out_item.item_direction = '转出' AND conv_order.status <> '已关闭'), 0)::int`,
     })
     .from(saleItems)
     .where(and(eq(saleItems.saleOrderId, refSaleOrderId), eq(saleItems.itemDirection, '购买'))))
-    .map(({ item, pickedQuantity, convertedAmount }) => ({
+    .map(({ item, pickedQuantity, convertedAmount, convertedQuantity }) => ({
       ...item,
       pickedQuantity: Number(pickedQuantity ?? 0),
       convertedAmount,
+      convertedQuantity: Number(convertedQuantity ?? 0),
     }))
 
   const sourceItems: RefundSourceItem[] = origRows.map((r) => ({
     picked_quantity: r.pickedQuantity,
     converted_amount: r.convertedAmount,
+    converted_quantity: Number(r.convertedQuantity ?? 0),
     sale_item_id: r.saleItemId,
     sku_id: r.skuId,
     product_name: r.productName,
@@ -761,6 +822,7 @@ export const createRefund = withPermission(
     sale_amount: r.saleAmount,
     received: r.received,
     picked_up_quantity: r.pickedUpQuantity,
+    refunded_quantity: r.refundedQuantity,
     sales_category: r.salesCategory as SalesCategory | null,
     service_fee: r.serviceFee,
   }))
@@ -1178,8 +1240,8 @@ export const approveRefund = withPermission(
         cascadeItems = [{ saleItemId: refSaleItemId, sessionCount, refundAmount, isFullItemRefund: true }]
       }
       // G2 复校（2026-09-14 #125）：家居行可退数量必须在锁内复算。
-      // createRefund 是事务外、无行锁读 picked_up_quantity 定额的；其间若有转换单把这批货折抵走
-      // （picked_up_quantity 被抬高），cascade 通道 5 的 LEAST(quantity, picked_up + qty) 会把冲突
+      // createRefund 是事务外、无行锁读已结算数量定额的；其间若有转换单把这批货折抵走
+      // （converted_quantity 被抬高），拆列前 cascade 通道 5 的 LEAST(quantity, picked_up + qty) 会把冲突
       // 静默封顶吞掉 —— 同一批货既进了转换单又退了现金，且家居账面 refunded_quantity 归 0 查无实据。
       // 这里按 sale_item_id 定序锁行复核，不足即拒绝审批。staff routes/order.js 有同义副本。
       const homeRefundQty = new Map<string, number>()
@@ -1201,6 +1263,11 @@ export const approveRefund = withPermission(
         if (qty > 0) homeRefundQty.set(it.saleItemId, (homeRefundQty.get(it.saleItemId) ?? 0) + qty)
       }
       {
+        // #182 锁序：先锁本单（sale_orders），再锁源行（sale_items）——与入账路径、
+        // createConversionOrder、关单回滚统一为 sale_orders → sale_items，避免 40P01。
+        await tx.execute(sql`
+          SELECT sale_order_id FROM sale_orders WHERE sale_order_id = ${refSaleOrderId} FOR UPDATE
+        `)
         // 无条件锁：老退款单（无 note.items 且 ref_sale_item_id 为空）会让 homeRefundQty 为空，
         // 若因此跳过加锁就退回「createRefund 无锁定额 + cascade LEAST 静默封顶」的旧缺口。
         // 锁集必须覆盖本单**全部购买行**而非只锁家居子集：后续 cascadeRefund /
@@ -1208,6 +1275,9 @@ export const approveRefund = withPermission(
         // 的混选转换事务形成反向锁序而死锁。按 sale_item_id 升序，与 createConversionOrder 的锁序一致。
         const lockedRows = await tx.execute(sql`
           SELECT sale_item_id, product_type, quantity, COALESCE(picked_up_quantity, 0) AS picked_up_quantity,
+                 session_count, remaining_sessions, paid_sessions,
+                 COALESCE(refunded_quantity, 0) AS refunded_quantity,
+                 COALESCE(converted_quantity, 0) AS converted_quantity,
                  unit_real_price, received
             FROM sale_items
            WHERE sale_order_id = ${refSaleOrderId}
@@ -1215,26 +1285,39 @@ export const approveRefund = withPermission(
            ORDER BY sale_item_id
              FOR UPDATE
         `)
-        // #145/#153：锁取得后另起一条语句聚合（与持锁查询同语句会拿到旧快照）
+        // #145/#153：锁取得后另起一条语句聚合转出行（与持锁查询同语句会拿到旧快照）。
+        // #154：已提货件数直读持锁行的 picked_up_quantity（EvalPlanQual 会刷新它），
+        // 本查询只剩**金额**——折抵金额含余数，不能由件数 × 单价推算。
         const consumedRows = (await tx.execute(sql`
           SELECT si.sale_item_id,
-                 COALESCE((SELECT SUM(pr.pickup_quantity)::int FROM pickup_records pr
-                            WHERE pr.sale_item_id = si.sale_item_id), 0)::int AS picked_quantity,
                  COALESCE((SELECT SUM(GREATEST(0, -out_item.received::numeric))
                              FROM sale_items out_item
                              JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id
                             WHERE out_item.ref_sale_item_id = si.sale_item_id
                               AND out_item.item_direction = '转出'
-                              AND out_item.product_type = '家居产品'
-                              AND conv_order.status <> '已关闭'), 0) AS converted_amount
+                              -- #182 不限 product_type：疗程卡的已转走金额同样要从 overpay 里扣掉，
+                              -- 否则折走的余数能再退一次；纯余数转出行(quantity=0)也必须计入。
+                              AND conv_order.status <> '已关闭'), 0) AS converted_amount,
+                 COALESCE((SELECT SUM(out_item.quantity)
+                             FROM sale_items out_item
+                             JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id
+                            WHERE out_item.ref_sale_item_id = si.sale_item_id
+                              AND out_item.item_direction = '转出'
+                              AND conv_order.status <> '已关闭'), 0)::int AS converted_quantity
             FROM sale_items si
            WHERE si.sale_order_id = ${refSaleOrderId}
              AND si.item_direction = '购买'
         `)) as unknown as Array<Record<string, unknown>>
         const consumedById = new Map(consumedRows.map((c) => [c.sale_item_id as string, c]))
         for (const r of Array.from(lockedRows as unknown as Iterable<Record<string, unknown>>)) {
-          if (r.product_type !== '家居产品') continue
-          const requested = homeRefundQty.get(r.sale_item_id as string) ?? 0
+          // #182：疗程卡也要进来做**余数**复核（与 staff order.js 的 approveRefund 逐行对齐）。
+          // 疗程卡可退次数由 cascadeRefund + recalcPaidSessionsForOrder 的 D3 守护把关，
+          // 但 overpay 余数（received > sale_amount 的多收零头）现在可以被转换单折走，
+          // 申请时合法的余数可能在审批前已经没了——漏这一段就能「折一次再退一次」。
+          const isHome = r.product_type === '家居产品'
+          const isCard = r.product_type === '疗程卡'
+          if (!isHome && !isCard) continue
+          const requested = isHome ? (homeRefundQty.get(r.sale_item_id as string) ?? 0) : 0
           const requestedOverpay = homeOverpayAmt.get(r.sale_item_id as string) ?? 0
           if (requested <= 0 && requestedOverpay <= 0) continue
           // 与 calculateUnusedQuantity 同口径：折抵可能带走剩余已付的全部金额却只占用
@@ -1245,22 +1328,26 @@ export const approveRefund = withPermission(
             sku_id: null,
             product_name: null,
             product_type: r.product_type as ProductType,
-            session_count: null,
-            remaining_sessions: null,
-            paid_sessions: null,
+            session_count: r.session_count == null ? null : Number(r.session_count),
+            remaining_sessions: r.remaining_sessions == null ? null : Number(r.remaining_sessions),
+            paid_sessions: r.paid_sessions == null ? null : Number(r.paid_sessions),
             unit_price: 0,
             quantity: Number(r.quantity ?? 0),
             unit_real_price: r.unit_real_price as string,
             received: r.received as string,
             picked_up_quantity: Number(r.picked_up_quantity ?? 0),
-            picked_quantity: c ? Number(c.picked_quantity ?? 0) : null,
+            refunded_quantity: Number(r.refunded_quantity ?? 0),
+            picked_quantity: Number(r.picked_up_quantity ?? 0),
             converted_amount: c ? (c.converted_amount as string) : null,
+            converted_quantity: c ? Number(c.converted_quantity ?? 0) : 0,
             sales_category: null,
             service_fee: null,
           }
-          const refundable = calculateUnusedQuantity(lockedSrc)
-          if (requested > refundable) {
-            throw new ApiError('CONFLICT', 'HOME_PRODUCT_REFUNDABLE_CHANGED: 家居产品可退数量已变化（可能已被转换折抵或提货），请刷新后重新发起退款')
+          if (isHome) {
+            const refundable = calculateUnusedQuantity(lockedSrc)
+            if (requested > refundable) {
+              throw new ApiError('CONFLICT', 'HOME_PRODUCT_REFUNDABLE_CHANGED: 家居产品可退数量已变化（可能已被转换折抵或提货），请刷新后重新发起退款')
+            }
           }
           // 余数同样按锁内新快照复核：申请时的 ¥50 余数可能已被折抵带走
           if (requestedOverpay > 0) {
@@ -1268,7 +1355,9 @@ export const approveRefund = withPermission(
               computeItemOverpayRemainders([lockedSrc]).get(r.sale_item_id as string) ?? 0,
             )
             if (requestedOverpay > currentOverpay + 0.001) {
-              throw new ApiError('CONFLICT', 'HOME_PRODUCT_REFUNDABLE_CHANGED: 家居产品可退余数已变化（可能已被转换折抵或提货），请刷新后重新发起退款')
+              throw new ApiError('CONFLICT', isHome
+                ? 'HOME_PRODUCT_REFUNDABLE_CHANGED: 家居产品可退余数已变化（可能已被转换折抵或提货），请刷新后重新发起退款'
+                : 'OVERPAY_REFUNDABLE_CHANGED: 可退余数已变化（可能已被转换折抵），请刷新后重新发起退款')
             }
           }
         }
@@ -1325,6 +1414,10 @@ export const approveRefund = withPermission(
     }
     // #125 G2：家居可退数量在审批前被转换折抵/提货吃掉。必须单独成分支——落到下面的
     // UNKNOWN「请稍后重试」会误导审批员反复重试同一笔（picked_up 抬高是持久状态，重试必然再失败）。
+    // #182 同理：疗程卡的 overpay 余数也会被转换折抵吃掉，同样不能落到「请稍后重试」
+    if (msg.includes('OVERPAY_REFUNDABLE_CHANGED')) {
+      return { success: false, error: { code: 'CONFLICT', message: '可退余数已变化（可能已被转换折抵），请刷新后重新发起退款' } }
+    }
     if (msg.includes('HOME_PRODUCT_REFUNDABLE_CHANGED')) {
       return { success: false, error: { code: 'CONFLICT', message: '家居产品可退数量已变化（可能已被转换折抵或提货），请刷新后重新发起退款' } }
     }

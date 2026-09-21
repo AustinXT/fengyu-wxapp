@@ -10,7 +10,7 @@ export interface CustomerHomeProduct {
   paidQuantity: number
   pickedQuantity: number
   refundedQuantity: number
-  /** 已通过转换单折抵转走的数量（2026-09-14 #125，与已退款分列，二者同源于 picked_up_quantity） */
+  /** 已通过转换单折抵转走的数量（2026-09-14 #125；#154 起直读 sale_items.converted_quantity 独立列） */
   convertedQuantity: number
   remainingQuantity: number
   pendingPickupQuantity: number
@@ -35,7 +35,10 @@ export function deriveHomeProductStatus(
   if (pendingPickupQuantity > 0) return pickedQuantity > 0 ? '部分提货' : '待提货'
   // 「待付清」必须与欠款金额绑定：只有真的算得出欠款才这么标。
   // 否则寄存单（金额列留空）和退款后仍有剩余的行会被误标成待付清/已完成。
-  // 注：#125 整行折抵后原单 received 不变（方案 A），欠款仍挂原单继续催收，故此处照常标「待付清」。
+  // 注：#182 起折抵会把原单该行欠款归零（下调 sale_amount / total_amount，下调量记在
+  // sale_items.waived_amount，仅关闭/删除该转换单时还原），因此被折抵过的行算出来的
+  // unpaidAmount 通常已是 0，不会再落进「待付清」。这条分支现在只服务**未被折抵**的欠款行。
+  // （#125 的方案 A「received 不变、欠款仍挂原单继续催收」已作废。）
   if (unpaidAmount != null && unpaidAmount > 0) return '待付清'
   // 还有未交付份额但算不出欠款（寄存单、退款后剩余）——是待提，不是已完成。
   // 整行折抵后 remainingQuantity = purchased − settled = 0，不会落进这条分支。
@@ -57,20 +60,31 @@ export function deriveHomeProductStatus(
  * - **退款不在此处扣**：`received` 已由 paid-sessions STEP 1.5 扣过逐项退款，
  *   而 `picked_up_quantity` 又包含退款结算数，两边都减就是重复扣减（顾客少折）。
  * - **件数**向下取整：`floor(剩余已付 / 单价)`，再受物理未结算件数封顶。
- *   转出行受 `chk_item_quantity > 0` 约束，不足一整件时没有载体可折，整行不可折抵
- *   （已付款留原单，付清后即可折抵或提货）。
+ *
+ * ⚠️ **#182 起本函数的 `quantity` 只是「提货 / 退款」口径，不再是折抵数量。**
+ *   折抵改为「整行退出」：一次带走该行**全部**物理未结算件（见 cards.ts / orders.ts 的
+ *   `remainingQty`），`chk_item_quantity` 也已放宽到允许转出行 quantity = 0（纯余数行）。
+ *   折抵只复用本函数的 `amount`（剩余已付，含不足一整件的余数）。
+ *   **不要**再把 `homeDeductible().quantity` 当折抵件数用——那会把「1 件 ¥680 只付 ¥594」
+ *   这类行重新算成 0 件而整行剔除，正是 #182 要修的缺陷。
  * - **金额**即剩余已付，含不足一整件的余数（用户 2026-09-14 拍板，顾客付的钱一分不丢）。
  * - 寄存单与 0 元赠品行没有「实收」可言，维持原口径 `单价 × 未结算件数`。
  *
- * 疗程卡不走本函数（维持 #125 的 remaining_sessions 口径）。
- * 与 staffApi routes/order.js 的 `hp.deductible_quantity` / `hp.deductible_amount` LATERAL 跨端同义。
+ * 疗程卡不走本函数：#182 起它与家居共用「剩余已付」金额口径，但已交付价值按
+ * （session_count − remaining_sessions）× 单价 算，与家居的 pickup_records 口径不同，
+ * 故在 cards.ts / orders.ts 内按分单独计算，没有抽成公共函数。
+ * 本函数的 `amount` 仍与 staffApi routes/order.js 的 `hp.deductible_amount` 家居分支同义；
+ * `quantity` 则只对应提货侧的 `pendingHomeProductQuantity`，**不**对应折抵数量。
  */
 export function homeDeductible(row: {
   saleOrderType: string | null
   quantity: number
+  /** 已**物理提货**件数（#154 拆列后的 picked_up_quantity；拆列前本参数是「已结算」合计） */
   pickedUpQuantity: number | null
-  /** 该行 pickup_records 的物理提货合计（不含退款、不含折抵） */
-  pickedQuantity: number | null
+  /** 已退款结算件数（#154 新列） */
+  refundedQuantity: number | null
+  /** 已转换折抵件数（#154 新列） */
+  convertedQuantity: number | null
   /** 该行已被折抵转走的金额合计（转出行 received 取正，排除已关闭的转换单） */
   convertedAmount: string | number | null
   saleAmount: string | number | null
@@ -78,8 +92,12 @@ export function homeDeductible(row: {
   unitRealPrice: string | number | null
 }): { quantity: number; amount: number } {
   const qty = Number(row.quantity ?? 0)
-  const settled = Math.max(0, Number(row.pickedUpQuantity ?? 0))
-  const picked = Math.max(0, Number(row.pickedQuantity ?? 0))
+  // #154：拆列前「已结算」与「已提货」共用一列，需要调用方额外从 pickup_records 聚合出
+  // pickedQuantity 才能把两者分开；拆列后两者各有独立列，聚合参数随之取消。
+  const picked = Math.max(0, Number(row.pickedUpQuantity ?? 0))
+  const settled = picked
+    + Math.max(0, Number(row.refundedQuantity ?? 0))
+    + Math.max(0, Number(row.convertedQuantity ?? 0))
   const convertedAmount = Math.max(0, Number(row.convertedAmount ?? 0))
   const saleAmount = Number(row.saleAmount ?? 0)
   const received = Number(row.received ?? 0)

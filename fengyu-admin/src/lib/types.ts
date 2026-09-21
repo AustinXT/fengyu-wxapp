@@ -508,8 +508,12 @@ export interface SaleItem {
   /** 待确认实付草稿（开单约定实付，行级；不进 received/paid_sessions，仅展示 + 确认收款入账参考） */
   pendingReceived: string
   expireDate: string | null
-  /** 已结算数量（家居产品；picked_up_quantity = 已提货+已退款+已转换；订单详情页填充，其它查询不取） */
+  /** 已提货数量（家居产品；#154 拆列后 picked_up_quantity 只记物理提货；订单详情页填充，其它查询不取） */
   pickedUpQuantity?: number | null
+  /** 已退款结算数量（家居产品；#154 新列；订单详情页填充，其它查询不取） */
+  refundedQuantity?: number | null
+  /** 已转换折抵数量（家居产品；#154 新列；订单详情页填充，其它查询不取） */
+  convertedQuantity?: number | null
   remark: string | null
   salesCategory: SalesCategory | null
   createdAt: string

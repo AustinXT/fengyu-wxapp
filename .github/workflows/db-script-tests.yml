@@ -43,7 +43,47 @@ jobs:
         working-directory: db
         run: npm ci
 
-      # 不连库：需要真实 PG 的 attribution-trigger 一项在缺 ATTRIBUTION_PG_TEST_URL 时自行 skip
+      # 不连库：需要真实 PG 的两个 .pg.test.js 在缺对应 env 时自行 skip
       - name: Run db script tests
         working-directory: db
         run: npm run db:test
+
+  # 迁移 0043 的回填是「带 CTE + CASE 分支的 UPDATE + 三个 DO 断言块」，分支走没走对、
+  # residual<0 会不会被 ELSE 0 吞掉、断言会不会真的 RAISE —— 全是 SQL 语义，字面量快照测不出来。
+  # 这套回归是唯一验证它的地方，缺 env 时会整套 skip，等于 CI 零覆盖，所以单起一个带 PG 的 job。
+  backfill-semantics:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install db deps
+        working-directory: db
+        run: npm ci
+
+      # 从零 apply 全部 migration —— 顺带守住「新迁移能在空库上跑起来」
+      - name: Apply migrations
+        working-directory: db
+        env:
+          DATABASE_URL: postgresql://postgres:test@localhost:5432/test
+        run: npx drizzle-kit migrate
+
+      - name: Run #154 backfill semantics regression
+        env:
+          QUANTITY_SPLIT_PG_TEST_URL: postgresql://postgres:test@localhost:5432/test
+        run: node --test db/scripts/__tests__/quantity-split-backfill.pg.test.js

@@ -35,9 +35,19 @@ const URL = process.env.ATTRIBUTION_PG_TEST_URL
  * 本套件会建数据、在事务里禁用核心 trigger、跑并发事务，误连一次就是生产事故。
  */
 const BUSINESS_DB_NAME = 'fengyu_wxapp'
+/**
+ * 一并拒绝 admin 的 e2e 库：它与 dev 业务库同机、只靠库名隔离（见 db/CLAUDE.md「e2e 独立库」），
+ * 同样不该被拿来禁用 trigger 和跑并发事务。
+ */
+const FORBIDDEN_DB_NAMES = [BUSINESS_DB_NAME, 'fengyu_e2e']
 
 /** 夹具前缀，清理时按它删；与 e2e 的 TE2L2_ 命名空间区隔开。 */
 const P = 'T137PG_'
+/**
+ * LIKE 模式：前缀里的 `_` 是 LIKE 通配符，不转义的话 `T137PG_%` 会连 `T137PGx...` 一起删掉 ——
+ * 清理范围宽于约定前缀。
+ */
+const LIKE_P = `${P.replace(/_/g, '\\_')}%`
 
 if (!URL) {
   test('attribution trigger 真实 PG 回归（未设 ATTRIBUTION_PG_TEST_URL，跳过）', { skip: true }, () => {})
@@ -52,7 +62,7 @@ async function assertNotBusinessDatabase(db) {
             COALESCE(host(inet_server_addr()), 'local') AS addr`,
   )
   const { db: dbName, addr } = rows[0]
-  if (dbName === BUSINESS_DB_NAME) {
+  if (FORBIDDEN_DB_NAMES.includes(dbName)) {
     throw new Error(
       `拒绝在业务库上运行本套件：current_database()=${dbName} @ ${addr}。`
       + '本套件会建数据、禁用 trigger、跑并发事务。',
@@ -61,11 +71,36 @@ async function assertNotBusinessDatabase(db) {
 }
 
 function runSuite() {
-  const pool = new Pool({ connectionString: URL, max: 4 })
+  const APP_NAME = 'T137PG'
+  const pool = new Pool({ connectionString: URL, max: 4, application_name: APP_NAME })
+
+  /**
+   * 与 `allocation-lock-order.pg.test.js`（issue #148）互斥。
+   *
+   * `db:test` 并行跑多文件，两个真库套件会连同一个库。光按 application_name 过滤等锁观察不够 ——
+   * 那只解决「看错了谁在等」，不隔离**真实锁图**：本套件会 `ALTER TABLE sale_order_payments
+   * DISABLE TRIGGER`（ACCESS EXCLUSIVE），与对方持有的行锁能绕成跨套件的环，让任一方拿到
+   * 「不是自己那个环产生的」40P01。用会话级 advisory lock 把两个套件串起来（需专用连接，
+   * 池连接轮换会让锁跟着丢）。两个套件各自只跑几百毫秒，串行代价可以忽略。
+   */
+  const SUITE_LOCK_KEY = 148137
+  /**
+   * 锁连接**不能**共用 APP_NAME：它在等 advisory lock 时 `wait_event_type` 也是 'Lock'，
+   * 会被本套件自己的 `waitUntilBlocked()` 当成「被测事务已阻塞」而提前放行（多进程跑时）。
+   */
+  const LOCK_APP_NAME = 'T137PG-suitelock'
+  let suiteLockClient = null
+  /** 库名校验通过才允许跑清理；before 失败时 node:test 仍会执行 after，用它挡住 DELETE。 */
+  let dbVerified = false
   const q = (sql, params) => pool.query(sql, params)
 
   test.before(async () => {
     await assertNotBusinessDatabase(pool)
+    dbVerified = true
+    // 与 allocation-lock-order.pg.test.js 互斥（见 SUITE_LOCK_KEY 说明）
+    suiteLockClient = new Client({ connectionString: URL, application_name: LOCK_APP_NAME })
+    await suiteLockClient.connect()
+    await suiteLockClient.query('SELECT pg_advisory_lock($1)', [SUITE_LOCK_KEY])
     await q(`INSERT INTO org_nodes (id, name, type) VALUES ($1,'测试总部','总部') ON CONFLICT (id) DO NOTHING`, [`${P}HQ`])
     await q(`INSERT INTO org_nodes (id, name, type, parent_id) VALUES ($1,'测试市场','市场',$2) ON CONFLICT (id) DO NOTHING`, [`${P}MK`, `${P}HQ`])
     await q(`INSERT INTO org_nodes (id, name, type, parent_id) VALUES ($1,'测试门店','门店',$2) ON CONFLICT (id) DO NOTHING`, [`${P}ST`, `${P}MK`])
@@ -73,17 +108,30 @@ function runSuite() {
   })
 
   test.after(async () => {
-    await q(`DELETE FROM sale_payment_item_receipts WHERE sale_order_id LIKE $1`, [`${P}%`])
-    await q(`DELETE FROM sale_items WHERE sale_order_id LIKE $1`, [`${P}%`])
-    await q(`DELETE FROM sale_order_payments WHERE sale_order_id LIKE $1`, [`${P}%`])
-    await q(`DELETE FROM sale_orders WHERE sale_order_id LIKE $1`, [`${P}%`])
-    // org_nodes / stores 上有 inventory_sync_location_from_org_node trigger 自动建
-    // inventory_locations 行，不先删它就会撞外键
-    await q(`DELETE FROM inventory_locations WHERE location_id LIKE $1 OR store_id LIKE $1`, [`${P}%`])
-    await q(`DELETE FROM stores WHERE store_id LIKE $1`, [`${P}%`])
-    await q(`DELETE FROM staff_wechat_users WHERE employee_id LIKE $1`, [`${P}%`])
-    await q(`DELETE FROM org_nodes WHERE id LIKE $1`, [`${P}%`])
-    await pool.end()
+    // try/finally：任一 DELETE 抛错都不能跳过连接释放，否则连接池吊住 event loop
+    // → 整个套件挂起而不是红一条。
+    try {
+      // 只有确认过不是业务库才允许发 DELETE：before 抛错时 node:test 仍会执行 after，
+      // 没有这道守卫就会对一个刚被拒绝的库照发整串清理语句。
+      if (dbVerified) {
+        await q(`DELETE FROM sale_payment_item_receipts WHERE sale_order_id LIKE $1`, [LIKE_P])
+        await q(`DELETE FROM sale_items WHERE sale_order_id LIKE $1`, [LIKE_P])
+        await q(`DELETE FROM sale_order_payments WHERE sale_order_id LIKE $1`, [LIKE_P])
+        await q(`DELETE FROM sale_orders WHERE sale_order_id LIKE $1`, [LIKE_P])
+        // org_nodes / stores 上有 inventory_sync_location_from_org_node trigger 自动建
+        // inventory_locations 行，不先删它就会撞外键
+        await q(`DELETE FROM inventory_locations WHERE location_id LIKE $1 OR store_id LIKE $1`, [LIKE_P])
+        await q(`DELETE FROM stores WHERE store_id LIKE $1`, [LIKE_P])
+        await q(`DELETE FROM staff_wechat_users WHERE employee_id LIKE $1`, [LIKE_P])
+        await q(`DELETE FROM org_nodes WHERE id LIKE $1`, [LIKE_P])
+      }
+    } finally {
+      await pool.end().catch(() => {})
+      if (suiteLockClient) {
+        await suiteLockClient.query('SELECT pg_advisory_unlock($1)', [SUITE_LOCK_KEY]).catch(() => {})
+        await suiteLockClient.end().catch(() => {})
+      }
+    }
   })
 
   /** 建一张订单 + 可选的首次支付/储值卡/回款流水，全部不显式带归属日期列（由 trigger 赋值）。 */
@@ -104,9 +152,17 @@ function runSuite() {
     return res.rows[0]
   }
   /**
-   * 等到「有会话正卡在锁上」为止。
+   * 等到「**本套件的**某个会话正卡在锁上」为止。
+   *
    * 原先固定 sleep 500ms：慢机器上被测事务可能在 T1 提交之后才真正执行，
    * 那样即使把 FOR SHARE 删掉测试也会假绿 —— 这类并发用例必须确认对方真的在等。
+   *
+   * ⚠ 必须按 `application_name` 过滤，只数自己人：`db:test` 是
+   * `node --test scripts/__tests__/`，Node 默认并行跑多文件，而
+   * `allocation-lock-order.pg.test.js`（issue #148）复用同一个 `ATTRIBUTION_PG_TEST_URL`
+   * 也在刻意制造等锁会话。只数「全库有没有人在等锁」会被它误触发 → 这里提前返回 →
+   * T1 在 T2 真正排上队之前就 COMMIT，并发时序没建立起来，用例退化成假绿。
+   * （T2 走连接池、pid 不固定，所以用 application_name 而不是 pid 白名单。）
    */
   async function waitUntilBlocked(timeoutMs = 5000) {
     const deadline = Date.now() + timeoutMs
@@ -115,12 +171,14 @@ function runSuite() {
         `SELECT COUNT(*)::int AS n FROM pg_stat_activity
          WHERE datname = current_database()
            AND wait_event_type = 'Lock'
+           AND application_name = $1
            AND pid <> pg_backend_pid()`,
+        [APP_NAME],
       )
       if (rows[0].n > 0) return
       await new Promise((r) => setTimeout(r, 50))
     }
-    throw new Error('等待超时：没有观察到任何会话在等锁，这个并发用例没有真正跑起来')
+    throw new Error('等待超时：没有观察到本套件的会话在等锁，这个并发用例没有真正跑起来')
   }
 
   const dateOf = async (id, changeType) =>
@@ -241,7 +299,7 @@ function runSuite() {
   test('绕过 trigger 写 NULL 会被 chk_sop_attribution_date_present 拦下', async () => {
     const id = `${P}D`
     await seedOrder(id, { orderDate: '2026-09-05', orderDatetime: '2026-09-05 10:00:00+08' })
-    const c = new Client({ connectionString: URL })
+    const c = new Client({ connectionString: URL, application_name: APP_NAME })
     await c.connect()
     try {
       await c.query('BEGIN')
@@ -267,7 +325,7 @@ function runSuite() {
    * 行锁上，整个套件表现为**挂起**而不是一条红 —— 排查成本差很多（本套件踩过）。
    */
   async function runBlockedConcurrency({ holdLock, write }) {
-    const t1 = new Client({ connectionString: URL })
+    const t1 = new Client({ connectionString: URL, application_name: APP_NAME })
     await t1.connect()
     let pending
     try {

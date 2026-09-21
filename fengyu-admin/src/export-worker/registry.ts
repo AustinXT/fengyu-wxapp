@@ -372,6 +372,14 @@ const serviceCommissionColumns = mapColumns([
   { header: '备注', width: 20, key: 'remark' },
 ])
 
+/**
+ * 日期列一律在此处挂 `map: fmtDate`，即使 action 侧已经格式化过。
+ * fmtDate 对 `YYYY-MM-DD` 幂等（无 `T` 直接 slice），重复调用无副作用；
+ * 而列侧不挂 map 时回落的 `text()` 是裸 `String(item)` —— 一旦上游换成 Date 或
+ * 去掉 action 侧格式化，就会把 `Wed Jan 14 2026 ... GMT+0000` 整串写进单元格，
+ * 且 tsc 和单测都不会红（列签名是 `Record<string, unknown>`，类型护栏到此为止）。
+ * ⚠️ 别改用 fmtDateTime 做这种双保险 —— 它不幂等，两侧都做会偏 8 小时。
+ */
 const customerColumns = mapColumns([
   { header: '姓名', width: 14, key: 'name' },
   { header: '手机号', width: 14, key: 'phone' },
@@ -384,9 +392,19 @@ const customerColumns = mapColumns([
   { header: '累计消费', width: 14, key: 'totalSpend' },
   { header: '推荐人', width: 14, key: 'promoterName' },
   { header: '顾客来源', width: 14, key: 'customerSource' },
-  { header: '生日', width: 14, key: 'birthday' },
+  { header: '生日', width: 14, key: 'birthday', map: (row) => fmtDate(value(row, 'birthday') as string | Date | null) },
+  // 「建档日期」而非「注册日期」：created_at 是本系统建档时刻，data-center 的「注册」指的是
+  // became_member_at（会员注册），两个「注册」不是一件事，同名会让甲方拿两张表对不上数。
+  // 老顾客普遍 2026 年才录入本系统，所以「建档日期」晚于「成为会员日期」是正常的（非倒挂 bug）。
+  { header: '建档日期', width: 14, key: 'createdAt', map: (row) => fmtDate(value(row, 'createdAt') as string | Date | null) },
+  { header: '成为会员日期', width: 16, key: 'becameMemberAt', map: (row) => fmtDate(value(row, 'becameMemberAt') as string | Date | null) },
 ])
 
+/**
+ * 「入职日期」插在「职位」之后（雇佣信息聚在一起），因此「生日」及其后 5 列相对
+ * #183 之前的导出文件整体右移一列 —— 按列位置引用旧文件的 Excel 公式会错位。
+ * 后续再加列请一律追加到末尾，不要再中插。
+ */
 const employeeColumns = mapColumns([
   { header: '员工编号', width: 16, key: 'employeeId' },
   { header: '姓名', key: 'name' },
@@ -396,6 +414,7 @@ const employeeColumns = mapColumns([
   { header: '所属组织', width: 18, key: 'orgPath' },
   { header: '所属门店', width: 18, key: 'storeName' },
   { header: '职位', key: 'positionName' },
+  { header: '入职日期', width: 14, key: 'hiredAt', map: (row) => fmtDate(value(row, 'hiredAt') as string | Date | null) },
   { header: '生日', width: 14, key: 'birthday', map: (row) => fmtDate(value(row, 'birthday') as string | Date | null) },
   { header: '技能', width: 24, key: 'skills' },
   { header: '社保', width: 8, key: 'socialInsurance', map: (row) => boolLabel(row, 'socialInsurance') },
@@ -667,13 +686,13 @@ export async function createExportContent(
       return {
         sheetName: '顾客',
         columns: customerColumns,
-        rows: pagedRows((options: ExportBatchOptions<number>) => exportCustomers(params, options)),
+        rows: pagedRows((options: ExportBatchOptions<string>) => exportCustomers(params, options)),
       }
     case 'employees': {
       const nodes = await db.select().from(orgNodes)
       const nodeMap = new Map(nodes.map((node) => [node.id, node]))
       const rows = (async function* (): AsyncIterable<Row> {
-        for await (const source of pagedRows((options: ExportBatchOptions<number>) => exportEmployees(params, options))) {
+        for await (const source of pagedRows((options: ExportBatchOptions<string>) => exportEmployees(params, options))) {
           const path: string[] = []
           let current = source.orgNodeId as string | null | undefined
           const seen = new Set<string>()

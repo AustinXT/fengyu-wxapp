@@ -237,8 +237,33 @@ exports.main = async (event, context) => {
     }
   } catch (error) {
     console.error(`[${action}] Error:`, error)
-    return buildErrorResponse(error)
+    return buildErrorResponse(normalizeRetryableDbError(error))
   }
+}
+
+/**
+ * 把 PG 的可重试错误翻成白名单内的 `CONFLICT:`，避免掉进 `buildErrorResponse` 的
+ * 「-1 服务器内部错误」兜底 —— 那个文案既没告诉用户能重试，也不利于排查。
+ *
+ * 放在全局漏斗而不是各 route 自己 catch（issue #148 评审结论）：死锁是**两个事务共同**造成的，
+ * PG 选谁当 victim 是任意的。只在「营业额分配」一侧翻译，意味着被选中的若是改期 / 收款 / 退款那一侧，
+ * 用户照样看到 -1 —— 兜底覆盖一半等于没有确定性。这里一处即覆盖全部 action。
+ *
+ * 沿 `cause` 链取码：当前 staffApi 直连原生 `pg`、错误是扁平的，但一旦中间引入包装层
+ * （像 admin 侧 drizzle 把错误包进 DrizzleQueryError 那样），只看 `error.code` 会静默失效。
+ *
+ * 只收 40P01：`40001`(serialization_failure) 在默认 READ COMMITTED 下不可达，本仓运行时也没有
+ * 任何 `SET TRANSACTION ISOLATION LEVEL`，加了是死代码。
+ */
+function normalizeRetryableDbError(error) {
+  let cur = error
+  for (let depth = 0; depth < 10 && cur && typeof cur === 'object'; depth++) {
+    if (cur.code === '40P01') {
+      return new Error('CONFLICT: DEADLOCK_DETECTED: 数据正被其他操作修改，请稍后重试')
+    }
+    cur = cur.cause
+  }
+  return error
 }
 
 exports._STORE_MUTATION_ACTIONS = STORE_MUTATION_ACTIONS
