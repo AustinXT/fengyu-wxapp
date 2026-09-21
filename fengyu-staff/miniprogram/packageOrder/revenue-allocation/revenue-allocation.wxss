@@ -196,6 +196,11 @@
   font-size: 28rpx;
   color: #2D2017;
 }
+/* 无门店也无市场的员工（总部职能岗 / 养生部等 store_id 为空者）不渲染右侧 text，
+   此时姓名是唯一子项，放开 60% 上限，避免长姓名被无谓截断 */
+.picker-member-name:last-child {
+  max-width: 100%;
+}
 .picker-member-store {
   display: block;
   /* basis 0 + grow：吃满姓名以外的剩余宽度，ellipsis 的可用宽度才确定 */
