@@ -34,15 +34,14 @@ export default function EmployeesPage({
   skillTags,
   canCreate,
   canManageSkillTags,
-  canDeleteSkillTags,
 }: {
   employees: Employee[];
   total: number;
   orgNodes: OrgNode[];
   skillTags: SkillTag[];
   canCreate: boolean;
+  /** 仅系统管理员：标签的新增/编辑/删除同一口径，见 page.tsx 与 skill-tags.ts（#211） */
   canManageSkillTags: boolean;
-  canDeleteSkillTags: boolean;
 }) {
   const [skillTagDialogOpen, setSkillTagDialogOpen] = useState(false);
   const { get, set, setMany } = useUrlFilters();
@@ -257,7 +256,6 @@ export default function EmployeesPage({
           onOpenChange={setSkillTagDialogOpen}
           skillTags={skillTags}
           canManage={canManageSkillTags}
-          canDelete={canDeleteSkillTags}
         />
       )}
     </div>

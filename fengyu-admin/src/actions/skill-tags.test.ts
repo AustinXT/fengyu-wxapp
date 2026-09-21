@@ -1,7 +1,7 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
 vi.mock('@/db', () => ({
-  db: { select: vi.fn(), transaction: vi.fn() },
+  db: { select: vi.fn(), insert: vi.fn(), transaction: vi.fn() },
 }))
 
 vi.mock('@db/lookup', () => ({
@@ -27,9 +27,10 @@ vi.mock('@/lib/operation-log', () => ({ logOperation: vi.fn(), logUpdate: vi.fn(
 vi.mock('@/lib/pg-error', () => ({ pgErrorCode: vi.fn(() => null) }))
 vi.mock('next/cache', () => ({ revalidatePath: vi.fn() }))
 
-import { deleteSkillTag, updateSkillTag } from './skill-tags'
+import { createSkillTag, deleteSkillTag, getSkillTags, updateSkillTag } from './skill-tags'
 import { db } from '@/db'
 import { getSession } from '@/lib/auth'
+import { requireAdmin } from '@/lib/permissions'
 import { logOperation, logUpdate } from '@/lib/operation-log'
 import { pgErrorCode } from '@/lib/pg-error'
 import { staffWechatUsers } from '@db/user'
@@ -240,5 +241,133 @@ describe('updateSkillTag — 改名级联 array_replace', () => {
     expect(result.success).toBe(false)
     expect(result.message).toContain('请输入标签名称')
     expect(db.transaction).not.toHaveBeenCalled()
+  })
+})
+
+describe('技能标签写操作 — 仅系统管理员硬闸门（#211）', () => {
+  // 店长(manager)/HR 在默认权限矩阵里持有 employee:update，外层 withPermission 放行，
+  // 拦截只能来自函数体首行的 requireAdmin。这里模拟它抛错，验证三个写操作都接了闸门
+  // 且在拦下时一行 SQL 都不发（UI 隐藏按钮是第二道，不能作为唯一防线）。
+  const nonAdminSession = {
+    employeeId: 'MGR-001',
+    roles: [{ role: 'manager', scopeId: 'store-1' }],
+    permissions: { actions: ['employee:update'], scopeStoreIds: ['store-1'] },
+  }
+
+  function denyAdmin() {
+    ;(requireAdmin as any).mockImplementation(() => {
+      throw new Error('PERMISSION_DENIED: 仅系统管理员可执行该操作')
+    })
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(nonAdminSession)
+  })
+
+  afterEach(() => {
+    // 复位为 noop，避免污染同文件后续（及重跑时前面的）用例
+    ;(requireAdmin as any).mockImplementation(() => {})
+  })
+
+  it('createSkillTag：非管理员 → 抛 PERMISSION_DENIED，不写库', async () => {
+    denyAdmin()
+    await expect(
+      createSkillTag({ id: 'stag-x', name: '新标签', sortOrder: 0 }),
+    ).rejects.toThrow('PERMISSION_DENIED')
+    expect(db.insert).not.toHaveBeenCalled()
+  })
+
+  it('updateSkillTag：非管理员 → 抛 PERMISSION_DENIED，连旧值都不读', async () => {
+    denyAdmin()
+    await expect(updateSkillTag('stag-1', { name: '改名' })).rejects.toThrow('PERMISSION_DENIED')
+    expect(db.select).not.toHaveBeenCalled()
+    expect(db.transaction).not.toHaveBeenCalled()
+  })
+
+  it('deleteSkillTag：非管理员 → 抛 PERMISSION_DENIED，连旧值都不读', async () => {
+    denyAdmin()
+    await expect(deleteSkillTag('stag-1')).rejects.toThrow('PERMISSION_DENIED')
+    expect(db.select).not.toHaveBeenCalled()
+    expect(db.transaction).not.toHaveBeenCalled()
+  })
+
+  it('空名等入参守卫排在硬闸门之后：非管理员传空名同样抛 PERMISSION_DENIED 而非返回提示', async () => {
+    denyAdmin()
+    // 若 requireAdmin 被放在空名守卫之后，这里会拿到 {success:false,'请输入标签名称'}，
+    // 等于把「该标签名是否合法」的信息泄露给无权者，也说明闸门位置不对。
+    await expect(createSkillTag({ id: 'stag-x', name: '  ' })).rejects.toThrow('PERMISSION_DENIED')
+    await expect(updateSkillTag('stag-1', { name: '  ' })).rejects.toThrow('PERMISSION_DENIED')
+  })
+
+  it('管理员会话：三个写操作都实际调用了 requireAdmin（闸门已接线）', async () => {
+    ;(getSession as any).mockResolvedValue(mockSession)
+    ;(requireAdmin as any).mockImplementation(() => {})
+
+    const insertChain: any = { values: vi.fn().mockResolvedValue(undefined) }
+    ;(db.insert as any).mockReturnValue(insertChain)
+    await createSkillTag({ id: 'stag-1', name: '美容师' })
+    expect(requireAdmin).toHaveBeenCalledTimes(1)
+    // 断言入参而不只是次数：否则 requireAdmin(null)、或传了别人的 session 也能绿
+    expect(requireAdmin).toHaveBeenCalledWith(
+      expect.objectContaining({ employeeId: 'ADMIN-001' }),
+    )
+
+    mockSelect([])
+    await updateSkillTag('stag-1', { name: '新名' })
+    expect(requireAdmin).toHaveBeenCalledTimes(2)
+
+    mockSelect([])
+    await deleteSkillTag('stag-1')
+    expect(requireAdmin).toHaveBeenCalledTimes(3)
+  })
+
+  it('传给 requireAdmin 的是 scopeSessionToActions 收紧后的 session（admin 角色不持 employee:update 会被裁掉）', async () => {
+    // 锁定 UI 侧必须用同一口径的原因：withPermission 先把 session 按 employee:update 收紧
+    // （with-permission.ts:70 → action-scope.ts:25，只留自身 actions 含该动作的角色行），
+    // 再交给业务函数。运营若在矩阵 UI 摘掉 admin 的 employee:update，admin+hr 双角色会话
+    // 仍能靠 hr 过外层闸门，但收紧后 roles 只剩 hr —— requireAdmin 看到的已不是管理员。
+    // 故 employees/page.tsx 的显隐判定也必须跑一遍 scopeSessionToActions，否则按钮可见却必被拒。
+    ;(getSession as any).mockResolvedValue({
+      employeeId: 'MIX-001',
+      roles: [
+        {
+          role: 'admin', scopeId: 'hq-1', isSuperAdmin: true,
+          actions: ['system:config'], scopeStoreIds: [], scopeOrgNodeIds: ['hq-1'],
+        },
+        {
+          role: 'hr', scopeId: 'mkt-1', isSuperAdmin: false,
+          actions: ['employee:update'], scopeStoreIds: ['store-1'], scopeOrgNodeIds: ['mkt-1'],
+        },
+      ],
+      permissions: {
+        actions: ['system:config', 'employee:update'],
+        scopeStoreIds: ['store-1'], scopeOrgNodeIds: ['mkt-1'],
+      },
+    })
+    ;(requireAdmin as any).mockImplementation(() => {})
+    ;(db.insert as any).mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) })
+
+    await createSkillTag({ id: 'stag-9', name: '新标签' })
+
+    const received = (requireAdmin as any).mock.calls[0][0]
+    expect(received.roles.map((r: any) => r.role)).toEqual(['hr'])
+  })
+
+  it('getSkillTags 读取不受硬闸门影响：非管理员可读，requireAdmin 不参与', async () => {
+    // 读取口径刻意停留在 employee:list —— 员工列表/详情/新建、营业额分配三个详情页、
+    // 提成矩阵页都依赖它；误加 requireAdmin 会让店长/HR/财务的技能筛选项整体丢数据。
+    denyAdmin()
+    const chain: any = {}
+    chain.from = vi.fn().mockReturnValue(chain)
+    chain.orderBy = vi.fn().mockResolvedValue([
+      { id: 'stag-1', name: '美容师', sortOrder: 0, createdAt: null, updatedAt: null },
+    ])
+    ;(db.select as any).mockReturnValue(chain)
+
+    const rows = await getSkillTags()
+    expect(rows).toHaveLength(1)
+    expect(rows[0].name).toBe('美容师')
+    expect(requireAdmin).not.toHaveBeenCalled()
   })
 })
