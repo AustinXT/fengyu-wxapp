@@ -16,7 +16,7 @@
  * 依赖：ensureTestCommissionMatrix() 注入规则到 TEST_MARKET_ORG_ID（name=`${NS}_市场`）
  *      （销售单 自销自耗 拆 tier(0,5000)=0.08 + tier(5000,NULL)=0.10）
  *
- * 新模型 fixture：每张订单造一笔待分配回款 + sale_payment_allocatable_items 行（基数 amount），
+ * 新模型 fixture：每张订单造一笔待分配回款 + sale_payment_item_receipts 行（基数 amount），
  *   suggestPayment 以 salePaymentId 为粒度；eventAmount = Σ spai.amount（提成档位基准）。
  */
 import './setup.mjs'
@@ -55,7 +55,7 @@ async function createPaymentWithSpai({ saleOrderId, items, amount }) {
   const paymentId = payRows[0].id
   for (const it of items) {
     await pgQuery(
-      `INSERT INTO sale_payment_allocatable_items
+      `INSERT INTO sale_payment_item_receipts
          (sale_payment_id, sale_order_id, sale_item_id, amount, sales_category, created_at)
        VALUES ($1, $2, $3, $4, $5::sales_category, NOW())`,
       [paymentId, saleOrderId, it.saleItemId, it.amount, it.salesCategory]

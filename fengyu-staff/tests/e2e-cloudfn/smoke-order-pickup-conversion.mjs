@@ -81,6 +81,7 @@ async function makeTransferIn(saleItemId) {
 async function pickedUpOf(saleItemId) {
   const rows = await pgQuery(
     `SELECT COALESCE(picked_up_quantity, 0)::int AS picked_up,
+            COALESCE(converted_quantity, 0)::int AS converted,
             COALESCE((SELECT SUM(pr.pickup_quantity)::int FROM pickup_records pr
                        WHERE pr.sale_item_id = si.sale_item_id), 0)::int AS records
        FROM sale_items si WHERE si.sale_item_id = $1`,
@@ -274,9 +275,12 @@ async function main() {
   if (conv.code !== 0) {
     errors.push(`转入行再次折抵失败 code=${conv.code} msg=${conv.message}`)
   } else {
-    // #125 把转出数量并入 picked_up_quantity（「已结算」），可提数量因而归零
+    // #125 把转出数量记成「已结算」让可提归零；#154（迁移 0046）把它从 picked_up_quantity
+    // 拆到独立的 converted_quantity —— picked_up_quantity 自此只记真实提货。
+    // 所以这里断言的是 converted_quantity，且 picked_up_quantity 必须保持不变（=0，本行没提过货）。
     const srcAfter = await pickedUpOf(CONV2_ITEM_ID)
-    if (srcAfter.picked_up !== 2) errors.push(`折抵后源行 picked_up_quantity 应=2（已转走），实际=${srcAfter.picked_up}`)
+    if (srcAfter.converted !== 2) errors.push(`折抵后源行 converted_quantity 应=2（已转走），实际=${srcAfter.converted}`)
+    if (srcAfter.picked_up !== 0) errors.push(`折抵不该改动 picked_up_quantity（#154 拆列后只记真实提货），实际=${srcAfter.picked_up}`)
 
     const avail4 = await invokeStaffApi('order.availablePickupItems', {
       _testOpenid: TEST_MANAGER_OPENID,

@@ -57,7 +57,9 @@ async function run() {
   await createTestSaleOrder({
     saleOrderId: ORDER, clientUserId: CLI_ID, storeId: S_A1.storeId,
     openedBy: MGR_A1.empId, totalAmount: 500, status: '待支付',
-    paymentMethod: '线下', prepaidCardAmount: 300,
+    // 预选态：卡未扣，只登记待扣额度。写 prepaidCardAmount（已结算净额）的话
+    // confirmOffline 读不到预选值，不会扣卡，余额与流水断言都会落空。
+    paymentMethod: '线下', pendingPrepaidCardAmount: 300,
   })
 
   await invalidateStaffAuthCache([MGR_A1.oid, MGR_MB.oid])

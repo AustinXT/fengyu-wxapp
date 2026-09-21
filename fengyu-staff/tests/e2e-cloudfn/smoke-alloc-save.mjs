@@ -4,15 +4,20 @@
  *
  * 验证：
  *   1. 超额分池（同 saleItemId+roleType 池 Σ > spai 可分配额）被拒
- *   2. 非法 ratio（0.15，非整十）被拒
+ *   2. 自定义小数 ratio（0.15）被接受
  *   3. 同 (saleItemId, employeeId, roleType) 重复被拒
  *   4. 正常保存（70% + 30% = 100%）→ sale_order_payments.allocation_status='已分配'
- *   5. PG 落库：sale_allocations 2 行（is_void=false），total_amount=base×ratio，
+ *   5. PG 落库：sale_payment_item_allocations 2 行（is_void=false），total_amount=base×ratio，
  *      commission_rate/commission_amount 非 NULL 且 = total×rate（提成固化快照）
  *   6. sale_orders.allocation_status 汇总位='已分配'
  *
  * 新模型 fixture：造一笔已支付回款（sale_order_payments.allocation_status='待分配'）
- *   + sale_payment_allocatable_items 行（可分配基数 amount），savePayment 以 salePaymentId 为粒度。
+ *   + sale_payment_item_receipts 行（逐笔受领基数 amount），savePayment 以 salePaymentId 为粒度。
+ *
+ * ⚠ 表名别写回 `sale_payment_allocatable_items`：那是遗留表（dev 里还剩几百行没清），
+ *   生产侧 `utils/payment-allocatable.js` 与 `allocation.js` 读写的都是
+ *   `sale_payment_item_receipts`。写错表不会报错，只会让分配一律被拒成
+ *   「saleItemId … 不属于该回款」—— 本组 4 个 smoke 曾因此长期为红。
  */
 import './setup.mjs'
 import {
@@ -32,7 +37,7 @@ let exitCode = 1
 function rec(line) { console.log(line) }
 
 /**
- * 造一笔已支付回款（待分配）+ 每项一行 sale_payment_allocatable_items（可分配基数）。
+ * 造一笔已支付回款（待分配）+ 每项一行 sale_payment_item_receipts（逐笔受领基数）。
  * 返回 salePaymentId（sale_order_payments.id）。
  */
 async function createPaymentWithSpai({ saleOrderId, items, amount, paidAt = null }) {
@@ -50,7 +55,7 @@ async function createPaymentWithSpai({ saleOrderId, items, amount, paidAt = null
   const paymentId = payRows[0].id
   for (const it of items) {
     await pgQuery(
-      `INSERT INTO sale_payment_allocatable_items
+      `INSERT INTO sale_payment_item_receipts
          (sale_payment_id, sale_order_id, sale_item_id, amount, sales_category, created_at)
        VALUES ($1, $2, $3, $4, $5::sales_category, NOW())`,
       [paymentId, saleOrderId, it.saleItemId, it.amount, it.salesCategory]
@@ -115,26 +120,27 @@ async function main() {
   })
   if (overflowResult.code === 0) {
     errors.push(`超额（110%）应拒，实际成功`)
-  } else if (!String(overflowResult.message || '').includes('合计超过')) {
-    errors.push(`超额拒应含 '合计超过'，实际 ${overflowResult.message}`)
+  } else if (!String(overflowResult.message || '').includes('不能超过 100%')) {
+    errors.push(`超额拒应含 '不能超过 100%'，实际 ${overflowResult.message}`)
   } else {
     rec(`  ✓ 超额池被拒（${overflowResult.message}）`)
   }
 
-  // ─── 2. 非法 ratio（0.15）被拒 ───
-  const invalidRatioResult = await invokeStaffApi('allocation.savePayment', {
+  // ─── 2. 自定义小数比例（0.15）被接受 ───
+  // 「必须是整十百分比」这条规则已在 6f4f2d4a（2026-07-21
+  // `feat(allocation): 分配比例支持自定义小数并容错缺失提成矩阵`）被有意去掉。
+  // 本用例随之从「应拒」翻成「应放行」——留着旧期望等于守护一个已废弃的约束。
+  const customRatioResult = await invokeStaffApi('allocation.savePayment', {
     _testOpenid: TEST_MANAGER_OPENID,
     salePaymentId: paymentId,
     allocations: [
       { saleItemId: itemId, employeeId: TEST_MANAGER_EMP_ID, roleType: '美容师', allocationRatio: 0.15 },
     ],
   })
-  if (invalidRatioResult.code === 0) {
-    errors.push(`非整十比例（0.15）应拒，实际成功`)
-  } else if (!String(invalidRatioResult.message || '').includes('整十')) {
-    errors.push(`非整十拒应含 '整十百分比'，实际 ${invalidRatioResult.message}`)
+  if (customRatioResult.code !== 0) {
+    errors.push(`自定义小数比例（0.15）应被接受，实际 code=${customRatioResult.code} msg=${customRatioResult.message}`)
   } else {
-    rec(`  ✓ 非整十比例被拒`)
+    rec(`  ✓ 自定义小数比例（0.15）被接受`)
   }
 
   // ─── 3. 重复 (saleItemId, employeeId, roleType) 被拒 ───
@@ -171,12 +177,18 @@ async function main() {
   }
 
   // ─── 5. PG 校验（按 salePaymentId 精确查本笔回款分配）───
+  // 分配行挂在「逐笔受领行」上（sale_payment_item_receipt_id），表里没有 sale_payment_id，
+  // 金额列是 allocated_amount —— 取别名 total_amount 沿用下方断言。
   const allocs = await pgQuery(
-    `SELECT employee_id, role_type, allocation_ratio, total_amount, commission_rate, commission_amount, is_void
-     FROM sale_allocations WHERE sale_payment_id = $1 AND is_void = false ORDER BY employee_id`,
+    `SELECT a.employee_id, a.role_type, a.allocation_ratio,
+            a.allocated_amount AS total_amount, a.commission_rate, a.commission_amount, a.is_void
+       FROM sale_payment_item_allocations a
+       JOIN sale_payment_item_receipts r ON r.id = a.sale_payment_item_receipt_id
+      WHERE r.sale_payment_id = $1 AND a.is_void = false
+      ORDER BY a.employee_id`,
     [paymentId]
   )
-  if (allocs.length !== 2) errors.push(`sale_allocations 应=2 行（有效），实际=${allocs.length}`)
+  if (allocs.length !== 2) errors.push(`sale_payment_item_allocations 应=2 行（有效），实际=${allocs.length}`)
   else {
     const sum = allocs.reduce((s, a) => s + Number(a.total_amount), 0)
     if (Math.abs(sum - 1000) > 0.01) errors.push(`分配金额合计应=1000（spai 基数），实际=${sum}`)
@@ -213,7 +225,7 @@ async function main() {
 
   pass = true
   exitCode = 0
-  rec(`  ✅ PASS — savePayment 4 项守卫（超额/非整十/重复/正常）+ PG 落库正确`)
+  rec(`  ✅ PASS — savePayment 4 项守卫（超额/自定义小数/重复/正常）+ PG 落库正确`)
 }
 
 try {
