@@ -694,8 +694,9 @@ async function assertGenericDocLocationRules(
    * 那份是活代码。留着这个影子的代价是实打实的：#200 的评审里有谱系两次把它当活代码推理、
    * 据此报了一条误报 P2。
    *
-   * 暂未加 `default:` 穷尽性守卫 —— 当前不在 switch 里的通用类型是直接 return（无位置约束），
-   * 改成 throw 是行为变更，需要单独评估，见 #237 正文。
+   * 删掉该 case 后 switch 已**穷尽全部 10 个通用类型**（由 business.test.ts 的守护钉死）。
+   * 仍未加 `default:` 穷尽性守卫：它的价值是在将来往白名单加类型却漏配 case 时于编译期/
+   * 运行期报错，但那属行为变更（要先决定漏配时是静默放行还是 throw），见 #237 正文。
    */
   switch (input.docType) {
     case '分院调货出库':

@@ -10,6 +10,9 @@ import type { AuthSession } from '@/lib/types'
 import { revalidatePath } from 'next/cache'
 import { sql } from 'drizzle-orm'
 import { assertInventoryBusinessWritable } from './cutover'
+// 仅用于给 INTERNAL_SAME_NODE_DOC_TYPES 标类型 —— 没有它，集合里写错别字不会编译报错，
+// 只会静默变成「该类型不属同主体」，与 engine.ts 那份的行为悄悄分叉。
+import type { InventoryDocType } from './types'
 
 // DOC_LOCK_KEY_PREFIX 必须与 staffApi 的 generateDocNo / admin engine.generateDocNo 保持字面量一致；cross-end snapshot 守护
 // Admin release SOP：切流前必须调用 getInventoryBaselineStatus 并断言 isInitialized=true。
@@ -126,7 +129,9 @@ interface PriceSnapshot {
 
 interface InsertDocHeaderInput {
   id: string
-  docType: string
+  // #236：收紧为联合类型 —— 裸 string 会让 INTERNAL_SAME_NODE_DOC_TYPES.has() 的类型参数
+  // 形同虚设（传错别字静默为「不属同主体」），而本文件的同主体断言正依赖该集合判断可靠
+  docType: InventoryDocType
   status: string
   sourceOrgNodeId?: string | null
   targetOrgNodeId?: string | null
@@ -598,7 +603,7 @@ const DOC_PREFIX: Record<string, string> = {
   库存转换入库: 'ZHI',
 }
 
-const INTERNAL_SAME_NODE_DOC_TYPES = new Set([
+const INTERNAL_SAME_NODE_DOC_TYPES = new Set<InventoryDocType>([
   '品项公司报货需求',
   '员工购出库',
   '供应链员工购出库',
@@ -1055,9 +1060,16 @@ async function insertDocHeader(tx: Tx, input: InsertDocHeaderInput): Promise<voi
      * 生效、另一个连报错都没有。这两份是同一逻辑的独立副本（项目禁止抽取跨端共享目录），
      * 一致性靠人工同步。
      *
-     * 当前 18 处 `insertDocHeader` 调用对同主体单据每次只传 source / target 其一，
-     * 没有调用方依赖被吃掉的那个行为 —— 这条是**防止以后新增专用服务时复现该坑**的前置断言，
-     * 不是在修一条活着的缺陷路径。
+     * 当前 17 处 `insertDocHeader` 调用对同主体单据每次只传 source / target 其一
+     * （两端都传的 7 处 docType 全不在本集合内），没有调用方依赖被吃掉的那个行为 ——
+     * 这条是**防止以后新增专用服务时复现该坑**的前置断言，不是在修一条活着的缺陷路径。
+     *
+     * ⚠️ 与 engine.ts 那份**字面相同但比的东西不同构**，改动前先读懂差异：
+     *   - engine 比的是归一化后的**原始入参**，且刻意排在任何 location 查询**之前**
+     *     （#200 的注释说明了这个前置性是防「探测无权节点是否存在」的承重点）；
+     *   - 这里比的是两次 `loadLocation` **查询之后**解析出的 `org_node_id`。
+     * 后者反而更宽容：调用方用 location_id 和 org_node_id 两种写法指同一主体时会解析成同值、
+     * 不会误杀。别照搬 engine 侧关于「必须早于查询」的安全推理来改这一段。
      */
     if (sourceOrgNodeId && targetOrgNodeId && sourceOrgNodeId !== targetOrgNodeId) {
       throw new ApiError('INVALID_PARAMS', '该单据的出库主体与入库主体必须是同一个')
