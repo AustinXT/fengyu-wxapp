@@ -1494,6 +1494,28 @@ describe('inventory.approveDoc / rejectDoc 鉴权主体（#235）', () => {
   })
 
   /**
+   * 钉住**审批可达面**：能走到 approveDoc / rejectDoc 的类型 = STAFF_VISIBLE ∩ APPROVAL。
+   *
+   * 「只有院退货和院产品报损能走到审批」在代码里只是个流程事实（由 SQL 的
+   * `doc_type = ANY(STAFF_VISIBLE_DOC_TYPE_LIST)` + 守卫共同决定），不是显式不变量 ——
+   * 往 STAFF_VISIBLE_DOC_TYPES 加一个类型的 PR 会**无声**改变审批可达面（GLM 谱系指出）。
+   * 这条让那种 PR 必须回来看一眼：新类型是否也该能被 staff 审批、鉴权主体推导是否仍成立。
+   */
+  test('STAFF_VISIBLE ∩ APPROVAL 恰为 {院退货, 院产品报损}', () => {
+    const src = readInventorySource()
+    const setItems = (name) => {
+      const block = src.match(new RegExp(`const ${name} = new Set\\(\\[([\\s\\S]*?)\\]\\)`))
+      expect(block, `未找到 ${name}`).toBeTruthy()
+      return [...block[1].matchAll(/'([^']+)'/g)].map((m) => m[1])
+    }
+    const visible = new Set(setItems('STAFF_VISIBLE_DOC_TYPES'))
+    const approval = setItems('APPROVAL_DOC_TYPES')
+    expect(approval.filter((t) => visible.has(t)).sort()).toEqual(['院产品报损', '院退货'])
+    // 且 LIST 必须是 Set 的派生，不能是手工维护的第二份（会静默漂移）
+    expect(src).toMatch(/const STAFF_VISIBLE_DOC_TYPE_LIST = Array\.from\(STAFF_VISIBLE_DOC_TYPES\)/)
+  })
+
+  /**
    * 守卫必须用**独立分类器**判方向。钉住它引用 OUTBOUND_DOC_TYPES ——
    * 只要有人把它改回「从 APPROVAL_DOC_TYPES 自身派生方向」，这条就红。
    */
@@ -1517,7 +1539,7 @@ describe('inventory.approveDoc / rejectDoc 鉴权主体（#235）', () => {
 
     // 入库方向的审批类型：属 APPROVAL、不属 OUTBOUND —— 必须 fail-closed
     const guard = makeGuard(new Set(['某入库审批类型']), new Set(['某出库类型']))
-    expect(() => guard('某入库审批类型')).toThrow('该审批方向尚未支持')
+    expect(() => guard('某入库审批类型')).toThrow('APPROVAL_DIRECTION_UNSUPPORTED')
     // 完全不属 APPROVAL 的类型走另一条错误
     expect(() => guard('无关类型')).toThrow('该单据类型不需要审批')
     // 同属两者 → 放行

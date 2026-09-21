@@ -243,7 +243,7 @@ function movementDirection(docType) {
 function assertApprovalOutboundDirection(docType) {
   if (!APPROVAL_DOC_TYPES.has(docType)) throw new Error('INVALID_STATE: 该单据类型不需要审批')
   if (!OUTBOUND_DOC_TYPES.has(docType)) {
-    throw new Error('INVALID_STATE: 该审批方向尚未支持，请先补全鉴权主体推导')
+    throw new Error('INVALID_STATE: APPROVAL_DIRECTION_UNSUPPORTED: 该单据暂不支持审批，请联系管理员')
   }
 }
 
@@ -573,6 +573,12 @@ async function resolveStaffCreateLocations(ctx, payload) {
    * 就会拿 source 鉴权却往无权的 target 加库存 —— 正是 #200 在 admin 修掉的那个洞。
    *
    * 7 个可建类型里只有「院顾客退货」是入库类（已逐一核对 INBOUND/OUTBOUND 归属）。
+   */
+  /**
+   * ⚠️ 这里隐式依赖「非 INBOUND 即由出库方发起」。对 staff 的 7 个可建类型成立
+   * （只有「院顾客退货」是 INBOUND），但**不要**把它当成通用的方向判据推广出去：
+   * `OUTBOUND_DOC_TYPES` 并非全量方向枚举（例如「分院调货出库/入库」两者都不在里面），
+   * 它实际扮演的是「审批方向分类器」。新增可建类型时必须回来核对这条三元。
    */
   const actingLocationId = INBOUND_DOC_TYPES.has(payload.docType)
     ? targetLocation?.location_id
