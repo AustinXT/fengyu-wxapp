@@ -1498,7 +1498,7 @@ describe('order.pay', () => {
       sale_order_datetime: now.toISOString(),
     }
     mockPayQueries({ order })
-    __mocks__.lakalaClient.queryTrade.mockResolvedValueOnce({ tradeState: 'CLOSE' })
+    __mocks__.lakalaClient.queryTrade.mockResolvedValueOnce({ ok: true, tradeState: 'CLOSE' })
 
     const ctx = createBoundCtx({ orderNo: order.sale_order_id })
     await routes.pay(ctx)

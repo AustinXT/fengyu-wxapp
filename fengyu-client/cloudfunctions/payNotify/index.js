@@ -519,6 +519,16 @@ async function resolveLakalaMerchantForReconcile(storeId) {
  *
  * @returns {Promise<{code:string, message:string}>}
  */
+/**
+ * 补偿扫描里每次查单的超时预算（双谱系评审 round-2）。
+ *
+ * lakala-client 默认 30s，而 payNotify 云函数自身的超时**也是 30s**：扫描的第一条一旦
+ * 卡满，整个函数就被平台终止，后面 19 条一条都处理不到，且下一分钟很可能又卡在同一条。
+ * 8s × 最坏 20 条仍会超，但配合逐单 try/catch 与 DESC 排序，实际只会牺牲尾部若干条，
+ * 不会让整批停摆。
+ */
+const RECONCILE_QUERY_TIMEOUT_MS = 8000
+
 async function runPaymentReconcile() {
   if (!isPayNotifyEnabled()) {
     console.log('[payNotify/reconcile] skip: 未启用')
@@ -560,9 +570,17 @@ async function runPaymentReconcile() {
         merchantNo: merchant.merchantNo,
         termNo: merchant.termNo,
         outTradeNo: o.lakala_out_order_no,
+        timeoutMs: RECONCILE_QUERY_TIMEOUT_MS,
       })
+      // ⚠️ 必须先验 ok（双谱系评审 round-2）：拉卡拉业务失败码的响应里也可能带
+      // resp_data.trade_state。据此释放意图会凭空造出第二笔可支付单；更糟的是据此
+      // 认 SUCCESS 会走下面的自调入账 —— 无真实到账却记账。
+      const tradeState = resp && resp.ok === true
+        ? String(resp.tradeState || '').trim().toUpperCase()
+        : ''
+      if (!tradeState) { skip++; continue }
       // REVOKED（当日交易撤销）同属可释放终态，#214 之前漏判导致撤销单永久占着支付意图
-      if (resp && ['FAIL', 'CLOSE', 'REVOKED'].includes(resp.tradeState)) {
+      if (['FAIL', 'CLOSE', 'REVOKED'].includes(tradeState)) {
         await pg.query(
           `UPDATE sale_orders
            SET lakala_out_order_no = NULL, updated_at = NOW()
@@ -574,7 +592,7 @@ async function runPaymentReconcile() {
         skip++
         continue
       }
-      if (!resp || resp.tradeState !== 'SUCCESS') { skip++; continue }
+      if (tradeState !== 'SUCCESS') { skip++; continue }
       // 已入账（external_txn_id = 拉卡拉 tradeNo 已存在）→ 幂等跳过，避免每分钟重复 callFunction
       const paid = await pg.query(
         'SELECT 1 FROM sale_order_payments WHERE external_txn_id = $1 LIMIT 1',

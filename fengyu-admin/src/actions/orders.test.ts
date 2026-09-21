@@ -2124,9 +2124,9 @@ describe('closeOrder — 事务原子性（关闭 + 作废分配）', () => {
       const result = await closeOrder('order-1')
 
       expect(result.success).toBe(true)
-      expect(closeTrade).toHaveBeenCalledWith({
+      expect(closeTrade).toHaveBeenCalledWith(expect.objectContaining({
         merchantNo: 'M1', termNo: 'T1', outTradeNo: 'order-1_123',
-      })
+      }))
     })
 
     it('渠道已 SUCCESS → 拒绝关闭，一条关单请求都不发', async () => {

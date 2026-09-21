@@ -273,6 +273,7 @@ export async function queryTrade(opts: {
   termNo: string
   outTradeNo?: string
   tradeNo?: string
+  timeoutMs?: number
 }): Promise<{ ok: boolean; code: string; msg: string; tradeState: string; tradeNo: string; totalAmountFen: number }> {
   if (!opts.merchantNo) throw new Error('INVALID_PARAMS: LAKALA_QUERY_MERCHANT_NO_REQUIRED')
   if (!opts.termNo) throw new Error('INVALID_PARAMS: LAKALA_QUERY_TERM_NO_REQUIRED')
@@ -284,7 +285,7 @@ export async function queryTrade(opts: {
   if (opts.tradeNo) reqData.trade_no = opts.tradeNo
   else reqData.out_trade_no = opts.outTradeNo
 
-  const resp = await request({ path: '/v3/labs/query/tradequery', reqData })
+  const resp = await request({ path: '/v3/labs/query/tradequery', reqData, timeoutMs: opts.timeoutMs })
   const data = resp.resp_data || {}
   return {
     ok: resp.ok,
@@ -314,6 +315,7 @@ export async function closeTrade(opts: {
   termNo: string
   outTradeNo?: string
   tradeNo?: string
+  timeoutMs?: number
 }): Promise<{ ok: boolean; code: string; msg: string; tradeState: string }> {
   if (!opts.merchantNo) throw new Error('INVALID_PARAMS: LAKALA_CLOSE_MERCHANT_NO_REQUIRED')
   if (!opts.termNo) throw new Error('INVALID_PARAMS: LAKALA_CLOSE_TERM_NO_REQUIRED')
@@ -325,7 +327,7 @@ export async function closeTrade(opts: {
   if (opts.tradeNo) reqData.origin_trade_no = opts.tradeNo
   else reqData.origin_out_trade_no = opts.outTradeNo
 
-  const resp = await request({ path: '/v3/labs/relation/close', reqData })
+  const resp = await request({ path: '/v3/labs/relation/close', reqData, timeoutMs: opts.timeoutMs })
   const data = resp.resp_data || {}
   return {
     ok: resp.ok,

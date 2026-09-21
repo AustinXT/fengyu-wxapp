@@ -3977,6 +3977,13 @@ export const confirmOfflinePayment = withPermission(
 /** 拉卡拉 trade_state 三分类（官方 10 个取值），与 clientApi routes/order.js 同源。 */
 const LAKALA_RELEASABLE_TRADE_STATES = ['FAIL', 'CLOSE', 'REVOKED']
 
+/**
+ * 作废意图路径上每次渠道调用的超时预算，与 clientApi 的 LAKALA_VOID_CALL_TIMEOUT_MS 同值。
+ * 该路径最坏串行三次往返；按客户端默认 30s/次算最坏 90s，前端或反向代理会先超时，
+ * 而渠道可能已经关单、本地意图却还没释放（双谱系评审 round-2）。
+ */
+const LAKALA_VOID_CALL_TIMEOUT_MS = 12000
+
 /** 与 payNotify 解析回调时的 toUpperCase 对齐，避免两端对同一笔单判定不一致。 */
 function normalizeTradeState(state: string | null | undefined): string {
   return String(state ?? '').trim().toUpperCase()
@@ -4046,6 +4053,7 @@ async function voidActiveOnlinePaymentIntent(
       merchantNo: merchant.merchantNo,
       termNo: merchant.termNo,
       outTradeNo,
+      timeoutMs: LAKALA_VOID_CALL_TIMEOUT_MS,
     })
     // 只有查单成功返回的 trade_state 才权威：request() 对非成功码不抛错，只置 ok=false，
     // 而错误响应里可能仍带一个非权威的 trade_state。按它释放意图会形成「本地已关、渠道可付」。
@@ -4072,7 +4080,12 @@ async function voidActiveOnlinePaymentIntent(
   // 必须先让渠道关单，再复核——关单返回成功不等于渠道已终态。
   if (!LAKALA_RELEASABLE_TRADE_STATES.includes(tradeState)) {
     try {
-      await closeTrade({ merchantNo: merchant.merchantNo, termNo: merchant.termNo, outTradeNo })
+      await closeTrade({
+        merchantNo: merchant.merchantNo,
+        termNo: merchant.termNo,
+        outTradeNo,
+        timeoutMs: LAKALA_VOID_CALL_TIMEOUT_MS,
+      })
     } catch (e) {
       console.error('voidActiveOnlinePaymentIntent closeTrade failed:', saleOrderId, e)
       return { success: false, message: '暂时无法终止本次在线支付，请稍后重试' }
@@ -4083,6 +4096,7 @@ async function voidActiveOnlinePaymentIntent(
         merchantNo: merchant.merchantNo,
         termNo: merchant.termNo,
         outTradeNo,
+        timeoutMs: LAKALA_VOID_CALL_TIMEOUT_MS,
       })
       if (!recheck.ok) {
         console.error('voidActiveOnlinePaymentIntent recheck not ok:', saleOrderId, recheck.code, recheck.msg)

@@ -1184,7 +1184,12 @@ async function reserveDirectOnlinePaymentIntentWithTerminalRetry(options) {
           termNo: merchant.termNo,
           outTradeNo: err.activeOutTradeNo,
         })
-        if (!oldTrade || !LAKALA_RELEASABLE_TRADE_STATES.includes(oldTrade.tradeState)) throw err
+        // 必须先验 ok：业务失败码的响应里也可能带非权威的 CLOSE，据此释放旧意图会
+        // 凭空造出第二笔可支付的单，旧单迟到付款将无法入账（双谱系评审 round-2）
+        if (!oldTrade || oldTrade.ok !== true
+            || !LAKALA_RELEASABLE_TRADE_STATES.includes(normalizeTradeState(oldTrade.tradeState))) {
+          throw err
+        }
         await releaseLakalaPaymentIntent(options.orderNo, err.activeOutTradeNo)
         excludedOutTradeNo = err.activeOutTradeNo
       } catch (queryErr) {
@@ -4133,8 +4138,10 @@ async function queryLakalaStatus(ctx) {
     termNo: merchant.termNo,
     outTradeNo: order.lakala_out_order_no,
   })
+  // 同样要求 ok===true 才解释状态：否则业务失败码携带的非权威 CLOSE 会释放意图
+  const queriedTradeState = (resp && resp.ok === true) ? normalizeTradeState(resp.tradeState) : ''
   let lakalaIntentReleased = false
-  if (resp && LAKALA_RELEASABLE_TRADE_STATES.includes(resp.tradeState)) {
+  if (queriedTradeState && LAKALA_RELEASABLE_TRADE_STATES.includes(queriedTradeState)) {
     const released = await pg.query(
       `UPDATE sale_orders
        SET lakala_out_order_no = NULL, updated_at = NOW()
@@ -4269,8 +4276,11 @@ async function confirmPayment(ctx) {
     return
   }
 
-  const tradeState = resp.tradeState || ''
-  if (LAKALA_RELEASABLE_TRADE_STATES.includes(tradeState)) {
+  // ⚠️ 这条路径的 SUCCESS 会直接触发本地入账，非权威状态绝不能采信：
+  // 拉卡拉业务失败码的响应里也可能带 resp_data.trade_state，据此入账等于无真实到账却记账
+  // （双谱系评审 round-2）。ok 不为 true 时按「查不到状态」处理，交给下游降级分支。
+  const tradeState = resp.ok === true ? normalizeTradeState(resp.tradeState) : ''
+  if (tradeState && LAKALA_RELEASABLE_TRADE_STATES.includes(tradeState)) {
     const released = await pg.query(
       `UPDATE sale_orders
        SET lakala_out_order_no = NULL, updated_at = NOW()
