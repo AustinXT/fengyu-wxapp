@@ -87,6 +87,9 @@ Page({
     // #214：订单上是否已有本人可续付的支付场次（由 scanDetail 下发，不含任何凭据）。
     // 为 true 时普通回款也走 pay/alipayPay 以复用场次，否则会撞 PAYMENT_INTENT_ACTIVE。
     hasResumablePaymentIntent: false,
+    // 有可续付场次时锁死抵扣与支付方式：那笔渠道单的金额/方式已定，服务端也有守卫，
+    // 让顾客以为能改、改完付的还是老方案，就是展示与资金结果不一致的来源
+    intentLocked: false,
     // 员工冻结 first_payment_amount 的受限回款：本场次不允许顾客再选储值卡。
     isRestrictedRepayment: false,
     showPayMethodGroup: true,
@@ -186,6 +189,8 @@ Page({
       // 回款（部分支付）用行级口径：已退行不计入，只有「未退且未付清」的行可继续支付；
       // 首次支付（待支付）无退款，沿用订单级 payable - 净到账（行级 Σ 未扣储值卡意向，首次场景不适用）
       const isRepayment = orderData.status === '部分支付';
+      // #214：订单上是否已有本人可续付的支付场次（后端只下发布尔，不含凭据）
+      const hasResumableIntent = orderData.hasResumablePaymentIntent === true;
       let remaining;
       if (isRepayment) {
         if (orderData.orderType === '转换单') {
@@ -240,8 +245,11 @@ Page({
         },
         items: data.items || [],
         cardBalance,
-        useCard: isRepayment ? false : prepaid > 0,
-        prepaidCardAmount: isRepayment ? 0 : prepaid,
+        // #214（round-8）：有可续付场次时必须**按订单上实际的待扣卡计划恢复**，不能像普通
+        // 回款那样一律显示「不使用储值卡」——复用的那笔场次里带着旧的 pending 卡额，
+        // 顾客会看到「不用卡、实付 ¥200」却被实际收走「微信 ¥120 + 扣卡 ¥80」。
+        useCard: (isRepayment && !hasResumableIntent) ? false : prepaid > 0,
+        prepaidCardAmount: (isRepayment && !hasResumableIntent) ? 0 : prepaid,
         paidAmount: paid,
         paymentMethod: effectiveMethod,
         couponDiscount,
@@ -252,7 +260,8 @@ Page({
         isRepayment,
         isRestrictedRepayment,
         // #214：后端只下发布尔标识，不含任何支付凭据
-        hasResumablePaymentIntent: orderData.hasResumablePaymentIntent === true,
+        hasResumablePaymentIntent: hasResumableIntent,
+        intentLocked: hasResumableIntent,
         showPayMethodGroup: paid > 0,
         balanceUpdatedAt,
       });
@@ -343,6 +352,13 @@ Page({
 
   onPayMethodTap(e: WechatMiniprogram.TouchEvent) {
     const { method } = e.currentTarget.dataset as { method: PayMethod };
+    // #214（round-8）：有可续付场次时支付方式已经定死在那笔渠道单里（复用判据要求方式一致，
+    // 服务端改抵扣/改方式也都有守卫）。让顾客以为能改、改完付的还是老方案，是展示与资金
+    // 结果不一致的来源。
+    if (this.data.intentLocked && method !== this.data.paymentMethod) {
+      Toast('本次支付已在进行中，如需更换方式请先取消订单');
+      return;
+    }
     if (method !== this.data.paymentMethod) {
       this._wechatAttempt = null;
       this._alipayAttempt = null;
@@ -576,7 +592,13 @@ Page({
         aliData = await callClientApi(
           'order.alipayPay', {
             saleOrderId: orderNo,
-            ...(firstPaymentAmount > 0 ? { payAmount: firstPaymentAmount } : {}),
+            // 回款必须显式传金额：前端的 remaining 是**退款感知的行级口径**（已退款行不计），
+            // 而后端 reserve 走订单级 total-received，会把退款额加回去。不传的话，有退款行的
+            // 订单两边算出的金额对不上，复用判据直接失败 → 又撞 PAYMENT_INTENT_ACTIVE
+            // （双谱系评审 round-8）。
+            ...(firstPaymentAmount > 0
+              ? { payAmount: firstPaymentAmount }
+              : (this.data.isRepayment ? { payAmount: paidAmount } : {})),
           },
         );
       }
@@ -612,6 +634,10 @@ Page({
     const payPayload: { saleOrderId: string; payAmount?: number } = { saleOrderId: orderNo };
     if (firstPaymentAmount > 0) {
       payPayload.payAmount = firstPaymentAmount;
+    } else if (this.data.isRepayment) {
+      // 同支付宝分支：回款走 pay 时必须显式传行级口径的金额，否则有退款行的订单
+      // 会因前后端算法不一致而复用失败（双谱系评审 round-8）
+      payPayload.payAmount = paidAmount;
     }
     const attemptAmount = firstPaymentAmount > 0 ? firstPaymentAmount : paidAmount;
     const attemptKey = `order.pay|${orderNo}|${attemptAmount}`;

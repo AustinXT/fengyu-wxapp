@@ -110,7 +110,7 @@ module.exports.unit = function(total, divisor) {
         <view class="deduction-row__right">
           <van-switch
             checked="{{useCard}}"
-            disabled="{{cardBalance <= 0 || isRestrictedRepayment}}"
+            disabled="{{cardBalance <= 0 || isRestrictedRepayment || intentLocked}}"
             active-color="#C0322A"
             size="40rpx"
             bind:change="onUseCardChange"
@@ -119,6 +119,10 @@ module.exports.unit = function(total, divisor) {
       </view>
       <view wx:if="{{isRestrictedRepayment}}" class="deduction-tips">
         本次回款金额已由门店锁定，不支持追加储值卡抵扣
+      </view>
+      <!-- #214：复用进行中的支付场次时，抵扣方案与支付方式都已定死在那笔渠道单里 -->
+      <view wx:elif="{{intentLocked}}" class="deduction-tips">
+        本次支付已在进行中，抵扣方案不可更改；如需调整请先取消订单
       </view>
       <view wx:if="{{useCard && prepaidCardAmount > 0}}" class="deduction-row deduction-row--sub">
         <text class="deduction-row__sub-label">抵扣金额</text>
