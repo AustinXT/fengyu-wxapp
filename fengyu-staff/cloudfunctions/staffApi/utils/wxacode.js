@@ -17,6 +17,21 @@ const CLIENT_APPID = process.env.CLIENT_APPID || 'wx811eb4ded3dfba3f'
 const CLIENT_APPSECRET = process.env.CLIENT_APPSECRET
 const WXACODE_ENV_VERSION = process.env.WXACODE_ENV_VERSION || 'release'
 
+// 微信只认这三个值；其余一律回落到环境变量默认值
+const VALID_ENV_VERSIONS = ['develop', 'trial', 'release']
+
+/**
+ * 决定小程序码指向客户端小程序的哪个版本。
+ *
+ * 为什么要按请求传而不是只读环境变量：单 CloudBase 环境下开发版和体验版共用同一个
+ * staffApiDev 函数，而微信规定 develop 码只能开发版打开、trial 码只能体验版打开——
+ * 一个环境变量满足不了两者。调用方把自己的 envVersion 带下来，这里据此生成对应的码。
+ * 该值只影响码指向哪个版本，不参与鉴权也不影响数据隔离，因此可以信任客户端取值。
+ */
+function resolveEnvVersion(envVersion) {
+  return VALID_ENV_VERSIONS.includes(envVersion) ? envVersion : WXACODE_ENV_VERSION
+}
+
 /**
  * 获取客户端小程序 access_token（带缓存）
  */
@@ -47,11 +62,13 @@ async function getClientAccessToken(forceRefresh = false) {
  * 生成客户端小程序码
  * @param {string} scene - 场景值（max 32 chars）
  * @param {string} page - 小程序页面路径
+ * @param {string} [envVersion] - 调用方所在的小程序版本（develop/trial/release），决定码指向哪个版本
  * @returns {Buffer} PNG 图片 buffer
  */
-async function generateWxacode(scene, page) {
+async function generateWxacode(scene, page, envVersion) {
+  const target = resolveEnvVersion(envVersion)
   let token = await getClientAccessToken()
-  let buffer = await requestWxacode(token, scene, page)
+  let buffer = await requestWxacode(token, scene, page, target)
 
   // 响应小于 1000 字节可能是错误 JSON
   if (buffer.length < 1000) {
@@ -60,7 +77,7 @@ async function generateWxacode(scene, page) {
       if (errData.errcode === 42001 || errData.errcode === 40001) {
         // token 过期，清缓存重试一次
         token = await getClientAccessToken(true)
-        buffer = await requestWxacode(token, scene, page)
+        buffer = await requestWxacode(token, scene, page, target)
         if (buffer.length < 1000) {
           const retryErr = JSON.parse(buffer.toString())
           throw new Error(`生成小程序码失败: ${retryErr.errcode} ${retryErr.errmsg}`)
@@ -116,13 +133,13 @@ function httpGet(url) {
   })
 }
 
-function requestWxacode(token, scene, page) {
+function requestWxacode(token, scene, page, envVersion) {
   const url = `https://api.weixin.qq.com/wxa/getwxacodeunlimit?access_token=${token}`
   const body = JSON.stringify({
     scene,
     page,
     check_path: false,
-    env_version: WXACODE_ENV_VERSION,
+    env_version: resolveEnvVersion(envVersion),
     width: 430,
     auto_color: false,
     line_color: { r: 212, g: 167, b: 106 } // 品牌金色

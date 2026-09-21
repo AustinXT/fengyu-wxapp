@@ -1980,17 +1980,25 @@ async function qrcode(ctx) {
   }
 
   // 待支付（首付）/ 部分支付（回款）订单生成小程序码（带缓存；scene=saleOrderId 与状态无关，可复用）
+  //
+  // 缓存键与云存储路径都必须带上调用方的小程序版本：单 CloudBase 环境下开发版和体验版
+  // 共用同一个 staffApiDev 实例，而微信规定 develop 码只能开发版打开、trial 码只能体验版打开。
+  // 只按 saleOrderId 缓存的话，先请求的那个版本会把码占住，另一个版本扫出来是打不开的。
+  // release（以及未传版本的旧客户端）保持原路径，避免动到生产已有的码。
+  const envVersion = payload._envVersion
+  const versionSuffix = envVersion && envVersion !== 'release' ? `-${envVersion}` : ''
+  const qrcodeCacheKey = `${saleOrderId}${versionSuffix}`
   let qrcodeUrl = ''
   let qrcodeError = ''
   if (order.status === '待支付' || order.status === '部分支付') {
-    if (qrcodeCache.has(saleOrderId)) {
-      qrcodeUrl = qrcodeCache.get(saleOrderId)
+    if (qrcodeCache.has(qrcodeCacheKey)) {
+      qrcodeUrl = qrcodeCache.get(qrcodeCacheKey)
     } else {
       try {
-        const buffer = await generateWxacode(saleOrderId, 'pagesOrder/scan-pay/scan-pay')
-        const cloudPath = `wxacode/order/${saleOrderId}.png`
+        const buffer = await generateWxacode(saleOrderId, 'pagesOrder/scan-pay/scan-pay', envVersion)
+        const cloudPath = `wxacode/order/${saleOrderId}${versionSuffix}.png`
         qrcodeUrl = await uploadToCloudStorage(buffer, cloudPath)
-        qrcodeCache.set(saleOrderId, qrcodeUrl)
+        qrcodeCache.set(qrcodeCacheKey, qrcodeUrl)
       } catch (err) {
         console.error('[order.qrcode] 生成小程序码失败:', err)
         qrcodeError = '生成小程序码失败'
