@@ -22,9 +22,21 @@ const { mockGetDoc, mockGetSession, mockRequireCaps } = vi.hoisted(() => ({
 vi.mock('@/actions/inventory/docs', () => ({ getInventoryCoreDocById: mockGetDoc }))
 vi.mock('@/lib/auth', () => ({ getSession: mockGetSession }))
 vi.mock('@/lib/page-capability', () => ({ requireAllUiPageCapabilities: mockRequireCaps }))
-vi.mock('next/navigation', () => ({ notFound: () => { throw new Error('notFound') } }))
+vi.mock('next/navigation', () => ({
+  notFound: () => { throw new Error('notFound') },
+  useRouter: () => ({ push: vi.fn(), replace: vi.fn() }),
+}))
+// 把 href 也渲染出来，否则断不了返回落点（与 allocations-page.test.tsx 对
+// PreserveListContextLink 的既有 mock 写法一致）。
 vi.mock('@/components/return-context', () => ({
-  ReturnContextLink: ({ children }: { children: React.ReactNode }) => <a>{children}</a>,
+  ReturnContextLink: ({ children, href }: { children: React.ReactNode; href: string }) => (
+    <a href={href}>{children}</a>
+  ),
+}))
+vi.mock('next/link', () => ({
+  default: ({ href, children, ...props }: { href: string; children: React.ReactNode }) => (
+    <a href={href} {...props}>{children}</a>
+  ),
 }))
 
 import Page from './page'
@@ -73,9 +85,15 @@ function itemFixture(over: Record<string, unknown>) {
   }
 }
 
-async function renderPage(doc: InventoryDocDetail) {
+async function renderPage(
+  doc: InventoryDocDetail,
+  search: Record<string, string | undefined> = {},
+) {
   mockGetDoc.mockResolvedValue(doc)
-  render(await Page({ params: Promise.resolve({ id: doc.id }) }))
+  render(await Page({
+    params: Promise.resolve({ id: doc.id }),
+    searchParams: Promise.resolve(search),
+  }))
 }
 
 /** 明细表是页面最后一张表（前面还有血缘表）。 */
@@ -191,5 +209,56 @@ describe('库存单据详情页 · 盘点三列（#131）', () => {
     const headers = within(table).getAllByRole('columnheader')
     const row = within(table).getAllByRole('row').find((r) => within(r).queryByText('SKU-1'))
     expect(within(row!).getAllByRole('cell')).toHaveLength(headers.length)
+  })
+})
+
+/**
+ * 返回入口（#190「点单据号、新标签打开，返回要求仍然可以返回到原来的页面」）。
+ *
+ * 首选是点击时 window.close() 回到原标签（办理台表单一个字不丢），href 是关不掉时的降级落点。
+ * 这里断的是**降级落点与文案**，以及最关键的一条：脏来源绝不能被回显成跳转目标。
+ */
+describe('库存单据详情页 · 返回入口（#190）', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockGetSession.mockResolvedValue({ employeeId: 'E1' })
+  })
+
+  function backLink(): HTMLAnchorElement {
+    const link = screen.getAllByRole('link').find((a) => (a.textContent ?? '').includes('返回'))
+    expect(link, '找不到返回入口').toBeTruthy()
+    return link as HTMLAnchorElement
+  }
+
+  it('带合法来源时落到办理台，文案点名层级', async () => {
+    await renderPage(docFixture(), { from: 'operations', level: 'market', op: 'market-report' })
+    const link = backLink()
+    expect(link.textContent).toContain('返回市场办理台')
+    expect(link.getAttribute('href')).toBe('/inventory/operations/market?op=market-report&tab=docs')
+  })
+
+  it.each([
+    ['supply-chain', '返回供应链办理台'],
+    ['market', '返回市场办理台'],
+    ['store', '返回门店办理台'],
+  ])('%s 的文案是「%s」', async (level, label) => {
+    await renderPage(docFixture(), { from: 'operations', level, op: 'store-request' })
+    expect(backLink().textContent).toContain(label)
+  })
+
+  it('level 是脏值时回落到单据中心（开放重定向的端到端护栏）', async () => {
+    // ⚠️ 这条必须有：白名单一旦被放宽，页面照常渲染，只是返回按钮把人送去外站。
+    await renderPage(docFixture(), { from: 'operations', level: 'https://evil.example', op: 'market-report' })
+    const link = backLink()
+    expect(link.textContent).toContain('返回')
+    expect(link.textContent).not.toContain('办理台')
+    expect(link.getAttribute('href')).toBe('/inventory/docs')
+  })
+
+  it('不带任何来源参数时仍是原来的「返回单据中心」', async () => {
+    await renderPage(docFixture())
+    const link = backLink()
+    expect(link.textContent).not.toContain('办理台')
+    expect(link.getAttribute('href')).toBe('/inventory/docs')
   })
 })

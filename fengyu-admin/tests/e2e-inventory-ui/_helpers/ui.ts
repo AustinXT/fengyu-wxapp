@@ -188,23 +188,35 @@ export interface GenericDocInput {
 }
 
 /**
- * 走 /inventory/docs 的通用建单弹窗建一张单，返回操作结果。
+ * 走 /inventory/docs 的通用建单弹窗建一张单，返回操作结果 `{ ok, toast }`。
  *
  * 只有 INVENTORY_GENERIC_DOC_TYPES 这 10 种能从这里建（分院调货出库/市场间调货出库/
  * 内部领用/院顾客产品出库/院顾客退货/市场产品报损/院产品报损/市场产品盘溢/
  * 市场库存盘点/分院库存盘点）。其余类型必须走对应的专用办理台。
  *
- * ⚠️ 这个弹窗提交失败走的是原生 alert()（inventory-docs-page.tsx:402），
- * 调用方必须提前挂好 page.on('dialog')，否则弹窗会阻塞整个页面。
+ * ⚠️ 成败只能靠「弹窗关没关」来判 —— 两边的反馈是不对称的：
+ *   · **成功**：表单就地清场后由调用方 `onOpenChange(false)` 关窗，**没有任何 toast**
+ *     （`inventory-docs-page.tsx` 的 `CreateDocDialog.onSuccess` 只做 `router.refresh()`）；
+ *   · **失败**：`toast.error(docActionErrorMessage(err, '创建单据失败'))`，且**弹窗不关**
+ *     （`inventory-doc-create-form.tsx` 的 `submit()` catch 分支，里面填的内容要留给用户）。
+ *   旧注释里的「提交失败走原生 alert()」早已不成立，别再照着挂 `page.on('dialog')` 兜底。
+ *
+ * 失败时返回的 `toast` 是剥完错误前缀后的中文文案，跨市场调货 / 自采禁跨市场这类
+ * **负向断言**就靠它取证；成功时为空串。
+ *
+ * ⚠️ 弹窗内的 `<select>` 按**位置**定位（nth(0..4)），新增任何一个都会全线错位。
+ * #200 只给两个主体下拉加了 `disabled`（非法端点），没有增删节点，索引不变。
  */
 export async function createGenericDoc(
   page: Page,
   input: GenericDocInput,
-): Promise<void> {
+): Promise<{ ok: boolean; toast: string }> {
   await page.goto(`${BASE}/inventory/docs`)
   await page.waitForLoadState('networkidle')
   await page.getByRole('button', { name: /新建/ }).first().click()
-  const dialog = page.getByRole('dialog')
+  // 动作弹窗（DocActionDialog）在同页常驻挂载，关闭态是 display:none 不进无障碍树，
+  // 理论上 getByRole('dialog') 只会命中一个；按标题再筛一道，免得将来两个弹窗真并存时撞 strict mode。
+  const dialog = page.getByRole('dialog').filter({ hasText: '新建库存单据' })
   await expect(dialog.getByText('新建库存单据')).toBeVisible({ timeout: 15_000 })
 
   const selects = dialog.locator('select')
@@ -234,8 +246,25 @@ export async function createGenericDoc(
     await dialog.getByPlaceholder('批号').fill(input.batchNo)
   }
   await dialog.getByRole('button', { name: '提交' }).click()
-  await page.waitForTimeout(3500)
+  /*
+   * 不能「先等 N 秒关窗、再回头 peek toast」：sonner 默认 4s 自动消失，
+   * 等满 20s 再读只会拿到空串，负向断言就永远匹配不上错误文案。
+   * 改成让「弹窗关闭（=成功）」与「出现 toast（=失败）」赛跑，谁先到算谁。
+   * 输家那个 waitFor 会继续挂到超时后自行 catch 成 null，不会产生未处理拒绝。
+   */
+  const closed = dialog.waitFor({ state: 'hidden', timeout: 30_000 })
+    .then(() => 'ok' as const)
+    .catch(() => null)
+  const toasted = page.locator('[data-sonner-toast]').first()
+    .waitFor({ state: 'visible', timeout: 30_000 })
+    .then(() => 'toast' as const)
+    .catch(() => null)
+  const outcome = await Promise.race([closed, toasted])
+  if (outcome === 'ok') return { ok: true, toast: '' }
+  const toastText = await peekToast(page, 8_000)
+  // 失败时弹窗还开着，不关掉会挡住下一次 page.goto 之前的任何操作
   await page.keyboard.press('Escape').catch(() => null)
+  return { ok: false, toast: toastText || '(未出现任何 toast)' }
 }
 
 async function selectLotOptionWithQty(sel: Locator, minQty: number): Promise<void> {
@@ -250,19 +279,39 @@ async function selectLotOptionWithQty(sel: Locator, minQty: number): Promise<voi
 }
 
 /**
- * 在单据中心对某单据执行行内操作（通过 / 驳回 / 收货）。
+ * 在单据中心对某单据执行行内操作（通过 / 驳回 / 收货），返回结果 toast 全文。
  *
- * ⚠️ 这三个操作的备注都用原生 prompt() 收集（inventory-docs-page.tsx:135-151），
- * 调用方必须挂 page.on('dialog') 并用 accept(备注文本) 应答，否则会卡死。
+ * ⚠️ 备注**早已不是原生 prompt()**：#134 起三个动作共用受控弹窗 `DocActionDialog`
+ * （`inventory-docs-page.tsx`），点完行内按钮只是把弹窗打开，必须再点确认按钮才真的提交。
+ *   · 备注填在弹窗内的 `<textarea>`，不是浏览器原生输入框；
+ *   · **`驳回` 的备注前端强制非空**（`DOC_ACTION_CONFIG.reject.remarkRequired = true`），
+ *     不传 remark 只会收到「请填写驳回原因」的 toast，单据纹丝不动 —— 调用方必须传；
+ *   · 成功文案见 `DOC_ACTION_CONFIG.successMessage`：通过=「单据已通过，库存已扣减」、
+ *     驳回=「单据已驳回」、收货=「收货已确认，已生成入库单 XXX」（带**新生成的入库单号**，
+ *     调用方可以直接从返回值里正则取，作为 `docIdByRemark` 之外的第二重取号途径）。
+ *
+ * 结果不符合预期时由 `readToast` 抛错并带上真实提示文案，不会静默通过。
  */
-export async function rowAction(page: Page, docId: string, action: '通过' | '驳回' | '收货'): Promise<void> {
+export async function rowAction(
+  page: Page,
+  docId: string,
+  action: '通过' | '驳回' | '收货',
+  remark = '',
+): Promise<string> {
   await page.goto(`${BASE}/inventory/docs?q=${encodeURIComponent(docId)}`)
   await page.waitForLoadState('networkidle')
   await page.waitForTimeout(1200)
   const row = page.locator('tbody tr').filter({ hasText: docId }).first()
   await expect(row).toBeVisible({ timeout: 15_000 })
-  await row.getByRole('button', { name: action }).click()
-  await page.waitForTimeout(3500)
+  await row.getByRole('button', { name: action, exact: true }).click()
+  const confirmText = { 通过: '确认通过', 驳回: '确认驳回', 收货: '确认收货' }[action]
+  // 弹窗描述区写着「单据号 {docId}」，按它筛可以稳定避开同页常驻挂载的建单弹窗
+  const dlg = page.getByRole('dialog').filter({ hasText: docId })
+  const confirm = dlg.getByRole('button', { name: confirmText, exact: true })
+  await expect(confirm).toBeVisible({ timeout: 15_000 })
+  if (remark) await dlg.locator('textarea').first().fill(remark)
+  await confirm.click()
+  return await readToast(page, action, /单据已通过|单据已驳回|收货已确认/)
 }
 
 // ───────────────────────── DB 读取断言 ─────────────────────────

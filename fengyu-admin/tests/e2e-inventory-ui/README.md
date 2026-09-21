@@ -20,7 +20,7 @@
 ```bash
 cd fengyu-admin
 
-bun run test:e2e:inventory-ui                    # 全套 11 条，约 5 分钟
+bun run test:e2e:inventory-ui                    # 全套 12 个 spec / 17 个 test
 PW_HEADED=1 bun run test:e2e:inventory-ui        # 有头观察
 
 # 单条
@@ -30,16 +30,26 @@ bunx playwright test --config=tests/e2e-inventory-ui/playwright.inventory.config
 # 指向别的实例
 ADMIN_BASE_URL=http://localhost:3000 bun run test:e2e:inventory-ui
 
-# 诊断 spec（默认不进套件）：复核批次下拉缺陷是否已修
+# 取证探针（默认 skip，不进套件）：逐秒采样批次下拉的加载状态
 INVT_PROBE=1 bunx playwright test --config=tests/e2e-inventory-ui/playwright.inventory.config.ts \
   tests/e2e-inventory-ui/inv-90-probe-lot-loading.spec.ts
 ```
+
+**spec 清单**：`inv-00` ~ `inv-11` 共 12 个文件。`inv-00` ~ `inv-10` 各 1 个 test（单测试函数内跑完整条场景），
+`inv-11`（#189 主体自动选中）是 `test.describe` 下的 6 个 test —— 它原先带 `test.skip(INVT_189 !== '1')` 开关，
+#189 部署到 dev 并实跑 6/6 通过后开关已删除，现随常规套件跑。
+`inv-90` 被 `testMatch` 收进来，但文件内 `test.skip(INVT_PROBE !== '1')` 使它默认跳过。
 
 > 本机若开着代理，Playwright 可能报 `ERR_PROXY_CONNECTION_FAILED`。
 > 前面加 `env -u HTTP_PROXY -u HTTPS_PROXY -u http_proxy -u https_proxy -u ALL_PROXY -u all_proxy` 即可。
 
 **spec 之间有状态依赖**，必须按编号顺序跑（config 已设 `workers: 1` / `fullyParallel: false`）。
 单据号通过 `.last-inventory-context.json` 传递；单跑靠后的 spec 前，先至少跑过一次 INV-01/02。
+例外：INV-11 只读页面、不读上下文，除 INV-00 的账号 seed 外无前置。
+
+> ⚠️ INV-10 的报告**转述**上游 spec 写进上下文的判定（`inv01` / `inv05` / `inv06` / `inv07`），
+> 没跑上游时它会如实输出一条 P2「未覆盖」而不是静默跳过。看到「未覆盖 / 证据过期」字样，
+> 含义是「本轮无从判断该 issue 是否回归」，**不是**缺陷复现，也**不能**读成「P0 已清零」。
 
 ## 前置条件
 
@@ -83,8 +93,8 @@ _helpers/
   cutover.ts        期初门禁开/关
   ui.ts             定位与操作原语（每个函数的注释都对应一个踩过的坑）
   ux-audit.ts       交互合理性启发式规则 + 报告渲染
-inv-00 ~ inv-10     场景 spec，见 BUSINESS-SCENARIOS.md
-inv-90-probe-*      诊断 spec（默认跳过）
+inv-00 ~ inv-11     场景 spec（12 个文件 / 17 个 test），见 BUSINESS-SCENARIOS.md
+inv-90-probe-*      #129 取证探针（默认跳过，INVT_PROBE=1 启用）
 BUSINESS-SCENARIOS.md  业务场景设计与断言矩阵
 UX-FINDINGS.md         交互合理性报告（INV-10 自动生成）
 ```
@@ -102,22 +112,31 @@ UX-FINDINGS.md         交互合理性报告（INV-10 自动生成）
 7. **批次要按可用量挑**，不能取第一个（同一主体常有多个批次）
 8. **文本断言要收紧到数据行** —— 拿 `main` 全文匹配会把筛选器下拉选项误判成数据
 
-## 已知缺陷（2026-09-13 首轮实测；详见 UX-FINDINGS.md）
+## 首轮实测缺陷的收敛情况（2026-09-13 发现 → 2026-09-21 复核）
 
-⚠️ 这张表是**首轮快照**，不随代码状态自动更新。「状态」列按 issue 实际进展手工维护；
-被扫描的实例未必已部署对应修复，扫描报告里旧条目照旧出现属正常。
+⚠️ 这张表是**人工维护的历史台账**，不随代码状态自动更新；判读当前状态请看 `UX-FINDINGS.md`
+（由 INV-10 每次跑时**整文件覆写**，且已全部改成「实测再报」—— 本轮没有可转述的实测判定时
+它会输出一条 P2「未覆盖」，不会假装已复核）。
 
 | 级别 | 问题 | 影响 | 状态 |
 |---|---|---|---|
-| P0 | 单据中心批次下拉永久卡在「加载库存批次...」 | 6 种需选来源批次的单据在后台**完全建不出来** | #129 已合入 dev |
-| P0 | 员工购的员工下拉恒为空（递归 CTE 别名写错，5 处） | 市场员工购 / 供应链员工购**完全不可用** | #130 已合入 dev |
-| P1 | 盘点单不记录账面数量（`stock_snapshot` 恒 NULL） | 盘点无法用于盈亏对账 | #131 已修（账面数按主体 + SKU 汇总写入；INV-10 已改为实测再报） |
-| P1 | SKU「供货商」是自由文本，与供应商档案无外键 | 档案形同虚设，无法按供应商统计 | #132 待开工 |
-| P1 | 业务错误被生产构建脱敏成英文占位或 digest 数字 | 用户不知道发生了什么 | #133 已合入 dev |
-| P1 | 建单失败用 `alert()`、审批备注用 `prompt()` | 原生弹窗无法校验必填、阻塞页面 | #134 已合入 dev |
+| P0 | 单据中心批次下拉永久卡在「加载库存批次...」 | 6 种需选来源批次的单据在后台**完全建不出来** | #129 **已修并已部署 dev**（2026-09-21 用 `inv-90` 探针取证：批次框约 1 秒解禁） |
+| P0 | 员工购的员工下拉恒为空（递归 CTE 别名写错，5 处） | 市场员工购 / 供应链员工购**完全不可用** | #130 **已修并已部署 dev**（实测候选：市场 115 人 / 供应链 10 人） |
+| P1 | 盘点单不记录账面数量（`stock_snapshot` 恒 NULL） | 盘点无法用于盈亏对账 | #131 已修（账面数按主体 + SKU 汇总写入；INV-10 转述 INV-06 判定） |
+| P1 | SKU「供货商」是自由文本，与供应商档案无外键 | 档案形同虚设，无法按供应商统计 | #132 **已修并已部署 dev**（改下拉 + `supplier_id` 外键；INV-10 转述 INV-01 判定） |
+| P1 | 业务错误被生产构建脱敏成英文占位或 digest 数字 | 用户不知道发生了什么 | #133 已合入 dev（INV-10 仍无条件登记此条，待补实测口径） |
+| P1 | 建单失败用 `alert()`、审批备注用 `prompt()` | 原生弹窗无法校验必填、阻塞页面 | #134 已修（INV-10 改为按本轮 `page.on('dialog')` 计数再报） |
 
-受 P0 阻断、**因而未能在 UI 层验证**的业务规则（已由 action 层 smoke 覆盖）：
-§8.2 分院调货限同市场、§10.3 市场间调货归属派生、自采 SKU 禁跨市场、报损审批链、内部领用。
+两条 P0 修复后，原先**受阻而无法在 UI 层验证**的业务规则已可正常覆盖：
+§8.2 分院调货限同市场、§10.3 市场间调货归属派生、自采 SKU 禁跨市场、报损审批链、内部领用、
+市场员工购与供应链员工购（此前只由 action 层 smoke 覆盖）。
+
+### 被测实例的版本落差（跑之前务必先看）
+
+本套件打的是**已部署的 dev 实例**，不是工作区代码。2026-09-21 该实例跑的是 `ab282a13`：
+**含** #129 / #130 / #132，**不含** 本分支在途的 #190 / #191 / #194 / #200。
+所以依赖在途改动的定位（如 #194 给行内控件补的 `aria-label`）在当前实例上跑不通，
+是**版本落差**而非测试缺陷 —— 重跑前先确认实例已部署到对应 commit。
 
 ## 本套件覆盖不到的范围
 
