@@ -119,12 +119,18 @@ function makeJpeg(width: number, height: number): Buffer {
   app0.writeUInt16BE(16, 2) // 段长（不含 marker 自身 2 字节）
   app0.write("JFIF\0", 4, "ascii")
 
-  const sof = Buffer.alloc(11)
+  // SOF0：marker(2) + length(2) + precision(1) + height(2) + width(2)
+  //        + 组件数(1) + 组件描述(3) = 13 字节，length 字段计为 11
+  const sof = Buffer.alloc(13)
   sof.writeUInt16BE(0xffc0, 0)
   sof.writeUInt16BE(11, 2)
   sof.writeUInt8(8, 4) // precision
   sof.writeUInt16BE(height, 5)
   sof.writeUInt16BE(width, 7)
+  sof.writeUInt8(1, 9) // 组件数
+  sof.writeUInt8(1, 10) // 组件 id
+  sof.writeUInt8(0x11, 11) // 采样因子
+  sof.writeUInt8(0, 12) // 量化表 id
 
   return Buffer.concat([Buffer.from([0xff, 0xd8]), app0, sof])
 }
@@ -550,12 +556,13 @@ describe("getImageDimensions", () => {
   })
 
   it("JPEG 段长恰好贴到 buffer 末尾仍可正常解析", () => {
-    const sof = Buffer.alloc(11)
+    const sof = Buffer.alloc(13)
     sof.writeUInt16BE(0xffc0, 0)
     sof.writeUInt16BE(11, 2)
     sof.writeUInt8(8, 4)
     sof.writeUInt16BE(600, 5)
     sof.writeUInt16BE(800, 7)
+    sof.writeUInt8(1, 9)
 
     const app0 = Buffer.alloc(6)
     app0.writeUInt16BE(0xffe0, 0)
@@ -563,5 +570,19 @@ describe("getImageDimensions", () => {
 
     const buf = Buffer.concat([Buffer.from([0xff, 0xd8]), app0, sof])
     expect(getImageDimensions(buf)).toEqual({ width: 800, height: 600 })
+  })
+
+  /**
+   * SOF 自己的段长也要校验：尺寸字节必须落在本段内，否则读到的其实是段外数据。
+   */
+  it("SOF 段长不足以容纳尺寸字段时判定失败", () => {
+    const sof = Buffer.alloc(13)
+    sof.writeUInt16BE(0xffc0, 0)
+    sof.writeUInt16BE(4, 2) // 段长 4，放不下 precision + height + width
+    sof.writeUInt16BE(600, 5)
+    sof.writeUInt16BE(800, 7)
+
+    const buf = Buffer.concat([Buffer.from([0xff, 0xd8]), sof])
+    expect(getImageDimensions(buf)).toBeNull()
   })
 })

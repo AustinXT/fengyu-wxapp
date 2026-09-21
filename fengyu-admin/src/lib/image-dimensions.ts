@@ -184,15 +184,20 @@ function parseJpeg(buf: Buffer): ImageDimensions | null {
       marker !== 0xc8 &&
       marker !== 0xcc
 
+    const segmentLength = buf.readUInt16BE(offset + 2)
+    if (segmentLength < 2) return null
+
     if (isSof) {
+      // SOF 段至少要含 precision(1) + height(2) + width(2) + 组件数(1)，
+      // 且必须完整落在 buffer 内——否则尺寸字节其实在段外
+      if (segmentLength < 8) return null
+      if (offset + 2 + segmentLength > buf.length) return null
       return {
         height: buf.readUInt16BE(offset + 5),
         width: buf.readUInt16BE(offset + 7),
       }
     }
 
-    const segmentLength = buf.readUInt16BE(offset + 2)
-    if (segmentLength < 2) return null
     // 段长越界（截断上传、或第三方工具写坏 APPn 长度）时直接判定失败。
     // 不能继续扫描：跳进垃圾字节后可能恰好撞上 0xFFCn 字节序列，读出一个「合法」的错误小尺寸，
     // 那会让真正的超大图通过校验——比返回 null 更危险。
@@ -213,7 +218,11 @@ function parseWebp(buf: Buffer): ImageDimensions | null {
 
   const format = buf.toString("ascii", 12, 16)
 
+  // 顶层 chunk 的声明长度必须容得下随后要读的尺寸字段，否则尺寸字节其实落在 chunk 之外
+  const topChunkSize = buf.readUInt32LE(16)
+
   if (format === "VP8 ") {
+    if (topChunkSize < 10) return null
     // 有损：关键帧 start code 必须是 9d 01 2a
     if (buf[23] !== 0x9d || buf[24] !== 0x01 || buf[25] !== 0x2a) return null
     return {
@@ -223,6 +232,7 @@ function parseWebp(buf: Buffer): ImageDimensions | null {
   }
 
   if (format === "VP8L") {
+    if (topChunkSize < 5) return null
     // 无损：1 字节 signature 必须是 0x2f
     if (buf[20] !== 0x2f) return null
     const bits = buf.readUInt32LE(21)
@@ -247,10 +257,16 @@ function parseWebp(buf: Buffer): ImageDimensions | null {
     // canvas 可以声明 100×100 而内嵌帧其实是 16000×16000。若解码端按帧尺寸分配位图，
     // 只信 canvas 就会读小放行。故取 canvas 与内嵌帧的较大者。
     const frame = parseWebpFrameAfterVp8x(buf)
+
+    // 真实动画 WebP 用 ANIM + ANMF 组织帧，没有顶层 VP8/VP8L 负载。
+    // 这类文件先按动图报出去，调用方会给「不支持动图」而不是「无法识别图片尺寸」。
+    if (frame === "animated") {
+      return { width, height, animated: true }
+    }
+
     // 结构不可信、或压根没有图像负载时，一律整体判定失败：
     // 静态 VP8X 必须含一个 VP8/VP8L 负载，不存在「只有 canvas 没有帧」的合法静态图；
     // 退回 canvas 尺寸等于用一个小尺寸放行了我们没能力确认的容器。
-    // （动图的负载在 ANMF 里，但 animated 已在上传侧整体拒绝。）
     if (frame === "invalid" || frame === null) return null
     return {
       width: Math.max(width, frame.width),
@@ -265,14 +281,15 @@ function parseWebp(buf: Buffer): ImageDimensions | null {
 /**
  * 在 VP8X 之后按 chunk 链找首个 VP8 / VP8L 帧，读它自己声明的尺寸。
  *
- * 三种返回值必须区分开：
- * - `ImageDimensions`：找到帧，用它的尺寸
- * - `null`：chunk 链走完但没有帧（合法，交由 canvas 尺寸兜底）
- * - `"invalid"`：结构不可信（声明长度越界、帧头放不下等），调用方必须整体判定失败
+ * 四种返回值必须区分开：
+ * - `ImageDimensions`：找到静态帧，用它的尺寸
+ * - `"animated"`：遇到 ANIM/ANMF，说明是动画容器（帧在 ANMF 里，无顶层 VP8/VP8L）
+ * - `null`：chunk 链走完但没有任何帧
+ * - `"invalid"`：结构不可信（声明长度越界、帧头放不下等）
  */
 function parseWebpFrameAfterVp8x(
   buf: Buffer
-): ImageDimensions | "invalid" | null {
+): ImageDimensions | "animated" | "invalid" | null {
   // RIFF(12) + VP8X header(8) + VP8X payload(10) = 30
   let offset = 30
 
@@ -283,6 +300,9 @@ function parseWebpFrameAfterVp8x(
 
     // payload 必须严格落在 buffer 内，否则结构不可信
     if (body + chunkSize > buf.length) return "invalid"
+
+    // 动画容器：帧在 ANMF 里，没有顶层 VP8/VP8L
+    if (chunkType === "ANIM" || chunkType === "ANMF") return "animated"
 
     if (chunkType === "VP8 ") {
       // 帧头字段必须在本 chunk 声明的长度之内，不能跨界读进下一个 chunk

@@ -36,72 +36,36 @@ function isProcessableHost(hostname) {
 }
 
 /**
- * 判断一个 query 参数是否属于「鉴权必需、删了会 403」的那类。
+ * 判断 URL 是否带 COS 签名（私有读 / 临时密钥）。
  *
- * 固定前缀列表补不全：COS V5 签名把哪些业务参数纳入签名，是由 `q-url-param-list`
- * 自己声明的（分号分隔）。若只保留 `q-url-param-list=response-content-disposition`
- * 而把真正的 `response-content-disposition=inline` 删掉，签名照样失效。
+ * 带签名的 URL 一律放弃处理（返回 null），不尝试「保留签名参数 + 追加缩略规则」：
+ * - 哪些参数被签进签名由 `q-url-param-list` 声明，而它写在 URL 上无从验真。
+ *   曾经据此做动态保留，结果被构造
+ *   `?imageView2%2F1%2Fw%2F50000&q-url-param-list=imageView2%2F1%2Fw%2F50000`
+ *   让一条放大规则「自声明」成已签名参数而存活。
+ * - 腾讯云要求把已签名的处理参数做**双重编码**写进 `q-url-param-list`，
+ *   还可能带 `versionId` 等其它签名参数；少保留一个签名就废，多保留一个就是放大通道。
+ * - 签名 URL 本身有时效，下发给小程序也不合适。
  *
- * 但 `q-url-param-list` 本身写在 URL 上、无从验真，**不能当作授权证据**：
- * 构造 `?imageView2%2F1%2Fw%2F50000&q-url-param-list=imageView2%2F1%2Fw%2F50000`
- * 就能让一条放大规则「自声明」成已签名参数从而存活，并排在服务端规则之前
- * （COS 未定义多个独立处理键的优先级，等于赌未定义行为）。
- *
- * 所以动态保留只对 `response-*` 生效 —— COS V5 实际会纳入签名的业务参数就这一族，
- * 且它们的名字不含 `/`，而任何数据万象处理指令的「名字」必然含 `/`。
- *
- * @param {string} param 形如 `key=value` 的原始参数串
- * @param {string[]} allParams 同一 URL 上的全部原始参数串
+ * 无法在不重签名的前提下安全追加处理规则，就不该返回一个注定 403 的 URL —— 直接 null。
+ * 当前生产 stores.cover_image 全部是公共读 URL（已核对 41/41），不受影响。
  */
-function isAuthParam(param, allParams) {
-  const name = decodeParamName(param)
-
-  // q-url-param-list 的值只会是分号分隔的参数名。值里出现 '/' 说明这不是正常签名 URL
-  // （典型是拿处理指令来「自声明」），整条丢弃，免得把处理指令字样带进下发的 URL
-  if (name === 'q-url-param-list') {
-    return signedParamNames(param).every((n) => /^[\w.-]*$/.test(n))
-  }
-
-  // q-* 是签名自身的字段；临时密钥 URL 还必须带安全令牌
-  if (name.startsWith('q-')) return true
-  if (name === 'x-cos-security-token') return true
-
-  // 动态声明只在 response-* 这一族内生效，且参数名必须是合法的 HTTP 参数名字符集
-  if (!name.startsWith('response-')) return false
-  if (!/^[\w.-]+$/.test(name)) return false
-
-  const listParam = allParams.find(
-    (p) => decodeParamName(p) === 'q-url-param-list'
-  )
-  if (!listParam) return false
-
-  return signedParamNames(listParam).includes(name)
-}
-
-/** 解出 q-url-param-list 声明的参数名（分号分隔，归一为小写） */
-function signedParamNames(listParam) {
-  const eq = listParam.indexOf('=')
-  if (eq === -1) return []
-  return decodeURIComponentSafe(listParam.slice(eq + 1))
-    .split(';')
-    .map((s) => s.trim().toLowerCase())
-    .filter(Boolean)
+function hasCosSignature(rawParams) {
+  return rawParams.some((p) => {
+    const name = decodeParamName(p)
+    return name.startsWith('q-') || name === 'x-cos-security-token'
+  })
 }
 
 /** 取参数名并归一（解码 + 小写），解码失败时退回原串 */
 function decodeParamName(param) {
   const eq = param.indexOf('=')
   const rawName = eq === -1 ? param : param.slice(0, eq)
-  return decodeURIComponentSafe(rawName).toLowerCase()
-}
-
-function decodeURIComponentSafe(value) {
   try {
-    return decodeURIComponent(value)
+    return decodeURIComponent(rawName).toLowerCase()
   } catch {
-    // 非法百分号编码：退回原串。这里只影响「是否认定为鉴权参数」，
-    // 退回原串会让它落到「非鉴权 → 丢弃」，方向是安全的
-    return value
+    // 非法百分号编码：退回原串。方向安全——它不会被当成签名参数，URL 走正常清洗
+    return rawName.toLowerCase()
   }
 }
 
@@ -141,19 +105,24 @@ function safeThumbUrl(url, boxSize) {
   // 这类把可信域名塞进 userinfo 的 URL 会被误判为可信
   if (!isProcessableHost(parsed.hostname)) return null
 
-  // 丢弃原 URL 上的全部图片处理参数，只保留鉴权相关参数，再拼服务端自己的规则。
-  //
-  // 这里必须是白名单而不是「剥掉 imageMogr2」的黑名单：COS 还有与 imageMogr2 平级的
-  // imageView2（mode 1 可把图放大到指定尺寸），黑名单漏掉它就等于留了个放大通道；
-  // 而黑名单永远只挡得住已知参数名。最终生效的规则必须由服务端完全掌控。
+  // 图片样式可以直接挂在对象路径后（默认分隔符 `!`），且样式本身能携带完整的缩放规则。
+  // 光清洗 query 挡不住它，而两种处理机制同时出现时的优先级 COS 并未定义 —— 直接拒绝。
+  if (parsed.pathname.includes('!')) return null
+
   const rawParams = parsed.search.replace(/^\?/, '').split('&').filter(Boolean)
-  const kept = rawParams.filter((p) => isAuthParam(p, rawParams))
 
-  kept.push(`imageMogr2/thumbnail/${boxSize}x${boxSize}`)
+  // 带签名的 URL 无法在不重签名的前提下安全改造，放弃处理
+  if (hasCosSignature(rawParams)) return null
 
+  // 其余情况丢弃原 URL 上的**全部** query，只留服务端自己的规则。
+  //
+  // 必须是「全部丢弃」而不是「剥掉 imageMogr2」的黑名单：COS 还有与 imageMogr2 平级的
+  // imageView2（mode 1 可把图放大到指定尺寸）、ci-process 等，黑名单漏掉任何一个
+  // 都等于留了个放大通道。最终生效的规则必须由服务端完全掌控。
+  //
   // 经 URL 对象重建而非裸字符串拼接：字符串拼接遇到 #fragment 会把参数拼进 fragment 里
   // （对 COS 不生效），遇到末尾裸 ? 会拼出 ??
-  parsed.search = `?${kept.join('&')}`
+  parsed.search = `?imageMogr2/thumbnail/${boxSize}x${boxSize}`
   return parsed.toString()
 }
 

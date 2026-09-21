@@ -92,80 +92,53 @@ describe('safeThumbUrl', () => {
     expect(result).toBe(`${COS_URL}?imageMogr2/thumbnail/300x300`)
   })
 
-  // COS 私有读签名共 7 个认证参数，丢任意一个都会 403
-  test('私有读签名的全部 7 个参数都必须保留', () => {
-    const signed =
-      `${COS_URL}?q-sign-algorithm=sha1&q-ak=AKID&q-sign-time=1&q-key-time=1` +
-      `&q-header-list=host&q-url-param-list=&q-signature=abc`
-    const result = safeThumbUrl(signed, 300)
+  /**
+   * 带签名的 URL 一律放弃处理，不尝试「保留签名参数 + 追加缩略规则」：
+   * 哪些参数被签进签名由 q-url-param-list 声明，而它写在 URL 上无从验真
+   * （曾被构造成让放大规则自声明存活）；腾讯云还要求已签名的处理参数做双重编码，
+   * 少保留一个签名就废、多保留一个就是放大通道。
+   * 无法在不重签名的前提下安全追加规则，就不该返回一个注定 403 的 URL。
+   */
+  describe('带 COS 签名的 URL 一律返回 null', () => {
+    test('标准 V5 私有读签名', () => {
+      const signed =
+        `${COS_URL}?q-sign-algorithm=sha1&q-ak=AKID&q-sign-time=1&q-key-time=1` +
+        `&q-header-list=host&q-url-param-list=&q-signature=abc`
+      expect(safeThumbUrl(signed, 300)).toBeNull()
+    })
 
-    for (const param of [
-      'q-sign-algorithm=sha1',
-      'q-ak=AKID',
-      'q-sign-time=1',
-      'q-key-time=1',
-      'q-header-list=host',
-      'q-url-param-list=',
-      'q-signature=abc',
-    ]) {
-      expect(result).toContain(param)
-    }
-    expect(result).toContain('imageMogr2/thumbnail/300x300')
-  })
+    test('临时密钥安全令牌', () => {
+      expect(
+        safeThumbUrl(`${COS_URL}?x-cos-security-token=TOKEN123`, 300)
+      ).toBeNull()
+    })
 
-  test('临时密钥 URL 的安全令牌必须保留', () => {
-    const result = safeThumbUrl(
-      `${COS_URL}?q-signature=abc&x-cos-security-token=TOKEN123`,
-      300
-    )
-    expect(result).toContain('x-cos-security-token=TOKEN123')
+    test('已把处理参数签进签名的 URL（双重编码形态）', () => {
+      const signed =
+        `${COS_URL}?q-url-param-list=imagemogr2%252fthumbnail%252f100x100` +
+        `&imageMogr2%2Fthumbnail%2F100x100=&q-signature=abc`
+      expect(safeThumbUrl(signed, 300)).toBeNull()
+    })
+
+    test('第四轮的自声明劫持构造', () => {
+      const attack =
+        `${COS_URL}?imageView2%2F1%2Fw%2F50000%2Fh%2F50000` +
+        `&q-url-param-list=imageView2%2F1%2Fw%2F50000%2Fh%2F50000`
+      expect(safeThumbUrl(attack, 300)).toBeNull()
+    })
   })
 
   /**
-   * 被签进签名的业务参数由 q-url-param-list 自己声明。只保留 q-url-param-list
-   * 本身、却把它列出的参数删掉，签名一样失效——白名单前缀列表覆盖不了这种动态声明。
+   * 图片样式可以直接挂在对象路径后（默认分隔符 `!`），样式本身能携带完整缩放规则。
+   * 只清洗 query 挡不住它，而两种处理机制并存时的优先级 COS 并未定义。
    */
-  test('q-url-param-list 声明的业务参数必须一并保留', () => {
-    const result = safeThumbUrl(
-      `${COS_URL}?q-url-param-list=response-content-disposition` +
-        `&response-content-disposition=inline&q-signature=abc`,
-      300
-    )
-    expect(result).toContain('q-url-param-list=response-content-disposition')
-    expect(result).toContain('response-content-disposition=inline')
-    expect(result).toContain('imageMogr2/thumbnail/300x300')
-  })
-
-  /**
-   * q-url-param-list 写在 URL 上、无从验真，不能当授权证据：
-   * 让一条放大规则「自声明」成已签名参数，就能存活并排在服务端规则之前，
-   * 而 COS 未定义多个独立处理键的优先级 —— 等于赌未定义行为。
-   */
-  test('自声明的处理参数不得借 q-url-param-list 存活', () => {
-    const attack =
-      `${COS_URL}?imageView2%2F1%2Fw%2F50000%2Fh%2F50000` +
-      `&q-url-param-list=imageView2%2F1%2Fw%2F50000%2Fh%2F50000`
-    const result = safeThumbUrl(attack, 300)
-    expect(result).not.toContain('imageView2')
-    expect(result).not.toContain('50000')
-    expect(result).toContain('imageMogr2/thumbnail/300x300')
-  })
-
-  test('无等号的编码参数名自声明同样无效', () => {
-    const attack =
-      `${COS_URL}?imageMogr2%2Fthumbnail%2F65536x65536` +
-      `&q-url-param-list=imagemogr2%2Fthumbnail%2F65536x65536`
-    const result = safeThumbUrl(attack, 300)
-    expect(result).not.toContain('65536')
-    expect(result).toContain('imageMogr2/thumbnail/300x300')
-  })
-
-  test('未被签名声明的同名业务参数仍然丢弃', () => {
-    const result = safeThumbUrl(
-      `${COS_URL}?q-url-param-list=&response-content-disposition=inline`,
-      300
-    )
-    expect(result).not.toContain('response-content-disposition=inline')
+  test('路径型图片样式返回 null', () => {
+    expect(
+      safeThumbUrl(
+        'https://6665-fengyu-client-prod-d1cga6909c0ba-1406056527.tcb.qcloud.la/store-covers/a.png!oversize',
+        300
+      )
+    ).toBeNull()
   })
 
   test('非法百分号编码不抛错且按非鉴权参数丢弃', () => {
