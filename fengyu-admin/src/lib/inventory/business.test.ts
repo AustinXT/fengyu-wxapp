@@ -33,6 +33,8 @@ import {
   quoteMarketReplenishmentPrice,
   quoteMarketReplenishmentPrices,
   receiveItemCompanyShipment,
+  receiveItemCompanyShipmentInFull,
+  receiveStoreAllocationInFull,
   receiveSupplyChainPurchaseOrder,
   rejectItemCompanyShipmentCancellation,
   requestItemCompanyShipmentCancellation,
@@ -225,6 +227,28 @@ function renderSql(query: unknown): string {
       return Array.isArray(chunk.value) ? chunk.value.join('') : String(chunk)
     })
     .join('')
+}
+
+/**
+ * 按序取出 `sql` 模板里的绑定参数值。
+ *
+ * `renderSql` 只还原静态片段（drizzle 的 StringChunk 带 `value: string[]`），
+ * 想断言「传下去的是哪一行」就得看参数本身。drizzle 0.45 把插值**原样**留在
+ * queryChunks 里（裸的 number / string，不是 Param 包装），所以这里按「不是
+ * StringChunk 就算参数」来挑，并兼容带 `value` 的包装形态。
+ */
+function sqlParams(query: unknown): unknown[] {
+  const chunks = (query as { queryChunks?: unknown[] }).queryChunks ?? []
+  const isStringChunk = (chunk: unknown) => (
+    typeof chunk === 'object' && chunk !== null && Array.isArray((chunk as { value?: unknown }).value)
+  )
+  return chunks
+    .filter((chunk) => !isStringChunk(chunk))
+    .map((chunk) => (
+      typeof chunk === 'object' && chunk !== null && 'value' in chunk
+        ? (chunk as { value: unknown }).value
+        : chunk
+    ))
 }
 
 /**
@@ -1624,5 +1648,222 @@ describe('allocateRetainedQuantity 按占比分配已收数量', () => {
       [{ from_item_id: 1, quantity: 5 }],
       6,
     )).toThrow('已收数量超过来源血缘合计')
+  })
+})
+
+/**
+ * 整单按待收数量收货（#192 待办区的「一键收货」）。
+ *
+ * 这两个入口没有 items 入参 —— 收多少完全由服务端从 `getShipmentReceiptProgress`
+ * 的 outstanding 推出来。三件事必须钉死，错了都不会报错只会收错货：
+ *   ① 入口与单据类型的绑定（市场入口只收品项公司发货、门店入口只收分院配货），
+ *      这是**权限边界**：两个入口的 Server Action 权限不同，按 docType 分发等于越权；
+ *   ② 只把 outstanding > 0 的行传下去（全收满的行再传一次会撞 CONFLICT）；
+ *   ③ 传下去的数量是整行待收量，且 TOCTOU 冲突时 fail-closed 抛 CONFLICT。
+ */
+describe('整单收货入口 receiveXxxInFull（#192）', () => {
+  const SENTINEL = '__DOWNSTREAM_REACHED__'
+
+  beforeEach(() => {
+    vi.resetAllMocks()
+  })
+
+  function shipmentDocRow(input: {
+    docType: '品项公司发货' | '分院配货'
+    status: string
+  }) {
+    return {
+      id: 'GFH-1',
+      doc_type: input.docType,
+      status: input.status,
+      source_org_node_id: 'HQ',
+      target_org_node_id: 'M1',
+      market_id: 'M1',
+      supplier_id: null,
+      supplier_name: null,
+      cancellation_request_reason: null,
+      cancellation_requested_by: null,
+      cancellation_requested_at: null,
+    }
+  }
+
+  function locationRow(locationId: string, locationType: string, parentLocationId: string | null) {
+    return {
+      location_id: locationId,
+      org_node_id: locationId,
+      location_type: locationType,
+      name: locationId,
+      parent_location_id: parentLocationId,
+    }
+  }
+
+  /** 发货单明细：quantity = 发货量，fulfilled = 已收量，outstanding 由二者相减得出。 */
+  function shipmentItemRow(id: number, quantity: string, fulfilledQuantity: string) {
+    return {
+      ...storeRequestItemRow(fulfilledQuantity),
+      id,
+      doc_id: 'GFH-1',
+      lot_id: 101,
+      quantity,
+      request_quantity: null,
+    }
+  }
+
+  /**
+   * 第 1 段：`getShipmentReceiptProgress` 的只读事务。
+   * 顺序 = docForUpdate → locationForUpdate(source) → locationForUpdate(target) → allDocItemsForUpdate。
+   */
+  function mockProgressTransaction(input: {
+    docType: '品项公司发货' | '分院配货'
+    status: string
+    items: ReturnType<typeof shipmentItemRow>[]
+  }) {
+    const txExecute = vi.fn()
+      .mockResolvedValueOnce([shipmentDocRow({ docType: input.docType, status: input.status })])
+      .mockResolvedValueOnce([locationRow('HQ', '总部', null)])
+      .mockResolvedValueOnce([locationRow(input.docType === '品项公司发货' ? 'M1' : 'S1', input.docType === '品项公司发货' ? '市场' : '门店', input.docType === '品项公司发货' ? 'HQ' : 'M1')])
+      .mockResolvedValueOnce(input.items)
+    vi.mocked(db.transaction).mockImplementationOnce(async (callback) => callback({ execute: txExecute } as never))
+    return txExecute
+  }
+
+  /**
+   * 第 2 段：`receivePhysicalShipment` 的写事务，跑完整个明细循环。
+   *
+   * 循环每行依次查：明细（FOR UPDATE + 数量闸）→ 来源批次 → 采购订单价格快照 → SKU。
+   * 全部行过完才走到 `generateDocId` 的 advisory lock —— 在那里抛哨兵收尾，
+   * 后面建单/建批次是既有路径，与本次改动无关。
+   */
+  function mockReceiveTransaction(downstreamItems: Map<number, ReturnType<typeof shipmentItemRow>>) {
+    const itemIds: number[] = []
+    // 先 source（总部）后 target（市场），与 receivePhysicalShipment 的调用序一致。
+    const locations = [locationRow('HQ', '总部', null), locationRow('M1', '市场', 'HQ')]
+    const txExecute = vi.fn(initializedCutoverExecutor(async (query: unknown) => {
+      const rendered = renderSql(query)
+      if (rendered.includes('pg_advisory_xact_lock')) throw new Error(SENTINEL)
+      if (rendered.includes('FROM inventory_docs')) {
+        return [shipmentDocRow({ docType: '品项公司发货', status: '待收货' })]
+      }
+      if (rendered.includes('FROM inventory_locations')) {
+        return [locations.shift() ?? locationRow('M1', '市场', 'HQ')]
+      }
+      // 价格快照的 SQL 里也出现 inventory_doc_items（JOIN），必须排在明细分支之前。
+      if (rendered.includes('FROM inventory_doc_links')) {
+        return [{
+          supply_chain_unit_cost: '10',
+          market_standard_unit_price: '100',
+          market_unit_discount: '0',
+          market_actual_unit_price: '100',
+          store_standard_unit_price: '120',
+          store_unit_discount: '0',
+          store_actual_unit_price: '120',
+        }]
+      }
+      if (rendered.includes('FROM inventory_stock_lots')) return [shipmentSourceLotRow()]
+      if (rendered.includes('FROM inventory_skus')) return [marketSkuRow('SKU-1')]
+      if (rendered.includes('FROM inventory_doc_items')) {
+        const id = Number(sqlParams(query)[0])
+        itemIds.push(id)
+        const row = downstreamItems.get(id)
+        return row ? [row] : []
+      }
+      throw new Error(`未预期的查询：${rendered.slice(0, 80)}`)
+    }))
+    vi.mocked(db.transaction).mockImplementationOnce(async (callback) => callback({ execute: txExecute } as never))
+    return { itemIds }
+  }
+
+  /** 两段各有一次 syncLocations 漂移探测，都短路掉。 */
+  function mockBothSyncProbes() {
+    vi.mocked(db.execute)
+      .mockResolvedValueOnce([{ drifted: false }] as never)
+      .mockResolvedValueOnce([{ drifted: false }] as never)
+  }
+
+  it('单据不是待收货时抛 INVALID_STATE，且不进下游收货事务', async () => {
+    mockBothSyncProbes()
+    mockProgressTransaction({
+      docType: '品项公司发货',
+      status: '已完成',
+      items: [shipmentItemRow(1, '10', '10')],
+    })
+    await expect(receiveItemCompanyShipmentInFull(SESSION, { shipmentId: 'GFH-1' }))
+      .rejects.toThrow('该发货单不是待收货状态，请刷新后重试')
+    // 只开了 getShipmentReceiptProgress 那一个事务；开第二个就说明下游被调了。
+    expect(vi.mocked(db.transaction)).toHaveBeenCalledTimes(1)
+  })
+
+  it('所有明细都收满时抛 INVALID_STATE，不会给下游送空 items', async () => {
+    // 下游 receivePhysicalShipment 对空 items 抛的是「收货至少需要一条明细」，
+    // 那句话对操作员没意义（他没填过明细）；这里必须在本层拦下并给出可操作的提示。
+    mockBothSyncProbes()
+    mockProgressTransaction({
+      docType: '品项公司发货',
+      status: '待收货',
+      items: [shipmentItemRow(1, '10', '10'), shipmentItemRow(2, '5', '5')],
+    })
+    await expect(receiveItemCompanyShipmentInFull(SESSION, { shipmentId: 'GFH-1' }))
+      .rejects.toThrow('该发货单没有待收数量，请刷新后重试')
+    expect(vi.mocked(db.transaction)).toHaveBeenCalledTimes(1)
+  })
+
+  it('入口与单据类型不匹配时抛 INVALID_PARAMS —— 市场入口收不了分院配货', async () => {
+    // 这条是权限边界的第一道闸：两个入口的 Server Action 权限不同
+    //（market_operate / store_operate），能互收就等于市场角色能替门店收货。
+    mockBothSyncProbes()
+    mockProgressTransaction({
+      docType: '分院配货',
+      status: '待收货',
+      items: [shipmentItemRow(1, '10', '0')],
+    })
+    await expect(receiveItemCompanyShipmentInFull(SESSION, { shipmentId: 'FPH-1' }))
+      .rejects.toThrow('单据类型与收货入口不匹配')
+    expect(vi.mocked(db.transaction)).toHaveBeenCalledTimes(1)
+  })
+
+  it('入口与单据类型不匹配时抛 INVALID_PARAMS —— 门店入口收不了品项公司发货', async () => {
+    mockBothSyncProbes()
+    mockProgressTransaction({
+      docType: '品项公司发货',
+      status: '待收货',
+      items: [shipmentItemRow(1, '10', '0')],
+    })
+    await expect(receiveStoreAllocationInFull(SESSION, { shipmentId: 'GFH-1' }))
+      .rejects.toThrow('单据类型与收货入口不匹配')
+    expect(vi.mocked(db.transaction)).toHaveBeenCalledTimes(1)
+  })
+
+  it('只把 outstanding > 0 的行传给下游，收满的行被跳过', async () => {
+    mockBothSyncProbes()
+    const items = [
+      shipmentItemRow(1, '10', '4'), // outstanding 6
+      shipmentItemRow(2, '5', '5'), // outstanding 0 → 跳过
+      shipmentItemRow(3, '8', '0'), // outstanding 8
+    ]
+    mockProgressTransaction({ docType: '品项公司发货', status: '待收货', items })
+    const { itemIds } = mockReceiveTransaction(new Map(items.map((row) => [row.id, row])))
+    // 下游明细行的剩余量与 progress 读到的一致 → 数量闸全过 → 走到建单号处抛哨兵。
+    await expect(receiveItemCompanyShipmentInFull(SESSION, { shipmentId: 'GFH-1' }))
+      .rejects.toThrow(SENTINEL)
+    expect(itemIds).toEqual([1, 3])
+  })
+
+  it('TOCTOU：progress 读完后别人先收了一部分，下游 fail-closed 抛 CONFLICT', async () => {
+    /*
+     * outstanding 在 getShipmentReceiptProgress 的事务里读、在 receivePhysicalShipment
+     * 的另一个事务里写，中间有窗口。这条同时钉两件事：
+     *   · 传下去的确实是**整行待收量**（传更小的值就不会撞上闸门，这条会变绿失效）；
+     *   · 并发下第二个请求被 FOR UPDATE + 数量闸挡住，不会超收。
+     */
+    mockBothSyncProbes()
+    mockProgressTransaction({
+      docType: '品项公司发货',
+      status: '待收货',
+      items: [shipmentItemRow(1, '10', '4')], // progress 认为待收 6
+    })
+    // 下游拿到的是已被别人收到 9 的版本（真实待收只剩 1）。
+    mockReceiveTransaction(new Map([[1, shipmentItemRow(1, '10', '9')]]))
+    await expect(receiveItemCompanyShipmentInFull(SESSION, { shipmentId: 'GFH-1' }))
+      .rejects.toThrow('实收数量不能超过待收数量')
   })
 })

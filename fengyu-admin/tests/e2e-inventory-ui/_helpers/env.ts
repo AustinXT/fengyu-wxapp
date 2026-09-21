@@ -55,6 +55,35 @@ export const TOPO = {
   STORE_B_NAME: '南昌世纪店',
 } as const
 
+/**
+ * 运行时解析「某市场下任一**启用**门店」，用于跨市场负向断言（§8.2）。
+ *
+ * 为什么不往 TOPO 里写死自贡的门店：
+ *   1) dev 的 org_nodes 会被 prod→dev 同步整体重刷，写死的 id 一次同步就失效；
+ *   2) 自贡那批门店里混着脏数据 —— `自贡汇东店` 的 org_node_id 是 `org-部门-*`，
+ *      按名字猜 id 的写法迟早踩空。
+ *
+ * ⚠️ 必须过滤 `is_active = true`：建单弹窗的主体下拉来自 `listInventoryLocations`，
+ * 它只列启用主体（engine.ts 里 `eq(inventoryLocations.isActive, true)`），
+ * 取到停用的（如 `自贡旭阳店`）会在下拉里找不到选项而抛错 —— 那是测试自己写坏了，
+ * 不是被测代码的问题。
+ *
+ * ⚠️ 取不到时返回 `null`，调用方必须走 **SKIP 分支而不是抛错**：一次组织调整就能让
+ * 某个市场暂时没有启用门店，不该因此把整支 spec 判红。
+ */
+export function anyStoreOfMarket(marketOrgNodeId: string): { orgNodeId: string; name: string } | null {
+  const row = psql(
+    `SELECT COALESCE(org_node_id,'') || '|' || name FROM inventory_locations
+      WHERE location_type = '门店' AND parent_location_id = ${sqlStr(marketOrgNodeId)}
+        AND is_active = true AND org_node_id IS NOT NULL
+      ORDER BY name LIMIT 1`,
+  )
+  // 只按**第一个** | 切：门店名里可能含分隔符，org_node_id 里不会
+  const i = row.indexOf('|')
+  if (i <= 0) return null
+  return { orgNodeId: row.slice(0, i), name: row.slice(i + 1) }
+}
+
 /** 所有测试数据的命名空间前缀。inventory_movements 只追加，留痕靠前缀识别。 */
 export const NS = 'INVT'
 

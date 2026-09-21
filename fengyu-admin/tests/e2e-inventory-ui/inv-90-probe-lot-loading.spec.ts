@@ -1,14 +1,24 @@
 /**
- * 诊断专用（不属于 INV-xx 场景编号）：单据中心批次下拉「加载库存批次...」是否会永久卡住。
+ * #129 的取证探针（不属于 INV-xx 场景编号）：单据中心批次下拉「加载库存批次...」
+ * 会不会永久卡住 —— 每 5 秒采样一次 disabled / 占位文案 / option 数，持续 60 秒。
  *
- * 怀疑点 inventory-docs-page.tsx:351-375 的 useEffect：
+ * 定位（别再把它当成「一次性诊断脚本」）：
+ *   · **#129 的验收标准就是它的输出**「批次框最终解除禁用」。2026-09-21 在 dev 实例
+ *     （commit ab282a13）实跑取证通过：批次框约 1 秒解禁，不是永久卡死。
+ *   · 它只打日志、**没有任何断言**，且一跑 60 秒 —— 所以不进常规套件（见下方 test.skip），
+ *     常规回归由 INV-05 的 `lotLoadingOk` 守护（判定经 ctx 转述进 INV-10 的报告）。
+ *   · 复核批次加载行为时（怀疑回归、或改动 inventory-docs-page 的批次 effect 后）
+ *     手动开 `INVT_PROBE=1` 单跑它，看逐秒采样才能分清「慢」与「卡死」。
+ *
+ * 原始根因（inventory-docs-page.tsx:351-375 的 useEffect）：
  *   依赖数组含 loadingLotKeys / lotOptionsByKey，而 effect 内部又 setState 这两个，
  *   形成自循环；effect 重跑时 cleanup 把 cancelled 置 true，导致**首次请求**返回时
  *   then/catch/finally 全部被 `if (!cancelled)` 跳过 —— loadingLotKeys[key] 永远停在
  *   true，select 的 disabled 条件 `isLoadingLots` 永远成立。
  *
- * 跑法：bunx playwright test --config=tests/e2e-inventory-ui/playwright.inventory.config.ts \
- *         tests/e2e-inventory-ui/probe-lot-loading.spec.ts
+ * 跑法：INVT_PROBE=1 bunx playwright test \
+ *         --config=tests/e2e-inventory-ui/playwright.inventory.config.ts \
+ *         tests/e2e-inventory-ui/inv-90-probe-lot-loading.spec.ts
  */
 
 import { test } from '@playwright/test'
@@ -17,9 +27,10 @@ import { selectContaining } from './_helpers/ui'
 
 test.setTimeout(300_000)
 
-// 诊断专用：默认不进全套（跑一次要 60s 且无断言）。
-// 需要复核 BUG-LOT-LOADING 是否已修时，加 INVT_PROBE=1 单独跑。
-test.skip(process.env.INVT_PROBE !== '1', '诊断专用，设 INVT_PROBE=1 启用')
+// 默认不进全套：跑一次要 60s 且**没有断言**（只打采样日志），进套件既拖时间又不会红。
+// 保留它的理由见文件头 —— #129 的验收取证就是它跑出来的；复核批次加载时手动开
+// INVT_PROBE=1 单跑，看逐秒采样区分「慢」与「卡死」。常规回归守护在 INV-05。
+test.skip(process.env.INVT_PROBE !== '1', '取证探针，设 INVT_PROBE=1 启用')
 
 test('probe：批次下拉是否永久停留在「加载库存批次...」', async ({ browser }) => {
   const inv01 = readCtx<{ supplySkuName: string }>('inv01')!

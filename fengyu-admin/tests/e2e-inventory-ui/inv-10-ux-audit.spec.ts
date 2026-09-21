@@ -12,7 +12,7 @@ import { test, expect } from '@playwright/test'
 import * as fs from 'fs'
 import * as path from 'path'
 import { BASE, INVT_ACCOUNTS, INVT_PASS, login, readCtx } from './_helpers/env'
-import { openOperation, selectByLabel, selectContaining, skuSelect } from './_helpers/ui'
+import { openOperation } from './_helpers/ui'
 import {
   checkForeignKeyInputs, checkLabelBinding, checkListAffordances, checkNumericGuards,
   checkRequiredMarkers, checkTechnicalLeak, extractFormControls, renderFindings,
@@ -51,7 +51,6 @@ const OPERATION_FORMS: Array<[string, string]> = [
 
 test('INV-10：交互合理性扫描 → UX-FINDINGS.md', async ({ browser }) => {
   const findings: Finding[] = []
-  const inv01 = readCtx<{ supplySkuName: string }>('inv01')
 
   const ctx = await browser.newContext()
   const page = await ctx.newPage()
@@ -158,37 +157,135 @@ test('INV-10：交互合理性扫描 → UX-FINDINGS.md', async ({ browser }) =>
       }
     }
 
-    // ══ E. 原生弹窗汇总 ═══════════════════════════════════════════
-    // INV-02/05 已实测：单据中心的建单失败走 alert()，审批/驳回/收货备注走 prompt()
-    findings.push({
-      rule: '使用原生 alert / prompt',
-      severity: 'P1',
-      page: '/inventory/docs',
-      detail: '建单失败用 alert() 弹原生框（inventory-docs-page.tsx:402）；审批/驳回/收货的备注用 prompt() 收集（:135-151）。原生弹窗无法样式化、无法做必填校验（驳回原因是必填的）、移动端体验差，且会阻塞页面',
-      evidence: nativeDialogs.length > 0
-        ? nativeDialogs.map((d) => `${d.type}@${d.where}`).join(' / ')
-        : '本轮未触发，证据见 INV-02 / INV-05',
-    })
+    // ══ E. 原生弹窗汇总（实测再报，#134）═══════════════════════════
+    // ⚠️ 原本是**无条件** push：#134 把 alert()/prompt() 换成 toast + 自建 Dialog 之后，
+    //    报告里照旧挂一条 P1，detail 还指着早已删掉的 inventory-docs-page.tsx:402。
+    //    改为只转述本轮实测 —— dialog 监听全程挂着，A/B/C/D 四段（7 个列表页 +
+    //    4 个弹窗表单 + 5 张办理台表单 + 空表单提交）一次都没触发就不进表。
+    //    ⚠️ 覆盖面有限：本 spec 不走单据中心的行内审批/驳回/收货，那三条原 prompt 路径
+    //    由 INV-02 / INV-05 自己的 dialog 监听兜底。
+    if (nativeDialogs.length > 0) {
+      findings.push({
+        rule: '使用原生 alert / prompt',
+        severity: 'P1',
+        page: Array.from(new Set(nativeDialogs.map((d) => d.where))).join(' / '),
+        detail: '库存页面仍在用浏览器原生弹窗（alert / confirm / prompt）。原生弹窗无法样式化、无法做必填校验（驳回原因业务上必填）、移动端体验差，且会阻塞页面 —— 应统一换成 toast + 自建 Dialog（#134）',
+        evidence: nativeDialogs.map((d) => `${d.type}@${d.where}：${d.message}`).join(' / '),
+      })
+    }
 
-    // ══ F. 已在链路测试中确认的缺陷，一并汇入报告 ═══════════════════
-    // ⚠️ 下面这几条是 2026-09-13 首轮实测的**硬编码**结论，不随代码状态自动失效。
-    //    #129 / #130 / #134 的修复已合入 dev（但未必已部署到被扫描的实例），
-    //    它们的条目仍会照旧输出 —— 判读时以对应 issue 的状态为准，别当成新发现。
-    //    盘点账面数那条已改为转述 INV-06 的实测判定（见下），其余几条的同类改造留给各自的跟进。
-    findings.push({
-      rule: '批次下拉永久卡在加载中',
-      severity: 'P0',
-      page: '/inventory/docs → 新建库存单据',
-      detail: '选定主体与 SKU 后，来源批次下拉永远停留在「加载库存批次...」且始终 disabled（实测 60s+）。根因是 inventory-docs-page.tsx:351-375 的 useEffect 自循环：依赖数组含它自己 set 的 loadingLotKeys/lotOptionsByKey，effect 重跑触发 cleanup 把 cancelled 置 true，首次请求的 then/catch/finally 全被跳过。后果：单据中心里所有需要选来源批次的单据类型（分院调货出库、市场间调货出库、内部领用、院顾客产品出库、市场产品报损、院产品报损）全部无法创建',
-      evidence: '接口已返回 200，是前端把结果丢了；详见 INV-05 / inv-90-probe-lot-loading',
-    })
-    findings.push({
-      rule: '员工下拉恒为空（SQL 别名错误）',
-      severity: 'P0',
-      page: '/inventory/operations/{market,supply-chain} → 员工购',
-      detail: 'business.ts 有 5 处递归 CTE 写错别名引用：CTE 在 JOIN 时起了别名（JOIN descendants parent / JOIN ancestors ancestor），SELECT/WHERE 却仍用原名（descendants.path / ancestors.path），PostgreSQL 直接报 invalid reference to FROM-clause entry。后果：市场员工购与供应链员工购的员工下拉恒为空，功能完全不可用；即使绕过下拉，提交时的 employeeForMarket / employeeForSupplyChain 校验同样会炸',
-      evidence: 'business.ts:1234 / 1263 / 1273 / 1329 / 1371；dev 库按正确 SQL 能查出 85 / 115 个候选',
-    })
+    // ══ F. 链路测试确认过的缺陷：一律改为转述实测判定 ═══════════════
+    // ⚠️ 这两条原本是 2026-09-13 首轮实测的**硬编码**结论，不随代码状态自动失效 ——
+    //    #129 / #130 的修复合入后，报告里照旧挂着两条 P0，P0 计数永远虚高，
+    //    而本 spec 是**整文件覆写** UX-FINDINGS.md，手工标注「已修」下一次跑就没了。
+    //    现按 #131 / #132 已建立的范式改成「转述对应 spec 自己的判定」。
+    //
+    // ⚠️ **三个分支一个都不能少**（照 #131 盘点那条的范式）：
+    //      判定为 false          → 照旧报 P0（回归复发）
+    //      判定为 true           → 不进表（实测通过）
+    //      没有判定 / 判定过期   → 报 P2「未覆盖」，写明本轮没跑对应 spec
+    //    第三条最容易被省掉，而省掉它的后果比 P0 虚高更糟：单跑 INV-10、或 INV-05 /
+    //    INV-07 半途挂掉时，报告会静默呈现成「P0 已清零」—— 回归被当成修好了。
+    //    （上一轮就踩过另一种形态：分支读的字段名压根没人写，两条 P0 成了死代码。
+    //      现在读的是三条线共同约定的 ctx 契约，字段名见下方各自的注释。）
+    /**
+     * ctx 文件跨运行保留，**两个方向都要判时效**：
+     *   - 上一轮「合格」+ 之后回退 → 单跑 INV-10 会零输出，回归漏报；
+     *   - 上一轮「不合格」+ 之后修好 → 单跑 INV-10 会继续断言有问题，误报。
+     * 口径与 #131 / #132 一致：6 小时。
+     */
+    const staleEvidence = (at?: string): boolean => {
+      const age = at ? Date.now() - Date.parse(at) : NaN
+      return !Number.isFinite(age) || age < 0 || age > 6 * 3600_000
+    }
+
+    // 批次下拉卡死（issue #129，已于 2026-09-21 关闭）：转述 INV-05 的守护判定。
+    // ctx 契约（D/E/F 三条线共用，字段名不可各写各的）：
+    //   inv05 = { at, lotLoadingOk: boolean, genericDocsCreated: string[] }
+    //     lotLoadingOk       —— 单据中心批次下拉是否在 30s 内解禁并出现真实批次
+    //     genericDocsCreated —— 本轮真正建出来的通用单据号（下拉不可用就一张也建不出来，
+    //                           所以它是 lotLoadingOk 的旁证，一并写进 evidence 供人工复核）
+    const inv05 = readCtx<{
+      lotLoadingOk?: boolean
+      genericDocsCreated?: string[]
+      at?: string
+    }>('inv05')
+    const lotDocs = inv05?.genericDocsCreated
+    const lotEvidence = `INV-05 判定 lotLoadingOk=${String(inv05?.lotLoadingOk)}，本轮建出通用单据 ${lotDocs?.length ? lotDocs.join(' / ') : '(无)'}，写于 ${inv05?.at ?? '(缺失)'}`
+    if (inv05?.lotLoadingOk === undefined) {
+      findings.push({
+        rule: '批次下拉状态未覆盖（本轮未跑 INV-05 或判定未执行）',
+        severity: 'P2',
+        page: '/inventory/docs → 新建库存单据（来源批次）',
+        detail: '本轮没有 INV-05 的 #129 守护判定可转述（它没跑、或建单前就挂了导致判定压根没执行），因此**无法判定 #129 是否回归**。单跑 INV-10 时属正常 —— 这既不等于缺陷复现，也不等于已复核通过，别把它读成「P0 已清零」',
+        evidence: inv05?.at ? `ctx inv05 写于 ${inv05.at}，无 lotLoadingOk` : 'ctx 无 inv05',
+      })
+    } else if (staleEvidence(inv05.at)) {
+      findings.push({
+        rule: '批次下拉状态证据过期未复核',
+        severity: 'P2',
+        page: '/inventory/docs → 新建库存单据（来源批次）',
+        detail: '上下文里有 INV-05 的 #129 守护判定，但那次运行距今已超过 6 小时（或时间戳异常）。这期间本实例可能已重新部署，该判定既不能证明当前实现正确、也不能证明它有问题 —— 请跑一遍 INV-05 再看',
+        evidence: lotEvidence,
+      })
+    } else if (inv05.lotLoadingOk === false) {
+      findings.push({
+        rule: '批次下拉永久卡在加载中',
+        severity: 'P0',
+        page: '/inventory/docs → 新建库存单据（来源批次）',
+        detail: 'INV-05 实测：选定出库/入库主体与 SKU 后，来源批次下拉在超时窗口内仍未解禁、或解禁后没有任何真实批次。#129 的根因是 useEffect 依赖数组含它自己 set 的 state 形成自循环，cleanup 把首次请求的 then/catch/finally 全跳过。后果：单据中心里所有需选来源批次的单据类型（分院调货出库、市场间调货出库、内部领用、院顾客产品出库、市场产品报损、院产品报损）全部无法创建',
+        evidence: lotEvidence,
+      })
+    }
+    // lotLoadingOk === true → 本轮实测通过，**不进表**
+
+    // 员工下拉恒为空（issue #130，已于 2026-09-21 关闭）：转述 INV-07 的候选数。
+    // 不删除本条 —— 删了就没人在报告里对回归发声；改成实测再报后它自动跟随代码状态。
+    // ctx 契约：inv07 = { at, employeeOptionsOk: boolean, marketStaffCount: number, supplyStaffCount: number }
+    //   employeeOptionsOk —— 两个员工购下拉是否都有候选（判定以它为准）
+    //   *StaffCount       —— **候选人数**（不含占位项；dev 实测 市场 115 / 供应链 10），
+    //                        仅作 evidence；⚠️ 与旧版「option 总数 <= 1」的口径不同，别混用
+    const inv07 = readCtx<{
+      employeeOptionsOk?: boolean
+      marketStaffCount?: number
+      supplyStaffCount?: number
+      at?: string
+    }>('inv07')
+    const marketStaffCount = inv07?.marketStaffCount
+    const supplyStaffCount = inv07?.supplyStaffCount
+    // 布尔缺失但两个计数都写了时按「都至少有一个候选」兜底推导；两者都没有才算未覆盖。
+    const employeeOptionsOk = inv07?.employeeOptionsOk
+      ?? (marketStaffCount !== undefined && supplyStaffCount !== undefined
+        ? marketStaffCount > 0 && supplyStaffCount > 0
+        : undefined)
+    const staffEvidence = `INV-07 判定 employeeOptionsOk=${String(inv07?.employeeOptionsOk)} / 市场员工购候选=${marketStaffCount ?? '(未判定)'} / 供应链员工购候选=${supplyStaffCount ?? '(未判定)'}，写于 ${inv07?.at ?? '(缺失)'}`
+    if (employeeOptionsOk === undefined) {
+      findings.push({
+        rule: '员工下拉候选未覆盖（本轮未跑 INV-07 或判定未执行）',
+        severity: 'P2',
+        page: '/inventory/operations/{market,supply-chain} → 员工购',
+        detail: '本轮没有 INV-07 的员工下拉判定可转述（它没跑、或打开办理台前就挂了），因此**无法判定 #130 是否回归**。单跑 INV-10 时属正常 —— 这既不等于缺陷复现，也不等于已复核通过',
+        evidence: inv07?.at ? `ctx inv07 写于 ${inv07.at}，无 employeeOptionsOk / *StaffCount` : 'ctx 无 inv07',
+      })
+    } else if (staleEvidence(inv07?.at)) {
+      findings.push({
+        rule: '员工下拉候选证据过期未复核',
+        severity: 'P2',
+        page: '/inventory/operations/{market,supply-chain} → 员工购',
+        detail: '上下文里有 INV-07 的员工下拉判定，但那次运行距今已超过 6 小时（或时间戳异常）。这期间本实例可能已重新部署 —— 请跑一遍 INV-07 再看',
+        evidence: staffEvidence,
+      })
+    } else if (employeeOptionsOk === false) {
+      findings.push({
+        rule: '员工下拉恒为空（SQL 别名错误）',
+        severity: 'P0',
+        page: '/inventory/operations/{market,supply-chain} → 员工购',
+        detail: 'INV-07 实测：员工购的员工下拉在占位项之外没有任何候选。#130 的根因是 business.ts 的递归 CTE 写错别名引用（CTE 在 JOIN 时起了别名，SELECT/WHERE 仍用原名），PostgreSQL 直接报 invalid reference to FROM-clause entry。后果：市场员工购与供应链员工购完全不可用；即使绕过下拉，提交时的 employeeForMarket / employeeForSupplyChain 校验同样会炸',
+        evidence: staffEvidence,
+      })
+    }
+    // employeeOptionsOk === true → 本轮实测通过，**不进表**
+
     // 盘点账面数（issue #131）：只看 **INV-06 本轮受控创建**的盘点单（单号经 ctx 传来）。
     //   - 无条件登记   → 修好之后报告仍输出旧结论，本身就是假情报
     //   - 扫全库历史   → dev 上有 8 张 #131 修复前建的单，stock_snapshot 本来就是 NULL；
@@ -349,17 +446,20 @@ test('INV-10：交互合理性扫描 → UX-FINDINGS.md', async ({ browser }) =>
       '本报告由启发式规则自动生成，**每条都需人工复核定性**为「真问题 / 设计如此 / 误报」。',
       '规则只负责摆出可核对的事实（字段名、控件类型、页面路径、源码位置），不替人下结论。',
       '',
-      '下列条目**若出现在上表中**，其证据来自链路测试实测复现，不是静态推测：',
+      '下列条目**若出现在上表中**，其证据来自实测复现，不是静态推测：',
       '',
-      '- 批次下拉卡死 → `inv-05-transfers.spec.ts` / `inv-90-probe-lot-loading.spec.ts`',
-      '- 员工下拉恒空 → `inv-07-staff-purchase-and-self-purchase.spec.ts`（并已在 dev 库直接执行原 SQL 复现报错）',
+      '- 批次下拉卡死 → `inv-05-transfers.spec.ts` 写入上下文的 `lotLoadingOk`（#129 已修；需细看采样过程时用 `inv-90-probe-lot-loading.spec.ts`）',
+      '- 员工下拉恒空 → `inv-07-staff-purchase-and-self-purchase.spec.ts` 写入上下文的 `employeeOptionsOk` + 两个候选数（#130 已修）',
+      '- 原生 alert / prompt → 本 spec 全程挂着的 dialog 监听计数（#134 已修）',
       '- 盘点不记账面数 → `inv-06-stocktake-and-loss.spec.ts`',
-      '- 供货商无外键 → `inv-01-master-data.spec.ts`（#132 已修；同样改为实测再报，',
-      '  本轮没检出就不会出现在上表里）',
+      '- 供货商无外键 → `inv-01-master-data.spec.ts`（#132 已修）',
       '- 错误提示脱敏 → `inv-02-supply-chain-stock.spec.ts`',
       '',
-      '（「盘点不记账面数」已改为实测再报：本轮没检出就不会出现在上表里，',
-      '这一行只说明**万一出现**时证据来自哪支 spec，不代表它已复现。）',
+      '（以上条目一律**实测再报**：本轮实测通过就不会出现在上表里。',
+      '这几行只说明**万一出现**时证据来自哪支 spec，不代表它已复现。',
+      '反过来，**上表里带「未覆盖」「证据过期」字样的 P2 也不是缺陷** —— 它们的含义是',
+      '「本轮没有可转述的实测判定，该 issue 是否回归无从判断」。看到它们请补跑对应 spec，',
+      '别把「没有 P0」读成「P0 已清零」。）',
       '',
     ].join('\n')
     fs.writeFileSync(outPath, md)

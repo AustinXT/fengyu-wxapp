@@ -34,6 +34,12 @@ import type { SQL } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import type { AuthSession } from '@/lib/types'
 import { assertInventoryBusinessWritable } from './cutover'
+import {
+  genericDocBusinessLevel,
+  inventoryDelegatableOperateActions,
+  inventoryLevelOperateDeniedMessage,
+} from './business-level'
+import { scopeSessionToActions } from '@/lib/action-scope'
 // 账面数按**主体 + SKU 汇总**记录 —— 口径由甲方 2026-09-16 拍板（issue #131 Q1）：
 // 现场就是按商品数总盘、不区分批次，按批次记会造成假精确。类型清单与详情页共用单源。
 import { STOCKTAKE_DOC_TYPES } from './stocktake'
@@ -2104,6 +2110,23 @@ export const listInventoryCoreDocs = withPermission(
       status?: InventoryCoreDocStatus
       statuses?: readonly InventoryCoreDocStatus[]
       /**
+       * 方向维（#192）：把可见范围从「source **或** target 在 scope」收窄成
+       * 「**指定那一端**在 scope」。
+       *
+       * 单据可见性本来就该是双端 OR —— 发货方和收货方都得看得见自己经手的单。
+       * 但**待办区**要回答的是另一个问题：这张单轮不轮得到我动手。服务端的写入动作
+       * 一律拿**单边**做校验（收货类 `assertLocationWritable(target)` /
+       * `assertOrgNodeVisible(target)`，撤回审批 `assertLocationWritable(source)`），
+       * 所以只按 docType + status 取待办，对端会在「待我处理」里看到一张带行内按钮的单，
+       * 点一次抛一次 PERMISSION_DENIED，刷新后那行还在 —— 点不掉、消不掉，
+       * 同时把待办计数一起污染。
+       *
+       * 与上面的 scope 分支同构：`scoped === null`（admin，本就不受 scope 限制）跳过，
+       * scope 为空集时 fail-closed。类型是两个字面量而不是开放字符串，
+       * 省得写进来一个拼错的值就静默退化成不收窄。
+       */
+      scopeRole?: 'source' | 'target'
+      /**
        * 只保留发起过撤回申请的单据（`cancellation_request_reason` 非空）。
        *
        * 类型刻意写死 `true` 而不是 `boolean`：本条件只有「收窄」一个方向，
@@ -2112,6 +2135,20 @@ export const listInventoryCoreDocs = withPermission(
        * 真需要反向过滤时应显式加一个 `cancellationNotRequested` 条件。
        */
       cancellationRequested?: true
+      /**
+       * 只保留**还有未履约明细**的单据，并按明细的市场归属分流（#192）：
+       * `'supply-chain'` → 存在 `market_id IS NULL` 且未履约的明细；
+       * `'market'` → 存在 `market_id IS NOT NULL` 且未履约的明细。
+       *
+       * 用途：#194 把供应链采购订单并进「采购订单」后，一张单可同时含两类行，
+       * 且只在**所有**行履约满时才转「已完成」。供应链收货待办若只按
+       * 「采购订单 + 待收货」取，就会长期挂着一批「供应链行已收完、只差市场行发货」的单，
+       * 点一次报一次 INVALID_STATE。
+       *
+       * 与 `cancellationRequested` 同样「只收窄不放宽」：类型是两个字面量而不是
+       * boolean / 开放字符串，省得传进来一个 falsy 值就静默退化成不过滤。
+       */
+      pendingItemScope?: 'supply-chain' | 'market'
       startDate?: string
       endDate?: string
       keyword?: string
@@ -2129,6 +2166,26 @@ export const listInventoryCoreDocs = withPermission(
       conditions.push(scoped.length > 0
         ? or(inArray(inventoryDocs.sourceOrgNodeId, scoped), inArray(inventoryDocs.targetOrgNodeId, scoped))
         : sql`FALSE`)
+    }
+    if (filters.scopeRole && scoped !== null) {
+      /*
+       * 方向维（#192）：在上面的双端 OR 之外**追加**一条单端收窄，而不是改写那一条。
+       * 两条 AND 起来后单端条件完全覆盖 OR（`target IN s` 蕴含 `source IN s OR target IN s`），
+       * 所以 OR 这时是冗余的 —— 冗余是**有意留的**：scope 那条是全表所有查询共用的基础
+       * 可见性闸，让它保持「与 scopeRole 无关、永远压栈」，读代码的人就不必去论证
+       * 「设了方向维之后 scope 还在不在」。多出来的这一项 planner 自己会吸收掉。
+       *
+       * 与 scope 分支同构：`scoped === null`（admin）跳过；scope 空集 fail-closed。
+       * 条件挂在 count 与 rows 共用的 whereClause 上，total 跟着收窄 —— 这正是要的：
+       * 待办计数必须只数「我能动手的单」，否则角标数字对不上列表行数。
+       *
+       * 端点列可空（如「采购订单」的 source_org_node_id 恒为 NULL），
+       * SQL 的 `NULL IN (...)` 求值为 NULL 即不命中，方向是 fail-closed，正确。
+       */
+      const endpointColumn = filters.scopeRole === 'source'
+        ? inventoryDocs.sourceOrgNodeId
+        : inventoryDocs.targetOrgNodeId
+      conditions.push(scoped.length > 0 ? inArray(endpointColumn, scoped) : sql`FALSE`)
     }
     if (filters.orgNodeId) {
       const locations = await db
@@ -2180,6 +2237,25 @@ export const listInventoryCoreDocs = withPermission(
     }
     if (filters.cancellationRequested) {
       conditions.push(isNotNull(inventoryDocs.cancellationRequestReason))
+    }
+    if (filters.pendingItemScope) {
+      /*
+       * 别名 pending_item 在本文件未被占用（现有别名是 visible_doc / visible_docs /
+       * root_doc / item / doc_link 等），新增别名前先 grep 全文件 —— 本仓有按文件聚合的
+       * CTE 别名守护，同名不同语句也会判撞。
+       * 条件挂在 count 与 rows 共用的 whereClause 上，total 跟着收窄（这是对的：
+       * 待办区的分页器必须按能操作的单数算页数）。
+       * EXISTS 走 idx_inventory_doc_items_doc(doc_id)。
+       */
+      const marketCondition = filters.pendingItemScope === 'supply-chain'
+        ? sql`pending_item.market_id IS NULL`
+        : sql`pending_item.market_id IS NOT NULL`
+      conditions.push(sql`EXISTS (
+        SELECT 1 FROM ${inventoryDocItems} pending_item
+         WHERE pending_item.doc_id = ${inventoryDocs.id}
+           AND ${marketCondition}
+           AND COALESCE(pending_item.fulfilled_quantity, 0) < pending_item.quantity
+      )`)
     }
     if (filters.startDate) conditions.push(gte(inventoryDocs.docDate, filters.startDate))
     if (filters.endDate) conditions.push(lte(inventoryDocs.docDate, filters.endDate))
@@ -2927,6 +3003,59 @@ export const createInventoryCoreDoc = withAnyPermission(
     if (!(INVENTORY_GENERIC_DOC_TYPES as readonly string[]).includes(input.docType)) {
       throw new ApiError('INVALID_STATE', '该库存单据不支持通用建单')
     }
+    /*
+     * 层级 action 闸（#191；甲方 2026-09-21 拍板改成「显式放开向下代建」）：
+     *
+     * 1) 入口的 withAnyPermission 是「三个 operate 任一」、**不按 docType 分层**，
+     *    所以只有 `inventory:store_operate` 的账号曾经也建得出「市场产品报损」这类上级单据。
+     *    这道闸把**向上**越级堵死。
+     * 2) **向下**是显式允许的：「市场人员替门店建单」是生产既有工作流，它不靠「权限并集
+     *    碰巧漏出来」，而由 inventoryDelegatableOperateActions 的层级序 ∩「scope 会向下
+     *    展开的层级」显式表达 —— 收回/放开代建都只需改 business-level.ts 那两张表。
+     *    ⚠️ 总部代建**不在候选集里**：access.ts 的 inventoryScopedOrgNodeIds 对
+     *    scopeType==='总部' 的绑定只计入自身 scopeId、不展开后代，总部账号看不见市场/门店
+     *    节点，放开了也只会在这里放行、到下面的 assertOrgNodeVisible 才被拒（错误更晚更含糊），
+     *    UI 下拉里还会多出 9 个必然 403 的死路选项。要真放开先改 inventoryScopedOrgNodeIds，
+     *    再把 LEVEL_SCOPE_EXPANDS_DOWNWARD 的 'supply-chain' 翻成 true。
+     * 3) 真正限制代建**范围**的是下面的 assertOrgNodeVisible（scope）与
+     *    assertGenericDocLocationRules（按 docType 强制主体 location_type，见 engine.ts 上方）；
+     *    这道闸只负责层级**方向**。
+     */
+    const docLevel = genericDocBusinessLevel(input.docType)
+    if (!docLevel) throw new ApiError('INVALID_STATE', '该库存单据没有归属业务层级')
+    const allowedActions = inventoryDelegatableOperateActions(docLevel)
+    if (!allowedActions.some((action) => hasPermission(session, action))) {
+      /*
+       * 文案由候选层级集生成（business-level.ts），别写回「X 或其上级层级」：
+       * 供应链是最顶层、市场的上级又不展开 scope，那句话会把用户指向一个不存在
+       * 或帮不上忙的权限。
+       */
+      throw new ApiError('PERMISSION_DENIED', inventoryLevelOperateDeniedMessage(docLevel))
+    }
+    /*
+     * ⚠️ 光校验 action 不够，**scope 必须跟着同一条角色绑定收窄**。
+     *
+     * 入口的 withAnyPermission 收的是「持有三个 operate 任一」的角色并集，于是多绑定账号
+     * （市场 A 绑 market_operate + 门店 B 绑 store_operate）会出现：单据层级要的 action 由
+     * 门店 B 的绑定提供、而目标节点的可见性由市场 A 的绑定提供，两者一拼接就放行 ——
+     * 而那条提供 action 的绑定对目标节点根本没有授权。action 并集配 scope 并集就是这么漏的。
+     *
+     * 【显式不变量，带前提】候选集 allowedActions 只依赖 docType、**与具体角色无关**。
+     * **当会话带角色级 scope 元数据时**（roles[] 上 actions / scopeStoreIds / scopeOrgNodeIds
+     * 三个数组齐全，正常登录会话都有），scopeSessionToActions 会先按候选 action 过滤角色，
+     * 于是「union(入选角色的 scope) 包含目标节点」与「∃ 某条角色绑定同时持有候选 action
+     * 且其 scope 覆盖目标节点」等价（inventoryScopedOrgNodeIds 是逐角色求并集，
+     * membership 即存在性）—— 所以候选从单值换成数组后，不会出现「action 来自这条绑定、
+     * scope 来自那条绑定」的拼接。
+     * ⚠️ 前提不成立时（导出快照 / 旧测试会话等缺元数据的形态）scopeSessionToActions
+     * 整条收窄被跳过、原样返回 session（见 lib/action-scope.ts 的 hasRoleScopeMetadata
+     * 提前返回），actingSession 退化成外层的 action 并集 + scope 并集，跨绑定拼接又成立。
+     * 这类会话本就只用于只读路径；真要在建单链路上遇到，修法是补元数据而不是放宽这里。
+     * ⚠️ 另外，谁要是改成「按角色分别算候选集」，即便元数据齐全等价性也破，拼接漏洞会悄悄回来。
+     *
+     * 往下所有可见性判定一律用这个收窄后的会话，不要再碰外层 session。
+     */
+    const actingSession = scopeSessionToActions(session, allowedActions)
     const status = defaultStatusForDoc(input.docType)
     if (!Array.isArray(input.items) || input.items.length === 0) {
       throw new ApiError('INVALID_PARAMS', '库存单据至少需要一条明细')
@@ -3002,7 +3131,7 @@ export const createInventoryCoreDoc = withAnyPermission(
      * 「没有对应库存主体」「主体已停用」还是「无权操作」就能反推该节点的存在与状态。
      * 它还会顺带跑一次 `syncInventoryLocations()` —— 让无权者触发写操作也不合适。
      */
-    await assertOrgNodeVisible(session, actingOrgNodeId)
+    await assertOrgNodeVisible(actingSession, actingOrgNodeId)
 
     /**
      * #200：单边单据拒绝另一边，必须在**任何 location 查询之前**。

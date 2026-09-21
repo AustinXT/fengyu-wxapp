@@ -11,10 +11,10 @@
  *   - ADM（scope 不受限，看得到多总部 / 5 市场 / 36 门店）→ 覆盖「仍可选」
  *   - SC / MK（库存 scope 不展开后代，只看得到自己那一个主体）→ 覆盖「只读固定」
  *
- * ⚠️ 默认 skip：套件打的是**已部署的 dev 实例**，而本 spec 断言的是尚未部署的行为。
- * 目标实例部署 #189 后跑一次，绿了就把下面那行 test.skip 删掉，让它进常规套件。
- * 本地验证：
- *   ADMIN_BASE_URL=http://localhost:3010 INVT_189=1 bunx playwright test \
+ * #189 已部署到 dev 实例并实跑 6/6 通过，原先的 `test.skip(INVT_189 !== '1')` 开关已删除，
+ * 本 spec 随 `inv-*.spec.ts` 进常规套件（playwright.inventory.config.ts 的 testMatch 本来就收它）。
+ * 单跑：
+ *   ADMIN_BASE_URL=http://localhost:3010 bunx playwright test \
  *     --config=tests/e2e-inventory-ui/playwright.inventory.config.ts \
  *     tests/e2e-inventory-ui/inv-11-*.spec.ts
  */
@@ -22,8 +22,6 @@
 import { test, expect, type Page } from '@playwright/test'
 import { BASE, INVT_ACCOUNTS, INVT_PASS, login } from './_helpers/env'
 import { escapeRe, labelled, openOperation } from './_helpers/ui'
-
-test.skip(process.env.INVT_189 !== '1', '待目标实例部署 #189 后启用（设 INVT_189=1）')
 
 test.setTimeout(180_000)
 
@@ -76,8 +74,10 @@ test.describe('INV-11 候选唯一即自动选中', () => {
 
     const cases: Array<[string, string, string[]]> = [
       ['supply-chain', '品项公司报货需求', ['供应链库存主体']],
-      ['supply-chain', '创建采购订单', ['供应链库存主体']],
-      ['supply-chain', '供应链采购订单', ['供应链库存主体']],
+      // #194：「创建采购订单」+「供应链采购订单」已合并成一张「采购订单」卡片
+      ['supply-chain', '采购订单', ['供应链库存主体']],
+      // #193 新增
+      ['supply-chain', '市场报货汇总', ['供应链库存主体']],
       ['supply-chain', '供应链采购入库', ['供应链库存主体']],
       // 这一处的 value 是 orgNodeId 而非 locationId（总部两者同值，别处不一定）。
       ['supply-chain', '品项公司发货', ['发货总部']],

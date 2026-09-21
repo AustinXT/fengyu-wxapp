@@ -6,11 +6,17 @@
  *   §8.2 同市场门店才可调货（约束存在性验证）；
  *   §10.3 市场间调货出库归来源市场、入库归目标市场，调用端传 marketId 不改变归属；
  *   自采 SKU 仅可在归属市场业务链中流转（含跨市场调货拦截）；
- *   §4 自采入库 → 配货给门店并核算门店货款。
+ *   §4 自采入库 → 配货给门店并核算门店货款；
+ *   #200 通用建单的端点口径（入库类 target 越权 / 多余端点）在**落库之前**就被拒。
+ *
+ * ⚠️ 本文件的三条调货正向/文案断言（STA1→STA2 成功、STA1→STB1 报「同市场」、
+ *    MKA→MKB 成功）是「不要给调货单 target 加建单期 scope 校验」的硬证据（#200 S10-1）：
+ *    任何给 transfer target 加 guard 的实现都会在这里红，别顺手改成 PERMISSION_DENIED。
  */
 import path from 'node:path'
-import { closePool } from './setup.mjs'
+import { closePool, pgQuery } from './setup.mjs'
 import {
+  INS,
   MKA_ORG, MKB_ORG, STA1_ID, STA1_ORG, STA2_ID, STA2_ORG, STB1_ID, STB1_ORG,
   SKU_SELF, SKU_SUPPLY, SUPPLIER_ID,
   cleanupInventoryFixture, ensureInventoryFixture, insertSeedLot,
@@ -31,6 +37,23 @@ const check = (name, ok, detail = '') => {
 }
 const setSession = (s) => { globalThis.__INV_SESSION = s }
 const num = (v) => (v === null || v === undefined ? null : Number(v))
+/**
+ * TE2AI 命名空间内的 inventory_docs 行数（可选按 doc_type 收窄）。
+ *
+ * 按命名空间过滤而不是全表 COUNT(*)：INV_E2E_DATABASE_URL 允许把冒烟指到共享库，
+ * 那里别人的单据会让全表计数漂移，把「没落单」的断言变成不确定性假红。
+ * 被拒的建单即便落了库也一定命中本命名空间（endpoint 与 created_by 都是 TE2AI%）。
+ */
+async function inventoryDocCount(docType = null) {
+  const rows = await pgQuery(
+    `SELECT COUNT(*)::int AS n
+       FROM inventory_docs
+      WHERE (source_org_node_id LIKE $1 OR target_org_node_id LIKE $1 OR created_by LIKE $1)
+        AND ($2::text IS NULL OR doc_type = $2::text)`,
+    [`${INS}%`, docType],
+  )
+  return Number(rows[0].n)
+}
 async function expectThrow(name, pattern, fn) {
   try {
     await fn()
@@ -68,6 +91,54 @@ try {
     marketStandardUnitPrice: 30, marketUnitDiscount: 0, marketActualUnitPrice: 30,
     storeStandardUnitPrice: 40, storeUnitDiscount: 0, storeActualUnitPrice: 40,
   })
+
+  // ════ #200 通用建单端点口径（负向：真 PG 证「库里没落单」）════
+  //
+  // 单测的 mock db 只能证明「函数抛了错」，证不了拒绝发生在 `db.transaction` **之前**。
+  // 这件事必须在真库上钉：一旦拒绝晚于单头 insert，migration 0039 的
+  // inventory_set_doc_market_id 触发器（BEFORE INSERT）就已经按
+  // COALESCE(source_market, target_market) 把这张伪造单归进伪造方的市场，
+  // 而 listInventoryCoreDocs 的 source/target 任一在 scope 即可见也随之放行。
+  setSession(storeA1Session())
+  const docsBefore = await inventoryDocCount()
+  // (a) issue 原文的攻击载荷：拿本店（有权）的 source 去换一个 scope 外的 target。
+  //     改前服务端按 `source ?? target` 判权威主体，用有权的 source 就把货退进了别人家。
+  //     改后鉴权端固定落在 target（入库类真正被改动的那一端），所以这里被 scope 闸直接拒掉。
+  //     ⚠️ 断的是 PERMISSION_DENIED 而不是形状错 —— 服务端的顺序是「scope 先于单边规则」，
+  //     target 越权时根本走不到「不接受出库主体」那一句。要单独验单边规则见 (a2)。
+  await expectThrow('#200 院顾客退货攻击载荷被拒(AC1/AC6)', /PERMISSION_DENIED.*无权操作该组织节点单据/, () =>
+    docs.createInventoryCoreDoc({
+      docType: '院顾客退货',
+      sourceOrgNodeId: STA1_ORG,
+      targetOrgNodeId: STA2_ORG,
+      items: [{ skuId: SKU_SUPPLY, quantity: 1 }],
+    }))
+  // (a2) AC5：单边单据夹带另一端时必须拒单、而不是静默忽略。
+  //      两端都填本店（都在 scope 内）才能越过上面那道 scope 闸，真正把单边规则测到 ——
+  //      若写成一个 scope 外的 target，拿到的就只是 (a) 那条 PERMISSION_DENIED，规则本身没被覆盖。
+  //      静默忽略的危害不止于少个报错：残留的 source 会被 0039 的 inventory_set_doc_market_id
+  //      按 COALESCE(source_market, target_market) 归错市场。
+  await expectThrow('#200 院顾客退货夹带出库主体被拒(AC5)', /INVALID_PARAMS.*不接受出库主体/, () =>
+    docs.createInventoryCoreDoc({
+      docType: '院顾客退货',
+      sourceOrgNodeId: STA1_ORG,
+      targetOrgNodeId: STA1_ORG,
+      items: [{ skuId: SKU_SUPPLY, quantity: 1 }],
+    }))
+  // (b) AC6：连 source 都不传，鉴权端只可能是 target —— 排除「靠 source 侥幸过闸」的解释。
+  //     文案一起断：层级 action 闸拒的是「缺少…库存操作权限」，这里断「无权操作该组织节点单据」，
+  //     才能证明拒绝来自 assertOrgNodeVisible。
+  await expectThrow('#200 院顾客退货 target 越权被拒(AC6)', /PERMISSION_DENIED.*无权操作该组织节点单据/, () =>
+    docs.createInventoryCoreDoc({
+      docType: '院顾客退货',
+      targetOrgNodeId: STB1_ORG,
+      items: [{ skuId: SKU_SUPPLY, quantity: 1 }],
+    }))
+  const docsAfter = await inventoryDocCount()
+  const returnDocs = await inventoryDocCount('院顾客退货')
+  check('#200 三次非法建单都没落库(inventory_docs 行数不变)',
+    docsAfter === docsBefore && returnDocs === 0,
+    `before=${docsBefore} after=${docsAfter} 院顾客退货=${returnDocs}`)
 
   // ════ 分院间调货（§8.2 限同市场）════
   setSession(storeA1Session())

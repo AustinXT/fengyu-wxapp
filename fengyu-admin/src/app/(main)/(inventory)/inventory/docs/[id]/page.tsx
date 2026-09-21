@@ -9,6 +9,8 @@ import { fmtDateTime } from '@/lib/datetime'
 import { getSession } from '@/lib/auth'
 import { requireAllUiPageCapabilities } from '@/lib/page-capability'
 import { isStocktakeDocType, stocktakeDiff, stocktakeSummary } from '@/lib/inventory/stocktake'
+import { resolveInventoryDocReturn } from '@/lib/inventory/operation-return'
+import { InventoryDocReturnLink } from './inventory-doc-return-link'
 
 export const dynamic = 'force-dynamic'
 
@@ -31,10 +33,20 @@ function StocktakeDiffCell({ diff }: { diff: number | null }) {
 
 export default async function Page({
   params,
+  searchParams,
 }: {
   params: Promise<{ id: string }>
+  /** Next 15 起是 Promise，与同目录 `docs/page.tsx` 的写法一致；页面已 force-dynamic。 */
+  searchParams?: Promise<Record<string, string | undefined>>
 }) {
   const { id } = await params
+  const query = await searchParams
+  /*
+   * #190 返回入口：办理台的单据号链接带 `?from=operations&level=<level>&op=<业务>`。
+   * 白名单解析在服务端做一次（不把脏值当 prop 往下传），解析不出来就是 null ——
+   * 页面回落到既有的「返回单据中心」，不会拿着来路不明的字符串去拼跳转路径。
+   */
+  const back = resolveInventoryDocReturn(query)
   requireAllUiPageCapabilities(await getSession(), ['inventory:list'])
   const doc = await getInventoryCoreDocById(id)
   if (!doc) notFound()
@@ -125,12 +137,26 @@ export default async function Page({
   return (
     <div className="p-6 space-y-6">
       <div className="flex items-center gap-3">
-        <ReturnContextLink
-          href="/inventory/docs"
-          className="inline-flex items-center gap-1 text-sm text-[#666666] hover:text-[var(--foreground)]"
-        >
-          <ArrowLeft className="size-4" /> 返回
-        </ReturnContextLink>
+        {/*
+          * 两条来源天然互斥，优先级明确：
+          *   单据中心列表 → PreserveListContextLink 注入 `?returnTo=` → 走 ReturnContextLink；
+          *   办理台单据 Tab → `?from/level/op` 枚举、**不带 returnTo** → 走 InventoryDocReturnLink，
+          *   它会先试 window.close() 真正回到原标签（办理台表单不丢），关不掉再导航过去。
+          */}
+        {back ? (
+          <InventoryDocReturnLink
+            href={back.href}
+            label={back.label}
+            className="inline-flex items-center gap-1 text-sm text-[#666666] hover:text-[var(--foreground)]"
+          />
+        ) : (
+          <ReturnContextLink
+            href="/inventory/docs"
+            className="inline-flex items-center gap-1 text-sm text-[#666666] hover:text-[var(--foreground)]"
+          >
+            <ArrowLeft className="size-4" /> 返回
+          </ReturnContextLink>
+        )}
         <h1 className="text-xl font-medium">库存单据详情</h1>
       </div>
 

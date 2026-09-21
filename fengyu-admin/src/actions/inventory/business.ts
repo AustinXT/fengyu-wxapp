@@ -24,8 +24,10 @@ import {
   quoteMarketReplenishmentPrice as quoteMarketReplenishmentPriceImpl,
   quoteMarketReplenishmentPrices as quoteMarketReplenishmentPricesImpl,
   receiveItemCompanyShipment as receiveItemCompanyShipmentImpl,
+  receiveItemCompanyShipmentInFull as receiveItemCompanyShipmentInFullImpl,
   receiveSupplyChainPurchaseOrder as receiveSupplyChainPurchaseOrderImpl,
   receiveStoreAllocation as receiveStoreAllocationImpl,
+  receiveStoreAllocationInFull as receiveStoreAllocationInFullImpl,
   rejectItemCompanyShipmentCancellation as rejectItemCompanyShipmentCancellationImpl,
   rejectReturnForRestock as rejectReturnForRestockImpl,
   requestItemCompanyShipmentCancellation as requestItemCompanyShipmentCancellationImpl,
@@ -46,6 +48,7 @@ import {
   type CreateSelfPurchasedReceiptInput,
   type CreateStoreAllocationInput,
   type CreateStoreReplenishmentInput,
+  type ReceiveShipmentInFullInput,
   type ReceiveShipmentInput,
   type ReceiveSupplyChainPurchaseOrderInput,
   type RequestItemCompanyShipmentCancellationInput,
@@ -154,6 +157,33 @@ export const receiveStoreAllocation = withPermission(
   'inventory:store_operate',
   async (session, input: ReceiveShipmentInput) =>
     receiveStoreAllocationImpl(session, input),
+)
+
+/*
+ * ────────── 待办区「一键收货」（#192） ──────────
+ *
+ * 两个入口的权限必须与上面**带明细的**同类收货入口逐字一致：
+ * 品项公司发货 → `inventory:market_operate`（对齐 `receiveItemCompanyShipment`）、
+ * 分院配货   → `inventory:store_operate`（对齐 `receiveStoreAllocation`）。
+ *
+ * ⚠️ **绝不能**合并成一个
+ * `withAnyPermission(['inventory:market_operate','inventory:store_operate'], …)`
+ * 再在内部按 `progress.docType` 分发：impl 调的是 lib 层函数，lib 层只有
+ * `assertLocationWritable`（scope 校验）没有 action 级校验，聚合写法会让只持有
+ * market_operate 的市场角色在 scope 覆盖下属门店时替门店收货 —— 而现有
+ * `receiveStoreAllocation` 是单权限 store_operate，市场角色本来是被拒的。
+ * 这条边界有 actions/inventory/business.test.ts 的权限回归用例钉住。
+ */
+export const receiveItemCompanyShipmentInFull = withPermission(
+  'inventory:market_operate',
+  async (session, input: ReceiveShipmentInFullInput) =>
+    receiveItemCompanyShipmentInFullImpl(session, input),
+)
+
+export const receiveStoreAllocationInFull = withPermission(
+  'inventory:store_operate',
+  async (session, input: ReceiveShipmentInFullInput) =>
+    receiveStoreAllocationInFullImpl(session, input),
 )
 
 export const createReturnForRestock = withAnyPermission(

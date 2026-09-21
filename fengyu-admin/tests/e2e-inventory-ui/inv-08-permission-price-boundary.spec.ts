@@ -221,8 +221,11 @@ test('INV-08：三级 scope 隔离与价格档裁剪', async ({ browser }) => {
     summarize(8, verdicts)
   }
 
-  const known = verdicts.filter((v) => v.verdict === 'FAIL' && /^(BLOCKED:|BUG-|UX-)/.test(v.check))
-  const functional = verdicts.filter((v) => v.verdict === 'FAIL' && !/^(BLOCKED:|BUG-|UX-)/.test(v.check))
+  // 豁免面收敛到 `/^UX-/`（原为 `/^(BLOCKED:|BUG-|UX-)/`，与 inv-06 / inv-07 一致）：
+  // 本 spec 只有一条 `UX-PRICE-COL`，`BLOCKED:` 与 `BUG-` 两支从未出现过，
+  // 留着等于给未来的安全边界回归预置一张豁免票。往这里加条目前先改这两行。
+  const known = verdicts.filter((v) => v.verdict === 'FAIL' && /^UX-/.test(v.check))
+  const functional = verdicts.filter((v) => v.verdict === 'FAIL' && !/^UX-/.test(v.check))
   if (known.length > 0) console.log(`\n[INV-08] ⛔ 已知缺陷:\n${JSON.stringify(known, null, 2)}`)
   expect(functional, `INV-08 安全边界失败项:\n${JSON.stringify(functional, null, 2)}`).toHaveLength(0)
 })

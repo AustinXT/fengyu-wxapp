@@ -8,8 +8,11 @@
  *
  * 盘溢（市场产品盘溢）是入库类，建单即完成并产生正向流水。
  *
- * ⚠️ 报损（市场产品报损 / 院产品报损）需要选来源批次，受 BUG-LOT-LOADING 阻断，
- * 在 UI 上无法创建 —— 见 INV-05。本 spec 如实记录，不伪装成已覆盖。
+ * 报损（市场产品报损 / 院产品报损）走审批链，是本 spec 的第二个不变量：
+ * **建单落「待审批」时库存分毫不动，审批通过那一刻才扣减**。
+ * 建单期只锁批次、写 lot_id（engine.ts:3195-3197），不产流水；
+ * 扣减发生在 approveInventoryCoreDoc（engine.ts:3320-3382）。
+ * D 段原先是两条「受 BUG-LOT-LOADING 阻断」的硬编码记录，#129 修复后已转为真实双链。
  */
 
 import { test, expect } from '@playwright/test'
@@ -18,7 +21,7 @@ import {
   login, psql, readCtx, recordVerdict, sqlStr, summarize, writeCtx, type Verdict,
 } from './_helpers/env'
 import { isGateOpen, openCutoverGate } from './_helpers/cutover'
-import { createGenericDoc, docIdByRemark, docStatus, docMovementCount, lotQtyAll } from './_helpers/ui'
+import { createGenericDoc, docIdByRemark, docStatus, docMovementCount, lotQtyAll, rowAction } from './_helpers/ui'
 
 test.setTimeout(500_000)
 
@@ -27,10 +30,13 @@ const R = {
   marketStocktake: `${NS}-市场盘点-${STAMP}`,
   storeStocktake: `${NS}-分院盘点-${STAMP}`,
   overflow: `${NS}-盘溢-${STAMP}`,
+  marketLoss: `${NS}-市场报损-${STAMP}`,
+  storeLoss: `${NS}-院报损-${STAMP}`,
 }
-const QTY = { stocktake: 7, overflow: 6 }
+// loss 走真实扣减：门店 A 一轮全套已被 INV-04/05 消耗，这里只取 2 件（额度见 README）
+const QTY = { stocktake: 7, overflow: 6, loss: 2 }
 
-test('INV-06：盘点不动库存 / 盘溢入库 / 报损受阻记录', async ({ browser }) => {
+test('INV-06：盘点不动库存 / 盘溢入库 / 报损审批链', async ({ browser }) => {
   const verdicts: Verdict[] = []
   const inv01 = readCtx<{ supplySkuId: string; supplySkuName: string }>('inv01')
   if (!inv01?.supplySkuId) throw new Error('缺少 INV-01 上下文')
@@ -204,16 +210,6 @@ test('INV-06：盘点不动库存 / 盘溢入库 / 报损受阻记录', async ({
       recordVerdict(verdicts, 'movement: 盘溢方向 = 入库', dir === '入库', dir)
     }
 
-    // ══ D. 报损受阻记录 ═══════════════════════════════════════════
-    for (const docType of ['市场产品报损', '院产品报损']) {
-      recordVerdict(
-        verdicts,
-        `BLOCKED: 无法创建「${docType}」（需选来源批次，受 BUG-LOT-LOADING 阻断）`,
-        false,
-        '见 INV-05',
-      )
-    }
-
     // 把**本 spec 自己的判定**交给 INV-10 转述，而不是让 INV-10 再查一遍库去
     // 反推「当前部署有没有生效」——它反推不了：ctx 文件跨运行保留，回退后单跑 INV-10
     // 会读到回退前建的非空单据，从而漏报（反向假绿）。
@@ -236,7 +232,11 @@ test('INV-06：盘点不动库存 / 盘溢入库 / 报损受阻记录', async ({
       if (hits.some((h) => h && h.verdict === 'FAIL')) return false  // 任一失败 → 失败
       return hits.some((h) => h === undefined) ? null : true    // 有的没执行 → 不知道
     }
-    writeCtx('inv06', {
+    // ⚠️ 这一次写盘**必须**排在 D 段之前：A~C 的判定此刻已全部落定，而 D 段是真实
+    //    UI 链路（建单 + 审批），随时可能抛。攒到 spec 末尾写的话，D 挂掉就会让 ctx
+    //    停留在**上一轮**的 #131 判定上，INV-10 据此生成的 UX-FINDINGS.md 是假情报。
+    //    D 段跑完后会带着 mbsId/ybsId 再写一次（同一份 inv06Ctx 展开，字段不丢）。
+    const inv06Ctx = {
       mpdId,
       ypdId,
       mpyId,
@@ -249,14 +249,141 @@ test('INV-06：盘点不动库存 / 盘溢入库 / 报损受阻记录', async ({
         '分院账面数量 = 该门店下该 SKU 全部批次在手量之和',
       ),
       at: new Date().toISOString(),
+    }
+    writeCtx('inv06', inv06Ctx)
+
+    // ══ D. 报损双链：建单即待审批不动库存 → 审批后才扣减 ═══════════
+    //
+    // 市场产品报损 / 院产品报损 是 APPROVAL_DOC_TYPES（engine.ts:188-193）里仅有的
+    // 两种能从单据中心通用建单建出来的类型（市场退货 / 院退货走专用办理台）。
+    // 链路分两拍：
+    //   ① 建单 —— defaultStatusForDoc（:328-332）给「待审批」；movementPlan 对
+    //      待审批直接返回 null（:351-357）→ 零流水、在手量分毫不动。但
+    //      shouldCaptureSourceLot（:3195-3197）仍会 FOR UPDATE 锁批次并把 lot_id
+    //      写进明细 —— 这是「报损必须指名批次」的落点，缺了它审批时
+    //      approveInventoryCoreDoc 会以「单据明细缺少库存批次」拒绝。
+    //   ② 审批 —— approveInventoryCoreDoc（:3320-3382）逐条锁批次 + 写出库流水，
+    //      status 推「已完成」，并写 approved_by / approved_at。
+    // 两者都在 INTERNAL_SAME_NODE_DOC_TYPES（:266-281），出库/入库主体传同一个；
+    // 出库主体类型另有硬校验：市场报损必须是市场、院报损必须是门店（:817-829）。
+    const lossDocIds: Partial<Record<'市场产品报损' | '院产品报损', string>> = {}
+    for (const [docType, prefix, orgNode, subjectLabel, remark] of [
+      ['市场产品报损', 'MBS', TOPO.MARKET, `市场 · ${TOPO.MARKET_NAME}`, R.marketLoss],
+      ['院产品报损', 'YBS', TOPO.STORE_A_ORG, `门店 · ${TOPO.STORE_A_NAME}`, R.storeLoss],
+    ] as const) {
+      console.log(`[INV-06] D ${docType}`)
+      const before = lotQtyAll(orgNode, inv01.supplySkuId)
+      // 这里不再清 `dialogs`：建单失败已改为 toast.error（弹窗不关），
+      // 原生 dialog 不会出现，失败文案直接读 createGenericDoc 的返回值。
+      const created = await createGenericDoc(page, {
+        docType,
+        sourceLabel: subjectLabel,
+        targetLabel: subjectLabel,
+        skuName: inv01.supplySkuName,
+        quantity: QTY.loss,
+        remark,
+        needLot: true,
+      })
+      const lossId = docIdByRemark(docType, remark)
+      recordVerdict(
+        verdicts,
+        `doc: ${docType}落库`,
+        Boolean(lossId),
+        lossId || `建单未成功，页面提示：${created.toast || '(无 toast)'}`,
+      )
+      // 没建出来就别继续：rowAction 会拿空单号去搜单据中心，报出来的是定位失败而非业务结论
+      if (!lossId) continue
+
+      recordVerdict(verdicts, `doc: ${docType}单号前缀 ${prefix}`, lossId.startsWith(prefix), lossId)
+      const pendingStatus = docStatus(lossId)
+      recordVerdict(verdicts, `doc: ${docType}初始状态 = 待审批`, pendingStatus === '待审批', pendingStatus)
+      const pendingQty = lotQtyAll(orgNode, inv01.supplySkuId)
+      recordVerdict(
+        verdicts,
+        `★ ${docType}待审批阶段库存分毫未动`,
+        pendingQty === before,
+        `${before} → ${pendingQty}`,
+      )
+      const pendingMoves = docMovementCount(lossId)
+      recordVerdict(
+        verdicts,
+        `★ ${docType}待审批阶段不产生库存流水`,
+        pendingMoves === 0,
+        `movements=${pendingMoves}`,
+      )
+      // 「报损必须指名批次」：明细不锁 lot_id 的话，审批时按哪个批次扣、扣的是谁的成本
+      // 全无从谈起（approveInventoryCoreDoc:3356 直接拒绝无批次明细）。
+      const lotLocked = psql(
+        `SELECT count(*) FROM inventory_doc_items
+          WHERE doc_id = ${sqlStr(lossId)} AND lot_id IS NOT NULL`,
+      )
+      recordVerdict(
+        verdicts,
+        `doc: ${docType}明细已锁定来源批次（lot_id 非空）`,
+        lotLocked === '1',
+        `lot_id 非空明细数=${lotLocked}`,
+      )
+      // §10.3：市场归属由 0039 的 inventory_expected_doc_market_id 触发器派生 ——
+      // 市场主体取自身、门店主体取 parent_location_id，所以门店报损同样归母市场。
+      const lossMarket = psql(`SELECT COALESCE(market_id,'') FROM inventory_docs WHERE id = ${sqlStr(lossId)}`)
+      recordVerdict(
+        verdicts,
+        `§10.3 ${docType}归属母市场`,
+        lossMarket === TOPO.MARKET,
+        lossMarket || '(空)',
+      )
+
+      await rowAction(page, lossId, '通过', `INVT-同意报损-${STAMP}`)
+      recordVerdict(verdicts, `doc: ${docType}审批后转已完成`, docStatus(lossId) === '已完成', docStatus(lossId))
+      const afterApprove = lotQtyAll(orgNode, inv01.supplySkuId)
+      recordVerdict(
+        verdicts,
+        `★ ${docType}审批通过后库存减 ${QTY.loss}`,
+        before - afterApprove === QTY.loss,
+        `${before} → ${afterApprove}`,
+      )
+      const approvedMoves = docMovementCount(lossId)
+      const lossDir = psql(`SELECT direction FROM inventory_movements WHERE doc_id = ${sqlStr(lossId)} LIMIT 1`)
+      recordVerdict(
+        verdicts,
+        `movement: ${docType}审批产生 1 条出库流水`,
+        approvedMoves === 1 && lossDir === '出库',
+        `count=${approvedMoves} / direction=${lossDir || '(无)'}`,
+      )
+      // 审批留痕：approved_by 与 approved_at 缺一不可，否则「谁批的、什么时候批的」断链。
+      // 用 `|` 拼再拆两段判空，别写成「整串非空」—— 只写了 approved_by 时整串也非空。
+      const approval = psql(
+        `SELECT COALESCE(approved_by,'') || '|' || COALESCE(approved_at::text,'')
+           FROM inventory_docs WHERE id = ${sqlStr(lossId)}`,
+      )
+      const [approvedBy = '', approvedAt = ''] = approval.split('|')
+      recordVerdict(
+        verdicts,
+        `doc: ${docType}审批留痕（approved_by / approved_at）`,
+        Boolean(approvedBy) && Boolean(approvedAt),
+        approval || '(查不到该单)',
+      )
+      lossDocIds[docType] = lossId
+    }
+
+    writeCtx('inv06', {
+      ...inv06Ctx,
+      mbsId: lossDocIds['市场产品报损'] ?? '',
+      ybsId: lossDocIds['院产品报损'] ?? '',
     })
   } finally {
     await ctx.close()
     summarize(6, verdicts)
   }
 
-  const known = verdicts.filter((v) => v.verdict === 'FAIL' && /^(BLOCKED:|BUG-|UX-)/.test(v.check))
-  const functional = verdicts.filter((v) => v.verdict === 'FAIL' && !/^(BLOCKED:|BUG-|UX-)/.test(v.check))
+  // 豁免面收敛到 `/^UX-/`（原为 `/^(BLOCKED:|BUG-|UX-)/`）：
+  //   - `BLOCKED:` 已随 #129 清空 —— D 段的两条硬编码受阻记录换成了真实报损双链，
+  //     再留着这一支等于给「报损又建不出来了」预置一张豁免票；
+  //   - `BUG-` 在本 spec 从未出现过，同理（做法与 inv-01 的 PENDING_UX_CHECKS 清零一致）；
+  //   - `UX-` 必须留：A/B 两段的「UX-并发：…本轮不判定」是共享 dev 库上的并发降级，
+  //     不是缺陷，硬失败只会把别人的写操作算到本 spec 头上。
+  const known = verdicts.filter((v) => v.verdict === 'FAIL' && /^UX-/.test(v.check))
+  const functional = verdicts.filter((v) => v.verdict === 'FAIL' && !/^UX-/.test(v.check))
   if (known.length > 0) {
     console.log(`\n[INV-06] ⛔ 已知缺陷/受阻 ${known.length} 项:\n${JSON.stringify(known, null, 2)}`)
   }

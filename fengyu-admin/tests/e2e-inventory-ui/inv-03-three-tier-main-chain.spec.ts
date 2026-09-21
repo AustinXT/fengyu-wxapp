@@ -183,7 +183,21 @@ test('INV-03：三级正向主链 —— 报货→采购→发货→入库→配
     await selectByLabel(page, '供应链库存主体', { label: '品牌总部' })
     await page.getByRole('button', { name: '汇总各市场报货' }).click()
     await page.waitForTimeout(2000)
-    await fillByLabel(page, '本次汇总', String(QTY.marketPurchase))
+    // #194：「本次汇总」是表格的 <th>，行内 Input 在 <td> 里没有 <label> 可包裹 ——
+    // 本文件的 fillByLabel（见下方 labelled()，locator('label').filter(...)）必然超时。
+    // 可访问名改由 inventory-operations-page.tsx 的 MarketReportSummaryForm 用
+    // aria-label 给出，实际文案是 `本次汇总 ${skuName} ${specName || skuId} ${marketName}`
+    // （源码 :1754 的 rowName，勾选框同款前缀式，字段名在前）。
+    // ⚠️ type="number" 的 ARIA role 是 spinbutton，不是 textbox。
+    // 只用**前缀**匹配到商品名为止：规格名取决于 SKU 主数据，E2E 这边拿不到。
+    // 商品名后补一个空格是必须的 —— rowName 里商品名之后恒有 `${specName || skuId}`
+    // （skuId 非空，故分隔空格一定存在），不补空格时 `INVT-SKU-123` 会连带命中
+    // `INVT-SKU-1234` 那行。同一 SKU 跨多市场仍可能多行命中，故再 .first() 兜底
+    // （本轮只有一个市场在报货）。
+    await page
+      .getByRole('spinbutton', { name: new RegExp(`^本次汇总 ${escapeRe(inv01.supplySkuName)} `) })
+      .first()
+      .fill(String(QTY.marketPurchase))
     await fillByLabel(page, '备注', R.summary)
     await submitForm(page, '创建市场报货汇总单', /市场报货汇总单已创建/)
     const summaryId = docIdByRemark('市场报货汇总', R.summary)
@@ -282,12 +296,13 @@ test('INV-03：三级正向主链 —— 报货→采购→发货→入库→配
     await openOperation(page, 'market', '市场采购入库')
     await selectByLabel(page, '品项公司发货单', { contains: shipId })
     await page.waitForTimeout(2000)
-    const receiveInputs = page.locator('tbody tr input[inputmode=decimal]')
-    const receiveRows = await receiveInputs.count()
-    for (let i = 0; i < receiveRows; i += 1) {
-      const outstanding = (await page.locator('tbody tr').nth(i).locator('td').nth(3).innerText()).trim()
-      await receiveInputs.nth(i).fill(outstanding)
-    }
+    const marketReceiveRows = await fillReceiptRows(page)
+    recordVerdict(
+      verdicts,
+      'ui: 市场采购入库的「本次实收」输入可定位并填入',
+      marketReceiveRows > 0,
+      `已填行数=${marketReceiveRows}`,
+    )
     await fillByLabel(page, '备注', R.marketReceipt)
     await submitForm(page, '登记本次实收', /市场采购入库已创建/)
 
@@ -368,12 +383,13 @@ test('INV-03：三级正向主链 —— 报货→采购→发货→入库→配
     await openOperation(page, 'store', '分院收货入库')
     await selectByLabel(page, '分院配货单', { contains: allocId })
     await page.waitForTimeout(2000)
-    const storeReceiveInputs = page.locator('tbody tr input[inputmode=decimal]')
-    const storeRows = await storeReceiveInputs.count()
-    for (let i = 0; i < storeRows; i += 1) {
-      const outstanding = (await page.locator('tbody tr').nth(i).locator('td').nth(3).innerText()).trim()
-      await storeReceiveInputs.nth(i).fill(outstanding)
-    }
+    const storeReceiveRows = await fillReceiptRows(page)
+    recordVerdict(
+      verdicts,
+      'ui: 分院收货入库的「本次实收」输入可定位并填入',
+      storeReceiveRows > 0,
+      `已填行数=${storeReceiveRows}`,
+    )
     await fillByLabel(page, '备注', R.storeReceipt)
     await submitForm(page, '登记本次实收', /分院收货入库已创建/)
 
@@ -467,6 +483,37 @@ async function submitForm(page: Page, name: string, expect: RegExp): Promise<str
 
 function escapeRe(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+/**
+ * 收货进度表：逐行把「待收」数量抄进「本次实收」，返回实际填了几行。
+ * 市场采购入库与分院收货入库共用同一份源码（ShipmentReceiptForm），故共用本函数。
+ *
+ * ⚠️ 不能再用 `input[inputmode=decimal]` 定位 —— #135 已把这些输入换成 `type="number"`，
+ * 页面上根本没有 inputmode 属性，`count()` 恒为 0：循环一次都不执行，整步**静默空转**，
+ * 只是靠表单预填的待收量碰巧提交成功（回归时同样不会报警）。
+ * type=number 的 ARIA role 是 **spinbutton**（不是 textbox），行内控件没有 <label>，
+ * 可访问名由 aria-label 给出（`本次实收 <商品名> 第N行`，#194）。
+ *
+ * 这里按**行**取控件而不是按可访问名匹配：同一 SKU 的赠品行与正常行连商品名带 skuId
+ * 都相同，只有行序号能区分；按行定位与「待收」列天然同源，不会错位。
+ * 返回值交调用方记 verdict —— 行数为 0 必须响亮失败，别再退回静默空转。
+ */
+async function fillReceiptRows(page: Page): Promise<number> {
+  const rows = page.locator('form tbody tr')
+  await rows.first().waitFor({ state: 'visible', timeout: 20_000 }).catch(() => null)
+  const total = await rows.count()
+  let filled = 0
+  for (let i = 0; i < total; i += 1) {
+    const row = rows.nth(i)
+    // 每行只有一个数值输入（本次实收）；明细备注是普通 text → textbox，不会被误取
+    const input = row.getByRole('spinbutton').first()
+    if (await input.count() === 0) continue
+    const outstanding = (await row.locator('td').nth(3).innerText()).trim()   // td[3] = 待收
+    await input.fill(outstanding)
+    filled += 1
+  }
+  return filled
 }
 
 /** 打开某层办理台的某张操作卡片 */
