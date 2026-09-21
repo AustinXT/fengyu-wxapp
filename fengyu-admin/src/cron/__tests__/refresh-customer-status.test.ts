@@ -2,7 +2,9 @@
  * STEP customerStatus（run.ts STEPS 第 2 项）—— customer_status 三段式 SQL 形态测试
  * （迁自 cronTask/__tests__/customer-status.test.js）
  *
- * 本 STEP 的主体是三段 SQL 字符串，JS 分支只有 `suspiciousBulkReset` 判据一处，故分四层：
+ * 本 STEP 的主体是三段 SQL 字符串，JS 逻辑只有 `suspiciousBulkReset` 判据与
+ * `buildUpdateCustomerStatusSql` 的 ctx 注入分支（后者未 export、尚无覆盖，见 follow-up）。
+ * 本文件分六层：
  *   1. 段 1 SQL 形态：反向过滤非会员客，SET customer_status = NULL
  *   2. 段 2 SQL 形态：UPDATE 限定 u.customer_type = '会员客'，含分类 CASE 与 90 天窗口
  *   3. 段 3 SQL 形态：会员客无服务记录置 '休眠'，守卫是 IS DISTINCT FROM 而非 IS NULL
@@ -229,8 +231,9 @@ describe('cron-worker STEP customerStatus — customer_status 三段式 SQL', ()
     const seg2Hits = (r: Row) => r.visits !== null && r.customerType === '会员客'
 
     /**
-     * 段 2 的 CASE 落值建模。分支顺序必须与 SQL 一致 —— CASE 是短路求值，
-     * 把 `>= 6` 挪到 `<= 5` 后面会改变语义。
+     * 段 2 的 CASE 落值建模。分支顺序必须与 SQL 一致 —— CASE 是短路求值。
+     * 前两个分支（`>= 6` / `<= 5`）互斥，交换它们不改变语义；**真正依赖顺序的是后两个**：
+     * `<= 6 months` 是 `<= 12 months` 的子区间，把冰冻挪到沉睡前面，所有沉睡都会变冰冻。
      */
     function seg2Value(v: Visits): string {
       if (v.visits90d >= 1 && v.totalVisits >= 6) return '保有会员-稳定'
@@ -272,7 +275,9 @@ describe('cron-worker STEP customerStatus — customer_status 三段式 SQL', ()
      * 的恒真式，模型写错也照样绿 —— 第 2 轮评审抓到过一次）。
      *
      * 覆盖 CASE 全部 5 个落值及其边界（total_visits 的 5/6、lastServiceMonthsAgo 的 6/7 与 12/13），
-     * 只列**可达**组合：visits90d >= 1 蕴含最后到店在 3 个月内，不构造自相矛盾的行。
+     * 只列**可达**组合：`visits_90d` 是 `total_visits` 在 90 天窗口内的子集，故必有
+     * `visits90d <= totalVisits`；且 visits90d >= 1 蕴含最后到店在 3 个月内。不构造自相矛盾的行 ——
+     * 拿合成的不可能状态去跑变异测试，杀死的是幻觉。
      *
      * ⚠️ `lastServiceMonthsAgo` 是**离散化的模型输入**，不做日历月算术。PG 的
      * `CURRENT_DATE - INTERVAL '6 months'` 有月末 clamp（`2026-08-31 - 6M = 2026-02-28`），
@@ -288,7 +293,7 @@ describe('cron-worker STEP customerStatus — customer_status 三段式 SQL', ()
       { visits: { visits90d: 1, totalVisits: 6, lastServiceMonthsAgo: 0 }, expected: '保有会员-稳定' },
       // visits90d = 2 / 3：防把模型的 `>= 1` 误写成 `=== 1`（只有 1 的话这种变异杀不死）
       { visits: { visits90d: 2, totalVisits: 7, lastServiceMonthsAgo: 0 }, expected: '保有会员-稳定' },
-      { visits: { visits90d: 3, totalVisits: 2, lastServiceMonthsAgo: 0 }, expected: '保有会员-有效' },
+      { visits: { visits90d: 3, totalVisits: 3, lastServiceMonthsAgo: 0 }, expected: '保有会员-有效' },
       { visits: { visits90d: 0, totalVisits: 3, lastServiceMonthsAgo: 4 }, expected: '沉睡' },
       // 6M 边界（SQL 是 >=，故 6 仍算沉睡）
       { visits: { visits90d: 0, totalVisits: 3, lastServiceMonthsAgo: 6 }, expected: '沉睡' },
@@ -466,10 +471,18 @@ describe('cron-worker STEP customerStatus — customer_status 三段式 SQL', ()
       expect(warnSpy).not.toHaveBeenCalled()
     })
 
-    it('恰好等于 10% 不告警（判据是 `>` 不是 `>=`）', async () => {
+    it('恰好等于 10% 不告警（比例判据是 `>` 不是 `>=`）', async () => {
       // reset=100, touched=1000 → 100 > 100 为 false
       const r = await refreshCustomerStatus(fakeDb({ cleared: 0, updated: 900, reset: 100 }))
       expect(r.suspiciousBulkReset).toBe(false)
+    })
+
+    it('恰好等于绝对下限且刚过比例线 → 告警（钉死阈值是 `>=` 不是 `>`）', async () => {
+      // reset=100, touched=999 → 100 >= 100 ✅ 且 100 > 99.9 ✅
+      // 上一条用例的 reset 也是 100，但被比例线挡住了，所以杀不死 `>= 100` → `> 100` 的变异；
+      // 这一条专门补上那个交叉边界。
+      const r = await refreshCustomerStatus(fakeDb({ cleared: 0, updated: 899, reset: 100 }))
+      expect(r.suspiciousBulkReset).toBe(true)
     })
 
     it('刚过 10% 且达下限 → 告警', async () => {

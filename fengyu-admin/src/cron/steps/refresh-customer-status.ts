@@ -187,7 +187,11 @@ export async function refreshCustomerStatus(
     //     代价是「缓慢持续丢单」（每天塌几十行）永远不会触发。
     //   · 整理成 `R > U/9`：R ≥ 100 但 R ≤ U/9 时不报。比如 U=9000、R=999，
     //     近千会员被刷休眠仍然静默 —— 段 2 命中大头时本判据就不敏感了。
-    // 两条都靠「次日复跑 + 数据看板肉眼」兜底；要收紧得引入历史基线对比，超出本 STEP 职责。
+    // ⚠️ 别指望「次日复跑」兜住这两条：漏报的行当天就被写成休眠了，次日段 3 的
+    // `IS DISTINCT FROM '休眠'` 把它们排除 → R 归零、更不会告警。真正的兜底只有数据看板
+    // 与人工复算；要自动收紧得引入历史基线对比，超出本 STEP 职责。
+    // 反向的误报也存在且可接受：合法地批量把 100 个「无单 ∧ 旧状态非休眠」顾客转成会员客，
+    // 会得到 U=0、R=100 而触发一次 warn。只是 warn、文案也写的「可能」，不阻断。
     const touchedMembers = updatedMember + resetNoVisit
     const suspiciousBulkReset =
       resetNoVisit >= BULK_RESET_SUSPICION_THRESHOLD &&
