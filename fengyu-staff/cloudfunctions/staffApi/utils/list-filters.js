@@ -23,7 +23,11 @@ function escapeLike(value) {
   return value.replace(/[\\%_]/g, '\\$&')
 }
 
-function normalizeListFilters(payload = {}, defaultPageSize = 20) {
+function normalizeListFilters(rawPayload = {}, defaultPageSize = 20) {
+  // 默认参数只对 undefined 生效，`normalizeListFilters(null)` 会在读属性时抛 TypeError。
+  // 当前 5 个调用方都写了 `ctx.event.payload || {}` 所以不可达，但本函数是分页归一的
+  // 抄写模板，不留这条路径（同 utils/paging.js 对 defaultPageSize 的处理理由）。
+  const payload = (rawPayload && typeof rawPayload === 'object') ? rawPayload : {}
   // 委托 utils/paging 单源（#240）。原先这里自带一套 `Number.isFinite` + `Math.trunc` 的归一，
   // 与 paging.js 语义不一致，且 **page 侧漏**：`isFinite(1e20)` 为真 → `offset = 2e21`，
   // `String(2e21)` 输出指数记法 `"2e+21"` → PG `int8in` 抛

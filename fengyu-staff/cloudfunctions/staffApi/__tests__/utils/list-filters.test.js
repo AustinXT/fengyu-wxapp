@@ -81,6 +81,14 @@ describe('list-filters', () => {
     expect(normalizeListFilters({}).keyword).toBe('')
   })
 
+  test('#240 payload 根值非对象（null / 字符串 / 数字）不抛，回落默认分页', () => {
+    for (const p of [null, undefined, 'abc', 123, []]) {
+      let r
+      expect(() => { r = normalizeListFilters(p) }, `payload=${JSON.stringify(p)}`).not.toThrow()
+      expect(r).toMatchObject({ page: 1, pageSize: 20, offset: 0, keyword: '' })
+    }
+  })
+
   test('LIKE 通配符按字面量转义', () => {
     expect(normalizeListFilters({ keyword: '张_%' }).keywordPattern).toBe('%张\\_\\%%')
   })
