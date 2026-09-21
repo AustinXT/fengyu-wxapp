@@ -18,6 +18,7 @@ const lakalaConfig = require('../utils/lakala-config')
 const { shanghaiYMD, shanghaiYYMMDD } = require('../utils/datetime')
 const { INVENTORY_LINKAGE_ENABLED } = require('../utils/feature-flags')
 const { classifySaleOrderDocumentType } = require('../utils/document-type')
+const { safeThumbUrl, PRODUCT_THUMB_BOX_SMALL } = require('../utils/image')
 
 function roundMoney(value) {
   return Math.round((Number(value) || 0) * 100) / 100
@@ -1170,7 +1171,9 @@ async function scanDetail(ctx) {
       prepaidCardReceived: i.prepaid_card_received,
       cashReceived: i.cash_received,
       refundedAmount: Number(itemRefundMap.get(i.sale_item_id) || 0),
-      coverImage: i.cover_image || ''
+      // issue #230：扫码付订单行封面 96rpx，走小档。
+      // safeThumbUrl 返回 null 时沿用既有的空串兜底，前端 wx:if 仍走占位分支
+      coverImage: safeThumbUrl(i.cover_image, PRODUCT_THUMB_BOX_SMALL) || ''
     }))
   }
 }
@@ -2106,6 +2109,12 @@ async function list(ctx) {
     // 行级退款额（已退行不可继续支付/回款）：批量聚合避免 N+1
     const refundMapBatch = await getPerItemRefundedMapBatch(pg, orderIds)
 
+    // issue #230：订单列表行封面 96rpx，走小档。这里的 row 直接挂到 order.items 下发，
+    // 前端读的就是 cover_image（下划线），故就地改写
+    for (const it of items) {
+      it.cover_image = safeThumbUrl(it.cover_image, PRODUCT_THUMB_BOX_SMALL)
+    }
+
     for (const order of orders) {
       const orderItems = itemsMap.get(order.sale_order_id) || []
       const orderRefundMap = refundMapBatch.get(order.sale_order_id)
@@ -2197,6 +2206,8 @@ async function detail(ctx) {
   const itemRefundMap = await getPerItemRefundedMap(pg, orderNo)
   for (const it of items) {
     it.refunded_amount = Number(itemRefundMap.get(it.sale_item_id) || 0)
+    // issue #230：订单详情行封面 120rpx，走小档（同 order.list，前端读 cover_image）
+    it.cover_image = safeThumbUrl(it.cover_image, PRODUCT_THUMB_BOX_SMALL)
   }
 
   // 待支付订单返回过期时间

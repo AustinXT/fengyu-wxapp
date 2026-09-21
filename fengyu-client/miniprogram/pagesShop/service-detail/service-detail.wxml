@@ -34,6 +34,7 @@ module.exports.strike = function(isMember, special, list) {
       class="cover-img"
       src="{{spu.cover_image}}"
       mode="aspectFill"
+      lazy-load
     />
     <view wx:else class="cover-placeholder">
       <van-icon name="photo-o" size="80rpx" color="#C0322A" />
@@ -172,6 +173,7 @@ module.exports.strike = function(isMember, special, list) {
           class="sku-popup__cover"
           src="{{spu.cover_image}}"
           mode="aspectFill"
+          lazy-load
         />
         <view wx:else class="sku-popup__cover sku-popup__cover--empty">
           <van-icon name="photo-o" size="48rpx" color="#CCC" />

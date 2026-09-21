@@ -31,6 +31,7 @@ module.exports.date = function(s) {
           src="{{item.coverImage}}"
           class="checkout-item__cover"
           mode="aspectFill"
+          lazy-load
         />
         <view wx:elif="{{!bundleProductId}}" class="checkout-item__cover checkout-item__cover--empty" />
         <view class="checkout-item__info">

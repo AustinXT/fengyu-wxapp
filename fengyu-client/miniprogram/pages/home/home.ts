@@ -36,7 +36,8 @@ interface SpuItem {
   product_id: string;
   name: string;
   category_name: string;
-  cover_image: string;
+  /** issue #230：云函数无法保证缩略时下发 null，wxml 走 cover-placeholder 分支 */
+  cover_image: string | null;
   min_price: string;
   /** 会员价分流：仅会员且标价起价 > 会员起价时填标价起价（划线），否则空串 */
   strike_min_price?: string;

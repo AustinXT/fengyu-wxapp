@@ -155,9 +155,32 @@ const STORE_LIST_THUMB_BOX = 300
  */
 const STORE_DETAIL_THUMB_BOX = 1080
 
+/**
+ * 商品小缩略图（issue #230）：订单行 96~120rpx、扫码付 96rpx、体验卡列表卡片 200rpx。
+ * 取其中最大的 200rpx，3x 屏约 344 物理像素，取 400 留余量。
+ * 解码上限 400×400×4 ≈ 0.6MB/张——订单列表一屏十几行也压不垮。
+ */
+const PRODUCT_THUMB_BOX_SMALL = 400
+
+/**
+ * 商品大图（issue #230）：覆盖两类整屏宽度的展示位，共用一个档位。
+ * - 商品列表卡片：shop 页是单列整行封面，容器约 700rpx，3x 屏约 1200 物理像素
+ * - 详情头图 / 详情长图：满屏 750rpx，3x 屏约 1170~1290 物理像素
+ *
+ * 与 STORE_DETAIL_THUMB_BOX 同取 1080：再小会在整屏宽度上被放大而发虚。
+ * 解码上限 1080×1080×4 ≈ 4.5MB/张，配合 lazy-load 只解码可见项，列表页可接受。
+ *
+ * 刻意**不**给 skuDetail 单独拆一个中间档：它同时服务结算页（120rpx 小图）与
+ * 体验卡详情页（整屏 480rpx 头图），取两者大者即此档；拆档要给接口加尺寸参数，
+ * 换来的只是结算页几张图的解码量，不值。
+ */
+const PRODUCT_THUMB_BOX_LARGE = 1080
+
 module.exports = {
   safeThumbUrl,
   isProcessableHost,
   STORE_LIST_THUMB_BOX,
   STORE_DETAIL_THUMB_BOX,
+  PRODUCT_THUMB_BOX_SMALL,
+  PRODUCT_THUMB_BOX_LARGE,
 }
