@@ -14,6 +14,7 @@
 import { describe, it, expect } from 'vitest'
 // `@db/*` → `../db/schema/*`（tsconfig paths），所以是 @db/user 不是 @db/schema/user
 import { clientWechatUsers } from '@db/user'
+import { customerStatusEnum, customerTypeEnum } from '@db/enums'
 import {
   RESET_NON_MEMBER_STATUS_SQL,
   UPDATE_CUSTOMER_STATUS_SQL,
@@ -252,15 +253,13 @@ describe('cron-worker STEP 1 — customer_status 三段式 SQL', () => {
       return '休眠'
     }
 
-    const TYPES: Row['customerType'][] = ['会员客', '流量客', '体验客', '小美客']
-    const STATUSES: Row['status'][] = [
-      null,
-      '休眠',
-      '保有会员-有效',
-      '保有会员-稳定',
-      '沉睡',
-      '冰冻',
-    ]
+    /**
+     * 值域直接取自 schema 的 pgEnum，不硬编码 —— 「穷举全部输入组合」这个宣称本身就依赖
+     * 值域完整。将来给枚举加值（例如第 5 种 customer_type、第 6 种 customer_status），
+     * 新值会自动进入穷举；若段 2 的 CASE 没跟着覆盖它，下面的断言立刻转红。
+     */
+    const TYPES = customerTypeEnum.enumValues as readonly Row['customerType'][]
+    const STATUSES: Row['status'][] = [null, ...customerStatusEnum.enumValues]
 
     /**
      * 到店画像样本：覆盖 CASE 的全部 5 个分支及其边界（total_visits 的 5/6、

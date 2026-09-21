@@ -89,11 +89,17 @@ UPDATE client_wechat_users u
  * 改用 `IS DISTINCT FROM` 既消除缺口（NULL 行仍命中），又保留「已是休眠就不重写
  * updated_at」的原意，与 refresh-spending-tier.ts 的范式一致。
  *
- * ⚠️ `'休眠'` 在本段出现 **2 处**（SET 与守卫），`db/scripts/update-customer-status.js` 与
- * `db/scripts/calc-monthly-activity.js` 两份活副本各 2 处 —— **全仓共 6 处**。
- * 枚举重命名（本仓做过一次：'预警沉睡' → '沉睡'）必须 6 处同改 —— 只改 SET 漏改守卫不会报错，
- * 而是让守卫恒真、段 3 每天重写全部无单会员客。单测 `SET 与守卫的「休眠」字面量必须一致`
- * 只钉得住本段这 2 处，db/scripts 两份靠人同步（本仓禁止跨端共享代码目录）。
+ * ⚠️ 本段的 `'休眠'` 出现 **2 处**（SET 与守卫），**两者必须永远相等** ——
+ * 只改 SET 漏改守卫不会报错，而是让守卫恒真、段 3 每天重写全部无单会员客（静默劣化，
+ * 比两处都漏改当场炸 22P02 更坏）。单测 `SET 与守卫的「休眠」字面量必须一致` 钉的就是这条。
+ *
+ * ⚠️⚠️ 枚举重命名（本仓做过一次：'预警沉睡' → '沉睡'）波及面**远不止本段** ——
+ * 本文件段 2 的 CASE ELSE、`db/scripts/update-customer-status.js`、
+ * `db/scripts/calc-monthly-activity.js`（含它的 dry-run 预览 CASE）、
+ * 以及读取侧的 `src/actions/data-center/customer.ts`、`staffApi/routes/{customer,mgmt-traffic}.js`、
+ * staff 小程序筛选项……**别照抄任何数字**（写死的计数必然过期，本注释已经错过两轮），
+ * 改之前现查：`grep -rn "'休眠'" --include='*.ts' --include='*.js' --include='*.sql'`。
+ * 本仓禁止跨端共享代码目录，这些副本一律靠人同步。
  */
 export const RESET_NO_VISITS_SQL = `
 UPDATE client_wechat_users u
@@ -134,11 +140,15 @@ export interface CustomerStatusResult {
    * 不抛错（可自愈，且抛错会在新环境首跑等场景误伤），只标记 + warn 供运维判读。
    */
   suspiciousBulkReset: boolean
+  /** 会员客总数，`suspiciousBulkReset` 的分母；也方便运维直接判读段 3 的占比 */
+  memberTotal: number
   stats: Array<{ customer_status: string | null; cnt: number }>
 }
 
-/** 段 3 单跑命中多少行才值得怀疑数据源塌了。稳态下日增量是个位数。 */
+/** 段 3 单跑命中多少行才值得怀疑数据源塌了。稳态下日增量是个位数（dev 实测 2）。 */
 const BULK_RESET_SUSPICION_THRESHOLD = 100
+/** 段 3 命中占会员客总数的比例上限。稳态约 0.1%，超过 10% 说明不是自然增量。 */
+const BULK_RESET_SUSPICION_RATIO = 0.1
 
 export async function refreshCustomerStatus(
   db: Db,
@@ -163,28 +173,38 @@ export async function refreshCustomerStatus(
       ORDER BY customer_status
     `)) as Array<{ customer_status: string | null; cnt: number }>
 
+    const memberTotalRows = (await tx.execute(sql`
+      SELECT COUNT(*)::int AS cnt FROM client_wechat_users WHERE customer_type = '会员客'
+    `)) as Array<{ cnt: number }>
+    const memberTotal = Number(memberTotalRows[0]?.cnt ?? 0)
+
     const updatedMember = updated.count ?? 0
     const resetNoVisit = reset.count ?? 0
-    // 判据是「段 3 反超段 2」而非「段 2 为 0」：service_orders 部分塌陷时段 2 仍会命中几行，
-    // 只看 updatedMember===0 会整片漏报（1889 会员里剩 1 人有单、其余 1800 被刷休眠也不告警）。
-    // 稳态下段 2 是大头（dev 实测 1818 : 2），段 3 反超即异常。
+    // 判据用「占会员客总数的比例」，不是「段 2 是否为 0」也不是「段 3 是否反超段 2」：
+    // service_orders 中等塌陷（比如误删 40%）时段 2 仍会命中上千行，前两种判据都整片漏报
+    // —— 1889 会员里 729 人被静默刷成休眠（稳态基线才 2 人）却不告警。
+    // 绝对下限 100 是为了不让小库 / 新环境的自然波动刷屏。
     const suspiciousBulkReset =
-      resetNoVisit >= BULK_RESET_SUSPICION_THRESHOLD && resetNoVisit > updatedMember
+      resetNoVisit >= BULK_RESET_SUSPICION_THRESHOLD &&
+      resetNoVisit > memberTotal * BULK_RESET_SUSPICION_RATIO
 
     return {
       clearedNonMember: cleared.count ?? 0,
       updatedMember,
       resetNoVisit,
       suspiciousBulkReset,
+      memberTotal,
       stats,
     }
   })
 
   // 告警放在 COMMIT 之后：事务内打印会在「已把这些行刷成休眠」之后又回滚，日志撒谎更难排障。
   if (result.suspiciousBulkReset) {
+    const pct = ((result.resetNoVisit / result.memberTotal) * 100).toFixed(1)
     console.warn(
-      `[customerStatus] 段 3 命中 ${result.resetNoVisit} 行、反超段 2 的 ${result.updatedMember} 行 —— ` +
-        'service_orders 可能处于异常态（restore 中 / client_user_id 被批量置空 / 表刚重灌）。' +
+      `[customerStatus] 段 3 命中 ${result.resetNoVisit} 行 = 会员客总数 ${result.memberTotal} 的 ${pct}%` +
+        `（段 2 命中 ${result.updatedMember} 行）—— service_orders 可能处于异常态` +
+        '（restore 中 / client_user_id 被批量置空 / 表刚重灌）。' +
         '这些会员客已被刷成「休眠」，数据看板当天会偏向休眠档；' +
         '确认数据源恢复后重跑本 STEP 即可还原。',
     )
