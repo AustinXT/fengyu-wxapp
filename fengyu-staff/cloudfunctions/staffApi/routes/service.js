@@ -9,8 +9,8 @@
  */
 
 const pg = require('../db/pg')
-const { requireStaffBound, requireManager, isCurrentStoreManager } = require('../middleware/auth')
-const { maskPhoneForAuth } = require('../utils/phone-visibility')
+const { requireStaffBound, requireManager, isCurrentStoreManager, hasValidManagerRole } = require('../middleware/auth')
+const { maskPhone } = require('../utils/pii')
 const { normalizeListFilters, addDateRange } = require('../utils/list-filters')
 const { logOperation, logTransition } = require('../utils/operation-log')
 const { shanghaiDateStr, shanghaiYYMMDD } = require('../utils/datetime')
@@ -965,6 +965,7 @@ async function list(ctx) {
     itemsSummary = await pg.query(`
       SELECT
         si.service_order_id,
+        si.service_item_id,
         COALESCE(sli.product_name, '') AS product_name,
         sli.remaining_sessions,
         sli.session_count,
@@ -983,6 +984,8 @@ async function list(ctx) {
   for (const i of itemsSummary) {
     if (!itemsMap[i.service_order_id]) itemsMap[i.service_order_id] = []
     itemsMap[i.service_order_id].push({
+      // wxml 的 wx:for 用它做 wx:key —— 此前未下发，key 恒 undefined 导致列表 diff 错位
+      serviceItemId: i.service_item_id,
       itemName: i.product_name,
       spec: '',
       remainingSessions: i.remaining_sessions,
@@ -1041,7 +1044,7 @@ async function list(ctx) {
     id: so.service_order_id,
     serviceOrderId: so.service_order_id,
     customerName: customerNameMap[so.client_user_id] || '',
-    customerPhone: maskPhoneForAuth(so.client_phone, ctx.auth),
+    customerPhone: maskPhoneForOrder(ctx.auth, so),
     staffName: staffNameMap[so.assigned_employee_id] || '',
     assignedStaffWfId: so.assigned_employee_id,
     status: so.status,
@@ -1182,9 +1185,10 @@ async function detail(ctx) {
     }
   }
 
-  // 顾客评价：仅店长可见（防普通员工抓包）；评价仅存在于已完成单
+  // 顾客评价：仅**该单所属门店**的店长可见（防普通员工抓包）；评价仅存在于已完成单。
+  // 同 maskPhoneForOrder：跨店放行后不能再用「请求人当前门店店长」当判据（#224）。
   let review
-  if (isCurrentStoreManager(ctx.auth) && so.status === '已完成') {
+  if (isOrderStoreManager(ctx.auth, so) && so.status === '已完成') {
     const reviewRows = await pg.query(
       `SELECT rating, comment, created_at FROM service_reviews WHERE service_order_id = $1`,
       [id]
@@ -1198,7 +1202,7 @@ async function detail(ctx) {
     id: so.service_order_id,
     serviceOrderId: so.service_order_id,
     customerName,
-    customerPhone: maskPhoneForAuth(so.client_phone, ctx.auth),
+    customerPhone: maskPhoneForOrder(ctx.auth, so),
     staffName,
     status: so.status,
     serviceTime: so.service_date,
@@ -1208,6 +1212,7 @@ async function detail(ctx) {
     remark: so.remark || '',
     storeName: (so.store_name || '').trim(),
     inCurrentStore: isInCurrentStore(ctx.auth, so),
+    canOperate: canOperateOrder(ctx.auth, so),
     review,
     items: items.map(i => ({
       saleItemId: i.sale_item_id,
@@ -1328,6 +1333,32 @@ function isInCurrentStore(auth, so) {
  */
 function isOrderStoreManager(auth, so) {
   return isCurrentStoreManager(auth) && isInCurrentStore(auth, so)
+}
+
+/**
+ * 服务单顾客手机号的可见形态（#224）。
+ *
+ * 不能直接用通用的 `maskPhoneForAuth(phone, auth)`：它判的是「请求人在**自己当前门店**是不是店长」，
+ * 而本次放开 assigned 后，A 店店长会以外援身份拿到 B 店的单——B 店根本不在他的店长 scope 内，
+ * 沿用旧判据就会把 B 店顾客的完整手机号交出去，构成跨组织域 PII 泄露。
+ * 店长特权一律与**这张单的门店**挂钩；仅因「指派给我」放行的跨店支援单按普通员工脱敏。
+ */
+function maskPhoneForOrder(auth, so) {
+  const canReadFull = auth?.loginLevel === 'management'
+    ? (hasValidManagerRole(auth) && isStoreInScope(auth, so.store_id))
+    : isOrderStoreManager(auth, so)
+  return canReadFull ? (so.client_phone || '') : maskPhone(so.client_phone)
+}
+
+/**
+ * 是否可对该单执行 start / complete / cancel（即路由里的「第二道门」）。
+ *
+ * 下发给详情页驱动按钮显隐——detail 的顾客档案兜底分支能打开「本店、顾客绑给我、但指派给同事」
+ * 的单，此时 inCurrentStore 为 true 却操作不了，不据此收口就会渲染出点了必报错的按钮。
+ * 列表页无需此字段：list 的可见集恒为「本店单（店长）∪ 指派给本人」，两者都必然可操作。
+ */
+function canOperateOrder(auth, so) {
+  return isOrderStoreManager(auth, so) || isAssignedToSelf(auth, so)
 }
 
 /**

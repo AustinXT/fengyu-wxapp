@@ -188,6 +188,7 @@ Page({
       await callStaffApi('service.start', { serviceOrderId: id });
       wx.showToast({ title: '服务已开始', icon: 'success' });
       this.resetAndLoad();
+      this.loadTabCounts(); // 待服务 → 服务中，两枚角标都要跟着动（与 onCompleteService 一致）
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : '操作失败';
       wx.showToast({ title: msg, icon: 'none' });

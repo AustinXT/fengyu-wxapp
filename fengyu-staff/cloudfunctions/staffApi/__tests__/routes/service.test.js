@@ -2390,6 +2390,107 @@ describe('#224 跨店支援单可见性与操作权限', () => {
     })
   })
 
+  // 店长特权（全号手机 + 顾客评价 + 可操作判据）必须与**单的门店**挂钩，
+  // 否则 A 店店长以外援身份拿到 B 店单时会读到 B 店顾客 PII —— 跨组织域泄露。
+  describe('店长特权与单的门店挂钩', () => {
+    test('店长外援看自己的支援单：手机号脱敏、不返回店长专属评价', async () => {
+      const ctx = createManagerCtx({ id: 'HLD-SUPPORT' })
+      pg.query
+        .mockResolvedValueOnce([supportOrderRow({
+          status: '已完成', assigned_employee_id: 'emp-001', client_phone: '13812345678',
+        })])
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([{ name: '店长本人' }])
+        .mockResolvedValueOnce([{ name: '顾客A' }])
+
+      await serviceRoutes.detail(ctx)
+
+      expect(ctx.result.customerPhone).toBe('138****5678')
+      expect(ctx.result.review).toBeUndefined()
+      // 未发起 service_reviews 查询
+      expect(pg.query.mock.calls.some(c => String(c[0]).includes('service_reviews'))).toBe(false)
+    })
+
+    test('店长看本店单：仍是全号 + 评价可见（零回归）', async () => {
+      const ctx = createManagerCtx({ id: 'HLD-LOCAL' })
+      pg.query
+        .mockResolvedValueOnce([supportOrderRow({
+          service_order_id: 'HLD-LOCAL', store_id: 'store-001', status: '已完成',
+          assigned_employee_id: 'emp-001', client_phone: '13812345678',
+        })])
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([{ name: '店长本人' }])
+        .mockResolvedValueOnce([{ name: '顾客A' }])
+        .mockResolvedValueOnce([{ rating: 5, comment: '很好', created_at: '2026-09-21' }])
+
+      await serviceRoutes.detail(ctx)
+
+      expect(ctx.result.customerPhone).toBe('13812345678')
+      expect(ctx.result.review).toEqual({ rating: 5, comment: '很好', createdAt: '2026-09-21' })
+    })
+
+    test('普通外援看支援单：手机号同样脱敏', async () => {
+      const ctx = createBeauticianCtx({ id: 'HLD-SUPPORT' })
+      pg.query
+        .mockResolvedValueOnce([supportOrderRow({ client_phone: '13812345678' })])
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([{ name: '外援甲' }])
+        .mockResolvedValueOnce([{ name: '顾客A' }])
+
+      await serviceRoutes.detail(ctx)
+
+      expect(ctx.result.customerPhone).toBe('138****5678')
+    })
+  })
+
+  // canOperate = 第二道门的结果，供详情页驱动「开始/完成/取消」按钮显隐
+  describe('canOperate 与第二道门同源', () => {
+    test('指派给本人的支援单 → canOperate=true', async () => {
+      const ctx = createBeauticianCtx({ id: 'HLD-SUPPORT' })
+      pg.query
+        .mockResolvedValueOnce([supportOrderRow()])
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([{ name: '外援甲' }])
+        .mockResolvedValueOnce([{ name: '顾客A' }])
+
+      await serviceRoutes.detail(ctx)
+      expect(ctx.result.canOperate).toBe(true)
+    })
+
+    test('顾客档案兜底打开的「本店但指派给同事」单 → inCurrentStore=true 但 canOperate=false', async () => {
+      const ctx = createBeauticianCtx({ id: 'HLD-COLLEAGUE' })
+      pg.query
+        .mockResolvedValueOnce([supportOrderRow({
+          service_order_id: 'HLD-COLLEAGUE', store_id: 'store-001', assigned_employee_id: 'emp-colleague',
+        })])
+        // 顾客绑本店且绑给本人 → 分支 3 只读放行
+        .mockResolvedValueOnce([{ bound_store_id: 'store-001', bound_employee_id: ME }])
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([{ name: '同事' }])
+        .mockResolvedValueOnce([{ name: '顾客A' }])
+
+      await serviceRoutes.detail(ctx)
+
+      expect(ctx.result.inCurrentStore).toBe(true)
+      // 后端 start/complete/cancel 会在第二道门拒绝，前端据此不渲染按钮
+      expect(ctx.result.canOperate).toBe(false)
+    })
+
+    test('店长看本店他人单 → canOperate=true（本单店长身份）', async () => {
+      const ctx = createManagerCtx({ id: 'HLD-LOCAL' })
+      pg.query
+        .mockResolvedValueOnce([supportOrderRow({
+          service_order_id: 'HLD-LOCAL', store_id: 'store-001', assigned_employee_id: 'emp-other',
+        })])
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([{ name: '同事' }])
+        .mockResolvedValueOnce([{ name: '顾客A' }])
+
+      await serviceRoutes.detail(ctx)
+      expect(ctx.result.canOperate).toBe(true)
+    })
+  })
+
   describe('cancel / confirm（口径：仍归开单门店）', () => {
     test('外援取消支援单被拒，且给出准确原因而非「不存在」', async () => {
       const ctx = createBeauticianCtx({ serviceOrderId: 'HLD-SUPPORT' })
