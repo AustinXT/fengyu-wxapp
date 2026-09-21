@@ -18,6 +18,7 @@ import { inventorySkuProductSkuMappings, inventorySkus } from '@db/inventory'
 import { prepaidCards, cardTransactions } from '@db/prepaid-card'
 import { eq, desc, asc, and, or, sql, ilike, gte, lt, gt, inArray, isNull } from 'drizzle-orm'
 import { alias } from 'drizzle-orm/pg-core'
+import { queryTrade, closeTrade, isReady as lakalaIsReady } from '@/lib/lakala-client'
 import type { SQL } from 'drizzle-orm'
 import type { AuthSession, SaleOrder, SaleItem, DateBasis, OrderStatus, SaleOrderType, SalesCategory } from '@/lib/types'
 import { revalidatePath } from 'next/cache'
@@ -3973,6 +3974,117 @@ export const confirmOfflinePayment = withPermission(
 )
 
 /** C4: 关闭订单 — 仅待支付/支付失败可关闭，同时作废关联的分配记录 */
+/** 拉卡拉 trade_state 三分类（官方 10 个取值），与 clientApi routes/order.js 同源。 */
+const LAKALA_RELEASABLE_TRADE_STATES = ['FAIL', 'CLOSE', 'REVOKED']
+const LAKALA_PAID_TRADE_STATES = ['SUCCESS', 'PART_REFUND', 'REFUND']
+
+/** 按门店解析拉卡拉商户号/终端号（与 clientApi 的 resolveLakalaMerchant 同源 SQL）。 */
+async function resolveLakalaMerchantForStore(
+  storeId: string | null,
+): Promise<{ merchantNo: string; termNo: string } | null> {
+  if (!storeId || !lakalaIsReady()) return null
+  const rows = await db.execute(sql`
+    SELECT lm.merchant_no, lm.term_no, lm.enabled
+      FROM stores s
+      JOIN lakala_merchants lm ON lm.id = s.lakala_merchant_id
+     WHERE s.store_id = ${storeId}
+  `)
+  const row = rows[0] as { merchant_no?: string; term_no?: string; enabled?: boolean } | undefined
+  if (!row || !row.enabled || !row.merchant_no || !row.term_no) return null
+  return { merchantNo: row.merchant_no, termNo: row.term_no }
+}
+
+/**
+ * 主动作废订单上进行中的在线支付意图，成功后订单才允许关闭（issue #214）。
+ *
+ * 全程 **fail-closed**：只有确认渠道侧已是「不可再支付」的终态才清本地意图。关单失败、
+ * 复核非终态、查单异常一律保留意图并返回失败——宁可让店员重试，也不制造「本地已关、
+ * 渠道可付」的窗口（那会让顾客残留的支付面板付进来的钱因 payNotify 的「非当前意图」
+ * 校验而无法入账，变成收了钱订单不动的最坏事故）。
+ *
+ * 与 clientApi routes/order.js 的 voidActiveLakalaPaymentIntent 是同源副本：
+ * admin 直连拉卡拉而不经 clientApi，是为了不把「关单能力」压在另一个云函数的可用性上，
+ * 也避免引入「函数名 env 配错 → dev 打到 prod 库」这条本项目标记过的最危险路径。
+ * 两份实现的终态集合与放行条件必须保持一致。
+ */
+async function voidActiveOnlinePaymentIntent(
+  saleOrderId: string,
+  outTradeNo: string,
+  storeId: string | null,
+): Promise<{ success: true } | { success: false; message: string }> {
+  let merchant: { merchantNo: string; termNo: string } | null = null
+  try {
+    merchant = await resolveLakalaMerchantForStore(storeId)
+  } catch (e) {
+    console.error('voidActiveOnlinePaymentIntent resolve merchant failed:', saleOrderId, e)
+  }
+  if (!merchant) {
+    return { success: false, message: '暂时无法确认支付结果，请稍后重试' }
+  }
+
+  let tradeState: string
+  try {
+    const trade = await queryTrade({
+      merchantNo: merchant.merchantNo,
+      termNo: merchant.termNo,
+      outTradeNo,
+    })
+    tradeState = trade.tradeState
+  } catch (e) {
+    console.error('voidActiveOnlinePaymentIntent queryTrade failed:', saleOrderId, e)
+    return { success: false, message: '暂时无法确认支付结果，请稍后重试' }
+  }
+
+  if (LAKALA_PAID_TRADE_STATES.includes(tradeState)) {
+    return { success: false, message: '该订单支付已成功，请刷新后按已支付订单处理' }
+  }
+
+  // 非终态（INIT / CREATE / DEAL / UNKNOWN）：顾客可能还握着可付款的支付面板，
+  // 必须先让渠道关单，再复核——关单返回成功不等于渠道已终态。
+  if (!LAKALA_RELEASABLE_TRADE_STATES.includes(tradeState)) {
+    try {
+      await closeTrade({ merchantNo: merchant.merchantNo, termNo: merchant.termNo, outTradeNo })
+    } catch (e) {
+      console.error('voidActiveOnlinePaymentIntent closeTrade failed:', saleOrderId, e)
+      return { success: false, message: '暂时无法终止本次在线支付，请稍后重试' }
+    }
+
+    try {
+      const recheck = await queryTrade({
+        merchantNo: merchant.merchantNo,
+        termNo: merchant.termNo,
+        outTradeNo,
+      })
+      tradeState = recheck.tradeState
+    } catch (e) {
+      console.error('voidActiveOnlinePaymentIntent recheck failed:', saleOrderId, e)
+      return { success: false, message: '暂时无法确认支付结果，请稍后重试' }
+    }
+
+    if (LAKALA_PAID_TRADE_STATES.includes(tradeState)) {
+      return { success: false, message: '该订单支付已成功，请刷新后按已支付订单处理' }
+    }
+    if (!LAKALA_RELEASABLE_TRADE_STATES.includes(tradeState)) {
+      return { success: false, message: '在线支付仍在处理中，请稍后重试' }
+    }
+  }
+
+  // CAS 锚当前单号：期间若顾客重新发起了支付（换了新单号），这里不匹配即不释放，
+  // 后续事务的 `lakala_out_order_no IS NULL` 守卫会照常拦住关闭。
+  const released = await db.execute(sql`
+    UPDATE sale_orders
+       SET lakala_out_order_no = NULL, updated_at = NOW()
+     WHERE sale_order_id = ${saleOrderId}
+       AND status IN ('待支付', '部分支付')
+       AND lakala_out_order_no = ${outTradeNo}
+     RETURNING sale_order_id
+  `)
+  if (released.length === 0) {
+    return { success: false, message: '支付状态已变化，请刷新后重试' }
+  }
+  return { success: true }
+}
+
 export const closeOrder = withPermission(
   'sale_order:update',
   async (session, saleOrderId: string): Promise<{ success: boolean; message: string }> => {
@@ -3991,6 +4103,23 @@ export const closeOrder = withPermission(
     .from(saleOrders)
     .where(eq(saleOrders.saleOrderId, saleOrderId))
     .limit(1)
+
+  // issue #214：顾客唤起支付后没付款，渠道单仍在有效期内，旧实现只能拒绝关闭
+  // （「在线支付处理中，暂不能关闭订单」），店员得等约 20 分钟。这里先向渠道关单并
+  // 释放意图，再走下面**原样不动**的事务与 CAS（`AND lakala_out_order_no IS NULL`）。
+  //
+  // 必须在事务之外：这是一次外部 HTTPS 往返，放进事务会把订单行锁持有到网络返回。
+  // 作废与事务之间若有顾客重新发起支付，事务内的 CAS 会重新拦住（fail-closed）。
+  if (orderCtx?.lakalaOutOrderNo) {
+    const voidResult = await voidActiveOnlinePaymentIntent(
+      saleOrderId,
+      orderCtx.lakalaOutOrderNo,
+      orderCtx.storeId,
+    )
+    if (!voidResult.success) {
+      return { success: false, message: voidResult.message }
+    }
+  }
 
   // 事务：关闭订单 + 作废分配，原子提交
   try {

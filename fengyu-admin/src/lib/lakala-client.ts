@@ -261,6 +261,81 @@ export async function request({
 }
 
 /**
+ * 交易查询：POST /v3/labs/query/tradequery
+ *
+ * trade_state 官方取值：INIT / CREATE / SUCCESS / FAIL / DEAL / UNKNOWN / CLOSE /
+ * PART_REFUND / REFUND / REVOKED。只有 SUCCESS 才算实际到账。
+ *
+ * 与 clientApi/payNotify 的 utils/lakala-client.js 同源副本，改一端须同步其余端。
+ */
+export async function queryTrade(opts: {
+  merchantNo: string
+  termNo: string
+  outTradeNo?: string
+  tradeNo?: string
+}): Promise<{ ok: boolean; code: string; msg: string; tradeState: string; tradeNo: string; totalAmountFen: number }> {
+  if (!opts.merchantNo) throw new Error('INVALID_PARAMS: LAKALA_QUERY_MERCHANT_NO_REQUIRED')
+  if (!opts.termNo) throw new Error('INVALID_PARAMS: LAKALA_QUERY_TERM_NO_REQUIRED')
+  if (!opts.outTradeNo && !opts.tradeNo) {
+    throw new Error('INVALID_PARAMS: LAKALA_QUERY_OUT_TRADE_NO_OR_TRADE_NO_REQUIRED')
+  }
+
+  const reqData: Record<string, unknown> = { merchant_no: opts.merchantNo, term_no: opts.termNo }
+  if (opts.tradeNo) reqData.trade_no = opts.tradeNo
+  else reqData.out_trade_no = opts.outTradeNo
+
+  const resp = await request({ path: '/v3/labs/query/tradequery', reqData })
+  const data = resp.resp_data || {}
+  return {
+    ok: resp.ok,
+    code: resp.code,
+    msg: resp.msg,
+    tradeState: String(data.trade_state ?? ''),
+    tradeNo: String(data.trade_no ?? ''),
+    totalAmountFen: Number(data.total_amount ?? 0),
+  }
+}
+
+/**
+ * 关单：POST /v3/labs/relation/close
+ *
+ * 把渠道侧尚未支付的单置为终态，使其此后不可再被支付——这是「未付款可立即关闭订单」
+ * 的前提：不关单就本地关闭，顾客残留的支付面板仍可付款，payNotify 会因「非当前意图」
+ * 拒绝入账 → 钱收了订单不动。
+ *
+ * ⚠️ 本接口返回成功**不等于**渠道已终态，调用方必须再 queryTrade 复核（见 orders.ts
+ * 的 voidActiveOnlinePaymentIntent）。因此即使字段规范有出入导致请求失败，也只会退回
+ * 「关不掉、请稍后重试」的现状，不会制造资金窟窿。
+ *
+ * 字段按 relation 类接口的「原交易标识三选一」规则（与 requestRefund 同族）。
+ */
+export async function closeTrade(opts: {
+  merchantNo: string
+  termNo: string
+  outTradeNo?: string
+  tradeNo?: string
+}): Promise<{ ok: boolean; code: string; msg: string; tradeState: string }> {
+  if (!opts.merchantNo) throw new Error('INVALID_PARAMS: LAKALA_CLOSE_MERCHANT_NO_REQUIRED')
+  if (!opts.termNo) throw new Error('INVALID_PARAMS: LAKALA_CLOSE_TERM_NO_REQUIRED')
+  if (!opts.outTradeNo && !opts.tradeNo) {
+    throw new Error('INVALID_PARAMS: LAKALA_CLOSE_OUT_TRADE_NO_OR_TRADE_NO_REQUIRED')
+  }
+
+  const reqData: Record<string, unknown> = { merchant_no: opts.merchantNo, term_no: opts.termNo }
+  if (opts.tradeNo) reqData.origin_trade_no = opts.tradeNo
+  else reqData.origin_out_trade_no = opts.outTradeNo
+
+  const resp = await request({ path: '/v3/labs/relation/close', reqData })
+  const data = resp.resp_data || {}
+  return {
+    ok: resp.ok,
+    code: resp.code,
+    msg: resp.msg,
+    tradeState: String(data.trade_state ?? ''),
+  }
+}
+
+/**
  * 统一退货：POST /api/v3/rfd/refund_front/refund
  * 详见 sources/documents/拉卡拉接口规范-补充.md「退货（统一退货，推荐用）」一节。
  *
