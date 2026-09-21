@@ -1,6 +1,6 @@
 // Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
 
-exports[`cron-worker STEP 1 — customer_status 三段式 SQL > #254 覆盖域穷举：单一快照下三段并集 = 全表 > SQL 全文快照 —— 变红说明 SQL 改了，请同步下面的 seg*Hits 模型 1`] = `
+exports[`cron-worker STEP 1 — customer_status 三段式 SQL > #254 覆盖域穷举：单一快照下无「该改却没人碰」的行 > SQL 全文快照 —— 变红说明 SQL 改了，请同步下面的 seg*Hits 模型 1`] = `
 {
   "seg1": "
 UPDATE client_wechat_users

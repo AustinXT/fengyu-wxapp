@@ -124,7 +124,9 @@ describe('cron-worker STEP 1 — customer_status 三段式 SQL', () => {
   })
 
   /**
-   * #254 回归：**在单一快照下**，三段的覆盖域并起来必须等于全表。
+   * #254 回归：**在单一快照下，每一行要么被某段命中，要么现值已等于应然值**。
+   * （注意不是「三段命中域并集 = 全表」—— 已处于应然值的行本就不该被重写，
+   * 那是守卫在省 updated_at churn；下面的断言验的正是前者。）
    *
    * 上面的正则断言只验"SQL 长什么样"，验不出"漏没漏行"。这里对三段的 WHERE 谓词建模，
    * 穷举 (customer_type, 有无已完成服务单, customer_status 旧值) 的组合，断言
@@ -141,7 +143,7 @@ describe('cron-worker STEP 1 — customer_status 三段式 SQL', () => {
    * 穷举照样全绿。所以下面第一条用 inline snapshot 锁住三段 SQL 全文：
    * 任何 WHERE 变更都会让 snapshot 变红，强制改的人回来看一眼模型。
    */
-  describe('#254 覆盖域穷举：单一快照下三段并集 = 全表', () => {
+  describe('#254 覆盖域穷举：单一快照下无「该改却没人碰」的行', () => {
     it('前提绑定：customer_type 必须是 NOT NULL（段 1 的三值逻辑安全性依赖它）', () => {
       expect(clientWechatUsers.customerType.notNull).toBe(true)
     })

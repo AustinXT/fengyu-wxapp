@@ -4,13 +4,17 @@
  * 业务口径：customer_status 仅对 customer_type='会员客' 的顾客有值，
  * 非会员客（流量客 / 体验客 / 小美客）一律 NULL。
  *
- * 三段 SQL 在同一事务中串行，**在单一快照下**三段的覆盖域必须并起来等于全表
- * （#254 曾漏一类行）：
+ * 必须守住的不变量（#254 就是破了它）：**在单一快照下，每一行要么被某一段命中，
+ * 要么现值已经等于应然值** —— 不允许存在「该改却三段都不碰」的行。
+ * 注意这不等于「三段命中域的并集 = 全表」：已处于应然值的行本就不该被重写
+ * （如非会员客 status 已是 NULL、无单会员客已是休眠），那是守卫在省 updated_at churn，不是漏行。
+ *
+ * 三段 SQL 在同一事务中串行：
  *   段 1：非会员客一律置 NULL（清理脏数据）
  *   段 2：会员客有到店记录的，按 visits_90d / total_visits 打状态
  *   段 3：会员客但完全无到店记录的，置 '休眠'（含已有旧值的 —— 见 RESET_NO_VISITS_SQL 注释）
  *
- * ⚠️ 「并集 = 全表」限定在单一快照下：事务是 READ COMMITTED，三条语句各取一次新快照，
+ * ⚠️ 「单一快照」这个前提不是摆设：事务是 READ COMMITTED，三条语句各取一次新快照，
  * 段间若有并发写 service_orders 落地，会出现瞬时偏差（某行本轮没人认领，或被段 2/段 3 各写一次）。
  * 这类偏差次日重跑即自愈，与 #254 那种「永久卡住」有本质区别，故不升级隔离级别。
  *
@@ -85,9 +89,11 @@ UPDATE client_wechat_users u
  * 改用 `IS DISTINCT FROM` 既消除缺口（NULL 行仍命中），又保留「已是休眠就不重写
  * updated_at」的原意，与 refresh-spending-tier.ts 的范式一致。
  *
- * ⚠️ `'休眠'` 在本段出现 **2 处**（SET 与守卫），另有 db/scripts 两份副本各 2 处。
- * 枚举重命名（本仓做过一次：'预警沉睡' → '沉睡'）必须 4 处同改 —— 只改 SET 漏改守卫不会报错，
- * 而是让守卫恒真、段 3 每天重写全部无单会员客。单测 `SET 与守卫的「休眠」字面量必须一致` 守着这条。
+ * ⚠️ `'休眠'` 在本段出现 **2 处**（SET 与守卫），`db/scripts/update-customer-status.js` 与
+ * `db/scripts/calc-monthly-activity.js` 两份活副本各 2 处 —— **全仓共 6 处**。
+ * 枚举重命名（本仓做过一次：'预警沉睡' → '沉睡'）必须 6 处同改 —— 只改 SET 漏改守卫不会报错，
+ * 而是让守卫恒真、段 3 每天重写全部无单会员客。单测 `SET 与守卫的「休眠」字面量必须一致`
+ * 只钉得住本段这 2 处，db/scripts 两份靠人同步（本仓禁止跨端共享代码目录）。
  */
 export const RESET_NO_VISITS_SQL = `
 UPDATE client_wechat_users u
@@ -122,16 +128,16 @@ export interface CustomerStatusResult {
   updatedMember: number
   resetNoVisit: number
   /**
-   * 段 2 一行未中、段 3 却大批命中 —— 典型形态是 service_orders 处于异常态
+   * 段 3 命中规模反常 —— 典型形态是 service_orders 处于异常态
    * （restore 进行中 / client_user_id 被批量置空 / 表刚清过重灌）。
-   * 此时段 3 会把全部非休眠会员客一次刷成「休眠」，数据看板当天全归休眠档。
+   * 此时段 3 会把大批非休眠会员客一次刷成「休眠」，数据看板当天全归休眠档。
    * 不抛错（可自愈，且抛错会在新环境首跑等场景误伤），只标记 + warn 供运维判读。
    */
   suspiciousBulkReset: boolean
   stats: Array<{ customer_status: string | null; cnt: number }>
 }
 
-/** 段 3 单跑命中多少行才值得怀疑数据源塌了。正常日增量是个位数。 */
+/** 段 3 单跑命中多少行才值得怀疑数据源塌了。稳态下日增量是个位数。 */
 const BULK_RESET_SUSPICION_THRESHOLD = 100
 
 export async function refreshCustomerStatus(
@@ -142,7 +148,7 @@ export async function refreshCustomerStatus(
   void dateSqlOf
   const updateSql = buildUpdateCustomerStatusSql(ctx)
 
-  return await db.transaction(async (tx) => {
+  const result = await db.transaction(async (tx) => {
     const cleared = (await tx.execute(sql.raw(RESET_NON_MEMBER_STATUS_SQL))) as unknown as {
       count?: number
     }
@@ -160,16 +166,11 @@ export async function refreshCustomerStatus(
 
     const updatedMember = updated.count ?? 0
     const resetNoVisit = reset.count ?? 0
+    // 判据是「段 3 反超段 2」而非「段 2 为 0」：service_orders 部分塌陷时段 2 仍会命中几行，
+    // 只看 updatedMember===0 会整片漏报（1889 会员里剩 1 人有单、其余 1800 被刷休眠也不告警）。
+    // 稳态下段 2 是大头（dev 实测 1818 : 2），段 3 反超即异常。
     const suspiciousBulkReset =
-      updatedMember === 0 && resetNoVisit >= BULK_RESET_SUSPICION_THRESHOLD
-    if (suspiciousBulkReset) {
-      console.warn(
-        `[customerStatus] 段 2 命中 0 行而段 3 命中 ${resetNoVisit} 行 —— ` +
-          'service_orders 可能处于异常态（restore 中 / client_user_id 被批量置空）。' +
-          '本次已把这些会员客刷成「休眠」，数据看板当天会全归休眠档；' +
-          '确认数据源恢复后重跑本 STEP 即可还原。',
-      )
-    }
+      resetNoVisit >= BULK_RESET_SUSPICION_THRESHOLD && resetNoVisit > updatedMember
 
     return {
       clearedNonMember: cleared.count ?? 0,
@@ -179,4 +180,16 @@ export async function refreshCustomerStatus(
       stats,
     }
   })
+
+  // 告警放在 COMMIT 之后：事务内打印会在「已把这些行刷成休眠」之后又回滚，日志撒谎更难排障。
+  if (result.suspiciousBulkReset) {
+    console.warn(
+      `[customerStatus] 段 3 命中 ${result.resetNoVisit} 行、反超段 2 的 ${result.updatedMember} 行 —— ` +
+        'service_orders 可能处于异常态（restore 中 / client_user_id 被批量置空 / 表刚重灌）。' +
+        '这些会员客已被刷成「休眠」，数据看板当天会偏向休眠档；' +
+        '确认数据源恢复后重跑本 STEP 即可还原。',
+    )
+  }
+
+  return result
 }
