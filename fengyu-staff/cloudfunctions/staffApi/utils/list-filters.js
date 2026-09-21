@@ -5,6 +5,12 @@ const { safePaging } = require('./paging')
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/
 
 function isValidDate(value) {
+  // ⚠️ typeof 守卫不可省：`DATE_RE.test(value)` 会对 value 做 ToString，而
+  // `JSON.parse('{"toString": null}')` 这种普通 JSON 对象会让 ToPrimitive 失败抛
+  // `TypeError: Cannot convert object to primitive value`（详见 utils/paging.js 同类说明）。
+  // 对日期而言非字符串本来就一律 false（`DATE_RE.test(20260801)` 也是 false），
+  // 所以这道守卫对既有合法用法**完全等价**，只是把异常路径变成返回 false。
+  if (typeof value !== 'string') return false
   if (!DATE_RE.test(value)) return false
   const [year, month, day] = value.split('-').map(Number)
   const date = new Date(Date.UTC(year, month - 1, day))
@@ -28,9 +34,19 @@ function normalizeListFilters(payload = {}, defaultPageSize = 20) {
     payload.pageSize,
     defaultPageSize,
   )
-  const keyword = String(payload.keyword || '').trim()
-  const startDate = String(payload.startDate || '').trim()
-  const endDate = String(payload.endDate || '').trim()
+  // `String(raw)` 同样会走 ToPrimitive，同样会被 `{"toString": null}` 抛 TypeError
+  // （既有缺陷，5 个 route 模块共用本 normalizer）。非法形状回落空串 = 视作"未提供"，
+  // 与下方 `if (startDate && …)` 的既有 truthy 语义一致；数字/布尔等的强转行为不变。
+  const toTrimmed = (raw) => {
+    try {
+      return String(raw || '').trim()
+    } catch {
+      return ''
+    }
+  }
+  const keyword = toTrimmed(payload.keyword)
+  const startDate = toTrimmed(payload.startDate)
+  const endDate = toTrimmed(payload.endDate)
 
   if (startDate && !isValidDate(startDate)) {
     throw new Error('INVALID_PARAMS: startDate 必须为 YYYY-MM-DD 格式')

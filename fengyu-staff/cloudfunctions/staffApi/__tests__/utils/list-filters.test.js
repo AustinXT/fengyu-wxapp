@@ -2,6 +2,7 @@ const {
   normalizeListFilters,
   addTimestampDateRange,
   addDateRange,
+  isValidDate,
 } = require('../../utils/list-filters')
 
 describe('list-filters', () => {
@@ -42,6 +43,42 @@ describe('list-filters', () => {
     expect(normalizeListFilters({ page: 3, pageSize: 50 })).toMatchObject({ page: 3, pageSize: 50, offset: 100 })
     expect(normalizeListFilters({ pageSize: 999 }).pageSize).toBe(100)
     expect(normalizeListFilters({}, 50)).toMatchObject({ page: 1, pageSize: 50, offset: 0 })
+  })
+
+  // ---------- #240：ToPrimitive 失败的 JSON 对象不得抛 TypeError ----------
+  // `JSON.parse('{"toString": null}')` 是普通 JSON 对象（不需要用户代码）：
+  // `String(raw)` 与 `DATE_RE.test(raw)` 都会走 ToPrimitive → TypeError，
+  // 被全局 catch 降级成 {code:-1,'服务器内部错误'}，与本 issue 是同类非优雅降级。
+  // 本 normalizer 被 order/service/serviceCommission/appointment/allocation 五个模块共用。
+  test('#240 ToPrimitive 失败的入参回落为"未提供"，不抛异常', () => {
+    const bad = JSON.parse('{"toString": null}')
+    for (const key of ['keyword', 'startDate', 'endDate', 'page', 'pageSize']) {
+      let r
+      expect(() => { r = normalizeListFilters({ [key]: bad }) }, `key=${key}`).not.toThrow()
+      expect(Number.isSafeInteger(r.offset)).toBe(true)
+    }
+    expect(normalizeListFilters({ keyword: bad }).keyword).toBe('')
+    expect(normalizeListFilters({ startDate: bad }).startDate).toBe('')
+  })
+
+  test('#240 isValidDate 非字符串一律 false（等价加固，不改既有判定）', () => {
+    const bad = JSON.parse('{"toString": null}')
+    expect(() => isValidDate(bad)).not.toThrow()
+    expect(isValidDate(bad)).toBe(false)
+    // 这些在加 typeof 守卫前后都是 false —— 证明守卫是等价的
+    expect(isValidDate(20260801)).toBe(false)
+    expect(isValidDate(null)).toBe(false)
+    expect(isValidDate(undefined)).toBe(false)
+    expect(isValidDate(new Date())).toBe(false)
+    // 合法值不受影响
+    expect(isValidDate('2026-08-01')).toBe(true)
+    expect(isValidDate('2026-02-30')).toBe(false)
+    expect(isValidDate('0000-01-01')).toBe(false)
+  })
+
+  test('#240 既有强转行为不变：数字 keyword 仍被 String 化', () => {
+    expect(normalizeListFilters({ keyword: 123 }).keyword).toBe('123')
+    expect(normalizeListFilters({}).keyword).toBe('')
   })
 
   test('LIKE 通配符按字面量转义', () => {
