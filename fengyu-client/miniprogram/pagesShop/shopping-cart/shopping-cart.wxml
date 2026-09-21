@@ -44,6 +44,7 @@ module.exports.price = function(n) { return (Math.round(n * 100) / 100).toFixed(
             class="cart-item-cover"
             src="{{item.coverImage}}"
             mode="aspectFill"
+            lazy-load
           />
           <view wx:else class="cart-item-cover cover-placeholder">
             <van-icon name="photo-o" size="40rpx" color="#CCC" />

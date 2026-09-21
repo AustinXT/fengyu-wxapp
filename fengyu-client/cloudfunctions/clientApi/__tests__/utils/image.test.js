@@ -293,3 +293,86 @@ describe('展示尺寸常量', () => {
     expect(bytes).toBeLessThan(5 * 1024 * 1024)
   })
 })
+
+/**
+ * issue #230：面积模式（`thumbnail/<Area>@`）—— 为商品详情长图引入。
+ *
+ * 为什么长图不能用 box：我们真正要封顶的是**解码内存**，而解码内存 = 总像素数 × 4。
+ * 面积模式直接约束这个量；box 只是通过边长间接约束它——对长宽比接近 1 的图两者等价，
+ * 对长图 box 会过度惩罚。
+ *
+ * 生产实测（详情图 1737×7065，原图解码 46.8MB）：
+ * - `thumbnail/1080x1080` → 266×1080，解码 1.1MB，但在 1290px 屏上放大 4.8 倍（糊）
+ * - `thumbnail/2250000@`  → 743×3025，解码 8.6MB，放大 1.7 倍（可接受）
+ */
+describe('safeThumbUrlByArea', () => {
+  const { safeThumbUrlByArea, PRODUCT_DETAIL_IMAGE_MAX_PIXELS } = require('../../utils/image')
+
+  test('COS 图片拼上面积缩略参数', () => {
+    expect(safeThumbUrlByArea(COS_URL, 2250000)).toBe(
+      `${COS_URL}?imageMogr2/thumbnail/2250000@`
+    )
+  })
+
+  test('规则不带 `!` —— 实测 `!<Area>@` 在本项目 bucket 上原样返回原图', () => {
+    // 写成 `thumbnail/!2250000@` 时数据万象不执行缩放（已对生产图实测），
+    // 那等于保护静默失效：URL 看着有参数，返回的却是 46.8MB 的原图。
+    const url = safeThumbUrlByArea(COS_URL, 2250000)
+    expect(url).not.toContain('!')
+    expect(url).toMatch(/imageMogr2\/thumbnail\/\d+@$/)
+  })
+
+  test('与 safeThumbUrl 共用同一套准入规则（校验不得分叉）', () => {
+    // 两个函数的 URL 校验都走 parseProcessableUrl。这条钉住「两种模式准入一致」，
+    // 防止将来有人只给其中一个加/减规则导致漂移。
+    const cases = [
+      null,
+      undefined,
+      '',
+      '   ',
+      42,
+      {},
+      'ftp://evil.com/a.jpg',
+      'https://img.example.com/a.jpg',                                  // 非 COS 域名
+      'https://a.tcb.qcloud.la@evil.com/x/a.jpg',                       // userinfo 伪装
+      'https://x.tcb.qcloud.la/a.png',                                  // 对象键只有一段
+      'https://x.tcb.qcloud.la/dir/a.svg',                              // 非图片扩展名
+      'https://x.tcb.qcloud.la/dir/a.png?q-sign-algorithm=sha1',        // 带 COS 签名
+    ]
+    for (const input of cases) {
+      expect(safeThumbUrl(input, 300)).toBeNull()
+      expect(safeThumbUrlByArea(input, 2250000)).toBeNull()
+    }
+  })
+
+  test('maxPixels 非法时返回 null（与 boxSize 同口径）', () => {
+    for (const bad of [0, -1, 1.5, NaN, Infinity, '2250000', null, undefined]) {
+      expect(safeThumbUrlByArea(COS_URL, bad)).toBeNull()
+    }
+  })
+
+  test('原 URL 的 query 整串丢弃，放大通道不与服务端规则并存', () => {
+    expect(
+      safeThumbUrlByArea(`${COS_URL}?imageView2/1/w/50000/h/50000`, 2250000)
+    ).toBe(`${COS_URL}?imageMogr2/thumbnail/2250000@`)
+  })
+
+  test('幂等：二次施加不会拼出两段规则', () => {
+    // invariant：整串丢弃 query 再重写。若有人改成「黑名单剥离 imageMogr2」，
+    // 二次应用会拼出 `?imageMogr2/...?imageMogr2/...`，这条立刻转红。
+    const once = safeThumbUrlByArea(COS_URL, 2250000)
+    expect(safeThumbUrlByArea(once, 2250000)).toBe(once)
+    // box 模式同理
+    const boxOnce = safeThumbUrl(COS_URL, 300)
+    expect(safeThumbUrl(boxOnce, 300)).toBe(boxOnce)
+  })
+
+  test('详情长图档位把单张解码内存压到 10MB 以内，且与长宽比无关', () => {
+    // 面积模式的关键性质：解码内存恒为 maxPixels×4，不论原图多细长。
+    // 一张 100×1,000,000（1 亿像素）的极端细长图同样被压到这个量。
+    const bytes = PRODUCT_DETAIL_IMAGE_MAX_PIXELS * 4
+    expect(bytes).toBeLessThan(10 * 1024 * 1024)
+    // admin 侧 detail_images 上限 9 张 → 详情页长图部分最坏 ≈ 77MB
+    expect(bytes * 9).toBeLessThan(80 * 1024 * 1024)
+  })
+})

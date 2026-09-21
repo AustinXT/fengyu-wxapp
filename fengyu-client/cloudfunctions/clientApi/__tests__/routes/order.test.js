@@ -6,6 +6,14 @@
 const pg = globalThis.__mocks__.pg
 const { createCtx, createBoundCtx, createMockTransactionClient } = require('../helpers')
 
+/**
+ * issue #230：订单行封面图下发前必须缩略。
+ * 形态取自生产实际数据（45/45 条均为此格式）：CloudBase COS 域名 + 两段 ASCII 对象键。
+ */
+const COS_COVER_URL = 'https://test-env-1300000000.tcb.qcloud.la/product-covers/a.jpg'
+/** 非 COS 域名：数据万象不生效，safeThumbUrl 按 fail-closed 约定返回 null，不退回原图 */
+const NON_COS_COVER_URL = 'https://img.example.com/a.jpg'
+
 let routes
 beforeEach(() => {
   vi.clearAllMocks()
@@ -32,7 +40,7 @@ describe('order.scanDetail', () => {
         sale_item_id: 'SI-001', unit_price: 200, quantity: 1, received: 100,
         sale_amount: 3000, session_count: 15,
         product_name: '温暖SPA·臀腿',
-        cover_image: 'https://img.example.com/a.jpg',
+        cover_image: COS_COVER_URL,
       }])
 
     const ctx = createBoundCtx({ orderNo: 'FY-001' })
@@ -48,7 +56,8 @@ describe('order.scanDetail', () => {
     expect(ctx.result.order.isExperienceConversion).toBe(false)
     expect(ctx.result.order.paymentMethod).toBe('微信')
     expect(ctx.result.items).toHaveLength(1)
-    expect(ctx.result.items[0].coverImage).toBe('https://img.example.com/a.jpg')
+    // issue #230：封面图下发前强制缩略（订单行 96rpx → 小档 400）
+    expect(ctx.result.items[0].coverImage).toBe(`${COS_COVER_URL}?imageMogr2/thumbnail/400x400`)
     // 行金额展示口径：saleAmount（行应付总额，权威）取自 sale_amount 列，
     // 多次卡（session_count=15、unit_price=200）行总额 3000 ≠ 单次价 200
     expect(ctx.result.items[0].saleAmount).toBe(3000)
@@ -1399,7 +1408,7 @@ describe('order.list', () => {
       { sale_order_id: 'FY-001', status: '已支付', total_amount: 100 },
     ])
     pg.query.mockResolvedValueOnce([
-      { sale_order_id: 'FY-001', sale_item_id: 'SI-001', product_name: 'A', received: 95, cover_image: 'https://img.example.com/a.jpg' },
+      { sale_order_id: 'FY-001', sale_item_id: 'SI-001', product_name: 'A', received: 95, cover_image: COS_COVER_URL },
     ])
 
     const ctx = createBoundCtx({})
@@ -1408,7 +1417,8 @@ describe('order.list', () => {
     expect(ctx.result.orders).toHaveLength(1)
     expect(ctx.result.hasMore).toBe(false)
     expect(ctx.result.orders[0].items).toHaveLength(1)
-    expect(ctx.result.orders[0].items[0].cover_image).toBe('https://img.example.com/a.jpg')
+    // issue #230：订单列表行封面 96rpx → 小档 400
+    expect(ctx.result.orders[0].items[0].cover_image).toBe(`${COS_COVER_URL}?imageMogr2/thumbnail/400x400`)
     expect(ctx.result.orders[0].items[0].received).toBe(95)
 
     // 验证 SQL 包含 LIMIT/OFFSET 分页参数
@@ -1476,7 +1486,7 @@ describe('order.detail', () => {
     }])
     pg.query.mockResolvedValueOnce([{
       sale_item_id: 'SI-001', product_name: 'A',
-      cover_image: 'https://img.example.com/a.jpg',
+      cover_image: COS_COVER_URL,
     }])
     // payments 并行查询（无明星员工 / 无券 → 但 payments 仍查询）
     pg.query.mockResolvedValueOnce([])
@@ -1486,13 +1496,34 @@ describe('order.detail', () => {
 
     expect(ctx.result.order.sale_order_id).toBe('FY-001')
     expect(ctx.result.items).toHaveLength(1)
-    expect(ctx.result.items[0].cover_image).toBe('https://img.example.com/a.jpg')
+    // issue #230：订单详情行封面 120rpx → 小档 400
+    expect(ctx.result.items[0].cover_image).toBe(`${COS_COVER_URL}?imageMogr2/thumbnail/400x400`)
     expect(ctx.result.payments).toEqual([])
 
     // 验证明细查询 SQL 包含 cover_image JOIN
     const itemsQuery = pg.query.mock.calls[1][0]
     expect(itemsQuery).toContain('cover_image')
     expect(itemsQuery).toContain('product_skus')
+  })
+
+  test('issue #230：非 COS 域名的封面下发 null，不退回原图', async () => {
+    pg.query.mockResolvedValueOnce([{
+      sale_order_id: 'FY-001', status: '已支付',
+      client_user_id: 'user-001',
+      sale_order_datetime: new Date().toISOString(),
+      preferred_employee_id: null, coupon_id: null,
+    }])
+    pg.query.mockResolvedValueOnce([{
+      sale_item_id: 'SI-001', product_name: 'A',
+      cover_image: NON_COS_COVER_URL,
+    }])
+    pg.query.mockResolvedValueOnce([])
+
+    const ctx = createBoundCtx({ orderNo: 'FY-001' })
+    await routes.detail(ctx)
+
+    // 退回原图 = 保护静默失效：调用方看不出区别，而那张图可能正是会撑爆进程的巨图
+    expect(ctx.result.items[0].cover_image).toBeNull()
   })
 
   test('缺少 saleOrderId → INVALID_PARAMS', async () => {

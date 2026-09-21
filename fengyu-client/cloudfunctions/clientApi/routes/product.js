@@ -4,6 +4,14 @@
  */
 
 const pg = require('../db/pg')
+const {
+  safeThumbUrl,
+  safeThumbUrlByArea,
+  PRODUCT_THUMB_BOX_SMALL,
+  PRODUCT_THUMB_BOX_LARGE,
+  PRODUCT_DETAIL_IMAGE_MAX_PIXELS,
+  PRODUCT_DETAIL_IMAGE_MAX_COUNT,
+} = require('../utils/image')
 
 /**
  * 有效性过滤条件（商城商品层 + SKU 层叠加）
@@ -268,6 +276,9 @@ async function getProductListByCategory({ categoryId, auth, keyword }) {
     const { priceFrom, listPriceFrom } = computeListPriceFrom(product, skus)
     return {
       ...product,
+      // issue #230：封面图下发前强制缩略，无法保证缩略时下发 null（前端有占位分支）。
+      // 本函数是 spuList / search / shopInit 三个入口的共同实现，一处改写覆盖三者。
+      cover_image: safeThumbUrl(product.cover_image, PRODUCT_THUMB_BOX_LARGE),
       skuList: skus,
       priceFrom,
       listPriceFrom
@@ -367,7 +378,11 @@ async function skuDetail(ctx) {
     throw new Error('INVALID_PARAMS: 商品不存在')
   }
 
-  ctx.result = { sku: rows[0] }
+  const sku = rows[0]
+  // issue #230：结算页（120rpx）与体验卡详情页（整屏 480rpx 头图）共用本接口，按大者取档
+  sku.cover_image = safeThumbUrl(sku.cover_image, PRODUCT_THUMB_BOX_LARGE)
+
+  ctx.result = { sku }
 }
 
 /**
@@ -428,6 +443,9 @@ async function hotList(ctx) {
     const { priceFrom, listPriceFrom } = computeListPriceFrom(product, skus)
     return {
       ...product,
+      // issue #230：当前无前端消费者（仅路由注册 + 测试），仍按同口径保护，
+      // 避免将来接上页面时又是一条无防护链路
+      cover_image: safeThumbUrl(product.cover_image, PRODUCT_THUMB_BOX_LARGE),
       priceFrom,
       listPriceFrom
     }
@@ -516,6 +534,26 @@ async function spuDetail(ctx) {
   ctx.result = {
     spu: {
       ...product,
+      // issue #230：头图是常规比例图（生产 44/44 长宽比恒为 1.56），走 box 档。
+      cover_image: safeThumbUrl(product.cover_image, PRODUCT_THUMB_BOX_LARGE),
+      // 详情长图走**面积模式**而不是 box：生产 14/14 张高宽比 3.56~5.42，
+      // box 的 contain 语义会把它们压到 199~302px 宽，前端 mode="widthFix"
+      // 再拉回满屏等于放大 4~6 倍，文字糊掉。面积模式直接封顶总像素（=解码内存）
+      // 且不破坏长宽比。
+      //
+      // filter 掉无法保证的那些——详情长图是 wx:for 直接渲染、没有占位分支，
+      // 留 null 会变成裂图。
+      //
+      // 张数也必须截断：单张封顶解决不了「很多张加起来撑爆」，而 admin 的 9 张上限
+      // 只在 UI 层，server action 与 DB 都没有约束（详见 image.js 的常量注释）。
+      // 先 filter 再 slice：保证截断后拿到的是 9 张**可用**的图，
+      // 而不是「9 张里混着几张被 filter 掉的空位」。
+      detail_images: Array.isArray(product.detail_images)
+        ? product.detail_images
+            .map(img => safeThumbUrlByArea(img, PRODUCT_DETAIL_IMAGE_MAX_PIXELS))
+            .filter(Boolean)
+            .slice(0, PRODUCT_DETAIL_IMAGE_MAX_COUNT)
+        : [],
       skuList,
       bundleGroups,
       priceFrom,
@@ -557,6 +595,12 @@ async function experienceCardList(ctx) {
       ${marketScopeFilter}
     ORDER BY sk.sort_order ASC, sk.sku_id ASC
   `, params)
+
+  // issue #230：体验卡列表卡片是 200rpx 方图，走小档。
+  // LEFT JOIN products 时 cover_image 本就可能为 NULL，safeThumbUrl 同样返回 null，语义一致。
+  for (const row of rows) {
+    row.cover_image = safeThumbUrl(row.cover_image, PRODUCT_THUMB_BOX_SMALL)
+  }
 
   ctx.result = { skuList: rows }
 }
