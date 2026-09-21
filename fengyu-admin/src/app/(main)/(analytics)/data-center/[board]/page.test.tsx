@@ -120,6 +120,28 @@ describe('数据中心板块页 · 非总部默认 scope 解析', () => {
     expect(redirect).not.toHaveBeenCalled()
   })
 
+  it('剔除遗留的 tab 参数，不让它永久滞留在板块 URL 上', async () => {
+    getDataCenterScopeOptions.mockResolvedValue(singleStoreOptions)
+
+    await expect(call('sales', { tab: 'customer', preset: 'year' })).rejects.toThrow(/REDIRECT:/)
+
+    const target = redirect.mock.calls[0][0] as string
+    expect(target).not.toContain('tab=')
+    expect(target).toContain('preset=year')
+  })
+
+  it('默认 scope 不可用时降级成空态，不进入无限重定向', async () => {
+    // 契约被破坏的假想场景：非总部却拿到空 storeId。
+    // 若不收口，redirect 后 parseScope 认不出空 scopeId → 回落 'all' → 再次 redirect → 浏览器转死。
+    getDataCenterScopeOptions.mockResolvedValue({
+      topLevel: 'store',
+      markets: [{ id: 'M1', name: '南昌市场', stores: [{ storeId: '', storeName: '坏数据店' }] }],
+    } satisfies DataCenterScopeOptions)
+
+    await expect(call('customer')).resolves.toBeTruthy()
+    expect(redirect).not.toHaveBeenCalled()
+  })
+
   it('重复 query key 取首值，不会把 "store,market" 这种脏值写进 URL', async () => {
     getDataCenterScopeOptions.mockResolvedValue(singleStoreOptions)
 

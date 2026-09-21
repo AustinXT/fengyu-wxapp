@@ -9,6 +9,7 @@ import {
   type DataCenterTab,
 } from "@/lib/data-center/params"
 import { resolveDefaultDataCenterScope } from "@/lib/data-center/scope-options"
+import type { DataCenterScope } from "@/lib/data-center/types"
 import { Card, CardContent } from "@/components/ui/card"
 import { ScopeTimeFilter } from "../_components/scope-time-filter"
 import { SalesBoard } from "../_components/sales/sales-board"
@@ -27,6 +28,18 @@ const BOARD_COMPONENTS: Record<DataCenterTab, ComponentType> = {
   customer: CustomerBoard,
   efficiency: EfficiencyBoard,
   product: ProductBoard,
+}
+
+/**
+ * 默认 scope 必须是「redirect 后 parseScope 还认得出」的具体值，否则下一跳又回落 'all'、
+ * needsDefaultScope 再次为真 —— 无限重定向，浏览器直接转死。
+ *
+ * `resolveDefaultDataCenterScope` 的契约本就保证非总部只会给 authorized/store（storeId 是 DB uuid），
+ * 这里显式校验一次，把「依赖另一个文件的隐式契约」变成「不满足就降级成空态」。
+ */
+function isUsableDefaultScope(scope: DataCenterScope | null): scope is Exclude<DataCenterScope, { type: 'all' }> {
+  if (scope === null || scope.type === "all") return false
+  return scope.type === "authorized" || Boolean(scope.id)
 }
 
 /**
@@ -61,18 +74,20 @@ export default async function Page({
   })
   const needsDefaultScope = rawScope.type === "all" && scopeOptions.topLevel !== "all"
   const defaultScope = resolveDefaultDataCenterScope(scopeOptions)
-  const noViewableScope = scopeOptions.topLevel !== "all" && defaultScope === null
-  if (needsDefaultScope && defaultScope) {
+  const usableDefaultScope = isUsableDefaultScope(defaultScope) ? defaultScope : null
+  const noViewableScope = scopeOptions.topLevel !== "all" && usableDefaultScope === null
+  if (needsDefaultScope && usableDefaultScope) {
     const next = new URLSearchParams()
     for (const [k, v] of Object.entries(query)) {
-      if (k === "scope" || k === "scopeId") continue
+      // tab 是裸路径时代的遗留参数，板块已由路径承载；不剔除会让它永久滞留在 URL 上
+      if (k === "scope" || k === "scopeId" || k === "tab") continue
       const value = firstQueryValue(v)
       if (!value) continue
       next.set(k, value)
     }
-    next.set("scope", defaultScope.type)
-    if (defaultScope.type === "market" || defaultScope.type === "store") {
-      next.set("scopeId", defaultScope.id)
+    next.set("scope", usableDefaultScope.type)
+    if (usableDefaultScope.type === "market" || usableDefaultScope.type === "store") {
+      next.set("scopeId", usableDefaultScope.id)
     }
     redirect(`/data-center/${board}?${next.toString()}`)
   }
