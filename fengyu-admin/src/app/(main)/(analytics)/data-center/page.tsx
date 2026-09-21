@@ -1,5 +1,5 @@
 import { redirect } from "next/navigation"
-import { firstQueryValue, parseBoard } from "@/lib/data-center/params"
+import { firstQueryValue, parseBoard, singleValueQuery } from "@/lib/data-center/params"
 
 export const dynamic = "force-dynamic"
 
@@ -18,13 +18,6 @@ export default async function Page({
 }) {
   const query = await searchParams
   const board = parseBoard(firstQueryValue(query.tab)) ?? "sales"
-  const next = new URLSearchParams()
-  for (const [k, v] of Object.entries(query)) {
-    if (k === "tab") continue
-    const value = firstQueryValue(v)
-    if (!value) continue // 空串一并丢弃，别把 `?scope=` 这种脏参数带进目标 URL
-    next.set(k, value)
-  }
-  const qs = next.toString()
+  const qs = singleValueQuery(query).toString()
   redirect(`/data-center/${board}${qs ? `?${qs}` : ""}`)
 }

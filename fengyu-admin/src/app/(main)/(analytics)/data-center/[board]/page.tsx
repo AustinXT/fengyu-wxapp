@@ -4,8 +4,10 @@ import { getDataCenterScopeOptions } from "@/actions/data-center/shared"
 import {
   DATA_CENTER_BOARD_LABELS,
   firstQueryValue,
+  hasRepeatedQueryKey,
   parseBoard,
   parseScope,
+  singleValueQuery,
   type DataCenterTab,
 } from "@/lib/data-center/params"
 import { resolveDefaultDataCenterScope } from "@/lib/data-center/scope-options"
@@ -77,19 +79,20 @@ export default async function Page({
   const usableDefaultScope = isUsableDefaultScope(defaultScope) ? defaultScope : null
   const noViewableScope = scopeOptions.topLevel !== "all" && usableDefaultScope === null
   if (needsDefaultScope && usableDefaultScope) {
-    const next = new URLSearchParams()
-    for (const [k, v] of Object.entries(query)) {
-      // tab 是裸路径时代的遗留参数，板块已由路径承载；不剔除会让它永久滞留在 URL 上
-      if (k === "scope" || k === "scopeId" || k === "tab") continue
-      const value = firstQueryValue(v)
-      if (!value) continue
-      next.set(k, value)
-    }
+    const next = singleValueQuery(query, ["scope", "scopeId"])
     next.set("scope", usableDefaultScope.type)
     if (usableDefaultScope.type === "market" || usableDefaultScope.type === "store") {
       next.set("scopeId", usableDefaultScope.id)
     }
     redirect(`/data-center/${board}?${next.toString()}`)
+  }
+
+  // 走到这里说明 URL 的 scope 已可用，但重复 key（?scope=store&scope=all）会让服务端按首值放行、
+  // 板块组件按末值取数被 validateScope 拒成「数据加载失败」。先规范化成单值，让两边看同一份 query。
+  // 规范化后不再有数组，不会二次进入本分支。
+  if (hasRepeatedQueryKey(query)) {
+    const qs = singleValueQuery(query).toString()
+    redirect(`/data-center/${board}${qs ? `?${qs}` : ""}`)
   }
 
   const Board = BOARD_COMPONENTS[board]

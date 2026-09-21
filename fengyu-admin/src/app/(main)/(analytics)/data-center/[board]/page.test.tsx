@@ -153,6 +153,35 @@ describe('数据中心板块页 · 非总部默认 scope 解析', () => {
   })
 })
 
+describe('数据中心板块页 · 重复 query key 规范化', () => {
+  // 服务端按首值判定 scope，板块组件（client）用 Object.fromEntries 按末值取数。
+  // 不规范化的话 ?scope=store&scope=all 会让服务端放行、客户端被 validateScope 拒成「数据加载失败」——
+  // 正是这条 invariant 最怕的症状，且走的是「不触发默认 scope redirect」那条分支，
+  // 只重复 preset 的用例抓不到它。
+  it('scope 重复且首值合法时仍规范化成单值 URL（服务端/客户端不能看到不同 scope）', async () => {
+    getDataCenterScopeOptions.mockResolvedValue(singleStoreOptions)
+
+    await expect(call('customer', { scope: ['store', 'all'], scopeId: 'S1' })).rejects.toThrow(/REDIRECT:/)
+
+    const target = redirect.mock.calls[0][0] as string
+    expect(target).toBe('/data-center/customer?scope=store&scopeId=S1')
+  })
+
+  it('规范化后不再二次跳转（终止性）', async () => {
+    getDataCenterScopeOptions.mockResolvedValue(singleStoreOptions)
+
+    await expect(call('customer', { scope: 'store', scopeId: 'S1' })).resolves.toBeTruthy()
+    expect(redirect).not.toHaveBeenCalled()
+  })
+
+  it('无重复 key 时不做多余跳转', async () => {
+    getDataCenterScopeOptions.mockResolvedValue(hqOptions)
+
+    await expect(call('sales', { preset: 'year' })).resolves.toBeTruthy()
+    expect(redirect).not.toHaveBeenCalled()
+  })
+})
+
 describe('数据中心板块页 · 动态段收口', () => {
   it('非法板块段走 notFound，且不查库（权限闸门之前就拦下）', async () => {
     getDataCenterScopeOptions.mockResolvedValue(hqOptions)

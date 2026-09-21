@@ -3,7 +3,9 @@ import {
   DATA_CENTER_BOARD_LABELS,
   DATA_CENTER_TABS,
   firstQueryValue,
+  hasRepeatedQueryKey,
   parseBoard,
+  singleValueQuery,
   parseScope,
   parseTimeRange,
   parseBoardParams,
@@ -29,6 +31,36 @@ describe('firstQueryValue', () => {
     expect(firstQueryValue('store')).toBe('store')
     expect(firstQueryValue(undefined)).toBeUndefined()
     expect(firstQueryValue([])).toBeUndefined()
+  })
+})
+
+describe('hasRepeatedQueryKey', () => {
+  it('只在存在数组值（重复 key）时为真', () => {
+    expect(hasRepeatedQueryKey({ scope: ['store', 'all'] })).toBe(true)
+    expect(hasRepeatedQueryKey({ scope: 'store', preset: 'year' })).toBe(false)
+    expect(hasRepeatedQueryKey({})).toBe(false)
+  })
+})
+
+describe('singleValueQuery', () => {
+  it('取首值、丢空串、剔除 tab', () => {
+    const qs = singleValueQuery({
+      tab: 'customer',
+      scope: ['store', 'all'],
+      scopeId: 'S1',
+      preset: '',
+      cmp: '0',
+    })
+    expect(qs.toString()).toBe('scope=store&scopeId=S1&cmp=0')
+  })
+
+  it('drop 里的 key 额外排除', () => {
+    const qs = singleValueQuery({ scope: 'store', scopeId: 'S1', preset: 'year' }, ['scope', 'scopeId'])
+    expect(qs.toString()).toBe('preset=year')
+  })
+
+  it('全空时产出空串（调用方据此省掉问号）', () => {
+    expect(singleValueQuery({ tab: 'sales', preset: undefined }).toString()).toBe('')
   })
 })
 
