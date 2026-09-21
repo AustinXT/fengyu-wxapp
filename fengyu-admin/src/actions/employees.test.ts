@@ -85,6 +85,7 @@ vi.mock('drizzle-orm', () => ({
     {
       raw: vi.fn((s) => ({ type: 'sql.raw', value: s })),
       join: vi.fn((chunks, sep) => ({ type: 'sql.join', chunks, sep })),
+      param: vi.fn((value) => ({ type: 'sql.param', value })),
     },
   ),
 }))
@@ -100,7 +101,7 @@ vi.mock('@/actions/skill-tags', () => ({
   deleteSkillTag: vi.fn(),
 }))
 
-import { createEmployee, updateEmployee, getAllocationEmployeeCandidates, getEmployees, getEmployeesPaginated, getOrgLevel2ForFilter, exportEmployees, searchEmployees } from './employees'
+import { createEmployee, updateEmployee, getAllocationEmployeeCandidates, getServiceStaffCandidates, getEmployees, getEmployeesPaginated, getOrgLevel2ForFilter, exportEmployees, searchEmployees } from './employees'
 import { db } from '@/db'
 import { getSession } from '@/lib/auth'
 import { isInScope } from '@/lib/permissions'
@@ -1058,6 +1059,78 @@ describe('getAllocationEmployeeCandidates — 分配专用最小候选', () => {
     expect(result[0]).not.toHaveProperty('phone')
     expect(result[0]).not.toHaveProperty('idCard')
     expect(isInScope).toHaveBeenCalledWith(expect.anything(), 'store-A')
+  })
+})
+
+describe('getServiceStaffCandidates — 服务单专用候选（issue #210）', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(isInScope as any).mockReturnValue(true)
+    ;(getSession as any).mockResolvedValue({
+      ...mockSession,
+      permissions: { actions: ['service:create'], scopeStoreIds: ['store-A'] },
+    })
+  })
+
+  it('返回本店与同市场出差人员，且不暴露手机号、身份证等档案字段', async () => {
+    ;(db.execute as any).mockResolvedValue([
+      {
+        employee_id: 'EMP-LOCAL',
+        name: '本店美容师',
+        store_id: 'store-A',
+        position_name: '美容师',
+        skills: ['美容师'],
+        is_on_business_trip: false,
+        store_name: 'A 店',
+        department_name: '美容部',
+        market_name: '南昌凤御',
+        assignment_scope: 'local',
+      },
+      {
+        employee_id: 'EMP-TRIP',
+        name: '市场养生师',
+        store_id: null,
+        position_name: '养生师',
+        skills: ['养生师'],
+        is_on_business_trip: true,
+        store_name: null,
+        department_name: '养生部',
+        market_name: '南昌凤御',
+        assignment_scope: 'same_market_trip',
+      },
+    ])
+
+    const result = await getServiceStaffCandidates('store-A')
+
+    expect(result.map((r) => [r.employeeId, r.assignmentScope])).toEqual([
+      ['EMP-LOCAL', 'local'],
+      ['EMP-TRIP', 'same_market_trip'],
+    ])
+    // store_id 为空的直挂节点员工照样带出锚定市场（旧的客户端过滤做不到）
+    expect(result[1]).toMatchObject({ storeId: null, marketName: '南昌凤御' })
+    expect(result[0]).not.toHaveProperty('phone')
+    expect(result[0]).not.toHaveProperty('idCard')
+    expect(isInScope).toHaveBeenCalledWith(expect.anything(), 'store-A')
+  })
+
+  it('门店不在 scope 内直接拒绝，不查库', async () => {
+    ;(isInScope as any).mockReturnValue(false)
+
+    await expect(getServiceStaffCandidates('store-X')).rejects.toThrow(/PERMISSION_DENIED/)
+    expect(db.execute).not.toHaveBeenCalled()
+  })
+
+  it('缺少 targetStoreId 直接拒绝', async () => {
+    await expect(getServiceStaffCandidates('')).rejects.toThrow(/PERMISSION_DENIED/)
+    expect(db.execute).not.toHaveBeenCalled()
+  })
+
+  it('技能白名单四项按固定顺序传入查询（顺序即排序优先级）', async () => {
+    ;(db.execute as any).mockResolvedValue([])
+
+    await getServiceStaffCandidates('store-A')
+
+    expect(sql.param).toHaveBeenCalledWith(['店经理', '美容师', '养生师', '品项老师'])
   })
 })
 

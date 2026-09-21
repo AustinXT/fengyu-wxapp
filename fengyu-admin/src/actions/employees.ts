@@ -27,6 +27,12 @@ import { parseEmployeeFilters, filterValidSkillValues } from '@/lib/list-filters
 import { getSkillTags } from '@/actions/skill-tags'
 import { orgNodeInScopeCondition, storeInOrgNodeCondition } from '@/lib/market-store-sql'
 import { maskPhone } from '@/lib/pii'
+import {
+  EMPLOYEE_ANCHOR_MARKET_JOIN,
+  SERVICE_ORDER_ASSIGNABLE_SKILLS,
+  marketSupportCondition,
+  targetMarketJoin,
+} from '@/lib/employee-anchor-market-sql'
 
 // drizzle 0.45 alias() 返回 PgTableWithColumns<Required<Update<any,...>>>，与 .leftJoin() 期望签名不兼容；cast 回原表类型解锁 build
 const storeNode = alias(orgNodes, 'store_node') as unknown as typeof orgNodes
@@ -96,6 +102,39 @@ export const getEmployees = withPermission(
 )
 
 /**
+ * 候选查询的原始行（分配候选与服务单候选共用同一组列）。
+ * 故意不含 phone / id_card 等档案字段——候选接口只暴露选人所需的最小信息。
+ */
+type CandidateRow = {
+  employee_id: string
+  name: string | null
+  store_id: string | null
+  position_name: string | null
+  skills: string[] | null
+  is_on_business_trip: boolean
+  store_name: string | null
+  department_name: string | null
+  market_name: string | null
+  assignment_scope: AllocationEmployeeCandidate['assignmentScope']
+}
+
+function toCandidate(row: CandidateRow): AllocationEmployeeCandidate {
+  return {
+    employeeId: row.employee_id,
+    name: row.name,
+    storeId: row.store_id,
+    positionName: row.position_name,
+    skills: row.skills,
+    isResigned: false,
+    isOnBusinessTrip: row.is_on_business_trip,
+    storeName: row.store_name ?? undefined,
+    departmentName: row.department_name ?? undefined,
+    marketName: row.market_name ?? undefined,
+    assignmentScope: row.assignment_scope,
+  }
+}
+
+/**
  * 营业额/服务提成分配候选：本门店员工 + 全公司已开启出差支援的员工。
  * 这是目标门店级、最小字段接口；跨市场候选不复用员工档案列表，避免泄露 PII。
  */
@@ -154,32 +193,59 @@ export const getAllocationEmployeeCandidates = withPermission(
         d.name NULLS LAST,
         u.name NULLS LAST,
         u.employee_id
-    `)) as unknown as Array<{
-      employee_id: string
-      name: string | null
-      store_id: string | null
-      position_name: string | null
-      skills: string[] | null
-      is_on_business_trip: boolean
-      store_name: string | null
-      department_name: string | null
-      market_name: string | null
-      assignment_scope: AllocationEmployeeCandidate['assignmentScope']
-    }>
+    `)) as unknown as CandidateRow[]
 
-    return rows.map((row) => ({
-      employeeId: row.employee_id,
-      name: row.name,
-      storeId: row.store_id,
-      positionName: row.position_name,
-      skills: row.skills,
-      isResigned: false,
-      isOnBusinessTrip: row.is_on_business_trip,
-      storeName: row.store_name ?? undefined,
-      departmentName: row.department_name ?? undefined,
-      marketName: row.market_name ?? undefined,
-      assignmentScope: row.assignment_scope,
-    }))
+    return rows.map(toCandidate)
+  },
+)
+
+/**
+ * 服务单创建的服务人员候选（issue #210）：本门店员工 ∪ 本门店所属市场内已开启出差支援的员工，
+ * 技能须命中 SERVICE_ORDER_ASSIGNABLE_SKILLS 四项之一。
+ *
+ * 不复用 `getEmployees()` 客户端过滤的老写法，原因有二：
+ *   1. 员工档案列表的 marketName 来自「门店 → 市场」，store_id 为空的直挂节点员工恒为 null，锚不到市场；
+ *   2. `getEmployees()` 走 employeeScopeCondition，门店级账号看不到市场内别店员工，候选恒空。
+ * 与 getAllocationEmployeeCandidates 同范式：目标门店级、最小字段，不外泄员工档案 PII。
+ *
+ * 排序：本店整体置顶 → 块内按技能白名单数组顺序（店经理→美容师→养生师→品项老师）→ 姓名。
+ * 返回的 assignmentScope 只会是 'local' / 'same_market_trip'（跨市场出差不进服务单候选）。
+ */
+export const getServiceStaffCandidates = withPermission(
+  'service:create',
+  async (session, targetStoreId: string): Promise<AllocationEmployeeCandidate[]> => {
+    if (!targetStoreId || !isInScope(session, targetStoreId)) {
+      throw new Error('PERMISSION_DENIED: 无权查看该门店的服务人员候选')
+    }
+
+    const skills = SERVICE_ORDER_ASSIGNABLE_SKILLS
+    const rows = (await db.execute(sql`
+      SELECT
+        u.employee_id,
+        u.name,
+        u.store_id,
+        u.position_name,
+        u.skills,
+        u.is_on_business_trip,
+        s.store_name,
+        d.name AS department_name,
+        employee_market.name AS market_name,
+        CASE WHEN u.store_id = ${targetStoreId} THEN 'local' ELSE 'same_market_trip' END AS assignment_scope
+      FROM staff_wechat_users u${EMPLOYEE_ANCHOR_MARKET_JOIN}${targetMarketJoin(targetStoreId)}
+      WHERE u.is_resigned = false
+        AND u.employee_id IS NOT NULL
+        AND u.skills && ${sql.param(skills)}::text[]
+        AND ${marketSupportCondition(targetStoreId)}
+      ORDER BY
+        CASE WHEN u.store_id = ${targetStoreId} THEN 0 ELSE 1 END,
+        (SELECT MIN(array_position(${sql.param(skills)}::text[], sk))
+           FROM unnest(u.skills) sk
+          WHERE sk = ANY(${sql.param(skills)}::text[])) NULLS LAST,
+        u.name NULLS LAST,
+        u.employee_id
+    `)) as unknown as CandidateRow[]
+
+    return rows.map(toCandidate)
   },
 )
 
