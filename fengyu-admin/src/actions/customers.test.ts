@@ -364,6 +364,21 @@ describe('updateCustomer — 校验 + scope + 错误处理', () => {
     expect(db.update).not.toHaveBeenCalled()
   })
 
+  it('推荐员工：显式 undefined → 不更新（与 boundEmployeeId 同口径，不当成解绑）', async () => {
+    ;(isInScope as any).mockReturnValue(true)
+    mockSelectBefore([{ userId: 'user-1', promoterEmployeeId: 'EMP-001', promoterEmployeeName: '王员工' }])
+    const where = vi.fn().mockResolvedValue({ count: 1 })
+    const set = vi.fn().mockReturnValue({ where })
+    ;(db.update as any).mockReturnValue({ set })
+
+    const result = await updateCustomer('user-1', { notes: '改备注', promoterEmployeeId: undefined })
+
+    expect(result.success).toBe(true)
+    const setArg = set.mock.calls[0][0]
+    expect(setArg).not.toHaveProperty('promoterEmployeeId')
+    expect(setArg).not.toHaveProperty('promoterEmployeeName')
+  })
+
   it('显式清空推荐员工 → ID 与姓名快照同时清空并进入审计 diff', async () => {
     mockSelectBefore([{
       userId: 'user-1', promoterEmployeeId: 'EMP-001', promoterEmployeeName: '王员工',
@@ -631,6 +646,9 @@ describe('updateCustomer — 校验 + scope + 错误处理', () => {
     expect(setArg).not.toHaveProperty('boundEmployeeId')
     expect(setArg).not.toHaveProperty('boundEmployeeName')
     expect(setArg).toMatchObject({ notes: '只改备注' })
+    // 短路分支不得重新引入员工查询 —— 否则「顺手刷新姓名」会把 name 卷回竞态
+    expect(db.select).toHaveBeenCalledTimes(1)   // 只有 before 查询
+    expect(isInScope).not.toHaveBeenCalled()
   })
 
   it('绑定美容师：null-over-null → 也不写回（否则可静默撤销窗口内的新绑定）', async () => {
@@ -1103,6 +1121,24 @@ describe('createCustomer — 输入校验 + 错误处理', () => {
       boundEmployeeId: null,
       boundEmployeeName: null,
     }))
+  })
+
+  it('建档时非字符串 boundEmployeeId / boundStoreId → 业务拒绝，不炸成 500', async () => {
+    ;(isInScope as any).mockReturnValue(true)
+    ;(db.select as any).mockImplementation(makeSelectChain([]))
+    ;(db.insert as any).mockReturnValue({ values: vi.fn() })
+
+    const badEmp = await createCustomer({
+      name: '张三', phone: '13812345678', boundEmployeeId: 12345 as any,
+    })
+    expect(badEmp).toEqual({ success: false, message: '绑定美容师参数不合法' })
+
+    const badStore = await createCustomer({
+      name: '张三', phone: '13812345678', boundStoreId: { x: 1 } as any,
+    })
+    expect(badStore).toEqual({ success: false, message: '绑定门店参数不合法' })
+
+    expect(db.insert).not.toHaveBeenCalled()
   })
 
   it('建档时 boundStoreId 为空串 → 归一为 null，不造「非 admin 永不可见」的孤儿', async () => {
@@ -1657,6 +1693,13 @@ describe('assignCustomer — 校验 + scope + 审计', () => {
       mockSession, 'customer.assign', 'customer', 'user-1',
       expect.objectContaining({ employeeId: 'EMP-1' }),
     )
+  })
+
+  it('非字符串 employeeId → 业务拒绝，不炸成 500（守卫在 helper 内，三入口共享）', async () => {
+    const result = await assignCustomer('user-1', 12345 as any)
+    expect(result).toEqual({ success: false, message: '绑定美容师参数不合法' })
+    expect(db.select).not.toHaveBeenCalled()
+    expect(db.update).not.toHaveBeenCalled()
   })
 
   it('空 employeeId → 在查库之前就拒绝（挡板已下沉进 helper）', async () => {

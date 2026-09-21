@@ -1155,6 +1155,11 @@ async function resolveBoundEmployee(
   session: AuthSession,
   employeeId: string,
 ): Promise<{ ok: true; employeeId: string; name: string | null } | { ok: false; message: string }> {
+  // 运行时类型守卫：Server Action 是带 cookie 即可直调的 RPC，TS 形参类型对实参没有约束力。
+  // 非字符串会在 `.trim()` 处炸成 TypeError → 500。放在 helper 里，三个入口一并覆盖。
+  if (employeeId !== null && employeeId !== undefined && typeof employeeId !== 'string') {
+    return { ok: false, message: '绑定美容师参数不合法' }
+  }
   // 空值挡板下沉到 helper（原先只有 assignCustomer 的调用方有，updateCustomer 没有）。
   // 判空与取值必须同源：只 trim 判空却写回原值，`'EMP-1 '` 会原样落库，
   // 而该列靠应用层 JOIN（无 FK），带空白的变体会让所有 `ON bound_employee_id = 'EMP-1'` 断裂。
@@ -1286,10 +1291,13 @@ export const updateCustomer = withPermission(
     }
 
     /*
-     * 「值是否变了」必须拿**两边都归一过**的值比较。库里存的是未归一值：
-     * sync-workfine.js:509 只做了 `RTRIM(UDF_S_6444)`（**没有 LTRIM**），
-     * 所以 `' EMP-1'` 这种左带空白的存量值真实存在。只归一新值会把它判成「值已变」
-     * → 又把整张表单锁死。
+     * 「值是否变了」必须拿**两边都归一过**的值比较。库里可能存着未归一值：该列无 FK、无 CHECK，
+     * 而本 PR 之前 admin 这三条写入路径（update / create / assign）都不做 trim。
+     * 只归一新值、拿它去比未归一的旧值，会把这类存量值判成「值已变」→ 又把整张表单锁死。
+     *
+     * （WorkFine 同步侧**不是**来源：`sync-workfine.js:582` 的 `trim(row.bound_employee_id)`
+     * 用的是 `:89` 那个 helper，实现为 `String(val).trim()` 双侧去空白 + 空串转 null
+     * —— 尽管它的函数注释误写成「RTRIM」，SQL 侧 `:509` 的 `RTRIM` 也只是第一道。）
      */
     const nextBoundEmployeeId = data.boundEmployeeId?.trim() || null
     const beforeBoundEmployeeId = before.boundEmployeeId?.trim() || null
@@ -1312,8 +1320,13 @@ export const updateCustomer = withPermission(
        * 两名员工并发编辑同一顾客（一个改绑定、一个改备注）就会踩中。
        *
        * 代价是放弃两件「顺带」行为，均为有意取舍：
-       *   - 惰性归一：带空白的存量值不再被本路径顺手修正 —— 那本就该由 sync 脚本补 LTRIM
-       *   - 姓名快照刷新：值未变时不再重查姓名 —— 员工改名的同步不该挂在顾客编辑上
+       *   - 惰性归一：带空白的存量物理值不再被本路径顺手修正，会继续参与下游按原值做的
+       *     JOIN / `IS NOT NULL` 统计（如 staffApi mgmt-dashboard 的归属榜）。
+       *     该清洗应走一次性数据修复脚本，不该由「用户碰巧编辑了这个顾客」来驱动 ——
+       *     顺手写回正是上面那条竞态的成因。已列 follow-up。
+       *   - 姓名快照刷新：值未变时不再重查姓名。员工改名后展示会 stale，
+       *     正解是读取侧像 promoterEmployeeName 那样 COALESCE(当前名, 快照)，
+       *     而不是在写路径顺带刷新 —— 后者同样会把 name 卷进回滚竞态。已列 follow-up。
        * boundEmployeeName 一并删是防御性的：它不在 allowedUpdateFields 白名单里、
        * 客户端注入会被 unexpectedFields 挡回，但白名单若日后放开，这里不能跟着漏。
        */
@@ -1332,7 +1345,10 @@ export const updateCustomer = withPermission(
 
   // admin 只提交 employeeId；服务端解析当前姓名并同步写 ID + 姓名快照。
   // 推荐人可跨店（与员工端小程序口径一致），仅校验在职，不受账号 scope 限制。
-  if ('promoterEmployeeId' in data) {
+  // 与上面 boundEmployeeId 同口径：`in` 会把显式 undefined 当成解绑、意外清空推荐人，
+  // 而本 Action 的通用字段过滤已确立「显式 undefined = 不更新」。
+  // 注意这只修 undefined 语义；promoter 的「校验在职、刻意不校验 scope」是另一套口径，不动。
+  if (data.promoterEmployeeId !== undefined) {
     if (data.promoterEmployeeId) {
       const [promoter] = await db
         .select({
@@ -1486,6 +1502,10 @@ export const createCustomer = withPermission(
   // 空串同样归一为 null —— 否则 `''` 因 falsy 跳过 scope 校验后被 `?? null` 原样写入，
   // 造出 `bound_store_id = ''` 的顾客：scopeCondition 的 IN 永不匹配，非 admin 从此看不见它。
   // 与下面 boundEmployeeId 的归一是同一条口径，不能只做一半。
+  if (data.boundStoreId !== null && data.boundStoreId !== undefined
+    && typeof data.boundStoreId !== 'string') {
+    return { success: false, message: '绑定门店参数不合法' }
+  }
   const nextBoundStoreId = data.boundStoreId?.trim() || null
   if (nextBoundStoreId && !isInScope(session, nextBoundStoreId)) {
     return { success: false, message: '无权在该门店创建顾客' }
@@ -1506,6 +1526,11 @@ export const createCustomer = withPermission(
   // 此前这里只 select 姓名、不校验存在性与 scope —— 与修复前的 updateCustomer 逐字同构，
   // 而 customer:create 与 customer:update 同属 manager + customer_mgr（同一批调用方），
   // 不堵这条等于「改」堵住了、「建」还开着。空串同样归一为 null，不留第三态。
+  // 与 updateCustomer 同款运行时守卫：外层这里就会 .trim()，不能等到 helper
+  if (data.boundEmployeeId !== null && data.boundEmployeeId !== undefined
+    && typeof data.boundEmployeeId !== 'string') {
+    return { success: false, message: '绑定美容师参数不合法' }
+  }
   let nextBoundEmployeeId = data.boundEmployeeId?.trim() || null
   let boundEmployeeName: string | null = null
   if (nextBoundEmployeeId) {
