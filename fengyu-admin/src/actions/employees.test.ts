@@ -391,6 +391,13 @@ describe('updateEmployee — 服务端输入校验 + 错误处理', () => {
     expect(result.message).toContain('已被其他人修改')
   })
 
+  /**
+   * ⚠️ 这条曾经变成过假阳性（codex 谱系第 3 轮发现）：当手机号查重排在读旧行**之前**时，
+   * 第一次 select 就是查重，而 `mockSelectExistingEmployee` 恰好在第一次返回一行 ——
+   * 于是函数提前返回「手机号已被使用」，mock 的 23505 根本不执行，删掉生产代码里的
+   * 23505 catch 测试照样绿。查重移到可见性拦截之后就恢复了有效性，
+   * 下面那条 `db.update` 断言是为了让这种失效下次能被直接看出来。
+   */
   it('DB 唯一冲突（23505）→ 友好消息', async () => {
     ;(db.select as any).mockImplementation(mockSelectExistingEmployee())
     const pgError = Object.assign(new Error('duplicate key'), {
@@ -404,6 +411,8 @@ describe('updateEmployee — 服务端输入校验 + 错误处理', () => {
 
     expect(result.success).toBe(false)
     expect(result.message).toContain('手机号已被其他员工使用')
+    // 必须真的走到 UPDATE 才谈得上「DB 抛 23505」——否则这条测的是别的分支
+    expect(db.update).toHaveBeenCalled()
   })
 
   it('正常更新 → 成功', async () => {
@@ -683,17 +692,20 @@ describe('updateEmployee — #228 归属变更必须落在 scope 内', () => {
   })
 
   /**
-   * 同批改手机号会在读旧值之前插入一次「唯一性」select，把整个函数推进另一条分支序列。
+   * 同批改手机号会多一次「唯一性」select，把函数推进另一条分支序列。
    * 守卫不得因此被跳过（给它套 `if (data.phone === undefined)` 这类前置条件时本例变红）。
+   *
+   * 注意查重现在排在**可见性拦截之后**（它查全表，放在前面会变成「任意手机号是否注册」
+   * 的探测器），所以 select 顺序是 1=旧员工行、2=手机号唯一性。
    */
-  it('越权调店 + 同批改手机号（多一次前置 select）→ 仍拒绝', async () => {
+  it('越权调店 + 同批改手机号（多一次 select）→ 仍拒绝', async () => {
     let call = 0
     ;(db.select as any).mockImplementation(() => {
       call++
       const current = call
       const limit = vi.fn().mockImplementation(() =>
-        // 1=手机号唯一性（无冲突） 2=旧员工行
-        Promise.resolve(current === 2 ? [{ storeId: 'store-A', orgNodeId: 'org-store-A' }] : []),
+        // 1=旧员工行 2=手机号唯一性（无冲突）
+        Promise.resolve(current === 1 ? [{ storeId: 'store-A', orgNodeId: 'org-store-A' }] : []),
       )
       const where = vi.fn().mockReturnValue({ limit })
       const from = vi.fn().mockReturnValue({ where })
@@ -709,6 +721,35 @@ describe('updateEmployee — #228 归属变更必须落在 scope 内', () => {
 
     expect(result.success).toBe(false)
     expect(result.message).toBe('无权将员工调至该门店')
+    expect(db.update).not.toHaveBeenCalled()
+  })
+
+  /**
+   * GLM 谱系第 2 轮：手机号查重查的是**全表**，排在可见性拦截之前就是又一个同构 oracle ——
+   * 拿任意不可见/不存在的 employeeId 提交 `{ phone: X }`，X 被占用 → 「该手机号已被其他员工使用」，
+   * 未被占用 → 「员工不存在或无权修改」，据此可枚举任意手机号是否注册为员工。
+   */
+  it('对不可见员工提交已被占用的手机号 → 仍返回统一文案，不泄露手机号是否已注册', async () => {
+    let call = 0
+    ;(db.select as any).mockImplementation(() => {
+      call++
+      const current = call
+      const limit = vi.fn().mockImplementation(() =>
+        current === 1
+          ? Promise.resolve([{ storeId: 'store-SECRET', orgNodeId: 'org-SECRET' }])  // 不可见的旧行
+          : Promise.resolve([{ employeeId: 'FY-SOMEONE' }]),                          // 手机号确实被占用
+      )
+      const where = vi.fn().mockReturnValue({ limit })
+      const from = vi.fn().mockReturnValue({ where })
+      return { from }
+    })
+    mockUpdateOk()
+
+    const result = await updateEmployee(
+      'FY-OTHER', { ...FULL_FORM, phone: '13900000002' }, EXPECTED_AT,
+    )
+
+    expect(result.message).toBe('员工不存在或无权修改')
     expect(db.update).not.toHaveBeenCalled()
   })
 
@@ -944,6 +985,48 @@ describe('updateEmployee — #228 归属变更必须落在 scope 内', () => {
     expect(invisible.result).toEqual(notFound.result)
     expect(notFound.result.message).toBe('员工不存在或无权修改')
     expect([notFound.wrote, invisible.wrote]).toEqual([0, 0])
+  })
+
+  /**
+   * codex 谱系第 3 轮给的更精确攻击：泄露的不只是「手机号是否注册」，而是
+   * **手机号与员工编号的对应关系**。手机号查重带 `employee_id != $target`：
+   *   - 拿一个**不存在**的 employeeId 提交手机号 P → 查重命中 P 的主人 → 「该手机号已被其他员工使用」
+   *   - 拿 P 的**真正主人**（scope 外）的 employeeId 提交同一个 P → `!= 自己` 把该行排除 → 另一句话
+   * 两句话的差异即可确认「P 属于哪个 employeeId」。查重移到可见性拦截之后后，两者同句。
+   */
+  it('同一手机号 × 不存在的编号 / 其真正主人的编号 → 响应逐字相同', async () => {
+    const probe = async (targetId: string, oldRow: Record<string, unknown> | null) => {
+      vi.clearAllMocks()
+      ;(getSession as any).mockResolvedValue(mockSession)
+      applyScopeFixture()
+      ;(isAdminScope as any).mockReturnValue(false)
+      let call = 0
+      ;(db.select as any).mockImplementation(() => {
+        call++
+        const current = call
+        const limit = vi.fn().mockImplementation(() =>
+          current === 1
+            ? Promise.resolve(oldRow ? [oldRow] : [])
+            // 查重：手机号确实被 scope 外的某人占用
+            : Promise.resolve([{ employeeId: 'FY-OWNER' }]),
+        )
+        const where = vi.fn().mockReturnValue({ limit })
+        const from = vi.fn().mockReturnValue({ where })
+        return { from }
+      })
+      mockUpdateOk()
+      const result = await updateEmployee(targetId, { ...FULL_FORM, phone: '13900000003' }, EXPECTED_AT)
+      return { result, wrote: (db.update as any).mock.calls.length }
+    }
+
+    // 不存在的编号
+    const notFound = await probe('FY-NOPE', null)
+    // 该手机号真正主人的编号（scope 外 → 不可见）
+    const realOwner = await probe('FY-OWNER', { storeId: 'store-SECRET', orgNodeId: 'org-SECRET' })
+
+    expect(realOwner.result).toEqual(notFound.result)
+    expect(notFound.result.message).toBe('员工不存在或无权修改')
+    expect([notFound.wrote, realOwner.wrote]).toEqual([0, 0])
   })
 
   /** 空串是「不填」而非「一个叫 '' 的门店」，与 createEmployee 的 truthiness 口径对齐 */

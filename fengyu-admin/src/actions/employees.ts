@@ -773,18 +773,6 @@ export const updateEmployee = withPermission(
     }
   }
 
-  // 校验手机号唯一性（如果更新了手机号）
-  if (data.phone) {
-    const [existing] = await db
-      .select({ employeeId: staffWechatUsers.employeeId })
-      .from(staffWechatUsers)
-      .where(and(eq(staffWechatUsers.phone, data.phone), sql`${staffWechatUsers.employeeId} != ${employeeId}`))
-      .limit(1)
-    if (existing) {
-      return { success: false, message: '该手机号已被其他员工使用' }
-    }
-  }
-
   // 获取旧值用于日志 diff + storeId 变更检测
   const [currentEmployee] = await db.select().from(staffWechatUsers).where(eq(staffWechatUsers.employeeId, employeeId)).limit(1)
   const oldStoreId = currentEmployee?.storeId ?? null
@@ -813,6 +801,25 @@ export const updateEmployee = withPermission(
     || (!!oldOrgNodeId && isOrgNodeInScope(session, oldOrgNodeId))
   if (!currentEmployee || !oldRowVisible) {
     return { success: false, message: '员工不存在或无权修改' }
+  }
+
+  /**
+   * 手机号唯一性查重 —— **必须在可见性拦截之后**（GLM 谱系第 2 轮）。
+   *
+   * 它查的是全表，放在前面就是又一个同构的 oracle：拿任意不存在/不可见的 employeeId
+   * 提交 `{ phone: X }`，X 已被系统内任意员工占用 → 「该手机号已被其他员工使用」，
+   * 未被占用 → 「员工不存在或无权修改」。两句话的差异可枚举任意手机号是否注册为员工
+   * （含 scope 外员工）。移到这里后，合法路径行为不变 —— 能改手机号的前提就是目标员工可见。
+   */
+  if (data.phone) {
+    const [existing] = await db
+      .select({ employeeId: staffWechatUsers.employeeId })
+      .from(staffWechatUsers)
+      .where(and(eq(staffWechatUsers.phone, data.phone), sql`${staffWechatUsers.employeeId} != ${employeeId}`))
+      .limit(1)
+    if (existing) {
+      return { success: false, message: '该手机号已被其他员工使用' }
+    }
   }
 
   /**
