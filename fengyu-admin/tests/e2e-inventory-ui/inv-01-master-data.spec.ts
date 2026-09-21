@@ -155,7 +155,15 @@ test('INV-01：基础档案建档 + 六价体系 + 公式价校验', async ({ br
     // 定位用 role + exact name：Field 的 <label> 包裹控件，但「市场进货价」那个
     // label 里还塞了整段说明文字（"公式价 = 核算价 × 市场折扣；手工覆盖必须留痕原因"），
     // 用 getByLabel('核算价') 会被这段文字 substring 命中，产生 strict mode violation。
-    const skuText = (name: string) => skuDialog.getByRole('textbox', { name, exact: true })
+    // ⚠️ #135 把 6 个价格字段换成了 <Input type="number">，它们的 ARIA role 是
+    //    spinbutton 而不是 textbox —— 只写 textbox 时 skuText('供应链采购价') 会等满
+    //    actionTimeout(20s) 才抛，报错只说「没找到」，看不出是 role 变了。
+    //    用 .or() 同时收两种：文本字段（产品名称 / 规格 / 产品系列）仍走 textbox，
+    //    数值字段（六价 + 市场折扣）走 spinbutton；将来某个字段改回 text 也不用动这里。
+    //    exact:true 下两侧最多命中一个，不会触发 strict mode violation。
+    const skuText = (name: string) =>
+      skuDialog.getByRole('textbox', { name, exact: true })
+        .or(skuDialog.getByRole('spinbutton', { name, exact: true }))
     await skuText('产品名称 *').fill(SKU_SUPPLY_NAME)
     await skuText('规格').fill('INVT-规格')
     // Step 1 刚建的档案，这里直接从下拉选（#132 前只能手打）
