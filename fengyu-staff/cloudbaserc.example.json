@@ -23,6 +23,28 @@
       "runtime": "Nodejs18.15",
       "handler": "index.main",
       "installDependency": false
+    },
+    {
+      "_comment": "影子函数：与 staffApi 同一份代码（dir 指向它），但连 dev 库。小程序端 develop/trial 版调这个，release 调 staffApi。",
+      "name": "staffApiDev",
+      "dir": "cloudfunctions/staffApi",
+      "timeout": 30,
+      "path": "/cloudfunctions/staffApiDev",
+      "envVariables": {
+        "PG_CONNECTION_STRING": "${DEV_PG_CONNECTION_STRING}",
+        "MSSQL_CONNECTION_STRING": "${DEV_MSSQL_CONNECTION_STRING}",
+        "CLIENT_SECRET": "${DEV_CLIENT_SECRET}",
+        "CLIENT_APPSECRET": "${CLIENT_APPSECRET}",
+        "CLIENT_API_HTTP_URL": "${CLIENT_SERVICE_URL}/cloudfunctions/clientApiDev",
+        "WXACODE_ENV_VERSION": "${DEV_WXACODE_ENV_VERSION}",
+        "ALLOW_TEST_OPENID": "${DEV_ALLOW_TEST_OPENID}",
+        "ALLOW_DIRECT_PHONE": "${DEV_ALLOW_DIRECT_PHONE}",
+        "INVENTORY_LINKAGE_ENABLED": "${DEV_INVENTORY_LINKAGE_ENABLED}",
+        "TZ": "Asia/Shanghai"
+      },
+      "runtime": "Nodejs18.15",
+      "handler": "index.main",
+      "installDependency": false
     }
   ]
 }
