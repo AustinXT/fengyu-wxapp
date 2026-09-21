@@ -347,6 +347,13 @@ Page({
 
   /** 储值卡开关 */
   async onUseCardChange(e: WxEvent<boolean>) {
+    // #214：与支付方式同理——wxml 上的 disabled 只是 UI 层，handler 自己也要挡。
+    // 复用场次的抵扣方案已经定死在那笔渠道单里（服务端改抵扣也有守卫），
+    // 这里若放行，顾客改完看到的金额和实际扣款就对不上了。
+    if (this.data.intentLocked) {
+      Toast('本次支付已在进行中，如需调整抵扣请先取消订单');
+      return;
+    }
     if (this.data.isRestrictedRepayment) {
       this.setData({ useCard: false, prepaidCardAmount: 0 });
       return;
