@@ -462,6 +462,27 @@ Page({
         0,
         totalAmount - (Number(this.data.couponDiscount) || 0) - (Number(this.data.pointsDiscount) || 0),
       ) * 100) / 100;
+      // #214（round-15）：意图活跃时抵扣方案已冻结在那笔渠道单里，提交又会跳过 scanAdjust，
+      // 继续按**实时**余额重算，展示金额就会和实际收款分叉——顾客在这期间充一笔值即可复现
+      // （场次按卡抵 ¥100 建，充值后页面显示卡抵 ¥200、实付少 ¥100，实际仍按 ¥200 收）。
+      // 控件锁只挡住了手动改，这条是余额变动自己把展示改了。
+      if (this.data.hasActivePaymentIntent) {
+        const frozenCardAmount = Math.round(Math.max(0, Math.min(
+          Number(this.data.restoredPrepaidCardAmount) || 0,
+          netAfterDiscounts,
+        )) * 100) / 100;
+        const frozenPaidAmount = Math.round((netAfterDiscounts - frozenCardAmount) * 100) / 100;
+        this.setData({
+          // 回写 useCard：loadCardBalance 的失败分支会把它置 false，
+          // 那会让冻结中的抵扣行凭空消失（wxml 用 useCard && prepaidCardAmount > 0 控制）
+          useCard: frozenCardAmount > 0,
+          prepaidCardAmount: frozenCardAmount,
+          paidAmount: frozenPaidAmount,
+          showPayMethodGroup: frozenPaidAmount > 0,
+          netBeforeCard: netAfterDiscounts,
+        });
+        return;
+      }
       const effectiveUseCard = this.data.useCard && this.data.cardBalance > 0 && netAfterDiscounts > 0;
       const prepaidCardAmount = effectiveUseCard
         ? Math.round(Math.min(Number(this.data.cardBalance) || 0, netAfterDiscounts) * 100) / 100
@@ -887,6 +908,25 @@ Page({
     }
   },
 
+  /**
+   * #214（round-15）：渠道单刚建好 —— 页面立刻进入冻结态。
+   *
+   * 支付宝关掉吱口令弹窗、微信支付抛非取消类错误，两条路都会把顾客留在本页。
+   * 此时服务端已有活动意图，再点一次「确认支付」若还走 scanAdjust，必被
+   * PAYMENT_INTENT_ACTIVE 拒掉——正是本 issue 要消灭的「付不了款」，只是发生在同一页。
+   *
+   * existingOrderNo 一并写上：自助下单路径原本为空，不写的话重试会再走 order.create，
+   * 撞「您有待支付订单」。restoredPrepaidCardAmount 记下当前展示的卡额作为冻结口径，
+   * 因为这笔渠道单就是按它建的。
+   */
+  markPaymentIntentActive(saleOrderId: string) {
+    this.setData({
+      hasActivePaymentIntent: true,
+      existingOrderNo: saleOrderId,
+      restoredPrepaidCardAmount: Number(this.data.prepaidCardAmount) || null,
+    });
+  },
+
   async doAlipayPay(saleOrderId: string) {
     const data = await callClientApi<any>('order.alipayPay', { saleOrderId });
     // 防御性短路：后端识别为全额储值卡抵扣 → 直接跳详情页，不调任何第三方通道
@@ -904,6 +944,8 @@ Page({
       Toast.fail('支付宝吱口令获取失败');
       return;
     }
+    // 拿到吱口令 = 渠道单已建，先冻结页面再弹窗
+    this.markPaymentIntentActive(saleOrderId);
     const displayAmount = this.data.isRecharge
       ? Number(data?.paidAmount || 0)
       : Number(data?.totalAmount || 0);
@@ -938,8 +980,11 @@ Page({
   },
 
   onAlipayShareClose() {
-    // 关闭弹窗但不跳转，用户可能改选其他支付方式
+    // 关闭弹窗但不跳转：顾客可能只是想再看一眼订单，回头还能用同一个吱口令付。
+    // #214（round-15）：此刻渠道单已建、页面已冻结，改支付方式要先取消订单——
+    // 直接说明，免得顾客在锁住的控件上反复试。
     this.setData({ showAlipayShare: false });
+    wx.showToast({ title: '吱口令仍有效，可重新点击支付查看', icon: 'none' });
   },
 
   async doWechatPay(saleOrderId: string) {
@@ -958,6 +1003,9 @@ Page({
       Toast.fail('支付参数获取失败');
       return;
     }
+    // 拿到支付参数 = 渠道单已建。下面 requestPayment 抛非取消类错误时顾客会留在本页，
+    // 不冻结的话重试走 scanAdjust 必撞 PAYMENT_INTENT_ACTIVE。
+    this.markPaymentIntentActive(saleOrderId);
     const isRecharge = this.data.isRecharge;
     const detailUrl = `/pagesOrder/order-detail/order-detail?saleOrderId=${saleOrderId}`;
     // 支付成功后带 paid=1：触发 order-detail.confirmAndRefresh 主动轮询确认到账（对齐 scan-pay
