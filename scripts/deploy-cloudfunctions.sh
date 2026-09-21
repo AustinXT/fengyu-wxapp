@@ -390,18 +390,60 @@ if [[ -n "$PLACEHOLDERS" ]]; then
   echo "$PLACEHOLDERS" | sed 's/^/      /'
 fi
 
+# ── 解析函数的代码目录 ──
+# 影子函数（*Dev）在 cloudbaserc 里用 `dir` 指向正式函数的目录，两套函数因此同源。
+# 输出绝对路径；函数未声明 `dir` 时输出空串，交回 CLI 自己按 functionRoot/<name> 解析。
+fn_code_dir() {  # $1=cloudbaserc 路径  $2=函数名
+  node -e '
+    const fs = require("fs"), path = require("path")
+    const [rc, name] = process.argv.slice(1)
+    const fn = (JSON.parse(fs.readFileSync(rc, "utf8")).functions ?? []).find((f) => f.name === name)
+    if (!fn) { console.error(`cloudbaserc 中找不到函数 ${name}`); process.exit(1) }
+    if (fn.dir) console.log(path.resolve(path.dirname(rc), fn.dir))
+  ' "$1" "$2"
+}
+
 # ── 单函数部署：不存在则创建，存在则只更新代码 ──
 # `tcb fn code update` 要求函数已存在；影子函数（*Dev）首次上线时该 env 里还没有它，
 # 必须先走 `tcb fn deploy` 按 cloudbaserc 创建。两条路径都会把 envVariables 一并推上去。
 # 注意这里用 `fn detail` 而非解析 `fn list` 表格：clientApi 是 clientApiDev 的前缀，
 # 对表格做子串匹配会把两者混为一谈。
+#
+# ⚠️ CLI 3.0.1 两条路径对配置项 `dir` 的处理并不一致（2026-09-22 首次实发影子函数时踩到）：
+#   · `tcb fn deploy`      —— 认 `dir`，代码目录解析正确
+#   · `tcb fn code update` —— 只把 `dir` 打印出来（"Using directory from config file: …/clientApi"），
+#                             打包时仍按 functionRoot/<函数名> 拼路径，于是影子函数必报
+#                             「路径不存在：…/cloudfunctions/clientApiDev」
+# 所以更新路径必须显式传 `--dir`（CLI 优先级 --dir > 配置项 dir > functionRoot/<name>）。
+# 三个 *Dev 一旦建好，往后每次部署都走 code update，不传 --dir 就是每次必挂。
 deploy_one_fn() {  # $1=函数名  $2=cloudbaserc 路径  $3=--sync 值  $4=--require 值
   local fn="$1" rc="$2" sync="$3" req="$4"
+  local dir
+  dir="$(fn_code_dir "$rc" "$fn")"
+  if [[ -n "$dir" && ! -d "$dir" ]]; then
+    echo "ERROR: $fn 在 cloudbaserc 里声明的代码目录不存在：$dir" >&2
+    return 1
+  fi
   if tcb fn detail "$fn" >/dev/null 2>&1; then
-    tcb fn code update "$fn"
+    if [[ -n "$dir" ]]; then
+      tcb fn code update "$fn" --dir "$dir"
+    else
+      tcb fn code update "$fn"
+    fi
   else
     echo "     函数 $fn 在该 env 中尚不存在 → 首次创建（tcb fn deploy）"
-    tcb fn deploy "$fn"
+    # CLI 3.0.1 建不了 http 类型触发器（报「不支持的触发器类型 [http]，目前仅支持定时触发器」）。
+    # 该错误发生在函数与代码都已上传成功之后，失败的只是其后的触发器创建步骤，
+    # 所以这里用 fn detail 复核实际结果：函数确实建出来了就放行，没建出来才算真失败。
+    # HTTP 入口本就不由 cloudbaserc 承载，须另行 `tcb service create` 建。
+    if ! tcb fn deploy "$fn"; then
+      if ! tcb fn detail "$fn" >/dev/null 2>&1; then
+        echo "ERROR: $fn 首次创建失败（函数未建出）。" >&2
+        return 1
+      fi
+      echo "     ⚠️  $fn 函数本体与代码已创建成功，失败的是触发器创建（CLI 不支持 http 触发器）。"
+      echo "        如该函数需要 HTTP 入口，另行执行：tcb service create -p <路径> -f $fn"
+    fi
   fi
   node "$ROOT/scripts/sync-cloudfunction-env.mjs" "$rc" "$fn" --sync "$sync" --require "$req"
 }

@@ -55,11 +55,15 @@ for (const side of SIDES) {
   test(`fengyu-${side}: 影子函数复用正式函数的代码目录（dir）`, () => {
     for (const fn of loadTemplate(side).functions.filter((f) => isShadow(f.name))) {
       // tcb 解析代码目录的优先级是 --dir > 配置项 dir > functionRoot/<name>。
-      // 不写 dir 就会去找不存在的 cloudfunctions/<name>Dev 目录，部署直接跳过。
+      // 不写 dir 就会去找不存在的 cloudfunctions/<name>Dev 目录，部署直接失败。
       assert.equal(
         fn.dir,
         `cloudfunctions/${baseNameOf(fn.name)}`,
         `${fn.name} 的 dir 必须指向正式函数的代码目录，保证两者同源`
+      )
+      assert.ok(
+        fs.existsSync(path.join(ROOT, `fengyu-${side}`, fn.dir)),
+        `${fn.name} 的 dir 指向了不存在的目录：${fn.dir}`
       )
     }
   })
@@ -171,6 +175,27 @@ for (const side of SIDES) {
     }
   })
 }
+
+test('deploy-cloudfunctions.sh 的 code update 必须显式传 --dir', () => {
+  // CLI 3.0.1 的 `tcb fn code update` 不认 cloudbaserc 的配置项 `dir`：它会把配置里的
+  // 目录打印出来，打包时却仍按 functionRoot/<函数名> 拼路径，于是影子函数报
+  // 「路径不存在：…/cloudfunctions/clientApiDev」。三个 *Dev 建好之后每次部署都走这条路径，
+  // 漏掉 --dir 就是每次 dev 发版必挂（2026-09-22 实发时踩到）。
+  const src = fs.readFileSync(path.join(ROOT, 'scripts/deploy-cloudfunctions.sh'), 'utf8')
+  const offenders = []
+  for (const line of src.split('\n')) {
+    if (line.trimStart().startsWith('#')) continue // 注释里复述命令不算
+    if (!/\btcb fn code update\b/.test(line)) continue
+    // 无 `dir` 字段的正式函数走不带 --dir 的分支，由紧邻的 [[ -n "$dir" ]] 判定守住
+    if (/--dir\b/.test(line) || /"\$fn"\s*$/.test(line)) continue
+    offenders.push(line.trim())
+  }
+  assert.deepEqual(offenders, [], '这些 code update 调用既没传 --dir 也不在 dir 判定分支内')
+  assert.ok(
+    /tcb fn code update "\$fn" --dir "\$dir"/.test(src),
+    'deploy_one_fn 缺少「声明了 dir 就传 --dir」的分支'
+  )
+})
 
 test('payNotifyDev 不得挂 timer 触发器', () => {
   // 正式 payNotify 的 wxShippingBackfill 每分钟跑对账，会 UPDATE sale_orders。
