@@ -1479,6 +1479,49 @@ describe('order.pay', () => {
     expect(pg.query.mock.calls.some(([sql]) => /SET lakala_out_order_no = NULL/.test(sql))).toBe(true)
   })
 
+  // 渠道回了成功码但支付参数残缺：此时渠道单很可能已建好、本地意图已占。
+  // 不拦就会落盘一份不可用的快照，顾客每次重试都复用它、每次都失败，直到场次过期
+  // （双谱系评审 round-7）。
+  test('预下单返回成功但缺 paySign → 安全释放后抛，不落畸形快照 (#214)', async () => {
+    mockPayQueries({
+      order: {
+        sale_order_id: 'FY-INCOMPLETE', status: '待支付', store_id: 'store-1',
+        client_user_id: 'user-001', total_amount: 100, payable_amount: 100,
+        sale_order_datetime: new Date().toISOString(),
+      },
+    })
+    const payQueryImpl = pg.query.getMockImplementation()
+    pg.query.mockImplementation(async (sql, params) => {
+      if (/lakala_merchants/.test(sql)) return [{ merchant_no: 'M1', term_no: 'T1', enabled: true }]
+      return payQueryImpl(sql, params)
+    })
+    __mocks__.lakalaClient.requestPreorder.mockResolvedValueOnce({
+      ok: true, code: 'BBS00000', tradeNo: 'LAK-T', logNo: 'L',
+      paymentParams: { timeStamp: '1', nonceStr: 'n', package: 'prepay_id=x' },  // 缺 paySign
+      lakalaAppId: 'wx811eb4ded3dfba3f', raw: {},
+    })
+    __mocks__.lakalaClient.queryTrade.mockResolvedValueOnce({ ok: true, tradeState: 'CLOSE' })
+
+    const ctx = createBoundCtx({ orderNo: 'FY-INCOMPLETE' })
+    await expect(routes.pay(ctx)).rejects.toThrow(/LAKALA_PREORDER_INCOMPLETE/)
+
+    // 没有落下任何快照
+    expect(pg.query.mock.calls.some(([sql]) => /SET lakala_payment_intent/.test(sql))).toBe(false)
+    // 意图已被安全释放
+    expect(pg.query.mock.calls.some(([sql]) => /SET lakala_out_order_no = NULL/.test(sql))).toBe(true)
+  })
+
+  test('历史畸形快照（缺 paySign）不被复用 (#214)', async () => {
+    mockPayQueries({
+      order: reusableOrder({}, {
+        paymentParams: { timeStamp: '1', nonceStr: 'n', package: 'prepay_id=x' },  // 缺 paySign
+      }),
+    })
+
+    const ctx = createBoundCtx({ orderNo: 'FY-REUSE-001' })
+    await expect(routes.pay(ctx)).rejects.toThrow(/CONFLICT: PAYMENT_INTENT_ACTIVE/)
+  })
+
   test('preorder 明确业务失败 → 按本次 out_trade_no CAS 释放意图', async () => {
     const now = new Date()
     const order = {

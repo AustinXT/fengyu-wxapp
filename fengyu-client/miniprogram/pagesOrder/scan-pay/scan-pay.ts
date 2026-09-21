@@ -30,6 +30,8 @@ interface ScanOrder {
   paymentMethod: PayMethod;
   couponDiscount: number;
   isExperienceConversion: boolean;
+  // #214：是否存在本人可续付的支付场次（布尔，不含凭据）
+  hasResumablePaymentIntent?: boolean;
 }
 
 interface ScanOrderItem {
@@ -82,6 +84,9 @@ Page({
     isFirstPartialScan: false,
     // 回款（部分支付订单）：普通回款可选卡；员工冻结金额的受限回款禁卡，方式限微信/支付宝。
     isRepayment: false,
+    // #214：订单上是否已有本人可续付的支付场次（由 scanDetail 下发，不含任何凭据）。
+    // 为 true 时普通回款也走 pay/alipayPay 以复用场次，否则会撞 PAYMENT_INTENT_ACTIVE。
+    hasResumablePaymentIntent: false,
     // 员工冻结 first_payment_amount 的受限回款：本场次不允许顾客再选储值卡。
     isRestrictedRepayment: false,
     showPayMethodGroup: true,
@@ -246,6 +251,8 @@ Page({
         isFirstPartialScan,
         isRepayment,
         isRestrictedRepayment,
+        // #214：后端只下发布尔标识，不含任何支付凭据
+        hasResumablePaymentIntent: orderData.hasResumablePaymentIntent === true,
         showPayMethodGroup: paid > 0,
         balanceUpdatedAt,
       });
@@ -518,7 +525,14 @@ Page({
 
     // 普通回款走 order.repay；员工已冻结 first_payment_amount 的转换单部分回款
     // 改走 pay/alipayPay，复用其服务端硬上限并允许本次金额小于整笔剩余欠款。
-    if (this.data.isRepayment && firstPaymentAmount <= 0) {
+    //
+    // #214 例外：订单上已有本人的可续付场次时，普通回款也改走 pay/alipayPay。
+    // order.repay 对活动意图是 fail-fast 的（它的 pending 作废与 payable 回写在预下单前
+    // 已提交，无法与渠道意图 CAS 原子化），顾客退出后重新扫码只会撞 PAYMENT_INTENT_ACTIVE
+    // ——回款场景下原样复现本 issue 的症状。pay 路径能复用同一笔场次继续付。
+    // 意图活跃时抵扣方案改不了（服务端有守卫），所以本次金额与快照一致，复用判据能命中。
+    const canResumeViaPay = this.data.hasResumablePaymentIntent === true;
+    if (this.data.isRepayment && firstPaymentAmount <= 0 && !canResumeViaPay) {
       await this.executeRepayConfirm();
       return;
     }

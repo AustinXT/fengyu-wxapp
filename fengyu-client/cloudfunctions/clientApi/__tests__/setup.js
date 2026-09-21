@@ -100,6 +100,8 @@ const mockLakalaClient = {
       paySign: 'mock-pay-sign-001',
     },
     lakalaAppId: 'wx811eb4ded3dfba3f',
+    // 支付宝 NATIVE 通道的二维码地址；#214 起预下单会校验它非空
+    alipayQrUrl: 'https://qr.alipay.com/mock-native-url',
     raw: {},
   })),
   // 支付宝吱口令默认返回 share_token
@@ -160,6 +162,8 @@ beforeEach(() => {
       paySign: 'mock-pay-sign-001',
     },
     lakalaAppId: 'wx811eb4ded3dfba3f',
+    // 支付宝 NATIVE 通道的二维码地址；#214 起预下单会校验它非空
+    alipayQrUrl: 'https://qr.alipay.com/mock-native-url',
     raw: {},
   })
   mockLakalaClient.requestAlipayShareCode.mockReset().mockResolvedValue({

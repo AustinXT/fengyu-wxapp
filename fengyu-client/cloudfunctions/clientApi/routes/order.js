@@ -598,10 +598,23 @@ async function createLakalaPreorder({
     }
   }
 
+  // 渠道回了成功码，但支付参数残缺（缺 package / paySign / 二维码 URL）——
+  // 此时渠道单很可能已经建好，本地意图已占。不拦的话会落盘一份**不可用的快照**，
+  // 顾客每次重试都复用它、每次都失败，直到场次过期（双谱系评审 round-7）。
+  // 按「渠道可能已建单」处理：走安全释放后抛，让顾客可以立刻重新发起。
   if (accountType === 'WECHAT' && transType === '71') {
-    return { outTradeNo, tradeNo: resp.tradeNo, paymentParams: resp.paymentParams }
+    const wxParams = resp.paymentParams
+    if (!wxParams || !wxParams.package || !wxParams.paySign) {
+      await releaseIntentAfterPreorderFailure(orderNo, outTradeNo, storeIdForRelease)
+      throw new Error('INVALID_STATE: LAKALA_PREORDER_INCOMPLETE: 渠道未返回完整的微信支付参数')
+    }
+    return { outTradeNo, tradeNo: resp.tradeNo, paymentParams: wxParams }
   }
   if (accountType === 'ALIPAY' && transType === '41') {
+    if (!resp.alipayQrUrl) {
+      await releaseIntentAfterPreorderFailure(orderNo, outTradeNo, storeIdForRelease)
+      throw new Error('INVALID_STATE: LAKALA_PREORDER_INCOMPLETE: 渠道未返回支付宝二维码地址')
+    }
     return { outTradeNo, tradeNo: resp.tradeNo, alipayQrUrl: resp.alipayQrUrl }
   }
   return { outTradeNo, tradeNo: resp.tradeNo }
@@ -847,6 +860,11 @@ function tryReuseLakalaPaymentIntent(order, { payAmount, paymentMethod, userId }
 
   const paymentParams = intent.paymentParams
   if (!paymentParams || typeof paymentParams !== 'object') return null
+
+  // 按通道校验必需字段：历史上可能落过畸形快照（渠道回成功却少字段），
+  // 复用它只会让顾客反复失败到场次过期。不复用即退回「查渠道 → 释放 → 重建」老路。
+  if (paymentMethod === '微信' && (!paymentParams.package || !paymentParams.paySign)) return null
+  if (paymentMethod === '支付宝' && !paymentParams.alipayShareToken) return null
 
   return { paymentParams }
 }
@@ -1308,6 +1326,10 @@ async function createLakalaAlipayShareCode({
     bizLink,
     timeoutMs: LAKALA_SHARE_CODE_TIMEOUT_MS,
   })
+  if (!resp.shareToken) {
+    // 同上：渠道回了成功但没给吱口令，落盘也是一份不可用的快照
+    throw new Error('INVALID_STATE: LAKALA_SHARE_CODE_INCOMPLETE: 渠道未返回吱口令')
+  }
   return { shareToken: resp.shareToken, expireDate: resp.expireDate, tradeNo: resp.tradeNo }
 }
 
@@ -1529,6 +1551,7 @@ async function _loadAndValidateBundle(bundleProductId, items) {
 async function scanDetail(ctx) {
   await requirePhone()(ctx, async () => {})
 
+  const { userId } = ctx.auth
   const { orderNo, saleOrderId } = ctx.event.payload || {}
   const targetOrderId = saleOrderId || orderNo
   if (!targetOrderId) {
@@ -1627,7 +1650,18 @@ async function scanDetail(ctx) {
       paymentMethod: order.payment_method || '微信',
       couponDiscount: Number(order.coupon_discount || 0),
       pointsUsed: Number(order.points_used || 0),
-      pointsDiscount: Number(order.points_discount || 0)
+      pointsDiscount: Number(order.points_discount || 0),
+      // #214：本人是否有一笔可续付的支付场次（双谱系评审 round-7）。
+      //
+      // 只下发布尔值，**绝不下发快照本身**（里面有 paySign/prepay_id）。前端据此决定
+      // 重入时走 order.pay（能复用场次）还是 order.repay（fail-fast，会撞
+      // PAYMENT_INTENT_ACTIVE）—— 普通回款此前固定走 repay，导致「退出后重新扫码
+      // 还是付不了」在回款场景下原样复现，正是本 issue 要消灭的症状。
+      hasResumablePaymentIntent: Boolean(
+        String(order.lakala_out_order_no || '').trim()
+        && order.client_user_id
+        && order.client_user_id === userId
+      ),
     },
     items: items.map(i => ({
       saleItemId: i.sale_item_id,
