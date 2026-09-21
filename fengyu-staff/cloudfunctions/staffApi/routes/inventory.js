@@ -241,7 +241,7 @@ function movementDirection(docType) {
  * 逼改代码的人回来补主体推导。
  */
 function assertApprovalOutboundDirection(docType) {
-  if (!APPROVAL_DOC_TYPES.has(docType)) throw new Error('INVALID_STATE: 该单据类型不需要审批')
+  if (!APPROVAL_DOC_TYPES.has(docType)) throw new Error('INVALID_STATE: APPROVAL_NOT_REQUIRED: 该单据类型不需要审批')
   if (!OUTBOUND_DOC_TYPES.has(docType)) {
     throw new Error('INVALID_STATE: APPROVAL_DIRECTION_UNSUPPORTED: 该单据暂不支持审批，请联系管理员')
   }

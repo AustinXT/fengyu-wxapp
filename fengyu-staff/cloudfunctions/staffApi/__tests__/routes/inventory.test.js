@@ -1511,6 +1511,17 @@ describe('inventory.approveDoc / rejectDoc 鉴权主体（#235）', () => {
     const visible = new Set(setItems('STAFF_VISIBLE_DOC_TYPES'))
     const approval = setItems('APPROVAL_DOC_TYPES')
     expect(approval.filter((t) => visible.has(t)).sort()).toEqual(['院产品报损', '院退货'])
+
+    /**
+     * 等集断言只提供「改了会醒」的摩擦力；这条子集断言才是**机器验证**的那一半（GLM P3-1）：
+     * 可达审批面里的每个类型都必须是守卫支持的出库方向，否则守卫会在运行时 fail-closed
+     * 把它挡下 —— 与其等真机上抛 APPROVAL_DIRECTION_UNSUPPORTED，不如在这里就红。
+     */
+    const outbound = new Set(setItems('OUTBOUND_DOC_TYPES'))
+    expect(
+      approval.filter((t) => visible.has(t)).filter((t) => !outbound.has(t)),
+      '可达审批面里出现了非出库方向的类型，方向守卫会在运行时把它拒掉',
+    ).toEqual([])
     // 且 LIST 必须是 Set 的派生，不能是手工维护的第二份（会静默漂移）
     expect(src).toMatch(/const STAFF_VISIBLE_DOC_TYPE_LIST = Array\.from\(STAFF_VISIBLE_DOC_TYPES\)/)
   })
@@ -1541,7 +1552,7 @@ describe('inventory.approveDoc / rejectDoc 鉴权主体（#235）', () => {
     const guard = makeGuard(new Set(['某入库审批类型']), new Set(['某出库类型']))
     expect(() => guard('某入库审批类型')).toThrow('APPROVAL_DIRECTION_UNSUPPORTED')
     // 完全不属 APPROVAL 的类型走另一条错误
-    expect(() => guard('无关类型')).toThrow('该单据类型不需要审批')
+    expect(() => guard('无关类型')).toThrow('APPROVAL_NOT_REQUIRED')
     // 同属两者 → 放行
     const ok = makeGuard(new Set(['出库审批类型']), new Set(['出库审批类型']))
     expect(() => ok('出库审批类型')).not.toThrow()
