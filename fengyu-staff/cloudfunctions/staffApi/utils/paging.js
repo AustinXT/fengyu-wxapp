@@ -66,15 +66,32 @@ const MAX_PAGE_SIZE_CEILING = 1000
  *          这条契约是**无条件**的——四个入参全部过归一，见 MAX_PAGE / MAX_PAGE_SIZE_CEILING 注释
  */
 function safePaging(page, pageSize, defaultPageSize, maxPageSize = MAX_PAGE_SIZE) {
-  // 三个出口走同一条归一：取整 → 安全整数且 ≥1 → 夹到上限，否则回落。
+  // 四个入参走同一条归一：取整 → 安全整数且 ≥1 → 夹到上限，否则回落。
   const clampInt = (raw, cap, fallback) => {
-    const n = Math.trunc(Number(raw))
+    let n
+    try {
+      // ⚠️ `Number(raw)` 会抛，而且触发形状**完全可以来自 JSON payload**：
+      // `JSON.parse('{"toString": null}')` 是个普通对象，ToPrimitive 先试
+      // `Object.prototype.valueOf`（返回对象本身，非原始值）再试 `toString`（被遮蔽成 null，
+      // 不可调用）→ `TypeError: Cannot convert object to primitive value`。
+      // 这不需要用户代码、不是"带副作用的 valueOf"，四个参数位置都能触发。
+      // 抛出去会被 index.js 全局 catch 降级成 `{code:-1, '服务器内部错误'}` ——
+      // 正是本 issue 要消灭的那类非优雅降级，所以这里必须兜住而不是让它冒泡。
+      n = Math.trunc(Number(raw))
+    } catch {
+      return fallback
+    }
     return Number.isSafeInteger(n) && n >= 1 ? Math.min(cap, n) : fallback
   }
 
   // ⚠️ 上限参数本身也必须先归一，否则它就是契约的破口：
   // `Math.min(cap, n)` 会把 cap 的小数 / 负数 / NaN 原样带到出口（见 MAX_PAGE_SIZE_CEILING 注释）。
-  const cap = clampInt(maxPageSize, MAX_PAGE_SIZE_CEILING, MAX_PAGE_SIZE)
+  // 外层再夹一次 ceiling 是**结构性双保险**：`clampInt` 的 fallback 参数不经过 cap，
+  // 若将来有人把 MAX_PAGE_SIZE 调到 > CEILING，非法 maxPageSize 会从 fallback 旁路溜过 ceiling。
+  const cap = Math.min(
+    MAX_PAGE_SIZE_CEILING,
+    clampInt(maxPageSize, MAX_PAGE_SIZE_CEILING, MAX_PAGE_SIZE),
+  )
 
   const safePage = clampInt(page, MAX_PAGE, 1)
   // 回落值本身也要过一遍归一：调用方传的 defaultPageSize 是常量，非法即编程错误，

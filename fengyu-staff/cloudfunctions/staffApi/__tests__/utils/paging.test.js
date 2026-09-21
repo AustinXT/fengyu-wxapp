@@ -172,6 +172,33 @@ describe('safePaging', () => {
     }
   })
 
+  // ---------- ToPrimitive 失败（闸门 2 codex 谱系发现）----------
+  // `JSON.parse('{"toString": null}')` 是个**普通 JSON 对象**，不需要用户代码：
+  // ToPrimitive 先试 Object.prototype.valueOf（返回对象本身，非原始值），再试 toString
+  // （被数据属性遮蔽成 null，不可调用）→ TypeError: Cannot convert object to primitive value。
+  // 四个参数位置都能触发。抛出去会被 index.js 全局 catch 降级成 {code:-1,'服务器内部错误'}，
+  // 正是本 issue 要消灭的非优雅降级。
+  test('ToPrimitive 失败的 JSON 对象不得让函数抛异常（四个参数位置逐一）', () => {
+    const bad = JSON.parse('{"toString": null}')
+    const worse = JSON.parse('{"valueOf": null, "toString": null}')
+
+    for (const args of [
+      [bad, 10, 20, 100],
+      [1, bad, 20, 100],
+      [1, 10, bad, 100],
+      [1, 10, 20, bad],
+      [worse, worse, worse, worse],
+    ]) {
+      let r
+      expect(() => { r = safePaging(...args) }, `args 位置含 ToPrimitive 失败对象`).not.toThrow()
+      expect(Number.isSafeInteger(r.safePage)).toBe(true)
+      expect(Number.isSafeInteger(r.safePageSize)).toBe(true)
+      expect(Number.isSafeInteger(r.offset)).toBe(true)
+      expect(r.safePageSize).toBeGreaterThanOrEqual(1)
+      expect(r.safePageSize).toBeLessThanOrEqual(MAX_PAGE_SIZE_CEILING)
+    }
+  })
+
   test('导出 MAX_PAGE_SIZE_CEILING 且满足 (MAX_PAGE-1)×CEILING 仍是安全整数', () => {
     expect(MAX_PAGE_SIZE_CEILING).toBe(1000)
     expect(Number.isSafeInteger((MAX_PAGE - 1) * MAX_PAGE_SIZE_CEILING)).toBe(true)
