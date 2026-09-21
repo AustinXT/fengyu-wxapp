@@ -1137,13 +1137,18 @@ describe('syncLocations 漂移探测与 engine.ts 字面一致（副本守护）
  * 把 guard 挪位置、给集合加删成员、重构时顺手把归一化提前。这类失误在真实 PR 里高频出现，
  * 而两份副本的分歧不会有任何运行时报错（`insertDocHeader` 那侧的行为是「静默吃掉 target」）。
  *
- * 它**不**防对抗性绕过。双谱系评审在六轮里一共给出 13 种绕过，每一种都需要刻意构造
- * （不可达诱饵、块作用域影子声明、对象方法伪造调用、初始化阶段折叠、`Set.delete()` 后置突变、
- * 条件 remark 跳过……）。已知仍可绕过的两条，都属于「必须故意」这一类：
+ * 它**不**防对抗性绕过。双谱系评审在七轮里一共给出 17 种绕过，凡是「自然重构就可能触发」的
+ * 都已逐条堵掉（`.add(config.xxx)` 式 mutation、整体重赋值、分支前 fast-path return、
+ * 初始化阶段折叠、条件 remark 跳过位置规则……）。**仍可绕过的都需要刻意构造**：
  *
- *   - `INTERNAL_SAME_NODE_DOC_TYPES.delete('期初库存')` —— 初始化字面量不变、快照全绿，
- *     但运行时集合已漂移。`Set` 本身可变，这条只能靠「代码里出现 `.delete(` 会非常显眼」兜住。
- *   - 期望快照与源码集合**同时**修改 —— 任何仓内 golden snapshot 的固有属性。
+ *   - 不可达诱饵（`if (false) { …完整 guard… }`）、块作用域影子声明、对象方法伪造调用
+ *     —— 这三类已被「顶层语句 / 顶层声明 / isFunctionLike」三条规则关掉
+ *   - **平级尾随诱饵**：`withPermission(action, realImpl, () => {…guard…})`。白名单 + 「实现必须是
+ *     最后一个实参」只关掉了「诱饵后面还有非函数实参」的形态；把诱饵放在最后仍可行，
+ *     但要同时把两个归属变量声明也抄进诱饵体（否则初始化断言会红）—— 属刻意构造
+ *   - 期望快照（成员清单与文案）与源码**同时**修改 —— 任何仓内 golden snapshot 的固有属性
+ *   - 「绑定来源」类：`const { sourceOrgNodeId, targetOrgNodeId } = normalize(input)`、
+ *     解构默认值、参数默认值 —— 都不产生赋值表达式，不在检测射程内
  *
  * 想要真正抵抗对抗性绕过只有一条路：**行为测试**。而它在这里不可得 ——
  * `insertDocHeader` 未导出，17 个调用点对同主体类型全是单边传参，没有任何公开 API
@@ -1203,7 +1208,9 @@ function functionBodyNode(sf: ts.SourceFile, fnName: string): ts.Block {
      * 「最后一个**函数**实参」会被**平级尾随**诱饵重定向（GLM 第 2 轮）：
      *     withPermission(action, realImpl, () => { …完整 guard 文本… })   // 伪装成 telemetry 回调
      * 三个检查全在诱饵体上通过，真实 impl 摘掉 guard 后照样全绿。
-     * 现在「最后一个实参之后不得再有函数实参」这条天然成立（它就是最后一个），
+     * ⚠️ 这只关掉了「诱饵后面还有非函数实参」的形态。把诱饵放在**最后**仍然可行 ——
+     * 但那需要同时把两个归属变量的声明也抄进诱饵体，否则初始化断言会红，属刻意构造
+     * （GLM 纠正了我这里原本「天然成立/已闭环」的错误措辞）。
      * 超出白名单的 wrapper 直接返回 undefined → 测试报「未找到函数」（红方向安全）。
      */
     if (!KNOWN_WRAPPERS.has(node.expression.getText())) return undefined
@@ -1406,6 +1413,9 @@ const SAME_NODE_HOSTS: Array<[string, string]> = [
  *
  * ⚠️ 增删成员必须同时改源码两份 + 本快照，且应在 PR 里说明理由。
  */
+/** 同主体一致性断言的期望文案（两份副本共用的显式 oracle） */
+const EXPECTED_SAME_NODE_MESSAGE = '该单据的出库主体与入库主体必须是同一个'
+
 const EXPECTED_INTERNAL_SAME_NODE: InventoryDocType[] = [
   '分院库存盘点', '供应链员工购出库', '内部领用', '员工购出库',
   '品项公司报货需求', '库存转换入库', '库存转换出库', '市场产品报损',
@@ -1413,7 +1423,7 @@ const EXPECTED_INTERNAL_SAME_NODE: InventoryDocType[] = [
 ]
 
 describe('insertDocHeader 同主体两端一致断言与 engine.ts 字面一致（副本守护）', () => {
-  it('两份副本的断言都是同主体分支首条语句，且错误文案逐字相同', () => {
+  it('两份副本的断言都是同主体分支首条语句，且错误文案等于期望值', () => {
     const messages = SAME_NODE_HOSTS.map(([file, fn]) => {
       const sf = parseFile(file)
       const ifStmt = sameNodeIfStatement(functionBodyNode(sf, fn))
@@ -1421,7 +1431,10 @@ describe('insertDocHeader 同主体两端一致断言与 engine.ts 字面一致�
       expect(msg, `${file}#${fn} 的同主体分支首条语句不是「两端不一致则抛 INVALID_PARAMS」`).toBeTruthy()
       return msg
     })
-    expect(messages[0]).toBe(messages[1])
+    // 两两比对之外还要对一份显式 oracle —— 否则两份同改文案仍全绿，
+    // 与 EXPECTED_INTERNAL_SAME_NODE 的立项理由（「相等 ≠ 正确」）同构（GLM 第 3 轮 P3）
+    expect(messages[0]).toBe(EXPECTED_SAME_NODE_MESSAGE)
+    expect(messages[1]).toBe(EXPECTED_SAME_NODE_MESSAGE)
   })
 
   /**
@@ -1439,6 +1452,31 @@ describe('insertDocHeader 同主体两端一致断言与 engine.ts 字面一致�
         ownershipAssignmentsBefore(body, ifStmt.getStart()),
         `${file}#${fn} 在进入同主体分支前改写了归属变量，断言会永不成立`,
       ).toEqual([])
+
+      /**
+       * 控制流的等价物：分支之前**不得有成功提前返回**（GLM 第 3 轮 P1）。
+       *
+       * 「抢先归一化」堵的是数据流，而加 fast path / legacy 委托是高频真实 PR：
+       *     if (input.docType === '库存转换出库' && input.fromConversion) {
+       *       return await legacyConvertInsert(input)     // 该子集永远走不到同主体 guard
+       *     }
+       * 文字没动、执行位置后移，五条断言全绿 —— 而且典型形态是只改一份，
+       * 正是「副本不对称漂移」的核心场景。
+       * `throw` 不禁：它是安全方向（操作失败、无静默写入）。
+       * 实测两份副本当前分支前各有 4 / 10 条语句、**零** return，可以直接钉死。
+       */
+      const returnsBefore: string[] = []
+      for (const st of topLevelStatements(body)) {
+        if (st.getStart() >= ifStmt.getStart()) break
+        const scan = (n: ts.Node) => {
+          if (ts.isFunctionLike(n)) return
+          if (ts.isReturnStatement(n)) returnsBefore.push(st.getText().slice(0, 60).replace(/\n/g, ' '))
+          ts.forEachChild(n, scan)
+        }
+        scan(st)
+      }
+      expect(returnsBefore, `${file}#${fn} 在同主体分支之前有提前返回，该子集永远走不到一致性断言`)
+        .toEqual([])
     }
   })
 
@@ -1494,23 +1532,70 @@ describe('insertDocHeader 同主体两端一致断言与 engine.ts 字面一致�
    * 不产生任何赋值表达式、不改字面量，三个 describe 全绿而运行时集合已与 12 项 oracle 脱钩。
    * 所以它落在本守护的威胁模型**之内**，必须堵。
    */
-  it('两个文件都没有对受守护集合做声明后 mutation（add / delete / clear）', () => {
-    const GUARDED = ['INTERNAL_SAME_NODE_DOC_TYPES', 'SPECIALIZED_DOC_TYPES']
+  it('受守护集合都是 const 且无声明后 mutation（方法调用 / 整体重赋值）', () => {
+    /**
+     * 「改成可配置」式重构有三种自然形态，三条都要堵：
+     *   ① `X.add(config.xxx)` / `.delete()` / `.clear()`  —— 方法调用
+     *   ② `let X = …; X = new Set([...])`                  —— 整体重赋值（GLM 第 3 轮 P2）
+     *   ③ `new Set([...BASE, ...cfg])`                     —— 已由「非字符串字面量元素直接失败」拦住
+     * 字面量快照只读声明处的初始成员，①②都不改字面量、不进赋值检测的射程。
+     *
+     * `SYSTEM_DERIVED_DOC_TYPES` 也在守护范围内（codex 第 3 轮）：它与 SPECIALIZED 一样
+     * 在位置规则调用之前拒绝单据，把某个通用类型加进它却忘了同步删白名单和 switch case，
+     * 那个 case 就重新变成 dead code —— 正是 #237 的根因。
+     */
+    const GUARDED = [
+      'INTERNAL_SAME_NODE_DOC_TYPES', 'SPECIALIZED_DOC_TYPES', 'SYSTEM_DERIVED_DOC_TYPES',
+    ]
     const MUTATORS = new Set(['add', 'delete', 'clear'])
     for (const file of [BUSINESS_TS, ENGINE_TS]) {
       const sf = parseFile(file)
       const found: string[] = []
       const visit = (n: ts.Node) => {
+        // ① 方法调用
         if (ts.isCallExpression(n) && ts.isPropertyAccessExpression(n.expression)
             && ts.isIdentifier(n.expression.expression)
             && GUARDED.includes(n.expression.expression.text)
             && MUTATORS.has(n.expression.name.text)) {
           found.push(`${n.expression.expression.text}.${n.expression.name.text}()`)
         }
+        // ② 整体重赋值
+        if (ts.isBinaryExpression(n)
+            && n.operatorToken.kind >= ts.SyntaxKind.FirstAssignment
+            && n.operatorToken.kind <= ts.SyntaxKind.LastAssignment
+            && ts.isIdentifier(n.left) && GUARDED.includes(n.left.text)) {
+          found.push(`${n.left.text} ${n.operatorToken.getText()} …`)
+        }
         ts.forEachChild(n, visit)
       }
       visit(sf)
       expect(found, `${file} 对受守护集合做了声明后 mutation —— 字面量快照对它全盲`).toEqual([])
+
+      // 并且声明必须是 const（让 ② 在编译期就不可能）
+      for (const st of sf.statements) {
+        if (!ts.isVariableStatement(st)) continue
+        for (const decl of st.declarationList.declarations) {
+          if (ts.isIdentifier(decl.name) && GUARDED.includes(decl.name.text)) {
+            expect(
+              (st.declarationList.flags & ts.NodeFlags.Const) !== 0,
+              `${file} 的 ${decl.name.text} 不是 const 声明`,
+            ).toBe(true)
+          }
+        }
+      }
+    }
+  })
+
+  /**
+   * 所有「位置规则调用之前就拒绝」的集合都必须与通用白名单互斥 —— 不只 SPECIALIZED。
+   * 见上一条注释里 codex 第 3 轮的场景。
+   */
+  it('所有前置拒绝集合都与 INVENTORY_GENERIC 互斥', () => {
+    const sf = parseFile(ENGINE_TS)
+    for (const name of ['SPECIALIZED_DOC_TYPES', 'SYSTEM_DERIVED_DOC_TYPES']) {
+      const rejected = new Set(setMembers(sf, name))
+      const overlap = (INVENTORY_GENERIC_DOC_TYPES as readonly string[]).filter((t) => rejected.has(t))
+      expect(overlap, `${name} 与通用类型白名单重叠 —— 对应 switch case 会变成 dead code`).toEqual([])
     }
   })
 
