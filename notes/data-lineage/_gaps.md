@@ -330,7 +330,7 @@ R1 + R1 复核 + R2 三轮重判一致："WorkFine 完全无 pickup 实体"，�
 - 现状：5434 现状 `point_transactions` 0 行 / `client_wechat_users.points_balance > 0` 用户数 = 0 / `operation_logs WHERE action LIKE 'points.%'` = 0 行 / `points.settleFailed` = 0 行（说明 `settlePointsSafe` 一次都没被调用过，不是被 catch 吞错）
 - 业务影响：① 顾客积分余额永远为 0 → client `points.balance` API 返回 0 → 顾客感知"无积分系统"；② member_level 升档时三件套权益里的"积分赠送"100% 失效；③ admin `/points` 页面永远空 + `distinctTypes` 下拉永远为空数组
 - 根因候选（按可能性降序）：① migrate-* 历史回填脚本（订单/服务/卡）确认未补发积分（10-points.md L22 已标），所有 142,811 行历史订单是 batch import，积分流水从未补发；② 真实生产 wxpay/alipay webhook 自 2026-04-10 baseline reset 后未触发过任何成功支付；③ `POINTS_ACCRUAL_ENABLED=false` 环境变量被部署侧默认禁用；④ cron-worker 容器未启动 / STEP 2/3/4 未被 cron 触发
-- 修复（顺序）：A `tcb fn invokefunction --name payNotify` 用真实订单 id 跑一次 dry-run 看是否 `feature-flag-disabled` 短路；B `docker exec fengyu-cron-worker node cron-worker.js --once` 看 STEP 5 audit 输出；C 写一次性补偿脚本 `db/scripts/backfill-points-from-orders.js` 扫描历史 sale_orders 调 `settlePointsForOrder` 回填（差值法天然幂等）
+- 修复（顺序）：A `tcb fn invokefunction --name payNotify` 用真实订单 id 跑一次 dry-run 看是否 `feature-flag-disabled` 短路；B `docker exec fengyu-cron-worker node --conditions=react-server cron-worker.mjs --once` 看 STEP 5 audit 输出；C 写一次性补偿脚本 `db/scripts/backfill-points-from-orders.js` 扫描历史 sale_orders 调 `settlePointsForOrder` 回填（差值法天然幂等）
 
 **P0：派生单 `ref_sale_order_id` 6 行全部 NULL，链净额计算依据缺失**
 

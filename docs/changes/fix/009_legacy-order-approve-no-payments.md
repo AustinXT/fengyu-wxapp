@@ -54,7 +54,7 @@ related: ["arch/001"]
 ## 后续 TODO
 - [x] 提交 PR → merge main → 部署 admin（含 cron-worker，使 I1 豁免生效）。
 - [x] 部署后回填：dev(47.113.202.7:5433) `--apply`，再 prod(118.178.196.26:5433) `--apply`（2026-07-20 完成：双库各删 1987 行；两库同源 baseline，fix/009 写作时的 902 为早期快照）。
-- [ ] 部署后跑一次 `docker exec fengyu-cron-worker node cron-worker.js --once`，确认 STEP 11 无 legacy 单 I1 违规。
+- [ ] 部署后跑一次 `docker exec fengyu-cron-worker node --conditions=react-server cron-worker.mjs --once`，确认 STEP 11 无 legacy 单 I1 违规。
 
 ## 预防措施
 - [ ] 历史单（`legacy_source` 非空）在任何「全局不变量校验 / 聚合」里默认排除；新增不变量时主动决策是否纳入 legacy（参考 I5 白名单范式，而非默认全收）。

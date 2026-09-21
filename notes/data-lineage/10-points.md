@@ -182,7 +182,7 @@ PG 量化指标全部命中。
   4. cron-worker 容器是否启动 / STEP 2/3/4 是否被 cron 触发未知
 - **修复**：
   - A 立即 `tcb fn invokefunction --name payNotify` 用真实订单 id 跑一次 dry-run，看是否报错或被 `feature-flag-disabled` 短路（保留 console.log 现场）
-  - B 立即 `docker exec fengyu-cron-worker node cron-worker.js --once` 看 STEP 5 audit 输出
+  - B 立即 `docker exec fengyu-cron-worker node --conditions=react-server cron-worker.mjs --once` 看 STEP 5 audit 输出
   - C 写一次性补偿脚本 `db/scripts/backfill-points-from-orders.js` — 扫描 `sale_orders WHERE sale_order_type='销售单' AND paid_amount > 0 AND client_user_id IS NOT NULL` 调 `settlePointsForOrder` 历史回填（基于差值法天然幂等 + 大量不会重复入账）
 
 #### 🔴 高危 #2：派生单 `ref_sale_order_id` **6 行全部 NULL**，链净额计算依据缺失
