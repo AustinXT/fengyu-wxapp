@@ -3982,7 +3982,7 @@ const LAKALA_PAID_TRADE_STATES = ['SUCCESS', 'PART_REFUND', 'REFUND']
 async function resolveLakalaMerchantForStore(
   storeId: string | null,
 ): Promise<{ merchantNo: string; termNo: string } | null> {
-  if (!storeId || !lakalaIsReady()) return null
+  if (!storeId) return null
   const rows = await db.execute(sql`
     SELECT lm.merchant_no, lm.term_no, lm.enabled
       FROM stores s
@@ -4110,7 +4110,9 @@ export const closeOrder = withPermission(
   //
   // 必须在事务之外：这是一次外部 HTTPS 往返，放进事务会把订单行锁持有到网络返回。
   // 作废与事务之间若有顾客重新发起支付，事务内的 CAS 会重新拦住（fail-closed）。
-  if (orderCtx?.lakalaOutOrderNo) {
+  // 拉卡拉未配置时整段跳过：行为退回改动前（下面的 CAS 会给出「在线支付处理中，暂不能
+  // 关闭订单」），而不是让这类订单彻底关不掉。与 staffApi 的通道未配置分支同口径。
+  if (orderCtx?.lakalaOutOrderNo && lakalaIsReady()) {
     const voidResult = await voidActiveOnlinePaymentIntent(
       saleOrderId,
       orderCtx.lakalaOutOrderNo,

@@ -22,9 +22,8 @@ const https = require('https')
 const crypto = require('crypto')
 const { URL } = require('url')
 
-const CLIENT_API_HTTP_URL = process.env.CLIENT_API_HTTP_URL
-const CLIENT_SECRET = process.env.CLIENT_SECRET
-
+// 每次读 process.env 而不是模块加载时快照：云函数实例复用期间 env 不变，读取开销可忽略，
+// 但这让「未配置时退回原行为」这条分支在单测里可被真实触发（模块常量无法在测试中改写）。
 const DEFAULT_TIMEOUT_MS = 20000
 
 function postJson(urlStr, body, headers, timeoutMs) {
@@ -61,7 +60,7 @@ function postJson(urlStr, body, headers, timeoutMs) {
 }
 
 function isConfigured() {
-  return Boolean(CLIENT_API_HTTP_URL && CLIENT_SECRET)
+  return Boolean(process.env.CLIENT_API_HTTP_URL && process.env.CLIENT_SECRET)
 }
 
 /**
@@ -84,11 +83,11 @@ async function callClientApi(action, payload) {
     payload: payload || {},
     timestamp: Date.now(),
   })
-  const sig = crypto.createHmac('sha256', CLIENT_SECRET).update(body).digest('hex')
+  const sig = crypto.createHmac('sha256', process.env.CLIENT_SECRET).update(body).digest('hex')
 
   let resp
   try {
-    resp = await postJson(CLIENT_API_HTTP_URL, body, { 'x-fengyu-signature': sig })
+    resp = await postJson(process.env.CLIENT_API_HTTP_URL, body, { 'x-fengyu-signature': sig })
   } catch (err) {
     throw new Error(`INVALID_STATE: clientApi 调用失败：${err.message}`)
   }

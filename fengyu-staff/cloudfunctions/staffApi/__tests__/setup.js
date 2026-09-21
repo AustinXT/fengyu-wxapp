@@ -42,11 +42,23 @@ const mockConfig = {
   FALLBACK_POINTS_DEDUCTION_MAX_RATE: 0.03,
 }
 require.cache[configPath] = { id: configPath, filename: configPath, loaded: true, exports: mockConfig }
-globalThis.__mocks__ = { pg: mockPg, cloud: mockCloud, mssql: mockMssql, wxacode: mockWxacode, config: mockConfig }
+// staffApi → clientApi 跨 env 桥（#214 关闭订单前请 clientApi 向渠道关单）。
+// isConfigured 默认 false = 未配通道，等价于改动前的行为；需要覆盖真实分支的用例自行改 mock。
+const clientApiBridgePath = require.resolve('../utils/client-api-bridge')
+const mockClientApiBridge = {
+  isConfigured: vi.fn(() => false),
+  callClientApi: vi.fn(async () => ({})),
+}
+require.cache[clientApiBridgePath] = {
+  id: clientApiBridgePath, filename: clientApiBridgePath, loaded: true, exports: mockClientApiBridge,
+}
+globalThis.__mocks__ = { pg: mockPg, cloud: mockCloud, mssql: mockMssql, wxacode: mockWxacode, config: mockConfig, clientApiBridge: mockClientApiBridge }
 beforeEach(() => {
   mockPg.query.mockReset().mockResolvedValue([])
   mockPg.transaction.mockReset().mockImplementation(async (cb) => { const client = { query: vi.fn(async () => ({ rows: [], rowCount: 0 })) }; return await cb(client) })
   mockPg.getPool.mockReset().mockReturnValue({})
+  mockClientApiBridge.isConfigured.mockReset().mockReturnValue(false)
+  mockClientApiBridge.callClientApi.mockReset().mockResolvedValue({})
   mockCloud.init.mockReset()
   mockCloud.getWXContext.mockReset().mockReturnValue({ OPENID: 'test-openid-001', APPID: 'wxe3f5d9ee6a94d22d', UNIONID: undefined })
   mockMssql.query.mockReset().mockResolvedValue([])
