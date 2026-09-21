@@ -30,7 +30,7 @@
 | staffApi vitest | **60 文件 / 2091 用例全绿**（60 skipped） | 含全部 `cross-end-*` snapshot |
 | admin `tsc --noEmit` | **0 错误** | — |
 | staff 小程序 `tsc --noEmit` | **0 错误** | #123 / #159 的 AC 之一 |
-| staff L2 e2e-cloudfn（连 dev 库） | **34 PASS / 20 FAIL** | 失败分析见 §4 |
+| staff L2 e2e-cloudfn（连 dev 库） | 起点 **34 PASS / 20 FAIL** → 校正后 **54 / 54 全绿** | 20 个失败逐个定性后**全是测试债**，已全部修复；见 §7.4 |
 | admin 只读 UI 验收（dev 站点） | **5 PASS / 3 SKIP** | 新建套件，见 §5 |
 | #136 守护反向验证 | **双向响亮失败** | 见 §3.3 |
 
@@ -103,9 +103,13 @@ I6  首次支付归属日 = 订单归属日                  → 0 违规
 
 `gh issue view 70` 的 `stateReason = NOT_PLANNED`，关闭评论写明"尚未发现数据模型、后台配置入口、兑换下单接口或顾客/员工端流程"。本次复核确认：全仓无 `积分商城` / `points_mall` / 兑换下单相关实现。**结论：不是验收不通过，是需求未开工而被关单，需求本身仍然有效。**
 
-## 四、staff L2 回归基线（34 PASS / 20 FAIL）
+## 四、staff L2 回归基线（起点 34 / 20，校正后 54 / 54）
 
-20 个失败已单独重跑确认**稳定复现**，非并发污染。按性质分三类：
+20 个失败已单独重跑确认**稳定复现**（非并发污染），逐个定性后**没有一个是功能回归**。
+下面保留当时的初判，最终定性与修复见 §7.4。
+
+> ⚠ 跑全套时别同时开两个 `run-all.mjs`：它们共用 `TE2LS` 命名空间，会互相清夹具。
+> 本次就因重复启动导致 alloc 三个用例假红，单跑即通过。
 
 ### 4.1 与本次验收范围相关（3 个，均为测试债）
 
@@ -122,7 +126,8 @@ I6  首次支付归属日 = 订单归属日                  → 0 违规
 - `smoke-confirm-offline-debt-card`：确认线下收款时储值卡抵扣未发生（现金应收 4000 而非 3100、卡余额未扣、缺"储值卡抵扣"行）。**涉及资金链路，建议单独立项排查**，本次未定性
 - 其余 deny / rbac 类：多为夹具与角色绑定约束（如"角色 manager 不能绑定到部门型组织节点"）冲突
 
-> **结论：L2 基线当前是红的，但红的主因是测试未随 #139 / #154 / 进销存开关更新，不是这 28 条 issue 的功能回归。** 建议单独立项做一轮 L2 夹具与期望校正。
+> **结论：L2 基线之前是红的，但红的主因是测试未随 #139 / #154 / 0039 约束 / 权限矩阵更新，
+> 不是这 28 条 issue 的功能回归。校正工作已在本轮完成（§7.4），基线现为 54/54。**
 
 ## 五、dev admin 只读 UI 验收（新增套件）
 
@@ -166,7 +171,112 @@ cron STEP 9 只告警不修复，告警持续堆积无人处理。与 MEMORY 中
 - dev admin 版本 `v1.16.33`，与 worktree 最近 tag 一致 —— 本批改动**已发到 dev**
 - dev 库最新迁移 id=49（2026-09-21 12:44），0040/0041/0046/0047 均已应用
 
-## 七、复跑方式
+## 七、排查结论与已做的处置（2026-09-21 补）
+
+### 7.1 【最重要】这批改动在 prod 上基本没上线
+
+| 项 | dev | prod |
+|---|---|---|
+| 迁移 | 0047（全量） | **0040**，待应用 **7 条**（0041~0047） |
+| 0041 视图直读 | ✅ | ❌ 仍有 5 处 `paired_payment`（旧 CASE+LATERAL） |
+| `trg_sale_orders_sync_payment_attribution` | ✅ | ❌ 不存在 |
+| `chk_sop_attribution_date_present` | ✅ | ❌ 不存在 |
+| `sale_items.converted_quantity`（0046） | ✅ | ❌ 不存在 |
+| admin 镜像 | v1.16.33 | **e0e7d734（2026-09-12）**，早于 #137 合入 |
+
+即 **#137 / #138 / #139 / #140 / #141 的口径收敛、#154 拆列、#183 导出列在生产上全都没生效**。
+当前 prod 是「旧代码 + 旧库」自洽状态，**没有在出错**：实测 prod I1 / I2 / I2b / I4 / I5 全部 0 违规。
+prod I6 有 34 条脱拍且每天新增，但旧视图有 CASE 回退兜着，不构成错账；这 34 条会被
+**0041 的「① 回填首次支付行」自动拉齐**，不需要额外脚本。
+
+**新增 `db/scripts/preflight-release.js`**（只读）：一条命令给出目标库落后几个迁移、
+待应用清单与逐条风险、5 项不变量现值、0041/0046 交付物是否到位，以及出自
+`docs/changes/arch/012` 的执行顺序硬约束。对 prod 已跑通。
+
+> 结论修订：本报告 §1 的「27 条达标」指**代码与 dev 环境达标**，不等于生产已修复。
+
+### 7.2 I3 积分虚高：根因是到店积分从不建批次
+
+prod 1210 户账面虚高 46940 分（dev 1195 户 / 45900 分）。根因：
+
+```
+「到店赠送」正向流水 2759 条 / 55180 分，point_batches 里一条对应记录都没有
+```
+
+三端 `visit-points`（staffApi / clientApi / admin lib）发放时只 `INSERT point_transactions`
++ `UPDATE points_balance`，**从不建批次**；而消费赠送路径（`utils/points.js` 的
+`grantPointBatch`、`points-settle.ts`）都建。后果三条：① I3 永久违规、cron 每日刷告警；
+② **到店积分事实上永不过期**（过期处理只扫批次），与 #67 的 365 天口径相悖；
+③ 抵扣时 `consumePointBatches` 尽力扣、扣不够也不报错，而余额校验看 `points_balance`
+—— 所以**顾客不吃亏**，但账本长期不平，将来若把余额改成由批次汇总，这部分会凭空消失。
+
+**已做**：
+- 三端 `visit-points` 补建批次（与 `grantPointBatch` 逐字同口径：365 天、`earned_at` 取流水
+  `created_at`）。两端单测全绿；并在 dev 库用事务 + ROLLBACK 实跑了改后的 SQL，
+  确认批次正确落地（`到店赠送 | 20 | 20 | 365 天`）且无残留。
+- 新增 `db/scripts/backfill-visit-points-batches.js`，**默认 dry-run，须显式 `--apply`**。
+  dev 上预演：1195 户 / 2523 行补建 / 保留额合计 45900，与缺口完全吻合，无一户未覆盖。
+  口径：按用户缺口 D 倒序（新的先保留）分配 `remaining`，`expire_at` = 流水时间 + 365 天。
+  存量全部落在 2026-08-24~09-21，**没有"补建即过期"的行**，所以不需要业务拍板。
+
+### 7.3 #146 AC4 补齐：SQL 可执行性冒烟
+
+新增 `fengyu-admin/tests/e2e-actions/smoke-cron-sql-executable.mjs`：读 cron STEP 源文件、
+抽出每个 `db.execute(sql\`…\`)` 的 SQL、还原编译期常量后逐块 `EXPLAIN`。
+不调用 STEP 本体（它命中违规会写 operation_logs + 推企微，I3 现在真有违规），
+也不抄 SQL 副本（抄本会与源码各自漂移）。
+
+覆盖 4 个只读巡检 STEP 共 **23 块 SQL，全部通过**。
+**反向验证**：把 I1 的 `WHERE` 挪回 `LEFT JOIN` 之前（复刻 #146 的原始写法），
+脚本立刻报 `syntax error at or near "LEFT"`；回滚即绿 —— 正是现有 `vi.mock` 单测抓不到的那个。
+
+### 7.4 L2 失败的定性与修复（20 个失败全部修完）
+
+**结论先行：20 个失败**逐个定性后**没有一个是功能回归**，全是测试债。五类根因：
+
+| 根因 | 涉及用例 | 说明 |
+|------|---------|------|
+| 夹具漏建「逐笔受领行」 | alloc×4、refund-core、refund-cascade-channels、order-refund、order-refund-list-detail、service-refund-freeze | 真实链路由 `capturePaymentAllocatables` 在付款事务内写 `sale_payment_item_receipts`；夹具直接 INSERT `sale_order_payments` 绕过了它。缺了它会以两种完全不同的面目暴露：分配报「saleItemId 不属于该回款」、退款报「退款金额无法完整映射到商品行实收」 |
+| 查了订单维度的遗留表 | refund-core、refund-cascade-channels、alloc-save、alloc-delete | 分配与冲销实际落 `sale_payment_item_allocations`。**这一条不只是查不到**：两处「负数冲销净额=0」断言在空集上恒真 —— 守护看着绿，其实什么都没验 |
+| 期望没跟上语义变更 | order-list(#139)、两个 conversion(#154 拆列)、alloc-save(整十规则 2026-07-21 取消)、confirm-offline / xend-scan(预选 vs 实扣字段)、order-pickup(错误前缀)、order-deposit(寄存单改走审批) | 详见下表 |
+| 0039 新增的 DB 级校验 | deny-non-manager、order-refund-list-detail、order-pickup(三处) | 角色×节点类型 trigger、库存 SKU 价格模式 trigger、批次零余额建仓 trigger |
+| 权限矩阵收紧 | rbac-hq-level、rbac-market-level | `customer_mgr` / `product` 本就无 `data_center:dashboard`（dev 与 prod 一致），用例却对 5 个角色一视同仁要求管理层入口 |
+
+几个值得单独记的：
+
+- **寄存单**：`createDeposit` 现在落「待审批」，审批入账在 admin 的 `approveDepositOrder`。
+  用例原本断言的 `paid_sessions` / `unit_real_price` / `received` 都是审批**之后**才成立的，
+  在 staff L2 这层无论如何跑不出来 —— 已移交 admin 侧覆盖。
+- **order-pickup**：开启库存联动后，测试数据在共享 dev 库上**根本清不掉**
+  （`inventory_movements` append-only 且 FK 引用 `doc_items` → docs 删不掉 → 顾客/员工/订单删不掉）。
+  这正是「库存链路只跑一次性 docker 库」这条既有约定的由来。已改为按
+  `INVENTORY_LINKAGE_ENABLED` 分流：默认跑主链路，库存断言需显式开启。
+- **product-skulist**：夹具注释假设「一级品项已在生产库 seed」，但两库实测的一级品类只有
+  其他/加项/家居/拓客引流卡/招牌/明星/王牌，夹具用的名字一个都不在 ——
+  `skuList` 里 `JOIN product_categories parent` 把测试 SKU 整个过滤掉了。已改为按需补建。
+
+#### 逐条明细
+
+| 用例 | 定性 | 处置 |
+|------|------|------|
+| `smoke-confirm-offline-debt-card` | **测试债，非资金退化**：夹具写 `prepaid_card_amount`（已结算净额），而 `confirmOffline` 读 `pending_prepaid_card_amount`（预选待扣）。夹具造出「卡已扣但余额没少」的自相矛盾态，于是被当成没预选卡、欠款全算现金 | 给 `createTestSaleOrder` 加 `pendingPrepaidCardAmount` 参数并修正 `payable_amount` 公式；用例**已转绿**（现金 3100 + 卡 900 = 4000） |
+| `smoke-alloc-save/delete/suggest`、`smoke-allocation-freeze` | **测试债**：往遗留表 `sale_payment_allocatable_items`（dev 尚存 390 行）写受领行，而生产侧读写的是 `sale_payment_item_receipts`（8513 行）。写错表不报错，只会让分配一律被拒成「saleItemId … 不属于该回款」 | 四个用例改到正确表；`smoke-allocation-freeze` 已转绿。`smoke-alloc-save` 另修三处过时期望：整十百分比规则已于 2026-07-21（`6f4f2d4a`）有意取消、落库表是 `sale_payment_item_allocations`（经 `receipt_id` 关联、金额列 `allocated_amount`）、超额文案改版 |
+| `smoke-order-list` | **#139 的预期后果**，代码注释已写明「纯待支付单不入选，与 admin 一致，非缺陷」 | 改为不带日期守护枚举合并，另加 1b 正面固化 #139 口径；**已转绿** |
+| `smoke-order-home-conversion` / `smoke-order-pickup-conversion` | **#154 拆列后的新语义**：折抵写 `converted_quantity` 而非 `picked_up_quantity` | 断言改到新列并补「两列之和不变」；**已转绿**（前者的 #182 段因 PR #196 未合默认跳过） |
+| `smoke-order-pickup` | 0039 的三道库存 trigger + 联动开启后数据清不掉 | 夹具按新规则重建 + 按开关分流；**已转绿** |
+| `smoke-order-deposit` | 寄存单改走审批，入账断言已不属 staff 层 | 断言改到「提交审批」语义，入账部分移交 admin；**已转绿** |
+| `smoke-rbac-hq-level` / `smoke-rbac-market-level` | 权限矩阵里 customer_mgr / product 无管理层入口 | 按矩阵分流（有权的进得去、无权的被挡）；**已转绿** |
+| `smoke-product-skulist` | 一级品类名在库中不存在，被 `JOIN parent` 滤掉 | 夹具按需补建一级品类；**已转绿** |
+| `smoke-deny-non-manager` | 「部门 scope 员工」已被 0039 trigger 根除，场景不可达 | 翻转为守护该约束本身仍生效；**已转绿** |
+| `smoke-xend-scan-confirm-scope` | 同 confirm-offline：预选 vs 实扣字段写错 | 改用 `pendingPrepaidCardAmount`；**已转绿** |
+
+### 7.5 遗留表待清理（新发现）
+
+`sale_payment_allocatable_items` 与 `sale_payment_item_receipts` 两张表并存，前者仅剩 390 行
+历史数据、生产代码已不再读写，但 `db/schema/order.ts` 仍定义它，多个 backfill 脚本仍引用。
+建议单独立项确认后下线，否则还会有人照着旧表名写测试或脚本。
+
+## 八、复跑方式
 
 ```bash
 # 静态 + 单测
