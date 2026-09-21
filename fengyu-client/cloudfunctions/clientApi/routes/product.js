@@ -10,6 +10,7 @@ const {
   PRODUCT_THUMB_BOX_SMALL,
   PRODUCT_THUMB_BOX_LARGE,
   PRODUCT_DETAIL_IMAGE_MAX_PIXELS,
+  PRODUCT_DETAIL_IMAGE_MAX_COUNT,
 } = require('../utils/image')
 
 /**
@@ -542,10 +543,16 @@ async function spuDetail(ctx) {
       //
       // filter 掉无法保证的那些——详情长图是 wx:for 直接渲染、没有占位分支，
       // 留 null 会变成裂图。
+      //
+      // 张数也必须截断：单张封顶解决不了「很多张加起来撑爆」，而 admin 的 9 张上限
+      // 只在 UI 层，server action 与 DB 都没有约束（详见 image.js 的常量注释）。
+      // 先 filter 再 slice：保证截断后拿到的是 9 张**可用**的图，
+      // 而不是「9 张里混着几张被 filter 掉的空位」。
       detail_images: Array.isArray(product.detail_images)
         ? product.detail_images
             .map(img => safeThumbUrlByArea(img, PRODUCT_DETAIL_IMAGE_MAX_PIXELS))
             .filter(Boolean)
+            .slice(0, PRODUCT_DETAIL_IMAGE_MAX_COUNT)
         : [],
       skuList,
       bundleGroups,

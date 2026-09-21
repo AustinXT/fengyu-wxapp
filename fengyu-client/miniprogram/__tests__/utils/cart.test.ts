@@ -225,6 +225,49 @@ describe('issue #230：存量购物车快照的封面净化', () => {
     expect(getCart().items[0].coverImage).toBe('')
   })
 
+  /**
+   * 双谱系评审独立指出：净化逻辑自身不能 fail-open。
+   * 原实现用 `url.includes('imageMogr2/thumbnail/')` 做子串判断，下面这些全都会被放行。
+   */
+  describe('净化判据自身不得 fail-open', () => {
+    test('非 COS 域名把缩略串塞进别的参数值里 —— codex 给出的构造', () => {
+      // includes() 命中，但 img.example.com 根本不执行数据万象，返回的是原图
+      seedStorage([{ skuId: 's1', price: 100, quantity: 1,
+        coverImage: 'https://img.example.com/huge.png?x=imageMogr2/thumbnail/1080x1080' }])
+      expect(getCart().items[0].coverImage).toBe('')
+    })
+
+    test('管道链后段接放大规则 —— GLM 给出的构造', () => {
+      seedStorage([{ skuId: 's1', price: 100, quantity: 1,
+        coverImage: `${COS}?imageMogr2/thumbnail/400x400|imageView2/1/w/50000` }])
+      expect(getCart().items[0].coverImage).toBe('')
+    })
+
+    test('形态合法但档位异常大（10000x10000 仍是 400MB 解码）', () => {
+      seedStorage([{ skuId: 's1', price: 100, quantity: 1,
+        coverImage: `${COS}?imageMogr2/thumbnail/10000x10000` }])
+      expect(getCart().items[0].coverImage).toBe('')
+    })
+
+    test('面积模式档位异常大同样拒绝', () => {
+      seedStorage([{ skuId: 's1', price: 100, quantity: 1,
+        coverImage: `${COS}?imageMogr2/thumbnail/99999999@` }])
+      expect(getCart().items[0].coverImage).toBe('')
+    })
+
+    test('把可信域名塞进 userinfo 伪装', () => {
+      seedStorage([{ skuId: 's1', price: 100, quantity: 1,
+        coverImage: 'https://x.tcb.qcloud.la@evil.com/d/a.jpg?imageMogr2/thumbnail/400x400' }])
+      expect(getCart().items[0].coverImage).toBe('')
+    })
+
+    test('缩略参数后面还跟着别的 query', () => {
+      seedStorage([{ skuId: 's1', price: 100, quantity: 1,
+        coverImage: `${COS}?imageMogr2/thumbnail/400x400&imageView2/1/w/50000` }])
+      expect(getCart().items[0].coverImage).toBe('')
+    })
+  })
+
   test('非字符串 / 缺字段一律归一为空串，不抛', () => {
     seedStorage([
       { skuId: 's1', price: 100, quantity: 1, coverImage: null },

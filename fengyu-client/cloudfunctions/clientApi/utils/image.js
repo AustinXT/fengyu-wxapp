@@ -256,6 +256,23 @@ const PRODUCT_THUMB_BOX_LARGE = 1080
  */
 const PRODUCT_DETAIL_IMAGE_MAX_PIXELS = 2250000
 
+/**
+ * 详情长图的**张数**上限（issue #230 双谱系评审独立提出）。
+ *
+ * 单张封顶只解决「一张图撑爆进程」，解决不了「很多张加起来撑爆进程」——
+ * 页面级总量 = 张数 × 单张。admin UI 有 `max={9}`（`product-detail-page.tsx`），
+ * 但那只是**客户端**限制：`actions/products.ts` 的 `createProduct` / `updateProduct`
+ * 既无 zod 也无长度断言，`db/schema/product.ts` 的 `text().array()` 也没有 CHECK ——
+ * 持 `product:update` 权限的账号直调 server action 就能写进 50 张。
+ *
+ * 所以下发侧必须自己截断，不能信上游。9 与 admin UI 上限对齐。
+ * 截断后详情页最坏 = 头图 4.5MB + 9×8.6MB ≈ **82MB**（有硬上限）。
+ *
+ * 治本仍需在 admin action 加服务端校验 + DB 加 `cardinality(detail_images) <= 9` 约束，
+ * 那属 admin 端改动，见 PR 的后续项。
+ */
+const PRODUCT_DETAIL_IMAGE_MAX_COUNT = 9
+
 module.exports = {
   safeThumbUrl,
   safeThumbUrlByArea,
@@ -265,4 +282,5 @@ module.exports = {
   PRODUCT_THUMB_BOX_SMALL,
   PRODUCT_THUMB_BOX_LARGE,
   PRODUCT_DETAIL_IMAGE_MAX_PIXELS,
+  PRODUCT_DETAIL_IMAGE_MAX_COUNT,
 }

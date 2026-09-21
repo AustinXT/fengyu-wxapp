@@ -664,6 +664,41 @@ describe('issue #230：商品封面图缩略下发', () => {
     expect(ctx.result.spu.detail_images).toEqual([`${COS_DETAIL_URL}?${AREA}`])
   })
 
+  test('detail_images 张数被截断到 9 —— 单张封顶挡不住「很多张加起来」', async () => {
+    // admin 的 max={9} 只在 UI 层：actions/products.ts 无 zod / 无长度断言，
+    // db/schema 的 text().array() 也没有 CHECK。持 product:update 权限直调
+    // server action 就能写进 50 张 → 50×8.6MB ≈ 430MB。下发侧必须自己截断，不能信上游。
+    pg.query.mockResolvedValueOnce([mockProductRow({
+      detail_images: Array.from({ length: 50 }, (_, i) =>
+        `https://test-env-1300000000.tcb.qcloud.la/product-details/d${i}.jpg`),
+    })])
+    pg.query.mockResolvedValueOnce([])
+
+    const ctx = createCtx({ payload: { productId: 'p1' } })
+    await routes.spuDetail(ctx)
+
+    expect(ctx.result.spu.detail_images).toHaveLength(9)
+    // 截断后仍全部带面积缩略参数
+    for (const url of ctx.result.spu.detail_images) {
+      expect(url).toMatch(/imageMogr2\/thumbnail\/\d+@$/)
+    }
+  })
+
+  test('截断取的是 9 张可用图，不是「9 个位置里混着被剔除的空位」', async () => {
+    // 先 filter 再 slice：前 5 张不可缩略时，应拿到后面 9 张合规的，而不是只剩 4 张
+    const bad = Array.from({ length: 5 }, () => 'https://img.example.com/x.jpg')
+    const good = Array.from({ length: 12 }, (_, i) =>
+      `https://test-env-1300000000.tcb.qcloud.la/product-details/g${i}.jpg`)
+    pg.query.mockResolvedValueOnce([mockProductRow({ detail_images: [...bad, ...good] })])
+    pg.query.mockResolvedValueOnce([])
+
+    const ctx = createCtx({ payload: { productId: 'p1' } })
+    await routes.spuDetail(ctx)
+
+    expect(ctx.result.spu.detail_images).toHaveLength(9)
+    expect(ctx.result.spu.detail_images[0]).toContain('/g0.jpg')
+  })
+
   test('spuDetail：detail_images 为 NULL 时归一为空数组', async () => {
     pg.query.mockResolvedValueOnce([mockProductRow({ detail_images: null })])
     pg.query.mockResolvedValueOnce([])

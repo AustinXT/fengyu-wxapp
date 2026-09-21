@@ -44,19 +44,52 @@ export interface Cart {
 }
 
 /**
+ * 净化用的解码内存上限。不硬编码云函数那几个具体档位——那会变成第二份会漂移的常量表；
+ * 只卡「解码内存是否在合理范围」，任何合理档位都放行，异常大的拒掉。
+ * 2000×2000×4 ≈ 16MB / 4,000,000×4 ≈ 16MB，与 PRODUCT_THUMB_BOX_LARGE(1080) 留足余量。
+ */
+const SANITIZE_MAX_EDGE = 2000;
+const SANITIZE_MAX_AREA = 4000000;
+
+/**
+ * 只认「本项目 COS 域名 + 两段对象键 + query 恰好是一条缩略规则」这一种完整形态。
+ *
+ * ⚠️ **不能用 `url.includes('imageMogr2/thumbnail/')` 这种子串判断**：
+ * `https://img.example.com/huge.png?x=imageMogr2/thumbnail/1080x1080` 会命中子串而被放行，
+ * 但那个域名根本不执行数据万象，返回的是原图 —— 净化逻辑自身 fail-open 等于没做。
+ * （双谱系评审独立指出，codex 给出了上面这个构造。）
+ *
+ * 末尾 `$` 锚定保证 query 里**只有**这一条规则，杜绝
+ * `?imageMogr2/thumbnail/400x400|imageView2/1/w/50000` 这类管道链后段放大。
+ */
+const THUMBED_COVER_PATTERN =
+  /^https:\/\/[\w-]+(?:\.[\w-]+)*\.tcb\.qcloud\.la\/[\w-]+\/[\w.-]+\.(?:png|jpe?g|webp|gif)\?imageMogr2\/thumbnail\/(\d+x\d+|\d+@)$/i;
+
+/** 档位数值本身也要卡：形态合法但 `10000x10000` 仍是 400MB 解码 */
+function isSafeThumbRule(rule: string): boolean {
+  const box = rule.match(/^(\d+)x(\d+)$/);
+  if (box) return Number(box[1]) <= SANITIZE_MAX_EDGE && Number(box[2]) <= SANITIZE_MAX_EDGE;
+  const area = rule.match(/^(\d+)@$/);
+  if (area) return Number(area[1]) <= SANITIZE_MAX_AREA;
+  return false;
+}
+
+/**
  * issue #230：购物车是 localStorage **持久化快照** —— `coverImage` 在加购那一刻
  * 从接口返回值拷贝进来，之后不再回源。
  *
  * 云函数已改为只下发缩略 URL，但**本次发版之前**加购的条目里躺的仍是原图 URL，
  * 服务端改造对它们完全不起作用（这也是 lazy-load 救不了的：购物车条目少，首屏即全部可见）。
  *
- * 这里只做**拒绝**不做构造：不含缩略参数的一律置空，让它走已有的 cover-placeholder 分支。
+ * 这里只做**拒绝**不做构造：不是完整合规形态的一律置空，走已有的 cover-placeholder 分支。
  * 刻意不在前端重拼 URL —— URL 构造必须由服务端完全掌控（前端拼一份就等于多一处会漂移的规则）。
- *
- * 判据取 `imageMogr2/thumbnail/`：box 模式（`NxN`）与面积模式（`N@`）都带这个前缀。
+ * 校验与构造是两回事：这里是纵深防御的**拒绝**规则，方向是 fail-closed。
  */
 export function sanitizeCoverImage(url: unknown): string {
-  return typeof url === 'string' && url.includes('imageMogr2/thumbnail/') ? url : '';
+  if (typeof url !== 'string') return '';
+  const matched = url.match(THUMBED_COVER_PATTERN);
+  if (!matched) return '';
+  return isSafeThumbRule(matched[1]) ? url : '';
 }
 
 /**
