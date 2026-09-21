@@ -55,7 +55,42 @@ import { db } from '@/db'
 import { getSession } from '@/lib/auth'
 import type { AuthSession } from '@/lib/types'
 
-/** 按 actions/auth.ts 的真实产出形状构造 session（roles + 展开后的两个 scope 集合） */
+/**
+ * 按 actions/auth.ts 的真实产出形状构造 session。
+ *
+ * ⚠️ 每条 role 上的 `actions` / `scopeStoreIds` / `scopeOrgNodeIds` **必须齐全**：
+ * `scopeSessionToActions`（withPermission 内部）只有在三者都是数组时才走严格收紧路径，
+ * 缺任何一个就整段退回旧会话兼容分支、原样返回顶层 scope —— 那样「多角色账号不得跨角色
+ * 串用 scope」这条接缝就完全没被测到（codex 谱系指出）。
+ */
+type RoleSpec = {
+  role: string
+  scopeType: '总部' | '市场' | '门店'
+  scopeId: string
+  actions: string[]
+  scopeStoreIds: string[]
+  scopeOrgNodeIds: string[]
+}
+
+function sessionOf(...roles: RoleSpec[]): AuthSession {
+  return {
+    employeeId: 'OP-001',
+    name: '操作者',
+    phone: '13800000000',
+    roles: roles.map((r) => ({
+      role: r.role, scopeId: r.scopeId, scopeType: r.scopeType,
+      actions: r.actions, scopeStoreIds: r.scopeStoreIds, scopeOrgNodeIds: r.scopeOrgNodeIds,
+    })),
+    permissions: {
+      actions: Array.from(new Set(roles.flatMap((r) => r.actions))),
+      scopeStoreIds: Array.from(new Set(roles.flatMap((r) => r.scopeStoreIds))),
+      scopeOrgNodeIds: Array.from(new Set(roles.flatMap((r) => r.scopeOrgNodeIds))),
+    },
+  } as AuthSession
+}
+
+const EMPLOYEE_ACTIONS = ['employee:create', 'employee:update']
+
 function session(over: {
   role: string
   scopeType: '总部' | '市场' | '门店'
@@ -63,17 +98,12 @@ function session(over: {
   scopeStoreIds: string[]
   scopeOrgNodeIds?: string[]
 }): AuthSession {
-  return {
-    employeeId: 'OP-001',
-    name: '操作者',
-    phone: '13800000000',
-    roles: [{ role: over.role, scopeId: over.scopeId, scopeType: over.scopeType }],
-    permissions: {
-      actions: ['employee:create', 'employee:update'],
-      scopeStoreIds: over.scopeStoreIds,
-      scopeOrgNodeIds: over.scopeOrgNodeIds ?? [],
-    },
-  } as AuthSession
+  return sessionOf({
+    role: over.role, scopeType: over.scopeType, scopeId: over.scopeId,
+    actions: EMPLOYEE_ACTIONS,
+    scopeStoreIds: over.scopeStoreIds,
+    scopeOrgNodeIds: over.scopeOrgNodeIds ?? [],
+  })
 }
 
 const STORE_MANAGER = session({
@@ -204,6 +234,66 @@ describe('#228 组合层 — updateEmployee × 真实 scope 判据', () => {
     mockUpdateOk()
     await expect(updateEmployee('FY-001', { storeId: null, orgNodeId: null }))
       .resolves.toMatchObject({ success: false, message: '员工必须归属门店或组织节点之一' })
+  })
+})
+
+/**
+ * codex 谱系 P3：多角色账号的 scope 不得跨角色串用。
+ *
+ * `withPermission('employee:update', ...)` 会先跑 `scopeSessionToActions` 把 session 收紧到
+ * **持有该动作的那些角色**。若某个不持 `employee:update` 的第二角色把别的门店带进顶层 scope，
+ * 收紧后它必须消失 —— 否则「用 A 角色的动作 + B 角色的范围」就能越权。
+ */
+describe('#228 组合层 — 多角色 scope 收紧（不得跨角色串用）', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  const MIXED = sessionOf(
+    {
+      role: 'hr', scopeType: '门店', scopeId: 'org-s1',
+      actions: ['employee:create', 'employee:update'],
+      scopeStoreIds: ['S001'], scopeOrgNodeIds: ['org-s1'],
+    },
+    {
+      // 第二角色能看见 S002，但**不持** employee:update
+      role: 'customer_mgr', scopeType: '门店', scopeId: 'org-s2',
+      actions: ['customer:list'],
+      scopeStoreIds: ['S002'], scopeOrgNodeIds: ['org-s2'],
+    },
+  )
+
+  it('调到「只有另一个无权角色才看得见」的门店 → 拒绝', async () => {
+    ;(getSession as any).mockResolvedValue(MIXED)
+    mockCurrentEmployee({ storeId: 'S001', orgNodeId: 'org-s1' })
+    mockUpdateOk()
+
+    const result = await updateEmployee('FY-001', { storeId: 'S002' })
+
+    expect(result.success).toBe(false)
+    expect(result.message).toBe('无权将员工调至该门店')
+    expect(db.update).not.toHaveBeenCalled()
+  })
+
+  it('调到持有该动作的角色自己的门店 → 放行', async () => {
+    ;(getSession as any).mockResolvedValue(MIXED)
+    mockCurrentEmployee({ storeId: null, orgNodeId: 'org-s1' })
+    mockUpdateOk()
+
+    const result = await updateEmployee('FY-001', { storeId: 'S001' })
+
+    expect(result.success).toBe(true)
+  })
+
+  it('组织节点维度同样收紧：另一角色的 org 节点不可用', async () => {
+    ;(getSession as any).mockResolvedValue(MIXED)
+    mockCurrentEmployee({ storeId: 'S001', orgNodeId: 'org-s1' })
+    mockUpdateOk()
+
+    const result = await updateEmployee('FY-001', { orgNodeId: 'org-s2' })
+
+    expect(result.success).toBe(false)
+    expect(result.message).toBe('无权将员工调至该组织节点')
   })
 })
 

@@ -618,6 +618,17 @@ export const createEmployee = withPermission(
   if (data.orgNodeId && !isOrgNodeInScope(session, data.orgNodeId)) {
     return { success: false, message: '无权在该组织节点下创建员工' }
   }
+  /**
+   * #228：两端都不填 → 非 admin 拒绝。上面两条都以字段 truthy 为前提，双空时一条都不触发，
+   * 于是普通 manager 直接提交空表单就能建出一条 `employeeScopeCondition` 对**所有非 admin**
+   * 永不命中的员工记录：创建成功、返回 employeeId，但它立刻从创建者自己的名册里消失，
+   * 且此后任何非 admin 的 updateEmployee 都会因 scopeCond 命中 0 行而无法修复。
+   * 该手机号仍可被员工端 bindPhone 绑定 —— 一个管理侧不可见的活跃账号。
+   * 这与 updateEmployee 侧「变更后必须仍可见」是同一条不变量的 create 面。
+   */
+  if (!isAdminScope(session) && !data.storeId && !data.orgNodeId) {
+    return { success: false, message: '员工必须归属门店或组织节点之一' }
+  }
 
   // 校验手机号唯一性（事务外，快速短路）
   if (data.phone) {
@@ -780,6 +791,24 @@ export const updateEmployee = withPermission(
   const oldOrgNodeId = currentEmployee?.orgNodeId ?? null
 
   /**
+   * #228：旧记录存在但**不在 scope 内** → 立刻返回与「员工不存在」完全相同的一句话。
+   *
+   * 不加这道，下面「新旧值相同则跳过校验」的设计会变成一个**归属信息 oracle**：
+   * 拿 scope 外的员工编号反复提交不同的 storeId —— 猜错返回「无权将员工调至该门店」，
+   * 猜中其真实旧门店时因 `next === old` 跳过校验、最终由 UPDATE 命中 0 行返回
+   * 「员工不存在或无权修改」。两句话的差异就能枚举出任意员工的真实归属（orgNodeId 同理）。
+   *
+   * 只在 `currentEmployee` 存在时判：查不到的员工继续走原路径（UPDATE count=0 → 同一句话），
+   * 两条路径的响应因此不可区分。可见性判据必须与 `employeeScopeCondition` 同源（OR 语义）。
+   */
+  const oldRowVisible = isAdminScope(session)
+    || (!!oldStoreId && isInScope(session, oldStoreId))
+    || (!!oldOrgNodeId && isOrgNodeInScope(session, oldOrgNodeId))
+  if (currentEmployee && !oldRowVisible) {
+    return { success: false, message: '员工不存在或无权修改' }
+  }
+
+  /**
    * 归属变更的 scope 校验（#228）。
    *
    * 下面的 `scopeCond` 只约束**旧**记录在不在 scope 内，对 `data.storeId` / `data.orgNodeId`
@@ -808,18 +837,35 @@ export const updateEmployee = withPermission(
     return { success: false, message: '无权将员工调至该组织节点' }
   }
   /**
-   * ② 单端清空放行（市场级 manager 把门店员工转市场直属岗正是「storeId 清空 + orgNodeId 设市场节点」），
-   *    但**两端同时为空要拦**：`employeeScopeCondition` 是 `store_id ∈ scope OR org_node_id ∈ scope`，
-   *    双空的行对所有非 admin 都不命中 —— 包括操作者自己，所以这一步**不可逆**（想改回去
-   *    UPDATE 会命中 0 行）。更要命的是 `permission_roles` 一字不动：清角色只发生在
-   *    `isResigned === true` 分支，§AFF-03 也只在 `data.storeId` truthy 时跑。
-   *    于是任何持 `employee:update` 的人都能把一个**仍持有效角色、仍能登录**的账号
-   *    从所有非 admin 的员工名册里永久抹掉 —— 这是审计盲区，不是显示问题。
-   *    只拦「本次把归属清空」这一动作；历史上就双空的存量员工照常可编辑其它字段。
-   *    admin 不受限。
+   * ② 变更后该员工必须**仍在操作者的可见范围内**（非 admin）。
+   *
+   *    `employeeScopeCondition` 是 `store_id ∈ scope` **OR** `org_node_id ∈ scope`，
+   *    一旦变更后两个维度都不命中，这一步就**不可逆** —— 操作者自己也看不见了，想改回去
+   *    UPDATE 会命中 0 行。更要命的是 `permission_roles` 一字不动：清角色只发生在
+   *    `isResigned === true` 分支，§AFF-03 也只在 storeId 变更时跑。于是任何持
+   *    `employee:update` 的人都能把一个**仍持有效角色、仍能登录**的账号从所有非 admin 的
+   *    员工名册里永久抹掉 —— 这是审计盲区，不是显示问题。
+   *
+   *    写成「变更后仍可见」而非「两端不能都空」是因为后者漏掉了一整类（GLM 谱系发现）：
+   *    员工 `(storeId=本店, orgNodeId=外市场节点)` 靠 store 维度可见，单清 storeId 后
+   *    另一端虽非空却在 scope 外 —— 同样永久消失。两种情形现在由同一条不变量覆盖。
+   *
+   *    与合法场景完全兼容：市场级 manager 转市场直属岗时 orgNodeId 设的是自己 scope 内的
+   *    市场节点，`stillVisible` 成立。校验①（逐字段拦越权新值）与本条（拦不可逆消失）
+   *    互补且都必要：①防搬到别人那儿，②防搬到没人那儿。
+   *
+   *    只在归属**确实发生变更**时判；历史上就不可见的存量员工已被上面的 oldRowVisible 拦住。
    */
-  if (!isAdminScope(session) && !nextStoreId && !nextOrgNodeId && (oldStoreId || oldOrgNodeId)) {
-    return { success: false, message: '员工必须归属门店或组织节点之一' }
+  const ownershipChanged = nextStoreId !== oldStoreId || nextOrgNodeId !== oldOrgNodeId
+  const stillVisible = (!!nextStoreId && isInScope(session, nextStoreId))
+    || (!!nextOrgNodeId && isOrgNodeInScope(session, nextOrgNodeId))
+  if (!isAdminScope(session) && ownershipChanged && !stillVisible) {
+    return {
+      success: false,
+      message: !nextStoreId && !nextOrgNodeId
+        ? '员工必须归属门店或组织节点之一'
+        : '变更后该员工将不在你的管理范围内，请先转交给有权管理该归属的同事',
+    }
   }
 
   // 乐观锁 + scope 隔离：WHERE employee_id = $1 [AND updated_at = $2] [AND scope]
@@ -953,7 +999,9 @@ export const updateEmployee = withPermission(
     }
   }
 
-  await logUpdate(session, 'employee.update', 'employee', employeeId, currentEmployee as Record<string, unknown>, data)
+  // #228：传 updateData 而非原始 data —— 归属空串已归一为 null、resignedAt/resignationReason
+  // 由 action 自动推导，只有 updateData 才等于真正写进库的那一组值；传 data 会让审计 diff 失真
+  await logUpdate(session, 'employee.update', 'employee', employeeId, currentEmployee as Record<string, unknown>, updateData)
   revalidatePath('/employees')
   revalidatePath('/permissions')
   return { success: true, message: '员工信息已更新' }

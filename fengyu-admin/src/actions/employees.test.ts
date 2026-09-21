@@ -185,6 +185,10 @@ describe('createEmployee — 服务端输入校验', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     ;(getSession as any).mockResolvedValue(mockSession)
+    // mockSession 是 admin 角色；显式短路 #228 的归属可见性校验，让这些用例专注各自目标
+    ;(isAdminScope as any).mockReturnValue(true)
+    ;(isInScope as any).mockReturnValue(true)
+    ;(isOrgNodeInScope as any).mockReturnValue(true)
   })
 
   it('姓名为空 → 拒绝', async () => {
@@ -323,6 +327,10 @@ describe('updateEmployee — 服务端输入校验 + 错误处理', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     ;(getSession as any).mockResolvedValue(mockSession)
+    // mockSession 是 admin 角色；显式短路 #228 的归属可见性校验，让这些用例专注各自目标
+    ;(isAdminScope as any).mockReturnValue(true)
+    ;(isInScope as any).mockReturnValue(true)
+    ;(isOrgNodeInScope as any).mockReturnValue(true)
   })
 
   it('手机号格式错误 → 拒绝', async () => {
@@ -524,6 +532,24 @@ const FULL_FORM = {
 } as const
 const EXPECTED_AT = '2026-01-01T00:00:00.000Z'
 
+/**
+ * 判据按 id 区分，而不是整体 true / false。
+ *
+ * #228 的校验现在既看**新值**（能不能调过去）也看**旧值**（这行本来是否可见）——
+ * 整体 mock 成 false 会把旧行一起判成不可见，用例就只能测到「员工不存在或无权修改」
+ * 那条统一兜底，表达不出「旧值可见 + 新值越界」这个真正要锁的组合。
+ */
+const IN_SCOPE_STORES = new Set(['store-A', 'store-B'])
+const IN_SCOPE_NODES = new Set(['org-store-A', 'org-store-B', 'dept-A', 'market-1'])
+/** 取某个判据被问过的 id 列表（用于断言「除旧值外没问过别的」） */
+function askedIds(fn: unknown): string[] {
+  return ((fn as { mock: { calls: unknown[][] } }).mock.calls).map((c) => c[1] as string)
+}
+function applyScopeFixture() {
+  ;(isInScope as any).mockImplementation((_s: unknown, id: string) => IN_SCOPE_STORES.has(id))
+  ;(isOrgNodeInScope as any).mockImplementation((_s: unknown, id: string) => IN_SCOPE_NODES.has(id))
+}
+
 describe('updateEmployee — #228 归属变更必须落在 scope 内', () => {
   /**
    * `db.select` 第 1 次调用 = 读旧值（currentEmployee）。
@@ -552,8 +578,7 @@ describe('updateEmployee — #228 归属变更必须落在 scope 内', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     ;(getSession as any).mockResolvedValue(mockSession)
-    ;(isInScope as any).mockReturnValue(true)
-    ;(isOrgNodeInScope as any).mockReturnValue(true)
+    applyScopeFixture()
     ;(isAdminScope as any).mockReturnValue(false)
   })
 
@@ -568,7 +593,6 @@ describe('updateEmployee — #228 归属变更必须落在 scope 内', () => {
   it('storeId 改到 scope 外门店 → 拒绝（完整表单 + 乐观锁的真实调用形态），且零写入', async () => {
     mockCurrentEmployee({ storeId: 'store-A', orgNodeId: 'org-store-A' })
     mockUpdateOk()
-    ;(isInScope as any).mockReturnValue(false)
 
     const result = await updateEmployee(
       'FY-001', { ...FULL_FORM, storeId: 'store-OTHER' }, EXPECTED_AT,
@@ -583,7 +607,6 @@ describe('updateEmployee — #228 归属变更必须落在 scope 内', () => {
   it('orgNodeId 改到 scope 外组织节点 → 拒绝（完整表单 + 乐观锁），且零写入', async () => {
     mockCurrentEmployee({ storeId: null, orgNodeId: 'dept-A' })
     mockUpdateOk()
-    ;(isOrgNodeInScope as any).mockReturnValue(false)
 
     const result = await updateEmployee(
       'FY-001',
@@ -598,16 +621,15 @@ describe('updateEmployee — #228 归属变更必须落在 scope 内', () => {
   })
 
   /**
-   * 旧归属为 null 的职能岗员工（issue 点名的人群）。早先零覆盖 ——
-   * 给守卫加 `oldStoreId !== null` 前置条件即可让它对这批人整体失效而测试全绿。
+   * 职能岗员工（store_id 为 NULL、靠 org_node_id 命中 scope）—— issue 点名的人群。
+   * 早先零覆盖：给守卫加 `oldStoreId !== null` 前置条件即可让它对这批人整体失效而测试全绿。
    */
-  it('旧归属双空的员工被调到 scope 外门店 → 仍拒绝', async () => {
-    mockCurrentEmployee({ storeId: null, orgNodeId: null })
+  it('职能岗员工（storeId 为 null）被调到 scope 外门店 → 仍拒绝', async () => {
+    mockCurrentEmployee({ storeId: null, orgNodeId: 'dept-A' })
     mockUpdateOk()
-    ;(isInScope as any).mockReturnValue(false)
 
     const result = await updateEmployee(
-      'FY-001', { ...FULL_FORM, storeId: 'store-OTHER', orgNodeId: null }, EXPECTED_AT,
+      'FY-001', { ...FULL_FORM, storeId: 'store-OTHER', orgNodeId: 'dept-A' }, EXPECTED_AT,
     )
 
     expect(result.success).toBe(false)
@@ -615,25 +637,9 @@ describe('updateEmployee — #228 归属变更必须落在 scope 内', () => {
     expect(db.update).not.toHaveBeenCalled()
   })
 
-  it('旧归属双空的员工被调到 scope 外组织节点 → 仍拒绝', async () => {
-    mockCurrentEmployee({ storeId: null, orgNodeId: null })
-    mockUpdateOk()
-    ;(isOrgNodeInScope as any).mockReturnValue(false)
-
-    const result = await updateEmployee(
-      'FY-001', { ...FULL_FORM, storeId: null, orgNodeId: 'hq-1' }, EXPECTED_AT,
-    )
-
-    expect(result.success).toBe(false)
-    expect(result.message).toBe('无权将员工调至该组织节点')
-    expect(db.update).not.toHaveBeenCalled()
-  })
-
   it('storeId 合法但 orgNodeId 越界 → 仍被拒（两条校验都在，不是二选一）', async () => {
     mockCurrentEmployee({ storeId: 'store-A', orgNodeId: 'org-store-A' })
     mockUpdateOk()
-    ;(isInScope as any).mockReturnValue(true)
-    ;(isOrgNodeInScope as any).mockReturnValue(false)
 
     const result = await updateEmployee(
       'FY-001', { ...FULL_FORM, storeId: 'store-B', orgNodeId: 'dept-OTHER' }, EXPECTED_AT,
@@ -648,7 +654,6 @@ describe('updateEmployee — #228 归属变更必须落在 scope 内', () => {
   it('越权调店 + 同批标离职 → 仍拒绝，且离职清角色的事务也不执行', async () => {
     mockCurrentEmployee({ storeId: 'store-A', orgNodeId: 'org-store-A' })
     mockUpdateOk()
-    ;(isInScope as any).mockReturnValue(false)
 
     const result = await updateEmployee(
       'FY-001', { ...FULL_FORM, storeId: 'store-OTHER', isResigned: true }, EXPECTED_AT,
@@ -678,7 +683,6 @@ describe('updateEmployee — #228 归属变更必须落在 scope 内', () => {
       return { from }
     })
     mockUpdateOk()
-    ;(isInScope as any).mockReturnValue(false)
 
     const result = await updateEmployee(
       'FY-001',
@@ -707,14 +711,9 @@ describe('updateEmployee — #228 归属变更必须落在 scope 内', () => {
       const from = vi.fn().mockReturnValue({ where })
       return { from }
     })
-    let updateCall = 0
-    ;(db.update as any).mockImplementation(() => {
-      updateCall++
-      const where = vi.fn().mockResolvedValue({ count: 1 })
-      void updateCall
-      const set = vi.fn().mockReturnValue({ where })
-      return { set }
-    })
+    ;(db.update as any).mockImplementation(() => ({
+      set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({ count: 1 }) }),
+    }))
 
     const result = await updateEmployee('FY-001', { storeId: 'store-B' })
 
@@ -729,7 +728,7 @@ describe('updateEmployee — #228 归属变更必须落在 scope 内', () => {
   })
 
   /**
-   * #228 / boundary-critic P1-2：§AFF-03 会越权改写 permission_roles。
+   * boundary-critic P1-2：§AFF-03 会越权改写 permission_roles。
    *
    * `employeeScopeCondition` 是 `store_id ∈ scope` **OR** `org_node_id ∈ scope` ——
    * 员工靠 org_node_id 命中即可被更新，此时它的 store_id 可以指向操作者看不见的门店。
@@ -754,8 +753,6 @@ describe('updateEmployee — #228 归属变更必须落在 scope 内', () => {
       return { from }
     })
     mockUpdateOk()
-    // 新门店 store-A 在 scope 内、旧门店 store-OUT 不在
-    ;(isInScope as any).mockImplementation((_s: unknown, id: string) => id === 'store-A')
 
     const result = await updateEmployee('FY-001', { storeId: 'store-A' })
 
@@ -770,45 +767,43 @@ describe('updateEmployee — #228 归属变更必须落在 scope 内', () => {
 
   /**
    * 边界①：编辑表单会把未改动的归属字段一并回传。对 no-op 提交报「无权」是纯误伤，
-   * 所以校验只在新值 !== 旧值时触发 —— 这里让两个判据恒 false，仍必须放行。
+   * 所以新值校验只在 `next !== old` 时触发。
+   *
+   * 判据仍会被调用一次 —— 那是「旧行是否可见」那道（见下方信息 oracle 用例），
+   * 所以这里断言的是**没有以任何新值去问过判据**，而不是「完全没调用」。
    */
-  it('归属字段回传旧值（no-op 整表提交）→ 不做 scope 校验，放行', async () => {
+  it('归属字段回传旧值（no-op 整表提交）→ 不对新值做 scope 校验，放行', async () => {
     mockCurrentEmployee({ storeId: 'store-A', orgNodeId: 'org-store-A' })
     mockUpdateOk()
-    ;(isInScope as any).mockReturnValue(false)
-    ;(isOrgNodeInScope as any).mockReturnValue(false)
 
     const result = await updateEmployee('FY-001', { ...FULL_FORM }, EXPECTED_AT)
 
     expect(result.success).toBe(true)
-    expect(isInScope).not.toHaveBeenCalled()
-    expect(isOrgNodeInScope).not.toHaveBeenCalled()
+    // 只可能以**旧值**被问过（可见性判定，且它是短路 OR —— store 命中后就不再问 org）。
+    // 断言「除旧值外没问过别的」，不依赖短路顺序。
+    expect(askedIds(isInScope).filter((id) => id !== 'store-A')).toEqual([])
+    expect(askedIds(isOrgNodeInScope).filter((id) => id !== 'org-store-A')).toEqual([])
   })
 
   /**
    * 边界②：单端清空放行。市场级 manager 把门店员工转市场直属岗正是
-   * 「storeId 清空 + orgNodeId 设为市场节点」，拦掉 null 会打挂这条合法路径。
+   * 「storeId 清空 + orgNodeId 设为市场节点」—— 清空后仍靠 orgNodeId 可见。
    */
-  it('storeId 置 null 且 orgNodeId 给市场节点（转市场直属岗）→ 放行', async () => {
+  it('storeId 置 null 且 orgNodeId 给 scope 内市场节点（转市场直属岗）→ 放行', async () => {
     mockCurrentEmployee({ storeId: 'store-A', orgNodeId: 'org-store-A' })
     mockUpdateOk()
-    ;(isInScope as any).mockReturnValue(false)
-    ;(isOrgNodeInScope as any).mockReturnValue(true)
 
     const result = await updateEmployee(
       'FY-001', { ...FULL_FORM, storeId: null, orgNodeId: 'market-1' }, EXPECTED_AT,
     )
 
     expect(result.success).toBe(true)
-    // storeId=null 不进 isInScope；orgNodeId 才是这条路径真正要校验的那一端
-    expect(isInScope).not.toHaveBeenCalled()
     expect(isOrgNodeInScope).toHaveBeenCalledWith(mockSession, 'market-1')
   })
 
   /**
-   * 边界③：两端同时清空要拦。双空的行对所有非 admin 的 employeeScopeCondition
-   * 都不命中（含操作者自己 → 不可逆），而 permission_roles 一字不动
-   * （清角色只在 isResigned=true 分支，§AFF-03 只在 storeId truthy 时跑）——
+   * 边界③：变更后必须仍可见。两端同时清空是最直白的一种 ——
+   * 双空的行对所有非 admin 都不命中（含操作者自己 → 不可逆），而 permission_roles 一字不动，
    * 等于把一个仍持有效角色、仍能登录的账号从所有非 admin 名册里永久抹掉。
    */
   it('两端同时清空 → 拒绝，且零写入', async () => {
@@ -824,6 +819,24 @@ describe('updateEmployee — #228 归属变更必须落在 scope 内', () => {
     expect(db.update).not.toHaveBeenCalled()
   })
 
+  /**
+   * 边界③的另一半（GLM 谱系发现）：写成「两端不能都空」会漏掉这一整类 ——
+   * 员工 `(storeId=本店, orgNodeId=外市场节点)` 靠 store 维度可见，单清 storeId 后
+   * 另一端虽**非空**却在 scope 外，员工同样永久消失且不可逆。
+   */
+  it('单端清空后另一端在 scope 外 → 拒绝（非空也不行），且零写入', async () => {
+    mockCurrentEmployee({ storeId: 'store-A', orgNodeId: 'org-MX' })
+    mockUpdateOk()
+
+    const result = await updateEmployee(
+      'FY-001', { ...FULL_FORM, storeId: null, orgNodeId: 'org-MX' }, EXPECTED_AT,
+    )
+
+    expect(result.success).toBe(false)
+    expect(result.message).toBe('变更后该员工将不在你的管理范围内，请先转交给有权管理该归属的同事')
+    expect(db.update).not.toHaveBeenCalled()
+  })
+
   it('admin 两端同时清空 → 放行（不受限）', async () => {
     mockCurrentEmployee({ storeId: 'store-A', orgNodeId: 'org-store-A' })
     mockUpdateOk()
@@ -836,14 +849,34 @@ describe('updateEmployee — #228 归属变更必须落在 scope 内', () => {
     expect(result.success).toBe(true)
   })
 
-  it('历史上就双空的员工改其它字段 → 不被「两端不能都空」误伤', async () => {
-    mockCurrentEmployee({ storeId: null, orgNodeId: null })
-    mockUpdateOk()
+  /**
+   * codex 谱系 P2：「新旧值相同则跳过校验」会把响应差异变成**归属信息 oracle**。
+   *
+   * 拿 scope 外的员工编号反复提交不同的 storeId —— 猜错时返回「无权将员工调至该门店」，
+   * 猜中其真实旧门店时因 `next === old` 跳过校验、最终由 UPDATE 命中 0 行返回
+   * 「员工不存在或无权修改」。两句话的差异就能枚举出任意员工的真实归属。
+   *
+   * 修复是：旧行存在但不可见时立刻返回与「员工不存在」**完全相同**的一句话。
+   * 下面两条断言的正是「猜中」与「猜错」不可区分。
+   */
+  it('旧行在 scope 外 → 猜错旧门店与猜中旧门店返回完全相同的响应（无信息泄露）', async () => {
+    const probe = async (guess: string | null) => {
+      vi.clearAllMocks()
+      ;(getSession as any).mockResolvedValue(mockSession)
+      applyScopeFixture()
+      ;(isAdminScope as any).mockReturnValue(false)
+      mockCurrentEmployee({ storeId: 'store-SECRET', orgNodeId: 'org-SECRET' })
+      mockUpdateOk()
+      return updateEmployee('FY-OTHER', { ...FULL_FORM, storeId: guess, orgNodeId: 'org-SECRET' }, EXPECTED_AT)
+    }
 
-    const result = await updateEmployee('FY-001', { name: '李四' })
+    const wrongGuess = await probe('store-GUESS')
+    const rightGuess = await probe('store-SECRET')
 
-    expect(result.success).toBe(true)
-    expect(db.update).toHaveBeenCalled()
+    expect(rightGuess).toEqual(wrongGuess)
+    expect(wrongGuess.message).toBe('员工不存在或无权修改')
+    // 探测不得产生任何写入
+    expect(db.update).not.toHaveBeenCalled()
   })
 
   /** 空串是「不填」而非「一个叫 '' 的门店」，与 createEmployee 的 truthiness 口径对齐 */
@@ -852,38 +885,36 @@ describe('updateEmployee — #228 归属变更必须落在 scope 内', () => {
     const where = vi.fn().mockResolvedValue({ count: 1 })
     const set = vi.fn().mockReturnValue({ where })
     ;(db.update as any).mockReturnValue({ set })
-    ;(isInScope as any).mockReturnValue(false)
 
     const result = await updateEmployee(
       'FY-001', { ...FULL_FORM, storeId: '', orgNodeId: 'org-store-A' }, EXPECTED_AT,
     )
 
     expect(result.success).toBe(true)
-    expect(isInScope).not.toHaveBeenCalled()
+    expect(isInScope).not.toHaveBeenCalledWith(mockSession, '')
     expect(set).toHaveBeenCalledWith(expect.objectContaining({ storeId: null }))
   })
 
-  it('不涉及归属字段的编辑（改姓名）→ 两个判据都不调用', async () => {
+  it('不涉及归属字段的编辑（改姓名）→ 不以任何新值询问判据', async () => {
     mockCurrentEmployee({ storeId: 'store-A', orgNodeId: 'org-store-A' })
     mockUpdateOk()
 
     const result = await updateEmployee('FY-001', { name: '李四' })
 
     expect(result.success).toBe(true)
-    expect(isInScope).not.toHaveBeenCalled()
-    expect(isOrgNodeInScope).not.toHaveBeenCalled()
+    expect(askedIds(isInScope).filter((id) => id !== 'store-A')).toEqual([])
+    expect(askedIds(isOrgNodeInScope).filter((id) => id !== 'org-store-A')).toEqual([])
   })
 
   // admin 不受限（isInScope / isOrgNodeInScope 内部的 isAdminScope 短路）与真实 session 塑形
   // 由 employees.scope-integration.test.ts 覆盖 —— 本文件把这些判据整体 mock 掉了。
 })
 
-describe('createEmployee — #228 orgNodeId 同样受 scope 约束', () => {
+describe('createEmployee — #228 归属同样受 scope 约束', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     ;(getSession as any).mockResolvedValue(mockSession)
-    ;(isInScope as any).mockReturnValue(true)
-    ;(isOrgNodeInScope as any).mockReturnValue(true)
+    applyScopeFixture()
     ;(isAdminScope as any).mockReturnValue(false)
   })
 
@@ -896,7 +927,6 @@ describe('createEmployee — #228 orgNodeId 同样受 scope 约束', () => {
    */
   it('orgNodeId 不在 scope 内 → 拒绝，不进事务', async () => {
     ;(db.select as any).mockImplementation(mockSelectEmpty())
-    ;(isOrgNodeInScope as any).mockReturnValue(false)
     mockTransactionSuccess()
 
     const result = await createEmployee({ ...BASE, storeId: null, orgNodeId: 'market-OTHER' })
@@ -909,35 +939,59 @@ describe('createEmployee — #228 orgNodeId 同样受 scope 约束', () => {
 
   it('storeId 在 scope 内但 orgNodeId 越界 → 仍拒绝（两条校验都在）', async () => {
     ;(db.select as any).mockImplementation(mockSelectEmpty())
-    ;(isInScope as any).mockReturnValue(true)
-    ;(isOrgNodeInScope as any).mockReturnValue(false)
     mockTransactionSuccess()
 
-    const result = await createEmployee({ ...BASE, storeId: 'store-1', orgNodeId: 'dept-OTHER' })
+    const result = await createEmployee({ ...BASE, storeId: 'store-A', orgNodeId: 'dept-OTHER' })
 
     expect(result.success).toBe(false)
     expect(result.message).toBe('无权在该组织节点下创建员工')
     expect(db.transaction).not.toHaveBeenCalled()
   })
 
-  it('orgNodeId 在 scope 内 → 正常创建', async () => {
+  it('两端都在 scope 内 → 正常创建', async () => {
     ;(db.select as any).mockImplementation(mockSelectEmpty())
     mockTransactionSuccess('FY-260315001')
 
-    const result = await createEmployee({ ...BASE, storeId: 'store-1', orgNodeId: 'dept-1' })
+    const result = await createEmployee({ ...BASE, storeId: 'store-A', orgNodeId: 'dept-A' })
 
     expect(result.success).toBe(true)
   })
 
-  it('orgNodeId 为 null → 跳过校验（未分配组织节点）', async () => {
+  it('orgNodeId 为 null 但 storeId 在 scope 内 → 跳过组织节点校验，正常创建', async () => {
     ;(db.select as any).mockImplementation(mockSelectEmpty())
-    ;(isOrgNodeInScope as any).mockReturnValue(false)
     mockTransactionSuccess('FY-260315001')
 
-    const result = await createEmployee({ ...BASE, storeId: 'store-1', orgNodeId: null })
+    const result = await createEmployee({ ...BASE, storeId: 'store-A', orgNodeId: null })
 
     expect(result.success).toBe(true)
     expect(isOrgNodeInScope).not.toHaveBeenCalled()
+  })
+
+  /**
+   * 两个谱系独立命中的 P1：两条校验都以字段 truthy 为前提，双空时一条都不触发。
+   * 普通 manager 提交空表单即可建出一条对**所有非 admin** 永不命中的员工记录 ——
+   * 创建成功却立刻从自己名册消失，且此后任何非 admin 都无法修复（scopeCond 命中 0 行），
+   * 而该手机号仍可被员工端 bindPhone 绑定。这是 updateEmployee 侧同一条不变量的 create 面。
+   */
+  it('两端都不填 → 非 admin 拒绝，不进事务', async () => {
+    ;(db.select as any).mockImplementation(mockSelectEmpty())
+    mockTransactionSuccess()
+
+    const result = await createEmployee({ ...BASE, storeId: null, orgNodeId: null })
+
+    expect(result.success).toBe(false)
+    expect(result.message).toBe('员工必须归属门店或组织节点之一')
+    expect(db.transaction).not.toHaveBeenCalled()
+  })
+
+  it('两端都不填 + admin → 放行', async () => {
+    ;(db.select as any).mockImplementation(mockSelectEmpty())
+    mockTransactionSuccess('FY-260315001')
+    ;(isAdminScope as any).mockReturnValue(true)
+
+    const result = await createEmployee({ ...BASE, storeId: null, orgNodeId: null })
+
+    expect(result.success).toBe(true)
   })
 })
 
@@ -945,6 +999,10 @@ describe('updateEmployee — §AFF-03 门店变更 scope 同步', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     ;(getSession as any).mockResolvedValue(mockSession)
+    // mockSession 是 admin 角色；显式短路 #228 的归属可见性校验，让这些用例专注各自目标
+    ;(isAdminScope as any).mockReturnValue(true)
+    ;(isInScope as any).mockReturnValue(true)
+    ;(isOrgNodeInScope as any).mockReturnValue(true)
   })
 
   /**
