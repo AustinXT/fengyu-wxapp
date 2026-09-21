@@ -38,7 +38,7 @@ describe('业务域菜单（权限点驱动）', () => {
     const nodes = getVisibleMenuItems(makeSession({ role: 'admin' }))
     expect(visibleLeaves(makeSession({ role: 'admin' }))).toHaveLength(flattenMenuItems().length)
     expect(nodes.filter(isMenuParent).map((node) => node.label)).toEqual([
-      '经营业务', '客户运营', '商品商城', '库存管理', '组织管理', '系统管理',
+      '经营业务', '客户运营', '商品商城', '库存管理', '组织管理', '数据中心', '系统管理',
     ])
   })
 
