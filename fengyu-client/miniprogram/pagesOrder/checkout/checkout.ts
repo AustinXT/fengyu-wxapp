@@ -614,11 +614,25 @@ Page({
   },
 
   onPayMethodChange(e: WxEvent<string>) {
-    this.setData({ paymentMethod: e.detail as '微信' | '支付宝' | '线下' });
+    const method = e.detail as '微信' | '支付宝' | '线下';
+    // 与 onPayMethodTap 同款守卫：两条路都要挡（scan-pay 的教训）
+    if (this.data.hasActivePaymentIntent && method !== this.data.paymentMethod) {
+      wx.showToast({ title: '本次支付进行中，如需更换方式请先取消订单', icon: 'none' });
+      this.setData({ paymentMethod: this.data.paymentMethod });
+      return;
+    }
+    this.setData({ paymentMethod: method });
   },
 
   onPayMethodTap(e: WechatMiniprogram.TouchEvent) {
     const { method } = e.currentTarget.dataset as { method: '微信' | '支付宝' | '线下' };
+    // #214（round-14）：radio-group 的 disabled 挡不住单元格自己的 bindtap ——
+    // scan-pay 踩过同一个坑。活动意图下支付方式已冻结在那笔渠道单里（复用判据要求方式一致），
+    // 放行改写会导致提交时旧场次被意外作废重建，或直接撞 PAYMENT_INTENT_ACTIVE。
+    if (this.data.hasActivePaymentIntent && method !== this.data.paymentMethod) {
+      wx.showToast({ title: '本次支付进行中，如需更换方式请先取消订单', icon: 'none' });
+      return;
+    }
     this.setData({ paymentMethod: method });
   },
 
