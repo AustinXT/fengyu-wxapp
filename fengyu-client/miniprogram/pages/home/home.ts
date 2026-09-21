@@ -4,16 +4,13 @@ import { getCartCount, clearCart } from "../../utils/cart";
 import { callClientApi } from "../../utils/cloud";
 import { getCosBase } from "../../utils/cloud-env";
 import { createCoverWindow, type CoverWindow } from "../../utils/cover-window";
-import { appendUniqueSpuRows, decorateSpuRows } from "../../utils/spu-list";
+import { appendUniqueSpuRows, buildAppendPatch, decorateSpuRows, SPU_PAGE_SIZE } from "../../utils/spu-list";
 import { getIsMember } from "../../utils/member-pricing";
 
 const app = getApp<IAppOption>();
 
 // CloudBase CDN 基础 URL（随 env 切换 dev/prod 桶）
 const CDN_BASE = `${getCosBase()}/fengyu-client`;
-
-/** issue #248：每页条数，与云函数默认值一致（后端仍会按 PRODUCT_PAGE_SIZE_MAX 夹取） */
-const PAGE_SIZE = 20;
 
 interface Banner {
   id: string;
@@ -327,8 +324,8 @@ Page({
       const data = await callClientApi<{ spuList: any[]; nextCursor?: string | null; hasMore?: boolean }>(
         "product.search",
         cursor
-          ? { keyword: value, limit: PAGE_SIZE, cursor }
-          : { keyword: value, limit: PAGE_SIZE }
+          ? { keyword: value, limit: SPU_PAGE_SIZE, cursor }
+          : { keyword: value, limit: SPU_PAGE_SIZE }
       );
 
       // 防止旧搜索结果覆盖新搜索（用户可能已继续输入）。
@@ -339,7 +336,7 @@ Page({
       }
 
       const prev = append ? this.data.searchResults : [];
-      const rows = decorateSpuRows(data?.spuList || [], getIsMember(), prev.length) as SpuItem[];
+      const rows = decorateSpuRows(data?.spuList || [], getIsMember(), { startIndex: prev.length, dropSkuList: true }) as SpuItem[];
       const results = appendUniqueSpuRows(prev, rows);
 
       this._searchKeyword = value;
@@ -347,7 +344,11 @@ Page({
         cursor: data?.nextCursor ?? null,
         hasMore: Boolean(data?.hasMore),
       };
-      this._setListData("search", { searchResults: results, searchLoading: false });
+      this._setListData("search",
+        append
+          ? { ...buildAppendPatch("searchResults", prev.length, results), searchLoading: false }
+          : { searchResults: results, searchLoading: false }
+      );
     } catch (err) {
       console.error("_doSearch error:", err);
       if (this.data.searchValue.trim() === value) {
@@ -480,7 +481,7 @@ Page({
 
     const { activeCategoryKey } = this.data;
 
-    if (this._pageState[activeCategoryKey]?.hasMore) {
+    if (this.data.hasMore) {
       this._isLoadingNext = true;
       this.loadSpuList(activeCategoryKey, true).then(() => {
         this._isLoadingNext = false;
@@ -534,12 +535,12 @@ Page({
       const initData = await callClientApi<{
         groups?: CategoryGroup[]; categories: Category[]; spuList: any[];
         spuCategoryId?: string | null; nextCursor?: string | null; hasMore?: boolean;
-      }>("product.shopInit", { limit: PAGE_SIZE });
+      }>("product.shopInit", { limit: SPU_PAGE_SIZE });
       if (epoch !== this._dataEpoch) return;
 
       const groups: CategoryGroup[] = initData?.groups || [];
       const categories: Category[] = initData?.categories || [];
-      const listWithPrice = decorateSpuRows(initData?.spuList || [], getIsMember(), 0) as SpuItem[];
+      const listWithPrice = decorateSpuRows(initData?.spuList || [], getIsMember(), { dropSkuList: true }) as SpuItem[];
 
       this._allGroups = groups;
       this._allCategories = categories;
@@ -626,7 +627,7 @@ Page({
       const cursor = append ? this._pageState[categoryKey]?.cursor ?? null : null;
       const data = await callClientApi<{ spuList: any[]; nextCursor?: string | null; hasMore?: boolean }>(
         "product.spuList",
-        cursor ? { categoryId, limit: PAGE_SIZE, cursor } : { categoryId, limit: PAGE_SIZE }
+        cursor ? { categoryId, limit: SPU_PAGE_SIZE, cursor } : { categoryId, limit: SPU_PAGE_SIZE }
       );
       // 代次变了说明缓存在请求飞行期间被整体重置（下拉刷新 / 切门店）。此时 prev 已是空数组，
       // 继续写下去会把「只有第 N 页」当第 1 页存起来、并把游标推进到第 N+1 页，
@@ -634,7 +635,7 @@ Page({
       if (epoch !== this._dataEpoch) return;
 
       const prev = append ? (this._spuCache[categoryKey] || []) : [];
-      const rows = decorateSpuRows(data?.spuList || [], getIsMember(), prev.length) as SpuItem[];
+      const rows = decorateSpuRows(data?.spuList || [], getIsMember(), { startIndex: prev.length, dropSkuList: true }) as SpuItem[];
       const listWithPrice = appendUniqueSpuRows(prev, rows);
 
       // 写入缓存 + 翻页进度
@@ -646,7 +647,12 @@ Page({
 
       // 仅在仍在查看该分类时更新
       if (this.data.activeCategoryKey === categoryKey) {
-        this._setListData("browse", { spuList: listWithPrice, hasMore: Boolean(data?.hasMore) });
+        this._setListData("browse",
+          append
+            // 翻页只发新增的那些行，别每页都重发整列（O(N²) 的跨线程序列化）
+            ? { ...buildAppendPatch("spuList", prev.length, listWithPrice), hasMore: Boolean(data?.hasMore) }
+            : { spuList: listWithPrice, hasMore: Boolean(data?.hasMore) }
+        );
       }
     } catch (err: any) {
       console.error("loadSpuList error:", err);

@@ -72,18 +72,6 @@
   display: block;
 }
 
-.load-more-hint {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 24rpx 0;
-}
-
-.load-more-text {
-  font-size: 24rpx;
-  color: var(--color-text-hint);
-}
-
 .spu-body {
   padding: 18rpx 20rpx 16rpx;
 }

@@ -203,9 +203,9 @@ describe('product 列表分页', () => {
     } = routes.__pageSizeCaliber)
   })
 
+  const b64 = (v) => Buffer.from(JSON.stringify(v), 'utf8').toString('base64')
   const decodeCursor = (c) => JSON.parse(Buffer.from(c, 'base64').toString('utf8'))
-  const makeCursor = (sortOrder, productId) =>
-    Buffer.from(JSON.stringify([sortOrder, productId]), 'utf8').toString('base64')
+  const makeCursor = (sortOrder, productId) => b64([sortOrder, productId])
 
   /** 造 n 行商品；sortOrder 可传函数，用于构造 sort_order 重复的场景 */
   function makeProductRows(n, sortOrder = (i) => i + 1) {
@@ -352,14 +352,14 @@ describe('product 列表分页', () => {
     ['空串', ''],
     ['数字', 123],
     ['非 base64 乱码', '!!!!'],
-    ['base64 里不是数组', Buffer.from(JSON.stringify({ a: 1 }), 'utf8').toString('base64')],
-    ['数组长度不对', Buffer.from(JSON.stringify([1]), 'utf8').toString('base64')],
-    ['sort_order 非整数', Buffer.from(JSON.stringify(['x', 'p1']), 'utf8').toString('base64')],
-    ['product_id 非字符串', Buffer.from(JSON.stringify([1, 2]), 'utf8').toString('base64')],
-    ['product_id 空串', Buffer.from(JSON.stringify([1, '']), 'utf8').toString('base64')],
+    ['base64 里不是数组', b64({ a: 1 })],
+    ['数组长度不对', b64([1])],
+    ['sort_order 非整数', b64(['x', 'p1'])],
+    ['product_id 非字符串', b64([1, 2])],
+    ['product_id 空串', b64([1, ''])],
     // sort_order 是 int4，超范围会让 PG 抛 22003（无白名单前缀 → -1），且库已白打一次
-    ['int4 上溢', Buffer.from(JSON.stringify([2147483648, 'p1']), 'utf8').toString('base64')],
-    ['int4 下溢', Buffer.from(JSON.stringify([-2147483649, 'p1']), 'utf8').toString('base64')],
+    ['int4 上溢', b64([2147483648, 'p1'])],
+    ['int4 下溢', b64([-2147483649, 'p1'])],
     // 超长串不该走完 Buffer + JSON.parse 才被拒
     ['超长串', 'A'.repeat(1024)],
   ])('畸形 cursor(%s) 抛 INVALID_PARAMS 且不打库', async (_label, cursor) => {

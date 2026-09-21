@@ -426,17 +426,6 @@
 }
 
 /* ===== 加载提示 ===== */
-.load-more-hint {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 24rpx 0;
-}
-
-.load-more-text {
-  font-size: 24rpx;
-  color: var(--color-text-hint);
-}
 
 /* ===== 右下角悬浮购物车按钮 ===== */
 .cart-fab {

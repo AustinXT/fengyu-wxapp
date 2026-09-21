@@ -85,8 +85,6 @@ export function createCoverWindow(page: PageLike, options: CoverWindowOptions): 
   let pending: Record<number, boolean> = {};
   let flushTimer: ReturnType<typeof setTimeout> | null = null;
   let fallbackTimer: ReturnType<typeof setTimeout> | null = null;
-  /** 本轮 refresh 是否收到过回调 —— 必须每轮重置，否则只有第一轮能触发 fail-open */
-  let gotCallbackThisRound = false;
   /** 仅由「工厂抛错」置位：环境确定性不支持 IntersectionObserver，永久停用 */
   let unsupported = false;
 
@@ -158,7 +156,6 @@ export function createCoverWindow(page: PageLike, options: CoverWindowOptions): 
     disconnect();
     clearTimers();
     pending = {};
-    gotCallbackThisRound = false;
 
     const list = getList();
     if (!list || list.length === 0) return;
@@ -168,7 +165,12 @@ export function createCoverWindow(page: PageLike, options: CoverWindowOptions): 
         .createIntersectionObserver(page as any, { observeAll: true })
         .relativeTo(options.scrollSelector, { top: margin, bottom: margin });
       observer.observe(options.slotSelector, (res) => {
-        gotCallbackThisRound = true;
+        // 收到第一个回调就撤掉 fail-open 守护：观察器已被证明在工作。
+        // 守护定时器本身就是「本轮是否收到过回调」的状态，不必再多存一个布尔。
+        if (fallbackTimer !== null) {
+          clearTimeout(fallbackTimer);
+          fallbackTimer = null;
+        }
         const idx = Number((res as any).dataset?.idx);
         if (!Number.isInteger(idx)) return;
         pending[idx] = res.intersectionRatio > 0;
@@ -185,7 +187,6 @@ export function createCoverWindow(page: PageLike, options: CoverWindowOptions): 
 
     fallbackTimer = setTimeout(() => {
       fallbackTimer = null;
-      if (gotCallbackThisRound) return;
       // 只放开本轮，不置 unsupported —— 下次 refresh 仍会重新尝试
       console.warn('[cover-window] 本轮未收到相交回调，暂退回整列显示');
       disconnect();
@@ -197,7 +198,6 @@ export function createCoverWindow(page: PageLike, options: CoverWindowOptions): 
     clearTimers();
     disconnect();
     pending = {};
-    gotCallbackThisRound = false;
   }
 
   return { refresh, dispose };

@@ -4,12 +4,9 @@ import { addToCart, getCartCount, clearCart } from '../../utils/cart';
 import { callClientApi } from '../../utils/cloud';
 import { createCoverWindow, type CoverWindow } from '../../utils/cover-window';
 import { getIsMember, priceView } from '../../utils/member-pricing';
-import { appendUniqueSpuRows, decorateSpuRows } from '../../utils/spu-list';
+import { appendUniqueSpuRows, buildAppendPatch, decorateSpuRows, SPU_PAGE_SIZE } from '../../utils/spu-list';
 
 const app = getApp<IAppOption>();
-
-/** issue #248：每页条数。后端 `PRODUCT_PAGE_SIZE_DEFAULT` 也是 20、上限 50，传大了会被夹取 */
-const PAGE_SIZE = 20;
 
 interface Category { category_id: string; category_name: string; category_order: number; }
 
@@ -182,11 +179,11 @@ Page({
       const initData = await callClientApi<{
         categories: Category[]; spuList: any[];
         spuCategoryId?: string | null; nextCursor?: string | null; hasMore?: boolean;
-      }>('product.shopInit', { limit: PAGE_SIZE });
+      }>('product.shopInit', { limit: SPU_PAGE_SIZE });
       if (epoch !== this._dataEpoch) return;
 
       const categories: Category[] = initData?.categories || [];
-      const listWithPrice = decorateSpuRows(initData?.spuList || [], getIsMember(), 0) as SpuItem[];
+      const listWithPrice = decorateSpuRows(initData?.spuList || [], getIsMember()) as SpuItem[];
 
       this._allCategories = categories;
 
@@ -258,7 +255,7 @@ Page({
     if (this._isLoadingNext || this.data.isLoading) return;
     const categoryId = this._activeCategoryId;
     if (!categoryId) return;
-    if (!this._pageState[categoryId]?.hasMore) return;
+    if (!this.data.hasMore) return;
 
     this._isLoadingNext = true;
     this.loadSpuList(categoryId, true).then(() => {
@@ -274,7 +271,7 @@ Page({
       const data = await callClientApi<{ spuList: any[]; nextCursor?: string | null; hasMore?: boolean }>(
         'product.spuList',
         // cursor 为 null 时不传：云函数只把「缺省」当首页，显式 null 也接受，但别依赖
-        cursor ? { categoryId, limit: PAGE_SIZE, cursor } : { categoryId, limit: PAGE_SIZE }
+        cursor ? { categoryId, limit: SPU_PAGE_SIZE, cursor } : { categoryId, limit: SPU_PAGE_SIZE }
       );
       // 代次变了说明缓存在请求飞行期间被整体重置（切门店）。此时 prev 已是空数组，
       // 继续写下去会把「只有第 N 页」当第 1 页存起来、并把旧门店的商品塞进新门店缓存。
@@ -282,7 +279,7 @@ Page({
       if (epoch !== this._dataEpoch) return;
 
       const prev = append ? (this._spuCache[categoryId] || []) : [];
-      const rows = decorateSpuRows(data?.spuList || [], getIsMember(), prev.length) as SpuItem[];
+      const rows = decorateSpuRows(data?.spuList || [], getIsMember(), { startIndex: prev.length }) as SpuItem[];
       const listWithPrice = appendUniqueSpuRows(prev, rows);
 
       this._spuCache[categoryId] = listWithPrice;
@@ -293,7 +290,12 @@ Page({
 
       // 仅在仍在看该分类时更新（翻页期间用户可能已切走）
       if (this._activeCategoryId === categoryId) {
-        this._setListData({ spuList: listWithPrice, hasMore: Boolean(data?.hasMore) });
+        this._setListData(
+          append
+            // 翻页只发新增的那些行，别每页都重发整列（O(N²) 的跨线程序列化）
+            ? { ...buildAppendPatch('spuList', prev.length, listWithPrice), hasMore: Boolean(data?.hasMore) }
+            : { spuList: listWithPrice, hasMore: Boolean(data?.hasMore) }
+        );
       }
     } catch (err: any) {
       console.error('loadSpuList error:', err);

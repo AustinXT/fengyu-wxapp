@@ -85,11 +85,11 @@
         </view>
 
         <!-- 翻页加载提示 / 到底提示 -->
-        <view wx:if="{{isLoading}}" class="load-more-hint">
+        <view wx:if="{{isLoading}}" class="list-footer">
           <van-loading size="20px" />
         </view>
-        <view wx:elif="{{!hasMore && spuList.length > 0}}" class="load-more-hint">
-          <text class="load-more-text">没有更多了</text>
+        <view wx:elif="{{!hasMore && spuList.length > 0}}" class="list-footer">
+          <text class="list-footer__end">没有更多了</text>
         </view>
       </view>
 

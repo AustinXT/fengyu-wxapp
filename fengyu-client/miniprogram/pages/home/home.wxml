@@ -144,7 +144,7 @@ module.exports.min = function(n) {
           </view>
 
           <!-- 搜索结果翻页提示 -->
-          <view wx:if="{{searchLoading}}" class="load-more-hint">
+          <view wx:if="{{searchLoading}}" class="list-footer">
             <van-loading size="20px" />
           </view>
         </view>
@@ -242,11 +242,11 @@ module.exports.min = function(n) {
           </view>
 
           <!-- 加载提示 -->
-          <view wx:if="{{isLoading}}" class="load-more-hint">
+          <view wx:if="{{isLoading}}" class="list-footer">
             <van-loading size="20px" />
           </view>
-          <view wx:elif="{{!hasMore}}" class="load-more-hint">
-            <text class="load-more-text">没有更多了</text>
+          <view wx:elif="{{!hasMore}}" class="list-footer">
+            <text class="list-footer__end">没有更多了</text>
           </view>
         </view>
 

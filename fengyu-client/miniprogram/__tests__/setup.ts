@@ -26,7 +26,7 @@ const observers: FakeObserver[] = []
 let observerFactoryThrows = false
 
 const wx = {
-  /** 页面用它把 refresh 推迟到 setData 渲染完成之后；测试里同步执行即可 */
+  /** nav-bar / workbench 等页面在用；测试里同步执行即可 */
   nextTick(cb: () => void) {
     cb()
   },

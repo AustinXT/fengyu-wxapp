@@ -205,21 +205,22 @@ const PRODUCT_PAGE_SIZE_DEFAULT = 20
 const PRODUCT_PAGE_SIZE_MAX = 50
 
 /**
- * ⚠️ 这是本仓第 3 份分页入参归一实现，基准是
- * `fengyu-staff/cloudfunctions/staffApi/utils/paging.js`（#240 修过 `Number()` 可抛的坑），
- * 第 2 份是 `fengyu-admin/src/lib/export-pagination.ts`。
- * 三者**语义不同、各自保留副本**（用户已 veto cloudfunctions-shared）：
- * - admin：`limit == null` → 不分页返全量
- * - staffApi：非法值回落默认，不抛
- * - 本文件：非法值一律抛 `INVALID_PARAMS`（顾客端没有「全量」这个合法语义）
+ * ⚠️ 分页入参归一在本仓有多份，**各自保留副本**（用户已 veto cloudfunctions-shared），
+ * 语义各不相同，改这里前先确认你要的是哪一份：
+ * - `fengyu-admin/src/lib/export-pagination.ts`：`limit == null` → 不分页返全量
+ * - `fengyu-staff/cloudfunctions/staffApi/utils/paging.js`：非法值回落默认，不抛（#240 修过 `Number()` 可抛的坑）
+ * - `clientApi/routes/points.js:72-85`：同端已有一份严格校验，口径与本函数一致
+ * - 本函数：非法值一律抛 `INVALID_PARAMS`（顾客端没有「全量」这个合法语义）
+ *
+ * clientApi 内还有 5 个列表接口是零校验/半校验的，收编工作见 issue #272，不在本函数范围。
  *
  * 只收 `number`，不做隐式转换：`Number(raw)` 对 `true` 给 1、对 `['20']` 给 20、
  * 对 `'0x14'` 给 20（全部静默接受），对 `{toString:null}`（合法 JSON）直接抛
  * `TypeError: Cannot convert object to primitive value` —— 那条错误没有白名单前缀，
  * 会被全局 catch 降级成 `{code:-1,'服务器内部错误'}` 而不是 -400。
  */
-function normalizeProductPageSize(raw) {
-  if (raw === undefined || raw === null) return PRODUCT_PAGE_SIZE_DEFAULT
+function normalizeProductPageSize(raw, defaultSize = PRODUCT_PAGE_SIZE_DEFAULT) {
+  if (raw === undefined || raw === null) return defaultSize
   if (typeof raw !== 'number' || !Number.isInteger(raw) || raw <= 0) {
     throw new Error('INVALID_PARAMS: limit 必须是正整数')
   }
@@ -245,35 +246,30 @@ function encodeProductCursor(row) {
 }
 
 function decodeProductCursor(raw) {
+  const bad = () => new Error('INVALID_PARAMS: cursor 不合法')
+
   // 缺省即「首页」。CloudBase payload 是 JSON，表达不出 undefined，
   // 所以 null 与 undefined 在本接口**等价**视为首页；空串 / 0 / 对象一律视为畸形游标。
   if (raw === undefined || raw === null) return null
-  if (typeof raw !== 'string' || raw === '') {
-    throw new Error('INVALID_PARAMS: cursor 不合法')
-  }
+  if (typeof raw !== 'string' || raw === '') throw bad()
   // 合法游标 base64 后 < 60 字符。先卡长度，别让 10MB 的串走完 Buffer + JSON.parse 才被拒。
-  if (raw.length > PRODUCT_CURSOR_MAX_LENGTH) {
-    throw new Error('INVALID_PARAMS: cursor 不合法')
-  }
+  if (raw.length > PRODUCT_CURSOR_MAX_LENGTH) throw bad()
+
   let parsed
   try {
     // Buffer.from(x, 'base64') 对非法字符是静默忽略而非抛错，真正的守门人是 JSON.parse
     parsed = JSON.parse(Buffer.from(raw, 'base64').toString('utf8'))
   } catch (e) {
-    throw new Error('INVALID_PARAMS: cursor 不合法')
+    throw bad()
   }
-  if (!Array.isArray(parsed) || parsed.length !== 2) {
-    throw new Error('INVALID_PARAMS: cursor 不合法')
-  }
+  if (!Array.isArray(parsed) || parsed.length !== 2) throw bad()
+
   const [sortOrder, productId] = parsed
-  if (!Number.isInteger(sortOrder) || typeof productId !== 'string' || productId === '') {
-    throw new Error('INVALID_PARAMS: cursor 不合法')
-  }
+  if (!Number.isInteger(sortOrder) || typeof productId !== 'string' || productId === '') throw bad()
   // sort_order 是 int4。超范围的值走到 `$n::int` 会让 PG 抛 22003，
   // 那条错误没有白名单前缀 → 降级成 -1「服务器内部错误」，而且库已经白打了一次。
-  if (sortOrder < INT4_MIN || sortOrder > INT4_MAX) {
-    throw new Error('INVALID_PARAMS: cursor 不合法')
-  }
+  if (sortOrder < INT4_MIN || sortOrder > INT4_MAX) throw bad()
+
   return { sortOrder, productId }
 }
 
@@ -327,7 +323,7 @@ async function getProductListByCategory({ categoryId, auth, keyword, limit, curs
     SELECT
       p.product_id, p.name, p.category_id,
       mc.category_name,
-      p.cover_image, p.description, p.sort_order,
+      p.cover_image, p.sort_order,
       p.price, p.special_price, p.is_bundle
     FROM products p
     JOIN mall_categories mc ON p.category_id = mc.category_id
@@ -377,7 +373,7 @@ async function getProductListByCategory({ categoryId, auth, keyword, limit, curs
     skuByProduct[sku.product_id].push(sku)
   }
 
-  const items = productRows.map(product => {
+  const spuList = productRows.map(product => {
     const skus = skuByProduct[product.product_id] || []
     const { priceFrom, listPriceFrom } = computeListPriceFrom(product, skus)
     return {
@@ -391,7 +387,7 @@ async function getProductListByCategory({ categoryId, auth, keyword, limit, curs
     }
   })
 
-  return { items, nextCursor, hasMore }
+  return { spuList, nextCursor, hasMore }
 }
 
 /**
@@ -401,8 +397,7 @@ async function getProductListByCategory({ categoryId, auth, keyword, limit, curs
  */
 async function spuList(ctx) {
   const { categoryId, limit, cursor } = ctx.event.payload || {}
-  const page = await getProductListByCategory({ categoryId, auth: ctx.auth, limit, cursor })
-  ctx.result = { spuList: page.items, nextCursor: page.nextCursor, hasMore: page.hasMore }
+  ctx.result = await getProductListByCategory({ categoryId, auth: ctx.auth, limit, cursor })
 }
 
 /**
@@ -419,8 +414,7 @@ async function search(ctx) {
     ctx.result = { spuList: [], nextCursor: null, hasMore: false }
     return
   }
-  const page = await getProductListByCategory({ auth: ctx.auth, keyword: kw, limit, cursor })
-  ctx.result = { spuList: page.items, nextCursor: page.nextCursor, hasMore: page.hasMore }
+  ctx.result = await getProductListByCategory({ auth: ctx.auth, keyword: kw, limit, cursor })
 }
 
 /**
@@ -448,18 +442,15 @@ async function shopInit(ctx) {
     firstCategoryId = categoriesList[0].category_id
   }
 
-  let firstPage = { items: [], nextCursor: null, hasMore: false }
-  if (firstCategoryId) {
-    firstPage = await getProductListByCategory({ categoryId: firstCategoryId, auth: ctx.auth, limit })
-  }
+  const firstPage = firstCategoryId
+    ? await getProductListByCategory({ categoryId: firstCategoryId, auth: ctx.auth, limit })
+    : { spuList: [], nextCursor: null, hasMore: false }
 
   ctx.result = {
     groups,
     categories: categoriesList,
-    spuList: firstPage.items,
     spuCategoryId: firstCategoryId,
-    nextCursor: firstPage.nextCursor,
-    hasMore: firstPage.hasMore
+    ...firstPage,
   }
 }
 
@@ -520,10 +511,7 @@ async function hotList(ctx) {
   // issue #248：原先是 `const { limit = 6 }` 直进 `LIMIT $1`。解构默认值只对 undefined 生效，
   // 所以 `{limit:null}` 会下发 `LIMIT NULL` —— **在 PG 里等于不限行数**，而本接口下发 cover_image；
   // `{limit:'abc'}` 则让 PG 抛 int8in 语法错。与列表接口共用同一套归一。
-  const pageSize = limit === undefined || limit === null
-    ? HOT_LIST_DEFAULT_LIMIT
-    : normalizeProductPageSize(limit)
-  const params = [pageSize]
+  const params = [normalizeProductPageSize(limit, HOT_LIST_DEFAULT_LIMIT)]
   const productMarketScopeFilter = buildMarketScopeFilter(ctx.auth, params, 'p')
   const existsSkuMarketScopeFilter = buildCatalogSkuMarketScopeFilter(ctx.auth, params, 'sk')
 

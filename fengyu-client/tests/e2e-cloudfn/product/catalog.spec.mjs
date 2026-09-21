@@ -259,41 +259,50 @@ async function createPagingProducts(sortOrders) {
   return ids.map(x => x.productId)
 }
 
+/**
+ * 顺着游标翻到底，返回 { ids, pages }。
+ * 顺带校验每页的分页壳自洽：单页不超 limit、hasMore 与 nextCursor 同进同退。
+ */
+async function drainPages(action, basePayload, limit) {
+  const ids = []
+  let cursor
+  let pages = 0
+  for (;;) {
+    pages++
+    if (pages > 20) throw new Error(`${action} 翻页未收敛，疑似游标不前进`)
+    const payload = { ...basePayload, limit }
+    if (cursor) payload.cursor = cursor
+
+    const res = await invokePublic(action, payload)
+    if (res.code !== 0) throw new Error(`${action} page${pages}: expect code=0, got ${res.code}: ${res.message}`)
+
+    const list = res.data?.spuList || []
+    if (list.length > limit) throw new Error(`${action} page${pages}: 单页应 ≤ limit(${limit})，got ${list.length}`)
+    ids.push(...list.map(p => p.product_id))
+
+    if (!res.data?.hasMore) {
+      if (res.data?.nextCursor !== null) throw new Error(`${action}: hasMore=false 时 nextCursor 应为 null`)
+      break
+    }
+    if (!res.data?.nextCursor) throw new Error(`${action} page${pages}: hasMore=true 但没给 nextCursor`)
+    cursor = res.data.nextCursor
+  }
+  if (new Set(ids).size !== ids.length) throw new Error(`${action} 翻页出现重复行: ${ids.join(',')}`)
+  return { ids, pages }
+}
+
 async function caseSpuListPaging() {
   await ensureTestCategories()
   // 7 个商品，sort_order 只有 3 个取值
   const expected = await createPagingProducts([5, 5, 5, 7, 7, 9, 9])
 
-  const seen = []
-  let cursor
-  let pages = 0
-  for (;;) {
-    pages++
-    if (pages > 20) throw new Error('翻页未收敛，疑似游标不前进')
-    const payload = { categoryId: TEST_MALL_CATEGORY_ID, limit: 3 }
-    if (cursor) payload.cursor = cursor
-    const res = await invokePublic('product.spuList', payload)
-    if (res.code !== 0) throw new Error(`page${pages}: expect code=0, got ${res.code}: ${res.message}`)
+  const { ids, pages } = await drainPages('product.spuList', { categoryId: TEST_MALL_CATEGORY_ID }, 3)
 
-    const list = res.data?.spuList || []
-    if (list.length > 3) throw new Error(`page${pages}: 单页应 ≤ limit(3)，got ${list.length}`)
-    seen.push(...list.map(p => p.product_id))
-
-    if (!res.data?.hasMore) {
-      if (res.data?.nextCursor !== null) throw new Error('hasMore=false 时 nextCursor 应为 null')
-      break
-    }
-    if (!res.data?.nextCursor) throw new Error(`page${pages}: hasMore=true 但没给 nextCursor`)
-    cursor = res.data.nextCursor
+  if (ids.length !== expected.length) {
+    throw new Error(`翻页共 ${ids.length} 行，期望 ${expected.length}（漏行）`)
   }
-
-  const uniq = new Set(seen)
-  if (uniq.size !== seen.length) throw new Error(`翻页出现重复行: ${seen.join(',')}`)
-  if (seen.length !== expected.length) {
-    throw new Error(`翻页共 ${seen.length} 行，期望 ${expected.length}（漏行）`)
-  }
-  if (seen.join(',') !== expected.join(',')) {
-    throw new Error(`翻页顺序不符合 (sort_order, product_id) 升序\n  got: ${seen.join(',')}\n  exp: ${expected.join(',')}`)
+  if (ids.join(',') !== expected.join(',')) {
+    throw new Error(`翻页顺序不符合 (sort_order, product_id) 升序\n  got: ${ids.join(',')}\n  exp: ${expected.join(',')}`)
   }
   if (pages !== 3) throw new Error(`7 行 / limit 3 应翻 3 页，实际 ${pages}`)
 }
@@ -302,25 +311,12 @@ async function caseSearchPaging() {
   await ensureTestCategories()
   const expected = await createPagingProducts([5, 5, 5, 7])
 
-  const seen = []
-  let cursor
-  for (;;) {
-    const payload = { keyword: '测试商品', limit: 2 }
-    if (cursor) payload.cursor = cursor
-    const res = await invokePublic('product.search', payload)
-    if (res.code !== 0) throw new Error(`expect code=0, got ${res.code}: ${res.message}`)
-    const list = res.data?.spuList || []
-    if (list.length > 2) throw new Error(`search 单页应 ≤ limit(2)，got ${list.length}`)
-    seen.push(...list.map(p => p.product_id))
-    if (!res.data?.hasMore) break
-    cursor = res.data.nextCursor
-    if (seen.length > 50) throw new Error('search 翻页未收敛')
-  }
+  // search 跨全部分类，库里的真实商品也可能命中关键词，故只断言「测试商品一个不漏」
+  const { ids } = await drainPages('product.search', { keyword: '测试商品' }, 2)
 
   for (const id of expected) {
-    if (!seen.includes(id)) throw new Error(`search 分页漏掉 ${id}`)
+    if (!ids.includes(id)) throw new Error(`search 分页漏掉 ${id}`)
   }
-  if (new Set(seen).size !== seen.length) throw new Error(`search 分页出现重复: ${seen.join(',')}`)
 }
 
 async function caseSpuListLimitClamped() {

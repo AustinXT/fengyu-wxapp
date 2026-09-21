@@ -6,7 +6,7 @@
  * 不覆盖页面层的 min_price / strike_min_price。
  */
 
-import { decorateSpuRows, appendUniqueSpuRows } from '../../utils/spu-list'
+import { decorateSpuRows, appendUniqueSpuRows, buildAppendPatch } from '../../utils/spu-list'
 import { INITIAL_COVER_VISIBLE_COUNT } from '../../utils/cover-window'
 
 const row = (over: Record<string, any> = {}) => ({
@@ -54,17 +54,49 @@ describe('decorateSpuRows · 会员价分流', () => {
     expect(r.name).toBe('商品')
   })
 
+  test('dropSkuList 丢掉 skuList 再进 setData，其余字段照常透传', () => {
+    const [r] = decorateSpuRows(
+      [row({ is_bundle: true, skuList: [{ sku_id: 's1' }] })],
+      false,
+      { dropSkuList: true }
+    )
+    expect(r).not.toHaveProperty('skuList')
+    expect(r.is_bundle).toBe(true)
+    expect(r.min_price).toBe('100')
+  })
+
   test('startIndex=0 时前若干条预置可见；追加页一律不可见', () => {
     const rows = Array.from({ length: 10 }, (_, i) => row({ product_id: `p${i}` }))
-    const first = decorateSpuRows(rows, false, 0)
+    const first = decorateSpuRows(rows, false)
     expect(first.filter(r => r.coverVisible)).toHaveLength(INITIAL_COVER_VISIBLE_COUNT)
 
-    const appended = decorateSpuRows(rows, false, 20)
+    const appended = decorateSpuRows(rows, false, { startIndex: 20 })
     expect(appended.every(r => r.coverVisible === false)).toBe(true)
   })
 
   test('空输入返回空数组', () => {
     expect(decorateSpuRows([], true)).toEqual([])
+  })
+})
+
+describe('buildAppendPatch', () => {
+  test('只发新增的那些行，不重发整列', () => {
+    const merged = ['a', 'b', 'c', 'd']
+    expect(buildAppendPatch('spuList', 2, merged)).toEqual({
+      'spuList[2]': 'c',
+      'spuList[3]': 'd',
+    })
+  })
+
+  test('去重后一行都没新增时产出空补丁', () => {
+    expect(buildAppendPatch('spuList', 3, ['a', 'b', 'c'])).toEqual({})
+  })
+
+  test('下标连续，不会在数组里留空洞', () => {
+    const keys = Object.keys(buildAppendPatch('searchResults', 20, Array(25).fill('x')))
+    expect(keys).toEqual(
+      Array.from({ length: 5 }, (_, i) => `searchResults[${20 + i}]`)
+    )
   })
 })
 
