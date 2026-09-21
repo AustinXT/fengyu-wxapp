@@ -1,5 +1,6 @@
 // utils/cloud.ts — clientApi 调用封装
 import { APP_VERSION } from './version'
+import { getApiFnName, getEnvVersion } from './cloud-env'
 
 const LOGGED_OUT_KEY = 'clientLoggedOut'
 
@@ -45,8 +46,16 @@ function createPhoneRequiredError(): ClientApiError {
  * 调用方已显式传入 `_appVersion` 时不覆盖。
  */
 function withClientContext(payload: Record<string, any>): Record<string, any> {
-  if (payload && payload._appVersion !== undefined) return payload
-  return { ...payload, _appVersion: APP_VERSION }
+  const next: Record<string, any> = payload && payload._appVersion !== undefined
+    ? { ...payload }
+    : { ...payload, _appVersion: APP_VERSION }
+  // 小程序版本：云函数入口据此校验「调用方版本」与「本函数部署通道」是否匹配。
+  // 单 env 内生产函数对开发版物理可达，误路由本来是 100% 静默的，这个字段让它响亮失败。
+  if (next._envVersion === undefined) {
+    const envVersion = getEnvVersion()
+    if (envVersion) next._envVersion = envVersion
+  }
+  return next
 }
 
 /**
@@ -78,7 +87,7 @@ export async function callClientApi<T = any>(
   let res: any
   try {
     res = await wx.cloud.callFunction({
-      name: 'clientApi',
+      name: getApiFnName(),
       data: { action, payload: withClientContext(payload) }
     })
   } catch (sdkErr: any) {
@@ -128,7 +137,7 @@ async function doBindPhoneWithCloudID(
   wx.showLoading({ title: '绑定中...', mask: true })
   try {
     const res = await wx.cloud.callFunction({
-      name: 'clientApi',
+      name: getApiFnName(),
       data: {
         action: 'auth.bindPhone',
         payload: withClientContext(payload),

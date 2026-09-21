@@ -17,6 +17,51 @@ const CLIENT_APPID = process.env.CLIENT_APPID || 'wx811eb4ded3dfba3f'
 const CLIENT_APPSECRET = process.env.CLIENT_APPSECRET
 const WXACODE_ENV_VERSION = process.env.WXACODE_ENV_VERSION || 'release'
 
+// 微信只认这三个值；其余一律回落到环境变量默认值
+const VALID_ENV_VERSIONS = ['develop', 'trial', 'release']
+
+/**
+ * 把调用方自报的版本收敛到白名单内，非法/缺失回落到本函数的部署默认值。
+ *
+ * 为什么要按请求传而不是只读环境变量：正式函数 staffApi 同时服务体验版和正式版，
+ * 而微信规定 trial 码只能体验版打开、release 码只能正式版打开——
+ * 一个环境变量满足不了两者。
+ */
+function resolveEnvVersion(envVersion) {
+  return VALID_ENV_VERSIONS.includes(envVersion) ? envVersion : WXACODE_ENV_VERSION
+}
+
+/**
+ * 本函数实例自身的部署身份：影子函数（staffApiDev）部署时 WXACODE_ENV_VERSION=develop，
+ * 正式函数为 release。
+ */
+function getSelfEnvVersion() {
+  return WXACODE_ENV_VERSION
+}
+
+/**
+ * 最终生效的码版本。**这是防止影子函数覆写生产小程序码的承重逻辑。**
+ *
+ * - 正式函数（self=release）：服务 trial 与 release 两种调用方，按自报值决定
+ * - 影子函数（self≠release）：**恒用自身版本，完全忽略调用方自报值**
+ *
+ * 影子函数与正式函数同住一个 env，也就是同一个 COS 桶。而 release 码刻意不带路径后缀，
+ * 所以只要影子函数有任何一条路径能算出 'release'，它就会把 develop 码写进
+ * `wxacode/order/<id>.png` —— 与生产同一个 key，直接覆盖，顾客扫码付不了款。
+ * 两条触发路径都真实存在：① 调用方 _envVersion 缺失（getAccountInfoSync 抛错的兜底产物）
+ * ② 任意已绑定员工伪造 _envVersion:'release'。
+ * 因此版本必须由「函数自己是谁」决定，与「库选择由函数 env 决定」同一条原则。
+ */
+function effectiveEnvVersion(requested) {
+  const self = getSelfEnvVersion()
+  return self === 'release' ? resolveEnvVersion(requested) : self
+}
+
+/** 云存储路径 / 缓存键的版本后缀。release 无后缀（保持生产既有路径不变）。 */
+function versionPathSuffix(envVersion) {
+  return envVersion === 'release' ? '' : `-${envVersion}`
+}
+
 /**
  * 获取客户端小程序 access_token（带缓存）
  */
@@ -47,11 +92,13 @@ async function getClientAccessToken(forceRefresh = false) {
  * 生成客户端小程序码
  * @param {string} scene - 场景值（max 32 chars）
  * @param {string} page - 小程序页面路径
+ * @param {string} [envVersion] - 调用方所在的小程序版本（develop/trial/release），决定码指向哪个版本
  * @returns {Buffer} PNG 图片 buffer
  */
-async function generateWxacode(scene, page) {
+async function generateWxacode(scene, page, envVersion) {
+  const target = resolveEnvVersion(envVersion)
   let token = await getClientAccessToken()
-  let buffer = await requestWxacode(token, scene, page)
+  let buffer = await requestWxacode(token, scene, page, target)
 
   // 响应小于 1000 字节可能是错误 JSON
   if (buffer.length < 1000) {
@@ -60,7 +107,7 @@ async function generateWxacode(scene, page) {
       if (errData.errcode === 42001 || errData.errcode === 40001) {
         // token 过期，清缓存重试一次
         token = await getClientAccessToken(true)
-        buffer = await requestWxacode(token, scene, page)
+        buffer = await requestWxacode(token, scene, page, target)
         if (buffer.length < 1000) {
           const retryErr = JSON.parse(buffer.toString())
           throw new Error(`生成小程序码失败: ${retryErr.errcode} ${retryErr.errmsg}`)
@@ -116,13 +163,13 @@ function httpGet(url) {
   })
 }
 
-function requestWxacode(token, scene, page) {
+function requestWxacode(token, scene, page, envVersion) {
   const url = `https://api.weixin.qq.com/wxa/getwxacodeunlimit?access_token=${token}`
   const body = JSON.stringify({
     scene,
     page,
     check_path: false,
-    env_version: WXACODE_ENV_VERSION,
+    env_version: resolveEnvVersion(envVersion),
     width: 430,
     auto_color: false,
     line_color: { r: 212, g: 167, b: 106 } // 品牌金色
@@ -149,5 +196,9 @@ function requestWxacode(token, scene, page) {
 module.exports = {
   getClientAccessToken,
   generateWxacode,
-  uploadToCloudStorage
+  uploadToCloudStorage,
+  // 路由层需要用同一套判定算云存储路径/缓存键的后缀——必须复用，不能各算各的
+  effectiveEnvVersion,
+  versionPathSuffix,
+  getSelfEnvVersion
 }

@@ -55,7 +55,8 @@ try {
 
   // ---- 登录（IDE 真实 openid → 测试员/manager），写 globalData 供后续页渲染 ----
   const login = await mp.evaluate(() => new Promise((res, rej) => {
-    wx.cloud.callFunction({ name: 'staffApi', data: { action: 'auth.login', payload: {} },
+    wx.cloud.callFunction({ // 单 env 内并存 staffApi(prod 库) 与 staffApiDev(dev 库)：写死会让断言库与被测页面写入库分裂
+ name: (() => { try { const v = wx.getAccountInfoSync().miniProgram.envVersion; return v === 'release' || v === 'trial' ? 'staffApi' : 'staffApiDev' } catch (e) { return 'staffApiDev' } })(), data: { action: 'auth.login', payload: {} },
       success: (x) => res(x.result), fail: (e) => rej(new Error(e?.errMsg || String(e))) })
   }))
   if (!login || login.code !== 0) throw new Error('auth.login 失败: ' + (login?.message || JSON.stringify(login)))

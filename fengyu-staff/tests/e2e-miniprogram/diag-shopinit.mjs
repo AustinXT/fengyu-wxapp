@@ -42,7 +42,8 @@ async function cleanup() {
 async function callShopInitRaw(mp, testOpenid) {
   return mp.evaluate((openid) => new Promise((resolve) => {
     wx.cloud.callFunction({
-      name: 'staffApi',
+      // 单 env 内并存 staffApi(prod 库) 与 staffApiDev(dev 库)：写死会让断言库与被测页面写入库分裂
+      name: (() => { try { const v = wx.getAccountInfoSync().miniProgram.envVersion; return v === 'release' || v === 'trial' ? 'staffApi' : 'staffApiDev' } catch (e) { return 'staffApiDev' } })(),
       data: { action: 'product.shopInit', payload: { _testOpenid: openid } },
       success: (res) => resolve({ ok: true, result: res.result }),
       fail: (err) => resolve({ ok: false, errMsg: err && err.errMsg ? err.errMsg : String(err) }),

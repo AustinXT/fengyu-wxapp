@@ -67,7 +67,8 @@ async function callScopeOptionsViaHook() {
   // 直接调云函数（已被 callStaffApi hook 注入 _testOpenid）
   return miniProgram.evaluate(() => new Promise((resolve, reject) => {
     wx.cloud.callFunction({
-      name: 'staffApi',
+      // 单 env 内并存 staffApi(prod 库) 与 staffApiDev(dev 库)：写死会让断言库与被测页面写入库分裂
+      name: (() => { try { const v = wx.getAccountInfoSync().miniProgram.envVersion; return v === 'release' || v === 'trial' ? 'staffApi' : 'staffApiDev' } catch (e) { return 'staffApiDev' } })(),
       data: { action: 'mgmtDashboard.scopeOptions', payload: { _loginLevel: 'management' } },
       success: (res) => resolve(res.result),
       fail: (err) => reject(new Error(err?.errMsg || String(err))),
@@ -163,7 +164,8 @@ async function run() {
     const today = new Date().toISOString().slice(0, 10);
     const r = await miniProgram.evaluate((date, sid) => new Promise((resolve, reject) => {
       wx.cloud.callFunction({
-        name: 'staffApi',
+        // 单 env 内并存 staffApi(prod 库) 与 staffApiDev(dev 库)：写死会让断言库与被测页面写入库分裂
+        name: (() => { try { const v = wx.getAccountInfoSync().miniProgram.envVersion; return v === 'release' || v === 'trial' ? 'staffApi' : 'staffApiDev' } catch (e) { return 'staffApiDev' } })(),
         data: {
           action: 'mgmtDashboard.summary',
           payload: { _loginLevel: 'management', date, scopeType: 'store', scopeId: sid },

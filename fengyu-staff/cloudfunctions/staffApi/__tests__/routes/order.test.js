@@ -3166,8 +3166,58 @@ describe('order.qrcode', () => {
     // 实际需支付 = Σ商品实付(pending_received 500) − 储值卡抵扣(0) = 500
     expect(ctx.result.actualPayable).toBe(500)
     expect(ctx.result.items).toHaveLength(1)
-    expect(wxacode.generateWxacode).toHaveBeenCalledWith('FY-QR-001', expect.any(String))
+    // 第三参是经 effectiveEnvVersion 净化后的值：未传 _envVersion 时，
+    // 正式函数回落到自身部署身份 'release'（影子函数则恒为 'develop'，见 utils/wxacode.test.js）
+    expect(wxacode.generateWxacode).toHaveBeenCalledWith('FY-QR-001', expect.any(String), 'release')
     expect(pg.transaction).not.toHaveBeenCalled()
+  })
+
+  test('小程序码按调用方版本生成，开发版与体验版互不顶替缓存', async () => {
+    // 单 CloudBase 环境下开发版和体验版共用同一个 staffApiDev 实例，
+    // 而 develop 码只能开发版打开、trial 码只能体验版打开。
+    // 若缓存键和云存储路径不带版本，先请求的那个版本会把码占住，另一个版本扫出来打不开。
+    const mockOrderRows = () => {
+      pg.query
+        .mockResolvedValueOnce([{
+          sale_order_id: 'FY-QR-ENV', status: '待支付', sale_order_type: '销售单',
+          client_phone: '138', customer_name: '张三', payment_method: '微信',
+          paid_at: null, store_id: 'store-001', opened_by: 'emp-001',
+          total_amount: '500', prepaid_card_amount: '0',
+        }])
+        .mockResolvedValueOnce([
+          { sale_item_id: 'item-1', received: '0', pending_received: '500', sale_amount: '500', product_name: '面部护理' },
+        ])
+    }
+
+    mockOrderRows()
+    await orderRoutes.qrcode(createManagerCtx({ saleOrderId: 'FY-QR-ENV', _envVersion: 'develop' }))
+    mockOrderRows()
+    await orderRoutes.qrcode(createManagerCtx({ saleOrderId: 'FY-QR-ENV', _envVersion: 'trial' }))
+
+    expect(wxacode.generateWxacode).toHaveBeenCalledTimes(2)
+    expect(wxacode.generateWxacode).toHaveBeenNthCalledWith(1, 'FY-QR-ENV', expect.any(String), 'develop')
+    expect(wxacode.generateWxacode).toHaveBeenNthCalledWith(2, 'FY-QR-ENV', expect.any(String), 'trial')
+
+    const cloudPaths = wxacode.uploadToCloudStorage.mock.calls.map((call) => call[1])
+    expect(new Set(cloudPaths).size).toBe(2)
+  })
+
+  test('正式版沿用不带版本后缀的云存储路径', async () => {
+    // release 保持原路径，避免改动生产已有的小程序码
+    pg.query
+      .mockResolvedValueOnce([{
+        sale_order_id: 'FY-QR-REL', status: '待支付', sale_order_type: '销售单',
+        client_phone: '138', customer_name: '张三', payment_method: '微信',
+        paid_at: null, store_id: 'store-001', opened_by: 'emp-001',
+        total_amount: '500', prepaid_card_amount: '0',
+      }])
+      .mockResolvedValueOnce([
+        { sale_item_id: 'item-1', received: '0', pending_received: '500', sale_amount: '500', product_name: '面部护理' },
+      ])
+
+    await orderRoutes.qrcode(createManagerCtx({ saleOrderId: 'FY-QR-REL', _envVersion: 'release' }))
+
+    expect(wxacode.uploadToCloudStorage).toHaveBeenCalledWith(expect.anything(), 'wxacode/order/FY-QR-REL.png')
   })
 
   test('储值卡抵扣后实际需支付 = 商品实付 − 储值卡（不显示应付）', async () => {

@@ -192,6 +192,31 @@ const STORE_MUTATION_ACTIONS = new Set([
 /**
  * 云函数入口函数
  */
+/**
+ * 部署通道与调用方版本一致性检查。
+ *
+ * 单 CloudBase 环境下，staffApi(prod 库) 与 staffApiDev(dev 库) 同住一个 env，
+ * 也就是说【从开发版也能直接调到生产函数】——改造前两者在不同 env，是平台物理隔离，
+ * 现在退化成了客户端自觉。误路由 100% 静默，正是最难查的那类故障。
+ *
+ * 这【不是安全边界】：_envVersion 由客户端自报，可伪造。它的作用是把「意外误路由」
+ * 从静默变成响亮失败。真正的数据隔离仍由函数自身的 PG_CONNECTION_STRING 保证。
+ *
+ * 缺失该字段一律放行——老版本前端不带它，不能把存量用户挡在门外。
+ */
+function assertChannelMatchesCaller(payload) {
+  const envVersion = payload && payload._envVersion
+  if (!envVersion) return
+  const channel = process.env.DEPLOY_CHANNEL || 'primary'
+  const callerOnProd = envVersion === 'release' || envVersion === 'trial'
+  if (channel === 'shadow' && callerOnProd) {
+    throw new Error('INVALID_STATE: CHANNEL_MISMATCH: 正式版/体验版不应调用连 dev 库的影子函数')
+  }
+  if (channel === 'primary' && !callerOnProd) {
+    throw new Error('INVALID_STATE: CHANNEL_MISMATCH: 开发版不应调用连生产库的正式函数')
+  }
+}
+
 exports.main = async (event, context) => {
   const { action, payload } = event
 
@@ -217,6 +242,10 @@ exports.main = async (event, context) => {
   }
 
   try {
+    // 必须在 try 内：抛出的 CHANNEL_MISMATCH 要走 buildErrorResponse 变成标准错误响应，
+    // 逃到 try 外就是裸 500。（system.health 由 admin 经 HMAC 调用、不带 _envVersion，自动放行）
+    assertChannelMatchesCaller(payload)
+
     if (action === 'system.health') {
       // 系统自检使用独立 HMAC 鉴权，不依赖员工 OPENID。
       await handler(ctx)

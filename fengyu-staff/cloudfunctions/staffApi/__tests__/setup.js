@@ -21,7 +21,15 @@ const mockPool = { request: vi.fn(() => mockRequest) }
 const mockMssql = { query: vi.fn(async () => []), getPool: vi.fn(async () => mockPool), _mockRequest: mockRequest, _mockPool: mockPool }
 require.cache[mssqlPath] = { id: mssqlPath, filename: mssqlPath, loaded: true, exports: mockMssql }
 const wxacodePath = require.resolve('../utils/wxacode')
-const mockWxacode = { generateWxacode: vi.fn(async () => Buffer.from('fake-qrcode-png')), uploadToCloudStorage: vi.fn(async () => 'cloud://mock-file-id/wxacode.png') }
+// effectiveEnvVersion / versionPathSuffix 是纯函数，mock 里保留真实语义（按正式函数身份 self=release），
+// 否则路由层算出的云存储路径就测不出真行为。影子函数分支由 __tests__/utils/wxacode.test.js 单独覆盖。
+const mockWxacode = {
+  generateWxacode: vi.fn(async () => Buffer.from('fake-qrcode-png')),
+  uploadToCloudStorage: vi.fn(async () => 'cloud://mock-file-id/wxacode.png'),
+  effectiveEnvVersion: vi.fn((v) => (['develop', 'trial', 'release'].includes(v) ? v : 'release')),
+  versionPathSuffix: vi.fn((v) => (v === 'release' ? '' : `-${v}`)),
+  getSelfEnvVersion: vi.fn(() => 'release'),
+}
 require.cache[wxacodePath] = { id: wxacodePath, filename: wxacodePath, loaded: true, exports: mockWxacode }
 const configPath = require.resolve('../utils/config')
 const mockConfig = {
