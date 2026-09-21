@@ -302,6 +302,20 @@
       "when": 1789549103374,
       "tag": "0042_inventory_sku_supplier_fk",
       "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "7",
+      "when": 1789789950120,
+      "tag": "0043_strange_revanche",
+      "breakpoints": true
+    },
+    {
+      "idx": 44,
+      "version": "7",
+      "when": 1789790016262,
+      "tag": "0044_wooden_human_torch",
+      "breakpoints": true
     }
   ]
 }

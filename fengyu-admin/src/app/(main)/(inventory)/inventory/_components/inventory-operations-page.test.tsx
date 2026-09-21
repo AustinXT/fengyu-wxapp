@@ -82,8 +82,14 @@ describe('办理台表单一致性（#135）', () => {
     // 抽样两个方向，防止整体计数对了但分配错了
     const store = block('function StoreRequestForm(', 'function ItemCompanyReplenishmentForm(')
     expect(store).toMatch(/min="0\.01"/)          // 数量走 positiveNumber
-    const purchase = block('function PurchaseOrderForm(', 'function SupplyChainPurchaseOrderForm(')
-    expect(purchase).toMatch(/<FormField label="采购数量"><Input type="number" min="0"/)
+    // #194 把「供应链采购订单」并入「采购订单」，原右锚 SupplyChainPurchaseOrderForm 已不存在，
+    // 改用紧随其后的 interface 作右锚。
+    const purchase = block('function PurchaseOrderForm(', 'interface ShipmentDraftLine {')
+    expect(purchase).toMatch(/<FormField label="采购数量">/)
+    expect(purchase).toMatch(/min="0"/)
+    // 市场报货汇总（#193）同属「至少填一条」语义，也走 min="0"
+    const summary = block('function MarketReportSummaryForm(', 'interface PurchaseSourceLine {')
+    expect(summary).toMatch(/min="0"/)
   })
 
   it('「请完整填写」语义的字段标必填', () => {
@@ -102,7 +108,7 @@ describe('办理台表单一致性（#135）', () => {
   it('「请填写至少一条」语义的字段**不**标必填', () => {
     // 采购订单的「采购数量」：submit() 先 .filter(quantity !== null) 再判
     // 「请填写至少一条采购数量」—— 逐行标 * 是误导（单行留空是允许的）。
-    const purchase = block('function PurchaseOrderForm(', 'function SupplyChainPurchaseOrderForm(')
+    const purchase = block('function PurchaseOrderForm(', 'interface ShipmentDraftLine {')
     expect(purchase).toMatch(/<FormField label="采购数量">/)
     expect(purchase).not.toMatch(/<FormField label="采购数量" required/)
 
@@ -184,23 +190,33 @@ describe('办理台表单一致性（#135）', () => {
     // 5 个表单会在选定来源单据后把主体回填成单据自己的主体。单据没带主体时（
     // `target_org_node_id` 可空）值会被写成空串 —— 此时组件若自作主张补一个唯一候选，
     // 界面显示"已固定"，服务端却仍按来源单据一致性拒绝，用户看不出问题出在哪。
-    expect(source.match(/autoSelect=\{!doc\}/g) ?? []).toHaveLength(5)
+    // #194 把两张采购表单合并成一张：`SupplyChainPurchaseOrderForm` 已不存在，
+    // 清单从 5 条减到 4 条。合并后的 `PurchaseOrderForm` 没有单选的来源单，
+    // 同一语义写成 `autoSelect={selectedDocIds.length === 0}`（勾了来源就交还单据决定），
+    // 所以它不计入 `!doc` 那一组，单独断言。
+    expect(source.match(/autoSelect=\{!doc\}/g) ?? []).toHaveLength(3)
 
     for (const [from, to] of [
-      ['function PurchaseOrderForm(', 'function SupplyChainPurchaseOrderForm('],
-      ['function SupplyChainPurchaseOrderForm(', 'interface ShipmentDraftLine'],
       ['function CompanyShipmentForm(', 'interface ReceiptProgressLine'],
       ['function SupplyChainPurchaseReceiptForm(', 'function SupplyChainPurchaseCancelForm('],
       ['function StoreAllocationForm(', 'function ReturnForm('],
     ] as const) {
       expect(block(from, to)).toMatch(/autoSelect=\{!doc\}/)
     }
+    expect(block('function PurchaseOrderForm(', 'interface ShipmentDraftLine {'))
+      .toMatch(/autoSelect=\{selectedDocIds\.length === 0\}/)
   })
 
-  it('必填标记覆盖到全部 19 个表单，不只是 UX 扫描点到的那 5 个', () => {
+  it('必填标记覆盖到全部表单，不只是 UX 扫描点到的那 5 个', () => {
     // 只改被扫描到的 5 个表单，会让同一个 FormField 组件在页面内自相矛盾：
     // 用户看到有些字段带 *、有些不带，会以为不带的都是可选。
+    //
+    // 58 → 55：#194 把两张采购表单合成一张。原先两张各带 3 个必填（来源单 / 供应商 /
+    // 供应链主体 = 6 个），合并后供应商不再手选（按商品带出）、来源单改成多选清单
+    // （标题上自带 *，不是 FormField），只剩「供应链库存主体」1 个；
+    // #193 新增的市场报货汇总表单同样只有 1 个 —— 这两项合计 6 → 2。
+    // 品项公司发货表单则多出 1 个「发往市场」（混合单一次只能发一个市场）。净减 3。
     const marked = source.match(/<(?:FormField|DocPicker) label=(?:"[^"]*"|\{[^}]*\}) required/g) ?? []
-    expect(marked.length).toBe(58)
+    expect(marked.length).toBe(55)
   })
 })

@@ -33,8 +33,10 @@ import {
   createMarketReplenishment,
   createMarketStaffPurchase,
   createSupplyChainStaffPurchase,
-  createPurchaseOrderFromItemCompanyReplenishment,
-  createPurchaseOrderFromMarketReplenishment,
+  createPurchaseOrder,
+  createMarketReportSummary,
+  resolveInventorySkuSupplierStatus,
+  summarizeMarketReplenishmentRequests,
   createReturnForRestock,
   createSelfPurchasedReceipt,
   createStoreAllocation,
@@ -79,7 +81,7 @@ type OperationId =
   | 'market-report'
   | 'item-company-request'
   | 'purchase-order'
-  | 'supply-chain-purchase-order'
+  | 'market-report-summary'
   | 'company-shipment'
   | 'market-receipt'
   | 'supply-chain-receipt'
@@ -115,7 +117,7 @@ interface OperationDefinition {
 
 const OPERATIONS: OperationDefinition[] = [
   { id: 'item-company-request', level: 'supply-chain', title: '品项公司报货需求', group: '需求与采购', icon: PackagePlus, tone: 'text-[#7B5E2B] bg-[#FFF8E6]' },
-  { id: 'supply-chain-purchase-order', level: 'supply-chain', title: '供应链采购订单', group: '需求与采购', icon: ShoppingCart, tone: 'text-[#5E8BB3] bg-[#F0F5FA]' },
+  { id: 'market-report-summary', level: 'supply-chain', title: '市场报货汇总', group: '需求与采购', icon: PackageSearch, tone: 'text-[#5E8BB3] bg-[#F0F5FA]' },
   { id: 'company-shipment', level: 'supply-chain', title: '品项公司发货', group: '发货、收货与退货', icon: Truck, tone: 'text-[#5E8BB3] bg-[#F0F5FA]' },
   { id: 'supply-chain-receipt', level: 'supply-chain', title: '供应链采购入库', group: '发货、收货与退货', icon: PackageCheck, tone: 'text-[#3D8A5A] bg-[#F0F9F2]' },
   { id: 'supply-chain-purchase-cancel', level: 'supply-chain', title: '关闭供应链采购', group: '发货、收货与退货', icon: RefreshCcw, tone: 'text-[#D94040] bg-[#FFF0F0]', approvalOnly: true },
@@ -125,9 +127,10 @@ const OPERATIONS: OperationDefinition[] = [
   { id: 'external-outbound', level: 'supply-chain', title: '非凤御市场出库', group: '市场特殊业务', icon: PackageX, tone: 'text-[#D94040] bg-[#FFF0F0]' },
   { id: 'supply-chain-staff-purchase', level: 'supply-chain', title: '供应链员工购', group: '市场特殊业务', icon: UserRoundCheck, tone: 'text-[#8A4B7A] bg-[#FCF1F9]' },
   { id: 'market-report', level: 'market', title: '市场汇总报货', group: '需求与采购', icon: PackageSearch, tone: 'text-[#5E8BB3] bg-[#F0F5FA]' },
-  // 采购订单位于流程图供应链泳道（市场报货单汇总 → 采购订单），归供应链办理台；
+  // 采购订单位于流程图供应链泳道（报货单汇总 → 采购订单），归供应链办理台；
   // action 权限 inventory:supply_chain_operate 与 business.ts 的总部 scope 校验同源。
-  { id: 'purchase-order', level: 'supply-chain', title: '创建采购订单', group: '需求与采购', icon: ShoppingCart, tone: 'text-[#7B5E2B] bg-[#FFF8E6]' },
+  // #194 起「供应链采购订单」已并入这一张卡片，来源在表单内多选。
+  { id: 'purchase-order', level: 'supply-chain', title: '采购订单', group: '需求与采购', icon: ShoppingCart, tone: 'text-[#7B5E2B] bg-[#FFF8E6]' },
   { id: 'market-receipt', level: 'market', title: '市场采购入库', group: '发货、收货与退货', icon: PackageCheck, tone: 'text-[#3D8A5A] bg-[#F0F9F2]' },
   { id: 'store-allocation', level: 'market', title: '分院配货', group: '发货、收货与退货', icon: Send, tone: 'text-[#8B5A2B] bg-[#FFF5E8]' },
   { id: 'store-return-approval', level: 'market', title: '审批门店退货', group: '发货、收货与退货', icon: RotateCcw, tone: 'text-[#D4820A] bg-[#FFF8E6]', approvalOnly: true },
@@ -626,8 +629,8 @@ function OperationWorkspace({
       {operation === 'store-request' && <StoreRequestForm locations={locations} skuOptions={skuOptions} onSuccess={onSuccess} />}
       {operation === 'market-report' && <MarketReportForm locations={locations} canViewPrice={canViewPrice} onSuccess={onSuccess} />}
       {operation === 'item-company-request' && <ItemCompanyReplenishmentForm locations={locations} skuOptions={skuOptions} onSuccess={onSuccess} />}
-      {operation === 'purchase-order' && <PurchaseOrderForm locations={locations} suppliers={suppliers} workflowDocs={workflowDocs} canViewPrice={canViewPrice} onSuccess={onSuccess} />}
-      {operation === 'supply-chain-purchase-order' && <SupplyChainPurchaseOrderForm locations={locations} suppliers={suppliers} workflowDocs={workflowDocs} canViewPrice={canViewPrice} onSuccess={onSuccess} />}
+      {operation === 'purchase-order' && <PurchaseOrderForm locations={locations} workflowDocs={workflowDocs} canViewPrice={canViewPrice} onSuccess={onSuccess} />}
+      {operation === 'market-report-summary' && <MarketReportSummaryForm locations={locations} onSuccess={onSuccess} />}
       {operation === 'company-shipment' && <CompanyShipmentForm locations={locations} workflowDocs={workflowDocs} onSuccess={onSuccess} />}
       {operation === 'market-receipt' && <ShipmentReceiptForm workflowDocs={workflowDocs} kind="market" onSuccess={onSuccess} />}
       {operation === 'supply-chain-receipt' && <SupplyChainPurchaseReceiptForm locations={locations} workflowDocs={workflowDocs} canViewPrice={canViewPrice} onSuccess={onSuccess} />}
@@ -1199,71 +1202,442 @@ interface DocumentQuantityLine {
   quantity: string
 }
 
+interface MarketReportSummaryDraftLine {
+  skuId: string
+  skuName: string
+  specName: string | null
+  marketId: string
+  marketName: string
+  outstandingQuantity: number
+  supplierId: string | null
+  supplierName: string | null
+  selected: boolean
+  quantity: string
+}
+
+/**
+ * 市场报货汇总表单（#193）：供应链侧跨市场汇总各市场的报货需求，落成一张汇总单。
+ *
+ * 明细按「商品 × 市场」成行 —— 行上不留市场，下游采购订单就没法按市场发货，
+ * 也没法把履约回写到正确的市场报货明细。
+ */
+function MarketReportSummaryForm({
+  locations,
+  onSuccess,
+}: {
+  locations: InventoryLocationRow[]
+  onSuccess: (message: string) => void
+}) {
+  const headquarters = locations.filter((location) => location.locationType === '总部' && location.isActive)
+  // 主体的「唯一候选自动选中」交给 InventorySubjectSelect（#189），这里不再自己补值
+  const [supplyChainLocationId, setSupplyChainLocationId] = useState('')
+  const [startDate, setStartDate] = useState('')
+  const [endDate, setEndDate] = useState('')
+  const [selectedMarketIds, setSelectedMarketIds] = useState<string[]>([])
+  const [docDate, setDocDate] = useState(today)
+  const [remark, setRemark] = useState('')
+  const [lines, setLines] = useState<MarketReportSummaryDraftLine[]>([])
+  const [loadingSummary, setLoadingSummary] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [sourceItemIdsByLine, setSourceItemIdsByLine] = useState<Map<string, number[]>>(new Map())
+
+  function lineKey(line: { skuId: string; marketId: string }) {
+    return `${line.skuId}@${line.marketId}`
+  }
+
+  const marketOptions = locations.filter(
+    (location) => location.locationType === '市场' && location.isActive && location.orgNodeId,
+  )
+
+  async function loadSummary() {
+    if (!supplyChainLocationId) {
+      toast.error('请选择供应链库存主体')
+      return
+    }
+    setLoadingSummary(true)
+    try {
+      const summary = await summarizeMarketReplenishmentRequests({
+        supplyChainLocationId,
+        startDate: optionalText(startDate),
+        endDate: optionalText(endDate),
+        // 不勾 = 全部市场（服务端把空数组与 null 同等对待）
+        marketIds: selectedMarketIds.length > 0 ? selectedMarketIds : null,
+      })
+      const nextSourceIds = new Map<string, number[]>()
+      setLines(summary.items.map((item) => {
+        nextSourceIds.set(`${item.skuId}@${item.marketId}`, item.requestItemIds)
+        return {
+          skuId: item.skuId,
+          skuName: item.skuName,
+          specName: item.specName,
+          marketId: item.marketId,
+          marketName: item.marketName,
+          outstandingQuantity: item.outstandingQuantity,
+          supplierId: item.supplierId,
+          supplierName: item.supplierName,
+          selected: true,
+          quantity: String(item.outstandingQuantity),
+        }
+      }))
+      setSourceItemIdsByLine(nextSourceIds)
+      if (summary.items.length === 0) toast.info('当前没有待汇总的市场报货明细')
+    } catch (error) {
+      toast.error(actionErrorMessage(error, '汇总市场报货失败'))
+    } finally {
+      setLoadingSummary(false)
+    }
+  }
+
+  function updateLine(key: string, patch: Partial<MarketReportSummaryDraftLine>) {
+    setLines((previous) => previous.map((line) => (
+      lineKey(line) === key ? { ...line, ...patch } : line
+    )))
+  }
+
+  async function submit() {
+    if (saving) return
+    if (!supplyChainLocationId) {
+      toast.error('请选择供应链库存主体')
+      return
+    }
+    const items: Array<{ skuId: string; marketId: string; quantity: number; sourceReportItemIds: number[] }> = []
+    for (const line of lines) {
+      if (!line.selected) continue
+      const quantity = positiveNumber(line.quantity)
+      if (quantity === null) continue
+      items.push({
+        skuId: line.skuId,
+        marketId: line.marketId,
+        quantity,
+        sourceReportItemIds: sourceItemIdsByLine.get(lineKey(line)) ?? [],
+      })
+    }
+    if (items.length === 0) {
+      toast.error('请至少勾选一条并填写汇总数量')
+      return
+    }
+    setSaving(true)
+    try {
+      const result = await createMarketReportSummary({
+        supplyChainLocationId,
+        docDate: optionalText(docDate),
+        remark: optionalText(remark),
+        items,
+      })
+      onSuccess(`市场报货汇总单已创建：${result.id}`)
+      setLines([])
+      setSourceItemIdsByLine(new Map())
+    } catch (error) {
+      toast.error(actionErrorMessage(error, '创建市场报货汇总失败'))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <form className="space-y-5" onSubmit={(event) => { event.preventDefault(); void submit() }}>
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-4">
+        <FormField label="供应链库存主体" required>
+          <InventorySubjectSelect
+            options={headquarters.map((location) => ({ value: location.locationId, label: location.name }))}
+            value={supplyChainLocationId}
+            onChange={setSupplyChainLocationId}
+            placeholder="请选择总部"
+          />
+        </FormField>
+        <FormField label="报货起始日期"><DatePicker value={startDate} onValueChange={setStartDate} /></FormField>
+        <FormField label="报货截止日期"><DatePicker value={endDate} onValueChange={setEndDate} /></FormField>
+        <FormField label="汇总单日期"><DatePicker value={docDate} onValueChange={setDocDate} /></FormField>
+      </div>
+
+      {marketOptions.length > 0 && (
+        <div className="space-y-2">
+          <h3 className="text-sm font-medium">市场范围</h3>
+          <p className="text-xs text-[#666666]">不勾选则汇总全部市场。</p>
+          <div className="flex flex-wrap gap-x-4 gap-y-1 rounded-[var(--radius)] border border-[var(--border)] p-3">
+            {marketOptions.map((market) => (
+              <label key={market.orgNodeId!} className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={selectedMarketIds.includes(market.orgNodeId!)}
+                  onChange={(event) => setSelectedMarketIds((previous) => (
+                    event.target.checked
+                      ? [...previous, market.orgNodeId!]
+                      : previous.filter((id) => id !== market.orgNodeId)
+                  ))}
+                />
+                {market.name}
+              </label>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div className="flex justify-start">
+        <Button type="button" variant="secondary" loading={loadingSummary} onClick={() => void loadSummary()}>
+          汇总各市场报货
+        </Button>
+      </div>
+
+      {lines.length > 0 && (
+        <div className="overflow-x-auto rounded-[var(--radius)] border border-[var(--border)]">
+          <table className="w-full min-w-[720px] text-sm">
+            <thead className="bg-[var(--muted)] text-left text-xs text-[var(--muted-foreground)]">
+              <tr>
+                <th className="px-3 py-2 font-medium">汇总</th>
+                <th className="px-3 py-2 font-medium">商品</th>
+                <th className="px-3 py-2 font-medium">市场</th>
+                <th className="px-3 py-2 font-medium">供应商</th>
+                <th className="px-3 py-2 text-right font-medium">未汇总数量</th>
+                <th className="px-3 py-2 text-right font-medium">本次汇总</th>
+              </tr>
+            </thead>
+            <tbody>
+              {lines.map((line) => {
+                const key = lineKey(line)
+                return (
+                  <tr key={key} className="border-t border-[var(--border)]">
+                    <td className="px-3 py-2">
+                      <input
+                        type="checkbox"
+                        checked={line.selected}
+                        onChange={(event) => updateLine(key, { selected: event.target.checked })}
+                      />
+                    </td>
+                    <td className="px-3 py-2">
+                      <div>{line.skuName}</div>
+                      {line.specName && <div className="text-xs text-[#888888]">{line.specName}</div>}
+                    </td>
+                    <td className="px-3 py-2">{line.marketName}</td>
+                    <td className={`px-3 py-2 ${line.supplierId ? '' : 'text-[#D94040]'}`}>
+                      {line.supplierName ?? '未绑定'}
+                    </td>
+                    <td className="px-3 py-2 text-right">{line.outstandingQuantity}</td>
+                    <td className="px-3 py-2 text-right">
+                      <Input
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        max="9999999999.99"
+                        value={line.quantity}
+                        disabled={!line.selected}
+                        onChange={(event) => updateLine(key, { quantity: event.target.value })}
+                      />
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <RemarkField value={remark} onChange={setRemark} />
+      <div className="flex justify-end">
+        <Button type="submit" loading={saving} disabled={lines.length === 0}>创建市场报货汇总单</Button>
+      </div>
+    </form>
+  )
+}
+
+interface PurchaseSourceLine {
+  sourceItemId: number
+  docId: string
+  docType: string
+  skuId: string
+  skuName: string
+  specName: string | null
+  marketId: string | null
+  /** 来源明细行上的供应商快照；仅采购订单与市场报货汇总会写，展示用。 */
+  supplier: string | null
+  supplierId: string | null
+  actualUnitPrice: number | null
+  availableQuantity: number
+  quantity: string
+}
+
+/**
+ * 合并后的采购订单表单（#194）。
+ *
+ * 取代原先的「创建采购订单」+「供应链采购订单」两张几乎一样的表单：一次勾选多张报货单
+ * （市场报货汇总 / 品项公司报货需求），把商品按 SKU × 市场汇总成采购明细。
+ * 供应商跟着商品走，界面不再让人选；缺供应商档案的商品会被挡下并标红提示。
+ */
 function PurchaseOrderForm({
   locations,
-  suppliers,
   workflowDocs,
   canViewPrice,
   onSuccess,
 }: {
   locations: InventoryLocationRow[]
-  suppliers: InventorySupplierRow[]
   workflowDocs: InventoryDocRow[]
   canViewPrice: boolean
   onSuccess: (message: string) => void
 }) {
   const headquarters = locations.filter((location) => location.locationType === '总部' && location.isActive)
-  const { docId, doc, loading, selectDocument } = useLoadedDocument()
-  const [supplierId, setSupplierId] = useState('')
   const [supplyChainLocationId, setSupplyChainLocationId] = useState('')
   const [docDate, setDocDate] = useState(today)
   const [remark, setRemark] = useState('')
-  const [lines, setLines] = useState<DocumentQuantityLine[]>([])
+  const [selectedDocIds, setSelectedDocIds] = useState<string[]>([])
+  const [lines, setLines] = useState<PurchaseSourceLine[]>([])
+  const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
 
+  const marketNameByOrgNodeId = useMemo(
+    () => new Map(locations.filter((location) => location.orgNodeId).map((location) => [location.orgNodeId as string, location.name])),
+    [locations],
+  )
+
+  // 供应商的真相源是**商品档案**，与服务端 `loadSku().supplierId` 同一口径。
+  // 两次踩坑记在这里：
+  //   ① 早先读来源明细行的 `supplier_id`，但只有采购订单与市场报货汇总会写那一列，
+  //      品项公司报货需求的明细从不写 → 供应链采购每行都判「未绑定」，提交被永久禁用；
+  //   ② 接着改用办理台的 `skuOptions`，可它只是列表页第一页（最多 100 条），
+  //      排在后面的合法 SKU 同样被误判。
+  // 所以按**选中的 SKU 精确批量查**，并且和建单时一样连「档案是否仍启用」一起看。
+  const [skuSupplierStatus, setSkuSupplierStatus] = useState<
+    Map<string, { supplierId: string | null; supplierName: string | null }>
+  >(new Map())
+
+  const candidates = useMemo(
+    () => [
+      ...docCandidates(workflowDocs, '市场报货汇总'),
+      ...docCandidates(workflowDocs, '品项公司报货需求'),
+    ],
+    [workflowDocs],
+  )
+
+  // 勾选集合一变就整体重拉：增量维护行状态会漏掉期间被别人下单或取消掉的明细。
   useEffect(() => {
-    if (!doc) {
+    let cancelled = false
+    if (selectedDocIds.length === 0) {
       setLines([])
       return
     }
-    setSupplyChainLocationId(doc.targetOrgNodeId ?? '')
-    setLines(doc.items.filter(hasAvailableQuantity).map((item) => ({
-      sourceItemId: item.id,
-      skuName: item.skuName,
-      specName: item.specName,
-      quantity: String(Math.max(0, item.quantity - (item.fulfilledQuantity ?? 0))),
-    })))
-  }, [doc])
+    setLoading(true)
+    void (async () => {
+      try {
+        const details = await Promise.all(selectedDocIds.map((id) => getInventoryCoreDocById(id)))
+        if (cancelled) return
+        const next: PurchaseSourceLine[] = []
+        for (const detail of details) {
+          if (!detail) continue
+          for (const item of detail.items) {
+            if (!hasAvailableQuantity(item)) continue
+            const available = remainingQuantity(item)
+            next.push({
+              sourceItemId: item.id,
+              docId: detail.id,
+              docType: detail.docType,
+              skuId: item.skuId,
+              skuName: item.skuName,
+              specName: item.specName,
+              marketId: item.marketId,
+              supplier: item.supplier,
+              supplierId: item.supplierId,
+              actualUnitPrice: item.actualUnitPrice ?? null,
+              availableQuantity: available,
+              quantity: String(available),
+            })
+          }
+        }
+        // 按本批明细涉及的 SKU 精确查供应商档案状态（不用分页列表）
+        const status = await resolveInventorySkuSupplierStatus(
+          Array.from(new Set(next.map((line) => line.skuId))),
+        )
+        if (cancelled) return
+        setSkuSupplierStatus(new Map(status.map((row) => [row.skuId, row])))
+        setLines(next)
+        // 来源单的 target 就是供应链主体，默认带出来省一次选择（候选唯一时尤其明显）。
+        setSupplyChainLocationId((current) => current
+          || (details.find((detail) => detail?.targetOrgNodeId)?.targetOrgNodeId ?? ''))
+      } catch (error) {
+        if (!cancelled) toast.error(actionErrorMessage(error, '加载报货单明细失败'))
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
+    })()
+    return () => { cancelled = true }
+  }, [selectedDocIds])
 
-  function updateLine(index: number, patch: Partial<DocumentQuantityLine>) {
-    setLines((previous) => previous.map((line, lineIndex) => lineIndex === index ? { ...line, ...patch } : line))
+  const groups = useMemo(() => {
+    const map = new Map<string, {
+      key: string
+      skuName: string
+      specName: string | null
+      marketId: string | null
+      supplier: string | null
+      missingSupplier: boolean
+      lines: PurchaseSourceLine[]
+    }>()
+    for (const line of lines) {
+      const key = `${line.skuId}@${line.marketId ?? ''}`
+      const status = skuSupplierStatus.get(line.skuId)
+      const group = map.get(key) ?? {
+        key,
+        skuName: line.skuName,
+        specName: line.specName,
+        marketId: line.marketId,
+        supplier: status?.supplierName ?? line.supplier,
+        missingSupplier: !status?.supplierId,
+        lines: [],
+      }
+      group.lines.push(line)
+      map.set(key, group)
+    }
+    return Array.from(map.values())
+  }, [lines, skuSupplierStatus])
+
+  const missingSupplierNames = useMemo(
+    () => Array.from(new Set(
+      lines.filter((line) => !skuSupplierStatus.get(line.skuId)?.supplierId).map((line) => line.skuName),
+    )),
+    [lines, skuSupplierStatus],
+  )
+
+  function updateLine(sourceItemId: number, quantity: string) {
+    setLines((previous) => previous.map((line) => (
+      line.sourceItemId === sourceItemId ? { ...line, quantity } : line
+    )))
+  }
+
+  function toggleDoc(id: string, checked: boolean) {
+    setSelectedDocIds((previous) => (
+      checked ? [...previous, id] : previous.filter((docId) => docId !== id)
+    ))
   }
 
   async function submit() {
     if (saving) return
-    if (!doc || !supplierId || !supplyChainLocationId) {
-      toast.error('请选择市场报货单、供应商和供应链库存主体')
+    if (!supplyChainLocationId) {
+      toast.error('请选择供应链库存主体')
       return
     }
-    const items = lines.map((line) => ({
-      marketReportItemId: line.sourceItemId,
-      quantity: positiveNumber(line.quantity),
-    })).filter((line) => line.quantity !== null)
+    // 服务端同样 fail-closed，这里先挡一道是为了让操作人一次看全要补哪些商品。
+    if (missingSupplierNames.length > 0) {
+      toast.error(`以下商品未绑定供应商档案，请先在商品资料补全：${missingSupplierNames.join('、')}`)
+      return
+    }
+    const items: Array<{ sourceItemId: number; quantity: number }> = []
+    for (const line of lines) {
+      const quantity = positiveNumber(line.quantity)
+      if (quantity === null) continue
+      items.push({ sourceItemId: line.sourceItemId, quantity })
+    }
     if (items.length === 0) {
       toast.error('请填写至少一条采购数量')
       return
     }
     setSaving(true)
     try {
-      const result = await createPurchaseOrderFromMarketReplenishment({
-        marketReportId: doc.id,
-        supplierId,
+      const result = await createPurchaseOrder({
         supplyChainLocationId,
         docDate: optionalText(docDate),
         remark: optionalText(remark),
-        items: items.map((item) => ({ ...item, quantity: item.quantity! })),
+        items,
       })
       onSuccess(`采购订单已创建：${result.id}`)
+      setSelectedDocIds([])
       setLines([])
     } catch (error) {
       toast.error(actionErrorMessage(error, '创建采购订单失败'))
@@ -1272,24 +1646,18 @@ function PurchaseOrderForm({
     }
   }
 
-  const candidates = docCandidates(workflowDocs, '市场报货')
   return (
     <form className="space-y-5" onSubmit={(event) => { event.preventDefault(); void submit() }}>
-      <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-        <DocPicker label="市场报货单" required docs={candidates} value={docId} onChange={(id) => void selectDocument(id)} />
-        <FormField label="供应商" required>
-          <Select value={supplierId} onChange={(event) => setSupplierId(event.target.value)}>
-            <option value="">请选择供应商</option>
-            {suppliers.map((supplier) => <option key={supplier.supplierId} value={supplier.supplierId}>{supplier.name}</option>)}
-          </Select>
-        </FormField>
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
         <FormField label="供应链库存主体" required>
           <InventorySubjectSelect
             options={headquarters.map((location) => ({ value: location.locationId, label: location.name }))}
             value={supplyChainLocationId}
             onChange={setSupplyChainLocationId}
             placeholder="请选择总部"
-            autoSelect={!doc}
+            /* #189：候选唯一时自动选中。合并后的表单没有单选的来源单，
+               「尚未勾选任何来源」对应它原先的 `!doc` —— 勾了之后主体交还来源单决定。 */
+            autoSelect={selectedDocIds.length === 0}
           />
         </FormField>
         <FormField label="订单日期">
@@ -1297,143 +1665,88 @@ function PurchaseOrderForm({
         </FormField>
       </div>
 
-      {loading && <div className="text-sm text-[#666666]">正在加载市场报货明细</div>}
-      <SourceDocumentItems doc={doc} canViewPrice={canViewPrice} />
-      {lines.length > 0 && (
-        <div className="space-y-3">
-          <h3 className="text-sm font-medium">本次下单数量</h3>
-          <div className="space-y-2">
-            {lines.map((line, index) => (
-              <div key={line.sourceItemId} className="grid grid-cols-1 gap-2 rounded-[var(--radius)] border border-[var(--border)] p-3 md:grid-cols-[minmax(0,1fr)_10rem]">
-                <div><div className="font-medium text-sm">{line.skuName}</div><div className="text-xs text-[#888888]">{line.specName || `明细 #${line.sourceItemId}`}</div></div>
-                <FormField label="采购数量"><Input type="number" min="0" step="0.01" max="9999999999.99" value={line.quantity} onChange={(event) => updateLine(index, { quantity: event.target.value })} /></FormField>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      <RemarkField value={remark} onChange={setRemark} />
-      <div className="flex justify-end"><Button type="submit" loading={saving} disabled={!doc || lines.length === 0}>创建采购订单</Button></div>
-    </form>
-  )
-}
-
-function SupplyChainPurchaseOrderForm({
-  locations,
-  suppliers,
-  workflowDocs,
-  canViewPrice,
-  onSuccess,
-}: {
-  locations: InventoryLocationRow[]
-  suppliers: InventorySupplierRow[]
-  workflowDocs: InventoryDocRow[]
-  canViewPrice: boolean
-  onSuccess: (message: string) => void
-}) {
-  const headquarters = locations.filter((location) => location.locationType === '总部' && location.isActive)
-  const { docId, doc, loading, selectDocument } = useLoadedDocument()
-  const [supplierId, setSupplierId] = useState('')
-  const [supplyChainLocationId, setSupplyChainLocationId] = useState('')
-  const [docDate, setDocDate] = useState(today)
-  const [remark, setRemark] = useState('')
-  const [lines, setLines] = useState<DocumentQuantityLine[]>([])
-  const [saving, setSaving] = useState(false)
-
-  useEffect(() => {
-    if (!doc) {
-      setLines([])
-      return
-    }
-    setSupplyChainLocationId(doc.targetOrgNodeId ?? '')
-    setLines(doc.items.filter(hasAvailableQuantity).map((item) => ({
-      sourceItemId: item.id,
-      skuName: item.skuName,
-      specName: item.specName,
-      quantity: String(Math.max(0, item.quantity - (item.fulfilledQuantity ?? 0))),
-    })))
-  }, [doc])
-
-  function updateLine(index: number, patch: Partial<DocumentQuantityLine>) {
-    setLines((previous) => previous.map((line, lineIndex) => lineIndex === index ? { ...line, ...patch } : line))
-  }
-
-  async function submit() {
-    if (saving) return
-    if (!doc || !supplierId || !supplyChainLocationId) {
-      toast.error('请选择品项公司报货需求、供应商和供应链库存主体')
-      return
-    }
-    const items = lines.map((line) => ({
-      companyRequestItemId: line.sourceItemId,
-      quantity: positiveNumber(line.quantity),
-    })).filter((line) => line.quantity !== null)
-    if (items.length === 0) {
-      toast.error('请填写至少一条采购数量')
-      return
-    }
-    setSaving(true)
-    try {
-      const result = await createPurchaseOrderFromItemCompanyReplenishment({
-        companyRequestId: doc.id,
-        supplierId,
-        supplyChainLocationId,
-        docDate: optionalText(docDate),
-        remark: optionalText(remark),
-        items: items.map((item) => ({ ...item, quantity: item.quantity! })),
-      })
-      onSuccess(`供应链采购订单已创建：${result.id}`)
-      setLines([])
-    } catch (error) {
-      toast.error(actionErrorMessage(error, '创建供应链采购订单失败'))
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  const candidates = docCandidates(workflowDocs, '品项公司报货需求')
-  return (
-    <form className="space-y-5" onSubmit={(event) => { event.preventDefault(); void submit() }}>
-      <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-        <DocPicker label="品项公司报货需求" required docs={candidates} value={docId} onChange={(id) => void selectDocument(id)} />
-        <FormField label="供应商" required>
-          <Select value={supplierId} onChange={(event) => setSupplierId(event.target.value)}>
-            <option value="">请选择供应商</option>
-            {suppliers.map((supplier) => <option key={supplier.supplierId} value={supplier.supplierId}>{supplier.name}</option>)}
-          </Select>
-        </FormField>
-        <FormField label="供应链库存主体" required>
-          <InventorySubjectSelect
-            options={headquarters.map((location) => ({ value: location.locationId, label: location.name }))}
-            value={supplyChainLocationId}
-            onChange={setSupplyChainLocationId}
-            placeholder="请选择总部"
-            autoSelect={!doc}
-          />
-        </FormField>
-        <FormField label="订单日期"><DatePicker value={docDate} onValueChange={setDocDate} /></FormField>
+      <div className="space-y-2">
+        <h3 className="text-sm font-medium">来源报货单<span className="ml-1 text-[#D94040]">*</span></h3>
+        <p className="text-xs text-[#666666]">可同时勾选多张市场报货汇总单与品项公司报货需求单，商品会按「商品 × 市场」合并成采购明细。</p>
+        {candidates.length === 0
+          ? <div className="rounded-[var(--radius)] border border-dashed border-[var(--border)] p-4 text-sm text-[#888888]">暂无可采购的报货单</div>
+          : (
+            <div className="max-h-56 space-y-1 overflow-y-auto rounded-[var(--radius)] border border-[var(--border)] p-2">
+              {candidates.map((doc) => (
+                <label key={doc.id} className="flex items-center gap-2 rounded px-2 py-1 text-sm hover:bg-[var(--muted)]">
+                  <input
+                    type="checkbox"
+                    checked={selectedDocIds.includes(doc.id)}
+                    onChange={(event) => toggleDoc(doc.id, event.target.checked)}
+                  />
+                  <span className="text-xs text-[#888888]">{doc.docType}</span>
+                  <span>{formatDoc(doc)}</span>
+                </label>
+              ))}
+            </div>
+          )}
       </div>
-      {loading && <div className="text-sm text-[#666666]">正在加载品项公司报货明细</div>}
-      <SourceDocumentItems doc={doc} canViewPrice={canViewPrice} />
-      {lines.length > 0 && (
-        <div className="space-y-3">
-          <h3 className="text-sm font-medium">本次下单数量</h3>
-          <div className="space-y-2">
-            {lines.map((line, index) => (
-              <div key={line.sourceItemId} className="grid grid-cols-1 gap-2 rounded-[var(--radius)] border border-[var(--border)] p-3 md:grid-cols-[minmax(0,1fr)_10rem]">
-                <div><div className="font-medium text-sm">{line.skuName}</div><div className="text-xs text-[#888888]">{line.specName || `明细 #${line.sourceItemId}`}</div></div>
-                <FormField label="采购数量"><Input type="number" min="0" step="0.01" max="9999999999.99" value={line.quantity} onChange={(event) => updateLine(index, { quantity: event.target.value })} /></FormField>
-              </div>
-            ))}
-          </div>
+
+      {loading && <div className="text-sm text-[#666666]">正在加载报货明细</div>}
+
+      {missingSupplierNames.length > 0 && (
+        <div className="rounded-[var(--radius)] border border-[#D94040] bg-[#FFF0F0] p-3 text-sm text-[#D94040]">
+          以下商品未绑定供应商档案，补全后才能下单：{missingSupplierNames.join('、')}
         </div>
       )}
+
+      {groups.length > 0 && (
+        <div className="space-y-3">
+          <h3 className="text-sm font-medium">采购明细</h3>
+          {groups.map((group) => (
+            <div key={group.key} className={`space-y-2 rounded-[var(--radius)] border p-3 ${group.missingSupplier ? 'border-[#D94040]' : 'border-[var(--border)]'}`}>
+              <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+                <span className="text-sm font-medium">{group.skuName}</span>
+                {group.specName && <span className="text-xs text-[#888888]">{group.specName}</span>}
+                <span className="text-xs text-[#5E8BB3]">
+                  {group.marketId ? (marketNameByOrgNodeId.get(group.marketId) ?? group.marketId) : '品项公司自用'}
+                </span>
+                <span className={`text-xs ${group.missingSupplier ? 'text-[#D94040]' : 'text-[#666666]'}`}>
+                  供应商：{group.supplier ?? '未绑定'}
+                </span>
+              </div>
+              {group.lines.map((line) => (
+                <div key={line.sourceItemId} className="grid grid-cols-1 gap-2 border-t border-[var(--border)] pt-2 md:grid-cols-[minmax(0,1fr)_8rem_10rem]">
+                  <div className="text-xs text-[#888888]">
+                    来源 {line.docId}（可采购 {line.availableQuantity}）
+                  </div>
+                  {canViewPrice && (
+                    <div className="text-xs text-[#888888]">
+                      单价 {line.actualUnitPrice ?? '—'}
+                    </div>
+                  )}
+                  <FormField label="采购数量">
+                    <Input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      max="9999999999.99"
+                      value={line.quantity}
+                      onChange={(event) => updateLine(line.sourceItemId, event.target.value)}
+                    />
+                  </FormField>
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
+      )}
+
       <RemarkField value={remark} onChange={setRemark} />
-      <div className="flex justify-end"><Button type="submit" loading={saving} disabled={!doc || lines.length === 0}>创建供应链采购订单</Button></div>
+      <div className="flex justify-end">
+        <Button type="submit" loading={saving} disabled={lines.length === 0 || missingSupplierNames.length > 0}>
+          创建采购订单
+        </Button>
+      </div>
     </form>
   )
 }
+
 
 interface ShipmentDraftLine {
   purchaseOrderItemId: number
@@ -1464,7 +1777,27 @@ function CompanyShipmentForm({
   const [trackingNo, setTrackingNo] = useState('')
   const [remark, setRemark] = useState('')
   const [lines, setLines] = useState<ShipmentDraftLine[]>([])
+  const [shipMarketId, setShipMarketId] = useState('')
   const [saving, setSaving] = useState(false)
+
+  // 合并后一张采购单可含多个市场的行，外加无市场归属的品项公司自用行（#194）。
+  // 发货单单头只能有一个市场，自用行更是压根不走发货 —— 装载全部明细会让用户一提交
+  // 就撞上服务端的「只能发往同一个市场」/「该明细没有市场归属」。这里先按市场收窄。
+  const shipMarkets = useMemo(() => {
+    if (!doc) return [] as Array<{ id: string; name: string }>
+    const seen = new Map<string, string>()
+    for (const item of doc.items) {
+      if (!item.marketId || seen.has(item.marketId)) continue
+      seen.set(item.marketId, item.marketName ?? item.marketId)
+    }
+    return Array.from(seen, ([id, name]) => ({ id, name }))
+  }, [doc])
+
+  useEffect(() => {
+    setShipMarketId((current) => (
+      shipMarkets.some((market) => market.id === current) ? current : (shipMarkets[0]?.id ?? '')
+    ))
+  }, [shipMarkets])
 
   useEffect(() => {
     if (!doc) {
@@ -1472,7 +1805,7 @@ function CompanyShipmentForm({
       return
     }
     setSourceOrgNodeId(doc.targetOrgNodeId ?? '')
-    setLines(doc.items.map((item) => {
+    setLines(doc.items.filter((item) => item.marketId && item.marketId === shipMarketId).map((item) => {
       const remaining = remainingQuantity(item)
       return {
         purchaseOrderItemId: item.id,
@@ -1486,7 +1819,7 @@ function CompanyShipmentForm({
         remark: '',
       }
     }))
-  }, [doc])
+  }, [doc, shipMarketId])
 
   function updateLine(index: number, patch: Partial<ShipmentDraftLine>) {
     setLines((previous) => previous.map((line, lineIndex) => lineIndex === index ? { ...line, ...patch } : line))
@@ -1543,12 +1876,31 @@ function CompanyShipmentForm({
             autoSelect={!doc}
           />
         </FormField>
+        {shipMarkets.length > 1 && (
+          <FormField label="发往市场" required>
+            <Select value={shipMarketId} onChange={(event) => setShipMarketId(event.target.value)}>
+              {shipMarkets.map((market) => <option key={market.id} value={market.id}>{market.name}</option>)}
+            </Select>
+          </FormField>
+        )}
         <FormField label="发货日期"><DatePicker value={docDate} onValueChange={setDocDate} /></FormField>
         <FormField label="物流公司"><Input value={logisticsCompany} onChange={(event) => setLogisticsCompany(event.target.value)} /></FormField>
         <FormField label="物流单号"><Input value={trackingNo} onChange={(event) => setTrackingNo(event.target.value)} /></FormField>
       </div>
 
       {loading && <div className="text-sm text-[#666666]">正在加载采购订单明细</div>}
+      {shipMarkets.length > 1 && (
+        <div className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--muted)] p-3 text-xs text-[#666666]">
+          本单含 {shipMarkets.length} 个市场的明细，发货单一次只能发往一个市场，请分次发货。
+        </div>
+      )}
+      {/* 候选按 doc_type 筛，纯供应链行的采购单也会列进来；选中后表单会是空的，
+          不给提示的话用户只会看到一个没有明细、点了也提交不了的表单。 */}
+      {doc && !loading && shipMarkets.length === 0 && (
+        <div className="rounded-[var(--radius)] border border-[#D4820A] bg-[#FFF8E6] p-3 text-sm text-[#7B5E2B]">
+          该采购订单没有市场归属的明细（全部是品项公司自用行），请改走「供应链采购入库」。
+        </div>
+      )}
       {lines.length > 0 && (
         <div className="space-y-3">
           <h3 className="text-sm font-medium">发货批次与数量</h3>
@@ -1729,7 +2081,9 @@ function SupplyChainPurchaseReceiptForm({
       return
     }
     setSupplyChainLocationId(doc.targetOrgNodeId ?? '')
-    setLines(doc.items.filter(hasAvailableQuantity).map((item) => ({
+    // 只有无市场归属的行才走供应链入库（#194）；市场行归品项公司发货，
+    // 一起装载会让提交必然撞上服务端的「该明细有市场归属」。
+    setLines(doc.items.filter((item) => !item.marketId).filter(hasAvailableQuantity).map((item) => ({
       purchaseOrderItemId: item.id,
       skuName: item.skuName,
       specName: item.specName,
@@ -1747,7 +2101,7 @@ function SupplyChainPurchaseReceiptForm({
   async function submit() {
     if (saving) return
     if (!doc || !supplyChainLocationId) {
-      toast.error('请选择待收货的供应链采购订单')
+      toast.error('请选择待收货的采购订单')
       return
     }
     const items = lines.map((line) => ({
@@ -1779,11 +2133,11 @@ function SupplyChainPurchaseReceiptForm({
     }
   }
 
-  const candidates = docCandidates(workflowDocs, '供应链采购订单', '待收货')
+  const candidates = docCandidates(workflowDocs, '采购订单', '待收货')
   return (
     <form className="space-y-5" onSubmit={(event) => { event.preventDefault(); void submit() }}>
       <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-        <DocPicker label="供应链采购订单" required docs={candidates} value={docId} onChange={(id) => void selectDocument(id)} />
+        <DocPicker label="采购订单" required docs={candidates} value={docId} onChange={(id) => void selectDocument(id)} />
         <FormField label="供应链库存主体" required>
           <InventorySubjectSelect
             options={headquarters.map((location) => ({ value: location.locationId, label: location.name }))}
@@ -1796,7 +2150,7 @@ function SupplyChainPurchaseReceiptForm({
         </FormField>
         <FormField label="入库日期"><DatePicker value={docDate} onValueChange={setDocDate} /></FormField>
       </div>
-      {loading && <div className="text-sm text-[#666666]">正在加载供应链采购订单明细</div>}
+      {loading && <div className="text-sm text-[#666666]">正在加载采购订单明细</div>}
       <SourceDocumentItems doc={doc} canViewPrice={canViewPrice} />
       {lines.length > 0 && (
         <div className="space-y-3">
@@ -1828,12 +2182,12 @@ function SupplyChainPurchaseCancelForm({
   const { docId, doc, loading, selectDocument } = useLoadedDocument()
   const [reason, setReason] = useState('')
   const [saving, setSaving] = useState(false)
-  const candidates = docCandidates(workflowDocs, '供应链采购订单', '待收货')
+  const candidates = docCandidates(workflowDocs, '采购订单', '待收货')
 
   async function submit() {
     if (saving) return
     if (!doc || !reason.trim()) {
-      toast.error('请选择待收货的供应链采购订单并填写关闭原因')
+      toast.error('请选择待收货的采购订单并填写关闭原因')
       return
     }
     setSaving(true)
@@ -1842,9 +2196,9 @@ function SupplyChainPurchaseCancelForm({
         purchaseOrderId: doc.id,
         cancellationReason: reason.trim(),
       })
-      onSuccess('供应链采购订单已关闭，未收数量已释放')
+      onSuccess('采购订单已关闭，未收数量已释放')
     } catch (error) {
-      toast.error(actionErrorMessage(error, '关闭供应链采购订单失败'))
+      toast.error(actionErrorMessage(error, '关闭采购订单失败'))
     } finally {
       setSaving(false)
     }
@@ -1853,13 +2207,13 @@ function SupplyChainPurchaseCancelForm({
   return (
     <div className="space-y-5">
       <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-        <DocPicker label="待收货供应链采购订单" required docs={candidates} value={docId} onChange={(id) => void selectDocument(id)} />
+        <DocPicker label="待收货采购订单" required docs={candidates} value={docId} onChange={(id) => void selectDocument(id)} />
       </div>
       {loading && <div className="text-sm text-[#666666]">正在加载采购订单明细</div>}
       <SourceDocumentItems doc={doc} canViewPrice={false} />
       <FormField label="关闭原因" required><Textarea value={reason} onChange={(event) => setReason(event.target.value)} /></FormField>
       <div className="flex justify-end">
-        <Button type="button" variant="destructive" loading={saving} onClick={() => void submit()} disabled={!doc}>关闭供应链采购订单</Button>
+        <Button type="button" variant="destructive" loading={saving} onClick={() => void submit()} disabled={!doc}>关闭采购订单</Button>
       </div>
     </div>
   )

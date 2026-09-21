@@ -9,10 +9,11 @@ import {
   createItemCompanyReplenishment as createItemCompanyReplenishmentImpl,
   createInventoryConversion as createInventoryConversionImpl,
   createMarketReplenishment as createMarketReplenishmentImpl,
+  createMarketReportSummary as createMarketReportSummaryImpl,
+  resolveInventorySkuSupplierStatus as resolveInventorySkuSupplierStatusImpl,
   createMarketStaffPurchase as createMarketStaffPurchaseImpl,
   createSupplyChainStaffPurchase as createSupplyChainStaffPurchaseImpl,
-  createPurchaseOrderFromItemCompanyReplenishment as createPurchaseOrderFromItemCompanyReplenishmentImpl,
-  createPurchaseOrderFromMarketReplenishment as createPurchaseOrderFromMarketReplenishmentImpl,
+  createPurchaseOrder as createPurchaseOrderImpl,
   createReturnForRestock as createReturnForRestockImpl,
   createSelfPurchasedReceipt as createSelfPurchasedReceiptImpl,
   createStoreAllocation as createStoreAllocationImpl,
@@ -28,10 +29,11 @@ import {
   rejectItemCompanyShipmentCancellation as rejectItemCompanyShipmentCancellationImpl,
   rejectReturnForRestock as rejectReturnForRestockImpl,
   requestItemCompanyShipmentCancellation as requestItemCompanyShipmentCancellationImpl,
+  summarizeMarketReplenishmentRequests as summarizeMarketReplenishmentRequestsImpl,
   summarizeStoreReplenishmentRequests as summarizeStoreReplenishmentRequestsImpl,
   type CreateItemCompanyShipmentInput,
+  type CreateMarketReportSummaryInput,
   type CreateItemCompanyReplenishmentInput,
-  type CreateCompanyPurchaseOrderInput,
   type CancelSupplyChainPurchaseOrderInput,
   type CreateExternalMarketOutboundInput,
   type CreateInventoryConversionInput,
@@ -39,7 +41,7 @@ import {
   type MarketPromotionSelectionInput,
   type CreateMarketStaffPurchaseInput,
   type CreateSupplyChainStaffPurchaseInput,
-  type CreatePurchaseOrderInput,
+  type CreateMergedPurchaseOrderInput,
   type CreateReturnForRestockInput,
   type CreateSelfPurchasedReceiptInput,
   type CreateStoreAllocationInput,
@@ -97,16 +99,31 @@ export const createItemCompanyReplenishment = withPermission(
     createItemCompanyReplenishmentImpl(session, input),
 )
 
-export const createPurchaseOrderFromMarketReplenishment = withPermission(
+export const summarizeMarketReplenishmentRequests = withPermission(
   'inventory:supply_chain_operate',
-  async (session, input: CreatePurchaseOrderInput) =>
-    createPurchaseOrderFromMarketReplenishmentImpl(session, input),
+  async (session, input: {
+    supplyChainLocationId: string
+    startDate?: string | null
+    endDate?: string | null
+    marketIds?: string[] | null
+  }) => summarizeMarketReplenishmentRequestsImpl(session, input),
 )
 
-export const createPurchaseOrderFromItemCompanyReplenishment = withPermission(
+export const createMarketReportSummary = withPermission(
   'inventory:supply_chain_operate',
-  async (session, input: CreateCompanyPurchaseOrderInput) =>
-    createPurchaseOrderFromItemCompanyReplenishmentImpl(session, input),
+  async (session, input: CreateMarketReportSummaryInput) =>
+    createMarketReportSummaryImpl(session, input),
+)
+
+export const resolveInventorySkuSupplierStatus = withPermission(
+  'inventory:supply_chain_operate',
+  async (session, skuIds: string[]) => resolveInventorySkuSupplierStatusImpl(session, skuIds),
+)
+
+export const createPurchaseOrder = withPermission(
+  'inventory:supply_chain_operate',
+  async (session, input: CreateMergedPurchaseOrderInput) =>
+    createPurchaseOrderImpl(session, input),
 )
 
 export const createItemCompanyShipment = withPermission(
