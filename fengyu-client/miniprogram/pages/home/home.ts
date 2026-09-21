@@ -608,6 +608,10 @@ Page({
         };
       }
 
+      // init 在途时用户可能已经点了别的分类（那会推进 _loadingToken，但不动 epoch）。
+      // 侧边栏必须写——用户选的分类也依赖它；但激活分类与列表不能再被 init 覆盖回首分类。
+      if (token !== this._loadingToken) return;
+
       const cachedFirst = firstCatKey ? this._spuCache[firstCatKey] : undefined;
       this._setListData("browse", {
         activeCategoryKey: firstCatKey,
@@ -617,8 +621,8 @@ Page({
 
       if (firstCatKey && !cachedFirst) this.loadSpuList(firstCatKey);
     } catch (err: any) {
-      // 过期请求的失败不该弹 Toast 干扰已经开始的新一轮加载
-      if (epoch !== this._dataEpoch) return;
+      // 过期请求的失败不该弹 Toast、更不该用 loadError 盖掉用户已经切过去的分类
+      if (epoch !== this._dataEpoch || token !== this._loadingToken) return;
       console.error("loadShopInit error:", err);
       Toast.fail(err?.message || "加载失败");
       if (epoch === this._dataEpoch) this.setData({ loadError: true });

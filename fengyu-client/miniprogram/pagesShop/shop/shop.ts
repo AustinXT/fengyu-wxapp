@@ -245,6 +245,13 @@ Page({
         };
       }
 
+      // init 在途时用户可能已经切了别的分类（那会推进 _loadingToken，但不动 epoch）。
+      // categories 必须写——用户选的分类也依赖它；但激活分类与列表不能再被 init 覆盖回去。
+      if (token !== this._loadingToken) {
+        this.setData({ categories });
+        return;
+      }
+
       const usable = activeId && serverIndex >= 0;
       this._setListData({
         categories,
@@ -254,8 +261,8 @@ Page({
       });
       if (activeId && !usable) this.loadSpuList(activeId);
     } catch (err: any) {
-      // 过期请求的失败不该弹 Toast 干扰已经开始的新一轮加载
-      if (epoch !== this._dataEpoch) return;
+      // 过期请求的失败不该弹 Toast 干扰用户已经切过去的分类
+      if (epoch !== this._dataEpoch || token !== this._loadingToken) return;
       console.error('loadShopInit error:', err);
       Toast.fail(err?.message || '加载失败');
     } finally {
