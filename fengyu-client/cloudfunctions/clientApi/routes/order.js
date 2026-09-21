@@ -1639,11 +1639,23 @@ async function scanDetail(ctx) {
     ? Number(order.first_payment_amount)
     : null
 
-  // #214：解析本人可续付场次的元数据（只取金额/方式，绝不外发 paymentParams）
+  // #214：本人是否持有一笔**活动中**的支付意图。
+  //
+  // ⚠️ 这与「快照是否还能直接复用」是两件事，必须分开下发（双谱系评审 round-10）：
+  // 合成一个布尔的话，「意图还在、但快照只剩不到一分钟或刚过期」会被判成「没有可续付场次」，
+  // 前端于是转回 order.repay —— 而 repay 对活动意图是 fail-fast 的，顾客又被卡死。
+  // 正确的分工：**有没有意图**决定走 pay 还是 repay（pay 能查单释放后重建，repay 不能）；
+  // **快照能不能复用**只决定 pay 内部是复用还是重开一场。
+  const hasActiveIntentForUser = Boolean(
+    String(order.lakala_out_order_no || '').trim()
+    && order.client_user_id
+    && order.client_user_id === userId
+  )
+
+  // 可续付场次的元数据（只取金额/方式，绝不外发 paymentParams）
   const resumableIntentMeta = (() => {
+    if (!hasActiveIntentForUser) return null
     const activeOutTradeNo = String(order.lakala_out_order_no || '').trim()
-    if (!activeOutTradeNo) return null
-    if (!order.client_user_id || order.client_user_id !== userId) return null
     const raw = order.lakala_payment_intent
     const intent = typeof raw === 'string' ? safeParseJson(raw) : raw
     if (!intent || typeof intent !== 'object' || Array.isArray(intent)) return null
@@ -1693,6 +1705,10 @@ async function scanDetail(ctx) {
       // 由 reserve 的 planRes 写入的（`client_user_id = CASE WHEN ... IS NULL AND
       // opened_by IS NOT NULL THEN $1`），不是等支付成功才写。所以「顾客扫码建了场次
       // 又退出」时归属已经落定，重入能正确识别（round-8 复核过这个时序）。
+      // 前端据此**路由**：有活动意图就必须走 pay/alipayPay（它们能查单释放后重建），
+      // 绝不能回落到 repay 的 fail-fast
+      hasActivePaymentIntent: hasActiveIntentForUser,
+      // 前端据此**复用与展示**：只有快照仍可直接复用时才有值
       hasResumablePaymentIntent: Boolean(resumableIntentMeta),
       // 可续付场次的**权威**金额与支付方式（不含 paySign/prepay_id 等任何凭据）。
       //

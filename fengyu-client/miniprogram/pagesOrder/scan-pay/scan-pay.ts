@@ -30,7 +30,9 @@ interface ScanOrder {
   paymentMethod: PayMethod;
   couponDiscount: number;
   isExperienceConversion: boolean;
-  // #214：是否存在本人可续付的支付场次（布尔，不含凭据）
+  // #214：本人是否持有活动中的支付意图 —— 决定走 pay 还是 repay
+  hasActivePaymentIntent?: boolean;
+  // 快照是否仍可直接复用 —— 决定 pay 内部复用还是重开一场，以及展示口径
   hasResumablePaymentIntent?: boolean;
   // 可续付场次的权威金额/方式/待扣卡额（不含凭据）；前端不再自行推算，避免口径分歧
   resumablePayAmount?: number | null;
@@ -90,6 +92,8 @@ Page({
     isRepayment: false,
     // #214：订单上是否已有本人可续付的支付场次（由 scanDetail 下发，不含任何凭据）。
     // 为 true 时普通回款也走 pay/alipayPay 以复用场次，否则会撞 PAYMENT_INTENT_ACTIVE。
+    // 本人是否持有活动中的支付意图（决定路由到 pay 而非 repay）
+    hasActivePaymentIntent: false,
     hasResumablePaymentIntent: false,
     // 有可续付场次时锁死抵扣与支付方式：那笔渠道单的金额/方式已定，服务端也有守卫，
     // 让顾客以为能改、改完付的还是老方案，就是展示与资金结果不一致的来源
@@ -199,7 +203,12 @@ Page({
       // 回款（部分支付）用行级口径：已退行不计入，只有「未退且未付清」的行可继续支付；
       // 首次支付（待支付）无退款，沿用订单级 payable - 净到账（行级 Σ 未扣储值卡意向，首次场景不适用）
       const isRepayment = orderData.status === '部分支付';
-      // #214：订单上是否已有本人可续付的支付场次（后端只下发布尔，不含凭据）
+      // #214：两个信号分工不同，不能混用（双谱系评审 round-10）
+      //   hasActiveIntent  —— 有活动意图 → 必须走 pay/alipayPay（它们能查单释放后重建）
+      //   hasResumableIntent —— 快照还能直接复用 → 决定展示口径与是否复用
+      // 合成一个布尔的话，「意图还在但快照刚过期」会被判成没有场次、转回 repay 的
+      // fail-fast，顾客又被卡死。
+      const hasActiveIntent = orderData.hasActivePaymentIntent === true;
       const hasResumableIntent = orderData.hasResumablePaymentIntent === true;
       let remaining;
       if (isRepayment) {
@@ -292,8 +301,11 @@ Page({
         isRepayment,
         isRestrictedRepayment,
         // #214：后端只下发布尔标识，不含任何支付凭据
+        hasActivePaymentIntent: hasActiveIntent,
         hasResumablePaymentIntent: hasResumableIntent,
-        intentLocked: hasResumableIntent,
+        // 锁绑「有活动意图」而非「可复用」：意图还在时改抵扣/改方式都会被服务端守卫拒，
+        // 放开只会让顾客改完才吃报错
+        intentLocked: hasActiveIntent,
         showPayMethodGroup: paid > 0,
         balanceUpdatedAt,
       });
@@ -595,7 +607,9 @@ Page({
     // 已提交，无法与渠道意图 CAS 原子化），顾客退出后重新扫码只会撞 PAYMENT_INTENT_ACTIVE
     // ——回款场景下原样复现本 issue 的症状。pay 路径能复用同一笔场次继续付。
     // 意图活跃时抵扣方案改不了（服务端有守卫），所以本次金额与快照一致，复用判据能命中。
-    const canResumeViaPay = this.data.hasResumablePaymentIntent === true;
+    // 路由看的是「有没有活动意图」，不是「快照能不能复用」：
+    // 意图还在但快照过期时，pay 会查单释放后重建；repay 则直接 fail-fast 卡死。
+    const canResumeViaPay = this.data.hasActivePaymentIntent === true;
     if (this.data.isRepayment && firstPaymentAmount <= 0 && !canResumeViaPay) {
       await this.executeRepayConfirm();
       return;

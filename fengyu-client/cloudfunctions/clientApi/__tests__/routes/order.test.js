@@ -2099,7 +2099,31 @@ describe('order.scanDetail 的可续付元数据', () => {
     expect(JSON.stringify(ctx.result)).not.toContain('prepay_id=secret')
   })
 
-  test('场次属于他人 → 不下发元数据', async () => {
+  // 「有活动意图」与「快照可复用」必须是两个信号：合成一个的话，意图还在但快照刚过期
+  // 会被判成没有场次 → 前端转回 repay 的 fail-fast → 顾客又被卡死（双谱系评审 round-10）。
+  test('意图仍在但快照已过期 → 仍报告有活动意图，只是不可复用 (#214)', async () => {
+    const outTradeNo = 'FY-SCAN-001_1700000000'
+    mockScanOrder({
+      lakala_out_order_no: outTradeNo,
+      lakala_payment_intent: {
+        outTradeNo,
+        expiresAt: new Date(Date.now() + 10 * 1000).toISOString(),  // 只剩 10s，低于复用门槛
+        paymentMethod: '微信', payAmount: 120,
+        paymentParams: { package: 'p', paySign: 's' },
+      },
+    })
+
+    const ctx = createBoundCtx({ saleOrderId: 'FY-SCAN-001' })
+    await routes.scanDetail(ctx)
+
+    // 路由信号：有意图 → 前端必须走 pay（它能查单释放后重建）
+    expect(ctx.result.order.hasActivePaymentIntent).toBe(true)
+    // 复用信号：快照不可用 → 不给元数据，前端按本地口径展示、后端重建场次
+    expect(ctx.result.order.hasResumablePaymentIntent).toBe(false)
+    expect(ctx.result.order.resumablePayAmount).toBeNull()
+  })
+
+  test('场次属于他人 → 两个信号都为否', async () => {
     const outTradeNo = 'FY-SCAN-001_1700000000'
     mockScanOrder({
       client_user_id: 'user-999',
@@ -2115,6 +2139,7 @@ describe('order.scanDetail 的可续付元数据', () => {
     const ctx = createBoundCtx({ saleOrderId: 'FY-SCAN-001' })
     await routes.scanDetail(ctx)
 
+    expect(ctx.result.order.hasActivePaymentIntent).toBe(false)
     expect(ctx.result.order.hasResumablePaymentIntent).toBe(false)
     expect(ctx.result.order.resumablePayAmount).toBeNull()
   })
