@@ -1,15 +1,12 @@
 /**
- * image 工具测试（staffApi 副本）—— COS 缩略参数拼接
+ * image 工具测试 —— COS 缩略参数拼接（issue #213 门店封面 OOM 崩溃）
  *
  * 核心安全约定：无法保证缩略的输入一律返回 null，绝不退回原图。
  *
- * `utils/image.js` 与 clientApi 侧**字节一致**（issue #232），因此本测试也覆盖
- * staff 端当前用不到的门店/详情长图档位——它们同样是副本的一部分，
- * 副本被改坏时这里要能立刻发现。副本本身的字节一致由
- * `__tests__/utils/image-cross-copy.test.js` 守护。
- *
- * staff 端**实际使用**的只有 `safeThumbUrl` + `PRODUCT_THUMB_BOX_SMALL`
- * （`routes/product.js` 的 bundleGroups 封面，见文件末尾的 staff 专属用例）。
+ * ⚠️ 本文件与 staffApi 侧同名副本**字节一致**（issue #232），改一端必须同步另一端；
+ * 由 `staffApi/__tests__/utils/image-cross-copy.test.js` 守护。
+ * 端专属的用法断言请放各端自己的文件（如 staff 的 `image-staff-bundle.test.js`），
+ * 别加进本文件——那会破坏字节一致，让两端测试悄悄漂移。
  */
 const {
   safeThumbUrl,
@@ -382,71 +379,5 @@ describe('safeThumbUrlByArea', () => {
     expect(bytes).toBeLessThan(10 * 1024 * 1024)
     // admin 侧 detail_images 上限 9 张 → 详情页长图部分最坏 ≈ 77MB
     expect(bytes * 9).toBeLessThan(80 * 1024 * 1024)
-  })
-})
-
-/**
- * staff 端专属：开单页套餐封面（issue #232）
- *
- * 这是 staffApi 当前**唯一**的外部图片下发点（`routes/product.js` 的 bundleGroups）。
- * 渲染侧 `components/bundle-picker/bundle-picker.wxml:28`，
- * 展示位 `.bundle-cover { width: 200rpx }`（**只设了宽**）+ `mode="aspectFill"`。
- */
-describe('staff 开单页套餐封面（issue #232）', () => {
-  const { PRODUCT_THUMB_BOX_SMALL } = require('../../utils/image')
-
-  test('复用 client 的小缩略档位 400，不另立档位', () => {
-    // 与 client 体验卡列表卡片（同为 200rpx）的档位一致——同一档展示位不该有两个数。
-    //
-    // ⚠️ 别照着"200rpx 宽 → 3x 屏 344 物理像素 → 400 够用"来理解这个数：
-    // 约束展示位的是**高**不是宽。`.bundle-cover` 没设 height，被 flex stretch
-    // 拉满卡片高（名称 2 行 + 描述 + 页脚 ≈ 211rpx）；1.56 横图 contain 到 400 box
-    // 后高度只剩 256，aspectFill 因此放大约 1.4 倍。这是**已接受的取舍**，
-    // 理由见 utils/image.js 里 PRODUCT_THUMB_BOX_SMALL 的注释（抬档会同时推高
-    // 另外 4 个一屏十几张的调用点）。
-    expect(PRODUCT_THUMB_BOX_SMALL).toBe(400)
-  })
-
-  test('单张封面解码内存压到 1MB 以内', () => {
-    const bytes = PRODUCT_THUMB_BOX_SMALL * PRODUCT_THUMB_BOX_SMALL * 4
-    expect(bytes).toBeLessThan(1024 * 1024)
-  })
-
-  test('⚠️ 页面级总量无上界——本档位只保证单张，不保证一页', () => {
-    // 这条不是在断言安全，是在**把已知缺口钉成文档**。
-    //
-    // `_queryMallBundleGroups` 的 SQL 没有 LIMIT，`bundle-picker` 全量 wx:for 渲染，
-    // 所以页面级解码量 = 套餐数 × 0.64MB，线性无界。
-    // 曾经这里写的是 `expect(bytes * 32).toBeLessThan(21MB)`——把"生产现在有 32 个套餐"
-    // 这个**数据快照**当成了不变量：admin 多建套餐，断言照样绿，
-    // 而它声称保证的页面级上界早已不成立。那种断言比没有更糟。
-    //
-    // 真正的上界要靠 SQL LIMIT / 前端分页（client 侧同类缺口见 issue #248）。
-    // 当前缓解只有 `bundle-picker.wxml:28` 的 lazy-load（只解码可见项）——
-    // 删掉那个 attribute 就穿，所以下面顺带钉住它。
-    const wxml = require('node:fs').readFileSync(
-      require('node:path').resolve(
-        __dirname, '../../../../miniprogram/components/bundle-picker/bundle-picker.wxml'
-      ), 'utf8'
-    )
-    expect(wxml).toContain('lazy-load')
-  })
-
-  test('套餐封面用 box 模式而非面积模式', () => {
-    // 封面是常规比例图（prod 43/43 商品封面长宽比恒 1.56），且展示位是 aspectFill 的方块，
-    // box 的 contain 语义与它匹配。面积模式在这里会让细长图输出超宽/超高，
-    // aspectFill 裁切后观感更差。长图（detail_images）才用面积模式。
-    expect(safeThumbUrl(COS_URL, PRODUCT_THUMB_BOX_SMALL)).toBe(
-      `${COS_URL}?imageMogr2/thumbnail/400x400`
-    )
-  })
-
-  test('封面不可缩略时返回 null，前端 wx:if 走占位而非裂图', () => {
-    // bundle-picker.wxml:27 `wx:if="{{item.coverImage}}"` 对 null / '' 都是 falsy，
-    // 走 `.bundle-cover--placeholder` 的礼物图标分支。
-    // 这条钉住「返回 null 而不是原 URL」——退回原图等于保护静默失效。
-    expect(safeThumbUrl(null, PRODUCT_THUMB_BOX_SMALL)).toBeNull()
-    expect(safeThumbUrl('', PRODUCT_THUMB_BOX_SMALL)).toBeNull()
-    expect(safeThumbUrl('https://img.example.com/a.jpg', PRODUCT_THUMB_BOX_SMALL)).toBeNull()
   })
 })

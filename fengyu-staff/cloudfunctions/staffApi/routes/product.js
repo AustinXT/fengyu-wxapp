@@ -331,8 +331,7 @@ async function _queryMallBundleGroups(auth) {
   `, [productIds])
 
   return productRows.map(p => {
-    // 缩略后下发，不给原图（issue #232）。解码内存 = 像素数 × 4，与文件体积无关，
-    // admin 上传侧的体积校验拦不住高压缩率的巨图（#213 那张 405KB 的 PNG 是 1.58 亿像素）。
+    // #232 缩略后下发：解码内存 = 像素 × 4，上传侧的体积校验拦不住高压缩巨图
     const coverImage = safeThumbUrl(p.cover_image, PRODUCT_THUMB_BOX_SMALL)
     // 观测降级：有封面却缩略不了（cloud:// fileID、三段对象键、站外域名、带签名……）
     // 时前端只会默默变成礼物图标占位，没有任何报错。staff 侧不像 client 侧有 43/44 张
@@ -367,8 +366,6 @@ async function _queryMallBundleGroups(auth) {
     return {
       productId: p.product_id,
       name: p.name,
-      // 无法保证缩略时是 null —— bundle-picker.wxml:27 的 `wx:if` 会走占位分支，
-      // 不会出现裂图；绝不退回原 URL（退回 = 保护静默失效）。
       coverImage,
       description: p.description,
       price: Number(p.price) || 0,

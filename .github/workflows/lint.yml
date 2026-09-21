@@ -86,30 +86,22 @@ jobs:
       - name: Install staffApi deps
         working-directory: fengyu-staff/cloudfunctions/staffApi
         run: npm ci || npm install
-      - name: Run cross-end snapshot tests (error-codes + SQL + inventory)
-        working-directory: fengyu-staff/cloudfunctions/staffApi
-        run: |
-          npx vitest run \
-            __tests__/routes/cross-end-error-codes-snapshot.test.js \
-            __tests__/routes/cross-end-sql-snapshot.test.js \
-            __tests__/routes/cross-end-inventory-snapshot.test.js \
-            __tests__/routes/inventory.test.js
-
-      # 图片缩略工具的跨副本守护（#232）：`utils/image.js` 在 clientApi 与 staffApi
-      # 之间字节一致，守护测试**放在 staff 侧但读两端文件**，所以这一个 step 就同时
-      # 覆盖两端 —— 上面 paths 已含 `fengyu-client/cloudfunctions/**/*.js`，
-      # 改 client 那份同样会触发本 job 并红。
+      # ⚠️ 跑**全量**，不要退回手工文件清单（#232）。
       #
-      # 这个模块的每条校验都是 #230 五轮评审逐个堵出来的绕过构造（指令大小写、
-      # userinfo 注入、反斜杠 authority、imageView2 并存……）。不进 CI 的话，
-      # 有人"顺手简化"掉其中一条，GitHub 检查照样全绿 —— 守护等于只在本地存在。
-      - name: Run image thumbnail cross-copy guards (#232)
+      # 这里原本只点名 4 个文件，于是 staffApi 的 64 个测试文件里只有 4 个进 CI，
+      # 11 个 cross-end 守护只跑 3 个 —— 新加的守护默认不进网，
+      # 而「漏加的那一次」恰好就是守护失效的那一次。
+      # `clientApi/__tests__/utils/lakala-cross-copy.test.js` 就是这么掉进洞里的：
+      # 字节一致守护写得好好的，从未跑过。
+      #
+      # 全量是负担得起的：staffApi 的测试全部 mock 了 pg（vitest.config.js 的
+      # setupFiles），不碰数据库，64 文件 / 2300 用例本地约 1.8 秒。
+      #
+      # 这条「不准写手工清单」由 __tests__/utils/image-cross-copy.test.js 的
+      # meta-guard 反向锁住。
+      - name: Run staffApi full test suite (含全部 cross-end / cross-copy 守护)
         working-directory: fengyu-staff/cloudfunctions/staffApi
-        run: |
-          npx vitest run \
-            __tests__/utils/image-cross-copy.test.js \
-            __tests__/utils/image.test.js \
-            __tests__/routes/product.test.js
+        run: npx vitest run
 
   cross-end-snapshots-admin:
     runs-on: ubuntu-latest

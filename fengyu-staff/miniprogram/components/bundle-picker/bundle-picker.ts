@@ -173,11 +173,10 @@ Component({
      * 比改动前直发原图（至少能渲染）更差。这里把它兜回占位分支。
      */
     onCoverError(e: WechatMiniprogram.CustomEvent) {
-      const productId = (e.currentTarget.dataset as { productId?: string }).productId;
-      if (!productId) return;
-      const idx = (this.data.filteredBundles as BundleSpu[])
-        .findIndex(b => b.productId === productId);
-      if (idx < 0 || this.data.filteredBundles[idx].coverImage === null) return;
+      // 用 wx:for 自带的 index，不绕 productId → findIndex：
+      // index 正是 setData 路径要的下标，线性扫一遍纯属自找。
+      const idx = (e.currentTarget.dataset as { index?: number }).index;
+      if (idx == null) return;
       // 只改 filteredBundles 这一份渲染数据源；properties.bundles 保持原样，
       // 下次 _refreshFiltered() 会重新带出 URL 并重试一次加载（瞬时网络问题可自愈）。
       this.setData({ [`filteredBundles[${idx}].coverImage`]: null });

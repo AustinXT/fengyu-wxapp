@@ -2,6 +2,11 @@
  * image 工具测试 —— COS 缩略参数拼接（issue #213 门店封面 OOM 崩溃）
  *
  * 核心安全约定：无法保证缩略的输入一律返回 null，绝不退回原图。
+ *
+ * ⚠️ 本文件与 staffApi 侧同名副本**字节一致**（issue #232），改一端必须同步另一端；
+ * 由 `staffApi/__tests__/utils/image-cross-copy.test.js` 守护。
+ * 端专属的用法断言请放各端自己的文件（如 staff 的 `image-staff-bundle.test.js`），
+ * 别加进本文件——那会破坏字节一致，让两端测试悄悄漂移。
  */
 const {
   safeThumbUrl,

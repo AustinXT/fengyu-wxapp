@@ -562,17 +562,13 @@ describe('product.shopInit', () => {
       ctx.result.mallBundleGroups.map(g => [g.productId, g.coverImage])
     )
 
-    expect(byId['prod-cos']).toBe(`${COS_URL}?imageMogr2/thumbnail/400x400`)
-    // 脏 query 被整串丢弃，输出与干净输入完全相同
-    expect(byId['prod-dirty']).toBe(`${COS_URL}?imageMogr2/thumbnail/400x400`)
-    expect(byId['prod-evil']).toBeNull()
-
-    // 任何一条下发值都不得是未处理的原图 URL。
-    // 先钉住条数——否则 byId 为空时这个循环 0 次断言、静默变绿。
-    expect(Object.keys(byId)).toHaveLength(3)
-    for (const url of Object.values(byId)) {
-      if (url !== null) expect(url).toContain('imageMogr2/thumbnail/')
-    }
+    // 逐条钉死精确值（这已蕴含「没有一条是未处理的原图」，不需要再加全称循环）
+    expect(byId).toEqual({
+      'prod-cos': `${COS_URL}?imageMogr2/thumbnail/400x400`,
+      // 脏 query 被整串丢弃，输出与干净输入完全相同
+      'prod-dirty': `${COS_URL}?imageMogr2/thumbnail/400x400`,
+      'prod-evil': null,
+    })
   })
 
   // ===== PR-B：排除法 + 分组返回 =====
