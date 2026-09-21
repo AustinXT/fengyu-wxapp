@@ -81,7 +81,7 @@ metadata:
    - `db/migrations/0076_to_withtimezone.sql` 存在
    - `_journal.json` 条数与 5433 生产库 `drizzle.__drizzle_migrations` 计数一致
    - schema 范式为 `timestamp("xxx", { withTimezone: true })`
-   - 凭据 grep 无命中（`47.113.202.7` / `47.96.87.33` / `fengyu123` / `Se[14]Qimoh` 等）
+   - 凭据 grep 无命中（`47.113.202.7` / `101.34.242.103` / `47.96.87.33` / `fengyu123` / `Se[14]Qimoh` 等）
      ⚠ `47.113.202.7` 自 2026-09-01 全面弃用后，`db/CLAUDE.md` / `envs/README.md` /
      `scripts/deploy-cloudfunctions.sh` 等处保留了**标注它已弃用**的说明文字（见 issue #151）。
      这类命中是有意保留的警示语境、非凭据泄漏；逐条确认语境后放行，不要机械按命中数判失败。

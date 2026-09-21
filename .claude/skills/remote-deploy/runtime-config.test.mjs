@@ -9,6 +9,7 @@ import test from 'node:test'
 import {
   TARGETS,
   ROOT,
+  KNOWN_DEV_HISTORICAL_MIGRATION_ROWS,
   KNOWN_PROD_HISTORICAL_MIGRATION_ROWS,
   analyzeMigrationState,
   buildServiceEnvs,
@@ -55,7 +56,7 @@ function validConfig(env = 'dev') {
     LAKALA_APPID: 'OP12345678',
     LAKALA_SERIAL_NO: 'serial',
     LAKALA_CALLBACK_IP_WHITELIST: '',
-    LAKALA_ENV: env === 'dev' ? 'test' : 'release',
+    LAKALA_ENV: 'release',
     LAKALA_PRIVATE_KEY_PEM: 'private-key',
     LAKALA_PLATFORM_CERT_PEM: 'platform-cert',
     LAKALA_SM4_KEY: 'sm4-key',
@@ -67,7 +68,7 @@ function validConfig(env = 'dev') {
     LAKALA_SOURCE: 'source',
     LAKALA_SUB_APPID: 'sub-app',
     LAKALA_ALIPAY_SHARE_SOURCE: '',
-    LAKALA_ONBOARDING_API_BASE: env === 'dev' ? 'https://test.wsmsd.cn/sit' : 'https://s2.lakala.com',
+    LAKALA_ONBOARDING_API_BASE: 'https://s2.lakala.com',
     LAKALA_ECONTRACT_CALLBACK_URL: '',
     LAKALA_ECONTRACT_TYPE: 'EC015',
     LAKALA_ONBOARDING_EMAIL: 'ops@example.com',
@@ -401,6 +402,16 @@ test('migration analysis follows latest created_at and hash instead of row count
   assert.equal(currentWithKnownProdHistorical.latestTag, '0002_c')
   assert.equal(currentWithKnownProdHistorical.historicalRowDelta, 0)
   assert.equal(currentWithKnownProdHistorical.ignoredHistoricalRowCount, 1)
+
+  const knownDevHistorical = KNOWN_DEV_HISTORICAL_MIGRATION_ROWS[0]
+  const currentWithKnownDevHistorical = analyzeMigrationState(entries, [
+    { hash: 'a', created_at: '100' },
+    knownDevHistorical,
+    { hash: 'b', created_at: '200' },
+    { hash: 'c', created_at: '300' },
+  ], hashes, { knownHistoricalRows: KNOWN_DEV_HISTORICAL_MIGRATION_ROWS })
+  assert.equal(currentWithKnownDevHistorical.ok, true)
+  assert.equal(currentWithKnownDevHistorical.ignoredHistoricalRowCount, 1)
 
   const currentWithHistoricalGap = analyzeMigrationState(entries, [
     { hash: 'c', created_at: '300' },

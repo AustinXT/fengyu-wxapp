@@ -1,0 +1,99 @@
+# 库存管理 —— 交互合理性审计报告
+
+> ⚠️ 本文件是 2026-09-13 首轮扫描的产物，**不随代码状态自动更新**。已修条目以删除线 + issue 号标注；
+> 重新生成会覆盖这些手工标注，判读时请以各 issue 的实际状态为准。
+
+
+> 目标：http://101.34.242.103:3000（dev 环境 fengyu-admin）
+> 生成时间：2026/9/13 23:32:32
+> 生成方式：`bun run test:e2e:inventory-ui` 中的 `inv-10-ux-audit.spec.ts` 自动扫描 + 链路测试中的实测发现
+
+**共 25 条：P0 2 · P1 5 · P2 18**（首轮扫描的数字；P1 3 条与 P2 全部已修，见删除线标注）
+
+严重度口径：
+
+| 级别 | 含义 |
+|---|---|
+| P0 | 功能不可用 / 数据错误，必须修 |
+| P1 | 影响正确性或可理解性，用户会被误导或卡住 |
+| ~~P2~~（#135 已修） | 体验与一致性问题，不阻断使用 |
+
+## 发现清单
+
+| 严重度 | 规则 | 位置 | 说明 | 证据 |
+|---|---|---|---|---|
+| P0 | 批次下拉永久卡在加载中 | `/inventory/docs → 新建库存单据` | 选定主体与 SKU 后，来源批次下拉永远停留在「加载库存批次...」且始终 disabled（实测 60s+）。根因是 inventory-docs-page.tsx:351-375 的 useEffect 自循环：依赖数组含它自己 set 的 loadingLotKeys/lotOptionsByKey，effect 重跑触发 cleanup 把 cancelled 置 true，首次请求的 then/catch/finally 全被跳过。后果：单据中心里所有需要选来源批次的单据类型（分院调货出库、市场间调货出库、内部领用、院顾客产品出库、市场产品报损、院产品报损）全部无法创建 | `接口已返回 200，是前端把结果丢了；详见 INV-05 / inv-90-probe-lot-loading` |
+| P0 | 员工下拉恒为空（SQL 别名错误） | `/inventory/operations/{market,supply-chain} → 员工购` | business.ts 有 5 处递归 CTE 写错别名引用：CTE 在 JOIN 时起了别名（JOIN descendants parent / JOIN ancestors ancestor），SELECT/WHERE 却仍用原名（descendants.path / ancestors.path），PostgreSQL 直接报 invalid reference to FROM-clause entry。后果：市场员工购与供应链员工购的员工下拉恒为空，功能完全不可用；即使绕过下拉，提交时的 employeeForMarket / employeeForSupplyChain 校验同样会炸 | `business.ts:1234 / 1263 / 1273 / 1329 / 1371；dev 库按正确 SQL 能查出 85 / 115 个候选` |
+| ~~P1~~（#132 已修） | 外键类字段应提供选择器 | `/inventory/skus → 新建库存商品` | 字段「供货商」引用的是已有档案（命中关键词「供货商」），却渲染为 <input> 自由输入 | `label="供货商" control=<input>` → 已改为 `<select>`，选项来自启用中的供应商档案 |
+| P1 | 使用原生 alert / prompt | `/inventory/docs` | 建单失败用 alert() 弹原生框（inventory-docs-page.tsx:402）；审批/驳回/收货的备注用 prompt() 收集（:135-151）。原生弹窗无法样式化、无法做必填校验（驳回原因是必填的）、移动端体验差，且会阻塞页面 | `本轮未触发，证据见 INV-02 / INV-05` |
+| ~~P1~~（#131 已修） | 盘点单不记录账面数量 | `/inventory/docs → 市场库存盘点 / 分院库存盘点` | engine.ts:2777 的 stockSnapshot 只在选中批次时才写（lot ? ... : null），而盘点单不属于 SOURCE_LOT_DOC_TYPES、UI 不提供批次选择器，于是 stock_snapshot 恒为 NULL。盘点单既不动库存也不记账面数，退化成只有「数量」的白条，无法用于任何盈亏对账 | `INV-06 实测 stock_snapshot = NULL` |
+| ~~P1~~（#132 已修） | SKU 供货商与供应商档案无关联 | `/inventory/skus → 新建库存商品` | 「供货商」是裸 <input> 文本框，且 inventory_skus 表只有 supplier(text) 列、没有 supplier_id 外键 —— 与 inventory_suppliers 档案表（以及 /inventory/suppliers 整个页面）完全不关联。同一供应商会产生多种写法，供应商档案形同虚设，也无法按供应商统计采购 | migration 0042 加 `supplier_id` 外键 + 按名称回填；supplier 文本列保留为名称快照（批次快照取这一列）|
+| P1 | 业务错误提示被生产构建脱敏 | `全局（Server Action 错误路径）` | Server Action 抛出的 ApiError 在生产构建下被 Next.js 统一脱敏，用户看到的是「An error occurred in the Server Components render...」或一串 error digest 数字（如 1956068727），业务文案（「库存期初尚未导入并核验完成」等）完全丢失，用户无从判断该做什么 | `INV-02 期初门禁拦截、INV-07 员工加载失败均复现` |
+| ~~P2~~（#135 已修） | 列表缺少分页与总数 | `/inventory/suppliers` | 列表有 6 行数据，但页面没有总数或分页控件，用户不知道数据有没有被截断 | — |
+| ~~P2~~（#135 已修） | 列表缺少分页与总数 | `/inventory/sku-mappings` | 列表有 101 行数据，但页面没有总数或分页控件，用户不知道数据有没有被截断 | — |
+| ~~P2~~（#135 已修） | 列表缺少分页与总数 | `/inventory/promotions` | 列表有 1 行数据，但页面没有总数或分页控件，用户不知道数据有没有被截断 | — |
+| ~~P2~~（#135 已修） | label 未与控件关联 | `/inventory/skus → 新建库存商品` | 1 个 <label> 既未包裹控件也没有 for 属性，辅助技术无法把字段名念给用户 | `产品编号` |
+| ~~P2~~（#135 已修） | 数值输入无浏览器级边界约束 | `/inventory/skus → 新建库存商品` | 6/8 个数值输入既不是 type=number 也没有 min 属性，负数与超大值只能等服务端拒绝 | `第1个数值框 / 第2个数值框 / 第3个数值框 / 第4个数值框` |
+| ~~P2~~（#135 已修） | label 未与控件关联 | `/inventory/suppliers → 新建供应商` | 5 个 <label> 既未包裹控件也没有 for 属性，辅助技术无法把字段名念给用户 | `供应商名称 * / 联系人 / 联系电话 / 地址 / 备注` |
+| ~~P2~~（#135 已修） | 数值输入无浏览器级边界约束 | `/inventory/docs → 新建库存单据` | 1/1 个数值输入既不是 type=number 也没有 min 属性，负数与超大值只能等服务端拒绝 | `数量` |
+| ~~P2~~（#135 已修） | label 未与控件关联 | `/inventory/promotions → 报货福利方案` | 13 个 <label> 既未包裹控件也没有 for 属性，辅助技术无法把字段名念给用户 | `方案编号 / 方案名称 * / 规则类型 / 适用市场 / 开始日期 *` |
+| ~~P2~~（#135 已修） | 必填项无标记 | `/inventory/operations/supply-chain → 品项公司报货需求` | 表单共 6 个字段，既无 * 标记也无 required/aria-required —— 用户只能靠提交报错试出必填项 | `供应链库存主体 / 报货日期 / 供应链商品 / 数量 / 明细备注 / 备注` |
+| ~~P2~~（#135 已修） | 数值输入无浏览器级边界约束 | `/inventory/operations/supply-chain → 品项公司报货需求` | 1/1 个数值输入既不是 type=number 也没有 min 属性，负数与超大值只能等服务端拒绝 | `第1个数值框` |
+| ~~P2~~（#135 已修） | 必填项无标记 | `/inventory/operations/supply-chain → 品项公司发货` | 表单共 6 个字段，既无 * 标记也无 required/aria-required —— 用户只能靠提交报错试出必填项 | `采购订单 / 发货总部 / 发货日期 / 物流公司 / 物流单号 / 备注` |
+| ~~P2~~（#135 已修） | 必填项无标记 | `/inventory/operations/market → 市场退货申请` | 表单共 9 个字段，既无 * 标记也无 required/aria-required —— 用户只能靠提交报错试出必填项 | `退货主体 / 回库主体 / 退货日期 / 商品 / 来源批次 / 数量` |
+| ~~P2~~（#135 已修） | 数值输入无浏览器级边界约束 | `/inventory/operations/market → 市场退货申请` | 1/1 个数值输入既不是 type=number 也没有 min 属性，负数与超大值只能等服务端拒绝 | `第1个数值框` |
+| ~~P2~~（#135 已修） | 必填项无标记 | `/inventory/operations/market → 自采产品入库` | 表单共 13 个字段，既无 * 标记也无 required/aria-required —— 用户只能靠提交报错试出必填项 | `入库市场 / 供应商 / 入库日期 / 收据附件地址 / 自采商品 / 数量` |
+| ~~P2~~（#135 已修） | 数值输入无浏览器级边界约束 | `/inventory/operations/market → 自采产品入库` | 3/3 个数值输入既不是 type=number 也没有 min 属性，负数与超大值只能等服务端拒绝 | `第1个数值框 / 资料价或本次价格 / 第3个数值框` |
+| ~~P2~~（#135 已修） | 必填项无标记 | `/inventory/operations/store → 门店报货` | 表单共 7 个字段，既无 * 标记也无 required/aria-required —— 用户只能靠提交报错试出必填项 | `报货门店 / 所属市场 / 报货日期 / 商品 / 数量 / 明细备注` |
+| ~~P2~~（#135 已修） | 数值输入无浏览器级边界约束 | `/inventory/operations/store → 门店报货` | 1/1 个数值输入既不是 type=number 也没有 min 属性，负数与超大值只能等服务端拒绝 | `第1个数值框` |
+| ~~P2~~（#135 已修） | 提交按钮未在提交期间禁用 | `/inventory/operations/store → 门店报货（防重复提交）` | 按钮在提交过程中未见 disabled/aria-busy，快速双击存在重复建单风险（各表单内部有 saving 标志，但未反映到可访问性属性上） | — |
+
+## #135 的处置（2026-09-18）
+
+18 条 P2 全部处置完毕，按 issue 归的 5 组：
+
+| 组 | 处置 |
+|---|---|
+| 必填项无标记（5 表单） | `FormField` / `DocPicker` 加 `required`，渲染红色 `*` + 读屏可读的 sr-only「（必填）」。判据取自各表单 `submit()` 的校验分支，**范围扩到全部 19 个表单**（60 处）—— 同一个组件只标一半会让用户以为没标的都是可选 |
+| label 未与控件关联（3 处） | 供应商 5 个字段、报货福利方案 12 个字段改为 `<label>` 包裹控件 |
+| 数值输入无边界约束（6 处） | 办理台 21 处 + SKU 表单 8 处 + 单据中心 1 处，改 `type="number" min="0" step="0.01" max="9999999999.99"`（max 取 `numeric(12,2)` 上界，超了 PG 会抛 22003） |
+| 列表缺分页与总数（3 处） | 三个列表补 `Pagination` + 「共 N 条」 |
+| 提交按钮未禁用 | `Button` 的 `loading` 本来就已经 `disabled`，缺的只是 `aria-busy`，已补 |
+
+### 两条判定为**误报**，改法与 issue 描述不同
+
+`/inventory/skus` 的「产品编号」与 `/inventory/promotions` 的「方案编号」都是
+**只读展示**（保存后由系统生成），压根没有可聚焦控件可关联。issue 给的两个改法
+（包裹控件 / 补 `htmlFor`+`id`）对只读展示都不适用 —— 正解是让它**不再是 `<label>`**，
+而不是改 DOM 骗过规则。
+
+### 顺带收紧了扫描器自身的两处口径
+
+1. **规则 6（数值边界）原本能被假修复骗过**：判据是
+   `type !== 'number' && min === null`，即「给 `type=text` 加个 `min`」就算通过。
+   但 `min`/`max` 对 `type=text` **完全无效**（HTML 规范里只作用于 number/range/date 系）——
+   而这恰好是 issue 字面建议「补 `min="0"`」会掉进的坑。已改为 `type !== 'number' || min === null`
+   （必须 type=number **且** 有 min）。
+   同时选择器补上 `input[type="number"]`：原本只收 `input[inputmode="decimal"]`，
+   本次改造后会一个元素都匹配不到、然后「0 个未受保护」静默通过 —— 不是修好了，是检测器瞎了。
+2. **规则 1/2 的 label 文本要排除 sr-only**：本次给必填字段加的「（必填）」是只给读屏的，
+   若算进字段名，`bare` 会以「（必填）」结尾，规则 1 里靠 `bare.endsWith(ex)` 的白名单豁免
+   会整批失效，凭空冒出一串 P1 误报。
+
+### 重新生成本报告属实效层
+
+扫描跑的是 dev 站点（`101.34.242.103:3000`）上**已部署**的版本。本次改动需要先部署，
+再跑 `bun run test:e2e:inventory-ui` 才能实测 P2 条目数下降。
+
+## 复核说明
+
+本报告由启发式规则自动生成，**每条都需人工复核定性**为「真问题 / 设计如此 / 误报」。
+规则只负责摆出可核对的事实（字段名、控件类型、页面路径、源码位置），不替人下结论。
+
+其中 P0 两条与 P1 三条已在链路测试中实测复现，不是静态推测：
+
+- 批次下拉卡死 → `inv-05-transfers.spec.ts` / `inv-90-probe-lot-loading.spec.ts`
+- 员工下拉恒空 → `inv-07-staff-purchase-and-self-purchase.spec.ts`（并已在 dev 库直接执行原 SQL 复现报错）
+- 盘点不记账面数 → `inv-06-stocktake-and-loss.spec.ts`
+- 供货商无外键 → `inv-01-master-data.spec.ts`（#132 已修；该 spec 的 UX-FIXED-01 / 01b 已从「已知缺陷豁免」转为正式守护，退化会让 spec 直接红）
+- 错误提示脱敏 → `inv-02-supply-chain-stock.spec.ts`

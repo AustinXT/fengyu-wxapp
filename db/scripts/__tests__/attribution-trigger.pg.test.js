@@ -1,5 +1,5 @@
 /**
- * 款项业绩归属日期 trigger 的真实 PG 回归（issue #137 / 迁移 0040）
+ * 款项业绩归属日期 trigger 的真实 PG 回归（issue #137 / 迁移 0041）
  *
  * 为什么必须连真库：本次改动把「订单级归属日期变更 → 同步首次支付行 + 同次储值卡行」
  * 从应用层下沉成了 DB trigger。admin / staffApi 的单测把 `db.execute` 整个 mock 掉了，
@@ -371,7 +371,7 @@ function runSuite() {
 
   // 下面两条把并发面铺满：入口不一定先 SELECT FOR UPDATE，写入的也不一定是首次支付行。
   // 曾经用 FOR KEY SHARE 只挡住了「先 FOR UPDATE」那一种，普通 UPDATE 照样脱拍（实测复现过），
-  // 所以迁移 0040 用的是 FOR SHARE。
+  // 所以迁移 0041 用的是 FOR SHARE。
   test('并发：普通 UPDATE（不先 FOR UPDATE）改期 + 首次支付入账 —— 只有 FOR SHARE 挡得住', async () => {
     const id = `${P}G`
     await seedOrder(id, { orderDate: '2026-09-13', orderDatetime: '2026-09-13 10:00:00+08' })
@@ -544,7 +544,7 @@ function runSuite() {
     }
   })
 
-  test('迁移 0040 的对象都在：两个 trigger + CHECK 约束，且同步 trigger 不是 DEFERRED', async () => {
+  test('迁移 0041 的对象都在：两个 trigger + CHECK 约束，且同步 trigger 不是 DEFERRED', async () => {
     const trg = (await q(`
       SELECT t.tgname, t.tgdeferrable, c.relname
       FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid

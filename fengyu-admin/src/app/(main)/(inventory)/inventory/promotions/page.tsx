@@ -3,7 +3,6 @@ import { listInventoryLocations } from '@/actions/inventory/locations'
 import { listInventoryPromotionPlans } from '@/actions/inventory/promotions'
 import { listInventorySkus } from '@/actions/inventory/skus'
 import { getSession } from '@/lib/auth'
-import { isAdminScope } from '@/lib/permissions'
 import { hasUiCapability } from '@/lib/permission-contract'
 import { requireAllUiPageCapabilities } from '@/lib/page-capability'
 import InventoryPromotionsPage from '../_components/inventory-promotions-page'
@@ -15,15 +14,16 @@ export default async function Page() {
   const session = await getSession()
   requireAllUiPageCapabilities(session, ['inventory:stock_list'])
   const [plans, locations, skus] = await Promise.all([
+    // 全量取回：本页的筛选在客户端做，分页必须发生在筛选之后（见 engine 注释）
     listInventoryPromotionPlans(),
     listInventoryLocations(),
     listInventorySkus({ page: 1, pageSize: 100, onlyActive: true }),
   ])
   const actions = session.permissions.actions
-  const canViewPrice = hasUiCapability(actions, 'inventory:price_view')
-  const canCreate = hasUiCapability(actions, 'inventory:create') && canViewPrice
-  const canUpdate = hasUiCapability(actions, 'inventory:update') && canViewPrice
-  const canManageGlobal = isAdminScope(session) || session.roles.some((role) => role.scopeType === '总部')
+  const canViewPrice = hasUiCapability(actions, 'inventory:supply_chain_price_view') || hasUiCapability(actions, 'inventory:market_price_view')
+  const canCreate = (hasUiCapability(actions, 'inventory:supply_chain_master_data_manage') || hasUiCapability(actions, 'inventory:market_operate')) && canViewPrice
+  const canUpdate = canCreate
+  const canManageGlobal = hasUiCapability(actions, 'inventory:supply_chain_master_data_manage')
 
   // 未获价格权限的使用者只接收非金额的方案信息，避免客户端 props 暴露优惠金额。
   const visiblePlans = canViewPrice

@@ -1,11 +1,11 @@
 /**
- * #154 迁移 0043 回填口径的真实 PG 回归
+ * #154 迁移 0046 回填口径的真实 PG 回归
  *
  * 为什么必须连真库：回填是一条带 CTE + CASE 分支的 UPDATE 加三个 DO 断言块，
  * 分支走没走对、`residual < 0` 会不会被 `ELSE 0` 静默吞掉、断言会不会真的 RAISE——
  * 这些全部是 SQL 语义，字面量快照测不出来。
  *
- * 本套件**直接读取 `db/migrations/0043_split_quantity_semantics.sql` 的正文**执行，
+ * 本套件**直接读取 `db/migrations/0046_split_quantity_semantics.sql` 的正文**执行，
  * 不复制一份 SQL 到测试里：复制副本会随迁移改动漂移，而漂移了测试照样绿。
  * drizzle-kit 生成段（两条 ADD COLUMN + 两条 ADD CONSTRAINT）由 `db:migrate` 建库时已执行，
  * 重放时跳过。
@@ -39,7 +39,7 @@ const BUSINESS_DB_NAME = 'fengyu_wxapp'
 /** 夹具前缀，清理时按它删。 */
 const P = 'T154PG_'
 
-const MIGRATION = path.join(__dirname, '..', '..', 'migrations', '0043_split_quantity_semantics.sql')
+const MIGRATION = path.join(__dirname, '..', '..', 'migrations', '0046_split_quantity_semantics.sql')
 
 if (!URL) {
   test('#154 回填口径真实 PG 回归（未设 QUANTITY_SPLIT_PG_TEST_URL，跳过）', { skip: true }, () => {})

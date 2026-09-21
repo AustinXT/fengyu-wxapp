@@ -74,9 +74,10 @@ node .claude/skills/remote-deploy/runtime-config.mjs reconcile
 拉卡拉门店入网测试部署到 dev（`101.34.242.103`，SSH 别名 `lx-test`）——
 原先挂在独立 test 环境上，test 退役后改挂 dev。
 ⚠ 走哪条拉卡拉通道由 `envs/dev.env` 的 `LAKALA_*` 取值决定，**不由环境名决定**：
-模板默认是 SIT 沙箱（`LAKALA_ENV=test` / `LAKALA_CLIENT_MODE=mock`）。
-真实门店入网需临时换成生产通道值（`release` / `https://s2.lakala.com` 等），用完记得改回，
-且改动只落在 gitignore 的 `dev.env`，不要提交进 example 模板：
+dev 模板自 2026-09-01 起默认就是 release 生产通道（`LAKALA_ENV=release` /
+`LAKALA_CLIENT_MODE=real`），与 prod 同商户体系 —— 也就是说 **dev 上的入网与支付会落到真实商户**。
+要退回 SIT 沙箱自测，只改 gitignore 的 `dev.env`（`test` / `mock` / `https://test.wsmsd.cn/sit` 等），
+不要把沙箱值提交进 example 模板：
 
 ```bash
 .claude/skills/remote-deploy/deploy-admin.sh dev
@@ -91,8 +92,14 @@ dev 的公网服务器和 SSH 目标是 `101.34.242.103`；Admin/Analyst 容器�
 hash 漂移或数据库领先本地代码即停止。先通过 `release-all` 或数据库专项流程完成迁移，再重跑部署。
 
 拉卡拉支付与门店入网统一复用 `LAKALA_*` 的模式、环境、APPID、证书、SM4、机构号、用户号、
-活动 ID、MCC、结算类型和来源。`LAKALA_ONBOARDING_*` 只保留入网 API 地址及业务参数，电子合同
+活动 ID、MCC、结算类型和来源。dev 与 prod 均使用 release 生产通道（`LAKALA_ENV=release`、
+入网 API `https://s2.lakala.com`、APPID 禁用 SIT 凭据 `OP00000003`）。
+`LAKALA_ONBOARDING_*` 只保留入网 API 地址及业务参数，电子合同
 回调地址和合同类型继续使用 `LAKALA_ECONTRACT_*`；电子合同机构号统一读取 `LAKALA_ORG_CODE`。
+
+> ⚠ 这三项目前**只有模板约定、没有代码门禁**。原先 `runtime-config.mjs` 里
+> `if (env === 'test')` 那段校验随独立 test 环境一起被删掉了（它在 test 退役后已是死代码），
+> 至今没有按 `dev` 重新接线。要恢复强制，需在 `validateConfig` 里补一条 `env === 'dev'` 分支。
 
 ## 小程序自适应（不需要渲染）
 

@@ -187,6 +187,80 @@ assert_rc() {  # $1=side 目录  $2=期望 envId
 [[ "$DO_CLIENT" == "1" ]] && assert_rc fengyu-client "$CLIENT_ENV_ID"
 echo "  ✓ envId + PG host 校验通过（${ACTIVE}）"
 
+# ── DB 前置依赖闸：云函数 SQL 依赖的 DB 对象必须已迁到目标库（#187）──
+# 背景：云函数与 admin 的退款 JSON 解析统一走 migration 0045 的 public.try_jsonb /
+# public.try_numeric。若目标库漏迁就部署，所有解析退款 note 的收款路径都会报
+# `function public.try_jsonb(text) does not exist` —— 报错点在收款主链上，是生产事故。
+# 这里用目标环境自己的连接串做**只读**探测（Node pg，不依赖本机 psql）。
+# 处置分环境：dev 探测不通告警放行；**prod 一律 fail-closed**（无法确认迁移状态就拒绝部署）。
+assert_db_prereqs() {
+  local pg_conn
+  pg_conn=$(node -e '
+    const fs = require("fs")
+    const c = JSON.parse(fs.readFileSync(process.argv[1], "utf8"))
+    // 取第一个带连接串的函数：本项目单库架构下同 env 各函数连接串一致，取哪个等价。
+    // 若日后某函数指向异库（只读副本等），这里要改成按函数名过滤，否则探测目标会静默漂移。
+    const fn = (c.functions || []).find((x) => x.envVariables && x.envVariables.PG_CONNECTION_STRING)
+    process.stdout.write(fn ? fn.envVariables.PG_CONNECTION_STRING : "")
+  ' "$1" 2>/dev/null || true)
+  # 探测不通时的处置：dev 告警放行，**prod 一律 fail-closed**——
+  # 生产恰恰是最不能"无法确认迁移状态还继续上传"的环境。
+  local soft_fail  # 0=可放行（dev）  1=必须中止（prod）
+  [[ "$ACTIVE" == "prod" ]] && soft_fail=1 || soft_fail=0
+  _db_probe_unavailable() {  # $1=原因
+    if [[ "$soft_fail" == "1" ]]; then
+      echo "ERROR: prod 部署无法确认 DB 迁移状态（$1），拒绝继续。" >&2
+      echo "       请先确认 ${ACTIVE} 库已执行 db:migrate（0045_try_cast_helpers）。" >&2
+      exit 1
+    fi
+    echo "  ⚠️  $1，跳过 DB 前置依赖检查（${ACTIVE} 环境放行；部署前请自行确认已迁 0045）"
+    return 0
+  }
+
+  [[ -z "$pg_conn" ]] && { _db_probe_unavailable "未取到 PG 连接串"; return 0; }
+
+  # 用项目已有的 Node pg 探测，不依赖本机 psql（CI / 同事机器上未必装）。
+  # ⚠️ 必须写成 `if probe=$(...); then`：本脚本开头 set -e，裸写 `probe=$(...)` 后再读 $? 时，
+  # 命令替换非零会让脚本**直接退出**，下面的分环境处理根本不可达（闸门 2 codex 实测指出）。
+  local probe
+  if probe=$(cd "$ROOT/db" && node -e '
+    const { Client } = require("pg")
+    // connectionTimeoutMillis 只覆盖建连；statement_timeout 防「连上了但查询 hang 住」把发版卡死
+    const c = new Client({
+      connectionString: process.argv[1],
+      connectionTimeoutMillis: 8000,
+      statement_timeout: 8000,
+      query_timeout: 8000,
+    })
+    c.connect()
+      // WARNING: 下面这段 SQL 内禁止出现双引号标识符。外层是 bash 单引号写不了裸单引号，
+      // 故 SQL 里用双引号占位、再由末尾的 .replace 统一翻成单引号；
+      // 若写了带双引号的标识符（如 schema.table 的引号形式），会被静默变形导致 SQL 报错。
+      .then(() => c.query(`
+        SELECT COALESCE(string_agg(f, ", "), "") AS missing
+          FROM (VALUES (\x27public.try_jsonb(text)\x27), (\x27public.try_numeric(text)\x27)) AS t(f)
+         WHERE to_regprocedure(f) IS NULL
+      `.replace(/"/g, "\x27")))
+      .then((r) => { process.stdout.write(r.rows[0].missing || ""); return c.end() })
+      .catch((e) => { console.error(e.message); process.exit(2) })
+  ' "$pg_conn"); then
+    : # 探测成功，结果在 $probe 里（空串=全部就绪）
+  else
+    _db_probe_unavailable "DB 探测失败（网络/权限/依赖）"
+    return 0
+  fi
+
+  if [[ -n "${probe//[[:space:]]/}" ]]; then
+    echo "ERROR: 目标库缺少云函数依赖的 DB 对象：${probe}" >&2
+    echo "       请先对 ${ACTIVE} 库执行 db:migrate（migration 0045_try_cast_helpers），再部署。" >&2
+    echo "       参见 db/CLAUDE.md「schema 变更两个库都要迁」的目标断言流程。" >&2
+    exit 1
+  fi
+  echo "  ✓ DB 前置依赖就绪（public.try_jsonb / public.try_numeric）"
+}
+[[ "$DO_STAFF"  == "1" ]] && assert_db_prereqs "$ROOT/fengyu-staff/cloudbaserc.json"
+[[ "$DO_CLIENT" == "1" ]] && assert_db_prereqs "$ROOT/fengyu-client/cloudbaserc.json"
+
 # ── 占位符扫描：渲染后仍含占位符的 env 给出告警（不中止，部分占位是预期的，如 prod 未填的 SM4）──
 SCAN_FILES=()
 [[ "$DO_STAFF"  == "1" ]] && SCAN_FILES+=("$ROOT/fengyu-staff/cloudbaserc.json")
@@ -223,7 +297,7 @@ if [[ "$DO_STAFF" == "1" ]]; then
   # envId 取自 cwd（已 cd fengyu-staff）的 cloudbaserc.json；tcb 3.x 不接受 --envId
   tcb fn code update staffApi
   node "$ROOT/scripts/sync-cloudfunction-env.mjs" "$ROOT/fengyu-staff/cloudbaserc.json" staffApi \
-    --sync CLIENT_SECRET \
+    --sync CLIENT_SECRET,PG_CONNECTION_STRING \
     --require PG_CONNECTION_STRING,CLIENT_SECRET,CLIENT_APPSECRET,WXACODE_ENV_VERSION
   echo "  ✓ staffApi deployed"
 fi
@@ -249,7 +323,7 @@ if [[ "$DO_CLIENT" == "1" ]]; then
   echo "==> [$STEP/$TOTAL] Deploy clientApi → $CLIENT_ENV_ID"
   tcb fn code update clientApi
   node "$ROOT/scripts/sync-cloudfunction-env.mjs" "$ROOT/fengyu-client/cloudbaserc.json" clientApi \
-    --sync CLIENT_SECRET \
+    --sync CLIENT_SECRET,PG_CONNECTION_STRING \
     --require PG_CONNECTION_STRING,TMAP_KEY,TMAP_SECRET,CLIENT_SECRET
   echo "  ✓ clientApi deployed"
 
@@ -257,7 +331,7 @@ if [[ "$DO_CLIENT" == "1" ]]; then
   echo "==> [$STEP/$TOTAL] Deploy payNotify → $CLIENT_ENV_ID"
   tcb fn code update payNotify
   node "$ROOT/scripts/sync-cloudfunction-env.mjs" "$ROOT/fengyu-client/cloudbaserc.json" payNotify \
-    --sync CLIENT_SECRET \
+    --sync CLIENT_SECRET,PG_CONNECTION_STRING \
     --require PG_CONNECTION_STRING,CLIENT_SECRET
   echo "  ✓ payNotify deployed"
 fi

@@ -23,6 +23,7 @@
     "test:e2e": "E2E_DATABASE_URL=${E2E_DATABASE_URL:-postgresql://fengyu:fengyu123@101.34.242.103:5433/${E2E_DB_NAME:-fengyu_e2e}} playwright test",
     "test:e2e:ui": "E2E_DATABASE_URL=${E2E_DATABASE_URL:-postgresql://fengyu:fengyu123@101.34.242.103:5433/${E2E_DB_NAME:-fengyu_e2e}} playwright test --ui",
     "test:e2e:manual": "playwright test --config=tests/e2e-chains/playwright.manual.config.ts --project=chromium --reporter=list",
+    "test:e2e:inventory": "bun tests/e2e-actions/smoke-inventory-chain.mjs && bun tests/e2e-actions/smoke-inventory-returns.mjs && bun tests/e2e-actions/smoke-inventory-transfer.mjs",
     "test:visual": "playwright test tests/e2e-pages/visual",
     "test:visual:update": "playwright test tests/e2e-pages/visual --update-snapshots",
     "test:all": "vitest run && playwright test"

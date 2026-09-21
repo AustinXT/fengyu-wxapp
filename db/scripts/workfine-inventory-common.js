@@ -1196,23 +1196,59 @@ function initialPriceForItem(row) {
   }
 }
 
+/**
+ * 判定供应链 SKU 的市场进货价来源模式。
+ * 价格可由「核算价 × 市场折扣（round 2 位）」推导时视为公式价（reason 留空，
+ * 满足 chk_inventory_skus_market_price_formula）；否则标记手工覆盖并留痕原因。
+ * 口径与 admin engine.ts 的公式重算（rawAccounting * ratio → Math.round(*100)/100）
+ * 及 0039 的 CHECK 约束（ROUND(...,2)）一致。
+ */
+function marketPriceModeFor(row) {
+  if (row.sourceType !== '供应链') return { mode: null, reason: null }
+  if (row.marketPurchasePrice === null) return { mode: '公式', reason: null }
+  const accounting = row.accountingPrice
+  const discount = row.marketPurchaseDiscount
+  if (accounting !== null && discount !== null) {
+    const ratio = discount > 1 ? discount / 100 : discount
+    const derived = String(Math.round(accounting * ratio * 100) / 100)
+    if (String(row.marketPurchasePrice) === derived) return { mode: '公式', reason: null }
+  }
+  return { mode: '手工覆盖', reason: 'WorkFine 历史同步价格' }
+}
+
 async function upsertSku(client, row) {
   const id = skuId(row.productCode)
+  const priceMode = marketPriceModeFor(row)
   const result = await client.query(
     `INSERT INTO inventory_skus (
        sku_id, product_code, product_name, spec_name, supplier, manufacturer, brand,
        product_series, purchase_category, source_type, owner_market_id,
        retail_price, accounting_price, supply_chain_purchase_price, market_purchase_price,
+       market_purchase_price_mode, market_purchase_price_override_reason,
        store_purchase_price, market_staff_purchase_price, market_purchase_discount,
        store_purchase_discount, staff_purchase_discount, item_company_purchase_price,
        is_reportable, is_active, remark
      ) VALUES (
-       $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24
+       $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26
      )
      ON CONFLICT (product_code) DO UPDATE SET
        product_name = EXCLUDED.product_name,
        spec_name = COALESCE(EXCLUDED.spec_name, inventory_skus.spec_name),
-       supplier = COALESCE(EXCLUDED.supplier, inventory_skus.supplier),
+       -- 已关联档案的 SKU，supplier 文本由 supplier_id 派生（#132），WorkFine 不得覆盖：
+       -- 覆盖了就会得到「supplier_id 指向 A、文本却是 B」的分叉 —— admin 列表走 JOIN 显示 A，
+       -- staffApi 的 SKU 列表与新建批次读文本列显示 B，且「按供应商统计」算到错的供应商头上。
+       -- ⚠️ 代价一：WorkFine 侧换了供应商时这里不会自动改挂，需人工在 admin 改挂。
+       --    这是刻意的 —— PG 是库存数据的唯一真理源，WorkFine 只是种源（同步已停用）。
+       -- ⚠️ 代价二：用户在 admin 把供货商清成「未指定」（两列都 NULL）之后，再重跑本导入，
+       --    这一行会把 WorkFine 的历史供应商名写回来、末尾的回填再把它关联上 ——
+       --    等于静默撤销了用户的清空。之所以接受：本脚本是**一次性历史迁移 / 初始导入**
+       --    工具，不在运营期运行（WorkFine 同步正式上线后已停用），而它的语义本就是
+       --    「以 WorkFine 为准补齐」。真要在运营期重跑，须先确认没有手工清空过的 SKU。
+       supplier = CASE
+         WHEN inventory_skus.supplier_id IS NULL
+           THEN COALESCE(EXCLUDED.supplier, inventory_skus.supplier)
+         ELSE inventory_skus.supplier
+       END,
        manufacturer = COALESCE(EXCLUDED.manufacturer, inventory_skus.manufacturer),
        brand = COALESCE(EXCLUDED.brand, inventory_skus.brand),
        product_series = COALESCE(EXCLUDED.product_series, inventory_skus.product_series),
@@ -1223,6 +1259,14 @@ async function upsertSku(client, row) {
        accounting_price = COALESCE(EXCLUDED.accounting_price, inventory_skus.accounting_price),
        supply_chain_purchase_price = COALESCE(EXCLUDED.supply_chain_purchase_price, inventory_skus.supply_chain_purchase_price),
        market_purchase_price = COALESCE(EXCLUDED.market_purchase_price, inventory_skus.market_purchase_price),
+       market_purchase_price_mode = CASE
+         WHEN EXCLUDED.source_type = '供应链' THEN EXCLUDED.market_purchase_price_mode
+         ELSE NULL
+       END,
+       market_purchase_price_override_reason = CASE
+         WHEN EXCLUDED.source_type = '供应链' THEN EXCLUDED.market_purchase_price_override_reason
+         ELSE NULL
+       END,
        store_purchase_price = COALESCE(EXCLUDED.store_purchase_price, inventory_skus.store_purchase_price),
        market_staff_purchase_price = COALESCE(EXCLUDED.market_staff_purchase_price, inventory_skus.market_staff_purchase_price),
        market_purchase_discount = COALESCE(EXCLUDED.market_purchase_discount, inventory_skus.market_purchase_discount),
@@ -1250,6 +1294,8 @@ async function upsertSku(client, row) {
       row.accountingPrice,
       row.supplyChainPurchasePrice,
       row.marketPurchasePrice,
+      priceMode.mode,
+      priceMode.reason,
       row.storePurchasePrice,
       row.marketStaffPurchasePrice,
       row.marketPurchaseDiscount,
@@ -1261,20 +1307,39 @@ async function upsertSku(client, row) {
       row.remark,
     ],
   )
-  return result.rows[0].sku_id
+  const insertedSkuId = result.rows[0].sku_id
+  // WorkFine 只给供应商名称文本，没有档案 id。SKU 建档侧（admin）自 #132 起强制选档案，
+  // 这里不补的话，每跑一次导入都会产生一批「有文本、没关联」的 SKU，档案关联被慢慢侵蚀。
+  // 口径与 migration 0042 的存量回填完全一致：按名称精确匹配、匹配上就一并把文本归一成
+  // 档案名（' 恒美 ' 拿到 id 却仍带空格的话，列表显示「恒美」、批次快照写「 恒美 」），
+  // 匹配不上就留 NULL、不自动建档（凭空建出的档案联系人/地址全空）。
+  // 幂等：只补 supplier_id IS NULL 的行，重复导入不会改已有关联。
+  await client.query(
+    `UPDATE inventory_skus AS s
+        SET supplier_id = v.supplier_id,
+            supplier = v.name
+       FROM inventory_suppliers AS v
+      WHERE s.sku_id = $1
+        AND s.supplier_id IS NULL
+        AND btrim(COALESCE(s.supplier, '')) <> ''
+        AND btrim(s.supplier) = v.name`,
+    [insertedSkuId],
+  )
+  return insertedSkuId
 }
 
 async function upsertInitialDocument(client, group, createdBy) {
   const docId = documentId(group.row, group.location.locationId)
   const result = await client.query(
     `INSERT INTO inventory_docs (
-       id, doc_type, status, target_location_id, market_id, doc_date,
+       id, doc_type, status, source_org_node_id, target_org_node_id, market_id, doc_date,
        total_quantity, total_amount, remark, created_by, confirmed_by, confirmed_at
-     ) VALUES ($1, '期初库存', '已完成', $2, $3, $4, $5, $6, $7, $8, $8, NOW())
+     ) VALUES ($1, '期初库存', '已完成', $2, $2, $3, $4, $5, $6, $7, $8, $8, NOW())
      ON CONFLICT (id) DO UPDATE SET
        doc_type = '期初库存',
        status = '已完成',
-       target_location_id = EXCLUDED.target_location_id,
+       source_org_node_id = EXCLUDED.source_org_node_id,
+       target_org_node_id = EXCLUDED.target_org_node_id,
        market_id = COALESCE(EXCLUDED.market_id, inventory_docs.market_id),
        doc_date = EXCLUDED.doc_date,
        total_quantity = EXCLUDED.total_quantity,
@@ -1284,7 +1349,7 @@ async function upsertInitialDocument(client, group, createdBy) {
      RETURNING id`,
     [
       docId,
-      group.location.locationId,
+      group.location.orgNodeId,
       group.row.marketId,
       group.row.snapshotDate,
       group.totalQuantity.toFixed(2),
@@ -1482,6 +1547,7 @@ module.exports = {
   movementKey,
   markWorkfineInventoryInitialized,
   markWorkfineInventoryPendingVerification,
+  marketPriceModeFor,
   normalizePhysicalTableName,
   normalizePriceRow,
   normalizeSnapshotRow,

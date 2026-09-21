@@ -145,8 +145,8 @@ const SALE_ITEMS_RECEIVED_ALLOC_SQL = `WITH tg AS (
  * STEP 1.5 逐项退款净额 SQL（2026-06-08 退款侧 $1 = saleOrderId）：从毛额 received 扣减
  * 已支付退款流水 note.items[].refundAmount（按 refSaleItemId 聚合到行）→ received 变「净额」
  * （毛实收 − 该行被退）。效果：被退项详情自动减少、SUM(received)=净实收、paid_sessions 按项扣减。
- * note→jsonb 三重防线根除 22P02/25P02：① WHERE 仅 退款+已支付（reject='已作废'自动排除→自愈）；
- * ② 外层 note LIKE '{%' 纯文本守门；③ 嵌套 CASE 保证 ::jsonb cast 只在守门通过时求值，jsonb_typeof 兜 items 非数组。
+ * note→jsonb 安全解析根除 22P02/25P02：① WHERE 仅 退款+已支付（reject='已作废'自动排除→自愈）；
+ * ② public.try_jsonb（migration 0045）把非法 JSON 降级为 NULL 而非抛错；③ jsonb_typeof 兜 items 非数组。
  * 仅 item_direction='购买' 行（与 STEP1 一致，不碰 convert_out/refund_out 负数行）；GREATEST(0) clamp。
  * 幂等：每次 recalc 先跑 STEP1 把 received 重置为毛额，本 STEP 再扣 → 多次结果一致。
  * 必须在 SALE_ITEMS_RECEIVED_ALLOC_SQL 之后、PAID_SESSIONS_RECALC_SQL 之前执行。
@@ -154,13 +154,11 @@ const SALE_ITEMS_RECEIVED_ALLOC_SQL = `WITH tg AS (
  */
 const RECEIVED_REFUNDED_DEDUCT_SQL = `WITH refund_items AS (
       SELECT elem ->> 'refSaleItemId' AS sale_item_id,
-             COALESCE((elem ->> 'refundAmount')::numeric, 0) AS refund_amount
+             COALESCE(public.try_numeric(elem ->> 'refundAmount'), 0) AS refund_amount
       FROM sale_order_payments sop
       CROSS JOIN LATERAL jsonb_array_elements(
-        CASE WHEN sop.note LIKE '{%'
-             THEN CASE WHEN jsonb_typeof((sop.note)::jsonb -> 'items') = 'array'
-                       THEN (sop.note)::jsonb -> 'items'
-                       ELSE '[]'::jsonb END
+        CASE WHEN jsonb_typeof(public.try_jsonb(sop.note) -> 'items') = 'array'
+             THEN public.try_jsonb(sop.note) -> 'items'
              ELSE '[]'::jsonb END
       ) AS elem
       WHERE sop.sale_order_id = $1 AND sop.change_type = '退款' AND sop.status = '已支付'
@@ -344,10 +342,8 @@ const FULL_REFUND_ZERO_AMOUNT_PAID_SESSIONS_SQL = `WITH full_refund_zero_items A
       SELECT elem ->> 'refSaleItemId' AS sale_item_id
       FROM sale_order_payments sop
       CROSS JOIN LATERAL jsonb_array_elements(
-        CASE WHEN sop.note LIKE '{%'
-             THEN CASE WHEN jsonb_typeof((sop.note)::jsonb -> 'items') = 'array'
-                       THEN (sop.note)::jsonb -> 'items'
-                       ELSE '[]'::jsonb END
+        CASE WHEN jsonb_typeof(public.try_jsonb(sop.note) -> 'items') = 'array'
+             THEN public.try_jsonb(sop.note) -> 'items'
              ELSE '[]'::jsonb END
       ) AS elem
       WHERE sop.sale_order_id = $1 AND sop.change_type = '退款' AND sop.status = '已支付'

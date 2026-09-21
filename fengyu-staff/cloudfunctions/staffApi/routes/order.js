@@ -48,7 +48,7 @@ const { INVENTORY_LINKAGE_ENABLED } = require('../utils/feature-flags')
 const { assertEmployeesAssignableToStore } = require('../utils/employee-assignment')
 const { classifySaleOrderDocumentType } = require('../utils/document-type')
 const { maskPhoneForAuth } = require('../utils/phone-visibility')
-const { normalizeListFilters, addDateRange } = require('../utils/list-filters')
+const { isValidDate, normalizeListFilters, addDateRange } = require('../utils/list-filters')
 const { assertPaymentAttributionReady } = require('../utils/attribution-guard')
 
 // 模块级缓存：saleOrderId → qrcodeUrl，避免轮询时重复生成
@@ -497,6 +497,91 @@ async function refreshSpendingTier(client, clientUserId) {
 }
 
 /**
+ * 顾客分类跃迁的订单级金额 CTE（#187，2026-09-18）。$1 = client_user_id。
+ *
+ * 产出每张已结清销售单的两个金额：
+ *   non_trial = Σ(非体验行毛实收)   trial = Σ(体验行毛实收)
+ * 毛实收 = sale_items.received（STEP 1.5 扣退款后的净额）+ 该行逐项退款额 → 还原"曾经收到的钱"。
+ *
+ * refund_by_item 用 `try_jsonb` / `try_numeric`（migration 0045 新增的 PL/pgSQL helper）
+ * 做**版本无关的安全转换**：非法 JSON / 非数字文本一律降级为 NULL，由 COALESCE 兜底，
+ * 而不是抛 22P02 回滚整个收款事务。
+ * 这取代了原先 `note LIKE '{%'` 的纯文本守门——LIKE 无法证明 JSON 合法，
+ * `{手工备注}`、`{"items":`（截断）都能通过守门却在 cast 处炸掉（#187 闸门 2 codex 两轮指出）。
+ * PG16 的 `pg_input_is_valid()` 能做同样的事，但自托管生产库版本未统一，故走 helper 路线。
+ * ⚠️ **部署顺序：必须先迁 0045 再部署本代码**，否则函数不存在会直接报错。
+ *
+ * ⚠️ 展开范围额外限定在**参与判定的已结清销售单**（ro.status / ro.sale_order_type）：
+ * 既避免白展开充值单/寄存单/转换单的退款 JSON，也把解析量收回到本就要读的订单集合内
+ * （原 RECEIVED_REFUNDED_DEDUCT_SQL 按单聚合，本 CTE 按顾客聚合）。
+ *
+ * ⚠️ **全额退款单不在判定范围内**：退完全部明细后原单状态变 `'已退款'`，被 o.status 过滤排除。
+ * 即「退款不扣减」只对**部分退款**成立（业务方 2026-09-18 确认保持此口径）。
+ *
+ * **LEAST(… , si.sale_amount) 封顶**：received 的扣减有两条路径——主路径按
+ * sale_payment_item_receipts 负额净算、回退路径才用 note.items[].refundAmount + GREATEST(0) clamp。
+ * 加回 note 原始额并非扣减的严格逆运算，`refunded > 实际扣减额` 时会高估 non_trial。
+ * 已结清订单的行级毛额上限就是 sale_amount（两段式瀑布按 sale_amount 余量铺开），故以此封顶：
+ * 把「不可逆误升为会员客」压成「最多漏升」——漏升可由后续订单或全库重算脚本自愈，误升不可逆。
+ *
+ * **无明细行订单兜底**：WorkFine 历史单（db/scripts/import-workfine-legacy.js）只建 sale_orders、
+ * 不建 sale_items，审核通过时 UPDATE received = total_amount。若用 INNER JOIN，这些单会整个从
+ * order_amounts 消失、历史大额单不再触发跃迁（相对旧口径是回归）。故改 LEFT JOIN + 无明细行时
+ * 回退到订单级 o.received，并全额计入 non_trial（历史单无体验卡语义）。
+ *
+ * item_direction='购买' 与 STEP 1.5 扣减作用域一致：转出/转入负数行不进 SUM
+ * （当前 '转出'/'转入' 只出现在转换单、已被 sale_order_type 过滤，此条为防御性对齐）。
+ * FILTER 聚合对全体验/全非体验订单会产生 NULL，COALESCE 归零以免 `NULL > 0` 使分支静默不命中。
+ *
+ * 八处副本逐字一致（详见 recalcCustomerType 内注释），由
+ * __tests__/routes/recalc-customer-type-sql.test.js 守护。
+ */
+const RECALC_CUSTOMER_TYPE_CTE = `WITH refund_by_item AS (
+       SELECT sop.sale_order_id,
+              elem ->> 'refSaleItemId' AS sale_item_id,
+              SUM(COALESCE(public.try_numeric(elem ->> 'refundAmount'), 0)) AS refunded
+       FROM sale_order_payments sop
+       JOIN sale_orders ro ON ro.sale_order_id = sop.sale_order_id
+       CROSS JOIN LATERAL jsonb_array_elements(
+         CASE WHEN jsonb_typeof(public.try_jsonb(sop.note) -> 'items') = 'array'
+              THEN public.try_jsonb(sop.note) -> 'items'
+              ELSE '[]'::jsonb END
+       ) AS elem
+       WHERE ro.client_user_id = $1
+         AND ro.status IN ('已支付', '已完成')
+         AND ro.sale_order_type = '销售单'
+         AND sop.change_type = '退款'
+         AND sop.status = '已支付'
+         AND elem ->> 'refSaleItemId' <> 'OVERPAY'
+       -- 序号绑定 SELECT 的前 2 列（sale_order_id, refSaleItemId）；重排 SELECT 列须同步改这里
+       GROUP BY 1, 2
+     ),
+     order_amounts AS (
+       SELECT o.sale_order_id,
+              CASE WHEN NOT EXISTS (SELECT 1 FROM sale_items si2 WHERE si2.sale_order_id = o.sale_order_id)
+                   THEN GREATEST(o.received::numeric, 0)
+                   ELSE COALESCE(SUM(LEAST(si.received::numeric + COALESCE(rbi.refunded, 0),
+                                           si.sale_amount::numeric))
+                                 FILTER (WHERE si.is_experience = false), 0)
+              END AS non_trial,
+              CASE WHEN NOT EXISTS (SELECT 1 FROM sale_items si2 WHERE si2.sale_order_id = o.sale_order_id)
+                   THEN 0
+                   ELSE COALESCE(SUM(LEAST(si.received::numeric + COALESCE(rbi.refunded, 0),
+                                           si.sale_amount::numeric))
+                                 FILTER (WHERE si.is_experience = true), 0)
+              END AS trial
+       FROM sale_orders o
+       LEFT JOIN sale_items si ON si.sale_order_id = o.sale_order_id
+                              AND si.item_direction = '购买'
+       LEFT JOIN refund_by_item rbi ON rbi.sale_order_id = o.sale_order_id
+                                   AND rbi.sale_item_id = si.sale_item_id
+       WHERE o.client_user_id = $1
+         AND o.status IN ('已支付', '已完成')
+         AND o.sale_order_type = '销售单'
+       GROUP BY o.sale_order_id, o.received
+     )`
+
+/**
  * 根据已支付/已完成订单历史，重算顾客类型（只升不降）
  * 阈值从 system_configs.new_member_threshold 读取
  * 跃迁为"会员客"时同步写入 became_member_at = COALESCE(首笔达标单 paid_at, created_at)（非检测时刻 NOW()）。
@@ -516,43 +601,26 @@ async function recalcCustomerType(client, clientUserId) {
 
   const threshold = await getMemberThreshold()
 
-  // 三端 SQL 独立副本（admin actions/orders.ts + staffApi routes/order.js + payNotify index.js）
-  // 修改时必须同步另外两端；一致性由 staffApi __tests__/routes/recalc-customer-type-sql.test.js
-  // 守护，任一端漂移立即触发测试失败。
+  // 八处 SQL 独立副本（staffApi routes/order.js + clientApi routes/order.js + payNotify index.js
+  // + admin actions/orders.ts + admin lib/recompute-customer-tags.ts + db/scripts/recalc-all-customer-types.js
+  // + db/scripts/recalc-became-member-at.js + db/scripts/backfill-membership-upgrade-doc-type.js）。
+  // 修改时必须同步其余七处；一致性由 staffApi
+  // __tests__/routes/recalc-customer-type-sql.test.js 守护，任一处漂移立即触发测试失败。
   //
-  // 充值卡剥离 SKU 化（2026-05-20）后 sale_order_type 新增 '充值单'；本 CASE 全部三个分支
-  // 保持 `o.sale_order_type = '销售单'` 字面量过滤——充值单是预收（顾客把钱预先存到储值卡），
-  // 不算实际销售也不影响顾客类型跃迁；且 0 行 sale_items 也无法满足小美客/体验客的 JOIN
-  // 条件，保留过滤不会引入误判。
+  // 2026-09-18 (#187) 口径：按**单笔订单的非体验部分毛实收**判定，落地 2026-04-26 Q5.2 决策
+  // （docs/audit/SUMMARY.md:344）。毛实收 = sale_items.received（净额）+ 该行逐项退款额，
+  // 即"曾经收到的钱"，退款不扣减（业务方 2026-09-18 拍板：曾付到门槛即算达标）。
+  // 混合订单（体验卡 + 普通商品）只按非体验部分算会员门槛——旧口径用订单应付额 o.total_amount，
+  // 会把体验卡金额也算进门槛。
+  //
+  // 充值卡剥离 SKU 化（2026-05-20）后 sale_order_type 新增 '充值单'；保持 `o.sale_order_type = '销售单'`
+  // 过滤——充值单是预收（顾客把钱预先存到储值卡），不算实际销售也不影响顾客类型跃迁。
   const typeResult = await client.query(
-    `SELECT CASE
-       WHEN EXISTS (
-         SELECT 1 FROM sale_orders o
-         WHERE o.client_user_id = $1
-           AND o.status IN ('已支付', '已完成')
-           AND o.sale_order_type = '销售单'
-           AND o.total_amount >= $2
-           -- 2026-04-26 sale-order-domain-refactor：回款单 → sale_order_payments[change_type='回款']
-           -- total_amount 在 sale_orders 上是订单总额（不含回款 amount），保留 total_amount >= $2 直接判定
-       ) THEN '会员客'
-       WHEN EXISTS (
-         SELECT 1
-         FROM sale_orders o
-         JOIN sale_items si ON si.sale_order_id = o.sale_order_id
-         WHERE o.client_user_id = $1
-           AND o.status IN ('已支付', '已完成')
-           AND o.sale_order_type = '销售单'
-           AND si.is_experience = false
-       ) THEN '小美客'
-       WHEN EXISTS (
-         SELECT 1
-         FROM sale_orders o
-         JOIN sale_items si ON si.sale_order_id = o.sale_order_id
-         WHERE o.client_user_id = $1
-           AND o.status IN ('已支付', '已完成')
-           AND o.sale_order_type = '销售单'
-           AND si.is_experience = true
-       ) THEN '体验客'
+    `${RECALC_CUSTOMER_TYPE_CTE}
+     SELECT CASE
+       WHEN EXISTS (SELECT 1 FROM order_amounts WHERE non_trial >= $2) THEN '会员客'
+       WHEN EXISTS (SELECT 1 FROM order_amounts WHERE non_trial > 0)   THEN '小美客'
+       WHEN EXISTS (SELECT 1 FROM order_amounts WHERE trial > 0)       THEN '体验客'
        ELSE '流量客'
      END AS computed_type`,
     [clientUserId, threshold]
@@ -579,15 +647,14 @@ async function recalcCustomerType(client, clientUserId) {
   // （COALESCE(paid_at, created_at)；选单子查询与下方 is_membership_upgrade 归因同源、选同一单）。
   if (updateResult.rowCount > 0 && updateResult.rows[0].customer_type === '会员客') {
     await client.query(
-      `UPDATE client_wechat_users SET became_member_at = (
+      `UPDATE client_wechat_users SET became_member_at = COALESCE((
+         ${RECALC_CUSTOMER_TYPE_CTE}
          SELECT COALESCE(o.paid_at, o.created_at) FROM sale_orders o
-         WHERE o.client_user_id = $1
-           AND o.status IN ('已支付', '已完成')
-           AND o.sale_order_type = '销售单'
-           AND o.total_amount >= $2
-         ORDER BY o.paid_at ASC NULLS LAST, o.created_at ASC
+         JOIN order_amounts oa ON oa.sale_order_id = o.sale_order_id
+         WHERE oa.non_trial >= $2
+         ORDER BY o.paid_at ASC NULLS LAST, o.created_at ASC, o.sale_order_id ASC
          LIMIT 1
-       ) WHERE user_id = $1`,
+       ), became_member_at) WHERE user_id = $1`,
       [clientUserId, threshold]
     )
     // 给触发本次首次跃迁的达标销售单打会员升级标记（WHERE 与会员客判定 CASE 同源）。
@@ -595,12 +662,11 @@ async function recalcCustomerType(client, clientUserId) {
     await client.query(
       `UPDATE sale_orders SET is_membership_upgrade = true
        WHERE sale_order_id = (
+         ${RECALC_CUSTOMER_TYPE_CTE}
          SELECT o.sale_order_id FROM sale_orders o
-         WHERE o.client_user_id = $1
-           AND o.status IN ('已支付', '已完成')
-           AND o.sale_order_type = '销售单'
-           AND o.total_amount >= $2
-         ORDER BY o.paid_at ASC NULLS LAST, o.created_at ASC
+         JOIN order_amounts oa ON oa.sale_order_id = o.sale_order_id
+         WHERE oa.non_trial >= $2
+         ORDER BY o.paid_at ASC NULLS LAST, o.created_at ASC, o.sale_order_id ASC
          LIMIT 1
        )`,
       [clientUserId, threshold]
@@ -2467,15 +2533,19 @@ async function rollbackPendingConversionOnClose(client, saleOrderId, now) {
       -- locked_source 是内连接，源行若已不存在，这条归因会**整条消失**，下面的
       -- restored_ok 检查也就看不见它 —— 权益已被前两段无条件加回、欠款却没还原。
       -- restored_ok 单独一列：上面那道自校验 CAS 失败时 restored 只会**静默少行**。
+      -- ⚠ locked_source 在本文件另外两条语句里是以原名限定的（FROM locked_source +
+      -- locked_source. 限定符）。这里不能再起别名：CTE 别名守护按**文件**聚合主查询文本，
+      -- 同一个 CTE 名一处用别名、另一处用原名会被判成混用（admin business.test.ts 的
+      -- 「CTE 起了别名就必须全程用别名」，扫描根覆盖本端）。全文件统一用原名。
       SELECT w.ref_sale_item_id AS sale_item_id,
-             ls.sale_order_id,
+             locked_source.sale_order_id,
              w.waived,
-             (ls.sale_item_id IS NOT NULL) AS source_found,
+             (locked_source.sale_item_id IS NOT NULL) AS source_found,
              (r.sale_item_id IS NOT NULL) AS restored_ok
         FROM waived w
-        LEFT JOIN locked_source ls ON ls.sale_item_id = w.ref_sale_item_id
+        LEFT JOIN locked_source ON locked_source.sale_item_id = w.ref_sale_item_id
         LEFT JOIN restored r ON r.sale_item_id = w.ref_sale_item_id
-       ORDER BY ls.sale_order_id, w.ref_sale_item_id`,
+       ORDER BY locked_source.sale_order_id, w.ref_sale_item_id`,
     [saleOrderId, now],
   )
   if (restoredWaive.rows.some((r) => r.source_found !== true)) {
@@ -2808,7 +2878,7 @@ async function list(ctx) {
   // staff 侧不提供口径切换下拉（管理层视图口径单一）。
   // 订单粒度：订单只要存在任一笔归属日期落在区间内的**已入账**款项即入选（EXISTS 半连接）。
   // ⚠ 下面的 status='已支付' 是语义闸门，不是索引优化，删掉会改变结果集：
-  // 迁移 0039 起未入账行的 performance_attribution_date 由 created_at 占位（不再是 NULL），
+  // 迁移 0040 起未入账行的 performance_attribution_date 由 created_at 占位（不再是 NULL），
   // 首次支付行的列值又是订单级的镜像（与本行是否入账无关），两者都会让未入账款项把订单带进结果。
   // 归属日期是 date 而非 timestamptz，走 addDateRange 的闭区间（与 allocation.js 共用同一实现）。
   // 附带后果（与 admin 一致，非缺陷）：0 笔已入账款项的订单——WorkFine 历史单、纯待支付单、
@@ -2877,18 +2947,6 @@ async function list(ctx) {
   ctx.result = { orders: mapped, page, pageSize }
 }
 
-function isValidIsoDateOnly(value) {
-  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(value || ''))
-  if (!match) return false
-  const year = Number(match[1])
-  const month = Number(match[2])
-  const day = Number(match[3])
-  const dateValue = new Date(Date.UTC(year, month - 1, day))
-  return dateValue.getUTCFullYear() === year
-    && dateValue.getUTCMonth() === month - 1
-    && dateValue.getUTCDate() === day
-}
-
 /**
  * 一次性修改订单业绩归属日期（员工端店长入口）。
  *
@@ -2902,7 +2960,7 @@ async function updatePerformanceAttribution(ctx) {
   const saleOrderId = String(payload.saleOrderId || '').trim()
   const targetDate = String(payload.performanceAttributionDate || '').trim()
   const expectedUpdatedAt = String(payload.expectedUpdatedAt || '').trim()
-  if (!saleOrderId || !isValidIsoDateOnly(targetDate)) {
+  if (!saleOrderId || !isValidDate(targetDate)) {
     throw new Error('INVALID_PARAMS: 订单号和有效的业绩归属日期必传')
   }
   if (!expectedUpdatedAt || Number.isNaN(new Date(expectedUpdatedAt).getTime())) {
@@ -2963,7 +3021,7 @@ async function updatePerformanceAttribution(ctx) {
     }
 
     // 款项行的同步由 DB trigger `sync_order_performance_attribution_to_payments()`
-    // （sale_orders 的 AFTER UPDATE，迁移 0040）完成，应用层不再各写一份 UPDATE：
+    // （sale_orders 的 AFTER UPDATE，迁移 0041）完成，应用层不再各写一份 UPDATE：
     // 查询侧已改为直读 sale_order_payments.performance_attribution_date，
     // 任何漏同步的写入路径都会直接出错数，同步动作必须由 DB 保证而不是靠每个入口记得写。
     // 这里只回读受影响的行用于审计日志。
@@ -2997,7 +3055,7 @@ async function updatePerformanceAttribution(ctx) {
     // 后续按 id 对账/去重的脚本两端行为不一致。
     const syncedPaymentIds = syncedRes.rows.map((row) => Number(row.id))
 
-    // 部署顺序闸门：本函数依赖迁移 0040 的 trigger 完成同步。若云函数先于迁移上线，
+    // 部署顺序闸门：本函数依赖迁移 0041 的 trigger 完成同步。若云函数先于迁移上线，
     // 上面的 UPDATE 只改了 sale_orders、款项行纹丝不动，而查询侧已直读款项列
     // —— 那是静默出错数。这里花一次廉价回读把它变成响亮失败并回滚整个事务。
     // 与 admin orders.ts updatePerformanceAttributionDate 同语义独立副本。
@@ -3010,7 +3068,7 @@ async function updatePerformanceAttribution(ctx) {
       [saleOrderId, updated.performance_attribution_date],
     )
     if (Number(staleRes.rows[0]?.stale || 0) > 0) {
-      throw new Error('INVALID_STATE: 业绩归属日期未能同步到款项流水，请确认数据库迁移 0040 已执行后重试')
+      throw new Error('INVALID_STATE: 业绩归属日期未能同步到款项流水，请确认数据库迁移 0041 已执行后重试')
     }
 
     await logUpdate(
@@ -3314,10 +3372,8 @@ async function reconcileOrderStatusAfterRefund(client, saleOrderId) {
               BOOL_OR(LOWER(COALESCE(elem ->> 'isFullItemRefund', 'false')) = 'true') AS full_refund
          FROM sale_order_payments sop
          CROSS JOIN LATERAL jsonb_array_elements(
-           CASE WHEN sop.note LIKE '{%'
-                THEN CASE WHEN jsonb_typeof((sop.note)::jsonb -> 'items') = 'array'
-                          THEN (sop.note)::jsonb -> 'items'
-                          ELSE '[]'::jsonb END
+           CASE WHEN jsonb_typeof(public.try_jsonb(sop.note) -> 'items') = 'array'
+                THEN public.try_jsonb(sop.note) -> 'items'
                 ELSE '[]'::jsonb END
          ) AS elem
         WHERE sop.sale_order_id = $1
@@ -6052,9 +6108,21 @@ async function createPickupInventoryDoc(client, ctx, updatedItem, requirements, 
   }
 
   const docId = await generatePickupInventoryDocNo(client)
+  const locationRows = await client.query(
+    `SELECT org_node_id
+       FROM inventory_locations
+      WHERE location_id = $1
+        AND is_active = true
+      LIMIT 1`,
+    [ctx.auth.effectiveStoreId],
+  )
+  const sourceOrgNodeId = locationRows.rows[0]?.org_node_id
+  if (!sourceOrgNodeId) {
+    throw new Error('INVALID_STATE: 提货门店没有有效组织节点')
+  }
   await client.query(
     `INSERT INTO inventory_docs (
-       id, doc_type, status, source_location_id, doc_date, total_quantity,
+       id, doc_type, status, source_org_node_id, doc_date, total_quantity,
        related_sale_order_id, client_user_id, customer_name,
        remark, created_by, confirmed_by, confirmed_at
      )
@@ -6062,7 +6130,7 @@ async function createPickupInventoryDoc(client, ctx, updatedItem, requirements, 
              $5, $6, $7, $8, $9, $9, NOW())`,
     [
       docId,
-      ctx.auth.effectiveStoreId,
+      sourceOrgNodeId,
       shanghaiDateStr(),
       requirements.reduce((sum, requirement) => sum + requirement.quantity, 0),
       updatedItem.sale_order_id,

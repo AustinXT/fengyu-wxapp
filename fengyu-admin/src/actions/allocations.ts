@@ -350,6 +350,7 @@ export const getPendingPayments = withPermission(
           )`
         : undefined,
       inArray(saleOrders.saleOrderType, ['销售单', '转换单'] as any),
+      // WorkFine 历史单业务排除；展示口径见 @/lib/workfine-legacy。
       sql`${saleOrders.legacySource} IS DISTINCT FROM 'workfine'`,
       isAdminScope(session)
         ? undefined
@@ -465,6 +466,7 @@ export const getPaymentAllocatables = withPermission(
       WHERE sop.id = ${salePaymentId} LIMIT 1
     `)) as any[]
     if (!pay || !isInScope(session, pay.store_id as string)) return null
+    // WorkFine 历史单业务排除；展示口径见 @/lib/workfine-legacy。
     if (!['销售单', '转换单'].includes(pay.sale_order_type) || pay.legacy_source === 'workfine') return null
 
     const items = (await db.execute(sql`
@@ -552,6 +554,7 @@ export const savePaymentAllocations = withPermission(
     if (!['销售单', '转换单'].includes(pay.sale_order_type)) {
       return { success: false, message: '该订单类型不参与营业额分配' }
     }
+    // WorkFine 历史单业务排除；展示口径见 @/lib/workfine-legacy。
     if (pay.legacy_source === 'workfine') {
       return { success: false, message: '历史订单不参与营业额分配' }
     }

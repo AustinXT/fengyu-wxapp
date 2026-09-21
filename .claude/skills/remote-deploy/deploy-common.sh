@@ -160,6 +160,7 @@ build_image() {
         --build-arg APP_COMMIT="$app_commit" \
         --build-arg NEXT_PUBLIC_RSA_PUBLIC_KEY="$(manifest_value "$manifest" nextPublicRsaPublicKey)" \
         --build-arg NEXT_PUBLIC_ANALYST_ORIGIN="$(manifest_value "$manifest" analystPublicOrigin)" \
+        --build-arg NEXT_PUBLIC_INVENTORY_LINKAGE_ENABLED="$(manifest_value "$manifest" nextPublicInventoryLinkageEnabled)" \
         -f "$REPO_ROOT/docker/Dockerfile.admin" \
         -t "$image_ref" \
         "$REPO_ROOT"

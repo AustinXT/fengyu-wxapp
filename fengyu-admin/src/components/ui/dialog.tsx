@@ -8,9 +8,32 @@ export interface DialogProps {
   onOpenChange: (open: boolean) => void
   children: React.ReactNode
   className?: string
+  /**
+   * 是否允许「点遮罩 / 按 ESC」关闭，默认允许。
+   *
+   * 置 false 时两条路径都被拦住（ESC 走 `onCancel` 的 preventDefault），
+   * 用于提交在途这类「关掉了但事情还在办」会造成误解的时刻 —— 否则只给确认/取消
+   * 按钮加 disabled 是拦不住的，遮罩与 ESC 会绕过去。
+   */
+  dismissible?: boolean
+  /**
+   * 弹窗的可及名称。原生 `<dialog>` 不会自动把 `DialogTitle` 当成名称，不给的话
+   * 读屏只会念一句「对话框」。
+   */
+  ariaLabel?: string
+  /** 弹窗的可及描述（单据号、不可撤销后果等），指向内容里某个元素的 id。 */
+  ariaDescribedBy?: string
 }
 
-function Dialog({ open, onOpenChange, children, className }: DialogProps) {
+function Dialog({
+  open,
+  onOpenChange,
+  children,
+  className,
+  dismissible = true,
+  ariaLabel,
+  ariaDescribedBy,
+}: DialogProps) {
   const dialogRef = React.useRef<HTMLDialogElement>(null)
   const onOpenChangeRef = React.useRef(onOpenChange)
 
@@ -62,6 +85,7 @@ function Dialog({ open, onOpenChange, children, className }: DialogProps) {
     // not close the dialog (regression fix: old code would close on inner
     // clicks when the dialog rect hadn't committed yet).
     if (e.target !== e.currentTarget) return
+    if (!dismissible) return
     const dialog = dialogRef.current
     if (!dialog) return
     const rect = dialog.getBoundingClientRect()
@@ -84,7 +108,18 @@ function Dialog({ open, onOpenChange, children, className }: DialogProps) {
         "open:animate-in open:fade-in-0 open:zoom-in-95",
         className,
       )}
+      aria-label={ariaLabel}
+      aria-describedby={ariaDescribedBy}
       onClick={handleBackdropClick}
+      // ESC 触发的是 cancel。用 React 的合成事件处理器而不是 addEventListener + ref：
+      // 处理器每次渲染都拿当前的 `dismissible`，而 ref 在 passive effect 里才更新 ——
+      // 点完「确认」立刻按 ESC 时那条路会读到旧值。
+      //（React 把 `cancel` 归在 nonDelegatedEvents 里，直接绑在元素上，不依赖冒泡。）
+      // 注意这条只在 `showModal()` 的模态路径上生效 —— 降级到 `.show()` 时浏览器本就不对
+      // ESC 派发 `cancel`，那条路上「ESC 关不掉」靠的是非模态自身不响应 ESC。
+      onCancel={(e) => {
+        if (!dismissible) e.preventDefault()
+      }}
     >
       <div className="p-6">{children}</div>
     </dialog>

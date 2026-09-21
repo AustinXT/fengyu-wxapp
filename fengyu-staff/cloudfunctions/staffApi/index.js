@@ -95,8 +95,14 @@ const routes = {
   'inventory.stockList':  () => require('./routes/inventory').stockList,
   'inventory.reportableSkuOptions': () => require('./routes/inventory').reportableSkuOptions,
   'inventory.storeOptions': () => require('./routes/inventory').storeOptions,
+  'inventory.docOrgOptions': () => require('./routes/inventory').docOrgOptions,
   'inventory.docList':    () => require('./routes/inventory').docList,
   'inventory.docDetail':  () => require('./routes/inventory').docDetail,
+  'inventory.createDoc':  () => require('./routes/inventory').createDoc,
+  'inventory.confirmReceive': () => require('./routes/inventory').confirmReceive,
+  'inventory.approveDoc': () => require('./routes/inventory').approveDoc,
+  'inventory.rejectDoc':  () => require('./routes/inventory').rejectDoc,
+  'inventory.uploadReceipt': () => require('./routes/inventory').uploadReceipt,
 
   // 营业额分配（按回款逐笔分配，当前口径）
   'allocation.pendingPayments':         () => require('./routes/allocation').pendingPayments,
@@ -179,6 +185,8 @@ const STORE_MUTATION_ACTIONS = new Set([
   'appointment.confirm', 'appointment.checkin',
   'card.recharge', 'card.inflow', 'card.createRefund', 'card.approveRefund', 'card.rejectRefund',
   'service.create', 'service.start', 'service.complete', 'service.confirm', 'service.cancel',
+  'inventory.createDoc', 'inventory.confirmReceive', 'inventory.approveDoc',
+  'inventory.rejectDoc', 'inventory.uploadReceipt',
 ])
 
 /**

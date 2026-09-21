@@ -17,6 +17,7 @@ const {
   groupRowsByDocument,
   LocationResolver,
   lotKey,
+  marketPriceModeFor,
   normalizeSnapshotRow,
   normalizeTemplateMetadata,
   sourceKey,
@@ -503,4 +504,31 @@ test('市场调货对方入库核对缺少单据号时停止，不能静默漏�
     () => normalizeMarketTransferRecord({ RID: 123 }, { code: 'S580', table: 'UDT_S_580' }, {}),
     /缺少单据号/,
   )
+})
+
+test('供应链 SKU 市场进货价来源：可公式推导写公式、不可推导写手工覆盖', () => {
+  // 核算价 100 × 折扣 0.85 → 85，与录入一致 → 公式
+  assert.deepEqual(marketPriceModeFor({
+    sourceType: '供应链', accountingPrice: 100, marketPurchaseDiscount: 0.85, marketPurchasePrice: 85,
+  }), { mode: '公式', reason: null })
+  // 折扣以百分数（>1）表示：85 → 0.85 → 85 → 公式
+  assert.deepEqual(marketPriceModeFor({
+    sourceType: '供应链', accountingPrice: 100, marketPurchaseDiscount: 85, marketPurchasePrice: 85,
+  }), { mode: '公式', reason: null })
+  // 价格与推导值不符 → 手工覆盖并留痕
+  assert.deepEqual(marketPriceModeFor({
+    sourceType: '供应链', accountingPrice: 100, marketPurchaseDiscount: 0.85, marketPurchasePrice: 88,
+  }), { mode: '手工覆盖', reason: 'WorkFine 历史同步价格' })
+  // 缺核算价或折扣无法推导 → 手工覆盖
+  assert.deepEqual(marketPriceModeFor({
+    sourceType: '供应链', accountingPrice: null, marketPurchaseDiscount: 0.85, marketPurchasePrice: 85,
+  }), { mode: '手工覆盖', reason: 'WorkFine 历史同步价格' })
+  // 供应链无市场进货价 → 公式（待后续补价）
+  assert.deepEqual(marketPriceModeFor({
+    sourceType: '供应链', accountingPrice: 100, marketPurchaseDiscount: 0.85, marketPurchasePrice: null,
+  }), { mode: '公式', reason: null })
+  // 非供应链不启用市场公式价模式
+  assert.deepEqual(marketPriceModeFor({
+    sourceType: '市场自采', accountingPrice: 100, marketPurchaseDiscount: 0.85, marketPurchasePrice: 85,
+  }), { mode: null, reason: null })
 })

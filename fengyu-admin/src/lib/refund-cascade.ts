@@ -543,17 +543,15 @@ export async function cascadeRefund(
   let voidedCommissions = 0
   if (fullItemIds.length > 0) {
     const res = await tx.execute(sql`
-      UPDATE service_commissions
+      UPDATE service_commissions sc
          SET voided_at = NOW(),
              voided_reason = ${reason},
              is_void = true,
              updated_at = NOW()
-       WHERE service_item_id IN (
-               SELECT si.service_item_id
-               FROM service_items si
-               WHERE si.sale_item_id IN (${sql.join(fullItemIds.map((id) => sql`${id}`), sql`, `)})
-             )
-         AND voided_at IS NULL
+        FROM service_items sit
+       WHERE sc.service_item_id = sit.service_item_id
+         AND sit.sale_item_id IN (${sql.join(fullItemIds.map((id) => sql`${id}`), sql`, `)})
+         AND sc.is_void = false
     `)
     voidedCommissions = rowsAffected(res)
   }

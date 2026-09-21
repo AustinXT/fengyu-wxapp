@@ -9,6 +9,10 @@ related: [001]
 
 # arch/002 门店库存域 v1
 
+> ⚠️ **本文档已被 [arch/011 进销存域 v3](011_inventory-domain-v3.md) 推翻（2026-09-02）。**
+> v1 的 4 对主+明细表与过渡期 `store_inventory_*` 表已在 migration 0017 全部删除，
+> 现行实现为三级统一进销存 v3，本文仅作历史决策记录保留。
+
 ## 背景与动机
 
 员工端"我的"Tab 的「库存管理」入口已经预埋（`profile.wxml` + `canSeeInventory` + `/packageMy/inventory/inventory` 占位页），但实际功能没落地。同时家居产品的提货流程在云函数 + admin 后台已经齐备（`order.createPickup` + `pickup_records` 表 + admin `/pickup-records`），员工端仅缺 UI。

@@ -1,0 +1,351 @@
+# 库存管理（进销存 v3）业务场景设计 —— dev 环境 UI 端到端
+
+> 目标环境：`http://101.34.242.103:3000`（dev fengyu-admin）+ `101.34.242.103:5433/fengyu_wxapp`
+> 规格权威：`notes/references/进销存/说明.md`（下称「说明.md」，断言名引用其章节号）
+> 补充规格：`.42cog/pm/admin.pr.spec.md` §5.1、`docs/changes/arch/011_inventory-domain-v3.md`
+
+---
+
+## 1. 定位
+
+### 1.1 本套件补什么盲区
+
+已有的 `tests/e2e-actions/smoke-inventory-{chain,returns,transfer}.mjs` 直调 Server Action，跑在本地 docker 一次性库，覆盖了**业务规则层**。但它们看不见：
+
+- 页面能不能打开、按钮在不在、表单填不填得进去
+- 权限与价格档在 **UI 上**的最终呈现（服务端遮蔽了字段，页面是显示空白、`—`、还是 `undefined`）
+- 交互是否合理（控件选型、校验时机、错误提示、空态引导）
+- 真实部署实例上的环境差异（dev 站点的构建版本、真实组织树、真实数据量）
+
+`tests/e2e-chains/` 与 `tests/e2e-pages/` 目前**没有任何 inventory spec** —— 这是全仓最大的 UI 测试缺口。
+
+### 1.2 本套件不做什么
+
+- 不重复 action 层已覆盖的纯计算断言（如价格公式推导的边界值穷举）
+- 不测 staff 小程序侧的库存页面（另一条链路）
+- 不做视觉回归（无快照基线）
+
+### 1.3 两条主线
+
+| 主线 | 问的问题 | 落点 |
+|---|---|---|
+| **A. 流程贯通** | 三级链路每一步能否在 UI 上真的走完，DB 事实是否正确 | INV-00 ~ INV-09 |
+| **B. 交互合理性** | 控件选型、校验、反馈、空态、危险操作是否合理 | INV-10 + `UX-FINDINGS.md` |
+
+---
+
+## 2. 场景入选标准
+
+一条场景要进本套件，须同时满足：
+
+1. **≥3 步状态流转**，或跨 ≥2 个页面 —— 单页单次提交的用 Vitest 组件测试更划算
+2. **有 UI 显隐/裁剪规则** —— 权限档位、状态驱动的按钮、金额字段遮蔽
+3. **前后端读写不一致即是 bug** —— UI 显示的数量/金额必须与 `inventory_docs`/`inventory_stock_lots` 对得上
+4. **action 层测不出来** —— 纯规则断言归 `smoke-inventory-*.mjs`
+
+---
+
+## 3. 环境前置（关键，不满足则全套跑不了）
+
+### 3.1 期初门禁（总闸）
+
+`fengyu-admin/src/lib/inventory/cutover.ts:36-52` 的 `assertInventoryBusinessWritable()` 守在**所有**库存写路径的事务第一行。dev 库 `inventory_cutover_states` 为空表 → 判定「待初始化」→ 一律抛：
+
+```
+INVALID_STATE: 库存期初尚未导入并核验完成，暂不可办理库存业务
+```
+
+门禁负向断言由 **INV-02** 执行（先在关闭态确认写入被拒 → 再置「已初始化」开闸）。
+**开闸后不恢复**（已确认），dev 后续可长期办理库存业务。
+
+> 为什么不放在 INV-00：建单弹窗强制要选库存 SKU，而 dev 库初始 0 个 SKU，关闸态下填不完表单。
+> 另经确认，**主数据 CRUD 不受该门禁保护** —— `assertInventoryBusinessWritable` 只守
+> `createDoc/approve/reject/receive`（`engine.ts:2677/2839/2905/2950`），`createInventorySku` /
+> `createInventorySupplier` 均不在其列，所以 INV-01 建档可以在关闸态先行完成。
+
+### 3.2 测试账号
+
+dev 库没有 `FY-TEST-*` 账号，`e2e-chains` 的 `TEST_PHONES` + `fengyu2026` 对本库无效。本套件自建 4 个账号，**各只绑一个角色 + 一个 scope** —— 多绑定会触发 `inventoryPriceScopeByTier()` 的跨绑定 fail-closed 路径（`src/lib/inventory/access.ts:87-117`），把价格档打成空集。
+
+| employee_id | 手机号 | 角色 | scope | 用途 |
+|---|---|---|---|---|
+| `INVT-ADM-01` | 19900001001 | `admin` | `ORG-HQ` | 主链路驱动（scope 不受限、价格档 `all`） |
+| `INVT-SC-01` | 19900001002 | `inventory_supply_chain_operator` | `ORG-HQ` | 供应链侧 + 边界断言 |
+| `INVT-MK-01` | 19900001003 | `inventory_market_finance` | `org-市场-1779327286268` | 市场侧 + 边界断言 |
+| `INVT-ST-01` | 19900001004 | `inventory_store_operator` | `org-门店-1780295730424` | **仅断言其无法登录 admin** |
+
+`admin_passwords.must_change` 必须置 `false`，否则登录后被重定向到 `/change-password`。
+登录连错 5 次会被 `login_attempts` 锁 15 分钟（`src/actions/auth.ts:50-52`）。
+
+### 3.3 测试主场（dev 库真实组织树）
+
+| 角色 | ID | 名称 |
+|---|---|---|
+| 总部 | `ORG-HQ` | 品牌总部 |
+| 市场 | `org-市场-1779327286268` | 南昌凤御（下辖 18 店） |
+| 门店 A | `org-门店-1780295730424` / store `store-1780299019315` | 南昌万科店 |
+| 门店 B | `org-门店-1779327399972` / store `store-1779809954402` | 南昌世纪店 |
+| 对照市场 | `org-市场-1779767525664` | 自贡凤御（跨市场负向断言用） |
+
+### 3.4 数据命名空间
+
+所有测试数据用 `INVT` 前缀（SKU 编码 `INVT-SKU-*`、供应商名 `INVT-供应商-*`、备注 `INVT`）。
+
+> ⚠️ **痕迹不可逆**：`inventory_movements` 有 `trg_inventory_movements_append_only` 触发器，禁 UPDATE/DELETE，且钉住 lots/docs/skus 的整张 FK 图。本套件按用户决定直连 dev 库、不做清理 —— 这是对 `smoke-inventory-chain.mjs:24-26`「库存链路一律用一次性库」约定的**明示破例**。
+
+---
+
+## 4. 场景全景图
+
+| ID | 场景 | 优先级 | 步数 | 主要风险点 |
+|---|---|---|---|---|
+| INV-00 | 环境自检 | P0 | 5 | 地基不成立则全套结果不可信（门禁负向断言在 INV-02，原因见 §3.1） |
+| INV-01 | 基础档案建档 | P0 | 8 | 六价体系、公式价校验、组成映射缺失会阻断开单 |
+| INV-02 | 门禁负向 + 开闸 + 供应链备货 | P0 | 6 | 门禁 fail-closed 失效则库存域可被越权写入；总部批次不产生则后续全链无货可发 |
+| INV-03 | 三级正向主链 | P0 | 10 | 本模块的主干；履约数量上限、金额四件套、赠送无金额 |
+| INV-04 | 退货双链 | P1 | 6 | 预留机制（审批前不扣减）、驳回释放 |
+| INV-05 | 调货 | P1 | 5 | 同市场限制、市场归属派生、自采 SKU 跨市场禁令 ⛔ **实测被 P0 缺陷阻断** |
+| INV-06 | 盘点与报损 | P1 | 5 | 盘点**不得**动库存（只记快照）；报损走审批 |
+| INV-07 | 员工购 / 内部领用 / 自采 | P2 | 4 | 供应链员工购的员工归属限制、不计营收 ⛔ **员工购实测不可用** |
+| INV-08 | 权限与价格档边界（负向） | P0 | 9 | 安全边界；价格泄漏是 §9.5 的硬约束 |
+| INV-09 | 单据中心与台账 | P1 | 7 | 两种组织树筛选语义相反，最易混淆 |
+| INV-10 | 交互合理性审计 | P0 | — | 用户明确提出的第二条主线 |
+
+---
+
+## 5. 场景详述
+
+### INV-00 环境自检
+
+**用户故事**：作为测试执行者，我需要在跑业务链路前确认地基成立 —— 连的是对的库、账号能登、页面都能打开。
+
+**前置**：dev 站点可访问；本机 psql 可连 `101.34.242.103:5433`。
+
+| Step | 操作 | 断言 |
+|---|---|---|
+| 1 | 校验目标库 | `current_database() = fengyu_wxapp`，且**不是**生产 IP `118.178.196.26` |
+| 2 | seed 4 个 `INVT-*` 账号（幂等） | 三张表齐全；角色绑定与 scope 类型匹配；`must_change=false` |
+| 3 | `INVT-ADM-01` 登录 | 落地 `/dashboard`，不被重定向到 `/change-password` |
+| 4 | 依次访问 10 个库存路由 + `/inventory` 根路由 | 全部 HTTP 2xx 且无权限/错误页；根路由重定向到默认办理台 |
+| 5 | 读取期初门禁状态与库存域基线计数 | 记入上下文，供后续 spec 做增量断言 |
+
+**实测提示**：可达性判定只认强信号（`权限不足`/`没有权限`/`Application error` 等）。
+早期用宽正则（含「不存在」「未找到」）会把 `/inventory/sku-mappings` 的「未配置」列值误判成被拦截。
+
+### INV-01 基础档案建档
+
+**用户故事**：作为供应链库存员，我要把供应商、库存商品、销售商品组成、报货福利方案建齐，让后续报货有货可报。
+
+**前置**：INV-00 已开闸。
+
+| Step | 操作 | UI 断言 | PG 断言 |
+|---|---|---|---|
+| 1 | `/inventory/suppliers` 新建 `INVT-供应商-01` | 保存成功提示；列表出现该行 | `inventory_suppliers` 新增，`is_active=true` |
+| 2 | `/inventory/skus` 新建供应链 SKU（核算价 4000、市场折扣 25%，说明.md §1.5 算例） | 保存成功 | `source_type='供应链'`；`market_purchase_price = 1000`（= 4000×0.25，§10.1） |
+| 3 | 同上表单：**「供货商」字段是什么控件** | **记录为 UX 发现**：应为下拉（`inventory_suppliers` 已有档案），实测为裸 `<Input>` | `inventory_skus.supplier` 为 text，**无 `supplier_id` 外键** |
+| 4 | 编辑 SKU，市场进货价改「手工覆盖」但不填原因 | 应被拦截并提示原因必填 | 无写入 |
+| 5 | 同上，填写覆盖原因后保存 | 保存成功 | `market_purchase_price_mode='手工覆盖'` 且 `override_reason` 非空（§10.1） |
+| 6 | 新建市场自采 SKU（归属南昌凤御） | 保存成功 | `source_type='市场自采'`、`owner_market_id='org-市场-1779327286268'` |
+| 7 | `/inventory/sku-mappings` 给一个家居销售商品配组成 | 配置状态变「已配置」 | `inventory_sku_product_sku_mappings` 新增，`quantity_per_sale_unit > 0` |
+| 8 | `/inventory/promotions` 建单品阶梯方案（≥5 件每单位减 50，§2） | 保存成功 | `rule_type='单品阶梯'`，`plan_items.report_min_quantity=5` |
+
+**负向补充**：组合福利只填一条产品 → 应提示「至少两条不同产品」（`engine.ts:3316`）；单价优惠高于市场进货价 → 应被拒（`engine.ts:3368`）。
+
+---
+
+### INV-02 供应链备货
+
+**用户故事**：作为供应链库存员，我要先把总部库存备起来，否则没货发给市场。
+
+| Step | 操作 | UI 断言 | PG 断言 |
+|---|---|---|---|
+| 1 | `/inventory/operations/supply-chain` → 品项公司报货需求 | 建单成功，单号前缀 `ZBH` | `doc_type='品项公司报货需求'`、`status='已完成'`、**不产生 movements**（NO_MOVEMENT 类型） |
+| 2 | → 采购订单（勾选该需求单，#194 合并后只剩一张采购卡片） | 单号前缀 `CGD`，状态「待收货」；明细行 `market_id` 为空 | `status='待收货'`；`inventory_doc_links` 有「品项公司报货采购订单」关系 |
+| 3 | → 供应链采购入库 | 单号前缀 `GRK`，采购订单转「已完成」 | `ORG-HQ` 出现 `inventory_stock_lots` 且 `quantity_on_hand > 0`；`inventory_movements.direction='入库'` 且 `after = before + delta` |
+
+---
+
+### INV-03 三级正向主链（P0 主干）
+
+**用户故事**：门店报货 → 市场汇总采购 → 供应链发货 → 市场入库 → 分院配货 → 门店收货，一条完整的货物与货款链路。
+
+**前置**：INV-01、INV-02 完成，总部有货。
+
+| Step | 操作 | UI 断言 | PG 断言 |
+|---|---|---|---|
+| 1 | 门店层办理台 → 门店报货（门店 A） | **不展示任何价格**（§1.3） | `doc_type='门店报货'`、前缀 `DBH`、无 movements |
+| 2 | 市场层 → 市场汇总报货 | 汇总数量出现，且**同行展示实时库存参考**（§3.2） | 汇总口径与门店报货单数量一致 |
+| 3 | → 市场报货（手填采购数量 ≠ 汇总数量，§3.2） | 可手动改数量 | `doc_type='市场报货'`、前缀 `MBH` |
+| 4 | 同上：提取福利方案 | 出现「单价优惠」，**实际单价 = 市场进货价 − 优惠**（§2.2/§3.3） | `doc_items` 的 promotion 快照四件套非空；金额由 DB 触发器算 |
+| 5 | 同上：核对本期应付货款（§3.4） | 页面金额 = 明细汇总 | `inventory_docs.total_amount` = Σ`doc_items.amount`（**读 DB 为准**，§10.2） |
+| 6 | 供应链层 → 创建采购订单 | 数量不得超过市场报货未下单数量 | 超额时报 `CONFLICT`（`business.ts:2258`） |
+| 7 | → 品项公司发货（含赠送，发货量 > 采购量，§5.2） | **页面不展示单价与货款**（§5.3/§10.4） | 赠品行 `amount = 0`；`is_gift=true`；`doc_type='品项公司发货'`、状态「待收货」 |
+| 8 | 市场层 → 市场采购入库 | 只能对已有发货单入库（§6.1） | 总部 lot 减、市场 lot 增；发货单收完转「已完成」 |
+| 9 | 市场层 → 分院配货（金额四件套：门店进货价/数量/单价优惠/应付货款，§7.3） | 四个字段齐全 | `doc_type='分院配货'`、状态「待收货」；门店真实单价落 `store_actual` |
+| 10 | 门店层 → 分院收货入库 | 配货单转「已完成」 | 门店 lot `quantity_on_hand` 增；`doc_type='院入库'`、前缀 `YRK` |
+| 11 | **附**：市场申请撤回品项发货 → 供应链驳回 | 驳回后单据**回到「待收货」**而非终态 | `status='待收货'`（`business.ts:3845-3873`） |
+| 12 | **附**：`/inventory/settlements` 查本月 | 市场货款结算、分院货款结算两段有数 | 合计与 Step 5/9 的单据金额对得上 |
+
+---
+
+### INV-04 退货双链
+
+| Step | 操作 | UI 断言 | PG 断言 |
+|---|---|---|---|
+| 1 | 门店 A 发起院退货 | 建单成功，状态「待审批」 | `doc_type='院退货'`；**来源批次 `quantity_on_hand` 不变**；`inventory_stock_reservations.status='已预留'` |
+| 2 | 市场审批通过 | 状态转「已完成」 | 门店 lot 减 + 市场 lot 增（同一事务）；预留转「已完成」 |
+| 3 | 市场发起市场退货 | 状态「待审批」 | `doc_type='市场退货'`；预留建立 |
+| 4 | 供应链驳回（填备注） | 状态「已驳回」 | 预留转「已释放」；库存**未变动** |
+| 5 | 再发起一单并由供应链通过 | 状态「已完成」 | 市场 lot 减 + 总部 lot 增；`doc_type='供应链退货入库'` 生成 |
+| 6 | 退货单真实单价核对（§7.3 后续以真实单价为准） | 明细单价 = 配货时的门店真实单价 | `doc_items` 价格快照与 INV-03 Step 9 一致 |
+
+---
+
+### INV-05 调货
+
+| Step | 操作 | UI 断言 | PG 断言 |
+|---|---|---|---|
+| 1 | 门店 A → 分院调货出库到门店 B（同属南昌凤御） | 建单成功，状态「待收货」 | `doc_type='分院调货出库'`、前缀 `DTO` |
+| 2 | 门店 B 确认收货 | 出库单转「已完成」 | 自动生成 `分院调货入库`(`DTI`)；两店 lot 此消彼长 |
+| 3 | 门店 A → 调货到自贡凤御下门店（**跨市场**） | **应被拒**，提示同市场限制（§8.2） | 无单据产生（`engine.ts:580-628`） |
+| 4 | 市场间调货：南昌凤御 → 自贡凤御 | 建单成功 | 出库单 `market_id` = 来源市场；入库单 = 目标市场（§10.3） |
+| 5 | 用市场自采 SKU 做跨市场调出 | **应被拒** | 无单据产生（`assertSkuAvailableToMarket`，`business.ts:1400-1407`） |
+
+---
+
+### INV-06 盘点与报损
+
+| Step | 操作 | UI 断言 | PG 断言 |
+|---|---|---|---|
+| 1 | 市场库存盘点建单 | 建单成功 | `doc_type='市场库存盘点'`；**`inventory_movements` 无新增**（movementPlan 返回 null）；`doc_items.stock_snapshot` 有值 |
+| 2 | 分院库存盘点建单 | 同上 | 同上 |
+| 3 | 市场产品报损建单 | 状态「待审批」 | `doc_type='市场产品报损'`；此时库存**未减** |
+| 4 | 审批通过报损 | 状态「已完成」 | lot 减；`movements.direction='出库'` |
+| 5 | 市场产品盘溢建单 | 建单即完成 | lot 增；`direction='入库'` |
+
+**关键**：Step 1/2 的「盘点不动库存」是最容易被误实现成「盘点即调整」的地方，必须硬断言 movements 计数不变。
+
+---
+
+### INV-07 员工购 / 内部领用 / 自采
+
+| Step | 操作 | UI 断言 | PG 断言 |
+|---|---|---|---|
+| 1 | 市场员工购 | 员工下拉只含本市场在职员工 | `doc_type='员工购出库'`、前缀 `YGG`；金额按市场员工购价（§1.4） |
+| 2 | 供应链员工购 | 员工下拉**只含未归属任何市场/门店的总部在职员工**（§11.1） | `doc_type='供应链员工购出库'`；只扣总部 lot；**不产生销售单**（§11.2） |
+| 3 | 内部领用（通用建单） | 从 `/inventory/docs?create=内部领用` 进入 | `doc_type='内部领用'`；建单即完成、出库 |
+| 4 | 自采产品入库 | 需 `self_purchase_receive` + `market_operate` **同一角色绑定** | `doc_type='自采产品入库'`、前缀 `ZRK`；自采 SKU 入市场库 |
+
+---
+
+### INV-08 权限与价格档边界（负向，P0 安全）
+
+**用户故事**：作为安全审计者，我要确认三级角色各自只能看到该看的主体与金额。
+
+| Step | 账号 | 操作 | 期望 |
+|---|---|---|---|
+| 1 | `INVT-ST-01` | 登录 admin | **登录被拒**（`can_access_admin=false`） |
+| 2 | `INVT-SC-01` | 进 `/inventory/operations/market` | 被拒（`notFound()`，无 `market_operate`） |
+| 3 | `INVT-MK-01` | 进 `/inventory/operations/supply-chain` | 被拒 |
+| 4 | `INVT-SC-01` | 看 `/inventory/stocks` | **只见总部库存，不下钻市场/门店**（§9.2） |
+| 5 | `INVT-MK-01` | 看 `/inventory/stocks` | 见南昌凤御 + 其门店；**看不到自贡凤御** |
+| 6 | `INVT-MK-01` | 看 `/inventory/docs` 中自贡凤御的单据 | 不可见（§9.4） |
+| 7 | `INVT-SC-01` | 看市场报货单金额 | 可见供应成本 + 市场结算价（§9.5） |
+| 8 | `INVT-MK-01` | 看品项公司发货单 | **无单价、无货款**（§5.3/§10.4） |
+| 9 | `INVT-MK-01` | 看 `/inventory/settlements` | 只见本市场两段数据，不含其他市场 |
+
+> 门店 `none` 档位的金额遮蔽（§9.5「门店不展示金额」）因门店账号无法登录 admin，**在本套件不可验证**，需在 staff 小程序侧覆盖 —— 已记入「已知限制」。
+
+---
+
+### INV-09 单据中心与台账
+
+| Step | 操作 | 期望 |
+|---|---|---|
+| 1 | `/inventory/docs` 按单据类型筛选 | 下拉含 33 种类型；筛选结果与 DB 一致 |
+| 2 | 按状态筛选 | 6 种状态齐全 |
+| 3 | 关键字搜索（单据号 / 备注 `INVT`） | 命中，300ms 防抖生效 |
+| 4 | 组织树筛选：选**市场** | **包含其下全部门店的单据**（单据中心语义） |
+| 5 | `/inventory/stocks` 组织树筛选：选**市场** | **只出本市场库存，不汇总下级门店**（库存查询语义，与 Step 4 相反） |
+| 6 | 单据详情页 | 单头字段齐全；**关联单据血缘表**展示上下游；履约进度列有值 |
+| 7 | `/inventory/stocks` 导出 | 生成文件，含供应链成本/系列/供应商列（需 `inventory:export`） |
+
+**Step 4 vs Step 5 的语义相反**是 `.42cog/design/admin.ui.spec.md:151` 明确规定的，也是最容易实现错的地方。
+
+---
+
+### INV-10 交互合理性审计
+
+见 `UX-FINDINGS.md`（跑完回填）。扫描器 `_helpers/ux-audit.ts` 遍历 11 个库存页面 + 各表单弹窗，跑 14 条启发式规则：
+
+| # | 规则 | 判定 |
+|---|---|---|
+| 1 | 外键类字段应给选择器而非自由文本 | label 命中「供应商/供货商/库位/主体/SKU/商品/员工/顾客/市场/门店」时，DOM 应为 `select`/`combobox` |
+| 2 | 必填项有可见标记 | `required` / `aria-required` / label 带 `*` |
+| 3 | 提交有反馈 | loading / disabled / toast；失败有可见错误文案 |
+| 4 | 不使用原生 `alert/confirm/prompt` | `page.on('dialog')` 捕获计数应为 0 |
+| 5 | 空态有引导 | 0 数据时有「暂无数据」+ 下一步入口 |
+| 6 | 危险操作二次确认 | 驳回/停用/取消走 `AlertDialog` |
+| 7 | 数量/金额边界校验 | `-1` / `0` / `999999999` / `1.005` 被拦且提示可读 |
+| 8 | 错误不暴露技术细节 | 页面不出现 `42703` / `PERMISSION_DENIED` / `INVALID_STATE` / 堆栈 |
+| 9 | 列表有分页与总数 | 分页控件 + 「共 N 条」 |
+| 10 | 无权限时金额列呈现 | 隐藏或统一占位，不得出现 `null`/`undefined`/`NaN` |
+| 11 | 未保存离开有提示 | 是否接入既有 `useUnsavedChanges` hook |
+| 12 | 防重复提交 | 快速双击建单，只产生 1 张单 |
+| 13 | 日期边界 | 结算页服务端限年份 1..9999，UI 是否也拦 |
+| 14 | 页面可达性 | 侧边栏可达全部 11 个路由；面包屑/返回正确 |
+
+**已定性的两条固定断言**（读代码时确认，非扫描推测）：
+
+- **UX-FIXED-01**：`_components/inventory-skus-page.tsx:388` 供货商为裸 `<Input>`；且 `inventory_skus` 只有 `supplier` **text** 列、**无 `supplier_id` 外键**，与 `inventory_suppliers` 档案表零关联。控件问题背后是数据模型问题 —— 同一供应商会产生多种写法，供应商档案形同虚设。
+- **UX-FIXED-02**：`_components/inventory-docs-page.tsx:135-151` 审批/驳回/收货备注用原生 `prompt()` 收集。原生弹窗无法样式化、无法做必填校验（驳回备注是必填的）、移动端体验差。
+
+---
+
+## 6. 实施摘要（2026-09-13 实跑回填）
+
+全套 11 条 spec 全部跑通，耗时约 5 分钟（`bun run test:e2e:inventory-ui`）。
+
+| 场景 | Spec 文件 | 断言点 | 结果 |
+|---|---|---|---|
+| INV-00 | `inv-00-gate-and-setup.spec.ts` | 13 | ✅ 全绿 |
+| INV-01 | `inv-01-master-data.spec.ts` | 19 | ✅ 功能全绿；捕获 3 条 UX 缺陷 |
+| INV-02 | `inv-02-supply-chain-stock.spec.ts` | 25 | ✅ 功能全绿；捕获 2 条 UX 缺陷 |
+| INV-03 | `inv-03-three-tier-main-chain.spec.ts` | 40 | ✅ 功能全绿；捕获 1 条 UX 缺陷 |
+| INV-04 | `inv-04-returns.spec.ts` | 19 | ✅ 全绿 |
+| INV-05 | `inv-05-transfers.spec.ts` | 4 + 6 条受阻清单 | ⛔ 改为缺陷复现（见下） |
+| INV-06 | `inv-06-stocktake-and-loss.spec.ts` | 17 | ✅ 盘点不变量全绿；报损受阻 |
+| INV-07 | `inv-07-staff-purchase-and-self-purchase.spec.ts` | 21 | ✅ 自采全绿；员工购受阻 |
+| INV-08 | `inv-08-permission-price-boundary.spec.ts` | 20 | ✅ 安全红线全守住 |
+| INV-09 | `inv-09-docs-center-and-ledger.spec.ts` | 18 | ✅ 全绿 |
+| INV-10 | `inv-10-ux-audit.spec.ts` | 扫描 25 条 finding | ✅ 报告已生成 |
+
+### 与原设计的偏差及原因
+
+实跑中发现两个 P0 产品缺陷，导致三条场景无法按原计划执行，已如实调整而非绕过：
+
+- **INV-05 调货**：原计划验证「§8.2 限同市场 / §10.3 归属派生 / 自采禁跨市场」。
+  实测发现单据中心的批次下拉永久卡死（BUG-LOT-LOADING），而分院调货出库与市场间调货出库
+  都必须选来源批次 —— **整条调货链路在后台点不动**。spec 改为钉住该缺陷 + 列出受阻规则清单。
+- **INV-06 报损**：同一缺陷阻断，盘点与盘溢部分正常验证并全绿。
+- **INV-07 员工购**：员工下拉恒为空（BUG-EMPLOYEE-CTE，递归 CTE 别名写错），
+  **市场员工购与供应链员工购完全不可用**。自采入库部分正常验证并全绿。
+
+### 依赖顺序的实际调整
+
+原计划把「门禁负向断言」放在 INV-00，实跑发现行不通：建单弹窗强制要选库存 SKU，
+而 dev 库初始 0 个 SKU，关闸态下压根填不完表单。
+
+同时确认一个事实：**主数据 CRUD 不受期初门禁保护** —— `assertInventoryBusinessWritable`
+只守 `createDoc/approve/reject/receive`（`engine.ts:2677/2839/2905/2950`），
+`createInventorySku` / `createInventorySupplier` 等都不在其列。所以建档可以在关闸态完成。
+
+于是调整为：INV-00 只做环境自检 → INV-01 关闸态建档 → **INV-02 做门禁负向断言后开闸**。
+
+## 7. 已知限制
+
+1. **门店侧 UI 无法用真实门店账号验证** —— `inventory_store_operator.can_access_admin=false`（migration 0039），门店业务在 admin 上只能由超管代跑；真实门店体验须走 staff 小程序。
+2. **超管跑主链路会绕过 scope 校验** —— `isAdminScope()` 令 scope 返回 `null`、价格档 `all`。故 scope 隔离由 INV-08 用专用角色单独覆盖，两者不可互相替代。
+3. **测试痕迹不可逆** —— `inventory_movements` 只追加。
+4. **期初门禁开后不关** —— dev 上任何人此后都能办理库存业务。
+5. **dev 落后于 `test` 分支** —— `0df2f706`（提货出库可用量漏减已预留）只在 `test` 分支；若可用量断言失败，先比对该提交再判定是否新 bug。

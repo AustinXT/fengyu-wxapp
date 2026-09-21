@@ -13,8 +13,8 @@
 
   <view class="section">
     <view class="section-title">基础信息</view>
-    <view class="field" wx:if="{{detail.sourceLocationName || detail.sourceLocationId}}"><text class="label">出库/发起主体</text><text class="value">{{detail.sourceLocationName || detail.sourceLocationId}}</text></view>
-    <view class="field" wx:if="{{detail.targetLocationName || detail.targetLocationId}}"><text class="label">入库/接收主体</text><text class="value">{{detail.targetLocationName || detail.targetLocationId}}</text></view>
+    <view class="field" wx:if="{{detail.sourceOrgNodeName || detail.sourceOrgNodeId}}"><text class="label">出库/发起主体</text><text class="value">{{detail.sourceOrgNodeName || detail.sourceOrgNodeId}}</text></view>
+    <view class="field" wx:if="{{detail.targetOrgNodeName || detail.targetOrgNodeId}}"><text class="label">入库/接收主体</text><text class="value">{{detail.targetOrgNodeName || detail.targetOrgNodeId}}</text></view>
     <view class="field" wx:if="{{detail.customerName}}"><text class="label">顾客</text><text class="value">{{detail.customerName}}</text></view>
     <view class="field"><text class="label">总数量</text><text class="value">{{detail.totalQuantity || '—'}}</text></view>
     <view class="field" wx:if="{{detail.relatedSaleOrderId}}"><text class="label">销售单号</text><text class="value">{{detail.relatedSaleOrderId}}</text></view>

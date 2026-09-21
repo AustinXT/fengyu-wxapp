@@ -204,7 +204,7 @@ export const batchSaveServiceCommissions = withPermission(
   try {
     await db.transaction(async (tx) => {
       await tx.execute(sql`
-        UPDATE service_commissions SET is_void = true
+        UPDATE service_commissions SET is_void = true, voided_at = NOW()
         WHERE service_item_id IN (
           SELECT service_item_id FROM service_items WHERE service_order_id = ${serviceOrderId}
         ) AND is_void = false

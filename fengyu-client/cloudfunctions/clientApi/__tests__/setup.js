@@ -11,6 +11,12 @@ const { vi } = await import('vitest')
 process.env.ALLOW_DIRECT_PHONE = process.env.ALLOW_DIRECT_PHONE || 'true'
 process.env.ALLOW_TEST_OPENID = process.env.ALLOW_TEST_OPENID || 'true'
 
+// 进销存开关现由 env 驱动且默认关闭（见 utils/feature-flags.js）。order.create 的
+// 「冻结库存组成」「未配置库存组成拒绝建单」等用例断言的是联动开启下的行为，故显式开启。
+// 必须在任何 require 之前设置：feature-flags 在模块加载期求值一次。
+// 关闭态的 fail-closed 守护在 fengyu-admin/src/lib/inventory-feature-flags.test.ts。
+process.env.INVENTORY_LINKAGE_ENABLED = process.env.INVENTORY_LINKAGE_ENABLED || 'true'
+
 // ====== Mock: db/pg ======
 const pgPath = require.resolve('../db/pg')
 const mockPg = {

@@ -4,13 +4,13 @@
  * 口径定义（与 DB 视图 `sale_item_performance_events.performance_date` 同源）：
  * **查询侧一律直读 `sale_order_payments.performance_attribution_date`，没有任何回退分支。**
  *
- * 回退只发生在写入侧，由两个 trigger 保证该列恒有值（迁移 0039 + 0040）：
+ * 回退只发生在写入侧，由两个 trigger 保证该列恒有值（迁移 0040 + 0041）：
  * - `initialize_payment_performance_attribution_date()`（BEFORE INSERT/UPDATE on sale_order_payments）
  *   —— 首次支付镜像 `sale_orders.performance_attribution_date`、同次混合支付卡行跟随主流水、
  *   其余 `paid_at` → `created_at` 兜底；
  * - `sync_order_performance_attribution_to_payments()`（AFTER UPDATE on sale_orders）
  *   —— 订单级归属日期被调整时同步首次支付行与同次卡行。
- * 迁移 0040 起该列是 NOT NULL。
+ * 迁移 0041 起该列是 NOT NULL。
  *
  * ⚠ 不要把 `resolvePaymentAttributionDate` 的订单级分支当成"残留回退"删掉 —— 见该函数注释，
  * 它处理的是**根本不存在款项行**的场景，与"有款项行但列为空"是两回事。

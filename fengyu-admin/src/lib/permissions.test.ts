@@ -257,10 +257,10 @@ describe('getPermissionMatrix / cache', () => {
     mockRoleRows([{
       roleKey: 'manager',
       isSuperAdmin: false,
-      actions: ['dashboard:view', 'appointment:delete', 'inventory:update'],
+      actions: ['dashboard:view', 'appointment:delete', 'inventory:stock_list'],
     }])
     const matrix = await getPermissionMatrix()
-    expect(matrix.manager).toEqual(['dashboard:view', 'inventory:update'])
+    expect(matrix.manager).toEqual(['dashboard:view', 'inventory:stock_list'])
   })
 
   it('DB throw 时回退 DEFAULT + console.error', async () => {

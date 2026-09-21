@@ -37,10 +37,11 @@ export default function RefundsPageClient({
   const status: RefundStatus | '' = ['待审批', '已支付', '已关闭'].includes(rawStatus)
     ? rawStatus as RefundStatus
     : ''
-  const [searchInput, setSearchInput] = useState(get('q'))
+  const q = get('q')
+  const [searchInput, setSearchInput] = useState(q)
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  useEffect(() => setSearchInput(get('q')), [get])
+  useEffect(() => setSearchInput(q), [q])
   useEffect(() => () => {
     if (debounceRef.current) clearTimeout(debounceRef.current)
   }, [])

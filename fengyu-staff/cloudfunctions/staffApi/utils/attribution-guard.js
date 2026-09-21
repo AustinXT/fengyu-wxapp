@@ -3,11 +3,11 @@
 /**
  * 款项业绩归属日期的迁移就绪守卫（fail-closed）。
  *
- * 背景：查询侧一律直读 `sale_order_payments.performance_attribution_date`（迁移 0039/0040 收敛）。
+ * 背景：查询侧一律直读 `sale_order_payments.performance_attribution_date`（迁移 0040/0041 收敛）。
  * 但 `0037` 的回填带 `WHERE change_type <> '首次支付'`，**首次支付行的该列一直是 NULL**，
- * 直到 `0039_payment_attribution_date_always_set` 的回填①才补上。
+ * 直到 `0040_payment_attribution_date_always_set` 的回填①才补上。
  *
- * 于是在未 apply 0039 的库上：绝大多数订单一次付清、唯一的已支付款项行就是首次支付行 →
+ * 于是在未 apply 0040 的库上：绝大多数订单一次付清、唯一的已支付款项行就是首次支付行 →
  * `NULL >= $1::date` 求值为 NULL → 条件为假 → **日期筛选静默返回近乎空集，且不报错**。
  * 运营会把「这个月没订单」当成业务事实。2026-09-14 dev 库实测：
  * 首次支付行 1628 行，NULL 率 **100%**；某月订单列表旧口径 3117 单 → 新口径 1830 单，
@@ -19,25 +19,25 @@
  * 无需等云函数容器回收就能立刻恢复；而未就绪时本来就要报错，多一次查询无所谓。
  * 并发的冷请求共享同一个在途 Promise（`inflight`），避免 max=5 的连接池被重复探针占满。
  *
- * ## 为什么不探 `chk_sop_attribution_date_present` 约束（0040 的产物）
+ * ## 为什么不探 `chk_sop_attribution_date_present` 约束（0041 的产物）
  *
- * 因为**只 apply 了 0039 的库是可以正常工作的**——0039 的回填①已补齐首次支付行，
+ * 因为**只 apply 了 0040 的库是可以正常工作的**——0040 的回填①已补齐首次支付行，
  * 它的 BEFORE trigger 也保证新行恒有值，查询侧直读该列不会出错。
- * prod 当前正是这个状态（0039 已 apply、0040 未 apply）。
- * 若改探 0040 的约束，会把这类**健康的库**误判成未就绪而全面报错。
+ * prod 当前正是这个状态（0040 已 apply、0041 未 apply）。
+ * 若改探 0041 的约束，会把这类**健康的库**误判成未就绪而全面报错。
  *
  * ## 为什么光探数据不够（codex 两轮评审，round-2 收敛到这个结论）
  *
- * 「当前没有 NULL 行」不等于「0039 已执行」：一个几乎空的 0038 库同样没有 NULL 行，
+ * 「当前没有 NULL 行」不等于「0040 已执行」：一个几乎空的 0038 库同样没有 NULL 行，
  * 探针会放行并永久缓存 `ready=true`；而 0038 的 trigger 仍不给新首次支付行赋值，
  * 之后新增的订单又会静默漏数。
  *
  * 所以探针查两件事，**任一不满足即拦**：
  *   ① 存量数据没有缺口（首次支付行都有归属日期）
- *   ② trigger **具备** 0039 的能力——函数体里有 `IF NEW.change_type = '首次支付' THEN` 分支。
- *      这是 0038→0039 的分水岭：0038 及之前的版本是 `IF NEW.change_type <> '首次支付'`
+ *   ② trigger **具备** 0040 的能力——函数体里有 `IF NEW.change_type = '首次支付' THEN` 分支。
+ *      这是 0038→0040 的分水岭：0038 及之前的版本是 `IF NEW.change_type <> '首次支付'`
  *      （把首次支付**排除**在外，所以那些行才会是 NULL），0039 起改成正面处理。
- *      检查「能力」而非「0040 约束」，既堵住空库漏洞、又不误伤只有 0039 的 prod。
+ *      检查「能力」而非「0041 约束」，既堵住空库漏洞、又不误伤只有 0040 的 prod。
  */
 
 let ready = false
@@ -72,7 +72,7 @@ const PROBE_SQL = `
 
 /**
  * @param {{ query: (sql: string, params?: unknown[]) => Promise<any[]> }} pg
- * @throws {Error} `INVALID_STATE: MIGRATION_REQUIRED: ...` 当库未 apply 0039
+ * @throws {Error} `INVALID_STATE: MIGRATION_REQUIRED: ...` 当库未 apply 0040
  */
 async function assertPaymentAttributionReady(pg) {
   if (ready) return
@@ -85,7 +85,7 @@ async function assertPaymentAttributionReady(pg) {
   // 探针行拿不到时按未就绪处理（fail-closed）：宁可报错也不放行可能漏数的查询
   if (!probe || probe.has_gap || !probe.trigger_ready) {
     throw new Error(
-      'INVALID_STATE: MIGRATION_REQUIRED: 业绩归属日期迁移（0039/0040）尚未执行，'
+      'INVALID_STATE: MIGRATION_REQUIRED: 业绩归属日期迁移（0040/0041）尚未执行，'
       + '按日期筛选会漏掉绝大多数订单，已阻止返回错误数据。请先执行数据库迁移。',
     )
   }

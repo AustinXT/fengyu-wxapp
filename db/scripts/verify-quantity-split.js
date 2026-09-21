@@ -2,25 +2,25 @@
 'use strict'
 
 /**
- * verify-quantity-split.js — #154 数量拆列的**只读**核对脚本（迁移 0043 配套）。
+ * verify-quantity-split.js — #154 数量拆列的**只读**核对脚本（迁移 0046 配套）。
  *
  * 本脚本从不写库。它同时承担迁移前的 dry-run 预演与迁移后的守恒校验，
  * 按 sale_items 上是否已存在 refunded_quantity / converted_quantity 自动切换模式。
  *
  * ── 迁移前（列尚不存在）────────────────────────────────────────────────
- *   预演 0043 的回填口径，逐行给出 before/after。**阻断项**（退出码 1）只有两类，
+ *   预演 0046 的回填口径，逐行给出 before/after。**阻断项**（退出码 1）只有两类，
  *   都是迁移会 RAISE EXCEPTION 的情形：
  *     · residual < 0                       —— 物理提货 + 已转换 超过旧的已结算合计
  *     · residual > 0、无退款、但有提货记录  —— 无从解释的结算量
  *   另有两类只做提示不阻断：「历史提货未留记录」的残差、部署窗口暴露面。
- *   另外算出**部署窗口暴露面**：0043 不向前兼容，迁移已跑而新代码未部署的那段时间里，
+ *   另外算出**部署窗口暴露面**：0046 不向前兼容，迁移已跑而新代码未部署的那段时间里，
  *   旧代码把 picked_up_quantity 读成「已结算」，被拆走的退款/折抵份额会短暂回到可提。
  *   整单退款的订单被派生查询的状态白名单挡住（o.status IN ('已支付','部分支付','已完成')），
  *   **部分退款**的订单不受保护 —— 这里统计的就是后者。
  *
  * ── 迁移后（列已存在）──────────────────────────────────────────────────
  *     · AC4 不变量：有提货记录的行，picked_up_quantity == SUM(pickup_records.pickup_quantity)
- *     · 三列非负，且合计不超过 quantity —— 后者已由 0043 的 CHECK 约束
+ *     · 三列非负，且合计不超过 quantity —— 后者已由 0046 的 CHECK 约束
  *       chk_sale_item_settled_le_quantity 保证，这里是约束被误 DROP 时的二道保险
  *
  * 任一异常 → 退出码 1，可直接挂在部署脚本前后。
@@ -42,7 +42,7 @@ if (require.main === module) assertDbTargetOrExit(process.env.DATABASE_URL)
 const VERBOSE = process.argv.includes('--verbose')
 const SAMPLE = 20
 
-/** 三语义的两个独立数据源；与迁移 0043 和四端派生口径字面同源。 */
+/** 三语义的两个独立数据源；与迁移 0046 和四端派生口径字面同源。 */
 const PICKED_PHYS = `COALESCE((
   SELECT SUM(pr.pickup_quantity)::int FROM pickup_records pr
    WHERE pr.sale_item_id = si.sale_item_id
@@ -59,7 +59,7 @@ const CONVERTED = `COALESCE((
 ), 0)`
 
 /**
- * 「本行退款实据」—— 与迁移 0043 的前置断言字面同口径。
+ * 「本行退款实据」—— 与迁移 0046 的前置断言字面同口径。
  * 只看「订单上有没有退款」会把同单**他行**的退款错安到本行头上（双谱系评审命中）：
  * 「已消耗」口径刻意不含 refunded，错记会让 overpay 余数虚高 → 多退。
  */
@@ -128,7 +128,7 @@ async function dryRun(client) {
              ${HAS_ITEM_REFUND_EVIDENCE} AS has_item_refund_evidence
         FROM sale_items si
         JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
-       -- ⚠ 这三个分支必须与迁移 0043 的 WHERE **字面同口径**：少一个分支，dry-run 会对
+       -- ⚠ 这三个分支必须与迁移 0046 的 WHERE **字面同口径**：少一个分支，dry-run 会对
        -- 「picked_up=0 但有未关闭转出行」这类历史行报「全部通过」，而迁移实际会 RAISE 回滚。
        WHERE COALESCE(si.picked_up_quantity, 0) <> 0
           OR EXISTS (SELECT 1 FROM pickup_records pr WHERE pr.sale_item_id = si.sale_item_id)
@@ -162,17 +162,17 @@ async function dryRun(client) {
   if (negative.length > 0) {
     problems += negative.length
     console.log('\n✗ residual < 0：物理提货 + 已转换 已超过旧的已结算合计。')
-    console.log('  迁移 0043 的前置断言会 RAISE EXCEPTION 回滚整个迁移，必须先查清这些行。')
+    console.log('  迁移 0046 的前置断言会 RAISE EXCEPTION 回滚整个迁移，必须先查清这些行。')
     report('residual < 0 明细', negative.map(toRow))
   }
 
-  // 与迁移 0043 的前置断言同口径：残差必须能落到**本行**的退款实据上，否则拦下。
+  // 与迁移 0046 的前置断言同口径：残差必须能落到**本行**的退款实据上，否则拦下。
   // 初版留过一条「无退款残差视为历史提货未留记录」的口子，它让 AC4 不再是全量不变量、
   // 并迫使 cron C5 为这类行开永久盲区（双谱系评审命中）。现在一律阻断。
   const unexplained = plan.filter((r) => r.residual > 0 && !r.has_item_refund_evidence)
   if (unexplained.length > 0) {
     problems += unexplained.length
-    console.log('\n✗ 残差查无本行退款实据 → 迁移 0043 会 RAISE EXCEPTION 中止。')
+    console.log('\n✗ 残差查无本行退款实据 → 迁移 0046 会 RAISE EXCEPTION 中止。')
     console.log('  实据三选一：整单已退款 / 退款流水 ref_sale_item_id 指向本行 / 退款 note.items 含本行。')
     console.log('  典型来源：同单他行退款、已删除转换单的转出行。必须先查清。')
     report('无从解释的残差明细', unexplained.map(toRow))
@@ -279,7 +279,7 @@ async function verifyAfter(client) {
   if (bad.length > 0) {
     problems += bad.length
     console.log('\n✗ 三列非法：出现负值，或「已结算」合计超过购买件数')
-    console.log('  后者本应被 0043 的 CHECK 约束 chk_sale_item_settled_le_quantity 挡住 —— ')
+    console.log('  后者本应被 0046 的 CHECK 约束 chk_sale_item_settled_le_quantity 挡住 —— ')
     console.log('  真的报出来说明约束被 DROP 了，先查约束是否还在。')
     report('非法明细', bad)
   } else {

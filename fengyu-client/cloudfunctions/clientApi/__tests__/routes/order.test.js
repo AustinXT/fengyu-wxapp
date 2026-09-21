@@ -163,7 +163,7 @@ describe('order.create', () => {
     expect(ctx.result.totalAmount).toBe(200)
   })
 
-  test('B2 不拆：家居产品 ×5 → 1 行 sale_items（quantity=5）', async () => {
+  test('B2 不拆：家居产品 ×5 → 1 行 sale_items 并冻结库存组成', async () => {
     pg.query.mockResolvedValueOnce([{ store_id: 's1', store_name: '测试店', market_name: '华东' }])
     pg.query.mockResolvedValueOnce([])  // closeExpiredOrdersByUser
     pg.query.mockResolvedValueOnce([])  // check pending
@@ -203,12 +203,21 @@ describe('order.create', () => {
     expect(insertItemCalls[0][1][6]).toBeNull()
     expect(insertItemCalls[0][1][7]).toBeNull()
     expect(insertItemCalls[0][1][9]).toBe(5)
-    expect(insertItemCalls[0][1][15]).toBeNull()
-    expect(clientQuery.mock.calls.some(([sql]) => /inventory_sku_product_sku_mappings/.test(sql))).toBe(false)
+    expect(JSON.parse(insertItemCalls[0][1][15])).toEqual({
+      version: 1,
+      components: [{
+        inventorySkuId: 'inventory-sku-001',
+        productCode: 'I001',
+        productName: '库存精华液',
+        specName: null,
+        quantityPerSaleUnit: 2,
+      }],
+    })
+    expect(clientQuery.mock.calls.some(([sql]) => /inventory_sku_product_sku_mappings/.test(sql))).toBe(true)
     expect(ctx.result.totalAmount).toBe(400)
   })
 
-  test('进销存联动关闭时，家居产品未配置库存组成也可建单', async () => {
+  test('进销存联动开启时，家居产品未配置库存组成拒绝建单', async () => {
     pg.query.mockResolvedValueOnce([{ store_id: 's1', store_name: '测试店', market_name: '华东' }])
     pg.query.mockResolvedValueOnce([])
     pg.query.mockResolvedValueOnce([])
@@ -225,9 +234,8 @@ describe('order.create', () => {
       items: [{ skuId: 'sku-home', quantity: 1 }],
       paymentMethod: '微信',
     })
-    await routes.create(ctx)
-    expect(ctx.result.saleOrderId).toBeTruthy()
-    expect(clientQuery.mock.calls.some(([sql]) => /inventory_sku_product_sku_mappings/.test(sql))).toBe(false)
+    await expect(routes.create(ctx)).rejects.toThrow(/INVALID_STATE: INVENTORY_COMPOSITION_MISSING/)
+    expect(clientQuery.mock.calls.some(([sql]) => /inventory_sku_product_sku_mappings/.test(sql))).toBe(true)
   })
 
   // 开单在事务内按历史达标次数分类；后续首次成功入账路径会再次按同一规则确认。

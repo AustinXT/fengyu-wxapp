@@ -300,7 +300,7 @@ import { ApiError } from '@/lib/api-error'
 import { logUpdate } from '@/lib/operation-log'
 
 /**
- * 归属日期口径断言助手（迁移 0040 收敛后）：查询侧直读
+ * 归属日期口径断言助手（迁移 0041 收敛后）：查询侧直读
  * sale_order_payments.performance_attribution_date，不再拼 CASE/COALESCE。
  * 无别名时该列作为插值进 sql`` 的 values；带别名时走 sql.raw，见各调用点的单独断言。
  */
@@ -1207,7 +1207,7 @@ describe('createOrder — B2 拆行（疗程卡 quantity>1 → N 行）', () => 
     expect(saleItemInserts.map((c) => Number(c.values.pendingReceived))).toEqual([500, 500, 350])
   })
 
-  it('家居产品 ×10（productType=家居产品）→ 写入 1 行 sale_items（quantity=10，合行不拆）', async () => {
+  it('家居产品 ×10 → 合行写入并冻结库存组成', async () => {
     const inserts = mockTransactionCaptureInserts('FY-XSD-WX-260518103')
     const result = await createOrder({
       ...baseOrderData,
@@ -1230,7 +1230,16 @@ describe('createOrder — B2 拆行（疗程卡 quantity>1 → N 行）', () => 
     expect(saleItemInserts).toHaveLength(1)
     expect(saleItemInserts[0].values.quantity).toBe(10)
     expect(saleItemInserts[0].values.productType).toBe('家居产品')
-    expect(saleItemInserts[0].values.inventoryCompositionSnapshot).toBeNull()
+    expect(saleItemInserts[0].values.inventoryCompositionSnapshot).toEqual({
+      version: 1,
+      components: [{
+        inventorySkuId: 'inventory-sku-001',
+        productCode: 'I001',
+        productName: '库存商品',
+        specName: null,
+        quantityPerSaleUnit: 1,
+      }],
+    })
   })
 })
 
@@ -1308,7 +1317,7 @@ describe('createDepositOrder — 疗程卡逐张落库', () => {
     expect(paymentInserts.map((c) => Number(c.values.amount))).toEqual([500, 425, 425])
   })
 
-  it('家居产品 ×3 逐件落库，并共用同一显示行组', async () => {
+  it('家居产品 ×3 逐件落库，共用显示行组和库存组成快照', async () => {
     mockDepositOrderReads([{
       skuId: 'sku-home',
       productType: '家居产品',
@@ -1340,7 +1349,11 @@ describe('createDepositOrder — 疗程卡逐张落库', () => {
     expect(saleItemInserts.map((c) => c.values.sessionCount)).toEqual([null, null, null])
     expect(saleItemInserts.map((c) => c.values.remainingSessions)).toEqual([null, null, null])
     expect(new Set(saleItemInserts.map((c) => c.values.saleItemGroupId)).size).toBe(1)
-    expect(saleItemInserts.every((c) => c.values.inventoryCompositionSnapshot == null)).toBe(true)
+    expect(saleItemInserts.map((c) => c.values.inventoryCompositionSnapshot)).toEqual([
+      expect.objectContaining({ version: 1 }),
+      expect.objectContaining({ version: 1 }),
+      expect.objectContaining({ version: 1 }),
+    ])
   })
 
   it('受限普通 SKU 不匹配顾客绑定门店市场时拒绝提交', async () => {
@@ -2677,7 +2690,7 @@ describe('getOrdersPaginated — 服务端分页', () => {
       .map(([strings]: any[]) => (Array.isArray(strings?.raw) ? strings.raw.join(' ') : ''))
       .join('\n')
     expect(rendered).toContain('payment_attribution_filter')
-    // 迁移 0040 收敛：直读款项级归属日期列，不再有首次支付→订单级的 CASE 分支
+    // 迁移 0041 收敛：直读款项级归属日期列，不再有首次支付→订单级的 CASE 分支
     expect(rendered).not.toContain("= '首次支付' THEN")
     // 带别名时走 sql.raw，不进 strings.raw，要单独查
     expect((sql as any).raw.mock.calls.some(
@@ -4721,7 +4734,7 @@ describe('updatePerformanceAttributionDate — 一次性业绩归属日期调整
     expect(execute.mock.calls[0][0].__sqlText).toMatch(/FOR UPDATE/)
     expect(execute.mock.calls[1][0].__sqlText).toMatch(/performance_attribution_adjusted_at IS NULL/)
     expect(execute.mock.calls[1][0].__sqlText).toMatch(/date_trunc\('milliseconds', updated_at\)/)
-    // 款项行同步已下沉为 sale_orders 的 AFTER UPDATE trigger（迁移 0040），
+    // 款项行同步已下沉为 sale_orders 的 AFTER UPDATE trigger（迁移 0041），
     // 应用层只回读受影响的行用于审计日志，不再自己发 UPDATE
     expect(execute.mock.calls[2][0].__sqlText).toMatch(/SELECT id/)
     // 回读集合 = trigger 覆盖的行（首次支付 + 同次已支付卡行），不按日期比
@@ -4746,11 +4759,11 @@ describe('updatePerformanceAttributionDate — 一次性业绩归属日期调整
     )
   })
 
-  it('迁移 0040 未落地（trigger 缺席）→ 响亮失败而不是静默出错数', async () => {
+  it('迁移 0041 未落地（trigger 缺席）→ 响亮失败而不是静默出错数', async () => {
     // 款项行没被同步 → 回读发现首次支付行日期仍是旧值
     mockAttributionTransaction({ staleRows: [{ stale: 1 }] })
 
-    await expect(updatePerformanceAttributionDate(input)).rejects.toThrow(/迁移 0040/)
+    await expect(updatePerformanceAttributionDate(input)).rejects.toThrow(/迁移 0041/)
   })
 
   it('同日提交不消耗修改机会', async () => {
@@ -6359,7 +6372,7 @@ describe('exportAllocationOrders — 销售提成三态导出（已分配明细 
     const rendered = (sql as any).mock.calls
       .map(([strings]: any[]) => (Array.isArray(strings?.raw) ? strings.raw.join(' ') : ''))
       .join('\n')
-    // 迁移 0040 收敛：直读**款项级**列；订单级列不得再出现在日期条件里
+    // 迁移 0041 收敛：直读**款项级**列；订单级列不得再出现在日期条件里
     expect(usedAttributionColumn()).toBe(true)
     expect(usedOrderLevelColumn()).toBe(false)
     expect(rendered).not.toContain("= '首次支付' THEN")
@@ -6895,7 +6908,7 @@ describe('exportOrderPayments — 回款明细导出（款项 × 商品子项）
     })
   })
 
-  // 迁移 0040 收敛：款项粒度导出直读款项级归属日期列，不再按 changeType 分支。
+  // 迁移 0041 收敛：款项粒度导出直读款项级归属日期列，不再按 changeType 分支。
   // fixture 刻意让首次支付行的**款项级列 ≠ 订单级列**（库里由 I6 巡检守护不会出现，
   // 但单测必须造得出来）—— 否则两值相等，断言无法区分读的是哪一列。
   // 列真为空时保持空：**不**补订单级兜底，否则约束上线前的残留会伪装成有归属日期。
@@ -6969,7 +6982,7 @@ describe('exportOrderPayments — 回款明细导出（款项 × 商品子项）
     const rendered = (sql as any).mock.calls
       .map(([strings]: any[]) => (Array.isArray(strings?.raw) ? strings.raw.join(' ') : ''))
       .join('\n')
-    // 迁移 0040 收敛：直读**款项级**列；订单级列不得再出现在日期条件里
+    // 迁移 0041 收敛：直读**款项级**列；订单级列不得再出现在日期条件里
     expect(usedAttributionColumn()).toBe(true)
     expect(usedOrderLevelColumn()).toBe(false)
     expect(rendered).not.toContain("= '首次支付' THEN")
@@ -6993,7 +7006,7 @@ describe('exportOrderPayments — 回款明细导出（款项 × 商品子项）
     await exportOrderPayments({ from: '2026-08-01', to: '2026-08-31' })
 
     // 规范：无 paid_at 的未入账流水在两种款项口径下都不命中（admin.pr.spec.md §回款明细导出）。
-    // 迁移 0039 起未入账行的 performance_attribution_date 由 created_at 占位（不再是 NULL），
+    // 迁移 0040 起未入账行的 performance_attribution_date 由 created_at 占位（不再是 NULL），
     // 首次支付那一支又恒取订单级归属日期（与本行是否入账无关），只靠区间比较两者都会漏进来。
     expect(hasPaidAtNotNullGate()).toBe(true)
   })

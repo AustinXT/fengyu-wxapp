@@ -61,7 +61,7 @@
       <van-cell title="订单管理" icon="orders-o" is-link bindtap="onNavOrders" />
       <van-cell title="预约管理" icon="clock-o" is-link bindtap="onNavAppointments" />
       <van-cell wx:if="{{isManager}}" title="营业额分配" icon="balance-o" is-link bindtap="onNavAllocationList" />
-      <van-cell wx:if="{{isManager && inventoryEntryEnabled}}" title="库存管理" icon="goods-collect-o" is-link bindtap="onNavInventory" />
+      <van-cell wx:if="{{canAccessInventory && inventoryEntryEnabled}}" title="库存管理" icon="goods-collect-o" is-link bindtap="onNavInventory" />
       <van-cell wx:if="{{isManager && inventoryEntryEnabled}}" title="提货核销" icon="cart-o" is-link bindtap="onNavPickup" />
     </van-cell-group>
   </view>

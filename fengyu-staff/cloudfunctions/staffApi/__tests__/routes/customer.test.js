@@ -403,8 +403,9 @@ describe('customer.calendar', () => {
 // ============================================================
 describe('customer.detail', () => {
   test('按 customer_id 查找返回完整信息（含 gender/storeName/notes）', async () => {
-    const pgBirthday = new Date(1990, 2, 15)
-    expect(pgBirthday.toISOString()).toBe('1990-03-14T16:00:00.000Z')
+    const legacyPgBirthday = new Date(1990, 2, 15)
+    expect(legacyPgBirthday.toISOString()).toBe('1990-03-14T16:00:00.000Z')
+    const pgBirthday = '1990-03-15'
     const ctx = createManagerCtx({ id: 'C001' })
     pg.query
       .mockResolvedValueOnce([{

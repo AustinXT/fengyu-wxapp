@@ -1,7 +1,10 @@
 import { Suspense } from 'react'
-import { redirect } from 'next/navigation'
 import { listInventoryCoreDocs } from '@/actions/inventory/docs'
-import { listInventoryDocLocationFilterOptions } from '@/actions/inventory/locations'
+import {
+  listInventoryDocLocationFilterOptions,
+  listInventoryLocations,
+} from '@/actions/inventory/locations'
+import { listInventorySkus } from '@/actions/inventory/skus'
 import { getSession } from '@/lib/auth'
 import { genericDocBusinessLevel } from '@/lib/inventory/business-level'
 import { resolveInventoryFilterLocationId } from '@/lib/inventory/location-filter'
@@ -18,20 +21,38 @@ export default async function Page({
   searchParams: Promise<Record<string, string | undefined>>
 }) {
   const params = await searchParams
-  const createType = params.create as InventoryDocType | undefined
-  if (createType && (INVENTORY_GENERIC_DOC_TYPES as readonly string[]).includes(createType)) {
-    const level = genericDocBusinessLevel(createType)
-    if (level) redirect(`/inventory/operations/${level}?view=docs&create=${encodeURIComponent(createType)}`)
-  }
   const page = params.page ? Number(params.page) : 1
   const pageSize = params.size ? Number(params.size) : 20
   const session = await getSession()
   requireAllUiPageCapabilities(session, ['inventory:list', 'inventory:stock_list'])
-  const filterOptions = await listInventoryDocLocationFilterOptions()
-  const selectedLocationId = resolveInventoryFilterLocationId(filterOptions, params.location)
-  const docs = selectedLocationId
+
+  const actions = session.permissions.actions
+  const operateByLevel = {
+    'supply-chain': hasUiCapability(actions, 'inventory:supply_chain_operate'),
+    market: hasUiCapability(actions, 'inventory:market_operate'),
+    store: hasUiCapability(actions, 'inventory:store_operate'),
+  }
+  const allowedCreateDocTypes = INVENTORY_GENERIC_DOC_TYPES.filter((docType) => {
+    const level = genericDocBusinessLevel(docType)
+    return level ? operateByLevel[level] : false
+  })
+  const requestedCreateType = params.create as InventoryDocType | undefined
+  const initialDocType = requestedCreateType
+    && (allowedCreateDocTypes as readonly InventoryDocType[]).includes(requestedCreateType)
+      ? requestedCreateType
+      : undefined
+
+  const [filterOptions, locations, skus] = await Promise.all([
+    listInventoryDocLocationFilterOptions(),
+    allowedCreateDocTypes.length > 0 ? listInventoryLocations() : Promise.resolve([]),
+    allowedCreateDocTypes.length > 0
+      ? listInventorySkus({ page: 1, pageSize: 100, onlyActive: true })
+      : Promise.resolve({ data: [], total: 0 }),
+  ])
+  const selectedOrgNodeId = resolveInventoryFilterLocationId(filterOptions, params.orgNodeId)
+  const docs = selectedOrgNodeId
     ? await listInventoryCoreDocs({
-        locationId: selectedLocationId,
+        orgNodeId: selectedOrgNodeId,
         docType: params.docType as never,
         status: params.status as never,
         keyword: params.q,
@@ -41,7 +62,8 @@ export default async function Page({
     : {
         data: [],
         total: 0,
-        canViewPrice: hasUiCapability(session.permissions.actions, 'inventory:price_view'),
+        canViewPrice: hasUiCapability(actions, 'inventory:supply_chain_price_view')
+          || hasUiCapability(actions, 'inventory:market_price_view'),
       }
 
   return (
@@ -50,14 +72,16 @@ export default async function Page({
         <InventoryDocsPage
           rows={docs.data}
           total={docs.total}
-          locations={[]}
-          skuOptions={[]}
-          canCreate={false}
-          canApprove={false}
+          locations={locations}
+          skuOptions={skus.data}
+          canCreate={allowedCreateDocTypes.length > 0}
+          canApprove={hasUiCapability(actions, 'inventory:supply_chain_approve') || hasUiCapability(actions, 'inventory:market_approve')}
+          canReceive={operateByLevel.market || operateByLevel.store}
           canViewPrice={docs.canViewPrice}
-          readOnly
+          initialDocType={initialDocType}
+          allowedCreateDocTypes={allowedCreateDocTypes}
           locationFilterOptions={filterOptions}
-          selectedLocationId={selectedLocationId}
+          selectedOrgNodeId={selectedOrgNodeId}
         />
       </Suspense>
     </div>

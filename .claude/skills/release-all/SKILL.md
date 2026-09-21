@@ -17,7 +17,7 @@ user-invocable: true
 allowed-tools: 'Bash, Read, Grep'
 metadata:
   author: NightVoyager
-  version: 2.4.0
+  version: 3.0.0
   title: 代码发版（dev/prod）
   description_zh: 预检门禁 + 目标库 db:migrate + admin/analyst 交叉编译发布 + CloudBase 云函数发布 + 版本号更新（dev/prod 双环境参数化）
   license: 42plugin-personal

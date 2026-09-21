@@ -1,6 +1,6 @@
 {
-  "id": "df189bed-4e58-4654-8f55-2e43c705d1f7",
-  "prevId": "728c4723-743d-48a8-99a4-da521e2bcd5e",
+  "id": "97777153-c72b-47f6-9f2f-8d74f23d3e5a",
+  "prevId": "a90c1074-67b8-4726-9d78-eee1d36a9b2d",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -2139,27 +2139,6 @@
           "notNull": false,
           "default": 0
         },
-        "waived_amount": {
-          "name": "waived_amount",
-          "type": "numeric(10, 2)",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'0'"
-        },
-        "refunded_quantity": {
-          "name": "refunded_quantity",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        },
-        "converted_quantity": {
-          "name": "converted_quantity",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        },
         "remark": {
           "name": "remark",
           "type": "text",
@@ -2374,19 +2353,7 @@
         },
         "chk_item_quantity": {
           "name": "chk_item_quantity",
-          "value": "\"sale_items\".\"quantity\" > 0 OR (\"sale_items\".\"item_direction\" = '转出' AND \"sale_items\".\"quantity\" = 0)"
-        },
-        "chk_item_waived_amount": {
-          "name": "chk_item_waived_amount",
-          "value": "\"sale_items\".\"waived_amount\" >= 0"
-        },
-        "chk_sale_item_settled_le_quantity": {
-          "name": "chk_sale_item_settled_le_quantity",
-          "value": "(COALESCE(\"sale_items\".\"picked_up_quantity\", 0) + \"sale_items\".\"refunded_quantity\" + \"sale_items\".\"converted_quantity\") <= \"sale_items\".\"quantity\""
-        },
-        "chk_sale_item_quantities_non_negative": {
-          "name": "chk_sale_item_quantities_non_negative",
-          "value": "COALESCE(\"sale_items\".\"picked_up_quantity\", 0) >= 0 AND \"sale_items\".\"refunded_quantity\" >= 0 AND \"sale_items\".\"converted_quantity\" >= 0"
+          "value": "\"sale_items\".\"quantity\" > 0"
         },
         "chk_item_service_fee": {
           "name": "chk_item_service_fee",
@@ -4706,6 +4673,13 @@
           "primaryKey": false,
           "notNull": true,
           "default": "ARRAY[]::text[]"
+        },
+        "allowed_scope_types": {
+          "name": "allowed_scope_types",
+          "type": "text[]",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "ARRAY['总部','市场','门店']::text[]"
         },
         "can_access_admin": {
           "name": "can_access_admin",
@@ -7283,6 +7257,18 @@
           "primaryKey": false,
           "notNull": false
         },
+        "supplier_id": {
+          "name": "supplier_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "market_id": {
+          "name": "market_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "product_series": {
           "name": "product_series",
           "type": "text",
@@ -7495,6 +7481,36 @@
           "method": "btree",
           "with": {}
         },
+        "idx_inventory_doc_items_supplier": {
+          "name": "idx_inventory_doc_items_supplier",
+          "columns": [
+            {
+              "expression": "supplier_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_inventory_doc_items_market": {
+          "name": "idx_inventory_doc_items_market",
+          "columns": [
+            {
+              "expression": "market_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
         "idx_inventory_doc_items_promotion": {
           "name": "idx_inventory_doc_items_promotion",
           "columns": [
@@ -7581,6 +7597,32 @@
           ],
           "columnsTo": [
             "sale_item_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "inventory_doc_items_supplier_id_inventory_suppliers_supplier_id_fk": {
+          "name": "inventory_doc_items_supplier_id_inventory_suppliers_supplier_id_fk",
+          "tableFrom": "inventory_doc_items",
+          "tableTo": "inventory_suppliers",
+          "columnsFrom": [
+            "supplier_id"
+          ],
+          "columnsTo": [
+            "supplier_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "inventory_doc_items_market_id_org_nodes_id_fk": {
+          "name": "inventory_doc_items_market_id_org_nodes_id_fk",
+          "tableFrom": "inventory_doc_items",
+          "tableTo": "org_nodes",
+          "columnsFrom": [
+            "market_id"
+          ],
+          "columnsTo": [
+            "id"
           ],
           "onDelete": "no action",
           "onUpdate": "no action"
@@ -7855,7 +7897,7 @@
         },
         "chk_inventory_doc_links_relation_type": {
           "name": "chk_inventory_doc_links_relation_type",
-          "value": "\"inventory_doc_links\".\"relation_type\" IN (\n        '门店报货汇总','市场报货采购订单','品项公司报货采购订单',\n        '采购订单发货','采购订单赠送发货','发货收货','采购订单供应链采购入库',\n        '门店报货配货','门店报货赠送配货','退货回库','库存转换','历史关联'\n      )"
+          "value": "\"inventory_doc_links\".\"relation_type\" IN (\n        '门店报货汇总','市场报货汇总','市场报货采购订单','报货汇总采购订单','品项公司报货采购订单',\n        '采购订单发货','采购订单赠送发货','发货收货','采购订单供应链采购入库',\n        '门店报货配货','门店报货赠送配货','退货回库','库存转换','历史关联'\n      )"
         }
       },
       "isRLSEnabled": false
@@ -7883,14 +7925,14 @@
           "notNull": true,
           "default": "'草稿'"
         },
-        "source_location_id": {
-          "name": "source_location_id",
+        "source_org_node_id": {
+          "name": "source_org_node_id",
           "type": "text",
           "primaryKey": false,
           "notNull": false
         },
-        "target_location_id": {
-          "name": "target_location_id",
+        "target_org_node_id": {
+          "name": "target_org_node_id",
           "type": "text",
           "primaryKey": false,
           "notNull": false
@@ -8137,11 +8179,11 @@
           "method": "btree",
           "with": {}
         },
-        "idx_inventory_docs_source": {
-          "name": "idx_inventory_docs_source",
+        "idx_inventory_docs_source_org_node": {
+          "name": "idx_inventory_docs_source_org_node",
           "columns": [
             {
-              "expression": "source_location_id",
+              "expression": "source_org_node_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -8152,11 +8194,11 @@
           "method": "btree",
           "with": {}
         },
-        "idx_inventory_docs_target": {
-          "name": "idx_inventory_docs_target",
+        "idx_inventory_docs_target_org_node": {
+          "name": "idx_inventory_docs_target_org_node",
           "columns": [
             {
-              "expression": "target_location_id",
+              "expression": "target_org_node_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -8199,28 +8241,28 @@
         }
       },
       "foreignKeys": {
-        "inventory_docs_source_location_id_inventory_locations_location_id_fk": {
-          "name": "inventory_docs_source_location_id_inventory_locations_location_id_fk",
+        "inventory_docs_source_org_node_id_inventory_locations_org_node_id_fk": {
+          "name": "inventory_docs_source_org_node_id_inventory_locations_org_node_id_fk",
           "tableFrom": "inventory_docs",
           "tableTo": "inventory_locations",
           "columnsFrom": [
-            "source_location_id"
+            "source_org_node_id"
           ],
           "columnsTo": [
-            "location_id"
+            "org_node_id"
           ],
           "onDelete": "no action",
           "onUpdate": "no action"
         },
-        "inventory_docs_target_location_id_inventory_locations_location_id_fk": {
-          "name": "inventory_docs_target_location_id_inventory_locations_location_id_fk",
+        "inventory_docs_target_org_node_id_inventory_locations_org_node_id_fk": {
+          "name": "inventory_docs_target_org_node_id_inventory_locations_org_node_id_fk",
           "tableFrom": "inventory_docs",
           "tableTo": "inventory_locations",
           "columnsFrom": [
-            "target_location_id"
+            "target_org_node_id"
           ],
           "columnsTo": [
-            "location_id"
+            "org_node_id"
           ],
           "onDelete": "no action",
           "onUpdate": "no action"
@@ -8379,11 +8421,11 @@
         },
         "chk_inventory_docs_type": {
           "name": "chk_inventory_docs_type",
-          "value": "\"inventory_docs\".\"doc_type\" IN (\n        '门店报货','市场报货','品项公司报货需求','采购订单','供应链采购订单',\n        '供应链采购入库','品项公司发货','市场采购入库','自采产品入库','分院配货',\n        '院入库','分院调货出库','分院调货入库','市场间调货出库','市场间调货入库',\n        '员工购出库','内部领用','非凤御市场出库','市场退货','市场退货入库',\n        '供应链退货入库','院退货','院顾客产品出库','院顾客退货','市场产品报损',\n        '院产品报损','市场产品盘溢','市场库存盘点','分院库存盘点','库存转换出库',\n        '库存转换入库','期初库存'\n      )"
+          "value": "\"inventory_docs\".\"doc_type\" IN (\n        '门店报货','市场报货','市场报货汇总','品项公司报货需求','采购订单',\n        '供应链采购入库','品项公司发货','市场采购入库','自采产品入库','分院配货',\n        '院入库','分院调货出库','分院调货入库','市场间调货出库','市场间调货入库',\n        '员工购出库','供应链员工购出库','内部领用','非凤御市场出库','市场退货','市场退货入库',\n        '供应链退货入库','院退货','院顾客产品出库','院顾客退货','市场产品报损',\n        '院产品报损','市场产品盘溢','市场库存盘点','分院库存盘点','库存转换出库',\n        '库存转换入库','期初库存'\n      )"
         },
-        "chk_inventory_docs_location_pair": {
-          "name": "chk_inventory_docs_location_pair",
-          "value": "\"inventory_docs\".\"source_location_id\" IS NULL\n        OR \"inventory_docs\".\"target_location_id\" IS NULL\n        OR \"inventory_docs\".\"source_location_id\" <> \"inventory_docs\".\"target_location_id\""
+        "chk_inventory_docs_org_endpoint": {
+          "name": "chk_inventory_docs_org_endpoint",
+          "value": "\"inventory_docs\".\"source_org_node_id\" IS NOT NULL OR \"inventory_docs\".\"target_org_node_id\" IS NOT NULL"
         }
       },
       "isRLSEnabled": false
@@ -8603,8 +8645,8 @@
           "method": "btree",
           "with": {}
         },
-        "idx_inventory_locations_org": {
-          "name": "idx_inventory_locations_org",
+        "uq_inventory_locations_org": {
+          "name": "uq_inventory_locations_org",
           "columns": [
             {
               "expression": "org_node_id",
@@ -8613,7 +8655,7 @@
               "nulls": "last"
             }
           ],
-          "isUnique": false,
+          "isUnique": true,
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -9557,6 +9599,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "supplier_id": {
+          "name": "supplier_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "manufacturer": {
           "name": "manufacturer",
           "type": "text",
@@ -9615,6 +9663,18 @@
         "market_purchase_price": {
           "name": "market_purchase_price",
           "type": "numeric(12, 2)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "market_purchase_price_mode": {
+          "name": "market_purchase_price_mode",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "market_purchase_price_override_reason": {
+          "name": "market_purchase_price_override_reason",
+          "type": "text",
           "primaryKey": false,
           "notNull": false
         },
@@ -9764,9 +9824,37 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "idx_inventory_skus_supplier": {
+          "name": "idx_inventory_skus_supplier",
+          "columns": [
+            {
+              "expression": "supplier_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
+        "inventory_skus_supplier_id_inventory_suppliers_supplier_id_fk": {
+          "name": "inventory_skus_supplier_id_inventory_suppliers_supplier_id_fk",
+          "tableFrom": "inventory_skus",
+          "tableTo": "inventory_suppliers",
+          "columnsFrom": [
+            "supplier_id"
+          ],
+          "columnsTo": [
+            "supplier_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
         "inventory_skus_owner_market_id_org_nodes_id_fk": {
           "name": "inventory_skus_owner_market_id_org_nodes_id_fk",
           "tableFrom": "inventory_skus",
@@ -9792,6 +9880,18 @@
         "chk_inventory_skus_prices_nonnegative": {
           "name": "chk_inventory_skus_prices_nonnegative",
           "value": "COALESCE(\"inventory_skus\".\"retail_price\", 0) >= 0\n       AND COALESCE(\"inventory_skus\".\"accounting_price\", 0) >= 0\n       AND COALESCE(\"inventory_skus\".\"supply_chain_purchase_price\", 0) >= 0\n       AND COALESCE(\"inventory_skus\".\"market_purchase_price\", 0) >= 0\n       AND COALESCE(\"inventory_skus\".\"store_purchase_price\", 0) >= 0\n       AND COALESCE(\"inventory_skus\".\"market_staff_purchase_price\", 0) >= 0\n       AND COALESCE(\"inventory_skus\".\"item_company_purchase_price\", 0) >= 0"
+        },
+        "chk_inventory_skus_market_price_mode": {
+          "name": "chk_inventory_skus_market_price_mode",
+          "value": "(\n        \"inventory_skus\".\"source_type\" = '供应链'\n        AND \"inventory_skus\".\"market_purchase_price_mode\" IN ('公式','手工覆盖')\n      ) OR (\n        \"inventory_skus\".\"source_type\" <> '供应链'\n        AND \"inventory_skus\".\"market_purchase_price_mode\" IS NULL\n        AND \"inventory_skus\".\"market_purchase_price_override_reason\" IS NULL\n      )"
+        },
+        "chk_inventory_skus_market_price_override": {
+          "name": "chk_inventory_skus_market_price_override",
+          "value": "\"inventory_skus\".\"market_purchase_price_mode\" <> '手工覆盖'\n        OR (\n          \"inventory_skus\".\"market_purchase_price\" IS NOT NULL\n          AND NULLIF(BTRIM(\"inventory_skus\".\"market_purchase_price_override_reason\"), '') IS NOT NULL\n        )"
+        },
+        "chk_inventory_skus_market_price_formula": {
+          "name": "chk_inventory_skus_market_price_formula",
+          "value": "\"inventory_skus\".\"market_purchase_price_mode\" <> '公式'\n        OR (\n          \"inventory_skus\".\"market_purchase_price_override_reason\" IS NULL\n          AND (\n            \"inventory_skus\".\"accounting_price\" IS NULL\n            OR \"inventory_skus\".\"market_purchase_discount\" IS NULL\n            OR \"inventory_skus\".\"market_purchase_price\" = ROUND(\n              \"inventory_skus\".\"accounting_price\" * CASE\n                WHEN \"inventory_skus\".\"market_purchase_discount\" > 1\n                  THEN \"inventory_skus\".\"market_purchase_discount\" / 100\n                ELSE \"inventory_skus\".\"market_purchase_discount\"\n              END,\n              2\n            )\n          )\n        )"
         }
       },
       "isRLSEnabled": false

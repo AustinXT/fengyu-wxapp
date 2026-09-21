@@ -37,6 +37,7 @@ const FORBIDDEN_TABLES = [
 const REQUIRED_COLUMNS = [
   ['inventory_locations', 'parent_location_id'],
   ['inventory_stock_lots', 'supplier_id'],
+  ['inventory_skus', 'supplier_id'],
   ['inventory_stock_lots', 'source_doc_id'],
   ['inventory_doc_links', 'from_item_id'],
   ['inventory_doc_links', 'to_item_id'],
@@ -57,6 +58,7 @@ const FORBIDDEN_COLUMNS = [
 const REQUIRED_CONSTRAINTS = [
   'inventory_locations_parent_location_id_inventory_locations_location_id_fk',
   'inventory_stock_lots_supplier_id_inventory_suppliers_supplier_id_fk',
+  'inventory_skus_supplier_id_inventory_suppliers_supplier_id_fk',
   'inventory_stock_lots_source_doc_id_inventory_docs_id_fk',
   'inventory_doc_items_promotion_plan_id_inventory_promotion_plans_id_fk',
   'inventory_doc_links_from_item_doc_fk',
@@ -97,6 +99,7 @@ const REQUIRED_MIGRATIONS = [
   '0010_mute_black_bolt',
   '0017_watery_slyde',
   '0018_complete_amazoness',
+  '0042_inventory_sku_supplier_fk',
 ]
 
 function postgresIdentifier(name) {
@@ -259,6 +262,107 @@ async function main() {
         ...(Number(audit.malformed_link_count) > 0 ? [`malformed links=${audit.malformed_link_count}`] : []),
         ...(Number(audit.malformed_movement_doc_pair_count) > 0
           ? [`malformed movement document pairs=${audit.malformed_movement_doc_pair_count}`]
+          : []),
+      ],
+    ) && ok
+
+    // ── SKU 供货商关联档案（#132）的回填核对 ──────────────────────────
+    // issue 验收标准要求「迁移结果可核对（迁移前后条数、未匹配清单）」。
+    //
+    // ⚠️ 能核对什么、不能核对什么，说清楚：
+    //   能：迁移**后**的状态 —— 关联数、未匹配清单、名称漂移、「有同名档案却一条都没关联」。
+    //   不能：**迁移前后的条数对比**。本脚本是事后只读核验，拿不到迁移前的基线，
+    //         所以「迁移过程中丢了几行 SKU」「未匹配文本被误清空」这两类它抓不到
+    //         （当前 0042 的 SQL 不会造成这两种情况，但脚本无法**证明**没发生）。
+    //         要真正核对条数，必须在**迁移前**先跑一次基线采集：
+    //           SELECT count(*) AS total,
+    //                  count(*) FILTER (WHERE btrim(COALESCE(supplier,'')) <> '') AS with_text,
+    //                  count(supplier_id) AS linked
+    //             FROM inventory_skus;
+    //         迁移后把 total 与 with_text 对回来（两者都不应减少）。
+    //
+    // 未匹配本身不算失败 —— 按拍板口径 Q1，匹配不上的本来就该留 NULL、不自动建档，
+    // 需要人工在 admin 改挂。
+    const supplierRows = await client.query(
+      `SELECT
+         COUNT(*)::int AS total,
+         COUNT(supplier_id)::int AS linked,
+         COUNT(*) FILTER (
+           WHERE supplier_id IS NULL AND btrim(COALESCE(supplier, '')) <> ''
+         )::int AS unmatched,
+         -- 「有同名档案却没关联上」有两种成因：档案后建（正常业务，系统没有「建档后自动
+         -- 回溯关联」这条规则）、建 SKU 时档案已在（本该关联上）。下面用 created_at 先后
+         -- 给出一个**启发式提示**帮人工判断。
+         -- ⚠️ 它不作为失败判据：created_at 表达不了因果顺序 ——
+         --    同一事务里插入的两行 now() 相等（PG 的 now() 是事务开始时间），
+         --    批量导入统一时间戳同样分不出先后，时钟回拨还会把先建的判成后建。
+         --    而且 migration 0042 建的档案 created_at 恒大于存量 SKU，
+         --    这个指标对「回填只连上了一部分」本来就恒为 0。两个谱系的评审都指出了这点。
+         COUNT(*) FILTER (
+           WHERE supplier_id IS NULL
+             AND btrim(COALESCE(supplier, '')) <> ''
+             AND EXISTS (
+               SELECT 1 FROM inventory_suppliers v WHERE v.name = btrim(inventory_skus.supplier)
+             )
+         )::int AS matchable_but_unlinked,
+         COUNT(*) FILTER (
+           WHERE supplier_id IS NULL
+             AND btrim(COALESCE(supplier, '')) <> ''
+             AND EXISTS (
+               SELECT 1 FROM inventory_suppliers v
+                WHERE v.name = btrim(inventory_skus.supplier)
+                  AND v.created_at <= inventory_skus.created_at
+             )
+         )::int AS matchable_at_creation,
+         COUNT(*) FILTER (
+           WHERE supplier_id IS NOT NULL
+             AND supplier IS DISTINCT FROM (
+               SELECT v.name FROM inventory_suppliers v WHERE v.supplier_id = inventory_skus.supplier_id
+             )
+         )::int AS name_drift
+         FROM inventory_skus`,
+    )
+    const supplierAudit = supplierRows.rows[0]
+    console.log(
+      'INFO inventory_skus supplier baseline note: 迁移前后条数对比需在迁移前另行采集基线，本脚本只核验迁移后状态',
+    )
+    console.log(
+      `INFO inventory_skus supplier: total=${supplierAudit.total} linked=${supplierAudit.linked} `
+      + `unmatched_text=${supplierAudit.unmatched} matchable_but_unlinked=${supplierAudit.matchable_but_unlinked} `
+      + `matchable_at_creation(hint)=${supplierAudit.matchable_at_creation} name_drift=${supplierAudit.name_drift}`,
+    )
+    if (Number(supplierAudit.unmatched) > 0) {
+      const unmatchedRows = await client.query(
+        `SELECT sku_id, product_name, supplier,
+                EXISTS (
+                  SELECT 1 FROM inventory_suppliers v WHERE v.name = btrim(inventory_skus.supplier)
+                ) AS matchable
+           FROM inventory_skus
+          WHERE supplier_id IS NULL AND btrim(COALESCE(supplier, '')) <> ''
+          ORDER BY supplier, sku_id
+          LIMIT 50`,
+      )
+      console.log('INFO unmatched supplier text (need manual re-link, up to 50):')
+      for (const row of unmatchedRows.rows) {
+        // 标出「现在已经有同名档案了」的行 —— 这些是人工改挂的首选目标
+        const hint = row.matchable ? ' [同名档案已存在，可改挂]' : ''
+        console.log(`  - ${row.sku_id} ${row.product_name} => ${JSON.stringify(row.supplier)}${hint}`)
+      }
+    }
+    // 两类**是**真问题，必须让脚本失败：
+    //  - name_drift：supplier 文本由 supplier_id 派生，对不上说明有写入路径绕过了派生
+    //    （例如 WorkFine 导入覆盖了已关联 SKU 的文本）
+    //  - matchable_but_unlinked：明明有同名档案却没关联上 = 迁移 0042 的回填没跑或被改坏
+    //    （只打印 unmatched 而不失败的话，把整段回填 UPDATE 删掉本脚本照样 exit 0）
+    ok = report(
+      'inventory_skus supplier snapshot',
+      [
+        ...(Number(supplierAudit.name_drift) > 0
+          ? [`supplier text differs from linked profile name on ${supplierAudit.name_drift} rows`]
+          : []),
+        // 「一条都没关联上、却有精确同名档案」= 回填整段没跑。这是唯一足够硬的失败判据。
+        ...(Number(supplierAudit.matchable_but_unlinked) > 0 && Number(supplierAudit.linked) === 0
+          ? [`nothing is linked at all while ${supplierAudit.matchable_but_unlinked} rows have an exactly-matching profile (migration 0042 backfill did not run?)`]
           : []),
       ],
     ) && ok

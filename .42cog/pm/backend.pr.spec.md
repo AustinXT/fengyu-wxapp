@@ -240,9 +240,9 @@
 - admin 动作 `sale_order:performance_attribution_update` 仅默认授予系统管理员、店长、财务；必须通过 scope 校验。
 - 操作时间不限；目标日期必须在原始订单上海自然日前后 7 天内（含边界）。同日提交不消耗机会。
 - 更新使用 `FOR UPDATE` + `performance_attribution_adjusted_at IS NULL` + `updated_at` CAS，保证并发下仅一次成功，并在同一事务写 `operation_logs`。
-- `sale_order_payments` 为**全部**款项（含首次支付）维护 `performance_attribution_date`、`performance_attribution_adjusted_at`、`performance_attribution_adjusted_by`；该列由数据库 trigger 保证恒有值（迁移 0039/0040，并由 `chk_sop_attribution_date_present` 约束兜底）：首次支付镜像订单归属日、其余入账时按 `paid_at` 上海自然日初始化、未入账（待支付/待审批）按 `created_at` 占位并在入账那一刻按 `paid_at` 重算。同订单、同精确 `paid_at`、同状态的首次支付/回款与储值卡抵扣视为同次混合支付，卡流水继承主流水归属字段。Admin 与 Staff 的混合线下收款必须统一按“现付后卡”写入：先写首次支付/回款主流水，再写储值卡抵扣流水，两行使用同一个 `paid_at`。
+- `sale_order_payments` 为**全部**款项（含首次支付）维护 `performance_attribution_date`、`performance_attribution_adjusted_at`、`performance_attribution_adjusted_by`；该列由数据库 trigger 保证恒有值（迁移 0040/0041，并由 `chk_sop_attribution_date_present` 约束兜底）：首次支付镜像订单归属日、其余入账时按 `paid_at` 上海自然日初始化、未入账（待支付/待审批）按 `created_at` 占位并在入账那一刻按 `paid_at` 重算。同订单、同精确 `paid_at`、同状态的首次支付/回款与储值卡抵扣视为同次混合支付，卡流水继承主流水归属字段。Admin 与 Staff 的混合线下收款必须统一按“现付后卡”写入：先写首次支付/回款主流水，再写储值卡抵扣流水，两行使用同一个 `paid_at`。
 - admin 款项调整动作复用 `sale_order:performance_attribution_update`；仅已支付、非首次支付且有 `paid_at` 的主流水或纯储值卡流水可改一次，目标日期为 `paid_at` 上海自然日前后 7 天，同日不消耗机会。混合支付调整主流水时必须在同一事务同步卡流水，卡流水不得单独调整。
-- `sale_order_performance_events`：`performance_date` **一律直读** `sale_order_payments.performance_attribution_date`，查询侧没有任何回退分支（迁移 0040）。上述"首次支付随订单 / 同次卡行跟随主流水 / 其余按 paid_at"的规则全部下沉到写入侧的两个 trigger：`initialize_payment_performance_attribution_date()`（BEFORE INSERT/UPDATE on sale_order_payments）与 `sync_order_performance_attribution_to_payments()`（AFTER UPDATE on sale_orders，订单级改期时同步首次支付行与同次卡行）。
+- `sale_order_performance_events`：`performance_date` **一律直读** `sale_order_payments.performance_attribution_date`，查询侧没有任何回退分支（迁移 0041）。上述"首次支付随订单 / 同次卡行跟随主流水 / 其余按 paid_at"的规则全部下沉到写入侧的两个 trigger：`initialize_payment_performance_attribution_date()`（BEFORE INSERT/UPDATE on sale_order_payments）与 `sync_order_performance_attribution_to_payments()`（AFTER UPDATE on sale_orders，订单级改期时同步首次支付行与同次卡行）。
 - `sale_item_performance_events`：将已支付 receipt 按上述事件日期展开；旧数据无完整 receipt 时用订单归属日补齐 `sale_items.received` 差额。
 
 ### 2.9 sale_items（销售明细）
@@ -882,13 +882,21 @@ login 返回中包含 `permissions` 字段：
 22. **回款/转换/退款仅员工端操作**
 23. **capability 列 SSoT**（2026-04-26 ticket 落地）：体验卡 / 充值卡 等"特殊 SKU 行为"判定一律读 `product_skus.is_experience` / `is_recharge_card`，**禁止**写 `WHERE product_kind = '体验卡'` / `'充值卡'` 字面量。两列互斥（`chk_sku_not_both_capabilities` CHECK 保护）。`product_kind` 仅作组织/分类标签。开单时 `sale_items` 自动快照同名列，行级不可变（admin 后续修改 SKU capability 不影响历史订单）。
 24. **D4 充值卡严格独立**：同一订单 `sale_items.is_recharge_card` 必须全 true 或全 false；混合下单抛 `INVALID_PARAMS: MIXED_RECHARGE_NOT_ALLOWED`。三端应用层（admin / staff / client）已加显式守卫，DB trigger `trg_check_no_mixed_recharge` 在 COMMIT 兜底。
-25. **customer_type 跃迁（event-driven）**：在三处收款触发点同步重算 — `payNotify`（线上支付回调）/ `staffApi.order.confirmOffline`（线下确认）/ `admin.recordPayment`（后台补录）。跃迁 SQL **三端独立副本**（admin `actions/orders.ts` + staffApi `routes/order.js` + payNotify `index.js`），由 `staffApi/__tests__/routes/recalc-customer-type-sql.test.js` 字节守卫一致性。判定逻辑：
-    - `EXISTS(销售单 total_amount ≥ threshold)` → `会员客`
-    - `EXISTS(销售单 sale_items.is_experience = false)` → `小美客`（充值卡的 `is_experience = false`，自动计入此通道，D1=A 决策）
-    - `EXISTS(销售单 sale_items.is_experience = true)` → `体验客`
+25. **customer_type 跃迁（event-driven）**：在收款触发点同步重算 — `payNotify`（线上支付回调）/ `clientApi` 支付完成 / `staffApi.order.confirmOffline` + `order.createRepayment` + 全额储值卡抵扣开单 / `admin.confirmOfflinePayment` + `recordPayment` + 零应付开单 + 全额抵扣转换。跃迁 SQL **八处独立副本**：五处运行时（staffApi `routes/order.js`、clientApi `routes/order.js`、payNotify `index.js`、admin `actions/orders.ts`、admin `lib/recompute-customer-tags.ts`）逐字一致 + 三个全库批量脚本（`db/scripts/recalc-all-customer-types.js`、`db/scripts/recalc-became-member-at.js`、`db/scripts/backfill-membership-upgrade-doc-type.js`）结构对齐，由 `staffApi/__tests__/routes/recalc-customer-type-sql.test.js` 守卫一致性。
+
+    判定逻辑（#187，2026-09-18 落地 2026-04-26 Q5.2 决策）——先按**单笔订单**聚合金额，再走三档 CASE：
+    - `non_trial` / `trial` = 该订单非体验 / 体验明细行的**毛实收**合计；毛实收 = `sale_items.received`（净额）+ 该行逐项退款额，即"曾经收到的钱"（退款不扣减）
+    - 聚合范围：`status IN ('已支付','已完成')` 的销售单、`item_direction='购买'` 行；部分支付订单不参与判定
+    - `EXISTS(某单 non_trial ≥ threshold)` → `会员客`
+    - `EXISTS(某单 non_trial > 0)` → `小美客`（充值卡的 `is_experience = false`，自动计入此通道，D1=A 决策）
+    - `EXISTS(某单 trial > 0)` → `体验客`
     - 否则 `流量客`
+    - **混合订单按非体验部分判**：体验卡 500 + 普通商品 1600（阈值 1980）→ 小美客，不因合计 2100 达标而判会员客
     - 客户分类**只升不降**（取 max(current, computed)）
     - `customer_type='会员客'` 早退出，无需重算
+    - `became_member_at` 与 `is_membership_upgrade` 归因同源同序（`non_trial ≥ threshold` 的单里按 `paid_at ASC NULLS LAST, created_at ASC, sale_order_id ASC` 取首笔；末位唯一键是确定性兜底，两键相同时保证两处选同一单）
+    - 毛实收按 `sale_amount` 封顶；无明细行的历史单回退订单级 `received`（全额计入 non_trial）
+    - ⚠️ 全额退款后原单状态变 `'已退款'`，整单退出判定 —— 「退款不扣减」只对**部分退款**成立
 
 ---
 

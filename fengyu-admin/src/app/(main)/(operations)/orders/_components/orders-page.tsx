@@ -39,6 +39,7 @@ import {
 import type { SaleOrder } from "@/lib/types";
 import type { MarketStoreFilterOptions } from "@/lib/market-store-filter-types";
 import MarketStoreFilter from "@/components/market-store-filter";
+import { paymentMethodDisplay } from "@/lib/workfine-legacy";
 
 const paymentMethodMap: Record<string, string> = {
   微信: "微信支付",
@@ -516,9 +517,10 @@ export default function OrdersPageClient({
                       )}
                     </td>
                     <td className="px-4 py-3">
-                      {order.legacySource === "workfine"
-                        ? "未知"
-                        : paymentMethodMap[order.paymentMethod] || order.paymentMethod}
+                      {paymentMethodDisplay(
+                        order.legacySource,
+                        paymentMethodMap[order.paymentMethod] || order.paymentMethod,
+                      )}
                     </td>
                     <td className="px-4 py-3">{order.openedByName || "顾客自助"}</td>
                     <td className="px-4 py-3 text-[#999999]">{fmtDateTime(order.saleOrderDatetime)}</td>

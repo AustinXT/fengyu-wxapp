@@ -151,18 +151,8 @@ function normalizeProfileChanges(changes) {
   return normalized;
 }
 
-function normalizeDbProfileValue(field, value) {
-  if (value === undefined || value === null) return null;
-  if (field === 'birthday') {
-    if (value instanceof Date) {
-      const year = value.getFullYear();
-      const month = String(value.getMonth() + 1).padStart(2, '0');
-      const day = String(value.getDate()).padStart(2, '0');
-      return `${year}-${month}-${day}`;
-    }
-    return String(value).slice(0, 10);
-  }
-  return value;
+function normalizeDbProfileValue(value) {
+  return value === undefined || value === null ? null : value;
 }
 
 /**
@@ -595,7 +585,7 @@ async function detail(ctx) {
     spendingTier: pgUser.spending_tier || null,
     monthlyActivity: pgUser.monthly_activity || null,
     customerStatus: pgUser.customer_status || null,
-    birthday: normalizeDbProfileValue('birthday', pgUser.birthday),
+    birthday: normalizeDbProfileValue(pgUser.birthday),
     occupation: pgUser.occupation || null,
     isMarried: pgUser.is_married,
     wechatName: pgUser.wechat_name || null,
@@ -1568,7 +1558,7 @@ async function listByTag(ctx) {
         memberLevel: r.member_level,
         lastServiceDate: r.last_service_date,
         lastPurchaseName: lastPurchaseMap[r.user_id] || null,
-        birthday: normalizeDbProfileValue('birthday', r.birthday),
+        birthday: normalizeDbProfileValue(r.birthday),
         source: 'miniprogram',
       }
     })
@@ -1795,7 +1785,7 @@ async function updateProfile(ctx) {
 
     const actualChanges = {}
     for (const [field, value] of Object.entries(normalized)) {
-      const oldValue = normalizeDbProfileValue(field, before[PROFILE_DB_FIELD_MAP[field]])
+      const oldValue = normalizeDbProfileValue(before[PROFILE_DB_FIELD_MAP[field]])
       if (JSON.stringify(oldValue) !== JSON.stringify(value)) actualChanges[field] = value
     }
 
@@ -1849,7 +1839,7 @@ async function updateProfile(ctx) {
     const auditBefore = {}
     const auditAfter = {}
     for (const [field, value] of Object.entries(actualChanges)) {
-      auditBefore[field] = normalizeDbProfileValue(field, before[PROFILE_DB_FIELD_MAP[field]])
+      auditBefore[field] = normalizeDbProfileValue(before[PROFILE_DB_FIELD_MAP[field]])
       auditAfter[field] = value
     }
     if (Object.prototype.hasOwnProperty.call(actualChanges, 'promoterEmployeeId')) {

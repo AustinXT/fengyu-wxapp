@@ -1,8 +1,8 @@
 /**
- * #154：`verify-quantity-split.js` 的 dry-run 与迁移 0043 的回填口径必须同源。
+ * #154：`verify-quantity-split.js` 的 dry-run 与迁移 0046 的回填口径必须同源。
  *
  * 为什么需要这个守护：dry-run 的**唯一用途**就是替迁移预演。脚本注释里写着
- * 「这三个分支必须与迁移 0043 的 WHERE 字面同口径」，但那只是一句注释 ——
+ * 「这三个分支必须与迁移 0046 的 WHERE 字面同口径」，但那只是一句注释 ——
  * 改了迁移不改脚本，测试照样全绿，而 dry-run 会给出与真实迁移不同的结论
  * （报「全部通过」，迁移却 RAISE 回滚）。本仓反复踩的就是这种「硬编码清单无守护」。
  *
@@ -17,7 +17,7 @@ const fs = require('node:fs')
 const path = require('node:path')
 
 const ROOT = path.resolve(__dirname, '../../..')
-const MIGRATION = path.join(ROOT, 'db/migrations/0043_split_quantity_semantics.sql')
+const MIGRATION = path.join(ROOT, 'db/migrations/0046_split_quantity_semantics.sql')
 const VERIFY = path.join(ROOT, 'db/scripts/verify-quantity-split.js')
 
 const read = (p) => fs.readFileSync(p, 'utf8')
@@ -25,7 +25,7 @@ const read = (p) => fs.readFileSync(p, 'utf8')
 const flat = (s) => s.replace(/\s+/g, ' ')
 
 test('两份文件都还在（改名/删除必须同步本守护）', () => {
-  assert.ok(fs.existsSync(MIGRATION), '迁移 0043 不存在')
+  assert.ok(fs.existsSync(MIGRATION), '迁移 0046 不存在')
   assert.ok(fs.existsSync(VERIFY), 'verify-quantity-split.js 不存在')
 })
 
@@ -134,7 +134,7 @@ test('「已结算 <= 购买件数」的权威表达是 CHECK 约束，三处引
   )
   assert.ok(
     migration.includes('ADD CONSTRAINT "chk_sale_item_settled_le_quantity" CHECK'),
-    '迁移 0043 少了该约束（schema 改了但没重新 generate？）',
+    '迁移 0046 少了该约束（schema 改了但没重新 generate？）',
   )
   // 约束必须在回填之前生效：此时 refunded/converted 恒为 0、picked_up <= quantity，必然通过
   assert.ok(
@@ -169,7 +169,7 @@ test('note→jsonb 守门写法与全仓四端约定一致（不得单独加 btr
   // 「四端 note→jsonb 守门」一项守护。第 4 轮评审建议把这两处改 btrim 兜住前导空格 ——
   // 不采纳：单独改会让这两处偏离四端约定，而副本漂移是本仓最高频的 P1 源；
   // 实测 prod 235 条退款 note 全合法、0 条带前导空格。要改就四端一起改。
-  for (const [name, file] of [['迁移 0043', MIGRATION], ['verify 脚本', VERIFY]]) {
+  for (const [name, file] of [['迁移 0046', MIGRATION], ['verify 脚本', VERIFY]]) {
     const src = read(file)
     assert.ok(
       src.includes("CASE WHEN sop.note LIKE '{%'"),
