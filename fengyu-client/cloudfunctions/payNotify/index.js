@@ -519,6 +519,14 @@ async function runPaymentReconcile() {
     console.log('[payNotify/reconcile] skip: 未启用')
     return { code: 'SUCCESS', message: 'reconcile disabled' }
   }
+  // fail-closed：自调入账的目标函数名必须显式配置，不回退到 'payNotify'。
+  // 同一个 env 里并存 payNotify(prod 库) 与 payNotifyDev(dev 库)，回退等于让 Dev 实例
+  // 拿 dev 库查出的订单号去调生产函数在 prod 库入账——这是整个架构唯一能把钱写错库的路径，
+  // 所以兜底方向必须是「本次不做」而不是「打给生产」。
+  if (!process.env.PAYNOTIFY_FN_NAME) {
+    console.error('[payNotify/reconcile] skip: PAYNOTIFY_FN_NAME 未配置，拒绝猜测目标函数（避免跨库入账）')
+    return { code: 'SUCCESS', message: 'reconcile skipped: PAYNOTIFY_FN_NAME missing' }
+  }
   const pg = getPg()
   // 窗口锚 updated_at（createLakalaPreorder 写 updated_at 反映最近一次拉卡拉下单）：覆盖老订单回款回调
   // 丢失（回款覆写 lakala_out_order_no 但不动 sale_order_datetime，故 sale_order_datetime 锚不到回款）。
@@ -567,10 +575,9 @@ async function runPaymentReconcile() {
       if (!(payAmount > 0)) { skip++; continue }
       const paymentMethod = o.payment_method === '支付宝' ? '支付宝' : '微信'
       // 自调 payNotify main（event 入口）触发同款幂等入账；event.Type 非 Timer 不会再次进入本任务，无递归
-      // 函数名走 env：同一 env 内并存 payNotify(prod 库) 与 payNotifyDev(dev 库) 两份部署，
-      // 写死 'payNotify' 会让 Dev 实例拿 dev 库查出的订单号去调生产函数写 prod 库。
+      // 函数名走 env（入口处已 fail-closed 校验存在性，见 runPaymentReconcile 开头）
       const r = await cloud.callFunction({
-        name: process.env.PAYNOTIFY_FN_NAME || 'payNotify',
+        name: process.env.PAYNOTIFY_FN_NAME,
         data: {
           orderNo: o.lakala_out_order_no,
           transactionId: resp.tradeNo,

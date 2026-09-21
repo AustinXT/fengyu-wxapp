@@ -107,6 +107,9 @@ require.cache[lakalaSignPath] = {
 
 // 全局启用 payNotify（测试需要业务逻辑生效）
 process.env.PAYNOTIFY_ENABLED = 'true'
+// 部署态一定有（deploy-cloudfunctions.sh 已把它纳入 --require 回读校验）。
+// 缺失时对账 fail-closed 跳过，那条分支在 reconcile.test.js 专项覆盖。
+process.env.PAYNOTIFY_FN_NAME = 'payNotify'
 
 function loadFreshIndex() {
   const p = require.resolve('../index')
