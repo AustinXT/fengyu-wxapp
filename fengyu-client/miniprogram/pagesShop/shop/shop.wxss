@@ -53,10 +53,29 @@
   margin-bottom: 16rpx;
 }
 
+/* issue #248：封面槽位。尺寸固定，内部 <image>/占位切换时卡片高度与滚动位置不变 */
+.spu-cover-slot {
+  width: 100%;
+  height: 220rpx;
+  display: block;
+}
+
 .spu-cover {
   width: 100%;
   height: 220rpx;
   display: block;
+}
+
+.load-more-hint {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24rpx 0;
+}
+
+.load-more-text {
+  font-size: 24rpx;
+  color: var(--color-text-hint);
 }
 
 .spu-body {

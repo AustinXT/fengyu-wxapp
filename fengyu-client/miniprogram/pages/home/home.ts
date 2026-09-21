@@ -3,12 +3,16 @@ import Toast from "@vant/weapp/toast/toast";
 import { getCartCount, clearCart } from "../../utils/cart";
 import { callClientApi } from "../../utils/cloud";
 import { getCosBase } from "../../utils/cloud-env";
+import { createCoverWindow, withInitialCoverVisible, type CoverWindow } from "../../utils/cover-window";
 import { getIsMember } from "../../utils/member-pricing";
 
 const app = getApp<IAppOption>();
 
 // CloudBase CDN 基础 URL（随 env 切换 dev/prod 桶）
 const CDN_BASE = `${getCosBase()}/fengyu-client`;
+
+/** issue #248：每页条数，与云函数默认值一致（后端仍会按 PRODUCT_PAGE_SIZE_MAX 夹取） */
+const PAGE_SIZE = 20;
 
 interface Banner {
   id: string;
@@ -38,6 +42,8 @@ interface SpuItem {
   category_name: string;
   /** issue #230：云函数无法保证缩略时下发 null，wxml 走 cover-placeholder 分支 */
   cover_image: string | null;
+  /** issue #248：视口窗口内才挂 <image>，滚远的卡片渲染成占位 */
+  coverVisible?: boolean;
   min_price: string;
   /** 会员价分流：仅会员且标价起价 > 会员起价时填标价起价（划线），否则空串 */
   strike_min_price?: string;
@@ -46,6 +52,9 @@ interface SpuItem {
   is_recommend: boolean;
   skuList?: any[];
 }
+
+/** 某个分类（或某次搜索）的翻页进度 */
+interface PageState { cursor: string | null; hasMore: boolean; }
 
 interface SidebarItem {
   id: string;
@@ -73,6 +82,7 @@ Page({
     spuList: [] as SpuItem[],
     isLoading: false,
     loadError: false,
+    hasMore: false,
     cartCount: 0,
   },
 
@@ -82,8 +92,11 @@ Page({
   // 所有二级分类
   _allCategories: [] as Category[],
 
-  // 页面级 SPU 缓存：按分类名缓存已加载的 SPU 列表
+  // 页面级 SPU 缓存：按分类名缓存已加载的 SPU 列表（累积已翻过的页）
   _spuCache: {} as Record<string, SpuItem[]>,
+
+  // 每个分类的翻页进度，与 _spuCache 同生命周期
+  _pageState: {} as Record<string, PageState>,
 
   // 所有分类 key 的有序列表（用于自动切换下一个分类）
   _allCategoryKeys: [] as string[],
@@ -91,16 +104,43 @@ Page({
   // 搜索防抖定时器
   _searchTimer: null as number | null,
 
+  // 当前搜索词与其翻页进度
+  _searchKeyword: "",
+  _searchPageState: { cursor: null, hasMore: false } as PageState,
+
   // 防止 scrolltolower 连续触发
   _isLoadingNext: false,
+  _isLoadingSearchNext: false,
+
+  // issue #248：两份列表各一个相交观察器（互斥渲染，但下标空间不同，不能共用选择器）
+  _coverWindow: null as CoverWindow | null,
+  _searchCoverWindow: null as CoverWindow | null,
 
   onLoad() {
     this._spuCache = {};
+    this._pageState = {};
     const storeName = app.globalData.boundStoreName || "";
     this.setData({ boundStoreName: storeName });
+    this._coverWindow = createCoverWindow(this as any, {
+      scrollSelector: ".product-scroll",
+      slotSelector: ".spu-cover-slot",
+      listKey: "spuList",
+    });
+    this._searchCoverWindow = createCoverWindow(this as any, {
+      scrollSelector: ".search-results-scroll",
+      slotSelector: ".search-cover-slot",
+      listKey: "searchResults",
+    });
     this.loadShopInit();
     this.loadBanners();
     this.updateCartCount();
+  },
+
+  onUnload() {
+    this._coverWindow?.dispose();
+    this._searchCoverWindow?.dispose();
+    this._coverWindow = null;
+    this._searchCoverWindow = null;
   },
 
   onShow() {
@@ -109,14 +149,17 @@ Page({
       // 切换门店时清空购物车和 SPU 缓存
       clearCart();
       this._spuCache = {};
+      this._pageState = {};
       this._allGroups = [];
       this._allCategories = [];
       this._allCategoryKeys = [];
+      this._resetSearchPaging();
       this.setData({
         boundStoreName: storeName,
         sidebarItems: [],
         activeCategoryKey: "",
         spuList: [],
+        hasMore: false,
         cartCount: 0,
         isSearching: false,
         searchResults: [],
@@ -135,8 +178,12 @@ Page({
   onPullDownRefresh() {
     // 退出搜索模式，重新加载全部数据
     if (this.data.isSearching) {
+      this._resetSearchPaging();
       this.setData({ isSearching: false, searchResults: [], searchValue: '' });
     }
+    // 下拉刷新要真重来一次：清掉分页游标与累积行，否则会拿旧游标续翻
+    this._spuCache = {};
+    this._pageState = {};
     this.loadShopInit().finally(() => {
       wx.stopPullDownRefresh();
     });
@@ -157,6 +204,7 @@ Page({
     // 输入为空 → 立即退出搜索模式
     if (!value.trim()) {
       if (this.data.isSearching) {
+        this._resetSearchPaging();
         this.setData({ isSearching: false, searchResults: [], searchLoading: false });
       }
       return;
@@ -178,6 +226,7 @@ Page({
     const value = this.data.searchValue.trim();
     if (!value) {
       if (this.data.isSearching) {
+        this._resetSearchPaging();
         this.setData({ isSearching: false, searchResults: [] });
       }
       return;
@@ -185,31 +234,80 @@ Page({
     await this._doSearch(value);
   },
 
-  /** 实际搜索执行 */
-  async _doSearch(value: string) {
+  _resetSearchPaging() {
+    this._searchKeyword = "";
+    this._searchPageState = { cursor: null, hasMore: false };
+    this._isLoadingSearchNext = false;
+  },
+
+  /** 会员价分流：会员看会员起价 + 划线标价起价；非会员只看标价起价 */
+  _decorate(rows: any[], startIndex: number): SpuItem[] {
+    const isMember = getIsMember();
+    return withInitialCoverVisible(
+      rows.map((spu: any) => ({
+        ...spu,
+        min_price: isMember ? (spu.priceFrom || "0") : (spu.listPriceFrom || spu.priceFrom || "0"),
+        strike_min_price: (isMember && Number(spu.listPriceFrom) > Number(spu.priceFrom)) ? spu.listPriceFrom : "",
+      })),
+      startIndex
+    ) as SpuItem[];
+  },
+
+  /** 列表内容变了就得重建相交观察（observeAll 不跟踪新增节点） */
+  _refreshCoverWindow(which: "browse" | "search") {
+    wx.nextTick(() => {
+      if (which === "search") this._searchCoverWindow?.refresh();
+      else this._coverWindow?.refresh();
+    });
+  },
+
+  /** 实际搜索执行；append=true 时翻本次搜索的下一页 */
+  async _doSearch(value: string, append = false) {
     this.setData({ isSearching: true, searchLoading: true });
 
     try {
       // 全量搜索：调云函数按商品名跨全部分类搜索，不依赖前端 _spuCache/侧边栏分类结构
       //（旧版 loadAllSpus 仅加载已挂进 _allCategoryKeys 的分类，会漏掉未挂侧边栏的分类商品）
-      const data = await callClientApi<{ spuList: SpuItem[] }>("product.search", { keyword: value });
-      // 会员价分流：会员看会员起价 + 划线标价起价；非会员只看标价起价
-      const isMember = getIsMember();
-      const results = (data?.spuList || []).map((spu: any) => ({
-        ...spu,
-        min_price: isMember ? (spu.priceFrom || "0") : (spu.listPriceFrom || spu.priceFrom || "0"),
-        strike_min_price: (isMember && Number(spu.listPriceFrom) > Number(spu.priceFrom)) ? spu.listPriceFrom : "",
-      }));
+      const cursor = append ? this._searchPageState.cursor : null;
+      const data = await callClientApi<{ spuList: any[]; nextCursor?: string | null; hasMore?: boolean }>(
+        "product.search",
+        cursor
+          ? { keyword: value, limit: PAGE_SIZE, cursor }
+          : { keyword: value, limit: PAGE_SIZE }
+      );
+
       // 防止旧搜索结果覆盖新搜索（用户可能已继续输入）
-      if (this.data.searchValue.trim() === value) {
-        this.setData({ searchResults: results, searchLoading: false });
-      }
+      if (this.data.searchValue.trim() !== value) return;
+
+      const prev = append ? this.data.searchResults : [];
+      const results = prev.concat(this._decorate(data?.spuList || [], prev.length));
+
+      this._searchKeyword = value;
+      this._searchPageState = {
+        cursor: data?.nextCursor ?? null,
+        hasMore: Boolean(data?.hasMore),
+      };
+      this.setData({ searchResults: results, searchLoading: false });
+      this._refreshCoverWindow("search");
     } catch (err) {
       console.error("_doSearch error:", err);
       if (this.data.searchValue.trim() === value) {
-        this.setData({ searchResults: [], searchLoading: false });
+        // 翻页失败只停在已有结果上，别把用户已看到的清空
+        this.setData(append ? { searchLoading: false } : { searchResults: [], searchLoading: false });
+        if (!append) this._resetSearchPaging();
       }
     }
+  },
+
+  /** 搜索结果触底：翻本次搜索的下一页 */
+  onSearchScrollToLower() {
+    if (this._isLoadingSearchNext || this.data.searchLoading) return;
+    if (!this._searchPageState.hasMore || !this._searchKeyword) return;
+
+    this._isLoadingSearchNext = true;
+    this._doSearch(this._searchKeyword, true).then(() => {
+      this._isLoadingSearchNext = false;
+    });
   },
 
   onSearchClear() {
@@ -217,6 +315,7 @@ Page({
       clearTimeout(this._searchTimer);
       this._searchTimer = null;
     }
+    this._resetSearchPaging();
     this.setData({ isSearching: false, searchResults: [], searchValue: "" });
   },
 
@@ -302,22 +401,39 @@ Page({
 
     const cached = this._spuCache[categoryKey];
 
+    // 切分类是整体替换而非追加，上一个分类的图片节点随之释放
     this.setData({
       activeCategoryKey: categoryKey,
       sidebarScrollIntoView: catItem.id,
       spuList: cached || [],
+      hasMore: Boolean(this._pageState[categoryKey]?.hasMore),
     });
 
-    if (!cached) {
+    if (cached) {
+      this._refreshCoverWindow("browse");
+    } else {
       this.loadSpuList(categoryKey);
     }
   },
 
-  // 商品列表滚动到底 → 自动切换到下一个分类
+  /**
+   * 商品列表滚动到底。
+   *
+   * issue #248 之后是两段语义：本分类还有下一页就先翻页，翻到底了才切下一个分类。
+   */
   onScrollToLower() {
-    if (this._isLoadingNext) return;
+    if (this._isLoadingNext || this.data.isLoading) return;
 
     const { activeCategoryKey } = this.data;
+
+    if (this._pageState[activeCategoryKey]?.hasMore) {
+      this._isLoadingNext = true;
+      this.loadSpuList(activeCategoryKey, true).then(() => {
+        this._isLoadingNext = false;
+      });
+      return;
+    }
+
     const currentIndex = this._allCategoryKeys.indexOf(activeCategoryKey);
     if (currentIndex < 0 || currentIndex >= this._allCategoryKeys.length - 1) return;
 
@@ -359,19 +475,14 @@ Page({
   async loadShopInit() {
     try {
       this.setData({ isLoading: true, loadError: false });
-      const initData = await callClientApi<{ groups?: CategoryGroup[]; categories: Category[]; spuList: any[] }>("product.shopInit", {});
+      const initData = await callClientApi<{
+        groups?: CategoryGroup[]; categories: Category[]; spuList: any[];
+        spuCategoryId?: string | null; nextCursor?: string | null; hasMore?: boolean;
+      }>("product.shopInit", { limit: PAGE_SIZE });
 
       const groups: CategoryGroup[] = initData?.groups || [];
       const categories: Category[] = initData?.categories || [];
-      const spuList: SpuItem[] = initData?.spuList || [];
-
-      // 会员价分流：会员看会员起价 + 划线标价起价；非会员只看标价起价
-      const isMember = getIsMember();
-      const listWithPrice = spuList.map((spu: any) => ({
-        ...spu,
-        min_price: isMember ? (spu.priceFrom || "0") : (spu.listPriceFrom || spu.priceFrom || "0"),
-        strike_min_price: (isMember && Number(spu.listPriceFrom) > Number(spu.priceFrom)) ? spu.listPriceFrom : "",
-      }));
+      const listWithPrice = this._decorate(initData?.spuList || [], 0);
 
       this._allGroups = groups;
       this._allCategories = categories;
@@ -379,19 +490,33 @@ Page({
       // 构建侧边栏（分组标题 + 二级分类）
       this.buildSidebarItems();
 
-      // 缓存 shopInit 返回的商品列表（对应第一个二级分类）
-      const firstCatKey = this._allCategoryKeys[0] || "";
-      if (firstCatKey && listWithPrice.length > 0) {
+      // 这批商品归属哪个分类由后端下发（shopInit 取的是「第一个 group 下的首个二级分类」）；
+      // 游标必须挂在正确的分类上，否则「加载更多」会翻错分类的下一页
+      const serverCatKey = initData?.spuCategoryId || "";
+      const firstCatKey =
+        serverCatKey && this._allCategoryKeys.indexOf(serverCatKey) >= 0
+          ? serverCatKey
+          : this._allCategoryKeys[0] || "";
+
+      // shopInit 的这批只有在确实属于当前激活分类时才可当作它的第一页
+      if (firstCatKey && firstCatKey === serverCatKey) {
         this._spuCache[firstCatKey] = listWithPrice;
+        this._pageState[firstCatKey] = {
+          cursor: initData?.nextCursor ?? null,
+          hasMore: Boolean(initData?.hasMore),
+        };
       }
 
       this.setData({
         activeCategoryKey: firstCatKey,
         spuList: firstCatKey ? (this._spuCache[firstCatKey] || []) : [],
+        hasMore: Boolean(this._pageState[firstCatKey]?.hasMore),
       });
 
       if (firstCatKey && !this._spuCache[firstCatKey]) {
         this.loadSpuList(firstCatKey);
+      } else {
+        this._refreshCoverWindow("browse");
       }
     } catch (err: any) {
       console.error("loadShopInit error:", err);
@@ -435,7 +560,7 @@ Page({
     this.setData({ sidebarItems: items });
   },
 
-  async loadSpuList(categoryKey: string) {
+  async loadSpuList(categoryKey: string, append = false) {
     this.setData({ isLoading: true });
     const categoryId = this._findCategoryId(categoryKey);
     if (!categoryId) {
@@ -443,23 +568,26 @@ Page({
       return;
     }
     try {
-      const data = await callClientApi<{ spuList: SpuItem[] }>("product.spuList", { categoryId });
+      const cursor = append ? this._pageState[categoryKey]?.cursor ?? null : null;
+      const data = await callClientApi<{ spuList: any[]; nextCursor?: string | null; hasMore?: boolean }>(
+        "product.spuList",
+        cursor ? { categoryId, limit: PAGE_SIZE, cursor } : { categoryId, limit: PAGE_SIZE }
+      );
 
-      const spuList: SpuItem[] = data?.spuList || [];
-      // 会员价分流：会员看会员起价 + 划线标价起价；非会员只看标价起价
-      const isMember = getIsMember();
-      const listWithPrice = spuList.map((spu: any) => ({
-        ...spu,
-        min_price: isMember ? (spu.priceFrom || "0") : (spu.listPriceFrom || spu.priceFrom || "0"),
-        strike_min_price: (isMember && Number(spu.listPriceFrom) > Number(spu.priceFrom)) ? spu.listPriceFrom : "",
-      }));
+      const prev = append ? (this._spuCache[categoryKey] || []) : [];
+      const listWithPrice = prev.concat(this._decorate(data?.spuList || [], prev.length));
 
-      // 写入缓存
+      // 写入缓存 + 翻页进度
       this._spuCache[categoryKey] = listWithPrice;
+      this._pageState[categoryKey] = {
+        cursor: data?.nextCursor ?? null,
+        hasMore: Boolean(data?.hasMore),
+      };
 
       // 仅在仍在查看该分类时更新
       if (this.data.activeCategoryKey === categoryKey) {
-        this.setData({ spuList: listWithPrice });
+        this.setData({ spuList: listWithPrice, hasMore: Boolean(data?.hasMore) });
+        this._refreshCoverWindow("browse");
       }
     } catch (err: any) {
       console.error("loadSpuList error:", err);
