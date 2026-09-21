@@ -135,7 +135,14 @@ node "$ROOT/scripts/render-cloudbaserc.mjs" "$ACTIVE"
 #    （所有环境均用 5433 端口 + fengyu_wxapp 库名，只能靠 IP 区分。
 #     2026-09-01 起 dev 迁入 lx-test（原 sqlserver101）：dev=101.34.242.103；
 #     prod=118.178.196.26。旧的 ali-demo 47.113.202.7 已弃用，不再是任何环境的目标。）──
-EXPECT_PG_HOST=$([[ "$ACTIVE" == "prod" ]] && echo "118.178.196.26" || echo "101.34.242.103")
+#
+#    影子函数（名字以 Dev 结尾，如 clientApiDev）是同一 env 内连 dev 库的第二份部署，
+#    它们的期望 host 恒为 DEV_PG_HOST，与 .active 无关。校验是双向的：
+#    正式函数连错到 dev 库、影子函数连错到 prod 库，两个方向都中止。
+#    后者尤其重要——影子函数误连 prod 就意味着开发版/体验版直接写生产数据。
+PROD_PG_HOST=118.178.196.26
+DEV_PG_HOST=101.34.242.103
+EXPECT_PG_HOST=$([[ "$ACTIVE" == "prod" ]] && echo "$PROD_PG_HOST" || echo "$DEV_PG_HOST")
 assert_rc() {  # $1=side 目录  $2=期望 envId
   local f="$ROOT/$1/cloudbaserc.json"
   [[ -f "$f" ]] || { echo "ERROR: $f 缺失（渲染失败）。中止。" >&2; exit 1; }
@@ -148,7 +155,7 @@ assert_rc() {  # $1=side 目录  $2=期望 envId
   # 只比 host 是不够的——同一台 101 上还有 :5433/fengyu_e2e（e2e 独立库）与历史的 :5434，
   # 只要 host 对就放行会把 e2e 库或错端口的串推进云函数。解析失败/缺值一律拒绝（fail-closed）。
   node -e '
-    const f = process.argv[1], expectHost = process.argv[2]
+    const f = process.argv[1], expectHost = process.argv[2], devHost = process.argv[3]
     const c = require(f)
     // 逐个函数校验——不能只看第一个：client 侧有 clientApi + payNotify 两个函数，
     // 任一条串指错库都会被 `fn code update` 一并推上去。
@@ -156,6 +163,8 @@ assert_rc() {  # $1=side 目录  $2=期望 envId
     if (fns.length === 0) {
       console.error("  未找到任何带 PG_CONNECTION_STRING 的函数——渲染异常，fail-closed 中止"); process.exit(1)
     }
+    // 影子函数按名字后缀识别（clientApiDev / payNotifyDev / staffApiDev），期望库与正式函数相反
+    const isShadow = (name) => /Dev$/.test(name)
     const mask = (v) => String(v).replace(/:\/\/[^@]*@/, "://***@")
     const allErrs = []
     for (const fn of fns) {
@@ -168,8 +177,9 @@ assert_rc() {  # $1=side 目录  $2=期望 envId
       try { u = new URL(s) } catch {
         allErrs.push(`${name}: 无法解析 ${mask(s)}`); continue
       }
+      const want = isShadow(name) ? devHost : expectHost
       const errs = []
-      if (u.hostname !== expectHost) errs.push(`host=${u.hostname} ≠ ${expectHost}`)
+      if (u.hostname !== want) errs.push(`host=${u.hostname} ≠ ${want}${isShadow(name) ? "（影子函数必须连 dev 库）" : ""}`)
       if (u.port !== "5433") errs.push(`port=${u.port || "(空)"} ≠ 5433`)
       if (u.pathname !== "/fengyu_wxapp") errs.push(`dbname=${u.pathname || "(空)"} ≠ /fengyu_wxapp`)
       // query 可覆盖 authority 的 host/port/dbname（libpq 语义），只比 authority 会被 ?host=<旧库> 绕过
@@ -178,7 +188,7 @@ assert_rc() {  # $1=side 目录  $2=期望 envId
       if (errs.length) allErrs.push(`${name}: ${errs.join("；")}`)
     }
     if (allErrs.length) { console.error("  " + allErrs.join("\n  ")); process.exit(1) }
-  ' "$f" "$EXPECT_PG_HOST" || {
+  ' "$f" "$EXPECT_PG_HOST" "$DEV_PG_HOST" || {
     echo "ERROR: $1 的 PG_CONNECTION_STRING 与 ${ACTIVE} 环境不符（详见上行），疑似跨环境污染。中止。" >&2
     exit 1
   }
@@ -198,9 +208,12 @@ assert_db_prereqs() {
   pg_conn=$(node -e '
     const fs = require("fs")
     const c = JSON.parse(fs.readFileSync(process.argv[1], "utf8"))
-    // 取第一个带连接串的函数：本项目单库架构下同 env 各函数连接串一致，取哪个等价。
-    // 若日后某函数指向异库（只读副本等），这里要改成按函数名过滤，否则探测目标会静默漂移。
-    const fn = (c.functions || []).find((x) => x.envVariables && x.envVariables.PG_CONNECTION_STRING)
+    // 必须排除影子函数（*Dev）：它们连 dev 库，而这里要探测的是【本次部署目标环境】的库。
+    // 从前同 env 各函数连接串一致，取哪个都等价；自打影子函数进场就不再成立——
+    // 用 .find() 不加过滤会在 prod 部署时静默去探 dev 库，等于这道迁移闸形同虚设。
+    const fn = (c.functions || []).find(
+      (x) => x.envVariables && x.envVariables.PG_CONNECTION_STRING && !/Dev$/.test(x.name || "")
+    )
     process.stdout.write(fn ? fn.envVariables.PG_CONNECTION_STRING : "")
   ' "$1" 2>/dev/null || true)
   # 探测不通时的处置：dev 告警放行，**prod 一律 fail-closed**——
@@ -271,11 +284,27 @@ if [[ -n "$PLACEHOLDERS" ]]; then
   echo "$PLACEHOLDERS" | sed 's/^/      /'
 fi
 
-# ── 步骤计数（staff=1 步 / client=2 步）──
+# ── 步骤计数（staff=2 步：staffApi + staffApiDev / client=4 步：clientApi + payNotify + 两个 Dev）──
 TOTAL=0
-[[ "$DO_STAFF"  == "1" ]] && TOTAL=$((TOTAL + 1))
-[[ "$DO_CLIENT" == "1" ]] && TOTAL=$((TOTAL + 2))
+[[ "$DO_STAFF"  == "1" ]] && TOTAL=$((TOTAL + 2))
+[[ "$DO_CLIENT" == "1" ]] && TOTAL=$((TOTAL + 4))
 STEP=0
+
+# ── 单函数部署：不存在则创建，存在则只更新代码 ──
+# `tcb fn code update` 要求函数已存在；影子函数（*Dev）首次上线时该 env 里还没有它，
+# 必须先走 `tcb fn deploy` 按 cloudbaserc 创建。两条路径都会把 envVariables 一并推上去。
+# 注意这里用 `fn detail` 而非解析 `fn list` 表格：clientApi 是 clientApiDev 的前缀，
+# 对表格做子串匹配会把两者混为一谈。
+deploy_one_fn() {  # $1=函数名  $2=cloudbaserc 路径  $3=--sync 值  $4=--require 值
+  local fn="$1" rc="$2" sync="$3" req="$4"
+  if tcb fn detail "$fn" >/dev/null 2>&1; then
+    tcb fn code update "$fn"
+  else
+    echo "     函数 $fn 在该 env 中尚不存在 → 首次创建（tcb fn deploy）"
+    tcb fn deploy "$fn"
+  fi
+  node "$ROOT/scripts/sync-cloudfunction-env.mjs" "$rc" "$fn" --sync "$sync" --require "$req"
+}
 
 # --- staff side ---
 if [[ "$DO_STAFF" == "1" ]]; then
@@ -295,11 +324,18 @@ if [[ "$DO_STAFF" == "1" ]]; then
     exit 1
   fi
   # envId 取自 cwd（已 cd fengyu-staff）的 cloudbaserc.json；tcb 3.x 不接受 --envId
-  tcb fn code update staffApi
-  node "$ROOT/scripts/sync-cloudfunction-env.mjs" "$ROOT/fengyu-staff/cloudbaserc.json" staffApi \
-    --sync CLIENT_SECRET,PG_CONNECTION_STRING \
-    --require PG_CONNECTION_STRING,CLIENT_SECRET,CLIENT_APPSECRET,WXACODE_ENV_VERSION
+  deploy_one_fn staffApi "$ROOT/fengyu-staff/cloudbaserc.json" \
+    CLIENT_SECRET,PG_CONNECTION_STRING \
+    PG_CONNECTION_STRING,CLIENT_SECRET,CLIENT_APPSECRET,WXACODE_ENV_VERSION
   echo "  ✓ staffApi deployed"
+
+  # 影子函数：同一 env、同一份代码（cloudbaserc 的 dir 指向 cloudfunctions/staffApi），连 dev 库
+  STEP=$((STEP + 1))
+  echo "==> [$STEP/$TOTAL] Deploy staffApiDev (dev 库) → $STAFF_ENV_ID"
+  deploy_one_fn staffApiDev "$ROOT/fengyu-staff/cloudbaserc.json" \
+    CLIENT_SECRET,PG_CONNECTION_STRING \
+    PG_CONNECTION_STRING,CLIENT_SECRET,CLIENT_APPSECRET,WXACODE_ENV_VERSION
+  echo "  ✓ staffApiDev deployed"
 fi
 
 # --- client side（clientApi + payNotify 同属 CLIENT_ENV_ID）---
@@ -321,19 +357,34 @@ if [[ "$DO_CLIENT" == "1" ]]; then
   # envId 取自 cwd（fengyu-client）的 cloudbaserc.json；clientApi 与 payNotify 共用同一 env
   STEP=$((STEP + 1))
   echo "==> [$STEP/$TOTAL] Deploy clientApi → $CLIENT_ENV_ID"
-  tcb fn code update clientApi
-  node "$ROOT/scripts/sync-cloudfunction-env.mjs" "$ROOT/fengyu-client/cloudbaserc.json" clientApi \
-    --sync CLIENT_SECRET,PG_CONNECTION_STRING \
-    --require PG_CONNECTION_STRING,TMAP_KEY,TMAP_SECRET,CLIENT_SECRET
+  deploy_one_fn clientApi "$ROOT/fengyu-client/cloudbaserc.json" \
+    CLIENT_SECRET,PG_CONNECTION_STRING,PAYNOTIFY_FN_NAME \
+    PG_CONNECTION_STRING,TMAP_KEY,TMAP_SECRET,CLIENT_SECRET,PAYNOTIFY_FN_NAME
   echo "  ✓ clientApi deployed"
 
   STEP=$((STEP + 1))
   echo "==> [$STEP/$TOTAL] Deploy payNotify → $CLIENT_ENV_ID"
-  tcb fn code update payNotify
-  node "$ROOT/scripts/sync-cloudfunction-env.mjs" "$ROOT/fengyu-client/cloudbaserc.json" payNotify \
-    --sync CLIENT_SECRET,PG_CONNECTION_STRING \
-    --require PG_CONNECTION_STRING,CLIENT_SECRET
+  deploy_one_fn payNotify "$ROOT/fengyu-client/cloudbaserc.json" \
+    CLIENT_SECRET,PG_CONNECTION_STRING,PAYNOTIFY_FN_NAME \
+    PG_CONNECTION_STRING,CLIENT_SECRET,PAYNOTIFY_FN_NAME
   echo "  ✓ payNotify deployed"
+
+  # 影子函数：同一 env、同一份代码（dir 指向正式函数目录），连 dev 库。
+  # PAYNOTIFY_FN_NAME 必须一并回读校验——它决定 clientApiDev 的对账自调打向哪个 payNotify，
+  # 错了就是拿 dev 库的订单号去写 prod 库。
+  STEP=$((STEP + 1))
+  echo "==> [$STEP/$TOTAL] Deploy clientApiDev (dev 库) → $CLIENT_ENV_ID"
+  deploy_one_fn clientApiDev "$ROOT/fengyu-client/cloudbaserc.json" \
+    CLIENT_SECRET,PG_CONNECTION_STRING,PAYNOTIFY_FN_NAME \
+    PG_CONNECTION_STRING,TMAP_KEY,TMAP_SECRET,CLIENT_SECRET,PAYNOTIFY_FN_NAME
+  echo "  ✓ clientApiDev deployed"
+
+  STEP=$((STEP + 1))
+  echo "==> [$STEP/$TOTAL] Deploy payNotifyDev (dev 库) → $CLIENT_ENV_ID"
+  deploy_one_fn payNotifyDev "$ROOT/fengyu-client/cloudbaserc.json" \
+    CLIENT_SECRET,PG_CONNECTION_STRING,PAYNOTIFY_FN_NAME \
+    PG_CONNECTION_STRING,CLIENT_SECRET,PAYNOTIFY_FN_NAME
+  echo "  ✓ payNotifyDev deployed"
 fi
 
 echo ""
