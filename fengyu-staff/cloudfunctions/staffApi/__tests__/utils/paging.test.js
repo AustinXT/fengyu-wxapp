@@ -10,7 +10,12 @@
  * 下游拿它当 LIMIT/OFFSET 参数就是 500 级报错。
  */
 
-const { safePaging, MAX_PAGE, MAX_PAGE_SIZE } = require('../../utils/paging')
+const {
+  safePaging,
+  MAX_PAGE,
+  MAX_PAGE_SIZE,
+  MAX_PAGE_SIZE_CEILING,
+} = require('../../utils/paging')
 
 describe('safePaging', () => {
   test('正常整数入参：原样返回并算出 offset', () => {
@@ -134,6 +139,44 @@ describe('safePaging', () => {
     expect(safePaging(1, 9999, 20).safePageSize).toBe(MAX_PAGE_SIZE)
   })
 
+  // ---------- maxPageSize（第 4 参）自身的归一 ----------
+  // 闸门 2 双谱系评审**独立收敛到同一条**：不校验第 4 参，`Math.min(cap, n)` 会把 cap 的
+  // 小数 / 负数 / NaN 原样带到出口 —— 契约就是假的。注意 `-10` 还恰好满足 isSafeInteger，
+  // 说明光靠「是安全整数」这条判据不够，必须同时要求 ≥ 1。
+  test.each([
+    ['小数 cap', [1, 10, 20, 2.5], 2],          // 旧实现：Math.min(2.5,10) = 2.5 → LIMIT 2.5 → PG 500
+    ['NaN cap', [1, 10, 20, NaN], 10],          // 旧实现：Math.min(NaN,10) = NaN
+    ['负数 cap', [1, 10, 20, -3], 10],          // 旧实现：-3（isSafeInteger 为真但 LIMIT 非法）
+    ['零 cap', [1, 10, 20, 0], 10],
+    ['字符串 cap', [1, 10, 20, '50'], 10],       // 字符串靠 Math.min 强转"碰巧能用"，属未定义行为
+    ['cap 超硬上限', [1, 99999, 20, 1e9], MAX_PAGE_SIZE_CEILING],
+  ])('maxPageSize 非法/越界时被归一：%s', (_label, args, expected) => {
+    const r = safePaging(...args)
+    expect(r.safePageSize).toBe(expected)
+    expect(Number.isSafeInteger(r.safePageSize)).toBe(true)
+    expect(r.safePageSize).toBeGreaterThanOrEqual(1)
+  })
+
+  // 安全整数对乘法**不封闭**：page 与 pageSize 各自是安全整数不代表乘积也是。
+  // 契约成立的隐藏前提是 (MAX_PAGE-1) × cap ≤ 2^53-1，靠 MAX_PAGE_SIZE_CEILING 保证。
+  test('offset 乘积不溢出：两谱系给的极端反例都被封住', () => {
+    for (const args of [
+      [1_000_000, 1e10, 1, 1e10],
+      [1_000_000, Number.MAX_SAFE_INTEGER, 1, Number.MAX_SAFE_INTEGER],
+      [MAX_PAGE, MAX_PAGE_SIZE_CEILING, 20, MAX_PAGE_SIZE_CEILING],
+    ]) {
+      const r = safePaging(...args)
+      expect(Number.isSafeInteger(r.offset), `args=${JSON.stringify(args)}`).toBe(true)
+      expect(String(r.offset)).not.toMatch(/e\+/i)
+      expect(r.offset).toBeLessThanOrEqual((MAX_PAGE - 1) * MAX_PAGE_SIZE_CEILING)
+    }
+  })
+
+  test('导出 MAX_PAGE_SIZE_CEILING 且满足 (MAX_PAGE-1)×CEILING 仍是安全整数', () => {
+    expect(MAX_PAGE_SIZE_CEILING).toBe(1000)
+    expect(Number.isSafeInteger((MAX_PAGE - 1) * MAX_PAGE_SIZE_CEILING)).toBe(true)
+  })
+
   test('任意入参组合下三个出口恒为**安全**整数且不超上限（表驱动兜底）', () => {
     // 输入表必须含 Number.MAX_SAFE_INTEGER 与空串：前者是 offset 溢出的唯一真实触发点，
     // 后者（Number('') === 0）是表单最常见的空值入参。
@@ -142,17 +185,20 @@ describe('safePaging', () => {
       null, undefined, {}, [], [5], '', '050', '12abc', true, false,
       Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER + 1, 2 ** 53, '9007199254740993',
     ]
+    // 第 4 参也纳入组合（闸门 2 双谱系的反例正是从这里进来的）
+    const caps = [undefined, 100, 50, 2.5, NaN, -10, 0, '50', 1e9, Infinity]
     for (const p of inputs) {
       for (const s of inputs) {
-        const r = safePaging(p, s, 50)
-        const label = `page=${String(p)} pageSize=${String(s)}`
+        const cap = caps[(inputs.indexOf(p) + inputs.indexOf(s)) % caps.length]
+        const r = safePaging(p, s, 50, cap)
+        const label = `page=${String(p)} pageSize=${String(s)} cap=${String(cap)}`
         expect(Number.isSafeInteger(r.safePage), label).toBe(true)
         expect(Number.isSafeInteger(r.safePageSize), label).toBe(true)
         expect(Number.isSafeInteger(r.offset), label).toBe(true)
         expect(r.safePage).toBeGreaterThanOrEqual(1)
         expect(r.safePage).toBeLessThanOrEqual(MAX_PAGE)
         expect(r.safePageSize).toBeGreaterThanOrEqual(1)
-        expect(r.safePageSize).toBeLessThanOrEqual(MAX_PAGE_SIZE)
+        expect(r.safePageSize).toBeLessThanOrEqual(MAX_PAGE_SIZE_CEILING)
         // pg 按 toString() 传参：任何指数记法都会让 PG int8in 报错
         expect(String(r.offset), label).not.toMatch(/e\+/i)
       }
