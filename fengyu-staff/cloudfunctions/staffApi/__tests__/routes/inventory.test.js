@@ -1388,6 +1388,90 @@ describe('inventory.approveDoc / rejectDoc 鉴权主体（#235）', () => {
     expect(client.query.mock.calls.some(([sql]) => /UPDATE inventory_docs/.test(sql))).toBe(false)
   })
 
+  /** rejectDoc 是独立实现，同一条不变量必须各自钉住（codex 谱系指出只保护了 approveDoc） */
+  test('rejectDoc：两端非空且 source 无权 → 必须按 source 拒绝（不得改用 target 鉴权）', async () => {
+    const ctx = createCtx({
+      payload: { id: 'DOC-BOTH-ENDS-R', auditRemark: '越权探测' },
+      auth: {
+        roles: ['finance'],
+        roleBindings: [{ role: 'finance', scopeId: 'market-A', scopeType: '市场' }],
+        scopeStoreIds: ['store-A'],
+        effectiveStoreId: null,
+      },
+    })
+    pg.query.mockImplementation(async (query, params) => {
+      const sql = String(query)
+      if (sql.includes('WITH RECURSIVE descendants')) return [{ store_id: 'store-A' }]
+      if (sql.includes('SELECT location_id, location_type, parent_location_id')) {
+        return [{
+          location_id: params[0], org_node_id: params[0], location_type: '门店',
+          parent_location_id: 'market-A', is_active: true,
+        }]
+      }
+      return []
+    })
+    const client = mockTransactionClient([
+      {
+        rows: [{
+          doc_type: '院退货',
+          status: '待审批',
+          source_org_node_id: 'store-B',
+          target_org_node_id: 'store-A',
+        }],
+      },
+      { rows: [{ store_id: 'store-A' }] },
+    ])
+
+    await expect(inventoryRoutes.rejectDoc(ctx)).rejects.toThrow(
+      'PERMISSION_DENIED: 无权审批该门店库存单据',
+    )
+    expect(client.query.mock.calls.some(([sql]) => /UPDATE inventory_docs/.test(sql))).toBe(false)
+  })
+
+  /**
+   * source 为空这一位在鉴权之前可见，是权衡后保留的（见 routes/inventory.js 里的注释）。
+   * 这里钉住它**不产生任何副作用** —— 即便 target 也在审批人权限之外。
+   */
+  test('approveDoc：source 为空且 target 也无权 → 仍零副作用', async () => {
+    const ctx = createCtx({
+      payload: { id: 'DOC-NO-SRC-NO-PERM' },
+      auth: {
+        roles: ['finance'],
+        roleBindings: [{ role: 'finance', scopeId: 'market-A', scopeType: '市场' }],
+        scopeStoreIds: ['store-A'],
+        effectiveStoreId: null,
+      },
+    })
+    pg.query.mockImplementation(async (query, params) => {
+      const sql = String(query)
+      if (sql.includes('WITH RECURSIVE descendants')) return [{ store_id: 'store-A' }]
+      if (sql.includes('SELECT location_id, location_type, parent_location_id')) {
+        return [{
+          location_id: params[0], org_node_id: params[0], location_type: '门店',
+          parent_location_id: 'market-Z', is_active: true,
+        }]
+      }
+      return []
+    })
+    const client = mockTransactionClient([
+      {
+        rows: [{
+          id: 'DOC-NO-SRC-NO-PERM',
+          doc_type: '院退货',
+          status: '待审批',
+          source_org_node_id: null,
+          target_org_node_id: 'store-OUTSIDE',
+        }],
+      },
+    ])
+
+    await expect(inventoryRoutes.approveDoc(ctx)).rejects.toThrow(
+      'INVALID_STATE: 待审批单据缺少出库主体',
+    )
+    expect(client.query.mock.calls.some(([sql]) => /FROM inventory_doc_items/.test(sql))).toBe(false)
+    expect(client.query.mock.calls.some(([sql]) => /UPDATE inventory_docs/.test(sql))).toBe(false)
+  })
+
   /**
    * **语义**不变量（不是文本形状）：可审批的类型必须全部是出库方向。
    *
@@ -1413,14 +1497,32 @@ describe('inventory.approveDoc / rejectDoc 鉴权主体（#235）', () => {
    * 守卫必须用**独立分类器**判方向。钉住它引用 OUTBOUND_DOC_TYPES ——
    * 只要有人把它改回「从 APPROVAL_DOC_TYPES 自身派生方向」，这条就红。
    */
-  test('方向守卫用独立分类器（OUTBOUND）而非从 APPROVAL 自身派生', () => {
-    const fn = functionSource('assertApprovalOutboundDirection')
-    expect(fn, '缺少 assertApprovalOutboundDirection 守卫').toBeTruthy()
-    expect(fn, '守卫必须用 OUTBOUND_DOC_TYPES 判方向').toMatch(/OUTBOUND_DOC_TYPES\.has\(/)
-    expect(fn, '守卫必须是 throw 而非静默返回').toMatch(/throw new Error\('INVALID_STATE/)
-    // 不得出现「用 APPROVAL 集合算出方向再拿方向去比」的恒真写法
-    expect(fn, '方向不得从 APPROVAL_DOC_TYPES 自身派生（恒真守卫）')
-      .not.toMatch(/APPROVAL_DOC_TYPES\.has\([^)]*\)\s*\?/)
+  /**
+   * **行为性**证明守卫真的 fail-closed，而不只是「源码里出现了 OUTBOUND_DOC_TYPES」。
+   *
+   * codex 谱系指出：只断言「引用了 OUTBOUND + 有 throw」时，下面这种退化实现仍会全绿——
+   *   `function f(t) { OUTBOUND_DOC_TYPES.has(t); if (!APPROVAL.has(t)) throw ... }`
+   * 所以这里把函数源码抽出来，注入**构造的**集合后真的执行它：
+   * 造一个「属于 APPROVAL 但不属于 OUTBOUND」的类型（正是将来放开入库审批时的形态），
+   * 断言它必定抛错。恒真守卫在这个注入下会静默放行 → 红。
+   */
+  test('方向守卫在「属于 APPROVAL 但不属于 OUTBOUND」时必定抛错（注入集合实测）', () => {
+    const fnSrc = functionSource('assertApprovalOutboundDirection')
+    expect(fnSrc, '缺少 assertApprovalOutboundDirection 守卫').toBeTruthy()
+    const makeGuard = new Function(
+      'APPROVAL_DOC_TYPES', 'OUTBOUND_DOC_TYPES',
+      `function assertApprovalOutboundDirection(docType) ${fnSrc}
+       return assertApprovalOutboundDirection`,
+    )
+
+    // 入库方向的审批类型：属 APPROVAL、不属 OUTBOUND —— 必须 fail-closed
+    const guard = makeGuard(new Set(['某入库审批类型']), new Set(['某出库类型']))
+    expect(() => guard('某入库审批类型')).toThrow('该审批方向尚未支持')
+    // 完全不属 APPROVAL 的类型走另一条错误
+    expect(() => guard('无关类型')).toThrow('该单据类型不需要审批')
+    // 同属两者 → 放行
+    const ok = makeGuard(new Set(['出库审批类型']), new Set(['出库审批类型']))
+    expect(() => ok('出库审批类型')).not.toThrow()
   })
 
   /**

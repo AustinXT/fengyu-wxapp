@@ -1876,7 +1876,18 @@ async function approveDoc(ctx) {
      *
      * 方向守卫刻意放在鉴权**之后**：它一度被提到最前面，结果让无权调用者能区分
      * 「该单不属可审批类型」（INVALID_STATE）与「无权审批该门店」（PERMISSION_DENIED），
-     * 凭空多泄漏 1 bit。现在与旧行为一致 —— 无权者一律先拿 PERMISSION_DENIED。
+     * 凭空多泄漏 1 bit。现在恢复成与旧行为一致。
+     *
+     * ⚠️ 但**不能**说成「无权者一律先拿 PERMISSION_DENIED」：source 空检查仍在鉴权之前，
+     * 所以「source 为空」这一位对无权者仍可见（codex 谱系指出注释与实现不符）。
+     * 保持现状是权衡后的选择：
+     *   - 去掉空检查 → `ensureStoreLocation(null)` 抛 `NOT_FOUND: 库存主体不存在`，
+     *     同样可区分，只是换了个错误码，白白损失一条可读的诊断信息；
+     *   - 按「先用 target 做一次仅用于信息披露控制的 scope gate」来堵 → 要在这里写出
+     *     「拿 target 鉴权」的代码路径，而那正是本 issue 要消灭的东西，后来者极易误读误用。
+     * 而这一位在**当前所有可达类型上不可达**：`STAFF_VISIBLE ∩ APPROVAL` = {院退货, 院产品报损}，
+     * 前者 source 恒非空、后者同主体，source 为空只可能是数据异常。已补用例钉住
+     * 「source 为空且 target 也无权」时同样不产生任何副作用。
      */
     if (!head.source_org_node_id) throw new Error('INVALID_STATE: 待审批单据缺少出库主体')
     const actingStore = await ensureStoreLocation(head.source_org_node_id, client)
