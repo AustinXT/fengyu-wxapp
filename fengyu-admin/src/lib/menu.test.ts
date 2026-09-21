@@ -7,6 +7,7 @@ import {
   isMenuParent,
   MENU_CONFIG,
 } from './menu'
+import { DATA_CENTER_TABS } from './data-center/params'
 import { DEFAULT_PERMISSION_MATRIX } from './permissions'
 import type { AuthSession, RoleType } from './types'
 
@@ -124,6 +125,16 @@ describe('MENU_CONFIG 完整性', () => {
   it('每个业务域均有子页', () => {
     for (const node of MENU_CONFIG.filter(isMenuParent)) {
       expect(node.children.length, `${node.label} 缺少二级菜单`).toBeGreaterThan(0)
+    }
+  })
+
+  // menu.ts 的 4 个 href 是纯字符串字面量，tsc 管不到；漏配只会表现为「侧边栏少一个入口」，
+  // 没有任何别的测试会红（page-permission-coverage 的守护是 menu → gates 单向的，
+  // menu 自己漏了它就遍历不到）。
+  it('每个数据中心板块都有侧边栏入口', () => {
+    const hrefs = new Set(leaves.map((item) => item.href))
+    for (const board of DATA_CENTER_TABS) {
+      expect(hrefs.has(`/data-center/${board}`), `板块 ${board} 缺侧边栏入口`).toBe(true)
     }
   })
 

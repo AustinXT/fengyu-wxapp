@@ -60,7 +60,8 @@ const LIST_PAGE_GATES: Record<string, Clause[]> = {
   '/legacy-orders': ['legacy_order:list', 'store:list'],
   // —— 数据管理 ——
   // 数据中心：4 个板块各占一条 menu href；SSR 仅 getDataCenterScopeOptions 闸门，板块数据客户端取数。
-  // 裸 '/data-center' 已不在 menu 中（纯 redirect 页，不查库），保留建模以防深链回归。
+  // 裸 '/data-center' 已不在 menu 中（纯 redirect 页，不查库），`seenBy()` 对它返回 []，
+  // 故它只参与「admin 能进所有页」那条断言，不再有 menu 可见性守护力——留作深链锚点。
   '/data-center': ['data_center:dashboard'],
   '/data-center/sales': ['data_center:dashboard'],
   '/data-center/customer': ['data_center:dashboard'],

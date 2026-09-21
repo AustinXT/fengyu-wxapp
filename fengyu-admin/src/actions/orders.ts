@@ -3598,7 +3598,9 @@ export const updatePaymentPerformanceAttributionDate = withPermission(
     revalidatePath('/orders')
     revalidatePath(`/orders/${result.saleOrderId}`)
     revalidatePath('/allocations')
-    // 'layout' 模式级联 /data-center 下全部板块路径（4 个板块各自独立路由）
+    // 'layout' 模式才能级联到 /data-center 下的 4 条板块路径（默认 'page' 模式只命中裸 redirect 页）。
+    // 注意这只清路由缓存：板块页是 force-dynamic、看板数据走客户端 Server Action，
+    // 所以它不是「让看板见到新数字」的机制，别依赖它。
     revalidatePath('/data-center', 'layout')
     return {
       success: true,

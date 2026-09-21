@@ -32,7 +32,7 @@ fengyu-admin/
 │   │   │   ├── (catalog)/                         # 商品与商城
 │   │   │   ├── (inventory)/inventory/             # 库存管理（库存、单据、资料、促销）
 │   │   │   ├── (organization)/                    # 组织、门店、商户、员工、提成
-│   │   │   ├── (analytics)/data-center/           # 数据中心
+│   │   │   ├── (analytics)/data-center/[board]/   # 数据中心（销售/客量/人效/品项）
 │   │   │   └── (system)/                          # 权限、消息、日志、系统配置
 │   │   └── globals.css        # Tailwind + 品牌色 CSS 变量
 │   ├── actions/               # Server Actions（18 模块，全部接真实 PG）

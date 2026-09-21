@@ -2,21 +2,12 @@ import { describe, it, expect } from 'vitest'
 import {
   DATA_CENTER_BOARD_LABELS,
   DATA_CENTER_TABS,
+  firstQueryValue,
   parseBoard,
-  parseTab,
   parseScope,
   parseTimeRange,
   parseBoardParams,
 } from './params'
-
-describe('parseTab', () => {
-  it('合法 tab 原样返回，非法回退 sales', () => {
-    expect(parseTab('customer')).toBe('customer')
-    expect(parseTab('product')).toBe('product')
-    expect(parseTab('xxx')).toBe('sales')
-    expect(parseTab(undefined)).toBe('sales')
-  })
-})
 
 describe('parseBoard', () => {
   it('合法板块原样返回，非法返回 null（不回退，交给 notFound 收口）', () => {
@@ -25,6 +16,19 @@ describe('parseBoard', () => {
     expect(parseBoard('xxx')).toBeNull()
     expect(parseBoard('')).toBeNull()
     expect(parseBoard(undefined)).toBeNull()
+  })
+
+  it('大小写敏感：不做 toLowerCase 容错', () => {
+    expect(parseBoard('Sales')).toBeNull()
+  })
+})
+
+describe('firstQueryValue', () => {
+  it('重复 query key 取首值，避免被 String(array) 压成逗号串', () => {
+    expect(firstQueryValue(['store', 'market'])).toBe('store')
+    expect(firstQueryValue('store')).toBe('store')
+    expect(firstQueryValue(undefined)).toBeUndefined()
+    expect(firstQueryValue([])).toBeUndefined()
   })
 })
 
