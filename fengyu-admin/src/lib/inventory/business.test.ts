@@ -1179,20 +1179,25 @@ function functionBodyNode(sf: ts.SourceFile, fnName: string): ts.Block {
     return impl?.body && ts.isBlock(impl.body) ? impl.body : undefined
   }
 
-  const visit = (node: ts.Node) => {
-    if (found) return
-    if (ts.isFunctionDeclaration(node) && node.name?.text === fnName && node.body) {
-      found = node.body
-      return
+  /**
+   * 只看**文件顶层声明**，不递归进任意作用域 —— 否则目标之前若有同名的嵌套函数/变量，
+   * 会选中那个影子声明，后续所有「顶层语句」检查实际检查的是诱饵函数（codex 第 4 轮 P3）。
+   */
+  for (const st of sf.statements) {
+    if (found) break
+    if (ts.isFunctionDeclaration(st) && st.name?.text === fnName && st.body) {
+      found = st.body
+      break
     }
-    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name)
-        && node.name.text === fnName && node.initializer) {
-      found = pickImplementation(node.initializer)
-      if (found) return
+    if (ts.isVariableStatement(st)) {
+      for (const decl of st.declarationList.declarations) {
+        if (ts.isIdentifier(decl.name) && decl.name.text === fnName && decl.initializer) {
+          found = pickImplementation(decl.initializer)
+          if (found) break
+        }
+      }
     }
-    ts.forEachChild(node, visit)
   }
-  visit(sf)
   expect(found, `${sf.fileName} 未找到函数 ${fnName}`).toBeTruthy()
   return found!
 }
@@ -1237,22 +1242,25 @@ function firstStatementGuardMessage(ifStmt: ts.IfStatement): string | null {
   const cond = first.expression.getText().replace(/\s+/g, '')
   if (cond !== 'sourceOrgNodeId&&targetOrgNodeId&&sourceOrgNodeId!==targetOrgNodeId') return null
 
-  let message: string | null = null
-  const findThrow = (n: ts.Node) => {
-    if (message !== null) return
-    if (ts.isThrowStatement(n) && n.expression && ts.isNewExpression(n.expression)) {
-      const args = n.expression.arguments ?? []
-      if (n.expression.expression.getText() === 'ApiError'
-          && args.length >= 2
-          && ts.isStringLiteral(args[0]) && args[0].text === 'INVALID_PARAMS'
-          && ts.isStringLiteral(args[1])) {
-        message = (args[1] as ts.StringLiteral).text
-      }
+  /**
+   * throw 必须是冲突分支的**直接**子语句。递归查找会被不可达子分支骗过（codex 第 4 轮）：
+   *     if (source && target && source !== target) {
+   *       if (source === target) { throw … }     // 条件互斥，永不执行
+   *     }
+   */
+  const inner = first.thenStatement
+  const direct = ts.isBlock(inner) ? Array.from(inner.statements) : [inner]
+  for (const st of direct) {
+    if (!ts.isThrowStatement(st) || !st.expression || !ts.isNewExpression(st.expression)) continue
+    const args = st.expression.arguments ?? []
+    if (st.expression.expression.getText() === 'ApiError'
+        && args.length >= 2
+        && ts.isStringLiteral(args[0]) && args[0].text === 'INVALID_PARAMS'
+        && ts.isStringLiteral(args[1])) {
+      return (args[1] as ts.StringLiteral).text
     }
-    ts.forEachChild(n, findThrow)
   }
-  findThrow(first.thenStatement)
-  return message
+  return null
 }
 
 /**
@@ -1281,6 +1289,10 @@ function ownershipAssignmentsBefore(body: ts.Block, beforePos: number): string[]
     // 不进入嵌套函数体：未被调用的回调里的赋值不该算（codex P3 的误红）。
     // 已知上限：guard 之前的 IIFE 或前置调用里的赋值会漏 —— 那种写法本身就该在评审里被拦。
     if (ts.isArrowFunction(n) || ts.isFunctionExpression(n) || ts.isFunctionDeclaration(n)) return
+    // `for (targetOrgNodeId of [...])` —— 循环变量就是赋值目标，不是 BinaryExpression（codex 第 4 轮）
+    if ((ts.isForOfStatement(n) || ts.isForInStatement(n)) && !ts.isVariableDeclarationList(n.initializer)) {
+      for (const name of namesInTarget(n.initializer)) hits.push(`${name} (for-loop target)`)
+    }
     if (ts.isBinaryExpression(n)
         && n.operatorToken.kind >= ts.SyntaxKind.FirstAssignment
         && n.operatorToken.kind <= ts.SyntaxKind.LastAssignment) {
@@ -1302,6 +1314,13 @@ function setMembers(sf: ts.SourceFile, varName: string): string[] {
         && n.initializer.expression.getText() === 'Set') {
       const arg = n.initializer.arguments?.[0]
       if (arg && ts.isArrayLiteralExpression(arg)) {
+        // 非字符串字面量元素（展开项 `...extra`、计算项）必须**直接失败**而不是被过滤掉 ——
+        // 否则往 SPECIALIZED 里塞一个含通用类型的 `...extra`，互斥断言照样绿（codex 第 4 轮）
+        const nonLiteral = arg.elements.filter((e) => !ts.isStringLiteral(e))
+        expect(
+          nonLiteral.map((e) => e.getText()),
+          `${varName} 含非字符串字面量元素，字面量守护无法覆盖它`,
+        ).toEqual([])
         members = arg.elements.filter(ts.isStringLiteral).map((e) => e.text)
       }
     }
@@ -1430,39 +1449,49 @@ describe('assertGenericDocLocationRules 的 case 与通用类型白名单一一�
       (st): st is ts.IfStatement => ts.isIfStatement(st)
         && st.expression.getText().replace(/\s+/g, '') === 'SPECIALIZED_DOC_TYPES.has(input.docType)',
     )
-    // 调用位置则要找**任意深度**的最早一次 —— 藏得再深也得排在拒绝之后
-    let callPos = Infinity
-    const scanCalls = (n: ts.Node) => {
-      if (ts.isCallExpression(n) && n.expression.getText() === 'assertGenericDocLocationRules') {
-        callPos = Math.min(callPos, n.getStart())
+    /**
+     * 调用位置只认**函数体顶层语句**里的那次（当前形态是 `await assertGenericDocLocationRules(…)`
+     * 这条 ExpressionStatement）。
+     *
+     * ⚠️ 不能「任意深度搜索」：删掉真实调用后写
+     *     const decoy = () => assertGenericDocLocationRules(…); void decoy
+     * 会让 callPos 仍是有限值且排在拒绝之后，而运行时**从未调用**规则函数（codex 第 4 轮）。
+     * 跨函数边界的调用不算。
+     */
+    const callPos = topLevelStatements(body).reduce((min, st) => {
+      let found = Infinity
+      const scan = (n: ts.Node) => {
+        // 顶层语句内部可以有 await/括号等包裹，但不跨函数边界
+        if (ts.isArrowFunction(n) || ts.isFunctionExpression(n) || ts.isFunctionDeclaration(n)) return
+        if (ts.isCallExpression(n) && n.expression.getText() === 'assertGenericDocLocationRules') {
+          found = Math.min(found, n.getStart())
+        }
+        ts.forEachChild(n, scan)
       }
-      ts.forEachChild(n, scanCalls)
-    }
-    ts.forEachChild(body, scanCalls)
+      scan(st)
+      return Math.min(min, found)
+    }, Infinity)
 
     expect(rejectIf, 'createInventoryCoreDoc 顶层不再无条件拒绝 SPECIALIZED 类型').toBeTruthy()
     expect(callPos, '未找到 assertGenericDocLocationRules 调用').toBeLessThan(Infinity)
 
-    // ① then 的**直接**子语句里必须有 throw（`if (flag) throw` 这种条件 throw 不算）
+    /**
+     * ① throw 必须是该分支的**第一条**语句。
+     *
+     * 「分支里某处有直接 throw」还不够（codex 第 4 轮）：在它前面插一句条件
+     * `if (…) return { success: true, … }`，部分 SPECIALIZED 单据就绕过了拒绝，而断言仍绿。
+     * 要求它是第一条，就不存在「throw 之前的退出路径」。
+     */
     const then = rejectIf!.thenStatement
     const directStatements = ts.isBlock(then) ? Array.from(then.statements) : [then]
-    const throwStmt = directStatements.find(ts.isThrowStatement)
-    expect(throwStmt, 'SPECIALIZED 分支里没有无条件 throw').toBeTruthy()
+    const throwStmt = directStatements[0]
+    expect(
+      throwStmt && ts.isThrowStatement(throwStmt),
+      'SPECIALIZED 分支的第一条语句不是 throw（前面存在其它语句就可能有提前退出路径）',
+    ).toBe(true)
 
-    // ② 该分支内不得先调用 assertGenericDocLocationRules
-    let callInsideBeforeThrow = false
-    const scanBranch = (n: ts.Node) => {
-      if (ts.isCallExpression(n) && n.expression.getText() === 'assertGenericDocLocationRules'
-          && n.getStart() < throwStmt!.getStart()) {
-        callInsideBeforeThrow = true
-      }
-      ts.forEachChild(n, scanBranch)
-    }
-    scanBranch(then)
-    expect(callInsideBeforeThrow, 'SPECIALIZED 分支在 throw 之前先调用了通用位置规则').toBe(false)
-
-    // ③ 比 throw 的位置，不是 if 的起点
-    expect(throwStmt!.getStart(), 'SPECIALIZED 拒绝被挪到了通用位置规则之后，dead case 的删除前提失效')
+    // ② 比 throw 的位置，不是 if 的起点
+    expect(throwStmt.getStart(), 'SPECIALIZED 拒绝被挪到了通用位置规则之后，dead case 的删除前提失效')
       .toBeLessThan(callPos)
   })
 })
