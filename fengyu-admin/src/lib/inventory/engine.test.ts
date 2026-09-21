@@ -30,6 +30,7 @@ import {
   approveInventoryCoreDoc,
   confirmInventoryCoreReceive,
   createInventoryCoreDoc,
+  genericDocEndpointSpec,
   createInventoryPromotionPlan,
   createInventorySku,
   createInventorySupplier,
@@ -46,6 +47,11 @@ import {
   updateInventoryPromotionPlan,
 } from './engine'
 import { hasPermission, isAdminScope } from '@/lib/permissions'
+import {
+  INVENTORY_DOC_TYPES,
+  INVENTORY_GENERIC_DOC_TYPES,
+  type InventoryDocType,
+} from './types'
 
 /*
  * 每个用例从干净的默认权限开始。
@@ -3375,12 +3381,18 @@ describe('#190 单据列表的多类型 / 多状态 / 撤回标记过滤', () =>
 })
 
 /**
- * 通用建单的层级 action 校验（#191）。
+ * 通用建单的层级 action 校验（#191；甲方 2026-09-21 拍板改成「显式放开向下代建」）。
  *
- * 入口的 `withAnyPermission` 是「三个 operate 任一」，只靠它，一个仅有
- * `inventory:market_operate` 的账号也能建「院产品报损」这类门店单 —— 而行级 scope
- * 拦不住（市场 scope 本就包含下属门店）。办理台把卡片按层级分页摆出来之后，
- * 服务端不跟上就成了「页面上没这张卡、接口却建得出来」。
+ * 入口的 `withAnyPermission` 是「三个 operate 任一」、不按 docType 分层，只靠它，一个仅有
+ * `inventory:store_operate` 的账号也能建「市场产品报损」这类上级单据。这道闸的职责是
+ * **只堵向上、显式放开「scope 能向下展开」的那一档代建**：
+ *   - 向上越级（门店建市场/供应链单、市场建供应链单）→ PERMISSION_DENIED；
+ *   - 市场替门店代建 → 放行，这是生产既有工作流，由 inventoryDelegatableOperateActions
+ *     的层级序显式表达，而不是靠权限并集碰巧漏出来；
+ *   - 总部替市场/门店代建 → **也拒**。access.ts 的 inventoryScopedOrgNodeIds 对总部绑定
+ *     不展开后代，总部账号选不出下级主体，放行只是把同一个 403 推迟到 assertOrgNodeVisible
+ *     （错误更晚、更含糊），顺带在 UI 下拉里堆 9 个死路选项。见 LEVEL_SCOPE_EXPANDS_DOWNWARD。
+ * 代建的**范围**由 assertOrgNodeVisible + assertGenericDocLocationRules 另行封死。
  */
 describe('#191 通用建单按 docType 校验层级 operate 权限', () => {
   beforeEach(() => {
@@ -3396,33 +3408,81 @@ describe('#191 通用建单按 docType 校验层级 operate 权限', () => {
     vi.mocked(hasPermission).mockImplementation((_session, action) => actions.includes(action))
   }
 
-  const CASES: Array<[string, string, string]> = [
-    ['院产品报损', 'inventory:store_operate', '门店'],
-    ['分院库存盘点', 'inventory:store_operate', '门店'],
-    ['院顾客产品出库', 'inventory:store_operate', '门店'],
-    ['市场产品报损', 'inventory:market_operate', '市场'],
-    ['市场库存盘点', 'inventory:market_operate', '市场'],
-    ['内部领用', 'inventory:supply_chain_operate', '供应链'],
+  function createDoc(docType: string) {
+    return createInventoryCoreDoc({
+      docType: docType as never,
+      sourceOrgNodeId: 'NODE-A1',
+      targetOrgNodeId: null,
+      docDate: '2026-09-19',
+      remark: '',
+      items: [{ skuId: 'SKU-1', quantity: 1 } as never],
+    })
+  }
+
+  /** 向上越级：只持有下级 operate，去建上级层级的单据 —— 必须被这道闸拦下。 */
+  const UPWARD_CASES: Array<[string, string]> = [
+    ['市场产品报损', 'inventory:store_operate'],
+    ['市场库存盘点', 'inventory:store_operate'],
+    ['内部领用', 'inventory:market_operate'],
+    ['内部领用', 'inventory:store_operate'],
   ]
 
-  it.each(CASES)('%s 需要 %s', async (docType, requiredAction) => {
-    // 持有另外两个 operate 也不行：层级各管各的
-    const others = [
-      'inventory:supply_chain_operate',
-      'inventory:market_operate',
-      'inventory:store_operate',
-    ].filter((action) => action !== requiredAction)
-    sessionWith(others)
-    await expect(
-      createInventoryCoreDoc({
-        docType: docType as never,
-        sourceOrgNodeId: 'NODE-A1',
-        targetOrgNodeId: null,
-        docDate: '2026-09-19',
-        remark: '',
-        items: [{ skuId: 'SKU-1', quantity: 1 } as never],
-      }),
-    ).rejects.toThrow('PERMISSION_DENIED')
+  it.each(UPWARD_CASES)('向上越级仍拒：%s 不接受 %s', async (docType, heldAction) => {
+    sessionWith([heldAction])
+    /*
+     * 必须连文案一起断言。光断言 'PERMISSION_DENIED' 是测不动的：这些用例的目标节点
+     * 本来也不在会话 scope 里，后面的 assertOrgNodeVisible 同样抛 PERMISSION_DENIED，
+     * 于是「把候选集改成恒返回三个 action」这种变异照样全绿。
+     * 文案里的「库存操作权限」只有层级 action 闸会写。
+     */
+    await expect(createDoc(docType)).rejects.toThrow('PERMISSION_DENIED')
+    await expect(createDoc(docType)).rejects.toThrow('库存操作权限')
+  })
+
+  /**
+   * 总部「代建」下级单据：也拒。
+   *
+   * 不是向上越级，而是**代建无意义**：inventoryScopedOrgNodeIds 对 scopeType==='总部'
+   * 的绑定只计入自身 scopeId、不展开后代，所以总部账号选不出市场/门店主体。放行的话
+   * 同一个请求照样死在后面的 assertOrgNodeVisible，只是错误更晚、文案是「无权操作该出库主体」
+   * 而不是「缺少市场库存操作权限」，用户只会以为是主体选错了。干脆在层级闸就拒。
+   */
+  const SUPPLY_CHAIN_DELEGATION_CASES: Array<[string, string]> = [
+    ['市场产品报损', 'inventory:supply_chain_operate'],
+    ['市场库存盘点', 'inventory:supply_chain_operate'],
+    ['院产品报损', 'inventory:supply_chain_operate'],
+    ['分院库存盘点', 'inventory:supply_chain_operate'],
+  ]
+
+  it.each(SUPPLY_CHAIN_DELEGATION_CASES)(
+    '总部代建仍拒（scope 不展开后代）：%s 不接受 %s',
+    async (docType, heldAction) => {
+      sessionWith([heldAction])
+      // 同 UPWARD_CASES：必须连文案一起断，否则「候选集恒返回三个 action」的变异会假绿
+      // （目标节点本来也不在 scope 里，assertOrgNodeVisible 同样抛 PERMISSION_DENIED）。
+      await expect(createDoc(docType)).rejects.toThrow('PERMISSION_DENIED')
+      await expect(createDoc(docType)).rejects.toThrow('库存操作权限')
+    },
+  )
+
+  /** 向下代建：持有市场 operate 去建门店单据 —— 显式放行（甲方 2026-09-21）。 */
+  const DOWNWARD_CASES: Array<[string, string]> = [
+    ['院产品报损', 'inventory:market_operate'],
+    ['分院库存盘点', 'inventory:market_operate'],
+    ['院顾客产品出库', 'inventory:market_operate'],
+  ]
+
+  it.each(DOWNWARD_CASES)('向下代建放行：%s 可由持有 %s 的账号建', async (docType, heldAction) => {
+    // 与下面那条同一写法：只断言「没被层级 action 闸拦住」，
+    // 后面的主体可见性/批次校验不在本用例范围，接受任何其它失败。
+    sessionWith([heldAction])
+    let error: unknown
+    try {
+      await createDoc(docType)
+    } catch (err) {
+      error = err
+    }
+    expect(String((error as Error)?.message ?? ''), docType).not.toContain('库存操作权限')
   })
 
   it('持有对应层级权限时不会被这道闸拦下', async () => {
@@ -3444,14 +3504,36 @@ describe('#191 通用建单按 docType 校验层级 operate 权限', () => {
     }
     expect(String((error as Error)?.message ?? '')).not.toContain('库存操作权限')
   })
+
+  it('总部建自己层级的内部领用仍放行 —— 收紧代建不能把本层级一起收掉', async () => {
+    /*
+     * 候选集的构造是「本层级 ∪ scope 能向下展开的上级」。谁要是把「本层级永远入选」
+     * 那一半删掉（只留 LEVEL_SCOPE_EXPANDS_DOWNWARD 过滤），供应链单的候选集会塌成空，
+     * 内部领用变成任何人都建不了，而上面所有「拒」的用例照样全绿。
+     */
+    sessionWith(['inventory:supply_chain_operate'])
+    let error: unknown
+    try {
+      await createDoc('内部领用')
+    } catch (err) {
+      error = err
+    }
+    expect(String((error as Error)?.message ?? '')).not.toContain('库存操作权限')
+  })
 })
 
 /**
  * 多绑定会话不能跨角色拼接「action 来自这条绑定、scope 来自那条绑定」（#191 round-2）。
  *
  * 入口的 withAnyPermission 收的是「持有三个 operate 任一」的角色并集，
- * 所以光加一道 `hasPermission(session, requiredAction)` 是半拉子：action 用并集、
+ * 所以光加一道 `hasPermission(session, 候选 action)` 是半拉子：action 用并集、
  * scope 也用并集，两者可以来自完全不同的绑定。
+ *
+ * ⚠️ 放开向下代建（2026-09-21）之后这个守护**没有失效**，只是发生位置变了：
+ * 门店单的候选集含 market_operate，市场绑定替下属门店建单**本来就合法**（下面第一条）；
+ * 真正还会拼接的是「候选集里一个都不持有的绑定提供了 scope」——
+ * 对应下面两条反例：一条被 action 闸拒（会话里根本没有候选 action），
+ * 一条被 scopeSessionToActions 收窄后的 scope 拒（候选 action 与目标节点来自不同绑定）。
  */
 describe('#191 层级权限必须与 scope 落在同一条角色绑定上', () => {
   beforeEach(() => {
@@ -3494,19 +3576,29 @@ describe('#191 层级权限必须与 scope 落在同一条角色绑定上', () =
     } as never
   }
 
-  it('门店单据的可见性只认授予 store_operate 的那条绑定，不吃市场绑定的范围', async () => {
+  it('市场绑定可替其下属门店建门店单（向下代建）', async () => {
     mockGetSession.mockResolvedValue(multiBindingSession())
-    // 门店 A1 只在市场绑定的范围里，而 store_operate 来自门店 B 的绑定 —— 不该放行
-    await expect(
-      createInventoryCoreDoc({
+    /*
+     * 门店 A1 只在市场 A 那条绑定的范围里。改口径前这被判作「拼接」而拒绝；
+     * 甲方 2026-09-21 拍板后它是合法的向下代建：市场 A 的绑定既持有候选 action
+     * （门店单候选集 = [market_operate, store_operate]）、其 scope 又覆盖 A1，
+     * 两者落在**同一条**绑定上 —— 市场 scope 确实展开到下属门店，代建能走通。
+     */
+    let error: unknown
+    try {
+      await createInventoryCoreDoc({
         docType: '院产品报损' as never,
         sourceOrgNodeId: 'NODE-A1',
         targetOrgNodeId: null,
         docDate: '2026-09-19',
         remark: '',
         items: [{ skuId: 'SKU-1', quantity: 1 } as never],
-      }),
-    ).rejects.toThrow(/PERMISSION_DENIED|无权/)
+      })
+    } catch (err) {
+      error = err
+    }
+    // 只断言没被权限/可见性闸拦下；后续主体类型、批次等校验不在本用例范围
+    expect(String((error as Error)?.message ?? '')).not.toMatch(/PERMISSION_DENIED|无权|库存操作权限/)
   })
 
   it('同一条绑定内的门店（门店 B）不被误伤', async () => {
@@ -3526,6 +3618,78 @@ describe('#191 层级权限必须与 scope 落在同一条角色绑定上', () =
     }
     // 只断言没被可见性/权限闸拦下；后续主体类型、批次等校验不在本用例范围
     expect(String((error as Error)?.message ?? '')).not.toMatch(/PERMISSION_DENIED|无权|库存操作权限/)
+  })
+
+  /**
+   * 拼接反例其一：scope 来自一条**根本不持有任何候选 operate** 的绑定。
+   *
+   * 角色 1 = store_operate @ 门店 B（让入口的 withAnyPermission 放行）；
+   * 角色 2 = market_price_view @ 市场 A（只提供可见性，不含任何 operate）。
+   * 对市场 A 建市场单：候选集 = [market_operate]，两条绑定都不持有
+   * —— 这正是新语义下层级 action 闸的全部价值：向下代建放开了，但「用门店权限 + 市场可见性
+   * 拼出一张市场单」仍然拒。
+   */
+  function splicingSession() {
+    return {
+      employeeId: 'E-SPLICE',
+      name: '拼接用户',
+      phone: '13800000000',
+      roles: [
+        {
+          role: 'inventory_store_operator', scopeId: 'NODE-B', scopeType: '门店',
+          actions: ['inventory:list', 'inventory:store_operate'],
+          scopeStoreIds: ['STORE-B'],
+          scopeOrgNodeIds: ['NODE-B'],
+        },
+        {
+          role: 'inventory_market_finance', scopeId: 'MKT-A', scopeType: '市场',
+          actions: ['inventory:list', 'inventory:market_price_view'],
+          scopeStoreIds: ['STORE-A1'],
+          scopeOrgNodeIds: ['MKT-A', 'NODE-A1'],
+        },
+      ],
+      permissions: {
+        actions: ['inventory:list', 'inventory:store_operate', 'inventory:market_price_view'],
+        scopeStoreIds: ['STORE-A1', 'STORE-B'],
+        scopeOrgNodeIds: ['MKT-A', 'NODE-A1', 'NODE-B'],
+      },
+    } as never
+  }
+
+  it('门店 operate + 市场只读可见性拼不出一张市场单', async () => {
+    mockGetSession.mockResolvedValue(splicingSession())
+    // 文案不再提「或其上级层级」：市场单的候选集里只剩市场自己（总部 scope 不展开）。
+    await expect(
+      createInventoryCoreDoc({
+        docType: '市场产品报损' as never,
+        sourceOrgNodeId: 'MKT-A',
+        targetOrgNodeId: null,
+        docDate: '2026-09-19',
+        remark: '',
+        items: [{ skuId: 'SKU-1', quantity: 1 } as never],
+      }),
+    ).rejects.toThrow('PERMISSION_DENIED: 缺少市场库存操作权限')
+  })
+
+  it('市场单的可见性只认持有候选 operate 的那条绑定，不吃门店绑定的范围', async () => {
+    /*
+     * 拼接反例其二，专门钉住 scopeSessionToActions(session, allowedActions)：
+     * 市场单候选集 = [market_operate] → 只有市场 A 那条绑定入选 →
+     * scope 收窄成 [MKT-A, NODE-A1]，门店 B 不在其中。
+     * 把 engine 里的 actingSession 退回外层 session（action 并集 + scope 并集），
+     * NODE-B 会混进可见范围，这条立刻转红。
+     */
+    mockGetSession.mockResolvedValue(multiBindingSession())
+    await expect(
+      createInventoryCoreDoc({
+        docType: '市场产品报损' as never,
+        sourceOrgNodeId: 'NODE-B',
+        targetOrgNodeId: null,
+        docDate: '2026-09-19',
+        remark: '',
+        items: [{ skuId: 'SKU-1', quantity: 1 } as never],
+      }),
+    ).rejects.toThrow('PERMISSION_DENIED: 无权操作该出库主体')
   })
 })
 
@@ -3597,5 +3761,407 @@ describe('#191 层级权限收紧不误伤 admin', () => {
         /PERMISSION_DENIED|无权|库存操作权限/,
       )
     }
+  })
+})
+
+/**
+ * #200：通用建单的 scope 校验必须钉在「本次真正被改动的库存主体」上。
+ *
+ * 改前的口径是 `sourceOrgNodeId ?? targetOrgNodeId`：对「院顾客退货」这类只改 target
+ * 的单据，攻击者拿一个自己有权的 source 当挡箭牌，就能把货退进 scope 外的门店 ——
+ * 而 source 在这类单据上本就不该出现，服务端却静默吞掉它并写进 inventory_docs，
+ * 0039 的 inventory_set_doc_market_id 触发器再按 COALESCE(source_market, target_market)
+ * 把单据归到攻击者的市场。
+ *
+ * ⚠️ 这个 describe 自带 beforeEach 把 isAdminScope 关掉：文件顶部的模块 mock 默认
+ * `() => true`，`vi.clearAllMocks()` 只清调用记录不恢复实现。忘了关的话
+ * `inventoryScopedOrgNodeIds` 直接返回 null，下面所有负向用例全部假绿。
+ */
+describe('#200 通用建单的权威库存主体与端点收窄', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockDb.select.mockReset()
+    mockDb.execute.mockReset()
+    mockDb.transaction.mockReset()
+    vi.mocked(isAdminScope).mockReturnValue(false)
+    vi.mocked(hasPermission).mockImplementation(
+      (session, action) => (session!.permissions.actions ?? []).includes(action),
+    )
+    mockDb.execute.mockResolvedValue([] as never)
+  })
+
+  /**
+   * 「价格档位」describe 里的 sessionWithActions 是那个 describe 内部的局部函数，
+   * 这里取不到，只能自建。形状必须带 roles[].actions / scopeStoreIds / scopeOrgNodeIds：
+   * withAnyPermission 先走 scopeSessionToActions 按 action 过滤角色，角色上缺这三个数组
+   * 会被判定为「无 scope 元数据」而整条收窄被跳过（见 lib/action-scope.ts:17-22）。
+   */
+  function scopedSession(
+    actions: string[],
+    scopeOrgNodeIds: string[],
+    scopeType: '市场' | '门店',
+  ) {
+    return {
+      employeeId: 'E-200',
+      name: '#200 测试用户',
+      phone: '13800000000',
+      roles: [{
+        role: 'inventory_op',
+        scopeId: scopeOrgNodeIds[0],
+        scopeType,
+        actions,
+        scopeStoreIds: [],
+        scopeOrgNodeIds,
+      }],
+      permissions: { actions, scopeStoreIds: [], scopeOrgNodeIds },
+    }
+  }
+
+  /** 门店会话：scope 只有 ORG-S1，ORG-S2 在 scope 外 */
+  function storeS1Session() {
+    return scopedSession(['inventory:list', 'inventory:store_operate'], ['ORG-S1'], '门店')
+  }
+
+  function createAndCatch(input: Record<string, unknown>): Promise<Error> {
+    return createInventoryCoreDoc(input as never).then(
+      () => { throw new Error('NO-ERROR：建单本应被拒绝，却成功返回') },
+      (err: Error) => err,
+    )
+  }
+
+  /** 前置校验不该碰库：证明拒绝发生在 ensureOrgNodeLocation / 事务之前 */
+  function expectNoDbTouched() {
+    expect(mockDb.transaction, 'db.transaction 不该被调用').not.toHaveBeenCalled()
+    expect(mockDb.execute, 'db.execute 不该被调用').not.toHaveBeenCalled()
+    expect(mockDb.select, 'db.select 不该被调用').not.toHaveBeenCalled()
+  }
+
+  // ── 负向 ────────────────────────────────────────────────────────────────
+
+  it('【N1】院顾客退货的 target 在 scope 外 → 拒绝，且一次库都不碰', async () => {
+    mockGetSession.mockResolvedValue(storeS1Session() as never)
+
+    const err = await createAndCatch({
+      docType: '院顾客退货',
+      targetOrgNodeId: 'ORG-S2',
+      items: [{ skuId: 'SKU-1', quantity: 1 }],
+    })
+
+    expect(err.message).toContain('无权操作该入库主体')
+    // 只断 rejects 的话，把 assertOrgNodeVisible 挪回 ensureOrgNodeLocation 之后照样绿 ——
+    // 而那样会先跑 syncInventoryLocations 的三条 UPSERT，并把「该节点存不存在 / 停没停用」
+    // 这个 oracle 泄露给越权方。
+    expectNoDbTouched()
+  })
+
+  it('【N2】院顾客退货夹带有权的 source 换无权的 target → 拒绝多余端点，不静默吞掉', async () => {
+    mockGetSession.mockResolvedValue(storeS1Session() as never)
+
+    const err = await createAndCatch({
+      docType: '院顾客退货',
+      sourceOrgNodeId: 'ORG-S1',
+      targetOrgNodeId: 'ORG-S2',
+      items: [{ skuId: 'SKU-1', quantity: 1 }],
+    })
+
+    expect(err.message).toContain('院顾客退货只能指定入库主体')
+    expectNoDbTouched()
+  })
+
+  it('【N3】院顾客产品出库的 source 在 scope 外 → 拒绝', async () => {
+    mockGetSession.mockResolvedValue(storeS1Session() as never)
+
+    const err = await createAndCatch({
+      docType: '院顾客产品出库',
+      sourceOrgNodeId: 'ORG-S2',
+      items: [{ skuId: 'SKU-1', quantity: 1 }],
+    })
+
+    expect(err.message).toContain('无权操作该出库主体')
+    expectNoDbTouched()
+  })
+
+  it('【N4】院顾客产品出库传 target → 即便两端同值且都有权也拒绝', async () => {
+    mockGetSession.mockResolvedValue(storeS1Session() as never)
+
+    // 故意用同值：证明拒绝来自 allowed 口径本身，而不是靠「两端不同」顺手挡住。
+    const err = await createAndCatch({
+      docType: '院顾客产品出库',
+      sourceOrgNodeId: 'ORG-S1',
+      targetOrgNodeId: 'ORG-S1',
+      items: [{ skuId: 'SKU-1', quantity: 1 }],
+    })
+
+    expect(err.message).toContain('院顾客产品出库只能指定出库主体')
+    expectNoDbTouched()
+  })
+
+  it('【N5】同主体单据两端不一致 → 拒绝，不因 source 有权就归一放行', async () => {
+    mockGetSession.mockResolvedValue(storeS1Session() as never)
+
+    const err = await createAndCatch({
+      docType: '院产品报损',
+      sourceOrgNodeId: 'ORG-S1',
+      targetOrgNodeId: 'ORG-S2',
+      items: [{ skuId: 'SKU-1', quantity: 1 }],
+    })
+
+    expect(err.message).toContain('必须是同一个库存主体')
+    // 改前是 `source ?? target` 静默吃掉 target，这张单会带着 ORG-S2 落库。
+    expectNoDbTouched()
+  })
+
+  it('【N6】同主体单据方向对称：无权端在 source 时报的仍是形状错，不是 PERMISSION_DENIED', async () => {
+    mockGetSession.mockResolvedValue(storeS1Session() as never)
+
+    const err = await createAndCatch({
+      docType: '院产品报损',
+      sourceOrgNodeId: 'ORG-S2',
+      targetOrgNodeId: 'ORG-S1',
+      items: [{ skuId: 'SKU-1', quantity: 1 }],
+    })
+
+    // 钉住 resolveGenericDocSubjects 必须早于 assertOrgNodeVisible：形状校验在 scope 之前。
+    expect(err.message).toContain('必须是同一个库存主体')
+    expect(err.message).not.toContain('PERMISSION_DENIED')
+    expectNoDbTouched()
+  })
+
+  // ── 正向 ────────────────────────────────────────────────────────────────
+
+  it('【P1】市场会话替 scope 内门店建院顾客退货 → 前置校验全过，走进事务', async () => {
+    mockGetSession.mockResolvedValue(scopedSession(
+      ['inventory:list', 'inventory:store_operate'],
+      ['ORG-M1', 'ORG-S1'],
+      '市场',
+    ) as never)
+    mockDb.select.mockImplementation(() => selectWithLimit([{
+      locationId: 'STORE-1', orgNodeId: 'ORG-S1', locationType: '门店',
+      parentLocationId: 'ORG-M1', isActive: true,
+    }]))
+    mockDb.transaction.mockImplementationOnce(async (callback: (tx: unknown) => unknown) => callback({
+      execute: vi.fn().mockRejectedValue(new Error('STOP-AFTER-VALIDATION')),
+    } as never))
+
+    const err = await createAndCatch({
+      docType: '院顾客退货',
+      targetOrgNodeId: 'ORG-S1',
+      items: [{ skuId: 'SKU-1', quantity: 1 }],
+    })
+
+    // 修完不能把「上级替 scope 内门店代建」一并挡死。
+    expect(err.message).toBe('STOP-AFTER-VALIDATION')
+  })
+
+  it('【P2】调货单的对端仍不做建单期 scope 校验：门店 → scope 外门店必须放行', async () => {
+    /*
+     * 这是 tests/e2e-actions/smoke-inventory-transfer.impl.mjs 三条 L2 冒烟的廉价镜像：
+     * storeA1 建「分院调货出库」STA1→STA2 期望成功。target 的校验被有意推迟到
+     * confirmInventoryCoreReceive（收货方自己的 scope 把关），建单期加 guard 会把
+     * 「门店发起调货」这条主干直接打死，而单测若没有这一条则全绿、只有冒烟才红。
+     */
+    mockGetSession.mockResolvedValue(storeS1Session() as never)
+    mockDb.select
+      .mockReturnValueOnce(selectWithLimit([{
+        locationId: 'STORE-1', orgNodeId: 'ORG-S1', locationType: '门店',
+        parentLocationId: 'MARKET-1', isActive: true,
+      }]))
+      .mockReturnValueOnce(selectWithLimit([{
+        locationId: 'STORE-2', orgNodeId: 'ORG-S2', locationType: '门店',
+        parentLocationId: 'MARKET-1', isActive: true,
+      }]))
+      .mockReturnValueOnce(selectWithoutLimit([
+        { locationId: 'STORE-1', orgNodeId: 'ORG-S1', locationType: '门店', parentLocationId: 'MARKET-1' },
+        { locationId: 'STORE-2', orgNodeId: 'ORG-S2', locationType: '门店', parentLocationId: 'MARKET-1' },
+      ]))
+    mockDb.transaction.mockImplementationOnce(async (callback: (tx: unknown) => unknown) => callback({
+      execute: vi.fn().mockRejectedValue(new Error('STOP-AFTER-VALIDATION')),
+    } as never))
+
+    const err = await createAndCatch({
+      docType: '分院调货出库',
+      sourceOrgNodeId: 'ORG-S1',
+      targetOrgNodeId: 'ORG-S2',
+      items: [{ skuId: 'SKU-1', quantity: 1, lotId: 1 }],
+    })
+
+    expect(err.message).toBe('STOP-AFTER-VALIDATION')
+  })
+
+  it('【P3】同主体单据只传一端仍可建（市场产品盘溢只给 target）', async () => {
+    mockGetSession.mockResolvedValue(scopedSession(
+      ['inventory:list', 'inventory:market_operate'],
+      ['MARKET-B'],
+      '市场',
+    ) as never)
+    mockDb.select.mockImplementation(() => selectWithLimit([{
+      locationId: 'MARKET-B', orgNodeId: 'MARKET-B', locationType: '市场',
+      parentLocationId: 'HQ', isActive: true,
+    }]))
+    mockDb.transaction.mockImplementationOnce(async (callback: (tx: unknown) => unknown) => callback({
+      execute: vi.fn().mockRejectedValue(new Error('STOP-AFTER-VALIDATION')),
+    } as never))
+
+    const err = await createAndCatch({
+      docType: '市场产品盘溢',
+      targetOrgNodeId: 'MARKET-B',
+      items: [{ skuId: 'SKU-1', quantity: 1 }],
+    })
+
+    expect(err.message).toBe('STOP-AFTER-VALIDATION')
+  })
+
+  // ── 口径快照 ────────────────────────────────────────────────────────────
+
+  /** [docType, authority, allowed, sameNode, deferredGuard?.role] */
+  const ENDPOINT_TABLE: Array<[InventoryDocType, string, string[], boolean, string | undefined]> = [
+    ['分院调货出库', 'source', ['source', 'target'], false, 'target'],
+    ['市场间调货出库', 'source', ['source', 'target'], false, 'target'],
+    ['内部领用', 'source', ['source', 'target'], true, undefined],
+    ['院顾客产品出库', 'source', ['source'], false, undefined],
+    ['院顾客退货', 'target', ['target'], false, undefined],
+    ['市场产品报损', 'source', ['source', 'target'], true, undefined],
+    ['院产品报损', 'source', ['source', 'target'], true, undefined],
+    ['市场产品盘溢', 'target', ['source', 'target'], true, undefined],
+    ['市场库存盘点', 'source', ['source', 'target'], true, undefined],
+    ['分院库存盘点', 'source', ['source', 'target'], true, undefined],
+  ]
+
+  it('【S1】通用建单 10 种类型的端点口径全表快照（新增类型不补口径即红）', () => {
+    expect(
+      ENDPOINT_TABLE.map(([docType]) => docType).sort(),
+      '端点口径表与 INVENTORY_GENERIC_DOC_TYPES 漂移了',
+    ).toEqual([...INVENTORY_GENERIC_DOC_TYPES].sort())
+
+    for (const [docType, authority, allowed, sameNode, deferredRole] of ENDPOINT_TABLE) {
+      const spec = genericDocEndpointSpec(docType)
+      expect([spec.authority, [...spec.allowed], spec.sameNode, spec.deferredGuard?.role], docType)
+        .toEqual([authority, allowed, sameNode, deferredRole])
+      // 豁免必须带理由，不能退化成一个光秃秃的开关
+      if (spec.deferredGuard) expect(spec.deferredGuard.reason, docType).toBeTruthy()
+    }
+  })
+
+  it('【S2】docFlowRole 与 movementPlan 不会只改一处', () => {
+    // 两者都不是导出符号，改用源码字面量守护（本文件 764/781/799 行同套路）。
+    const source = readFileSync(resolve(__dirname, 'engine.ts'), 'utf8')
+    const flowBody = source.slice(
+      source.indexOf('function docFlowRole('),
+      source.indexOf('function movementPlan('),
+    )
+    const planBody = source.slice(
+      source.indexOf('function movementPlan('),
+      source.indexOf('type DocEndpointRole'),
+    )
+    expect(flowBody, 'engine.ts 里找不到 docFlowRole').toBeTruthy()
+    expect(planBody, 'engine.ts 里找不到 movementPlan').toBeTruthy()
+
+    // 四个方向集合只能出现在 docFlowRole 里；movementPlan 只负责「状态是否已落库存」
+    for (const name of [
+      'NO_MOVEMENT_DOC_TYPES',
+      'RECEIVE_REQUIRED_DOC_TYPES',
+      'INBOUND_DOC_TYPES',
+      'OUTBOUND_DOC_TYPES',
+    ]) {
+      expect(flowBody, `docFlowRole 少了 ${name} 分支`).toContain(name)
+      expect(planBody, `movementPlan 又自己判了一遍 ${name}，两处会漂移`).not.toContain(name)
+    }
+    expect(planBody, 'movementPlan 必须委托给 docFlowRole').toContain('return docFlowRole(docType)')
+  })
+
+  it('【S2】端点口径与四个集合的字面量逐类型一致（全部 33 种单据）', () => {
+    const source = readFileSync(resolve(__dirname, 'engine.ts'), 'utf8')
+    const readSet = (name: string): Set<string> => {
+      const block = source.match(
+        new RegExp(`const ${name} = new Set<InventoryDocType>\\(\\[([\\s\\S]*?)\\]\\)`),
+      )?.[1]
+      expect(block, `engine.ts 里找不到 ${name}`).toBeTruthy()
+      return new Set([...block!.matchAll(/'([^']+)'/g)].map((m) => m[1]))
+    }
+    const noMovement = readSet('NO_MOVEMENT_DOC_TYPES')
+    const receive = readSet('RECEIVE_REQUIRED_DOC_TYPES')
+    const inbound = readSet('INBOUND_DOC_TYPES')
+    const outbound = readSet('OUTBOUND_DOC_TYPES')
+    const sameNodeSet = readSet('INTERNAL_SAME_NODE_DOC_TYPES')
+
+    const roleOf = (docType: string): 'source' | 'target' | null => {
+      if (noMovement.has(docType)) return null
+      if (receive.has(docType)) return 'source'
+      if (inbound.has(docType)) return 'target'
+      if (outbound.has(docType)) return 'source'
+      return null
+    }
+
+    expect(INVENTORY_DOC_TYPES.length).toBe(33)
+    for (const docType of INVENTORY_DOC_TYPES) {
+      const role = roleOf(docType)
+      if (sameNodeSet.has(docType)) {
+        expect(genericDocEndpointSpec(docType), docType).toMatchObject({
+          authority: role ?? 'source', sameNode: true,
+        })
+      } else if (receive.has(docType)) {
+        expect(genericDocEndpointSpec(docType), docType).toMatchObject({
+          authority: 'source', sameNode: false,
+        })
+      } else if (role) {
+        expect(genericDocEndpointSpec(docType), docType).toMatchObject({
+          authority: role, allowed: [role], sameNode: false,
+        })
+      } else {
+        // 没有静态流水方向、又不是同主体单据 → 权威主体无法判定，fail-closed
+        expect(() => genericDocEndpointSpec(docType), docType).toThrow('未定义权威库存主体')
+      }
+    }
+  })
+
+  it('【S3】非通用类型 fail-closed，不回落到 source ?? target', () => {
+    expect(() => genericDocEndpointSpec('门店报货')).toThrow('未定义权威库存主体')
+    const err = (() => {
+      try {
+        genericDocEndpointSpec('门店报货')
+        return null
+      } catch (e) {
+        return e as Error & { prefix?: string }
+      }
+    })()
+    expect(err?.prefix).toBe('INVALID_STATE')
+    expect(err?.message.startsWith('INVALID_STATE: ')).toBe(true)
+  })
+
+  // ── 驳回路径 ────────────────────────────────────────────────────────────
+
+  it('【R1】驳回按同一套端点口径校验 scope', async () => {
+    mockGetSession.mockResolvedValue(scopedSession(
+      ['inventory:list', 'inventory:market_approve'],
+      ['MARKET-1'],
+      '市场',
+    ) as never)
+    mockDb.transaction.mockImplementationOnce(async (callback: (tx: unknown) => unknown) => callback({
+      execute: initializedCutoverExecutor(vi.fn().mockResolvedValueOnce([{
+        doc_type: '市场产品报损', status: '待审批',
+        source_org_node_id: 'MARKET-9', target_org_node_id: 'MARKET-9',
+      }])),
+    } as never))
+
+    await expect(rejectInventoryCoreDoc('MBS-260920-0001'))
+      .rejects.toThrow('PERMISSION_DENIED')
+  })
+
+  it('【R1】fail-closed throw 不得抢在 assertGenericDocTransition 之前', async () => {
+    mockGetSession.mockResolvedValue(scopedSession(
+      ['inventory:list', 'inventory:market_approve'],
+      ['MARKET-1'],
+      '市场',
+    ) as never)
+    mockDb.transaction.mockImplementationOnce(async (callback: (tx: unknown) => unknown) => callback({
+      execute: initializedCutoverExecutor(vi.fn().mockResolvedValueOnce([{
+        doc_type: '市场退货', status: '待审批',
+        source_org_node_id: 'MARKET-9', target_org_node_id: 'HQ',
+      }])),
+    } as never))
+
+    // 专用类型的报错必须仍是这句，而不是「未定义权威库存主体」
+    await expect(rejectInventoryCoreDoc('MTH-260920-0001'))
+      .rejects.toThrow('必须通过对应的专用业务流程处理')
   })
 })

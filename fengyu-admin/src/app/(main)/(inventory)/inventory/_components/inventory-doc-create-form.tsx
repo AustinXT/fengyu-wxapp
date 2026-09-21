@@ -47,6 +47,53 @@ export const SOURCE_LOT_DOC_TYPES = new Set<InventoryDocType>([
   '库存转换出库',
 ])
 
+/**
+ * 通用建单的**合法端点**口径，与 engine.ts 的 `genericDocEndpointSpec` 同源（#200 S6-a）。
+ *
+ * engine.ts 第 2 行是 `import 'server-only'`，前端 import 会把 `@/db` 一起拖进浏览器包，
+ * 所以这里另写一份；两份不漂移由 `inventory-docs-page.test.tsx` 的源码字面量守护拦住
+ * （它直接读 engine.ts 里 `INTERNAL_SAME_NODE_DOC_TYPES` / `RECEIVE_REQUIRED_DOC_TYPES` /
+ *  `INBOUND_DOC_TYPES` / `OUTBOUND_DOC_TYPES` 四个集合的字面量，按 `genericDocEndpointSpec`
+ *  的分支顺序推导期望值）。
+ *
+ * - `same-node`   两端指同一个库存主体。两个下拉**都保持可用**并互相镜像同值 ——
+ *                 服务端两端不一致直接拒单（#200 AC4），镜像让用户点哪个都对。
+ * - `both`        两端各自独立（调货出库：source 出货、target 收货）。
+ * - `source-only` 只允许出库主体；入库主体下拉禁用，提交时该端点送 null。
+ * - `target-only` 只允许入库主体；出库主体下拉禁用，提交时该端点送 null。
+ *
+ * ⚠️ 只禁用**非法**的那一端，两端都合法的类型一律 enabled：`tests/e2e-inventory-ui`
+ * 的既有用例按 `selects.nth(n)` 定位并会直接操作同主体类型的 target 下拉
+ * （inv-02 的「市场产品盘溢」、inv-06 的 createGenericDoc 同时传两端），
+ * 禁用或删节点都会把它们打挂。
+ */
+export type GenericDocEndpointMode = 'same-node' | 'both' | 'source-only' | 'target-only'
+
+const GENERIC_DOC_ENDPOINT_MODE = {
+  分院调货出库: 'both',
+  市场间调货出库: 'both',
+  内部领用: 'same-node',
+  院顾客产品出库: 'source-only',
+  院顾客退货: 'target-only',
+  市场产品报损: 'same-node',
+  院产品报损: 'same-node',
+  市场产品盘溢: 'same-node',
+  市场库存盘点: 'same-node',
+  分院库存盘点: 'same-node',
+  // `satisfies Record<通用类型联合, …>`：漏一种、多一种、键写错都是编译错误。
+  // 别退化成 `Record<string, string>` —— 那样 tsc 就完全管不到了。
+} as const satisfies Record<(typeof INVENTORY_GENERIC_DOC_TYPES)[number], GenericDocEndpointMode>
+
+export function genericDocEndpointMode(docType: InventoryDocType): GenericDocEndpointMode {
+  // 非通用类型走各自的专用业务表单，不经本表单；'both' = 不收窄，是不可达的兜底。
+  // 服务端在这一支上是 fail-closed（`genericDocEndpointSpec` 直接 throw），
+  // 前端不跟着抛：表单层多放行一个端点只是少收窄一次，真正的闸门在服务端。
+  return (
+    (GENERIC_DOC_ENDPOINT_MODE as Partial<Record<InventoryDocType, GenericDocEndpointMode>>)[docType]
+    ?? 'both'
+  )
+}
+
 function formatDate(v: string | null | undefined) {
   return v ? v.slice(0, 10) : '—'
 }
@@ -167,6 +214,8 @@ export function InventoryDocCreateForm({
   const [remark, setRemark] = useState('')
   const [items, setItems] = useState<DraftItem[]>([defaultItem()])
   const requiresSourceLot = SOURCE_LOT_DOC_TYPES.has(docType)
+  /** 当前类型允许哪些端点（#200 S6）：决定两个主体下拉的禁用/镜像与 payload 的置空 */
+  const endpointMode = genericDocEndpointMode(docType)
   /**
    * 批次取数的表单级缓存：按 (库位, SKU) 存**Promise**，既去重在途请求也复用已取结果。
    * 没有它的话，N 条明细选同一个 SKU 就发 N 次；更隐蔽的是明细行用 index 当 React key，
@@ -238,8 +287,14 @@ export function InventoryDocCreateForm({
     try {
       const payload: CreateInventoryDocInput = {
         docType,
-        sourceOrgNodeId: sourceOrgNodeId || null,
-        targetOrgNodeId: targetOrgNodeId || null,
+        /*
+         * 非法端点一律送 null（#200 S6-f）：服务端 `resolveGenericDocSubjects` 对
+         * 「不该出现却给了非空值」的端点是直接拒单（AC5），不是静默忽略 ——
+         * 多送一个端点不会被吞掉，只会让用户收到一条他看不懂的报错。
+         * same-node 两端已在 onChange 里镜像成同值，原样送给服务端归一即可。
+         */
+        sourceOrgNodeId: endpointMode === 'target-only' ? null : (sourceOrgNodeId || null),
+        targetOrgNodeId: endpointMode === 'source-only' ? null : (targetOrgNodeId || null),
         docDate,
         remark,
         items: items.map<InventoryDocItemInput>((item) => ({
@@ -263,16 +318,23 @@ export function InventoryDocCreateForm({
        * （内部领用 / 顾客产品出库 / 顾客退货 / 盘溢 / 两种调货出库），重复提交 = 重复扣减或重复入库，
        * 事后只能红冲。同页的内置表单成功后都会 `setLines([初始行])`，这里对齐它们。
        *
-       * **主体与日期也要清**，别为了「连续建单少选一次」把它们留着：
-       * 盘点 / 报损 / 盘溢这些同主体类型在服务端走 `source ?? target`
-       * （engine.ts 的 INTERNAL_SAME_NODE_DOC_TYPES），残留的 source 会**静默吃掉**
-       * 用户这次选的 target —— 界面照常返回成功单号，货却记在上一张单的主体上。
-       * 明细已经清空、表单看着像新的，这个陷阱反而更难被发现。
+       * **主体与日期也要清**，别为了「连续建单少选一次」把它们留着：明细已经清空、
+       * 表单看着像新的，残留主体却会被下一张单原样提交。
+       *
+       * 这条的**理由在 #200 之后变了**，别照着旧版本推断行为：同主体类型服务端原先走
+       * `source ?? target`（engine.ts 的 INTERNAL_SAME_NODE_DOC_TYPES），残留 source 会
+       * 静默吃掉用户这次选的 target 并照常返回成功单号 —— 那个「悄悄把货记到上一张单的
+       * 主体上」的失败模式**已经不存在**：`resolveGenericDocSubjects` 现在对
+       * 「同主体类型两端不一致」（AC4）与「非法端点给了非空值」（AC5）一律硬拒单。
+       * 代价于是换成了另一种：用户对着一张看起来是空的表单，收到
+       * 「只能指定入库主体」/「……必须是同一个库存主体」这类对不上号的报错。
+       * 静默记错主体和突兀报错都不该给用户，清场是同一个解 ——
+       * 换单据类型那条路径同理，清在上面 docType 的 onChange（#200 S6-b）。
        * 日期同理：不重置的话下一张单会沿用上次补录的历史日期。
        *
        * 注：**单候选环境**（市场角色只管一个市场、门店角色只管一家店）下，主体清空后
        * 会被 `InventorySubjectSelect` 立刻填回那个唯一候选 —— 这是预期，不是没清掉。
-       * 那种环境里一张单也只可能是它，上面说的「残留 source 吃掉 target」根本无从发生。
+       * 那种环境里一张单也只可能是它，上面说的残留风险根本无从发生。
        */
       setItems([defaultItem()])
       setRemark('')
@@ -320,7 +382,25 @@ export function InventoryDocCreateForm({
         */}
       <div className="grid grid-cols-4 gap-3">
         <FieldLabel text="单据类型">
-          <Select value={docType} disabled={isDocTypeLocked} onChange={(e) => setDocType(e.target.value as InventoryDocType)}>
+          <Select
+            value={docType}
+            disabled={isDocTypeLocked}
+            onChange={(e) => {
+              setDocType(e.target.value as InventoryDocType)
+              /*
+               * 换类型必须清两端主体与各行批次（#200 S6-b）：新类型的合法端点可能不同。
+               * 不清的话，先选「院顾客产品出库」填了出库主体、再切「院顾客退货」，
+               * 用户对着一个看起来空的表单收到「只能指定入库主体」。
+               * 批次同理：批次是按出库主体的库位取的，主体一清旧 lotId 就不属于这张单了。
+               *
+               * ⚠️ 用 onChange 而不是 `useEffect([docType])` —— 这条链路有过 useEffect
+               * 自循环把批次下拉卡死的 P0（#129，见 DocLotSelect 的注释），不再往里加 effect。
+               */
+              setSourceOrgNodeId('')
+              setTargetOrgNodeId('')
+              setItems((prev) => (prev.some((item) => item.lotId) ? prev.map((item) => ({ ...item, lotId: '' })) : prev))
+            }}
+          >
             {availableDocTypes.map((type) => (
               <option key={type} value={type}>{type}</option>
             ))}
@@ -334,8 +414,13 @@ export function InventoryDocCreateForm({
             options={subjectOptions}
             value={sourceOrgNodeId}
             placeholder="出库/发起主体"
+            // 只禁非法端点：入库类（院顾客退货）没有出库主体这一说（#200 S6-c）
+            disabled={endpointMode === 'target-only'}
             onChange={(value) => {
               setSourceOrgNodeId(value)
+              // same-node：两端指同一个主体，服务端两端不一致直接拒单（#200 AC4）。
+              // 镜像而不是把 target 禁掉 —— 既有 e2e（inv-02 / inv-06）会直接操作 target 下拉。
+              if (endpointMode === 'same-node') setTargetOrgNodeId(value)
               // 换主体必须清批次：批次是按 (库位, SKU) 取的，换了库位旧的 lotId 就不属于这张单了。
               // 自动选中（唯一候选）同样走这条 onChange，联动不会被绕过。
               // 条件重建：mount 自动选中与清场后回填时 lotId 本就是空的，没必要多一次渲染。
@@ -348,7 +433,16 @@ export function InventoryDocCreateForm({
             options={subjectOptions}
             value={targetOrgNodeId}
             placeholder="入库/接收主体"
-            onChange={setTargetOrgNodeId}
+            // 只禁非法端点：纯出库类（院顾客产品出库）没有入库主体这一说（#200 S6-d）
+            disabled={endpointMode === 'source-only'}
+            onChange={(value) => {
+              setTargetOrgNodeId(value)
+              if (endpointMode === 'same-node') {
+                // 同主体类型下 target 也决定了 source，而批次是按 source 的库位取的，一并清
+                setSourceOrgNodeId(value)
+                setItems((prev) => (prev.some((item) => item.lotId) ? prev.map((item) => ({ ...item, lotId: '' })) : prev))
+              }
+            }}
           />
         </FieldLabel>
       </div>
