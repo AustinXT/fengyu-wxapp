@@ -412,6 +412,215 @@ describe('库存通用建单边界', () => {
   })
 })
 
+/**
+ * #200 建单的 scope 校验必须落在「本单真正被改动库存的主体」上。
+ *
+ * 改前取 `sourceOrgNodeId ?? targetOrgNodeId` 并只校验它：入库类单据的流水写在 target
+ * 上（`movementPlan.locationRole === 'target'`），却拿 source 去鉴权 —— 同时传一个自己
+ * 有权限的 source + 一个无权限的 target，就能往无权操作的主体里加库存。共享建单表单本来
+ * 就把出库/入库两个下拉都渲染出来，普通表单操作即可构造，不需要伪造请求。
+ */
+describe('#200 建单 scope 按真正被改动的主体校验', () => {
+  /** 门店账号：只对 ORG-S1 可见，对 ORG-S2 无权 */
+  const STORE_SESSION = {
+    employeeId: 'E002',
+    name: '门店账号',
+    phone: '13800000002',
+    roles: [{ role: 'manager', scopeId: 'ORG-S1', scopeType: '门店', scopeOrgNodeIds: ['ORG-S1'] }],
+    permissions: {
+      actions: ['inventory:create_doc', 'inventory:store_operate'],
+      scopeStoreIds: ['S1'],
+      scopeOrgNodeIds: ['ORG-S1'],
+    },
+  } as never
+
+  /**
+   * scope 校验现在**先于** `ensureOrgNodeLocation`（#200：否则「不存在 / 已停用 / 无权」
+   * 三种不同的错就成了探测无权节点状态的信道）。所以这个 mock 不再是走到鉴权的前提，
+   * 而是让鉴权通过后的那些用例能继续往下跑到事务。
+   */
+  function locationRow(locationType: string) {
+    return [{
+      locationId: 'LOC-X',
+      orgNodeId: 'ORG-X',
+      locationType,
+      parentLocationId: null,
+      isActive: true,
+    }]
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.mocked(isAdminScope).mockReturnValue(false)   // 非总部账号才有 scope 约束
+    mockGetSession.mockResolvedValue(STORE_SESSION)
+    mockDb.execute.mockResolvedValue([])
+    mockDb.select.mockReset()
+    mockDb.select.mockImplementation(() => selectWithLimit(locationRow('门店')))
+    mockDb.transaction.mockReset()
+    mockDb.transaction.mockImplementation(async () => {
+      throw new Error('REACHED-TRANSACTION')   // 任何越权组合都不该走到事务
+    })
+  })
+
+  it('入库类：target 无权限时必须拒，不得因为 source 有权限而放行', async () => {
+    // 院顾客退货 = INBOUND，流水写在 target；这正是 issue 举的触发场景
+    await expect(createInventoryCoreDoc({
+      docType: '院顾客退货',
+      targetOrgNodeId: 'ORG-S2',              // 无权限的另一门店
+      items: [{ skuId: 'SKU-1', quantity: 1 }],
+    } as never)).rejects.toThrow('无权操作该组织节点单据')
+  })
+
+  /**
+   * 只断言错误文案锁不住**顺序**：把 `ensureOrgNodeLocation` 移回鉴权之前，mock 的查询
+   * 照样成功、最终仍抛同一句「无权操作」，测试依旧全绿。而顺序正是这里的安全属性 ——
+   * 那个函数对「不存在 / 已停用 / 正常」抛三种不同的错，放在鉴权前就是一个探测无权节点
+   * 状态的信道，还会让无权者触发 `syncInventoryLocations()` 写操作。
+   * 所以直接断言：被拒的请求一次 DB 都没碰。
+   */
+  it('越权请求在任何 DB 访问之前就被拒（锁住鉴权/单边规则先于 location 查询）', async () => {
+    await expect(createInventoryCoreDoc({
+      docType: '院顾客退货',
+      targetOrgNodeId: 'ORG-S2',
+      items: [{ skuId: 'SKU-1', quantity: 1 }],
+    } as never)).rejects.toThrow('无权操作该组织节点单据')
+
+    expect(mockDb.select).not.toHaveBeenCalled()
+    expect(mockDb.execute).not.toHaveBeenCalled()
+    expect(mockDb.transaction).not.toHaveBeenCalled()
+  })
+
+  it('多余主体的请求同样零 DB 访问（单边规则必须先于 location 查询）', async () => {
+    await expect(createInventoryCoreDoc({
+      docType: '院顾客退货',
+      sourceOrgNodeId: 'ORG-S1',              // 有权限，但这类单据不接受出库主体
+      targetOrgNodeId: 'ORG-S1',
+      items: [{ skuId: 'SKU-1', quantity: 1 }],
+    } as never)).rejects.toThrow('院顾客退货不接受出库主体')
+
+    expect(mockDb.select).not.toHaveBeenCalled()
+    expect(mockDb.execute).not.toHaveBeenCalled()
+    expect(mockDb.transaction).not.toHaveBeenCalled()
+  })
+
+  /**
+   * 这条是本 issue 的核心回归，断言**必须精确到 PERMISSION_DENIED 的文案**：
+   *
+   * 本单有两道防线 ——「鉴权落在 target」和「单边单据拒绝另一边」，它们都能拦住这个组合，
+   * 但抛的错不同。若断言写成两者之一皆可（宽松正则），把 `actingOrgNodeId` 回退成
+   * `source ?? target` 后测试**照样全绿**（会走第二道防线抛 INVALID_PARAMS），这条回归
+   * 就白写了 —— 实测踩过。
+   *
+   * 精确到「无权操作该组织节点单据」才同时锁住两件事：鉴权对象是 target，
+   * 且鉴权发生在主体规则校验之前。
+   */
+  it('入库类：同时传有权限的 source + 无权限的 target 时，先以 target 鉴权并拒绝', async () => {
+    await expect(createInventoryCoreDoc({
+      docType: '院顾客退货',
+      sourceOrgNodeId: 'ORG-S1',              // 自己有权限
+      targetOrgNodeId: 'ORG-S2',              // 货实际进这里，但无权限
+      items: [{ skuId: 'SKU-1', quantity: 1 }],
+    } as never)).rejects.toThrow('无权操作该组织节点单据')
+  })
+
+  it('入库类：target 有权限时放行（校验对象换成 target，不是拒绝一切）', async () => {
+    await expect(createInventoryCoreDoc({
+      docType: '院顾客退货',
+      targetOrgNodeId: 'ORG-S1',
+      items: [{ skuId: 'SKU-1', quantity: 1 }],
+    } as never)).rejects.toThrow('REACHED-TRANSACTION')
+  })
+
+  it('出库类：source 无权限时必须拒', async () => {
+    await expect(createInventoryCoreDoc({
+      docType: '院顾客产品出库',
+      sourceOrgNodeId: 'ORG-S2',
+      items: [{ skuId: 'SKU-1', quantity: 1 }],
+    } as never)).rejects.toThrow('无权操作该组织节点单据')
+  })
+
+  it('单边单据传另一边的主体时拒绝，而不是静默忽略', async () => {
+    await expect(createInventoryCoreDoc({
+      docType: '院顾客产品出库',
+      sourceOrgNodeId: 'ORG-S1',
+      targetOrgNodeId: 'ORG-S1',
+      items: [{ skuId: 'SKU-1', quantity: 1 }],
+    } as never)).rejects.toThrow('院顾客产品出库不接受入库主体')
+
+    await expect(createInventoryCoreDoc({
+      docType: '院顾客退货',
+      sourceOrgNodeId: 'ORG-S1',
+      targetOrgNodeId: 'ORG-S1',
+      items: [{ skuId: 'SKU-1', quantity: 1 }],
+    } as never)).rejects.toThrow('院顾客退货不接受出库主体')
+  })
+
+  it('同主体单据：source 与 target 都给且不一致时拒绝（改前静默取 source，吃掉用户选的 target）', async () => {
+    mockDb.select.mockImplementation(() => selectWithLimit(locationRow('门店')))
+    await expect(createInventoryCoreDoc({
+      docType: '分院库存盘点',
+      sourceOrgNodeId: 'ORG-S1',
+      targetOrgNodeId: 'ORG-S2',
+      items: [{ skuId: 'SKU-1', quantity: 1 }],
+    } as never)).rejects.toThrow('出库主体与入库主体必须是同一个')
+  })
+
+  it('同主体单据：两边给同一个值时正常放行', async () => {
+    await expect(createInventoryCoreDoc({
+      docType: '分院库存盘点',
+      sourceOrgNodeId: 'ORG-S1',
+      targetOrgNodeId: 'ORG-S1',
+      items: [{ skuId: 'SKU-1', quantity: 1 }],
+    } as never)).rejects.toThrow('REACHED-TRANSACTION')
+  })
+
+  /**
+   * reject 的显式 source 校验原先没有任何回归测试 —— 既有 reject 用例走的是专用单据，
+   * 会在 `assertGenericDocTransition` 就提前退出，把代码恢复成 `source ?? target` 照样全绿。
+   * 这里用**通用**待审批单据打到那两行。
+   */
+  /** 锁「reject 按 source 鉴权」这个不变量本身（改前改后都成立），防止将来被改成按 target */
+  it('驳回：source 越权时拒绝', async () => {
+    mockDb.transaction.mockImplementationOnce(async (callback: (tx: unknown) => unknown) => callback({
+      execute: initializedCutoverExecutor(vi.fn().mockResolvedValueOnce([{
+        doc_type: '院产品报损', status: '待审批',
+        source_org_node_id: 'ORG-S2',        // 无权限
+        target_org_node_id: 'ORG-S1',        // 有权限
+      }])),
+    }))
+    await expect(rejectInventoryCoreDoc('SPH-260809-0001'))
+      .rejects.toThrow('无权操作该组织节点单据')
+  })
+
+  it('驳回：通用待审批单据缺 source 时明确报错，而不是悄悄拿 target 顶上', async () => {
+    mockDb.transaction.mockImplementationOnce(async (callback: (tx: unknown) => unknown) => callback({
+      execute: initializedCutoverExecutor(vi.fn().mockResolvedValueOnce([{
+        doc_type: '院产品报损', status: '待审批',
+        source_org_node_id: null,
+        target_org_node_id: 'ORG-S1',
+      }])),
+    }))
+    await expect(rejectInventoryCoreDoc('SPH-260809-0002'))
+      .rejects.toThrow('待审批单据缺少出库主体')
+  })
+
+  it('无流水单据（建单即待审批）沿用 source ?? target 口径，行为与改前一致', async () => {
+    // 院产品报损建单落「待审批」→ movementPlan 为 null，此刻不动库存，
+    // 真正扣减发生在审批那步（approveDoc 另有针对 source 的校验）
+    await expect(createInventoryCoreDoc({
+      docType: '院产品报损',
+      sourceOrgNodeId: 'ORG-S2',
+      items: [{ skuId: 'SKU-1', quantity: 1 }],
+    } as never)).rejects.toThrow('无权操作该组织节点单据')
+
+    await expect(createInventoryCoreDoc({
+      docType: '院产品报损',
+      sourceOrgNodeId: 'ORG-S1',
+      items: [{ skuId: 'SKU-1', quantity: 1 }],
+    } as never)).rejects.toThrow('REACHED-TRANSACTION')
+  })
+})
+
 describe('库存 SKU 来源与价格保护', () => {
   beforeEach(() => {
     vi.clearAllMocks()

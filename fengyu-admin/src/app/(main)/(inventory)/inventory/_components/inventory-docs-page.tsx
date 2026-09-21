@@ -826,7 +826,27 @@ function CreateDocDialog({
       </DialogHeader>
       <div className="mt-4 space-y-4">
         <div className="grid grid-cols-4 gap-3">
-          <Select value={docType} disabled={isDocTypeLocked} onChange={(e) => setDocType(e.target.value as InventoryDocType)}>
+          <Select
+            value={docType}
+            disabled={isDocTypeLocked}
+            onChange={(e) => {
+              setDocType(e.target.value as InventoryDocType)
+              /**
+               * #200：换单据类型必须清空两个主体。服务端现在会拒绝「单边单据收到另一边的
+               * 主体」（改前是静默忽略）—— 用同一个弹窗连着建两张不同类型的单时，上一张的
+               * 残留值会让新单以「XX 不接受入库主体」失败，而那个下拉在新类型下本来就不该有值。
+               *
+               * lotId 必须一起清，且**不能**指望「重新选主体时会清」——
+               * 只有出库主体的 onChange 清 lotId，入库主体的不清。于是有这条路径：
+               * 在「院顾客产品出库」选好门店+SKU+批次 → 切到「院产品报损」（同主体单据）→
+               * 只在「入库/接收主体」选回原门店（批次框因 source 为空而不可用，用户看不出它还选着）
+               * → 提交时 payload 仍带旧 lotId，服务端把 target 归一成 source 后会锁定并写入该批次。
+               */
+              setSourceOrgNodeId('')
+              setTargetOrgNodeId('')
+              setItems((prev) => (prev.some((item) => item.lotId) ? prev.map((item) => ({ ...item, lotId: '' })) : prev))
+            }}
+          >
             {availableDocTypes.map((type) => (
               <option key={type} value={type}>{type}</option>
             ))}
