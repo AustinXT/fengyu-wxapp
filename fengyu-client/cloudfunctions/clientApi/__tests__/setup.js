@@ -112,6 +112,10 @@ const mockLakalaClient = {
     tradeState: 'SUCCESS', tradeNo: 'LAK-T-001', accTradeNo: 'wx-txn-001',
     payMode: 'WECHAT', totalAmountFen: 0, payerAmountFen: 0, raw: {},
   })),
+  // 关单（#214）默认成功并返回 CLOSE；不 mock 会走真实实现打真网络
+  closeTrade: vi.fn(async () => ({
+    ok: true, code: 'BBS00000', msg: '操作成功', tradeState: 'CLOSE', raw: {},
+  })),
 }
 require.cache[lakalaClientPath] = {
   id: lakalaClientPath,
@@ -165,5 +169,8 @@ beforeEach(() => {
     ok: true, code: 'BBS00000', msg: '操作成功',
     tradeState: 'SUCCESS', tradeNo: 'LAK-T-001', accTradeNo: 'wx-txn-001',
     payMode: 'WECHAT', totalAmountFen: 0, payerAmountFen: 0, raw: {},
+  })
+  mockLakalaClient.closeTrade.mockReset().mockResolvedValue({
+    ok: true, code: 'BBS00000', msg: '操作成功', tradeState: 'CLOSE', raw: {},
   })
 })
