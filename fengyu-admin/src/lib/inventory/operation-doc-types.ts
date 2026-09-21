@@ -13,7 +13,7 @@ export const INVENTORY_OPERATION_IDS = [
   'market-report',
   'item-company-request',
   'purchase-order',
-  'supply-chain-purchase-order',
+  'market-report-summary',
   'company-shipment',
   'market-receipt',
   'supply-chain-receipt',
@@ -69,12 +69,18 @@ export interface InventoryOperationDocQuery {
 export const INVENTORY_OPERATION_DOC_QUERY: Record<InventoryOperationId, InventoryOperationDocQuery> = {
   // —— 供应链 ——
   'item-company-request': { docTypes: ['品项公司报货需求'] },
-  'supply-chain-purchase-order': { docTypes: ['供应链采购订单'] },
+  // 供应链跨市场汇总各市场报货需求（#193），是采购订单的来源之一。
+  'market-report-summary': { docTypes: ['市场报货汇总'] },
+  /*
+   * `供应链采购订单` 已于 #194 并入 `采购订单`（migration 0043 收敛存量 / 0044 收紧约束）：
+   * 两条链路的分流改看明细行的 `market_id`（非空走品项公司发货、NULL 走供应链采购入库），
+   * 不再由单据类型区分。所以原先的 supply-chain-purchase-order 业务卡片也一并去掉了。
+   */
   'purchase-order': { docTypes: ['采购订单'] },
   'company-shipment': { docTypes: ['品项公司发货'] },
   'supply-chain-receipt': { docTypes: ['供应链采购入库'] },
-  // 关闭采购不产出新单，只把采购订单置为已取消。
-  'supply-chain-purchase-cancel': { docTypes: ['供应链采购订单'], statuses: ['已取消'] },
+  // 关闭采购不产出新单，只把采购订单置为已取消（类型随 #194 从「供应链采购订单」并成「采购订单」）。
+  'supply-chain-purchase-cancel': { docTypes: ['采购订单'], statuses: ['已取消'] },
   // 审批市场退货 → 货回供应链库，产出供应链退货入库单（business.ts: approveReturnForRestock）。
   'market-return-approval': { docTypes: ['供应链退货入库'] },
   /*

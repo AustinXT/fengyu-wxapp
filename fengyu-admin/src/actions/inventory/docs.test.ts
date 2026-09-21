@@ -79,7 +79,8 @@ describe('listInventoryOperationDocs 入参闸门', () => {
     // 防止映射与断言一起被改错还全绿。
     await listInventoryOperationDocs({ operationId: 'supply-chain-purchase-cancel', page: 1 })
     expect(mockEngine.listInventoryCoreDocs).toHaveBeenLastCalledWith({
-      docTypes: ['供应链采购订单'], statuses: ['已取消'], locationType: undefined,
+      // 类型随 #194 从「供应链采购订单」并成「采购订单」，靠 statuses 与建单业务区分
+      docTypes: ['采购订单'], statuses: ['已取消'], locationType: undefined,
       cancellationRequested: undefined, page: 1, pageSize: undefined,
     })
 
