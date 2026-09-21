@@ -44,7 +44,13 @@ const ROUTE_LABELS: Record<string, string> = {
   "/card-transactions": "充值卡流水",
   "/mall": "商城管理",
   "/merchants": "商户管理",
+  // 裸路径只做 redirect，正常不会渲染面包屑；但 /data-center/<非法段> 的 404 页靠这一条
+  // 渲染出可点的「数据中心」逃生链接（点它经裸路径跳回销售板块）。勿当死代码删。
   "/data-center": "数据中心",
+  "/data-center/sales": "销售",
+  "/data-center/customer": "客量",
+  "/data-center/efficiency": "人效",
+  "/data-center/product": "品项",
   "/permissions": "权限管理",
   "/messages": "消息中心",
   "/logs": "操作日志",
