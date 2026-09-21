@@ -26,6 +26,7 @@ const { shanghaiDateStr } = require("../utils/datetime");
 const { excludeDepositRefundSql } = require("../utils/consume-filter");
 const { assertPaymentAttributionReady } = require("../utils/attribution-guard");
 const { getPointsToYuanRate, getPointsDeductionMaxRate } = require("../utils/config");
+const { safePaging } = require("../utils/paging");
 
 /**
  * 顾客档案子 Tab 可见性闸门（calendar/refundHistory 等）。
@@ -221,22 +222,8 @@ async function search(ctx) {
   // 不传 page 时 safePage=1 / safePageSize=20 / offset=0，等价于改造前的 `LIMIT 20`。
   // `page: null` 视同未传（走裸数组分支）。
   const wantsPaged = page !== undefined && page !== null;
-  /**
-   * 两道防线都不可省：
-   * ① Math.trunc —— Math.max/min 不取整，`pageSize=2.5` 会原样进 LIMIT，
-   *    PG 按 int8 解析参数直接抛 `invalid input syntax for type bigint: "2.5"`（500 级，非降级）。
-   * ② Number.isSafeInteger —— `page='Infinity'` 经 trunc 仍是 Infinity，
-   *    `Math.max(1, Infinity)` 还是 Infinity，OFFSET 会变成 Infinity 同样打到 PG 报错。
-   *    非安全整数一律回落默认值。
-   */
-  const pageNum = Math.trunc(Number(page));
-  const safePage = Number.isSafeInteger(pageNum) && pageNum >= 1 ? pageNum : 1;
-  const pageSizeNum = Math.trunc(Number(pageSize));
-  // 非法值（0 / 负数 / NaN / Infinity）一律回落默认 20，语义与 mgmt-customer 的 `|| 50` 一致
-  const safePageSize = Number.isSafeInteger(pageSizeNum) && pageSizeNum >= 1
-    ? Math.min(100, pageSizeNum)
-    : 20;
-  const offset = (safePage - 1) * safePageSize;
+  // 取整 + 安全整数两道防线见 utils/paging.js 函数头（#240 抽成单源，staffApi 内共用）
+  const { safePage, safePageSize, offset } = safePaging(page, pageSize, 20);
   let rows = [];
 
   if (phone) {
@@ -1571,9 +1558,10 @@ async function listByTag(ctx) {
     return true
   })
 
-  // 分页
-  const offset = (page - 1) * pageSize
-  const paged = filtered.slice(offset, offset + pageSize)
+  // 分页归一见 utils/paging.js 函数头（#240：此处原先零校验，
+  // `page='abc'` → slice(NaN,NaN) 列表恒空、`page=-1` → 静默返回尾部错误数据）
+  const { safePageSize, offset } = safePaging(page, pageSize, 20)
+  const paged = filtered.slice(offset, offset + safePageSize)
 
   // 最近购买商品名（仅查分页后的用户，减少查询量）
   const pagedUserIds = paged.map(r => r.user_id).filter(Boolean)
@@ -1641,7 +1629,9 @@ async function refundHistory(ctx) {
   }
   // 交易数据跟顾客走：退款流水不再按门店过滤（顾客可见性已由 assertProfileVisibleByIdentifier 守护）
   const refundWhere = refundClientWhere
-  refundParams.push(pageSize, (page - 1) * pageSize)
+  // 分页归一见 utils/paging.js 函数头（#240：此处原先零校验，pageSize 直接进 LIMIT）
+  const { safePageSize, offset } = safePaging(page, pageSize, 50)
+  refundParams.push(safePageSize, offset)
   const refundRows = await pg.query(`
     SELECT
       sop.id AS payment_id,
@@ -2142,9 +2132,8 @@ async function phoneChangeLogs(ctx) {
   if (!clientUserId && !clientPhone) {
     throw new Error('INVALID_PARAMS: 缺少 clientUserId 或 clientPhone')
   }
-  const safePage = Math.max(1, Number(page) || 1)
-  const safePageSize = Math.min(100, Math.max(1, Number(pageSize) || 50))
-  const offset = (safePage - 1) * safePageSize
+  // 取整 + 安全整数两道防线见 utils/paging.js 函数头（#240）
+  const { safePageSize, offset } = safePaging(page, pageSize, 50)
 
   // 手机号变更日志按 client_user_id 关联，先解析 user_id
   let cuid = clientUserId

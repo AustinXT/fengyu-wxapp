@@ -611,6 +611,50 @@ describe('mgmtCustomer.search SQL 形态', () => {
     expect(ctx.result.page).toBe(1)
   })
 
+  // ---------- #240 分页取整（invariant D-search-pagination） ----------
+  // 改前写法 `Math.min(100, Math.max(1, Number(pageSize) || 50))` 不取整：
+  // 2.5 既 >1 又 <100，两个夹子双双失效 → 2.5 原样进 LIMIT，
+  // PG 按 int8 解析抛 `invalid input syntax for type bigint: "2.5"`（500 级，非降级）。
+  test('#240 小数 pageSize 被取整：LIMIT/OFFSET 参数必须是整数', async () => {
+    setupCommonMocks({ searchRows: [] })
+    const ctx = makeHqCtx({ scopeType: 'all', page: 2.7, pageSize: 2.5 })
+    await search(ctx)
+
+    const call = pg.query.mock.calls.find((c) =>
+      /SELECT\s+c\.user_id,\s+c\.phone/.test(c[0]) && /OFFSET/.test(c[0]),
+    )
+    // page=2.7→2，pageSize=2.5→2，offset=(2-1)*2=2
+    expect(call[1]).toEqual([2, 2])
+    expect(Number.isInteger(call[1][0])).toBe(true)
+    expect(Number.isInteger(call[1][1])).toBe(true)
+    expect(ctx.result.page).toBe(2)
+    expect(ctx.result.pageSize).toBe(2)
+  })
+
+  test("#240 非安全整数回落默认：'Infinity' / 1e21 不得进 LIMIT/OFFSET", async () => {
+    // 'Infinity' 经 Math.trunc 仍是 Infinity，旧写法的 Math.max(1, Infinity) 也还是 Infinity。
+    setupCommonMocks({ searchRows: [] })
+    const ctxInf = makeHqCtx({ scopeType: 'all', page: 'Infinity', pageSize: 'Infinity' })
+    await search(ctxInf)
+    const infCall = pg.query.mock.calls.find((c) =>
+      /SELECT\s+c\.user_id,\s+c\.phone/.test(c[0]) && /OFFSET/.test(c[0]),
+    )
+    expect(infCall[1]).toEqual([50, 0])
+    expect(Number.isInteger(infCall[1][0])).toBe(true)
+    expect(Number.isInteger(infCall[1][1])).toBe(true)
+
+    // 1e21 超出安全整数范围（pg 会把它序列化成 "1e+21" 文本）→ 回落默认
+    setupCommonMocks({ searchRows: [] })
+    const ctxHuge = makeHqCtx({ scopeType: 'all', page: 1e21, pageSize: 1e21 })
+    await search(ctxHuge)
+    const hugeCall = pg.query.mock.calls.find((c) =>
+      /SELECT\s+c\.user_id,\s+c\.phone/.test(c[0]) && /OFFSET/.test(c[0]),
+    )
+    expect(hugeCall[1]).toEqual([50, 0])
+    expect(Number.isInteger(hugeCall[1][1])).toBe(true)
+    expect(ctxHuge.result.page).toBe(1)
+  })
+
   test('返回结构：customers + page + pageSize + hasMore', async () => {
     setupCommonMocks({
       searchRows: Array.from({ length: 50 }, (_, i) => ({

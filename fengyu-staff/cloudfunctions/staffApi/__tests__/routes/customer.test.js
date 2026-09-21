@@ -1449,6 +1449,40 @@ describe('customer.listByTag', () => {
     // tier 已下沉到 admin cron（customer_status/spending_tier DB 列），listByTag 不再输出
   })
 
+  // ---------- #240 内存分页守卫 ----------
+  // listByTag 走 filtered.slice(offset, offset+pageSize)，原先 page/pageSize 零校验：
+  //   page='abc' → slice(NaN, NaN) → 空数组（表现为「本店没有顾客」而非报错）
+  //   page=-1    → slice(-40,-20) → 静默返回列表尾部的错误一页
+  // 与 staff.performanceDetail 早已修掉的坑同型（见 routes/staff.js 的 toPositiveInt 注释）。
+  test('#240 page 非法（字符串 / 负数）不得让 slice 走进 NaN 或负索引', async () => {
+    const recent = new Date()
+    recent.setDate(recent.getDate() - 5)
+    const rows = Array.from({ length: 5 }, (_, i) => ({
+      user_id: `u${i}`, name: `客${i}`, phone: '13800000000', birthday: null,
+      member_level: 'VIP', last_service_date: recent.toISOString().slice(0, 10),
+      year_consumption: '25000',
+    }))
+
+    // 'abc' → NaN → 旧实现 slice(NaN,NaN) 返回空数组
+    const ctxNaN = createManagerCtx({ tag: 'active', page: 'abc', pageSize: 10 })
+    pg.query.mockResolvedValueOnce(rows).mockResolvedValueOnce([])
+    await customerRoutes.listByTag(ctxNaN)
+    expect(ctxNaN.result.customers).toHaveLength(5)
+    expect(ctxNaN.result.total).toBe(5)
+
+    // page=-1 → 旧实现 slice(-20,-10) 返回尾部错误数据；应回落第 1 页
+    const ctxNeg = createManagerCtx({ tag: 'active', page: -1, pageSize: 2 })
+    pg.query.mockResolvedValueOnce(rows).mockResolvedValueOnce([])
+    await customerRoutes.listByTag(ctxNeg)
+    expect(ctxNeg.result.customers.map(c => c.name)).toEqual(['客0', '客1'])
+
+    // pageSize 小数被取整（内存分页不会打到 PG，但切片长度必须确定）
+    const ctxFrac = createManagerCtx({ tag: 'active', page: 1, pageSize: 2.9 })
+    pg.query.mockResolvedValueOnce(rows).mockResolvedValueOnce([])
+    await customerRoutes.listByTag(ctxFrac)
+    expect(ctxFrac.result.customers).toHaveLength(2)
+  })
+
   test('按 sleeping 标签筛选（含无服务记录）', async () => {
     const ctx = createManagerCtx({ tag: 'sleeping', page: 1, pageSize: 10 })
 
@@ -1596,6 +1630,40 @@ describe('customer.listByTag', () => {
 // customer.refundHistory
 // ============================================================
 describe('customer.refundHistory', () => {
+  // ---------- #240 分页守卫 ----------
+  // 原先零守卫：`refundParams.push(pageSize, (page-1)*pageSize)` 直接把入参推进 SQL，
+  // `pageSize=2.5` 即复现本 issue 的 500；无上限时 `pageSize=1e6` 一次吐全部退款流水。
+  test('#240 pageSize 小数 / 超上限 / 非安全整数都不得原样进 LIMIT', async () => {
+    const mockThree = () => pg.query
+      .mockResolvedValueOnce([])   // Q1 退款流水
+      .mockResolvedValueOnce([])   // Q2 转换单
+      .mockResolvedValueOnce([])   // Q3 转换单明细
+
+    const refundCall = () => pg.query.mock.calls.find(c => /sale_order_payments/.test(c[0]))
+
+    const ctxFrac = createManagerCtx({ clientUserId: 'u1', page: 2.7, pageSize: 2.5 })
+    mockThree()
+    await customerRoutes.refundHistory(ctxFrac)
+    let params = refundCall()[1]
+    // 末两位是 LIMIT / OFFSET：pageSize=2.5→2，page=2.7→2，offset=(2-1)*2=2
+    expect(params.slice(-2)).toEqual([2, 2])
+    expect(params.slice(-2).every(Number.isInteger)).toBe(true)
+
+    pg.query.mockClear()
+    const ctxBig = createManagerCtx({ clientUserId: 'u1', page: 1, pageSize: 1e6 })
+    mockThree()
+    await customerRoutes.refundHistory(ctxBig)
+    params = refundCall()[1]
+    expect(params.slice(-2)).toEqual([100, 0])   // 夹到 MAX_PAGE_SIZE，不会一次吐全表
+
+    pg.query.mockClear()
+    const ctxInf = createManagerCtx({ clientUserId: 'u1', page: 'Infinity', pageSize: 'Infinity' })
+    mockThree()
+    await customerRoutes.refundHistory(ctxInf)
+    params = refundCall()[1]
+    expect(params.slice(-2)).toEqual([50, 0])    // 回落默认 50 / 第 1 页
+  })
+
   // refundHistory 拆分为 3 query —
   //   1) sale_order_payments[change_type='退款'] JOIN sale_orders（refund_reason / audit_* / note 在主表）
   //   2) sale_orders[type='转换单']
@@ -2460,6 +2528,47 @@ describe('customer.phoneChangeLogs', () => {
     pg.query.mockResolvedValueOnce([])  // 解析 user_id 无行
     await customerRoutes.phoneChangeLogs(ctx)
     expect(ctx.result).toEqual([])
+  })
+
+  // ---------- #240 分页取整 ----------
+  // 改前写法 `Math.min(100, Math.max(1, Number(pageSize) || 50))` 不取整：
+  // 2.5 既 >1 又 <100，两个夹子双双失效 → 2.5 原样进 LIMIT，
+  // PG 按 int8 解析抛 `invalid input syntax for type bigint: "2.5"`（500 级，非降级）。
+  test('#240 小数 pageSize 被取整：LIMIT/OFFSET 参数必须是整数', async () => {
+    const ctx = createManagerCtx({ clientUserId: 'u1', page: 2.7, pageSize: 2.5 })
+    pg.query
+      .mockResolvedValueOnce([{ bound_store_id: 'store-001', bound_employee_id: 'emp-x' }])
+      .mockResolvedValueOnce([])
+    await customerRoutes.phoneChangeLogs(ctx)
+
+    // 按 SQL 特征取调用，不硬编码 mock.calls 下标 —— 守卫查询数量将来变化时不会误判
+    const logCall = pg.query.mock.calls.find(c => /FROM operation_logs/.test(c[0]))
+    expect(logCall[0]).toContain('LIMIT $2 OFFSET $3')
+    // pageSize=2.5→2，page=2.7→2，offset=(2-1)*2=2
+    expect(logCall[1]).toEqual(['u1', 2, 2])
+    expect(Number.isInteger(logCall[1][1])).toBe(true)
+    expect(Number.isInteger(logCall[1][2])).toBe(true)
+  })
+
+  test("#240 非安全整数回落默认 50：'Infinity' / 1e21 不得进 LIMIT/OFFSET", async () => {
+    const ctxInf = createManagerCtx({ clientUserId: 'u1', page: 'Infinity', pageSize: 'Infinity' })
+    pg.query
+      .mockResolvedValueOnce([{ bound_store_id: 'store-001', bound_employee_id: 'emp-x' }])
+      .mockResolvedValueOnce([])
+    await customerRoutes.phoneChangeLogs(ctxInf)
+    expect(pg.query.mock.calls.find(c => /FROM operation_logs/.test(c[0]))[1])
+      .toEqual(['u1', 50, 0])
+
+    pg.query.mockClear()
+    const ctxHuge = createManagerCtx({ clientUserId: 'u1', page: 1e21, pageSize: 1e21 })
+    pg.query
+      .mockResolvedValueOnce([{ bound_store_id: 'store-001', bound_employee_id: 'emp-x' }])
+      .mockResolvedValueOnce([])
+    await customerRoutes.phoneChangeLogs(ctxHuge)
+    // 1e21 超出安全整数范围（pg 会序列化成 "1e+21" 文本）→ 回落默认 50 / 第 1 页
+    const hugeParams = pg.query.mock.calls.find(c => /FROM operation_logs/.test(c[0]))[1]
+    expect(hugeParams).toEqual(['u1', 50, 0])
+    expect(Number.isInteger(hugeParams[2])).toBe(true)
   })
 })
 

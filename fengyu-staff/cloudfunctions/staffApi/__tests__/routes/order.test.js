@@ -7193,6 +7193,63 @@ describe('提货查询门店范围', () => {
     await expect(orderRoutes.pickupRecordsList(ctx)).rejects.toThrow(/PERMISSION_DENIED/)
     expect(pg.query).not.toHaveBeenCalled()
   })
+
+  // ---------- #240 日期入参校验（同类「非优雅降级」的漏网处）----------
+  // 原先零校验：`startDate='abc'` 直接绑进 `pr.created_at >= $n` → PG 22007
+  // → 全局 catch 降级成 {code:-1,'服务器内部错误'}，而非 -400 INVALID_PARAMS。
+  test.each([
+    [{ startDate: 'abc' }, /INVALID_PARAMS.*startDate/],
+    [{ endDate: '26-08-01' }, /INVALID_PARAMS.*endDate/],
+    [{ startDate: '2026-02-30' }, /INVALID_PARAMS.*startDate/],
+    [{ startDate: '2026-08-27', endDate: '2026-08-26' }, /INVALID_PARAMS.*不能晚于/],
+  ])('#240 非法日期入参抛 INVALID_PARAMS 而非打到 PG：%#', async (payload, re) => {
+    const ctx = createManagerCtx(payload)
+    await expect(orderRoutes.pickupRecordsList(ctx)).rejects.toThrow(re)
+    // 关键：必须在发 SQL **之前**拦住
+    expect(pg.query).not.toHaveBeenCalled()
+  })
+
+  test('#240 合法 YYYY-MM-DD 仍正常进 SQL（前端 picker 的既有格式不受影响）', async () => {
+    const ctx = createManagerCtx({ startDate: '2026-08-01', endDate: '2026-08-31' })
+    pg.query.mockResolvedValueOnce([]).mockResolvedValueOnce([{ cnt: 0 }])
+    await orderRoutes.pickupRecordsList(ctx)
+    expect(pg.query.mock.calls[0][1]).toContain('2026-08-01')
+    expect(pg.query.mock.calls[0][1]).toContain('2026-08-31')
+  })
+
+  // ---------- #240 分页归一（本接口上限 50，与其它接口的 100 不同）----------
+  // 原先 `parseInt(pageSize,10) || 20`：`parseInt('1e21',10) === 1` 会**静默取错值**（不崩，
+  // 但用户看到一页 1 条）；且 `page` 在算 offset 与返回信封里各归一一遍，两条路径天然会漂。
+  test('#240 pickupRecordsList 分页归一：上限 50、page 只归一一次', async () => {
+    const pickupLimit = (ctx) => {
+      const sql = pg.query.mock.calls[0][0]
+      const m = sql.match(/LIMIT\s+(\d+)\s+OFFSET\s+(\d+)/)
+      return { limit: Number(m[1]), offset: Number(m[2]), result: ctx.result }
+    }
+
+    // 超上限被夹到 50（不是 100）
+    const ctxBig = createManagerCtx({ page: 1, pageSize: 999 })
+    pg.query.mockResolvedValueOnce([]).mockResolvedValueOnce([{ cnt: 0 }])
+    await orderRoutes.pickupRecordsList(ctxBig)
+    expect(pickupLimit(ctxBig).limit).toBe(50)
+    expect(ctxBig.result.pageSize).toBe(50)
+
+    // '1e21' 旧写法经 parseInt 截断成 1（静默取错值）；新写法回落默认 20
+    pg.query.mockClear()
+    const ctxExp = createManagerCtx({ page: 1, pageSize: '1e21' })
+    pg.query.mockResolvedValueOnce([]).mockResolvedValueOnce([{ cnt: 0 }])
+    await orderRoutes.pickupRecordsList(ctxExp)
+    expect(pickupLimit(ctxExp).limit).toBe(20)
+
+    // page 归一只发生一次：SQL 的 offset 与返回信封的 page 必须同源
+    pg.query.mockClear()
+    const ctxPage = createManagerCtx({ page: 3.9, pageSize: 10 })
+    pg.query.mockResolvedValueOnce([]).mockResolvedValueOnce([{ cnt: 0 }])
+    await orderRoutes.pickupRecordsList(ctxPage)
+    const { offset, result } = pickupLimit(ctxPage)
+    expect(result.page).toBe(3)
+    expect(offset).toBe((result.page - 1) * result.pageSize)
+  })
 })
 
 // ============================================================
@@ -8527,5 +8584,55 @@ describe('order.close — 欠款归零的回滚（#182）', () => {
 
     await expect(orderRoutes.close(ctx))
       .rejects.toThrow(/CONFLICT: 原订单已不存在，无法还原折抵行的已支付次数/)
+  })
+})
+
+// ============================================================
+// order.refundList — #240 分页守卫
+// ============================================================
+// 原先零守卫：`const offset = (page-1)*pageSize` + `params = [storeId, pageSize, offset]`，
+// 入参直接进 `LIMIT $2 OFFSET $3`。`pageSize=2.5` 即复现本 issue 的 500
+// （PG `invalid input syntax for type bigint: "2.5"`）；无上限时 `pageSize=999999`
+// 一次吐全店退款流水。前端恒传 20，但云函数 payload 是可直接构造的边界。
+describe('order.refundList — 分页入参守卫（#240）', () => {
+  const listCall = () => pg.query.mock.calls.find(c => /sale_order_payments/.test(c[0]) && /LIMIT/.test(c[0]))
+
+  test('小数 pageSize 被取整，LIMIT/OFFSET 恒为整数', async () => {
+    const ctx = createManagerCtx({ page: 2.7, pageSize: 2.5 })
+    pg.query.mockResolvedValue([])
+    await orderRoutes.refundList(ctx)
+
+    const params = listCall()[1]
+    // [storeId, LIMIT, OFFSET]：pageSize=2.5→2，page=2.7→2，offset=(2-1)*2=2
+    expect(params[1]).toBe(2)
+    expect(params[2]).toBe(2)
+    expect(Number.isInteger(params[1])).toBe(true)
+    expect(Number.isInteger(params[2])).toBe(true)
+    // 返回的分页信封也应是归一后的值，不是原始入参
+    expect(ctx.result.page).toBe(2)
+    expect(ctx.result.pageSize).toBe(2)
+  })
+
+  test('pageSize 超上限被夹到 100，不会一次吐全店退款流水', async () => {
+    const ctx = createManagerCtx({ page: 1, pageSize: 999999 })
+    pg.query.mockResolvedValue([])
+    await orderRoutes.refundList(ctx)
+
+    expect(listCall()[1][1]).toBe(100)
+    expect(ctx.result.pageSize).toBe(100)
+  })
+
+  test("非安全整数（'Infinity' / 1e21）回落默认 20 / 第 1 页", async () => {
+    const ctxInf = createManagerCtx({ page: 'Infinity', pageSize: 'Infinity' })
+    pg.query.mockResolvedValue([])
+    await orderRoutes.refundList(ctxInf)
+    expect(listCall()[1].slice(1)).toEqual([20, 0])
+
+    pg.query.mockClear()
+    const ctxHuge = createManagerCtx({ page: 1e21, pageSize: 1e21 })
+    pg.query.mockResolvedValue([])
+    await orderRoutes.refundList(ctxHuge)
+    expect(listCall()[1].slice(1)).toEqual([20, 0])
+    expect(ctxHuge.result.page).toBe(1)
   })
 })
