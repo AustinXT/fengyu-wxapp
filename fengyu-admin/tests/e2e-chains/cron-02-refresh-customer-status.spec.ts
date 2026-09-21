@@ -126,6 +126,32 @@ test.describe.serial('cron-02 refreshCustomerStatus', () => {
     expect(getCustomerStatus(uid)).toBe('休眠')
   })
 
+  /**
+   * #254 回归：2.8 的顾客是新建的（status 本就 NULL），走的是段 3 原本就覆盖的分支。
+   * 真正漏掉的是「已有非 NULL 旧值」的那一类 —— 顾客原有已完成服务单（状态已写入），
+   * 后来服务单被撤销/删除/改状态而掉出 visit_stats，三段全不匹配、旧状态永久卡住。
+   * prod 2026-09-22 实际命中 2 行（段丽、刘红红，挂着「保有会员-有效」却零服务单）。
+   */
+  test('2.8b 会员客 + 服务单被撤销后无到店记录 + 已有旧 status → 段 3 仍须重置为休眠（#254）', () => {
+    const uid = upsertClient('CS_28B', { customerType: '会员客' })
+    // 先造一笔已完成服务单并跑一次，让它拿到正常状态
+    insertServiceVisit('CS_28B', uid, '2026-11-15')
+    runCustomerStatus(REF_DATE)
+    expect(getCustomerStatus(uid)).toBe('保有会员-有效')
+
+    // 服务单被撤销 → 掉出 visit_stats，但旧 status 仍在
+    psql(`UPDATE service_orders SET status = '已取消' WHERE service_order_id = '${PREFIX.SVC}CS_28B'`)
+    expect(getCustomerStatus(uid)).toBe('保有会员-有效')
+
+    // 修复前：段 2 不匹配（无 visit_stats）、段 3 被 IS NULL 挡住 → 永久卡在「保有会员-有效」
+    runCustomerStatus(REF_DATE)
+    expect(getCustomerStatus(uid)).toBe('休眠')
+
+    // 幂等：再跑一次仍是休眠
+    runCustomerStatus(REF_DATE)
+    expect(getCustomerStatus(uid)).toBe('休眠')
+  })
+
   test('2.9 会员客 6M 边界精确（last_service 略早于 6M）→ 冰冻', () => {
     const uid = upsertClient('CS_29', { customerType: '会员客' })
     // 6M 外 1d：2026-11-20 - 6M - 1d = 2026-05-19
