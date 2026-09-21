@@ -190,6 +190,9 @@ Page({
    * 追加的那一页从此永远是占位图，且失败是静默的。
    */
   _setListData(patch: Record<string, any>) {
+    // setData 会**同步**换掉 page.data 里的列表，而 refresh 要等渲染回调才跑。
+    // 这中间旧 observer 的在队回调仍属当前世代，会把旧下标写进新列表 —— 先作废掉。
+    this._coverWindow?.invalidate();
     this.setData(patch, () => this._coverWindow?.refresh());
   },
 
@@ -242,6 +245,7 @@ Page({
       console.error('loadShopInit error:', err);
       Toast.fail(err?.message || '加载失败');
     } finally {
+      // 只有当前代次的请求能关 loading，否则旧请求会提前关掉新请求的转圈
       if (epoch === this._dataEpoch) this.setData({ isLoading: false });
     }
   },
@@ -286,12 +290,21 @@ Page({
 
   async loadSpuList(categoryId: string, append = false) {
     const epoch = this._dataEpoch;
-    // 分类内请求代次：拦住同一分类的乱序回包。翻页沿用当前代次，
-    // 首页请求会推进它，于是「首页重来」自动作废还在途的翻页回包。
-    const seq = (this._reqSeq[categoryId] = (this._reqSeq[categoryId] || 0) + 1);
+    // 分类内请求代次：拦住同一分类的乱序回包。**只有首页请求推进代次**，
+    // 于是「首页重来」自动作废还在途的翻页回包；翻页沿用当前代次，
+    // 靠下面的 cursor 幂等键去重，不能靠 ++（后发翻页会错杀先发的成功回包）。
+    const seq = append
+      ? (this._reqSeq[categoryId] || 0)
+      : (this._reqSeq[categoryId] = (this._reqSeq[categoryId] || 0) + 1);
     this.setData({ isLoading: true });
+    // 翻页的幂等键：同一个 cursor 只认第一个回来的回包
+    const sentCursor = append ? this._pageState[categoryId]?.cursor ?? null : null;
+    const isStale = () =>
+      epoch !== this._dataEpoch ||
+      seq !== (this._reqSeq[categoryId] || 0) ||
+      (append && (this._pageState[categoryId]?.cursor ?? null) !== sentCursor);
     try {
-      const cursor = append ? this._pageState[categoryId]?.cursor ?? null : null;
+      const cursor = sentCursor;
       const data = await callClientApi<{ spuList: any[]; nextCursor?: string | null; hasMore?: boolean }>(
         'product.spuList',
         // cursor 为 null 时不传：云函数只把「缺省」当首页，显式 null 也接受，但别依赖
@@ -300,7 +313,7 @@ Page({
       // 代次变了说明缓存在请求飞行期间被整体重置（切门店）。此时 prev 已是空数组，
       // 继续写下去会把「只有第 N 页」当第 1 页存起来、并把旧门店的商品塞进新门店缓存。
       // 判定必须在写 _spuCache **之前**，不能只在 setData 之前。
-      if (epoch !== this._dataEpoch || seq !== this._reqSeq[categoryId]) return;
+      if (isStale()) return;
 
       const prev = append ? (this._spuCache[categoryId] || []) : [];
       const rows = decorateSpuRows(data?.spuList || [], getIsMember(), { startIndex: prev.length }) as SpuItem[];
@@ -322,15 +335,18 @@ Page({
         );
       }
     } catch (err: any) {
+      // 过期请求的失败不该打扰用户，也不该动当前列表的状态
+      if (isStale()) return;
       console.error('loadSpuList error:', err);
       Toast.fail(err?.message || '加载商品失败');
       // 失败后把 hasMore 落下来：否则每次触底都会重发同一个失败请求
-      if (epoch === this._dataEpoch && seq === this._reqSeq[categoryId] && this._pageState[categoryId]) {
+      if (this._pageState[categoryId]) {
         this._pageState[categoryId].hasMore = false;
         if (this._activeCategoryId === categoryId) this.setData({ hasMore: false });
       }
     } finally {
-      if (epoch === this._dataEpoch) this.setData({ isLoading: false });
+      // 只有当前代次的请求能关 loading，否则旧请求会提前关掉新请求的转圈
+      if (!isStale()) this.setData({ isLoading: false });
     }
   },
 

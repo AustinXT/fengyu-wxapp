@@ -235,12 +235,18 @@ function normalizeProductPageSize(raw, defaultSize = PRODUCT_PAGE_SIZE_DEFAULT) 
  * 对外是不透明 base64 串，前端只需原样回传。
  */
 /**
- * 游标长度上限只为挡「10MB base64 走完 Buffer + JSON.parse 才被拒」这种浪费，
- * 不是业务约束。`products.product_id` 是 **无长度约束的 text**（生产实际值形如
- * `prod-1786781954741`，约 18 字符），所以阈值必须留足冗余，
- * 否则会出现「服务端生成的 nextCursor 被自己拒收」的死局。
+ * 游标长度上限。
+ *
+ * ⚠️ 这是个 **DoS 闸门，不是业务约束**：只为挡「10MB base64 走完 Buffer + JSON.parse
+ * 才被拒」这种浪费。`products.product_id` 是**无长度约束的 text**，所以单靠一个固定阈值
+ * 无法宣称「服务端生成的游标一定解得回来」—— 真正的自洽要靠写入侧约束 ID 长度，
+ * 而本 issue 已拍板不加迁移。
+ *
+ * 折中：阈值留到 8192（可容纳约 6000 字符的 product_id，生产实际值形如
+ * `prod-1786781954741` 约 18 字符，余量 300 倍以上）。真有 ID 长到撑爆它，
+ * 那是数据异常，此时游标解不开会显式报 -400 而不是静默翻错页 —— 暴露比掩盖好。
  */
-const PRODUCT_CURSOR_MAX_LENGTH = 2048
+const PRODUCT_CURSOR_MAX_LENGTH = 8192
 const INT4_MIN = -2147483648
 const INT4_MAX = 2147483647
 
@@ -258,7 +264,7 @@ function decodeProductCursor(raw) {
   // 所以 null 与 undefined 在本接口**等价**视为首页；空串 / 0 / 对象一律视为畸形游标。
   if (raw === undefined || raw === null) return null
   if (typeof raw !== 'string' || raw === '') throw bad()
-  // 合法游标 base64 后 < 60 字符。先卡长度，别让 10MB 的串走完 Buffer + JSON.parse 才被拒。
+  // 先卡长度，别让 10MB 的串走完 Buffer + JSON.parse 才被拒（见上方常量注释）。
   if (raw.length > PRODUCT_CURSOR_MAX_LENGTH) throw bad()
 
   let parsed

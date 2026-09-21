@@ -67,6 +67,14 @@ export interface CoverWindow {
   /** 列表内容变化（换分类 / 翻页追加 / 搜索结果刷新）后必须调用，且要在 setData 渲染回调里 */
   refresh(): void;
   /**
+   * 作废当前这一轮观察，但不重建。
+   *
+   * `setData` 会**同步**换掉 `page.data` 里的列表，而 `refresh()` 要等渲染完成回调才跑；
+   * 这中间旧 observer 的在队回调仍属于当前世代，会把旧下标写进新列表。
+   * 所以换列表前先调一次本方法把世代推掉。
+   */
+  invalidate(): void;
+  /**
    * 页面显隐。隐藏时断开观察器（不渲染的页面收不到相交回调，硬撑只会误触发 fail-open），
    * 显示时由页面自行决定给哪份列表 `refresh()`。
    */
@@ -232,6 +240,8 @@ export function createCoverWindow(page: PageLike, options: CoverWindowOptions): 
       } catch (_) {
         /* 已经坏掉的 observer 收不掉也没别的办法 */
       }
+      // 换代：`created` 可能已经 observe 成功、回调已入队，不作废掉会把刚 showAll 的行写回 false
+      generation++;
       showAll();
       return;
     }
@@ -241,9 +251,15 @@ export function createCoverWindow(page: PageLike, options: CoverWindowOptions): 
       fallbackTimer = null;
       // 只放开本轮，不置 unsupported —— 下次 refresh 仍会重新尝试
       console.warn('[cover-window] 本轮未收到相交回调，暂退回整列显示');
-      disconnect();
+      // 换代必须在 showAll 之前：放弃本轮 observer 之后，它已入队的回调不能再把
+      // 刚放开的行写回 false —— 那时既没有 observer 也没有守护定时器，会永久停在占位图
+      teardown();
       showAll();
     }, FALLBACK_DELAY_MS);
+  }
+
+  function invalidate() {
+    teardown();
   }
 
   function setVisible(next: boolean) {
@@ -257,5 +273,5 @@ export function createCoverWindow(page: PageLike, options: CoverWindowOptions): 
     teardown();
   }
 
-  return { refresh, setVisible, dispose };
+  return { refresh, invalidate, setVisible, dispose };
 }

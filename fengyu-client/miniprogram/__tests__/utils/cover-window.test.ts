@@ -320,6 +320,53 @@ describe('createCoverWindow · 世代校验', () => {
     expect((page.data.spuList as any[]).every(r => r.coverVisible)).toBe(true)
   })
 
+  // fail-open 之后既没有 observer 也没有守护定时器，旧回调再把行写回 false 就永久停在占位图
+  test('fail-open 放开整列后，旧观察器的在队回调不得把行写回 false', () => {
+    const page = makePage('spuList', 8)
+    const w = createCoverWindow(page as any, OPTS)
+    w.refresh()
+    const stale = (wx as any).__lastObserver()
+
+    vi.advanceTimersByTime(FALLBACK_DELAY_MS)
+    expect((page.data.spuList as any[]).every(r => r.coverVisible)).toBe(true)
+
+    emitOn(stale, 3, false)
+    vi.advanceTimersByTime(FLUSH_DELAY_MS)
+
+    expect((page.data.spuList as any[]).every(r => r.coverVisible)).toBe(true)
+  })
+
+  test('接线失败放开整列后不留可回调的残骸，且不起守护定时器', () => {
+    const page = makePage('spuList', 8)
+    const w = createCoverWindow(page as any, OPTS)
+    ;(wx as any).__setObserverWiringThrows(true)
+    w.refresh()
+
+    const broken = (wx as any).__lastObserver()
+    expect(broken.callback).toBeNull()      // observe 没跑成，没有回调能再写脏数据
+    expect(broken.disconnected).toBe(true)  // 但原生 observer 已经建出来了，必须收掉
+    expect((page.data.spuList as any[]).every(r => r.coverVisible)).toBe(true)
+
+    const calls = page.setDataCalls.length
+    vi.advanceTimersByTime(FALLBACK_DELAY_MS + FLUSH_DELAY_MS)
+    expect(page.setDataCalls).toHaveLength(calls)
+  })
+
+  test('invalidate 换代但不重建：setData 换列表前用它掐掉旧回调', () => {
+    const page = makePage('spuList', 8)
+    const w = createCoverWindow(page as any, OPTS)
+    w.refresh()
+    const stale = (wx as any).__lastObserver()
+
+    w.invalidate()
+    expect(stale.disconnected).toBe(true)
+    expect((wx as any).__getObservers()).toHaveLength(1) // 没有重建
+
+    emitOn(stale, 0, true)
+    vi.advanceTimersByTime(FALLBACK_DELAY_MS + FLUSH_DELAY_MS)
+    expect(page.setDataCalls).toHaveLength(0)
+  })
+
   test('dispose 之后的在队回调不再重新武装定时器', () => {
     const page = makePage('spuList', 8)
     const w = createCoverWindow(page as any, OPTS)
