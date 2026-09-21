@@ -3978,7 +3978,19 @@ export const confirmOfflinePayment = withPermission(
 const LAKALA_RELEASABLE_TRADE_STATES = ['FAIL', 'CLOSE', 'REVOKED']
 const LAKALA_PAID_TRADE_STATES = ['SUCCESS', 'PART_REFUND', 'REFUND']
 
-/** 按门店解析拉卡拉商户号/终端号（与 clientApi 的 resolveLakalaMerchant 同源 SQL）。 */
+/**
+ * close 允许关闭的订单状态。关单前的意图作废闸门、释放意图的 CAS、以及事务内 closeOrder
+ * 的 CAS 共用这一份——三处字面量各自漂移过一次（释放 CAS 曾误写成 '部分支付'，导致
+ * '支付失败' 单渠道已关、本地永远关不掉）。
+ */
+const CLOSEABLE_ORDER_STATUSES = ['待支付', '支付失败'] as const
+
+/**
+ * 按门店解析拉卡拉商户号/终端号。
+ *
+ * 刻意保持与 clientApi `resolveLakalaMerchant` **逐字同源的原生 SQL**（而不是改写成
+ * Drizzle query builder）：这是四端副本之一，字面一致才能靠对照发现漂移。
+ */
 async function resolveLakalaMerchantForStore(
   storeId: string | null,
 ): Promise<{ merchantNo: string; termNo: string } | null> {
@@ -4119,10 +4131,9 @@ export const closeOrder = withPermission(
   //
   // 状态闸门排在关单之前：对一张「已支付」单点关闭，本该直接回「状态不允许关闭」，
   // 不该先去渠道查单甚至发关单请求。
-  const CLOSEABLE_STATUSES = ['待支付', '支付失败']
   if (orderCtx?.lakalaOutOrderNo
       && lakalaIsReady()
-      && CLOSEABLE_STATUSES.includes(orderCtx.status ?? '')) {
+      && (CLOSEABLE_ORDER_STATUSES as readonly string[]).includes(orderCtx.status ?? '')) {
     const voidResult = await voidActiveOnlinePaymentIntent(
       saleOrderId,
       orderCtx.lakalaOutOrderNo,

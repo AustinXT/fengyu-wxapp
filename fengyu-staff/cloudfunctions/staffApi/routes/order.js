@@ -2690,6 +2690,12 @@ WHERE sale_items.sale_item_id IN (
 }
 
 /**
+ * close 允许关闭的订单状态（店长分支 ∪ 开单人分支）。
+ * 关单前的意图作废闸门与事务内的状态校验共用这一份，避免两处字面量各自漂移。
+ */
+const CLOSEABLE_ORDER_STATUSES = ['待支付', '支付失败']
+
+/**
  * 关闭订单前作废进行中的在线支付意图（issue #214）。
  *
  * staffApi 没有拉卡拉凭据，委托 clientApi 完成「查渠道状态 → 未付款则关单 → 复核终态
@@ -2714,8 +2720,7 @@ async function releaseOnlinePaymentIntentBeforeClose(saleOrderId) {
 
   // 状态闸门排在关单之前：对一张已支付/已完成的单点关闭，本该由下面事务里的状态校验
   // 直接拒绝，不该先跑一轮跨 env 查单甚至向渠道发关单请求。
-  // 这里放行的集合是 close 事务内两条分支（店长 / 开单人）允许的状态并集。
-  if (!['待支付', '支付失败'].includes(rows[0].status)) return
+  if (!CLOSEABLE_ORDER_STATUSES.includes(rows[0].status)) return
 
   await clientApiBridge.callClientApi('order.voidPaymentIntent', { saleOrderId })
 }
@@ -2760,7 +2765,7 @@ async function close(ctx) {
     const isCreator = order.opened_by && order.opened_by === ctx.auth.staffWfId
 
     if (isManagerRole) {
-      if (!['待支付', '支付失败'].includes(order.status)) {
+      if (!CLOSEABLE_ORDER_STATUSES.includes(order.status)) {
         throw new Error(`INVALID_PARAMS: 订单当前状态"${order.status}"不允许关闭`)
       }
     } else if (isCreator) {

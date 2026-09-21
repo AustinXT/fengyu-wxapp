@@ -622,6 +622,32 @@ function lakalaIntentExpiresAt(nowMs = Date.now()) {
 }
 
 /**
+ * 构造微信场次快照（pay / repay 两处调用点共用，避免字段各自漂移——漏一个字段不会报错，
+ * 只会让复用判据静默落空，退化成「还是发不了新支付」）。
+ */
+function buildWechatIntentSnapshot(outTradeNo, payAmount, paymentParams) {
+  return {
+    outTradeNo,
+    expiresAt: lakalaIntentExpiresAt(),
+    paymentMethod: '微信',
+    payAmount,
+    paymentParams,
+  }
+}
+
+/** 构造支付宝吱口令场次快照（alipayPay / repay 两处调用点共用）。 */
+function buildAlipayIntentSnapshot(outTradeNo, payAmount, shareToken, expireDate) {
+  return {
+    outTradeNo,
+    // 吱口令自带有效期，可能短于 preorder 的 timeout_express，取更早者
+    expiresAt: earlierIntentExpiry(expireDate, lakalaIntentExpiresAt()),
+    paymentMethod: '支付宝',
+    payAmount,
+    paymentParams: { alipayShareToken: shareToken, alipayExpireDate: expireDate },
+  }
+}
+
+/**
  * 支付宝吱口令自带 expire_date，可能早于 preorder 的 timeout_express。
  * 复用截止取两者更早者；渠道值无法解析时退回 preorder 口径（宁可少复用一会儿）。
  *
@@ -773,11 +799,12 @@ function safeParseJson(text) {
  *
  * @param {string} orderNo
  * @param {{ outTradeNo: string, storeId: string }} ctx
- * @returns {Promise<'released'|'noop'>}
+ * 调用方负责先判空 outTradeNo（`cancel` 与 `voidPaymentIntent` 都判了）；真漏判也是
+ * fail-closed —— lakala-client 的参数校验会先抛 INVALID_PARAMS，不会误释放意图。
+ *
+ * @returns {Promise<'released'>}
  */
 async function voidActiveLakalaPaymentIntent(orderNo, { outTradeNo, storeId }) {
-  if (!outTradeNo) return 'noop'
-
   let merchant
   try {
     merchant = await resolveLakalaMerchant(storeId)
@@ -2196,13 +2223,8 @@ async function pay(ctx) {
       requestIp: getRequestIp(),
     })
     paymentParams = preorderResp.paymentParams
-    await persistLakalaPaymentIntentSnapshot(orderNo, reservation.outTradeNo, {
-      outTradeNo: reservation.outTradeNo,
-      expiresAt: lakalaIntentExpiresAt(),
-      paymentMethod: '微信',
-      payAmount: reservation.payAmount,
-      paymentParams,
-    })
+    await persistLakalaPaymentIntentSnapshot(orderNo, reservation.outTradeNo,
+      buildWechatIntentSnapshot(reservation.outTradeNo, reservation.payAmount, paymentParams))
   }
   // first_payment_amount 必须保留到真实支付回调入账；仅发起预下单不代表付款成功。
   // payNotify 成功写入首笔款项时再清空，避免顾客放弃付款后重新扫码被放大到全额。
@@ -3184,17 +3206,9 @@ async function alipayPay(ctx) {
     })
     alipayShareToken = shareCodeResp.shareToken
     alipayExpireDate = shareCodeResp.expireDate
-    await persistLakalaPaymentIntentSnapshot(orderNo, reservation.outTradeNo, {
-      outTradeNo: reservation.outTradeNo,
-      // 吱口令自带有效期，可能短于 preorder 的 timeout_express，取更早者
-      expiresAt: earlierIntentExpiry(shareCodeResp.expireDate, lakalaIntentExpiresAt()),
-      paymentMethod: '支付宝',
-      payAmount: reservation.payAmount,
-      paymentParams: {
-        alipayShareToken: shareCodeResp.shareToken,
-        alipayExpireDate: shareCodeResp.expireDate,
-      },
-    })
+    await persistLakalaPaymentIntentSnapshot(orderNo, reservation.outTradeNo,
+      buildAlipayIntentSnapshot(reservation.outTradeNo, reservation.payAmount,
+        shareCodeResp.shareToken, shareCodeResp.expireDate))
   }
   // 与微信一致：首付上限在 payNotify 确认真实到账时清空，预下单阶段继续保留。
   ctx.result = {
@@ -3930,13 +3944,8 @@ async function repay(ctx) {
     // issue #214：repay 自身保持「有活动意图即 fail-fast」（见上方事务注释——它的
     // pending 作废与 payable 回写在预下单前已提交，无法与渠道意图 CAS 原子化）。
     // 但仍落盘快照：顾客中断后从 order.pay 入口回来时可复用这一场次继续付。
-    await persistLakalaPaymentIntentSnapshot(saleOrderId, reservedOutTradeNo, {
-      outTradeNo: reservedOutTradeNo,
-      expiresAt: lakalaIntentExpiresAt(),
-      paymentMethod: '微信',
-      payAmount: repayAmountInput,
-      paymentParams: repayPaymentParams,
-    })
+    await persistLakalaPaymentIntentSnapshot(saleOrderId, reservedOutTradeNo,
+      buildWechatIntentSnapshot(reservedOutTradeNo, repayAmountInput, repayPaymentParams))
     ctx.result = {
       saleOrderId,
       status: '待支付',
@@ -3969,16 +3978,9 @@ async function repay(ctx) {
       requestIp: repayRequestIp,
       bizLink: repayPreorderResp.alipayQrUrl,
     })
-    await persistLakalaPaymentIntentSnapshot(saleOrderId, reservedOutTradeNo, {
-      outTradeNo: reservedOutTradeNo,
-      expiresAt: earlierIntentExpiry(repayShareCodeResp.expireDate, lakalaIntentExpiresAt()),
-      paymentMethod: '支付宝',
-      payAmount: repayAmountInput,
-      paymentParams: {
-        alipayShareToken: repayShareCodeResp.shareToken,
-        alipayExpireDate: repayShareCodeResp.expireDate,
-      },
-    })
+    await persistLakalaPaymentIntentSnapshot(saleOrderId, reservedOutTradeNo,
+      buildAlipayIntentSnapshot(reservedOutTradeNo, repayAmountInput,
+        repayShareCodeResp.shareToken, repayShareCodeResp.expireDate))
     ctx.result = {
       saleOrderId,
       status: '待支付',
