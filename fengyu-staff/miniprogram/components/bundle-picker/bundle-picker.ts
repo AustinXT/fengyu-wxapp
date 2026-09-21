@@ -177,11 +177,15 @@ Component({
       // binderror 是异步的，事件在途时用户改关键词会让 _refreshFiltered() 重排
       // filteredBundles，那时 index 指向的已是另一条 —— 错杀无辜条目的封面。
       // 列表量级是几十，findIndex 的线性扫可以忽略。
-      const productId = (e.currentTarget.dataset as { productId?: string }).productId;
-      if (!productId) return;
+      const ds = e.currentTarget.dataset as { productId?: string; coverSrc?: string };
+      if (!ds.productId) return;
       const idx = (this.data.filteredBundles as BundleSpu[])
-        .findIndex(b => b.productId === productId);
+        .findIndex(b => b.productId === ds.productId);
       if (idx < 0) return;
+      // 迟到的事件可能对应的是**上一张**封面：父组件刚把同一 productId 的 coverImage
+      // 换成了新 URL，这时把它置空就是误杀一张本来有效的图。
+      // 比对绑定时的 src，只处理"还是那张失败的图"的情况。
+      if (this.data.filteredBundles[idx].coverImage !== ds.coverSrc) return;
       // 只改 filteredBundles 这一份渲染数据源；properties.bundles 保持原样，
       // 下次 _refreshFiltered() 会重新带出 URL 并重试一次加载（瞬时网络问题可自愈）。
       this.setData({ [`filteredBundles[${idx}].coverImage`]: null });

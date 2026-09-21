@@ -47,9 +47,12 @@ describe('image 工具跨副本一致性守护', () => {
     const [staffPath, clientPath] = COPIES[key]
     // `readFileSync` 透明跟随 symlink —— 有人用软链"保持两端同步"的话字节断言恒绿，
     // 而软链恰恰是根 CLAUDE.md 明令禁止的跨端共享手段（用户已 veto）。
-    // 这条让「用软链绕过副本约定」直接暴露（GLM 评审指出）。
+    //
+    // 用 realpath 比对而不是 `lstatSync(p).isSymbolicLink()`：后者只看文件本身，
+    // 把整个 `utils/` 目录软链过去照样漏（codex 第 2 轮指出）。
+    // realpath 会解开路径上**每一段**软链，任何一段是链接都会让两边解析到同一个真实路径。
     for (const p of [staffPath, clientPath]) {
-      expect(fs.lstatSync(p).isSymbolicLink()).toBe(false)
+      expect(fs.realpathSync(p)).toBe(path.resolve(p))
     }
     expect(read(staffPath)).toBe(read(clientPath))
   })
