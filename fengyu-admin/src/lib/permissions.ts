@@ -496,7 +496,7 @@ export function requirePermission(session: AuthSession | null, action: string): 
 }
 
 /**
- * 仅系统管理员（admin 角色）硬闸：不受权限矩阵 UI 支配。
+ * 仅超级管理员硬闸（生产判据是角色行的 `isSuperAdmin=true`，不是 `role === 'admin'`）。
  *
  * 用于两类 Server Action 的函数体首行：
  * ① 所有物理删除（db.delete 真删）；

@@ -47,7 +47,8 @@ function session(roles: Role[]): AuthSession {
   }
 }
 
-// employee:update 的 UI 依赖项（permission-contract 的 dependencies 表）
+// 员工表单页的 UI 依赖项（permission-contract 的 dependencies 表）。本函数刻意不检查它们，
+// 但 fixture 仍带上，好让「持 employee:update 的角色」贴近生产实配。
 const UPDATE_DEPS = ['employee:list', 'org:list', 'store:list']
 const ADMIN_ACTIONS = [SKILL_TAG_WRITE_ACTION, ...UPDATE_DEPS, 'system:config']
 
@@ -100,10 +101,30 @@ describe('canManageSkillTags — 「标签管理」入口显隐', () => {
     expect(canManageSkillTags(s)).toBe(true)
   })
 
-  it('超管角色持 employee:update 但缺 UI 依赖项 → 不可见（避免按钮可见却进不去表单）', () => {
+  it('超管角色持 employee:update 但缺员工表单页的 UI 依赖项 → 仍可见（与服务端一致）', () => {
+    // 服务端 requirePermission 只查动作本身，不查 UI 依赖闭包；若这里改用 hasUiCapability
+    // 就会比服务端更严，出现「API 调得通却看不到入口」。页面能不能进是 requireUiPageCapability
+    // 的职责，不该混进写权限判定。本例钉住这个边界。
     const s = session([
       role('admin', { actions: [SKILL_TAG_WRITE_ACTION], isSuperAdmin: true }),
     ])
-    expect(canManageSkillTags(s)).toBe(false)
+    expect(canManageSkillTags(s)).toBe(true)
+  })
+
+  it('角色缺 scope 元数据数组 → scopeSessionToActions 原样返回，按原始 roles 判定', () => {
+    // 旧导出快照 / 历史会话没有角色级元数据时，scopeSessionToActions 会整份原样返回
+    // （action-scope.ts 的 hasRoleScopeMetadata 早退）。此时 admin+hr 会话里 admin 角色
+    // 不会被裁掉 → 可见。服务端走的是同一个函数，两侧结论仍然一致。
+    const s: AuthSession = {
+      employeeId: 'LEGACY-1',
+      name: '历史会话',
+      phone: '13800000000',
+      roles: [
+        { role: 'admin', scopeId: 'hq-1', scopeType: '总部', isSuperAdmin: true },
+        { role: 'hr', scopeId: 'mkt-1', scopeType: '市场', isSuperAdmin: false },
+      ],
+      permissions: { actions: [SKILL_TAG_WRITE_ACTION], scopeStoreIds: [] },
+    }
+    expect(canManageSkillTags(s)).toBe(true)
   })
 })
