@@ -803,24 +803,6 @@ export const updateEmployee = withPermission(
     return { success: false, message: '员工不存在或无权修改' }
   }
 
-  /**
-   * 手机号唯一性查重 —— **必须在可见性拦截之后**（GLM 谱系第 2 轮）。
-   *
-   * 它查的是全表，放在前面就是又一个同构的 oracle：拿任意不存在/不可见的 employeeId
-   * 提交 `{ phone: X }`，X 已被系统内任意员工占用 → 「该手机号已被其他员工使用」，
-   * 未被占用 → 「员工不存在或无权修改」。两句话的差异可枚举任意手机号是否注册为员工
-   * （含 scope 外员工）。移到这里后，合法路径行为不变 —— 能改手机号的前提就是目标员工可见。
-   */
-  if (data.phone) {
-    const [existing] = await db
-      .select({ employeeId: staffWechatUsers.employeeId })
-      .from(staffWechatUsers)
-      .where(and(eq(staffWechatUsers.phone, data.phone), sql`${staffWechatUsers.employeeId} != ${employeeId}`))
-      .limit(1)
-    if (existing) {
-      return { success: false, message: '该手机号已被其他员工使用' }
-    }
-  }
 
   /**
    * 归属变更的 scope 校验（#228）。
@@ -879,6 +861,30 @@ export const updateEmployee = withPermission(
       message: !nextStoreId && !nextOrgNodeId
         ? '员工必须归属门店或组织节点之一'
         : '变更后该员工将不在你的管理范围内，请先转交给有权管理该归属的同事',
+    }
+  }
+
+  /**
+   * 手机号唯一性查重 —— 必须排在**所有拒绝路径之后**（codex 谱系第 3、4 轮各推进一次）。
+   *
+   * 它查的是全表，任何早于它的 `return` 都会把「该手机号是否被占用」变成信道：
+   * - 轮 3：排在可见性拦截之前 → 拿任意不存在/不可见的 employeeId 即可探测，
+   *   且因为查重带 `employee_id != $target`，还能确认「手机号 P 属于哪个 employeeId」。
+   * - 轮 4：仅移到可见性之后仍不够 —— 拿一个**可见**的员工 E 配一个越界门店：
+   *   `updateEmployee(E, { phone: P, storeId: <scope 外> })`，P 被占用 → 「手机号已被使用」，
+   *   未占用 → 落到归属校验 → 「无权将员工调至该门店」。两条都零写入，照样能枚举全系统手机号。
+   *
+   * 现在它是最后一道校验，之后紧接着就是 UPDATE：想探测就必须真的改掉目标员工的手机号
+   * （有写入、进审计、破坏数据），这已是手机号唯一约束本身的固有语义，不再是白嫖的信道。
+   */
+  if (data.phone) {
+    const [existing] = await db
+      .select({ employeeId: staffWechatUsers.employeeId })
+      .from(staffWechatUsers)
+      .where(and(eq(staffWechatUsers.phone, data.phone), sql`${staffWechatUsers.employeeId} != ${employeeId}`))
+      .limit(1)
+    if (existing) {
+      return { success: false, message: '该手机号已被其他员工使用' }
     }
   }
 

@@ -1029,6 +1029,47 @@ describe('updateEmployee — #228 归属变更必须落在 scope 内', () => {
     expect([notFound.wrote, realOwner.wrote]).toEqual([0, 0])
   })
 
+  /**
+   * codex 谱系第 4 轮：查重仅移到可见性之后还不够 —— 拿一个**可见**员工配越界门店，
+   * 「手机号被占用」与「无权调至该门店」两条都零写入，照样能枚举全系统手机号。
+   * 查重现在排在所有拒绝路径之后，所以这两种情形必须响应**逐字相同**。
+   */
+  it('可见员工 + 越界门店：手机号占用与否响应逐字相同且都零写入', async () => {
+    const probe = async (phoneTaken: boolean) => {
+      vi.clearAllMocks()
+      ;(getSession as any).mockResolvedValue(mockSession)
+      applyScopeFixture()
+      ;(isAdminScope as any).mockReturnValue(false)
+      let call = 0
+      ;(db.select as any).mockImplementation(() => {
+        call++
+        const current = call
+        const limit = vi.fn().mockImplementation(() =>
+          current === 1
+            ? Promise.resolve([{ storeId: 'store-A', orgNodeId: 'org-store-A' }])  // 可见员工
+            : Promise.resolve(phoneTaken ? [{ employeeId: 'FY-OWNER' }] : []),
+        )
+        const where = vi.fn().mockReturnValue({ limit })
+        const from = vi.fn().mockReturnValue({ where })
+        return { from }
+      })
+      mockUpdateOk()
+      const result = await updateEmployee(
+        'FY-001',
+        { ...FULL_FORM, phone: '13900000004', storeId: 'store-OTHER' },
+        EXPECTED_AT,
+      )
+      return { result, wrote: (db.update as any).mock.calls.length }
+    }
+
+    const taken = await probe(true)
+    const free = await probe(false)
+
+    expect(taken.result).toEqual(free.result)
+    expect(free.result.message).toBe('无权将员工调至该门店')
+    expect([taken.wrote, free.wrote]).toEqual([0, 0])
+  })
+
   /** 空串是「不填」而非「一个叫 '' 的门店」，与 createEmployee 的 truthiness 口径对齐 */
   it('storeId 传空串 → 按清空处理（不报无权），且写库值归一为 null', async () => {
     mockCurrentEmployee({ storeId: 'store-A', orgNodeId: 'org-store-A' })
@@ -1283,6 +1324,41 @@ describe('updateEmployee — §AFF-03 门店变更 scope 同步', () => {
     expect(result.success).toBe(true)
     // 旧门店为 null，不做 scope 同步
     expect(db.update).toHaveBeenCalledTimes(1)
+  })
+
+  /**
+   * codex 谱系第 4 轮 P3：既有 §AFF-03 用例都不传手机号，mock 只映射「旧员工 → 旧门店 → 新门店」
+   * 三次查询。合法的「改手机号 + scope 内调店」是四次序列（中间多一次查重），此前没被锁住。
+   */
+  it('改手机号 + scope 内调店（四次查询）→ 员工更新、角色 scope 同步、审计日志三者都发生', async () => {
+    let call = 0
+    ;(db.select as any).mockImplementation(() => {
+      call++
+      const current = call
+      const limit = vi.fn().mockImplementation(() => {
+        if (current === 1) return Promise.resolve([{ storeId: 'store-A', orgNodeId: 'org-store-A' }])
+        if (current === 2) return Promise.resolve([])                            // 手机号无冲突
+        if (current === 3) return Promise.resolve([{ orgNodeId: 'org-store-A' }]) // 旧门店 org_node
+        if (current === 4) return Promise.resolve([{ orgNodeId: 'org-store-B' }]) // 新门店 org_node
+        return Promise.resolve([])
+      })
+      const where = vi.fn().mockReturnValue({ limit })
+      const from = vi.fn().mockReturnValue({ where })
+      return { from }
+    })
+    ;(db.update as any).mockImplementation(() => ({
+      set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({ count: 1 }) }),
+    }))
+
+    const result = await updateEmployee('FY-001', { phone: '13900000005', storeId: 'store-B' })
+
+    expect(result.success).toBe(true)
+    expect(db.update).toHaveBeenCalledTimes(2)   // 员工行 + permission_roles
+    expect(logOperation).toHaveBeenCalledWith(
+      mockSession, 'permission.scopeSync', 'permission_role', 'FY-001',
+      expect.objectContaining({ oldStoreId: 'store-A', newStoreId: 'store-B' }),
+    )
+    expect(logUpdate).toHaveBeenCalledTimes(1)
   })
 
   it('scope 同步无匹配行（rowCount=0）→ 不写审计日志', async () => {
