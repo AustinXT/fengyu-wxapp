@@ -1250,15 +1250,19 @@ function firstStatementGuardMessage(ifStmt: ts.IfStatement): string | null {
    */
   const inner = first.thenStatement
   const direct = ts.isBlock(inner) ? Array.from(inner.statements) : [inner]
-  for (const st of direct) {
-    if (!ts.isThrowStatement(st) || !st.expression || !ts.isNewExpression(st.expression)) continue
-    const args = st.expression.arguments ?? []
-    if (st.expression.expression.getText() === 'ApiError'
-        && args.length >= 2
-        && ts.isStringLiteral(args[0]) && args[0].text === 'INVALID_PARAMS'
-        && ts.isStringLiteral(args[1])) {
-      return (args[1] as ts.StringLiteral).text
-    }
+  /**
+   * throw 必须是冲突分支的**第一条**直接子语句 —— 与 SPECIALIZED 分支同一条规则。
+   * 「直接子语句里某处有 throw」还不够（codex 第 5 轮）：在它前面插一句
+   * `if (input.status) return`，冲突输入就不会执行到 throw，而文案比较照样通过。
+   */
+  const st = direct[0]
+  if (!st || !ts.isThrowStatement(st) || !st.expression || !ts.isNewExpression(st.expression)) return null
+  const args = st.expression.arguments ?? []
+  if (st.expression.expression.getText() === 'ApiError'
+      && args.length >= 2
+      && ts.isStringLiteral(args[0]) && args[0].text === 'INVALID_PARAMS'
+      && ts.isStringLiteral(args[1])) {
+    return (args[1] as ts.StringLiteral).text
   }
   return null
 }
@@ -1287,8 +1291,10 @@ function ownershipAssignmentsBefore(body: ts.Block, beforePos: number): string[]
   const visit = (n: ts.Node) => {
     if (n.getStart() >= beforePos) return
     // 不进入嵌套函数体：未被调用的回调里的赋值不该算（codex P3 的误红）。
+    // 用 `isFunctionLike` 覆盖全部函数边界（含 MethodDeclaration、访问器）——
+    // 只列三种节点会漏掉对象方法（codex 第 5 轮）。
     // 已知上限：guard 之前的 IIFE 或前置调用里的赋值会漏 —— 那种写法本身就该在评审里被拦。
-    if (ts.isArrowFunction(n) || ts.isFunctionExpression(n) || ts.isFunctionDeclaration(n)) return
+    if (ts.isFunctionLike(n)) return
     // `for (targetOrgNodeId of [...])` —— 循环变量就是赋值目标，不是 BinaryExpression（codex 第 4 轮）
     if ((ts.isForOfStatement(n) || ts.isForInStatement(n)) && !ts.isVariableDeclarationList(n.initializer)) {
       for (const name of namesInTarget(n.initializer)) hits.push(`${name} (for-loop target)`)
@@ -1307,6 +1313,12 @@ function ownershipAssignmentsBefore(body: ts.Block, beforePos: number): string[]
 /** 读 `const X = new Set([...])` 的字符串成员（AST，注释里的字符串自然不算） */
 function setMembers(sf: ts.SourceFile, varName: string): string[] {
   let members: string[] | undefined
+  /**
+   * 只看**文件顶层声明**。递归会先取到块作用域里的同名影子声明（codex 第 5 轮）：
+   *     { const SPECIALIZED_DOC_TYPES = new Set([]) ; void SPECIALIZED_DOC_TYPES }
+   *     const SPECIALIZED_DOC_TYPES = new Set([… '内部领用' …])   // 真实声明，已与 GENERIC 重叠
+   * 遍历拿到影子的空数组就停了，互斥断言全绿而运行时集合已经重叠。
+   */
   const visit = (n: ts.Node) => {
     if (members) return
     if (ts.isVariableDeclaration(n) && ts.isIdentifier(n.name) && n.name.text === varName
@@ -1324,10 +1336,14 @@ function setMembers(sf: ts.SourceFile, varName: string): string[] {
         members = arg.elements.filter(ts.isStringLiteral).map((e) => e.text)
       }
     }
-    ts.forEachChild(n, visit)
   }
-  visit(sf)
-  expect(members, `${sf.fileName} 未找到 ${varName} 的 Set 初始化`).toBeTruthy()
+  for (const st of sf.statements) {
+    if (members) break
+    if (ts.isVariableStatement(st)) {
+      for (const decl of st.declarationList.declarations) visit(decl)
+    }
+  }
+  expect(members, `${sf.fileName} 未在文件顶层找到 ${varName} 的 Set 初始化`).toBeTruthy()
   return [...members!].sort()
 }
 
@@ -1461,8 +1477,11 @@ describe('assertGenericDocLocationRules 的 case 与通用类型白名单一一�
     const callPos = topLevelStatements(body).reduce((min, st) => {
       let found = Infinity
       const scan = (n: ts.Node) => {
-        // 顶层语句内部可以有 await/括号等包裹，但不跨函数边界
-        if (ts.isArrowFunction(n) || ts.isFunctionExpression(n) || ts.isFunctionDeclaration(n)) return
+        // 顶层语句内部可以有 await/括号等包裹，但不跨**任何**函数边界。
+        // 只排除箭头/函数表达式/函数声明会漏掉对象方法（codex 第 5 轮实测）：
+        //     const deferred = { validate() { return assertGenericDocLocationRules(…) } }
+        // 这个方法从未被调用，却能让 callPos 有限且排在拒绝之后。
+        if (ts.isFunctionLike(n)) return
         if (ts.isCallExpression(n) && n.expression.getText() === 'assertGenericDocLocationRules') {
           found = Math.min(found, n.getStart())
         }
