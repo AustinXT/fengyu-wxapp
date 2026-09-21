@@ -769,6 +769,56 @@ describe('staff.performanceDetail', () => {
     expect(bigCtx.result.pageSize).toBe(100)
   })
 
+  // ---------- #239 服务提成查询的稳定排序 ----------
+  // 本函数是**内存分页**（两条 SQL 拼进 allItems → JS sort → slice），page/pageSize 是入参，
+  // 每翻一页都是一次独立云函数调用 = 一次新的 SQL 执行。V8 的 Array.sort 稳定，
+  // 同 date 多行的相对顺序完全继承自 SQL 返回顺序 → SQL 缺唯一键 tie-break 时翻页会重复/漏行。
+  test('#239 svcRows 的 ORDER BY 必须带唯一键 tie-break（PG 不保证 ORDER BY 非唯一键时同序）', async () => {
+    const ctx = createManagerCtx({ startDate: '2024-06-01', endDate: '2024-06-30' })
+    pg.query.mockResolvedValueOnce([])
+    pg.query.mockResolvedValueOnce([])
+    await staffRoutes.performanceDetail(ctx)
+
+    // ⚠️ 断言 SQL 字面量而非切片结果：mock 数据天然有序，
+    // 只断言 items 顺序的话把 ORDER BY 整条删掉测试照样绿（#181 踩过）。
+    const svcSql = pg.query.mock.calls[1][0]
+    expect(svcSql).toMatch(/ORDER BY\s+so\.service_date DESC,\s*sc\.id DESC/)
+
+    // 对照组：销售侧本来就有 tie-break，一并钉住，防止有人"统一风格"把它删掉
+    const allocSql = pg.query.mock.calls[0][0]
+    expect(allocSql).toMatch(/ORDER BY\s+spe\.performance_date DESC,\s*spia\.id DESC/)
+  })
+
+  test('#239 同一天多条服务提成连续翻两页：两页无重复、并集等于总数', async () => {
+    // 触发条件是「同一天有多条服务提成」—— 对活跃门店的美容师是常态
+    const sameDayRows = Array.from({ length: 6 }, (_, i) => ({
+      ...mkSvc('自销自耗', String(10 + i)),
+      service_order_id: `SVC-${i}`,
+      service_date: '2024-06-20',
+    }))
+
+    const page1 = createManagerCtx({ startDate: '2024-06-01', endDate: '2024-06-30', page: 1, pageSize: 3 })
+    pg.query.mockResolvedValueOnce([])
+    pg.query.mockResolvedValueOnce(sameDayRows)
+    await staffRoutes.performanceDetail(page1)
+
+    const page2 = createManagerCtx({ startDate: '2024-06-01', endDate: '2024-06-30', page: 2, pageSize: 3 })
+    pg.query.mockResolvedValueOnce([])
+    pg.query.mockResolvedValueOnce(sameDayRows)
+    await staffRoutes.performanceDetail(page2)
+
+    const ids1 = page1.result.items.map(i => i.orderId)
+    const ids2 = page2.result.items.map(i => i.orderId)
+    expect(ids1).toHaveLength(3)
+    expect(ids2).toHaveLength(3)
+    // 无重复
+    expect(ids1.filter(id => ids2.includes(id))).toEqual([])
+    // 无遗漏：并集 = 全量 6 条
+    expect(new Set([...ids1, ...ids2]).size).toBe(6)
+    expect(page1.result.total).toBe(6)
+    expect(page2.result.total).toBe(6)
+  })
+
   test('saleItems 同时返回 allocAmount（员工分配份额）与 businessAmount（整行实收）', async () => {
     const ctx = createManagerCtx({ startDate: '2024-06-01', endDate: '2024-06-30' })
 
