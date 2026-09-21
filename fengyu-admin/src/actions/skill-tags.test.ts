@@ -4,8 +4,10 @@ vi.mock('@/db', () => ({
   db: { select: vi.fn(), insert: vi.fn(), transaction: vi.fn() },
 }))
 
+// is_valid 列在 db/schema/lookup.ts:15 已废弃（恒 true、代码不再读写，仅保留避免 migration），
+// 故不进 mock —— 留着会让读者以为 getSkillTags 漏了「过滤停用标签」这一步。
 vi.mock('@db/lookup', () => ({
-  skillTags: { id: 'id', name: 'name', sortOrder: 'sort_order', isValid: 'is_valid', updatedAt: 'updated_at' },
+  skillTags: { id: 'id', name: 'name', sortOrder: 'sort_order', updatedAt: 'updated_at' },
 }))
 vi.mock('@db/user', () => ({
   staffWechatUsers: { skills: 'skills', updatedAt: 'updated_at' },
@@ -167,6 +169,12 @@ describe('updateSkillTag — 改名级联 array_replace', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     ;(getSession as any).mockResolvedValue(mockSession)
+  })
+
+  afterEach(() => {
+    // vi.clearAllMocks() 只清 calls，不清 implementation：23505 用例设的返回值会一直存活，
+    // 污染后续任何走 catch 分支的用例。显式复位成「不是已知 PG 错误码」。
+    ;(pgErrorCode as any).mockReturnValue(null)
   })
 
   it('改名 → 事务内先级联员工 array_replace，再更新字典行（update 调 2 次）', async () => {

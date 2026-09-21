@@ -4,8 +4,8 @@ import { parseEmployeeFilters, filterValidSkillValues } from '@/lib/list-filters
 import { getOrgNodes } from '@/actions/org'
 import { getSkillTags } from '@/actions/skill-tags'
 import { getSession } from '@/lib/auth'
-import { hasPermission, isAdminScope } from '@/lib/permissions'
-import { scopeSessionToActions } from '@/lib/action-scope'
+import { hasPermission } from '@/lib/permissions'
+import { canManageSkillTags } from '@/lib/skill-tag-access'
 import { hasUiCapability } from '@/lib/permission-contract'
 import { requireUiPageCapability } from '@/lib/page-capability'
 import EmployeesPage from './_components/employees-page'
@@ -40,20 +40,9 @@ export default async function Page({
   })
   const actions = session?.permissions.actions ?? []
   const canCreate = hasUiCapability(actions, 'employee:create')
-  // 技能标签的增/改/删统一为「仅系统管理员」，与 skill-tags.ts 三个写操作的
-  // requireAdmin 硬闸门同口径（#211）。
-  //
-  // 两个条件缺一不可，且必须与服务端逐位同构：
-  // ① employee:update —— 外层 withPermission 用它把关，运营若在矩阵 UI 摘掉 admin 的
-  //    该权限，服务端会先拒，UI 不该显示一个点了就报错的按钮；
-  // ② isAdminScope 判的是 scopeSessionToActions 收紧后的角色 —— withPermission 交给
-  //    requireAdmin 的正是这份收紧 session（with-permission.ts:70 → action-scope.ts:25），
-  //    它只保留「自身 actions 含 employee:update」的角色行。若这里图省事用原始 session，
-  //    admin+hr 双角色会话在 admin 被摘掉该权限时会算出 true（hr 补上了 union），
-  //    而服务端收紧后只剩 hr → 按钮可见却必然被拒。
-  const canManageSkillTags =
-    hasUiCapability(actions, 'employee:update')
-    && isAdminScope(scopeSessionToActions(session, ['employee:update']))
+  // 技能标签的增/改/删统一为「仅系统管理员」（#211）。判定口径集中在 canManageSkillTags，
+  // 与服务端 withPermission + requireAdmin 的组合同构，理由见该函数的文档注释。
+  const canManage = canManageSkillTags(session)
 
   return (
     <Suspense>
@@ -63,7 +52,7 @@ export default async function Page({
         orgNodes={orgNodes}
         skillTags={skillTags}
         canCreate={canCreate}
-        canManageSkillTags={canManageSkillTags}
+        canManageSkillTags={canManage}
       />
     </Suspense>
   )

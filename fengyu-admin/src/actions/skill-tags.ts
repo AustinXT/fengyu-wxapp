@@ -9,6 +9,7 @@ import { revalidatePath } from 'next/cache'
 import type { SkillTag } from '@/lib/types'
 import { withPermission } from '@/lib/with-permission'
 import { requireAdmin } from '@/lib/permissions'
+import { SKILL_TAG_WRITE_ACTION } from '@/lib/skill-tag-access'
 import { logOperation, logUpdate } from '@/lib/operation-log'
 
 function rowToSkillTag(row: typeof skillTags.$inferSelect): SkillTag {
@@ -41,11 +42,15 @@ export const getSkillTags = withPermission('employee:list', async (): Promise<Sk
  * 技能标签写操作三件套（create / update / delete）统一由 `requireAdmin` 把关。
  *
  * 技能标签是服务提成矩阵「市场 × 技能标签」的维度，店长/HR 自行增改会造成矩阵错配、
- * 提成分配不到人；外层 `withPermission('employee:update')` 仅作纵深过滤（并满足 HOF
- * 的 ESLint 强制），真正的「仅系统管理员」判定以角色为准，不受权限矩阵 UI 支配（#211）。
+ * 提成分配不到人；外层 `withPermission(SKILL_TAG_WRITE_ACTION)` 仅作纵深过滤（并满足 HOF
+ * 的 ESLint 强制），真正的「仅系统管理员」判定以角色为准（#211）。
+ *
+ * UI 侧显隐走 `canManageSkillTags(session)`（同一模块），它复刻了本处
+ * 「withPermission 收紧 session → requireAdmin」的组合效果；改这里的 action 或闸门时，
+ * 那个函数必须一起看。
  */
 export const createSkillTag = withPermission(
-  'employee:update',
+  SKILL_TAG_WRITE_ACTION,
   async (
     session,
     data: {
@@ -78,7 +83,7 @@ export const createSkillTag = withPermission(
 )
 
 export const updateSkillTag = withPermission(
-  'employee:update',
+  SKILL_TAG_WRITE_ACTION,
   async (
     session,
     id: string,
@@ -163,7 +168,7 @@ export const updateSkillTag = withPermission(
 )
 
 export const deleteSkillTag = withPermission(
-  'employee:update',
+  SKILL_TAG_WRITE_ACTION,
   async (session, id: string): Promise<{ success: boolean; message: string }> => {
     requireAdmin(session)
 

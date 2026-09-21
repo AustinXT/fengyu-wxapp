@@ -505,7 +505,17 @@ export function requirePermission(session: AuthSession | null, action: string): 
  *
  * 前置的 withPermission('xxx:delete' / 'xxx:update', ...) 仍保留（满足 ESLint HOF
  * 强制 + 纵深过滤），但真正的判定由本函数以角色为准：即便运营在权限矩阵 UI 给其它
- * 角色勾上对应权限点，这些操作也无法实际执行。isAdminScope 即 role==='admin'。
+ * 角色勾上对应权限点，这些操作也无法实际执行。
+ *
+ * ⚠️ 两点容易误解，写方案前先看清：
+ * ① `isAdminScope` 判的是 `isSuperAdmin ?? role === 'admin'`。`permission_roles.is_super_admin`
+ *    是 notNull 列，生产会话恒为 boolean，故 `role === 'admin'` 只是旧会话/测试的兼容回退；
+ *    显式 `isSuperAdmin=false` 的 admin 角色行会被拦下。
+ * ② 本函数收到的 session 通常已被 `withPermission` 经 `scopeSessionToActions` 按外层 action
+ *    收紧（只留自身 actions 含该动作的角色行）。所以实际语义是「**授予该 action 的角色里
+ *    至少一个是超管**」，而非「会话里任意位置有超管角色」。当外层 action 属
+ *    ADMIN_ONLY_ACTIONS 时两者等价；用共享 action（如 employee:update）时不等价 ——
+ *    UI 侧复刻判定必须一并跑 scopeSessionToActions，见 `skill-tag-access.ts`。
  */
 export function requireAdmin(session: AuthSession | null): asserts session is AuthSession {
   if (!session) {
