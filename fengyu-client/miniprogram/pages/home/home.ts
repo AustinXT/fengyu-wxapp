@@ -599,6 +599,14 @@ Page({
           ? serverCatKey
           : this._allCategoryKeys[0] || "";
 
+      // init 在途时用户可能已经点了别的分类（那会推进 _loadingToken，但不动 epoch）。
+      // 侧边栏上面已经无条件写了——用户选的分类也依赖它——但 init 的其余写入全部让位：
+      // 缓存和游标也不能写。若用户点的恰好就是首分类且它的请求先返回，
+      // init 后到再改写缓存/游标，界面第一页与游标就来自两个不同的响应了。
+      if (token !== this._loadingToken && this._allCategoryKeys.indexOf(this.data.activeCategoryKey) >= 0) {
+        return;
+      }
+
       // shopInit 的这批只有在确实属于当前激活分类时才可当作它的第一页
       if (firstCatKey && firstCatKey === serverCatKey) {
         this._spuCache[firstCatKey] = listWithPrice;
@@ -607,10 +615,6 @@ Page({
           hasMore: Boolean(initData?.hasMore),
         };
       }
-
-      // init 在途时用户可能已经点了别的分类（那会推进 _loadingToken，但不动 epoch）。
-      // 侧边栏必须写——用户选的分类也依赖它；但激活分类与列表不能再被 init 覆盖回首分类。
-      if (token !== this._loadingToken) return;
 
       const cachedFirst = firstCatKey ? this._spuCache[firstCatKey] : undefined;
       this._setListData("browse", {
@@ -625,7 +629,7 @@ Page({
       if (epoch !== this._dataEpoch || token !== this._loadingToken) return;
       console.error("loadShopInit error:", err);
       Toast.fail(err?.message || "加载失败");
-      if (epoch === this._dataEpoch) this.setData({ loadError: true });
+      this.setData({ loadError: true });
     } finally {
       // 只有最后启动的请求能关 loading（见 _loadingToken 注释）。
       // 不能用 isStale()：翻页成功的请求自己推进了游标，回到这里反而判定自己过期，

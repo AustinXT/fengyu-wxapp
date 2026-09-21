@@ -233,6 +233,21 @@ Page({
       // 而不是用 Math.max(0, -1) 把下标和 _activeCategoryId 悄悄指到两个不同分类上
       const activeIndex = serverIndex >= 0 ? serverIndex : 0;
       const activeId = serverIndex >= 0 ? serverCatId : (categories[0]?.category_id || '');
+
+      // init 在途时用户可能已经切了别的分类（那会推进 _loadingToken，但不动 epoch）。
+      // 此时 init 的一切写入都得让位：内部激活分类、缓存、游标、列表，
+      // 任何一样被改回首分类都会让界面与内部状态错位（比如触底去翻另一个分类的下一页）。
+      // categories 仍要写——用户选的分类也依赖它——但索引必须按用户选的那个重新定位，
+      // 因为分类受门店市场范围过滤，新旧数组可能增删换序。
+      if (token !== this._loadingToken) {
+        const keptIndex = categories.findIndex(c => c.category_id === this._activeCategoryId);
+        if (keptIndex >= 0) {
+          this.setData({ categories, activeCategoryIndex: keptIndex });
+          return;
+        }
+        // 用户选的分类在新数据里已不存在，他的选择失效了，让 init 正常接管
+      }
+
       this._activeCategoryId = activeId;
 
       // 只缓存「确实属于当前分类且有内容」的那批：空数组是 truthy，
@@ -243,13 +258,6 @@ Page({
           cursor: initData?.nextCursor ?? null,
           hasMore: Boolean(initData?.hasMore),
         };
-      }
-
-      // init 在途时用户可能已经切了别的分类（那会推进 _loadingToken，但不动 epoch）。
-      // categories 必须写——用户选的分类也依赖它；但激活分类与列表不能再被 init 覆盖回去。
-      if (token !== this._loadingToken) {
-        this.setData({ categories });
-        return;
       }
 
       const usable = activeId && serverIndex >= 0;
