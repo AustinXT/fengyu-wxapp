@@ -472,6 +472,38 @@ describe('#200 建单 scope 按真正被改动的主体校验', () => {
   })
 
   /**
+   * 只断言错误文案锁不住**顺序**：把 `ensureOrgNodeLocation` 移回鉴权之前，mock 的查询
+   * 照样成功、最终仍抛同一句「无权操作」，测试依旧全绿。而顺序正是这里的安全属性 ——
+   * 那个函数对「不存在 / 已停用 / 正常」抛三种不同的错，放在鉴权前就是一个探测无权节点
+   * 状态的信道，还会让无权者触发 `syncInventoryLocations()` 写操作。
+   * 所以直接断言：被拒的请求一次 DB 都没碰。
+   */
+  it('越权请求在任何 DB 访问之前就被拒（锁住鉴权/单边规则先于 location 查询）', async () => {
+    await expect(createInventoryCoreDoc({
+      docType: '院顾客退货',
+      targetOrgNodeId: 'ORG-S2',
+      items: [{ skuId: 'SKU-1', quantity: 1 }],
+    } as never)).rejects.toThrow('无权操作该组织节点单据')
+
+    expect(mockDb.select).not.toHaveBeenCalled()
+    expect(mockDb.execute).not.toHaveBeenCalled()
+    expect(mockDb.transaction).not.toHaveBeenCalled()
+  })
+
+  it('多余主体的请求同样零 DB 访问（单边规则必须先于 location 查询）', async () => {
+    await expect(createInventoryCoreDoc({
+      docType: '院顾客退货',
+      sourceOrgNodeId: 'ORG-S1',              // 有权限，但这类单据不接受出库主体
+      targetOrgNodeId: 'ORG-S1',
+      items: [{ skuId: 'SKU-1', quantity: 1 }],
+    } as never)).rejects.toThrow('院顾客退货不接受出库主体')
+
+    expect(mockDb.select).not.toHaveBeenCalled()
+    expect(mockDb.execute).not.toHaveBeenCalled()
+    expect(mockDb.transaction).not.toHaveBeenCalled()
+  })
+
+  /**
    * 这条是本 issue 的核心回归，断言**必须精确到 PERMISSION_DENIED 的文案**：
    *
    * 本单有两道防线 ——「鉴权落在 target」和「单边单据拒绝另一边」，它们都能拦住这个组合，
