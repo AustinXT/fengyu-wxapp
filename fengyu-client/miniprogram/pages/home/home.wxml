@@ -59,7 +59,7 @@ module.exports.min = function(n) {
       >
         <swiper-item wx:for="{{banners}}" wx:key="id">
           <view class="banner-item" style="background: {{item.bgColor}};">
-            <image wx:if="{{item.image}}" class="banner-image" src="{{item.image}}" mode="aspectFill" />
+            <image wx:if="{{item.image}}" class="banner-image" src="{{item.image}}" mode="aspectFill" lazy-load />
           </view>
         </swiper-item>
       </swiper>

@@ -81,8 +81,15 @@ let _serviceHotlineBackup = null
 // ─── shareGift 5 个公开字段（路由白名单） ───────────────────
 const SHARE_GIFT_PUBLIC_KEYS = ['enabled', 'percent', 'minFaceValue', 'maxFaceValue', 'validityDays']
 
+// 合法 COS host —— 必须真在 utils/image.js 的白名单里，否则整组退化成「全拒」的恒真断言
+const COS_HOST = 'https://6665-fengyu-client-prod-d1cga6909c0ba-1406056527.tcb.qcloud.la'
+
 async function caseBannersWithData() {
   await upsertConfig(BANNER_COUNT_KEY, '2')
+  // banner_images 存的是 admin 上传原件的随机名 URL，服务端只借它的 origin（issue #231）
+  await upsertConfig(BANNER_KEY, JSON.stringify([
+    `${COS_HOST}/fengyu-client/banner/1788156883695-gz1cdm.jpg`,
+  ]))
 
   const res = await invokePublic('config.banners', {})
   if (res.code !== 0) throw new Error(`expect code=0, got ${res.code}: ${res.message}`)
@@ -91,6 +98,44 @@ async function caseBannersWithData() {
   }
   if (typeof res.data.v !== 'number' || res.data.v <= 0) {
     throw new Error(`expect v>0 number (cache version), got ${JSON.stringify(res.data.v)}`)
+  }
+
+  // ─── issue #231：URL 构造收回服务端，下发值必须已缩略且带版本号 ───
+  const { images } = res.data
+  if (!Array.isArray(images) || images.length !== 2) {
+    throw new Error(`expect images to be 2 URLs, got ${JSON.stringify(images)}`)
+  }
+  images.forEach((url, i) => {
+    const expected = `${COS_HOST}/fengyu-client/banner/banner${i + 1}.jpg`
+      + `?imageMogr2/thumbnail/1080x1080&v=${res.data.v}`
+    if (url !== expected) {
+      throw new Error(`banner[${i}] mismatch:\n  expected ${expected}\n  got      ${url}`)
+    }
+  })
+  // 随机名原件绝不能出现在下发值里（前端要的是 reuploadToFixedPath 之后的固定名）
+  if (images.join().includes('1788156883695-gz1cdm')) {
+    throw new Error(`下发了 admin 上传原件的随机名 URL: ${JSON.stringify(images)}`)
+  }
+}
+
+/**
+ * issue #231 fail-closed：host 不在 COS 白名单时整体返回空数组。
+ * 宁可不显示轮播，也不下发未经缩略的原图 —— banner 在首页，原图直发就是 #213 复现路径。
+ */
+async function caseBannersUntrustedHost() {
+  await upsertConfig(BANNER_COUNT_KEY, '1')
+  await upsertConfig(BANNER_KEY, JSON.stringify([
+    `https://evil.example.com/fengyu-client/banner/x.jpg`,
+  ]))
+
+  const res = await invokePublic('config.banners', {})
+  if (res.code !== 0) throw new Error(`expect code=0, got ${res.code}: ${res.message}`)
+  // count/v 照常返回（前端据此知道"配置了但取不到图"）
+  if (res.data.count !== 1) {
+    throw new Error(`expect count=1, got ${JSON.stringify(res.data)}`)
+  }
+  if (!Array.isArray(res.data.images) || res.data.images.length !== 0) {
+    throw new Error(`expect images=[] for untrusted host, got ${JSON.stringify(res.data.images)}`)
   }
 }
 
@@ -101,6 +146,9 @@ async function caseBannersEmpty() {
   if (res.code !== 0) throw new Error(`expect code=0, got ${res.code}: ${res.message}`)
   if (res.data.count !== 0) {
     throw new Error(`expect count=0, got ${JSON.stringify(res.data)}`)
+  }
+  if (!Array.isArray(res.data.images) || res.data.images.length !== 0) {
+    throw new Error(`expect images=[], got ${JSON.stringify(res.data.images)}`)
   }
 }
 
@@ -252,6 +300,7 @@ async function caseShareGiftSensitiveFieldsNotLeaked() {
 const CASES = [
   ['banners with data → returns array of URLs', caseBannersWithData],
   ['banners no row → returns []', caseBannersEmpty],
+  ['banners 非白名单 host → images=[] (fail-closed)', caseBannersUntrustedHost],
   ['fengyuguan with data → returns url', caseFengyuguanWithData],
   ['serviceHotline with data → returns phone', caseServiceHotlineWithData],
   ['serviceHotline no row → {phone:"",v:0}', caseServiceHotlineNoRow],

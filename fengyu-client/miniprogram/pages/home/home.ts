@@ -2,13 +2,12 @@
 import Toast from "@vant/weapp/toast/toast";
 import { getCartCount, clearCart } from "../../utils/cart";
 import { callClientApi } from "../../utils/cloud";
-import { getCosBase } from "../../utils/cloud-env";
 import { getIsMember } from "../../utils/member-pricing";
 
 const app = getApp<IAppOption>();
 
-// CloudBase CDN 基础 URL（随 env 切换 dev/prod 桶）
-const CDN_BASE = `${getCosBase()}/fengyu-client`;
+// 原先这里有个 CDN_BASE 常量用来拼 banner URL。issue #231 把 URL 构造收回服务端后
+// 本页不再需要它 —— 前端不做任何图片 URL 拼接，拼一份就等于多一处会漂移的规则。
 
 interface Banner {
   id: string;
@@ -335,17 +334,27 @@ Page({
   // ===== 数据加载 =====
 
   async loadBanners() {
-    // 走云函数取 count/v（不受 wx.request 域名白名单限制），图片仍用 CDN_BASE 拼固定路径。
+    // URL 由云函数下发（issue #231）：banner 曾是全站唯一绕开 safeThumbUrl 的图片链路，
+    // 前端自己拼固定路径 = 原图直发（生产那张 3002×1039 解码 11.9MB）。
+    // 收回服务端后，下发的 URL 已带 imageMogr2 缩略规则与 ?v= 版本号，
+    // 后续调尺寸不需要小程序发版。
+    //
+    // 不在前端做任何 URL 拼接或兜底：拼不出合法 URL 时服务端返回空数组，
+    // 此时宁可不显示轮播，也不能退回未缩略的原图。
     try {
-      const { count, v } = await callClientApi<{ count: number; v: number }>("config.banners", {});
-      if (count > 0) {
+      const { images } = await callClientApi<{
+        count: number;
+        v: number;
+        images?: string[];
+      }>("config.banners", {});
+      if (Array.isArray(images) && images.length > 0) {
         this.setData({
-          banners: Array.from({ length: count }, (_, i) => ({
+          banners: images.map((image, i) => ({
             id: String(i + 1),
             title: "",
             desc: "",
             bgColor: "",
-            image: `${CDN_BASE}/banner/banner${i + 1}.jpg?v=${v}`,
+            image,
             link: "",
           })),
         });

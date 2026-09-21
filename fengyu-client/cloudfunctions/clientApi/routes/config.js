@@ -9,14 +9,29 @@
 
 const pg = require('../db/pg')
 const { invalidateCache } = require('../utils/config')
+const { safeBannerThumbUrl, BANNER_THUMB_BOX } = require('../utils/image')
 
 /**
- * 获取首页轮播图数量 + 缓存版本号。
+ * 获取首页轮播图。
  *
- * 返回 { count, v } 而非 URL 列表：客户端用自己的 env-aware CDN_BASE 拼固定路径
- * `${CDN_BASE}/banner/banner{N}.jpg?v=${v}`（<image> 加载，不受 wx.request 域名白名单限制）。
- * count/v 取自 system_configs.banner_count（admin saveSettings 每次保存写入，updated_at=NOW()），
- * 用 updated_at 当缓存版本号；无 banner_count 时按 banner_images 数组长度兜底。
+ * 返回 `{ count, v, images }`，其中 `images` 是**已施加缩略规则的完整 URL 列表**（issue #231）。
+ *
+ * 为什么把 URL 构造收回服务端：原先只下发 count/v、由客户端拼
+ * `${CDN_BASE}/banner/banner{N}.jpg?v=${v}`，导致 banner 是全站唯一绕开
+ * `safeThumbUrl` 防护的图片链路 —— 生产那张 3002×1039 的 banner 原图直发，解码 11.9MB，
+ * 而首页是流量最高的页面、swiper 还会预渲染相邻帧。
+ * 收回服务端后，后续调整尺寸不需要小程序发版（审核周期长）。
+ *
+ * ⚠️ 三个与其它链路不同的地方：
+ * 1. **对象键是三段** `fengyu-client/banner/banner{N}.jpg`，过不了 `safeThumbUrl` 的
+ *    两段白名单，所以走 `safeBannerThumbUrl`（专属白名单，比默认更严）
+ * 2. **必须带 `?v=`**：banner 是覆盖式上传（admin `reuploadToFixedPath` 到固定文件名），
+ *    换图后 URL 不变，丢了版本号客户端会长期拿到旧图
+ * 3. **host 取自 `banner_images`**（admin 写入时用的是它自己的 `CDN_BASE`），
+ *    而不是云函数另配一份 —— 少一处需要跟环境同步的配置。
+ *    host 仍过 COS 白名单校验，不在白名单就返回 null（fail-closed）
+ *
+ * `count`/`v` 保留：前端据此判断是否有 banner，且 v 仍是缓存版本的单一来源。
  * 无需认证，公开接口。
  */
 async function banners(ctx) {
@@ -27,18 +42,54 @@ async function banners(ctx) {
   let count = 0
   let v = 0
   const cntRow = rows.find((r) => r.key === 'banner_count')
+  const imgRow = rows.find((r) => r.key === 'banner_images')
   if (cntRow) {
     count = parseInt(cntRow.value, 10) || 0
     v = Math.floor(Number(cntRow.v)) || 0
-  } else {
+  } else if (imgRow) {
     // 兜底：无 banner_count 时按 banner_images 数组长度
-    const imgRow = rows.find((r) => r.key === 'banner_images')
-    if (imgRow) {
-      try { count = JSON.parse(imgRow.value).length } catch { /* empty */ }
-      v = Math.floor(Number(imgRow.v)) || 0
-    }
+    try { count = JSON.parse(imgRow.value).length } catch { /* empty */ }
+    v = Math.floor(Number(imgRow.v)) || 0
   }
-  ctx.result = { count, v }
+
+  ctx.result = { count, v, images: buildBannerUrls(imgRow && imgRow.value, count, v) }
+}
+
+/**
+ * 由 `banner_images` 的第一条取出 origin，拼出固定路径的 banner URL 列表并施加缩略规则。
+ *
+ * `banner_images` 存的是 admin **上传原件**的随机名 URL
+ * （`fengyu-client/banner/<ts>-<rand>.jpg`），而客户端要的是
+ * `reuploadToFixedPath` 之后的固定名 `banner{N}.jpg` —— 两者同图不同键，
+ * 所以这里只借它的 origin，路径按 count 重新生成。
+ *
+ * 任何一条拼不出合法 URL（host 不在白名单、版本号非法……）就整体返回 `[]`：
+ * banner 是展示位，宁可不显示也不下发未经缩略的原图。
+ */
+function buildBannerUrls(rawImages, count, v) {
+  if (!count || !rawImages) return []
+
+  let origin
+  try {
+    const list = JSON.parse(rawImages)
+    if (!Array.isArray(list) || list.length === 0) return []
+    origin = new URL(list[0]).origin
+  } catch {
+    return []
+  }
+
+  const urls = []
+  for (let i = 1; i <= count; i += 1) {
+    const url = safeBannerThumbUrl(
+      `${origin}/fengyu-client/banner/banner${i}.jpg`,
+      BANNER_THUMB_BOX,
+      v
+    )
+    // 有一条不合规就整体放弃，避免前端拿到"缺了中间几张"的残缺轮播
+    if (!url) return []
+    urls.push(url)
+  }
+  return urls
 }
 
 /**

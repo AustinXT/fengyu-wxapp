@@ -27,6 +27,31 @@
 const COS_HOST_PATTERN = /\.tcb\.qcloud\.la$/i
 
 /**
+ * 对象键白名单（默认）：两段、纯 ASCII、以图片扩展名结尾。
+ * admin `path=` 模式上传生成的键形如 `store-covers/1789097186265-apa9p0.png`。
+ * 详细理由见 parseProcessableUrl 里的注释。
+ */
+const OBJECT_KEY_PATTERN = /^\/[\w-]+\/[\w.-]+\.(png|jpe?g|webp|gif)$/i
+
+/**
+ * 首页 banner 的对象键白名单（issue #231）—— **比默认的两段键更严格**。
+ *
+ * banner 与其它图片链路有两处结构性不同：
+ * 1. 键是**三段** `fengyu-client/banner/banner{N}.jpg`
+ *    （前端 `home.ts` 的 `CDN_BASE` 自带 `/fengyu-client` 前缀），过不了默认的两段白名单
+ * 2. 文件名**固定**、覆盖式上传（admin `settings.ts` 的 `reuploadToFixedPath`），
+ *    所以换图后 URL 不变，必须靠 `?v=` 破缓存
+ *
+ * 刻意**不**把默认白名单放宽成「2~3 段」来容纳它 —— 那条白名单是 #230 五轮 +
+ * #232 两轮评审钉死的，且现在有三份副本；放宽会扩大
+ * 「样式分隔符配成 `/` 时与正常键不可区分」这个已知限制的暴露面。
+ * 这里改用一条**只认 banner 这一种形态**的正则：段名写死、文件名锚定 `banner<数字>`，
+ * 比默认白名单窄得多。
+ */
+const BANNER_OBJECT_KEY_PATTERN =
+  /^\/fengyu-client\/banner\/banner\d+\.(png|jpe?g|webp)$/i
+
+/**
  * 判断 hostname 是否属于可做数据万象处理的域名。
  * 先去掉 FQDN 尾点（`a.tcb.qcloud.la.` 与 `a.tcb.qcloud.la` DNS 等价，
  * 不归一会漏匹配从而退回下发原图）。
@@ -81,7 +106,7 @@ function decodeParamName(param) {
  * @param {string} url 原始图片 URL
  * @returns {URL|null} 通过校验的 URL 对象（query 尚未写入规则）；不通过返回 null
  */
-function parseProcessableUrl(url) {
+function parseProcessableUrl(url, objectKeyPattern = OBJECT_KEY_PATTERN) {
   if (typeof url !== 'string' || url.trim() === '') return null
 
   // 只处理 http(s)。cloud:// 这类 fileID 需由调用侧先换成 https 再进来，
@@ -115,7 +140,11 @@ function parseProcessableUrl(url) {
   // （`/` 的情形是 `store-covers` 为对象键、`oversize.png` 为样式名），
   // 代码层与正常两段键不可区分。本项目 bucket 须保持默认分隔符 `!`、
   // 且不得配置含缩放规则的样式。
-  if (!/^\/[\w-]+\/[\w.-]+\.(png|jpe?g|webp|gif)$/i.test(parsed.pathname)) {
+  //
+  // 允许调用方传入**更严格**的专属白名单（issue #231 的 banner 走三段固定键）。
+  // 注意方向：参数只用来换一条同样是白名单的正则，**不是**给调用方放宽的口子 ——
+  // 默认值就是上面描述的两段键规则，传不传行为一致。
+  if (!objectKeyPattern.test(parsed.pathname)) {
     return null
   }
 
@@ -198,6 +227,53 @@ function safeThumbUrlByArea(url, maxPixels) {
 }
 
 /**
+ * 首页 banner 专用的缩略 URL（issue #231）。
+ *
+ * 与 {@link safeThumbUrl} 的两点不同，都源于 banner 链路的结构性差异：
+ *
+ * 1. **对象键走 {@link BANNER_OBJECT_KEY_PATTERN}**（三段固定键，比默认白名单更严）
+ * 2. **在规则后追加 `&v=<version>`** —— banner 是覆盖式上传，换图后 URL 不变，
+ *    丢了版本号客户端会长期拿到旧图。
+ *    已对生产图实测：`?imageMogr2/thumbnail/1080x1080&v=175…` 与
+ *    `?v=175…&imageMogr2/thumbnail/1080x1080` **两种顺序都正常缩略**（1080×374），
+ *    规则与版本号可以共存。
+ *
+ * 追加 `&v=` 不违背「query 整串由服务端掌控」这条核心约定 —— 丢弃的是**外部传入**的
+ * query，追加的是服务端自己算出来的版本号，最终 query 仍然完全由服务端决定。
+ *
+ * @param {string} url 原始 banner URL（host 仍走 COS 白名单校验）
+ * @param {number} boxSize 目标 box 边长
+ * @param {number} version 缓存版本号（system_configs.banner_count 的 updated_at 毫秒）
+ * @returns {string|null} 处理后的 URL；无法保证缩略时返回 null
+ */
+function safeBannerThumbUrl(url, boxSize, version) {
+  if (!Number.isInteger(boxSize) || boxSize <= 0) return null
+  // 版本号必须是非负整数。给不出版本号时**不降级下发**：
+  // 没有 `?v=` 的 banner URL 会被 CDN 长期缓存，换图不生效——
+  // 那是比"图略大"更难排查的故障，宁可走占位。
+  if (!Number.isInteger(version) || version < 0) return null
+
+  const parsed = parseProcessableUrl(url, BANNER_OBJECT_KEY_PATTERN)
+  if (!parsed) return null
+
+  parsed.search = `?imageMogr2/thumbnail/${boxSize}x${boxSize}&v=${version}`
+  return parsed.toString()
+}
+
+/**
+ * 首页 banner 档位（issue #231）：满屏轮播，`.banner-swiper { height: 260rpx }` + aspectFill。
+ *
+ * 展示位宽约 686rpx（750 − 32×2 padding），3x 屏物理约 1180×447。
+ * 生产 banner 实测 3002×1039（2.89:1 宽图），box 1080 输出 1080×374、解码 1.5MB
+ * （原图 11.9MB），aspectFill 放大约 1.19 倍 —— 对照片类内容可接受。
+ *
+ * 与 STORE_DETAIL_THUMB_BOX / PRODUCT_THUMB_BOX_LARGE 同取 1080，不另立档位。
+ * swiper 开了 `circular` + `autoplay` 会预渲染相邻帧，N 张时可能同时驻留 2~3 张：
+ * 本档下 3 张 ≈ 4.5MB；若抬到 1280（放大 1.01 倍）则 3 张 ≈ 6.6MB，不值。
+ */
+const BANNER_THUMB_BOX = 1080
+
+/**
  * 门店列表卡片：显示尺寸 160rpx，3x 屏约 240 物理像素，取 300 留余量。
  * 解码上限 300×300×4 ≈ 0.34MB/张。
  */
@@ -276,7 +352,9 @@ const PRODUCT_DETAIL_IMAGE_MAX_COUNT = 9
 module.exports = {
   safeThumbUrl,
   safeThumbUrlByArea,
+  safeBannerThumbUrl,
   isProcessableHost,
+  BANNER_THUMB_BOX,
   STORE_LIST_THUMB_BOX,
   STORE_DETAIL_THUMB_BOX,
   PRODUCT_THUMB_BOX_SMALL,
