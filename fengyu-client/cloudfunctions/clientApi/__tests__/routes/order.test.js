@@ -1419,6 +1419,41 @@ describe('order.pay', () => {
     expect(__mocks__.lakalaClient.closeTrade).not.toHaveBeenCalled()
   })
 
+  // round-13：这个闸门最初写在 try 里，抛出的 PAYMENT_INTENT_CHANGED 被自己的 catch
+  // 接住、降级成了 PAYMENT_INTENT_ACTIVE —— 新设计的可重试错误成了不可达代码。
+  test('作废耗时过长 → 本次不重建，返回可重试的 PAYMENT_INTENT_CHANGED (#214)', async () => {
+    mockPayQueries({
+      order: reusableOrder({}, { expiresAt: new Date(Date.now() - 1000).toISOString() }),
+    })
+    const payQueryImpl = pg.query.getMockImplementation()
+    pg.query.mockImplementation(async (sql, params) => {
+      if (/lakala_merchants/.test(sql)) return [{ merchant_no: 'M1', term_no: 'T1', enabled: true }]
+      return payQueryImpl(sql, params)
+    })
+    // 作废本身成功，但把预算耗光（每跳都慢）
+    __mocks__.lakalaClient.queryTrade
+      .mockImplementationOnce(async () => {
+        await new Promise((r) => setTimeout(r, 60))
+        return { ok: true, tradeState: 'CREATE' }
+      })
+      .mockImplementationOnce(async () => ({ ok: true, tradeState: 'CLOSE' }))
+    // 把阈值压到 50ms，让上面那一跳必然超预算
+    const routesModule = require('../../routes/order')
+    const originalNow = Date.now
+    let call = 0
+    Date.now = () => originalNow() + (++call > 2 ? 60000 : 0)   // 作废后时间跳到超预算
+    try {
+      const ctx = createBoundCtx({ orderNo: 'FY-REUSE-001' })
+      await expect(routesModule.pay(ctx)).rejects.toThrow(/PAYMENT_INTENT_CHANGED/)
+    } finally {
+      Date.now = originalNow
+    }
+    // 关键：旧场次确实被关掉了（不是「作废失败」那条路）
+    expect(__mocks__.lakalaClient.closeTrade).toHaveBeenCalled()
+    // 且没有去建新场次
+    expect(__mocks__.lakalaClient.requestPreorder).not.toHaveBeenCalled()
+  })
+
   test('意图无快照但已过宽限期 → 按不可复用处理，走主动作废 (#214)', async () => {
     mockPayQueries({
       order: {

@@ -688,7 +688,13 @@ const LAKALA_VOID_CALL_TIMEOUT_MS = 7000
  * 一个可重试的错误（旧场次此时**已经作废干净**，顾客点一次重试就是全新的 60s 预算，
  * 不会卡住）。正常情况下拉卡拉单次往返 1~2s，这条降级分支根本走不到。
  */
-const LAKALA_REBUILD_MIN_BUDGET_MS = 35000
+// 算式（改这个数之前先重算一遍）：
+//   函数超时 60s − 重建最坏耗时 = 允许的「已耗时」上限
+//   微信：  preorder 20s + 失败清理 21s = 41s → 上限 19s
+//   支付宝：preorder 15s + 吱口令 13s + 失败清理 21s = 49s → 上限 11s
+// 取两者更小的一侧再留点余量 → 10s。
+// 作废本身最坏 21s，走满就必然不重建（保守，正确）；正常 3 次往返 3~6s，照常重建。
+const LAKALA_REBUILD_MAX_ELAPSED_MS = 10000
 
 /**
  * 预下单 / 吱口令的单次超时预算（双谱系评审 round-6）。
@@ -1335,7 +1341,9 @@ async function reserveDirectOnlinePaymentIntentWithTerminalRetry(options) {
       // 不能当成「快照残缺该作废」去关它（双谱系评审 round-12）。让调用方稍后重试。
       if (!err.activeHasSnapshot && err.activeUpdatedAt) {
         const age = Date.now() - new Date(err.activeUpdatedAt).getTime()
-        if (Number.isFinite(age) && age >= 0 && age < INTENT_CREATION_GRACE_MS) {
+        // 负值也当「刚创建」：DB 时钟比函数实例略超前（NTP 毫秒级偏差）时 age 会是负数，
+        // 按原写法会跳过宽限期直接作废——恰好复现宽限期要防的那件事
+        if (Number.isFinite(age) && age < INTENT_CREATION_GRACE_MS) {
           console.warn('[order/reserveDirectOnlinePaymentIntent] 意图可能正在创建中，不作废:',
             options.orderNo, age)
           throw err
@@ -1357,13 +1365,6 @@ async function reserveDirectOnlinePaymentIntentWithTerminalRetry(options) {
           merchant,   // 事务内已解析过，不必再查一次
         })
         excludedOutTradeNo = err.activeOutTradeNo
-        // 旧场次已作废干净。重建前先确认剩余预算够跑完「预下单 + 万一失败的清理」，
-        // 不够就让顾客重试——重试是全新的函数预算，而硬着头皮建单可能在清理前被平台杀掉。
-        if (Date.now() - startedAt > LAKALA_REBUILD_MIN_BUDGET_MS) {
-          console.warn('[order/reserveDirectOnlinePaymentIntent] 作废耗时过长，本次不重建:',
-            options.orderNo, Date.now() - startedAt)
-          throw new Error('CONFLICT: PAYMENT_INTENT_CHANGED: 上一笔支付场次已关闭，请重新发起支付')
-        }
       } catch (voidErr) {
         // 「已支付」要如实告诉顾客（比含糊的「请勿重复发起」准确得多）；
         // 其余情况（关不掉 / 查不准）保留原错误，语义不变。
@@ -1373,6 +1374,19 @@ async function reserveDirectOnlinePaymentIntentWithTerminalRetry(options) {
         console.warn('[order/reserveDirectOnlinePaymentIntent] 旧意图作废未完成，保留:',
           options.orderNo, voidErr && voidErr.message)
         throw err
+      }
+
+      // ⚠️ 这段必须在 try/catch **之外**（双谱系评审 round-13）：写在 try 里的话，
+      // 它抛出的 PAYMENT_INTENT_CHANGED 会被下面自己的 catch 接住、降级成原始的
+      // PAYMENT_INTENT_ACTIVE —— 新设计的可重试错误成了不可达代码，日志还会打出
+      // 「作废未完成」这种与事实相反的话（此时作废其实已经成功）。
+      //
+      // 旧场次此时已作废干净。重建前确认剩余预算够跑完「预下单 + 万一失败的清理」，
+      // 不够就让顾客重试——重试是全新的函数预算，硬建可能在清理前被平台杀掉。
+      if (Date.now() - startedAt > LAKALA_REBUILD_MAX_ELAPSED_MS) {
+        console.warn('[order/reserveDirectOnlinePaymentIntent] 作废耗时过长，本次不重建:',
+          options.orderNo, Date.now() - startedAt)
+        throw new Error('CONFLICT: PAYMENT_INTENT_CHANGED: 上一笔支付场次已关闭，请重新发起支付')
       }
     }
   }
