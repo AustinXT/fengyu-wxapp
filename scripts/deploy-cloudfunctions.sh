@@ -17,7 +17,7 @@
 #    代码更新后，本脚本再通过 SCF API 对指定变量执行“读取→合并→回读验证”，
 #    避免 `tcb config update` 3.0.1 的键名损坏问题，也不会覆盖未纳入模板的变量。
 #
-# Usage: scripts/deploy-cloudfunctions.sh [dev|prod|both] [client|staff|all] [--yes]
+# Usage: scripts/deploy-cloudfunctions.sh [dev|prod|both] [client|staff|all] [--yes] [--plan]
 #
 # 两个正交维度，顺序无关：
 #
@@ -32,13 +32,15 @@
 #      staff  → staffApi 系（staff 账号 / STAFF_ENV_ID）
 #      all    → 两端都部（默认）
 #
-#   --yes → 跳过 confirm（位置任意）
+#   --yes  → 跳过 confirm（位置任意）
+#   --plan → 只打印部署计划与函数数后退出，不做任何改动（渲染/登录/上传都不执行）
 #
 # 常用：
 #   ...deploy-cloudfunctions.sh dev          # 改完代码先只发 dev 验证，生产不动
 #   ...deploy-cloudfunctions.sh dev staff    # 只发 staffApiDev
 #   ...deploy-cloudfunctions.sh prod         # 验证通过后再发生产
 #   ...deploy-cloudfunctions.sh              # 发版：六个全发
+#   ...deploy-cloudfunctions.sh prod --plan  # 拿不准会动什么，先看计划
 #
 # ⚠️ 注意 `.active` 恒为 prod（所有函数都住 prod env）。这里的 dev/prod 指的是
 #    【函数连哪个库】，不是【部到哪个 CloudBase 环境】——后者已只剩一个。
@@ -52,10 +54,19 @@ CHANNEL=both
 TARGET=all
 ASSUME_YES=0
 PLAN_ONLY=0
+CHANNEL_SET=0
+TARGET_SET=0
 for arg in "$@"; do
   case "$arg" in
-    dev|prod|both)    CHANNEL="$arg" ;;
-    client|staff|all) TARGET="$arg" ;;
+    # 同一维度给两个值一律拒绝，不做「最后一个生效」。
+    # `deploy-cloudfunctions.sh prod dev` 这种手误会让 CHANNEL=dev：生产函数不部署，
+    # 且因 DO_PRIMARY=0 连 confirm 都跳过 —— 操作者以为发了生产，实际全程无人工闸口。
+    dev|prod|both)
+      [[ "$CHANNEL_SET" == "1" ]] && { echo "ERROR: 通道参数重复（已是 '$CHANNEL'，又给了 '$arg'）。请只指定一个。" >&2; exit 1; }
+      CHANNEL="$arg"; CHANNEL_SET=1 ;;
+    client|staff|all)
+      [[ "$TARGET_SET" == "1" ]] && { echo "ERROR: 端参数重复（已是 '$TARGET'，又给了 '$arg'）。请只指定一个。" >&2; exit 1; }
+      TARGET="$arg"; TARGET_SET=1 ;;
     --yes|-y)         ASSUME_YES=1 ;;
     --plan|-n)        PLAN_ONLY=1 ;;
     *) echo "ERROR: unknown arg '$arg'. Usage: $0 [dev|prod|both] [client|staff|all] [--yes] [--plan]" >&2; exit 1 ;;
@@ -115,8 +126,19 @@ fi
 PROD_PG_HOST=118.178.196.26
 DEV_PG_HOST=101.34.242.103
 
+# ── 步骤计数：每端每通道 staff 1 个 / client 2 个函数 ──
+# 放在计划打印之前，好让 --plan 也能暴露计数，避免 TOTAL 与实际步数脱节却没人看见。
+TOTAL=0
+for _ch in primary shadow; do
+  [[ "$_ch" == "primary" && "$DO_PRIMARY" != "1" ]] && continue
+  [[ "$_ch" == "shadow"  && "$DO_SHADOW"  != "1" ]] && continue
+  [[ "$DO_STAFF"  == "1" ]] && TOTAL=$((TOTAL + 1))
+  [[ "$DO_CLIENT" == "1" ]] && TOTAL=$((TOTAL + 2))
+done
+STEP=0
+
 # ── 本次部署计划（无论是否 confirm 都打印，让操作者看见实际目标）──
-echo "==> 部署计划：channel=$CHANNEL  target=$TARGET"
+echo "==> 部署计划：channel=$CHANNEL  target=$TARGET  共 $TOTAL 个函数"
 if [[ "$DO_PRIMARY" == "1" ]]; then
   [[ "$DO_STAFF"  == "1" ]] && echo "    staffApi                    → $STAFF_ENV_ID   [prod 库 $PROD_PG_HOST]"
   [[ "$DO_CLIENT" == "1" ]] && echo "    clientApi + payNotify       → $CLIENT_ENV_ID  [prod 库 $PROD_PG_HOST]"
@@ -289,10 +311,11 @@ assert_db_prereqs() {  # $1=cloudbaserc 路径  $2=channel(primary|shadow)
   # 探测不通时的处置跟着【目标库】走，而不是跟着 .active（它恒为 prod）：
   # 探不到 prod 库 → fail-closed，生产最不能"无法确认迁移状态还继续上传"；
   # 探不到 dev 库  → 告警放行，dev 库偶发不可达不该挡住开发自测。
-  local soft_fail db_label
-  if [[ "$want_shadow" == "shadow" ]]; then soft_fail=0; db_label="dev"; else soft_fail=1; db_label="prod"; fi
+  # fail_closed=1 → 探测失败即中止；=0 → 告警放行。（原名 soft_fail 语义是反的）
+  local fail_closed db_label
+  if [[ "$want_shadow" == "shadow" ]]; then fail_closed=0; db_label="dev"; else fail_closed=1; db_label="prod"; fi
   _db_probe_unavailable() {  # $1=原因
-    if [[ "$soft_fail" == "1" ]]; then
+    if [[ "$fail_closed" == "1" ]]; then
       echo "ERROR: 部署正式函数前无法确认 ${db_label} 库的迁移状态（$1），拒绝继续。" >&2
       echo "       请先确认 ${db_label} 库已执行 db:migrate（0045_try_cast_helpers）。" >&2
       exit 1
@@ -335,19 +358,26 @@ assert_db_prereqs() {  # $1=cloudbaserc 路径  $2=channel(primary|shadow)
   fi
 
   if [[ -n "${probe//[[:space:]]/}" ]]; then
-    echo "ERROR: 目标库缺少云函数依赖的 DB 对象：${probe}" >&2
-    echo "       请先对 ${ACTIVE} 库执行 db:migrate（migration 0045_try_cast_helpers），再部署。" >&2
+    # 必须报 $db_label 而不是 $ACTIVE：后者恒为 prod，
+    # 探 shadow 通道发现 dev 库漏迁时会把人指去迁 prod 库，越迁越错。
+    echo "ERROR: ${db_label} 库缺少云函数依赖的 DB 对象：${probe}" >&2
+    echo "       请先对 ${db_label} 库执行 db:migrate（migration 0045_try_cast_helpers），再部署。" >&2
     echo "       参见 db/CLAUDE.md「schema 变更两个库都要迁」的目标断言流程。" >&2
     exit 1
   fi
-  echo "  ✓ DB 前置依赖就绪（public.try_jsonb / public.try_numeric）"
+  echo "  ✓ ${db_label} 库 DB 前置依赖就绪（public.try_jsonb / public.try_numeric）"
 }
-# 按本次通道逐一探测：两个通道都部时两个库都要确认过才放行
+# 按【通道】探测，每个通道只探一次：staff 与 client 在同一通道下连的是同一个库，
+# 按「端×通道」探会做重复探测，每次还带 8s 超时。
+# 取哪一侧的 cloudbaserc 都等价，优先用本次实际会部署的那一侧。
 for _ch in primary shadow; do
   [[ "$_ch" == "primary" && "$DO_PRIMARY" != "1" ]] && continue
   [[ "$_ch" == "shadow"  && "$DO_SHADOW"  != "1" ]] && continue
-  [[ "$DO_STAFF"  == "1" ]] && assert_db_prereqs "$ROOT/fengyu-staff/cloudbaserc.json"  "$_ch"
-  [[ "$DO_CLIENT" == "1" ]] && assert_db_prereqs "$ROOT/fengyu-client/cloudbaserc.json" "$_ch"
+  if [[ "$DO_CLIENT" == "1" ]]; then
+    assert_db_prereqs "$ROOT/fengyu-client/cloudbaserc.json" "$_ch"
+  else
+    assert_db_prereqs "$ROOT/fengyu-staff/cloudbaserc.json" "$_ch"
+  fi
 done
 
 # ── 占位符扫描：渲染后仍含占位符的 env 给出告警（不中止，部分占位是预期的，如 prod 未填的 SM4）──
@@ -359,16 +389,6 @@ if [[ -n "$PLACEHOLDERS" ]]; then
   echo "⚠️  注意：cloudbaserc 仍含以下占位符，将原样上传到 [$ACTIVE]，请确认是否预期："
   echo "$PLACEHOLDERS" | sed 's/^/      /'
 fi
-
-# ── 步骤计数：每端每通道 staff 1 个 / client 2 个函数 ──
-TOTAL=0
-for _ch in primary shadow; do
-  [[ "$_ch" == "primary" && "$DO_PRIMARY" != "1" ]] && continue
-  [[ "$_ch" == "shadow"  && "$DO_SHADOW"  != "1" ]] && continue
-  [[ "$DO_STAFF"  == "1" ]] && TOTAL=$((TOTAL + 1))
-  [[ "$DO_CLIENT" == "1" ]] && TOTAL=$((TOTAL + 2))
-done
-STEP=0
 
 # ── 单函数部署：不存在则创建，存在则只更新代码 ──
 # `tcb fn code update` 要求函数已存在；影子函数（*Dev）首次上线时该 env 里还没有它，

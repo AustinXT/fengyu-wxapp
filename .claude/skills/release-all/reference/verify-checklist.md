@@ -34,8 +34,10 @@ DB 目标口径：
 | payNotify | `PG_CONNECTION_STRING`→`$EXPECT_IP`:5433、（启用支付时）`LAKALA_*` 全套、`LAKALA_NOTIFY_URL`(非 PLACEHOLDER) | client 子账号（同 clientApi env） |
 
 envId 实际值（核对 cloudbaserc.json / `tcb fn detail`）：
-- prod：staff=`fengyu-staff-prod-d4dtv6052992e9` / client=`fengyu-client-prod-d1cga6909c0ba`
-- dev：staff=`cloud1-9g3ydpg512eecc99` / client=`cloud1-3gpht4b01ff88838`
+- staff=`fengyu-staff-prod-d4dtv6052992e9` / client=`fengyu-client-prod-d1cga6909c0ba`
+- **只剩这一套**。dev 侧的 `cloud1-9g3ydpg512eecc99` / `cloud1-3gpht4b01ff88838` 已于 2026-09-21 退役
+  （前者不在任何密钥账号下、后者到期），dev 库改由同 env 内的影子函数 `*Dev` 承载。
+  线上若仍出现 `cloud1-*`，说明配置没跟上，按现状核对而非照抄。
 
 ## 冒烟（按 ENV 选 ssh host）
 

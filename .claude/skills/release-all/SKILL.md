@@ -5,10 +5,11 @@ description: |
   runs pre-flight test/type gates, bumps miniprogram APP_VERSION from the latest
   git tag, runs pending Drizzle migrations against the selected target database,
   cross-compiles the Next.js admin and fengyu-analyst, then ships both to the target host
-  (prod→lx-prod / dev→lx-test). Both environments also deploy staffApi, clientApi,
-  and payNotify to their own CloudBase envs. Note the `test` and `main` git branches
-  both release to the prod environment; the standalone test environment was retired
-  on 2026-09-01.
+  (prod→lx-prod / dev→lx-test). Cloud functions now live in a SINGLE CloudBase env:
+  dev/prod are distinguished by function name, not by env — `deploy-cloudfunctions.sh dev`
+  ships the shadow functions (`*Dev`, wired to the dev DB) and `prod` ships the primary ones.
+  Note the `test` and `main` git branches both release to the prod environment;
+  the standalone test environment was retired on 2026-09-01.
   Use when the user says 发版 / 上线 / 发布生产 / 发布测试 / 发 dev / release / ship to dev|prod.
   This is an UPDATE release — runs pending migrations only through db:migrate, never wipes the DB.
 argument-hint: '[dev|prod] [skip-tests|skip-version|skip-admin|skip-analyst|skip-cloudfn]'
@@ -74,7 +75,6 @@ metadata:
 - **永不用 `--force`**：env 变量会被清空（2026-04-02 事故）。只用 `tcb fn code update`（脚本已遵守）。
 - 技能**完全不碰 git**（不 commit / 不 push）。允许携带未提交改动发版；Admin/Analyst 镜像必须用 `<commit>-dirty.<fingerprint>` 标记脏状态，CloudBase 则按当前工作树上传。不得把脏发布表述为已提交或仅由 commit 可复现。
 - **目标 DB 硬约束**：迁移目标必须为 dev=`101.34.242.103`、prod=`118.178.196.26` 的 `:5433/fengyu_wxapp`。dev 远程容器允许 `172.18.0.1`，但必须同时验证宿主公网 IP=101.34.242.103 且宿主 5433 正在监听。**`47.113.202.7` 已弃用，任何迁移都不得指向它。**
-- **发 prod 后必须恢复 dev env（§8）**。
 - `db:migrate` 出错、连接目标不符，或本地 migration journal 比目标库旧时，立即停止；不得继续 admin 或云函数发布。已成功应用的 migration 不做回滚，按 `db/CLAUDE.md` 新建向前修复 migration。
 
 ---
@@ -135,7 +135,7 @@ metadata:
    ```bash
    docker info >/dev/null 2>&1 && echo 'docker ✓' || echo 'docker 未运行 ✗'
    ssh $SSH_HOST true && echo "$SSH_HOST 可达 ✓"
-   cat envs/.active   # 记录当前 env；发 prod 时 Phase 7 须恢复回此值
+   cat envs/.active   # 应为 prod（恒定）；§8 的「发完复位 dev」已作废，不要复位
    ```
 8. **工作树状态**：`git status --short`。脏工作树不再阻断，但必须展示文件清单；后续 Admin/Analyst 发布清单必须显示 `dirty.<fingerprint>`，prod 确认文本也必须包含该指纹。
 
@@ -200,11 +200,13 @@ unset MIGRATE_DATABASE_URL
 ## §6 Phase 5 — 云函数发布（除非 `skip-cloudfn`；**串行，禁止并行**）
 
 ```bash
-scripts/use-env.sh prod          # 渲染 cloudbaserc + 写 .active=prod（ENV_PROFILE 守卫兜底）
-scripts/deploy-cloudfunctions.sh # 默认 both：串行双账号 + 6 个函数（正式 3 + 影子 3）
+scripts/use-env.sh prod                  # 渲染 cloudbaserc + 写 .active=prod（ENV_PROFILE 守卫兜底）
+scripts/deploy-cloudfunctions.sh $ENV    # ⚠️ 必须带 $ENV：dev→只发影子函数 / prod→只发正式函数
 ```
-- **`.active` 恒为 `prod`**，脚本会主动拒绝 `.active=dev`（dev 侧 CloudBase 环境已退役）。
-  `$ENV=dev` 的发版场景对应的是**通道**参数：`scripts/deploy-cloudfunctions.sh dev`（只发影子函数，不碰生产、无 confirm）。
+- **`$ENV` 在这一步是【通道】参数，不能省。** 省掉就是默认 `both`，
+  于是 `/release-all dev` 会把 3 个**正式函数**一起发上生产——正是影子函数架构要堵的那个泄漏。
+- **`.active` 恒为 `prod`**（所有函数都住 prod env），脚本会主动拒绝 `.active=dev`。
+  这里的 dev/prod 指【函数连哪个库】，与 `.active` 是两回事，别混。
 - 会动正式函数时才 confirm（输入 `yes`）；纯 `dev` 通道跳过。不确定发哪个通道时先跑 `--plan` 看计划。
 - PG host 校验按函数名分组且**期望值是绝对常量**：正式函数必须 118.178.196.26、影子函数必须 101.34.242.103，任一方向不符即中止。
 - 逐个确认 6 行 `✓ ... deployed`（`both` 时）：staffApi → staffApiDev → clientApi → payNotify → clientApiDev → payNotifyDev。
@@ -230,12 +232,16 @@ scripts/deploy-cloudfunctions.sh # 默认 both：串行双账号 + 6 个函数�
    - prod 的 `DATABASE_URL` host 必须为 `$EXPECT_IP`；dev 允许 `172.18.0.1`，但须同时验证宿主公网 IP=`101.34.242.103` 且 5433 正在监听。`NEXT_PUBLIC_ANALYST_ORIGIN` 必须等于 Phase 0 的 `ANALYST_PUBLIC_ORIGIN`。
    - 容器状态须为 `running`，`curl http://localhost:3001/` 必须为 `200` 或 `307`。
 
-3. **云函数 env 终检**【DB assert ⑤】：逐个 `getFunctionConfig`（cloudbase-mcp 或 `tcb fn detail <fn>`）核对**线上**值：
-   - 三端 `PG_CONNECTION_STRING` 都 → `$EXPECT_IP:5433/fengyu_wxapp`
-   - staffApi：`ALLOW_TEST_OPENID`（prod=false / dev=true）、`WXACODE_ENV_VERSION`（prod=release / dev=develop）、`CLIENT_SECRET` 非空
+3. **云函数 env 终检**【DB assert ⑤】：逐个 `getFunctionConfig`（cloudbase-mcp 或 `tcb fn detail <fn>`）核对**线上**值。
+   **按函数名区分，不再按 env 区分**——六个函数同住 prod env：
+   - 正式函数（`staffApi` / `clientApi` / `payNotify`）：`PG_CONNECTION_STRING` → `118.178.196.26:5433/fengyu_wxapp`、`DEPLOY_CHANNEL=primary`
+   - 影子函数（`*Dev`）：`PG_CONNECTION_STRING` → `101.34.242.103:5433/fengyu_wxapp`、`DEPLOY_CHANNEL=shadow`
+   - staffApi：`ALLOW_TEST_OPENID=false`、`WXACODE_ENV_VERSION=release`、`CLIENT_SECRET` 非空
+     （staffApiDev 对应 `true` / `develop`）
    - clientApi：`TMAP_KEY` / `TMAP_SECRET` 非空
-   - payNotify：`PG_CONNECTION_STRING`（启用支付时还需 `LAKALA_*`）
-   - envId 前缀：prod=`fengyu-*-prod-*` / dev=`cloud1-*`
+   - clientApi / payNotify（含 `*Dev`）：`PAYNOTIFY_FN_NAME` 必须与自身归属一致
+     （正式=`payNotify` / 影子=`payNotifyDev`）——运行时 fail-closed，缺失会静默跳过对账
+   - envId：两端都只剩 prod 前缀 `fengyu-*-prod-*`；`cloud1-*` 是已退役的 dev env，**线上不该再出现**
    - 注意：`code update` 不改 env，这些值由首次 provisioning 决定 —— 必须查线上，不能只信 envs/$ENV.env。
 
 4. **冒烟**：`tcb fn invoke staffApi`（空 payload）期望返回 **-401 UNAUTHORIZED**（证明函数运行 + DB 鉴权中间件生效）；返回 **-1** 也算通过（云函数冒烟常见，非 halt 信号）。
