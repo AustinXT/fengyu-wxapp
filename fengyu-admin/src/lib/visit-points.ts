@@ -7,7 +7,7 @@
 
 import { sql } from 'drizzle-orm'
 import { db } from '@/db'
-import { beijingTs } from '@/lib/db-time'
+import { instantTs } from '@/lib/db-time'
 import { DEPOSIT_REFUND_REMARK } from '@/lib/service-remark'
 
 type AdminTx = Parameters<Parameters<typeof db.transaction>[0]>[0]
@@ -116,13 +116,16 @@ export async function grantVisitPointsEntry(
   // 一并覆盖成恒等函数，Date 未经序列化直达 Bind → ERR_INVALID_ARG_TYPE。
   // 所以 staff/client 两端裸用原生 pg 能吃 Date，**唯独经 drizzle 的本副本不行**。
   //
-  // 用 `beijingTs` 而非 db-time 文档里「现在语义用 nowTs()」的默认建议，是因为它们是形参
-  // 且**并不总是"现在"**：cron 补发传的是原服务日锚点，单测传固定时刻，staff/client 两端同样
-  // 用调用方传入的值。改成 `NOW()` 会让形参对 SQL 失效并与另两端语义分叉。
-  // （这里可以接受 beijingTs 的秒级截断：幂等键是 external_ref、不含时间分量；expire_at 派生自
-  //  已落库行自身的 created_at，自洽。做 `>=` 阈值比较的场景才必须用保留毫秒的 instantTs。）
-  const grantedAtTs = beijingTs(occurredAt)
-  const balanceUpdatedTs = beijingTs(balanceUpdatedAt)
+  // 用 `instantTs`（绑 ISO+Z，**毫秒不丢**）而非 db-time 文档里「现在语义用 nowTs()」的默认建议：
+  // 这两个都是形参且**并不总是"现在"**（cron 补发传原服务日锚点，单测传固定时刻，
+  // staff/client 两端同样用调用方传入的值），改成 `NOW()` 会让形参对 SQL 失效并与另两端分叉。
+  //
+  // 不用 `beijingTs` 是因为它会截断到秒，而 `points_updated_at` 是**水位列**：别的积分路径写的是
+  // PG `NOW()`（微秒），补发若在同一秒内把它截成整秒就是**往回退**，按水位做增量同步的下游会漏行。
+  // `created_at` 虽无单调契约，也一并用 instantTs —— 同一条语句里两个时间源用同一种精度，
+  // 省得以后有人只改一处。
+  const grantedAtTs = instantTs(occurredAt)
+  const balanceUpdatedTs = instantTs(balanceUpdatedAt)
   const result = (await executor.execute(sql`
     WITH inserted AS (
       INSERT INTO point_transactions

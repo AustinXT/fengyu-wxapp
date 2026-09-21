@@ -7,6 +7,7 @@
 
 import { sql } from 'drizzle-orm'
 import type { Db } from '../run'
+import { nowOf, type CronContext } from '../lib/cron-context'
 import {
   buildVisitPointsExternalRef,
   grantVisitPointsEntry,
@@ -88,11 +89,18 @@ function parseFailureDetail(value: FailedVisitPointsRow['detail']): VisitPointsF
   }
 }
 
-export async function retryVisitPoints(db: Db): Promise<RetryVisitPointsResult> {
+export async function retryVisitPoints(
+  db: Db,
+  // ⚠ 必须吃 ctx：前一个 STEP `pointsExpiry` 用的是注入时刻（CRON_REFERENCE_DATE），
+  // 本步若拿宿主机 `Date.now()` 判有效期，两步在演练/CI 下会对同一批数据得出相反结论 ——
+  // 参考日期下已过期的却被补发，或反过来被提前写成 expired。生产不设该 env，nowOf 退化为 new Date()。
+  ctx?: CronContext,
+): Promise<RetryVisitPointsResult> {
   if (process.env.POINTS_ACCRUAL_ENABLED === 'false') {
     return { candidateCount: 0, recoveredCount: 0, expiredCount: 0, errorCount: 0, paused: true }
   }
 
+  const now = nowOf(ctx)
   const configuredAmount = await loadVisitPointsReward(db)
   if (configuredAmount <= 0) {
     return { candidateCount: 0, recoveredCount: 0, expiredCount: 0, errorCount: 0, paused: true }
@@ -121,7 +129,15 @@ export async function retryVisitPoints(db: Db): Promise<RetryVisitPointsResult> 
     const detail = parseFailureDetail(failure.detail)
     const anchor = detail ? serviceDateAnchor(detail.serviceDate) : null
     if (!detail || !anchor) {
+      // 这两类都不会自愈（detail 解析不出 / serviceDate 日历非法），每轮都会被重新扫到。
+      // 目前**故意不写 tombstone**：脏值一旦被人工修好就该恢复补发，不该永久摘除。
+      // 代价是它们会一直占候选名额，攒到 RETRY_BATCH_SIZE 就会饿死队列 —— 所以必须打日志，
+      // 让 errorCount 可归因（跟进见 #253 的 follow-up）。
       errorCount++
+      console.error(
+        `[visit-points] retry skipped log ${failure.id}:`,
+        detail ? `invalid serviceDate ${detail.serviceDate}` : 'unparsable detail',
+      )
       continue
     }
 
@@ -131,7 +147,7 @@ export async function retryVisitPoints(db: Db): Promise<RetryVisitPointsResult> 
     // 且顾客拿到的是一笔当场就不可用的积分。这类候选直接判定为"已过期、不补发"，
     // 写一条 outcome='expired' 的处理记录把它从待重试集合里摘掉（否则每轮重扫，
     // 积压到 RETRY_BATCH_SIZE 就会把整个队列饿死）。
-    if (anchor.getTime() + VISIT_POINTS_VALID_DAYS * 86_400_000 <= Date.now()) {
+    if (anchor.getTime() + VISIT_POINTS_VALID_DAYS * 86_400_000 <= now.getTime()) {
       try {
         await db.transaction(async (tx) => {
           await markVisitPointsFailureRecovered(tx, Number(failure.id), failure.target_id, {
@@ -157,9 +173,9 @@ export async function retryVisitPoints(db: Db): Promise<RetryVisitPointsResult> 
           detail.serviceDate,
           detail.rewardAmount,
           anchor,
-          // 余额变更时间恒为**真实当下**，不能跟着补发锚点回到历史时刻（否则按
-          // points_updated_at 做增量同步/对账的下游会漏掉这次真实的余额变更）。
-          new Date(),
+          // 余额变更时间恒为**当下**（演练下是注入时刻），不能跟着补发锚点回到历史时刻
+          // ——否则按 points_updated_at 做增量同步/对账的下游会漏掉这次真实的余额变更。
+          now,
         )
         await markVisitPointsFailureRecovered(tx, Number(failure.id), failure.target_id, result)
       })

@@ -13,7 +13,7 @@ import { describe, it, expect } from 'vitest'
 import path from 'node:path'
 import postgres from 'postgres'
 import { drizzle } from 'drizzle-orm/postgres-js'
-import { nowTs, beijingTs } from '../db-time'
+import { nowTs, beijingTs, instantTs } from '../db-time'
 import { runBunProbeInTz } from './tz-probe-helper'
 
 /** 从 drizzle sql 片段的 queryChunks 里拼出可读 SQL 串（参数内联），便于断言。 */
@@ -63,6 +63,35 @@ describe('beijingTs', () => {
 
   it('epoch 0 是合法输入（refunds.ts 的兜底阈值用它）', () => {
     expect(render(beijingTs(new Date(0)))).toBe("1970-01-01 08:00:00::timestamp AT TIME ZONE 'Asia/Shanghai'")
+  })
+})
+
+/**
+ * `instantTs` 是给**阈值比较**用的：`beijingTs` 截断到秒，会把 `>=` 窗口向前放宽最多 999ms。
+ * 落在 `actions/refunds.ts` 的会员跌档超额扣除上，就是把升级前不到 1 秒用掉的券/积分
+ * 算进"升级后已用"，多扣退款金额；落在 `points_updated_at` 这种水位列上，
+ * 就是同一秒内的写入变成往回退，按水位做增量同步的下游漏行。
+ */
+describe('instantTs', () => {
+  it('保留毫秒，落成带 Z 的 ISO 字面 + ::timestamptz', () => {
+    expect(render(instantTs(new Date('2026-04-24T10:00:00.123Z'))))
+      .toBe('2026-04-24T10:00:00.123Z::timestamptz')
+  })
+
+  it('毫秒不被抹平（与 beijingTs 的秒级截断对照）', () => {
+    const d = new Date('2026-04-24T10:00:00.900Z')
+    expect(render(instantTs(d))).toContain('.900Z')
+    // 同一时刻经 beijingTs 会丢掉 .900 —— 这正是不能拿它当阈值的原因
+    expect(render(beijingTs(d))).toBe("2026-04-24 18:00:00::timestamp AT TIME ZONE 'Asia/Shanghai'")
+  })
+
+  it('与进程 TZ 无关（toISOString 恒为 UTC）', () => {
+    const iso = render(instantTs(new Date(0)))
+    expect(iso).toBe('1970-01-01T00:00:00.000Z::timestamptz')
+  })
+
+  it('Invalid Date 直接抛错', () => {
+    expect(() => instantTs(new Date('not-a-date'))).toThrow(TypeError)
   })
 })
 

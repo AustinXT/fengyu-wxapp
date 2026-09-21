@@ -27,10 +27,13 @@ const ADMIN_ROOT = path.resolve(__dirname, '../../..')
  * 豁免：测试文件自身。`visit-points.test.ts` 的「对照组」用例**故意**把裸 Date 插进模板，
  * 用来证明 drizzle 确实不代为序列化（见该文件注释）。
  *
- * 判据是「**该文件 import 了 vitest**」，不是路径。按 `__tests__/` 目录豁免会留一个洞：
- * 有人把生产 helper 放进测试目录，它就永久免检了。
+ * 判据是「import 了 vitest **或** 文件名是 `*.test.ts(x)`」，不按**目录**。
+ * 按 `__tests__/` 目录豁免会留一个洞：有人把生产 helper 放进测试目录，它就永久免检了。
+ * 两个条件都留着是因为本项目 `vitest.config.ts` 开了 `globals: true` ——
+ * 测试文件可以不 import vitest 直接用 `describe/it`，只看 import 会误报。
  */
 function isExempt(sf: ts.SourceFile): boolean {
+  if (/\.test\.tsx?$/.test(sf.fileName)) return true
   return sf.statements.some(
     (st) =>
       ts.isImportDeclaration(st) &&
@@ -47,29 +50,57 @@ interface Hit {
 }
 
 /**
- * tag 是否解析到 drizzle 的 `sql`。
+ * 这个带标签模板是不是 drizzle 的 `` sql`` ``。
  *
- * 用**符号**而非 `node.tag.getText() === 'sql'`：后者对 `import { sql as raw }` 与
- * `drizzleOrm.sql` 两种写法都会判否，**整个模板被跳过**（守护静默失效）。
+ * 判据是**结果类型**：展开结果的符号叫 `SQL` 且声明在 `drizzle-orm` 里。
+ * 试过但不够的写法：
+ *   - `node.tag.getText() === 'sql'` —— `import { sql as raw }` 和 `drizzleOrm.sql` 直接判否，
+ *     **整个模板被跳过**，守护静默失效；
+ *   - 解析 tag 符号再比名字 —— 堵住了 import 别名，但 `const s = sql` 这种**变量别名**
+ *     符号名是 `s`，照样漏。
+ * 看结果类型则与 tag 怎么拿到的无关，三种写法通吃。
  */
-function isDrizzleSqlTag(tag: ts.Node, checker: ts.TypeChecker): boolean {
-  let sym = checker.getSymbolAtLocation(tag)
-  if (sym && sym.flags & ts.SymbolFlags.Alias) sym = checker.getAliasedSymbol(sym)
-  return sym?.getName() === 'sql'
+function isDrizzleSqlTemplate(node: ts.TaggedTemplateExpression, checker: ts.TypeChecker): boolean {
+  const type = checker.getTypeAtLocation(node)
+  const sym = type.getSymbol() ?? type.aliasSymbol
+  if (sym?.getName() !== 'SQL') return false
+  return (sym.getDeclarations() ?? []).some((d) =>
+    d.getSourceFile().fileName.includes('drizzle-orm'),
+  )
+}
+
+/** 全局 `Date` 实例类型（从 lib.*.d.ts 的 `interface Date` 取声明类型）。 */
+function resolveGlobalDateType(program: ts.Program, checker: ts.TypeChecker): ts.Type {
+  const decl = program
+    .getSourceFiles()
+    .filter((f) => f.isDeclarationFile && /\/lib\.[^/]*\.d\.ts$/.test(f.fileName))
+    .flatMap((f) => f.statements)
+    .find((st): st is ts.InterfaceDeclaration =>
+      ts.isInterfaceDeclaration(st) && st.name.text === 'Date',
+    )
+  if (!decl) throw new Error('未能从 lib.d.ts 解析出全局 Date 类型，守护无法运行')
+  const sym = checker.getSymbolAtLocation(decl.name)
+  if (!sym) throw new Error('未能解析 Date 符号，守护无法运行')
+  return checker.getDeclaredTypeOfSymbol(sym)
 }
 
 /**
- * 类型里是否含 JS `Date`。按**符号名**判，不按 `typeToString()` 的正则：
- *   - `Date | null` → 拆 union 后命中（正则也能命中，但靠的是巧合）
- *   - `type Clock = Date` 这类别名 → 符号仍是 `Date`，命中；正则看到 "Clock" 会漏
- *   - `SQL<Date>`（`sql<Date>\`\`` 片段，运行时安全）→ 符号是 `SQL`，不命中；
- *     正则会把它误报
- *   - `PgColumn<{…dataType:"date"…}>` 列引用（渲染成列名，安全）→ 符号是 `PgColumn`，不命中
- *   - `any` → 无符号，不命中。静态判不了，属已知盲区（别在 sql`` 里 `as any`）
+ * 类型里是否含 JS `Date`。按**可赋值性**判，不按 `typeToString()` 正则、也不按符号名：
+ *   - 正则：`type Clock = Date` 打印成 "Clock" 会漏；安全的 `SQL<Date>` 会被误报
+ *   - 符号名：`Readonly<Date>` 的符号是 `__type`、`Date & { __brand }` 是交叉类型没有 Date 符号，
+ *     两者运行时都是裸 `Date`，照样会炸，但符号名判据看不见
+ * 可赋值性对这几种变体全部命中，而 `SQL<Date>` / `PgColumn<…>` / `string` 都不可赋值给 Date，
+ * 天然不误报，无需维护排除名单。
+ *
+ * `any` / `never` 必须显式跳过：它们可赋值给任何类型，不跳会把全部 `${any}` 插值报成缺陷
+ * （生产代码里确实有若干处）。这是已知盲区 —— 别在 `` sql`` `` 模板里 `as any`。
  */
-function containsDateType(type: ts.Type): boolean {
+function containsDateType(type: ts.Type, checker: ts.TypeChecker, dateType: ts.Type): boolean {
   const parts = type.isUnion() ? type.types : [type]
-  return parts.some((p) => ((p.getSymbol() ?? p.aliasSymbol)?.getName()) === 'Date')
+  return parts.some((p) => {
+    if (p.flags & (ts.TypeFlags.Any | ts.TypeFlags.Never | ts.TypeFlags.Unknown)) return false
+    return checker.isTypeAssignableTo(p, dateType)
+  })
 }
 
 function scanSqlTemplatesForDate(): Hit[] {
@@ -79,6 +110,7 @@ function scanSqlTemplatesForDate(): Hit[] {
   const srcFiles = parsed.fileNames.filter((f) => f.startsWith(path.join(ADMIN_ROOT, 'src') + path.sep))
   const program = ts.createProgram(srcFiles, parsed.options)
   const checker = program.getTypeChecker()
+  const dateType = resolveGlobalDateType(program, checker)
 
   const hits: Hit[] = []
   for (const sf of program.getSourceFiles()) {
@@ -90,11 +122,11 @@ function scanSqlTemplatesForDate(): Hit[] {
       if (
         ts.isTaggedTemplateExpression(node) &&
         ts.isTemplateExpression(node.template) &&
-        isDrizzleSqlTag(node.tag, checker)
+        isDrizzleSqlTemplate(node, checker)
       ) {
         for (const span of node.template.templateSpans) {
           const type = checker.getTypeAtLocation(span.expression)
-          if (containsDateType(type)) {
+          if (containsDateType(type, checker, dateType)) {
             hits.push({
               file: path.relative(ADMIN_ROOT, sf.fileName),
               line: sf.getLineAndCharacterOfPosition(span.expression.getStart(sf)).line + 1,
@@ -123,7 +155,8 @@ describe('禁止把 JS Date 插进 drizzle sql`` 模板（#253 回归守护）',
       hits.length === 0
         ? ''
         : `发现 ${hits.length} 处把 Date 插进 sql\`\` 模板，运行时会抛 ERR_INVALID_ARG_TYPE：\n${report}\n` +
-          `修法：改用 @/lib/db-time 的 nowTs() / beijingTs(d) / beijingBoundaryTs(dateStr, time)。`,
+          `修法：改用 @/lib/db-time 的 nowTs()（现在）/ instantTs(d)（绝对时刻，毫秒不丢，` +
+          `阈值比较必用）/ beijingTs(d)（北京墙钟，秒级）/ beijingBoundaryTs(dateStr, time)（日期边界）。`,
     ).toEqual([])
     // CI 冷缓存下建 program 比本机慢得多，超时给到 60s（本机实测约 12s）。
   }, 60_000)

@@ -158,6 +158,38 @@ describe('cron visitPointsRetry', () => {
     expect(db.transaction).not.toHaveBeenCalled()
   })
 
+  // 时间源必须跟 CronContext 走：前一个 STEP pointsExpiry 用的就是注入时刻，
+  // 本步若拿宿主机时钟，演练/CI 下两步会对同一批数据得出相反结论。
+  it('有效期判定与余额时间都走 ctx.referenceDate，不用宿主机时钟', async () => {
+    const failure = {
+      id: 301,
+      target_id: 'SVC-CTX',
+      // 相对真实当下（2026 年）没过期，相对注入的 2030 年已过期
+      detail: { rewardAmount: 20, userId: 'u-5', serviceDate: '2026-08-13' },
+    }
+    const db = {
+      execute: vi.fn().mockResolvedValue([failure]),
+      transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn({ execute: vi.fn() })),
+    }
+
+    const referenceDate = new Date('2030-01-01T03:00:00+08:00')
+    const result = await retryVisitPoints(db as never, { referenceDate })
+
+    expect(result.expiredCount).toBe(1)
+    expect(result.recoveredCount).toBe(0)
+    expect(grantVisitPointsEntry).not.toHaveBeenCalled()
+
+    // 不传 ctx 时同一条应当被正常补发，且余额时间取注入时刻
+    vi.clearAllMocks()
+    vi.mocked(loadVisitPointsReward).mockResolvedValue(20)
+    vi.mocked(grantVisitPointsEntry).mockResolvedValue({ granted: true, amount: 20 })
+    vi.mocked(markVisitPointsFailureRecovered).mockResolvedValue()
+    const near = new Date('2026-09-22T03:00:00+08:00')
+    await retryVisitPoints(db as never, { referenceDate: near })
+    const [, , , , , balanceUpdatedAt] = vi.mocked(grantVisitPointsEntry).mock.calls[0]
+    expect(balanceUpdatedAt).toBe(near)
+  })
+
   // 有效期天数在两处出现：本 STEP 的 JS 常量（判"要不要补发"）与发放 SQL 的 INTERVAL 字面量
   // （决定 expire_at）。SQL 受跨端 snapshot 守护、不能把常量插进去，只能镜像，所以要防漂移。
   it('VISIT_POINTS_VALID_DAYS 与发放 SQL 的 INTERVAL 字面量一致', () => {
