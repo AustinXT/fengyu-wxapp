@@ -11,6 +11,8 @@
  */
 import { describe, it, expect } from 'vitest'
 import path from 'node:path'
+import postgres from 'postgres'
+import { drizzle } from 'drizzle-orm/postgres-js'
 import { nowTs, beijingTs } from '../db-time'
 import { runBunProbeInTz } from './tz-probe-helper'
 
@@ -52,4 +54,34 @@ describe('beijingTs', () => {
       expect(runBunProbeInTz(PROBE, INSTANT, tz)).toBe(EXPECT)
     })
   }
+})
+
+/**
+ * #253 的**根因层**守护：为什么 admin 写 timestamp 列必须经 db-time，不能裸传 Date。
+ *
+ * 常见误解是「postgres.js 不接受 Date」——不成立，它原生带 `date.serialize`（→ ISO 串，OID 1184）。
+ * 真凶是 drizzle 的 `construct()`：它为了自己接管时间类型，把 client 上时间 OID 的 **serializer**
+ * 一并覆盖成恒等函数，于是 Date 未经序列化直达 Bind writer → ERR_INVALID_ARG_TYPE。
+ * 到店积分（lib/visit-points.ts）2026-08-14 → 2026-09-22 的 100% 失败就是这条链。
+ *
+ * 这一层是 `visit-points.test.ts` 里 `PgDialect().sqlToQuery()` 断言够不到的下游，两处合起来才闭环。
+ * 本用例不连库（postgres.js 建 client 是惰性的，不发 TCP）。
+ */
+describe('drizzle 覆盖 postgres.js 时间 serializer（#253 根因）', () => {
+  it('construct() 把 1184 的 serializer 从 toISOString 换成恒等函数', () => {
+    const client = postgres('postgresql://probe:probe@127.0.0.1:1/probe')
+    try {
+      const instant = new Date('2026-08-13T10:00:00.000Z')
+
+      // 覆盖前：postgres.js 原生会把 Date 序列化成 ISO 串（所以裸用 postgres.js 不受影响）
+      expect(client.options.serializers[1184](instant)).toBe('2026-08-13T10:00:00.000Z')
+
+      drizzle(client)
+
+      // 覆盖后：恒等函数，Date 原样流向 Bind —— 这就是必须走 beijingTs()/nowTs() 的原因
+      expect(client.options.serializers[1184](instant)).toBe(instant)
+    } finally {
+      void client.end({ timeout: 0 })
+    }
+  })
 })

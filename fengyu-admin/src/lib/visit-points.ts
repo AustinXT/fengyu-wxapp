@@ -99,9 +99,15 @@ export async function grantVisitPointsEntry(
   }
 
   const externalRef = buildVisitPointsExternalRef(userId, serviceDate)
-  // ⚠ `now` 是 JS Date，**不能**直接插值：admin 走 drizzle + postgres.js，Bind 阶段对 Date 实例抛
-  // ERR_INVALID_ARG_TYPE（staff/client 两端用原生 pg，能吃 Date，所以只有本副本需要包装）。
-  // 统一经 `beijingTs()` 落成北京墙钟字面 + AT TIME ZONE，与 cron/steps 的写入范式一致（lib/db-time）。
+  // ⚠ `now` 是 JS Date，**不能**直接插值（#253：admin 侧到店积分曾因此 100% 失败）。
+  // 根因不是 postgres.js 本身——它原生支持 Date（types.js 的 `date.serialize` → toISOString，OID 1184）；
+  // 是 drizzle 的 `construct()`（drizzle-orm/postgres-js/driver.js）把时间 OID 的 **serializer**
+  // 一并覆盖成恒等函数，Date 未经序列化直达 Bind → ERR_INVALID_ARG_TYPE。
+  // 所以 staff/client 两端裸用原生 pg 能吃 Date，**唯独经 drizzle 的本副本不行**。
+  //
+  // 选 `beijingTs(now)` 而非 db-time 文档里「现在语义用 nowTs()」的默认建议，是因为 `now` 是形参：
+  // cron 重试会显式传入补发时刻、单测要注入确定时刻，且 staff/client 两端同样用调用方传入的 `now`。
+  // 改成 `NOW()` 会让形参对 SQL 失效并与另两端语义分叉。
   const nowTsSql = beijingTs(now)
   const result = (await executor.execute(sql`
     WITH inserted AS (

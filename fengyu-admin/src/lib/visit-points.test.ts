@@ -30,8 +30,13 @@ const snapshot: VisitPointsServiceSnapshot = {
  * 把 drizzle 的 SQL 片段编译成驱动真正收到的 `{sql, params}`。
  *
  * mock 掉 `execute` 的单测看不到绑定层，Date 塞进模板也全绿——#253 就是这么漏出去的
- * （postgres.js Bind 阶段对 Date 实例抛 ERR_INVALID_ARG_TYPE，到店积分自 2026-08-14 起 100% 失败）。
+ * （到店积分自 2026-08-14 起 100% 失败，prod 积压 373 条失败日志）。
  * 这里用与运行时同一个 PgDialect 把片段展开，断言落到 params 里的都是驱动吃得下的标量。
+ *
+ * ⚠ 覆盖边界：真实路径是 `db.execute` → drizzle session → `client.unsafe(query, params)`，
+ * 而崩溃发生在 `sqlToQuery` 的**下游**（drizzle 覆盖 serializer + postgres.js Bind）。
+ * 本 helper 只到 `sqlToQuery` 为止，跨层那一段由 `__tests__/db-time.test.ts` 的
+ * 「drizzle 覆盖 postgres.js 时间 serializer」用例独立取证，两者合起来才闭环。
  */
 function compile(fragment: SQL) {
   return new PgDialect().sqlToQuery(fragment)
@@ -99,16 +104,23 @@ describe('会员到店积分（admin）', () => {
 
     const { sql: text, params } = compile(execute.mock.calls[0][0] as SQL)
 
-    // 主断言：postgres.js 的 Bind 阶段只吃 string/Buffer/ArrayBuffer 等标量，Date 会直接抛型错
+    // 唯一真正的不变量：绑定层不得出现 Date 实例（Bind writer 只吃 string/Buffer/ArrayBuffer）。
+    // 任一处回退裸 ${now} 这条即红。
     expect(params.some((p) => p instanceof Date)).toBe(false)
-    // 两处时间写入（point_transactions.created_at、client_wechat_users.points_updated_at）都被包装
+
+    // 下面两条锁的是**选型**（I5：外部入参走 beijingTs 落北京墙钟），不是 #253 的不变量：
+    // 改成 nowTs() / now.toISOString() 同样能修好 #253，但这两条会红。
+    // 若哪天有意改选型，应同步改这两条断言，而不是删掉它们。
+    // 两处时间写入（point_transactions.created_at、client_wechat_users.points_updated_at）都被包装：
     expect(params.filter((p) => p === '2026-08-13 18:00:00')).toHaveLength(2)
     expect(text.match(/AT TIME ZONE 'Asia\/Shanghai'/g)).toHaveLength(2)
   })
 
-  // 对照组：证明上面那条断言不是空转——drizzle 自己不会把 Date 转成标量，
-  // 它原样交给驱动，所以「不写 beijingTs 就一定炸」在类型层面无人拦截。
-  it('对照：裸 Date 插值会原样穿透到绑定层（说明守护有效）', () => {
+  // 对照组 = drizzle 0.45 行为快照 + 升级信号。
+  // 它锁的是「drizzle 不会代你把 Date 转成标量、原样交给驱动」这个前提；前提成立，
+  // 上面那条主断言才有意义。**这条变红是好消息**：说明新版 drizzle 自己归一了 Date，
+  // #253 的成因消失，届时主断言退化为恒真，可以连同本用例一起重新评估。
+  it('对照：drizzle 0.45 下裸 Date 插值会原样穿透到绑定层（变红=成因已消失，非回归）', () => {
     const { params } = compile(sql`SELECT ${new Date('2026-08-13T10:00:00.000Z')}`)
     expect(params[0]).toBeInstanceOf(Date)
   })
