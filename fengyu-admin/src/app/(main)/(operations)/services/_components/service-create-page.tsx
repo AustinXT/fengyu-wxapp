@@ -12,14 +12,15 @@ import { Separator } from "@/components/ui/separator"
 import { MemberLevelBadge } from "@/components/ui/member-level-badge"
 import { searchCustomers } from "@/actions/customers"
 import { getAvailableSaleItems, createServiceOrder } from "@/actions/services"
+import { getServiceStaffCandidates } from "@/actions/employees"
 import type { AvailableSaleItem } from "@/actions/services"
-import type { Store, Employee, Customer } from "@/lib/types"
+import type { Store, AllocationEmployeeCandidate, Customer } from "@/lib/types"
 import { formatPhoneSafe } from "@/lib/format"
 import { shanghaiToday } from "@/lib/datetime"
 import { DEPOSIT_REFUND_REMARK } from "@/lib/service-remark"
 import { actionErrorMessage } from "@/lib/action-error"
 import { expandGroupServiceSessions, getTreatmentCardBusinessIdentity, groupTreatmentCards, sumGroupValue } from "@/lib/treatment-card-group"
-import { formatOrderServiceStaffOption, getOrderServiceStaffCandidates, isOrderServiceStaffCandidate } from "@/lib/order-service-staff"
+import { formatServiceStaffOption } from "@/lib/service-staff-candidate"
 
 const steps = ["选择顾客", "选择项目", "确认提交"]
 
@@ -88,10 +89,8 @@ function groupAvailableSaleItems(items: AvailableSaleItem[]): GroupedAvailableSa
 
 export default function ServiceCreatePageClient({
   stores,
-  employees,
 }: {
   stores: Store[]
-  employees: Employee[]
 }) {
   const [step, setStep] = useState(0)
 
@@ -110,6 +109,10 @@ export default function ServiceCreatePageClient({
   const [itemNameQuery, setItemNameQuery] = useState("")
   const [selectedStoreId, setSelectedStoreId] = useState<string>(stores[0]?.storeId || "")
   const [selectedEmployeeId, setSelectedEmployeeId] = useState<string>("")
+  // 候选连同它所属的 storeId 一起存：清理 effect 只认「本轮门店的候选」，
+  // 否则切店时会拿上一家店的候选去判定刚预选的人员（见下方 effect 注释）
+  const [candidates, setCandidates] = useState<{ storeId: string; rows: AllocationEmployeeCandidate[] }>({ storeId: "", rows: [] })
+  const [loadingCandidates, setLoadingCandidates] = useState(false)
   const [serviceDate, setServiceDate] = useState(() => shanghaiToday())
   const [remark, setRemark] = useState("")
   // 备注模式：custom=自由输入；deposit-refund=寄存单退款专用标准化备注（提交时落 DEPOSIT_REFUND_REMARK）
@@ -119,19 +122,45 @@ export default function ServiceCreatePageClient({
   const [submitting, setSubmitting] = useState(false)
   const [createdServiceOrderId, setCreatedServiceOrderId] = useState("")
 
-  // Store change → clear employee if not in new store
+  // 候选随门店异步加载：本店员工 ∪ 本门店所属市场内出差支援的员工（issue #210）。
+  // 切店竞态用 cancelled 标记兜住——后发请求先返回时不会被先发请求的结果覆盖。
   useEffect(() => {
-    if (selectedEmployeeId && selectedStoreId) {
-      const emp = employees.find(e => e.employeeId === selectedEmployeeId)
-      if (!emp || !isOrderServiceStaffCandidate(
-        emp,
-        selectedStoreId,
-        stores.find((store) => store.storeId === selectedStoreId)?.marketName,
-      )) {
-        setSelectedEmployeeId("")
-      }
+    if (!selectedStoreId) {
+      setCandidates({ storeId: "", rows: [] })
+      return
     }
-  }, [selectedStoreId, selectedEmployeeId, employees])
+    let cancelled = false
+    setLoadingCandidates(true)
+    getServiceStaffCandidates(selectedStoreId)
+      .then((rows) => { if (!cancelled) setCandidates({ storeId: selectedStoreId, rows }) })
+      .catch((err) => {
+        if (cancelled) return
+        setCandidates({ storeId: selectedStoreId, rows: [] })
+        toast.error(actionErrorMessage(err, "加载服务人员失败"))
+      })
+      .finally(() => { if (!cancelled) setLoadingCandidates(false) })
+    return () => { cancelled = true }
+  }, [selectedStoreId])
+
+  // 候选变化（切店 / 重新加载）后，已选人员不在候选内就清空，避免提交时被服务端拒绝。
+  // 判据是 `candidates.storeId === selectedStoreId` 而不是 loadingCandidates ——
+  // searchCustomer 里 setSelectedStoreId 与 setSelectedEmployeeId 同批更新，
+  // 加载 effect 的 setLoadingCandidates(true) 对同一轮的本 effect 不可见，
+  // 只看 loading 标记会拿上一家店的候选把刚预选的顾客绑定美容师误清掉。
+  useEffect(() => {
+    if (candidates.storeId !== selectedStoreId) return
+    if (selectedEmployeeId && !candidates.rows.some(c => c.employeeId === selectedEmployeeId)) {
+      setSelectedEmployeeId("")
+    }
+  }, [candidates, selectedStoreId, selectedEmployeeId])
+
+  // 只渲染与当前门店匹配的候选，避免切店瞬间闪出上一家店的人员
+  const visibleCandidates = candidates.storeId === selectedStoreId ? candidates.rows : []
+  // 所选人员必须属于「当前门店这一批」候选：新门店请求已返回、清理 effect 尚未执行的那一帧，
+  // 只看 loadingCandidates 会短暂放行上一家店的陈旧选择
+  const isSelectedCandidateValid = Boolean(
+    selectedEmployeeId && visibleCandidates.some(c => c.employeeId === selectedEmployeeId),
+  )
 
   const searchCustomer = async () => {
     if (!phone.trim() || !/^1\d{10}$/.test(phone.trim())) {
@@ -152,17 +181,8 @@ export default function ServiceCreatePageClient({
           ? result.boundStoreId
           : selectedStoreId
         if (targetStoreId !== selectedStoreId) setSelectedStoreId(targetStoreId)
-        if (result.boundEmployeeId && employees.some(
-          e => e.employeeId === result.boundEmployeeId && isOrderServiceStaffCandidate(
-            e,
-            targetStoreId,
-            stores.find((store) => store.storeId === targetStoreId)?.marketName,
-          ),
-        )) {
-          setSelectedEmployeeId(result.boundEmployeeId)
-        } else {
-          setSelectedEmployeeId("")
-        }
+        // 先乐观预选顾客的绑定美容师；若其不在该门店候选内，候选加载完成后的 effect 会清掉
+        setSelectedEmployeeId(result.boundEmployeeId || "")
       }
     } catch (err) {
       toast.error(actionErrorMessage(err, "搜索失败，请稍后重试"))
@@ -212,12 +232,6 @@ export default function ServiceCreatePageClient({
   const getSessionUsed = (groupKey: string) =>
     selectedItems.find(i => i.groupKey === groupKey)?.sessionUsed ?? 1
 
-  const filteredEmployees = getOrderServiceStaffCandidates(
-    employees,
-    selectedStoreId,
-    stores.find((store) => store.storeId === selectedStoreId)?.marketName,
-  )
-
   const itemProductKinds = useMemo(
     () => Array.from(new Set(availableItems.map((item) => item.productKind).filter((value): value is string => Boolean(value)))),
     [availableItems],
@@ -242,7 +256,9 @@ export default function ServiceCreatePageClient({
   }, [availableItems, itemCategoryId, itemNameQuery, itemProductKind])
   const hasItemFilters = Boolean(itemProductKind || itemCategoryId || itemNameQuery.trim())
 
-  const canSubmit = selectedItems.length > 0 && selectedStoreId && selectedEmployeeId
+  // 所选人员必须仍在当前门店的候选批次里才放行（加载中、或切店后残留的陈旧选择一律拦下），
+  // 否则会把上一家店的人带到提交，被服务端 INVALID_PARAMS 拒
+  const canSubmit = selectedItems.length > 0 && selectedStoreId && !loadingCandidates && isSelectedCandidateValid
 
   const handleSubmit = async () => {
     if (!selectedCustomer || !canSubmit) return
@@ -513,13 +529,21 @@ export default function ServiceCreatePageClient({
                   </Select>
                 </div>
                 <div>
-                  <label className="text-sm text-[#999999]">负责美容师</label>
-                  <Select className="mt-1" value={selectedEmployeeId} onChange={(e) => setSelectedEmployeeId(e.target.value)}>
-                    <option value="">请选择</option>
-                    {filteredEmployees.map((e) => (
-                      <option key={e.employeeId} value={e.employeeId}>{formatOrderServiceStaffOption(e, selectedStoreId)}</option>
+                  <label className="text-sm text-[#999999]">服务人员</label>
+                  <Select
+                    className="mt-1"
+                    value={selectedEmployeeId}
+                    onChange={(e) => setSelectedEmployeeId(e.target.value)}
+                    disabled={loadingCandidates}
+                  >
+                    <option value="">{loadingCandidates ? "加载中…" : "请选择"}</option>
+                    {visibleCandidates.map((e) => (
+                      <option key={e.employeeId} value={e.employeeId}>{formatServiceStaffOption(e)}</option>
                     ))}
                   </Select>
+                  {!loadingCandidates && selectedStoreId && visibleCandidates.length === 0 && (
+                    <p className="mt-1 text-xs text-[#D4820A]">该门店暂无可选服务人员（需具备店经理/美容师/养生师/品项老师技能标签）</p>
+                  )}
                 </div>
                 <div>
                   <label className="text-sm text-[#999999]">服务日期</label>
@@ -542,7 +566,7 @@ export default function ServiceCreatePageClient({
           <div className="flex justify-between">
             <Button variant="outline" onClick={() => setStep(0)}>上一步</Button>
             <Button onClick={() => {
-              if (!selectedEmployeeId) { toast.error("请选择负责美容师"); return }
+              if (!selectedEmployeeId) { toast.error("请选择服务人员"); return }
               if (selectedItems.length === 0) { toast.error("请选择至少一个服务项目"); return }
               setStep(2)
             }} disabled={!canSubmit}>下一步</Button>
@@ -566,8 +590,8 @@ export default function ServiceCreatePageClient({
                 <p className="font-medium">{stores.find(s => s.storeId === selectedStoreId)?.storeName || "—"}</p>
               </div>
               <div>
-                <span className="text-[#999999]">负责美容师</span>
-                <p className="font-medium">{employees.find(e => e.employeeId === selectedEmployeeId)?.name || "—"}</p>
+                <span className="text-[#999999]">服务人员</span>
+                <p className="font-medium">{visibleCandidates.find(e => e.employeeId === selectedEmployeeId)?.name || "—"}</p>
               </div>
               <div>
                 <span className="text-[#999999]">服务日期</span>
@@ -601,7 +625,7 @@ export default function ServiceCreatePageClient({
 
             <div className="flex justify-between">
               <Button variant="outline" onClick={() => setStep(1)}>上一步</Button>
-              <Button loading={submitting} onClick={handleSubmit}>提交服务单</Button>
+              <Button loading={submitting} disabled={!canSubmit} onClick={handleSubmit}>提交服务单</Button>
             </div>
           </CardContent>
         </Card>
