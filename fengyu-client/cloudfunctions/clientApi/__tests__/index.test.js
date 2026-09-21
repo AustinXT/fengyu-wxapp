@@ -58,6 +58,36 @@ describe('HTTP-only action 不可经 cloud.callFunction 调用', () => {
     expect(res.code).not.toBe(0)
     expect(res.errorType).toBe('PERMISSION_DENIED')
   })
+
+  // 闸门的全部效力押在 HTTP_ACTION_ALLOWLIST 上，两个方向都会出事：
+  //   漏项 → 新增的 HTTP-only action 仍可被 cloud.callFunction 伪造来源调用；
+  //   多项 → 误把普通 action 放进去，会直接打断 admin 经 node-sdk 的现有集成
+  //          （如 config.invalidateConfig）。
+  test('allowlist 与 routes 里的 _fromHttp 断言一一对应', () => {
+    const fs = require('fs')
+    const path = require('path')
+
+    const indexSrc = fs.readFileSync(path.resolve(__dirname, '../index.js'), 'utf8')
+    const listMatch = indexSrc.match(/HTTP_ACTION_ALLOWLIST = new Set\(\[([^\]]*)\]\)/)
+    expect(listMatch).toBeTruthy()
+    const allowlist = listMatch[1]
+      .split(',')
+      .map((x) => x.trim().replace(/^['"]|['"]$/g, ''))
+      .filter(Boolean)
+
+    const routesDir = path.resolve(__dirname, '../routes')
+    let assertionCount = 0
+    for (const f of fs.readdirSync(routesDir)) {
+      if (!f.endsWith('.js')) continue
+      const src = fs.readFileSync(path.join(routesDir, f), 'utf8')
+      assertionCount += (src.match(/if \(!ctx\.event\._fromHttp \|\| ctx\.event\._hmacVerified !== true\)/g) || []).length
+    }
+
+    expect(assertionCount).toBe(allowlist.length)
+    // admin 经 CloudBase node-sdk（callFunction 路径）调用的 action 绝不能进 allowlist
+    expect(allowlist).not.toContain('config.invalidateConfig')
+    expect(allowlist).not.toContain('system.health')
+  })
 })
 
 describe('clientApi 入口', () => {

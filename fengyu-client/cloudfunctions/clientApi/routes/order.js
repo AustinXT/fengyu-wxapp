@@ -528,6 +528,8 @@ async function createLakalaPreorder({
   payAmountYuan, accountType, transType,
   openid, subAppid, requestIp,
   subject, attach,
+  // 仅用于预下单失败时的安全释放（需要按门店解析商户去查单/关单）
+  storeId: storeIdForRelease,
 }) {
   const totalAmountFen = Math.round(payAmountYuan * 100)
   if (!outTradeNo) {
@@ -547,6 +549,7 @@ async function createLakalaPreorder({
       timeoutExpressMin: LAKALA_PREORDER_TIMEOUT_MIN,
     })
   } catch (err) {
+    // 渠道明确回了业务失败码 → 确定没建单，直接本地释放，不必再跑一遍查单/关单。
     const definitelyNotCreated = err
       && /LAKALA_PREORDER_FAILED/.test(String(err.message || ''))
     if (definitelyNotCreated) {
@@ -558,6 +561,13 @@ async function createLakalaPreorder({
            AND lakala_out_order_no = $2`,
         [orderNo, outTradeNo]
       )
+    } else {
+      // 超时/网络异常：**不确定**渠道是否已建单。以前这里直接放着不管，留下「意图活跃
+      // 但没有快照」的状态——顾客重试只会撞 PAYMENT_INTENT_ACTIVE，得等渠道超时 + 定时
+      // 补偿才自愈，正是本 issue 要消灭的卡死（双谱系评审 round-6）。
+      // 改为走 fail-closed 的安全释放：查得到且未付款就关单后释放，查不到/查不准就保留，
+      // 既不会误释放一笔可能已被支付的单，也不会平白把订单锁死。
+      await releaseIntentAfterPreorderFailure(orderNo, outTradeNo, storeIdForRelease)
     }
     throw err
   }
@@ -733,7 +743,10 @@ async function confirmIntentReleased(orderNo, outTradeNo) {
  * 预下单成功后把本次支付场次快照落盘，供顾客中途退出后「继续支付」复用（issue #214）。
  *
  * CAS 锚 `lakala_out_order_no = $2`：并发场景下意图若已被换掉，快照就不该落到新场次上。
- * 落盘失败不抛——本次支付照常进行，只是失去复用能力，退回改动前的行为。
+ *
+ * 落盘失败**不抛**：此时支付参数已经拿到手，让顾客先把这笔付掉比什么都重要。代价是
+ * 这一场次失去复用能力（顾客中途退出后要等渠道超时），即退回改动前的行为——
+ * 与「预下单/吱口令失败」那条路径的安全释放不同，那里顾客根本没拿到可用的支付参数。
  */
 async function persistLakalaPaymentIntentSnapshot(orderNo, outTradeNo, snapshot) {
   try {
@@ -825,6 +838,9 @@ function safeParseJson(text) {
  * @returns {Promise<boolean>} true = 可继续复用；false = 已释放意图，调用方应重新预占
  */
 async function ensureReusedIntentStillPayable(orderNo, outTradeNo, merchant) {
+  // 商户配置缺失（数据异常）时放行复用而不是拒绝：拒绝会让顾客直接卡在「发不了支付」，
+  // 而放行最坏也只是回发一个可能已失效的场次、由前端唤起失败——两害相权取轻。
+  // 能走到这里说明预下单当时是成功的，商户配置凭空消失属于需要人工介入的异常。
   if (!merchant) return true
   let trade
   try {
@@ -2327,6 +2343,7 @@ async function pay(ctx) {
     const preorderResp = await createLakalaPreorder({
       orderNo,
       outTradeNo: reservation.outTradeNo,
+      storeId: reservation.storeId,
       merchantNo: reservation.merchant.merchantNo,
       termNo: reservation.merchant.termNo,
       payAmountYuan: reservation.payAmount,
@@ -3311,6 +3328,7 @@ async function alipayPay(ctx) {
     const preorderRespAli = await createLakalaPreorder({
       orderNo,
       outTradeNo: reservation.outTradeNo,
+      storeId: reservation.storeId,
       merchantNo: reservation.merchant.merchantNo,
       termNo: reservation.merchant.termNo,
       payAmountYuan: reservation.payAmount,
@@ -4066,6 +4084,7 @@ async function repay(ctx) {
     const { paymentParams: repayPaymentParams } = await createLakalaPreorder({
       orderNo: saleOrderId,
       outTradeNo: reservedOutTradeNo,
+      storeId: repayStoreId,
       merchantNo: repayMerchant.merchantNo,
       termNo: repayMerchant.termNo,
       payAmountYuan: repayAmountInput,
@@ -4096,6 +4115,7 @@ async function repay(ctx) {
     const repayPreorderResp = await createLakalaPreorder({
       orderNo: saleOrderId,
       outTradeNo: reservedOutTradeNo,
+      storeId: repayStoreId,
       merchantNo: repayMerchant.merchantNo,
       termNo: repayMerchant.termNo,
       payAmountYuan: repayAmountInput,
