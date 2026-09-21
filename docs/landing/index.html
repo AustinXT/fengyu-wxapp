@@ -1,0 +1,2237 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#1d1219" />
+    <meta name="description" content="灵楔美业连锁经营系统 · 功能介绍" />
+    <title>灵楔美业连锁经营系统｜功能介绍</title>
+    <link
+      rel="icon"
+      type="image/svg+xml"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%231d1219'/%3E%3Cpath d='M32 13l16 9v20l-16 9-16-9V22z' fill='none' stroke='%23d9ae6b' stroke-width='4' stroke-linejoin='round'/%3E%3C/svg%3E"
+    />
+    <style>
+      :root {
+        --deep: #1d1219;
+        --plum: #3b2338;
+        --plum2: #55304c;
+        --gold: #d9ae6b;
+        --gold-soft: #f0d9ae;
+        --rose: #e7b0a6;
+        --sage: #8fb3a3;
+        --paper: #f8f4f0;
+        --white: #fffdfb;
+        --ink: #2a1e26;
+        --muted: #7b6b73;
+        --line: #e6dcd5;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html {
+        scroll-behavior: smooth;
+      }
+      body {
+        margin: 0;
+        background: var(--paper);
+        color: var(--ink);
+        font-family: "PingFang SC", "Microsoft YaHei", Arial, sans-serif;
+        line-height: 1.6;
+      }
+      a {
+        color: inherit;
+        text-decoration: none;
+      }
+      .wrap {
+        width: min(1180px, calc(100% - 48px));
+        margin: auto;
+      }
+
+      /* ---------- 页头与主视觉 ---------- */
+      .top {
+        position: relative;
+        overflow: hidden;
+        color: var(--white);
+        background:
+          radial-gradient(circle at 78% 10%, #6d3c60 0, transparent 34%),
+          linear-gradient(126deg, var(--deep) 0%, var(--plum) 62%, #4a2a44 100%);
+      }
+      .top:after {
+        content: "";
+        position: absolute;
+        width: 780px;
+        height: 780px;
+        right: -390px;
+        bottom: -520px;
+        border: 1px solid #d9ae6b40;
+        border-radius: 50%;
+        box-shadow:
+          0 0 0 64px #d9ae6b0f,
+          0 0 0 128px #d9ae6b0a;
+      }
+      .nav {
+        position: relative;
+        z-index: 2;
+        height: 82px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 24px;
+        border-bottom: 1px solid #ffffff20;
+      }
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        font-size: 16px;
+        font-weight: 750;
+        letter-spacing: 0.04em;
+      }
+      .brand-mark {
+        width: 34px;
+        height: 34px;
+        display: grid;
+        place-items: center;
+        border: 1px solid var(--gold);
+        border-radius: 10px;
+        color: var(--gold);
+        font-size: 17px;
+        font-weight: 800;
+      }
+      .nav-links {
+        display: flex;
+        gap: 28px;
+        font-size: 14px;
+        color: #e3d3dd;
+      }
+      .nav-links a:hover {
+        color: var(--gold-soft);
+      }
+      .hero {
+        position: relative;
+        z-index: 1;
+        min-height: 574px;
+        padding: 76px 0 90px;
+        display: grid;
+        grid-template-columns: 1.02fr 0.98fr;
+        gap: 62px;
+        align-items: center;
+      }
+      .overline {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        color: var(--gold);
+        font-size: 12px;
+        font-weight: 800;
+        letter-spacing: 0.13em;
+      }
+      .overline:before {
+        content: "";
+        width: 27px;
+        height: 1px;
+        background: var(--gold);
+      }
+      h1 {
+        max-width: 680px;
+        margin: 22px 0 20px;
+        font-size: clamp(40px, 5vw, 66px);
+        line-height: 1.06;
+        letter-spacing: -0.06em;
+        font-weight: 800;
+      }
+      h1 em {
+        color: var(--gold);
+        font-style: normal;
+      }
+      .hero-copy {
+        max-width: 580px;
+        margin: 0;
+        color: #d6c5cf;
+        font-size: 17px;
+      }
+      .hero-note {
+        margin-top: 26px;
+        color: #a9919e;
+        font-size: 13px;
+      }
+
+      /* ---------- 主视觉中的经营看板示意 ---------- */
+      .board {
+        padding: 17px;
+        border: 1px solid #ffffff33;
+        background: #27182545;
+        backdrop-filter: blur(2px);
+        box-shadow: 18px 18px 0 #d9ae6b1c;
+      }
+      .board-bar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 0 4px 11px;
+        border-bottom: 1px solid #ffffff1f;
+        color: #e8dae2;
+        font-size: 13px;
+      }
+      .tiny-live {
+        color: var(--gold);
+        font-weight: 800;
+      }
+      .tiny-live:before {
+        content: "";
+        display: inline-block;
+        width: 6px;
+        height: 6px;
+        margin-right: 6px;
+        border-radius: 50%;
+        background: var(--gold);
+      }
+      .board-main {
+        display: grid;
+        grid-template-columns: 1.05fr 0.95fr;
+        gap: 12px;
+        padding-top: 12px;
+      }
+      .board-pane {
+        min-height: 218px;
+        padding: 15px;
+        background: #3a223666;
+        border: 1px solid #ffffff14;
+      }
+      .pane-label {
+        color: #cbb2c0;
+        font-size: 12px;
+        letter-spacing: 0.08em;
+      }
+      .bars {
+        margin-top: 18px;
+        display: grid;
+        gap: 14px;
+      }
+      .bar-row {
+        display: grid;
+        grid-template-columns: 12px 1fr 62px;
+        align-items: center;
+        gap: 9px;
+        font-size: 12px;
+        color: #efe3ea;
+      }
+      .bar-row i {
+        width: 9px;
+        height: 9px;
+        border-radius: 2px;
+        background: var(--gold);
+      }
+      .bar-row:nth-child(2) i {
+        background: var(--rose);
+      }
+      .bar-row:nth-child(3) i {
+        background: var(--sage);
+      }
+      .bar-row:nth-child(4) i {
+        background: #a292c4;
+      }
+      .bar-row b {
+        display: block;
+        height: 5px;
+        background: #efdde955;
+      }
+      .bar-row em {
+        font-style: normal;
+        text-align: right;
+        color: #c9b2c0;
+      }
+      .w-wide {
+        width: 84%;
+      }
+      .w-mid {
+        width: 63%;
+      }
+      .w-small {
+        width: 41%;
+      }
+      .split {
+        display: grid;
+        place-content: center;
+        gap: 8px;
+        text-align: center;
+      }
+      .split strong {
+        color: #fff;
+        font-size: 22px;
+        line-height: 1.15;
+      }
+      .split span {
+        color: #d0bccb;
+        font-size: 12px;
+      }
+      .route {
+        margin-top: 7px;
+        color: var(--gold);
+        font-size: 24px;
+        letter-spacing: 4px;
+      }
+      .board-foot {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 1px;
+        margin-top: 12px;
+        background: #ffffff22;
+      }
+      .board-stat {
+        padding: 11px;
+        background: #2b1a28;
+      }
+      .board-stat b {
+        display: block;
+        font-size: 19px;
+        color: var(--gold);
+      }
+      .board-stat span {
+        color: #c4aeba;
+        font-size: 12px;
+      }
+
+      /* ---------- 通用版式 ---------- */
+      section {
+        padding: 100px 0;
+      }
+      .section-tag {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        color: #9a5f52;
+        font-size: 12px;
+        letter-spacing: 0.14em;
+        font-weight: 800;
+      }
+      .section-tag:before {
+        content: "";
+        width: 8px;
+        height: 8px;
+        background: var(--gold);
+      }
+      .section-head {
+        display: flex;
+        align-items: end;
+        justify-content: space-between;
+        gap: 35px;
+        margin-bottom: 38px;
+      }
+      .section-head h2 {
+        max-width: 660px;
+        margin: 12px 0 0;
+        font-size: clamp(30px, 3.6vw, 46px);
+        letter-spacing: -0.052em;
+        line-height: 1.14;
+      }
+      .section-head p {
+        max-width: 350px;
+        margin: 0 0 3px;
+        color: var(--muted);
+        font-size: 16px;
+      }
+
+      /* ---------- 能力模块 ---------- */
+      .capability {
+        background: var(--white);
+      }
+      .modules {
+        display: grid;
+        grid-template-columns: repeat(12, 1fr);
+        gap: 12px;
+      }
+      .module {
+        position: relative;
+        min-height: 232px;
+        padding: 22px;
+        border: 1px solid var(--line);
+        background: #fff;
+        overflow: hidden;
+        transition: 0.2s;
+      }
+      .module:hover {
+        transform: translateY(-4px);
+        border-color: #c9a377;
+        box-shadow: 0 18px 28px #3b233812;
+      }
+      .module:nth-child(1),
+      .module:nth-child(2) {
+        grid-column: span 3;
+      }
+      .module:nth-child(3) {
+        grid-column: span 6;
+        background: #f6eee4;
+      }
+      .module:nth-child(4),
+      .module:nth-child(5),
+      .module:nth-child(6) {
+        grid-column: span 4;
+      }
+      .module:nth-child(7),
+      .module:nth-child(8) {
+        grid-column: span 6;
+        min-height: 178px;
+      }
+      .module-no {
+        color: #a4877c;
+        font-family: Georgia, serif;
+        font-size: 14px;
+      }
+      .module-symbol {
+        position: absolute;
+        top: 17px;
+        right: 18px;
+        color: #a97d46;
+        font-size: 29px;
+        font-weight: 300;
+      }
+      .module h3 {
+        margin: 56px 0 7px;
+        font-size: 21px;
+        letter-spacing: -0.025em;
+      }
+      .module p {
+        max-width: 250px;
+        margin: 0;
+        color: var(--muted);
+        font-size: 15px;
+      }
+      .module:nth-child(3) h3 {
+        margin-top: 46px;
+        font-size: 29px;
+      }
+      .module:nth-child(3) p {
+        max-width: 480px;
+        font-size: 16px;
+      }
+      .module:nth-child(3):after {
+        content: "";
+        position: absolute;
+        width: 170px;
+        height: 170px;
+        right: 36px;
+        bottom: -112px;
+        border: 25px solid #dcb684;
+        border-radius: 50%;
+        opacity: 0.66;
+      }
+      .module:nth-child(7) h3,
+      .module:nth-child(8) h3 {
+        margin-top: 34px;
+      }
+      .module:nth-child(7) p,
+      .module:nth-child(8) p {
+        max-width: 470px;
+      }
+
+      /* ---------- 三端协同 ---------- */
+      .surfaces {
+        background: var(--paper);
+      }
+      .surface-grid {
+        display: grid;
+        grid-template-columns: repeat(2, 1fr);
+        gap: 16px;
+      }
+      .surface {
+        position: relative;
+        display: flex;
+        flex-direction: column;
+        padding: 26px 26px 24px;
+        background: #fff;
+        border: 1px solid var(--line);
+        transition: 0.2s;
+      }
+      .surface:hover {
+        border-color: #c9a377;
+        box-shadow: 0 16px 26px #3b233810;
+      }
+      .surface-top {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 14px;
+      }
+      .surface-role {
+        color: #9a5f52;
+        font-size: 12px;
+        font-weight: 800;
+        letter-spacing: 0.12em;
+      }
+      .surface-no {
+        color: #bda99e;
+        font-family: Georgia, serif;
+        font-size: 14px;
+      }
+      .surface h3 {
+        margin: 12px 0 8px;
+        font-size: 24px;
+        letter-spacing: -0.03em;
+      }
+      .surface > p {
+        margin: 0;
+        color: var(--muted);
+        font-size: 15px;
+      }
+      .surface ul {
+        list-style: none;
+        margin: 18px 0 0;
+        padding: 0;
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 9px 18px;
+      }
+      .surface li {
+        display: flex;
+        gap: 9px;
+        font-size: 14px;
+        color: #4d3b45;
+      }
+      .surface li:before {
+        content: "";
+        flex: none;
+        width: 6px;
+        height: 6px;
+        margin-top: 0.58em;
+        border-radius: 50%;
+        background: var(--gold);
+      }
+      .surface-meta {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 7px;
+        margin-top: auto;
+        padding-top: 20px;
+      }
+      .surface-meta span {
+        padding: 3px 9px;
+        background: #f7f1ea;
+        color: #8a6a49;
+        font-size: 11px;
+      }
+
+      /* 平台底座 */
+      .foundation {
+        background: var(--white);
+      }
+      .base-grid {
+        display: grid;
+        grid-template-columns: repeat(5, 1fr);
+        gap: 1px;
+        background: var(--line);
+        border: 1px solid var(--line);
+      }
+      .base-cell {
+        padding: 22px 18px 24px;
+        background: #fff;
+      }
+      .base-cell b {
+        display: block;
+        margin-bottom: 7px;
+        font-size: 16px;
+      }
+      .base-cell span {
+        color: var(--muted);
+        font-size: 14px;
+      }
+      .base-note {
+        display: flex;
+        gap: 10px;
+        margin-top: 22px;
+        color: #7a4f45;
+        font-size: 15px;
+      }
+      .base-note:before {
+        content: "";
+        flex: 0 0 4px;
+        background: var(--gold);
+      }
+      .base-note b {
+        color: var(--ink);
+      }
+
+      /* ---------- 业务闭环 ---------- */
+      .journey {
+        background: var(--white);
+      }
+      .journey-grid {
+        display: grid;
+        grid-template-columns: 0.9fr 1.1fr;
+        gap: 62px;
+        align-items: center;
+      }
+      .journey h2 {
+        margin: 12px 0 18px;
+        font-size: clamp(32px, 4vw, 47px);
+        line-height: 1.13;
+        letter-spacing: -0.055em;
+      }
+      .journey-copy {
+        max-width: 420px;
+        margin: 0;
+        color: var(--muted);
+        font-size: 17px;
+      }
+      .journey-note {
+        display: flex;
+        gap: 10px;
+        margin-top: 25px;
+        font-size: 15px;
+        color: #7a4f45;
+      }
+      .journey-note:before {
+        content: "";
+        flex: 0 0 4px;
+        background: var(--gold);
+      }
+      .journey-note b {
+        color: var(--ink);
+      }
+      .timeline {
+        border-top: 1px solid #ded2cb;
+      }
+      .timeline-item {
+        display: grid;
+        grid-template-columns: 76px 1fr auto;
+        gap: 18px;
+        align-items: center;
+        min-height: 96px;
+        border-bottom: 1px solid #e7ddd7;
+      }
+      .timeline-no {
+        color: #a97d46;
+        font-weight: 800;
+        font-size: 14px;
+      }
+      .timeline-item h3 {
+        margin: 0 0 3px;
+        font-size: 19px;
+      }
+      .timeline-item p {
+        margin: 0;
+        color: var(--muted);
+        font-size: 15px;
+      }
+      .timeline-arrow {
+        color: #b08a5c;
+        font-size: 23px;
+      }
+
+      /* ---------- 功能展示 ---------- */
+      .showcase {
+        background: var(--paper);
+      }
+      .showcase-intro {
+        max-width: 690px;
+        margin-bottom: 46px;
+      }
+      .showcase-intro h2 {
+        margin: 12px 0;
+        font-size: clamp(31px, 4vw, 47px);
+        letter-spacing: -0.055em;
+        line-height: 1.13;
+      }
+      .showcase-intro p {
+        margin: 0;
+        color: var(--muted);
+        font-size: 16px;
+      }
+      .feature-shot {
+        display: grid;
+        grid-template-columns: 1.18fr 0.82fr;
+        gap: 54px;
+        align-items: center;
+        padding: 48px 0;
+        border-top: 1px solid var(--line);
+      }
+      .feature-shot.reverse {
+        grid-template-columns: 0.82fr 1.18fr;
+      }
+      .feature-shot.reverse .screen-frame {
+        order: 2;
+      }
+      .feature-no {
+        display: block;
+        margin-bottom: 14px;
+        color: #a2603f;
+        font-family: Georgia, serif;
+        font-size: 15px;
+      }
+      .feature-shot h3 {
+        margin: 0 0 12px;
+        font-size: clamp(24px, 2.8vw, 33px);
+        letter-spacing: -0.045em;
+        line-height: 1.22;
+      }
+      .feature-shot > div > p {
+        margin: 0;
+        color: var(--muted);
+        font-size: 16px;
+      }
+      .feature-points {
+        display: grid;
+        gap: 11px;
+        margin: 22px 0 0;
+        padding: 0;
+        list-style: none;
+      }
+      .feature-points li {
+        display: flex;
+        gap: 10px;
+        color: #5a4550;
+        font-size: 14px;
+      }
+      .feature-points li:before {
+        content: "";
+        flex: none;
+        width: 7px;
+        height: 7px;
+        margin-top: 0.56em;
+        border-radius: 50%;
+        background: var(--gold);
+      }
+      .screen-frame {
+        padding: 10px;
+        background: #efe8e2;
+        border: 1px solid #ddd0c8;
+        box-shadow: 13px 13px 0 #e8d8c2;
+      }
+      .screen-caption {
+        margin: 11px 3px 1px;
+        color: #7d6a62;
+        font-size: 12px;
+      }
+
+      /* ---------- 界面示意（纯 CSS 绘制，非真实数据） ---------- */
+      .ui {
+        background: #fff;
+        border: 1px solid #e8ded7;
+        font-size: 12px;
+        color: #4a3b44;
+      }
+      .ui-bar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        padding: 10px 13px;
+        border-bottom: 1px solid #eee3dc;
+        background: #faf6f2;
+        font-weight: 700;
+      }
+      .ui-bar span {
+        color: #a08d97;
+        font-weight: 400;
+      }
+      .ui-body {
+        padding: 12px 13px 14px;
+      }
+      .ui-filters {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 7px;
+        margin-bottom: 11px;
+      }
+      .chip {
+        padding: 4px 9px;
+        border: 1px solid #e6dad2;
+        border-radius: 3px;
+        color: #8b7780;
+        background: #fdfaf8;
+      }
+      .ui-table {
+        width: 100%;
+        border-collapse: collapse;
+      }
+      .ui-table th {
+        padding: 7px 6px;
+        border-bottom: 1px solid #ece1da;
+        color: #9c8892;
+        font-weight: 600;
+        text-align: left;
+        font-size: 11px;
+      }
+      .ui-table td {
+        padding: 9px 6px;
+        border-bottom: 1px solid #f2ebe6;
+        white-space: nowrap;
+      }
+      .ui-table tr:last-child td {
+        border-bottom: 0;
+      }
+      .mono {
+        font-family: "SF Mono", Menlo, Consolas, monospace;
+        font-size: 11px;
+        color: #7a4f45;
+      }
+      .pill {
+        display: inline-block;
+        padding: 2px 8px;
+        border-radius: 999px;
+        font-size: 11px;
+        line-height: 1.6;
+      }
+      .pill.paid {
+        background: #e8f1ea;
+        color: #3f7357;
+      }
+      .pill.wait {
+        background: #fbf0dd;
+        color: #96702c;
+      }
+      .pill.done {
+        background: #efeaf1;
+        color: #6a5570;
+      }
+      .pill.refund {
+        background: #f8e7e4;
+        color: #9c5346;
+      }
+      .tag {
+        display: inline-block;
+        padding: 2px 7px;
+        background: #f4ece3;
+        color: #8a6a49;
+        font-size: 11px;
+      }
+      .num {
+        text-align: right;
+        font-variant-numeric: tabular-nums;
+      }
+
+      .alloc-row {
+        display: grid;
+        grid-template-columns: 96px 1fr 54px;
+        align-items: center;
+        gap: 11px;
+        padding: 11px 0;
+        border-bottom: 1px solid #f2ebe6;
+      }
+      .alloc-row:last-child {
+        border-bottom: 0;
+      }
+      .alloc-name b {
+        display: block;
+        font-size: 12px;
+      }
+      .alloc-name span {
+        color: #a08d97;
+        font-size: 11px;
+      }
+      .meter {
+        height: 7px;
+        background: #f1e7e0;
+      }
+      .meter i {
+        display: block;
+        height: 100%;
+        background: linear-gradient(90deg, #d9ae6b, #c1875a);
+      }
+      .alloc-foot {
+        display: flex;
+        justify-content: space-between;
+        margin-top: 12px;
+        padding-top: 10px;
+        border-top: 1px dashed #e3d6cd;
+        color: #8b7780;
+        font-size: 11px;
+      }
+      .alloc-foot b {
+        color: #7a4f45;
+      }
+
+      .svc-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding-bottom: 11px;
+        border-bottom: 1px solid #f0e7e1;
+      }
+      .svc-head b {
+        font-size: 13px;
+      }
+      .svc-line {
+        display: grid;
+        grid-template-columns: 1fr 78px 44px;
+        align-items: center;
+        gap: 10px;
+        padding: 10px 0;
+        border-bottom: 1px solid #f4ede8;
+      }
+      .svc-line span {
+        color: #8b7780;
+        font-size: 11px;
+      }
+      .dots {
+        display: flex;
+        gap: 3px;
+      }
+      .dots i {
+        width: 9px;
+        height: 9px;
+        border-radius: 50%;
+        background: #d9ae6b;
+      }
+      .dots i.off {
+        background: #eee3da;
+      }
+      .svc-foot {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-top: 12px;
+        color: #8b7780;
+        font-size: 11px;
+      }
+
+      .matrix {
+        display: grid;
+        grid-template-columns: 86px repeat(4, 1fr);
+        gap: 1px;
+        background: #eee3dc;
+        border: 1px solid #eee3dc;
+      }
+      .matrix div {
+        padding: 9px 6px;
+        background: #fff;
+        text-align: center;
+        font-size: 11px;
+        color: #6b5660;
+      }
+      .matrix .mh {
+        background: #faf5f0;
+        color: #9c8892;
+        font-weight: 700;
+      }
+      .matrix .mv {
+        text-align: left;
+        background: #faf5f0;
+        color: #6b5660;
+        font-weight: 700;
+      }
+      .matrix .hot {
+        background: #f6ecdd;
+        color: #8a6a49;
+        font-weight: 700;
+      }
+
+      /* 经营分析看板示意 */
+      .kpis {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 8px;
+        margin-bottom: 13px;
+      }
+      .kpi {
+        padding: 10px 11px;
+        background: #faf6f2;
+        border: 1px solid #f0e7e1;
+      }
+      .kpi span {
+        display: block;
+        color: #9c8892;
+        font-size: 11px;
+      }
+      .kpi b {
+        display: block;
+        margin-top: 4px;
+        font-size: 18px;
+        color: #3a2b34;
+        font-variant-numeric: tabular-nums;
+      }
+      .kpi i {
+        font-style: normal;
+        font-size: 11px;
+        color: #7d9a83;
+      }
+      .chart {
+        display: flex;
+        align-items: flex-end;
+        gap: 9px;
+        height: 82px;
+        padding-bottom: 7px;
+        border-bottom: 1px solid #eee3dc;
+      }
+      .chart i {
+        flex: 1;
+        min-width: 0;
+        background: linear-gradient(180deg, #e2bd83, #c1875a);
+        font-style: normal;
+      }
+      .chart i:last-child {
+        background: linear-gradient(180deg, #6d3c60, #3b2338);
+      }
+      .chart-axis {
+        display: flex;
+        gap: 9px;
+        margin-top: 7px;
+        color: #a08d97;
+        font-size: 10px;
+      }
+      .chart-axis span {
+        flex: 1;
+        text-align: center;
+      }
+      .rank {
+        margin-top: 12px;
+      }
+      .rank-row {
+        display: grid;
+        grid-template-columns: 16px 1fr 52px;
+        align-items: center;
+        gap: 9px;
+        padding: 7px 0;
+        border-bottom: 1px solid #f4ede8;
+        font-size: 11px;
+      }
+      .rank-row:last-child {
+        border-bottom: 0;
+      }
+      .rank-row em {
+        font-style: normal;
+        color: #a97d46;
+        font-weight: 700;
+      }
+
+      /* AI 助手对话示意 */
+      .chat {
+        display: grid;
+        gap: 9px;
+      }
+      .msg {
+        max-width: 84%;
+        padding: 9px 11px;
+        font-size: 11.5px;
+        line-height: 1.65;
+      }
+      .msg.ask {
+        justify-self: end;
+        background: linear-gradient(120deg, #3b2338, #6d3c60);
+        color: #f0e2ea;
+      }
+      .msg.ans {
+        justify-self: start;
+        max-width: 92%;
+        background: #faf6f2;
+        border: 1px solid #f0e7e1;
+        color: #4a3b44;
+      }
+      .msg.ans b {
+        color: #8a5a3c;
+      }
+      .msg-viz {
+        display: grid;
+        gap: 5px;
+        margin-top: 9px;
+        padding-top: 8px;
+        border-top: 1px dashed #e3d6cd;
+      }
+      .msg-viz div {
+        display: grid;
+        grid-template-columns: 1fr 44px;
+        gap: 8px;
+        color: #6b5660;
+        font-size: 11px;
+      }
+      .msg-viz div span:last-child {
+        text-align: right;
+        font-variant-numeric: tabular-nums;
+        color: #a97d46;
+        font-weight: 700;
+      }
+      .chat-input {
+        margin-top: 3px;
+        padding: 8px 11px;
+        border: 1px solid #ece1da;
+        background: #fffdfb;
+        color: #b3a1aa;
+        font-size: 11px;
+      }
+      .chat-note {
+        margin-top: 8px;
+        color: #9c8892;
+        font-size: 10.5px;
+      }
+
+      .phones {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 12px;
+      }
+      .phone {
+        padding: 9px;
+        background: #fff;
+        border: 1px solid #e8ded7;
+        border-radius: 14px;
+      }
+      .phone-bar {
+        display: flex;
+        justify-content: space-between;
+        color: #b3a1aa;
+        font-size: 10px;
+        padding: 2px 4px 8px;
+      }
+      .phone-title {
+        font-size: 13px;
+        font-weight: 700;
+        padding: 0 4px 9px;
+      }
+      .phone-card {
+        padding: 9px 10px;
+        margin-bottom: 7px;
+        background: #faf6f2;
+        border: 1px solid #f0e7e1;
+        font-size: 11px;
+        color: #6b5660;
+      }
+      .phone-card b {
+        display: block;
+        margin-bottom: 3px;
+        color: #3a2b34;
+        font-size: 12px;
+      }
+      .phone-card.gold {
+        background: linear-gradient(120deg, #3b2338, #6d3c60);
+        border-color: #3b2338;
+        color: #e0cdda;
+      }
+      .phone-card.gold b {
+        color: var(--gold-soft);
+      }
+      .phone-grid {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 6px;
+      }
+      .phone-grid div {
+        padding: 12px 4px;
+        background: #faf6f2;
+        border: 1px solid #f0e7e1;
+        text-align: center;
+        font-size: 10px;
+        color: #7b6b73;
+      }
+      .phone-tabbar {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 4px;
+        margin-top: 9px;
+        padding-top: 8px;
+        border-top: 1px solid #f0e7e1;
+        color: #b3a1aa;
+        font-size: 10px;
+        text-align: center;
+      }
+      .phone-tabbar b {
+        color: #9a5f52;
+        font-weight: 700;
+      }
+
+      /* ---------- 价值 ---------- */
+      .proof {
+        background: var(--deep);
+        color: var(--white);
+      }
+      .proof .section-tag {
+        color: var(--gold);
+      }
+      .proof .section-head h2 {
+        color: #fff;
+      }
+      .proof .section-head p {
+        color: #c6b1bf;
+      }
+      .proof-grid {
+        display: grid;
+        grid-template-columns: 1.2fr 0.8fr;
+        gap: 14px;
+      }
+      .proof-main,
+      .proof-side {
+        background: #2c1a29;
+        border: 1px solid #ffffff24;
+      }
+      .proof-main {
+        display: flex;
+        flex-direction: column;
+        justify-content: space-between;
+        min-height: 285px;
+        padding: 27px;
+      }
+      .proof-main h3 {
+        max-width: 540px;
+        margin: 0;
+        font-size: 27px;
+        letter-spacing: -0.035em;
+        line-height: 1.26;
+      }
+      .proof-main p {
+        max-width: 520px;
+        margin: 10px 0 0;
+        color: #cdb9c7;
+        font-size: 16px;
+      }
+      .proof-points {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 12px;
+      }
+      .proof-points div {
+        padding-top: 10px;
+        border-top: 1px solid #ffffff31;
+        color: #c3aebd;
+        font-size: 14px;
+      }
+      .proof-points b {
+        display: block;
+        margin-bottom: 2px;
+        color: var(--gold);
+        font-size: 19px;
+      }
+      .proof-side {
+        padding: 27px;
+      }
+      .proof-side h3 {
+        margin: 0 0 20px;
+        font-size: 20px;
+      }
+      .proof-list {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+      }
+      .proof-list li {
+        display: flex;
+        gap: 10px;
+        padding: 11px 0;
+        border-top: 1px solid #ffffff21;
+        color: #d3c2ce;
+        font-size: 15px;
+      }
+      .proof-list li:before {
+        content: "✓";
+        color: var(--gold);
+        font-weight: 900;
+      }
+
+      /* ---------- 结语与页脚 ---------- */
+      .closing {
+        padding: 72px 0 88px;
+      }
+      .closing-box {
+        padding: 38px 42px;
+        background: var(--gold-soft);
+      }
+      .closing-box h2 {
+        max-width: 720px;
+        margin: 0;
+        color: #3d2338;
+        font-size: clamp(27px, 3.7vw, 42px);
+        letter-spacing: -0.055em;
+        line-height: 1.18;
+      }
+      footer {
+        padding: 22px 0;
+        background: var(--deep);
+        color: #a48f9e;
+        font-size: 13px;
+      }
+      .footer-inner {
+        display: flex;
+        justify-content: space-between;
+        gap: 20px;
+      }
+      .footer-inner b {
+        color: #f3e6ee;
+      }
+
+      /* ---------- 响应式 ---------- */
+      @media (max-width: 1040px) {
+        .base-grid {
+          grid-template-columns: repeat(2, 1fr);
+        }
+      }
+      @media (max-width: 900px) {
+        .surface-grid {
+          grid-template-columns: 1fr;
+        }
+      }
+      @media (max-width: 840px) {
+        .nav-links {
+          display: none;
+        }
+        .hero {
+          grid-template-columns: 1fr;
+          gap: 42px;
+          min-height: 0;
+          padding-top: 58px;
+        }
+        .board {
+          width: 100%;
+          max-width: 540px;
+        }
+        .section-head {
+          flex-direction: column;
+          align-items: start;
+          gap: 15px;
+        }
+        .section-head p {
+          max-width: 600px;
+        }
+        .module:nth-child(n) {
+          grid-column: span 6;
+        }
+        .module:nth-child(3) h3 {
+          font-size: 24px;
+        }
+        .journey-grid,
+        .proof-grid,
+        .feature-shot,
+        .feature-shot.reverse {
+          grid-template-columns: 1fr;
+          gap: 32px;
+        }
+        .feature-shot.reverse .screen-frame {
+          order: 0;
+        }
+      }
+      @media (max-width: 530px) {
+        .wrap {
+          width: min(100% - 30px, 1180px);
+        }
+        .nav {
+          height: 68px;
+        }
+        .hero {
+          padding: 52px 0 58px;
+        }
+        .hero-copy {
+          font-size: 16px;
+        }
+        .board-main {
+          grid-template-columns: 1fr;
+        }
+        .board-pane {
+          min-height: 142px;
+        }
+        .module:nth-child(n) {
+          grid-column: span 12;
+          min-height: 194px;
+        }
+        .module h3,
+        .module:nth-child(3) h3 {
+          margin-top: 42px;
+        }
+        .module:nth-child(3):after {
+          right: -12px;
+        }
+        .timeline-item {
+          grid-template-columns: 46px 1fr 18px;
+          gap: 10px;
+        }
+        .phones {
+          grid-template-columns: 1fr;
+        }
+        .surface ul {
+          grid-template-columns: 1fr;
+        }
+        .base-grid {
+          grid-template-columns: 1fr;
+        }
+        .kpis {
+          grid-template-columns: 1fr;
+        }
+        .matrix {
+          grid-template-columns: 70px repeat(4, 1fr);
+          font-size: 10px;
+        }
+        .proof-main,
+        .proof-side {
+          padding: 22px;
+        }
+        .proof-points {
+          grid-template-columns: 1fr;
+        }
+        .closing-box {
+          padding: 30px;
+        }
+        .feature-shot {
+          padding: 34px 0;
+        }
+        .screen-frame {
+          padding: 6px;
+          box-shadow: 8px 8px 0 #e8d8c2;
+        }
+        section {
+          padding: 68px 0;
+        }
+        .footer-inner {
+          flex-direction: column;
+          gap: 4px;
+        }
+        .ui-table th:nth-child(4),
+        .ui-table td:nth-child(4) {
+          display: none;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header class="top" id="top">
+      <nav class="wrap nav" aria-label="页面导航">
+        <div class="brand">
+          <span class="brand-mark">楔</span><span>灵楔美业连锁经营系统</span>
+        </div>
+        <div class="nav-links">
+          <a href="#capability">核心能力</a>
+          <a href="#surfaces">产品矩阵</a>
+          <a href="#journey">业务闭环</a>
+          <a href="#showcase">功能展示</a>
+          <a href="#foundation">平台底座</a>
+          <a href="#value">平台价值</a>
+        </div>
+      </nav>
+      <div class="wrap hero">
+        <div>
+          <div class="overline">CHAIN BEAUTY OPERATION SYSTEM</div>
+          <h1>让每一家门店的经营<br />都跑在同一套<em>口径</em>上</h1>
+          <p class="hero-copy">
+            面向连锁美容机构的一体化产品矩阵：顾客端小程序、员工端小程序、管理后台与经营分析站四款子产品共用同一份数据，把组织权限、品项定价、开单收款、到店核销、业绩分账、会员资产与经营分析连成一条可追溯的主线。
+          </p>
+          <p class="hero-note">
+            页面内所有界面均为示意图，数据为虚构，不代表任何真实门店经营情况。
+          </p>
+        </div>
+        <div class="board" aria-label="连锁经营协同示意">
+          <div class="board-bar">
+            <span>连锁经营总览</span><span class="tiny-live">业务联动</span>
+          </div>
+          <div class="board-main">
+            <div class="board-pane">
+              <span class="pane-label">经营状态监测</span>
+              <div class="bars">
+                <div class="bar-row">
+                  <i></i><b class="w-wide"></b><em>开单收款</em>
+                </div>
+                <div class="bar-row">
+                  <i></i><b class="w-mid"></b><em>到店核销</em>
+                </div>
+                <div class="bar-row">
+                  <i></i><b class="w-small"></b><em>会员资产</em>
+                </div>
+                <div class="bar-row">
+                  <i></i><b class="w-mid"></b><em>经营分析</em>
+                </div>
+              </div>
+            </div>
+            <div class="board-pane split">
+              <span class="pane-label">业绩归属</span>
+              <strong>明细级分账</strong>
+              <div class="route">● → ●</div>
+              <span>门店 · 部门 · 岗位 · 个人</span>
+            </div>
+          </div>
+          <div class="board-foot">
+            <div class="board-stat"><b>组织</b><span>三级数据域</span></div>
+            <div class="board-stat"><b>单据</b><span>全程可追溯</span></div>
+            <div class="board-stat"><b>分账</b><span>矩阵化计算</span></div>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <main>
+      <section class="capability" id="capability">
+        <div class="wrap">
+          <div class="section-head">
+            <div>
+              <div class="section-tag">CAPABILITY SYSTEM</div>
+              <h2>围绕连锁经营的关键环节，织成一张协同网络</h2>
+            </div>
+            <p>
+              以统一的信息入口承接日常经营，让总部统筹、市场督导与门店执行保持同一节奏。
+            </p>
+          </div>
+          <div class="modules">
+            <article class="module">
+              <span class="module-no">01</span><span class="module-symbol">◇</span>
+              <h3>组织与权限</h3>
+              <p>品牌总部—市场—门店三级组织树，角色与数据域双维授权。</p>
+            </article>
+            <article class="module">
+              <span class="module-no">02</span><span class="module-symbol">◈</span>
+              <h3>品项与定价</h3>
+              <p>品项分类、疗程卡与家居产品、套餐组合与多档会员价。</p>
+            </article>
+            <article class="module">
+              <span class="module-no">03 / 交易主线</span
+              ><span class="module-symbol">₩</span>
+              <h3>开单收款与单据治理</h3>
+              <p>
+                员工开单生成收款码，顾客线上自助或到店扫码支付；销售、内部、转换、寄存等单据类型统一建模，回款与退款作为款项流水沉淀在原单之下。
+              </p>
+            </article>
+            <article class="module">
+              <span class="module-no">04</span><span class="module-symbol">✓</span>
+              <h3>预约与到店核销</h3>
+              <p>预约确认、到店签到、服务单登记与跨订单次数核销。</p>
+            </article>
+            <article class="module">
+              <span class="module-no">05</span><span class="module-symbol">↔</span>
+              <h3>业绩分账</h3>
+              <p>销售明细级营业额分配，跨部门独立计算，提成矩阵自动取率。</p>
+            </article>
+            <article class="module">
+              <span class="module-no">06</span><span class="module-symbol">◎</span>
+              <h3>会员资产</h3>
+              <p>储值卡、积分、会员等级、优惠券与体验卡集中管理。</p>
+            </article>
+            <article class="module">
+              <span class="module-no">07</span><span class="module-symbol">⌁</span>
+              <h3>经营分析与报表</h3>
+              <p>
+                独立分析站提供复购率、普及率与新客漏斗等指标看板，并支持明细报表导出与对账。
+              </p>
+            </article>
+            <article class="module">
+              <span class="module-no">08</span><span class="module-symbol">⎙</span>
+              <h3>库存与操作留痕</h3>
+              <p>
+                门店库存、提货与调拨记录归口管理，关键操作写入日志，谁在何时改了什么一查即知。
+              </p>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section class="surfaces" id="surfaces">
+        <div class="wrap">
+          <div class="section-head">
+            <div>
+              <div class="section-tag">PRODUCT MATRIX</div>
+              <h2>四款子产品，一份经营数据</h2>
+            </div>
+            <p>
+              顾客、一线员工、管理者与经营分析人员各取所需，不再依赖线下表格与微信群同步口径。
+            </p>
+          </div>
+          <div class="surface-grid">
+            <article class="surface">
+              <div class="surface-top">
+                <div class="surface-role">FOR CUSTOMER</div>
+                <span class="surface-no">01</span>
+              </div>
+              <h3>顾客端小程序</h3>
+              <p>
+                把门店服务搬到顾客手机上，自助完成选购、支付、预约与卡券查看。
+              </p>
+              <ul>
+                <li>门店选择与定位测距</li>
+                <li>门店绑定与解绑申请</li>
+                <li>商城品项与购物车</li>
+                <li>自助下单与在线支付</li>
+                <li>预约发起与服务记录</li>
+                <li>疗程卡余次查询</li>
+                <li>储值卡、积分与优惠券</li>
+                <li>会员权益与分享礼</li>
+              </ul>
+              <div class="surface-meta">
+                <span>微信小程序</span><span>顾客自助</span><span>微信 / 支付宝支付</span>
+              </div>
+            </article>
+            <article class="surface">
+              <div class="surface-top">
+                <div class="surface-role">FOR STAFF</div>
+                <span class="surface-no">02</span>
+              </div>
+              <h3>员工端小程序</h3>
+              <p>
+                一线岗位的随身工作台，开单、核销、跟客与绩效查看都在同一个入口。
+              </p>
+              <ul>
+                <li>工作台待办与业绩日历</li>
+                <li>门店与管理双视图切换</li>
+                <li>店长开单与三步结算</li>
+                <li>收款码与线下收款确认</li>
+                <li>服务单新建与核销</li>
+                <li>预约确认与到店签到</li>
+                <li>顾客档案与标签筛选</li>
+                <li>提成分配与个人绩效</li>
+              </ul>
+              <div class="surface-meta">
+                <span>微信小程序</span><span>门店执行</span><span>角色化待办</span>
+              </div>
+            </article>
+            <article class="surface">
+              <div class="surface-top">
+                <div class="surface-role">FOR MANAGEMENT</div>
+                <span class="surface-no">03</span>
+              </div>
+              <h3>管理后台</h3>
+              <p>
+                总部与市场的经营中枢，主数据、业务规则与审核流程集中在此落地。
+              </p>
+              <ul>
+                <li>组织架构与门店管理</li>
+                <li>员工、职位与标签维护</li>
+                <li>权限矩阵与数据域配置</li>
+                <li>商品、品项分类与商城</li>
+                <li>提成矩阵与会员权益</li>
+                <li>订单、分配与退款审核</li>
+                <li>库存、提货与流水查询</li>
+                <li>报表导出与操作日志</li>
+              </ul>
+              <div class="surface-meta">
+                <span>Web 管理端</span><span>总部 / 市场</span><span>主数据与规则</span>
+              </div>
+            </article>
+            <article class="surface">
+              <div class="surface-top">
+                <div class="surface-role">FOR ANALYSIS</div>
+                <span class="surface-no">04</span>
+              </div>
+              <h3>经营分析站</h3>
+              <p>
+                独立部署的分析站点，用指标看板与 AI 经营助手回答“生意到底怎么样”。
+              </p>
+              <ul>
+                <li>复购率看板与趋势</li>
+                <li>疗程卡普及率分析</li>
+                <li>新客漏斗与来源拆分</li>
+                <li>品项 / 市场 / 门店排名</li>
+                <li>AI 经营助手问答</li>
+                <li>结构化图表与名单</li>
+                <li>与管理后台单点登录</li>
+                <li>指标目录持续扩展</li>
+              </ul>
+              <div class="surface-meta">
+                <span>Web · PC 与移动</span><span>经营决策</span><span>AI 助手</span>
+              </div>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section class="journey" id="journey">
+        <div class="wrap journey-grid">
+          <div>
+            <div class="section-tag">BUSINESS LOOP</div>
+            <h2>把一次到店消费，变成可追溯的经营过程</h2>
+            <p class="journey-copy">
+              经营不是散落在各处的表单，而是一段有始有终的链路。系统把关键节点组织成清晰的状态流转，让每一笔钱、每一次服务都有据可查。
+            </p>
+            <div class="journey-note">
+              <div>
+                <b>总部定规则</b><span> · 门店按同一口径执行与结算</span>
+              </div>
+            </div>
+          </div>
+          <div class="timeline">
+            <article class="timeline-item">
+              <span class="timeline-no">01</span>
+              <div>
+                <h3>进店建档</h3>
+                <p>顾客绑定门店与专属美容师，档案与会员身份即时建立。</p>
+              </div>
+              <span class="timeline-arrow">↘</span>
+            </article>
+            <article class="timeline-item">
+              <span class="timeline-no">02</span>
+              <div>
+                <h3>开单收款</h3>
+                <p>选品项、取会员价、核销优惠，线上线下汇入同一张单据。</p>
+              </div>
+              <span class="timeline-arrow">↘</span>
+            </article>
+            <article class="timeline-item">
+              <span class="timeline-no">03</span>
+              <div>
+                <h3>业绩分账</h3>
+                <p>按销售明细分配到部门与个人，提成比例由矩阵自动匹配。</p>
+              </div>
+              <span class="timeline-arrow">↘</span>
+            </article>
+            <article class="timeline-item">
+              <span class="timeline-no">04</span>
+              <div>
+                <h3>到店核销</h3>
+                <p>服务单记录实际履约，次数扣减与顾客确认全程留痕。</p>
+              </div>
+              <span class="timeline-arrow">↘</span>
+            </article>
+            <article class="timeline-item">
+              <span class="timeline-no">05</span>
+              <div>
+                <h3>资产沉淀</h3>
+                <p>余次、储值、积分与等级沉淀为可复用的会员资产，驱动复购。</p>
+              </div>
+              <span class="timeline-arrow">✓</span>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section class="showcase" id="showcase">
+        <div class="wrap">
+          <div class="showcase-intro">
+            <div class="section-tag">SYSTEM IN PRACTICE</div>
+            <h2>清晰的业务视图，承接真实的门店工作</h2>
+            <p>
+              从订单收款、业绩分账、服务核销到权限配置与经营分析，四款子产品的关键界面如下。每个处理环节都可见、可查、可协同；以下界面为功能示意，数据均为虚构。
+            </p>
+          </div>
+
+          <article class="feature-shot">
+            <div class="screen-frame">
+              <div class="ui" role="img" aria-label="订单管理界面示意">
+                <div class="ui-bar"><b>订单管理</b><span>全部门店</span></div>
+                <div class="ui-body">
+                  <div class="ui-filters">
+                    <span class="chip">全部状态</span>
+                    <span class="chip">全部单据</span>
+                    <span class="chip">全部支付方式</span>
+                    <span class="chip">下单日期</span>
+                  </div>
+                  <table class="ui-table">
+                    <thead>
+                      <tr>
+                        <th>订单号</th>
+                        <th>类型</th>
+                        <th>状态</th>
+                        <th>门店</th>
+                        <th class="num">金额</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr>
+                        <td class="mono">LX-XSD-WX-2601120031</td>
+                        <td><span class="tag">销售单</span></td>
+                        <td><span class="pill paid">已支付</span></td>
+                        <td>旗舰门店</td>
+                        <td class="num">¥ 6,800</td>
+                      </tr>
+                      <tr>
+                        <td class="mono">LX-XSD-WX-2601120028</td>
+                        <td><span class="tag">充值单</span></td>
+                        <td><span class="pill paid">已支付</span></td>
+                        <td>中心门店</td>
+                        <td class="num">¥ 5,000</td>
+                      </tr>
+                      <tr>
+                        <td class="mono">LX-XSD-WX-2601120024</td>
+                        <td><span class="tag">销售单</span></td>
+                        <td><span class="pill wait">待支付</span></td>
+                        <td>社区门店</td>
+                        <td class="num">¥ 1,280</td>
+                      </tr>
+                      <tr>
+                        <td class="mono">LX-XSD-WX-2601110097</td>
+                        <td><span class="tag">转换单</span></td>
+                        <td><span class="pill done">已完成</span></td>
+                        <td>旗舰门店</td>
+                        <td class="num">¥ 2,400</td>
+                      </tr>
+                      <tr>
+                        <td class="mono">LX-XSD-WX-2601110083</td>
+                        <td><span class="tag">销售单</span></td>
+                        <td><span class="pill refund">部分退款</span></td>
+                        <td>中心门店</td>
+                        <td class="num">¥ 3,600</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+              <div class="screen-caption">订单管理 · 界面示意（虚构数据）</div>
+            </div>
+            <div>
+              <span class="feature-no">01 / 管理后台 · 交易可查</span>
+              <h3>各类单据集中管理，收款进度一目了然</h3>
+              <p>
+                销售、充值、内部、转换与寄存单据在同一张列表中统一呈现，配合状态、门店、支付方式与日期组合筛选，收款与欠款情况随时可查。
+              </p>
+              <ul class="feature-points">
+                <li>按门店、单据类型、状态与支付方式组合查询</li>
+                <li>实收、已退与欠款金额并列展示</li>
+                <li>回款、退款作为款项流水挂在原单之下可追溯</li>
+              </ul>
+            </div>
+          </article>
+
+          <article class="feature-shot reverse">
+            <div class="screen-frame">
+              <div class="ui" role="img" aria-label="营业额分配界面示意">
+                <div class="ui-bar"><b>营业额分配</b><span>销售明细级</span></div>
+                <div class="ui-body">
+                  <div class="alloc-row">
+                    <div class="alloc-name">
+                      <b>美容部 · 顾问</b><span>销售提成</span>
+                    </div>
+                    <div class="meter"><i style="width: 62%"></i></div>
+                    <div class="num mono">62%</div>
+                  </div>
+                  <div class="alloc-row">
+                    <div class="alloc-name">
+                      <b>美容部 · 技师</b><span>服务归属</span>
+                    </div>
+                    <div class="meter"><i style="width: 28%"></i></div>
+                    <div class="num mono">28%</div>
+                  </div>
+                  <div class="alloc-row">
+                    <div class="alloc-name">
+                      <b>推广部 · 引流</b><span>渠道贡献</span>
+                    </div>
+                    <div class="meter"><i style="width: 10%"></i></div>
+                    <div class="num mono">10%</div>
+                  </div>
+                  <div class="alloc-foot">
+                    <span>本行实收 ¥ 6,800</span
+                    ><span>已分配 <b>¥ 6,800</b> · 待分配 ¥ 0</span>
+                  </div>
+                </div>
+              </div>
+              <div class="screen-caption">营业额分配 · 界面示意（虚构数据）</div>
+            </div>
+            <div>
+              <span class="feature-no">02 / 管理后台 · 分账到人</span>
+              <h3>业绩分配落到明细行，而不是一张订单</h3>
+              <p>
+                以销售明细为最小归属单位，支持一行分给多人、跨部门各自独立计算；指定美容师可在支付完成后自动获得归属，避免事后补录。
+              </p>
+              <ul class="feature-points">
+                <li>同部门分配总额不超过该行实收</li>
+                <li>跨部门按各自规则独立计算，互不挤占</li>
+                <li>退款业绩自动冲销为负数，账面始终自洽</li>
+              </ul>
+            </div>
+          </article>
+
+          <article class="feature-shot">
+            <div class="screen-frame">
+              <div class="ui" role="img" aria-label="服务单核销界面示意">
+                <div class="ui-bar"><b>服务单核销</b><span>服务中</span></div>
+                <div class="ui-body">
+                  <div class="svc-head">
+                    <b>到店服务 · 本次核销 2 项</b
+                    ><span class="pill wait">待顾客确认</span>
+                  </div>
+                  <div class="svc-line">
+                    <div>
+                      深层清洁护理<span> · 来自订单 LX-XSD-WX-2601120031</span>
+                    </div>
+                    <div class="dots">
+                      <i></i><i></i><i></i><i class="off"></i><i class="off"></i>
+                    </div>
+                    <div class="num mono">3/5</div>
+                  </div>
+                  <div class="svc-line">
+                    <div>
+                      头皮养护疗程<span> · 来自订单 LX-XSD-WX-2512280046</span>
+                    </div>
+                    <div class="dots">
+                      <i></i><i></i><i class="off"></i><i class="off"></i
+                      ><i class="off"></i>
+                    </div>
+                    <div class="num mono">2/5</div>
+                  </div>
+                  <div class="svc-foot">
+                    <span>负责美容师 · 技师 A</span><span>次数在服务完成时扣减</span>
+                  </div>
+                </div>
+              </div>
+              <div class="screen-caption">服务单核销 · 界面示意（虚构数据）</div>
+            </div>
+            <div>
+              <span class="feature-no">03 / 员工端小程序 · 履约留痕</span>
+              <h3>一次到店，可以核销来自多笔订单的项目</h3>
+              <p>
+                服务单与订单不是一对一绑定，而是通过核销行关联到具体的销售明细，让“顾客这次做了什么、扣了谁的次数”清晰可查。
+              </p>
+              <ul class="feature-points">
+                <li>支持同一次服务跨多笔订单核销</li>
+                <li>次数仅在服务完成时扣减，取消不扣次</li>
+                <li>余次归零自动关闭相关预约，避免空跑</li>
+              </ul>
+            </div>
+          </article>
+
+          <article class="feature-shot reverse">
+            <div class="screen-frame">
+              <div class="ui" role="img" aria-label="提成比例矩阵界面示意">
+                <div class="ui-bar"><b>提成比例矩阵</b><span>按市场维护</span></div>
+                <div class="ui-body">
+                  <div class="matrix">
+                    <div class="mh">角色 / 单据</div>
+                    <div class="mh">销售单</div>
+                    <div class="mh">内部单</div>
+                    <div class="mh">转换单</div>
+                    <div class="mh">充值单</div>
+                    <div class="mv">顾问</div>
+                    <div class="hot">8%</div>
+                    <div>4%</div>
+                    <div>5%</div>
+                    <div>3%</div>
+                    <div class="mv">技师</div>
+                    <div>5%</div>
+                    <div>3%</div>
+                    <div class="hot">6%</div>
+                    <div>—</div>
+                    <div class="mv">店长</div>
+                    <div>3%</div>
+                    <div>2%</div>
+                    <div>2%</div>
+                    <div>2%</div>
+                    <div class="mv">推广</div>
+                    <div>4%</div>
+                    <div>—</div>
+                    <div>—</div>
+                    <div class="hot">5%</div>
+                  </div>
+                  <div class="alloc-foot">
+                    <span>维度：组织 × 单据类型 × 角色 × 销售分类 × 金额阶段</span>
+                  </div>
+                </div>
+              </div>
+              <div class="screen-caption">提成比例矩阵 · 界面示意（虚构数据）</div>
+            </div>
+            <div>
+              <span class="feature-no">04 / 管理后台 · 规则前置</span>
+              <h3>提成规则写在矩阵里，不写在每个人的记忆里</h3>
+              <p>
+                提成比例按组织、单据类型、角色、销售分类与金额阶段五个维度配置，分账时自动取率，规则调整只需维护矩阵，无需逐单解释。
+              </p>
+              <ul class="feature-points">
+                <li>不同市场可维护各自的比例口径</li>
+                <li>规则变更留痕，历史单据按当时口径结算</li>
+                <li>与营业额分配联动，减少人工核算</li>
+              </ul>
+            </div>
+          </article>
+
+          <article class="feature-shot">
+            <div class="screen-frame">
+              <div class="phones">
+                <div class="phone">
+                  <div class="phone-bar"><span>9:41</span><span>顾客端</span></div>
+                  <div class="phone-title">我的卡包</div>
+                  <div class="phone-card gold">
+                    <b>储值卡余额 ¥ 4,280</b>累计充值 ¥ 10,000 · 可用于门店消费抵扣
+                  </div>
+                  <div class="phone-card">
+                    <b>深层清洁护理 · 余 3 次</b>有效期至 2027-01-31
+                  </div>
+                  <div class="phone-card"><b>积分 1,860</b>当前等级 · 金卡会员</div>
+                  <div class="phone-tabbar">
+                    <span>首页</span><span>商城</span><span>预约</span
+                    ><b>我的</b>
+                  </div>
+                </div>
+                <div class="phone">
+                  <div class="phone-bar"><span>9:41</span><span>员工端</span></div>
+                  <div class="phone-title">工作台</div>
+                  <div class="phone-card gold">
+                    <b>今日分成 ¥ 1,240</b>本月累计 ¥ 18,600
+                  </div>
+                  <div class="phone-grid">
+                    <div>待确认<br />预约 3</div>
+                    <div>待服务<br />顾客 5</div>
+                    <div>待分配<br />订单 2</div>
+                    <div>待收款<br />单据 1</div>
+                    <div>待确认<br />服务 4</div>
+                    <div>今日<br />到店 9</div>
+                  </div>
+                  <div class="phone-tabbar">
+                    <b>工作台</b><span>开单</span><span>顾客</span><span>我的</span>
+                  </div>
+                </div>
+              </div>
+              <div class="screen-caption">顾客端与员工端 · 界面示意（虚构数据）</div>
+            </div>
+            <div>
+              <span class="feature-no">05 / 顾客端 × 员工端 · 两端同源</span>
+              <h3>顾客看到的余次，和员工核销的余次是同一个数</h3>
+              <p>
+                顾客端的卡包、余次与储值余额，与员工端的开单、核销共用同一套业务数据，不存在两套口径对不上的问题。
+              </p>
+              <ul class="feature-points">
+                <li>顾客自助查询余次、流水与服务记录</li>
+                <li>员工端待办按角色推送，减少遗漏</li>
+                <li>两端账号体系独立，权限互不越界</li>
+              </ul>
+            </div>
+          </article>
+
+          <article class="feature-shot reverse">
+            <div class="screen-frame">
+              <div class="ui" role="img" aria-label="权限与数据域配置界面示意">
+                <div class="ui-bar"><b>权限与数据域</b><span>角色 × 域</span></div>
+                <div class="ui-body">
+                  <table class="ui-table">
+                    <thead>
+                      <tr>
+                        <th>角色</th>
+                        <th>数据域</th>
+                        <th>可见范围</th>
+                        <th>关键权限</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr>
+                        <td>经营管理</td>
+                        <td><span class="tag">总部</span></td>
+                        <td>全部门店</td>
+                        <td>订单 · 分配 · 商品</td>
+                      </tr>
+                      <tr>
+                        <td>经营管理</td>
+                        <td><span class="tag">市场</span></td>
+                        <td>所辖门店</td>
+                        <td>订单 · 分配</td>
+                      </tr>
+                      <tr>
+                        <td>财务</td>
+                        <td><span class="tag">总部</span></td>
+                        <td>全部门店</td>
+                        <td>只读 · 报表导出</td>
+                      </tr>
+                      <tr>
+                        <td>店长</td>
+                        <td><span class="tag">门店</span></td>
+                        <td>本店</td>
+                        <td>开单 · 核销 · 分配</td>
+                      </tr>
+                      <tr>
+                        <td>一线员工</td>
+                        <td><span class="tag">门店</span></td>
+                        <td>本人相关</td>
+                        <td>服务 · 预约</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+              <div class="screen-caption">权限与数据域 · 界面示意（虚构数据）</div>
+            </div>
+            <div>
+              <span class="feature-no">06 / 管理后台 · 权限到域</span>
+              <h3>看得到什么，由角色和数据域共同决定</h3>
+              <p>
+                角色决定能做什么，数据域决定能看到哪一层组织。同一名员工可以同时持有多个角色与多个数据域，适配连锁机构常见的兼岗与代管场景。
+              </p>
+              <ul class="feature-points">
+                <li>总部 / 市场 / 门店三级数据域</li>
+                <li>按功能模块细分操作权限</li>
+                <li>无权限记录时自动降级为最小可用范围</li>
+              </ul>
+            </div>
+          </article>
+
+          <article class="feature-shot">
+            <div class="screen-frame">
+              <div class="ui" role="img" aria-label="复购率看板界面示意">
+                <div class="ui-bar"><b>复购率看板</b><span>顾客经营</span></div>
+                <div class="ui-body">
+                  <div class="kpis">
+                    <div class="kpi">
+                      <span>进入人数</span><b>1,284</b><i>较上年 +6.2%</i>
+                    </div>
+                    <div class="kpi">
+                      <span>复购人数</span><b>486</b><i>较上年 +11.4%</i>
+                    </div>
+                    <div class="kpi">
+                      <span>复购率</span><b>37.8%</b><i>较上年 +1.7pt</i>
+                    </div>
+                  </div>
+                  <div class="chart">
+                    <i style="height: 38%"></i>
+                    <i style="height: 52%"></i>
+                    <i style="height: 46%"></i>
+                    <i style="height: 64%"></i>
+                    <i style="height: 58%"></i>
+                    <i style="height: 78%"></i>
+                  </div>
+                  <div class="chart-axis">
+                    <span>1月</span><span>2月</span><span>3月</span><span>4月</span
+                    ><span>5月</span><span>6月</span>
+                  </div>
+                  <div class="rank">
+                    <div class="rank-row">
+                      <em>1</em><span>面部护理</span><span class="num">42.6%</span>
+                    </div>
+                    <div class="rank-row">
+                      <em>2</em><span>身体养护</span><span class="num">38.1%</span>
+                    </div>
+                    <div class="rank-row">
+                      <em>3</em><span>头皮养护</span><span class="num">31.4%</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div class="screen-caption">复购率看板 · 界面示意（虚构数据）</div>
+            </div>
+            <div>
+              <span class="feature-no">07 / 经营分析站 · 指标看板</span>
+              <h3>把经营问题，拆成可以对比的指标</h3>
+              <p>
+                分析站以指标为单位组织看板：复购率、疗程卡普及率与新客漏斗已上线，每个指标都提供 KPI、趋势与品项、市场、门店的横向排名，指标目录按顾客、销售、服务、组织四类持续扩展。
+              </p>
+              <ul class="feature-points">
+                <li>复购率：进入人数、复购人数与同比对比</li>
+                <li>普及率：持卡会员数、总会员数与剩余次数</li>
+                <li>新客漏斗：来源拆分、到店率与会员成交率</li>
+                <li>PC 与移动端自适应，出门在外也能看</li>
+              </ul>
+            </div>
+          </article>
+
+          <article class="feature-shot reverse">
+            <div class="screen-frame">
+              <div class="ui" role="img" aria-label="AI 经营助手界面示意">
+                <div class="ui-bar">
+                  <b>经营分析助手</b><span>结果来自数据库查询</span>
+                </div>
+                <div class="ui-body chat">
+                  <div class="msg ask">上半年哪个品项的复购率最高？</div>
+                  <div class="msg ans">
+                    上半年复购率最高的品项是<b>面部护理</b>，为 42.6%；身体养护
+                    38.1% 次之。以下为品项复购率排名：
+                    <div class="msg-viz">
+                      <div><span>面部护理</span><span>42.6%</span></div>
+                      <div><span>身体养护</span><span>38.1%</span></div>
+                      <div><span>头皮养护</span><span>31.4%</span></div>
+                    </div>
+                  </div>
+                  <div class="msg ask">那新客到店率呢？</div>
+                  <div class="msg ans">
+                    上半年新客到店率为 <b>61.3%</b>，会员成交率
+                    28.7%，可在新客漏斗看板中按来源与门店进一步下钻。
+                  </div>
+                  <div class="chat-input">输入经营问题…</div>
+                  <div class="chat-note">
+                    超出已接入指标范围的问题会明确说明无法回答，不做推测
+                  </div>
+                </div>
+              </div>
+              <div class="screen-caption">AI 经营助手 · 界面示意（虚构数据）</div>
+            </div>
+            <div>
+              <span class="feature-no">08 / 经营分析站 · AI 助手</span>
+              <h3>用一句话提问，拿到带图表的确定答案</h3>
+              <p>
+                助手把自然语言问题翻译成受控的数据库查询，答案与图表全部来自实际数据，而不是模型自行编写；能力范围之外的问题会直接说明无法回答。
+              </p>
+              <ul class="feature-points">
+                <li>回答以服务端确定性查询结果为唯一事实来源</li>
+                <li>返回指标卡、趋势、排名与名单等结构化图表</li>
+                <li>查询范围受登录者的角色与数据域约束</li>
+                <li>顾客名单按需脱敏，会话记录留在本地浏览器</li>
+              </ul>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <section class="foundation" id="foundation">
+        <div class="wrap">
+          <div class="section-head">
+            <div>
+              <div class="section-tag">SHARED FOUNDATION</div>
+              <h2>四款产品之上，是同一套底座</h2>
+            </div>
+            <p>
+              子产品各自面向不同角色，但数据、身份与规则只有一份，避免系统之间反复对账。
+            </p>
+          </div>
+          <div class="base-grid">
+            <div class="base-cell">
+              <b>统一业务主库</b>
+              <span>组织、商品、订单、服务与会员资产集中存储，自托管可控。</span>
+            </div>
+            <div class="base-cell">
+              <b>小程序接口网关</b>
+              <span>两个小程序各自的云函数网关，按微信身份鉴权与路由。</span>
+            </div>
+            <div class="base-cell">
+              <b>支付与回调</b>
+              <span>在线支付、支付回调对账与自动发货，异常可补偿。</span>
+            </div>
+            <div class="base-cell">
+              <b>身份与数据域</b>
+              <span>管理后台与分析站单点登录，权限与可见范围同源。</span>
+            </div>
+            <div class="base-cell">
+              <b>定时任务</b>
+              <span>会员等级刷新、周期活动与数据备份按计划自动执行。</span>
+            </div>
+          </div>
+          <div class="base-note">
+            <div>
+              <b>一处维护，多端可用</b>
+              <span>
+                · 新增门店、调整品项或修改提成规则，只需在管理后台维护一次，其余子产品即时按新口径运行。
+              </span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="proof" id="value">
+        <div class="wrap">
+          <div class="section-head">
+            <div>
+              <div class="section-tag">PLATFORM VALUE</div>
+              <h2>让“连锁统一”不止停留在口号里</h2>
+            </div>
+            <p>
+              用可共享的数据与可衔接的流程，为连锁美业经营建立稳定的工作底座。
+            </p>
+          </div>
+          <div class="proof-grid">
+            <article class="proof-main">
+              <div>
+                <h3>从统一视角看经营，用同一套口径结算。</h3>
+                <p>
+                  组织、品项、订单、核销、分账、会员资产与经营指标彼此连接，让管理动作从层层追问，变成有序推进。
+                </p>
+              </div>
+              <div class="proof-points">
+                <div><b>统一入口</b>四款产品同源数据</div>
+                <div><b>全程留痕</b>关键状态可查询</div>
+                <div><b>规则前置</b>价格与提成可配置</div>
+              </div>
+            </article>
+            <aside class="proof-side">
+              <h3>面向日常经营的五项价值</h3>
+              <ul class="proof-list">
+                <li>一套数据服务顾客、员工、管理者与分析人员</li>
+                <li>连锁组织的分级授权与分级统计</li>
+                <li>从开单到分账的完整资金与业绩链路</li>
+                <li>退款、回款与转换的单据级追溯</li>
+                <li>从经营结果到指标归因的分析能力</li>
+              </ul>
+            </aside>
+          </div>
+        </div>
+      </section>
+
+      <section class="closing">
+        <div class="wrap">
+          <div class="closing-box">
+            <h2>让每一次服务、每一笔收款，都落在同一张账上。</h2>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer>
+      <div class="wrap footer-inner">
+        <b>灵楔美业连锁经营系统</b
+        ><span
+          >顾客端小程序 · 员工端小程序 · 管理后台 · 经营分析站 ｜ 界面均为示意图，数据为虚构</span
+        >
+      </div>
+    </footer>
+  </body>
+</html>
