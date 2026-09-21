@@ -61,7 +61,10 @@ async function main() {
     saleOrderId: ORDER_ID,
     clientUserId: TEST_CLIENT_USER_ID,
     totalAmount: TOTAL,
-    prepaidCardAmount: PREPAID, // → fixture 落 payable_amount = 5000 − 900 = 4100
+    // 预选态：卡还没扣（balance 仍是 1000），只登记待扣额度 → payable = 5000 − 900 = 4100。
+    // 写成 prepaidCardAmount 是错的：那表示"已结算净额"，confirmOffline 读的是 pending 那列，
+    // 会当作没预选卡而把欠款 4000 全记成现金（本用例 2026-09-21 前一直因此为红）。
+    pendingPrepaidCardAmount: PREPAID,
     status: '待支付',
     paymentMethod: '线下',
   })

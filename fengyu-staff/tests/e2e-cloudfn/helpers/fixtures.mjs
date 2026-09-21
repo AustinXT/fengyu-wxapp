@@ -545,6 +545,12 @@ export async function createTestSaleOrder({
   isRechargeCard = false,
   salesCategory = null,
   prepaidCardAmount = 0,
+  // 储值卡「预选待扣」额度。两段式语义见 fengyu-staff/CLAUDE.md：开单只写
+  // pending_prepaid_card_amount 且**不动 prepaid_cards.balance**，真正扣卡发生在
+  // clientApi / payNotify / confirmOffline，结算后才转入 prepaid_card_amount。
+  // 要构造"待结算、卡未扣"的订单必须用这个参数——写 prepaidCardAmount 造出来的是
+  // 「卡已扣但余额没少」的自相矛盾态，confirmOffline 会当成没预选卡而把欠款全算现金。
+  pendingPrepaidCardAmount = 0,
   preferredEmployeeId = null,
   refSaleOrderId = null,
 } = {}) {
@@ -556,24 +562,26 @@ export async function createTestSaleOrder({
   try {
     await client.query('BEGIN')
 
-    const payableAmount = Number(totalAmount) - Number(prepaidCardAmount)
+    // 应付 = 总额 − 已结算卡额 − 预选待扣卡额（两者都不该由顾客再掏现金）
+    const payableAmount =
+      Number(totalAmount) - Number(prepaidCardAmount) - Number(pendingPrepaidCardAmount)
     await client.query(
       `INSERT INTO sale_orders (
          sale_order_id, status, sale_order_type, market_name, store_id,
          sale_order_datetime, client_user_id, client_phone, customer_name,
-         total_amount, prepaid_card_amount, payable_amount, received,
+         total_amount, prepaid_card_amount, pending_prepaid_card_amount, payable_amount, received,
          payment_method, opened_by, preferred_employee_id, allocation_status,
          ref_sale_order_id
        )
        VALUES ($1, $2::order_status, $3::sale_order_type, $4, $5,
                NOW(), $6, $7, $8,
-               $9, $10, $11, 0,
-               $12::payment_method, $13, $14, '待分配'::allocation_status,
-               $15)`,
+               $9, $10, $11, $12, 0,
+               $13::payment_method, $14, $15, '待分配'::allocation_status,
+               $16)`,
       [
         saleOrderId, status, saleOrderType, `${NS}_市场`, storeId,
         clientUserId, TEST_CLIENT_PHONE, `${NS}_顾客`,
-        totalAmount, prepaidCardAmount, payableAmount,
+        totalAmount, prepaidCardAmount, pendingPrepaidCardAmount, payableAmount,
         paymentMethod, openedBy, preferredEmployeeId,
         refSaleOrderId,
       ]
@@ -949,6 +957,64 @@ export async function createTestCoupon({
     [ucId, tplId, userId, status, expire]
   )
   return { templateId: tplId, couponId: ucId }
+}
+
+/**
+ * 给已存在的款项行补「逐笔受领」明细（sale_payment_item_receipts，即 spir/spai）。
+ *
+ * 为什么夹具必须显式建它：真实链路里这行由 `utils/payment-allocatable.js` 的
+ * `capturePaymentAllocatables` 在付款事务内写；夹具直接 INSERT `sale_order_payments`
+ * 绕过了那一步，于是款项在「按回款逐笔」模型里没有任何可分配/可退的基数。
+ *
+ * 缺了它会以两种完全不同的面目暴露出来，都不指向夹具：
+ *   - 分配：`allocation.savePayment` 报「saleItemId … 不属于该回款」
+ *   - 退款：`refund-cascade` 的残值映射全为 0 → 「退款金额无法完整映射到商品行实收」
+ *
+ * @param {number} salePaymentId 款项行 id
+ * @param {string} saleOrderId   订单号
+ * @param {Array<{saleItemId: string, amount: number, salesCategory?: string}>} items
+ */
+export async function createPaymentItemReceipts(salePaymentId, saleOrderId, items) {
+  for (const it of items) {
+    await pgQuery(
+      `INSERT INTO sale_payment_item_receipts
+         (sale_payment_id, sale_order_id, sale_item_id, amount, sales_category, created_at)
+       VALUES ($1, $2, $3, $4, $5::sales_category, NOW())
+       ON CONFLICT (sale_payment_id, sale_item_id)
+       DO UPDATE SET amount = EXCLUDED.amount`,
+      [salePaymentId, saleOrderId, it.saleItemId, it.amount, it.salesCategory || '他销自耗'],
+    )
+  }
+}
+
+/**
+ * 建一笔「已支付」款项 + 配套的逐笔受领明细（真实付款链路的最小等价物）。
+ *
+ * 直接 INSERT `sale_order_payments` 而不配 receipts 是夹具里最常见的陷阱：
+ * 订单看着已支付，但退款映射与营业额分配都读不到基数。详见 createPaymentItemReceipts。
+ *
+ * @param {string} saleOrderId
+ * @param {{changeType?: string, amount: number, paymentMethod?: string,
+ *          items: Array<{saleItemId: string, amount: number, salesCategory?: string}>}} opts
+ * @returns {Promise<number>} salePaymentId
+ */
+export async function createPaidPayment(saleOrderId, {
+  changeType = '首次支付',
+  amount,
+  paymentMethod = '线下',
+  items,
+}) {
+  const rows = await pgQuery(
+    `INSERT INTO sale_order_payments
+       (sale_order_id, change_type, amount, payment_method, status, source_end, created_at, paid_at)
+     VALUES ($1, $2::payment_change_type, $3, $4::payment_method,
+             '已支付'::payment_flow_status, 'staff'::payment_source_end, NOW(), NOW())
+     RETURNING id`,
+    [saleOrderId, changeType, amount, paymentMethod],
+  )
+  const salePaymentId = rows[0].id
+  await createPaymentItemReceipts(salePaymentId, saleOrderId, items)
+  return salePaymentId
 }
 
 // ────────────────────────────────────────────────────────────────────────

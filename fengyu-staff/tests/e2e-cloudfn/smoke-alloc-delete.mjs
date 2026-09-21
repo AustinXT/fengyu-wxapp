@@ -3,7 +3,7 @@
  * allocation.deletePaymentAllocation 冒烟（按回款逐笔分配，spai 模型）
  *
  * 验证：
- *   1. 删除后 sale_allocations 行 is_void=true（软删除）；有效行 0、作废行 1（保留历史）
+ *   1. 删除后 sale_payment_item_allocations 行 is_void=true（软删除）；有效行 0、作废行 1（保留历史）
  *   2. sale_order_payments.allocation_status 回 '待分配'（CAS '已分配'→'待分配'）
  *   3. sale_orders.allocation_status 汇总位回 '待分配'
  *   4. 重复删除（已是 '待分配'）被状态机拒（INVALID_STATE: STATE_TRANSITION_BLOCKED）
@@ -41,7 +41,7 @@ async function createPaymentWithSpai({ saleOrderId, items, amount }) {
   const paymentId = payRows[0].id
   for (const it of items) {
     await pgQuery(
-      `INSERT INTO sale_payment_allocatable_items
+      `INSERT INTO sale_payment_item_receipts
          (sale_payment_id, sale_order_id, sale_item_id, amount, sales_category, created_at)
        VALUES ($1, $2, $3, $4, $5::sales_category, NOW())`,
       [paymentId, saleOrderId, it.saleItemId, it.amount, it.salesCategory]
@@ -100,14 +100,22 @@ async function main() {
   }
 
   // 软删除：原行 is_void=true，新查应 0 行有效
+  // 分配行落在 sale_payment_item_allocations，经 sale_payment_item_receipt_id 关联回款，
+  // 表里没有 sale_payment_id 列 —— 查 sale_allocations 会永远得 0 行（那是订单维度的旧模型表）。
   const validAllocs = await pgQuery(
-    `SELECT employee_id FROM sale_allocations WHERE sale_payment_id = $1 AND is_void = false`,
+    `SELECT a.employee_id
+       FROM sale_payment_item_allocations a
+       JOIN sale_payment_item_receipts r ON r.id = a.sale_payment_item_receipt_id
+      WHERE r.sale_payment_id = $1 AND a.is_void = false`,
     [paymentId]
   )
   if (validAllocs.length !== 0) errors.push(`is_void=false 应=0 行，实际=${validAllocs.length}`)
 
   const voidedAllocs = await pgQuery(
-    `SELECT employee_id, voided_at FROM sale_allocations WHERE sale_payment_id = $1 AND is_void = true`,
+    `SELECT a.employee_id, a.voided_at
+       FROM sale_payment_item_allocations a
+       JOIN sale_payment_item_receipts r ON r.id = a.sale_payment_item_receipt_id
+      WHERE r.sale_payment_id = $1 AND a.is_void = true`,
     [paymentId]
   )
   if (voidedAllocs.length !== 1) errors.push(`is_void=true 应=1 行（保留历史），实际=${voidedAllocs.length}`)
