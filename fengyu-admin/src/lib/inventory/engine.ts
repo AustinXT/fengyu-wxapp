@@ -3019,13 +3019,22 @@ export const createInventoryCoreDoc = withAnyPermission(
         ? sourceOrgNodeId
         : (sourceOrgNodeId ?? targetOrgNodeId)
     if (!actingOrgNodeId) throw new ApiError('INVALID_PARAMS', '缺少当前操作组织节点')
+    /**
+     * #200：鉴权必须**先于** `ensureOrgNodeLocation`。
+     *
+     * 那个函数会对不存在 / 已停用的节点分别抛 `NOT_FOUND` / `INVALID_STATE`，
+     * 放在鉴权前就成了一个探测器：拿无权限的 orgNodeId 试建单，靠返回的是
+     * 「没有对应库存主体」「主体已停用」还是「无权操作」就能反推该节点的存在与状态。
+     * 它还会顺带跑一次 `syncInventoryLocations()` —— 让无权者触发写操作也不合适。
+     */
+    await assertOrgNodeVisible(session, actingOrgNodeId)
+
     const sourceLocationRow = sourceOrgNodeId ? await ensureOrgNodeLocation(sourceOrgNodeId) : null
     const targetLocationRow = targetOrgNodeId ? await ensureOrgNodeLocation(targetOrgNodeId) : null
     const actingLocationId = sourceOrgNodeId === actingOrgNodeId
       ? sourceLocationRow?.locationId
       : targetLocationRow?.locationId
     if (!actingLocationId) throw new ApiError('NOT_FOUND', '组织节点没有对应库存主体')
-    await assertOrgNodeVisible(session, actingOrgNodeId)
 
     await assertGenericDocLocationRules(input, sourceOrgNodeId, targetOrgNodeId, actingOrgNodeId, plan)
 

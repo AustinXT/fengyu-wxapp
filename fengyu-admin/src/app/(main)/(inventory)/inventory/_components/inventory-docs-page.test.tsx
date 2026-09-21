@@ -47,6 +47,7 @@ import {
 } from '@/actions/inventory/docs'
 import InventoryDocsPage, { SOURCE_LOT_DOC_TYPES } from './inventory-docs-page'
 import { INVENTORY_GENERIC_DOC_TYPES } from '@/lib/inventory/types'
+import type { InventoryDocType } from '@/lib/inventory/types'
 
 // vitest.config.ts 没开 clearMocks/restoreMocks。这里必须用 resetAllMocks 而不是 clearAllMocks ——
 // 后者只清调用记录、不清 implementation，忘记设 mock 的新用例会静默继承上一条的 mockRejectedValue。
@@ -496,9 +497,13 @@ describe('#200 切换单据类型时复位主体字段', () => {
     expect(targetSelect().value).toBe('')
   })
 
-  it('换类型同时清掉已选批次（主体一换批次必然失效）', async () => {
+  /**
+   * 批次不单独断言：主体被清空后批次框本就不可用，而重新选主体的 onChange 会再清一次
+   * lotId —— 「切类型时也清 lotId」那行代码在任何可观测路径上都锁不住，已作为冗余删除。
+   */
+  it('换类型后重新选回同一主体与 SKU，批次仍是未选状态', async () => {
     vi.mocked(listInventoryLotOptions).mockResolvedValue([lot(11, 'SKU-1', 'B-001', 30)])
-    openWithTypes(['市场产品报损', '院顾客退货'])
+    openWithTypes(['市场产品报损', '内部领用'])   // 两者都在 SOURCE_LOT_DOC_TYPES 里
 
     fireEvent.change(sourceSelect(), { target: { value: 'M1' } })
     fireEvent.change(skuSelect(), { target: { value: 'SKU-1' } })
@@ -506,11 +511,14 @@ describe('#200 切换单据类型时复位主体字段', () => {
     fireEvent.change(lotSelect(), { target: { value: '11' } })
     expect(lotSelect().value).toBe('11')
 
-    fireEvent.change(dialogSelect(/^市场产品报损$/), { target: { value: '院顾客退货' } })
-
+    fireEvent.change(dialogSelect(/^市场产品报损$/), { target: { value: '内部领用' } })
     expect(sourceSelect().value).toBe('')
-    // 院顾客退货不需要来源批次，批次下拉本身会消失；这里断言主体确实被复位即可
     expect(targetSelect().value).toBe('')
+
+    fireEvent.change(sourceSelect(), { target: { value: 'M1' } })
+    fireEvent.change(skuSelect(), { target: { value: 'SKU-1' } })
+    await waitFor(() => expect(lotSelect()).not.toBeDisabled())
+    expect(lotSelect().value).toBe('')
   })
 })
 

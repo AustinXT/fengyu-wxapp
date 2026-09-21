@@ -538,6 +538,36 @@ describe('#200 建单 scope 按真正被改动的主体校验', () => {
     } as never)).rejects.toThrow('REACHED-TRANSACTION')
   })
 
+  /**
+   * reject 的显式 source 校验原先没有任何回归测试 —— 既有 reject 用例走的是专用单据，
+   * 会在 `assertGenericDocTransition` 就提前退出，把代码恢复成 `source ?? target` 照样全绿。
+   * 这里用**通用**待审批单据打到那两行。
+   */
+  /** 锁「reject 按 source 鉴权」这个不变量本身（改前改后都成立），防止将来被改成按 target */
+  it('驳回：source 越权时拒绝', async () => {
+    mockDb.transaction.mockImplementationOnce(async (callback: (tx: unknown) => unknown) => callback({
+      execute: initializedCutoverExecutor(vi.fn().mockResolvedValueOnce([{
+        doc_type: '院产品报损', status: '待审批',
+        source_org_node_id: 'ORG-S2',        // 无权限
+        target_org_node_id: 'ORG-S1',        // 有权限
+      }])),
+    }))
+    await expect(rejectInventoryCoreDoc('SPH-260809-0001'))
+      .rejects.toThrow('无权操作该组织节点单据')
+  })
+
+  it('驳回：通用待审批单据缺 source 时明确报错，而不是悄悄拿 target 顶上', async () => {
+    mockDb.transaction.mockImplementationOnce(async (callback: (tx: unknown) => unknown) => callback({
+      execute: initializedCutoverExecutor(vi.fn().mockResolvedValueOnce([{
+        doc_type: '院产品报损', status: '待审批',
+        source_org_node_id: null,
+        target_org_node_id: 'ORG-S1',
+      }])),
+    }))
+    await expect(rejectInventoryCoreDoc('SPH-260809-0002'))
+      .rejects.toThrow('待审批单据缺少出库主体')
+  })
+
   it('无流水单据（建单即待审批）沿用 source ?? target 口径，行为与改前一致', async () => {
     // 院产品报损建单落「待审批」→ movementPlan 为 null，此刻不动库存，
     // 真正扣减发生在审批那步（approveDoc 另有针对 source 的校验）

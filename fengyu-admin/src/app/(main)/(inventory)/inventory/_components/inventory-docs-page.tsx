@@ -839,7 +839,6 @@ function CreateDocDialog({
                */
               setSourceOrgNodeId('')
               setTargetOrgNodeId('')
-              setItems((prev) => (prev.some((item) => item.lotId) ? prev.map((item) => ({ ...item, lotId: '' })) : prev))
             }}
           >
             {availableDocTypes.map((type) => (
