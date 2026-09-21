@@ -783,18 +783,28 @@ describe('staff.performanceDetail', () => {
     // 只断言 items 顺序的话把 ORDER BY 整条删掉测试照样绿（#181 踩过）。
     // 取**整条 ORDER BY 子句**（到语句末尾）而非子串存在性 —— 后者可以被
     // 「注释掉真 ORDER BY 再补一行同文本」骗过。
-    // 先剥掉 SQL 注释再取：不剥的话下面这种结构能骗过断言 —— 内层 CTE 的注释里写着
-    // 期望文本、真正的外层 ORDER BY 却没有 tie-break（codex 谱系评审给的反例）：
-    //   WITH unused AS (SELECT 1 -- ORDER BY so.service_date DESC, sc.id DESC
-    //   LIMIT 0) SELECT ... ORDER BY so.service_date DESC
-    // 同时**取最后一条** ORDER BY —— 真正决定结果顺序的是最外层那条。
+    // 只认**最外层（括号深度 0）**的 ORDER BY，并先剥掉 SQL 注释。
+    // 两个谱系各给了一种绕过，都被这个实现挡住：
+    //   ① 内层 CTE 的注释里写着期望文本、真正的外层 ORDER BY 没 tie-break
+    //      → 剥注释解决
+    //   ② 把带 tie-break 的 ORDER BY 挪进子查询 / CTE，外层无 ORDER BY
+    //      → PG 会忽略子查询内排序，#239 复活；按括号深度过滤解决
     const orderByClause = (sql) => {
       const stripped = sql
         .replace(/\/\*[\s\S]*?\*\//g, ' ')   // 块注释
         .replace(/--[^\n]*/g, ' ')             // 行注释
-      const all = [...stripped.matchAll(/ORDER BY([\s\S]*?)(?=\n\s*(?:LIMIT|OFFSET)\b|\)|\s*$)/g)]
-      if (!all.length) return null
-      return all[all.length - 1][1].replace(/\s+/g, ' ').trim()
+      let depth = 0
+      for (let i = 0; i < stripped.length; i++) {
+        const ch = stripped[i]
+        if (ch === '(') depth++
+        else if (ch === ')') depth--
+        else if (depth === 0 && stripped.startsWith('ORDER BY', i)) {
+          const rest = stripped.slice(i + 'ORDER BY'.length)
+          const end = rest.search(/\n\s*(?:LIMIT|OFFSET)\b|\)|$/)
+          return rest.slice(0, end === -1 ? undefined : end).replace(/\s+/g, ' ').trim()
+        }
+      }
+      return null
     }
 
     const svcSql = pg.query.mock.calls[1][0]
