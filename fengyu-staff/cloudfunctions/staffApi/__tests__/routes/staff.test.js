@@ -794,8 +794,13 @@ describe('staff.performanceDetail', () => {
         .replace(/\/\*[\s\S]*?\*\//g, ' ')   // 块注释
         .replace(/--[^\n]*/g, ' ')             // 行注释
       let depth = 0
+      let inStr = false
       for (let i = 0; i < stripped.length; i++) {
         const ch = stripped[i]
+        // 单引号字符串内的括号不算结构括号 —— 否则 `WHERE x = ')'` 会让深度提前归零，
+        // 把子查询里的 ORDER BY 误认成最外层（codex 谱系给的第三种绕过）
+        if (ch === "'") { inStr = !inStr; continue }
+        if (inStr) continue
         if (ch === '(') depth++
         else if (ch === ')') depth--
         else if (depth === 0 && stripped.startsWith('ORDER BY', i)) {
