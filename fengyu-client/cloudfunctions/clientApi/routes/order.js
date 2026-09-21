@@ -677,17 +677,18 @@ function normalizeTradeState(state) {
 const LAKALA_VOID_CALL_TIMEOUT_MS = 7000
 
 /**
- * 作废 + 重建这条路径的总预算核算（双谱系评审 round-12 要求核对）：
+ * 作废 + 重建这条路径的总预算（双谱系评审 round-12）。
  *
- *   reserve 事务(~1s) + 查单 7s + 关单 7s + 复核 7s + 二次 reserve(~1s) + 预下单 20s
- *   ≈ 43s，落在 clientApi 的 60s 函数超时内。
+ * ⚠️ 我最初的核算漏了一环：新场次**自己失败时还要再清理一次**。完整的最坏路径是
+ *   作废旧场次 21s + 预下单(支付宝还有吱口令) 28s + 新场次失败清理 21s ≈ 70s
+ * ——超过 clientApi 的 60s 函数超时，会在清理完成前被平台杀掉，留下「活动意图但无快照」，
+ * 也就是本 issue 要消灭的那个状态又回来了。
  *
- * 支付宝路径的预下单是 15s、另加吱口令 6s(+1s 退避 +6s 重试)：
- *   1 + 21 + 1 + 15 + 13 ≈ 51s，同样在 60s 内但余量更薄——这也是支付宝那两个常量
- *   比微信更紧的原因。动任何一个超时常量都要回来重算这两条。
- *
- * 注意这是**最坏路径**：正常情况下拉卡拉单次往返 1~2s，整条路远达不到上限。
+ * 所以不能闷头重建：作废完成后先看还剩多少预算，不够跑完「重建 + 失败清理」就直接返回
+ * 一个可重试的错误（旧场次此时**已经作废干净**，顾客点一次重试就是全新的 60s 预算，
+ * 不会卡住）。正常情况下拉卡拉单次往返 1~2s，这条降级分支根本走不到。
  */
+const LAKALA_REBUILD_MIN_BUDGET_MS = 35000
 
 /**
  * 预下单 / 吱口令的单次超时预算（双谱系评审 round-6）。
@@ -955,7 +956,11 @@ async function ensureReusedIntentStillPayable(orderNo, outTradeNo, merchant) {
   if (LAKALA_RELEASABLE_TRADE_STATES.includes(state)) {
     // 渠道已终态：这笔场次再也付不了，留着它只会让顾客反复撞墙。释放后让调用方重建。
     console.warn('[order/reuseIntent] 快照对应的渠道场次已终态，释放后重建:', orderNo, state)
-    await confirmIntentReleased(orderNo, outTradeNo)
+    // 返回值不能忽略（双谱系评审 round-12）：并发请求可能已经清掉这笔、预占了新的一笔，
+    // 此时 CAS 扑空。若还按「已释放」继续往下走，会进一步作废那笔尚未落快照的新意图。
+    if (!await confirmIntentReleased(orderNo, outTradeNo)) {
+      throw new Error('CONFLICT: PAYMENT_INTENT_CHANGED: 支付场次已变化，请刷新后重试')
+    }
     return false
   }
   return true
@@ -1103,8 +1108,23 @@ function activePaymentIntentError(order) {
   err.activeOutTradeNo = order.lakala_out_order_no
   err.activeStoreId = order.store_id
   err.activeMerchant = order._lakalaMerchant
+  // 意图行的最后更新时刻，供「另一请求可能正在建单」的宽限期判断用
+  err.activeUpdatedAt = order.updated_at
+  err.activeHasSnapshot = Boolean(order.lakala_payment_intent)
   return err
 }
+
+/**
+ * 「另一个请求刚预占、预下单还没跑完」的宽限期（双谱系评审 round-12）。
+ *
+ * 预占意图与落快照之间隔着一次渠道预下单往返。这段窗口里意图**有单号但没快照**，
+ * 看起来和「快照残缺、该作废」一模一样。若此时另一请求直接关单，会把前一个请求
+ * 正在建的渠道单关掉——它随后返回给前端的支付参数已经死了，顾客必然支付失败。
+ *
+ * 所以：意图很新 + 还没落快照时，不主动关单，只 fail-fast 让调用方稍后重试。
+ * 取 30s 是因为预下单最坏 20s（支付宝 15s + 吱口令 13s ≈ 28s），留一点余量。
+ */
+const INTENT_CREATION_GRACE_MS = 30000
 
 function normalizeRequestedPayAmount(payAmountInput) {
   if (payAmountInput === undefined || payAmountInput === null) return null
@@ -1136,7 +1156,7 @@ async function reserveDirectOnlinePaymentIntent({
       `SELECT sale_order_id, status, sale_order_type, store_id, client_user_id, opened_by,
               sale_order_datetime, total_amount, payable_amount, prepaid_card_amount,
               pending_prepaid_card_amount, received, refunded_amount, first_payment_amount,
-              lakala_out_order_no, lakala_payment_intent
+              lakala_out_order_no, lakala_payment_intent, updated_at
        FROM sale_orders
        WHERE sale_order_id = $1
        FOR UPDATE`,
@@ -1301,6 +1321,7 @@ async function reserveDirectOnlinePaymentIntent({
 }
 
 async function reserveDirectOnlinePaymentIntentWithTerminalRetry(options) {
+  const startedAt = Date.now()
   let excludedOutTradeNo = null
   for (let attempt = 0; attempt < 2; attempt++) {
     const outTradeNo = buildLakalaOutTradeNo(options.orderNo, excludedOutTradeNo)
@@ -1310,6 +1331,17 @@ async function reserveDirectOnlinePaymentIntentWithTerminalRetry(options) {
       if (!err || !err.activeOutTradeNo || attempt > 0) throw err
       const merchant = err.activeMerchant || await resolveLakalaMerchant(err.activeStoreId)
       if (!merchant) throw err
+      // 「有单号但还没落快照」且这笔意图很新 → 很可能是另一个请求正在建单的中间态，
+      // 不能当成「快照残缺该作废」去关它（双谱系评审 round-12）。让调用方稍后重试。
+      if (!err.activeHasSnapshot && err.activeUpdatedAt) {
+        const age = Date.now() - new Date(err.activeUpdatedAt).getTime()
+        if (Number.isFinite(age) && age >= 0 && age < INTENT_CREATION_GRACE_MS) {
+          console.warn('[order/reserveDirectOnlinePaymentIntent] 意图可能正在创建中，不作废:',
+            options.orderNo, age)
+          throw err
+        }
+      }
+
       // 走到这里说明旧意图**不可复用**（快照过期 / 残缺 / 方案不符 / 归属不符）。
       //
       // 此前只在渠道已是终态时才释放，非终态一律抛 PAYMENT_INTENT_ACTIVE —— 于是
@@ -1325,6 +1357,13 @@ async function reserveDirectOnlinePaymentIntentWithTerminalRetry(options) {
           merchant,   // 事务内已解析过，不必再查一次
         })
         excludedOutTradeNo = err.activeOutTradeNo
+        // 旧场次已作废干净。重建前先确认剩余预算够跑完「预下单 + 万一失败的清理」，
+        // 不够就让顾客重试——重试是全新的函数预算，而硬着头皮建单可能在清理前被平台杀掉。
+        if (Date.now() - startedAt > LAKALA_REBUILD_MIN_BUDGET_MS) {
+          console.warn('[order/reserveDirectOnlinePaymentIntent] 作废耗时过长，本次不重建:',
+            options.orderNo, Date.now() - startedAt)
+          throw new Error('CONFLICT: PAYMENT_INTENT_CHANGED: 上一笔支付场次已关闭，请重新发起支付')
+        }
       } catch (voidErr) {
         // 「已支付」要如实告诉顾客（比含糊的「请勿重复发起」准确得多）；
         // 其余情况（关不掉 / 查不准）保留原错误，语义不变。

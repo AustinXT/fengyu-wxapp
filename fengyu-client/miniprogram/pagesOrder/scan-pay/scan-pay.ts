@@ -556,9 +556,25 @@ Page({
         });
         return;
       }
-      // 2026-05-19 dirty-read 修复：CONFLICT 优先于 INSUFFICIENT_BALANCE
-      // CONFLICT 表示余额在 scanAdjust → confirmPrepaidFull 期间被改动，需要用户重选抵扣方案
-      if (errorType === 'CONFLICT' || /CONFLICT/.test(msg)) {
+      // #214（round-12）：CONFLICT 不再一律当成「储值卡余额被改动」。
+      //
+      // 支付意图链路引入了好几类 CONFLICT——「支付已成功」「状态不确定」「场次已变化」——
+      // 把它们统一提示成「储值卡余额已变动」并清掉本地状态，会把真实的支付结果盖掉：
+      // 顾客明明已经付成功了，页面却让他重选抵扣方案。按二级标签分开处理。
+      if (msg.includes('PAYMENT_ALREADY_SUCCEEDED')) {
+        Toast.success('支付已成功，正在更新订单');
+        setTimeout(() => {
+          wx.redirectTo({ url: `/pagesOrder/order-detail/order-detail?saleOrderId=${this.data.orderNo}&paid=1` });
+        }, 1200);
+      } else if (msg.includes('PAYMENT_INTENT_CHANGED') || msg.includes('PAYMENT_INTENT_ACTIVE')) {
+        // 场次变了或仍在进行中：重新拉一次订单，让页面回到与服务端一致的状态
+        Toast.fail('支付场次已变化，正在刷新');
+        setTimeout(() => this.loadOrder(this.data.orderNo), 800);
+      } else if (msg.includes('PAYMENT_STATUS_UNCERTAIN')) {
+        Toast.fail('暂时无法确认支付结果，请稍后重试');
+      } else if (errorType === 'CONFLICT' || /CONFLICT/.test(msg)) {
+        // 2026-05-19 dirty-read 修复：余额在 scanAdjust → confirmPrepaidFull 期间被改动，
+        // 需要用户重选抵扣方案
         await this.handleBalanceConflict(msg);
       } else if (msg.includes('INSUFFICIENT_BALANCE')) {
         await this.handleInsufficientBalance();

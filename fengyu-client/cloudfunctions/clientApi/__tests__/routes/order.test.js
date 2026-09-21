@@ -1397,6 +1397,55 @@ describe('order.pay', () => {
     expect(ctx.result.paymentParams.package).toBe('prepay_id=wx_mock_001')
   })
 
+  // round-12：预占意图与落快照之间隔着一次渠道预下单往返。这段窗口里意图「有单号没快照」，
+  // 看起来和「快照残缺该作废」一样——此时另一请求若直接关单，会把前一个请求正在建的
+  // 渠道单关掉，它返回给前端的支付参数就已经死了。
+  test('意图刚预占、快照未落（创建中）→ 不作废，只 fail-fast 让调用方重试 (#214)', async () => {
+    mockPayQueries({
+      order: {
+        sale_order_id: 'FY-CREATING', status: '待支付', store_id: 'store-1',
+        client_user_id: 'user-001', total_amount: 100, payable_amount: 100,
+        lakala_out_order_no: 'FY-CREATING_1770000000',
+        lakala_payment_intent: null,               // 快照还没落
+        updated_at: new Date().toISOString(),      // 刚刚预占
+        sale_order_datetime: new Date().toISOString(),
+      },
+    })
+
+    const ctx = createBoundCtx({ orderNo: 'FY-CREATING' })
+    await expect(routes.pay(ctx)).rejects.toThrow(/PAYMENT_INTENT_ACTIVE/)
+    // 关键：一笔渠道请求都不该发出去
+    expect(__mocks__.lakalaClient.queryTrade).not.toHaveBeenCalled()
+    expect(__mocks__.lakalaClient.closeTrade).not.toHaveBeenCalled()
+  })
+
+  test('意图无快照但已过宽限期 → 按不可复用处理，走主动作废 (#214)', async () => {
+    mockPayQueries({
+      order: {
+        sale_order_id: 'FY-STALE', status: '待支付', store_id: 'store-1',
+        client_user_id: 'user-001', total_amount: 100, payable_amount: 100,
+        lakala_out_order_no: 'FY-STALE_1770000000',
+        lakala_payment_intent: null,
+        updated_at: new Date(Date.now() - 5 * 60 * 1000).toISOString(),  // 5 分钟前
+        sale_order_datetime: new Date().toISOString(),
+      },
+    })
+    const payQueryImpl = pg.query.getMockImplementation()
+    pg.query.mockImplementation(async (sql, params) => {
+      if (/lakala_merchants/.test(sql)) return [{ merchant_no: 'M1', term_no: 'T1', enabled: true }]
+      return payQueryImpl(sql, params)
+    })
+    __mocks__.lakalaClient.queryTrade
+      .mockResolvedValueOnce({ ok: true, tradeState: 'CREATE' })
+      .mockResolvedValueOnce({ ok: true, tradeState: 'CLOSE' })
+
+    const ctx = createBoundCtx({ orderNo: 'FY-STALE' })
+    await routes.pay(ctx)
+
+    expect(__mocks__.lakalaClient.closeTrade).toHaveBeenCalled()
+    expect(__mocks__.lakalaClient.requestPreorder).toHaveBeenCalled()
+  })
+
   test('旧场次已被支付 → 如实报「支付已成功」，不再含糊说「请勿重复发起」 (#214)', async () => {
     mockPayQueries({
       order: reusableOrder({}, { expiresAt: new Date(Date.now() - 1000).toISOString() }),
