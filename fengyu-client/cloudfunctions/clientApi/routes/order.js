@@ -3870,12 +3870,18 @@ async function confirmPayment(ctx) {
     return
   }
   const paymentMethod = order.payment_method === '支付宝' ? '支付宝' : '微信'
+  // fail-closed：入账目标函数名必须显式配置，不回退到 'payNotify'。
+  // 同一 env 内并存 payNotify(prod 库) 与 payNotifyDev(dev 库)，回退等于让 clientApiDev
+  // 拿 dev 库的订单号去调生产函数在 prod 库入账。宁可这次对账降级，也不能把钱写错库。
+  if (!process.env.PAYNOTIFY_FN_NAME) {
+    console.error('[order.confirmPayment] PAYNOTIFY_FN_NAME 未配置，拒绝猜测目标函数（避免跨库入账）')
+    ctx.result = { saleOrderId: orderNo, status: localStatus, reconciled: false, reason: 'paynotify_not_configured', ...localPaymentSnapshot }
+    return
+  }
   let payNotifyResult
   try {
-    // 函数名走 env：同一 env 内并存 payNotify(prod 库) 与 payNotifyDev(dev 库) 两份部署，
-    // 写死 'payNotify' 会让 clientApiDev 拿 dev 库的订单号去调生产函数写 prod 库。
     const r = await cloud.callFunction({
-      name: process.env.PAYNOTIFY_FN_NAME || 'payNotify',
+      name: process.env.PAYNOTIFY_FN_NAME,
       data: {
         orderNo: order.lakala_out_order_no,
         transactionId: resp.tradeNo,

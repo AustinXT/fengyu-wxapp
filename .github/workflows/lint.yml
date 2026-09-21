@@ -54,6 +54,19 @@ jobs:
       - name: Run remote deploy config tests
         run: node --test .claude/skills/remote-deploy/runtime-config.test.mjs
 
+  cloudbase-shadow-functions:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      # 守住「影子函数(*Dev)必须连 dev 库」这条不变量——破了就是开发版/体验版直接写生产库
+      - name: Run cloudbase shadow function guards
+        run: node --test scripts/__tests__/cloudbaserc-shadow-functions.test.mjs
+
   cross-end-snapshots-staff:
     runs-on: ubuntu-latest
     steps:

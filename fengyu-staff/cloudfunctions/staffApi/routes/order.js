@@ -14,7 +14,7 @@
 const pg = require('../db/pg')
 const { requireStaffBound, requireManager, isCurrentStoreManager } = require('../middleware/auth')
 const { assertOrderInScope, isStoreInScope, restrictToBoundEmployee, buildBundleMarketScopeFilter, buildNormalSkuMarketScopeFilter } = require('../utils/scope')
-const { generateWxacode, uploadToCloudStorage } = require('../utils/wxacode')
+const { generateWxacode, uploadToCloudStorage, effectiveEnvVersion, versionPathSuffix } = require('../utils/wxacode')
 const { getMemberThreshold, getPointsToYuanRate, getPointsDeductionMaxRate } = require('../utils/config')
 // 充值卡剥离 SKU 化（2026-05-20）：充值识别改为 sale_orders.sale_order_type='充值单'，
 // 不再依赖虚拟 SKU ID 或 product_name 正则解析面值。
@@ -1980,17 +1980,26 @@ async function qrcode(ctx) {
   }
 
   // 待支付（首付）/ 部分支付（回款）订单生成小程序码（带缓存；scene=saleOrderId 与状态无关，可复用）
+  //
+  // 版本与后缀一律走 wxacode.effectiveEnvVersion：影子函数恒用自身身份、忽略调用方自报值。
+  // 绝不能直接拿 payload._envVersion 拼路径——它是客户端可控的任意字符串，
+  // 既会注入 cloudPath，又会把无上限的 qrcodeCache 键空间撑大；
+  // 更要命的是它为空或被伪造成 'release' 时，影子函数会写进生产码的同一个 COS key。
+  // 正式函数则按调用方自报区分 trial / release（两者的码不能互相打开）。
+  const envVersion = effectiveEnvVersion(payload._envVersion)
+  const versionSuffix = versionPathSuffix(envVersion)
+  const qrcodeCacheKey = `${saleOrderId}${versionSuffix}`
   let qrcodeUrl = ''
   let qrcodeError = ''
   if (order.status === '待支付' || order.status === '部分支付') {
-    if (qrcodeCache.has(saleOrderId)) {
-      qrcodeUrl = qrcodeCache.get(saleOrderId)
+    if (qrcodeCache.has(qrcodeCacheKey)) {
+      qrcodeUrl = qrcodeCache.get(qrcodeCacheKey)
     } else {
       try {
-        const buffer = await generateWxacode(saleOrderId, 'pagesOrder/scan-pay/scan-pay')
-        const cloudPath = `wxacode/order/${saleOrderId}.png`
+        const buffer = await generateWxacode(saleOrderId, 'pagesOrder/scan-pay/scan-pay', envVersion)
+        const cloudPath = `wxacode/order/${saleOrderId}${versionSuffix}.png`
         qrcodeUrl = await uploadToCloudStorage(buffer, cloudPath)
-        qrcodeCache.set(saleOrderId, qrcodeUrl)
+        qrcodeCache.set(qrcodeCacheKey, qrcodeUrl)
       } catch (err) {
         console.error('[order.qrcode] 生成小程序码失败:', err)
         qrcodeError = '生成小程序码失败'
