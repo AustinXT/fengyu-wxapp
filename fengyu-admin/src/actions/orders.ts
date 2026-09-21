@@ -4071,11 +4071,15 @@ async function voidActiveOnlinePaymentIntent(
 
   // CAS 锚当前单号：期间若顾客重新发起了支付（换了新单号），这里不匹配即不释放，
   // 后续事务的 `lakala_out_order_no IS NULL` 守卫会照常拦住关闭。
+  //
+  // ⚠️ 状态集合必须与下面 closeOrder 的 CAS（'待支付' OR '支付失败'）同源，不能照抄
+  // clientApi 的 ('待支付','部分支付')：'支付失败' 单在那种写法下渠道已被关掉、本地却
+  // 永远释放不了意图 → 这张单再也关不掉，且提示还把店员引向无效重试。
   const released = await db.execute(sql`
     UPDATE sale_orders
        SET lakala_out_order_no = NULL, updated_at = NOW()
      WHERE sale_order_id = ${saleOrderId}
-       AND status IN ('待支付', '部分支付')
+       AND status IN ('待支付', '支付失败')
        AND lakala_out_order_no = ${outTradeNo}
      RETURNING sale_order_id
   `)
@@ -4112,7 +4116,13 @@ export const closeOrder = withPermission(
   // 作废与事务之间若有顾客重新发起支付，事务内的 CAS 会重新拦住（fail-closed）。
   // 拉卡拉未配置时整段跳过：行为退回改动前（下面的 CAS 会给出「在线支付处理中，暂不能
   // 关闭订单」），而不是让这类订单彻底关不掉。与 staffApi 的通道未配置分支同口径。
-  if (orderCtx?.lakalaOutOrderNo && lakalaIsReady()) {
+  //
+  // 状态闸门排在关单之前：对一张「已支付」单点关闭，本该直接回「状态不允许关闭」，
+  // 不该先去渠道查单甚至发关单请求。
+  const CLOSEABLE_STATUSES = ['待支付', '支付失败']
+  if (orderCtx?.lakalaOutOrderNo
+      && lakalaIsReady()
+      && CLOSEABLE_STATUSES.includes(orderCtx.status ?? '')) {
     const voidResult = await voidActiveOnlinePaymentIntent(
       saleOrderId,
       orderCtx.lakalaOutOrderNo,

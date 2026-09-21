@@ -536,6 +536,10 @@ async function runPaymentReconcile() {
   // 窗口锚 updated_at（createLakalaPreorder 写 updated_at 反映最近一次拉卡拉下单）：覆盖老订单回款回调
   // 丢失（回款覆写 lakala_out_order_no 但不动 sale_order_datetime，故 sale_order_datetime 锚不到回款）。
   // LIMIT 20 + 串行循环（每单 PG+HTTPS+callFunction）避免超 CloudBase Timer 超时；美容院单量小窗口内通常 0~2 单。
+  //
+  // 排序取 DESC（#214）：窗口放宽到 2h 后，那些渠道侧查不到、永远判不出终态的「幽灵意图」
+  // 会在扫描集里滞留两小时；ASC 会让它们凭 updated_at 最老长期霸占每分钟仅 20 条的预算，
+  // 把真正需要补入账的新订单饿死——而本任务恰恰是「回调丢失」的资金安全网。新单优先。
   const { rows } = await pg.query(
     `SELECT sale_order_id, store_id, lakala_out_order_no, payment_method
        FROM sale_orders
@@ -543,7 +547,7 @@ async function runPaymentReconcile() {
         AND status IN ('待支付', '部分支付')
         AND updated_at > now() - interval '2 hours'
         AND updated_at < now() - interval '90 seconds'
-      ORDER BY updated_at ASC
+      ORDER BY updated_at DESC
       LIMIT 20`)
   let ok = 0
   let skip = 0

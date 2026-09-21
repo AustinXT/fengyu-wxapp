@@ -2706,11 +2706,16 @@ async function releaseOnlinePaymentIntentBeforeClose(saleOrderId) {
   if (!clientApiBridge.isConfigured()) return
 
   const rows = await pg.query(
-    'SELECT lakala_out_order_no FROM sale_orders WHERE sale_order_id = $1',
+    'SELECT status, lakala_out_order_no FROM sale_orders WHERE sale_order_id = $1',
     [saleOrderId],
   )
   if (rows.length === 0) return
   if (!String(rows[0].lakala_out_order_no || '').trim()) return
+
+  // 状态闸门排在关单之前：对一张已支付/已完成的单点关闭，本该由下面事务里的状态校验
+  // 直接拒绝，不该先跑一轮跨 env 查单甚至向渠道发关单请求。
+  // 这里放行的集合是 close 事务内两条分支（店长 / 开单人）允许的状态并集。
+  if (!['待支付', '支付失败'].includes(rows[0].status)) return
 
   await clientApiBridge.callClientApi('order.voidPaymentIntent', { saleOrderId })
 }

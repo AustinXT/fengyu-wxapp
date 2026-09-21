@@ -413,15 +413,22 @@ Page({
     const { orderNo, submitting } = this.data;
     if (!orderNo || submitting) return;
 
+    // 防抖必须在弹窗**之前**置位：await showModal 期间页面仍可响应点击，
+    // 置位放在 await 之后的话连点两次会弹两个确认框、发两次取消请求，
+    // 第二次撞上已关闭的单，顾客刚看到「订单已取消」又吃一记红 Toast。
+    this.setData({ submitting: true });
+
     const confirmRes = await wx.showModal({
       title: '确认取消',
       content: '确定要取消该订单吗？取消后无法恢复。',
       confirmText: '确定取消',
       confirmColor: '#FF4D4F',
     });
-    if (!confirmRes.confirm) return;
+    if (!confirmRes.confirm) {
+      this.setData({ submitting: false });
+      return;
+    }
 
-    this.setData({ submitting: true });
     try {
       Toast.loading({ message: '取消中...', forbidClick: true, duration: 0 });
       await callClientApi('order.cancel', { saleOrderId: orderNo });

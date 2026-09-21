@@ -1349,6 +1349,26 @@ describe('order.pay', () => {
     await expect(routes.pay(ctx)).rejects.toThrow(/CONFLICT: PAYMENT_INTENT_ACTIVE/)
   })
 
+  // paymentParams 里的 prepay_id 绑定的是建单那位顾客的 openid。回发给第二个人不但
+  // 泄漏他的 paySign，对方 wx.requestPayment 还必然失败，且有效期内每次重试都命中同一
+  // 快照 → 这张单对他永久不可支付。（pr-ready 边界审计发现）
+  test('快照归属他人 → 不复用，不泄漏 paySign (#214)', async () => {
+    mockPayQueries({ order: reusableOrder({ client_user_id: 'user-999' }) })
+
+    const ctx = createBoundCtx({ orderNo: 'FY-REUSE-001' })
+    await expect(routes.pay(ctx)).rejects.toThrow(/PERMISSION_DENIED|PAYMENT_INTENT_ACTIVE/)
+  })
+
+  test('员工开单尚未认领（client_user_id 为空）→ 不复用任何快照 (#214)', async () => {
+    mockPayQueries({
+      order: reusableOrder({ client_user_id: null, opened_by: 'emp-001' }),
+    })
+
+    const ctx = createBoundCtx({ orderNo: 'FY-REUSE-001' })
+    await expect(routes.pay(ctx)).rejects.toThrow(/CONFLICT: PAYMENT_INTENT_ACTIVE/)
+    expect(__mocks__.lakalaClient.requestPreorder).not.toHaveBeenCalled()
+  })
+
   test('快照金额与本次应付不符 → 不复用 (#214)', async () => {
     mockPayQueries({ order: reusableOrder({}, { payAmount: 100 }) })
 
@@ -1670,7 +1690,6 @@ describe('order.cancel', () => {
   })
 
   test('正常取消待支付订单', async () => {
-    pg.query.mockResolvedValueOnce([])  // #214 员工单 client_user_id 原子认领（未命中）
     pg.query.mockResolvedValueOnce([{
       sale_order_id: 'FY-001', status: '待支付', client_user_id: 'user-001',
     }])
@@ -1690,7 +1709,6 @@ describe('order.cancel', () => {
   })
 
   test('非待支付订单不允许取消', async () => {
-    pg.query.mockResolvedValueOnce([])  // #214 员工单 client_user_id 原子认领（未命中）
     pg.query.mockResolvedValueOnce([{
       sale_order_id: 'FY-001', status: '已支付', client_user_id: 'user-001',
     }])
@@ -1771,6 +1789,94 @@ describe('order.cancel', () => {
     const ctx = createBoundCtx({ orderNo: 'FY-001' })
     await expect(routes.cancel(ctx)).rejects.toThrow(/PAYMENT_INTENT_ACTIVE/)
     expect(pg.transaction).not.toHaveBeenCalled()
+  })
+
+  // 订单号是可枚举的日序号。若在闸门之前写 client_user_id，任意顾客枚举到一张员工开单
+  // 就能把归属永久改到自己名下，而且闸门抛错后不回滚——被"认领"走的顾客此后连支付都会
+  // PERMISSION_DENIED。所以归属写入必须与关单同在最后那条 CAS 里。
+  test('取消失败时绝不写入 client_user_id（归属只随 CAS 落地） (#214)', async () => {
+    const writes = []
+    pg.query.mockImplementation(async (sql) => {
+      writes.push(sql)
+      if (/SELECT \* FROM sale_orders/.test(sql)) return [{
+        sale_order_id: 'FY-CLAIM-001', status: '待支付', client_user_id: null,
+        opened_by: 'emp-001', store_id: 'store-1',
+        lakala_out_order_no: 'FY-CLAIM-001_1700000000',
+      }]
+      if (/lakala_merchants/.test(sql)) return [{ merchant_no: 'M1', term_no: 'T1', enabled: true }]
+      return []
+    })
+    // 渠道仍可支付且关不掉 → 取消必须失败
+    __mocks__.lakalaClient.queryTrade
+      .mockResolvedValueOnce({ ok: true, tradeState: 'CREATE' })
+      .mockResolvedValueOnce({ ok: true, tradeState: 'CREATE' })
+
+    const ctx = createBoundCtx({ orderNo: 'FY-CLAIM-001' })
+    await expect(routes.cancel(ctx)).rejects.toThrow(/PAYMENT_INTENT_ACTIVE/)
+
+    // 事务外不得出现任何写 client_user_id 的语句
+    expect(writes.some((sql) => /SET client_user_id/.test(sql))).toBe(false)
+    expect(pg.transaction).not.toHaveBeenCalled()
+  })
+
+  test('查单未返回 trade_state（渠道查无此单）→ 不发关单请求，保留意图 (#214)', async () => {
+    pg.query.mockImplementation(async (sql) => {
+      if (/SELECT \* FROM sale_orders/.test(sql)) return [{
+        sale_order_id: 'FY-GHOST-001', status: '待支付', client_user_id: 'user-001',
+        store_id: 'store-1', lakala_out_order_no: 'FY-GHOST-001_1700000000',
+      }]
+      if (/lakala_merchants/.test(sql)) return [{ merchant_no: 'M1', term_no: 'T1', enabled: true }]
+      return []
+    })
+    // 业务错误码 + resp_data 为空 → tradeState 是空串，既非已付款也非可释放终态
+    __mocks__.lakalaClient.queryTrade.mockResolvedValueOnce({ ok: false, code: 'BBS10000', tradeState: '' })
+
+    const ctx = createBoundCtx({ orderNo: 'FY-GHOST-001' })
+    await expect(routes.cancel(ctx)).rejects.toThrow(/PAYMENT_STATUS_UNCERTAIN/)
+    expect(__mocks__.lakalaClient.closeTrade).not.toHaveBeenCalled()
+  })
+
+  test('渠道状态大小写变体按大写归一，已付款单仍被拦住 (#214)', async () => {
+    pg.query.mockImplementation(async (sql) => {
+      if (/SELECT \* FROM sale_orders/.test(sql)) return [{
+        sale_order_id: 'FY-CASE-001', status: '待支付', client_user_id: 'user-001',
+        store_id: 'store-1', lakala_out_order_no: 'FY-CASE-001_1700000000',
+      }]
+      if (/lakala_merchants/.test(sql)) return [{ merchant_no: 'M1', term_no: 'T1', enabled: true }]
+      return []
+    })
+    __mocks__.lakalaClient.queryTrade.mockResolvedValueOnce({ ok: true, tradeState: 'Success' })
+
+    const ctx = createBoundCtx({ orderNo: 'FY-CASE-001' })
+    await expect(routes.cancel(ctx)).rejects.toThrow(/PAYMENT_ALREADY_SUCCEEDED/)
+    expect(__mocks__.lakalaClient.closeTrade).not.toHaveBeenCalled()
+  })
+
+  // 释放 CAS 返回 0 行有三种语义：别人已释放（可继续）/ 意图被换掉（必须拦）/ 状态已变（必须拦）。
+  // 一律当失败会造成误报：轮询先释放、顾客随即点取消，就要点两次才成功。
+  test('意图已被他处释放 → 视为已达成，取消照常完成 (#214)', async () => {
+    let released = false
+    pg.query.mockImplementation(async (sql) => {
+      if (/SELECT \* FROM sale_orders/.test(sql)) return [{
+        sale_order_id: 'FY-RACE-001', status: '待支付', client_user_id: 'user-001',
+        store_id: 'store-1', lakala_out_order_no: 'FY-RACE-001_1700000000',
+      }]
+      if (/lakala_merchants/.test(sql)) return [{ merchant_no: 'M1', term_no: 'T1', enabled: true }]
+      if (/SET lakala_out_order_no = NULL/.test(sql)) { released = true; return [] }  // CAS 扑空
+      if (/SELECT lakala_out_order_no FROM sale_orders/.test(sql)) {
+        return [{ lakala_out_order_no: released ? null : 'FY-RACE-001_1700000000' }]
+      }
+      return []
+    })
+    __mocks__.lakalaClient.queryTrade.mockResolvedValueOnce({ ok: true, tradeState: 'CLOSE' })
+    pg.transaction.mockImplementation(async (cb) => cb({
+      query: vi.fn().mockResolvedValue({ rows: [], rowCount: 1 }),
+    }))
+
+    const ctx = createBoundCtx({ orderNo: 'FY-RACE-001' })
+    await routes.cancel(ctx)
+
+    expect(ctx.result.status).toBe('已关闭')
   })
 
   test('关单请求本身失败 → 保留意图、拒绝取消 (#214)', async () => {
@@ -1903,6 +2009,29 @@ describe('order.queryLakalaStatus', () => {
     expect(ctx.result.lakalaIntentReleased).toBe(true)
     const release = pg.query.mock.calls.find(([sql]) => /SET lakala_out_order_no = NULL/.test(sql))
     expect(release[1]).toEqual(['FY-FAIL-001', outTradeNo])
+  })
+
+  // #214：queryLakalaStatus 是小程序轮询的主释放路径，此前只认 ['FAIL','CLOSE']，
+  // REVOKED 单在这里不释放 → 顾客侧仍然发不了新支付（pr-ready sibling 审计发现的漏改）。
+  test('拉卡拉 REVOKED（撤销）→ 查询接口同样释放活动意图 (#214)', async () => {
+    const outTradeNo = 'FY-REVOKED-001_1700000000'
+    pg.query.mockImplementation(async (sql) => {
+      if (/SELECT sale_order_id, status/.test(sql)) return [{
+        sale_order_id: 'FY-REVOKED-001', status: '待支付', store_id: 'store-1',
+        lakala_out_order_no: outTradeNo, client_user_id: 'user-001',
+      }]
+      if (/lakala_merchants/.test(sql)) return [{ merchant_no: 'M1', term_no: 'T1', enabled: true }]
+      if (/SET lakala_out_order_no = NULL/.test(sql)) return [{ sale_order_id: 'FY-REVOKED-001' }]
+      return []
+    })
+    __mocks__.lakalaClient.queryTrade.mockResolvedValueOnce({
+      ok: true, code: 'BBS00000', tradeState: 'REVOKED', tradeNo: 'LAK-T-RVK', raw: {},
+    })
+
+    const ctx = createBoundCtx({ orderNo: 'FY-REVOKED-001' })
+    await routes.queryLakalaStatus(ctx)
+
+    expect(ctx.result.lakalaIntentReleased).toBe(true)
   })
 
   test('非本人订单 → PERMISSION_DENIED', async () => {
@@ -2645,7 +2774,6 @@ describe('prepaid card deduction - order.create', () => {
 describe('prepaid card deduction - order.cancel', () => {
   test('无扣款（prepaid_card_amount=0）：无需回冲', async () => {
     // 2026-04-26 sale-order-domain-refactor: paid_amount → 由 payable_amount 表达"应付实金"
-    pg.query.mockResolvedValueOnce([])  // #214 员工单 client_user_id 原子认领（未命中）
     pg.query.mockResolvedValueOnce([{
       sale_order_id: 'FY-001', status: '待支付', client_user_id: 'user-001',
       prepaid_card_amount: 0, payable_amount: 100, total_amount: 100,
@@ -2677,7 +2805,6 @@ describe('prepaid card deduction - order.cancel', () => {
 
   test('已扣款（全额抵扣已支付单）：反向 INSERT 充值流水 + balance 回冲', async () => {
     // 全额抵扣判定：payable_amount=0（即 total = prepaid_card_amount）
-    pg.query.mockResolvedValueOnce([])  // #214 员工单 client_user_id 原子认领（未命中）
     pg.query.mockResolvedValueOnce([{
       sale_order_id: 'FY-002', status: '已支付', client_user_id: 'user-001',
       prepaid_card_amount: '300', payable_amount: '0', total_amount: '300',
@@ -2723,7 +2850,6 @@ describe('prepaid card deduction - order.cancel', () => {
   })
 
   test('已支付单但无储值卡抵扣 → 拒绝取消', async () => {
-    pg.query.mockResolvedValueOnce([])  // #214 员工单 client_user_id 原子认领（未命中）
     pg.query.mockResolvedValueOnce([{
       sale_order_id: 'FY-003', status: '已支付', client_user_id: 'user-001',
       prepaid_card_amount: 0, payable_amount: 100, total_amount: 100,

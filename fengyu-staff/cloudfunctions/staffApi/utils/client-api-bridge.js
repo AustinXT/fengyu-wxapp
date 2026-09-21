@@ -24,7 +24,11 @@ const { URL } = require('url')
 
 // 每次读 process.env 而不是模块加载时快照：云函数实例复用期间 env 不变，读取开销可忽略，
 // 但这让「未配置时退回原行为」这条分支在单测里可被真实触发（模块常量无法在测试中改写）。
-const DEFAULT_TIMEOUT_MS = 20000
+// 90s：`order.voidPaymentIntent` 在 clientApi 侧最多要串行走三次拉卡拉往返
+// （queryTrade → closeTrade → 复核 queryTrade），而 lakala-client 单次超时就是 30s。
+// 给 20s 会让正常关单也经常超时，且超时后 clientApi 可能已经释放成功 —— 店员却收到
+// 失败提示，重试又撞上「意图已变」的误导性错误。
+const DEFAULT_TIMEOUT_MS = 90000
 
 function postJson(urlStr, body, headers, timeoutMs) {
   return new Promise((resolve, reject) => {
@@ -64,10 +68,31 @@ function isConfigured() {
 }
 
 /**
+ * 把 clientApi 的错误响应还原成带一级白名单前缀的 Error。
+ *
+ * clientApi 的 `buildErrorResponse` 会把前缀从 message 里剥掉（`parseErrorPrefix` 返回
+ * `message.slice(...)`），前缀改放 `errorType`。原样 rethrow 的话，staffApi 自己的
+ * buildErrorResponse 认不出白名单前缀，会把「支付已成功」这类明确业务冲突降级成
+ * 「服务器内部错误」，店员看不到真正原因。
+ *
+ * 导出为独立纯函数是为了可测——这条链路上的 mock 很容易写成「带全前缀」的理想形态，
+ * 反而把真实缺陷掩盖掉。
+ */
+function buildBridgeError(json) {
+  const message = String((json && json.message) || 'clientApi 调用失败')
+  const prefix = String((json && json.errorType) || '').trim()
+  // errorType 缺失时保守归为 INVALID_STATE，至少不让它降级成「服务器内部错误」
+  if (!prefix) return new Error(`INVALID_STATE: ${message}`)
+  return new Error(message.startsWith(`${prefix}:`) ? message : `${prefix}: ${message}`)
+}
+
+/**
  * 调 clientApi 的内部 action。
  *
- * 错误透传：clientApi 已 buildErrorResponse，message 自带 9 项白名单前缀，
- * 直接 throw 让 staffApi 的全局 catch 归类到同一个 errorType，前端无需区分是哪一端抛的。
+ * 错误透传要**重建**一级前缀，不能原样 rethrow：clientApi 的 `buildErrorResponse` 会把
+ * 一级前缀从 message 里剥掉（`parseErrorPrefix` 返回 `message.slice(...)`），前缀改放在
+ * `errorType` 字段。原样抛出去，staffApi 自己的 buildErrorResponse 认不出白名单前缀，
+ * 会把「支付已成功」这类明确业务冲突降级成「服务器内部错误」，店员看不到真正原因。
  *
  * @param {string} action - 必须在 clientApi 的 HTTP_ACTION_ALLOWLIST 内
  * @param {object} payload
@@ -96,7 +121,7 @@ async function callClientApi(action, payload) {
     throw new Error(`INVALID_STATE: clientApi HTTP status=${resp.status}, body=${(resp.raw || '').slice(0, 200)}`)
   }
   if (resp.json.code !== 0) {
-    throw new Error(resp.json.message || 'INVALID_STATE: clientApi 调用失败')
+    throw buildBridgeError(resp.json)
   }
   return resp.json.data || {}
 }
@@ -104,4 +129,5 @@ async function callClientApi(action, payload) {
 module.exports = {
   callClientApi,
   isConfigured,
+  buildBridgeError,
 }

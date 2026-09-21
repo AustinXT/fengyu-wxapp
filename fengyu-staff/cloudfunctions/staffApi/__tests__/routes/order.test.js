@@ -2454,7 +2454,7 @@ describe('order.close', () => {
       mockScopeOk()
       __mocks__.clientApiBridge.isConfigured.mockReturnValue(true)
       // 第一次 pg.query 是关单前预读，第二次给事务内的订单锁（makeCloseQuery 委托 pg.query）
-      pg.query.mockResolvedValueOnce([{ lakala_out_order_no: 'FY-CLOSE-VOID_500' }])
+      pg.query.mockResolvedValueOnce([{ status: '待支付', lakala_out_order_no: 'FY-CLOSE-VOID_500' }])
       pg.query.mockResolvedValueOnce([{
         sale_order_id: 'FY-CLOSE-VOID',
         status: '待支付',
@@ -2486,7 +2486,7 @@ describe('order.close', () => {
       __mocks__.clientApiBridge.callClientApi.mockRejectedValueOnce(
         new Error('CONFLICT: PAYMENT_ALREADY_SUCCEEDED: 支付已成功，正在更新订单，请稍后刷新'),
       )
-      pg.query.mockResolvedValueOnce([{ lakala_out_order_no: 'FY-CLOSE-PAID_500' }])
+      pg.query.mockResolvedValueOnce([{ status: '待支付', lakala_out_order_no: 'FY-CLOSE-PAID_500' }])
 
       await expect(orderRoutes.close(ctx)).rejects.toThrow(/PAYMENT_ALREADY_SUCCEEDED/)
       expect(pg.transaction).not.toHaveBeenCalled()
@@ -2497,7 +2497,7 @@ describe('order.close', () => {
 
       mockScopeOk()
       __mocks__.clientApiBridge.isConfigured.mockReturnValue(true)
-      pg.query.mockResolvedValueOnce([{ lakala_out_order_no: null }])
+      pg.query.mockResolvedValueOnce([{ status: '待支付', lakala_out_order_no: null }])
       pg.query.mockResolvedValueOnce([{
         sale_order_id: 'FY-CLOSE-PLAIN',
         status: '待支付',
@@ -2515,6 +2515,23 @@ describe('order.close', () => {
       await orderRoutes.close(ctx)
 
       expect(ctx.result.status).toBe('已关闭')
+      expect(__mocks__.clientApiBridge.callClientApi).not.toHaveBeenCalled()
+    })
+
+    // 状态闸门排在关单之前：对一张已支付单点关闭，不该先跑跨 env 查单甚至发关单请求
+    test('已支付订单不触发跨 env 作废调用', async () => {
+      const ctx = createManagerCtx({ saleOrderId: 'FY-CLOSE-PAIDSTATUS' })
+
+      mockScopeOk()
+      __mocks__.clientApiBridge.isConfigured.mockReturnValue(true)
+      pg.query.mockResolvedValueOnce([{ status: '已支付', lakala_out_order_no: 'FY-X_500' }])
+      pg.query.mockResolvedValueOnce([{
+        sale_order_id: 'FY-CLOSE-PAIDSTATUS', status: '已支付',
+        store_id: 'store-001', opened_by: 'emp-other',
+      }])
+      pg.transaction.mockImplementation(async (cb) => cb({ query: makeCloseQuery() }))
+
+      await expect(orderRoutes.close(ctx)).rejects.toThrow(/不允许关闭|不允许取消/)
       expect(__mocks__.clientApiBridge.callClientApi).not.toHaveBeenCalled()
     })
 

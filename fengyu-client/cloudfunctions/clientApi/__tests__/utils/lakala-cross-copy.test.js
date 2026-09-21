@@ -47,4 +47,63 @@ describe('lakala 跨副本一致性守护', () => {
     expect(read(path.join(PAYNOTIFY, 'lakala-config.js'))).toContain('normalizePem')
     expect(read(ADMIN_LAKALA_CLIENT)).toContain('normalizePem')
   })
+
+  // ===== #214 支付意图关单：三端接口与终态集合一致性 =====
+  describe('#214 关单接口与 trade_state 终态集合', () => {
+    const CLIENT_ORDER = path.resolve(__dirname, '../../routes/order.js')
+    const PAYNOTIFY_INDEX = path.resolve(__dirname, '../../../payNotify/index.js')
+    const ADMIN_ORDERS = path.resolve(
+      __dirname, '../../../../../fengyu-admin/src/actions/orders.ts',
+    )
+
+    test('admin 的关单/查单走与 js 副本相同的 v3 路径与字段名', () => {
+      const admin = read(ADMIN_LAKALA_CLIENT)
+      const client = read(path.join(CLIENT, 'lakala-client.js'))
+      for (const token of ['/v3/labs/relation/close', '/v3/labs/query/tradequery', 'origin_out_trade_no']) {
+        expect(admin).toContain(token)
+        expect(client).toContain(token)
+      }
+    })
+
+    // 这条锁死的是 #214 真正的坑：REVOKED（当日交易撤销）是终态却长期被漏判，
+    // 撤销过的单会永久占住支付意图——谁也发不了新支付、谁也关不掉订单。
+    // pr-ready 审计发现首轮修复本身就漏了 queryLakalaStatus / confirmPayment 两处，
+    // 所以这里直接把旧集合字面量钉成永久红灯，而不是只断言新集合存在。
+    test('生产代码不得再出现 [FAIL, CLOSE] 旧终态集合（REVOKED 必须在列）', () => {
+      const OLD_SET = /\[\s*'FAIL',\s*'CLOSE'\s*\]/
+      for (const file of [CLIENT_ORDER, PAYNOTIFY_INDEX, ADMIN_ORDERS]) {
+        const src = read(file)
+          .split('\n')
+          .filter((line) => !/^\s*(\*|\/\/)/.test(line))   // 注释里可以保留历史说明
+          .join('\n')
+        expect(src).not.toMatch(OLD_SET)
+      }
+    })
+
+    test('三端终态分类字面一致（可释放 3 个 / 已付款 3 个）', () => {
+      const RELEASABLE = /\[\s*'FAIL',\s*'CLOSE',\s*'REVOKED'\s*\]/
+      const PAID = /\[\s*'SUCCESS',\s*'PART_REFUND',\s*'REFUND'\s*\]/
+      for (const file of [CLIENT_ORDER, ADMIN_ORDERS]) {
+        const src = read(file)
+        expect(src).toMatch(RELEASABLE)
+        expect(src).toMatch(PAID)
+      }
+      // payNotify 是被动兜底，只需认得可释放终态（它不做关单）
+      expect(read(PAYNOTIFY_INDEX)).toMatch(/\[\s*'FAIL',\s*'CLOSE',\s*'REVOKED'\s*\]/)
+      expect(read(PAYNOTIFY_INDEX)).toContain("tradeState === 'REVOKED'")
+    })
+
+    // fail-closed 是整个关单流程的承重结构：关单返回成功 ≠ 渠道已终态，
+    // 必须复核；复核不过一律不释放本地意图。两份 helper 都不许绕过。
+    test('clientApi 与 admin 的作废 helper 都保留「关单后复核」结构', () => {
+      for (const file of [CLIENT_ORDER, ADMIN_ORDERS]) {
+        const src = read(file)
+        expect(src).toContain('closeTrade')
+        // 关单之后必须再查一次
+        expect(src).toMatch(/closeTrade[\s\S]{0,1200}queryTrade/)
+        // 释放意图的 CAS 必须锚当前单号
+        expect(src).toMatch(/lakala_out_order_no = (\$2|\$\{outTradeNo\})/)
+      }
+    })
+  })
 })

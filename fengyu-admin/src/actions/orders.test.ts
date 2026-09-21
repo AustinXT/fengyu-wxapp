@@ -2180,6 +2180,39 @@ describe('closeOrder — 事务原子性（关闭 + 作废分配）', () => {
       expect(closeTrade).not.toHaveBeenCalled()
     })
 
+    // 释放 CAS 的状态集合必须与 closeOrder 的 CAS（待支付 OR 支付失败）同源。
+    // 照抄 clientApi 的 ('待支付','部分支付') 会让「支付失败」单在渠道已被关掉之后
+    // 永远释放不了本地意图 → 这张单再也关不掉，提示还把店员引向无效重试。
+    it('支付失败状态的残留意图同样可释放并关闭', async () => {
+      mockSelectBefore([{
+        status: '支付失败', customerName: '顾客甲', totalAmount: '200.00',
+        storeId: 'store-001', lakalaOutOrderNo: 'order-1_123',
+      }])
+      ;(queryTrade as any).mockResolvedValueOnce({ tradeState: 'CLOSE' })
+      ;(db.execute as any)
+        .mockResolvedValueOnce([{ merchant_no: 'M1', term_no: 'T1', enabled: true }])
+        .mockResolvedValueOnce([{ sale_order_id: 'order-1' }])
+      mockCloseTx(1)
+
+      const result = await closeOrder('order-1')
+
+      expect(result.success).toBe(true)
+    })
+
+    // 状态闸门排在关单之前：对一张已支付单点关闭，不该先去渠道查单甚至发关单请求
+    it('已支付订单不触发任何渠道调用', async () => {
+      mockSelectBefore([{
+        status: '已支付', customerName: '顾客甲', totalAmount: '200.00',
+        storeId: 'store-001', lakalaOutOrderNo: 'order-1_123',
+      }])
+      mockCloseTx(0)
+
+      await closeOrder('order-1')
+
+      expect(queryTrade).not.toHaveBeenCalled()
+      expect(closeTrade).not.toHaveBeenCalled()
+    })
+
     it('查单异常 → 保留意图、拒绝关闭', async () => {
       mockSelectBefore([{
         status: '待支付', customerName: '顾客甲', totalAmount: '200.00',
