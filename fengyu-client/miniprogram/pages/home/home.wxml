@@ -109,8 +109,8 @@ module.exports.min = function(n) {
           <text class="search-results-close-text">返回</text>
         </view>
       </view>
-      <scroll-view class="search-results-scroll" scroll-y>
-        <van-loading wx:if="{{searchLoading}}" size="24px" vertical style="padding: 80rpx 0;">搜索中...</van-loading>
+      <scroll-view class="search-results-scroll" scroll-y bindscrolltolower="onSearchScrollToLower" lower-threshold="100">
+        <van-loading wx:if="{{searchLoading && searchResults.length === 0}}" size="24px" vertical style="padding: 80rpx 0;">搜索中...</van-loading>
         <van-empty wx:elif="{{searchResults.length === 0}}" description="未找到相关商品" />
         <view wx:else class="spu-list">
           <view
@@ -120,10 +120,13 @@ module.exports.min = function(n) {
             bindtap="onSpuTap"
             data-product-id="{{item.product_id}}"
           >
-            <view class="spu-cover cover-placeholder" wx:if="{{!item.cover_image}}">
-              <van-icon name="photo-o" size="48rpx" color="#CCCCCC" />
+            <!-- issue #248：槽位尺寸固定，视口窗口只换槽位内容，卡片高度与滚动位置不变 -->
+            <view class="search-cover-slot" data-idx="{{index}}">
+              <image wx:if="{{item.cover_image && item.coverVisible}}" class="spu-cover" src="{{item.cover_image}}" mode="aspectFill" lazy-load />
+              <view wx:else class="spu-cover cover-placeholder">
+                <van-icon name="photo-o" size="48rpx" color="#CCCCCC" />
+              </view>
             </view>
-            <image wx:else class="spu-cover" src="{{item.cover_image}}" mode="aspectFill" lazy-load />
             <view class="spu-body">
               <text class="spu-name">{{item.name}}</text>
               <view class="spu-footer">
@@ -138,6 +141,11 @@ module.exports.min = function(n) {
                 </view>
               </view>
             </view>
+          </view>
+
+          <!-- 搜索结果翻页提示 -->
+          <view wx:if="{{searchLoading}}" class="list-footer">
+            <van-loading size="20px" />
           </view>
         </view>
       </scroll-view>
@@ -199,17 +207,19 @@ module.exports.min = function(n) {
             bindtap="onSpuTap"
             data-product-id="{{item.product_id}}"
           >
-            <!-- 左侧封面 -->
-            <view class="spu-cover cover-placeholder" wx:if="{{!item.cover_image}}">
-              <van-icon name="photo-o" size="48rpx" color="#CCCCCC" />
+            <!-- 左侧封面：issue #248 的视口窗口只换槽位内容，卡片高度与滚动位置不变 -->
+            <view class="spu-cover-slot" data-idx="{{index}}">
+              <image
+                wx:if="{{item.cover_image && item.coverVisible}}"
+                class="spu-cover"
+                src="{{item.cover_image}}"
+                mode="aspectFill"
+                lazy-load
+              />
+              <view wx:else class="spu-cover cover-placeholder">
+                <van-icon name="photo-o" size="48rpx" color="#CCCCCC" />
+              </view>
             </view>
-            <image
-              wx:else
-              class="spu-cover"
-              src="{{item.cover_image}}"
-              mode="aspectFill"
-              lazy-load
-            />
 
             <!-- 右侧信息 -->
             <view class="spu-body">
@@ -232,13 +242,18 @@ module.exports.min = function(n) {
           </view>
 
           <!-- 加载提示 -->
-          <view wx:if="{{isLoading}}" class="load-more-hint">
+          <view wx:if="{{isLoading}}" class="list-footer">
             <van-loading size="20px" />
+          </view>
+          <view wx:elif="{{!hasMore}}" class="list-footer">
+            <text class="list-footer__end">没有更多了</text>
           </view>
         </view>
 
-        <!-- 底部留白，确保单个商品也能触发滚动切换下一分类 -->
-        <view class="scroll-bottom-spacer" wx:if="{{spuList.length > 0}}" />
+        <!-- 底部留白：让单个商品的分类也能触发滚动切换下一分类。
+             还有下一页时不要它——否则用户滚过最后一张卡还得再滚 1.5 屏空白才触底，
+             且新一页插在留白之上，触底瞬间视野里仍是空白。 -->
+        <view class="scroll-bottom-spacer" wx:if="{{spuList.length > 0 && !hasMore}}" />
 
       </scroll-view>
     </view>
