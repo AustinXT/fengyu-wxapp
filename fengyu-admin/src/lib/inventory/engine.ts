@@ -2952,6 +2952,14 @@ export const createInventoryCoreDoc = withAnyPermission(
     let sourceOrgNodeId = normalizeText(input.sourceOrgNodeId)
     let targetOrgNodeId = normalizeText(input.targetOrgNodeId)
     if (INTERNAL_SAME_NODE_DOC_TYPES.has(input.docType)) {
+      /**
+       * #200：两边都给且不一致时拒绝。原先无条件 `source ?? target` 会**静默吃掉**调用方
+       * 选的 target —— 共享建单表单同时渲染出库/入库两个下拉，用户选了两个不同主体却只有
+       * 一个生效，另一个连报错都没有。
+       */
+      if (sourceOrgNodeId && targetOrgNodeId && sourceOrgNodeId !== targetOrgNodeId) {
+        throw new ApiError('INVALID_PARAMS', '该单据的出库主体与入库主体必须是同一个')
+      }
       const orgNodeId = sourceOrgNodeId ?? targetOrgNodeId
       sourceOrgNodeId = orgNodeId
       targetOrgNodeId = orgNodeId
@@ -2959,15 +2967,6 @@ export const createInventoryCoreDoc = withAnyPermission(
     if (RECEIVE_REQUIRED_DOC_TYPES.has(input.docType) && !targetOrgNodeId) {
       throw new ApiError('INVALID_PARAMS', '待收货单据缺少接收主体')
     }
-    const actingOrgNodeId = sourceOrgNodeId ?? targetOrgNodeId
-    if (!actingOrgNodeId) throw new ApiError('INVALID_PARAMS', '缺少当前操作组织节点')
-    const sourceLocationRow = sourceOrgNodeId ? await ensureOrgNodeLocation(sourceOrgNodeId) : null
-    const targetLocationRow = targetOrgNodeId ? await ensureOrgNodeLocation(targetOrgNodeId) : null
-    const actingLocationId = sourceOrgNodeId === actingOrgNodeId
-      ? sourceLocationRow?.locationId
-      : targetLocationRow?.locationId
-    if (!actingLocationId) throw new ApiError('NOT_FOUND', '组织节点没有对应库存主体')
-    await assertOrgNodeVisible(session, actingOrgNodeId)
 
     const plan = movementPlan(input.docType, status)
     if (plan?.locationRole === 'source' && !sourceOrgNodeId) {
@@ -2976,6 +2975,73 @@ export const createInventoryCoreDoc = withAnyPermission(
     if (plan?.locationRole === 'target' && !targetOrgNodeId) {
       throw new ApiError('INVALID_PARAMS', '入库类单据缺少入库主体')
     }
+
+    /**
+     * #200 鉴权主体 = **本单真正被改动库存的那个主体**，不是「发起方」。
+     *
+     * 改前取 `sourceOrgNodeId ?? targetOrgNodeId`，只对它做 assertOrgNodeVisible：
+     * 入库类单据（movementPlan.locationRole='target'）的流水写在 target 上，却拿 source 去鉴权
+     * —— 同时传一个自己有权限的 source + 一个无权限的 target，就能往无权操作的主体里加库存。
+     * 共享建单表单本来就把两个下拉都渲染出来，普通表单操作即可构造，无需伪造请求。
+     *
+     * 无流水单据（报货类 NO_MOVEMENT、建单即待审批的报损/退货申请）plan 为 null，
+     * 保持原有的 `source ?? target` 口径：它们此刻不动任何库存，真正扣减发生在审批/收货那步，
+     * 那两处各自已对正确的主体做了校验（见 approve / confirmReceive 分支）。
+     */
+    // `locationRole === 'source'` 时上面已强制 source 非空，`source ?? target` 必等于 source，
+    // 故只需把 target 类单独摘出来，其余走同一支
+    const actingOrgNodeId = plan?.locationRole === 'target'
+      ? targetOrgNodeId
+      : (sourceOrgNodeId ?? targetOrgNodeId)
+    if (!actingOrgNodeId) throw new ApiError('INVALID_PARAMS', '缺少当前操作组织节点')
+    /**
+     * #200：鉴权必须**先于** `ensureOrgNodeLocation`。
+     *
+     * 那个函数会对不存在 / 已停用的节点分别抛 `NOT_FOUND` / `INVALID_STATE`，
+     * 放在鉴权前就成了一个探测器：拿无权限的 orgNodeId 试建单，靠返回的是
+     * 「没有对应库存主体」「主体已停用」还是「无权操作」就能反推该节点的存在与状态。
+     * 它还会顺带跑一次 `syncInventoryLocations()` —— 让无权者触发写操作也不合适。
+     */
+    await assertOrgNodeVisible(session, actingOrgNodeId)
+
+    /**
+     * #200：单边单据拒绝另一边，必须在**任何 location 查询之前**。
+     *
+     * 它是纯输入校验（只看 docType 与两个 id 是否为空），零查询依赖。放在 ensureOrgNodeLocation
+     * 之后的话，无权的那一边照样会先进 ensure、照样按「不存在 / 已停用 / 正常」抛出三种不同的错
+     * —— 上面刚堵住的探测信道换个位置继续成立（两个谱系独立命中此点）。
+     *
+     * 写成按 `movementPlan.locationRole` 推导的通用规则、而不是逐 docType 手写 case：
+     * 新增单据类型时自动覆盖，不会因为漏改某个 case 又出现「传一个自己有权的无关主体去过鉴权」。
+     * 两类豁免：INTERNAL_SAME_NODE（两端已在上面统一）、RECEIVE_REQUIRED（调货/发货本就两边都要）。
+     *
+     * ⚠️ 调货类的 target 是对方主体，发起方本就无权可见，**不能**对它鉴权 —— 那会打挂正常调货。
+     * 它的存在性探测是业务必需（要选得到对方门店），不在本次要堵的范围内。
+     */
+    if (
+      plan
+      && !INTERNAL_SAME_NODE_DOC_TYPES.has(input.docType)
+      && !RECEIVE_REQUIRED_DOC_TYPES.has(input.docType)
+    ) {
+      if (plan.locationRole === 'target' && sourceOrgNodeId) {
+        throw new ApiError('INVALID_PARAMS', `${input.docType}不接受出库主体`)
+      }
+      if (plan.locationRole === 'source' && targetOrgNodeId) {
+        throw new ApiError('INVALID_PARAMS', `${input.docType}不接受入库主体`)
+      }
+    }
+
+    const sourceLocationRow = sourceOrgNodeId ? await ensureOrgNodeLocation(sourceOrgNodeId) : null
+    // 同主体单据两端已被统一成同一个 id，没必要再查一遍（ensureOrgNodeLocation 内部还会跑一次
+    // syncInventoryLocations）
+    const targetLocationRow = targetOrgNodeId
+      ? (targetOrgNodeId === sourceOrgNodeId ? sourceLocationRow : await ensureOrgNodeLocation(targetOrgNodeId))
+      : null
+    const actingLocationId = sourceOrgNodeId === actingOrgNodeId
+      ? sourceLocationRow?.locationId
+      : targetLocationRow?.locationId
+    if (!actingLocationId) throw new ApiError('NOT_FOUND', '组织节点没有对应库存主体')
+
     await assertGenericDocLocationRules(input, sourceOrgNodeId, targetOrgNodeId, actingOrgNodeId)
 
     const totalQuantity = input.items.reduce((sum, item) => sum + assertPositiveQuantity(item.quantity), 0)
@@ -3235,7 +3301,18 @@ export const rejectInventoryCoreDoc = withAnyPermission(
       if (!doc) throw new ApiError('NOT_FOUND', '库存单据不存在')
       assertGenericDocTransition(doc.doc_type)
       if (doc.status !== '待审批') throw new ApiError('INVALID_STATE', '只有待审批单据可以驳回')
-      await assertOrgNodeVisible(session, doc.source_org_node_id ?? doc.target_org_node_id ?? '')
+      /**
+       * #200：与 approve 分支（对 `head.source_org_node_id` 显式鉴权）对称。
+       * 驳回只回滚预留、不搬库存，但鉴权对象必须和审批一致 —— 原先写成
+       * `source ?? target ?? ''`，是本 issue 要清理的那个「取一个代表值去做安全决策」
+       * 反模式。今天走不到 `?? target` 分支（能进「待审批」的都是 APPROVAL_DOC_TYPES，
+       * 它们的 source 恒非空），但那是巧合：新增一个 source 可空的待审批类型，
+       * 这里就会无声退化成按 target 鉴权。
+       */
+      if (!doc.source_org_node_id) {
+        throw new ApiError('INVALID_STATE', '待审批单据缺少出库主体，无法驳回')
+      }
+      await assertOrgNodeVisible(session, doc.source_org_node_id)
 
       const updated = await tx.execute(sql`
         UPDATE inventory_docs

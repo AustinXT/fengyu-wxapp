@@ -47,6 +47,7 @@ import {
 } from '@/actions/inventory/docs'
 import InventoryDocsPage, { SOURCE_LOT_DOC_TYPES } from './inventory-docs-page'
 import { INVENTORY_GENERIC_DOC_TYPES } from '@/lib/inventory/types'
+import type { InventoryDocType } from '@/lib/inventory/types'
 
 // vitest.config.ts 没开 clearMocks/restoreMocks。这里必须用 resetAllMocks 而不是 clearAllMocks ——
 // 后者只清调用记录、不清 implementation，忘记设 mock 的新用例会静默继承上一条的 mockRejectedValue。
@@ -457,6 +458,76 @@ describe('InventoryDocsPage 来源批次下拉（#129 回归）', () => {
     openDialogAndPickSource()
 
     await waitFor(() => expect(toast.error).toHaveBeenCalledWith('加载可用批次失败', expect.objectContaining({ id: expect.any(String) })))
+  })
+})
+
+/**
+ * #200：服务端现在会拒绝「单边单据收到另一边的主体」（改前是静默忽略）。
+ * 这个弹窗用 `useState('')` 存两个主体，且原生 `<dialog>` 关闭不卸载组件 ——
+ * 用同一个弹窗连着建两张不同类型的单时，上一张的主体残留会让新单以
+ * 「XX 不接受入库主体」失败，而那个下拉在新类型下根本不该有值。
+ */
+describe('#200 切换单据类型时复位主体字段', () => {
+  const targetSelect = () => dialogSelect(/^入库\/接收主体$/)
+
+  function openWithTypes(types: InventoryDocType[]) {
+    render(
+      <InventoryDocsPage
+        {...baseProps}
+        locations={locations}
+        skuOptions={skuOptions}
+        allowedCreateDocTypes={types}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: '新建' }))
+  }
+
+  it('换类型后出库/入库主体都回到未选状态，不把上一张单的残留带进新单', () => {
+    openWithTypes(['分院调货出库', '院顾客产品出库'])
+
+    fireEvent.change(sourceSelect(), { target: { value: 'M1' } })
+    fireEvent.change(targetSelect(), { target: { value: 'M2' } })
+    expect(sourceSelect().value).toBe('M1')
+    expect(targetSelect().value).toBe('M2')
+
+    fireEvent.change(dialogSelect(/^分院调货出库$/), { target: { value: '院顾客产品出库' } })
+
+    // 院顾客产品出库是单边（只走 source）单据，残留的 target 会被服务端直接拒
+    expect(sourceSelect().value).toBe('')
+    expect(targetSelect().value).toBe('')
+  })
+
+  /**
+   * 必须走 **target-only 提交** 来断言 payload —— 这是唯一能锁住「切类型清 lotId」的路径：
+   * 只有出库主体的 onChange 清 lotId，入库主体的不清。所以「切完类型只选入库主体就提交」
+   * 时，旧 lotId 会一路带进 payload，而同主体单据的服务端会把 target 归一成 source、
+   * 按出库批次锁定并写入它。只断言 DOM 上批次框显示为空是锁不住的（受控 select 的值
+   * 不在 options 里时本来就显示空，state 里那个旧 id 还在）。
+   */
+  it('换类型后只选入库主体就提交，payload 不得带上一张单的 lotId', async () => {
+    vi.mocked(listInventoryLotOptions).mockResolvedValue([lot(11, 'SKU-1', 'B-001', 30)])
+    vi.mocked(createInventoryCoreDoc).mockResolvedValue(undefined as never)
+    openWithTypes(['院顾客产品出库', '院产品报损'])
+
+    // 第一张单：选好出库主体 + SKU + 批次
+    fireEvent.change(sourceSelect(), { target: { value: 'M1' } })
+    fireEvent.change(skuSelect(), { target: { value: 'SKU-1' } })
+    await waitFor(() => expect(lotSelect()).not.toBeDisabled())
+    fireEvent.change(lotSelect(), { target: { value: '11' } })
+    expect(lotSelect().value).toBe('11')
+
+    // 切到同主体单据，然后**只动入库主体**（它的 onChange 不清 lotId）
+    fireEvent.change(dialogSelect(/^院顾客产品出库$/), { target: { value: '院产品报损' } })
+    expect(sourceSelect().value).toBe('')
+    expect(targetSelect().value).toBe('')
+    fireEvent.change(targetSelect(), { target: { value: 'M1' } })
+    fireEvent.change(within(screen.getByRole('dialog')).getByPlaceholderText('数量'), { target: { value: '2' } })
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: '提交' }))
+
+    await waitFor(() => expect(createInventoryCoreDoc).toHaveBeenCalledTimes(1))
+    const payload = vi.mocked(createInventoryCoreDoc).mock.calls[0][0]
+    expect(payload.docType).toBe('院产品报损')
+    expect(payload.items[0].lotId).toBeNull()
   })
 })
 

@@ -18,7 +18,7 @@ import {
 import { invokeStaffApi } from './helpers/invoke.mjs'
 import {
   ensureTestStore, createTestStaff, createTestClient,
-  createTestSaleOrder, cleanupTestData,
+  createTestSaleOrder, cleanupTestData, createPaidPayment,
 } from './helpers/fixtures.mjs'
 
 let pass = false
@@ -50,6 +50,10 @@ async function main() {
     status: '已支付', salesCategory: '他销自耗',
   })
   await pgQuery(`UPDATE sale_orders SET received = total_amount WHERE sale_order_id = $1`, [orderId])
+  // 行级 received / paid_sessions 决定卡包可见性（paid_sessions 是"已退卡消失"的唯一机制）；
+  // 款项 + 逐笔受领是退款残值映射的来源。两者缺一，用例会以"卡不显示"或"无法映射"的面目失败。
+  await pgQuery(`UPDATE sale_items SET received = 500, paid_sessions = 5 WHERE sale_order_id = $1`, [orderId])
+  await createPaidPayment(orderId, { amount: 500, items: [{ saleItemId: `${orderId}_ITEM_1`, amount: 500 }] })
   // 注：createTestSaleOrder 已按单次价语义建 item（疗程卡 unit_real_price = 500/5 = 100）；
   // 退款封顶(0da8122f)按 unit_real_price × 退款次数 算 → 退满 5 次 = 100×5 = 500 = 已收，恰好通过。
   const items = await pgQuery(`SELECT sale_item_id FROM sale_items WHERE sale_order_id = $1`, [orderId])

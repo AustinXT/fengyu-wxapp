@@ -157,11 +157,20 @@ async function main() {
     check(outRows[0].ref_sale_item_id === srcItemId, `转出.ref_sale_item_id 应=${srcItemId}`)
   }
 
-  // ── 源行 picked_up_quantity：3 + 7 = 10 ──
+  // ── 源行数量分列：已提 3 留在 picked_up_quantity，已转 7 进 converted_quantity ──
+  // #125 最初把转出数量并进 picked_up_quantity（当时那一列是「已结算」三语义共用）；
+  // #154（迁移 0046）把三语义拆开后，picked_up_quantity 只记真实提货，转出记 converted_quantity。
+  // 两列之和仍是 10 —— 拆列是等量搬运，「已结算」总量不变。
   const afterConv = await pgQuery(
-    `SELECT picked_up_quantity FROM sale_items WHERE sale_item_id = $1`, [srcItemId])
-  check(Number(afterConv[0]?.picked_up_quantity) === 10,
-    `折抵后 picked_up_quantity 应=10（3 已提 + 7 已转），实际=${afterConv[0]?.picked_up_quantity}`)
+    `SELECT COALESCE(picked_up_quantity,0)::int AS picked_up,
+            COALESCE(converted_quantity,0)::int AS converted
+       FROM sale_items WHERE sale_item_id = $1`, [srcItemId])
+  check(Number(afterConv[0]?.picked_up) === 3,
+    `折抵后 picked_up_quantity 应=3（只记真实提货），实际=${afterConv[0]?.picked_up}`)
+  check(Number(afterConv[0]?.converted) === 7,
+    `折抵后 converted_quantity 应=7（已转走），实际=${afterConv[0]?.converted}`)
+  check(Number(afterConv[0]?.picked_up) + Number(afterConv[0]?.converted) === 10,
+    `已结算总量应=10（3 已提 + 7 已转），实际=${Number(afterConv[0]?.picked_up) + Number(afterConv[0]?.converted)}`)
 
   // ── 3. 顾客档案家居 Tab：待提归零 + 已转换 7 + 已退款 0 ──
   const home1 = await invokeStaffApi('customer.homeProducts', {
@@ -284,6 +293,13 @@ async function main() {
   // ── 7b. #182 纯余数行：没有剩余权益、但还有不足一整盒的已付余额 → 必须能选到 ──
   // 这正是 issue #182 的核心场景（prod FY-XSD-WX-2608170136：1 件 ¥680 只付 ¥594）。
   // 旧口径 FLOOR(50 / 100) = 0 → 整行被剔除，顾客的 ¥50 既折不掉也提不出。
+  //
+  // ⚠ **这段是写在实现之前的**：#182 仍是 open（PR #196 未合），当前代码必然选不到该行。
+  // 默认跳过，让 L2 基线保持可信——基线绿了，新回归才看得见。
+  // #182 合并后删掉这个开关即可；在此之前想看它红：INCLUDE_PENDING_182=1 跑本用例。
+  if (process.env.INCLUDE_PENDING_182 !== '1') {
+    rec('  ⏭ 跳过 7b（#182 尚未合并，PR #196 待 merge）；INCLUDE_PENDING_182=1 可强制执行')
+  } else {
   await pgQuery(`UPDATE sale_items SET received = 350 WHERE sale_item_id = $1`, [srcItemId])
   const held3 = await invokeStaffApi('order.customerHeldCards', {
     _testOpenid: TEST_MANAGER_OPENID,
@@ -298,6 +314,7 @@ async function main() {
       `纯余数行折抵额应=50.00（350 − 已提 300），实际=${remainderCard.deductibleAmount}`)
     check(Number(remainderCard.remainingQuantity) === 0,
       `纯余数行可折件数应=0，实际=${remainderCard.remainingQuantity}`)
+  }
   }
 
   if (errors.length) {

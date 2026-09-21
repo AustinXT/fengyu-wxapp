@@ -25,7 +25,7 @@ import { invokeStaffApi } from './helpers/invoke.mjs'
 import {
   ensureTestStore, createTestStaff, createTestClient,
   createTestSaleOrder, createTestSaleItem, createTestServiceOrder,
-  createTestCoupon, cleanupTestData,
+  createTestCoupon, cleanupTestData, createPaidPayment, createPaymentItemReceipts,
 } from './helpers/fixtures.mjs'
 
 let pass = false
@@ -41,19 +41,36 @@ async function makePaidCardOrder(saleOrderId, { total, sessionCount }) {
   })
   await pgQuery(`UPDATE sale_orders SET received = $2 WHERE sale_order_id = $1`, [saleOrderId, total])
   await pgQuery(`UPDATE sale_items SET received = $2, paid_sessions = $3 WHERE sale_order_id = $1`, [saleOrderId, total, sessionCount])
-  await pgQuery(
-    `INSERT INTO sale_order_payments (sale_order_id, change_type, amount, payment_method, status, source_end, created_at)
-     VALUES ($1, '首次支付', $2, '线下', '已支付', 'staff', NOW())`,
-    [saleOrderId, total]
-  )
-  return { saleItemId: `${saleOrderId}_ITEM_1` }
+  // 款项必须配「逐笔受领」明细，否则 refund-cascade 的残值映射读到 0，
+  // 退款审批会被拒成「退款金额无法完整映射到商品行实收」。
+  const saleItemId = `${saleOrderId}_ITEM_1`
+  await createPaidPayment(saleOrderId, {
+    amount: total,
+    items: [{ saleItemId, amount: total }],
+  })
+  return { saleItemId }
 }
 
+/**
+ * 挂一条营业额分配到该明细行的「首次支付」受领行上。
+ * 必须落 sale_payment_item_allocations —— cascade 通道 1 的负数冲销写的是这张表；
+ * 建到订单维度旧表 sale_allocations 里，下游"净额=0"断言会在空集上恒真。
+ */
 async function addAllocation(saleItemId, amount) {
+  const receipt = await pgQuery(
+    `SELECT r.id FROM sale_payment_item_receipts r
+       JOIN sale_order_payments p ON p.id = r.sale_payment_id
+      WHERE r.sale_item_id = $1 AND p.change_type = '首次支付'
+      LIMIT 1`,
+    [saleItemId]
+  )
+  if (!receipt[0]) throw new Error(`addAllocation: ${saleItemId} 没有首次支付受领行`)
   await pgQuery(
-    `INSERT INTO sale_allocations (sale_item_id, employee_id, role_type, allocation_ratio, total_amount, commission_rate, commission_amount, is_void)
+    `INSERT INTO sale_payment_item_allocations
+       (sale_payment_item_receipt_id, employee_id, role_type, allocation_ratio,
+        allocated_amount, commission_rate, commission_amount, is_void)
      VALUES ($1, $2, '美容师', 1.00, $3, 0.06, $4, false)`,
-    [saleItemId, TEST_MANAGER_EMP_ID, amount, Math.round(amount * 0.06)]
+    [receipt[0].id, TEST_MANAGER_EMP_ID, amount, Math.round(amount * 0.06)]
   )
 }
 
@@ -75,8 +92,14 @@ async function main() {
   // 订单升级为 2 明细：total/received=1800，B 行 received=800 / paid_sessions=8
   await pgQuery(`UPDATE sale_orders SET total_amount = 1800, received = 1800 WHERE sale_order_id = $1`, [orderQ])
   await pgQuery(`UPDATE sale_items SET received = 800, paid_sessions = 8 WHERE sale_item_id = $1`, [qB])
-  // 首次支付流水改 1800（覆盖 makePaidCardOrder 的 1000）
+  // 首次支付流水改 1800（覆盖 makePaidCardOrder 的 1000），并给后加的 B 行补一条受领明细
+  // —— 款项金额变了，逐笔受领也必须跟着覆盖到新明细，否则 B 行在退款/分配模型里不存在。
   await pgQuery(`UPDATE sale_order_payments SET amount = 1800 WHERE sale_order_id = $1 AND change_type = '首次支付'`, [orderQ])
+  const payQFirst = await pgQuery(
+    `SELECT id FROM sale_order_payments WHERE sale_order_id = $1 AND change_type = '首次支付' LIMIT 1`,
+    [orderQ]
+  )
+  await createPaymentItemReceipts(payQFirst[0].id, orderQ, [{ saleItemId: qB, amount: 800 }])
   await addAllocation(qA, 1000)
   await addAllocation(qB, 800)
 
@@ -91,15 +114,19 @@ async function main() {
     // 通道1（2026-06-24 起记负数冲销，非 is_void 软删）：退的 A 行新增挂退款流水 payQ 的 -1000 镜像行，净额=0；
     // 未退的 B 行保留 +800 不被误冲（Bug Q 守护——子集退款不清未退明细）
     const aA = await pgQuery(
-      `SELECT COALESCE(SUM(total_amount::numeric),0)::numeric AS net,
-              COUNT(*) FILTER (WHERE total_amount < 0 AND sale_payment_id = $2) AS neg
-         FROM sale_allocations WHERE sale_item_id = $1`,
+      `SELECT COALESCE(SUM(a.allocated_amount::numeric),0)::numeric AS net,
+              COUNT(*) FILTER (WHERE a.allocated_amount < 0 AND r.sale_payment_id = $2) AS neg
+         FROM sale_payment_item_allocations a
+         JOIN sale_payment_item_receipts r ON r.id = a.sale_payment_item_receipt_id
+        WHERE r.sale_item_id = $1`,
       [qA, payQ]
     )
     const aB = await pgQuery(
-      `SELECT COALESCE(SUM(total_amount::numeric),0)::numeric AS net,
-              COUNT(*) FILTER (WHERE total_amount < 0) AS neg
-         FROM sale_allocations WHERE sale_item_id = $1`,
+      `SELECT COALESCE(SUM(a.allocated_amount::numeric),0)::numeric AS net,
+              COUNT(*) FILTER (WHERE a.allocated_amount < 0) AS neg
+         FROM sale_payment_item_allocations a
+         JOIN sale_payment_item_receipts r ON r.id = a.sale_payment_item_receipt_id
+        WHERE r.sale_item_id = $1`,
       [qB]
     )
     if (Number(aA[0]?.net) !== 0 || Number(aA[0]?.neg) !== 1) errors.push(`Q 退的 A 行分配应被负数冲销净额=0(1 条镜像行)，实际 net=${aA[0]?.net} neg=${aA[0]?.neg}`)
@@ -141,7 +168,14 @@ async function main() {
         WHERE si.sale_item_id = $1 AND sc.is_void = true`,
       [mItem]
     )
-    const alM = await pgQuery(`SELECT is_void FROM sale_allocations WHERE sale_item_id = $1`, [mItem])
+    const alM = await pgQuery(
+      `SELECT a.is_void
+         FROM sale_payment_item_allocations a
+         JOIN sale_payment_item_receipts r ON r.id = a.sale_payment_item_receipt_id
+        WHERE r.sale_item_id = $1
+        ORDER BY a.id`,
+      [mItem]
+    )
     if (Number(voidedComm[0]?.n) !== 0) errors.push(`M 已完成服务的提成不应被作废，实际作废 ${voidedComm[0]?.n} 条（Bug M 回归·薪酬损失！）`)
     if (alM[0]?.is_void !== false) errors.push(`M 有已消费时分配不应作废 is_void=false，实际=${alM[0]?.is_void}`)
     if (Number(voidedComm[0]?.n) === 0 && alM[0]?.is_void === false) rec(`  ✓ M 退剩余次数: 3 条已挣提成 + 分配均保留（未误作废）`)
@@ -212,11 +246,10 @@ async function main() {
   const c5Item = `${orderC5}_ITEM_1`
   await pgQuery(`UPDATE sale_orders SET received = 500 WHERE sale_order_id = $1`, [orderC5])
   await pgQuery(`UPDATE sale_items SET received = 500, picked_up_quantity = 2 WHERE sale_item_id = $1`, [c5Item])
-  await pgQuery(
-    `INSERT INTO sale_order_payments (sale_order_id, change_type, amount, payment_method, status, source_end, created_at)
-     VALUES ($1, '首次支付', 500, '线下', '已支付', 'staff', NOW())`,
-    [orderC5]
-  )
+  await createPaidPayment(orderC5, {
+    amount: 500,
+    items: [{ saleItemId: c5Item, amount: 500 }],
+  })
 
   const c5a = await invokeStaffApi('order.createRefund', {
     _testOpenid: TEST_MANAGER_OPENID, refSaleOrderId: orderC5, items: [{ saleItemId: c5Item, refundQuantity: 3 }], refundReason: 'e2e_C5',
@@ -228,9 +261,15 @@ async function main() {
     if (c5b.code !== 0) errors.push(`C5 approveRefund 应成功，code=${c5b.code} msg=${c5b.message}`)
     const o5 = await pgQuery(`SELECT refunded_amount FROM sale_orders WHERE sale_order_id = $1`, [orderC5])
     if (Number(o5[0]?.refunded_amount) !== 300) errors.push(`C5 家居退 3 件 refunded_amount 应=300，实际=${o5[0]?.refunded_amount}`)
-    // 通道5：已退 3 件计入 picked_up（已结算）→ LEAST(5, 2+3)=5
-    const pk = await pgQuery(`SELECT picked_up_quantity FROM sale_items WHERE sale_item_id = $1`, [c5Item])
-    if (Number(pk[0]?.picked_up_quantity) !== 5) errors.push(`C5 退后 picked_up 应=5（已结算 2提货+3退），实际=${pk[0]?.picked_up_quantity}`)
+    // 通道5：退 3 件。#154（迁移 0046）拆列前这 3 件并进 picked_up_quantity（当时是"已结算"），
+    // 拆列后退款份额记 refunded_quantity，picked_up_quantity 只留真实提货的 2 件；两列之和仍是 5。
+    const pk = await pgQuery(
+      `SELECT COALESCE(picked_up_quantity,0)::int AS picked_up,
+              COALESCE(refunded_quantity,0)::int AS refunded
+         FROM sale_items WHERE sale_item_id = $1`, [c5Item])
+    if (Number(pk[0]?.picked_up) !== 2) errors.push(`C5 退后 picked_up 应=2（只记真实提货），实际=${pk[0]?.picked_up}`)
+    if (Number(pk[0]?.refunded) !== 3) errors.push(`C5 退后 refunded_quantity 应=3，实际=${pk[0]?.refunded}`)
+    if (Number(pk[0]?.picked_up) + Number(pk[0]?.refunded) !== 5) errors.push(`C5 已结算总量应=5（2 提货 + 3 退），实际=${Number(pk[0]?.picked_up) + Number(pk[0]?.refunded)}`)
     // 防超退：refundable = quantity(5) - picked_up(5) = 0 → 二次退被拒
     const c5dup = await invokeStaffApi('order.createRefund', {
       _testOpenid: TEST_MANAGER_OPENID, refSaleOrderId: orderC5, items: [{ saleItemId: c5Item, refundQuantity: 1 }], refundReason: 'e2e_C5_dup',

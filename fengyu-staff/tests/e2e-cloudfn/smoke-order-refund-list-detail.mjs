@@ -25,7 +25,7 @@ import {
 import { invokeStaffApi } from './helpers/invoke.mjs'
 import {
   ensureTestStore, createTestOrg, createTestStaff, createTestStaffWithRoles,
-  createTestClient, createTestSaleOrder, cleanupTestData,
+  createTestClient, createTestSaleOrder, cleanupTestData, createPaidPayment,
   invalidateStaffAuthCache,
 } from './helpers/fixtures.mjs'
 
@@ -70,7 +70,11 @@ async function main() {
     orgNodeId: TEST_STORE_ORG_ID,
     positionName: '美容师',
     skills: [],
-    bindings: [{ role: 'store_staff', scopeId: TEST_STORE_ORG_ID }],
+    // 角色键是 'staff'（门店普通员工）——`store_staff` 是 ctx.auth.staffLevel 的取值，不是角色。
+    // 0039 起 DB trigger permission_validate_role_assignment_scope 会拿 role 去
+    // permission_role_definitions 查 allowed_scope_types，查不到就直接 RAISE，
+    // 于是这里写错角色名会在建夹具阶段就抛「角色 store_staff 不能绑定到 门店 型组织节点」。
+    bindings: [{ role: 'staff', scopeId: TEST_STORE_ORG_ID }],
   })
   await invalidateStaffAuthCache([TEST_MANAGER_OPENID, MGR_B_OID, EMP_C_OID])
   await pgQuery('SELECT 1') // pool barrier
@@ -90,7 +94,10 @@ async function main() {
       status: '已支付',
       salesCategory: '他销自耗',
     })
+    // 行级实收 + 款项 + 逐笔受领：三者齐了 approveRefund 才能把退款额映射到商品行。
     await pgQuery(`UPDATE sale_orders SET received = total_amount WHERE sale_order_id = $1`, [oid])
+    await pgQuery(`UPDATE sale_items SET received = 800, paid_sessions = 1 WHERE sale_order_id = $1`, [oid])
+    await createPaidPayment(oid, { amount: 800, items: [{ saleItemId: `${oid}_ITEM_1`, amount: 800 }] })
   }
   const a1Items = await pgQuery(`SELECT sale_item_id FROM sale_items WHERE sale_order_id = $1`, [orderA1])
   const a2Items = await pgQuery(`SELECT sale_item_id FROM sale_items WHERE sale_order_id = $1`, [orderA2])
