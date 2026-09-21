@@ -295,6 +295,7 @@
   font-weight: 600;
   color: var(--color-text-primary);
   flex: 1;
+  display: block;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

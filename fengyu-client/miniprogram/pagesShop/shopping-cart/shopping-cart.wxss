@@ -113,6 +113,7 @@
   font-size: 26rpx;
   font-weight: 600;
   color: var(--color-text-primary);
+  display: block;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -124,6 +125,7 @@
   font-size: 22rpx;
   color: var(--color-text-hint);
   margin-top: 4rpx;
+  display: block;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

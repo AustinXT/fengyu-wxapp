@@ -71,7 +71,6 @@
 }
 
 .spu-name {
-  display: block;
   font-size: 28rpx;
   font-weight: 600;
   color: var(--color-text-primary);

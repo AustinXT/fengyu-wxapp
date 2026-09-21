@@ -1772,6 +1772,16 @@ describe('admin confirmServiceOrder 接入服务提成写入守护（M1）', () 
 })
 
 // 会员到店积分：三端 finalizer 独立副本，常量、核心 INSERT+余额更新 SQL 与触发点必须一致。
+//
+// ⚠ 本组守护的**语义边界**（#253 暴露）：normalizeSql 把 `$N` 与 `${...}` 双双归一成 `?`，
+// 所以它保证的是「三端 SQL 的**形状**一致」，**不蕴含绑定层等价**。实际差异：
+//   staff / client（原生 pg）  → 裸 `$4`，node-postgres 序列化 Date，保留毫秒
+//   admin（drizzle+postgres.js）→ `${beijingTs(now)}` 展开成 `$N::timestamp AT TIME ZONE 'Asia/Shanghai'`，
+//                                 北京墙钟字面，**截断到秒**
+// 两者写出的绝对时刻同义，但精度与传参形态不同。admin 必须这么写：drizzle 的 construct()
+// 把时间 OID 的 serializer 覆盖成恒等函数，裸传 Date 会在 Bind 阶段抛 ERR_INVALID_ARG_TYPE
+// （根因守护见 fengyu-admin/src/lib/__tests__/db-time.test.ts）。
+// 结论：这一组测试绿 ≠ 三端 bind 语义字节同义；改时间写法时别只看它。
 describe('会员到店积分跨端一致性守护（staff / client / admin）', () => {
   let sources, grantSqls
 

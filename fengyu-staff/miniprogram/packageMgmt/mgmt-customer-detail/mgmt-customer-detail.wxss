@@ -499,6 +499,7 @@
 .home-product-name {
   min-width: 0;
   flex: 1;
+  display: block;
   overflow: hidden;
   color: #333;
   font-size: 28rpx;
