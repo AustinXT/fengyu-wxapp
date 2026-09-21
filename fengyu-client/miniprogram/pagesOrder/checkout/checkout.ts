@@ -932,6 +932,11 @@ Page({
       existingOrderNo: saleOrderId,
       restoredPrepaidCardAmount: Number.isFinite(frozen) && frozen > 0 ? frozen : null,
     });
+    // 记下权威值还不够，得让它**立刻覆盖当前展示的字段**（round-17）：
+    // 在途那段时间里被异步余额刷新改出来的 prepaidCardAmount / paidAmount / useCard
+    // 还挂在页面上，冻结后又不会再被重算，顾客就会一直看着一组渠道单里不存在的金额。
+    // 冻结分支会按 netAfterDiscounts − 冻结卡额 重算，明细与合计保持闭合。
+    this.recomputeAmounts();
   },
 
   async doAlipayPay(saleOrderId: string) {

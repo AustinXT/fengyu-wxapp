@@ -105,15 +105,22 @@ describe('#214 渠道单建好后页面立即冻结', () => {
       }
       return Promise.resolve({});
     });
-    // 页面状态此刻已被余额刷新改成「卡抵 ¥100」——与渠道单不符
-    const inst = createPageInstance({ prepaidCardAmount: 100, paidAmount: 200 });
+    // 页面状态此刻已被余额刷新改成「卡抵 ¥100、实付 ¥200」——与渠道单不符
+    const inst = createPageInstance({
+      unitPrice: 300, quantity: 1, cardBalance: 300,
+      useCard: true, prepaidCardAmount: 100, paidAmount: 200,
+    });
 
     await inst.doAlipayPay('FY-XSD-WX-2609220009');
 
     expect(inst.data.restoredPrepaidCardAmount).toBeNull();
+    // round-17：记下权威值还不够，展示字段必须同时被覆盖回来
+    expect(inst.data.prepaidCardAmount).toBe(0);
+    expect(inst.data.paidAmount).toBe(300);
+    expect(inst.data.useCard).toBe(false);
   });
 
-  test('服务端返回带卡额时按服务端值冻结', async () => {
+  test('服务端返回带卡额时按服务端值冻结，展示同步覆盖', async () => {
     callClientApiMock.mockImplementation((action: string) => {
       if (action === 'order.pay') {
         return Promise.resolve({
@@ -124,11 +131,19 @@ describe('#214 渠道单建好后页面立即冻结', () => {
       }
       return Promise.resolve({});
     });
-    const inst = createPageInstance({ prepaidCardAmount: 0, paidAmount: 300 });
+    const inst = createPageInstance({
+      unitPrice: 300, quantity: 1, cardBalance: 0,
+      useCard: false, prepaidCardAmount: 0, paidAmount: 300,
+    });
 
     await inst.doWechatPay('FY-XSD-WX-2609220010');
 
     expect(inst.data.restoredPrepaidCardAmount).toBe(100);
+    expect(inst.data.prepaidCardAmount).toBe(100);
+    expect(inst.data.paidAmount).toBe(200);
+    expect(inst.data.useCard).toBe(true);
+    // 明细与合计闭合：卡抵 + 实付 = 应付净额
+    expect(inst.data.prepaidCardAmount + inst.data.paidAmount).toBe(inst.data.netBeforeCard);
   });
 
   test('微信拿到支付参数 → 同样进入冻结态（requestPayment 抛非取消错误时顾客留在本页）', async () => {
