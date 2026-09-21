@@ -28,6 +28,13 @@ on:
       #    触发它只是为了让**单测**守护有机会拦下「只改测试」的回归。
       - 'fengyu-admin/tests/**'
       - 'fengyu-staff/cloudfunctions/**/__tests__/**'
+      # 影子函数守卫盯的正是这几个文件 —— 不加进来，「只改 cloudbaserc 模板把影子函数
+      # 库指向改错」这个最该被拦的 PR 反而不会触发 CI。守卫不触发等于没有守卫。
+      - 'fengyu-client/cloudbaserc.example.json'
+      - 'fengyu-staff/cloudbaserc.example.json'
+      - 'scripts/render-cloudbaserc.mjs'
+      - 'scripts/deploy-cloudfunctions.sh'
+      - 'scripts/__tests__/**'
 
 jobs:
   cas-guards:
