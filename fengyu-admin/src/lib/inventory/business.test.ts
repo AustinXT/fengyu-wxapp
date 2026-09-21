@@ -1124,24 +1124,52 @@ describe('syncLocations 漂移探测与 engine.ts 字面一致（副本守护）
  * business 这份当时漏了同步 —— 本测试守护两份不再漂移。
  *
  * ⚠️ 这里只能做**字面量守护**，不能做行为测试：`insertDocHeader` 不是 export，而现存
- * 18 处调用对同主体单据每次只传 source / target 其一（已逐处核实，含 `createReturnForRestock`
- * 那处两端都传的调用 —— 它的 docType 只会是「院退货」/「市场退货」，都不在
- * INTERNAL_SAME_NODE_DOC_TYPES 里），**没有任何公开 API 能构造出两端不一致**。
+ * **17** 处调用对同主体单据每次只传 source / target 其一（已逐处核实：两端都传的 7 处 docType
+ * 全不在本集合内，含 `createReturnForRestock` —— 它的 docType 只会是「院退货」/「市场退货」），
+ * **没有任何公开 API 能构造出两端不一致**。
  * 该断言是防未来新增专用服务复现此坑的前置守卫，其运行时行为规格由 engine.ts 侧的用例承载。
  */
+/**
+ * 读源文件并**先剥离全部注释**再返回。
+ *
+ * 所有字面量守护都必须基于这个去注释后的文本 —— 否则三种绕过全部成立（codex 实测）：
+ * ① 把旧 guard 以块注释形式留在真正分支之前，「先匹配分支、后删注释」的做法会从注释
+ *    内部开始匹配，开头的 `/*` 不在捕获结果里，删除失效；
+ * ② 把集合成员单行注释掉（`// '内部领用',`），运行时少一项而提取结果不变；
+ * ③ 注释掉的 `case` 同理会被当成活 case。
+ */
+function sourceWithoutComments(file: string): string {
+  return readFileSync(resolve(process.cwd(), file), 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/\/\/[^\n]*/g, '')
+}
+
+const BUSINESS_TS = 'src/lib/inventory/business.ts'
+const ENGINE_TS = 'src/lib/inventory/engine.ts'
+
+/**
+ * 同主体单据的 12 项**期望成员快照**。
+ *
+ * 只比对两份副本「相等」是不够的（codex P3）：两端**同时**把某项换成另一个合法的
+ * InventoryDocType 仍然相等。这份显式清单才是语义 oracle，两份副本各自与它比对。
+ */
+const EXPECTED_INTERNAL_SAME_NODE = [
+  '分院库存盘点', '供应链员工购出库', '内部领用', '员工购出库',
+  '品项公司报货需求', '库存转换入库', '库存转换出库', '市场产品报损',
+  '市场产品盘溢', '市场库存盘点', '期初库存', '院产品报损',
+]
+
+function setItems(file: string, varName: string): string[] {
+  const block = sourceWithoutComments(file).match(
+    new RegExp(`const ${varName} = new Set(?:<[^>]+>)?\\(\\[([\\s\\S]*?)\\]\\)`),
+  )?.[1]
+  expect(block, `${file} 未找到 ${varName}`).toBeTruthy()
+  return Array.from(block!.matchAll(/'([^']+)'/g)).map((m) => m[1]).sort()
+}
+
 describe('insertDocHeader 同主体两端一致断言与 engine.ts 字面一致（副本守护）', () => {
   const GUARD_RE =
     /if \(sourceOrgNodeId && targetOrgNodeId && sourceOrgNodeId !== targetOrgNodeId\) \{\s*\n\s*throw new ApiError\('INVALID_PARAMS', '([^']+)'\)\s*\n\s*\}/
-
-  /** 取两份副本里 INTERNAL_SAME_NODE 分支的**分支体**（去掉块注释后再分析） */
-  function sameNodeBranchBody(file: string): string {
-    const src = readFileSync(resolve(process.cwd(), file), 'utf8')
-    const branch = src.match(
-      /if \(INTERNAL_SAME_NODE_DOC_TYPES\.has\(input\.docType\)\) \{([\s\S]*?)\n(  |    )\}/,
-    )?.[1]
-    expect(branch, `${file} 未找到 INTERNAL_SAME_NODE 分支`).toBeTruthy()
-    return branch!.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '')
-  }
 
   /**
    * 断言的**文案**必须逐字一致。
@@ -1150,29 +1178,42 @@ describe('insertDocHeader 同主体两端一致断言与 engine.ts 字面一致�
    * 结果在数学上必然相等，是恒真断言。这里让正则把文案做成捕获组，比的是捕获值。
    */
   it('两份副本都含该断言，且错误文案逐字相同', () => {
-    const businessSrc = readFileSync(resolve(process.cwd(), 'src/lib/inventory/business.ts'), 'utf8')
-    const engineSrc = readFileSync(resolve(process.cwd(), 'src/lib/inventory/engine.ts'), 'utf8')
-    const businessMsg = businessSrc.match(GUARD_RE)?.[1]
-    const engineMsg = engineSrc.match(GUARD_RE)?.[1]
+    const businessMsg = sourceWithoutComments(BUSINESS_TS).match(GUARD_RE)?.[1]
+    const engineMsg = sourceWithoutComments(ENGINE_TS).match(GUARD_RE)?.[1]
     expect(businessMsg, 'business.ts 的 insertDocHeader 缺少同主体两端一致断言').toBeTruthy()
     expect(engineMsg, 'engine.ts 的 createInventoryCoreDoc 缺少同主体两端一致断言').toBeTruthy()
     expect(businessMsg).toBe(engineMsg)
   })
 
   /**
-   * 断言必须是分支内**第一条语句**。
+   * 断言必须是分支内**第一条语句**，**且**两个变量初始化到进入分支之间不许有任何对它们的赋值。
    *
-   * ⚠️ 只断言「guard 下标 < `const orgNodeId = ...` 下标」是不够的（实测可绕）：
-   * 在 guard **之前**插一行 `if (source && target) target = source` 之类的等价归一化，
-   * guard 字面量还在、相对顺序也还对，但它永远不成立 —— 运行时保护被彻底废掉而测试全绿。
-   * 所以这里钉的是「分支体的第一条可执行语句就是 guard」。
+   * 两道都不能少（codex 各给了一个实测可绕的反例）：
+   * - 只钉「分支内第一条语句」→ 在**分支之前**插
+   *   `if (INTERNAL_SAME_NODE_DOC_TYPES.has(input.docType) && source && target) target = source`，
+   *   guard 仍是分支内第一条、三条测试全绿，但不一致输入已被提前吞掉。
+   * - 只钉「guard 下标 < 归一化赋值下标」→ 在 guard **之前**插等价归一化即可绕过。
    */
-  it('两份副本的断言都是同主体分支里的第一条语句', () => {
-    for (const file of ['src/lib/inventory/business.ts', 'src/lib/inventory/engine.ts']) {
-      const body = sameNodeBranchBody(file)
-      const firstStatement = body.split('\n').map((l) => l.trim()).filter(Boolean)[0]
+  it('两份副本的断言都是同主体分支首条语句，且分支前没有抢先归一化', () => {
+    for (const file of [BUSINESS_TS, ENGINE_TS]) {
+      const src = sourceWithoutComments(file)
+
+      const branchBody = src.match(
+        /if \(INTERNAL_SAME_NODE_DOC_TYPES\.has\(input\.docType\)\) \{([\s\S]*?)\n(  |    )\}/,
+      )?.[1]
+      expect(branchBody, `${file} 未找到 INTERNAL_SAME_NODE 分支`).toBeTruthy()
+      const firstStatement = branchBody!.split('\n').map((l) => l.trim()).filter(Boolean)[0]
       expect(firstStatement, `${file} 同主体分支的首条语句不是一致性断言`)
         .toBe('if (sourceOrgNodeId && targetOrgNodeId && sourceOrgNodeId !== targetOrgNodeId) {')
+
+      // 两个变量的初始化点 → 分支入口之间，不许出现对它们的再赋值
+      const initAt = src.search(/(let|const) targetOrgNodeId\s*=/)
+      const branchAt = src.indexOf('if (INTERNAL_SAME_NODE_DOC_TYPES.has(input.docType)) {')
+      expect(initAt, `${file} 未找到 targetOrgNodeId 初始化`).toBeGreaterThan(-1)
+      expect(branchAt, `${file} 未找到同主体分支入口`).toBeGreaterThan(initAt)
+      const between = src.slice(src.indexOf('\n', initAt), branchAt)
+      expect(between, `${file} 在进入同主体分支前抢先改写了归属变量，断言会永不成立`)
+        .not.toMatch(/\b(source|target)OrgNodeId\s*=[^=]/)
     }
   })
 
@@ -1181,20 +1222,12 @@ describe('insertDocHeader 同主体两端一致断言与 engine.ts 字面一致�
    *
    * 两份 `INTERNAL_SAME_NODE_DOC_TYPES` 是独立副本（项目禁止抽取跨端共享目录）。
    * 有人给 engine 那份加一个新的同主体类型却漏了 business 那份 → business 对该类型
-   * 退回「静默吃掉 target」的老行为，而上面两条守护**照样全绿**（断言还在、位置还对）。
-   * 这正是 #236 这个坑的复发路径，比字面量漂移概率更高。
+   * 退回「静默吃掉 target」的老行为，而上面两条守护**照样全绿**。
    */
-  it('两份 INTERNAL_SAME_NODE_DOC_TYPES 集合完全一致（含数量，防两边同时丢项）', () => {
-    const items = (file: string) => {
-      const src = readFileSync(resolve(process.cwd(), file), 'utf8')
-      const block = src.match(/const INTERNAL_SAME_NODE_DOC_TYPES = new Set(?:<[^>]+>)?\(\[([\s\S]*?)\]\)/)?.[1]
-      expect(block, `${file} 未找到 INTERNAL_SAME_NODE_DOC_TYPES`).toBeTruthy()
-      return Array.from(block!.matchAll(/'([^']+)'/g)).map((m) => m[1])
-    }
-    const businessItems = items('src/lib/inventory/business.ts')
-    const engineItems = items('src/lib/inventory/engine.ts')
-    expect(businessItems.length).toBe(12)
-    expect(businessItems).toEqual(engineItems)
+  it('两份 INTERNAL_SAME_NODE_DOC_TYPES 都等于期望成员快照', () => {
+    const expected = [...EXPECTED_INTERNAL_SAME_NODE].sort()
+    expect(setItems(BUSINESS_TS, 'INTERNAL_SAME_NODE_DOC_TYPES')).toEqual(expected)
+    expect(setItems(ENGINE_TS, 'INTERNAL_SAME_NODE_DOC_TYPES')).toEqual(expected)
   })
 })
 
@@ -1205,18 +1238,9 @@ describe('insertDocHeader 同主体两端一致断言与 engine.ts 字面一致�
  * （人或评审 agent）把它当活代码推理。#200 的评审里就因此产生过一条误报 P2。
  */
 describe('assertGenericDocLocationRules 的 case 与通用类型白名单一一对应（#237）', () => {
-  const engineSrc = () => readFileSync(resolve(process.cwd(), 'src/lib/inventory/engine.ts'), 'utf8')
-
-  function setItems(src: string, varName: string): string[] {
-    const block = src.match(
-      new RegExp(`const ${varName} = new Set(?:<[^>]+>)?\\(\\[([\\s\\S]*?)\\]\\)`),
-    )?.[1]
-    expect(block, `未找到 ${varName}`).toBeTruthy()
-    return Array.from(block!.matchAll(/'([^']+)'/g)).map((m) => m[1])
-  }
-
   it('不含任何 SPECIALIZED 类型的 case，且覆盖全部通用类型', () => {
-    const fnBody = engineSrc().match(
+    // 注释里的 case 不算数（codex P2-3 同型），故走去注释文本
+    const fnBody = sourceWithoutComments(ENGINE_TS).match(
       /async function assertGenericDocLocationRules\([\s\S]*?\n  switch \(input\.docType\) \{([\s\S]*?)\n  \}\n\}/,
     )?.[1]
     expect(fnBody, '未找到 assertGenericDocLocationRules 的 switch 体').toBeTruthy()
@@ -1232,7 +1256,7 @@ describe('assertGenericDocLocationRules 的 case 与通用类型白名单一一�
    * 这条互斥断言比上一条更直接命中 #237 的根因（dead case 的来源就是集合归属搞混）。
    */
   it('SPECIALIZED 与 INVENTORY_GENERIC 两个集合互斥', () => {
-    const specialized = new Set(setItems(engineSrc(), 'SPECIALIZED_DOC_TYPES'))
+    const specialized = new Set(setItems(ENGINE_TS, 'SPECIALIZED_DOC_TYPES'))
     const overlap = (INVENTORY_GENERIC_DOC_TYPES as readonly string[]).filter((t) => specialized.has(t))
     expect(overlap, '通用类型白名单里混进了专用类型').toEqual([])
   })
