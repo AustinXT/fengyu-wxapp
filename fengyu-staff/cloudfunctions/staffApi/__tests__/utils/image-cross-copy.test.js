@@ -38,12 +38,28 @@ describe('image 工具跨副本一致性守护', () => {
    * 下面几条锁死最容易被"顺手简化"掉的形态，是独立于字节比对的第二道闸门。
    */
   test('两端都保留 box 与面积两种模式的导出', () => {
+    // ⚠️ 这里必须 require 真模块查 `typeof`，不能对源码做 `toContain('safeThumbUrl')`——
+    // 这几个名字在**注释里**就出现多次（`{@link safeThumbUrlByArea}` 等），
+    // 把函数定义改名后源码断言照样绿，是个恒真守护。
+    // 而且 `safeThumbUrl` 是 `safeThumbUrlByArea` 的子串，前者被后者蕴含。
     for (const p of [STAFF_IMAGE, CLIENT_IMAGE]) {
-      const src = read(p)
-      expect(src).toContain('safeThumbUrl')
-      expect(src).toContain('safeThumbUrlByArea')
-      // 两种模式共用同一个准入校验，防止"给其中一个加规则"造成分叉
-      expect(src).toContain('parseProcessableUrl')
+      delete require.cache[require.resolve(p)]
+      const mod = require(p)
+      expect(typeof mod.safeThumbUrl).toBe('function')
+      expect(typeof mod.safeThumbUrlByArea).toBe('function')
+
+      // 两种模式必须共用同一套准入规则：喂同一组非法输入，两者要给出一致的拒绝。
+      // 这比 `toContain('parseProcessableUrl')` 强——它验的是行为不是字面量。
+      for (const bad of [
+        null, '', 'ftp://evil.com/a.jpg',
+        'https://img.example.com/dir/a.png',              // 非 COS 域名
+        'https://a.tcb.qcloud.la@evil.com/dir/a.png',     // userinfo 伪装
+        'https://x.tcb.qcloud.la/dir/a.svg',              // 非图片扩展名
+        'https://x.tcb.qcloud.la/dir/a.png?q-signature=d' // 带 COS 签名
+      ]) {
+        expect(mod.safeThumbUrl(bad, 400)).toBeNull()
+        expect(mod.safeThumbUrlByArea(bad, 2250000)).toBeNull()
+      }
     }
   })
 
@@ -65,5 +81,26 @@ describe('image 工具跨副本一致性守护', () => {
       expect(src).toContain('`?imageMogr2/thumbnail/${boxSize}x${boxSize}`')
       expect(src).toContain('`?imageMogr2/thumbnail/${maxPixels}@`')
     }
+  })
+
+  /**
+   * meta-guard：守护本身必须跑在 CI 里，否则它只在本地存在，拦不住回归合入。
+   *
+   * 仿 `db-script-tests.yml` 的「CI workflow 的 paths 覆盖所有内联副本」反向断言
+   * （由 `db/scripts/__tests__/db-target-guard.test.js` 锁住）。
+   *
+   * 本 PR 之前，`clientApi/__tests__/utils/lakala-cross-copy.test.js` 就掉在这个洞里：
+   * 字节一致守护写得好好的，但从未在任何 CI job 里跑过。
+   * 删掉 lint.yml 里那个 step，这条立刻红。
+   */
+  test('meta：本守护已接进 CI（lint.yml 的 staff job 清单）', () => {
+    const lintYml = path.resolve(__dirname, '../../../../../.github/workflows/lint.yml')
+    const yml = read(lintYml)
+
+    expect(yml).toContain('__tests__/utils/image-cross-copy.test.js')
+
+    // paths 必须同时覆盖两端——守护读的是两端文件，只触发一端等于半个守护
+    expect(yml).toContain("- 'fengyu-staff/cloudfunctions/**/*.js'")
+    expect(yml).toContain("- 'fengyu-client/cloudfunctions/**/*.js'")
   })
 })

@@ -95,6 +95,22 @@ jobs:
             __tests__/routes/cross-end-inventory-snapshot.test.js \
             __tests__/routes/inventory.test.js
 
+      # 图片缩略工具的跨副本守护（#232）：`utils/image.js` 在 clientApi 与 staffApi
+      # 之间字节一致，守护测试**放在 staff 侧但读两端文件**，所以这一个 step 就同时
+      # 覆盖两端 —— 上面 paths 已含 `fengyu-client/cloudfunctions/**/*.js`，
+      # 改 client 那份同样会触发本 job 并红。
+      #
+      # 这个模块的每条校验都是 #230 五轮评审逐个堵出来的绕过构造（指令大小写、
+      # userinfo 注入、反斜杠 authority、imageView2 并存……）。不进 CI 的话，
+      # 有人"顺手简化"掉其中一条，GitHub 检查照样全绿 —— 守护等于只在本地存在。
+      - name: Run image thumbnail cross-copy guards (#232)
+        working-directory: fengyu-staff/cloudfunctions/staffApi
+        run: |
+          npx vitest run \
+            __tests__/utils/image-cross-copy.test.js \
+            __tests__/utils/image.test.js \
+            __tests__/routes/product.test.js
+
   cross-end-snapshots-admin:
     runs-on: ubuntu-latest
     steps:
