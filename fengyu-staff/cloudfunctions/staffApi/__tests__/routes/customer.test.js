@@ -261,6 +261,17 @@ describe('customer.search', () => {
     expect(pg.query.mock.calls[1][1]).toEqual(['store-001', 20, 0])
   })
 
+  test('#181 小数 pageSize 被取整：LIMIT 参数必须是整数（PG 按 int8 解析，2.5 会直接报错）', async () => {
+    const ctx = createManagerCtx({ page: 2.7, pageSize: 2.5 })
+    pg.query.mockResolvedValueOnce([])
+    await customerRoutes.search(ctx)
+    const [, params] = pg.query.mock.calls[0]
+    // page=2.7→2，pageSize=2.5→2，offset=(2-1)*2=2
+    expect(params).toEqual(['store-001', 2, 2])
+    expect(Number.isInteger(params[1])).toBe(true)
+    expect(Number.isInteger(params[2])).toBe(true)
+  })
+
   test('#181 phone 分支不分页：传 page 也返回信封但 hasMore 恒 false、SQL 无 LIMIT', async () => {
     const ctx = createManagerCtx({ phone: '13800001111', page: 1, pageSize: 1 })
     pg.query

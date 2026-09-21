@@ -219,9 +219,12 @@ async function search(ctx) {
   const restrictEmp = profileScope && restrictToBoundEmployee(ctx.auth);
 
   // 不传 page 时 safePage=1 / safePageSize=20 / offset=0，等价于改造前的 `LIMIT 20`。
+  // `page: null` 视同未传（走裸数组分支）。
   const wantsPaged = page !== undefined && page !== null;
-  const safePage = Math.max(1, Number(page) || 1);
-  const safePageSize = Math.min(100, Math.max(1, Number(pageSize) || 20));
+  // Math.trunc 不可省：Math.max/min 不取整，pageSize=2.5 会原样进 LIMIT，
+  // PG 按 int8 解析参数直接抛 `invalid input syntax for type bigint: "2.5"`（500 而非优雅降级）。
+  const safePage = Math.max(1, Math.trunc(Number(page)) || 1);
+  const safePageSize = Math.min(100, Math.max(1, Math.trunc(Number(pageSize)) || 20));
   const offset = (safePage - 1) * safePageSize;
   let rows = [];
 

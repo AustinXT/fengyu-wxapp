@@ -101,6 +101,30 @@ interface CustomerSearchPage {
 // 与 customer.listByTag 及管理层顾客列表保持同一页大小
 const PAGE_SIZE = 20;
 
+/**
+ * 把 customer.search 的返回归一化成分页信封（#181）。
+ *
+ * ⚠️ 这不是防御性编程的洁癖，是**真实的发版窗口**：云函数部署与小程序审核发布是两条
+ * 独立时间线。本页改造后恒传 `page`，若线上 staffApi 还是旧版本（不认 page，直接返回裸
+ * 数组），`data.customers` 取到 undefined → 列表恒空，而 `hasMore` 为 undefined 会让
+ * 「没有更多了」照常显示 —— 呈现出一个逼真的「本店没有顾客」假象，不报错、不进 catch。
+ * 归一化后退化为「单页、无更多」，至少第一页数据是对的。
+ */
+function normalizeSearchPage(
+  raw: CustomerSearchPage | CustomerListItem[],
+  requestedPage: number,
+): CustomerSearchPage {
+  if (Array.isArray(raw)) {
+    return { customers: raw, page: requestedPage, pageSize: PAGE_SIZE, hasMore: false };
+  }
+  return {
+    customers: raw?.customers || [],
+    page: typeof raw?.page === 'number' ? raw.page : requestedPage,
+    pageSize: raw?.pageSize || PAGE_SIZE,
+    hasMore: !!raw?.hasMore,
+  };
+}
+
 Page({
   data: {
     searchKeyword: '',
@@ -138,6 +162,13 @@ Page({
     // 分页状态（#181）：标签分支与搜索/筛选分支共用，onReachBottom 单一判据
     page: 1,
     hasMore: false,
+    /**
+     * 请求世代（#181）：每次发起列表请求自增，响应回来先比对。
+     * 翻页请求在途时切筛选/搜索会并发发起 reset 请求，若旧的那次**后**返回，
+     * 它的 reset=false 分支会把旧条件的数据追加到新列表尾部（跨筛选脏合并）。
+     * `loading` 闸门挡不住这个 —— 各筛选入口本来就允许在 loading 期间点击。
+     */
+    reqGen: 0,
     // 客户分配
     isManager: false,
     showAssignSheet: false,
@@ -152,7 +183,14 @@ Page({
     }
     this.setData({ isManager: isManager() });
     this.loadStats();
-    if (!this.data.activeTag && !this.data.searched) {
+    /**
+     * #181：补 `results.length === 0` 守卫（对齐 mgmt-customer-list 的既有范式）。
+     * 改造前这条分支不支持翻页，每次 onShow 重拉第一页无损失；加上下滑加载后，
+     * 从顾客详情页返回会把已加载的第 2、3… 页整体丢掉、列表跳回顶部 ——
+     * 恰好打在本需求最常用的默认浏览态上。
+     * 代价：详情页里改了姓名/备注后返回，列表不自动刷新，需下拉刷新（与管理层视图一致）。
+     */
+    if (!this.data.activeTag && !this.data.searched && this.data.results.length === 0) {
       this.loadList(1, true);
     }
   },
@@ -185,7 +223,8 @@ Page({
   // 关键词与拓展筛选**同时**下发 —— 改造前 onSearch 只传 keyword，筛选条在 UI 上仍高亮
   // 却不作用于结果，属于 UI 与请求不一致；合并后以 UI 所见为准。
   async loadList(page: number, reset: boolean): Promise<void> {
-    this.setData({ loading: true, hasAdvancedFilter: this.computeHasAdvancedFilter() });
+    const gen = this.data.reqGen + 1;
+    this.setData({ reqGen: gen, loading: true, hasAdvancedFilter: this.computeHasAdvancedFilter() });
     try {
       const { customerType, spendingTier, monthlyActivity, customerStatus } = this.data;
       const keyword = this.data.searchKeyword.trim();
@@ -201,8 +240,10 @@ Page({
       if (monthlyActivity) params.monthlyActivity = monthlyActivity;
       if (customerStatus) params.customerStatus = customerStatus;
       // 带 page 时云函数返回分页信封（不带则是裸数组，供业务流程选顾客沿用）
-      const data = await callStaffApi<CustomerSearchPage>('customer.search', params);
-      const customers = withMemberLevelBadgeClasses(fmtCustomerDates(data.customers || []));
+      const raw = await callStaffApi<CustomerSearchPage | CustomerListItem[]>('customer.search', params);
+      if (gen !== this.data.reqGen) return; // 期间已有更新的请求发出，本次结果作废
+      const data = normalizeSearchPage(raw, page);
+      const customers = withMemberLevelBadgeClasses(fmtCustomerDates(data.customers));
       const newResults = reset ? customers : [...this.data.results, ...customers];
       this.setData({
         results: newResults,
@@ -211,15 +252,16 @@ Page({
         searched: !!keyword,
       });
     } catch (err: unknown) {
-      // 首屏失败清空列表（沿用既有静默口径）；翻页失败保留已有结果并提示
-      if (reset) {
+      if (gen !== this.data.reqGen) return;
+      // 始终提示（合并前 onSearch 失败是有 toast 的，不能因为合并而丢掉反馈）；
+      // 只有在本来就没数据时才清空 —— 一次失败的刷新不该抹掉已在屏的好数据
+      const msg = err instanceof Error ? err.message : '加载失败';
+      wx.showToast({ title: msg, icon: 'none' });
+      if (reset && this.data.results.length === 0) {
         this.setData({ results: [], page: 1, hasMore: false });
-      } else {
-        const msg = err instanceof Error ? err.message : '加载失败';
-        wx.showToast({ title: msg, icon: 'none' });
       }
     } finally {
-      this.setData({ loading: false });
+      if (gen === this.data.reqGen) this.setData({ loading: false });
     }
   },
 
@@ -290,9 +332,11 @@ Page({
   },
 
   async loadByTag(tag: TagType, page: number, reset: boolean) {
-    this.setData({ loading: true });
+    const gen = this.data.reqGen + 1;
+    this.setData({ reqGen: gen, loading: true });
     try {
       const data = await callStaffApi<CustomerTagResponse>('customer.listByTag', { tag, page, pageSize: PAGE_SIZE });
+      if (gen !== this.data.reqGen) return; // 同 loadList：期间已有更新的请求
       const customers = withMemberLevelBadgeClasses(fmtCustomerDates(data.customers || []));
       const newResults = reset ? customers : [...this.data.results, ...customers];
       this.setData({
@@ -301,10 +345,11 @@ Page({
         hasMore: newResults.length < data.total,
       });
     } catch (err: unknown) {
+      if (gen !== this.data.reqGen) return;
       const msg = err instanceof Error ? err.message : '加载失败';
       wx.showToast({ title: msg, icon: 'none' });
     } finally {
-      this.setData({ loading: false });
+      if (gen === this.data.reqGen) this.setData({ loading: false });
     }
   },
 
