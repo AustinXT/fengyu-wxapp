@@ -1,6 +1,8 @@
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
+import { INVENTORY_GENERIC_DOC_TYPES } from '@/lib/inventory/types'
+import { INVENTORY_BUSINESS_LEVELS, genericDocBusinessLevel } from '@/lib/inventory/business-level'
 
 /**
  * 办理台（inventory-operations-page.tsx）的表单一致性守护（#135）。
@@ -298,39 +300,137 @@ describe('业务工作区双 Tab（#190）', () => {
 })
 
 /**
- * 通用业务卡片与单据 Tab 的边界（#190 / #191）。
+ * 通用建单业务卡片（#191 把 #190 里「通用卡走 Link、不参与单据 Tab」那层临时保护
+ * 换成了真正的映射）。
  *
- * 10 张通用卡（内部领用 / 报损 / 盘点 / 调货 / 顾客产品出库…）目前借用了三个真实
- * 转换业务的 id 当 React key，靠 `href` 分支走 <Link> 跳单据中心，永远不会
- * setActiveOperation，所以不会打开单据 Tab。这层保护是**隐式**的 ——
- * 一旦 #191 把某张卡改成内嵌表单而忘了给它自己的 id，
- * 「市场产品报损」的单据 Tab 会直接列出库存转换单：页面完全正常，数据完全不对。
+ * 这批卡以前借用三个转换业务的 id 当 React key，靠 `href` 分支绕开单据 Tab；
+ * 现在它们和内置卡一样能打开工作区，保护必须落在 **id 与 docType 的对应关系**上 ——
+ * 借错 id 的后果是「市场产品报损」的 Tab 列出库存转换单：页面完全正常，数据完全不对。
  */
-describe('通用业务卡片不参与单据 Tab（#190 / #191 交界）', () => {
+describe('通用建单业务卡片（#191）', () => {
   const source = readFileSync(resolve(__dirname, 'inventory-operations-page.tsx'), 'utf8')
 
-  it('GENERIC_OPERATIONS 每一条都带 href（否则会落进按 id 查映射表的单据 Tab）', () => {
-    const generic = source.slice(
-      source.indexOf('const GENERIC_OPERATIONS'),
-      source.indexOf('function today()'),
-    )
-    const entries = generic.match(/\{ id: '[^']+',[^}]*\}/g) ?? []
-    /*
-     * ⚠️ 上面的正则要求 `id` 是字面量的第一个键且条目里没有嵌套对象。
-     * 键序一变条目就不进 entries —— 没 href 也不会红，正好漏掉这条测试要防的事故。
-     * 所以先用「`id:` 的出现次数 == 抓到的条目数」把漏检本身钉住。
-     */
-    const idCount = (generic.match(/\bid: '/g) ?? []).length
-    expect(entries.length, '有通用卡没被守护正则抓到（键序变了？含嵌套对象？）').toBe(idCount)
-    expect(entries.length).toBeGreaterThanOrEqual(10)
-    for (const entry of entries) {
-      expect(entry, `通用卡缺 href：${entry.slice(0, 60)}`).toContain("href: '/inventory/docs?create=")
+  const genericBlock = source.slice(
+    source.indexOf('const GENERIC_OPERATIONS'),
+    source.indexOf('function genericAsOperation'),
+  )
+
+  it('通用卡只声明 docType，不再借用内置业务 id', () => {
+    // 有 `id:` 就说明又开始手写 id 了 —— 那正是借错 id 的入口。
+    expect(genericBlock).not.toMatch(/\bid: '/)
+    const docTypes = [...genericBlock.matchAll(/docType: '([^']+)'/g)].map((m) => m[1])
+    expect(docTypes.length).toBe(10)
+    // 每张卡的类型必须真属于「无需上游血缘」的通用建单类型，
+    // 混进 '品项公司发货' 这种业务单类型就等于从通用入口绕过专用服务的校验。
+    for (const docType of docTypes) {
+      expect(INVENTORY_GENERIC_DOC_TYPES, `${docType} 不是通用建单类型`).toContain(docType)
+    }
+    // 10 张卡覆盖全部 10 种通用类型，不重不漏
+    expect([...docTypes].sort()).toEqual([...INVENTORY_GENERIC_DOC_TYPES].sort())
+  })
+
+  it('通用卡所在层级与 genericDocBusinessLevel 一致', () => {
+    // 不一致的话，深链 `?create=<docType>` 的层级校验会把用户挡在门外，
+    // 而卡片就明晃晃摆在那个层级的页面上 —— 点得开、深链打不开，自相矛盾。
+    for (const level of INVENTORY_BUSINESS_LEVELS) {
+      const levelBlock = genericBlock.slice(
+        genericBlock.indexOf(`${level === 'supply-chain' ? "'supply-chain'" : level}: [`),
+      )
+      const firstEntryEnd = levelBlock.indexOf('\n  ],')
+      const entries = [...levelBlock.slice(0, firstEntryEnd).matchAll(/docType: '([^']+)'/g)].map((m) => m[1])
+      expect(entries.length, `${level} 没解析到通用卡`).toBeGreaterThan(0)
+      for (const docType of entries) {
+        expect(genericDocBusinessLevel(docType as never), `${docType} 挂错层级`).toBe(level)
+      }
     }
   })
 
-  it('工作区只接受 OPERATIONS 里的卡片，通用卡走 Link 分支', () => {
-    // active 的来源必须限定在 OPERATIONS（内置表单卡），不能把 GENERIC_OPERATIONS 也算进去。
-    expect(source).toMatch(/const active = OPERATIONS\.find\(/)
-    expect(source).toMatch(/if \(operation\.href\) \{/)
+  it('通用业务走共享建单表单，且 visible 不跟 Tab 切换走', () => {
+    // visible 接到 Tab 上的话，用户切去看单据再回来，已选的批次会被
+    // 共享表单的「不可见即推进代次」effect 清掉 —— 直接违背 #190 的「切 Tab 不丢表单」。
+    const workspace = source.slice(source.indexOf('function OperationWorkspace('))
+    expect(workspace).toMatch(/<InventoryDocCreateForm\s+visible\s/)
+    expect(workspace).toMatch(/allowedDocTypes=\{\[card\.docType\]\}/)
+    // 锁死单一类型：不锁的话用户能在「市场产品报损」的工作区里改选成盘点单。
+    expect(workspace).toMatch(/initialDocType=\{card\.docType\}/)
+  })
+
+  it('卡片渲染不再有 href/Link 分支', () => {
+    const cardsBlock = source.slice(source.indexOf('{levelOperations.filter('), source.indexOf('{active && ('))
+    expect(cardsBlock).not.toMatch(/operation\.href/)
+    expect(cardsBlock).not.toMatch(/<Link/)
+  })
+})
+
+/**
+ * 共享建单表单接进办理台时的闸门（#191 pr-ready 三方审计的 P1/P2）。
+ *
+ * 这几条防的都是「页面看起来完全正常，但用户多建了一张实扣库存的单」。
+ */
+describe('办理台内嵌建单的闸门（#191）', () => {
+  const source = readFileSync(resolve(__dirname, 'inventory-operations-page.tsx'), 'utf8')
+  const formSource = readFileSync(resolve(__dirname, 'inventory-doc-create-form.tsx'), 'utf8')
+
+  it('建单成功后表单就地清场，不能靠调用方去关弹窗', () => {
+    /*
+     * 办理台提交完工作区还开着（只 toast + router.refresh()，后者不重挂客户端组件）。
+     * 不清场的话用户再点一次就是第二张一模一样的单，而 10 种通用类型里有 6 种
+     * 建单当刻就落库存流水 —— 重复提交＝重复扣减，只能事后红冲。
+     */
+    const submitBody = formSource.slice(
+      formSource.indexOf('const result = await createInventoryCoreDoc(payload)'),
+      formSource.indexOf('} catch (err) {', formSource.indexOf('const result = await createInventoryCoreDoc')),
+    )
+    expect(submitBody).toMatch(/setItems\(\[defaultItem\(\)\]\)/)
+    expect(submitBody).toMatch(/setRemark\(''\)/)
+    // 批次可用量刚被自己这单改掉，必须推代次让下一张单重新取数
+    expect(submitBody).toMatch(/setLotEpoch\(\(n\) => n \+ 1\)/)
+    // 单号要交回给调用方做可核对的反馈
+    expect(submitBody).toMatch(/onSuccess\(result\.id\)/)
+  })
+
+  it('onStale 只刷新，不碰任何成功通道', () => {
+    // 接成 onSuccess 的话，提交失败时会在红色错误 toast 旁边再弹一条绿色「成功」。
+    // ⚠️ 不能只防 `onStale={() => onSuccess(...)}` 这一种字面写法 ——
+    // 包成 `onStale={() => { router.refresh(); onSuccess('x') }}` 就绕过去了。
+    // 改成：把 onStale 的整个表达式切出来，断言里面除了 router.refresh() 什么都没有。
+    const workspace = source.slice(source.indexOf('function OperationWorkspace('))
+    const onStaleStart = workspace.indexOf('onStale={')
+    expect(onStaleStart).toBeGreaterThan(-1)
+    const onStaleExpr = workspace.slice(onStaleStart, workspace.indexOf('\n', onStaleStart))
+    expect(onStaleExpr).toMatch(/onStale=\{\(\) => router\.refresh\(\)\}/)
+    expect(onStaleExpr).not.toMatch(/onSuccess|toast/)
+  })
+
+  it('提交在途时卡片与关闭按钮一起上锁', () => {
+    // 这时候切走会把表单连同在途请求一起卸载：单已经建出去了，用户却只看到面板消失。
+    // ⚠️ 锚定到 enabled 的计算式里，不要全文找 `!workspaceBusy` —— 那样任何无关位置
+    // 出现这个子串都算过，「锁卡片」这条被单独拆掉时反而抓不住。
+    const enabledExpr = source.slice(
+      source.indexOf('const enabled = (operation.approvalOnly'),
+      source.indexOf('const content = ('),
+    )
+    expect(enabledExpr).toMatch(/&& !workspaceBusy/)
+    expect(source).toMatch(/closeDisabled=\{busy\}/)
+    expect(source).toMatch(/onBusyChange=\{setWorkspaceBusy\}/)
+  })
+
+  it('深链先打开工作区再抹掉 ?create=，顺序不能反', () => {
+    // 只抹参数不打开的话，客户端软导航（Link / router.push 带 ?create=）会静默失效：
+    // useState 只吃首次挂载的初值，服务端 prop 变了组件却不重挂。
+    const effect = source.slice(
+      source.indexOf('if (!initialOperationId) return'),
+      source.indexOf('}, [initialOperationId, level, router])'),
+    )
+    const setIndex = effect.indexOf('setActiveOperation(initialOperationId)')
+    const replaceIndex = effect.indexOf('router.replace(')
+    expect(setIndex).toBeGreaterThan(-1)
+    expect(replaceIndex).toBeGreaterThan(setIndex)
+  })
+
+  it('通用卡的 docType 有编译期覆盖性检查，不只靠测试扫源码', () => {
+    // 漏配一张卡时 tsc 直接报错并点名缺哪种类型（已做变异验证）。
+    expect(source).toMatch(/as const satisfies Record<InventoryBusinessLevel, readonly GenericOperationDefinition\[\]>/)
+    expect(source).toMatch(/Exclude<InventoryGenericDocType, DeclaredGenericDocTypes>/)
   })
 })

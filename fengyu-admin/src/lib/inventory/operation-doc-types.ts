@@ -1,3 +1,4 @@
+import { INVENTORY_GENERIC_DOC_TYPES } from './types'
 import type { InventoryCoreDocStatus, InventoryDocType, InventoryLocationType } from './types'
 
 /**
@@ -140,4 +141,59 @@ export const INVENTORY_OPERATION_DOC_QUERY: Record<InventoryOperationId, Invento
     docTypes: ['库存转换出库', '库存转换入库'],
     locationType: '门店',
   },
+}
+
+/*
+ * ────────── 通用建单业务（#191） ──────────
+ *
+ * 10 张「通用业务」卡片（内部领用 / 报损 / 盘点 / 调货 / 顾客产品出入库）与上面 24 个
+ * 内置业务的区别：它们没有专属的业务函数，就是**直接建一张某类型的单**。
+ * 所以 id 直接由 docType 派生、映射天然为「查这一种单据」，零维护。
+ *
+ * ⚠️ 这批卡片在 #191 之前借用了三个转换业务的 id 当 React key，一旦哪天被改成内嵌表单，
+ * 「市场产品报损」的单据 Tab 会直接列出库存转换单 —— 页面完全正常，数据完全不对。
+ * 独立 id 就是为了堵死这条路。
+ */
+export const GENERIC_OPERATION_PREFIX = 'generic:'
+
+/** 通用建单类型（`INVENTORY_GENERIC_DOC_TYPES` 的成员），供卡片定义做编译期约束。 */
+export type InventoryGenericDocType = (typeof INVENTORY_GENERIC_DOC_TYPES)[number]
+
+export type InventoryGenericOperationId = `${typeof GENERIC_OPERATION_PREFIX}${string}`
+
+export function genericOperationId(docType: InventoryDocType): InventoryGenericOperationId {
+  return `${GENERIC_OPERATION_PREFIX}${docType}`
+}
+
+/**
+ * 解析通用业务 id → docType。**白名单校验在这里**：
+ * 只认 `INVENTORY_GENERIC_DOC_TYPES`（那 10 种无需上游血缘的类型），
+ * 拼一个 `generic:品项公司发货` 进来会被拒 —— 否则就能从通用入口绕过
+ * 专用服务的数量、价格、批次校验去建业务单。
+ */
+export function asGenericDocType(value: string | undefined | null): InventoryDocType | null {
+  if (!value) return null
+  return (INVENTORY_GENERIC_DOC_TYPES as readonly string[]).includes(value)
+    ? (value as InventoryDocType)
+    : null
+}
+
+export function parseGenericOperationId(operationId: string): InventoryDocType | null {
+  if (!operationId.startsWith(GENERIC_OPERATION_PREFIX)) return null
+  return asGenericDocType(operationId.slice(GENERIC_OPERATION_PREFIX.length))
+}
+
+/** 任一业务卡片 id（内置表单业务 ∪ 通用建单业务）。 */
+export type InventoryAnyOperationId = InventoryOperationId | InventoryGenericOperationId
+
+/**
+ * 业务 id → 单据 Tab 的查询条件。内置业务查表，通用业务按 docType 直接派生。
+ * 返回 `null` = 不认识这个 id，调用方必须 fail-closed（别退化成「不加过滤」）。
+ */
+export function resolveOperationDocQuery(operationId: string): InventoryOperationDocQuery | null {
+  const genericDocType = parseGenericOperationId(operationId)
+  if (genericDocType) return { docTypes: [genericDocType] }
+  return (INVENTORY_OPERATION_IDS as readonly string[]).includes(operationId)
+    ? INVENTORY_OPERATION_DOC_QUERY[operationId as InventoryOperationId]
+    : null
 }
