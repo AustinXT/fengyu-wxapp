@@ -176,7 +176,7 @@ describe('WXSS 文本截断有效性（#238）', () => {
             if (tags.size === 0) continue // class 未被使用（死样式），不报
             const msg =
               `${rel}:${rule.line}  .${cls}  display:${d}` +
-              ` —— flex/grid container 不是 block container，ellipsis 不生效（宿主 <${[...tags].join('/')}>）`
+              ` —— 该 display 不是 block container，ellipsis 不生效（宿主 <${[...tags].join('/')}>）`
             ;(KNOWN_BROKEN.includes(`${rel}|${cls}`) ? exempted : broken).push(msg)
             continue
           }
