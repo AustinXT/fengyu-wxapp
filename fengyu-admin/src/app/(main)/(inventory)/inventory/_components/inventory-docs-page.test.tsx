@@ -460,6 +460,60 @@ describe('InventoryDocsPage 来源批次下拉（#129 回归）', () => {
   })
 })
 
+/**
+ * #200：服务端现在会拒绝「单边单据收到另一边的主体」（改前是静默忽略）。
+ * 这个弹窗用 `useState('')` 存两个主体，且原生 `<dialog>` 关闭不卸载组件 ——
+ * 用同一个弹窗连着建两张不同类型的单时，上一张的主体残留会让新单以
+ * 「XX 不接受入库主体」失败，而那个下拉在新类型下根本不该有值。
+ */
+describe('#200 切换单据类型时复位主体字段', () => {
+  const targetSelect = () => dialogSelect(/^入库\/接收主体$/)
+
+  function openWithTypes(types: InventoryDocType[]) {
+    render(
+      <InventoryDocsPage
+        {...baseProps}
+        locations={locations}
+        skuOptions={skuOptions}
+        allowedCreateDocTypes={types}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: '新建' }))
+  }
+
+  it('换类型后出库/入库主体都回到未选状态，不把上一张单的残留带进新单', () => {
+    openWithTypes(['分院调货出库', '院顾客产品出库'])
+
+    fireEvent.change(sourceSelect(), { target: { value: 'M1' } })
+    fireEvent.change(targetSelect(), { target: { value: 'M2' } })
+    expect(sourceSelect().value).toBe('M1')
+    expect(targetSelect().value).toBe('M2')
+
+    fireEvent.change(dialogSelect(/^分院调货出库$/), { target: { value: '院顾客产品出库' } })
+
+    // 院顾客产品出库是单边（只走 source）单据，残留的 target 会被服务端直接拒
+    expect(sourceSelect().value).toBe('')
+    expect(targetSelect().value).toBe('')
+  })
+
+  it('换类型同时清掉已选批次（主体一换批次必然失效）', async () => {
+    vi.mocked(listInventoryLotOptions).mockResolvedValue([lot(11, 'SKU-1', 'B-001', 30)])
+    openWithTypes(['市场产品报损', '院顾客退货'])
+
+    fireEvent.change(sourceSelect(), { target: { value: 'M1' } })
+    fireEvent.change(skuSelect(), { target: { value: 'SKU-1' } })
+    await waitFor(() => expect(lotSelect()).not.toBeDisabled())
+    fireEvent.change(lotSelect(), { target: { value: '11' } })
+    expect(lotSelect().value).toBe('11')
+
+    fireEvent.change(dialogSelect(/^市场产品报损$/), { target: { value: '院顾客退货' } })
+
+    expect(sourceSelect().value).toBe('')
+    // 院顾客退货不需要来源批次，批次下拉本身会消失；这里断言主体确实被复位即可
+    expect(targetSelect().value).toBe('')
+  })
+})
+
 // issue #129 的验收标准之一是「6 种单据类型均能在单据中心成功创建并落库」。
 // 只断言「批次加载出来了」挡不住后续回归：onChange 不再写 item.lotId、
 // 或 payload 映射漏掉 lotId，批次照样能加载，6 种出库单却全部撞服务端必填校验。

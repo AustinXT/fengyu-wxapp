@@ -3286,7 +3286,18 @@ export const rejectInventoryCoreDoc = withAnyPermission(
       if (!doc) throw new ApiError('NOT_FOUND', '库存单据不存在')
       assertGenericDocTransition(doc.doc_type)
       if (doc.status !== '待审批') throw new ApiError('INVALID_STATE', '只有待审批单据可以驳回')
-      await assertOrgNodeVisible(session, doc.source_org_node_id ?? doc.target_org_node_id ?? '')
+      /**
+       * #200：与 approve 分支（对 `head.source_org_node_id` 显式鉴权）对称。
+       * 驳回只回滚预留、不搬库存，但鉴权对象必须和审批一致 —— 原先写成
+       * `source ?? target ?? ''`，是本 issue 要清理的那个「取一个代表值去做安全决策」
+       * 反模式。今天走不到 `?? target` 分支（能进「待审批」的都是 APPROVAL_DOC_TYPES，
+       * 它们的 source 恒非空），但那是巧合：新增一个 source 可空的待审批类型，
+       * 这里就会无声退化成按 target 鉴权。
+       */
+      if (!doc.source_org_node_id) {
+        throw new ApiError('INVALID_STATE', '待审批单据缺少出库主体，无法驳回')
+      }
+      await assertOrgNodeVisible(session, doc.source_org_node_id)
 
       const updated = await tx.execute(sql`
         UPDATE inventory_docs

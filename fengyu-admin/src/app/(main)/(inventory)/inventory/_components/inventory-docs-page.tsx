@@ -826,7 +826,22 @@ function CreateDocDialog({
       </DialogHeader>
       <div className="mt-4 space-y-4">
         <div className="grid grid-cols-4 gap-3">
-          <Select value={docType} disabled={isDocTypeLocked} onChange={(e) => setDocType(e.target.value as InventoryDocType)}>
+          <Select
+            value={docType}
+            disabled={isDocTypeLocked}
+            onChange={(e) => {
+              setDocType(e.target.value as InventoryDocType)
+              /**
+               * #200：换单据类型必须清空两个主体。服务端现在会拒绝「单边单据收到另一边的
+               * 主体」（改前是静默忽略）—— 用同一个弹窗连着建两张不同类型的单时，上一张的
+               * 残留值会让新单以「XX 不接受入库主体」失败，而那个下拉在新类型下本来就不该有值。
+               * 主体一换批次必然失效，lotId 一并清（与下方主体 onChange 同口径）。
+               */
+              setSourceOrgNodeId('')
+              setTargetOrgNodeId('')
+              setItems((prev) => (prev.some((item) => item.lotId) ? prev.map((item) => ({ ...item, lotId: '' })) : prev))
+            }}
+          >
             {availableDocTypes.map((type) => (
               <option key={type} value={type}>{type}</option>
             ))}
