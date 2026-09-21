@@ -480,6 +480,9 @@ function publicManifest(env, config, target) {
     analystAdminOrigin: config.ANALYST_ADMIN_ORIGIN,
     analystAdminLoginUrl: config.ANALYST_ADMIN_LOGIN_URL,
     nextPublicRsaPublicKey: config.NEXT_PUBLIC_RSA_PUBLIC_KEY,
+    // 进销存发布开关。刻意不进 REQUIRED_KEYS：缺键时回落 'false'（fail-closed），
+    // 既不阻断未同步该键的本地 env 部署，也不会把库存入口误开进未完成期初核验的环境。
+    nextPublicInventoryLinkageEnabled: config.NEXT_PUBLIC_INVENTORY_LINKAGE_ENABLED ?? 'false',
     cloudbaseEnvId: config.CLOUDBASE_ENV_ID,
     cdnBase: config.CDN_BASE,
   }
