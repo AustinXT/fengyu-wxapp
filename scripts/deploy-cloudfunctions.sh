@@ -17,28 +17,67 @@
 #    代码更新后，本脚本再通过 SCF API 对指定变量执行“读取→合并→回读验证”，
 #    避免 `tcb config update` 3.0.1 的键名损坏问题，也不会覆盖未纳入模板的变量。
 #
-# Usage: scripts/deploy-cloudfunctions.sh [client|staff|all] [--yes]
-#   client → 只部 clientApi + payNotify + 两个影子函数（client 账号 / CLIENT_ENV_ID）
-#   staff  → 只部 staffApi + staffApiDev（staff 账号 / STAFF_ENV_ID）
-#   all    → 六个函数都部（默认）。影子函数(*Dev)与正式函数同 env 同代码，仅连接库不同。
-#   --yes  → 跳过 prod confirm（位置任意）
+# Usage: scripts/deploy-cloudfunctions.sh [dev|prod|both] [client|staff|all] [--yes] [--plan]
+#
+# 两个正交维度，顺序无关：
+#
+#   ① 通道（部署哪一套函数）—— 单 env 内并存两套同代码、连不同库的部署
+#      dev   → 只部影子函数 clientApiDev / payNotifyDev / staffApiDev（连 dev 库）
+#              **完全不碰生产函数**，因此跳过 confirm
+#      prod  → 只部正式函数 clientApi / payNotify / staffApi（连 prod 库），需 confirm
+#      both  → 六个都部（默认，发版场景），需 confirm
+#
+#   ② 端（部署哪一侧）
+#      client → clientApi 系（client 账号 / CLIENT_ENV_ID）
+#      staff  → staffApi 系（staff 账号 / STAFF_ENV_ID）
+#      all    → 两端都部（默认）
+#
+#   --yes  → 跳过 confirm（位置任意）
+#   --plan → 只打印部署计划与函数数后退出，不做任何改动（渲染/登录/上传都不执行）
+#
+# 常用：
+#   ...deploy-cloudfunctions.sh dev          # 改完代码先只发 dev 验证，生产不动
+#   ...deploy-cloudfunctions.sh dev staff    # 只发 staffApiDev
+#   ...deploy-cloudfunctions.sh prod         # 验证通过后再发生产
+#   ...deploy-cloudfunctions.sh              # 发版：六个全发
+#   ...deploy-cloudfunctions.sh prod --plan  # 拿不准会动什么，先看计划
+#
+# ⚠️ 注意 `.active` 恒为 prod（所有函数都住 prod env）。这里的 dev/prod 指的是
+#    【函数连哪个库】，不是【部到哪个 CloudBase 环境】——后者已只剩一个。
 
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
-# ── 参数解析（target + --yes，顺序无关）──
+# ── 参数解析（channel + target + --yes，顺序无关）──
+# 通道用 both 而非 all 表示全选，避免与端维度的 all 撞词。
+CHANNEL=both
 TARGET=all
 ASSUME_YES=0
+PLAN_ONLY=0
+CHANNEL_SET=0
+TARGET_SET=0
 for arg in "$@"; do
   case "$arg" in
-    client|staff|all) TARGET="$arg" ;;
+    # 同一维度给两个值一律拒绝，不做「最后一个生效」。
+    # `deploy-cloudfunctions.sh prod dev` 这种手误会让 CHANNEL=dev：生产函数不部署，
+    # 且因 DO_PRIMARY=0 连 confirm 都跳过 —— 操作者以为发了生产，实际全程无人工闸口。
+    dev|prod|both)
+      [[ "$CHANNEL_SET" == "1" ]] && { echo "ERROR: 通道参数重复（已是 '$CHANNEL'，又给了 '$arg'）。请只指定一个。" >&2; exit 1; }
+      CHANNEL="$arg"; CHANNEL_SET=1 ;;
+    client|staff|all)
+      [[ "$TARGET_SET" == "1" ]] && { echo "ERROR: 端参数重复（已是 '$TARGET'，又给了 '$arg'）。请只指定一个。" >&2; exit 1; }
+      TARGET="$arg"; TARGET_SET=1 ;;
     --yes|-y)         ASSUME_YES=1 ;;
-    *) echo "ERROR: unknown arg '$arg'. Usage: $0 [client|staff|all] [--yes]" >&2; exit 1 ;;
+    --plan|-n)        PLAN_ONLY=1 ;;
+    *) echo "ERROR: unknown arg '$arg'. Usage: $0 [dev|prod|both] [client|staff|all] [--yes] [--plan]" >&2; exit 1 ;;
   esac
 done
 DO_STAFF=0; DO_CLIENT=0
 [[ "$TARGET" == "staff"  || "$TARGET" == "all" ]] && DO_STAFF=1
 [[ "$TARGET" == "client" || "$TARGET" == "all" ]] && DO_CLIENT=1
+DO_PRIMARY=0; DO_SHADOW=0
+[[ "$CHANNEL" == "prod" || "$CHANNEL" == "both" ]] && DO_PRIMARY=1
+[[ "$CHANNEL" == "dev"  || "$CHANNEL" == "both" ]] && DO_SHADOW=1
 
 if [[ ! -f "$ROOT/envs/.active" ]]; then
   echo "ERROR: envs/.active not found. Run scripts/use-env.sh <env> first." >&2
@@ -87,6 +126,34 @@ fi
 PROD_PG_HOST=118.178.196.26
 DEV_PG_HOST=101.34.242.103
 
+# ── 步骤计数：每端每通道 staff 1 个 / client 2 个函数 ──
+# 放在计划打印之前，好让 --plan 也能暴露计数，避免 TOTAL 与实际步数脱节却没人看见。
+TOTAL=0
+for _ch in primary shadow; do
+  [[ "$_ch" == "primary" && "$DO_PRIMARY" != "1" ]] && continue
+  [[ "$_ch" == "shadow"  && "$DO_SHADOW"  != "1" ]] && continue
+  [[ "$DO_STAFF"  == "1" ]] && TOTAL=$((TOTAL + 1))
+  [[ "$DO_CLIENT" == "1" ]] && TOTAL=$((TOTAL + 2))
+done
+STEP=0
+
+# ── 本次部署计划（无论是否 confirm 都打印，让操作者看见实际目标）──
+echo "==> 部署计划：channel=$CHANNEL  target=$TARGET  共 $TOTAL 个函数"
+if [[ "$DO_PRIMARY" == "1" ]]; then
+  [[ "$DO_STAFF"  == "1" ]] && echo "    staffApi                    → $STAFF_ENV_ID   [prod 库 $PROD_PG_HOST]"
+  [[ "$DO_CLIENT" == "1" ]] && echo "    clientApi + payNotify       → $CLIENT_ENV_ID  [prod 库 $PROD_PG_HOST]"
+fi
+if [[ "$DO_SHADOW" == "1" ]]; then
+  [[ "$DO_STAFF"  == "1" ]] && echo "    staffApiDev                 → $STAFF_ENV_ID   [dev  库 $DEV_PG_HOST]"
+  [[ "$DO_CLIENT" == "1" ]] && echo "    clientApiDev + payNotifyDev → $CLIENT_ENV_ID  [dev  库 $DEV_PG_HOST]"
+fi
+echo "    注：两套函数同住 prod env，仅连接库不同；此处 dev/prod 指【连哪个库】。"
+
+if [[ "$PLAN_ONLY" == "1" ]]; then
+  echo "(--plan：仅预览，未做任何改动)"
+  exit 0
+fi
+
 # `fn code update` uploads local code verbatim and these functions set
 # installDependency=false. Refuse to deploy a package with unresolved runtime deps.
 assert_function_dependencies() {  # $1=relative function directory  $2=function name
@@ -132,18 +199,12 @@ if [[ "$DO_CLIENT" == "1" ]]; then
   assert_function_dependencies fengyu-client/cloudfunctions/payNotify payNotify
 fi
 
-# 防呆：prod 强制 confirm（仅列出本次实际部署的目标）
-if [[ "$ACTIVE" == "prod" && "$ASSUME_YES" != "1" ]]; then
-  echo "⚠️  About to deploy to PROD (target=$TARGET):"
-  if [[ "$DO_STAFF" == "1" ]]; then
-    echo "    staffApi                  → $STAFF_ENV_ID   [prod 库 $PROD_PG_HOST]"
-    echo "    staffApiDev               → $STAFF_ENV_ID   [dev  库 $DEV_PG_HOST]"
-  fi
-  if [[ "$DO_CLIENT" == "1" ]]; then
-    echo "    clientApi + payNotify     → $CLIENT_ENV_ID  [prod 库 $PROD_PG_HOST]"
-    echo "    clientApiDev + payNotifyDev → $CLIENT_ENV_ID  [dev  库 $DEV_PG_HOST]"
-  fi
-  echo "    注：影子函数(*Dev)与正式函数同住 prod env，仅连接库不同。"
+# 防呆：只有会动【生产库函数】时才强制 confirm。
+# 纯 dev 通道不碰任何正式函数，每次都要敲 yes 只会训练出肌肉记忆式确认，
+# 反而稀释了这道闸在真正碰生产时的警示作用。
+if [[ "$DO_PRIMARY" == "1" && "$ASSUME_YES" != "1" ]]; then
+  echo ""
+  echo "⚠️  本次会更新【连生产库】的正式函数。"
   read -p "Type 'yes' to confirm: " confirm
   if [[ "$confirm" != "yes" ]]; then
     echo "Aborted."
@@ -230,30 +291,36 @@ echo "  ✓ envId + PG host 校验通过（${ACTIVE}）"
 # `function public.try_jsonb(text) does not exist` —— 报错点在收款主链上，是生产事故。
 # 这里用目标环境自己的连接串做**只读**探测（Node pg，不依赖本机 psql）。
 # 处置分环境：dev 探测不通告警放行；**prod 一律 fail-closed**（无法确认迁移状态就拒绝部署）。
-assert_db_prereqs() {
+assert_db_prereqs() {  # $1=cloudbaserc 路径  $2=channel(primary|shadow)
+  local want_shadow="$2"
   local pg_conn
   pg_conn=$(node -e '
     const fs = require("fs")
     const c = JSON.parse(fs.readFileSync(process.argv[1], "utf8"))
-    // 必须排除影子函数（*Dev）：它们连 dev 库，而这里要探测的是【本次部署目标环境】的库。
-    // 从前同 env 各函数连接串一致，取哪个都等价；自打影子函数进场就不再成立——
-    // 用 .find() 不加过滤会在 prod 部署时静默去探 dev 库，等于这道迁移闸形同虚设。
+    const wantShadow = process.argv[2] === "shadow"
+    // 必须按【本次实际部署的通道】取连接串：正式函数连 prod 库、影子函数连 dev 库，
+    // 探测目标要跟着走。从前同 env 各函数连接串一致，取哪个都等价；
+    // 自打影子函数进场就不再成立——不加过滤的 .find() 会在只部 prod 时去探 dev 库，
+    // 等于这道迁移闸形同虚设。反过来只部 dev 时探 prod 库，则 dev 库漏迁照样放行。
     const fn = (c.functions || []).find(
-      (x) => x.envVariables && x.envVariables.PG_CONNECTION_STRING && !/Dev$/.test(x.name || "")
+      (x) => x.envVariables && x.envVariables.PG_CONNECTION_STRING
+        && /Dev$/.test(x.name || "") === wantShadow
     )
     process.stdout.write(fn ? fn.envVariables.PG_CONNECTION_STRING : "")
-  ' "$1" 2>/dev/null || true)
-  # 探测不通时的处置：dev 告警放行，**prod 一律 fail-closed**——
-  # 生产恰恰是最不能"无法确认迁移状态还继续上传"的环境。
-  local soft_fail  # 0=可放行（dev）  1=必须中止（prod）
-  [[ "$ACTIVE" == "prod" ]] && soft_fail=1 || soft_fail=0
+  ' "$1" "$2" 2>/dev/null || true)
+  # 探测不通时的处置跟着【目标库】走，而不是跟着 .active（它恒为 prod）：
+  # 探不到 prod 库 → fail-closed，生产最不能"无法确认迁移状态还继续上传"；
+  # 探不到 dev 库  → 告警放行，dev 库偶发不可达不该挡住开发自测。
+  # fail_closed=1 → 探测失败即中止；=0 → 告警放行。（原名 soft_fail 语义是反的）
+  local fail_closed db_label
+  if [[ "$want_shadow" == "shadow" ]]; then fail_closed=0; db_label="dev"; else fail_closed=1; db_label="prod"; fi
   _db_probe_unavailable() {  # $1=原因
-    if [[ "$soft_fail" == "1" ]]; then
-      echo "ERROR: prod 部署无法确认 DB 迁移状态（$1），拒绝继续。" >&2
-      echo "       请先确认 ${ACTIVE} 库已执行 db:migrate（0045_try_cast_helpers）。" >&2
+    if [[ "$fail_closed" == "1" ]]; then
+      echo "ERROR: 部署正式函数前无法确认 ${db_label} 库的迁移状态（$1），拒绝继续。" >&2
+      echo "       请先确认 ${db_label} 库已执行 db:migrate（0045_try_cast_helpers）。" >&2
       exit 1
     fi
-    echo "  ⚠️  $1，跳过 DB 前置依赖检查（${ACTIVE} 环境放行；部署前请自行确认已迁 0045）"
+    echo "  ⚠️  $1，跳过 ${db_label} 库的前置依赖检查（放行；请自行确认已迁 0045）"
     return 0
   }
 
@@ -291,15 +358,27 @@ assert_db_prereqs() {
   fi
 
   if [[ -n "${probe//[[:space:]]/}" ]]; then
-    echo "ERROR: 目标库缺少云函数依赖的 DB 对象：${probe}" >&2
-    echo "       请先对 ${ACTIVE} 库执行 db:migrate（migration 0045_try_cast_helpers），再部署。" >&2
+    # 必须报 $db_label 而不是 $ACTIVE：后者恒为 prod，
+    # 探 shadow 通道发现 dev 库漏迁时会把人指去迁 prod 库，越迁越错。
+    echo "ERROR: ${db_label} 库缺少云函数依赖的 DB 对象：${probe}" >&2
+    echo "       请先对 ${db_label} 库执行 db:migrate（migration 0045_try_cast_helpers），再部署。" >&2
     echo "       参见 db/CLAUDE.md「schema 变更两个库都要迁」的目标断言流程。" >&2
     exit 1
   fi
-  echo "  ✓ DB 前置依赖就绪（public.try_jsonb / public.try_numeric）"
+  echo "  ✓ ${db_label} 库 DB 前置依赖就绪（public.try_jsonb / public.try_numeric）"
 }
-[[ "$DO_STAFF"  == "1" ]] && assert_db_prereqs "$ROOT/fengyu-staff/cloudbaserc.json"
-[[ "$DO_CLIENT" == "1" ]] && assert_db_prereqs "$ROOT/fengyu-client/cloudbaserc.json"
+# 按【通道】探测，每个通道只探一次：staff 与 client 在同一通道下连的是同一个库，
+# 按「端×通道」探会做重复探测，每次还带 8s 超时。
+# 取哪一侧的 cloudbaserc 都等价，优先用本次实际会部署的那一侧。
+for _ch in primary shadow; do
+  [[ "$_ch" == "primary" && "$DO_PRIMARY" != "1" ]] && continue
+  [[ "$_ch" == "shadow"  && "$DO_SHADOW"  != "1" ]] && continue
+  if [[ "$DO_CLIENT" == "1" ]]; then
+    assert_db_prereqs "$ROOT/fengyu-client/cloudbaserc.json" "$_ch"
+  else
+    assert_db_prereqs "$ROOT/fengyu-staff/cloudbaserc.json" "$_ch"
+  fi
+done
 
 # ── 占位符扫描：渲染后仍含占位符的 env 给出告警（不中止，部分占位是预期的，如 prod 未填的 SM4）──
 SCAN_FILES=()
@@ -310,12 +389,6 @@ if [[ -n "$PLACEHOLDERS" ]]; then
   echo "⚠️  注意：cloudbaserc 仍含以下占位符，将原样上传到 [$ACTIVE]，请确认是否预期："
   echo "$PLACEHOLDERS" | sed 's/^/      /'
 fi
-
-# ── 步骤计数（staff=2 步：staffApi + staffApiDev / client=4 步：clientApi + payNotify + 两个 Dev）──
-TOTAL=0
-[[ "$DO_STAFF"  == "1" ]] && TOTAL=$((TOTAL + 2))
-[[ "$DO_CLIENT" == "1" ]] && TOTAL=$((TOTAL + 4))
-STEP=0
 
 # ── 单函数部署：不存在则创建，存在则只更新代码 ──
 # `tcb fn code update` 要求函数已存在；影子函数（*Dev）首次上线时该 env 里还没有它，
@@ -335,8 +408,7 @@ deploy_one_fn() {  # $1=函数名  $2=cloudbaserc 路径  $3=--sync 值  $4=--re
 
 # --- staff side ---
 if [[ "$DO_STAFF" == "1" ]]; then
-  STEP=$((STEP + 1))
-  echo "==> [$STEP/$TOTAL] Deploy staffApi → $STAFF_ENV_ID"
+  # 登录只做一次，两个通道共用（tcb 鉴权是全局单例，反复切会互相踢）
   cd "$ROOT/fengyu-staff"
   set -a; source .env 2>/dev/null || true; set +a
   if [[ -z "${TENCENTCLOUD_SECRETID:-}" || -z "${TENCENTCLOUD_SECRETKEY:-}" ]]; then
@@ -350,19 +422,26 @@ if [[ "$DO_STAFF" == "1" ]]; then
     echo "  检查：fengyu-staff/.env 的 TENCENTCLOUD_SECRETID 是 staff 账号子号" >&2
     exit 1
   fi
+
   # envId 取自 cwd（已 cd fengyu-staff）的 cloudbaserc.json；tcb 3.x 不接受 --envId
-  deploy_one_fn staffApi "$ROOT/fengyu-staff/cloudbaserc.json" \
-    CLIENT_SECRET,PG_CONNECTION_STRING,DEPLOY_CHANNEL \
-    PG_CONNECTION_STRING,CLIENT_SECRET,CLIENT_APPSECRET,WXACODE_ENV_VERSION,DEPLOY_CHANNEL
-  echo "  ✓ staffApi deployed"
+  if [[ "$DO_PRIMARY" == "1" ]]; then
+    STEP=$((STEP + 1))
+    echo "==> [$STEP/$TOTAL] Deploy staffApi (prod 库) → $STAFF_ENV_ID"
+    deploy_one_fn staffApi "$ROOT/fengyu-staff/cloudbaserc.json" \
+      CLIENT_SECRET,PG_CONNECTION_STRING,DEPLOY_CHANNEL \
+      PG_CONNECTION_STRING,CLIENT_SECRET,CLIENT_APPSECRET,WXACODE_ENV_VERSION,DEPLOY_CHANNEL
+    echo "  ✓ staffApi deployed"
+  fi
 
   # 影子函数：同一 env、同一份代码（cloudbaserc 的 dir 指向 cloudfunctions/staffApi），连 dev 库
-  STEP=$((STEP + 1))
-  echo "==> [$STEP/$TOTAL] Deploy staffApiDev (dev 库) → $STAFF_ENV_ID"
-  deploy_one_fn staffApiDev "$ROOT/fengyu-staff/cloudbaserc.json" \
-    CLIENT_SECRET,PG_CONNECTION_STRING,DEPLOY_CHANNEL \
-    PG_CONNECTION_STRING,CLIENT_SECRET,CLIENT_APPSECRET,WXACODE_ENV_VERSION,DEPLOY_CHANNEL
-  echo "  ✓ staffApiDev deployed"
+  if [[ "$DO_SHADOW" == "1" ]]; then
+    STEP=$((STEP + 1))
+    echo "==> [$STEP/$TOTAL] Deploy staffApiDev (dev 库) → $STAFF_ENV_ID"
+    deploy_one_fn staffApiDev "$ROOT/fengyu-staff/cloudbaserc.json" \
+      CLIENT_SECRET,PG_CONNECTION_STRING,DEPLOY_CHANNEL \
+      PG_CONNECTION_STRING,CLIENT_SECRET,CLIENT_APPSECRET,WXACODE_ENV_VERSION,DEPLOY_CHANNEL
+    echo "  ✓ staffApiDev deployed"
+  fi
 fi
 
 # --- client side（clientApi + payNotify 同属 CLIENT_ENV_ID）---
@@ -382,36 +461,40 @@ if [[ "$DO_CLIENT" == "1" ]]; then
     exit 1
   fi
   # envId 取自 cwd（fengyu-client）的 cloudbaserc.json；clientApi 与 payNotify 共用同一 env
-  STEP=$((STEP + 1))
-  echo "==> [$STEP/$TOTAL] Deploy clientApi → $CLIENT_ENV_ID"
-  deploy_one_fn clientApi "$ROOT/fengyu-client/cloudbaserc.json" \
-    CLIENT_SECRET,PG_CONNECTION_STRING,PAYNOTIFY_FN_NAME,DEPLOY_CHANNEL \
-    PG_CONNECTION_STRING,TMAP_KEY,TMAP_SECRET,CLIENT_SECRET,PAYNOTIFY_FN_NAME,DEPLOY_CHANNEL
-  echo "  ✓ clientApi deployed"
+  if [[ "$DO_PRIMARY" == "1" ]]; then
+    STEP=$((STEP + 1))
+    echo "==> [$STEP/$TOTAL] Deploy clientApi (prod 库) → $CLIENT_ENV_ID"
+    deploy_one_fn clientApi "$ROOT/fengyu-client/cloudbaserc.json" \
+      CLIENT_SECRET,PG_CONNECTION_STRING,PAYNOTIFY_FN_NAME,DEPLOY_CHANNEL \
+      PG_CONNECTION_STRING,TMAP_KEY,TMAP_SECRET,CLIENT_SECRET,PAYNOTIFY_FN_NAME,DEPLOY_CHANNEL
+    echo "  ✓ clientApi deployed"
 
-  STEP=$((STEP + 1))
-  echo "==> [$STEP/$TOTAL] Deploy payNotify → $CLIENT_ENV_ID"
-  deploy_one_fn payNotify "$ROOT/fengyu-client/cloudbaserc.json" \
-    CLIENT_SECRET,PG_CONNECTION_STRING,PAYNOTIFY_FN_NAME,DEPLOY_CHANNEL \
-    PG_CONNECTION_STRING,CLIENT_SECRET,PAYNOTIFY_FN_NAME,DEPLOY_CHANNEL
-  echo "  ✓ payNotify deployed"
+    STEP=$((STEP + 1))
+    echo "==> [$STEP/$TOTAL] Deploy payNotify (prod 库) → $CLIENT_ENV_ID"
+    deploy_one_fn payNotify "$ROOT/fengyu-client/cloudbaserc.json" \
+      CLIENT_SECRET,PG_CONNECTION_STRING,PAYNOTIFY_FN_NAME,DEPLOY_CHANNEL \
+      PG_CONNECTION_STRING,CLIENT_SECRET,PAYNOTIFY_FN_NAME,DEPLOY_CHANNEL
+    echo "  ✓ payNotify deployed"
+  fi
 
   # 影子函数：同一 env、同一份代码（dir 指向正式函数目录），连 dev 库。
   # PAYNOTIFY_FN_NAME 必须一并回读校验——它决定 clientApiDev 的对账自调打向哪个 payNotify，
   # 错了就是拿 dev 库的订单号去写 prod 库。
-  STEP=$((STEP + 1))
-  echo "==> [$STEP/$TOTAL] Deploy clientApiDev (dev 库) → $CLIENT_ENV_ID"
-  deploy_one_fn clientApiDev "$ROOT/fengyu-client/cloudbaserc.json" \
-    CLIENT_SECRET,PG_CONNECTION_STRING,PAYNOTIFY_FN_NAME,DEPLOY_CHANNEL \
-    PG_CONNECTION_STRING,TMAP_KEY,TMAP_SECRET,CLIENT_SECRET,PAYNOTIFY_FN_NAME,DEPLOY_CHANNEL
-  echo "  ✓ clientApiDev deployed"
+  if [[ "$DO_SHADOW" == "1" ]]; then
+    STEP=$((STEP + 1))
+    echo "==> [$STEP/$TOTAL] Deploy clientApiDev (dev 库) → $CLIENT_ENV_ID"
+    deploy_one_fn clientApiDev "$ROOT/fengyu-client/cloudbaserc.json" \
+      CLIENT_SECRET,PG_CONNECTION_STRING,PAYNOTIFY_FN_NAME,DEPLOY_CHANNEL \
+      PG_CONNECTION_STRING,TMAP_KEY,TMAP_SECRET,CLIENT_SECRET,PAYNOTIFY_FN_NAME,DEPLOY_CHANNEL
+    echo "  ✓ clientApiDev deployed"
 
-  STEP=$((STEP + 1))
-  echo "==> [$STEP/$TOTAL] Deploy payNotifyDev (dev 库) → $CLIENT_ENV_ID"
-  deploy_one_fn payNotifyDev "$ROOT/fengyu-client/cloudbaserc.json" \
-    CLIENT_SECRET,PG_CONNECTION_STRING,PAYNOTIFY_FN_NAME,DEPLOY_CHANNEL \
-    PG_CONNECTION_STRING,CLIENT_SECRET,PAYNOTIFY_FN_NAME,DEPLOY_CHANNEL
-  echo "  ✓ payNotifyDev deployed"
+    STEP=$((STEP + 1))
+    echo "==> [$STEP/$TOTAL] Deploy payNotifyDev (dev 库) → $CLIENT_ENV_ID"
+    deploy_one_fn payNotifyDev "$ROOT/fengyu-client/cloudbaserc.json" \
+      CLIENT_SECRET,PG_CONNECTION_STRING,PAYNOTIFY_FN_NAME,DEPLOY_CHANNEL \
+      PG_CONNECTION_STRING,CLIENT_SECRET,PAYNOTIFY_FN_NAME,DEPLOY_CHANNEL
+    echo "  ✓ payNotifyDev deployed"
+  fi
 fi
 
 echo ""
