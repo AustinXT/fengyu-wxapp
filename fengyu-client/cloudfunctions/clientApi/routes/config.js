@@ -3,6 +3,7 @@
  * config.banners — 获取首页轮播图（已缩略的完整 URL 列表 + 版本号，无需认证）
  * config.fengyuguan — 获取凤御馆宣传图（无需认证）
  * config.shareGift — 获取分享礼展示规则（脱敏，无需认证）
+ * config.consumeAgreement — 获取消费协议（标题 + 正文 + 版本号，无需认证）
  * config.serviceHotline — 获取客服热线电话号（无需认证）
  * config.invalidateConfig — 主动清空 utils/config 内存缓存（admin 保存配置时广播，副作用仅限清一次缓存）
  */

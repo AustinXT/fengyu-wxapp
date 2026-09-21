@@ -57,10 +57,13 @@ const BANNER_KEY_EXT = 'jpg'
  * **两段键**（`images/fengyuguan.jpg`）——即 banner 是项目里唯一的三段键。
  * 头像是新链路、无存量迁移负担，**从一开始就用两段键**比再加一条白名单更根本。
  */
-const BANNER_OBJECT_KEY_PATTERN = new RegExp(
-  `^${BANNER_KEY_DIR.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/banner\\d+\\.${BANNER_KEY_EXT}$`,
-  'i',
-)
+const BANNER_OBJECT_KEY_PATTERN = (() => {
+  // 两个拼进正则的字面量都要转义 —— 只转义 DIR 而裸拼 EXT 是「派生只落了一半」：
+  // 有人把 EXT 改成 `jpg|jpeg` 这类含正则语法的值，就成了隐性的正则注入面
+  // （写宽了放行不存在的键 → 轮播 404，写窄了整块 fail-closed → 轮播消失，且无报错指路）。
+  const esc = (v) => v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  return new RegExp(`^${esc(BANNER_KEY_DIR)}/banner\\d+\\.${esc(BANNER_KEY_EXT)}$`, 'i')
+})()
 
 /**
  * banner 档位：满屏轮播，`.banner-swiper { height: 260rpx }` + aspectFill。
