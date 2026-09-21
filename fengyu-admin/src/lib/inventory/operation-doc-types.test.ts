@@ -71,7 +71,7 @@ describe('业务 → 产出单据类型映射（#190）', () => {
     // 关闭采购、撤回申请、撤回审批都只改目标单状态。不收窄的话，
     // 「关闭供应链采购」的 Tab 会列出全部采购订单，与「供应链采购订单」业务完全重合。
     expect(INVENTORY_OPERATION_DOC_QUERY['supply-chain-purchase-cancel']).toEqual({
-      docTypes: ['供应链采购订单'],
+      docTypes: ['采购订单'],
       statuses: ['已取消'],
     })
     /*
@@ -132,12 +132,14 @@ describe('业务 → 产出单据类型映射（#190）', () => {
   }
 
   it('四组易混业务钉「函数 → docType」，互换映射必须转红', () => {
-    // 存在性断言挡不住互换：把 purchase-order 与 supply-chain-purchase-order 的
-    // docType 对调，两个字面量都还在 business.ts 里，测试照样全绿，而用户在 Tab 里
-    // 看到的是另一个业务的单。这几组名字只差「供应链」三个字，最容易抄反。
+    // 存在性断言挡不住互换：把两个业务的 docType 对调，两个字面量都还在 business.ts 里，
+    // 测试照样全绿，而用户在 Tab 里看到的是另一个业务的单。
+    // 这几组名字只差「供应链」三个字，最容易抄反。
+    // 注：原先的 supply-chain-purchase-order 已随 #194 并入 purchase-order
+    //（两个 createPurchaseOrderFrom* 入口也合并成了 createPurchaseOrder）。
     const pairs: Array<[InventoryOperationId, string, string]> = [
-      ['purchase-order', 'createPurchaseOrderFromMarketReplenishment', '采购订单'],
-      ['supply-chain-purchase-order', 'createPurchaseOrderFromItemCompanyReplenishment', '供应链采购订单'],
+      ['purchase-order', 'createPurchaseOrder', '采购订单'],
+      ['market-report-summary', 'createMarketReportSummary', '市场报货汇总'],
       ['staff-purchase', 'createMarketStaffPurchase', '员工购出库'],
       ['supply-chain-staff-purchase', 'createSupplyChainStaffPurchase', '供应链员工购出库'],
     ]
@@ -188,8 +190,8 @@ describe('业务 → 产出单据类型映射（#190）', () => {
       ['store-request', 'createStoreReplenishmentRequest', '门店报货'],
       ['item-company-request', 'createItemCompanyReplenishment', '品项公司报货需求'],
       ['market-report', 'createMarketReplenishment', '市场报货'],
-      ['purchase-order', 'createPurchaseOrderFromMarketReplenishment', '采购订单'],
-      ['supply-chain-purchase-order', 'createPurchaseOrderFromItemCompanyReplenishment', '供应链采购订单'],
+      ['purchase-order', 'createPurchaseOrder', '采购订单'],
+      ['market-report-summary', 'createMarketReportSummary', '市场报货汇总'],
       ['company-shipment', 'createItemCompanyShipment', '品项公司发货'],
       ['supply-chain-receipt', 'receiveSupplyChainPurchaseOrder', '供应链采购入库'],
       ['store-allocation', 'createStoreAllocation', '分院配货'],

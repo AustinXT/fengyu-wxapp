@@ -160,7 +160,7 @@ dev 库没有 `FY-TEST-*` 账号，`e2e-chains` 的 `TEST_PHONES` + `fengyu2026`
 | Step | 操作 | UI 断言 | PG 断言 |
 |---|---|---|---|
 | 1 | `/inventory/operations/supply-chain` → 品项公司报货需求 | 建单成功，单号前缀 `ZBH` | `doc_type='品项公司报货需求'`、`status='已完成'`、**不产生 movements**（NO_MOVEMENT 类型） |
-| 2 | → 供应链采购订单（由上一单转） | 单号前缀 `PCG`，状态「待收货」 | `status='待收货'`；`inventory_doc_links` 有「品项公司报货采购订单」关系 |
+| 2 | → 采购订单（勾选该需求单，#194 合并后只剩一张采购卡片） | 单号前缀 `CGD`，状态「待收货」；明细行 `market_id` 为空 | `status='待收货'`；`inventory_doc_links` 有「品项公司报货采购订单」关系 |
 | 3 | → 供应链采购入库 | 单号前缀 `GRK`，采购订单转「已完成」 | `ORG-HQ` 出现 `inventory_stock_lots` 且 `quantity_on_hand > 0`；`inventory_movements.direction='入库'` 且 `after = before + delta` |
 
 ---

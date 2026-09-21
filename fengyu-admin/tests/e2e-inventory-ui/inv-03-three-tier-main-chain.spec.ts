@@ -33,6 +33,7 @@ const STAMP = Date.now().toString().slice(-8)
 const R = {
   storeReq: `${NS}-门店报货-${STAMP}`,
   marketReq: `${NS}-市场报货-${STAMP}`,
+  summary: `${NS}-报货汇总-${STAMP}`,
   po: `${NS}-采购订单-${STAMP}`,
   shipment: `${NS}-品项发货-${STAMP}`,
   marketReceipt: `${NS}-市场入库-${STAMP}`,
@@ -77,7 +78,7 @@ test('INV-03：三级正向主链 —— 报货→采购→发货→入库→配
     // 第二次运行就会撞上「没有可用量 >= 35 的批次」（库存被拆成多个小批次）。
     // 走 INV-02 同款三步补一张新批次，让本 spec 可独立重复执行。
     const needQty = QTY.shipNormal + QTY.shipGift
-    const hqBatch = await ensureHqBatch(page, inv01.supplySkuName, inv01.supplierName, needQty)
+    const hqBatch = await ensureHqBatch(page, inv01.supplySkuName, needQty)
     recordVerdict(verdicts, `前置: 总部具备可用量 >= ${needQty} 的批次`, Boolean(hqBatch), hqBatch)
 
     // ══ 1. 门店报货（§1.3 不体现价格）══════════════════════════════
@@ -175,12 +176,22 @@ test('INV-03：三级正向主链 —— 报货→采购→发货→入库→配
       mrAmount,
     )
 
-    // ══ 3. 创建采购订单 ═══════════════════════════════════════════
-    console.log('[INV-03] 3/8 创建采购订单')
-    await openOperation(page, 'supply-chain', '创建采购订单')
-    await selectByLabel(page, '市场报货单', { contains: marketReqId })
+    // ══ 3. 市场报货汇总 → 采购订单 ══════════════════════════════
+    // #193/#194：采购订单不再直接引用市场报货单，中间多一层跨市场汇总。
+    console.log('[INV-03] 3/8 市场报货汇总 → 采购订单')
+    await openOperation(page, 'supply-chain', '市场报货汇总')
+    await selectByLabel(page, '供应链库存主体', { label: '品牌总部' })
+    await page.getByRole('button', { name: '汇总各市场报货' }).click()
     await page.waitForTimeout(2000)
-    await selectByLabel(page, '供应商', { contains: inv01.supplierName })
+    await fillByLabel(page, '本次汇总', String(QTY.marketPurchase))
+    await fillByLabel(page, '备注', R.summary)
+    await submitForm(page, '创建市场报货汇总单', /市场报货汇总单已创建/)
+    const summaryId = docIdByRemark('市场报货汇总', R.summary)
+    recordVerdict(verdicts, 'doc: 市场报货汇总单落库', Boolean(summaryId), summaryId)
+
+    await openOperation(page, 'supply-chain', '采购订单')
+    await checkSourceDoc(page, summaryId)
+    await page.waitForTimeout(2000)
     await selectByLabel(page, '供应链库存主体', { label: '品牌总部' })
     await fillByLabel(page, '采购数量', String(QTY.marketPurchase))
     await fillByLabel(page, '备注', R.po)
@@ -188,9 +199,9 @@ test('INV-03：三级正向主链 —— 报货→采购→发货→入库→配
 
     const poId = docIdByRemark('采购订单', R.po)
     recordVerdict(verdicts, 'doc: 采购订单落库', Boolean(poId), poId)
-    // 注意「采购订单」与「供应链采购订单」是两种不同的 doc_type：
-    // 「待收货」状态白名单只含 供应链采购订单/品项公司发货/分院配货/分院调货出库/市场间调货出库
-    // （0009 触发器）。「采购订单」属 NO_MOVEMENT_DOC_TYPES，建单即「已完成」，不动库存。
+    // #194 之后只剩 `采购订单` 一种 doc_type，市场行与供应链行靠明细的 market_id 分流。
+    // 纯市场行的单不需要收货，沿用「建单即已完成」；含供应链行的才是「待收货」
+    // （0043 已把 0009 触发器的待收货白名单从 `供应链采购订单` 换成 `采购订单`）。
     recordVerdict(
       verdicts,
       'doc: 采购订单建单即完成（属 NO_MOVEMENT 类型）',
@@ -440,7 +451,7 @@ test('INV-03：三级正向主链 —— 报货→采购→发货→入库→配
  * 点击表单的提交按钮。
  *
  * 必须限定在 <form> 内：办理台的操作卡片也是 <button>，且个别卡片与提交按钮同名
- * （如「创建采购订单」既是 supply-chain 的卡片标题又是表单提交按钮），
+ * （如「采购订单」既是 supply-chain 的卡片标题又出现在表单提交按钮里），
  * 直接 getByRole('button', {name}) 会 strict mode violation。
  */
 async function submitForm(page: Page, name: string, expect: RegExp): Promise<string> {
@@ -499,6 +510,16 @@ async function selectByLabel(page: Page, labelText: string, option: { label: str
   const sel = field.locator('select').first()
   if ('contains' in option) await selectContaining(sel, option.contains)
   else await sel.selectOption({ label: option.label })
+}
+
+/**
+ * 勾选合并后采购表单里的来源报货单（#194）。
+ * 来源从单选 Select 改成了多选 checkbox 清单，勾完组件会重新拉明细。
+ */
+async function checkSourceDoc(page: Page, docId: string) {
+  const row = page.locator('label').filter({ hasText: docId }).first()
+  await row.waitFor({ state: 'visible', timeout: 20_000 })
+  await row.locator('input[type="checkbox"]').check()
 }
 
 /** 明细行里的 SkuPicker（占位文案「选择库存商品」） */
@@ -570,14 +591,13 @@ async function selectLotContaining(page: Page, labelText: string, batchNo: strin
 /**
  * 确保总部存在一个可用量 >= needQty 的**单一**批次，返回其批号。
  *
- * 已有满足条件的批次就直接复用；否则走「品项公司报货需求 → 供应链采购订单
+ * 已有满足条件的批次就直接复用；否则走「品项公司报货需求 → 采购订单
  * → 供应链采购入库」补一张新批次。发货只能从单个批次出，所以这里要的是
  * 「单批次足量」而不是「总量足量」。
  */
 async function ensureHqBatch(
   page: Page,
   skuName: string,
-  supplierName: string,
   needQty: number,
 ): Promise<string> {
   const existing = psql(
@@ -602,18 +622,18 @@ async function ensureHqBatch(
   await submitForm(page, '创建品项公司报货需求', /品项公司报货需求已创建/)
   const reqId = docIdByRemark('品项公司报货需求', `${tag}-req`)
 
-  await openOperation(page, 'supply-chain', '供应链采购订单')
-  await selectByLabel(page, '品项公司报货需求', { contains: reqId })
+  // #194：两张采购卡片已合并为「采购订单」，来源改多选，供应商由商品档案带出不再手选。
+  await openOperation(page, 'supply-chain', '采购订单')
+  await checkSourceDoc(page, reqId)
   await page.waitForTimeout(2000)
-  await selectByLabel(page, '供应商', { contains: supplierName })
   await selectByLabel(page, '供应链库存主体', { label: '品牌总部' })
   await fillByLabel(page, '采购数量', replenishQty)
   await fillByLabel(page, '备注', `${tag}-po`)
-  await submitForm(page, '创建供应链采购订单', /供应链采购订单已创建/)
-  const poId = docIdByRemark('供应链采购订单', `${tag}-po`)
+  await submitForm(page, '创建采购订单', /采购订单已创建/)
+  const poId = docIdByRemark('采购订单', `${tag}-po`)
 
   await openOperation(page, 'supply-chain', '供应链采购入库')
-  await selectByLabel(page, '供应链采购订单', { contains: poId })
+  await selectByLabel(page, '采购订单', { contains: poId })
   await page.waitForTimeout(2000)
   await fillByLabel(page, '实收数量', replenishQty)
   await fillByLabel(page, '批号', batchNo)

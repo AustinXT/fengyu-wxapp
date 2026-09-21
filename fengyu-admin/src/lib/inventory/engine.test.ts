@@ -1707,13 +1707,13 @@ describe('库存单据详情履约进度', () => {
     expect(fulfillmentSql).toContain("receipt_doc.status = '已完成'")
   })
 
-  it('供应链采购订单按关联入库单聚合已收与待收数量', async () => {
+  it('采购订单的供应链行按关联入库单聚合已收与待收数量', async () => {
     const now = new Date('2026-08-10T09:00:00.000Z')
     mockDb.select
       .mockReturnValueOnce(detailHeadSelect([{
         doc: {
           id: 'PCG-260810-0001',
-          docType: '供应链采购订单',
+          docType: '采购订单',
           status: '待收货',
           sourceOrgNodeId: null,
           targetOrgNodeId: 'HQ',
@@ -3297,11 +3297,11 @@ describe('#190 单据列表的多类型 / 多状态 / 撤回标记过滤', () =>
   })
 
   it('statuses 收窄：关闭采购只看已取消的采购订单', async () => {
-    const { text, params } = await whereOf({ docTypes: ['供应链采购订单'], statuses: ['已取消'] })
+    const { text, params } = await whereOf({ docTypes: ['采购订单'], statuses: ['已取消'] })
     // 断言列名而不只是参数值：'已取消' 误绑到别的文本列（remark、audit_remark…）
     // 时参数断言照样绿，而过滤完全没生效。
     expect(text).toContain('"status" in')
-    expect(params).toContain('供应链采购订单')
+    expect(params).toContain('采购订单')
     expect(params).toContain('已取消')
   })
 
