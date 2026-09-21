@@ -2,15 +2,17 @@
  * STEP customerStatus（run.ts STEPS 第 2 项）—— customer_status 三段式 SQL 形态测试
  * （迁自 cronTask/__tests__/customer-status.test.js）
  *
- * 因为本 STEP 是纯 SQL 三段式，没有 JS 分支可以单测，本文件聚焦于：
- *   1. 三段 SQL 形态：均带 customer_type='会员客' 守卫（除段1外，段1反向过滤非会员客）
- *   2. 段 1 SQL：非会员客 SET customer_status = NULL
- *   3. 段 2 SQL：UPDATE 限定 u.customer_type = '会员客'，含分类 CASE 与 90 天窗口
- *   4. 段 3 SQL：会员客无服务记录置 '休眠'
- *   5. 后置不变量：跑完后 COUNT(*) WHERE customer_type != '会员客' AND customer_status IS NOT NULL = 0
- *   6. #254 覆盖域穷举：对三段 WHERE 谓词 + 段 2 的 CASE 落值建模后穷举输入组合，断言
+ * 本 STEP 的主体是三段 SQL 字符串，JS 分支只有 `suspiciousBulkReset` 判据一处，故分四层：
+ *   1. 段 1 SQL 形态：反向过滤非会员客，SET customer_status = NULL
+ *   2. 段 2 SQL 形态：UPDATE 限定 u.customer_type = '会员客'，含分类 CASE 与 90 天窗口
+ *   3. 段 3 SQL 形态：会员客无服务记录置 '休眠'，守卫是 IS DISTINCT FROM 而非 IS NULL
+ *   4. 三段的守卫方向组合（「整体不变量」describe）—— 仍是对 SQL 字面的正则断言，
+ *      **不执行 SQL**；「跑完后非会员客 status 必为 NULL」这类后置不变量的运行时验证
+ *      在 E2E `tests/e2e-chains/cron-02-refresh-customer-status.spec.ts`，不在本文件
+ *   5. #254 覆盖域穷举：对三段 WHERE 谓词 + 段 2 的 CASE 落值建模后穷举输入组合，断言
  *      「每一行要么被某段命中并落到正确目标值，要么现值已等于应然值」。
- *      形态断言（1~5）只验 SQL 长什么样，验不出"漏没漏行"—— #254 就是这么溜过去的。
+ *      形态断言（1~4）只验 SQL 长什么样，验不出"漏没漏行"—— #254 就是这么溜过去的
+ *   6. 函数体：`suspiciousBulkReset` 判据（mock db，7 个场景取自双谱系评审的反例）
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
@@ -407,7 +409,7 @@ describe('cron-worker STEP customerStatus — customer_status 三段式 SQL', ()
    * 下面的场景全部取自双谱系评审举出的真实反例，每个都曾是某一版判据的漏报点。
    *
    * ⚠️ mock 必须用 postgres.js 的 `{ count: n }` 形状 —— 写成 node-postgres 的
-   * `{ rowCount: n }` 会让 mock 漂移掩盖真实缺陷（本仓踩过，见 lib/pg-rows.ts 注释）。
+   * `{ rowCount: n }` 会让 mock 漂移掩盖真实缺陷（本仓踩过，见 src/lib/pg-rows.ts 注释）。
    * 这里反过来利用这一点：生产代码若改读 `.rowCount`，下面的计数断言会立刻转红。
    */
   describe('refreshCustomerStatus 函数体 —— suspiciousBulkReset 判据', () => {

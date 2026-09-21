@@ -120,7 +120,8 @@ UPDATE client_wechat_users u
 function buildUpdateCustomerStatusSql(ctx?: CronContext): string {
   if (!ctx?.referenceDate) return UPDATE_CUSTOMER_STATUS_SQL
   const dateStr = formatYmd(ctx.referenceDate)
-  // 用字面量替换（参数化此处复杂度高且 PG 不缓存查询计划差异）
+  // 用字面量替换而非参数化：这条 SQL 是 sql.raw 下发的整串，改成参数化要把三处占位一起编织进去，
+  // 收益（计划复用）在每天只跑一次的批处理上可以忽略。
   return UPDATE_CUSTOMER_STATUS_SQL.replace(/CURRENT_DATE/g, `('${dateStr}'::date)`)
 }
 
@@ -180,7 +181,13 @@ export async function refreshCustomerStatus(
     //   · 占**会员客总数**的比例：存量无单休眠会员会稀释分母 —— 1 万会员里 9200 人本就休眠
     //     （段 3 不碰），剩下 800 个有单会员的服务单全丢，800 < 10000×10% 照样不告警
     // 用「本轮触及数」当分母就没有这个稀释面：上面三个场景现在都会告警。
-    // 绝对下限 100 是为了不让小库 / 新环境的自然波动刷屏。
+    //
+    // 已知的两条容忍带（刻意取舍，不是遗漏）：
+    //   · R < 100 一律不报 —— 不让小库 / 新环境 / 每天几十行的自然波动刷屏。
+    //     代价是「缓慢持续丢单」（每天塌几十行）永远不会触发。
+    //   · 整理成 `R > U/9`：R ≥ 100 但 R ≤ U/9 时不报。比如 U=9000、R=999，
+    //     近千会员被刷休眠仍然静默 —— 段 2 命中大头时本判据就不敏感了。
+    // 两条都靠「次日复跑 + 数据看板肉眼」兜底；要收紧得引入历史基线对比，超出本 STEP 职责。
     const touchedMembers = updatedMember + resetNoVisit
     const suspiciousBulkReset =
       resetNoVisit >= BULK_RESET_SUSPICION_THRESHOLD &&
