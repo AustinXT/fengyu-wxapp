@@ -212,6 +212,12 @@ Page({
     }
   },
 
+  /**
+   * 下拉刷新与错误态重试都走 `reset=true`，因此会采纳输入框里的**当前值**
+   * （哪怕用户输入后没点搜索）。这是有意取舍：此刻屏幕上输入框显示的就是那个词，
+   * 刷新出对应结果所见即所得；反过来把输入框回退成已提交词会抹掉用户正在打的字。
+   * 「未提交不生效」这条只约束**翻页**（见 committedKeyword 注释），不约束整体刷新。
+   */
   onPullDownRefresh() {
     const done = () => wx.stopPullDownRefresh();
     this.loadStats();

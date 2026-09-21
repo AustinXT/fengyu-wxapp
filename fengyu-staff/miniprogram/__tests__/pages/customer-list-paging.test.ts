@@ -154,6 +154,48 @@ describe('#181 关键词提交态', () => {
     expect(vi.mocked(callStaffApi).mock.calls.at(-1)![1]).toMatchObject({ keyword: '李', page: 1 })
   })
 
+  /**
+   * 五条切换路径里有三条会把 `searchKeyword` 置空却不经过 onSearch。
+   * 它们必须让 committedKeyword 一起归零，否则后续翻页会带上一个用户已经放弃的关键词。
+   * （这些用例在「初始 committedKeyword 恒为空」的前提下是测不出来的，必须先造出已提交态。）
+   */
+  test.each([
+    ['onAdvancedFilterTap', (p: Record<string, any>) => p.onAdvancedFilterTap({ currentTarget: { dataset: { dim: 'spendingTier', value: '10W+' } } })],
+    ['onResetFilters', (p: Record<string, any>) => p.onResetFilters()],
+    ['onStatTap 取消标签', (p: Record<string, any>) => {
+      p.data.activeTag = 'active'
+      return p.onStatTap({ currentTarget: { dataset: { tag: 'active' } } })
+    }],
+  ])('%s 清掉已提交关键词，后续翻页不再带 keyword', async (_name, act) => {
+    const page = createPage('customerList')
+    // 先造出「搜过张、已提交」的现场
+    vi.mocked(callStaffApi).mockResolvedValueOnce(pageEnvelope(['z1'], 1, true) as never)
+    page.data.searchKeyword = '张'
+    await page.onSearch()
+    expect(page.data.committedKeyword).toBe('张')
+
+    vi.mocked(callStaffApi).mockResolvedValue(pageEnvelope(['n1'], 1, true) as never)
+    await act(page)
+    expect(page.data.committedKeyword).toBe('')
+
+    vi.mocked(callStaffApi).mockResolvedValueOnce(pageEnvelope(['n2'], 2, false) as never)
+    await page.loadList(2, false)
+    expect(vi.mocked(callStaffApi).mock.calls.at(-1)![1]).not.toHaveProperty('keyword')
+  })
+
+  test('标签分支翻页不读关键词（committedKeyword 残留也不影响）', async () => {
+    const page = createPage('customerList')
+    page.data.committedKeyword = '张'      // 搜过词后进标签态的残留
+    page.data.activeTag = 'active'
+    vi.mocked(callStaffApi).mockResolvedValueOnce({ customers: [customerRow('t2')], total: 99 } as never)
+
+    await page.loadByTag('active', 2, false)
+
+    const call = vi.mocked(callStaffApi).mock.calls.at(-1)!
+    expect(call[0]).toBe('customer.listByTag')
+    expect(call[1]).not.toHaveProperty('keyword')
+  })
+
   test('onSearchChange 的 detail 为空值时不抛异常', async () => {
     const page = createPage('customerList')
     vi.mocked(callStaffApi).mockResolvedValue(pageEnvelope([], 1, false) as never)

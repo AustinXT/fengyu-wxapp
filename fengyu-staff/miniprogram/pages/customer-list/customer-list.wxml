@@ -166,7 +166,6 @@
     </view>
   </view>
 
-  <view wx:else />
 
   <view class="safe-area-bottom" />
 
