@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { toast } from 'sonner'
 import { createInventoryCoreDoc } from '@/actions/inventory/docs'
 import { listInventoryLotOptions } from '@/actions/inventory/stocks'
@@ -19,6 +19,7 @@ import { Button } from '@/components/ui/button'
 import { DatePicker } from '@/components/ui/date-picker'
 import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
+import InventorySubjectSelect from '@/components/inventory-subject-select'
 import { Textarea } from '@/components/ui/textarea'
 
 /**
@@ -199,6 +200,21 @@ export function InventoryDocCreateForm({
     // 都清了 lotId，这条路径也要清。
     setItems((prev) => (prev.some((item) => item.lotId) ? prev.map((item) => ({ ...item, lotId: '' })) : prev))
   }, [visible])
+  /*
+   * ⚠️ value 用 **orgNodeId** 而不是 locationId：`InventorySubjectSelect` 的两种 id
+   * 空间由调用方决定，而本表单 submit() 发给 server action 的就是
+   * `sourceOrgNodeId` / `targetOrgNodeId`。总部与市场两者同值、**门店不同**，
+   * 传错只有门店会炸，在只有总部/市场的环境里测不出来。
+   */
+  const subjectOptions = useMemo(
+    () => locations
+      .filter((location) => location.orgNodeId)
+      .map((location) => ({
+        value: location.orgNodeId!,
+        label: `${location.locationType} · ${location.name}`,
+      })),
+    [locations],
+  )
   const isDocTypeLocked = Boolean(initialDocType && availableDocTypes.includes(initialDocType))
   const sourceLocationId = locations.find((location) => location.orgNodeId === sourceOrgNodeId)?.locationId ?? ''
 
@@ -289,28 +305,23 @@ export function InventoryDocCreateForm({
           ))}
         </Select>
         <DatePicker value={docDate} onValueChange={setDocDate} aria-label="单据日期" />
-        <Select
+        <InventorySubjectSelect
+          options={subjectOptions}
           value={sourceOrgNodeId}
-          onChange={(e) => {
-            setSourceOrgNodeId(e.target.value)
+          placeholder="出库/发起主体"
+          onChange={(value) => {
+            setSourceOrgNodeId(value)
+            // 换主体必须清批次：批次是按 (库位, SKU) 取的，换了库位旧的 lotId 就不属于这张单了。
+            // 自动选中（唯一候选）同样走这条 onChange，联动不会被绕过。
             setItems((prev) => prev.map((item) => ({ ...item, lotId: '' })))
           }}
-        >
-          <option value="">出库/发起主体</option>
-          {locations.filter((location) => location.orgNodeId).map((location) => (
-            <option key={location.orgNodeId!} value={location.orgNodeId!}>
-              {location.locationType} · {location.name}
-            </option>
-          ))}
-        </Select>
-        <Select value={targetOrgNodeId} onChange={(e) => setTargetOrgNodeId(e.target.value)}>
-          <option value="">入库/接收主体</option>
-          {locations.filter((location) => location.orgNodeId).map((location) => (
-            <option key={location.orgNodeId!} value={location.orgNodeId!}>
-              {location.locationType} · {location.name}
-            </option>
-          ))}
-        </Select>
+        />
+        <InventorySubjectSelect
+          options={subjectOptions}
+          value={targetOrgNodeId}
+          placeholder="入库/接收主体"
+          onChange={setTargetOrgNodeId}
+        />
       </div>
       <Textarea placeholder="备注" value={remark} onChange={(e) => setRemark(e.target.value)} />
 
