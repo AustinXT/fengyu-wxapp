@@ -1866,19 +1866,19 @@ describe('inventory 库存主体解析确定性（#251）', () => {
     expect(client.query.mock.calls.some(([sql]) => /FROM inventory_doc_items/.test(sql))).toBe(false)
   })
 
-  test('撞值行中有一行已停用时不算歧义，按在用行正常解析', async () => {
-    // `syncInventoryLocations` 只 UPSERT 从不 DELETE，闭店门店会留下 is_active=false 的幽灵行。
-    // 让幽灵行参与歧义判定，会把与它撞值的在营门店整个锁死——而修复前的无序 LIMIT 1
-    // 反倒有一半概率正常，那是可用性倒退。
-    const ctx = storeCtx({ roles: ['customer_mgr'], roleBindings: [
-      { role: 'customer_mgr', scopeId: 'node-store-001', scopeType: '门店' },
-    ] })
+  test('撞值行中有一行已停用**仍**算歧义（停用不能消除 id 空间的不确定性）', async () => {
+    // 曾想把闭店幽灵行过滤掉（`syncInventoryLocations` 只 UPSERT 从不 DELETE，闭店只置
+    // is_active=false），理由是「免得它把撞值的在营门店锁死」。那是错的：
+    // 设入参 X 既是在营门店 A 的 location_id(=store_id)、又是停用门店 Y 的 org_node_id，
+    // 调用方传 head.source_org_node_id = X 时意图明确是 Y（单据里存的就是 org_node_id），
+    // 过滤掉 Y 会静默返回 A，随后按 A 鉴权、生成 A 的单据 —— 正是本 issue 的危害本体。
+    const ctx = storeCtx()
     mockLocationQuery((input) => collisionRows(input, { yActive: false }))
 
-    // 走到权限判定 = 主体解析已正常返回，没有被 CONFLICT 截断
     await expect(inventoryRoutes.createDoc(ctx)).rejects.toThrow(
-      'PERMISSION_DENIED: 无库存写入权限',
+      'CONFLICT: LOCATION_ID_AMBIGUOUS: 库存主体标识冲突',
     )
+    expect(pg.transaction).not.toHaveBeenCalled()
   })
 
   test('唯一命中项已停用仍抛 INVALID_STATE（原语义不被撞值守卫吃掉）', async () => {

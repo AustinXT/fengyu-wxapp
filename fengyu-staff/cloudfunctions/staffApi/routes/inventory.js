@@ -478,8 +478,13 @@ function queryRows(client, sql, params) {
  *     （只有总部/市场行自指），于是**某个 store_id 恰好等于某个 `type='门店'` 的 org_nodes.id**
  *     时，行 X（by location_id）与行 Y（by org_node_id）是两个**不同门店**的主体。
  *
- * （X 若是总部/市场行则 `X.org_node_id = X.location_id = $1`，与 Y 同值会违反
- * `uq_inventory_locations_org`，不可能共存 —— 所以撞值场景只有「门店 × 门店」一种。）
+ * 撞值场景**只可能是「门店 × 门店」**，两支都要论证（评审时有人只看一支就误判成还有
+ * 「门店 × 总部/市场」一族）：
+ *   - X 若是总部/市场自指行 → `X.org_node_id = X.location_id = $1`，与 `Y.org_node_id = $1`
+ *     同值，违反 `uq_inventory_locations_org`；
+ *   - Y 若是总部/市场自指行 → `Y.location_id = Y.org_node_id = $1 = X.location_id`，违反主键。
+ *  （后者在 `syncInventoryLocations` 里表现为第二条 UPSERT 的 `ON CONFLICT (location_id)`
+ *   直接覆盖第一条，最终只剩一行，根本凑不出两行。）
  *
  * 无 `ORDER BY` 的 `LIMIT 1` 在这种两行上取哪行不保证稳定，两次独立调用可能拿到不同门店，
  * 于是「按 A 鉴权、扣 B 的批次」。故：
@@ -493,10 +498,12 @@ function queryRows(client, sql, params) {
  *   2. `ORDER BY location_id` 只保证**确定性**（消除 TOCTOU：同一入参两次调用必得同一行），
  *      不声称语义正确。主键排序、非空、全序，不暗示任何 id 空间的优先级。
  *   3. `LIMIT 2` —— 两侧各最多 1 行，2 是精确上界；回到 `LIMIT 1` 就永远看不见撞值。
- *   4. 歧义只在**在用**主体之间判定：`syncInventoryLocations` 只 UPSERT 从不 DELETE，
- *      闭店门店会留下 `is_active=false` 的幽灵行。让幽灵行参与判定，会把与它撞值的
- *      在营门店整个锁死（而修复前的 `LIMIT 1` 反倒有一半概率正常）—— 那是可用性倒退。
- *      admin 侧 `business.ts` 的同签名副本本来就带 `AND is_active = true`。
+ *   4. **停用行照样参与歧义判定**，`is_active` 只在唯一命中项上判。
+ *      曾想「把闭店幽灵行过滤掉，免得它把撞值的在营门店锁死」，但那是错的：
+ *      设 X 既是在营门店 A 的 `location_id`(=store_id)、又是**停用**门店 Y 的 `org_node_id`，
+ *      调用方传 `head.source_org_node_id = X` 时意图明确是 Y（单据里存的就是 org_node_id），
+ *      过滤掉 Y 会**静默返回 A**，随后按 A 鉴权、生成 A 的单据 —— 正是本 issue 的危害本体。
+ *      停用状态并不能消除入参所属 id 空间的不确定性。
  *
  * 注：与 issue #251 正文的归因不同，这与 `stores.org_node_id` 是否 unique **无关**
  * （`inventory_locations.org_node_id` 早已 UNIQUE，那条路径是 UPSERT 期 fail-loud）。
@@ -514,12 +521,10 @@ async function ensureInventoryLocation(locationId, requiredType = null, client =
     [locationId],
   )
   if (rows.length === 0) throw new Error('NOT_FOUND: 库存主体不存在')
-  // 停用行不参与歧义判定，但仍保留「唯一命中项已停用 → INVALID_STATE」的原有语义。
-  const activeRows = rows.filter((row) => row.is_active !== false)
-  if (activeRows.length > 1) {
+  if (rows.length > 1) {
     throw new Error('CONFLICT: LOCATION_ID_AMBIGUOUS: 库存主体标识冲突，请联系管理员')
   }
-  const row = activeRows[0] || rows[0]
+  const row = rows[0]
   if (row.is_active === false) throw new Error('INVALID_STATE: 库存主体已停用')
   if (requiredType && row.location_type !== requiredType) {
     throw new Error(`INVALID_PARAMS: 库存主体必须是${requiredType}`)

@@ -1886,9 +1886,9 @@ describe('库存主体解析确定性（#251）', () => {
   it('一个入参命中两行时抛 CONFLICT，不静默选首行', async () => {
     const txExecute = vi.fn().mockResolvedValueOnce([
       // 行 Y：另一门店（S-OTHER）的 org_node_id 恰好等于入参
-      { location_id: 'S-OTHER', org_node_id: 'S1', location_type: '门店', name: '门店二', parent_location_id: 'M1' },
+      { location_id: 'S-OTHER', org_node_id: 'S1', location_type: '门店', name: '门店二', parent_location_id: 'M1', is_active: true },
       // 行 X：某门店的 store_id 就是入参本身
-      { location_id: 'S1', org_node_id: 'org-门店-1', location_type: '门店', name: '门店一', parent_location_id: 'M1' },
+      { location_id: 'S1', org_node_id: 'org-门店-1', location_type: '门店', name: '门店一', parent_location_id: 'M1', is_active: true },
     ])
     vi.mocked(db.execute).mockResolvedValue([] as never)
     vi.mocked(db.transaction).mockImplementationOnce(async (callback) => callback({
@@ -1907,9 +1907,40 @@ describe('库存主体解析确定性（#251）', () => {
     expect(queries).not.toContain('inventory_movements')
   })
 
+  it('撞值行中有一行已停用**仍**抛 CONFLICT（停用不能消除 id 空间的不确定性）', async () => {
+    // is_active 从 WHERE 移到 JS 侧判定的原因：留在 WHERE 里会让停用行不参与歧义判定，
+    // 于是「入参意图指向那个停用主体」时会静默返回另一家在营门店并继续写库存。
+    const txExecute = vi.fn().mockResolvedValueOnce([
+      { location_id: 'S-OTHER', org_node_id: 'S1', location_type: '门店', name: '门店二', parent_location_id: 'M1', is_active: false },
+      { location_id: 'S1', org_node_id: 'org-门店-1', location_type: '门店', name: '门店一', parent_location_id: 'M1', is_active: true },
+    ])
+    vi.mocked(db.execute).mockResolvedValue([] as never)
+    vi.mocked(db.transaction).mockImplementationOnce(async (callback) => callback({
+      execute: initializedCutoverExecutor(txExecute),
+    } as never))
+
+    await expect(createReturnForRestock(SESSION, {
+      sourceOrgNodeId: 'S1', targetOrgNodeId: 'M1', items: [{ lotId: 1, quantity: 1 }],
+    } as never)).rejects.toThrow('库存主体标识冲突')
+  })
+
+  it('唯一命中项已停用时仍报「不存在或已停用」（原文案不被撞值守卫吃掉）', async () => {
+    const txExecute = vi.fn().mockResolvedValueOnce([
+      { location_id: 'S1', org_node_id: 'org-门店-1', location_type: '门店', name: '门店一', parent_location_id: 'M1', is_active: false },
+    ])
+    vi.mocked(db.execute).mockResolvedValue([] as never)
+    vi.mocked(db.transaction).mockImplementationOnce(async (callback) => callback({
+      execute: initializedCutoverExecutor(txExecute),
+    } as never))
+
+    await expect(createReturnForRestock(SESSION, {
+      sourceOrgNodeId: 'S1', targetOrgNodeId: 'M1', items: [{ lotId: 1, quantity: 1 }],
+    } as never)).rejects.toThrow('库存主体不存在或已停用')
+  })
+
   it('主体查询带确定性排序与 LIMIT 2', async () => {
     const txExecute = vi.fn().mockResolvedValue([
-      { location_id: 'S1', org_node_id: 'org-门店-1', location_type: '门店', name: '门店一', parent_location_id: 'M1' },
+      { location_id: 'S1', org_node_id: 'org-门店-1', location_type: '门店', name: '门店一', parent_location_id: 'M1', is_active: true },
     ])
     vi.mocked(db.execute).mockResolvedValue([] as never)
     vi.mocked(db.transaction).mockImplementationOnce(async (callback) => callback({

@@ -830,8 +830,12 @@ async function locationForRead(tx: Tx, endpointId: string): Promise<Location> {
  *   2. `ORDER BY location_id` 只保证确定性，不声称正确；`LIMIT 2` 是精确上界。
  *
  * ⚠️ 子句顺序：PG 要求 `LIMIT` 在 `FOR UPDATE` **之前**。
- * 停用行由 `AND is_active = true` 在 WHERE 就滤掉，故歧义天然只在在用主体间判定
- *（staff 端因保留「已停用」的差异化报错，是在 JS 侧过滤，两端语义一致、实现不同）。
+ *
+ * ⚠️ `is_active` 从 WHERE 移到了 JS 侧判定（#251 评审）：留在 WHERE 里会让**停用行不参与
+ * 歧义判定** —— 设 X 既是在营门店 A 的 `location_id`(=store_id)、又是**停用**门店 Y 的
+ * `org_node_id`，调用方传 `input.sourceOrgNodeId = X` 时意图明确是 Y，SQL 提前滤掉 Y 会
+ * **静默返回 A**，随后按 A 鉴权、生成 A 的单据 —— 正是本 issue 的危害本体。
+ * 停用状态不能消除入参所属 id 空间的不确定性。对外文案保持不变。
  */
 async function loadLocation(tx: Tx, endpointId: string, forUpdate: boolean): Promise<Location> {
   const matched = rows<{
@@ -840,11 +844,11 @@ async function loadLocation(tx: Tx, endpointId: string, forUpdate: boolean): Pro
     location_type: LocationType
     name: string
     parent_location_id: string | null
+    is_active: boolean
   }>(await tx.execute(sql`
-    SELECT location_id, org_node_id, location_type, name, parent_location_id
+    SELECT location_id, org_node_id, location_type, name, parent_location_id, is_active
       FROM inventory_locations
      WHERE (location_id = ${endpointId} OR org_node_id = ${endpointId})
-       AND is_active = true
      ORDER BY location_id
      LIMIT 2
      ${forUpdate ? sql`FOR UPDATE` : sql``}
@@ -853,7 +857,9 @@ async function loadLocation(tx: Tx, endpointId: string, forUpdate: boolean): Pro
     throw new ApiError('CONFLICT', '库存主体标识冲突，请联系管理员')
   }
   const row = matched[0]
-  if (!row) throw new ApiError('NOT_FOUND', '库存主体不存在或已停用')
+  if (!row || row.is_active === false) {
+    throw new ApiError('NOT_FOUND', '库存主体不存在或已停用')
+  }
   return {
     locationId: row.location_id,
     orgNodeId: row.org_node_id,

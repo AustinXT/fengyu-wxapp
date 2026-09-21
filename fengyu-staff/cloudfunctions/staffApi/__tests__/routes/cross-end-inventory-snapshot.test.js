@@ -358,18 +358,41 @@ describe('PR #113 进销存单据组织端点跨端守护（staff / admin / sche
     test('admin 侧 loadLocation 同样带确定性排序 + LIMIT 2', () => {
       expect(flat(adminBusinessSrc)).toContain(
         'WHERE (location_id = ${endpointId} OR org_node_id = ${endpointId})'
-        + ' AND is_active = true ORDER BY location_id LIMIT 2',
+        + ' ORDER BY location_id LIMIT 2',
       )
     })
 
     test('两端撞到两行都必须抛 CONFLICT（不静默选一行）', () => {
-      // staff：在用行 > 1 才算歧义（停用的幽灵行不参与）；admin：WHERE 已滤 is_active。
       expect(flat(staffSrc)).toMatch(
-        /if \(activeRows\.length > 1\) \{ throw new Error\('CONFLICT: LOCATION_ID_AMBIGUOUS:/,
+        /if \(rows\.length > 1\) \{ throw new Error\('CONFLICT: LOCATION_ID_AMBIGUOUS:/,
       )
       expect(flat(adminBusinessSrc)).toMatch(
         /if \(matched\.length > 1\) \{ throw new ApiError\('CONFLICT',/,
       )
+    })
+
+    /**
+     * 停用行**必须参与**歧义判定 —— 两端都不得把 `is_active` 前置到过滤位置。
+     *
+     * 设入参 X 既是在营门店 A 的 `location_id`(=store_id)、又是**停用**门店 Y 的 `org_node_id`，
+     * 调用方传 org_node_id = X 时意图是 Y；一旦 Y 被提前滤掉，就会静默返回 A 并按 A 鉴权、
+     * 生成 A 的单据 —— 正是本 issue 的危害本体。停用状态不能消除入参所属 id 空间的不确定性。
+     *
+     * staff 侧曾用 `rows.filter(r => r.is_active !== false)` 再判歧义、
+     * admin 侧曾在 WHERE 里写 `AND is_active = true`，两种都属于这个反模式。
+     */
+    test('两端都不得把停用行排除在歧义判定之外', () => {
+      // admin：is_active 不能出现在 WHERE 与 ORDER BY 之间（即不能作为过滤条件）
+      const adminWhereToOrder = flat(adminBusinessSrc).match(
+        /WHERE \(location_id = \$\{endpointId\} OR org_node_id = \$\{endpointId\}\)(.*?)ORDER BY location_id/,
+      )
+      expect(adminWhereToOrder).not.toBeNull()
+      expect(adminWhereToOrder[1]).not.toMatch(/is_active/)
+      // staff：歧义判定必须基于全部命中行，不得先按 is_active 过滤
+      expect(flat(staffSrc)).not.toMatch(/filter\([^)]*is_active[^)]*\)[^;]*length > 1/)
+      // 两端的 is_active 判定都必须发生在「唯一命中项」确定之后
+      expect(flat(staffSrc)).toMatch(/const row = rows\[0\] if \(row\.is_active === false\)/)
+      expect(flat(adminBusinessSrc)).toMatch(/const row = matched\[0\] if \(!row \|\| row\.is_active === false\)/)
     })
 
     test('admin engine.ts 仍按 org_node_id 单列（UNIQUE）解析，未引入 OR 多态', () => {
