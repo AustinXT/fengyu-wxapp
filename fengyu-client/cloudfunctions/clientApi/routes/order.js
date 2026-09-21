@@ -1639,6 +1639,29 @@ async function scanDetail(ctx) {
     ? Number(order.first_payment_amount)
     : null
 
+  // #214：解析本人可续付场次的元数据（只取金额/方式，绝不外发 paymentParams）
+  const resumableIntentMeta = (() => {
+    const activeOutTradeNo = String(order.lakala_out_order_no || '').trim()
+    if (!activeOutTradeNo) return null
+    if (!order.client_user_id || order.client_user_id !== userId) return null
+    const raw = order.lakala_payment_intent
+    const intent = typeof raw === 'string' ? safeParseJson(raw) : raw
+    if (!intent || typeof intent !== 'object' || Array.isArray(intent)) return null
+    if (String(intent.outTradeNo || '') !== activeOutTradeNo) return null
+    const expiresAt = intent.expiresAt ? new Date(intent.expiresAt).getTime() : 0
+    if (!Number.isFinite(expiresAt)
+        || expiresAt - Date.now() < PAYMENT_INTENT_REUSE_MIN_REMAINING_MS) {
+      return null
+    }
+    return {
+      payAmount: Number(intent.payAmount || 0),
+      paymentMethod: intent.paymentMethod || null,
+      // 预下单当时订单上的待扣卡额；快照没存就回落订单当前值（同一场次内它不会变——
+      // 意图活跃期改抵扣方案有服务端守卫）
+      prepaidCardAmount: pendingPrepaidCardAmount,
+    }
+  })()
+
   ctx.result = {
     order: {
       orderNo: order.sale_order_id,
@@ -1670,11 +1693,16 @@ async function scanDetail(ctx) {
       // 由 reserve 的 planRes 写入的（`client_user_id = CASE WHEN ... IS NULL AND
       // opened_by IS NOT NULL THEN $1`），不是等支付成功才写。所以「顾客扫码建了场次
       // 又退出」时归属已经落定，重入能正确识别（round-8 复核过这个时序）。
-      hasResumablePaymentIntent: Boolean(
-        String(order.lakala_out_order_no || '').trim()
-        && order.client_user_id
-        && order.client_user_id === userId
-      ),
+      hasResumablePaymentIntent: Boolean(resumableIntentMeta),
+      // 可续付场次的**权威**金额与支付方式（不含 paySign/prepay_id 等任何凭据）。
+      //
+      // 下发它是因为前端自己推算这三个值会和快照对不上：前端的 remaining 是退款感知的
+      // 行级口径、还要再减待扣卡额，而快照里存的是预下单当时定死的线上金额。
+      // round-8/9 连着两轮因为这个口径分歧出问题（金额对不上导致复用失败、
+      // 抵扣展示与实际收款不符）——权威数据在快照里，就该由后端给出，不让前端二次推算。
+      resumablePayAmount: resumableIntentMeta ? resumableIntentMeta.payAmount : null,
+      resumablePaymentMethod: resumableIntentMeta ? resumableIntentMeta.paymentMethod : null,
+      resumablePrepaidCardAmount: resumableIntentMeta ? resumableIntentMeta.prepaidCardAmount : null,
     },
     items: items.map(i => ({
       saleItemId: i.sale_item_id,

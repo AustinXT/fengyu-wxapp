@@ -32,6 +32,10 @@ interface ScanOrder {
   isExperienceConversion: boolean;
   // #214：是否存在本人可续付的支付场次（布尔，不含凭据）
   hasResumablePaymentIntent?: boolean;
+  // 可续付场次的权威金额/方式/待扣卡额（不含凭据）；前端不再自行推算，避免口径分歧
+  resumablePayAmount?: number | null;
+  resumablePaymentMethod?: PayMethod | null;
+  resumablePrepaidCardAmount?: number | null;
 }
 
 interface ScanOrderItem {
@@ -151,7 +155,13 @@ Page({
       // 历史 pending 只能按 min(pending, 当前余额) 恢复。余额下降时立即同步服务端，
       // 确保随后现金应付额和 payNotify 待扣卡额来自同一份新快照。
       const restoredPending = restorePendingPrepaid(pendingPrepaid, cardBalance);
-      if (orderData.status === '待支付'
+      // #214（round-9）：有可续付场次时**不能**自动回写抵扣方案——意图活跃期改抵扣有服务端
+      // 守卫，scanAdjust 会抛 PAYMENT_INTENT_ACTIVE，整页落进「无法获取订单」的错误态，
+      // 连新加的取消入口都一起消失，顾客彻底没有出路。
+      // 这种场景（预留卡额后余额又降了）保留原方案只读展示，提交时由服务端按真实余额判定。
+      const skipAutoAdjust = orderData.hasResumablePaymentIntent === true
+      if (!skipAutoAdjust
+          && orderData.status === '待支付'
           && pendingPrepaid > 0
           && Math.round(restoredPending * 100) !== Math.round(pendingPrepaid * 100)) {
         const validMethods: PayMethod[] = ['微信', '支付宝', '线下'];
@@ -218,9 +228,18 @@ Page({
       // 也用于员工在部分支付转换单上发起的订单级部分回款。
       const isFirstPartialScan = firstPaymentAmount > 0 && received === 0;
       const isRestrictedRepayment = isRepayment && firstPaymentAmount > 0;
-      const paid = firstPaymentAmount > 0
-        ? Math.min(firstPaymentAmount, remaining)
-        : remaining;
+      // #214：有可续付场次时，金额/方式/待扣卡额一律以**后端下发的快照口径**为准。
+      // 前端自己推算会和快照对不上（round-8/9 连着两轮栽在这里）：本地 remaining 是
+      // 退款感知的行级口径，而快照存的是预下单当时定死的线上金额。
+      const resumablePay = hasResumableIntent && Number.isFinite(Number(orderData.resumablePayAmount))
+        ? Number(orderData.resumablePayAmount)
+        : null;
+      const resumableCard = hasResumableIntent && Number.isFinite(Number(orderData.resumablePrepaidCardAmount))
+        ? Number(orderData.resumablePrepaidCardAmount)
+        : null;
+      const paid = resumablePay != null
+        ? resumablePay
+        : (firstPaymentAmount > 0 ? Math.min(firstPaymentAmount, remaining) : remaining);
       const couponDiscount = Number(orderData.couponDiscount || 0);
       const validMethods: PayMethod[] = ['微信', '支付宝', '线下'];
       const restoredMethod = validMethods.includes(orderData.paymentMethod)
@@ -228,7 +247,13 @@ Page({
         : '微信';
       // 回款场景：部分支付订单（已有首付到账，扫码付剩余应付）；受限回款由 isRestrictedRepayment 禁卡。
       // （isRepayment 已在上方 remaining 计算前定义）
-      const effectiveMethod: PayMethod = isRepayment && restoredMethod === '线下' ? '微信' : restoredMethod;
+      const baseMethod: PayMethod = isRepayment && restoredMethod === '线下' ? '微信' : restoredMethod;
+      // 复用场次的支付方式必须与快照一致（复用判据之一），直接采用后端下发值
+      const effectiveMethod: PayMethod = (hasResumableIntent
+        && orderData.resumablePaymentMethod
+        && validMethods.includes(orderData.resumablePaymentMethod))
+        ? (orderData.resumablePaymentMethod as PayMethod)
+        : baseMethod;
 
       this.setData({
         order: {
@@ -245,11 +270,16 @@ Page({
         },
         items: data.items || [],
         cardBalance,
-        // #214（round-8）：有可续付场次时必须**按订单上实际的待扣卡计划恢复**，不能像普通
-        // 回款那样一律显示「不使用储值卡」——复用的那笔场次里带着旧的 pending 卡额，
-        // 顾客会看到「不用卡、实付 ¥200」却被实际收走「微信 ¥120 + 扣卡 ¥80」。
-        useCard: (isRepayment && !hasResumableIntent) ? false : prepaid > 0,
-        prepaidCardAmount: (isRepayment && !hasResumableIntent) ? 0 : prepaid,
+        // #214：有可续付场次时严格按**该场次的**待扣卡额展示。
+        // 不能用 `prepaid`（它带 `pendingPrepaid > 0 ? pendingPrepaid : actualPrepaid` 的兜底）：
+        // 订单早期若有已结算的卡扣，而复用的场次本身不带卡计划，会误显示「使用储值卡 ¥80」
+        // ——开关还被锁死，顾客无法纠正（round-9 两个谱系都指到这里）。
+        useCard: resumableCard != null
+          ? resumableCard > 0
+          : (isRepayment ? false : prepaid > 0),
+        prepaidCardAmount: resumableCard != null
+          ? resumableCard
+          : (isRepayment ? 0 : prepaid),
         paidAmount: paid,
         paymentMethod: effectiveMethod,
         couponDiscount,
@@ -339,6 +369,15 @@ Page({
   /** 支付方式选择 */
   async onPayMethodChange(e: WxEvent<string>) {
     const method = e.detail as PayMethod;
+    // #214（round-9）：锁不能只加在 onPayMethodTap —— van-radio-group 的 change 事件
+    // 可以直接改值、绕过单元格点击那条路；改完提交会因方式与快照不符撞 PAYMENT_INTENT_ACTIVE。
+    if (this.data.intentLocked) {
+      if (method !== this.data.paymentMethod) {
+        Toast('本次支付已在进行中，如需更换方式请先取消订单');
+        this.setData({ paymentMethod: this.data.paymentMethod });
+      }
+      return;
+    }
     if (method !== this.data.paymentMethod) {
       this._wechatAttempt = null;
       this._alipayAttempt = null;

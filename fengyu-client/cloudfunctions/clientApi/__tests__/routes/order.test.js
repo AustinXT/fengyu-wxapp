@@ -2055,6 +2055,99 @@ describe('order.cancel', () => {
 
 // ===== #214 跨 env 内部接口 order.voidPaymentIntent =====
 // 仅供 staffApi 经 HTTP 触发器 + HMAC 调用；staff 侧没有也不该有拉卡拉凭据。
+// ===== #214 scanDetail 下发的可续付元数据（round-9）=====
+// 前端自己推算金额/方式/卡额会和快照对不上（round-8/9 连着两轮栽在这里），
+// 权威数据在快照里，由后端给出。但**绝不能**把 paymentParams 一起带出去。
+describe('order.scanDetail 的可续付元数据', () => {
+  function mockScanOrder(overrides) {
+    pg.query.mockImplementation(async (sql) => {
+      if (/FROM sale_orders o/.test(sql)) return [{
+        sale_order_id: 'FY-SCAN-001', status: '部分支付', store_id: 'store-1',
+        opened_by: 'emp-001', client_user_id: 'user-001',
+        total_amount: 300, payable_amount: 300, received: 100,
+        prepaid_card_amount: 0, pending_prepaid_card_amount: 0,
+        sale_order_datetime: new Date().toISOString(),
+        ...overrides,
+      }]
+      return []
+    })
+  }
+
+  test('有本人有效场次 → 下发金额/方式/卡额，但不含任何凭据', async () => {
+    const outTradeNo = 'FY-SCAN-001_1700000000'
+    mockScanOrder({
+      lakala_out_order_no: outTradeNo,
+      pending_prepaid_card_amount: 80,
+      lakala_payment_intent: {
+        outTradeNo,
+        expiresAt: new Date(Date.now() + 8 * 60 * 1000).toISOString(),
+        paymentMethod: '微信',
+        payAmount: 120,
+        paymentParams: { package: 'prepay_id=secret', paySign: 'must-not-leak' },
+      },
+    })
+
+    const ctx = createBoundCtx({ saleOrderId: 'FY-SCAN-001' })
+    await routes.scanDetail(ctx)
+
+    expect(ctx.result.order.hasResumablePaymentIntent).toBe(true)
+    expect(ctx.result.order.resumablePayAmount).toBe(120)
+    expect(ctx.result.order.resumablePaymentMethod).toBe('微信')
+    expect(ctx.result.order.resumablePrepaidCardAmount).toBe(80)
+    // 凭据绝不外发
+    expect(JSON.stringify(ctx.result)).not.toContain('must-not-leak')
+    expect(JSON.stringify(ctx.result)).not.toContain('prepay_id=secret')
+  })
+
+  test('场次属于他人 → 不下发元数据', async () => {
+    const outTradeNo = 'FY-SCAN-001_1700000000'
+    mockScanOrder({
+      client_user_id: 'user-999',
+      lakala_out_order_no: outTradeNo,
+      lakala_payment_intent: {
+        outTradeNo,
+        expiresAt: new Date(Date.now() + 8 * 60 * 1000).toISOString(),
+        paymentMethod: '微信', payAmount: 120,
+        paymentParams: { package: 'p', paySign: 's' },
+      },
+    })
+
+    const ctx = createBoundCtx({ saleOrderId: 'FY-SCAN-001' })
+    await routes.scanDetail(ctx)
+
+    expect(ctx.result.order.hasResumablePaymentIntent).toBe(false)
+    expect(ctx.result.order.resumablePayAmount).toBeNull()
+  })
+
+  test('快照已过期 → 不下发元数据', async () => {
+    const outTradeNo = 'FY-SCAN-001_1700000000'
+    mockScanOrder({
+      lakala_out_order_no: outTradeNo,
+      lakala_payment_intent: {
+        outTradeNo,
+        expiresAt: new Date(Date.now() - 1000).toISOString(),
+        paymentMethod: '微信', payAmount: 120,
+        paymentParams: { package: 'p', paySign: 's' },
+      },
+    })
+
+    const ctx = createBoundCtx({ saleOrderId: 'FY-SCAN-001' })
+    await routes.scanDetail(ctx)
+
+    expect(ctx.result.order.hasResumablePaymentIntent).toBe(false)
+  })
+
+  test('无活动意图 → 不下发元数据', async () => {
+    mockScanOrder({ lakala_out_order_no: null })
+
+    const ctx = createBoundCtx({ saleOrderId: 'FY-SCAN-001' })
+    await routes.scanDetail(ctx)
+
+    expect(ctx.result.order.hasResumablePaymentIntent).toBe(false)
+    expect(ctx.result.order.resumablePaymentMethod).toBeNull()
+  })
+})
+
 describe('order.voidPaymentIntent', () => {
   function internalCtx(payload) {
     const ctx = createBoundCtx(payload)
