@@ -23,6 +23,10 @@
  * 不处理 `@media` / `@supports` 条件块、`!important`、选择器 specificity、内联 `style=`，
  * 也不解析组件图（`externalClasses` / `addGlobalClass` / `styleIsolation`）——
  * 本仓当前零处使用 `externalClasses`，且无一条 `@media` 触及截断样式，故暂不可达。
+ * 另有一类已知漏报：**截断声明与 display 分属两条规则**时（`.a { text-overflow: ellipsis }`
+ * 配 `.a.x { display: flex }`）判据查不到 —— 判据是「按规则块」而非「按 class 合并后的
+ * 最终声明」。全仓现有 5 个「截断规则内无 display」的 class 已逐一核实安全（宿主是 view
+ * 默认 block，或本就是死样式）。
  * 判据一律 fail-closed：拿不准就报错，宁可误报让人来看一眼，也不放行。
  *
  * 这份文件与 staff 端的同名测试是**各端独立副本**（CLAUDE.md：禁止跨端共享代码目录）。
@@ -171,7 +175,7 @@ describe('WXSS 文本截断有效性（#238）', () => {
           const d = rule.display
 
           // ② display 写了但不在 block container 白名单里 —— 无论挂在什么标签上都失效
-          if (d && !BLOCK_CONTAINER.some((v) => d === v || d.startsWith(v + ' '))) {
+          if (d && !BLOCK_CONTAINER.includes(d)) {
             const tags = hostTags(scopeWxml, cls)
             if (tags.size === 0) continue // class 未被使用（死样式），不报
             const msg =
@@ -212,7 +216,7 @@ describe('WXSS 文本截断有效性（#238）', () => {
         broken.map((b) => `  · ${b}`).join('\n') +
         `\n\n修法：\n` +
         `  · 挂在 <text> 上缺 display → 补 \`display: block;\`\n` +
-        `  · display 是 flex/grid → 截断要挪到**承载文字的子元素**上（子元素记得加 min-width: 0），\n` +
+        `  · display 是 flex/grid → 截断要挪到**承载文字的子元素**上（子元素若无 overflow:hidden 则还需 min-width: 0），\n` +
         `    或把该元素改成 block container（若它本来只是为了垂直居中，可用 line-height 替代）\n` +
         `  · -webkit-line-clamp → 必须配 \`display: -webkit-box; -webkit-box-orient: vertical;\`\n`,
     ).toEqual([])
@@ -314,14 +318,17 @@ describe('WXSS 文本截断有效性（#238）', () => {
 
     test('判据是白名单 fail-closed：非 block-container 的 display 一律不放行', () => {
       // codex 谱系指出：黑名单会漏掉显式 inline / initial / unset / var() / 多关键字语法
+      // `block flex` / `inline-block flex` 是合法的两关键字语法（block 级 flex container），
+      // ellipsis 同样是死的 —— 精确匹配才能拒掉，前缀匹配会放行（GLM 谱系指出）
       for (const bad of ['inline', 'flex', 'inline-flex', 'grid', 'initial', 'unset',
-                         'inherit', 'var(--d)', 'inline flex', 'table', 'ruby']) {
+                         'inherit', 'var(--d)', 'inline flex', 'block flex',
+                         'inline-block flex', 'table', 'ruby']) {
         const d = parseTruncationRules(`.a { display: ${bad}; text-overflow: ellipsis; }`)[0].display
-        expect(BLOCK_CONTAINER.some((v) => d === v || d!.startsWith(v + ' ')), `display:${bad} 不该被放行`).toBe(false)
+        expect(BLOCK_CONTAINER.includes(d!), `display:${bad} 不该被放行`).toBe(false)
       }
       for (const good of ['block', 'inline-block', '-webkit-box', 'flow-root', 'list-item']) {
         const d = parseTruncationRules(`.a { display: ${good}; text-overflow: ellipsis; }`)[0].display
-        expect(BLOCK_CONTAINER.some((v) => d === v || d!.startsWith(v + ' ')), `display:${good} 该被放行`).toBe(true)
+        expect(BLOCK_CONTAINER.includes(d!), `display:${good} 该被放行`).toBe(true)
       }
     })
 

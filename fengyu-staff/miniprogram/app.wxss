@@ -296,8 +296,9 @@ page {
  * `text-overflow` 只作用于 block container，而 .mgmt-scope-tag 是 `inline-flex`
  * （flex container 不是 block container）→ 写在它上面的 ellipsis **不生效**，
  * 长市场名超过 max-width 时会被 `overflow: hidden` 硬裁切、没有「…」。
- * `min-width: 0` 同样不可省：flex item 的 min-width 默认是 auto（= 内容固有宽度），
- * 不置 0 的话它根本不会收缩，截断永远轮不到发生。
+ * `min-width: 0` 是**防御性**的：本规则已有 `overflow: hidden`，按规范这已让 automatic
+ * minimum size 归零、不加也能收缩；显式写上是防止后人删掉 overflow 后 flex item 的
+ * `min-width: auto`（= 内容固有宽度）让它拒绝收缩、截断永远轮不到发生。
  */
 .mgmt-scope-tag-value {
   display: block;
