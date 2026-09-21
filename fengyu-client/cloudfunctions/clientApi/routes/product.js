@@ -234,7 +234,13 @@ function normalizeProductPageSize(raw, defaultSize = PRODUCT_PAGE_SIZE_DEFAULT) 
  * 故与主键 product_id 组成复合键，配合行值比较保证全序。
  * 对外是不透明 base64 串，前端只需原样回传。
  */
-const PRODUCT_CURSOR_MAX_LENGTH = 256
+/**
+ * 游标长度上限只为挡「10MB base64 走完 Buffer + JSON.parse 才被拒」这种浪费，
+ * 不是业务约束。`products.product_id` 是 **无长度约束的 text**（生产实际值形如
+ * `prod-1786781954741`，约 18 字符），所以阈值必须留足冗余，
+ * 否则会出现「服务端生成的 nextCursor 被自己拒收」的死局。
+ */
+const PRODUCT_CURSOR_MAX_LENGTH = 2048
 const INT4_MIN = -2147483648
 const INT4_MAX = 2147483647
 
@@ -407,6 +413,11 @@ async function spuList(ctx) {
  */
 async function search(ctx) {
   const { keyword, limit, cursor } = ctx.event.payload || {}
+  // 分页入参先校验再短路：空关键词也不该成为绕过 limit/cursor 校验的口子，
+  // 否则三个 action 的入参契约不一致（search 返回 code=0，另两个返回 -400）
+  normalizeProductPageSize(limit)
+  decodeProductCursor(cursor)
+
   // 非字符串一律当空关键词短路：`(keyword || '').trim()` 对 `[]`（truthy）会抛
   // `trim is not a function` → 没有白名单前缀 → 降级成 -1 而不是走空结果分支
   const kw = typeof keyword === 'string' ? keyword.trim() : ''
@@ -426,7 +437,11 @@ async function search(ctx) {
  * 对应（否则「加载更多」会翻错分类的下一页），故由后端下发权威值。
  */
 async function shopInit(ctx) {
-  const { limit } = ctx.event.payload || {}
+  const { limit, cursor } = ctx.event.payload || {}
+  // 入参校验先于任何查询：shopInit 要并发打两个分类查询，畸形入参别让它们先白跑
+  normalizeProductPageSize(limit)
+  decodeProductCursor(cursor)
+
   const [groups, categoriesList] = await Promise.all([
     getCategoryGroups(ctx.auth),
     getCategoriesList(ctx.auth),
@@ -442,8 +457,10 @@ async function shopInit(ctx) {
     firstCategoryId = categoriesList[0].category_id
   }
 
+  // 透传 cursor：本接口既然下发 nextCursor，就必须收得回来，
+  // 否则调用方拿着 nextCursor 再调一次仍是第一页（重复行 / 死循环）
   const firstPage = firstCategoryId
-    ? await getProductListByCategory({ categoryId: firstCategoryId, auth: ctx.auth, limit })
+    ? await getProductListByCategory({ categoryId: firstCategoryId, auth: ctx.auth, limit, cursor })
     : { spuList: [], nextCursor: null, hasMore: false }
 
   ctx.result = {

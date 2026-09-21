@@ -461,6 +461,64 @@ describe('product 列表分页', () => {
     expect(decodeCursor(ctx.result.nextCursor)).toEqual([20, 'p20'])
   })
 
+  // shopInit 既然下发 nextCursor，就必须收得回来，否则调用方拿着它再调一次仍是第一页
+  test('shopInit 透传 cursor（不是只下发不接收）', async () => {
+    pg.query
+      .mockResolvedValueOnce([{ category_id: 'g-1', category_name: '护理', sort_order: 1 }])
+      .mockResolvedValueOnce([{ category_id: 'cat-1', category_name: '面部', category_group: '护理', category_order: 1 }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+
+    const ctx = createBoundCtx({ cursor: makeCursor(7, 'p20') })
+    await routes.shopInit(ctx)
+
+    const [sql, params] = pg.query.mock.calls[2]
+    expect(sql).toContain('(p.sort_order, p.product_id) >')
+    expect(params).toContain(7)
+    expect(params).toContain('p20')
+  })
+
+  // 空关键词不该成为绕过分页校验的口子，否则三个 action 的入参契约不一致
+  test.each([
+    ['非法 limit', { keyword: '   ', limit: 0 }],
+    ['畸形 cursor', { keyword: '   ', cursor: 'not-a-cursor' }],
+  ])('search 空关键词 + %s 仍返回 -400 且不打库', async (_label, payload) => {
+    const ctx = createBoundCtx(payload)
+    await expect(routes.search(ctx)).rejects.toThrow(/^INVALID_PARAMS:/)
+    expect(pg.query).not.toHaveBeenCalled()
+  })
+
+  test.each([
+    ['非法 limit', { limit: 0 }],
+    ['畸形 cursor', { cursor: 'not-a-cursor' }],
+  ])('shopInit %s 返回 -400 且不打库（校验先于两个并发分类查询）', async (_label, payload) => {
+    const ctx = createBoundCtx(payload)
+    await expect(routes.shopInit(ctx)).rejects.toThrow(/^INVALID_PARAMS:/)
+    expect(pg.query).not.toHaveBeenCalled()
+  })
+
+  // product_id 是无长度约束的 text，上限太小会让服务端拒收自己生成的游标
+  test('长 product_id 生成的游标能被自己解回来', async () => {
+    const longId = 'p'.repeat(200)
+    pg.query.mockResolvedValueOnce(
+      makeProductRows(DEFAULT_PAGE_SIZE + 1).map((r, i) =>
+        i === DEFAULT_PAGE_SIZE - 1 ? { ...r, product_id: longId } : r
+      )
+    )
+    pg.query.mockResolvedValueOnce([])
+
+    const ctx = createBoundCtx({ categoryId: 'cat-1' })
+    await routes.spuList(ctx)
+    const cursor = ctx.result.nextCursor
+    expect(cursor.length).toBeLessThanOrEqual(CURSOR_MAX_LENGTH)
+
+    vi.clearAllMocks()
+    pg.query.mockResolvedValueOnce([])
+    const next = createBoundCtx({ categoryId: 'cat-1', cursor })
+    await routes.spuList(next)
+    expect(pg.query.mock.calls[0][1]).toContain(longId)
+  })
+
   test('shopInit 无分类时分页字段为空壳', async () => {
     pg.query.mockResolvedValueOnce([]).mockResolvedValueOnce([])
 

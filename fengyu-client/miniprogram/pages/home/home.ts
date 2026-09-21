@@ -115,6 +115,17 @@ Page({
    */
   _dataEpoch: 0,
 
+  /**
+   * 每个分类的请求序号，以及全局的搜索请求序号。
+   *
+   * `_dataEpoch` 只拦得住「缓存被整体重置」，拦不住**同一分类内的乱序回包**：
+   * 快速点 A → B → A 会让 A 的两个首页请求并发，新的先回、旧的后回，
+   * 旧回包会把 `_spuCache[A]` 打回第一页并让在途的第 3 页接错位置，第 2 页永久跳过。
+   * 搜索侧同理：旧请求只靠「关键词相同」判有效，同词二次搜索时会串进旧门店/旧游标的结果。
+   */
+  _reqSeq: {} as Record<string, number>,
+  _searchSeq: 0,
+
   // 防止 scrolltolower 连续触发
   _isLoadingNext: false,
   _isLoadingSearchNext: false,
@@ -159,8 +170,10 @@ Page({
    */
   onHide() {
     this._teardownTimers();
-    this._coverWindow?.dispose();
-    this._searchCoverWindow?.dispose();
+    // 隐藏时只拆观察器接线，不销毁实例：隐藏的页面不渲染，observer 注定零回调，
+    // 硬撑着会在 800ms 后误触发 fail-open 把整列图片放开
+    this._coverWindow?.setVisible(false);
+    this._searchCoverWindow?.setVisible(false);
   },
 
   _teardownTimers() {
@@ -181,6 +194,8 @@ Page({
     if (storeName !== this.data.boundStoreName) {
       // 切换门店时清空购物车和 SPU 缓存
       clearCart();
+      this._coverWindow?.setVisible(true);
+      this._searchCoverWindow?.setVisible(true);
       this._resetPaging();
       this._allGroups = [];
       this._allCategories = [];
@@ -199,7 +214,9 @@ Page({
       this.loadShopInit();
     } else {
       this.updateCartCount();
-      // onHide 里 dispose 过，回到本页要把当前显示的那份列表重新接上观察器
+      // onHide 里拆过接线，回到本页要把当前显示的那份列表重新接上观察器
+      this._coverWindow?.setVisible(true);
+      this._searchCoverWindow?.setVisible(true);
       this._refreshCoverWindow(this.data.isSearching ? "search" : "browse");
     }
   },
@@ -208,6 +225,7 @@ Page({
   _resetPaging() {
     this._spuCache = {};
     this._pageState = {};
+    this._reqSeq = {};
     this._isLoadingNext = false;
     this._dataEpoch++;
     this._resetSearchPaging();
@@ -291,6 +309,7 @@ Page({
     this._searchKeyword = "";
     this._searchPageState = { cursor: null, hasMore: false };
     this._isLoadingSearchNext = false;
+    this._searchSeq++;
   },
 
   /**
@@ -315,6 +334,9 @@ Page({
 
   /** 实际搜索执行；append=true 时翻本次搜索的下一页 */
   async _doSearch(value: string, append = false) {
+    // 首页搜索换代作废在途请求；翻页沿用当前代次（它就是同一次搜索的延续）
+    if (!append) this._searchSeq++;
+    const seq = this._searchSeq;
     this.setData({ isSearching: true, searchLoading: true });
 
     try {
@@ -328,8 +350,11 @@ Page({
           : { keyword: value, limit: SPU_PAGE_SIZE }
       );
 
-      // 防止旧搜索结果覆盖新搜索（用户可能已继续输入）。
-      // 早退也要把 loading 关掉，否则转圈会一直挂到下一次搜索完成。
+      // 只认当前代次的回包。光比对关键词不够：退出搜索后用同一个词再搜一次、
+      // 或切门店后搜同一个词，旧请求都能通过「关键词相同」的检查，
+      // 把旧门店 / 旧游标的那一页追加进新结果并覆盖 _searchPageState。
+      if (seq !== this._searchSeq) return;
+      // 早退也要把 loading 关掉，否则转圈会一直挂到下一次搜索完成
       if (this.data.searchValue.trim() !== value) {
         this.setData({ searchLoading: false });
         return;
@@ -351,12 +376,14 @@ Page({
       );
     } catch (err) {
       console.error("_doSearch error:", err);
+      // 过期请求的失败不该动当前状态（`_resetSearchPaging` 会把新搜索的游标也清掉）
+      if (seq !== this._searchSeq) return;
       if (this.data.searchValue.trim() === value) {
         // 翻页失败只停在已有结果上，别把用户已看到的清空；
         // 但要把 hasMore 落下来，否则每次触底都重发同一个失败请求
         this.setData(append ? { searchLoading: false } : { searchResults: [], searchLoading: false });
         if (append) this._searchPageState = { ...this._searchPageState, hasMore: false };
-        else this._resetSearchPaging();
+        else this._searchPageState = { cursor: null, hasMore: false };
       } else {
         this.setData({ searchLoading: false });
       }
@@ -617,6 +644,10 @@ Page({
 
   async loadSpuList(categoryKey: string, append = false) {
     const epoch = this._dataEpoch;
+    // 分类内请求代次：拦住同一分类的乱序回包（快速点 A→B→A 会让 A 的两个首页请求并发）。
+    // 翻页沿用当前代次 —— 它是同一次浏览的延续，但首页请求会把它推进，
+    // 于是「首页重来」自动作废掉还在途的翻页回包。
+    const seq = (this._reqSeq[categoryKey] = (this._reqSeq[categoryKey] || 0) + 1);
     this.setData({ isLoading: true });
     const categoryId = this._findCategoryId(categoryKey);
     if (!categoryId) {
@@ -632,7 +663,7 @@ Page({
       // 代次变了说明缓存在请求飞行期间被整体重置（下拉刷新 / 切门店）。此时 prev 已是空数组，
       // 继续写下去会把「只有第 N 页」当第 1 页存起来、并把游标推进到第 N+1 页，
       // 前面那些行就此永久消失。判定必须在写 _spuCache **之前**。
-      if (epoch !== this._dataEpoch) return;
+      if (epoch !== this._dataEpoch || seq !== this._reqSeq[categoryKey]) return;
 
       const prev = append ? (this._spuCache[categoryKey] || []) : [];
       const rows = decorateSpuRows(data?.spuList || [], getIsMember(), { startIndex: prev.length, dropSkuList: true }) as SpuItem[];
@@ -659,7 +690,7 @@ Page({
       Toast.fail(err?.message || "加载商品失败");
       // 失败后把 hasMore 落下来：否则触底永远走「翻页」分支，
       // 既切不到下一个分类（home 触底的第二段语义），又会每次触底重发同一个失败请求
-      if (epoch === this._dataEpoch && this._pageState[categoryKey]) {
+      if (epoch === this._dataEpoch && seq === this._reqSeq[categoryKey] && this._pageState[categoryKey]) {
         this._pageState[categoryKey].hasMore = false;
         if (this.data.activeCategoryKey === categoryKey) this.setData({ hasMore: false });
       }

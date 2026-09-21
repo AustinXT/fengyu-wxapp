@@ -24,6 +24,7 @@ interface FakeObserver {
 
 const observers: FakeObserver[] = []
 let observerFactoryThrows = false
+let observerWiringThrows = false
 
 const wx = {
   /** nav-bar / workbench 等页面在用；测试里同步执行即可 */
@@ -41,6 +42,7 @@ const wx = {
       callback: null,
       disconnected: false,
       relativeTo(selector, margins) {
+        if (observerWiringThrows) throw new Error('relativeTo failed')
         inst.relativeToSelector = selector
         inst.relativeToMargins = margins
         return inst
@@ -70,9 +72,14 @@ const wx = {
   __setObserverFactoryThrows(v: boolean) {
     observerFactoryThrows = v
   },
+  /** relativeTo/observe 接线抛错（瞬态），与工厂抛错（能力缺失）区分开 */
+  __setObserverWiringThrows(v: boolean) {
+    observerWiringThrows = v
+  },
   __resetObservers() {
     observers.length = 0
     observerFactoryThrows = false
+    observerWiringThrows = false
   },
 
   getStorageSync(key: string) {

@@ -47,7 +47,11 @@ const OPTS = {
 
 /** 模拟 observer 对某个下标的相交回调 */
 function emit(idx: number, intersecting: boolean) {
-  const ob = (wx as any).__lastObserver()
+  emitOn((wx as any).__lastObserver(), idx, intersecting)
+}
+
+/** 指定某个（可能已过期的）observer 发回调 */
+function emitOn(ob: any, idx: number, intersecting: boolean) {
   ob.callback({ dataset: { idx: String(idx) }, intersectionRatio: intersecting ? 0.5 : 0 })
 }
 
@@ -263,5 +267,109 @@ describe('createCoverWindow · fail-open', () => {
     vi.advanceTimersByTime(FALLBACK_DELAY_MS)
 
     expect((page.data.spuList as any[]).every(r => r.coverVisible)).toBe(true)
+  })
+
+  test('relativeTo/observe 抛错算瞬态：本轮放开，下轮仍重试，且不泄漏半构造的 observer', () => {
+    const page = makePage('spuList', 8)
+    const w = createCoverWindow(page as any, OPTS)
+    ;(wx as any).__setObserverWiringThrows(true)
+    w.refresh()
+
+    const broken = (wx as any).__lastObserver()
+    expect(broken.disconnected).toBe(true)            // 已创建的原生 observer 必须收掉
+    expect((page.data.spuList as any[]).every(r => r.coverVisible)).toBe(true)
+
+    ;(wx as any).__setObserverWiringThrows(false)
+    w.refresh()
+    expect((wx as any).__lastObserver().observeSelector).toBe('.spu-cover-slot')
+  })
+})
+
+// 两个谱系的评审独立命中：`disconnect()` 拦不住已经进了事件队列的旧回调
+describe('createCoverWindow · 世代校验', () => {
+  test('旧世代回调不得把可见性写进新列表', () => {
+    const page = makePage('spuList', 50)
+    const w = createCoverWindow(page as any, OPTS)
+    w.refresh()
+    const stale = (wx as any).__lastObserver()
+
+    // 换了一批商品（切分类），新一轮观察器就位
+    w.refresh()
+
+    // 旧观察器的在队回调这时才执行
+    emitOn(stale, 12, true)
+    vi.advanceTimersByTime(FLUSH_DELAY_MS)
+
+    expect(page.setDataCalls).toHaveLength(0)
+    expect((page.data.spuList as any[])[12].coverVisible).toBe(false)
+  })
+
+  test('旧世代回调不得清掉新世代的 fail-open 守护定时器', () => {
+    const page = makePage('spuList', 8)
+    const w = createCoverWindow(page as any, OPTS)
+    w.refresh()
+    const stale = (wx as any).__lastObserver()
+
+    // 新一轮观察器注定零回调（例如建在被 wx:if 切走的列表上），守护定时器是唯一兜底
+    w.refresh()
+    emitOn(stale, 0, false)
+
+    vi.advanceTimersByTime(FALLBACK_DELAY_MS)
+
+    // 守护没被旧回调误杀 → 整列放开，而不是永久停在占位图
+    expect((page.data.spuList as any[]).every(r => r.coverVisible)).toBe(true)
+  })
+
+  test('dispose 之后的在队回调不再重新武装定时器', () => {
+    const page = makePage('spuList', 8)
+    const w = createCoverWindow(page as any, OPTS)
+    w.refresh()
+    const stale = (wx as any).__lastObserver()
+
+    w.dispose()
+    emitOn(stale, 3, true)
+    vi.advanceTimersByTime(FALLBACK_DELAY_MS + FLUSH_DELAY_MS)
+
+    expect(page.setDataCalls).toHaveLength(0)
+  })
+})
+
+describe('createCoverWindow · 页面显隐', () => {
+  test('隐藏期间的 refresh 不建观察器（不渲染的页面注定零回调，会误触 fail-open）', () => {
+    const page = makePage('spuList', 8)
+    const w = createCoverWindow(page as any, OPTS)
+    w.setVisible(false)
+
+    w.refresh()
+    vi.advanceTimersByTime(FALLBACK_DELAY_MS)
+
+    expect((wx as any).__getObservers()).toHaveLength(0)
+    expect(page.setDataCalls).toHaveLength(0)
+    expect((page.data.spuList as any[]).every(r => r.coverVisible === false)).toBe(true)
+  })
+
+  test('setVisible(false) 拆掉当前接线并换代', () => {
+    const page = makePage('spuList', 8)
+    const w = createCoverWindow(page as any, OPTS)
+    w.refresh()
+    const stale = (wx as any).__lastObserver()
+
+    w.setVisible(false)
+    expect(stale.disconnected).toBe(true)
+
+    emitOn(stale, 0, true)
+    vi.advanceTimersByTime(FALLBACK_DELAY_MS + FLUSH_DELAY_MS)
+    expect(page.setDataCalls).toHaveLength(0)
+  })
+
+  test('setVisible(true) 不自动 refresh —— 由页面决定给哪份列表接线', () => {
+    const page = makePage('spuList', 8)
+    const w = createCoverWindow(page as any, OPTS)
+    w.setVisible(false)
+    w.setVisible(true)
+    expect((wx as any).__getObservers()).toHaveLength(0)
+
+    w.refresh()
+    expect((wx as any).__getObservers()).toHaveLength(1)
   })
 })

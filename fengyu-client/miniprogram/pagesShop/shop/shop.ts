@@ -62,6 +62,13 @@ Page({
    */
   _dataEpoch: 0,
 
+  /**
+   * 每个分类的请求序号。`_dataEpoch` 只拦得住「缓存被整体重置」，
+   * 拦不住**同一分类内的乱序回包**：快速点 A → B → A 会让 A 的两个首页请求并发，
+   * 旧回包会把 `_spuCache[A]` 打回第一页并让在途的翻页接错位置。
+   */
+  _reqSeq: {} as Record<string, number>,
+
   // 防止 scrolltolower 连续触发
   _isLoadingNext: false,
 
@@ -84,8 +91,19 @@ Page({
     this._coverWindow = null;
   },
 
+  /**
+   * shop 会被 navigateTo 到商品详情 / 购物车盖住。隐藏的页面不渲染，
+   * 此时若翻页回包到达并重建观察器，一个相交回调都收不到 →
+   * 800ms 后误触发 fail-open 把整列图片放开，回来时解码上限已经没了。
+   */
+  onHide() {
+    this._isLoadingNext = false;
+    this._coverWindow?.setVisible(false);
+  },
+
   onShow() {
     const storeName = app.globalData.boundStoreName || '';
+    this._coverWindow?.setVisible(true);
     if (storeName !== this.data.boundStoreName) {
       clearCart();
       this._resetPaging();
@@ -94,6 +112,8 @@ Page({
       this.loadShopInit();
     } else {
       this.updateCartCount();
+      // onHide 里拆过接线，回来要重新接上
+      this._coverWindow?.refresh();
     }
   },
 
@@ -101,6 +121,7 @@ Page({
   _resetPaging() {
     this._spuCache = {};
     this._pageState = {};
+    this._reqSeq = {};
     this._activeCategoryId = '';
     this._isLoadingNext = false;
     this._dataEpoch++;
@@ -265,6 +286,9 @@ Page({
 
   async loadSpuList(categoryId: string, append = false) {
     const epoch = this._dataEpoch;
+    // 分类内请求代次：拦住同一分类的乱序回包。翻页沿用当前代次，
+    // 首页请求会推进它，于是「首页重来」自动作废还在途的翻页回包。
+    const seq = (this._reqSeq[categoryId] = (this._reqSeq[categoryId] || 0) + 1);
     this.setData({ isLoading: true });
     try {
       const cursor = append ? this._pageState[categoryId]?.cursor ?? null : null;
@@ -276,7 +300,7 @@ Page({
       // 代次变了说明缓存在请求飞行期间被整体重置（切门店）。此时 prev 已是空数组，
       // 继续写下去会把「只有第 N 页」当第 1 页存起来、并把旧门店的商品塞进新门店缓存。
       // 判定必须在写 _spuCache **之前**，不能只在 setData 之前。
-      if (epoch !== this._dataEpoch) return;
+      if (epoch !== this._dataEpoch || seq !== this._reqSeq[categoryId]) return;
 
       const prev = append ? (this._spuCache[categoryId] || []) : [];
       const rows = decorateSpuRows(data?.spuList || [], getIsMember(), { startIndex: prev.length }) as SpuItem[];
@@ -301,7 +325,7 @@ Page({
       console.error('loadSpuList error:', err);
       Toast.fail(err?.message || '加载商品失败');
       // 失败后把 hasMore 落下来：否则每次触底都会重发同一个失败请求
-      if (epoch === this._dataEpoch && this._pageState[categoryId]) {
+      if (epoch === this._dataEpoch && seq === this._reqSeq[categoryId] && this._pageState[categoryId]) {
         this._pageState[categoryId].hasMore = false;
         if (this._activeCategoryId === categoryId) this.setData({ hasMore: false });
       }
