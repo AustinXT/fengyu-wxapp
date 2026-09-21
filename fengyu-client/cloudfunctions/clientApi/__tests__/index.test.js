@@ -32,6 +32,34 @@ function clearClientApiCache() {
   })
 }
 
+// ===== 双谱系评审 round-5：HTTP-only action 的来源伪造防线 =====
+// 路由函数靠断言 event._fromHttp && event._hmacVerified 确认来源，而 ctx.event 就是
+// 调用方传进来的 event —— 任何已登录顾客都能用 wx.cloud.callFunction 在 data 里塞这两个
+// 字段把断言骗过去，等于完全绕开 HMAC。来源证明不能放在调用方可控的数据里。
+describe('HTTP-only action 不可经 cloud.callFunction 调用', () => {
+  const HTTP_ONLY = ['auth.uploadStaffAvatar', 'order.voidPaymentIntent']
+
+  test.each(HTTP_ONLY)('%s：伪造 _fromHttp/_hmacVerified 仍被拒绝', async (action) => {
+    const { main } = require('../index')
+    const res = await main({
+      action,
+      _fromHttp: true,
+      _hmacVerified: true,
+      payload: { saleOrderId: 'FY-001', expectedOutTradeNo: 'FY-001_1' },
+    }, {})
+
+    expect(res.code).not.toBe(0)
+    expect(res.errorType).toBe('PERMISSION_DENIED')
+  })
+
+  test.each(HTTP_ONLY)('%s：不带伪造标记同样被拒绝', async (action) => {
+    const { main } = require('../index')
+    const res = await main({ action, payload: {} }, {})
+    expect(res.code).not.toBe(0)
+    expect(res.errorType).toBe('PERMISSION_DENIED')
+  })
+})
+
 describe('clientApi 入口', () => {
   let main
 

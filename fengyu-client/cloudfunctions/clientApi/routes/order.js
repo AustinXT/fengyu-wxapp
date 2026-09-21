@@ -858,6 +858,24 @@ async function ensureReusedIntentStillPayable(orderNo, outTradeNo, merchant) {
 }
 
 /**
+ * 预下单已成功、但后续步骤（如支付宝吱口令）失败时的安全释放（双谱系评审 round-5）。
+ *
+ * 不释放的话会留下「意图活跃但没有可复用快照」的状态：顾客立刻重试只会撞
+ * PAYMENT_INTENT_ACTIVE，得等渠道超时 + 定时补偿才能自愈——正是本 issue 要消灭的卡死。
+ *
+ * 释放本身仍走 fail-closed 的 voidActiveLakalaPaymentIntent（查单确认非 SUCCESS → 关单
+ * → 复核）。释放失败不能盖掉真正的业务错误，所以这里只记日志。
+ */
+async function releaseIntentAfterPreorderFailure(orderNo, outTradeNo, storeId) {
+  try {
+    await voidActiveLakalaPaymentIntent(orderNo, { outTradeNo, storeId })
+  } catch (err) {
+    console.warn('[order/preorderFailure] 安全释放未完成，交由定时补偿兜底:',
+      orderNo, outTradeNo, err && err.message)
+  }
+}
+
+/**
  * 主动作废订单上的在线支付意图，成功后该订单可被取消/关闭（issue #214）。
  *
  * 全程 **fail-closed**：只有确认渠道侧已是「不可再支付」的终态才清本地意图。
@@ -3301,15 +3319,23 @@ async function alipayPay(ctx) {
       requestIp: requestIpAli,
     })
     // 步骤 2: share_code 用 alipayQrUrl 作为 biz_link 换取吱口令
-    const shareCodeResp = await createLakalaAlipayShareCode({
-      orderNo,
-      merchantNo: reservation.merchant.merchantNo,
-      termNo: reservation.merchant.termNo,
-      outTradeNo: preorderRespAli.outTradeNo,
-      payAmountYuan: reservation.payAmount,
-      requestIp: requestIpAli,
-      bizLink: preorderRespAli.alipayQrUrl,
-    })
+    let shareCodeResp
+    try {
+      shareCodeResp = await createLakalaAlipayShareCode({
+        orderNo,
+        merchantNo: reservation.merchant.merchantNo,
+        termNo: reservation.merchant.termNo,
+        outTradeNo: preorderRespAli.outTradeNo,
+        payAmountYuan: reservation.payAmount,
+        requestIp: requestIpAli,
+        bizLink: preorderRespAli.alipayQrUrl,
+      })
+    } catch (err) {
+      // preorder 已在渠道侧建单（CREATE），但吱口令没拿到 → 意图活跃却无快照可复用。
+      // 不释放的话顾客重试只会撞 PAYMENT_INTENT_ACTIVE，得等渠道超时才自愈。
+      await releaseIntentAfterPreorderFailure(orderNo, reservation.outTradeNo, reservation.storeId)
+      throw err
+    }
     alipayShareToken = shareCodeResp.shareToken
     alipayExpireDate = shareCodeResp.expireDate
     await persistLakalaPaymentIntentSnapshot(orderNo, reservation.outTradeNo,
@@ -3703,6 +3729,7 @@ async function repay(ctx) {
     ? buildLakalaOutTradeNo(saleOrderId)
     : null
   let repayMerchant = null
+  let repayStoreId = null   // 事务内读到的门店，供预下单失败时的安全释放使用
 
   await pg.transaction(async (client) => {
     // 1. 锁原单 + 校验归属 + 状态
@@ -3825,6 +3852,7 @@ async function repay(ctx) {
       if (paymentMethod === '支付宝' && !lakalaConfig.readConfig().alipayShareSource) {
         throw new Error('INVALID_STATE: ALIPAY_NOT_AVAILABLE: 暂不支持支付宝，请使用微信支付')
       }
+      repayStoreId = origOrder.store_id
       repayMerchant = await resolveLakalaMerchantInTransaction(client, origOrder.store_id)
       if (!repayMerchant) {
         throw new Error('INVALID_STATE: LAKALA_NOT_CONFIGURED: 该门店未启用拉卡拉聚合支付，请联系管理员')
@@ -4075,15 +4103,22 @@ async function repay(ctx) {
       transType: '41',
       requestIp: repayRequestIp,
     })
-    const repayShareCodeResp = await createLakalaAlipayShareCode({
-      orderNo: saleOrderId,
-      merchantNo: repayMerchant.merchantNo,
-      termNo: repayMerchant.termNo,
-      outTradeNo: repayPreorderResp.outTradeNo,
-      payAmountYuan: repayAmountInput,
-      requestIp: repayRequestIp,
-      bizLink: repayPreorderResp.alipayQrUrl,
-    })
+    let repayShareCodeResp
+    try {
+      repayShareCodeResp = await createLakalaAlipayShareCode({
+        orderNo: saleOrderId,
+        merchantNo: repayMerchant.merchantNo,
+        termNo: repayMerchant.termNo,
+        outTradeNo: repayPreorderResp.outTradeNo,
+        payAmountYuan: repayAmountInput,
+        requestIp: repayRequestIp,
+        bizLink: repayPreorderResp.alipayQrUrl,
+      })
+    } catch (err) {
+      // 同 alipayPay：preorder 已建单但吱口令失败，安全释放后再抛，别把订单锁死
+      await releaseIntentAfterPreorderFailure(saleOrderId, reservedOutTradeNo, repayStoreId)
+      throw err
+    }
     await persistLakalaPaymentIntentSnapshot(saleOrderId, reservedOutTradeNo,
       buildAlipayIntentSnapshot(reservedOutTradeNo, repayAmountInput,
         repayShareCodeResp.shareToken, repayShareCodeResp.expireDate))

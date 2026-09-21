@@ -1448,6 +1448,37 @@ describe('order.pay', () => {
     expect(new Date(snapshot.expiresAt).getTime()).toBeGreaterThan(Date.now())
   })
 
+  // preorder 已在渠道侧建单（CREATE），但吱口令没拿到 → 意图活跃却无快照可复用。
+  // 不释放的话顾客重试只会撞 PAYMENT_INTENT_ACTIVE，得等渠道超时才自愈
+  // （双谱系评审 round-5）。
+  test('支付宝吱口令失败 → 安全释放意图后再抛，不把订单锁死 (#214)', async () => {
+    const now = new Date()
+    mockPayQueries({
+      order: {
+        sale_order_id: 'FY-ALI-SC', status: '待支付', store_id: 'store-1',
+        client_user_id: 'user-001', total_amount: 100, payable_amount: 100,
+        sale_order_datetime: now.toISOString(),
+      },
+    })
+    // 安全释放在事务外解析商户（mockPayQueries 只 mock 了事务内那条），这里补上
+    const payQueryImpl = pg.query.getMockImplementation()
+    pg.query.mockImplementation(async (sql, params) => {
+      if (/lakala_merchants/.test(sql)) return [{ merchant_no: 'M1', term_no: 'T1', enabled: true }]
+      return payQueryImpl(sql, params)
+    })
+    __mocks__.lakalaClient.requestAlipayShareCode.mockRejectedValueOnce(
+      new Error('INVALID_STATE: LAKALA_TIMEOUT_30000ms'),
+    )
+    // 安全释放走 fail-closed：查单确认渠道已终态后释放
+    __mocks__.lakalaClient.queryTrade.mockResolvedValueOnce({ ok: true, tradeState: 'CLOSE' })
+
+    const ctx = createBoundCtx({ orderNo: 'FY-ALI-SC' })
+    await expect(routes.alipayPay(ctx)).rejects.toThrow(/LAKALA_TIMEOUT/)
+
+    // 释放确实发生了（按本次单号 CAS）
+    expect(pg.query.mock.calls.some(([sql]) => /SET lakala_out_order_no = NULL/.test(sql))).toBe(true)
+  })
+
   test('preorder 明确业务失败 → 按本次 out_trade_no CAS 释放意图', async () => {
     const now = new Date()
     const order = {

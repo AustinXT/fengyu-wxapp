@@ -143,6 +143,20 @@ exports.main = async (event, context) => {
     return { code: -1, message: '缺少 action 参数' }
   }
 
+  // ⚠️ HTTP-only action 必须在这里拒绝（双谱系评审 round-5）。
+  //
+  // 这些 action 的路由函数靠断言 `event._fromHttp && event._hmacVerified` 来确认来源，
+  // 而 ctx.event **就是调用方传进来的 event** —— 任何已登录顾客都能用
+  // `wx.cloud.callFunction` 在 data 里直接塞这两个字段把断言骗过去，等于完全绕开 HMAC。
+  // 来源证明不能放在调用方可控的数据里：走到这里就说明不是 HTTP 触发器入口
+  // （那条路在 main 开头就分流走了），直接拒。
+  if (HTTP_ACTION_ALLOWLIST.has(action)) {
+    return buildErrorResponse(new Error('PERMISSION_DENIED: 该接口仅供内部服务调用'))
+  }
+  // 纵深防御：即便将来有人在别处读这两个标记，也不该看到调用方伪造的值
+  delete event._fromHttp
+  delete event._hmacVerified
+
   // 查找路由（懒加载：首次调用时才 require 对应模块）
   const resolver = routes[action]
   if (!resolver) {
