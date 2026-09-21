@@ -372,9 +372,10 @@ async function start(ctx) {
     throw new Error('INVALID_PARAMS: 缺少 serviceOrderId')
   }
 
+  // 门店门（#224）：本店单 ∪ 指派给本人的跨店支援单；下方第二道门把非店长收死在「指派给自己」
   const serviceOrders = await pg.query(
-    'SELECT * FROM service_orders WHERE service_order_id = $1 AND store_id = $2',
-    [serviceOrderId, ctx.auth.effectiveStoreId]
+    'SELECT * FROM service_orders WHERE service_order_id = $1 AND (store_id = $2 OR assigned_employee_id = $3)',
+    [serviceOrderId, ctx.auth.effectiveStoreId, ctx.auth.staffWfId]
   )
 
   if (serviceOrders.length === 0) {
@@ -746,9 +747,10 @@ async function complete(ctx) {
     throw new Error('INVALID_PARAMS: 缺少 serviceOrderId')
   }
 
+  // 门店门（#224）：本店单 ∪ 指派给本人的跨店支援单；下方第二道门把非店长收死在「指派给自己」
   const serviceOrders = await pg.query(
-    'SELECT * FROM service_orders WHERE service_order_id = $1 AND store_id = $2',
-    [serviceOrderId, ctx.auth.effectiveStoreId]
+    'SELECT * FROM service_orders WHERE service_order_id = $1 AND (store_id = $2 OR assigned_employee_id = $3)',
+    [serviceOrderId, ctx.auth.effectiveStoreId, ctx.auth.staffWfId]
   )
 
   if (serviceOrders.length === 0) {
@@ -866,8 +868,11 @@ async function list(ctx) {
   const payload = ctx.event.payload || {}
   const { status } = payload
   const { pageSize, offset, keyword, keywordPattern, phoneKeyword, startDate, endDate } = normalizeListFilters(payload)
-  const params = [ctx.auth.effectiveStoreId]
-  const conditions = ['so.store_id = $1']
+  // 门店门（#224）：本店服务单 ∪ 指派给本人的跨店支援单。
+  // $1/$2 固定占位，非店长分支复用 $2 把可见范围收死在「指派给自己」。
+  // 管理层模式 effectiveStoreId=null → `so.store_id = NULL` 为 NULL（非 true），条件退化为仅本人被指派单，不放大权限。
+  const params = [ctx.auth.effectiveStoreId, ctx.auth.staffWfId]
+  const conditions = ['(so.store_id = $1 OR so.assigned_employee_id = $2)']
 
   if (status) {
     if (!['待服务', '服务中', '待客户确认', '已完成', '已取消'].includes(status)) {
@@ -898,8 +903,7 @@ async function list(ctx) {
   addDateRange(conditions, params, 'so.service_date', startDate, endDate)
 
   if (!isCurrentStoreManager(ctx.auth)) {
-    params.push(ctx.auth.staffWfId)
-    conditions.push(`so.assigned_employee_id = $${params.length}`)
+    conditions.push('so.assigned_employee_id = $2')
   }
 
   params.push(pageSize)
@@ -919,10 +923,13 @@ async function list(ctx) {
       so.started_at,
       so.completed_at,
       so.created_at,
+      so.store_id,
+      st.store_name,
       wu.phone AS client_phone,
       wu.name AS client_name
     FROM service_orders so
     LEFT JOIN client_wechat_users wu ON so.client_user_id = wu.user_id
+    LEFT JOIN stores st ON st.store_id = so.store_id
     WHERE ${conditions.join('\n      AND ')}
     ORDER BY so.service_date DESC, so.created_at DESC, so.service_order_id DESC
     LIMIT $${limitParam} OFFSET $${offsetParam}
@@ -1020,6 +1027,9 @@ async function list(ctx) {
     completedTime: so.completed_at,
     appointmentId: so.appointment_id,
     remark: so.remark || '',
+    storeId: so.store_id,
+    storeName: so.store_name || '',
+    isSupport: isSupportOrder(ctx.auth, so),
     items: itemsMap[so.service_order_id] || [],
   }))
 }
@@ -1051,9 +1061,11 @@ async function detail(ctx) {
       so.created_at,
       so.updated_at,
       so.store_id,
+      st.store_name,
       wu.phone AS client_phone
     FROM service_orders so
     LEFT JOIN client_wechat_users wu ON so.client_user_id = wu.user_id
+    LEFT JOIN stores st ON st.store_id = so.store_id
     WHERE so.service_order_id = $1
   `, [id])
 
@@ -1064,15 +1076,18 @@ async function detail(ctx) {
   const so = serviceOrders[0]
 
   // 分层可见性（与 order.detail 一致）：
-  //  1) 服务单在本 scope 内 + (店长 或 指定美容师是本人) → 门店操作权限放行（护理 Tab / 操作场景，行为不变）
+  //  0) 服务单指派给本人 → 放行，**不要求门店在 scope 内**（跨店支援单，#224）。
+  //     指派关系本身就是授权凭据（建单时已过 marketSupport 校验），此处不重算「锚定市场 + 出差标记」：
+  //     重算会让出差标记一关掉，在途支援单立刻变不可见，且引入第 6 份锚定市场 SQL 副本。
+  //  1) 服务单在本 scope 内 + 店长 → 门店操作权限放行（护理 Tab / 操作场景，行为不变）
   //  2) 管理层模式 + 服务单门店在本 scope 内 → 监管只读放行
   //  3) 服务单顾客在本 scope 内（bound_store_id ∈ scope）→ 顾客档案场景只读放行（含跨门店服务单）
   //  4) 都不满足 → 无权查看
-  // 注：门店模式普通员工不靠 inStoreScope 放开（否则可看本店他人服务单），仅经分支 1/3。
+  // 注：门店模式普通员工不靠 inStoreScope 放开（否则可看本店他人服务单），仅经分支 0/3。
   const inStoreScope = isStoreInScope(ctx.auth, so.store_id)
   const isManager = isCurrentStoreManager(ctx.auth)
   const isMgmt = ctx.auth.loginLevel === 'management'
-  let visible = inStoreScope && (isManager || so.assigned_employee_id === ctx.auth.staffWfId)
+  let visible = isAssignedToSelf(ctx.auth, so) || (inStoreScope && isManager)
   if (!visible && isMgmt && inStoreScope) {
     visible = true // 管理层监管本 scope 内服务单（只读）
   }
@@ -1169,6 +1184,9 @@ async function detail(ctx) {
     completedTime: so.completed_at,
     appointmentId: so.appointment_id,
     remark: so.remark || '',
+    storeId: so.store_id,
+    storeName: so.store_name || '',
+    isSupport: isSupportOrder(ctx.auth, so),
     review,
     items: items.map(i => ({
       saleItemId: i.sale_item_id,
@@ -1196,12 +1214,21 @@ async function cancel(ctx) {
     throw new Error('INVALID_PARAMS: 缺少 serviceOrderId')
   }
 
+  // 取消保持「仅开单门店」（#224 已拍板）：取消属开单门店的调度决策，不由外援行使
   const serviceOrders = await pg.query(
     'SELECT * FROM service_orders WHERE service_order_id = $1 AND store_id = $2',
     [serviceOrderId, ctx.auth.effectiveStoreId]
   )
 
   if (serviceOrders.length === 0) {
+    // 支援单现在看得见了（#224），沿用「不存在」文案会误导 —— 仅对指派给本人的单给出准确原因，不泄露他人单
+    const supportRows = await pg.query(
+      'SELECT 1 FROM service_orders WHERE service_order_id = $1 AND assigned_employee_id = $2',
+      [serviceOrderId, ctx.auth.staffWfId]
+    )
+    if (supportRows.length > 0) {
+      throw new Error('PERMISSION_DENIED: 支援服务单需由开单门店取消')
+    }
     throw new Error('INVALID_PARAMS: 服务单不存在或不属于本门店')
   }
 
@@ -1248,6 +1275,27 @@ async function cancel(ctx) {
 // ========== 辅助函数 ==========
 
 /**
+ * 服务单是否指派给当前请求人本人。
+ *
+ * 六个入口均先过 requireStaffBound()，staffWfId 必非空；这里仍显式判空，
+ * 避免将来被无守卫的调用方复用时 `undefined === undefined` 误判为放行。
+ */
+function isAssignedToSelf(auth, so) {
+  return Boolean(auth && auth.staffWfId && so.assigned_employee_id === auth.staffWfId)
+}
+
+/**
+ * 是否「跨店支援单」：单属于别的门店、且指派给本人（#224）。
+ *
+ * 供前端标识支援单（列表标签 / 详情门店行 / 隐藏取消按钮）用，不参与任何鉴权判定。
+ * 管理层模式 effectiveStoreId=null 时恒 false —— 监管视角不存在「支援」语义。
+ */
+function isSupportOrder(auth, so) {
+  if (!auth || !auth.effectiveStoreId || !so.store_id) return false
+  return so.store_id !== auth.effectiveStoreId && isAssignedToSelf(auth, so)
+}
+
+/**
  * 生成服务单 ID
  *
  * advisory lock 必须与最终 INSERT 在同一事务内才能闭合 TOCTOU 窗口。
@@ -1292,12 +1340,12 @@ function generateServiceItemId() {
 async function counts(ctx) {
   await requireStaffBound()(ctx, async () => {})
 
-  const params = [ctx.auth.effectiveStoreId]
-  let scopeFilter = 'so.store_id = $1'
+  // 与 list 同口径（#224），否则角标数与列表条数对不上
+  const params = [ctx.auth.effectiveStoreId, ctx.auth.staffWfId]
+  let scopeFilter = '(so.store_id = $1 OR so.assigned_employee_id = $2)'
 
   if (!isCurrentStoreManager(ctx.auth)) {
-    params.push(ctx.auth.staffWfId)
-    scopeFilter += ` AND so.assigned_employee_id = $${params.length}`
+    scopeFilter += ' AND so.assigned_employee_id = $2'
   }
 
   const rows = await pg.query(`
