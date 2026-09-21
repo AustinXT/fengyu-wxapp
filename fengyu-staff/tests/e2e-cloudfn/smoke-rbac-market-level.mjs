@@ -3,7 +3,8 @@
  * RBAC × 市场级 scope 综合 smoke
  *
  * 覆盖 5 个 case：每个员工绑 market A scope（org_nodes.type='市场'）：
- *   1. manager × 市场      → staffLevel='market', scopedStores=[A1,A2], availableLoginLevels=['store','management']
+ *   1. manager × 市场      → staffLevel='market', scopedStores=[A1,A2]；availableLoginLevels
+ *      按 permission_matrix 分流（customer_mgr/product 无 data_center:dashboard，只有 store）
  *   2. finance × 市场      → 同
  *   3. customer_mgr × 市场 → 同
  *   4. hr × 市场           → 同
@@ -32,11 +33,13 @@ const STORE_A1 = TEST_STORES_MULTI.A1
 const STORE_A2 = TEST_STORES_MULTI.A2
 
 const employees = [
-  { key: 'mgr',  empId: `${NS}_RBAC_M_MGR`,  oid: `${NS}_RBAC_M_MGR_OPENID`,  ph: testPhone(3), role: 'manager' },
-  { key: 'fin',  empId: `${NS}_RBAC_M_FIN`,  oid: `${NS}_RBAC_M_FIN_OPENID`,  ph: testPhone(4), role: 'finance' },
-  { key: 'cm',   empId: `${NS}_RBAC_M_CM`,   oid: `${NS}_RBAC_M_CM_OPENID`,   ph: testPhone(5), role: 'customer_mgr' },
-  { key: 'hr',   empId: `${NS}_RBAC_M_HR`,   oid: `${NS}_RBAC_M_HR_OPENID`,   ph: testPhone(6), role: 'hr' },
-  { key: 'prod', empId: `${NS}_RBAC_M_PROD`, oid: `${NS}_RBAC_M_PROD_OPENID`, ph: testPhone(7), role: 'product' },
+  // mgmt = permission_matrix 里是否有 data_center:dashboard（决定能否进管理层模式）。
+  // 两库实测 customer_mgr / product 没有；详见 smoke-rbac-hq-level 同处注释。
+  { key: 'mgr',  empId: `${NS}_RBAC_M_MGR`,  oid: `${NS}_RBAC_M_MGR_OPENID`,  ph: testPhone(3), role: 'manager',      mgmt: true },
+  { key: 'fin',  empId: `${NS}_RBAC_M_FIN`,  oid: `${NS}_RBAC_M_FIN_OPENID`,  ph: testPhone(4), role: 'finance',      mgmt: true },
+  { key: 'cm',   empId: `${NS}_RBAC_M_CM`,   oid: `${NS}_RBAC_M_CM_OPENID`,   ph: testPhone(5), role: 'customer_mgr', mgmt: false },
+  { key: 'hr',   empId: `${NS}_RBAC_M_HR`,   oid: `${NS}_RBAC_M_HR_OPENID`,   ph: testPhone(6), role: 'hr',           mgmt: true },
+  { key: 'prod', empId: `${NS}_RBAC_M_PROD`, oid: `${NS}_RBAC_M_PROD_OPENID`, ph: testPhone(7), role: 'product',      mgmt: false },
 ]
 
 async function run() {
@@ -65,6 +68,7 @@ async function run() {
     const lvl = r.data?.staffLevel
     const scopedIds = (r.data?.scopedStores || []).map((s) => s.storeId).sort()
     const avail = (r.data?.availableLoginLevels || []).slice().sort()
+    const expectedAvail = e.mgmt ? 'management,store' : 'store'
     if (r.code !== 0) {
       results.push({ ok: false, label: `login.${e.key}`, reason: `code=${r.code} ${r.message}` })
       continue
@@ -73,18 +77,28 @@ async function run() {
       results.push({ ok: false, label: `login.${e.key}.staffLevel`, reason: `expected market, got ${lvl}` })
     } else if (scopedIds.length !== 2 || !scopedIds.includes(STORE_A1.storeId) || !scopedIds.includes(STORE_A2.storeId)) {
       results.push({ ok: false, label: `login.${e.key}.scopedStores`, reason: `expected [A1,A2], got ${JSON.stringify(scopedIds)}` })
-    } else if (avail.join(',') !== 'management,store') {
-      results.push({ ok: false, label: `login.${e.key}.availableLoginLevels`, reason: `expected [store,management], got ${JSON.stringify(avail)}` })
+    } else if (avail.join(',') !== expectedAvail) {
+      results.push({
+        ok: false, label: `login.${e.key}.availableLoginLevels`,
+        reason: `expected ${e.mgmt ? '[store,management]' : '[store]（该角色无 data_center:dashboard）'}, got ${JSON.stringify(avail)}`,
+      })
     } else {
       results.push({ ok: true, label: `login.${e.key}.market×2stores×2logins` })
     }
   }
 
   // 2) 以 management 模式调 mgmtDashboard.scopeOptions（这是管理层准入门槛 action）
-  for (const e of employees) {
+  for (const e of employees.filter((x) => x.mgmt)) {
     results.push(await expectOk('mgmtDashboard.scopeOptions',
       { _testOpenid: e.oid, _loginLevel: 'management' },
       `${e.key}.mgmtDashboard.scopeOptions`))
+  }
+  // 2b) 无管理层入口的角色必须被挡在门外
+  for (const e of employees.filter((x) => !x.mgmt)) {
+    results.push(await expectFail('mgmtDashboard.scopeOptions',
+      { _testOpenid: e.oid, _loginLevel: 'management' },
+      'PERMISSION_DENIED',
+      `${e.key}.scopeOptions.deny（无管理层入口）`))
   }
 
   // 3) 以 store 模式 + currentStoreId=A1 调 customer.search（验证多店切单店）
