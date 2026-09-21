@@ -2220,6 +2220,23 @@ export const listInventoryCoreDocs = withPermission(
       status?: InventoryCoreDocStatus
       statuses?: readonly InventoryCoreDocStatus[]
       /**
+       * 方向维（#192）：把可见范围从「source **或** target 在 scope」收窄成
+       * 「**指定那一端**在 scope」。
+       *
+       * 单据可见性本来就该是双端 OR —— 发货方和收货方都得看得见自己经手的单。
+       * 但**待办区**要回答的是另一个问题：这张单轮不轮得到我动手。服务端的写入动作
+       * 一律拿**单边**做校验（收货类 `assertLocationWritable(target)` /
+       * `assertOrgNodeVisible(target)`，撤回审批 `assertLocationWritable(source)`），
+       * 所以只按 docType + status 取待办，对端会在「待我处理」里看到一张带行内按钮的单，
+       * 点一次抛一次 PERMISSION_DENIED，刷新后那行还在 —— 点不掉、消不掉，
+       * 同时把待办计数一起污染。
+       *
+       * 与上面的 scope 分支同构：`scoped === null`（admin，本就不受 scope 限制）跳过，
+       * scope 为空集时 fail-closed。类型是两个字面量而不是开放字符串，
+       * 省得写进来一个拼错的值就静默退化成不收窄。
+       */
+      scopeRole?: 'source' | 'target'
+      /**
        * 只保留发起过撤回申请的单据（`cancellation_request_reason` 非空）。
        *
        * 类型刻意写死 `true` 而不是 `boolean`：本条件只有「收窄」一个方向，
@@ -2228,6 +2245,20 @@ export const listInventoryCoreDocs = withPermission(
        * 真需要反向过滤时应显式加一个 `cancellationNotRequested` 条件。
        */
       cancellationRequested?: true
+      /**
+       * 只保留**还有未履约明细**的单据，并按明细的市场归属分流（#192）：
+       * `'supply-chain'` → 存在 `market_id IS NULL` 且未履约的明细；
+       * `'market'` → 存在 `market_id IS NOT NULL` 且未履约的明细。
+       *
+       * 用途：#194 把供应链采购订单并进「采购订单」后，一张单可同时含两类行，
+       * 且只在**所有**行履约满时才转「已完成」。供应链收货待办若只按
+       * 「采购订单 + 待收货」取，就会长期挂着一批「供应链行已收完、只差市场行发货」的单，
+       * 点一次报一次 INVALID_STATE。
+       *
+       * 与 `cancellationRequested` 同样「只收窄不放宽」：类型是两个字面量而不是
+       * boolean / 开放字符串，省得传进来一个 falsy 值就静默退化成不过滤。
+       */
+      pendingItemScope?: 'supply-chain' | 'market'
       startDate?: string
       endDate?: string
       keyword?: string
@@ -2245,6 +2276,26 @@ export const listInventoryCoreDocs = withPermission(
       conditions.push(scoped.length > 0
         ? or(inArray(inventoryDocs.sourceOrgNodeId, scoped), inArray(inventoryDocs.targetOrgNodeId, scoped))
         : sql`FALSE`)
+    }
+    if (filters.scopeRole && scoped !== null) {
+      /*
+       * 方向维（#192）：在上面的双端 OR 之外**追加**一条单端收窄，而不是改写那一条。
+       * 两条 AND 起来后单端条件完全覆盖 OR（`target IN s` 蕴含 `source IN s OR target IN s`），
+       * 所以 OR 这时是冗余的 —— 冗余是**有意留的**：scope 那条是全表所有查询共用的基础
+       * 可见性闸，让它保持「与 scopeRole 无关、永远压栈」，读代码的人就不必去论证
+       * 「设了方向维之后 scope 还在不在」。多出来的这一项 planner 自己会吸收掉。
+       *
+       * 与 scope 分支同构：`scoped === null`（admin）跳过；scope 空集 fail-closed。
+       * 条件挂在 count 与 rows 共用的 whereClause 上，total 跟着收窄 —— 这正是要的：
+       * 待办计数必须只数「我能动手的单」，否则角标数字对不上列表行数。
+       *
+       * 端点列可空（如「采购订单」的 source_org_node_id 恒为 NULL），
+       * SQL 的 `NULL IN (...)` 求值为 NULL 即不命中，方向是 fail-closed，正确。
+       */
+      const endpointColumn = filters.scopeRole === 'source'
+        ? inventoryDocs.sourceOrgNodeId
+        : inventoryDocs.targetOrgNodeId
+      conditions.push(scoped.length > 0 ? inArray(endpointColumn, scoped) : sql`FALSE`)
     }
     if (filters.orgNodeId) {
       const locations = await db
@@ -2296,6 +2347,25 @@ export const listInventoryCoreDocs = withPermission(
     }
     if (filters.cancellationRequested) {
       conditions.push(isNotNull(inventoryDocs.cancellationRequestReason))
+    }
+    if (filters.pendingItemScope) {
+      /*
+       * 别名 pending_item 在本文件未被占用（现有别名是 visible_doc / visible_docs /
+       * root_doc / item / doc_link 等），新增别名前先 grep 全文件 —— 本仓有按文件聚合的
+       * CTE 别名守护，同名不同语句也会判撞。
+       * 条件挂在 count 与 rows 共用的 whereClause 上，total 跟着收窄（这是对的：
+       * 待办区的分页器必须按能操作的单数算页数）。
+       * EXISTS 走 idx_inventory_doc_items_doc(doc_id)。
+       */
+      const marketCondition = filters.pendingItemScope === 'supply-chain'
+        ? sql`pending_item.market_id IS NULL`
+        : sql`pending_item.market_id IS NOT NULL`
+      conditions.push(sql`EXISTS (
+        SELECT 1 FROM ${inventoryDocItems} pending_item
+         WHERE pending_item.doc_id = ${inventoryDocs.id}
+           AND ${marketCondition}
+           AND COALESCE(pending_item.fulfilled_quantity, 0) < pending_item.quantity
+      )`)
     }
     if (filters.startDate) conditions.push(gte(inventoryDocs.docDate, filters.startDate))
     if (filters.endDate) conditions.push(lte(inventoryDocs.docDate, filters.endDate))

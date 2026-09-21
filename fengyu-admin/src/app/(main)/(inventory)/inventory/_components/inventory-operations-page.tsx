@@ -46,15 +46,21 @@ import {
   listSupplyChainEmployeeOptions,
   quoteMarketReplenishmentPrices,
   receiveItemCompanyShipment,
+  receiveItemCompanyShipmentInFull,
   receiveSupplyChainPurchaseOrder,
   receiveStoreAllocation,
+  receiveStoreAllocationInFull,
   rejectItemCompanyShipmentCancellation,
   rejectReturnForRestock,
   requestItemCompanyShipmentCancellation,
   summarizeStoreReplenishmentRequests,
 } from '@/actions/inventory/business'
-import type { MarketPromotionQuoteResult } from '@/lib/inventory/business'
-import { getInventoryCoreDocById, listInventoryOperationDocs } from '@/actions/inventory/docs'
+import type { MarketPromotionQuoteResult, ReceiveShipmentInFullInput } from '@/lib/inventory/business'
+import {
+  confirmInventoryCoreReceive,
+  getInventoryCoreDocById,
+  listInventoryOperationDocs,
+} from '@/actions/inventory/docs'
 import { listInventoryLotOptions } from '@/actions/inventory/stocks'
 import { actionErrorMessage } from '@/lib/action-error'
 import type {
@@ -68,10 +74,14 @@ import type {
 } from '@/lib/inventory/types'
 import type { InventoryBusinessLevel } from '@/lib/inventory/business-level'
 import {
+  INVENTORY_INBOX_ACTION_STATUS,
   genericOperationId,
+  resolveOperationDocQuery,
+  resolveOperationInboxActions,
   type InventoryAnyOperationId,
   type InventoryGenericDocType,
   type InventoryGenericOperationId,
+  type InventoryInboxActionKind,
   type InventoryOperationId,
 } from '@/lib/inventory/operation-doc-types'
 /*
@@ -83,6 +93,7 @@ import {
   parseInventoryOperationId,
   parseInventoryOperationsTab,
 } from '@/lib/inventory/operation-return'
+import { DocActionDialog, type DocActionPending, type DocActionSpec } from './doc-action-dialog'
 import { InventoryDocCreateForm } from './inventory-doc-create-form'
 import InventorySubjectSelect from '@/components/inventory-subject-select'
 import { Badge } from '@/components/ui/badge'
@@ -355,6 +366,7 @@ function DocPicker({
   label,
   docs,
   value,
+  current = null,
   onChange,
   disabled = false,
   required = false,
@@ -362,14 +374,43 @@ function DocPicker({
   label: string
   docs: InventoryDocRow[]
   value: string
+  /**
+   * 当前选中的那张单据本身（各表单 `useLoadedDocument()` 拿到的 `doc`）。
+   * 只用于「选中值不在 `docs` 里」时补一条选项，见下方 `selectedMissing`。
+   */
+  current?: InventoryDocRow | null
   onChange: (value: string) => void
   disabled?: boolean
   required?: boolean
 }) {
+  /*
+   * 选中值不在候选集里的兜底（#192）。
+   *
+   * 两边口径本来就不一样：`docs` 来自 RSC 传下来的 `workflowDocs`，那是页面服务端
+   * 按 `page: 1, pageSize: 100` 拉的一页 —— **全类型混排的最近 100 张**；
+   * 而 `value` 可能来自待办区「去收货」的预选券，待办段是服务端按类型 + 状态**全量分页**查的。
+   * 长期挂着的待收货单大概率就落在那 100 张之外。
+   *
+   * `<select value={x}>` 匹配不到任何 `<option>` 时，浏览器落到 `selectedIndex = -1`：
+   * 表现是**下拉一片空白、下方明细表却已经加载好**，既没有报错也没有任何提示，
+   * 用户只会以为跳转失败。同一条路还能被正常路径踩到 —— 选好一张单之后
+   * 行内动作 / 建单成功触发 `router.refresh()`，这张单的状态变了就会掉出
+   * `docCandidates` 的状态过滤，下拉同样归空。
+   *
+   * 所以：选中值没有对应选项时就地补一条。有 `current` 就用它的完整文案；
+   * 还在加载（`current` 尚为 null）时先用单号占位，保证 select 任何时刻都有选中项。
+   *
+   * ⚠️ 这只治**显示**：候选集本身仍是最近 100 张混排，正常路径下更老的单在下拉里
+   * 依旧翻不出来、选不到。要根治得让服务端按 docType + status 出候选（PR follow-up）。
+   */
+  const selectedMissing = value !== '' && !docs.some((doc) => doc.id === value)
   return (
     <FormField label={label} required={required}>
       <Select value={value} onChange={(event) => onChange(event.target.value)} disabled={disabled}>
         <option value="">请选择</option>
+        {selectedMissing && (
+          <option value={value}>{current && current.id === value ? formatDoc(current) : value}</option>
+        )}
         {docs.map((doc) => (
           <option key={doc.id} value={doc.id}>{formatDoc(doc)}</option>
         ))}
@@ -475,6 +516,39 @@ function useLoadedDocument() {
   }, [])
 
   return { docId, doc, loading, selectDocument }
+}
+
+/** 待办区「去收货」跳到填报表单时带的预选券（#192）。 */
+interface OperationFormPrefill {
+  docId: string
+  /**
+   * 每点一次自增。用 token 而不是裸 docId 当触发源：同一张单点第二次时 docId 没变，
+   * 只挂 docId 的 effect 不会再跑，表现是「第二次点没反应」且没有任何报错。
+   */
+  token: number
+}
+
+/**
+ * 把预选券兑现成一次 `selectDocument`。
+ *
+ * 覆盖语义是**直接切换 + toast 告知**，不做二次确认：收货表单输入量小
+ * （实收数量默认预填待收数），代价低。注意 `selectDocument` 会重置明细行 ——
+ * 在填报表单里填到一半再从待办区跳过来，填的内容会丢，这点在 PR 里单列说明。
+ */
+function useDocumentPrefill(
+  prefill: OperationFormPrefill | null | undefined,
+  selectDocument: (id: string) => Promise<void>,
+) {
+  const token = prefill?.token
+  const docId = prefill?.docId
+  useEffect(() => {
+    if (!docId) return
+    void selectDocument(docId)
+    toast.info(`已切换到单据 ${docId}`)
+    // 依赖只挂 token（理由见 OperationFormPrefill.token）。docId 随 token 一起确定，
+    // selectDocument 是 useLoadedDocument 里 deps 为空的 useCallback，恒定。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token])
 }
 
 function SourceDocumentItems({
@@ -716,9 +790,23 @@ export default function InventoryOperationsPage({
         <Card ref={workspaceRef}>
           <CardContent className="p-5">
             <OperationWorkspace
+              /*
+               * key：工作区自己也有跟着业务走的 state 了（Tab 选中态、「去收货」的表单预选券）。
+               * 内层 `<Tabs key={operation}>` 只重建 Tabs 子树，管不到 OperationWorkspace
+               * 自己的 useState —— 不加这道 key，A→B 时 B 会继承 A 的 Tab 选中态与预选券。
+               */
+              key={active.id}
               operation={active}
               level={level}
               defaultTab={pendingDocsTabFor === active.id ? 'docs' : 'form'}
+              /*
+               * 行内动作的前端可见性判据，与卡片 `enabled` **同一个** operationEnabled ——
+               * 别在下游再算一份。当前 `active` 已经过这道判据，所以这里恒为 true；
+               * 留着这个 prop 是为了让 OperationDocsTab 的权限口径显式可测，
+               * 也为了将来有人放宽 `active` 的筛选时不至于连闸门都没有。
+               * 真正的授权边界在 Server Action 的 withPermission + assertLocationWritable。
+               */
+              canAct={operationEnabled(active)}
               busy={workspaceBusy}
               onBusyChange={setWorkspaceBusy}
               locations={locations}
@@ -740,6 +828,7 @@ function OperationWorkspace({
   operation: card,
   level,
   defaultTab,
+  canAct,
   busy,
   onBusyChange,
   locations,
@@ -755,7 +844,14 @@ function OperationWorkspace({
   level: InventoryBusinessLevel
   /** 只在「从详情页返回」那一次是 'docs'，由父层的一次性券决定。 */
   defaultTab: 'form' | 'docs'
+  /** 待办行内动作按钮的前端可见性判据，由父层用 operationEnabled 算好（#192）。 */
+  canAct: boolean
   busy: boolean
+  /**
+   * 工作区里**任一**提交在途时上报（建单表单 / 待办行内动作两条路都算），父层据此锁卡片。
+   * 必须是稳定引用（父层的 `setWorkspaceBusy`）：下游 `DocActionDialog` 的 effect cleanup
+   * 会在引用变化时补一次 `false`。
+   */
   onBusyChange: (busy: boolean) => void
   locations: InventoryLocationRow[]
   skuOptions: InventorySkuRow[]
@@ -767,6 +863,37 @@ function OperationWorkspace({
 }) {
   const router = useRouter()
   const operation = card.id
+  /*
+   * Tabs 改受控（#192）：待办区的「去收货」要能把用户从单据 Tab 送回填报表单。
+   * 初值仍是父层那张一次性券，切换权交给 setTab —— 组件外部（行内动作）也能推它。
+   */
+  const [tab, setTab] = useState<string>(defaultTab)
+  /*
+   * 「去收货」的表单预选券。用 token 而不是裸 docId：同一张单点第二次也要能再触发
+   * （裸 docId 在 effect 依赖里不变，第二次点击静默失效）。
+   */
+  const [prefill, setPrefill] = useState<{ docId: string; token: number } | null>(null)
+  /** 待办条数，挂在「单据」Tab 的角标上 —— 不点开也知道这张卡有没有活。 */
+  const [inboxTotal, setInboxTotal] = useState(0)
+  /*
+   * 工作区里有**两条**提交路径会在途：填报表单侧的建单（`InventoryDocCreateForm`）与
+   * 单据 Tab 里待办区的行内动作。两者的在途态都必须上报给父层的 `workspaceBusy` ——
+   * 不上报的那条（行内动作原先就漏了）提交在途时卡片与「关闭」按钮都不锁，
+   * 用户一切走就把在途请求连同整个工作区卸载：单其实已经办出去了，界面上却什么反馈都没有。
+   *
+   * 各存一份再 OR 上报，**不能共用一个布尔**：两个面板都是 keepMounted 的，
+   * 「建单在途时切到单据 Tab 再办一张待办」完全可达，共用的话先结束的那条
+   * 会把仍在途的那条一起解锁。
+   */
+  const [formBusy, setFormBusy] = useState(false)
+  const [actionBusy, setActionBusy] = useState(false)
+  useEffect(() => {
+    onBusyChange(formBusy || actionBusy)
+  }, [formBusy, actionBusy, onBusyChange])
+  const handleGotoForm = useCallback((docId: string) => {
+    setPrefill((previous) => ({ docId, token: (previous?.token ?? 0) + 1 }))
+    setTab('form')
+  }, [])
   return (
     <div className="space-y-5">
       <OperationHeader title={card.title} onClose={onClose} closeDisabled={busy} />
@@ -779,10 +906,22 @@ function OperationWorkspace({
         * key 在 A→B→A 时重建 Tabs，直接读 URL 的话第二次打开 A 又被弹回单据 Tab，
         * 用户永远回不到填报表单，且没有任何报错。
         */}
-      <Tabs key={operation} defaultValue={defaultTab}>
+      <Tabs key={operation} value={tab} onValueChange={setTab}>
         <TabsList>
           <TabsTrigger value="form">填报表单</TabsTrigger>
-          <TabsTrigger value="docs">单据</TabsTrigger>
+          <TabsTrigger value="docs">
+            单据
+            {/*
+              * 待办角标。sr-only 补一句是因为光一个数字读屏念出来是「单据 3」——
+              * 听不出 3 是什么。
+              */}
+            {inboxTotal > 0 && (
+              <Badge variant="outline" className="ml-1">
+                {inboxTotal}
+                <span className="sr-only"> 条待我处理</span>
+              </Badge>
+            )}
+          </TabsTrigger>
         </TabsList>
         {/*
           * keepMounted：表单面板切走时只隐藏不卸载。默认的卸载语义会把填了一半的
@@ -809,7 +948,8 @@ function OperationWorkspace({
                * 跟共享组件自己弹的红色错误 toast 同屏打架。
                */
               onStale={() => router.refresh()}
-              onBusyChange={onBusyChange}
+              // 建单在途态先落到本地 formBusy，与行内动作的 actionBusy 合并后再上报（见上方注释）。
+              onBusyChange={setFormBusy}
               renderActions={({ submit, submitting }) => (
                 <div className="flex justify-end">
                   <Button type="button" onClick={submit} loading={submitting}>创建{card.title}单据</Button>
@@ -823,11 +963,11 @@ function OperationWorkspace({
           {operation === 'purchase-order' && <PurchaseOrderForm locations={locations} workflowDocs={workflowDocs} canViewPrice={canViewPrice} onSuccess={onSuccess} />}
           {operation === 'market-report-summary' && <MarketReportSummaryForm locations={locations} onSuccess={onSuccess} />}
           {operation === 'company-shipment' && <CompanyShipmentForm locations={locations} workflowDocs={workflowDocs} onSuccess={onSuccess} />}
-          {operation === 'market-receipt' && <ShipmentReceiptForm workflowDocs={workflowDocs} kind="market" onSuccess={onSuccess} />}
-          {operation === 'supply-chain-receipt' && <SupplyChainPurchaseReceiptForm locations={locations} workflowDocs={workflowDocs} canViewPrice={canViewPrice} onSuccess={onSuccess} />}
-          {operation === 'supply-chain-purchase-cancel' && <SupplyChainPurchaseCancelForm workflowDocs={workflowDocs} onSuccess={onSuccess} />}
+          {operation === 'market-receipt' && <ShipmentReceiptForm workflowDocs={workflowDocs} kind="market" prefill={prefill} onSuccess={onSuccess} />}
+          {operation === 'supply-chain-receipt' && <SupplyChainPurchaseReceiptForm locations={locations} workflowDocs={workflowDocs} canViewPrice={canViewPrice} prefill={prefill} onSuccess={onSuccess} />}
+          {operation === 'supply-chain-purchase-cancel' && <SupplyChainPurchaseCancelForm workflowDocs={workflowDocs} prefill={prefill} onSuccess={onSuccess} />}
           {operation === 'store-allocation' && <StoreAllocationForm locations={locations} skuOptions={skuOptions} workflowDocs={workflowDocs} canViewPrice={canViewPrice} onSuccess={onSuccess} />}
-          {operation === 'store-receipt' && <ShipmentReceiptForm workflowDocs={workflowDocs} kind="store" onSuccess={onSuccess} />}
+          {operation === 'store-receipt' && <ShipmentReceiptForm workflowDocs={workflowDocs} kind="store" prefill={prefill} onSuccess={onSuccess} />}
           {operation === 'store-return' && <ReturnForm locations={locations} skuOptions={skuOptions} sourceType="门店" onSuccess={onSuccess} />}
           {operation === 'market-return' && <ReturnForm locations={locations} skuOptions={skuOptions} sourceType="市场" onSuccess={onSuccess} />}
           {operation === 'store-return-approval' && <ReturnApprovalForm workflowDocs={workflowDocs} docType="院退货" onSuccess={onSuccess} />}
@@ -842,8 +982,27 @@ function OperationWorkspace({
           {operation === 'market-conversion' && <ConversionForm locations={locations} skuOptions={skuOptions} locationType="市场" onSuccess={onSuccess} />}
           {operation === 'store-conversion' && <ConversionForm locations={locations} skuOptions={skuOptions} locationType="门店" onSuccess={onSuccess} />}
         </TabsContent>
-        <TabsContent value="docs">
-          <OperationDocsTab operation={operation} level={level} canViewPrice={canViewPrice} />
+        {/*
+          * keepMounted：单据面板切走时也不卸载。两个理由，缺一不可 ——
+          * (1) 待办角标挂在 Tab 标题上，卸载了就归零，「不点开也知道有没有活」直接失效；
+          * (2) 切回来要重新发两次查询。
+          * 代价是**点开业务卡片就立刻发一次两段查询**（原先要切到单据 Tab 才发），
+          * 是本次改动最大的 DB 往返增量。
+          */}
+        <TabsContent value="docs" keepMounted>
+          <OperationDocsTab
+            operation={operation}
+            level={level}
+            canViewPrice={canViewPrice}
+            canAct={canAct}
+            onGotoForm={handleGotoForm}
+            onInboxTotalChange={setInboxTotal}
+            /*
+             * 行内动作的在途态：与建单那条口径对齐，在途时一并锁住卡片与「关闭」按钮。
+             * `setActionBusy` 是 setState，稳定引用 —— 下游 DocActionDialog 要求。
+             */
+            onActionBusyChange={setActionBusy}
+          />
         </TabsContent>
       </Tabs>
     </div>
@@ -852,23 +1011,254 @@ function OperationWorkspace({
 
 const OPERATION_DOCS_PAGE_SIZE = 20
 
+/*
+ * ────────── 待办区的行内动作（#192） ──────────
+ *
+ * 动作集合、以及「哪个动作在哪个状态下出现」的单源在
+ * `@/lib/inventory/operation-doc-types`（纯数据，与服务端的 inbox 查询条件同文件、
+ * 由单测互相钉死）。本文件只负责把它们接到 Server Action、文案与弹窗上。
+ */
+
 /**
- * 业务工作区的「单据」Tab（#190）：显示**本业务产出的**、当前账号可见的单据。
+ * **不进弹窗**的两个动作：只把用户送回「填报表单」Tab 并预选这张单。
+ *
+ * 供应链采购入库要逐行填批号 / 效期（留空会让实物并进「无批号」批次，是实质性数据损失），
+ * 所以它只有跳转版、没有一键版；市场 / 门店收货两条既有一键版也留跳转版，
+ * 部分收货与差异登记仍得回表单。
+ */
+const INBOX_GOTO_ACTION_KINDS = ['shipment-receive-goto', 'purchase-receive-goto'] as const
+type InboxGotoActionKind = (typeof INBOX_GOTO_ACTION_KINDS)[number]
+/**
+ * 走 `DocActionDialog` 的动作。
+ *
+ * 刻意从 `InventoryInboxActionKind` 里 `Exclude` 掉跳转类 —— `DocActionDialog` 的
+ * `config` 是 `Record<K, DocActionSpec>`，只要把跳转类也算进 K，就必须给它们编一份
+ * 用不上的弹窗文案；而漏编则直接编译失败。类型上分开，两类动作各自完整。
+ */
+type InboxDialogActionKind = Exclude<InventoryInboxActionKind, InboxGotoActionKind>
+
+const INBOX_GOTO_ACTION_SET: ReadonlySet<InventoryInboxActionKind> = new Set(INBOX_GOTO_ACTION_KINDS)
+
+function isInboxGotoAction(kind: InventoryInboxActionKind): kind is InboxGotoActionKind {
+  return INBOX_GOTO_ACTION_SET.has(kind)
+}
+
+/**
+ * 行内按钮文案。同一张卡片上不会同时出现「通过」的两种来源（退货 / 撤回），不会撞名。
+ *
+ * ⚠️ 这里**没有「草稿 → 取消」**，是数据层刻意的决定不是遗漏：
+ * 没有任何业务产出草稿单（`insertDocHeader` 每次都显式传 status，`草稿` 只是列默认值），
+ * 全仓也没有「取消草稿」的 Server Action。口径与理由写在
+ * `@/lib/inventory/operation-doc-types` 的 `INVENTORY_INBOX_ACTION_KINDS` 上，
+ * 并有单测断言状态值域不含 `草稿` —— 哪天真有业务产出草稿单，那条会红并提醒补这个动作。
+ */
+const INBOX_ACTION_LABEL: Record<InventoryInboxActionKind, string> = {
+  'return-approve': '通过',
+  'return-reject': '驳回',
+  'cancellation-approve': '通过',
+  'cancellation-reject': '驳回',
+  'shipment-receive-full': '一键收货',
+  'shipment-receive-goto': '去收货',
+  'purchase-receive-goto': '去收货',
+  'purchase-close': '关闭采购',
+  'generic-receive': '确认收货',
+}
+
+/**
+ * 一键整单收货 → 两个**单权限**的 Server Action。
+ *
+ * ⚠️ 必须按业务分发到两个 action，**不能**做成一个按 docType 分发的聚合入口：
+ * lib 层只有 `assertLocationWritable`（scope 校验）没有 action 级校验，聚合写法会让
+ * 只持有 `inventory:market_operate` 的市场角色在 scope 覆盖下属门店时替门店收货 ——
+ * 而现有 `receiveStoreAllocation` 是单权限 `inventory:store_operate`，市场角色本该被拒。
+ *
+ * 用 `Map` 而不是对象字面量：对象查表会命中 `Object.prototype`，
+ * `operation` 万一是 `'constructor'` 这类串会取到一个 truthy 的函数（fail-open）。
+ */
+const FULL_RECEIVE_ACTIONS: ReadonlyMap<
+  string,
+  (input: ReceiveShipmentInFullInput) => Promise<{ id: string; shipmentId: string }>
+> = new Map([
+  ['market-receipt', receiveItemCompanyShipmentInFull],
+  ['store-receipt', receiveStoreAllocationInFull],
+])
+
+/**
+ * 待办行内动作的弹窗配置。
+ *
+ * 做成工厂而不是模块级常量，只为了 `shipment-receive-full` 一条 —— 它要按业务选
+ * 市场 / 门店两个不同权限的 action（见 `FULL_RECEIVE_ACTIONS`）。
+ *
+ * `remarkRequired` 每条都对齐服务端：服务端 `required(...)` 的一律 true。
+ * 抄错了 TS **不会**报错（run 的入参形状抄错才会），所以这份口径由单测逐条钉住。
+ */
+function buildInboxActionConfig(
+  operation: InventoryAnyOperationId,
+): Readonly<Record<InboxDialogActionKind, DocActionSpec>> {
+  return {
+    'return-approve': {
+      title: '确认通过退货？',
+      label: '审批备注',
+      placeholder: '选填，将记录在单据的审批信息中',
+      // business.ts 的 approveReturnForRestock：auditRemark 可选
+      remarkRequired: false,
+      consequence: '通过后将从退货主体出库并回库到上级主体，单据变为已完成，不可撤销。',
+      confirmText: '确认通过',
+      successMessage: () => '退货已通过，货品已回库',
+      errorFallback: '退货审批失败',
+      run: (docId, remark) => approveReturnForRestock({ returnDocId: docId, auditRemark: remark || null }),
+    },
+    'return-reject': {
+      title: '驳回退货申请',
+      label: '驳回原因',
+      placeholder: '请说明驳回原因，制单人可查看此说明',
+      // business.ts 的 rejectReturnForRestock：required(input.auditRemark, '驳回原因')
+      remarkRequired: true,
+      confirmText: '确认驳回',
+      confirmVariant: 'destructive',
+      successMessage: () => '退货申请已驳回',
+      errorFallback: '驳回失败',
+      run: (docId, remark) => rejectReturnForRestock({ returnDocId: docId, auditRemark: remark }),
+    },
+    'cancellation-approve': {
+      title: '确认通过撤回申请？',
+      label: '审批备注',
+      placeholder: '选填，将记录在单据的审批信息中',
+      // business.ts 的 approveItemCompanyShipmentCancellation：auditRemark 可选
+      remarkRequired: false,
+      consequence: '撤回后总部库存将回滚、采购订单履约数量回退，发货单变为已取消，不可撤销。',
+      confirmText: '确认通过',
+      successMessage: () => '撤回申请已通过，发货单已取消',
+      errorFallback: '撤回审批失败',
+      run: (docId, remark) =>
+        approveItemCompanyShipmentCancellation({ shipmentId: docId, auditRemark: remark || null }),
+    },
+    'cancellation-reject': {
+      title: '驳回撤回申请',
+      label: '驳回原因',
+      placeholder: '请说明驳回原因，申请人可查看此说明',
+      // business.ts 的 rejectItemCompanyShipmentCancellation：required(input.auditRemark, '驳回原因')
+      remarkRequired: true,
+      confirmText: '确认驳回',
+      confirmVariant: 'destructive',
+      successMessage: () => '撤回申请已驳回，发货单回到待收货',
+      errorFallback: '驳回失败',
+      run: (docId, remark) =>
+        rejectItemCompanyShipmentCancellation({ shipmentId: docId, auditRemark: remark }),
+    },
+    'shipment-receive-full': {
+      title: '整单收货',
+      label: '收货备注',
+      placeholder: '选填，将记录在入库单上',
+      remarkRequired: false,
+      consequence: '将按各明细的待收数量整单收货并生成入库单。需要部分收货或登记差异请用「去收货」。',
+      confirmText: '确认整单收货',
+      // 收货产出一张新入库单，单号是用户下一步要找的东西，别丢
+      successMessage: (result) => {
+        const inboundDocId = (result as { id?: unknown } | null)?.id
+        return typeof inboundDocId === 'string' && inboundDocId
+          ? `收货已确认，已生成入库单 ${inboundDocId}`
+          : '收货已确认'
+      },
+      errorFallback: '整单收货失败',
+      run: async (docId, remark) => {
+        const receive = FULL_RECEIVE_ACTIONS.get(operation)
+        // fail-closed：只有市场收货 / 门店收货两个台配了一键入口，其余业务宁可报错也不乱调。
+        if (!receive) throw new Error('当前业务没有一键整单收货入口')
+        return receive({ shipmentId: docId, remark: remark || null })
+      },
+    },
+    'purchase-close': {
+      title: '关闭采购订单',
+      label: '关闭原因',
+      placeholder: '请说明关闭原因，制单人可查看此说明',
+      // business.ts 的 cancelSupplyChainPurchaseOrder：required(input.cancellationReason, '关闭原因')
+      remarkRequired: true,
+      consequence: '关闭后未收数量将退还来源报货单，采购订单变为已取消，不可撤销。',
+      confirmText: '确认关闭',
+      confirmVariant: 'destructive',
+      successMessage: () => '采购订单已关闭，未收数量已释放',
+      errorFallback: '关闭采购订单失败',
+      run: (docId, remark) =>
+        cancelSupplyChainPurchaseOrder({ purchaseOrderId: docId, cancellationReason: remark }),
+    },
+    'generic-receive': {
+      title: '确认收货',
+      label: '收货备注',
+      placeholder: '选填，如实收与单据有差异请在此说明',
+      remarkRequired: false,
+      consequence: '确认后将生成对应的入库单并增加在手库存。',
+      confirmText: '确认收货',
+      successMessage: (result) => {
+        const inboundDocId = (result as { inboundDocId?: unknown } | null)?.inboundDocId
+        return typeof inboundDocId === 'string' && inboundDocId
+          ? `收货已确认，已生成入库单 ${inboundDocId}`
+          : '收货已确认'
+      },
+      errorFallback: '收货确认失败',
+      /*
+       * 唯一走 generic 三件套的动作：`分院调货出库` 在 `INVENTORY_GENERIC_DOC_TYPES` 里，
+       * 过得了服务端的 `assertGenericDocTransition`。上面 6 条绑的都是专用业务 action ——
+       * 院退货 / 品项公司发货 / 分院配货 / 采购订单都不在那张白名单里，
+       * 走 generic 会被 100% 拒掉（INVALID_STATE「必须通过对应的专用业务流程处理」）。
+       */
+      run: (docId, remark) => confirmInventoryCoreReceive(docId, remark),
+    },
+  }
+}
+
+/**
+ * 业务工作区的「单据」Tab（#190 一段 → #192 两段）。
+ *
+ * 上段「待我处理」= 本业务要经手、但由上游产出的单（待审批 / 待收货），带行内动作；
+ * 下段「本业务产出」= #190 的原语义，只读。
  *
  * 单据类型 / 状态 / 层级的收窄规则在服务端按 operationId 查映射表解析
- * （`listInventoryOperationDocs`），这里只管展示与翻页。
+ * （`listInventoryOperationDocs` 一次调用返回两段），这里只管展示、翻页与动作分发。
+ *
+ * `export` 是为了能脱开整页单独渲染测试（与同目录 inventory-docs-page 导出
+ * SOURCE_LOT_DOC_TYPES 同例）。
  */
-function OperationDocsTab({
+export function OperationDocsTab({
   operation,
   level,
   canViewPrice,
+  canAct,
+  onGotoForm,
+  onInboxTotalChange,
+  onActionBusyChange,
 }: {
   /** 内置业务 id 或 `generic:<docType>`；查询条件由服务端按 id 解析（#190/#191）。 */
   operation: InventoryAnyOperationId
   /** 拼「返回XX办理台」来源参数用（#190）。 */
   level: InventoryBusinessLevel
   canViewPrice: boolean
+  /**
+   * 行内动作按钮的前端可见性。与业务卡片的 `enabled` 同源（父层的 `operationEnabled`）。
+   *
+   * ⚠️ 这只是**体验**，不是安全边界：授权判据在 Server Action 的
+   * `withPermission` / `withAnyPermission` + lib 层的 `assertLocationWritable`。
+   * 伪造调用照样会被服务端拒掉。
+   */
+  canAct: boolean
+  /** 「去收货」：把用户送回填报表单并预选这张单。 */
+  onGotoForm: (docId: string) => void
+  /** 待办条数上报给工作区，挂在 Tab 角标上。 */
+  onInboxTotalChange: (total: number) => void
+  /**
+   * 行内动作的提交在途态上报给工作区（#192 follow-up）。
+   *
+   * 和建单表单那条路径同口径：在途时锁住业务卡片与「关闭」按钮 —— 这时候切走会把
+   * 在途请求连同整个工作区一起卸载，单已经办出去了而用户只看到面板消失。
+   * 漏报的表现是「两条提交路径一个锁、一个不锁」，从界面上完全看不出来。
+   *
+   * ⚠️ 必须传**稳定引用**（setState 或 useCallback）：它会并进传给 `DocActionDialog` 的
+   * `onBusyChange`，后者的 effect cleanup 在引用变化时补一次 `false`，
+   * 内联箭头等于每次重渲都把在途态闪断一下。
+   */
+  onActionBusyChange: (busy: boolean) => void
 }) {
+  const router = useRouter()
   const [rows, setRows] = useState<InventoryDocRow[]>([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
@@ -876,37 +1266,100 @@ function OperationDocsTab({
   const [loading, setLoading] = useState(true)
   const [failed, setFailed] = useState(false)
   const [priceVisible, setPriceVisible] = useState(canViewPrice)
+  /*
+   * 待办段的 rows/total/pageSize 各存一份，**不与产出段共用** ——
+   * 两段各自翻页、engine 也各自回传夹过白名单的页长，共用一个 state 会让其中一段算错总页数。
+   */
+  const [inboxRows, setInboxRows] = useState<InventoryDocRow[]>([])
+  const [inboxTotal, setInboxTotal] = useState(0)
+  const [inboxPage, setInboxPage] = useState(1)
+  const [inboxPageSize, setInboxPageSize] = useState(OPERATION_DOCS_PAGE_SIZE)
+  const [inboxFailed, setInboxFailed] = useState(false)
+  /*
+   * 行内动作跑完之后的重取券。**这是最容易漏的一条**：本 Tab 的数据是客户端 action 拉的，
+   * `router.refresh()` 对它完全无效 —— 只调后者的话「提示 + 刷新」只完成了提示，
+   * 办完的单仍停在待办区，用户会再点一次。
+   */
+  const [reloadToken, setReloadToken] = useState(0)
+  /** 当前挂在弹窗上的动作。非空即「有窗开着」，同时也是开窗入口的点击闸。 */
+  const [pendingInboxAction, setPendingInboxAction] = useState<DocActionPending<InboxDialogActionKind> | null>(null)
+  /** 提交在途态，由 DocActionDialog 上报（`setActionBusy` 是稳定引用，符合它的契约）。 */
+  const [actionBusy, setActionBusy] = useState(false)
+  /*
+   * 在途态有**两个消费者，职责不同，别合并**：
+   * - 本地 `actionBusy`：开窗入口的点击闸（在途时点另一行直接不响应，不开第二个弹窗）；
+   * - `onActionBusyChange`：上报给工作区，锁住业务卡片与「关闭」按钮。
+   * 只留前者就是本次修的那条 —— 行内动作在途时工作区照样能被关掉。
+   *
+   * `useCallback` 而不是内联箭头：`DocActionDialog` 的 onBusyChange 要求稳定引用
+   * （它的 effect cleanup 会在引用变化时补一次 false）。`onActionBusyChange` 由调用方
+   * 保证稳定，这里的依赖数组才立得住。
+   */
+  const handleActionBusyChange = useCallback((busy: boolean) => {
+    setActionBusy(busy)
+    onActionBusyChange(busy)
+  }, [onActionBusyChange])
+
+  /*
+   * 「这个业务有没有待办段」直接读映射表（纯函数、客户端可调），不等服务端响应：
+   * 等响应的话首帧会闪一下、首次请求失败时整个区块连同失败提示一起消失
+   * —— 用户只会看到产出段报错，不知道待办也没取到。
+   * 查询条件本身仍然只在服务端解析，这里读的是同一张表的同一个字段，不是第二份真相。
+   */
+  const hasInbox = useMemo(() => resolveOperationDocQuery(operation)?.inbox != null, [operation])
+  const inboxActions = useMemo(() => resolveOperationInboxActions(operation), [operation])
+  const inboxActionConfig = useMemo(() => buildInboxActionConfig(operation), [operation])
 
   useEffect(() => {
     let cancelled = false
     setLoading(true)
     setFailed(false)
-    listInventoryOperationDocs({ operationId: operation, page, pageSize: OPERATION_DOCS_PAGE_SIZE })
+    setInboxFailed(false)
+    listInventoryOperationDocs({
+      operationId: operation,
+      page,
+      inboxPage,
+      pageSize: OPERATION_DOCS_PAGE_SIZE,
+    })
       .then((result) => {
         if (cancelled) return
-        setRows(result.data)
-        setTotal(result.total)
+        setRows(result.produced.data)
+        setTotal(result.produced.total)
         // 服务端会把非白名单页长夹成 20，按它返回的实际值渲染分页器，
         // 否则前端按自己那份 pageSize 算总页数，最后几页会翻不到。
-        setPageSize(result.pageSize)
-        setPriceVisible(result.canViewPrice)
+        setPageSize(result.produced.pageSize)
+        setPriceVisible(result.produced.canViewPrice)
+        if (result.inbox) {
+          setInboxRows(result.inbox.data)
+          setInboxTotal(result.inbox.total)
+          setInboxPageSize(result.inbox.pageSize)
+        } else {
+          setInboxRows([])
+          setInboxTotal(0)
+        }
       })
       .catch((error) => {
         if (cancelled) return
         // 刻意**不清零 total**：清了会让 Pagination 算出 totalPages=1，
         // 越界自纠 effect 把用户从第 3 页静默弹回第 1 页并再发一次请求 ——
-        // 一次瞬时失败被放大成「跳页 + 重复请求 + 第二条 toast」。
+        // 一次瞬时失败被放大成「跳页 + 重复请求 + 第二条 toast」。待办段同理。
         setRows([])
+        setInboxRows([])
         // 失败态与空态必须分开：都渲染成「暂无单据」会让人以为这个业务真的没单，
         // 而实际上是这次没取到。
         setFailed(true)
+        setInboxFailed(true)
         toast.error(actionErrorMessage(error, '加载单据失败'))
       })
       .finally(() => {
         if (!cancelled) setLoading(false)
       })
     return () => { cancelled = true }
-  }, [operation, page])
+  }, [operation, page, inboxPage, reloadToken])
+
+  useEffect(() => {
+    onInboxTotalChange(hasInbox ? inboxTotal : 0)
+  }, [hasInbox, inboxTotal, onInboxTotalChange])
 
   const columns: Column<InventoryDocRow>[] = [
     {
@@ -971,15 +1424,170 @@ function OperationDocsTab({
     },
   ]
 
+  /**
+   * 一行上该出现哪些按钮：本业务配了哪些动作 × 这些动作各自的可操作状态 × 当前行状态。
+   *
+   * 状态判据读 `INVENTORY_INBOX_ACTION_STATUS`（与服务端 inbox.statuses 同文件、单测互钉），
+   * 不在这里手写 `row.status === '待审批'` —— 映射表放宽了状态而按钮没跟上的话，
+   * 按钮就会出现在点一次报一次错的行上。
+   *
+   * 匹配不到任何动作（已完成 / 已驳回 / 已取消）就返回 null，**不渲染空按钮位**。
+   */
+  function inboxRowActions(row: InventoryDocRow) {
+    const kinds = inboxActions.filter((kind) => INVENTORY_INBOX_ACTION_STATUS[kind] === row.status)
+    if (kinds.length === 0) return null
+    return (
+      <div className="flex flex-wrap gap-1">
+        {kinds.map((kind) => (
+          <Button
+            key={kind}
+            variant="ghost"
+            size="sm"
+            /*
+             * 可访问名带单据号（#194 的「<字段名> <行标识>」口径）：一页十几行按钮
+             * 全叫「通过」，读屏分不清，Playwright 也只能 strict mode violation。
+             */
+            aria-label={`${INBOX_ACTION_LABEL[kind]} ${row.id}`}
+            onClick={() => {
+              /*
+               * 点击闸而不是 disabled：点下去就变 disabled 会让 `showModal()` 记不到
+               * 「打开前的焦点」，关闭弹窗后焦点回不到这个按钮上（#134 的结论）。
+               * 在途时点另一行也走这条 —— 直接不响应，不开第二个弹窗。
+               */
+              if (pendingInboxAction || actionBusy) return
+              // 跳转类动作没有 Server Action，只切 Tab + 预选单据，不进弹窗。
+              if (isInboxGotoAction(kind)) {
+                onGotoForm(row.id)
+                return
+              }
+              setPendingInboxAction({ kind, docId: row.id })
+            }}
+          >
+            {INBOX_ACTION_LABEL[kind]}
+          </Button>
+        ))}
+      </div>
+    )
+  }
+
+  const inboxColumns: Column<InventoryDocRow>[] = [
+    ...columns,
+    /*
+     * 撤回原因是审批人唯一的判断依据，不该逼他点进详情页才看得到。
+     * 只有撤回审批这张卡有（别的业务这一列全是空）。
+     */
+    ...(operation === 'shipment-cancel-approval'
+      ? [{
+          key: 'cancellationRequestReason',
+          header: '撤回原因',
+          cell: (row: InventoryDocRow) => row.cancellationRequestReason ?? '—',
+        } as Column<InventoryDocRow>]
+      : []),
+    /*
+     * 一个可用动作都没有（无权限 / 本业务没配动作）时整列都不渲染 ——
+     * 留一列空白表头只是噪音。
+     */
+    ...(canAct && inboxActions.length > 0
+      ? [{ key: 'inboxActions', header: '操作', cell: inboxRowActions } as Column<InventoryDocRow>]
+      : []),
+  ]
+
+  /*
+   * 空态收敛：`total === 0` 才算真空。
+   * 不能用 `rows.length === 0` —— 办完最后一张单后停在第 3 页时 rows 也是空的，
+   * 那时必须把表格连同 Pagination 一起渲染出来，靠它的越界自纠把人带回第 1 页。
+   */
+  const inboxEmpty = !loading && inboxTotal === 0 && inboxRows.length === 0
+  const producedEmpty = !loading && total === 0 && rows.length === 0
+  /*
+   * 「只有一边空时，空的那一边不占一大块」：产出段只在**待办段有内容**时收成一行字。
+   * 两边都空时产出段仍渲染整表，那句「暂无单据」是这个业务唯一的总结论。
+   */
+  const compactProduced = producedEmpty && hasInbox && !inboxEmpty
+  const inboxEmptyText = inboxFailed ? '待办加载失败，请稍后重试' : '当前没有待处理单据'
+
   return (
-    <div className="space-y-3">
-      <DataTable
-        columns={columns}
-        data={rows}
-        loading={loading}
-        emptyText={failed ? '单据加载失败，请切换 Tab 或稍后重试' : '暂无单据'}
+    <div className="space-y-6">
+      {/* 无 inbox 语义的业务（17 个内置 + 9 个通用）整段不渲染，外观与 #190 完全一致。 */}
+      {hasInbox && (
+        <section className="space-y-2" aria-label="待我处理">
+          <div className="flex flex-wrap items-center gap-2">
+            <h3 className="text-sm font-medium">待我处理</h3>
+            <Badge variant="outline">{inboxTotal}</Badge>
+            <span className="text-xs text-[#888888]">上游已提交、等你审批或收货的单据</span>
+          </div>
+          {inboxEmpty ? (
+            <p className="px-1 py-2 text-sm text-[#888888]">{inboxEmptyText}</p>
+          ) : (
+            <>
+              <DataTable
+                columns={inboxColumns}
+                data={inboxRows}
+                loading={loading}
+                emptyText={inboxEmptyText}
+              />
+              {/* 待办段自己的页码，与产出段互不干扰（服务端也是两个独立的 page 入参）。 */}
+              <Pagination
+                total={inboxTotal}
+                page={inboxPage}
+                pageSize={inboxPageSize}
+                onPageChange={setInboxPage}
+              />
+            </>
+          )}
+        </section>
+      )}
+
+      {/* space-y-3 与 #190 的原布局逐字一致：无 inbox 的 17 个业务外观不能有任何变化 */}
+      <section className="space-y-3" aria-label="本业务产出">
+        {/*
+          * 产出段**不加任何行内动作**：产出单绝大多数是终态，少数非终态的处理入口在别的
+          * 业务卡片上（purchase-order 产出的待收货采购订单由 supply-chain-receipt /
+          * supply-chain-purchase-cancel 处理）。在这里再放一份等于多一处口径。
+          */}
+        {hasInbox && <h3 className="text-sm font-medium">本业务产出</h3>}
+        {compactProduced ? (
+          <p className="px-1 py-2 text-sm text-[#888888]">本业务暂无产出单据</p>
+        ) : (
+          <>
+            <DataTable
+              columns={columns}
+              data={rows}
+              loading={loading}
+              emptyText={failed ? '单据加载失败，请切换 Tab 或稍后重试' : '暂无单据'}
+            />
+            <Pagination total={total} page={page} pageSize={pageSize} onPageChange={setPage} />
+          </>
+        )}
+      </section>
+
+      {/*
+        * **无条件渲染**，绝不能写成 `{canAct && <DocActionDialog/>}`：权限翻转时条件渲染会把
+        * 正开着的弹窗整个卸载 —— 填的备注没了，而 pendingInboxAction 仍非空 → 开窗入口被
+        * 点击闸永久锁死，只能整页重载（#134 评审 R9 抓到的真死锁）。
+        */}
+      <DocActionDialog
+        config={inboxActionConfig}
+        pending={pendingInboxAction}
+        onBusyChange={handleActionBusyChange}
+        onOpenChange={(next) => {
+          if (!next) setPendingInboxAction(null)
+        }}
+        onDone={(finished) => {
+          // 只关「当初发起的那一张」：期间若已切到别的单据，别把人家开着的弹窗连同
+          // 刚敲进去的备注一起抹掉。在途切单已被点击闸从状态上禁掉，这是第二道防线。
+          setPendingInboxAction((current) =>
+            current && current.docId === finished.docId && current.kind === finished.kind
+              ? null
+              : current,
+          )
+          // 两件事都得做，只做后一件等于没刷新（见 reloadToken 的注释）：
+          // reloadToken 重取本 Tab 的两段，router.refresh() 让表单 Tab 的
+          // DocPicker 候选（RSC 的 workflowDocs）跟着变。
+          setReloadToken((n) => n + 1)
+          router.refresh()
+        }}
       />
-      <Pagination total={total} page={page} pageSize={pageSize} onPageChange={setPage} />
     </div>
   )
 }
@@ -2225,7 +2833,7 @@ function CompanyShipmentForm({
   return (
     <form className="space-y-5" onSubmit={(event) => { event.preventDefault(); void submit() }}>
       <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-        <DocPicker label="采购订单" required docs={candidates} value={docId} onChange={(id) => void selectDocument(id)} />
+        <DocPicker label="采购订单" required docs={candidates} value={docId} current={doc} onChange={(id) => void selectDocument(id)} />
         <FormField label="发货总部" required>
           <InventorySubjectSelect
             options={headquarters.filter((location) => location.orgNodeId).map((location) => ({ value: location.orgNodeId!, label: location.name }))}
@@ -2299,14 +2907,18 @@ interface ReceiptProgressLine {
 function ShipmentReceiptForm({
   workflowDocs,
   kind,
+  prefill,
   onSuccess,
 }: {
   workflowDocs: InventoryDocRow[]
   kind: 'market' | 'store'
+  /** 待办区「去收货」带来的预选券（#192）。 */
+  prefill?: OperationFormPrefill | null
   onSuccess: (message: string) => void
 }) {
   const docType = kind === 'market' ? '品项公司发货' : '分院配货'
   const { docId, doc, loading, selectDocument } = useLoadedDocument()
+  useDocumentPrefill(prefill, selectDocument)
   const [docDate, setDocDate] = useState(today)
   const [remark, setRemark] = useState('')
   const [lines, setLines] = useState<ReceiptProgressLine[]>([])
@@ -2387,7 +2999,7 @@ function ShipmentReceiptForm({
   return (
     <form className="space-y-5" onSubmit={(event) => { event.preventDefault(); void submit() }}>
       <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-        <DocPicker label={kind === 'market' ? '品项公司发货单' : '分院配货单'} docs={candidates} value={docId} onChange={(id) => void selectDocument(id)} required />
+        <DocPicker label={kind === 'market' ? '品项公司发货单' : '分院配货单'} docs={candidates} value={docId} current={doc} onChange={(id) => void selectDocument(id)} required />
         <FormField label="收货日期"><DatePicker value={docDate} onValueChange={setDocDate} /></FormField>
       </div>
       {(loading || loadingProgress) && <div className="text-sm text-[#666666]">正在加载待收货明细</div>}
@@ -2433,15 +3045,19 @@ function SupplyChainPurchaseReceiptForm({
   locations,
   workflowDocs,
   canViewPrice,
+  prefill,
   onSuccess,
 }: {
   locations: InventoryLocationRow[]
   workflowDocs: InventoryDocRow[]
   canViewPrice: boolean
+  /** 待办区「去收货」带来的预选券（#192）。 */
+  prefill?: OperationFormPrefill | null
   onSuccess: (message: string) => void
 }) {
   const headquarters = locations.filter((location) => location.locationType === '总部' && location.isActive)
   const { docId, doc, loading, selectDocument } = useLoadedDocument()
+  useDocumentPrefill(prefill, selectDocument)
   const [supplyChainLocationId, setSupplyChainLocationId] = useState('')
   const [docDate, setDocDate] = useState(today)
   const [remark, setRemark] = useState('')
@@ -2510,7 +3126,7 @@ function SupplyChainPurchaseReceiptForm({
   return (
     <form className="space-y-5" onSubmit={(event) => { event.preventDefault(); void submit() }}>
       <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-        <DocPicker label="采购订单" required docs={candidates} value={docId} onChange={(id) => void selectDocument(id)} />
+        <DocPicker label="采购订单" required docs={candidates} value={docId} current={doc} onChange={(id) => void selectDocument(id)} />
         <FormField label="供应链库存主体" required>
           <InventorySubjectSelect
             options={headquarters.map((location) => ({ value: location.locationId, label: location.name }))}
@@ -2547,12 +3163,16 @@ function SupplyChainPurchaseReceiptForm({
 
 function SupplyChainPurchaseCancelForm({
   workflowDocs,
+  prefill,
   onSuccess,
 }: {
   workflowDocs: InventoryDocRow[]
+  /** 待办区跳转带来的预选券（#192）。本业务的行内动作是弹窗关闭，跳转只在表单侧兜底。 */
+  prefill?: OperationFormPrefill | null
   onSuccess: (message: string) => void
 }) {
   const { docId, doc, loading, selectDocument } = useLoadedDocument()
+  useDocumentPrefill(prefill, selectDocument)
   const [reason, setReason] = useState('')
   const [saving, setSaving] = useState(false)
   const candidates = docCandidates(workflowDocs, '采购订单', '待收货')
@@ -2580,7 +3200,7 @@ function SupplyChainPurchaseCancelForm({
   return (
     <div className="space-y-5">
       <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-        <DocPicker label="待收货采购订单" required docs={candidates} value={docId} onChange={(id) => void selectDocument(id)} />
+        <DocPicker label="待收货采购订单" required docs={candidates} value={docId} current={doc} onChange={(id) => void selectDocument(id)} />
       </div>
       {loading && <div className="text-sm text-[#666666]">正在加载采购订单明细</div>}
       <SourceDocumentItems doc={doc} canViewPrice={false} />
@@ -2720,7 +3340,7 @@ function StoreAllocationForm({
   return (
     <form className="space-y-5" onSubmit={(event) => { event.preventDefault(); void submit() }}>
       <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-        <DocPicker label="门店报货单" required docs={candidates} value={docId} onChange={(id) => void selectDocument(id)} />
+        <DocPicker label="门店报货单" required docs={candidates} value={docId} current={doc} onChange={(id) => void selectDocument(id)} />
         <FormField label="配货市场" required>
           <InventorySubjectSelect
             options={markets.map((location) => ({ value: location.locationId, label: location.name }))}
@@ -2950,7 +3570,7 @@ function ReturnApprovalForm({
 
   return (
     <div className="space-y-5">
-      <div className="grid grid-cols-1 gap-3 md:grid-cols-2"><DocPicker label="待审批退货单" required docs={candidates} value={docId} onChange={(id) => void selectDocument(id)} /></div>
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-2"><DocPicker label="待审批退货单" required docs={candidates} value={docId} current={doc} onChange={(id) => void selectDocument(id)} /></div>
       {loading && <div className="text-sm text-[#666666]">正在加载退货明细</div>}
       <SourceDocumentItems doc={doc} canViewPrice={false} />
       <RemarkField value={auditRemark} onChange={setAuditRemark} />
@@ -2990,7 +3610,7 @@ function ShipmentCancellationRequestForm({
 
   return (
     <div className="space-y-5">
-      <div className="grid grid-cols-1 gap-3 md:grid-cols-2"><DocPicker label="待收货品项公司发货单" required docs={candidates} value={docId} onChange={(id) => void selectDocument(id)} /></div>
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-2"><DocPicker label="待收货品项公司发货单" required docs={candidates} value={docId} current={doc} onChange={(id) => void selectDocument(id)} /></div>
       {loading && <div className="text-sm text-[#666666]">正在加载发货明细</div>}
       <SourceDocumentItems doc={doc} canViewPrice={false} />
       <FormField label="撤回原因" required><Textarea value={reason} onChange={(event) => setReason(event.target.value)} /></FormField>
@@ -3050,7 +3670,7 @@ function ShipmentCancellationApprovalForm({
   return (
     <div className="space-y-5">
       <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-        <DocPicker label="待审批品项公司发货单" required docs={candidates} value={docId} onChange={(id) => void selectDocument(id)} />
+        <DocPicker label="待审批品项公司发货单" required docs={candidates} value={docId} current={doc} onChange={(id) => void selectDocument(id)} />
       </div>
       {loading && <div className="text-sm text-[#666666]">正在加载撤回申请明细</div>}
       <SourceDocumentItems doc={doc} canViewPrice={false} />

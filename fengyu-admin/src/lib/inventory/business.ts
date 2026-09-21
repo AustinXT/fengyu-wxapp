@@ -399,6 +399,30 @@ export interface ReceiveShipmentInput {
   items: ReceiptLineInput[]
 }
 
+/**
+ * 整单按待收数量收货的入参（#192 待办区的「一键收货」）。
+ *
+ * 与 `ReceiveShipmentInput` 的唯一差别是**没有 items** —— 明细由服务端从
+ * `getShipmentReceiptProgress` 的 outstanding 算出来，客户端说不了收多少。
+ * 需要部分收货 / 登记差异仍走带 items 的 `receiveItemCompanyShipment`
+ * / `receiveStoreAllocation`。
+ */
+export interface ReceiveShipmentInFullInput {
+  shipmentId: string
+  docDate?: string | null
+  remark?: string | null
+}
+
+/**
+ * 实物发货收货链路涉及的两种发货单类型。
+ *
+ * 声明成字面量联合（而不是 `InventoryDocType`）是刻意的：
+ * `receiveShipmentInFull` 的 `expectedDocType` 是**权限边界的一部分**
+ * （市场入口只能收品项公司发货、门店入口只能收分院配货），
+ * 放宽成开放的 docType 会让「按单据类型分发」看起来合法。
+ */
+export type ReceivableShipmentDocType = '品项公司发货' | '分院配货'
+
 export interface StoreAllocationLineInput {
   requestItemId: number
   lotId: number
@@ -4144,6 +4168,66 @@ export async function receiveStoreAllocation(
   return receivePhysicalShipment(session, input, '分院配货', '院入库')
 }
 
+/**
+ * 「按各明细的待收数量整单收货」的共同实现（#192 待办区行内动作）。
+ *
+ * ⚠️ **expectedDocType 必须由调用方写死，不能从 `progress.docType` 反推。**
+ * 两个入口的 Server Action 权限不同 —— 市场收品项公司发货要
+ * `inventory:market_operate`、门店收分院配货要 `inventory:store_operate` ——
+ * 而 lib 层只有 `assertLocationWritable`（scope 校验）没有 action 级校验。
+ * 做成一个「按 docType 分发」的聚合函数 + `withAnyPermission`，只有 market_operate
+ * 的市场角色就能在 scope 覆盖下属门店时替门店收货，打破 `receiveStoreAllocation`
+ * 现有的单权限边界。所以下面是两个各自写死类型的导出，不是一个带参数的公开入口。
+ *
+ * ⚠️ **TOCTOU 是已知且刻意保留的**：outstanding 在 `getShipmentReceiptProgress`
+ * 自己的事务里读，`receivePhysicalShipment` 另起一个事务才写。并发下第二个请求会在
+ * `docItemForUpdate`(FOR UPDATE) + `nearlyGreater(quantity, shipmentItem.quantity - received)`
+ * 处抛 CONFLICT「实收数量不能超过待收数量」—— fail-closed，前端按 stale 处理
+ * （提示 + 重取列表）。**不要**为了消除这个窗口去改 `receivePhysicalShipment` 的
+ * 事务边界，那是发货收货的核心路径。
+ */
+async function receiveShipmentInFull(
+  session: AuthSession,
+  input: ReceiveShipmentInFullInput,
+  expectedDocType: ReceivableShipmentDocType,
+): Promise<{ id: string; shipmentId: string }> {
+  const progress = await getShipmentReceiptProgress(session, input.shipmentId)
+  if (progress.docType !== expectedDocType) {
+    throw new ApiError('INVALID_PARAMS', '单据类型与收货入口不匹配')
+  }
+  if (progress.status !== '待收货') {
+    throw new ApiError('INVALID_STATE', '该发货单不是待收货状态，请刷新后重试')
+  }
+  const items = progress.items
+    .filter((item) => item.outstandingQuantity > EPSILON)
+    .map((item) => ({ shipmentItemId: item.itemId, receivedQuantity: item.outstandingQuantity }))
+  if (items.length === 0) {
+    throw new ApiError('INVALID_STATE', '该发货单没有待收数量，请刷新后重试')
+  }
+  return receivePhysicalShipment(
+    session,
+    { ...input, items },
+    expectedDocType,
+    expectedDocType === '品项公司发货' ? '市场采购入库' : '院入库',
+  )
+}
+
+/** 市场侧一键收货：整单收下品项公司发货的全部待收数量，产出市场采购入库。 */
+export async function receiveItemCompanyShipmentInFull(
+  session: AuthSession,
+  input: ReceiveShipmentInFullInput,
+): Promise<{ id: string; shipmentId: string }> {
+  return receiveShipmentInFull(session, input, '品项公司发货')
+}
+
+/** 门店侧一键收货：整单收下分院配货的全部待收数量，产出院入库。 */
+export async function receiveStoreAllocationInFull(
+  session: AuthSession,
+  input: ReceiveShipmentInFullInput,
+): Promise<{ id: string; shipmentId: string }> {
+  return receiveShipmentInFull(session, input, '分院配货')
+}
+
 /** 退货创建时只预留来源批次；市场/总部审批后才会同时出库和回库，避免悬空库存。 */
 export async function createReturnForRestock(
   session: AuthSession,
@@ -5239,12 +5323,19 @@ export async function quoteMarketReplenishmentPrice(
   return quote
 }
 
-/** 用同一份发货明细给页面展示预期、实收、差异和赠送，不从自由表单字段推断。 */
+/**
+ * 用同一份发货明细给页面展示预期、实收、差异和赠送，不从自由表单字段推断。
+ *
+ * 返回值带 `docType`：调用方（整单收货入口、收货表单）需要知道这是哪种发货单，
+ * 但**不能**由客户端传进来 —— 客户端能说 docType 就等于能挑收货入口，
+ * 而两个入口的 Server Action 权限不同（见 `receiveShipmentInFull` 的说明）。
+ */
 export async function getShipmentReceiptProgress(
   session: AuthSession,
   shipmentIdInput: string,
 ): Promise<{
   shipmentId: string
+  docType: ReceivableShipmentDocType
   status: string
   items: Array<{
     itemId: number
@@ -5261,7 +5352,10 @@ export async function getShipmentReceiptProgress(
   await syncLocations()
   return db.transaction(async (tx) => {
     const shipment = await docForUpdate(tx, shipmentId)
-    if (!['品项公司发货', '分院配货'].includes(shipment.docType)) {
+    // 写成两条 `!==` 而不是 `[...].includes(...)`：后者不会把 `docType: string`
+    // 收窄成 `ReceivableShipmentDocType`，返回值就只能靠断言撒谎。
+    const docType = shipment.docType
+    if (docType !== '品项公司发货' && docType !== '分院配货') {
       throw new ApiError('INVALID_PARAMS', '仅支持查询品项公司发货或分院配货进度')
     }
     const source = shipment.sourceOrgNodeId ? await locationForUpdate(tx, shipment.sourceOrgNodeId) : null
@@ -5286,6 +5380,7 @@ export async function getShipmentReceiptProgress(
     const items = await allDocItemsForUpdate(tx, shipmentId)
     return {
       shipmentId,
+      docType,
       status: shipment.status,
       items: items.map((item) => {
         const receivedQuantity = item.fulfilledQuantity ?? 0

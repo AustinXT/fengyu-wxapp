@@ -3238,60 +3238,65 @@ describe('盘点单账面数量（#131）', () => {
  * 不产出新单的业务靠状态 / 撤回标记收窄。任一条件没落到 WHERE 上，
  * 用户看到的就是「别的业务的单」，而页面不会有任何异常表现。
  */
-describe('#190 单据列表的多类型 / 多状态 / 撤回标记过滤', () => {
-  function capturingCountSelect(rows: unknown[], sink: { where?: unknown }) {
-    return {
-      from: () => ({
-        where: async (cond: unknown) => {
-          sink.where = cond
-          return rows
-        },
-      }),
-    }
+/*
+ * 下面两个 describe（#190 过滤条件、#192 方向维）共用这套「抓 WHERE 再编译成 SQL」的夹具，
+ * 所以放在 describe 外面。**不要**把它们复制一份到新 describe 里：
+ * 两份夹具一旦漂移（比如只有一份用双 sink），漏掉 COUNT 条件那类缺陷就只在一半用例里可见。
+ */
+function capturingCountSelect(rows: unknown[], sink: { where?: unknown }) {
+  return {
+    from: () => ({
+      where: async (cond: unknown) => {
+        sink.where = cond
+        return rows
+      },
+    }),
   }
+}
 
-  function capturingDocsListSelect(rows: unknown[], sink: { where?: unknown }) {
-    return {
-      from: () => ({
+function capturingDocsListSelect(rows: unknown[], sink: { where?: unknown }) {
+  return {
+    from: () => ({
+      leftJoin: () => ({
         leftJoin: () => ({
-          leftJoin: () => ({
-            where: (cond: unknown) => {
-              sink.where = cond
-              return { orderBy: () => ({ limit: () => ({ offset: async () => rows }) }) }
-            },
-          }),
+          where: (cond: unknown) => {
+            sink.where = cond
+            return { orderBy: () => ({ limit: () => ({ offset: async () => rows }) }) }
+          },
         }),
       }),
-    }
+    }),
   }
+}
 
-  /**
-   * 断言一律落在**编译后的 SQL 文本 + 参数**上，不用遍历对象找字符串的那种匹配：
-   * drizzle 的条件对象里挂着整张表的元数据，`sqlContains(where, '某列名')` 对
-   * 任何条件都恒为真（列名来自表定义而非条件本身），假阳性会让「没加条件」的用例照样绿。
-   */
-  function compile(where: unknown) {
-    const compiled = new PgDialect().sqlToQuery(where as Parameters<PgDialect['sqlToQuery']>[0])
-    return { text: compiled.sql, params: compiled.params.map((param) => String(param)) }
-  }
+/**
+ * 断言一律落在**编译后的 SQL 文本 + 参数**上，不用遍历对象找字符串的那种匹配：
+ * drizzle 的条件对象里挂着整张表的元数据，`sqlContains(where, '某列名')` 对
+ * 任何条件都恒为真（列名来自表定义而非条件本身），假阳性会让「没加条件」的用例照样绿。
+ */
+function compile(where: unknown) {
+  const compiled = new PgDialect().sqlToQuery(where as Parameters<PgDialect['sqlToQuery']>[0])
+  return { text: compiled.sql, params: compiled.params.map((param) => String(param)) }
+}
 
-  async function whereOf(filters: Parameters<typeof listInventoryCoreDocs>[0]) {
-    // COUNT 与 LIST 用**各自的 sink**：共用一个的话后写的会覆盖前一个，
-    // COUNT 漏掉过滤条件（total 把别的业务的单也算进去、分页器长出一堆空页）
-    // 这类漂移就永远测不出来。拿到后逐条断言两份条件必须一致。
-    const countSink: { where?: unknown } = {}
-    const listSink: { where?: unknown } = {}
-    mockDb.select
-      .mockReturnValueOnce(capturingCountSelect([{ count: 0 }], countSink) as never)
-      .mockReturnValueOnce(capturingDocsListSelect([], listSink) as never)
-    await listInventoryCoreDocs(filters)
-    const list = compile(listSink.where)
-    const count = compile(countSink.where)
-    expect(count.text, 'COUNT 与 LIST 的过滤条件必须一致').toBe(list.text)
-    expect(count.params, 'COUNT 与 LIST 的绑定参数必须一致').toEqual(list.params)
-    return list
-  }
+async function whereOf(filters: Parameters<typeof listInventoryCoreDocs>[0]) {
+  // COUNT 与 LIST 用**各自的 sink**：共用一个的话后写的会覆盖前一个，
+  // COUNT 漏掉过滤条件（total 把别的业务的单也算进去、分页器长出一堆空页）
+  // 这类漂移就永远测不出来。拿到后逐条断言两份条件必须一致。
+  const countSink: { where?: unknown } = {}
+  const listSink: { where?: unknown } = {}
+  mockDb.select
+    .mockReturnValueOnce(capturingCountSelect([{ count: 0 }], countSink) as never)
+    .mockReturnValueOnce(capturingDocsListSelect([], listSink) as never)
+  await listInventoryCoreDocs(filters)
+  const list = compile(listSink.where)
+  const count = compile(countSink.where)
+  expect(count.text, 'COUNT 与 LIST 的过滤条件必须一致').toBe(list.text)
+  expect(count.params, 'COUNT 与 LIST 的绑定参数必须一致').toEqual(list.params)
+  return list
+}
 
+describe('#190 单据列表的多类型 / 多状态 / 撤回标记过滤', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mockDb.select.mockReset()
@@ -3350,6 +3355,58 @@ describe('#190 单据列表的多类型 / 多状态 / 撤回标记过滤', () =>
     expect(explicitFalse.text).not.toContain('cancellation_request_reason')
   })
 
+  /*
+   * pendingItemScope（#192/#194）。
+   *
+   * 这三条守的是「供应链收货待办」的正确性。#194 把供应链采购订单并进「采购订单」后，
+   * 一张单可同时含市场行与供应链行，而完结判定要求**所有**行履约满，于是
+   * 「供应链行已收完、只差市场行发货」的混合单会长期停在「待收货」；
+   * 不按明细的市场归属分流，这批单会全部涌进供应链收货待办，点一次吃一次
+   * INVALID_STATE（`receiveSupplyChainPurchaseOrder` 对 `orderItem.marketId` 非空的行直接抛）。
+   *
+   * 三处最容易写坏、且都不会报错的地方，逐个钉：
+   *   (a) 两个方向写反 —— 待办区会精确地只剩点了必报错的那批单；
+   *   (b) EXISTS 忘了按 doc_id 关联外层 —— 只要**全库**存在一条未履约明细，条件恒真；
+   *   (c) 未履约条件被简化掉 —— 已收满的行也算数，退化成「只要有明细就算待办」。
+   */
+  it("pendingItemScope='supply-chain' 生成 market_id IS NULL 的未履约 EXISTS", async () => {
+    const { text } = await whereOf({ docTypes: ['采购订单'], statuses: ['待收货'], pendingItemScope: 'supply-chain' })
+    expect(text).toContain('EXISTS (')
+    expect(text).toContain('pending_item.market_id IS NULL')
+    // 写反成 IS NOT NULL 会让供应链待办只剩必报错的混合单
+    expect(text).not.toContain('pending_item.market_id IS NOT NULL')
+  })
+
+  it("pendingItemScope='market' 生成 market_id IS NOT NULL 的未履约 EXISTS", async () => {
+    const { text } = await whereOf({ docTypes: ['采购订单'], statuses: ['待收货'], pendingItemScope: 'market' })
+    expect(text).toContain('EXISTS (')
+    expect(text).toContain('pending_item.market_id IS NOT NULL')
+  })
+
+  it('不传 pendingItemScope 时不加该 EXISTS —— 别误伤普通单据查询', async () => {
+    // 多加会把「明细已全部履约」的单静默筛掉（比如已收满但还没完结的单），
+    // 漏加会把点了必报错的混合单倒进待办区，两个方向都是静默错。
+    const { text } = await whereOf({ docTypes: ['采购订单'], statuses: ['待收货'] })
+    expect(text).not.toContain('pending_item')
+    expect(text).not.toContain('EXISTS')
+  })
+
+  it('EXISTS 按 doc_id 关联外层单据，且只认未履约明细', async () => {
+    /*
+     * 这条是上面两条的承重梁：
+     * 丢了 `pending_item.doc_id = inventory_docs.id`，EXISTS 就与外层无关 ——
+     * 全库只要有一条未履约明细，**每一张**采购订单都会命中，过滤完全失效而 SQL 合法；
+     * 丢了 `COALESCE(fulfilled_quantity,0) < quantity`，已收满的行照样算数，
+     * 混合单又会全部回到待办区。两种退化都不会报错，只会让待办区悄悄变回原样。
+     * `COALESCE` 不能简化成 `fulfilled_quantity < quantity`：该列可空，NULL 比较出 NULL，
+     * 一条都没收过的明细反而不算「未履约」。
+     */
+    const { text } = await whereOf({ docTypes: ['采购订单'], pendingItemScope: 'supply-chain' })
+    expect(text).toContain('FROM "inventory_doc_items" pending_item')
+    expect(text).toContain('pending_item.doc_id = "inventory_docs"."id"')
+    expect(text).toContain('COALESCE(pending_item.fulfilled_quantity, 0) < pending_item.quantity')
+  })
+
   it('locationType 与 docTypes 叠加：转换单按层级隔离', async () => {
     // 市场办理台传 locationType=市场，条件里必须同时出现类型与层级两把锁。
     mockDb.select.mockReset()
@@ -3377,6 +3434,120 @@ describe('#190 单据列表的多类型 / 多状态 / 撤回标记过滤', () =>
     expect(compiled.sql).toContain('"source_org_node_id" in')
     expect(compiled.sql).toContain('"target_org_node_id" in')
     expect(compiled.sql).toMatch(/source_org_node_id" in[^)]*\)\s+or\s+"[^"]*"\."target_org_node_id" in/)
+  })
+})
+
+/**
+ * 待办区的方向维 `scopeRole`（#192 P1）。
+ *
+ * 单据可见性是**双端 OR**（`source OR target IN scoped`）—— 发货方和收货方都看得见
+ * 自己经手的单，这对「本业务产出」是对的。但待办区问的是另一件事：这张单轮不轮得到我动手。
+ * 服务端的写入动作一律拿**单边**校验：
+ *   `confirmInventoryCoreReceive` → `assertOrgNodeVisible(session, head.target_org_node_id)`
+ *   `receivePhysicalShipment` / `approveReturnForRestock` → `assertLocationWritable(session, target)`
+ *   `approve|rejectItemCompanyShipmentCancellation` → `assertLocationWritable(session, source)`
+ *
+ * 没有这一维时，「门店调拨」的待办会把**发货门店**自己开出去的待收货调货单也列成
+ * 「待我处理」并渲染「确认收货」按钮：点一次 PERMISSION_DENIED、刷新后那行还在，
+ * 操作员无路可走，待办角标还跟着虚高。这个 describe 钉的就是这条收窄真的落到了 WHERE 上。
+ */
+describe('#192 待办区按 scopeRole 收窄到单个端点', () => {
+  /** 单端收窄必须**挂在双端 OR 之外**（AND 上去），不能只出现在 OR 里面。 */
+  const STANDALONE_TARGET = /\)\s+and\s+"[^"]*"\."target_org_node_id" in/
+  const STANDALONE_SOURCE = /\)\s+and\s+"[^"]*"\."source_org_node_id" in/
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockDb.select.mockReset()
+    mockDb.execute.mockReset()
+    mockGetSession.mockResolvedValue(SESSION)
+    mockDb.execute.mockResolvedValue([{ drifted: false }] as never)
+    // 非 admin：scopeRole 只有在会话真的受 scope 限制时才有意义。
+    // SESSION 的角色是「总部 / HQ」，inventoryScopedOrgNodeIds 对总部不展开后代 → scoped = ['HQ']。
+    vi.mocked(isAdminScope).mockReturnValue(false)
+  })
+
+  it("scopeRole='target' 在双端 OR 之外再 AND 一条 target 收窄", async () => {
+    const { text, params } = await whereOf({
+      docTypes: ['分院调货出库'],
+      statuses: ['待收货'],
+      scopeRole: 'target',
+    })
+    // 双端 OR 仍在（scope 本身不能被顶掉）……
+    expect(text).toMatch(/source_org_node_id" in[^)]*\)\s+or\s+"[^"]*"\."target_org_node_id" in/)
+    // ……并且额外 AND 了一条独立的 target 条件。
+    expect(text).toMatch(STANDALONE_TARGET)
+    expect(text).not.toMatch(STANDALONE_SOURCE)
+    // 绑的是会话 scope 的节点，不是别处漂来的常量：双端 OR 用掉 2 个，单端收窄第 3 个。
+    expect(params.filter((param) => param === 'HQ')).toHaveLength(3)
+  })
+
+  it("scopeRole='source' 收窄到发货端 —— 撤回审批唯一的方向", async () => {
+    // 抄成 target 的话，供应链审批人（scope 只有总部 = 发货方）会一张待审批的单都看不到。
+    const { text } = await whereOf({
+      docTypes: ['品项公司发货'],
+      statuses: ['待审批'],
+      scopeRole: 'source',
+      cancellationRequested: true,
+    })
+    expect(text).toMatch(STANDALONE_SOURCE)
+    expect(text).not.toMatch(STANDALONE_TARGET)
+  })
+
+  it('不传 scopeRole 时可见性保持双端 OR —— produced 段不能被误伤', async () => {
+    // 产出区必须让发货方看得见自己开的单；把 scopeRole 做成默认收窄会静默吞掉它们。
+    const { text } = await whereOf({ docTypes: ['分院调货出库'] })
+    expect(text).not.toMatch(STANDALONE_TARGET)
+    expect(text).not.toMatch(STANDALONE_SOURCE)
+    expect(text).toMatch(/source_org_node_id" in[^)]*\)\s+or\s+"[^"]*"\."target_org_node_id" in/)
+  })
+
+  it('admin（scoped === null）跳过 scopeRole，与现有 scope 分支同构', async () => {
+    // admin 本就不受 scope 限制，拿一个空的「可见节点集合」去收窄会把待办区整个清空。
+    vi.mocked(isAdminScope).mockReturnValue(true)
+    const { text } = await whereOf({
+      docTypes: ['分院调货出库'],
+      statuses: ['待收货'],
+      scopeRole: 'target',
+    })
+    expect(text).not.toContain('org_node_id')
+    expect(text).not.toContain('FALSE')
+  })
+
+  it('scope 为空集时 fail-closed，不退化成「不收窄」', async () => {
+    /*
+     * 与 scope 分支同构：空集是「什么都看不见」，绝不是「不过滤」。
+     *
+     * 断言用**出现次数**而不是 `toContain('FALSE')`：空 scope 下基础 scope 分支自己
+     * 就会压一个 FALSE 进去，只判存在性的话，把 scopeRole 的 fail-closed 整段删掉
+     * 这条照样绿（验证过）。两个 FALSE 才说明两条分支各自都收了口。
+     */
+    mockGetSession.mockResolvedValue({
+      ...(SESSION as unknown as Record<string, unknown>),
+      roles: [],
+      permissions: { actions: [], scopeStoreIds: [], scopeOrgNodeIds: [] },
+    } as never)
+    const { text } = await whereOf({
+      docTypes: ['分院调货出库'],
+      statuses: ['待收货'],
+      scopeRole: 'target',
+    })
+    expect(text.match(/FALSE/g) ?? [], 'scope 分支与 scopeRole 分支各一个 FALSE').toHaveLength(2)
+    expect(text).not.toMatch(STANDALONE_TARGET)
+  })
+
+  it('COUNT 与 LIST 都带上 scopeRole —— 待办角标不能比列表多', async () => {
+    /*
+     * whereOf 内部已逐条断言两份条件一致，这里把「为什么一致很重要」写下来并再点一次名：
+     * 只有 LIST 收窄、COUNT 不收窄的话，角标数字会把对端的单也算进去 ——
+     * 用户看到「待我处理 6」却只列出 2 行，而且怎么点都消不掉那 4。
+     */
+    const { text } = await whereOf({
+      docTypes: ['分院配货'],
+      statuses: ['待收货'],
+      scopeRole: 'target',
+    })
+    expect(text).toMatch(STANDALONE_TARGET)
   })
 })
 

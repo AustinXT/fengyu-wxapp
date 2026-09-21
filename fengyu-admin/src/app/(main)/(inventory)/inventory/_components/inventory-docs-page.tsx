@@ -1,9 +1,8 @@
 'use client'
 
-import { useCallback, useEffect, useId, useRef, useState, useTransition } from 'react'
+import { useCallback, useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
 import { ClipboardList, Plus } from 'lucide-react'
-import { toast } from 'sonner'
 import {
   approveInventoryCoreDoc,
   confirmInventoryCoreReceive,
@@ -29,7 +28,6 @@ import { DataTable, type Column } from '@/components/ui/data-table'
 import {
   Dialog,
   DialogClose,
-  DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
@@ -39,8 +37,7 @@ import { DatePicker } from '@/components/ui/date-picker'
 import { Input } from '@/components/ui/input'
 import { Pagination } from '@/components/ui/pagination'
 import { Select } from '@/components/ui/select'
-import { Textarea } from '@/components/ui/textarea'
-import { docActionErrorMessage, isStaleStateError } from '@/lib/inventory/doc-action-error'
+import { DocActionDialog, type DocActionSpec } from './doc-action-dialog'
 import { InventoryDocCreateForm } from './inventory-doc-create-form'
 import { useUrlFilters } from '@/lib/hooks/use-url-filters'
 import { PreserveListContextLink } from '@/components/return-context'
@@ -320,7 +317,13 @@ export default function InventoryDocsPage({
         />
       )}
 
+      {/*
+        弹窗组件与办理台单据 Tab 共用（#192），动作集合由本页的 config 决定。
+        **不要**把它套进权限条件里 —— 权限翻转时卸载正开着的弹窗会连输入一起丢，
+        而 `pendingAction` 仍非空 → 点击闸把所有入口锁死（同 CreateDocDialog 上方的注释）。
+      */}
       <DocActionDialog
+        config={DOC_ACTION_CONFIG}
         pending={pendingAction}
         onBusyChange={setActionDialogBusy}
         onOpenChange={(next) => {
@@ -351,25 +354,12 @@ type DocActionKind = 'approve' | 'reject' | 'receive'
  * `remarkRequired` 目前只有驳回为 true —— 驳回原因是制单人唯一能看到的解释，
  * 空着等于让人猜。服务端 `rejectInventoryCoreDoc` 暂未强制非空（改它是接口契约变更，
  * 见 PR 说明），故这里是**前端闸门**：拦住手滑，而不是拦住恶意调用。
+ *
+ * 只绑 generic 三件套，是**本页专属**的配置：办理台的库存业务单（院退货 / 品项公司发货 /
+ * 采购订单…）不在 INVENTORY_GENERIC_DOC_TYPES 里，走这三个 action 会被服务端的
+ * `assertGenericDocTransition` 直接拒掉，那边自己配一份同形状的 config。
  */
-const DOC_ACTION_CONFIG: Readonly<
-  Record<
-    DocActionKind,
-    {
-      title: string
-      label: string
-      placeholder: string
-      remarkRequired: boolean
-      /** 提交后不可撤销的后果，渲染在标题下方。没有后果的动作留空。 */
-      consequence?: string
-      confirmText: string
-      confirmVariant?: 'destructive'
-      successMessage: (result: unknown) => string
-      errorFallback: string
-      run: (docId: string, remark: string) => Promise<unknown>
-    }
-  >
-> = {
+const DOC_ACTION_CONFIG: Readonly<Record<DocActionKind, DocActionSpec>> = {
   approve: {
     title: '确认审批通过？',
     label: '审批备注',
@@ -411,17 +401,6 @@ const DOC_ACTION_CONFIG: Readonly<
     run: (docId, remark) => confirmInventoryCoreReceive(docId, remark),
   },
 }
-
-const DOC_ACTION_REMARK_MAX = 300
-
-/**
- * Unicode 格式字符（`Cf` 类）：零宽空格、LRM/RLM 方向标记、方向隔离符等。
- * 肉眼看不见，`trim()` 也吃不掉。从聊天软件/表格/富文本复制过来的文本常带，
- * 不清掉就能拿「看起来是空的」的输入绕过必填。
- */
-const INVISIBLE_FORMAT_RE = /\p{Cf}/gu
-
-/** 裸前缀错误的统一说法：它本来就没带可读文案，直接说清「发生了什么 + 已经替你做了什么」。 */
 
 /**
  * 单据中心的建单入口：只负责弹窗外壳，表单本体与提交逻辑走共享组件
@@ -494,170 +473,6 @@ function CreateDocDialog({
           )}
         />
       </div>
-    </Dialog>
-  )
-}
-
-function DocActionDialog({
-  pending,
-  onOpenChange,
-  onDone,
-  onBusyChange,
-}: {
-  pending: { kind: DocActionKind; docId: string } | null
-  onOpenChange: (open: boolean) => void
-  onDone: (finished: { kind: DocActionKind; docId: string }) => void
-  /** 把「有动作在途」上报给父组件，用来把行操作按钮一起锁住 */
-  onBusyChange: (busy: boolean) => void
-}) {
-  const remarkId = useId()
-  const errorId = `${remarkId}-error`
-  const descriptionId = `${remarkId}-desc`
-  const remarkRef = useRef<HTMLTextAreaElement>(null)
-  // 每个提交自己持有一张「凭证」，只有凭证还是自己的那次才有资格解锁 ——
-  // 防的是「A 在途 → 换到 B → B 提交 → A 先回来，A 的 finally 把 B 的锁解了」。
-  // 第一道闸在父组件（弹窗开着 / 在途时，开窗入口走点击闸拦住，见 anyDialogOpen），这里是第二道：
-  // 万一将来有人拆了那道闸，至少锁的归属还是对的。
-  const submitTokenRef = useRef(0)
-  const [remark, setRemark] = useState('')
-  const [touched, setTouched] = useState(false)
-  const [submitting, setSubmitting] = useState(false)
-  // 关闭时**不卸载**，走 open=false 让原生 dialog.close() 正常执行 —— 焦点才会还给
-  // 触发它的那个按钮（前提是那个按钮在 showModal() 时仍可聚焦，所以开窗入口用点击闸
-  // 而不是 disabled，见 anyDialogOpen 的注释）
-  //（历史：曾在 dialog.tsx 的卸载 cleanup 里补一次 close() 来救焦点，后因 StrictMode 下
-  //  排队的 close 事件会在监听重挂后到达、反向关掉刚开的弹窗而撤销，改成现在这套。），也才不会踩「卸载期补 close()、排队的
-  // close 事件在 StrictMode 重挂监听后才到达」那个坑。代价是关闭后还要拿着上一次的配置
-  // 渲染（隐藏态），故留一份快照。同文件的 CreateDocDialog 用的也是常驻挂载。
-  const [snapshot, setSnapshot] = useState(pending)
-  useEffect(() => {
-    if (pending) setSnapshot(pending)
-  }, [pending])
-  // 关闭（以及理论上的换单据）都把输入与在途态清干净 —— 弹窗常驻挂载，state 不会随卸载消失。
-  // 注：现在父组件保证「同时只开一个弹窗」，A→B 直切已不可达，这里主要覆盖的是关闭路径。
-  const resetKey = pending ? `${pending.kind}:${pending.docId}` : ''
-  useEffect(() => {
-    setRemark('')
-    setTouched(false)
-    // 换单据/换动作 = 换一次提交周期：作废上一张凭证，上一次的 finally 就管不到这一次了
-    submitTokenRef.current += 1
-    setSubmitting(false)
-  }, [resetKey])
-
-  // showModal() 在 layout effect 里跑，那之前 <dialog> 还是 display:none，React 的
-  // autoFocus 会静默失败；而常驻挂载后 textarea 从第二次打开起也不会再重挂。
-  // 所以焦点得在 passive effect 里自己给 —— 否则焦点停在右上角的 X 上，
-  // 键盘用户一个 Enter 就把弹窗关了。
-  useEffect(() => {
-    if (pending) remarkRef.current?.focus()
-  }, [resetKey, pending])
-
-  useEffect(() => {
-    onBusyChange(submitting)
-  }, [submitting, onBusyChange])
-  // 卸载时把在途态归还给父组件。DocActionDialog 在父组件里是无条件渲染的，这条只在整页
-  // 卸载时触发，属纯防御；真正会被条件渲染摘掉的是下面的 CreateDocDialog。
-  useEffect(() => () => onBusyChange(false), [onBusyChange])
-
-  const active = pending ?? snapshot
-  if (!active) return null
-  const config = DOC_ACTION_CONFIG[active.kind]
-  // 提交的是用户原样输入（只 trim 首尾空白）；清 Cf 字符只用来判「看起来是不是空的」——
-  // 否则 ZWJ 组合 emoji、阿拉伯语方向控制符会在落库时被悄悄改写。
-  const submittedRemark = remark.trim()
-  const missing = config.remarkRequired && !remark.replace(INVISIBLE_FORMAT_RE, '').trim()
-
-  async function submit() {
-    if (!pending || submitting) return
-    setTouched(true)
-    if (missing) {
-      toast.error(`请填写${config.label}`)
-      return
-    }
-    setSubmitting(true)
-    const token = ++submitTokenRef.current
-    try {
-      const result = await config.run(pending.docId, submittedRemark)
-      toast.success(config.successMessage(result))
-      onDone(pending)
-    } catch (err) {
-      toast.error(docActionErrorMessage(err, config.errorFallback))
-      // 单据已被别人改过时，留着弹窗只会让人反复点同一个必失败的按钮：
-      // 列表也还是旧状态，按钮照样在。关掉 + 刷新，才是有出路的处理。
-      if (isStaleStateError(err)) onDone(pending)
-    } finally {
-      // 凭证被换单据/换动作作废过的话，这次的 finally 无权解锁
-      if (submitTokenRef.current === token) setSubmitting(false)
-    }
-  }
-
-  return (
-    // 提交在途时禁止遮罩/ESC 关闭：Server Action 无法中止，「关掉了」≠「取消了」，
-    // 而审批通过是实扣库存且不可撤销的。三条关闭路径必须同一口径。
-    <Dialog
-      open={pending !== null}
-      onOpenChange={onOpenChange}
-      dismissible={!submitting}
-      ariaLabel={config.title}
-      ariaDescribedBy={descriptionId}
-    >
-      {!submitting && <DialogClose onOpenChange={onOpenChange} />}
-      <DialogHeader>
-        <DialogTitle>{config.title}</DialogTitle>
-        <DialogDescription id={descriptionId}>
-          单据号 {active.docId}
-          {config.consequence && (
-            <>
-              <br />
-              {config.consequence}
-            </>
-          )}
-        </DialogDescription>
-      </DialogHeader>
-      <div className="mt-4">
-        <label className="mb-1 block text-sm font-medium" htmlFor={remarkId}>
-          {config.label}
-          {config.remarkRequired && <span className="text-[var(--primary)]"> *</span>}
-        </label>
-        <Textarea
-          // key 用 resetKey：换单据时把 textarea 整个重挂，丢掉滚动位置、选区这些 DOM 内部状态
-          // （value 本身是受控的，靠 state 复位，不靠 key）
-          key={resetKey}
-          id={remarkId}
-          ref={remarkRef}
-          aria-required={config.remarkRequired}
-          aria-invalid={touched && missing}
-          aria-describedby={touched && missing ? errorId : undefined}
-          value={remark}
-          onChange={(e) => setRemark(e.target.value)}
-          rows={4}
-          maxLength={DOC_ACTION_REMARK_MAX}
-          placeholder={config.placeholder}
-        />
-        <div className="mt-1 flex items-start justify-between gap-2">
-          {touched && missing ? (
-            // 不加 role="alert"：同文案的 toast 已经在 live region 里播报过一次，
-            // 这里再挂一个 alert 会让读屏把同一句念两遍。视觉红字 + aria-invalid +
-            // aria-describedby 已经把「哪里错了」说清楚。
-            <p id={errorId} className="text-xs text-[var(--destructive)]">
-              请填写{config.label}
-            </p>
-          ) : (
-            <span />
-          )}
-          <span className="shrink-0 text-xs text-[#999999]">
-            {remark.length}/{DOC_ACTION_REMARK_MAX}
-          </span>
-        </div>
-      </div>
-      <DialogFooter>
-        <Button variant="outline" onClick={() => onOpenChange(false)} disabled={submitting}>
-          取消
-        </Button>
-        <Button onClick={submit} disabled={submitting} variant={config.confirmVariant}>
-          {submitting ? '处理中…' : config.confirmText}
-        </Button>
-      </DialogFooter>
     </Dialog>
   )
 }
