@@ -77,12 +77,14 @@ const insCard = (id, orderId, saleAmount, pending, sessionCount) =>
 //   行级 Δ = sale_amount − 净实收；pending_received 钉到**毛已付** = 净实收 + 该行已退款额
 async function foldRow(saleItemId, rowRefunded) {
   const cur = await client.query(
-    `SELECT sale_amount::numeric AS sale_amount, received::numeric AS received
+    `SELECT sale_order_id, sale_amount::numeric AS sale_amount, received::numeric AS received,
+            session_count, unit_real_price
        FROM sale_items WHERE sale_item_id = $1`,
     [saleItemId],
   )
-  const saleAmount = num(cur.rows[0].sale_amount)
-  const received = num(cur.rows[0].received)
+  const row = cur.rows[0]
+  const saleAmount = num(row.sale_amount)
+  const received = num(row.received)
   const rowWaive = num(saleAmount - received)
   await client.query(
     `UPDATE sale_items
@@ -90,6 +92,25 @@ async function foldRow(saleItemId, rowRefunded) {
             pending_received = $4, remaining_sessions = 0
       WHERE sale_item_id = $1`,
     [saleItemId, received, rowWaive, num(received + rowRefunded)],
+  )
+  // ⚠ 必须真的落一条**转出行**：「该行已折抵退出」的判据是「存在未关闭的转出行引用本行」，
+  //   不是 waived_amount > 0（付清行 / overpay 行 Δ_row = 0 却同样已退出）。
+  //   只改列不落转出行的话，Branch B 的固定预留不会生效，用例会以 D3 失败——
+  //   这正是判据换成 EXISTS 之后 fixture 必须跟着变真的地方。
+  // 按整个 saleItemId 派生，避免两个 item 的尾 8 位相同而撞主键（varchar(30) 够放）
+  const convOrderId = `CV-${saleItemId}`.slice(0, 30)
+  await insOrder(convOrderId, 0, 0)
+  await client.query(
+    `UPDATE sale_orders SET sale_order_type = '转换单' WHERE sale_order_id = $1`,
+    [convOrderId],
+  )
+  await client.query(
+    `INSERT INTO sale_items
+       (sale_item_id, sale_order_id, store_id, item_direction, ref_sale_item_id, product_type,
+        unit_price, unit_real_price, sale_amount, received, quantity, sales_category)
+     VALUES ($1, $2, $3, '转出', $4, '疗程卡', $5, $5, $6, $6, 0, '自销自耗')`,
+    [`${convOrderId}-O`.slice(0, 30), convOrderId, storeId, saleItemId,
+      row.unit_real_price, -received],
   )
   return { rowWaive, orderWaive: Math.max(0, num(rowWaive - rowRefunded)) }
 }

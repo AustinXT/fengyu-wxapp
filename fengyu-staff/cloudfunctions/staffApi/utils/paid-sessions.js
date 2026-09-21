@@ -89,25 +89,28 @@ const SALE_ITEMS_RECEIVED_ALLOC_SQL = `WITH tg AS (
     caps AS (
       SELECT si.sale_item_id,
              COALESCE(tg.targeted, 0)::numeric AS targeted,
-             -- #182 折抵退出的行（waived_amount > 0）：它的**毛已付**已经钉在 pending_received
-             -- 上（折抵时写入 = 净实收 + 该行已退款额），改为**固定预留**、等同于一笔定向支付，
-             -- 不再参与按比例的两段瀑布，预留额同时从 untargeted 扣除（见 agg）。
-             -- 两个都不能省：① 仍丢回比例池 → untargeted < Σpend_cap 时该行只拿到比例份额、
-             --   低于钉住值，而其 remaining_sessions 已注销为 0 → (session_count − 0) >
-             --   paid_sessions 立刻踩 D3，该单此后任何整单 recalc 全抛 UNDERFLOW；
+             -- #182 折抵退出的行：它的**毛已付**已经钉在 pending_received 上（折抵时写入
+             -- = 净实收 + 该行已退款额），改为**固定预留**、等同于一笔定向支付，不再参与
+             -- 按比例的两段瀑布，预留额同时从 untargeted 扣除（见 agg）。
+             -- ⚠ 判据是「存在未关闭的转出行引用本行」，**不能用 waived_amount > 0**：
+             --   原行已付清 / overpay 时 Δ_row = 0、不写 waived_amount，但权益同样被整行注销，
+             --   漏掉这类行 → 它被瀑布重新摊薄 → remaining=0 而 paid_sessions < session_count
+             --   → 永久违反 D3，该单此后任何整单 recalc 全抛 UNDERFLOW。
+             --   与 STEP 1.6 的排除判据同源（那里同样不能用 waived_amount）。
+             -- 两个都不能省：① 仍丢回比例池 → untargeted < Σpend_cap 时该行只拿到比例份额；
              -- ② 事后再单行抬回下限 → Σ行级 received 会超过订单级实收（凭空多出行级实收，
              --   污染 0040 视图 residual），且同单其它行被少分。预留是唯一同时守住两者的写法。
-             CASE WHEN si.waived_amount::numeric > 0
+             CASE WHEN EXISTS (SELECT 1 FROM sale_items conv_out JOIN sale_orders conv_out_order ON conv_out_order.sale_order_id = conv_out.sale_order_id WHERE conv_out.ref_sale_item_id = si.sale_item_id AND conv_out.item_direction = '转出' AND conv_out_order.status <> '已关闭')
                   THEN GREATEST(0, si.pending_received::numeric - COALESCE(tg.targeted, 0)::numeric)
                   ELSE 0 END AS reserved,
-             CASE WHEN si.waived_amount::numeric > 0 THEN 0
+             CASE WHEN EXISTS (SELECT 1 FROM sale_items conv_out JOIN sale_orders conv_out_order ON conv_out_order.sale_order_id = conv_out.sale_order_id WHERE conv_out.ref_sale_item_id = si.sale_item_id AND conv_out.item_direction = '转出' AND conv_out_order.status <> '已关闭') THEN 0
                   ELSE GREATEST(0, si.pending_received::numeric - COALESCE(tg.targeted, 0)::numeric)
              END AS pend_cap,
              -- ⚠ 第二段产能不得改成 (sale_amount + waived_amount)：折抵行已结清，**不应**再参与
              -- 第二段 untargeted 分配（否则会吸走本该给同单欠款行的回款：两行各原价 ¥100 各实收
              -- ¥50，A 折抵后再回款 ¥50，若 A 仍有产能会分成 A=¥75/B=¥75，而正确结果是
              -- A=¥50/B=¥100，还可能让 B 少解锁权益甚至踩 D3）。折抵行这里直接取 0。
-             CASE WHEN si.waived_amount::numeric > 0 THEN 0
+             CASE WHEN EXISTS (SELECT 1 FROM sale_items conv_out JOIN sale_orders conv_out_order ON conv_out_order.sale_order_id = conv_out.sale_order_id WHERE conv_out.ref_sale_item_id = si.sale_item_id AND conv_out.item_direction = '转出' AND conv_out_order.status <> '已关闭') THEN 0
                   ELSE GREATEST(0, si.sale_amount::numeric - GREATEST(si.pending_received::numeric, COALESCE(tg.targeted, 0)::numeric))
              END AS sale_cap
       FROM sale_items si
@@ -136,7 +139,7 @@ const SALE_ITEMS_RECEIVED_ALLOC_SQL = `WITH tg AS (
         updated_at = NOW()
     FROM caps, agg
     WHERE si.sale_item_id = caps.sale_item_id`
-// #182 折抵行走上面的 reserved 分支：received = GREATEST(pending_received, targeted)（毛额），
+// #182 折抵行（存在未关闭转出行）走上面的 reserved 分支：received = GREATEST(pending_received, targeted)（毛额），
 //   随后 STEP 1.5 扣掉该行已退款额得到净额 = 折抵时的净实收 = 下调后的 sale_amount
 //   → paid_sessions 恒满付，D3 成立。**不要**改成「事后单行抬 received 下限」：
 //   钉住值是毛额、STEP 1.5 会再扣一次退款，且单行抬升会破坏 Σ行级 = 订单级实收。

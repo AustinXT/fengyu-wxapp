@@ -5831,6 +5831,8 @@ export const createConversionOrder = withPermission(
         orderWaiveAmount: number
         /** 折抵后钉给 pending_received 的**毛已付**（净实收 + 该行已退款额） */
         pinnedPendingReceived: number
+        /** 该行是否进入「折抵退出」记账（非寄存单且有已付）；Δ_row 可能为 0 但仍要钉 pending */
+        waiveEligible: boolean
         refPendingReceived: number
       }
       const outItems: OutItem[] = []
@@ -5901,7 +5903,13 @@ export const createConversionOrder = withPermission(
             received: row.received as string,
             unitRealPrice: row.unit_real_price as string,
           })
-          qty = Math.max(0, Number(row.quantity ?? 0) - Number(row.picked_up_quantity ?? 0))
+          // #154：未结算件数 = quantity − (已提货 + 已退款 + 已转换)。只减 picked_up 会算出过大的
+          // qty，随后撞 chk_sale_item_settled_le_quantity 的写入守卫 → 「曾部分退款后再折抵」
+          // 这类合法操作稳定报并发冲突。必须与候选 WHERE / staff 侧逐字同口径。
+          qty = Math.max(0, Number(row.quantity ?? 0)
+            - (Number(row.picked_up_quantity ?? 0)
+               + Number(row.refunded_quantity ?? 0)
+               + Number(row.converted_quantity ?? 0)))
           lineAmount = Math.round(home.amount * 100) / 100
         }
 
@@ -5971,6 +5979,9 @@ export const createConversionOrder = withPermission(
           refSaleAmount,
           waiveAmount,
           orderWaiveAmount,
+          // 「该行已折抵退出」≠「有欠款可豁免」：付清行 / overpay 行 Δ_row = 0，但权益同样
+          // 被整行注销，pending_received 的钉住与 Branch B 的固定预留必须覆盖它们。
+          waiveEligible,
           // 欠款归零会把 pending_received 钉到该行**毛已付** = 净实收 + 该行已退款额。
           // 必须是毛额：STEP 1 重建的是毛额语义，钉住值随后要经 STEP 1.5 扣一次退款才成净额。
           // 钉成净实收会被 STEP 1.5 再扣一次（付清后退过款的行终值 = 净额 − 退款额 < 新应付）
@@ -6439,7 +6450,10 @@ export const createConversionOrder = withPermission(
       const waiveByOrder = new Map<string, number>()
       for (const out of outItems) {
         const waive = out.waiveAmount
-        if (!(waive > 0)) continue
+        // ⚠ 闸门是 waiveEligible，**不是** waive > 0：Δ_row 为 0（原行已付清 / overpay）时
+        // sale_amount 与 waived_amount 都不用动，但 pending_received 仍必须钉到毛已付 ——
+        // 它是 Branch B 固定预留该行 received 的唯一依据。与 staff createConversion 同源。
+        if (!out.waiveEligible) continue
         const updItem = await tx
           .update(saleItems)
           .set({
@@ -7858,7 +7872,15 @@ export const recordPayment = withPermission(
                 -- targeted（通常 0），而它的 remaining_sessions 已注销为 0 →
                 -- (session_count − 0) > paid_sessions 永久违反 D3，原单从此回款/退款/回调全失败。
                 -- 触发条件很普通：同一原单里另一行发起定向回款即可。
-                WHEN si.waived_amount::numeric > 0 THEN si.pending_received
+                -- ⚠ 判据用「存在未关闭转出行」而非 waived_amount > 0：付清行 / overpay 行
+                --   Δ_row = 0、不写 waived_amount，却同样已整行退出，用金额判会漏掉它们。
+                WHEN EXISTS (
+                       SELECT 1 FROM sale_items conv_out
+                         JOIN sale_orders conv_out_order ON conv_out_order.sale_order_id = conv_out.sale_order_id
+                        WHERE conv_out.ref_sale_item_id = si.sale_item_id
+                          AND conv_out.item_direction = '转出'
+                          AND conv_out_order.status <> '已关闭'
+                     ) THEN si.pending_received
                 ELSE COALESCE(rp.delta, 0)
               END,
               updated_at = NOW()

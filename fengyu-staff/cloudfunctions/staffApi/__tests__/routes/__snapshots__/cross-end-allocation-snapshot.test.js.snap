@@ -15,12 +15,21 @@ exports[`断言1：staff / clientApi / payNotify 三个 pg 版 capturePaymentAll
   }
 
   const itemsRes = await client.query(
-    \`SELECT sale_item_id, sale_amount::numeric AS sale_amount, pending_received::numeric AS pending_received,
-            waived_amount::numeric AS waived_amount, sales_category
-       FROM sale_items
-      WHERE sale_order_id = $1
-        AND item_direction = '购买'
-      ORDER BY sale_item_id\`,
+    \`SELECT si.sale_item_id, si.sale_amount::numeric AS sale_amount,
+            si.pending_received::numeric AS pending_received, si.sales_category,
+            -- 「已折抵退出」判据：存在未关闭的转出行引用本行。**不能用 waived_amount > 0** ——
+            -- 原行已付清 / overpay 时 Δ_row = 0、不写 waived_amount，但权益同样被整行注销。
+            EXISTS (
+              SELECT 1 FROM sale_items conv_out
+                JOIN sale_orders conv_out_order ON conv_out_order.sale_order_id = conv_out.sale_order_id
+               WHERE conv_out.ref_sale_item_id = si.sale_item_id
+                 AND conv_out.item_direction = '转出'
+                 AND conv_out_order.status <> '已关闭'
+            ) AS converted_out
+       FROM sale_items si
+      WHERE si.sale_order_id = $1
+        AND si.item_direction = '购买'
+      ORDER BY si.sale_item_id\`,
     [saleOrderId],
   )
   const items = itemsRes.rows
@@ -82,12 +91,14 @@ exports[`断言1：staff / clientApi / payNotify 三个 pg 版 capturePaymentAll
       const prior = priorMap.get(i.sale_item_id) || 0
       const pending = Number(i.pending_received)
       const saleAmt = Number(i.sale_amount)
-      // #182：折抵退出的行（waived_amount > 0）债务已归零、剩余权益已注销，不得再吸收新款项。
+      // #182：折抵退出的行债务已归零、剩余权益已注销，不得再吸收新款项。
       // 它的 pending_received 被钉成「毛已付」作为 paid-sessions STEP 1 的预留依据，
       // 若照常算 pendCap = pending − prior，在无历史 receipt 的老单上（prior = 0）会得到
       // 一整笔产能，把本该落在真正欠款行上的回款分到已结清行 —— 钱记错归属，欠款行
       // 少拿 receipt、paid_sessions 解锁不足。
-      if (Number(i.waived_amount) > 0) {
+      // 判据用 converted_out（未关闭转出行）而非 waived_amount：付清行 / overpay 行 Δ_row = 0
+      // 却同样已退出，用金额判会漏掉它们。
+      if (i.converted_out === true) {
         return { saleItemId: i.sale_item_id, pendCap: 0, saleCap: 0 }
       }
       return {
@@ -133,7 +144,7 @@ exports[`断言1：staff / clientApi / payNotify 三个 pg 版 capturePaymentAll
     } else {
       // 两段产能都为 0 的兜底（订单已结清却又来了一笔款）。#182：优先落在**未被折抵**的行上 ——
       // 折抵行的剩余权益已注销，把钱记到它头上既错归属又毫无意义。
-      const fallback = items.find((i) => !(Number(i.waived_amount) > 0)) || items[0]
+      const fallback = items.find((i) => i.converted_out !== true) || items[0]
       perItem = [{ saleItemId: fallback.sale_item_id, amount: evt }]
     }
   }

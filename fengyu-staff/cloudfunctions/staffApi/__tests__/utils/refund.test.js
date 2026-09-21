@@ -142,6 +142,9 @@ describe('buildRefundDetails 行级多收余数', () => {
     quantity: 1,
     unit_real_price: 100,
     picked_up_quantity: null,
+    // #182：疗程卡的已转走金额必须显式给出（缺省即 fail-closed 抛错）
+    converted_amount: '0',
+    converted_quantity: 0,
     sales_category: null,
     service_fee: 0,
     sale_amount: 100,
@@ -376,6 +379,27 @@ describe('computeItemOverpayRemainders — 家居余数按实际已转走金额�
       sale_item_id: 'si-3', product_type: '疗程卡', quantity: 1,
       session_count: 10, remaining_sessions: 7, paid_sessions: 10,
       unit_real_price: '100', received: '1050', picked_up_quantity: 0,
+      // #182：疗程卡的已转走金额必须**显式**给出（哪怕是 0）。缺省会抛
+      // REFUND_SOURCE_MISSING_CONVERTED_AMOUNT —— 静默按 0 会让已折抵的卡重新算出 overpay，
+      // 等于折一次再退一次。
+      converted_amount: '0', converted_quantity: 0,
     })).toBe(50)
+  })
+
+  test('疗程卡缺 converted_amount 必须抛错（不得静默按 0）', () => {
+    expect(() => overpayOf({
+      sale_item_id: 'si-3b', product_type: '疗程卡', quantity: 1,
+      session_count: 10, remaining_sessions: 7, paid_sessions: 10,
+      unit_real_price: '100', received: '1050', picked_up_quantity: 0,
+    })).toThrow(/REFUND_SOURCE_MISSING_CONVERTED_AMOUNT/)
+  })
+
+  test('家居只给一半聚合（picked_quantity 有、converted_amount 无）必须抛错', () => {
+    expect(() => overpayOf({
+      sale_item_id: 'si-3c', product_type: '家居产品', quantity: 10,
+      unit_real_price: '100', received: '450', picked_up_quantity: 0,
+      refunded_quantity: 0, converted_quantity: 0,
+      picked_quantity: 0,
+    })).toThrow(/REFUND_SOURCE_MISSING_CONVERTED_AMOUNT/)
   })
 })

@@ -101,13 +101,14 @@ function computeCardRemainingRemainder(item: {
   unitRealPrice: string | number | null
   received: string | number | null
   /**
-   * #182：已被转换单折走的金额。折抵会带走 overpay 余数且不动 remaining_sessions，
-   * 不传这一项，卡包/顾客持卡/导出的「剩余零头」列会继续展示已经被折走的钱。
-   * 调用方未提供时按 0（旧行为），但列表类查询都应带上转出行聚合。
+   * #182：已被转换单折走的金额（转出行 received 聚合）。折抵会带走 overpay 余数且不动
+   * remaining_sessions，不传这一项，卡包/顾客持卡/导出的「剩余零头」列会继续展示已经被折走的钱。
+   * **刻意设成必填**：可选的话调用方漏传时 tsc 不报错，helper 里的运行时守卫才会炸，
+   * 而那已经是退款链路上了。与 #154 把三列设成必填同一理由。
    */
-  convertedAmount?: string | number | null
-  /** #182：已折走的**次数**。必须先按次数扣减再加金额，否则与 (sc − rem) 双计。 */
-  convertedQuantity?: number | null
+  convertedAmount: string | number | null
+  /** #182：已折走的**次数**。必须先按次数扣减再加金额，否则与 (sc − rem) 双计。必填同上。 */
+  convertedQuantity: number | null
 }): number {
   const source: RefundSourceItem = {
     sale_item_id: item.saleItemId,
@@ -126,7 +127,7 @@ function computeCardRemainingRemainder(item: {
     received: item.received,
     picked_up_quantity: 0,
     picked_quantity: null,
-    converted_amount: item.convertedAmount ?? null,
+    converted_amount: item.convertedAmount,
     converted_quantity: item.convertedQuantity ?? 0,
     sales_category: null,
     service_fee: null,

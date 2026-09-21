@@ -168,6 +168,28 @@ export function computeItemOverpayRemainders(origItems: RefundSourceItem[]): Map
     // overpay 场景（received > sale_amount，如 7 次 × ¥398 实收 ¥3000）折走的是 ¥214 这笔
     // 真实金额、且不动 remaining_sessions（Q=0 的纯余数行），不扣它就能折一次再退一次。
     // converted_amount / converted_quantity 缺省（历史调用方不传）时为 0，退回旧口径，零回归。
+    // fail-closed：聚合缺失会**静默失真**，而失真方向是「已消耗被低估 → overpay 虚高 → 多退」。
+    // 家居的三列缺失已由 calculateUnusedQuantity 抛错拦住，这里补齐**聚合**侧的对称守卫：
+    //  · 疗程卡完全不传 converted_amount → 已折抵的卡（rem=0、已折走 ¥214 那类）会重新算出
+    //    overpay，等于折一次再退一次；
+    //  · 家居「半缺」（只给 picked_quantity 或只给 converted_amount）→ 缺失侧按 0 计，
+    //    金额门对该侧失效，结果被钳到 physicalRemaining，可能高于金额支撑量。
+    // 两种都改成拒绝退款（退款链路上 fail-closed 是正确方向）。
+    const hasPicked = it.picked_quantity != null
+    const hasConvAmt = it.converted_amount != null
+    if (it.product_type === '疗程卡') {
+      if (!hasConvAmt) {
+        throw new Error(
+          'INVALID_STATE: REFUND_SOURCE_MISSING_CONVERTED_AMOUNT: '
+          + '疗程卡多收余数缺少 converted_amount（转出行 received 聚合），取数处需补齐',
+        )
+      }
+    } else if (hasPicked !== hasConvAmt) {
+      throw new Error(
+        'INVALID_STATE: REFUND_SOURCE_MISSING_CONVERTED_AMOUNT: '
+        + '家居多收余数的 picked_quantity / converted_amount 必须同时提供，取数处需补齐',
+      )
+    }
     const convertedAmount = Number(it.converted_amount ?? 0) || 0
     const convertedQuantity = Math.max(0, Number(it.converted_quantity ?? 0) || 0)
     // ⚠ 不要加 `it.product_type !== '疗程卡' &&` 前缀：疗程卡在下面的三元里有独立分支，
@@ -203,7 +225,12 @@ export function computeItemOverpayRemainders(origItems: RefundSourceItem[]): Map
 }
 
 /**
- * 计算行级 overpay 合计。无行级 received 的旧单元测试/历史调用回退到旧订单级口径。
+ * 计算行级 overpay 合计。有行级 received 时逐行算（权威口径）；否则退回订单级口径。
+ *
+ * ⚠ 「回退」**不等于零回归**：回退分支仍会逐行调用 calculateUnusedQuantity，家居行缺
+ *   refunded_quantity / converted_quantity 会直接抛 INVALID_STATE（#154 的 fail-closed 守卫），
+ *   疗程卡缺 converted_amount 也会被 computeItemOverpayRemainders 的守卫拦住。
+ *   即：缺列/缺聚合一律拒绝退款，不存在「安静退回旧口径」这条路。
  */
 export function computeOverpayRemainder(
   order: { received: string | number; refundedAmount?: string | number } | null | undefined,
@@ -226,7 +253,12 @@ export function computeOverpayRemainder(
     if (it.product_type === '疗程卡') {
       const sc = Number(it.session_count) || 0
       const rem = Number(it.remaining_sessions) || 0
-      consumedValue += Math.max(0, sc - rem) * urp
+      // 与行级口径对齐：先按已转走**次数**扣掉被折走的部分，再加回实际已转走**金额**。
+      // 漏掉这两项会让同一张已折抵卡在两条路径上算出不同的 overpay —— 订单级把已折走的
+      // 余数又算成可退（多退）。
+      const convQty = Math.max(0, Number(it.converted_quantity) || 0)
+      const convAmt = Number(it.converted_amount) || 0
+      consumedValue += Math.max(0, sc - rem - convQty) * urp + convAmt
     } else {
       // #154：「已消耗」= 已提货金额 + 已转走金额，不含已退款（received 已扣过逐项退款）。
       // 已转走优先取实际金额 converted_amount —— 折抵金额含余数时「件数 × 单价」会低估

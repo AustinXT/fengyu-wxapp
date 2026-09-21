@@ -151,6 +151,9 @@ function mockPaginatedChain(total: number, dataRows: any[]) {
 }
 
 const mockCardRow = {
+  // #182：疗程卡的已转走金额/次数必须显式给出（真实查询带转出行聚合），缺省即 fail-closed
+  convertedAmount: '0',
+  convertedQuantity: 0,
   saleItemId: 'SI-001',
   saleOrderId: 'FY-XSD-WX-2604100001',
   productName: '蜜语水润嫩肤护理',
@@ -655,6 +658,9 @@ const mockCardDetailSession = {
 }
 
 const mockCardDetailRow = {
+  // #182：疗程卡的已转走金额/次数必须显式给出（真实查询带转出行聚合），缺省即 fail-closed
+  convertedAmount: '0',
+  convertedQuantity: 0,
   saleItemId: 'SI-001',
   saleOrderId: 'FY-XSD-WX-2604100001',
   productName: '蜜语水润嫩肤护理',
@@ -837,6 +843,9 @@ function mockExportChain(rows: any[]) {
 }
 
 const mockExportRow = {
+  // #182：疗程卡的已转走金额/次数必须显式给出（真实查询带转出行聚合），缺省即 fail-closed
+  convertedAmount: '0',
+  convertedQuantity: 0,
   productName: '蜜语水润嫩肤护理',
   specName: '蜜语水润嫩肤护理 10次卡',
   sessionCount: 10,

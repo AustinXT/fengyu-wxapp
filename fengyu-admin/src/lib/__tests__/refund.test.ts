@@ -77,6 +77,9 @@ describe('buildRefundDetails', () => {
       product_type: '疗程卡',
       refunded_quantity: 0,
       converted_quantity: 0,
+      // #182：疗程卡的已转走金额必须显式给出（缺省即 fail-closed 抛
+      // REFUND_SOURCE_MISSING_CONVERTED_AMOUNT）—— 静默按 0 会让已折抵的卡重新算出 overpay。
+      converted_amount: '0',
       session_count: 10,
       remaining_sessions: 10,
       paid_sessions: 10,

@@ -1514,18 +1514,29 @@ describe("STEP 1 received 分摊 SQL 四端字节同义守护", () => {
     // 预留、同时从 untargeted 扣除，且 pend_cap / sale_cap 归 0 不参与比例瀑布。
     // 三种错误写法都踩过（详见 backend.pr.spec.md）：钉净实收 → STEP 1.5 二次扣退款；
     // 丢回比例池 → untargeted < Σpend_cap 时被摊薄；事后单行抬下限 → Σ行级 > 订单级实收。
-    test("四端折抵退出行按 pending_received 固定预留（reserved）", () => {
-      const reserved = /CASE WHEN si\.waived_amount::numeric > 0\s*THEN GREATEST\(0,\s*si\.pending_received::numeric\s*-\s*COALESCE\(tg\.targeted,\s*0\)::numeric\)\s*ELSE 0 END AS reserved/i
+    // ⚠ 判据必须是「存在未关闭的转出行引用本行」，**不能用 waived_amount > 0**：
+    //   原行已付清 / overpay 时 Δ_row = 0、不写 waived_amount，但权益同样被整行注销；
+    //   漏掉这类行 → 被瀑布重新摊薄 → remaining=0 而 paid_sessions < session_count → 永久违反 D3。
+    test("四端折抵退出行按 pending_received 固定预留（reserved），判据用未关闭转出行", () => {
+      const exited = "EXISTS (SELECT 1 FROM sale_items conv_out JOIN sale_orders conv_out_order"
+        + " ON conv_out_order.sale_order_id = conv_out.sale_order_id"
+        + " WHERE conv_out.ref_sale_item_id = si.sale_item_id"
+        + " AND conv_out.item_direction = '转出' AND conv_out_order.status <> '已关闭')"
+      const reserved = /CASE WHEN EXISTS \(SELECT 1 FROM sale_items conv_out[\s\S]*?\)\s*THEN GREATEST\(0,\s*si\.pending_received::numeric\s*-\s*COALESCE\(tg\.targeted,\s*0\)::numeric\)\s*ELSE 0 END AS reserved/i
       for (const sql of [allocSqls.staff, allocSqls.client, allocSqls.payNotify, allocSqls.adminTs]) {
         expect(sql).toMatch(reserved)
+        // 三处（reserved / pend_cap / sale_cap）都必须用同一条 EXISTS 判据
+        expect(sql.split(exited).length - 1, 'reserved/pend_cap/sale_cap 三处判据未同源').toBe(3)
+        // 反向：不得回退到 waived_amount 判据
+        expect(sql).not.toMatch(/CASE WHEN si\.waived_amount::numeric > 0/i)
         // 预留额从 untargeted 扣除（否则同单其它行会被多分、Σ行级 > 订单级实收）
         expect(sql).toMatch(/- COALESCE\(SUM\(reserved\),\s*0\)::numeric\) AS untargeted/i)
         // 预留额计入终值两条分支
         expect(sql).toMatch(/THEN caps\.targeted \+ caps\.reserved/i)
         expect(sql).toMatch(/ELSE caps\.targeted \+ caps\.reserved END/i)
         // 折抵行不得参与比例瀑布
-        expect(sql).toMatch(/CASE WHEN si\.waived_amount::numeric > 0 THEN 0\s*ELSE GREATEST\(0,\s*si\.pending_received[\s\S]*?END AS pend_cap/i)
-        expect(sql).toMatch(/CASE WHEN si\.waived_amount::numeric > 0 THEN 0\s*ELSE GREATEST\(0,\s*si\.sale_amount[\s\S]*?END AS sale_cap/i)
+        expect(sql).toMatch(/THEN 0\s*ELSE GREATEST\(0,\s*si\.pending_received[\s\S]*?END AS pend_cap/i)
+        expect(sql).toMatch(/THEN 0\s*ELSE GREATEST\(0,\s*si\.sale_amount[\s\S]*?END AS sale_cap/i)
       }
     })
     // ⚠ 不得改成 (sale_amount + waived_amount)：放大上限会让退出行吸走本该给同单欠款行的回款
@@ -2284,13 +2295,20 @@ describe('cross-end-sql-snapshot 反模式守护（防镜像 bug 字面锁定失
     ]
     for (const [end, file] of ENDS) {
       const text = readFile(file)
-      expect(text, `${end} 购买行取数缺 waived_amount，无法判断是否已折抵`)
-        .toContain('waived_amount::numeric AS waived_amount')
+      // 判据必须是「存在未关闭转出行」（converted_out），**不是** waived_amount > 0：
+      // 付清行 / overpay 行 Δ_row = 0、不写 waived_amount，却同样已整行退出。
+      expect(text, `${end} 购买行取数缺 converted_out，无法判断是否已折抵退出`)
+        .toContain(') AS converted_out')
+      expect(text, `${end} converted_out 判据不是「未关闭转出行」`)
+        .toMatch(/conv_out\.item_direction = '转出'[\s\S]{0,120}conv_out_order\.status <> '已关闭'[\s\S]{0,40}\) AS converted_out/)
       expect(text, `${end} 缺「折抵行产能归零」分支`)
-        .toMatch(/if \(Number\(i\.waived_amount\) > 0\) \{[\s\S]{0,120}pendCap: 0, saleCap: 0/)
+        .toMatch(/if \(i\.converted_out === true\) \{[\s\S]{0,120}pendCap: 0, saleCap: 0/)
       // 两段产能均为 0 的兜底不得把钱落到折抵行上
       expect(text, `${end} 兜底仍写死 items[0]，可能落到折抵行`)
-        .toMatch(/items\.find\(\(i\) => !\(Number\(i\.waived_amount\) > 0\)\) \|\| items\[0\]/)
+        .toMatch(/items\.find\(\(i\) => i\.converted_out !== true\) \|\| items\[0\]/)
+      // 反向：不得回退到 waived_amount 判据（注释里提它是可以的，代码里不行）
+      expect(text.replace(/^\s*(?:--|\/\/).*$/gm, ''), `${end} 分摊产能仍在读 waived_amount`)
+        .not.toMatch(/waived_amount/)
     }
   })
 
@@ -2989,6 +3007,18 @@ describe('转换单换入家居产品可见可提跨端守护', () => {
   // 「已转走金额」优先用实际聚合、缺了才退回件数 × 单价 —— 这个 fallback 是给历史调用方的，
   // 一旦哪个生产取数点忘了注入 converted_amount，就会静默走件数推算：折抵含余数时低估
   // consumed → overpay 余数虚高 → 多退。代码里看不出来，只能把「必须注入」锁成断言。
+  // #182×#154：聚合缺失会**静默失真**（已消耗被低估 → overpay 虚高 → 多退），方向和
+  // 「家居缺三列」一样危险，所以两端都要有运行时守卫，不能只靠取数点自觉。
+  test('两端 overpay 对「聚合缺失」fail-closed（疗程卡缺 converted_amount / 家居半缺）', () => {
+    for (const [end, file] of [['staff', FILES.staffRefundJs], ['admin', FILES.adminRefundTs]]) {
+      const text = readFile(file)
+      expect(text, `${end} 缺「疗程卡缺 converted_amount 抛错」守卫`)
+        .toContain('REFUND_SOURCE_MISSING_CONVERTED_AMOUNT')
+      expect(text, `${end} 未按「半缺也抛」判定（hasPicked !== hasConvAmt）`)
+        .toMatch(/hasPicked !== hasConvAmt/)
+    }
+  })
+
   test('所有退款取数点都注入 converted_amount（转出行 received 聚合）', () => {
     const staff = normalizeSql(stripComments(readFile(FILES.staffOrderJs)))
     const adminRefunds = normalizeSql(stripComments(readFile(FILES.adminRefundsTs)))

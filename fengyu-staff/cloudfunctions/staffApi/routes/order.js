@@ -4427,7 +4427,15 @@ async function createRepayment(ctx) {
              -- targeted（通常 0），而它的 remaining_sessions 已注销为 0 →
              -- (session_count − 0) > paid_sessions 永久违反 D3，原单从此回款/退款/回调全失败。
              -- 触发条件很普通：同一原单里另一行发起定向回款即可。
-               WHEN si.waived_amount::numeric > 0 THEN si.pending_received
+             -- ⚠ 判据用「存在未关闭转出行」而非 waived_amount > 0：付清行 / overpay 行
+             --   Δ_row = 0、不写 waived_amount，却同样已整行退出，用金额判会漏掉它们。
+               WHEN EXISTS (
+                      SELECT 1 FROM sale_items conv_out
+                        JOIN sale_orders conv_out_order ON conv_out_order.sale_order_id = conv_out.sale_order_id
+                       WHERE conv_out.ref_sale_item_id = si.sale_item_id
+                         AND conv_out.item_direction = '转出'
+                         AND conv_out_order.status <> '已关闭'
+                    ) THEN si.pending_received
                ELSE COALESCE(rp.delta, 0)
              END,
              updated_at = NOW()
@@ -4940,6 +4948,11 @@ async function createConversion(ctx) {
         // overpay 也已被折走 → 可退恒 0，已退款额自此冻结，回滚时按同一公式重算即可。
         waiveAmount,
         orderWaiveAmount,
+        // 「该行已折抵退出」与「有欠款可豁免」**不是同一件事**：付清行 / overpay 行的
+        // Δ_row = 0（waiveAmount = 0），但权益同样被整行注销。pending_received 的钉住、
+        // Branch B 的固定预留、定向回款的保护都必须覆盖这类行，否则它会被瀑布重新摊薄 →
+        // remaining=0 而 paid_sessions < session_count → 永久违反 D3。
+        waiveEligible,
         // 欠款归零会把 pending_received 钉到该行**毛已付** = 净实收 + 该行已退款额。
         // 必须是毛额：STEP 1 重建的是毛额语义，钉住值随后要经 STEP 1.5 扣一次退款才成净额。
         // 钉成净实收会被 STEP 1.5 再扣一次（付清后退过款的行终值 = 净额 − 退款额 < 新应付）
@@ -5405,7 +5418,13 @@ async function createConversion(ctx) {
       // 两个下调额与守卫在转出行构建时已算好（见 waiveAmount / orderWaiveAmount）：
       // waive = 行级（压到净实收，保 paid_sessions 满付 → D3）；订单级见下方 waiveByOrder。
       const waive = d.waiveAmount
-      if (!(waive > 0)) continue
+      // ⚠ 闸门是 waiveEligible，**不是** waive > 0：Δ_row 为 0（原行已付清 / overpay）时
+      // sale_amount 与 waived_amount 都不用动，但 pending_received 仍必须钉到毛已付 ——
+      // 它是 Branch B 固定预留该行 received 的唯一依据。少钉这一类行，整行退出后
+      // remaining=0 而 received 被摊薄 → paid_sessions < session_count → 永久违反 D3。
+      // 寄存单与 received=0 的未付行不在此列（waiveEligible 已排除）：前者 total_amount=0
+      // 走 paid_sessions=session_count 兜底，后者没有已付可折。
+      if (!d.waiveEligible) continue
 
       const updItem = await tx.query(
         `UPDATE sale_items
