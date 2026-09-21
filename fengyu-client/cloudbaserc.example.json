@@ -30,7 +30,8 @@
         "CLIENT_APPSECRET": "${CLIENT_APPSECRET}",
         "SEC_CHECK_ENABLED": "${SEC_CHECK_ENABLED}",
         "INVENTORY_LINKAGE_ENABLED": "${INVENTORY_LINKAGE_ENABLED}",
-        "PAYNOTIFY_FN_NAME": "payNotify"
+        "PAYNOTIFY_FN_NAME": "payNotify",
+        "DEPLOY_CHANNEL": "primary"
       },
       "triggers": [
         {
@@ -64,7 +65,8 @@
         "LAKALA_PLATFORM_CERT_PEM": "${LAKALA_PLATFORM_CERT_PEM}",
         "LAKALA_SUB_APPID": "${LAKALA_SUB_APPID}",
         "LAKALA_ALIPAY_SHARE_SOURCE": "${LAKALA_ALIPAY_SHARE_SOURCE}",
-        "PAYNOTIFY_FN_NAME": "payNotify"
+        "PAYNOTIFY_FN_NAME": "payNotify",
+        "DEPLOY_CHANNEL": "primary"
       },
       "triggers": [
         {
@@ -78,7 +80,7 @@
       "installDependency": false
     },
     {
-      "_comment": "影子函数：与 clientApi 同一份代码（dir 指向它），但连 dev 库。小程序端 develop/trial 版调这个，release 调 clientApi。",
+      "_comment": "影子函数：与 clientApi 同一份代码（dir 指向它），但连 dev 库。仅开发者工具开发版(develop)调这个；体验版与正式版都调 clientApi 连生产库——dev/prod 共用同一套拉卡拉生产商户凭据，体验版下单扣的是真钱，账必须记在 prod 库。",
       "name": "clientApiDev",
       "dir": "cloudfunctions/clientApi",
       "timeout": 60,
@@ -105,7 +107,8 @@
         "CLIENT_APPSECRET": "${CLIENT_APPSECRET}",
         "SEC_CHECK_ENABLED": "${DEV_SEC_CHECK_ENABLED}",
         "INVENTORY_LINKAGE_ENABLED": "${DEV_INVENTORY_LINKAGE_ENABLED}",
-        "PAYNOTIFY_FN_NAME": "payNotifyDev"
+        "PAYNOTIFY_FN_NAME": "payNotifyDev",
+        "DEPLOY_CHANNEL": "shadow"
       },
       "triggers": [
         {
@@ -119,7 +122,7 @@
       "installDependency": false
     },
     {
-      "_comment": "影子函数：与 payNotify 同一份代码（dir 指向它），但连 dev 库。刻意不挂 wxShippingBackfill timer——正式 payNotify 每分钟跑对账会 UPDATE sale_orders，两份同时跑会互抢 lakala_out_order_no 的释放。",
+      "_comment": "影子函数：与 payNotify 同一份代码（dir 指向它），但连 dev 库。刻意不挂 wxShippingBackfill timer——不是怕跟正式 payNotify 抢行（两者连不同的库，压根不会碰到同一行），而是因为 dev 与 prod 共用同一套拉卡拉生产商户凭据：让 dev 实例每分钟拿真实商户去 queryTrade / 发货回传没有意义，还会放大配额与误入账风险。",
       "name": "payNotifyDev",
       "dir": "cloudfunctions/payNotify",
       "timeout": 30,
@@ -141,7 +144,8 @@
         "LAKALA_PLATFORM_CERT_PEM": "${DEV_LAKALA_PLATFORM_CERT_PEM}",
         "LAKALA_SUB_APPID": "${DEV_LAKALA_SUB_APPID}",
         "LAKALA_ALIPAY_SHARE_SOURCE": "${DEV_LAKALA_ALIPAY_SHARE_SOURCE}",
-        "PAYNOTIFY_FN_NAME": "payNotifyDev"
+        "PAYNOTIFY_FN_NAME": "payNotifyDev",
+        "DEPLOY_CHANNEL": "shadow"
       },
       "runtime": "Nodejs18.15",
       "handler": "index.main",

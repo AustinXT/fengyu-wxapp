@@ -18,14 +18,15 @@
         "ALLOW_TEST_OPENID": "${ALLOW_TEST_OPENID}",
         "ALLOW_DIRECT_PHONE": "${ALLOW_DIRECT_PHONE}",
         "INVENTORY_LINKAGE_ENABLED": "${INVENTORY_LINKAGE_ENABLED}",
-        "TZ": "Asia/Shanghai"
+        "TZ": "Asia/Shanghai",
+        "DEPLOY_CHANNEL": "primary"
       },
       "runtime": "Nodejs18.15",
       "handler": "index.main",
       "installDependency": false
     },
     {
-      "_comment": "影子函数：与 staffApi 同一份代码（dir 指向它），但连 dev 库。小程序端 develop/trial 版调这个，release 调 staffApi。",
+      "_comment": "影子函数：与 staffApi 同一份代码（dir 指向它），但连 dev 库。仅开发者工具开发版(develop)调这个；体验版与正式版都调 staffApi 连生产库——dev/prod 共用同一套拉卡拉生产商户凭据，体验版下单扣的是真钱，账必须记在 prod 库。",
       "name": "staffApiDev",
       "dir": "cloudfunctions/staffApi",
       "timeout": 30,
@@ -40,7 +41,8 @@
         "ALLOW_TEST_OPENID": "${DEV_ALLOW_TEST_OPENID}",
         "ALLOW_DIRECT_PHONE": "${DEV_ALLOW_DIRECT_PHONE}",
         "INVENTORY_LINKAGE_ENABLED": "${DEV_INVENTORY_LINKAGE_ENABLED}",
-        "TZ": "Asia/Shanghai"
+        "TZ": "Asia/Shanghai",
+        "DEPLOY_CHANNEL": "shadow"
       },
       "runtime": "Nodejs18.15",
       "handler": "index.main",

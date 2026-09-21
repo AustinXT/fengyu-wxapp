@@ -39,7 +39,21 @@ function readEnv(file) {
 
 function functionEnv(name) {
   const parsed = JSON.parse(fs.readFileSync(path.join(auditDir, `${name}.json`), 'utf8'))
-  return parsed.functions?.[0]?.envVariables ?? {}
+  const fns = parsed.functions ?? []
+  // 必须按名精确取，不能退化到 [0]。
+  // 单个 CloudBase env 里现在并存正式函数与影子函数（clientApi / clientApiDev …），
+  // 若 dump 是 env 级产物而非单函数 `tcb fn detail`，functions[0] 完全可能是 clientApiDev——
+  // 它的 PG_CONNECTION_STRING 指向 dev 库，而本脚本会把读到的值**写回 envs/prod.env**。
+  // 那正是本仓库在 deploy-cloudfunctions.sh 的 assert_db_prereqs 里修过的同型陷阱。
+  const matched = fns.find((fn) => fn?.name === name)
+  if (!matched) {
+    const available = fns.map((fn) => fn?.name).filter(Boolean).join(', ') || '(空)'
+    throw new Error(
+      `${name}.json 里找不到名为 ${name} 的函数（现有：${available}）。` +
+      `dump 必须是 \`tcb fn detail <fn>\` 的单函数产物，不能用 env 级的 fn list。`
+    )
+  }
+  return matched.envVariables ?? {}
 }
 
 function containerEnv(name) {
@@ -108,7 +122,27 @@ Object.assign(prod, {
   ENV_PROFILE: 'prod',
 })
 
-// PG_CONNECTION_STRING 以三个线上云函数共同使用的 PG 为准，远程 admin 的同名遗留值不参与。
+// PG_CONNECTION_STRING 以线上【正式】云函数使用的 PG 为准，远程 admin 的同名遗留值不参与。
+// 影子函数（clientApiDev 等）连的是 dev 库，绝不能作为 prod.env 的来源——
+// 这里再加一道 host 断言兜底，口径与 deploy-cloudfunctions.sh 的 assert_rc 一致：
+// 即便上游 dump 取错了函数，也要在写回 envs/prod.env 之前**响亮失败**，而不是静默污染。
+const PROD_PG_HOST = '118.178.196.26'
+{
+  const conn = clientApi.PG_CONNECTION_STRING
+  if (!conn) throw new Error('clientApi 的 PG_CONNECTION_STRING 为空，拒绝写回 envs/prod.env')
+  let host
+  try {
+    host = new URL(conn).hostname
+  } catch {
+    throw new Error('clientApi 的 PG_CONNECTION_STRING 无法解析，拒绝写回 envs/prod.env')
+  }
+  if (host !== PROD_PG_HOST) {
+    throw new Error(
+      `clientApi 的 PG_CONNECTION_STRING 指向 ${host}，不是生产库 ${PROD_PG_HOST}。` +
+      `很可能 dump 取到了影子函数(*Dev)。拒绝把 dev 连接串写进 envs/prod.env。`
+    )
+  }
+}
 prod.PG_CONNECTION_STRING = clientApi.PG_CONNECTION_STRING
 
 const dev = { ...devTemplateValues, ...currentDev, ENV_PROFILE: 'dev' }

@@ -18,9 +18,9 @@
 #    避免 `tcb config update` 3.0.1 的键名损坏问题，也不会覆盖未纳入模板的变量。
 #
 # Usage: scripts/deploy-cloudfunctions.sh [client|staff|all] [--yes]
-#   client → 只部 clientApi + payNotify（client 账号 / CLIENT_ENV_ID）
-#   staff  → 只部 staffApi（staff 账号 / STAFF_ENV_ID）
-#   all    → 三个函数都部（默认）
+#   client → 只部 clientApi + payNotify + 两个影子函数（client 账号 / CLIENT_ENV_ID）
+#   staff  → 只部 staffApi + staffApiDev（staff 账号 / STAFF_ENV_ID）
+#   all    → 六个函数都部（默认）。影子函数(*Dev)与正式函数同 env 同代码，仅连接库不同。
 #   --yes  → 跳过 prod confirm（位置任意）
 
 set -euo pipefail
@@ -46,12 +46,25 @@ if [[ ! -f "$ROOT/envs/.active" ]]; then
 fi
 ACTIVE=$(cat "$ROOT/envs/.active")
 
-# ── .active 白名单：只允许 dev / prod ──
+# ── .active 白名单：云函数部署只允许 prod ──
 # 独立 test 环境已于 2026-09-01 退役。若 .active 残留 'test' 且本地仍有 envs/test.env，
 # 由于 test.env 的 PG host 与 dev 同为 101，PG 校验会误判通过，而它的 envId 复用 prod ——
 # 结果是把 dev 的 PG 变量推进 prod CloudBase（2026-05-26 跨环境污染事故的同族路径）。
-if [[ ! "$ACTIVE" =~ ^(dev|prod)$ ]]; then
-  echo "ERROR: envs/.active='$ACTIVE' 不在白名单（只允许 dev / prod）。请先执行 scripts/use-env.sh <dev|prod>。" >&2
+#
+# dev 也于 2026-09-21 一并退役：dev 侧 CloudBase 环境已不可用（staff 的 envId 不在任何密钥
+# 账号下、client 的已到期），dev 库改由 prod env 内的影子函数（*Dev）承载。
+# 之所以要**主动拒绝**而不是放着不管：本脚本所有期望值都取自 `envs/$ACTIVE.env`，
+# 一旦有人把 dev.env 的 envId 改成 prod env（在 dev env 已死的前提下这是很自然的下一步），
+# `.active=dev` 就会把正式 clientApi/staffApi/payNotify 连着 dev 连接串推进生产 env，
+# 而 envId 与 PG 两道断言**全部自证通过**——期望值和实际值出自同一个文件。
+# 生产全量流量会静默切到 dev 库。
+if [[ "$ACTIVE" == "dev" ]]; then
+  echo "ERROR: dev 部署线已退役——dev 侧 CloudBase 环境不可用，dev 库现由 prod env 内的影子函数(*Dev)承载。" >&2
+  echo "       请执行 scripts/use-env.sh prod，本脚本会同时部署正式函数与影子函数（共 6 个）。" >&2
+  exit 1
+fi
+if [[ "$ACTIVE" != "prod" ]]; then
+  echo "ERROR: envs/.active='$ACTIVE' 不在白名单（云函数部署只允许 prod）。请先执行 scripts/use-env.sh prod。" >&2
   exit 1
 fi
 
@@ -68,6 +81,11 @@ if [[ -z "$STAFF_ENV_ID" || -z "$CLIENT_ENV_ID" ]]; then
   echo "ERROR: STAFF_ENV_ID / CLIENT_ENV_ID missing in envs/$ACTIVE.env" >&2
   exit 1
 fi
+
+# ── 数据库 host 绝对常量（confirm 提示与 assert_rc 共用，故须早于两者定义）──
+# 所有环境均用 5433 端口 + fengyu_wxapp 库名，只能靠 IP 区分。
+PROD_PG_HOST=118.178.196.26
+DEV_PG_HOST=101.34.242.103
 
 # `fn code update` uploads local code verbatim and these functions set
 # installDependency=false. Refuse to deploy a package with unresolved runtime deps.
@@ -117,8 +135,15 @@ fi
 # 防呆：prod 强制 confirm（仅列出本次实际部署的目标）
 if [[ "$ACTIVE" == "prod" && "$ASSUME_YES" != "1" ]]; then
   echo "⚠️  About to deploy to PROD (target=$TARGET):"
-  [[ "$DO_STAFF"  == "1" ]] && echo "    staffApi              → $STAFF_ENV_ID"
-  [[ "$DO_CLIENT" == "1" ]] && echo "    clientApi + payNotify → $CLIENT_ENV_ID"
+  if [[ "$DO_STAFF" == "1" ]]; then
+    echo "    staffApi                  → $STAFF_ENV_ID   [prod 库 $PROD_PG_HOST]"
+    echo "    staffApiDev               → $STAFF_ENV_ID   [dev  库 $DEV_PG_HOST]"
+  fi
+  if [[ "$DO_CLIENT" == "1" ]]; then
+    echo "    clientApi + payNotify     → $CLIENT_ENV_ID  [prod 库 $PROD_PG_HOST]"
+    echo "    clientApiDev + payNotifyDev → $CLIENT_ENV_ID  [dev  库 $DEV_PG_HOST]"
+  fi
+  echo "    注：影子函数(*Dev)与正式函数同住 prod env，仅连接库不同。"
   read -p "Type 'yes' to confirm: " confirm
   if [[ "$confirm" != "yes" ]]; then
     echo "Aborted."
@@ -140,9 +165,11 @@ node "$ROOT/scripts/render-cloudbaserc.mjs" "$ACTIVE"
 #    它们的期望 host 恒为 DEV_PG_HOST，与 .active 无关。校验是双向的：
 #    正式函数连错到 dev 库、影子函数连错到 prod 库，两个方向都中止。
 #    后者尤其重要——影子函数误连 prod 就意味着开发版/体验版直接写生产数据。
-PROD_PG_HOST=118.178.196.26
-DEV_PG_HOST=101.34.242.103
-EXPECT_PG_HOST=$([[ "$ACTIVE" == "prod" ]] && echo "$PROD_PG_HOST" || echo "$DEV_PG_HOST")
+#
+#    ⚠️ 期望值是【绝对常量】（定义见文件上方），不从 .active / env 文件推导。
+#    这两道断言的意义在于「拿一个独立于被检对象的事实去校验它」；若期望值也取自
+#    envs/$ACTIVE.env，就变成自己证明自己——改一处 env 文件即可让断言全绿。
+EXPECT_PG_HOST=$PROD_PG_HOST   # 正式函数恒连 prod 库（.active 已被限定为 prod）
 assert_rc() {  # $1=side 目录  $2=期望 envId
   local f="$ROOT/$1/cloudbaserc.json"
   [[ -f "$f" ]] || { echo "ERROR: $f 缺失（渲染失败）。中止。" >&2; exit 1; }
@@ -325,16 +352,16 @@ if [[ "$DO_STAFF" == "1" ]]; then
   fi
   # envId 取自 cwd（已 cd fengyu-staff）的 cloudbaserc.json；tcb 3.x 不接受 --envId
   deploy_one_fn staffApi "$ROOT/fengyu-staff/cloudbaserc.json" \
-    CLIENT_SECRET,PG_CONNECTION_STRING \
-    PG_CONNECTION_STRING,CLIENT_SECRET,CLIENT_APPSECRET,WXACODE_ENV_VERSION
+    CLIENT_SECRET,PG_CONNECTION_STRING,DEPLOY_CHANNEL \
+    PG_CONNECTION_STRING,CLIENT_SECRET,CLIENT_APPSECRET,WXACODE_ENV_VERSION,DEPLOY_CHANNEL
   echo "  ✓ staffApi deployed"
 
   # 影子函数：同一 env、同一份代码（cloudbaserc 的 dir 指向 cloudfunctions/staffApi），连 dev 库
   STEP=$((STEP + 1))
   echo "==> [$STEP/$TOTAL] Deploy staffApiDev (dev 库) → $STAFF_ENV_ID"
   deploy_one_fn staffApiDev "$ROOT/fengyu-staff/cloudbaserc.json" \
-    CLIENT_SECRET,PG_CONNECTION_STRING \
-    PG_CONNECTION_STRING,CLIENT_SECRET,CLIENT_APPSECRET,WXACODE_ENV_VERSION
+    CLIENT_SECRET,PG_CONNECTION_STRING,DEPLOY_CHANNEL \
+    PG_CONNECTION_STRING,CLIENT_SECRET,CLIENT_APPSECRET,WXACODE_ENV_VERSION,DEPLOY_CHANNEL
   echo "  ✓ staffApiDev deployed"
 fi
 
@@ -358,15 +385,15 @@ if [[ "$DO_CLIENT" == "1" ]]; then
   STEP=$((STEP + 1))
   echo "==> [$STEP/$TOTAL] Deploy clientApi → $CLIENT_ENV_ID"
   deploy_one_fn clientApi "$ROOT/fengyu-client/cloudbaserc.json" \
-    CLIENT_SECRET,PG_CONNECTION_STRING,PAYNOTIFY_FN_NAME \
-    PG_CONNECTION_STRING,TMAP_KEY,TMAP_SECRET,CLIENT_SECRET,PAYNOTIFY_FN_NAME
+    CLIENT_SECRET,PG_CONNECTION_STRING,PAYNOTIFY_FN_NAME,DEPLOY_CHANNEL \
+    PG_CONNECTION_STRING,TMAP_KEY,TMAP_SECRET,CLIENT_SECRET,PAYNOTIFY_FN_NAME,DEPLOY_CHANNEL
   echo "  ✓ clientApi deployed"
 
   STEP=$((STEP + 1))
   echo "==> [$STEP/$TOTAL] Deploy payNotify → $CLIENT_ENV_ID"
   deploy_one_fn payNotify "$ROOT/fengyu-client/cloudbaserc.json" \
-    CLIENT_SECRET,PG_CONNECTION_STRING,PAYNOTIFY_FN_NAME \
-    PG_CONNECTION_STRING,CLIENT_SECRET,PAYNOTIFY_FN_NAME
+    CLIENT_SECRET,PG_CONNECTION_STRING,PAYNOTIFY_FN_NAME,DEPLOY_CHANNEL \
+    PG_CONNECTION_STRING,CLIENT_SECRET,PAYNOTIFY_FN_NAME,DEPLOY_CHANNEL
   echo "  ✓ payNotify deployed"
 
   # 影子函数：同一 env、同一份代码（dir 指向正式函数目录），连 dev 库。
@@ -375,15 +402,15 @@ if [[ "$DO_CLIENT" == "1" ]]; then
   STEP=$((STEP + 1))
   echo "==> [$STEP/$TOTAL] Deploy clientApiDev (dev 库) → $CLIENT_ENV_ID"
   deploy_one_fn clientApiDev "$ROOT/fengyu-client/cloudbaserc.json" \
-    CLIENT_SECRET,PG_CONNECTION_STRING,PAYNOTIFY_FN_NAME \
-    PG_CONNECTION_STRING,TMAP_KEY,TMAP_SECRET,CLIENT_SECRET,PAYNOTIFY_FN_NAME
+    CLIENT_SECRET,PG_CONNECTION_STRING,PAYNOTIFY_FN_NAME,DEPLOY_CHANNEL \
+    PG_CONNECTION_STRING,TMAP_KEY,TMAP_SECRET,CLIENT_SECRET,PAYNOTIFY_FN_NAME,DEPLOY_CHANNEL
   echo "  ✓ clientApiDev deployed"
 
   STEP=$((STEP + 1))
   echo "==> [$STEP/$TOTAL] Deploy payNotifyDev (dev 库) → $CLIENT_ENV_ID"
   deploy_one_fn payNotifyDev "$ROOT/fengyu-client/cloudbaserc.json" \
-    CLIENT_SECRET,PG_CONNECTION_STRING,PAYNOTIFY_FN_NAME \
-    PG_CONNECTION_STRING,CLIENT_SECRET,PAYNOTIFY_FN_NAME
+    CLIENT_SECRET,PG_CONNECTION_STRING,PAYNOTIFY_FN_NAME,DEPLOY_CHANNEL \
+    PG_CONNECTION_STRING,CLIENT_SECRET,PAYNOTIFY_FN_NAME,DEPLOY_CHANNEL
   echo "  ✓ payNotifyDev deployed"
 fi
 
