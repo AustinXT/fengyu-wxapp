@@ -798,13 +798,20 @@ export const updateEmployee = withPermission(
    * 猜中其真实旧门店时因 `next === old` 跳过校验、最终由 UPDATE 命中 0 行返回
    * 「员工不存在或无权修改」。两句话的差异就能枚举出任意员工的真实归属（orgNodeId 同理）。
    *
-   * 只在 `currentEmployee` 存在时判：查不到的员工继续走原路径（UPDATE count=0 → 同一句话），
-   * 两条路径的响应因此不可区分。可见性判据必须与 `employeeScopeCondition` 同源（OR 语义）。
+   * 「不存在」与「存在但不可见」必须**合并**成同一个立即返回分支。
+   * 只拦后者、让前者继续往下走是不够的（codex 谱系第 2 轮）—— 那只是把 oracle 从
+   * 「归属值」换成了「employeeId 是否存在」：带乐观锁时不存在的记录会一路走到
+   * UPDATE 后返回「数据已被其他人修改」，不带乐观锁且提交 scope 外归属时会返回
+   * 「无权将员工调至该门店」，而且它多跑了一次 `db.update`（调用次数/耗时差异）。
+   * 现在两者逐字同一句话、且都零写入。
+   *
+   * 可见性判据必须与 `employeeScopeCondition` 同源（OR 语义），否则会出现
+   * 「这里放行但 UPDATE 命中 0 行」的静默错位。
    */
   const oldRowVisible = isAdminScope(session)
     || (!!oldStoreId && isInScope(session, oldStoreId))
     || (!!oldOrgNodeId && isOrgNodeInScope(session, oldOrgNodeId))
-  if (currentEmployee && !oldRowVisible) {
+  if (!currentEmployee || !oldRowVisible) {
     return { success: false, message: '员工不存在或无权修改' }
   }
 

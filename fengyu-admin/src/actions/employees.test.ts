@@ -164,6 +164,23 @@ function mockSelectEmpty() {
   return vi.fn().mockReturnValue({ from })
 }
 
+/**
+ * updateEmployee 的第 1 次 select = 读旧员工行。#228 之后「查不到」与「不可见」合并成了
+ * 同一个立即返回分支（零写入），所以凡是期望流程走到 UPDATE 的用例都必须让这一次查到行。
+ * 后续 select（手机号唯一性 / §AFF-03 的两次 org_node 查询）仍返回空。
+ */
+function mockSelectExistingEmployee(row: Record<string, unknown> = { storeId: 'store-A', orgNodeId: 'org-store-A' }) {
+  let call = 0
+  return vi.fn().mockImplementation(() => {
+    call++
+    const current = call
+    const limit = vi.fn().mockImplementation(() => Promise.resolve(current === 1 ? [row] : []))
+    const where = vi.fn().mockReturnValue({ limit })
+    const from = vi.fn().mockReturnValue({ where })
+    return { from }
+  })
+}
+
 function mockSelectFound(row: any) {
   const limit = vi.fn().mockResolvedValue([row])
   const where = vi.fn().mockReturnValue({ limit })
@@ -348,7 +365,7 @@ describe('updateEmployee — 服务端输入校验 + 错误处理', () => {
   })
 
   it('手机号 null → 跳过格式校验（合法清除）', async () => {
-    ;(db.select as any).mockImplementation(mockSelectEmpty())
+    ;(db.select as any).mockImplementation(mockSelectExistingEmployee())
     const where = vi.fn().mockResolvedValue({ count: 1 })
     const set = vi.fn().mockReturnValue({ where })
     ;(db.update as any).mockReturnValue({ set })
@@ -359,7 +376,7 @@ describe('updateEmployee — 服务端输入校验 + 错误处理', () => {
   })
 
   it('乐观锁冲突（rowCount=0）→ 友好消息', async () => {
-    ;(db.select as any).mockImplementation(mockSelectEmpty())
+    ;(db.select as any).mockImplementation(mockSelectExistingEmployee())
     const where = vi.fn().mockResolvedValue({ count: 0 })
     const set = vi.fn().mockReturnValue({ where })
     ;(db.update as any).mockReturnValue({ set })
@@ -375,7 +392,7 @@ describe('updateEmployee — 服务端输入校验 + 错误处理', () => {
   })
 
   it('DB 唯一冲突（23505）→ 友好消息', async () => {
-    ;(db.select as any).mockImplementation(mockSelectEmpty())
+    ;(db.select as any).mockImplementation(mockSelectExistingEmployee())
     const pgError = Object.assign(new Error('duplicate key'), {
       code: '23505',
       detail: 'Key (phone)=(13812345678) already exists.',
@@ -390,7 +407,7 @@ describe('updateEmployee — 服务端输入校验 + 错误处理', () => {
   })
 
   it('正常更新 → 成功', async () => {
-    ;(db.select as any).mockImplementation(mockSelectEmpty())
+    ;(db.select as any).mockImplementation(mockSelectExistingEmployee())
     const where = vi.fn().mockResolvedValue({ count: 1 })
     const set = vi.fn().mockReturnValue({ where })
     ;(db.update as any).mockReturnValue({ set })
@@ -401,7 +418,7 @@ describe('updateEmployee — 服务端输入校验 + 错误处理', () => {
   })
 
   it('rowCount=0，无乐观锁 → 报告员工不存在或无权（不再静默成功）', async () => {
-    ;(db.select as any).mockImplementation(mockSelectEmpty())
+    ;(db.select as any).mockImplementation(mockSelectExistingEmployee())
     const where = vi.fn().mockResolvedValue({ count: 0 })
     const set = vi.fn().mockReturnValue({ where })
     ;(db.update as any).mockReturnValue({ set })
@@ -430,7 +447,7 @@ describe('updateEmployee — 服务端输入校验 + 错误处理', () => {
   }
 
   it('isResigned=true (非 admin) → 事务清理权限角色 + 逐条 logOperation', async () => {
-    ;(db.select as any).mockImplementation(mockSelectEmpty())
+    ;(db.select as any).mockImplementation(mockSelectExistingEmployee())
     const empWhere = vi.fn().mockResolvedValue({ count: 1 })
     const empSet = vi.fn().mockReturnValue({ where: empWhere })
     ;(db.update as any).mockReturnValue({ set: empSet })
@@ -454,7 +471,7 @@ describe('updateEmployee — 服务端输入校验 + 错误处理', () => {
   })
 
   it('isResigned=true 但是最后一个活跃 admin → 抛 INVALID_STATE (UPDATE 未发生)', async () => {
-    ;(db.select as any).mockImplementation(mockSelectEmpty())
+    ;(db.select as any).mockImplementation(mockSelectExistingEmployee())
     ;(isAdminEmployee as any).mockResolvedValueOnce(true)
     ;(countActiveAdmins as any).mockResolvedValueOnce(1)
 
@@ -467,7 +484,7 @@ describe('updateEmployee — 服务端输入校验 + 错误处理', () => {
   })
 
   it('isResigned=true admin 但 count=2 → 成功离职 + 角色清理', async () => {
-    ;(db.select as any).mockImplementation(mockSelectEmpty())
+    ;(db.select as any).mockImplementation(mockSelectExistingEmployee())
     ;(isAdminEmployee as any).mockResolvedValueOnce(true)
     ;(countActiveAdmins as any).mockResolvedValueOnce(2)
     const empWhere = vi.fn().mockResolvedValue({ count: 1 })
@@ -489,7 +506,7 @@ describe('updateEmployee — 服务端输入校验 + 错误处理', () => {
   })
 
   it('事务内 delete 抛错 → 整个 updateEmployee 抛出（事务回滚由 Drizzle 处理）', async () => {
-    ;(db.select as any).mockImplementation(mockSelectEmpty())
+    ;(db.select as any).mockImplementation(mockSelectExistingEmployee())
     const empWhere = vi.fn().mockResolvedValue({ count: 1 })
     const empSet = vi.fn().mockReturnValue({ where: empWhere })
     ;(db.update as any).mockReturnValue({ set: empSet })
@@ -859,24 +876,74 @@ describe('updateEmployee — #228 归属变更必须落在 scope 内', () => {
    * 修复是：旧行存在但不可见时立刻返回与「员工不存在」**完全相同**的一句话。
    * 下面两条断言的正是「猜中」与「猜错」不可区分。
    */
-  it('旧行在 scope 外 → 猜错旧门店与猜中旧门店返回完全相同的响应（无信息泄露）', async () => {
-    const probe = async (guess: string | null) => {
+  /**
+   * codex 谱系两轮追出来的信息泄露，最终形态是**三方等价**。
+   *
+   * 第 1 轮：「新旧值相同则跳过校验」把响应差异变成归属 oracle —— 拿 scope 外的员工编号
+   * 反复提交不同 storeId，猜错返回「无权将员工调至该门店」、猜中其真实旧门店时跳过校验
+   * 并最终由 UPDATE 命中 0 行返回「员工不存在或无权修改」，据此可枚举任意员工的真实归属。
+   *
+   * 第 2 轮：只拦「存在但不可见」还不够 —— 那只是把 oracle 换成「employeeId 是否存在」：
+   * 不存在的记录会一路走到 UPDATE，带乐观锁时返回「数据已被其他人修改」、不带时返回
+   * 「无权将员工调至该门店」，而且它多跑了一次 db.update（调用次数/耗时差异）。
+   *
+   * 所以这里断言三种输入的响应**逐字相同且都零写入**：
+   * ① 员工不存在 ② 存在但不可见 + 猜错旧门店 ③ 存在但不可见 + 猜中旧门店。
+   */
+  it('不存在 / 不可见猜错 / 不可见猜中 → 三者响应逐字相同且均零写入（无信息泄露）', async () => {
+    const probe = async (opts: { exists: boolean; guess: string | null }) => {
       vi.clearAllMocks()
       ;(getSession as any).mockResolvedValue(mockSession)
       applyScopeFixture()
       ;(isAdminScope as any).mockReturnValue(false)
-      mockCurrentEmployee({ storeId: 'store-SECRET', orgNodeId: 'org-SECRET' })
+      if (opts.exists) {
+        mockCurrentEmployee({ storeId: 'store-SECRET', orgNodeId: 'org-SECRET' })
+      } else {
+        ;(db.select as any).mockImplementation(mockSelectEmpty())
+      }
       mockUpdateOk()
-      return updateEmployee('FY-OTHER', { ...FULL_FORM, storeId: guess, orgNodeId: 'org-SECRET' }, EXPECTED_AT)
+      const result = await updateEmployee(
+        'FY-PROBE',
+        { ...FULL_FORM, storeId: opts.guess, orgNodeId: 'org-SECRET' },
+        EXPECTED_AT,
+      )
+      return { result, wrote: (db.update as any).mock.calls.length }
     }
 
-    const wrongGuess = await probe('store-GUESS')
-    const rightGuess = await probe('store-SECRET')
+    const notFound = await probe({ exists: false, guess: 'store-GUESS' })
+    const wrongGuess = await probe({ exists: true, guess: 'store-GUESS' })
+    const rightGuess = await probe({ exists: true, guess: 'store-SECRET' })
 
-    expect(rightGuess).toEqual(wrongGuess)
-    expect(wrongGuess.message).toBe('员工不存在或无权修改')
-    // 探测不得产生任何写入
-    expect(db.update).not.toHaveBeenCalled()
+    expect(wrongGuess.result).toEqual(notFound.result)
+    expect(rightGuess.result).toEqual(notFound.result)
+    expect(notFound.result.message).toBe('员工不存在或无权修改')
+    // 三条路径都不许触碰 db.update —— 否则调用次数/耗时本身就是信道
+    expect([notFound.wrote, wrongGuess.wrote, rightGuess.wrote]).toEqual([0, 0, 0])
+  })
+
+  /** 不带乐观锁时同样三方等价（第 2 轮指出这是另一条可区分路径） */
+  it('不带 expectedUpdatedAt 时，不存在与不可见仍然响应相同且零写入', async () => {
+    const probe = async (exists: boolean) => {
+      vi.clearAllMocks()
+      ;(getSession as any).mockResolvedValue(mockSession)
+      applyScopeFixture()
+      ;(isAdminScope as any).mockReturnValue(false)
+      if (exists) {
+        mockCurrentEmployee({ storeId: 'store-SECRET', orgNodeId: 'org-SECRET' })
+      } else {
+        ;(db.select as any).mockImplementation(mockSelectEmpty())
+      }
+      mockUpdateOk()
+      const result = await updateEmployee('FY-PROBE', { storeId: 'store-OTHER' })
+      return { result, wrote: (db.update as any).mock.calls.length }
+    }
+
+    const notFound = await probe(false)
+    const invisible = await probe(true)
+
+    expect(invisible.result).toEqual(notFound.result)
+    expect(notFound.result.message).toBe('员工不存在或无权修改')
+    expect([notFound.wrote, invisible.wrote]).toEqual([0, 0])
   })
 
   /** 空串是「不填」而非「一个叫 '' 的门店」，与 createEmployee 的 truthiness 口径对齐 */
@@ -1076,7 +1143,7 @@ describe('updateEmployee — §AFF-03 门店变更 scope 同步', () => {
 
   it('storeId 未变更（编辑其他字段）→ 不触发 scope 同步', async () => {
     // data 中不含 storeId → 不查旧值，不做 scope sync
-    ;(db.select as any).mockImplementation(mockSelectEmpty())
+    ;(db.select as any).mockImplementation(mockSelectExistingEmployee())
     const where = vi.fn().mockResolvedValue({ count: 1 })
     const set = vi.fn().mockReturnValue({ where })
     ;(db.update as any).mockReturnValue({ set })
