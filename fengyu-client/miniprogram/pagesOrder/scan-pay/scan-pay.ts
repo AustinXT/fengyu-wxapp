@@ -644,13 +644,13 @@ Page({
       const aliAmount = firstPaymentAmount > 0 ? firstPaymentAmount : paidAmount;
       const attemptKey = `order.alipayPay|${orderNo}|${aliAmount}`;
       let aliData: { status?: string; reason?: string; alipayShareToken?: string; paidAmount?: number };
-      if (this._alipayAttempt?.key === attemptKey) {
-        await this.assertCachedAttemptCardBalance(Number(this.data.order?.pendingPrepaidCardAmount || 0));
-        aliData = {
-          alipayShareToken: this._alipayAttempt.shareToken,
-          paidAmount: Number(this._alipayAttempt.amount),
-        };
-      } else {
+      // #214（round-11）：**不再用页面级缓存直接复用凭据**。
+      //
+      // 服务端现在有了真正的场次复用（而且会先查渠道状态），页面级缓存反而会绕过它：
+      // 顾客关掉吱口令弹窗等到 token 过期、或微信那边其实已经付成功但客户端回调异常时，
+      // 再点支付会一直拿旧凭据重试——既认不出 SUCCESS，也没法让服务端释放 CLOSE 后重建。
+      // 每次提交都问服务端，由它决定复用还是重开，是唯一不会和渠道真实状态脱节的做法。
+      {
         aliData = await callClientApi(
           'order.alipayPay', {
             saleOrderId: orderNo,
@@ -678,6 +678,7 @@ Page({
         Toast.fail('支付宝吱口令获取失败');
         return;
       }
+      this.setData({ hasActivePaymentIntent: true, intentLocked: true });
       this._alipayAttempt = {
         key: attemptKey,
         shareToken,
@@ -703,14 +704,17 @@ Page({
     }
     const attemptAmount = firstPaymentAmount > 0 ? firstPaymentAmount : paidAmount;
     const attemptKey = `order.pay|${orderNo}|${attemptAmount}`;
-    const cachedWechatAttempt = this._wechatAttempt?.key === attemptKey ? this._wechatAttempt : null;
-    const reusingWechatAttempt = !!cachedWechatAttempt;
-    let payParams = cachedWechatAttempt?.paymentParams || null;
-    if (!payParams) {
+    // #214（round-11）：同支付宝分支，不再用页面级缓存复用微信支付参数——
+    // 服务端的场次复用会先查渠道状态，页面缓存会绕过这层校验。
+    const reusingWechatAttempt = false;
+    let payParams = null as any;
+    {
       const data = await callClientApi<{ paymentParams?: any }>('order.pay', payPayload);
       payParams = data.paymentParams;
       if (payParams?.paySign) {
         this._wechatAttempt = { key: attemptKey, paymentParams: payParams };
+        // 场次已建立：同页面内再次点击一律回服务端，由它查渠道状态后决定复用还是重开
+        this.setData({ hasActivePaymentIntent: true, intentLocked: true });
       }
     }
     if (!payParams || !payParams.paySign) {
@@ -753,18 +757,15 @@ Page({
     // 支付宝：聚合主扫吱口令（可叠加储值卡抵扣）
     if (paymentMethod === '支付宝') {
       const attemptKey = `order.repay.alipay|${orderNo}|${paidAmount}|${prepaidCardAmount}`;
-      let aliData: { alipayShareToken?: string };
-      if (this._alipayAttempt?.key === attemptKey) {
-        await this.assertCachedAttemptCardBalance(prepaidCardAmount);
-        aliData = { alipayShareToken: this._alipayAttempt.shareToken };
-      } else {
-        aliData = await callClientApi<{ alipayShareToken?: string }>('order.repay', {
-          saleOrderId: orderNo,
-          paymentMethod: '支付宝',
-          repayAmount: paidAmount,
-          prepaidCardAmount,
-        });
-      }
+      // #214（round-11）：不再用页面级缓存复用凭据——服务端的场次复用会先查渠道状态，
+      // 缓存会绕过它。repay 建单成功后把 hasActivePaymentIntent 置起来，
+      // 同页面内再次点击就会走 pay/alipayPay 由服务端决定复用还是重开。
+      const aliData = await callClientApi<{ alipayShareToken?: string }>('order.repay', {
+        saleOrderId: orderNo,
+        paymentMethod: '支付宝',
+        repayAmount: paidAmount,
+        prepaidCardAmount,
+      });
       const shareToken = aliData?.alipayShareToken;
       if (!shareToken) {
         Toast.fail('支付宝吱口令获取失败');
@@ -779,16 +780,18 @@ Page({
         showAlipayShare: true,
         alipayShareToken: shareToken,
         alipayAmount: Number(paidAmount).toFixed(2),
+        // 场次已建立：同页面内再次点击改由服务端决定复用还是重开
+        hasActivePaymentIntent: true,
+        intentLocked: true,
       });
       return;
     }
 
     // 微信：聚合主扫 wx.requestPayment（可叠加储值卡抵扣）
     const attemptKey = `order.repay.wechat|${orderNo}|${paidAmount}|${prepaidCardAmount}`;
-    const cachedWechatAttempt = this._wechatAttempt?.key === attemptKey ? this._wechatAttempt : null;
-    const reusingWechatAttempt = !!cachedWechatAttempt;
-    let payParams = cachedWechatAttempt?.paymentParams || null;
-    if (!payParams) {
+    const reusingWechatAttempt = false;
+    let payParams = null as any;
+    {
       const data = await callClientApi<{ paymentParams?: any }>('order.repay', {
         saleOrderId: orderNo,
         paymentMethod: '微信',
@@ -798,6 +801,8 @@ Page({
       payParams = data.paymentParams;
       if (payParams?.paySign) {
         this._wechatAttempt = { key: attemptKey, paymentParams: payParams };
+        // 场次已建立：同页面内再次点击一律回服务端，由它查渠道状态后决定复用还是重开
+        this.setData({ hasActivePaymentIntent: true, intentLocked: true });
       }
     }
     if (!payParams || !payParams.paySign) {

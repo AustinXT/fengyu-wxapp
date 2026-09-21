@@ -1252,6 +1252,12 @@ describe('order.pay', () => {
   })
 
   test('受限回款已有活动拉卡拉意图 → CONFLICT，不创建第二个预下单', async () => {
+    // #214（round-11）：不复用时会走 fail-closed 主动作废——渠道仍 CREATE 且关单后
+    // 复核仍非终态 → 保留 PAYMENT_INTENT_ACTIVE（关不掉就不放行）
+    __mocks__.lakalaClient.queryTrade
+      .mockResolvedValueOnce({ ok: true, tradeState: 'CREATE' })
+      .mockResolvedValueOnce({ ok: true, tradeState: 'CREATE' })
+
     const now = new Date()
     const order = {
       sale_order_id: 'FY-CONV-ACTIVE', status: '部分支付', sale_order_type: '转换单', store_id: 'store-1',
@@ -1269,6 +1275,12 @@ describe('order.pay', () => {
   })
 
   test('支付宝已有活动拉卡拉意图 → 在写 payment_method/顾客绑定前拒绝', async () => {
+    // #214（round-11）：不复用时会走 fail-closed 主动作废——渠道仍 CREATE 且关单后
+    // 复核仍非终态 → 保留 PAYMENT_INTENT_ACTIVE（关不掉就不放行）
+    __mocks__.lakalaClient.queryTrade
+      .mockResolvedValueOnce({ ok: true, tradeState: 'CREATE' })
+      .mockResolvedValueOnce({ ok: true, tradeState: 'CREATE' })
+
     const now = new Date()
     const order = {
       sale_order_id: 'FY-ALI-ACTIVE', status: '待支付', store_id: 'store-1',
@@ -1364,7 +1376,45 @@ describe('order.pay', () => {
     expect(ctx.result.paymentParams.package).toBe('prepay_id=wx_reuse_001')
   })
 
+  // round-11：快照不可复用、但渠道单仍活着（例如支付宝吱口令先于 10 分钟预下单过期）时，
+  // 此前只在渠道已终态才释放 → 顾客还是只能干等渠道超时，本 issue 的症状原样复现。
+  // 现在改走与取消/关单同一套 fail-closed 作废：关单 + 复核终态后释放并重建新场次。
+  test('快照不可复用但渠道仍 CREATE → 主动关单释放后重建新场次 (#214)', async () => {
+    mockPayQueries({
+      order: reusableOrder({}, { expiresAt: new Date(Date.now() - 1000).toISOString() }),
+    })
+    __mocks__.lakalaClient.queryTrade
+      .mockResolvedValueOnce({ ok: true, tradeState: 'CREATE' })   // 作废前查单：仍可支付
+      .mockResolvedValueOnce({ ok: true, tradeState: 'CLOSE' })    // 关单后复核：已终态
+
+    const ctx = createBoundCtx({ orderNo: 'FY-REUSE-001' })
+    await routes.pay(ctx)
+
+    // 关掉了旧场次
+    expect(__mocks__.lakalaClient.closeTrade).toHaveBeenCalled()
+    // 并重新向渠道下了一单（不是回发旧快照）
+    expect(__mocks__.lakalaClient.requestPreorder).toHaveBeenCalled()
+    expect(ctx.result.paymentParams.package).toBe('prepay_id=wx_mock_001')
+  })
+
+  test('旧场次已被支付 → 如实报「支付已成功」，不再含糊说「请勿重复发起」 (#214)', async () => {
+    mockPayQueries({
+      order: reusableOrder({}, { expiresAt: new Date(Date.now() - 1000).toISOString() }),
+    })
+    __mocks__.lakalaClient.queryTrade.mockResolvedValueOnce({ ok: true, tradeState: 'SUCCESS' })
+
+    const ctx = createBoundCtx({ orderNo: 'FY-REUSE-001' })
+    await expect(routes.pay(ctx)).rejects.toThrow(/PAYMENT_ALREADY_SUCCEEDED/)
+    expect(__mocks__.lakalaClient.closeTrade).not.toHaveBeenCalled()
+  })
+
   test('快照已过期 → 不复用，回到 PAYMENT_INTENT_ACTIVE (#214)', async () => {
+    // #214（round-11）：不复用时会走 fail-closed 主动作废——渠道仍 CREATE 且关单后
+    // 复核仍非终态 → 保留 PAYMENT_INTENT_ACTIVE（关不掉就不放行）
+    __mocks__.lakalaClient.queryTrade
+      .mockResolvedValueOnce({ ok: true, tradeState: 'CREATE' })
+      .mockResolvedValueOnce({ ok: true, tradeState: 'CREATE' })
+
     mockPayQueries({
       order: reusableOrder({}, { expiresAt: new Date(Date.now() - 1000).toISOString() }),
     })
@@ -1375,6 +1425,12 @@ describe('order.pay', () => {
   })
 
   test('快照剩余有效期不足 1 分钟 → 不复用（顾客来不及输密码） (#214)', async () => {
+    // #214（round-11）：不复用时会走 fail-closed 主动作废——渠道仍 CREATE 且关单后
+    // 复核仍非终态 → 保留 PAYMENT_INTENT_ACTIVE（关不掉就不放行）
+    __mocks__.lakalaClient.queryTrade
+      .mockResolvedValueOnce({ ok: true, tradeState: 'CREATE' })
+      .mockResolvedValueOnce({ ok: true, tradeState: 'CREATE' })
+
     mockPayQueries({
       order: reusableOrder({}, { expiresAt: new Date(Date.now() + 30 * 1000).toISOString() }),
     })
@@ -1384,6 +1440,12 @@ describe('order.pay', () => {
   })
 
   test('快照单号与当前意图不一致 → 不复用（残留快照自动失效） (#214)', async () => {
+    // #214（round-11）：不复用时会走 fail-closed 主动作废——渠道仍 CREATE 且关单后
+    // 复核仍非终态 → 保留 PAYMENT_INTENT_ACTIVE（关不掉就不放行）
+    __mocks__.lakalaClient.queryTrade
+      .mockResolvedValueOnce({ ok: true, tradeState: 'CREATE' })
+      .mockResolvedValueOnce({ ok: true, tradeState: 'CREATE' })
+
     mockPayQueries({
       order: reusableOrder({}, { outTradeNo: 'FY-REUSE-001_1760000000' }),
     })
@@ -1403,6 +1465,12 @@ describe('order.pay', () => {
   })
 
   test('员工开单尚未认领（client_user_id 为空）→ 不复用任何快照 (#214)', async () => {
+    // #214（round-11）：不复用时会走 fail-closed 主动作废——渠道仍 CREATE 且关单后
+    // 复核仍非终态 → 保留 PAYMENT_INTENT_ACTIVE（关不掉就不放行）
+    __mocks__.lakalaClient.queryTrade
+      .mockResolvedValueOnce({ ok: true, tradeState: 'CREATE' })
+      .mockResolvedValueOnce({ ok: true, tradeState: 'CREATE' })
+
     mockPayQueries({
       order: reusableOrder({ client_user_id: null, opened_by: 'emp-001' }),
     })
@@ -1413,6 +1481,12 @@ describe('order.pay', () => {
   })
 
   test('快照金额与本次应付不符 → 不复用 (#214)', async () => {
+    // #214（round-11）：不复用时会走 fail-closed 主动作废——渠道仍 CREATE 且关单后
+    // 复核仍非终态 → 保留 PAYMENT_INTENT_ACTIVE（关不掉就不放行）
+    __mocks__.lakalaClient.queryTrade
+      .mockResolvedValueOnce({ ok: true, tradeState: 'CREATE' })
+      .mockResolvedValueOnce({ ok: true, tradeState: 'CREATE' })
+
     mockPayQueries({ order: reusableOrder({}, { payAmount: 100 }) })
 
     const ctx = createBoundCtx({ orderNo: 'FY-REUSE-001' })
@@ -1420,6 +1494,12 @@ describe('order.pay', () => {
   })
 
   test('微信场次不被支付宝通道复用 (#214)', async () => {
+    // #214（round-11）：不复用时会走 fail-closed 主动作废——渠道仍 CREATE 且关单后
+    // 复核仍非终态 → 保留 PAYMENT_INTENT_ACTIVE（关不掉就不放行）
+    __mocks__.lakalaClient.queryTrade
+      .mockResolvedValueOnce({ ok: true, tradeState: 'CREATE' })
+      .mockResolvedValueOnce({ ok: true, tradeState: 'CREATE' })
+
     mockPayQueries({ order: reusableOrder() })
 
     const ctx = createBoundCtx({ orderNo: 'FY-REUSE-001' })
@@ -1512,6 +1592,12 @@ describe('order.pay', () => {
   })
 
   test('历史畸形快照（缺 paySign）不被复用 (#214)', async () => {
+    // #214（round-11）：不复用时会走 fail-closed 主动作废——渠道仍 CREATE 且关单后
+    // 复核仍非终态 → 保留 PAYMENT_INTENT_ACTIVE（关不掉就不放行）
+    __mocks__.lakalaClient.queryTrade
+      .mockResolvedValueOnce({ ok: true, tradeState: 'CREATE' })
+      .mockResolvedValueOnce({ ok: true, tradeState: 'CREATE' })
+
     mockPayQueries({
       order: reusableOrder({}, {
         paymentParams: { timeStamp: '1', nonceStr: 'n', package: 'prepay_id=x' },  // 缺 paySign

@@ -972,10 +972,11 @@ async function releaseIntentAfterPreorderFailure(orderNo, outTradeNo, storeId) {
  *
  * @returns {Promise<'released'>}
  */
-async function voidActiveLakalaPaymentIntent(orderNo, { outTradeNo, storeId }) {
-  let merchant
+async function voidActiveLakalaPaymentIntent(orderNo, { outTradeNo, storeId, merchant: knownMerchant }) {
+  // 调用方若已在事务里解析过商户就直接传进来，省一次 DB 往返
+  let merchant = knownMerchant || null
   try {
-    merchant = await resolveLakalaMerchant(storeId)
+    if (!merchant) merchant = await resolveLakalaMerchant(storeId)
   } catch (err) {
     console.warn('[order/voidIntent] 商户配置读取失败:', orderNo, err && err.message)
     merchant = null
@@ -1285,23 +1286,29 @@ async function reserveDirectOnlinePaymentIntentWithTerminalRetry(options) {
       if (!err || !err.activeOutTradeNo || attempt > 0) throw err
       const merchant = err.activeMerchant || await resolveLakalaMerchant(err.activeStoreId)
       if (!merchant) throw err
+      // 走到这里说明旧意图**不可复用**（快照过期 / 残缺 / 方案不符 / 归属不符）。
+      //
+      // 此前只在渠道已是终态时才释放，非终态一律抛 PAYMENT_INTENT_ACTIVE —— 于是
+      // 「支付宝吱口令先于 10 分钟预下单过期」这种情况（快照不可复用、渠道仍 CREATE）
+      // 顾客还是只能干等渠道超时，本 issue 的症状原样复现（双谱系评审 round-11）。
+      //
+      // 现在改走与取消/关单同一套 fail-closed 作废：查单 → 已付款则拒绝 → 终态直接释放 →
+      // 非终态则关单 + 复核后释放。关不掉就仍然保留原错误，不会凭空造出第二笔可支付的单。
       try {
-        const oldTrade = await lakalaClient.queryTrade({
-          merchantNo: merchant.merchantNo,
-          termNo: merchant.termNo,
+        await voidActiveLakalaPaymentIntent(options.orderNo, {
           outTradeNo: err.activeOutTradeNo,
+          storeId: err.activeStoreId,
+          merchant,   // 事务内已解析过，不必再查一次
         })
-        // 必须先验 ok：业务失败码的响应里也可能带非权威的 CLOSE，据此释放旧意图会
-        // 凭空造出第二笔可支付的单，旧单迟到付款将无法入账（双谱系评审 round-2）
-        if (!oldTrade || oldTrade.ok !== true
-            || !LAKALA_RELEASABLE_TRADE_STATES.includes(normalizeTradeState(oldTrade.tradeState))) {
-          throw err
-        }
-        await releaseLakalaPaymentIntent(options.orderNo, err.activeOutTradeNo)
         excludedOutTradeNo = err.activeOutTradeNo
-      } catch (queryErr) {
-        if (queryErr === err) throw err
-        console.warn('[order/reserveDirectOnlinePaymentIntent] 旧意图状态不确定，保留:', options.orderNo, queryErr && queryErr.message)
+      } catch (voidErr) {
+        // 「已支付」要如实告诉顾客（比含糊的「请勿重复发起」准确得多）；
+        // 其余情况（关不掉 / 查不准）保留原错误，语义不变。
+        if (/PAYMENT_ALREADY_SUCCEEDED/.test(String((voidErr && voidErr.message) || ''))) {
+          throw voidErr
+        }
+        console.warn('[order/reserveDirectOnlinePaymentIntent] 旧意图作废未完成，保留:',
+          options.orderNo, voidErr && voidErr.message)
         throw err
       }
     }
