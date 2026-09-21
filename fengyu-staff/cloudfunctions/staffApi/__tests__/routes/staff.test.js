@@ -769,6 +769,99 @@ describe('staff.performanceDetail', () => {
     expect(bigCtx.result.pageSize).toBe(100)
   })
 
+  // ---------- #239 服务提成查询的稳定排序 ----------
+  // 本函数是**内存分页**（两条 SQL 拼进 allItems → JS sort → slice），page/pageSize 是入参，
+  // 每翻一页都是一次独立云函数调用 = 一次新的 SQL 执行。V8 的 Array.sort 稳定，
+  // 同 date 多行的相对顺序完全继承自 SQL 返回顺序 → SQL 缺唯一键 tie-break 时翻页会重复/漏行。
+  test('#239 svcRows 的 ORDER BY 必须带唯一键 tie-break（PG 不保证 ORDER BY 非唯一键时同序）', async () => {
+    const ctx = createManagerCtx({ startDate: '2024-06-01', endDate: '2024-06-30' })
+    pg.query.mockResolvedValueOnce([])
+    pg.query.mockResolvedValueOnce([])
+    await staffRoutes.performanceDetail(ctx)
+
+    // ⚠️ 断言 SQL 字面量而非切片结果：mock 数据天然有序，
+    // 只断言 items 顺序的话把 ORDER BY 整条删掉测试照样绿（#181 踩过）。
+    // 取**整条 ORDER BY 子句**（到语句末尾）而非子串存在性 —— 后者可以被
+    // 「注释掉真 ORDER BY 再补一行同文本」骗过。
+    // 只认**最外层（括号深度 0）**的 ORDER BY，并先剥掉 SQL 注释。
+    //
+    // 边界声明（刻意 fail-closed —— 下列情形一律返回 null 或不等值而**变红**，绝不放行）：
+    //   不支持 dollar-quote（`$$…$$`）、转义串（`E'\''`）、字符串内的 `--`、
+    //   双引号标识符、小写 `order by`、`DESC ,` 这类非常规格式。
+    //   本仓 SQL 都是手写模板且格式统一，误报红时人工确认一眼即可；
+    //   反过来放行才是真风险（#239 复活且无人察觉）。
+    // 两个谱系各给了一种绕过，都被这个实现挡住：
+    //   ① 内层 CTE 的注释里写着期望文本、真正的外层 ORDER BY 没 tie-break
+    //      → 剥注释解决
+    //   ② 把带 tie-break 的 ORDER BY 挪进子查询 / CTE，外层无 ORDER BY
+    //      → PG 会忽略子查询内排序，#239 复活；按括号深度过滤解决
+    const orderByClause = (sql) => {
+      const stripped = sql
+        .replace(/\/\*[\s\S]*?\*\//g, ' ')   // 块注释
+        .replace(/--[^\n]*/g, ' ')             // 行注释
+      let depth = 0
+      let inStr = false
+      for (let i = 0; i < stripped.length; i++) {
+        const ch = stripped[i]
+        // 单引号字符串内的括号不算结构括号 —— 否则 `WHERE x = ')'` 会让深度提前归零，
+        // 把子查询里的 ORDER BY 误认成最外层（codex 谱系给的第三种绕过）
+        if (ch === "'") { inStr = !inStr; continue }
+        if (inStr) continue
+        if (ch === '(') depth++
+        else if (ch === ')') depth--
+        else if (depth === 0 && stripped.startsWith('ORDER BY', i)) {
+          const rest = stripped.slice(i + 'ORDER BY'.length)
+          // `$` 保证 search 必有命中，无需处理 -1
+          const end = rest.search(/\n\s*(?:LIMIT|OFFSET)\b|\)|$/)
+          return rest.slice(0, end).replace(/\s+/g, ' ').trim()
+        }
+      }
+      return null
+    }
+
+    const svcSql = pg.query.mock.calls[1][0]
+    expect(orderByClause(svcSql)).toBe('so.service_date DESC, sc.id DESC')
+
+    // 对照组：销售侧本来就有 tie-break，一并钉住，防止有人"统一风格"把它删掉
+    const allocSql = pg.query.mock.calls[0][0]
+    expect(orderByClause(allocSql)).toBe('spe.performance_date DESC, spia.id DESC')
+  })
+
+  // ⚠️ 这条**不锁 #239 的 tie-break**（删掉 `sc.id DESC` 它照样绿）——
+  // mock 不执行 SQL，6 行 date 全等时顺序完全由 mock 数组决定。
+  // 它锁的是另一件独立的事：**JS 内存分页的切片本身无重无漏**，
+  // 且 `total` 恒为过滤后全量（`safePage`/`safePageSize` 的负索引与字符串拼接加固靠它）。
+  // #239 的真正护栏是上面那条 ORDER BY 字面量断言。
+  test('内存分页切片无重无漏：连续翻两页并集等于 total', async () => {
+    // 场景取「同一天多条服务提成」—— 对活跃门店的美容师是常态，也是 #239 的触发条件
+    const sameDayRows = Array.from({ length: 6 }, (_, i) => ({
+      ...mkSvc('自销自耗', String(10 + i)),
+      service_order_id: `SVC-${i}`,
+      service_date: '2024-06-20',
+    }))
+
+    const page1 = createManagerCtx({ startDate: '2024-06-01', endDate: '2024-06-30', page: 1, pageSize: 3 })
+    pg.query.mockResolvedValueOnce([])
+    pg.query.mockResolvedValueOnce(sameDayRows)
+    await staffRoutes.performanceDetail(page1)
+
+    const page2 = createManagerCtx({ startDate: '2024-06-01', endDate: '2024-06-30', page: 2, pageSize: 3 })
+    pg.query.mockResolvedValueOnce([])
+    pg.query.mockResolvedValueOnce(sameDayRows)
+    await staffRoutes.performanceDetail(page2)
+
+    const ids1 = page1.result.items.map(i => i.orderId)
+    const ids2 = page2.result.items.map(i => i.orderId)
+    expect(ids1).toHaveLength(3)
+    expect(ids2).toHaveLength(3)
+    // 无重复
+    expect(ids1.filter(id => ids2.includes(id))).toEqual([])
+    // 无遗漏：并集 = 全量 6 条
+    expect(new Set([...ids1, ...ids2]).size).toBe(6)
+    expect(page1.result.total).toBe(6)
+    expect(page2.result.total).toBe(6)
+  })
+
   test('saleItems 同时返回 allocAmount（员工分配份额）与 businessAmount（整行实收）', async () => {
     const ctx = createManagerCtx({ startDate: '2024-06-01', endDate: '2024-06-30' })
 

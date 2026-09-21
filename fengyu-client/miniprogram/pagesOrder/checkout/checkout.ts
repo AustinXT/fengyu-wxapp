@@ -1,7 +1,7 @@
 // pages/checkout/checkout.ts
 import Toast from '@vant/weapp/toast/toast';
 import Dialog from '@vant/weapp/dialog/dialog';
-import { clearCart } from '../../utils/cart';
+import { clearCart, sanitizeCoverImage } from '../../utils/cart';
 import { callClientApi, bindPhoneWithCloudID } from '../../utils/cloud';
 import { buildCouponDisplay, formatDate } from '../../utils/format';
 import { getIsMember, priceView } from '../../utils/member-pricing';
@@ -128,6 +128,8 @@ Page({
     } else if (bundleProductId) {
       // 场景 D：组合套餐下单（service-detail 跳来，items 暂存 localStorage）
       const bundleItems: CheckoutItem[] = wx.getStorageSync('bundleCheckoutItems') || [];
+      // issue #230：storage 快照可能是发版前写入的未缩略原图 URL，置空走占位图
+      bundleItems.forEach((i) => { i.coverImage = sanitizeCoverImage(i.coverImage); });
       if (bundleItems.length === 0) {
         Toast.fail('无套餐商品');
         setTimeout(() => wx.navigateBack(), 1000);
@@ -152,6 +154,8 @@ Page({
     } else if (fromCart === '1') {
       // 场景 C：购物车批量下单
       const checkoutItems: CheckoutItem[] = wx.getStorageSync('checkoutItems') || [];
+      // issue #230：同上，storage 快照绕过了云函数的缩略保护
+      checkoutItems.forEach((i) => { i.coverImage = sanitizeCoverImage(i.coverImage); });
       if (checkoutItems.length === 0) {
         Toast.fail('无结算商品');
         setTimeout(() => wx.navigateBack(), 1000);

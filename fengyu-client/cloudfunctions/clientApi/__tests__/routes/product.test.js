@@ -535,3 +535,249 @@ describe('product.experienceCardList', () => {
     expect(ctx.result.skuList).toEqual([])
   })
 })
+
+/**
+ * issue #230：商品封面图下发前的尺寸约束。
+ *
+ * 背景与 #213 同根因——解码内存只跟分辨率有关，与文件体积无关。
+ * 生产库里出现过 405KB / 12576×12575 的 PNG（解码 ~603MB），
+ * 靠上传侧的 file.size 校验拦不住，必须在下发的 URL 上限制输出分辨率。
+ *
+ * 契约有两条，两条都要守：
+ * 1. 能缩略的 → URL 带 imageMogr2/thumbnail/NxN（双边 box，解码封顶 N×N×4）
+ * 2. 不能保证缩略的 → 下发 null，**不退回原图**（退回原图 = 保护静默失效）
+ */
+describe('issue #230：商品封面图缩略下发', () => {
+  /** 生产实际形态（45/45 条均为此格式）：CloudBase COS 域名 + 两段 ASCII 对象键 */
+  const COS_COVER_URL = 'https://test-env-1300000000.tcb.qcloud.la/product-covers/a.jpg'
+  const COS_DETAIL_URL = 'https://test-env-1300000000.tcb.qcloud.la/product-details/d1.jpg'
+  /** 非 COS 域名：数据万象不生效，拼参数等于没保护，按 fail-closed 返回 null */
+  const NON_COS_URL = 'https://img.example.com/a.jpg'
+
+  const LARGE = 'imageMogr2/thumbnail/1080x1080'
+  const SMALL = 'imageMogr2/thumbnail/400x400'
+  /** 详情长图走面积模式（总像素约束），不是 box —— 见下方「长图必须用面积模式」用例 */
+  const AREA = 'imageMogr2/thumbnail/2250000@'
+
+  function mockProductRow(overrides = {}) {
+    return {
+      product_id: 'p1', name: '美白护理', category_id: 'cat-1', category_name: '护理',
+      cover_image: COS_COVER_URL, description: '', sort_order: 1,
+      price: 100, special_price: 80, is_bundle: false,
+      ...overrides,
+    }
+  }
+
+  test('spuList：列表封面走大档（shop 页整行展示）', async () => {
+    pg.query.mockResolvedValueOnce([mockProductRow()])
+    pg.query.mockResolvedValueOnce([{ sku_id: 'sku-1', price: 100, special_price: 80 }])
+
+    const ctx = createBoundCtx()
+    await routes.spuList(ctx)
+
+    expect(ctx.result.spuList[0].cover_image).toBe(`${COS_COVER_URL}?${LARGE}`)
+  })
+
+  test('search / shopInit 与 spuList 共用同一实现，缩略同样生效', async () => {
+    // 三个入口都走 getProductListByCategory，一处改写覆盖三者——
+    // 这条用 search 抽样验证，防止将来有人只给 spuList 加保护
+    pg.query.mockResolvedValueOnce([mockProductRow()])
+    pg.query.mockResolvedValueOnce([{ sku_id: 'sku-1', price: 100, special_price: 80 }])
+
+    const ctx = createBoundCtx({ keyword: '美白' })
+    await routes.search(ctx)
+
+    expect(ctx.result.spuList[0].cover_image).toBe(`${COS_COVER_URL}?${LARGE}`)
+  })
+
+  test('hotList：当前无前端消费者，仍按同口径保护', async () => {
+    pg.query.mockResolvedValueOnce([mockProductRow()])
+    pg.query.mockResolvedValueOnce([{ product_id: 'p1', sku_id: 'sku-1', price: 100, special_price: 80 }])
+
+    const ctx = createBoundCtx()
+    await routes.hotList(ctx)
+
+    expect(ctx.result.spuList[0].cover_image).toBe(`${COS_COVER_URL}?${LARGE}`)
+  })
+
+  test('skuDetail：结算页与体验卡详情共用，按大者取档', async () => {
+    pg.query.mockResolvedValueOnce([{
+      sku_id: 'sku-1', product_type: '疗程卡', spec_name: '标准',
+      price: 100, special_price: 80, cover_image: COS_COVER_URL,
+    }])
+
+    const ctx = createBoundCtx({ skuId: 'sku-1' })
+    await routes.skuDetail(ctx)
+
+    expect(ctx.result.sku.cover_image).toBe(`${COS_COVER_URL}?${LARGE}`)
+  })
+
+  test('spuDetail：头图走 box 档，detail_images 走面积档', async () => {
+    pg.query.mockResolvedValueOnce([mockProductRow({
+      detail_images: [COS_DETAIL_URL, COS_COVER_URL],
+    })])
+    pg.query.mockResolvedValueOnce([{ sku_id: 'sku-1', price: 100, special_price: 80 }])
+
+    const ctx = createCtx({ payload: { productId: 'p1' } })
+    await routes.spuDetail(ctx)
+
+    expect(ctx.result.spu.cover_image).toBe(`${COS_COVER_URL}?${LARGE}`)
+    expect(ctx.result.spu.detail_images).toEqual([
+      `${COS_DETAIL_URL}?${AREA}`,
+      `${COS_COVER_URL}?${AREA}`,
+    ])
+  })
+
+  test('detail_images 必须走面积模式，不能退回 box——box 会把长图压糊', async () => {
+    // 生产 14/14 张详情图高宽比 3.56~5.42（如 1389×5547、1737×7065），
+    // 前端 mode="widthFix" 满屏渲染。
+    // box 的 contain 语义会把 1737×7065 压成 266×1080（实测），
+    // widthFix 再拉回 1290px = 放大 4.8 倍，长图里的文字直接糊掉。
+    // 面积模式下同一张图是 743×3025（实测），放大 1.7 倍。
+    //
+    // 这条钉住「规则形状」而不只是数值：任何人把 detail_images 改回 box 立刻转红。
+    pg.query.mockResolvedValueOnce([mockProductRow({
+      detail_images: [COS_DETAIL_URL],
+    })])
+    pg.query.mockResolvedValueOnce([])
+
+    const ctx = createCtx({ payload: { productId: 'p1' } })
+    await routes.spuDetail(ctx)
+
+    const url = ctx.result.spu.detail_images[0]
+    expect(url).toMatch(/imageMogr2\/thumbnail\/\d+@$/)
+    expect(url).not.toMatch(/thumbnail\/\d+x\d+/)
+    // 必须是不带 `!` 的形式：实测 `thumbnail/!<Area>@` 在本项目 bucket 上原样返回原图
+    expect(url).not.toContain('!')
+  })
+
+  test('spuDetail：无法缩略的 detail_images 被剔除而不是留 null', async () => {
+    // 详情长图没有占位分支（wx:for 直接渲染），留 null 会变成裂图
+    pg.query.mockResolvedValueOnce([mockProductRow({
+      detail_images: [COS_DETAIL_URL, NON_COS_URL, ''],
+    })])
+    pg.query.mockResolvedValueOnce([])
+
+    const ctx = createCtx({ payload: { productId: 'p1' } })
+    await routes.spuDetail(ctx)
+
+    expect(ctx.result.spu.detail_images).toEqual([`${COS_DETAIL_URL}?${AREA}`])
+  })
+
+  test('detail_images 张数被截断到 9 —— 单张封顶挡不住「很多张加起来」', async () => {
+    // admin 的 max={9} 只在 UI 层：actions/products.ts 无 zod / 无长度断言，
+    // db/schema 的 text().array() 也没有 CHECK。持 product:update 权限直调
+    // server action 就能写进 50 张 → 50×8.6MB ≈ 430MB。下发侧必须自己截断，不能信上游。
+    pg.query.mockResolvedValueOnce([mockProductRow({
+      detail_images: Array.from({ length: 50 }, (_, i) =>
+        `https://test-env-1300000000.tcb.qcloud.la/product-details/d${i}.jpg`),
+    })])
+    pg.query.mockResolvedValueOnce([])
+
+    const ctx = createCtx({ payload: { productId: 'p1' } })
+    await routes.spuDetail(ctx)
+
+    expect(ctx.result.spu.detail_images).toHaveLength(9)
+    // 截断后仍全部带面积缩略参数
+    for (const url of ctx.result.spu.detail_images) {
+      expect(url).toMatch(/imageMogr2\/thumbnail\/\d+@$/)
+    }
+  })
+
+  test('截断取的是 9 张可用图，不是「9 个位置里混着被剔除的空位」', async () => {
+    // 先 filter 再 slice：前 5 张不可缩略时，应拿到后面 9 张合规的，而不是只剩 4 张
+    const bad = Array.from({ length: 5 }, () => 'https://img.example.com/x.jpg')
+    const good = Array.from({ length: 12 }, (_, i) =>
+      `https://test-env-1300000000.tcb.qcloud.la/product-details/g${i}.jpg`)
+    pg.query.mockResolvedValueOnce([mockProductRow({ detail_images: [...bad, ...good] })])
+    pg.query.mockResolvedValueOnce([])
+
+    const ctx = createCtx({ payload: { productId: 'p1' } })
+    await routes.spuDetail(ctx)
+
+    expect(ctx.result.spu.detail_images).toHaveLength(9)
+    expect(ctx.result.spu.detail_images[0]).toContain('/g0.jpg')
+  })
+
+  test('spuDetail：detail_images 为 NULL 时归一为空数组', async () => {
+    pg.query.mockResolvedValueOnce([mockProductRow({ detail_images: null })])
+    pg.query.mockResolvedValueOnce([])
+
+    const ctx = createCtx({ payload: { productId: 'p1' } })
+    await routes.spuDetail(ctx)
+
+    expect(ctx.result.spu.detail_images).toEqual([])
+  })
+
+  test('experienceCardList：200rpx 方卡走小档', async () => {
+    pg.query.mockResolvedValueOnce([
+      { sku_id: 'sku-exp-1', spec_name: '体验装', price: 99, special_price: 1, cover_image: COS_COVER_URL },
+    ])
+
+    const ctx = createBoundCtx()
+    await routes.experienceCardList(ctx)
+
+    expect(ctx.result.skuList[0].cover_image).toBe(`${COS_COVER_URL}?${SMALL}`)
+  })
+
+  test('experienceCardList：LEFT JOIN 落空时 cover_image 为 NULL，保持 null', async () => {
+    pg.query.mockResolvedValueOnce([
+      { sku_id: 'sku-exp-1', spec_name: '体验装', price: 99, special_price: 1, cover_image: null },
+    ])
+
+    const ctx = createBoundCtx()
+    await routes.experienceCardList(ctx)
+
+    expect(ctx.result.skuList[0].cover_image).toBeNull()
+  })
+
+  test('非 COS 域名一律下发 null，不退回原图', async () => {
+    // 这是全族的核心不变量：退回原图意味着调用方看不出区别，
+    // 而那张图可能正是会撑爆进程的巨图
+    pg.query.mockResolvedValueOnce([mockProductRow({ cover_image: NON_COS_URL })])
+    pg.query.mockResolvedValueOnce([])
+
+    const ctx = createBoundCtx()
+    await routes.spuList(ctx)
+
+    expect(ctx.result.spuList[0].cover_image).toBeNull()
+  })
+
+  test('空封面（历史脏数据）下发 null 而不是空串或原值', async () => {
+    pg.query.mockResolvedValueOnce([mockProductRow({ cover_image: '' })])
+    pg.query.mockResolvedValueOnce([])
+
+    const ctx = createBoundCtx()
+    await routes.spuList(ctx)
+
+    expect(ctx.result.spuList[0].cover_image).toBeNull()
+  })
+
+  test('缩略规则是双边 box 而不是只限宽——只限宽挡不住细长图', async () => {
+    // 1080×20000 的长截图在 `thumbnail/1080x` 下宽度已达标、高度完全不受约束，
+    // 解码仍是 1080×20000×4 ≈ 86MB。这条钉住规则形状，防止有人改回单边。
+    pg.query.mockResolvedValueOnce([mockProductRow()])
+    pg.query.mockResolvedValueOnce([])
+
+    const ctx = createBoundCtx()
+    await routes.spuList(ctx)
+
+    const url = ctx.result.spuList[0].cover_image
+    expect(url).toMatch(/imageMogr2\/thumbnail\/(\d+)x\1$/)
+  })
+
+  test('原 URL 上的处理参数被整串丢弃，不与服务端规则并存', async () => {
+    // imageView2 的 mode 1 可以把图放大到指定尺寸——黑名单漏掉任何一个平级 API
+    // 都等于留了个放大通道，所以必须整串丢弃 query
+    pg.query.mockResolvedValueOnce([mockProductRow({
+      cover_image: `${COS_COVER_URL}?imageView2/1/w/50000/h/50000`,
+    })])
+    pg.query.mockResolvedValueOnce([])
+
+    const ctx = createBoundCtx()
+    await routes.spuList(ctx)
+
+    expect(ctx.result.spuList[0].cover_image).toBe(`${COS_COVER_URL}?${LARGE}`)
+    expect(ctx.result.spuList[0].cover_image).not.toContain('imageView2')
+  })
+})

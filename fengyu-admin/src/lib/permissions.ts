@@ -450,6 +450,56 @@ export function isInScope(session: AuthSession, storeId: string): boolean {
 }
 
 /**
+ * 检查指定组织节点是否在用户 scope 内（`isInScope` 的 org_node_id 对偶）
+ *
+ * admin → 始终 true。
+ *
+ * **口径必须与 `employeeScopeCondition` 的 orgNodeIds 完全一致**（含 `scopeDeptNodeIds`
+ * 旧会话回退）—— 二者一个负责「入参新值是否可写」、一个负责「目标行是否可见」，
+ * 口径一旦分叉就会出现「校验放行但 UPDATE 的 WHERE 匹配不到」或反之的静默错位。
+ *
+ * ⚠️ 不要与库存侧的 `inventoryScopedOrgNodeIds` / `assertOrgNodeVisible` 混用：那一套对
+ * 「总部」scope **刻意不展开后代**（市场退货必须由总部逐个授权审批），而这里的
+ * `scopeOrgNodeIds` 是含全部后代的展开集合。两套语义不同，各自服务不同的业务约束。
+ *
+ * ⚠️ 另有 `lib/node-scope.ts` 的 `isNodeInScope`（org.ts 建/改节点、stores.ts 建门店在用）
+ * 与本函数前两级回退完全相同，**只有第三级不同**：它在两个集合都缺失时回退到
+ * `session.roles.map(r => r.scopeId)`（角色根节点自身），本函数回退到空集。
+ * 这不是疏忽，**恰恰是不能复用它的原因** —— 本函数与 `employeeScopeCondition` 服务于
+ * 同一次 `updateEmployee` 调用（一个判新值可否写入、一个拼进 UPDATE 的 WHERE），
+ * 而 `employeeScopeCondition` 的回退就是空集。改用 `isNodeInScope` 会在缺元数据的会话里
+ * 造出「校验放行 → UPDATE 命中 0 行 → 用户看到『员工不存在或无权修改』」的静默错位。
+ * 两者该不该统一（以及统一到哪一档）是独立议题，已另开 issue。
+ */
+export function isOrgNodeInScope(session: AuthSession, orgNodeId: string): boolean {
+  if (isAdminScope(session)) return true
+  const orgNodeIds = session.permissions.scopeOrgNodeIds
+    ?? session.permissions.scopeDeptNodeIds
+    ?? []
+  return orgNodeIds.includes(orgNodeId)
+}
+
+/**
+ * 某一行员工记录对当前账号是否可见 —— `employeeScopeCondition` 的**内存版**。
+ *
+ * 两者必须永远给出同一个答案：`employeeScopeCondition` 拼进 UPDATE 的 WHERE、
+ * 这个在进 SQL 之前拦截。口径一旦分叉就会出现「这里放行 → UPDATE 命中 0 行 →
+ * 用户看到『数据已被其他人修改』」的静默错位（GLM 谱系指出原先是手工复刻、无同源保障）。
+ *
+ * 放在这里与 `employeeScopeCondition` 紧邻，改一个必须看另一个；
+ * `permissions.test.ts` 有一条交叉验证用例把两者对同一 session 的判定钉在一起。
+ */
+export function isEmployeeRowVisible(
+  session: AuthSession,
+  storeId: string | null,
+  orgNodeId: string | null,
+): boolean {
+  if (isAdminScope(session)) return true
+  return (!!storeId && isInScope(session, storeId))
+    || (!!orgNodeId && isOrgNodeInScope(session, orgNodeId))
+}
+
+/**
  * Check if user has a specific permission action
  */
 export function hasPermission(session: AuthSession, action: string): boolean {
