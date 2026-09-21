@@ -12,6 +12,8 @@
  */
 
 import { describe, it, expect } from 'vitest'
+// `@db/*` → `../db/schema/*`（tsconfig paths），所以是 @db/user 不是 @db/schema/user
+import { clientWechatUsers } from '@db/user'
 import {
   RESET_NON_MEMBER_STATUS_SQL,
   UPDATE_CUSTOMER_STATUS_SQL,
@@ -101,16 +103,57 @@ describe('cron-worker STEP 1 — customer_status 三段式 SQL', () => {
       // IS NULL 会把「段 2 没分到 且 已有旧值」误判成不需要处理，三段拼不全
       expect(RESET_NO_VISITS_SQL).not.toMatch(/u\.customer_status\s+IS\s+NULL/i)
     })
+
+    /**
+     * 枚举重命名防线：本仓做过一次 `ALTER TYPE customer_status RENAME VALUE '预警沉睡' → '沉睡'`。
+     * 段 3 里 '休眠' 出现两处（SET 与守卫）。只改 SET 漏改守卫**不会报错**，而是让守卫恒真 ——
+     * 段 3 每天重写全部无单会员客、updated_at 日日 churn、resetNoVisit 永不归零。
+     * 这是静默劣化，比两处都漏改（22P02 当场炸）更坏，所以单独钉一条。
+     */
+    it('SET 与守卫的「休眠」字面量必须一致（防枚举重命名只改一半）', () => {
+      const setLiteral = RESET_NO_VISITS_SQL.match(
+        /SET\s+customer_status\s*=\s*'([^']+)'::customer_status/,
+      )?.[1]
+      const guardLiteral = RESET_NO_VISITS_SQL.match(
+        /customer_status\s+IS\s+DISTINCT\s+FROM\s+'([^']+)'::customer_status/,
+      )?.[1]
+      expect(setLiteral).toBeDefined()
+      expect(guardLiteral).toBeDefined()
+      expect(guardLiteral).toBe(setLiteral)
+    })
   })
 
   /**
-   * #254 回归：三段的覆盖域并起来必须等于全表。
+   * #254 回归：**在单一快照下**，三段的覆盖域并起来必须等于全表。
    *
    * 上面的正则断言只验"SQL 长什么样"，验不出"漏没漏行"。这里对三段的 WHERE 谓词建模，
    * 穷举 (customer_type, 有无已完成服务单, customer_status 旧值) 的组合，断言
    * 「每一行至少被一段命中，且命中后落到正确的目标值」——这是 #254 缺陷唯一能被测出的形态。
+   *
+   * ⚠️ 本模型的两条前提，不成立时结论也不成立：
+   * 1. **单一快照**。真 SQL 三段是 READ COMMITTED 下串行执行、各取一次新快照，
+   *    段间并发写 service_orders 会造成瞬时偏差（次日重跑自愈，见 steps 文件头注释）。
+   * 2. **`customer_type` NOT NULL**。段 1 用 `!= '会员客'`，若该列可为 NULL，
+   *    `NULL != '会员客'` 为 NULL → 段 1 不命中、段 2/3 的 `= '会员客'` 也不命中 → 三值逻辑漏判。
+   *    下面 `前提绑定` 用 schema 断言钉住它。
+   *
+   * ⚠️⚠️ 这是对 SQL 的**手工 JS 重新建模**，和真 SQL 没有机械耦合 —— 改了 SQL 忘改模型，
+   * 穷举照样全绿。所以下面第一条用 inline snapshot 锁住三段 SQL 全文：
+   * 任何 WHERE 变更都会让 snapshot 变红，强制改的人回来看一眼模型。
    */
-  describe('#254 覆盖域穷举：三段并集 = 全表', () => {
+  describe('#254 覆盖域穷举：单一快照下三段并集 = 全表', () => {
+    it('前提绑定：customer_type 必须是 NOT NULL（段 1 的三值逻辑安全性依赖它）', () => {
+      expect(clientWechatUsers.customerType.notNull).toBe(true)
+    })
+
+    it('SQL 全文快照 —— 变红说明 SQL 改了，请同步下面的 seg*Hits 模型', () => {
+      expect({
+        seg1: RESET_NON_MEMBER_STATUS_SQL,
+        seg2: UPDATE_CUSTOMER_STATUS_SQL,
+        seg3: RESET_NO_VISITS_SQL,
+      }).toMatchSnapshot()
+    })
+
     type Row = {
       customerType: '会员客' | '流量客' | '体验客' | '小美客'
       hasCompletedService: boolean
@@ -185,6 +228,20 @@ describe('cron-worker STEP 1 — customer_status 三段式 SQL', () => {
 
     it('段 2 与段 3 的命中域互斥（不会同一行写两次）', () => {
       const both = ALL_ROWS.filter((r) => seg2Hits(r) && seg3Hits(r))
+      expect(both).toEqual([])
+    })
+
+    /**
+     * 段 1 先写、段 3 后读同一列，所以「段 1 与段 3 不重叠」是模型能把三段当独立谓词的前提。
+     * 靠的是 customer_type 守卫方向相反（段 1 反向 != / 段 3 正向 =）。
+     */
+    it('段 1 与段 3 的命中域互斥（段 1 的写入不会喂给段 3）', () => {
+      const both = ALL_ROWS.filter((r) => seg1Hits(r) && seg3Hits(r))
+      expect(both).toEqual([])
+    })
+
+    it('段 1 与段 2 的命中域互斥', () => {
+      const both = ALL_ROWS.filter((r) => seg1Hits(r) && seg2Hits(r))
       expect(both).toEqual([])
     })
 

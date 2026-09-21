@@ -4,10 +4,15 @@
  * 业务口径：customer_status 仅对 customer_type='会员客' 的顾客有值，
  * 非会员客（流量客 / 体验客 / 小美客）一律 NULL。
  *
- * 三段 SQL 在同一事务中串行，三段的覆盖域必须并起来等于全表（#254 曾漏一类行）：
+ * 三段 SQL 在同一事务中串行，**在单一快照下**三段的覆盖域必须并起来等于全表
+ * （#254 曾漏一类行）：
  *   段 1：非会员客一律置 NULL（清理脏数据）
  *   段 2：会员客有到店记录的，按 visits_90d / total_visits 打状态
  *   段 3：会员客但完全无到店记录的，置 '休眠'（含已有旧值的 —— 见 RESET_NO_VISITS_SQL 注释）
+ *
+ * ⚠️ 「并集 = 全表」限定在单一快照下：事务是 READ COMMITTED，三条语句各取一次新快照，
+ * 段间若有并发写 service_orders 落地，会出现瞬时偏差（某行本轮没人认领，或被段 2/段 3 各写一次）。
+ * 这类偏差次日重跑即自愈，与 #254 那种「永久卡住」有本质区别，故不升级隔离级别。
  *
  * 与原 cronTask 的事务边界一致：整体一个 db.transaction，任一段失败 → 全段回滚。
  *
@@ -28,6 +33,12 @@ UPDATE client_wechat_users
 /**
  * 段 2 SQL：含 CURRENT_DATE 时间引用。
  * ctx=undefined 时与原 raw SQL 等价（生产路径 + Vitest 形态断言）。
+ *
+ * ⚠️ 本段一次锁住上千行 client_wechat_users，且加锁顺序由执行计划决定
+ * （hash join 走 ctid 物理序 / nested loop 走 HashAggregate 无序输出）。
+ * 两个 cron 实例并发跑同一 STEP 时，若各自选了不同计划就可能 40P01 死锁，
+ * 输的那个整个 STEP 回滚（三段一个事务）。手动 `--once` 必须与 03:00 定时跑错开 ——
+ * runDailyJobs 目前没有任何互斥，靠人守。
  */
 export const UPDATE_CUSTOMER_STATUS_SQL = `
 WITH visit_stats AS (
@@ -61,12 +72,22 @@ UPDATE client_wechat_users u
  * ⚠️ 守卫必须是 `IS DISTINCT FROM '休眠'` 而非 `IS NULL`（#254）：
  * `NOT EXISTS(已完成服务单)` 与段 2 的 `visit_stats` join 互为补集（visit_stats 正由
  * `status='已完成'` 分组而来），「只补段 2 没分到的」这一意图已由它完整表达。再叠一个
- * `IS NULL` 就把「段 2 没分到 **且** 已有旧值」误判成不需要处理 —— 顾客原有已完成服务单
- * （状态已写入），后来服务单被撤销/删除/改状态而掉出 visit_stats 时，三段全不匹配，
+ * `IS NULL` 就把「段 2 没分到 **且** 已有旧值」误判成不需要处理 —— 这类行三段全不匹配，
  * 旧状态永久卡住、cron 跑多少次都不自愈（prod 2026-09-22 实际命中 2 行）。
+ *
+ * 那 2 行的**成因至今未定位**，别把下面这句当已知结论：应用层写 service_orders.status 的
+ * 路径全部封死了「已完成 → 其它态」（admin services.ts:1523/1595、staffApi service.js:1325），
+ * 而实测那 2 人任何状态的服务单都是 0 条（撤销会留下 '已取消' 的行）。已知能绕过守卫的通道是
+ * db/scripts 一次性修复脚本（repair-cancel-conversion-order-2608130108.js:328 就在
+ * `UPDATE service_orders SET status='已取消' … WHERE status='已完成'`）与手工 SQL。
+ * 修复的正当性不依赖成因：无论哪条通道，三段覆盖域必须是全表，否则脏了就不可自愈。
  *
  * 改用 `IS DISTINCT FROM` 既消除缺口（NULL 行仍命中），又保留「已是休眠就不重写
  * updated_at」的原意，与 refresh-spending-tier.ts 的范式一致。
+ *
+ * ⚠️ `'休眠'` 在本段出现 **2 处**（SET 与守卫），另有 db/scripts 两份副本各 2 处。
+ * 枚举重命名（本仓做过一次：'预警沉睡' → '沉睡'）必须 4 处同改 —— 只改 SET 漏改守卫不会报错，
+ * 而是让守卫恒真、段 3 每天重写全部无单会员客。单测 `SET 与守卫的「休眠」字面量必须一致` 守着这条。
  */
 export const RESET_NO_VISITS_SQL = `
 UPDATE client_wechat_users u
@@ -100,8 +121,18 @@ export interface CustomerStatusResult {
   clearedNonMember: number
   updatedMember: number
   resetNoVisit: number
+  /**
+   * 段 2 一行未中、段 3 却大批命中 —— 典型形态是 service_orders 处于异常态
+   * （restore 进行中 / client_user_id 被批量置空 / 表刚清过重灌）。
+   * 此时段 3 会把全部非休眠会员客一次刷成「休眠」，数据看板当天全归休眠档。
+   * 不抛错（可自愈，且抛错会在新环境首跑等场景误伤），只标记 + warn 供运维判读。
+   */
+  suspiciousBulkReset: boolean
   stats: Array<{ customer_status: string | null; cnt: number }>
 }
+
+/** 段 3 单跑命中多少行才值得怀疑数据源塌了。正常日增量是个位数。 */
+const BULK_RESET_SUSPICION_THRESHOLD = 100
 
 export async function refreshCustomerStatus(
   db: Db,
@@ -127,10 +158,24 @@ export async function refreshCustomerStatus(
       ORDER BY customer_status
     `)) as Array<{ customer_status: string | null; cnt: number }>
 
+    const updatedMember = updated.count ?? 0
+    const resetNoVisit = reset.count ?? 0
+    const suspiciousBulkReset =
+      updatedMember === 0 && resetNoVisit >= BULK_RESET_SUSPICION_THRESHOLD
+    if (suspiciousBulkReset) {
+      console.warn(
+        `[customerStatus] 段 2 命中 0 行而段 3 命中 ${resetNoVisit} 行 —— ` +
+          'service_orders 可能处于异常态（restore 中 / client_user_id 被批量置空）。' +
+          '本次已把这些会员客刷成「休眠」，数据看板当天会全归休眠档；' +
+          '确认数据源恢复后重跑本 STEP 即可还原。',
+      )
+    }
+
     return {
       clearedNonMember: cleared.count ?? 0,
-      updatedMember: updated.count ?? 0,
-      resetNoVisit: reset.count ?? 0,
+      updatedMember,
+      resetNoVisit,
+      suspiciousBulkReset,
       stats,
     }
   })
