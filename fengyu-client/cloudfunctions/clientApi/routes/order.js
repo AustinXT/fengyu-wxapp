@@ -800,39 +800,54 @@ function safeParseJson(text) {
 }
 
 /**
- * 复用旧支付场次前，确认它在渠道侧尚未被支付（双谱系评审 round-1）。
+ * 复用旧支付场次前，确认它在渠道侧仍然可支付（双谱系评审 round-1 引入，round-2 补全）。
  *
- * 场景：顾客已经付款但回调还没入账，立刻又重新扫码。此时本地仍是「待支付 + 意图活跃」，
- * 快照五项判据全中 → 不查渠道就把旧 paymentParams 回发，前端会去唤起一笔**已成功**的
- * 场次，顾客只能得到误导性失败或无尽等待。
+ * 两类必须拦下的状态：
+ *   - **已支付**（SUCCESS / PART_REFUND / REFUND）：顾客付了款但回调还没入账就重新扫码，
+ *     不查渠道就回发旧 paymentParams，前端会去唤起一笔已成功的场次，只能得到误导性失败。
+ *   - **已终态但本地没释放**（FAIL / CLOSE / REVOKED）：例如关单成功但复核那一跳超时，
+ *     fail-closed 保留了意图与快照。此时复用会回发一个**已死亡**的场次，顾客每次重试都
+ *     命中同一快照、反复失败，直到快照过期才自愈——正是本 issue 要消灭的卡死的短时复刻。
+ *     这种情况直接释放本地意图并返回 false，调用方重新预占一笔新场次，顾客无感。
  *
  * 必须在事务**之外**调用：这是一次 HTTPS 往返，放进事务会把订单行锁持有到网络返回。
  *
- * 查单失败时选择**放行复用**而不是拒绝：复用的是同一笔渠道单，渠道对已支付的场次本身
- * 会拒绝二次付款，不存在重复扣款；而拒绝会让顾客重新卡在「发不了新支付」上——正是本
- * issue 要消灭的状态。
+ * 查单失败时选择**放行复用**而不是拒绝：复用的是同一笔渠道单，渠道对已支付/已关闭的
+ * 场次本身会拒绝付款，不存在重复扣款；而拒绝会让顾客重新卡在「发不了新支付」上。
+ *
+ * @returns {Promise<boolean>} true = 可继续复用；false = 已释放意图，调用方应重新预占
  */
-async function assertReusedIntentNotPaid(orderNo, outTradeNo, merchant) {
-  if (!merchant) return
+async function ensureReusedIntentStillPayable(orderNo, outTradeNo, merchant) {
+  if (!merchant) return true
   let trade
   try {
     trade = await lakalaClient.queryTrade({
       merchantNo: merchant.merchantNo,
       termNo: merchant.termNo,
       outTradeNo,
+      timeoutMs: LAKALA_VOID_CALL_TIMEOUT_MS,
     })
   } catch (err) {
     console.warn('[order/reuseIntent] 复用前查单失败，降级放行:', orderNo, err && err.message)
-    return
+    return true
   }
   if (!trade || trade.ok !== true) {
     console.warn('[order/reuseIntent] 复用前查单未成功返回，降级放行:',
       orderNo, trade && trade.code, trade && trade.msg)
-    return
+    return true
   }
-  if (LAKALA_PAID_TRADE_STATES.includes(normalizeTradeState(trade.tradeState))) {
+
+  const state = normalizeTradeState(trade.tradeState)
+  if (LAKALA_PAID_TRADE_STATES.includes(state)) {
     throw new Error('CONFLICT: PAYMENT_ALREADY_SUCCEEDED: 支付已成功，正在更新订单，请稍后刷新')
   }
+  if (LAKALA_RELEASABLE_TRADE_STATES.includes(state)) {
+    // 渠道已终态：这笔场次再也付不了，留着它只会让顾客反复撞墙。释放后让调用方重建。
+    console.warn('[order/reuseIntent] 快照对应的渠道场次已终态，释放后重建:', orderNo, state)
+    await confirmIntentReleased(orderNo, outTradeNo)
+    return false
+  }
+  return true
 }
 
 /**
@@ -2245,7 +2260,7 @@ async function pay(ctx) {
     }
   }
 
-  const reservation = await reserveDirectOnlinePaymentIntentWithTerminalRetry({
+  let reservation = await reserveDirectOnlinePaymentIntentWithTerminalRetry({
     orderNo,
     userId,
     payAmountInput,
@@ -2265,11 +2280,18 @@ async function pay(ctx) {
   }
 
   // issue #214：命中复用则不再向渠道下单，直接回发原场次参数让顾客继续付同一笔。
-  // 回发前先确认渠道侧这笔场次还没被支付（事务已提交，这里做 HTTPS 往返是安全的）。
-  let paymentParams = reservation.paymentParams
-  if (reservation.reused) {
-    await assertReusedIntentNotPaid(orderNo, reservation.outTradeNo, reservation.merchant)
+  // 回发前先确认渠道侧这笔场次仍可支付（事务已提交，这里做 HTTPS 往返是安全的）；
+  // 若渠道已终态，helper 会释放意图并返回 false，这里重新预占一笔新场次，顾客无感。
+  if (reservation.reused
+      && !await ensureReusedIntentStillPayable(orderNo, reservation.outTradeNo, reservation.merchant)) {
+    reservation = await reserveDirectOnlinePaymentIntentWithTerminalRetry({
+      orderNo,
+      userId,
+      payAmountInput,
+      paymentMethod: '微信',
+    })
   }
+  let paymentParams = reservation.paymentParams
   if (!reservation.reused) {
     const cfg = lakalaConfig.readConfig()
     const preorderResp = await createLakalaPreorder({
@@ -3221,7 +3243,7 @@ async function alipayPay(ctx) {
     }
   }
 
-  const reservation = await reserveDirectOnlinePaymentIntentWithTerminalRetry({
+  let reservation = await reserveDirectOnlinePaymentIntentWithTerminalRetry({
     orderNo,
     userId,
     payAmountInput,
@@ -3239,11 +3261,19 @@ async function alipayPay(ctx) {
   }
 
   // issue #214：命中复用则直接回发原吱口令，顾客继续付同一笔，不再开新场次。
+  // 渠道已终态时 helper 释放意图并返回 false，这里重新预占，顾客无感（同 pay）。
+  if (reservation.reused
+      && !await ensureReusedIntentStillPayable(orderNo, reservation.outTradeNo, reservation.merchant)) {
+    reservation = await reserveDirectOnlinePaymentIntentWithTerminalRetry({
+      orderNo,
+      userId,
+      payAmountInput,
+      paymentMethod: '支付宝',
+      requireAlipayShareSource: true,
+    })
+  }
   let alipayShareToken = reservation.paymentParams && reservation.paymentParams.alipayShareToken
   let alipayExpireDate = reservation.paymentParams && reservation.paymentParams.alipayExpireDate
-  if (reservation.reused) {
-    await assertReusedIntentNotPaid(orderNo, reservation.outTradeNo, reservation.merchant)
-  }
   if (!reservation.reused) {
     const cfgAli = lakalaConfig.readConfig()
     const requestIpAli = getRequestIp()

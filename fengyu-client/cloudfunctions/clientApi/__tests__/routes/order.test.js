@@ -1334,6 +1334,24 @@ describe('order.pay', () => {
     expect(__mocks__.lakalaClient.requestPreorder).not.toHaveBeenCalled()
   })
 
+  // 关单成功但复核那一跳超时时，fail-closed 会保留意图与快照。此时复用会回发一个
+  // **已死亡**的场次，顾客每次重试都命中同一快照反复失败，直到快照过期才自愈——
+  // 正是本 issue 要消灭的卡死的短时复刻（双谱系评审 round-2 发现）。
+  test('快照对应的渠道场次已终态 → 释放意图并重建新场次，不回发死场次 (#214)', async () => {
+    mockPayQueries({ order: reusableOrder() })
+    // 复用前查单：渠道已 CLOSE（本地意图没来得及释放）
+    __mocks__.lakalaClient.queryTrade.mockResolvedValueOnce({ ok: true, tradeState: 'CLOSE' })
+
+    const ctx = createBoundCtx({ orderNo: 'FY-REUSE-001' })
+    await routes.pay(ctx)
+
+    // 不再回发快照里的旧参数，而是重新向渠道下单
+    expect(__mocks__.lakalaClient.requestPreorder).toHaveBeenCalled()
+    expect(ctx.result.paymentParams.package).toBe('prepay_id=wx_mock_001')
+    // 释放走的是按单号 CAS
+    expect(pg.query.mock.calls.some(([sql]) => /SET lakala_out_order_no = NULL/.test(sql))).toBe(true)
+  })
+
   // 查单失败时放行复用：复用的是同一笔渠道单，渠道对已支付场次本身会拒绝二次付款，
   // 不存在重复扣款；拒绝反而会让顾客重新卡在「发不了新支付」上。
   test('复用前查单失败 → 降级放行，仍回发原参数 (#214)', async () => {
