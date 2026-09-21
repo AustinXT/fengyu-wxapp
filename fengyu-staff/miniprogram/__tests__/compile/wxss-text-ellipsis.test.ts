@@ -19,6 +19,12 @@
  * 父容器哪天从 flex 改成 block，截断会静默失效且没有任何报错。
  * （② 则是真正会当场失效的缺陷，与 blockify 无关。）
  *
+ * ⚠️ **能力边界（刻意保守，不求解真实 computed display）**：本测试是静态 lint，
+ * 不处理 `@media` / `@supports` 条件块、`!important`、选择器 specificity、内联 `style=`，
+ * 也不解析组件图（`externalClasses` / `addGlobalClass` / `styleIsolation`）——
+ * 本仓当前零处使用 `externalClasses`，且无一条 `@media` 触及截断样式，故暂不可达。
+ * 判据一律 fail-closed：拿不准就报错，宁可误报让人来看一眼，也不放行。
+ *
  * 这份文件与 client 端的同名测试是**各端独立副本**（CLAUDE.md：禁止跨端共享代码目录）。
  */
 import fs from 'fs'
@@ -35,8 +41,12 @@ const BLOCK_CONTAINER = [
   'table-cell',
   '-webkit-box', // 多行截断的标准写法
 ]
-/** 明确不是 block container —— 写了也白写 */
-const NOT_BLOCK_CONTAINER = ['flex', 'inline-flex', 'grid', 'inline-grid', 'contents', 'none']
+/**
+ * 判据是**白名单**（fail-closed），不是「排除已知的坏值」黑名单。
+ * 黑名单会漏掉一大批：显式 `display: inline`、`initial` / `unset` / `inherit` / `revert`、
+ * `var(--x)`、`inline-table` / `table` / `ruby`、多关键字语法 `inline flex` / `block flex` ……
+ * 这些都不是 block container，ellipsis 同样不生效。白名单之外一律报错。
+ */
 
 /**
  * 已确认失效、但**不在 #238 授权范围内**的豁免项。
@@ -84,6 +94,22 @@ function stripCssComments(src: string): string {
   return src.replace(/\/\*[\s\S]*?\*\//g, ' ')
 }
 
+/**
+ * 求选择器的作用目标 class：按 `,` 拆成分支，每支取最右侧 compound selector 里的 class。
+ * `.a .b` / `.a > .b` → b；`.a.b` → a 与 b（同一元素同时具备）；`.a::before` → a。
+ */
+export function selectorTargets(rawSel: string): string[] {
+  const out = new Set<string>()
+  for (const branch of rawSel.split(',')) {
+    const compound = branch.trim().split(/[\s>+~]+/).filter(Boolean).pop()
+    if (!compound) continue
+    for (const c of compound.replace(/::?[\w-]+(\([^)]*\))?/g, '').match(/\.([A-Za-z0-9_-]+)/g) || []) {
+      out.add(c.slice(1))
+    }
+  }
+  return [...out]
+}
+
 /** 取出所有声明了 text-overflow 或 -webkit-line-clamp 的规则块 */
 export function parseTruncationRules(rawSrc: string, file = '<inline>'): Rule[] {
   const src = stripCssComments(rawSrc)
@@ -101,8 +127,10 @@ export function parseTruncationRules(rawSrc: string, file = '<inline>'): Rule[] 
     rules.push({
       file,
       line: src.slice(0, m.index).split('\n').length,
-      // 分组选择器（`.a, .b { … }`）要取**全部** class，只取最后一个会漏
-      classNames: [...new Set((rawSel.match(/\.([A-Za-z0-9_-]+)/g) || []).map((c) => c.slice(1)))],
+      // 分组选择器（`.a, .b`）每个分支各有自己的目标；而每个分支的目标是**最右侧的
+      // compound selector**（`.parent .child` 的声明作用于 .child，不是 .parent），
+      // 把左侧祖先也当成目标会误报。
+      classNames: selectorTargets(rawSel),
       display: ds.length ? ds[ds.length - 1][1].trim() : null,
       hasLineClamp,
     })
@@ -153,8 +181,8 @@ describe('WXSS 文本截断有效性（#238）', () => {
         for (const cls of rule.classNames) {
           const d = rule.display
 
-          // ② display 写了但不是 block container —— 无论挂在什么标签上都失效
-          if (d && NOT_BLOCK_CONTAINER.some((v) => d === v || d.startsWith(v))) {
+          // ② display 写了但不在 block container 白名单里 —— 无论挂在什么标签上都失效
+          if (d && !BLOCK_CONTAINER.some((v) => d === v || d.startsWith(v + ' '))) {
             const tags = hostTags(scopeWxml, cls)
             if (tags.size === 0) continue // class 未被使用（死样式），不报
             const msg =
@@ -283,6 +311,28 @@ describe('WXSS 文本截断有效性（#238）', () => {
       } finally {
         fs.unlinkSync(tmp)
       }
+    })
+
+    test('判据是白名单 fail-closed：非 block-container 的 display 一律不放行', () => {
+      // codex 谱系指出：黑名单会漏掉显式 inline / initial / unset / var() / 多关键字语法
+      for (const bad of ['inline', 'flex', 'inline-flex', 'grid', 'initial', 'unset',
+                         'inherit', 'var(--d)', 'inline flex', 'table', 'ruby']) {
+        const d = parseTruncationRules(`.a { display: ${bad}; text-overflow: ellipsis; }`)[0].display
+        expect(BLOCK_CONTAINER.some((v) => d === v || d!.startsWith(v + ' ')), `display:${bad} 不该被放行`).toBe(false)
+      }
+      for (const good of ['block', 'inline-block', '-webkit-box', 'flow-root', 'list-item']) {
+        const d = parseTruncationRules(`.a { display: ${good}; text-overflow: ellipsis; }`)[0].display
+        expect(BLOCK_CONTAINER.some((v) => d === v || d!.startsWith(v + ' ')), `display:${good} 该被放行`).toBe(true)
+      }
+    })
+
+    test('选择器目标取最右侧 compound，不把祖先当目标', () => {
+      expect(selectorTargets('.parent .child')).toEqual(['child'])
+      expect(selectorTargets('.a > .b')).toEqual(['b'])
+      expect(selectorTargets('.a.b').sort()).toEqual(['a', 'b'])
+      expect(selectorTargets('.a, .b').sort()).toEqual(['a', 'b'])
+      expect(selectorTargets('.a::before')).toEqual(['a'])
+      expect(selectorTargets('.wrap .x, .y > .z').sort()).toEqual(['x', 'z'])
     })
 
     test('全仓确实扫得到规则（为 0 说明 walk/解析坏了）', () => {
