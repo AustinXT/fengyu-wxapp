@@ -823,10 +823,15 @@ describe('isEmployeeRowVisible 与 employeeScopeCondition 同源', () => {
     // 任一维命中即可见（OR 语义，与 employeeScopeCondition 一致）
     expect(isEmployeeRowVisible(session, 'S9', 'D1')).toBe(true)
 
-    // SQL 侧承载的正是同一组 id
+    // SQL 侧承载的正是同一组 id，**且两维必须以 OR 组合**
     const cond = JSON.stringify(employeeScopeCondition(session, STORE_COL, ORG_COL))
     expect(cond).toContain(JSON.stringify(['S1']))
     expect(cond).toContain(JSON.stringify(['D1']))
+    // ⚠️ 只断言「同时含 S1 与 D1」是不够的（codex 指出）：把 `or(...parts)` 误改成
+    // `and(...parts)` 照样含这两组 id，而语义从「任一维命中即可见」翻转成「两维都要命中」，
+    // 与 isEmployeeRowVisible 的 OR 判定直接冲突。
+    expect(cond, 'employeeScopeCondition 的两个维度必须以 OR 组合').toContain('" or "')
+    expect(cond, 'employeeScopeCondition 不得用 AND 组合两个维度').not.toContain('" and "')
   })
 
   it('admin 恒可见，且 SQL 侧不过滤（undefined）', () => {
