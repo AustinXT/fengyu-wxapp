@@ -63,6 +63,17 @@ Page({
   _dataEpoch: 0,
 
   /**
+   * loading 所有权令牌。
+   *
+   * `isLoading` 是页面级的单一状态，而同时可能有多个请求在飞（切分类、翻页、兜底重拉）。
+   * **不能用「数据是否过期」来决定谁关 loading**：翻页成功的请求会自己把游标推进，
+   * 回到 finally 时反而判定自己过期 —— 于是没有任何请求去关，底部永久转圈，
+   * 触底入口又被 `isLoading` 拦住，加载完一页就再也翻不动了。
+   * 规则简单化：**最后启动的那个请求负责关**。
+   */
+  _loadingToken: 0,
+
+  /**
    * 每个分类的请求序号。`_dataEpoch` 只拦得住「缓存被整体重置」，
    * 拦不住**同一分类内的乱序回包**：快速点 A → B → A 会让 A 的两个首页请求并发，
    * 旧回包会把 `_spuCache[A]` 打回第一页并让在途的翻页接错位置。
@@ -198,6 +209,7 @@ Page({
 
   async loadShopInit() {
     const epoch = this._dataEpoch;
+    const token = ++this._loadingToken;
     try {
       this.setData({ isLoading: true });
       const initData = await callClientApi<{
@@ -242,11 +254,15 @@ Page({
       });
       if (activeId && !usable) this.loadSpuList(activeId);
     } catch (err: any) {
+      // 过期请求的失败不该弹 Toast 干扰已经开始的新一轮加载
+      if (epoch !== this._dataEpoch) return;
       console.error('loadShopInit error:', err);
       Toast.fail(err?.message || '加载失败');
     } finally {
-      // 只有当前代次的请求能关 loading，否则旧请求会提前关掉新请求的转圈
-      if (epoch === this._dataEpoch) this.setData({ isLoading: false });
+      // 只有最后启动的请求能关 loading（见 _loadingToken 注释）。
+      // 不能用 isStale()：翻页成功的请求自己推进了游标，回到这里反而判定自己过期，
+      // 结果谁都不关，底部永久转圈、触底入口又被 isLoading 拦住。
+      if (token === this._loadingToken) this.setData({ isLoading: false });
     }
   },
 
@@ -296,6 +312,7 @@ Page({
     const seq = append
       ? (this._reqSeq[categoryId] || 0)
       : (this._reqSeq[categoryId] = (this._reqSeq[categoryId] || 0) + 1);
+    const token = ++this._loadingToken;
     this.setData({ isLoading: true });
     // 翻页的幂等键：同一个 cursor 只认第一个回来的回包
     const sentCursor = append ? this._pageState[categoryId]?.cursor ?? null : null;
@@ -345,8 +362,10 @@ Page({
         if (this._activeCategoryId === categoryId) this.setData({ hasMore: false });
       }
     } finally {
-      // 只有当前代次的请求能关 loading，否则旧请求会提前关掉新请求的转圈
-      if (!isStale()) this.setData({ isLoading: false });
+      // 只有最后启动的请求能关 loading（见 _loadingToken 注释）。
+      // 不能用 isStale()：翻页成功的请求自己推进了游标，回到这里反而判定自己过期，
+      // 结果谁都不关，底部永久转圈、触底入口又被 isLoading 拦住。
+      if (token === this._loadingToken) this.setData({ isLoading: false });
     }
   },
 
