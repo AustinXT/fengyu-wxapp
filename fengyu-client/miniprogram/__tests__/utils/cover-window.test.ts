@@ -409,14 +409,57 @@ describe('createCoverWindow · 页面显隐', () => {
     expect(page.setDataCalls).toHaveLength(0)
   })
 
-  test('setVisible(true) 不自动 refresh —— 由页面决定给哪份列表接线', () => {
+  // 「先 refresh 再 setVisible(true)」是很自然的写法，靠注释契约守不住，所以由模块自己重建
+  test('setVisible(true) 自动重建观察器', () => {
     const page = makePage('spuList', 8)
     const w = createCoverWindow(page as any, OPTS)
     w.setVisible(false)
-    w.setVisible(true)
     expect((wx as any).__getObservers()).toHaveLength(0)
 
-    w.refresh()
+    w.setVisible(true)
     expect((wx as any).__getObservers()).toHaveLength(1)
+    expect((wx as any).__lastObserver().observeSelector).toBe('.spu-cover-slot')
+  })
+
+  test('重复 setVisible 同值不做无谓重建', () => {
+    const page = makePage('spuList', 8)
+    const w = createCoverWindow(page as any, OPTS)
+    w.refresh()
+    w.setVisible(true)
+    expect((wx as any).__getObservers()).toHaveLength(1)
+  })
+})
+
+describe('createCoverWindow · dispose 终局', () => {
+  test('dispose 之后 refresh / setVisible / invalidate 一律 no-op', () => {
+    const page = makePage('spuList', 8)
+    const w = createCoverWindow(page as any, OPTS)
+    w.dispose()
+
+    // setData 的渲染回调可能排在 onUnload 之后才跑，那时不该再建观察器
+    w.refresh()
+    w.setVisible(false)
+    w.setVisible(true)
+    w.invalidate()
+
+    expect((wx as any).__getObservers()).toHaveLength(0)
+    expect(page.setDataCalls).toHaveLength(0)
+  })
+})
+
+describe('createCoverWindow · 诊断', () => {
+  test('槽位缺 data-idx 时警告一次（整列永久占位且 fail-open 不触发，零日志最难查）', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const page = makePage('spuList', 8)
+    createCoverWindow(page as any, OPTS).refresh()
+
+    const ob = (wx as any).__lastObserver()
+    for (let i = 0; i < 5; i++) ob.callback({ dataset: {}, intersectionRatio: 1 })
+    vi.advanceTimersByTime(FLUSH_DELAY_MS)
+
+    const hits = warn.mock.calls.filter(c => String(c[0]).includes('data-idx'))
+    expect(hits).toHaveLength(1)
+    expect(page.setDataCalls).toHaveLength(0)
+    warn.mockRestore()
   })
 })

@@ -18,6 +18,9 @@
  * 2. 列表内容一变就要 `refresh()`：`observeAll` 不跟踪后续新增的节点。
  * 3. 页面隐藏/显示要调 `setVisible()`，卸载要调 `dispose()`。隐藏期间收到网络回包
  *    而不打招呼的话，observer 会建在不渲染的页面上、一个回调都收不到。
+ * 4. `invalidate()` 之后无论成败都要再 `refresh()`。只 invalidate 不 refresh，
+ *    列表会冻结在最后一次 flush 的快照上：屏外的行回滚时永久占位、屏内的行不再卸载。
+ *    列表没变时重复 refresh 是安全的（首次 observe 会对全表重校一遍）。
  */
 
 /** 视口上下各扩展的像素数：一屏左右的预加载余量，滚动时不会看到占位闪烁 */
@@ -75,8 +78,11 @@ export interface CoverWindow {
    */
   invalidate(): void;
   /**
-   * 页面显隐。隐藏时断开观察器（不渲染的页面收不到相交回调，硬撑只会误触发 fail-open），
-   * 显示时由页面自行决定给哪份列表 `refresh()`。
+   * 这份列表在不在场（页面可见 + 该列表没被 `wx:if` 切走）。
+   *
+   * 不在场时断开观察器 —— 不渲染的节点收不到相交回调，硬撑只会在 800ms 后误触发
+   * fail-open 把整列放开。重新在场时**自动重建**：让调用方自己记得补 `refresh()`
+   * 是守不住的，「先 refresh 再 setVisible(true)」这种很自然的写法会被静默吞掉。
    */
   setVisible(visible: boolean): void;
   /** 页面卸载时调用 */
@@ -107,8 +113,12 @@ export function createCoverWindow(page: PageLike, options: CoverWindowOptions): 
   let flushTimer: ReturnType<typeof setTimeout> | null = null;
   let fallbackTimer: ReturnType<typeof setTimeout> | null = null;
   let visible = true;
+  /** 页面已卸载。`setData` 的渲染回调可能排在 `onUnload` 之后才跑，那时不该再建观察器 */
+  let disposed = false;
   /** 仅由 `wx.createIntersectionObserver` 抛错置位：环境确定性不支持，永久停用 */
   let unsupported = false;
+  /** NaN 下标只警告一次，避免每个回调刷屏 */
+  let warnedBadIndex = false;
 
   /**
    * 观察器世代。每次 refresh / setVisible(false) / dispose 都换代。
@@ -189,6 +199,7 @@ export function createCoverWindow(page: PageLike, options: CoverWindowOptions): 
   }
 
   function refresh() {
+    if (disposed) return;
     if (unsupported) {
       showAll();
       return;
@@ -226,7 +237,15 @@ export function createCoverWindow(page: PageLike, options: CoverWindowOptions): 
           fallbackTimer = null;
         }
         const idx = Number((res as any).dataset?.idx);
-        if (!Number.isInteger(idx)) return;
+        if (!Number.isInteger(idx)) {
+          // wxml 漏写 / 写错 `data-idx` 会让整列永久停在占位图，而回调一直在到、
+          // fail-open 不会触发 —— 零日志的半瘫最难查，留一条线索
+          if (!warnedBadIndex) {
+            warnedBadIndex = true;
+            console.warn(`[cover-window] ${options.slotSelector} 缺少合法的 data-idx`);
+          }
+          return;
+        }
         pending[idx] = res.intersectionRatio > 0;
         scheduleFlush(gen);
       });
@@ -259,17 +278,20 @@ export function createCoverWindow(page: PageLike, options: CoverWindowOptions): 
   }
 
   function invalidate() {
+    if (disposed) return;
     teardown();
   }
 
   function setVisible(next: boolean) {
-    if (visible === next) return;
+    if (disposed || visible === next) return;
     visible = next;
-    // 隐藏时只拆接线、保留 unsupported；显示后由页面决定给哪份列表 refresh
-    if (!next) teardown();
+    // 不在场时只拆接线、保留 unsupported；重新在场时自动重建
+    if (next) refresh();
+    else teardown();
   }
 
   function dispose() {
+    disposed = true;
     teardown();
   }
 

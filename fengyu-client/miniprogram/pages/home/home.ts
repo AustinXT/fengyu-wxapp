@@ -161,6 +161,9 @@ Page({
       slotSelector: ".search-cover-slot",
       listKey: "searchResults",
     });
+    // 两份列表由 wx:if/wx:else 互斥渲染，用 setVisible 表达「这份在不在场」。
+    // 初始是浏览态，搜索结果那份不在场。
+    this._searchCoverWindow.setVisible(false);
     this.loadShopInit();
     this.loadBanners();
     this.updateCartCount();
@@ -187,6 +190,13 @@ Page({
     this._searchCoverWindow?.setVisible(false);
   },
 
+  /** 让观察器的「在场性」与当前形态一致：两份列表由 wx:if/wx:else 互斥渲染 */
+  _syncCoverWindowVisibility() {
+    const searching = this.data.isSearching;
+    this._coverWindow?.setVisible(!searching);
+    this._searchCoverWindow?.setVisible(searching);
+  },
+
   _teardownTimers() {
     if (this._searchTimer) {
       clearTimeout(this._searchTimer);
@@ -205,8 +215,6 @@ Page({
     if (storeName !== this.data.boundStoreName) {
       // 切换门店时清空购物车和 SPU 缓存
       clearCart();
-      this._coverWindow?.setVisible(true);
-      this._searchCoverWindow?.setVisible(true);
       this._resetPaging();
       this._allGroups = [];
       this._allCategories = [];
@@ -222,13 +230,12 @@ Page({
         searchResults: [],
         searchValue: "",
       });
+      this._syncCoverWindowVisibility();
       this.loadShopInit();
     } else {
       this.updateCartCount();
-      // onHide 里拆过接线，回到本页要把当前显示的那份列表重新接上观察器
-      this._coverWindow?.setVisible(true);
-      this._searchCoverWindow?.setVisible(true);
-      this._refreshCoverWindow(this.data.isSearching ? "search" : "browse");
+      // onHide 里拆过接线；回来时只让**在场的那份**重新接线（setVisible(true) 会自动重建）
+      this._syncCoverWindowVisibility();
     }
   },
 
@@ -250,7 +257,8 @@ Page({
     // 退出搜索模式，重新加载全部数据；下拉刷新要真重来一次，
     // 清掉分页游标与累积行，否则会拿旧游标续翻
     this._resetPaging();
-    this.setData({ isSearching: false, searchResults: [], searchValue: '' });
+    this.setData({ isSearching: false, searchResults: [], searchValue: '' },
+      () => this._syncCoverWindowVisibility());
     this.loadShopInit().finally(() => {
       wx.stopPullDownRefresh();
     });
@@ -310,10 +318,9 @@ Page({
       this._searchTimer = null;
     }
     this._resetSearchPaging();
-    this._searchCoverWindow?.dispose();
     const patch: Record<string, any> = { isSearching: false, searchResults: [], searchLoading: false };
     if (!opts.keepInput) patch.searchValue = "";
-    this.setData(patch, () => this._coverWindow?.refresh());
+    this.setData(patch, () => this._syncCoverWindowVisibility());
   },
 
   _resetSearchPaging() {
@@ -339,8 +346,8 @@ Page({
   },
 
   _refreshCoverWindow(which: "browse" | "search") {
-    // 两份列表由 wx:if/wx:else 互斥渲染。给不在场的那份重建观察器，
-    // 参照节点根本不存在 → 一个回调都收不到 → 会误触发 fail-open 把解码封顶放掉。
+    // 在场性已由 _syncCoverWindowVisibility 通过 setVisible 表达（不在场时 refresh 自身 no-op），
+    // 这里是双保险：给不在场的那份重建观察器，参照节点根本不存在 → 零回调 → 误触发 fail-open。
     if (which === "browse" && this.data.isSearching) return;
     if (which === "search" && !this.data.isSearching) return;
     if (which === "search") this._searchCoverWindow?.refresh();
@@ -352,7 +359,11 @@ Page({
     // 首页搜索换代作废在途请求；翻页沿用当前代次（它就是同一次搜索的延续）
     if (!append) this._searchSeq++;
     const seq = this._searchSeq;
-    this.setData({ isSearching: true, searchLoading: true });
+    const wasSearching = this.data.isSearching;
+    this.setData({ isSearching: true, searchLoading: true }, () => {
+      // 进入搜索会把浏览列表整片切走，观察器要跟着换在场性
+      if (!wasSearching) this._syncCoverWindowVisibility();
+    });
 
     try {
       // 全量搜索：调云函数按商品名跨全部分类搜索，不依赖前端 _spuCache/侧边栏分类结构
