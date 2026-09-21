@@ -1048,6 +1048,20 @@ async function insertDocHeader(tx: Tx, input: InsertDocHeaderInput): Promise<voi
   let sourceOrgNodeId = source?.orgNodeId ?? null
   let targetOrgNodeId = target?.orgNodeId ?? null
   if (INTERNAL_SAME_NODE_DOC_TYPES.has(input.docType)) {
+    /**
+     * #236：与 `engine.ts` 的同名分支对齐（两端都给且不一致时拒绝，**文案逐字相同**便于 grep 比对）。
+     *
+     * 原先无条件 `source ?? target` 会**静默吃掉**调用方给的 target —— 传两个不同主体只有一个
+     * 生效、另一个连报错都没有。这两份是同一逻辑的独立副本（项目禁止抽取跨端共享目录），
+     * 一致性靠人工同步。
+     *
+     * 当前 18 处 `insertDocHeader` 调用对同主体单据每次只传 source / target 其一，
+     * 没有调用方依赖被吃掉的那个行为 —— 这条是**防止以后新增专用服务时复现该坑**的前置断言，
+     * 不是在修一条活着的缺陷路径。
+     */
+    if (sourceOrgNodeId && targetOrgNodeId && sourceOrgNodeId !== targetOrgNodeId) {
+      throw new ApiError('INVALID_PARAMS', '该单据的出库主体与入库主体必须是同一个')
+    }
     const orgNodeId = sourceOrgNodeId ?? targetOrgNodeId
     sourceOrgNodeId = orgNodeId
     targetOrgNodeId = orgNodeId

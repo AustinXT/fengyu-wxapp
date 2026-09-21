@@ -38,6 +38,7 @@ import {
   requestItemCompanyShipmentCancellation,
 } from './business'
 import { db } from '@/db'
+import { INVENTORY_GENERIC_DOC_TYPES } from './types'
 
 const SESSION = {
   employeeId: 'E001',
@@ -1114,6 +1115,67 @@ describe('syncLocations 漂移探测与 engine.ts 字面一致（副本守护）
       const upserts = src.match(/INSERT INTO inventory_locations[\s\S]*?ON CONFLICT \(location_id\) DO UPDATE/g)
       expect(upserts?.length ?? 0, `${file} UPSERT 自愈路径缺失`).toBeGreaterThanOrEqual(2)
     }
+  })
+})
+
+/**
+ * #236 守护：`insertDocHeader`（business.ts）与 `createInventoryCoreDoc`（engine.ts）
+ * 各有一份「同主体单据统一两端」的逻辑。#200 给 engine 那份加了「两端都给且不一致则拒绝」，
+ * business 这份当时漏了同步 —— 本测试守护两份不再漂移。
+ *
+ * ⚠️ 这里只能做**字面量守护**，不能做行为测试：`insertDocHeader` 不是 export，而现存
+ * 18 处调用对同主体单据每次只传 source / target 其一（已逐处核实，含 `createReturnForRestock`
+ * 那处两端都传的调用 —— 它的 docType 只会是「院退货」/「市场退货」，都不在
+ * INTERNAL_SAME_NODE_DOC_TYPES 里），**没有任何公开 API 能构造出两端不一致**。
+ * 该断言是防未来新增专用服务复现此坑的前置守卫，其运行时行为规格由 engine.ts 侧的用例承载。
+ */
+describe('insertDocHeader 同主体两端一致断言与 engine.ts 字面一致（副本守护）', () => {
+  const SAME_NODE_GUARD_RE =
+    /if \(sourceOrgNodeId && targetOrgNodeId && sourceOrgNodeId !== targetOrgNodeId\) \{\s*\n\s*throw new ApiError\('INVALID_PARAMS', '该单据的出库主体与入库主体必须是同一个'\)\s*\n\s*\}/
+
+  it('两份副本都含该断言，且逐字一致', () => {
+    const businessSrc = readFileSync(resolve(process.cwd(), 'src/lib/inventory/business.ts'), 'utf8')
+    const engineSrc = readFileSync(resolve(process.cwd(), 'src/lib/inventory/engine.ts'), 'utf8')
+    const businessGuard = businessSrc.match(SAME_NODE_GUARD_RE)?.[0]
+    const engineGuard = engineSrc.match(SAME_NODE_GUARD_RE)?.[0]
+    expect(businessGuard, 'business.ts 的 insertDocHeader 缺少同主体两端一致断言').toBeTruthy()
+    expect(engineGuard, 'engine.ts 的 createInventoryCoreDoc 缺少同主体两端一致断言').toBeTruthy()
+    // 归一化缩进后逐字比对（两处所在的嵌套层级不同）
+    expect(businessGuard!.replace(/\s+/g, ' ')).toBe(engineGuard!.replace(/\s+/g, ' '))
+  })
+
+  it('断言位于 INTERNAL_SAME_NODE_DOC_TYPES 分支内、且在归一化赋值之前', () => {
+    const businessSrc = readFileSync(resolve(process.cwd(), 'src/lib/inventory/business.ts'), 'utf8')
+    const branch = businessSrc.match(
+      /if \(INTERNAL_SAME_NODE_DOC_TYPES\.has\(input\.docType\)\) \{[\s\S]*?\n  \}/,
+    )?.[0]
+    expect(branch, '未找到 business.ts 的同主体分支').toBeTruthy()
+    const guardAt = branch!.search(SAME_NODE_GUARD_RE)
+    const assignAt = branch!.indexOf('const orgNodeId = sourceOrgNodeId ?? targetOrgNodeId')
+    expect(guardAt, '断言不在同主体分支内').toBeGreaterThan(-1)
+    expect(assignAt, '未找到归一化赋值').toBeGreaterThan(-1)
+    // 顺序颠倒会让归一化先把两端抹成同值，断言随之恒不成立（静默失效）
+    expect(guardAt).toBeLessThan(assignAt)
+  })
+})
+
+/**
+ * #237 守护：`assertGenericDocLocationRules` 的 case 集合必须与
+ * `INVENTORY_GENERIC_DOC_TYPES` 一一对应。写进去的专用类型（SPECIALIZED）永远不可达 ——
+ * 唯一调用点 `createInventoryCoreDoc` 在更靠前处已把它们整体拒了 —— 但会诱导后来者
+ * （人或评审 agent）把它当活代码推理。#200 的评审里就因此产生过一条误报 P2。
+ */
+describe('assertGenericDocLocationRules 的 case 与通用类型白名单一一对应（#237）', () => {
+  it('不含任何 SPECIALIZED 类型的 case，且覆盖全部通用类型', () => {
+    const engineSrc = readFileSync(resolve(process.cwd(), 'src/lib/inventory/engine.ts'), 'utf8')
+    const fnBody = engineSrc.match(
+      /async function assertGenericDocLocationRules\([\s\S]*?\n  switch \(input\.docType\) \{([\s\S]*?)\n  \}\n\}/,
+    )?.[1]
+    expect(fnBody, '未找到 assertGenericDocLocationRules 的 switch 体').toBeTruthy()
+
+    const cases = Array.from(fnBody!.matchAll(/case '([^']+)':/g)).map((m) => m[1])
+    expect(new Set(cases).size, 'case 有重复').toBe(cases.length)
+    expect(new Set(cases)).toEqual(new Set(INVENTORY_GENERIC_DOC_TYPES))
   })
 })
 

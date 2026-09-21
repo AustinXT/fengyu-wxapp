@@ -683,11 +683,21 @@ async function assertGenericDocLocationRules(
   targetOrgNodeId: string | null,
   actingOrgNodeId: string,
 ): Promise<void> {
+  /**
+   * 这里的 case 集合必须与 `INVENTORY_GENERIC_DOC_TYPES`（types.ts，10 个）一一对应 ——
+   * 本函数只有一个调用点（`createInventoryCoreDoc`），而那里在更靠前的位置就把
+   * `SPECIALIZED_DOC_TYPES` 整体拒了（「该库存单据必须从对应的专用业务流程创建」），
+   * 所以任何专用类型的 case 写在这里都是**不可达**的。
+   *
+   * #237：原先多出一个 `供应链采购入库` 的 case（它属 SPECIALIZED），已删。它真正的
+   * 位置校验在 `business.ts` 的专用服务里（`assertType(supplyChain, '总部', '供应链采购入库主体')`），
+   * 那份是活代码。留着这个影子的代价是实打实的：#200 的评审里有谱系两次把它当活代码推理、
+   * 据此报了一条误报 P2。
+   *
+   * 暂未加 `default:` 穷尽性守卫 —— 当前不在 switch 里的通用类型是直接 return（无位置约束），
+   * 改成 throw 是行为变更，需要单独评估，见 #237 正文。
+   */
   switch (input.docType) {
-    case '供应链采购入库':
-      if (!targetOrgNodeId) throw new ApiError('INVALID_PARAMS', '供应链采购入库缺少入库主体')
-      await assertLocationType(targetOrgNodeId, '总部', '供应链采购入库主体')
-      return
     case '分院调货出库':
       await assertSameMarketForStoreTransfer(sourceOrgNodeId, targetOrgNodeId)
       return
