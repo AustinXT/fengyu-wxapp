@@ -4280,6 +4280,19 @@ export async function approveReturnForRestock(
     const targetOrgNodeId = required(returnDoc.targetOrgNodeId, '回库主体')
     const source = await locationForUpdate(tx, sourceOrgNodeId)
     const target = await locationForUpdate(tx, targetOrgNodeId)
+    /**
+     * 只校验 target（收货方）是**设计意图**，不是漏掉 source —— 2026-09-22 用户拍板。
+     *
+     * 本函数确实两侧都动库存（source 出库、target 入库），所以「按被改动的主体鉴权」这条
+     * 规则（见 #200）在这里会推导出「两边都该校验」。但退货审批的语义是**上级审下级**：
+     * - 院退货（门店 → 市场）：市场审批人收货，其 scope 天然展开覆盖辖区门店
+     * - 市场退货（市场 → 总部）：总部审批人收货。`inventoryScopedLocationIds` 对「总部」
+     *   scope **刻意不展开后代**，所以总部审批人的 scope 里永远没有具体市场 ——
+     *   若在此处加 `assertLocationWritable(session, source)`，市场退货将**无人可审**。
+     *
+     * 换句话说：能审批的前提就是「你是收货方」，而退货出库是下级已提交的申请，
+     * 审批人对其 source 无需可见性。#200 的评审两次把这里标为疑似缺陷，故在此钉住结论。
+     */
     assertLocationWritable(session, target)
     const inboundDocType = returnDoc.docType === '院退货' ? '市场退货入库' : '供应链退货入库'
     const items = await allDocItemsForUpdate(tx, returnDocId)
@@ -4432,6 +4445,8 @@ export async function rejectReturnForRestock(
       throw new ApiError('INVALID_STATE', '当前单据不能驳回')
     }
     const target = await locationForUpdate(tx, required(returnDoc.targetOrgNodeId, '回库主体'))
+    // 与 approveReturnForRestock 同口径：只校验收货方是设计意图（总部 scope 不展开后代，
+    // 校验 source 会让市场退货无人可驳）。详见那里的注释。
     assertLocationWritable(session, target)
     await tx.execute(sql`
       UPDATE inventory_stock_reservations
