@@ -140,14 +140,12 @@ export interface CustomerStatusResult {
    * 不抛错（可自愈，且抛错会在新环境首跑等场景误伤），只标记 + warn 供运维判读。
    */
   suspiciousBulkReset: boolean
-  /** 会员客总数，`suspiciousBulkReset` 的分母；也方便运维直接判读段 3 的占比 */
-  memberTotal: number
   stats: Array<{ customer_status: string | null; cnt: number }>
 }
 
 /** 段 3 单跑命中多少行才值得怀疑数据源塌了。稳态下日增量是个位数（dev 实测 2）。 */
 const BULK_RESET_SUSPICION_THRESHOLD = 100
-/** 段 3 命中占会员客总数的比例上限。稳态约 0.1%，超过 10% 说明不是自然增量。 */
+/** 段 3 命中占「本轮被触及的会员客」的比例上限。稳态约 0.1%，超过 10% 说明不是自然增量。 */
 const BULK_RESET_SUSPICION_RATIO = 0.1
 
 export async function refreshCustomerStatus(
@@ -173,37 +171,37 @@ export async function refreshCustomerStatus(
       ORDER BY customer_status
     `)) as Array<{ customer_status: string | null; cnt: number }>
 
-    const memberTotalRows = (await tx.execute(sql`
-      SELECT COUNT(*)::int AS cnt FROM client_wechat_users WHERE customer_type = '会员客'
-    `)) as Array<{ cnt: number }>
-    const memberTotal = Number(memberTotalRows[0]?.cnt ?? 0)
-
     const updatedMember = updated.count ?? 0
     const resetNoVisit = reset.count ?? 0
-    // 判据用「占会员客总数的比例」，不是「段 2 是否为 0」也不是「段 3 是否反超段 2」：
-    // service_orders 中等塌陷（比如误删 40%）时段 2 仍会命中上千行，前两种判据都整片漏报
-    // —— 1889 会员里 729 人被静默刷成休眠（稳态基线才 2 人）却不告警。
+    // 分母是「本轮被段 2 或段 3 触及的会员客」，三个更直觉的判据都被验证会漏报：
+    //   · `updatedMember === 0`：中等塌陷时段 2 仍命中上千行 → 整片漏报
+    //   · `resetNoVisit > updatedMember`：误删 40% 时 729 : 1091，仍不告警
+    //   · 占**会员客总数**的比例：存量无单休眠会员会稀释分母 —— 1 万会员里 9200 人本就休眠
+    //     （段 3 不碰），剩下 800 个有单会员的服务单全丢，800 < 10000×10% 照样不告警
+    // 用「本轮触及数」当分母就没有这个稀释面：上面三个场景现在都会告警。
     // 绝对下限 100 是为了不让小库 / 新环境的自然波动刷屏。
+    const touchedMembers = updatedMember + resetNoVisit
     const suspiciousBulkReset =
       resetNoVisit >= BULK_RESET_SUSPICION_THRESHOLD &&
-      resetNoVisit > memberTotal * BULK_RESET_SUSPICION_RATIO
+      resetNoVisit > touchedMembers * BULK_RESET_SUSPICION_RATIO
 
     return {
       clearedNonMember: cleared.count ?? 0,
       updatedMember,
       resetNoVisit,
       suspiciousBulkReset,
-      memberTotal,
       stats,
     }
   })
 
   // 告警放在 COMMIT 之后：事务内打印会在「已把这些行刷成休眠」之后又回滚，日志撒谎更难排障。
   if (result.suspiciousBulkReset) {
-    const pct = ((result.resetNoVisit / result.memberTotal) * 100).toFixed(1)
+    // 除零不可达：分母 = updatedMember + resetNoVisit ≥ resetNoVisit ≥ 100
+    const touched = result.updatedMember + result.resetNoVisit
+    const pct = ((result.resetNoVisit / touched) * 100).toFixed(1)
     console.warn(
-      `[customerStatus] 段 3 命中 ${result.resetNoVisit} 行 = 会员客总数 ${result.memberTotal} 的 ${pct}%` +
-        `（段 2 命中 ${result.updatedMember} 行）—— service_orders 可能处于异常态` +
+      `[customerStatus] 段 3 命中 ${result.resetNoVisit} 行，占本轮触及会员客 ${touched} 的 ${pct}%` +
+        `（段 2 只命中 ${result.updatedMember} 行）—— service_orders 可能处于异常态` +
         '（restore 中 / client_user_id 被批量置空 / 表刚重灌）。' +
         '这些会员客已被刷成「休眠」，数据看板当天会偏向休眠档；' +
         '确认数据源恢复后重跑本 STEP 即可还原。',
