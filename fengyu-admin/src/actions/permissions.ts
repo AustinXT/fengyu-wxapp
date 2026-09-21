@@ -1,7 +1,7 @@
 'use server'
 
 import { db } from '@/db'
-import { pgErrorCode } from '@/lib/pg-error'
+import { pgErrorCode, pgErrorConstraint } from '@/lib/pg-error'
 import { permissionRoleDefinitions, permissionRoles } from '@db/permission'
 import { staffWechatUsers } from '@db/user'
 import { orgNodes } from '@db/org'
@@ -346,8 +346,16 @@ export const assignRole = withAnyPermission(
       return { success: false, message: '该员工已拥有相同的角色和权限范围' }
     }
     // employee_id 的 FK 兜底：前置校验与 insert 之间员工被并发删除的竞态。
+    // 这条确实可达 —— deleteEmployee 在事务里先 `tx.delete(permissionRoles)` 再删主表
+    // （employees.ts:1047-1058），所以「有角色行就删不掉员工」的直觉不成立。
     // 文案与前置校验逐字相同，不让竞态窗口变成另一个探测信道。
-    if (pgErrorCode(err) === '23503') {
+    //
+    // ⚠️ 必须按约束名收窄：permission_roles 另有 scope_id → org_nodes、
+    // role → permission_role_definitions 两条 FK，只判 23503 会把「组织节点/角色定义被并发删除」
+    // 误报成「员工不存在」—— 把原本响亮的 500 变成静默且主体错误的业务拒绝，排障指错方向。
+    // 判据取子串而非全名（全名 permission_roles_employee_id_staff_wechat_users_employee_id_fk
+    // 由 drizzle 生成规则决定，会随 schema 改名漂移），另两条 FK 名均不含 employee_id。
+    if (pgErrorCode(err) === '23503' && pgErrorConstraint(err)?.includes('employee_id')) {
       return { success: false, message: '员工不存在或不在您的权限范围内' }
     }
     throw err

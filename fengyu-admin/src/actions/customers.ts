@@ -1131,21 +1131,32 @@ export const getCustomerServiceOrders = withPermission(
  * scope 判据用 `isInScope(storeId)`，**刻意不用** `isEmployeeRowVisible` 的
  * store ∪ orgNode 双维度（那是 `assignRole` 侧的口径）：绑定美容师是门店业绩归属，
  * 直挂市场 / 职能部门（`store_id IS NULL`）的员工本就不该成为顾客的绑定美容师，
- * 放宽到双维度等于扩大可写集合。`isInScope` 对 admin 放行、对 `storeId=null` 的非 admin 拒绝。
+ * 放宽到双维度等于扩大可写集合。无门店的员工直接拒绝 —— 写成显式的 `!emp.storeId`
+ * 而不是 `isInScope(session, emp.storeId ?? '')`：后者能挡住只是因为碰巧没有
+ * `store_id = ''` 的门店行（PG text 主键允许空串，schema 无 CHECK），
+ * 那是数据前提不是代码约束，不该让安全判定借道它。
  *
  * 在职状态**不**校验 —— 与 `assignCustomer` 既有行为一致（存量绑定关系里就有离职美容师）。
  * 这与同文件 `promoterEmployeeId` 的口径（校验在职、刻意不校验 scope）是两套，各有出处，勿互相对齐。
+ *
+ * ⚠️ 已知第四处写入未收敛：`mergeClientProfile` 从 orphan 行搬 `boundEmployeeId`
+ * 而 orphan 行本身无 scope 校验。那里是「孤儿档案合并」语义（仅在源字段为空时搬历史值），
+ * 「遇到 scope 外归属该拒绝合并 / 跳过该字段 / 照搬」属业务口径，待产品拍板后另行处理。
  */
 async function resolveBoundEmployee(
   session: AuthSession,
   employeeId: string,
 ): Promise<{ ok: true; name: string | null } | { ok: false; message: string }> {
+  // 空值挡板下沉到 helper（原先只有 assignCustomer 的调用方有，updateCustomer 没有）
+  if (!employeeId?.trim()) {
+    return { ok: false, message: '请选择美容师' }
+  }
   const [emp] = await db
     .select({ name: staffWechatUsers.name, storeId: staffWechatUsers.storeId })
     .from(staffWechatUsers)
     .where(eq(staffWechatUsers.employeeId, employeeId))
     .limit(1)
-  if (!emp || !isInScope(session, emp.storeId ?? '')) {
+  if (!emp || !emp.storeId || !isInScope(session, emp.storeId)) {
     return { ok: false, message: '员工不存在或无权分配' }
   }
   return { ok: true, name: emp.name ?? null }
@@ -1234,14 +1245,37 @@ export const updateCustomer = withPermission(
     ]))
   }
 
-  // boundEmployeeId 变更时校验第二主体并同步写入冗余姓名（#250，与 assignCustomer 单源）
+  /*
+   * boundEmployeeId 的第二主体校验（#250，与 assignCustomer / createCustomer 共用 resolveBoundEmployee）。
+   * 两处刻意设计，改之前先读完：
+   *
+   * ① **空串归一为解绑**。原先 `''` 会落进「清空」分支只把姓名置 null，
+   *    而 `updateData` 来自 `filter(v !== undefined)`，`''` 照样写进 bound_employee_id
+   *    → 留下「ID 是空串、姓名是 NULL」的第三态。该列无 FK 拦不住，且下游两头漏统：
+   *    staff mgmt-dashboard 的归属榜按 `IS NOT NULL` 收进来再被 JOIN 丢掉，
+   *    而「无归属新会员」监控只数 `IS NULL`。
+   *
+   * ② **只在值真的变了时才因校验失败而拒绝**。前端 handleSave 对该字段是**无条件重发**
+   *    （`customer-detail-page.tsx:298`，与紧邻的 promoterEmployeeId 条件发送不同），
+   *    而存量值本就可能不合规 —— 该列无 FK、WorkFine 同步无条件覆盖且不在
+   *    WORKFINE_OVERRIDE_FIELD_MAP 保护名单里、员工调店后无回填路径、生产有 21 人 store_id IS NULL。
+   *    无条件拒绝会让这类顾客「改个备注都存不下去」（early return = 整条 UPDATE 原子失败），
+   *    而下拉候选里根本没有那个脏值、用户无从自救。
+   *    不变即无需重新授权；**改值仍必过闸**，越权路径没有被放宽。
+   */
   if ('boundEmployeeId' in data) {
-    if (data.boundEmployeeId) {
-      const resolved = await resolveBoundEmployee(session, data.boundEmployeeId)
-      if (!resolved.ok) return { success: false, message: resolved.message }
-      updateData.boundEmployeeName = resolved.name
-    } else {
+    const nextBoundEmployeeId = data.boundEmployeeId?.trim() ? data.boundEmployeeId : null
+    updateData.boundEmployeeId = nextBoundEmployeeId
+    if (nextBoundEmployeeId === null) {
       updateData.boundEmployeeName = null
+    } else {
+      const resolved = await resolveBoundEmployee(session, nextBoundEmployeeId)
+      if (resolved.ok) {
+        updateData.boundEmployeeName = resolved.name
+      } else if (nextBoundEmployeeId !== before.boundEmployeeId) {
+        return { success: false, message: resolved.message }
+      }
+      // else：值未变 + 存量脏值 → 放行本次编辑，姓名快照保持原样（不写 null 制造新脏数据）
     }
   }
 
@@ -1314,9 +1348,9 @@ export const assignCustomer = withPermission(
   'customer:update',
   async (session, userId: string, employeeId: string): Promise<{ success: boolean; message: string }> => {
   if (!userId) return { success: false, message: '缺少顾客 userId' }
-  if (!employeeId) return { success: false, message: '请选择美容师' }
 
   // 员工存在性 + scope 校验（对齐 staff 端 assertEmployeeInScope）：
+  // 空值挡板已下沉到 resolveBoundEmployee 内（同样在查库之前返回「请选择美容师」）。
   // 防止门店店长把本店顾客分配给其他门店的美容师。
   // 与 updateCustomer 共用 resolveBoundEmployee —— 同一列同一权限只能有一条校验路径（#250）。
   const resolved = await resolveBoundEmployee(session, employeeId)
@@ -1402,13 +1436,16 @@ export const createCustomer = withPermission(
     return { success: false, message: '该手机号已存在顾客记录' }
   }
 
-  // 解析绑定美容师姓名
+  // 绑定美容师：走与 updateCustomer / assignCustomer 同一条校验路径（#250）。
+  // 此前这里只 select 姓名、不校验存在性与 scope —— 与修复前的 updateCustomer 逐字同构，
+  // 而 customer:create 与 customer:update 同属 manager + customer_mgr（同一批调用方），
+  // 不堵这条等于「改」堵住了、「建」还开着。空串同样归一为 null，不留第三态。
+  const nextBoundEmployeeId = data.boundEmployeeId?.trim() ? data.boundEmployeeId : null
   let boundEmployeeName: string | null = null
-  if (data.boundEmployeeId) {
-    const { staffWechatUsers } = await import('@db/user')
-    const [emp] = await db.select({ name: staffWechatUsers.name }).from(staffWechatUsers)
-      .where(eq(staffWechatUsers.employeeId, data.boundEmployeeId)).limit(1)
-    boundEmployeeName = emp?.name ?? null
+  if (nextBoundEmployeeId) {
+    const resolved = await resolveBoundEmployee(session, nextBoundEmployeeId)
+    if (!resolved.ok) return { success: false, message: resolved.message }
+    boundEmployeeName = resolved.name
   }
 
   // 服务端生成 userId
@@ -1421,7 +1458,7 @@ export const createCustomer = withPermission(
       phone: data.phone,
       name: data.name,
       boundStoreId: data.boundStoreId ?? null,
-      boundEmployeeId: data.boundEmployeeId ?? null,
+      boundEmployeeId: nextBoundEmployeeId,
       boundEmployeeName,
     })
   } catch (err: any) {

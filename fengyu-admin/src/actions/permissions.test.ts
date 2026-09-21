@@ -265,6 +265,10 @@ describe('assignRole — AC-09 & scope constraint', () => {
     roles: [{ role: 'hr', scopeId: 'market-1' }],
     permissions: {
       actions: ['permission:assign'],
+      // ⚠️ scopeStoreIds 是 AuthSession 的**必填**字段（types.ts:762），生产 session
+      // 恒为数组。fixture 原先漏了它，导致「hr + 带 storeId 的员工」这条最常见的生产路径
+      // 一测就在 isInScope 里 TypeError，只能另建 storeManagerSession 绕道。补齐后两条维度都可测。
+      scopeStoreIds: ['store-fengyu', 'store-jincheng'],
       scopeOrgNodeIds: ['market-1', 'store-fengyu', 'store-jincheng'],
     },
   }
@@ -614,16 +618,68 @@ describe('assignRole — AC-09 & scope constraint', () => {
     expect(values).toHaveBeenCalledOnce()
   })
 
-  it('并发删员工导致 FK 23503 → 友好文案，与前置校验逐字相同', async () => {
+  it('并发删员工导致 employee_id FK 23503 → 友好文案，与前置校验逐字相同', async () => {
     ;(getSession as any).mockResolvedValue(hrSession)
     ;(hasRole as any).mockReturnValue(false)
     mockAssignRoleSelects()
-    const fkError = Object.assign(new Error('violates foreign key constraint'), { code: '23503' })
+    const fkError = Object.assign(new Error('violates foreign key constraint'), {
+      code: '23503',
+      constraint_name: 'permission_roles_employee_id_staff_wechat_users_employee_id_fk',
+    })
     ;(db.insert as any).mockReturnValue({ values: vi.fn().mockRejectedValue(fkError) })
 
     const result = await assignRole({ employeeId: 'EMP-RACE', role: 'manager', scopeId: 'market-1' })
 
     expect(result).toEqual({ success: false, message: '员工不存在或不在您的权限范围内' })
+  })
+
+  it('scope_id FK 23503（组织节点被并发删）→ 照旧抛出，不误报成「员工不存在」', async () => {
+    // permission_roles 有三条 FK。只判 23503 不判约束名，会把「节点/角色定义被删」
+    // 说成「员工不存在」—— 把响亮的 500 变成静默且主体错误的业务拒绝。
+    ;(getSession as any).mockResolvedValue(hrSession)
+    ;(hasRole as any).mockReturnValue(false)
+    mockAssignRoleSelects()
+    const fkError = Object.assign(new Error('violates foreign key constraint'), {
+      code: '23503',
+      constraint_name: 'permission_roles_scope_id_org_nodes_id_fk',
+    })
+    ;(db.insert as any).mockReturnValue({ values: vi.fn().mockRejectedValue(fkError) })
+
+    await expect(
+      assignRole({ employeeId: 'EMP-Y', role: 'manager', scopeId: 'market-1' }),
+    ).rejects.toThrow('violates foreign key constraint')
+  })
+
+  it('hr + 带 storeId 的本市场门店员工 → 放行（store 维度，非 org 维度）', async () => {
+    // hrSession 现已带 scopeStoreIds，这条生产上最常见的路径此前测不了
+    // （fixture 缺该字段时 isInScope 会 TypeError，只能另建 storeManagerSession 绕道）
+    ;(getSession as any).mockResolvedValue(hrSession)
+    ;(hasRole as any).mockReturnValue(false)
+    mockAssignRoleSelects({
+      node: { type: '门店' },
+      employee: { storeId: 'store-jincheng', orgNodeId: null, isResigned: false },
+    })
+    const values = vi.fn().mockResolvedValue({})
+    ;(db.insert as any).mockReturnValue({ values })
+
+    const result = await assignRole({ employeeId: 'EMP-STORE', role: 'manager', scopeId: 'store-jincheng' })
+
+    expect(result.success).toBe(true)
+    expect(values).toHaveBeenCalledOnce()
+  })
+
+  it('hr + 他市场门店员工（store 维度）→ 拒绝', async () => {
+    ;(getSession as any).mockResolvedValue(hrSession)
+    ;(hasRole as any).mockReturnValue(false)
+    mockAssignRoleSelects({
+      employee: { storeId: 'store-of-other-market', orgNodeId: null, isResigned: false },
+    })
+    ;(db.insert as any).mockReturnValue({ values: vi.fn() })
+
+    const result = await assignRole({ employeeId: 'EMP-OTHER', role: 'manager', scopeId: 'market-1' })
+
+    expect(result).toEqual({ success: false, message: '员工不存在或不在您的权限范围内' })
+    expect(db.insert).not.toHaveBeenCalled()
   })
 })
 
