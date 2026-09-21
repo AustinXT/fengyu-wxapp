@@ -12,15 +12,12 @@
   <block wx:else>
     <view class="status-banner status-banner--{{detail.status === '待服务' ? 'pending' : detail.status === '服务中' ? 'progress' : detail.status === '待客户确认' ? 'awaiting' : detail.status === '已取消' ? 'cancelled' : 'done'}}">
       <text class="status-label">{{detail.status}}</text>
-      <view class="banner-right">
-        <!-- 跨店支援单（#224）：单开在别的门店、指派给本人 -->
-        <text wx:if="{{detail.isSupport}}" class="support-tag">支援</text>
-        <text class="service-no">{{detail.serviceOrderId}}</text>
-      </view>
+      <text class="service-no">{{detail.serviceOrderId}}</text>
     </view>
 
     <van-cell-group title="基本信息" class="section-group">
-      <van-cell wx:if="{{detail.isSupport}}" title="服务门店" value="{{detail.storeName}}" />
+      <!-- 非本店单（#224）：显式标出开单门店，否则界面上看不出这单不归本店 -->
+      <van-cell wx:if="{{!detail.inCurrentStore && detail.storeName}}" title="服务门店" value="{{detail.storeName}}" />
       <van-cell title="顾客" value="{{detail.customerName}}" />
       <van-cell title="手机号" value="{{detail.customerPhone}}" />
       <van-cell title="服务人员" value="{{detail.staffName}}" />
@@ -88,8 +85,9 @@
         custom-style="border-radius: 48rpx;"
         bind:click="onCompleteService"
       >标记完成</van-button>
+      <!-- 代客户确认仍归开单门店店长（#224） -->
       <van-button
-        wx:elif="{{!isReadOnly && detail.status === '待客户确认' && isManager}}"
+        wx:elif="{{!isReadOnly && detail.status === '待客户确认' && isManager && detail.inCurrentStore}}"
         type="primary" block
         disabled="{{submitting}}"
         loading="{{submitting}}"
@@ -97,9 +95,10 @@
         custom-style="border-radius: 48rpx;"
         bind:click="onConfirmService"
       >代客户确认</van-button>
-      <!-- 支援单不给取消入口（#224）：取消属开单门店的调度决策，云函数同样会拒绝 -->
+      <!-- 非本店单不给取消入口（#224）：取消属开单门店的调度决策，云函数同样会拒绝。
+           判据用 inCurrentStore 而非「是否支援单」——顾客档案也能点进他店他人的单 -->
       <van-button
-        wx:if="{{!isReadOnly && !detail.isSupport && (detail.status === '待服务' || detail.status === '服务中' || detail.status === '待客户确认')}}"
+        wx:if="{{!isReadOnly && detail.inCurrentStore && (detail.status === '待服务' || detail.status === '服务中' || detail.status === '待客户确认')}}"
         type="danger" block plain
         disabled="{{submitting}}"
         custom-style="border-radius: 48rpx; margin-top: 20rpx;"

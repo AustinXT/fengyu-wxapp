@@ -106,6 +106,8 @@ const FILES = {
   // staff: routes/service.js 的 finalizeServiceOrder；client: utils/service-finalize.js
   // 顾客确认链路首次把"扣次数 + 算提成"SQL 引入 clientApi，故纳入跨端守护。
   staffServiceJs: path.resolve(__dirname, '../../routes/service.js'),
+  // #224：service.counts 店长分支与 staff.todoList 店长分支须逐字同口径（角标数 vs 待办数）
+  staffStaffRouteJs: path.resolve(__dirname, '../../routes/staff.js'),
   clientServiceFinalizeJs: path.resolve(__dirname, '../../../../../fengyu-client/cloudfunctions/clientApi/utils/service-finalize.js'),
   // M1（2026-07-14）：admin confirmServiceOrder 经 lib/service-commission-settle.ts 镜像同口径
   adminServiceCommissionSettleTs: path.resolve(__dirname, '../../../../../fengyu-admin/src/lib/service-commission-settle.ts'),
@@ -3592,5 +3594,57 @@ describe('疗程卡可用次数为 0 时仍展示的跨端守护（issue #122）
         expect(src, `${key} 未在日期分支调用守卫`).toContain('assertPaymentAttributionReady(pg)')
       }
     })
+  })
+})
+
+// ============================================================
+// #224 服务单「门店门」同端守护
+//
+// 跨端副本清单守的是四端一致；这里守的是**同端两文件**：
+// service.counts（服务 Tab 角标）与 staff.todoList（工作台待办）数的是同一批单，
+// 店长分支一旦单边漂移，两个数字就对不上——#224 之前恰好一致，是本次放宽引入的风险。
+// ============================================================
+describe('#224 服务单门店门：counts 与 todoList 店长分支同口径', () => {
+  const serviceSrc = readFile(FILES.staffServiceJs)
+  const staffRouteSrc = readFile(FILES.staffStaffRouteJs)
+
+  const STORE_GATE = '(store_id = $1 OR assigned_employee_id = $2)'
+
+  test('service.list / counts 店长分支 = 本店 ∪ 指派给本人', () => {
+    const gate = '(so.store_id = $1 OR so.assigned_employee_id = $2)'
+    expect(serviceSrc).toContain(`conditions.push('${gate}')`)
+    expect(serviceSrc).toContain(`scopeFilter = '${gate}'`)
+  })
+
+  test('staff.todoList 店长分支逐字同口径', () => {
+    expect(staffRouteSrc).toContain(STORE_GATE)
+    expect(staffRouteSrc).toMatch(/FROM service_orders WHERE \(store_id = \$1 OR assigned_employee_id = \$2\) AND status IN \('待服务', '服务中'\)/)
+  })
+
+  test('非店长分支两处都不带 OR（(A∪B)∧B ≡ B，多写 OR 会让 planner 退化成 BitmapOr）', () => {
+    // service.list / service.counts 非店长分支
+    expect(serviceSrc).toContain("conditions.push('so.assigned_employee_id = $1')")
+    expect(serviceSrc).toContain("scopeFilter = 'so.assigned_employee_id = $1'")
+    // staff.todoList 非店长分支
+    expect(staffRouteSrc).toMatch(/FROM service_orders WHERE assigned_employee_id = \$1 AND status IN/)
+  })
+
+  test('cancel / confirm 门店门未被放宽（取消与确认仍归开单门店）', () => {
+    // 两者都先查「本店 ∪ 指派给本人」再在 JS 侧用 isInCurrentStore 分流拒绝原因
+    const gateCount = (serviceSrc.match(/\(store_id = \$2 OR assigned_employee_id = \$3\)/g) || []).length
+    expect(gateCount).toBe(4) // start / complete / cancel / confirm
+    expect(serviceSrc).toContain("throw new Error('PERMISSION_DENIED: 支援服务单需由开单门店取消')")
+    expect(serviceSrc).toContain("throw new Error('PERMISSION_DENIED: 支援服务单需由开单门店店长确认')")
+  })
+
+  test('第二道门与单的门店挂钩，不得退回裸 isCurrentStoreManager', () => {
+    // isCurrentStoreManager 只看请求人当前门店；直接用它做第二道门对店长恒真短路
+    expect(serviceSrc).toContain('function isOrderStoreManager(auth, so)')
+    expect(serviceSrc).not.toMatch(/!isCurrentStoreManager\(ctx\.auth\)\s*&&\s*so\.assigned_employee_id !==/)
+  })
+
+  test('管理层模式不得写服务单状态', () => {
+    const mgmtGuards = (serviceSrc.match(/管理层模式仅支持只读操作/g) || []).length
+    expect(mgmtGuards).toBe(2) // start + complete
   })
 })

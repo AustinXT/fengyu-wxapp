@@ -14,6 +14,8 @@ const MOCK_SERVICES = [
     completedTime: null as string | null,
     appointmentId: 'appt-001',
     remark: '',
+    storeName: '南昌世纪店',
+    inCurrentStore: true,
     items: [
       {
         saleItemId: 'XSLSH-WX-20260205001',
@@ -38,6 +40,8 @@ const MOCK_SERVICES = [
     completedTime: null as string | null,
     appointmentId: null,
     remark: '',
+    storeName: '红谷滩旗舰店',
+    inCurrentStore: false,   // #224：本地可目视验证「非本店单」标签与按钮隐藏
     items: [
       {
         saleItemId: 'XSLSH-WX-20260210001',
@@ -62,6 +66,8 @@ const MOCK_SERVICES = [
     completedTime: '2026-02-26 11:30',
     appointmentId: null,
     remark: '顾客反馈良好',
+    storeName: '南昌世纪店',
+    inCurrentStore: true,
     items: [
       {
         saleItemId: 'XSLSH-WX-20260120001',
@@ -86,6 +92,8 @@ const MOCK_SERVICES = [
     completedTime: '2026-02-25 16:20',
     appointmentId: 'appt-002',
     remark: '',
+    storeName: '南昌世纪店',
+    inCurrentStore: true,
     items: [
       {
         saleItemId: 'XSLSH-WX-20260205001',

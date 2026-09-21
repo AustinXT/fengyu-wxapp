@@ -15,10 +15,10 @@ interface ServiceDetail {
   completedTime: string | null;
   appointmentId: string | null;
   remark: string;
-  // 跨店支援单（#224）：单属于别的门店、指派给本人。取消仍归开单门店，故支援单不显示取消按钮
-  storeId: string | null;
+  // #224 跨店支援单。inCurrentStore 由云函数下发，与 cancel/confirm 的门店门同源——
+  // 取消与代客户确认都仍归开单门店，非本店单一律不给这两个入口。
   storeName: string;
-  isSupport: boolean;
+  inCurrentStore: boolean;
   items: Array<{
     saleItemId: string;
     itemName: string;

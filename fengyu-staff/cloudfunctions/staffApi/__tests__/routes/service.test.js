@@ -2051,10 +2051,13 @@ describe('service.create clientUserId 解析', () => {
 })
 
 // ============================================================
-// #224 外援跨店支援单：可见 + 可开始/完成，取消仍归开单门店
+// #224 外援跨店支援单：可见 + 可开始/完成，取消/确认仍归开单门店
 //
-// 场景：外援本人 effectiveStoreId=store-001，被指派到 store-SUPPORT 的服务单。
-// 放行判据一律是 assigned_employee_id = 本人，不重算「锚定市场 + is_on_business_trip」。
+// 关键设计约束（pr-ready 三个对抗 reviewer 各自独立命中）：
+//   1. 门店门按角色分支构造 —— 非店长恒等于「指派给本人」，不写冗余 OR（避免索引退化）
+//   2. 第二道门必须与**单的门店**挂钩，否则对店长恒真短路，边界只剩 SQL 单点
+//   3. 前端 inCurrentStore 必须与 cancel/confirm 的门店门同源，否则造出「按钮点了必报错」
+//   4. effectiveStoreId 可能为 null（管理层模式；门店模式解析不出门店的员工，auth.js:77-79）
 // ============================================================
 describe('#224 跨店支援单可见性与操作权限', () => {
   const SUPPORT_STORE = 'store-SUPPORT'
@@ -2083,61 +2086,154 @@ describe('#224 跨店支援单可见性与操作权限', () => {
     vi.clearAllMocks()
   })
 
-  describe('list', () => {
-    test('非店长：门店门放宽为 OR，且仍被 AND 收死在指派给自己', async () => {
+  describe('list / counts 门店门按角色分支构造', () => {
+    test('非店长：条件恒等于「指派给本人」，不带冗余 OR', async () => {
       const ctx = createBeauticianCtx({ page: 1 })
+      pg.query.mockResolvedValueOnce([])
+
+      await serviceRoutes.list(ctx)
+
+      const [sql, params] = pg.query.mock.calls[0]
+      expect(sql).toContain('so.assigned_employee_id = $1')
+      // (store ∪ assigned) ∧ assigned ≡ assigned —— 多写 OR 会让 planner 退化成 BitmapOr
+      expect(sql).not.toContain('so.store_id = $1')
+      expect(params[0]).toBe(ME)
+    })
+
+    test('店长：保留 OR（本店全部 ∪ 自己的跨店支援单）', async () => {
+      const ctx = createManagerCtx({ page: 1 })
       pg.query.mockResolvedValueOnce([])
 
       await serviceRoutes.list(ctx)
 
       const [sql, params] = pg.query.mock.calls[0]
       expect(sql).toContain('(so.store_id = $1 OR so.assigned_employee_id = $2)')
-      expect(sql).toContain('AND so.assigned_employee_id = $2')
-      // $1/$2 固定占位，不因 status/keyword 等动态条件而错位
-      expect(params[0]).toBe('store-001')
-      expect(params[1]).toBe(ME)
+      expect(params.slice(0, 2)).toEqual(['store-001', 'emp-001'])
     })
 
-    test('非店长 + 状态过滤：动态参数从 $3 起，不与固定占位撞号', async () => {
-      const ctx = createBeauticianCtx({ status: '服务中', page: 1 })
+    test('counts 与 list 同分支同口径（角标数须等于列表条数）', async () => {
+      const beautician = createBeauticianCtx({})
+      pg.query.mockResolvedValueOnce([{ status: '待服务', cnt: 2 }])
+      await serviceRoutes.counts(beautician)
+      expect(pg.query.mock.calls[0][0]).toContain('so.assigned_employee_id = $1')
+      expect(pg.query.mock.calls[0][1]).toEqual([ME])
+
+      vi.clearAllMocks()
+      const manager = createManagerCtx({})
+      pg.query.mockResolvedValueOnce([{ status: '待服务', cnt: 5 }])
+      await serviceRoutes.counts(manager)
+      expect(pg.query.mock.calls[0][0]).toContain('(so.store_id = $1 OR so.assigned_employee_id = $2)')
+      expect(pg.query.mock.calls[0][1]).toEqual(['store-001', 'emp-001'])
+    })
+
+    // 占位符编号：固定占位的个数随角色分支变化（非店长 1 个、店长 2 个），
+    // 后续动态条件全靠 params.length 自增，必须逐组合核对不错位。
+    test('非店长 + 全量筛选：动态占位从 $2 起且逐位对齐', async () => {
+      const ctx = createBeauticianCtx({
+        status: '服务中', keyword: '138', startDate: '2026-09-01', endDate: '2026-09-30', page: 1,
+      })
+      pg.query.mockResolvedValueOnce([])
+
+      await serviceRoutes.list(ctx)
+
+      const [sql, params] = pg.query.mock.calls[0]
+      expect(params[0]).toBe(ME)
+      expect(sql).toContain('so.status = $2')
+      expect(params[1]).toBe('服务中')
+      // keyword 同时命中姓名($3)与手机号($4)
+      expect(params[2]).toContain('138')
+      expect(params[3]).toBe('%138%')
+      expect(sql).toContain('$5::date')
+      expect(sql).toContain('$6::date')
+      expect(params[4]).toBe('2026-09-01')
+      expect(params[5]).toBe('2026-09-30')
+      // LIMIT/OFFSET 收尾
+      expect(sql).toContain('LIMIT $7 OFFSET $8')
+      expect(params).toHaveLength(8)
+    })
+
+    test('店长 + 全量筛选：动态占位从 $3 起且逐位对齐', async () => {
+      const ctx = createManagerCtx({
+        status: '服务中', keyword: '138', startDate: '2026-09-01', endDate: '2026-09-30', page: 1,
+      })
       pg.query.mockResolvedValueOnce([])
 
       await serviceRoutes.list(ctx)
 
       const [sql, params] = pg.query.mock.calls[0]
       expect(sql).toContain('so.status = $3')
-      expect(params[2]).toBe('服务中')
+      expect(sql).toContain('LIMIT $8 OFFSET $9')
+      expect(params).toHaveLength(9)
     })
+  })
 
-    test('支援单返回 isSupport=true + 开单门店名', async () => {
+  describe('inCurrentStore 与 cancel/confirm 门店门同源', () => {
+    test('支援单：inCurrentStore=false + 下发开单门店名', async () => {
       const ctx = createBeauticianCtx({ page: 1 })
       pg.query
         .mockResolvedValueOnce([supportOrderRow()])
-        .mockResolvedValueOnce([]) // items
+        .mockResolvedValueOnce([])
         .mockResolvedValueOnce([{ employee_id: ME, name: '外援甲' }])
         .mockResolvedValueOnce([{ user_id: 'cu-support', name: '顾客A' }])
 
       await serviceRoutes.list(ctx)
 
-      expect(ctx.result[0].isSupport).toBe(true)
-      expect(ctx.result[0].storeId).toBe(SUPPORT_STORE)
+      expect(ctx.result[0].inCurrentStore).toBe(false)
       expect(ctx.result[0].storeName).toBe('支援门店')
     })
 
-    test('本店单 isSupport=false（不误标）', async () => {
+    test('本店单：inCurrentStore=true（不误标）', async () => {
       const ctx = createBeauticianCtx({ page: 1 })
       pg.query
-        .mockResolvedValueOnce([supportOrderRow({ store_id: 'store-001', store_name: '测试店' })])
+        .mockResolvedValueOnce([supportOrderRow({ store_id: 'store-001', store_name: '  测试店  ' })])
         .mockResolvedValueOnce([])
         .mockResolvedValueOnce([{ employee_id: ME, name: '本店美容师' }])
         .mockResolvedValueOnce([{ user_id: 'cu-support', name: '顾客A' }])
 
       await serviceRoutes.list(ctx)
 
-      expect(ctx.result[0].isSupport).toBe(false)
+      expect(ctx.result[0].inCurrentStore).toBe(true)
+      expect(ctx.result[0].storeName).toBe('测试店') // 已 trim
     })
 
-    test('管理层模式 isSupport 恒 false（监管视角无支援语义）', async () => {
+    test('store_name 为 NULL（LEFT JOIN 未命中）→ 空串，不产生 undefined', async () => {
+      const ctx = createBeauticianCtx({ page: 1 })
+      pg.query
+        .mockResolvedValueOnce([supportOrderRow({ store_name: null })])
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([{ employee_id: ME, name: '外援甲' }])
+        .mockResolvedValueOnce([{ user_id: 'cu-support', name: '顾客A' }])
+
+      await serviceRoutes.list(ctx)
+
+      expect(ctx.result[0].storeName).toBe('')
+    })
+
+    // P1-1：门店模式但 effectiveStoreId 解析不出来（auth.js:77-79）。
+    // 库里存在 49 名既无 store_id 又无角色绑定的员工会落到这里。
+    test('effectiveStoreId=null 的门店模式员工：本店单也标 inCurrentStore=false，与 cancel 拒绝口径一致', async () => {
+      const ctx = createBeauticianCtx({ page: 1 }, { effectiveStoreId: null, scopeStoreIds: [] })
+      pg.query
+        .mockResolvedValueOnce([supportOrderRow({ store_id: 'store-001' })])
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([{ employee_id: ME, name: '无门店员工' }])
+        .mockResolvedValueOnce([{ user_id: 'cu-support', name: '顾客A' }])
+
+      await serviceRoutes.list(ctx)
+
+      // 后端 cancel 的 `store_id = NULL` 恒 0 行 → 前端必须同样判 false 才不会给出无效的取消按钮
+      expect(ctx.result[0].inCurrentStore).toBe(false)
+    })
+
+    test('effectiveStoreId=null 时 cancel 一律拒绝，且不会把本店单误报成「不存在」', async () => {
+      const ctx = createBeauticianCtx({ serviceOrderId: 'HLD-LOCAL' }, { effectiveStoreId: null, scopeStoreIds: [] })
+      pg.query.mockResolvedValueOnce([supportOrderRow({ service_order_id: 'HLD-LOCAL', store_id: 'store-001' })])
+
+      await expect(serviceRoutes.cancel(ctx))
+        .rejects.toThrow(/PERMISSION_DENIED.*支援服务单需由开单门店取消/)
+    })
+
+    test('管理层模式 list：退化为「指派给本人」，inCurrentStore 恒 false', async () => {
       const ctx = createManagementCtx({ page: 1 })
       pg.query
         .mockResolvedValueOnce([supportOrderRow({ assigned_employee_id: 'emp-001' })])
@@ -2147,22 +2243,11 @@ describe('#224 跨店支援单可见性与操作权限', () => {
 
       await serviceRoutes.list(ctx)
 
-      expect(ctx.result[0].isSupport).toBe(false)
-    })
-  })
-
-  describe('counts', () => {
-    test('非店长与 list 同口径，保证角标数与列表条数一致', async () => {
-      const ctx = createBeauticianCtx({})
-      pg.query.mockResolvedValueOnce([{ status: '待服务', cnt: 2 }])
-
-      await serviceRoutes.counts(ctx)
-
-      const [sql, params] = pg.query.mock.calls[0]
-      expect(sql).toContain('(so.store_id = $1 OR so.assigned_employee_id = $2)')
-      expect(sql).toContain('AND so.assigned_employee_id = $2')
-      expect(params).toEqual(['store-001', ME])
-      expect(ctx.result.pending).toBe(2)
+      // 行为变更钉死：改造前 `store_id = NULL` 恒空，现在返回本人被指派单（不放大权限）
+      expect(pg.query.mock.calls[0][0]).toContain('so.assigned_employee_id = $1')
+      expect(pg.query.mock.calls[0][1][0]).toBe('emp-001')
+      expect(ctx.result).toHaveLength(1)
+      expect(ctx.result[0].inCurrentStore).toBe(false)
     })
   })
 
@@ -2171,16 +2256,15 @@ describe('#224 跨店支援单可见性与操作权限', () => {
       const ctx = createBeauticianCtx({ id: 'HLD-SUPPORT' })
       pg.query
         .mockResolvedValueOnce([supportOrderRow({ status: '服务中' })])
-        .mockResolvedValueOnce([]) // items
+        .mockResolvedValueOnce([])
         .mockResolvedValueOnce([{ name: '外援甲' }])
         .mockResolvedValueOnce([{ name: '顾客A' }])
 
       await serviceRoutes.detail(ctx)
 
       expect(ctx.result.serviceOrderId).toBe('HLD-SUPPORT')
-      expect(ctx.result.isSupport).toBe(true)
+      expect(ctx.result.inCurrentStore).toBe(false)
       expect(ctx.result.storeName).toBe('支援门店')
-      // 第 2 次查询应是 service_items，而非 client_wechat_users 可见性兜底
       expect(pg.query.mock.calls[1][0]).toContain('FROM service_items')
     })
 
@@ -2193,12 +2277,29 @@ describe('#224 跨店支援单可见性与操作权限', () => {
       await expect(serviceRoutes.detail(ctx))
         .rejects.toThrow(/PERMISSION_DENIED/)
     })
+
+    // 顾客档案兜底分支能打开「别店 + 别人负责」的单，此时前端同样不能给取消入口
+    test('经顾客 scope 兜底打开的他店单：inCurrentStore=false（前端据此不渲染取消按钮）', async () => {
+      const ctx = createManagerCtx({ id: 'HLD-XSTORE' })
+      pg.query
+        .mockResolvedValueOnce([supportOrderRow({
+          service_order_id: 'HLD-XSTORE', status: '已完成', assigned_employee_id: 'emp-other',
+        })])
+        .mockResolvedValueOnce([{ bound_store_id: 'store-001', bound_employee_id: 'emp-001' }])
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([{ name: '他店员工' }])
+        .mockResolvedValueOnce([{ name: '顾客A' }])
+
+      await serviceRoutes.detail(ctx)
+
+      expect(ctx.result.serviceOrderId).toBe('HLD-XSTORE')
+      expect(ctx.result.inCurrentStore).toBe(false)
+      expect(ctx.result.storeName).toBe('支援门店')
+    })
   })
 
   describe('start / complete', () => {
-    test('start：第一道门放行支援单（SQL 带 OR assigned + 三个参数）', async () => {
-      const ctx = createBeauticianCtx({ serviceOrderId: 'HLD-SUPPORT' })
-      pg.query.mockResolvedValueOnce([supportOrderRow()])
+    const startTxn = () => {
       const clientQuery = vi.fn(async (sql) => {
         if (sql.includes('FROM service_items sit')) {
           return { rows: [{ sale_item_id: 'item-001', session_used: 1 }], rowCount: 1 }
@@ -2210,6 +2311,13 @@ describe('#224 跨店支援单可见性与操作权限', () => {
         return { rows: [], rowCount: 1 }
       })
       pg.transaction.mockImplementationOnce(async (cb) => await cb({ query: clientQuery }))
+      return clientQuery
+    }
+
+    test('start：第一道门放行支援单（OR assigned + 三个参数）', async () => {
+      const ctx = createBeauticianCtx({ serviceOrderId: 'HLD-SUPPORT' })
+      pg.query.mockResolvedValueOnce([supportOrderRow()])
+      startTxn()
 
       await serviceRoutes.start(ctx)
 
@@ -2229,40 +2337,75 @@ describe('#224 跨店支援单可见性与操作权限', () => {
       await serviceRoutes.complete(ctx)
 
       expect(ctx.result.status).toBe('待客户确认')
-      expect(pg.query.mock.calls[0][0]).toContain('(store_id = $2 OR assigned_employee_id = $3)')
     })
 
-    test('第二道门仍生效：支援门店里他人的单，非店长不可操作', async () => {
-      const ctx = createBeauticianCtx({ serviceOrderId: 'HLD-OTHER' })
-      // 第一道门此时只可能因 store_id 命中（他人单不会因 assigned 命中），构造为本店他人单
+    // 第二道门必须与**单的门店**挂钩：isCurrentStoreManager 只看请求人当前门店，
+    // 直接拿它做判据对任何店长恒真短路，整条边界就只剩第一道门 SQL 单点承担。
+    // 这里 mock 第一道门返回他店他人单（模拟 SQL 被放宽/绕过），断言 JS 层独立拦截。
+    test('第二道门独立生效：店长拿到他店他人单时仍拒绝（不被 isCurrentStoreManager 短路）', async () => {
+      const ctx = createManagerCtx({ serviceOrderId: 'HLD-OTHER' })
       pg.query.mockResolvedValueOnce([supportOrderRow({
-        service_order_id: 'HLD-OTHER', store_id: 'store-001', assigned_employee_id: 'emp-other',
+        service_order_id: 'HLD-OTHER', store_id: SUPPORT_STORE, assigned_employee_id: 'emp-other',
       })])
 
       await expect(serviceRoutes.start(ctx))
-        .rejects.toThrow(/PERMISSION_DENIED/)
+        .rejects.toThrow(/PERMISSION_DENIED.*无权操作该服务单/)
+    })
+
+    test('店长对本店他人单仍可操作（零回归）', async () => {
+      const ctx = createManagerCtx({ serviceOrderId: 'HLD-LOCAL' })
+      pg.query.mockResolvedValueOnce([supportOrderRow({
+        service_order_id: 'HLD-LOCAL', store_id: 'store-001', assigned_employee_id: 'emp-other',
+      })])
+      startTxn()
+
+      await serviceRoutes.start(ctx)
+
+      expect(ctx.result.status).toBe('服务中')
+    })
+
+    test('店长对指派给自己的支援单可操作（第二道门走 assigned 分支）', async () => {
+      const ctx = createManagerCtx({ serviceOrderId: 'HLD-SUPPORT' })
+      pg.query.mockResolvedValueOnce([supportOrderRow({ assigned_employee_id: 'emp-001' })])
+      startTxn()
+
+      await serviceRoutes.start(ctx)
+
+      expect(ctx.result.status).toBe('服务中')
+    })
+
+    // 管理层是只读视角；放开门店门后 `store_id = NULL OR assigned = 本人` 会让它拿到自己被指派的单
+    test('管理层模式 start / complete 显式拒绝（只读视角，不写状态）', async () => {
+      const startCtx = createManagementCtx({ serviceOrderId: 'HLD-SUPPORT' })
+      await expect(serviceRoutes.start(startCtx))
+        .rejects.toThrow(/PERMISSION_DENIED.*管理层模式仅支持只读操作/)
+
+      const completeCtx = createManagementCtx({ serviceOrderId: 'HLD-SUPPORT' })
+      await expect(serviceRoutes.complete(completeCtx))
+        .rejects.toThrow(/PERMISSION_DENIED.*管理层模式仅支持只读操作/)
+
+      // 一条 SQL 都不该发出
+      expect(pg.query).not.toHaveBeenCalled()
+      expect(pg.transaction).not.toHaveBeenCalled()
     })
   })
 
-  describe('cancel（口径：仍仅开单门店）', () => {
+  describe('cancel / confirm（口径：仍归开单门店）', () => {
     test('外援取消支援单被拒，且给出准确原因而非「不存在」', async () => {
       const ctx = createBeauticianCtx({ serviceOrderId: 'HLD-SUPPORT' })
-      pg.query
-        .mockResolvedValueOnce([])                 // 门店门 0 行
-        .mockResolvedValueOnce([{ '?column?': 1 }]) // 探测：确为指派给本人的支援单
+      pg.query.mockResolvedValueOnce([supportOrderRow()])
 
       await expect(serviceRoutes.cancel(ctx))
         .rejects.toThrow(/PERMISSION_DENIED.*支援服务单需由开单门店取消/)
 
-      // 探测查询必须同时绑定 serviceOrderId + 本人工号，不得泄露他人单
-      expect(pg.query.mock.calls[1][1]).toEqual(['HLD-SUPPORT', ME])
+      // 单次查询即分流，不额外占用连接池（max 5）
+      expect(pg.query).toHaveBeenCalledTimes(1)
+      expect(pg.query.mock.calls[0][1]).toEqual(['HLD-SUPPORT', 'store-001', ME])
     })
 
     test('单真不存在时仍是 INVALID_PARAMS（不被支援分支吞掉）', async () => {
       const ctx = createBeauticianCtx({ serviceOrderId: 'HLD-NONE' })
-      pg.query
-        .mockResolvedValueOnce([]) // 门店门 0 行
-        .mockResolvedValueOnce([]) // 探测也 0 行
+      pg.query.mockResolvedValueOnce([])
 
       await expect(serviceRoutes.cancel(ctx))
         .rejects.toThrow(/INVALID_PARAMS.*不存在/)
@@ -2280,21 +2423,16 @@ describe('#224 跨店支援单可见性与操作权限', () => {
       await serviceRoutes.cancel(ctx)
 
       expect(ctx.result.status).toBe('已取消')
-      // 未走探测分支
-      expect(pg.query.mock.calls).toHaveLength(1)
     })
-  })
 
-  describe('confirm（口径：仍由开单门店店长执行）', () => {
-    test('外援所属门店店长确认不到支援单（门店门未放宽）', async () => {
+    test('店长确认自己的支援单被拒，文案指向开单门店（店经理也在技能白名单内，场景可达）', async () => {
       const ctx = createManagerCtx({ serviceOrderId: 'HLD-SUPPORT' })
-      pg.query.mockResolvedValueOnce([]) // store_id = effectiveStoreId 不命中
+      pg.query.mockResolvedValueOnce([supportOrderRow({
+        status: '待客户确认', assigned_employee_id: 'emp-001',
+      })])
 
       await expect(serviceRoutes.confirm(ctx))
-        .rejects.toThrow(/INVALID_PARAMS.*不属于本门店/)
-
-      expect(pg.query.mock.calls[0][0]).toContain('AND store_id = $2')
-      expect(pg.query.mock.calls[0][0]).not.toContain('assigned_employee_id')
+        .rejects.toThrow(/PERMISSION_DENIED.*支援服务单需由开单门店店长确认/)
     })
   })
 })

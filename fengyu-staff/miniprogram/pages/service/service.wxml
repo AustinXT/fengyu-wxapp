@@ -41,8 +41,8 @@
       <view class="card-header">
         <text class="service-no">{{item.serviceOrderId}}</text>
         <view class="header-tags">
-          <!-- 跨店支援单（#224）：单开在别的门店、指派给本人 -->
-          <view wx:if="{{item.isSupport}}" class="support-tag">支援 · {{item.storeName}}</view>
+          <!-- 非本店单（#224）：标出开单门店，避免与本店单混淆 -->
+          <view wx:if="{{!item.inCurrentStore && item.storeName}}" class="support-tag">{{item.storeName}}</view>
           <view class="status-tag status-tag--{{item.status === '待服务' ? 'pending' : item.status === '服务中' ? 'progress' : item.status === '待客户确认' ? 'awaiting' : 'done'}}">
             {{item.status}}
           </view>
@@ -95,8 +95,10 @@
           catchtap="onCompleteService"
           data-id="{{item.id}}"
         >标记完成</van-button>
+        <!-- 代客户确认仍归开单门店店长（#224）：isManager 是页面级变量，非本店单必须显式排除，
+             否则店长外援会看到一个点了必报「不属于本门店」的按钮 -->
         <van-button
-          wx:elif="{{!isReadOnly && item.status === '待客户确认' && isManager}}"
+          wx:elif="{{!isReadOnly && item.status === '待客户确认' && isManager && item.inCurrentStore}}"
           type="primary"
           size="small"
           custom-class="btn-success"

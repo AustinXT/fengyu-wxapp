@@ -15,10 +15,10 @@ interface ServiceItem {
   serviceTime: string;
   startTime: string | null;
   completedTime: string | null;
-  // 跨店支援单（#224）：单属于别的门店、指派给本人。isSupport 由云函数判定，前端只做展示
-  storeId: string | null;
+  // #224 跨店支援单。inCurrentStore 由云函数下发，与 cancel/confirm 的门店门同源——
+  // 前端据它决定是否渲染「取消 / 代客户确认」，自行推导会与后端判据错位造出点了必报错的按钮。
   storeName: string;
-  isSupport: boolean;
+  inCurrentStore: boolean;
   items: Array<{
     itemName: string;
     spec: string;

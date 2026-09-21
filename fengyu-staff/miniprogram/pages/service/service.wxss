@@ -35,9 +35,8 @@
   flex-shrink: 0;
 }
 
-/* 跨店支援单标识（#224）：开单门店不是本人所属门店 */
+/* 非本店单标识（#224）：展示开单门店名。库内最长门店名 5 字，280rpx 有富余 */
 .support-tag {
-  display: inline-block;
   padding: 4rpx 16rpx;
   border-radius: 24rpx;
   font-size: 22rpx;
@@ -45,7 +44,7 @@
   line-height: 1.5;
   background: #F0F4FA;
   color: #5E8BB3;
-  max-width: 240rpx;
+  max-width: 280rpx;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

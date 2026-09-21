@@ -372,6 +372,13 @@ async function start(ctx) {
     throw new Error('INVALID_PARAMS: 缺少 serviceOrderId')
   }
 
+  // 管理层模式是只读视角（requireManager 亦如此声明）。放开门店门后
+  // `store_id = NULL OR assigned_employee_id = 本人` 会让管理层拿到自己被指派的单并写状态，
+  // 与前端 isReadOnly 口径分叉且 operation_logs 追不回门店，故显式拒绝。
+  if (ctx.auth.loginLevel === 'management') {
+    throw new Error('PERMISSION_DENIED: 管理层模式仅支持只读操作')
+  }
+
   // 门店门（#224）：本店单 ∪ 指派给本人的跨店支援单；下方第二道门把非店长收死在「指派给自己」
   const serviceOrders = await pg.query(
     'SELECT * FROM service_orders WHERE service_order_id = $1 AND (store_id = $2 OR assigned_employee_id = $3)',
@@ -384,7 +391,7 @@ async function start(ctx) {
 
   const so = serviceOrders[0]
 
-  if (!isCurrentStoreManager(ctx.auth) && so.assigned_employee_id !== ctx.auth.staffWfId) {
+  if (!isOrderStoreManager(ctx.auth, so) && !isAssignedToSelf(ctx.auth, so)) {
     throw new Error('PERMISSION_DENIED: 无权操作该服务单')
   }
 
@@ -747,6 +754,11 @@ async function complete(ctx) {
     throw new Error('INVALID_PARAMS: 缺少 serviceOrderId')
   }
 
+  // 管理层模式只读（同 start）
+  if (ctx.auth.loginLevel === 'management') {
+    throw new Error('PERMISSION_DENIED: 管理层模式仅支持只读操作')
+  }
+
   // 门店门（#224）：本店单 ∪ 指派给本人的跨店支援单；下方第二道门把非店长收死在「指派给自己」
   const serviceOrders = await pg.query(
     'SELECT * FROM service_orders WHERE service_order_id = $1 AND (store_id = $2 OR assigned_employee_id = $3)',
@@ -759,7 +771,7 @@ async function complete(ctx) {
 
   const so = serviceOrders[0]
 
-  if (!isCurrentStoreManager(ctx.auth) && so.assigned_employee_id !== ctx.auth.staffWfId) {
+  if (!isOrderStoreManager(ctx.auth, so) && !isAssignedToSelf(ctx.auth, so)) {
     throw new Error('PERMISSION_DENIED: 无权操作该服务单')
   }
 
@@ -811,9 +823,11 @@ async function confirm(ctx) {
     throw new Error('INVALID_PARAMS: 缺少 serviceOrderId')
   }
 
+  // 确认保持「仅开单门店店长」（#224 未放宽）；与 cancel 同款，区分两种拒绝原因。
+  // 店经理在服务单技能白名单内 → 店长本人也可能是外援，会看到自己的支援单进入「待客户确认」。
   const serviceOrders = await pg.query(
-    'SELECT * FROM service_orders WHERE service_order_id = $1 AND store_id = $2',
-    [serviceOrderId, ctx.auth.effectiveStoreId]
+    'SELECT * FROM service_orders WHERE service_order_id = $1 AND (store_id = $2 OR assigned_employee_id = $3)',
+    [serviceOrderId, ctx.auth.effectiveStoreId, ctx.auth.staffWfId]
   )
 
   if (serviceOrders.length === 0) {
@@ -821,6 +835,10 @@ async function confirm(ctx) {
   }
 
   const so = serviceOrders[0]
+
+  if (!isInCurrentStore(ctx.auth, so)) {
+    throw new Error('PERMISSION_DENIED: 支援服务单需由开单门店店长确认')
+  }
 
   // 幂等：已完成
   if (so.status === '已完成') {
@@ -868,11 +886,20 @@ async function list(ctx) {
   const payload = ctx.event.payload || {}
   const { status } = payload
   const { pageSize, offset, keyword, keywordPattern, phoneKeyword, startDate, endDate } = normalizeListFilters(payload)
-  // 门店门（#224）：本店服务单 ∪ 指派给本人的跨店支援单。
-  // $1/$2 固定占位，非店长分支复用 $2 把可见范围收死在「指派给自己」。
-  // 管理层模式 effectiveStoreId=null → `so.store_id = NULL` 为 NULL（非 true），条件退化为仅本人被指派单，不放大权限。
-  const params = [ctx.auth.effectiveStoreId, ctx.auth.staffWfId]
-  const conditions = ['(so.store_id = $1 OR so.assigned_employee_id = $2)']
+  // 门店门（#224）按角色分支构造，不用「统一 OR + 再 AND 收窄」：
+  //  - 非店长可见范围本就等价于「指派给本人」（`(store ∪ assigned) ∧ assigned ≡ assigned`），
+  //    多写的 OR 纯属冗余，却会让 planner 从 idx_svc_orders_assigned_employee 退化成 BitmapOr
+  //  - 店长才真需要 OR：本店全部 ∪ 自己的跨店支援单
+  // 管理层模式（effectiveStoreId=null）必落非店长分支，条件即「指派给本人」，不放大权限。
+  const params = []
+  const conditions = []
+  if (isCurrentStoreManager(ctx.auth)) {
+    params.push(ctx.auth.effectiveStoreId, ctx.auth.staffWfId)
+    conditions.push('(so.store_id = $1 OR so.assigned_employee_id = $2)')
+  } else {
+    params.push(ctx.auth.staffWfId)
+    conditions.push('so.assigned_employee_id = $1')
+  }
 
   if (status) {
     if (!['待服务', '服务中', '待客户确认', '已完成', '已取消'].includes(status)) {
@@ -901,10 +928,6 @@ async function list(ctx) {
   }
 
   addDateRange(conditions, params, 'so.service_date', startDate, endDate)
-
-  if (!isCurrentStoreManager(ctx.auth)) {
-    conditions.push('so.assigned_employee_id = $2')
-  }
 
   params.push(pageSize)
   const limitParam = params.length
@@ -1027,9 +1050,8 @@ async function list(ctx) {
     completedTime: so.completed_at,
     appointmentId: so.appointment_id,
     remark: so.remark || '',
-    storeId: so.store_id,
-    storeName: so.store_name || '',
-    isSupport: isSupportOrder(ctx.auth, so),
+    storeName: (so.store_name || '').trim(),
+    inCurrentStore: isInCurrentStore(ctx.auth, so),
     items: itemsMap[so.service_order_id] || [],
   }))
 }
@@ -1184,9 +1206,8 @@ async function detail(ctx) {
     completedTime: so.completed_at,
     appointmentId: so.appointment_id,
     remark: so.remark || '',
-    storeId: so.store_id,
-    storeName: so.store_name || '',
-    isSupport: isSupportOrder(ctx.auth, so),
+    storeName: (so.store_name || '').trim(),
+    inCurrentStore: isInCurrentStore(ctx.auth, so),
     review,
     items: items.map(i => ({
       saleItemId: i.sale_item_id,
@@ -1214,27 +1235,26 @@ async function cancel(ctx) {
     throw new Error('INVALID_PARAMS: 缺少 serviceOrderId')
   }
 
-  // 取消保持「仅开单门店」（#224 已拍板）：取消属开单门店的调度决策，不由外援行使
+  // 取消保持「仅开单门店」（#224 已拍板）：取消属开单门店的调度决策，不由外援行使。
+  // 一次查出「本店单 ∪ 指派给本人的单」再在 JS 侧分流，拆成两次查询会多占一条池连接（max 5）
+  // 并引入文案 TOCTOU。门店归属判定复用 isInCurrentStore —— 与前端拿到的 inCurrentStore 同源。
   const serviceOrders = await pg.query(
-    'SELECT * FROM service_orders WHERE service_order_id = $1 AND store_id = $2',
-    [serviceOrderId, ctx.auth.effectiveStoreId]
+    'SELECT * FROM service_orders WHERE service_order_id = $1 AND (store_id = $2 OR assigned_employee_id = $3)',
+    [serviceOrderId, ctx.auth.effectiveStoreId, ctx.auth.staffWfId]
   )
 
   if (serviceOrders.length === 0) {
-    // 支援单现在看得见了（#224），沿用「不存在」文案会误导 —— 仅对指派给本人的单给出准确原因，不泄露他人单
-    const supportRows = await pg.query(
-      'SELECT 1 FROM service_orders WHERE service_order_id = $1 AND assigned_employee_id = $2',
-      [serviceOrderId, ctx.auth.staffWfId]
-    )
-    if (supportRows.length > 0) {
-      throw new Error('PERMISSION_DENIED: 支援服务单需由开单门店取消')
-    }
     throw new Error('INVALID_PARAMS: 服务单不存在或不属于本门店')
   }
 
   const so = serviceOrders[0]
 
-  if (!isCurrentStoreManager(ctx.auth) && so.assigned_employee_id !== ctx.auth.staffWfId) {
+  // 支援单现在看得见了（#224），沿用「不存在」文案会误导
+  if (!isInCurrentStore(ctx.auth, so)) {
+    throw new Error('PERMISSION_DENIED: 支援服务单需由开单门店取消')
+  }
+
+  if (!isOrderStoreManager(ctx.auth, so) && !isAssignedToSelf(ctx.auth, so)) {
     throw new Error('PERMISSION_DENIED: 无权操作该服务单')
   }
 
@@ -1285,14 +1305,29 @@ function isAssignedToSelf(auth, so) {
 }
 
 /**
- * 是否「跨店支援单」：单属于别的门店、且指派给本人（#224）。
+ * 服务单是否属于当前生效门店（#224）。
  *
- * 供前端标识支援单（列表标签 / 详情门店行 / 隐藏取消按钮）用，不参与任何鉴权判定。
- * 管理层模式 effectiveStoreId=null 时恒 false —— 监管视角不存在「支援」语义。
+ * **必须与 cancel / confirm 的门店门 `store_id = $2` 严格同源**——前端用它决定是否渲染
+ * 「取消服务单」「代客户确认」按钮，判据比后端窄或宽都会造出「按钮点了必报错」的死路：
+ *   - `effectiveStoreId=null`（管理层模式，或门店模式解析不出门店的员工，auth.js:77-79）
+ *     → SQL `store_id = NULL` 恒 0 行，此处同样返回 false
+ *   - 别人负责的跨门店单（detail 分支 3 顾客档案兜底可打开）→ 两侧同样为 false
+ *
+ * 取反即「非本店单」，用于列表/详情展示开单门店名。不参与任何鉴权放行判定。
  */
-function isSupportOrder(auth, so) {
-  if (!auth || !auth.effectiveStoreId || !so.store_id) return false
-  return so.store_id !== auth.effectiveStoreId && isAssignedToSelf(auth, so)
+function isInCurrentStore(auth, so) {
+  return Boolean(auth && auth.effectiveStoreId && so.store_id === auth.effectiveStoreId)
+}
+
+/**
+ * 当前请求人是否为**这张单所属门店**的店长（#224）。
+ *
+ * `isCurrentStoreManager` 只看请求人当前门店，与单的门店无关——直接用它做第二道门，
+ * 对任何店长都恒真短路，整条边界就只剩第一道门 SQL 单点承担。这里显式与 `so.store_id`
+ * 挂钩，让两道门重新互相独立。
+ */
+function isOrderStoreManager(auth, so) {
+  return isCurrentStoreManager(auth) && isInCurrentStore(auth, so)
 }
 
 /**
@@ -1340,12 +1375,15 @@ function generateServiceItemId() {
 async function counts(ctx) {
   await requireStaffBound()(ctx, async () => {})
 
-  // 与 list 同口径（#224），否则角标数与列表条数对不上
-  const params = [ctx.auth.effectiveStoreId, ctx.auth.staffWfId]
-  let scopeFilter = '(so.store_id = $1 OR so.assigned_employee_id = $2)'
-
-  if (!isCurrentStoreManager(ctx.auth)) {
-    scopeFilter += ' AND so.assigned_employee_id = $2'
+  // 与 list 同口径同分支（#224），否则角标数与列表条数对不上
+  const params = []
+  let scopeFilter
+  if (isCurrentStoreManager(ctx.auth)) {
+    params.push(ctx.auth.effectiveStoreId, ctx.auth.staffWfId)
+    scopeFilter = '(so.store_id = $1 OR so.assigned_employee_id = $2)'
+  } else {
+    params.push(ctx.auth.staffWfId)
+    scopeFilter = 'so.assigned_employee_id = $1'
   }
 
   const rows = await pg.query(`
