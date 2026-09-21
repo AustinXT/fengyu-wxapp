@@ -374,7 +374,7 @@ async function todayCommission(ctx) {
  *
  * 口径约定（勿误改）：日历每日格子 + 头部合计 = 整店汇总业绩
  *   = SUM(sale_order_performance_events.amount)，**一律按款项业绩归属日期**
- *   （#137 收敛 / 迁移 0040，首次支付/回款/退款同口径），
+ *   （#137 收敛 / 迁移 0041，首次支付/回款/退款同口径），
  *   按 effectiveStoreId（当前选中门店）过滤，与首卡「门店今日营收」/ mgmt-dashboard.queryStoreRevenue 同口径。
  *   ⚠️ 这是【整店营业额】维度，不是登录员工的个人分成份额（个人本月累计走 todayCommission.thisMonth*）。
  */

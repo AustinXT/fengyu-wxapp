@@ -40,6 +40,7 @@ const session: AuthSession = {
       'sale_order:refund_create', 'service:list', 'appointment:list', 'pickup_record:list', 'store_unbind:list',
       'customer:list', 'sale_item:list', 'coupon:list', 'system:config', 'point_transaction:list', 'card_transaction:list',
       'product:create', 'inventory:list', 'inventory:stock_list', 'org:create', 'store:create', 'merchant:list',
+      'inventory:supply_chain_operate', 'inventory:supply_chain_master_data_manage',
       'employee:create', 'commission:list', 'data_center:dashboard', 'permission:list', 'message:list', 'operation_log:list',
     ],
     scopeStoreIds: [],

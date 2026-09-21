@@ -9,15 +9,18 @@ import {
   createItemCompanyReplenishment as createItemCompanyReplenishmentImpl,
   createInventoryConversion as createInventoryConversionImpl,
   createMarketReplenishment as createMarketReplenishmentImpl,
+  createMarketReportSummary as createMarketReportSummaryImpl,
+  resolveInventorySkuSupplierStatus as resolveInventorySkuSupplierStatusImpl,
   createMarketStaffPurchase as createMarketStaffPurchaseImpl,
-  createPurchaseOrderFromItemCompanyReplenishment as createPurchaseOrderFromItemCompanyReplenishmentImpl,
-  createPurchaseOrderFromMarketReplenishment as createPurchaseOrderFromMarketReplenishmentImpl,
+  createSupplyChainStaffPurchase as createSupplyChainStaffPurchaseImpl,
+  createPurchaseOrder as createPurchaseOrderImpl,
   createReturnForRestock as createReturnForRestockImpl,
   createSelfPurchasedReceipt as createSelfPurchasedReceiptImpl,
   createStoreAllocation as createStoreAllocationImpl,
   createStoreReplenishmentRequest as createStoreReplenishmentRequestImpl,
   getShipmentReceiptProgress as getShipmentReceiptProgressImpl,
   listMarketEmployeeOptions as listMarketEmployeeOptionsImpl,
+  listSupplyChainEmployeeOptions as listSupplyChainEmployeeOptionsImpl,
   quoteMarketReplenishmentPrice as quoteMarketReplenishmentPriceImpl,
   quoteMarketReplenishmentPrices as quoteMarketReplenishmentPricesImpl,
   receiveItemCompanyShipment as receiveItemCompanyShipmentImpl,
@@ -26,17 +29,19 @@ import {
   rejectItemCompanyShipmentCancellation as rejectItemCompanyShipmentCancellationImpl,
   rejectReturnForRestock as rejectReturnForRestockImpl,
   requestItemCompanyShipmentCancellation as requestItemCompanyShipmentCancellationImpl,
+  summarizeMarketReplenishmentRequests as summarizeMarketReplenishmentRequestsImpl,
   summarizeStoreReplenishmentRequests as summarizeStoreReplenishmentRequestsImpl,
   type CreateItemCompanyShipmentInput,
+  type CreateMarketReportSummaryInput,
   type CreateItemCompanyReplenishmentInput,
-  type CreateCompanyPurchaseOrderInput,
   type CancelSupplyChainPurchaseOrderInput,
   type CreateExternalMarketOutboundInput,
   type CreateInventoryConversionInput,
   type CreateMarketReplenishmentInput,
   type MarketPromotionSelectionInput,
   type CreateMarketStaffPurchaseInput,
-  type CreatePurchaseOrderInput,
+  type CreateSupplyChainStaffPurchaseInput,
+  type CreateMergedPurchaseOrderInput,
   type CreateReturnForRestockInput,
   type CreateSelfPurchasedReceiptInput,
   type CreateStoreAllocationInput,
@@ -46,22 +51,22 @@ import {
   type RequestItemCompanyShipmentCancellationInput,
   type ResolveItemCompanyShipmentCancellationInput,
 } from '@/lib/inventory/business'
-import { withAllPermissions, withPermission } from '@/lib/with-permission'
+import { withAllPermissions, withAnyPermission, withPermission } from '@/lib/with-permission'
 
 export const createStoreReplenishmentRequest = withPermission(
-  'inventory:create_doc',
+  'inventory:store_operate',
   async (session, input: CreateStoreReplenishmentInput) =>
     createStoreReplenishmentRequestImpl(session, input),
 )
 
 export const summarizeStoreReplenishmentRequests = withPermission(
-  'inventory:list',
+  'inventory:market_operate',
   async (session, input: { marketId: string; startDate?: string | null; endDate?: string | null }) =>
     summarizeStoreReplenishmentRequestsImpl(session, input),
 )
 
 export const quoteMarketReplenishmentPrice = withPermission(
-  'inventory:price_view',
+  'inventory:market_price_view',
   async (session, input: {
     marketId: string
     skuId: string
@@ -73,7 +78,7 @@ export const quoteMarketReplenishmentPrice = withPermission(
 )
 
 export const quoteMarketReplenishmentPrices = withPermission(
-  'inventory:price_view',
+  'inventory:market_price_view',
   async (session, input: {
     marketId: string
     items: Array<{ skuId: string; quantity: number }>
@@ -83,104 +88,119 @@ export const quoteMarketReplenishmentPrices = withPermission(
 )
 
 export const createMarketReplenishment = withPermission(
-  'inventory:create_doc',
+  'inventory:market_operate',
   async (session, input: CreateMarketReplenishmentInput) =>
     createMarketReplenishmentImpl(session, input),
 )
 
 export const createItemCompanyReplenishment = withPermission(
-  'inventory:create_doc',
+  'inventory:supply_chain_operate',
   async (session, input: CreateItemCompanyReplenishmentInput) =>
     createItemCompanyReplenishmentImpl(session, input),
 )
 
-export const createPurchaseOrderFromMarketReplenishment = withPermission(
-  'inventory:create_doc',
-  async (session, input: CreatePurchaseOrderInput) =>
-    createPurchaseOrderFromMarketReplenishmentImpl(session, input),
+export const summarizeMarketReplenishmentRequests = withPermission(
+  'inventory:supply_chain_operate',
+  async (session, input: {
+    supplyChainLocationId: string
+    startDate?: string | null
+    endDate?: string | null
+    marketIds?: string[] | null
+  }) => summarizeMarketReplenishmentRequestsImpl(session, input),
 )
 
-export const createPurchaseOrderFromItemCompanyReplenishment = withPermission(
-  'inventory:create_doc',
-  async (session, input: CreateCompanyPurchaseOrderInput) =>
-    createPurchaseOrderFromItemCompanyReplenishmentImpl(session, input),
+export const createMarketReportSummary = withPermission(
+  'inventory:supply_chain_operate',
+  async (session, input: CreateMarketReportSummaryInput) =>
+    createMarketReportSummaryImpl(session, input),
+)
+
+export const resolveInventorySkuSupplierStatus = withPermission(
+  'inventory:supply_chain_operate',
+  async (session, skuIds: string[]) => resolveInventorySkuSupplierStatusImpl(session, skuIds),
+)
+
+export const createPurchaseOrder = withPermission(
+  'inventory:supply_chain_operate',
+  async (session, input: CreateMergedPurchaseOrderInput) =>
+    createPurchaseOrderImpl(session, input),
 )
 
 export const createItemCompanyShipment = withPermission(
-  'inventory:create_doc',
+  'inventory:supply_chain_operate',
   async (session, input: CreateItemCompanyShipmentInput) =>
     createItemCompanyShipmentImpl(session, input),
 )
 
 export const receiveItemCompanyShipment = withPermission(
-  'inventory:create_doc',
+  'inventory:market_operate',
   async (session, input: ReceiveShipmentInput) =>
     receiveItemCompanyShipmentImpl(session, input),
 )
 
 export const receiveSupplyChainPurchaseOrder = withPermission(
-  'inventory:create_doc',
+  'inventory:supply_chain_operate',
   async (session, input: ReceiveSupplyChainPurchaseOrderInput) =>
     receiveSupplyChainPurchaseOrderImpl(session, input),
 )
 
 export const createStoreAllocation = withPermission(
-  'inventory:create_doc',
+  'inventory:market_operate',
   async (session, input: CreateStoreAllocationInput) =>
     createStoreAllocationImpl(session, input),
 )
 
 export const receiveStoreAllocation = withPermission(
-  'inventory:create_doc',
+  'inventory:store_operate',
   async (session, input: ReceiveShipmentInput) =>
     receiveStoreAllocationImpl(session, input),
 )
 
-export const createReturnForRestock = withPermission(
-  'inventory:create_doc',
+export const createReturnForRestock = withAnyPermission(
+  ['inventory:market_operate', 'inventory:store_operate'],
   async (session, input: CreateReturnForRestockInput) =>
     createReturnForRestockImpl(session, input),
 )
 
-export const approveReturnForRestock = withPermission(
-  'inventory:approve',
+export const approveReturnForRestock = withAnyPermission(
+  ['inventory:supply_chain_approve', 'inventory:market_approve'],
   async (session, input: { returnDocId: string; auditRemark?: string | null }) =>
     approveReturnForRestockImpl(session, input),
 )
 
-export const rejectReturnForRestock = withPermission(
-  'inventory:approve',
+export const rejectReturnForRestock = withAnyPermission(
+  ['inventory:supply_chain_approve', 'inventory:market_approve'],
   async (session, input: { returnDocId: string; auditRemark: string }) =>
     rejectReturnForRestockImpl(session, input),
 )
 
 export const requestItemCompanyShipmentCancellation = withAllPermissions(
-  ['inventory:create_doc', 'inventory:shipment_cancel_request'],
+  ['inventory:market_operate', 'inventory:shipment_cancel_request'],
   async (session, input: RequestItemCompanyShipmentCancellationInput) =>
     requestItemCompanyShipmentCancellationImpl(session, input),
 )
 
 export const approveItemCompanyShipmentCancellation = withAllPermissions(
-  ['inventory:approve', 'inventory:shipment_cancel_approve'],
+  ['inventory:supply_chain_approve', 'inventory:shipment_cancel_approve'],
   async (session, input: ResolveItemCompanyShipmentCancellationInput) =>
     approveItemCompanyShipmentCancellationImpl(session, input),
 )
 
 export const rejectItemCompanyShipmentCancellation = withAllPermissions(
-  ['inventory:approve', 'inventory:shipment_cancel_approve'],
+  ['inventory:supply_chain_approve', 'inventory:shipment_cancel_approve'],
   async (session, input: ResolveItemCompanyShipmentCancellationInput & { auditRemark: string }) =>
     rejectItemCompanyShipmentCancellationImpl(session, input),
 )
 
 /** 兼容已打开的旧后台页面；调用后仅提交申请，不会直接撤回。 */
 export const cancelItemCompanyShipment = withAllPermissions(
-  ['inventory:create_doc', 'inventory:shipment_cancel_request'],
+  ['inventory:market_operate', 'inventory:shipment_cancel_request'],
   async (session, input: RequestItemCompanyShipmentCancellationInput) =>
     requestItemCompanyShipmentCancellationImpl(session, input),
 )
 
 export const cancelSupplyChainPurchaseOrder = withPermission(
-  'inventory:approve',
+  'inventory:supply_chain_approve',
   async (session, input: CancelSupplyChainPurchaseOrderInput) =>
     cancelSupplyChainPurchaseOrderImpl(session, input),
 )
@@ -191,30 +211,41 @@ export const getShipmentReceiptProgress = withPermission(
 )
 
 export const createMarketStaffPurchase = withPermission(
-  'inventory:create_doc',
+  'inventory:market_operate',
   async (session, input: CreateMarketStaffPurchaseInput) =>
     createMarketStaffPurchaseImpl(session, input),
 )
 
 export const listMarketEmployeeOptions = withPermission(
-  'inventory:create_doc',
+  'inventory:market_operate',
   async (session, marketId: string) => listMarketEmployeeOptionsImpl(session, marketId),
 )
 
+export const createSupplyChainStaffPurchase = withPermission(
+  'inventory:supply_chain_operate',
+  async (session, input: CreateSupplyChainStaffPurchaseInput) =>
+    createSupplyChainStaffPurchaseImpl(session, input),
+)
+
+export const listSupplyChainEmployeeOptions = withPermission(
+  'inventory:supply_chain_operate',
+  async (session, locationId: string) => listSupplyChainEmployeeOptionsImpl(session, locationId),
+)
+
 export const createSelfPurchasedReceipt = withAllPermissions(
-  ['inventory:create_doc', 'inventory:self_purchase_receive'],
+  ['inventory:market_operate', 'inventory:self_purchase_receive'],
   async (session, input: CreateSelfPurchasedReceiptInput) =>
     createSelfPurchasedReceiptImpl(session, input),
 )
 
 export const createExternalMarketOutbound = withPermission(
-  'inventory:create_doc',
+  'inventory:supply_chain_operate',
   async (session, input: CreateExternalMarketOutboundInput) =>
     createExternalMarketOutboundImpl(session, input),
 )
 
-export const createInventoryConversion = withPermission(
-  'inventory:create_doc',
+export const createInventoryConversion = withAnyPermission(
+  ['inventory:supply_chain_operate', 'inventory:market_operate', 'inventory:store_operate'],
   async (session, input: CreateInventoryConversionInput) =>
     createInventoryConversionImpl(session, input),
 )

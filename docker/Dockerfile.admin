@@ -64,6 +64,12 @@ ENV NEXT_PUBLIC_RSA_PUBLIC_KEY=$NEXT_PUBLIC_RSA_PUBLIC_KEY
 ARG NEXT_PUBLIC_ANALYST_ORIGIN=
 ENV NEXT_PUBLIC_ANALYST_ORIGIN=$NEXT_PUBLIC_ANALYST_ORIGIN
 
+# 进销存发布开关：lib/menu.ts 被 sidebar / breadcrumb-nav 两个 'use client' 组件引用，
+# 浏览器端要读得到，故用 NEXT_PUBLIC_ 在构建期 inline。不传即空串 → !== 'true' → 关闭
+# （fail-closed：期初库存未核验的环境绝不能露出库存入口 / 走库存联动）。
+ARG NEXT_PUBLIC_INVENTORY_LINKAGE_ENABLED=
+ENV NEXT_PUBLIC_INVENTORY_LINKAGE_ENABLED=$NEXT_PUBLIC_INVENTORY_LINKAGE_ENABLED
+
 RUN bun run build
 
 # 代码保护(L1)：兜底删除构建产物里的任何 source map。next build 生产模式默认不发

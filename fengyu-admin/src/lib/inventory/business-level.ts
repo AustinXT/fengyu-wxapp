@@ -1,18 +1,19 @@
 import { notFound } from 'next/navigation'
 import type { InventoryDocType, InventoryLocationType } from '@/lib/inventory/types'
 import type { AuthSession } from '@/lib/types'
+import { hasPermission } from '@/lib/permissions'
 
 export const INVENTORY_BUSINESS_LEVELS = ['supply-chain', 'market', 'store'] as const
 export type InventoryBusinessLevel = (typeof INVENTORY_BUSINESS_LEVELS)[number]
 
-const LEVEL_SCOPE_ACCESS: Record<InventoryBusinessLevel, readonly AuthSession['roles'][number]['scopeType'][]> = {
-  'supply-chain': ['总部'],
-  market: ['总部', '市场'],
-  store: ['总部', '市场', '门店'],
+const LEVEL_ACTION_ACCESS: Record<InventoryBusinessLevel, readonly string[]> = {
+  'supply-chain': ['inventory:supply_chain_operate', 'inventory:supply_chain_approve'],
+  market: ['inventory:market_operate', 'inventory:market_approve'],
+  store: ['inventory:store_operate'],
 }
 
 export function canAccessInventoryBusinessLevel(session: AuthSession, level: InventoryBusinessLevel): boolean {
-  return session.roles.some((role) => LEVEL_SCOPE_ACCESS[level].includes(role.scopeType))
+  return LEVEL_ACTION_ACCESS[level].some((action) => hasPermission(session, action))
 }
 
 export function requireInventoryBusinessLevel(

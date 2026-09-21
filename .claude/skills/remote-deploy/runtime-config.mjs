@@ -480,6 +480,9 @@ function publicManifest(env, config, target) {
     analystAdminOrigin: config.ANALYST_ADMIN_ORIGIN,
     analystAdminLoginUrl: config.ANALYST_ADMIN_LOGIN_URL,
     nextPublicRsaPublicKey: config.NEXT_PUBLIC_RSA_PUBLIC_KEY,
+    // 进销存发布开关。刻意不进 REQUIRED_KEYS：缺键时回落 'false'（fail-closed），
+    // 既不阻断未同步该键的本地 env 部署，也不会把库存入口误开进未完成期初核验的环境。
+    nextPublicInventoryLinkageEnabled: config.NEXT_PUBLIC_INVENTORY_LINKAGE_ENABLED ?? 'false',
     cloudbaseEnvId: config.CLOUDBASE_ENV_ID,
     cdnBase: config.CDN_BASE,
   }
@@ -503,6 +506,14 @@ export function renderBundle(env, outputDir, options = {}) {
 export const KNOWN_PROD_HISTORICAL_MIGRATION_ROWS = Object.freeze([
   {
     // 生产库历史 0034 遗留行；2026-09-01 只读核验，非当前本地 journal 的迁移。
+    created_at: '1787637056739',
+    hash: 'd4549ec0237b8f4441af860a02c0905e59e382e3c07503063f6310ec95b896bd',
+  },
+])
+
+export const KNOWN_DEV_HISTORICAL_MIGRATION_ROWS = Object.freeze([
+  {
+    // 测试库 0034 重复登记；同一 SQL 已由后续记录完整覆盖，仅核验时忽略此历史行。
     created_at: '1787637056739',
     hash: 'd4549ec0237b8f4441af860a02c0905e59e382e3c07503063f6310ec95b896bd',
   },
@@ -586,7 +597,9 @@ export async function checkMigrations(env, options = {}) {
     if (!table.rows[0]?.name) fail('target database has no drizzle migration journal')
     const result = await client.query('SELECT hash, created_at FROM drizzle.__drizzle_migrations ORDER BY created_at, id')
     const state = analyzeMigrationState(journal.entries, result.rows, hashes, {
-      knownHistoricalRows: env === 'prod' ? KNOWN_PROD_HISTORICAL_MIGRATION_ROWS : [],
+      knownHistoricalRows: env === 'prod'
+        ? KNOWN_PROD_HISTORICAL_MIGRATION_ROWS
+        : KNOWN_DEV_HISTORICAL_MIGRATION_ROWS,
     })
     if (!state.ok) {
       const detail = state.pending.length ? `: ${state.pending.join(', ')}` : ''

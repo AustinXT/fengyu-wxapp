@@ -67,7 +67,7 @@
         <text class="func-label">营业额分配</text>
       </view>
       <!-- 库存管理（仅店长可点；非店长显示但点按拦截） -->
-      <view wx:if="{{inventoryEntryEnabled}}" class="func-item func-item--half" style="background: linear-gradient(135deg, #F86B71 0%, #EF3640 100%);" bindtap="goInventory">
+      <view wx:if="{{inventoryEntryEnabled && canAccessInventory}}" class="func-item func-item--half" style="background: linear-gradient(135deg, #F86B71 0%, #EF3640 100%);" bindtap="goInventory">
         <van-icon name="goods-collect-o" size="60rpx" color="#FFFFFF" />
         <text class="func-label">库存管理</text>
       </view>

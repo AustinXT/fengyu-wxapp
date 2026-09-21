@@ -10,7 +10,7 @@ import { withPermission } from '@/lib/with-permission'
  * 业务角色看板（manager/finance）零默认值。
  *
  * 2026-04-26 sale-order-domain-refactor（2026-08 现金流口径修订）：
- *   - 组织层级营业额读取 `sale_order_performance_events`：该视图的 performance_date 自迁移 0040 起
+ *   - 组织层级营业额读取 `sale_order_performance_events`：该视图的 performance_date 自迁移 0041 起
  *     一律直读 `sale_order_payments.performance_attribution_date`（首次支付行是订单级的镜像），
  *     仅纳入首次支付/回款/退款和销售单/转换单/充值单；储值卡抵扣排除
  *   - `sale_orders.received` / `refunded_amount` 仅作订单快照，不再作为组织层级业绩源
@@ -143,6 +143,7 @@ export const getDashboardStats = withPermission('dashboard:view', async (session
         FROM sale_order_performance_events spe
         WHERE spe.store_id IN (${sql.join(scopeIds.map(id => sql`${id}`), sql`, `)})
           -- 历史订单（WorkFine 核对补登）不计入经营营收（仅供会员体系重算）
+          -- WorkFine 历史单业务排除；展示口径见 @/lib/workfine-legacy
           AND spe.legacy_source IS DISTINCT FROM 'workfine'
       ),
       order_metrics AS (
@@ -164,6 +165,7 @@ export const getDashboardStats = withPermission('dashboard:view', async (session
           END) AS pending_allocations
         FROM sale_orders so
         WHERE so.store_id IN (${sql.join(scopeIds.map(id => sql`${id}`), sql`, `)})
+          -- WorkFine 历史单业务排除；展示口径见 @/lib/workfine-legacy
           AND so.legacy_source IS DISTINCT FROM 'workfine'
       )
       SELECT

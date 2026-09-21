@@ -12,6 +12,22 @@ on:
       - '.claude/skills/remote-deploy/**'
       - 'docker/docker-compose*.yml'
       - '.github/workflows/lint.yml'
+      # schema 改动也要触发：cross-end inventory 守护把 db/schema/inventory.ts 当权威锚
+      - 'db/schema/**'
+      # migration 也要触发：新加的 trigger 可能让盘点开始产流水/改在手量。
+      # ⚠️ 单测看不到数据库 trigger，触发只是让**其余**守护跑一遍；
+      #    trigger 行为面必须靠 INV-06 在真库上人工跑（见 tests/e2e-inventory-ui/README.md）。
+      - 'db/migrations/**'
+      # 依赖清单也要触发：action-error 的漂移守护盯的正是 Next 的 digest 形态，
+      # 而「只升 Next」的 PR 恰恰只动这几个文件 —— 不加进来的话，最该跑守护的那次跑不到。
+      - 'fengyu-admin/package.json'
+      - 'fengyu-admin/package-lock.json'
+      - 'fengyu-admin/bun.lock'
+      # 测试目录也要触发：只删守护断言（不动 src）的 PR 同样该让 CI 跑一遍。
+      # ⚠️ E2E（tests/e2e-inventory-ui）需要活的 dev 实例 + PG，CI 里跑不了，
+      #    触发它只是为了让**单测**守护有机会拦下「只改测试」的回归。
+      - 'fengyu-admin/tests/**'
+      - 'fengyu-staff/cloudfunctions/**/__tests__/**'
 
 jobs:
   cas-guards:
@@ -50,12 +66,14 @@ jobs:
       - name: Install staffApi deps
         working-directory: fengyu-staff/cloudfunctions/staffApi
         run: npm ci || npm install
-      - name: Run cross-end snapshot tests (error-codes + SQL)
+      - name: Run cross-end snapshot tests (error-codes + SQL + inventory)
         working-directory: fengyu-staff/cloudfunctions/staffApi
         run: |
           npx vitest run \
             __tests__/routes/cross-end-error-codes-snapshot.test.js \
-            __tests__/routes/cross-end-sql-snapshot.test.js
+            __tests__/routes/cross-end-sql-snapshot.test.js \
+            __tests__/routes/cross-end-inventory-snapshot.test.js \
+            __tests__/routes/inventory.test.js
 
   cross-end-snapshots-admin:
     runs-on: ubuntu-latest
@@ -69,6 +87,50 @@ jobs:
       - name: Install admin deps
         working-directory: fengyu-admin
         run: npm ci || npm install
+
+      # admin 的 `@db/*`（tsconfig paths → `../db/schema/*`）里的文件自己 import
+      # `drizzle-orm/pg-core`。裸包名按 node 规则从 **importer 目录**（= `db/`）向上找
+      # node_modules，`fengyu-admin/node_modules` 不在这条链上。本地一直是绿的，靠的是
+      # `db/` 有自己的 node_modules（它是独立的 Drizzle 工程）；CI 只装 admin 的话，
+      # 任何 import 到 `@db/*` 的测试会整文件加载失败（Failed to resolve import）。
+      # ⚠️ 别改成 resolve.dedupe 或把 db/node_modules/drizzle-orm 软链到 admin 那份 ——
+      #    vite 默认 realpath 软链，两条路径会塌成同一个 module id。而 src/actions 下
+      #    6 个测试（stores / orders / refunds / employees{,.delete} /
+      #    products-getProductsByKind）用 `vi.mock('drizzle-orm/pg-core')` 只导出 alias，
+      #    一旦合成一份，真实 schema（如 db/schema/lookup.ts）就会拿到残缺 mock，
+      #    报 `pgTable is not a function`。实测：dedupe 会让这 6 个文件 360 条转红。
+      - name: Install db schema deps
+        working-directory: db
+        run: npm ci --omit=dev || npm install --omit=dev
+
       - name: Run admin cross-end error-codes test
         working-directory: fengyu-admin
         run: npx vitest run src/lib/__tests__/error-codes-cross-end.test.ts
+
+      # action-error.test.ts 里有三条漂移守护（Next digest 形态 / 裸 token digest 生产者 /
+      # 二级子标签长度前提）。它们守的东西会随依赖升级和他人改代码而漂，不进 CI 就等于
+      # 只在本地手工跑时才生效，拦不住回归合入。
+      - name: Run admin action-error drift guards
+        working-directory: fengyu-admin
+        run: npx vitest run src/lib/__tests__/action-error.test.ts
+
+      # SKU 供货商关联档案（#132）：`supplierId` 三态（undefined=不动 / null=清空 / id=写两列）
+      # 与「供货商必须是 select 而不是自由文本」的守护。不进 CI 的话，把下拉改回 <Input>、
+      # 或让 engine 重新收自由文本，GitHub 检查照样全绿 —— 而 issue 的根因正是自由文本。
+      - name: Run inventory SKU supplier guards (#132)
+        working-directory: fengyu-admin
+        run: |
+          npx vitest run \
+            src/lib/inventory/engine.test.ts \
+            'src/app/(main)/(inventory)/inventory/_components/inventory-skus-page.test.tsx'
+
+      # 盘点账面数（#131）：engine 的口径快照（编译后的 SQL 与参数）、纯计算单测、
+      # 以及详情页三列的真实渲染测试。不进 CI 的话，把 stockSnapshot 改回 null
+      # 或删掉详情页三列，GitHub 检查照样全绿 —— 守护等于只在本地手工跑时才存在。
+      - name: Run inventory stocktake guards (#131)
+        working-directory: fengyu-admin
+        run: |
+          npx vitest run \
+            src/lib/inventory/engine.test.ts \
+            src/lib/inventory/stocktake.test.ts \
+            'src/app/(main)/(inventory)/inventory/docs/[id]/page.test.tsx'

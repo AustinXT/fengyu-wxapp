@@ -79,6 +79,49 @@ export function hasRole(...roleNames: string[]): boolean {
   return roleNames.some(r => roles.includes(r));
 }
 
+/** 当前员工是否由任一角色绑定授予指定动作之一；库存权限不再按角色名推断。 */
+export function hasAnyAction(...actions: string[]): boolean {
+  return (app().globalData.roleBindings || []).some((binding) => {
+    if (binding.isSuperAdmin) return true;
+    const bound: string[] = Array.isArray(binding.actions) ? binding.actions : [];
+    return actions.some((action) => bound.includes(action));
+  });
+}
+
+export function hasAction(action: string): boolean {
+  return hasAnyAction(action);
+}
+
+/**
+ * 库存入口可见性：对齐云端 staffApi auth.js 的库存白名单三动作并集
+ * （store_operate / market_operate / market_approve），市场库存财务也能进入浏览。
+ */
+export function canAccessInventory(): boolean {
+  const currentStoreId = getCurrentStoreId();
+  return hasAnyAction('inventory:store_operate', 'inventory:market_operate', 'inventory:market_approve')
+    && !!currentStoreId
+    && (app().globalData.inventoryStoreIds || []).includes(currentStoreId);
+}
+
+/**
+ * 门店库存写操作（建单 / 收货确认）：云端 confirmReceive 等写路径仅认
+ * inventory:store_operate，入口放宽（canAccessInventory）不影响这里的收紧判定。
+ */
+export function canOperateStoreInventory(): boolean {
+  const currentStoreId = getCurrentStoreId();
+  return hasAction('inventory:store_operate')
+    && !!currentStoreId
+    && (app().globalData.inventoryStoreIds || []).includes(currentStoreId);
+}
+
+export function requireInventoryStoreOperate(tipMsg = '当前账号无门店库存办理权限'): boolean {
+  if (!canOperateStoreInventory()) {
+    wx.showToast({ title: tipMsg, icon: 'none' });
+    return false;
+  }
+  return true;
+}
+
 /**
  * 要求店长身份，否则 toast 提示
  */

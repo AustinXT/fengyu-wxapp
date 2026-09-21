@@ -2788,7 +2788,7 @@ describe('order.updatePerformanceAttribution', () => {
     expect(query.mock.calls[0][0]).toMatch(/FOR UPDATE/)
     expect(query.mock.calls[1][0]).toMatch(/performance_attribution_adjusted_at IS NULL/)
     expect(query.mock.calls[1][0]).toMatch(/date_trunc\('milliseconds', updated_at\)/)
-    // 款项行同步已下沉为 sale_orders 的 AFTER UPDATE trigger（迁移 0040）：
+    // 款项行同步已下沉为 sale_orders 的 AFTER UPDATE trigger（迁移 0041）：
     // 查询侧改为直读款项级归属日期列后，漏同步会直接出错数，同步必须由 DB 保证。
     // 应用层只回读受影响的行用于审计日志，不再自己发 UPDATE。
     expect(query.mock.calls[2][0]).toMatch(/SELECT id/)
@@ -2804,12 +2804,12 @@ describe('order.updatePerformanceAttribution', () => {
     expect(JSON.parse(auditInsert[1][8]).changes.syncedPaymentIds).toEqual({ from: [], to: [41, 43] })
   })
 
-  test('迁移 0040 未落地（trigger 缺席）→ 响亮失败而不是静默出错数', async () => {
+  test('迁移 0041 未落地（trigger 缺席）→ 响亮失败而不是静默出错数', async () => {
     const ctx = createManagerCtx(input)
     mockAttributionTransaction({ staleRows: [{ stale: 1 }] })
 
     await expect(orderRoutes.updatePerformanceAttribution(ctx))
-      .rejects.toThrow(/INVALID_STATE.*迁移 0040/)
+      .rejects.toThrow(/INVALID_STATE.*迁移 0041/)
   })
 
   test('同日提交不消耗修改机会', async () => {
@@ -6847,7 +6847,7 @@ describe('order.createPickup', () => {
     expect(pg.query.mock.calls[1][1]).toEqual(['item-001', 'store-001'])
   })
 
-  test('取货成功', async () => {
+  test('取货成功并按库存组成出库', async () => {
     const ctx = createManagerCtx({ saleItemId: 'item-001', inventorySkuId: 'inventory-sku-001', pickupQuantity: 2 })
     let transactionClient
 
@@ -6897,6 +6897,9 @@ describe('order.createPickup', () => {
           if (/SELECT id FROM inventory_docs/.test(sql)) {
             return { rows: [], rowCount: 0 }
           }
+          if (/SELECT org_node_id/.test(sql) && /FROM inventory_locations/.test(sql)) {
+            return { rows: [{ org_node_id: 'org-node-store-001' }], rowCount: 1 }
+          }
           if (/INSERT INTO inventory_doc_items/.test(sql)) {
             return { rows: [{ id: 10 }], rowCount: 1 }
           }
@@ -6912,9 +6915,12 @@ describe('order.createPickup', () => {
     expect(ctx.result.saleItemId).toBe('item-001')
     expect(ctx.result.pickedUp).toBe(2)
     expect(ctx.result.remaining).toBe(3) // 5 - 2
-    expect(ctx.result.inventoryMode).toBe('record-only')
+    expect(ctx.result.inventoryMode).toBe('composition')
     expect(ctx.result.message).toContain('取货成功')
-    expect(transactionClient.query.mock.calls.some(([sql]) => /inventory_cutover_states|inventory_stock_lots|inventory_docs|inventory_movements/.test(sql))).toBe(false)
+    expect(transactionClient.query.mock.calls.some(([sql]) => /FROM inventory_cutover_states/.test(sql))).toBe(true)
+    expect(transactionClient.query.mock.calls.some(([sql]) => /FROM inventory_stock_lots/.test(sql))).toBe(true)
+    expect(transactionClient.query.mock.calls.some(([sql]) => /INSERT INTO inventory_docs/.test(sql))).toBe(true)
+    expect(transactionClient.query.mock.calls.some(([sql]) => /INSERT INTO inventory_movements/.test(sql))).toBe(true)
     const pickupInsert = transactionClient.query.mock.calls.find(([sql]) => /INSERT INTO pickup_records/.test(sql))
     expect(pickupInsert[0]).toMatch(/VALUES \(\$1, NULL/)
   })
@@ -6922,6 +6928,7 @@ describe('order.createPickup', () => {
   test('超出可提货数量拒绝', async () => {
     const ctx = createManagerCtx({ saleItemId: 'item-001', inventorySkuId: 'inventory-sku-001', pickupQuantity: 10 })
     const clientResults = [
+      { rows: [{ status: '已初始化' }], rowCount: 1 },
       { rows: [{
         sale_item_id: 'item-001', sale_order_id: 'FY-001', store_id: 'store-001',
         product_type: '家居产品', item_direction: '购买', quantity: 5,
@@ -6939,6 +6946,7 @@ describe('order.createPickup', () => {
   test('跨店提货拒绝 — sale_items.store_id 与员工当前门店不一致', async () => {
     const ctx = createManagerCtx({ saleItemId: 'item-other-store', inventorySkuId: 'inventory-sku-001', pickupQuantity: 1 })
     const clientResults = [
+      { rows: [{ status: '已初始化' }], rowCount: 1 },
       { rows: [{
         sale_item_id: 'item-other-store', sale_order_id: 'FY-OTHER', store_id: 'store-999',
         product_type: '家居产品', item_direction: '购买', quantity: 5,

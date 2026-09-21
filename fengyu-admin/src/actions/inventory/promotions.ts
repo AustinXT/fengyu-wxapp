@@ -12,7 +12,7 @@ import {
 import { isAdminScope } from '@/lib/permissions'
 import type { AuthSession } from '@/lib/types'
 import type { InventoryPromotionPlanInput } from '@/lib/inventory/types'
-import { withPermission } from '@/lib/with-permission'
+import { withAnyPermission, withPermission } from '@/lib/with-permission'
 import { inventoryPromotionPlans } from '@db/inventory'
 import { eq } from 'drizzle-orm'
 
@@ -39,21 +39,21 @@ export const getInventoryPromotionPlanById = withPermission(
   async (_session, id: string) => getInventoryPromotionPlanByIdImpl(id),
 )
 
-export const createInventoryPromotionPlan = withPermission(
-  'inventory:create',
+export const createInventoryPromotionPlan = withAnyPermission(
+  ['inventory:supply_chain_master_data_manage', 'inventory:market_operate'],
   async (_session, input: InventoryPromotionPlanInput) => createInventoryPromotionPlanImpl(input),
 )
 
-export const updateInventoryPromotionPlan = withPermission(
-  'inventory:update',
+export const updateInventoryPromotionPlan = withAnyPermission(
+  ['inventory:supply_chain_master_data_manage', 'inventory:market_operate'],
   async (session, id: string, input: InventoryPromotionPlanInput) => {
     await assertGlobalPromotionMutable(session, id)
     return updateInventoryPromotionPlanImpl(id, input)
   },
 )
 
-export const disableInventoryPromotionPlan = withPermission(
-  'inventory:update',
+export const disableInventoryPromotionPlan = withAnyPermission(
+  ['inventory:supply_chain_master_data_manage', 'inventory:market_operate'],
   async (session, id: string) => {
     await assertGlobalPromotionMutable(session, id)
     return disableInventoryPromotionPlanImpl(id)

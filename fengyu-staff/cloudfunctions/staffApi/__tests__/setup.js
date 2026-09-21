@@ -1,6 +1,12 @@
 // 与 CloudBase 入口一致：pg 会把 date 解析为当前时区的本地零点 Date。
 process.env.TZ = 'Asia/Shanghai'
 
+// 进销存开关现由 env 驱动且默认关闭（见 utils/feature-flags.js）。createPickup 等用例
+// 断言的是「联动开启」下的行为（inventoryMode='composition'、扣批次、写库存单据），
+// 故在此显式开启。必须在任何 require 之前设置：feature-flags 在模块加载期求值一次。
+// 关闭态的 fail-closed 守护在 fengyu-admin/src/lib/inventory-feature-flags.test.ts。
+process.env.INVENTORY_LINKAGE_ENABLED = 'true'
+
 const path = require('path')
 const { vi } = await import('vitest')
 const pgPath = require.resolve('../db/pg')

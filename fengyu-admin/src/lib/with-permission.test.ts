@@ -192,6 +192,45 @@ describe('withAllPermissions', () => {
     await expect(wrapped()).resolves.toBe('EMP-001')
     expect(fn).toHaveBeenCalledTimes(1)
   })
+
+  it('说明.md §9.3：跨绑定拼接多权限必须 PERMISSION_DENIED，fn 不被调用', async () => {
+    // 市场 A 绑定持基础动作、市场 B 绑定持特殊动作，动作并集齐全但没有任何
+    // 单一绑定同时具备两者——requirePermission 逐项能过，收紧后 roles 必须为空并拒绝。
+    const session: AuthSession = {
+      employeeId: 'EMP-SPLIT',
+      name: '测试用户',
+      phone: '13800138000',
+      roles: [
+        {
+          role: 'inventory_market_finance', scopeId: 'MKT-A', scopeType: '市场',
+          actions: ['inventory:create_doc'],
+          scopeStoreIds: ['STORE-A1'], scopeOrgNodeIds: ['MKT-A'],
+        },
+        {
+          role: 'inventory_market_finance', scopeId: 'MKT-B', scopeType: '市场',
+          actions: ['inventory:self_purchase_receive'],
+          scopeStoreIds: ['STORE-B1'], scopeOrgNodeIds: ['MKT-B'],
+        },
+      ],
+      permissions: {
+        actions: ['inventory:create_doc', 'inventory:self_purchase_receive'],
+        scopeStoreIds: ['STORE-A1', 'STORE-B1'],
+        scopeOrgNodeIds: ['MKT-A', 'MKT-B'],
+      },
+    }
+    mockGetSession.mockResolvedValue(session)
+    const fn = vi.fn()
+
+    const wrapped = withAllPermissions([
+      'inventory:create_doc',
+      'inventory:self_purchase_receive',
+    ], fn)
+
+    await expect(wrapped()).rejects.toThrow(
+      'PERMISSION_DENIED: 多项权限必须由同一角色授权范围同时提供',
+    )
+    expect(fn).not.toHaveBeenCalled()
+  })
 })
 
 describe('业务错误补 digest（穿透 Next.js 生产脱敏）', () => {

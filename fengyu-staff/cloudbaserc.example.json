@@ -17,6 +17,7 @@
         "WXACODE_ENV_VERSION": "${WXACODE_ENV_VERSION}",
         "ALLOW_TEST_OPENID": "${ALLOW_TEST_OPENID}",
         "ALLOW_DIRECT_PHONE": "${ALLOW_DIRECT_PHONE}",
+        "INVENTORY_LINKAGE_ENABLED": "${INVENTORY_LINKAGE_ENABLED}",
         "TZ": "Asia/Shanghai"
       },
       "runtime": "Nodejs18.15",

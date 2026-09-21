@@ -115,7 +115,7 @@ import { db } from '@/db'
 import { saleOrderPayments, saleOrders } from '@db/order'
 
 /**
- * 归属日期口径断言助手（迁移 0040 收敛后）：查询侧直读
+ * 归属日期口径断言助手（迁移 0041 收敛后）：查询侧直读
  * sale_order_payments.performance_attribution_date，不再拼 CASE/COALESCE。
  */
 const usedAttributionColumn = () =>
@@ -398,7 +398,7 @@ describe('getPendingPayments — 全部状态/日期筛选', () => {
     expect((lt as any).mock.calls.some(([col]: any[]) => col === saleOrders.saleOrderDatetime)).toBe(false)
     expect((gte as any).mock.calls.some(([col]: any[]) => col === saleOrderPayments.paidAt)).toBe(false)
     expect((lt as any).mock.calls.some(([col]: any[]) => col === saleOrderPayments.paidAt)).toBe(false)
-    // 直读款项级归属日期列（迁移 0040 收敛：不再有首次支付→订单级的 CASE 分支，
+    // 直读款项级归属日期列（迁移 0041 收敛：不再有首次支付→订单级的 CASE 分支，
     // 该行的列值由 trigger 写成订单级的镜像）
     expect(usedAttributionColumn()).toBe(true)
     expect(usedOrderLevelColumn()).toBe(false)

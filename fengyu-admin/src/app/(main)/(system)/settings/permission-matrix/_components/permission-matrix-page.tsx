@@ -99,6 +99,7 @@ export default function PermissionMatrixPage({ initialRoles, allActions, canMana
           name: draft.name,
           description: draft.description,
           actions: draft.actions,
+          allowedScopeTypes: draft.allowedScopeTypes,
           canAccessAdmin: draft.canAccessAdmin,
           isSuperAdmin: draft.isSuperAdmin,
           isStoreManager: draft.isStoreManager,
@@ -215,6 +216,31 @@ export default function PermissionMatrixPage({ initialRoles, allActions, canMana
                   </label>
                 ))}
                 {!canManageCapabilities && <p className="md:col-span-3 text-xs text-[#999999]">仅超级管理员可修改高级能力。</p>}
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader><CardTitle>可绑定组织层级</CardTitle></CardHeader>
+              <CardContent className="grid gap-3 md:grid-cols-3">
+                {(['总部', '市场', '门店'] as const).map((scopeType) => (
+                  <label key={scopeType} className="flex items-center gap-2 rounded-md border p-3 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={draft.allowedScopeTypes.includes(scopeType)}
+                      disabled={!canManageCapabilities || draft.isSuperAdmin}
+                      onChange={(event) => setDraft({
+                        ...draft,
+                        allowedScopeTypes: event.target.checked
+                          ? [...new Set([...draft.allowedScopeTypes, scopeType])]
+                          : draft.allowedScopeTypes.filter((item) => item !== scopeType),
+                      })}
+                    />
+                    {scopeType}
+                  </label>
+                ))}
+                <p className="md:col-span-3 text-xs text-[#999999]">
+                  进销存分层动作会在服务端自动锁定到对应层级，普通角色不能混合供应链、市场和门店动作。
+                </p>
               </CardContent>
             </Card>
 

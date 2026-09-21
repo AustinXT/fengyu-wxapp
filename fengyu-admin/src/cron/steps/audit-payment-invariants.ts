@@ -172,10 +172,10 @@ export async function auditPaymentInvariants(db: Db): Promise<PaymentInvariantsR
   }
 
   // ── I6: 首次支付款项的业绩归属日期 = 所属订单的业绩归属日期 ──
-  // 迁移 0040 起各端报表直读 sale_order_payments.performance_attribution_date（不再有 CASE 回退），
+  // 迁移 0041 起各端报表直读 sale_order_payments.performance_attribution_date（不再有 CASE 回退），
   // 首次支付那一行是 sale_orders 的镜像。镜像一旦脱拍，那笔业绩会静默落到错误的日子，
   // 金额不变量（I1/I2）也查不出来 —— 它们只看总额，不看归属日。
-  // 写入侧由两个 trigger 保证：initialize_payment_performance_attribution_date（BEFORE，0039）
+  // 写入侧由两个 trigger 保证：initialize_payment_performance_attribution_date（BEFORE，0040）
   // 与 sync_order_performance_attribution_to_payments（sale_orders AFTER UPDATE，0040）。
   // 本项守护的是"trigger 被绕过"（禁用触发器的批量导入 / session_replication_role=replica）。
   const r6 = (await db.execute(sql`
@@ -200,7 +200,7 @@ export async function auditPaymentInvariants(db: Db): Promise<PaymentInvariantsR
 
   // ── I6b: 同次混合支付的储值卡抵扣行的归属日期 = 配对主流水的归属日期 ──
   // I6 只守首次支付↔订单那条镜像；卡行↔主流水这条同样是直读列之后才变得致命，
-  // 而迁移 0040 的自检只管迁移那一刻。谓词与 trigger / 迁移自检的配对条件保持一致：
+  // 而迁移 0041 的自检只管迁移那一刻。谓词与 trigger / 迁移自检的配对条件保持一致：
   // 同单、同 status、paid_at 精确相同，首次支付优先于回款。
   const r6b = (await db.execute(sql`
     SELECT card.id::text AS id,

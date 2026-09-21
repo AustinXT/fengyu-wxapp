@@ -2,6 +2,7 @@
 
 import { db } from '@/db'
 import { pgErrorCode } from '@/lib/pg-error'
+import { businessErrorMessage } from '@/lib/action-error'
 import { orgNodes, stores } from '@db/org'
 import { staffWechatUsers } from '@db/user'
 import { permissionRoles } from '@db/permission'
@@ -27,31 +28,29 @@ function validateParentType(nodeType: OrgNode['type'], parentType: OrgNode['type
 }
 
 /**
- * 检查 targetId 是否是 nodeId 的子孙节点
+ * 检查 targetId 是否是 nodeId 的子孙节点。
+ * 递归 CTE 单条查询（path 数组防 parent 环无限递归）；tx 可选传入以便在
+ * reparent 事务内对最新已提交状态复核。
  */
-async function checkIsDescendant(nodeId: string, targetId: string): Promise<boolean> {
+async function checkIsDescendant(
+  nodeId: string,
+  targetId: string,
+  tx?: Parameters<Parameters<typeof db.transaction>[0]>[0],
+): Promise<boolean> {
   if (nodeId === targetId) return true
-
-  // BFS 查找所有子孙节点
-  const queue = [nodeId]
-  const visited = new Set<string>()
-
-  while (queue.length > 0) {
-    const current = queue.shift()!
-    if (visited.has(current)) continue
-    visited.add(current)
-
-    if (current === targetId) return true
-
-    const children = await db
-      .select({ id: orgNodes.id })
-      .from(orgNodes)
-      .where(eq(orgNodes.parentId, current))
-
-    children.forEach((child) => queue.push(child.id))
-  }
-
-  return false
+  const client = tx ?? db
+  const rows = await client.execute(sql`
+    WITH RECURSIVE descendants(id, path) AS (
+      SELECT ${nodeId}::text, ARRAY[${nodeId}::text]
+      UNION ALL
+      SELECT child.id, descendants.path || child.id
+        FROM org_nodes child
+        JOIN descendants ON child.parent_id = descendants.id
+       WHERE NOT child.id = ANY(descendants.path)
+    )
+    SELECT 1 FROM descendants WHERE id = ${targetId} LIMIT 1
+  `)
+  return (rows as unknown as unknown[]).length > 0
 }
 
 export const getOrgNodes = withPermission(
@@ -205,10 +204,25 @@ export const updateOrgNode = withPermission(
     ? and(eq(orgNodes.id, id), sql`date_trunc('milliseconds', ${orgNodes.updatedAt}) = ${expectedUpdatedAt}`)
     : eq(orgNodes.id, id)
 
+  // 移动父节点的更新走事务 + advisory lock 串行化：两个并发交叉移动（A→B / B→A）
+  // 各自的无锁环检查都能通过，先后提交即成环；锁内复核关闭该 TOCTOU 窗口。
+  const reparenting = data.parentId !== undefined && data.parentId !== before.parentId
   let result: any
   try {
-    result = await db.update(orgNodes).set(data).where(whereConditions)
+    result = reparenting
+      ? await db.transaction(async (tx) => {
+        await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext('org_nodes:reparent'))`)
+        if (data.parentId && await checkIsDescendant(id, data.parentId, tx)) {
+          throw new Error('INVALID_STATE: 不能将节点移动到自己的子节点下')
+        }
+        return tx.update(orgNodes).set(data).where(whereConditions)
+      })
+      : await db.update(orgNodes).set(data).where(whereConditions)
   } catch (err: any) {
+    if (err instanceof Error && err.message.includes('不能将节点移动到自己的子节点下')) {
+      // 原样回传会把 `INVALID_STATE: ` 前缀一起端给用户；走白名单闸门剥掉前缀（issue #133）。
+      return { success: false, message: businessErrorMessage(err, '不能将节点移动到自己的子节点下') }
+    }
     throw err
   }
 

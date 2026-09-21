@@ -60,6 +60,8 @@ export interface AdminMerchant {
   marketName: string | null
   /** 关联门店数（stores.lakala_merchant_id 反查） */
   storeCount: number
+  /** 关联门店简称，多个门店以「、」分隔（stores.store_name 聚合） */
+  storeNames: string | null
   createdAt: string
   updatedAt: string
 }
@@ -153,7 +155,7 @@ export const getMerchantsPaginated = withPermission(
       .from(lakalaMerchants)
       .where(whereClause)
 
-    // DATA：LEFT JOIN stores 统计关联门店数
+    // DATA：LEFT JOIN stores 统计关联门店数，同时聚合门店简称供列表直接展示（避免 N+1 查询）
     const dataQuery = db
       .select({
         id: lakalaMerchants.id,
@@ -166,6 +168,7 @@ export const getMerchantsPaginated = withPermission(
         createdAt: lakalaMerchants.createdAt,
         updatedAt: lakalaMerchants.updatedAt,
         storeCount: sql<number>`cast(count(${stores.storeId}) as int)`,
+        storeNames: sql<string | null>`string_agg(${stores.storeName}, '、' ORDER BY ${stores.storeName})`,
       })
       .from(lakalaMerchants)
       .leftJoin(stores, eq(stores.lakalaMerchantId, lakalaMerchants.id))
@@ -187,6 +190,7 @@ export const getMerchantsPaginated = withPermission(
         enabled: r.enabled,
         marketName: r.marketName ?? null,
         storeCount: r.storeCount ?? 0,
+        storeNames: r.storeNames ?? null,
         createdAt: r.createdAt.toISOString(),
         updatedAt: r.updatedAt.toISOString(),
       })),

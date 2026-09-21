@@ -11,6 +11,11 @@ import {
   KNOWN_PERMISSION_ACTIONS as CATALOG_ACTIONS,
   sanitizeRoleDefinitionActions,
 } from './permission-contract'
+// isAdminScope 实现在 session-role-guards.ts（client 组件经 menu.ts 引用，不得拖入 @/db）。
+// 对外再导出必须用 export-from：vitest SSR 对 import X + export { X } 间接再导出会得到
+// undefined 绑定（2026-09-01 business.test.ts 18 用例失败根因）；import 仅供本文件内部使用。
+import { isAdminScope } from './session-role-guards'
+export { isAdminScope } from './session-role-guards'
 
 /** 权限目录是唯一真相源；管理员默认持有目录中的全部权限。 */
 export const ALL_ACTIONS: string[] = [...CATALOG_ACTIONS]
@@ -47,7 +52,6 @@ export const DEFAULT_PERMISSION_MATRIX: Record<RoleType, string[]> = {
     'dashboard:view',
     'data_center:dashboard',
     'employee:create', 'employee:list', 'employee:update',
-    'inventory:create', 'inventory:list', 'inventory:stock_list',
     'legacy_order:approve', 'legacy_order:list', 'legacy_order:pull', 'legacy_order:reject', 'legacy_order:update_amount', 'legacy_order:update_phone',
     'merchant:list',
     'message:list', 'message:send',
@@ -75,7 +79,6 @@ export const DEFAULT_PERMISSION_MATRIX: Record<RoleType, string[]> = {
     'dashboard:view',
     'data_center:dashboard',
     'employee:list',
-    'inventory:export', 'inventory:list', 'inventory:stock_list',
     'legacy_order:approve', 'legacy_order:list', 'legacy_order:pull', 'legacy_order:reject', 'legacy_order:update_amount', 'legacy_order:update_phone',
     'merchant:create', 'merchant:list', 'merchant:update',
     'operation_log:list',
@@ -107,7 +110,6 @@ export const DEFAULT_PERMISSION_MATRIX: Record<RoleType, string[]> = {
   product: [
     'coupon:create', 'coupon:list', 'coupon:update',
     'dashboard:view',
-    'inventory:create', 'inventory:export', 'inventory:list', 'inventory:stock_list',
     'operation_log:list',
     'org:list',
     'product:create', 'product:list', 'product:update',
@@ -121,7 +123,6 @@ export const DEFAULT_PERMISSION_MATRIX: Record<RoleType, string[]> = {
     'customer:create', 'customer:list', 'customer:update',
     'dashboard:view',
     'employee:list',
-    'inventory:list', 'inventory:stock_list',
     'legacy_order:approve', 'legacy_order:list', 'legacy_order:pull', 'legacy_order:reject', 'legacy_order:update_amount', 'legacy_order:update_phone',
     'operation_log:list',
     'org:list',
@@ -133,6 +134,21 @@ export const DEFAULT_PERMISSION_MATRIX: Record<RoleType, string[]> = {
   ],
   // staff（普通员工）专供小程序端，禁止登录 admin（canAccessAdmin 拦截）；矩阵留空。
   staff: [],
+  inventory_supply_chain_operator: [
+    'inventory:export', 'inventory:list', 'inventory:shipment_cancel_approve',
+    'inventory:stock_list', 'inventory:supply_chain_approve',
+    'inventory:supply_chain_master_data_manage', 'inventory:supply_chain_operate',
+    'inventory:supply_chain_price_view',
+  ],
+  inventory_market_finance: [
+    'inventory:export', 'inventory:list', 'inventory:market_approve',
+    'inventory:market_operate', 'inventory:market_price_view',
+    'inventory:market_sku_manage', 'inventory:self_purchase_receive',
+    'inventory:shipment_cancel_request', 'inventory:stock_list',
+  ],
+  inventory_store_operator: [
+    'inventory:list', 'inventory:stock_list', 'inventory:store_operate',
+  ],
 }
 
 /**
@@ -335,11 +351,10 @@ export function buildScopeWhere(session: AuthSession, storeIdColumn = 'store_id'
 }
 
 /**
- * 判断 session 是否拥有 admin 角色（不受 scope 限制）
+ * 判断 session 是否拥有 admin 角色（不受 scope 限制）。
+ * 实现移至 session-role-guards.ts（client 组件经 menu.ts 引用，不得拖入 @/db）；
+ * re-export 见文件顶部 import 区，server 调用方与 vi.mock('@/lib/permissions') 关系不变。
  */
-export function isAdminScope(session: AuthSession): boolean {
-  return session.roles.some(r => r.isSuperAdmin ?? r.role === 'admin')
-}
 
 /**
  * 是否允许登录管理后台：持有任一非 staff 角色即可。

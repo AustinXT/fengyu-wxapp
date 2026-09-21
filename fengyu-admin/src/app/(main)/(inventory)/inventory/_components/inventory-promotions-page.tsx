@@ -23,8 +23,11 @@ import { DataTable, type Column } from '@/components/ui/data-table'
 import { Dialog, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { DatePicker } from '@/components/ui/date-picker'
 import { Input } from '@/components/ui/input'
+import { Pagination } from '@/components/ui/pagination'
 import { Select } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
+
+const PAGE_SIZE_OPTIONS = [10, 20, 50, 100]
 
 type EditorMode = 'create' | 'edit' | 'view' | null
 
@@ -165,7 +168,7 @@ export default function InventoryPromotionsPage({
   const handleSearchChange = useCallback((value: string) => {
     setSearchInput(value)
     if (searchTimerRef.current) clearTimeout(searchTimerRef.current)
-    searchTimerRef.current = setTimeout(() => setMany({ q: value }), 300)
+    searchTimerRef.current = setTimeout(() => setMany({ q: value, page: '' }), 300)
   }, [setMany])
 
   const filteredRows = useMemo(() => {
@@ -181,6 +184,25 @@ export default function InventoryPromotionsPage({
         .some((value) => value!.toLowerCase().includes(keyword))
     })
   }, [get, rows, searchInput])
+
+  // 分页在**筛选之后**做：本页三个筛选都在上面的 useMemo 里，
+  // 若先切页再筛，用户只会筛到当前页那一屏的匹配项。
+  const pageSize = PAGE_SIZE_OPTIONS.includes(Number(get('size'))) ? Number(get('size')) : 20
+  const rawPage = Math.max(1, Number(get('page', '1')) || 1)
+  // searchInput 是本地 state，打字时 filteredRows 立刻变短，而重置 page 的 setMany
+  // 要等 300ms debounce —— 这中间 page 会越界，不夹一下会闪一屏空列表。
+  const totalPages = Math.max(1, Math.ceil(filteredRows.length / pageSize))
+  const page = Math.min(rawPage, totalPages)
+  const pagedRows = filteredRows.slice((page - 1) * pageSize, page * pageSize)
+
+  // 夹取只解决了「渲染出空列表」，URL 里的越界页码还在：Pagination 收到的是夹取**后**的
+  // page，它自己的越界自纠 effect 就永远不触发。残留的 `?page=99` 会在用户清掉筛选、
+  // 结果变多时把人莫名带到第 99 页。这里主动清掉。
+  // 条件守卫保证只在越界时执行一次：setMany 之后 rawPage 变回 1，条件不再成立，不会自循环
+  // （本仓库在 inventory-docs-page 有过 useEffect 自循环把下拉卡死的 P0，这里刻意写严）。
+  useEffect(() => {
+    if (rawPage > totalPages) setMany({ page: '' })
+  }, [rawPage, totalPages, setMany])
 
   const canCreatePlan = canCreate && (canManageGlobal || marketOptions.length > 0)
   const readOnly = mode === 'view'
@@ -423,7 +445,7 @@ export default function InventoryPromotionsPage({
         <div className="flex flex-wrap items-center gap-2">
           <Select
             value={get('market')}
-            onChange={(event) => setMany({ market: event.target.value })}
+            onChange={(event) => setMany({ market: event.target.value, page: '' })}
             className="w-36"
             aria-label="适用市场筛选"
           >
@@ -434,7 +456,7 @@ export default function InventoryPromotionsPage({
           </Select>
           <Select
             value={get('status')}
-            onChange={(event) => setMany({ status: event.target.value })}
+            onChange={(event) => setMany({ status: event.target.value, page: '' })}
             className="w-28"
             aria-label="福利方案状态筛选"
           >
@@ -450,7 +472,7 @@ export default function InventoryPromotionsPage({
           />
           <Button variant="outline" onClick={() => {
             setSearchInput('')
-            setMany({ q: '', market: '', status: '' })
+            setMany({ q: '', market: '', status: '', page: '' })
           }}>
             重置
           </Button>
@@ -462,7 +484,15 @@ export default function InventoryPromotionsPage({
         </div>
       </div>
 
-      <DataTable columns={columns} data={filteredRows} emptyText="暂无市场报货福利方案" />
+      <DataTable columns={columns} data={pagedRows} emptyText="暂无市场报货福利方案" />
+      <Pagination
+        total={filteredRows.length}
+        page={page}
+        pageSize={pageSize}
+        pageSizeOptions={PAGE_SIZE_OPTIONS}
+        onPageChange={(next) => setMany({ page: String(next) })}
+        onPageSizeChange={(size) => setMany({ size: String(size), page: '' })}
+      />
 
       <Dialog open={mode !== null} onOpenChange={closeEditor} className="max-w-5xl">
         <DialogHeader>
@@ -471,24 +501,24 @@ export default function InventoryPromotionsPage({
         <div className="mt-4 max-h-[68vh] space-y-5 overflow-y-auto pr-1">
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
             <div className="space-y-2">
-              <label className="text-sm font-medium">方案编号</label>
+              <span className="block text-sm font-medium text-[#666666]">方案编号</span>
               <div className="flex min-h-9 items-center rounded-[var(--radius)] border border-[var(--border)] bg-[var(--muted)] px-3 text-sm text-[#666666]">
                 {selectedPlan?.planNo ?? '保存后由系统自动生成'}
               </div>
             </div>
-            <div className="space-y-2">
-              <label className="text-sm font-medium">方案名称 *</label>
+            <label className="block space-y-2">
+              <span className="block text-sm font-medium">方案名称 *</span>
               <Input value={form.name} readOnly={readOnly} disabled={saving} onChange={(event) => setField('name', event.target.value)} />
-            </div>
-            <div className="space-y-2">
-              <label className="text-sm font-medium">规则类型</label>
+            </label>
+            <label className="block space-y-2">
+              <span className="block text-sm font-medium">规则类型</span>
               <Select value={form.ruleType} disabled={readOnly || saving} onChange={(event) => setField('ruleType', event.target.value as PromotionForm['ruleType'])}>
                 <option value="单品阶梯">单品阶梯</option>
                 <option value="组合">组合</option>
               </Select>
-            </div>
-            <div className="space-y-2">
-              <label className="text-sm font-medium">适用市场</label>
+            </label>
+            <label className="block space-y-2">
+              <span className="block text-sm font-medium">适用市场</span>
               <Select
                 value={form.scopeMarketId}
                 disabled={readOnly || saving}
@@ -499,26 +529,26 @@ export default function InventoryPromotionsPage({
                   <option key={market.locationId} value={market.locationId}>{market.name}</option>
                 ))}
               </Select>
-            </div>
-            <div className="space-y-2">
-              <label className="text-sm font-medium">开始日期 *</label>
+            </label>
+            <label className="block space-y-2">
+              <span className="block text-sm font-medium">开始日期 *</span>
               <DatePicker value={form.startsAt} disabled={readOnly || saving} onValueChange={(value) => setField('startsAt', value)} aria-label="开始日期" />
-            </div>
-            <div className="space-y-2">
-              <label className="text-sm font-medium">结束日期 *</label>
+            </label>
+            <label className="block space-y-2">
+              <span className="block text-sm font-medium">结束日期 *</span>
               <DatePicker value={form.endsAt} disabled={readOnly || saving} onValueChange={(value) => setField('endsAt', value)} aria-label="结束日期" />
-            </div>
-            <div className="space-y-2">
-              <label className="text-sm font-medium">状态</label>
+            </label>
+            <label className="block space-y-2">
+              <span className="block text-sm font-medium">状态</span>
               <Select value={form.status} disabled={readOnly || saving} onChange={(event) => setField('status', event.target.value as '启用' | '停用')}>
                 <option value="启用">启用</option>
                 <option value="停用">停用</option>
               </Select>
-            </div>
-            <div className="space-y-2 sm:col-span-2 lg:col-span-3">
-              <label className="text-sm font-medium">备注</label>
+            </label>
+            <label className="block space-y-2 sm:col-span-2 lg:col-span-3">
+              <span className="block text-sm font-medium">备注</span>
               <Textarea value={form.remark} readOnly={readOnly} disabled={saving} onChange={(event) => setField('remark', event.target.value)} />
-            </div>
+            </label>
           </div>
 
           <div className="space-y-3 border-t border-[var(--border)] pt-4">
@@ -546,8 +576,8 @@ export default function InventoryPromotionsPage({
                     )}
                   </div>
                   <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
-                    <div className="space-y-2 sm:col-span-2">
-                      <label className="text-sm font-medium">库存商品 *</label>
+                    <label className="block space-y-2 sm:col-span-2">
+                      <span className="block text-sm font-medium">库存商品 *</span>
                       <Select value={item.skuId} disabled={readOnly || saving} onChange={(event) => updateItem(index, { skuId: event.target.value })}>
                         <option value="">请选择库存商品</option>
                         {skuOptions.map((sku) => (
@@ -556,27 +586,27 @@ export default function InventoryPromotionsPage({
                           </option>
                         ))}
                       </Select>
-                    </div>
-                    <div className="space-y-2">
-                      <label className="text-sm font-medium">{form.ruleType === '组合' ? '组合数量下限 *' : '数量下限'}</label>
-                      <Input type="number" min="0" step="1" placeholder={form.ruleType === '组合' ? '必填' : '留空不限'} value={item.reportMinQuantity} readOnly={readOnly} disabled={saving} onChange={(event) => updateItem(index, { reportMinQuantity: event.target.value })} />
-                    </div>
-                    <div className="space-y-2">
-                      <label className="text-sm font-medium">数量上限</label>
-                      <Input type="number" min="0" step="1" placeholder="留空不限" value={item.reportMaxQuantity} readOnly={readOnly} disabled={saving} onChange={(event) => updateItem(index, { reportMaxQuantity: event.target.value })} />
-                    </div>
+                    </label>
+                    <label className="block space-y-2">
+                      <span className="block text-sm font-medium">{form.ruleType === '组合' ? '组合数量下限 *' : '数量下限'}</span>
+                      <Input type="number" min="0" step="1" max="9999999999.99" placeholder={form.ruleType === '组合' ? '必填' : '留空不限'} value={item.reportMinQuantity} readOnly={readOnly} disabled={saving} onChange={(event) => updateItem(index, { reportMinQuantity: event.target.value })} />
+                    </label>
+                    <label className="block space-y-2">
+                      <span className="block text-sm font-medium">数量上限</span>
+                      <Input type="number" min="0" step="1" max="9999999999.99" placeholder="留空不限" value={item.reportMaxQuantity} readOnly={readOnly} disabled={saving} onChange={(event) => updateItem(index, { reportMaxQuantity: event.target.value })} />
+                    </label>
                     {canViewPrice && (
                       <>
-                        <div className="space-y-2">
-                          <label className="text-sm font-medium">单价优惠 *</label>
-                          <Input type="number" min="0" step="0.01" value={item.marketUnitDiscount} readOnly={readOnly} disabled={saving} onChange={(event) => updateItem(index, { marketUnitDiscount: event.target.value })} />
-                        </div>
+                        <label className="block space-y-2">
+                          <span className="block text-sm font-medium">单价优惠 *</span>
+                          <Input type="number" min="0" step="0.01" max="9999999999.99" value={item.marketUnitDiscount} readOnly={readOnly} disabled={saving} onChange={(event) => updateItem(index, { marketUnitDiscount: event.target.value })} />
+                        </label>
                       </>
                     )}
-                    <div className="space-y-2 sm:col-span-2 lg:col-span-4">
-                      <label className="text-sm font-medium">明细备注</label>
+                    <label className="block space-y-2 sm:col-span-2 lg:col-span-4">
+                      <span className="block text-sm font-medium">明细备注</span>
                       <Textarea value={item.remark} readOnly={readOnly} disabled={saving} onChange={(event) => updateItem(index, { remark: event.target.value })} />
-                    </div>
+                    </label>
                   </div>
                   {readOnly && (
                     <p className="text-xs text-[#666666]">适用数量：{formatQuantityRange(numberOrNull(item.reportMinQuantity), numberOrNull(item.reportMaxQuantity))}</p>

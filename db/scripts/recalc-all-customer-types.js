@@ -13,14 +13,16 @@
  *
  * 修复策略（"系统补激活"，不发权益）：
  *   等价于把 staffApi recalcCustomerType 的判定逻辑全量回放到所有顾客身上：
- *     1. 单订单 (total_amount) 或单订单+回款链 (total + Σ回款) ≥ new_member_threshold ⇒ 会员客
- *     2. 否则有非卡品 SKU 销售记录 ⇒ 小美客
- *     3. 否则有卡品（除充值卡外）SKU 销售记录 ⇒ 体验客
+ *     1. 存在一张销售单，其**非体验部分毛实收** ≥ new_member_threshold ⇒ 会员客
+ *     2. 否则存在一张单其非体验部分毛实收 > 0 ⇒ 小美客
+ *     3. 否则存在一张单其体验部分毛实收 > 0 ⇒ 体验客
  *     4. 否则 ⇒ 流量客
+ *   （#187 2026-09-18：判定金额从 total_amount 换成毛实收 = sale_items.received 净额
+ *    + 该行逐项退款额，按 sale_amount 封顶；无明细行的历史单回退订单级 received。）
  *   仅"向上跃迁"（rank: 流量客<体验客<小美客<会员客），保护已被手工或 payNotify 升级过的行。
  *
  * 同事务额外维护：
- *   - 会员客升级行：member_level 仅在原值为 NULL 时按滚动 12 个月销售额 (paid_amount) 写入
+ *   - 会员客升级行：member_level 仅在原值为 NULL 时按滚动 12 个月净消费写入
  *     初始等级（黑/金/粉/星/初钻），与 cron-worker determineMemberLevel 同源。
  *   - became_member_at 仅在原值为 NULL 时写入 first_qualified_at（首笔达标单
  *     COALESCE(paid_at, created_at)；选单口径 DISTINCT ON + ORDER BY paid_at
@@ -75,18 +77,68 @@ CREATE TEMP TABLE _recalc_target ON COMMIT DROP AS
 WITH threshold AS (
   SELECT $1::numeric AS v
 ),
-qualified_orders AS (
-  -- 单笔销售单达阈值的订单。保留 paid_at / created_at 原始列供 member_first
-  -- 按 paid_at ASC NULLS LAST 选单（与 recalc-became-member-at.js 同口径）。
-  SELECT o.client_user_id, o.sale_order_id, o.paid_at, o.created_at
+-- #187（2026-09-18）：跃迁判定金额从订单应付额 total_amount 换成
+-- **单笔订单的非体验部分毛实收**（sale_items.received 净额 + 该行逐项退款额），
+-- 落地 2026-04-26 Q5.2 决策。本段是五端运行时 CTE 的全库批量版：
+-- 少了 client_user_id 参数过滤、多带 client_user_id/paid_at/created_at 输出列，
+-- 其余判定语义与 staffApi routes/order.js RECALC_CUSTOMER_TYPE_CTE 逐项对齐。
+refund_by_item AS (
+  -- note→jsonb 三重防线逐字对齐 staffApi utils/paid-sessions.js RECEIVED_REFUNDED_DEDUCT_SQL：
+  -- ① 仅退款+已支付流水；② public.try_jsonb 安全转换（非法 JSON 降级 NULL）；③ jsonb_typeof 兜 items 非数组。
+  SELECT sop.sale_order_id,
+         elem ->> 'refSaleItemId' AS sale_item_id,
+         SUM(COALESCE(public.try_numeric(elem ->> 'refundAmount'), 0)) AS refunded
+    FROM sale_order_payments sop
+    JOIN sale_orders ro ON ro.sale_order_id = sop.sale_order_id
+    CROSS JOIN LATERAL jsonb_array_elements(
+      CASE WHEN jsonb_typeof(public.try_jsonb(sop.note) -> 'items') = 'array'
+           THEN public.try_jsonb(sop.note) -> 'items'
+           ELSE '[]'::jsonb END
+    ) AS elem
+   WHERE ro.status IN ('已支付', '已完成')
+     AND ro.sale_order_type = '销售单'
+     AND sop.change_type = '退款'
+     AND sop.status = '已支付'
+     AND elem ->> 'refSaleItemId' <> 'OVERPAY'
+   -- 序号绑定 SELECT 的前 2 列（sale_order_id, refSaleItemId）；重排 SELECT 列须同步改这里
+   GROUP BY 1, 2
+),
+order_amounts AS (
+  -- LEAST(…, sale_amount) 封顶：加回 note 原始退款额并非扣减的严格逆运算，
+  -- refunded > 实际扣减额时会高估；已结清订单的行级毛额上限就是 sale_amount，故以此封顶，
+  -- 把「不可逆误升会员客」压成「最多漏升」（漏升可由后续订单或再跑一次本脚本自愈）。
+  -- 无明细行订单（WorkFine 历史单只建 sale_orders）回退订单级 received，全额计入 non_trial。
+  SELECT o.sale_order_id, o.client_user_id, o.paid_at, o.created_at,
+         CASE WHEN NOT EXISTS (SELECT 1 FROM sale_items si2 WHERE si2.sale_order_id = o.sale_order_id)
+              THEN GREATEST(o.received::numeric, 0)
+              ELSE COALESCE(SUM(LEAST(si.received::numeric + COALESCE(rbi.refunded, 0),
+                                      si.sale_amount::numeric))
+                            FILTER (WHERE si.is_experience = false), 0)
+         END AS non_trial,
+         CASE WHEN NOT EXISTS (SELECT 1 FROM sale_items si2 WHERE si2.sale_order_id = o.sale_order_id)
+              THEN 0
+              ELSE COALESCE(SUM(LEAST(si.received::numeric + COALESCE(rbi.refunded, 0),
+                                      si.sale_amount::numeric))
+                            FILTER (WHERE si.is_experience = true), 0)
+         END AS trial
     FROM sale_orders o
+    LEFT JOIN sale_items si ON si.sale_order_id = o.sale_order_id
+                           AND si.item_direction = '购买'
+    LEFT JOIN refund_by_item rbi ON rbi.sale_order_id = o.sale_order_id
+                                AND rbi.sale_item_id = si.sale_item_id
     -- 2026-04-26 sale-order-domain-refactor 后，回款下沉到
     -- sale_order_payments.change_type='回款'，sale_order_type 枚举已不含“回款单”。
-    -- 会员客判定与在线端保持单笔销售单 total_amount 达阈值口径。
    WHERE o.status IN ('已支付', '已完成')
      AND o.sale_order_type = '销售单'
      AND o.client_user_id IS NOT NULL
-     AND o.total_amount >= (SELECT v FROM threshold)
+   GROUP BY o.sale_order_id, o.client_user_id, o.paid_at, o.created_at, o.received
+),
+qualified_orders AS (
+  -- 非体验部分毛实收达阈值的订单。保留 paid_at / created_at 原始列供 member_first
+  -- 按 paid_at ASC NULLS LAST 选单（与 recalc-became-member-at.js 同口径）。
+  SELECT client_user_id, sale_order_id, paid_at, created_at
+    FROM order_amounts
+   WHERE non_trial >= (SELECT v FROM threshold)
 ),
 member_first AS (
   -- 选单口径与 recalc-became-member-at.js 的 BUILD_TARGET_SQL 同源：
@@ -98,35 +150,33 @@ member_first AS (
          client_user_id AS user_id,
          COALESCE(paid_at, created_at) AS first_qualified_at
     FROM qualified_orders
-   ORDER BY client_user_id, paid_at ASC NULLS LAST, created_at ASC
+   ORDER BY client_user_id, paid_at ASC NULLS LAST, created_at ASC, sale_order_id ASC
 ),
 -- 2026-04-26 sku-capability 切换：xiaomei/tiyan 直接用 sale_items.is_experience 判定
 -- 充值卡 SKU 的 is_experience=false → 充值卡购买视同"小美客"消费（D1=A）
--- 与 staffApi/order.js recalcCustomerType + payNotify 行 ~466 同口径
+-- #187 起改判金额：存在一张单其 non_trial > 0（小美客）/ trial > 0（体验客），
+-- 与其余七处副本的 non_trial > 0 / trial > 0 分支同口径。
 xiaomei_users AS (
-  SELECT DISTINCT o.client_user_id AS user_id
-    FROM sale_orders o
-    JOIN sale_items si ON si.sale_order_id = o.sale_order_id
-   WHERE o.status IN ('已支付', '已完成')
-     AND o.sale_order_type = '销售单'
-     AND o.client_user_id IS NOT NULL
-     AND si.is_experience = false
+  SELECT DISTINCT client_user_id AS user_id
+    FROM order_amounts
+   WHERE non_trial > 0
 ),
 tiyan_users AS (
-  SELECT DISTINCT o.client_user_id AS user_id
-    FROM sale_orders o
-    JOIN sale_items si ON si.sale_order_id = o.sale_order_id
-   WHERE o.status IN ('已支付', '已完成')
-     AND o.sale_order_type = '销售单'
-     AND o.client_user_id IS NOT NULL
-     AND si.is_experience = true
+  SELECT DISTINCT client_user_id AS user_id
+    FROM order_amounts
+   WHERE trial > 0
 ),
 spend_12m AS (
+  -- 2026-09-19 修既有 bug（#187 闸门 2 codex 发现）：本段原查 paid_amount 列，
+  -- 而该列在 2026-04-26 sale-order-domain-refactor 里已 DROP（与 received 重复，见
+  -- db/schema/order.ts 的 received 注释）。结果是整个脚本一跑就报
+  -- column paid_amount does not exist，全库回算根本执行不了。
+  -- 口径对齐 cron steps/refresh-member-levels.ts：净消费 = GREATEST(received - refunded_amount, 0)，
+  -- 单据范围含 '销售单' 与 '转换单'（原脚本只算销售单，与 cron 不一致，一并对齐）。
   SELECT client_user_id AS user_id,
-         COALESCE(SUM(paid_amount::numeric), 0) AS spend
+         COALESCE(SUM(GREATEST(received::numeric - refunded_amount::numeric, 0)), 0) AS spend
     FROM sale_orders
-   WHERE sale_order_type = '销售单'
-     AND paid_amount > 0
+   WHERE sale_order_type IN ('销售单', '转换单')
      AND paid_at >= (NOW() - INTERVAL '12 months')
      AND client_user_id IS NOT NULL
    GROUP BY client_user_id

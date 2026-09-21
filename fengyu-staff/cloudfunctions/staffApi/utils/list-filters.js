@@ -71,6 +71,7 @@ function addDateRange(conditions, params, column, startDate, endDate) {
 }
 
 module.exports = {
+  isValidDate,
   normalizeListFilters,
   addTimestampDateRange,
   addDateRange,

@@ -1,14 +1,14 @@
 /**
  * 「按回款逐笔分配」真实库集成测试（capture 链路）
  *
- * 默认直连测试库（postgresql://fengyu:fengyu123@101.34.242.103:5433/fengyu_wxapp）。
+ * 默认直连 dev 库（postgresql://fengyu:fengyu123@101.34.242.103:5433/fengyu_wxapp）。
  * 可通过 PAYMENT_ALLOCATABLE_INT_DATABASE_URL 覆盖到临时 PG 做迁移验证。
  * 全程 BEGIN ... ROLLBACK 包裹，绝不 COMMIT —— 不在库里留任何痕迹。
  *
  * 直接调用 utils/payment-allocatable 的 capturePaymentAllocatables /
  * refreshOrderAllocationRollup，传入真实 pg Client 事务句柄。
  *
- * ⚠️ 仅对测试库（101.34.242.103:5433）；绝不碰生产 IP 118.178.196.26。
+ * ⚠️ 仅对 dev 库（101.34.242.103:5433）；绝不碰生产 IP 118.178.196.26。
  *
  * 运行：
  *   env -u http_proxy -u https_proxy -u all_proxy \
@@ -59,13 +59,13 @@ beforeAll(async () => {
   await client.connect()
 
   // 守护：绝不连生产 IP 118.178.196.26。
-  // 默认连接测试库时仍校验库名；覆盖到临时 PG 时允许其它库名。
+  // 默认连接 dev 库时仍校验库名；覆盖到临时 PG 时允许其它库名。
   if (CONN.includes('118.178.196.26')) {
     throw new Error('拒绝运行：PAYMENT_ALLOCATABLE_INT_DATABASE_URL 指向生产库')
   }
   const dbRes = await client.query('SELECT current_database() AS db')
   if (CONN === DEFAULT_CONN && dbRes.rows[0].db !== 'fengyu_wxapp') {
-    throw new Error(`拒绝运行：期望测试库 fengyu_wxapp，实连 ${dbRes.rows[0].db}`)
+    throw new Error(`拒绝运行：期望 dev 库 fengyu_wxapp，实连 ${dbRes.rows[0].db}`)
   }
 
   await client.query('BEGIN')

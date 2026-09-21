@@ -4,6 +4,24 @@
     <button class="create-button" bindtap="onCreateTap">{{createLabel}}</button>
   </view>
   <view class="filters">
+    <view class="search-row" wx:if="{{orgNodeOptions.length > 0}}">
+      <picker
+        class="search-input"
+        mode="selector"
+        range="{{orgNodeOptions}}"
+        range-key="label"
+        value="{{selectedOrgNodeIndex}}"
+        bindchange="onOrgNodeChange"
+      >
+        <view>{{selectedOrgNodeIndex >= 0 ? orgNodeOptions[selectedOrgNodeIndex].label : '全部可见组织'}}</view>
+      </picker>
+      <button
+        wx:if="{{selectedOrgNodeIndex >= 0}}"
+        class="filter-chip"
+        size="mini"
+        bindtap="onClearOrgNode"
+      >清除</button>
+    </view>
     <view class="filter-row" wx:if="{{subtypes.length > 0}}">
       <view class="filter-chip {{subtypeFilter === '' ? 'active' : ''}}" data-value="" bindtap="onSubtypeTap">全部</view>
       <view
@@ -45,8 +63,8 @@
         <text class="meta-text">{{item.docDate}}</text>
       </view>
       <view class="item-body">
-        <text class="store">{{item.sourceLocationName || item.sourceLocationId || '—'}}</text>
-        <text wx:if="{{item.targetLocationName || item.targetLocationId}}" class="counterpart">→ {{item.targetLocationName || item.targetLocationId}}</text>
+        <text class="store">{{item.sourceOrgNodeName || item.sourceOrgNodeId || '—'}}</text>
+        <text wx:if="{{item.targetOrgNodeName || item.targetOrgNodeId}}" class="counterpart">→ {{item.targetOrgNodeName || item.targetOrgNodeId}}</text>
         <text wx:if="{{item.customerName}}" class="customer">{{item.customerName}}</text>
       </view>
       <view class="item-foot">

@@ -37,7 +37,20 @@ export const inventorySkus = pgTable(
     productCode: text('product_code').notNull(),
     productName: text('product_name').notNull(),
     specName: text('spec_name'),
+    /**
+     * 供应商名称，由 `supplier_id` 关联的档案派生写入。
+     *
+     * **是同步维护的冗余名，不是历史快照**：档案改名时 `updateInventorySupplier`
+     * 会把所有关联 SKU 的本列一起改过来。真正的历史快照是
+     * `inventory_doc_items.supplier` 与 `inventory_stock_lots.supplier`，它们在
+     * 建单 / 建批次那一刻冻结、之后不再变。
+     *
+     * 保留本列的理由：`ensureLotFromSku` 建批次时取的就是它；存量里匹配不上档案的
+     * 旧文本也靠它留存（`supplier_id` 为 NULL 时）。
+     */
     supplier: text('supplier'),
+    /** 供应商档案关联。存量文本按名称精确匹配回填，匹配不上的保留文本、本列为 NULL。 */
+    supplierId: text('supplier_id').references(() => inventorySuppliers.supplierId),
     manufacturer: text('manufacturer'),
     brand: text('brand'),
     productSeries: text('product_series'),
@@ -54,6 +67,10 @@ export const inventorySkus = pgTable(
       precision: 12,
       scale: 2,
     }),
+    /** 供应链 SKU 的市场进货价来源；非供应链 SKU 不使用该字段。 */
+    marketPurchasePriceMode: text('market_purchase_price_mode'),
+    /** 手工覆盖公式价时必填，历史/接口操作同时写入操作日志。 */
+    marketPurchasePriceOverrideReason: text('market_purchase_price_override_reason'),
     storePurchasePrice: numeric('store_purchase_price', {
       precision: 12,
       scale: 2,
@@ -93,6 +110,7 @@ export const inventorySkus = pgTable(
     index('idx_inventory_skus_series').on(table.productSeries),
     index('idx_inventory_skus_source').on(table.sourceType),
     index('idx_inventory_skus_owner_market').on(table.ownerMarketId),
+    index('idx_inventory_skus_supplier').on(table.supplierId),
     check(
       'chk_inventory_skus_source_type',
       sql`${table.sourceType} IN ('供应链','市场自采','转让店')`,
@@ -106,6 +124,44 @@ export const inventorySkus = pgTable(
        AND COALESCE(${table.storePurchasePrice}, 0) >= 0
        AND COALESCE(${table.marketStaffPurchasePrice}, 0) >= 0
        AND COALESCE(${table.itemCompanyPurchasePrice}, 0) >= 0`,
+    ),
+    check(
+      'chk_inventory_skus_market_price_mode',
+      sql`(
+        ${table.sourceType} = '供应链'
+        AND ${table.marketPurchasePriceMode} IN ('公式','手工覆盖')
+      ) OR (
+        ${table.sourceType} <> '供应链'
+        AND ${table.marketPurchasePriceMode} IS NULL
+        AND ${table.marketPurchasePriceOverrideReason} IS NULL
+      )`,
+    ),
+    check(
+      'chk_inventory_skus_market_price_override',
+      sql`${table.marketPurchasePriceMode} <> '手工覆盖'
+        OR (
+          ${table.marketPurchasePrice} IS NOT NULL
+          AND NULLIF(BTRIM(${table.marketPurchasePriceOverrideReason}), '') IS NOT NULL
+        )`,
+    ),
+    check(
+      'chk_inventory_skus_market_price_formula',
+      sql`${table.marketPurchasePriceMode} <> '公式'
+        OR (
+          ${table.marketPurchasePriceOverrideReason} IS NULL
+          AND (
+            ${table.accountingPrice} IS NULL
+            OR ${table.marketPurchaseDiscount} IS NULL
+            OR ${table.marketPurchasePrice} = ROUND(
+              ${table.accountingPrice} * CASE
+                WHEN ${table.marketPurchaseDiscount} > 1
+                  THEN ${table.marketPurchaseDiscount} / 100
+                ELSE ${table.marketPurchaseDiscount}
+              END,
+              2
+            )
+          )
+        )`,
     ),
   ],
 )
@@ -159,9 +215,8 @@ export const inventorySkuProductSkuMappings = pgTable(
 /**
  * 库存主体：总部 / 市场 / 门店。
  *
- * location_id 使用组织树节点或门店主键，便于直接承接现有权限 scope：
- * - 总部、市场：org_nodes.id
- * - 门店：stores.store_id
+ * 库存余额仍以 location_id 作为内部主键；org_node_id 是单据、权限和页面接口
+ * 使用的统一组织节点标识。总部、市场、门店库存主体必须一一对应组织节点。
  */
 export const inventoryLocations = pgTable(
   'inventory_locations',
@@ -183,7 +238,7 @@ export const inventoryLocations = pgTable(
   },
   (table) => [
     index('idx_inventory_locations_type').on(table.locationType),
-    index('idx_inventory_locations_org').on(table.orgNodeId),
+    uniqueIndex('uq_inventory_locations_org').on(table.orgNodeId),
     index('idx_inventory_locations_store').on(table.storeId),
     check(
       'chk_inventory_locations_type',
@@ -374,11 +429,13 @@ export const inventoryDocs = pgTable(
     id: text('id').primaryKey(),
     docType: text('doc_type').notNull(),
     status: text('status').notNull().default('草稿'),
-    sourceLocationId: text('source_location_id').references(
-      () => inventoryLocations.locationId,
+    /** 实际发起/出库组织节点；外部供应商或顾客侧不写入此字段。 */
+    sourceOrgNodeId: text('source_org_node_id').references(
+      () => inventoryLocations.orgNodeId,
     ),
-    targetLocationId: text('target_location_id').references(
-      () => inventoryLocations.locationId,
+    /** 实际接收/入库组织节点；外部供应商或顾客侧不写入此字段。 */
+    targetOrgNodeId: text('target_org_node_id').references(
+      () => inventoryLocations.orgNodeId,
     ),
     /** 业务所属市场；不以文本名称推导，确保跨层单据可以按市场隔离。 */
     marketId: text('market_id').references(() => orgNodes.id),
@@ -441,8 +498,8 @@ export const inventoryDocs = pgTable(
     index('idx_inventory_docs_type').on(table.docType),
     index('idx_inventory_docs_status').on(table.status),
     index('idx_inventory_docs_date').on(table.docDate),
-    index('idx_inventory_docs_source').on(table.sourceLocationId),
-    index('idx_inventory_docs_target').on(table.targetLocationId),
+    index('idx_inventory_docs_source_org_node').on(table.sourceOrgNodeId),
+    index('idx_inventory_docs_target_org_node').on(table.targetOrgNodeId),
     index('idx_inventory_docs_market').on(table.marketId),
     index('idx_inventory_docs_supplier').on(table.supplierId),
     check(
@@ -452,20 +509,18 @@ export const inventoryDocs = pgTable(
     check(
       'chk_inventory_docs_type',
       sql`${table.docType} IN (
-        '门店报货','市场报货','品项公司报货需求','采购订单','供应链采购订单',
+        '门店报货','市场报货','市场报货汇总','品项公司报货需求','采购订单',
         '供应链采购入库','品项公司发货','市场采购入库','自采产品入库','分院配货',
         '院入库','分院调货出库','分院调货入库','市场间调货出库','市场间调货入库',
-        '员工购出库','内部领用','非凤御市场出库','市场退货','市场退货入库',
+        '员工购出库','供应链员工购出库','内部领用','非凤御市场出库','市场退货','市场退货入库',
         '供应链退货入库','院退货','院顾客产品出库','院顾客退货','市场产品报损',
         '院产品报损','市场产品盘溢','市场库存盘点','分院库存盘点','库存转换出库',
         '库存转换入库','期初库存'
       )`,
     ),
     check(
-      'chk_inventory_docs_location_pair',
-      sql`${table.sourceLocationId} IS NULL
-        OR ${table.targetLocationId} IS NULL
-        OR ${table.sourceLocationId} <> ${table.targetLocationId}`,
+      'chk_inventory_docs_org_endpoint',
+      sql`${table.sourceOrgNodeId} IS NOT NULL OR ${table.targetOrgNodeId} IS NOT NULL`,
     ),
   ],
 )
@@ -489,6 +544,20 @@ export const inventoryDocItems = pgTable(
     skuName: text('sku_name').notNull(),
     specName: text('spec_name'),
     supplier: text('supplier'),
+    /**
+     * 行级供应商档案关联。
+     *
+     * 采购订单一次汇总多张报货单后，一张单里的商品可能分属不同供应商，单头的
+     * `inventory_docs.supplier_id` 不再够用（#194）。建单时由 `inventory_skus.supplier_id`
+     * 带出，与上面的 `supplier` 名称快照并存：本列是关联、`supplier` 是冻结的历史名。
+     */
+    supplierId: text('supplier_id').references(() => inventorySuppliers.supplierId),
+    /**
+     * 行级市场归属。NULL = 品项公司自用行（走供应链采购入库），非 NULL = 市场行（走品项公司发货）。
+     *
+     * 采购订单收敛成单一 doc_type 后，下游链路分流不再看单据类型而是看本列（#194）。
+     */
+    marketId: text('market_id').references(() => orgNodes.id),
     productSeries: text('product_series'),
     batchNo: text('batch_no').notNull().default(''),
     expiryDate: date('expiry_date'),
@@ -546,6 +615,8 @@ export const inventoryDocItems = pgTable(
     index('idx_inventory_doc_items_doc').on(table.docId),
     index('idx_inventory_doc_items_lot').on(table.lotId),
     index('idx_inventory_doc_items_sku').on(table.skuId),
+    index('idx_inventory_doc_items_supplier').on(table.supplierId),
+    index('idx_inventory_doc_items_market').on(table.marketId),
     index('idx_inventory_doc_items_promotion').on(table.promotionPlanId),
     uniqueIndex('uq_inventory_doc_items_id_doc').on(table.id, table.docId),
     check('chk_inventory_doc_items_qty', sql`${table.quantity} > 0`),
@@ -622,7 +693,7 @@ export const inventoryDocLinks = pgTable(
     check(
       'chk_inventory_doc_links_relation_type',
       sql`${table.relationType} IN (
-        '门店报货汇总','市场报货采购订单','品项公司报货采购订单',
+        '门店报货汇总','市场报货汇总','市场报货采购订单','报货汇总采购订单','品项公司报货采购订单',
         '采购订单发货','采购订单赠送发货','发货收货','采购订单供应链采购入库',
         '门店报货配货','门店报货赠送配货','退货回库','库存转换','历史关联'
       )`,

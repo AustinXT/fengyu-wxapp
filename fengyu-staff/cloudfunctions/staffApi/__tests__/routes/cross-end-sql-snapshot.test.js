@@ -678,6 +678,24 @@ describe('SUMMARY v3 §2 #14：refund-cascade 双端 5 通道覆盖守护', () =
       expect(adminSrc).toMatch(/service_commissions[\s\S]*?voided_at\s*=\s*NOW\(\)/i)
       expect(adminSrc).toMatch(/service_commissions[\s\S]*?voided_reason\s*=/i)
     })
+    test('两端通道 2 WHERE 谓词镜像为 sc.is_void = false，不再按裸 voided_at IS NULL 过滤', () => {
+      const staffSql = normalizeSql(staffSrc.slice(
+        staffSrc.indexOf('通道 2: service_commissions'),
+        staffSrc.indexOf('通道 3: user_coupons'),
+      ))
+      const adminSql = normalizeSql(adminSrc.slice(
+        adminSrc.indexOf('2) service_commissions'),
+        adminSrc.indexOf('3) user_coupons'),
+      ))
+      const activePredicate = /AND sc\.is_void = false/i
+      const legacyPredicate = /(?:WHERE|AND) (?:sc\.)?voided_at IS NULL/i
+
+      expect(staffSql).toMatch(activePredicate)
+      expect(adminSql).toMatch(activePredicate)
+      expect(staffSql.match(activePredicate)?.[0]).toBe(adminSql.match(activePredicate)?.[0])
+      expect(staffSql).not.toMatch(legacyPredicate)
+      expect(adminSql).not.toMatch(legacyPredicate)
+    })
   })
 
   // 通道 3：user_coupons 状态翻转（UPDATE ... SET status = '未使用'；部分退款不退券）
@@ -1494,7 +1512,7 @@ describe("STEP 1 received 分摊 SQL 四端字节同义守护", () => {
 // Block 7c: STEP 1.5 逐项退款净额 SQL 四端字节同义（2026-06-08 退款侧）
 //   recalcPaidSessionsForOrder 在 STEP1（毛额分摊）之后、STEP2 之前，从已支付退款流水
 //   note.items[].refundAmount 按 refSaleItemId 聚合扣减 sale_items.received → 净额（被退项单独减少）。
-//   note→jsonb 三重防线：① WHERE 仅 退款+已支付；② note LIKE '{%' 纯文本守门；③ 嵌套 CASE 保 ::jsonb cast。
+//   note→jsonb 安全解析：① WHERE 仅 退款+已支付；② public.try_jsonb（0045）失败降级 NULL；③ jsonb_typeof 兜非数组。
 //   admin（Drizzle ${id}）+ staff/client/payNotify（pg $1）四端归一化后字节同义。
 // ─────────────────────────────────────────────────────────────────────────────
 describe("STEP 1.5 逐项退款净额 SQL 四端字节同义守护", () => {
@@ -1518,12 +1536,26 @@ describe("STEP 1.5 逐项退款净额 SQL 四端字节同义守护", () => {
       expect(deductSqls.payNotify).toMatch(pattern)
       expect(deductSqls.adminTs).toMatch(pattern)
     })
-    test("四端 note→jsonb 守门：note LIKE '{%' 外层 + jsonb_typeof items 数组（防 22P02/25P02）", () => {
-      const guard = /sop\.note LIKE '\{%'/i
-      const typ = /jsonb_typeof\(\(sop\.note\)::jsonb -> 'items'\)\s*=\s*'array'/i
+    test('四端 note→jsonb 守门：public.try_jsonb 安全转换 + jsonb_typeof items 数组（防 22P02/25P02）', () => {
+      // #187：原断言要求 `sop.note LIKE '{%'` 外层守门 + 裸 `(sop.note)::jsonb`——
+      // 那个组合**挡不住** `{手工备注}`、`{"items":`（截断）这类以 { 开头但非合法 JSON 的值，
+      // 它们照样进 cast 抛 22P02、回滚整个收款事务（闸门 2 codex 指出，已实测复现）。
+      // 现统一改用 migration 0045 的 public.try_jsonb（失败降级 NULL），LIKE 假守门一并废除。
+      const safeCast = /jsonb_typeof\(public\.try_jsonb\(sop\.note\) -> 'items'\)\s*=\s*'array'/i
+      const safeExtract = /public\.try_jsonb\(sop\.note\) -> 'items'/i
       for (const s of [deductSqls.staff, deductSqls.client, deductSqls.payNotify, deductSqls.adminTs]) {
-        expect(s).toMatch(guard)
-        expect(s).toMatch(typ)
+        expect(s).toMatch(safeCast)
+        expect(s).toMatch(safeExtract)
+        // 回归守护：不得退回裸 cast 或 LIKE 假守门
+        expect(s).not.toMatch(/\(sop\.note\)::jsonb/)
+        expect(s).not.toMatch(/sop\.note LIKE/)
+      }
+    })
+
+    test('四端 refundAmount 用 public.try_numeric 安全转换（非数字/NaN 不得污染聚合）', () => {
+      for (const s of [deductSqls.staff, deductSqls.client, deductSqls.payNotify, deductSqls.adminTs]) {
+        expect(s).toMatch(/public\.try_numeric\(elem ->> 'refundAmount'\)/i)
+        expect(s).not.toMatch(/\(elem ->> 'refundAmount'\)::numeric/)
       }
     })
     test("四端按 refSaleItemId 聚合 refundAmount（逐项归因）", () => {

@@ -17,7 +17,7 @@
 | `CLIENT_SERVICE_URL` | dev 域名 | prod 真实域名 | 跨服务调用指错环境 |
 | `ADMIN_JWT_SECRET` | dev jwt | prod 独立 jwt | 跨环境 session 互通 |
 | `ANALYST_PUBLIC_ORIGIN` | dev analyst URL | prod analyst URL | analyst 入口串环境 |
-| `LAKALA_*` | SIT 沙箱 | prod 真实商户凭证 | 支付或入网不可用 |
+| `LAKALA_*` | release 生产通道（APPID 禁 SIT 凭据 OP00000003） | prod 真实商户凭证 | 支付或入网不可用 |
 | `PAYNOTIFY_ENABLED` | `true` | `true` | 支付通知不可用 |
 
 DB 目标口径：

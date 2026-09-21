@@ -11,8 +11,15 @@ import { withPermission } from '@/lib/with-permission'
 
 export const listInventorySkuCompositions = withPermission(
   'inventory:stock_list',
-  async (_session, filters: { keyword?: string; status?: 'configured' | 'unconfigured' | 'invalid' } = {}) =>
-    listInventorySkuCompositionsImpl(filters),
+  async (
+    _session,
+    filters: {
+      keyword?: string
+      status?: 'configured' | 'unconfigured' | 'invalid'
+      page?: number
+      pageSize?: number
+    } = {},
+  ) => listInventorySkuCompositionsImpl(filters),
 )
 
 export const listInventorySkuCompositionOptions = withPermission(
@@ -21,11 +28,11 @@ export const listInventorySkuCompositionOptions = withPermission(
 )
 
 export const createInventorySkuComposition = withPermission(
-  'inventory:create',
+  'inventory:supply_chain_master_data_manage',
   async (_session, input: InventoryCompositionInput) => createInventorySkuCompositionImpl(input),
 )
 
 export const updateInventorySkuComposition = withPermission(
-  'inventory:update',
+  'inventory:supply_chain_master_data_manage',
   async (_session, input: InventoryCompositionInput) => updateInventorySkuCompositionImpl(input),
 )

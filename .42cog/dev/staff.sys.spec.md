@@ -381,4 +381,13 @@ staff.todoList → 6 种待办:
 | 权限细粒度配置 UI | 管理后台（员工端仅查看） |
 | WorkFine 数据同步 | db/scripts 离线脚本 |
 | 转换单/退款单/回款单/取货单 | P2 |
-| 消息推送/排班/库存 | 暂不实现 |
+| 消息推送/排班 | 暂不实现 |
+
+> 历史勘误：「库存」曾列为暂不实现，已被进销存 v3 推翻（见
+> `docs/changes/arch/011_inventory-domain-v3.md`）。现状：`routes/inventory.js` 提供
+> 11 个 action（stockList / reportableSkuOptions / storeOptions / docOrgOptions /
+> docList / docDetail / createDoc / confirmReceive / approveDoc / rejectDoc 等），
+> 仅门店层主体（`buildInventoryLocationScope` 按 source/target_org_node_id 双端点
+> org 树过滤）；写操作要求动作与 scope 来自同一角色绑定；响应与入参均不含金额字段
+> （`assertNoStaffMoneyFields`）；与 admin 的一致性由
+> `__tests__/routes/cross-end-inventory-snapshot.test.js` 守护。

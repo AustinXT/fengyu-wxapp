@@ -457,7 +457,7 @@ export default function PermissionsPage({
                 const role = e.target.value as RoleType
                 setAssignRoleValue(role)
                 const definition = roleDefinitions.find((item) => item.roleKey === role)
-                if (definition?.isSuperAdmin) {
+                if (definition?.allowedScopeTypes.length === 1 && definition.allowedScopeTypes[0] === '总部') {
                   const hq = orgNodes.find(n => n.type === "总部")
                   setAssignScopeId(hq ? hq.id : "")
                   return
@@ -465,7 +465,7 @@ export default function PermissionsPage({
                 // 切换角色后，清空已变非法（超出新角色 scope 类型）的已选范围
                 if (assignScopeId) {
                   const node = orgNodes.find(n => n.id === assignScopeId)
-                  if (!node || !["总部", "市场", "门店"].includes(node.type)) {
+                  if (!node || !definition?.allowedScopeTypes.includes(node.type as '总部' | '市场' | '门店')) {
                     setAssignScopeId("")
                   }
                 }
@@ -485,7 +485,7 @@ export default function PermissionsPage({
               className="mt-1"
               orgNodes={orgNodes}
               excludeTypes={["部门"]}
-              allowedTypes={roleDefinitions.find((role) => role.roleKey === assignRoleValue)?.isSuperAdmin ? ["总部"] : ["总部", "市场", "门店"]}
+              allowedTypes={roleDefinitions.find((role) => role.roleKey === assignRoleValue)?.allowedScopeTypes ?? []}
               allowedNodeIds={accessibleScopeIds}
               value={assignScopeId}
               onChange={(id) => setAssignScopeId(id)}

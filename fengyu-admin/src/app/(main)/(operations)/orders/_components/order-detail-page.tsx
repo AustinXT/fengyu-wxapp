@@ -20,6 +20,7 @@ import { getTreatmentCardBusinessIdentity, groupTreatmentCards, sumGroupValue } 
 import { PerformanceAttributionDialog } from "./performance-attribution-dialog";
 import { PaymentPerformanceAttributionDialog } from "./payment-performance-attribution-dialog";
 import { ReturnContextLink } from "@/components/return-context";
+import { isWorkfineLegacy, paymentMethodDisplay } from "@/lib/workfine-legacy";
 
 /** ticket 2026-04-24 PR-3 §3.3 — change_type/status 中文展示，退款金额红色 */
 const paymentChangeTypeLabelMap: Record<string, string> = {
@@ -245,7 +246,7 @@ export default function OrderDetailPageClient({
   const hasRefund = refundedAmount > 0 && order.status !== "已退款";
   const couponDiscount = Number(order.couponDiscount ?? "0");
   // 历史订单（WorkFine 导入）标记，订单信息卡展示"历史订单"角标
-  const isLegacy = order.legacySource === "workfine";
+  const isLegacy = isWorkfineLegacy(order.legacySource);
 
   const totalAmount = Number(order.totalAmount ?? "0");
   // 回款欠款（总额口径 = total − paidAmount，含储值卡，与 status 结清判定一致）：
@@ -265,7 +266,7 @@ export default function OrderDetailPageClient({
     canRecordPayment &&
     (order.saleOrderType === "销售单" || order.saleOrderType === "转换单") &&
     !order.isExperienceConversion &&
-    order.legacySource !== "workfine" &&
+    !isWorkfineLegacy(order.legacySource) &&
     repayRemaining > 0 &&
     (order.status === "部分支付" || order.status === "待支付") &&
     !canShowConfirmOffline;
@@ -282,7 +283,7 @@ export default function OrderDetailPageClient({
   const canShowRefund =
     canRefund &&
     order.saleOrderType === "销售单" &&
-    order.legacySource !== "workfine" &&
+    !isWorkfineLegacy(order.legacySource) &&
     (order.status === "已支付" || order.status === "已完成" || order.status === "部分支付");
 
   const canShowDepositApproval =
@@ -563,7 +564,10 @@ export default function OrderDetailPageClient({
             <div>
               <span className="text-[#999999]">支付方式</span>
               <p className="font-medium mt-1">
-                {isLegacy ? "未知" : paymentMethodMap[order.paymentMethod] || order.paymentMethod}
+                {paymentMethodDisplay(
+                  order.legacySource,
+                  paymentMethodMap[order.paymentMethod] || order.paymentMethod,
+                )}
               </p>
             </div>
             {order.offlineConfirmedByName && (
@@ -763,7 +767,7 @@ export default function OrderDetailPageClient({
                   const amt = Number(p.amount);
                   const isRefund = p.changeType === "退款" || amt < 0;
                   const isFirstPayment = p.changeType === "首次支付";
-                  // 直读款项级列：迁移 0040 起它由 trigger 赋值 + CHECK 兜底恒有值，
+                  // 直读款项级列：迁移 0041 起它由 trigger 赋值 + CHECK 兜底恒有值，
                   // 首次支付那一行本身就是订单级的镜像。不按 changeType 分支、也不回退 paid_at
                   // —— 回退会把"列为空"这种数据异常伪装成有归属日期，与导出侧的留空策略相反。
                   const attributionDate = p.performanceAttributionDate;

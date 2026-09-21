@@ -11,6 +11,17 @@
           }
         ]
       }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c 'BRANCH=$(git branch --show-current 2>/dev/null); if [[ \"$BRANCH\" == \"main\" || \"$BRANCH\" == \"dev\" ]]; then LAST=$(git log -1 --format=%s 2>/dev/null); if echo \"$LAST\" | grep -qE \"^(feat|fix|refactor)\"; then echo \"[提示] $BRANCH 有新提交，可 /remote-deploy admin 或 /cloudbase-deploy 部署\"; fi; fi'",
+            "timeout": 5000
+          }
+        ]
+      }
     ]
   }
 }

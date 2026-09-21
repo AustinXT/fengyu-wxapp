@@ -63,7 +63,29 @@ npm run db:check:attribution   # 款项归属日期迁移前体检（只读，�
    - prod：从 `envs/prod.env` 的 `ADMIN_DATABASE_URL` 显式迁 **118.178.196.26:5433/fengyu_wxapp**
    - 详见下文「dev / prod 两套业务库」小节；完整发版优先使用 `/release-all <env>` 的目标断言与迁移门禁
 
-### 写 sale_order_payments 的硬约束（迁移 0039 / 0040）
+### ⚠️ 迁移 0039–0041 的编号在 2026-09-16 的 main→dev 合并里重排过
+
+同一条迁移在两条分支上拿到过不同编号，合并时按 `when` 时序重排为：
+
+| idx | tag | when | 来历 |
+|---|---|---|---|
+| 39 | `0039_inventory_org_endpoints_and_permissions` | 1788231409458 | dev 线原样 |
+| 40 | `0040_payment_attribution_date_always_set` | 1789117632431 | dev 线原样；**test/main 线上它叫 0039** |
+| 41 | `0041_bizarre_wolfpack`（#137） | 1789357902234 | test/main 线的 0040 改号而来 |
+
+**为什么必须是这个顺序**：drizzle 的 migrator 拿 `__drizzle_migrations` 里最大的 `created_at`
+与 journal 各条的 `when` 比大小来决定跳过谁（不是按 hash 求集合差）。inventory 的 `when` 早于
+payment，一旦把它排到 payment 之后，**任何已 apply 过 payment 的库都会永久静默跳过它** ——
+2026-09-14 prod 需要手工 apply + 手工 INSERT 就是踩了这个。`when` 值一个都不许改。
+
+**三个 SQL 文件内容逐字节未动**（改名不改内容），所以已 apply 的库里记的 (hash, created_at)
+仍然对得上，不会被判成待迁。
+
+**⚠️ `0041_bizarre_wolfpack.sql` 内部的注释仍写「0039 的 BEFORE trigger」「0039 是已发布的
+迁移」** —— 那是它在 test 线被写下时的编号，指的是现在的 **0040**。这些注释**故意不改**：
+迁移文件的内容参与 hash，改一个字就会让已 apply 的库报 hash 漂移。读 SQL 注释时按本表换算。
+
+### 写 sale_order_payments 的硬约束（迁移 0040 / 0041）
 
 `sale_order_payments.performance_attribution_date` 由 BEFORE trigger
 `initialize_payment_performance_attribution_date()` 赋值，并由 CHECK 约束
@@ -81,7 +103,7 @@ npm run db:check:attribution   # 款项归属日期迁移前体检（只读，�
 
 **锁序约定：`sale_orders` → `sale_order_payments`，新代码不得反向。**
 
-迁移 0040 给 BEFORE trigger 的两处 `SELECT ... FROM sale_orders` 补了 `FOR SHARE`
+迁移 0041 给 BEFORE trigger 的两处 `SELECT ... FROM sale_orders` 补了 `FOR SHARE`
 （**不能降回 `FOR KEY SHARE`**：归属日期不是键列，普通 `UPDATE sale_orders` 取 FOR NO KEY UPDATE，
 与 FOR KEY SHARE 不冲突 —— 实测挡不住）。
 
@@ -96,14 +118,14 @@ npm run db:check:attribution   # 款项归属日期迁移前体检（只读，�
 （`fengyu-admin/src/actions/allocations.ts` 的 `refreshOrderAllocationRollup` 链路、
 staffApi `routes/allocation.js` 的保存/删除）是「先改款项行、再刷新订单汇总」。
 它与「订单级改期」（先锁订单、再回写款项行）并发时会 40P01 —— 已在临时 PG 实测复现，
-且**把 0040 的 AFTER trigger 禁用、改用改造前的应用层 UPDATE 同样复现**，
+且**把 0041 的 AFTER trigger 禁用、改用改造前的应用层 UPDATE 同样复现**，
 说明这个环在 0040 之前就存在，只是同步动作下沉后不再能从应用代码里一眼看出锁足迹。修它属于 allocation 模块的独立课题。
 
 另有两条路径（clientApi `routes/order.js` 的 repay 纯卡/混合分支、admin `orders.ts` 的
 `deductPrepaidCardAtCreation`）不先锁订单，但它们写的是配对不上主流水的卡行，压根不触发上面的共享锁，
 且被 `prepaid_cards` 行锁串行化 —— **无环是因为不触发，不是因为顺序对**。改动这两处时要重新评估。
 
-跑 0040 之前先执行 `npm run db:check:attribution` 确认没有真阻塞项：该迁移的
+跑 0041 之前先执行 `npm run db:check:attribution` 确认没有真阻塞项：该迁移的
 `ADD CONSTRAINT` 取 ACCESS EXCLUSIVE 并持有到事务提交，回填与自检的全表扫描都落在这个窗口里，
 应避开营业高峰。迁移首条已加 `SET LOCAL lock_timeout = '3s'`，拿不到锁会直接失败而不是把业务卡住。
 

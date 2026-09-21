@@ -70,10 +70,8 @@ export const FULL_REFUND_ZERO_AMOUNT_PAID_SESSIONS_SQL = `WITH full_refund_zero_
       SELECT elem ->> 'refSaleItemId' AS sale_item_id
       FROM sale_order_payments sop
       CROSS JOIN LATERAL jsonb_array_elements(
-        CASE WHEN sop.note LIKE '{%'
-             THEN CASE WHEN jsonb_typeof((sop.note)::jsonb -> 'items') = 'array'
-                       THEN (sop.note)::jsonb -> 'items'
-                       ELSE '[]'::jsonb END
+        CASE WHEN jsonb_typeof(public.try_jsonb(sop.note) -> 'items') = 'array'
+             THEN public.try_jsonb(sop.note) -> 'items'
              ELSE '[]'::jsonb END
       ) AS elem
       WHERE sop.sale_order_id = $1 AND sop.change_type = '退款' AND sop.status = '已支付'
@@ -151,7 +149,7 @@ export const CONVERSION_IN_ITEMS_RECEIVED_RECALC_SQL = `WITH conversion_order AS
 /**
  * 已付未用次数（可用次数）派生表达式 —— 查询侧只读派生（与上方 RECALC 写入对照）。
  * admin 单源：卡包列表/详情（cards.ts）+ 订单导出 + 营业额分配导出（orders.ts）复用。
- *   - paid_sessions IS NULL（migration 0040 前历史行未回填）→ 退回物理剩余 remaining_sessions，避免误显「已耗尽」
+ *   - paid_sessions IS NULL（migration 0041 前历史行未回填）→ 退回物理剩余 remaining_sessions，避免误显「已耗尽」
  *   - 否则 max(paid − used, 0)，used = max(session_count − remaining, 0)（clamp 防脏数据 remaining>session_count 时负值）
  * 口径须与 client/staff 前端 paidUnusedSessions 派生一致（cross-end-sql-snapshot.test.js 守护 JS 派生口径）。
  */
@@ -271,13 +269,11 @@ export async function recalcPaidSessionsForOrder(tx: AdminTx, saleOrderId: strin
     await tx.execute(sql`
       WITH refund_items AS (
         SELECT elem ->> 'refSaleItemId' AS sale_item_id,
-               COALESCE((elem ->> 'refundAmount')::numeric, 0) AS refund_amount
+               COALESCE(public.try_numeric(elem ->> 'refundAmount'), 0) AS refund_amount
         FROM sale_order_payments sop
         CROSS JOIN LATERAL jsonb_array_elements(
-          CASE WHEN sop.note LIKE '{%'
-               THEN CASE WHEN jsonb_typeof((sop.note)::jsonb -> 'items') = 'array'
-                         THEN (sop.note)::jsonb -> 'items'
-                         ELSE '[]'::jsonb END
+          CASE WHEN jsonb_typeof(public.try_jsonb(sop.note) -> 'items') = 'array'
+               THEN public.try_jsonb(sop.note) -> 'items'
                ELSE '[]'::jsonb END
         ) AS elem
         WHERE sop.sale_order_id = ${saleOrderId} AND sop.change_type = '退款' AND sop.status = '已支付'
@@ -411,10 +407,8 @@ export async function recalcPaidSessionsForOrder(tx: AdminTx, saleOrderId: strin
       SELECT elem ->> 'refSaleItemId' AS sale_item_id
       FROM sale_order_payments sop
       CROSS JOIN LATERAL jsonb_array_elements(
-        CASE WHEN sop.note LIKE '{%'
-             THEN CASE WHEN jsonb_typeof((sop.note)::jsonb -> 'items') = 'array'
-                       THEN (sop.note)::jsonb -> 'items'
-                       ELSE '[]'::jsonb END
+        CASE WHEN jsonb_typeof(public.try_jsonb(sop.note) -> 'items') = 'array'
+             THEN public.try_jsonb(sop.note) -> 'items'
              ELSE '[]'::jsonb END
       ) AS elem
       WHERE sop.sale_order_id = ${saleOrderId} AND sop.change_type = '退款' AND sop.status = '已支付'

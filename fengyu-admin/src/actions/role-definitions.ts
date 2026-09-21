@@ -47,11 +47,45 @@ export interface RoleDefinitionInput {
   name: string
   description?: string | null
   actions?: string[]
+  allowedScopeTypes?: Array<'总部' | '市场' | '门店'>
   copyFromRoleKey?: string | null
   canAccessAdmin?: boolean
   isSuperAdmin?: boolean
   isStoreManager?: boolean
   expectedUpdatedAt?: string
+}
+
+const INVENTORY_TIER_ACTIONS = {
+  总部: [
+    'inventory:supply_chain_operate', 'inventory:supply_chain_approve',
+    'inventory:supply_chain_price_view', 'inventory:supply_chain_master_data_manage',
+    'inventory:shipment_cancel_approve',
+  ],
+  市场: [
+    'inventory:market_operate', 'inventory:market_approve', 'inventory:market_price_view',
+    'inventory:market_sku_manage', 'inventory:self_purchase_receive',
+    'inventory:shipment_cancel_request',
+  ],
+  门店: ['inventory:store_operate'],
+} as const
+
+function normalizeAllowedScopeTypes(
+  value: readonly string[] | undefined,
+  actions: readonly string[],
+  isSuperAdmin: boolean,
+): Array<'总部' | '市场' | '门店'> {
+  if (isSuperAdmin) return ['总部']
+  const valid = new Set(['总部', '市场', '门店'])
+  const normalized = [...new Set(value ?? ['总部', '市场', '门店'])]
+  if (normalized.length === 0 || normalized.some((item) => !valid.has(item))) {
+    throw new Error('INVALID_PARAMS: 角色至少需要一个有效的可绑定层级')
+  }
+  const tiers = (Object.entries(INVENTORY_TIER_ACTIONS) as Array<[
+    '总部' | '市场' | '门店', readonly string[],
+  ]>).filter(([, tierActions]) => tierActions.some((action) => actions.includes(action)))
+  if (tiers.length > 1) throw new Error('INVALID_PARAMS: 普通角色不能混合多个进销存层级动作')
+  if (tiers.length === 1) return [tiers[0][0]]
+  return normalized as Array<'总部' | '市场' | '门店'>
 }
 
 function normalizeName(value: string): string {
@@ -96,16 +130,23 @@ function normalizeActions(actions: readonly string[], isSuperAdmin: boolean): st
 }
 
 /**
- * 超级管理员会绕过数据 scope，因此已在市场、门店等非总部节点分配的角色
- * 不得直接升级。调用方必须先撤销这些分配，再创建或升级总部范围的角色。
+ * 复核存量分配与层级白名单的冲突：permission_roles 的 DB 触发器只在分配行自身
+ * INSERT/UPDATE 时校验 scope 节点类型，编辑角色定义（收窄 allowedScopeTypes 或
+ * 加入进销存层级动作触发 normalize 收敛）不会触发复核；staffApi 鉴权也不读
+ * allowed_scope_types，矛盾分配会在小程序端持续生效。因此创建/升级/编辑前按
+ * 目标层级集合检查存量分配，有冲突先拒绝（口径同 0039 迁移期 DO 守卫）。
+ * 超级管理员绕过数据 scope，只允许绑定总部节点，等价于白名单 ['总部']。
  */
-async function hasNonHeadquartersAssignment(roleKey: string): Promise<boolean> {
+async function hasConflictingScopeAssignment(
+  roleKey: string,
+  allowedScopeTypes: readonly ('总部' | '市场' | '门店')[],
+): Promise<boolean> {
   const rows = await db.execute(sql`
     SELECT 1
       FROM permission_roles pr
       JOIN org_nodes node ON node.id = pr.scope_id
      WHERE pr.role = ${roleKey}
-       AND node.type <> '总部'
+       AND NOT (node.type = ANY(${allowedScopeTypes}::text[]))
      LIMIT 1
   `)
   return (rows as unknown as unknown[]).length > 0
@@ -140,6 +181,7 @@ function serialize(row: {
   name: string
   description: string | null
   actions: string[]
+  allowedScopeTypes: string[]
   canAccessAdmin: boolean
   isSuperAdmin: boolean
   isStoreManager: boolean
@@ -150,6 +192,7 @@ function serialize(row: {
   return {
     ...row,
     actions: sanitizeRoleDefinitionActions(row.actions, row.isSuperAdmin, KNOWN_PERMISSION_ACTIONS),
+    allowedScopeTypes: row.allowedScopeTypes as Array<'总部' | '市场' | '门店'>,
     assignmentCount: Number(row.assignmentCount),
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
@@ -165,6 +208,7 @@ export const getRoleDefinitions = withAnyPermission(
         name: permissionRoleDefinitions.name,
         description: permissionRoleDefinitions.description,
         actions: permissionRoleDefinitions.actions,
+        allowedScopeTypes: permissionRoleDefinitions.allowedScopeTypes,
         canAccessAdmin: permissionRoleDefinitions.canAccessAdmin,
         isSuperAdmin: permissionRoleDefinitions.isSuperAdmin,
         isStoreManager: permissionRoleDefinitions.isStoreManager,
@@ -204,6 +248,7 @@ export const createRoleDefinition = withPermission(
 
     const roleKey = `role_${randomUUID()}`
     const actions = normalizeActions(sourceActions, isSuperAdmin)
+    const allowedScopeTypes = normalizeAllowedScopeTypes(input.allowedScopeTypes, actions, isSuperAdmin)
     try {
       await db.transaction(async (tx) => {
         await tx.insert(permissionRoleDefinitions).values({
@@ -211,6 +256,7 @@ export const createRoleDefinition = withPermission(
           name: normalizeName(input.name),
           description: normalizeDescription(input.description),
           actions,
+          allowedScopeTypes,
           canAccessAdmin: isSuperAdmin ? true : input.canAccessAdmin !== false,
           isSuperAdmin,
           isStoreManager,
@@ -225,7 +271,7 @@ export const createRoleDefinition = withPermission(
     }
 
     await logOperation(session, 'role_definition.create', 'permission_role_definition', roleKey, {
-      name: normalizeName(input.name), actions, canAccessAdmin: input.canAccessAdmin !== false,
+      name: normalizeName(input.name), actions, allowedScopeTypes, canAccessAdmin: input.canAccessAdmin !== false,
       isSuperAdmin, isStoreManager,
     })
     invalidatePermissionMatrixCache()
@@ -257,7 +303,7 @@ export const updateRoleDefinition = withPermission(
       || nextAdminAccess !== before.canAccessAdmin
     if (capabilityChanged) requireAdmin(session)
 
-    if (!before.isSuperAdmin && nextSuper && await hasNonHeadquartersAssignment(roleKey)) {
+    if (!before.isSuperAdmin && nextSuper && await hasConflictingScopeAssignment(roleKey, ['总部'])) {
       throw new Error('INVALID_STATE: 已在非总部范围分配的角色不能直接升级为超级管理员，请先撤销相关授权')
     }
 
@@ -283,6 +329,16 @@ export const updateRoleDefinition = withPermission(
       ),
       nextSuper,
     )
+    const allowedScopeTypes = normalizeAllowedScopeTypes(
+      input.allowedScopeTypes ?? before.allowedScopeTypes,
+      actions,
+      nextSuper,
+    )
+    // 编辑可能收窄层级（含 normalize 对进销存层级动作的强制收敛）；按目标层级复核
+    // 存量分配，矛盾时拒绝，防止小程序端继续按旧绑定放行。
+    if (await hasConflictingScopeAssignment(roleKey, allowedScopeTypes)) {
+      throw new Error('INVALID_STATE: 存在与新可绑定层级冲突的角色分配，请先撤销相关授权后再保存')
+    }
     // PostgreSQL 的 timestamptz 可保留微秒，而 JavaScript Date 只能保留毫秒。
     // 页面拿到的是 ISO 毫秒值，直接等值比较会让刚创建的角色也误判为并发冲突。
     const expectedUpdatedAt = input.expectedUpdatedAt ?? before.updatedAt.toISOString()
@@ -294,6 +350,7 @@ export const updateRoleDefinition = withPermission(
             name: normalizeName(input.name ?? before.name),
             description: normalizeDescription(input.description ?? before.description),
             actions,
+            allowedScopeTypes,
             canAccessAdmin: nextAdminAccess,
             isSuperAdmin: nextSuper,
             isStoreManager: nextStoreManager,
@@ -315,8 +372,8 @@ export const updateRoleDefinition = withPermission(
     }
 
     await logUpdate(session, 'role_definition.update', 'permission_role_definition', roleKey,
-      { name: before.name, description: before.description, actions: before.actions, canAccessAdmin: before.canAccessAdmin, isSuperAdmin: before.isSuperAdmin, isStoreManager: before.isStoreManager },
-      { name: input.name ?? before.name, description: input.description ?? before.description, actions, canAccessAdmin: nextAdminAccess, isSuperAdmin: nextSuper, isStoreManager: nextStoreManager },
+      { name: before.name, description: before.description, actions: before.actions, allowedScopeTypes: before.allowedScopeTypes, canAccessAdmin: before.canAccessAdmin, isSuperAdmin: before.isSuperAdmin, isStoreManager: before.isStoreManager },
+      { name: input.name ?? before.name, description: input.description ?? before.description, actions, allowedScopeTypes, canAccessAdmin: nextAdminAccess, isSuperAdmin: nextSuper, isStoreManager: nextStoreManager },
     )
     invalidatePermissionMatrixCache()
     revalidatePath('/settings/permission-matrix')

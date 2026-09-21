@@ -10,7 +10,10 @@ import { actionErrorMessage, actionErrorType } from "@/lib/action-error"
  * 15.5 起对带 `__NEXT_ERROR_CODE` 的错误会追加 `@E<码>`（lib/error-telemetry-utils.js）。
  * 只有这种形态才是「给客服定位用的编号」，其余 digest 是业务/技术文案，不得原样渲染。
  */
-const NEXT_AUTO_DIGEST_RE = /^\d{1,10}(?:@E\d+)?$/
+const NEXT_AUTO_DIGEST_RE = /^\d{1,10}(?:@[A-Za-z][\w-]*)?$/
+
+/** 「没有可展示的业务理由」的哨兵。不可能与真实文案相等，故用它代替空串做判定。 */
+const NO_BUSINESS_REASON = "__no_business_reason__"
 
 export default function ErrorPage({
   error,
@@ -68,7 +71,10 @@ export default function ErrorPage({
   }
 
   // 通用 500。业务拦截理由（若有）优先于通用话术展示，让守护的理由能传达到人（issue #133）。
-  const reason = actionErrorMessage(error, "")
+  // 用独占哨兵而非空串问「有没有可展示的业务理由」：`actionErrorMessage` 会把空白 fallback
+  // 兜成「操作失败」（免得弹空白 toast），所以空串当哨兵会恒为真、把通用文案顶掉。
+  const reason = actionErrorMessage(error, NO_BUSINESS_REASON)
+  const hasReason = reason !== NO_BUSINESS_REASON
   return (
     <div className="flex min-h-[60vh] items-center justify-center">
       <Card className="w-full max-w-md">
@@ -76,7 +82,7 @@ export default function ErrorPage({
           <div className="text-5xl text-[#D94040]">500</div>
           <h2 className="text-xl font-semibold text-[var(--foreground)]">服务异常</h2>
           <p className="text-sm text-[#666666]">
-            {reason || "抱歉，页面加载出现问题，请稍后重试"}
+            {hasReason ? reason : "抱歉，页面加载出现问题，请稍后重试"}
           </p>
           {/* 只展示 Next 自动生成的错误编号（供客服定位）。digest 也可能是完整业务 / 技术文案
               （如 `INVALID_STATE: CLIENT_SECRET is not configured`），原样渲染会绕过

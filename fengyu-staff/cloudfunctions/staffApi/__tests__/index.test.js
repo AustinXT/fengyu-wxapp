@@ -22,20 +22,7 @@ function healthPayload(service) {
       .digest('hex'),
   }
 }
-const DISABLED_ROUTE_EXPORTS = new Set([
-  'inventory.createDoc',
-  'inventory.confirmReceive',
-  'inventory.approveDoc',
-  'inventory.rejectDoc',
-  'inventory.uploadReceipt',
-])
-const REMOVED_ACTIONS = [
-  'inventory.createDoc',
-  'inventory.confirmReceive',
-  'inventory.approveDoc',
-  'inventory.rejectDoc',
-  'inventory.uploadReceipt',
-]
+const DISABLED_ROUTE_EXPORTS = new Set()
 
 function clearStaffApiCache() {
   Object.keys(require.cache).forEach(key => {
@@ -171,12 +158,11 @@ describe('staffApi 入口', () => {
     }
   })
 
-  test('已移除的库存写 action 不可通过公开路由调用', async () => {
-    for (const action of REMOVED_ACTIONS) {
-      const result = await main({ action, payload: {} }, {})
-      expect(result.code).toBe(-1)
-      expect(result.message).toContain('未知')
-    }
+  test('库存写 action 已注册并进入库存业务参数校验', async () => {
+    const result = await main({ action: 'inventory.createDoc', payload: {} }, {})
+    expect(result.code).toBe(-400)
+    expect(result.errorType).toBe('INVALID_PARAMS')
+    expect(result.message).toContain('不支持创建')
   })
 
   test('管理层模式由网关拒绝门店业务 mutation', async () => {
