@@ -28,12 +28,14 @@ const MAX_EDGE = 12_000
  *
  * 它是极端长条图，生产实际为 2083×37403（约 77.9MP、单边 37403），套用通用上限会直接
  * 把现网这张图挡在门外。但**不能因此完全豁免校验**——那等于留一条无上界的上传通道。
- * 故给一组宽松但有限的专用阈值。
+ *
+ * 阈值贴着现网实际尺寸留一档余量即可，不要放得更宽：`exactKey` 取自请求表单，
+ * 任何已登录账号都能声明这个 key 来认领这组阈值，放得越宽被滥用的空间越大。
  * 顾客端 pages/cart 会用 wx.getImageInfo 拿真实宽高后按 imageMogr2 动态切条显示，
- * 不直接解码原图，所以这张图本身有等效防护。
+ * 不直接解码原图，所以这张图本身另有等效防护。
  */
-const MAX_PIXELS_FENGYUGUAN = 120_000_000
-const MAX_EDGE_FENGYUGUAN = 60_000
+const MAX_PIXELS_FENGYUGUAN = 90_000_000
+const MAX_EDGE_FENGYUGUAN = 45_000
 
 const COOKIE_NAME = 'fy-admin-token'
 

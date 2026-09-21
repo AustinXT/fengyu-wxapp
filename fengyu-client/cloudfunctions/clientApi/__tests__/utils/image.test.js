@@ -30,10 +30,14 @@ describe('safeThumbUrl', () => {
     expect(result).not.toMatch(/thumbnail\/300x(?!300)/)
   })
 
-  test('已有 query 时保留原参数并追加缩略参数', () => {
-    const withQuery = `${COS_URL}?t=1758440000000`
-    expect(safeThumbUrl(withQuery, 300)).toBe(
-      `${withQuery}&imageMogr2/thumbnail/300x300`
+  /**
+   * cache-buster 这类非白名单参数也会被丢弃。这是安全的：门店封面走 path 模式上传，
+   * 文件名自带时间戳 + 随机串，URL 本身已唯一，不依赖 ?t= 刷新缓存
+   * （?t= 只在 admin 的 exactKey 覆盖式上传里出现，那类图不走本函数）。
+   */
+  test('非白名单的 cache-buster 参数被丢弃', () => {
+    expect(safeThumbUrl(`${COS_URL}?t=1758440000000`, 300)).toBe(
+      `${COS_URL}?imageMogr2/thumbnail/300x300`
     )
   })
 
@@ -58,14 +62,43 @@ describe('safeThumbUrl', () => {
       expect(result).not.toContain('12576')
       expect(result).not.toContain('Evil')
     })
+
+    test('链式 pipe 规则整条丢弃', () => {
+      const result = safeThumbUrl(
+        `${COS_URL}?imageMogr2/thumbnail/300x300|imageMogr2/crop/50000x50000`,
+        300
+      )
+      expect(result).toBe(`${COS_URL}?imageMogr2/thumbnail/300x300`)
+      expect(result).not.toContain('crop')
+    })
   })
 
-  test('剥离 imageMogr2 时保留其它无关 query 参数', () => {
+  /**
+   * 白名单而非黑名单：COS 还有与 imageMogr2 平级的 imageView2（mode 1 可放大），
+   * 只剥 imageMogr2 的话它能存活下来，等于留了个放大通道。
+   */
+  test('imageView2 等其它图片处理参数同样被丢弃', () => {
     const result = safeThumbUrl(
-      `${COS_URL}?t=123&imageMogr2/thumbnail/50000x&v=2`,
+      `${COS_URL}?imageView2/1/w/50000/h/50000`,
       300
     )
-    expect(result).toBe(`${COS_URL}?t=123&v=2&imageMogr2/thumbnail/300x300`)
+    expect(result).toBe(`${COS_URL}?imageMogr2/thumbnail/300x300`)
+    expect(result).not.toContain('imageView2')
+    expect(result).not.toContain('50000')
+  })
+
+  test('未知的图片处理参数一律丢弃，不留放大通道', () => {
+    const result = safeThumbUrl(`${COS_URL}?t=123&someFutureApi/9999&v=2`, 300)
+    expect(result).toBe(`${COS_URL}?imageMogr2/thumbnail/300x300`)
+  })
+
+  test('私有读签名参数必须保留，否则会 403', () => {
+    const signed = `${COS_URL}?q-sign-algorithm=sha1&q-ak=AKID&q-key-time=1&q-signature=abc`
+    const result = safeThumbUrl(signed, 300)
+    expect(result).toContain('q-sign-algorithm=sha1')
+    expect(result).toContain('q-ak=AKID')
+    expect(result).toContain('q-key-time=1')
+    expect(result).toContain('imageMogr2/thumbnail/300x300')
   })
 
   // 以下输入都无法保证缩略，必须返回 null 让调用方渲染占位图，而不是下发原图

@@ -30,7 +30,14 @@ function parsePng(buf: Buffer): ImageDimensions | null {
   if (buf.readUInt32BE(4) !== 0x0d0a1a0a) return null
   if (buf.readUInt32BE(8) !== 13) return null // IHDR chunk 数据长度固定 13
   if (buf.toString("ascii", 12, 16) !== "IHDR") return null
-  return { width: buf.readUInt32BE(16), height: buf.readUInt32BE(20) }
+  return {
+    width: buf.readUInt32BE(16),
+    height: buf.readUInt32BE(20),
+    // APNG 靠 acTL chunk 声明动画。不查的话，40MP canvas × 数百帧的 APNG
+    // 四项检查全过（animated 未置位、像素积压线、单边压线），绕过动图拒绝。
+    // 这里用整块搜索做粗上界——方向是误拒而非误放。
+    animated: buf.includes("acTL", 8, "ascii"),
+  }
 }
 
 /**
@@ -51,21 +58,69 @@ function parseGif(buf: Buffer): ImageDimensions | null {
 }
 
 /**
- * 粗判 GIF 是否多帧：数 Image Descriptor(0x2C) 出现次数。
- * 这里只做保守的上界估计——宁可把单帧误判成动图被拒，也不放过数百帧的动图
- * （1000×1000 的 300 帧 GIF 只有 1MP，按像素积校验会放行，但解码开销是百 MB 级）。
+ * 判断 GIF 是否多帧。
+ *
+ * 必须按块结构遍历，不能直接扫 0x2C 字节：0x2C 在调色板和 LZW 压缩数据里会随机出现
+ * （约 1/256 每字节），那样任何上千字节的**静态** GIF 都会被误判成动图。
+ *
+ * 结构：LSD(13B) → [全局颜色表] → 循环 { 0x21 扩展块 | 0x2C 图像块 | 0x3B 结束 }
+ * 解析不下去（截断/畸形）时返回 true，方向为 fail-closed：宁可误拒也不放过多帧图。
  */
 function isAnimatedGif(buf: Buffer): boolean {
-  let frames = 0
-  // 从 LSD 之后开始扫；上限防止超大文件拖慢上传
-  const limit = Math.min(buf.length, 2 * 1024 * 1024)
-  for (let i = 13; i < limit; i++) {
-    if (buf[i] === 0x2c) {
-      frames++
-      if (frames > 1) return true
-    }
+  let offset = 13
+
+  // 全局颜色表：packed 的最高位标记存在，低 3 位决定表大小
+  const packed = buf[10]
+  if (packed & 0x80) {
+    offset += 3 * (1 << ((packed & 0x07) + 1))
   }
-  return false
+
+  let frames = 0
+  while (offset < buf.length) {
+    const block = buf[offset]
+
+    if (block === 0x3b) return false // Trailer：正常结束，且只数到 ≤1 帧
+    if (block === 0x21) {
+      // 扩展块：1B 引导 + 1B label + 若干 sub-block
+      offset += 2
+      offset = skipGifSubBlocks(buf, offset)
+      if (offset < 0) return true
+      continue
+    }
+    if (block === 0x2c) {
+      if (++frames > 1) return true
+      // Image Descriptor 共 10 字节，其中末字节 packed 标记局部颜色表
+      if (offset + 10 > buf.length) return true
+      const localPacked = buf[offset + 9]
+      offset += 10
+      if (localPacked & 0x80) {
+        offset += 3 * (1 << ((localPacked & 0x07) + 1))
+      }
+      offset += 1 // LZW minimum code size
+      offset = skipGifSubBlocks(buf, offset)
+      if (offset < 0) return true
+      continue
+    }
+
+    // 遇到无法识别的块，结构已不可信
+    return true
+  }
+
+  return frames > 1
+}
+
+/**
+ * 跳过一串 GIF sub-block（每块 1 字节长度 + 数据，0 长度结束）
+ * @returns 结束后的 offset；越界/畸形返回 -1
+ */
+function skipGifSubBlocks(buf: Buffer, start: number): number {
+  let offset = start
+  while (offset < buf.length) {
+    const size = buf[offset]
+    if (size === 0) return offset + 1
+    offset += size + 1
+  }
+  return -1
 }
 
 /**
@@ -155,7 +210,59 @@ function parseWebp(buf: Buffer): ImageDimensions | null {
     // 24 位宽/高，-1 存储
     const width = (buf[24] | (buf[25] << 8) | (buf[26] << 16)) + 1
     const height = (buf[27] | (buf[28] << 8) | (buf[29] << 16)) + 1
-    return { width, height, animated }
+
+    // VP8X 是本组格式里唯一「容器声明与实际负载可分离」的：
+    // canvas 可以声明 100×100 而内嵌帧其实是 16000×16000。若解码端按帧尺寸分配位图，
+    // 只信 canvas 就会读小放行。故取 canvas 与内嵌帧的较大者。
+    const frame = parseWebpFrameAfterVp8x(buf)
+    return {
+      width: Math.max(width, frame?.width ?? 0),
+      height: Math.max(height, frame?.height ?? 0),
+      animated,
+    }
+  }
+
+  return null
+}
+
+/**
+ * 在 VP8X 之后按 chunk 链找首个 VP8 / VP8L 帧，读它自己声明的尺寸。
+ * 找不到或结构不可信时返回 null（交由 canvas 尺寸兜底）。
+ */
+function parseWebpFrameAfterVp8x(buf: Buffer): ImageDimensions | null {
+  // RIFF(12) + VP8X header(8) + VP8X payload(10) = 30
+  let offset = 30
+
+  while (offset + 8 <= buf.length) {
+    const chunkType = buf.toString("ascii", offset, offset + 4)
+    const chunkSize = buf.readUInt32LE(offset + 4)
+    const body = offset + 8
+
+    if (chunkType === "VP8 ") {
+      if (body + 10 > buf.length) return null
+      if (buf[body + 3] !== 0x9d || buf[body + 4] !== 0x01 || buf[body + 5] !== 0x2a) {
+        return null
+      }
+      return {
+        width: buf.readUInt16LE(body + 6) & 0x3fff,
+        height: buf.readUInt16LE(body + 8) & 0x3fff,
+      }
+    }
+
+    if (chunkType === "VP8L") {
+      if (body + 5 > buf.length) return null
+      if (buf[body] !== 0x2f) return null
+      const bits = buf.readUInt32LE(body + 1)
+      return {
+        width: (bits & 0x3fff) + 1,
+        height: ((bits >> 14) & 0x3fff) + 1,
+      }
+    }
+
+    // chunk 按偶数字节对齐
+    const advance = 8 + chunkSize + (chunkSize % 2)
+    if (advance <= 8) return null // 防御：非递增即判定结构不可信
+    offset += advance
   }
 
   return null

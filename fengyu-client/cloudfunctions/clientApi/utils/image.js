@@ -60,13 +60,18 @@ function safeThumbUrl(url, boxSize) {
   // 这类把可信域名塞进 userinfo 的 URL 会被误判为可信
   if (!isProcessableHost(parsed.hostname)) return null
 
-  // 剥掉 URL 上已有的任何 imageMogr2 参数，再拼服务端自己的规则。
-  // 不能「看到 imageMogr2 就当作已处理并原样返回」——那样 ?imageMogr2/thumbnail/50000x
-  // 这种参数会被认成「已处理」，结果继续下发超大图。最终生效的规则必须由服务端完全掌控。
+  // 丢弃原 URL 上的全部图片处理参数，只保留白名单内的参数，再拼服务端自己的规则。
+  //
+  // 这里必须是白名单而不是「剥掉 imageMogr2」的黑名单：COS 还有与 imageMogr2 平级的
+  // imageView2（mode 1 可把图放大到指定尺寸），黑名单漏掉它就等于留了个放大通道；
+  // 而黑名单永远只挡得住已知参数名。最终生效的规则必须由服务端完全掌控。
+  //
+  // q-sign-* / q-ak / q-key-time 等是私有读签名参数，去掉会导致 403，必须留。
+  const KEEP_PREFIXES = ['q-sign', 'q-ak', 'q-key-time', 'q-url-param-list', 'sign=']
   const kept = parsed.search
     .replace(/^\?/, '')
     .split('&')
-    .filter((p) => p !== '' && !p.startsWith('imageMogr2'))
+    .filter((p) => p !== '' && KEEP_PREFIXES.some((k) => p.startsWith(k)))
 
   kept.push(`imageMogr2/thumbnail/${boxSize}x${boxSize}`)
 

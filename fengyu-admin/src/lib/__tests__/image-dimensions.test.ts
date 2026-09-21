@@ -28,12 +28,68 @@ function makeGif(width: number, height: number, frames = 1): Buffer {
 
   const blocks: Buffer[] = [lsd]
   for (let i = 0; i < frames; i++) {
+    // Image Descriptor(10B，末字节 packed=0 表示无局部调色板)
     const desc = Buffer.alloc(10)
-    desc[0] = 0x2c // Image Separator
+    desc[0] = 0x2c
     blocks.push(desc)
+    // LZW min code size + 一个 sub-block + 结束标记
+    blocks.push(Buffer.from([0x08, 0x02, 0x4c, 0x2c, 0x00]))
   }
   blocks.push(Buffer.from([0x3b])) // trailer
   return Buffer.concat(blocks)
+}
+
+/**
+ * 单帧 GIF，但 LZW 数据里含多个 0x2C 字节。
+ * 直接扫 0x2C 的实现会把它误判成动图——而真实静态 GIF 几乎必然含这种字节。
+ */
+function makeStaticGifWithNoisyData(width: number, height: number): Buffer {
+  const lsd = Buffer.alloc(13)
+  lsd.write("GIF89a", 0, "ascii")
+  lsd.writeUInt16LE(width, 6)
+  lsd.writeUInt16LE(height, 8)
+
+  const desc = Buffer.alloc(10)
+  desc[0] = 0x2c
+
+  // 一个 sub-block，数据里塞满 0x2C
+  const payload = Buffer.alloc(32, 0x2c)
+  const dataBlocks = Buffer.concat([
+    Buffer.from([0x08]), // LZW min code size
+    Buffer.from([payload.length]),
+    payload,
+    Buffer.from([0x00]), // sub-block 结束
+  ])
+
+  return Buffer.concat([lsd, desc, dataBlocks, Buffer.from([0x3b])])
+}
+
+/** PNG + acTL chunk（APNG） */
+function makeApng(width: number, height: number): Buffer {
+  const png = makePng(width, height)
+  const actl = Buffer.alloc(12)
+  actl.writeUInt32BE(8, 0)
+  actl.write("acTL", 4, "ascii")
+  return Buffer.concat([png, actl])
+}
+
+/** VP8X 声明一个 canvas 尺寸，内嵌 VP8 帧却是另一个（更大的）尺寸 */
+function makeWebpVp8xWithFrame(
+  canvasW: number,
+  canvasH: number,
+  frameW: number,
+  frameH: number
+): Buffer {
+  const head = makeWebpVp8x(canvasW, canvasH)
+  const chunk = Buffer.alloc(8 + 10)
+  chunk.write("VP8 ", 0, "ascii")
+  chunk.writeUInt32LE(10, 4)
+  chunk[8 + 3] = 0x9d
+  chunk[8 + 4] = 0x01
+  chunk[8 + 5] = 0x2a
+  chunk.writeUInt16LE(frameW, 8 + 6)
+  chunk.writeUInt16LE(frameH, 8 + 8)
+  return Buffer.concat([head, chunk])
 }
 
 /** 构造 JPEG：SOI + 一个无关 APP0 段 + SOF0 段 */
@@ -112,7 +168,7 @@ function makeWebpVp8l(width: number, height: number): Buffer {
 
 describe("getImageDimensions", () => {
   it("解析 PNG", () => {
-    expect(getImageDimensions(makePng(800, 600))).toEqual({
+    expect(getImageDimensions(makePng(800, 600))).toMatchObject({
       width: 800,
       height: 600,
     })
@@ -166,6 +222,30 @@ describe("getImageDimensions", () => {
       })
     })
 
+    /**
+     * 0x2C 在调色板和 LZW 数据里会随机出现（约 1/256 每字节）。
+     * 若靠裸扫 0x2C 判定，任何上千字节的静态 GIF 都会被误拒。
+     */
+    it("LZW 数据含大量 0x2C 的静态 GIF 不被误判为动图", () => {
+      expect(
+        getImageDimensions(makeStaticGifWithNoisyData(800, 600))
+      ).toMatchObject({ width: 800, height: 600, animated: false })
+    })
+
+    it("APNG 被识别为动图（acTL chunk）", () => {
+      expect(getImageDimensions(makeApng(4000, 4000))).toMatchObject({
+        width: 4000,
+        height: 4000,
+        animated: true,
+      })
+    })
+
+    it("普通 PNG 不被误判为 APNG", () => {
+      expect(getImageDimensions(makePng(4000, 4000))).toMatchObject({
+        animated: false,
+      })
+    })
+
     it("WebP ANIM 标志位被识别", () => {
       expect(getImageDimensions(makeWebpVp8x(800, 600, true))).toMatchObject({
         animated: true,
@@ -213,11 +293,29 @@ describe("getImageDimensions", () => {
       buf.writeUInt32LE(99, 16)
       expect(getImageDimensions(buf)).toBeNull()
     })
+
+    /**
+     * VP8X 是唯一「容器声明与实际负载可分离」的格式：canvas 可以声明 100×100
+     * 而内嵌帧其实是 16000×16000。只信 canvas 就会读小放行。
+     */
+    it("VP8X canvas 小于内嵌帧时取较大者，不被读小放行", () => {
+      const dim = getImageDimensions(
+        makeWebpVp8xWithFrame(100, 100, 16000, 16000)
+      )
+      expect(dim).toMatchObject({ width: 16000, height: 16000 })
+      expect(dim!.width * dim!.height).toBeGreaterThan(40_000_000)
+    })
+
+    it("VP8X canvas 大于内嵌帧时仍以 canvas 为准", () => {
+      expect(
+        getImageDimensions(makeWebpVp8xWithFrame(8000, 8000, 100, 100))
+      ).toMatchObject({ width: 8000, height: 8000 })
+    })
   })
 
   it("还原 issue #213 的肇事图尺寸：12576×12575", () => {
     const dim = getImageDimensions(makePng(12576, 12575))
-    expect(dim).toEqual({ width: 12576, height: 12575 })
+    expect(dim).toMatchObject({ width: 12576, height: 12575 })
     // 这张图正是超过 40MP 上限、必须被拒的那一类
     expect(dim!.width * dim!.height).toBeGreaterThan(40_000_000)
   })
