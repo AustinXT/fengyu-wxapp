@@ -7,6 +7,8 @@
  *   3. 段 2 SQL：UPDATE 限定 u.customer_type = '会员客'，含分类 CASE 与 90 天窗口
  *   4. 段 3 SQL：会员客无服务记录置 '休眠'
  *   5. 后置不变量：跑完后 COUNT(*) WHERE customer_type != '会员客' AND customer_status IS NOT NULL = 0
+ *   6. #254 覆盖域穷举：对三段 WHERE 谓词建模后穷举全部输入组合，断言并集 = 全表。
+ *      形态断言（1~5）只验 SQL 长什么样，验不出"漏没漏行"—— #254 就是这么溜过去的。
  */
 
 import { describe, it, expect } from 'vitest'
@@ -92,8 +94,111 @@ describe('cron-worker STEP 1 — customer_status 三段式 SQL', () => {
       expect(RESET_NO_VISITS_SQL).toMatch(/so\.status\s*=\s*'已完成'/)
     })
 
-    it('段 3 只覆盖段 2 没分到状态的会员客（customer_status IS NULL）', () => {
-      expect(RESET_NO_VISITS_SQL).toMatch(/u\.customer_status\s+IS\s+NULL/i)
+    it('段 3 守卫用 IS DISTINCT FROM 休眠，而非 IS NULL（#254 覆盖缺口）', () => {
+      expect(RESET_NO_VISITS_SQL).toMatch(
+        /u\.customer_status\s+IS\s+DISTINCT\s+FROM\s+'休眠'::customer_status/i,
+      )
+      // IS NULL 会把「段 2 没分到 且 已有旧值」误判成不需要处理，三段拼不全
+      expect(RESET_NO_VISITS_SQL).not.toMatch(/u\.customer_status\s+IS\s+NULL/i)
+    })
+  })
+
+  /**
+   * #254 回归：三段的覆盖域并起来必须等于全表。
+   *
+   * 上面的正则断言只验"SQL 长什么样"，验不出"漏没漏行"。这里对三段的 WHERE 谓词建模，
+   * 穷举 (customer_type, 有无已完成服务单, customer_status 旧值) 的组合，断言
+   * 「每一行至少被一段命中，且命中后落到正确的目标值」——这是 #254 缺陷唯一能被测出的形态。
+   */
+  describe('#254 覆盖域穷举：三段并集 = 全表', () => {
+    type Row = {
+      customerType: '会员客' | '流量客' | '体验客' | '小美客'
+      hasCompletedService: boolean
+      /** null 表示 customer_status IS NULL */
+      status: string | null
+    }
+
+    /** 段 1：customer_status IS NOT NULL AND customer_type != '会员客' → NULL */
+    const seg1Hits = (r: Row) => r.status !== null && r.customerType !== '会员客'
+
+    /** 段 2：join visit_stats（等价于有已完成服务单）AND customer_type = '会员客' → CASE 分类 */
+    const seg2Hits = (r: Row) => r.hasCompletedService && r.customerType === '会员客'
+
+    /**
+     * 段 3（修复后）：会员客 AND status IS DISTINCT FROM '休眠' AND NOT EXISTS(已完成服务单)
+     * 注意 NULL IS DISTINCT FROM '休眠' 为 true —— 原 IS NULL 行依然命中。
+     */
+    const seg3Hits = (r: Row) =>
+      r.customerType === '会员客' && r.status !== '休眠' && !r.hasCompletedService
+
+    /** 缺陷版段 3（IS NULL），仅用于证明它确实漏行 */
+    const seg3HitsBuggy = (r: Row) =>
+      r.customerType === '会员客' && r.status === null && !r.hasCompletedService
+
+    /** 该行跑完三段后 customer_status 的应然值；null = 应为 NULL */
+    function expectedStatus(r: Row): string | null | '按CASE分类' {
+      if (r.customerType !== '会员客') return null
+      if (r.hasCompletedService) return '按CASE分类'
+      return '休眠'
+    }
+
+    const TYPES: Row['customerType'][] = ['会员客', '流量客', '体验客', '小美客']
+    const STATUSES: Row['status'][] = [
+      null,
+      '休眠',
+      '保有会员-有效',
+      '保有会员-稳定',
+      '沉睡',
+      '冰冻',
+    ]
+
+    const ALL_ROWS: Row[] = TYPES.flatMap((customerType) =>
+      [true, false].flatMap((hasCompletedService) =>
+        STATUSES.map((status) => ({ customerType, hasCompletedService, status })),
+      ),
+    )
+
+    it('每一行要么被某段命中，要么现值已等于应然值（无漏网）', () => {
+      const missed = ALL_ROWS.filter((r) => {
+        if (seg1Hits(r) || seg2Hits(r) || seg3Hits(r)) return false
+        // 未被任何段命中 → 现值必须已经等于应然值，否则就是永久卡住的脏行
+        const want = expectedStatus(r)
+        return want !== '按CASE分类' && r.status !== want
+      })
+      expect(missed).toEqual([])
+    })
+
+    it('缺陷版（IS NULL）会漏掉「会员客 ∧ 无已完成服务单 ∧ 已有非 NULL 旧值」', () => {
+      const missedByBug = ALL_ROWS.filter((r) => {
+        if (seg1Hits(r) || seg2Hits(r) || seg3HitsBuggy(r)) return false
+        const want = expectedStatus(r)
+        return want !== '按CASE分类' && r.status !== want
+      })
+      // prod 2026-09-22 实际命中的就是这一类（「保有会员-有效」+ 零服务单）
+      expect(missedByBug.length).toBeGreaterThan(0)
+      expect(missedByBug.every((r) => r.customerType === '会员客')).toBe(true)
+      expect(missedByBug.every((r) => !r.hasCompletedService)).toBe(true)
+      expect(missedByBug.every((r) => r.status !== null && r.status !== '休眠')).toBe(true)
+      // 修复版把这批全接住了
+      expect(missedByBug.every((r) => seg3Hits(r))).toBe(true)
+    })
+
+    it('段 2 与段 3 的命中域互斥（不会同一行写两次）', () => {
+      const both = ALL_ROWS.filter((r) => seg2Hits(r) && seg3Hits(r))
+      expect(both).toEqual([])
+    })
+
+    it('段 3 不重写已经是「休眠」的行（避免无谓 updated_at churn）', () => {
+      const alreadyDormant = ALL_ROWS.filter(
+        (r) => r.customerType === '会员客' && !r.hasCompletedService && r.status === '休眠',
+      )
+      expect(alreadyDormant.length).toBeGreaterThan(0)
+      expect(alreadyDormant.some((r) => seg3Hits(r))).toBe(false)
+    })
+
+    it('段 3 不碰非会员客（那是段 1 的活）', () => {
+      const nonMemberHitBySeg3 = ALL_ROWS.filter((r) => r.customerType !== '会员客' && seg3Hits(r))
+      expect(nonMemberHitBySeg3).toEqual([])
     })
   })
 

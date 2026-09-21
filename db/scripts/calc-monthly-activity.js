@@ -195,11 +195,14 @@ UPDATE client_wechat_users u
    AND u.customer_type = '会员客'
 `
 
+// ⚠️ 守卫必须是 IS DISTINCT FROM '休眠' 而非 IS NULL（#254）：NOT EXISTS 已完整表达
+// 「段 2 没分到」，再叠 IS NULL 会漏掉「已有旧值」的行，跑多少次都不自愈。
+// 与 fengyu-admin/src/cron/steps/refresh-customer-status.ts 段 3 保持字面一致。
 const RESET_MEMBER_NO_VISITS_SQL = `
 UPDATE client_wechat_users u
    SET customer_status = '休眠'::customer_status, updated_at = NOW()
  WHERE u.customer_type = '会员客'
-   AND u.customer_status IS NULL
+   AND u.customer_status IS DISTINCT FROM '休眠'::customer_status
    AND NOT EXISTS (
      SELECT 1 FROM service_orders so
       WHERE so.client_user_id = u.user_id AND so.status = '已完成'

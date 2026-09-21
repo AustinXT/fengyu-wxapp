@@ -7,7 +7,8 @@
  * 启动方式：
  *   - bun run src/cron/index.ts           # 长驻调度
  *   - bun run src/cron/index.ts --once    # 立即跑一次后退出（本地冒烟 / 容器内手动触发）
- *   - node dist/cron-worker.js [--once]   # 生产容器内
+ *   - node --conditions=react-server cron-worker.mjs [--once]   # 生产容器内（入口是 .mjs，
+ *     且 --conditions 不能省；与 docker-compose 的 command 一致）
  */
 
 /**

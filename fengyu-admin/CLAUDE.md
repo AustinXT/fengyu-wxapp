@@ -158,7 +158,15 @@ bun run cron:once   # 立即跑一次后退出，本地冒烟
 bun run cron:dev    # 长驻调度（开发模式）
 ```
 
-**生产容器内手动触发**：`docker exec fengyu-cron-worker node cron-worker.js --once`
+**生产容器内手动触发**：
+
+```bash
+docker exec fengyu-cron-worker node --conditions=react-server cron-worker.mjs --once
+```
+
+⚠️ 入口是 `cron-worker.mjs`（`docker/Dockerfile.admin` 把 bundle 产物 COPY 到容器根），写 `.js` 会
+`MODULE_NOT_FOUND`；`--conditions=react-server` 也不能省（bundle 内含 RSC 条件导出），与
+`docker/docker-compose.yml` 的 `command` 保持一致。加 `--only=<stepName>` 可只跑单个 STEP。
 
 **约定**：`operation_logs.source` 写 `'cronTask'`（保留语义，便于历史日志追溯）；`benefits` 类配置（含 `member_level_benefits` / `birthday_benefits` / `thanksgiving_benefits`）每次跑前重读 `system_configs`，不缓存。
 

@@ -4,10 +4,10 @@
  * 业务口径：customer_status 仅对 customer_type='会员客' 的顾客有值，
  * 非会员客（流量客 / 体验客 / 小美客）一律 NULL。
  *
- * 三段 SQL 在同一事务中串行：
+ * 三段 SQL 在同一事务中串行，三段的覆盖域必须并起来等于全表（#254 曾漏一类行）：
  *   段 1：非会员客一律置 NULL（清理脏数据）
  *   段 2：会员客有到店记录的，按 visits_90d / total_visits 打状态
- *   段 3：会员客但完全无到店记录的，置 '休眠'
+ *   段 3：会员客但完全无到店记录的，置 '休眠'（含已有旧值的 —— 见 RESET_NO_VISITS_SQL 注释）
  *
  * 与原 cronTask 的事务边界一致：整体一个 db.transaction，任一段失败 → 全段回滚。
  *
@@ -55,11 +55,24 @@ UPDATE client_wechat_users u
    AND u.customer_type = '会员客'
 `
 
+/**
+ * 段 3 SQL：会员客 ∧ 无已完成服务单 → '休眠'。
+ *
+ * ⚠️ 守卫必须是 `IS DISTINCT FROM '休眠'` 而非 `IS NULL`（#254）：
+ * `NOT EXISTS(已完成服务单)` 与段 2 的 `visit_stats` join 互为补集（visit_stats 正由
+ * `status='已完成'` 分组而来），「只补段 2 没分到的」这一意图已由它完整表达。再叠一个
+ * `IS NULL` 就把「段 2 没分到 **且** 已有旧值」误判成不需要处理 —— 顾客原有已完成服务单
+ * （状态已写入），后来服务单被撤销/删除/改状态而掉出 visit_stats 时，三段全不匹配，
+ * 旧状态永久卡住、cron 跑多少次都不自愈（prod 2026-09-22 实际命中 2 行）。
+ *
+ * 改用 `IS DISTINCT FROM` 既消除缺口（NULL 行仍命中），又保留「已是休眠就不重写
+ * updated_at」的原意，与 refresh-spending-tier.ts 的范式一致。
+ */
 export const RESET_NO_VISITS_SQL = `
 UPDATE client_wechat_users u
    SET customer_status = '休眠'::customer_status, updated_at = NOW()
  WHERE u.customer_type = '会员客'
-   AND u.customer_status IS NULL
+   AND u.customer_status IS DISTINCT FROM '休眠'::customer_status
    AND NOT EXISTS (
      SELECT 1 FROM service_orders so
       WHERE so.client_user_id = u.user_id AND so.status = '已完成'
