@@ -28,6 +28,10 @@ on:
       #    触发它只是为了让**单测**守护有机会拦下「只改测试」的回归。
       - 'fengyu-admin/tests/**'
       - 'fengyu-staff/cloudfunctions/**/__tests__/**'
+      # image-staff-bundle.test.js 读这个组件的 wxml，断言 lazy-load 与 binderror 还在
+      # （它们是页面级解码量与"URL 有效但出不来图"的唯一兜底）。
+      # 不加这条路径的话，「只删 lazy-load」的 PR 根本不触发 workflow，守护等于不存在。
+      - 'fengyu-staff/miniprogram/components/bundle-picker/**'
       # 影子函数守卫盯的正是这几个文件 —— 不加进来，「只改 cloudbaserc 模板把影子函数
       # 库指向改错」这个最该被拦的 PR 反而不会触发 CI。守卫不触发等于没有守卫。
       - 'fengyu-client/cloudbaserc.example.json'

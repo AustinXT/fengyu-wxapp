@@ -11,6 +11,7 @@
 const {
   safeThumbUrl,
   isProcessableHost,
+  COS_ALLOWED_HOSTS,
   STORE_LIST_THUMB_BOX,
   STORE_DETAIL_THUMB_BOX,
 } = require('../../utils/image')
@@ -264,11 +265,31 @@ describe('safeThumbUrl', () => {
 })
 
 describe('isProcessableHost', () => {
-  test('识别 CloudBase 云存储域名并容忍 FQDN 尾点', () => {
-    expect(isProcessableHost('a.tcb.qcloud.la')).toBe(true)
-    expect(isProcessableHost('a.tcb.qcloud.la.')).toBe(true)
+  const [PROD_HOST] = COS_ALLOWED_HOSTS
+
+  test('精确匹配白名单内的 bucket，并容忍 FQDN 尾点与大小写', () => {
+    expect(isProcessableHost(PROD_HOST)).toBe(true)
+    // DNS 语义：尾点等价、大小写不敏感。⚠️ 只有 host 这一段可以放宽，
+    // 数据万象的处理指令是大小写敏感的
+    expect(isProcessableHost(`${PROD_HOST}.`)).toBe(true)
+    expect(isProcessableHost(PROD_HOST.toUpperCase())).toBe(true)
+  })
+
+  /**
+   * 关键：**后缀对不等于可处理**（#232 评审）。
+   * 数据万象是按 bucket 绑定的服务，同后缀但没开通的环境会把 imageMogr2
+   * 当普通 query 忽略、原样返回原图 —— 保护静默失效，且图能正常加载，
+   * 连渲染侧 binderror 都不会触发。
+   */
+  test('同后缀但不在白名单的 bucket 一律拒绝', () => {
+    expect(isProcessableHost('9999-attacker-env-1406056527.tcb.qcloud.la')).toBe(false)
+    expect(isProcessableHost('a.tcb.qcloud.la')).toBe(false)
+    expect(isProcessableHost('x.tcb.qcloud.la')).toBe(false)
+  })
+
+  test('域名伪装与不执行数据万象的邻近域名一律拒绝', () => {
     expect(isProcessableHost('evil.com')).toBe(false)
-    expect(isProcessableHost('a.tcb.qcloud.la.evil.com')).toBe(false)
+    expect(isProcessableHost(`${PROD_HOST}.evil.com`)).toBe(false)
     // 静态网站托管，不执行数据万象
     expect(isProcessableHost('x.tcloudbaseapp.com')).toBe(false)
     // 通用 COS 域名，任何人可建桶，无法保证开通了数据万象
@@ -340,9 +361,9 @@ describe('safeThumbUrlByArea', () => {
       'ftp://evil.com/a.jpg',
       'https://img.example.com/a.jpg',                                  // 非 COS 域名
       'https://a.tcb.qcloud.la@evil.com/x/a.jpg',                       // userinfo 伪装
-      'https://x.tcb.qcloud.la/a.png',                                  // 对象键只有一段
-      'https://x.tcb.qcloud.la/dir/a.svg',                              // 非图片扩展名
-      'https://x.tcb.qcloud.la/dir/a.png?q-sign-algorithm=sha1',        // 带 COS 签名
+      'https://6665-fengyu-client-prod-d1cga6909c0ba-1406056527.tcb.qcloud.la/a.png',            // 对象键只有一段
+      'https://6665-fengyu-client-prod-d1cga6909c0ba-1406056527.tcb.qcloud.la/dir/a.svg',        // 非图片扩展名
+      'https://6665-fengyu-client-prod-d1cga6909c0ba-1406056527.tcb.qcloud.la/dir/a.png?q-sign-algorithm=sha1',  // 带 COS 签名
     ]
     for (const input of cases) {
       expect(safeThumbUrl(input, 300)).toBeNull()

@@ -10,7 +10,7 @@ const { createCtx, createBoundCtx, createMockTransactionClient } = require('../h
  * issue #230：订单行封面图下发前必须缩略。
  * 形态取自生产实际数据（45/45 条均为此格式）：CloudBase COS 域名 + 两段 ASCII 对象键。
  */
-const COS_COVER_URL = 'https://test-env-1300000000.tcb.qcloud.la/product-covers/a.jpg'
+const COS_COVER_URL = 'https://6665-fengyu-client-prod-d1cga6909c0ba-1406056527.tcb.qcloud.la/product-covers/a.jpg'
 /** 非 COS 域名：数据万象不生效，safeThumbUrl 按 fail-closed 约定返回 null，不退回原图 */
 const NON_COS_COVER_URL = 'https://img.example.com/a.jpg'
 

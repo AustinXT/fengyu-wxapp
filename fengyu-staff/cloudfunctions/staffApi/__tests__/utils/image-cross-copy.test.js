@@ -40,6 +40,7 @@ function read(p) {
 // 再对 client 份重跑一遍是纯重复（真出现分歧时，字节那条自己就是红的）。
 const STAFF_IMAGE = COPIES['utils/image.js'][0]
 const STAFF_SRC = read(STAFF_IMAGE)
+const [HOST] = require(STAFF_IMAGE).COS_ALLOWED_HOSTS
 
 describe('image 工具跨副本一致性守护', () => {
   test.each(Object.keys(COPIES))('%s：staffApi 与 clientApi 字节一致', (key) => {
@@ -66,8 +67,9 @@ describe('image 工具跨副本一致性守护', () => {
       null, '', 'ftp://evil.com/a.jpg',
       'https://img.example.com/dir/a.png',              // 非 COS 域名
       'https://a.tcb.qcloud.la@evil.com/dir/a.png',     // userinfo 伪装
-      'https://x.tcb.qcloud.la/dir/a.svg',              // 非图片扩展名
-      'https://x.tcb.qcloud.la/dir/a.png?q-signature=d' // 带 COS 签名
+      `https://${HOST}/dir/a.svg`,                      // 非图片扩展名
+      `https://${HOST}/dir/a.png?q-signature=d`,        // 带 COS 签名
+      'https://9999-other-env-1406056527.tcb.qcloud.la/dir/a.png' // 同后缀但不在白名单
     ]) {
       expect(mod.safeThumbUrl(bad, 400)).toBeNull()
       expect(mod.safeThumbUrlByArea(bad, 2250000)).toBeNull()
@@ -79,12 +81,18 @@ describe('image 工具跨副本一致性守护', () => {
     // 本模块注释里就写着 `tcloudbaseapp.com` / `thumbnail/!<Area>@`
     // （在解释为什么刻意不放通它们），全文 not.toContain 会误红。
 
-    // host 白名单只认 CloudBase 云存储域名；放通静态托管 / 通用 COS 都会让保护静默失效。
-    // 顺带锁死「无 `g` 标志」：带 /g 时 .test() 会因 lastIndex 隔次返回 false，
-    // 在云函数实例复用下表现为同一张图时而缩略时而 null 的跨请求污染。
-    const hostPattern = STAFF_SRC.match(/^const COS_HOST_PATTERN = (.+)$/m)
-    expect(hostPattern).not.toBeNull()
-    expect(hostPattern[1].trim()).toBe('/\\.tcb\\.qcloud\\.la$/i')
+    // host 白名单必须是**精确 bucket 列表**，不能退回后缀通配（#232 评审）：
+    // 数据万象按 bucket 绑定，同后缀但没开通的环境会原样返回原图 = 保护静默失效。
+    const mod = require(STAFF_IMAGE)
+    expect(Array.isArray(mod.COS_ALLOWED_HOSTS)).toBe(true)
+    expect(mod.COS_ALLOWED_HOSTS.length).toBeGreaterThan(0)
+    for (const h of mod.COS_ALLOWED_HOSTS) {
+      // 每一项都必须是完整 hostname，不能是 `.tcb.qcloud.la` 这种后缀片段，
+      // 也不能含通配符——那等于把精确白名单偷偷改回通配
+      expect(h).toMatch(/^[\w-]+\.tcb\.qcloud\.la$/)
+    }
+    // 源码里不得再出现后缀通配正则（防止有人加回一条 `endsWith` 式的兜底）
+    expect(STAFF_SRC).not.toMatch(/\/\\\.tcb\\\.qcloud\\\.la\$\//)
 
     // 两条规则的拼法逐字锁定：
     // - box 必须双边（只限宽的 `${n}x` 高度无界）
@@ -97,17 +105,17 @@ describe('image 工具跨副本一致性守护', () => {
     // 这三道防线（#232）此前只有注释没有断言。
     // box 是 contain 语义、不放大，N 取得过大等于完全不约束 —— 属「规则看着在、实际不生效」。
     const mod = require(STAFF_IMAGE)
-    const url = 'https://x.tcb.qcloud.la/product-covers/a.png'
+    const url = `https://${mod.COS_ALLOWED_HOSTS[0]}/product-covers/a.png`
     expect(mod.safeThumbUrl(url, mod.MAX_THUMB_BOX)).toContain('imageMogr2/thumbnail/')
     expect(mod.safeThumbUrl(url, mod.MAX_THUMB_BOX + 1)).toBeNull()
     expect(mod.safeThumbUrlByArea(url, mod.MAX_THUMB_PIXELS)).toContain('imageMogr2/thumbnail/')
     expect(mod.safeThumbUrlByArea(url, mod.MAX_THUMB_PIXELS + 1)).toBeNull()
     // 超长 URL：cover_image 是无约束 text，10MB 的值会撑爆整个列表接口响应体
-    const tooLong = `https://x.tcb.qcloud.la/product-covers/${'a'.repeat(mod.MAX_SOURCE_URL_LENGTH)}.png`
+    const tooLong = `https://${HOST}/product-covers/${'a'.repeat(mod.MAX_SOURCE_URL_LENGTH)}.png`
     expect(mod.safeThumbUrl(tooLong, 400)).toBeNull()
     // userinfo 不得随 toString() 带出去
-    expect(mod.safeThumbUrl('https://u:p@x.tcb.qcloud.la/product-covers/a.png', 400))
-      .toBe('https://x.tcb.qcloud.la/product-covers/a.png?imageMogr2/thumbnail/400x400')
+    expect(mod.safeThumbUrl(`https://u:p@${HOST}/product-covers/a.png`, 400))
+      .toBe(`https://${HOST}/product-covers/a.png?imageMogr2/thumbnail/400x400`)
   })
 
   /**
@@ -127,11 +135,23 @@ describe('image 工具跨副本一致性守护', () => {
     const lintYml = path.resolve(__dirname, '../../../../../.github/workflows/lint.yml')
     const yml = read(lintYml)
 
-    // 出现 `npx vitest run __tests__/...` 就说明有人退回了点名清单
-    expect(yml).not.toMatch(/npx vitest run[\s\\]+__tests__\//)
+    // ⚠️ 断言命令**恰好**是不带任何参数的 `npx vitest run`，而不是用负向正则
+    // 去猜"手工清单长什么样"。负向匹配挡不住 `--dir __tests__/utils`、
+    // `-t <pattern>`、`--project` 这些同样会缩小范围的写法。
+    const staffVitestRuns = [...yml.matchAll(
+      /working-directory: fengyu-staff\/cloudfunctions\/staffApi\n\s*run: (.+)$/gm
+    )]
+      .map((m) => m[1].trim())
+      // 同一个 job 里还有 `npm ci || npm install` 之类的步骤，只看跑测试那条
+      .filter((cmd) => cmd.includes('vitest'))
 
-    // paths 必须同时覆盖两端——守护读的是两端文件，只触发一端等于半个守护
+    expect(staffVitestRuns).toEqual(['npx vitest run'])
+
+    // paths 必须覆盖守护实际读到的**全部**文件，否则「改了但不触发」等于没有守护：
+    // - 两端 cloudfunctions（字节一致比对读两端的 utils/image.js 与 image.test.js）
+    // - bundle-picker 组件（image-staff-bundle.test.js 读它的 wxml 断言 lazy-load/binderror）
     expect(yml).toContain("- 'fengyu-staff/cloudfunctions/**/*.js'")
     expect(yml).toContain("- 'fengyu-client/cloudfunctions/**/*.js'")
+    expect(yml).toContain("- 'fengyu-staff/miniprogram/components/bundle-picker/**'")
   })
 })

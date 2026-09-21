@@ -21,18 +21,32 @@
  */
 
 /**
- * 只认 CloudBase 云存储的 CDN 域名（本项目 stores.cover_image 全部是这个后缀，已核对 41/41）。
+ * 可做数据万象处理的 bucket hostname —— **精确白名单，不是后缀通配**。
+ *
+ * 为什么必须精确到 bucket（#232 评审指出）：
+ * 数据万象是**按 bucket 绑定**的服务，不是 `.tcb.qcloud.la` 这个后缀自带的能力。
+ * 用后缀通配的话，任何同后缀但没开通数据万象的 CloudBase 环境都会通过校验，
+ * 拼上 `imageMogr2` 后 COS 原样返回**原图** —— 这正是本模块最怕的「保护静默失效」：
+ * URL 看着有规则、图也能正常加载，下发的却是那张会撑爆进程的巨图，
+ * 连渲染侧的 `binderror` 兜底都不会触发。
+ *
+ * 两个 host 的来源是 `fengyu-admin/src/lib/cloudbase.ts` 的 `CDN_BASE`（按环境取值）：
+ * - `6665-fengyu-client-prod-…` —— 当前生产。库里实测 prod 43+42 张、
+ *   dev 43+42+12 张**全部**是它（单 CloudBase 环境架构，dev/prod 同一个 bucket）
+ * - `636c-cloud1-3gpht4b01ff88838-…` —— 历史 dev 环境，仍是 admin `.env.local`
+ *   的默认值，本机开发上传的图会落在这里
+ *
+ * ⚠️ 换 bucket / 加环境时必须显式加进这个数组，否则该环境的图片会**全部**变占位。
+ * 这是刻意的 fail-closed；下发侧的 `console.warn` 会在日志里暴露漏加。
  *
  * 刻意**不**放通另外两类看起来相关的域名：
- * - `*.tcloudbaseapp.com` 是 CloudBase **静态网站托管**，不执行数据万象，
- *   拼上参数也会原样返回原图 —— 那等于保护静默失效
- * - `*.myqcloud.com` 是通用 COS 域名，任何腾讯云用户都能建桶，
- *   无法保证对方开通了数据万象
- *
- * 已知限制：同后缀的其它 CloudBase 环境也会匹配。更严格的做法是按本项目实际 bucket
- * 做精确 hostname 白名单，但那需要引入环境变量配置，留待后续。
+ * - `*.tcloudbaseapp.com` 是 CloudBase **静态网站托管**，不执行数据万象
+ * - `*.myqcloud.com` 是通用 COS 域名，任何腾讯云用户都能建桶
  */
-const COS_HOST_PATTERN = /\.tcb\.qcloud\.la$/i
+const COS_ALLOWED_HOSTS = [
+  '6665-fengyu-client-prod-d1cga6909c0ba-1406056527.tcb.qcloud.la',
+  '636c-cloud1-3gpht4b01ff88838-1406056527.tcb.qcloud.la',
+]
 
 /**
  * 入参 URL 的长度上界。现实封面 URL 约 110 字符，2048 已是数量级余量。
@@ -54,12 +68,16 @@ const MAX_THUMB_BOX = 2048
 const MAX_THUMB_PIXELS = MAX_THUMB_BOX * MAX_THUMB_BOX
 
 /**
- * 判断 hostname 是否属于可做数据万象处理的域名。
- * 先去掉 FQDN 尾点（`a.tcb.qcloud.la.` 与 `a.tcb.qcloud.la` DNS 等价，
- * 不归一会漏匹配从而退回下发原图）。
+ * 判断 hostname 是否属于可做数据万象处理的 bucket。
+ *
+ * 归一两件事后再精确比对：
+ * - FQDN 尾点（`a.tcb.qcloud.la.` 与 `a.tcb.qcloud.la` DNS 等价，不归一会漏匹配）
+ * - 大小写（DNS 不区分大小写）。⚠️ **只有这一段**不敏感 ——
+ *   数据万象的处理指令是大小写敏感的（`IMAGEMOGR2` 不执行），那部分绝不能一起放宽
  */
 function isProcessableHost(hostname) {
-  return COS_HOST_PATTERN.test(String(hostname).replace(/\.$/, ''))
+  const normalized = String(hostname).replace(/\.$/, '').toLowerCase()
+  return COS_ALLOWED_HOSTS.includes(normalized)
 }
 
 /**
@@ -353,6 +371,7 @@ module.exports = {
   safeThumbUrl,
   safeThumbUrlByArea,
   isProcessableHost,
+  COS_ALLOWED_HOSTS,
   MAX_SOURCE_URL_LENGTH,
   MAX_THUMB_BOX,
   MAX_THUMB_PIXELS,
