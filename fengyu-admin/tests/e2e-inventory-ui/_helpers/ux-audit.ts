@@ -60,7 +60,9 @@ export interface FormControl {
 export async function extractFormControls(scope: Locator): Promise<FormControl[]> {
   return await scope.locator('label').evaluateAll((labels) =>
     labels.map((label) => {
-      const control = label.querySelector('input, select, textarea')
+      // 含 output：候选唯一的库存主体字段会降级成只读 <output>（#189）。它同样是
+      // labelable element，label 照常念得出字段名，不该被规则 2 当成孤儿 label。
+      const control = label.querySelector('input, select, textarea, output')
       // sr-only 是只给读屏的补充说明（#135 给必填字段加了「（必填）」），
       // **不能**算进字段名：否则 bare 会以「（必填）」结尾，
       // 规则 1 里靠 `bare.endsWith(ex)` 的白名单豁免会整批失效，凭空冒出一串 P1 误报。
