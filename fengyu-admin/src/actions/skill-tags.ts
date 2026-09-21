@@ -9,6 +9,7 @@ import { revalidatePath } from 'next/cache'
 import type { SkillTag } from '@/lib/types'
 import { withPermission } from '@/lib/with-permission'
 import { requireAdmin } from '@/lib/permissions'
+import { SKILL_TAG_WRITE_ACTION } from '@/lib/skill-tag-access'
 import { logOperation, logUpdate } from '@/lib/operation-log'
 
 function rowToSkillTag(row: typeof skillTags.$inferSelect): SkillTag {
@@ -21,7 +22,12 @@ function rowToSkillTag(row: typeof skillTags.$inferSelect): SkillTag {
   }
 }
 
-/** 全量查询技能标签 */
+/**
+ * 全量查询技能标签 —— 读取口径刻意停留在 `employee:list`，**不随写操作一起收紧**。
+ *
+ * 被员工列表/详情/新建、营业额分配三个详情页、提成矩阵页共 7 处 SSR 消费；收紧到
+ * 管理员会让店长、HR、财务的技能筛选项与标签展示整体丢数据（#211）。
+ */
 export const getSkillTags = withPermission('employee:list', async (): Promise<SkillTag[]> => {
   const rows = await db
     .select()
@@ -32,8 +38,19 @@ export const getSkillTags = withPermission('employee:list', async (): Promise<Sk
   return rows.map(rowToSkillTag)
 })
 
+/**
+ * 技能标签写操作三件套（create / update / delete）统一由 `requireAdmin` 把关。
+ *
+ * 技能标签是服务提成矩阵「市场 × 技能标签」的维度，店长/HR 自行增改会造成矩阵错配、
+ * 提成分配不到人；外层 `withPermission(SKILL_TAG_WRITE_ACTION)` 仅作纵深过滤（并满足 HOF
+ * 的 ESLint 强制），真正的「仅系统管理员」判定以角色为准（#211）。
+ *
+ * UI 侧显隐走 `canManageSkillTags(session)`（同一模块），它复刻了本处
+ * 「withPermission 收紧 session → requireAdmin」的组合效果；改这里的 action 或闸门时，
+ * 那个函数必须一起看。
+ */
 export const createSkillTag = withPermission(
-  'employee:update',
+  SKILL_TAG_WRITE_ACTION,
   async (
     session,
     data: {
@@ -42,6 +59,8 @@ export const createSkillTag = withPermission(
       sortOrder?: number
     },
   ): Promise<{ success: boolean; message: string }> => {
+    requireAdmin(session)
+
     if (!data.name?.trim()) {
       return { success: false, message: '请输入标签名称' }
     }
@@ -64,7 +83,7 @@ export const createSkillTag = withPermission(
 )
 
 export const updateSkillTag = withPermission(
-  'employee:update',
+  SKILL_TAG_WRITE_ACTION,
   async (
     session,
     id: string,
@@ -74,6 +93,8 @@ export const updateSkillTag = withPermission(
     }>,
     expectedUpdatedAt?: string,
   ): Promise<{ success: boolean; message: string }> => {
+    requireAdmin(session)
+
     // 空名守卫（与 createSkillTag 一致）
     if (data.name !== undefined && !data.name.trim()) {
       return { success: false, message: '请输入标签名称' }
@@ -147,7 +168,7 @@ export const updateSkillTag = withPermission(
 )
 
 export const deleteSkillTag = withPermission(
-  'employee:update',
+  SKILL_TAG_WRITE_ACTION,
   async (session, id: string): Promise<{ success: boolean; message: string }> => {
     requireAdmin(session)
 

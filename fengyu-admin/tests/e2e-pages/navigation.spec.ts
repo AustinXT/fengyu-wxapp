@@ -38,7 +38,7 @@ test.describe('页面路由可达性', () => {
     { path: '/customers', heading: '顾客管理' },
     { path: '/coupons', heading: /优惠券管理/ },
     { path: '/permissions', heading: '权限管理' },
-
+    { path: '/data-center/customer', heading: '客量' },
     { path: '/logs', heading: '操作日志' },
     { path: '/settings', heading: '系统配置' },
   ]
@@ -49,6 +49,20 @@ test.describe('页面路由可达性', () => {
       await expect(page.getByRole('heading', { name: heading })).toBeVisible()
     })
   }
+})
+
+test.describe('数据中心板块路径', () => {
+  // 板块自 #212 改为侧边栏二级菜单，各占一条路径；裸路径只做跳转，仍兜住旧 ?tab= 书签。
+  test('旧 ?tab= 深链重定向到对应板块路径', async ({ page }) => {
+    await page.goto('/data-center?tab=efficiency')
+    await expect(page).toHaveURL(/\/data-center\/efficiency/)
+    await expect(page.getByRole('heading', { name: '人效' })).toBeVisible()
+  })
+
+  test('裸路径落到销售板块', async ({ page }) => {
+    await page.goto('/data-center')
+    await expect(page).toHaveURL(/\/data-center\/sales/)
+  })
 })
 
 test.describe('侧边栏导航链接', () => {

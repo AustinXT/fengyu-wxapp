@@ -82,4 +82,40 @@ describe('Sidebar 二级菜单', () => {
     await user.keyboard('{Escape}')
     expect(screen.queryByRole('menu')).not.toBeInTheDocument()
   })
+
+  // 数据中心 4 板块（#212）：路径化是高亮正确的前提——itemMatchesPath 只比 pathname，
+  // 若退回 `/data-center?tab=` 方案，4 个子项会同时命中高亮。
+  it('访问数据中心板块时展开该域，只高亮当前板块', () => {
+    pathname = '/data-center/customer'
+    render(<Sidebar collapsed={false} onToggle={() => {}} session={session} />)
+
+    expect(screen.getByRole('button', { name: '数据中心' })).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByRole('link', { name: '客量' })).toHaveClass('text-[var(--primary)]')
+    for (const label of ['销售', '人效', '品项']) {
+      expect(screen.getByRole('link', { name: label })).not.toHaveClass('text-[var(--primary)]')
+    }
+  })
+
+  it('折叠态点击数据中心弹出 4 个板块浮层', async () => {
+    const user = userEvent.setup()
+    render(<Sidebar collapsed onToggle={() => {}} session={session} />)
+
+    await user.click(screen.getByRole('button', { name: '数据中心' }))
+    for (const label of ['销售', '客量', '人效', '品项']) {
+      expect(screen.getByRole('menuitem', { name: label })).toBeVisible()
+    }
+  })
+
+  it('无 data_center:dashboard 权限时整组消失', () => {
+    const noDataCenter: AuthSession = {
+      ...session,
+      permissions: {
+        ...session.permissions,
+        actions: session.permissions.actions.filter((a) => a !== 'data_center:dashboard'),
+      },
+    }
+    render(<Sidebar collapsed={false} onToggle={() => {}} session={noDataCenter} />)
+
+    expect(screen.queryByRole('button', { name: '数据中心' })).not.toBeInTheDocument()
+  })
 })

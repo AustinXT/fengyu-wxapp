@@ -50,6 +50,45 @@ export function TablePageSkeleton({ title = "" }: { title?: string }) {
   )
 }
 
+/** 数据中心板块骨架（标题 + 范围/时间筛选器 + KPI 卡 + 图表块） */
+export function BoardPageSkeleton() {
+  return (
+    <div className="flex flex-col gap-4">
+      <Skeleton className="h-7 w-20" />
+
+      {/* 公共筛选器 */}
+      <Card>
+        <CardContent className="flex flex-wrap items-center gap-3 p-4">
+          {Array.from({ length: 4 }).map((_, i) => (
+            <Skeleton key={i} className="h-10 w-36" />
+          ))}
+        </CardContent>
+      </Card>
+
+      {/* KPI 卡 */}
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        {Array.from({ length: 4 }).map((_, i) => (
+          <Card key={i}>
+            <CardContent className="space-y-3 p-5">
+              <Skeleton className="h-4 w-20" />
+              <Skeleton className="h-8 w-24" />
+              <Skeleton className="h-3 w-16" />
+            </CardContent>
+          </Card>
+        ))}
+      </div>
+
+      {/* 图表 / 明细块 */}
+      <Card>
+        <CardContent className="space-y-4 p-5">
+          <Skeleton className="h-5 w-24" />
+          <Skeleton className="h-64 w-full rounded-lg" />
+        </CardContent>
+      </Card>
+    </div>
+  )
+}
+
 /** 工作台看板骨架（4 卡片 + 2 列） */
 export function DashboardSkeleton() {
   return (

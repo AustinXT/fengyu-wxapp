@@ -158,6 +158,8 @@
 .picker-scroll {
   height: 720rpx;
   padding: 0 32rpx;
+  /* scroll-view 默认 content-box，不加 box-sizing 左右 padding 会把行内容整体挤出屏幕右侧 */
+  box-sizing: border-box;
 }
 .picker-group {
   margin-bottom: 16rpx;
@@ -181,11 +183,34 @@
 .picker-member:active {
   background: #F5F5F5;
 }
+/* text 默认 inline，显式块化才保证 ellipsis 生效（与全仓其它截断场景写法一致） */
 .picker-member-name {
+  display: block;
+  /* 不收缩：姓名必须完整，长门店名不得挤压它 */
+  flex: 0 0 auto;
+  /* 极端长姓名的兜底，避免反过来把门店名挤没 */
+  max-width: 60%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
   font-size: 28rpx;
   color: #2D2017;
 }
+/* 无门店也无市场的员工（总部职能岗 / 养生部等 store_id 为空者）不渲染右侧 text，
+   此时姓名是唯一子项，放开 60% 上限，避免长姓名被无谓截断 */
+.picker-member-name:last-child {
+  max-width: 100%;
+}
 .picker-member-store {
+  display: block;
+  /* basis 0 + grow：吃满姓名以外的剩余宽度，ellipsis 的可用宽度才确定 */
+  flex: 1 1 0;
+  min-width: 0;
+  margin-left: 16rpx;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  text-align: right;
   font-size: 22rpx;
   color: #999;
 }
