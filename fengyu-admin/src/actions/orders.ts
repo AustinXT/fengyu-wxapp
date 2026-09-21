@@ -609,22 +609,76 @@ async function applyRechargeOnOrderPaid(
 /**
  * customer_type 跃迁（admin recordPayment 触发点）。
  *
- * 三端跃迁触发点之一（与 fengyu-staff/cloudfunctions/staffApi/routes/order.js
- * recalcCustomerType + fengyu-client/cloudfunctions/payNotify/index.js 镜像一致）。
+ * 八处跃迁 SQL 副本之一（staffApi routes/order.js + clientApi routes/order.js + payNotify index.js
+ * + admin actions/orders.ts + admin lib/recompute-customer-tags.ts
+ * + db/scripts/recalc-all-customer-types.js + db/scripts/recalc-became-member-at.js
+ * + db/scripts/backfill-membership-upgrade-doc-type.js）。
  *
- * 业务口径（2026-04-26 体验卡 ticket Round 2）：
- *   - 会员客：销售单 total_amount >= memberThreshold
- *   - 小美客：销售单中存在非体验卡明细行（si.is_experience = false）
- *   - 体验客：销售单中存在体验卡明细行（si.is_experience = true）
+ * 业务口径（#187，2026-09-18 落地 2026-04-26 Q5.2 决策）——按**单笔订单的非体验部分毛实收**判定：
+ *   - 会员客：存在一张销售单，其 non_trial >= memberThreshold
+ *   - 小美客：存在一张销售单，其 non_trial > 0
+ *   - 体验客：存在一张销售单，其 trial > 0
  *   - 流量客：兜底
+ * 毛实收 = sale_items.received（净额）+ 该行逐项退款额，即"曾经收到的钱"（退款不扣减）。
+ * 旧口径按订单应付额 o.total_amount，会把混合订单里的体验卡金额也算进会员门槛。
  *
  * 只升不降；跃迁为"会员客"时同步写入 became_member_at = COALESCE(首笔达标单 paid_at, created_at)（非检测时刻 NOW()）。
  *
- * SQL 关键字段（is_experience capability 列、不再 JOIN product_categories）必须与
- * staffApi/routes/order.js + payNotify/index.js 字面一致 —— 守卫测试
- * recalc-customer-type-sql.test.js 跨三个文件比对。
+ * SQL 必须与其余七处字面一致 —— 守卫测试 recalc-customer-type-sql.test.js 跨八个文件比对。
  */
 type AdminTx = Parameters<Parameters<typeof db.transaction>[0]>[0]
+
+/**
+ * 顾客分类跃迁的订单级金额 CTE（#187）。产出每张已结清销售单的
+ * non_trial / trial = 非体验 / 体验行的毛实收合计。
+ * refund_by_item 用 public.try_jsonb / public.try_numeric（migration 0045）做安全转换：
+ * 非法 JSON / 非数字文本降级为 NULL 而非抛 22P02。全仓退款 note 解析已统一此写法，LIKE 假守门已废除。
+ * item_direction='购买' 与 STEP 1.5 扣减作用域一致；FILTER 聚合的 NULL 由 COALESCE 归零。
+ */
+const recalcCustomerTypeCte = (clientUserId: string) => sql`WITH refund_by_item AS (
+       SELECT sop.sale_order_id,
+              elem ->> 'refSaleItemId' AS sale_item_id,
+              SUM(COALESCE(public.try_numeric(elem ->> 'refundAmount'), 0)) AS refunded
+       FROM sale_order_payments sop
+       JOIN sale_orders ro ON ro.sale_order_id = sop.sale_order_id
+       CROSS JOIN LATERAL jsonb_array_elements(
+         CASE WHEN jsonb_typeof(public.try_jsonb(sop.note) -> 'items') = 'array'
+              THEN public.try_jsonb(sop.note) -> 'items'
+              ELSE '[]'::jsonb END
+       ) AS elem
+       WHERE ro.client_user_id = ${clientUserId}
+         AND ro.status IN ('已支付', '已完成')
+         AND ro.sale_order_type = '销售单'
+         AND sop.change_type = '退款'
+         AND sop.status = '已支付'
+         AND elem ->> 'refSaleItemId' <> 'OVERPAY'
+       -- 序号绑定 SELECT 的前 2 列（sale_order_id, refSaleItemId）；重排 SELECT 列须同步改这里
+       GROUP BY 1, 2
+     ),
+     order_amounts AS (
+       SELECT o.sale_order_id,
+              CASE WHEN NOT EXISTS (SELECT 1 FROM sale_items si2 WHERE si2.sale_order_id = o.sale_order_id)
+                   THEN GREATEST(o.received::numeric, 0)
+                   ELSE COALESCE(SUM(LEAST(si.received::numeric + COALESCE(rbi.refunded, 0),
+                                           si.sale_amount::numeric))
+                                 FILTER (WHERE si.is_experience = false), 0)
+              END AS non_trial,
+              CASE WHEN NOT EXISTS (SELECT 1 FROM sale_items si2 WHERE si2.sale_order_id = o.sale_order_id)
+                   THEN 0
+                   ELSE COALESCE(SUM(LEAST(si.received::numeric + COALESCE(rbi.refunded, 0),
+                                           si.sale_amount::numeric))
+                                 FILTER (WHERE si.is_experience = true), 0)
+              END AS trial
+       FROM sale_orders o
+       LEFT JOIN sale_items si ON si.sale_order_id = o.sale_order_id
+                              AND si.item_direction = '购买'
+       LEFT JOIN refund_by_item rbi ON rbi.sale_order_id = o.sale_order_id
+                                   AND rbi.sale_item_id = si.sale_item_id
+       WHERE o.client_user_id = ${clientUserId}
+         AND o.status IN ('已支付', '已完成')
+         AND o.sale_order_type = '销售单'
+       GROUP BY o.sale_order_id, o.received
+     )`
 
 async function recalcCustomerType(tx: AdminTx, clientUserId: string): Promise<void> {
   if (!clientUserId) return
@@ -637,36 +691,14 @@ async function recalcCustomerType(tx: AdminTx, clientUserId: string): Promise<vo
 
   const threshold = await getMemberThreshold()
 
-  // 三端 SQL 独立副本（admin actions/orders.ts + staffApi routes/order.js + payNotify index.js）
-  // 修改时必须同步另外两端；一致性由 staffApi __tests__/routes/recalc-customer-type-sql.test.js
-  // 与 cross-end-sql-snapshot.test.js 守护，任一端漂移立即触发测试失败。
+  // 八处 SQL 独立副本，修改时必须同步其余七处；一致性由 staffApi
+  // __tests__/routes/recalc-customer-type-sql.test.js 与 cross-end-sql-snapshot.test.js 守护。
   const typeRes = await tx.execute(sql`
+    ${recalcCustomerTypeCte(clientUserId)}
     SELECT CASE
-       WHEN EXISTS (
-         SELECT 1 FROM sale_orders o
-         WHERE o.client_user_id = ${clientUserId}
-           AND o.status IN ('已支付', '已完成')
-           AND o.sale_order_type = '销售单'
-           AND o.total_amount >= ${threshold}
-       ) THEN '会员客'
-       WHEN EXISTS (
-         SELECT 1
-         FROM sale_orders o
-         JOIN sale_items si ON si.sale_order_id = o.sale_order_id
-         WHERE o.client_user_id = ${clientUserId}
-           AND o.status IN ('已支付', '已完成')
-           AND o.sale_order_type = '销售单'
-           AND si.is_experience = false
-       ) THEN '小美客'
-       WHEN EXISTS (
-         SELECT 1
-         FROM sale_orders o
-         JOIN sale_items si ON si.sale_order_id = o.sale_order_id
-         WHERE o.client_user_id = ${clientUserId}
-           AND o.status IN ('已支付', '已完成')
-           AND o.sale_order_type = '销售单'
-           AND si.is_experience = true
-       ) THEN '体验客'
+       WHEN EXISTS (SELECT 1 FROM order_amounts WHERE non_trial >= ${threshold}) THEN '会员客'
+       WHEN EXISTS (SELECT 1 FROM order_amounts WHERE non_trial > 0)   THEN '小美客'
+       WHEN EXISTS (SELECT 1 FROM order_amounts WHERE trial > 0)       THEN '体验客'
        ELSE '流量客'
      END AS computed_type
   `)
@@ -694,27 +726,25 @@ async function recalcCustomerType(tx: AdminTx, clientUserId: string): Promise<vo
     // became_member_at 记为确立会员资格的首笔达标单时间（COALESCE(paid_at, created_at)）；
     // 选单子查询与下方 is_membership_upgrade 归因同源、选同一单。
     await tx.execute(sql`
-      UPDATE client_wechat_users SET became_member_at = (
+      UPDATE client_wechat_users SET became_member_at = COALESCE((
+        ${recalcCustomerTypeCte(clientUserId)}
         SELECT COALESCE(o.paid_at, o.created_at) FROM sale_orders o
-        WHERE o.client_user_id = ${clientUserId}
-          AND o.status IN ('已支付', '已完成')
-          AND o.sale_order_type = '销售单'
-          AND o.total_amount >= ${threshold}
-        ORDER BY o.paid_at ASC NULLS LAST, o.created_at ASC
+        JOIN order_amounts oa ON oa.sale_order_id = o.sale_order_id
+        WHERE oa.non_trial >= ${threshold}
+        ORDER BY o.paid_at ASC NULLS LAST, o.created_at ASC, o.sale_order_id ASC
         LIMIT 1
-      ) WHERE user_id = ${clientUserId}
+      ), became_member_at) WHERE user_id = ${clientUserId}
     `)
-    // 给触发本次首次跃迁的达标销售单打会员升级标记（WHERE 与会员客判定 CASE 同源；四端镜像）。
+    // 给触发本次首次跃迁的达标销售单打会员升级标记（WHERE 与会员客判定 CASE 同源；八处镜像）。
     // 函数开头“已是会员客即 return”保证只在首次跃迁时执行一次；paid_at 最早 = 确立会员资格的首笔达标单。
     await tx.execute(sql`
       UPDATE sale_orders SET is_membership_upgrade = true
       WHERE sale_order_id = (
+        ${recalcCustomerTypeCte(clientUserId)}
         SELECT o.sale_order_id FROM sale_orders o
-        WHERE o.client_user_id = ${clientUserId}
-          AND o.status IN ('已支付', '已完成')
-          AND o.sale_order_type = '销售单'
-          AND o.total_amount >= ${threshold}
-        ORDER BY o.paid_at ASC NULLS LAST, o.created_at ASC
+        JOIN order_amounts oa ON oa.sale_order_id = o.sale_order_id
+        WHERE oa.non_trial >= ${threshold}
+        ORDER BY o.paid_at ASC NULLS LAST, o.created_at ASC, o.sale_order_id ASC
         LIMIT 1
       )
     `)
@@ -7358,13 +7388,6 @@ export const recordPayment = withPermission(
         throw new ApiError('CONFLICT', 'CONCURRENT_CHANGED: 订单状态已变更，请刷新后重试')
       }
 
-      // 9) customer_type 跃迁（仅在本次回款使订单结清，即翻为'已支付'时触发）
-      // 与 staff confirmOffline / payNotify 三端对齐，保证 admin 财务补录回款
-      // 也能驱动客户分类升级（修复 audit-15 P0-15-01 admin 三资金触发点跃迁缺失）。
-      if (targetStatus === '已支付' && locked.client_user_id) {
-        await recalcCustomerType(tx, locked.client_user_id)
-      }
-
       // 10) 积分发放（修复 audit-15 P0-15-01：admin recordPayment 触发点缺失）
       //     无论本次是否结清都尝试 settle：链净额差值法天然幂等，
       //     可正确处理"分次回款只发增量积分"的场景
@@ -7390,6 +7413,16 @@ export const recordPayment = withPermission(
       // 11) paid_sessions 重算（ticket 2026-05-19）：received 增长 → paid_sessions 单调上升
       //     必须在 capture 之后：新 STEP1 从 receipt 聚合 received
       await recalcPaidSessionsForOrder(tx, saleOrderId)
+
+      // 12) customer_type 跃迁（仅在本次回款使订单结清，即翻为'已支付'时触发）
+      //     与 staff confirmOffline / payNotify 对齐，保证 admin 财务补录回款
+      //     也能驱动客户分类升级（修复 audit-15 P0-15-01 admin 三资金触发点跃迁缺失）。
+      //     ⚠️ #187 起必须排在 recalcPaidSessionsForOrder **之后**：跃迁判定已改读
+      //     sale_items.received（由上面 STEP1 从 receipt 聚合写出），排在前面会读到本次回款
+      //     之前的旧值、少算本笔回款额。旧口径读 o.total_amount（建单即定）不受顺序影响。
+      if (targetStatus === '已支付' && locked.client_user_id) {
+        await recalcCustomerType(tx, locked.client_user_id)
+      }
 
       return {
         repaymentOrderId,
