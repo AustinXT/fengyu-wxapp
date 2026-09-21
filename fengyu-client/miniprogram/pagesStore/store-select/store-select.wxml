@@ -65,6 +65,7 @@
         src="{{item.cover_image}}"
         mode="aspectFill"
         class="store-cover"
+        lazy-load
       />
       <view wx:else class="store-cover store-cover-placeholder">
         <van-icon name="shop-o" size="40rpx" color="#C0322A" />

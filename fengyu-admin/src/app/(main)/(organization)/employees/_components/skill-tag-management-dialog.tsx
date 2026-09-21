@@ -30,14 +30,22 @@ export default function SkillTagManagementDialog({
   open,
   onOpenChange,
   skillTags: allTags,
-  canManage = false,
-  canDelete,
+  canManage,
 }: {
   open: boolean
   onOpenChange: (open: boolean) => void
   skillTags: SkillTag[]
-  canManage?: boolean
-  canDelete: boolean
+  /**
+   * 新增 / 编辑 / 删除共用一个口径：仅系统管理员（#211）。
+   *
+   * 曾拆成 canManage + canDelete 两个 prop，删除多一道 isAdminScope；现在增改也收紧到
+   * 管理员，两者恒等 —— 合并成单一 prop 以免日后两套判定各自漂移。服务端
+   * skill-tags.ts 的三个写操作都有 requireAdmin 硬闸门，这里只管显隐。
+   *
+   * 刻意不给默认值：调用方目前只在为 true 时才挂载本组件，留个 `= false` 的默认值既是
+   * 不可达分支，也会让新调用点漏传时静默退化成只读弹窗。必填由 TS 兜住。
+   */
+  canManage: boolean
 }) {
   const router = useRouter()
 
@@ -108,7 +116,7 @@ export default function SkillTagManagementDialog({
   }
 
   async function handleDelete() {
-    if (!canDelete || !deleteTarget) return
+    if (!canManage || !deleteTarget) return
     setDeleting(true)
     try {
       const res = await deleteSkillTag(deleteTarget.id)
@@ -141,7 +149,7 @@ export default function SkillTagManagementDialog({
           {canManage && <Button variant="link" size="sm" className="h-auto p-0" onClick={() => openEdit(row)}>
             编辑
           </Button>}
-          {canDelete && (
+          {canManage && (
             <Button
               variant="link"
               size="sm"

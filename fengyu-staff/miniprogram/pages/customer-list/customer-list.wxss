@@ -155,11 +155,16 @@
   border-radius: 28rpx;
 }
 
-/* 加载更多 */
+/* 加载更多 / 没有更多 */
 .loading-more {
   display: flex;
   justify-content: center;
   padding: 24rpx;
+}
+
+.no-more-text {
+  font-size: 22rpx;
+  color: #999;
 }
 
 /* ===== 标签筛选行 ===== */

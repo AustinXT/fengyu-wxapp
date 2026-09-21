@@ -496,19 +496,33 @@ export function requirePermission(session: AuthSession | null, action: string): 
 }
 
 /**
- * 物理删除专属硬闸：仅系统管理员（admin 角色）可通过，不受权限矩阵 UI 支配。
+ * 仅超级管理员硬闸（生产判据是角色行的 `isSuperAdmin=true`，不是 `role === 'admin'`）。
  *
- * 用于所有物理删除（db.delete 真删）Server Action 的函数体首行——前置的
- * withPermission('xxx:delete', ...) 仍保留（满足 ESLint HOF 强制 + 纵深过滤），
- * 但真正的「仅系统管理员」判定由本函数以角色为准：即便运营在权限矩阵 UI 给其它
- * 角色勾上 :delete 点，物理删除也无法实际执行。isAdminScope 即 role==='admin'。
+ * 用于两类 Server Action 的函数体首行：
+ * ① 所有物理删除（db.delete 真删）；
+ * ② 不可授权给其它角色的敏感写操作——角色能力位变更（role-definitions）、
+ *    提成口径类字典（skill-tags 技能标签，见 #211）等。
+ *
+ * 前置的 withPermission('xxx:delete' / 'xxx:update', ...) 仍保留（满足 ESLint HOF
+ * 强制 + 纵深过滤），但真正的判定由本函数以角色为准：即便运营在权限矩阵 UI 给其它
+ * 角色勾上对应权限点，这些操作也无法实际执行。
+ *
+ * ⚠️ 两点容易误解，写方案前先看清：
+ * ① `isAdminScope` 判的是 `isSuperAdmin ?? role === 'admin'`。`permission_roles.is_super_admin`
+ *    是 notNull 列，生产会话恒为 boolean，故 `role === 'admin'` 只是旧会话/测试的兼容回退；
+ *    显式 `isSuperAdmin=false` 的 admin 角色行会被拦下。
+ * ② 本函数收到的 session 通常已被 `withPermission` 经 `scopeSessionToActions` 按外层 action
+ *    收紧（只留自身 actions 含该动作的角色行）。所以实际语义是「**授予该 action 的角色里
+ *    至少一个是超管**」，而非「会话里任意位置有超管角色」。当外层 action 属
+ *    ADMIN_ONLY_ACTIONS 时两者等价；用共享 action（如 employee:update）时不等价 ——
+ *    UI 侧复刻判定必须一并跑 scopeSessionToActions，见 `skill-tag-access.ts`。
  */
 export function requireAdmin(session: AuthSession | null): asserts session is AuthSession {
   if (!session) {
     redirect('/login?expired=1')
   }
   if (!isAdminScope(session)) {
-    throw new PermissionError('PERMISSION_DENIED: 仅系统管理员可执行物理删除')
+    throw new PermissionError('PERMISSION_DENIED: 仅系统管理员可执行该操作')
   }
 }
 

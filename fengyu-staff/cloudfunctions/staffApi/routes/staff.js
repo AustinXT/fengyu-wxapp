@@ -14,6 +14,12 @@ const { requireStaffBound, invalidateAuthCache, isCurrentStoreManager } = requir
 const { assertEmployeeInScope, isStoreInScope, buildStoreScopeCondition } = require('../utils/scope')
 const { shanghaiDateStr } = require('../utils/datetime')
 const { SALES_CATEGORIES, UNCATEGORIZED } = require('../utils/sales-categories')
+const {
+  SERVICE_ORDER_ASSIGNABLE_SKILLS,
+  EMPLOYEE_ANCHOR_MARKET_JOIN,
+  targetMarketJoin,
+  marketSupportCondition,
+} = require('../utils/employee-assignment')
 
 // 跨 env 转上传相关 env vars：
 // - CLIENT_API_HTTP_URL：clientApi 的 HTTP 触发器 URL（部署 clientApi 后 tcb fn detail 拿）
@@ -72,7 +78,7 @@ function performanceEventWindow(eventAlias, startIdx, endIdx) {
 async function list(ctx) {
   await requireStaffBound()(ctx, async () => {})
 
-  const { storeId: payloadStoreId } = ctx.event.payload || {}
+  const { storeId: payloadStoreId, scene } = ctx.event.payload || {}
   const targetStoreId = payloadStoreId || ctx.auth.effectiveStoreId
 
   if (!targetStoreId) {
@@ -85,34 +91,77 @@ async function list(ctx) {
     throw new Error('PERMISSION_DENIED: 不在权限范围内的门店')
   }
 
-  // 美容师选择列表按 skills 数组含 '美容师' 或 '养生师' 判定，不按 position_name ——
-  // 养生师也可被指定接单（业务诉求）；与 clientApi/routes/staff.js + admin
-  // orders/services/customers picker 单源对齐，写法与 mgmt-dashboard.js 的
-  // `s.skills && ARRAY['美容师','养生师']::text[]` 同源。
-  // 经理/督导/财智部等岗位即使 store_id 匹配也不应进入美容师选择列表。
-  const staffRows = await pg.query(`
-    SELECT
-      u.employee_id,
-      u.name,
-      u.position_name AS position,
-      u.skills,
-      u.avatar_url,
-      u.store_id,
-      u.is_on_business_trip,
-      d.name AS department,
-      s.store_name,
-      m.name AS market_name
-    FROM staff_wechat_users u
-    LEFT JOIN stores s ON u.store_id = s.store_id
-    LEFT JOIN org_nodes so ON s.org_node_id = so.id
-    LEFT JOIN org_nodes m ON so.parent_id = m.id
-    LEFT JOIN org_nodes d ON u.org_node_id = d.id
-    WHERE u.is_resigned = false
-      AND u.store_id = $1
-      AND u.employee_id IS NOT NULL
-      AND u.skills && ARRAY['美容师','养生师']::text[]
-    ORDER BY d.name, u.name
-  `, [targetStoreId])
+  // 服务单场景（issue #210）：候选放宽为「本店员工 ∪ 本门店所属市场内开启出差支援的员工」，
+  // 技能扩至四项。其余调用方（开单、顾客列表、顾客详情、员工绩效）不传 scene，走下方原口径。
+  //
+  // 仅店长放宽：service.create 里非店长只能把服务单指派给自己
+  // （`!isCurrentStoreManager(ctx.auth) && resolvedStaffWfId !== ctx.auth.staffWfId` 直接拒），
+  // 候选列表对普通员工没有用途，没必要让任意在职员工借此枚举同市场跨店人员。
+  // 非店长传了 scene 也不报错，静默退回本店口径（与放宽前一致）。
+  const isServiceScene = scene === 'service' && isCurrentStoreManager(ctx.auth)
+
+  let staffRows
+  if (isServiceScene) {
+    // 排序：本店整体置顶 → 块内按技能白名单数组顺序（店经理→美容师→养生师→品项老师）→ 姓名。
+    // 多技能员工取白名单内最靠前的技能作为排序角色；调序改
+    // utils/employee-assignment.js 的 SERVICE_ORDER_ASSIGNABLE_SKILLS 即可，此处无硬编码。
+    // market_name 在本分支返回员工的【锚定市场】（而非门店所属市场），供前端标注外援来源。
+    staffRows = await pg.query(`
+      SELECT
+        u.employee_id,
+        u.name,
+        u.position_name AS position,
+        u.skills,
+        u.avatar_url,
+        u.store_id,
+        u.is_on_business_trip,
+        d.name AS department,
+        s.store_name,
+        employee_market.name AS market_name,
+        CASE WHEN u.store_id = $1 THEN 'local' ELSE 'same_market_trip' END AS assignment_scope
+      FROM staff_wechat_users u${EMPLOYEE_ANCHOR_MARKET_JOIN}${targetMarketJoin('$1')}
+      WHERE u.is_resigned = false
+        AND u.employee_id IS NOT NULL
+        AND u.skills && $2::text[]
+        AND ${marketSupportCondition('$1')}
+      ORDER BY
+        CASE WHEN u.store_id = $1 THEN 0 ELSE 1 END,
+        (SELECT MIN(array_position($2::text[], sk))
+           FROM unnest(u.skills) sk
+          WHERE sk = ANY($2::text[])) NULLS LAST,
+        u.name NULLS LAST,
+        u.employee_id
+    `, [targetStoreId, SERVICE_ORDER_ASSIGNABLE_SKILLS])
+  } else {
+    // 美容师选择列表按 skills 数组含 '美容师' 或 '养生师' 判定，不按 position_name ——
+    // 养生师也可被指定接单（业务诉求）；与 clientApi/routes/staff.js + admin
+    // orders/services/customers picker 单源对齐，写法与 mgmt-dashboard.js 的
+    // `s.skills && ARRAY['美容师','养生师']::text[]` 同源。
+    // 经理/督导/财智部等岗位即使 store_id 匹配也不应进入美容师选择列表。
+    staffRows = await pg.query(`
+      SELECT
+        u.employee_id,
+        u.name,
+        u.position_name AS position,
+        u.skills,
+        u.avatar_url,
+        u.store_id,
+        u.is_on_business_trip,
+        d.name AS department,
+        s.store_name,
+        m.name AS market_name
+      FROM staff_wechat_users u
+      LEFT JOIN stores s ON u.store_id = s.store_id
+      LEFT JOIN org_nodes so ON s.org_node_id = so.id
+      LEFT JOIN org_nodes m ON so.parent_id = m.id
+      LEFT JOIN org_nodes d ON u.org_node_id = d.id
+      WHERE u.is_resigned = false
+        AND u.store_id = $1
+        AND u.employee_id IS NOT NULL
+        AND u.skills && ARRAY['美容师','养生师']::text[]
+      ORDER BY d.name, u.name
+    `, [targetStoreId])
+  }
 
   ctx.result = {
     staffList: staffRows.map(r => ({
@@ -126,6 +175,11 @@ async function list(ctx) {
       storeName: r.store_name || '',
       marketName: r.market_name || '',
       isOnBusinessTrip: r.is_on_business_trip === true,
+      // 非服务单场景恒为 'local'（查询本就只含本店员工），前端无需分支判断
+      assignmentScope: r.assignment_scope || 'local',
+      // ⚠️ isManager 走 position_name 口径，与服务单场景的 skills 口径**不同源**：
+      // 技能含「店经理」但岗位名不是「门店经理」的人会排在首位却 isManager=false。
+      // 服务单场景一律以 skills 为准（排序与角色标签都取它），isManager 仅供旧场景，勿混用。
       isManager: r.position === '门店经理'
     }))
   }

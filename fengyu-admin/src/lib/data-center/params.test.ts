@@ -1,12 +1,75 @@
 import { describe, it, expect } from 'vitest'
-import { parseTab, parseScope, parseTimeRange, parseBoardParams } from './params'
+import {
+  DATA_CENTER_BOARD_LABELS,
+  DATA_CENTER_TABS,
+  firstQueryValue,
+  hasRepeatedQueryKey,
+  parseBoard,
+  singleValueQuery,
+  parseScope,
+  parseTimeRange,
+  parseBoardParams,
+} from './params'
 
-describe('parseTab', () => {
-  it('合法 tab 原样返回，非法回退 sales', () => {
-    expect(parseTab('customer')).toBe('customer')
-    expect(parseTab('product')).toBe('product')
-    expect(parseTab('xxx')).toBe('sales')
-    expect(parseTab(undefined)).toBe('sales')
+describe('parseBoard', () => {
+  it('合法板块原样返回，非法返回 null（不回退，交给 notFound 收口）', () => {
+    expect(parseBoard('sales')).toBe('sales')
+    expect(parseBoard('efficiency')).toBe('efficiency')
+    expect(parseBoard('xxx')).toBeNull()
+    expect(parseBoard('')).toBeNull()
+    expect(parseBoard(undefined)).toBeNull()
+  })
+
+  it('大小写敏感：不做 toLowerCase 容错', () => {
+    expect(parseBoard('Sales')).toBeNull()
+  })
+})
+
+describe('firstQueryValue', () => {
+  it('重复 query key 取首值，避免被 String(array) 压成逗号串', () => {
+    expect(firstQueryValue(['store', 'market'])).toBe('store')
+    expect(firstQueryValue('store')).toBe('store')
+    expect(firstQueryValue(undefined)).toBeUndefined()
+    expect(firstQueryValue([])).toBeUndefined()
+  })
+})
+
+describe('hasRepeatedQueryKey', () => {
+  it('只在存在数组值（重复 key）时为真', () => {
+    expect(hasRepeatedQueryKey({ scope: ['store', 'all'] })).toBe(true)
+    expect(hasRepeatedQueryKey({ scope: 'store', preset: 'year' })).toBe(false)
+    expect(hasRepeatedQueryKey({})).toBe(false)
+  })
+})
+
+describe('singleValueQuery', () => {
+  it('取首值、丢空串、剔除 tab', () => {
+    const qs = singleValueQuery({
+      tab: 'customer',
+      scope: ['store', 'all'],
+      scopeId: 'S1',
+      preset: '',
+      cmp: '0',
+    })
+    expect(qs.toString()).toBe('scope=store&scopeId=S1&cmp=0')
+  })
+
+  it('drop 里的 key 额外排除', () => {
+    const qs = singleValueQuery({ scope: 'store', scopeId: 'S1', preset: 'year' }, ['scope', 'scopeId'])
+    expect(qs.toString()).toBe('preset=year')
+  })
+
+  it('全空时产出空串（调用方据此省掉问号）', () => {
+    expect(singleValueQuery({ tab: 'sales', preset: undefined }).toString()).toBe('')
+  })
+})
+
+describe('DATA_CENTER_BOARD_LABELS', () => {
+  it('每个板块都有中文名（菜单项、面包屑、h1 共用）', () => {
+    for (const board of DATA_CENTER_TABS) {
+      expect(DATA_CENTER_BOARD_LABELS[board], `板块 ${board} 缺中文名`).toBeTruthy()
+    }
+    expect(Object.keys(DATA_CENTER_BOARD_LABELS)).toHaveLength(DATA_CENTER_TABS.length)
   })
 })
 

@@ -15,7 +15,9 @@ interface StoreInfo {
   available_beds: number;
   staff_count: number;
   customer_count: number;
-  cover_image: string;
+  // 云函数无法保证缩略时会下发 null（见 clientApi/utils/image.js 的 safeThumbUrl），
+  // 前端 wx:if 走占位分支；相册里不可缩略的项已在云函数侧剔除，故仍是 string[]
+  cover_image: string | null;
   images: string[];
   street_address: string;
   latitude: number | null;

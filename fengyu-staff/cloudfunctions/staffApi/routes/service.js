@@ -18,7 +18,10 @@ const { assertNoPendingRefundByServiceOrder } = require('../utils/refund')
 const { isStoreInScope, restrictToBoundEmployee } = require('../utils/scope')
 const { DEPOSIT_REFUND_REMARK } = require('../utils/consume-filter')
 const { grantVisitPointsSafe } = require('../utils/visit-points')
-const { assertEmployeesAssignableToStore } = require('../utils/employee-assignment')
+const {
+  assertEmployeesAssignableToStore,
+  SERVICE_ORDER_ASSIGNABLE_SKILLS,
+} = require('../utils/employee-assignment')
 
 /**
  * 创建服务单
@@ -216,11 +219,17 @@ async function create(ctx) {
     }
   }
 
+  // 服务单可指派「本店员工 ∪ 本门店所属市场内开启出差支援的员工」，技能扩至四项（issue #210）；
+  // 与 staff.list({ scene: 'service' }) 的候选口径同源，否则前端选得到、提交被拦。
   await assertEmployeesAssignableToStore(
     pg,
     [resolvedStaffWfId, ...normalizedItems.map((item) => item.employeeId)],
     ctx.auth.effectiveStoreId,
-    { requireServiceSkills: true },
+    {
+      requireServiceSkills: true,
+      skills: SERVICE_ORDER_ASSIGNABLE_SKILLS,
+      assignmentScope: 'marketSupport',
+    },
   )
 
   // serviceOrderId 在事务内由 generateServiceOrderId(client) 生成，保证 advisory lock

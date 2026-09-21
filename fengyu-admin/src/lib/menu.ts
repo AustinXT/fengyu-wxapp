@@ -4,6 +4,7 @@ import {
   ChartNoAxesCombined,
   CreditCard,
   FileText,
+  Gauge,
   Gift,
   Grid3x3,
   History,
@@ -25,6 +26,7 @@ import {
   Activity,
   Store,
   Ticket,
+  TrendingUp,
   Undo2,
   Unlink,
   UserRound,
@@ -169,7 +171,17 @@ export const MENU_CONFIG: MenuNode[] = [
       { label: '提成矩阵', icon: Grid3x3, href: '/commission', requiredActions: ['commission:list'] },
     ],
   },
-  { label: '数据中心', icon: LineChart, href: '/data-center', requiredActions: ['data_center:dashboard'] },
+  {
+    // 4 个板块各占一条独立路径：itemMatchesPath 只比 pathname，挂 `?tab=` 会让子项同时高亮。
+    label: '数据中心',
+    icon: LineChart,
+    children: [
+      { label: '销售', icon: TrendingUp, href: '/data-center/sales', requiredActions: ['data_center:dashboard'] },
+      { label: '客量', icon: Users, href: '/data-center/customer', requiredActions: ['data_center:dashboard'] },
+      { label: '人效', icon: Gauge, href: '/data-center/efficiency', requiredActions: ['data_center:dashboard'] },
+      { label: '品项', icon: PieChart, href: '/data-center/product', requiredActions: ['data_center:dashboard'] },
+    ],
+  },
   {
     label: '系统管理',
     icon: Settings,
