@@ -9,10 +9,29 @@ const DATE_RE = /^\d{4}-\d{2}-\d{2}$/
 export const DATA_CENTER_TABS = ['sales', 'customer', 'efficiency', 'product'] as const
 export type DataCenterTab = (typeof DATA_CENTER_TABS)[number]
 
+/** 板块中文名：侧边栏菜单项、面包屑末级与页面 h1 共用同一套叫法。 */
+export const DATA_CENTER_BOARD_LABELS: Record<DataCenterTab, string> = {
+  sales: '销售',
+  customer: '客量',
+  efficiency: '人效',
+  product: '品项',
+}
+
+/** 容错解析：非法值回退 sales。裸 `/data-center` 兼容旧 `?tab=` 深链时使用。 */
 export function parseTab(raw: string | undefined): DataCenterTab {
   return (DATA_CENTER_TABS as readonly string[]).includes(raw ?? '')
     ? (raw as DataCenterTab)
     : 'sales'
+}
+
+/**
+ * 严格解析：非法值返回 null。
+ * `/data-center/[board]` 用它收口动态段——否则任意 `/data-center/xxx` 都会静默渲染销售板块。
+ */
+export function parseBoard(raw: string | undefined): DataCenterTab | null {
+  return (DATA_CENTER_TABS as readonly string[]).includes(raw ?? '')
+    ? (raw as DataCenterTab)
+    : null
 }
 
 export function parseScope(raw: { scope?: string; scopeId?: string }): DataCenterScope {

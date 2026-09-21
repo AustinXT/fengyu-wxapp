@@ -1,5 +1,13 @@
 import { describe, it, expect } from 'vitest'
-import { parseTab, parseScope, parseTimeRange, parseBoardParams } from './params'
+import {
+  DATA_CENTER_BOARD_LABELS,
+  DATA_CENTER_TABS,
+  parseBoard,
+  parseTab,
+  parseScope,
+  parseTimeRange,
+  parseBoardParams,
+} from './params'
 
 describe('parseTab', () => {
   it('合法 tab 原样返回，非法回退 sales', () => {
@@ -7,6 +15,25 @@ describe('parseTab', () => {
     expect(parseTab('product')).toBe('product')
     expect(parseTab('xxx')).toBe('sales')
     expect(parseTab(undefined)).toBe('sales')
+  })
+})
+
+describe('parseBoard', () => {
+  it('合法板块原样返回，非法返回 null（不回退，交给 notFound 收口）', () => {
+    expect(parseBoard('sales')).toBe('sales')
+    expect(parseBoard('efficiency')).toBe('efficiency')
+    expect(parseBoard('xxx')).toBeNull()
+    expect(parseBoard('')).toBeNull()
+    expect(parseBoard(undefined)).toBeNull()
+  })
+})
+
+describe('DATA_CENTER_BOARD_LABELS', () => {
+  it('每个板块都有中文名（菜单项、面包屑、h1 共用）', () => {
+    for (const board of DATA_CENTER_TABS) {
+      expect(DATA_CENTER_BOARD_LABELS[board], `板块 ${board} 缺中文名`).toBeTruthy()
+    }
+    expect(Object.keys(DATA_CENTER_BOARD_LABELS)).toHaveLength(DATA_CENTER_TABS.length)
   })
 })
 

@@ -3598,7 +3598,8 @@ export const updatePaymentPerformanceAttributionDate = withPermission(
     revalidatePath('/orders')
     revalidatePath(`/orders/${result.saleOrderId}`)
     revalidatePath('/allocations')
-    revalidatePath('/data-center')
+    // 'layout' 模式级联 /data-center 下全部板块路径（4 个板块各自独立路由）
+    revalidatePath('/data-center', 'layout')
     return {
       success: true,
       message: '款项业绩归属日期已修改；该次付款不可再次调整',

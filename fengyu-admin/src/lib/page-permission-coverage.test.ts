@@ -59,7 +59,13 @@ const LIST_PAGE_GATES: Record<string, Clause[]> = {
   '/inventory/promotions': ['inventory:stock_list'],
   '/legacy-orders': ['legacy_order:list', 'store:list'],
   // —— 数据管理 ——
-  '/data-center': ['data_center:dashboard'], // SSR 仅 getDataCenterScopeOptions 闸门；板块数据客户端取数
+  // 数据中心：4 个板块各占一条 menu href；SSR 仅 getDataCenterScopeOptions 闸门，板块数据客户端取数。
+  // 裸 '/data-center' 已不在 menu 中（纯 redirect 页，不查库），保留建模以防深链回归。
+  '/data-center': ['data_center:dashboard'],
+  '/data-center/sales': ['data_center:dashboard'],
+  '/data-center/customer': ['data_center:dashboard'],
+  '/data-center/efficiency': ['data_center:dashboard'],
+  '/data-center/product': ['data_center:dashboard'],
   '/org': ['org:list'],
   '/stores': ['store:list'],
   '/merchants': ['merchant:list'], // 商户管理（admin + finance）；getMerchantsPaginated
