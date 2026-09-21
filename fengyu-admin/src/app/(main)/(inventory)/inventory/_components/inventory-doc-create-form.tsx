@@ -106,6 +106,16 @@ type LotCache = Map<string, { promise: Promise<InventoryLotRow[]>; settled: bool
 
 type LotLoadState = { key: string; lots: InventoryLotRow[]; failed?: boolean }
 
+/** 字段名 + 控件。用 `<label>` 包裹而不是并列，控件（含只读 `<output>`）才能被正确关联。 */
+function FieldLabel({ text, children }: { text: string; children: ReactNode }) {
+  return (
+    <label className="space-y-1.5">
+      <span className="block text-sm font-medium">{text}</span>
+      {children}
+    </label>
+  )
+}
+
 export function InventoryDocCreateForm({
   visible,
   locations,
@@ -259,6 +269,10 @@ export function InventoryDocCreateForm({
        * 用户这次选的 target —— 界面照常返回成功单号，货却记在上一张单的主体上。
        * 明细已经清空、表单看着像新的，这个陷阱反而更难被发现。
        * 日期同理：不重置的话下一张单会沿用上次补录的历史日期。
+       *
+       * 注：**单候选环境**（市场角色只管一个市场、门店角色只管一家店）下，主体清空后
+       * 会被 `InventorySubjectSelect` 立刻填回那个唯一候选 —— 这是预期，不是没清掉。
+       * 那种环境里一张单也只可能是它，上面说的「残留 source 吃掉 target」根本无从发生。
        */
       setItems([defaultItem()])
       setRemark('')
@@ -298,30 +312,45 @@ export function InventoryDocCreateForm({
 
   return (
     <div className="space-y-4">
+      {/*
+        * 四个字段都带可见 label。主体字段**必须**有 —— `InventorySubjectSelect` 在
+        * 候选唯一时会降级成只读 `<output>`，占位文案（「出库/发起主体」「入库/接收主体」）
+        * 随之消失，两个字段会显示成一模一样的「市场 · 某某」，用户和读屏都分不清谁是谁。
+        * `<output>` 是 labelable element，外层 `<label>` 能正确关联上去。
+        */}
       <div className="grid grid-cols-4 gap-3">
-        <Select value={docType} disabled={isDocTypeLocked} onChange={(e) => setDocType(e.target.value as InventoryDocType)}>
-          {availableDocTypes.map((type) => (
-            <option key={type} value={type}>{type}</option>
-          ))}
-        </Select>
-        <DatePicker value={docDate} onValueChange={setDocDate} aria-label="单据日期" />
-        <InventorySubjectSelect
-          options={subjectOptions}
-          value={sourceOrgNodeId}
-          placeholder="出库/发起主体"
-          onChange={(value) => {
-            setSourceOrgNodeId(value)
-            // 换主体必须清批次：批次是按 (库位, SKU) 取的，换了库位旧的 lotId 就不属于这张单了。
-            // 自动选中（唯一候选）同样走这条 onChange，联动不会被绕过。
-            setItems((prev) => prev.map((item) => ({ ...item, lotId: '' })))
-          }}
-        />
-        <InventorySubjectSelect
-          options={subjectOptions}
-          value={targetOrgNodeId}
-          placeholder="入库/接收主体"
-          onChange={setTargetOrgNodeId}
-        />
+        <FieldLabel text="单据类型">
+          <Select value={docType} disabled={isDocTypeLocked} onChange={(e) => setDocType(e.target.value as InventoryDocType)}>
+            {availableDocTypes.map((type) => (
+              <option key={type} value={type}>{type}</option>
+            ))}
+          </Select>
+        </FieldLabel>
+        <FieldLabel text="单据日期">
+          <DatePicker value={docDate} onValueChange={setDocDate} aria-label="单据日期" />
+        </FieldLabel>
+        <FieldLabel text="出库/发起主体">
+          <InventorySubjectSelect
+            options={subjectOptions}
+            value={sourceOrgNodeId}
+            placeholder="出库/发起主体"
+            onChange={(value) => {
+              setSourceOrgNodeId(value)
+              // 换主体必须清批次：批次是按 (库位, SKU) 取的，换了库位旧的 lotId 就不属于这张单了。
+              // 自动选中（唯一候选）同样走这条 onChange，联动不会被绕过。
+              // 条件重建：mount 自动选中与清场后回填时 lotId 本就是空的，没必要多一次渲染。
+              setItems((prev) => (prev.some((item) => item.lotId) ? prev.map((item) => ({ ...item, lotId: '' })) : prev))
+            }}
+          />
+        </FieldLabel>
+        <FieldLabel text="入库/接收主体">
+          <InventorySubjectSelect
+            options={subjectOptions}
+            value={targetOrgNodeId}
+            placeholder="入库/接收主体"
+            onChange={setTargetOrgNodeId}
+          />
+        </FieldLabel>
       </div>
       <Textarea placeholder="备注" value={remark} onChange={(e) => setRemark(e.target.value)} />
 

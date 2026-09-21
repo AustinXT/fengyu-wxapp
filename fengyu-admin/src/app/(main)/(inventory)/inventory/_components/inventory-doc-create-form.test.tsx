@@ -295,12 +295,19 @@ describe('共享建单表单的主体字段（#189 × #191）', () => {
     // 降级成只读后就不再是 combobox（出库/入库两个都应如此）
     expect(screen.queryByRole('option', { name: '出库/发起主体' })).toBeNull()
     expect(screen.queryByRole('option', { name: '入库/接收主体' })).toBeNull()
+    /*
+     * 只读降级会把占位文案一起带走，两个字段都变成「市场 · 市场一部」。
+     * 没有可见 label 的话，用户和读屏都分不清哪个是出库、哪个是入库 ——
+     * 这是换成 InventorySubjectSelect 才会有的退化，必须由 label 兜住。
+     */
+    for (const fieldName of ['出库/发起主体', '入库/接收主体']) {
+      const label = screen.getByText(fieldName)
+      expect(label.parentElement?.textContent, fieldName).toContain('市场一部')
+    }
 
     // 自动选中的值必须真的进了表单 state：提交时带出去的就是它
     fireEvent.change(screen.getByPlaceholderText('数量'), { target: { value: '3' } })
-    fireEvent.change(screen.getByRole('option', { name: 'P001 · 测试商品' }).closest('select')!, {
-      target: { value: 'SKU-1' },
-    })
+    fireEvent.change(selectByPlaceholder('库存 SKU'), { target: { value: 'SKU-1' } })
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: '提交' }))
     })
@@ -330,5 +337,62 @@ describe('共享建单表单的主体字段（#189 × #191）', () => {
     for (const state of ['sourceOrgNodeId', 'targetOrgNodeId']) {
       expect(source).not.toMatch(new RegExp(`<Select value=\\{${state}\\}`))
     }
+  })
+})
+
+/**
+ * 批次取数用的是 **locationId**，不是主体字段的 orgNodeId（#191 增量评审 codex P3-2）。
+ *
+ * 表单里两种 id 同时存在：主体 state 存 `orgNodeId`（提交要它），批次接口要 `locationId`，
+ * 中间靠 `locations.find(l => l.orgNodeId === sourceOrgNodeId)?.locationId` 反查。
+ * **总部与市场两者同值，只有门店不同** —— 把反查去掉、直接拿 orgNodeId 去查批次，
+ * 在只有总部/市场的环境里怎么点都正常，一上门店就查不到任何批次。
+ * 所以这条用例刻意用 `locationId !== orgNodeId` 的门店主体。
+ */
+describe('批次取数的 id 空间（#191）', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockCreateDoc.mockResolvedValue({ success: true, id: 'FY-CK-260921-0002' })
+  })
+
+  it('门店主体下，批次接口收到的是 store 的 locationId 而不是 orgNodeId', async () => {
+    mockListLots.mockResolvedValue([{ id: 9, batchNo: 'B009', availableQuantity: 12, expiryDate: null }])
+    // 门店：locationId(STORE-S1) 与 orgNodeId(NODE-S1) 是两个不同的值
+    const storeLocation = [
+      { locationId: 'STORE-S1', orgNodeId: 'NODE-S1', name: '象湖店', locationType: '门店', isActive: true },
+    ] as never
+
+    render(
+      <InventoryDocCreateForm
+        visible
+        locations={storeLocation}
+        skuOptions={SKUS}
+        initialDocType={'院产品报损' as never}
+        allowedDocTypes={['院产品报损'] as never}
+        onSuccess={vi.fn()}
+        onStale={vi.fn()}
+        onBusyChange={() => {}}
+        renderActions={({ submit }) => <button type="button" onClick={submit}>提交</button>}
+      />,
+    )
+
+    // 唯一候选会自动选中；选 SKU 后触发批次取数
+    await waitFor(() => expect(document.querySelectorAll('[data-fixed-subject="NODE-S1"]').length).toBe(2))
+    await act(async () => {
+      fireEvent.change(selectByPlaceholder('库存 SKU'), { target: { value: 'SKU-1' } })
+    })
+
+    await waitFor(() => expect(mockListLots).toHaveBeenCalled())
+    expect(mockListLots).toHaveBeenCalledWith('STORE-S1', 'SKU-1')
+    // 反向：绝不能拿 orgNodeId 去查
+    expect(mockListLots).not.toHaveBeenCalledWith('NODE-S1', 'SKU-1')
+
+    // 而提交带出去的仍是 orgNodeId
+    fireEvent.change(screen.getByPlaceholderText('数量'), { target: { value: '2' } })
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: '提交' }))
+    })
+    await waitFor(() => expect(mockCreateDoc).toHaveBeenCalled())
+    expect(mockCreateDoc.mock.calls[0][0].sourceOrgNodeId).toBe('NODE-S1')
   })
 })
