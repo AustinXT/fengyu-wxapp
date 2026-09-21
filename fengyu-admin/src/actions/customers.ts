@@ -1114,6 +1114,43 @@ export const getCustomerServiceOrders = withPermission(
   },
 )
 
+/**
+ * 「绑定美容师」这个第二主体的解析 + 校验 —— `updateCustomer` 与 `assignCustomer` 的单源。
+ *
+ * 两者写的是**同一张表的同一列**（`bound_employee_id` + 冗余姓名）、吃**同一个权限**
+ * `customer:update`，校验必须走同一条路径。#250 之前 `assignCustomer` 有存在性 + scope 校验，
+ * `updateCustomer` 只查了个姓名 —— 门店 A 的 manager 可以
+ * `updateCustomer(userId, { boundEmployeeId: '<门店B的美容师>' })` 绕开 guard，
+ * 把本店顾客的业绩归属注入他人 scope；传不存在的 ID 则写下 `bound_employee_name = null` 悬挂引用。
+ *
+ * **「不存在」与「存在但不在 scope 内」合并成同一条文案，且两条路径都零写入**
+ * —— 对齐 #228 在 `updateEmployee` 上确立的口径（commit 2c27c34a）：分成两句话
+ * （原 `assignCustomer` 的「员工不存在」/「无权分配给该门店的员工」）就能拿任意 employeeId
+ * 探测它是否真实存在。合并后两者逐字相同。
+ *
+ * scope 判据用 `isInScope(storeId)`，**刻意不用** `isEmployeeRowVisible` 的
+ * store ∪ orgNode 双维度（那是 `assignRole` 侧的口径）：绑定美容师是门店业绩归属，
+ * 直挂市场 / 职能部门（`store_id IS NULL`）的员工本就不该成为顾客的绑定美容师，
+ * 放宽到双维度等于扩大可写集合。`isInScope` 对 admin 放行、对 `storeId=null` 的非 admin 拒绝。
+ *
+ * 在职状态**不**校验 —— 与 `assignCustomer` 既有行为一致（存量绑定关系里就有离职美容师）。
+ * 这与同文件 `promoterEmployeeId` 的口径（校验在职、刻意不校验 scope）是两套，各有出处，勿互相对齐。
+ */
+async function resolveBoundEmployee(
+  session: AuthSession,
+  employeeId: string,
+): Promise<{ ok: true; name: string | null } | { ok: false; message: string }> {
+  const [emp] = await db
+    .select({ name: staffWechatUsers.name, storeId: staffWechatUsers.storeId })
+    .from(staffWechatUsers)
+    .where(eq(staffWechatUsers.employeeId, employeeId))
+    .limit(1)
+  if (!emp || !isInScope(session, emp.storeId ?? '')) {
+    return { ok: false, message: '员工不存在或无权分配' }
+  }
+  return { ok: true, name: emp.name ?? null }
+}
+
 export const updateCustomer = withPermission(
   'customer:update',
   async (
@@ -1197,12 +1234,12 @@ export const updateCustomer = withPermission(
     ]))
   }
 
-  // boundEmployeeId 变更时同步写入冗余姓名
+  // boundEmployeeId 变更时校验第二主体并同步写入冗余姓名（#250，与 assignCustomer 单源）
   if ('boundEmployeeId' in data) {
     if (data.boundEmployeeId) {
-      const [emp] = await db.select({ name: staffWechatUsers.name }).from(staffWechatUsers)
-        .where(eq(staffWechatUsers.employeeId, data.boundEmployeeId)).limit(1)
-      updateData.boundEmployeeName = emp?.name ?? null
+      const resolved = await resolveBoundEmployee(session, data.boundEmployeeId)
+      if (!resolved.ok) return { success: false, message: resolved.message }
+      updateData.boundEmployeeName = resolved.name
     } else {
       updateData.boundEmployeeName = null
     }
@@ -1279,26 +1316,16 @@ export const assignCustomer = withPermission(
   if (!userId) return { success: false, message: '缺少顾客 userId' }
   if (!employeeId) return { success: false, message: '请选择美容师' }
 
-  // 校验员工存在并取冗余姓名 + 门店（与 updateCustomer 同范式）
-  const { staffWechatUsers } = await import('@db/user')
-  const [emp] = await db
-    .select({ name: staffWechatUsers.name, storeId: staffWechatUsers.storeId })
-    .from(staffWechatUsers)
-    .where(eq(staffWechatUsers.employeeId, employeeId))
-    .limit(1)
-  if (!emp) return { success: false, message: '员工不存在' }
-
-  // 员工 scope 校验（对齐 staff 端 assertEmployeeInScope）：
+  // 员工存在性 + scope 校验（对齐 staff 端 assertEmployeeInScope）：
   // 防止门店店长把本店顾客分配给其他门店的美容师。
-  // isInScope 对 admin 角色放行；员工无门店（storeId=null）时非 admin 拒绝。
-  if (!isInScope(session, emp.storeId ?? '')) {
-    return { success: false, message: '无权分配给该门店的员工' }
-  }
+  // 与 updateCustomer 共用 resolveBoundEmployee —— 同一列同一权限只能有一条校验路径（#250）。
+  const resolved = await resolveBoundEmployee(session, employeeId)
+  if (!resolved.ok) return { success: false, message: resolved.message }
 
   const scopeCond = scopeCondition(session, clientWechatUsers.boundStoreId)
   const result: any = await db
     .update(clientWechatUsers)
-    .set({ boundEmployeeId: employeeId, boundEmployeeName: emp.name ?? null } as any)
+    .set({ boundEmployeeId: employeeId, boundEmployeeName: resolved.name } as any)
     .where(and(eq(clientWechatUsers.userId, userId), scopeCond))
 
   if ((result as any).count === 0) {
@@ -1307,12 +1334,12 @@ export const assignCustomer = withPermission(
 
   await logOperation(session, 'customer.assign', 'customer', userId, {
     employeeId,
-    employeeName: emp.name ?? null,
+    employeeName: resolved.name,
   })
 
   const { revalidatePath } = await import('next/cache')
   revalidatePath(`/customers/${userId}`)
-  return { success: true, message: `已分配给 ${emp.name ?? employeeId}` }
+  return { success: true, message: `已分配给 ${resolved.name ?? employeeId}` }
   },
 )
 

@@ -9,7 +9,7 @@ import { eq, and, inArray, sql, desc, asc } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import type { PermissionRole } from '@/lib/types'
 import { hasRole } from '@/lib/auth'
-import { hasPermission, isAdminScope } from '@/lib/permissions'
+import { hasPermission, isAdminScope, isEmployeeRowVisible } from '@/lib/permissions'
 import { withPermission, withAnyPermission } from '@/lib/with-permission'
 import { logOperation } from '@/lib/operation-log'
 import { countActiveAdmins } from '@/lib/admin-guard'
@@ -283,6 +283,42 @@ export const assignRole = withAnyPermission(
     throw new Error(`INVALID_PARAMS: 角色 ${data.role} 不能绑定到 ${node.type} 型 scope`)
   }
 
+  /*
+   * 被授权人（第二主体）校验 —— #250。
+   *
+   * 上面那段只管住了 `data.scopeId`（授权范围），对 `data.employeeId` 此前零约束：
+   * 绑市场 M 的 hr 可以把市场 N 的真实员工授予 M 内节点的角色（授权范围本身没越界，
+   * 但「被授权人」完全未校验）；传垃圾 ID 则触发 `permission_roles.employee_id` 的
+   * FK 23503，而 catch 只认 23505 → 裸抛 500 而非友好文案。
+   *
+   * 判据用 `isEmployeeRowVisible`（store ∪ orgNode 双维度）而**不是** `isInScope`：
+   * `permission_roles` 授的恰恰包含职能部门员工（`store_id IS NULL`、靠 `org_node_id` 命中 scope），
+   * 只按 store 判会把他们整体挡掉。这与 `customers.ts` 的 `resolveBoundEmployee` 刻意用
+   * 单维度 `isInScope` 是两套口径，各有出处，别互相「对齐」。
+   *
+   * 「不存在」与「存在但不可见」合并成同一条文案、且都零写入（对齐 #228 commit 2c27c34a）：
+   * 分成两句话只是把 oracle 从「员工归属」换成「employeeId 是否存在」。
+   * 必须前置到下面的 existing 查询之前 —— 那句「该员工已拥有相同的角色和权限范围」
+   * 对 scope 外员工同样是可探测的信道。
+   *
+   * 在职判定排在可见性**之后**：对不可见的员工连「他已离职」都不该泄露。
+   */
+  const [targetEmployee] = await db
+    .select({
+      storeId: staffWechatUsers.storeId,
+      orgNodeId: staffWechatUsers.orgNodeId,
+      isResigned: staffWechatUsers.isResigned,
+    })
+    .from(staffWechatUsers)
+    .where(eq(staffWechatUsers.employeeId, data.employeeId))
+    .limit(1)
+  if (!targetEmployee || !isEmployeeRowVisible(session, targetEmployee.storeId, targetEmployee.orgNodeId)) {
+    return { success: false, message: '员工不存在或不在您的权限范围内' }
+  }
+  if (targetEmployee.isResigned) {
+    return { success: false, message: '该员工已离职，无法分配角色' }
+  }
+
   // 检查是否已存在相同的角色记录，避免重复分配
   const [existing] = await db
     .select({ id: permissionRoles.id })
@@ -308,6 +344,11 @@ export const assignRole = withAnyPermission(
   } catch (err: any) {
     if (pgErrorCode(err) === '23505') {
       return { success: false, message: '该员工已拥有相同的角色和权限范围' }
+    }
+    // employee_id 的 FK 兜底：前置校验与 insert 之间员工被并发删除的竞态。
+    // 文案与前置校验逐字相同，不让竞态窗口变成另一个探测信道。
+    if (pgErrorCode(err) === '23503') {
+      return { success: false, message: '员工不存在或不在您的权限范围内' }
     }
     throw err
   }
