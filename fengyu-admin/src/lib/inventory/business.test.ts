@@ -1158,21 +1158,25 @@ function functionBodyNode(sf: ts.SourceFile, fnName: string): ts.Block {
   let found: ts.Block | undefined
 
   /**
-   * HOF 形态取**参数最多**的那个函数实参，而不是深度优先的第一个 ——
-   * `withAnyPermission(() => perms, async (session, input) => {…})` 里第一个是权限回调，
-   * 盯着它就检查错了主体（codex P3）。
+   * HOF 形态取**调用实参里最后一个函数**，这是 `withPermission(action, impl)` /
+   * `withAnyPermission(actions, impl)` 这类包装器的固定惯例。
+   *
+   * 试过两版都不行：深度优先第一个会拿到 `withAnyPermission(() => perms, impl)` 的权限回调；
+   * 按 `parameters.length` 降序在同参数数时退化为源码顺序，前面放个同参诱饵就能骗过（codex）。
+   * 只看**顶层实参**、不递归进子表达式，诱饵就没有落脚点。
    */
   const pickImplementation = (node: ts.Node): ts.Block | undefined => {
-    const candidates: Array<ts.ArrowFunction | ts.FunctionExpression> = []
-    const dig = (n: ts.Node) => {
-      if (ts.isArrowFunction(n) || ts.isFunctionExpression(n)) candidates.push(n)
-      ts.forEachChild(n, dig)
+    if (!ts.isCallExpression(node)) {
+      // 直接 `const f = async (…) => {…}` 的形态
+      return (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) && node.body
+        && ts.isBlock(node.body) ? node.body : undefined
     }
-    dig(node)
-    const best = candidates
-      .filter((c) => c.body && ts.isBlock(c.body))
-      .sort((a, b) => b.parameters.length - a.parameters.length)[0]
-    return best?.body as ts.Block | undefined
+    const fnArgs = node.arguments.filter(
+      (a): a is ts.ArrowFunction | ts.FunctionExpression =>
+        ts.isArrowFunction(a) || ts.isFunctionExpression(a),
+    )
+    const impl = fnArgs[fnArgs.length - 1]
+    return impl?.body && ts.isBlock(impl.body) ? impl.body : undefined
   }
 
   const visit = (node: ts.Node) => {
@@ -1193,20 +1197,26 @@ function functionBodyNode(sf: ts.SourceFile, fnName: string): ts.Block {
   return found!
 }
 
-/** 找 `if (INTERNAL_SAME_NODE_DOC_TYPES.has(input.docType)) { … }` 这个语句节点 */
+/**
+ * 在函数体的**顶层语句序列**里找目标节点，不递归进嵌套函数、也不钻进别的语句内部。
+ *
+ * ⚠️ 无边界递归会被**不可达诱饵**骗过（codex 第 3 轮实测）：
+ *     if (false) { if (INTERNAL_SAME_NODE_DOC_TYPES.has(input.docType)) { …完整 guard… } }
+ * 真正的分支即便被整个删除，这段永不执行的代码仍能让断言全绿 —— 静默放行。
+ * 目标结构本来就是函数体的直接语句，限定在顶层既更准确也堵掉了诱饵的落脚点。
+ */
+function topLevelStatements(body: ts.Block): ts.Statement[] {
+  return Array.from(body.statements)
+}
+
+/** 找顶层的 `if (INTERNAL_SAME_NODE_DOC_TYPES.has(input.docType)) { … }` */
 function sameNodeIfStatement(body: ts.Block): ts.IfStatement {
-  let hit: ts.IfStatement | undefined
-  const visit = (n: ts.Node) => {
-    if (hit) return
-    if (ts.isIfStatement(n) && n.expression.getText().replace(/\s+/g, '')
-        === 'INTERNAL_SAME_NODE_DOC_TYPES.has(input.docType)') {
-      hit = n
-      return
-    }
-    ts.forEachChild(n, visit)
-  }
-  visit(body)
-  expect(hit, '未找到 INTERNAL_SAME_NODE 分支').toBeTruthy()
+  const hit = topLevelStatements(body).find(
+    (st): st is ts.IfStatement => ts.isIfStatement(st)
+      && st.expression.getText().replace(/\s+/g, '')
+        === 'INTERNAL_SAME_NODE_DOC_TYPES.has(input.docType)',
+  )
+  expect(hit, '未在函数体顶层找到 INTERNAL_SAME_NODE 分支').toBeTruthy()
   return hit!
 }
 
@@ -1268,6 +1278,9 @@ function ownershipAssignmentsBefore(body: ts.Block, beforePos: number): string[]
 
   const visit = (n: ts.Node) => {
     if (n.getStart() >= beforePos) return
+    // 不进入嵌套函数体：未被调用的回调里的赋值不该算（codex P3 的误红）。
+    // 已知上限：guard 之前的 IIFE 或前置调用里的赋值会漏 —— 那种写法本身就该在评审里被拦。
+    if (ts.isArrowFunction(n) || ts.isFunctionExpression(n) || ts.isFunctionDeclaration(n)) return
     if (ts.isBinaryExpression(n)
         && n.operatorToken.kind >= ts.SyntaxKind.FirstAssignment
         && n.operatorToken.kind <= ts.SyntaxKind.LastAssignment) {
@@ -1374,14 +1387,12 @@ describe('assertGenericDocLocationRules 的 case 与通用类型白名单一一�
   it('不含任何 SPECIALIZED 类型的 case，且覆盖全部通用类型', () => {
     const sf = parseFile(ENGINE_TS)
     const body = functionBodyNode(sf, 'assertGenericDocLocationRules')
-    let switchStmt: ts.SwitchStatement | undefined
-    const visit = (n: ts.Node) => {
-      if (switchStmt) return
-      if (ts.isSwitchStatement(n) && n.expression.getText() === 'input.docType') switchStmt = n
-      else ts.forEachChild(n, visit)
-    }
-    ts.forEachChild(body, visit)
-    expect(switchStmt, '未找到 switch (input.docType)').toBeTruthy()
+    // 顶层语句序列里找，不递归 —— 否则 `if (false) { switch … }` 这种诱饵能骗过（codex 第 3 轮）
+    const switchStmt = topLevelStatements(body).find(
+      (st): st is ts.SwitchStatement =>
+        ts.isSwitchStatement(st) && st.expression.getText() === 'input.docType',
+    )
+    expect(switchStmt, '未在函数体顶层找到 switch (input.docType)').toBeTruthy()
 
     // 只取活的 CaseClause —— 注释掉的 case 不在 AST 里
     const cases = switchStmt!.caseBlock.clauses
@@ -1414,21 +1425,22 @@ describe('assertGenericDocLocationRules 的 case 与通用类型白名单一一�
     const sf = parseFile(ENGINE_TS)
     const body = functionBodyNode(sf, 'createInventoryCoreDoc')
 
-    let rejectIf: ts.IfStatement | undefined
+    // 拒绝分支必须是**顶层**语句（`if (false) { … }` 之类的不可达诱饵不算）
+    const rejectIf = topLevelStatements(body).find(
+      (st): st is ts.IfStatement => ts.isIfStatement(st)
+        && st.expression.getText().replace(/\s+/g, '') === 'SPECIALIZED_DOC_TYPES.has(input.docType)',
+    )
+    // 调用位置则要找**任意深度**的最早一次 —— 藏得再深也得排在拒绝之后
     let callPos = Infinity
-    const visit = (n: ts.Node) => {
-      if (ts.isIfStatement(n) && n.expression.getText().replace(/\s+/g, '')
-          === 'SPECIALIZED_DOC_TYPES.has(input.docType)' && !rejectIf) {
-        rejectIf = n
-      }
+    const scanCalls = (n: ts.Node) => {
       if (ts.isCallExpression(n) && n.expression.getText() === 'assertGenericDocLocationRules') {
         callPos = Math.min(callPos, n.getStart())
       }
-      ts.forEachChild(n, visit)
+      ts.forEachChild(n, scanCalls)
     }
-    ts.forEachChild(body, visit)
+    ts.forEachChild(body, scanCalls)
 
-    expect(rejectIf, 'createInventoryCoreDoc 不再拒绝 SPECIALIZED 类型').toBeTruthy()
+    expect(rejectIf, 'createInventoryCoreDoc 顶层不再无条件拒绝 SPECIALIZED 类型').toBeTruthy()
     expect(callPos, '未找到 assertGenericDocLocationRules 调用').toBeLessThan(Infinity)
 
     // ① then 的**直接**子语句里必须有 throw（`if (flag) throw` 这种条件 throw 不算）
