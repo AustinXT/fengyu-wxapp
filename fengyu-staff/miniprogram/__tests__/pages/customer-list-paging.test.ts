@@ -240,7 +240,7 @@ describe('#181 onShow 与触底', () => {
     expect(searchCalls).toHaveLength(1)
   })
 
-  test('onReachBottom：标签分支走 listByTag，其余走 loadList，loading/hasMore 任一不满足即不发请求', async () => {
+  test('onReachBottom：非标签分支走 loadList；loading/hasMore 任一不满足即不发请求', async () => {
     const page = createPage('customerList')
     page.data.page = 2
     page.data.hasMore = true
@@ -260,6 +260,86 @@ describe('#181 onShow 与触底', () => {
     vi.clearAllMocks()
     page.data.hasMore = true
     page.data.loading = true
+    page.onReachBottom()
+    expect(callStaffApi).not.toHaveBeenCalled()
+  })
+
+  test('onReachBottom：标签分支走 listByTag 且带上下一页页码', async () => {
+    const page = createPage('customerList')
+    page.data.activeTag = 'active'
+    page.data.page = 2
+    page.data.hasMore = true
+    page.data.loading = false
+
+    vi.mocked(callStaffApi).mockResolvedValueOnce({ customers: [customerRow('t3')], total: 99 } as never)
+    page.onReachBottom()
+    await Promise.resolve()
+
+    expect(vi.mocked(callStaffApi).mock.calls[0][0]).toBe('customer.listByTag')
+    expect(vi.mocked(callStaffApi).mock.calls[0][1]).toMatchObject({ tag: 'active', page: 3, pageSize: 20 })
+  })
+})
+
+/**
+ * 五条会切换查询条件的入口（都调 reset 请求）。
+ * 它们与 loadList/loadByTag 共用同一套 page/hasMore，任何一条忘了归位，
+ * 下一次触底就会拿新条件去请求旧分支的页码。
+ */
+describe('#181 查询条件切换时的分页归位', () => {
+  function primeSecondPage(page: Record<string, any>) {
+    // 把页面置成「默认列表已加载到第 2 页」
+    page.data.results = [customerRow('u1'), customerRow('u2')]
+    page.data.page = 2
+    page.data.hasMore = true
+  }
+
+  test.each([
+    ['onStatTap（统计卡片）', (p: Record<string, any>) => p.onStatTap({ currentTarget: { dataset: { tag: 'active' } } }), 'customer.listByTag'],
+    ['onSearch（关键词）', (p: Record<string, any>) => { p.data.searchKeyword = '张'; return p.onSearch() }, 'customer.search'],
+    ['onSearchChange（清空关键词）', (p: Record<string, any>) => p.onSearchChange({ detail: '' }), 'customer.search'],
+    ['onAdvancedFilterTap（拓展筛选）', (p: Record<string, any>) => p.onAdvancedFilterTap({ currentTarget: { dataset: { dim: 'spendingTier', value: '10W+' } } }), 'customer.search'],
+    ['onResetFilters（重置）', (p: Record<string, any>) => p.onResetFilters(), 'customer.search'],
+  ])('%s 成功时请求第 1 页且分页状态归位', async (_name, act, expectedAction) => {
+    const page = createPage('customerList')
+    primeSecondPage(page)
+    vi.mocked(callStaffApi).mockResolvedValue(
+      (expectedAction === 'customer.listByTag'
+        ? { customers: [customerRow('n1')], total: 1 }
+        : pageEnvelope(['n1'], 1, false)) as never,
+    )
+
+    await act(page)
+
+    const call = vi.mocked(callStaffApi).mock.calls.find(([action]) => action === expectedAction)
+    expect(call, `${_name} 应发起 ${expectedAction}`).toBeTruthy()
+    expect(call![1]).toMatchObject({ page: 1 })
+    expect(page.data.page).toBe(1)
+    expect(page.data.results.map((r: any) => r.clientUserId)).toEqual(['n1'])
+  })
+
+  /**
+   * codex 谱系命中的 P1：reset 请求失败后，查询条件已经切成新的，屏幕上留的却是旧数据。
+   * 若此时保留旧 page/hasMore，下一次触底会用**新条件**请求 page+1 ——
+   * 既跳过新条件的第 1 页，又把两种条件的数据混进同一个列表。
+   */
+  test.each([
+    ['切到标签筛选失败', (p: Record<string, any>) => p.onStatTap({ currentTarget: { dataset: { tag: 'active' } } })],
+    ['切到关键词搜索失败', (p: Record<string, any>) => { p.data.searchKeyword = '张'; return p.onSearch() }],
+    ['切到拓展筛选失败', (p: Record<string, any>) => p.onAdvancedFilterTap({ currentTarget: { dataset: { dim: 'spendingTier', value: '10W+' } } })],
+  ])('%s 后必须掐断触底（page=1 / hasMore=false）', async (_name, act) => {
+    const page = createPage('customerList')
+    primeSecondPage(page)
+    vi.mocked(callStaffApi).mockRejectedValue(new Error('网络异常'))
+
+    await act(page)
+
+    expect(page.data.page).toBe(1)
+    expect(page.data.hasMore).toBe(false)
+    expect(page.data.results).toHaveLength(2) // 旧数据保留供展示
+    expect(toastCalls.map((t) => t.title)).toContain('网络异常')
+
+    // 再触底不得发请求（hasMore 已为 false）
+    vi.clearAllMocks()
     page.onReachBottom()
     expect(callStaffApi).not.toHaveBeenCalled()
   })

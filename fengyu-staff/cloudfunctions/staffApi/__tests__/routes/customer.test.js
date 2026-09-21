@@ -272,6 +272,21 @@ describe('customer.search', () => {
     expect(Number.isInteger(params[2])).toBe(true)
   })
 
+  test('#181 非安全整数页码回落默认：Infinity / 超大值不得进 OFFSET', async () => {
+    // 'Infinity' 经 Math.trunc 仍是 Infinity，Math.max(1, Infinity) 也还是 Infinity，
+    // 直接进 OFFSET 会让 PG 报错 —— 必须被 Number.isSafeInteger 挡回默认值。
+    const ctxInf = createManagerCtx({ page: 'Infinity', pageSize: 'Infinity' })
+    pg.query.mockResolvedValueOnce([])
+    await customerRoutes.search(ctxInf)
+    expect(pg.query.mock.calls[0][1]).toEqual(['store-001', 20, 0])
+
+    const ctxHuge = createManagerCtx({ page: 1e21, pageSize: 20 })
+    pg.query.mockResolvedValueOnce([])
+    await customerRoutes.search(ctxHuge)
+    // 1e21 超出安全整数范围 → 回落第 1 页
+    expect(pg.query.mock.calls[1][1]).toEqual(['store-001', 20, 0])
+  })
+
   test('#181 phone 分支不分页：传 page 也返回信封但 hasMore 恒 false、SQL 无 LIMIT', async () => {
     const ctx = createManagerCtx({ phone: '13800001111', page: 1, pageSize: 1 })
     pg.query
@@ -1524,6 +1539,12 @@ describe('customer.listByTag', () => {
     expect(ctx.result.total).toBe(2)
     expect(ctx.result.customers).toHaveLength(1)
     expect(ctx.result.customers[0].name).toBe('客B')
+    /**
+     * #181：`filtered.slice()` 是内存分页，行序完全由 SQL 决定。上面的 mock 天然有序，
+     * 所以只断言切片结果的话，把 ORDER BY 删掉这个用例照样绿 —— 必须直接锁 SQL 契约，
+     * 否则「翻页不重复不漏行」这条验收标准没有任何测试守护。
+     */
+    expect(pg.query.mock.calls[0][0]).toContain('ORDER BY c.user_id ASC')
   })
 
   test('缺少 tag 参数时拒绝', async () => {

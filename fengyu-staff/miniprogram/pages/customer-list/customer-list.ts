@@ -254,15 +254,25 @@ Page({
     } catch (err: unknown) {
       if (gen !== this.data.reqGen) return;
       // 始终提示（合并前 onSearch 失败是有 toast 的，不能因为合并而丢掉反馈）；
-      // 只有在本来就没数据时才清空 —— 一次失败的刷新不该抹掉已在屏的好数据
+      // 列表内容保留 —— 一次失败的刷新不该抹掉已在屏的好数据
       const msg = err instanceof Error ? err.message : '加载失败';
       wx.showToast({ title: msg, icon: 'none' });
-      if (reset && this.data.results.length === 0) {
-        this.setData({ results: [], page: 1, hasMore: false });
-      }
+      if (reset) this.resetPagingAfterFailedReset();
     } finally {
       if (gen === this.data.reqGen) this.setData({ loading: false });
     }
+  },
+
+  /**
+   * reset 请求失败后掐断触底（#181）。
+   *
+   * 调用方在发起 reset 请求前**已经**把查询条件切成新的（activeTag / searchKeyword /
+   * 筛选项），失败时屏幕上留着的却是旧条件的数据。此时若保留旧的 `page`/`hasMore`，
+   * 下一次触底会拿**新条件**去请求 `page+1` —— 既跳过了新条件的第 1 页，又把两种
+   * 条件的数据混在同一个列表里。所以失败后必须把分页状态压到「只有这一屏、没有更多」。
+   */
+  resetPagingAfterFailedReset() {
+    this.setData({ page: 1, hasMore: false });
   },
 
   onSearchChange(e: WechatMiniprogram.CustomEvent) {
@@ -348,6 +358,7 @@ Page({
       if (gen !== this.data.reqGen) return;
       const msg = err instanceof Error ? err.message : '加载失败';
       wx.showToast({ title: msg, icon: 'none' });
+      if (reset) this.resetPagingAfterFailedReset();
     } finally {
       if (gen === this.data.reqGen) this.setData({ loading: false });
     }

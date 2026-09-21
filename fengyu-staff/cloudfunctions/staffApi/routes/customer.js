@@ -221,10 +221,21 @@ async function search(ctx) {
   // 不传 page 时 safePage=1 / safePageSize=20 / offset=0，等价于改造前的 `LIMIT 20`。
   // `page: null` 视同未传（走裸数组分支）。
   const wantsPaged = page !== undefined && page !== null;
-  // Math.trunc 不可省：Math.max/min 不取整，pageSize=2.5 会原样进 LIMIT，
-  // PG 按 int8 解析参数直接抛 `invalid input syntax for type bigint: "2.5"`（500 而非优雅降级）。
-  const safePage = Math.max(1, Math.trunc(Number(page)) || 1);
-  const safePageSize = Math.min(100, Math.max(1, Math.trunc(Number(pageSize)) || 20));
+  /**
+   * 两道防线都不可省：
+   * ① Math.trunc —— Math.max/min 不取整，`pageSize=2.5` 会原样进 LIMIT，
+   *    PG 按 int8 解析参数直接抛 `invalid input syntax for type bigint: "2.5"`（500 级，非降级）。
+   * ② Number.isSafeInteger —— `page='Infinity'` 经 trunc 仍是 Infinity，
+   *    `Math.max(1, Infinity)` 还是 Infinity，OFFSET 会变成 Infinity 同样打到 PG 报错。
+   *    非安全整数一律回落默认值。
+   */
+  const pageNum = Math.trunc(Number(page));
+  const safePage = Number.isSafeInteger(pageNum) && pageNum >= 1 ? pageNum : 1;
+  const pageSizeNum = Math.trunc(Number(pageSize));
+  // 非法值（0 / 负数 / NaN / Infinity）一律回落默认 20，语义与 mgmt-customer 的 `|| 50` 一致
+  const safePageSize = Number.isSafeInteger(pageSizeNum) && pageSizeNum >= 1
+    ? Math.min(100, pageSizeNum)
+    : 20;
   const offset = (safePage - 1) * safePageSize;
   let rows = [];
 
