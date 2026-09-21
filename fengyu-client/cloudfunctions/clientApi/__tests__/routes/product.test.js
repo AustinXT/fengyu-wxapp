@@ -123,7 +123,8 @@ describe('product.spuList', () => {
     expect(productSql).toContain('p.market_scope IS NULL')
     expect(productSql).toContain("sk.market_scope IS NULL OR btrim(sk.market_scope) <> ''")
     expect(productSql).not.toContain('FROM stores s')
-    expect(productParams).toEqual(['cat-1'])
+    // 末位 21 = issue #248 的 pageSize(20) + 1 探测行
+    expect(productParams).toEqual(['cat-1', 21])
 
     const [skuSql, skuParams] = pg.query.mock.calls[1]
     expect(skuSql).toContain("sk.market_scope IS NULL OR btrim(sk.market_scope) <> ''")
@@ -150,7 +151,7 @@ describe('product.spuList', () => {
     expect(productSql).toContain('sk.market_scope')
     expect(productSql).toContain('FROM stores s')
     expect(productSql).toContain('pm.id = ANY')
-    expect(productParams).toEqual([['store-nanchang'], 'cat-1', ['store-nanchang']])
+    expect(productParams).toEqual([['store-nanchang'], 'cat-1', ['store-nanchang'], 21])
 
     const [skuSql, skuParams] = pg.query.mock.calls[1]
     expect(skuSql).toContain('sk.market_scope')
@@ -186,7 +187,193 @@ describe('product.search', () => {
     const [productSql, productParams] = pg.query.mock.calls[0]
     expect(productSql).toContain('p.market_scope IS NULL')
     expect(productSql).toContain("sk.market_scope IS NULL OR btrim(sk.market_scope) <> ''")
-    expect(productParams).toEqual(['%全市场%'])
+    expect(productParams).toEqual(['%全市场%', 21])
+  })
+})
+
+// ===== issue #248：商品列表硬分页（keyset 复合游标） =====
+describe('product 列表分页', () => {
+  const DEFAULT_PAGE_SIZE = 20
+  const MAX_PAGE_SIZE = 50
+
+  const decodeCursor = (c) => JSON.parse(Buffer.from(c, 'base64').toString('utf8'))
+
+  /** 造 n 行商品；sortOrder 可传函数，用于构造 sort_order 重复的场景 */
+  function makeProductRows(n, sortOrder = (i) => i + 1) {
+    return Array.from({ length: n }, (_, i) => ({
+      product_id: `p${i + 1}`,
+      name: `商品${i + 1}`,
+      category_id: 'cat-1',
+      category_name: '护理',
+      cover_image: '',
+      description: '',
+      sort_order: typeof sortOrder === 'function' ? sortOrder(i) : sortOrder,
+      price: 100,
+      special_price: 80,
+      is_bundle: false,
+    }))
+  }
+
+  test('默认分页：SQL 带 LIMIT + 复合排序键，末位参数为 pageSize+1 探测行', async () => {
+    pg.query.mockResolvedValueOnce(makeProductRows(3))
+    pg.query.mockResolvedValueOnce([])
+
+    const ctx = createBoundCtx({ categoryId: 'cat-1' })
+    await routes.spuList(ctx)
+
+    const [sql, params] = pg.query.mock.calls[0]
+    expect(sql).toContain('ORDER BY p.sort_order ASC, p.product_id ASC')
+    expect(sql).toMatch(/LIMIT \$\d+/)
+    expect(params[params.length - 1]).toBe(DEFAULT_PAGE_SIZE + 1)
+  })
+
+  test('不足一页：hasMore=false、nextCursor=null', async () => {
+    pg.query.mockResolvedValueOnce(makeProductRows(3))
+    pg.query.mockResolvedValueOnce([])
+
+    const ctx = createBoundCtx({ categoryId: 'cat-1' })
+    await routes.spuList(ctx)
+
+    expect(ctx.result.spuList).toHaveLength(3)
+    expect(ctx.result.hasMore).toBe(false)
+    expect(ctx.result.nextCursor).toBeNull()
+  })
+
+  test('探测行命中：截回 pageSize 条、hasMore=true、游标取本页最后一行（不是探测行）', async () => {
+    // 造 21 行 = pageSize + 1，第 21 行是探测行，不应下发也不应成为游标
+    pg.query.mockResolvedValueOnce(makeProductRows(DEFAULT_PAGE_SIZE + 1))
+    pg.query.mockResolvedValueOnce([])
+
+    const ctx = createBoundCtx({ categoryId: 'cat-1' })
+    await routes.spuList(ctx)
+
+    expect(ctx.result.spuList).toHaveLength(DEFAULT_PAGE_SIZE)
+    expect(ctx.result.spuList[DEFAULT_PAGE_SIZE - 1].product_id).toBe('p20')
+    expect(ctx.result.hasMore).toBe(true)
+    expect(decodeCursor(ctx.result.nextCursor)).toEqual([20, 'p20'])
+
+    // SKU 批量查询只应带本页 20 个 id，不含被截掉的探测行
+    const [, skuParams] = pg.query.mock.calls[1]
+    expect(skuParams[0]).toHaveLength(DEFAULT_PAGE_SIZE)
+    expect(skuParams[0]).not.toContain('p21')
+  })
+
+  test('sort_order 重复时游标仍全序（复合键带 product_id 兜底）', async () => {
+    // 21 行全部 sort_order=7，单列游标会在这里漏行/重行
+    pg.query.mockResolvedValueOnce(makeProductRows(DEFAULT_PAGE_SIZE + 1, 7))
+    pg.query.mockResolvedValueOnce([])
+
+    const ctx = createBoundCtx({ categoryId: 'cat-1' })
+    await routes.spuList(ctx)
+
+    expect(decodeCursor(ctx.result.nextCursor)).toEqual([7, 'p20'])
+  })
+
+  test('传 cursor：SQL 用行值比较，参数显式转型', async () => {
+    pg.query.mockResolvedValueOnce([])
+    const cursor = Buffer.from(JSON.stringify([7, 'p20']), 'utf8').toString('base64')
+
+    const ctx = createBoundCtx({ categoryId: 'cat-1', cursor })
+    await routes.spuList(ctx)
+
+    const [sql, params] = pg.query.mock.calls[0]
+    expect(sql).toContain('(p.sort_order, p.product_id) >')
+    expect(sql).toMatch(/\$\d+::int, \$\d+::text/)
+    expect(params).toContain(7)
+    expect(params).toContain('p20')
+  })
+
+  test('limit 超过上限被夹到 MAX_PAGE_SIZE', async () => {
+    pg.query.mockResolvedValueOnce([])
+
+    const ctx = createBoundCtx({ categoryId: 'cat-1', limit: 9999 })
+    await routes.spuList(ctx)
+
+    const [, params] = pg.query.mock.calls[0]
+    expect(params[params.length - 1]).toBe(MAX_PAGE_SIZE + 1)
+  })
+
+  test.each([0, -1, 1.5, 'abc', {}])('非法 limit(%p) 抛 INVALID_PARAMS 且不打库', async (limit) => {
+    const ctx = createBoundCtx({ categoryId: 'cat-1', limit })
+    await expect(routes.spuList(ctx)).rejects.toThrow(/^INVALID_PARAMS:/)
+    expect(pg.query).not.toHaveBeenCalled()
+  })
+
+  test.each([
+    ['空串', ''],
+    ['数字', 123],
+    ['非 base64 乱码', '!!!!'],
+    ['base64 里不是数组', Buffer.from(JSON.stringify({ a: 1 }), 'utf8').toString('base64')],
+    ['数组长度不对', Buffer.from(JSON.stringify([1]), 'utf8').toString('base64')],
+    ['sort_order 非整数', Buffer.from(JSON.stringify(['x', 'p1']), 'utf8').toString('base64')],
+    ['product_id 非字符串', Buffer.from(JSON.stringify([1, 2]), 'utf8').toString('base64')],
+  ])('畸形 cursor(%s) 抛 INVALID_PARAMS 且不打库', async (_label, cursor) => {
+    const ctx = createBoundCtx({ categoryId: 'cat-1', cursor })
+    await expect(routes.spuList(ctx)).rejects.toThrow(/^INVALID_PARAMS:/)
+    expect(pg.query).not.toHaveBeenCalled()
+  })
+
+  test('缺省 cursor 才是首页：不传 / 传 null 都走无游标分支', async () => {
+    pg.query.mockResolvedValueOnce([])
+    const ctx = createBoundCtx({ categoryId: 'cat-1', cursor: null })
+    await routes.spuList(ctx)
+
+    expect(pg.query.mock.calls[0][0]).not.toContain('(p.sort_order, p.product_id) >')
+  })
+
+  test('search 同样支持 limit / cursor', async () => {
+    pg.query.mockResolvedValueOnce(makeProductRows(DEFAULT_PAGE_SIZE + 1))
+    pg.query.mockResolvedValueOnce([])
+
+    const ctx = createBoundCtx({ keyword: '护理', limit: 5 })
+    await routes.search(ctx)
+
+    // limit=5 时探测行参数应为 6；mock 返回 21 行是刻意的，验证「按声明的 pageSize 截断」
+    expect(pg.query.mock.calls[0][1]).toContain(6)
+    expect(ctx.result.spuList).toHaveLength(5)
+    expect(ctx.result.hasMore).toBe(true)
+    expect(decodeCursor(ctx.result.nextCursor)).toEqual([5, 'p5'])
+  })
+
+  test('search 空 keyword 返回完整分页壳', async () => {
+    const ctx = createBoundCtx({ keyword: '   ' })
+    await routes.search(ctx)
+
+    expect(ctx.result).toEqual({ spuList: [], nextCursor: null, hasMore: false })
+    expect(pg.query).not.toHaveBeenCalled()
+  })
+
+  test('shopInit 下发 spuCategoryId + 分页字段', async () => {
+    pg.query
+      .mockResolvedValueOnce([{ category_id: 'g-1', category_name: '护理', sort_order: 1 }])
+      .mockResolvedValueOnce([
+        // 故意让 categories[0] 与「第一个 group 下的首个二级分类」不是同一个，
+        // 验证 spuCategoryId 取的是后者（前端据此挂游标）
+        { category_id: 'cat-other', category_name: '其它', category_group: '未分组', category_order: 0 },
+        { category_id: 'cat-1', category_name: '面部', category_group: '护理', category_order: 1 },
+      ])
+      .mockResolvedValueOnce(makeProductRows(DEFAULT_PAGE_SIZE + 1))
+      .mockResolvedValueOnce([])
+
+    const ctx = createBoundCtx()
+    await routes.shopInit(ctx)
+
+    expect(ctx.result.spuCategoryId).toBe('cat-1')
+    expect(ctx.result.spuList).toHaveLength(DEFAULT_PAGE_SIZE)
+    expect(ctx.result.hasMore).toBe(true)
+    expect(decodeCursor(ctx.result.nextCursor)).toEqual([20, 'p20'])
+  })
+
+  test('shopInit 无分类时分页字段为空壳', async () => {
+    pg.query.mockResolvedValueOnce([]).mockResolvedValueOnce([])
+
+    const ctx = createBoundCtx()
+    await routes.shopInit(ctx)
+
+    expect(ctx.result.spuList).toEqual([])
+    expect(ctx.result.spuCategoryId).toBeNull()
+    expect(ctx.result.nextCursor).toBeNull()
+    expect(ctx.result.hasMore).toBe(false)
   })
 })
 

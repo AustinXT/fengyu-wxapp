@@ -194,9 +194,73 @@ async function categories(ctx) {
 }
 
 /**
- * 内部函数：按分类获取商城商品列表（含 SKU）
+ * issue #248：商品列表硬分页。
+ *
+ * 默认 20：实测生产（dev 为 prod 副本）最大分类 10 个商品、最坏单字关键词搜索命中 15 个，
+ * 因此未发版的老前端（不传 limit/cursor）当前零截断；未来商品数增长时被截在 20 条，
+ * 是刻意的页面级解码量硬上限，优于改造前的无界返回。
+ * 上限 50：防客户端传 limit=9999 绕过硬上限。
  */
-async function getProductListByCategory({ categoryId, auth, keyword }) {
+const PRODUCT_PAGE_SIZE_DEFAULT = 20
+const PRODUCT_PAGE_SIZE_MAX = 50
+
+function normalizeProductPageSize(raw) {
+  if (raw === undefined || raw === null) return PRODUCT_PAGE_SIZE_DEFAULT
+  const n = Number(raw)
+  if (!Number.isInteger(n) || n <= 0) {
+    throw new Error('INVALID_PARAMS: limit 必须是正整数')
+  }
+  return Math.min(n, PRODUCT_PAGE_SIZE_MAX)
+}
+
+/**
+ * 复合游标 (sort_order, product_id)。
+ *
+ * products.sort_order 可重复（integer NOT NULL DEFAULT 0），单列游标会漏行/重行，
+ * 故与主键 product_id 组成复合键，配合行值比较保证全序。
+ * 对外是不透明 base64 串，前端只需原样回传。
+ */
+function encodeProductCursor(row) {
+  return Buffer.from(
+    JSON.stringify([Number(row.sort_order), String(row.product_id)]),
+    'utf8'
+  ).toString('base64')
+}
+
+function decodeProductCursor(raw) {
+  // 只有缺省才是「首页」；空串 / 0 / 对象一律视为畸形游标，别让它先白打一次库
+  if (raw === undefined || raw === null) return null
+  if (typeof raw !== 'string' || raw === '') {
+    throw new Error('INVALID_PARAMS: cursor 不合法')
+  }
+  let parsed
+  try {
+    // Buffer.from(x, 'base64') 对非法字符是静默忽略而非抛错，真正的守门人是 JSON.parse
+    parsed = JSON.parse(Buffer.from(raw, 'base64').toString('utf8'))
+  } catch (e) {
+    throw new Error('INVALID_PARAMS: cursor 不合法')
+  }
+  if (!Array.isArray(parsed) || parsed.length !== 2) {
+    throw new Error('INVALID_PARAMS: cursor 不合法')
+  }
+  const [sortOrder, productId] = parsed
+  if (!Number.isInteger(sortOrder) || typeof productId !== 'string' || productId === '') {
+    throw new Error('INVALID_PARAMS: cursor 不合法')
+  }
+  return { sortOrder, productId }
+}
+
+/**
+ * 内部函数：按分类获取商城商品列表（含 SKU）
+ *
+ * issue #248：返回 { items, nextCursor, hasMore }（原先直接返回数组）。
+ * 三个入口 spuList / search / shopInit 共用，一处改写覆盖三者。
+ */
+async function getProductListByCategory({ categoryId, auth, keyword, limit, cursor }) {
+  // 入参校验先于任何查询
+  const pageSize = normalizeProductPageSize(limit)
+  const decodedCursor = decodeProductCursor(cursor)
+
   const params = []
   const productMarketScopeFilter = buildMarketScopeFilter(auth, params, 'p')
   let whereClause = `WHERE ${PRODUCT_VALID_FILTER} ${productMarketScopeFilter}`
@@ -212,6 +276,14 @@ async function getProductListByCategory({ categoryId, auth, keyword }) {
     whereClause += ` AND p.name ILIKE $${params.length}`
   }
 
+  // issue #248 keyset 翻页：行值比较取「排在游标之后」的行。
+  // sort_order / product_id 两列都是 NOT NULL，不存在 NULL 传播导致静默丢行。
+  // 参数按 text 下发，须显式转型，否则行值比较的类型推断会失败。
+  if (decodedCursor) {
+    params.push(decodedCursor.sortOrder, decodedCursor.productId)
+    whereClause += ` AND (p.sort_order, p.product_id) > ($${params.length - 1}::int, $${params.length}::text)`
+  }
+
   // 仅返回有有效 SKU 的商品
   const existsSkuMarketScopeFilter = buildCatalogSkuMarketScopeFilter(auth, params, 'sk')
   whereClause += ` AND EXISTS (
@@ -222,7 +294,9 @@ async function getProductListByCategory({ categoryId, auth, keyword }) {
       ${existsSkuMarketScopeFilter}
   )`
 
-  const productRows = await pg.query(`
+  // 多取一行作探测行，用于判定 hasMore（不额外打一次 count 查询）
+  params.push(pageSize + 1)
+  const probedRows = await pg.query(`
     SELECT
       p.product_id, p.name, p.category_id,
       mc.category_name,
@@ -231,8 +305,13 @@ async function getProductListByCategory({ categoryId, auth, keyword }) {
     FROM products p
     JOIN mall_categories mc ON p.category_id = mc.category_id
     ${whereClause}
-    ORDER BY p.sort_order ASC
+    ORDER BY p.sort_order ASC, p.product_id ASC
+    LIMIT $${params.length}
   `, params)
+
+  const hasMore = probedRows.length > pageSize
+  const productRows = hasMore ? probedRows.slice(0, pageSize) : probedRows
+  const nextCursor = hasMore ? encodeProductCursor(productRows[productRows.length - 1]) : null
 
   // 批量查询所有商品的 SKU（通过 mall_product_skus 关联）
   // PR-D：附带 product_kind + kind_display_color（一级行 display_color），
@@ -271,7 +350,7 @@ async function getProductListByCategory({ categoryId, auth, keyword }) {
     skuByProduct[sku.product_id].push(sku)
   }
 
-  return productRows.map(product => {
+  const items = productRows.map(product => {
     const skus = skuByProduct[product.product_id] || []
     const { priceFrom, listPriceFrom } = computeListPriceFrom(product, skus)
     return {
@@ -284,15 +363,19 @@ async function getProductListByCategory({ categoryId, auth, keyword }) {
       listPriceFrom
     }
   })
+
+  return { items, nextCursor, hasMore }
 }
 
 /**
  * 商品列表
+ *
+ * issue #248：支持 keyset 分页（limit / cursor），返回 nextCursor / hasMore。
  */
 async function spuList(ctx) {
-  const { categoryId } = ctx.event.payload || {}
-  const result = await getProductListByCategory({ categoryId, auth: ctx.auth })
-  ctx.result = { spuList: result }
+  const { categoryId, limit, cursor } = ctx.event.payload || {}
+  const page = await getProductListByCategory({ categoryId, auth: ctx.auth, limit, cursor })
+  ctx.result = { spuList: page.items, nextCursor: page.nextCursor, hasMore: page.hasMore }
 }
 
 /**
@@ -301,40 +384,53 @@ async function spuList(ctx) {
  * 让顾客能搜到任何可见商品（含未浏览过分类的商品）。
  */
 async function search(ctx) {
-  const kw = (ctx.event.payload?.keyword || '').trim()
+  const { keyword, limit, cursor } = ctx.event.payload || {}
+  const kw = (keyword || '').trim()
   if (!kw) {
-    ctx.result = { spuList: [] }
+    ctx.result = { spuList: [], nextCursor: null, hasMore: false }
     return
   }
-  const result = await getProductListByCategory({ auth: ctx.auth, keyword: kw })
-  ctx.result = { spuList: result }
+  const page = await getProductListByCategory({ auth: ctx.auth, keyword: kw, limit, cursor })
+  ctx.result = { spuList: page.items, nextCursor: page.nextCursor, hasMore: page.hasMore }
 }
 
 /**
  * Shop 页初始化接口（合并 categories + 第一个分类的商品列表）
+ *
+ * issue #248：额外下发 spuCategoryId —— 本批商品归属哪个分类由后端说了算。
+ * 改造前 shop.ts 把这批商品缓存到 `categories[0].category_id`，而这里取的是
+ * 「第一个 group 下的第一个二级分类」，两者不必然相同；分页后游标必须与分类严格
+ * 对应（否则「加载更多」会翻错分类的下一页），故由后端下发权威值。
  */
 async function shopInit(ctx) {
+  const { limit } = ctx.event.payload || {}
   const [groups, categoriesList] = await Promise.all([
     getCategoryGroups(ctx.auth),
     getCategoriesList(ctx.auth),
   ])
 
   // 找第一个 group 下的第一个二级分类，加载其商品
-  let firstSpuList = []
+  let firstCategoryId = null
   if (groups.length > 0 && categoriesList.length > 0) {
     const firstChild = categoriesList.find(c => c.category_group === groups[0].category_name)
-    if (firstChild) {
-      firstSpuList = await getProductListByCategory({ categoryId: firstChild.category_id, auth: ctx.auth })
-    }
+    if (firstChild) firstCategoryId = firstChild.category_id
   } else if (categoriesList.length > 0) {
     // 降级：无分组时取第一个分类
-    firstSpuList = await getProductListByCategory({ categoryId: categoriesList[0].category_id, auth: ctx.auth })
+    firstCategoryId = categoriesList[0].category_id
+  }
+
+  let firstPage = { items: [], nextCursor: null, hasMore: false }
+  if (firstCategoryId) {
+    firstPage = await getProductListByCategory({ categoryId: firstCategoryId, auth: ctx.auth, limit })
   }
 
   ctx.result = {
     groups,
     categories: categoriesList,
-    spuList: firstSpuList
+    spuList: firstPage.items,
+    spuCategoryId: firstCategoryId,
+    nextCursor: firstPage.nextCursor,
+    hasMore: firstPage.hasMore
   }
 }
 
