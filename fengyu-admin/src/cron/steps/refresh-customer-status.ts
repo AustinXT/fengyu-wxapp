@@ -25,7 +25,7 @@
 
 import { sql } from 'drizzle-orm'
 import type { Db } from '../run'
-import { type CronContext, dateSqlOf } from '../lib/cron-context'
+import type { CronContext } from '../lib/cron-context'
 
 export const RESET_NON_MEMBER_STATUS_SQL = `
 UPDATE client_wechat_users
@@ -144,8 +144,7 @@ export async function refreshCustomerStatus(
   db: Db,
   ctx?: CronContext,
 ): Promise<CustomerStatusResult> {
-  // dateSqlOf 仅用于 stats 聚合处（无需），段 1/3 无时间引用，段 2 用 buildUpdateCustomerStatusSql
-  void dateSqlOf
+  // 段 1/3 无时间引用，段 2 的 CURRENT_DATE 由 buildUpdateCustomerStatusSql 注入
   const updateSql = buildUpdateCustomerStatusSql(ctx)
 
   const result = await db.transaction(async (tx) => {
