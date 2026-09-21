@@ -462,4 +462,24 @@ describe('createCoverWindow · 诊断', () => {
     expect(page.setDataCalls).toHaveLength(0)
     warn.mockRestore()
   })
+
+  // `Number('')` 和 `Number(null)` 都是 0，光判 isInteger 会把它们当成「第 0 行」
+  test.each([
+    ['空串', ''],
+    ['null', null],
+    ['非数字串', 'x'],
+    ['负数', '-1'],
+    ['越界', '99'],
+  ])('data-idx=%s 被拒绝且不写数据', (_label, idx) => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const page = makePage('spuList', 8)
+    createCoverWindow(page as any, OPTS).refresh()
+
+    ;(wx as any).__lastObserver().callback({ dataset: { idx }, intersectionRatio: 1 })
+    vi.advanceTimersByTime(FLUSH_DELAY_MS)
+
+    expect(page.setDataCalls).toHaveLength(0)
+    expect((page.data.spuList as any[])[0].coverVisible).toBe(false)
+    warn.mockRestore()
+  })
 })

@@ -123,8 +123,7 @@ Page({
       this.loadShopInit();
     } else {
       this.updateCartCount();
-      // onHide 里拆过接线，回来要重新接上
-      this._coverWindow?.refresh();
+      // 上面的 setVisible(true) 已经自动重建了接线，这里不必再 refresh 一次
     }
   },
 

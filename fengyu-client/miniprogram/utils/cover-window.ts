@@ -236,13 +236,19 @@ export function createCoverWindow(page: PageLike, options: CoverWindowOptions): 
           clearTimeout(fallbackTimer);
           fallbackTimer = null;
         }
-        const idx = Number((res as any).dataset?.idx);
-        if (!Number.isInteger(idx)) {
-          // wxml 漏写 / 写错 `data-idx` 会让整列永久停在占位图，而回调一直在到、
-          // fail-open 不会触发 —— 零日志的半瘫最难查，留一条线索
+        // wxml 漏写 / 写错 `data-idx` 会让整列永久停在占位图，而回调一直在到、
+        // fail-open 不会触发 —— 零日志的半瘫最难查，留一条线索。
+        // 注意 `Number('')` 是 0、`Number(null)` 也是 0，光判 isInteger 漏得掉；
+        // 负数与越界整数会一路走到 flush 才被静默丢弃，同样要在这里报出来。
+        const rawIdx = (res as any).dataset?.idx;
+        const idx = typeof rawIdx === 'string' && rawIdx !== '' ? Number(rawIdx) : NaN;
+        const listLength = getList()?.length ?? 0;
+        if (!Number.isInteger(idx) || idx < 0 || idx >= listLength) {
           if (!warnedBadIndex) {
             warnedBadIndex = true;
-            console.warn(`[cover-window] ${options.slotSelector} 缺少合法的 data-idx`);
+            console.warn(
+              `[cover-window] ${options.slotSelector} 的 data-idx 不合法: ${String(rawIdx)}`
+            );
           }
           return;
         }
