@@ -234,6 +234,142 @@ async function caseSearchEmptyKeyword() {
   if (list.length !== 0) throw new Error(`expect empty for blank keyword, got ${list.length}`)
 }
 
+// ─── issue #248：商品列表硬分页 ───────────────────────────
+//
+// 全部用例都限定 categoryId=TEST_MALL_CATEGORY_ID，与库里的真实商品隔离。
+// 注意 caseSpuListAll（不传 categoryId）之所以在默认 LIMIT 20 下稳定命中测试商品，
+// 是因为 fixture 的 sort_order=0 而真实商品 sort_order 都 ≥ 10001 —— 排序键决定的，
+// 不是运气，但也别再往那条用例上加依赖。
+
+/** 造 n 个测试商品，sort_order 故意重复，专打「单列游标会漏行」的场景 */
+async function createPagingProducts(sortOrders) {
+  const ids = []
+  for (let i = 0; i < sortOrders.length; i++) {
+    const productId = `${NS}_PG_P${String(i + 1).padStart(2, '0')}`
+    await createTestSku({
+      skuId: `${NS}_PG_SKU${String(i + 1).padStart(2, '0')}`,
+      productId,
+      productSortOrder: sortOrders[i],
+      linkToProduct: true,
+    })
+    ids.push({ productId, sortOrder: sortOrders[i] })
+  }
+  // 期望顺序 = (sort_order, product_id) 升序
+  ids.sort((a, b) => a.sortOrder - b.sortOrder || a.productId.localeCompare(b.productId))
+  return ids.map(x => x.productId)
+}
+
+async function caseSpuListPaging() {
+  await ensureTestCategories()
+  // 7 个商品，sort_order 只有 3 个取值
+  const expected = await createPagingProducts([5, 5, 5, 7, 7, 9, 9])
+
+  const seen = []
+  let cursor
+  let pages = 0
+  for (;;) {
+    pages++
+    if (pages > 20) throw new Error('翻页未收敛，疑似游标不前进')
+    const payload = { categoryId: TEST_MALL_CATEGORY_ID, limit: 3 }
+    if (cursor) payload.cursor = cursor
+    const res = await invokePublic('product.spuList', payload)
+    if (res.code !== 0) throw new Error(`page${pages}: expect code=0, got ${res.code}: ${res.message}`)
+
+    const list = res.data?.spuList || []
+    if (list.length > 3) throw new Error(`page${pages}: 单页应 ≤ limit(3)，got ${list.length}`)
+    seen.push(...list.map(p => p.product_id))
+
+    if (!res.data?.hasMore) {
+      if (res.data?.nextCursor !== null) throw new Error('hasMore=false 时 nextCursor 应为 null')
+      break
+    }
+    if (!res.data?.nextCursor) throw new Error(`page${pages}: hasMore=true 但没给 nextCursor`)
+    cursor = res.data.nextCursor
+  }
+
+  const uniq = new Set(seen)
+  if (uniq.size !== seen.length) throw new Error(`翻页出现重复行: ${seen.join(',')}`)
+  if (seen.length !== expected.length) {
+    throw new Error(`翻页共 ${seen.length} 行，期望 ${expected.length}（漏行）`)
+  }
+  if (seen.join(',') !== expected.join(',')) {
+    throw new Error(`翻页顺序不符合 (sort_order, product_id) 升序\n  got: ${seen.join(',')}\n  exp: ${expected.join(',')}`)
+  }
+  if (pages !== 3) throw new Error(`7 行 / limit 3 应翻 3 页，实际 ${pages}`)
+}
+
+async function caseSearchPaging() {
+  await ensureTestCategories()
+  const expected = await createPagingProducts([5, 5, 5, 7])
+
+  const seen = []
+  let cursor
+  for (;;) {
+    const payload = { keyword: '测试商品', limit: 2 }
+    if (cursor) payload.cursor = cursor
+    const res = await invokePublic('product.search', payload)
+    if (res.code !== 0) throw new Error(`expect code=0, got ${res.code}: ${res.message}`)
+    const list = res.data?.spuList || []
+    if (list.length > 2) throw new Error(`search 单页应 ≤ limit(2)，got ${list.length}`)
+    seen.push(...list.map(p => p.product_id))
+    if (!res.data?.hasMore) break
+    cursor = res.data.nextCursor
+    if (seen.length > 50) throw new Error('search 翻页未收敛')
+  }
+
+  for (const id of expected) {
+    if (!seen.includes(id)) throw new Error(`search 分页漏掉 ${id}`)
+  }
+  if (new Set(seen).size !== seen.length) throw new Error(`search 分页出现重复: ${seen.join(',')}`)
+}
+
+async function caseSpuListLimitClamped() {
+  await ensureTestCategories()
+  await createTestSku({ skuId: TEST_SKU_NORMAL_ID, productId: TEST_PRODUCT_ID })
+  // 超大 limit 不报错，但被后端夹到 PRODUCT_PAGE_SIZE_MAX(50)
+  const res = await invokePublic('product.spuList', { limit: 9999 })
+  if (res.code !== 0) throw new Error(`expect code=0, got ${res.code}: ${res.message}`)
+  const list = res.data?.spuList || []
+  if (list.length > 50) throw new Error(`limit 未被夹取，返回 ${list.length} 行`)
+}
+
+async function caseInvalidPagingParams() {
+  const bad = [
+    ['limit=0', { categoryId: TEST_MALL_CATEGORY_ID, limit: 0 }],
+    ['limit=-1', { categoryId: TEST_MALL_CATEGORY_ID, limit: -1 }],
+    ['limit 非整数', { categoryId: TEST_MALL_CATEGORY_ID, limit: 1.5 }],
+    ['cursor 空串', { categoryId: TEST_MALL_CATEGORY_ID, cursor: '' }],
+    ['cursor 乱码', { categoryId: TEST_MALL_CATEGORY_ID, cursor: '!!!not-a-cursor!!!' }],
+    ['cursor 结构不对', { categoryId: TEST_MALL_CATEGORY_ID, cursor: Buffer.from('[1]').toString('base64') }],
+  ]
+  for (const [label, payload] of bad) {
+    const res = await invokePublic('product.spuList', payload)
+    if (res.code !== -400) throw new Error(`${label}: expect code=-400, got ${res.code}: ${res.message}`)
+  }
+}
+
+async function caseShopInitPaging() {
+  await ensureTestCategories()
+  await createTestSku({ skuId: TEST_SKU_NORMAL_ID, productId: TEST_PRODUCT_ID })
+  const res = await invokePublic('product.shopInit', { limit: 5 })
+  if (res.code !== 0) throw new Error(`expect code=0, got ${res.code}: ${res.message}`)
+
+  const { spuList, spuCategoryId, nextCursor, hasMore } = res.data || {}
+  if (!Array.isArray(spuList)) throw new Error('shopInit spuList not array')
+  if (spuList.length > 5) throw new Error(`shopInit 未按 limit 截断，got ${spuList.length}`)
+  if (typeof hasMore !== 'boolean') throw new Error('shopInit 应下发 hasMore')
+  if (spuList.length > 0 && !spuCategoryId) {
+    throw new Error('有商品时 shopInit 必须下发 spuCategoryId，前端据它挂游标')
+  }
+  if (spuCategoryId) {
+    // 下发的商品必须全部属于 spuCategoryId，否则前端翻页会翻错分类
+    const wrong = spuList.find(p => p.category_id !== spuCategoryId)
+    if (wrong) throw new Error(`spuCategoryId=${spuCategoryId} 与商品 category_id=${wrong.category_id} 不符`)
+  }
+  if (hasMore && !nextCursor) throw new Error('shopInit hasMore=true 但没给 nextCursor')
+  if (!hasMore && nextCursor !== null) throw new Error('shopInit hasMore=false 时 nextCursor 应为 null')
+}
+
 const CASES = [
   ['categories returns array containing test mall category', caseCategoriesHasTest],
   ['spuList without categoryId returns test product', caseSpuListAll],
@@ -246,6 +382,12 @@ const CASES = [
   ['search by name 命中商品（跨分类·不传 categoryId）', caseSearchByName],
   ['search 无匹配返回空', caseSearchNoMatch],
   ['search 空 keyword 返回空', caseSearchEmptyKeyword],
+  // issue #248
+  ['spuList keyset 翻页：sort_order 重复也不漏行不重复', caseSpuListPaging],
+  ['search 同样支持 keyset 翻页', caseSearchPaging],
+  ['spuList limit 超上限被夹到 50', caseSpuListLimitClamped],
+  ['非法 limit / 畸形 cursor 返回 -400', caseInvalidPagingParams],
+  ['shopInit 下发 spuCategoryId + 分页字段且自洽', caseShopInitPaging],
 ]
 
 let pass = 0, fail = 0
