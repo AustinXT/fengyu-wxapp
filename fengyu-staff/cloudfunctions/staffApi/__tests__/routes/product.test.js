@@ -507,6 +507,62 @@ describe('product.shopInit', () => {
     expect(b2.groups[0].skus[0].bundlePrice).toBe(999)
     expect(b2.specialPrice).toBeNull()
     expect(b2.coverImage).toBeNull()
+    // issue #232：`img-a.png` 是相对路径，不是可施加数据万象规则的 COS URL → null。
+    // 这是刻意的「无法保证缩略就不下发」约定，不是退回原值。
+    expect(b1.coverImage).toBeNull()
+  })
+
+  /**
+   * issue #232：套餐封面必须缩略后下发，不给原图。
+   *
+   * 上面那条用例的 mock 是相对路径 `img-a.png`（走 null 分支），
+   * 证明不了「合法 COS URL 会被拼上缩略参数」这条正向链路真的接上了 ——
+   * 接线漏掉时那条用例照样绿。这里用真实形态的 COS URL 正面钉住。
+   */
+  test('mallBundleGroups：COS 封面下发时带 imageMogr2 缩略参数，原图不外泄（#232）', async () => {
+    const ctx = createCtx()
+    const COS_URL =
+      'https://6665-fengyu-client-prod-d1cga6909c0ba-1406056527.tcb.qcloud.la/product-covers/1789097186265-apa9p0.png'
+
+    pg.query.mockResolvedValueOnce([]) // 1) _queryCategoryRows
+    pg.query.mockResolvedValueOnce([   // 2) productRows
+      {
+        product_id: 'prod-cos', name: 'COS 封面套餐', cover_image: COS_URL,
+        description: null, price: '100', special_price: null, sort_order: 1,
+      },
+      {
+        // 已带放大参数的 URL：query 必须被整串丢弃后重拼，
+        // 不能与服务端规则并存（imageView2 mode 1 能把图放大）
+        product_id: 'prod-dirty', name: '带放大参数的封面',
+        cover_image: `${COS_URL}?imageView2/1/w/50000/h/50000`,
+        description: null, price: '100', special_price: null, sort_order: 2,
+      },
+      {
+        // 非 CloudBase 云存储域名：不执行数据万象，拼参数等于保护静默失效 → null
+        product_id: 'prod-evil', name: '站外封面',
+        cover_image: 'https://img.example.com/dir/a.png',
+        description: null, price: '100', special_price: null, sort_order: 3,
+      },
+    ])
+    pg.query.mockResolvedValueOnce([]) // 3) groupRows
+    pg.query.mockResolvedValueOnce([]) // 4) skuLinkRows
+    pg.query.mockResolvedValueOnce([]) // 5) _queryExperienceSkus
+
+    await productRoutes.shopInit(ctx)
+
+    const byId = Object.fromEntries(
+      ctx.result.mallBundleGroups.map(g => [g.productId, g.coverImage])
+    )
+
+    expect(byId['prod-cos']).toBe(`${COS_URL}?imageMogr2/thumbnail/400x400`)
+    // 脏 query 被整串丢弃，输出与干净输入完全相同
+    expect(byId['prod-dirty']).toBe(`${COS_URL}?imageMogr2/thumbnail/400x400`)
+    expect(byId['prod-evil']).toBeNull()
+
+    // 任何一条下发值都不得是未处理的原图 URL
+    for (const url of Object.values(byId)) {
+      if (url !== null) expect(url).toContain('imageMogr2/thumbnail/')
+    }
   })
 
   // ===== PR-B：排除法 + 分组返回 =====
