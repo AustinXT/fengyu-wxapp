@@ -1,7 +1,8 @@
 /**
- * STEP 1 — customer_status 三段式 SQL 形态测试（迁自 cronTask/__tests__/customer-status.test.js）
+ * STEP customerStatus（run.ts STEPS 第 2 项）—— customer_status 三段式 SQL 形态测试
+ * （迁自 cronTask/__tests__/customer-status.test.js）
  *
- * 因为 STEP 1 是纯 SQL 三段式，没有 JS 分支可以单测，本文件聚焦于：
+ * 因为本 STEP 是纯 SQL 三段式，没有 JS 分支可以单测，本文件聚焦于：
  *   1. 三段 SQL 形态：均带 customer_type='会员客' 守卫（除段1外，段1反向过滤非会员客）
  *   2. 段 1 SQL：非会员客 SET customer_status = NULL
  *   3. 段 2 SQL：UPDATE 限定 u.customer_type = '会员客'，含分类 CASE 与 90 天窗口
@@ -22,7 +23,7 @@ import {
   RESET_NO_VISITS_SQL,
 } from '../steps/refresh-customer-status'
 
-describe('cron-worker STEP 1 — customer_status 三段式 SQL', () => {
+describe('cron-worker STEP customerStatus — customer_status 三段式 SQL', () => {
   describe('段 1：非会员客一律置 NULL', () => {
     it('SQL 中 customer_status 被置 NULL', () => {
       expect(RESET_NON_MEMBER_STATUS_SQL).toMatch(/SET\s+customer_status\s*=\s*NULL/i)
@@ -142,7 +143,7 @@ describe('cron-worker STEP 1 — customer_status 三段式 SQL', () => {
    *    下面 `前提绑定` 用 schema 断言钉住它。
    *
    * ⚠️⚠️ 这是对 SQL 的**手工 JS 重新建模**，和真 SQL 没有机械耦合 —— 改了 SQL 忘改模型，
-   * 穷举照样全绿。所以下面第一条用 **inline** snapshot 锁住三段 SQL 全文：
+   * 穷举照样全绿。所以下面的 `SQL 全文快照` 用 **inline** snapshot 锁住三段 SQL 全文：
    * 任何 WHERE / CASE 变更都会让它变红，且因为是 inline，快照差异直接出现在 PR diff 里，
    * `vitest -u` 也得改动这个测试文件本身 —— 比 external `.snap` 更难被一键洗白。
    */
@@ -263,47 +264,54 @@ describe('cron-worker STEP 1 — customer_status 三段式 SQL', () => {
     const STATUSES: Row['status'][] = [null, ...customerStatusEnum.enumValues]
 
     /**
-     * 到店画像样本：覆盖 CASE 的全部 5 个分支及其边界（total_visits 的 5/6、
-     * lastServiceMonthsAgo 的 6/7 与 12/13）。只列**可达**组合 ——
-     * visits90d >= 1 蕴含最后到店在 3 个月内，不构造自相矛盾的行。
+     * 到店画像样本 + **手写的期望落值**。`expected` 是独立 oracle：下面的断言拿
+     * `seg2Value(profile)` 跟它比，而不是再调一次 `seg2Value`（那样就成了 `f(x) === f(x)`
+     * 的恒真式，模型写错也照样绿 —— 第 2 轮评审抓到过一次）。
+     *
+     * 覆盖 CASE 全部 5 个落值及其边界（total_visits 的 5/6、lastServiceMonthsAgo 的 6/7 与 12/13），
+     * 只列**可达**组合：visits90d >= 1 蕴含最后到店在 3 个月内，不构造自相矛盾的行。
+     *
+     * ⚠️ `lastServiceMonthsAgo` 是**离散化的模型输入**，不做日历月算术。PG 的
+     * `CURRENT_DATE - INTERVAL '6 months'` 有月末 clamp（`2026-08-31 - 6M = 2026-02-28`），
+     * 「6 个月零 1 天」这类真实日期边界由 E2E `cron-02` 的 2.9 用真库验证，不在本模型射程内。
      */
-    const VISIT_PROFILES: Array<Visits | null> = [
-      null, // 无任何已完成服务单 → 段 3 的域
-      { visits90d: 1, totalVisits: 1, lastServiceMonthsAgo: 0 }, // 保有会员-有效
-      { visits90d: 1, totalVisits: 5, lastServiceMonthsAgo: 0 }, // 保有会员-有效（<=5 边界）
-      { visits90d: 1, totalVisits: 6, lastServiceMonthsAgo: 0 }, // 保有会员-稳定（>=6 边界）
-      { visits90d: 1, totalVisits: 9, lastServiceMonthsAgo: 0 }, // 保有会员-稳定
-      { visits90d: 0, totalVisits: 3, lastServiceMonthsAgo: 4 }, // 沉睡
-      { visits90d: 0, totalVisits: 3, lastServiceMonthsAgo: 6 }, // 沉睡（<=6 边界）
-      { visits90d: 0, totalVisits: 3, lastServiceMonthsAgo: 7 }, // 冰冻
-      { visits90d: 0, totalVisits: 3, lastServiceMonthsAgo: 12 }, // 冰冻（<=12 边界）
-      { visits90d: 0, totalVisits: 3, lastServiceMonthsAgo: 13 }, // 休眠（ELSE）
+    const VISIT_PROFILES: Array<{ visits: Visits | null; expected: string }> = [
+      // 无任何已完成服务单 → 不进段 2，由段 3 兜成休眠
+      { visits: null, expected: '休眠' },
+      { visits: { visits90d: 1, totalVisits: 1, lastServiceMonthsAgo: 0 }, expected: '保有会员-有效' },
+      // <=5 边界
+      { visits: { visits90d: 1, totalVisits: 5, lastServiceMonthsAgo: 0 }, expected: '保有会员-有效' },
+      // >=6 边界
+      { visits: { visits90d: 1, totalVisits: 6, lastServiceMonthsAgo: 0 }, expected: '保有会员-稳定' },
+      // visits90d = 2 / 3：防把模型的 `>= 1` 误写成 `=== 1`（只有 1 的话这种变异杀不死）
+      { visits: { visits90d: 2, totalVisits: 7, lastServiceMonthsAgo: 0 }, expected: '保有会员-稳定' },
+      { visits: { visits90d: 3, totalVisits: 2, lastServiceMonthsAgo: 0 }, expected: '保有会员-有效' },
+      { visits: { visits90d: 0, totalVisits: 3, lastServiceMonthsAgo: 4 }, expected: '沉睡' },
+      // 6M 边界（SQL 是 >=，故 6 仍算沉睡）
+      { visits: { visits90d: 0, totalVisits: 3, lastServiceMonthsAgo: 6 }, expected: '沉睡' },
+      { visits: { visits90d: 0, totalVisits: 3, lastServiceMonthsAgo: 7 }, expected: '冰冻' },
+      // 12M 边界
+      { visits: { visits90d: 0, totalVisits: 3, lastServiceMonthsAgo: 12 }, expected: '冰冻' },
+      // ELSE
+      { visits: { visits90d: 0, totalVisits: 3, lastServiceMonthsAgo: 13 }, expected: '休眠' },
     ]
 
     const ALL_ROWS: Row[] = TYPES.flatMap((customerType) =>
-      VISIT_PROFILES.flatMap((visits) =>
+      VISIT_PROFILES.flatMap(({ visits }) =>
         STATUSES.map((status) => ({ customerType, visits, status })),
       ),
     )
 
-    it('段 2 的 CASE 五个分支与四个边界都被样本覆盖到', () => {
-      const produced = new Set(
-        VISIT_PROFILES.filter((v): v is Visits => v !== null).map((v) => seg2Value(v)),
-      )
-      expect([...produced].sort()).toEqual(
-        ['保有会员-有效', '保有会员-稳定', '冰冻', '沉睡', '休眠'].sort(),
-      )
-      // 边界点逐个钉死，防有人把 >= 6 改成 > 6 / <= 6 months 改成 < 6 months 却无人察觉
-      expect(seg2Value({ visits90d: 1, totalVisits: 5, lastServiceMonthsAgo: 0 })).toBe(
-        '保有会员-有效',
-      )
-      expect(seg2Value({ visits90d: 1, totalVisits: 6, lastServiceMonthsAgo: 0 })).toBe(
-        '保有会员-稳定',
-      )
-      expect(seg2Value({ visits90d: 0, totalVisits: 3, lastServiceMonthsAgo: 6 })).toBe('沉睡')
-      expect(seg2Value({ visits90d: 0, totalVisits: 3, lastServiceMonthsAgo: 7 })).toBe('冰冻')
-      expect(seg2Value({ visits90d: 0, totalVisits: 3, lastServiceMonthsAgo: 12 })).toBe('冰冻')
-      expect(seg2Value({ visits90d: 0, totalVisits: 3, lastServiceMonthsAgo: 13 })).toBe('休眠')
+    it('段 2 的 CASE 建模与手写期望逐条一致（独立 oracle）', () => {
+      const wrong = VISIT_PROFILES.filter((p) => p.visits !== null)
+        .map((p) => ({ ...p, got: seg2Value(p.visits as Visits) }))
+        .filter((p) => p.got !== p.expected)
+      expect(wrong).toEqual([])
+    })
+
+    it('样本覆盖了 customer_status 的全部 5 个枚举值', () => {
+      const produced = new Set(VISIT_PROFILES.map((p) => p.expected))
+      expect([...produced].sort()).toEqual([...customerStatusEnum.enumValues].sort())
     })
 
     it('每一行要么被某段命中，要么现值已等于应然值（无漏网）', () => {
@@ -315,10 +323,12 @@ describe('cron-worker STEP 1 — customer_status 三段式 SQL', () => {
       expect(missed).toEqual([])
     })
 
-    it('被段 2 命中的行，落值必须等于 CASE 的应然值', () => {
-      const wrong = ALL_ROWS.filter((r) => seg2Hits(r)).filter(
-        (r) => seg2Value(r.visits as Visits) !== expectedStatus(r),
-      )
+    it('会员客跑完三段后的落值，必须等于该画像手写的期望值', () => {
+      // 用手写 expected 当 oracle，不再拿 seg2Value 跟 expectedStatus 比（那是 f(x)===f(x)）
+      const wrong = VISIT_PROFILES.map((p) => ({
+        ...p,
+        got: expectedStatus({ customerType: '会员客', visits: p.visits, status: null }),
+      })).filter((p) => p.got !== p.expected)
       expect(wrong).toEqual([])
     })
 

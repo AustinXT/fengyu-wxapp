@@ -1,5 +1,6 @@
 /**
- * STEP 1 — customer_status 重算（迁自 cronTask/index.js:34-86）
+ * STEP customerStatus（run.ts STEPS 的第 2 项，不是第 1 项 —— 第 1 项是 closeExpiredAppointments）
+ * customer_status 重算（迁自 cronTask/index.js:34-86）
  *
  * 业务口径：customer_status 仅对 customer_type='会员客' 的顾客有值，
  * 非会员客（流量客 / 体验客 / 小美客）一律 NULL。
