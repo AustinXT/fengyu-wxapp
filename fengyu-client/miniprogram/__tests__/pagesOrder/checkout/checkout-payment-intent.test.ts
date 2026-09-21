@@ -9,6 +9,8 @@
  */
 
 import { vi } from 'vitest';
+import { readFileSync } from 'fs';
+import { resolve } from 'path';
 
 const callClientApiMock = vi.fn();
 vi.mock('../../../utils/cloud', () => ({
@@ -77,7 +79,9 @@ describe('#214 渠道单建好后页面立即冻结', () => {
   test('支付宝拿到吱口令 → hasActivePaymentIntent=true 且订单号落到 existingOrderNo', async () => {
     callClientApiMock.mockImplementation((action: string) => {
       if (action === 'order.alipayPay') {
-        return Promise.resolve({ alipayShareToken: '¥tok¥', totalAmount: 200, paidAmount: 200 });
+        return Promise.resolve({
+          alipayShareToken: '¥tok¥', totalAmount: 200, paidAmount: 200, prepaidCardAmount: 0,
+        });
       }
       return Promise.resolve({});
     });
@@ -88,6 +92,43 @@ describe('#214 渠道单建好后页面立即冻结', () => {
     expect(inst.data.hasActivePaymentIntent).toBe(true);
     expect(inst.data.existingOrderNo).toBe('FY-XSD-WX-2609220001');
     expect(inst.data.showAlipayShare).toBe(true);
+  });
+
+  // round-16：此前冻结值读的是 this.data.prepaidCardAmount，而从发起请求到它返回的
+  // 这段时间里，异步的余额刷新或用户拨动都可能已经改掉页面方案——照着改完的状态冻结，
+  // 记下的是一个渠道单里根本不存在的金额。
+  test('冻结卡额取服务端返回的权威值，不取（可能已被异步改写的）页面状态', async () => {
+    callClientApiMock.mockImplementation((action: string) => {
+      if (action === 'order.alipayPay') {
+        // 渠道单实际预占 ¥0（全额线上付）
+        return Promise.resolve({ alipayShareToken: '¥t¥', paidAmount: 300, prepaidCardAmount: 0 });
+      }
+      return Promise.resolve({});
+    });
+    // 页面状态此刻已被余额刷新改成「卡抵 ¥100」——与渠道单不符
+    const inst = createPageInstance({ prepaidCardAmount: 100, paidAmount: 200 });
+
+    await inst.doAlipayPay('FY-XSD-WX-2609220009');
+
+    expect(inst.data.restoredPrepaidCardAmount).toBeNull();
+  });
+
+  test('服务端返回带卡额时按服务端值冻结', async () => {
+    callClientApiMock.mockImplementation((action: string) => {
+      if (action === 'order.pay') {
+        return Promise.resolve({
+          paymentParams: { timeStamp: '1', nonceStr: 'n', package: 'p', signType: 'RSA', paySign: 's' },
+          paidAmount: 200,
+          prepaidCardAmount: 100,
+        });
+      }
+      return Promise.resolve({});
+    });
+    const inst = createPageInstance({ prepaidCardAmount: 0, paidAmount: 300 });
+
+    await inst.doWechatPay('FY-XSD-WX-2609220010');
+
+    expect(inst.data.restoredPrepaidCardAmount).toBe(100);
   });
 
   test('微信拿到支付参数 → 同样进入冻结态（requestPayment 抛非取消错误时顾客留在本页）', async () => {
@@ -194,6 +235,20 @@ describe('#214 冻结期的金额展示口径', () => {
 
     expect(inst.data.prepaidCardAmount).toBe(300);
     expect(inst.data.paidAmount).toBe(0);
+  });
+
+  // 逻辑层冻结了，模板层还乘着 cardBalance > 0 的话照样穿帮：余额查询失败把它打到 0，
+  // 开关会显示关闭、抵扣行会消失，而实付里明明已经扣掉了那笔卡额——明细对不上合计。
+  test('模板层：开关选中态与抵扣明细在冻结期不由实时余额控制', () => {
+    const wxml = readFileSync(
+      resolve(__dirname, '../../../pagesOrder/checkout/checkout.wxml'), 'utf8',
+    );
+    expect(wxml).toContain('checked="{{useCard && (hasActivePaymentIntent || cardBalance > 0)}}"');
+    expect(wxml).toContain(
+      '{{useCard && (hasActivePaymentIntent || cardBalance > 0) && prepaidCardAmount > 0}}',
+    );
+    // 冻结期余额查询失败不该表现成「没有余额」
+    expect(wxml).toContain('hasActivePaymentIntent && prepaidCardAmount > 0');
   });
 
   test('冻结卡额超过应付净额时按净额封顶，实付不为负', () => {

@@ -527,6 +527,8 @@ Page({
       wx.showToast({ title: '本次支付进行中，如需调整请先取消订单', icon: 'none' });
       return;
     }
+    // 提交在途时方案已随请求发出去了，此刻再改只会让页面与渠道单分叉（round-16）
+    if (this.data.submitting) return;
     // 余额 = 0 时禁用：忽略 change 事件
     if (this.data.cardBalance <= 0) return;
     this.setData({
@@ -916,14 +918,19 @@ Page({
    * PAYMENT_INTENT_ACTIVE 拒掉——正是本 issue 要消灭的「付不了款」，只是发生在同一页。
    *
    * existingOrderNo 一并写上：自助下单路径原本为空，不写的话重试会再走 order.create，
-   * 撞「您有待支付订单」。restoredPrepaidCardAmount 记下当前展示的卡额作为冻结口径，
-   * 因为这笔渠道单就是按它建的。
+   * 撞「您有待支付订单」。
+   *
+   * ⚠️ 冻结卡额只认服务端返回的 `prepaidCardAmount`（这笔渠道单实际预占的待扣卡额），
+   * 不读 `this.data`（双谱系评审 round-16）：从发起 order.pay 到它返回的这段时间里，
+   * 异步的余额刷新或用户拨动都可能改掉页面的抵扣方案，照着改完的状态冻结，
+   * 记下的就是一个渠道单里根本不存在的金额——正是这次修复本想消灭的分叉。
    */
-  markPaymentIntentActive(saleOrderId: string) {
+  markPaymentIntentActive(saleOrderId: string, authoritativePrepaidCardAmount: unknown) {
+    const frozen = Number(authoritativePrepaidCardAmount);
     this.setData({
       hasActivePaymentIntent: true,
       existingOrderNo: saleOrderId,
-      restoredPrepaidCardAmount: Number(this.data.prepaidCardAmount) || null,
+      restoredPrepaidCardAmount: Number.isFinite(frozen) && frozen > 0 ? frozen : null,
     });
   },
 
@@ -945,7 +952,7 @@ Page({
       return;
     }
     // 拿到吱口令 = 渠道单已建，先冻结页面再弹窗
-    this.markPaymentIntentActive(saleOrderId);
+    this.markPaymentIntentActive(saleOrderId, data?.prepaidCardAmount);
     const displayAmount = this.data.isRecharge
       ? Number(data?.paidAmount || 0)
       : Number(data?.totalAmount || 0);
@@ -1005,7 +1012,7 @@ Page({
     }
     // 拿到支付参数 = 渠道单已建。下面 requestPayment 抛非取消类错误时顾客会留在本页，
     // 不冻结的话重试走 scanAdjust 必撞 PAYMENT_INTENT_ACTIVE。
-    this.markPaymentIntentActive(saleOrderId);
+    this.markPaymentIntentActive(saleOrderId, data?.prepaidCardAmount);
     const isRecharge = this.data.isRecharge;
     const detailUrl = `/pagesOrder/order-detail/order-detail?saleOrderId=${saleOrderId}`;
     // 支付成功后带 paid=1：触发 order-detail.confirmAndRefresh 主动轮询确认到账（对齐 scan-pay

@@ -2591,6 +2591,10 @@ async function pay(ctx) {
     orderNo,
     totalAmount: reservation.totalAmount,
     paidAmount: reservation.payAmount,
+    // 这笔渠道单实际预占的待扣卡额。前端据此冻结展示口径——
+    // 不下发的话它只能读自己的页面状态，而那份状态可能已被异步的余额刷新改过
+    // （双谱系评审 round-16：展示卡抵 ¥100、渠道单其实是 ¥0 全额线上付）
+    prepaidCardAmount: reservation.pendingPrepaidAmount,
     paymentMethod: '微信',
     paymentParams,  // wx.requestPayment 5 字段：timeStamp/nonceStr/package/signType/paySign
   }
@@ -3602,6 +3606,8 @@ async function alipayPay(ctx) {
     orderNo,
     totalAmount: reservation.totalAmount,
     paidAmount: reservation.payAmount,
+    // 与微信通道同一口径，供前端冻结展示（双谱系评审 round-16）
+    prepaidCardAmount: reservation.pendingPrepaidAmount,
     paymentMethod: '支付宝',
     alipayShareToken,
     alipayExpireDate,

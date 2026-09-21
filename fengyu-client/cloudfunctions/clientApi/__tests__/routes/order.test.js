@@ -1335,6 +1335,26 @@ describe('order.pay', () => {
     expect(__mocks__.lakalaClient.requestPreorder).not.toHaveBeenCalled()
   })
 
+  // round-16：前端此前只能读自己的页面状态来冻结展示口径，而从发起 order.pay 到它返回
+  // 的这段时间里，异步的余额刷新或用户拨动都可能已经改掉那份状态——照着改完的状态冻结，
+  // 记下的就是一个渠道单里根本不存在的金额，展示与实收分叉。
+  // 这笔渠道单实际预占多少卡额，只有服务端说了算。
+  test('pay 必须下发这笔渠道单实际预占的待扣卡额 (#214)', async () => {
+    mockPayQueries({
+      order: reusableOrder(
+        { pending_prepaid_card_amount: 98, payable_amount: 200 },
+        { payAmount: 200 },
+      ),
+    })
+    __mocks__.lakalaClient.queryTrade.mockResolvedValueOnce({ ok: true, tradeState: 'CREATE' })
+
+    const ctx = createBoundCtx({ orderNo: 'FY-REUSE-001' })
+    await routes.pay(ctx)
+
+    expect(ctx.result.prepaidCardAmount).toBe(98)
+    expect(ctx.result.paidAmount).toBe(200)
+  })
+
   // 顾客已付款但回调还没入账时立刻重新扫码：不查渠道就回发旧参数，前端会去唤起一笔
   // 已成功的场次，顾客只能得到误导性失败或无尽等待。
   test('复用前发现渠道已支付 → 拒绝复用并提示刷新 (#214)', async () => {
