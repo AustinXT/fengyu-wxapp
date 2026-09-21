@@ -40,6 +40,25 @@
 const COS_HOST_PATTERN = /\.tcb\.qcloud\.la$/i
 
 /**
+ * 入参 URL 的长度上界。现实封面 URL 约 110 字符，2048 已是数量级余量。
+ * 存在的理由见 parseProcessableUrl 里的注释：挡的是「一条超长 URL 撑爆整个接口响应」。
+ */
+const MAX_SOURCE_URL_LENGTH = 2048
+
+/**
+ * 档位参数的上界，两种模式同一口径：**单张解码不超过 2048×2048×4 ≈ 16.8MB**。
+ *
+ * 不是为了当前调用点（它们传的都是本模块导出的常量），而是为了让
+ * 「档位值本身失控」不至于等于没有保护 —— 这正是 issue #230 在
+ * `thumbnail/!<Area>@` 上踩过的同一类坑：规则看着在，实际不生效。
+ *
+ * 2048 也远超现实需要：最大的展示位是满屏 750rpx（折叠屏展开约 2000 物理像素），
+ * 本模块最大的档位常量是 1080。
+ */
+const MAX_THUMB_BOX = 2048
+const MAX_THUMB_PIXELS = MAX_THUMB_BOX * MAX_THUMB_BOX
+
+/**
  * 判断 hostname 是否属于可做数据万象处理的域名。
  * 先去掉 FQDN 尾点（`a.tcb.qcloud.la.` 与 `a.tcb.qcloud.la` DNS 等价，
  * 不归一会漏匹配从而退回下发原图）。
@@ -62,6 +81,17 @@ function isProcessableHost(hostname) {
  *
  * 无法在不重签名的前提下安全追加处理规则，就不该返回一个注定 403 的 URL —— 直接 null。
  * 当前生产 stores.cover_image 全部是公共读 URL（已核对 41/41），不受影响。
+ *
+ * ⚠️ **已知限制：只认 COS V5 的 query 签名形态**（`q-*` / `x-cos-security-token`）。
+ * `cloud.getTempFileURL()` 产的是另一种——CloudBase CDN 鉴权（`sign` / `t` 之类），
+ * 参数名不以 `q-` 开头，会被当成普通 query 一并丢弃，下发出去就是 403 裂图。
+ *
+ * 当前没有调用点会喂进这种 URL（封面来自 admin `lib/cloudbase.ts` 拼的公共读地址；
+ * 生产库实测：staff 头像 17/17 无 query、client 头像 42/42 是 `cloud://` 走不到这里）。
+ * 刻意**不**把 `t` / `token` / `expire` 加进名单：它们同时也是极常见的缓存刷新参数
+ * （banner 就用 `?v=`），误判成签名会让本可缩略的图直接变占位。
+ * 真要接 `getTempFileURL` 链路（issue #233 的头像下发侧）时，
+ * 应当按**实际抓到的参数名**收紧，而不是现在凭猜测扩名单。
  */
 function hasCosSignature(rawParams) {
   return rawParams.some((p) => {
@@ -96,6 +126,12 @@ function decodeParamName(param) {
  */
 function parseProcessableUrl(url) {
   if (typeof url !== 'string' || url.trim() === '') return null
+
+  // 长度上界：`products.cover_image` / `stores.cover_image` 都是无约束的 `text`，
+  // admin 的写入侧也没有长度断言。一条 10MB 的 URL 会被原样放大后塞进响应体，
+  // 撑爆的不是一张图而是**整个接口**（列表接口要拼几十条）。
+  // 2048 是现实 URL 的数量级上限（实际封面 URL ~110 字符）。
+  if (url.length > MAX_SOURCE_URL_LENGTH) return null
 
   // 只处理 http(s)。cloud:// 这类 fileID 需由调用侧先换成 https 再进来，
   // 否则无从施加缩略规则，按约定返回 null 而不是把原始地址下发出去。
@@ -137,6 +173,12 @@ function parseProcessableUrl(url) {
   // 带签名的 URL 无法在不重签名的前提下安全改造，放弃处理
   if (hasCosSignature(rawParams)) return null
 
+  // 清掉 userinfo：`https://user:pw@host/...` 的 hostname 判断已经是安全的
+  // （走 parsed.hostname，不会被 `@` 伪装骗过），但 `toString()` 会把凭证原样带出去，
+  // 下发进 `<image src>` 和前端日志。库里不该有这种 URL，真有就不该传播。
+  parsed.username = ''
+  parsed.password = ''
+
   return parsed
 }
 
@@ -160,6 +202,10 @@ function parseProcessableUrl(url) {
  */
 function safeThumbUrl(url, boxSize) {
   if (!Number.isInteger(boxSize) || boxSize <= 0) return null
+  // 上界：`thumbnail/NxN` 是 contain 语义、**不放大**，所以 N 取得过大等于完全不约束——
+  // 「保护静默失效」的又一种形态（`thumbnail/99999x99999` 看着有规则，实际原样返回）。
+  // 当前所有调用点传的都是本模块导出的常量，这条挡的是将来有人传外部输入。
+  if (boxSize > MAX_THUMB_BOX) return null
 
   const parsed = parseProcessableUrl(url)
   if (!parsed) return null
@@ -202,6 +248,8 @@ function safeThumbUrl(url, boxSize) {
  */
 function safeThumbUrlByArea(url, maxPixels) {
   if (!Number.isInteger(maxPixels) || maxPixels <= 0) return null
+  // 与 box 同口径的上界，见 MAX_THUMB_PIXELS
+  if (maxPixels > MAX_THUMB_PIXELS) return null
 
   const parsed = parseProcessableUrl(url)
   if (!parsed) return null
@@ -224,8 +272,28 @@ const STORE_LIST_THUMB_BOX = 300
 const STORE_DETAIL_THUMB_BOX = 1080
 
 /**
- * 商品小缩略图（issue #230）：订单行 96~120rpx、扫码付 96rpx、体验卡列表卡片 200rpx。
- * 取其中最大的 200rpx，3x 屏约 344 物理像素，取 400 留余量。
+ * 商品小缩略图。**两端共 5 个调用点**，改值会同时影响 client 与 staff：
+ *
+ * | 端 | 位置 | 展示位 |
+ * |---|---|---|
+ * | client (#230) | `order.js` 订单行 ×2、扫码付 ×1 | 96~120rpx 方形 |
+ * | client (#230) | `product.js` 体验卡列表卡片 | 200×200rpx 方形 |
+ * | **staff (#232)** | `product.js` bundleGroups → `bundle-picker` | **200rpx 宽 × 最高约 211rpx 高** |
+ *
+ * ⚠️ **已接受的取舍：这一档在 aspectFill 展示位上会放大约 1.4 倍。**
+ *
+ * 容易算错的地方是——约束展示位的是**高**不是宽。staff 的 `.bundle-cover` 只设了
+ * `width: 200rpx`，高度被 flex `align-items: stretch` 拉满卡片（名称 2 行 + 描述 + 页脚
+ * ≈ 211rpx）。生产封面长宽比恒 1.56（横图），contain 到 400 box 后是 400×256，
+ * 高度方向只有 256 —— 而 1290px 屏上容器高约 363 物理像素，`aspectFill` 因此放大 1.42 倍。
+ * 要让高度方向也不放大，box 得抬到 566 以上。
+ *
+ * 不抬的理由：抬档会让**全部 5 个调用点**的解码量线性膨胀，而其中三个
+ * （订单列表、扫码付）恰恰是一屏十几张的场景 —— 正是本模块要压的那一类。
+ * 1.4 倍放大在 200rpx 的小展示位上对照片类内容观感损失有限
+ * （与 #230 详情长图 4.8 倍把文字压糊完全不是一个量级）。
+ * 折叠屏展开态（staff `app.json` 的 `resizable: true`）约 2.2 倍，同理接受。
+ *
  * 解码上限 400×400×4 ≈ 0.6MB/张——订单列表一屏十几行也压不垮。
  */
 const PRODUCT_THUMB_BOX_SMALL = 400
@@ -290,6 +358,9 @@ module.exports = {
   safeThumbUrl,
   safeThumbUrlByArea,
   isProcessableHost,
+  MAX_SOURCE_URL_LENGTH,
+  MAX_THUMB_BOX,
+  MAX_THUMB_PIXELS,
   STORE_LIST_THUMB_BOX,
   STORE_DETAIL_THUMB_BOX,
   PRODUCT_THUMB_BOX_SMALL,
