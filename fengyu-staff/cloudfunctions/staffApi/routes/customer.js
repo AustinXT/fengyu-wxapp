@@ -1558,9 +1558,10 @@ async function listByTag(ctx) {
     return true
   })
 
-  // 分页
-  const offset = (page - 1) * pageSize
-  const paged = filtered.slice(offset, offset + pageSize)
+  // 分页（#240：原先零校验直接算 offset —— `page='abc'` 会让 slice(NaN, NaN) 返回空数组，
+  // 表现为「列表恒空」而非报错；`page=-1` 则静默返回列表尾部的错误数据）
+  const { safePageSize, offset } = safePaging(page, pageSize, 20)
+  const paged = filtered.slice(offset, offset + safePageSize)
 
   // 最近购买商品名（仅查分页后的用户，减少查询量）
   const pagedUserIds = paged.map(r => r.user_id).filter(Boolean)
@@ -1628,7 +1629,10 @@ async function refundHistory(ctx) {
   }
   // 交易数据跟顾客走：退款流水不再按门店过滤（顾客可见性已由 assertProfileVisibleByIdentifier 守护）
   const refundWhere = refundClientWhere
-  refundParams.push(pageSize, (page - 1) * pageSize)
+  // #240：原先零校验直接把 pageSize 推进 LIMIT —— `pageSize=2.5` 会让 PG 抛
+  // `invalid input syntax for type bigint`（500 级），且无上限时 `pageSize=1e6` 一次吐全表
+  const { safePageSize: refundPageSize, offset: refundOffset } = safePaging(page, pageSize, 50)
+  refundParams.push(refundPageSize, refundOffset)
   const refundRows = await pg.query(`
     SELECT
       sop.id AS payment_id,

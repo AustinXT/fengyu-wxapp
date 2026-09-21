@@ -49,6 +49,7 @@ const { assertEmployeesAssignableToStore } = require('../utils/employee-assignme
 const { classifySaleOrderDocumentType } = require('../utils/document-type')
 const { maskPhoneForAuth } = require('../utils/phone-visibility')
 const { isValidDate, normalizeListFilters, addDateRange } = require('../utils/list-filters')
+const { safePaging } = require('../utils/paging')
 const { assertPaymentAttributionReady } = require('../utils/attribution-guard')
 
 // 模块级缓存：saleOrderId → qrcodeUrl，避免轮询时重复生成
@@ -6970,9 +6971,11 @@ async function refundList(ctx) {
   await requireStaffBound()(ctx, async () => {})
 
   const { status, page = 1, pageSize = 20 } = ctx.event.payload || {}
-  const offset = (page - 1) * pageSize
+  // #240：原先零校验直接把 pageSize 推进 LIMIT —— `pageSize=2.5` 会让 PG 抛
+  // `invalid input syntax for type bigint`（500 级），且无上限时 `pageSize=1e6` 一次吐全表
+  const { safePage, safePageSize, offset } = safePaging(page, pageSize, 20)
 
-  const params = [ctx.auth.effectiveStoreId, pageSize, offset]
+  const params = [ctx.auth.effectiveStoreId, safePageSize, offset]
   let whereExtra = ''
   if (status) {
     params.push(status)
@@ -7007,7 +7010,7 @@ async function refundList(ctx) {
     LIMIT $2 OFFSET $3
   `, params)
 
-  ctx.result = { refunds, page, pageSize }
+  ctx.result = { refunds, page: safePage, pageSize: safePageSize }
 }
 
 /**

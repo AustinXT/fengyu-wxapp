@@ -8529,3 +8529,53 @@ describe('order.close — 欠款归零的回滚（#182）', () => {
       .rejects.toThrow(/CONFLICT: 原订单已不存在，无法还原折抵行的已支付次数/)
   })
 })
+
+// ============================================================
+// order.refundList — #240 分页守卫
+// ============================================================
+// 原先零守卫：`const offset = (page-1)*pageSize` + `params = [storeId, pageSize, offset]`，
+// 入参直接进 `LIMIT $2 OFFSET $3`。`pageSize=2.5` 即复现本 issue 的 500
+// （PG `invalid input syntax for type bigint: "2.5"`）；无上限时 `pageSize=999999`
+// 一次吐全店退款流水。前端恒传 20，但云函数 payload 是可直接构造的边界。
+describe('order.refundList — 分页入参守卫（#240）', () => {
+  const listCall = () => pg.query.mock.calls.find(c => /sale_order_payments/.test(c[0]) && /LIMIT/.test(c[0]))
+
+  test('小数 pageSize 被取整，LIMIT/OFFSET 恒为整数', async () => {
+    const ctx = createManagerCtx({ page: 2.7, pageSize: 2.5 })
+    pg.query.mockResolvedValue([])
+    await orderRoutes.refundList(ctx)
+
+    const params = listCall()[1]
+    // [storeId, LIMIT, OFFSET]：pageSize=2.5→2，page=2.7→2，offset=(2-1)*2=2
+    expect(params[1]).toBe(2)
+    expect(params[2]).toBe(2)
+    expect(Number.isInteger(params[1])).toBe(true)
+    expect(Number.isInteger(params[2])).toBe(true)
+    // 返回的分页信封也应是归一后的值，不是原始入参
+    expect(ctx.result.page).toBe(2)
+    expect(ctx.result.pageSize).toBe(2)
+  })
+
+  test('pageSize 超上限被夹到 100，不会一次吐全店退款流水', async () => {
+    const ctx = createManagerCtx({ page: 1, pageSize: 999999 })
+    pg.query.mockResolvedValue([])
+    await orderRoutes.refundList(ctx)
+
+    expect(listCall()[1][1]).toBe(100)
+    expect(ctx.result.pageSize).toBe(100)
+  })
+
+  test("非安全整数（'Infinity' / 1e21）回落默认 20 / 第 1 页", async () => {
+    const ctxInf = createManagerCtx({ page: 'Infinity', pageSize: 'Infinity' })
+    pg.query.mockResolvedValue([])
+    await orderRoutes.refundList(ctxInf)
+    expect(listCall()[1].slice(1)).toEqual([20, 0])
+
+    pg.query.mockClear()
+    const ctxHuge = createManagerCtx({ page: 1e21, pageSize: 1e21 })
+    pg.query.mockResolvedValue([])
+    await orderRoutes.refundList(ctxHuge)
+    expect(listCall()[1].slice(1)).toEqual([20, 0])
+    expect(ctxHuge.result.page).toBe(1)
+  })
+})

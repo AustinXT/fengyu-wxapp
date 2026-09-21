@@ -1,5 +1,7 @@
 'use strict'
 
+const { safePaging } = require('./paging')
+
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/
 
 function isValidDate(value) {
@@ -16,12 +18,16 @@ function escapeLike(value) {
 }
 
 function normalizeListFilters(payload = {}, defaultPageSize = 20) {
-  const rawPage = Number(payload.page)
-  const rawPageSize = Number(payload.pageSize)
-  const page = Number.isFinite(rawPage) ? Math.max(1, Math.trunc(rawPage) || 1) : 1
-  const pageSize = Number.isFinite(rawPageSize)
-    ? Math.max(1, Math.min(100, Math.trunc(rawPageSize) || defaultPageSize))
-    : defaultPageSize
+  // 委托 utils/paging 单源（#240）。原先这里自带一套 `Number.isFinite` + `Math.trunc` 的归一，
+  // 与 paging.js 语义不一致，且 **page 侧漏**：`isFinite(1e20)` 为真 → `offset = 2e21`，
+  // `String(2e21)` 输出指数记法 `"2e+21"` → PG `int8in` 抛
+  // `invalid input syntax for type bigint`（500 级），与本 issue 同一个根因。
+  // 保留两套实现还会让 invariant `D-search-pagination` 的抄写者面对两个语义不同的模板。
+  const { safePage: page, safePageSize: pageSize, offset } = safePaging(
+    payload.page,
+    payload.pageSize,
+    defaultPageSize,
+  )
   const keyword = String(payload.keyword || '').trim()
   const startDate = String(payload.startDate || '').trim()
   const endDate = String(payload.endDate || '').trim()
@@ -39,7 +45,7 @@ function normalizeListFilters(payload = {}, defaultPageSize = 20) {
   return {
     page,
     pageSize,
-    offset: (page - 1) * pageSize,
+    offset,
     keyword,
     keywordPattern: keyword ? `%${escapeLike(keyword)}%` : '',
     phoneKeyword: keyword.replace(/\D/g, ''),

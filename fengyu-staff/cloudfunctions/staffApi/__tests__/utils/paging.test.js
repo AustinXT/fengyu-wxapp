@@ -10,7 +10,7 @@
  * 下游拿它当 LIMIT/OFFSET 参数就是 500 级报错。
  */
 
-const { safePaging } = require('../../utils/paging')
+const { safePaging, MAX_PAGE, MAX_PAGE_SIZE } = require('../../utils/paging')
 
 describe('safePaging', () => {
   test('正常整数入参：原样返回并算出 offset', () => {
@@ -89,16 +89,72 @@ describe('safePaging', () => {
     expect(Number.isInteger(r.offset)).toBe(true)
   })
 
-  test('任意入参组合下三个出口恒为整数（表驱动兜底）', () => {
-    const inputs = [2.5, '2.5', 'Infinity', Infinity, -Infinity, NaN, 1e21, -1, 0, null, undefined, {}, [], '12abc']
+  // ---------- page 封顶：offset 必须恒为安全整数 ----------
+  // 不封顶时 `safePaging(Number.MAX_SAFE_INTEGER, 100, 50)` 的 offset = 900719925474099000，
+  // Number.isSafeInteger 为假；maxPageSize 调高还会让 offset 越过 1e21 → String() 输出
+  // "2e+21" → pg 按文本传参让 PG int8in 报错，正是本 issue 要修的那个 500。
+  test('page 超 MAX_PAGE 被夹住，offset 仍是安全整数', () => {
+    const r = safePaging(Number.MAX_SAFE_INTEGER, 100, 50)
+    expect(r.safePage).toBe(MAX_PAGE)
+    expect(r.offset).toBe((MAX_PAGE - 1) * 100)
+    expect(Number.isSafeInteger(r.offset)).toBe(true)
+    // 关键：String() 不得退化成指数记法（pg 是按 toString() 传参的）
+    expect(String(r.offset)).not.toMatch(/e\+/i)
+  })
+
+  test('MAX_PAGE 边界：恰好等于上限不被改动，上限+1 被夹住', () => {
+    expect(safePaging(MAX_PAGE, 10, 20).safePage).toBe(MAX_PAGE)
+    expect(safePaging(MAX_PAGE + 1, 10, 20).safePage).toBe(MAX_PAGE)
+  })
+
+  // ---------- defaultPageSize 自身的契约 ----------
+  // 漏传第三参数时若原样吐出 undefined，node-postgres 会把它序列化成 null，
+  // 而 `LIMIT NULL` 在 PG 里等于**不限行数** —— 静默全表返回（顾客表含手机号）。
+  test('defaultPageSize 非法（漏传 / 0 / 负数 / NaN）时回落 1，绝不吐出 undefined', () => {
+    expect(safePaging(1, 'abc').safePageSize).toBe(1)
+    expect(safePaging(1, 'abc', 0).safePageSize).toBe(1)
+    expect(safePaging(1, 'abc', -5).safePageSize).toBe(1)
+    expect(safePaging(1, 'abc', NaN).safePageSize).toBe(1)
+    expect(safePaging(1, 'abc', Infinity).safePageSize).toBe(1)
+  })
+
+  test('defaultPageSize 是小数时按取整处理（截断意图明确，不粗暴兜 1）', () => {
+    expect(safePaging(1, 'abc', 2.5).safePageSize).toBe(2)
+    expect(safePaging(1, 'abc', 20.9).safePageSize).toBe(20)
+  })
+
+  test('defaultPageSize 超 maxPageSize 也被夹住（回落分支不得突破自己声明的上限）', () => {
+    expect(safePaging(1, 'abc', 500).safePageSize).toBe(MAX_PAGE_SIZE)
+    expect(safePaging(1, 'abc', 500, 30).safePageSize).toBe(30)
+  })
+
+  test('导出的常量口径：MAX_PAGE_SIZE=100 且是 maxPageSize 的默认值', () => {
+    expect(MAX_PAGE_SIZE).toBe(100)
+    expect(MAX_PAGE).toBe(1_000_000)
+    expect(safePaging(1, 9999, 20).safePageSize).toBe(MAX_PAGE_SIZE)
+  })
+
+  test('任意入参组合下三个出口恒为**安全**整数且不超上限（表驱动兜底）', () => {
+    // 输入表必须含 Number.MAX_SAFE_INTEGER 与空串：前者是 offset 溢出的唯一真实触发点，
+    // 后者（Number('') === 0）是表单最常见的空值入参。
+    const inputs = [
+      2.5, '2.5', 'Infinity', Infinity, -Infinity, NaN, 1e21, -1, 0, -0, 0.5,
+      null, undefined, {}, [], [5], '', '050', '12abc', true, false,
+      Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER + 1, 2 ** 53, '9007199254740993',
+    ]
     for (const p of inputs) {
       for (const s of inputs) {
         const r = safePaging(p, s, 50)
-        expect(Number.isInteger(r.safePage), `page=${String(p)}`).toBe(true)
-        expect(Number.isInteger(r.safePageSize), `pageSize=${String(s)}`).toBe(true)
-        expect(Number.isInteger(r.offset), `offset for ${String(p)}/${String(s)}`).toBe(true)
+        const label = `page=${String(p)} pageSize=${String(s)}`
+        expect(Number.isSafeInteger(r.safePage), label).toBe(true)
+        expect(Number.isSafeInteger(r.safePageSize), label).toBe(true)
+        expect(Number.isSafeInteger(r.offset), label).toBe(true)
         expect(r.safePage).toBeGreaterThanOrEqual(1)
+        expect(r.safePage).toBeLessThanOrEqual(MAX_PAGE)
         expect(r.safePageSize).toBeGreaterThanOrEqual(1)
+        expect(r.safePageSize).toBeLessThanOrEqual(MAX_PAGE_SIZE)
+        // pg 按 toString() 传参：任何指数记法都会让 PG int8in 报错
+        expect(String(r.offset), label).not.toMatch(/e\+/i)
       }
     }
   })
