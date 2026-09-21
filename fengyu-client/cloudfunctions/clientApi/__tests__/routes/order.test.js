@@ -2026,6 +2026,23 @@ describe('order.voidPaymentIntent', () => {
     expect(__mocks__.lakalaClient.queryTrade).not.toHaveBeenCalled()
   })
 
+  // 滚动部署期间必然存在「旧版 staffApi 只发 saleOrderId」的窗口。软校验会在那段时间
+  // 静默跳过比对、关掉顾客新发起的合法支付；强制必填则让旧版调用直接失败（fail-closed）。
+  test('存在活动意图但缺 expectedOutTradeNo → 拒绝，且一笔渠道请求都不发 (#214)', async () => {
+    pg.query.mockImplementation(async (sql) => {
+      if (/FROM sale_orders WHERE sale_order_id/.test(sql)) return [{
+        sale_order_id: 'FY-001', status: '待支付', store_id: 'store-1',
+        lakala_out_order_no: 'FY-001_1',
+      }]
+      return []
+    })
+
+    const ctx = internalCtx({ saleOrderId: 'FY-001' })
+    await expect(routes.voidPaymentIntent(ctx)).rejects.toThrow(/INVALID_PARAMS.*expectedOutTradeNo/)
+    expect(__mocks__.lakalaClient.queryTrade).not.toHaveBeenCalled()
+    expect(__mocks__.lakalaClient.closeTrade).not.toHaveBeenCalled()
+  })
+
   test('无活动意图 → noop，不发渠道请求', async () => {
     pg.query.mockImplementation(async (sql) => {
       if (/FROM sale_orders WHERE sale_order_id/.test(sql)) return [{

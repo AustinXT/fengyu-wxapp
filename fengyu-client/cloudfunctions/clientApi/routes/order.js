@@ -4388,14 +4388,14 @@ async function voidPaymentIntent(ctx) {
   if (!saleOrderId) {
     throw new Error('INVALID_PARAMS: 缺少 saleOrderId 参数')
   }
-  // 调用方预读到的意图单号。本接口绝不能「读当前是哪笔就关哪笔」——见下方 TOCTOU 说明。
+  // 调用方预读到的意图单号，**必填**。本接口绝不能「读当前是哪笔就关哪笔」——见下方
+  // TOCTOU 说明。
   //
-  // 为向后兼容保留为软校验（缺省则跳过比对），但缺省意味着 TOCTOU 防线失效，
-  // 所以必须留痕告警，避免将来新增调用方漏传时无声降级（双谱系评审 round-4）。
+  // 这里刻意不做向后兼容的软校验（双谱系评审 round-4）：滚动部署期间必然存在「旧版
+  // staffApi 只发 saleOrderId」的窗口，软校验会在那段时间静默跳过比对、关掉顾客新发起的
+  // 合法支付。宁可让旧版调用直接失败（关单功能短暂不可用、店员重试即可），也不要静默
+  // 破坏一笔正在进行的支付。
   const expectedOutTradeNo = String(payload.expectedOutTradeNo || '').trim()
-  if (!expectedOutTradeNo) {
-    console.warn('[order/voidPaymentIntent] 调用方未传 expectedOutTradeNo，TOCTOU 防线已跳过:', saleOrderId)
-  }
 
   const rows = await pg.query(
     'SELECT sale_order_id, status, store_id, lakala_out_order_no FROM sale_orders WHERE sale_order_id = $1',
@@ -4414,7 +4414,11 @@ async function voidPaymentIntent(ctx) {
   // 到账并清锁、顾客又发起了补款意图 B。若本接口只按订单号「关当前那笔」，就会把合法的 B
   // 关掉——而 staff 侧事务随后会因订单已变「部分支付」拒绝关闭，最终订单没关成、顾客的
   // 补款却被破坏。所以单号不匹配一律拒绝，绝不自动改为操作新意图。
-  if (expectedOutTradeNo && expectedOutTradeNo !== String(order.lakala_out_order_no)) {
+  if (!expectedOutTradeNo) {
+    // 必须排在任何渠道调用之前：缺参时一笔查单/关单都不能发出去
+    throw new Error('INVALID_PARAMS: 缺少 expectedOutTradeNo 参数')
+  }
+  if (expectedOutTradeNo !== String(order.lakala_out_order_no)) {
     throw new Error('CONFLICT: PAYMENT_INTENT_CHANGED: 支付场次已变化，请刷新后重试')
   }
   // 状态同样要在任何渠道调用之前复核（调用方的预检与这里之间可能已经变化）。
