@@ -478,13 +478,19 @@ function queryRows(client, sql, params) {
  *     （只有总部/市场行自指），于是**某个 store_id 恰好等于某个 `type='门店'` 的 org_nodes.id**
  *     时，行 X（by location_id）与行 Y（by org_node_id）是两个**不同门店**的主体。
  *
- * 撞值场景**只可能是「门店 × 门店」**，两支都要论证（评审时有人只看一支就误判成还有
- * 「门店 × 总部/市场」一族）：
+ * 本函数能看到的撞值**只可能是「门店 × 门店」**，两支的挡法不同，别混为一谈：
  *   - X 若是总部/市场自指行 → `X.org_node_id = X.location_id = $1`，与 `Y.org_node_id = $1`
- *     同值，违反 `uq_inventory_locations_org`；
- *   - Y 若是总部/市场自指行 → `Y.location_id = Y.org_node_id = $1 = X.location_id`，违反主键。
- *  （后者在 `syncInventoryLocations` 里表现为第二条 UPSERT 的 `ON CONFLICT (location_id)`
- *   直接覆盖第一条，最终只剩一行，根本凑不出两行。）
+ *     同值，**违反 `uq_inventory_locations_org`**（`ON CONFLICT (location_id)` 管不到
+ *     org_node_id 的唯一冲突，所以这一支会在 UPSERT 期真的报错）；
+ *   - Y 若是总部/市场自指行 → 两行 `location_id` 同值，但**不会报主键冲突** ——
+ *     `syncInventoryLocations` 第二条 UPSERT 的 `ON CONFLICT (location_id) DO UPDATE`
+ *     把那个自指行**静默改写成门店行**，最终只剩一行。读取端因此凑不出两行。
+ *
+ * ⚠️ 上面第二支不是「安全」，是**本函数的盲区**：市场/总部主体被无声顶替，`> 1` 守卫看不见，
+ * 且下一轮同步试图恢复自指行时会因残留的 `store_id` 撞上 `inventory_validate_location_tree`
+ * 的 `NEW.store_id IS NOT NULL` 校验而 RAISE EXCEPTION —— 那会让**全部库存操作持续失败**。
+ * 它的成因与本 issue 同源（store_id 与 org_nodes.id 两个 id 空间无交叉唯一性），
+ * 但修复位置在 sync/DB 层而非这里，已登记为 **#270**，勿在本函数里找它的解。
  *
  * 无 `ORDER BY` 的 `LIMIT 1` 在这种两行上取哪行不保证稳定，两次独立调用可能拿到不同门店，
  * 于是「按 A 鉴权、扣 B 的批次」。故：
@@ -495,8 +501,11 @@ function queryRows(client, sql, params) {
  *      （`resolveStaffCreateLocations` 的 fallback 链：`payload.storeId`、`effectiveStoreId`、
  *      `auth.inventoryStoreIds`，四项全是 store_id）。固定任何一侧优先，都会对另一半调用点
  *      **确定性地**返回另一家门店 —— 稳定，但稳定地错，而且从此不再报错。
- *   2. `ORDER BY location_id` 只保证**确定性**（消除 TOCTOU：同一入参两次调用必得同一行），
- *      不声称语义正确。主键排序、非空、全序，不暗示任何 id 空间的优先级。
+ *   2. `ORDER BY location_id` 按主键定序（非空、全序），**不暗示任何 id 空间的优先级** ——
+ *      撞值时不存在语义正确的那一行，所以它只承诺「确定」，不承诺「对」。
+ *      ⚠️ 别因为「2 行必抛、0/1 行与顺序无关」就删掉它：admin 侧的同签名副本带 `FOR UPDATE`，
+ *      撞值时两行都会被锁，主键序保证并发事务的**加锁顺序一致**，那是实打实的防死锁作用
+ *      （本端无锁，保持字面一致是为了两端可对照）。
  *   3. `LIMIT 2` —— 两侧各最多 1 行，2 是精确上界；回到 `LIMIT 1` 就永远看不见撞值。
  *   4. **停用行照样参与歧义判定**，`is_active` 只在唯一命中项上判。
  *      曾想「把闭店幽灵行过滤掉，免得它把撞值的在营门店锁死」，但那是错的：
@@ -525,6 +534,9 @@ async function ensureInventoryLocation(locationId, requiredType = null, client =
     throw new Error('CONFLICT: LOCATION_ID_AMBIGUOUS: 库存主体标识冲突，请联系管理员')
   }
   const row = rows[0]
+  // 注：单行停用时本端报 INVALID_STATE，admin `business.ts:loadLocation` 同一数据状态报
+  // NOT_FOUND「库存主体不存在或已停用」。两端**决策一致（都拒绝）、错误码不同**，
+  // 是各自沿用改动前的对外文案，不是跨端漂移 —— 别当不一致去「修齐」。
   if (row.is_active === false) throw new Error('INVALID_STATE: 库存主体已停用')
   if (requiredType && row.location_type !== requiredType) {
     throw new Error(`INVALID_PARAMS: 库存主体必须是${requiredType}`)

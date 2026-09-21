@@ -388,11 +388,26 @@ describe('PR #113 进销存单据组织端点跨端守护（staff / admin / sche
       )
       expect(adminWhereToOrder).not.toBeNull()
       expect(adminWhereToOrder[1]).not.toMatch(/is_active/)
-      // staff：歧义判定必须基于全部命中行，不得先按 is_active 过滤
-      expect(flat(staffSrc)).not.toMatch(/filter\([^)]*is_active[^)]*\)[^;]*length > 1/)
-      // 两端的 is_active 判定都必须发生在「唯一命中项」确定之后
-      expect(flat(staffSrc)).toMatch(/const row = rows\[0\] if \(row\.is_active === false\)/)
-      expect(flat(adminBusinessSrc)).toMatch(/const row = matched\[0\] if \(!row \|\| row\.is_active === false\)/)
+      // staff：歧义判定必须基于**全部命中集** `rows`，不得先过滤出子集再判。
+      // ⚠️ 别用 `filter\([^)]*is_active...` 这种写法：箭头函数的 `(row)` 里就有 `)`，
+      // `[^)]*` 当场截断 —— 那条正则对回退版是**假阴性**（实测确认过）。
+      expect(flat(staffSrc)).toMatch(/if \(rows\.length > 1\)/)
+      expect(flat(staffSrc)).not.toMatch(/\bfilter\b[\s\S]{0,140}?\.length > 1/)
+
+      // 两端的 is_active 判定都必须发生在「唯一命中项」确定**之后**。
+      // 用位置比较而不是连续文本匹配：两者之间隔着注释是常态，钉死连续片段会误红。
+      const orderedAfter = (src, pick, check) => {
+        const s = flat(src)
+        const pickIdx = s.indexOf(pick)
+        const checkIdx = s.indexOf(check)
+        expect(pickIdx, `未找到「${pick}」`).toBeGreaterThan(-1)
+        expect(checkIdx, `未找到「${check}」`).toBeGreaterThan(-1)
+        // 歧义判定（抛 CONFLICT）必须排在取唯一行之前
+        expect(s.indexOf('length > 1'), '歧义判定应先于取唯一行').toBeLessThan(pickIdx)
+        return checkIdx > pickIdx
+      }
+      expect(orderedAfter(staffSrc, 'const row = rows[0]', 'row.is_active === false')).toBe(true)
+      expect(orderedAfter(adminBusinessSrc, 'const row = matched[0]', 'row.is_active === false')).toBe(true)
     })
 
     test('admin engine.ts 仍按 org_node_id 单列（UNIQUE）解析，未引入 OR 多态', () => {

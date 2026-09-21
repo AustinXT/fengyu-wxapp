@@ -827,7 +827,10 @@ async function locationForRead(tx: Tx, endpointId: string): Promise<Location> {
  *   1. **`throw` 是唯一正确性保障** —— 撞值时不存在语义正确的那一行（一半调用点传
  *      org_node_id、另一半传 store_id，固定任何优先级都会对另一半确定性地取错主体）。
  *      别改软成「取第一行」。
- *   2. `ORDER BY location_id` 只保证确定性，不声称正确；`LIMIT 2` 是精确上界。
+ *   2. `ORDER BY location_id` 按主键定序，不声称语义正确；`LIMIT 2` 是精确上界。
+ *      **本端的排序有实打实的作用**：`forUpdate` 分支在撞值时两行都会被锁，
+ *      主键序保证并发事务加锁顺序一致 —— 这是防死锁，不只是「确定性」。
+ *      旧版无 ORDER BY 无 LIMIT，是把全部匹配行无序锁住并持有到事务末，新版严格更优。
  *
  * ⚠️ 子句顺序：PG 要求 `LIMIT` 在 `FOR UPDATE` **之前**。
  *
@@ -857,6 +860,9 @@ async function loadLocation(tx: Tx, endpointId: string, forUpdate: boolean): Pro
     throw new ApiError('CONFLICT', '库存主体标识冲突，请联系管理员')
   }
   const row = matched[0]
+  // 注：单行停用时本端报 NOT_FOUND（沿用改动前的对外文案），staff 端同一数据状态报
+  // INVALID_STATE「库存主体已停用」。两端**决策一致（都拒绝）、错误码不同**，是刻意保留的
+  // 既有差异，不是跨端漂移 —— 别当不一致去「修齐」。
   if (!row || row.is_active === false) {
     throw new ApiError('NOT_FOUND', '库存主体不存在或已停用')
   }
