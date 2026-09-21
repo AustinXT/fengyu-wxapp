@@ -337,6 +337,13 @@
       "when": 1789965884662,
       "tag": "0047_waived_amount_and_zero_qty_out",
       "breakpoints": true
+    },
+    {
+      "idx": 48,
+      "version": "7",
+      "when": 1789999039383,
+      "tag": "0048_hesitant_scarlet_spider",
+      "breakpoints": true
     }
   ]
 }
