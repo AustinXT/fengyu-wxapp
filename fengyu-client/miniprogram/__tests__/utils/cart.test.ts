@@ -321,6 +321,25 @@ describe('issue #230：存量购物车快照的封面净化', () => {
       }
     })
 
+    test('端口超出 WHATWG 上限被拒（加载端会判 URL 无效 → 加载失败图而非占位图）', () => {
+      // 两谱系第五轮独立指出的唯一 P3。方向本就是 fail-closed，修它只为让
+      // 「放行的 URL 一定能被加载端正常解析」这个性质成立。
+      for (const port of ['65536', '99999999999']) {
+        seedStorage([{ skuId: 's1', price: 100, quantity: 1,
+          coverImage: `https://x.tcb.qcloud.la:${port}/d/a.jpg?imageMogr2/thumbnail/400x400` }])
+        expect(getCart().items[0].coverImage).toBe('')
+      }
+    })
+
+    test('合法端口仍放行（云函数会原样下发非默认端口）', () => {
+      const u = 'https://x.tcb.qcloud.la:8443/d/a.jpg?imageMogr2/thumbnail/400x400'
+      seedStorage([{ skuId: 's1', price: 100, quantity: 1, coverImage: u }])
+      expect(getCart().items[0].coverImage).toBe(u)
+      const edge = 'https://x.tcb.qcloud.la:65535/d/a.jpg?imageMogr2/thumbnail/400x400'
+      seedStorage([{ skuId: 's1', price: 100, quantity: 1, coverImage: edge }])
+      expect(getCart().items[0].coverImage).toBe(edge)
+    })
+
     test('userinfo 含分隔符的伪装被拒', () => {
       for (const u of [
         'https://evil.com/@x.tcb.qcloud.la/d/a.jpg?imageMogr2/thumbnail/400x400',
@@ -408,6 +427,10 @@ describe('issue #230：净化器与云函数构造器的闭环守护', () => {
     ['反斜杠 × 双 @', `https://evil.com\\@a@${H}/product-covers/a.jpg`],
     ['对象键只有一段', `https://${H}/a.png`],
     ['非图片扩展名', `https://${H}/d/a.svg`],
+    // ⚠️ 这条原始 URL 自带 query，下面拼规则时会出现双 `?`，不是良构 URL。
+    // 保留原样是刻意的：它要测的是**云函数拒绝签名 URL**这件事，
+    // 而净化器侧 THUMB_RULE 的 `^...$` 锚定对双 `?` 串同样必然拒，断言方向成立。
+    // （GLM 第五轮 P3-4 指出此措辞，结论是无影响。）
     ['带 COS 签名', `https://${H}/d/a.png?q-sign-algorithm=sha1`],
     ['非 http(s)', `ftp://${H}/d/a.jpg`],
   ] as const

@@ -81,7 +81,10 @@ const URL_PARTS_PATTERN = /^(https?):\/\/([^/?#]+)(\/[^?#]*)\?(.*)$/i;
  * - `\.?` 尾点、`(?::\d+)?` 端口 —— 云函数会原样下发，必须接受
  */
 const AUTHORITY_PATTERN =
-  /^(?:[^@/\\?#]*@)?[\w-]+(?:\.[\w-]+)*\.tcb\.qcloud\.la\.?(?::\d+)?$/i;
+  /^(?:[^@/\\?#]*@)?[\w-]+(?:\.[\w-]+)*\.tcb\.qcloud\.la\.?(?::(\d+))?$/i;
+
+/** WHATWG 端口上限。超出时 `new URL()` 判整条 URL 无效 → 加载失败图而非占位图 */
+const MAX_PORT = 65535;
 
 /** 对象键形态：两段、纯 ASCII、图片扩展名。与云函数 `safeThumbUrl` 的白名单同形 */
 const OBJECT_KEY_PATTERN = /^\/[\w-]+\/[\w.-]+\.(?:png|jpe?g|webp|gif)$/i;
@@ -137,7 +140,12 @@ export function sanitizeCoverImage(url: unknown): string {
 
   // authority 整体过白名单（大小写不敏感是 DNS 语义）。
   // 不拆开逐段检查——见 AUTHORITY_PATTERN 注释里那张「拆开检查会漏什么」的表。
-  if (!AUTHORITY_PATTERN.test(authority)) return '';
+  const auth = authority.match(AUTHORITY_PATTERN);
+  if (!auth) return '';
+
+  // 端口是纯数字段，在两种解析里语义一致，单独校验数值范围不会引入解析分歧。
+  // 超出 65535 时加载端判 URL 无效 → 显示加载失败图而不是我们想要的占位图。
+  if (auth[1] !== undefined && Number(auth[1]) > MAX_PORT) return '';
 
   if (!OBJECT_KEY_PATTERN.test(path)) return '';
 
