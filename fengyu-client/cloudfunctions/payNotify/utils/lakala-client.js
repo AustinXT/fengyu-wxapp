@@ -178,6 +178,7 @@ async function requestPreorder({
   notifyUrl,
   subAppid, openid,
   timeoutExpressMin = 10,
+  timeoutMs,
 }) {
   if (!merchantNo) throw new Error('INVALID_PARAMS: LAKALA_PREORDER_MERCHANT_NO_REQUIRED')
   if (!termNo) throw new Error('INVALID_PARAMS: LAKALA_PREORDER_TERM_NO_REQUIRED')  // 聚合主扫 term_no 必填
@@ -219,7 +220,7 @@ async function requestPreorder({
     reqData.acc_busi_fields = accBusi
   }
 
-  const resp = await request({ path: '/v3/labs/trans/preorder', reqData })
+  const resp = await request({ path: '/v3/labs/trans/preorder', reqData, timeoutMs })
   if (!resp.ok) {
     throw new Error(`INVALID_STATE: LAKALA_PREORDER_FAILED: ${resp.code} ${resp.msg || ''}`)
   }
@@ -281,6 +282,7 @@ async function requestAlipayShareCode({
   merchantNo, termNo, outTradeNo,
   totalAmountFen, requestIp,
   source, bizLink, sellerId, codeValidPeriodSec,
+  timeoutMs,
 }) {
   if (!merchantNo) throw new Error('INVALID_PARAMS: LAKALA_SHARE_CODE_MERCHANT_NO_REQUIRED')
   if (!termNo) throw new Error('INVALID_PARAMS: LAKALA_SHARE_CODE_TERM_NO_REQUIRED')
@@ -309,7 +311,7 @@ async function requestAlipayShareCode({
       await new Promise((r) => setTimeout(r, 1000))  // 1s 退避
     }
     try {
-      const resp = await request({ path: '/v3/labs/trans/share_code', reqData })
+      const resp = await request({ path: '/v3/labs/trans/share_code', reqData, timeoutMs })
       if (!resp.ok) {
         lastErr = new Error(`INVALID_STATE: LAKALA_SHARE_CODE_FAILED: ${resp.code} ${resp.msg || ''}`)
         continue

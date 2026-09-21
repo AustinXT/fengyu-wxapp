@@ -26,15 +26,17 @@ const { URL } = require('url')
 // 读取开销可忽略，但这让「未配置时退回原行为」那条分支在单测里可被真实触发
 // （模块级常量无法在测试中改写）。
 //
-// 50s：`order.voidPaymentIntent` 在 clientApi 侧最多串行走三次拉卡拉往返
-// （queryTrade → closeTrade → 复核 queryTrade）。
+// 25s：`order.voidPaymentIntent` 在 clientApi 侧最多串行走三次拉卡拉往返
+// （queryTrade → closeTrade → 复核 queryTrade），每次 7s 预算，合计约 21s。
 //
-// 这个值要同时夹在两个平台超时之间，改任一个都要回来核对（双谱系评审 round-1 踩到）：
-//   - 必须 **小于 staffApi 自己的函数超时**（cloudbaserc `timeout`，本次已 30→60），
-//     否则 staffApi 先被平台干掉，店员看到超时而 clientApi 可能已经释放成功；
-//   - clientApi 侧的函数超时是 60s，其 void 路径给每次渠道调用设了 12s 预算
-//     （见 routes/order.js 的 LAKALA_VOID_CALL_TIMEOUT_MS），三次合计约 36s，留有余量。
-const DEFAULT_TIMEOUT_MS = 50000
+// ⚠️ 这个值**按线上 staffApi 实际 30s 的函数超时来定，不是按 cloudbaserc 模板里的 60s**
+// （双谱系评审 round-6）：`tcb fn code update` 只推代码，**不会更新已存在函数的 timeout**，
+// 所以模板改成 60 对存量函数无效，线上仍是 30s。把桥设成 50s 会让 staffApi 先被平台
+// 硬杀——那正是「渠道意图已释放、本地订单却没关」的来源。
+//
+// 25s 的设计在两种情况下都成立：线上仍是 30s 时留 5s 余量；将来真把函数超时调到 60s，
+// 也只是更宽松。改这里或改 clientApi 的 LAKALA_VOID_CALL_TIMEOUT_MS，两边都要回来核对。
+const DEFAULT_TIMEOUT_MS = 25000
 
 function postJson(urlStr, body, headers, timeoutMs) {
   return new Promise((resolve, reject) => {

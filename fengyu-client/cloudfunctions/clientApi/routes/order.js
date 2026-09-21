@@ -547,6 +547,7 @@ async function createLakalaPreorder({
       attach: attach || orderNo,
       subAppid, openid,
       timeoutExpressMin: LAKALA_PREORDER_TIMEOUT_MIN,
+      timeoutMs: LAKALA_PREORDER_TIMEOUT_MS,
     })
   } catch (err) {
     // 渠道明确回了业务失败码 → 确定没建单，直接本地释放，不必再跑一遍查单/关单。
@@ -629,7 +630,19 @@ function normalizeTradeState(state) {
  * 干掉，留下「渠道已关单、本地意图没释放」的不一致。12s × 3 ≈ 36s，留足余量。
  * ⚠️ 改这个值或改 cloudbaserc 的函数超时，要回头核对 staffApi 桥的 DEFAULT_TIMEOUT_MS。
  */
-const LAKALA_VOID_CALL_TIMEOUT_MS = 12000
+const LAKALA_VOID_CALL_TIMEOUT_MS = 7000
+
+/**
+ * 预下单 / 吱口令的单次超时预算（双谱系评审 round-6）。
+ *
+ * 整条支付请求必须在 clientApi 的 60s 函数超时内跑完，**且要给失败后的安全释放留出余量**：
+ *   微信：preorder 20s + 释放 7s×3 = 41s
+ *   支付宝：preorder 20s + 吱口令(8s + 1s 退避 + 8s 重试) + 释放 21s ≈ 58s
+ * 用 lakala-client 的默认 30s 会让释放根本跑不完，留下「意图活跃但无快照」——
+ * 正是安全释放本身要消灭的状态。
+ */
+const LAKALA_PREORDER_TIMEOUT_MS = 20000
+const LAKALA_SHARE_CODE_TIMEOUT_MS = 8000
 
 /**
  * 复用旧支付场次的最小剩余有效期。低于这个值不复用——顾客还没输完密码渠道单就过期了，
@@ -1266,6 +1279,7 @@ async function createLakalaAlipayShareCode({
     requestIp: requestIp || '0.0.0.0',
     source: cfg.alipayShareSource,
     bizLink,
+    timeoutMs: LAKALA_SHARE_CODE_TIMEOUT_MS,
   })
   return { shareToken: resp.shareToken, expireDate: resp.expireDate, tradeNo: resp.tradeNo }
 }
