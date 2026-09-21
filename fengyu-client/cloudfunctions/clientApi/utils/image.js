@@ -93,8 +93,14 @@ function decodeParamName(param) {
  * @returns {URL|null} 通过校验的 URL 对象（query 尚未写入规则）；不通过返回 null
  */
 function parseProcessableUrl(url, objectKeyPattern = OBJECT_KEY_PATTERN) {
-  // 只接受正则对象；传别的（含 undefined 以外的假值）一律拒绝，不静默回退到默认
-  if (!(objectKeyPattern instanceof RegExp) || objectKeyPattern.global) return null
+  // 只接受正则对象；传别的一律拒绝，不静默回退到默认。
+  //
+  // ⚠️ 必须同时拒绝 `g` **和** `y` —— 两者都会让 `.test()` 使用并更新 `lastIndex`，
+  // 也就是**同一个输入隔次返回 false**（实测 `ok null ok null`）。
+  // 后果是「偶数张 banner 随机消失」这类完全无规律、极难排查的故障。
+  // 一度只拒了 `g`，sticky 是评审探到的另一半。
+  if (!(objectKeyPattern instanceof RegExp)) return null
+  if (objectKeyPattern.global || objectKeyPattern.sticky) return null
 
   if (typeof url !== 'string' || url.trim() === '') return null
 

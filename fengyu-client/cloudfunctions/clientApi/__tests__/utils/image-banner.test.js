@@ -114,6 +114,38 @@ describe('safeBannerThumbUrl', () => {
   })
 })
 
+describe('parseProcessableUrl 的 objectKeyPattern 参数', () => {
+  const { parseProcessableUrl } = require('../../utils/image')
+
+  /**
+   * ⚠️ `g` 与 `y` 都会让 `.test()` 使用并更新 `lastIndex` —— 同一个输入**隔次返回 false**。
+   * 后果是「偶数张 banner 随机消失」这类无规律、极难排查的故障。
+   * 一度只拒了 `g`；sticky 是双谱系评审探出来的另一半。
+   */
+  test.each([
+    ['g', /^\/fengyu-client\/banner\/banner\d+\.jpg$/gi],
+    ['y (sticky)', /^\/fengyu-client\/banner\/banner\d+\.jpg$/iy],
+  ])('拒绝带 %s 标志的正则（.test() 有状态）', (_label, re) => {
+    // 连调 4 次都必须是 null；只拒一半时会是 ok/null 交替
+    for (let i = 0; i < 4; i += 1) {
+      expect(parseProcessableUrl(BANNER, re)).toBeNull()
+    }
+  })
+
+  test('拒绝非正则，不静默回退到默认白名单', () => {
+    for (const bad of [null, '', 'banner', {}, [], 0]) {
+      expect(parseProcessableUrl(BANNER, bad)).toBeNull()
+    }
+  })
+
+  test('无状态正则连调结果恒定', () => {
+    const re = /^\/fengyu-client\/banner\/banner\d+\.jpg$/i
+    const out = [0, 1, 2, 3].map(() => (parseProcessableUrl(BANNER, re) ? 'ok' : 'null'))
+    expect(new Set(out).size).toBe(1)
+    expect(out[0]).toBe('ok')
+  })
+})
+
 describe('bannerSourceUrl 与白名单同源', () => {
   /**
    * 目录名在「源 URL 模板」和「白名单正则」里各写一次，漏改一处 = 全站轮播消失。
