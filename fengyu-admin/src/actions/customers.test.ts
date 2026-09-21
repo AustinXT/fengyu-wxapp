@@ -602,6 +602,63 @@ describe('updateCustomer — 校验 + scope + 错误处理', () => {
     ;(isInScope as any).mockReturnValue(true)
   })
 
+  it('绑定美容师：值未变且**合法** → 也不写回（竞态回滚的高频形态）', async () => {
+    // 前端无条件重发 + expectedUpdatedAt 可缺省 ⇒ 两名员工并发编辑同一顾客
+    // （一个改绑定、一个改备注）就会把别人刚改的绑定回滚掉，且 logUpdate 差异为零、审计看不见。
+    // 这一支不需要脏值，是日常路径，比「未变且无效」那支更常触发。
+    ;(isAdminScope as any).mockReturnValue(false)
+    ;(isInScope as any).mockReturnValue(true)
+    let selectCall = 0
+    ;(db.select as any).mockImplementation(() => {
+      selectCall++
+      const rows = selectCall === 1
+        ? [{ userId: 'user-1', boundEmployeeId: 'EMP-1', boundEmployeeName: '王美容师' }]
+        : [{ name: '王美容师', storeId: 'store-1' }]
+      const chain: any = {}
+      chain.from = vi.fn().mockReturnValue(chain)
+      chain.where = vi.fn().mockReturnValue(chain)
+      chain.limit = vi.fn().mockResolvedValue(rows)
+      return chain
+    })
+    const where = vi.fn().mockResolvedValue({ count: 1 })
+    const set = vi.fn().mockReturnValue({ where })
+    ;(db.update as any).mockReturnValue({ set })
+
+    const result = await updateCustomer('user-1', { notes: '只改备注', boundEmployeeId: 'EMP-1' })
+
+    expect(result.success).toBe(true)
+    const setArg = set.mock.calls[0][0]
+    expect(setArg).not.toHaveProperty('boundEmployeeId')
+    expect(setArg).not.toHaveProperty('boundEmployeeName')
+    expect(setArg).toMatchObject({ notes: '只改备注' })
+  })
+
+  it('绑定美容师：null-over-null → 也不写回（否则可静默撤销窗口内的新绑定）', async () => {
+    ;(isInScope as any).mockReturnValue(true)
+    mockSelectBefore([{ userId: 'user-1', boundEmployeeId: null, boundEmployeeName: null }])
+    const where = vi.fn().mockResolvedValue({ count: 1 })
+    const set = vi.fn().mockReturnValue({ where })
+    ;(db.update as any).mockReturnValue({ set })
+
+    const result = await updateCustomer('user-1', { notes: '只改备注', boundEmployeeId: null })
+
+    expect(result.success).toBe(true)
+    const setArg = set.mock.calls[0][0]
+    expect(setArg).not.toHaveProperty('boundEmployeeId')
+    expect(setArg).not.toHaveProperty('boundEmployeeName')
+  })
+
+  it('绑定美容师：非字符串入参 → 业务拒绝，不炸成 500', async () => {
+    // Server Action 是可直调的 RPC，TS 形参类型对运行时实参无约束力。
+    ;(isInScope as any).mockReturnValue(true)
+    mockSelectBefore([{ userId: 'user-1', boundEmployeeId: null }])
+
+    const result = await updateCustomer('user-1', { boundEmployeeId: 12345 as any })
+
+    expect(result).toEqual({ success: false, message: '绑定美容师参数不合法' })
+    expect(db.update).not.toHaveBeenCalled()
+  })
+
   it('只提交未变的存量脏值（无其它字段）→ 无操作成功，不触发 Drizzle 的 No values to set', async () => {
     // delete 掉唯一字段后 updateData 为空，Drizzle 对空集合是抛异常而非 no-op。
     ;(isAdminScope as any).mockReturnValue(false)
@@ -620,10 +677,12 @@ describe('updateCustomer — 校验 + scope + 错误处理', () => {
     })
 
     const result = await updateCustomer('user-1', { boundEmployeeId: 'EMP-STALE' })
+    const { revalidatePath } = await import('next/cache')
 
     expect(result.success).toBe(true)
     expect(db.update).not.toHaveBeenCalled()
     expect(logUpdate).not.toHaveBeenCalled()
+    expect(revalidatePath).not.toHaveBeenCalled()  // 零写入就不该刷缓存
     ;(isInScope as any).mockReturnValue(true)
   })
 
@@ -632,10 +691,12 @@ describe('updateCustomer — 校验 + scope + 错误处理', () => {
     mockSelectBefore([{ userId: 'user-1', boundEmployeeId: 'EMP-1' }])
 
     const result = await updateCustomer('user-1', { boundEmployeeId: undefined })
+    const { revalidatePath } = await import('next/cache')
 
     expect(result.success).toBe(true)
     expect(db.update).not.toHaveBeenCalled()
     expect(logUpdate).not.toHaveBeenCalled()
+    expect(revalidatePath).not.toHaveBeenCalled()
   })
 
   it('绑定美容师：值变了 + 目标不合规 → 仍然拒绝（越权路径没被放宽）', async () => {
@@ -998,23 +1059,49 @@ describe('createCustomer — 输入校验 + 错误处理', () => {
   it('建档：合法但带空白的 employee/store ID → 查询、scope 入参、写入三处都用归一值', async () => {
     // createCustomer 自己那两行归一（nextBoundStoreId / nextBoundEmployeeId = resolved.employeeId）
     // 若被回退成原始入参，空串用例和 helper 用例都抓不到 —— 需要这条独立锁住。
+    //
+    // ⚠️ 顾客绑定门店与员工所属门店**必须用不同 ID**：两者同值时，
+    // 「门店 guard 收到归一值」这条断言会被 helper 随后用员工行 storeId 发起的
+    // 第二次同值调用满足 → 门店 guard 就算错用未归一值也恒真（codex 谱系指出）。
     ;(isAdminScope as any).mockReturnValue(false)
     ;(isInScope as any).mockReturnValue(true)
-    mockPhoneCheckThenEmployee([{ name: '王美容师', storeId: 'store-1' }])
+    mockPhoneCheckThenEmployee([{ name: '王美容师', storeId: 'store-EMP' }])
     const values = vi.fn().mockResolvedValue({})
     ;(db.insert as any).mockReturnValue({ values })
 
     const result = await createCustomer({
       name: '张三', phone: '13812345678',
-      boundStoreId: '  store-1  ', boundEmployeeId: '  EMP-1  ',
+      boundStoreId: '  store-CUST  ', boundEmployeeId: '  EMP-1  ',
     })
 
     expect(result.success).toBe(true)
-    expect(isInScope).toHaveBeenCalledWith(mockSession, 'store-1')   // 不是 '  store-1  '
+    // 按调用顺序断言：第 1 次是门店 guard，必须收到归一后的绑定门店
+    expect((isInScope as any).mock.calls[0]).toEqual([mockSession, 'store-CUST'])
+    expect((isInScope as any).mock.calls[1]).toEqual([mockSession, 'store-EMP'])
     expect(eq).toHaveBeenCalledWith('employee_id', 'EMP-1')
     expect(values).toHaveBeenCalledWith(expect.objectContaining({
-      boundStoreId: 'store-1',
+      boundStoreId: 'store-CUST',
       boundEmployeeId: 'EMP-1',
+    }))
+  })
+
+  it('建档时 boundEmployeeId 为纯空白 → 按 null 建档，不查员工表也不报「请选择美容师」', async () => {
+    // 外层若回退成 `data.boundEmployeeId || null`，'   ' 是 truthy 会被送进 helper
+    // 撞上空值挡板 → 建档直接失败。带空白的合法值那条用例抓不到这个退化。
+    ;(isInScope as any).mockReturnValue(true)
+    ;(db.select as any).mockImplementation(makeSelectChain([]))
+    const values = vi.fn().mockResolvedValue({})
+    ;(db.insert as any).mockReturnValue({ values })
+
+    const result = await createCustomer({
+      name: '张三', phone: '13812345678', boundStoreId: 'store-1', boundEmployeeId: '   ',
+    })
+
+    expect(result.success).toBe(true)
+    expect(db.select).toHaveBeenCalledTimes(1) // 只有手机号查重，没查员工表
+    expect(values).toHaveBeenCalledWith(expect.objectContaining({
+      boundEmployeeId: null,
+      boundEmployeeName: null,
     }))
   })
 

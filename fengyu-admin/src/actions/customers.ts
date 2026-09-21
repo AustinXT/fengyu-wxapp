@@ -1271,40 +1271,54 @@ export const updateCustomer = withPermission(
   // （上面的 `filter(value !== undefined)`）已经确立了「显式 undefined = 不更新」的规则，
   // 用 `in` 会让 `{ boundEmployeeId: undefined }` 落进归一化分支被当成解绑、意外清空绑定。
   if (data.boundEmployeeId !== undefined) {
+    // Server Action 是带 cookie 即可直调的 RPC，TS 形参类型对运行时实参没有约束力。
+    // 非字符串会在下面 `?.trim()` 处炸成 TypeError → 500，这里提前转成业务拒绝。
+    if (data.boundEmployeeId !== null && typeof data.boundEmployeeId !== 'string') {
+      return { success: false, message: '绑定美容师参数不合法' }
+    }
+
+    /*
+     * 「值是否变了」必须拿**两边都归一过**的值比较。库里存的是未归一值：
+     * sync-workfine.js:509 只做了 `RTRIM(UDF_S_6444)`（**没有 LTRIM**），
+     * 所以 `' EMP-1'` 这种左带空白的存量值真实存在。只归一新值会把它判成「值已变」
+     * → 又把整张表单锁死。
+     */
     const nextBoundEmployeeId = data.boundEmployeeId?.trim() || null
-    if (nextBoundEmployeeId === null) {
+    const beforeBoundEmployeeId = before.boundEmployeeId?.trim() || null
+
+    if (nextBoundEmployeeId === beforeBoundEmployeeId) {
+      /*
+       * 值没变 → **两列一律不碰**（不是「写回同值」）。这一支覆盖三种情形：
+       * 合法未变 / 存量脏值未变 / null-over-null。
+       *
+       * 闸门 2 两个谱系先后命中同一条竞态，第二轮才发现它**不止存在于失败分支**：
+       * `updateData` 由上面的 `Object.fromEntries` 预先带入了 `boundEmployeeId`，
+       * 只要把它留在 SET 里，配合可缺省的 `expectedUpdatedAt`
+       * （缺省时 whereConditions 退化为 `userId + scopeCond`、无任何并发守卫）就有：
+       *   ① 请求读到绑定值 V
+       *   ② 窗口内合法方（前台 assignCustomer / 总部修正 / 转店流程）把绑定改成 W
+       *   ③ 本请求的 UPDATE 落地，把 W **回滚**成 V，且返回 success
+       *   ④ logUpdate 拿请求开头读到的 before(=V) 与 updateData(=V) 比对，差异为零
+       *      → 这次回滚在审计里完全不可见
+       * 而前端 handleSave 对该字段是无条件重发，所以这**不需要刻意攻击**：
+       * 两名员工并发编辑同一顾客（一个改绑定、一个改备注）就会踩中。
+       *
+       * 代价是放弃两件「顺带」行为，均为有意取舍：
+       *   - 惰性归一：带空白的存量值不再被本路径顺手修正 —— 那本就该由 sync 脚本补 LTRIM
+       *   - 姓名快照刷新：值未变时不再重查姓名 —— 员工改名的同步不该挂在顾客编辑上
+       * boundEmployeeName 一并删是防御性的：它不在 allowedUpdateFields 白名单里、
+       * 客户端注入会被 unexpectedFields 挡回，但白名单若日后放开，这里不能跟着漏。
+       */
+      delete updateData.boundEmployeeId
+      delete updateData.boundEmployeeName
+    } else if (nextBoundEmployeeId === null) {
       updateData.boundEmployeeId = null
       updateData.boundEmployeeName = null
     } else {
       const resolved = await resolveBoundEmployee(session, nextBoundEmployeeId)
-      // 「值是否变了」必须拿**同样归一过**的两边比较。库里存的是未归一值：
-      // sync-workfine.js:509 只做了 `RTRIM(UDF_S_6444)`（**没有 LTRIM**），
-      // 所以 `' EMP-1'` 这种左带空白的值真实存在。拿归一后的新值去比未归一的旧值，
-      // 带空白的存量脏值会被判成「值已变」→ 又把整张表单锁死，等于 P1-1 的回归。
-      const beforeBoundEmployeeId = before.boundEmployeeId?.trim() || null
-      if (resolved.ok) {
-        updateData.boundEmployeeId = resolved.employeeId
-        updateData.boundEmployeeName = resolved.name
-      } else if (nextBoundEmployeeId !== beforeBoundEmployeeId) {
-        return { success: false, message: resolved.message }
-      } else {
-        /*
-         * 值未变 + 存量脏值 → **两列都不碰**，而不是「写回同值」。
-         *
-         * 闸门 2 两个谱系独立命中：`updateData` 由上面的 `Object.fromEntries` 预先带入了
-         * `boundEmployeeId`，若不 delete，SET 子句里就带着这个未授权 ID。
-         * `expectedUpdatedAt` 是**可选**参数，缺省时 whereConditions 退化为
-         * `userId + scopeCond`、无任何并发守卫，于是：
-         *   ① 请求读到脏值 E → 因「值未变」放行
-         *   ② 窗口内合法方（总部修正 / 前台 assignCustomer / 转店流程）把绑定改成 F
-         *   ③ 本请求的 UPDATE 落地，把 F **回滚**成 E，且返回 success
-         *   ④ logUpdate 拿请求开头读到的 before(=E) 与 updateData(=E) 比对，差异为零
-         *      → 这次回滚在审计里完全不可见
-         * 反复重放即可让总部的修正永远无法持久。delete 掉在非并发下与写回同值等价，
-         * 是无语义损失的纯收紧。
-         */
-        delete updateData.boundEmployeeId
-      }
+      if (!resolved.ok) return { success: false, message: resolved.message }
+      updateData.boundEmployeeId = resolved.employeeId
+      updateData.boundEmployeeName = resolved.name
     }
   }
 
