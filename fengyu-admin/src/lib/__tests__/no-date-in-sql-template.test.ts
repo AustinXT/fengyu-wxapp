@@ -38,7 +38,9 @@ function isExempt(sf: ts.SourceFile): boolean {
     (st) =>
       ts.isImportDeclaration(st) &&
       ts.isStringLiteral(st.moduleSpecifier) &&
-      st.moduleSpecifier.text === 'vitest',
+      st.moduleSpecifier.text === 'vitest' &&
+      // `import type { Mock } from 'vitest'` 不算 —— 生产文件带个 type-only import 就免检太松
+      !st.importClause?.isTypeOnly,
   )
 }
 
@@ -95,11 +97,26 @@ function resolveGlobalDateType(program: ts.Program, checker: ts.TypeChecker): ts
  * `any` / `never` 必须显式跳过：它们可赋值给任何类型，不跳会把全部 `${any}` 插值报成缺陷
  * （生产代码里确实有若干处）。这是已知盲区 —— 别在 `` sql`` `` 模板里 `as any`。
  */
-function containsDateType(type: ts.Type, checker: ts.TypeChecker, dateType: ts.Type): boolean {
+function containsDateType(
+  type: ts.Type,
+  checker: ts.TypeChecker,
+  dateType: ts.Type,
+  depth = 0,
+): boolean {
   const parts = type.isUnion() ? type.types : [type]
   return parts.some((p) => {
     if (p.flags & (ts.TypeFlags.Any | ts.TypeFlags.Never | ts.TypeFlags.Unknown)) return false
-    return checker.isTypeAssignableTo(p, dateType)
+    if (checker.isTypeAssignableTo(p, dateType)) return true
+    // 数组/元组也要看元素：`WHERE col = ANY(${dateArray})` 里 `Date[]` 不可赋值给 `Date`，
+    // 但 drizzle 连数组元素级 serializer 也一并覆盖了，Bind 阶段照样出问题。
+    // ⚠ 只递归数组/元组的元素类型，**不要**递归泛型实参 —— `SQL<Date>` 是安全形态，
+    // 递归进去会把它误报成缺陷。
+    if (depth < 3 && (checker.isArrayType(p) || checker.isTupleType(p))) {
+      return checker
+        .getTypeArguments(p as ts.TypeReference)
+        .some((arg) => containsDateType(arg, checker, dateType, depth + 1))
+    }
+    return false
   })
 }
 
