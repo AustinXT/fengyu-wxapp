@@ -44,6 +44,22 @@ export interface Cart {
 }
 
 /**
+ * issue #230：购物车是 localStorage **持久化快照** —— `coverImage` 在加购那一刻
+ * 从接口返回值拷贝进来，之后不再回源。
+ *
+ * 云函数已改为只下发缩略 URL，但**本次发版之前**加购的条目里躺的仍是原图 URL，
+ * 服务端改造对它们完全不起作用（这也是 lazy-load 救不了的：购物车条目少，首屏即全部可见）。
+ *
+ * 这里只做**拒绝**不做构造：不含缩略参数的一律置空，让它走已有的 cover-placeholder 分支。
+ * 刻意不在前端重拼 URL —— URL 构造必须由服务端完全掌控（前端拼一份就等于多一处会漂移的规则）。
+ *
+ * 判据取 `imageMogr2/thumbnail/`：box 模式（`NxN`）与面积模式（`N@`）都带这个前缀。
+ */
+export function sanitizeCoverImage(url: unknown): string {
+  return typeof url === 'string' && url.includes('imageMogr2/thumbnail/') ? url : '';
+}
+
+/**
  * 获取购物车数据
  */
 export function getCart(): Cart {
@@ -56,6 +72,10 @@ export function getCart(): Cart {
     data.items = data.items.filter(
       (i: any) => i && typeof i.skuId === 'string' && typeof i.price === 'number' && typeof i.quantity === 'number'
     );
+    // 存量条目的封面可能是未缩略的原图 URL，置空走占位图
+    data.items.forEach((i: CartItem) => {
+      i.coverImage = sanitizeCoverImage(i.coverImage);
+    });
     return data;
   } catch {
     return { items: [], updatedAt: Date.now() };

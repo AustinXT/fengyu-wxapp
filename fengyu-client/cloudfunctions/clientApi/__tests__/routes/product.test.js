@@ -556,6 +556,8 @@ describe('issue #230：商品封面图缩略下发', () => {
 
   const LARGE = 'imageMogr2/thumbnail/1080x1080'
   const SMALL = 'imageMogr2/thumbnail/400x400'
+  /** 详情长图走面积模式（总像素约束），不是 box —— 见下方「长图必须用面积模式」用例 */
+  const AREA = 'imageMogr2/thumbnail/2250000@'
 
   function mockProductRow(overrides = {}) {
     return {
@@ -610,7 +612,7 @@ describe('issue #230：商品封面图缩略下发', () => {
     expect(ctx.result.sku.cover_image).toBe(`${COS_COVER_URL}?${LARGE}`)
   })
 
-  test('spuDetail：头图与 detail_images 逐个缩略', async () => {
+  test('spuDetail：头图走 box 档，detail_images 走面积档', async () => {
     pg.query.mockResolvedValueOnce([mockProductRow({
       detail_images: [COS_DETAIL_URL, COS_COVER_URL],
     })])
@@ -621,9 +623,32 @@ describe('issue #230：商品封面图缩略下发', () => {
 
     expect(ctx.result.spu.cover_image).toBe(`${COS_COVER_URL}?${LARGE}`)
     expect(ctx.result.spu.detail_images).toEqual([
-      `${COS_DETAIL_URL}?${LARGE}`,
-      `${COS_COVER_URL}?${LARGE}`,
+      `${COS_DETAIL_URL}?${AREA}`,
+      `${COS_COVER_URL}?${AREA}`,
     ])
+  })
+
+  test('detail_images 必须走面积模式，不能退回 box——box 会把长图压糊', async () => {
+    // 生产 14/14 张详情图高宽比 3.56~5.42（如 1389×5547、1737×7065），
+    // 前端 mode="widthFix" 满屏渲染。
+    // box 的 contain 语义会把 1737×7065 压成 266×1080（实测），
+    // widthFix 再拉回 1290px = 放大 4.8 倍，长图里的文字直接糊掉。
+    // 面积模式下同一张图是 743×3025（实测），放大 1.7 倍。
+    //
+    // 这条钉住「规则形状」而不只是数值：任何人把 detail_images 改回 box 立刻转红。
+    pg.query.mockResolvedValueOnce([mockProductRow({
+      detail_images: [COS_DETAIL_URL],
+    })])
+    pg.query.mockResolvedValueOnce([])
+
+    const ctx = createCtx({ payload: { productId: 'p1' } })
+    await routes.spuDetail(ctx)
+
+    const url = ctx.result.spu.detail_images[0]
+    expect(url).toMatch(/imageMogr2\/thumbnail\/\d+@$/)
+    expect(url).not.toMatch(/thumbnail\/\d+x\d+/)
+    // 必须是不带 `!` 的形式：实测 `thumbnail/!<Area>@` 在本项目 bucket 上原样返回原图
+    expect(url).not.toContain('!')
   })
 
   test('spuDetail：无法缩略的 detail_images 被剔除而不是留 null', async () => {
@@ -636,7 +661,7 @@ describe('issue #230：商品封面图缩略下发', () => {
     const ctx = createCtx({ payload: { productId: 'p1' } })
     await routes.spuDetail(ctx)
 
-    expect(ctx.result.spu.detail_images).toEqual([`${COS_DETAIL_URL}?${LARGE}`])
+    expect(ctx.result.spu.detail_images).toEqual([`${COS_DETAIL_URL}?${AREA}`])
   })
 
   test('spuDetail：detail_images 为 NULL 时归一为空数组', async () => {

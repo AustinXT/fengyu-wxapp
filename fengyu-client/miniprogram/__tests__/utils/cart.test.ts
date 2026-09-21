@@ -188,3 +188,51 @@ describe('setAllSelected', () => {
     expect((items[0] as any).selected).toBeUndefined()
   })
 })
+
+/**
+ * issue #230：购物车是 localStorage 持久化快照，`coverImage` 在加购那一刻拷贝进来，
+ * 之后不再回源。云函数改为只下发缩略 URL 后，**发版前**加购的条目里仍是原图 URL ——
+ * 服务端改造对它们不起作用，lazy-load 也救不了（购物车条目少，首屏即全部可见）。
+ *
+ * 这里只做**拒绝**不做构造：不含缩略参数的一律置空走占位图。
+ * 刻意不在前端重拼 URL —— URL 构造必须由服务端完全掌控。
+ */
+describe('issue #230：存量购物车快照的封面净化', () => {
+  const COS = 'https://x.tcb.qcloud.la/product-covers/a.jpg'
+
+  function seedStorage(items: any[]) {
+    ;(wx.setStorageSync as any)('cart', { items, updatedAt: Date.now() })
+  }
+
+  test('box 模式的缩略 URL 保留', () => {
+    seedStorage([{ skuId: 's1', price: 100, quantity: 1, coverImage: `${COS}?imageMogr2/thumbnail/1080x1080` }])
+    expect(getCart().items[0].coverImage).toBe(`${COS}?imageMogr2/thumbnail/1080x1080`)
+  })
+
+  test('面积模式的缩略 URL 同样保留', () => {
+    // 判据必须同时认 box(`NxN`) 与面积(`N@`) 两种形态，否则详情图链路会被误杀
+    seedStorage([{ skuId: 's1', price: 100, quantity: 1, coverImage: `${COS}?imageMogr2/thumbnail/2250000@` }])
+    expect(getCart().items[0].coverImage).toBe(`${COS}?imageMogr2/thumbnail/2250000@`)
+  })
+
+  test('未缩略的存量原图 URL 被置空', () => {
+    seedStorage([{ skuId: 's1', price: 100, quantity: 1, coverImage: COS }])
+    expect(getCart().items[0].coverImage).toBe('')
+  })
+
+  test('带其它处理参数的 URL 也被置空（imageView2 是放大通道）', () => {
+    seedStorage([{ skuId: 's1', price: 100, quantity: 1, coverImage: `${COS}?imageView2/1/w/50000` }])
+    expect(getCart().items[0].coverImage).toBe('')
+  })
+
+  test('非字符串 / 缺字段一律归一为空串，不抛', () => {
+    seedStorage([
+      { skuId: 's1', price: 100, quantity: 1, coverImage: null },
+      { skuId: 's2', price: 100, quantity: 1 },
+      { skuId: 's3', price: 100, quantity: 1, coverImage: 42 },
+    ])
+    for (const item of getCart().items) {
+      expect(item.coverImage).toBe('')
+    }
+  })
+})

@@ -6,8 +6,10 @@
 const pg = require('../db/pg')
 const {
   safeThumbUrl,
+  safeThumbUrlByArea,
   PRODUCT_THUMB_BOX_SMALL,
   PRODUCT_THUMB_BOX_LARGE,
+  PRODUCT_DETAIL_IMAGE_MAX_PIXELS,
 } = require('../utils/image')
 
 /**
@@ -531,13 +533,18 @@ async function spuDetail(ctx) {
   ctx.result = {
     spu: {
       ...product,
-      // issue #230：头图与详情长图都是整屏宽度展示，同取大档。
-      // detail_images 是 text[]，逐个缩略后 filter 掉无法保证的那些——
-      // 详情长图没有占位分支，留 null 会渲染成裂图。
+      // issue #230：头图是常规比例图（生产 44/44 长宽比恒为 1.56），走 box 档。
       cover_image: safeThumbUrl(product.cover_image, PRODUCT_THUMB_BOX_LARGE),
+      // 详情长图走**面积模式**而不是 box：生产 14/14 张高宽比 3.56~5.42，
+      // box 的 contain 语义会把它们压到 199~302px 宽，前端 mode="widthFix"
+      // 再拉回满屏等于放大 4~6 倍，文字糊掉。面积模式直接封顶总像素（=解码内存）
+      // 且不破坏长宽比。
+      //
+      // filter 掉无法保证的那些——详情长图是 wx:for 直接渲染、没有占位分支，
+      // 留 null 会变成裂图。
       detail_images: Array.isArray(product.detail_images)
         ? product.detail_images
-            .map(img => safeThumbUrl(img, PRODUCT_THUMB_BOX_LARGE))
+            .map(img => safeThumbUrlByArea(img, PRODUCT_DETAIL_IMAGE_MAX_PIXELS))
             .filter(Boolean)
         : [],
       skuList,
