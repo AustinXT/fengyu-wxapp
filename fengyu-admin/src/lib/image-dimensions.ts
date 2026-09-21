@@ -120,6 +120,8 @@ function parseWebp(buf: Buffer): ImageDimensions | null {
  * @returns 解析成功返回宽高；格式不支持或 header 损坏返回 null（不抛异常）
  */
 export function getImageDimensions(buffer: Buffer): ImageDimensions | null {
+  // try/catch 是纯兜底：四个 parser 各自已在开头做长度校验，当前没有已知的抛出路径。
+  // 留着是因为调用方（上传接口）宁可判定「解析失败 → 拒绝」，也不该因解析器异常整个 500。
   try {
     const parsed =
       parsePng(buffer) ??
@@ -128,15 +130,8 @@ export function getImageDimensions(buffer: Buffer): ImageDimensions | null {
       parseWebp(buffer)
 
     if (!parsed) return null
-    // 宽高必须是正整数，否则视为解析失败
-    if (
-      !Number.isInteger(parsed.width) ||
-      !Number.isInteger(parsed.height) ||
-      parsed.width <= 0 ||
-      parsed.height <= 0
-    ) {
-      return null
-    }
+    // 宽高为 0 的畸形 header（readUIntXX 恒返回非负整数，无需再判整数性）
+    if (parsed.width <= 0 || parsed.height <= 0) return null
     return parsed
   } catch {
     return null
