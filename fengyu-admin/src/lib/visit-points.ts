@@ -7,6 +7,7 @@
 
 import { sql } from 'drizzle-orm'
 import { db } from '@/db'
+import { beijingTs } from '@/lib/db-time'
 import { DEPOSIT_REFUND_REMARK } from '@/lib/service-remark'
 
 type AdminTx = Parameters<Parameters<typeof db.transaction>[0]>[0]
@@ -98,11 +99,15 @@ export async function grantVisitPointsEntry(
   }
 
   const externalRef = buildVisitPointsExternalRef(userId, serviceDate)
+  // ⚠ `now` 是 JS Date，**不能**直接插值：admin 走 drizzle + postgres.js，Bind 阶段对 Date 实例抛
+  // ERR_INVALID_ARG_TYPE（staff/client 两端用原生 pg，能吃 Date，所以只有本副本需要包装）。
+  // 统一经 `beijingTs()` 落成北京墙钟字面 + AT TIME ZONE，与 cron/steps 的写入范式一致（lib/db-time）。
+  const nowTsSql = beijingTs(now)
   const result = (await executor.execute(sql`
     WITH inserted AS (
       INSERT INTO point_transactions
         (user_id, type, amount, ref_order_id, external_ref, created_at)
-      VALUES (${userId}, '到店赠送', ${amount}, NULL, ${externalRef}, ${now})
+      VALUES (${userId}, '到店赠送', ${amount}, NULL, ${externalRef}, ${nowTsSql})
       ON CONFLICT DO NOTHING
       RETURNING id, amount, created_at
     ),
@@ -117,7 +122,7 @@ export async function grantVisitPointsEntry(
     )
     UPDATE client_wechat_users
        SET points_balance = COALESCE(points_balance, 0) + (SELECT amount FROM inserted),
-           points_updated_at = ${now}
+           points_updated_at = ${nowTsSql}
      WHERE user_id = ${userId}
        AND EXISTS (SELECT 1 FROM inserted)
     RETURNING points_balance
