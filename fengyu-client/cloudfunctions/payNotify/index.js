@@ -301,9 +301,10 @@ function parseHttpTriggerEvent(event) {
   if (tradeState === 'REFUND' || tradeState === 'PART_REFUND') {
     return { _lakalaCallbackAcked: true, ackBody: { code: 'SUCCESS', message: '退款回调已确认' } }
   }
-  // 明确失败/关闭：交给 main 按当前 out_trade_no CAS 释放活动意图后再 ack。
+  // 明确失败/关闭/撤销：交给 main 按当前 out_trade_no CAS 释放活动意图后再 ack。
   // 不能在 parse 阶段直接 ack，否则受限回款会永久卡在 PAYMENT_INTENT_ACTIVE。
-  if (tradeState === 'FAIL' || tradeState === 'CLOSE') {
+  // REVOKED（当日交易撤销）同属不可再支付的终态，#214 之前被漏判 → 撤销单永久卡死。
+  if (tradeState === 'FAIL' || tradeState === 'CLOSE' || tradeState === 'REVOKED') {
     return {
       orderNo: outTradeNo,
       tradeState,
@@ -508,7 +509,11 @@ async function resolveLakalaMerchantForReconcile(storeId) {
  * 扫描「拉卡拉下单成功 + received=0 + 待支付/部分支付 + 90s~30min」的订单，主动 queryTrade 查真实状态，
  * SUCCESS 则 cloud.callFunction 自调 payNotify main（event 入口）触发与回调同款的幂等入账。
  *
- * 窗口：90s 下界给正常回调留时间（避免与前端轮询/正常回调抢）；30min 上界超窗已非时序问题，停止避免无限扫。
+ * 窗口：90s 下界给正常回调留时间（避免与前端轮询/正常回调抢）；2h 上界只为防无限扫。
+ * 上界原本是 30min，但渠道单要等 timeout_express(10min) 超时转 CLOSE 后才可能被这里释放，
+ * 中间任何一次 queryTrade 失败就可能错过窗口 → 支付意图永久残留，谁也发不了新支付、
+ * 关不掉订单（issue #214 的「永久卡死」路径）。扫描目标集本就很小（仅有活动意图的待支付单
+ * + LIMIT 20），放宽上界的代价可忽略。
  * 与前端 confirmPayment 轮询互补：前端覆盖用户在线场景，本任务覆盖用户付款后长时间不回订单页的兜底。
  * 两者最终都走 payNotify 幂等入账，重复安全（uq_sop_txn / uq_sop_first_payment / CAS 守卫）。
  *
@@ -536,7 +541,7 @@ async function runPaymentReconcile() {
        FROM sale_orders
       WHERE lakala_out_order_no IS NOT NULL
         AND status IN ('待支付', '部分支付')
-        AND updated_at > now() - interval '30 minutes'
+        AND updated_at > now() - interval '2 hours'
         AND updated_at < now() - interval '90 seconds'
       ORDER BY updated_at ASC
       LIMIT 20`)
@@ -552,7 +557,8 @@ async function runPaymentReconcile() {
         termNo: merchant.termNo,
         outTradeNo: o.lakala_out_order_no,
       })
-      if (resp && ['FAIL', 'CLOSE'].includes(resp.tradeState)) {
+      // REVOKED（当日交易撤销）同属可释放终态，#214 之前漏判导致撤销单永久占着支付意图
+      if (resp && ['FAIL', 'CLOSE', 'REVOKED'].includes(resp.tradeState)) {
         await pg.query(
           `UPDATE sale_orders
            SET lakala_out_order_no = NULL, updated_at = NOW()

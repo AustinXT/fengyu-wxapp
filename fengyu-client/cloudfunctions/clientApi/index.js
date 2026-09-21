@@ -23,7 +23,7 @@ const { extractAppVersion } = require('./utils/app-version')
 
 // HTTP 触发器仅放白名单 action（其他即使签对了也 403）
 // 任何新增需要 HTTP 暴露的 action 必须显式加这里
-const HTTP_ACTION_ALLOWLIST = new Set(['auth.uploadStaffAvatar'])
+const HTTP_ACTION_ALLOWLIST = new Set(['auth.uploadStaffAvatar', 'order.voidPaymentIntent'])
 
 // HMAC 时间戳容忍窗口（±5min）
 const HMAC_TIMESTAMP_WINDOW_MS = 5 * 60 * 1000
@@ -70,6 +70,8 @@ const routes = {
   'order.repay': () => require('./routes/order').repay,
   'order.queryLakalaStatus': () => require('./routes/order').queryLakalaStatus,
   'order.confirmPayment': () => require('./routes/order').confirmPayment,
+  // 跨 env 入口：仅供 staffApi 通过 HTTP 触发器 + HMAC 调用，关闭订单前先让渠道关单（#214）
+  'order.voidPaymentIntent': () => require('./routes/order').voidPaymentIntent,
   'appointment.create': () => require('./routes/appointment').create,
   'appointment.list': () => require('./routes/appointment').list,
   'appointment.cancel': () => require('./routes/appointment').cancel,
