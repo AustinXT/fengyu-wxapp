@@ -3,23 +3,28 @@
  *
  * CloudBase 只剩一个 prod 环境后，数据库隔离改由【云函数名】承担：
  * clientApi 连生产库、clientApiDev 连 dev 库，同住一个 env。
- * 选错函数名 = 开发版/体验版直接读写生产数据，且没有任何报错提示。
- * 这里是这条判断在前端的唯一落点。
+ * 选错函数名 = 读写了另一个库，且没有任何报错提示。
+ *
+ * 体验版（trial）走生产库是刻意的：dev 与 prod 共用同一套拉卡拉生产商户凭据，
+ * 体验版下单扣的是真钱，账必须记在 prod 库才对得上。
  */
 
-import { getApiFnName, getCloudEnv, getEnvVersion } from '../../utils/cloud-env'
+import { getApiFnName, getCloudEnv, getEnvVersion, __resetApiFnNameCache } from '../../utils/cloud-env'
 
 function setEnvVersion(version: string | undefined): void {
   const wx = (globalThis as any).wx
   if (version === undefined) {
     delete wx.getAccountInfoSync
-    return
+  } else {
+    wx.getAccountInfoSync = () => ({ miniProgram: { envVersion: version } })
   }
-  wx.getAccountInfoSync = () => ({ miniProgram: { envVersion: version } })
+  // 函数名是 memoize 的（见实现注释：避免热路径抖动导致单次跨库），测试间必须重置
+  __resetApiFnNameCache()
 }
 
 afterEach(() => {
   delete (globalThis as any).wx.getAccountInfoSync
+  __resetApiFnNameCache()
 })
 
 describe('getApiFnName', () => {
@@ -28,9 +33,9 @@ describe('getApiFnName', () => {
     expect(getApiFnName()).toBe('clientApi')
   })
 
-  test('体验版走 clientApiDev —— 运营自测不落生产数据', () => {
+  test('体验版同样走 clientApi —— 扣真钱就得记真账', () => {
     setEnvVersion('trial')
-    expect(getApiFnName()).toBe('clientApiDev')
+    expect(getApiFnName()).toBe('clientApi')
   })
 
   test('开发者工具开发版走 clientApiDev', () => {
@@ -47,13 +52,26 @@ describe('getApiFnName', () => {
     ;(globalThis as any).wx.getAccountInfoSync = () => {
       throw new Error('getAccountInfoSync unavailable')
     }
+    __resetApiFnNameCache()
     expect(getApiFnName()).toBe('clientApiDev')
   })
 
   test('未知版本字符串不得落到生产函数', () => {
-    // 只有精确等于 'release' 才放行——白名单而非黑名单，新增版本态默认走 Dev
+    // 白名单而非黑名单：新增版本态默认走 Dev
     setEnvVersion('some-future-version')
     expect(getApiFnName()).toBe('clientApiDev')
+  })
+
+  test('结果在会话内钉住，不随后续调用重算', () => {
+    // 每个请求都重算的话，一次 getAccountInfoSync 抖动就等于这一个请求跨库——
+    // 正式版用户的订单会静默落进 dev 库，前端还显示成功。
+    setEnvVersion('release')
+    expect(getApiFnName()).toBe('clientApi')
+    // 模拟运行中 API 抖动
+    ;(globalThis as any).wx.getAccountInfoSync = () => {
+      throw new Error('transient failure')
+    }
+    expect(getApiFnName()).toBe('clientApi')
   })
 })
 
