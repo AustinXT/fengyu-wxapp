@@ -41,7 +41,7 @@ metadata:
 | `ENV_PROFILE` | `dev` | `prod` |
 | admin | 发布 | 发布 |
 | analyst | 发布 | 发布 |
-| CloudBase 云函数 | dev env（cloud1-*） | prod env |
+| CloudBase 云函数 | prod env 内的**影子函数** `*Dev`（连 dev 库）<br>`deploy-cloudfunctions.sh dev` | prod env 内的**正式函数**（连 prod 库）<br>`deploy-cloudfunctions.sh prod` |
 | admin 命令 | `deploy-admin.sh dev` | `deploy-admin.sh prod` |
 | analyst 命令 | `deploy-analyst.sh dev` | `deploy-analyst.sh prod` |
 
@@ -57,7 +57,7 @@ metadata:
 - `.claude/skills/remote-deploy/deploy-admin.sh <dev|prod>` — admin 交叉编译 + 远程部署
 - `.claude/skills/remote-deploy/deploy-analyst.sh <dev|prod>` — analyst 交叉编译 + 远程部署（读取同环境 `ANALYST_PUBLIC_ORIGIN`，并校验容器 DB / public origin）
 - `scripts/use-env.sh <dev|prod>` — 切 env + 渲染 cloudbaserc（含 ENV_PROFILE 守卫）
-- `scripts/deploy-cloudfunctions.sh` — 按 `.active` 串行双账号部署 staffApi/clientApi/payNotify
+- `scripts/deploy-cloudfunctions.sh [dev|prod|both]` — 串行双账号部署。**只剩一个 CloudBase 环境（prod）**，dev/prod 靠函数名区分：正式函数 staffApi/clientApi/payNotify 连 prod 库，影子函数 staffApiDev/clientApiDev/payNotifyDev 连 dev 库，两套同代码。发版走默认 `both`（6 个全发）
 
 参数（可组合）：`dev` / `prod`（二选一，默认 prod）+ `skip-tests` `skip-version` `skip-admin` `skip-analyst` `skip-cloudfn`。数据库迁移不可跳过。analyst 默认正常发布，除非显式传入 `skip-analyst`。
 
@@ -200,12 +200,15 @@ unset MIGRATE_DATABASE_URL
 ## §6 Phase 5 — 云函数发布（除非 `skip-cloudfn`；**串行，禁止并行**）
 
 ```bash
-scripts/use-env.sh $ENV          # 渲染 $ENV cloudbaserc + 写 .active=$ENV（ENV_PROFILE 守卫兜底）
-scripts/deploy-cloudfunctions.sh  # prod confirm + 串行双账号 + tcb fn code update ×3
+scripts/use-env.sh prod          # 渲染 cloudbaserc + 写 .active=prod（ENV_PROFILE 守卫兜底）
+scripts/deploy-cloudfunctions.sh # 默认 both：串行双账号 + 6 个函数（正式 3 + 影子 3）
 ```
-- `$ENV=prod` 时脚本有 confirm（输入 `yes`）；`$ENV=dev` 无 confirm。
-- 脚本内置 envId + PG host(IP) 双校验：prod 期望 118.178.196.26 / dev 期望 101.34.242.103，不符即中止（防跨环境污染）。脚本另有 `.active` 白名单断言，只接受 `dev` / `prod`。
-- 逐个确认 `✓ staffApi deployed` → `✓ clientApi deployed` → `✓ payNotify deployed`。
+- **`.active` 恒为 `prod`**，脚本会主动拒绝 `.active=dev`（dev 侧 CloudBase 环境已退役）。
+  `$ENV=dev` 的发版场景对应的是**通道**参数：`scripts/deploy-cloudfunctions.sh dev`（只发影子函数，不碰生产、无 confirm）。
+- 会动正式函数时才 confirm（输入 `yes`）；纯 `dev` 通道跳过。不确定发哪个通道时先跑 `--plan` 看计划。
+- PG host 校验按函数名分组且**期望值是绝对常量**：正式函数必须 118.178.196.26、影子函数必须 101.34.242.103，任一方向不符即中止。
+- 逐个确认 6 行 `✓ ... deployed`（`both` 时）：staffApi → staffApiDev → clientApi → payNotify → clientApiDev → payNotifyDev。
+- ⚠️ 影子函数首次上线后，还需在 CloudBase 控制台手建 `/cloudfunctions/clientApiDev` 与 `/lakala/notify-dev` 两条 HTTP 访问服务路径（`enableAuth:false`）。
 - **再次强调**：这步绝不开并行 agent（全局 auth.json 单例，并行会互相踢登录）。
 
 ---
@@ -243,14 +246,19 @@ scripts/deploy-cloudfunctions.sh  # prod confirm + 串行双账号 + tcb fn code
 
 ---
 
-## §8 Phase 7 — 恢复 dev env（防呆，仅发 prod 时）
+## §8 Phase 7 — ~~恢复 dev env~~（已取消，2026-09-21）
 
-```bash
-# 仅当本次 $ENV=prod：
-scripts/use-env.sh dev
-```
-- 发 prod 后把 `cloudbaserc.json` 重渲染回 dev、`.active` 复位 dev，避免后续误操作打到 prod。
-- 发 dev 时保持 dev。
+**这一步不要再做了。** 原先发完 prod 会 `scripts/use-env.sh dev` 把 `.active` 复位回 dev，
+防的是「cloudbaserc 停在 prod 态导致后续误操作打到生产」。
+
+CloudBase 收缩到单环境后这个防呆失效且有害：
+
+- 所有函数都住 prod env，`.active` 恒为 `prod`，没有「另一个环境」可退回
+- `deploy-cloudfunctions.sh` 现在会**主动拒绝** `.active=dev`，复位反而让下次部署直接失败
+- 原先「别误打到生产」的保护，现在由**通道参数**承担：
+  `deploy-cloudfunctions.sh dev` 只动影子函数，压根碰不到正式函数
+
+发完 prod 保持 `.active=prod` 即可，无需任何复位动作。
 
 ---
 
