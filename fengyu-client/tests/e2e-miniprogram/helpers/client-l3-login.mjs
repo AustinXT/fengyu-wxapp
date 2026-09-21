@@ -41,7 +41,8 @@ export const INJECT_MODE = process.env.ALLOW_TEST_OPENID_REMOTE === 'true'
 async function probeRealOpenid(miniProgram) {
   const result = await miniProgram.evaluate(async () => {
     const r = await wx.cloud.callFunction({
-      name: 'clientApi',
+      // 单 env 内并存 clientApi(prod 库) 与 clientApiDev(dev 库)：写死会让断言库与被测页面写入库分裂
+      name: (() => { try { const v = wx.getAccountInfoSync().miniProgram.envVersion; return v === 'release' || v === 'trial' ? 'clientApi' : 'clientApiDev' } catch (e) { return 'clientApiDev' } })(),
       data: { action: 'auth.login' },
     })
     return r.result
@@ -168,7 +169,8 @@ function makeInvoker(miniProgram, testOpenid) {
     const data = { action, payload }
     if (testOpenid) data._testOpenid = testOpenid
     return await miniProgram.evaluate(async (cfData) => {
-      const r = await wx.cloud.callFunction({ name: 'clientApi', data: cfData })
+      const r = await wx.cloud.callFunction({ // 单 env 内并存 clientApi(prod 库) 与 clientApiDev(dev 库)：写死会让断言库与被测页面写入库分裂
+ name: (() => { try { const v = wx.getAccountInfoSync().miniProgram.envVersion; return v === 'release' || v === 'trial' ? 'clientApi' : 'clientApiDev' } catch (e) { return 'clientApiDev' } })(), data: cfData })
       return r.result
     }, data)
   }
