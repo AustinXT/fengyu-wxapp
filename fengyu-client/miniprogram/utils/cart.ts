@@ -54,6 +54,17 @@ const SANITIZE_MAX_AREA = 4000000;
 /** 把 URL 拆成 authority / path / query 三段，便于逐段用**各自正确的大小写规则**校验 */
 const URL_PARTS_PATTERN = /^(https?):\/\/([^/?#]+)(\/[^?#]*)\?(.*)$/i;
 
+/**
+ * 域名白名单。**必须是字符集白名单，不能只做后缀匹配** ——
+ * 后缀匹配会被 `https://evil.com\x.tcb.qcloud.la/...` 绕过：
+ * `\` 不在 `[^/?#]` 的排除集里，于是 authority 整串是 `evil.com\x.tcb.qcloud.la`、
+ * 后缀 `.tcb.qcloud.la` 命中放行；但 WHATWG URL 对特殊 scheme **把 `\` 当 `/`**，
+ * 加载端解析出的真实 host 是 `evil.com` —— 从攻击者服务器取图、缩略规则不执行。
+ * 同族还有 tab / 空格 / `%23` 变体，一个字符集全灭。
+ * （双谱系评审第三轮独立命中；讽刺的是被这版替换掉的旧正则反而拒绝它。）
+ */
+const HOST_PATTERN = /^[\w-]+(?:\.[\w-]+)*\.tcb\.qcloud\.la$/i;
+
 /** 对象键形态：两段、纯 ASCII、图片扩展名。与云函数 `safeThumbUrl` 的白名单同形 */
 const OBJECT_KEY_PATTERN = /^\/[\w-]+\/[\w.-]+\.(?:png|jpe?g|webp|gif)$/i;
 
@@ -65,7 +76,7 @@ const OBJECT_KEY_PATTERN = /^\/[\w-]+\/[\w.-]+\.(?:png|jpe?g|webp|gif)$/i;
  * 末尾 `$` 锚定保证 query 里**只有**这一条规则，杜绝
  * `?imageMogr2/thumbnail/400x400|imageView2/1/w/50000` 这类管道链后段放大。
  */
-const THUMB_RULE_PATTERN = /^imageMogr2\/thumbnail\/(\d+x\d+|\d+@)$/;
+const THUMB_RULE_PATTERN = /^imageMogr2\/thumbnail\/([1-9]\d*x[1-9]\d*|[1-9]\d*@)$/;
 
 /**
  * 档位数值本身也要卡：形态合法但 `10000x10000` 仍是 400MB 解码。
@@ -106,14 +117,21 @@ export function sanitizeCoverImage(url: unknown): string {
   if (!parts) return '';
   const [, , authority, path, query] = parts;
 
-  // 把可信域名塞进 userinfo 的伪装（`https://x.tcb.qcloud.la@evil.com/...`）
-  if (authority.indexOf('@') !== -1) return '';
+  // authority 形如 `[userinfo@]host[:port]`。取**最后一个** `@` 之后的部分
+  // （与 WHATWG URL 一致：userinfo 内部还可以再出现 `@`）。
+  // 这样两类构造自然分流：
+  // - `https://x.tcb.qcloud.la@evil.com/...` 伪装 → 取到 `evil.com` → 拒
+  // - `https://user@x.tcb.qcloud.la/...`     → 取到 `x.tcb.qcloud.la` → 放行
+  //
+  // 后者不能一概拒：云函数用 `new URL().hostname` 判据，对它**会照常下发**
+  // （实测输出带 userinfo 原样保留）。前端一刀切拒绝就是又一处两端漂移，
+  // 后果是新加购条目静默变占位图。
+  const hostPort = authority.slice(authority.lastIndexOf('@') + 1);
 
-  // 域名大小写不敏感（DNS 语义），并去掉 FQDN 尾点——
-  // `a.tcb.qcloud.la.` 与 `a.tcb.qcloud.la` 等价，云函数侧同样做了归一。
-  // 端口一并剥掉：云函数只校验 hostname，非默认端口的 URL 它会照常下发。
-  const host = authority.split(':')[0].replace(/\.$/, '');
-  if (!/\.tcb\.qcloud\.la$/i.test(host)) return '';
+  // 域名大小写不敏感（DNS 语义），去掉 FQDN 尾点、剥掉端口——
+  // 云函数只校验 hostname，尾点/端口的 URL 它会照常下发。
+  const host = hostPort.split(':')[0].replace(/\.$/, '');
+  if (!HOST_PATTERN.test(host)) return '';
 
   if (!OBJECT_KEY_PATTERN.test(path)) return '';
 

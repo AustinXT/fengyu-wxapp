@@ -3,6 +3,7 @@
  * 覆盖全部 8 个导出函数：getCart/addToCart/updateQuantity/removeFromCart/clearCart/getCartCount/getCartTotal/setAllSelected
  */
 
+import { createRequire } from 'node:module'
 import {
   getCart,
   addToCart,
@@ -284,6 +285,40 @@ describe('issue #230：存量购物车快照的封面净化', () => {
       }
     })
 
+    test('前导零档位被拒（Number("0400")=400 会骗过纯数值校验）', () => {
+      for (const rule of ['0400x0400', '01080x01080', '02250000@']) {
+        seedStorage([{ skuId: 's1', price: 100, quantity: 1,
+          coverImage: `${COS}?imageMogr2/thumbnail/${rule}` }])
+        expect(getCart().items[0].coverImage).toBe('')
+      }
+    })
+
+    test('反斜杠伪装被拒 —— WHATWG URL 把 \\ 当 /，真实 host 是 evil.com', () => {
+      seedStorage([{ skuId: 's1', price: 100, quantity: 1,
+        coverImage: 'https://evil.com\\x.tcb.qcloud.la/product-covers/a.jpg?imageMogr2/thumbnail/400x400' }])
+      expect(getCart().items[0].coverImage).toBe('')
+    })
+
+    test('tab / 空格 / %23 同族变体一并被拒（host 字符集白名单）', () => {
+      for (const host of ['evil.com\tx.tcb.qcloud.la', 'evil.com x.tcb.qcloud.la', 'evil.com%23x.tcb.qcloud.la']) {
+        seedStorage([{ skuId: 's1', price: 100, quantity: 1,
+          coverImage: `https://${host}/product-covers/a.jpg?imageMogr2/thumbnail/400x400` }])
+        expect(getCart().items[0].coverImage).toBe('')
+      }
+    })
+
+    test('userinfo 里带可信域名的伪装被拒，但 user@可信域名 放行（与服务端一致）', () => {
+      seedStorage([
+        { skuId: 's1', price: 100, quantity: 1,
+          coverImage: `https://x.tcb.qcloud.la@evil.com/d/a.jpg?imageMogr2/thumbnail/400x400` },
+        { skuId: 's2', price: 100, quantity: 1,
+          coverImage: `https://user@x.tcb.qcloud.la/d/a.jpg?imageMogr2/thumbnail/400x400` },
+      ])
+      const items = getCart().items
+      expect(items[0].coverImage).toBe('')
+      expect(items[1].coverImage).toBe('https://user@x.tcb.qcloud.la/d/a.jpg?imageMogr2/thumbnail/400x400')
+    })
+
     test('缩略参数后面还跟着别的 query', () => {
       seedStorage([{ skuId: 's1', price: 100, quantity: 1,
         coverImage: `${COS}?imageMogr2/thumbnail/400x400&imageView2/1/w/50000` }])
@@ -304,46 +339,81 @@ describe('issue #230：存量购物车快照的封面净化', () => {
 })
 
 /**
- * issue #230 · 两端判据的**闭环守护**（GLM 第二轮 P2-1 提出）。
+ * issue #230 · 两端判据的**闭环守护**（真正绑定服务端实现）
  *
- * 净化器是云函数 `safeThumbUrl` / `safeThumbUrlByArea` 的**镜像判据**，
- * 两边各写一份就会漂移。GLM 实测出 4 处不对称：服务端接受 `http://`、FQDN 尾点、
- * 非默认端口、`#fragment`，而前端正则当时全会误杀 —— 后果是**新加购**的条目
- * 封面也静默变占位图（无报错，极难定位）。当时不可达只因生产 URL 恰好都规范。
+ * 净化器 `sanitizeCoverImage` 是云函数 `safeThumbUrl` / `safeThumbUrlByArea` 的**镜像判据**，
+ * 两边各写一份必然漂移，而漂移是**静默**的：
+ * - 前端比服务端严 → 新加购条目封面变占位图（无报错、极难定位）
+ * - 前端比服务端松 → fail-open，未缩略的外域原图被放行（就是 #213 的崩溃）
  *
- * 本项目对 error-codes / refund-cascade 有 cross-end 字面量 snapshot 的惯例，
- * 这里是等价物：把云函数**会下发的各种形态**喂给净化器，断言全部被接受。
- * 任一端收紧/放宽而另一端没跟上，这组用例立刻转红。
- *
- * fixture 按云函数 `safeThumbUrl` 的实际输出形态构造（它用 URL 对象重建 URL，
- * 故端口、尾点、fragment 都会原样保留在输出里）。
+ * ⚠️ 这组用例**直接 require 云函数模块**跑真实构造器，不是手写 fixture。
+ * 第一版曾用手写 `SHAPES` 列举形态，被 codex 指出「没有绑定真实实现，
+ * 『任一端漂移立即转红』的注释不成立」——并当场给出漏网反例（userinfo 形态）。
+ * 项目现有的 cross-end 守护（`cross-end-error-codes-snapshot.test.js`）同样是 require 另一端模块，做法一致。
  */
-describe('issue #230：净化器必须接受云函数的全部合法下发形态', () => {
-  const HOST = 'test-env-1300000000.tcb.qcloud.la'
-  // 三个档位对应 PRODUCT_THUMB_BOX_SMALL / _LARGE / _DETAIL_IMAGE_MAX_PIXELS
-  const RULES = ['imageMogr2/thumbnail/400x400', 'imageMogr2/thumbnail/1080x1080', 'imageMogr2/thumbnail/2250000@']
+describe('issue #230：净化器与云函数构造器的闭环守护', () => {
+  const req = createRequire(import.meta.url)
+  const img = req('../../../cloudfunctions/clientApi/utils/image.js')
 
-  const SHAPES: Array<[string, string]> = [
-    ['https 常规', `https://${HOST}/product-covers/a.jpg`],
-    ['http（云函数 safeThumbUrl 接受 https?）', `http://${HOST}/product-covers/a.jpg`],
-    ['FQDN 尾点（云函数归一后放行）', `https://${HOST}./product-covers/a.jpg`],
-    ['非默认端口（云函数只校验 hostname）', `https://${HOST}:8443/product-covers/a.jpg`],
-    ['大写扩展名', `https://${HOST}/product-covers/UPPER.PNG`],
-    ['大写域名（DNS 不敏感）', `https://TEST-ENV-1300000000.TCB.QCLOUD.LA/product-covers/a.jpg`],
-    ['详情图目录 webp', `https://${HOST}/product-details/1789097186265-apa9p0.webp`],
-    ['jpeg 扩展名', `https://${HOST}/product-covers/a.jpeg`],
+  const H = 'test-env-1300000000.tcb.qcloud.la'
+
+  /** 构造器**接受**的输入（服务端会下发）→ 净化器必须**接受**其输出 */
+  const SERVER_ACCEPTS = [
+    ['https 常规', `https://${H}/product-covers/a.jpg`],
+    ['http', `http://${H}/product-covers/a.jpg`],
+    ['FQDN 尾点', `https://${H}./product-covers/a.jpg`],
+    ['非默认端口', `https://${H}:8443/product-covers/a.jpg`],
+    ['userinfo（云函数按 hostname 判据放行）', `https://user@${H}/product-covers/a.jpg`],
+    ['大写扩展名', `https://${H}/product-covers/UPPER.PNG`],
+    ['jpeg', `https://${H}/product-covers/a.jpeg`],
+    ['webp 详情图', `https://${H}/product-details/1789097186265-apa9p0.webp`],
+    ['带 #fragment', `https://${H}/product-covers/a.jpg#sec`],
+    ['原 URL 已带放大参数（会被整串丢弃）', `https://${H}/product-covers/a.jpg?imageView2/1/w/50000`],
+  ] as const
+
+  /** 构造器**拒绝**的输入 → 净化器也必须拒绝（方向盲区：P1 的反斜杠洞正落在这一格） */
+  const SERVER_REJECTS = [
+    ['非 COS 域名', 'https://img.example.com/a.jpg'],
+    ['userinfo 伪装可信域名', `https://${H}@evil.com/d/a.jpg`],
+    ['反斜杠伪装（WHATWG 把 \\ 当 /）', `https://evil.com\\${H}/product-covers/a.jpg`],
+    ['对象键只有一段', `https://${H}/a.png`],
+    ['非图片扩展名', `https://${H}/d/a.svg`],
+    ['带 COS 签名', `https://${H}/d/a.png?q-sign-algorithm=sha1`],
+    ['非 http(s)', `ftp://${H}/d/a.jpg`],
+  ] as const
+
+  const RULES: Array<[string, (u: string) => string | null]> = [
+    ['box SMALL', (u) => img.safeThumbUrl(u, img.PRODUCT_THUMB_BOX_SMALL)],
+    ['box LARGE', (u) => img.safeThumbUrl(u, img.PRODUCT_THUMB_BOX_LARGE)],
+    ['area DETAIL', (u) => img.safeThumbUrlByArea(u, img.PRODUCT_DETAIL_IMAGE_MAX_PIXELS)],
   ]
 
-  for (const [name, base] of SHAPES) {
-    for (const rule of RULES) {
-      test(`接受：${name} + ${rule}`, () => {
-        expect(sanitizeCoverImage(`${base}?${rule}`)).toBe(`${base}?${rule}`)
+  for (const [ruleName, build] of RULES) {
+    for (const [shapeName, input] of SERVER_ACCEPTS) {
+      test(`${ruleName} · 服务端下发「${shapeName}」→ 净化器必须接受`, () => {
+        const out = build(input)
+        // 前置断言：这些输入确实是服务端会接受的，否则用例本身失去意义
+        expect(out, `构造器意外拒绝了 ${input}`).not.toBeNull()
+        expect(sanitizeCoverImage(out as string)).toBe(out)
+      })
+    }
+
+    for (const [shapeName, input] of SERVER_REJECTS) {
+      test(`${ruleName} · 服务端拒绝「${shapeName}」→ 净化器也必须拒绝`, () => {
+        expect(build(input), `构造器意外接受了 ${input}`).toBeNull()
+        // 构造器拒绝时不会有输出；直接把**原始 URL 拼上合法规则**喂给净化器，
+        // 模拟「脏数据混进 storage」——净化器同样不能放行
+        expect(sanitizeCoverImage(`${input}?imageMogr2/thumbnail/400x400`)).toBe('')
       })
     }
   }
 
-  test('接受：带 #fragment 的下发值（云函数不剥 hash，参数拼在 fragment 前）', () => {
-    const u = `https://${HOST}/product-covers/a.jpg?imageMogr2/thumbnail/400x400#sec`
-    expect(sanitizeCoverImage(u)).toBe(u)
+  test('档位常量与净化器上限口径一致（净化器不能把合法档位误杀）', () => {
+    for (const box of [img.PRODUCT_THUMB_BOX_SMALL, img.PRODUCT_THUMB_BOX_LARGE]) {
+      const u = img.safeThumbUrl(`https://${H}/product-covers/a.jpg`, box)
+      expect(sanitizeCoverImage(u)).toBe(u)
+    }
+    const areaUrl = img.safeThumbUrlByArea(`https://${H}/product-details/a.jpg`, img.PRODUCT_DETAIL_IMAGE_MAX_PIXELS)
+    expect(sanitizeCoverImage(areaUrl)).toBe(areaUrl)
   })
 })
