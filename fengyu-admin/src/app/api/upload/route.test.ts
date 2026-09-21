@@ -21,14 +21,17 @@ import { POST } from './route'
 
 // ── fixtures ────────────────────────────────────────────────────────────────
 
+/** 8 字节签名 + 完整 IHDR chunk（长度 4 + 类型 4 + 数据 13 + CRC 4） */
 function makePng(width: number, height: number): Buffer {
-  const buf = Buffer.alloc(24)
+  const buf = Buffer.alloc(33)
   buf.writeUInt32BE(0x89504e47, 0)
   buf.writeUInt32BE(0x0d0a1a0a, 4)
   buf.writeUInt32BE(13, 8)
   buf.write('IHDR', 12, 'ascii')
   buf.writeUInt32BE(width, 16)
   buf.writeUInt32BE(height, 20)
+  buf.writeUInt8(8, 24)
+  buf.writeUInt8(6, 25)
   return buf
 }
 

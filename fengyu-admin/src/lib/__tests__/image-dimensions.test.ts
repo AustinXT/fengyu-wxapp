@@ -1,15 +1,20 @@
 import { describe, it, expect } from "vitest"
 import { getImageDimensions } from "../image-dimensions"
 
-/** 构造 PNG：签名 + IHDR（宽高 big-endian uint32） */
+/**
+ * 构造 PNG：8 字节签名 + 完整 IHDR chunk
+ * （长度 4 + 类型 4 + 数据 13 + CRC 4 = 25，合计 33 字节）
+ */
 function makePng(width: number, height: number): Buffer {
-  const buf = Buffer.alloc(24)
+  const buf = Buffer.alloc(33)
   buf.writeUInt32BE(0x89504e47, 0)
   buf.writeUInt32BE(0x0d0a1a0a, 4)
   buf.writeUInt32BE(13, 8)
   buf.write("IHDR", 12, "ascii")
   buf.writeUInt32BE(width, 16)
   buf.writeUInt32BE(height, 20)
+  buf.writeUInt8(8, 24) // bit depth
+  buf.writeUInt8(6, 25) // color type
   return buf
 }
 
@@ -64,13 +69,31 @@ function makeStaticGifWithNoisyData(width: number, height: number): Buffer {
   return Buffer.concat([lsd, desc, dataBlocks, Buffer.from([0x3b])])
 }
 
-/** PNG + acTL chunk（APNG） */
+/** PNG + acTL chunk（APNG）。acTL 必须出现在 IDAT 之前 */
 function makeApng(width: number, height: number): Buffer {
-  const png = makePng(width, height)
-  const actl = Buffer.alloc(12)
+  const actl = Buffer.alloc(20)
   actl.writeUInt32BE(8, 0)
   actl.write("acTL", 4, "ascii")
-  return Buffer.concat([png, actl])
+  actl.writeUInt32BE(3, 8) // 帧数
+  actl.writeUInt32BE(0, 12) // 循环次数
+  return Buffer.concat([makePng(width, height), actl, makeIdat()])
+}
+
+/** 最小 IDAT chunk */
+function makeIdat(): Buffer {
+  const idat = Buffer.alloc(12)
+  idat.writeUInt32BE(0, 0)
+  idat.write("IDAT", 4, "ascii")
+  return idat
+}
+
+/** 静态 PNG，但 tEXt 数据里含 "acTL" 四个字节 */
+function makePngWithActlBytes(width: number, height: number): Buffer {
+  const text = Buffer.alloc(12 + 8)
+  text.writeUInt32BE(8, 0)
+  text.write("tEXt", 4, "ascii")
+  text.write("xxacTLyy", 8, "ascii")
+  return Buffer.concat([makePng(width, height), text, makeIdat()])
 }
 
 /**
@@ -401,6 +424,16 @@ describe("getImageDimensions", () => {
       expect(getImageDimensions(makePng(4000, 4000))).toMatchObject({
         animated: false,
       })
+    })
+
+    /**
+     * 整块搜 "acTL" 字节会把 tEXt/iTXt/IDAT 里碰巧出现这四个字节的合法静态 PNG
+     * 误判成动图拒绝，必须按 chunk 结构遍历。
+     */
+    it("tEXt 数据含 acTL 字节的静态 PNG 不被误判", () => {
+      expect(
+        getImageDimensions(makePngWithActlBytes(800, 600))
+      ).toMatchObject({ width: 800, height: 600, animated: false })
     })
 
     it("WebP ANIM 标志位被识别", () => {

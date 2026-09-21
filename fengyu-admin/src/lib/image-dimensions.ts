@@ -25,7 +25,9 @@ export interface ImageDimensions {
  * 让无法解码的坏图入库。
  */
 function parsePng(buf: Buffer): ImageDimensions | null {
-  if (buf.length < 24) return null
+  // 完整 IHDR 是 8(签名)+4(长度)+4(类型)+13(数据)+4(CRC)=33，
+  // 但读宽高只需到 23；要求至少 29 以保证 IHDR 数据段完整
+  if (buf.length < 29) return null
   if (buf.readUInt32BE(0) !== 0x89504e47) return null
   if (buf.readUInt32BE(4) !== 0x0d0a1a0a) return null
   if (buf.readUInt32BE(8) !== 13) return null // IHDR chunk 数据长度固定 13
@@ -33,11 +35,34 @@ function parsePng(buf: Buffer): ImageDimensions | null {
   return {
     width: buf.readUInt32BE(16),
     height: buf.readUInt32BE(20),
-    // APNG 靠 acTL chunk 声明动画。不查的话，40MP canvas × 数百帧的 APNG
-    // 四项检查全过（animated 未置位、像素积压线、单边压线），绕过动图拒绝。
-    // 这里用整块搜索做粗上界——方向是误拒而非误放。
-    animated: buf.includes("acTL", 8, "ascii"),
+    animated: isApng(buf),
   }
+}
+
+/**
+ * APNG 靠 acTL chunk 声明动画。不查的话，40MP canvas × 数百帧的 APNG
+ * 四项检查全过（animated 未置位、像素积压线、单边压线），绕过动图拒绝。
+ *
+ * 必须按 chunk 结构遍历，不能整块搜 "acTL" 字节：合法静态 PNG 的
+ * tEXt / iTXt / IDAT 数据里碰巧出现这四个字节就会被误判成动图而拒绝。
+ * acTL 按规范必须出现在 IDAT 之前，所以扫到 IDAT 即可停。
+ */
+function isApng(buf: Buffer): boolean {
+  let offset = 8 // 跳过签名
+  while (offset + 8 <= buf.length) {
+    const length = buf.readUInt32BE(offset)
+    const type = buf.toString("ascii", offset + 4, offset + 8)
+
+    if (type === "acTL") return true
+    if (type === "IDAT" || type === "IEND") return false
+
+    // chunk = 长度(4) + 类型(4) + 数据(length) + CRC(4)
+    const advance = 12 + length
+    if (advance <= 12 && length !== 0) return false // 防御：非递增
+    if (offset + advance > buf.length) return false // 声明长度越界，结构不可信
+    offset += advance
+  }
+  return false
 }
 
 /**

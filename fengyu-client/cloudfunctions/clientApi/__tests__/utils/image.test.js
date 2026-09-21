@@ -227,8 +227,29 @@ describe('safeThumbUrl', () => {
 
   test('FQDN 尾点域名与不带尾点等价，不应漏处理', () => {
     const fqdn =
-      'https://6665-fengyu-client-prod-d1cga6909c0ba-1406056527.tcb.qcloud.la./a.png'
+      'https://6665-fengyu-client-prod-d1cga6909c0ba-1406056527.tcb.qcloud.la./store-covers/a.png'
     expect(safeThumbUrl(fqdn, 300)).toContain('imageMogr2/thumbnail/300x300')
+  })
+
+  /**
+   * 路径必须符合 admin 生成的对象键格式（两段、纯 ASCII、无编码）。
+   * COS 样式分隔符可配置成 ! _ / -，逐个排除既挡不全，也挡不住 %21 / %2F 编码形态。
+   */
+  describe('不符合对象键格式的路径一律返回 null', () => {
+    const host =
+      'https://6665-fengyu-client-prod-d1cga6909c0ba-1406056527.tcb.qcloud.la'
+    const cases = [
+      ['! 分隔符', `${host}/store-covers/a.png!oversize`],
+      ['%21 编码形态', `${host}/store-covers/a.png%21oversize`],
+      ['%2F 编码形态', `${host}/store-covers/a.png%2Foversize`],
+      ['/ 分隔符（三段路径）', `${host}/store-covers/a.png/oversize`],
+      ['任意百分号编码', `${host}/store-covers/a%2Ebpng`],
+      ['单段路径', `${host}/a.png`],
+    ]
+
+    test.each(cases)('%s', (_label, url) => {
+      expect(safeThumbUrl(url, 300)).toBeNull()
+    })
   })
 })
 

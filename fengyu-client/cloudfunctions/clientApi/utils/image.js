@@ -105,9 +105,17 @@ function safeThumbUrl(url, boxSize) {
   // 这类把可信域名塞进 userinfo 的 URL 会被误判为可信
   if (!isProcessableHost(parsed.hostname)) return null
 
-  // 图片样式可以直接挂在对象路径后（默认分隔符 `!`），且样式本身能携带完整的缩放规则。
-  // 光清洗 query 挡不住它，而两种处理机制同时出现时的优先级 COS 并未定义 —— 直接拒绝。
-  if (parsed.pathname.includes('!')) return null
+  // 图片样式可以直接挂在对象路径后，样式本身能携带完整的缩放规则；
+  // 光清洗 query 挡不住它，而两种处理机制并存时的优先级 COS 并未定义。
+  //
+  // 这里用「本项目对象键格式」的白名单，而不是逐个排除分隔符：
+  // COS 的样式分隔符可配置成 `!` `_` `/` `-` 四种，逐个排除既挡不全，
+  // 也挡不住 `%21` / `%2F` 这类编码形态（URL.pathname 不会替你解码）。
+  // admin 上传生成的键形如 `store-covers/1789097186265-apa9p0.png`（两段、纯 ASCII、无编码）。
+  //
+  // ⚠️ 已知限制：`-` 与 `_` 同时是合法文件名字符，若 bucket 把样式分隔符配成这两种，
+  // 代码层无法与正常键区分。本项目 bucket 必须保持默认配置、且不得配置含缩放规则的样式。
+  if (!/^\/[\w-]+\/[\w.-]+$/.test(parsed.pathname)) return null
 
   const rawParams = parsed.search.replace(/^\?/, '').split('&').filter(Boolean)
 
