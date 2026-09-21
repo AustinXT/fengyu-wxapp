@@ -471,6 +471,76 @@ describe('InventoryDocsPage 来源批次下拉（#129 回归）', () => {
   })
 })
 
+/**
+ * #200：服务端现在会拒绝「单边单据收到另一边的主体」（改前是静默忽略）。
+ * 这个弹窗用 `useState('')` 存两个主体，且原生 `<dialog>` 关闭不卸载组件 ——
+ * 用同一个弹窗连着建两张不同类型的单时，上一张的主体残留会让新单以
+ * 「XX 不接受入库主体」失败，而那个下拉在新类型下根本不该有值。
+ */
+describe('#200 切换单据类型时复位主体字段', () => {
+  const targetSelect = () => dialogSelect(/^入库\/接收主体$/)
+
+  function openWithTypes(types: InventoryDocType[]) {
+    render(
+      <InventoryDocsPage
+        {...baseProps}
+        locations={locations}
+        skuOptions={skuOptions}
+        allowedCreateDocTypes={types}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: '新建' }))
+  }
+
+  it('换类型后出库/入库主体都回到未选状态，不把上一张单的残留带进新单', () => {
+    openWithTypes(['分院调货出库', '院顾客产品出库'])
+
+    fireEvent.change(sourceSelect(), { target: { value: 'M1' } })
+    fireEvent.change(targetSelect(), { target: { value: 'M2' } })
+    expect(sourceSelect().value).toBe('M1')
+    expect(targetSelect().value).toBe('M2')
+
+    fireEvent.change(dialogSelect(/^分院调货出库$/), { target: { value: '院顾客产品出库' } })
+
+    // 院顾客产品出库是单边（只走 source）单据，残留的 target 会被服务端直接拒
+    expect(sourceSelect().value).toBe('')
+    expect(targetSelect().value).toBe('')
+  })
+
+  /**
+   * 必须走 **target-only 提交** 来断言 payload —— 这是唯一能锁住「切类型清 lotId」的路径：
+   * 只有出库主体的 onChange 清 lotId，入库主体的不清。所以「切完类型只选入库主体就提交」
+   * 时，旧 lotId 会一路带进 payload，而同主体单据的服务端会把 target 归一成 source、
+   * 按出库批次锁定并写入它。只断言 DOM 上批次框显示为空是锁不住的（受控 select 的值
+   * 不在 options 里时本来就显示空，state 里那个旧 id 还在）。
+   */
+  it('换类型后只选入库主体就提交，payload 不得带上一张单的 lotId', async () => {
+    vi.mocked(listInventoryLotOptions).mockResolvedValue([lot(11, 'SKU-1', 'B-001', 30)])
+    vi.mocked(createInventoryCoreDoc).mockResolvedValue(undefined as never)
+    openWithTypes(['院顾客产品出库', '院产品报损'])
+
+    // 第一张单：选好出库主体 + SKU + 批次
+    fireEvent.change(sourceSelect(), { target: { value: 'M1' } })
+    fireEvent.change(skuSelect(), { target: { value: 'SKU-1' } })
+    await waitFor(() => expect(lotSelect()).not.toBeDisabled())
+    fireEvent.change(lotSelect(), { target: { value: '11' } })
+    expect(lotSelect().value).toBe('11')
+
+    // 切到同主体单据，然后**只动入库主体**（它的 onChange 不清 lotId）
+    fireEvent.change(dialogSelect(/^院顾客产品出库$/), { target: { value: '院产品报损' } })
+    expect(sourceSelect().value).toBe('')
+    expect(targetSelect().value).toBe('')
+    fireEvent.change(targetSelect(), { target: { value: 'M1' } })
+    fireEvent.change(within(screen.getByRole('dialog')).getByPlaceholderText('数量'), { target: { value: '2' } })
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: '提交' }))
+
+    await waitFor(() => expect(createInventoryCoreDoc).toHaveBeenCalledTimes(1))
+    const payload = vi.mocked(createInventoryCoreDoc).mock.calls[0][0]
+    expect(payload.docType).toBe('院产品报损')
+    expect(payload.items[0].lotId).toBeNull()
+  })
+})
+
 // issue #129 的验收标准之一是「6 种单据类型均能在单据中心成功创建并落库」。
 // 只断言「批次加载出来了」挡不住后续回归：onChange 不再写 item.lotId、
 // 或 payload 映射漏掉 lotId，批次照样能加载，6 种出库单却全部撞服务端必填校验。
@@ -580,7 +650,7 @@ describe('通用建单入口里需要来源批次的单据类型', () => {
 
 // ── #200 S6：建单表单按单据类型收窄库存主体端点 ──────────────────────────
 //
-// 服务端（engine.ts 的 resolveGenericDocSubjects）从「静默吃掉多余端点」改成了
+// 服务端（engine.ts `createInventoryCoreDoc` 里的端点校验段）从「静默吃掉多余端点」改成了
 // 「多给一个端点就拒单」（AC5）、「同主体两端不一致就拒单」（AC4）。表单不跟着收窄的话，
 // 用户在界面上点得出来的组合会直接撞服务端报错，而报错文案说的是他看不懂的端点术语。
 //
@@ -615,7 +685,7 @@ const lastCreatePayload = () => vi.mocked(createInventoryCoreDoc).mock.calls[0][
 describe('建单表单按单据类型收窄库存主体端点（#200 S6）', () => {
   it('同主体类型：选了出库主体，入库主体镜像同值', () => {
     // 「市场产品报损」属 INTERNAL_SAME_NODE_DOC_TYPES：两端必须是同一个主体，
-    // 否则服务端 resolveGenericDocSubjects 直接拒单（AC4）。
+    // 否则服务端 createInventoryCoreDoc 的端点校验段直接拒单（AC4）。
     openCreateDialog(['市场产品报损'])
     fireEvent.change(sourceSelect(), { target: { value: 'M1' } })
     expect(targetSelect().value).toBe('M1')
@@ -744,14 +814,22 @@ describe('建单表单按单据类型收窄库存主体端点（#200 S6）', () 
   })
 })
 
-// 前端的 genericDocEndpointMode 与服务端 engine.ts 的 genericDocEndpointSpec 是两份真相
+// 前端的 genericDocEndpointMode 与服务端 engine.ts 的建单端点口径是两份真相
 // （engine.ts 第 2 行是 `import 'server-only'`，前端不能直接 import），所以照搬同目录
 // SOURCE_LOT_DOC_TYPES 那条守护的做法：直接读 engine.ts 的源码字面量，逐项比对。
 //
+// 服务端那份口径**没有单独的函数**，是 createInventoryCoreDoc 里的一段内联规则：
+//   1) INTERNAL_SAME_NODE_DOC_TYPES —— 两端都给且不一致就拒，否则归一成同一个主体
+//   2) RECEIVE_REQUIRED_DOC_TYPES —— 两端都要（并豁免下面的单边规则）
+//   3) 其余且 `movementPlan(docType, defaultStatusForDoc(docType))` 非空 ——
+//      locationRole==='target' 时传了出库主体就拒、==='source' 时传了入库主体就拒
+// 所以本守护要同时钉住：四个方向集合的成员、movementPlan / defaultStatusForDoc 的分支顺序，
+// 以及建单段里那条单边规则的形状。任何一处动了都会红。
+//
 // 光把 10 项映射抄成常量断言挡不住真正的漏改：给 OUTBOUND_DOC_TYPES +
 // INVENTORY_GENERIC_DOC_TYPES 同时加一个新类型、却漏加前端映射，常量断言照样绿，
-// 而表单会按兜底的 'both' 放行入库主体 → 提交必撞服务端「只能指定出库主体」。
-describe('前端端点口径与服务端 genericDocEndpointSpec 不漂移（#200 S6-a）', () => {
+// 而表单会按兜底的 'both' 放行入库主体 → 提交必撞服务端「…不接受入库主体」。
+describe('前端端点口径与服务端建单规则不漂移（#200 S6-a）', () => {
   const engineSrc = readFileSync(resolve(process.cwd(), 'src/lib/inventory/engine.ts'), 'utf8')
 
   /** 与同目录 SOURCE_LOT_DOC_TYPES 守护同一个正则：集合的声明写法一变，这里立刻抛错 */
@@ -774,11 +852,37 @@ describe('前端端点口径与服务端 genericDocEndpointSpec 不漂移（#200
     return body!
   }
 
+  /**
+   * 截出 createInventoryCoreDoc 里的「端点校验段」：从两个端点变量落地，
+   * 到开始查 location 为止 —— 端点口径整段都在这里，没有别的地方能改它。
+   */
+  function readCreateEndpointSection(): string {
+    const start = engineSrc.indexOf('let sourceOrgNodeId = normalizeText(input.sourceOrgNodeId)')
+    expect(start, 'engine.ts 里找不到建单端点校验段的起点').toBeGreaterThan(0)
+    const end = engineSrc.indexOf('const sourceLocationRow = sourceOrgNodeId ?', start)
+    expect(end, 'engine.ts 里找不到建单端点校验段的终点').toBeGreaterThan(start)
+    return engineSrc.slice(start, end)
+  }
+
   const setChecksIn = (body: string) =>
     [...body.matchAll(/([A-Z_]+_DOC_TYPES)\.has\(docType\)/g)].map((m) => m[1])
 
-  it('docFlowRole 的分支顺序与角色映射没变（本守护的推导前提）', () => {
-    const body = readFnBody('function docFlowRole(')
+  it('defaultStatusForDoc 的分支顺序没变（它决定建单那一刻的 status）', () => {
+    // status 是 movementPlan 的入参：报损/退货类建单即「待审批」→ plan 为 null → 单边规则整条不生效。
+    // 把这条分支挪走（比如让报损单建单即「已完成」），下面 serverMode 的推导就不再成立。
+    const body = readFnBody('function defaultStatusForDoc(')
+    expect(setChecksIn(body)).toEqual(['APPROVAL_DOC_TYPES', 'RECEIVE_REQUIRED_DOC_TYPES'])
+    expect(body).toMatch(/APPROVAL_DOC_TYPES\.has\(docType\)\) return '待审批'/)
+    expect(body).toMatch(/RECEIVE_REQUIRED_DOC_TYPES\.has\(docType\)\) return '待收货'/)
+    expect(body).toMatch(/return '已完成'/)
+  })
+
+  it('movementPlan 的分支顺序与角色映射没变（本守护的推导前提）', () => {
+    const body = readFnBody('function movementPlan(')
+    // 不落流水的四个状态先短路成 null
+    expect(body).toMatch(
+      /status === '草稿' \|\| status === '待审批' \|\| status === '已驳回' \|\| status === '已取消'/,
+    )
     expect(setChecksIn(body)).toEqual([
       'NO_MOVEMENT_DOC_TYPES',
       'RECEIVE_REQUIRED_DOC_TYPES',
@@ -794,44 +898,78 @@ describe('前端端点口径与服务端 genericDocEndpointSpec 不漂移（#200
     expect(roleOf('OUTBOUND_DOC_TYPES')).toBe('source')
   })
 
-  it('genericDocEndpointSpec 仍是「同主体优先、其次待收货、再看流水方向」三段式', () => {
-    const body = readFnBody('export function genericDocEndpointSpec(')
-    // 顺序是有意义的：调货出库既在 RECEIVE_REQUIRED 又有流水方向，同主体的报损/盘点
-    // 则两个集合都可能命中 —— 换个顺序就是换一套口径。
-    expect(setChecksIn(body)).toEqual([
-      'INTERNAL_SAME_NODE_DOC_TYPES',
-      'RECEIVE_REQUIRED_DOC_TYPES',
-    ])
-    // 同主体与待收货两支都允许两端；只剩单端的那支取 docFlowRole 的角色
-    expect(body).toMatch(/sameNode: true/)
-    expect(body).toMatch(/allowed: \[role\]/)
-    // fail-closed 兜底不能退回 `source ?? target`
-    expect(body).toMatch(/throw new ApiError\('INVALID_STATE'/)
+  it('建单段仍是「同主体归一 + 单边拒另一边（两类豁免）」', () => {
+    const section = readCreateEndpointSection()
+
+    // 1) 同主体：两端都给且不一致 → 拒；否则归一成同一个（改回无条件 `source ?? target` 立刻红）
+    expect(section).toMatch(/INTERNAL_SAME_NODE_DOC_TYPES\.has\(input\.docType\)/)
+    expect(section).toMatch(/sourceOrgNodeId && targetOrgNodeId && sourceOrgNodeId !== targetOrgNodeId/)
+    expect(section).toMatch(/const orgNodeId = sourceOrgNodeId \?\? targetOrgNodeId/)
+
+    // 2) 待收货单据两端都要
+    expect(section).toMatch(/RECEIVE_REQUIRED_DOC_TYPES\.has\(input\.docType\) && !targetOrgNodeId/)
+
+    // 3) 单边规则：挂在 `plan` 非空上，且恰好豁免同主体 / 待收货两类
+    expect(section).toMatch(/\bplan\s*\n\s*&& !INTERNAL_SAME_NODE_DOC_TYPES\.has\(input\.docType\)/)
+    expect(
+      [...section.matchAll(/&& !([A-Z_]+_DOC_TYPES)\.has\(input\.docType\)/g)].map((m) => m[1]),
+      '单边规则的豁免集合变了（多一类 = 少收窄一种，少一类 = 会打挂正常调货）',
+    ).toEqual(['INTERNAL_SAME_NODE_DOC_TYPES', 'RECEIVE_REQUIRED_DOC_TYPES'])
+    expect(section).toMatch(/plan\.locationRole === 'target' && sourceOrgNodeId/)
+    expect(section).toMatch(/plan\.locationRole === 'source' && targetOrgNodeId/)
   })
 
   it('10 种通用类型的端点模式逐项等于服务端口径', () => {
     const sameNode = readSet('INTERNAL_SAME_NODE_DOC_TYPES')
     const receiveRequired = readSet('RECEIVE_REQUIRED_DOC_TYPES')
+    const approval = readSet('APPROVAL_DOC_TYPES')
     const inbound = readSet('INBOUND_DOC_TYPES')
     const outbound = readSet('OUTBOUND_DOC_TYPES')
     const noMovement = readSet('NO_MOVEMENT_DOC_TYPES')
 
-    /** 复刻 genericDocEndpointSpec 的分支顺序；null = 服务端会走 fail-closed throw */
-    function serverMode(docType: string): GenericDocEndpointMode | null {
-      if (sameNode.has(docType)) return 'same-node'
-      if (receiveRequired.has(docType)) return 'both'
+    /** 复刻 defaultStatusForDoc */
+    function createStatus(docType: string): string {
+      if (approval.has(docType)) return '待审批'
+      if (receiveRequired.has(docType)) return '待收货'
+      return '已完成'
+    }
+
+    /** 复刻 movementPlan 在**建单那一刻**的取值 */
+    function planRole(docType: string): 'source' | 'target' | null {
+      const status = createStatus(docType)
+      if (status === '草稿' || status === '待审批' || status === '已驳回' || status === '已取消') {
+        return null
+      }
       if (noMovement.has(docType)) return null
-      if (inbound.has(docType)) return 'target-only'
-      if (outbound.has(docType)) return 'source-only'
+      if (receiveRequired.has(docType)) return 'source'
+      if (inbound.has(docType)) return 'target'
+      if (outbound.has(docType)) return 'source'
       return null
     }
 
+    /** 复刻建单段那条内联的端点规则 */
+    function serverMode(docType: string): GenericDocEndpointMode {
+      if (sameNode.has(docType)) return 'same-node'
+      if (receiveRequired.has(docType)) return 'both'
+      const role = planRole(docType)
+      // plan 为空 = 单边规则整条不生效，服务端两端都收得下
+      if (role === null) return 'both'
+      return role === 'target' ? 'target-only' : 'source-only'
+    }
+
+    /*
+     * #200 的残余缺口检查：单边规则挂在 `plan` 非空上，所以「plan 为空又不走同主体归一」
+     * 的类型会两端全收 —— 用户就能传一个自己有权的无关主体去过 assertOrgNodeVisible。
+     * 今天 10 种通用类型里 plan 为空的只有报损两种，而它们先被 INTERNAL_SAME_NODE 归一拦住，
+     * 所以没有缺口。将来谁往 APPROVAL / NO_MOVEMENT 加一个非同主体的通用类型，这条先红。
+     */
+    expect(
+      INVENTORY_GENERIC_DOC_TYPES.filter((t) => !sameNode.has(t) && planRole(t) === null),
+      '出现了 plan 为空又不归一同主体的通用类型：服务端单边规则对它整条失效',
+    ).toEqual([])
+
     for (const docType of INVENTORY_GENERIC_DOC_TYPES) {
-      const expected = serverMode(docType)
-      // 通用白名单里出现 fail-closed 类型 = 服务端建单必抛「未定义权威库存主体」，
-      // 那不是前端映射能救的，得回去改白名单
-      expect(expected, `${docType} 在 engine.ts 里落进了 fail-closed 分支`).not.toBeNull()
-      expect(genericDocEndpointMode(docType), `${docType} 的端点口径漂移了`).toBe(expected)
+      expect(genericDocEndpointMode(docType), `${docType} 的端点口径漂移了`).toBe(serverMode(docType))
     }
   })
 })

@@ -101,19 +101,34 @@ try {
   // 而 listInventoryCoreDocs 的 source/target 任一在 scope 即可见也随之放行。
   setSession(storeA1Session())
   const docsBefore = await inventoryDocCount()
-  // (a) AC5：入库类单据只认 target，夹带的 source 必须拒单而不是被忽略。
-  //     这是 issue 原文的攻击载荷 —— 拿本店（有权）的 source 去换一个 scope 外的 target；
+  // (a) issue 原文的攻击载荷：拿本店（有权）的 source 去换一个 scope 外的 target。
   //     改前服务端按 `source ?? target` 判权威主体，用有权的 source 就把货退进了别人家。
-  await expectThrow('#200 院顾客退货夹带出库主体被拒(AC5)', /INVALID_PARAMS.*只能指定入库主体/, () =>
+  //     改后鉴权端固定落在 target（入库类真正被改动的那一端），所以这里被 scope 闸直接拒掉。
+  //     ⚠️ 断的是 PERMISSION_DENIED 而不是形状错 —— 服务端的顺序是「scope 先于单边规则」，
+  //     target 越权时根本走不到「不接受出库主体」那一句。要单独验单边规则见 (a2)。
+  await expectThrow('#200 院顾客退货攻击载荷被拒(AC1/AC6)', /PERMISSION_DENIED.*无权操作该组织节点单据/, () =>
     docs.createInventoryCoreDoc({
       docType: '院顾客退货',
       sourceOrgNodeId: STA1_ORG,
       targetOrgNodeId: STA2_ORG,
       items: [{ skuId: SKU_SUPPLY, quantity: 1 }],
     }))
-  // (b) AC6：只传 target 时，scope 校验必须落在 target（真正被改动的主体）上。
-  //     文案一起断：证明拒绝来自端点口径那道闸，而不是层级 action 闸顺手挡住的。
-  await expectThrow('#200 院顾客退货 target 越权被拒(AC6)', /PERMISSION_DENIED.*无权操作该入库主体/, () =>
+  // (a2) AC5：单边单据夹带另一端时必须拒单、而不是静默忽略。
+  //      两端都填本店（都在 scope 内）才能越过上面那道 scope 闸，真正把单边规则测到 ——
+  //      若写成一个 scope 外的 target，拿到的就只是 (a) 那条 PERMISSION_DENIED，规则本身没被覆盖。
+  //      静默忽略的危害不止于少个报错：残留的 source 会被 0039 的 inventory_set_doc_market_id
+  //      按 COALESCE(source_market, target_market) 归错市场。
+  await expectThrow('#200 院顾客退货夹带出库主体被拒(AC5)', /INVALID_PARAMS.*不接受出库主体/, () =>
+    docs.createInventoryCoreDoc({
+      docType: '院顾客退货',
+      sourceOrgNodeId: STA1_ORG,
+      targetOrgNodeId: STA1_ORG,
+      items: [{ skuId: SKU_SUPPLY, quantity: 1 }],
+    }))
+  // (b) AC6：连 source 都不传，鉴权端只可能是 target —— 排除「靠 source 侥幸过闸」的解释。
+  //     文案一起断：层级 action 闸拒的是「缺少…库存操作权限」，这里断「无权操作该组织节点单据」，
+  //     才能证明拒绝来自 assertOrgNodeVisible。
+  await expectThrow('#200 院顾客退货 target 越权被拒(AC6)', /PERMISSION_DENIED.*无权操作该组织节点单据/, () =>
     docs.createInventoryCoreDoc({
       docType: '院顾客退货',
       targetOrgNodeId: STB1_ORG,
@@ -121,7 +136,7 @@ try {
     }))
   const docsAfter = await inventoryDocCount()
   const returnDocs = await inventoryDocCount('院顾客退货')
-  check('#200 两次越权建单都没落库(inventory_docs 行数不变)',
+  check('#200 三次非法建单都没落库(inventory_docs 行数不变)',
     docsAfter === docsBefore && returnDocs === 0,
     `before=${docsBefore} after=${docsAfter} 院顾客退货=${returnDocs}`)
 

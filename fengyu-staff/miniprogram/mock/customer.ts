@@ -146,23 +146,43 @@ const MOCK_CUSTOMER_ORDERS: Record<string, any[]> = {
   ],
 }
 
+/**
+ * #181：customer.search 的返回形态与云函数保持一致的多态 ——
+ * payload 带 page 返回 { customers, page, pageSize, hasMore }（顾客档案 Tab 下滑加载用），
+ * 不带 page 仍返回裸数组（开单 / 充值卡 / 充值金转入 / 服务单 / 提货五处沿用）。
+ * mock 不切片（数据量小），hasMore 恒 false；phone 分支与云函数一致，永不分页。
+ */
+function wrapSearchResult(
+  payload: Record<string, any>,
+  list: any[],
+  isPhoneBranch = false,
+): any {
+  if (payload.page === undefined || payload.page === null) return list
+  const pageSize = Math.min(100, Math.max(1, Number(payload.pageSize) || 20))
+  const page = Math.max(1, Number(payload.page) || 1)
+  // mock 数据量小于一页，第 2 页起恒为空，避免下滑无限追加重复数据
+  const customers = isPhoneBranch || page === 1 ? list : []
+  return { customers, page, pageSize, hasMore: false }
+}
+
 export const customerHandlers: Record<string, (payload: Record<string, any>) => any> = {
   'customer.search': (payload) => {
     // 手机号精确匹配（pickup 数字输入用）
     const phone = (payload.phone || '').replace(/\s/g, '')
     if (phone) {
       const found = MOCK_CUSTOMERS.find(c => c.phone === phone)
-      return found ? [found] : []
+      return wrapSearchResult(payload, found ? [found] : [], true)
     }
     // 关键词模糊匹配手机号 + 姓名（开单 / 充值卡 / 顾客 Tab / 服务单用；crossStore 在 mock 中无意义）
     const keyword = (payload.keyword || '').trim()
     if (keyword) {
-      return MOCK_CUSTOMERS.filter(
+      const matched = MOCK_CUSTOMERS.filter(
         c => (c.phone || '').includes(keyword) || (c.name || '').includes(keyword),
       )
+      return wrapSearchResult(payload, matched)
     }
     // 无入参时返回全部（默认列表）
-    return MOCK_CUSTOMERS
+    return wrapSearchResult(payload, MOCK_CUSTOMERS)
   },
 
   'customer.calendar': (payload) => {

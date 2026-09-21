@@ -34,7 +34,7 @@ function makeSession(roles: AuthSession['roles'], actions: string[] = []): AuthS
   }
 }
 
-describe('requireAdmin — 物理删除硬闸（仅系统管理员）', () => {
+describe('requireAdmin — 仅系统管理员硬闸（物理删除 + 不可授权的敏感写操作）', () => {
   beforeEach(() => mockedRedirect.mockClear())
 
   it('session 为 null → redirect("/login?expired=1")', () => {
@@ -84,6 +84,26 @@ describe('requireAdmin — 物理删除硬闸（仅系统管理员）', () => {
 
   it('空 roles → 拦下', () => {
     const session = makeSession([], ['sale_order:delete'])
+    expect(() => requireAdmin(session)).toThrow(PermissionError)
+    expect(mockedRedirect).not.toHaveBeenCalled()
+  })
+
+  // 上面的用例都不带 isSuperAdmin，走的是 `r.isSuperAdmin ?? r.role === 'admin'` 的回退支。
+  // 但生产 session 从 permission_roles.is_super_admin（notNull + default false，
+  // db/schema/permission.ts:25）直读，该字段永远是 boolean —— 回退支在生产不可达，
+  // 真正生效的是下面两条。#211 把本闸门从物理删除扩到日常增改后，这两条更需锁定。
+  it('isSuperAdmin=true 的自定义角色 → 放行（不要求 role 字面量是 admin）', () => {
+    const session = makeSession([
+      { role: 'custom_ops', scopeId: 'hq', scopeType: '总部', isSuperAdmin: true },
+    ])
+    expect(() => requireAdmin(session)).not.toThrow()
+    expect(mockedRedirect).not.toHaveBeenCalled()
+  })
+
+  it('isSuperAdmin=false 但 role 字面量是 admin → 拦下（?? 不回退，false 是有效值）', () => {
+    const session = makeSession([
+      { role: 'admin', scopeId: 'hq', scopeType: '总部', isSuperAdmin: false },
+    ])
     expect(() => requireAdmin(session)).toThrow(PermissionError)
     expect(mockedRedirect).not.toHaveBeenCalled()
   })

@@ -48,7 +48,8 @@ const GENERIC_DOC_TYPE_SET = new Set<InventoryDocType>(INVENTORY_GENERIC_DOC_TYP
 /*
  * 从共享建单表单 re-export：单据中心与办理台共用同一份表单（#191），
  * 这两份口径跟着表单走。仍从本文件导出是为了不动既有测试的 import 路径 ——
- * 那批用例（与服务端 shouldCaptureSourceLot / genericDocEndpointSpec 的漂移守护）
+ * 那批用例（与服务端 shouldCaptureSourceLot、以及 createInventoryCoreDoc 里那段内联端点规则
+ * ——同主体归一 + 按 movementPlan 方向单边拒另一端——的漂移守护）
  * 是这条链上最值钱的守护。
  */
 export { SOURCE_LOT_DOC_TYPES, genericDocEndpointMode } from './inventory-doc-create-form'

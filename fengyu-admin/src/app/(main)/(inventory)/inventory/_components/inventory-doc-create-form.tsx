@@ -48,13 +48,16 @@ export const SOURCE_LOT_DOC_TYPES = new Set<InventoryDocType>([
 ])
 
 /**
- * 通用建单的**合法端点**口径，与 engine.ts 的 `genericDocEndpointSpec` 同源（#200 S6-a）。
+ * 通用建单的**合法端点**口径，与 engine.ts `createInventoryCoreDoc` 里那段内联的端点规则
+ * 同源（#200 S6-a）：同主体类型两端归一（`INTERNAL_SAME_NODE_DOC_TYPES`）、待收货类型两端都要
+ * （`RECEIVE_REQUIRED_DOC_TYPES`）、其余按 `movementPlan` 的 `locationRole` 拒掉另一端。
  *
  * engine.ts 第 2 行是 `import 'server-only'`，前端 import 会把 `@/db` 一起拖进浏览器包，
  * 所以这里另写一份；两份不漂移由 `inventory-docs-page.test.tsx` 的源码字面量守护拦住
- * （它直接读 engine.ts 里 `INTERNAL_SAME_NODE_DOC_TYPES` / `RECEIVE_REQUIRED_DOC_TYPES` /
- *  `INBOUND_DOC_TYPES` / `OUTBOUND_DOC_TYPES` 四个集合的字面量，按 `genericDocEndpointSpec`
- *  的分支顺序推导期望值）。
+ * （它直接读 engine.ts 里 `NO_MOVEMENT_DOC_TYPES` / `RECEIVE_REQUIRED_DOC_TYPES` /
+ *  `APPROVAL_DOC_TYPES` / `INBOUND_DOC_TYPES` / `OUTBOUND_DOC_TYPES` /
+ *  `INTERNAL_SAME_NODE_DOC_TYPES` 六个集合的字面量，按 `defaultStatusForDoc` → `movementPlan`
+ *  → 建单段单边规则的分支顺序推导期望值）。
  *
  * - `same-node`   两端指同一个库存主体。两个下拉**都保持可用**并互相镜像同值 ——
  *                 服务端两端不一致直接拒单（#200 AC4），镜像让用户点哪个都对。
@@ -86,7 +89,8 @@ const GENERIC_DOC_ENDPOINT_MODE = {
 
 export function genericDocEndpointMode(docType: InventoryDocType): GenericDocEndpointMode {
   // 非通用类型走各自的专用业务表单，不经本表单；'both' = 不收窄，是不可达的兜底。
-  // 服务端在这一支上是 fail-closed（`genericDocEndpointSpec` 直接 throw），
+  // 服务端在这一支上本就 fail-closed（`createInventoryCoreDoc` 开头的
+  // `INVENTORY_GENERIC_DOC_TYPES` 白名单直接抛「该库存单据不支持通用建单」），
   // 前端不跟着抛：表单层多放行一个端点只是少收窄一次，真正的闸门在服务端。
   return (
     (GENERIC_DOC_ENDPOINT_MODE as Partial<Record<InventoryDocType, GenericDocEndpointMode>>)[docType]
@@ -288,8 +292,9 @@ export function InventoryDocCreateForm({
       const payload: CreateInventoryDocInput = {
         docType,
         /*
-         * 非法端点一律送 null（#200 S6-f）：服务端 `resolveGenericDocSubjects` 对
-         * 「不该出现却给了非空值」的端点是直接拒单（AC5），不是静默忽略 ——
+         * 非法端点一律送 null（#200 S6-f）：服务端 `createInventoryCoreDoc` 里那条按
+         * `movementPlan.locationRole` 推导的单边规则，对「不该出现却给了非空值」的端点
+         * 是直接拒单（AC5，抛「…不接受出库/入库主体」），不是静默忽略 ——
          * 多送一个端点不会被吞掉，只会让用户收到一条他看不懂的报错。
          * same-node 两端已在 onChange 里镜像成同值，原样送给服务端归一即可。
          */
@@ -324,10 +329,10 @@ export function InventoryDocCreateForm({
        * 这条的**理由在 #200 之后变了**，别照着旧版本推断行为：同主体类型服务端原先走
        * `source ?? target`（engine.ts 的 INTERNAL_SAME_NODE_DOC_TYPES），残留 source 会
        * 静默吃掉用户这次选的 target 并照常返回成功单号 —— 那个「悄悄把货记到上一张单的
-       * 主体上」的失败模式**已经不存在**：`resolveGenericDocSubjects` 现在对
+       * 主体上」的失败模式**已经不存在**：`createInventoryCoreDoc` 的端点校验段现在对
        * 「同主体类型两端不一致」（AC4）与「非法端点给了非空值」（AC5）一律硬拒单。
        * 代价于是换成了另一种：用户对着一张看起来是空的表单，收到
-       * 「只能指定入库主体」/「……必须是同一个库存主体」这类对不上号的报错。
+       * 「…不接受入库主体」/「该单据的出库主体与入库主体必须是同一个」这类对不上号的报错。
        * 静默记错主体和突兀报错都不该给用户，清场是同一个解 ——
        * 换单据类型那条路径同理，清在上面 docType 的 onChange（#200 S6-b）。
        * 日期同理：不重置的话下一张单会沿用上次补录的历史日期。

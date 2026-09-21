@@ -17,7 +17,7 @@
   <view wx:else>
     <!-- 门店封面图 -->
     <view wx:if="{{store.cover_image}}" class="cover-wrap">
-      <image src="{{store.cover_image}}" mode="aspectFill" class="cover-image" />
+      <image src="{{store.cover_image}}" mode="aspectFill" class="cover-image" lazy-load />
     </view>
     <!-- 无封面时 Hero 区域 -->
     <view wx:else class="hero">
@@ -113,6 +113,7 @@
           class="gallery-image"
           data-index="{{index}}"
           bindtap="onPreviewImage"
+          lazy-load
         />
       </view>
     </van-cell-group>
