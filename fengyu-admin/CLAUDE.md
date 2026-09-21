@@ -57,7 +57,7 @@ fengyu-admin/
 └── vitest.config.ts
 ```
 
-路由组仅用于源码组织，公开 URL 保持不变（如订单仍是 `/orders`）。侧边栏采用手风琴二级菜单：工作台、数据中心直达；经营业务、客户运营、商品商城、库存管理、组织管理、系统管理按叶子权限过滤。库存管理的“资料配置”由 `/inventory/skus`、`/inventory/suppliers`、`/inventory/sku-mappings` 三个保留深链的页签构成。
+路由组仅用于源码组织，公开 URL 保持不变（如订单仍是 `/orders`）。侧边栏采用手风琴二级菜单：工作台直达；经营业务、客户运营、商品商城、库存管理、组织管理、数据中心、系统管理按叶子权限过滤。数据中心的四个板块各占一条路径（`/data-center/{sales|customer|efficiency|product}`），裸 `/data-center` 只做跳转（兼容旧 `?tab=` 深链）。库存管理的“资料配置”由 `/inventory/skus`、`/inventory/suppliers`、`/inventory/sku-mappings` 三个保留深链的页签构成。
 
 ## 常用命令
 
