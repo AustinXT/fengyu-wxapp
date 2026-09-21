@@ -93,6 +93,22 @@ describe('lakala 跨副本一致性守护', () => {
       expect(read(PAYNOTIFY_INDEX)).toContain("tradeState === 'REVOKED'")
     })
 
+    // clientApi 的跨 env 作废接口与 staffApi 的关单前闸门必须认同一组「可关闭状态」：
+    // 两端漂移会让 staff 放行、clientApi 拒绝（或反之），表现为莫名其妙的「状态已变化」。
+    test('可关闭订单状态集合三端一致（待支付 / 支付失败）', () => {
+      const STAFF_ORDER = path.resolve(
+        __dirname, '../../../../../fengyu-staff/cloudfunctions/staffApi/routes/order.js',
+      )
+      const SET_LITERAL = /\[\s*'待支付',\s*'支付失败'\s*\]/
+      expect(read(CLIENT_ORDER)).toMatch(SET_LITERAL)
+      expect(read(STAFF_ORDER)).toMatch(SET_LITERAL)
+      expect(read(ADMIN_ORDERS)).toMatch(SET_LITERAL)
+      // 三端都应通过具名常量引用，而不是散落字面量
+      expect(read(CLIENT_ORDER)).toContain('CLOSEABLE_ORDER_STATUSES')
+      expect(read(STAFF_ORDER)).toContain('CLOSEABLE_ORDER_STATUSES')
+      expect(read(ADMIN_ORDERS)).toContain('CLOSEABLE_ORDER_STATUSES')
+    })
+
     // fail-closed 是整个关单流程的承重结构：关单返回成功 ≠ 渠道已终态，
     // 必须复核；复核不过一律不释放本地意图。两份 helper 都不许绕过。
     test('clientApi 与 admin 的作废 helper 都保留「关单后复核」结构', () => {

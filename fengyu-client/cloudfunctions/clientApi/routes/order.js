@@ -599,6 +599,13 @@ function buildLakalaOutTradeNo(orderNo, excludedOutTradeNo) {
 const LAKALA_RELEASABLE_TRADE_STATES = ['FAIL', 'CLOSE', 'REVOKED']
 const LAKALA_PAID_TRADE_STATES = ['SUCCESS', 'PART_REFUND', 'REFUND']
 
+/**
+ * 允许关闭的订单状态（跨 env 作废接口的前置复核用）。
+ * 必须与 staffApi routes/order.js 的 CLOSEABLE_ORDER_STATUSES 同集合——
+ * 两端漂移会让「staff 放行但 clientApi 拒绝」这类状态变成误报，由 snapshot 守护。
+ */
+const CLOSEABLE_ORDER_STATUSES = ['待支付', '支付失败']
+
 /** 与 payNotify 解析回调时的 `.toUpperCase()` 对齐，避免两端对同一笔单判定不一致。 */
 function normalizeTradeState(state) {
   return String(state || '').trim().toUpperCase()
@@ -4381,9 +4388,14 @@ async function voidPaymentIntent(ctx) {
   if (!saleOrderId) {
     throw new Error('INVALID_PARAMS: 缺少 saleOrderId 参数')
   }
-  // 调用方预读到的意图单号。必须由调用方给出并在这里校验，不能让本接口
-  // 「读当前是哪笔就关哪笔」——见下方 TOCTOU 说明（双谱系评审 round-3）。
+  // 调用方预读到的意图单号。本接口绝不能「读当前是哪笔就关哪笔」——见下方 TOCTOU 说明。
+  //
+  // 为向后兼容保留为软校验（缺省则跳过比对），但缺省意味着 TOCTOU 防线失效，
+  // 所以必须留痕告警，避免将来新增调用方漏传时无声降级（双谱系评审 round-4）。
   const expectedOutTradeNo = String(payload.expectedOutTradeNo || '').trim()
+  if (!expectedOutTradeNo) {
+    console.warn('[order/voidPaymentIntent] 调用方未传 expectedOutTradeNo，TOCTOU 防线已跳过:', saleOrderId)
+  }
 
   const rows = await pg.query(
     'SELECT sale_order_id, status, store_id, lakala_out_order_no FROM sale_orders WHERE sale_order_id = $1',
@@ -4405,8 +4417,9 @@ async function voidPaymentIntent(ctx) {
   if (expectedOutTradeNo && expectedOutTradeNo !== String(order.lakala_out_order_no)) {
     throw new Error('CONFLICT: PAYMENT_INTENT_CHANGED: 支付场次已变化，请刷新后重试')
   }
-  // 状态同样要在任何渠道调用之前复核（调用方的预检与这里之间可能已经变化）
-  if (!['待支付', '支付失败'].includes(order.status)) {
+  // 状态同样要在任何渠道调用之前复核（调用方的预检与这里之间可能已经变化）。
+  // 集合与 staffApi 的 CLOSEABLE_ORDER_STATUSES 必须一致，由 cross-copy snapshot 守护。
+  if (!CLOSEABLE_ORDER_STATUSES.includes(order.status)) {
     throw new Error('CONFLICT: PAYMENT_INTENT_CHANGED: 订单状态已变化，请刷新后重试')
   }
 
