@@ -169,6 +169,13 @@ Page({
      * `loading` 闸门挡不住这个 —— 各筛选入口本来就允许在 loading 期间点击。
      */
     reqGen: 0,
+    /**
+     * 首屏/重置请求失败（#181）。必须有这个独立状态，不能靠「列表为空」推断：
+     * 切换查询条件的请求失败时若保留旧条件的数据，屏幕上就是一份**属于旧条件**的列表，
+     * 却顶着新的筛选高亮、底部还写着「没有更多了」—— 比空列表更误导。
+     * 置错误态后清空列表并给出重试入口，语义才是诚实的。
+     */
+    listError: false,
     // 客户分配
     isManager: false,
     showAssignSheet: false,
@@ -190,7 +197,7 @@ Page({
      * 恰好打在本需求最常用的默认浏览态上。
      * 代价：详情页里改了姓名/备注后返回，列表不自动刷新，需下拉刷新（与管理层视图一致）。
      */
-    if (!this.data.activeTag && !this.data.searched && this.data.results.length === 0) {
+    if (!this.data.activeTag && !this.data.searched && this.data.results.length === 0 && !this.data.listError) {
       this.loadList(1, true);
     }
   },
@@ -250,29 +257,44 @@ Page({
         page: data.page,
         hasMore: data.hasMore,
         searched: !!keyword,
+        listError: false,
       });
     } catch (err: unknown) {
       if (gen !== this.data.reqGen) return;
-      // 始终提示（合并前 onSearch 失败是有 toast 的，不能因为合并而丢掉反馈）；
-      // 列表内容保留 —— 一次失败的刷新不该抹掉已在屏的好数据
-      const msg = err instanceof Error ? err.message : '加载失败';
-      wx.showToast({ title: msg, icon: 'none' });
-      if (reset) this.resetPagingAfterFailedReset();
+      this.handleListError(err, reset);
     } finally {
       if (gen === this.data.reqGen) this.setData({ loading: false });
     }
   },
 
   /**
-   * reset 请求失败后掐断触底（#181）。
+   * 列表请求失败的统一处理（#181）。
    *
-   * 调用方在发起 reset 请求前**已经**把查询条件切成新的（activeTag / searchKeyword /
-   * 筛选项），失败时屏幕上留着的却是旧条件的数据。此时若保留旧的 `page`/`hasMore`，
-   * 下一次触底会拿**新条件**去请求 `page+1` —— 既跳过了新条件的第 1 页，又把两种
-   * 条件的数据混在同一个列表里。所以失败后必须把分页状态压到「只有这一屏、没有更多」。
+   * 始终 toast（合并前 onSearch 失败是有提示的，不能因为合并丢掉反馈）。此外分两种：
+   *
+   * - **reset 请求失败**：调用方在发起前**已经**把查询条件切成新的（activeTag /
+   *   searchKeyword / 筛选项）。此时若保留旧条件的数据，屏幕上就是一份属于旧条件的列表，
+   *   却顶着新的筛选高亮、底部还写着「没有更多了」，`onShow` 也因列表非空不再重试 ——
+   *   一个会一直留在屏幕上的错误归属。而且旧的 `page`/`hasMore` 会让下一次触底拿**新条件**
+   *   请求 `page+1`，既跳过新条件第 1 页又混合两类数据。所以：清空 + 错误态 + 重试入口。
+   * - **翻页请求失败**：查询条件没变，屏幕上的数据是对的，保留即可；`page` 不推进，
+   *   下次触底自然重试同一页。
    */
-  resetPagingAfterFailedReset() {
-    this.setData({ page: 1, hasMore: false });
+  handleListError(err: unknown, reset: boolean) {
+    const msg = err instanceof Error ? err.message : '加载失败';
+    wx.showToast({ title: msg, icon: 'none' });
+    if (reset) {
+      this.setData({ results: [], page: 1, hasMore: false, listError: true });
+    }
+  },
+
+  // 错误态的重试入口：按当前处于哪条分支重新拉第一页
+  onListRetry() {
+    if (this.data.activeTag) {
+      this.loadByTag(this.data.activeTag as TagType, 1, true);
+    } else {
+      this.loadList(1, true);
+    }
   },
 
   onSearchChange(e: WechatMiniprogram.CustomEvent) {
@@ -353,12 +375,11 @@ Page({
         results: newResults,
         page,
         hasMore: newResults.length < data.total,
+        listError: false,
       });
     } catch (err: unknown) {
       if (gen !== this.data.reqGen) return;
-      const msg = err instanceof Error ? err.message : '加载失败';
-      wx.showToast({ title: msg, icon: 'none' });
-      if (reset) this.resetPagingAfterFailedReset();
+      this.handleListError(err, reset);
     } finally {
       if (gen === this.data.reqGen) this.setData({ loading: false });
     }

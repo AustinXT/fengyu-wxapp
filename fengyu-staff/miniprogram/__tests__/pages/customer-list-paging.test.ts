@@ -171,17 +171,44 @@ describe('#181 失败反馈', () => {
    * P1：loadFilteredList 与 onSearch 合并后，onSearch 恒走 reset=true 分支。
    * 若该分支静默清空，搜索失败会呈现为「无任何文案的空白列表」。
    */
-  test('搜索失败必须 toast，且不抹掉已在屏的结果', async () => {
+  /**
+   * 查询条件已切成新的（这里是加了关键词），此时把旧条件的数据留在屏幕上会顶着新的
+   * 筛选高亮、底部还写「没有更多了」—— 比空列表更误导。所以 reset 失败要清空并进错误态。
+   */
+  test('搜索失败：toast + 清空 + 进错误态（旧条件数据不得冒充新结果）', async () => {
     const page = createPage('customerList')
     vi.mocked(callStaffApi).mockResolvedValueOnce(pageEnvelope(['u1'], 1, false) as never)
     await page.loadList(1, true)
+    expect(page.data.listError).toBe(false)
 
     vi.mocked(callStaffApi).mockRejectedValueOnce(new Error('网络开小差'))
     page.data.searchKeyword = '张'
     await page.onSearch()
 
     expect(toastCalls.map((t) => t.title)).toContain('网络开小差')
-    expect(page.data.results).toHaveLength(1)   // 旧数据保留
+    expect(page.data.results).toEqual([])
+    expect(page.data.listError).toBe(true)
+    expect(page.data.hasMore).toBe(false)
+  })
+
+  test('onListRetry 按当前分支重拉第一页并清掉错误态', async () => {
+    const page = createPage('customerList')
+    vi.mocked(callStaffApi).mockRejectedValueOnce(new Error('超时'))
+    await page.loadList(1, true)
+    expect(page.data.listError).toBe(true)
+
+    vi.mocked(callStaffApi).mockResolvedValueOnce(pageEnvelope(['u1'], 1, false) as never)
+    await page.onListRetry()
+    expect(page.data.listError).toBe(false)
+    expect(page.data.results).toHaveLength(1)
+
+    // 标签分支的重试要走 listByTag
+    page.data.activeTag = 'active'
+    page.data.listError = true
+    vi.mocked(callStaffApi).mockResolvedValueOnce({ customers: [customerRow('t1')], total: 1 } as never)
+    await page.onListRetry()
+    expect(vi.mocked(callStaffApi).mock.calls.at(-1)![0]).toBe('customer.listByTag')
+    expect(page.data.listError).toBe(false)
   })
 
   test('首屏失败（本来就没数据）清空并提示', async () => {
@@ -192,6 +219,7 @@ describe('#181 失败反馈', () => {
 
     expect(page.data.results).toEqual([])
     expect(page.data.hasMore).toBe(false)
+    expect(page.data.listError).toBe(true)
     expect(toastCalls).toHaveLength(1)
   })
 
@@ -206,6 +234,8 @@ describe('#181 失败反馈', () => {
     expect(page.data.page).toBe(1)    // 仍停在第 1 页
     expect(page.data.hasMore).toBe(true)
     expect(page.data.results).toHaveLength(1)
+    // 翻页失败时查询条件没变，屏幕上的数据是对的 —— 不得清空、不得进错误态
+    expect(page.data.listError).toBe(false)
   })
 })
 
@@ -296,7 +326,12 @@ describe('#181 查询条件切换时的分页归位', () => {
   test.each([
     ['onStatTap（统计卡片）', (p: Record<string, any>) => p.onStatTap({ currentTarget: { dataset: { tag: 'active' } } }), 'customer.listByTag'],
     ['onSearch（关键词）', (p: Record<string, any>) => { p.data.searchKeyword = '张'; return p.onSearch() }, 'customer.search'],
-    ['onSearchChange（清空关键词）', (p: Record<string, any>) => p.onSearchChange({ detail: '' }), 'customer.search'],
+    ['onSearchChange（清空关键词）', (p: Record<string, any>) => {
+      // 必须先造出「有关键词」的现场，否则这条只是在验证默认态又请求了一次第 1 页
+      p.data.searchKeyword = '张'
+      p.data.searched = true
+      return p.onSearchChange({ detail: '' })
+    }, 'customer.search'],
     ['onAdvancedFilterTap（拓展筛选）', (p: Record<string, any>) => p.onAdvancedFilterTap({ currentTarget: { dataset: { dim: 'spendingTier', value: '10W+' } } }), 'customer.search'],
     ['onResetFilters（重置）', (p: Record<string, any>) => p.onResetFilters(), 'customer.search'],
   ])('%s 成功时请求第 1 页且分页状态归位', async (_name, act, expectedAction) => {
@@ -315,6 +350,11 @@ describe('#181 查询条件切换时的分页归位', () => {
     expect(call![1]).toMatchObject({ page: 1 })
     expect(page.data.page).toBe(1)
     expect(page.data.results.map((r: any) => r.clientUserId)).toEqual(['n1'])
+    if (_name.startsWith('onSearchChange')) {
+      // 关键词清空后请求不得再带 keyword，searched 也要归位
+      expect(call![1]).not.toHaveProperty('keyword')
+      expect(page.data.searched).toBe(false)
+    }
   })
 
   /**
@@ -335,7 +375,8 @@ describe('#181 查询条件切换时的分页归位', () => {
 
     expect(page.data.page).toBe(1)
     expect(page.data.hasMore).toBe(false)
-    expect(page.data.results).toHaveLength(2) // 旧数据保留供展示
+    expect(page.data.results).toEqual([])      // 旧条件的数据不得留在屏幕上冒充新结果
+    expect(page.data.listError).toBe(true)     // 与「该分类确实没有顾客」区分开
     expect(toastCalls.map((t) => t.title)).toContain('网络异常')
 
     // 再触底不得发请求（hasMore 已为 false）

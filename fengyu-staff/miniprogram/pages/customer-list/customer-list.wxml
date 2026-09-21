@@ -115,7 +115,14 @@
     <view slot="action" bindtap="onSearch">搜索</view>
   </van-search>
 
-  <view wx:if="{{loading && results.length === 0}}" class="loading-wrap">
+  <!-- 错误态优先于空态：请求失败与「确实没有顾客」必须分得清，否则切筛选失败会被当成该分类无人 -->
+  <view wx:if="{{listError}}" class="empty-wrap">
+    <van-empty description="加载失败，请重试">
+      <van-button slot="bottom" type="primary" size="small" round bind:click="onListRetry">重新加载</van-button>
+    </van-empty>
+  </view>
+
+  <view wx:elif="{{loading && results.length === 0}}" class="loading-wrap">
     <van-loading type="spinner" color="#C0322A" />
   </view>
 
