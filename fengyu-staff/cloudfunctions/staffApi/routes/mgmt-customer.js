@@ -29,6 +29,7 @@ const { maskPhone } = require('../utils/pii')
 const { excludeDepositRefundSql } = require('../utils/consume-filter')
 const { shanghaiDateStr } = require('../utils/datetime')
 const { assertPaymentAttributionReady } = require('../utils/attribution-guard')
+const { safePaging } = require('../utils/paging')
 
 // ====================================================================
 // 共享 helper（buildSaleScope/buildClientScope 为与 mgmt-product.js 一致的本地副本；
@@ -287,9 +288,8 @@ async function search(ctx) {
 
   const fullPhone = isMgmtFullPhone(ctx.auth)
 
-  const safePage = Math.max(1, Number(page) || 1)
-  const safePageSize = Math.min(100, Math.max(1, Number(pageSize) || 50))
-  const offset = (safePage - 1) * safePageSize
+  // invariant D-search-pagination：取整 + 安全整数两道防线见 utils/paging.js 函数头（#240）
+  const { safePage, safePageSize, offset } = safePaging(page, pageSize, 50)
 
   let rows = []
 

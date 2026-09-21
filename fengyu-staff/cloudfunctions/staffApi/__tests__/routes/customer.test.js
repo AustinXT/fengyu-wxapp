@@ -2461,6 +2461,44 @@ describe('customer.phoneChangeLogs', () => {
     await customerRoutes.phoneChangeLogs(ctx)
     expect(ctx.result).toEqual([])
   })
+
+  // ---------- #240 分页取整 ----------
+  // 改前写法 `Math.min(100, Math.max(1, Number(pageSize) || 50))` 不取整：
+  // 2.5 既 >1 又 <100，两个夹子双双失效 → 2.5 原样进 LIMIT，
+  // PG 按 int8 解析抛 `invalid input syntax for type bigint: "2.5"`（500 级，非降级）。
+  test('#240 小数 pageSize 被取整：LIMIT/OFFSET 参数必须是整数', async () => {
+    const ctx = createManagerCtx({ clientUserId: 'u1', page: 2.7, pageSize: 2.5 })
+    pg.query
+      .mockResolvedValueOnce([{ bound_store_id: 'store-001', bound_employee_id: 'emp-x' }])
+      .mockResolvedValueOnce([])
+    await customerRoutes.phoneChangeLogs(ctx)
+
+    const [sql, params] = pg.query.mock.calls[1]
+    expect(sql).toContain('LIMIT $2 OFFSET $3')
+    // pageSize=2.5→2，page=2.7→2，offset=(2-1)*2=2
+    expect(params).toEqual(['u1', 2, 2])
+    expect(Number.isInteger(params[1])).toBe(true)
+    expect(Number.isInteger(params[2])).toBe(true)
+  })
+
+  test("#240 非安全整数回落默认 50：'Infinity' / 1e21 不得进 LIMIT/OFFSET", async () => {
+    const ctxInf = createManagerCtx({ clientUserId: 'u1', page: 'Infinity', pageSize: 'Infinity' })
+    pg.query
+      .mockResolvedValueOnce([{ bound_store_id: 'store-001', bound_employee_id: 'emp-x' }])
+      .mockResolvedValueOnce([])
+    await customerRoutes.phoneChangeLogs(ctxInf)
+    expect(pg.query.mock.calls[1][1]).toEqual(['u1', 50, 0])
+
+    const ctxHuge = createManagerCtx({ clientUserId: 'u1', page: 1e21, pageSize: 1e21 })
+    pg.query
+      .mockResolvedValueOnce([{ bound_store_id: 'store-001', bound_employee_id: 'emp-x' }])
+      .mockResolvedValueOnce([])
+    await customerRoutes.phoneChangeLogs(ctxHuge)
+    // 1e21 超出安全整数范围（pg 会序列化成 "1e+21" 文本）→ 回落默认 50 / 第 1 页
+    const hugeParams = pg.query.mock.calls[3][1]
+    expect(hugeParams).toEqual(['u1', 50, 0])
+    expect(Number.isInteger(hugeParams[2])).toBe(true)
+  })
 })
 
 // ============================================================
