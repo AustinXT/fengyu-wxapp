@@ -12,6 +12,7 @@
 const pg = require('../db/pg')
 const { requireStaffBound } = require('../middleware/auth')
 const { buildBundleMarketScopeFilter, buildNormalSkuMarketScopeFilter, buildNormalSkuMarketScopeCondition, marketScopeValues } = require('../utils/scope')
+const { safeThumbUrl, PRODUCT_THUMB_BOX_SMALL } = require('../utils/image')
 
 /**
  * SKU 可见范围过滤（product_skus.market_scope）。
@@ -287,6 +288,9 @@ async function _queryExperienceSkus(auth) {
  *
  * 供前端 BundlePicker 子视图使用（Step 1 选"组合套餐"商品类型时）。
  * 与 client `product.spuDetail`、admin `getProductsByKind('__bundle__')` 数据形态对齐。
+ *
+ * `coverImage` 是 `string | null`：经 `safeThumbUrl` 施加 COS 缩略参数后下发（issue #232），
+ * 非 CloudBase 云存储域名 / 带签名 / 对象键不合白名单的一律 null，由前端走占位分支。
  */
 async function _queryMallBundleGroups(auth) {
   const params = []
@@ -354,7 +358,11 @@ async function _queryMallBundleGroups(auth) {
     return {
       productId: p.product_id,
       name: p.name,
-      coverImage: p.cover_image,
+      // 缩略后下发，不给原图（issue #232）。解码内存 = 像素数 × 4，与文件体积无关，
+      // admin 上传侧的体积校验拦不住高压缩率的巨图（#213 那张 405KB 的 PNG 是 1.58 亿像素）。
+      // 无法保证缩略时返回 null —— bundle-picker.wxml:27 的 `wx:if` 会走占位分支，
+      // 不会出现裂图；绝不退回原 URL（退回 = 保护静默失效）。
+      coverImage: safeThumbUrl(p.cover_image, PRODUCT_THUMB_BOX_SMALL),
       description: p.description,
       price: Number(p.price) || 0,
       specialPrice: p.special_price ? Number(p.special_price) : null,
