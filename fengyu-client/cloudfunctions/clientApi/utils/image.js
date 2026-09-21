@@ -10,64 +10,88 @@
  * 必须在 URL 上限制输出分辨率。
  *
  * 用 imageMogr2 拼缩略参数的好处是对存量图立即生效（无需重新上传、无需小程序发版）。
- * 只做等比缩放、不转格式：转 jpg 虽更小，但会让带透明通道的图出现黑底，
- * 而缩到 300x 后解码内存已降到 300×300×4 ≈ 360KB，格式带来的差异无关紧要。
  */
 
 // 数据万象仅对 CloudBase / COS 自有域名生效，外链拼了参数反而可能 404
 const COS_HOST_PATTERN = /(\.tcb\.qcloud\.la|\.myqcloud\.com|\.tcloudbaseapp\.com)$/i
 
 /**
- * 给 COS 图片 URL 拼接等比缩略参数
+ * 判断 hostname 是否属于可做数据万象处理的域名。
+ * 先去掉 FQDN 尾点（`a.tcb.qcloud.la.` 与 `a.tcb.qcloud.la` DNS 等价，
+ * 不归一会漏匹配从而退回下发原图）。
+ */
+function isProcessableHost(hostname) {
+  return COS_HOST_PATTERN.test(String(hostname).replace(/\.$/, ''))
+}
+
+/**
+ * 生成可安全下发给小程序的缩略图 URL。
+ *
+ * **无法保证缩略的一律返回 null，而不是退回原图** —— 这是本模块的核心安全约定。
+ * 退回原图意味着「保护静默失效」：调用方看不出区别，而那张图可能正是会撑爆进程的巨图。
+ * 返回 null 时调用方应渲染占位图（前端各处已有 wx:if 占位分支）。
+ *
+ * 缩略规则用**双边** box（`thumbnail/NxN`，数据万象的 contain 语义：等比缩放到宽高都不超过 N），
+ * 而不是只限宽的 `thumbnail/Nx`。只限宽挡不住细长图：
+ * 一张 1080×20000 的长截图（21.6MP，能过 40MP 上限、文件也不大）在 `1080x` 规则下
+ * 宽度已达标、高度完全不受约束，解码仍是 1080×20000×4 ≈ 86MB。
+ * 用双边 box 后，解码内存被硬封顶为 N×N×4。
  *
  * @param {string} url 原始图片 URL
- * @param {number} width 目标宽度（像素），等比缩放
- * @returns {string} 处理后的 URL；不适用的输入一律原样返回（降级不报错）
+ * @param {number} boxSize 目标 box 边长（像素），等比缩放到宽高均不超过它
+ * @returns {string|null} 处理后的 URL；无法保证缩略时返回 null
  */
-function thumbUrl(url, width) {
-  if (typeof url !== 'string' || url === '') return url
-  if (!Number.isInteger(width) || width <= 0) return url
+function safeThumbUrl(url, boxSize) {
+  if (typeof url !== 'string' || url.trim() === '') return null
+  if (!Number.isInteger(boxSize) || boxSize <= 0) return null
 
-  // 仅处理 http(s)：cloud:// 等协议交给调用方自行转换
-  if (!/^https?:\/\//i.test(url)) return url
+  // 只处理 http(s)。cloud:// 这类 fileID 需由调用侧先换成 https 再进来，
+  // 否则无从施加缩略规则，按约定返回 null 而不是把原始地址下发出去。
+  if (!/^https?:\/\//i.test(url)) return null
 
   let parsed
   try {
     parsed = new URL(url)
   } catch {
-    return url
+    return null
   }
 
   // 用 hostname 判断而不是对整串做正则：否则 https://a.tcb.qcloud.la@evil.com/
   // 这类把可信域名塞进 userinfo 的 URL 会被误判为可信
-  if (!COS_HOST_PATTERN.test(parsed.hostname)) return url
+  if (!isProcessableHost(parsed.hostname)) return null
 
-  // 幂等：已经带过 imageMogr2 的不再叠加（叠加会让后一个参数失效）。
-  // 按「参数边界」判断而非子串匹配，否则 ?ref=imageMogr2Test 会被误判成已处理而放行原图
-  const existingParams = parsed.search.replace(/^\?/, '').split('&')
-  if (existingParams.some(p => p.startsWith('imageMogr2'))) return url
+  // 剥掉 URL 上已有的任何 imageMogr2 参数，再拼服务端自己的规则。
+  // 不能「看到 imageMogr2 就当作已处理并原样返回」——那样 ?imageMogr2/thumbnail/50000x
+  // 这种参数会被认成「已处理」，结果继续下发超大图。最终生效的规则必须由服务端完全掌控。
+  const kept = parsed.search
+    .replace(/^\?/, '')
+    .split('&')
+    .filter((p) => p !== '' && !p.startsWith('imageMogr2'))
+
+  kept.push(`imageMogr2/thumbnail/${boxSize}x${boxSize}`)
 
   // 经 URL 对象重建而非裸字符串拼接：字符串拼接遇到 #fragment 会把参数拼进 fragment 里
   // （对 COS 不生效），遇到末尾裸 ? 会拼出 ??
-  const param = `imageMogr2/thumbnail/${width}x`
-  parsed.search = parsed.search ? `${parsed.search}&${param}` : `?${param}`
+  parsed.search = `?${kept.join('&')}`
   return parsed.toString()
 }
 
 /**
- * 门店列表卡片：显示尺寸 160rpx，3x 屏约 240 物理像素，取 300 留余量
+ * 门店列表卡片：显示尺寸 160rpx，3x 屏约 240 物理像素，取 300 留余量。
+ * 解码上限 300×300×4 ≈ 0.34MB/张。
  */
-const STORE_LIST_THUMB_WIDTH = 300
+const STORE_LIST_THUMB_BOX = 300
 
 /**
- * 门店详情头图 / 相册：头图宽度是满屏 750rpx，3x 屏（iPhone Pro 等）物理宽约 1170~1290px，
+ * 门店详情头图 / 相册：头图宽度是满屏 750rpx，3x 屏物理宽约 1170~1290px，
  * 用 750 会被放大约 1.7 倍发虚，故取 1080。
- * 解码约 1080×1080×4 ≈ 4.5MB/张，详情页图片数量有限（相册 admin 侧限制 9 张），可接受。
+ * 解码上限 1080×1080×4 ≈ 4.5MB/张，详情页图片数量有限（相册 admin 侧限制 9 张），可接受。
  */
-const STORE_DETAIL_THUMB_WIDTH = 1080
+const STORE_DETAIL_THUMB_BOX = 1080
 
 module.exports = {
-  thumbUrl,
-  STORE_LIST_THUMB_WIDTH,
-  STORE_DETAIL_THUMB_WIDTH,
+  safeThumbUrl,
+  isProcessableHost,
+  STORE_LIST_THUMB_BOX,
+  STORE_DETAIL_THUMB_BOX,
 }

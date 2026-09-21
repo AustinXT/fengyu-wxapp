@@ -13,13 +13,27 @@ function makePng(width: number, height: number): Buffer {
   return buf
 }
 
-/** 构造 GIF89a：逻辑屏幕宽高 little-endian uint16 */
-function makeGif(width: number, height: number): Buffer {
-  const buf = Buffer.alloc(10)
-  buf.write("GIF89a", 0, "ascii")
-  buf.writeUInt16LE(width, 6)
-  buf.writeUInt16LE(height, 8)
-  return buf
+/**
+ * 构造 GIF89a：完整 Logical Screen Descriptor（13 字节）
+ * @param frames 追加的 Image Descriptor(0x2C) 个数，>1 即视为动图
+ */
+function makeGif(width: number, height: number, frames = 1): Buffer {
+  const lsd = Buffer.alloc(13)
+  lsd.write("GIF89a", 0, "ascii")
+  lsd.writeUInt16LE(width, 6)
+  lsd.writeUInt16LE(height, 8)
+  lsd[10] = 0x00 // packed: 无全局调色板
+  lsd[11] = 0x00 // 背景色索引
+  lsd[12] = 0x00 // 像素宽高比
+
+  const blocks: Buffer[] = [lsd]
+  for (let i = 0; i < frames; i++) {
+    const desc = Buffer.alloc(10)
+    desc[0] = 0x2c // Image Separator
+    blocks.push(desc)
+  }
+  blocks.push(Buffer.from([0x3b])) // trailer
+  return Buffer.concat(blocks)
 }
 
 /** 构造 JPEG：SOI + 一个无关 APP0 段 + SOF0 段 */
@@ -39,14 +53,22 @@ function makeJpeg(width: number, height: number): Buffer {
   return Buffer.concat([Buffer.from([0xff, 0xd8]), app0, sof])
 }
 
-/** 构造 WebP VP8X（扩展格式，24 位宽高，-1 存储） */
-function makeWebpVp8x(width: number, height: number): Buffer {
+/**
+ * 构造 WebP VP8X（扩展格式，24 位宽高，-1 存储）
+ * @param animated 置 flags 的 ANIMATION 位
+ */
+function makeWebpVp8x(
+  width: number,
+  height: number,
+  animated = false
+): Buffer {
   const buf = Buffer.alloc(30)
   buf.write("RIFF", 0, "ascii")
   buf.writeUInt32LE(22, 4)
   buf.write("WEBP", 8, "ascii")
   buf.write("VP8X", 12, "ascii")
-  buf.writeUInt32LE(10, 16)
+  buf.writeUInt32LE(10, 16) // VP8X chunk 数据长度固定 10
+  buf[20] = animated ? 0x02 : 0x00 // flags: bit1 = ANIMATION
   const w = width - 1
   const h = height - 1
   buf[24] = w & 0xff
@@ -55,6 +77,36 @@ function makeWebpVp8x(width: number, height: number): Buffer {
   buf[27] = h & 0xff
   buf[28] = (h >> 8) & 0xff
   buf[29] = (h >> 16) & 0xff
+  return buf
+}
+
+/** 构造 WebP VP8（有损，含 9d 01 2a start code） */
+function makeWebpVp8(width: number, height: number): Buffer {
+  const buf = Buffer.alloc(30)
+  buf.write("RIFF", 0, "ascii")
+  buf.writeUInt32LE(22, 4)
+  buf.write("WEBP", 8, "ascii")
+  buf.write("VP8 ", 12, "ascii")
+  buf.writeUInt32LE(10, 16)
+  buf[23] = 0x9d
+  buf[24] = 0x01
+  buf[25] = 0x2a
+  buf.writeUInt16LE(width, 26)
+  buf.writeUInt16LE(height, 28)
+  return buf
+}
+
+/** 构造 WebP VP8L（无损，signature 0x2f + 位域打包的宽高） */
+function makeWebpVp8l(width: number, height: number): Buffer {
+  const buf = Buffer.alloc(30)
+  buf.write("RIFF", 0, "ascii")
+  buf.writeUInt32LE(22, 4)
+  buf.write("WEBP", 8, "ascii")
+  buf.write("VP8L", 12, "ascii")
+  buf.writeUInt32LE(10, 16)
+  buf[20] = 0x2f
+  const bits = ((width - 1) & 0x3fff) | (((height - 1) & 0x3fff) << 14)
+  buf.writeUInt32LE(bits >>> 0, 21)
   return buf
 }
 
@@ -67,7 +119,7 @@ describe("getImageDimensions", () => {
   })
 
   it("解析 GIF", () => {
-    expect(getImageDimensions(makeGif(320, 240))).toEqual({
+    expect(getImageDimensions(makeGif(320, 240))).toMatchObject({
       width: 320,
       height: 240,
     })
@@ -80,10 +132,86 @@ describe("getImageDimensions", () => {
     })
   })
 
-  it("解析 WebP VP8X", () => {
-    expect(getImageDimensions(makeWebpVp8x(1920, 1080))).toEqual({
+  it("解析 WebP 三种子格式", () => {
+    expect(getImageDimensions(makeWebpVp8x(1920, 1080))).toMatchObject({
       width: 1920,
       height: 1080,
+    })
+    expect(getImageDimensions(makeWebpVp8(800, 600))).toMatchObject({
+      width: 800,
+      height: 600,
+    })
+    expect(getImageDimensions(makeWebpVp8l(1024, 768))).toMatchObject({
+      width: 1024,
+      height: 768,
+    })
+  })
+
+  /**
+   * 动图的解码开销是「单帧 × 帧数」，像素积完全代表不了：
+   * 1000×1000 的 300 帧 GIF 只有 1MP，却能吃掉百 MB 级内存。
+   */
+  describe("动图识别（像素积校验覆盖不到的绕过路径）", () => {
+    it("多帧 GIF 标记为 animated", () => {
+      expect(getImageDimensions(makeGif(1000, 1000, 300))).toMatchObject({
+        width: 1000,
+        height: 1000,
+        animated: true,
+      })
+    })
+
+    it("单帧 GIF 不标记 animated", () => {
+      expect(getImageDimensions(makeGif(1000, 1000, 1))).toMatchObject({
+        animated: false,
+      })
+    })
+
+    it("WebP ANIM 标志位被识别", () => {
+      expect(getImageDimensions(makeWebpVp8x(800, 600, true))).toMatchObject({
+        animated: true,
+      })
+      expect(getImageDimensions(makeWebpVp8x(800, 600, false))).toMatchObject({
+        animated: false,
+      })
+    })
+  })
+
+  /**
+   * 只按固定偏移读、不校验容器签名的话，坏图也能读出尺寸并入库。
+   */
+  describe("容器完整性校验（截断/伪造 header 必须判定失败）", () => {
+    it("PNG 缺少完整 8 字节签名", () => {
+      const buf = makePng(800, 600)
+      buf.writeUInt32BE(0xdeadbeef, 4) // 破坏 \r\n\x1a\n
+      expect(getImageDimensions(buf)).toBeNull()
+    })
+
+    it("PNG 的 IHDR 声明长度不是 13", () => {
+      const buf = makePng(800, 600)
+      buf.writeUInt32BE(99, 8)
+      expect(getImageDimensions(buf)).toBeNull()
+    })
+
+    it("GIF 截断到 10 字节（LSD 不完整）", () => {
+      expect(getImageDimensions(makeGif(320, 240).subarray(0, 10))).toBeNull()
+    })
+
+    it("WebP VP8 缺少 9d 01 2a start code", () => {
+      const buf = makeWebpVp8(800, 600)
+      buf[23] = 0x00
+      expect(getImageDimensions(buf)).toBeNull()
+    })
+
+    it("WebP VP8L 签名不是 0x2f", () => {
+      const buf = makeWebpVp8l(1024, 768)
+      buf[20] = 0x00
+      expect(getImageDimensions(buf)).toBeNull()
+    })
+
+    it("WebP VP8X chunk 长度不是 10", () => {
+      const buf = makeWebpVp8x(1920, 1080)
+      buf.writeUInt32LE(99, 16)
+      expect(getImageDimensions(buf)).toBeNull()
     })
   })
 

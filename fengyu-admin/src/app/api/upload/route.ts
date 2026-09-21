@@ -10,16 +10,30 @@ const MAX_SIZE_FENGYUGUAN = 20 * 1024 * 1024 // 20MB（凤御馆超长宣传图�
 const FENGYUGUAN_KEY = "images/fengyuguan.jpg"
 
 /**
- * 像素总数上限（issue #213）
+ * 分辨率上限（issue #213）
  *
  * 体积校验拦不住高压缩率的大分辨率图：生产上传过 405KB 的 12576×12575 PNG（约 1.58 亿像素），
- * 顾客端小程序解码时吃掉约 603MB 内存导致进程被杀。小程序端的解码开销只跟像素数相关，
- * 所以这里按像素数把关。
+ * 顾客端小程序解码时吃掉约 603MB 内存导致进程被杀。解码开销只跟像素数相关，故按像素数把关。
  *
- * 40MP（约 8000×5000）对正常门店/商品照片足够宽松（实测商品图 2083×1333 ≈ 2.8MP），
- * 又能拦住上面那种异常图。
+ * 像素积与单边**两个**都要卡：只卡像素积挡不住细长图——一张 500×50000 只有 25MP 能过关，
+ * 但它在任何只限宽的缩略规则下高度都不受约束，解码依然是几十 MB 级。
+ *
+ * 40MP（约 8000×5000）对正常门店/商品照片足够宽松（实测商品图 2083×1333 ≈ 2.8MP）。
  */
 const MAX_PIXELS = 40_000_000
+const MAX_EDGE = 12_000
+
+/**
+ * 凤御馆超长宣传图的独立上限。
+ *
+ * 它是极端长条图，生产实际为 2083×37403（约 77.9MP、单边 37403），套用通用上限会直接
+ * 把现网这张图挡在门外。但**不能因此完全豁免校验**——那等于留一条无上界的上传通道。
+ * 故给一组宽松但有限的专用阈值。
+ * 顾客端 pages/cart 会用 wx.getImageInfo 拿真实宽高后按 imageMogr2 动态切条显示，
+ * 不直接解码原图，所以这张图本身有等效防护。
+ */
+const MAX_PIXELS_FENGYUGUAN = 120_000_000
+const MAX_EDGE_FENGYUGUAN = 60_000
 
 const COOKIE_NAME = 'fy-admin-token'
 
@@ -80,37 +94,59 @@ export async function POST(req: NextRequest) {
 
     const buffer = Buffer.from(await file.arrayBuffer())
 
-    // 分辨率校验。只豁免凤御馆那一张超长宣传图：它形态特殊（极端长条），
-    // 且顾客端 pages/cart 会用 wx.getImageInfo 拿真实宽高后按 imageMogr2 动态切条显示，
-    // 自带等效防护。banner 走的是 path 模式，同样受本校验保护。
-    if (exactKey !== FENGYUGUAN_KEY) {
-      const dimensions = getImageDimensions(buffer)
+    // 分辨率校验。凤御馆长图走独立的宽松阈值，但同样受校验约束（不是豁免）。
+    // banner 走的是 path 模式，适用通用阈值。
+    const isFengyuguan = exactKey === FENGYUGUAN_KEY
+    const maxPixels = isFengyuguan ? MAX_PIXELS_FENGYUGUAN : MAX_PIXELS
+    const maxEdge = isFengyuguan ? MAX_EDGE_FENGYUGUAN : MAX_EDGE
 
-      // fail-closed：解析不出尺寸一律拒绝，不能放行。
-      // file.type 由客户端提供、可伪造，截断或畸形 header（例如 APPn 段声明长度越界、
-      // 导致 SOF 被跳过）都会让解析返回 null；而微信解码器对畸形 header 的容忍度远高于
-      // 这个最小解析器，放行等于给「本次要堵的那类图」留了后门。
-      if (!dimensions) {
-        return NextResponse.json(
-          {
-            error:
-              "无法识别图片尺寸，可能文件已损坏或格式不受支持，请换一张图片或重新导出后上传。",
-          },
-          { status: 400 }
-        )
-      }
+    const dimensions = getImageDimensions(buffer)
 
-      if (dimensions.width * dimensions.height > MAX_PIXELS) {
-        return NextResponse.json(
-          {
-            error:
-              `图片分辨率过大（${dimensions.width}×${dimensions.height}），` +
-              `请压缩到 ${Math.round(MAX_PIXELS / 1_000_000)}MP 以内再上传。` +
-              `分辨率过大的图片会导致小程序端加载时闪退。`,
-          },
-          { status: 400 }
-        )
-      }
+    // fail-closed：解析不出尺寸一律拒绝，不能放行。
+    // file.type 由客户端提供、可伪造，截断或畸形 header（例如 APPn 段声明长度越界、
+    // 导致 SOF 被跳过）都会让解析返回 null；而微信解码器对畸形 header 的容忍度远高于
+    // 这个最小解析器，放行等于给「本次要堵的那类图」留了后门。
+    if (!dimensions) {
+      return NextResponse.json(
+        {
+          error:
+            "无法识别图片尺寸，可能文件已损坏或格式不受支持，请换一张图片或重新导出后上传。",
+        },
+        { status: 400 }
+      )
+    }
+
+    // 动图的解码开销是「单帧 × 帧数」，像素积校验完全代表不了它：
+    // 一张 1000×1000 的 300 帧 GIF 只有 1MP，却能吃掉百 MB 级内存。封面场景无动图需求。
+    if (dimensions.animated) {
+      return NextResponse.json(
+        { error: "不支持动图（多帧 GIF / 动态 WebP），请上传静态图片。" },
+        { status: 400 }
+      )
+    }
+
+    if (dimensions.width * dimensions.height > maxPixels) {
+      return NextResponse.json(
+        {
+          error:
+            `图片分辨率过大（${dimensions.width}×${dimensions.height}），` +
+            `请压缩到 ${Math.round(maxPixels / 1_000_000)}MP 以内再上传。` +
+            `分辨率过大的图片会导致小程序端加载时闪退。`,
+        },
+        { status: 400 }
+      )
+    }
+
+    // 细长图：像素积可能很小但单边极大，缩略后仍会吃掉大量解码内存
+    if (dimensions.width > maxEdge || dimensions.height > maxEdge) {
+      return NextResponse.json(
+        {
+          error:
+            `图片单边尺寸过大（${dimensions.width}×${dimensions.height}），` +
+            `宽和高都需在 ${maxEdge} 像素以内。过长或过宽的图片会导致小程序端加载时闪退。`,
+        },
+        { status: 400 }
+      )
     }
 
     const url = await uploadFile(buffer, cloudPath)

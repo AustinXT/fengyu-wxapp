@@ -8,8 +8,8 @@ const pg = globalThis.__mocks__.pg
 const { createCtx, createBoundCtx } = require('../helpers')
 // 引用常量而非硬编码宽度，避免两处数字各改各的（pr-ready 指出的字段族漂移）
 const {
-  STORE_LIST_THUMB_WIDTH,
-  STORE_DETAIL_THUMB_WIDTH,
+  STORE_LIST_THUMB_BOX,
+  STORE_DETAIL_THUMB_BOX,
 } = require('../../utils/image')
 
 let routes
@@ -55,21 +55,39 @@ describe('store.list', () => {
     await routes.list(ctx)
 
     expect(ctx.result.stores[0].cover_image).toBe(
-      `${original}?imageMogr2/thumbnail/${STORE_LIST_THUMB_WIDTH}x`
+      `${original}?imageMogr2/thumbnail/${STORE_LIST_THUMB_BOX}x${STORE_LIST_THUMB_BOX}`
     )
   })
 
-  test('封面图为空时不产生无效 URL', async () => {
+  test('封面图为空时下发 null，不产生无效 URL', async () => {
     pg.query.mockResolvedValueOnce([
       { store_id: 's1', store_name: '凤御A店', cover_image: null },
       { store_id: 's2', store_name: '凤御B店', cover_image: '' },
+      { store_id: 's3', store_name: '凤御C店', cover_image: '   ' },
+    ])
+
+    const ctx = createCtx({ payload: {} })
+    await routes.list(ctx)
+
+    // 前端用 wx:if="{{item.cover_image}}" 判空，null 会走占位图分支；
+    // 纯空白串对 wx:if 为真，会渲染成裂图，所以也必须归一成 null
+    expect(ctx.result.stores[0].cover_image).toBeNull()
+    expect(ctx.result.stores[1].cover_image).toBeNull()
+    expect(ctx.result.stores[2].cover_image).toBeNull()
+  })
+
+  // 退回原图等于保护静默失效：那张图可能正是会撑爆进程的巨图
+  test('非 COS 域名的封面下发 null 而不是原图', async () => {
+    pg.query.mockResolvedValueOnce([
+      { store_id: 's1', store_name: '凤御A店', cover_image: 'https://example.com/huge.png' },
+      { store_id: 's2', store_name: '凤御B店', cover_image: 'cloud://env.bucket/huge.png' },
     ])
 
     const ctx = createCtx({ payload: {} })
     await routes.list(ctx)
 
     expect(ctx.result.stores[0].cover_image).toBeNull()
-    expect(ctx.result.stores[1].cover_image).toBe('')
+    expect(ctx.result.stores[1].cover_image).toBeNull()
   })
 })
 
@@ -109,11 +127,11 @@ describe('store.detail', () => {
     await routes.detail(ctx)
 
     expect(ctx.result.store.cover_image).toBe(
-      `${host}/store-covers/a.png?imageMogr2/thumbnail/${STORE_DETAIL_THUMB_WIDTH}x`
+      `${host}/store-covers/a.png?imageMogr2/thumbnail/${STORE_DETAIL_THUMB_BOX}x${STORE_DETAIL_THUMB_BOX}`
     )
     expect(ctx.result.store.images).toEqual([
-      `${host}/store-images/b.png?imageMogr2/thumbnail/${STORE_DETAIL_THUMB_WIDTH}x`,
-      `${host}/store-images/c.png?imageMogr2/thumbnail/${STORE_DETAIL_THUMB_WIDTH}x`,
+      `${host}/store-images/b.png?imageMogr2/thumbnail/${STORE_DETAIL_THUMB_BOX}x${STORE_DETAIL_THUMB_BOX}`,
+      `${host}/store-images/c.png?imageMogr2/thumbnail/${STORE_DETAIL_THUMB_BOX}x${STORE_DETAIL_THUMB_BOX}`,
     ])
   })
 

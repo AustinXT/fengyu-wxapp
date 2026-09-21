@@ -7,9 +7,9 @@ const pg = require('../db/pg')
 const crypto = require('crypto')
 const { checkText } = require('../utils/wx-sec-check')
 const {
-  thumbUrl,
-  STORE_LIST_THUMB_WIDTH,
-  STORE_DETAIL_THUMB_WIDTH,
+  safeThumbUrl,
+  STORE_LIST_THUMB_BOX,
+  STORE_DETAIL_THUMB_BOX,
 } = require('../utils/image')
 
 /**
@@ -57,8 +57,9 @@ async function list(ctx) {
   // 格式化开业时间
   stores.forEach(s => {
     s.open_date = formatOpenDate(s.open_date)
-    // 列表一次渲染几十张卡片，必须走缩略图，否则超大原图解码会撑爆小程序进程（#213）
-    s.cover_image = thumbUrl(s.cover_image, STORE_LIST_THUMB_WIDTH)
+    // 列表一次渲染几十张卡片，必须走缩略图，否则超大原图解码会撑爆小程序进程（#213）。
+    // 无法保证缩略的一律下发 null（前端有占位图分支），不退回原图——退回原图等于保护静默失效
+    s.cover_image = safeThumbUrl(s.cover_image, STORE_LIST_THUMB_BOX)
   })
 
   ctx.result = { stores }
@@ -111,10 +112,13 @@ async function detail(ctx) {
 
   const store = storeResult[0]
   store.open_date = formatOpenDate(store.open_date)
-  // 详情页头图接近满屏，用更大的缩略宽度；相册逐张处理（同样是 admin 上传的未压缩原图，#213）
-  store.cover_image = thumbUrl(store.cover_image, STORE_DETAIL_THUMB_WIDTH)
+  // 详情页头图接近满屏，用更大的 box；相册逐张处理（同样是 admin 上传的未压缩原图，#213）
+  store.cover_image = safeThumbUrl(store.cover_image, STORE_DETAIL_THUMB_BOX)
+  // 无法缩略的相册图直接从数组里剔除，避免前端渲染出 src=null 的裂图
   store.images = Array.isArray(store.images)
-    ? store.images.map(img => thumbUrl(img, STORE_DETAIL_THUMB_WIDTH))
+    ? store.images
+        .map(img => safeThumbUrl(img, STORE_DETAIL_THUMB_BOX))
+        .filter(Boolean)
     : []
 
   // 用确定的 store_id 并行查询员工数和顾客数

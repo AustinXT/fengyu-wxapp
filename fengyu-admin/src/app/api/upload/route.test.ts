@@ -1,0 +1,172 @@
+/**
+ * 上传接口的分辨率闸门测试（issue #213）
+ *
+ * 光测 getImageDimensions 不够：如果有人把 `!dimensions` 的拒绝改成放行、
+ * 放宽 exactKey 条件、或调换校验顺序，纯解析器测试全都照样通过。
+ * 这里从路由入口验证闸门本身，并断言被拒时**不会**真的上传。
+ */
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { NextRequest } from 'next/server'
+
+const mocks = vi.hoisted(() => ({
+  jwtVerify: vi.fn(),
+  uploadFile: vi.fn(),
+}))
+
+vi.mock('jose', () => ({ jwtVerify: mocks.jwtVerify }))
+vi.mock('@/lib/cloudbase', () => ({ uploadFile: mocks.uploadFile }))
+vi.mock('@/lib/jwt-secret', () => ({ JWT_SECRET: new Uint8Array(32) }))
+
+import { POST } from './route'
+
+// ── fixtures ────────────────────────────────────────────────────────────────
+
+function makePng(width: number, height: number): Buffer {
+  const buf = Buffer.alloc(24)
+  buf.writeUInt32BE(0x89504e47, 0)
+  buf.writeUInt32BE(0x0d0a1a0a, 4)
+  buf.writeUInt32BE(13, 8)
+  buf.write('IHDR', 12, 'ascii')
+  buf.writeUInt32BE(width, 16)
+  buf.writeUInt32BE(height, 20)
+  return buf
+}
+
+function makeAnimatedGif(width: number, height: number): Buffer {
+  const lsd = Buffer.alloc(13)
+  lsd.write('GIF89a', 0, 'ascii')
+  lsd.writeUInt16LE(width, 6)
+  lsd.writeUInt16LE(height, 8)
+  const frames = [Buffer.alloc(10), Buffer.alloc(10)]
+  frames[0][0] = 0x2c
+  frames[1][0] = 0x2c
+  return Buffer.concat([lsd, ...frames])
+}
+
+function post(
+  body: Buffer,
+  { type = 'image/png', path, exactKey } = {} as {
+    type?: string
+    path?: string
+    exactKey?: string
+  }
+) {
+  const fd = new FormData()
+  fd.append('file', new File([new Uint8Array(body)], 'a.png', { type }))
+  if (path) fd.append('path', path)
+  if (exactKey) fd.append('exactKey', exactKey)
+
+  const req = new NextRequest('http://localhost/api/upload', {
+    method: 'POST',
+    body: fd,
+  })
+  req.cookies.set('fy-admin-token', 'valid')
+  return POST(req)
+}
+
+beforeEach(() => {
+  vi.clearAllMocks()
+  mocks.jwtVerify.mockResolvedValue({ payload: {} })
+  mocks.uploadFile.mockResolvedValue('https://cdn.example.com/a.png')
+})
+
+// ── tests ───────────────────────────────────────────────────────────────────
+
+describe('POST /api/upload 分辨率闸门', () => {
+  it('正常门店照片放行并上传', async () => {
+    const res = await post(makePng(2083, 1333), { path: 'store-covers' })
+    expect(res.status).toBe(200)
+    expect(mocks.uploadFile).toHaveBeenCalledOnce()
+  })
+
+  it('issue #213 肇事图（12576×12575）被拒且不上传', async () => {
+    const res = await post(makePng(12576, 12575), { path: 'store-covers' })
+    expect(res.status).toBe(400)
+    await expect(res.json()).resolves.toMatchObject({
+      error: expect.stringContaining('分辨率过大'),
+    })
+    expect(mocks.uploadFile).not.toHaveBeenCalled()
+  })
+
+  it('解析不出尺寸时 fail-closed：拒绝且不上传', async () => {
+    // 自称 image/png，实际是随机字节（file.type 由客户端提供，可伪造）
+    const res = await post(Buffer.from('definitely not an image'), {
+      path: 'store-covers',
+    })
+    expect(res.status).toBe(400)
+    await expect(res.json()).resolves.toMatchObject({
+      error: expect.stringContaining('无法识别图片尺寸'),
+    })
+    expect(mocks.uploadFile).not.toHaveBeenCalled()
+  })
+
+  it('细长图被单边上限拦下（像素积远低于 40MP）', async () => {
+    // 500×50000 = 25MP，能过像素积上限，但缩略后解码仍是几十 MB
+    const res = await post(makePng(500, 50000), { path: 'store-covers' })
+    expect(res.status).toBe(400)
+    await expect(res.json()).resolves.toMatchObject({
+      error: expect.stringContaining('单边尺寸过大'),
+    })
+    expect(mocks.uploadFile).not.toHaveBeenCalled()
+  })
+
+  it('动图被拒（帧数放大解码开销，像素积校验看不到）', async () => {
+    const res = await post(makeAnimatedGif(1000, 1000), {
+      type: 'image/gif',
+      path: 'store-covers',
+    })
+    expect(res.status).toBe(400)
+    await expect(res.json()).resolves.toMatchObject({
+      error: expect.stringContaining('不支持动图'),
+    })
+    expect(mocks.uploadFile).not.toHaveBeenCalled()
+  })
+
+  describe('凤御馆长图走独立阈值，但不是豁免', () => {
+    const FENGYUGUAN_KEY = 'images/fengyuguan.jpg'
+
+    it('生产现有尺寸 2083×37403 必须能传（否则是回归）', async () => {
+      const res = await post(makePng(2083, 37403), {
+        exactKey: FENGYUGUAN_KEY,
+      })
+      expect(res.status).toBe(200)
+      expect(mocks.uploadFile).toHaveBeenCalledOnce()
+    })
+
+    it('同一张图走普通 path 模式则被拒', async () => {
+      const res = await post(makePng(2083, 37403), { path: 'store-covers' })
+      expect(res.status).toBe(400)
+      expect(mocks.uploadFile).not.toHaveBeenCalled()
+    })
+
+    it('超出独立阈值的仍被拒，不是无上界通道', async () => {
+      const res = await post(makePng(70000, 70000), {
+        exactKey: FENGYUGUAN_KEY,
+      })
+      expect(res.status).toBe(400)
+      expect(mocks.uploadFile).not.toHaveBeenCalled()
+    })
+
+    it('其它 exactKey 不继承豁免，适用通用阈值', async () => {
+      const res = await post(makePng(12576, 12575), {
+        exactKey: 'images/other-fixed.jpg',
+      })
+      expect(res.status).toBe(400)
+      expect(mocks.uploadFile).not.toHaveBeenCalled()
+    })
+  })
+
+  it('未携带 token 时直接 401，不触碰文件', async () => {
+    const fd = new FormData()
+    fd.append('file', new File([new Uint8Array(makePng(100, 100))], 'a.png'))
+    fd.append('path', 'store-covers')
+    const res = await POST(
+      new NextRequest('http://localhost/api/upload', {
+        method: 'POST',
+        body: fd,
+      })
+    )
+    expect(res.status).toBe(401)
+    expect(mocks.uploadFile).not.toHaveBeenCalled()
+  })
+})
