@@ -333,8 +333,11 @@ export const saleItems = pgTable(
     isShengmei: boolean("is_shengmei"),
     /**
      * 体验卡快照（开单时从 product_skus.is_experience 拷贝）。
-     * 客户分类跃迁判定：order_non_trial_amount = SUM(received WHERE is_experience=false)，
-     * order_trial_amount = SUM(received WHERE is_experience=true)。混合订单按非体验部分判跃迁。
+     * 客户分类跃迁判定（#187 已落地，2026-09-18）：按**单笔订单**聚合
+     * non_trial = SUM(毛实收 WHERE is_experience=false)、trial = SUM(毛实收 WHERE is_experience=true)；
+     * 毛实收 = received（净额）+ 该行逐项退款额（退款不扣减）。混合订单按非体验部分判跃迁：
+     * non_trial ≥ 阈值 → 会员客 / non_trial > 0 → 小美客 / trial > 0 → 体验客 / 否则流量客。
+     * 实现见 staffApi routes/order.js RECALC_CUSTOMER_TYPE_CTE（八处副本，snapshot 守护）。
      * 与 unit_price/unit_real_price 同属价格快照族，admin 后续修改 product_skus.is_experience 不影响历史订单。
      */
     isExperience: boolean("is_experience").notNull().default(false),

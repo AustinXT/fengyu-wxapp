@@ -22,7 +22,7 @@ metadata:
 
 ## 0. 状态管理：run ledger（断点续跑的生命线）
 
-台账文件 `_tmp/issue-sweep/run-<YYYYMMDD-HHmm>.md`：
+台账文件 `$BASE/_tmp/issue-sweep/run-<YYYYMMDD-HHmm>.md`——**留在起点仓库**（`BASE` = 发车时的 `git rev-parse --show-toplevel`）。单条 issue 的 `state.md` 在各自 worktree 内（issue-dev §0），ledger 是批次视图，不跟任何一个 worktree 同生共死：
 
 ```markdown
 # sweep run 2026-09-10 14:00
@@ -35,8 +35,8 @@ metadata:
 ```
 
 - **每条 issue 状态变化立即写盘**（pending → in-progress → done / 待拍板 / skipped+原因）
-- **断点续跑**：启动时先查最近的 ledger——有 `in-progress`/`pending` 项 → 从断点继续（in-progress 的先读该 issue 的 `_tmp/issue-<N>/state.md` 恢复现场），不重做 done
-- 单条 issue 的细粒度状态在各自 `_tmp/issue-<N>/state.md`（issue-dev §0），ledger 只记批次视图
+- ledger 的「分支/PR」列同时记 worktree 路径，便于人工插手
+- **断点续跑**：启动时先查最近的 ledger——有 `in-progress`/`pending` 项 → 从断点继续，不重做 done。in-progress 的先读 `$BASE/_tmp/issue-<N>/WORKTREE` 指针定位到那条的 worktree，再读其中的 `state.md` 恢复现场
 
 ## 1. 拉单与过滤
 
@@ -59,15 +59,17 @@ gh issue list --state open --limit 100 --json number,title,labels,createdAt
 
 ## 3. 逐条执行（闸门不降级）
 
-每条完整走 `issue-dev` 全流水线：状态校验 → 调研 → 分流 → 细化 → 实现 → **三层验证** → **pr-ready（P1 清零）** → **双谱系评审（收敛无 P0/P1/P2）** → PR base dev。
+每条完整走 `issue-dev` 全流水线：状态校验 → **开隔离 worktree** → 调研 → 分流 → 细化 → 实现 → **三层验证** → **pr-ready（P1 清零）** → **双谱系评审（收敛无 P0/P1/P2）** → PR base dev → 回收 worktree。
 
 批量模式专属纪律：
-- **每条独立分支、独立 PR，均基于 origin/dev**（不叠罗汉，互不依赖）；上一条开完 PR 切回 dev 起下一条，工作区必须干净
-- `.claude/notes/pr-ready/` 是覆盖式快照——**每条跑完立即把四份 audit 拷到 `_tmp/issue-<N>/review/` 存档**，否则被下一条冲掉
+- **每条一个独立 worktree、独立分支、独立 PR，均基于 origin/dev**（不叠罗汉，互不依赖）。worktree 由 issue-dev §1 创建、§8 回收，**起点仓库全程保持不动**——不需要在条目之间切分支，也不要求起点仓库工作区干净
+- `.claude/notes/pr-ready/` 是覆盖式快照，但 worktree 模式下它已天然隔离在各自 worktree 内，条目之间不再互相冲掉；**存档到 `_tmp/issue-<N>/review/` 这一步照做**——issue-dev §8 会删掉整个 worktree，存档是唯一能活下来的落点
 - 多条 PR 改同一文件（docs 索引、同一路由、error-codes 副本等）→ ledger 与汇总表标注冲突风险与建议 merge 顺序
 - 无人值守时分流闸门的"停等拍板"变为：issue 评论列问题 → 标记待拍板 → 跳下一条
 
 ## 4. 卡住处理（登记跳过，不空转）
+
+卡住的条目 **worktree 一律保留**（issue-dev §8 只在 PR 成功开出后才回收），ledger 的备注列记下 worktree 路径——人工接手或下一批重入时直接续跑，不用重建。
 
 | 情形 | 处理 |
 |---|---|

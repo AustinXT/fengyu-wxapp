@@ -220,3 +220,117 @@ describe('办理台表单一致性（#135）', () => {
     expect(marked.length).toBe(55)
   })
 })
+
+/**
+ * 业务工作区双 Tab 的结构守护（#190）。
+ *
+ * 同样走源码守护（理由见文件顶部：2800 行组件 + 20 个表单，渲染 mock 成本远高于收益）。
+ * 这里钉的四条都是「改错了页面照常渲染、但行为静默跑偏」的点。
+ */
+describe('业务工作区双 Tab（#190）', () => {
+  const source = readFileSync(resolve(__dirname, 'inventory-operations-page.tsx'), 'utf8')
+
+  it('工作区默认停在填报表单，且换业务时 key 强制重建（光有 defaultValue 钉不住）', () => {
+    // 办理台的主用途是办业务。默认落到单据 Tab 会让每个人每次都多点一下。
+    // ⚠️ Tabs 是 uncontrolled：父层在 activeOperation A→B 时原地更新不重挂，
+    // 选中态会跟着跑到下一个业务 —— 点开 B 直接落在 B 的单据页。key 是唯一的拦法，
+    // 只断言 defaultValue 的话，这个回归照样全绿。
+    expect(source).toMatch(/<Tabs key=\{operation\} defaultValue="form">/)
+    expect(source).toMatch(/<TabsTrigger value="form">填报表单<\/TabsTrigger>/)
+    expect(source).toMatch(/<TabsTrigger value="docs">单据<\/TabsTrigger>/)
+  })
+
+  it('表单面板带 keepMounted，切去看单据不会清空填了一半的表单', () => {
+    // 去掉 keepMounted 后页面完全正常，只是每次切 Tab 回来数据没了 ——
+    // 这种回归没人会在 code review 里看出来。
+    expect(source).toMatch(/<TabsContent value="form" keepMounted/)
+  })
+
+  it('金额列头只看会话级价格权限，不从当前页数据反推', () => {
+    // 反推（`rows.some(r => r.totalAmount != null)`）看着能少一列空「—」，实则更糟：
+    // 行级遮蔽后 totalAmount 就是 undefined，混合绑定账号翻到整页都被遮蔽的那一页时
+    // 金额列会整列消失、翻回去又出现，表头随页抖动；无权限的行也不再显示「—」。
+    const tab = source.slice(source.indexOf('function OperationDocsTab('))
+    expect(tab).toMatch(/setPriceVisible\(result\.canViewPrice\)/)
+    expect(tab).toMatch(/\.\.\.\(priceVisible\s*\n?\s*\?/)
+    expect(tab).not.toMatch(/rows\.some\([^)]*totalAmount/)
+  })
+
+  it('请求失败的空表与真的没单据，文案必须不同', () => {
+    // 两者都渲染「暂无单据」的话，用户会以为这个业务真的一张单都没有。
+    const tab = source.slice(source.indexOf('function OperationDocsTab('))
+    expect(tab).toMatch(/setFailed\(true\)/)
+    expect(tab).toMatch(/emptyText=\{failed \? '单据加载失败/)
+  })
+
+  it('分页器用服务端返回的 pageSize，不用前端常量', () => {
+    // engine 会把非白名单页长静默夹成 20。前端按自己那份算总页数的话，
+    // 页码条少算页数，最后几页永远翻不到且没有任何提示。
+    const tab = source.slice(source.indexOf('function OperationDocsTab('))
+    expect(tab).toMatch(/setPageSize\(result\.pageSize\)/)
+    expect(tab).toMatch(/<Pagination total=\{total\} page=\{page\} pageSize=\{pageSize\}/)
+  })
+
+  it('请求失败不清零 total，否则用户被静默弹回第 1 页并触发第二次请求', () => {
+    // Pagination 的越界自纠：total=0 → totalPages=1 → 第 3 页越界 → onPageChange(1)
+    // → effect 依赖变 → 再发一次请求。一次瞬时失败被放大成跳页 + 重复请求。
+    const catchBlock = source.slice(source.indexOf('.catch((error) => {', source.indexOf('function OperationDocsTab(')))
+    expect(catchBlock.slice(0, 400)).toMatch(/setRows\(\[\]\)/)
+    expect(catchBlock.slice(0, 400)).not.toMatch(/setTotal\(0\)/)
+  })
+
+  it('单据号用新标签打开详情，不做整行 router.push', () => {
+    // keepMounted 的全部意义是「去单据 Tab 看一眼回来表单还在」。行内 router.push
+    // 会把整个办理台连同填了一半的明细卸载掉，而 returnTo 只恢复 URL、恢复不了 React state。
+    const tab = source.slice(source.indexOf('function OperationDocsTab('))
+    expect(tab).toMatch(/target="_blank"/)
+    expect(tab).toMatch(/rel="noopener noreferrer"/)
+    expect(tab).not.toMatch(/onRowClick/)
+  })
+
+  it('单据 Tab 只能走 listInventoryOperationDocs，不自己拼单据类型', () => {
+    // 单据类型 / 状态 / 层级的收窄规则在服务端按 operationId 查映射表解析。
+    // 客户端一旦自己拼 docType，映射表就有了第二份真相，改一处忘一处。
+    expect(source).toContain('listInventoryOperationDocs')
+    expect(source).not.toMatch(/listInventoryCoreDocs/)
+    expect(source).not.toMatch(/docTypes:\s*\[/)
+  })
+})
+
+/**
+ * 通用业务卡片与单据 Tab 的边界（#190 / #191）。
+ *
+ * 10 张通用卡（内部领用 / 报损 / 盘点 / 调货 / 顾客产品出库…）目前借用了三个真实
+ * 转换业务的 id 当 React key，靠 `href` 分支走 <Link> 跳单据中心，永远不会
+ * setActiveOperation，所以不会打开单据 Tab。这层保护是**隐式**的 ——
+ * 一旦 #191 把某张卡改成内嵌表单而忘了给它自己的 id，
+ * 「市场产品报损」的单据 Tab 会直接列出库存转换单：页面完全正常，数据完全不对。
+ */
+describe('通用业务卡片不参与单据 Tab（#190 / #191 交界）', () => {
+  const source = readFileSync(resolve(__dirname, 'inventory-operations-page.tsx'), 'utf8')
+
+  it('GENERIC_OPERATIONS 每一条都带 href（否则会落进按 id 查映射表的单据 Tab）', () => {
+    const generic = source.slice(
+      source.indexOf('const GENERIC_OPERATIONS'),
+      source.indexOf('function today()'),
+    )
+    const entries = generic.match(/\{ id: '[^']+',[^}]*\}/g) ?? []
+    /*
+     * ⚠️ 上面的正则要求 `id` 是字面量的第一个键且条目里没有嵌套对象。
+     * 键序一变条目就不进 entries —— 没 href 也不会红，正好漏掉这条测试要防的事故。
+     * 所以先用「`id:` 的出现次数 == 抓到的条目数」把漏检本身钉住。
+     */
+    const idCount = (generic.match(/\bid: '/g) ?? []).length
+    expect(entries.length, '有通用卡没被守护正则抓到（键序变了？含嵌套对象？）').toBe(idCount)
+    expect(entries.length).toBeGreaterThanOrEqual(10)
+    for (const entry of entries) {
+      expect(entry, `通用卡缺 href：${entry.slice(0, 60)}`).toContain("href: '/inventory/docs?create=")
+    }
+  })
+
+  it('工作区只接受 OPERATIONS 里的卡片，通用卡走 Link 分支', () => {
+    // active 的来源必须限定在 OPERATIONS（内置表单卡），不能把 GENERIC_OPERATIONS 也算进去。
+    expect(source).toMatch(/const active = OPERATIONS\.find\(/)
+    expect(source).toMatch(/if \(operation\.href\) \{/)
+  })
+})

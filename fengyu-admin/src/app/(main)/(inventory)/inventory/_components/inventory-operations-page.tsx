@@ -54,7 +54,7 @@ import {
   summarizeStoreReplenishmentRequests,
 } from '@/actions/inventory/business'
 import type { MarketPromotionQuoteResult } from '@/lib/inventory/business'
-import { getInventoryCoreDocById } from '@/actions/inventory/docs'
+import { getInventoryCoreDocById, listInventoryOperationDocs } from '@/actions/inventory/docs'
 import { listInventoryLotOptions } from '@/actions/inventory/stocks'
 import { actionErrorMessage } from '@/lib/action-error'
 import type {
@@ -66,41 +66,26 @@ import type {
   InventorySupplierRow,
 } from '@/lib/inventory/types'
 import type { InventoryBusinessLevel } from '@/lib/inventory/business-level'
+import type { InventoryOperationId } from '@/lib/inventory/operation-doc-types'
 import InventorySubjectSelect from '@/components/inventory-subject-select'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
+import { DataTable, type Column } from '@/components/ui/data-table'
 import { DatePicker } from '@/components/ui/date-picker'
 import { Input } from '@/components/ui/input'
+import { Pagination } from '@/components/ui/pagination'
 import { Select } from '@/components/ui/select'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Textarea } from '@/components/ui/textarea'
 import { Tooltip } from '@/components/ui/tooltip'
 
-type OperationId =
-  | 'store-request'
-  | 'market-report'
-  | 'item-company-request'
-  | 'purchase-order'
-  | 'market-report-summary'
-  | 'company-shipment'
-  | 'market-receipt'
-  | 'supply-chain-receipt'
-  | 'supply-chain-purchase-cancel'
-  | 'store-allocation'
-  | 'store-receipt'
-  | 'store-return'
-  | 'market-return'
-  | 'store-return-approval'
-  | 'market-return-approval'
-  | 'staff-purchase'
-  | 'supply-chain-staff-purchase'
-  | 'self-purchase'
-  | 'external-outbound'
-  | 'supply-chain-conversion'
-  | 'market-conversion'
-  | 'store-conversion'
-  | 'shipment-cancel'
-  | 'shipment-cancel-approval'
+/**
+ * 业务卡片 id 的单源在 `@/lib/inventory/operation-doc-types`：那里的
+ * `Record<InventoryOperationId, …>` 映射表要求每个业务都登记自己的产出单据类型（#190），
+ * 新增卡片时漏登记会直接编译失败。
+ */
+type OperationId = InventoryOperationId
 
 interface OperationDefinition {
   id: OperationId
@@ -626,30 +611,171 @@ function OperationWorkspace({
   return (
     <div className="space-y-5">
       <OperationHeader title={title} onClose={onClose} />
-      {operation === 'store-request' && <StoreRequestForm locations={locations} skuOptions={skuOptions} onSuccess={onSuccess} />}
-      {operation === 'market-report' && <MarketReportForm locations={locations} canViewPrice={canViewPrice} onSuccess={onSuccess} />}
-      {operation === 'item-company-request' && <ItemCompanyReplenishmentForm locations={locations} skuOptions={skuOptions} onSuccess={onSuccess} />}
-      {operation === 'purchase-order' && <PurchaseOrderForm locations={locations} workflowDocs={workflowDocs} canViewPrice={canViewPrice} onSuccess={onSuccess} />}
-      {operation === 'market-report-summary' && <MarketReportSummaryForm locations={locations} onSuccess={onSuccess} />}
-      {operation === 'company-shipment' && <CompanyShipmentForm locations={locations} workflowDocs={workflowDocs} onSuccess={onSuccess} />}
-      {operation === 'market-receipt' && <ShipmentReceiptForm workflowDocs={workflowDocs} kind="market" onSuccess={onSuccess} />}
-      {operation === 'supply-chain-receipt' && <SupplyChainPurchaseReceiptForm locations={locations} workflowDocs={workflowDocs} canViewPrice={canViewPrice} onSuccess={onSuccess} />}
-      {operation === 'supply-chain-purchase-cancel' && <SupplyChainPurchaseCancelForm workflowDocs={workflowDocs} onSuccess={onSuccess} />}
-      {operation === 'store-allocation' && <StoreAllocationForm locations={locations} skuOptions={skuOptions} workflowDocs={workflowDocs} canViewPrice={canViewPrice} onSuccess={onSuccess} />}
-      {operation === 'store-receipt' && <ShipmentReceiptForm workflowDocs={workflowDocs} kind="store" onSuccess={onSuccess} />}
-      {operation === 'store-return' && <ReturnForm locations={locations} skuOptions={skuOptions} sourceType="门店" onSuccess={onSuccess} />}
-      {operation === 'market-return' && <ReturnForm locations={locations} skuOptions={skuOptions} sourceType="市场" onSuccess={onSuccess} />}
-      {operation === 'store-return-approval' && <ReturnApprovalForm workflowDocs={workflowDocs} docType="院退货" onSuccess={onSuccess} />}
-      {operation === 'market-return-approval' && <ReturnApprovalForm workflowDocs={workflowDocs} docType="市场退货" onSuccess={onSuccess} />}
-      {operation === 'shipment-cancel' && <ShipmentCancellationRequestForm workflowDocs={workflowDocs} onSuccess={onSuccess} />}
-      {operation === 'shipment-cancel-approval' && <ShipmentCancellationApprovalForm workflowDocs={workflowDocs} onSuccess={onSuccess} />}
-      {operation === 'staff-purchase' && <MarketStaffPurchaseForm locations={locations} skuOptions={skuOptions} onSuccess={onSuccess} />}
-      {operation === 'supply-chain-staff-purchase' && <SupplyChainStaffPurchaseForm locations={locations} skuOptions={skuOptions} onSuccess={onSuccess} />}
-      {operation === 'self-purchase' && <SelfPurchaseForm locations={locations} skuOptions={skuOptions} suppliers={suppliers} canViewPrice={canViewPrice} onSuccess={onSuccess} />}
-      {operation === 'external-outbound' && <ExternalOutboundForm locations={locations} skuOptions={skuOptions} onSuccess={onSuccess} />}
-      {operation === 'supply-chain-conversion' && <ConversionForm locations={locations} skuOptions={skuOptions} locationType="总部" onSuccess={onSuccess} />}
-      {operation === 'market-conversion' && <ConversionForm locations={locations} skuOptions={skuOptions} locationType="市场" onSuccess={onSuccess} />}
-      {operation === 'store-conversion' && <ConversionForm locations={locations} skuOptions={skuOptions} locationType="门店" onSuccess={onSuccess} />}
+      {/*
+        * key：`activeOperation` A→B 时父层元素类型与位置不变，React 原地更新、不重挂，
+        * Tabs 的 uncontrolled state 会把「单据」选中态带到下一个业务 ——
+        * 点开 B 直接落在 B 的单据页、填报表单被藏起来。加 key 强制重建。
+        */}
+      <Tabs key={operation} defaultValue="form">
+        <TabsList>
+          <TabsTrigger value="form">填报表单</TabsTrigger>
+          <TabsTrigger value="docs">单据</TabsTrigger>
+        </TabsList>
+        {/*
+          * keepMounted：表单面板切走时只隐藏不卸载。默认的卸载语义会把填了一半的
+          * 明细行、选好的批次连同 useState 一起丢掉，用户去「单据」看一眼回来就得重填。
+          */}
+        <TabsContent value="form" keepMounted className="space-y-5">
+          {operation === 'store-request' && <StoreRequestForm locations={locations} skuOptions={skuOptions} onSuccess={onSuccess} />}
+          {operation === 'market-report' && <MarketReportForm locations={locations} canViewPrice={canViewPrice} onSuccess={onSuccess} />}
+          {operation === 'item-company-request' && <ItemCompanyReplenishmentForm locations={locations} skuOptions={skuOptions} onSuccess={onSuccess} />}
+          {operation === 'purchase-order' && <PurchaseOrderForm locations={locations} workflowDocs={workflowDocs} canViewPrice={canViewPrice} onSuccess={onSuccess} />}
+          {operation === 'market-report-summary' && <MarketReportSummaryForm locations={locations} onSuccess={onSuccess} />}
+          {operation === 'company-shipment' && <CompanyShipmentForm locations={locations} workflowDocs={workflowDocs} onSuccess={onSuccess} />}
+          {operation === 'market-receipt' && <ShipmentReceiptForm workflowDocs={workflowDocs} kind="market" onSuccess={onSuccess} />}
+          {operation === 'supply-chain-receipt' && <SupplyChainPurchaseReceiptForm locations={locations} workflowDocs={workflowDocs} canViewPrice={canViewPrice} onSuccess={onSuccess} />}
+          {operation === 'supply-chain-purchase-cancel' && <SupplyChainPurchaseCancelForm workflowDocs={workflowDocs} onSuccess={onSuccess} />}
+          {operation === 'store-allocation' && <StoreAllocationForm locations={locations} skuOptions={skuOptions} workflowDocs={workflowDocs} canViewPrice={canViewPrice} onSuccess={onSuccess} />}
+          {operation === 'store-receipt' && <ShipmentReceiptForm workflowDocs={workflowDocs} kind="store" onSuccess={onSuccess} />}
+          {operation === 'store-return' && <ReturnForm locations={locations} skuOptions={skuOptions} sourceType="门店" onSuccess={onSuccess} />}
+          {operation === 'market-return' && <ReturnForm locations={locations} skuOptions={skuOptions} sourceType="市场" onSuccess={onSuccess} />}
+          {operation === 'store-return-approval' && <ReturnApprovalForm workflowDocs={workflowDocs} docType="院退货" onSuccess={onSuccess} />}
+          {operation === 'market-return-approval' && <ReturnApprovalForm workflowDocs={workflowDocs} docType="市场退货" onSuccess={onSuccess} />}
+          {operation === 'shipment-cancel' && <ShipmentCancellationRequestForm workflowDocs={workflowDocs} onSuccess={onSuccess} />}
+          {operation === 'shipment-cancel-approval' && <ShipmentCancellationApprovalForm workflowDocs={workflowDocs} onSuccess={onSuccess} />}
+          {operation === 'staff-purchase' && <MarketStaffPurchaseForm locations={locations} skuOptions={skuOptions} onSuccess={onSuccess} />}
+          {operation === 'supply-chain-staff-purchase' && <SupplyChainStaffPurchaseForm locations={locations} skuOptions={skuOptions} onSuccess={onSuccess} />}
+          {operation === 'self-purchase' && <SelfPurchaseForm locations={locations} skuOptions={skuOptions} suppliers={suppliers} canViewPrice={canViewPrice} onSuccess={onSuccess} />}
+          {operation === 'external-outbound' && <ExternalOutboundForm locations={locations} skuOptions={skuOptions} onSuccess={onSuccess} />}
+          {operation === 'supply-chain-conversion' && <ConversionForm locations={locations} skuOptions={skuOptions} locationType="总部" onSuccess={onSuccess} />}
+          {operation === 'market-conversion' && <ConversionForm locations={locations} skuOptions={skuOptions} locationType="市场" onSuccess={onSuccess} />}
+          {operation === 'store-conversion' && <ConversionForm locations={locations} skuOptions={skuOptions} locationType="门店" onSuccess={onSuccess} />}
+        </TabsContent>
+        <TabsContent value="docs">
+          <OperationDocsTab operation={operation} canViewPrice={canViewPrice} />
+        </TabsContent>
+      </Tabs>
+    </div>
+  )
+}
+
+const OPERATION_DOCS_PAGE_SIZE = 20
+
+/**
+ * 业务工作区的「单据」Tab（#190）：显示**本业务产出的**、当前账号可见的单据。
+ *
+ * 单据类型 / 状态 / 层级的收窄规则在服务端按 operationId 查映射表解析
+ * （`listInventoryOperationDocs`），这里只管展示与翻页。
+ */
+function OperationDocsTab({
+  operation,
+  canViewPrice,
+}: {
+  operation: OperationId
+  canViewPrice: boolean
+}) {
+  const [rows, setRows] = useState<InventoryDocRow[]>([])
+  const [total, setTotal] = useState(0)
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(OPERATION_DOCS_PAGE_SIZE)
+  const [loading, setLoading] = useState(true)
+  const [failed, setFailed] = useState(false)
+  const [priceVisible, setPriceVisible] = useState(canViewPrice)
+
+  useEffect(() => {
+    let cancelled = false
+    setLoading(true)
+    setFailed(false)
+    listInventoryOperationDocs({ operationId: operation, page, pageSize: OPERATION_DOCS_PAGE_SIZE })
+      .then((result) => {
+        if (cancelled) return
+        setRows(result.data)
+        setTotal(result.total)
+        // 服务端会把非白名单页长夹成 20，按它返回的实际值渲染分页器，
+        // 否则前端按自己那份 pageSize 算总页数，最后几页会翻不到。
+        setPageSize(result.pageSize)
+        setPriceVisible(result.canViewPrice)
+      })
+      .catch((error) => {
+        if (cancelled) return
+        // 刻意**不清零 total**：清了会让 Pagination 算出 totalPages=1，
+        // 越界自纠 effect 把用户从第 3 页静默弹回第 1 页并再发一次请求 ——
+        // 一次瞬时失败被放大成「跳页 + 重复请求 + 第二条 toast」。
+        setRows([])
+        // 失败态与空态必须分开：都渲染成「暂无单据」会让人以为这个业务真的没单，
+        // 而实际上是这次没取到。
+        setFailed(true)
+        toast.error(actionErrorMessage(error, '加载单据失败'))
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false)
+      })
+    return () => { cancelled = true }
+  }, [operation, page])
+
+  const columns: Column<InventoryDocRow>[] = [
+    {
+      key: 'id',
+      header: '单据号',
+      /*
+       * 新标签打开，且**不做整行点击**：keepMounted 的全部意义就是「去单据 Tab 看一眼
+       * 回来表单还在」，行内 router.push 会把整个办理台连同填了一半的明细一起卸载，
+       * 而 returnTo 那套只能恢复 URL、恢复不了 React state。
+       */
+      cell: (row) => (
+        <a
+          href={`/inventory/docs/${row.id}`}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="font-mono text-xs text-[var(--primary)] underline-offset-2 hover:underline"
+        >
+          {row.id}
+        </a>
+      ),
+    },
+    {
+      key: 'docType',
+      header: '类型',
+      cell: (row) => (
+        <span className="rounded bg-[#FFF0EE] px-2 py-0.5 text-xs text-[var(--primary)]">{row.docType}</span>
+      ),
+    },
+    { key: 'sourceOrgNodeName', header: '出库/发起', cell: (row) => row.sourceOrgNodeName ?? '—' },
+    { key: 'targetOrgNodeName', header: '入库/接收', cell: (row) => row.targetOrgNodeName ?? '—' },
+    { key: 'docDate', header: '日期', cell: (row) => row.docDate.slice(0, 10) },
+    { key: 'totalQuantity', header: '数量', cell: (row) => <span className="font-medium">{row.totalQuantity}</span> },
+    /*
+     * 列头只看会话级价格权限，**不从当前页数据反推**：行级遮蔽后 totalAmount 会变成
+     * undefined，按"本页有没有金额"决定列头的话，混合绑定账号翻到全遮蔽的一页时整列消失、
+     * 翻回有权限的页又出现，表头随页抖动，且无权限的行也不再按验收要求显示「—」。
+     * 代价是有一批**业务卡片**（按卡片计 12 个：品项公司发货与两个撤回 Tab 共用的发货单、
+     * 两张退货申请、两张退货回库、非凤御出库、三个层级的转换、门店报货）产出的单据
+     * 本就不带金额，会多一列全是「—」。那要靠「docType → 有无金额语义」的单源来治
+     * （engine 侧的 AMOUNTLESS_DOC_TYPES 只覆盖一种，是遮蔽语义不是无金额全集，见 PR follow-up）。
+     */
+    ...(priceVisible
+      ? [{ key: 'totalAmount', header: '金额', cell: (row: InventoryDocRow) => row.totalAmount ?? '—' } as Column<InventoryDocRow>]
+      : []),
+    {
+      key: 'status',
+      header: '状态',
+      cell: (row) => (
+        <span className={row.status === '已完成' ? 'text-[#3D8A5A]' : row.status === '已驳回' ? 'text-[#888888]' : 'text-[#D4820A]'}>
+          {row.status}
+        </span>
+      ),
+    },
+  ]
+
+  return (
+    <div className="space-y-3">
+      <DataTable
+        columns={columns}
+        data={rows}
+        loading={loading}
+        emptyText={failed ? '单据加载失败，请切换 Tab 或稍后重试' : '暂无单据'}
+      />
+      <Pagination total={total} page={page} pageSize={pageSize} onPageChange={setPage} />
     </div>
   )
 }

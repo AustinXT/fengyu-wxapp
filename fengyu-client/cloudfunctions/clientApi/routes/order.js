@@ -280,13 +280,67 @@ async function refreshSpendingTier(client, clientUserId) {
 }
 
 /**
+ * 顾客分类跃迁的订单级金额 CTE（#187，2026-09-18）。$1 = client_user_id。
+ * 产出每张已结清销售单的 non_trial / trial = 非体验 / 体验行的**毛实收**合计
+ * （sale_items.received 净额 + 该行逐项退款额 → 还原"曾经收到的钱"，退款不扣减）。
+ * refund_by_item 的 note→jsonb 三重防线逐字对齐 staffApi utils/paid-sessions.js
+ * RECEIVED_REFUNDED_DEDUCT_SQL，根除 22P02。八处副本逐字一致，由 staffApi
+ * __tests__/routes/recalc-customer-type-sql.test.js 守护。
+ */
+const RECALC_CUSTOMER_TYPE_CTE = `WITH refund_by_item AS (
+       SELECT sop.sale_order_id,
+              elem ->> 'refSaleItemId' AS sale_item_id,
+              SUM(COALESCE(public.try_numeric(elem ->> 'refundAmount'), 0)) AS refunded
+       FROM sale_order_payments sop
+       JOIN sale_orders ro ON ro.sale_order_id = sop.sale_order_id
+       CROSS JOIN LATERAL jsonb_array_elements(
+         CASE WHEN jsonb_typeof(public.try_jsonb(sop.note) -> 'items') = 'array'
+              THEN public.try_jsonb(sop.note) -> 'items'
+              ELSE '[]'::jsonb END
+       ) AS elem
+       WHERE ro.client_user_id = $1
+         AND ro.status IN ('已支付', '已完成')
+         AND ro.sale_order_type = '销售单'
+         AND sop.change_type = '退款'
+         AND sop.status = '已支付'
+         AND elem ->> 'refSaleItemId' <> 'OVERPAY'
+       -- 序号绑定 SELECT 的前 2 列（sale_order_id, refSaleItemId）；重排 SELECT 列须同步改这里
+       GROUP BY 1, 2
+     ),
+     order_amounts AS (
+       SELECT o.sale_order_id,
+              CASE WHEN NOT EXISTS (SELECT 1 FROM sale_items si2 WHERE si2.sale_order_id = o.sale_order_id)
+                   THEN GREATEST(o.received::numeric, 0)
+                   ELSE COALESCE(SUM(LEAST(si.received::numeric + COALESCE(rbi.refunded, 0),
+                                           si.sale_amount::numeric))
+                                 FILTER (WHERE si.is_experience = false), 0)
+              END AS non_trial,
+              CASE WHEN NOT EXISTS (SELECT 1 FROM sale_items si2 WHERE si2.sale_order_id = o.sale_order_id)
+                   THEN 0
+                   ELSE COALESCE(SUM(LEAST(si.received::numeric + COALESCE(rbi.refunded, 0),
+                                           si.sale_amount::numeric))
+                                 FILTER (WHERE si.is_experience = true), 0)
+              END AS trial
+       FROM sale_orders o
+       LEFT JOIN sale_items si ON si.sale_order_id = o.sale_order_id
+                              AND si.item_direction = '购买'
+       LEFT JOIN refund_by_item rbi ON rbi.sale_order_id = o.sale_order_id
+                                   AND rbi.sale_item_id = si.sale_item_id
+       WHERE o.client_user_id = $1
+         AND o.status IN ('已支付', '已完成')
+         AND o.sale_order_type = '销售单'
+       GROUP BY o.sale_order_id, o.received
+     )`
+
+/**
  * 重算顾客类型（customer_type，只升不降）。clientApi 独立副本，镜像 staffApi routes/order.js:109-202。
  * 阈值从 system_configs.new_member_threshold 读取。跃迁为"会员客"时同步写 became_member_at = COALESCE(首笔达标单 paid_at, created_at)（非检测时刻 NOW()），
  * 并给 paid_at 最早的达标销售单打 is_membership_upgrade=true（会员升级单归因）。
  *
- * 四端 SQL 独立副本（staffApi + clientApi + payNotify + admin orders.ts / recompute-customer-tags.ts），
- * 修改必须同步另外三端；一致性由 staffApi __tests__/routes/recalc-customer-type-sql.test.js 守护。
- * clientApi 用单笔口径（不含 payNotify 的回款单累计分支——该分支为 sale-order-domain-refactor 后死代码）。
+ * 八处 SQL 独立副本（staffApi + clientApi + payNotify + admin orders.ts / recompute-customer-tags.ts
+ * + db/scripts/recalc-all-customer-types.js + recalc-became-member-at.js + backfill-membership-upgrade-doc-type.js），
+ * 修改必须同步其余七处；一致性由 staffApi __tests__/routes/recalc-customer-type-sql.test.js 守护。
+ * 单笔订单口径（#187 后判定金额换成该单非体验部分毛实收，仍不跨订单累计）。
  * @param {object} client - pg 事务客户端
  * @param {string} clientUserId - client_wechat_users.user_id
  */
@@ -303,32 +357,11 @@ async function recalcCustomerType(client, clientUserId) {
   const threshold = await getMemberThreshold()
 
   const typeResult = await client.query(
-    `SELECT CASE
-       WHEN EXISTS (
-         SELECT 1 FROM sale_orders o
-         WHERE o.client_user_id = $1
-           AND o.status IN ('已支付', '已完成')
-           AND o.sale_order_type = '销售单'
-           AND o.total_amount >= $2
-       ) THEN '会员客'
-       WHEN EXISTS (
-         SELECT 1
-         FROM sale_orders o
-         JOIN sale_items si ON si.sale_order_id = o.sale_order_id
-         WHERE o.client_user_id = $1
-           AND o.status IN ('已支付', '已完成')
-           AND o.sale_order_type = '销售单'
-           AND si.is_experience = false
-       ) THEN '小美客'
-       WHEN EXISTS (
-         SELECT 1
-         FROM sale_orders o
-         JOIN sale_items si ON si.sale_order_id = o.sale_order_id
-         WHERE o.client_user_id = $1
-           AND o.status IN ('已支付', '已完成')
-           AND o.sale_order_type = '销售单'
-           AND si.is_experience = true
-       ) THEN '体验客'
+    `${RECALC_CUSTOMER_TYPE_CTE}
+     SELECT CASE
+       WHEN EXISTS (SELECT 1 FROM order_amounts WHERE non_trial >= $2) THEN '会员客'
+       WHEN EXISTS (SELECT 1 FROM order_amounts WHERE non_trial > 0)   THEN '小美客'
+       WHEN EXISTS (SELECT 1 FROM order_amounts WHERE trial > 0)       THEN '体验客'
        ELSE '流量客'
      END AS computed_type`,
     [clientUserId, threshold]
@@ -358,26 +391,24 @@ async function recalcCustomerType(client, clientUserId) {
   // 函数开头“已是会员客即 return”保证只在首次跃迁时执行一次。
   if (updateResult.rowCount > 0 && updateResult.rows[0].customer_type === '会员客') {
     await client.query(
-      `UPDATE client_wechat_users SET became_member_at = (
+      `UPDATE client_wechat_users SET became_member_at = COALESCE((
+         ${RECALC_CUSTOMER_TYPE_CTE}
          SELECT COALESCE(o.paid_at, o.created_at) FROM sale_orders o
-         WHERE o.client_user_id = $1
-           AND o.status IN ('已支付', '已完成')
-           AND o.sale_order_type = '销售单'
-           AND o.total_amount >= $2
-         ORDER BY o.paid_at ASC NULLS LAST, o.created_at ASC
+         JOIN order_amounts oa ON oa.sale_order_id = o.sale_order_id
+         WHERE oa.non_trial >= $2
+         ORDER BY o.paid_at ASC NULLS LAST, o.created_at ASC, o.sale_order_id ASC
          LIMIT 1
-       ) WHERE user_id = $1`,
+       ), became_member_at) WHERE user_id = $1`,
       [clientUserId, threshold]
     )
     await client.query(
       `UPDATE sale_orders SET is_membership_upgrade = true
        WHERE sale_order_id = (
+         ${RECALC_CUSTOMER_TYPE_CTE}
          SELECT o.sale_order_id FROM sale_orders o
-         WHERE o.client_user_id = $1
-           AND o.status IN ('已支付', '已完成')
-           AND o.sale_order_type = '销售单'
-           AND o.total_amount >= $2
-         ORDER BY o.paid_at ASC NULLS LAST, o.created_at ASC
+         JOIN order_amounts oa ON oa.sale_order_id = o.sale_order_id
+         WHERE oa.non_trial >= $2
+         ORDER BY o.paid_at ASC NULLS LAST, o.created_at ASC, o.sale_order_id ASC
          LIMIT 1
        )`,
       [clientUserId, threshold]
