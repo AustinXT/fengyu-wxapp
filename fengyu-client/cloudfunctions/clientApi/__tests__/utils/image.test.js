@@ -136,6 +136,30 @@ describe('safeThumbUrl', () => {
     expect(result).toContain('imageMogr2/thumbnail/300x300')
   })
 
+  /**
+   * q-url-param-list 写在 URL 上、无从验真，不能当授权证据：
+   * 让一条放大规则「自声明」成已签名参数，就能存活并排在服务端规则之前，
+   * 而 COS 未定义多个独立处理键的优先级 —— 等于赌未定义行为。
+   */
+  test('自声明的处理参数不得借 q-url-param-list 存活', () => {
+    const attack =
+      `${COS_URL}?imageView2%2F1%2Fw%2F50000%2Fh%2F50000` +
+      `&q-url-param-list=imageView2%2F1%2Fw%2F50000%2Fh%2F50000`
+    const result = safeThumbUrl(attack, 300)
+    expect(result).not.toContain('imageView2')
+    expect(result).not.toContain('50000')
+    expect(result).toContain('imageMogr2/thumbnail/300x300')
+  })
+
+  test('无等号的编码参数名自声明同样无效', () => {
+    const attack =
+      `${COS_URL}?imageMogr2%2Fthumbnail%2F65536x65536` +
+      `&q-url-param-list=imagemogr2%2Fthumbnail%2F65536x65536`
+    const result = safeThumbUrl(attack, 300)
+    expect(result).not.toContain('65536')
+    expect(result).toContain('imageMogr2/thumbnail/300x300')
+  })
+
   test('未被签名声明的同名业务参数仍然丢弃', () => {
     const result = safeThumbUrl(
       `${COS_URL}?q-url-param-list=&response-content-disposition=inline`,
@@ -213,11 +237,19 @@ describe('safeThumbUrl', () => {
     expect(result).not.toContain('??')
   })
 
-  test('其它 COS 域名后缀同样生效', () => {
-    const myqcloud = 'https://bucket-123.cos.ap-shanghai.myqcloud.com/a.png'
-    expect(safeThumbUrl(myqcloud, 300)).toBe(
-      `${myqcloud}?imageMogr2/thumbnail/300x300`
-    )
+  /**
+   * 只认 CloudBase 云存储 CDN 域名。另外两类看起来相关的域名刻意不放通：
+   * tcloudbaseapp.com 是静态网站托管（不执行数据万象，拼了也原图直出）；
+   * myqcloud.com 是通用 COS 域名，任何人都能建桶、无法保证开通了数据万象。
+   * 拼上参数却不生效 = 保护静默失效，所以按约定返回 null。
+   */
+  test('通用 COS 域名与静态托管域名一律返回 null', () => {
+    expect(
+      safeThumbUrl('https://bucket-123.cos.ap-shanghai.myqcloud.com/a.png', 300)
+    ).toBeNull()
+    expect(
+      safeThumbUrl('https://attacker-env.tcloudbaseapp.com/12576.png', 300)
+    ).toBeNull()
   })
 
   test('FQDN 尾点域名与不带尾点等价，不应漏处理', () => {
@@ -228,12 +260,15 @@ describe('safeThumbUrl', () => {
 })
 
 describe('isProcessableHost', () => {
-  test('识别 COS 域名并容忍 FQDN 尾点', () => {
+  test('识别 CloudBase 云存储域名并容忍 FQDN 尾点', () => {
     expect(isProcessableHost('a.tcb.qcloud.la')).toBe(true)
     expect(isProcessableHost('a.tcb.qcloud.la.')).toBe(true)
-    expect(isProcessableHost('b.myqcloud.com')).toBe(true)
     expect(isProcessableHost('evil.com')).toBe(false)
     expect(isProcessableHost('a.tcb.qcloud.la.evil.com')).toBe(false)
+    // 静态网站托管，不执行数据万象
+    expect(isProcessableHost('x.tcloudbaseapp.com')).toBe(false)
+    // 通用 COS 域名，任何人可建桶，无法保证开通了数据万象
+    expect(isProcessableHost('b.myqcloud.com')).toBe(false)
   })
 })
 

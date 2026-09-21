@@ -82,9 +82,10 @@ function makeWebpVp8xWithFrame(
   canvasH: number,
   frameW: number,
   frameH: number,
-  extraChunk = false
+  extraChunk = false,
+  animated = false
 ): Buffer {
-  const head = makeWebpVp8x(canvasW, canvasH)
+  const head = makeWebpVp8xHeader(canvasW, canvasH, animated)
 
   const parts: Buffer[] = [head]
   if (extraChunk) {
@@ -129,10 +130,11 @@ function makeJpeg(width: number, height: number): Buffer {
 }
 
 /**
- * 构造 WebP VP8X（扩展格式，24 位宽高，-1 存储）
+ * 只构造 VP8X 头部（30 字节，无图像负载）。
+ * 真实的静态 VP8X 文件必须再跟一个 VP8/VP8L chunk，见 makeWebpVp8x。
  * @param animated 置 flags 的 ANIMATION 位
  */
-function makeWebpVp8x(
+function makeWebpVp8xHeader(
   width: number,
   height: number,
   animated = false
@@ -153,6 +155,18 @@ function makeWebpVp8x(
   buf[28] = (h >> 8) & 0xff
   buf[29] = (h >> 16) & 0xff
   return buf
+}
+
+/** 完整的静态 VP8X 文件：头部 + 与 canvas 同尺寸的 VP8 帧 */
+function makeWebpVp8x(
+  width: number,
+  height: number,
+  animated = false
+): Buffer {
+  // VP8 帧尺寸字段是 14 位，最大 16383
+  const frameW = Math.min(width, 16383)
+  const frameH = Math.min(height, 16383)
+  return makeWebpVp8xWithFrame(width, height, frameW, frameH, false, animated)
 }
 
 /** 构造 WebP VP8（有损，含 9d 01 2a start code） */
@@ -316,6 +330,36 @@ describe("getImageDimensions", () => {
      * （LSD 100×100 而帧 65535×65535，LZW 高压缩下文件很小），
      * 只校验 LSD 会让它四道检查全过。
      */
+    /**
+     * 帧可以带 left/top 偏移。按「帧覆盖区域」分配位图的解码器需要 left+width 那么大，
+     * 只取帧自身 width/height 仍会读小。
+     */
+    it("帧带 left/top 偏移时按覆盖区域判定", () => {
+      const lsd = Buffer.alloc(13)
+      lsd.write("GIF89a", 0, "ascii")
+      lsd.writeUInt16LE(100, 6)
+      lsd.writeUInt16LE(100, 8)
+
+      const desc = Buffer.alloc(10)
+      desc[0] = 0x2c
+      desc.writeUInt16LE(60000, 1) // left
+      desc.writeUInt16LE(60000, 3) // top
+      desc.writeUInt16LE(5535, 5) // width
+      desc.writeUInt16LE(5535, 7) // height
+
+      const gif = Buffer.concat([
+        lsd,
+        desc,
+        Buffer.from([0x08, 0x01, 0x00, 0x00]),
+        Buffer.from([0x3b]),
+      ])
+
+      expect(getImageDimensions(gif)).toMatchObject({
+        width: 65535,
+        height: 65535,
+      })
+    })
+
     it("帧矩形大于逻辑屏幕时按较大者判定", () => {
       const lsd = Buffer.alloc(13)
       lsd.write("GIF89a", 0, "ascii")
@@ -399,6 +443,14 @@ describe("getImageDimensions", () => {
       const buf = makeWebpVp8x(1920, 1080)
       buf.writeUInt32LE(99, 16)
       expect(getImageDimensions(buf)).toBeNull()
+    })
+
+    /**
+     * 静态 VP8X 必须含一个 VP8/VP8L 图像负载，不存在「只有 canvas 没有帧」的合法静态图。
+     * 退回 canvas 尺寸等于用一个小尺寸放行了没能力确认的容器。
+     */
+    it("VP8X 只有头部没有图像负载时判定失败", () => {
+      expect(getImageDimensions(makeWebpVp8xHeader(100, 100))).toBeNull()
     })
 
     /**

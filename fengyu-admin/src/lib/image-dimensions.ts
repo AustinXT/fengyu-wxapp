@@ -112,8 +112,16 @@ function scanGifBlocks(buf: Buffer): GifScan {
       frames++
       // Image Descriptor 共 10 字节：left/top/width/height 各 2B + packed 1B
       if (offset + 10 > buf.length) return bail
-      frameWidth = Math.max(frameWidth, buf.readUInt16LE(offset + 5))
-      frameHeight = Math.max(frameHeight, buf.readUInt16LE(offset + 7))
+      // 取「帧覆盖区域」而非帧自身尺寸：帧可以带 left/top 偏移，
+      // 按覆盖区域分配位图的解码器会要 left+width 那么大
+      frameWidth = Math.max(
+        frameWidth,
+        buf.readUInt16LE(offset + 1) + buf.readUInt16LE(offset + 5)
+      )
+      frameHeight = Math.max(
+        frameHeight,
+        buf.readUInt16LE(offset + 3) + buf.readUInt16LE(offset + 7)
+      )
 
       const localPacked = buf[offset + 9]
       offset += 10
@@ -239,12 +247,14 @@ function parseWebp(buf: Buffer): ImageDimensions | null {
     // canvas 可以声明 100×100 而内嵌帧其实是 16000×16000。若解码端按帧尺寸分配位图，
     // 只信 canvas 就会读小放行。故取 canvas 与内嵌帧的较大者。
     const frame = parseWebpFrameAfterVp8x(buf)
-    // 结构不可信时必须整体判定失败：若退回 canvas 尺寸，等于用一个小尺寸放行了
-    // 一个我们根本没能力确认的容器
-    if (frame === "invalid") return null
+    // 结构不可信、或压根没有图像负载时，一律整体判定失败：
+    // 静态 VP8X 必须含一个 VP8/VP8L 负载，不存在「只有 canvas 没有帧」的合法静态图；
+    // 退回 canvas 尺寸等于用一个小尺寸放行了我们没能力确认的容器。
+    // （动图的负载在 ANMF 里，但 animated 已在上传侧整体拒绝。）
+    if (frame === "invalid" || frame === null) return null
     return {
-      width: Math.max(width, frame?.width ?? 0),
-      height: Math.max(height, frame?.height ?? 0),
+      width: Math.max(width, frame.width),
+      height: Math.max(height, frame.height),
       animated,
     }
   }

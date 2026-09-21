@@ -12,8 +12,19 @@
  * 用 imageMogr2 拼缩略参数的好处是对存量图立即生效（无需重新上传、无需小程序发版）。
  */
 
-// 数据万象仅对 CloudBase / COS 自有域名生效，外链拼了参数反而可能 404
-const COS_HOST_PATTERN = /(\.tcb\.qcloud\.la|\.myqcloud\.com|\.tcloudbaseapp\.com)$/i
+/**
+ * 只认 CloudBase 云存储的 CDN 域名（本项目 stores.cover_image 全部是这个后缀，已核对 41/41）。
+ *
+ * 刻意**不**放通另外两类看起来相关的域名：
+ * - `*.tcloudbaseapp.com` 是 CloudBase **静态网站托管**，不执行数据万象，
+ *   拼上参数也会原样返回原图 —— 那等于保护静默失效
+ * - `*.myqcloud.com` 是通用 COS 域名，任何腾讯云用户都能建桶，
+ *   无法保证对方开通了数据万象
+ *
+ * 已知限制：同后缀的其它 CloudBase 环境也会匹配。更严格的做法是按本项目实际 bucket
+ * 做精确 hostname 白名单，但那需要引入环境变量配置，留待后续。
+ */
+const COS_HOST_PATTERN = /\.tcb\.qcloud\.la$/i
 
 /**
  * 判断 hostname 是否属于可做数据万象处理的域名。
@@ -27,10 +38,17 @@ function isProcessableHost(hostname) {
 /**
  * 判断一个 query 参数是否属于「鉴权必需、删了会 403」的那类。
  *
- * 光靠固定前缀列表补不全：COS V5 签名把哪些业务参数纳入签名，是由 `q-url-param-list`
+ * 固定前缀列表补不全：COS V5 签名把哪些业务参数纳入签名，是由 `q-url-param-list`
  * 自己声明的（分号分隔）。若只保留 `q-url-param-list=response-content-disposition`
  * 而把真正的 `response-content-disposition=inline` 删掉，签名照样失效。
- * 所以这里先读出它声明的参数名集合，再据此决定保留谁。
+ *
+ * 但 `q-url-param-list` 本身写在 URL 上、无从验真，**不能当作授权证据**：
+ * 构造 `?imageView2%2F1%2Fw%2F50000&q-url-param-list=imageView2%2F1%2Fw%2F50000`
+ * 就能让一条放大规则「自声明」成已签名参数从而存活，并排在服务端规则之前
+ * （COS 未定义多个独立处理键的优先级，等于赌未定义行为）。
+ *
+ * 所以动态保留只对 `response-*` 生效 —— COS V5 实际会纳入签名的业务参数就这一族，
+ * 且它们的名字不含 `/`，而任何数据万象处理指令的「名字」必然含 `/`。
  *
  * @param {string} param 形如 `key=value` 的原始参数串
  * @param {string[]} allParams 同一 URL 上的全部原始参数串
@@ -38,22 +56,36 @@ function isProcessableHost(hostname) {
 function isAuthParam(param, allParams) {
   const name = decodeParamName(param)
 
+  // q-url-param-list 的值只会是分号分隔的参数名。值里出现 '/' 说明这不是正常签名 URL
+  // （典型是拿处理指令来「自声明」），整条丢弃，免得把处理指令字样带进下发的 URL
+  if (name === 'q-url-param-list') {
+    return signedParamNames(param).every((n) => /^[\w.-]*$/.test(n))
+  }
+
   // q-* 是签名自身的字段；临时密钥 URL 还必须带安全令牌
   if (name.startsWith('q-')) return true
   if (name === 'x-cos-security-token') return true
 
-  // q-url-param-list 声明了哪些业务参数被签进了签名，这些同样不能动
+  // 动态声明只在 response-* 这一族内生效，且参数名必须是合法的 HTTP 参数名字符集
+  if (!name.startsWith('response-')) return false
+  if (!/^[\w.-]+$/.test(name)) return false
+
   const listParam = allParams.find(
     (p) => decodeParamName(p) === 'q-url-param-list'
   )
   if (!listParam) return false
 
-  const signedNames = decodeURIComponentSafe(listParam.slice(listParam.indexOf('=') + 1))
+  return signedParamNames(listParam).includes(name)
+}
+
+/** 解出 q-url-param-list 声明的参数名（分号分隔，归一为小写） */
+function signedParamNames(listParam) {
+  const eq = listParam.indexOf('=')
+  if (eq === -1) return []
+  return decodeURIComponentSafe(listParam.slice(eq + 1))
     .split(';')
     .map((s) => s.trim().toLowerCase())
     .filter(Boolean)
-
-  return signedNames.includes(name)
 }
 
 /** 取参数名并归一（解码 + 小写），解码失败时退回原串 */
