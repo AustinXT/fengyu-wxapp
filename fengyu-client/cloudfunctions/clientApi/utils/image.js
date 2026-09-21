@@ -113,9 +113,15 @@ function safeThumbUrl(url, boxSize) {
   // 也挡不住 `%21` / `%2F` 这类编码形态（URL.pathname 不会替你解码）。
   // admin 上传生成的键形如 `store-covers/1789097186265-apa9p0.png`（两段、纯 ASCII、无编码）。
   //
-  // ⚠️ 已知限制：`-` 与 `_` 同时是合法文件名字符，若 bucket 把样式分隔符配成这两种，
-  // 代码层无法与正常键区分。本项目 bucket 必须保持默认配置、且不得配置含缩放规则的样式。
-  if (!/^\/[\w-]+\/[\w.-]+$/.test(parsed.pathname)) return null
+  // 末尾锚定图片扩展名：样式名通常不带扩展名，所以这一条顺带挡掉了
+  // `a.png-oversize` / `a.png_oversize` 这类用 `-`/`_` 作分隔符的形态，
+  // 同时排除 SVG/PDF 等不该走图片管线的对象。
+  //
+  // ⚠️ 剩余已知限制：若 bucket 把分隔符配成 `-`/`_` 且样式名本身以 `.png` 之类结尾，
+  // 代码层仍无法与正常键区分。本项目 bucket 须保持默认配置、不得配置含缩放规则的样式。
+  if (!/^\/[\w-]+\/[\w.-]+\.(png|jpe?g|webp|gif)$/i.test(parsed.pathname)) {
+    return null
+  }
 
   const rawParams = parsed.search.replace(/^\?/, '').split('&').filter(Boolean)
 

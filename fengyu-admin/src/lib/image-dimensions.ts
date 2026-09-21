@@ -31,7 +31,7 @@ function parsePng(buf: Buffer): ImageDimensions | null {
   if (buf.readUInt32BE(0) !== 0x89504e47) return null
   if (buf.readUInt32BE(4) !== 0x0d0a1a0a) return null
   if (buf.readUInt32BE(8) !== 13) return null // IHDR chunk 数据长度固定 13
-  if (buf.toString("ascii", 12, 16) !== "IHDR") return null
+  if (buf.toString("latin1", 12, 16) !== "IHDR") return null
   return {
     width: buf.readUInt32BE(16),
     height: buf.readUInt32BE(20),
@@ -51,7 +51,7 @@ function isApng(buf: Buffer): boolean {
   let offset = 8 // 跳过签名
   while (offset + 8 <= buf.length) {
     const length = buf.readUInt32BE(offset)
-    const type = buf.toString("ascii", offset + 4, offset + 8)
+    const type = buf.toString("latin1", offset + 4, offset + 8)
 
     if (type === "acTL") return true
     if (type === "IDAT" || type === "IEND") return false
@@ -73,7 +73,7 @@ function isApng(buf: Buffer): boolean {
  */
 function parseGif(buf: Buffer): ImageDimensions | null {
   if (buf.length < 13) return null
-  const sig = buf.toString("ascii", 0, 6)
+  const sig = buf.toString("latin1", 0, 6)
   if (sig !== "GIF87a" && sig !== "GIF89a") return null
 
   const scan = scanGifBlocks(buf)
@@ -238,10 +238,10 @@ function parseJpeg(buf: Buffer): ImageDimensions | null {
  */
 function parseWebp(buf: Buffer): ImageDimensions | null {
   if (buf.length < 30) return null
-  if (buf.toString("ascii", 0, 4) !== "RIFF") return null
-  if (buf.toString("ascii", 8, 12) !== "WEBP") return null
+  if (buf.toString("latin1", 0, 4) !== "RIFF") return null
+  if (buf.toString("latin1", 8, 12) !== "WEBP") return null
 
-  const format = buf.toString("ascii", 12, 16)
+  const format = buf.toString("latin1", 12, 16)
 
   // 顶层 chunk 的声明长度必须容得下随后要读的尺寸字段，否则尺寸字节其实落在 chunk 之外
   const topChunkSize = buf.readUInt32LE(16)
@@ -319,7 +319,7 @@ function parseWebpFrameAfterVp8x(
   let offset = 30
 
   while (offset + 8 <= buf.length) {
-    const chunkType = buf.toString("ascii", offset, offset + 4)
+    const chunkType = buf.toString("latin1", offset, offset + 4)
     const chunkSize = buf.readUInt32LE(offset + 4)
     const body = offset + 8
 

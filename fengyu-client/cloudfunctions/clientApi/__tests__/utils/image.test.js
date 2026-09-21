@@ -245,6 +245,11 @@ describe('safeThumbUrl', () => {
       ['/ 分隔符（三段路径）', `${host}/store-covers/a.png/oversize`],
       ['任意百分号编码', `${host}/store-covers/a%2Ebpng`],
       ['单段路径', `${host}/a.png`],
+      // 扩展名锚定顺带挡掉用 - / _ 作分隔符的样式形态
+      ['- 分隔符', `${host}/store-covers/a.png-oversize`],
+      ['_ 分隔符', `${host}/store-covers/a.png_oversize`],
+      ['非图片扩展名', `${host}/store-covers/a.svg`],
+      ['无扩展名', `${host}/store-covers/a`],
     ]
 
     test.each(cases)('%s', (_label, url) => {

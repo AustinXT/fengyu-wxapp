@@ -493,6 +493,56 @@ describe("getImageDimensions", () => {
     })
 
     /**
+     * Node 的 `ascii` 解码会清除每个字节的最高位，于是 `D6 D0 B8 A0` 会被读成 "VP8 "、
+     * `C9 C8 C4 D2` 会被读成 "IHDR"。用它比较 FourCC / magic 等于接受一整族高位伪造值：
+     * 先放一个声明 1×1 的高位伪 chunk，后面跟真实大图，解析器就会读出 1×1 放行。
+     * 必须用 latin1（或原始字节）做精确比较。
+     */
+    it("高位伪造的 FourCC 不得被当作 VP8 chunk", () => {
+      const head = makeWebpVp8xHeader(100, 100)
+
+      // "VP8 " 每个字节置最高位 → ascii 解码会还原成 "VP8 "
+      const fake = Buffer.alloc(8 + 10)
+      fake[0] = 0x56 | 0x80
+      fake[1] = 0x50 | 0x80
+      fake[2] = 0x38 | 0x80
+      fake[3] = 0x20 | 0x80
+      fake.writeUInt32LE(10, 4)
+      fake[8 + 3] = 0x9d
+      fake[8 + 4] = 0x01
+      fake[8 + 5] = 0x2a
+      fake.writeUInt16LE(1, 8 + 6)
+      fake.writeUInt16LE(1, 8 + 8)
+
+      const real = Buffer.alloc(8 + 10)
+      real.write("VP8 ", 0, "latin1")
+      real.writeUInt32LE(10, 4)
+      real[8 + 3] = 0x9d
+      real[8 + 4] = 0x01
+      real[8 + 5] = 0x2a
+      real.writeUInt16LE(16000, 8 + 6)
+      real.writeUInt16LE(16000, 8 + 8)
+
+      const buf = Buffer.concat([head, fake, real])
+      buf.writeUInt32LE(buf.length - 8, 4)
+
+      const dim = getImageDimensions(buf)
+      // 绝不能读成伪 chunk 声明的 1×1（那会让后面 16000×16000 的真帧过闸）
+      expect(dim?.width).not.toBe(1)
+      expect(dim?.height).not.toBe(1)
+    })
+
+    it("高位伪造的 IHDR 不得被当作 PNG 头", () => {
+      const buf = makePng(800, 600)
+      // "IHDR" 每个字节置最高位
+      buf[12] = 0x49 | 0x80
+      buf[13] = 0x48 | 0x80
+      buf[14] = 0x44 | 0x80
+      buf[15] = 0x52 | 0x80
+      expect(getImageDimensions(buf)).toBeNull()
+    })
+
+    /**
      * VP8X 是唯一「容器声明与实际负载可分离」的格式：canvas 可以声明 100×100
      * 而内嵌帧其实是 16000×16000。只信 canvas 就会读小放行。
      */
