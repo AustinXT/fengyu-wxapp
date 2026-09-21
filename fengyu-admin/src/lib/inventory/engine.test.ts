@@ -47,6 +47,19 @@ import {
 } from './engine'
 import { hasPermission, isAdminScope } from '@/lib/permissions'
 
+/*
+ * 每个用例从干净的默认权限开始。
+ *
+ * `vi.clearAllMocks()` 只清调用记录、**不恢复实现** —— 有几个用例用
+ * `vi.mocked(hasPermission).mockReturnValue(false)` 测拒绝路径，那份实现会一路泄漏到
+ * 后面所有 describe。以前没炸是因为建单路径根本不调 hasPermission；#191 给通用建单
+ * 补了层级 action 校验之后，泄漏立刻变成「后续建单用例全部 PERMISSION_DENIED」。
+ * 各 describe 自己的 beforeEach 仍可覆盖（内层后跑）。
+ */
+beforeEach(() => {
+  vi.mocked(hasPermission).mockReturnValue(true)
+})
+
 const SESSION = {
   employeeId: 'E001',
   name: '测试用户',
@@ -3358,5 +3371,231 @@ describe('#190 单据列表的多类型 / 多状态 / 撤回标记过滤', () =>
     expect(compiled.sql).toContain('"source_org_node_id" in')
     expect(compiled.sql).toContain('"target_org_node_id" in')
     expect(compiled.sql).toMatch(/source_org_node_id" in[^)]*\)\s+or\s+"[^"]*"\."target_org_node_id" in/)
+  })
+})
+
+/**
+ * 通用建单的层级 action 校验（#191）。
+ *
+ * 入口的 `withAnyPermission` 是「三个 operate 任一」，只靠它，一个仅有
+ * `inventory:market_operate` 的账号也能建「院产品报损」这类门店单 —— 而行级 scope
+ * 拦不住（市场 scope 本就包含下属门店）。办理台把卡片按层级分页摆出来之后，
+ * 服务端不跟上就成了「页面上没这张卡、接口却建得出来」。
+ */
+describe('#191 通用建单按 docType 校验层级 operate 权限', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockDb.select.mockReset()
+    mockDb.execute.mockReset()
+    mockGetSession.mockResolvedValue(SESSION)
+    vi.mocked(isAdminScope).mockReturnValue(false)
+    mockDb.execute.mockResolvedValue([{ drifted: false }] as never)
+  })
+
+  function sessionWith(actions: string[]) {
+    vi.mocked(hasPermission).mockImplementation((_session, action) => actions.includes(action))
+  }
+
+  const CASES: Array<[string, string, string]> = [
+    ['院产品报损', 'inventory:store_operate', '门店'],
+    ['分院库存盘点', 'inventory:store_operate', '门店'],
+    ['院顾客产品出库', 'inventory:store_operate', '门店'],
+    ['市场产品报损', 'inventory:market_operate', '市场'],
+    ['市场库存盘点', 'inventory:market_operate', '市场'],
+    ['内部领用', 'inventory:supply_chain_operate', '供应链'],
+  ]
+
+  it.each(CASES)('%s 需要 %s', async (docType, requiredAction) => {
+    // 持有另外两个 operate 也不行：层级各管各的
+    const others = [
+      'inventory:supply_chain_operate',
+      'inventory:market_operate',
+      'inventory:store_operate',
+    ].filter((action) => action !== requiredAction)
+    sessionWith(others)
+    await expect(
+      createInventoryCoreDoc({
+        docType: docType as never,
+        sourceOrgNodeId: 'NODE-A1',
+        targetOrgNodeId: null,
+        docDate: '2026-09-19',
+        remark: '',
+        items: [{ skuId: 'SKU-1', quantity: 1 } as never],
+      }),
+    ).rejects.toThrow('PERMISSION_DENIED')
+  })
+
+  it('持有对应层级权限时不会被这道闸拦下', async () => {
+    // 只断言「没被权限闸拦住」：后面的主体/批次校验不在本用例范围，
+    // 所以接受任何非 PERMISSION_DENIED 的失败。
+    sessionWith(['inventory:store_operate'])
+    let error: unknown
+    try {
+      await createInventoryCoreDoc({
+        docType: '院产品报损' as never,
+        sourceOrgNodeId: 'NODE-A1',
+        targetOrgNodeId: null,
+        docDate: '2026-09-19',
+        remark: '',
+        items: [{ skuId: 'SKU-1', quantity: 1 } as never],
+      })
+    } catch (err) {
+      error = err
+    }
+    expect(String((error as Error)?.message ?? '')).not.toContain('库存操作权限')
+  })
+})
+
+/**
+ * 多绑定会话不能跨角色拼接「action 来自这条绑定、scope 来自那条绑定」（#191 round-2）。
+ *
+ * 入口的 withAnyPermission 收的是「持有三个 operate 任一」的角色并集，
+ * 所以光加一道 `hasPermission(session, requiredAction)` 是半拉子：action 用并集、
+ * scope 也用并集，两者可以来自完全不同的绑定。
+ */
+describe('#191 层级权限必须与 scope 落在同一条角色绑定上', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockDb.select.mockReset()
+    mockDb.execute.mockReset()
+    vi.mocked(isAdminScope).mockReturnValue(false)
+    // 真实语义：hasPermission 看的是会话 actions 并集
+    vi.mocked(hasPermission).mockImplementation(
+      (session, action) => (session.permissions.actions ?? []).includes(action),
+    )
+    mockDb.execute.mockResolvedValue([{ drifted: false }] as never)
+  })
+
+  /** 市场 A 绑 market_operate（可见 A 及其下属门店 A1）+ 门店 B 绑 store_operate（只可见 B）。 */
+  function multiBindingSession() {
+    return {
+      employeeId: 'E-MULTI',
+      name: '多绑定用户',
+      phone: '13800000000',
+      roles: [
+        {
+          role: 'inventory_market_operator', scopeId: 'MKT-A', scopeType: '市场',
+          actions: ['inventory:list', 'inventory:market_operate'],
+          scopeStoreIds: ['STORE-A1'],
+          scopeOrgNodeIds: ['MKT-A', 'NODE-A1'],
+        },
+        {
+          role: 'inventory_store_operator', scopeId: 'NODE-B', scopeType: '门店',
+          actions: ['inventory:list', 'inventory:store_operate'],
+          scopeStoreIds: ['STORE-B'],
+          scopeOrgNodeIds: ['NODE-B'],
+        },
+      ],
+      permissions: {
+        actions: ['inventory:list', 'inventory:market_operate', 'inventory:store_operate'],
+        scopeStoreIds: ['STORE-A1', 'STORE-B'],
+        scopeOrgNodeIds: ['MKT-A', 'NODE-A1', 'NODE-B'],
+      },
+    } as never
+  }
+
+  it('门店单据的可见性只认授予 store_operate 的那条绑定，不吃市场绑定的范围', async () => {
+    mockGetSession.mockResolvedValue(multiBindingSession())
+    // 门店 A1 只在市场绑定的范围里，而 store_operate 来自门店 B 的绑定 —— 不该放行
+    await expect(
+      createInventoryCoreDoc({
+        docType: '院产品报损' as never,
+        sourceOrgNodeId: 'NODE-A1',
+        targetOrgNodeId: null,
+        docDate: '2026-09-19',
+        remark: '',
+        items: [{ skuId: 'SKU-1', quantity: 1 } as never],
+      }),
+    ).rejects.toThrow(/PERMISSION_DENIED|无权/)
+  })
+
+  it('同一条绑定内的门店（门店 B）不被误伤', async () => {
+    mockGetSession.mockResolvedValue(multiBindingSession())
+    let error: unknown
+    try {
+      await createInventoryCoreDoc({
+        docType: '院产品报损' as never,
+        sourceOrgNodeId: 'NODE-B',
+        targetOrgNodeId: null,
+        docDate: '2026-09-19',
+        remark: '',
+        items: [{ skuId: 'SKU-1', quantity: 1 } as never],
+      })
+    } catch (err) {
+      error = err
+    }
+    // 只断言没被可见性/权限闸拦下；后续主体类型、批次等校验不在本用例范围
+    expect(String((error as Error)?.message ?? '')).not.toMatch(/PERMISSION_DENIED|无权|库存操作权限/)
+  })
+})
+
+/**
+ * admin 不能被层级权限收紧误伤（#191 round-3，两个谱系都点名缺这条）。
+ *
+ * `scopeSessionToActions` 按 action 过滤角色，万一哪天 admin 角色的 actions 不再是
+ * 字面量枚举（比如改成通配或延迟解析），过滤会把 admin 角色整个滤掉 →
+ * `isAdminScope` 转假 → 全局范围塌成空集 → admin 反而建不了单。
+ * 这条用**带完整角色级元数据的真实形态 admin 会话**把它钉住。
+ */
+describe('#191 层级权限收紧不误伤 admin', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockDb.select.mockReset()
+    mockDb.execute.mockReset()
+    vi.mocked(hasPermission).mockImplementation(
+      (session, action) => (session.permissions.actions ?? []).includes(action),
+    )
+    mockDb.execute.mockResolvedValue([{ drifted: false }] as never)
+  })
+
+  it('admin 建任意层级的通用单都不被权限或可见性闸拦下', async () => {
+    // admin 的 scope 是「全局不受限」，靠 isAdminScope 判定；这里连同角色级元数据
+    // 一起给全，走的是真实的收窄路径而不是无元数据的兼容 no-op。
+    vi.mocked(isAdminScope).mockReturnValue(true)
+    mockGetSession.mockResolvedValue({
+      employeeId: 'E-ADMIN',
+      name: '超管',
+      phone: '13800000000',
+      roles: [{
+        role: 'admin', scopeId: 'HQ', scopeType: '总部',
+        actions: [
+          'inventory:list',
+          'inventory:supply_chain_operate',
+          'inventory:market_operate',
+          'inventory:store_operate',
+        ],
+        scopeStoreIds: [],
+        scopeOrgNodeIds: ['HQ'],
+      }],
+      permissions: {
+        actions: [
+          'inventory:list',
+          'inventory:supply_chain_operate',
+          'inventory:market_operate',
+          'inventory:store_operate',
+        ],
+        scopeStoreIds: [],
+        scopeOrgNodeIds: ['HQ'],
+      },
+    } as never)
+
+    for (const docType of ['院产品报损', '市场产品报损', '内部领用']) {
+      let error: unknown
+      try {
+        await createInventoryCoreDoc({
+          docType: docType as never,
+          sourceOrgNodeId: 'NODE-ANY',
+          targetOrgNodeId: null,
+          docDate: '2026-09-19',
+          remark: '',
+          items: [{ skuId: 'SKU-1', quantity: 1 } as never],
+        })
+      } catch (err) {
+        error = err
+      }
+      expect(String((error as Error)?.message ?? ''), docType).not.toMatch(
+        /PERMISSION_DENIED|无权|库存操作权限/,
+      )
+    }
   })
 })
