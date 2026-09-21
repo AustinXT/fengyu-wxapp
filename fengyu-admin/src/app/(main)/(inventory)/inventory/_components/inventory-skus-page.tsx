@@ -18,6 +18,7 @@ import {
 } from '@/lib/inventory/types'
 import { Button } from '@/components/ui/button'
 import { DataTable, type Column } from '@/components/ui/data-table'
+import InventorySubjectSelect from '@/components/inventory-subject-select'
 import { Dialog, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Pagination } from '@/components/ui/pagination'
@@ -668,10 +669,13 @@ function SkuFormDialog({
             </Field>
             {form.sourceType !== '供应链' && (
               <Field label="归属市场 *">
-                <Select value={form.ownerMarketId} disabled={!!row} onChange={(event) => setField('ownerMarketId', event.target.value)}>
-                  <option value="">请选择市场</option>
-                  {markets.map((market) => <option key={market.locationId} value={market.locationId}>{market.name}</option>)}
-                </Select>
+                <InventorySubjectSelect
+                  options={markets.map((market) => ({ value: market.locationId, label: market.name }))}
+                  value={form.ownerMarketId}
+                  onChange={(ownerMarketId) => setField('ownerMarketId', ownerMarketId)}
+                  placeholder="请选择市场"
+                  disabled={!!row}
+                />
               </Field>
             )}
           </div>

@@ -65,6 +65,7 @@ import type {
 } from '@/lib/inventory/types'
 import type { InventoryBusinessLevel } from '@/lib/inventory/business-level'
 import type { InventoryOperationId } from '@/lib/inventory/operation-doc-types'
+import InventorySubjectSelect from '@/components/inventory-subject-select'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
@@ -847,16 +848,22 @@ function StoreRequestForm({
     <form className="space-y-5" onSubmit={(event) => { event.preventDefault(); void submit() }}>
       <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
         <FormField label="报货门店" required>
-          <Select value={storeId} onChange={(event) => selectStore(event.target.value)}>
-            <option value="">请选择门店</option>
-            {stores.map((location) => <option key={location.locationId} value={location.locationId}>{location.name}</option>)}
-          </Select>
+          <InventorySubjectSelect
+            options={stores.map((location) => ({ value: location.locationId, label: location.name }))}
+            value={storeId}
+            onChange={selectStore}
+            placeholder="请选择门店"
+          />
         </FormField>
         <FormField label="所属市场" required>
-          <Select value={marketId} onChange={(event) => setMarketId(event.target.value)}>
-            <option value="">请选择市场</option>
-            {markets.map((location) => <option key={location.locationId} value={location.locationId}>{location.name}</option>)}
-          </Select>
+          {/* 值由「报货门店」联动派生（selectStore 写 parentLocationId），不能自己补 */}
+          <InventorySubjectSelect
+            options={markets.map((location) => ({ value: location.locationId, label: location.name }))}
+            value={marketId}
+            onChange={setMarketId}
+            placeholder="请选择市场"
+            autoSelect={false}
+          />
         </FormField>
         <FormField label="报货日期">
           <DatePicker value={docDate} onValueChange={setDocDate} />
@@ -953,10 +960,12 @@ function ItemCompanyReplenishmentForm({
     <form className="space-y-5" onSubmit={(event) => { event.preventDefault(); void submit() }}>
       <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
         <FormField label="供应链库存主体" required>
-          <Select value={supplyChainLocationId} onChange={(event) => setSupplyChainLocationId(event.target.value)}>
-            <option value="">请选择总部</option>
-            {headquarters.map((location) => <option key={location.locationId} value={location.locationId}>{location.name}</option>)}
-          </Select>
+          <InventorySubjectSelect
+            options={headquarters.map((location) => ({ value: location.locationId, label: location.name }))}
+            value={supplyChainLocationId}
+            onChange={setSupplyChainLocationId}
+            placeholder="请选择总部"
+          />
         </FormField>
         <FormField label="报货日期"><DatePicker value={docDate} onValueChange={setDocDate} /></FormField>
       </div>
@@ -1187,16 +1196,20 @@ function MarketReportForm({
     <form className="space-y-5" onSubmit={(event) => { event.preventDefault(); void submit() }}>
       <div className="grid grid-cols-1 gap-3 md:grid-cols-3 xl:grid-cols-5">
         <FormField label="市场" required>
-          <Select value={marketId} onChange={(event) => { setMarketId(event.target.value); setLines([]); setQuoteResult(null) }}>
-            <option value="">请选择市场</option>
-            {markets.map((location) => <option key={location.locationId} value={location.locationId}>{location.name}</option>)}
-          </Select>
+          <InventorySubjectSelect
+            options={markets.map((location) => ({ value: location.locationId, label: location.name }))}
+            value={marketId}
+            onChange={(nextMarketId) => { setMarketId(nextMarketId); setLines([]); setQuoteResult(null) }}
+            placeholder="请选择市场"
+          />
         </FormField>
         <FormField label="供应链库存主体" required>
-          <Select value={supplyChainLocationId} onChange={(event) => setSupplyChainLocationId(event.target.value)}>
-            <option value="">请选择总部</option>
-            {headquarters.map((location) => <option key={location.locationId} value={location.locationId}>{location.name}</option>)}
-          </Select>
+          <InventorySubjectSelect
+            options={headquarters.map((location) => ({ value: location.locationId, label: location.name }))}
+            value={supplyChainLocationId}
+            onChange={setSupplyChainLocationId}
+            placeholder="请选择总部"
+          />
         </FormField>
         <FormField label="汇总开始日期">
           <DatePicker value={startDate} onValueChange={setStartDate} />
@@ -1397,10 +1410,13 @@ function PurchaseOrderForm({
           </Select>
         </FormField>
         <FormField label="供应链库存主体" required>
-          <Select value={supplyChainLocationId} onChange={(event) => setSupplyChainLocationId(event.target.value)}>
-            <option value="">请选择总部</option>
-            {headquarters.map((location) => <option key={location.locationId} value={location.locationId}>{location.name}</option>)}
-          </Select>
+          <InventorySubjectSelect
+            options={headquarters.map((location) => ({ value: location.locationId, label: location.name }))}
+            value={supplyChainLocationId}
+            onChange={setSupplyChainLocationId}
+            placeholder="请选择总部"
+            autoSelect={!doc}
+          />
         </FormField>
         <FormField label="订单日期">
           <DatePicker value={docDate} onValueChange={setDocDate} />
@@ -1514,10 +1530,13 @@ function SupplyChainPurchaseOrderForm({
           </Select>
         </FormField>
         <FormField label="供应链库存主体" required>
-          <Select value={supplyChainLocationId} onChange={(event) => setSupplyChainLocationId(event.target.value)}>
-            <option value="">请选择总部</option>
-            {headquarters.map((location) => <option key={location.locationId} value={location.locationId}>{location.name}</option>)}
-          </Select>
+          <InventorySubjectSelect
+            options={headquarters.map((location) => ({ value: location.locationId, label: location.name }))}
+            value={supplyChainLocationId}
+            onChange={setSupplyChainLocationId}
+            placeholder="请选择总部"
+            autoSelect={!doc}
+          />
         </FormField>
         <FormField label="订单日期"><DatePicker value={docDate} onValueChange={setDocDate} /></FormField>
       </div>
@@ -1642,10 +1661,13 @@ function CompanyShipmentForm({
       <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
         <DocPicker label="采购订单" required docs={candidates} value={docId} onChange={(id) => void selectDocument(id)} />
         <FormField label="发货总部" required>
-          <Select value={sourceOrgNodeId} onChange={(event) => setSourceOrgNodeId(event.target.value)}>
-            <option value="">请选择总部</option>
-            {headquarters.filter((location) => location.orgNodeId).map((location) => <option key={location.orgNodeId!} value={location.orgNodeId!}>{location.name}</option>)}
-          </Select>
+          <InventorySubjectSelect
+            options={headquarters.filter((location) => location.orgNodeId).map((location) => ({ value: location.orgNodeId!, label: location.name }))}
+            value={sourceOrgNodeId}
+            onChange={setSourceOrgNodeId}
+            placeholder="请选择总部"
+            autoSelect={!doc}
+          />
         </FormField>
         <FormField label="发货日期"><DatePicker value={docDate} onValueChange={setDocDate} /></FormField>
         <FormField label="物流公司"><Input value={logisticsCompany} onChange={(event) => setLogisticsCompany(event.target.value)} /></FormField>
@@ -1889,10 +1911,14 @@ function SupplyChainPurchaseReceiptForm({
       <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
         <DocPicker label="供应链采购订单" required docs={candidates} value={docId} onChange={(id) => void selectDocument(id)} />
         <FormField label="供应链库存主体" required>
-          <Select value={supplyChainLocationId} onChange={(event) => setSupplyChainLocationId(event.target.value)} disabled={Boolean(doc)}>
-            <option value="">请选择总部</option>
-            {headquarters.map((location) => <option key={location.locationId} value={location.locationId}>{location.name}</option>)}
-          </Select>
+          <InventorySubjectSelect
+            options={headquarters.map((location) => ({ value: location.locationId, label: location.name }))}
+            value={supplyChainLocationId}
+            onChange={setSupplyChainLocationId}
+            placeholder="请选择总部"
+            autoSelect={!doc}
+            disabled={Boolean(doc)}
+          />
         </FormField>
         <FormField label="入库日期"><DatePicker value={docDate} onValueChange={setDocDate} /></FormField>
       </div>
@@ -2095,10 +2121,13 @@ function StoreAllocationForm({
       <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
         <DocPicker label="门店报货单" required docs={candidates} value={docId} onChange={(id) => void selectDocument(id)} />
         <FormField label="配货市场" required>
-          <Select value={sourceMarketId} onChange={(event) => setSourceMarketId(event.target.value)}>
-            <option value="">请选择市场</option>
-            {markets.map((location) => <option key={location.locationId} value={location.locationId}>{location.name}</option>)}
-          </Select>
+          <InventorySubjectSelect
+            options={markets.map((location) => ({ value: location.locationId, label: location.name }))}
+            value={sourceMarketId}
+            onChange={setSourceMarketId}
+            placeholder="请选择市场"
+            autoSelect={!doc}
+          />
         </FormField>
         <FormField label="配货日期"><DatePicker value={docDate} onValueChange={setDocDate} /></FormField>
       </div>
@@ -2217,23 +2246,37 @@ function ReturnForm({
     }
   }
 
+  // 注意跨 id 空间比较：parentLocationId 存的是 inventory_locations 的父级 location_id，
+  // 这里拿它比 org_node_id —— 只因为父级必然是市场 / 总部（两者 location_id = org_nodes.id）
+  // 才成立。门店的 location_id 是 store_id，永远不会出现在 targets 里。
   const targets = source?.locationType === '门店'
-    ? locations.filter((location) => location.orgNodeId === source.parentLocationId)
+    // isActive 与其它 16 处候选口径对齐：停用主体不该进候选，否则「候选唯一」会被它污染。
+    ? locations.filter((location) => location.orgNodeId === source.parentLocationId && location.isActive)
     : headquarters
   return (
     <form className="space-y-5" onSubmit={(event) => { event.preventDefault(); void submit() }}>
       <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
         <FormField label="退货主体" required>
-          <Select value={sourceOrgNodeId} onChange={(event) => selectSource(event.target.value)}>
-            <option value="">请选择{sourceType}</option>
-            {sourceLocations.filter((location) => location.orgNodeId).map((location) => <option key={location.orgNodeId!} value={location.orgNodeId!}>{location.locationType} · {location.name}</option>)}
-          </Select>
+          <InventorySubjectSelect
+            options={sourceLocations.filter((location) => location.orgNodeId).map((location) => ({ value: location.orgNodeId!, label: `${location.locationType} · ${location.name}` }))}
+            value={sourceOrgNodeId}
+            onChange={selectSource}
+            placeholder={`请选择${sourceType}`}
+          />
         </FormField>
         <FormField label="回库主体" required>
-          <Select value={targetOrgNodeId} onChange={(event) => setTargetOrgNodeId(event.target.value)}>
-            <option value="">请选择回库主体</option>
-            {targets.filter((location) => location.orgNodeId).map((location) => <option key={location.orgNodeId!} value={location.orgNodeId!}>{location.name}</option>)}
-          </Select>
+          {/*
+            值由「退货主体」联动派生（门店→父市场、市场→总部），不能自己补：未选来源时
+            targets 退化成 headquarters，自动选中会把唯一总部固定成只读——而门店退货
+            只能退回父市场，那就是个撒谎的只读值，还会盖掉 selectSource 刚写进去的市场。
+          */}
+          <InventorySubjectSelect
+            options={targets.filter((location) => location.orgNodeId).map((location) => ({ value: location.orgNodeId!, label: location.name }))}
+            value={targetOrgNodeId}
+            onChange={setTargetOrgNodeId}
+            placeholder="请选择回库主体"
+            autoSelect={false}
+          />
         </FormField>
         <FormField label="退货日期"><DatePicker value={docDate} onValueChange={setDocDate} /></FormField>
       </div>
@@ -2445,6 +2488,16 @@ function SupplyChainStaffPurchaseForm({
   const [lines, setLines] = useState<LotDraftLine[]>([{ skuId: '', lotId: '', quantity: '1', reason: '', remark: '' }])
   const [saving, setSaving] = useState(false)
 
+  // 卸载标志：主体候选唯一时员工列表会在挂载那一刻就开始拉（#189），此前只有用户手选
+  // 才会发起。请求序号挡得住结果错配，但挡不住「打开就切走」时给已卸载表单弹错误 toast。
+  // ⚠️ 必须是独立的 ref，不能拿请求序号当卸载标志：StrictMode（dev 默认开）会 mount →
+  // cleanup → 再 mount，污染序号会让首发请求的结果被永久丢弃，loading 再也不复位。
+  const mountedRef = useRef(true)
+  useEffect(() => {
+    mountedRef.current = true
+    return () => { mountedRef.current = false }
+  }, [])
+
   function updateLine(index: number, patch: Partial<LotDraftLine>) {
     setLines((previous) => previous.map((line, lineIndex) => lineIndex === index ? { ...line, ...patch } : line))
   }
@@ -2464,7 +2517,7 @@ function SupplyChainStaffPurchaseForm({
       const options = await listSupplyChainEmployeeOptions(nextLocationId)
       if (employeeRequestRef.current === requestId) setEmployeeOptions(options)
     } catch (error) {
-      if (employeeRequestRef.current === requestId) {
+      if (mountedRef.current && employeeRequestRef.current === requestId) {
         toast.error(actionErrorMessage(error, '加载供应链员工失败'))
       }
     } finally {
@@ -2505,7 +2558,14 @@ function SupplyChainStaffPurchaseForm({
   return (
     <form className="space-y-5" onSubmit={(event) => { event.preventDefault(); void submit() }}>
       <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-        <FormField label="供应链总部" required><Select value={locationId} onChange={(event) => void selectLocation(event.target.value)}><option value="">请选择供应链总部</option>{headquarters.map((location) => <option key={location.locationId} value={location.locationId}>{location.name}</option>)}</Select></FormField>
+        <FormField label="供应链总部" required>
+          <InventorySubjectSelect
+            options={headquarters.map((location) => ({ value: location.locationId, label: location.name }))}
+            value={locationId}
+            onChange={(nextLocationId) => void selectLocation(nextLocationId)}
+            placeholder="请选择供应链总部"
+          />
+        </FormField>
         <FormField label="购买员工" required>
           <Select value={employeeId} disabled={!locationId || loadingEmployees} onChange={(event) => setEmployeeId(event.target.value)}>
             <option value="">{loadingEmployees ? '正在加载员工' : locationId ? '请选择员工' : '请先选择供应链总部'}</option>
@@ -2544,6 +2604,16 @@ function MarketStaffPurchaseForm({
   const [lines, setLines] = useState<LotDraftLine[]>([{ skuId: '', lotId: '', quantity: '1', reason: '', remark: '' }])
   const [saving, setSaving] = useState(false)
 
+  // 卸载标志：主体候选唯一时员工列表会在挂载那一刻就开始拉（#189），此前只有用户手选
+  // 才会发起。请求序号挡得住结果错配，但挡不住「打开就切走」时给已卸载表单弹错误 toast。
+  // ⚠️ 必须是独立的 ref，不能拿请求序号当卸载标志：StrictMode（dev 默认开）会 mount →
+  // cleanup → 再 mount，污染序号会让首发请求的结果被永久丢弃，loading 再也不复位。
+  const mountedRef = useRef(true)
+  useEffect(() => {
+    mountedRef.current = true
+    return () => { mountedRef.current = false }
+  }, [])
+
   function updateLine(index: number, patch: Partial<LotDraftLine>) {
     setLines((previous) => previous.map((line, lineIndex) => lineIndex === index ? { ...line, ...patch } : line))
   }
@@ -2563,7 +2633,7 @@ function MarketStaffPurchaseForm({
       const options = await listMarketEmployeeOptions(nextMarketId)
       if (employeeRequestRef.current === requestId) setEmployeeOptions(options)
     } catch (error) {
-      if (employeeRequestRef.current === requestId) {
+      if (mountedRef.current && employeeRequestRef.current === requestId) {
         toast.error(actionErrorMessage(error, '加载市场员工失败'))
       }
     } finally {
@@ -2604,7 +2674,14 @@ function MarketStaffPurchaseForm({
   return (
     <form className="space-y-5" onSubmit={(event) => { event.preventDefault(); void submit() }}>
       <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-        <FormField label="市场" required><Select value={marketId} onChange={(event) => void selectMarket(event.target.value)}><option value="">请选择市场</option>{markets.map((location) => <option key={location.locationId} value={location.locationId}>{location.name}</option>)}</Select></FormField>
+        <FormField label="市场" required>
+          <InventorySubjectSelect
+            options={markets.map((location) => ({ value: location.locationId, label: location.name }))}
+            value={marketId}
+            onChange={(nextMarketId) => void selectMarket(nextMarketId)}
+            placeholder="请选择市场"
+          />
+        </FormField>
         <FormField label="购买员工" required>
           <Select value={employeeId} disabled={!marketId || loadingEmployees} onChange={(event) => setEmployeeId(event.target.value)}>
             <option value="">{loadingEmployees ? '正在加载员工' : marketId ? '请选择员工' : '请先选择市场'}</option>
@@ -2715,7 +2792,14 @@ function SelfPurchaseForm({
   return (
     <form className="space-y-5" onSubmit={(event) => { event.preventDefault(); void submit() }}>
       <div className="grid grid-cols-1 gap-3 md:grid-cols-3 xl:grid-cols-4">
-        <FormField label="入库市场" required><Select value={marketId} onChange={(event) => { setMarketId(event.target.value); setLines((previous) => previous.map((line) => ({ ...line, skuId: '' }))) }}><option value="">请选择市场</option>{markets.map((location) => <option key={location.locationId} value={location.locationId}>{location.name}</option>)}</Select></FormField>
+        <FormField label="入库市场" required>
+          <InventorySubjectSelect
+            options={markets.map((location) => ({ value: location.locationId, label: location.name }))}
+            value={marketId}
+            onChange={(nextMarketId) => { setMarketId(nextMarketId); setLines((previous) => previous.map((line) => ({ ...line, skuId: '' }))) }}
+            placeholder="请选择市场"
+          />
+        </FormField>
         <FormField label="供应商" required><Select value={supplierId} onChange={(event) => setSupplierId(event.target.value)}><option value="">请选择供应商</option>{suppliers.map((supplier) => <option key={supplier.supplierId} value={supplier.supplierId}>{supplier.name}</option>)}</Select></FormField>
         <FormField label="入库日期"><DatePicker value={docDate} onValueChange={setDocDate} /></FormField>
         <FormField label="收据附件地址" className="md:col-span-2"><Input value={receiptAttachmentUrl} onChange={(event) => setReceiptAttachmentUrl(event.target.value)} placeholder="填写附件地址" /></FormField>
@@ -2782,7 +2866,7 @@ function ExternalOutboundForm({
 
   return (
     <form className="space-y-5" onSubmit={(event) => { event.preventDefault(); void submit() }}>
-      <div className="grid grid-cols-1 gap-3 md:grid-cols-3"><FormField label="供应链库存主体" required><Select value={locationId} onChange={(event) => { setLocationId(event.target.value); setLines((previous) => previous.map((line) => ({ ...line, lotId: '' }))) }}><option value="">请选择供应链库存主体</option>{headquarters.map((location) => <option key={location.locationId} value={location.locationId}>{location.name}</option>)}</Select></FormField><FormField label="外部对象" required><Input value={externalPartyName} onChange={(event) => setExternalPartyName(event.target.value)} /></FormField><FormField label="出库日期"><DatePicker value={docDate} onValueChange={setDocDate} /></FormField></div>
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-3"><FormField label="供应链库存主体" required><InventorySubjectSelect options={headquarters.map((location) => ({ value: location.locationId, label: location.name }))} value={locationId} onChange={(nextLocationId) => { setLocationId(nextLocationId); setLines((previous) => previous.map((line) => ({ ...line, lotId: '' }))) }} placeholder="请选择供应链库存主体" /></FormField><FormField label="外部对象" required><Input value={externalPartyName} onChange={(event) => setExternalPartyName(event.target.value)} /></FormField><FormField label="出库日期"><DatePicker value={docDate} onValueChange={setDocDate} /></FormField></div>
       <div className="space-y-3"><div className="flex items-center justify-between gap-3"><h3 className="text-sm font-medium">出库批次</h3><Button type="button" variant="outline" size="sm" onClick={() => setLines((previous) => [...previous, { skuId: '', lotId: '', quantity: '1', reason: '', remark: '' }])}>添加明细</Button></div>{lines.map((line, index) => <div key={index} className="grid grid-cols-1 gap-2 rounded-[var(--radius)] border border-[var(--border)] p-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_8rem_minmax(0,1fr)_2.5rem]"><FormField label="商品" required><SkuPicker value={line.skuId} skus={skuOptions} onChange={(skuId) => updateLine(index, { skuId, lotId: '' })} /></FormField><FormField label="供应链批次" required><LotPicker locationId={locationId} skuId={line.skuId} value={line.lotId} onChange={(lotId) => updateLine(index, { lotId })} /></FormField><FormField label="数量" required><Input type="number" min="0.01" step="0.01" max="9999999999.99" value={line.quantity} onChange={(event) => updateLine(index, { quantity: event.target.value })} /></FormField><FormField label="明细备注"><Input value={line.remark} onChange={(event) => updateLine(index, { remark: event.target.value })} /></FormField><div className="flex items-end justify-end"><SmallIconButton label="删除明细" onClick={() => setLines((previous) => previous.length > 1 ? previous.filter((_, lineIndex) => lineIndex !== index) : previous)} disabled={lines.length === 1} /></div></div>)}</div>
       <RemarkField value={remark} onChange={setRemark} />
       <div className="flex justify-end"><Button type="submit" loading={saving}>创建非凤御市场出库单</Button></div>
@@ -2862,7 +2946,7 @@ function ConversionForm({
   return (
     <form className="space-y-5" onSubmit={(event) => { event.preventDefault(); void submit() }}>
       <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-        <FormField label="转换库存主体" required><Select value={locationId} onChange={(event) => { setLocationId(event.target.value); setLines((previous) => previous.map((line) => ({ ...line, sourceLotId: '' }))) }}><option value="">请选择{locationType}</option>{availableLocations.map((location) => <option key={location.locationId} value={location.locationId}>{location.locationType} · {location.name}</option>)}</Select></FormField>
+        <FormField label="转换库存主体" required><InventorySubjectSelect options={availableLocations.map((location) => ({ value: location.locationId, label: `${location.locationType} · ${location.name}` }))} value={locationId} onChange={(nextLocationId) => { setLocationId(nextLocationId); setLines((previous) => previous.map((line) => ({ ...line, sourceLotId: '' }))) }} placeholder={`请选择${locationType}`} /></FormField>
         <FormField label="转换日期"><DatePicker value={docDate} onValueChange={setDocDate} /></FormField>
       </div>
       <div className="space-y-3">
