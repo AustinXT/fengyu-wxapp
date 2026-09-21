@@ -307,6 +307,31 @@ describe('issue #230：存量购物车快照的封面净化', () => {
       }
     })
 
+    test('反斜杠 × userinfo 组合被拒 —— 拆开检查必漏的那一类', () => {
+      // codex 第四轮命中：`lastIndexOf('@')` 会取到可信域名，`\` 检查被整个跳过。
+      // 真实 host 是 evil.com（WHATWG 把 \ 当 /，@可信域名 已属于 path）。
+      // 这是连续第三个打穿「拆开逐段检查」思路的构造，故改为 authority 整体白名单。
+      for (const u of [
+        'https://evil.com\\@x.tcb.qcloud.la/d/a.jpg?imageMogr2/thumbnail/400x400',
+        'https://evil.com\\@a@x.tcb.qcloud.la/d/a.jpg?imageMogr2/thumbnail/400x400',
+        'https://evil.com\\\\@x.tcb.qcloud.la/d/a.jpg?imageMogr2/thumbnail/400x400',
+      ]) {
+        seedStorage([{ skuId: 's1', price: 100, quantity: 1, coverImage: u }])
+        expect(getCart().items[0].coverImage).toBe('')
+      }
+    })
+
+    test('userinfo 含分隔符的伪装被拒', () => {
+      for (const u of [
+        'https://evil.com/@x.tcb.qcloud.la/d/a.jpg?imageMogr2/thumbnail/400x400',
+        'https://evil.com?@x.tcb.qcloud.la/d/a.jpg?imageMogr2/thumbnail/400x400',
+        'https://evil.com#@x.tcb.qcloud.la/d/a.jpg?imageMogr2/thumbnail/400x400',
+      ]) {
+        seedStorage([{ skuId: 's1', price: 100, quantity: 1, coverImage: u }])
+        expect(getCart().items[0].coverImage).toBe('')
+      }
+    })
+
     test('userinfo 里带可信域名的伪装被拒，但 user@可信域名 放行（与服务端一致）', () => {
       seedStorage([
         { skuId: 's1', price: 100, quantity: 1,
@@ -347,6 +372,9 @@ describe('issue #230：存量购物车快照的封面净化', () => {
  * - 前端比服务端松 → fail-open，未缩略的外域原图被放行（就是 #213 的崩溃）
  *
  * ⚠️ 这组用例**直接 require 云函数模块**跑真实构造器，不是手写 fixture。
+ * 但它仍是**有限样本**守护，覆盖的是「已知可达形态」而非全部输入空间 ——
+ * 例如 `foo~bar.tcb.qcloud.la` 服务端接受而前端拒（`~` 不在 host 字符集里），
+ * 该形态不会是 CloudBase 正常签发的桶域名，故不追平（codex 第四轮 P3-2）。
  * 第一版曾用手写 `SHAPES` 列举形态，被 codex 指出「没有绑定真实实现，
  * 『任一端漂移立即转红』的注释不成立」——并当场给出漏网反例（userinfo 形态）。
  * 项目现有的 cross-end 守护（`cross-end-error-codes-snapshot.test.js`）同样是 require 另一端模块，做法一致。
@@ -376,19 +404,24 @@ describe('issue #230：净化器与云函数构造器的闭环守护', () => {
     ['非 COS 域名', 'https://img.example.com/a.jpg'],
     ['userinfo 伪装可信域名', `https://${H}@evil.com/d/a.jpg`],
     ['反斜杠伪装（WHATWG 把 \\ 当 /）', `https://evil.com\\${H}/product-covers/a.jpg`],
+    ['反斜杠 × userinfo 组合', `https://evil.com\\@${H}/product-covers/a.jpg`],
+    ['反斜杠 × 双 @', `https://evil.com\\@a@${H}/product-covers/a.jpg`],
     ['对象键只有一段', `https://${H}/a.png`],
     ['非图片扩展名', `https://${H}/d/a.svg`],
     ['带 COS 签名', `https://${H}/d/a.png?q-sign-algorithm=sha1`],
     ['非 http(s)', `ftp://${H}/d/a.jpg`],
   ] as const
 
-  const RULES: Array<[string, (u: string) => string | null]> = [
-    ['box SMALL', (u) => img.safeThumbUrl(u, img.PRODUCT_THUMB_BOX_SMALL)],
-    ['box LARGE', (u) => img.safeThumbUrl(u, img.PRODUCT_THUMB_BOX_LARGE)],
-    ['area DETAIL', (u) => img.safeThumbUrlByArea(u, img.PRODUCT_DETAIL_IMAGE_MAX_PIXELS)],
+  const RULES: Array<[string, (u: string) => string | null, string]> = [
+    ['box SMALL', (u) => img.safeThumbUrl(u, img.PRODUCT_THUMB_BOX_SMALL),
+      `imageMogr2/thumbnail/${img.PRODUCT_THUMB_BOX_SMALL}x${img.PRODUCT_THUMB_BOX_SMALL}`],
+    ['box LARGE', (u) => img.safeThumbUrl(u, img.PRODUCT_THUMB_BOX_LARGE),
+      `imageMogr2/thumbnail/${img.PRODUCT_THUMB_BOX_LARGE}x${img.PRODUCT_THUMB_BOX_LARGE}`],
+    ['area DETAIL', (u) => img.safeThumbUrlByArea(u, img.PRODUCT_DETAIL_IMAGE_MAX_PIXELS),
+      `imageMogr2/thumbnail/${img.PRODUCT_DETAIL_IMAGE_MAX_PIXELS}@`],
   ]
 
-  for (const [ruleName, build] of RULES) {
+  for (const [ruleName, build, ruleStr] of RULES) {
     for (const [shapeName, input] of SERVER_ACCEPTS) {
       test(`${ruleName} · 服务端下发「${shapeName}」→ 净化器必须接受`, () => {
         const out = build(input)
@@ -401,9 +434,11 @@ describe('issue #230：净化器与云函数构造器的闭环守护', () => {
     for (const [shapeName, input] of SERVER_REJECTS) {
       test(`${ruleName} · 服务端拒绝「${shapeName}」→ 净化器也必须拒绝`, () => {
         expect(build(input), `构造器意外接受了 ${input}`).toBeNull()
-        // 构造器拒绝时不会有输出；直接把**原始 URL 拼上合法规则**喂给净化器，
-        // 模拟「脏数据混进 storage」——净化器同样不能放行
-        expect(sanitizeCoverImage(`${input}?imageMogr2/thumbnail/400x400`)).toBe('')
+        // 构造器拒绝时不会有输出；直接把**原始 URL 拼上该档位的合法规则**喂给净化器，
+        // 模拟「脏数据混进 storage」——净化器同样不能放行。
+        // ⚠️ 必须用 ruleStr 而不是写死 400x400：写死会让三个档位退化成同一个断言，
+        //    面积分支若单独漂移就不会转红（codex 第四轮 P3-1）。
+        expect(sanitizeCoverImage(`${input}?${ruleStr}`)).toBe('')
       })
     }
   }

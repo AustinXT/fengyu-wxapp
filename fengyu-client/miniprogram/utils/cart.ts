@@ -55,15 +55,33 @@ const SANITIZE_MAX_AREA = 4000000;
 const URL_PARTS_PATTERN = /^(https?):\/\/([^/?#]+)(\/[^?#]*)\?(.*)$/i;
 
 /**
- * 域名白名单。**必须是字符集白名单，不能只做后缀匹配** ——
- * 后缀匹配会被 `https://evil.com\x.tcb.qcloud.la/...` 绕过：
- * `\` 不在 `[^/?#]` 的排除集里，于是 authority 整串是 `evil.com\x.tcb.qcloud.la`、
- * 后缀 `.tcb.qcloud.la` 命中放行；但 WHATWG URL 对特殊 scheme **把 `\` 当 `/`**，
- * 加载端解析出的真实 host 是 `evil.com` —— 从攻击者服务器取图、缩略规则不执行。
- * 同族还有 tab / 空格 / `%23` 变体，一个字符集全灭。
- * （双谱系评审第三轮独立命中；讽刺的是被这版替换掉的旧正则反而拒绝它。）
+ * authority（`[userinfo@]host[:port]`）的**整体白名单**。
+ *
+ * ⚠️ 这里必须一次性白名单整个 authority，**不能先拆再逐段检查** ——
+ * 前三轮评审连续用三个构造打穿了「拆开检查」的思路，每次我补一个字符、
+ * 下一轮就出现新的：
+ *
+ * | 构造 | 为什么拆开检查会漏 |
+ * |---|---|
+ * | `evil.com\x.tcb.qcloud.la` | `\` 不在 `[^/?#]` 排除集，后缀匹配命中 |
+ * | `evil.com\@x.tcb.qcloud.la` | `lastIndexOf('@')` 取到可信域名，`\` 检查被跳过 |
+ * | tab / 空格 / `%23` 变体 | 同族，逐个排除排不完 |
+ *
+ * 根因：**我在用字符串解析模拟 URL 解析，而两者语义不同**。
+ * WHATWG URL 对特殊 scheme 把 `\` 当 `/`，所以上面这些的真实 host 都是 `evil.com`
+ * —— 从攻击者服务器取未缩略原图，#213 完整回归。
+ * 小程序没有 `URL` 构造函数可用，只能靠白名单把「形态不在已知集合内」的一律拒掉。
+ *
+ * 各段说明：
+ * - `(?:[^@/\\?#]*@)?` —— 可选 userinfo。排除 `@` 保证**最多一个** `@`；
+ *   排除 `/` `\` `?` `#` 保证它不会吃掉真正的分隔符。
+ *   于是 `x.tcb.qcloud.la@evil.com`（伪装）会因 host 段不匹配而拒，
+ *   `user@x.tcb.qcloud.la`（云函数会下发）正常放行。
+ * - host —— 严格 `[\w-]` 分段，`\` / tab / 空格 / 全角一律不匹配
+ * - `\.?` 尾点、`(?::\d+)?` 端口 —— 云函数会原样下发，必须接受
  */
-const HOST_PATTERN = /^[\w-]+(?:\.[\w-]+)*\.tcb\.qcloud\.la$/i;
+const AUTHORITY_PATTERN =
+  /^(?:[^@/\\?#]*@)?[\w-]+(?:\.[\w-]+)*\.tcb\.qcloud\.la\.?(?::\d+)?$/i;
 
 /** 对象键形态：两段、纯 ASCII、图片扩展名。与云函数 `safeThumbUrl` 的白名单同形 */
 const OBJECT_KEY_PATTERN = /^\/[\w-]+\/[\w.-]+\.(?:png|jpe?g|webp|gif)$/i;
@@ -117,21 +135,9 @@ export function sanitizeCoverImage(url: unknown): string {
   if (!parts) return '';
   const [, , authority, path, query] = parts;
 
-  // authority 形如 `[userinfo@]host[:port]`。取**最后一个** `@` 之后的部分
-  // （与 WHATWG URL 一致：userinfo 内部还可以再出现 `@`）。
-  // 这样两类构造自然分流：
-  // - `https://x.tcb.qcloud.la@evil.com/...` 伪装 → 取到 `evil.com` → 拒
-  // - `https://user@x.tcb.qcloud.la/...`     → 取到 `x.tcb.qcloud.la` → 放行
-  //
-  // 后者不能一概拒：云函数用 `new URL().hostname` 判据，对它**会照常下发**
-  // （实测输出带 userinfo 原样保留）。前端一刀切拒绝就是又一处两端漂移，
-  // 后果是新加购条目静默变占位图。
-  const hostPort = authority.slice(authority.lastIndexOf('@') + 1);
-
-  // 域名大小写不敏感（DNS 语义），去掉 FQDN 尾点、剥掉端口——
-  // 云函数只校验 hostname，尾点/端口的 URL 它会照常下发。
-  const host = hostPort.split(':')[0].replace(/\.$/, '');
-  if (!HOST_PATTERN.test(host)) return '';
+  // authority 整体过白名单（大小写不敏感是 DNS 语义）。
+  // 不拆开逐段检查——见 AUTHORITY_PATTERN 注释里那张「拆开检查会漏什么」的表。
+  if (!AUTHORITY_PATTERN.test(authority)) return '';
 
   if (!OBJECT_KEY_PATTERN.test(path)) return '';
 
