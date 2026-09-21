@@ -480,6 +480,26 @@ export function isOrgNodeInScope(session: AuthSession, orgNodeId: string): boole
 }
 
 /**
+ * 某一行员工记录对当前账号是否可见 —— `employeeScopeCondition` 的**内存版**。
+ *
+ * 两者必须永远给出同一个答案：`employeeScopeCondition` 拼进 UPDATE 的 WHERE、
+ * 这个在进 SQL 之前拦截。口径一旦分叉就会出现「这里放行 → UPDATE 命中 0 行 →
+ * 用户看到『数据已被其他人修改』」的静默错位（GLM 谱系指出原先是手工复刻、无同源保障）。
+ *
+ * 放在这里与 `employeeScopeCondition` 紧邻，改一个必须看另一个；
+ * `permissions.test.ts` 有一条交叉验证用例把两者对同一 session 的判定钉在一起。
+ */
+export function isEmployeeRowVisible(
+  session: AuthSession,
+  storeId: string | null,
+  orgNodeId: string | null,
+): boolean {
+  if (isAdminScope(session)) return true
+  return (!!storeId && isInScope(session, storeId))
+    || (!!orgNodeId && isOrgNodeInScope(session, orgNodeId))
+}
+
+/**
  * Check if user has a specific permission action
  */
 export function hasPermission(session: AuthSession, action: string): boolean {

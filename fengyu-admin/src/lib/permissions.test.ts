@@ -24,7 +24,7 @@ vi.mock('@db/org', () => ({
   stores: { storeId: 'store_id', orgNodeId: 'org_node_id' },
 }))
 
-import { computeActions, requirePermission, requireAnyPermission, buildScopeWhere, DEFAULT_PERMISSION_MATRIX, ALL_ACTIONS, PermissionError, expandRoleScope, expandScopeStoreIds, expandScopeOrgNodeIds, isAdminScope, accessiblePermissionScopeIds, scopeCondition, employeeScopeCondition, isInScope, isOrgNodeInScope, hasPermission, getPermissionMatrix, invalidatePermissionMatrixCache, canAccessAdmin, isDepositOrderApprover } from './permissions'
+import { computeActions, requirePermission, requireAnyPermission, buildScopeWhere, DEFAULT_PERMISSION_MATRIX, ALL_ACTIONS, PermissionError, expandRoleScope, expandScopeStoreIds, expandScopeOrgNodeIds, isAdminScope, accessiblePermissionScopeIds, scopeCondition, employeeScopeCondition, isInScope, isOrgNodeInScope, isEmployeeRowVisible, hasPermission, getPermissionMatrix, invalidatePermissionMatrixCache, canAccessAdmin, isDepositOrderApprover } from './permissions'
 import { scopeSessionToActions } from './action-scope'
 import type { AuthSession, RoleType } from './types'
 import { db } from '@/db'
@@ -795,6 +795,59 @@ describe('isOrgNodeInScope — #228 员工调组织节点的判据', () => {
     // ⑤ 两个集合都缺失 → fail-closed
     const noMeta = manager({})
     expect(isOrgNodeInScope(noMeta, 'D1')).toBe(false)
+  })
+})
+
+/**
+ * `isEmployeeRowVisible` 与 `employeeScopeCondition` 必须给出同一个答案 ——
+ * 前者在进 SQL 之前拦截、后者拼进 UPDATE 的 WHERE。口径分叉会造出
+ * 「内存里放行 → UPDATE 命中 0 行 → 用户看到『数据已被其他人修改』」的静默错位。
+ *
+ * 这条把两者对同一批行的判定钉在一起（GLM 谱系指出原先是手工复刻、无同源保障）。
+ */
+describe('isEmployeeRowVisible 与 employeeScopeCondition 同源', () => {
+  const STORE_COL = { name: 'store_id' } as any
+  const ORG_COL = { name: 'org_node_id' } as any
+
+  it('对同一批行，内存判定与 SQL 条件承载的集合一致', () => {
+    const session = mockSession({
+      roles: [{ role: 'manager', scopeId: 'm1', scopeType: '市场' }],
+      permissions: { actions: [], scopeStoreIds: ['S1'], scopeOrgNodeIds: ['D1'] },
+    })
+
+    // 命中 store 维 / 命中 org 维 / 两维都不命中 / 双空
+    expect(isEmployeeRowVisible(session, 'S1', null)).toBe(true)
+    expect(isEmployeeRowVisible(session, null, 'D1')).toBe(true)
+    expect(isEmployeeRowVisible(session, 'S9', 'D9')).toBe(false)
+    expect(isEmployeeRowVisible(session, null, null)).toBe(false)
+    // 任一维命中即可见（OR 语义，与 employeeScopeCondition 一致）
+    expect(isEmployeeRowVisible(session, 'S9', 'D1')).toBe(true)
+
+    // SQL 侧承载的正是同一组 id
+    const cond = JSON.stringify(employeeScopeCondition(session, STORE_COL, ORG_COL))
+    expect(cond).toContain(JSON.stringify(['S1']))
+    expect(cond).toContain(JSON.stringify(['D1']))
+  })
+
+  it('admin 恒可见，且 SQL 侧不过滤（undefined）', () => {
+    const admin = mockSession({
+      roles: [{ role: 'admin', scopeId: 'hq', scopeType: '总部' }],
+      permissions: { actions: [], scopeStoreIds: [], scopeOrgNodeIds: [] },
+    })
+    expect(isEmployeeRowVisible(admin, null, null)).toBe(true)
+    expect(isEmployeeRowVisible(admin, 'ANY', 'ANY')).toBe(true)
+    expect(employeeScopeCondition(admin, STORE_COL, ORG_COL)).toBeUndefined()
+  })
+
+  it('空集会话：内存恒 false，SQL 侧给 FALSE 条件（而非不过滤）', () => {
+    const empty = mockSession({
+      roles: [{ role: 'manager', scopeId: 's1', scopeType: '门店' }],
+      permissions: { actions: [], scopeStoreIds: [], scopeOrgNodeIds: [] },
+    })
+    expect(isEmployeeRowVisible(empty, 'S1', 'D1')).toBe(false)
+    const cond = employeeScopeCondition(empty, STORE_COL, ORG_COL)
+    expect(cond).toBeDefined()
+    expect(JSON.stringify(cond)).toContain('false')
   })
 })
 

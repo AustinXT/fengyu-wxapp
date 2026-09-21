@@ -10,7 +10,7 @@ import type { SQL } from 'drizzle-orm'
 import { alias } from 'drizzle-orm/pg-core'
 import { revalidatePath } from 'next/cache'
 import type { AllocationEmployeeCandidate, Employee } from '@/lib/types'
-import { scopeCondition, isInScope, isOrgNodeInScope, isAdminScope, requireAdmin, employeeScopeCondition } from '@/lib/permissions'
+import { scopeCondition, isInScope, isOrgNodeInScope, isAdminScope, isEmployeeRowVisible, requireAdmin, employeeScopeCondition } from '@/lib/permissions'
 import { withPermission } from '@/lib/with-permission'
 import { logOperation, logUpdate } from '@/lib/operation-log'
 import { ApiError } from '@/lib/api-error'
@@ -787,13 +787,11 @@ export const updateEmployee = withPermission(
    * 「无权将员工调至该门店」，而且它多跑了一次 `db.update`（调用次数/耗时差异）。
    * 现在两者逐字同一句话、且都零写入。
    *
-   * 可见性判据必须与 `employeeScopeCondition` 同源（OR 语义），否则会出现
-   * 「这里放行但 UPDATE 命中 0 行」的静默错位。
+   * 可见性判据用 `isEmployeeRowVisible` —— 它与 `employeeScopeCondition` 在
+   * permissions.ts 里紧邻定义、由一条交叉验证用例钉住同源。原先是在这里手工复刻 OR 语义，
+   * 无任何机制保证两边不漂移（GLM 谱系指出）。
    */
-  const oldRowVisible = isAdminScope(session)
-    || (!!oldStoreId && isInScope(session, oldStoreId))
-    || (!!oldOrgNodeId && isOrgNodeInScope(session, oldOrgNodeId))
-  if (!currentEmployee || !oldRowVisible) {
+  if (!currentEmployee || !isEmployeeRowVisible(session, oldStoreId, oldOrgNodeId)) {
     return { success: false, message: '员工不存在或无权修改' }
   }
 

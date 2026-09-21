@@ -61,6 +61,7 @@ vi.mock('@/lib/permissions', () => ({
   employeeScopeCondition: vi.fn(() => undefined),
   isInScope: vi.fn(() => true),
   isOrgNodeInScope: vi.fn(() => true),
+  isEmployeeRowVisible: vi.fn(() => true),
   // 默认 false = 非 admin：本文件演的全是「受 scope 限制的角色」。
   // admin 短路语义在此测不到（判据被整体 mock），见 employees.scope-integration.test.ts。
   isAdminScope: vi.fn(() => false),
@@ -110,7 +111,7 @@ vi.mock('@/actions/skill-tags', () => ({
 import { createEmployee, updateEmployee, getAllocationEmployeeCandidates, getServiceStaffCandidates, getEmployees, getEmployeesPaginated, getOrgLevel2ForFilter, exportEmployees, searchEmployees } from './employees'
 import { db } from '@/db'
 import { getSession } from '@/lib/auth'
-import { isInScope, isOrgNodeInScope, isAdminScope } from '@/lib/permissions'
+import { isInScope, isOrgNodeInScope, isAdminScope, isEmployeeRowVisible } from '@/lib/permissions'
 import { logOperation, logUpdate } from '@/lib/operation-log'
 import { eq, ilike, inArray, isNull, sql, gt } from 'drizzle-orm'
 import { countActiveAdmins, isAdminEmployee } from '@/lib/admin-guard'
@@ -208,6 +209,7 @@ describe('createEmployee — 服务端输入校验', () => {
     ;(isAdminScope as any).mockReturnValue(true)
     ;(isInScope as any).mockReturnValue(true)
     ;(isOrgNodeInScope as any).mockReturnValue(true)
+    ;(isEmployeeRowVisible as any).mockReturnValue(true)
   })
 
   it('姓名为空 → 拒绝', async () => {
@@ -361,6 +363,7 @@ describe('updateEmployee — 服务端输入校验 + 错误处理', () => {
     ;(isAdminScope as any).mockReturnValue(true)
     ;(isInScope as any).mockReturnValue(true)
     ;(isOrgNodeInScope as any).mockReturnValue(true)
+    ;(isEmployeeRowVisible as any).mockReturnValue(true)
   })
 
   it('手机号格式错误 → 拒绝', async () => {
@@ -587,6 +590,11 @@ function askedIds(fn: unknown): string[] {
 function applyScopeFixture() {
   ;(isInScope as any).mockImplementation((_s: unknown, id: string) => IN_SCOPE_STORES.has(id))
   ;(isOrgNodeInScope as any).mockImplementation((_s: unknown, id: string) => IN_SCOPE_NODES.has(id))
+  // 与真实实现同构：admin 短路 + store/org 的 OR
+  ;(isEmployeeRowVisible as any).mockImplementation(
+    (_s: unknown, storeId: string | null, orgNodeId: string | null) =>
+      (!!storeId && IN_SCOPE_STORES.has(storeId)) || (!!orgNodeId && IN_SCOPE_NODES.has(orgNodeId)),
+  )
 }
 
 describe('updateEmployee — #228 归属变更必须落在 scope 内', () => {
@@ -1235,6 +1243,7 @@ describe('updateEmployee — §AFF-03 门店变更 scope 同步', () => {
     ;(isAdminScope as any).mockReturnValue(true)
     ;(isInScope as any).mockReturnValue(true)
     ;(isOrgNodeInScope as any).mockReturnValue(true)
+    ;(isEmployeeRowVisible as any).mockReturnValue(true)
   })
 
   /**
