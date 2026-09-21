@@ -9,7 +9,7 @@ import { alias } from 'drizzle-orm/pg-core'
 import { eq, and, asc, sql, inArray, isNotNull, isNull, ilike } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import crypto from 'crypto'
-import type { ProductCategory, Product, ProductSku, ProjectSeries, MallCategory, MallBundleGroup } from '@/lib/types'
+import type { ProductCategory, Product, ProductSku, ProjectSeries, MallCategory, MallBundleGroup, SalesCategory } from '@/lib/types'
 import { withPermission } from '@/lib/with-permission'
 import { expandVisibleMarketIds, requireAdmin } from '@/lib/permissions'
 import { logOperation, logUpdate } from '@/lib/operation-log'
@@ -1937,7 +1937,7 @@ export interface OrderPickerSku {
 export interface OrderPickerCategory {
   categoryId: string
   categoryName: string
-  salesCategory: '自销自耗' | '他销自耗' | '他销他耗' | '生态合作' | null
+  salesCategory: SalesCategory | null
   sortOrder: number
   skus: OrderPickerSku[]
 }

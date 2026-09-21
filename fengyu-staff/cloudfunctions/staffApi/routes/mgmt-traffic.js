@@ -394,14 +394,16 @@ async function queryMemberOps(scopeType, scopeId, period) {
   const rows = await pg.query(
     `WITH member_spend AS (
        SELECT o.client_user_id,
-              SUM(o.received::numeric - COALESCE(o.refunded_amount, 0)::numeric) AS spend
-         FROM sale_orders o
+              SUM(spe.amount::numeric) AS spend
+         FROM sale_order_performance_events spe
+         JOIN sale_orders o ON o.sale_order_id = spe.sale_order_id
          JOIN client_wechat_users c ON c.user_id = o.client_user_id
         WHERE ${sc.sql}
-          AND o.sale_order_type IN ('销售单', '转换单')
-          AND o.status = '已支付'
-          AND o.legacy_source IS DISTINCT FROM 'workfine'
-          AND o.paid_at::date BETWEEN ${startDateExpr(period)} AND ${endDateExpr(period)}
+          AND spe.sale_order_type IN ('销售单', '转换单')
+          AND spe.status = '已支付'
+          AND spe.change_type IN ('首次支付', '回款', '退款')
+          AND spe.legacy_source IS DISTINCT FROM 'workfine'
+          AND spe.performance_date BETWEEN ${startDateExpr(period)} AND ${endDateExpr(period)}
           AND c.customer_type = '会员客'
         GROUP BY o.client_user_id
      )
@@ -460,16 +462,18 @@ async function queryNewMemberCount(scopeType, scopeId, period) {
 async function queryNewMemberSpend(scopeType, scopeId, period) {
   const sc = buildSaleScope(scopeType, scopeId, 'o', 1)
   const rows = await pg.query(
-    `SELECT COALESCE(SUM(o.received::numeric - COALESCE(o.refunded_amount, 0)::numeric), 0) AS v
-       FROM sale_orders o
+    `SELECT COALESCE(SUM(spe.amount::numeric), 0) AS v
+       FROM sale_order_performance_events spe
+       JOIN sale_orders o ON o.sale_order_id = spe.sale_order_id
        JOIN client_wechat_users c ON c.user_id = o.client_user_id
       WHERE ${sc.sql}
         AND c.became_member_at IS NOT NULL
         AND c.became_member_at::date BETWEEN ${startDateExpr(period)} AND ${endDateExpr(period)}
-        AND o.sale_order_type IN ('销售单', '转换单')
-        AND o.status = '已支付'
-        AND o.legacy_source IS DISTINCT FROM 'workfine'
-        AND o.paid_at::date BETWEEN ${startDateExpr(period)} AND ${endDateExpr(period)}`,
+        AND spe.sale_order_type IN ('销售单', '转换单')
+        AND spe.status = '已支付'
+        AND spe.change_type IN ('首次支付', '回款', '退款')
+        AND spe.legacy_source IS DISTINCT FROM 'workfine'
+        AND spe.performance_date BETWEEN ${startDateExpr(period)} AND ${endDateExpr(period)}`,
     sc.params,
   )
   return Number(rows[0]?.v || 0)

@@ -289,6 +289,11 @@ export const saleItems = pgTable(
     /**
      * 该行应付金额（摊券后的权威行总额）。恒等式：疗程卡 sale_amount = unit_real_price × session_count；
      * 非卡 sale_amount = unit_real_price × quantity。unit_price/unit_real_price 均由 sale_amount 派生。
+     *
+     * ⚠️ **家居「转出」行含余数时豁免该恒等式**（#145/#153）：折抵金额是「剩余已付」，
+     * 含不足一整件的已付余额——付 ¥450 折 4 件时转出行 `sale_amount = received = -450`，
+     * 而 `quantity(4) × unit_real_price(100) = 400`。sale_amount 必须等于实际折走的金额，
+     * 否则转换单差额会少算。**不要按该恒等式校验转出行**（写对账脚本时尤其注意）。
      */
     saleAmount: numeric("sale_amount", { precision: 10, scale: 2 }).notNull(),
     /**

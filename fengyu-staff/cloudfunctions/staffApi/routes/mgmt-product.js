@@ -8,8 +8,11 @@
  *   按 product_kind 分组 + memberCount（分母）
  *
  * mgmtProduct.cycleStats — 体验/进入/复购（区间维度）
- *   达标日：SUM(received) 在 (client_user_id, store_id, product_kind, purchase_date) 分组下 ≥ threshold
- *   purchase_date：COALESCE(sale_order_datetime, paid_at)::date
+ *   达标日：SUM(sipe.amount) 在 (client_user_id, store_id, product_kind, purchase_date) 分组下 ≥ threshold
+ *   purchase_date：sale_item_performance_events.performance_date（子项业绩归属日期）
+ *   ⚠ 2026-09-14 订正：原注释写「SUM(received)」「COALESCE(sale_order_datetime, paid_at)::date」
+ *     与实现不符 —— #137 起本文件 daily_agg 已改走子项业绩事件视图（见下方 SQL），
+ *     跨月回款按款项分摊到各自归属日，不再整单压在下单日。
  *   entry_date：跨店合并，全历史最早达标日
  *   复购：在 [startDate, endDate] 内 entry_date 后再次达标（threshold 共用）
  *   订单状态：排除已关闭/已作废/未审核/待审批/支付失败；received 达标即计入，不要求已支付

@@ -1,0 +1,49 @@
+name: DB script tests
+
+# db/scripts/__tests__ 的 node:test 套件（不连库）此前没有任何 CI 闸门——它不在 admin /
+# staffApi 的 vitest 基线里（db/CLAUDE.md 已注明），只靠人记得 `npm run db:test`。
+# 其中 db-target-guard.test.js 守的是「运维脚本不得连到已退役的旧库 47.113.202.7」，
+# 那台机器至今可连通、连上不报错、只是安静地返回停在 2026-08-24 的旧数据——
+# 这种守护靠自觉执行等于没有。
+#
+# 与 db-migrations-check.yml 分开成两个 workflow，是因为两者的触发面和代价差一个量级：
+# 那个要起 PG service + drizzle-kit generate + 从零 apply（分钟级），
+# 改一个 repair 脚本不该把它拖起来。
+
+on:
+  pull_request:
+    paths:
+      - 'db/scripts/**'
+      # payment-migrations-regression.test.js 对迁移 SQL 与 journal 做字面量断言
+      - 'db/migrations/**'
+      - 'db/package.json'
+      - 'db/package-lock.json'
+      # ↓ 两个跨子项目入口：它们无法 require db/scripts/_lib/assert-db-target.js，
+      #   只能内联同源逻辑，由 db-target-guard.test.js 做行为等价断言。
+      #   漏掉这两条路径 = 有人改坏内联守卫而 CI 全绿。
+      #   该覆盖关系由 db-target-guard.test.js 的「CI workflow 的 paths 覆盖所有内联副本」一项反向锁住，
+      #   新增内联副本却忘了加路径会直接红。
+      - 'fengyu-admin/src/db/seed.ts'
+      - 'fengyu-staff/scripts/manual-e2e/monitor-pk-conflicts.mjs'
+      - '.github/workflows/db-script-tests.yml'
+
+jobs:
+  script-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install db deps
+        working-directory: db
+        run: npm ci
+
+      # 不连库：需要真实 PG 的 attribution-trigger 一项在缺 ATTRIBUTION_PG_TEST_URL 时自行 skip
+      - name: Run db script tests
+        working-directory: db
+        run: npm run db:test

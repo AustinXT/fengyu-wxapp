@@ -1067,7 +1067,7 @@ describe('customer.homeProducts', () => {
     expect(sql).toContain("si.item_direction = '购买'")
     expect(sql).toContain("si.product_type = '家居产品'")
     expect(sql).toMatch(/FLOOR\(GREATEST\(0, si\.received::numeric\) \* si\.quantity \/ NULLIF\(si\.sale_amount::numeric, 0\)\)/)
-    expect(sql).toContain('GREATEST(paid_quantity - picked_quantity, 0)')
+    expect(sql).toContain('SUM(si.row_pending_pickup)::int AS pending_pickup_quantity')
     expect(sql).not.toMatch(/o\.store_id\s*=/)
   })
 

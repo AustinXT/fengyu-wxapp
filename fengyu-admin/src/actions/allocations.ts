@@ -7,6 +7,7 @@ import { clientWechatUsers } from '@db/user'
 import { eq, sql, and, or, inArray, desc, ilike, gte, lt } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import type { SaleAllocation, AuthSession, DateBasis } from '@/lib/types'
+import { createSalesCategoryRates } from '@/lib/sales-categories'
 import { paymentAttributionRangeConditions } from '@/lib/performance-attribution'
 import { isAdminScope, isInScope } from '@/lib/permissions'
 import { withPermission } from '@/lib/with-permission'
@@ -53,7 +54,7 @@ async function buildSalesRateLookup(
         department: dept,
         amountMin: r.amount_tier_min != null ? Number(r.amount_tier_min) : -9999.9,
         amountMax: r.amount_tier_max != null ? Number(r.amount_tier_max) : 10000000,
-        orderRates: { 自销自耗: 0, 他销自耗: 0, 他销他耗: 0, 生态合作: 0 },
+        orderRates: createSalesCategoryRates(),
       }
       byKey.set(key, entry)
       grouped.push(entry)

@@ -16,7 +16,9 @@
  * 关键口径红线（与 mgmt-traffic.js 字面一致，consistency.customer.test.ts 守护）：
  *   - 新会员/会员数 = became_member_at（历史化）；保有会员 = 90 天到店窗口 + became_member_at 守卫
  *   - 消费分桶 = member_spend CTE 左闭右开 [1990,1w)/[1w,3w)/[3w,6w)/[6w,10w)/[10w,+∞)，
- *     不复用 spending_tier 列（lifetime 快照）；spend = received - refunded_amount（与 mgmt-traffic.js 一致）
+ *     不复用 spending_tier 列（lifetime 快照）；
+ *     spend = SUM(sale_order_performance_events.amount) @ performance_date（#138 起，与业绩 KPI 同源；
+ *     不按父订单 status 过滤、排除储值卡抵扣；与 mgmt-traffic.js 逐条一致，由 consistency.customer.test.ts 守护）
  *   - 成交率分母 = 区间内到店的「体验客 + 小美客」（D-conv-denom=B）
  *   - 项目数 = SUM(session_used) WHERE sales_category IN ('自销自耗','他销自耗')（D-5）
  *   - customer_status 枚举 '沉睡'/'冰冻'/'休眠'（非 '预警沉睡'）
@@ -284,7 +286,11 @@ async function queryReactivated(
   return num(first(rows).v)
 }
 
-/** 会员经营人数（区间内单笔订单消费 >= 1990 的会员客去重人数） */
+/**
+ * 会员经营人数（区间内**已入账款项净额合计** >= 1990 的会员客去重人数）。
+ * ⚠ 不是「单笔订单 >= 1990」——SQL 先 GROUP BY client_user_id 汇总区间内全部款项流水，
+ * 再按 1990 分档。#138 起金额口径为款项流水净额（含退款负数），日期按业绩归属日期。
+ */
 async function queryOperatedMembers(
   session: AuthSession,
   scope: DataCenterScope,
@@ -294,14 +300,16 @@ async function queryOperatedMembers(
   const rows = await db.execute(sql`
     WITH member_spend AS (
       SELECT o.client_user_id,
-             SUM(o.received::numeric - COALESCE(o.refunded_amount, 0)::numeric) AS spend
-      FROM sale_orders o
+             SUM(spe.amount::numeric) AS spend
+      FROM sale_order_performance_events spe
+      JOIN sale_orders o ON o.sale_order_id = spe.sale_order_id
       JOIN client_wechat_users c ON c.user_id = o.client_user_id
       WHERE ${sc}
-        AND o.sale_order_type IN ('销售单', '转换单')
-        AND o.status = '已支付'
-        AND o.legacy_source IS DISTINCT FROM 'workfine'
-        AND o.paid_at::date BETWEEN ${range.start} AND ${range.end}
+        AND spe.sale_order_type IN ('销售单', '转换单')
+        AND spe.status = '已支付'
+        AND spe.change_type IN ('首次支付', '回款', '退款')
+        AND spe.legacy_source IS DISTINCT FROM 'workfine'
+        AND spe.performance_date BETWEEN ${range.start} AND ${range.end}
         AND c.customer_type = '会员客'
       GROUP BY o.client_user_id
     )
@@ -321,14 +329,16 @@ async function queryMemberAvgTicket(
   const rows = await db.execute(sql`
     WITH member_spend AS (
       SELECT o.client_user_id,
-             SUM(o.received::numeric - COALESCE(o.refunded_amount, 0)::numeric) AS spend
-      FROM sale_orders o
+             SUM(spe.amount::numeric) AS spend
+      FROM sale_order_performance_events spe
+      JOIN sale_orders o ON o.sale_order_id = spe.sale_order_id
       JOIN client_wechat_users c ON c.user_id = o.client_user_id
       WHERE ${sc}
-        AND o.sale_order_type IN ('销售单', '转换单')
-        AND o.status = '已支付'
-        AND o.legacy_source IS DISTINCT FROM 'workfine'
-        AND o.paid_at::date BETWEEN ${range.start} AND ${range.end}
+        AND spe.sale_order_type IN ('销售单', '转换单')
+        AND spe.status = '已支付'
+        AND spe.change_type IN ('首次支付', '回款', '退款')
+        AND spe.legacy_source IS DISTINCT FROM 'workfine'
+        AND spe.performance_date BETWEEN ${range.start} AND ${range.end}
         AND c.customer_type = '会员客'
       GROUP BY o.client_user_id
     )
@@ -365,16 +375,18 @@ async function queryNewMemberSpend(
 ): Promise<number> {
   const sc = scopeFilterSql(session, scope, 'o.store_id')
   const rows = await db.execute(sql`
-    SELECT COALESCE(SUM(o.received::numeric - COALESCE(o.refunded_amount, 0)::numeric), 0) AS v
-    FROM sale_orders o
+    SELECT COALESCE(SUM(spe.amount::numeric), 0) AS v
+    FROM sale_order_performance_events spe
+    JOIN sale_orders o ON o.sale_order_id = spe.sale_order_id
     JOIN client_wechat_users c ON c.user_id = o.client_user_id
     WHERE ${sc}
       AND c.became_member_at IS NOT NULL
       AND c.became_member_at::date BETWEEN ${range.start} AND ${range.end}
-      AND o.sale_order_type IN ('销售单', '转换单')
-      AND o.status = '已支付'
-      AND o.legacy_source IS DISTINCT FROM 'workfine'
-      AND o.paid_at::date BETWEEN ${range.start} AND ${range.end}
+      AND spe.sale_order_type IN ('销售单', '转换单')
+      AND spe.status = '已支付'
+      AND spe.change_type IN ('首次支付', '回款', '退款')
+      AND spe.legacy_source IS DISTINCT FROM 'workfine'
+      AND spe.performance_date BETWEEN ${range.start} AND ${range.end}
   `)
   return num(first(rows).v)
 }
@@ -658,17 +670,19 @@ async function queryOpsBreakdown(
       FROM skel sk
       GROUP BY ${groupId}
     ),
-    -- 会员消费先按当前市场/门店 + 顾客合并：spend = received - refunded_amount
+    -- 会员消费先按当前市场/门店 + 顾客合并：spend = SUM(已入账款项流水) @ 业绩归属日期（#138）
     member_spend AS (
       SELECT ${groupId} AS group_id, o.client_user_id,
-             SUM(o.received::numeric - COALESCE(o.refunded_amount, 0)::numeric) AS spend
-      FROM sale_orders o
+             SUM(spe.amount::numeric) AS spend
+      FROM sale_order_performance_events spe
+      JOIN sale_orders o ON o.sale_order_id = spe.sale_order_id
       JOIN skel sk ON sk.store_id = o.store_id
       JOIN client_wechat_users c ON c.user_id = o.client_user_id
-      WHERE o.sale_order_type IN ('销售单', '转换单')
-        AND o.status = '已支付'
-        AND o.legacy_source IS DISTINCT FROM 'workfine'
-        AND o.paid_at::date BETWEEN ${start} AND ${end}
+      WHERE spe.sale_order_type IN ('销售单', '转换单')
+        AND spe.status = '已支付'
+        AND spe.change_type IN ('首次支付', '回款', '退款')
+        AND spe.legacy_source IS DISTINCT FROM 'workfine'
+        AND spe.performance_date BETWEEN ${start} AND ${end}
         AND c.customer_type = '会员客'
       GROUP BY ${groupId}, o.client_user_id
     ),
@@ -699,16 +713,18 @@ async function queryOpsBreakdown(
     -- 新增会员对应消费按实际订单发生门店汇总
     newmem_spend AS (
       SELECT ${groupId} AS group_id,
-             COALESCE(SUM(o.received::numeric - COALESCE(o.refunded_amount, 0)::numeric), 0) AS new_spend
-      FROM sale_orders o
+             COALESCE(SUM(spe.amount::numeric), 0) AS new_spend
+      FROM sale_order_performance_events spe
+      JOIN sale_orders o ON o.sale_order_id = spe.sale_order_id
       JOIN skel sk ON sk.store_id = o.store_id
       JOIN client_wechat_users c ON c.user_id = o.client_user_id
       WHERE c.became_member_at IS NOT NULL
         AND c.became_member_at::date BETWEEN ${start} AND ${end}
-        AND o.sale_order_type IN ('销售单', '转换单')
-        AND o.status = '已支付'
-        AND o.legacy_source IS DISTINCT FROM 'workfine'
-        AND o.paid_at::date BETWEEN ${start} AND ${end}
+        AND spe.sale_order_type IN ('销售单', '转换单')
+        AND spe.status = '已支付'
+        AND spe.change_type IN ('首次支付', '回款', '退款')
+        AND spe.legacy_source IS DISTINCT FROM 'workfine'
+        AND spe.performance_date BETWEEN ${start} AND ${end}
       GROUP BY ${groupId}
     ),
     -- 流量客人数（成交率分母，体验客+小美客，市场内 DISTINCT 客户）
@@ -955,7 +971,7 @@ export const getCustomerBoard = withPermission(
       withComparison((r) => queryReactivated(session, scope, r, 'frozen'), comparison, 'count', false),
       withComparison(() => queryStatusCount(session, scope, '休眠'), comparison, 'count', false),
       withComparison((r) => queryReactivated(session, scope, r, 'deep'), comparison, 'count', false),
-      // 会员经营人数（单笔≥1990）
+      // 会员经营人数（区间内款项净额合计 ≥1990，非单笔）
       withComparison((r) => queryOperatedMembers(session, scope, r), comparison, 'count', enabled),
       // 会员新增
       withComparison((r) => queryNewMemberCount(session, scope, r), comparison, 'count', enabled),

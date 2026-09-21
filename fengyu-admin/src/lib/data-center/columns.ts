@@ -4,6 +4,7 @@
  * 本文件不依赖 Server Action 或 Node API，页面和异步导出 worker 都可以安全引用。
  */
 import type { DataCenterExportView } from '@/lib/export-job-types'
+import { SALES_CATEGORIES, SALES_CATEGORY_COLUMN_KEYS } from '@/lib/sales-categories'
 import type { MetricUnit } from './types'
 
 export interface DataCenterMetricColumn {
@@ -42,6 +43,20 @@ const staffTextColumns = [
   { key: 'store', label: '门店', source: 'labels' },
   { key: 'position', label: '职级', source: 'labels' },
 ] as const satisfies readonly DataCenterBreakdownTextColumn[]
+
+/**
+ * 「按技师人效」的 sales_category 四分类销售额列，由单源生成 —— 枚举加值时
+ * `SALES_CATEGORY_COLUMN_KEYS` 会先在 tsc 报缺键，不会静默少一列。
+ *
+ * ⚠️ 本组列口径是 `spia.allocated_amount`（营业额份额），取数见
+ *    `actions/data-center/efficiency.ts` 的 `revenue_by_emp_cat` CTE；
+ *    与 staff 绩效页同名 4 格的 `commission_amount`（提成）差一个费率量级，勿对齐。
+ */
+const salesCategoryMetricColumns = SALES_CATEGORIES.map((label) => ({
+  key: SALES_CATEGORY_COLUMN_KEYS[label],
+  label,
+  unit: 'amount' as const,
+})) satisfies readonly DataCenterMetricColumn[]
 
 const customerRegistrationMetricColumns = [
   { key: 'registered', label: '会员注册', unit: 'count' },
@@ -181,10 +196,7 @@ export const DATA_CENTER_VIEW_CONFIG = {
     textColumns: staffTextColumns,
     metricColumns: [
       { key: 'revenue', label: '当月业绩', unit: 'amount' },
-      { key: 'saleZxzh', label: '自销自耗', unit: 'amount' },
-      { key: 'saleTxzh', label: '他销自耗', unit: 'amount' },
-      { key: 'saleTxth', label: '他销他耗', unit: 'amount' },
-      { key: 'saleEco', label: '生态合作', unit: 'amount' },
+      ...salesCategoryMetricColumns,
       { key: 'consumeTotal', label: '实耗合计', unit: 'amount' },
       { key: 'newMember', label: '纳客数', unit: 'count' },
       { key: 'projectCount', label: '项目数', unit: 'count' },

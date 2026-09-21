@@ -29,7 +29,7 @@ const KPI_STATUS: KpiGridItem[] = [
 ]
 
 const KPI_OPERATION: KpiGridItem[] = [
-  { key: "operatedMembers", label: "会员经营人数", hint: "单笔消费 ≥ 1990" },
+  { key: "operatedMembers", label: "会员经营人数", hint: "区间内消费合计 ≥ 1990" },
   { key: "newMembers", label: "会员新增" },
   { key: "trafficCustomers", label: "当月流量客人数" },
   { key: "convRate", label: "成交率", hint: "会员新增 ÷ 流量客" },
