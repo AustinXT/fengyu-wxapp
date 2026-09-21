@@ -123,19 +123,53 @@ test('INV-08：三级 scope 隔离与价格档裁剪', async ({ browser }) => {
       )
 
       // §9.4 单据可见性：他市场的单据不应出现在列表
-      const otherMarketDoc = psql(
-        `SELECT id FROM inventory_docs WHERE market_id = ${sqlStr(TOPO.MARKET_OTHER)} ORDER BY created_at DESC LIMIT 1`,
+      //
+      // 「他市场单据」必须按**产品侧那条可见性规则**挑，而不是只看 market_id：
+      // `listInventoryCoreDocs` 的过滤是 `source OR target IN scoped`
+      // （engine.ts:2167），只要 MK 的市场（或其后代门店）是任一端，MK 就是这张单
+      // 的合法参与方。
+      //
+      // 只按 market_id 挑会挑错：§10.3 规定市场间调货入库归属**收货**市场，于是
+      // 「MK 发往他市场」的调货单 market_id 是他市场、source 却是 MK 自己 ——
+      // 把 MK 看得见自己发出的单判成「泄漏」。旧写法一直绿，只是因为当时 inv-05
+      // 从没真建出过市场间调货单，这条断言长期落在空集上。
+      //
+      // 优先取归属他市场的单；dev 上「自贡凤御」内部单据可能一张都没有，此时退到
+      // **任何 MK 两端都不沾的单**（总部内部单等）—— 断言的实质是「非参与方看不到」，
+      // 换个主体照样成立。一张都取不到时**不静默放过**：那意味着这条安全断言压根
+      // 没跑，与 inv-10 的「ctx 缺失 → 报未覆盖」同一条纪律。
+      const otherMarketRow = psql(
+        `WITH RECURSIVE mine AS (
+           SELECT id FROM org_nodes WHERE id = ${sqlStr(TOPO.MARKET)}
+           UNION ALL
+           SELECT n.id FROM org_nodes n JOIN mine ON n.parent_id = mine.id
+         )
+         SELECT d.id || '|' || COALESCE(d.market_id, '') FROM inventory_docs d
+          WHERE COALESCE(d.source_org_node_id, '') NOT IN (SELECT id FROM mine)
+            AND COALESCE(d.target_org_node_id, '') NOT IN (SELECT id FROM mine)
+          ORDER BY COALESCE(d.market_id = ${sqlStr(TOPO.MARKET_OTHER)}, false) DESC,
+                   d.created_at DESC
+          LIMIT 1`,
       )
+      const otherMarketDoc = otherMarketRow.split('|')[0]
+      const subjectKind = otherMarketRow.endsWith(`|${TOPO.MARKET_OTHER}`)
+        ? `他市场（${TOPO.MARKET_OTHER_NAME}）单据`
+        : '非参与方单据'
       if (otherMarketDoc) {
         const docs = await visit(page, `/inventory/docs?q=${encodeURIComponent(otherMarketDoc)}`)
         recordVerdict(
           verdicts,
-          `§9.4 MK: 搜不到他市场单据 ${otherMarketDoc}`,
+          `§9.4 MK: 搜不到${subjectKind} ${otherMarketDoc}`,
           !docs.text.includes(otherMarketDoc),
-          docs.text.includes(otherMarketDoc) ? '泄漏了他市场单据' : '未泄漏',
+          docs.text.includes(otherMarketDoc) ? `泄漏了${subjectKind}` : '未泄漏',
         )
       } else {
-        recordVerdict(verdicts, '§9.4 MK: 他市场单据可见性（跳过：他市场暂无单据）', true, 'skip')
+        recordVerdict(
+          verdicts,
+          '§9.4 MK: 他市场单据可见性【未覆盖】',
+          false,
+          '库中找不到任何 MK 两端都不沾的单据，本条安全断言未实际执行',
+        )
       }
 
       // §5.3/§10.4 品项公司发货单对市场不展示金额
