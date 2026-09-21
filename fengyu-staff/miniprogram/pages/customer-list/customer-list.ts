@@ -90,6 +90,17 @@ interface CustomerTagResponse {
   total: number;
 }
 
+// customer.search 带 page 时的分页信封（不带 page 仍返回裸数组，业务流程选顾客沿用）
+interface CustomerSearchPage {
+  customers: CustomerListItem[];
+  page: number;
+  pageSize: number;
+  hasMore: boolean;
+}
+
+// 与 customer.listByTag 及管理层顾客列表保持同一页大小
+const PAGE_SIZE = 20;
+
 Page({
   data: {
     searchKeyword: '',
@@ -124,8 +135,9 @@ Page({
     hasAdvancedFilter: false,
     // 当前选中的标签（空 = 不筛选）
     activeTag: '' as '' | TagType,
-    tagPage: 1,
-    tagHasMore: false,
+    // 分页状态（#181）：标签分支与搜索/筛选分支共用，onReachBottom 单一判据
+    page: 1,
+    hasMore: false,
     // 客户分配
     isManager: false,
     showAssignSheet: false,
@@ -141,7 +153,7 @@ Page({
     this.setData({ isManager: isManager() });
     this.loadStats();
     if (!this.data.activeTag && !this.data.searched) {
-      this.loadFilteredList();
+      this.loadList(1, true);
     }
   },
 
@@ -151,7 +163,7 @@ Page({
     if (this.data.activeTag) {
       this.loadByTag(this.data.activeTag as TagType, 1, true).finally(done);
     } else {
-      this.loadFilteredList().finally(done);
+      this.loadList(1, true).finally(done);
     }
   },
 
@@ -168,21 +180,44 @@ Page({
     return customerType !== 'all' || !!spendingTier || !!monthlyActivity || !!customerStatus;
   },
 
-  // 按当前筛选条件加载列表（无筛选时即默认全店列表）
-  async loadFilteredList(): Promise<void> {
+  // 按当前筛选条件 + 关键词加载列表（无筛选无关键词时即默认全店列表）
+  // #181：原 loadFilteredList / onSearch 两个无分页函数合并于此，分页逻辑只写一遍。
+  // 关键词与拓展筛选**同时**下发 —— 改造前 onSearch 只传 keyword，筛选条在 UI 上仍高亮
+  // 却不作用于结果，属于 UI 与请求不一致；合并后以 UI 所见为准。
+  async loadList(page: number, reset: boolean): Promise<void> {
     this.setData({ loading: true, hasAdvancedFilter: this.computeHasAdvancedFilter() });
     try {
       const { customerType, spendingTier, monthlyActivity, customerStatus } = this.data;
+      const keyword = this.data.searchKeyword.trim();
       // profileScope: 顾客档案浏览，普通员工仅见绑定本人的顾客（业务流程选顾客不传此标记）
-      const params: Record<string, string | boolean> = { profileScope: true };
+      const params: Record<string, string | number | boolean> = {
+        profileScope: true,
+        page,
+        pageSize: PAGE_SIZE,
+      };
+      if (keyword) params.keyword = keyword;
       if (customerType !== 'all') params.customerType = customerType;
       if (spendingTier) params.spendingTier = spendingTier;
       if (monthlyActivity) params.monthlyActivity = monthlyActivity;
       if (customerStatus) params.customerStatus = customerStatus;
-      const data = await callStaffApi<CustomerListItem[]>('customer.search', params);
-      this.setData({ results: withMemberLevelBadgeClasses(fmtCustomerDates(data || [])), searched: false });
-    } catch (_) {
-      this.setData({ results: [] });
+      // 带 page 时云函数返回分页信封（不带则是裸数组，供业务流程选顾客沿用）
+      const data = await callStaffApi<CustomerSearchPage>('customer.search', params);
+      const customers = withMemberLevelBadgeClasses(fmtCustomerDates(data.customers || []));
+      const newResults = reset ? customers : [...this.data.results, ...customers];
+      this.setData({
+        results: newResults,
+        page: data.page,
+        hasMore: data.hasMore,
+        searched: !!keyword,
+      });
+    } catch (err: unknown) {
+      // 首屏失败清空列表（沿用既有静默口径）；翻页失败保留已有结果并提示
+      if (reset) {
+        this.setData({ results: [], page: 1, hasMore: false });
+      } else {
+        const msg = err instanceof Error ? err.message : '加载失败';
+        wx.showToast({ title: msg, icon: 'none' });
+      }
     } finally {
       this.setData({ loading: false });
     }
@@ -192,26 +227,14 @@ Page({
     this.setData({ searchKeyword: e.detail as unknown as string });
     if (!e.detail.trim()) {
       this.setData({ activeTag: '' });
-      this.loadFilteredList();
+      this.loadList(1, true);
     }
   },
 
   async onSearch() {
-    const keyword = this.data.searchKeyword.trim();
-    if (!keyword) {
-      this.loadFilteredList();
-      return;
-    }
-    this.setData({ loading: true, searched: true, activeTag: '' });
-    try {
-      const data = await callStaffApi<CustomerListItem[]>('customer.search', { keyword, profileScope: true });
-      this.setData({ results: withMemberLevelBadgeClasses(fmtCustomerDates(data || [])) });
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : '搜索失败';
-      wx.showToast({ title: msg, icon: 'none' });
-    } finally {
-      this.setData({ loading: false });
-    }
+    // 搜索与筛选互斥于标签筛选：清标签后统一交给 loadList（关键词为空即退回默认列表）
+    this.setData({ activeTag: '' });
+    await this.loadList(1, true);
   },
 
   // 展开/收起拓展筛选面板
@@ -225,7 +248,7 @@ Page({
     if ((this.data as Record<string, unknown>)[dim] === value) return;
     // 选拓展筛选清除统计卡片选中态（互斥）
     this.setData({ [dim]: value, activeTag: '', searchKeyword: '', searched: false });
-    this.loadFilteredList();
+    this.loadList(1, true);
   },
 
   // 重置全部拓展筛选（含顾客类型）
@@ -239,7 +262,7 @@ Page({
       searchKeyword: '',
       searched: false,
     });
-    this.loadFilteredList();
+    this.loadList(1, true);
   },
 
   // 点击统计卡片筛选
@@ -248,7 +271,7 @@ Page({
     if (tag === this.data.activeTag) {
       // 取消筛选
       this.setData({ activeTag: '', searchKeyword: '' });
-      this.loadFilteredList();
+      this.loadList(1, true);
       return;
     }
     // 选卡片清除全部拓展筛选（互斥）
@@ -261,7 +284,7 @@ Page({
       hasAdvancedFilter: false,
       searchKeyword: '',
       searched: false,
-      tagPage: 1,
+      page: 1,
     });
     this.loadByTag(tag, 1, true);
   },
@@ -269,13 +292,13 @@ Page({
   async loadByTag(tag: TagType, page: number, reset: boolean) {
     this.setData({ loading: true });
     try {
-      const data = await callStaffApi<CustomerTagResponse>('customer.listByTag', { tag, page, pageSize: 20 });
+      const data = await callStaffApi<CustomerTagResponse>('customer.listByTag', { tag, page, pageSize: PAGE_SIZE });
       const customers = withMemberLevelBadgeClasses(fmtCustomerDates(data.customers || []));
       const newResults = reset ? customers : [...this.data.results, ...customers];
       this.setData({
         results: newResults,
-        tagPage: page,
-        tagHasMore: newResults.length < data.total,
+        page,
+        hasMore: newResults.length < data.total,
       });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : '加载失败';
@@ -285,9 +308,14 @@ Page({
     }
   },
 
+  // #181：标签分支与搜索/筛选分支共用 page / hasMore，触底判据只剩一条
   onReachBottom() {
-    if (this.data.activeTag && this.data.tagHasMore && !this.data.loading) {
-      this.loadByTag(this.data.activeTag as TagType, this.data.tagPage + 1, false);
+    if (this.data.loading || !this.data.hasMore) return;
+    const nextPage = this.data.page + 1;
+    if (this.data.activeTag) {
+      this.loadByTag(this.data.activeTag as TagType, nextPage, false);
+    } else {
+      this.loadList(nextPage, false);
     }
   },
 

@@ -138,7 +138,7 @@ describe('customer.search', () => {
     await customerRoutes.search(ctx)
     const [sql, params] = pg.query.mock.calls[0]
     expect(sql).toMatch(/c\.bound_store_id\s*=\s*ANY\(\$2::text\[\]\)/)
-    expect(params).toEqual(['%李%', ['store-001', 'store-002'], 20])
+    expect(params).toEqual(['%李%', ['store-001', 'store-002'], 20, 0])
   })
 
   test('customerType=会员客 按 customer_type 枚举等值过滤', async () => {
@@ -149,7 +149,7 @@ describe('customer.search', () => {
     // 默认列表分支：$1=门店，$2=customer_type，$3=LIMIT
     expect(sql).toContain('c.customer_type = $2')
     expect(sql).not.toContain('customer_id IS NOT NULL')
-    expect(params).toEqual(['store-001', '会员客', 20])
+    expect(params).toEqual(['store-001', '会员客', 20, 0])
   })
 
   test('customerType=all 不追加 customer_type 过滤', async () => {
@@ -158,7 +158,7 @@ describe('customer.search', () => {
     await customerRoutes.search(ctx)
     const [sql, params] = pg.query.mock.calls[0]
     expect(sql).not.toContain('c.customer_type =')
-    expect(params).toEqual(['store-001', 20])
+    expect(params).toEqual(['store-001', 20, 0])
   })
 
   test('spendingTier / monthlyActivity / customerStatus 多维度 AND 叠加（默认分支）', async () => {
@@ -173,8 +173,8 @@ describe('customer.search', () => {
     expect(sql).toContain('c.spending_tier = $2')
     expect(sql).toContain('c.monthly_activity = $3')
     expect(sql).toContain('c.customer_status = $4')
-    expect(sql).toContain('LIMIT $5')
-    expect(params).toEqual(['store-001', '10W+', '一次客活', '沉睡', 20])
+    expect(sql).toContain('LIMIT $5 OFFSET $6')
+    expect(params).toEqual(['store-001', '10W+', '一次客活', '沉睡', 20, 0])
   })
 
   test('非法枚举值被忽略（不追加条件）', async () => {
@@ -184,7 +184,7 @@ describe('customer.search', () => {
     const [sql, params] = pg.query.mock.calls[0]
     expect(sql).not.toContain('c.spending_tier')
     expect(sql).not.toContain('c.customer_status')
-    expect(params).toEqual(['store-001', 20])
+    expect(params).toEqual(['store-001', 20, 0])
   })
 
   test('手机号分支叠加枚举筛选（占位符从 $2 起，无 LIMIT）', async () => {
@@ -196,6 +196,95 @@ describe('customer.search', () => {
     expect(sql).toContain('c.customer_status = $2')
     expect(sql).not.toContain('LIMIT')
     expect(params).toEqual(['13800001111', '冰冻'])
+  })
+
+  // ---------- #181 分页 ----------
+  // search 的返回形态是**多态**的：带 page 才返回信封，不带仍是裸数组。
+  // 裸数组被开单/充值卡/充值金转入/服务单/提货五处业务流程消费，
+  // 下面这组用例是这两种形态的锁：任一形态被改掉都会红。
+
+  test('#181 不传 page：返回裸数组，SQL 仍带 OFFSET 0（等价改造前的 LIMIT 20）', async () => {
+    const ctx = createManagerCtx({})
+    pg.query.mockResolvedValueOnce([])
+    await customerRoutes.search(ctx)
+    const [sql, params] = pg.query.mock.calls[0]
+    expect(sql).toContain('ORDER BY c.user_id ASC')
+    expect(params).toEqual(['store-001', 20, 0])
+    expect(Array.isArray(ctx.result)).toBe(true)
+    expect(ctx.result).toEqual([])
+  })
+
+  test('#181 传 page：返回分页信封且 OFFSET = (page-1)*pageSize', async () => {
+    const ctx = createManagerCtx({ page: 3, pageSize: 20 })
+    pg.query.mockResolvedValueOnce([])
+    await customerRoutes.search(ctx)
+    const [, params] = pg.query.mock.calls[0]
+    expect(params).toEqual(['store-001', 20, 40])
+    expect(Array.isArray(ctx.result)).toBe(false)
+    expect(ctx.result).toMatchObject({ page: 3, pageSize: 20, hasMore: false })
+    expect(ctx.result.customers).toEqual([])
+  })
+
+  test('#181 hasMore：本页取满为 true，未取满为 false', async () => {
+    const full = Array.from({ length: 2 }, (_, i) => ({
+      user_id: `u${i}`, phone: `1380000000${i}`, name: `客${i}`,
+      customer_id: null, member_level: null, bound_store_id: 'store-001', store_name: '测试店',
+    }))
+    const ctxFull = createManagerCtx({ page: 1, pageSize: 2 })
+    pg.query
+      .mockResolvedValueOnce(full)
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+    await customerRoutes.search(ctxFull)
+    expect(ctxFull.result.hasMore).toBe(true)
+
+    const ctxPartial = createManagerCtx({ page: 1, pageSize: 2 })
+    pg.query
+      .mockResolvedValueOnce(full.slice(0, 1))
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+    await customerRoutes.search(ctxPartial)
+    expect(ctxPartial.result.hasMore).toBe(false)
+  })
+
+  test('#181 pageSize 越界被夹到 [1,100]，page 非法回落为 1', async () => {
+    const ctxBig = createManagerCtx({ page: 1, pageSize: 9999 })
+    pg.query.mockResolvedValueOnce([])
+    await customerRoutes.search(ctxBig)
+    expect(pg.query.mock.calls[0][1]).toEqual(['store-001', 100, 0])
+
+    const ctxBad = createManagerCtx({ page: -5, pageSize: 0 })
+    pg.query.mockResolvedValueOnce([])
+    await customerRoutes.search(ctxBad)
+    // 本 describe 无 clearAllMocks，calls 是累积的：第二次 search 落在 calls[1]
+    // pageSize=0 → Number(0)||20 → 20；page=-5 → Math.max(1,-5) → 1
+    expect(pg.query.mock.calls[1][1]).toEqual(['store-001', 20, 0])
+  })
+
+  test('#181 phone 分支不分页：传 page 也返回信封但 hasMore 恒 false、SQL 无 LIMIT', async () => {
+    const ctx = createManagerCtx({ phone: '13800001111', page: 1, pageSize: 1 })
+    pg.query
+      .mockResolvedValueOnce([
+        { user_id: 'u1', phone: '13800001111', name: '张三', customer_id: 'C001', member_level: 'VIP', bound_store_id: 'store-001', store_name: '测试店' },
+      ])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+    await customerRoutes.search(ctx)
+    const [sql, params] = pg.query.mock.calls[0]
+    expect(sql).not.toContain('LIMIT')
+    expect(params).toEqual(['13800001111'])
+    // 取满 1 条也不得推断出 hasMore=true（phone 分支最多命中 1 条）
+    expect(ctx.result.hasMore).toBe(false)
+    expect(ctx.result.customers).toHaveLength(1)
+  })
+
+  test('#181 keyword 分支同样带 ORDER BY + OFFSET', async () => {
+    const ctx = createManagerCtx({ keyword: '张', page: 2, pageSize: 20 })
+    pg.query.mockResolvedValueOnce([])
+    await customerRoutes.search(ctx)
+    const [sql, params] = pg.query.mock.calls[0]
+    expect(sql).toContain('ORDER BY c.user_id ASC')
+    expect(params).toEqual(['%张%', 'store-001', 20, 20])
   })
 
   test('search 返回 lastPurchaseName 字段', async () => {
