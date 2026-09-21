@@ -6,6 +6,11 @@
 const pg = require('../db/pg')
 const crypto = require('crypto')
 const { checkText } = require('../utils/wx-sec-check')
+const {
+  thumbUrl,
+  STORE_LIST_THUMB_WIDTH,
+  STORE_DETAIL_THUMB_WIDTH,
+} = require('../utils/image')
 
 /**
  * 门店列表
@@ -52,6 +57,8 @@ async function list(ctx) {
   // 格式化开业时间
   stores.forEach(s => {
     s.open_date = formatOpenDate(s.open_date)
+    // 列表一次渲染几十张卡片，必须走缩略图，否则超大原图解码会撑爆小程序进程（#213）
+    s.cover_image = thumbUrl(s.cover_image, STORE_LIST_THUMB_WIDTH)
   })
 
   ctx.result = { stores }
@@ -104,7 +111,11 @@ async function detail(ctx) {
 
   const store = storeResult[0]
   store.open_date = formatOpenDate(store.open_date)
-  store.images = Array.isArray(store.images) ? store.images : []
+  // 详情页头图接近满屏，用更大的缩略宽度；相册逐张处理（同样是 admin 上传的未压缩原图，#213）
+  store.cover_image = thumbUrl(store.cover_image, STORE_DETAIL_THUMB_WIDTH)
+  store.images = Array.isArray(store.images)
+    ? store.images.map(img => thumbUrl(img, STORE_DETAIL_THUMB_WIDTH))
+    : []
 
   // 用确定的 store_id 并行查询员工数和顾客数
   const actualStoreId = store.store_id

@@ -2,11 +2,24 @@ import { NextRequest, NextResponse } from "next/server"
 import { jwtVerify } from "jose"
 import { uploadFile } from "@/lib/cloudbase"
 import { JWT_SECRET } from "@/lib/jwt-secret"
+import { getImageDimensions } from "@/lib/image-dimensions"
 
 const ALLOWED_TYPES = ["image/jpeg", "image/png", "image/webp", "image/gif"]
 const MAX_SIZE_DEFAULT = 5 * 1024 * 1024 // 5MB
 const MAX_SIZE_FENGYUGUAN = 20 * 1024 * 1024 // 20MB（凤御馆超长宣传图专用）
 const FENGYUGUAN_KEY = "images/fengyuguan.jpg"
+
+/**
+ * 像素总数上限（issue #213）
+ *
+ * 体积校验拦不住高压缩率的大分辨率图：生产上传过 405KB 的 12576×12575 PNG（约 1.58 亿像素），
+ * 顾客端小程序解码时吃掉约 603MB 内存导致进程被杀。小程序端的解码开销只跟像素数相关，
+ * 所以这里按像素数把关。
+ *
+ * 40MP（约 8000×5000）对正常门店/商品照片足够宽松（实测商品图 2083×1333 ≈ 2.8MP），
+ * 又能拦住上面那种异常图。
+ */
+const MAX_PIXELS = 40_000_000
 
 const COOKIE_NAME = 'fy-admin-token'
 
@@ -66,6 +79,24 @@ export async function POST(req: NextRequest) {
     }
 
     const buffer = Buffer.from(await file.arrayBuffer())
+
+    // 分辨率校验：仅对 path 模式（门店/商品封面等）生效。
+    // exactKey 模式是 banner 与凤御馆超长宣传图，形态特殊且有独立体积上限，不在此设限。
+    if (!exactKey) {
+      const dimensions = getImageDimensions(buffer)
+      if (dimensions && dimensions.width * dimensions.height > MAX_PIXELS) {
+        return NextResponse.json(
+          {
+            error:
+              `图片分辨率过大（${dimensions.width}×${dimensions.height}），` +
+              `请压缩到 ${MAX_PIXELS / 1_000_000}MP 以内再上传。` +
+              `分辨率过大的图片会导致小程序端加载时闪退。`,
+          },
+          { status: 400 }
+        )
+      }
+    }
+
     const url = await uploadFile(buffer, cloudPath)
 
     return NextResponse.json({ url })
