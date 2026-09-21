@@ -6822,8 +6822,9 @@ async function pickupRecordsList(ctx) {
     clientUserId,
   } = ctx.event.payload || {}
 
-  const limit = Math.max(1, Math.min(50, parseInt(pageSize, 10) || 20))
-  const offset = (Math.max(1, parseInt(page, 10) || 1) - 1) * limit
+  // 分页归一见 utils/paging.js 函数头（#240：原先 `parseInt('1e21',10) === 1` 会静默取错值，
+  // 且 page 侧在返回信封里又重算一遍 —— 两条独立归一路径天然会漂）。本接口上限 50。
+  const { safePage, safePageSize: limit, offset } = safePaging(page, pageSize, 20, 50)
 
   const conditions = []
   const params = []
@@ -6919,7 +6920,7 @@ async function pickupRecordsList(ctx) {
       saleOrderId: r.sale_order_id || null,
     })),
     total: countRow[0]?.cnt ?? 0,
-    page: Math.max(1, parseInt(page, 10) || 1),
+    page: safePage,
     pageSize: limit,
   }
   return ctx.result
@@ -6971,8 +6972,7 @@ async function refundList(ctx) {
   await requireStaffBound()(ctx, async () => {})
 
   const { status, page = 1, pageSize = 20 } = ctx.event.payload || {}
-  // #240：原先零校验直接把 pageSize 推进 LIMIT —— `pageSize=2.5` 会让 PG 抛
-  // `invalid input syntax for type bigint`（500 级），且无上限时 `pageSize=1e6` 一次吐全表
+  // 分页归一见 utils/paging.js 函数头（#240：此处原先零校验，pageSize 直接进 LIMIT）
   const { safePage, safePageSize, offset } = safePaging(page, pageSize, 20)
 
   const params = [ctx.auth.effectiveStoreId, safePageSize, offset]

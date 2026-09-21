@@ -19,8 +19,13 @@
  */
 
 /**
- * 每页条数默认上限。staffApi 内此前有 4 处 `100` 各自 hardcode
- * （list-filters / inventory / staff.performanceDetail / 本文件），收敛到这里。
+ * 每页条数默认上限。
+ *
+ * ⚠️ staffApi 内这个 `100` 原本有 4 处各自 hardcode，本 PR 只收编了 **2 处**
+ * （本文件 + `utils/list-filters.js`）。**尚未收编**（follow-up，别以为已经统一）：
+ *   - `routes/staff.js:682` `performanceDetail` 的 `toPositiveInt` —— 喂内存 slice 不进 SQL，
+ *     且该文件正被 #239 在途修改
+ *   - `routes/inventory.js:927/1023/1195` —— 另有 3 份 `parseInt` 归一副本（上限 50/100 混用）
  */
 const MAX_PAGE_SIZE = 100
 
@@ -44,25 +49,22 @@ const MAX_PAGE = 1_000_000
  *          三者**均为安全整数**（`Number.isSafeInteger` 为真）——见 MAX_PAGE 注释
  */
 function safePaging(page, pageSize, defaultPageSize, maxPageSize = MAX_PAGE_SIZE) {
-  const pageNum = Math.trunc(Number(page))
-  const pageInRange = Number.isSafeInteger(pageNum) && pageNum >= 1 ? pageNum : 1
-  const safePage = Math.min(MAX_PAGE, pageInRange)   // 封顶理由见 MAX_PAGE 常量注释
+  // 三个出口走同一条归一：取整 → 安全整数且 ≥1 → 夹到上限，否则回落。
+  const clampInt = (raw, cap, fallback) => {
+    const n = Math.trunc(Number(raw))
+    return Number.isSafeInteger(n) && n >= 1 ? Math.min(cap, n) : fallback
+  }
 
+  const safePage = clampInt(page, MAX_PAGE, 1)
   // 回落值本身也要过一遍归一：调用方传的 defaultPageSize 是常量，非法即编程错误，
   // 但本 helper 是 invariant D-search-pagination 的抄写模板，不能留一条
   // 「回落分支能吐出 > maxPageSize 或非整数」的路径（否则坑会跟着模板扩散）。
-  // 非法时兜到 1：宁可一页少返回，也不放任失控值进 LIMIT。
-  const defaultNum = Math.trunc(Number(defaultPageSize))
-  const fallbackPageSize = Number.isSafeInteger(defaultNum) && defaultNum >= 1
-    ? Math.min(maxPageSize, defaultNum)
-    : 1
-
-  const pageSizeNum = Math.trunc(Number(pageSize))
+  // 非法时兜到 1：宁可一页少返回，也不放任失控值进 LIMIT
+  // —— 尤其 `undefined` 会被 pg 序列化成 `null`，而 `LIMIT NULL` 在 PG 等于**不限行数**。
+  const fallbackPageSize = clampInt(defaultPageSize, maxPageSize, 1)
   // 非法值（0 / 负数 / NaN / Infinity / 超安全整数）一律回落调用点默认值，
   // 语义与改造前的 `Number(pageSize) || <默认>` 一致。
-  const safePageSize = Number.isSafeInteger(pageSizeNum) && pageSizeNum >= 1
-    ? Math.min(maxPageSize, pageSizeNum)
-    : fallbackPageSize
+  const safePageSize = clampInt(pageSize, maxPageSize, fallbackPageSize)
 
   return { safePage, safePageSize, offset: (safePage - 1) * safePageSize }
 }

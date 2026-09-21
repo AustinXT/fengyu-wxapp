@@ -7193,6 +7193,40 @@ describe('提货查询门店范围', () => {
     await expect(orderRoutes.pickupRecordsList(ctx)).rejects.toThrow(/PERMISSION_DENIED/)
     expect(pg.query).not.toHaveBeenCalled()
   })
+
+  // ---------- #240 分页归一（本接口上限 50，与其它接口的 100 不同）----------
+  // 原先 `parseInt(pageSize,10) || 20`：`parseInt('1e21',10) === 1` 会**静默取错值**（不崩，
+  // 但用户看到一页 1 条）；且 `page` 在算 offset 与返回信封里各归一一遍，两条路径天然会漂。
+  test('#240 pickupRecordsList 分页归一：上限 50、page 只归一一次', async () => {
+    const pickupLimit = (ctx) => {
+      const sql = pg.query.mock.calls[0][0]
+      const m = sql.match(/LIMIT\s+(\d+)\s+OFFSET\s+(\d+)/)
+      return { limit: Number(m[1]), offset: Number(m[2]), result: ctx.result }
+    }
+
+    // 超上限被夹到 50（不是 100）
+    const ctxBig = createManagerCtx({ page: 1, pageSize: 999 })
+    pg.query.mockResolvedValueOnce([]).mockResolvedValueOnce([{ cnt: 0 }])
+    await orderRoutes.pickupRecordsList(ctxBig)
+    expect(pickupLimit(ctxBig).limit).toBe(50)
+    expect(ctxBig.result.pageSize).toBe(50)
+
+    // '1e21' 旧写法经 parseInt 截断成 1（静默取错值）；新写法回落默认 20
+    pg.query.mockClear()
+    const ctxExp = createManagerCtx({ page: 1, pageSize: '1e21' })
+    pg.query.mockResolvedValueOnce([]).mockResolvedValueOnce([{ cnt: 0 }])
+    await orderRoutes.pickupRecordsList(ctxExp)
+    expect(pickupLimit(ctxExp).limit).toBe(20)
+
+    // page 归一只发生一次：SQL 的 offset 与返回信封的 page 必须同源
+    pg.query.mockClear()
+    const ctxPage = createManagerCtx({ page: 3.9, pageSize: 10 })
+    pg.query.mockResolvedValueOnce([]).mockResolvedValueOnce([{ cnt: 0 }])
+    await orderRoutes.pickupRecordsList(ctxPage)
+    const { offset, result } = pickupLimit(ctxPage)
+    expect(result.page).toBe(3)
+    expect(offset).toBe((result.page - 1) * result.pageSize)
+  })
 })
 
 // ============================================================
