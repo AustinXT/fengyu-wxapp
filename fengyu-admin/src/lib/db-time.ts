@@ -42,6 +42,11 @@ export function nowTs() {
  *      报表筛选边界 `beijingTs(new Date(filters.dateFrom))`（与 sale_order_datetime 同语义）。
  */
 export function beijingTs(d: Date) {
+  // fmtDateTime 是**展示**用 helper，对 Invalid Date 返回 ''（UI 里留白是对的）。
+  // 但拼进 SQL 会变成 `''::timestamp` → 运行时 22007，错误信息离现场很远。这里提前 fail-fast。
+  if (!(d instanceof Date) || Number.isNaN(d.getTime())) {
+    throw new TypeError(`beijingTs 需要有效的 Date，收到：${String(d)}`)
+  }
   const wallClock = fmtDateTime(d) // 'YYYY-MM-DD HH:mm:ss' Asia/Shanghai 墙钟
   return sql`${wallClock}::timestamp AT TIME ZONE 'Asia/Shanghai'`
 }

@@ -18,7 +18,7 @@ import { ApiError } from '@/lib/api-error'
 import { determineMemberLevel, isDowngrade, type MemberLevel } from '../../../db/utils/member-level'
 import { getMemberThreshold } from '@/lib/member-threshold'
 import { getPointsToYuanRate } from '@/lib/system-config'
-import { nowTs } from '@/lib/db-time'
+import { beijingTs, nowTs } from '@/lib/db-time'
 import {
   offsetPageResult,
   resolveExportOffsetPage,
@@ -609,7 +609,11 @@ export const estimateRefundOverdraft = withAnyPermission(
     }
   }
 
-  const upgradedAtThreshold = upgradedAt ?? new Date(0)
+  // ⚠ 与 #253 同型：drizzle 把时间 OID 的 serializer 覆盖成恒等函数，裸 Date 进 `sql``` 模板
+  // 会在 Bind 阶段抛 ERR_INVALID_ARG_TYPE（读端谓词一样炸）。必须经 beijingTs 落成墙钟字面。
+  // 这条只在 willDowngrade 时才走到，所以潜伏了 5 个月没暴露；它在 createRefund 的写路径上
+  // （refunds.ts 内 estimateRefundOverdraft 调用点），会让「会员跌档的退款」整单创建失败。
+  const upgradedAtThreshold = beijingTs(upgradedAt ?? new Date(0))
   const couponKeyPrefix = `cpn-up-${params.userId}-${currentLevel}-`
 
   const usedCouponRows = (await db.execute<{

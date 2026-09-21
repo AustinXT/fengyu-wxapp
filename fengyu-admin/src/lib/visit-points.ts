@@ -105,15 +105,15 @@ export async function grantVisitPointsEntry(
   // 一并覆盖成恒等函数，Date 未经序列化直达 Bind → ERR_INVALID_ARG_TYPE。
   // 所以 staff/client 两端裸用原生 pg 能吃 Date，**唯独经 drizzle 的本副本不行**。
   //
-  // 选 `beijingTs(now)` 而非 db-time 文档里「现在语义用 nowTs()」的默认建议，是因为 `now` 是形参：
-  // cron 重试会显式传入补发时刻、单测要注入确定时刻，且 staff/client 两端同样用调用方传入的 `now`。
-  // 改成 `NOW()` 会让形参对 SQL 失效并与另两端语义分叉。
-  const nowTsSql = beijingTs(now)
+  // 选 `beijingTs(now)` 而非 db-time 文档里「现在语义用 nowTs()」的默认建议，是因为 `now` 是形参
+  // 且**并不总是"现在"**：cron 补发（retry-visit-points）传的是原服务日锚点，单测传固定时刻，
+  // staff/client 两端同样用调用方传入的值。改成 `NOW()` 会让形参对 SQL 失效并与另两端语义分叉。
+  const grantedAtTs = beijingTs(now)
   const result = (await executor.execute(sql`
     WITH inserted AS (
       INSERT INTO point_transactions
         (user_id, type, amount, ref_order_id, external_ref, created_at)
-      VALUES (${userId}, '到店赠送', ${amount}, NULL, ${externalRef}, ${nowTsSql})
+      VALUES (${userId}, '到店赠送', ${amount}, NULL, ${externalRef}, ${grantedAtTs})
       ON CONFLICT DO NOTHING
       RETURNING id, amount, created_at
     ),
@@ -128,7 +128,7 @@ export async function grantVisitPointsEntry(
     )
     UPDATE client_wechat_users
        SET points_balance = COALESCE(points_balance, 0) + (SELECT amount FROM inserted),
-           points_updated_at = ${nowTsSql}
+           points_updated_at = ${grantedAtTs}
      WHERE user_id = ${userId}
        AND EXISTS (SELECT 1 FROM inserted)
     RETURNING points_balance

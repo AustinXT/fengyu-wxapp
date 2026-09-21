@@ -54,6 +54,16 @@ describe('beijingTs', () => {
       expect(runBunProbeInTz(PROBE, INSTANT, tz)).toBe(EXPECT)
     })
   }
+
+  // fail-fast：Invalid Date 经 fmtDateTime 会变成 ''，拼进 SQL 是 `''::timestamp` → 运行时 22007，
+  // 报错离现场很远。提前抛型错，把问题钉在调用点。
+  it('Invalid Date 直接抛错，不生成空字面量 SQL', () => {
+    expect(() => beijingTs(new Date('not-a-date'))).toThrow(TypeError)
+  })
+
+  it('epoch 0 是合法输入（refunds.ts 的兜底阈值用它）', () => {
+    expect(render(beijingTs(new Date(0)))).toBe("1970-01-01 08:00:00::timestamp AT TIME ZONE 'Asia/Shanghai'")
+  })
 })
 
 /**

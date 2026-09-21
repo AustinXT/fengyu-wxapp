@@ -18,6 +18,21 @@ import {
 
 const RETRY_BATCH_SIZE = 100
 
+/**
+ * 补发流水的时间锚点 = **原服务日**的北京零点（业务口径，2026-09-22 拍板）。
+ *
+ * 此前这里传 `new Date()`，流水会落在补发当天：顾客积分明细里 8 月的到店会显示成 9 月到账，
+ * 365 天有效期也跟着顺延。因为 admin 侧发放自 2026-08-14 起 100% 失败（#253），
+ * 这条路径从未成功执行过，所以改成按服务日回填不影响任何已落库数据。
+ *
+ * 取零点而非某个"像样"的时点，是为了不编造并不知道的钟点；`serviceDate` 已由
+ * `parseFailureDetail` 校验过 `YYYY-MM-DD` 形态，显式带 `+08:00` 偏移，与进程 TZ 解耦。
+ * 幂等仍由 `external_ref`（含 serviceDate）保证，与锚点取值无关。
+ */
+function serviceDateAnchor(serviceDate: string): Date {
+  return new Date(`${serviceDate}T00:00:00+08:00`)
+}
+
 interface FailedVisitPointsRow {
   id: number | string
   target_id: string
@@ -93,7 +108,7 @@ export async function retryVisitPoints(db: Db): Promise<RetryVisitPointsResult> 
           detail.userId,
           detail.serviceDate,
           detail.rewardAmount,
-          new Date(),
+          serviceDateAnchor(detail.serviceDate),
         )
         await markVisitPointsFailureRecovered(tx, Number(failure.id), failure.target_id, result)
       })

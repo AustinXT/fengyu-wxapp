@@ -81,6 +81,26 @@ describe('cron visitPointsRetry', () => {
     )
   })
 
+  // 补发口径守护（2026-09-22 拍板）：流水锚在**原服务日北京零点**，不是补发当刻。
+  // 传 new Date() 会让 8 月的到店显示成补发日到账、365 天有效期顺延。
+  it('补发时间锚在原服务日的北京零点，而非补发当刻', async () => {
+    const failure = {
+      id: 102,
+      target_id: 'SVC-2',
+      detail: { rewardAmount: 20, userId: 'u-2', serviceDate: '2026-08-13' },
+    }
+    const db = {
+      execute: vi.fn().mockResolvedValue([failure]),
+      transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn({ execute: vi.fn() })),
+    }
+
+    await retryVisitPoints(db as never)
+
+    const grantedAt = vi.mocked(grantVisitPointsEntry).mock.calls[0][4]
+    // 北京 2026-08-13 00:00:00 == UTC 2026-08-12 16:00:00
+    expect(grantedAt.toISOString()).toBe('2026-08-12T16:00:00.000Z')
+  })
+
   it('非法失败日志不补发，也不扫描服务单', async () => {
     const db = {
       execute: vi.fn().mockResolvedValue([{ id: 1, target_id: 'SVC-OLD', detail: null }]),
