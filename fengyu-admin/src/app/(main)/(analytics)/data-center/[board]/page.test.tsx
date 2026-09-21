@@ -1,3 +1,5 @@
+import { existsSync } from 'node:fs'
+import path from 'node:path'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { DataCenterScopeOptions } from '@/lib/data-center/types'
 
@@ -193,6 +195,21 @@ describe('数据中心板块页 · 动态段收口', () => {
 
   it('大小写不做容错', async () => {
     await expect(call('Sales')).rejects.toThrow('NOT_FOUND')
+  })
+
+  // 2026-09-21 实测：给 data-center 段加 loading.tsx 后，/data-center/<非法段> 的 404 页
+  // 整棵 React 树的客户端导航全部失效——点侧边栏、点面包屑逃生链接都毫无反应，只能手动刷新。
+  // （硬导航正常，确认是 Suspense 边界与同段 notFound() 的组合问题；放到 [board]/ 下同样复现，
+  //  而 /orders/<不存在 id> 的 404 页软导航正常，可见是本段特有。）
+  // 骨架屏的收益远不及「404 页点什么都没反应」的代价，故不设 loading 边界。
+  it('data-center 段下不得存在 loading.tsx', () => {
+    const dir = path.resolve(__dirname, '..')
+    for (const p of [
+      path.join(dir, 'loading.tsx'),
+      path.join(dir, '[board]', 'loading.tsx'),
+    ]) {
+      expect(existsSync(p), `${p} 会让非法板块段的 404 页客户端导航失效`).toBe(false)
+    }
   })
 
   it('四个合法板块都能渲染', async () => {
