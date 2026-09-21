@@ -603,8 +603,10 @@ async function createLakalaPreorder({
   // 顾客每次重试都复用它、每次都失败，直到场次过期（双谱系评审 round-7）。
   // 按「渠道可能已建单」处理：走安全释放后抛，让顾客可以立刻重新发起。
   if (accountType === 'WECHAT' && transType === '71') {
+    // wx.requestPayment 的五个必需字段缺一不可（appId 由小程序 context 提供，不在此列）
     const wxParams = resp.paymentParams
-    if (!wxParams || !wxParams.package || !wxParams.paySign) {
+    if (!wxParams || !wxParams.package || !wxParams.paySign
+        || !wxParams.timeStamp || !wxParams.nonceStr || !wxParams.signType) {
       await releaseIntentAfterPreorderFailure(orderNo, outTradeNo, storeIdForRelease)
       throw new Error('INVALID_STATE: LAKALA_PREORDER_INCOMPLETE: 渠道未返回完整的微信支付参数')
     }
@@ -658,7 +660,7 @@ function normalizeTradeState(state) {
  *
  * 该路径最坏串行三次往返（queryTrade → closeTrade → 复核 queryTrade）。按 lakala-client
  * 默认的 30s/次算最坏 90s，而 clientApi 的云函数超时只有 60s —— 会在复核完成前被平台
- * 干掉，留下「渠道已关单、本地意图没释放」的不一致。12s × 3 ≈ 36s，留足余量。
+ * 干掉，留下「渠道已关单、本地意图没释放」的不一致。7s × 3 ≈ 21s，留足余量。
  * ⚠️ 改这个值或改 cloudbaserc 的函数超时，要回头核对 staffApi 桥的 DEFAULT_TIMEOUT_MS。
  */
 const LAKALA_VOID_CALL_TIMEOUT_MS = 7000
@@ -863,7 +865,11 @@ function tryReuseLakalaPaymentIntent(order, { payAmount, paymentMethod, userId }
 
   // 按通道校验必需字段：历史上可能落过畸形快照（渠道回成功却少字段），
   // 复用它只会让顾客反复失败到场次过期。不复用即退回「查渠道 → 释放 → 重建」老路。
-  if (paymentMethod === '微信' && (!paymentParams.package || !paymentParams.paySign)) return null
+  if (paymentMethod === '微信'
+      && (!paymentParams.package || !paymentParams.paySign
+          || !paymentParams.timeStamp || !paymentParams.nonceStr || !paymentParams.signType)) {
+    return null
+  }
   if (paymentMethod === '支付宝' && !paymentParams.alipayShareToken) return null
 
   return { paymentParams }
@@ -941,6 +947,8 @@ async function ensureReusedIntentStillPayable(orderNo, outTradeNo, merchant) {
  * → 复核）。释放失败不能盖掉真正的业务错误，所以这里只记日志。
  */
 async function releaseIntentAfterPreorderFailure(orderNo, outTradeNo, storeId) {
+  // 契约：**本函数永不抛**。调用点都是 `await release(...)` 后紧跟 `throw err`（原始业务错误），
+  // 一旦这里漏出异常就会把真正的错误换掉，前端的错误映射全乱——正是下面那层 catch 的意义。
   try {
     await voidActiveLakalaPaymentIntent(orderNo, { outTradeNo, storeId })
   } catch (err) {
@@ -1657,6 +1665,11 @@ async function scanDetail(ctx) {
       // 重入时走 order.pay（能复用场次）还是 order.repay（fail-fast，会撞
       // PAYMENT_INTENT_ACTIVE）—— 普通回款此前固定走 repay，导致「退出后重新扫码
       // 还是付不了」在回款场景下原样复现，正是本 issue 要消灭的症状。
+      //
+      // 判据含 client_user_id 匹配，对员工开单同样成立：归属是在**预占支付意图那一刻**
+      // 由 reserve 的 planRes 写入的（`client_user_id = CASE WHEN ... IS NULL AND
+      // opened_by IS NOT NULL THEN $1`），不是等支付成功才写。所以「顾客扫码建了场次
+      // 又退出」时归属已经落定，重入能正确识别（round-8 复核过这个时序）。
       hasResumablePaymentIntent: Boolean(
         String(order.lakala_out_order_no || '').trim()
         && order.client_user_id
