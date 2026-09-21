@@ -245,6 +245,8 @@ interface HomeProduct {
   paidQuantity: number;
   pickedQuantity: number;
   refundedQuantity: number;
+  /** 已转换折抵件数；路由早已下发，本副本此前漏接（#154 补齐，与 packageCustomer 同款展示） */
+  convertedQuantity: number;
   remainingQuantity: number;
   pendingPickupQuantity: number;
   /** 行级欠款；仅 refundedQuantity=0 时有值，退过款的行为 null（received 是净实收，相减会虚增欠款） */

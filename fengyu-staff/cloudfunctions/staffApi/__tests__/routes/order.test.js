@@ -7998,17 +7998,21 @@ describe('order.createConversion — 家居产品折抵（#125）', () => {
     expect(outInsert.params).toEqual(expect.arrayContaining([7, -700]))
   })
 
-  test('转出数量并入 picked_up_quantity，带不可超转守卫', async () => {
+  test('转出数量落 converted_quantity，守卫按「已结算」三列之和判不可超转', async () => {
     const ctx = homeConversionCtx()
     const calls = mockHomeProductConversion()
 
     await orderRoutes.createConversion(ctx)
 
+    // #154：折抵写独立的 converted_quantity；写回 picked_up_quantity 会让「删一条提货记录」
+    // 把折抵占用的额度重新放出来（缺陷 1）。
     const deduct = calls.find(({ sql }) =>
-      sql.includes('UPDATE sale_items') && sql.includes('picked_up_quantity = COALESCE(picked_up_quantity, 0) +'))
+      sql.includes('UPDATE sale_items') && sql.includes('converted_quantity = COALESCE(converted_quantity, 0) +'))
     expect(deduct).toBeDefined()
-    // 守卫：加完不得超过 quantity，并发第二笔 rowCount=0 → 抛冲突
-    expect(deduct.sql).toContain('(COALESCE(picked_up_quantity, 0) + $4) <= quantity')
+    expect(deduct.sql).not.toContain('picked_up_quantity = COALESCE(picked_up_quantity, 0) +')
+    // 守卫：三列之和加完不得超过 quantity，并发第二笔 rowCount=0 → 抛冲突
+    expect(deduct.sql).toContain('COALESCE(picked_up_quantity, 0) + COALESCE(refunded_quantity, 0)')
+    expect(deduct.sql).toContain('+ COALESCE(converted_quantity, 0) + $4) <= quantity')
     expect(deduct.params).toEqual(expect.arrayContaining(['item-home-1', 'store-001', 7]))
     // 家居不得走疗程卡的 remaining_sessions 扣减
     const sessionDeduct = calls.find(({ sql }) =>
@@ -8219,7 +8223,9 @@ describe('order.close — 家居转出回滚（#125）', () => {
       String(sql).includes('restore_quantity') &&
       String(sql).includes("product_type = '家居产品'"))
     expect(homeRestore).toBeTruthy()
-    expect(String(homeRestore[0])).toContain('picked_up_quantity = GREATEST')
+    // #154：折抵记在 converted_quantity，撤销也退回同一列
+    expect(String(homeRestore[0])).toContain('converted_quantity = GREATEST')
+    expect(String(homeRestore[0])).not.toContain('picked_up_quantity = GREATEST')
     expect(homeRestore[1]).toEqual(expect.arrayContaining(['FY-CONV-HOME-001']))
 
     // 疗程卡回滚段必须仍在（两类资产各回各的）

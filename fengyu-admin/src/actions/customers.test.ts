@@ -116,6 +116,8 @@ vi.mock('drizzle-orm', () => ({
   or: vi.fn((...args) => ({ type: 'or', args })),
   desc: vi.fn((col) => ({ type: 'desc', col })),
   asc: vi.fn((col) => ({ type: 'asc', col })),
+  gt: vi.fn((col, val) => ({ type: 'gt', col, val })),
+  isNull: vi.fn((col) => ({ type: 'isNull', col })),
   inArray: vi.fn((col, vals) => ({ type: 'inArray', col, vals })),
   sql: Object.assign(vi.fn(() => ({ as: vi.fn() })), {
     raw: vi.fn((value) => ({ type: 'raw', value })),
@@ -161,7 +163,7 @@ import { hasRole } from '@/lib/auth'
 import { logUpdate } from '@/lib/operation-log'
 import { clientWechatUsers } from '@db/user'
 import { pointBatches } from '@db/points'
-import { eq, ilike, isNotNull, sql } from 'drizzle-orm'
+import { eq, ilike, isNotNull, sql, gt } from 'drizzle-orm'
 
 const mockSession = {
   employeeId: 'MGR-001',
@@ -1252,7 +1254,7 @@ describe('mergeClientProfile — 积分批次余额重算', () => {
   })
 })
 
-describe('exportCustomers — 顾客导出（12 列 + spending_tier 口径累计消费）', () => {
+describe('exportCustomers — 顾客导出（14 列 + spending_tier 口径累计消费）', () => {
   /**
    * mock 两次 db.select：
    *   1) 主查询 .from().where().orderBy() → customerRows
@@ -1287,12 +1289,21 @@ describe('exportCustomers — 顾客导出（12 列 + spending_tier 口径累计
         userId: 'u1', name: '张三', phone: '13800000001', storeName: '南昌店',
         customerType: '会员客', memberLevel: '金钻', spendingTier: '3-6W', customerStatus: '保有会员-稳定',
         boundEmployeeName: '李美容', promoterName: '王推荐', customerSource: '老带新',
-        birthday: new Date('1990-05-20T00:00:00.000Z'),
+        // birthday 是 drizzle date() 列 → 真实取出来是 string，不是 Date（别改回 Date，会让
+        // mock 与真实类型漂移，掩盖「date 列被当 UTC 午夜换算」这类缺陷）
+        birthday: '1990-05-20',
+        // created_at / became_member_at 是 timestamptz（withTimezone）→ 真实取出来是 Date。
+        // 这两个值的 UTC 日期都比北京日期早一天，裸 slice(0,10) 会各偏一天，
+        // 只有走 fmtDate（Asia/Shanghai 还原）才对。
+        createdAt: new Date('2026-01-14T17:30:00.000Z'),
+        becameMemberAt: new Date('2026-03-01T23:00:00.000Z'),
       },
       {
         userId: 'u2', name: null, phone: null, storeName: null,
         customerType: '流量客', memberLevel: null, spendingTier: '<1990', customerStatus: null,
         boundEmployeeName: null, promoterName: null, customerSource: null, birthday: null,
+        createdAt: new Date('2026-02-10T03:00:00.000Z'),
+        becameMemberAt: null, // 流量客从未成为会员
       },
     ]
     mockExportChains(customerRows, [{ clientUserId: 'u1', total: '35000.00' }])
@@ -1307,18 +1318,25 @@ describe('exportCustomers — 顾客导出（12 列 + spending_tier 口径累计
       employeeName: '李美容', promoterName: '王推荐', customerSource: '老带新',
       totalSpend: '35000.00', // 与 spendingTier '3-6W' 自洽
     })
-    expect(rows[0].birthday).toBe('1990-05-20') // fmtDate（Asia/Shanghai）
+    expect(rows[0].birthday).toBe('1990-05-20') // date 列：fmtDate 走 slice 分支，与时区无关
+    // #183 新增两列：timestamptz 必须按北京日期落地，不是 UTC 日期
+    expect(rows[0].createdAt).toBe('2026-01-15')
+    expect(rows[0].becameMemberAt).toBe('2026-03-02')
     // u2 无消费记录 → totalSpend 回退 '0'；null 字段透传
     expect(rows[1].totalSpend).toBe('0')
     expect(rows[1].name).toBeNull()
     expect(rows[1].birthday).toBeNull()
+    expect(rows[1].createdAt).toBe('2026-02-10')
+    expect(rows[1].becameMemberAt).toBeNull() // 非会员客留空，不回退成建档日
   })
 
-  it('超过旧上限也返回全量且不标记截断', async () => {
+  it('超过旧上限也返回全量且不标记截断（大批量下格式化路径照样跑）', async () => {
     const customerRows = Array.from({ length: 10001 }, (_, i) => ({
       userId: `u${i}`, name: `顾客${i}`, phone: null, storeName: null,
       customerType: '流量客', memberLevel: null, spendingTier: '<1990', customerStatus: null,
       boundEmployeeName: null, promoterName: null, customerSource: null, birthday: null,
+      // created_at 是 NOT NULL 列，给 null 会让这一万行全走短路分支、fmtDate 一次都不执行
+      createdAt: new Date('2026-02-10T03:00:00.000Z'), becameMemberAt: null,
     }))
     mockExportChains(customerRows, [])
 
@@ -1326,6 +1344,61 @@ describe('exportCustomers — 顾客导出（12 列 + spending_tier 口径累计
 
     expect(truncated).toBe(false)
     expect(rows).toHaveLength(10001)
+    expect(rows[10000].createdAt).toBe('2026-02-10')
+  })
+
+  it('keyset 分页：按不可变 user_id 排序 + 游标 gt，切掉探测行，游标取本页末行', async () => {
+    const mkRow = (id: string) => ({
+      userId: id, name: `顾客${id}`, phone: null, storeName: null, customerType: '流量客',
+      memberLevel: null, spendingTier: '<1990', customerStatus: null, boundEmployeeName: null,
+      promoterName: null, customerSource: null, birthday: null,
+      createdAt: new Date('2026-02-10T03:00:00.000Z'), becameMemberAt: null,
+    })
+    // 请求 2 条 → 查询取 3 条（探测行），末行应被切掉且不参与游标
+    const fetched = [mkRow('u1'), mkRow('u2'), mkRow('u3')]
+    const mainChain: any = Object.assign(Promise.resolve(fetched), {})
+    mainChain.from = vi.fn().mockReturnValue(mainChain)
+    mainChain.where = vi.fn().mockReturnValue(mainChain)
+    mainChain.orderBy = vi.fn().mockReturnValue(mainChain)
+    mainChain.limit = vi.fn().mockResolvedValue(fetched)
+    ;(db.select as any).mockReturnValueOnce(mainChain)
+    const spendChain: any = {}
+    spendChain.from = vi.fn().mockReturnValue(spendChain)
+    spendChain.where = vi.fn().mockReturnValue(spendChain)
+    spendChain.groupBy = vi.fn().mockResolvedValue([])
+    ;(db.select as any).mockReturnValueOnce(spendChain)
+
+    const result = await exportCustomers({}, { limit: 2, cursor: 'u0' })
+
+    expect(mainChain.limit).toHaveBeenCalledWith(3) // limit + 1 探测行
+    expect(result.rows).toHaveLength(2)
+    expect(result.hasMore).toBe(true)
+    // 游标取本页最后一行（u2），不是被切掉的探测行（u3）
+    expect(result.nextCursor).toBe('u2')
+    // 不能只断言 gt 被调用过：算了条件却忘了拼进 whereClause 时，固定返回数据的 mock 照样会绿
+    expect(gt).toHaveBeenCalledWith(clientWechatUsers.userId, 'u0')
+    expect(mainChain.where).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'and',
+        args: expect.arrayContaining([{ type: 'gt', col: 'user_id', val: 'u0' }]),
+      }),
+    )
+    // 排序键只能是 user_id：name 可被 updateCustomer 改写，拿它当游标首键会让
+    // 改名后的顾客移到游标之前、永久漏掉
+    expect(mainChain.orderBy).toHaveBeenCalledWith({ type: 'asc', col: 'user_id' })
+    expect(mainChain.orderBy).toHaveBeenCalledTimes(1)
+    expect(gt).not.toHaveBeenCalledWith(clientWechatUsers.name, expect.any(String))
+    // 补查累计消费只针对本页两人，不含探测行
+    expect(spendChain.where).toHaveBeenCalledWith({ type: 'inArray', col: 'client_user_id', vals: ['u1', 'u2'] })
+  })
+
+  it('keyset 游标是空串/非字符串 → 抛 INVALID_STATE，不静默从头重扫', async () => {
+    mockExportChains([], null)
+
+    await expect(exportCustomers({}, { limit: 2, cursor: '' as any })).rejects.toThrow('导出分页游标无效')
+    await expect(exportCustomers({}, { limit: 2, cursor: 0 as any })).rejects.toThrow('导出分页游标无效')
+    await expect(exportCustomers({}, { limit: 2, cursor: { userId: 'u9' } as any })).rejects.toThrow('导出分页游标无效')
+    expect(db.select).not.toHaveBeenCalled()
   })
 
   it('空结果 → rows=[] truncated=false，不触发消费补查（db.select 仅 1 次）', async () => {

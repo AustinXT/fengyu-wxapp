@@ -2164,7 +2164,7 @@ describe('closeOrder — 事务原子性（关闭 + 作废分配）', () => {
       expect(sqlTexts.some((text: string) =>
         text.includes('restore_quantity') &&
         text.includes("product_type = '家居产品'") &&
-        text.includes('picked_up_quantity = GREATEST'),
+        text.includes('converted_quantity = GREATEST'),
       )).toBe(true)
       // 疗程卡回滚段必须仍在
       expect(sqlTexts.some((text: string) => text.includes('restore_sessions'))).toBe(true)
@@ -3326,12 +3326,14 @@ describe('createConversionOrder — 事务路径：differ=0 / >0 / <0', () => {
       const tx = {
         execute: vi.fn().mockImplementation(async (sqlArg: any) => {
           const text = sqlArg?.__sqlText ?? ''
-          // #145/#153：家居折抵额度在锁取得后用独立语句复算（新快照），仅家居行触发。
+          // #145/#153：家居折抵**金额**在锁取得后用独立语句复算（新快照），仅家居行触发。
           // 按 SQL 特征识别而非序号，避免它挤掉后面按序号 mock 的返回值。
-          if (text.includes('home_picked_quantity')) {
+          // #154：件数三列已随持锁查询直读（EvalPlanQual 会刷新），这条语句只剩金额，
+          // 识别键相应从 home_picked_quantity 换成 home_converted_amount。
+          if (text.includes('home_converted_amount')) {
             executeSql.push(text)
             return opts.homeConsumedRows ?? [{
-              sale_item_id: 'home-1', home_picked_quantity: 3, home_converted_amount: '0',
+              sale_item_id: 'home-1', home_converted_amount: '0',
             }]
           }
           // #182 锁序：先查涉及原单（不加锁）→ 再按 sale_order_id 升序锁原单。
@@ -3429,7 +3431,8 @@ describe('createConversionOrder — 事务路径：differ=0 / >0 / <0', () => {
     sale_item_id: 'home-1', sale_order_id: 'old-order', store_id: 'store-1', item_direction: '购买',
     sku_id: 'sku-home', product_name: '家居精华', product_type: '家居产品',
     session_count: null, remaining_sessions: null,
-    quantity: 10, picked_up_quantity: 3,
+    // #154：三列各记各的语义（已提 3 / 未退 / 未折抵）
+    quantity: 10, picked_up_quantity: 3, refunded_quantity: 0, converted_quantity: 0,
     unit_price: '120', unit_real_price: '100',
     // #145/#153：折抵额度按「剩余已付 = 1000 − 3 件已提 × 100 − 0 已转走 = 700」→ 7 件
     sale_amount: '1000', received: '1000', sale_order_type: '销售单',
@@ -3464,7 +3467,7 @@ describe('createConversionOrder — 事务路径：differ=0 / >0 / <0', () => {
     expect(outRow.received).toBe('-700.00')
   })
 
-  it('#125 家居转出数量并入 picked_up_quantity 且带不可超转守卫，不走 remaining_sessions', async () => {
+  it('#125/#154 家居转出数量落 converted_quantity 且带不可超转守卫，不走 remaining_sessions', async () => {
     const { executeSql } = mockConvTx({
       heldRows: [homeHeldRow()],
       skuRows: homeSkuRows,
@@ -3507,7 +3510,7 @@ describe('createConversionOrder — 事务路径：differ=0 / >0 / <0', () => {
     mockConvTx({
       // 4 件全部结算、实收已全额对应已提货 → 既无权益也无剩余已付
       heldRows: [homeHeldRow({ quantity: 4, picked_up_quantity: 4, sale_amount: '400.00', received: '400.00' })],
-      homeConsumedRows: [{ sale_item_id: 'home-1', home_picked_quantity: 4, home_converted_amount: '0' }],
+      homeConsumedRows: [{ sale_item_id: 'home-1', home_converted_amount: '0' }],
       skuRows: homeSkuRows,
     })
 
@@ -3840,7 +3843,7 @@ describe('createConversionOrder — 事务路径：differ=0 / >0 / <0', () => {
     const reservedIndex = captured.executeSql.findIndex((text) => /FROM\s+service_items\s+sit/i.test(text))
     expect(lockIndex).toBeGreaterThanOrEqual(0)
     // 锁行 → 折抵额度复算（#182 起疗程卡也走）→ 预扣汇总，三条各自独立的语句
-    const deductibleIndex = captured.executeSql.findIndex((text) => /home_picked_quantity/i.test(text))
+    const deductibleIndex = captured.executeSql.findIndex((text) => /home_converted_amount/i.test(text))
     expect(deductibleIndex).toBe(lockIndex + 1)
     expect(reservedIndex).toBe(lockIndex + 2)
     // 锁行查询不得混入服务预扣（那必须是独立的下一条查询），也不得在**顶层**聚合。
@@ -4123,7 +4126,7 @@ describe('createConversionOrder — 事务路径：differ=0 / >0 / <0', () => {
           captured.execTexts.push(text)
           if (/FOR\s+UPDATE\s+OF\s+si/i.test(text)) return Promise.resolve(opts.heldRows)
           // #182：折抵额度复算（锁后另起语句）对疗程卡也执行，必须返回数组
-          if (/home_picked_quantity/i.test(text)) return Promise.resolve([])
+          if (/home_converted_amount/i.test(text)) return Promise.resolve([])
           // #182 欠款归零三条语句（本组用例的 heldRows 无欠款，实际不会触发，留作防御）
           if (/FROM sale_orders WHERE sale_order_id =/.test(text) && /FOR UPDATE/.test(text)) {
             return Promise.resolve([{
@@ -5856,7 +5859,9 @@ describe('deleteOrder — 守卫 + 级联删除', () => {
     ;(db.transaction as any).mockImplementation(async (fn: any) => {
       const tx = {
         update: vi.fn().mockReturnValue({ set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({ count: 1 }) }) }),
-        execute: vi.fn().mockResolvedValue(undefined),
+        // 返回 [] 而不是 undefined：postgres.js 的 execute() 恒返回 RowList（数组），
+        // mock 成 undefined 会让「读了行再看 .length」的代码在单测里炸、在生产里正常 —— 是反向的漂移。
+        execute: vi.fn().mockResolvedValue([]),
         delete: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({ count: deleteCount }) }),
       }
       return fn(tx)
@@ -5935,7 +5940,9 @@ describe('deleteOrder — 守卫 + 级联删除', () => {
           if (text.includes('SELECT status FROM sale_orders') && text.includes('FOR UPDATE')) {
             return freshStatus === undefined ? [] : [{ status: freshStatus }]
           }
-          return undefined
+          // 其余读（如 #148 的退款流水复检）返回空结果集：postgres.js 的 execute() 恒返回数组，
+          // 返回 undefined 会让读完看 .length 的代码在单测里炸、生产里正常——反向的 mock 漂移。
+          return []
         }),
         delete: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({ count: 1 }) }),
       }
@@ -5967,6 +5974,46 @@ describe('deleteOrder — 守卫 + 级联删除', () => {
     expect(executed.some((t) => t.includes('SELECT status FROM sale_orders') && t.includes('FOR UPDATE'))).toBe(true)
     expect(executed.some((t) => t.includes('restore_sessions'))).toBe(false)
     expect(executed.some((t) => t.includes('restore_quantity'))).toBe(false)
+  })
+
+  // #148：事务内锁到订单后必须复检退款流水。这既是修 TOCTOU（上面那批守卫都在事务外读、
+  // 且只挡 status='已支付' 的款项行，待审批退款漏网），也是新增订单锁**不与退款审批成环**的前提——
+  // 退款审批是「先拿退款行 → 再 UPDATE sale_orders」，与本事务「先锁订单 → 再删全单款项行」反向。
+  // 把这条复检删掉或移到锁之前，两者就变成真实的死锁对。
+  it('事务内复检到退款流水（含待审批）→ 拒绝删除，不执行任何 DELETE', async () => {
+    enqueueSelect([[okOrder], [], []]) // 事务外三道守卫都放行：order / paidPayment（无已支付流水）/ childOrder
+    enqueueExecute([[], [], []])
+    const executed: string[] = []
+    const txDelete = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({ count: 1 }) })
+    ;(db.transaction as any).mockImplementation(async (fn: any) => {
+      const tx = {
+        update: vi.fn().mockReturnValue({ set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({ count: 1 }) }) }),
+        execute: vi.fn().mockImplementation(async (q: any) => {
+          const text = q?.__sqlText || ''
+          executed.push(text)
+          if (text.includes('SELECT status FROM sale_orders') && text.includes('FOR UPDATE')) {
+            return [{ status: '待支付' }]
+          }
+          // 退款流水复检命中一行 —— 该单有一笔待审批退款
+          if (text.includes("change_type = '退款'")) return [{ '?column?': 1 }]
+          return []
+        }),
+        delete: txDelete,
+      }
+      return fn(tx)
+    })
+
+    const result = await deleteOrder('FY-REFUND')
+
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('退款流水')
+    // 顺序不变量：锁 → 复检，且复检不通过时一条 DELETE 都不该发出
+    const lockAt = executed.findIndex((t) => t.includes('SELECT status FROM sale_orders') && t.includes('FOR UPDATE'))
+    const checkAt = executed.findIndex((t) => t.includes("change_type = '退款'"))
+    expect(lockAt).toBeGreaterThanOrEqual(0)
+    expect(checkAt).toBeGreaterThan(lockAt)
+    expect(executed.some((t) => /DELETE\s+FROM/i.test(t))).toBe(false)
+    expect(txDelete).not.toHaveBeenCalled()
   })
 
   it('干净测试单 → 级联删除成功 + 审计', async () => {

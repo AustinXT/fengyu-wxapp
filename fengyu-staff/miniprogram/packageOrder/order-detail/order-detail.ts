@@ -100,6 +100,8 @@ interface RawOrderItem {
   remark?: string | null;
   sales_category?: string;
   picked_up_quantity?: number;
+  refunded_quantity?: number;
+  converted_quantity?: number;
 }
 
 interface RawPayment {
@@ -170,10 +172,15 @@ interface DisplayOrderItem {
   remainPct: number;
   paidUnusedPct: number;
   unpaidPct: number;
-  /** 详情扩展：销售分类 / 过期日期（formatDate 后，空串=无）/ 已结算数量（已提货+已退款+已转换，#125）（家居，0=不展示） */
+  /** 详情扩展：销售分类 / 过期日期（formatDate 后，空串=无）（家居数量列 0=不展示） */
   salesCategory: string;
   expireDate: string;
+  /** 已物理提货件数（#154 拆列后 picked_up_quantity 只记提货，不再含已退款/已转换） */
   pickedUpQuantity: number;
+  /** 已退款结算件数（#154 新列） */
+  refundedQuantity: number;
+  /** 已转换折抵件数（#154 新列） */
+  convertedQuantity: number;
   /** 单次现价 / 原价 + 是否有折扣（原价划线展示） */
   unitRealPrice: string;
   unitPrice: string;
@@ -363,6 +370,8 @@ Page({
           // expire_date 是 pg date 列，必须 formatDate 避免 UTC 串偏移日期
           expireDate: it.expire_date ? formatDate(it.expire_date) : '',
           pickedUpQuantity: Number(it.picked_up_quantity || 0),
+          refundedQuantity: Number(it.refunded_quantity || 0),
+          convertedQuantity: Number(it.converted_quantity || 0),
           unitRealPrice: Number(it.unit_real_price || 0).toFixed(2),
           unitPrice: Number(it.unit_price || 0).toFixed(2),
           hasDiscount: Number(it.unit_price || 0) > Number(it.unit_real_price || 0),
@@ -396,6 +405,8 @@ Page({
           repayable: sumGroupValue(group, (item) => item.repayable).toFixed(2),
           overpayRefundable: sumGroupValue(group, (item) => item.overpayRefundable),
           pickedUpQuantity: sumGroupValue(group, (item) => item.pickedUpQuantity),
+          refundedQuantity: sumGroupValue(group, (item) => item.refundedQuantity),
+          convertedQuantity: sumGroupValue(group, (item) => item.convertedQuantity),
           pendingReceived: sumGroupValue(group, (item) => item.pendingReceived).toFixed(2),
         };
         if (!primary.isTreatmentCard) return aggregate;
@@ -426,6 +437,8 @@ Page({
           paidUnusedPct: pct(paidUnusedSessions),
           unpaidPct: pct(unpaidSessions),
           pickedUpQuantity: sumGroupValue(group, (item) => item.pickedUpQuantity),
+          refundedQuantity: sumGroupValue(group, (item) => item.refundedQuantity),
+          convertedQuantity: sumGroupValue(group, (item) => item.convertedQuantity),
           pendingReceived: sumGroupValue(group, (item) => item.pendingReceived).toFixed(2),
         };
       });

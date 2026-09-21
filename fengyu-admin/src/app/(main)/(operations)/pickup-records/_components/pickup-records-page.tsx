@@ -119,10 +119,9 @@ export default function PickupRecordsPage({ records, filterOptions, total, canCr
     },
     {
       key: 'progress',
-      // #125：itemPickedUpQuantity 是 sale_items.picked_up_quantity =「已结算」
-      //（已提货 + 已退款 + 已转换），不等于物理提货量（权威来源是 pickup_records）。
-      // 整行折抵后这里会显示 10/10 而实际只提了 3 盒，故列头不再叫「进度」。
-      header: '已结算/购买',
+      // #154 拆列后 itemPickedUpQuantity 就是物理提货量（picked_up_quantity 与
+      // pickup_records 守恒，由 cron STEP 12 C5 巡检），列头回归「已提货」本义。
+      header: '已提货/购买',
       cell: (row) =>
         row.itemQuantity != null ? (
           <span className="text-xs text-[#666666]">
@@ -294,7 +293,7 @@ export default function PickupRecordsPage({ records, filterOptions, total, canCr
             </div>
             {detail.itemQuantity != null && (
               <div className="flex justify-between gap-4">
-                <span className="text-[#999999]">已结算/购买</span>
+                <span className="text-[#999999]">已提货/购买</span>
                 <span>
                   {detail.itemPickedUpQuantity ?? 0} / {detail.itemQuantity}
                 </span>

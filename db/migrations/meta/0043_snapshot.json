@@ -1,5 +1,5 @@
 {
-  "id": "b92550b9-43fb-4f62-8009-b10cfbae39b6",
+  "id": "728c4723-743d-48a8-99a4-da521e2bcd5e",
   "prevId": "ce07c1b8-05a7-4d78-a18e-4567d1fe7958",
   "version": "7",
   "dialect": "postgresql",
@@ -2139,12 +2139,19 @@
           "notNull": false,
           "default": 0
         },
-        "waived_amount": {
-          "name": "waived_amount",
-          "type": "numeric(10, 2)",
+        "refunded_quantity": {
+          "name": "refunded_quantity",
+          "type": "integer",
           "primaryKey": false,
           "notNull": true,
-          "default": "'0'"
+          "default": 0
+        },
+        "converted_quantity": {
+          "name": "converted_quantity",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
         },
         "remark": {
           "name": "remark",
@@ -2360,11 +2367,15 @@
         },
         "chk_item_quantity": {
           "name": "chk_item_quantity",
-          "value": "\"sale_items\".\"quantity\" > 0 OR (\"sale_items\".\"item_direction\" = '转出' AND \"sale_items\".\"quantity\" = 0)"
+          "value": "\"sale_items\".\"quantity\" > 0"
         },
-        "chk_item_waived_amount": {
-          "name": "chk_item_waived_amount",
-          "value": "\"sale_items\".\"waived_amount\" >= 0"
+        "chk_sale_item_settled_le_quantity": {
+          "name": "chk_sale_item_settled_le_quantity",
+          "value": "(COALESCE(\"sale_items\".\"picked_up_quantity\", 0) + \"sale_items\".\"refunded_quantity\" + \"sale_items\".\"converted_quantity\") <= \"sale_items\".\"quantity\""
+        },
+        "chk_sale_item_quantities_non_negative": {
+          "name": "chk_sale_item_quantities_non_negative",
+          "value": "COALESCE(\"sale_items\".\"picked_up_quantity\", 0) >= 0 AND \"sale_items\".\"refunded_quantity\" >= 0 AND \"sale_items\".\"converted_quantity\" >= 0"
         },
         "chk_item_service_fee": {
           "name": "chk_item_service_fee",

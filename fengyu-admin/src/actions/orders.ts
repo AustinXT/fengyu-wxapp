@@ -541,9 +541,9 @@ async function rollbackPendingConversionOnClose(tx: OrderTx, saleOrderId: string
        FOR UPDATE OF src
     )
     UPDATE sale_items src
-       SET picked_up_quantity = GREATEST(
+       SET converted_quantity = GREATEST(
              0,
-             COALESCE(src.picked_up_quantity, 0) - locked_source.restore_quantity
+             COALESCE(src.converted_quantity, 0) - locked_source.restore_quantity
            ),
            updated_at = NOW()
       FROM locked_source
@@ -3096,6 +3096,8 @@ export const getOrderById = withAnyPermission(
     pendingReceived: ir.item.pendingReceived,
     expireDate: ir.item.expireDate,
     pickedUpQuantity: ir.item.pickedUpQuantity,
+    refundedQuantity: ir.item.refundedQuantity,
+    convertedQuantity: ir.item.convertedQuantity,
     remark: ir.item.remark,
     salesCategory: ir.item.salesCategory as SaleItem['salesCategory'],
     createdAt: ir.item.createdAt.toISOString(),
@@ -4185,17 +4187,54 @@ export const deleteOrder = withPermission(
     // 2. 事务级联删除（仅安全从属表 + 释放券；再删主单并复核可删条件）
     try {
       const txResult = await db.transaction(async (tx) => {
-        // 待支付/支付失败转换单：撤销创建时对源疗程卡 remaining_sessions / 家居 picked_up_quantity 的即时扣减。
+        // 锁序 `sale_orders` → `sale_order_payments`（硬约束见 db/CLAUDE.md），**无条件**取，必须是第一条。
+        // 本事务是「先删子表（spia → receipts → payments → items）、最后删主单」，天然反向；
+        // 而营业额分配 / 改期 / 收款等事务都是先锁订单行再写款项与分配。两者交错即 40P01：
+        //   T_分配: 锁 sale_orders ✓ → 等 sale_payment_item_allocations
+        //   T_删除: 删 sale_payment_item_allocations ✓ → 等 sale_orders
+        // 此前这条锁只在「转换单」分支里取，非转换单路径整条链不持订单锁（issue #148 评审发现）。
         //
-        // 状态闸门不可省，且**必须在事务内锁单后读新鲜状态**：外层 `order.status` 是事务外读的，
-        // closeOrder‖deleteOrder 交错时（close 先提交并已回滚）这里会拿陈旧的 '待支付' 再回滚一次，
-        // 把家居 picked_up_quantity 多减一遍 → 已提货/已退款的数量凭空复活成可提可退。
-        // DELETE 复检允许 '已关闭'，所以那笔 delete 仍会提交，错误不会被任何守卫拦下。
+        // 它同时供下面的转换单状态闸门读新鲜状态——该闸门不可省，且**必须在锁内读**：
+        // 外层 `order.status` 是事务外读的，closeOrder‖deleteOrder 交错时（close 先提交并已回滚）
+        // 会拿陈旧的 '待支付' 再回滚一次，把家居 picked_up_quantity 多减一遍 →
+        // 已提货/已退款的数量凭空复活成可提可退。DELETE 复检允许 '已关闭'，那笔 delete 仍会提交，
+        // 错误不会被任何守卫拦下。
+        const freshRows = await tx.execute(sql`
+          SELECT status FROM sale_orders WHERE sale_order_id = ${saleOrderId} FOR UPDATE
+        `) as unknown as Array<{ status?: string }> | undefined
+        const freshStatus = freshRows?.[0]?.status
+
+        // 锁内复检：本单不得存在任何退款流水（含「待审批」）。
+        //
+        // 业务上：有退款在走的订单本就不该物理删除；上面那批守卫是在**事务外**读的（TOCTOU），
+        // 且只挡 `status='已支付'` 的款项流水，待审批退款行漏网。
+        //
+        // 并发上：这条复检是新加的订单锁能成立的前提。退款审批（staff order.js / admin refunds.ts /
+        // staff card.js）是「先拿退款行锁 → 再 UPDATE sale_orders」，与本事务「先锁订单 → 再删全单款项行」
+        // 恰好反向。之所以不成环，靠的是两者**不可能并存**：
+        //   1. 本事务持 `FOR UPDATE`，它与外键 INSERT 取的 `FOR KEY SHARE` 冲突 ——
+        //      持锁期间没人能给这张单新建退款流水；
+        //   2. 已存在的退款流水被这条复检挡下，直接退出、根本不进入 DELETE。
+        // ⚠ 因此**不要把这条复检删掉或移到锁之前**，那会让 deleteOrder × 退款审批变成真实的死锁对。
+        //
+        // ⚠ 上面第 1 条隐含一个假设：**退款流水只由 INSERT 产生**。若将来出现「UPDATE 既有款项行、
+        // 把 change_type 改写成 '退款'」的路径，它不取父行的 FOR KEY SHARE，这条锁就挡不住它，
+        // 论证随之失效。（2026-09-18 已 grep 全仓确认无此路径；两个评审谱系独立指出该假设应写明。）
+        //
+        // 另需知道：申请侧仍有一个**可检测**的暂态环 —— createRefund 先插入 tuple、其 FK 检查卡在本锁上，
+        // 而本事务随后的 DELETE 会撞上那条未提交 tuple。它是毫秒级窗口、双方都有 40P01→可重试翻译、
+        // 且删除是低频运维操作，故按可接受处理（详见 db/CLAUDE.md）。
+        const refundRows = await tx.execute(sql`
+          SELECT 1 FROM sale_order_payments
+          WHERE sale_order_id = ${saleOrderId} AND change_type = '退款'
+          LIMIT 1
+        `) as unknown as unknown[]
+        if (refundRows.length > 0) {
+          throw new Error('ORDER_HAS_REFUND_FLOW')
+        }
+
+        // 待支付/支付失败转换单：撤销创建时对源疗程卡 remaining_sessions / 家居 picked_up_quantity 的即时扣减。
         if (order.saleOrderType === '转换单') {
-          const freshRows = await tx.execute(sql`
-            SELECT status FROM sale_orders WHERE sale_order_id = ${saleOrderId} FOR UPDATE
-          `) as unknown as Array<{ status?: string }> | undefined
-          const freshStatus = freshRows?.[0]?.status
           if (freshStatus === '待支付' || freshStatus === '支付失败') {
             await rollbackPendingConversionOnClose(tx, saleOrderId)
           }
@@ -4249,6 +4288,9 @@ export const deleteOrder = withPermission(
     } catch (e) {
       if (e instanceof Error && e.message === 'ORDER_STATE_CHANGED') {
         return { success: false, message: '订单状态已变更，请刷新重试' }
+      }
+      if (e instanceof Error && e.message === 'ORDER_HAS_REFUND_FLOW') {
+        return { success: false, message: '订单存在退款流水，不可删除' }
       }
       if (pgErrorCode(e) === '23503') {
         return { success: false, message: '订单存在关联业务数据，无法删除' }
@@ -5648,6 +5690,8 @@ export const createConversionOrder = withPermission(
           si.remaining_sessions,
           si.quantity,
           si.picked_up_quantity,
+          si.refunded_quantity,
+          si.converted_quantity,
           si.unit_price,
           si.unit_real_price,
           si.sale_amount,
@@ -5674,17 +5718,19 @@ export const createConversionOrder = withPermission(
       `)
 
       const held = Array.from(heldRows as unknown as Iterable<Record<string, unknown>>)
-      // #145/#153：折抵额度必须在**锁取得之后**用另一条语句复算。
+      // #145/#153：折抵**金额**必须在**锁取得之后**用另一条语句复算。
       // `FOR UPDATE OF si` 只锁 sale_items：READ COMMITTED 下语句先取快照再等锁，
-      // 唤醒后 EvalPlanQual 只刷新 si 自身的行版本，pickup_records 与转出行聚合仍是旧快照
+      // 唤醒后 EvalPlanQual 只刷新 si 自身的行版本，转出行聚合仍是旧快照
       // → 两笔并发折抵会各自读到 converted_amount=0，把同一批已付价值折两遍。
       // ⚠ #182 起**疗程卡也走这条复算**：折抵额改「剩余已付」后同样依赖转出行聚合。
+      //
+      // #154：件数三列（picked_up / refunded / converted）都在 si 自己身上，EvalPlanQual 会刷新，
+      // 已随持锁查询一并取到，不再需要事后聚合 pickup_records —— 这条语句现在只为**金额**而存在，
+      // 因此作用域必须覆盖**两类**（疗程卡也要扣已转走金额），不能像 #154 那样只取家居。
       const deductibleIds = held.map((row) => row.sale_item_id as string)
       if (deductibleIds.length > 0) {
         const consumedRows = (await tx.execute(sql`
           SELECT si.sale_item_id,
-                 COALESCE((SELECT SUM(pr.pickup_quantity) FROM pickup_records pr
-                            WHERE pr.sale_item_id = si.sale_item_id), 0) AS home_picked_quantity,
                  COALESCE((SELECT SUM(GREATEST(0, -out_item.received::numeric))
                              FROM sale_items out_item
                              JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id
@@ -5697,7 +5743,6 @@ export const createConversionOrder = withPermission(
         const consumedById = new Map(consumedRows.map((r) => [r.sale_item_id as string, r]))
         for (const row of held) {
           const c = consumedById.get(row.sale_item_id as string)
-          row.home_picked_quantity = c?.home_picked_quantity ?? 0
           row.home_converted_amount = c?.home_converted_amount ?? 0
         }
       }
@@ -5849,7 +5894,8 @@ export const createConversionOrder = withPermission(
             saleOrderType: row.sale_order_type as string,
             quantity: Number(row.quantity ?? 0),
             pickedUpQuantity: Number(row.picked_up_quantity ?? 0),
-            pickedQuantity: Number(row.home_picked_quantity ?? 0),
+            refundedQuantity: Number(row.refunded_quantity ?? 0),
+            convertedQuantity: Number(row.converted_quantity ?? 0),
             convertedAmount: row.home_converted_amount as string,
             saleAmount: row.sale_amount as string,
             received: row.received as string,
@@ -6363,18 +6409,19 @@ export const createConversionOrder = withPermission(
             )
           if (rowsAffected(upd) === 0) throw new ApiError('CONFLICT', 'CARD_CONCURRENT_CHANGED: 卡状态变化，请重试')
         } else if (out.productType === '家居产品') {
-          // 2026-09-14 #125：家居转出数量并入 picked_up_quantity（该列语义已是"已结算"=已提货+已退款，
-          // 见 refund-cascade 通道 5），提货与退款两侧的可用量随之归零。守卫式加法与 createPickup 一致，
-          // 并发双开转换单时第二笔 count=0 直接冲突，不会静默超转。
+          // 2026-09-14 #125：家居转出数量占用源行额度；#154 起写入独立的 converted_quantity
+          // （拆列前与已提货/已退款共用 picked_up_quantity）。提货与退款两侧的可用量都从
+          // 「已结算 = 已提货 + 已退款 + 已转换」扣，故守卫必须算三者之和而不只是本列。
+          // 守卫式加法与 createPickup 一致，并发双开转换单时第二笔 count=0 直接冲突，不会静默超转。
           const upd = await tx
             .update(saleItems)
-            .set({ pickedUpQuantity: sql`COALESCE(${saleItems.pickedUpQuantity}, 0) + ${out.quantity}`, updatedAt: sql`NOW()` })
+            .set({ convertedQuantity: sql`COALESCE(${saleItems.convertedQuantity}, 0) + ${out.quantity}`, updatedAt: sql`NOW()` })
             .where(
               and(
                 eq(saleItems.saleItemId, out.refSaleItemId),
                 eq(saleItems.storeId, data.storeId),
                 eq(saleItems.productType, '家居产品'),
-                sql`(COALESCE(${saleItems.pickedUpQuantity}, 0) + ${out.quantity}) <= ${saleItems.quantity}`,
+                sql`(COALESCE(${saleItems.pickedUpQuantity}, 0) + COALESCE(${saleItems.refundedQuantity}, 0) + COALESCE(${saleItems.convertedQuantity}, 0) + ${out.quantity}) <= ${saleItems.quantity}`,
               ),
             )
           // 影响行数必须走 rowsAffected：postgres.js 的 RowList 只有 .count，

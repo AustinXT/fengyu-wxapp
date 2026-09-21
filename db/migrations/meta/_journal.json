@@ -290,10 +290,17 @@
       "breakpoints": true
     },
     {
-      "idx": 41,
+      "idx": 43,
       "version": "7",
-      "when": 1789713204941,
-      "tag": "0041_common_colleen_wing",
+      "when": 1789786018613,
+      "tag": "0043_split_quantity_semantics",
+      "breakpoints": true
+    },
+    {
+      "idx": 44,
+      "version": "7",
+      "when": 1789786019613,
+      "tag": "0044_waived_amount_and_zero_qty_out",
       "breakpoints": true
     }
   ]

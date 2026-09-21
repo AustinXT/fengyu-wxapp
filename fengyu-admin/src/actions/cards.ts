@@ -114,6 +114,9 @@ function computeCardRemainingRemainder(item: {
     sku_id: null,
     product_name: null,
     product_type: '疗程卡',
+    // 疗程卡不走家居数量链路，已退款件数恒 0（#154 起 RefundSourceItem 要求显式给出）；
+    // converted_quantity 不在这里给 0 —— 下方用转出行聚合值，疗程卡的已转走次数必须算进去。
+    refunded_quantity: 0,
     session_count: item.sessionCount,
     remaining_sessions: item.remainingSessions,
     paid_sessions: item.paidSessions,
@@ -124,7 +127,7 @@ function computeCardRemainingRemainder(item: {
     picked_up_quantity: 0,
     picked_quantity: null,
     converted_amount: item.convertedAmount ?? null,
-    converted_quantity: item.convertedQuantity ?? null,
+    converted_quantity: item.convertedQuantity ?? 0,
     sales_category: null,
     service_fee: null,
   }
@@ -819,9 +822,12 @@ export const getCustomerHeldCards = withPermission(
       paidSessions: saleItems.paidSessions,
       quantity: saleItems.quantity,
       pickedUpQuantity: saleItems.pickedUpQuantity,
-      // #145/#153 家居折抵额度：物理提货合计与已转走金额（与 staff LATERAL 同源）
-      homePickedQuantity: sql`COALESCE((SELECT SUM(pr.pickup_quantity)::int FROM pickup_records pr WHERE pr.sale_item_id = ${saleItems.saleItemId}), 0)`,
-      // #182 不限 out_item.product_type：疗程卡的已转走金额同样要扣，纯余数转出行(quantity=0)也必须计入
+      refundedQuantity: saleItems.refundedQuantity,
+      convertedQuantity: saleItems.convertedQuantity,
+      // #145/#153 家居折抵额度的**金额**项（件数自 #154 起直读上面三列，不再聚合 pickup_records）。
+      // 金额仍须从转出行 received 聚合：折 4 件可能带走 ¥450 而非 ¥400（与 staff LATERAL 同源）。
+      // #182 **不限 out_item.product_type**：疗程卡的已转走金额同样要扣，
+      // 纯余数转出行（quantity=0）也必须计入，限类型会让同一笔已付被折两遍。
       homeConvertedAmount: sql`COALESCE((SELECT SUM(GREATEST(0, -out_item.received::numeric)) FROM sale_items out_item JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id WHERE out_item.ref_sale_item_id = ${saleItems.saleItemId} AND out_item.item_direction = '转出' AND conv_order.status <> '已关闭'), 0)`,
       unitPrice: saleItems.unitPrice,
       unitRealPrice: saleItems.unitRealPrice,
@@ -855,18 +861,21 @@ export const getCustomerHeldCards = withPermission(
         // 寄存单 / 0 元赠品行没有「实收」：它们的折抵额 = 单价 × 权益，而赠品单价为 0 → 恒 0，
         // 用金额门会把整行**静默剔除**（旧闸门 remaining_sessions > 0 是放行的）。故这两类按
         // **权益**放行、其余按**金额**放行；createConversionOrder 的锁内闸门必须逐字同口径。
+        // #154：家居的「未结算件数」必须减三列之和。只减 picked_up 会让整行退款/整行折抵过的
+        // 寄存单与 0 元赠品家居行重新通过本闸门、在候选列表里复活；「已提货金额」的件数因子
+        // 同理直读 picked_up_quantity 列（#154 保证它恒等于 SUM(pickup_records)）。
         sql`(
           CASE WHEN ${saleOrders.saleOrderType} = '寄存单' OR ${saleItems.saleAmount} <= 0
                THEN (
                  CASE WHEN ${saleItems.productType} = '疗程卡'
                       THEN COALESCE(${saleItems.remainingSessions}, 0)
-                      ELSE GREATEST(0, ${saleItems.quantity} - COALESCE(${saleItems.pickedUpQuantity}, 0))
+                      ELSE GREATEST(0, ${saleItems.quantity} - (COALESCE(${saleItems.pickedUpQuantity}, 0) + COALESCE(${saleItems.refundedQuantity}, 0) + COALESCE(${saleItems.convertedQuantity}, 0)))
                  END
                )
                ELSE GREATEST(0, ${saleItems.received}::numeric
                  - CASE WHEN ${saleItems.productType} = '疗程卡'
                         THEN GREATEST(0, COALESCE(${saleItems.sessionCount}, 0) - COALESCE(${saleItems.remainingSessions}, 0))::numeric * ${saleItems.unitRealPrice}::numeric
-                        ELSE COALESCE((SELECT SUM(pr.pickup_quantity) FROM pickup_records pr WHERE pr.sale_item_id = ${saleItems.saleItemId}), 0) * ${saleItems.unitRealPrice}::numeric
+                        ELSE COALESCE(${saleItems.pickedUpQuantity}, 0) * ${saleItems.unitRealPrice}::numeric
                    END
                  - COALESCE((SELECT SUM(GREATEST(0, -out_item.received::numeric)) FROM sale_items out_item JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id WHERE out_item.ref_sale_item_id = ${saleItems.saleItemId} AND out_item.item_direction = '转出' AND conv_order.status <> '已关闭'), 0)
                )
@@ -875,7 +884,8 @@ export const getCustomerHeldCards = withPermission(
         // 在途退款冻结：原订单存在 '待审批' 退款时排除整单的卡（与 staff customerHeldCards 对齐）
         sql`NOT EXISTS (SELECT 1 FROM sale_order_payments sop WHERE sop.sale_order_id = ${saleItems.saleOrderId} AND sop.change_type = '退款' AND sop.status = '待审批')`,
         // 审批后隐藏已退完的卡：仅当订单存在已审批退款时按 paid_sessions 有效余量判定（不影响无退款的分期卡）
-        // 家居产品不适用：已退数量由 refund-cascade 并入 picked_up_quantity，未提货数量已天然扣除
+        // 家居产品不适用：已退数量落 refunded_quantity（#154 拆列前并入 picked_up_quantity），
+        // 而未结算件数 = quantity − 已提货 − 已退款 − 已转换，天然已扣除
         sql`(${saleItems.productType} <> '疗程卡' OR NOT EXISTS (SELECT 1 FROM sale_order_payments sop WHERE sop.sale_order_id = ${saleItems.saleOrderId} AND sop.change_type = '退款' AND sop.status = '已支付') OR ${saleItems.paidSessions} IS NULL OR ${saleItems.paidSessions} > (${saleItems.sessionCount} - ${saleItems.remainingSessions}))`,
       ),
     )
@@ -891,7 +901,8 @@ export const getCustomerHeldCards = withPermission(
       saleOrderType: r.saleOrderType,
       quantity: r.quantity ?? 0,
       pickedUpQuantity: r.pickedUpQuantity ?? 0,
-      pickedQuantity: Number(r.homePickedQuantity ?? 0),
+      refundedQuantity: r.refundedQuantity ?? 0,
+      convertedQuantity: r.convertedQuantity ?? 0,
       convertedAmount: r.homeConvertedAmount as string | number | null,
       saleAmount: r.saleAmount,
       received: r.received,
@@ -908,8 +919,11 @@ export const getCustomerHeldCards = withPermission(
     const cardAmount = isDepositOrGift
       ? (toCents(r.unitRealPrice) * remSess) / 100
       : cardRemainingPaidCents / 100
+    // #154：家居「未结算件数」= quantity − (已提货 + 已退款 + 已转换)。只减 picked_up 会把
+    // 已退款/已转换过的件数当成还能折走，折抵会撞 chk_sale_item_settled_le_quantity 或超卖。
     const remainingQty = isHomeProduct
-      ? Math.max(0, (r.quantity ?? 0) - (r.pickedUpQuantity ?? 0))
+      ? Math.max(0, (r.quantity ?? 0)
+          - ((r.pickedUpQuantity ?? 0) + (r.refundedQuantity ?? 0) + (r.convertedQuantity ?? 0)))
       : remSess
     return {
       saleItemId: r.saleItemId,

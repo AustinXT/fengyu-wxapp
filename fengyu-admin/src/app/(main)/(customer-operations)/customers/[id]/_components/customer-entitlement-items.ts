@@ -77,6 +77,8 @@ export function getCustomerVisibleSaleItems(orders: SaleOrder[]): CustomerVisibl
       pendingReceived: item.pendingReceived,
       expireDate: item.expireDate,
       pickedUpQuantity: item.pickedUpQuantity,
+      refundedQuantity: item.refundedQuantity,
+      convertedQuantity: item.convertedQuantity,
       remark: item.remark,
       salesCategory: item.salesCategory,
       productName: item.productName,
@@ -103,6 +105,8 @@ export function getCustomerVisibleSaleItems(orders: SaleOrder[]): CustomerVisibl
       received: sumGroupValue(group, ({ item }) => item.received).toFixed(2),
       pendingReceived: sumGroupValue(group, ({ item }) => item.pendingReceived).toFixed(2),
       pickedUpQuantity: sumGroupValue(group, ({ item }) => item.pickedUpQuantity),
+      refundedQuantity: sumGroupValue(group, ({ item }) => item.refundedQuantity),
+      convertedQuantity: sumGroupValue(group, ({ item }) => item.convertedQuantity),
       cardCount: group.cardCount,
     }
   })

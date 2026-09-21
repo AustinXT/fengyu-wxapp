@@ -25,8 +25,8 @@
       <view wx:else class="card-foot">按销售商品组成自动出库</view>
       <view class="card-meta">
         <text>{{item.clientName || '—'}}</text>
-        <!-- itemPickedUpQuantity 是「已结算」= 已提货 + 已退款 + 已转换（#125），非物理提货量 -->
-        <text wx:if="{{item.itemQuantity}}">已结算 {{item.itemPickedUpQuantity}}/{{item.itemQuantity}}</text>
+        <!-- #154 拆列后 itemPickedUpQuantity 就是物理提货量（与 pickup_records 守恒） -->
+        <text wx:if="{{item.itemQuantity}}">已提货 {{item.itemPickedUpQuantity}}/{{item.itemQuantity}}</text>
         <text class="store">{{item.storeName || '—'}}</text>
       </view>
       <view wx:if="{{item.confirmedByName}}" class="card-foot">
