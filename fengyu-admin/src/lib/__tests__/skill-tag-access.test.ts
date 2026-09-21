@@ -5,7 +5,7 @@ import { canManageSkillTags, SKILL_TAG_WRITE_ACTION } from '../skill-tag-access'
 /**
  * 「标签管理」入口显隐（#211）。
  *
- * 这里全部走真实的 hasUiCapability / scopeSessionToActions / isAdminScope，不 mock ——
+ * 这里全部走真实的 actions.includes / scopeSessionToActions / isAdminScope，不 mock ——
  * 本函数的全部价值就在于复刻服务端 `withPermission + requireAdmin` 的组合效果，
  * mock 掉任何一环都等于不测。
  */
