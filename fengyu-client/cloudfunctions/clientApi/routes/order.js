@@ -692,9 +692,12 @@ const LAKALA_VOID_CALL_TIMEOUT_MS = 7000
 //   函数超时 60s − 重建最坏耗时 = 允许的「已耗时」上限
 //   微信：  preorder 20s + 失败清理 21s = 41s → 上限 19s
 //   支付宝：preorder 15s + 吱口令 13s + 失败清理 21s = 49s → 上限 11s
-// 取两者更小的一侧再留点余量 → 10s。
+// 取两者更小的一侧（11s）再留余量 → 8s。
+//
+// 留这 3s 是因为 startedAt 从本 wrapper 入口起算，不含 action 的前置开销（鉴权、
+// advisory lock 等待、订单读取）——那部分也吃同一个 60s 函数预算（双谱系评审 round-14）。
 // 作废本身最坏 21s，走满就必然不重建（保守，正确）；正常 3 次往返 3~6s，照常重建。
-const LAKALA_REBUILD_MAX_ELAPSED_MS = 10000
+const LAKALA_REBUILD_MAX_ELAPSED_MS = 8000
 
 /**
  * 预下单 / 吱口令的单次超时预算（双谱系评审 round-6）。
@@ -1393,7 +1396,7 @@ async function reserveDirectOnlinePaymentIntentWithTerminalRetry(options) {
       // 旧场次此时已作废干净。重建前确认剩余预算够跑完「预下单 + 万一失败的清理」，
       // 不够就让顾客重试——重试是全新的函数预算，硬建可能在清理前被平台杀掉。
       if (Date.now() - startedAt > LAKALA_REBUILD_MAX_ELAPSED_MS) {
-        console.warn('[order/reserveDirectOnlinePaymentIntent] 作废耗时过长，本次不重建:',
+        console.warn('[order/reserveDirectOnlinePaymentIntent] 累计耗时超预算，本次不重建:',
           options.orderNo, Date.now() - startedAt)
         throw new Error('CONFLICT: PAYMENT_INTENT_CHANGED: 上一笔支付场次已关闭，请重新发起支付')
       }

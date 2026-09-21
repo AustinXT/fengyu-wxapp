@@ -500,6 +500,12 @@ Page({
 
   /** 储值卡开关切换 */
   onToggleUseCard(e: WxEvent<boolean>) {
+    // #214（round-14）：订单上已有活动支付意图时，抵扣方案已冻结在那笔渠道单里，
+    // 且「去支付」会跳过 scanAdjust —— 放行拨动只会让顾客看到的金额和实际扣款不符。
+    if (this.data.hasActivePaymentIntent) {
+      wx.showToast({ title: '本次支付进行中，如需调整请先取消订单', icon: 'none' });
+      return;
+    }
     // 余额 = 0 时禁用：忽略 change 事件
     if (this.data.cardBalance <= 0) return;
     this.setData({

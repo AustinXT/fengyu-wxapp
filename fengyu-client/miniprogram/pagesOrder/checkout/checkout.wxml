@@ -119,7 +119,7 @@ module.exports.date = function(s) {
         </view>
         <van-switch
           checked="{{useCard && cardBalance > 0}}"
-          disabled="{{cardBalance <= 0}}"
+          disabled="{{cardBalance <= 0 || hasActivePaymentIntent}}"
           size="40rpx"
           active-color="#C0322A"
           bind:change="onToggleUseCard"
@@ -142,7 +142,7 @@ module.exports.date = function(s) {
     </van-cell>
     <!-- 仅实付 > 0 时显示支付方式按钮组 -->
     <block wx:if="{{showPayMethodGroup}}">
-      <van-radio-group value="{{paymentMethod}}" bind:change="onPayMethodChange">
+      <van-radio-group value="{{paymentMethod}}" disabled="{{hasActivePaymentIntent}}" bind:change="onPayMethodChange">
         <van-cell title="微信支付" clickable bindtap="onPayMethodTap" data-method="微信">
           <van-icon slot="icon" name="wechat-pay" size="40rpx" color="#07C160" style="margin-right:16rpx" />
           <van-radio slot="right-icon" name="微信" />
