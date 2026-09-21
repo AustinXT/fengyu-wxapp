@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 vi.mock('@/db', () => ({
@@ -249,14 +251,25 @@ describe('createEmployee — 服务端输入校验', () => {
     expect(db.transaction).not.toHaveBeenCalled()
   })
 
-  it('手机号已被使用 → 拒绝', async () => {
-    ;(db.select as any).mockImplementation(
-      mockSelectFound({ employeeId: 'FY-001' }),
-    )
-    const result = await createEmployee({ name: '张三', phone: '13812345678', idCard: '110101199003078888' })
+  /**
+   * 手机号唯一性已不做事务外预查重（那是零写入探测信道），改由 DB 的
+   * `uq_staff_users_phone` 约束 + 23505 转译承担 —— 所以这条现在**必须**进事务。
+   */
+  it('手机号已被使用 → DB 抛 23505 → 友好文案（不再事务外预查）', async () => {
+    ;(db.select as any).mockImplementation(mockSelectEmpty())
+    const pgError = Object.assign(new Error('duplicate key'), {
+      code: '23505',
+      constraint: 'uq_staff_users_phone',
+      detail: 'Key (phone)=(13812345678) already exists.',
+    })
+    ;(db.transaction as any).mockRejectedValue(pgError)
+
+    const result = await createEmployee({ name: '张三', phone: '13812345678', idCard: '110101199003078888', storeId: 'store-1' })
+
     expect(result.success).toBe(false)
     expect(result.message).toContain('手机号已被其他员工使用')
-    expect(db.transaction).not.toHaveBeenCalled()
+    // 冲突必须由真实写入触发 —— 这正是「不再有零写入探测」的体现
+    expect(db.transaction).toHaveBeenCalled()
   })
 
   it('storeId 不在 scope 内 → 拒绝，不进事务', async () => {
@@ -1030,44 +1043,72 @@ describe('updateEmployee — #228 归属变更必须落在 scope 内', () => {
   })
 
   /**
-   * codex 谱系第 4 轮：查重仅移到可见性之后还不够 —— 拿一个**可见**员工配越界门店，
-   * 「手机号被占用」与「无权调至该门店」两条都零写入，照样能枚举全系统手机号。
-   * 查重现在排在所有拒绝路径之后，所以这两种情形必须响应**逐字相同**。
+   * 连追五轮的终局：**手机号查重整体删除**，改由 DB 唯一约束 + 23505 转译承担。
+   *
+   * 每一轮的修复都"看起来完整"，下一轮都能找到同构变体：
+   *   轮 3：查重在可见性前 → 任意 employeeId 可探测，且能确认「P 属于哪个 employeeId」
+   *   轮 4：移到可见性后 → 可见员工 + 越界门店，两条路径都零写入
+   *   轮 5：再移到归属校验后 → **仍有** 乐观锁命中 0 行、离职前 admin 守卫这些零写入失败路径可配对
+   * 只要那次全表预查排在任何可能失败的步骤之前，就总能配出一对「零写入但响应不同」。
+   *
+   * 下面三组对照分别覆盖轮 3/4/5 的攻击形态，全部要求响应逐字相同且零写入。
    */
-  it('可见员工 + 越界门店：手机号占用与否响应逐字相同且都零写入', async () => {
-    const probe = async (phoneTaken: boolean) => {
+  it('手机号探测的三种配对（不可见 / 越界门店 / 乐观锁未命中）均无零写入信道', async () => {
+    const probe = async (opts: {
+      oldRow: Record<string, unknown> | null
+      storeId: string | null
+      updateCount: number
+    }) => {
       vi.clearAllMocks()
       ;(getSession as any).mockResolvedValue(mockSession)
       applyScopeFixture()
       ;(isAdminScope as any).mockReturnValue(false)
-      let call = 0
-      ;(db.select as any).mockImplementation(() => {
-        call++
-        const current = call
-        const limit = vi.fn().mockImplementation(() =>
-          current === 1
-            ? Promise.resolve([{ storeId: 'store-A', orgNodeId: 'org-store-A' }])  // 可见员工
-            : Promise.resolve(phoneTaken ? [{ employeeId: 'FY-OWNER' }] : []),
-        )
-        const where = vi.fn().mockReturnValue({ limit })
-        const from = vi.fn().mockReturnValue({ where })
-        return { from }
-      })
-      mockUpdateOk()
+      if (opts.oldRow) {
+        ;(db.select as any).mockImplementation(mockSelectExistingEmployee(opts.oldRow))
+      } else {
+        ;(db.select as any).mockImplementation(mockSelectEmpty())
+      }
+      const where = vi.fn().mockResolvedValue({ count: opts.updateCount })
+      ;(db.update as any).mockReturnValue({ set: vi.fn().mockReturnValue({ where }) })
       const result = await updateEmployee(
-        'FY-001',
-        { ...FULL_FORM, phone: '13900000004', storeId: 'store-OTHER' },
+        'FY-PROBE',
+        { ...FULL_FORM, phone: '13900000006', storeId: opts.storeId ?? undefined },
         EXPECTED_AT,
       )
       return { result, wrote: (db.update as any).mock.calls.length }
     }
 
-    const taken = await probe(true)
-    const free = await probe(false)
+    // 轮 3 形态：目标不可见 —— 不管手机号占没占用都同一句话、零写入
+    const invisible = await probe({
+      oldRow: { storeId: 'store-SECRET', orgNodeId: 'org-SECRET' }, storeId: null, updateCount: 1,
+    })
+    expect(invisible.result.message).toBe('员工不存在或无权修改')
+    expect(invisible.wrote).toBe(0)
 
-    expect(taken.result).toEqual(free.result)
-    expect(free.result.message).toBe('无权将员工调至该门店')
-    expect([taken.wrote, free.wrote]).toEqual([0, 0])
+    // 轮 4 形态：目标可见但门店越界 —— 拒绝发生在任何手机号相关查询之前
+    const outOfScope = await probe({
+      oldRow: { storeId: 'store-A', orgNodeId: 'org-store-A' }, storeId: 'store-OTHER', updateCount: 1,
+    })
+    expect(outOfScope.result.message).toBe('无权将员工调至该门店')
+    expect(outOfScope.wrote).toBe(0)
+
+    // 轮 5 形态：一路合法但乐观锁未命中 —— 这条**必须**真的发起 UPDATE
+    // （手机号冲突与否现在都只能由这次 UPDATE 的结果体现，探测不再免费）
+    const staleLock = await probe({
+      oldRow: { storeId: 'store-A', orgNodeId: 'org-store-A' }, storeId: 'store-B', updateCount: 0,
+    })
+    expect(staleLock.result.message).toBe('数据已被其他人修改，请刷新后重试')
+    expect(staleLock.wrote).toBe(1)
+  })
+
+  /** 源码里不得再出现事务外的全表手机号预查（防复发） */
+  it('updateEmployee / createEmployee 都不再做事务外手机号预查重', () => {
+    const src = readFileSync(resolve(process.cwd(), 'src/actions/employees.ts'), 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/\/\/[^\n]*/g, '')
+    // 特征是「以 phone 做**等值**条件」；`searchEmployees` 的列选择与 ilike 模糊搜索不算
+    expect(src, '事务外的全表手机号等值预查又回来了 —— 它是零写入探测信道')
+      .not.toMatch(/eq\(staffWechatUsers\.phone/)
   })
 
   /** 空串是「不填」而非「一个叫 '' 的门店」，与 createEmployee 的 truthiness 口径对齐 */
@@ -1327,19 +1368,19 @@ describe('updateEmployee — §AFF-03 门店变更 scope 同步', () => {
   })
 
   /**
-   * codex 谱系第 4 轮 P3：既有 §AFF-03 用例都不传手机号，mock 只映射「旧员工 → 旧门店 → 新门店」
-   * 三次查询。合法的「改手机号 + scope 内调店」是四次序列（中间多一次查重），此前没被锁住。
+   * codex 谱系第 4 轮 P3：既有 §AFF-03 用例都不传手机号。这条把「改手机号 + 调店」合法路径
+   * 锁住（第 5 轮删掉事务外预查重后，查询序列从四次回落为三次）。
    */
-  it('改手机号 + scope 内调店（四次查询）→ 员工更新、角色 scope 同步、审计日志三者都发生', async () => {
+  it('改手机号 + scope 内调店 → 员工更新、角色 scope 同步、审计日志三者都发生', async () => {
     let call = 0
     ;(db.select as any).mockImplementation(() => {
       call++
       const current = call
       const limit = vi.fn().mockImplementation(() => {
+        // 预查重删除后回落为三次：旧员工行 → 旧门店 org_node → 新门店 org_node
         if (current === 1) return Promise.resolve([{ storeId: 'store-A', orgNodeId: 'org-store-A' }])
-        if (current === 2) return Promise.resolve([])                            // 手机号无冲突
-        if (current === 3) return Promise.resolve([{ orgNodeId: 'org-store-A' }]) // 旧门店 org_node
-        if (current === 4) return Promise.resolve([{ orgNodeId: 'org-store-B' }]) // 新门店 org_node
+        if (current === 2) return Promise.resolve([{ orgNodeId: 'org-store-A' }])
+        if (current === 3) return Promise.resolve([{ orgNodeId: 'org-store-B' }])
         return Promise.resolve([])
       })
       const where = vi.fn().mockReturnValue({ limit })

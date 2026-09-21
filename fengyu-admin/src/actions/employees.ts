@@ -630,18 +630,12 @@ export const createEmployee = withPermission(
     return { success: false, message: '员工必须归属门店或组织节点之一' }
   }
 
-  // 校验手机号唯一性（事务外，快速短路）
-  if (data.phone) {
-    const [existing] = await db
-      .select({ employeeId: staffWechatUsers.employeeId })
-      .from(staffWechatUsers)
-      .where(eq(staffWechatUsers.phone, data.phone))
-      .limit(1)
-    if (existing) {
-      return { success: false, message: '该手机号已被其他员工使用' }
-    }
-  }
-
+  /**
+   * 同 updateEmployee：手机号唯一性交给 DB 约束 + 下面的 23505 转译，不做事务外预查重。
+   * 这里的预查同样是零写入信道 —— 提交一个 scope 内归属 + 合法必填字段 + **非法 birthday**，
+   * 手机号已占用时直接返回占用文案、未占用时 INSERT 因日期转换失败整事务回滚，
+   * 两者同样零持久化写入而响应可区分（codex 谱系第 5 轮）。
+   */
   // 事务：ID 生成（advisory lock）+ 插入，原子提交防并发重复
   let employeeId: string
   try {
@@ -865,28 +859,17 @@ export const updateEmployee = withPermission(
   }
 
   /**
-   * 手机号唯一性查重 —— 必须排在**所有拒绝路径之后**（codex 谱系第 3、4 轮各推进一次）。
+   * 手机号唯一性**不再做事务外预查重** —— 交给 DB 的 `uq_staff_users_phone`
+   * （partial unique index，`WHERE phone IS NOT NULL`）+ 下面的 23505 转译。
    *
-   * 它查的是全表，任何早于它的 `return` 都会把「该手机号是否被占用」变成信道：
-   * - 轮 3：排在可见性拦截之前 → 拿任意不存在/不可见的 employeeId 即可探测，
-   *   且因为查重带 `employee_id != $target`，还能确认「手机号 P 属于哪个 employeeId」。
-   * - 轮 4：仅移到可见性之后仍不够 —— 拿一个**可见**的员工 E 配一个越界门店：
-   *   `updateEmployee(E, { phone: P, storeId: <scope 外> })`，P 被占用 → 「手机号已被使用」，
-   *   未占用 → 落到归属校验 → 「无权将员工调至该门店」。两条都零写入，照样能枚举全系统手机号。
-   *
-   * 现在它是最后一道校验，之后紧接着就是 UPDATE：想探测就必须真的改掉目标员工的手机号
-   * （有写入、进审计、破坏数据），这已是手机号唯一约束本身的固有语义，不再是白嫖的信道。
+   * 原因是那次预查是**全表**查询，无论排在哪里都会留下零写入信道（codex 谱系连追五轮）：
+   *   - 排在可见性拦截前 → 任意 employeeId 即可探测，且因带 `employee_id != $target`
+   *     还能确认「手机号 P 属于哪个 employeeId」；
+   *   - 移到可见性后 → 可见员工 + 越界门店，两条路径都零写入；
+   *   - 再移到归属校验后 → **仍有**乐观锁命中 0 行、离职前 admin 守卫这些零写入失败路径可配对。
+   * 只要它排在任何可能失败的步骤之前，就总能找到同构变体。删掉它，冲突必须由真实的 UPDATE
+   * 触发，探测就得付出「真的改掉目标员工手机号」的代价 —— 那是唯一约束本身的固有语义。
    */
-  if (data.phone) {
-    const [existing] = await db
-      .select({ employeeId: staffWechatUsers.employeeId })
-      .from(staffWechatUsers)
-      .where(and(eq(staffWechatUsers.phone, data.phone), sql`${staffWechatUsers.employeeId} != ${employeeId}`))
-      .limit(1)
-    if (existing) {
-      return { success: false, message: '该手机号已被其他员工使用' }
-    }
-  }
 
   // 乐观锁 + scope 隔离：WHERE employee_id = $1 [AND updated_at = $2] [AND scope]
   const scopeCond = employeeScopeCondition(session, staffWechatUsers.storeId, staffWechatUsers.orgNodeId)
