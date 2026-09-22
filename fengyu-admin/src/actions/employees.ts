@@ -631,10 +631,15 @@ function invalidDateMessage(
      * （第 6 轮两谱系共识）。
      *
      * 用 UTC 构造再回读三个分量比对 —— `new Date('2026-02-30')` 会**静默滚到** 3 月 2 日，
-     * 单看 `isNaN` 抓不到。走 `Date.UTC` 而不是解析字符串，避开本地时区把日期挪一天。
+     * 单看 `isNaN` 抓不到。走 UTC 而不是解析字符串，避开本地时区把日期挪一天。
+     *
+     * ⚠️ 不能用 `Date.UTC(y, ...)`：它把 0–99 的年份**映射到 1900–1999**，
+     * 于是 `0096-02-29`（合法，PG 也接受）回读年份得 1996 ≠ 96 被误拒（第 7 轮两谱系共识）。
+     * `setUTCFullYear` 不做这个映射。
      */
     const [y, m, d] = value.split('-').map(Number)
-    const probe = new Date(Date.UTC(y, m - 1, d))
+    const probe = new Date(0)
+    probe.setUTCFullYear(y, m - 1, d)
     if (
       probe.getUTCFullYear() !== y ||
       probe.getUTCMonth() !== m - 1 ||
@@ -808,12 +813,13 @@ export const createEmployee = withPermission(
         orgNodeId: data.orgNodeId || null,
         positionName: data.positionName ?? null,
         avatarUrl: data.avatarUrl ?? null,
-        birthday: data.birthday ?? null,
+        // `|| null` 而不是 `?? null`：空串被 invalidDateMessage 当「不填」放行，`??` 挡不住它 → PG 22007
+        birthday: data.birthday || null,
         skills: data.skills ?? null,
         socialInsurance: data.socialInsurance ?? false,
         isResigned: false,
         // 默认按今天作为入职日（admin 表单可覆盖），mgmt-dashboard 员工数历史化所需
-        hiredAt: data.hiredAt ?? shanghaiToday(),
+        hiredAt: data.hiredAt || shanghaiToday(),
         resignedAt: null,
       })
 
@@ -897,6 +903,19 @@ export const updateEmployee = withPermission(
     const le = data.leaveEnd || null
     if ((ls && !le) || (!ls && le)) {
       return { success: false, message: '请假开始和结束时间需同时填写' }
+    }
+    /**
+     * 格式也要校验（GLM 谱系第 7 轮）：Server Action 可被直调，垃圾串能通过「成对 + 字典序」
+     * 两道检查（垃圾串与自身可比），一路打到 UPDATE 撞 PG `22007/22008` → 500。
+     * 与 `invalidDateMessage` 同源，只是多了时分。
+     */
+    for (const [label, value] of [['请假开始时间', ls], ['请假结束时间', le]] as const) {
+      if (!value) continue
+      if (!/^\d{4}-\d{2}-\d{2}T([01]\d|2[0-3]):[0-5]\d$/.test(value)) {
+        return { success: false, message: `${label}格式不正确（需为 YYYY-MM-DDTHH:mm）` }
+      }
+      const dateError = invalidDateMessage([[label, value.slice(0, 10)]])
+      if (dateError) return { success: false, message: dateError }
     }
     // datetime-local 同格式（YYYY-MM-DDTHH:mm）字典序即时间序，可直接比较；DB chk_swu_leave_range 兜底
     if (ls && le && le <= ls) {
@@ -1042,6 +1061,15 @@ export const updateEmployee = withPermission(
   // #228：归属字段写库值必须与上面校验用的归一值一致，否则 `''` 会按 null 过校验却按 `''` 入库
   if (data.storeId !== undefined) updateData.storeId = nextStoreId
   if (data.orgNodeId !== undefined) updateData.orgNodeId = nextOrgNodeId
+  /**
+   * date 列的空串同样要归一（GLM 谱系第 7 轮）—— 与上面 leave / 归属字段同一个道理。
+   * `invalidDateMessage` 把空串当「不填」放行，若这里不归一，`''` 会直达 UPDATE 撞 PG `22007`，
+   * 而两处 catch 只翻译 23505/23503 → 500。前端清空日期时传的就是空串。
+   * ⚠️ `resignedAt` 必须放在下面那条自动推导**之前**，否则会把推导结果洗掉。
+   */
+  if (data.birthday !== undefined) updateData.birthday = data.birthday || null
+  if (data.hiredAt !== undefined) updateData.hiredAt = data.hiredAt || null
+  if (data.resignedAt !== undefined) updateData.resignedAt = data.resignedAt || null
   if (data.isResigned !== undefined && data.resignedAt === undefined) {
     updateData.resignedAt = data.isResigned ? shanghaiToday() : null
   }
@@ -1060,6 +1088,24 @@ export const updateEmployee = withPermission(
       }
     }
   }
+
+  /**
+   * 复职的角色快照必须在 UPDATE **之前**拍（codex 谱系第 7 轮 P1）。
+   *
+   * 放在 UPDATE 之后的话：残留 `manager` 的员工提交 `{ isResigned: false }` → 员工行已成功
+   * 变为在职 → `findAllRoleBindings` 遇到瞬时连接错误抛出 → 前端收到失败；**重试时旧值已是
+   * 在职**，复职分支不再进入，操作者从此看不到残留角色提示。提示丢了，权限却已恢复。
+   * 挪到 UPDATE 前，查询失败即零写入，重试仍走复职路径。
+   *
+   * ⚠️ 这里不构成零写入信道：只在「旧行已通过可见性校验 + 旧值确为离职」时才查，
+   * 越权者到不了；失败是异常而非可区分文案。
+   *
+   * ⚠️ UI 目前**没有复职入口**（「标记离职」按钮只在 `!isResigned` 时出现，编辑表单也不含
+   * `isResigned`），所以这条路径当前只能由直调触达。它是为将来的复职入口先把语义定住 ——
+   * 届时那个入口必须用 `result.message` 送达提示，别再写死「操作成功」（#249 踩过）。
+   */
+  const isReinstating = data.isResigned === false && currentEmployee.isResigned === true
+  const rolesAtReinstate = isReinstating ? await findAllRoleBindings(employeeId) : []
 
   let result: any
   try {
@@ -1252,9 +1298,8 @@ export const updateEmployee = withPermission(
    *     必须**如实披露**：员工复职即恢复这些权限，操作者不能不知情
    * 直接写死「已全部撤销」会在残留态下与事实相反，理由详见 `@/lib/employee-roles`。
    */
-  if (data.isResigned === false && currentEmployee.isResigned === true) {
-    const remaining = await findAllRoleBindings(employeeId)
-    const roles = Array.from(new Set(remaining.map((r) => r.role)))
+  if (isReinstating) {
+    const roles = Array.from(new Set(rolesAtReinstate.map((r) => r.role)))
     if (roles.length > 0) {
       await logOperation(session, 'permission.reinstated.rolesRetained', 'permission_role', employeeId, {
         oldStoreId, newStoreId: nextStoreId, roles,

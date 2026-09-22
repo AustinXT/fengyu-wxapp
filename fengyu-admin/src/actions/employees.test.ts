@@ -228,14 +228,26 @@ function mockSelectExistingEmployee(row: Record<string, unknown> = { storeId: 's
   })
 }
 
+/**
+ * @returns `inserted` —— 事务内 `tx.insert().values(...)` 真正收到的那一组值。
+ *   断言「校验放行」是不够的：空串日期能过校验却撞 PG `22007`，而 mock 看不见 22007 ——
+ *   测试全绿 + 生产 500（GLM 谱系第 7 轮）。所以要断言**写库值**已归一为 null。
+ */
 function mockTransactionSuccess(employeeId = 'FY-260315001') {
+  const inserted: Record<string, unknown>[] = []
   ;(db.transaction as any).mockImplementation(async (fn: any) => {
     const tx = {
       execute: vi.fn().mockResolvedValue([{ id: employeeId }]),
-      insert: vi.fn().mockReturnValue({ values: vi.fn().mockResolvedValue({}) }),
+      insert: vi.fn().mockReturnValue({
+        values: vi.fn().mockImplementation((v: Record<string, unknown>) => {
+          inserted.push(v)
+          return Promise.resolve({})
+        }),
+      }),
     }
     return fn(tx)
   })
+  return inserted
 }
 
 describe('createEmployee — 服务端输入校验', () => {
@@ -329,15 +341,46 @@ describe('createEmployee — 服务端输入校验', () => {
     expect(result.success).toBe(true)
   })
 
-  /** 空串 = 「不填」，不该被当成非法格式拦下（前端清空日期时传的就是空串） */
-  it('日期传空串 → 视为不填，放行', async () => {
+  /**
+   * 空串 = 「不填」，不该被当成非法格式拦下（前端清空日期时传的就是空串）。
+   *
+   * ⚠️ 只断言 `success === true` **不够**（GLM 谱系第 7 轮）：空串过了校验之后若不归一，
+   * 会直达 INSERT 撞 PG `22007`，而 mock 看不见 22007 —— 测试全绿而生产 500。
+   * 所以这里断言的是真正写进库的值：`birthday` 归一为 null，`hiredAt` 回落到今天。
+   */
+  it('日期传空串 → 视为不填，且写库值已归一（不是把空串塞进 date 列）', async () => {
     ;(db.select as any).mockImplementation(mockSelectEmpty())
-    mockTransactionSuccess()
+    const inserted = mockTransactionSuccess()
     const result = await createEmployee({
       name: '张三', phone: '13812345678', idCard: '110101199003078888',
       storeId: 'store-A', birthday: '', hiredAt: '',
     })
     expect(result.success).toBe(true)
+    expect(inserted[0]?.birthday).toBeNull()
+    expect(inserted[0]?.hiredAt).not.toBe('')   // 空串必须已回落为今天
+    expect(typeof inserted[0]?.hiredAt).toBe('string')
+  })
+
+  /** codex/GLM 第 7 轮：`Date.UTC` 把 0–99 年映射到 1900–1999，会误拒合法的四位年份 */
+  it('四位年份 0096-02-29（1996 是闰年、96 也是）→ 放行，不被 0–99 映射误拒', async () => {
+    ;(db.select as any).mockImplementation(mockSelectEmpty())
+    const inserted = mockTransactionSuccess()
+    const result = await createEmployee({
+      name: '张三', phone: '13812345678', idCard: '110101199003078888',
+      storeId: 'store-A', birthday: '0096-02-29',
+    })
+    expect(result.success).toBe(true)
+    expect(inserted[0]?.birthday).toBe('0096-02-29')
+  })
+
+  it('四位年份 0099-02-29（99 非闰年，而映射目标 1999 也非闰年）→ 仍拒', async () => {
+    ;(db.select as any).mockImplementation(mockSelectEmpty())
+    const result = await createEmployee({
+      name: '张三', phone: '13812345678', idCard: '110101199003078888',
+      storeId: 'store-A', birthday: '0099-02-29',
+    })
+    expect(result.success).toBe(false)
+    expect(result.message).toBe('生日不是一个存在的日期')
   })
 
   it('入职日期格式非法 → 同样拒（两个日期列都校验）', async () => {
@@ -484,6 +527,61 @@ describe('updateEmployee — 服务端输入校验 + 错误处理', () => {
     expect(result.success).toBe(false)
     expect(result.message).toContain('身份证号格式不正确')
     expect(db.update).not.toHaveBeenCalled()
+  })
+
+  /**
+   * update 侧的空串归一（GLM 谱系第 7 轮 P2-A）：`updateData = {...data}` 原先只归一
+   * leave / 归属四个字段，三个 date 列的 `''` 会直达 UPDATE 撞 PG `22007` → 500。
+   * 断言写库值而不只是 success。
+   */
+  it('update 传空串日期 → 写库值归一为 null（不是把空串塞进 date 列）', async () => {
+    ;(db.select as any).mockImplementation(mockSelectExistingEmployee())
+    const where = vi.fn().mockResolvedValue({ count: 1 })
+    const set = vi.fn().mockReturnValue({ where })
+    ;(db.update as any).mockReturnValue({ set })
+
+    const result = await updateEmployee('FY-001', { birthday: '', hiredAt: '', resignedAt: '' })
+
+    expect(result.success).toBe(true)
+    expect(set).toHaveBeenCalledWith(expect.objectContaining({
+      birthday: null, hiredAt: null, resignedAt: null,
+    }))
+  })
+
+  /**
+   * 请假区间以前只校验「成对 + 字典序」，垃圾串与自身可比 → 一路打到 UPDATE 撞
+   * PG `22007/22008` → 500（GLM 谱系第 7 轮 P2-B）。Server Action 可直调，前端 widget
+   * 不产生这种值不代表服务端不用挡。
+   */
+  it.each([
+    ['垃圾串', '不是时间', '不是时间'],
+    ['缺时分', '2026-03-01', '2026-03-02'],
+    ['不存在的日期部分', '2026-02-30T10:00', '2026-03-01T10:00'],
+    ['小时越界', '2026-03-01T24:00', '2026-03-02T10:00'],
+    ['分钟越界', '2026-03-01T10:60', '2026-03-02T10:00'],
+  ])('请假时间 %s → 打库前就拒', async (_label, ls, le) => {
+    ;(db.select as any).mockImplementation(mockSelectExistingEmployee())
+    ;(db.update as any).mockReturnValue({
+      set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({ count: 1 }) }),
+    })
+
+    const result = await updateEmployee('FY-001', { leaveStart: ls, leaveEnd: le })
+
+    expect(result.success).toBe(false)
+    expect(result.message).toMatch(/请假(开始|结束)时间(格式不正确|不是一个存在的日期)/)
+    expect(db.update).not.toHaveBeenCalled()
+  })
+
+  it('合法的请假区间 → 放行', async () => {
+    ;(db.select as any).mockImplementation(mockSelectExistingEmployee())
+    const where = vi.fn().mockResolvedValue({ count: 1 })
+    ;(db.update as any).mockReturnValue({ set: vi.fn().mockReturnValue({ where }) })
+
+    const result = await updateEmployee('FY-001', {
+      leaveStart: '2026-03-01T09:00', leaveEnd: '2026-03-03T18:30',
+    })
+
+    expect(result.success).toBe(true)
   })
 
   /** #228 的教训：只修一侧等于没修 —— update 侧同样在打库前校验三个日期列 */
@@ -1802,6 +1900,48 @@ describe('#249 调店不自动搬迁角色绑定 —— 只留审计 + 回传提
       mockSession, 'permission.reinstated.rolesRetained', 'permission_role', 'FY-001',
       expect.objectContaining({ roles: ['manager', 'finance'] }),
     )
+  })
+
+  /**
+   * 角色快照必须在 UPDATE **之前**拍（codex 谱系第 7 轮 P1）。
+   *
+   * 放在之后的话：查询遇到瞬时错误 → 前端收到失败，但员工行已经变成在职；
+   * **重试时旧值已是在职**，复职分支不再进入 —— 提示从此永久丢失，而权限已经恢复。
+   */
+  it('复职时角色快照查询失败 → 零写入（不能留下「已复职但报错」）', async () => {
+    mockSelectByTable({
+      employee: [{ storeId: 'store-A', orgNodeId: 'org-store-A', isResigned: true }],
+      store: [[{ orgNodeId: 'org-store-A' }]],
+      bindings: [],
+    })
+    ;(findAllRoleBindings as any).mockRejectedValue(new Error('connection terminated'))
+    mockUpdateOnce()
+
+    await expect(updateEmployee('FY-001', { isResigned: false })).rejects.toThrow()
+    expect(db.update).not.toHaveBeenCalled()
+  })
+
+  /** 调用顺序的正向断言：快照在前、UPDATE 在后 */
+  it('复职的角色快照早于 UPDATE 发生', async () => {
+    const order: string[] = []
+    mockSelectByTable({
+      employee: [{ storeId: 'store-A', orgNodeId: 'org-store-A', isResigned: true }],
+      store: [[{ orgNodeId: 'org-store-A' }]],
+      bindings: [],
+    })
+    ;(findAllRoleBindings as any).mockImplementation(() => {
+      order.push('snapshot')
+      return Promise.resolve([])
+    })
+    ;(db.update as any).mockImplementation(() => {
+      order.push('update')
+      return { set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({ count: 1 }) }) }
+    })
+
+    const result = await updateEmployee('FY-001', { isResigned: false })
+
+    expect(result.success).toBe(true)
+    expect(order).toEqual(['snapshot', 'update'])
   })
 
   /** 复职**不调店**同样需要提示 —— 判据挂在调店分支里就漏了一半 */

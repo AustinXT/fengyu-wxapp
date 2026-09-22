@@ -12,6 +12,7 @@ import { Textarea } from "@/components/ui/textarea"
 import { Select } from "@/components/ui/select"
 import { SkillSelect } from "@/components/ui/skill-select"
 import { OrgTreeSelect } from "@/components/ui/org-tree-select"
+import { EmployeeOwnershipFields } from "@/components/employee-ownership-fields"
 import { ImageUpload, toHttpUrl } from "@/components/ui/image-upload"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -19,7 +20,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 import { DataTable, type Column } from "@/components/ui/data-table"
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogTitle, AlertDialogDescription, AlertDialogFooter } from "@/components/ui/alert-dialog"
 import { Separator } from "@/components/ui/separator"
-import { formatDate, buildOrgPath, findAncestorMarketId, applyOrgNodeSelection, applyStoreSelection } from "@/lib/utils"
+import { formatDate, buildOrgPath, findAncestorMarketId } from "@/lib/utils"
 import { shanghaiToday } from "@/lib/datetime"
 import { formatPhoneSafe } from "@/lib/format"
 import { actionErrorMessage, actionErrorType } from "@/lib/action-error"
@@ -507,43 +508,18 @@ export default function EmployeeDetailPage({
                   <label className="text-sm font-medium">离职原因</label>
                   <Input value={employee.resignationReason ?? "—"} disabled />
                 </div>
-                <div className="space-y-2">
-                  <label className="text-sm font-medium">所属组织</label>
-                  {isEditing ? (
-                    <OrgTreeSelect
-                      orgNodes={orgNodes}
-                      value={form.orgNodeId}
-                      onChange={(id) =>
-                        // 联动逻辑整体在 applyOrgNodeSelection 里（可单测），这里只合并补丁
-                        setForm((prev) => ({ ...prev, ...applyOrgNodeSelection(prev, id, orgNodes, stores) }))
-                      }
-                      placeholder="请选择所属组织"
-                    />
-                  ) : (
-                    <Input value={buildOrgPath(employee.orgNodeId, orgNodes)} disabled />
-                  )}
-                </div>
-                <div className="space-y-2">
-                  <label className="text-sm font-medium">所属门店</label>
-                  {isEditing ? (
-                    <Select
-                      value={form.storeId}
-                      onChange={(e) =>
-                        // #259 双向联动：口径在 applyStoreSelection 里，这里只合并补丁
-                        setForm((prev) => ({ ...prev, ...applyStoreSelection(prev, e.target.value, orgNodes, stores) }))
-                      }
-                    >
-                      <option value="">请选择门店</option>
-                      {filteredStores.map((s) => (
-                        <option key={s.storeId} value={s.storeId}>
-                          {s.storeName}
-                        </option>
-                      ))}
-                    </Select>
-                  ) : (
-                    <Input value={employee.storeName ?? ""} disabled />
-                  )}
-                </div>
+                {/* #259 归属双向联动整体在该组件内（含交互测试），页面只合并回传的补丁 */}
+                <EmployeeOwnershipFields
+                  value={{ storeId: form.storeId, orgNodeId: form.orgNodeId }}
+                  onChange={(patch) => setForm((prev) => ({ ...prev, ...patch }))}
+                  orgNodes={orgNodes}
+                  stores={stores}
+                  storeOptions={filteredStores}
+                  readonlyView={isEditing ? undefined : {
+                    orgPath: buildOrgPath(employee.orgNodeId, orgNodes),
+                    storeName: employee.storeName ?? "",
+                  }}
+                />
                 <div className="space-y-2">
                   <label className="text-sm font-medium">职位</label>
                   {isEditing ? (
