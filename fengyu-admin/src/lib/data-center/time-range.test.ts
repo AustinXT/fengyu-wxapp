@@ -128,8 +128,10 @@ describe('resolveTimeRange', () => {
    * lastYear（同比基期）走的是与 previous 同一个 deltaPct，所以「不得长于当期」这条约束
    * 对它同等适用。#283 的四轮评审最初全都只扫 previous，漏掉了这里 —— 补上逐日扫描。
    *
-   * week / custom 的 lastYear 在区间跨 2 月底时会多/少含一个 2/29（既有缺陷，不在 #283 范围，
-   * 量级 12.5% 但 1826 天里只命中 5 天）；today / month 的 lastYear 恒等长。
+   * week / custom 的 lastYear 在区间跨 2 月底时会多/少含一个 2/29（既有缺陷，不在 #283 范围）：
+   * 下面扫描的 1826 天里命中 9 天，但「本周」当期在月初只有 2~5 天，1 天的差就是巨幅偏差 ——
+   * 最坏 2024-03-01 的 +25%（5 天比 4 天）、2028-03-01 的 +50%（3 天比 2 天）。
+   * today / month 的 lastYear 恒等长（2/29 经 addYears 归一化到 3/1 恰好补齐长度，但端点语义漂了）。
    */
   it('lastYear 的长度：today/month 恒等长，week 跨闰年 ±1 天（既有缺陷，钉住量级）', () => {
     const days = (r: { start: string; end: string }) =>
@@ -141,7 +143,12 @@ describe('resolveTimeRange', () => {
     expect(w.current).toEqual({ start: '2025-02-24', end: '2025-03-02' })
     expect(w.lastYear).toEqual({ start: '2024-02-24', end: '2024-03-02' })
     expect(days(w.current)).toBe(7)
-    expect(days(w.lastYear!)).toBe(8) // ← 缺陷所在：日均持平时 yoy 会算出约 -12.5% 假下滑
+    expect(days(w.lastYear!)).toBe(8) // ← 缺陷所在：日均持平时该锚点 yoy 算出约 -12.5%（非最坏）
+
+    // 最坏锚点：当期只有 5 天时，1 天的基期差就是 +25%
+    const worst = resolveTimeRange({ preset: 'week' }, new Date('2024-03-01T04:00:00Z'))
+    expect(days(worst.current)).toBe(5) // 2024-02-26(周一)~03-01
+    expect(days(worst.lastYear!)).toBe(4) // [2023-02-26, 2023-03-01]，去年少一个 2/29
 
     // custom 同源（区间跨 2 月底）
     const c = resolveTimeRange(
