@@ -170,7 +170,8 @@ admin 管理权限分配/撤销、WorkFine → PG 数据同步、操作日志查
   另：**复职**必须给权限提示，判据与调不调店无关（挂在调店分支里会漏掉「复职不调店」），
   且必须**实查** `permission_roles` 而不是从 `is_resigned` 推断 ——
   「离职 ⇒ 角色已清空」这个不变量会破：写 `is_resigned=true` 的 UPDATE 与删角色的事务是两次
-  独立提交，`db/scripts/sync-workfine.js:381` 的 UPSERT 更是直接改 `is_resigned` 而完全不碰角色。
+  独立提交（**该来源已在本次事务化后堵上**，但存量数据里仍可能留有那时产生的残留行），
+  `db/scripts/sync-workfine.js:381` 的 UPSERT 更是直接改 `is_resigned` 而完全不碰角色（**仍存在**）。
   实查为空 → 提示「已全部撤销，需重新授权」；非空 → 提示「离职期间仍保留…，复职后即恢复生效」。
   同理 §AFF-03 的离职分支判据是 `rolesRevokedByRequest`（= `data.isResigned === true`，
   「角色是本请求刚删的」，同一 action 内可信）—— 注意**不是**状态迁移 `isResigning`

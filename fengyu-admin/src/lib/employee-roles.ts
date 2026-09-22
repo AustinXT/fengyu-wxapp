@@ -13,8 +13,10 @@ type RoleQueryExecutor = Pick<typeof db, 'select'>
  * `updateEmployee` 标记离职时会在事务里删光该员工的 `permission_roles`，于是很容易把
  * 「`is_resigned = true`」直接当成「没有任何角色绑定」来用。第 6 轮两个评审谱系**各自独立**
  * 指出这个推断会破，来源有两条且都真实可达：
- *   1. 写 `is_resigned = true` 的 UPDATE 与删角色的事务是**两次独立提交** ——
- *      后者失败时前者已经持久化，留下「离职行 + 有效角色」
+ *   1. **（历史实现，已修）** 写 `is_resigned = true` 的 UPDATE 与删角色曾是两次独立提交，
+ *      后者失败时前者已持久化 → 「离职行 + 有效角色」。
+ *      现在 `updateEmployee` 的整个写入段在同一个事务里，这条来源已堵上；
+ *      但存量数据里仍可能留有那时产生的残留行，所以判据照旧不能押注
  *   2. `db/scripts/sync-workfine.js:381` 的 UPSERT 直接 `is_resigned = EXCLUDED.is_resigned`，
  *      **完全不碰 permission_roles** —— WorkFine 那边标某人离职，此人在 admin 的角色原样留着
  *

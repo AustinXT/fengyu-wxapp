@@ -601,9 +601,20 @@ const FK_GONE_MESSAGE = '所选门店或组织节点已被删除，请刷新后�
 /**
  * `staff_wechat_users` **自己**指向门店/组织节点的两个外键，精确名（已用 `pg_constraint` 核对）。
  * 只有这两个撞 `23503` 才等于「用户选的门店/节点被删了」。
+ *
+ * ⚠️ 不能写成 `constraint.includes('staff_wechat_users')` —— 审计表那条 FK 的真名
+ * `operation_logs_operator_employee_id_staff_wechat_users_employee_id_fk` 也含该子串。
  */
+const EMPLOYEE_OWNERSHIP_FK_CONSTRAINTS = new Set([
+  'staff_wechat_users_store_id_stores_store_id_fk',
+  'staff_wechat_users_org_node_id_org_nodes_id_fk',
+])
+
+/** 「系统至少留一名在职超级管理员」这把锁的 key —— 两条减少活跃 admin 的路径共用 */
+const ACTIVE_ADMIN_LOCK_KEY = 'admin:active_count'
+
 /**
- * 「系统至少留一名在职超级管理员」这个不变量的串行化锁。
+ * 取上面那把锁。
  *
  * 光把计数查询传进 `tx` **不够**（codex / GLM 第 10 轮各自独立指出）：
  * READ COMMITTED 下每条语句只看已提交快照，两笔并发离职/删除分别针对 admin A、B 时
@@ -618,12 +629,6 @@ const FK_GONE_MESSAGE = '所选门店或组织节点已被删除，请刷新后�
 async function lockActiveAdminCount(tx: EmployeeUpdateTx) {
   await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${ACTIVE_ADMIN_LOCK_KEY})::bigint)`)
 }
-const ACTIVE_ADMIN_LOCK_KEY = 'admin:active_count'
-
-const EMPLOYEE_OWNERSHIP_FK_CONSTRAINTS = new Set([
-  'staff_wechat_users_store_id_stores_store_id_fk',
-  'staff_wechat_users_org_node_id_org_nodes_id_fk',
-])
 
 /** `db.transaction` 回调收到的句柄；事务内各处只用到这几个方法 */
 type EmployeeUpdateTx = Parameters<Parameters<typeof db.transaction>[0]>[0]
@@ -1133,9 +1138,10 @@ export const updateEmployee = withPermission(
    *
    * 两谱系第 13 轮的共同诊断：这个函数此前的缺陷几乎全是同一类病 ——
    * 「同一份状态有两套真相（事务外快照 vs 锁内重读），靠注释纪律而非结构来保持同步」。
-   * 现在锁内会构造一个 `transition` 对象作为**唯一事实源**，所有消费者（自洽复查、
-   * scope 复查、§AFF-03、复职审计、logUpdate）只接它；这里的 `preTx*` 作用域收窄到
-   * 下面几行早拒判断，误用一眼可见。
+   * 现在锁内的派生值收成一个 `transition` 对象：归属自洽复查、scope 复查、§AFF-03、
+   * 复职审计都只接它；`logUpdate` 接的是同样来自锁内的 `lockedRow`（审计 before）与
+   * 真正写库的 `updateData`。**关键不是「全都叫 transition」，而是「全都来自锁内」** ——
+   * 事务外这组 `preTx*` 的作用域收窄到下面几行早拒判断，误用一眼可见。
    */
   const preTxNextStoreId = data.storeId === undefined ? oldStoreId : (data.storeId || null)
   const preTxNextOrgNodeId = data.orgNodeId === undefined ? oldOrgNodeId : (data.orgNodeId || null)
@@ -1315,7 +1321,7 @@ export const updateEmployee = withPermission(
    * `employee.update` 全部审计，**都在同一个事务里**（codex 谱系第 8、9 轮）。
    *
    * 逐条踩过的坑：
-   *   - 第 8 轮：`UPDATE is_resigned = true` 与删角色是两次独立提交 —— 后者失败则员工保留
+   *   - 第 8 轮（**已修**）：`UPDATE is_resigned = true` 与删角色曾是两次独立提交 —— 后者失败则员工保留
    *     全部角色，而 `login` / `getSession` 都不校验 `is_resigned`（本 PR 范围外的独立缺口），
    *     账号继续拥有后台权限
    *   - 第 9 轮：审计留在事务外 —— 提交后 `logUpdate` 或 `reinstated.*` 插入失败，会留下
@@ -1327,9 +1333,9 @@ export const updateEmployee = withPermission(
    *
    * 事务外只剩 `revalidatePath` 与文案组装 —— 都不会写库。
    *
-   * ⚠️ 复职的角色快照仍必须在 UPDATE **之前**（第 7 轮）：进了事务不改变这个要求，
-   * 因为要的是「查询失败时这次操作整体不生效」。放进事务后顺带解决了它与 UPDATE
-   * 不串行的问题（第 9 轮 P2：快照读到的角色可能在 UPDATE 前被别人撤销）。
+   * ⚠️ 复职的角色快照拍在 **CAS 成功之后**：第 7 轮曾要求它排在 UPDATE 之前，那是因为
+   * 当时写入还没进事务、「零写入」只能靠位置保证；现在整段在事务里，查询失败由回滚承担，
+   * 放到 CAS 之后能让快照与「员工已在职」更接近同一时点（第 10 轮）。
    */
   const txResult = await runEmployeeUpdateTx()
   if ('failure' in txResult) return txResult.failure
@@ -1650,8 +1656,9 @@ export const updateEmployee = withPermission(
          * 这是同一个 action 内部的事实，可信。
          *
          * ⚠️ 不要扩成 `|| currentEmployee.isResigned === true`（第 5 轮我这么写过）：
-         * 那是在押注「离职 ⇒ 角色已清空」这个**会破的**不变量 —— 独立提交的时序、
-         * `sync-workfine.js` 直接改 `is_resigned` 而不碰角色，两条来源都真实可达
+         * 那是在押注「离职 ⇒ 角色已清空」这个**会破的**不变量 ——
+         * 当年那次「两次独立提交」的时序已由本次事务化堵上，但它产生的存量残留仍在，
+         * 而 `sync-workfine.js` 直接改 `is_resigned` 不碰角色这条来源**至今有效**
          * （第 6 轮两谱系各自独立指出；证据与生产实测见 `@/lib/employee-roles`）。
          * 押注它的后果是：残留绑定的员工调店时走进这一支，旧店绑定**不再被披露**，
          * 操作者以为角色早已撤销，实际静默保留。
@@ -1749,7 +1756,7 @@ export const updateEmployee = withPermission(
    *
    * 两种结果分别提示（第 6 轮两谱系共识）：
    *   - 实查为空 → 角色真空，需要重新授权
-   *   - 实查非空 → 残留绑定（独立提交失败 / `sync-workfine.js` 标离职不清角色），
+   *   - 实查非空 → 残留绑定（历史的独立提交失败遗留 / `sync-workfine.js` 标离职不清角色），
    *     必须**如实披露**：员工复职即恢复这些权限，操作者不能不知情
    * 直接写死「已全部撤销」会在残留态下与事实相反，理由详见 `@/lib/employee-roles`。
    */
