@@ -2008,6 +2008,123 @@ describe('order.detail', () => {
   })
 })
 
+/**
+ * issue #215：顾客端的支付倒计时必须只在「这一刻的懒清理真会关掉它」时出现。
+ *
+ * 原本 order.detail 只看 status 就按「下单时间 + 10 分钟」下发 expire_at，
+ * 而 closeExpiredOrder 还有另外两条守卫（员工单 / 在途支付意图）。两边一错开，
+ * 顾客就看着一个永远不会兑现的倒计时，且 order-detail 的「归零重载」会因为
+ * 状态永远不变而按网络 RTT 持续打 order.detail。
+ */
+describe('order.detail — 支付倒计时下发口径 (#215)', () => {
+  const TEN_MIN_MS = 10 * 60 * 1000
+  // 刚下单（未过期）——避免 detail 里的懒清理分支干扰，专注断言下发口径
+  const FRESH_ORDER_TIME = new Date(Date.now() - 60 * 1000).toISOString()
+
+  function mockDetailQueries(orderOverrides) {
+    pg.query.mockResolvedValueOnce([{
+      sale_order_id: 'FY-215',
+      client_user_id: 'user-001',
+      sale_order_datetime: FRESH_ORDER_TIME,
+      preferred_employee_id: null,
+      coupon_id: null,
+      opened_by: null,
+      lakala_out_order_no: null,
+      ...orderOverrides,
+    }])
+    pg.query.mockResolvedValueOnce([])  // items
+    pg.query.mockResolvedValueOnce([])  // 行级退款额
+    pg.query.mockResolvedValueOnce([])  // payments
+  }
+
+  test('顾客自助单 + 无在途支付意图 → 下发「下单时间 + 10 分钟」', async () => {
+    mockDetailQueries({ status: '待支付' })
+    const ctx = createBoundCtx({ orderNo: 'FY-215' })
+    await routes.detail(ctx)
+
+    expect(ctx.result.order.expire_at).toBe(
+      new Date(new Date(FRESH_ORDER_TIME).getTime() + TEN_MIN_MS).toISOString()
+    )
+  })
+
+  test('员工开单 → 不下发 expire_at（懒清理恒跳过员工单，倒计时归零也关不掉，issue #27）', async () => {
+    mockDetailQueries({ status: '待支付', opened_by: 'E001' })
+    const ctx = createBoundCtx({ orderNo: 'FY-215' })
+    await routes.detail(ctx)
+
+    expect(ctx.result.order.expire_at).toBeNull()
+  })
+
+  test('自助单但有在途支付意图 → 不下发（UPDATE 的 lakala_out_order_no IS NULL 挡住关单）', async () => {
+    mockDetailQueries({ status: '待支付', lakala_out_order_no: 'FY-215_1750000000' })
+    const ctx = createBoundCtx({ orderNo: 'FY-215' })
+    await routes.detail(ctx)
+
+    expect(ctx.result.order.expire_at).toBeNull()
+  })
+
+  test('lakala_out_order_no 是空串 → 不下发（SQL 里空串不是 NULL，同样关不掉）', async () => {
+    mockDetailQueries({ status: '待支付', lakala_out_order_no: '' })
+    const ctx = createBoundCtx({ orderNo: 'FY-215' })
+    await routes.detail(ctx)
+
+    expect(ctx.result.order.expire_at).toBeNull()
+  })
+
+  test('非待支付状态 → 不下发', async () => {
+    mockDetailQueries({ status: '部分支付' })
+    const ctx = createBoundCtx({ orderNo: 'FY-215' })
+    await routes.detail(ctx)
+
+    expect(ctx.result.order.expire_at).toBeNull()
+  })
+
+  test('判据函数正负例矩阵', () => {
+    const eligible = routes.isPendingOrderAutoCloseEligible
+    expect(eligible({ status: '待支付', opened_by: null, lakala_out_order_no: null })).toBe(true)
+    expect(eligible({ status: '待支付' })).toBe(true)  // 列缺失（undefined）等同 NULL
+    expect(eligible({ status: '待支付', opened_by: 'E001', lakala_out_order_no: null })).toBe(false)
+    expect(eligible({ status: '待支付', opened_by: null, lakala_out_order_no: 'X' })).toBe(false)
+    expect(eligible({ status: '待支付', opened_by: null, lakala_out_order_no: '' })).toBe(false)
+    expect(eligible({ status: '待支付', opened_by: null, lakala_out_order_no: '   ' })).toBe(false)
+    expect(eligible({ status: '已关闭', opened_by: null, lakala_out_order_no: null })).toBe(false)
+  })
+
+  test('expire_at 下发口径与 closeExpiredOrder 的三条守卫同源（字面断言）', () => {
+    const { readFileSync } = require('fs')
+    const { resolve } = require('path')
+    const source = readFileSync(resolve(__dirname, '../../routes/order.js'), 'utf8')
+    // 注释里会提到这些守卫，断言必须落在代码本身上
+    const stripComments = (s) => s.split('\n').map((l) => l.replace(/\/\/.*$/, '')).join('\n')
+
+    const helperBody = stripComments(source.slice(
+      source.indexOf('function isPendingOrderAutoCloseEligible(order) {'),
+      source.indexOf('async function closeExpiredOrder(orderNo) {'),
+    ))
+    const closeBody = stripComments(source.slice(
+      source.indexOf('async function closeExpiredOrder(orderNo) {'),
+      source.indexOf('async function closeExpiredOrdersByUser(userId) {'),
+    ))
+
+    expect(helperBody).not.toBe('')
+    expect(closeBody).not.toBe('')
+
+    // closeExpiredOrder 的三条守卫
+    expect(closeBody).toContain("status = '待支付'")
+    expect(closeBody).toContain('opened_by IS NULL')
+    expect(closeBody).toContain('lakala_out_order_no IS NULL')
+
+    // 判据函数逐条对应
+    expect(helperBody).toContain("order.status === '待支付'")
+    expect(helperBody).toContain('!order.opened_by')
+    expect(helperBody).toContain('order.lakala_out_order_no == null')
+
+    // ⚠️ 不能退回 #214 的 `String(x || '').trim()` 语义：那套会把空串判成「没有意图」，
+    // 而 SQL 的 IS NULL 不会 —— 一旦换回去，脏值上又会出现「倒计时归零但关不掉」的矛盾态
+    expect(helperBody).not.toContain('trim(')
+  })
+})
+
 describe('order.cancel', () => {
   const lakalaEnv = {
     LAKALA_API_BASE: 'https://x', LAKALA_APPID: 'OP', LAKALA_SERIAL_NO: 'sn',
