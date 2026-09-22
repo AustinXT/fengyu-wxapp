@@ -504,6 +504,18 @@ describe('createEmployee — 服务端输入校验', () => {
     expect((logOperation as any).mock.calls[0][5]).toBe(handedTx)
   })
 
+  /** 与 update 侧同构（#228：只修一侧等于没修）—— GLM 第 12 轮 P2-2 */
+  it('create 侧 skills 传非数组 → 打库前拒，不进事务', async () => {
+    ;(db.select as any).mockImplementation(mockSelectEmpty())
+    const result = await createEmployee({
+      name: '张三', phone: '13812345678', idCard: '110101199003078888',
+      storeId: 'store-A', skills: '美容' as any,
+    })
+    expect(result.success).toBe(false)
+    expect(result.message).toBe('技能标签格式不正确')
+    expect(db.transaction).not.toHaveBeenCalled()
+  })
+
   it('正常创建 → 成功', async () => {
     ;(db.select as any).mockImplementation(mockSelectEmpty())
     mockTransactionSuccess('FY-260315001')
@@ -1150,19 +1162,35 @@ describe('updateEmployee — 服务端输入校验 + 错误处理', () => {
     expect(Object.keys(set.mock.calls.at(-1)![0]), `${key} 必须被白名单丢弃`).not.toContain(key)
   })
 
-  /** 白名单不能把合法字段一起丢掉 */
-  it('白名单放行全部 17 个合法字段', async () => {
-    ;(db.select as any).mockImplementation(mockSelectExistingEmployee())
+  /**
+   * 白名单不能把合法字段一起丢掉。
+   *
+   * ⚠️ 上一版这条用 `FULL_FORM` 断言，标题说「全部 17 个」而 `FULL_FORM` 只有 15 键 ——
+   * 缺 `isResigned` / `resignedAt` / `resignationReason`，把它们从白名单里删掉全套仍绿
+   * （`resignedAt` 有归一行兜底、`resignationReason` 被 invariant 无条件清空、角色删除分支只看
+   * `data.isResigned`）。生产上的后果是「标记离职」写不进 `is_resigned`、「编辑离职原因」静默失效
+   * （GLM 谱系第 12 轮 P2-1）。这条显式列出全部 18 个键逐一断言。
+   */
+  it('白名单放行全部 18 个合法字段（含离职三字段 + skills）', async () => {
+    ;(db.select as any).mockImplementation(mockSelectExistingEmployee({
+      storeId: 'store-A', orgNodeId: 'org-store-A', isResigned: true, resignedAt: '2025-06-30',
+    }))
     const set = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({ count: 1 }) })
     ;(db.update as any).mockReturnValue({ set })
 
-    const result = await updateEmployee('FY-001', { ...FULL_FORM }, EXPECTED_AT)
+    const payload = {
+      ...FULL_FORM,
+      isResigned: true, resignedAt: '2025-06-30', resignationReason: '个人原因',
+      skills: ['美容'],
+    }
+    const result = await updateEmployee('FY-001', payload)
 
     expect(result.success).toBe(true)
     const written = Object.keys(set.mock.calls.at(-1)![0])
-    for (const k of Object.keys(FULL_FORM)) {
+    for (const k of Object.keys(payload)) {
       expect(written, `${k} 是合法字段，不该被白名单误丢`).toContain(k)
     }
+    expect(written.length, '写库键数应与传入的合法键数一致').toBe(Object.keys(payload).length)
   })
 
   /** `skills` 传非数组会让 PG 解析数组字面量失败（22P02）→ 两处 catch 都不翻译 → 500 */
@@ -1314,6 +1342,57 @@ describe('updateEmployee — 服务端输入校验 + 错误处理', () => {
 
     expect(result.success).toBe(true)
     expect(result.message, '锁内旧值是已离职 → 这是复职，必须给提示').toContain('仍保留以下角色绑定')
+  })
+
+  /** 三个 notNull boolean 列：直调传 null 会撞 23502 未翻译 → 500（GLM 第 12 轮 P3-1） */
+  it.each(['isResigned', 'isOnBusinessTrip', 'socialInsurance'])(
+    '%s 传 null → 打库前拒，不进事务',
+    async (key) => {
+      ;(db.select as any).mockImplementation(mockSelectExistingEmployee())
+      ;(db.update as any).mockReturnValue({
+        set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({ count: 1 }) }),
+      })
+
+      const result = await updateEmployee('FY-001', { [key]: null } as any)
+
+      expect(result.success).toBe(false)
+      expect(result.message).toBe('参数格式不正确')
+      expect(db.update).not.toHaveBeenCalled()
+    },
+  )
+
+  /**
+   * 归属 post-image 必须按**锁内**旧值重算并复查（codex 第 12 轮 P1）。
+   *
+   * 两笔不带 `expectedUpdatedAt` 的并发请求分别改 store 与 org，各自按自己看到的旧状态都合法，
+   * 合成后却是「store=B + org=A店的部门」—— 正是 #259 要禁的跨门店双重可见。
+   * 这里模拟第二笔：事务外看到 `{store: A, org: 市场部门}`（改 org 合法），
+   * 锁内已被第一笔改成 `{store: B, org: 市场部门}` → 复算出的组合违反自洽 → 必须拒。
+   */
+  it('并发插队后锁内重算发现组合违反自洽 → 拒绝（不制造跨门店双重可见）', async () => {
+    let selectCall = 0
+    ;(db.select as any).mockImplementation(() => ({
+      from: vi.fn().mockImplementation((table: unknown) => {
+        if (table === stores) return selectChain([{ orgNodeId: 'org-store-B' }])
+        if (table !== staffWechatUsers) return selectChain([])
+        const outsideTx = selectCall++ === 0
+        return selectChain([outsideTx
+          ? { storeId: 'store-A', orgNodeId: 'market-1', isResigned: false, resignedAt: null }
+          // 第一笔已把门店改成 store-B
+          : { storeId: 'store-B', orgNodeId: 'market-1', isResigned: false, resignedAt: null }])
+      }),
+    }))
+    // 新 orgNodeId 的门店祖先是 store-A 的节点，与锁内的 store-B 不符
+    ;(findNearestStoreAncestor as any).mockResolvedValue({ exists: true, storeAncestorId: 'org-store-A' })
+    ;(db.update as any).mockReturnValue({
+      set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({ count: 1 }) }),
+    })
+
+    const result = await updateEmployee('FY-001', { orgNodeId: 'dept-A' })
+
+    expect(result.success).toBe(false)
+    expect(result.message).toBe('所选组织节点属于另一个门店，请改选本门店或其所属部门')
+    expect(db.update).not.toHaveBeenCalled()
   })
 
   /** 乐观锁未命中时不该删角色 —— CAS 没改到行，角色也不该动 */

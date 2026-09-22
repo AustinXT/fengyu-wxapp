@@ -686,6 +686,7 @@ function invalidDateMessage(
 async function assertOwnershipConsistent(
   storeId: string | null,
   orgNodeId: string | null,
+  executor: Pick<typeof db, 'select'> & Pick<typeof db, 'execute'> = db,
 ): Promise<string | null> {
   /**
    * ## 存在性先于一致性
@@ -700,7 +701,7 @@ async function assertOwnershipConsistent(
    * 之后，能问到的 id 本来就在操作者可见范围内。
    */
   if (storeId) {
-    const [store] = await db
+    const [store] = await executor
       .select({ orgNodeId: stores.orgNodeId })
       .from(stores)
       .where(eq(stores.storeId, storeId))
@@ -708,7 +709,7 @@ async function assertOwnershipConsistent(
     if (!store) return '所选门店不存在'
 
     if (orgNodeId) {
-      const ancestor = await findNearestStoreAncestor(orgNodeId)
+      const ancestor = await findNearestStoreAncestor(orgNodeId, executor)
       if (!ancestor.exists) return '所选组织节点不存在，请刷新后重新选择'
       // 无门店祖先（挂市场下的部门、或直接挂市场）→ 与门店维度无关，放行
       if (ancestor.storeAncestorId === null) return null
@@ -726,7 +727,7 @@ async function assertOwnershipConsistent(
   }
 
   if (orgNodeId) {
-    const ancestor = await findNearestStoreAncestor(orgNodeId)
+    const ancestor = await findNearestStoreAncestor(orgNodeId, executor)
     if (!ancestor.exists) return '所选组织节点不存在，请刷新后重新选择'
     /**
      * ⚠️ **已知口径缺口，刻意未改**（codex 谱系第 9 轮）：
@@ -794,6 +795,11 @@ export const createEmployee = withPermission(
   {
     const dateError = invalidDateMessage([['生日', data.birthday], ['入职日期', data.hiredAt]])
     if (dateError) return { success: false, message: dateError }
+  }
+
+  // 与 update 侧同构（#228：只修一侧等于没修）—— 非数组会让 PG 解析 text[] 失败（22P02）→ 500
+  if (data.skills !== undefined && data.skills !== null && !Array.isArray(data.skills)) {
+    return { success: false, message: '技能标签格式不正确' }
   }
 
   // 校验 storeId 在 scope 内（HR 角色受 scope 限制）— 在 DB 查询前快速失败
@@ -1084,13 +1090,16 @@ export const updateEmployee = withPermission(
   }
 
   /**
-   * #259：归属自洽。只在归属**确实变更**时查 —— 存量的 15 个不匹配记录里有 13 个是合法的
-   * 矩阵式归属，no-op 回传不该被拦；那 2 个跨门店挂载的脏数据也因此不会变成「不可编辑」。
+   * #259 的归属自洽校验**只在事务内做一次**（锁内旧值重算 post-image 后）。
+   *
+   * 这里刻意不再预先查一遍：事务外算出的 post-image 只反映请求进来那一刻的旧值，
+   * 两笔并发请求各自按自己看到的旧状态都合法、合成后却违反不变量（codex 谱系第 12 轮 P1）。
+   * 既然锁内必须复查，事务外那次就是纯冗余的一次打库。
+   * 代价是非法请求也会开一次事务 —— 那是个空事务（校验在任何写入之前），成本可忽略。
+   *
+   * 纯入参校验与 scope 判定仍留在事务外早拒：它们不打库，且 scope 只依赖 session 与请求里的
+   * 显式值，与员工旧状态无关。
    */
-  if (ownershipChanged) {
-    const conflict = await assertOwnershipConsistent(nextStoreId, nextOrgNodeId)
-    if (conflict) return { success: false, message: conflict }
-  }
 
   /**
    * 手机号唯一性**不再做事务外预查重** —— 交给 DB 的 `uq_staff_users_phone`
@@ -1147,13 +1156,23 @@ export const updateEmployee = withPermission(
   }
   /**
    * `skills` 单独处理：直调传个字符串会让 PG 解析数组字面量失败（`22P02`），
-   * 而两处 catch 都不翻译 → 500（GLM 第 11 轮 P3-4）。非数组一律当没传。
+   * 而两处 catch 都不翻译 → 500（GLM 第 11 轮 P3-4）。
    */
   if (data.skills !== undefined) {
     if (data.skills !== null && !Array.isArray(data.skills)) {
       return { success: false, message: '技能标签格式不正确' }
     }
     updateData.skills = data.skills
+  }
+  /**
+   * 三个 notNull 的 boolean 列：`assign` 只挡 `undefined`，直调传 `null` 会一路撞
+   * `23502`（not-null violation），而 catch 不翻译 → 500（GLM 第 11 轮 P3-1）。
+   * 同时 `data.isResigned ?? prev.isResigned` 会把 `null` 当「未传」，双写推导也跟着失真。
+   */
+  for (const key of ['isResigned', 'isOnBusinessTrip', 'socialInsurance'] as const) {
+    if (data[key] !== undefined && typeof data[key] !== 'boolean') {
+      return { success: false, message: '参数格式不正确' }
+    }
   }
   // 请假字段空串归一为 null（清空请假区间）
   if (data.leaveStart !== undefined) updateData.leaveStart = data.leaveStart || null
@@ -1189,8 +1208,9 @@ export const updateEmployee = withPermission(
    * 会把离职日期重置成今天。缺日期时先回落旧值。
    */
   /**
-   * @param prev 该员工的**旧**离职态。事务内会拿 `FOR UPDATE` 锁内的真旧值再算一次 ——
-   *   事务外这次只是为了让 `updateData` 有个初值（审计 diff 也要用）。
+   * @param prev 该员工的**旧**离职态，必须是 `FOR UPDATE` 锁内重读到的那份。
+   *   ⚠️ 只能调**一次**、且只能在事务内 —— 事务外先算一遍会把 `updateData.resignedAt` 填上，
+   *   锁内的 `if (!updateData.resignedAt)` 就被短路（GLM 第 11 轮 P3-1 / 第 12 轮 P3-4）。
    */
   function applyResignationInvariant(prev: { isResigned: boolean; resignedAt: string | null }) {
     const willBeResigned = data.isResigned ?? prev.isResigned
@@ -1295,6 +1315,36 @@ export const updateEmployee = withPermission(
         applyResignationInvariant(lockedRow as { isResigned: boolean; resignedAt: string | null })
         // 复职判定同样以锁内旧值为准
         const isReinstating = data.isResigned === false && lockedRow.isResigned === true
+
+        /**
+         * 归属的 **post-image 要按锁内旧值重算并复查自洽**（codex 谱系第 12 轮 P1）。
+         *
+         * 事务外算出的 `nextStoreId` / `nextOrgNodeId` 只反映请求进来那一刻的旧值。
+         * 两个不带 `expectedUpdatedAt` 的并发请求分别提交 `{ storeId: B }` 与
+         * `{ orgNodeId: A店的部门 }`：各自按自己看到的旧状态都合法，先后提交后合成
+         * `store = B + org = A店部门` —— **恰好是 #259 要禁的跨门店双重可见**。
+         * 拿锁内旧值重算一遍即可：每一笔提交都对「它真正要写成的那个组合」负责。
+         *
+         * ⚠️ 这里只复查**自洽**（组合是否矛盾），不复查 scope ——
+         * 新值的 scope 早在事务外按请求里的显式值判过，而 scope 判据只依赖 session 与那个值本身，
+         * 与员工旧状态无关，锁内重判会得到同样结果。
+         */
+        const lockedNextStoreId = data.storeId === undefined
+          ? (lockedRow.storeId ?? null)
+          : (data.storeId || null)
+        const lockedNextOrgNodeId = data.orgNodeId === undefined
+          ? (lockedRow.orgNodeId ?? null)
+          : (data.orgNodeId || null)
+        if (
+          lockedNextStoreId !== (lockedRow.storeId ?? null)
+          || lockedNextOrgNodeId !== (lockedRow.orgNodeId ?? null)
+        ) {
+          const conflict = await assertOwnershipConsistent(lockedNextStoreId, lockedNextOrgNodeId, tx)
+          if (conflict) return { failure: { success: false as const, message: conflict } }
+        }
+        // 写库值也必须是锁内重算的那一组，否则复查过的组合与实际写入的不是同一个
+        if (data.storeId !== undefined) updateData.storeId = lockedNextStoreId
+        if (data.orgNodeId !== undefined) updateData.orgNodeId = lockedNextOrgNodeId
 
         /**
          * 最后一个超级管理员守卫必须**串行**（codex 谱系第 10 轮 P1）。
@@ -1608,9 +1658,25 @@ export const deleteEmployee = withPermission(
      *   - 审计留在事务外，它失败会留下「员工已删 + 前端 500」
      * 锁用的是与离职路径**同一把** `lockActiveAdminCount`。
      */
+    /** 标记「已进入审计写入阶段」—— 23503 的归因靠它，不靠约束名（见下方注释） */
+    let auditPhase = false
     try {
       const txResult = await db.transaction(async (tx): Promise<true | { failure: string }> => {
         await lockActiveAdminCount(tx)
+        /**
+         * 锁内重读完整行，守卫与审计快照都用它（codex / GLM 第 12 轮）——
+         * 事务外那份 `emp` 到这里可能已被并发改过：
+         *   - 读到「E 已离职」→ 跳过守卫；期间 E 被复职、另一 admin 合法离职 → E 成了唯一活跃
+         *     admin，却被删掉 → 零管理员
+         *   - 审计快照记的是旧姓名/手机号，而不是真正被删掉的那份数据
+         */
+        const [locked] = await tx
+          .select()
+          .from(staffWechatUsers)
+          .where(eq(staffWechatUsers.employeeId, employeeId))
+          .for('update')
+          .limit(1)
+        if (!locked) return { failure: '员工状态已变更，请刷新重试' }
         /**
          * 最后一个活跃 admin 守卫（删除会移除其 admin 角色 → 自锁）。
          *
@@ -1629,7 +1695,7 @@ export const deleteEmployee = withPermission(
          * （GLM 谱系第 11 轮 P2-2）。所以要加上「目标当前在职」这个条件。
          */
         if (
-          !emp.isResigned
+          !locked.isResigned
           && await isAdminEmployee(employeeId, tx)
           && await countActiveAdmins(tx) <= 1
         ) {
@@ -1645,8 +1711,19 @@ export const deleteEmployee = withPermission(
         if ((result as any).count === 0) {
           throw new Error('EMPLOYEE_ROW_GONE')
         }
+        /**
+         * 审计的失败要与主表删除的失败**分开识别**（两谱系第 12 轮共识）。
+         *
+         * ⚠️ 上一轮我按约束名前缀 `operation_logs_` 区分 —— 那是错的：
+         * 主表 `DELETE` 撞到的**也是** `operation_logs_operator_..._fk`
+         * （员工登录过后台就有操作日志，这是最高频的拦截场景），
+         * 于是「该改为离职」被误报成「数据冲突，请稍后重试」，用户重试永远不会成功。
+         * 真正窄的那个场景是「本次事务内审计 INSERT 时操作者被并发删」——
+         * 只有用**阶段**标志才分得开。
+         */
+        auditPhase = true
         await logOperation(session, 'employee.delete', 'employee', employeeId, {
-          snapshot: { name: emp.name, phone: emp.phone, storeId: emp.storeId, isResigned: emp.isResigned },
+          snapshot: { name: locked.name, phone: locked.phone, storeId: locked.storeId, isResigned: locked.isResigned },
         }, tx)
         return true
       })
@@ -1659,17 +1736,14 @@ export const deleteEmployee = withPermission(
         return { success: false, message: '员工状态已变更，请刷新重试' }
       }
       /**
-       * `23503` 按精确白名单区分（GLM 谱系第 11 轮 P3-2，与 update 侧对齐）：
-       * 事务内 `logOperation` 的 INSERT 自身 FK（操作者被并发删除）也会抛 23503 ——
-       * 那跟被删员工的业务关联毫无关系，给「已有业务关联」是误导。
-       * 员工表**被引用**（业务表指向他）撞的是各业务表自己的 FK，落到下面的兜底文案。
+       * `23503` 按**阶段**归因（两谱系第 12 轮共识，见事务内 `auditPhase` 处的注释）：
+       * 到了审计写入阶段才抛的，是审计自身的 FK（操作者被并发删）→ 暂时性冲突；
+       * 之前抛的都是主表删除被业务表引用 → 该提示改为离职。
        */
       if (pgErrorCode(e) === '23503') {
-        const constraint = pgErrorConstraint(e) ?? ''
-        if (constraint.startsWith('operation_logs_')) {
-          return { success: false, message: '数据冲突，请稍后重试' }
-        }
-        return { success: false, message: '该员工已有业务关联（订单 / 服务 / 分配 / 预约 / 库存等），无法删除，建议改为离职' }
+        return auditPhase
+          ? { success: false, message: '数据冲突，请稍后重试' }
+          : { success: false, message: '该员工已有业务关联（订单 / 服务 / 分配 / 预约 / 库存等），无法删除，建议改为离职' }
       }
       throw e
     }

@@ -42,8 +42,11 @@ export type NearestStoreAncestor =
  *
  * `path` 数组防环：组织表理论上是树，但没有 DB 级约束禁止成环，一旦成环递归 CTE 会打满连接。
  */
-export async function findNearestStoreAncestor(orgNodeId: string): Promise<NearestStoreAncestor> {
-  const rows = await db.execute(sql`
+export async function findNearestStoreAncestor(
+  orgNodeId: string,
+  executor: SqlExecutor = db,
+): Promise<NearestStoreAncestor> {
+  const rows = await executor.execute(sql`
     WITH RECURSIVE chain AS (
       SELECT id, parent_id, type, 0 AS depth, ARRAY[id] AS path
         FROM org_nodes WHERE id = ${orgNodeId}
