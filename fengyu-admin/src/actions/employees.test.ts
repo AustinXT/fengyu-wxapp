@@ -1368,8 +1368,16 @@ describe('#249 §AFF-03 允许多绑定 —— 调店不删除/不合并任何�
     // 第 2 次 update 必须按**行 id** 定位，且只改 scopeId
     const roleUpdate = updates[1]
     expect(roleUpdate.set).toMatchObject({ scopeId: 'org-store-B' })
-    expect(JSON.stringify(roleUpdate.where), '角色绑定的 UPDATE 必须按行 id 定位，不能按 employeeId')
-      .toContain('"b":7')
+    const whereJson = JSON.stringify(roleUpdate.where)
+    expect(whereJson, '角色绑定的 UPDATE 必须按行 id 定位，不能按 employeeId').toContain('"b":7')
+    /**
+     * **compare-and-set**：除 id 外还必须比对旧 scope_id。
+     * 少了它，这条绑定在 SELECT 之后被另一笔调店搬到 C 时，当前请求会按 id 直接覆盖成 B ——
+     * 丢失并发写入。两个谱系独立指出这一点。
+     */
+    expect(whereJson, 'UPDATE 必须带旧 scope_id 条件（compare-and-set），否则会覆盖并发写入')
+      .toContain('org-store-A')
+    expect(whereJson, 'UPDATE 应同时锚定 employee_id').toContain('FY-001')
     expect(logOperation).toHaveBeenCalledWith(
       mockSession, 'permission.scopeSync', 'permission_role', 'FY-001',
       expect.objectContaining({ role: 'manager', newScopeId: 'org-store-B' }),
@@ -1434,6 +1442,84 @@ describe('#249 §AFF-03 允许多绑定 —— 调店不删除/不合并任何�
       mockSession, 'permission.scopeSync.skipped', 'permission_role', 'FY-001',
       expect.objectContaining({ reason: 'role_already_bound_at_target', roles: ['manager'] }),
     )
+  })
+
+  /**
+   * 两个谱系都指出的假审计：绑定在 SELECT 之后被并发撤销/搬走时，只按 id 更新会命中 0 行
+   * 而**不抛错**，原先仍记 `permission.scopeSync` 成功。compare-and-set + count 检查后
+   * 应改记 `source_binding_changed`。
+   */
+  it('绑定被并发改掉（UPDATE 命中 0 行）→ 记 source_binding_changed，不记成功审计', async () => {
+    mockSelectByTable({
+      employee: [{ storeId: 'store-A', orgNodeId: 'org-dept' }],
+      store: [[{ orgNodeId: 'org-store-A' }], [{ orgNodeId: 'org-store-B' }]],
+      bindings: [{ id: 7, role: 'manager', scopeId: 'org-store-A' }],
+    })
+    let call = 0
+    ;(db.update as any).mockImplementation(() => ({
+      set: vi.fn().mockReturnValue({
+        where: vi.fn().mockImplementation(() => {
+          call++
+          // 1=员工行成功；2=角色绑定已被并发改掉 → 0 行
+          return Promise.resolve({ count: call === 1 ? 1 : 0 })
+        }),
+      }),
+    }))
+
+    const result = await updateEmployee('FY-001', { storeId: 'store-B' })
+
+    expect(result.success).toBe(true)
+    expect(logOperation).toHaveBeenCalledWith(
+      mockSession, 'permission.scopeSync.skipped', 'permission_role', 'FY-001',
+      expect.objectContaining({ reason: 'source_binding_changed', roles: ['manager'] }),
+    )
+    expect(logOperation).not.toHaveBeenCalledWith(
+      expect.anything(), 'permission.scopeSync', expect.anything(), expect.anything(), expect.anything(),
+    )
+    // 未同步的事实必须回传调用方，不能只躺在审计里
+    expect(result.message).toContain('未随调店同步')
+    expect(result.message).toContain('manager')
+  })
+
+  /** 旧店或新店没有 org_node（stores.org_node_id 可空）→ 也要留痕，不能静默跳过 */
+  it('门店未配置组织节点 → 记 store_missing_org_node 审计', async () => {
+    mockSelectByTable({
+      employee: [{ storeId: 'store-A', orgNodeId: 'org-dept' }],
+      store: [[{ orgNodeId: null }], [{ orgNodeId: 'org-store-B' }]],
+      bindings: [],
+    })
+    ;(db.update as any).mockReturnValue({
+      set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({ count: 1 }) }),
+    })
+
+    const result = await updateEmployee('FY-001', { storeId: 'store-B' })
+
+    expect(result.success).toBe(true)
+    expect(logOperation).toHaveBeenCalledWith(
+      mockSession, 'permission.scopeSync.skipped', 'permission_role', 'FY-001',
+      expect.objectContaining({ reason: 'store_missing_org_node' }),
+    )
+  })
+
+  /** 「目标店已有同角色」也要回传，不只写审计 */
+  it('目标店已有同角色时未同步的角色回传给调用方', async () => {
+    mockSelectByTable({
+      employee: [{ storeId: 'store-A', orgNodeId: 'org-dept' }],
+      store: [[{ orgNodeId: 'org-store-A' }], [{ orgNodeId: 'org-store-B' }]],
+      bindings: [
+        { id: 1, role: 'manager', scopeId: 'org-store-A' },
+        { id: 2, role: 'manager', scopeId: 'org-store-B' },
+      ],
+    })
+    ;(db.update as any).mockReturnValue({
+      set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({ count: 1 }) }),
+    })
+
+    const result = await updateEmployee('FY-001', { storeId: 'store-B' })
+
+    expect(result.success).toBe(true)
+    expect(result.message).toContain('未随调店同步')
+    expect(result.message).toContain('manager')
   })
 })
 

@@ -1030,6 +1030,12 @@ export const updateEmployee = withPermission(
     })
   }
 
+  /**
+   * 未能随调店同步的角色清单，最后回传给调用方（两个谱系都指出：
+   * 「有时搬有时不搬」而调用方只拿到通用「保存成功」，不同步的事实只能靠人去翻审计日志）。
+   */
+  const unsyncedRoles: string[] = []
+
   // §AFF-03：门店变更时同步更新 permission_roles scope
   // 仅更新 store 级别的 scope（旧门店 org_node → 新门店 org_node），不影响 market/headquarters 级 scope
   if (nextStoreId && oldStoreId && nextStoreId !== oldStoreId) {
@@ -1061,7 +1067,16 @@ export const updateEmployee = withPermission(
       await logOperation(session, 'permission.scopeSync.skipped', 'permission_role', employeeId, {
         reason: 'old_store_out_of_scope', oldStoreId, newStoreId: nextStoreId,
       })
-    } else if (oldStore?.orgNodeId && newStore?.orgNodeId) {
+    } else if (!oldStore?.orgNodeId || !newStore?.orgNodeId) {
+      /**
+       * 旧店或新店未配置 org_node（`stores.org_node_id` 可空）→ 无可搬绑定。
+       * 原先这条路径**静默跳过、无审计**，与其它「不动则记审计」的约定不一致。
+       */
+      await logOperation(session, 'permission.scopeSync.skipped', 'permission_role', employeeId, {
+        reason: 'store_missing_org_node', oldStoreId, newStoreId: nextStoreId,
+        oldStoreHasNode: !!oldStore?.orgNodeId, newStoreHasNode: !!newStore?.orgNodeId,
+      })
+    } else {
       /**
        * #249：**允许多绑定** —— 调店不得删除或合并任何角色绑定。口径已拍板（见 issue 评论）。
        *
@@ -1100,6 +1115,7 @@ export const updateEmployee = withPermission(
       const blocked = atOld.filter((b) => rolesAtNew.has(b.role))
 
       const raced: string[] = []
+      const vanished: string[] = []
       for (const b of movable) {
         /**
          * per-row catch 不可省。SELECT 与这些 UPDATE 之间没有锁 ——
@@ -1112,15 +1128,36 @@ export const updateEmployee = withPermission(
          * 降级为与「目标店已有同角色」相同的处理（不动那条 + 记审计）——
          * 在「允许多绑定」口径下这两种情形的结果是一样的：该角色留在旧门店，属允许状态。
          */
+        let moved: { count?: number }
         try {
-          await db
+          /**
+           * **compare-and-set**：除了行 id 还要比对 (employee_id, role, scope_id) ——
+           * 只按 id 更新会丢失并发写入（两个谱系独立指出）：这条绑定在 SELECT 之后
+           * 被另一笔调店搬到了 C，当前请求仍会把它覆盖成 B。加上旧 scope 条件后，
+           * 那种情形命中 0 行而不是覆盖。
+           */
+          moved = await db
             .update(permissionRoles)
             .set({ scopeId: newStore.orgNodeId, updatedBy: session.employeeId })
-            .where(eq(permissionRoles.id, b.id))
+            .where(and(
+              eq(permissionRoles.id, b.id),
+              eq(permissionRoles.employeeId, employeeId),
+              eq(permissionRoles.role, b.role),
+              eq(permissionRoles.scopeId, oldStore.orgNodeId),
+            )) as unknown as { count?: number }
         } catch (err: unknown) {
-          if (pgErrorCode(err) === '23505') { raced.push(b.role); continue }
+          // 按**约束名**收窄，不吞掉将来新增的其它唯一约束
+          if (pgErrorCode(err) === '23505'
+              && (pgErrorConstraint(err)?.includes('perm_roles') ?? false)) {
+            raced.push(b.role); continue
+          }
           throw err
         }
+        /**
+         * 0 行 = 这条绑定在 SELECT 之后被并发改掉或撤销了。原先无条件记
+         * `permission.scopeSync` 成功 → **假审计**（两个谱系都点了这条）。
+         */
+        if ((moved.count ?? 0) === 0) { vanished.push(b.role); continue }
         await logOperation(session, 'permission.scopeSync', 'permission_role', employeeId, {
           oldStoreId, newStoreId: nextStoreId,
           oldScopeId: oldStore.orgNodeId, newScopeId: newStore.orgNodeId, role: b.role,
@@ -1132,11 +1169,18 @@ export const updateEmployee = withPermission(
           roles: raced, concurrent: true,
         })
       }
+      if (vanished.length > 0) {
+        await logOperation(session, 'permission.scopeSync.skipped', 'permission_role', employeeId, {
+          reason: 'source_binding_changed', oldStoreId, newStoreId: nextStoreId, roles: vanished,
+        })
+      }
+      unsyncedRoles.push(...raced, ...vanished)
       if (blocked.length > 0) {
         await logOperation(session, 'permission.scopeSync.skipped', 'permission_role', employeeId, {
           reason: 'role_already_bound_at_target', oldStoreId, newStoreId: nextStoreId,
           roles: blocked.map((b) => b.role),
         })
+        unsyncedRoles.push(...blocked.map((b) => b.role))
       }
       /**
        * #249 问题 3：原先只在 `count > 0` 时写日志，「本来就没有绑定」与
@@ -1155,6 +1199,13 @@ export const updateEmployee = withPermission(
   await logUpdate(session, 'employee.update', 'employee', employeeId, currentEmployee as Record<string, unknown>, updateData)
   revalidatePath('/employees')
   revalidatePath('/permissions')
+  if (unsyncedRoles.length > 0) {
+    const roles = Array.from(new Set(unsyncedRoles)).join('、')
+    return {
+      success: true,
+      message: `员工信息已更新；以下角色的权限范围未随调店同步，请到权限页确认：${roles}`,
+    }
+  }
   return { success: true, message: '员工信息已更新' }
   },
 )
