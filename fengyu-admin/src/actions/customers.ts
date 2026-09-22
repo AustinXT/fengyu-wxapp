@@ -1372,8 +1372,11 @@ export const updateCustomer = withPermission(
     }
   }
 
-  // 没有任何字段要写 → 直接当无操作成功返回。Drizzle 对空集合是**抛异常**的
-  // （`drizzle-orm/utils.js:91` 的 `throw new Error("No values to set")`），
+  // 没有任何字段要写 → 直接当无操作成功返回。Drizzle 对空集合是**抛异常**而非 no-op
+  // （`drizzle-orm/utils.js:91`，错误信息 `No values to set`），
+  // ⚠️ 这里不要把那句 throw 语句原样抄进注释 —— staffApi 的
+  // `cross-end-error-codes-snapshot.test.js` 用纯文本 grep 扫 `fengyu-admin/src/actions/`
+  // 下的裸 throw，不区分代码与注释，抄了会被算成一处野生前缀违规（CI 实测踩过）。
   // 会冒成 500。两条新路径会走到这里：只提交一个未变的存量脏 ID（上面 delete 掉了唯一字段）、
   // 或只提交 `{ boundEmployeeId: undefined }`（被「undefined = 不更新」过滤掉）。
   // 顾客的可见性在上面的 `before` 查询里已经校验过，此处返回成功不泄露任何东西；
