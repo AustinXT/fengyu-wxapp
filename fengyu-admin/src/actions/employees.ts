@@ -641,6 +641,8 @@ function invalidDateMessage(
     const probe = new Date(0)
     probe.setUTCFullYear(y, m - 1, d)
     if (
+      // PG 没有公元 0 年（BC 1 直接接 AD 1），`0000-01-01` 过 JS 回读但入库报越界
+      y < 1 ||
       probe.getUTCFullYear() !== y ||
       probe.getUTCMonth() !== m - 1 ||
       probe.getUTCDate() !== d
@@ -1070,11 +1072,21 @@ export const updateEmployee = withPermission(
   if (data.birthday !== undefined) updateData.birthday = data.birthday || null
   if (data.hiredAt !== undefined) updateData.hiredAt = data.hiredAt || null
   if (data.resignedAt !== undefined) updateData.resignedAt = data.resignedAt || null
-  if (data.isResigned !== undefined && data.resignedAt === undefined) {
-    updateData.resignedAt = data.isResigned ? shanghaiToday() : null
+  /**
+   * 离职状态与离职日期是**双写不变量**：在职 ⇒ 日期为 null，离职 ⇒ 日期非 null。
+   * 以本次操作后的 `isResigned` 为权威统一推导，别让显式传入的 `resignedAt` 绕过它
+   * （codex 谱系第 8 轮 P2 / GLM P3-1）：
+   *   - `{ isResigned: true, resignedAt: '' }` —— 空串归一成 null 后，原先那条
+   *     `data.resignedAt === undefined` 判据不成立 → 跳过推导 → 写出「已离职但无离职日期」
+   *   - `{ isResigned: false, resignedAt: '2026-09-01' }` —— 原先照写 → 「在职却挂着离职日期」，
+   *     而 `resignationReason` 同时被无条件清空，两个字段自相矛盾
+   */
+  if (data.isResigned === true && !updateData.resignedAt) {
+    updateData.resignedAt = shanghaiToday()
   }
-  // 复职 / 撤销离职：连带清空离职原因
+  // 复职 / 撤销离职：离职日期与原因一并清空
   if (data.isResigned === false) {
+    updateData.resignedAt = null
     updateData.resignationReason = null
   }
 
@@ -1107,9 +1119,49 @@ export const updateEmployee = withPermission(
   const isReinstating = data.isResigned === false && currentEmployee.isResigned === true
   const rolesAtReinstate = isReinstating ? await findAllRoleBindings(employeeId) : []
 
+  /**
+   * 标记离职时，员工行 UPDATE 与角色撤销（含 revoke 审计）必须在**同一个事务**里
+   * （codex 谱系第 8 轮 P1）。
+   *
+   * 原先是两次独立提交：`UPDATE is_resigned = true` 先落盘，随后的角色事务若在查询、删除
+   * 或写审计任一步失败，调用方收到错误，而员工**保留全部角色** —— 配上
+   * `login` / `getSession` 都不校验 `is_resigned`（本 PR 范围外的独立缺口），
+   * 这个账号继续拥有后台权限。这也正是「离职 ⇒ 角色已清空」那个不变量的来源之一。
+   *
+   * ⚠️ 我上一轮以「`logOperation` 不接受 tx」为由把它记成「不做」——**那个理由是错的**：
+   * `lib/operation-log.ts` 的 `logOperation` / `logUpdate` 早就有可选的
+   * `executor: OperationLogExecutor = db` 参数（codex 指出并给了行号）。
+   *
+   * 非离职路径不进事务（没有第二个写操作要原子化），保持原样。
+   */
   let result: any
   try {
-    result = await db.update(staffWechatUsers).set(updateData).where(whereConditions)
+    result = data.isResigned === true
+      ? await db.transaction(async (tx) => {
+        const updated = await tx.update(staffWechatUsers).set(updateData).where(whereConditions)
+        // CAS 未命中就别删角色了 —— 直接把结果带出去，由外面统一返回冲突文案
+        if ((updated as any).count === 0) return updated
+        const roles = await tx
+          .select({
+            id: permissionRoles.id,
+            role: permissionRoles.role,
+            scopeId: permissionRoles.scopeId,
+          })
+          .from(permissionRoles)
+          .where(eq(permissionRoles.employeeId, employeeId))
+        await tx.delete(permissionRoles).where(eq(permissionRoles.employeeId, employeeId))
+        for (const r of roles) {
+          // 传 tx：审计与删除同生共死，否则会留下「记了 revoke 但角色还在」的假审计
+          await logOperation(session, 'permission.revoke', 'permission_role', String(r.id), {
+            role: r.role,
+            scopeId: r.scopeId,
+            employeeId,
+            batch: 'resignation',
+          }, tx)
+        }
+        return updated
+      })
+      : await db.update(staffWechatUsers).set(updateData).where(whereConditions)
   } catch (err: any) {
     if (pgErrorCode(err) === '23505') {
       if (pgErrorDetail(err)?.includes('phone') || pgErrorConstraint(err)?.includes('phone')) {
@@ -1126,29 +1178,6 @@ export const updateEmployee = withPermission(
       success: false,
       message: expectedUpdatedAt ? '数据已被其他人修改，请刷新后重试' : '员工不存在或无权修改',
     }
-  }
-
-  // 标记离职时事务清理权限角色 + 逐条 logOperation（audit-22 P1-22-06 顺手关闭）
-  if (data.isResigned === true) {
-    await db.transaction(async (tx) => {
-      const roles = await tx
-        .select({
-          id: permissionRoles.id,
-          role: permissionRoles.role,
-          scopeId: permissionRoles.scopeId,
-        })
-        .from(permissionRoles)
-        .where(eq(permissionRoles.employeeId, employeeId))
-      await tx.delete(permissionRoles).where(eq(permissionRoles.employeeId, employeeId))
-      for (const r of roles) {
-        await logOperation(session, 'permission.revoke', 'permission_role', String(r.id), {
-          role: r.role,
-          scopeId: r.scopeId,
-          employeeId,
-          batch: 'resignation',
-        })
-      }
-    })
   }
 
   /**

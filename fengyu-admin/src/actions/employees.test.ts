@@ -373,6 +373,18 @@ describe('createEmployee — 服务端输入校验', () => {
     expect(inserted[0]?.birthday).toBe('0096-02-29')
   })
 
+  /** PG 没有公元 0 年（BC 1 直接接 AD 1），`0000-01-01` 过 JS 回读但入库报越界（codex 第 8 轮） */
+  it('公元 0000 年 → 拒（PG 不接受，否则入库越界变 500）', async () => {
+    ;(db.select as any).mockImplementation(mockSelectEmpty())
+    const result = await createEmployee({
+      name: '张三', phone: '13812345678', idCard: '110101199003078888',
+      storeId: 'store-A', birthday: '0000-01-01',
+    })
+    expect(result.success).toBe(false)
+    expect(result.message).toBe('生日不是一个存在的日期')
+    expect(db.transaction).not.toHaveBeenCalled()
+  })
+
   it('四位年份 0099-02-29（99 非闰年，而映射目标 1999 也非闰年）→ 仍拒', async () => {
     ;(db.select as any).mockImplementation(mockSelectEmpty())
     const result = await createEmployee({
@@ -530,6 +542,57 @@ describe('updateEmployee — 服务端输入校验 + 错误处理', () => {
   })
 
   /**
+   * 离职状态与离职日期的**双写不变量**：在职 ⇒ null，离职 ⇒ 非 null。
+   * 显式传入的 `resignedAt` 不得绕过它（codex 谱系第 8 轮 P2 / GLM P3-1）。
+   */
+  it.each([
+    ['离职 + 空串日期 → 自动填今天（不能写出「已离职但无离职日期」）',
+      { isResigned: true, resignedAt: '' }, (v: any) => expect(v.resignedAt).toBeTruthy()],
+    ['复职 + 显式离职日期 → 日期被清空（不能写出「在职却挂着离职日期」）',
+      { isResigned: false, resignedAt: '2026-09-01' }, (v: any) => expect(v.resignedAt).toBeNull()],
+  ])('%s', async (_label, payload, assertSet) => {
+    ;(db.select as any).mockImplementation(mockSelectExistingEmployee({
+      storeId: 'store-A', orgNodeId: 'org-store-A', isResigned: !payload.isResigned,
+    }))
+    const set = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({ count: 1 }) })
+    ;(db.update as any).mockReturnValue({ set })
+    ;(db.transaction as any).mockImplementation(async (fn: any) => fn({
+      update: vi.fn().mockReturnValue({
+        set: vi.fn().mockImplementation((v: any) => {
+          set(v)
+          return { where: vi.fn().mockResolvedValue({ count: 1 }) }
+        }),
+      }),
+      select: vi.fn().mockReturnValue({
+        from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([]) }),
+      }),
+      delete: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({}) }),
+    }))
+
+    const result = await updateEmployee('FY-001', payload)
+
+    expect(result.success).toBe(true)
+    assertSet(set.mock.calls.at(-1)?.[0])
+  })
+
+  /** 复职时离职原因也要一起清 —— 否则在职员工挂着一条离职原因 */
+  it('复职 → resignedAt 与 resignationReason 一起清空', async () => {
+    ;(db.select as any).mockImplementation(mockSelectExistingEmployee({
+      storeId: 'store-A', orgNodeId: 'org-store-A', isResigned: true,
+    }))
+    const set = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({ count: 1 }) })
+    ;(db.update as any).mockReturnValue({ set })
+    ;(findAllRoleBindings as any).mockResolvedValue([])
+
+    const result = await updateEmployee('FY-001', { isResigned: false })
+
+    expect(result.success).toBe(true)
+    expect(set).toHaveBeenCalledWith(expect.objectContaining({
+      resignedAt: null, resignationReason: null,
+    }))
+  })
+
+  /**
    * update 侧的空串归一（GLM 谱系第 7 轮 P2-A）：`updateData = {...data}` 原先只归一
    * leave / 归属四个字段，三个 date 列的 `''` 会直达 UPDATE 撞 PG `22007` → 500。
    * 断言写库值而不只是 success。
@@ -678,20 +741,30 @@ describe('updateEmployee — 服务端输入校验 + 错误处理', () => {
   })
 
   /** 离职事务 mock：返回员工现有角色列表 + delete + log 链 */
-  function mockResignTransaction(roles: any[]) {
+  /**
+   * 离职路径现在整体在一个事务里：`tx.update`（员工行，带乐观锁 CAS）→ `tx.select`（角色）
+   * → `tx.delete` → 逐条 revoke 审计（传 tx）。
+   * 员工行 UPDATE 与角色撤销必须同生共死（codex 谱系第 8 轮 P1），所以 `tx` 上要有 `update`。
+   *
+   * @param roles 事务内查到的角色
+   * @param updateCount 员工行 UPDATE 的 rowCount（0 = 乐观锁未命中）
+   */
+  function mockResignTransaction(roles: any[], updateCount = 1) {
     const txDelete = vi.fn().mockResolvedValue({})
-    const txLimit = vi.fn() // 不需要
     const txWhere = vi.fn().mockResolvedValue(roles)
     const txFrom = vi.fn().mockReturnValue({ where: txWhere })
     const txSelect = vi.fn().mockReturnValue({ from: txFrom })
+    const txUpdateWhere = vi.fn().mockResolvedValue({ count: updateCount })
+    const txUpdateSet = vi.fn().mockReturnValue({ where: txUpdateWhere })
     ;(db.transaction as any).mockImplementation(async (fn: any) => {
       const tx = {
+        update: vi.fn().mockReturnValue({ set: txUpdateSet }),
         select: txSelect,
         delete: vi.fn().mockReturnValue({ where: txDelete }),
       }
       return fn(tx)
     })
-    return { txDelete }
+    return { txDelete, txUpdateSet }
   }
 
   it('isResigned=true (非 admin) → 事务清理权限角色 + 逐条 logOperation', async () => {
@@ -715,6 +788,8 @@ describe('updateEmployee — 服务端输入校验 + 错误处理', () => {
       'permission_role',
       '11',
       expect.objectContaining({ role: 'manager', scopeId: 'store-A', employeeId: 'FY-001', batch: 'resignation' }),
+      // 第 6 个参数是 executor —— 审计必须走同一个 tx，否则会留下「记了 revoke 但角色还在」的假审计
+      expect.objectContaining({ update: expect.any(Function), delete: expect.any(Function) }),
     )
   })
 
@@ -750,16 +825,29 @@ describe('updateEmployee — 服务端输入校验 + 错误处理', () => {
       'permission_role',
       '99',
       expect.objectContaining({ role: 'admin', scopeId: 'hq-1', employeeId: 'FY-002', batch: 'resignation' }),
+      expect.objectContaining({ update: expect.any(Function) }),
     )
   })
 
-  it('事务内 delete 抛错 → 整个 updateEmployee 抛出（事务回滚由 Drizzle 处理）', async () => {
+  /**
+   * codex 谱系第 8 轮 P1：员工行 UPDATE 与角色撤销必须**同生共死**。
+   *
+   * 原先它们是两次独立提交 —— `is_resigned = true` 先落盘，角色事务失败时员工保留全部角色，
+   * 而 `login` / `getSession` 都不校验在职（本 PR 范围外的独立缺口），账号继续有后台权限。
+   * 现在整条链在一个事务里：断言「员工行 UPDATE 走的是 tx 而不是 db」+「delete 失败时抛出」，
+   * 前者才是「会一起回滚」的结构保证（后者只证明异常没被吞）。
+   */
+  it('事务内 delete 抛错 → 整个 updateEmployee 抛出，且员工行 UPDATE 走的是同一个 tx', async () => {
     ;(db.select as any).mockImplementation(mockSelectExistingEmployee())
-    const empWhere = vi.fn().mockResolvedValue({ count: 1 })
-    const empSet = vi.fn().mockReturnValue({ where: empWhere })
-    ;(db.update as any).mockReturnValue({ set: empSet })
+    ;(db.update as any).mockReturnValue({
+      set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({ count: 1 }) }),
+    })
+    const txUpdate = vi.fn().mockReturnValue({
+      set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({ count: 1 }) }),
+    })
     ;(db.transaction as any).mockImplementation(async (fn: any) => {
       const tx = {
+        update: txUpdate,
         select: vi.fn().mockReturnValue({
           from: vi.fn().mockReturnValue({
             where: vi.fn().mockResolvedValue([{ id: 1, role: 'manager', scopeId: 'store-A' }]),
@@ -773,6 +861,24 @@ describe('updateEmployee — 服务端输入校验 + 错误处理', () => {
     })
 
     await expect(updateEmployee('FY-001', { isResigned: true })).rejects.toThrow('connection lost')
+    expect(txUpdate, '员工行必须在事务内更新，否则角色删除失败时离职状态已经落盘').toHaveBeenCalled()
+    expect(db.update, '离职路径不得走事务外的 db.update').not.toHaveBeenCalled()
+  })
+
+  /** 乐观锁未命中时不该删角色 —— CAS 没改到行，角色也不该动 */
+  it('离职时乐观锁未命中 → 返回冲突文案，且角色一条都不删', async () => {
+    ;(db.select as any).mockImplementation(mockSelectExistingEmployee())
+    const { txDelete } = mockResignTransaction([{ id: 1, role: 'manager', scopeId: 'store-A' }], 0)
+
+    const result = await updateEmployee('FY-001', { isResigned: true }, '2026-01-01T00:00:00.000Z')
+
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('已被其他人修改')
+    expect(txDelete).not.toHaveBeenCalled()
+    expect(logOperation).not.toHaveBeenCalledWith(
+      mockSession, 'permission.revoke', 'permission_role', expect.anything(),
+      expect.anything(), expect.anything(),
+    )
   })
 })
 
@@ -1732,7 +1838,11 @@ describe('#249 调店不自动搬迁角色绑定 —— 只留审计 + 回传提
       bindings: [],
     })
     mockUpdateOnce()
+    // 离职路径整体在一个事务里：tx.update（员工行 CAS）+ tx.select/delete（角色）
     ;(db.transaction as any).mockImplementation(async (fn: any) => fn({
+      update: vi.fn().mockReturnValue({
+        set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({ count: 1 }) }),
+      }),
       select: vi.fn().mockReturnValue({
         from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([]) }),
       }),
@@ -1779,7 +1889,11 @@ describe('#249 调店不自动搬迁角色绑定 —— 只留审计 + 回传提
       bindings: [{ role: 'manager' }],
     })
     mockUpdateOnce()
+    // 离职路径整体在一个事务里：tx.update（员工行 CAS）+ tx.select/delete（角色）
     ;(db.transaction as any).mockImplementation(async (fn: any) => fn({
+      update: vi.fn().mockReturnValue({
+        set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({ count: 1 }) }),
+      }),
       select: vi.fn().mockReturnValue({
         from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([]) }),
       }),

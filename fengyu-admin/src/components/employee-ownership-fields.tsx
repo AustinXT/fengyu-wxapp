@@ -52,7 +52,7 @@ export function EmployeeOwnershipFields({
   return (
     <>
       <div className="space-y-2">
-        <label className="text-sm font-medium" htmlFor="ownership-org">所属组织</label>
+        <label className="text-sm font-medium">所属组织</label>
         {readonlyView ? (
           <Input value={readonlyView.orgPath} disabled />
         ) : (
