@@ -163,6 +163,34 @@ Component({
       this.setData({ filteredBundles: filtered });
     },
 
+    /**
+     * 封面加载失败 → 退回礼物图标占位（issue #232）
+     *
+     * `wx:if="{{item.coverImage}}"` 只挡得住「云函数判定不可缩略 → null」这一种。
+     * URL 本身合法、但 COS 侧出不来图的情况它挡不住：数据万象对超限源图直接报错
+     * （不回退原图）、对象键 404、bucket 未开通数据万象……
+     * 这类情况下 `coverImage` 非空，wx:if 为真，用户看到的是一个**空白框**——
+     * 比改动前直发原图（至少能渲染）更差。这里把它兜回占位分支。
+     */
+    onCoverError(e: WechatMiniprogram.CustomEvent) {
+      // ⚠️ 用 productId 定位而**不是** wx:for 的 index：
+      // binderror 是异步的，事件在途时用户改关键词会让 _refreshFiltered() 重排
+      // filteredBundles，那时 index 指向的已是另一条 —— 错杀无辜条目的封面。
+      // 列表量级是几十，findIndex 的线性扫可以忽略。
+      const ds = e.currentTarget.dataset as { productId?: string; coverSrc?: string };
+      if (!ds.productId) return;
+      const idx = (this.data.filteredBundles as BundleSpu[])
+        .findIndex(b => b.productId === ds.productId);
+      if (idx < 0) return;
+      // 迟到的事件可能对应的是**上一张**封面：父组件刚把同一 productId 的 coverImage
+      // 换成了新 URL，这时把它置空就是误杀一张本来有效的图。
+      // 比对绑定时的 src，只处理"还是那张失败的图"的情况。
+      if (this.data.filteredBundles[idx].coverImage !== ds.coverSrc) return;
+      // 只改 filteredBundles 这一份渲染数据源；properties.bundles 保持原样，
+      // 下次 _refreshFiltered() 会重新带出 URL 并重试一次加载（瞬时网络问题可自愈）。
+      this.setData({ [`filteredBundles[${idx}].coverImage`]: null });
+    },
+
     onSelectBundle(e: WechatMiniprogram.TouchEvent) {
       const productId = e.currentTarget.dataset.productId as string;
       const bundle = (this.data.bundles as BundleSpu[]).find(b => b.productId === productId);

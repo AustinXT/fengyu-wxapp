@@ -12,6 +12,7 @@
 const pg = require('../db/pg')
 const { requireStaffBound } = require('../middleware/auth')
 const { buildBundleMarketScopeFilter, buildNormalSkuMarketScopeFilter, buildNormalSkuMarketScopeCondition, marketScopeValues } = require('../utils/scope')
+const { safeThumbUrl, PRODUCT_THUMB_BOX_SMALL } = require('../utils/image')
 
 /**
  * SKU 可见范围过滤（product_skus.market_scope）。
@@ -287,6 +288,9 @@ async function _queryExperienceSkus(auth) {
  *
  * 供前端 BundlePicker 子视图使用（Step 1 选"组合套餐"商品类型时）。
  * 与 client `product.spuDetail`、admin `getProductsByKind('__bundle__')` 数据形态对齐。
+ *
+ * `coverImage` 是 `string | null`：经 `safeThumbUrl` 施加 COS 缩略参数后下发（issue #232），
+ * 非 CloudBase 云存储域名 / 带签名 / 对象键不合白名单的一律 null，由前端走占位分支。
  */
 async function _queryMallBundleGroups(auth) {
   const params = []
@@ -327,6 +331,14 @@ async function _queryMallBundleGroups(auth) {
   `, [productIds])
 
   return productRows.map(p => {
+    // #232 缩略后下发：解码内存 = 像素 × 4，上传侧的体积校验拦不住高压缩巨图
+    const coverImage = safeThumbUrl(p.cover_image, PRODUCT_THUMB_BOX_SMALL)
+    // 观测降级：有封面却缩略不了（cloud:// fileID、三段对象键、站外域名、带签名……）
+    // 时前端只会默默变成礼物图标占位，没有任何报错。staff 侧不像 client 侧有 43/44 张
+    // 生产图实测背书（生产套餐封面目前全空），日志是上线后唯一能发现 fail-closed 的信号。
+    if (p.cover_image && !coverImage) {
+      console.warn('[#232] bundle cover not processable, fallback to placeholder:', p.product_id)
+    }
     const groups = groupRows
       .filter(g => g.product_id === p.product_id)
       .map(g => ({
@@ -354,7 +366,7 @@ async function _queryMallBundleGroups(auth) {
     return {
       productId: p.product_id,
       name: p.name,
-      coverImage: p.cover_image,
+      coverImage,
       description: p.description,
       price: Number(p.price) || 0,
       specialPrice: p.special_price ? Number(p.special_price) : null,

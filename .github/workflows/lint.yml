@@ -28,6 +28,15 @@ on:
       #    触发它只是为了让**单测**守护有机会拦下「只改测试」的回归。
       - 'fengyu-admin/tests/**'
       - 'fengyu-staff/cloudfunctions/**/__tests__/**'
+      # image-staff-bundle.test.js 读这个组件的 wxml，断言 lazy-load 与 binderror 还在
+      # （它们是页面级解码量与"URL 有效但出不来图"的唯一兜底）。
+      # 不加这条路径的话，「只删 lazy-load」的 PR 根本不触发 workflow，守护等于不存在。
+      - 'fengyu-staff/miniprogram/components/bundle-picker/**'
+      # bucket 白名单与档位上界有**三份**副本：两端云函数的 utils/image.js
+      # 加上前端净化器 miniprogram/utils/cart.ts。第三份的守护（cart.test.ts 的
+      # 闭环断言，它 require 真实云函数模块比对）此前不在任何 workflow 的触发面里 ——
+      # 只改 cart.ts 的 PR 不触发 CI，三份副本的漂移防线断在第三份上。
+      - 'fengyu-client/miniprogram/**'
       # 影子函数守卫盯的正是这几个文件 —— 不加进来，「只改 cloudbaserc 模板把影子函数
       # 库指向改错」这个最该被拦的 PR 反而不会触发 CI。守卫不触发等于没有守卫。
       - 'fengyu-client/cloudbaserc.example.json'
@@ -86,14 +95,51 @@ jobs:
       - name: Install staffApi deps
         working-directory: fengyu-staff/cloudfunctions/staffApi
         run: npm ci || npm install
-      - name: Run cross-end snapshot tests (error-codes + SQL + inventory)
+
+      # 跨端 snapshot 会真的 `require()` 另一端的模块来做行为等价断言
+      # （如 cross-end-recharge 拿 clientApi 的 routes/card.js 比 matchTier），
+      # 而那条链最终会 `require('pg')` —— 只装 staffApi 依赖时它报
+      # `Cannot find module 'pg'`，整个测试文件加载失败。
+      # ⚠️ 改成跑全量之后才暴露：点名跑 4 个文件时这条根本不在清单里。
+      - name: Install clientApi deps (跨端 require 的目标)
+        working-directory: fengyu-client/cloudfunctions/clientApi
+        run: npm ci || npm install
+      # ⚠️ 跑**全量**，不要退回手工文件清单（#232）。
+      #
+      # 这里原本只点名 4 个文件，于是 staffApi 的 64 个测试文件里只有 4 个进 CI，
+      # 11 个 cross-end 守护只跑 3 个 —— 新加的守护默认不进网，
+      # 而「漏加的那一次」恰好就是守护失效的那一次。
+      # `clientApi/__tests__/utils/lakala-cross-copy.test.js` 就是这么掉进洞里的：
+      # 字节一致守护写得好好的，从未跑过。
+      #
+      # 全量是负担得起的：staffApi 的测试全部 mock 了 pg（vitest.config.js 的
+      # setupFiles），不碰数据库，64 文件 / 2300 用例本地约 1.8 秒。
+      #
+      # 这条「不准写手工清单」由 __tests__/utils/image-cross-copy.test.js 的
+      # meta-guard 反向锁住。
+      - name: Run staffApi full test suite (含全部 cross-end / cross-copy 守护)
         working-directory: fengyu-staff/cloudfunctions/staffApi
-        run: |
-          npx vitest run \
-            __tests__/routes/cross-end-error-codes-snapshot.test.js \
-            __tests__/routes/cross-end-sql-snapshot.test.js \
-            __tests__/routes/cross-end-inventory-snapshot.test.js \
-            __tests__/routes/inventory.test.js
+        run: npx vitest run
+
+  # 三份副本里的第三份（前端净化器）。cart.test.ts 的闭环守护 require 真实云函数
+  # 模块比对 bucket 白名单与档位上界 —— 不进 CI 的话，两端云函数改了而 cart.ts 漏改
+  # （或反过来）全都测不出来，封面会在购物车里静默变占位。
+  # 同样跑全量而不是点名文件，理由见上面 staffApi job 的注释。
+  client-miniprogram-guards:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install client miniprogram deps
+        working-directory: fengyu-client/miniprogram
+        run: npm ci || npm install
+      - name: Run client miniprogram tests
+        working-directory: fengyu-client/miniprogram
+        run: npx vitest run
 
   cross-end-snapshots-admin:
     runs-on: ubuntu-latest
