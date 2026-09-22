@@ -1114,6 +1114,71 @@ export const getCustomerServiceOrders = withPermission(
   },
 )
 
+/**
+ * 「绑定美容师」这个第二主体的解析 + 校验 —— `updateCustomer` 与 `assignCustomer` 的单源。
+ *
+ * 两者写的是**同一张表的同一列**（`bound_employee_id` + 冗余姓名）、吃**同一个权限**
+ * `customer:update`，校验必须走同一条路径。#250 之前 `assignCustomer` 有存在性 + scope 校验，
+ * `updateCustomer` 只查了个姓名 —— 门店 A 的 manager 可以
+ * `updateCustomer(userId, { boundEmployeeId: '<门店B的美容师>' })` 绕开 guard，
+ * 把本店顾客的业绩归属注入他人 scope；传不存在的 ID 则写下 `bound_employee_name = null` 悬挂引用。
+ *
+ * **「不存在」与「存在但不在 scope 内」合并成同一条文案，且两条路径都零写入**
+ * —— 对齐 #228 在 `updateEmployee` 上确立的口径（commit 2c27c34a）：分成两句话
+ * （原 `assignCustomer` 的「员工不存在」/「无权分配给该门店的员工」）就能拿任意 employeeId
+ * 探测它是否真实存在。合并后两者逐字相同。
+ *
+ * scope 判据用 `isInScope(storeId)`，**刻意不用** `isEmployeeRowVisible` 的
+ * store ∪ orgNode 双维度（那是 `assignRole` 侧的口径）：绑定美容师是门店业绩归属，
+ * 直挂市场 / 职能部门（`store_id IS NULL`）的员工本就不该成为顾客的绑定美容师，
+ * 放宽到双维度等于扩大可写集合。无门店的员工直接拒绝 —— 写成显式的 `!emp.storeId`
+ * 而不是 `isInScope(session, emp.storeId ?? '')`：后者能挡住只是因为碰巧没有
+ * `store_id = ''` 的门店行（PG text 主键允许空串，schema 无 CHECK），
+ * 那是数据前提不是代码约束，不该让安全判定借道它。
+ *
+ * 在职状态**不**校验 —— 与 `assignCustomer` 既有行为一致（存量绑定关系里就有离职美容师）。
+ * 这与同文件 `promoterEmployeeId` 的口径（校验在职、刻意不校验 scope）是两套，各有出处，勿互相对齐。
+ *
+ * ⚠️ 已知第四处写入未收敛：`mergeClientProfile` 从 orphan 行搬 `boundEmployeeId`
+ * 而 orphan 行本身无 scope 校验。那里是「孤儿档案合并」语义（仅在源字段为空时搬历史值），
+ * 「遇到 scope 外归属该拒绝合并 / 跳过该字段 / 照搬」属业务口径，待产品拍板后另行处理。
+ *
+ * ⚠️ **刻意不做「员工门店 == 顾客门店」的互查**（闸门 2 GLM 谱系提出）。
+ * 本函数只回答「这个员工对当前操作者可见吗」，顾客侧的可见性由调用方各自的 `scopeCond`
+ * / `isInScope(boundStoreId)` 负责 —— 两个主体各自对 session 过闸，但不互相校验。
+ * 于是多店权限者可以造出「B 店顾客挂 A 店美容师」的跨店组合。
+ * 这不是本 PR 引入的（三条路径一向如此），且「跨店绑定是否合法」是业务口径：
+ * 本系统本就有支援门店 / 出差 / 跨店服务的概念。要收紧需产品先拍板，已列 follow-up。
+ * 在此之前**不要**「顺手对齐」加上互查 —— 那会直接打断跨店支援的日常流程。
+ */
+async function resolveBoundEmployee(
+  session: AuthSession,
+  employeeId: string,
+): Promise<{ ok: true; employeeId: string; name: string | null } | { ok: false; message: string }> {
+  // 运行时类型守卫：Server Action 是带 cookie 即可直调的 RPC，TS 形参类型对实参没有约束力。
+  // 非字符串会在 `.trim()` 处炸成 TypeError → 500。放在 helper 里，三个入口一并覆盖。
+  if (employeeId !== null && employeeId !== undefined && typeof employeeId !== 'string') {
+    return { ok: false, message: '绑定美容师参数不合法' }
+  }
+  // 空值挡板下沉到 helper（原先只有 assignCustomer 的调用方有，updateCustomer 没有）。
+  // 判空与取值必须同源：只 trim 判空却写回原值，`'EMP-1 '` 会原样落库，
+  // 而该列靠应用层 JOIN（无 FK），带空白的变体会让所有 `ON bound_employee_id = 'EMP-1'` 断裂。
+  // 归一后的 ID 由返回值下发，三个调用方一律写 `resolved.employeeId`，不要再用自己的入参。
+  const normalized = employeeId?.trim()
+  if (!normalized) {
+    return { ok: false, message: '请选择美容师' }
+  }
+  const [emp] = await db
+    .select({ name: staffWechatUsers.name, storeId: staffWechatUsers.storeId })
+    .from(staffWechatUsers)
+    .where(eq(staffWechatUsers.employeeId, normalized))
+    .limit(1)
+  if (!emp || !emp.storeId || !isInScope(session, emp.storeId)) {
+    return { ok: false, message: '员工不存在或无权分配' }
+  }
+  return { ok: true, employeeId: normalized, name: emp.name ?? null }
+}
+
 export const updateCustomer = withPermission(
   'customer:update',
   async (
@@ -1197,20 +1262,93 @@ export const updateCustomer = withPermission(
     ]))
   }
 
-  // boundEmployeeId 变更时同步写入冗余姓名
-  if ('boundEmployeeId' in data) {
-    if (data.boundEmployeeId) {
-      const [emp] = await db.select({ name: staffWechatUsers.name }).from(staffWechatUsers)
-        .where(eq(staffWechatUsers.employeeId, data.boundEmployeeId)).limit(1)
-      updateData.boundEmployeeName = emp?.name ?? null
-    } else {
+  /*
+   * boundEmployeeId 的第二主体校验（#250，与 assignCustomer / createCustomer 共用 resolveBoundEmployee）。
+   * 两处刻意设计，改之前先读完：
+   *
+   * ① **空串归一为解绑**。原先 `''` 会落进「清空」分支只把姓名置 null，
+   *    而 `updateData` 来自 `filter(v !== undefined)`，`''` 照样写进 bound_employee_id
+   *    → 留下「ID 是空串、姓名是 NULL」的第三态。该列无 FK 拦不住，且下游两头漏统：
+   *    staff mgmt-dashboard 的归属榜按 `IS NOT NULL` 收进来再被 JOIN 丢掉，
+   *    而「无归属新会员」监控只数 `IS NULL`。
+   *
+   * ② **只在值真的变了时才因校验失败而拒绝**。前端 handleSave 对该字段是**无条件重发**
+   *    （`customer-detail-page.tsx:298`，与紧邻的 promoterEmployeeId 条件发送不同），
+   *    而存量值本就可能不合规 —— 该列无 FK、WorkFine 同步无条件覆盖且不在
+   *    WORKFINE_OVERRIDE_FIELD_MAP 保护名单里、员工调店后无回填路径、生产有 21 人 store_id IS NULL。
+   *    无条件拒绝会让这类顾客「改个备注都存不下去」（early return = 整条 UPDATE 原子失败），
+   *    而下拉候选里根本没有那个脏值、用户无从自救。
+   *    不变即无需重新授权；**改值仍必过闸**，越权路径没有被放宽。
+   */
+  // 用 `!== undefined` 而不是 `'boundEmployeeId' in data`：本 Action 的通用字段过滤
+  // （上面的 `filter(value !== undefined)`）已经确立了「显式 undefined = 不更新」的规则，
+  // 用 `in` 会让 `{ boundEmployeeId: undefined }` 落进归一化分支被当成解绑、意外清空绑定。
+  if (data.boundEmployeeId !== undefined) {
+    // Server Action 是带 cookie 即可直调的 RPC，TS 形参类型对运行时实参没有约束力。
+    // 非字符串会在下面 `?.trim()` 处炸成 TypeError → 500，这里提前转成业务拒绝。
+    if (data.boundEmployeeId !== null && typeof data.boundEmployeeId !== 'string') {
+      return { success: false, message: '绑定美容师参数不合法' }
+    }
+
+    /*
+     * 「值是否变了」必须拿**两边都归一过**的值比较。库里可能存着未归一值：该列无 FK、无 CHECK，
+     * 而本 PR 之前 admin 这三条写入路径（update / create / assign）都不做 trim。
+     * 只归一新值、拿它去比未归一的旧值，会把这类存量值判成「值已变」→ 又把整张表单锁死。
+     *
+     * （WorkFine 同步侧**不是**来源：`sync-workfine.js:582` 的 `trim(row.bound_employee_id)`
+     * 用的是 `:89` 那个 helper，实现为 `String(val).trim()` 双侧去空白 + 空串转 null
+     * —— 尽管它的函数注释误写成「RTRIM」，SQL 侧 `:509` 的 `RTRIM` 也只是第一道。）
+     */
+    const nextBoundEmployeeId = data.boundEmployeeId?.trim() || null
+    const beforeBoundEmployeeId = before.boundEmployeeId?.trim() || null
+
+    if (nextBoundEmployeeId === beforeBoundEmployeeId) {
+      /*
+       * 值没变 → **两列一律不碰**（不是「写回同值」）。这一支覆盖三种情形：
+       * 合法未变 / 存量脏值未变 / null-over-null。
+       *
+       * 闸门 2 两个谱系先后命中同一条竞态，第二轮才发现它**不止存在于失败分支**：
+       * `updateData` 由上面的 `Object.fromEntries` 预先带入了 `boundEmployeeId`，
+       * 只要把它留在 SET 里，配合可缺省的 `expectedUpdatedAt`
+       * （缺省时 whereConditions 退化为 `userId + scopeCond`、无任何并发守卫）就有：
+       *   ① 请求读到绑定值 V
+       *   ② 窗口内合法方（前台 assignCustomer / 总部修正 / 转店流程）把绑定改成 W
+       *   ③ 本请求的 UPDATE 落地，把 W **回滚**成 V，且返回 success
+       *   ④ logUpdate 拿请求开头读到的 before(=V) 与 updateData(=V) 比对，差异为零
+       *      → 这次回滚在审计里完全不可见
+       * 而前端 handleSave 对该字段是无条件重发，所以这**不需要刻意攻击**：
+       * 两名员工并发编辑同一顾客（一个改绑定、一个改备注）就会踩中。
+       *
+       * 代价是放弃两件「顺带」行为，均为有意取舍：
+       *   - 惰性归一：带空白的存量物理值不再被本路径顺手修正，会继续参与下游按原值做的
+       *     JOIN / `IS NOT NULL` 统计（如 staffApi mgmt-dashboard 的归属榜）。
+       *     该清洗应走一次性数据修复脚本，不该由「用户碰巧编辑了这个顾客」来驱动 ——
+       *     顺手写回正是上面那条竞态的成因。已列 follow-up。
+       *   - 姓名快照刷新：值未变时不再重查姓名。员工改名后展示会 stale，
+       *     正解是读取侧像 promoterEmployeeName 那样 COALESCE(当前名, 快照)，
+       *     而不是在写路径顺带刷新 —— 后者同样会把 name 卷进回滚竞态。已列 follow-up。
+       * boundEmployeeName 一并删是防御性的：它不在 allowedUpdateFields 白名单里、
+       * 客户端注入会被 unexpectedFields 挡回，但白名单若日后放开，这里不能跟着漏。
+       */
+      delete updateData.boundEmployeeId
+      delete updateData.boundEmployeeName
+    } else if (nextBoundEmployeeId === null) {
+      updateData.boundEmployeeId = null
       updateData.boundEmployeeName = null
+    } else {
+      const resolved = await resolveBoundEmployee(session, nextBoundEmployeeId)
+      if (!resolved.ok) return { success: false, message: resolved.message }
+      updateData.boundEmployeeId = resolved.employeeId
+      updateData.boundEmployeeName = resolved.name
     }
   }
 
   // admin 只提交 employeeId；服务端解析当前姓名并同步写 ID + 姓名快照。
   // 推荐人可跨店（与员工端小程序口径一致），仅校验在职，不受账号 scope 限制。
-  if ('promoterEmployeeId' in data) {
+  // 与上面 boundEmployeeId 同口径：`in` 会把显式 undefined 当成解绑、意外清空推荐人，
+  // 而本 Action 的通用字段过滤已确立「显式 undefined = 不更新」。
+  // 注意这只修 undefined 语义；promoter 的「校验在职、刻意不校验 scope」是另一套口径，不动。
+  if (data.promoterEmployeeId !== undefined) {
     if (data.promoterEmployeeId) {
       const [promoter] = await db
         .select({
@@ -1232,6 +1370,19 @@ export const updateCustomer = withPermission(
       updateData.promoterEmployeeId = null
       updateData.promoterEmployeeName = null
     }
+  }
+
+  // 没有任何字段要写 → 直接当无操作成功返回。Drizzle 对空集合是**抛异常**而非 no-op
+  // （`drizzle-orm/utils.js:91`，错误信息 `No values to set`），
+  // ⚠️ 这里不要把那句 throw 语句原样抄进注释 —— staffApi 的
+  // `cross-end-error-codes-snapshot.test.js` 用纯文本 grep 扫 `fengyu-admin/src/actions/`
+  // 下的裸 throw，不区分代码与注释，抄了会被算成一处野生前缀违规（CI 实测踩过）。
+  // 会冒成 500。两条新路径会走到这里：只提交一个未变的存量脏 ID（上面 delete 掉了唯一字段）、
+  // 或只提交 `{ boundEmployeeId: undefined }`（被「undefined = 不更新」过滤掉）。
+  // 顾客的可见性在上面的 `before` 查询里已经校验过，此处返回成功不泄露任何东西；
+  // 零写入所以不记审计、不 revalidate。
+  if (Object.keys(updateData).length === 0) {
+    return { success: true, message: '顾客信息已更新' }
   }
 
   const whereConditions = expectedUpdatedAt
@@ -1277,28 +1428,19 @@ export const assignCustomer = withPermission(
   'customer:update',
   async (session, userId: string, employeeId: string): Promise<{ success: boolean; message: string }> => {
   if (!userId) return { success: false, message: '缺少顾客 userId' }
-  if (!employeeId) return { success: false, message: '请选择美容师' }
 
-  // 校验员工存在并取冗余姓名 + 门店（与 updateCustomer 同范式）
-  const { staffWechatUsers } = await import('@db/user')
-  const [emp] = await db
-    .select({ name: staffWechatUsers.name, storeId: staffWechatUsers.storeId })
-    .from(staffWechatUsers)
-    .where(eq(staffWechatUsers.employeeId, employeeId))
-    .limit(1)
-  if (!emp) return { success: false, message: '员工不存在' }
-
-  // 员工 scope 校验（对齐 staff 端 assertEmployeeInScope）：
+  // 员工存在性 + scope 校验（对齐 staff 端 assertEmployeeInScope）：
+  // 空值挡板已下沉到 resolveBoundEmployee 内（同样在查库之前返回「请选择美容师」）。
   // 防止门店店长把本店顾客分配给其他门店的美容师。
-  // isInScope 对 admin 角色放行；员工无门店（storeId=null）时非 admin 拒绝。
-  if (!isInScope(session, emp.storeId ?? '')) {
-    return { success: false, message: '无权分配给该门店的员工' }
-  }
+  // 与 updateCustomer 共用 resolveBoundEmployee —— 同一列同一权限只能有一条校验路径（#250）。
+  const resolved = await resolveBoundEmployee(session, employeeId)
+  if (!resolved.ok) return { success: false, message: resolved.message }
 
   const scopeCond = scopeCondition(session, clientWechatUsers.boundStoreId)
   const result: any = await db
     .update(clientWechatUsers)
-    .set({ boundEmployeeId: employeeId, boundEmployeeName: emp.name ?? null } as any)
+    // 写归一后的 resolved.employeeId，不是原始入参 —— 入参可能带首尾空白
+    .set({ boundEmployeeId: resolved.employeeId, boundEmployeeName: resolved.name } as any)
     .where(and(eq(clientWechatUsers.userId, userId), scopeCond))
 
   if ((result as any).count === 0) {
@@ -1306,13 +1448,13 @@ export const assignCustomer = withPermission(
   }
 
   await logOperation(session, 'customer.assign', 'customer', userId, {
-    employeeId,
-    employeeName: emp.name ?? null,
+    employeeId: resolved.employeeId,
+    employeeName: resolved.name,
   })
 
   const { revalidatePath } = await import('next/cache')
   revalidatePath(`/customers/${userId}`)
-  return { success: true, message: `已分配给 ${emp.name ?? employeeId}` }
+  return { success: true, message: `已分配给 ${resolved.name ?? resolved.employeeId}` }
   },
 )
 
@@ -1359,8 +1501,16 @@ export const createCustomer = withPermission(
     return { success: false, message: '手机号格式不正确（需为 11 位手机号）' }
   }
 
-  // scope 隔离：非 admin 只能在自己 scope 内的门店创建顾客
-  if (data.boundStoreId && !isInScope(session, data.boundStoreId)) {
+  // scope 隔离：非 admin 只能在自己 scope 内的门店创建顾客。
+  // 空串同样归一为 null —— 否则 `''` 因 falsy 跳过 scope 校验后被 `?? null` 原样写入，
+  // 造出 `bound_store_id = ''` 的顾客：scopeCondition 的 IN 永不匹配，非 admin 从此看不见它。
+  // 与下面 boundEmployeeId 的归一是同一条口径，不能只做一半。
+  if (data.boundStoreId !== null && data.boundStoreId !== undefined
+    && typeof data.boundStoreId !== 'string') {
+    return { success: false, message: '绑定门店参数不合法' }
+  }
+  const nextBoundStoreId = data.boundStoreId?.trim() || null
+  if (nextBoundStoreId && !isInScope(session, nextBoundStoreId)) {
     return { success: false, message: '无权在该门店创建顾客' }
   }
 
@@ -1375,13 +1525,22 @@ export const createCustomer = withPermission(
     return { success: false, message: '该手机号已存在顾客记录' }
   }
 
-  // 解析绑定美容师姓名
+  // 绑定美容师：走与 updateCustomer / assignCustomer 同一条校验路径（#250）。
+  // 此前这里只 select 姓名、不校验存在性与 scope —— 与修复前的 updateCustomer 逐字同构，
+  // 而 customer:create 与 customer:update 同属 manager + customer_mgr（同一批调用方），
+  // 不堵这条等于「改」堵住了、「建」还开着。空串同样归一为 null，不留第三态。
+  // 与 updateCustomer 同款运行时守卫：外层这里就会 .trim()，不能等到 helper
+  if (data.boundEmployeeId !== null && data.boundEmployeeId !== undefined
+    && typeof data.boundEmployeeId !== 'string') {
+    return { success: false, message: '绑定美容师参数不合法' }
+  }
+  let nextBoundEmployeeId = data.boundEmployeeId?.trim() || null
   let boundEmployeeName: string | null = null
-  if (data.boundEmployeeId) {
-    const { staffWechatUsers } = await import('@db/user')
-    const [emp] = await db.select({ name: staffWechatUsers.name }).from(staffWechatUsers)
-      .where(eq(staffWechatUsers.employeeId, data.boundEmployeeId)).limit(1)
-    boundEmployeeName = emp?.name ?? null
+  if (nextBoundEmployeeId) {
+    const resolved = await resolveBoundEmployee(session, nextBoundEmployeeId)
+    if (!resolved.ok) return { success: false, message: resolved.message }
+    nextBoundEmployeeId = resolved.employeeId
+    boundEmployeeName = resolved.name
   }
 
   // 服务端生成 userId
@@ -1393,8 +1552,8 @@ export const createCustomer = withPermission(
       userId,
       phone: data.phone,
       name: data.name,
-      boundStoreId: data.boundStoreId ?? null,
-      boundEmployeeId: data.boundEmployeeId ?? null,
+      boundStoreId: nextBoundStoreId,
+      boundEmployeeId: nextBoundEmployeeId,
       boundEmployeeName,
     })
   } catch (err: any) {
