@@ -125,6 +125,55 @@ describe('resolveTimeRange', () => {
   })
 
   /**
+   * lastYear（同比基期）走的是与 previous 同一个 deltaPct，所以「不得长于当期」这条约束
+   * 对它同等适用。#283 的四轮评审最初全都只扫 previous，漏掉了这里 —— 补上逐日扫描。
+   *
+   * week / custom 的 lastYear 在区间跨 2 月底时会多/少含一个 2/29（既有缺陷，不在 #283 范围，
+   * 量级 12.5% 但 1826 天里只命中 5 天）；today / month 的 lastYear 恒等长。
+   */
+  it('lastYear 的长度：today/month 恒等长，week 跨闰年 ±1 天（既有缺陷，钉住量级）', () => {
+    const days = (r: { start: string; end: string }) =>
+      Math.round((Date.parse(`${r.end}T00:00:00Z`) - Date.parse(`${r.start}T00:00:00Z`)) / 86400000) + 1
+    const isLeap = (y: number) => (y % 4 === 0 && y % 100 !== 0) || y % 400 === 0
+
+    // 锚点：跨 2 月底的那一周，去年同区间多含一个 2/29 → 同比基期长 1 天
+    const w = resolveTimeRange({ preset: 'week' }, new Date('2025-03-02T04:00:00Z'))
+    expect(w.current).toEqual({ start: '2025-02-24', end: '2025-03-02' })
+    expect(w.lastYear).toEqual({ start: '2024-02-24', end: '2024-03-02' })
+    expect(days(w.current)).toBe(7)
+    expect(days(w.lastYear!)).toBe(8) // ← 缺陷所在：日均持平时 yoy 会算出约 -12.5% 假下滑
+
+    // custom 同源（区间跨 2 月底）
+    const c = resolveTimeRange(
+      { preset: 'custom', start: '2025-02-24', end: '2025-03-02' },
+      new Date('2026-09-22T04:00:00Z'),
+    )
+    expect(days(c.lastYear!)).toBe(days(c.current) + 1)
+
+    for (const year of DAILY_SCAN_YEARS) {
+      for (let i = 0; i < (isLeap(year) ? 366 : 365); i++) {
+        const now = new Date(Date.UTC(year, 0, 1, 4) + i * 86400000)
+        for (const preset of ['today', 'week', 'month', 'year'] as const) {
+          const r = resolveTimeRange({ preset }, now)
+          const ly = r.lastYear
+          expect(ly, `${preset} @ ${r.current.end} 的 lastYear 不应为 null`).not.toBeNull()
+          if (!ly) continue
+
+          const at = `${preset} @ ${r.current.end} (lastYear=${ly.start}~${ly.end})`
+          const diff = days(ly) - days(r.current)
+
+          if (preset === 'today' || preset === 'month') {
+            expect(diff, at).toBe(0) // 恒等长
+          } else {
+            // week / year：跨闰年 ±1 天。钉住上界，防止从 ±1 恶化成 ±N
+            expect(Math.abs(diff), at).toBeLessThanOrEqual(1)
+          }
+        }
+      }
+    }
+  })
+
+  /**
    * year 分支**未被 #283 修复**，是一条 characterization test：钉住偏差量级（±1 天），
    * 既不假装它等长，也不放任它恶化。锚点写死具体日期而不是统计总数——统计数会随扫描
    * 年份清单变化而失败，那是测试脆弱不是行为回归。
