@@ -100,6 +100,40 @@ export function findAncestorStoreNodeId(nodeId: string | null, orgNodes: OrgNode
   return null
 }
 
+/**
+ * 「所属组织」改变后，「所属门店」该跟着变成什么。返回 `undefined` 表示不动。
+ *
+ * 两个方向的联动都必须有（GLM 谱系第 4 轮）：门店→组织那侧原本就有，
+ * 组织→门店这侧原先只按**市场**判断 —— 同市场内把组织改到门店 B 的子树时市场没变，
+ * storeId 保持门店 A，提交上去正好撞服务端的归属自洽校验，用户得二次试错才明白。
+ *
+ * 规则：
+ *   - 新节点有门店祖先，且该门店在可选列表里 → 直接设成它（节点已明确指向某门店，无歧义）
+ *   - 新节点有门店祖先但不在可选列表里（scope 过滤掉了）→ 清空，让用户自己选
+ *   - 新节点无门店祖先（市场下的部门等矩阵归属）→ 退回原有的市场口径：
+ *     当前门店不在新市场下才清空，否则保留（门店是工作地点、部门是专业归属，两者可以并存）
+ */
+export function resolveStoreIdForOrgNode(
+  nextOrgNodeId: string,
+  currentStoreId: string,
+  orgNodes: OrgNode[],
+  stores: { storeId: string; orgNodeId: string | null }[],
+): string | undefined {
+  const storeAncestor = findAncestorStoreNodeId(nextOrgNodeId, orgNodes)
+  if (storeAncestor) {
+    const target = stores.find((s) => s.orgNodeId === storeAncestor)
+    if (target) return target.storeId === currentStoreId ? undefined : target.storeId
+    return currentStoreId === '' ? undefined : ''
+  }
+  const nextMarketId = findAncestorMarketId(nextOrgNodeId, orgNodes)
+  const storeMarketId = findAncestorMarketId(
+    stores.find((s) => s.storeId === currentStoreId)?.orgNodeId ?? null,
+    orgNodes,
+  )
+  if (nextMarketId !== storeMarketId) return currentStoreId === '' ? undefined : ''
+  return undefined
+}
+
 export function findAncestorMarketId(nodeId: string | null, orgNodes: OrgNode[]): string | null {
   if (!nodeId || orgNodes.length === 0) return null
   const map = new Map(orgNodes.map((n) => [n.id, n]))

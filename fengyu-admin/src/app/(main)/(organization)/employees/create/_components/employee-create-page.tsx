@@ -14,7 +14,7 @@ import { ImageUpload } from "@/components/ui/image-upload"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { createEmployee } from "@/actions/employees"
 import { actionErrorMessage } from "@/lib/action-error"
-import { findAncestorMarketId, findAncestorStoreNodeId } from "@/lib/utils"
+import { findAncestorMarketId, findAncestorStoreNodeId, resolveStoreIdForOrgNode } from "@/lib/utils"
 import { shanghaiToday } from "@/lib/datetime"
 import type { Store, OrgNode, SkillTag } from "@/lib/types"
 
@@ -196,14 +196,9 @@ export default function EmployeeCreatePage({ stores, orgNodes, skillTags }: Prop
                 value={form.orgNodeId}
                 onChange={(id) => {
                   handleChange("orgNodeId", id)
-                  const newMarketId = findAncestorMarketId(id, orgNodes)
-                  const storeMarketId = findAncestorMarketId(
-                    stores.find((s) => s.storeId === form.storeId)?.orgNodeId ?? null,
-                    orgNodes,
-                  )
-                  if (newMarketId !== storeMarketId) {
-                    handleChange("storeId", "")
-                  }
+                  // 组织→门店的反向联动（口径与取舍见 resolveStoreIdForOrgNode）
+                  const nextStoreId = resolveStoreIdForOrgNode(id, form.storeId, orgNodes, stores)
+                  if (nextStoreId !== undefined) handleChange("storeId", nextStoreId)
                 }}
                 placeholder="请选择所属组织"
               />

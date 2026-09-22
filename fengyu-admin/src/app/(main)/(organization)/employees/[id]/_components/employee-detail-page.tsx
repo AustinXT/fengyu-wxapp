@@ -19,7 +19,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 import { DataTable, type Column } from "@/components/ui/data-table"
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogTitle, AlertDialogDescription, AlertDialogFooter } from "@/components/ui/alert-dialog"
 import { Separator } from "@/components/ui/separator"
-import { formatDate, buildOrgPath, findAncestorMarketId, findAncestorStoreNodeId } from "@/lib/utils"
+import { formatDate, buildOrgPath, findAncestorMarketId, findAncestorStoreNodeId, resolveStoreIdForOrgNode } from "@/lib/utils"
 import { shanghaiToday } from "@/lib/datetime"
 import { formatPhoneSafe } from "@/lib/format"
 import { actionErrorMessage, actionErrorType } from "@/lib/action-error"
@@ -515,15 +515,9 @@ export default function EmployeeDetailPage({
                       value={form.orgNodeId}
                       onChange={(id) => {
                         handleFormChange("orgNodeId", id)
-                        // 组织变更时，若当前门店不在新市场下则清空
-                        const newMarketId = findAncestorMarketId(id, orgNodes)
-                        const storeMarketId = findAncestorMarketId(
-                          stores.find((s) => s.storeId === form.storeId)?.orgNodeId ?? null,
-                          orgNodes,
-                        )
-                        if (newMarketId !== storeMarketId) {
-                          handleFormChange("storeId", "")
-                        }
+                        // 组织→门店的反向联动（口径与取舍见 resolveStoreIdForOrgNode）
+                        const nextStoreId = resolveStoreIdForOrgNode(id, form.storeId, orgNodes, stores)
+                        if (nextStoreId !== undefined) handleFormChange("storeId", nextStoreId)
                       }}
                       placeholder="请选择所属组织"
                     />
