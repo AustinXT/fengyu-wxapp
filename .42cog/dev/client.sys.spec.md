@@ -242,6 +242,8 @@ product.shopInit(门店商品初始化)
 
 ⚠️ **`closeExpiredOrder` 体内不得有任何时间谓词**：「过没过 10 分钟」一律由调用方判。`order.detail` 的「权威 0」契约架在这条前提上（见下文）；这里一旦加上 `sale_order_datetime < NOW() - INTERVAL '10 minutes'` 之类的「加固」，补关成败就取决于 PG 与云函数宿主的时钟差 —— PG 慢一点就关不掉而复读仍判 eligible，矛盾态从后门回来。同源锁里有对应断言。
 
+⚠️ **`order.scanDetail` 永不下发 `expire_at`**：它的主查询自带 `WHERE opened_by IS NOT NULL`（只服务员工开单订单），字段是显式映射、不含任何 expire 字段；`scan-pay` 页也没有任何时效文案。issue #215 验收标准 4「扫码支付页同步对齐」因此**天然成立**（2026-09-22 全页 grep 核实）。⚠️ 将来若让 scanDetail 也服务自助单或补下发时限，**必须走 `PENDING_AUTO_CLOSE_GUARD_SQL`**——否则口径分叉会从这一端复发，而那里目前没有任何同源锁。
+
 ⚠️ **数据不变量**：`lakala_out_order_no` 只有两种合法形态 —— `NULL`（无意图）或**非空白字符串**（活动意图）。空白非 NULL 是非法态：SQL 守卫按 `IS NULL` 判「有意图、关不掉」，而 #214 的 `has_active_payment_intent` 按 `trim()` 判「没有意图」，两者会错开。目前无任何写入路径能产出它（写入点只有 `= NULL` 与生成的 `${saleOrderId}_${ts}`），2026-09-22 在 dev 库实测 31859 张单中该形态为 **0** 条。
 
 前端倒计时：待支付详情页 `MM:SS` 格式，1s 刷新。未下发 `expire_at` 时不起倒计时，文案退为「请完成支付」。

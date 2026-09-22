@@ -4,7 +4,9 @@
  */
 
 const pg = globalThis.__mocks__.pg
-const { createBoundCtx, createCtx, sqlConjuncts } = require('../helpers')
+const {
+  createBoundCtx, createCtx, sqlConjuncts, sliceBetweenAnchors, sliceUpdateWhere,
+} = require('../helpers')
 
 let routes
 beforeEach(() => {
@@ -309,15 +311,13 @@ describe('card 充值路径的关单守卫 — 与 order.closeExpiredOrder 同�
     const { resolve } = require('path')
     const cardSrc = readFileSync(resolve(__dirname, '../../routes/card.js'), 'utf8')
 
-    const fnAt = cardSrc.indexOf('async function _closeExpiredPendingByUser(')
-    expect(fnAt, '未找到 _closeExpiredPendingByUser').toBeGreaterThanOrEqual(0)
-    const fnBody = cardSrc.slice(fnAt, fnAt + 2500)
-    const updateAt = fnBody.indexOf('UPDATE sale_orders')
-    expect(updateAt, '未找到充值路径的 UPDATE sale_orders').toBeGreaterThanOrEqual(0)
-    const whereAt = fnBody.indexOf('WHERE sale_order_id = $1', updateAt)
-    expect(whereAt, '未找到充值路径 UPDATE 的 WHERE 子句').toBeGreaterThan(updateAt)
-    const cardWhere = fnBody.slice(whereAt, fnBody.indexOf('`', whereAt))
-    expect(cardWhere.length, '充值路径 WHERE 切片异常').toBeGreaterThan(0)
+    // 函数体窗口 + WHERE 切片都走 fail-loud helper（锚点缺失即抛，不静默切出一大段）
+    const fnBody = sliceBetweenAnchors(
+      cardSrc,
+      'async function _closeExpiredPendingByUser(',
+      '\n/**',
+    )
+    const cardWhere = sliceUpdateWhere(fnBody)
 
     // ⚠️ 同样不能只做 `toContain`：`AND → OR` 会让充值路径去关**不属于当前顾客、
     // 或仍有在途支付意图**的订单，而四个子串照样都在（codex 评审 round-3 P1）。

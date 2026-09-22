@@ -5,7 +5,7 @@
 
 const pg = globalThis.__mocks__.pg
 const {
-  createCtx, createBoundCtx, createMockTransactionClient, sqlConjuncts, sliceBetweenAnchors,
+  createCtx, createBoundCtx, createMockTransactionClient, sqlConjuncts, sliceBetweenAnchors, sliceUpdateWhere,
 } = require('../helpers')
 
 /**
@@ -2168,9 +2168,11 @@ describe('order.detail — 支付倒计时下发口径 (#215)', () => {
     //
     // ⚠️ 时间偏移必须在**开头那次检查之后**才生效，否则测的就不是「补关」这条路径了。
     // 这里挂在重读 mock 的副作用上：重读发生在 Promise.all 里，而 nowMs 在其之后才取。
+    // 余量给足：下单于 500 秒前、偏移 110 秒。开头那次检查要误触发得等进程被卡 >100 秒
+    //（20 倍余量，慢 CI 也不会假红）；而重读之后 -500+110 已越过 -600，补关必定触发。
     const realNow = Date.now
     let nowOffset = 0
-    const justUnder = new Date(realNow() - (10 * 60 * 1000 - 5000)).toISOString()
+    const justUnder = new Date(realNow() - 500 * 1000).toISOString()
 
     pg.query.mockResolvedValueOnce([{
       sale_order_id: 'FY-215', client_user_id: 'user-001',
@@ -2182,7 +2184,7 @@ describe('order.detail — 支付倒计时下发口径 (#215)', () => {
     pg.query.mockResolvedValueOnce([])  // 行级退款额
     pg.query.mockResolvedValueOnce([])  // payments
     pg.query.mockImplementationOnce(async () => {   // 重读：此刻把时间推过截止点
-      nowOffset = 6000
+      nowOffset = 110 * 1000
       return [{
         sale_order_id: 'FY-215', status: '待支付', sale_order_datetime: justUnder,
         lakala_out_order_no: null, auto_close_eligible: true,
@@ -2286,12 +2288,8 @@ describe('order.detail — 支付倒计时下发口径 (#215)', () => {
 
     // 守卫要钉在 **UPDATE 的 WHERE** 上——SELECT … FOR UPDATE 里也有 opened_by IS NULL，
     // 只断言整个函数体的话，单独从 UPDATE 删掉它仍然全绿
-    const updateAt = closeBody.indexOf('UPDATE sale_orders')
-    expect(updateAt, '未在 closeExpiredOrder 里找到 UPDATE sale_orders').toBeGreaterThanOrEqual(0)
-    const whereAt = closeBody.indexOf('WHERE sale_order_id = $1', updateAt)
-    expect(whereAt, '未找到 closeExpiredOrder 的 UPDATE WHERE 子句').toBeGreaterThan(updateAt)
-    const closeWhere = closeBody.slice(whereAt, closeBody.indexOf('`', whereAt))
-    expect(closeWhere.length, 'UPDATE WHERE 切片异常').toBeGreaterThan(0)
+    // 切片走 fail-loud helper：裸 indexOf 拼出来的 `slice(x, -1)` 会静默切出大半个文件
+    const closeWhere = sliceUpdateWhere(closeBody)
 
     // 判据常量（切片同样要逐个断言锚点——`indexOf` 未命中返回 -1，
     // `slice(x, -1)` 会切出从声明到文件尾的一大段，下面的比对就恒真了）

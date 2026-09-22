@@ -257,7 +257,9 @@ describe('order-detail 待支付倒计时 (#215)', () => {
 
   test('设备时钟比服务端快很多时，倒计时仍按服务端下发的剩余量走', () => {
     // 只比绝对时间的话，手机快 30 分钟就会把一个刚下发的时限判成「已过期」→
-    // 自助单彻底看不到倒计时，而服务端根本还没打算关它
+    // 自助单彻底看不到倒计时，而服务端根本还没打算关它。
+    // ⚠️ 下面这个「已过期的 expire_at + 为正的 expire_in_ms」组合**生产不可达**
+    //（两者同源、同条件下发，恒自洽），纯防御性构造，别依赖服务端会发这种形态。
     const { page, loadDetail } = createPageWithStubbedLoad();
     page.startCountdown({
       sale_order_id: 'FY-215',

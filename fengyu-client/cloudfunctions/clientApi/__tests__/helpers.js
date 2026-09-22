@@ -112,9 +112,28 @@ function sliceBetweenAnchors(source, startAnchor, endAnchor) {
   return source.slice(start, end)
 }
 
+
+/**
+ * 从一段源码里切出某条 `UPDATE <table>` 的 WHERE 子句（到模板字符串收尾的反引号为止）。
+ *
+ * ⚠️ 每个锚点都断言找到了。`indexOf` 未命中返回 -1，而 `slice(x, -1)` 会**静默**切出
+ * 从 x 到文件倒数第二字符的一大段（含后续 JS 与别的 SQL）—— 守卫锁就在那一刻变成摆设。
+ * 这是 issue #215 round-1 修掉的同型陷阱，别再用裸 indexOf 拼切片。
+ */
+function sliceUpdateWhere(source, tableClause = 'UPDATE sale_orders') {
+  const updateAt = source.indexOf(tableClause)
+  if (updateAt < 0) throw new Error(`未找到 ${tableClause}`)
+  const whereAt = source.indexOf('WHERE ', updateAt)
+  if (whereAt < 0) throw new Error(`${tableClause} 之后未找到 WHERE 子句`)
+  const backtickAt = source.indexOf('`', whereAt)
+  if (backtickAt <= whereAt) throw new Error(`${tableClause} 的 WHERE 子句未以反引号收尾`)
+  return source.slice(whereAt, backtickAt)
+}
+
 module.exports = {
   sqlConjuncts,
   sliceBetweenAnchors,
+  sliceUpdateWhere,
   createCtx,
   createBoundCtx,
   createNewUserCtx,

@@ -1535,14 +1535,16 @@ async function closeExpiredOrder(orderNo) {
  * @param {string} userId - 用户ID
  */
 async function closeExpiredOrdersByUser(userId) {
-  // 候选集带上 `lakala_out_order_no IS NULL`（issue #215）：有在途支付意图的单
-  // 在 closeExpiredOrder 的 UPDATE 里本来就会被挡下，选出来只是白跑一个空事务 ——
-  // 而 order.list 每次首屏都会调这里，池子 max 5，N 个空事务串行跑会拖慢首屏。
-  // ⚠️ 这是**候选集收缩**，不碰 CAS：真正决定关不关的仍是 closeExpiredOrder 的 UPDATE 守卫。
+  // ⚠️ 候选集**刻意是超集**，不要往这里加 `lakala_out_order_no IS NULL`（issue #215）。
+  // 看起来那样能省掉几个空事务（有意图的单反正会被 UPDATE 的 CAS 挡下），但
+  // `lakala_out_order_no` 是双向可变的：SELECT 之后、CAS 之前它完全可能被
+  // payNotify / 对账 / 支付失败清理清成 NULL —— 那一刻这单已经该关了，
+  // 而收窄过的候选集根本没把它选进来，这一趟就漏过去了。
+  // 后果是过期单继续占着 `uq_sale_orders_client_pending`，顾客再下自助单会被拒。
+  // 选多了只是白跑一个空事务（fail-safe），选漏了是功能错误。
   const expired = await pg.query(
     `SELECT sale_order_id FROM sale_orders
      WHERE client_user_id = $1 AND status = '待支付' AND opened_by IS NULL
-     AND lakala_out_order_no IS NULL
      AND sale_order_datetime < NOW() - INTERVAL '10 minutes'`,
     [userId]
   )
@@ -3018,8 +3020,10 @@ async function detail(ctx) {
   // 且没有十分钟守卫）。这时下发一个「权威的 0」就是在骗前端 —— 它对权威值的处理是
   // 不再重载，而这单确实还开着。宁可不下发：前端会退到绝对时间口径（非权威），
   // 按它自己的一次性闸门重载一次，自愈且有界。
-  const expireInMs = eligible && deadlineMs > nowMs ? deadlineMs - nowMs : null
-  const expireClock = eligible ? shanghaiClockHM(new Date(deadlineMs)) : null
+  // 两个字段同条件下发：降级响应里只剩一个「已经过去的 HH:mm」对读日志的人是徒增困惑
+  const vouchable = eligible && deadlineMs > nowMs
+  const expireInMs = vouchable ? deadlineMs - nowMs : null
+  const expireClock = vouchable ? shanghaiClockHM(new Date(deadlineMs)) : null
 
   // 精简 payments 字段（只给前端需要的）
   const payments = paymentRows.map(p => ({
