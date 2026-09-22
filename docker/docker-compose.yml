@@ -95,7 +95,7 @@ services:
         condition: service_healthy
 
   # cron-worker：迁自 fengyu-client/cloudfunctions/cronTask 的每日 03:00 定时任务
-  # 复用 admin 镜像（含 cron-worker.js bundle），覆盖 entrypoint 切到 cron 入口
+  # 复用 admin 镜像（含 cron-worker.mjs bundle），覆盖 entrypoint 切到 cron 入口
   cron-worker:
     image: fengyu-admin:latest
     container_name: fengyu-cron-worker

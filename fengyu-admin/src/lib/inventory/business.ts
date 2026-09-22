@@ -10,6 +10,9 @@ import type { AuthSession } from '@/lib/types'
 import { revalidatePath } from 'next/cache'
 import { sql } from 'drizzle-orm'
 import { assertInventoryBusinessWritable } from './cutover'
+// 仅用于给 INTERNAL_SAME_NODE_DOC_TYPES 标类型 —— 没有它，集合里写错别字不会编译报错，
+// 只会静默变成「该类型不属同主体」，与 engine.ts 那份的行为悄悄分叉。
+import type { InventoryDocType } from './types'
 
 // DOC_LOCK_KEY_PREFIX 必须与 staffApi 的 generateDocNo / admin engine.generateDocNo 保持字面量一致；cross-end snapshot 守护
 // Admin release SOP：切流前必须调用 getInventoryBaselineStatus 并断言 isInitialized=true。
@@ -126,7 +129,9 @@ interface PriceSnapshot {
 
 interface InsertDocHeaderInput {
   id: string
-  docType: string
+  // #236：收紧为联合类型 —— 裸 string 会让 INTERNAL_SAME_NODE_DOC_TYPES.has() 的类型参数
+  // 形同虚设（传错别字静默为「不属同主体」），而本文件的同主体断言正依赖该集合判断可靠
+  docType: InventoryDocType
   status: string
   sourceOrgNodeId?: string | null
   targetOrgNodeId?: string | null
@@ -622,7 +627,7 @@ const DOC_PREFIX: Record<string, string> = {
   库存转换入库: 'ZHI',
 }
 
-const INTERNAL_SAME_NODE_DOC_TYPES = new Set([
+const INTERNAL_SAME_NODE_DOC_TYPES = new Set<InventoryDocType>([
   '品项公司报货需求',
   '员工购出库',
   '供应链员工购出库',
@@ -805,21 +810,69 @@ async function locationForRead(tx: Tx, endpointId: string): Promise<Location> {
   return loadLocation(tx, endpointId, false)
 }
 
+/**
+ * 按 location_id 或 org_node_id 取库存主体。
+ *
+ * `OR` 是**有意的双 id 多态查找**：调用方两种 id 都会传进来 ——
+ * `locationForUpdate(tx, input.sourceOrgNodeId)`（org_node_id）与
+ * `locationForUpdate(tx, storeId)`（store_id）并存。
+ *
+ * ⚠️ 但两侧**可以落在不同的两行上**（#251，与 staffApi `ensureInventoryLocation` 同签名）：
+ * `location_id` 是主键、`org_node_id` 有 `uq_inventory_locations_org`，各自最多 1 行；
+ * 而 `syncInventoryLocations` 写的门店行是 `location_id = store_id`、
+ * `org_node_id = org-门店-*`（只有总部/市场行自指）。于是**某个 store_id 恰好等于某个
+ * `type='门店'` 的 `org_nodes.id`** 时，两侧指向两个**不同门店**的库存主体。
+ *
+ * 原先既无 `ORDER BY` 也无 `LIMIT`、直接取 `[row]`，取哪行不保证稳定；结果又直接喂
+ * `assertLocationWritable` → `assertInventoryLocationInScope` ——「按 A 鉴权、扣 B 的批次」。
+ * 更重的是 `forUpdate` 分支会**把两行都锁上**，且旧版无 ORDER BY，加锁顺序不定 ——
+ * 与只锁单行的 `engine.ts` `orgNodeLocationIdForUpdate` 属于锁序卫生问题。
+ *（严格说单锁事务自身闭不出死锁环，要成环还得调用方先持有其它锁；但无序多行加锁
+ * 本就是该避免的形态，`ORDER BY location_id` 让并发的本语句之间有了一致的加锁顺序。）
+ *
+ * 故与 staff 端同款两道闸：
+ *   1. **`throw` 是唯一正确性保障** —— 撞值时不存在语义正确的那一行（一半调用点传
+ *      org_node_id、另一半传 store_id，固定任何优先级都会对另一半确定性地取错主体）。
+ *      别改软成「取第一行」。
+ *   2. `ORDER BY location_id` 按主键定序，不声称语义正确；`LIMIT 2` 是精确上界。
+ *      **本端的排序有实打实的作用**：`forUpdate` 分支在撞值时两行都会被锁，
+ *      主键序保证并发事务加锁顺序一致 —— 这是防死锁，不只是「确定性」。
+ *      旧版无 ORDER BY 无 LIMIT，是把全部匹配行无序锁住并持有到事务末，新版严格更优。
+ *
+ * ⚠️ 子句顺序：PG 要求 `LIMIT` 在 `FOR UPDATE` **之前**。
+ *
+ * ⚠️ `is_active` 从 WHERE 移到了 JS 侧判定（#251 评审）：留在 WHERE 里会让**停用行不参与
+ * 歧义判定** —— 设 X 既是在营门店 A 的 `location_id`(=store_id)、又是**停用**门店 Y 的
+ * `org_node_id`，调用方传 `input.sourceOrgNodeId = X` 时意图明确是 Y，SQL 提前滤掉 Y 会
+ * **静默返回 A**，随后按 A 鉴权、生成 A 的单据 —— 正是本 issue 的危害本体。
+ * 停用状态不能消除入参所属 id 空间的不确定性。对外文案保持不变。
+ */
 async function loadLocation(tx: Tx, endpointId: string, forUpdate: boolean): Promise<Location> {
-  const [row] = rows<{
+  const matched = rows<{
     location_id: string
     org_node_id: string
     location_type: LocationType
     name: string
     parent_location_id: string | null
+    is_active: boolean
   }>(await tx.execute(sql`
-    SELECT location_id, org_node_id, location_type, name, parent_location_id
+    SELECT location_id, org_node_id, location_type, name, parent_location_id, is_active
       FROM inventory_locations
      WHERE (location_id = ${endpointId} OR org_node_id = ${endpointId})
-       AND is_active = true
+     ORDER BY location_id
+     LIMIT 2
      ${forUpdate ? sql`FOR UPDATE` : sql``}
   `))
-  if (!row) throw new ApiError('NOT_FOUND', '库存主体不存在或已停用')
+  if (matched.length > 1) {
+    throw new ApiError('CONFLICT', '库存主体标识冲突，请联系管理员')
+  }
+  const row = matched[0]
+  // 注：单行停用时本端报 NOT_FOUND（沿用改动前的对外文案），staff 端同一数据状态报
+  // INVALID_STATE「库存主体已停用」。两端**决策一致（都拒绝）、错误码不同**，是刻意保留的
+  // 既有差异，不是跨端漂移 —— 别当不一致去「修齐」。
+  if (!row || row.is_active === false) {
+    throw new ApiError('NOT_FOUND', '库存主体不存在或已停用')
+  }
   return {
     locationId: row.location_id,
     orgNodeId: row.org_node_id,
@@ -1072,6 +1125,27 @@ async function insertDocHeader(tx: Tx, input: InsertDocHeaderInput): Promise<voi
   let sourceOrgNodeId = source?.orgNodeId ?? null
   let targetOrgNodeId = target?.orgNodeId ?? null
   if (INTERNAL_SAME_NODE_DOC_TYPES.has(input.docType)) {
+    /**
+     * #236：与 `engine.ts` 的同名分支对齐（两端都给且不一致时拒绝，**文案逐字相同**便于 grep 比对）。
+     *
+     * 原先无条件 `source ?? target` 会**静默吃掉**调用方给的 target —— 传两个不同主体只有一个
+     * 生效、另一个连报错都没有。这两份是同一逻辑的独立副本（项目禁止抽取跨端共享目录），
+     * 一致性靠人工同步。
+     *
+     * 当前 17 处 `insertDocHeader` 调用对同主体单据每次只传 source / target 其一
+     * （两端都传的 7 处 docType 全不在本集合内），没有调用方依赖被吃掉的那个行为 ——
+     * 这条是**防止以后新增专用服务时复现该坑**的前置断言，不是在修一条活着的缺陷路径。
+     *
+     * ⚠️ 与 engine.ts 那份**字面相同但比的东西不同构**，改动前先读懂差异：
+     *   - engine 比的是归一化后的**原始入参**，且刻意排在任何 location 查询**之前**
+     *     （#200 的注释说明了这个前置性是防「探测无权节点是否存在」的承重点）；
+     *   - 这里比的是两次 `loadLocation` **查询之后**解析出的 `org_node_id`。
+     * 后者反而更宽容：调用方用 location_id 和 org_node_id 两种写法指同一主体时会解析成同值、
+     * 不会误杀。别照搬 engine 侧关于「必须早于查询」的安全推理来改这一段。
+     */
+    if (sourceOrgNodeId && targetOrgNodeId && sourceOrgNodeId !== targetOrgNodeId) {
+      throw new ApiError('INVALID_PARAMS', '该单据的出库主体与入库主体必须是同一个')
+    }
     const orgNodeId = sourceOrgNodeId ?? targetOrgNodeId
     sourceOrgNodeId = orgNodeId
     targetOrgNodeId = orgNodeId

@@ -100,6 +100,8 @@ const mockLakalaClient = {
       paySign: 'mock-pay-sign-001',
     },
     lakalaAppId: 'wx811eb4ded3dfba3f',
+    // 支付宝 NATIVE 通道的二维码地址；#214 起预下单会校验它非空
+    alipayQrUrl: 'https://qr.alipay.com/mock-native-url',
     raw: {},
   })),
   // 支付宝吱口令默认返回 share_token
@@ -111,6 +113,10 @@ const mockLakalaClient = {
     ok: true, code: 'BBS00000', msg: '操作成功',
     tradeState: 'SUCCESS', tradeNo: 'LAK-T-001', accTradeNo: 'wx-txn-001',
     payMode: 'WECHAT', totalAmountFen: 0, payerAmountFen: 0, raw: {},
+  })),
+  // 关单（#214）默认成功并返回 CLOSE；不 mock 会走真实实现打真网络
+  closeTrade: vi.fn(async () => ({
+    ok: true, code: 'BBS00000', msg: '操作成功', tradeState: 'CLOSE', raw: {},
   })),
 }
 require.cache[lakalaClientPath] = {
@@ -156,6 +162,8 @@ beforeEach(() => {
       paySign: 'mock-pay-sign-001',
     },
     lakalaAppId: 'wx811eb4ded3dfba3f',
+    // 支付宝 NATIVE 通道的二维码地址；#214 起预下单会校验它非空
+    alipayQrUrl: 'https://qr.alipay.com/mock-native-url',
     raw: {},
   })
   mockLakalaClient.requestAlipayShareCode.mockReset().mockResolvedValue({
@@ -165,5 +173,8 @@ beforeEach(() => {
     ok: true, code: 'BBS00000', msg: '操作成功',
     tradeState: 'SUCCESS', tradeNo: 'LAK-T-001', accTradeNo: 'wx-txn-001',
     payMode: 'WECHAT', totalAmountFen: 0, payerAmountFen: 0, raw: {},
+  })
+  mockLakalaClient.closeTrade.mockReset().mockResolvedValue({
+    ok: true, code: 'BBS00000', msg: '操作成功', tradeState: 'CLOSE', raw: {},
   })
 })

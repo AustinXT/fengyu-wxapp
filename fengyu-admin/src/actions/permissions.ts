@@ -1,7 +1,7 @@
 'use server'
 
 import { db } from '@/db'
-import { pgErrorCode } from '@/lib/pg-error'
+import { pgErrorCode, pgErrorConstraint } from '@/lib/pg-error'
 import { permissionRoleDefinitions, permissionRoles } from '@db/permission'
 import { staffWechatUsers } from '@db/user'
 import { orgNodes } from '@db/org'
@@ -9,7 +9,7 @@ import { eq, and, inArray, sql, desc, asc } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import type { PermissionRole } from '@/lib/types'
 import { hasRole } from '@/lib/auth'
-import { hasPermission, isAdminScope } from '@/lib/permissions'
+import { hasPermission, isAdminScope, isEmployeeRowVisible } from '@/lib/permissions'
 import { withPermission, withAnyPermission } from '@/lib/with-permission'
 import { logOperation } from '@/lib/operation-log'
 import { countActiveAdmins } from '@/lib/admin-guard'
@@ -283,6 +283,48 @@ export const assignRole = withAnyPermission(
     throw new Error(`INVALID_PARAMS: 角色 ${data.role} 不能绑定到 ${node.type} 型 scope`)
   }
 
+  /*
+   * 被授权人（第二主体）校验 —— #250。
+   *
+   * 上面那段只管住了 `data.scopeId`（授权范围），对 `data.employeeId` 此前零约束：
+   * 绑市场 M 的 hr 可以把市场 N 的真实员工授予 M 内节点的角色（授权范围本身没越界，
+   * 但「被授权人」完全未校验）；传垃圾 ID 则触发 `permission_roles.employee_id` 的
+   * FK 23503，而 catch 只认 23505 → 裸抛 500 而非友好文案。
+   *
+   * 判据用 `isEmployeeRowVisible`（store ∪ orgNode 双维度）而**不是** `isInScope`：
+   * `permission_roles` 授的恰恰包含职能部门员工（`store_id IS NULL`、靠 `org_node_id` 命中 scope），
+   * 只按 store 判会把他们整体挡掉。这与 `customers.ts` 的 `resolveBoundEmployee` 刻意用
+   * 单维度 `isInScope` 是两套口径，各有出处，别互相「对齐」。
+   *
+   * 「不存在」与「存在但不可见」合并成同一条文案、且都零写入（对齐 #228 commit 2c27c34a）：
+   * 分成两句话只是把 oracle 从「员工归属」换成「employeeId 是否存在」。
+   * 必须前置到下面的 existing 查询之前 —— 那句「该员工已拥有相同的角色和权限范围」
+   * 对 scope 外员工同样是可探测的信道。
+   *
+   * 在职判定排在可见性**之后**：对不可见的员工连「他已离职」都不该泄露。
+   *
+   * 失败通道的分层判据（本函数里 throw 与 return 混用，不是随意的）：
+   * **全局公共数据可以 throw**（角色定义 `:253`、组织节点 `:274` —— 任何持 permission:assign
+   * 的人本来就能列举它们，且 scopeId 在 :260-265 已被挡在自身 scope 内）；
+   * **敏感归属必须走合并 return**（本段的员工校验）。
+   * 后续维护者不要在员工侧加 throw —— 那会重新暴露「employeeId 是否存在」。
+   */
+  const [targetEmployee] = await db
+    .select({
+      storeId: staffWechatUsers.storeId,
+      orgNodeId: staffWechatUsers.orgNodeId,
+      isResigned: staffWechatUsers.isResigned,
+    })
+    .from(staffWechatUsers)
+    .where(eq(staffWechatUsers.employeeId, data.employeeId))
+    .limit(1)
+  if (!targetEmployee || !isEmployeeRowVisible(session, targetEmployee.storeId, targetEmployee.orgNodeId)) {
+    return { success: false, message: '员工不存在或不在您的权限范围内' }
+  }
+  if (targetEmployee.isResigned) {
+    return { success: false, message: '该员工已离职，无法分配角色' }
+  }
+
   // 检查是否已存在相同的角色记录，避免重复分配
   const [existing] = await db
     .select({ id: permissionRoles.id })
@@ -308,6 +350,23 @@ export const assignRole = withAnyPermission(
   } catch (err: any) {
     if (pgErrorCode(err) === '23505') {
       return { success: false, message: '该员工已拥有相同的角色和权限范围' }
+    }
+    // employee_id 的 FK 兜底：前置校验与 insert 之间员工被并发删除的竞态。
+    // 这条确实可达 —— deleteEmployee 在事务里先 `tx.delete(permissionRoles)` 再删主表
+    // （employees.ts:1047-1058），所以「有角色行就删不掉员工」的直觉不成立。
+    // 文案与前置校验逐字相同，不让竞态窗口变成另一个探测信道。
+    //
+    // ⚠️ 必须按约束名收窄：permission_roles 另有 scope_id → org_nodes、
+    // role → permission_role_definitions 两条 FK，只判 23503 会把「组织节点/角色定义被并发删除」
+    // 误报成「员工不存在」—— 把原本响亮的 500 变成静默且主体错误的业务拒绝，排障指错方向。
+    // 判据取**前缀**而非全名或裸子串：全名
+    // `permission_roles_employee_id_staff_wechat_users_employee_id_fk` 由 drizzle 生成规则决定、
+    // 会随 schema 改名漂移；而裸 `includes('employee_id')` 在将来新增
+    // `created_by → staff_wechat_users.employee_id` 之类的 FK 时会把它也吞进来
+    // （那条约束名同样含 employee_id）。前缀锁死「引用列就是 employee_id」这一点。
+    if (pgErrorCode(err) === '23503'
+      && pgErrorConstraint(err)?.startsWith('permission_roles_employee_id_')) {
+      return { success: false, message: '员工不存在或不在您的权限范围内' }
     }
     throw err
   }

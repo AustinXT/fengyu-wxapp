@@ -22,20 +22,17 @@
       </van-sidebar>
     </scroll-view>
 
-    <!-- 右侧：商品列表 -->
-    <scroll-view class="product-scroll" scroll-y>
+    <!-- 右侧：商品列表（触底加载本分类下一页） -->
+    <scroll-view class="product-scroll" scroll-y bindscrolltolower="onScrollToLower" lower-threshold="100">
 
-      <!-- 骨架屏 -->
-      <view wx:if="{{isLoading}}" class="skeleton-wrap">
+      <!-- 骨架屏：仅首屏；翻页追加时走列表底部的加载提示，不能把已渲染的列表整片换掉 -->
+      <view wx:if="{{isLoading && spuList.length === 0}}" class="skeleton-wrap">
         <van-skeleton title avatar row="3" />
         <van-skeleton title avatar row="3" style="margin-top:24rpx" />
       </view>
 
       <!-- 空态 -->
-      <view wx:elif="{{spuList.length === 0 && categories.length === 0}}">
-        <van-empty description="该分类暂无商品" />
-      </view>
-      <view wx:elif="{{spuList.length === 0 && categories.length > 0}}">
+      <view wx:elif="{{spuList.length === 0}}">
         <van-empty description="该分类暂无商品" />
       </view>
 
@@ -48,17 +45,19 @@
           bindtap="onSpuTap"
           data-product-id="{{item.product_id}}"
         >
-          <!-- 商品封面 -->
-          <view class="spu-cover cover-placeholder" wx:if="{{!item.cover_image}}">
-            <van-icon name="photo-o" size="64rpx" color="#CCCCCC" />
+          <!-- 商品封面：槽位尺寸固定，issue #248 的视口窗口只切换槽位内容，卡片高度不抖 -->
+          <view class="spu-cover-slot" data-idx="{{index}}">
+            <image
+              wx:if="{{item.cover_image && item.coverVisible}}"
+              class="spu-cover"
+              src="{{item.cover_image}}"
+              mode="aspectFill"
+              lazy-load
+            />
+            <view wx:else class="spu-cover cover-placeholder">
+              <van-icon name="photo-o" size="64rpx" color="#CCCCCC" />
+            </view>
           </view>
-          <image
-            wx:else
-            class="spu-cover"
-            src="{{item.cover_image}}"
-            mode="aspectFill"
-            lazy-load
-          />
 
           <!-- 商品信息 -->
           <view class="spu-body">
@@ -83,6 +82,14 @@
               </view>
             </view>
           </view>
+        </view>
+
+        <!-- 翻页加载提示 / 到底提示 -->
+        <view wx:if="{{isLoading}}" class="list-footer">
+          <van-loading size="20px" />
+        </view>
+        <view wx:elif="{{!hasMore && spuList.length > 0}}" class="list-footer">
+          <text class="list-footer__end">没有更多了</text>
         </view>
       </view>
 

@@ -2443,6 +2443,120 @@ describe('order.close', () => {
     expect(clientQueryMock.mock.calls.some(([sql]) => /SET status = '已关闭'|SET status = '已作废'/.test(sql))).toBe(false)
   })
 
+  // ===== #214 关闭订单前先请 clientApi 向渠道关单 =====
+  // 背景：顾客唤起支付后没付款，渠道单仍在有效期内，旧实现只能拒绝关闭，店员实测要等
+  // 约 20 分钟（等拉卡拉 10 分钟超时 + payNotify 定时补偿扫到）。staffApi 没有拉卡拉
+  // 凭据（也不该有），所以委托 clientApi 完成关单。
+  describe('#214 关闭前作废在线支付意图', () => {
+    test('通道已配置 + 存在活动意图 → 调 clientApi 作废后按原流程关闭', async () => {
+      const ctx = createManagerCtx({ saleOrderId: 'FY-CLOSE-VOID' })
+
+      mockScopeOk()
+      __mocks__.clientApiBridge.isConfigured.mockReturnValue(true)
+      // 第一次 pg.query 是关单前预读，第二次给事务内的订单锁（makeCloseQuery 委托 pg.query）
+      pg.query.mockResolvedValueOnce([{ status: '待支付', lakala_out_order_no: 'FY-CLOSE-VOID_500' }])
+      pg.query.mockResolvedValueOnce([{
+        sale_order_id: 'FY-CLOSE-VOID',
+        status: '待支付',
+        store_id: 'store-001',
+        opened_by: 'emp-other',
+        lakala_out_order_no: null,   // clientApi 已把它清空
+      }])
+
+      pg.transaction.mockImplementation(async (cb) => cb({
+        query: makeCloseQuery(async (sql) => {
+          if (sql.includes('sale_items')) return { rows: [{ sale_item_id: 'item-1' }], rowCount: 1 }
+          return defaultQueryResult(sql)
+        }),
+      }))
+
+      await orderRoutes.close(ctx)
+
+      expect(ctx.result.status).toBe('已关闭')
+      // 必须带上预读到的单号，clientApi 侧据此拒绝「关到另一笔新意图」（TOCTOU 防线）
+      expect(__mocks__.clientApiBridge.callClientApi).toHaveBeenCalledWith(
+        'order.voidPaymentIntent',
+        { saleOrderId: 'FY-CLOSE-VOID', expectedOutTradeNo: 'FY-CLOSE-VOID_500' },
+      )
+    })
+
+    test('clientApi 判定不可作废（支付已成功）→ 原样抛出，绝不本地强关', async () => {
+      const ctx = createManagerCtx({ saleOrderId: 'FY-CLOSE-PAID' })
+
+      mockScopeOk()
+      __mocks__.clientApiBridge.isConfigured.mockReturnValue(true)
+      __mocks__.clientApiBridge.callClientApi.mockRejectedValueOnce(
+        new Error('CONFLICT: PAYMENT_ALREADY_SUCCEEDED: 支付已成功，正在更新订单，请稍后刷新'),
+      )
+      pg.query.mockResolvedValueOnce([{ status: '待支付', lakala_out_order_no: 'FY-CLOSE-PAID_500' }])
+
+      await expect(orderRoutes.close(ctx)).rejects.toThrow(/PAYMENT_ALREADY_SUCCEEDED/)
+      expect(pg.transaction).not.toHaveBeenCalled()
+    })
+
+    test('无活动意图 → 不调 clientApi，行为与改动前一致', async () => {
+      const ctx = createManagerCtx({ saleOrderId: 'FY-CLOSE-PLAIN' })
+
+      mockScopeOk()
+      __mocks__.clientApiBridge.isConfigured.mockReturnValue(true)
+      pg.query.mockResolvedValueOnce([{ status: '待支付', lakala_out_order_no: null }])
+      pg.query.mockResolvedValueOnce([{
+        sale_order_id: 'FY-CLOSE-PLAIN',
+        status: '待支付',
+        store_id: 'store-001',
+        opened_by: 'emp-other',
+      }])
+
+      pg.transaction.mockImplementation(async (cb) => cb({
+        query: makeCloseQuery(async (sql) => {
+          if (sql.includes('sale_items')) return { rows: [{ sale_item_id: 'item-1' }], rowCount: 1 }
+          return defaultQueryResult(sql)
+        }),
+      }))
+
+      await orderRoutes.close(ctx)
+
+      expect(ctx.result.status).toBe('已关闭')
+      expect(__mocks__.clientApiBridge.callClientApi).not.toHaveBeenCalled()
+    })
+
+    // 状态闸门排在关单之前：对一张已支付单点关闭，不该先跑跨 env 查单甚至发关单请求
+    test('已支付订单不触发跨 env 作废调用', async () => {
+      const ctx = createManagerCtx({ saleOrderId: 'FY-CLOSE-PAIDSTATUS' })
+
+      mockScopeOk()
+      __mocks__.clientApiBridge.isConfigured.mockReturnValue(true)
+      pg.query.mockResolvedValueOnce([{ status: '已支付', lakala_out_order_no: 'FY-X_500' }])
+      pg.query.mockResolvedValueOnce([{
+        sale_order_id: 'FY-CLOSE-PAIDSTATUS', status: '已支付',
+        store_id: 'store-001', opened_by: 'emp-other',
+      }])
+      pg.transaction.mockImplementation(async (cb) => cb({ query: makeCloseQuery() }))
+
+      await expect(orderRoutes.close(ctx)).rejects.toThrow(/不允许关闭|不允许取消/)
+      expect(__mocks__.clientApiBridge.callClientApi).not.toHaveBeenCalled()
+    })
+
+    test('通道未配置 → 连预读都不发，事务内守卫照常拦住活动意图', async () => {
+      const ctx = createManagerCtx({ saleOrderId: 'FY-CLOSE-NOBRIDGE' })
+
+      mockScopeOk()
+      __mocks__.clientApiBridge.isConfigured.mockReturnValue(false)
+      pg.query.mockResolvedValueOnce([{
+        sale_order_id: 'FY-CLOSE-NOBRIDGE',
+        status: '待支付',
+        store_id: 'store-001',
+        opened_by: 'emp-other',
+        lakala_out_order_no: 'FY-CLOSE-NOBRIDGE_500',
+      }])
+      pg.transaction.mockImplementation(async (cb) => cb({ query: makeCloseQuery() }))
+
+      await expect(orderRoutes.close(ctx))
+        .rejects.toThrow(/CONFLICT.*ONLINE_PAYMENT_INTENT_ACTIVE/)
+      expect(__mocks__.clientApiBridge.callClientApi).not.toHaveBeenCalled()
+    })
+  })
+
   test('关闭待支付转换单时恢复源卡次数并作废转换权益', async () => {
     const ctx = createManagerCtx({ saleOrderId: 'FY-CONV-001' })
 
@@ -2924,6 +3038,36 @@ describe('order.detail', () => {
 
     expect(ctx.result.order.sale_order_id).toBe('FY-001')
     expect(ctx.result.items).toHaveLength(1)
+  })
+
+  // #214：新增的 lakala_payment_intent 含 paySign / prepay_id，只对归属顾客本人有意义。
+  // 这里是 `SELECT o.*` 原样展开，漏剥离就会把支付凭据下发给员工端（双谱系评审 round-3）。
+  test('订单详情不得下发 lakala_payment_intent 支付凭据 (#214)', async () => {
+    const ctx = createManagerCtx({ saleOrderId: 'FY-001' })
+
+    pg.query
+      .mockResolvedValueOnce([{
+        sale_order_id: 'FY-001',
+        status: '待支付',
+        store_id: 'store-001',
+        preferred_employee_id: 'emp-b1',
+        client_phone: '138',
+        customer_name: '顾客A',
+        coupon_id: null,
+        lakala_out_order_no: 'FY-001_1700000000',
+        lakala_payment_intent: {
+          outTradeNo: 'FY-001_1700000000',
+          paymentParams: { package: 'prepay_id=secret', paySign: 'should-not-leak' },
+        },
+      }])
+      .mockResolvedValueOnce([{ name: '美容师A' }])
+      .mockResolvedValueOnce([{ sale_item_id: 'item-1' }])
+      .mockResolvedValueOnce([])
+
+    await orderRoutes.detail(ctx)
+
+    expect(ctx.result.order.lakala_payment_intent).toBeUndefined()
+    expect(JSON.stringify(ctx.result)).not.toContain('should-not-leak')
   })
 
   test('缺少 saleOrderId 时拒绝', async () => {

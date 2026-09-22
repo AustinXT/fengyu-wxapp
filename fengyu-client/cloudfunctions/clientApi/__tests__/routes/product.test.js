@@ -123,7 +123,8 @@ describe('product.spuList', () => {
     expect(productSql).toContain('p.market_scope IS NULL')
     expect(productSql).toContain("sk.market_scope IS NULL OR btrim(sk.market_scope) <> ''")
     expect(productSql).not.toContain('FROM stores s')
-    expect(productParams).toEqual(['cat-1'])
+    // 末位 21 = issue #248 的 pageSize(20) + 1 探测行
+    expect(productParams).toEqual(['cat-1', 21])
 
     const [skuSql, skuParams] = pg.query.mock.calls[1]
     expect(skuSql).toContain("sk.market_scope IS NULL OR btrim(sk.market_scope) <> ''")
@@ -150,7 +151,7 @@ describe('product.spuList', () => {
     expect(productSql).toContain('sk.market_scope')
     expect(productSql).toContain('FROM stores s')
     expect(productSql).toContain('pm.id = ANY')
-    expect(productParams).toEqual([['store-nanchang'], 'cat-1', ['store-nanchang']])
+    expect(productParams).toEqual([['store-nanchang'], 'cat-1', ['store-nanchang'], 21])
 
     const [skuSql, skuParams] = pg.query.mock.calls[1]
     expect(skuSql).toContain('sk.market_scope')
@@ -186,7 +187,348 @@ describe('product.search', () => {
     const [productSql, productParams] = pg.query.mock.calls[0]
     expect(productSql).toContain('p.market_scope IS NULL')
     expect(productSql).toContain("sk.market_scope IS NULL OR btrim(sk.market_scope) <> ''")
-    expect(productParams).toEqual(['%全市场%'])
+    expect(productParams).toEqual(['%全市场%', 21])
+  })
+})
+
+// ===== issue #248：商品列表硬分页（keyset 复合游标） =====
+describe('product 列表分页', () => {
+  // 口径从路由模块直接取，不再抄一份字面量（实现调值时测试跟着走，不会静默漂移）
+  let DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, CURSOR_MAX_LENGTH
+  beforeEach(() => {
+    ;({
+      PRODUCT_PAGE_SIZE_DEFAULT: DEFAULT_PAGE_SIZE,
+      PRODUCT_PAGE_SIZE_MAX: MAX_PAGE_SIZE,
+      PRODUCT_CURSOR_MAX_LENGTH: CURSOR_MAX_LENGTH,
+    } = routes.__pageSizeCaliber)
+  })
+
+  const b64 = (v) => Buffer.from(JSON.stringify(v), 'utf8').toString('base64')
+  const decodeCursor = (c) => JSON.parse(Buffer.from(c, 'base64').toString('utf8'))
+  const makeCursor = (sortOrder, productId) => b64([sortOrder, productId])
+
+  /** 造 n 行商品；sortOrder 可传函数，用于构造 sort_order 重复的场景 */
+  function makeProductRows(n, sortOrder = (i) => i + 1) {
+    return Array.from({ length: n }, (_, i) => ({
+      product_id: `p${i + 1}`,
+      name: `商品${i + 1}`,
+      category_id: 'cat-1',
+      category_name: '护理',
+      cover_image: '',
+      description: '',
+      sort_order: typeof sortOrder === 'function' ? sortOrder(i) : sortOrder,
+      price: 100,
+      special_price: 80,
+      is_bundle: false,
+    }))
+  }
+
+  test('默认分页：SQL 带 LIMIT + 复合排序键，末位参数为 pageSize+1 探测行', async () => {
+    pg.query.mockResolvedValueOnce(makeProductRows(3))
+    pg.query.mockResolvedValueOnce([])
+
+    const ctx = createBoundCtx({ categoryId: 'cat-1' })
+    await routes.spuList(ctx)
+
+    const [sql, params] = pg.query.mock.calls[0]
+    expect(sql).toContain('ORDER BY p.sort_order ASC, p.product_id ASC')
+    expect(sql).toMatch(/LIMIT \$\d+/)
+    expect(params[params.length - 1]).toBe(DEFAULT_PAGE_SIZE + 1)
+  })
+
+  test('不足一页：hasMore=false、nextCursor=null', async () => {
+    pg.query.mockResolvedValueOnce(makeProductRows(3))
+    pg.query.mockResolvedValueOnce([])
+
+    const ctx = createBoundCtx({ categoryId: 'cat-1' })
+    await routes.spuList(ctx)
+
+    expect(ctx.result.spuList).toHaveLength(3)
+    expect(ctx.result.hasMore).toBe(false)
+    expect(ctx.result.nextCursor).toBeNull()
+  })
+
+  test('探测行命中：截回 pageSize 条、hasMore=true、游标取本页最后一行（不是探测行）', async () => {
+    // 造 21 行 = pageSize + 1，第 21 行是探测行，不应下发也不应成为游标
+    pg.query.mockResolvedValueOnce(makeProductRows(DEFAULT_PAGE_SIZE + 1))
+    pg.query.mockResolvedValueOnce([])
+
+    const ctx = createBoundCtx({ categoryId: 'cat-1' })
+    await routes.spuList(ctx)
+
+    expect(ctx.result.spuList).toHaveLength(DEFAULT_PAGE_SIZE)
+    expect(ctx.result.spuList[DEFAULT_PAGE_SIZE - 1].product_id).toBe('p20')
+    expect(ctx.result.hasMore).toBe(true)
+    expect(decodeCursor(ctx.result.nextCursor)).toEqual([20, 'p20'])
+
+    // SKU 批量查询只应带本页 20 个 id，不含被截掉的探测行
+    const [, skuParams] = pg.query.mock.calls[1]
+    expect(skuParams[0]).toHaveLength(DEFAULT_PAGE_SIZE)
+    expect(skuParams[0]).not.toContain('p21')
+  })
+
+  test('sort_order 重复时游标仍全序（复合键带 product_id 兜底）', async () => {
+    // 21 行全部 sort_order=7，单列游标会在这里漏行/重行
+    pg.query.mockResolvedValueOnce(makeProductRows(DEFAULT_PAGE_SIZE + 1, 7))
+    pg.query.mockResolvedValueOnce([])
+
+    const ctx = createBoundCtx({ categoryId: 'cat-1' })
+    await routes.spuList(ctx)
+
+    expect(decodeCursor(ctx.result.nextCursor)).toEqual([7, 'p20'])
+  })
+
+  test('正好一页：pageSize 条时 hasMore=false（分界线）', async () => {
+    pg.query.mockResolvedValueOnce(makeProductRows(DEFAULT_PAGE_SIZE))
+    pg.query.mockResolvedValueOnce([])
+
+    const ctx = createBoundCtx({ categoryId: 'cat-1' })
+    await routes.spuList(ctx)
+
+    expect(ctx.result.spuList).toHaveLength(DEFAULT_PAGE_SIZE)
+    expect(ctx.result.hasMore).toBe(false)
+    expect(ctx.result.nextCursor).toBeNull()
+  })
+
+  test('limit=1 的逐条翻页语义', async () => {
+    pg.query.mockResolvedValueOnce(makeProductRows(2))
+    pg.query.mockResolvedValueOnce([])
+
+    const ctx = createBoundCtx({ categoryId: 'cat-1', limit: 1 })
+    await routes.spuList(ctx)
+
+    expect(pg.query.mock.calls[0][1]).toContain(2) // 探测行 = 1 + 1
+    expect(ctx.result.spuList).toHaveLength(1)
+    expect(ctx.result.hasMore).toBe(true)
+    expect(decodeCursor(ctx.result.nextCursor)).toEqual([1, 'p1'])
+  })
+
+  test('传 cursor：SQL 用行值比较，参数显式转型', async () => {
+    pg.query.mockResolvedValueOnce([])
+    const cursor = makeCursor(7, 'p20')
+
+    const ctx = createBoundCtx({ categoryId: 'cat-1', cursor })
+    await routes.spuList(ctx)
+
+    const [sql, params] = pg.query.mock.calls[0]
+    expect(sql).toContain('(p.sort_order, p.product_id) >')
+    expect(sql).toMatch(/\$\d+::int, \$\d+::text/)
+    expect(params).toContain(7)
+    expect(params).toContain('p20')
+  })
+
+  test('limit 超过上限被夹到 MAX_PAGE_SIZE', async () => {
+    pg.query.mockResolvedValueOnce([])
+
+    const ctx = createBoundCtx({ categoryId: 'cat-1', limit: 9999 })
+    await routes.spuList(ctx)
+
+    const [, params] = pg.query.mock.calls[0]
+    expect(params[params.length - 1]).toBe(MAX_PAGE_SIZE + 1)
+  })
+
+  // limit 只收 number。`Number(raw)` 的隐式转换会把 true→1、['20']→20、'0x14'→20
+  // 静默接受（true 那条会让列表变成「每页 1 条」），而 {toString:null} 是合法 JSON
+  // 却会抛无前缀的 TypeError → 降级成 -1 而不是 -400。
+  test.each([
+    ['0', 0],
+    ['-1', -1],
+    ['小数', 1.5],
+    ['NaN', NaN],
+    ['Infinity', Infinity],
+    ['字符串数字', '20'],
+    ['十六进制字符串', '0x14'],
+    ['布尔 true', true],
+    ['单元素数组', [20]],
+    ['普通对象', {}],
+    ['toString 被遮蔽的对象', { toString: null }],
+  ])('非法 limit(%s) 抛 INVALID_PARAMS 且不打库', async (_label, limit) => {
+    const ctx = createBoundCtx({ categoryId: 'cat-1', limit })
+    await expect(routes.spuList(ctx)).rejects.toThrow(/^INVALID_PARAMS:/)
+    expect(pg.query).not.toHaveBeenCalled()
+  })
+
+  test.each([
+    ['空串', ''],
+    ['数字', 123],
+    ['非 base64 乱码', '!!!!'],
+    ['base64 里不是数组', b64({ a: 1 })],
+    ['数组长度不对', b64([1])],
+    ['sort_order 非整数', b64(['x', 'p1'])],
+    ['product_id 非字符串', b64([1, 2])],
+    ['product_id 空串', b64([1, ''])],
+    // sort_order 是 int4，超范围会让 PG 抛 22003（无白名单前缀 → -1），且库已白打一次
+    ['int4 上溢', b64([2147483648, 'p1'])],
+    ['int4 下溢', b64([-2147483649, 'p1'])],
+    // 超长串不该走完 Buffer + JSON.parse 才被拒
+    ['超长串', 'A'.repeat(1024)],
+  ])('畸形 cursor(%s) 抛 INVALID_PARAMS 且不打库', async (_label, cursor) => {
+    const ctx = createBoundCtx({ categoryId: 'cat-1', cursor })
+    await expect(routes.spuList(ctx)).rejects.toThrow(/^INVALID_PARAMS:/)
+    expect(pg.query).not.toHaveBeenCalled()
+  })
+
+  test('int4 边界值本身合法（不误杀）', async () => {
+    pg.query.mockResolvedValueOnce([])
+    const ctx = createBoundCtx({ categoryId: 'cat-1', cursor: makeCursor(2147483647, 'p1') })
+    await routes.spuList(ctx)
+    expect(pg.query.mock.calls[0][1]).toContain(2147483647)
+  })
+
+  test('cursor 长度上限只卡超长串，正常游标远低于阈值', async () => {
+    const real = makeCursor(2147483647, 'prod-1786781954741')
+    expect(real.length).toBeLessThan(CURSOR_MAX_LENGTH)
+  })
+
+  test('缺省 cursor 才是首页：不传 / 传 null 都走无游标分支', async () => {
+    pg.query.mockResolvedValueOnce([])
+    const ctx = createBoundCtx({ categoryId: 'cat-1', cursor: null })
+    await routes.spuList(ctx)
+
+    expect(pg.query.mock.calls[0][0]).not.toContain('(p.sort_order, p.product_id) >')
+  })
+
+  test('search 同样支持 limit / cursor', async () => {
+    pg.query.mockResolvedValueOnce(makeProductRows(DEFAULT_PAGE_SIZE + 1))
+    pg.query.mockResolvedValueOnce([])
+
+    const ctx = createBoundCtx({ keyword: '护理', limit: 5 })
+    await routes.search(ctx)
+
+    // limit=5 时探测行参数应为 6；mock 返回 21 行是刻意的，验证「按声明的 pageSize 截断」
+    expect(pg.query.mock.calls[0][1]).toContain(6)
+    expect(ctx.result.spuList).toHaveLength(5)
+    expect(ctx.result.hasMore).toBe(true)
+    expect(decodeCursor(ctx.result.nextCursor)).toEqual([5, 'p5'])
+  })
+
+  // `(keyword || '').trim()` 对 `[]`（truthy）会抛 `trim is not a function` → 降级成 -1
+  test.each([
+    ['空格串', '   '],
+    ['空串', ''],
+    ['undefined', undefined],
+    ['null', null],
+    ['数字', 123],
+    ['空数组', []],
+    ['对象', {}],
+    ['布尔', true],
+  ])('search keyword=%s 返回完整分页壳且不打库', async (_label, keyword) => {
+    const ctx = createBoundCtx({ keyword })
+    await routes.search(ctx)
+
+    expect(ctx.result).toEqual({ spuList: [], nextCursor: null, hasMore: false })
+    expect(pg.query).not.toHaveBeenCalled()
+  })
+
+  // hotList 原先是 `const { limit = 6 }` 直进 LIMIT：解构默认值只对 undefined 生效，
+  // `{limit:null}` 会下发 `LIMIT NULL` —— 在 PG 里等于不限行数，而本接口下发 cover_image
+  test.each([
+    ['不传', undefined, 6],
+    ['null', null, 6],
+    ['正常值', 3, 3],
+    ['超上限', 9999, 50],
+  ])('hotList limit=%s → LIMIT %i', async (_label, limit, expected) => {
+    pg.query.mockResolvedValueOnce([])
+    const ctx = createBoundCtx(limit === undefined ? {} : { limit })
+    await routes.hotList(ctx)
+    expect(pg.query.mock.calls[0][1][0]).toBe(expected)
+  })
+
+  test('hotList 非法 limit 抛 INVALID_PARAMS 且不打库', async () => {
+    const ctx = createBoundCtx({ limit: 'abc' })
+    await expect(routes.hotList(ctx)).rejects.toThrow(/^INVALID_PARAMS:/)
+    expect(pg.query).not.toHaveBeenCalled()
+  })
+
+  test('shopInit 下发 spuCategoryId + 分页字段', async () => {
+    pg.query
+      .mockResolvedValueOnce([{ category_id: 'g-1', category_name: '护理', sort_order: 1 }])
+      .mockResolvedValueOnce([
+        // 故意让 categories[0] 与「第一个 group 下的首个二级分类」不是同一个，
+        // 验证 spuCategoryId 取的是后者（前端据此挂游标）
+        { category_id: 'cat-other', category_name: '其它', category_group: '未分组', category_order: 0 },
+        { category_id: 'cat-1', category_name: '面部', category_group: '护理', category_order: 1 },
+      ])
+      .mockResolvedValueOnce(makeProductRows(DEFAULT_PAGE_SIZE + 1))
+      .mockResolvedValueOnce([])
+
+    const ctx = createBoundCtx()
+    await routes.shopInit(ctx)
+
+    expect(ctx.result.spuCategoryId).toBe('cat-1')
+    expect(ctx.result.spuList).toHaveLength(DEFAULT_PAGE_SIZE)
+    expect(ctx.result.hasMore).toBe(true)
+    expect(decodeCursor(ctx.result.nextCursor)).toEqual([20, 'p20'])
+  })
+
+  // shopInit 既然下发 nextCursor，就必须收得回来，否则调用方拿着它再调一次仍是第一页
+  test('shopInit 透传 cursor（不是只下发不接收）', async () => {
+    pg.query
+      .mockResolvedValueOnce([{ category_id: 'g-1', category_name: '护理', sort_order: 1 }])
+      .mockResolvedValueOnce([{ category_id: 'cat-1', category_name: '面部', category_group: '护理', category_order: 1 }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+
+    const ctx = createBoundCtx({ cursor: makeCursor(7, 'p20') })
+    await routes.shopInit(ctx)
+
+    const [sql, params] = pg.query.mock.calls[2]
+    expect(sql).toContain('(p.sort_order, p.product_id) >')
+    expect(params).toContain(7)
+    expect(params).toContain('p20')
+  })
+
+  // 空关键词不该成为绕过分页校验的口子，否则三个 action 的入参契约不一致
+  test.each([
+    ['非法 limit', { keyword: '   ', limit: 0 }],
+    ['畸形 cursor', { keyword: '   ', cursor: 'not-a-cursor' }],
+  ])('search 空关键词 + %s 仍返回 -400 且不打库', async (_label, payload) => {
+    const ctx = createBoundCtx(payload)
+    await expect(routes.search(ctx)).rejects.toThrow(/^INVALID_PARAMS:/)
+    expect(pg.query).not.toHaveBeenCalled()
+  })
+
+  test.each([
+    ['非法 limit', { limit: 0 }],
+    ['畸形 cursor', { cursor: 'not-a-cursor' }],
+  ])('shopInit %s 返回 -400 且不打库（校验先于两个并发分类查询）', async (_label, payload) => {
+    const ctx = createBoundCtx(payload)
+    await expect(routes.shopInit(ctx)).rejects.toThrow(/^INVALID_PARAMS:/)
+    expect(pg.query).not.toHaveBeenCalled()
+  })
+
+  // product_id 是无长度约束的 text，上限太小会让服务端拒收自己生成的游标
+  test('长 product_id 生成的游标能被自己解回来', async () => {
+    const longId = 'p'.repeat(200)
+    pg.query.mockResolvedValueOnce(
+      makeProductRows(DEFAULT_PAGE_SIZE + 1).map((r, i) =>
+        i === DEFAULT_PAGE_SIZE - 1 ? { ...r, product_id: longId } : r
+      )
+    )
+    pg.query.mockResolvedValueOnce([])
+
+    const ctx = createBoundCtx({ categoryId: 'cat-1' })
+    await routes.spuList(ctx)
+    const cursor = ctx.result.nextCursor
+    expect(cursor.length).toBeLessThanOrEqual(CURSOR_MAX_LENGTH)
+
+    vi.clearAllMocks()
+    pg.query.mockResolvedValueOnce([])
+    const next = createBoundCtx({ categoryId: 'cat-1', cursor })
+    await routes.spuList(next)
+    expect(pg.query.mock.calls[0][1]).toContain(longId)
+  })
+
+  test('shopInit 无分类时分页字段为空壳', async () => {
+    pg.query.mockResolvedValueOnce([]).mockResolvedValueOnce([])
+
+    const ctx = createBoundCtx()
+    await routes.shopInit(ctx)
+
+    expect(ctx.result.spuList).toEqual([])
+    expect(ctx.result.spuCategoryId).toBeNull()
+    expect(ctx.result.nextCursor).toBeNull()
+    expect(ctx.result.hasMore).toBe(false)
   })
 })
 
@@ -549,8 +891,8 @@ describe('product.experienceCardList', () => {
  */
 describe('issue #230：商品封面图缩略下发', () => {
   /** 生产实际形态（45/45 条均为此格式）：CloudBase COS 域名 + 两段 ASCII 对象键 */
-  const COS_COVER_URL = 'https://test-env-1300000000.tcb.qcloud.la/product-covers/a.jpg'
-  const COS_DETAIL_URL = 'https://test-env-1300000000.tcb.qcloud.la/product-details/d1.jpg'
+  const COS_COVER_URL = 'https://6665-fengyu-client-prod-d1cga6909c0ba-1406056527.tcb.qcloud.la/product-covers/a.jpg'
+  const COS_DETAIL_URL = 'https://6665-fengyu-client-prod-d1cga6909c0ba-1406056527.tcb.qcloud.la/product-details/d1.jpg'
   /** 非 COS 域名：数据万象不生效，拼参数等于没保护，按 fail-closed 返回 null */
   const NON_COS_URL = 'https://img.example.com/a.jpg'
 
@@ -670,7 +1012,7 @@ describe('issue #230：商品封面图缩略下发', () => {
     // server action 就能写进 50 张 → 50×8.6MB ≈ 430MB。下发侧必须自己截断，不能信上游。
     pg.query.mockResolvedValueOnce([mockProductRow({
       detail_images: Array.from({ length: 50 }, (_, i) =>
-        `https://test-env-1300000000.tcb.qcloud.la/product-details/d${i}.jpg`),
+        `https://6665-fengyu-client-prod-d1cga6909c0ba-1406056527.tcb.qcloud.la/product-details/d${i}.jpg`),
     })])
     pg.query.mockResolvedValueOnce([])
 
@@ -688,7 +1030,7 @@ describe('issue #230：商品封面图缩略下发', () => {
     // 先 filter 再 slice：前 5 张不可缩略时，应拿到后面 9 张合规的，而不是只剩 4 张
     const bad = Array.from({ length: 5 }, () => 'https://img.example.com/x.jpg')
     const good = Array.from({ length: 12 }, (_, i) =>
-      `https://test-env-1300000000.tcb.qcloud.la/product-details/g${i}.jpg`)
+      `https://6665-fengyu-client-prod-d1cga6909c0ba-1406056527.tcb.qcloud.la/product-details/g${i}.jpg`)
     pg.query.mockResolvedValueOnce([mockProductRow({ detail_images: [...bad, ...good] })])
     pg.query.mockResolvedValueOnce([])
 

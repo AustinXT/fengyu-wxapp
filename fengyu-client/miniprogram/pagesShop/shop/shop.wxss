@@ -53,6 +53,19 @@
   margin-bottom: 16rpx;
 }
 
+/* issue #248：封面槽位。尺寸固定，内部 <image>/占位切换时卡片高度与滚动位置不变 */
+.spu-cover-slot {
+  width: 100%;
+  height: 220rpx;
+  display: block;
+}
+
+/* 改造前占位只在「商品无封面」时出现（罕见），所以沿用 app.wxss 的品牌粉红渐变无妨；
+   改造后滚出视口窗口的每张卡都走这个分支，整片网格会闪粉红。改成与 home 同口径的中性灰。 */
+.cover-placeholder {
+  background: var(--color-bg-section);
+}
+
 .spu-cover {
   width: 100%;
   height: 220rpx;
@@ -71,7 +84,6 @@
 }
 
 .spu-name {
-  display: block;
   font-size: 28rpx;
   font-weight: 600;
   color: var(--color-text-primary);

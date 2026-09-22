@@ -329,6 +329,122 @@ describe('PR #113 进销存单据组织端点跨端守护（staff / admin / sche
     })
   })
 
+  // #251：`location_id = <X> OR org_node_id = <X>` 的双 id 多态查找。
+  //
+  // 两侧各自唯一（`location_id` 是主键、`org_node_id` 有 `uq_inventory_locations_org`），
+  // 但**可以落在不同的两行上**：门店行是 `location_id = store_id` / `org_node_id = org-门店-*`
+  //（只有总部/市场行自指），所以某个 store_id 恰等于某个 `type='门店'` 的 org_nodes.id 时，
+  // 两侧指向两个**不同门店**的库存主体 → 取首行 = 「按 A 鉴权、扣 B 的批次」。
+  //
+  // ⚠️ 该签名全仓有**两份**，且一份在 admin：
+  //   - staff `ensureInventoryLocation`（routes/inventory.js）
+  //   - admin  `loadLocation`（lib/inventory/business.ts，20+ 处写路径走它，还带 FOR UPDATE）
+  // 初版守护只打在 engine.ts 上、漏了 business.ts，导致这条安全断言假绿 ——
+  // 所以下面的反向闸**必须同时扫两个 admin 文件**。
+  //
+  // 对照：admin `ensureOrgNodeLocation` / `orgNodeLocationIdForUpdate`（engine.ts）只按
+  // org_node_id 单列查，该列 UNIQUE ⇒ 最多一行、天然确定，是**刻意的非对称**，不需要两道闸。
+  describe('§6 库存主体解析确定性（#251）', () => {
+    const adminBusinessSrc = readFile(FILES.adminBusinessTs)
+    /** 归一空白后再断言：避免 prettier 换行 / 缩进变动造成误红。 */
+    const flat = (src) => src.replace(/\s+/g, ' ')
+
+    test('staff 侧 OR 多态查找必须带确定性排序 + LIMIT 2', () => {
+      expect(flat(staffSrc)).toContain(
+        'WHERE location_id = $1 OR org_node_id = $1 ORDER BY location_id LIMIT 2',
+      )
+    })
+
+    test('admin 侧 loadLocation 同样带确定性排序 + LIMIT 2', () => {
+      expect(flat(adminBusinessSrc)).toContain(
+        'WHERE (location_id = ${endpointId} OR org_node_id = ${endpointId})'
+        + ' ORDER BY location_id LIMIT 2',
+      )
+    })
+
+    test('两端撞到两行都必须抛 CONFLICT（不静默选一行）', () => {
+      expect(flat(staffSrc)).toMatch(
+        /if \(rows\.length > 1\) \{ throw new Error\('CONFLICT: LOCATION_ID_AMBIGUOUS:/,
+      )
+      expect(flat(adminBusinessSrc)).toMatch(
+        /if \(matched\.length > 1\) \{ throw new ApiError\('CONFLICT',/,
+      )
+    })
+
+    /**
+     * 停用行**必须参与**歧义判定 —— 两端都不得把 `is_active` 前置到过滤位置。
+     *
+     * 设入参 X 既是在营门店 A 的 `location_id`(=store_id)、又是**停用**门店 Y 的 `org_node_id`，
+     * 调用方传 org_node_id = X 时意图是 Y；一旦 Y 被提前滤掉，就会静默返回 A 并按 A 鉴权、
+     * 生成 A 的单据 —— 正是本 issue 的危害本体。停用状态不能消除入参所属 id 空间的不确定性。
+     *
+     * staff 侧曾用 `rows.filter(r => r.is_active !== false)` 再判歧义、
+     * admin 侧曾在 WHERE 里写 `AND is_active = true`，两种都属于这个反模式。
+     */
+    test('两端都不得把停用行排除在歧义判定之外', () => {
+      // admin：is_active 不能出现在 WHERE 与 ORDER BY 之间（即不能作为过滤条件）
+      const adminWhereToOrder = flat(adminBusinessSrc).match(
+        /WHERE \(location_id = \$\{endpointId\} OR org_node_id = \$\{endpointId\}\)(.*?)ORDER BY location_id/,
+      )
+      expect(adminWhereToOrder).not.toBeNull()
+      expect(adminWhereToOrder[1]).not.toMatch(/is_active/)
+      // staff：歧义判定必须基于**全部命中集** `rows`，不得先过滤出子集再判。
+      // ⚠️ 别用 `filter\([^)]*is_active...` 这种写法：箭头函数的 `(row)` 里就有 `)`，
+      // `[^)]*` 当场截断 —— 那条正则对回退版是**假阴性**（实测确认过）。
+      expect(flat(staffSrc)).toMatch(/if \(rows\.length > 1\)/)
+      expect(flat(staffSrc)).not.toMatch(/\bfilter\b[\s\S]{0,140}?\.length > 1/)
+
+      // 两端的 is_active 判定都必须发生在「唯一命中项」确定**之后**。
+      // 用位置比较而不是连续文本匹配：两者之间隔着注释是常态，钉死连续片段会误红。
+      const orderedAfter = (src, pick, check) => {
+        const s = flat(src)
+        const pickIdx = s.indexOf(pick)
+        const checkIdx = s.indexOf(check)
+        expect(pickIdx, `未找到「${pick}」`).toBeGreaterThan(-1)
+        expect(checkIdx, `未找到「${check}」`).toBeGreaterThan(-1)
+        // 歧义判定（抛 CONFLICT）必须排在取唯一行之前
+        expect(s.indexOf('length > 1'), '歧义判定应先于取唯一行').toBeLessThan(pickIdx)
+        return checkIdx > pickIdx
+      }
+      expect(orderedAfter(staffSrc, 'const row = rows[0]', 'row.is_active === false')).toBe(true)
+      expect(orderedAfter(adminBusinessSrc, 'const row = matched[0]', 'row.is_active === false')).toBe(true)
+    })
+
+    test('admin engine.ts 仍按 org_node_id 单列（UNIQUE）解析，未引入 OR 多态', () => {
+      // 形参名用 \w+ 而非写死 orgNodeId：纯重命名不该让守护误红。
+      expect(flat(adminSrc)).toMatch(/\.where\(eq\(inventoryLocations\.orgNodeId, \w+\)\)/)
+      expect(flat(adminSrc)).toMatch(/FROM inventory_locations WHERE org_node_id = \$\{\w+\}/)
+    })
+
+    /**
+     * 反向闸：任何 admin 文件若**新引入**双 id 多态而没同步两道闸，这里必须红。
+     *
+     * 正则放宽以吃掉初版的三类假阴性：操作数反序、表别名前缀（`l.location_id`）、
+     * 参数不是 `${}` 直插（先存变量再拼）。engine.ts 当前应当一处都不命中；
+     * business.ts 命中的那一处必须同时满足上面「有 ORDER BY + LIMIT 2 + CONFLICT」三条。
+     */
+    test('admin 侧不得存在「无两道闸」的 OR 多态', () => {
+      const orPolymorphic = /(\w+\.)?location_id\s*=[^\n]*\bOR\b[^\n]*(\w+\.)?org_node_id|(\w+\.)?org_node_id\s*=[^\n]*\bOR\b[^\n]*(\w+\.)?location_id/g
+      const drizzleOr = /\bor\(\s*eq\(\s*\w+\.(locationId|orgNodeId)/g
+
+      expect(adminSrc.match(orPolymorphic)).toBeNull()
+      expect(adminSrc.match(drizzleOr)).toBeNull()
+      expect(adminBusinessSrc.match(drizzleOr)).toBeNull()
+      // business.ts 只允许 loadLocation 这一处 OR 多态；多出来的必须自证已加两道闸。
+      expect(adminBusinessSrc.match(orPolymorphic)).toHaveLength(1)
+    })
+
+    test('schema 权威锚：唯一性 + 可空性共同决定了上界与排序写法', () => {
+      // 前两条：`LIMIT 2` 是精确上界的依据。一旦被撤，两端的 2 都不再成立。
+      expect(schemaSrc).toMatch(/locationId: text\('location_id'\)\.primaryKey\(\)/)
+      expect(schemaSrc).toMatch(/uniqueIndex\('uq_inventory_locations_org'\)\.on\(table\.orgNodeId\)/)
+      // 第三条：org_node_id **可空**（无 .notNull()）。这正是不能拿
+      // `ORDER BY (org_node_id = $1) DESC` 当排序键的原因之一（NULL 比较得 NULL，
+      // 且 DESC 默认 NULLS FIRST），也是 `org_node_id || locationId` 兜底那个已知缺陷的前提。
+      expect(schemaSrc).toMatch(/orgNodeId: text\('org_node_id'\)\.references\(\(\) => orgNodes\.id\),/)
+    })
+  })
+
   describe('Snapshot 守护（提交后任一项漂移立即可见）', () => {
     test('单据类型集合与端点口径文本快照', () => {
       expect({

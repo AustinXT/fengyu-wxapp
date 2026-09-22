@@ -158,7 +158,24 @@ bun run cron:once   # 立即跑一次后退出，本地冒烟
 bun run cron:dev    # 长驻调度（开发模式）
 ```
 
-**生产容器内手动触发**：`docker exec fengyu-cron-worker node cron-worker.js --once`
+**生产容器内手动触发**：
+
+```bash
+docker exec fengyu-cron-worker node --conditions=react-server cron-worker.mjs --once
+```
+
+⚠️ 入口是 `cron-worker.mjs`（`docker/Dockerfile.admin` 把 bundle 产物 COPY 到容器根），写 `.js` 会
+`MODULE_NOT_FOUND`；`--conditions=react-server` 也不能省（bundle 内含 RSC 条件导出），与
+`docker/docker-compose.yml` 的 `command` 保持一致。加 `--only=<stepName>` 可只跑单个 STEP。
+判成功看输出末尾的 `one-shot done: {"ok":true,...}`——中间刷的大量 audit 告警是只读巡检，不代表失败。
+⚠️ `one-shot done` **只有 `--once` 分支才打**（`src/cron/index.ts:48`），别拿它判断 03:00 那一跳。
+
+⚠️ **手动触发必须与 03:00 定时跑错开**。`src/cron/index.ts` 的调度是
+`runBackupTick().then(() => runDailyJobs())`，**先备份、备份完才跑 STEP**，所以 STEP 的真实执行窗口
+在备份之后（时长视库大小，不是固定的 03:00–03:03）。定时跑**没有专门的结束日志**，判它跑完要看
+最后一个 STEP 的行日志出现：`[cron-worker] storeUnbindOrphans: {...}`（`src/cron/run.ts` STEPS 末项）。
+`runDailyJobs` 没有任何互斥（无进程锁 / 无 advisory lock），撞上去可能 40P01 死锁，
+输的那一跑整个 STEP 回滚。
 
 **约定**：`operation_logs.source` 写 `'cronTask'`（保留语义，便于历史日志追溯）；`benefits` 类配置（含 `member_level_benefits` / `birthday_benefits` / `thanksgiving_benefits`）每次跑前重读 `system_configs`，不缓存。
 

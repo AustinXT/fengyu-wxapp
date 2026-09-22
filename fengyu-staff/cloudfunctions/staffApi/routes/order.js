@@ -48,6 +48,7 @@ const { INVENTORY_LINKAGE_ENABLED } = require('../utils/feature-flags')
 const { assertEmployeesAssignableToStore } = require('../utils/employee-assignment')
 const { classifySaleOrderDocumentType } = require('../utils/document-type')
 const { maskPhoneForAuth } = require('../utils/phone-visibility')
+const clientApiBridge = require('../utils/client-api-bridge')
 const { isValidDate, normalizeListFilters, addDateRange } = require('../utils/list-filters')
 const { safePaging } = require('../utils/paging')
 const { assertPaymentAttributionReady } = require('../utils/attribution-guard')
@@ -2690,6 +2691,61 @@ WHERE sale_items.sale_item_id IN (
 }
 
 /**
+ * close 允许关闭的订单状态（店长分支 ∪ 开单人分支）。
+ * 关单前的意图作废闸门与事务内的状态校验共用这一份，避免两处字面量各自漂移。
+ */
+const CLOSEABLE_ORDER_STATUSES = ['待支付', '支付失败']
+
+/**
+ * 关闭订单前作废进行中的在线支付意图（issue #214）。
+ *
+ * staffApi 没有拉卡拉凭据，委托 clientApi 完成「查渠道状态 → 未付款则关单 → 复核终态
+ * → 释放意图」。clientApi 侧全程 fail-closed：关不掉就不释放，本函数把它的 CONFLICT
+ * 原样抛给店员（「支付已成功」/「稍后重试」），绝不本地强关——那会让顾客残留的支付面板
+ * 付进来的钱变成收了却入不了账。
+ *
+ * 通道未配置时静默跳过：退回改动前的行为（下面的守卫照样拦住），不因为桥没配好
+ * 就让关单功能整个不可用。
+ */
+async function releaseOnlinePaymentIntentBeforeClose(ctx, saleOrderId) {
+  // 通道未配置 → 什么都不做（连预读都省掉），行为与改动前逐字一致：
+  // 下面事务里的 `lakala_out_order_no` 守卫照样拦住有活动意图的订单。
+  if (!clientApiBridge.isConfigured()) return
+
+  const rows = await pg.query(
+    'SELECT status, opened_by, lakala_out_order_no FROM sale_orders WHERE sale_order_id = $1',
+    [saleOrderId],
+  )
+  if (rows.length === 0) return
+  const order = rows[0]
+  if (!String(order.lakala_out_order_no || '').trim()) return
+
+  // 鉴权与状态闸门都必须排在关单之前（双谱系评审 round-1）：
+  // 关渠道单是**对外副作用**，一旦发出就打断了顾客正在进行的支付。若只靠事务内的校验，
+  // 同门店的普通员工（非本单开单人）调一次 close 就能中断别人的支付——事务最终会抛
+  // PERMISSION_DENIED，但钱那头的场次已经没了。
+  //
+  // 这里的判定必须与事务内（isManagerRole / isCreator 两分支）逐字同口径；
+  // 事务内仍保留二次校验，这里只是把副作用挡在前面。
+  const isManagerRole = isCurrentStoreManager(ctx.auth)
+  const isCreator = order.opened_by && order.opened_by === ctx.auth.staffWfId
+  if (isManagerRole) {
+    if (!CLOSEABLE_ORDER_STATUSES.includes(order.status)) return
+  } else if (isCreator) {
+    if (order.status !== '待支付') return
+  } else {
+    return  // 无权操作：不碰渠道，让事务内抛 PERMISSION_DENIED
+  }
+
+  // 带上预读到的单号：clientApi 侧据此校验「要关的还是同一笔」，避免在跨 env 往返期间
+  // 原意图已到账清锁、顾客又发起新意图时，误把新那笔合法支付关掉（双谱系评审 round-3）。
+  await clientApiBridge.callClientApi('order.voidPaymentIntent', {
+    saleOrderId,
+    expectedOutTradeNo: String(order.lakala_out_order_no),
+  })
+}
+
+/**
  * 关闭订单
  */
 async function close(ctx) {
@@ -2703,6 +2759,14 @@ async function close(ctx) {
 
   // scope 守卫
   await assertOrderInScope(pg, ctx.auth, saleOrderId)
+
+  // issue #214：顾客唤起支付后没付款，渠道单仍在有效期内，旧实现只能拒绝关闭
+  // （「已有进行中的在线支付，暂不可关闭订单」），店员得等约 20 分钟。这里先请
+  // clientApi 向渠道关单并释放意图，再走下面**原样不动**的事务与 CAS。
+  //
+  // 必须在事务之外：这是一次跨 env HTTPS 往返，放进事务会把订单行锁持有到网络返回。
+  // 作废与下面的守卫之间若有顾客重新发起支付，事务内的守卫会重新拦住（fail-closed）。
+  await releaseOnlinePaymentIntentBeforeClose(ctx, saleOrderId)
 
   const now = new Date()
 
@@ -2721,7 +2785,7 @@ async function close(ctx) {
     const isCreator = order.opened_by && order.opened_by === ctx.auth.staffWfId
 
     if (isManagerRole) {
-      if (!['待支付', '支付失败'].includes(order.status)) {
+      if (!CLOSEABLE_ORDER_STATUSES.includes(order.status)) {
         throw new Error(`INVALID_PARAMS: 订单当前状态"${order.status}"不允许关闭`)
       }
     } else if (isCreator) {
@@ -3333,9 +3397,14 @@ async function detail(ctx) {
       ? computeOverpayRemainder(order, purchaseItems)
       : 0
 
+  // #214：这里是 `SELECT o.*` 原样展开，新增的 lakala_payment_intent 里含 paySign /
+  // prepay_id 等支付凭据，只对归属顾客本人有意义，不该下发给员工端。
+  // clientApi 的 order.detail 有同款剥离，两端必须保持一致。
+  const { lakala_payment_intent: _omitPaymentIntent, ...orderForStaff } = order
+
   ctx.result = {
     order: {
-      ...order,
+      ...orderForStaff,
       coupon_name: couponName,
       // 营业额分配口径：仅销售单/转换单且非历史订单参与（与 allocation.js ALLOCATABLE_ORDER_TYPES 一致），控制详情页分配入口显隐
       allocatable: ['销售单', '转换单'].includes(order.sale_order_type) && order.legacy_source !== 'workfine',

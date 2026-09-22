@@ -65,7 +65,7 @@ beforeEach(() => {
   process.env.PAYNOTIFY_FN_NAME = 'payNotify'
   mockIsReady.mockReset().mockReturnValue(true)
   mockCallFunction.mockReset().mockResolvedValue({ result: { code: 'SUCCESS', message: '已处理' } })
-  mockQueryTrade.mockReset().mockResolvedValue({ tradeState: 'SUCCESS', tradeNo: 'LAK-T', totalAmountFen: 1, raw: {} })
+  mockQueryTrade.mockReset().mockResolvedValue({ ok: true, tradeState: 'SUCCESS', tradeNo: 'LAK-T', totalAmountFen: 1, raw: {} })
   // mockQuery 也要重置：多个用例断言 `not.toHaveBeenCalled()`，
   // 而调用记录不清会跨用例累积，结果取决于文件内的测试顺序。
   mockQuery.mockReset()
@@ -155,7 +155,7 @@ test('拉卡拉非 SUCCESS → skip，不自调入账', async () => {
       lakala_out_order_no: 'FY-001_1700000000', payment_method: '微信',
     }],
   })
-  mockQueryTrade.mockResolvedValue({ tradeState: 'INIT', tradeNo: 'LAK-T', totalAmountFen: 1, raw: {} })
+  mockQueryTrade.mockResolvedValue({ ok: true, tradeState: 'INIT', tradeNo: 'LAK-T', totalAmountFen: 1, raw: {} })
   const r = await runPaymentReconcile()
   expect(r.message).toContain('skip=1')
   expect(mockCallFunction).not.toHaveBeenCalled()
@@ -168,13 +168,42 @@ test('拉卡拉明确 CLOSE → 按当前 out_trade_no CAS 释放，不自调入
       lakala_out_order_no: 'FY-001_1700000000', payment_method: '微信',
     }],
   })
-  mockQueryTrade.mockResolvedValue({ tradeState: 'CLOSE', tradeNo: 'LAK-T', totalAmountFen: 1, raw: {} })
+  mockQueryTrade.mockResolvedValue({ ok: true, tradeState: 'CLOSE', tradeNo: 'LAK-T', totalAmountFen: 1, raw: {} })
   const r = await runPaymentReconcile()
   expect(r.message).toContain('skip=1')
   const release = mockQuery.mock.calls.find(([sql]) => /SET lakala_out_order_no = NULL/.test(sql))
   expect(release[1]).toEqual(['FY-001', 'FY-001_1700000000'])
   expect(mockCallFunction).not.toHaveBeenCalled()
 })
+
+// ⚠️ 拉卡拉业务失败码的响应里也可能带 resp_data.trade_state。据此认 SUCCESS 会走自调入账
+// —— 无真实到账却记账；据此认 CLOSE 会释放意图、凭空造出第二笔可支付单。
+// （双谱系评审 round-2）
+test('查单 ok=false 且携带 SUCCESS → 不入账、不自调 payNotify', async () => {
+  setupPg({
+    candidates: [{
+      sale_order_id: 'FY-001', store_id: 's1',
+      lakala_out_order_no: 'FY-001_1700000000', payment_method: '微信',
+    }],
+  })
+  mockQueryTrade.mockResolvedValue({ ok: false, code: 'BBS10000', tradeState: 'SUCCESS', tradeNo: 'LAK-T', totalAmountFen: 100, raw: {} })
+  const r = await runPaymentReconcile()
+  expect(r.message).toContain('skip=1')
+  expect(mockCallFunction).not.toHaveBeenCalled()
+})
+
+test('查单 ok=false 且携带 CLOSE → 不释放支付意图', async () => {
+  setupPg({
+    candidates: [{
+      sale_order_id: 'FY-001', store_id: 's1',
+      lakala_out_order_no: 'FY-001_1700000000', payment_method: '微信',
+    }],
+  })
+  mockQueryTrade.mockResolvedValue({ ok: false, code: 'BBS10000', tradeState: 'CLOSE', tradeNo: 'LAK-T', totalAmountFen: 0, raw: {} })
+  await runPaymentReconcile()
+  expect(mockQuery.mock.calls.some(([sql]) => /SET lakala_out_order_no = NULL/.test(sql))).toBe(false)
+})
+
 
 test('商户未配（store 无关联拉卡拉商户）→ skip，不查 trade', async () => {
   setupPg({

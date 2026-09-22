@@ -569,6 +569,76 @@ export async function createTestProduct({
   return { categoryId: subCatId, skuId, specName }
 }
 
+/**
+ * 创建一个套餐商品（`products.is_bundle = true`）+ 一个分组 + 关联 SKU。
+ *
+ * 为 issue #232 引入：`bundleGroups` 的封面缩略链路在 L2 上此前是**零覆盖**——
+ * 不是断言写错，而是夹具从不建 bundle 商品，断言永远跑在空集上。
+ *
+ * `coverImage` 默认给一个真实形态的 COS URL（不是相对路径），
+ * 否则 `safeThumbUrl` 走 null 分支，照样验证不到正向链路。
+ *
+ * `market_scope` 留 NULL = 全市场可见，避免与 `buildBundleMarketScopeFilter` 的
+ * 市场过滤纠缠（那是 scope 模块自己的 smoke 该覆盖的事）。
+ */
+export async function createTestBundleProduct({
+  suffix = 'B1',
+  coverImage = 'https://6665-fengyu-client-prod-d1cga6909c0ba-1406056527.tcb.qcloud.la/product-covers/1789097186265-apa9p0.png',
+  price = 1999,
+  specialPrice = null,
+  skuIds = [],
+} = {}) {
+  const productId = `${NS}_BUNDLE_${suffix}`
+
+  // ⚠️ `products.category_id` NOT NULL 且 FK → **mall_categories**（不是 product_categories，
+  // 那是 SKU 侧的品项分类，两套分类体系）。少建这一行会报
+  // 「null value in column "category_id" of relation "products"」。
+  const mallCatId = `${NS}_MALLCAT`
+  await pgQuery(
+    `INSERT INTO mall_categories (category_id, category_name, category_group, sort_order)
+     VALUES ($1, $2, NULL, 0)
+     ON CONFLICT (category_id) DO NOTHING`,
+    [mallCatId, `${NS}_商城分类`],
+  )
+
+  await pgQuery(
+    `INSERT INTO products (
+       product_id, category_id, name, cover_image, description, price, special_price,
+       is_bundle, is_visible, sort_order, market_scope
+     )
+     VALUES ($1, $2, $3, $4, $5, $6, $7, true, true, 0, NULL)
+     ON CONFLICT (product_id) DO UPDATE
+       SET name = EXCLUDED.name,
+           cover_image = EXCLUDED.cover_image,
+           price = EXCLUDED.price,
+           special_price = EXCLUDED.special_price,
+           is_bundle = true,
+           deleted_at = NULL`,
+    [productId, mallCatId, `${NS}_套餐_${suffix}`, coverImage, `${NS} 测试套餐`, price, specialPrice],
+  )
+
+  const groupRows = await pgQuery(
+    `INSERT INTO mall_bundle_groups (product_id, group_name, pick_count, sort_order)
+     VALUES ($1, $2, $3, 0)
+     RETURNING id`,
+    [productId, `${NS}_分组_${suffix}`, skuIds.length > 1 ? 1 : null],
+  )
+  const groupId = groupRows[0].id
+
+  for (const [i, skuId] of skuIds.entries()) {
+    await pgQuery(
+      `INSERT INTO mall_product_skus (
+         product_id, sku_id, bundle_group_id, bundle_price, bundle_list_price, sort_order
+       )
+       VALUES ($1, $2, $3, $4, $5, $6)
+       ON CONFLICT DO NOTHING`,
+      [productId, skuId, groupId, price, price, i],
+    )
+  }
+
+  return { productId, groupId, coverImage }
+}
+
 // ────────────────────────────────────────────────────────────────────────
 // 销售订单
 // ────────────────────────────────────────────────────────────────────────
@@ -1383,7 +1453,14 @@ export async function cleanupTestData(prefix = NS) {
     [`DELETE FROM staff_wechat_users WHERE phone = ANY($1::text[])`, [testPhones]],
 
     // ─── 11) 商品域 ───
-    [`DELETE FROM mall_product_skus WHERE sku_id LIKE $1`, [like]],
+    // ⚠️ 顺序：mall_product_skus / mall_bundle_groups 都 FK → products，必须先删。
+    // 之前这里漏了 products 与 mall_bundle_groups（夹具从不建套餐，所以没暴露）——
+    // 一旦有 smoke 建 is_bundle 商品而不清理，它会永久留在 dev 库里，
+    // 之后**所有** shopInit 调用都会看见这个幽灵套餐（#232 补 bundle 夹具时发现）。
+    [`DELETE FROM mall_product_skus WHERE sku_id LIKE $1 OR product_id LIKE $1`, [like]],
+    [`DELETE FROM mall_bundle_groups WHERE product_id LIKE $1`, [like]],
+    [`DELETE FROM products WHERE product_id LIKE $1`, [like]],
+    [`DELETE FROM mall_categories WHERE category_id LIKE $1`, [like]],
     [`DELETE FROM product_skus WHERE sku_id LIKE $1`, [like]],
     [`DELETE FROM product_categories WHERE category_id LIKE $1`, [like]],
 

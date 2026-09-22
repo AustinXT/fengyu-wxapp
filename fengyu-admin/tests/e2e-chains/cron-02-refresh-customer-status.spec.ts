@@ -126,6 +126,41 @@ test.describe.serial('cron-02 refreshCustomerStatus', () => {
     expect(getCustomerStatus(uid)).toBe('休眠')
   })
 
+  /**
+   * #254 回归：2.8 的顾客是新建的（status 本就 NULL），走的是段 3 原本就覆盖的分支。
+   * 真正漏掉的是「已有非 NULL 旧值」的那一类 —— 顾客掉出 visit_stats 之后旧状态没人清，
+   * 三段全不匹配、永久卡住。prod 2026-09-22 实际命中 2 行（会员客，挂着「保有会员-有效」
+   * 却零服务单；当事人身份见 issue #254，源码里不留真实顾客信息）。
+   *
+   * ⚠️ 下面用「把已完成单改成已取消」来构造这个状态，是**测试手段**不是已知成因：
+   * 应用层三个写入口（admin services.ts:1523/1595、staffApi service.js:1325）都封死了
+   * 「已完成 → 其它态」，只有 db/scripts 一次性修复脚本与手工 SQL 能绕过。prod 那 2 行的
+   * 真实成因至今未定位（实测它们任何状态的服务单都是 0 条）。本用例验的是段 3 的覆盖域，
+   * 不是「取消服务单」这条业务流程。
+   */
+  test('2.8b 会员客 + 掉出 visit_stats + 已有旧 status → 段 3 仍须重置为休眠（#254）', () => {
+    const uid = upsertClient('CS_28B', { customerType: '会员客' })
+    // 先造一笔已完成服务单并跑一次，让它拿到正常状态
+    insertServiceVisit('CS_28B', uid, '2026-11-15')
+    runCustomerStatus(REF_DATE)
+    expect(getCustomerStatus(uid)).toBe('保有会员-有效')
+
+    // 直接改库让它掉出 visit_stats，但旧 status 仍在（模拟脚本/手工 SQL 通道）
+    psql(`UPDATE service_orders SET status = '已取消' WHERE service_order_id = '${PREFIX.SVC}CS_28B'`)
+    expect(getCustomerStatus(uid)).toBe('保有会员-有效')
+
+    // 修复前：段 2 不匹配（无 visit_stats）、段 3 被 IS NULL 挡住 → 永久卡在「保有会员-有效」
+    const healed = runCustomerStatus(REF_DATE) as { resetNoVisit: number }
+    expect(getCustomerStatus(uid)).toBe('休眠')
+    // 至少把本用例这一行算进去了（同库其它真实顾客也可能被段 3 命中，故用 >=1）
+    expect(healed.resetNoVisit).toBeGreaterThanOrEqual(1)
+
+    // 幂等：再跑一次不仅值不变，而且段 3 一行都不该写（守卫挡住，不刷 updated_at）
+    const again = runCustomerStatus(REF_DATE) as { resetNoVisit: number }
+    expect(getCustomerStatus(uid)).toBe('休眠')
+    expect(again.resetNoVisit).toBe(0)
+  })
+
   test('2.9 会员客 6M 边界精确（last_service 略早于 6M）→ 冰冻', () => {
     const uid = upsertClient('CS_29', { customerType: '会员客' })
     // 6M 外 1d：2026-11-20 - 6M - 1d = 2026-05-19

@@ -79,7 +79,7 @@ const STEPS: ReadonlyArray<readonly [string, StepFn]> = [
   // —— 积分批次到期处理与顾客提醒 ——
   ['pointsExpiry', processPointsExpiry],
   // —— 积分失败补偿（写入；必须在余额审计前）——
-  ['visitPointsRetry', retryVisitPoints as StepFn],
+  ['visitPointsRetry', retryVisitPoints],
   // —— 数据完整性审计（只读，放在末尾，不感知 ctx）——
   ['pointsAudit', auditPointsBalance as StepFn],
   ['roleTypeNullsAudit', auditRoleTypeNulls as StepFn],
