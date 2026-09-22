@@ -354,7 +354,12 @@ function stripComments(source: string, fileName: string): string {
     for (const r of ts.getTrailingCommentRanges(source, node.getEnd()) ?? []) {
       holes.push([r.pos, r.end])
     }
-    node.forEachChild(visit)
+    // ⚠️ 必须用 `getChildren()` 递归到 **token 级**，不能用 `forEachChild`（只走 AST node）。
+    // 注释挂在「下一个 token 的 leading」上，而 JSX 表达式容器 `{/* … */}`、
+    // 空数组 `[/* … */]`、空对象 `{ /* … */ }`、参数间 `call(/* … */ 1, 2)` 这几种形状里，
+    // 注释后面跟的是 `}` / `]` / `1` 这类**标点或字面量 token**，不是 AST node ——
+    // `forEachChild` 走不到它们，注释就采集不到、留在原地被守护正则当代码命中（误报变红）。
+    node.getChildren(sf).forEach(visit)
   }
   visit(sf)
   // 挖空而不是删除：保留换行与字符偏移，行号定位与 wrappedByNormalizePage 的
@@ -378,11 +383,16 @@ function stripComments(source: string, fileName: string): string {
 function wrappedByNormalizePage(source: string, idx: number): boolean {
   let i = idx - 1
   while (i >= 0 && /\s/.test(source[i])) i--
-  const CALL = 'normalizePage('
-  if (source.slice(i - CALL.length + 1, i + 1) !== CALL) return false
+  // 先认左括号，再跨过「函数名与括号之间的空白」—— `normalizePage (get(…))` 是合法写法，
+  // 直接比 `normalizePage(` 会把它误判成未包裹（fail-closed 误报，CI 会红但很费解）。
+  if (source[i] !== '(') return false
+  i--
+  while (i >= 0 && /\s/.test(source[i])) i--
+  const NAME = 'normalizePage'
+  if (source.slice(i - NAME.length + 1, i + 1) !== NAME) return false
   // ⚠️ 后缀比对会把 `denormalizePage(` / `myNormalizePage(` 也算命中 —— 前者的后 14 个
   // 字符恰好就是 `normalizePage(`。必须确认它是**独立标识符**而不是别的函数的词尾。
-  const before = source[i - CALL.length]
+  const before = source[i - NAME.length]
   return before === undefined || !/[\w$]/.test(before)
 }
 
@@ -403,9 +413,20 @@ describe('守护的底层工具自身（这两个函数错了，上面所有守�
     ['插值内的块注释要剥掉（否则误报）',
       'const x = `${1 /* Math.max(1, filters.page) */}`',
       'c.ts', BAD_RE, false],
-    ['JSX 文本里的撇号不该进入字符串态',
+    // ⚠️ 这条的断言必须是 **BAD_RE 不命中**，不能是 OFFSET_RE 命中。
+    // 撇号翻车的真实失败方向是：`don'` 让旧状态机进字符串态且永不闭合，
+    // 于是下一行的 `// Math.max(1, filters.page)` **作为「字符串内容」被保留** →
+    // BAD_RE 误报变红。而 OFFSET_RE 那句在旧实现下同样完好 → 断言 true 恒绿、
+    // 钉不住这条回归（GLM 逐字复刻旧状态机实测确认）。
+    ['JSX 文本里的撇号不该进入字符串态（否则后续注释存活→误报）',
       `const A = () => <div>don't</div>\n// Math.max(1, filters.page)\nconst offset = (page - 1) * pageSize`,
-      'd.tsx', OFFSET_RE, true],
+      'd.tsx', BAD_RE, false],
+    ['JSX 表达式容器里的注释要剥掉（forEachChild 走不到 } token）',
+      `const A = () => (<div>{/* (page - 1) * pageSize */}</div>)`,
+      'd2.tsx', OFFSET_RE, false],
+    ['空容器 / 参数间的注释同样要剥掉',
+      `const a = [/* (page - 1) * pageSize */]; call(/* (page - 1) * pageSize */ 1, 2)`,
+      'd3.ts', OFFSET_RE, false],
     ['行尾注释里的反模式要剥掉（#250 踩过的误报）',
       'const x = 1 // Math.max(1, filters.page || 1)',
       'e.ts', BAD_RE, false],
@@ -425,6 +446,7 @@ describe('守护的底层工具自身（这两个函数错了，上面所有守�
     // 后缀比对的经典漏报：`denormalizePage(` 的后 14 个字符恰好是 `normalizePage(`
     ['denormalizePage(get(…)) 不算', `denormalizePage(get('page', '1'))`, false],
     ['myNormalizePage(get(…)) 不算', `myNormalizePage(get('page', '1'))`, false],
+    ['名与括号间有空格也算包裹', `normalizePage (get('page', '1'))`, true],
     ['裸 get 不算', `const p = get('page', '1')`, false],
   ])('wrappedByNormalizePage: %s', (_label, src, expected) => {
     const idx = (src as string).indexOf("get('page'")
@@ -438,6 +460,37 @@ describe('防复发守护（#281 改完后不能再长回来）', () => {
   // 当时正逐字匹配「手算 offset」那条正则，守护恒绿**不是因为没有违规，
   // 是因为扫描根避开了现场**。
   const ROOTS = ['actions', 'app', 'lib']
+
+  it('守护正则本身有灵敏度（放宽/收窄了会被这条抓住）', () => {
+    // GLM 指出：RECEIVER 放宽与「page * pageSize - pageSize」等价式这两处强化，
+    // 只靠「全仓当前无 offender」间接成立 —— 把 RECEIVER 改回 `\w+\.`
+    // 或删掉等价式分支，43 条用例照样全绿，灵敏度回退**完全不可见**。
+    // 这条用最小输入正面钉住每个 pattern 必须命中什么。
+    const RECEIVER = String.raw`[\w$]+(?:\??\.[\w$]+)*\??\.`
+    const MUST_HIT: Array<[RegExp, string]> = [
+      [new RegExp(String.raw`Math\.max\(\s*1\s*,\s*(?:Number\(\s*)?${RECEIVER}page\b`),
+        'const page = Math.max(1, filters?.page ?? 1)'],
+      [new RegExp(String.raw`Math\.max\(\s*1\s*,\s*(?:Number\(\s*)?${RECEIVER}page\b`),
+        'const page = Math.max(1, ctx.filters.page || 1)'],
+      [new RegExp(String.raw`(?<!normalizePage\()\bNumber\(\s*(?:${RECEIVER})?get\(\s*['"]page['"]`),
+        `const page = Number(searchParams.get('page'))`],
+      [new RegExp(String.raw`const\s+[\w$]*[Pp]age[\w$]*\s*=\s*Number\(\s*${RECEIVER}page\b`),
+        'const currentPage = Number(filters.page) || 1'],
+    ]
+    for (const [re, sample] of MUST_HIT) {
+      expect(re.test(sample), sample).toBe(true)
+    }
+
+    const OFFSET_EQUIV = [
+      'const offset = (page - 1) * pageSize',
+      'const offset = page * pageSize - pageSize',
+    ]
+    for (const sample of OFFSET_EQUIV) {
+      const hit = /\(\s*[\w$.?]*[Pp]age[\w$]*\s*-\s*1\s*\)\s*\*/.test(sample)
+        || /[\w$.?]*[Pp]age[\w$]*\s*\*\s*([\w$.?]*[Pp]ageSize[\w$]*)\s*-\s*\1\b/.test(sample)
+      expect(hit, sample).toBe(true)
+    }
+  })
 
   it('全仓不得再出现不取整的页码写法', () => {
     const offenders: string[] = []
