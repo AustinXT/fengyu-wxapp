@@ -200,7 +200,13 @@ export default function EmployeeDetailPage({
         if (result.message.includes('已被其他人修改')) router.refresh()
         return
       }
-      toast.success("保存成功")
+      /**
+       * 必须显示 `result.message` 而不是硬编码「保存成功」（#249）——
+       * 调店时服务端会在 message 里带上「仍绑定在原门店、需联系有权限的管理员」的角色清单。
+       * 硬编码文案会把那条唯一的当场提示整个吞掉，而「操作者当场看到」正是
+       * 「调店不自动搬迁角色」这个决定的配套前提（配套的权限页入口/一键迁移见 #304）。
+       */
+      toast.success(result.message)
       setIsEditing(false)
       router.refresh()
     } catch (err) {

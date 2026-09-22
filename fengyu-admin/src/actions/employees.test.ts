@@ -1527,6 +1527,66 @@ describe('#249 调店不自动搬迁角色绑定 —— 只留审计 + 回传提
     expect(result.message).not.toContain('manager')
   })
 
+  /** codex 第 3 轮：跨 scope + 同批离职 —— 离职判定必须先于 scope 判定 */
+  it('跨 scope 调店 + 同批离职 → 记 roles_revoked_by_resignation（不是 old_store_out_of_scope）', async () => {
+    mockSelectByTable({
+      employee: [{ storeId: 'store-OUT', orgNodeId: 'org-store-A' }],  // 靠 org 维可见
+      store: [[{ orgNodeId: 'org-store-OUT' }]],
+      bindings: [{ role: 'manager' }],
+    })
+    mockUpdateOnce()
+    ;(db.transaction as any).mockImplementation(async (fn: any) => fn({
+      select: vi.fn().mockReturnValue({
+        from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([]) }),
+      }),
+      delete: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({}) }),
+    }))
+
+    const result = await updateEmployee('FY-001', { storeId: 'store-A', isResigned: true })
+
+    expect(result.success).toBe(true)
+    expect(logOperation).toHaveBeenCalledWith(
+      mockSession, 'permission.scopeSync.skipped', 'permission_role', 'FY-001',
+      expect.objectContaining({ reason: 'roles_revoked_by_resignation' }),
+    )
+    // 不得再返回「可能仍有角色绑定」——角色已被离职分支删光
+    expect(result.message).toBe('员工信息已更新')
+  })
+
+  /** GLM 第 3 轮：此前已离职、本次只改归属（payload 不带 isResigned）—— 同构失真 */
+  it('已离职员工再改归属 → 仍记 roles_revoked_by_resignation', async () => {
+    mockSelectByTable({
+      employee: [{ storeId: 'store-A', orgNodeId: 'org-dept', isResigned: true }],
+      store: [[{ orgNodeId: 'org-store-A' }]],
+      bindings: [],
+    })
+    mockUpdateOnce()
+
+    const result = await updateEmployee('FY-001', { storeId: 'store-B' })
+
+    expect(result.success).toBe(true)
+    expect(logOperation).toHaveBeenCalledWith(
+      mockSession, 'permission.scopeSync.skipped', 'permission_role', 'FY-001',
+      expect.objectContaining({ reason: 'roles_revoked_by_resignation' }),
+    )
+  })
+
+  /** codex 第 3 轮：A → 无门店 时没有「新门店」，文案不能说「按新门店重新授权」 */
+  it('storeId 从有到无时的文案说「撤销或改绑」，不说「按新门店」', async () => {
+    mockSelectByTable({
+      employee: [{ storeId: 'store-A', orgNodeId: 'org-store-A' }],
+      store: [[{ orgNodeId: 'org-store-A' }]],
+      bindings: [{ role: 'manager' }],
+    })
+    mockUpdateOnce()
+
+    const result = await updateEmployee('FY-001', { storeId: null, orgNodeId: 'market-1' })
+
+    expect(result.success).toBe(true)
+    expect(result.message).toContain('判断撤销或改绑到合适范围')
+    expect(result.message).not.toContain('按新门店')
+  })
+
   /**
    * 结构守护：钉住「不再搬迁」这个决定本身。
    *

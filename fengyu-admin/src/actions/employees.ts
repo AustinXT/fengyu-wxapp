@@ -1068,7 +1068,21 @@ export const updateEmployee = withPermission(
    * `nextStoreId && …` 让这类请求一条审计都不记、也不回传，成了权限跟进盲区。
    */
   if (oldStoreId && nextStoreId !== oldStoreId) {
-    if (!isInScope(session, oldStoreId)) {
+    if (data.isResigned === true || currentEmployee.isResigned === true) {
+      /**
+       * 离职判定必须在**最前面**（codex 谱系第 3 轮）：
+       * 原先它排在 scope 判定之后，于是「跨 scope 调店 + 同批离职」会先命中
+       * `old_store_out_of_scope` 并返回「可能仍有角色绑定」——而角色其实已被离职分支删光。
+       *
+       * 两种时间轴都要覆盖（GLM 谱系第 3 轮）：
+       *   - `data.isResigned === true`：本次请求同批标离职，上面的事务刚把角色删完
+       *   - `currentEmployee.isResigned === true`：此前某次请求已离职，本次只改归属
+       * 后者不带 isResigned，原先会落进查询分支 → 必空 → 记「本来就没有」，同构失真。
+       */
+      await logOperation(session, 'permission.scopeSync.skipped', 'permission_role', employeeId, {
+        reason: 'roles_revoked_by_resignation', oldStoreId, newStoreId: nextStoreId,
+      })
+    } else if (!isInScope(session, oldStoreId)) {
       /**
        * #228 的守卫保留，但意义已变 —— 不再是「阻止越权 UPDATE」（现在反正不写），
        * 而是 ① 不向无权者披露旧店有哪些角色 ② 在审计里标记「因权限不完整需另有人复核」。
@@ -1080,16 +1094,6 @@ export const updateEmployee = withPermission(
         reason: 'old_store_out_of_scope', oldStoreId, newStoreId: nextStoreId,
       })
       ownershipNeedsReview = true
-    } else if (data.isResigned === true) {
-      /**
-       * 「调店 + 同批离职」：离职分支在上面已经把该员工的角色全删了，
-       * 此时再查旧店绑定必为空，记 `no_binding_at_old_store` 是**语义失真**
-       * （实际是「因离职撤销」而非「本来就没有」）—— codex 谱系指出。
-       * 不回传提示是对的：角色确实已撤销，没有跟进事项。
-       */
-      await logOperation(session, 'permission.scopeSync.skipped', 'permission_role', employeeId, {
-        reason: 'roles_revoked_by_resignation', oldStoreId, newStoreId: nextStoreId,
-      })
     } else {
       const [oldStore] = await db
         .select({ orgNodeId: stores.orgNodeId })
@@ -1149,9 +1153,14 @@ export const updateEmployee = withPermission(
    */
   if (unsyncedRoles.length > 0) {
     const roles = Array.from(new Set(unsyncedRoles)).join('、')
+    /**
+     * `A → 无门店`（转市场直属岗）时没有「新门店」可言，文案不能说「按新门店重新授权」
+     * （codex 谱系第 3 轮）—— 该由管理员判断撤销还是改绑到合适范围。
+     */
+    const action = nextStoreId ? '按新门店重新授权' : '判断撤销或改绑到合适范围'
     return {
       success: true,
-      message: `员工信息已更新。以下角色仍绑定在原门店，需联系有权限的管理员按新门店重新授权：${roles}`,
+      message: `员工信息已更新。以下角色仍绑定在原门店，需联系有权限的管理员${action}：${roles}`,
     }
   }
   if (ownershipNeedsReview) {
