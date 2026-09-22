@@ -149,18 +149,14 @@ Page({
   _poller: null as PaymentPoller | null,
   // 从 scan-pay 支付完成跳入（?paid=1）：详情加载后若仍待支付，触发一次兜底轮询
   _needConfirm: false,
-  // 已因倒计时归零而自动重载过的订单号（issue #215）。
-  // 归零重载要终止，依赖「后端懒清理把订单置为已关闭」；一旦出现「倒计时归零但订单仍可支付」
-  // 的矛盾态，loadDetail → startCountdown → 归零 → loadDetail 就是一条按网络 RTT 空转的死循环。
-  // 后端现已只对「真会被关掉」的订单下发 expire_at，这里是防旧版本云函数/跨端漂移的兜底：
-  // 同一张单只自动重载一次，之后只清倒计时。用户主动触发的刷新（onShow/下拉）不受影响。
-  _expiredReloadedOrderId: null as string | null,
-  // loadDetail 的单调序号（issue #215）。触发源有 5 条（onLoad / onShow / 下拉 /
-  // 倒计时归零 / 支付回调），并发时「后到者赢 setData」会让旧响应盖掉新响应 ——
-  // 最坏是把一张服务端已关闭的单又画回「待支付」。只有最后一次发起的请求允许落 setData。
-  _loadSeq: 0,
-  // 页面已卸载。归零分支发出 loadDetail 后用户立刻返回，请求回来仍会走到
-  // startCountdown 在死实例上重新 setInterval —— 孤儿定时器每秒对死实例 setData
+  // loadDetail 的单调序号（issue #215），沿用 pages/home/home.ts 的同名 idiom。
+  // 触发源有 5 条（onLoad / onShow / 下拉 / 倒计时归零 / 支付回调），并发时
+  // 「后到者赢 setData」会让旧响应盖掉新响应 —— 最坏是把一张服务端已关闭的单
+  // 又画回「待支付」。只有最后一次发起的请求允许落 setData。
+  _loadingToken: 0,
+  // 页面已卸载（issue #215）。onUnload 之后仍可能有在途请求回来：
+  // confirmAndRefresh 里 `poller.clear()` 会 resolve 掉那个 promise，后面紧跟着
+  // 一句 loadDetail —— 不拦就会在死实例上重新装表，孤儿定时器每秒对它 setData。
   _destroyed: false,
 
   onLoad(options) {
@@ -192,15 +188,14 @@ Page({
     }
   },
 
-  /** @returns 本次加载是否成功落盘（失败、或被更新的一次请求抢先，都返回 false） */
-  async loadDetail(saleOrderId: string): Promise<boolean> {
-    if (this._destroyed) return false;
-    const seq = ++this._loadSeq;
+  async loadDetail(saleOrderId: string) {
+    if (this._destroyed) return;
+    const token = ++this._loadingToken;
     this.setData({ isLoading: true });
     try {
       const data = await callClientApi('order.detail', { saleOrderId });
       // 飞在途中时又发起了更新的一次加载 → 本次结果作废，不落 setData
-      if (seq !== this._loadSeq || this._destroyed) return false;
+      if (token !== this._loadingToken || this._destroyed) return;
       const order = (data?.order || {}) as OrderDetailData;
       const items: OrderDetailItem[] = data?.items || [];
       const paymentsRaw: OrderPayment[] = (data as any)?.payments || [];
@@ -384,70 +379,74 @@ Page({
           this.confirmAndRefresh(order.sale_order_id);
         }
       }
-      return true;
     } catch {
       Toast.fail('加载失败');
-      return false;
     } finally {
       // 被抢先的那次不许把 loading 关掉——真正在飞的那次还没回来
-      if (seq === this._loadSeq) {
+      if (token === this._loadingToken) {
         this.setData({ isLoading: false });
       }
     }
   },
 
-  startCountdown(order: OrderDetailData) {
-    // 清理旧定时器
+  /** 停表（不动 countdown 文案，调用方按需自己清） */
+  _stopCountdown() {
     if (this._countdownTimer) {
-      clearInterval(this._countdownTimer!);
+      clearInterval(this._countdownTimer);
       this._countdownTimer = null;
     }
+  },
 
-    // 卸载后请求才回来的场景：不许在死实例上重新装表（issue #215）
-    if (this._destroyed) return;
+  /**
+   * 待支付倒计时。
+   *
+   * 「归零重载」这条链原本会死循环：loadDetail → startCountdown → 归零 → loadDetail，
+   * 靠「后端把 status 改成已关闭」才能终止，对关不掉的订单就按网络 RTT 空转。
+   *
+   * 断点不是加一个「只重载一次」的标记，而是**区分装表时机**（issue #215）：
+   *   - 装表时就已经过期 → 只清 UI，**不重载**。这次 detail 响应本身就刚跑过服务端的
+   *     懒清理，再打一次拿到的还是同一个答案。
+   *   - 走着走着归零 → 重载一次取回懒清理后的状态。重载回来 `expire_at` 必已过期，
+   *     必然落进上一条 → **两跳内收敛，不需要任何状态**。
+   */
+  startCountdown(order: OrderDetailData) {
+    this._stopCountdown();
 
     if (order.status !== '待支付' || !order.expire_at) {
       this.setData({ countdown: '' });
       return;
     }
 
-    // 返回值 = 倒计时是否还要继续走；归零后不再装/留定时器
-    const tick = (): boolean => {
-      const rawExpire = String(order.expire_at);
-      const remaining = new Date(rawExpire.includes('T') ? rawExpire : rawExpire.replace(/-/g, '/')).getTime() - Date.now();
+    // 解析只做一次：这是个不变量，放进 tick 就是每秒重算 600 次；
+    // 顺带让 tick 只捕获两个标量，不再钉住整个 order
+    const rawExpire = String(order.expire_at);
+    const expireMs = new Date(
+      rawExpire.includes('T') ? rawExpire : rawExpire.replace(/-/g, '/'),
+    ).getTime();
+
+    if (expireMs - Date.now() <= 0) {
+      this.setData({ countdown: '' });
+      return;
+    }
+
+    const saleOrderId = order.sale_order_id;
+    const tick = () => {
+      const remaining = expireMs - Date.now();
       if (remaining <= 0) {
-        if (this._countdownTimer) {
-          clearInterval(this._countdownTimer);
-          this._countdownTimer = null;
-        }
+        this._stopCountdown();
         this.setData({ countdown: '' });
-        // 超时刷新页面，取回后端懒清理后的状态。每张单只自动重载一次（issue #215）——
-        // 重载回来仍是「待支付 + 已过期」时再刷就是死循环，见 _expiredReloadedOrderId。
-        if (this._expiredReloadedOrderId !== order.sale_order_id) {
-          // 先置位再发请求：置位是防死循环，必须在**发出**时生效。
-          // 但请求失败（弱网/超时）时要还回去——否则这一次网络抖动就把这张单
-          // 唯一的自动恢复机会永久烧掉，页面会一直停在「待支付 + 已过期」上。
-          this._expiredReloadedOrderId = order.sale_order_id;
-          this.loadDetail(order.sale_order_id).then((ok) => {
-            if (!ok && this._expiredReloadedOrderId === order.sale_order_id) {
-              this._expiredReloadedOrderId = null;
-            }
-          });
-        }
-        return false;
+        this.loadDetail(saleOrderId);
+        return;
       }
       const mins = Math.floor(remaining / 60000);
       const secs = Math.floor((remaining % 60000) / 1000);
-      this.setData({
-        countdown: `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`,
-      });
-      return true;
+      const next = `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+      // setInterval 有漂移，相邻两 tick 落在同一秒是常态；setData 跨线程，别白推
+      if (next !== this.data.countdown) this.setData({ countdown: next });
     };
 
-    // 首 tick 就已过期时不再装定时器（否则会白跑一次 1s 后的空转 tick）
-    if (tick()) {
-      this._countdownTimer = setInterval(tick, 1000);
-    }
+    tick();
+    this._countdownTimer = setInterval(tick, 1000);
   },
 
   /**
@@ -458,10 +457,7 @@ Page({
   async confirmAndRefresh(saleOrderId: string) {
     if (this._poller) return; // 防重入
     // 停止待支付倒计时，避免轮询期间每秒 setData 造成频闪
-    if (this._countdownTimer) {
-      clearInterval(this._countdownTimer);
-      this._countdownTimer = null;
-    }
+    this._stopCountdown();
     this.setData({ confirmingPayment: true, countdown: '' });
     const poller = pollPaymentConfirm(saleOrderId, {
       baselineReceived: Number(this.data.order?.received || 0),
@@ -483,13 +479,10 @@ Page({
   },
 
   onUnload() {
-    // 先置 destroyed 再清表：在途的 loadDetail 回来时 startCountdown 会据此早退，
-    // 否则孤儿定时器会每秒对死实例 setData，最长烧到 expire_at 到点（issue #215）
+    // 置 destroyed 后，在途 loadDetail 回来时会在入口早退，不再落 setData、不再装表
+    // —— 否则孤儿定时器每秒对死实例 setData，最长烧到 expire_at 到点（issue #215）
     this._destroyed = true;
-    if (this._countdownTimer) {
-      clearInterval(this._countdownTimer!);
-      this._countdownTimer = null;
-    }
+    this._stopCountdown();
     if (this._poller) {
       this._poller.clear();
       this._poller = null;
@@ -503,14 +496,11 @@ Page({
       this._poller = null;
       this.setData({ confirmingPayment: false });
     }
-    // 倒计时同样停掉（issue #215）：隐藏期间 1Hz setData 是纯浪费，
-    // 更要紧的是它会在用户看不见的时候归零、静默消耗掉那次唯一的自动重载。
+    // 倒计时同样停掉（issue #215）：隐藏期间 1Hz 的 setData 是纯浪费，
+    // 更要紧的是它会在用户看不见的时候归零并发一次后台重载。
     // onShow 必定 loadDetail，回来时倒计时会重建。
-    if (this._countdownTimer) {
-      clearInterval(this._countdownTimer);
-      this._countdownTimer = null;
-      this.setData({ countdown: '' });
-    }
+    this._stopCountdown();
+    if (this.data.countdown) this.setData({ countdown: '' });
   },
 
   onCopyOrderNo() {

@@ -1439,45 +1439,23 @@ async function createLakalaAlipayShareCode({
 }
 
 /**
- * 这一刻的懒清理是否真会关掉这张待支付订单。
+ * 「这一刻的懒清理真会关掉这张待支付单」的判据（issue #215），与下面 closeExpiredOrder
+ * 的 UPDATE 守卫逐条同源。顾客端的支付倒计时只能按它下发。
  *
- * 与 closeExpiredOrder 的三条守卫**同源**（issue #215）：顾客端的支付倒计时只能按它下发。
  * 原本 order.detail 只看 status 就按「下单时间 + 10 分钟」发 expire_at，而员工开单的订单
- * 永远不会被懒清理关掉 —— 倒计时归零后订单照样可付，顾客看到的时限纯属误导。
+ * 永远不会被懒清理关掉 —— 倒计时归零后订单照样可付，顾客看到的时限纯属误导。更要命的是
+ * order-detail 的「归零重载」靠「后端把 status 改成已关闭」才能终止，恒关不掉的订单
+ * 会让它按网络 RTT 持续打 order.detail。
  *
- * 更要命的是前端那条链会因此空转：order-detail 的倒计时归零后会 loadDetail 刷新，
- * 而刷新靠「后端把 status 改成已关闭」才能终止。恒关不掉的订单 → 按网络 RTT 持续打 order.detail。
+ * **写成 SQL 让库来判，不在 JS 里镜像一份**：镜像就得逐个处理 `IS NULL` vs `== null`、
+ * 空串（SQL 里不是 NULL）、列没被 SELECT 出来是 undefined —— 全是跨语言复制凭空带来的
+ * 自伤，而判据本身一行 SQL 就说清楚了。
  *
- * ⚠️ 改 closeExpiredOrder 的 WHERE 守卫必须同步改这里，
+ * ⚠️ 改 closeExpiredOrder 的 UPDATE 守卫必须同步改这里，
  * 由 `__tests__/routes/order.test.js` 的「expire_at 下发口径与 closeExpiredOrder 守卫同源」钉住。
- *
- * @param {{status: string, opened_by: unknown, lakala_out_order_no: unknown}} order
- * @returns {boolean}
  */
-function isPendingOrderAutoCloseEligible(order) {
-  // fail-closed：两条守卫列必须**真的被 SELECT 出来**才敢下发倒计时。
-  // pg 对「选了但值是 NULL」返回 null，对「根本没选」返回 undefined —— 两者可区分。
-  // 不区分的话，将来谁把 detail 的 `SELECT o.*` 收窄成显式列表，这里就会静默退化成
-  // `undefined == null → true`，一路退回 #215 原状；而单测的手写 mock 行喂什么有什么，
-  // 根本测不出来。缺列时判「不下发」是安全方向：最多少一个倒计时，不会造出矛盾态。
-  if (order.opened_by === undefined || order.lakala_out_order_no === undefined) {
-    return false
-  }
-  return order.status === '待支付'
-    // 守卫 2：员工开单交顾客扫码，扫码时刻往往已超 10 分钟，不套用自助懒清理（issue #27）。
-    // 与守卫 3 同样按 SQL 的 `IS NULL` 字面取 `== null`，不用 `!opened_by`——
-    // 后者对空串判「会被关」而 SQL 判「关不掉」。空串眼下被 FK
-    //（staff_wechat_users.employee_id）挡着不可达，但两条守卫写成一个形式才不会
-    // 让下一个人以为它们的口径有区别。
-    && order.opened_by == null
-    // 守卫 3：有在途支付意图时 closeExpiredOrder 的 UPDATE 不命中，订单不会被关。
-    //
-    // ⚠️ 这里刻意**不用** #214 那套 `String(x || '').trim()` 判据。那套问的是「有没有一笔
-    // 语义上活动的意图」，会把空串/纯空白判成「没有」；而本判据问的是「UPDATE 的
-    // `lakala_out_order_no IS NULL` 会不会命中」—— 空串在 SQL 里不是 NULL，关不掉。
-    // 用 trim 会在这种脏值上把「关不掉的单」判成「会被关」，正好造出本 issue 要消灭的矛盾态。
-    && order.lakala_out_order_no == null
-}
+const PENDING_AUTO_CLOSE_GUARD_SQL =
+  `o.status = '待支付' AND o.opened_by IS NULL AND o.lakala_out_order_no IS NULL`
 
 /**
  * 关闭过期订单并释放关联优惠券（原子操作）。
@@ -2866,7 +2844,8 @@ async function detail(ctx) {
   }
 
   const orders = await pg.query(
-    `SELECT o.*, s.store_name
+    `SELECT o.*, s.store_name,
+            (${PENDING_AUTO_CLOSE_GUARD_SQL}) AS auto_close_eligible
      FROM sale_orders o
      LEFT JOIN stores s ON o.store_id = s.store_id
      WHERE o.sale_order_id = $1 AND o.client_user_id = $2`,
@@ -2881,29 +2860,12 @@ async function detail(ctx) {
 
   // 懒清理过期的待支付订单（防止前端倒计时到 0 后无限重载，同时释放优惠券）
   // 员工单 closeExpiredOrder 内部跳过，不置已关闭（issue #27）
+  let attemptedLazyClose = false
   if (order.status === '待支付') {
     const orderTime = new Date(order.sale_order_datetime)
     if (Date.now() - orderTime.getTime() > 10 * 60 * 1000) {
-      const closed = await closeExpiredOrder(orderNo)
-      // issue #215：无论关成没关成都重读这三列再算 expire_at。上面那条 `SELECT o.*` 是
-      // 懒清理**之前**的快照，而 `lakala_out_order_no` 是双向可变的（order.pay 写入、
-      // cancel/payNotify 清空），`status` 还可能被另一个并发 detail 抢先关掉 ——
-      // 拿旧快照喂判据就会对一张已经有在途意图（或已被关闭）的单发出一个当场就过期的
-      // 倒计时，顾客那边表现为进页面即归零白闪一次。
-      // 本文件 :2550 对 order.pay 已经写明「状态必须 FOR UPDATE 后重读」，detail 这条
-      // 展示链路此前是唯一的例外。
-      const refreshed = await pg.query(
-        `SELECT status, opened_by, lakala_out_order_no
-           FROM sale_orders WHERE sale_order_id = $1`,
-        [orderNo]
-      )
-      if (refreshed.length > 0) {
-        order.status = refreshed[0].status
-        order.opened_by = refreshed[0].opened_by
-        order.lakala_out_order_no = refreshed[0].lakala_out_order_no
-      } else if (closed) {
-        order.status = '已关闭'
-      }
+      attemptedLazyClose = true
+      await closeExpiredOrder(orderNo)
     }
   }
 
@@ -2951,18 +2913,9 @@ async function detail(ctx) {
     it.cover_image = safeThumbUrl(it.cover_image, PRODUCT_THUMB_BOX_SMALL)
   }
 
-  // 待支付订单返回过期时间。
-  // issue #215：口径必须与 closeExpiredOrder 的守卫同源 —— 只有「这一刻懒清理真会关掉它」的订单
-  // 才下发 expire_at。员工开单单、以及有在途支付意图的自助单都关不掉，给它们发倒计时等于骗顾客，
-  // 还会把前端的「归零重载」变成一条打不停的 order.detail。
-  let expireAt = null
-  if (isPendingOrderAutoCloseEligible(order)) {
-    expireAt = new Date(new Date(order.sale_order_datetime).getTime() + 10 * 60 * 1000).toISOString()
-  }
-
-  // 并行查询美容师姓名、券名称和款项流水
+  // 并行查询美容师姓名、券名称、款项流水，以及懒清理后的订单快照
   // 退款流水通过同表 change_type='退款' 聚合（不再依赖独立 sale_order_type='退款单' 行）
-  const [preferredStaffName, couponName, paymentRows] = await Promise.all([
+  const [preferredStaffName, couponName, paymentRows, refreshedRows] = await Promise.all([
     order.preferred_employee_id
       ? pg.query('SELECT name FROM staff_wechat_users WHERE employee_id = $1', [order.preferred_employee_id])
           .then(rows => rows.length > 0 ? rows[0].name : null)
@@ -2983,8 +2936,34 @@ async function detail(ctx) {
        WHERE sale_order_id = $1
        ORDER BY created_at ASC, id ASC`,
       [orderNo]
-    )
+    ),
+    // issue #215：刚跑过懒清理就必须重读，上面那条 `SELECT o.*` 是关单**之前**的快照。
+    // `lakala_out_order_no` 双向可变（order.pay 写入、cancel/payNotify 清空），`status`
+    // 还可能被另一个并发 detail 抢先关掉 —— 拿旧快照算 expire_at 就会对一张已有在途意图
+    // （或已被关闭）的单发出一个当场就过期的倒计时，顾客那边表现为进页面即归零白闪一次。
+    // 本文件 :2550 对 order.pay 早已写明「状态必须 FOR UPDATE 后重读」，detail 这条展示
+    // 链路此前是唯一的例外。挂在这个并行批次里，不额外增加一个往返。
+    attemptedLazyClose
+      ? pg.query(
+          `SELECT o.status, o.lakala_out_order_no,
+                  (${PENDING_AUTO_CLOSE_GUARD_SQL}) AS auto_close_eligible
+             FROM sale_orders o WHERE o.sale_order_id = $1`,
+          [orderNo]
+        )
+      : Promise.resolve(null),
   ])
+
+  // 整行覆盖而不是逐列赋值：下一个可变列加进重读 SELECT 时这里不用跟着改
+  if (refreshedRows && refreshedRows.length > 0) {
+    Object.assign(order, refreshedRows[0])
+  }
+
+  // 待支付订单返回过期时间。判据由数据库给出（PENDING_AUTO_CLOSE_GUARD_SQL），
+  // 只有「这一刻懒清理真会关掉它」的订单才发：员工开单单、以及有在途支付意图的自助单
+  // 都关不掉，给它们发倒计时等于骗顾客，还会把前端的「归零重载」变成打不停的 order.detail。
+  const expireAt = order.auto_close_eligible
+    ? new Date(new Date(order.sale_order_datetime).getTime() + 10 * 60 * 1000).toISOString()
+    : null
 
   // 精简 payments 字段（只给前端需要的）
   const payments = paymentRows.map(p => ({
@@ -3003,7 +2982,13 @@ async function detail(ctx) {
   // #214：这里是 `SELECT o.*` 原样展开，新增的 lakala_payment_intent 里含 paySign 等支付凭据，
   // 必须在下发前剥掉（schema 注释也写明「不随 order.detail 下发」）。scanDetail / list 是显式
   // 字段映射，天然不受影响；只有本处的整行展开会把新列带出去。
-  const { lakala_payment_intent: _omitPaymentIntent, ...orderForClient } = order
+  // issue #215：`auto_close_eligible` 也剥掉。它是服务端算 expire_at 的中间量，
+  // 下发出去只会诱使前端拿它自己推导展示口径 —— 前端要用的就是 expire_at 本身。
+  const {
+    lakala_payment_intent: _omitPaymentIntent,
+    auto_close_eligible: _omitAutoCloseEligible,
+    ...orderForClient
+  } = order
 
   ctx.result = {
     order: {
@@ -4824,7 +4809,4 @@ module.exports = {
   confirmPayment,
   decideReconcile,
   voidPaymentIntent,
-  // 纯判据，导出仅供单测直接走正负例矩阵（index.js 的 action 映射是显式白名单，
-  // 不会因为多导出一个函数就多出一个可调用 action）
-  isPendingOrderAutoCloseEligible,
 }

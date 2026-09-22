@@ -2015,10 +2015,15 @@ describe('order.detail', () => {
  * 而 closeExpiredOrder 还有另外两条守卫（员工单 / 在途支付意图）。两边一错开，
  * 顾客就看着一个永远不会兑现的倒计时，且 order-detail 的「归零重载」会因为
  * 状态永远不变而按网络 RTT 持续打 order.detail。
+ *
+ * ⚠️ 判据本身（`PENDING_AUTO_CLOSE_GUARD_SQL`）由 PostgreSQL 求值，L1 的 pg mock
+ * 喂什么有什么，**测不到谓词语义**——那部分靠下面的字面同源断言 + 真库核验
+ * （`_tmp/issue-215/verify.md` 判据层记录了 psql 逐例对表结果）。
+ * 这里测的是「服务端如何由 auto_close_eligible 推导出 expire_at」这段 JS。
  */
 describe('order.detail — 支付倒计时下发口径 (#215)', () => {
   const TEN_MIN_MS = 10 * 60 * 1000
-  // 刚下单（未过期）——避免 detail 里的懒清理分支干扰，专注断言下发口径
+  // 刚下单（未过期）——不触发懒清理分支，专注断言下发口径
   const FRESH_ORDER_TIME = new Date(Date.now() - 60 * 1000).toISOString()
 
   function mockDetailQueries(orderOverrides) {
@@ -2028,6 +2033,7 @@ describe('order.detail — 支付倒计时下发口径 (#215)', () => {
       sale_order_datetime: FRESH_ORDER_TIME,
       preferred_employee_id: null,
       coupon_id: null,
+      status: '待支付',
       opened_by: null,
       lakala_out_order_no: null,
       ...orderOverrides,
@@ -2037,8 +2043,8 @@ describe('order.detail — 支付倒计时下发口径 (#215)', () => {
     pg.query.mockResolvedValueOnce([])  // payments
   }
 
-  test('顾客自助单 + 无在途支付意图 → 下发「下单时间 + 10 分钟」', async () => {
-    mockDetailQueries({ status: '待支付' })
+  test('库判「会被自动关闭」→ 下发「下单时间 + 10 分钟」', async () => {
+    mockDetailQueries({ auto_close_eligible: true })
     const ctx = createBoundCtx({ orderNo: 'FY-215' })
     await routes.detail(ctx)
 
@@ -2047,118 +2053,98 @@ describe('order.detail — 支付倒计时下发口径 (#215)', () => {
     )
   })
 
-  test('员工开单 → 不下发 expire_at（懒清理恒跳过员工单，倒计时归零也关不掉，issue #27）', async () => {
-    mockDetailQueries({ status: '待支付', opened_by: 'E001' })
+  test('库判「关不掉」→ 不下发 expire_at', async () => {
+    mockDetailQueries({ auto_close_eligible: false, opened_by: 'E001' })
     const ctx = createBoundCtx({ orderNo: 'FY-215' })
     await routes.detail(ctx)
 
     expect(ctx.result.order.expire_at).toBeNull()
   })
 
-  test('自助单但有在途支付意图 → 不下发（UPDATE 的 lakala_out_order_no IS NULL 挡住关单）', async () => {
-    mockDetailQueries({ status: '待支付', lakala_out_order_no: 'FY-215_1750000000' })
+  test('auto_close_eligible 是服务端中间量，不下发给前端', async () => {
+    // 下发出去就会诱使前端拿它自己推导展示口径——前端要用的就是 expire_at 本身
+    mockDetailQueries({ auto_close_eligible: true })
     const ctx = createBoundCtx({ orderNo: 'FY-215' })
     await routes.detail(ctx)
 
-    expect(ctx.result.order.expire_at).toBeNull()
+    expect(ctx.result.order).not.toHaveProperty('auto_close_eligible')
+    expect(ctx.result.order).not.toHaveProperty('lakala_payment_intent')
   })
 
-  test('lakala_out_order_no 是空串 → 不下发（SQL 里空串不是 NULL，同样关不掉）', async () => {
-    mockDetailQueries({ status: '待支付', lakala_out_order_no: '' })
+  test('主查询必须把判据作为 auto_close_eligible 一起取回', async () => {
+    mockDetailQueries({ auto_close_eligible: true })
     const ctx = createBoundCtx({ orderNo: 'FY-215' })
     await routes.detail(ctx)
 
-    expect(ctx.result.order.expire_at).toBeNull()
-  })
-
-  test('非待支付状态 → 不下发', async () => {
-    mockDetailQueries({ status: '部分支付' })
-    const ctx = createBoundCtx({ orderNo: 'FY-215' })
-    await routes.detail(ctx)
-
-    expect(ctx.result.order.expire_at).toBeNull()
+    const ordersSql = pg.query.mock.calls[0][0]
+    expect(ordersSql).toContain('AS auto_close_eligible')
+    expect(ordersSql).toContain("o.status = '待支付'")
+    expect(ordersSql).toContain('o.opened_by IS NULL')
+    expect(ordersSql).toContain('o.lakala_out_order_no IS NULL')
   })
 
   test('生产形态：sale_order_datetime 是 Date 对象时同样算得出 expire_at', async () => {
     // 线上 pg 对 timestamptz(1184) 直出 JS Date；上面的用例喂的是 ISO 字符串，
     // 两种输入都得走通，不然哪天 mock 与生产分叉了也看不出来
     const at = new Date(Date.now() - 60 * 1000)
-    mockDetailQueries({ status: '待支付', sale_order_datetime: at })
+    mockDetailQueries({ auto_close_eligible: true, sale_order_datetime: at })
     const ctx = createBoundCtx({ orderNo: 'FY-215' })
     await routes.detail(ctx)
 
     expect(ctx.result.order.expire_at).toBe(new Date(at.getTime() + TEN_MIN_MS).toISOString())
   })
 
-  test('懒清理之后必须重读守卫列，不能拿关单前的快照算 expire_at', async () => {
+  test('未跑懒清理时不发重读查询（不白花一个往返）', async () => {
+    mockDetailQueries({ auto_close_eligible: true })
+    const ctx = createBoundCtx({ orderNo: 'FY-215' })
+    await routes.detail(ctx)
+
+    const refreshCall = pg.query.mock.calls.find(
+      ([sql]) => /AS auto_close_eligible/.test(sql) && /FROM sale_orders o WHERE/.test(sql)
+    )
+    expect(refreshCall).toBeUndefined()
+  })
+
+  test('懒清理之后必须重读，不能拿关单前的快照算 expire_at', async () => {
     // 场景：detail 的 SELECT 落地后、懒清理跑完前，顾客在别处点了「去支付」
     // → lakala_out_order_no 被写入。用旧快照算就会发一个当场就过期的倒计时。
     const stale = new Date(Date.now() - 20 * 60 * 1000).toISOString()
     pg.query.mockResolvedValueOnce([{
       sale_order_id: 'FY-215', client_user_id: 'user-001',
       sale_order_datetime: stale, preferred_employee_id: null, coupon_id: null,
-      status: '待支付', opened_by: null, lakala_out_order_no: null,   // ← 旧快照
+      status: '待支付', opened_by: null, lakala_out_order_no: null,
+      auto_close_eligible: true,          // ← 关单前的快照
     }])
     // closeExpiredOrder 走 pg.transaction（默认 mock 返回空行 → 关不掉）
-    pg.query.mockResolvedValueOnce([{
-      status: '待支付', opened_by: null, lakala_out_order_no: 'FY-215_1750000000',  // ← 重读拿到真相
-    }])
     pg.query.mockResolvedValueOnce([])  // items
     pg.query.mockResolvedValueOnce([])  // 行级退款额
     pg.query.mockResolvedValueOnce([])  // payments
+    pg.query.mockResolvedValueOnce([{   // ← 重读拿到真相
+      status: '待支付', lakala_out_order_no: 'FY-215_1750000000', auto_close_eligible: false,
+    }])
 
     const ctx = createBoundCtx({ orderNo: 'FY-215' })
     await routes.detail(ctx)
 
-    const refreshSql = pg.query.mock.calls[1][0]
-    expect(refreshSql).toContain('FROM sale_orders')
-    expect(refreshSql).toContain('lakala_out_order_no')
+    const refreshCall = pg.query.mock.calls.find(
+      ([sql]) => /AS auto_close_eligible/.test(sql) && /FROM sale_orders o WHERE/.test(sql)
+    )
+    expect(refreshCall).toBeDefined()
     expect(ctx.result.order.expire_at).toBeNull()
     // 重读的值也应该反映到同一份响应的其它派生字段上
     expect(ctx.result.order.has_active_payment_intent).toBe(true)
   })
 
-  test('判据函数正负例矩阵', () => {
-    const eligible = routes.isPendingOrderAutoCloseEligible
-    expect(eligible({ status: '待支付', opened_by: null, lakala_out_order_no: null })).toBe(true)
-    // fail-closed：列没被 SELECT 出来（undefined）时不下发。若判成 true，
-    // 将来把 detail 的 `SELECT o.*` 收窄就会静默退回 #215 原状
-    expect(eligible({ status: '待支付' })).toBe(false)
-    expect(eligible({ status: '待支付', opened_by: null })).toBe(false)
-    expect(eligible({ status: '待支付', lakala_out_order_no: null })).toBe(false)
-    expect(eligible({ status: '待支付', opened_by: 'E001', lakala_out_order_no: null })).toBe(false)
-    // 两条守卫都按 SQL 的 IS NULL 字面取，空串在 SQL 里不是 NULL → 关不掉 → 不下发
-    expect(eligible({ status: '待支付', opened_by: '', lakala_out_order_no: null })).toBe(false)
-    expect(eligible({ status: '待支付', opened_by: '   ', lakala_out_order_no: null })).toBe(false)
-    expect(eligible({ status: '待支付', opened_by: null, lakala_out_order_no: 'X' })).toBe(false)
-    expect(eligible({ status: '待支付', opened_by: null, lakala_out_order_no: '' })).toBe(false)
-    expect(eligible({ status: '待支付', opened_by: null, lakala_out_order_no: '   ' })).toBe(false)
-    expect(eligible({ status: '已关闭', opened_by: null, lakala_out_order_no: null })).toBe(false)
-  })
-
-  test('detail 的订单查询必须取到两条守卫列，否则判据会静默 fail-open', async () => {
-    mockDetailQueries({ status: '待支付' })
-    const ctx = createBoundCtx({ orderNo: 'FY-215' })
-    await routes.detail(ctx)
-
-    // 判据读的是这条查询取回的行。`SELECT o.*` 取全列所以现在成立；
-    // 一旦有人收窄成显式列表却漏掉这两列，判据拿到的是 undefined —— 本断言先转红
-    const ordersSql = pg.query.mock.calls[0][0]
-    const selectsAllOrderColumns = /SELECT\s+o\.\*/.test(ordersSql)
-    const selectsBothGuardColumns = ordersSql.includes('opened_by') && ordersSql.includes('lakala_out_order_no')
-    expect(selectsAllOrderColumns || selectsBothGuardColumns).toBe(true)
-  })
-
-  test('expire_at 下发口径与 closeExpiredOrder 的三条守卫同源（字面断言）', () => {
+  test('expire_at 下发口径与 closeExpiredOrder 的 UPDATE 守卫同源（字面断言）', () => {
     const { readFileSync } = require('fs')
     const { resolve } = require('path')
     const source = readFileSync(resolve(__dirname, '../../routes/order.js'), 'utf8')
-    // 注释里会提到这些守卫，断言必须落在代码本身上
+    // 注释里也会提到这些守卫，断言必须落在代码本身上
     const stripComments = (s) => s.split('\n').map((l) => l.replace(/\/\/.*$/, '')).join('\n')
 
     // ⚠️ 切片锚点必须逐个断言找到了。`indexOf` 未命中返回 -1，而 `slice(start, -1)`
     // 会**返回从 start 到文件倒数第二字符的全部内容**（不是空串）——那段里到处都有
-    // `opened_by IS NULL` / `lakala_out_order_no IS NULL`，下面三条 toContain 会静默恒真，
+    // `opened_by IS NULL` / `lakala_out_order_no IS NULL`，下面的 toContain 会静默恒真，
     // 于是这个「唯一的漂移锁」在有人重命名 closeExpiredOrdersByUser 之后就悄悄失效了。
     const sliceBetween = (startAnchor, endAnchor) => {
       const start = source.indexOf(startAnchor)
@@ -2168,37 +2154,33 @@ describe('order.detail — 支付倒计时下发口径 (#215)', () => {
       return stripComments(source.slice(start, end))
     }
 
-    const helperBody = sliceBetween(
-      'function isPendingOrderAutoCloseEligible(order) {',
-      'async function closeExpiredOrder(orderNo) {',
-    )
     const closeBody = sliceBetween(
       'async function closeExpiredOrder(orderNo) {',
       'async function closeExpiredOrdersByUser(userId) {',
     )
-
-    // 再兜一层尺寸：两个函数各自都是几十行，切出几千字符就是锚点错位了
-    expect(helperBody.length).toBeLessThan(2000)
+    // 兜一层尺寸：这个函数就几十行，切出几千字符就是锚点错位了
     expect(closeBody.length).toBeLessThan(3000)
 
-    // closeExpiredOrder 的三条守卫。守卫 2/3 要钉在 **UPDATE** 上——
-    // SELECT … FOR UPDATE 里也有 opened_by IS NULL，只断言 closeBody 的话
-    // 单独从 UPDATE 删掉它仍然全绿
+    // 守卫要钉在 **UPDATE** 上——SELECT … FOR UPDATE 里也有 opened_by IS NULL，
+    // 只断言整个函数体的话，单独从 UPDATE 删掉它仍然全绿
     const updateAt = closeBody.indexOf('UPDATE sale_orders')
     expect(updateAt, '未在 closeExpiredOrder 里找到 UPDATE sale_orders').toBeGreaterThanOrEqual(0)
     const closeUpdateClause = closeBody.slice(updateAt)
-    expect(closeBody).toContain("status = '待支付'")
+    expect(closeUpdateClause).toContain("status = '待支付'")
     expect(closeUpdateClause).toContain('opened_by IS NULL')
     expect(closeUpdateClause).toContain('lakala_out_order_no IS NULL')
 
-    // 判据函数逐条对应
-    expect(helperBody).toContain("order.status === '待支付'")
-    expect(helperBody).toContain('order.opened_by == null')
-    expect(helperBody).toContain('order.lakala_out_order_no == null')
-
-    // ⚠️ 不能退回 #214 的 `String(x || '').trim()` 语义：那套会把空串判成「没有意图」，
-    // 而 SQL 的 IS NULL 不会 —— 一旦换回去，脏值上又会出现「倒计时归零但关不掉」的矛盾态
-    expect(helperBody).not.toContain('trim(')
+    // 判据常量逐条对应（只差 `o.` 前缀）
+    const guardAt = source.indexOf('const PENDING_AUTO_CLOSE_GUARD_SQL')
+    expect(guardAt, '未找到 PENDING_AUTO_CLOSE_GUARD_SQL').toBeGreaterThanOrEqual(0)
+    const guardDecl = source.slice(guardAt, source.indexOf('\n\n', guardAt))
+    expect(guardDecl).toContain("o.status = '待支付'")
+    expect(guardDecl).toContain('o.opened_by IS NULL')
+    expect(guardDecl).toContain('o.lakala_out_order_no IS NULL')
+    // 判据必须留在 SQL 里由库求值；一旦有人把它搬回 JS，`IS NULL` vs `== null`、
+    // 空串、列没 SELECT 出来是 undefined 这一堆跨语言语义差就会重新找上门
+    expect(guardDecl).not.toContain('===')
+    expect(guardDecl).not.toContain('=> ')
   })
 })
 
