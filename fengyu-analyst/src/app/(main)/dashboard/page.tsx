@@ -35,7 +35,7 @@ import {
 } from "@/lib/analyst-scope"
 import { getSession } from "@/lib/auth"
 import { getMetric, type AnalystMetric } from "@/lib/metric-catalog"
-import { formatMetricDelta } from "@/lib/metric-delta"
+import { formatMetricDelta, formatPointDelta } from "@/lib/metric-delta"
 import {
   getNewCustomerFunnelDashboard,
   getNewCustomerFunnelFilterOptions,
@@ -61,15 +61,6 @@ import type { AuthSession } from "@/lib/types"
 
 function formatRate(value: number): string {
   return `${(value * 100).toFixed(1)}%`
-}
-
-function formatDelta(value: number | null): { text: string; tone: "default" | "positive" | "negative" } {
-  if (value === null) return { text: "无上一年对比", tone: "default" }
-  if (value === 0) return { text: "同比持平", tone: "default" }
-  return {
-    text: `同比 ${value > 0 ? "+" : ""}${(value * 100).toFixed(1)}pct`,
-    tone: value > 0 ? "positive" : "negative",
-  }
 }
 
 function formatMoney(value: number): string {
@@ -538,7 +529,7 @@ async function RepurchaseDashboard({
     getRepurchaseCascadeTree(session, scope),
   ])
   const normalized = data.filters
-  const delta = formatDelta(data.kpi.delta)
+  const delta = formatPointDelta(data.kpi.delta)
   const exportHref = `/api/analyst/repurchase/export?${scopedQueryString(scope, {
     year: normalized.year || undefined,
     productKind: normalized.productKind,
