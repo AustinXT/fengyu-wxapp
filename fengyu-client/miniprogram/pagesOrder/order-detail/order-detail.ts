@@ -149,6 +149,12 @@ Page({
   _poller: null as PaymentPoller | null,
   // 从 scan-pay 支付完成跳入（?paid=1）：详情加载后若仍待支付，触发一次兜底轮询
   _needConfirm: false,
+  // 已因倒计时归零而自动重载过的订单号（issue #215）。
+  // 归零重载要终止，依赖「后端懒清理把订单置为已关闭」；一旦出现「倒计时归零但订单仍可支付」
+  // 的矛盾态，loadDetail → startCountdown → 归零 → loadDetail 就是一条按网络 RTT 空转的死循环。
+  // 后端现已只对「真会被关掉」的订单下发 expire_at，这里是防旧版本云函数/跨端漂移的兜底：
+  // 同一张单只自动重载一次，之后只清倒计时。用户主动触发的刷新（onShow/下拉）不受影响。
+  _expiredReloadedOrderId: null as string | null,
 
   onLoad(options) {
     // 读全局灰度开关（未配置默认 false）
@@ -385,26 +391,36 @@ Page({
       return;
     }
 
-    const tick = () => {
+    // 返回值 = 倒计时是否还要继续走；归零后不再装/留定时器
+    const tick = (): boolean => {
       const rawExpire = String(order.expire_at);
       const remaining = new Date(rawExpire.includes('T') ? rawExpire : rawExpire.replace(/-/g, '/')).getTime() - Date.now();
       if (remaining <= 0) {
-        clearInterval(this._countdownTimer!);
-        this._countdownTimer = null;
+        if (this._countdownTimer) {
+          clearInterval(this._countdownTimer);
+          this._countdownTimer = null;
+        }
         this.setData({ countdown: '' });
-        // 超时刷新页面
-        this.loadDetail(order.sale_order_id);
-        return;
+        // 超时刷新页面，取回后端懒清理后的状态。每张单只自动重载一次（issue #215）——
+        // 重载回来仍是「待支付 + 已过期」时再刷就是死循环，见 _expiredReloadedOrderId。
+        if (this._expiredReloadedOrderId !== order.sale_order_id) {
+          this._expiredReloadedOrderId = order.sale_order_id;
+          this.loadDetail(order.sale_order_id);
+        }
+        return false;
       }
       const mins = Math.floor(remaining / 60000);
       const secs = Math.floor((remaining % 60000) / 1000);
       this.setData({
         countdown: `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`,
       });
+      return true;
     };
 
-    tick();
-    this._countdownTimer = setInterval(tick, 1000);
+    // 首 tick 就已过期时不再装定时器（否则会白跑一次 1s 后的空转 tick）
+    if (tick()) {
+      this._countdownTimer = setInterval(tick, 1000);
+    }
   },
 
   /**

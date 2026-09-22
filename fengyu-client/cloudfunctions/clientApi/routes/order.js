@@ -1439,6 +1439,35 @@ async function createLakalaAlipayShareCode({
 }
 
 /**
+ * 这一刻的懒清理是否真会关掉这张待支付订单。
+ *
+ * 与 closeExpiredOrder 的三条守卫**同源**（issue #215）：顾客端的支付倒计时只能按它下发。
+ * 原本 order.detail 只看 status 就按「下单时间 + 10 分钟」发 expire_at，而员工开单的订单
+ * 永远不会被懒清理关掉 —— 倒计时归零后订单照样可付，顾客看到的时限纯属误导。
+ *
+ * 更要命的是前端那条链会因此空转：order-detail 的倒计时归零后会 loadDetail 刷新，
+ * 而刷新靠「后端把 status 改成已关闭」才能终止。恒关不掉的订单 → 按网络 RTT 持续打 order.detail。
+ *
+ * ⚠️ 改 closeExpiredOrder 的 WHERE 守卫必须同步改这里，
+ * 由 `__tests__/routes/order.test.js` 的「expire_at 下发口径与 closeExpiredOrder 守卫同源」钉住。
+ *
+ * @param {{status: string, opened_by: unknown, lakala_out_order_no: unknown}} order
+ * @returns {boolean}
+ */
+function isPendingOrderAutoCloseEligible(order) {
+  return order.status === '待支付'
+    // 守卫 2：员工开单交顾客扫码，扫码时刻往往已超 10 分钟，不套用自助懒清理（issue #27）
+    && !order.opened_by
+    // 守卫 3：有在途支付意图时 closeExpiredOrder 的 UPDATE 不命中，订单不会被关。
+    //
+    // ⚠️ 这里刻意**不用** #214 那套 `String(x || '').trim()` 判据。那套问的是「有没有一笔
+    // 语义上活动的意图」，会把空串/纯空白判成「没有」；而本判据问的是「UPDATE 的
+    // `lakala_out_order_no IS NULL` 会不会命中」—— 空串在 SQL 里不是 NULL，关不掉。
+    // 用 trim 会在这种脏值上把「关不掉的单」判成「会被关」，正好造出本 issue 要消灭的矛盾态。
+    && order.lakala_out_order_no == null
+}
+
+/**
  * 关闭过期订单并释放关联优惠券（原子操作）。
  *
  * 仅关闭「顾客自助下单」(opened_by IS NULL) 的过期订单。员工开单订单
@@ -2892,9 +2921,12 @@ async function detail(ctx) {
     it.cover_image = safeThumbUrl(it.cover_image, PRODUCT_THUMB_BOX_SMALL)
   }
 
-  // 待支付订单返回过期时间
+  // 待支付订单返回过期时间。
+  // issue #215：口径必须与 closeExpiredOrder 的守卫同源 —— 只有「这一刻懒清理真会关掉它」的订单
+  // 才下发 expire_at。员工开单单、以及有在途支付意图的自助单都关不掉，给它们发倒计时等于骗顾客，
+  // 还会把前端的「归零重载」变成一条打不停的 order.detail。
   let expireAt = null
-  if (order.status === '待支付') {
+  if (isPendingOrderAutoCloseEligible(order)) {
     expireAt = new Date(new Date(order.sale_order_datetime).getTime() + 10 * 60 * 1000).toISOString()
   }
 
@@ -4762,4 +4794,7 @@ module.exports = {
   confirmPayment,
   decideReconcile,
   voidPaymentIntent,
+  // 纯判据，导出仅供单测直接走正负例矩阵（index.js 的 action 映射是显式白名单，
+  // 不会因为多导出一个函数就多出一个可调用 action）
+  isPendingOrderAutoCloseEligible,
 }
