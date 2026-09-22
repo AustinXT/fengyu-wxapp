@@ -19,7 +19,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 import { DataTable, type Column } from "@/components/ui/data-table"
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogTitle, AlertDialogDescription, AlertDialogFooter } from "@/components/ui/alert-dialog"
 import { Separator } from "@/components/ui/separator"
-import { formatDate, buildOrgPath, findAncestorMarketId, findAncestorStoreNodeId, resolveStoreIdForOrgNode } from "@/lib/utils"
+import { formatDate, buildOrgPath, findAncestorMarketId, applyOrgNodeSelection, applyStoreSelection } from "@/lib/utils"
 import { shanghaiToday } from "@/lib/datetime"
 import { formatPhoneSafe } from "@/lib/format"
 import { actionErrorMessage, actionErrorType } from "@/lib/action-error"
@@ -513,12 +513,10 @@ export default function EmployeeDetailPage({
                     <OrgTreeSelect
                       orgNodes={orgNodes}
                       value={form.orgNodeId}
-                      onChange={(id) => {
-                        handleFormChange("orgNodeId", id)
-                        // 组织→门店的反向联动（口径与取舍见 resolveStoreIdForOrgNode）
-                        const nextStoreId = resolveStoreIdForOrgNode(id, form.storeId, orgNodes, stores)
-                        if (nextStoreId !== undefined) handleFormChange("storeId", nextStoreId)
-                      }}
+                      onChange={(id) =>
+                        // 联动逻辑整体在 applyOrgNodeSelection 里（可单测），这里只合并补丁
+                        setForm((prev) => ({ ...prev, ...applyOrgNodeSelection(prev, id, orgNodes, stores) }))
+                      }
                       placeholder="请选择所属组织"
                     />
                   ) : (
@@ -530,22 +528,10 @@ export default function EmployeeDetailPage({
                   {isEditing ? (
                     <Select
                       value={form.storeId}
-                      onChange={(e) => {
-                        const nextStoreId = e.target.value
-                        handleFormChange("storeId", nextStoreId)
-                        /**
-                         * #259：所属组织若归属于**旧**门店，跟着改成新门店的节点。
-                         * 不联动的话「同市场内改门店、不动所属组织」会提交
-                         * {新门店, 旧门店的节点} —— 被服务端归属自洽校验拒绝，
-                         * 而这正是生产上两条脏数据的成因。
-                         * 挂市场下的部门（养生部/财智部那类矩阵归属）没有门店祖先，不受影响。
-                         */
-                        const currentStoreAncestor = findAncestorStoreNodeId(form.orgNodeId || null, orgNodes)
-                        if (currentStoreAncestor) {
-                          const nextNode = stores.find((s) => s.storeId === nextStoreId)?.orgNodeId ?? ""
-                          if (nextNode !== currentStoreAncestor) handleFormChange("orgNodeId", nextNode)
-                        }
-                      }}
+                      onChange={(e) =>
+                        // #259 双向联动：口径在 applyStoreSelection 里，这里只合并补丁
+                        setForm((prev) => ({ ...prev, ...applyStoreSelection(prev, e.target.value, orgNodes, stores) }))
+                      }
                     >
                       <option value="">请选择门店</option>
                       {filteredStores.map((s) => (

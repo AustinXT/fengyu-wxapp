@@ -99,38 +99,75 @@ export function findAncestorStoreNodeId(nodeId: string | null, orgNodes: OrgNode
   return null
 }
 
+/** 员工表单里这两个字段是联动的一对；两个方向的联动函数都返回要合并进 form 的**补丁** */
+export type OwnershipFields = { storeId: string; orgNodeId: string }
+
 /**
- * 「所属组织」改变后，「所属门店」该跟着变成什么。返回 `undefined` 表示不动。
+ * 用户改了「所属组织」→ 返回该合并进 form 的补丁。
  *
- * 两个方向的联动都必须有（GLM 谱系第 4 轮）：门店→组织那侧原本就有，
- * 组织→门店这侧原先只按**市场**判断 —— 同市场内把组织改到门店 B 的子树时市场没变，
- * storeId 保持门店 A，提交上去正好撞服务端的归属自洽校验，用户得二次试错才明白。
+ * ## 为什么做成「旧状态 + 选择 → 新状态」的纯函数
+ *
+ * 上一版导出的是 `resolveStoreIdForOrgNode(...)` 这种「算出一个值」的 helper，联动的**接线**
+ * （拿到值以后有没有真的 setState）只能靠页面源码的结构守护去认。codex 谱系第 6 轮给了具体绕过：
+ * 把调用改成 `if (next !== undefined) void next`，或者门店方向保留 `findAncestorStoreNodeId(...)`
+ * 但删掉 `handleChange("orgNodeId", ...)`，结构守护照样全绿而真实页面重新提交不自洽归属。
+ *
+ * 改成返回整份补丁后，页面只剩一行 `setForm(prev => ({ ...prev, ...patch }))`，
+ * **联动逻辑本身**（包括「改门店时组织跟着变成什么」——那段以前只活在页面里、从未被测过）
+ * 进入单测覆盖。与两条递归 CTE 的处理同源：要提高保障等级就让它可测，而不是继续加断言。
  *
  * 规则：
- *   - 新节点有门店祖先，且该门店在可选列表里 → 直接设成它（节点已明确指向某门店，无歧义）
- *   - 新节点有门店祖先但不在可选列表里（scope 过滤掉了）→ 清空，让用户自己选
- *   - 新节点无门店祖先（市场下的部门等矩阵归属）→ 退回原有的市场口径：
- *     当前门店不在新市场下才清空，否则保留（门店是工作地点、部门是专业归属，两者可以并存）
+ *   - 新节点有门店祖先，且该门店在可选列表里 → 门店设成它（节点已明确指向某门店，无歧义）
+ *   - 有门店祖先但被 scope 过滤掉了 → 清空门店，让用户自己选
+ *   - 无门店祖先（市场下的部门等矩阵归属）→ 退回市场口径：当前门店不在新市场下才清空，
+ *     否则保留（门店是工作地点、部门是专业归属，两者本就可以并存）
  */
-export function resolveStoreIdForOrgNode(
+export function applyOrgNodeSelection(
+  form: OwnershipFields,
   nextOrgNodeId: string,
-  currentStoreId: string,
   orgNodes: OrgNode[],
   stores: { storeId: string; orgNodeId: string | null }[],
-): string | undefined {
+): Partial<OwnershipFields> {
+  const patch: Partial<OwnershipFields> = { orgNodeId: nextOrgNodeId }
+
   const storeAncestor = findAncestorStoreNodeId(nextOrgNodeId, orgNodes)
   if (storeAncestor) {
     const target = stores.find((s) => s.orgNodeId === storeAncestor)
-    if (target) return target.storeId === currentStoreId ? undefined : target.storeId
-    return currentStoreId === '' ? undefined : ''
+    const nextStoreId = target ? target.storeId : ''
+    if (nextStoreId !== form.storeId) patch.storeId = nextStoreId
+    return patch
   }
+
   const nextMarketId = findAncestorMarketId(nextOrgNodeId, orgNodes)
   const storeMarketId = findAncestorMarketId(
-    stores.find((s) => s.storeId === currentStoreId)?.orgNodeId ?? null,
+    stores.find((s) => s.storeId === form.storeId)?.orgNodeId ?? null,
     orgNodes,
   )
-  if (nextMarketId !== storeMarketId) return currentStoreId === '' ? undefined : ''
-  return undefined
+  if (nextMarketId !== storeMarketId && form.storeId !== '') patch.storeId = ''
+  return patch
+}
+
+/**
+ * 用户改了「所属门店」→ 返回该合并进 form 的补丁。
+ *
+ * 所属组织若归属于**旧**门店，跟着改成新门店的节点。不联动的话「同市场内改门店、不动所属组织」
+ * 会提交 `{新门店, 旧门店的节点}`，被服务端归属自洽校验拒绝 —— 而这正是生产上两条脏数据
+ * （王芳、王小凤）的成因。挂市场下的部门（养生部/财智部那类矩阵归属）没有门店祖先，不受影响。
+ */
+export function applyStoreSelection(
+  form: OwnershipFields,
+  nextStoreId: string,
+  orgNodes: OrgNode[],
+  stores: { storeId: string; orgNodeId: string | null }[],
+): Partial<OwnershipFields> {
+  const patch: Partial<OwnershipFields> = { storeId: nextStoreId }
+
+  const currentStoreAncestor = findAncestorStoreNodeId(form.orgNodeId || null, orgNodes)
+  if (!currentStoreAncestor) return patch     // 组织挂在市场下，与门店维度无关
+
+  const nextNode = stores.find((s) => s.storeId === nextStoreId)?.orgNodeId ?? ''
+  if (nextNode !== currentStoreAncestor) patch.orgNodeId = nextNode
+  return patch
 }
 
 /** 查找组织节点所属的市场节点 ID（自身及祖先里最近的「市场」型节点，向上遍历 parentId 链） */

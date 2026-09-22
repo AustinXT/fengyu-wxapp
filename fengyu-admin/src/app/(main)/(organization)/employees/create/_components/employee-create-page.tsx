@@ -14,7 +14,7 @@ import { ImageUpload } from "@/components/ui/image-upload"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { createEmployee } from "@/actions/employees"
 import { actionErrorMessage } from "@/lib/action-error"
-import { findAncestorMarketId, findAncestorStoreNodeId, resolveStoreIdForOrgNode } from "@/lib/utils"
+import { findAncestorMarketId, applyOrgNodeSelection, applyStoreSelection } from "@/lib/utils"
 import { shanghaiToday } from "@/lib/datetime"
 import type { Store, OrgNode, SkillTag } from "@/lib/types"
 
@@ -195,10 +195,9 @@ export default function EmployeeCreatePage({ stores, orgNodes, skillTags }: Prop
                 orgNodes={orgNodes}
                 value={form.orgNodeId}
                 onChange={(id) => {
-                  handleChange("orgNodeId", id)
-                  // 组织→门店的反向联动（口径与取舍见 resolveStoreIdForOrgNode）
-                  const nextStoreId = resolveStoreIdForOrgNode(id, form.storeId, orgNodes, stores)
-                  if (nextStoreId !== undefined) handleChange("storeId", nextStoreId)
+                  setFormDirty(true)
+                  // 联动逻辑整体在 applyOrgNodeSelection 里（可单测），这里只合并补丁
+                  setForm((prev) => ({ ...prev, ...applyOrgNodeSelection(prev, id, orgNodes, stores) }))
                 }}
                 placeholder="请选择所属组织"
               />
@@ -208,18 +207,9 @@ export default function EmployeeCreatePage({ stores, orgNodes, skillTags }: Prop
               <Select
                 value={form.storeId}
                 onChange={(e) => {
-                  const nextStoreId = e.target.value
-                  handleChange("storeId", nextStoreId)
-                  /**
-                   * #259：所属组织若归属于**别的**门店，跟着改成新门店的节点 ——
-                   * 否则提交 {新门店, 别的门店的节点} 会被服务端归属自洽校验拒绝。
-                   * 挂市场下的部门（养生部/财智部那类矩阵归属）没有门店祖先，不受影响。
-                   */
-                  const currentStoreAncestor = findAncestorStoreNodeId(form.orgNodeId || null, orgNodes)
-                  if (currentStoreAncestor) {
-                    const nextNode = stores.find((s) => s.storeId === nextStoreId)?.orgNodeId ?? ""
-                    if (nextNode !== currentStoreAncestor) handleChange("orgNodeId", nextNode)
-                  }
+                  setFormDirty(true)
+                  // #259 双向联动：口径在 applyStoreSelection 里，这里只合并补丁
+                  setForm((prev) => ({ ...prev, ...applyStoreSelection(prev, e.target.value, orgNodes, stores) }))
                 }}
               >
                 <option value="">请选择门店</option>

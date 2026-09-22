@@ -17,6 +17,7 @@ import { ApiError } from '@/lib/api-error'
 import { pgErrorCode, pgErrorConstraint, pgErrorDetail } from '@/lib/pg-error'
 import { countActiveAdmins, isAdminEmployee } from '@/lib/admin-guard'
 import { findNearestStoreAncestor, findRolesBoundWithinSubtree } from '@/lib/org-ancestry'
+import { findAllRoleBindings } from '@/lib/employee-roles'
 import { shanghaiToday } from '@/lib/datetime'
 import {
   resolveExportBatchLimit,
@@ -620,8 +621,26 @@ function invalidDateMessage(
   fields: readonly (readonly [string, string | null | undefined])[],
 ): string | null {
   for (const [label, value] of fields) {
-    if (value && !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    if (!value) continue          // null / undefined / 空串都视为「不填」，由 updateData 归一处理
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
       return `${label}格式不正确（需为 YYYY-MM-DD）`
+    }
+    /**
+     * 只校验外形不够：`2026-02-30` / `2026-13-01` / `9999-99-99` 都能过正则，
+     * 却被 PG 判为不存在的日期（`22007`/`22008`，两处 catch 都没翻译）→ 用户仍看到 500
+     * （第 6 轮两谱系共识）。
+     *
+     * 用 UTC 构造再回读三个分量比对 —— `new Date('2026-02-30')` 会**静默滚到** 3 月 2 日，
+     * 单看 `isNaN` 抓不到。走 `Date.UTC` 而不是解析字符串，避开本地时区把日期挪一天。
+     */
+    const [y, m, d] = value.split('-').map(Number)
+    const probe = new Date(Date.UTC(y, m - 1, d))
+    if (
+      probe.getUTCFullYear() !== y ||
+      probe.getUTCMonth() !== m - 1 ||
+      probe.getUTCDate() !== d
+    ) {
+      return `${label}不是一个存在的日期`
     }
   }
   return null
@@ -1124,25 +1143,26 @@ export const updateEmployee = withPermission(
    * `nextStoreId && …` 让这类请求一条审计都不记、也不回传，成了权限跟进盲区。
    */
   if (oldStoreId && nextStoreId !== oldStoreId) {
-    if (data.isResigned === true || currentEmployee.isResigned === true) {
+    if (data.isResigned === true) {
       /**
        * 离职判定必须在**最前面**（codex 谱系第 3 轮）：
        * 原先它排在 scope 判定之后，于是「跨 scope 调店 + 同批离职」会先命中
        * `old_store_out_of_scope` 并返回「可能仍有角色绑定」——而角色其实已被离职分支删光。
        *
-       * 判据是「**这次操作前后任一时刻处于离职态**」，也就是「角色是否已被离职清空」。
-       * 标记离职的事务把该员工**全部** `permission_roles` 删光，所以下面三种时间轴
-       * 旧店查询都必然为空，一律归这一类：
-       *   - `data.isResigned === true`：本次同批标离职，上面的事务刚把角色删完
-       *   - `data.isResigned` 缺省 + 旧值已离职：此前已离职，本次只改归属
-       *   - `data.isResigned === false` + 旧值已离职：**复职**同时调店
+       * 判据刻意**只**认 `data.isResigned === true` —— 也就是「角色是**本次请求**刚删光的」，
+       * 这是同一个 action 内部的事实，可信。
        *
-       * ⚠️ 第 4 轮我把这里改成了 `data.isResigned ?? currentEmployee.isResigned`
-       * （「操作后是否离职态」），想让复职落进查询分支好拿到提示 —— 那是**修错了地方**：
-       * 旧店查出来必然是空，于是落进 `no_binding_at_old_store`，返回干净的「员工信息已更新」，
-       * 在最该提醒的时刻依然零提示（codex 谱系第 5 轮 P1）。真正缺的是复职提示本身，
-       * 它与调不调店无关，已独立放在函数末尾（见 `permission.reinstated.rolesEmpty`）。
-       * 改回 `||` 顺带省掉一次注定为空的查询和一条语义失真的审计。
+       * ⚠️ 不要扩成 `|| currentEmployee.isResigned === true`（第 5 轮我这么写过）：
+       * 那是在押注「离职 ⇒ 角色已清空」这个**会破的**不变量 —— 独立提交的时序、
+       * `sync-workfine.js` 直接改 `is_resigned` 而不碰角色，两条来源都真实可达
+       * （第 6 轮两谱系各自独立指出；证据与生产实测见 `@/lib/employee-roles`）。
+       * 押注它的后果是：残留绑定的员工调店时走进这一支，旧店绑定**不再被披露**，
+       * 操作者以为角色早已撤销，实际静默保留。
+       * 旧值已离职的请求一律落到下面的查询分支去**查事实** —— 真没绑定就记
+       * `no_binding_at_old_store`，语义与这一支等价；有残留就如实披露。
+       *
+       * 至于「复职后是角色真空、需要重新授权」这条提示，与调不调店无关，
+       * 独立放在函数末尾（见 `permission.reinstated.*`），同样基于实查而非推断。
        */
       await logOperation(session, 'permission.scopeSync.skipped', 'permission_role', employeeId, {
         reason: 'roles_revoked_by_resignation', oldStoreId, newStoreId: nextStoreId,
@@ -1221,22 +1241,31 @@ export const updateEmployee = withPermission(
     notes.push('原门店不在你的管理范围内，该员工在原门店可能仍有角色绑定，请联系有权限的管理员复核')
   }
   /**
-   * **复职 = 角色真空**，与调不调店无关（codex 谱系第 5 轮的 P1）。
+   * 复职必须给权限提示，且**基于实查**而不是从 `is_resigned` 推断。
    *
-   * 标记离职时事务把该员工全部 `permission_roles` 删光了，所以复职后他一条角色都没有。
-   * 上一轮只把「复职 + 调店」从离职分支挪进了查询分支 —— 但旧店查出来必然是空，
-   * 于是落进 `no_binding_at_old_store`，最终返回干干净净的「员工信息已更新」，
-   * 恰恰在最该提醒的时刻零提示。（而我那条测试给已离职员工**伪造**了一条 manager 绑定，
-   * 正好避开了真实的角色真空 —— 与「守护 DB 造不出来的状态」同类的测试设计错误。）
+   * 判据放在 §AFF-03 之外：§AFF-03 的入口是「离开原门店」，而「复职但不调店」同样需要提示，
+   * 挂在调店分支里就漏了一半（codex 谱系第 5 轮 P1）。
    *
-   * 判据放在 §AFF-03 之外：§AFF-03 的入口是「离开原门店」，而「复职但不调店」同样是角色真空，
-   * 挂在调店分支里就漏了一半。
+   * 两种结果分别提示（第 6 轮两谱系共识）：
+   *   - 实查为空 → 角色真空，需要重新授权
+   *   - 实查非空 → 残留绑定（独立提交失败 / `sync-workfine.js` 标离职不清角色），
+   *     必须**如实披露**：员工复职即恢复这些权限，操作者不能不知情
+   * 直接写死「已全部撤销」会在残留态下与事实相反，理由详见 `@/lib/employee-roles`。
    */
   if (data.isResigned === false && currentEmployee.isResigned === true) {
-    await logOperation(session, 'permission.reinstated.rolesEmpty', 'permission_role', employeeId, {
-      oldStoreId, newStoreId: nextStoreId,
-    })
-    notes.push('该员工离职时角色已全部撤销，复职后需联系有权限的管理员重新授权')
+    const remaining = await findAllRoleBindings(employeeId)
+    const roles = Array.from(new Set(remaining.map((r) => r.role)))
+    if (roles.length > 0) {
+      await logOperation(session, 'permission.reinstated.rolesRetained', 'permission_role', employeeId, {
+        oldStoreId, newStoreId: nextStoreId, roles,
+      })
+      notes.push(`该员工离职期间仍保留以下角色绑定，复职后即恢复生效，请联系有权限的管理员复核：${roles.join('、')}`)
+    } else {
+      await logOperation(session, 'permission.reinstated.rolesEmpty', 'permission_role', employeeId, {
+        oldStoreId, newStoreId: nextStoreId,
+      })
+      notes.push('该员工离职时角色已全部撤销，复职后需联系有权限的管理员重新授权')
+    }
   }
   return {
     success: true,

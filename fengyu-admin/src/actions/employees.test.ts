@@ -61,6 +61,13 @@ vi.mock('@/lib/org-ancestry', () => ({
   findRolesBoundWithinSubtree: vi.fn(),
 }))
 
+/**
+ * 「该员工现在有没有角色」一律实查，不从 `is_resigned` 推 —— 复职提示据此分岔。
+ * 独立模块便于在这里直接摆布返回值，不用去动 `mockSelectByTable` 对
+ * `db.select(permissionRoles)` 恒空的守护设计。
+ */
+vi.mock('@/lib/employee-roles', () => ({ findAllRoleBindings: vi.fn() }))
+
 vi.mock('@/lib/auth', () => ({
   getSession: vi.fn(),
 }))
@@ -129,6 +136,7 @@ import { logOperation, logUpdate } from '@/lib/operation-log'
 import { eq, ilike, inArray, isNull, sql, gt } from 'drizzle-orm'
 import { countActiveAdmins, isAdminEmployee } from '@/lib/admin-guard'
 import { findNearestStoreAncestor, findRolesBoundWithinSubtree } from '@/lib/org-ancestry'
+import { findAllRoleBindings } from '@/lib/employee-roles'
 import { getSkillTags } from '@/actions/skill-tags'
 
 const mockSession = {
@@ -195,6 +203,7 @@ function rowsForTable(table: unknown, employeeRow?: Record<string, unknown>) {
 function defaultAncestryMocks() {
   ;(findNearestStoreAncestor as any).mockResolvedValue({ exists: true, storeAncestorId: null })
   ;(findRolesBoundWithinSubtree as any).mockResolvedValue([])
+  ;(findAllRoleBindings as any).mockResolvedValue([])
 }
 
 function mockSelectEmpty() {
@@ -288,6 +297,47 @@ describe('createEmployee — 服务端输入校验', () => {
     expect(result.success).toBe(false)
     expect(result.message).toBe('生日格式不正确（需为 YYYY-MM-DD）')
     expect(db.transaction).not.toHaveBeenCalled()
+  })
+
+  /**
+   * 只校验外形不够（第 6 轮两谱系共识）：这些都能过 `^\d{4}-\d{2}-\d{2}$`，
+   * 却被 PG 判为不存在的日期（22007/22008，两处 catch 都没翻译）→ 仍是 500。
+   * ⚠️ `new Date('2026-02-30')` 会**静默滚到** 3 月 2 日，只判 isNaN 抓不到。
+   */
+  it.each(['2026-02-30', '2026-13-01', '9999-99-99', '2026-00-10', '2025-02-29'])(
+    '形似但不存在的日期 %s → 拒，不进事务',
+    async (bad) => {
+      ;(db.select as any).mockImplementation(mockSelectEmpty())
+      const result = await createEmployee({
+        name: '张三', phone: '13812345678', idCard: '110101199003078888',
+        storeId: 'store-A', birthday: bad,
+      })
+      expect(result.success).toBe(false)
+      expect(result.message).toBe('生日不是一个存在的日期')
+      expect(db.transaction).not.toHaveBeenCalled()
+    },
+  )
+
+  /** 闰年 2 月 29 日是合法的，别把它一起拦掉 */
+  it('闰年 2024-02-29 → 放行', async () => {
+    ;(db.select as any).mockImplementation(mockSelectEmpty())
+    mockTransactionSuccess()
+    const result = await createEmployee({
+      name: '张三', phone: '13812345678', idCard: '110101199003078888',
+      storeId: 'store-A', birthday: '2024-02-29',
+    })
+    expect(result.success).toBe(true)
+  })
+
+  /** 空串 = 「不填」，不该被当成非法格式拦下（前端清空日期时传的就是空串） */
+  it('日期传空串 → 视为不填，放行', async () => {
+    ;(db.select as any).mockImplementation(mockSelectEmpty())
+    mockTransactionSuccess()
+    const result = await createEmployee({
+      name: '张三', phone: '13812345678', idCard: '110101199003078888',
+      storeId: 'store-A', birthday: '', hiredAt: '',
+    })
+    expect(result.success).toBe(true)
   })
 
   it('入职日期格式非法 → 同样拒（两个日期列都校验）', async () => {
@@ -698,6 +748,12 @@ function mockSelectByTable(plan: {
   store?: Array<Record<string, unknown>[]>
   /** 旧店子树上的角色绑定（`findRolesBoundWithinSubtree` 的返回值） */
   bindings?: Array<{ role: string } & Record<string, unknown>>
+  /**
+   * 该员工**当前实际**持有的角色（`findAllRoleBindings`）。复职提示据此分岔：
+   * 空 → 「角色已全部撤销」；非空 → 「离职期间仍保留…」。
+   * 默认空 —— 与生产实测一致（27 个离职员工 0 条残留绑定）。
+   */
+  retainedRoles?: string[]
 }) {
   let storeCall = 0
   ;(findNearestStoreAncestor as any).mockImplementation((id: string) =>
@@ -708,6 +764,10 @@ function mockSelectByTable(plan: {
     ),
   )
   ;(findRolesBoundWithinSubtree as any).mockResolvedValue((plan.bindings ?? []).map((b) => b.role))
+  /** 复职分支的实查；只有专测复职残留的用例才覆盖它 */
+  ;(findAllRoleBindings as any).mockResolvedValue(
+    (plan.retainedRoles ?? []).map((role) => ({ role, scopeId: 'org-store-A' })),
+  )
   ;(db.select as any).mockImplementation(() => ({
     from: vi.fn().mockImplementation((table: unknown) => {
       if (table === permissionRoles) {
@@ -1639,11 +1699,18 @@ describe('#249 调店不自动搬迁角色绑定 —— 只留审计 + 回传提
     expect(result.message).toBe('员工信息已更新')
   })
 
-  /** GLM 第 3 轮：此前已离职、本次只改归属（payload 不带 isResigned）—— 同构失真 */
-  it('已离职员工再改归属 → 仍记 roles_revoked_by_resignation', async () => {
+  /**
+   * 此前已离职、本次只改归属（payload 不带 isResigned）→ **查事实**，不按 `is_resigned` 推断。
+   *
+   * 第 5 轮这里记的是 `roles_revoked_by_resignation`（把「曾经离职」等同于「角色已清空」）。
+   * 第 6 轮两谱系各自指出那个不变量会破：写 `is_resigned` 的 UPDATE 与删角色的事务是两次
+   * 独立提交，`sync-workfine.js` 更是直接改 `is_resigned` 而完全不碰角色。
+   * 真没绑定时两种写法语义等价（见本条）；有残留时只有查事实才会披露（见下一条）。
+   */
+  it('已离职员工再改归属 + 旧店确实无绑定 → 记 no_binding_at_old_store', async () => {
     mockSelectByTable({
       employee: [{ storeId: 'store-A', orgNodeId: 'org-dept', isResigned: true }],
-      store: [[{ orgNodeId: 'org-store-A' }]],
+      store: [[{ orgNodeId: 'org-store-B' }], [{ orgNodeId: 'org-store-A' }]],
       bindings: [],
     })
     mockUpdateOnce()
@@ -1653,8 +1720,31 @@ describe('#249 调店不自动搬迁角色绑定 —— 只留审计 + 回传提
     expect(result.success).toBe(true)
     expect(logOperation).toHaveBeenCalledWith(
       mockSession, 'permission.scopeSync.skipped', 'permission_role', 'FY-001',
-      expect.objectContaining({ reason: 'roles_revoked_by_resignation' }),
+      expect.objectContaining({ reason: 'no_binding_at_old_store' }),
     )
+  })
+
+  /**
+   * 残留态：离职行 + 有效角色。押注不变量时这一支被 `roles_revoked_by_resignation` 吞掉，
+   * 操作者以为角色早已撤销，实际员工仍持有旧店权限（`login` 也不校验在职，见
+   * `@/lib/employee-roles` 的注释，那是本 PR 范围外的独立缺口）。
+   */
+  it('已离职员工再改归属 + 旧店有残留绑定 → 如实披露，不被「已离职」吞掉', async () => {
+    mockSelectByTable({
+      employee: [{ storeId: 'store-A', orgNodeId: 'org-dept', isResigned: true }],
+      store: [[{ orgNodeId: 'org-store-B' }], [{ orgNodeId: 'org-store-A' }]],
+      bindings: [{ role: 'manager' }],
+    })
+    mockUpdateOnce()
+
+    const result = await updateEmployee('FY-001', { storeId: 'store-B' })
+
+    expect(result.success).toBe(true)
+    expect(logOperation).toHaveBeenCalledWith(
+      mockSession, 'permission.scopeSync.skipped', 'permission_role', 'FY-001',
+      expect.objectContaining({ reason: 'manual_review_required', roles: ['manager'] }),
+    )
+    expect(result.message).toContain('manager')
   })
 
   /**
@@ -1687,7 +1777,34 @@ describe('#249 调店不自动搬迁角色绑定 —— 只留审计 + 回传提
     )
   })
 
-  /** 复职**不调店**同样是角色真空 —— 判据挂在调店分支里就漏了一半 */
+  /**
+   * 复职 + **残留绑定**：提示必须与事实相符。
+   * 写死「角色已全部撤销」在这个状态下正好说反 —— 员工复职即恢复这些权限，
+   * 操作者必须当场知道（第 6 轮两谱系共识）。
+   */
+  it('复职 + 离职期间残留绑定 → 提示「仍保留」并列出角色，不说「已全部撤销」', async () => {
+    mockSelectByTable({
+      employee: [{ storeId: 'store-A', orgNodeId: 'org-store-A', isResigned: true }],
+      store: [[{ orgNodeId: 'org-store-A' }]],
+      bindings: [],
+      retainedRoles: ['manager', 'finance'],
+    })
+    mockUpdateOnce()
+
+    const result = await updateEmployee('FY-001', { isResigned: false })
+
+    expect(result.success).toBe(true)
+    expect(result.message).toContain('仍保留以下角色绑定')
+    expect(result.message).toContain('manager')
+    expect(result.message).toContain('finance')
+    expect(result.message).not.toContain('已全部撤销')
+    expect(logOperation).toHaveBeenCalledWith(
+      mockSession, 'permission.reinstated.rolesRetained', 'permission_role', 'FY-001',
+      expect.objectContaining({ roles: ['manager', 'finance'] }),
+    )
+  })
+
+  /** 复职**不调店**同样需要提示 —— 判据挂在调店分支里就漏了一半 */
   it('复职但不调店 → 仍回传「需重新授权」提示', async () => {
     mockSelectByTable({
       employee: [{ storeId: 'store-A', orgNodeId: 'org-store-A', isResigned: true }],
