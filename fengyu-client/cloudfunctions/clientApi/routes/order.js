@@ -1535,9 +1535,14 @@ async function closeExpiredOrder(orderNo) {
  * @param {string} userId - 用户ID
  */
 async function closeExpiredOrdersByUser(userId) {
+  // 候选集带上 `lakala_out_order_no IS NULL`（issue #215）：有在途支付意图的单
+  // 在 closeExpiredOrder 的 UPDATE 里本来就会被挡下，选出来只是白跑一个空事务 ——
+  // 而 order.list 每次首屏都会调这里，池子 max 5，N 个空事务串行跑会拖慢首屏。
+  // ⚠️ 这是**候选集收缩**，不碰 CAS：真正决定关不关的仍是 closeExpiredOrder 的 UPDATE 守卫。
   const expired = await pg.query(
     `SELECT sale_order_id FROM sale_orders
      WHERE client_user_id = $1 AND status = '待支付' AND opened_by IS NULL
+     AND lakala_out_order_no IS NULL
      AND sale_order_datetime < NOW() - INTERVAL '10 minutes'`,
     [userId]
   )
@@ -2877,7 +2882,11 @@ async function detail(ctx) {
 
   // 懒清理过期的待支付订单（防止前端倒计时到 0 后无限重载，同时释放优惠券）
   // 员工单 closeExpiredOrder 内部跳过，不置已关闭（issue #27）
-  if (order.status === '待支付') {
+  // 判据列一起看：员工单、有在途意图的单在这里是白开一个事务
+  //（`closeExpiredOrder` 的 SELECT ... FOR UPDATE 只有 status + opened_by 两条守卫，
+  // 对有意图的单会命中并短暂锁住该行，跟并发的 order.pay / payNotify 抢毫秒）。
+  // 下面的补关循环本来就用刷新后的行兜着，这里对不可关的单没有必要试。
+  if (order.status === '待支付' && order.auto_close_eligible) {
     const orderTime = new Date(order.sale_order_datetime)
     if (Date.now() - orderTime.getTime() > 10 * 60 * 1000) {
       await closeExpiredOrder(orderNo)
@@ -3003,7 +3012,13 @@ async function detail(ctx) {
   // 只给绝对时间的话，前端要拿设备的 `Date.now()` / `getHours()` 去推 —— 手机时钟快几分钟
   // 就会把刚下发的时限判成「已过期」，出境改了时区则会显示成「请在 03:15 前完成支付
   //（剩余 09:30）」这种自相矛盾的句子。判过期、报时刻都是服务端的事。
-  const expireInMs = eligible ? Math.max(0, deadlineMs - nowMs) : null
+  //
+  // ⚠️ **只在剩余量严格为正时才下发**。走到这里还满足「可关且已过期」，说明上面两次
+  // 补关都被并发写入的支付意图挤掉了（`order.repay` 可以对待支付单写 `lakala_out_order_no`
+  // 且没有十分钟守卫）。这时下发一个「权威的 0」就是在骗前端 —— 它对权威值的处理是
+  // 不再重载，而这单确实还开着。宁可不下发：前端会退到绝对时间口径（非权威），
+  // 按它自己的一次性闸门重载一次，自愈且有界。
+  const expireInMs = eligible && deadlineMs > nowMs ? deadlineMs - nowMs : null
   const expireClock = eligible ? shanghaiClockHM(new Date(deadlineMs)) : null
 
   // 精简 payments 字段（只给前端需要的）

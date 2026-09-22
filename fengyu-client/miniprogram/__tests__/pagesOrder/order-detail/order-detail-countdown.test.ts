@@ -171,26 +171,25 @@ describe('order-detail 待支付倒计时 (#215)', () => {
     expect(loadDetail).not.toHaveBeenCalled();
   });
 
-  test('服务端权威地说剩 0 → 只清 UI，不重载、不装定时器', () => {
-    // 服务端那边补关复检与剩余量计算共用同一个 nowMs，所以「权威的 0」严格蕴含
-    // 「它已经试过关单了」，再打一次拿到的还是同一个答案。
-    // 这一条正是死循环的结构性断点 —— 注意**只有权威口径**才享受这个待遇，
-    // 旧云函数的绝对时间回退算出的 0 仍必须重载（见下面那条用例）。
+  test('装表即过期 → 只重载一次，不装定时器', () => {
+    // 服务端**只在剩余量严格为正时**才下发 expire_in_ms，所以拿到 0 说明契约被破坏
+    //（旧云函数、或补关被并发意图连续挤掉后的降级）—— 按非权威处理，
+    // 走带一次性闸门的重载路径，而不是当成「服务端已经处理完了」永不重载。
     const { page, loadDetail } = createPageWithStubbedLoad();
 
     page.startCountdown(PENDING_ORDER_WITH_REMAINING(0));
 
     expect(page.data.countdown).toBe('');
     expect(page._countdownTimer).toBeNull();
-    expect(loadDetail).not.toHaveBeenCalled();
+    expect(loadDetail).toHaveBeenCalledTimes(1);
   });
 
-  test('反复装表（模拟 onShow/下拉）也不会累积重载 —— 循环不可能形成', () => {
+  test('反复装表（模拟 onShow/下拉）也只重载一次 —— 循环不可能形成', () => {
     const { page, loadDetail } = createPageWithStubbedLoad();
 
     for (let i = 0; i < 10; i++) page.startCountdown(PENDING_ORDER_WITH_REMAINING(0));
 
-    expect(loadDetail).not.toHaveBeenCalled();
+    expect(loadDetail).toHaveBeenCalledTimes(1);
   });
 
   test('走着走着归零 → 重载一次并停表（假时钟跑满一拍）', () => {
@@ -311,21 +310,13 @@ describe('order-detail 待支付倒计时 (#215)', () => {
     expect(page._countdownDeadlineAt - Date.now()).toBeLessThan(60_000);
   });
 
-  test('服务端说剩 0 → 不重载；服务端说剩 50ms 但被 RTT 扣成 0 → 必须重载一次', () => {
-    // 这两种「0」处理完全相反：前者意味着服务端已经试过关单了（那边共用同一个 nowMs
-    // 保证这点），再打一次拿到的还是同一个答案；后者服务端根本还没试过关，
-    // 混为一谈的话页面会永久停在「待支付 / 请完成支付 / 去支付」
-    const a = createPageWithStubbedLoad();
-    a.page._lastLoadRttMs = 0;
-    a.page.startCountdown(PENDING_ORDER_WITH_REMAINING(0));
-    expect(a.loadDetail).not.toHaveBeenCalled();
-    expect(a.page.data.countdown).toBe('');
+  test('服务端给的剩余量为正、但被 RTT 扣成 0 → 重载一次（服务端还没试过关）', () => {
+    const { page, loadDetail } = createPageWithStubbedLoad();
+    page._lastLoadRttMs = 500;            // 本次 RTT 比剩余量还长
+    page.startCountdown(PENDING_ORDER_WITH_REMAINING(50));
 
-    const b = createPageWithStubbedLoad();
-    b.page._lastLoadRttMs = 500;          // 本次 RTT 比剩余量还长
-    b.page.startCountdown(PENDING_ORDER_WITH_REMAINING(50));
-    expect(b.loadDetail).toHaveBeenCalledTimes(1);
-    expect(b.page.data.countdown).toBe('');
+    expect(loadDetail).toHaveBeenCalledTimes(1);
+    expect(page.data.countdown).toBe('');
   });
 
   test('服务端下发 expire_clock 时，截止时刻用它而不是设备时区推导', async () => {

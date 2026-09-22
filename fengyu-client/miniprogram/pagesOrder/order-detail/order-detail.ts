@@ -522,17 +522,12 @@ Page({
       authoritative = false;
     }
 
-    // ⚠️ 必须区分两种「0」（双谱系评审 round-3 / round-4）：
-    //   - **服务端权威**地说 0 → 它已经试过关单了（那边补关复检与剩余量计算共用同一个
-    //     nowMs，严格保证这点）→ 只清 UI，不重载。这是死循环的结构性断点。
-    //   - 其它任何算出来的 0（旧云函数的绝对时间回退、扣掉 RTT 之后归零）→
-    //     服务端**还没试过关**，必须当成「走着走着归零」重载一次让它去关。
-    //     混为一谈，页面就会永久停在「待支付 / 请完成支付 / 去支付」。
-    if (authoritative && serverRemaining <= 0) {
-      this._countdownDeadlineAt = 0;
-      this.setData({ countdown: '' });
-      return;
-    }
+    // 服务端**只在剩余量严格为正时**才下发 `expire_in_ms`：它下发即意味着
+    // 「这一刻订单确实还开着、而且到点会被关掉」。拿到 <= 0 说明契约被破坏
+    //（旧版本云函数、或服务端补关被并发意图连续挤掉后的降级），
+    // 那就按非权威处理 —— 走下面那条**带一次性闸门**的重载路径，
+    // 绝不当成「服务端已经处理完了」而永不重载（双谱系评审 round-3 ~ round-7）。
+    if (authoritative && serverRemaining <= 0) authoritative = false;
 
     const remainingAt0 = authoritative ? serverRemaining - this._lastLoadRttMs : serverRemaining;
     if (remainingAt0 <= 0) {
@@ -633,7 +628,7 @@ Page({
       return;
     }
     // 已经过了截止点就别在这里发请求：紧跟着的 onShow loadDetail 会刷新，
-    // 在这儿再发一次只是白打一个必定被 token 判废的请求
+    // 在这儿再发一次只是白白多排一次 single-flight 的尾随刷新
     if (this._countdownDeadlineAt - Date.now() <= 0) {
       this._countdownDeadlineAt = 0;
       this.setData({ countdown: '' });

@@ -4,7 +4,9 @@
  */
 
 const pg = globalThis.__mocks__.pg
-const { createCtx, createBoundCtx, createMockTransactionClient, sqlConjuncts } = require('../helpers')
+const {
+  createCtx, createBoundCtx, createMockTransactionClient, sqlConjuncts, sliceBetweenAnchors,
+} = require('../helpers')
 
 /**
  * issue #230：订单行封面图下发前必须缩略。
@@ -2029,7 +2031,7 @@ describe('order.detail — 支付倒计时下发口径 (#215)', () => {
   // 刚下单（未过期）——不触发懒清理分支，专注断言下发口径
   const FRESH_ORDER_TIME = new Date(Date.now() - 60 * 1000).toISOString()
 
-  function mockDetailQueries(orderOverrides) {
+  function mockDetailQueries(orderOverrides, refreshOverrides = orderOverrides) {
     pg.query.mockResolvedValueOnce([{
       sale_order_id: 'FY-215',
       client_user_id: 'user-001',
@@ -2044,6 +2046,17 @@ describe('order.detail — 支付倒计时下发口径 (#215)', () => {
     pg.query.mockResolvedValueOnce([])  // items
     pg.query.mockResolvedValueOnce([])  // 行级退款额
     pg.query.mockResolvedValueOnce([])  // payments
+    // 可支付态一定会发重读查询，而生产里它**恒返回一行**（订单行就在那）。
+    // 不喂的话会吃到全局默认的 `[]`，L1 就永远在「重读落空」这个非生产形态下跑，
+    // 日后谁在「重读有行」路径上加逻辑就测不到了（双谱系评审 round-7）。
+    pg.query.mockResolvedValueOnce([{
+      sale_order_id: 'FY-215',
+      sale_order_datetime: FRESH_ORDER_TIME,
+      status: '待支付',
+      opened_by: null,
+      lakala_out_order_no: null,
+      ...refreshOverrides,
+    }])
   }
 
   /** 找出「重读判据列」那一次查询（与主查询区分：它没有 JOIN stores） */
@@ -2134,10 +2147,11 @@ describe('order.detail — 支付倒计时下发口径 (#215)', () => {
     // 主查询与组装响应之间，另一台设备的 order.pay 可能刚写入 lakala_out_order_no。
     // 只在「跑过懒清理」时重读的话，这份响应会既发着倒计时、又把
     // has_active_payment_intent 算成 false —— 又一次展示口径与关单规则分叉。
-    mockDetailQueries({ auto_close_eligible: true })
-    pg.query.mockResolvedValueOnce([{
-      status: '待支付', lakala_out_order_no: 'FY-215_1750000000', auto_close_eligible: false,
-    }])
+    mockDetailQueries(
+      { auto_close_eligible: true },
+      // 重读拿到真相：意图刚被另一台设备写进来
+      { auto_close_eligible: false, lakala_out_order_no: 'FY-215_1750000000' },
+    )
 
     const ctx = createBoundCtx({ orderNo: 'FY-215' })
     await routes.detail(ctx)
@@ -2262,18 +2276,11 @@ describe('order.detail — 支付倒计时下发口径 (#215)', () => {
     // 会**返回从 start 到文件倒数第二字符的全部内容**（不是空串）——那段里到处都有
     // `opened_by IS NULL` / `lakala_out_order_no IS NULL`，下面的 toContain 会静默恒真，
     // 于是这个「唯一的漂移锁」在有人重命名 closeExpiredOrdersByUser 之后就悄悄失效了。
-    const sliceBetween = (startAnchor, endAnchor) => {
-      const start = source.indexOf(startAnchor)
-      const end = source.indexOf(endAnchor)
-      expect(start, `未找到锚点: ${startAnchor}`).toBeGreaterThanOrEqual(0)
-      expect(end, `未找到锚点: ${endAnchor}`).toBeGreaterThan(start)
-      return stripComments(source.slice(start, end))
-    }
-
-    const closeBody = sliceBetween(
+    const closeBody = stripComments(sliceBetweenAnchors(
+      source,
       'async function closeExpiredOrder(orderNo) {',
       'async function closeExpiredOrdersByUser(userId) {',
-    )
+    ))
     // 兜一层尺寸：这个函数就几十行，切出几千字符就是锚点错位了
     expect(closeBody.length).toBeLessThan(3000)
 

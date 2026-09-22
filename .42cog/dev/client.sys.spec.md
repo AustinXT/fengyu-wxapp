@@ -202,10 +202,16 @@ product.shopInit(门店商品初始化)
 
 **10 分钟超时**：`expire_at = sale_order_datetime + 10min`，不存储字段，应用层 SQL 条件懒清理。
 
-清理时机（三处）：
-1. `order.create` — 创建前检查是否有超时待支付单
-2. `order.list` — 列表查询排除超时单
-3. `order.pay` — 支付前验证未超时
+清理入口（改守卫或释放逻辑时必须逐个扫）：
+
+| 入口 | 形态 | 说明 |
+|---|---|---|
+| `order.create` / `order.list` | 批量，走 `closeExpiredOrdersByUser` | 候选 SELECT 是**超集**（只带 status + opened_by + `lakala_out_order_no IS NULL` + 时间），真正裁决在 `closeExpiredOrder` 的 UPDATE |
+| `order.pay` / `order.alipayPay` / `order.offlinePay` | 单笔，关成了就抛「订单已超时」 | 支付入口的拒绝守卫 |
+| `order.detail` | 单笔，关单 + **有界重试两次** | issue #215 新增：请求处理期间可能跨过截止点 |
+| `card.recharge` | 单笔批量，`_closeExpiredPendingByUser` | **独立实现**，守卫是超集（多一条 `sale_order_type <> '转换单'`），释放侧只回滚优惠券 |
+
+⚠️ 候选 SELECT 侧（`closeExpiredOrdersByUser` 与 `closeExpiredOrder` 自身的 `SELECT ... FOR UPDATE`）都是**超集、fail-safe** 形态：选多了只是白跑空事务，不会错关（裁决全在 UPDATE 的 CAS 上）。同源锁只锁 UPDATE 侧与判据常量，不锁这两个 SELECT。
 
 **懒清理的三条守卫**（`closeExpiredOrder`，缺一不关）：
 
