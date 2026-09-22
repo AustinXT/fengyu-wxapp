@@ -138,15 +138,25 @@ const ADMIN = session({
  * 「所选门店不存在」而提前退出 —— 本文件每条用例都会被那一步拦住。行里 `orgNodeId`
  * 给什么无所谓：顶部已把 `findNearestStoreAncestor` 固定成「无门店祖先」，归属自洽在比对前放行。
  */
+/**
+ * 事务内的锁行重读是 `.where(...).for('update').limit(1)`，而查角色是 `.where(...)` 直接
+ * await —— 所以 `where` 的返回值要**既可 await 又能继续链**（codex 谱系第 10 轮加的 FOR UPDATE）。
+ */
+function selectChain(rows: unknown) {
+  const limit = vi.fn().mockResolvedValue(rows)
+  const whereResult: any = Promise.resolve(rows)
+  whereResult.limit = limit
+  whereResult.for = vi.fn().mockReturnValue({ limit })
+  return { where: vi.fn().mockReturnValue(whereResult), limit }
+}
+
 function mockCurrentEmployee(row: Record<string, unknown>) {
   ;(db.select as any).mockImplementation(() => ({
-    from: vi.fn().mockImplementation((table: unknown) => {
-      const rows = table === stores ? [{ orgNodeId: null }]
+    from: vi.fn().mockImplementation((table: unknown) => selectChain(
+      table === stores ? [{ orgNodeId: null }]
         : table === staffWechatUsers ? [row]
-        : []
-      const limit = vi.fn().mockResolvedValue(rows)
-      return { where: vi.fn().mockReturnValue({ limit }), limit }
-    }),
+        : [],
+    )),
   }))
 }
 
@@ -174,10 +184,8 @@ function mockTxPassthrough() {
 /** createEmployee 侧：员工表查空（没有旧行可读），stores 仍需返回一行，理由同上 */
 function mockSelectEmpty() {
   ;(db.select as any).mockImplementation(() => ({
-    from: vi.fn().mockImplementation((table: unknown) => {
-      const limit = vi.fn().mockResolvedValue(table === stores ? [{ orgNodeId: null }] : [])
-      return { where: vi.fn().mockReturnValue({ limit }), limit }
-    }),
+    from: vi.fn().mockImplementation((table: unknown) =>
+      selectChain(table === stores ? [{ orgNodeId: null }] : [])),
   }))
 }
 

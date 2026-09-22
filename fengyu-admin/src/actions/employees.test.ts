@@ -190,6 +190,24 @@ describe('searchEmployees — 推荐员工检索（全部在职员工，可跨�
  * `orgNodeId` 给 null 也不会走进「本门店未配置组织节点」：`beforeEach` 给
  * `findNearestStoreAncestor` 的默认答案是「节点存在、无门店祖先」，归属自洽在比对之前就放行。
  */
+/**
+ * 事务内的锁行重读是 `.where(...).for('update').limit(1)` —— 所有 select 替身的 `where`
+ * 返回值都要带 `for`，否则链在 `.for` 上炸（codex 谱系第 10 轮加的 `FOR UPDATE`）。
+ */
+function selectChain(rows: unknown) {
+  const limit = vi.fn().mockResolvedValue(rows)
+  const forUpdate = vi.fn().mockReturnValue({ limit })
+  /**
+   * `where` 的返回值必须**既可 await 又能继续链**：
+   * 查角色是 `.from(t).where(c)` 直接 await（无 limit），锁行重读是
+   * `.where(c).for('update').limit(1)`。所以给 Promise 挂上 `limit` / `for`。
+   */
+  const whereResult: any = Promise.resolve(rows)
+  whereResult.limit = limit
+  whereResult.for = forUpdate
+  return { where: vi.fn().mockReturnValue(whereResult), limit, for: forUpdate }
+}
+
 function rowsForTable(table: unknown, employeeRow?: Record<string, unknown>) {
   if (table === stores) return [{ orgNodeId: null }]
   if (table === staffWechatUsers && employeeRow) return [employeeRow]
@@ -208,10 +226,7 @@ function defaultAncestryMocks() {
 
 function mockSelectEmpty() {
   return vi.fn().mockReturnValue({
-    from: vi.fn().mockImplementation((table: unknown) => {
-      const limit = vi.fn().mockResolvedValue(rowsForTable(table))
-      return { where: vi.fn().mockReturnValue({ limit }), limit }
-    }),
+    from: vi.fn().mockImplementation((table: unknown) => selectChain(rowsForTable(table))),
   })
 }
 
@@ -221,10 +236,7 @@ function mockSelectEmpty() {
  */
 function mockSelectExistingEmployee(row: Record<string, unknown> = { storeId: 'store-A', orgNodeId: 'org-store-A' }) {
   return vi.fn().mockReturnValue({
-    from: vi.fn().mockImplementation((table: unknown) => {
-      const limit = vi.fn().mockResolvedValue(rowsForTable(table, row))
-      return { where: vi.fn().mockReturnValue({ limit }), limit }
-    }),
+    from: vi.fn().mockImplementation((table: unknown) => selectChain(rowsForTable(table, row))),
   })
 }
 
@@ -561,15 +573,14 @@ describe('updateEmployee — 服务端输入校验 + 错误处理', () => {
     const set = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({ count: 1 }) })
     ;(db.update as any).mockReturnValue({ set })
     ;(db.transaction as any).mockImplementation(async (fn: any) => fn({
+      execute: vi.fn().mockResolvedValue([]),
       update: vi.fn().mockReturnValue({
         set: vi.fn().mockImplementation((v: any) => {
           set(v)
           return { where: vi.fn().mockResolvedValue({ count: 1 }) }
         }),
       }),
-      select: vi.fn().mockReturnValue({
-        from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([]) }),
-      }),
+      select: (db as any).select,
       delete: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({}) }),
     }))
 
@@ -797,15 +808,25 @@ describe('updateEmployee — 服务端输入校验 + 错误处理', () => {
    * @param roles 事务内查到的角色
    * @param updateCount 员工行 UPDATE 的 rowCount（0 = 乐观锁未命中）
    */
-  function mockResignTransaction(roles: any[], updateCount = 1) {
+  /**
+   * 事务体现在是：锁行重读（`FOR UPDATE`）→ advisory lock（`tx.execute`）→ admin 守卫
+   * → `tx.update`（CAS）→ 角色查询/删除 → 各条审计。所以 tx 上还要有 `execute`，
+   * 且 `select` 链要能接 `.for('update')`。
+   *
+   * @param lockedRow 锁行重读拿到的旧离职态；默认在职
+   */
+  function mockResignTransaction(roles: any[], updateCount = 1, lockedRow: any = { isResigned: false, resignedAt: null }) {
     const txDelete = vi.fn().mockResolvedValue({})
-    const txWhere = vi.fn().mockResolvedValue(roles)
-    const txFrom = vi.fn().mockReturnValue({ where: txWhere })
-    const txSelect = vi.fn().mockReturnValue({ from: txFrom })
+    let selectCall = 0
+    // 第 1 次 select = 锁行重读，之后 = 查角色
+    const txSelect = vi.fn().mockImplementation(() => ({
+      from: vi.fn().mockImplementation(() => selectChain(selectCall++ === 0 ? [lockedRow] : roles)),
+    }))
     const txUpdateWhere = vi.fn().mockResolvedValue({ count: updateCount })
     const txUpdateSet = vi.fn().mockReturnValue({ where: txUpdateWhere })
     ;(db.transaction as any).mockImplementation(async (fn: any) => {
       const tx = {
+        execute: vi.fn().mockResolvedValue([]),      // advisory lock
         update: vi.fn().mockReturnValue({ set: txUpdateSet }),
         select: txSelect,
         delete: vi.fn().mockReturnValue({ where: txDelete }),
@@ -900,12 +921,9 @@ describe('updateEmployee — 服务端输入校验 + 错误处理', () => {
     })
     ;(db.transaction as any).mockImplementation(async (fn: any) => {
       const tx = {
+        execute: vi.fn().mockResolvedValue([]),
         update: txUpdate,
-        select: vi.fn().mockReturnValue({
-          from: vi.fn().mockReturnValue({
-            where: vi.fn().mockResolvedValue([{ id: 1, role: 'manager', scopeId: 'store-A' }]),
-          }),
-        }),
+        select: (db as any).select,
         delete: vi.fn().mockReturnValue({
           where: vi.fn().mockRejectedValue(new Error('connection lost')),
         }),
@@ -926,6 +944,8 @@ describe('updateEmployee — 服务端输入校验 + 错误处理', () => {
   it('离职事务内撞 FK 23503 → 翻译成友好文案（不是 500）', async () => {
     ;(db.select as any).mockImplementation(mockSelectExistingEmployee())
     ;(db.transaction as any).mockImplementation(async (fn: any) => fn({
+      execute: vi.fn().mockResolvedValue([]),
+      select: (db as any).select,
       update: vi.fn().mockReturnValue({
         set: vi.fn().mockReturnValue({
           where: vi.fn().mockRejectedValue(Object.assign(new Error('fk'), {
@@ -933,7 +953,6 @@ describe('updateEmployee — 服务端输入校验 + 错误处理', () => {
           })),
         }),
       }),
-      select: vi.fn(),
       delete: vi.fn(),
     }))
 
@@ -946,6 +965,8 @@ describe('updateEmployee — 服务端输入校验 + 错误处理', () => {
   it('离职事务内撞手机号唯一约束 23505 → 翻译成友好文案', async () => {
     ;(db.select as any).mockImplementation(mockSelectExistingEmployee())
     ;(db.transaction as any).mockImplementation(async (fn: any) => fn({
+      execute: vi.fn().mockResolvedValue([]),
+      select: (db as any).select,
       update: vi.fn().mockReturnValue({
         set: vi.fn().mockReturnValue({
           where: vi.fn().mockRejectedValue(Object.assign(new Error('dup'), {
@@ -953,7 +974,6 @@ describe('updateEmployee — 服务端输入校验 + 错误处理', () => {
           })),
         }),
       }),
-      select: vi.fn(),
       delete: vi.fn(),
     }))
 
@@ -961,6 +981,111 @@ describe('updateEmployee — 服务端输入校验 + 错误处理', () => {
 
     expect(result.success).toBe(false)
     expect(result.message).toBe('该手机号已被其他员工使用')
+  })
+
+  /**
+   * codex 谱系第 10 轮 P1：仅把 `countActiveAdmins` 传进 `tx` **不够串行** ——
+   * READ COMMITTED 下两笔并发离职分别针对 admin A / B 时各自都读到 `count = 2`，
+   * 更新的是不同员工行、删的是不同角色行，两边都能提交 → 零活跃 admin。
+   * 要真串行得有一把公共的 advisory lock。
+   */
+  it('离职路径在守卫之前取 advisory lock（否则并发离职两个 admin 会双双通过）', async () => {
+    ;(db.select as any).mockImplementation(mockSelectExistingEmployee())
+    const order: string[] = []
+    const txExecute = vi.fn().mockImplementation(() => {
+      order.push('lock')
+      return Promise.resolve([])
+    })
+    ;(isAdminEmployee as any).mockImplementation(() => {
+      order.push('guard')
+      return Promise.resolve(false)
+    })
+    ;(db.transaction as any).mockImplementation(async (fn: any) => fn({
+      execute: txExecute,
+      update: (db as any).update,
+      select: (db as any).select,
+      delete: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({}) }),
+      insert: (db as any).insert,
+    }))
+    ;(db.update as any).mockReturnValue({
+      set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({ count: 1 }) }),
+    })
+
+    await updateEmployee('FY-001', { isResigned: true })
+
+    expect(txExecute.mock.calls[0][0], 'advisory lock 的 SQL').toBeDefined()
+    expect(JSON.stringify(txExecute.mock.calls[0][0])).toContain('pg_advisory_xact_lock')
+    expect(order, '锁必须在守卫查询之前').toEqual(['lock', 'guard'])
+  })
+
+  /**
+   * codex 谱系第 10 轮 P2：双写不变量依赖「旧离职态」，而事务**外**读到的旧值到写入之间
+   * 可被插队 —— 不带 `expectedUpdatedAt` 的普通编辑读到「在职」算出 `resignedAt = null`，
+   * 另一请求先完成离职，这次提交就把离职日期清空了。事务内 `FOR UPDATE` 锁行重读修掉它。
+   */
+  it('事务内用 FOR UPDATE 锁行重读，并按锁内旧值重算双写字段', async () => {
+    // 事务外读到「在职」，锁内重读却是「已离职于 2025-06-30」（模拟被并发离职插队）
+    let selectCall = 0
+    ;(db.select as any).mockImplementation(() => ({
+      from: vi.fn().mockImplementation((table: unknown) => {
+        if (table !== staffWechatUsers) return selectChain(table === stores ? [{ orgNodeId: null }] : [])
+        const outsideTx = selectCall++ === 0
+        return selectChain([outsideTx
+          ? { storeId: 'store-A', orgNodeId: 'org-store-A', isResigned: false, resignedAt: null }
+          : { isResigned: true, resignedAt: '2025-06-30' }])
+      }),
+    }))
+    const set = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({ count: 1 }) })
+    ;(db.update as any).mockReturnValue({ set })
+
+    const result = await updateEmployee('FY-001', { name: '李四' })
+
+    expect(result.success).toBe(true)
+    // 按锁内旧值（已离职）推导 → 保留原离职日期，而不是按事务外那个「在职」清成 null
+    expect(set).toHaveBeenCalledWith(expect.objectContaining({ resignedAt: '2025-06-30' }))
+  })
+
+  /** 锁行重读查不到（事务外读到过、这会儿没了）→ 与「不存在/不可见」同句，不泄露发生了什么 */
+  it('锁行重读查不到员工 → 统一文案，且不写库', async () => {
+    let selectCall = 0
+    ;(db.select as any).mockImplementation(() => ({
+      from: vi.fn().mockImplementation((table: unknown) => {
+        if (table !== staffWechatUsers) return selectChain([])
+        return selectChain(selectCall++ === 0
+          ? [{ storeId: 'store-A', orgNodeId: 'org-store-A', isResigned: false, resignedAt: null }]
+          : [])
+      }),
+    }))
+    ;(db.update as any).mockReturnValue({
+      set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({ count: 1 }) }),
+    })
+
+    const result = await updateEmployee('FY-001', { name: '李四' })
+
+    expect(result.success).toBe(false)
+    expect(result.message).toBe('员工不存在或无权修改')
+    expect(db.update).not.toHaveBeenCalled()
+  })
+
+  /**
+   * 结构守护：并发隔离本身单测**证明不了**。
+   *
+   * 红检「把 `.for('update')` 删掉」时全套照样绿 —— mock 的 select 链无论带不带 `.for`
+   * 都返回同一组数据，`FOR UPDATE` 的语义在 PG 层，要真验得开两个连接并发跑。
+   * 同理 advisory lock 的互斥效果也只能验「SQL 发出去了」而非「真的互斥了」。
+   *
+   * 所以这里退一步只钉源码形态，并如实声明上限：
+   * **它只防「被顺手删掉」，不证明隔离成立。** 要提高保障等级得上双连接并发冒烟
+   * （真库 + 两个 client 同时提交），本 PR 未做 —— 那是独立的测试基建活。
+   */
+  it('源码守护：锁行重读带 FOR UPDATE + 离职守卫前有 advisory lock', () => {
+    const src = readFileSync(resolve(process.cwd(), 'src/actions/employees.ts'), 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/(^|[^:'"])\/\/[^\n]*/g, '$1')
+    expect(src, '事务内重读员工行必须 FOR UPDATE，否则双写不变量会被并发插队')
+      .toMatch(/\.for\(\s*['"]update['"]\s*\)/)
+    expect(src, '最后-admin 守卫前必须取 advisory lock，传 tx 不足以串行')
+      .toMatch(/pg_advisory_xact_lock\(hashtext\('admin:active_count'\)/)
   })
 
   /** 乐观锁未命中时不该删角色 —— CAS 没改到行，角色也不该动 */
@@ -1082,6 +1207,7 @@ function mockSelectByTable(plan: {
         const where: any = vi.fn().mockImplementation(() => {
           const p: any = Promise.resolve([])
           p.limit = vi.fn().mockResolvedValue([])
+          p.for = vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) })
           return p
         })
         return { where }
@@ -1090,9 +1216,7 @@ function mockSelectByTable(plan: {
         : table === stores ? (plan.store?.[storeCall++] ?? [])
         : table === staffWechatUsers ? (plan.employee ?? [])
         : []
-      const limit = vi.fn().mockResolvedValue(rows)
-      const where = vi.fn().mockReturnValue({ limit })
-      return { where, limit }
+      return selectChain(rows)
     }),
   }))
 }
@@ -1122,7 +1246,7 @@ function mockTxPassthrough() {
     select: (db as any).select,
     delete: (db as any).delete,
     insert: (db as any).insert,
-    execute: (db as any).execute,
+    execute: (db as any).execute,   // advisory lock 也走这条
   }))
 }
 
@@ -1145,18 +1269,19 @@ describe('updateEmployee — #228 归属变更必须落在 scope 内', () => {
    * `db.select` 第 1 次调用 = 读旧值（currentEmployee）。
    * 传了 `phone` 的用例会多一次「手机号唯一性」select 抢在前面，故 FULL_FORM 的 phone 恒为 null。
    */
+  /**
+   * 按**表**分派（不数「第几次 select」）。`stores` 必须返回一行 —— 归属自洽的存在性校验
+   * 只要 `nextStoreId` 非空就查它。链走 `selectChain`，因此支持事务内的
+   * `.where(...).for('update').limit(1)` 锁行重读。
+   */
   function mockCurrentEmployee(row: Record<string, unknown>) {
-    let call = 0
-    ;(db.select as any).mockImplementation(() => {
-      call++
-      const current = call
-      const limit = vi.fn().mockImplementation(() =>
-        Promise.resolve(current === 1 ? [row] : []),
-      )
-      const where = vi.fn().mockReturnValue({ limit })
-      const from = vi.fn().mockReturnValue({ where })
-      return { from }
-    })
+    ;(db.select as any).mockImplementation(() => ({
+      from: vi.fn().mockImplementation((table: unknown) => selectChain(
+        table === stores ? [{ orgNodeId: null }]
+          : table === staffWechatUsers ? [row]
+          : [],
+      )),
+    }))
   }
 
   function mockUpdateOk() {
@@ -1347,20 +1472,11 @@ describe('updateEmployee — #228 归属变更必须落在 scope 内', () => {
    * 既剥夺了他对外店的角色、又授予了他对我店的角色，而操作者不持 permission:assign/revoke。
    */
   it('旧门店在 scope 外 → 员工归属照改，但 permission_roles 同步被跳过并留痕', async () => {
-    let call = 0
-    ;(db.select as any).mockImplementation(() => {
-      call++
-      const current = call
-      const limit = vi.fn().mockImplementation(() => {
-        // 旧 store 是 scope 外的 store-OUT，但 org_node 在 scope 内 → 行可见
-        if (current === 1) return Promise.resolve([{ storeId: 'store-OUT', orgNodeId: 'org-store-A' }])
-        if (current === 2) return Promise.resolve([{ orgNodeId: 'org-store-OUT' }])
-        if (current === 3) return Promise.resolve([{ orgNodeId: 'org-store-A' }])
-        return Promise.resolve([])
-      })
-      const where = vi.fn().mockReturnValue({ limit })
-      const from = vi.fn().mockReturnValue({ where })
-      return { from }
+    mockSelectByTable({
+      // 旧 store 是 scope 外的 store-OUT，但 org_node 在 scope 内 → 行可见
+      employee: [{ storeId: 'store-OUT', orgNodeId: 'org-store-A' }],
+      store: [[{ orgNodeId: 'org-store-A' }]],   // 归属自洽查新门店 store-A
+      bindings: [],
     })
     mockUpdateOk()
 
@@ -1974,6 +2090,67 @@ describe('#249 调店不自动搬迁角色绑定 —— 只留审计 + 回传提
    * 「审计失败会抛出」不等于「审计在事务里」—— 上一版红检（把 `logUpdate` 的 `tx` 去掉）
    * **没有变红**，因为那组用例只断言抛出。判据必须是「审计收到的 executor 就是那个 tx」。
    */
+  /**
+   * codex 谱系第 10 轮 P2：其余断言多用 `expect.anything()`，辅助函数若「保留参数但内部
+   * 仍用全局 db」会全绿。这条用**同一性**（`toBe`）把所有辅助调用都钉到那个 tx 上。
+   */
+  it('事务内所有辅助调用都收到同一个 tx（不是全局 db）', async () => {
+    mockSelectByTable({
+      employee: [{ storeId: 'store-A', orgNodeId: 'org-dept', isResigned: true }],
+      store: [[{ orgNodeId: 'org-store-B' }], [{ orgNodeId: 'org-store-A' }]],
+      bindings: [{ role: 'manager' }],
+      retainedRoles: ['manager'],
+    })
+    mockUpdateOnce()
+    let handedTx: unknown
+    ;(db.transaction as any).mockImplementation(async (fn: any) => {
+      const tx = {
+        execute: vi.fn().mockResolvedValue([]),
+        update: (db as any).update,
+        select: (db as any).select,
+        delete: (db as any).delete,
+        insert: (db as any).insert,
+      }
+      handedTx = tx
+      return fn(tx)
+    })
+
+    const result = await updateEmployee('FY-001', { storeId: 'store-B', isResigned: false })
+
+    expect(result.success).toBe(true)
+    expect((findAllRoleBindings as any).mock.calls[0][1], '复职快照').toBe(handedTx)
+    expect((findRolesBoundWithinSubtree as any).mock.calls[0][2], '§AFF-03 绑定查询').toBe(handedTx)
+    expect((logOperation as any).mock.calls[0][5], '§AFF-03 审计').toBe(handedTx)
+    expect((logUpdate as any).mock.calls[0][6], 'employee.update 审计').toBe(handedTx)
+  })
+
+  /** 离职路径的两个 admin 守卫查询同样必须走 tx（否则守卫读的是另一个快照） */
+  it('离职守卫的两次查询都收到同一个 tx', async () => {
+    ;(db.select as any).mockImplementation(mockSelectExistingEmployee())
+    ;(isAdminEmployee as any).mockResolvedValue(true)
+    ;(countActiveAdmins as any).mockResolvedValue(5)
+    let handedTx: unknown
+    ;(db.transaction as any).mockImplementation(async (fn: any) => {
+      const tx = {
+        execute: vi.fn().mockResolvedValue([]),
+        update: (db as any).update,
+        select: (db as any).select,
+        delete: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({}) }),
+        insert: (db as any).insert,
+      }
+      handedTx = tx
+      return fn(tx)
+    })
+    ;(db.update as any).mockReturnValue({
+      set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({ count: 1 }) }),
+    })
+
+    await updateEmployee('FY-001', { isResigned: true })
+
+    expect((isAdminEmployee as any).mock.calls[0][1]).toBe(handedTx)
+    expect((countActiveAdmins as any).mock.calls[0][0]).toBe(handedTx)
+  })
+
   it('employee.update 审计与 UPDATE 共用同一个事务句柄', async () => {
     mockSelectByTable({
       employee: [{ storeId: 'store-A', orgNodeId: 'org-dept' }],
@@ -2016,7 +2193,9 @@ describe('#249 调店不自动搬迁角色绑定 —— 只留审计 + 回传提
     })
     mockUpdateOnce()
     ;(logUpdate as any).mockRejectedValue(Object.assign(new Error('fk'), {
-      code: '23503', constraint: 'operation_logs_operator_employee_id_fk',
+      code: '23503', // 真名（已用 pg_constraint 核对）—— 它**也包含** `staff_wechat_users`，
+      // 所以 `includes()` 式判据会误判成「门店已删除」，必须精确白名单
+      constraint: 'operation_logs_operator_employee_id_staff_wechat_users_employee_id_fk',
     }))
 
     const result = await updateEmployee('FY-001', { storeId: 'store-B' })
@@ -2063,12 +2242,11 @@ describe('#249 调店不自动搬迁角色绑定 —— 只留审计 + 回传提
     mockUpdateOnce()
     // 离职路径整体在一个事务里：tx.update（员工行 CAS）+ tx.select/delete（角色）
     ;(db.transaction as any).mockImplementation(async (fn: any) => fn({
+      execute: vi.fn().mockResolvedValue([]),
       update: vi.fn().mockReturnValue({
         set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({ count: 1 }) }),
       }),
-      select: vi.fn().mockReturnValue({
-        from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([]) }),
-      }),
+      select: (db as any).select,
       delete: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({}) }),
     }))
 
@@ -2115,12 +2293,11 @@ describe('#249 调店不自动搬迁角色绑定 —— 只留审计 + 回传提
     mockUpdateOnce()
     // 离职路径整体在一个事务里：tx.update（员工行 CAS）+ tx.select/delete（角色）
     ;(db.transaction as any).mockImplementation(async (fn: any) => fn({
+      execute: vi.fn().mockResolvedValue([]),
       update: vi.fn().mockReturnValue({
         set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({ count: 1 }) }),
       }),
-      select: vi.fn().mockReturnValue({
-        from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([]) }),
-      }),
+      select: (db as any).select,
       delete: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({}) }),
     }))
 
@@ -2246,12 +2423,15 @@ describe('#249 调店不自动搬迁角色绑定 —— 只留审计 + 回传提
   })
 
   /**
-   * 角色快照必须在 UPDATE **之前**拍（codex 谱系第 7 轮 P1）。
+   * 复职角色快照与整笔操作**同生共死**。
    *
-   * 放在之后的话：查询遇到瞬时错误 → 前端收到失败，但员工行已经变成在职；
-   * **重试时旧值已是在职**，复职分支不再进入 —— 提示从此永久丢失，而权限已经恢复。
+   * 演化两轮：第 7 轮要求它在 UPDATE **之前**（当时写入没进事务，查询失败会留下
+   * 「已复职但报错」，重试又不再进复职分支 → 提示永久丢失）；第 10 轮整个写入段进了事务，
+   * 「零写入」由回滚承担，于是挪到 CAS **成功之后** —— 快照与「员工已在职」这个事实
+   * 更接近同一时点（codex 谱系第 10 轮 P2）。
+   * 判据因此从「快照早于 UPDATE」变成「快照失败则整笔回滚」。
    */
-  it('复职时角色快照查询失败 → 零写入（不能留下「已复职但报错」）', async () => {
+  it('复职时角色快照查询失败 → 整笔回滚（不能留下「已复职但报错」）', async () => {
     mockSelectByTable({
       employee: [{ storeId: 'store-A', orgNodeId: 'org-store-A', isResigned: true }],
       store: [[{ orgNodeId: 'org-store-A' }]],
@@ -2259,13 +2439,28 @@ describe('#249 调店不自动搬迁角色绑定 —— 只留审计 + 回传提
     })
     ;(findAllRoleBindings as any).mockRejectedValue(new Error('connection terminated'))
     mockUpdateOnce()
+    let rolledBack = false
+    ;(db.transaction as any).mockImplementation(async (fn: any) => {
+      try {
+        return await fn({
+          execute: vi.fn().mockResolvedValue([]),
+          update: (db as any).update,
+          select: (db as any).select,
+          delete: (db as any).delete,
+          insert: (db as any).insert,
+        })
+      } catch (err) {
+        rolledBack = true      // 真库里这一步就是 ROLLBACK
+        throw err
+      }
+    })
 
     await expect(updateEmployee('FY-001', { isResigned: false })).rejects.toThrow()
-    expect(db.update).not.toHaveBeenCalled()
+    expect(rolledBack, '快照失败必须让整笔事务回滚，否则员工已复职而提示丢失').toBe(true)
   })
 
-  /** 调用顺序的正向断言：快照在前、UPDATE 在后 */
-  it('复职的角色快照早于 UPDATE 发生', async () => {
+  /** 快照在 CAS 之后、审计之前 —— 顺序错了会拿到与「已在职」不同时点的角色集合 */
+  it('复职的角色快照在 CAS 成功之后拍', async () => {
     const order: string[] = []
     mockSelectByTable({
       employee: [{ storeId: 'store-A', orgNodeId: 'org-store-A', isResigned: true }],
@@ -2284,7 +2479,7 @@ describe('#249 调店不自动搬迁角色绑定 —— 只留审计 + 回传提
     const result = await updateEmployee('FY-001', { isResigned: false })
 
     expect(result.success).toBe(true)
-    expect(order).toEqual(['snapshot', 'update'])
+    expect(order).toEqual(['update', 'snapshot'])
   })
 
   /** 复职**不调店**同样需要提示 —— 判据挂在调店分支里就漏了一半 */
@@ -2642,17 +2837,8 @@ describe('updateEmployee — §AFF-03 门店变更 scope 同步', () => {
   })
 
   it('storeId 设为相同值 → 不触发 scope 同步', async () => {
-    // 旧 storeId 与新值相同
-    let selectCall = 0
-    ;(db.select as any).mockImplementation(() => {
-      selectCall++
-      const limit = vi.fn().mockResolvedValue(
-        selectCall === 1 ? [{ storeId: 'store-A' }] : [],
-      )
-      const where = vi.fn().mockReturnValue({ limit })
-      const from = vi.fn().mockReturnValue({ where })
-      return { from }
-    })
+    // 旧 storeId 与新值相同 → 归属字段 no-op，既不触发自洽校验也不触发 §AFF-03
+    mockSelectByTable({ employee: [{ storeId: 'store-A', orgNodeId: null }], store: [], bindings: [] })
     const where = vi.fn().mockResolvedValue({ count: 1 })
     const set = vi.fn().mockReturnValue({ where })
     ;(db.update as any).mockReturnValue({ set })

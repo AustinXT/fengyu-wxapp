@@ -182,8 +182,16 @@ admin 管理权限分配/撤销、WorkFine → PG 数据同步、操作日志查
   事务外只剩 `revalidatePath` 与文案组装。
   理由：审计留在事务外时，它失败会留下「状态已改、前端显示失败」；复职那条更糟 ——
   重试不再进入复职分支，权限提示永久丢失。
-  `23503` 只在约束名含 `staff_wechat_users` 时翻译成「门店/组织节点已被删除」，
-  审计日志自身的 FK 冲突走通用并发文案（否则是误导）。
+  事务开头先 `FOR UPDATE` 锁住员工行重读 —— 双写不变量与最后-admin 守卫都依赖旧状态，
+  事务外读到的旧值到写入之间会被并发插队。离职守卫之前还要取
+  `pg_advisory_xact_lock(hashtext('admin:active_count'))`：仅把计数查询传进 `tx` **不够串行**，
+  READ COMMITTED 下两笔并发离职分别针对不同 admin 时各自都读到 `count = 2`。
+  ⚠️ 这把锁只覆盖本 action 的离职路径；`actions/permissions.ts` 撤销超级管理员角色也会减少
+  活跃 admin，要完全闭合该不变量得让它用**同一把**锁 —— 跨 action 的锁协议，待独立处理。
+  `23503` 只在**精确白名单**（`staff_wechat_users_store_id_stores_store_id_fk` /
+  `staff_wechat_users_org_node_id_org_nodes_id_fk`）上翻译成「门店/组织节点已被删除」；
+  ⚠️ 不能写 `includes('staff_wechat_users')` —— 审计表那条 FK 的真名
+  `operation_logs_operator_employee_id_staff_wechat_users_employee_id_fk` 也含该子串。
   ⚠️ 生产实测（2026-09-22）当前 `is_resigned=true` 且仍有绑定的行是 0 条（27 个离职员工全干净）。
   **另一个相关缺口在本 PR 范围外，待独立处理**：
   `actions/auth.ts` 的 `login` 与 `lib/auth.ts` 取 session 都不校验 `is_resigned`，

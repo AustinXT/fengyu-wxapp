@@ -598,6 +598,15 @@ export const getOrgLevel2ForFilter = withPermission(
  */
 const FK_GONE_MESSAGE = '所选门店或组织节点已被删除，请刷新后重试'
 
+/**
+ * `staff_wechat_users` **自己**指向门店/组织节点的两个外键，精确名（已用 `pg_constraint` 核对）。
+ * 只有这两个撞 `23503` 才等于「用户选的门店/节点被删了」。
+ */
+const EMPLOYEE_OWNERSHIP_FK_CONSTRAINTS = new Set([
+  'staff_wechat_users_store_id_stores_store_id_fk',
+  'staff_wechat_users_org_node_id_org_nodes_id_fk',
+])
+
 /** `db.transaction` 回调收到的句柄；事务内各处只用到这几个方法 */
 type EmployeeUpdateTx = Parameters<Parameters<typeof db.transaction>[0]>[0]
 
@@ -1112,15 +1121,24 @@ export const updateEmployee = withPermission(
    * ⚠️ 离职态下**不能**无条件写 `shanghaiToday()` —— 已离职员工的普通编辑（不带 isResigned）
    * 会把离职日期重置成今天。缺日期时先回落旧值。
    */
-  const willBeResigned = data.isResigned ?? currentEmployee.isResigned
-  if (willBeResigned) {
-    if (!updateData.resignedAt) {
-      updateData.resignedAt = currentEmployee.resignedAt ?? shanghaiToday()
+  /**
+   * @param prev 该员工的**旧**离职态。事务内会拿 `FOR UPDATE` 锁内的真旧值再算一次 ——
+   *   事务外这次只是为了让 `updateData` 有个初值（审计 diff 也要用）。
+   */
+  function applyResignationInvariant(prev: { isResigned: boolean; resignedAt: string | null }) {
+    const willBeResigned = data.isResigned ?? prev.isResigned
+    if (willBeResigned) {
+      // 缺日期时回落**旧值**再回落今天 —— 不能无条件写今天，否则已离职员工的普通编辑
+      // 会把历史离职日期改掉（`updateData.resignedAt` 此时已是归一后的值，空串已成 null）
+      if (!updateData.resignedAt) {
+        updateData.resignedAt = prev.resignedAt ?? shanghaiToday()
+      }
+    } else {
+      updateData.resignedAt = null
+      updateData.resignationReason = null
     }
-  } else {
-    updateData.resignedAt = null
-    updateData.resignationReason = null
   }
+  applyResignationInvariant(currentEmployee as { isResigned: boolean; resignedAt: string | null })
 
   /**
    * 复职的角色快照必须在 UPDATE **之前**拍（codex 谱系第 7 轮 P1）。
@@ -1171,16 +1189,44 @@ export const updateEmployee = withPermission(
   > {
     try {
       return await db.transaction(async (tx) => {
-        // 离职守卫在事务内重读，避免两个 admin 并发离职时双方都看到 count = 2
-        if (data.isResigned === true && await isAdminEmployee(employeeId, tx)) {
-          if (await countActiveAdmins(tx) <= 1) {
+        /**
+         * 锁住这一行员工再重读 —— 双写不变量与最后-admin 守卫都依赖「旧状态」，
+         * 而事务**外**读到的旧值到写入之间可被插队（codex 谱系第 10 轮）：
+         *   - 不带 `expectedUpdatedAt` 的普通编辑读到「在职」并算出 `resignedAt = null`，
+         *     另一请求先完成离职 → 这次提交把离职日期清空 → `is_resigned=true + resigned_at=null`
+         *   - 反向竞态得到「在职却带离职日期」
+         * `FOR UPDATE` 让并发的第二笔排队到第一笔提交之后，重读到的就是真旧值。
+         */
+        const [lockedRow] = await tx
+          .select({ isResigned: staffWechatUsers.isResigned, resignedAt: staffWechatUsers.resignedAt })
+          .from(staffWechatUsers)
+          .where(eq(staffWechatUsers.employeeId, employeeId))
+          .for('update')
+          .limit(1)
+        if (!lockedRow) {
+          // 事务外读到过、这会儿没了 —— 与「不存在/不可见」同句，不泄露发生了什么
+          return { failure: { success: false as const, message: '员工不存在或无权修改' } }
+        }
+        // 用锁内的真旧值重算双写字段（事务外那次计算可能基于过期状态）
+        applyResignationInvariant(lockedRow)
+
+        /**
+         * 最后一个超级管理员守卫必须**串行**（codex 谱系第 10 轮 P1）。
+         *
+         * 仅把 `countActiveAdmins` 传进 `tx` 不够 —— READ COMMITTED 下两笔并发离职分别针对
+         * admin A / B 时，各自都读到 `count = 2`，更新的又是不同员工行、删的是不同角色行，
+         * 两边都能提交，最终零活跃 admin。要真串行得有一把公共锁。
+         *
+         * ⚠️ 这把锁只覆盖本 action 的离职路径。`actions/permissions.ts` 的撤销超级管理员角色
+         * 也会减少活跃 admin，要完全闭合该不变量得让它用**同一把**锁 ——
+         * 那是跨 action 的锁协议，不在本 PR 范围，已如实记录待独立处理。
+         */
+        if (data.isResigned === true) {
+          await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext('admin:active_count')::bigint)`)
+          if (await isAdminEmployee(employeeId, tx) && await countActiveAdmins(tx) <= 1) {
             throw new Error('INVALID_STATE: 该员工是系统最后一个活跃 admin，请先转移角色')
           }
         }
-
-        const rolesAtReinstate = isReinstating
-          ? Array.from(new Set((await findAllRoleBindings(employeeId, tx)).map((r) => r.role)))
-          : []
 
         const updated = await tx.update(staffWechatUsers).set(updateData).where(whereConditions)
         if ((updated as any).count === 0) {
@@ -1191,6 +1237,18 @@ export const updateEmployee = withPermission(
             },
           }
         }
+
+        /**
+         * 复职角色快照挪到 CAS **成功之后**（codex 谱系第 10 轮 P2）。
+         *
+         * 第 7 轮要求它在 UPDATE 之前，理由是「查询失败要零写入」—— 进了事务之后这个理由
+         * 已由回滚承担，而放在 UPDATE 之后能让快照与「员工已在职」这个事实更接近同一时点。
+         * ⚠️ 仍不是完全串行：普通 `SELECT` 不锁角色行，并发的授权/撤权仍可能插在中间。
+         * 要完全串行需要角色变更路径共用员工级锁 —— 同上，跨 action，不在本 PR 范围。
+         */
+        const rolesAtReinstate = isReinstating
+          ? Array.from(new Set((await findAllRoleBindings(employeeId, tx)).map((r) => r.role)))
+          : []
 
         if (data.isResigned === true) {
           const roles = await tx
@@ -1240,16 +1298,28 @@ export const updateEmployee = withPermission(
         return { failure: { success: false as const, message: '数据冲突，请稍后重试' } }
       }
       /**
-       * `23503` 只在**员工表自己**的归属外键上翻译成「门店/组织节点已被删除」
-       * （codex 谱系第 9 轮 P2）。事务扩大后，审计日志自身的 FK（operator / org_node）
-       * 并发失效也会抛 23503 —— 那跟用户选的门店毫无关系，给那句话是误导。
+       * `23503` 只在**员工表自己的归属外键**上翻译成「门店/组织节点已被删除」
+       * （codex 谱系第 9 轮 P2）。事务扩大后，审计日志自身的 FK 并发失效也会抛 23503 ——
+       * 那跟用户选的门店毫无关系，给那句话是误导。
+       *
+       * ⚠️ 判据必须是**精确白名单**，不能写 `includes('staff_wechat_users')`（第 9 轮我这么写过）：
+       * 审计表那条 FK 的真名是
+       * `operation_logs_operator_employee_id_staff_wechat_users_employee_id_fk` ——
+       * 它**也包含** `staff_wechat_users`，于是操作者被并发删除时照样返回「门店已删除」。
+       * 更糟的是当时那条测试用的是我编造的短名 `operation_logs_operator_employee_id_fk`
+       * （不含该子串），所以**假绿**（codex 第 10 轮指出并给了 baseline.sql 行号）。
+       * 真名已用一次性库的 `pg_constraint` 核对过。
        */
       if (pgErrorCode(err) === '23503') {
         const constraint = pgErrorConstraint(err) ?? ''
-        if (constraint.includes('staff_wechat_users')) {
-          return { failure: { success: false as const, message: FK_GONE_MESSAGE } }
+        return {
+          failure: {
+            success: false as const,
+            message: EMPLOYEE_OWNERSHIP_FK_CONSTRAINTS.has(constraint)
+              ? FK_GONE_MESSAGE
+              : '数据冲突，请稍后重试',
+          },
         }
-        return { failure: { success: false as const, message: '数据冲突，请稍后重试' } }
       }
       throw err
     }
