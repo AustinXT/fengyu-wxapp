@@ -273,7 +273,7 @@ describe('createEmployee — 服务端输入校验', () => {
     ;(isEmployeeRowVisible as any).mockReturnValue(true)
     defaultAncestryMocks()
     mockTxPassthrough()
-    resetAuditMocks()
+    resetSharedMocks()
   })
 
   it('姓名为空 → 拒绝', async () => {
@@ -564,7 +564,7 @@ describe('updateEmployee — 服务端输入校验 + 错误处理', () => {
     ;(isEmployeeRowVisible as any).mockReturnValue(true)
     defaultAncestryMocks()
     mockTxPassthrough()
-    resetAuditMocks()
+    resetSharedMocks()
   })
 
   it('手机号格式错误 → 拒绝', async () => {
@@ -1126,6 +1126,196 @@ describe('updateEmployee — 服务端输入校验 + 错误处理', () => {
       '标记离职与物理删除两处都要取锁').toBe(2)
   })
 
+  /**
+   * **P0（GLM 谱系第 11 轮）**：`updateData` 原先是 `{ ...data }` 全量展开，而 Server Action
+   * 可被直调（TS 类型只在编译期）、drizzle `.set()` 按表列映射 ——
+   * `staff_wechat_users.openid` 是真实列，且 `staffApi/middleware/auth.js:185` 用
+   * `WHERE u.openid = $1` 认证员工，于是持 `employee:update` 的低权操作者能把自己 scope 内
+   * 任一员工的 openid 改成攻击者的，攻击者登录员工端小程序即**接管该员工账号**。
+   */
+  it.each([
+    ['openid（账号接管）', 'openid', 'o_attacker'],
+    ['employeeId（改主键）', 'employeeId', 'FY-HIJACK'],
+    ['createdAt（伪造时序）', 'createdAt', '2020-01-01T00:00:00.000Z'],
+    ['updatedAt（伪造乐观锁基准）', 'updatedAt', '2020-01-01T00:00:00.000Z'],
+  ])('直调注入 %s → 该键不得进入写库 payload', async (_label, key, value) => {
+    ;(db.select as any).mockImplementation(mockSelectExistingEmployee())
+    const set = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({ count: 1 }) })
+    ;(db.update as any).mockReturnValue({ set })
+
+    const result = await updateEmployee('FY-001', { name: '张三', [key]: value } as any)
+
+    expect(result.success).toBe(true)
+    expect(set).toHaveBeenCalled()
+    expect(Object.keys(set.mock.calls.at(-1)![0]), `${key} 必须被白名单丢弃`).not.toContain(key)
+  })
+
+  /** 白名单不能把合法字段一起丢掉 */
+  it('白名单放行全部 17 个合法字段', async () => {
+    ;(db.select as any).mockImplementation(mockSelectExistingEmployee())
+    const set = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({ count: 1 }) })
+    ;(db.update as any).mockReturnValue({ set })
+
+    const result = await updateEmployee('FY-001', { ...FULL_FORM }, EXPECTED_AT)
+
+    expect(result.success).toBe(true)
+    const written = Object.keys(set.mock.calls.at(-1)![0])
+    for (const k of Object.keys(FULL_FORM)) {
+      expect(written, `${k} 是合法字段，不该被白名单误丢`).toContain(k)
+    }
+  })
+
+  /** `skills` 传非数组会让 PG 解析数组字面量失败（22P02）→ 两处 catch 都不翻译 → 500 */
+  it('skills 传非数组 → 打库前拒，不进事务', async () => {
+    ;(db.select as any).mockImplementation(mockSelectExistingEmployee())
+    ;(db.update as any).mockReturnValue({
+      set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({ count: 1 }) }),
+    })
+
+    const result = await updateEmployee('FY-001', { skills: '美容' as any })
+
+    expect(result.success).toBe(false)
+    expect(result.message).toBe('技能标签格式不正确')
+    expect(db.update).not.toHaveBeenCalled()
+  })
+
+  /**
+   * 锁序必须与 `deleteEmployee` 一致（advisory → 行锁），否则同一员工并发
+   * 「标记离职 + 物理删除」会形成 lock ordering inversion → PG `40P01` → 500
+   * （codex / GLM 第 11 轮各自独立指出）。
+   */
+  it('离职路径的 advisory lock 早于员工行锁', async () => {
+    const order: string[] = []
+    ;(db.select as any).mockImplementation(() => ({
+      from: vi.fn().mockImplementation((table: unknown) => {
+        if (table === staffWechatUsers) {
+          const rows = [{ storeId: 'store-A', orgNodeId: 'org-store-A', isResigned: false, resignedAt: null }]
+          const limit = vi.fn().mockResolvedValue(rows)
+          const whereResult: any = Promise.resolve(rows)
+          whereResult.limit = limit
+          whereResult.for = vi.fn().mockImplementation(() => {
+            order.push('row-lock')
+            return { limit }
+          })
+          return { where: vi.fn().mockReturnValue(whereResult), limit }
+        }
+        return selectChain(table === stores ? [{ orgNodeId: null }] : [])
+      }),
+    }))
+    ;(db.transaction as any).mockImplementation(async (fn: any) => fn({
+      execute: vi.fn().mockImplementation(() => {
+        order.push('advisory')
+        return Promise.resolve([])
+      }),
+      update: (db as any).update,
+      select: (db as any).select,
+      delete: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({}) }),
+      insert: (db as any).insert,
+    }))
+    ;(db.update as any).mockReturnValue({
+      set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({ count: 1 }) }),
+    })
+
+    await updateEmployee('FY-001', { isResigned: true })
+
+    expect(order.slice(0, 2), 'advisory 必须先于行锁，与 deleteEmployee 同序').toEqual(['advisory', 'row-lock'])
+  })
+
+  /**
+   * 目标已离职时他本就不在 `countActiveAdmins`（join 了 `is_resigned = false`）里 ——
+   * 再标记他离职不会让活跃数变化，不该拦（GLM 第 11 轮 P2-2）。
+   */
+  it('对已离职的残留 admin 再标离职 → 不被「最后一个活跃 admin」误拒', async () => {
+    ;(db.select as any).mockImplementation(mockSelectExistingEmployee({
+      storeId: 'store-A', orgNodeId: 'org-store-A', isResigned: true, resignedAt: '2025-06-30',
+    }))
+    ;(isAdminEmployee as any).mockResolvedValue(true)
+    ;(countActiveAdmins as any).mockResolvedValue(1)   // 系统只剩 1 个在职 admin（是别人）
+    ;(db.update as any).mockReturnValue({
+      set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({ count: 1 }) }),
+    })
+
+    const result = await updateEmployee('FY-001', { isResigned: true })
+
+    expect(result.success).toBe(true)
+    expect(isAdminEmployee, '目标已离职 → 守卫整段跳过，连查都不必').not.toHaveBeenCalled()
+  })
+
+  /**
+   * `applyResignationInvariant` 只能在锁内算**一次**：事务外先算一遍会把
+   * `updateData.resignedAt` 填成今天，锁内的 `if (!updateData.resignedAt)` 就被短路
+   * → 对已离职员工直调 `{ isResigned: true }` 会把历史离职日期重置为今天（GLM 第 11 轮 P3-1）。
+   */
+  it('已离职员工直调 { isResigned: true } → 历史离职日期不被重置为今天', async () => {
+    ;(db.select as any).mockImplementation(mockSelectExistingEmployee({
+      storeId: 'store-A', orgNodeId: 'org-store-A', isResigned: true, resignedAt: '2025-06-30',
+    }))
+    const set = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({ count: 1 }) })
+    ;(db.update as any).mockReturnValue({ set })
+
+    const result = await updateEmployee('FY-001', { isResigned: true })
+
+    expect(result.success).toBe(true)
+    expect(set).toHaveBeenCalledWith(expect.objectContaining({ resignedAt: '2025-06-30' }))
+  })
+
+  /**
+   * `applyResignationInvariant` 只能在锁内算**一次**。
+   *
+   * ⚠️ 上一版红检（在事务外也调一次）**没变红** —— 我那条「日期不被重置」用例里事务外与锁内
+   * 读到的是同一行，两次计算结果相同，区分不出来。这条用双快照构造出差异：
+   * 事务外看到「在职 + 无离职日期」→ 算出 `resignedAt = 今天`；锁内其实是
+   * 「已离职于 2025-06-30」→ 若事务外已填过，锁内的 `if (!updateData.resignedAt)` 就被短路，
+   * 历史离职日期被改成今天（GLM 第 11 轮 P3-1 描述的正是这条链）。
+   */
+  it('事务外与锁内旧值不同时，双写只按锁内那次算（不被事务外的结果短路）', async () => {
+    let selectCall = 0
+    ;(db.select as any).mockImplementation(() => ({
+      from: vi.fn().mockImplementation((table: unknown) => {
+        if (table !== staffWechatUsers) return selectChain(table === stores ? [{ orgNodeId: null }] : [])
+        const outsideTx = selectCall++ === 0
+        return selectChain([outsideTx
+          ? { storeId: 'store-A', orgNodeId: 'org-store-A', isResigned: false, resignedAt: null }
+          : { storeId: 'store-A', orgNodeId: 'org-store-A', isResigned: true, resignedAt: '2025-06-30' }])
+      }),
+    }))
+    const set = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({ count: 1 }) })
+    ;(db.update as any).mockReturnValue({ set })
+
+    const result = await updateEmployee('FY-001', { isResigned: true })
+
+    expect(result.success).toBe(true)
+    expect(set.mock.calls.at(-1)![0].resignedAt,
+      '必须是锁内读到的历史日期，而不是事务外算出的今天').toBe('2025-06-30')
+  })
+
+  /**
+   * 复职判定也要用**锁内**旧值：事务外读到「在职」→ `isReinstating` 为 false → 锁内其实完成了
+   * 复职，却不实查角色、不写复职审计、不回传提示（codex 第 11 轮 P2-2）。
+   */
+  it('复职判定用锁内旧值（事务外读到在职也不影响）', async () => {
+    let selectCall = 0
+    ;(db.select as any).mockImplementation(() => ({
+      from: vi.fn().mockImplementation((table: unknown) => {
+        if (table !== staffWechatUsers) return selectChain(table === stores ? [{ orgNodeId: null }] : [])
+        const outsideTx = selectCall++ === 0
+        return selectChain([outsideTx
+          // 事务外这一眼看到的是「在职」（被并发离职插队前的旧状态）
+          ? { storeId: 'store-A', orgNodeId: 'org-store-A', isResigned: false, resignedAt: null }
+          : { storeId: 'store-A', orgNodeId: 'org-store-A', isResigned: true, resignedAt: '2025-06-30' }])
+      }),
+    }))
+    ;(findAllRoleBindings as any).mockResolvedValue([{ role: 'manager', scopeId: 'org-store-A' }])
+    ;(db.update as any).mockReturnValue({
+      set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({ count: 1 }) }),
+    })
+
+    const result = await updateEmployee('FY-001', { isResigned: false })
+
+    expect(result.success).toBe(true)
+    expect(result.message, '锁内旧值是已离职 → 这是复职，必须给提示').toContain('仍保留以下角色绑定')
+  })
+
   /** 乐观锁未命中时不该删角色 —— CAS 没改到行，角色也不该动 */
   it('离职时乐观锁未命中 → 返回冲突文案，且角色一条都不删', async () => {
     ;(db.select as any).mockImplementation(mockSelectExistingEmployee())
@@ -1270,12 +1460,18 @@ function mockSelectByTable(plan: {
  */
 /**
  * ⚠️ `vi.clearAllMocks()` 只清调用记录，**不清 mockImplementation** ——
- * 某条用例把 `logOperation` 设成 reject 之后会一路泄漏到后面所有用例。
- * 每个 beforeEach 显式恢复成 resolve。
+ * 某条用例把 `logOperation` 设成 reject、或把 `countActiveAdmins` 设成 1 之后，
+ * 会一路泄漏到后面所有用例（这个坑本 PR 里踩了两次：第一次是审计 mock，
+ * 第二次是 admin 守卫的计数）。每个 beforeEach 显式恢复默认。
  */
-function resetAuditMocks() {
+function resetSharedMocks() {
   ;(logOperation as any).mockResolvedValue(undefined)
   ;(logUpdate as any).mockResolvedValue(undefined)
+  // 与 vi.mock 工厂里的默认保持一致：不是 admin、系统有 5 个活跃 admin
+  ;(isAdminEmployee as any).mockResolvedValue(false)
+  ;(countActiveAdmins as any).mockResolvedValue(5)
+  // 离职路径会在事务内 `tx.delete(permissionRoles)`（tx 透传到 db.delete）—— 给个默认可用链
+  ;(db.delete as any).mockReturnValue({ where: vi.fn().mockResolvedValue({}) })
 }
 
 function mockTxPassthrough() {
@@ -1335,7 +1531,7 @@ describe('updateEmployee — #228 归属变更必须落在 scope 内', () => {
     ;(isAdminScope as any).mockReturnValue(false)
     defaultAncestryMocks()
     mockTxPassthrough()
-    resetAuditMocks()
+    resetSharedMocks()
   })
 
   /**
@@ -1844,7 +2040,7 @@ describe('createEmployee — #228 归属同样受 scope 约束', () => {
     ;(isAdminScope as any).mockReturnValue(false)
     defaultAncestryMocks()
     mockTxPassthrough()
-    resetAuditMocks()
+    resetSharedMocks()
   })
 
   const BASE = { name: '张三', phone: '13812345678', idCard: '110101199003078888' }
@@ -1934,7 +2130,7 @@ describe('#249 调店不自动搬迁角色绑定 —— 只留审计 + 回传提
     ;(isAdminScope as any).mockReturnValue(false)
     ;(isInScope as any).mockImplementation((_s: unknown, id: string) => IN_SCOPE_STORES.has(id))
     mockTxPassthrough()
-    resetAuditMocks()
+    resetSharedMocks()
   })
 
   function mockUpdateOnce() {
@@ -2610,7 +2806,7 @@ describe('#259 归属自洽 —— 只禁 orgNodeId 指向「另一个门店」'
     ;(isAdminScope as any).mockReturnValue(false)
     defaultAncestryMocks()
     mockTxPassthrough()
-    resetAuditMocks()
+    resetSharedMocks()
   })
 
   function mockUpdateOk2() {
@@ -2839,7 +3035,7 @@ describe('updateEmployee — §AFF-03 门店变更 scope 同步', () => {
     ;(isEmployeeRowVisible as any).mockReturnValue(true)
     defaultAncestryMocks()
     mockTxPassthrough()
-    resetAuditMocks()
+    resetSharedMocks()
   })
 
   it('storeId 变更 → 只写 skipped 审计，permission_roles 不动', async () => {

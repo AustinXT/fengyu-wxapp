@@ -1115,10 +1115,46 @@ export const updateEmployee = withPermission(
       )
     : and(eq(staffWechatUsers.employeeId, employeeId), scopeCond)
 
-  // is_resigned ↔ resigned_at 双写一致：调用方仅传 isResigned 时由 action 自动推导 resignedAt
-  // - isResigned=true 且未显式给 resignedAt：写 today
-  // - isResigned=false：清空 resignedAt
-  const updateData = { ...data }
+  /**
+   * ## 写库字段必须**显式白名单**拣选，不能 `{ ...data }` 全量展开
+   *
+   * `data` 的 TS 类型只在编译期存在 —— Server Action **可以被直调**（POST 到 action endpoint，
+   * 参数就是反序列化的 body），运行时能携带任意键；而 drizzle 的 `.set()` 是按**表列**映射的，
+   * 键名撞上真实列就会写进去。
+   *
+   * ⚠️ 这是账号接管级越权（GLM 谱系第 11 轮判 P0，已核实）：
+   * `staff_wechat_users.openid` 是真实列，而 `staffApi/middleware/auth.js:185` 用
+   * `WHERE u.openid = $1` 认证员工 —— 持 `employee:update` 的低权操作者（如市场级 HR）
+   * 对自己 scope 内任一员工提交 `{ openid: <攻击者的微信 openid> }`，攻击者用自己微信登录
+   * 员工端小程序就**成为该员工**，拿到他的全部角色与 scope。
+   * 同一信道还能改 `employeeId`（主键）、`createdAt` / `updatedAt`（伪造审计时序与乐观锁基准）。
+   *
+   * （codex 谱系第 6 轮也提过这处，当时我判成「存量模式、非本 PR 引入」记录不修 ——
+   * 那个判断轻了：`openid` 这一个字段就把它从「可维护性」推到了越权。）
+   *
+   * `createEmployee` 用的是显式 `values({ … })` 逐字段列出，不受影响。
+   */
+  const updateData: Record<string, unknown> = {}
+  const assign = <K extends keyof typeof data>(key: K) => {
+    if (data[key] !== undefined) updateData[key as string] = data[key]
+  }
+  for (const key of [
+    'phone', 'name', 'gender', 'idCard', 'storeId', 'orgNodeId', 'positionName',
+    'birthday', 'isResigned', 'resignedAt', 'resignationReason', 'avatarUrl',
+    'hiredAt', 'leaveStart', 'leaveEnd', 'isOnBusinessTrip', 'socialInsurance',
+  ] as const) {
+    assign(key)
+  }
+  /**
+   * `skills` 单独处理：直调传个字符串会让 PG 解析数组字面量失败（`22P02`），
+   * 而两处 catch 都不翻译 → 500（GLM 第 11 轮 P3-4）。非数组一律当没传。
+   */
+  if (data.skills !== undefined) {
+    if (data.skills !== null && !Array.isArray(data.skills)) {
+      return { success: false, message: '技能标签格式不正确' }
+    }
+    updateData.skills = data.skills
+  }
   // 请假字段空串归一为 null（清空请假区间）
   if (data.leaveStart !== undefined) updateData.leaveStart = data.leaveStart || null
   if (data.leaveEnd !== undefined) updateData.leaveEnd = data.leaveEnd || null
@@ -1169,7 +1205,7 @@ export const updateEmployee = withPermission(
       updateData.resignationReason = null
     }
   }
-  applyResignationInvariant(currentEmployee as { isResigned: boolean; resignedAt: string | null })
+  // ⚠️ 刻意**不在这里**调用 —— 它只能在事务内拿锁内旧值算一次，理由见事务体里那段注释
 
   /**
    * 复职的角色快照必须在 UPDATE **之前**拍（codex 谱系第 7 轮 P1）。
@@ -1186,8 +1222,6 @@ export const updateEmployee = withPermission(
    * `isResigned`），所以这条路径当前只能由直调触达。它是为将来的复职入口先把语义定住 ——
    * 届时那个入口必须用 `result.message` 送达提示，别再写死「操作成功」（#249 踩过）。
    */
-  const isReinstating = data.isResigned === false && currentEmployee.isResigned === true
-
   /**
    * ## 一次操作 = 一个事务
    *
@@ -1213,23 +1247,36 @@ export const updateEmployee = withPermission(
    */
   const txResult = await runEmployeeUpdateTx()
   if ('failure' in txResult) return txResult.failure
-  const { unsyncedRoles, ownershipNeedsReview, rolesAtReinstate } = txResult
+  const { unsyncedRoles, ownershipNeedsReview, rolesAtReinstate, isReinstating } = txResult
 
   async function runEmployeeUpdateTx(): Promise<
-    { failure: { success: false; message: string } } | { unsyncedRoles: string[]; ownershipNeedsReview: boolean; rolesAtReinstate: string[] }
+    | { failure: { success: false; message: string } }
+    | { unsyncedRoles: string[]; ownershipNeedsReview: boolean; rolesAtReinstate: string[]; isReinstating: boolean }
   > {
     try {
       return await db.transaction(async (tx) => {
         /**
-         * 锁住这一行员工再重读 —— 双写不变量与最后-admin 守卫都依赖「旧状态」，
-         * 而事务**外**读到的旧值到写入之间可被插队（codex 谱系第 10 轮）：
+         * ## 锁序：advisory lock **先于**员工行锁
+         *
+         * 两个 action 必须同序（codex / GLM 第 11 轮各自独立指出）：`deleteEmployee` 是
+         * 「advisory → 行锁（DELETE 时）」，若这里写成「行锁 → advisory」就是教科书式
+         * lock ordering inversion —— T1 标记 A 离职拿到 A 的行锁后等 advisory，
+         * T2 删除 A 拿到 advisory 后等 A 的行锁 → PG 抛 `40P01`，而两处 catch 都不翻译它 → 500。
+         */
+        if (data.isResigned === true) await lockActiveAdminCount(tx)
+
+        /**
+         * 锁住这一行员工再重读**完整行** —— 双写不变量、最后-admin 守卫、`isReinstating`
+         * 判定、审计的 before 快照都依赖「旧状态」，而事务**外**读到的旧值到写入之间可被插队
+         * （codex 第 10/11 轮、GLM 第 11 轮）：
          *   - 不带 `expectedUpdatedAt` 的普通编辑读到「在职」并算出 `resignedAt = null`，
          *     另一请求先完成离职 → 这次提交把离职日期清空 → `is_resigned=true + resigned_at=null`
-         *   - 反向竞态得到「在职却带离职日期」
+         *   - `{ isResigned: false }` 在事务外读到「在职」→ `isReinstating` 为 false → 锁内其实
+         *     完成了复职，却不实查角色、不写复职审计、不回传重新授权提示
          * `FOR UPDATE` 让并发的第二笔排队到第一笔提交之后，重读到的就是真旧值。
          */
         const [lockedRow] = await tx
-          .select({ isResigned: staffWechatUsers.isResigned, resignedAt: staffWechatUsers.resignedAt })
+          .select()
           .from(staffWechatUsers)
           .where(eq(staffWechatUsers.employeeId, employeeId))
           .for('update')
@@ -1238,25 +1285,32 @@ export const updateEmployee = withPermission(
           // 事务外读到过、这会儿没了 —— 与「不存在/不可见」同句，不泄露发生了什么
           return { failure: { success: false as const, message: '员工不存在或无权修改' } }
         }
-        // 用锁内的真旧值重算双写字段（事务外那次计算可能基于过期状态）
-        applyResignationInvariant(lockedRow)
+        /**
+         * 用锁内的真旧值重算双写字段。
+         * ⚠️ 必须**只在这里**算一次：事务外若先算过一遍，`updateData.resignedAt` 已被填成
+         * `shanghaiToday()`，锁内的 `if (!updateData.resignedAt)` 就被短路 —— 对已离职员工
+         * 直调 `{ isResigned: true }` 会把历史离职日期重置为今天，恰是注释声称防住的那件事
+         * （GLM 第 11 轮 P3-1）。
+         */
+        applyResignationInvariant(lockedRow as { isResigned: boolean; resignedAt: string | null })
+        // 复职判定同样以锁内旧值为准
+        const isReinstating = data.isResigned === false && lockedRow.isResigned === true
 
         /**
          * 最后一个超级管理员守卫必须**串行**（codex 谱系第 10 轮 P1）。
-         *
          * 仅把 `countActiveAdmins` 传进 `tx` 不够 —— READ COMMITTED 下两笔并发离职分别针对
-         * admin A / B 时，各自都读到 `count = 2`，更新的又是不同员工行、删的是不同角色行，
-         * 两边都能提交，最终零活跃 admin。要真串行得有一把公共锁。
+         * admin A / B 时各自都读到 `count = 2`、改的又是不同行，两边都能提交 → 零活跃 admin。
          *
-         * ⚠️ 这把锁只覆盖本 action 的离职路径。`actions/permissions.ts` 的撤销超级管理员角色
-         * 也会减少活跃 admin，要完全闭合该不变量得让它用**同一把**锁 ——
-         * 那是跨 action 的锁协议，不在本 PR 范围，已如实记录待独立处理。
+         * 目标**已离职**时他本就不在 `countActiveAdmins`（join 了 `is_resigned = false`）里，
+         * 标记他离职不会让活跃数变化 —— 此时不该拦（GLM 第 11 轮 P2-2）。
+         *
+         * ⚠️ 这把锁覆盖本 action 与 `deleteEmployee`；`actions/permissions.ts` 的撤销超级管理员
+         * 角色也会减少活跃 admin，要完全闭合得让它用**同一把**锁 —— 跨 action 的锁协议，
+         * 不在本 PR 范围，已如实记录待独立处理。
          */
-        if (data.isResigned === true) {
-          await lockActiveAdminCount(tx)
+        if (data.isResigned === true && !lockedRow.isResigned) {
           if (await isAdminEmployee(employeeId, tx) && await countActiveAdmins(tx) <= 1) {
-            // 用 ApiError 而非裸 throw —— 前缀才走 errorType 白名单通道，前端能按类型路由
-            // （同文件 851 行的 P0 audit-CC5 已示范；GLM 谱系多轮提到）
+            // 用 ApiError 而非裸 throw —— 前缀走 errorType 白名单通道，也不会撞跨端错误码守护
             throw new ApiError('INVALID_STATE', '该员工是系统最后一个活跃 admin，请先转移角色')
           }
         }
@@ -1319,9 +1373,10 @@ export const updateEmployee = withPermission(
         }
         // #228：传 updateData 而非原始 data —— 归属空串已归一为 null、resignedAt/resignationReason
         // 由 action 自动推导，只有 updateData 才等于真正写进库的那一组值；传 data 会让审计 diff 失真
+        // 审计的 before 也用锁内重读的行 —— 事务外那份可能已被并发改过
         await logUpdate(session, 'employee.update', 'employee', employeeId,
-          currentEmployee as Record<string, unknown>, updateData, tx)
-        return { unsyncedRoles, ownershipNeedsReview, rolesAtReinstate }
+          lockedRow as Record<string, unknown>, updateData, tx)
+        return { unsyncedRoles, ownershipNeedsReview, rolesAtReinstate, isReinstating }
       })
     } catch (err: any) {
       if (pgErrorCode(err) === '23505') {
@@ -1553,13 +1608,32 @@ export const deleteEmployee = withPermission(
      *   - 审计留在事务外，它失败会留下「员工已删 + 前端 500」
      * 锁用的是与离职路径**同一把** `lockActiveAdminCount`。
      */
-    const ADMIN_GUARD_FAILED = 'LAST_ACTIVE_ADMIN'
     try {
-      const txResult = await db.transaction(async (tx) => {
+      const txResult = await db.transaction(async (tx): Promise<true | { failure: string }> => {
         await lockActiveAdminCount(tx)
-        // 最后一个活跃 admin 守卫（删除会移除其 admin 角色 → 自锁）
-        if (await isAdminEmployee(employeeId, tx) && await countActiveAdmins(tx) <= 1) {
-          throw new Error(ADMIN_GUARD_FAILED)
+        /**
+         * 最后一个活跃 admin 守卫（删除会移除其 admin 角色 → 自锁）。
+         *
+         * ⚠️ 守卫失败**返回**而不是抛一个裸 sentinel（codex 谱系第 11 轮 P1）：
+         * `cross-end-error-codes-snapshot.test.js` 会 grep admin `actions/` 下的裸抛错，
+         * 未登记进它的 `TX_SENTINELS` 白名单的一律算违规 —— 我上一轮加的那个
+         * `LAST_ACTIVE_ADMIN` 哨兵**直接把那个质量闸门打红了**，
+         * 而它在 `fengyu-staff` 目录下、admin 的 vitest 跑不到，所以我没发现。
+         * 守卫发生在任何写入之前，返回值让事务正常提交一个空事务即可，与 CAS 未命中同构。
+         *
+         * ⚠️ 那个 grep 是**纯文本**匹配 —— 连注释里出现的字面量都算违规。
+         * 所以这段说明刻意不写出完整的抛错表达式（第一次改完注释仍然红，就是因为这个）。
+         *
+         * ⚠️ 目标**已离职**时他本就不在 `countActiveAdmins`（那个查询 join 了
+         * `is_resigned = false`）里 —— 删掉他不会让活跃数归零，此时误拒且文案说反
+         * （GLM 谱系第 11 轮 P2-2）。所以要加上「目标当前在职」这个条件。
+         */
+        if (
+          !emp.isResigned
+          && await isAdminEmployee(employeeId, tx)
+          && await countActiveAdmins(tx) <= 1
+        ) {
+          return { failure: '该员工是系统最后一个活跃管理员，请先转移角色' }
         }
         // 先删可随员工删除的从属行（登录凭证 + 权限角色）
         await tx.delete(adminPasswords).where(eq(adminPasswords.employeeId, employeeId))
@@ -1576,17 +1650,25 @@ export const deleteEmployee = withPermission(
         }, tx)
         return true
       })
-      if (!txResult) {
-        return { success: false, message: '员工状态已变更，请刷新重试' }
+      // `txResult` 只可能是 `true` 或守卫的 failure（其它失败都走 throw → 下面的 catch）
+      if (txResult !== true) {
+        return { success: false, message: txResult.failure }
       }
     } catch (e) {
-      if (e instanceof Error && e.message === ADMIN_GUARD_FAILED) {
-        return { success: false, message: '该员工是系统最后一个活跃管理员，请先转移角色' }
-      }
       if (e instanceof Error && e.message === 'EMPLOYEE_ROW_GONE') {
         return { success: false, message: '员工状态已变更，请刷新重试' }
       }
+      /**
+       * `23503` 按精确白名单区分（GLM 谱系第 11 轮 P3-2，与 update 侧对齐）：
+       * 事务内 `logOperation` 的 INSERT 自身 FK（操作者被并发删除）也会抛 23503 ——
+       * 那跟被删员工的业务关联毫无关系，给「已有业务关联」是误导。
+       * 员工表**被引用**（业务表指向他）撞的是各业务表自己的 FK，落到下面的兜底文案。
+       */
       if (pgErrorCode(e) === '23503') {
+        const constraint = pgErrorConstraint(e) ?? ''
+        if (constraint.startsWith('operation_logs_')) {
+          return { success: false, message: '数据冲突，请稍后重试' }
+        }
         return { success: false, message: '该员工已有业务关联（订单 / 服务 / 分配 / 预约 / 库存等），无法删除，建议改为离职' }
       }
       throw e

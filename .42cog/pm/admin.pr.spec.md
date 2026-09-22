@@ -186,6 +186,11 @@ admin 管理权限分配/撤销、WorkFine → PG 数据同步、操作日志查
   事务外读到的旧值到写入之间会被并发插队。离职守卫之前还要取
   `pg_advisory_xact_lock(hashtext('admin:active_count'))`：仅把计数查询传进 `tx` **不够串行**，
   READ COMMITTED 下两笔并发离职分别针对不同 admin 时各自都读到 `count = 2`。
+  **写库字段必须显式白名单拣选**——`{ ...data }` 全量展开会让直调方写进任意同名表列，
+  而 `staff_wechat_users.openid` 是真实列、`staffApi` 用 `WHERE u.openid = $1` 认证员工 →
+  持 `employee:update` 者可接管 scope 内任一员工的小程序账号（账号接管级越权）。
+  锁序统一为「advisory lock → 员工行锁」，两个 action 同序（反序会 `40P01` 死锁）；
+  守卫要判「目标当前在职」（`countActiveAdmins` 只数在职，对离职残留 admin 会误拒且文案说反）。
   `deleteEmployee`（物理删除）共用同一把锁，守卫与 `employee.delete` 审计同样在事务内；
   `createEmployee` 的 `employee.create` 审计也在事务内 —— 三个写入口同构（「只修一侧等于没修」）。
   ⚠️ `actions/permissions.ts` 撤销超级管理员角色也会减少活跃 admin，要完全闭合该不变量
