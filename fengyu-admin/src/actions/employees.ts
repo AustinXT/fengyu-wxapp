@@ -5,7 +5,7 @@ import { staffWechatUsers } from '@db/user'
 import { stores, orgNodes } from '@db/org'
 import { permissionRoles } from '@db/permission'
 import { adminPasswords } from '@db/admin-auth'
-import { eq, and, or, gt, sql, ilike, desc, asc } from 'drizzle-orm'
+import { eq, and, or, gt, sql, ilike, desc, asc, inArray } from 'drizzle-orm'
 import type { SQL } from 'drizzle-orm'
 import { alias } from 'drizzle-orm/pg-core'
 import { revalidatePath } from 'next/cache'
@@ -564,6 +564,46 @@ export const getOrgLevel2ForFilter = withPermission(
 )
 
 
+/**
+ * 归属自洽校验（#259）：`orgNodeId` 若指向**门店**类型的节点，必须正是该 `storeId` 的 org_node。
+ *
+ * 为什么只禁「另一个门店」而不要求两端严格相等 —— 生产数据给出的答案：
+ * 在职员工里 `store_id` 与 `org_node_id` 都非空且不相等的共 15 人，
+ *   - **13 人**是矩阵式归属：养生师挂「养生部」、数据主管/助理挂「财智部」「财智管理中心」，
+ *     人在具体门店上班。门店是工作地点、部门是专业归属，这是有意的组织安排。
+ *   - **2 人**（王芳、王小凤）的 org_node_id 指向**另一个门店**节点（同市场内录入选错）——
+ *     这才是脏数据。
+ *   - **0 人**的 org_node_id 是该门店 org_node 的后代（部门节点挂在**市场**下，不是门店下），
+ *     所以「必须是后代」这条规则对现网一个都不放行。
+ *
+ * 而 issue 描述的危害「同一员工同时出现在两个门店名册」**只由跨门店挂载造成** ——
+ * `employeeScopeCondition` 是 `store_id ∈ scope OR org_node_id ∈ scope`，
+ * 挂部门节点时另一个门店的账号看不见他（部门在市场下，只有市场及以上可见）。
+ *
+ * 口径已拍板，见 issue #259 的评论。
+ */
+async function assertOwnershipConsistent(
+  storeId: string | null,
+  orgNodeId: string | null,
+): Promise<string | null> {
+  if (!storeId || !orgNodeId) return null
+  const [node] = await db
+    .select({ type: orgNodes.type })
+    .from(orgNodes)
+    .where(eq(orgNodes.id, orgNodeId))
+    .limit(1)
+  // 节点不存在：交给 FK 约束报错，不在这里制造第二种「不存在」文案
+  if (!node || node.type !== '门店') return null
+
+  const [store] = await db
+    .select({ orgNodeId: stores.orgNodeId })
+    .from(stores)
+    .where(eq(stores.storeId, storeId))
+    .limit(1)
+  if (store?.orgNodeId && store.orgNodeId === orgNodeId) return null
+  return '所选组织节点属于另一个门店，请改选本门店或其所属部门'
+}
+
 export const createEmployee = withPermission(
   'employee:create',
   async (
@@ -628,6 +668,11 @@ export const createEmployee = withPermission(
    */
   if (!isAdminScope(session) && !data.storeId && !data.orgNodeId) {
     return { success: false, message: '员工必须归属门店或组织节点之一' }
+  }
+  // #259：归属自洽 —— orgNodeId 指向「另一个门店」时拒绝（挂部门/市场放行）
+  {
+    const conflict = await assertOwnershipConsistent(data.storeId ?? null, data.orgNodeId ?? null)
+    if (conflict) return { success: false, message: conflict }
   }
 
   /**
@@ -857,6 +902,15 @@ export const updateEmployee = withPermission(
   }
 
   /**
+   * #259：归属自洽。只在归属**确实变更**时查 —— 存量的 15 个不匹配记录里有 13 个是合法的
+   * 矩阵式归属，no-op 回传不该被拦；那 2 个跨门店挂载的脏数据也因此不会变成「不可编辑」。
+   */
+  if (ownershipChanged) {
+    const conflict = await assertOwnershipConsistent(nextStoreId, nextOrgNodeId)
+    if (conflict) return { success: false, message: conflict }
+  }
+
+  /**
    * 手机号唯一性**不再做事务外预查重** —— 交给 DB 的 `uq_staff_users_phone`
    * （partial unique index，`WHERE phone IS NOT NULL`）+ 下面的 23505 转译。
    *
@@ -983,18 +1037,60 @@ export const updateEmployee = withPermission(
         reason: 'old_store_out_of_scope', oldStoreId, newStoreId: nextStoreId,
       })
     } else if (oldStore?.orgNodeId && newStore?.orgNodeId) {
-      const scopeResult = await db
-        .update(permissionRoles)
-        .set({ scopeId: newStore.orgNodeId, updatedBy: session.employeeId })
+      /**
+       * #249：**允许多绑定** —— 调店不得删除或合并任何角色绑定。口径已拍板（见 issue 评论）。
+       *
+       * 生产数据：31 个「员工 × 角色」对持有多条 scope 绑定，最多的一个 manager 绑 5 个门店、
+       * 另有两人各绑 6 个。**多店兼任是常态，不是异常**。所以原先无条件
+       * `UPDATE … SET scope_id = 新店 WHERE scope_id = 旧店` 有两个问题：
+       *   ① 旧店有多条绑定时，无从判断该动哪条；
+       *   ② 目标店已有同角色时直接撞 `uq_perm_roles_emp_role_scope`（23505）——
+       *      而员工行 UPDATE 已经提交，于是「人调过去了、角色没同步、调用方收到失败」。
+       *
+       * 现在只在**唯一无歧义的搬迁场景**下动它：旧店恰好一条该角色的绑定、且目标店没有同角色。
+       * 其余一律一条都不动 + 写审计，留给有权者（持 permission:assign/revoke）显式处理。
+       * 这样不删除任何绑定、不扩大授权、不再有唯一键冲突，31 个兼任员工的调店既不失败也不丢权。
+       *
+       * ⚠️ 顺带接受一个结果：#249 问题 2 的「两步绕过」（先 storeId→null 再设新值，
+       * 绑定永远停在旧门店）在这个口径下**不再是缺陷** —— 绑定停在旧门店本身就是允许的状态。
+       */
+      const bindings = await db
+        .select({ id: permissionRoles.id, role: permissionRoles.role, scopeId: permissionRoles.scopeId })
+        .from(permissionRoles)
         .where(and(
           eq(permissionRoles.employeeId, employeeId),
-          eq(permissionRoles.scopeId, oldStore.orgNodeId),
+          inArray(permissionRoles.scopeId, [oldStore.orgNodeId, newStore.orgNodeId]),
         ))
 
-      if ((scopeResult as any).count > 0) {
+      const atOld = bindings.filter((b) => b.scopeId === oldStore.orgNodeId)
+      const rolesAtNew = new Set(bindings.filter((b) => b.scopeId === newStore.orgNodeId).map((b) => b.role))
+      // 仅搬「旧店独此一条、且新店没有同角色」的那些
+      const movable = atOld.filter((b) => !rolesAtNew.has(b.role))
+      const blocked = atOld.filter((b) => rolesAtNew.has(b.role))
+
+      for (const b of movable) {
+        await db
+          .update(permissionRoles)
+          .set({ scopeId: newStore.orgNodeId, updatedBy: session.employeeId })
+          .where(eq(permissionRoles.id, b.id))
         await logOperation(session, 'permission.scopeSync', 'permission_role', employeeId, {
           oldStoreId, newStoreId: nextStoreId,
-          oldScopeId: oldStore.orgNodeId, newScopeId: newStore.orgNodeId,
+          oldScopeId: oldStore.orgNodeId, newScopeId: newStore.orgNodeId, role: b.role,
+        })
+      }
+      if (blocked.length > 0) {
+        await logOperation(session, 'permission.scopeSync.skipped', 'permission_role', employeeId, {
+          reason: 'role_already_bound_at_target', oldStoreId, newStoreId: nextStoreId,
+          roles: blocked.map((b) => b.role),
+        })
+      }
+      /**
+       * #249 问题 3：原先只在 `count > 0` 时写日志，「本来就没有绑定」与
+       * 「被并发改掉了」都静默。现在无绑定可搬也留一条痕。
+       */
+      if (atOld.length === 0) {
+        await logOperation(session, 'permission.scopeSync.skipped', 'permission_role', employeeId, {
+          reason: 'no_binding_at_old_store', oldStoreId, newStoreId: nextStoreId,
         })
       }
     }

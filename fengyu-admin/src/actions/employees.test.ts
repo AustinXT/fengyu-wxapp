@@ -110,6 +110,9 @@ vi.mock('@/actions/skill-tags', () => ({
 
 import { createEmployee, updateEmployee, getAllocationEmployeeCandidates, getServiceStaffCandidates, getEmployees, getEmployeesPaginated, getOrgLevel2ForFilter, exportEmployees, searchEmployees } from './employees'
 import { db } from '@/db'
+import { stores, orgNodes } from '@db/org'
+import { permissionRoles } from '@db/permission'
+import { staffWechatUsers } from '@db/user'
 import { getSession } from '@/lib/auth'
 import { isInScope, isOrgNodeInScope, isAdminScope, isEmployeeRowVisible } from '@/lib/permissions'
 import { logOperation, logUpdate } from '@/lib/operation-log'
@@ -583,6 +586,51 @@ const EXPECTED_AT = '2026-01-01T00:00:00.000Z'
  */
 const IN_SCOPE_STORES = new Set(['store-A', 'store-B'])
 const IN_SCOPE_NODES = new Set(['org-store-A', 'org-store-B', 'dept-A', 'market-1'])
+/**
+ * 按**查询的表**分派 `db.select()`，而不是数「第几次 select」。
+ *
+ * 序号式 mock 极其脆弱：#259 在归属校验里新增了一次 orgNodes 查询，就把 §AFF-03 那几条
+ * 用例的 1/2/3/4 序列全打乱了（bindings 从第 4 次变成第 5 次）。按表分派后，
+ * 往中间插入任何新查询都不会再打乱既有断言 —— 这和「按特征而不是按位置识别」是同一个道理。
+ *
+ * @param plan 每张表返回什么；`rows` 用于 `.limit()` 结尾的查询，`await`ed 用于直接 await where 的
+ */
+function mockSelectByTable(plan: {
+  employee?: Record<string, unknown>[]
+  orgNode?: Record<string, unknown>[]
+  /**
+   * stores 被两处查询共用（#259 的归属自洽查 store.org_node_id、§AFF-03 查旧/新门店），
+   * 所以按**该表的调用次序**依次返回。让 orgNode 的 type 不是「门店」即可跳过 #259 那次查询，
+   * 此时次序就是 [旧门店, 新门店]。
+   */
+  store?: Array<Record<string, unknown>[]>
+  /** permission_roles 的查询没有 .limit()，await 的是 where 的返回值 */
+  bindings?: Record<string, unknown>[]
+}) {
+  let storeCall = 0
+  ;(db.select as any).mockImplementation(() => ({
+    from: vi.fn().mockImplementation((table: unknown) => {
+      if (table === permissionRoles) {
+        // 既可能 await where（查绑定），也可能 .where().limit()
+        const rows = plan.bindings ?? []
+        const where: any = vi.fn().mockImplementation(() => {
+          const p: any = Promise.resolve(rows)
+          p.limit = vi.fn().mockResolvedValue(rows)
+          return p
+        })
+        return { where }
+      }
+      const rows = table === orgNodes ? (plan.orgNode ?? [])
+        : table === stores ? (plan.store?.[storeCall++] ?? [])
+        : table === staffWechatUsers ? (plan.employee ?? [])
+        : []
+      const limit = vi.fn().mockResolvedValue(rows)
+      const where = vi.fn().mockReturnValue({ limit })
+      return { where, limit }
+    }),
+  }))
+}
+
 /** 取某个判据被问过的 id 列表（用于断言「除旧值外没问过别的」） */
 function askedIds(fn: unknown): string[] {
   return ((fn as { mock: { calls: unknown[][] } }).mock.calls).map((c) => c[1] as string)
@@ -775,20 +823,12 @@ describe('updateEmployee — #228 归属变更必须落在 scope 内', () => {
   })
 
   it('storeId 改到 scope 内门店 → 放行，且 §AFF-03 的 permission_roles 同步照常发生', async () => {
-    // 1=旧员工行 2=旧门店 org_node 3=新门店 org_node
-    let call = 0
-    ;(db.select as any).mockImplementation(() => {
-      call++
-      const current = call
-      const limit = vi.fn().mockImplementation(() => {
-        if (current === 1) return Promise.resolve([{ storeId: 'store-A', orgNodeId: 'org-store-A' }])
-        if (current === 2) return Promise.resolve([{ orgNodeId: 'org-store-A' }])
-        if (current === 3) return Promise.resolve([{ orgNodeId: 'org-store-B' }])
-        return Promise.resolve([])
-      })
-      const where = vi.fn().mockReturnValue({ limit })
-      const from = vi.fn().mockReturnValue({ where })
-      return { from }
+    mockSelectByTable({
+      employee: [{ storeId: 'store-A', orgNodeId: 'org-store-A' }],
+      // 挂的是部门节点 → #259 的归属自洽直接放行，不额外查 stores
+      orgNode: [{ type: '部门' }],
+      store: [[{ orgNodeId: 'org-store-A' }], [{ orgNodeId: 'org-store-B' }]],
+      bindings: [{ id: 1, role: 'manager', scopeId: 'org-store-A' }],
     })
     ;(db.update as any).mockImplementation(() => ({
       set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({ count: 1 }) }),
@@ -1235,6 +1275,242 @@ describe('createEmployee — #228 归属同样受 scope 约束', () => {
   })
 })
 
+// ── #249 允许多绑定 / #259 归属自洽 ─────────────────────────────────────────
+
+describe('#249 §AFF-03 允许多绑定 —— 调店不删除/不合并任何角色绑定', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockSession)
+    applyScopeFixture()
+    ;(isAdminScope as any).mockReturnValue(false)
+    ;(isInScope as any).mockImplementation((_s: unknown, id: string) => IN_SCOPE_STORES.has(id))
+  })
+
+  function mockUpdates() {
+    ;(db.update as any).mockImplementation(() => ({
+      set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({ count: 1 }) }),
+    }))
+  }
+
+  /**
+   * 生产上 31 个「员工 × 角色」对持多条绑定（最多一人绑 5-6 个门店）。
+   * 目标门店已有同角色时，原先无条件 `SET scope_id = 新店 WHERE scope_id = 旧店`
+   * 会直接撞 `uq_perm_roles_emp_role_scope`（23505）—— 而员工行 UPDATE 已经提交，
+   * 于是「人调过去了、角色没同步、调用方收到失败」。
+   */
+  it('目标门店已有同角色 → 一条都不动，写 role_already_bound_at_target 审计', async () => {
+    mockSelectByTable({
+      employee: [{ storeId: 'store-A', orgNodeId: 'org-dept' }],
+      orgNode: [{ type: '部门' }],
+      store: [[{ orgNodeId: 'org-store-A' }], [{ orgNodeId: 'org-store-B' }]],
+      bindings: [
+        { id: 1, role: 'manager', scopeId: 'org-store-A' },   // 旧店
+        { id: 2, role: 'manager', scopeId: 'org-store-B' },   // 新店已有同角色 → 冲突
+      ],
+    })
+    mockUpdates()
+
+    const result = await updateEmployee('FY-001', { storeId: 'store-B' })
+
+    expect(result.success).toBe(true)
+    // 只有员工行那一次 UPDATE —— permission_roles 一条都不许动
+    expect(db.update).toHaveBeenCalledTimes(1)
+    expect(logOperation).toHaveBeenCalledWith(
+      mockSession, 'permission.scopeSync.skipped', 'permission_role', 'FY-001',
+      expect.objectContaining({ reason: 'role_already_bound_at_target', roles: ['manager'] }),
+    )
+    expect(logOperation).not.toHaveBeenCalledWith(
+      expect.anything(), 'permission.scopeSync', expect.anything(), expect.anything(), expect.anything(),
+    )
+  })
+
+  /** 兼任多店（旧店有该角色、新店没有）→ 只搬无歧义的那条，其余绑定原样保留 */
+  it('员工在多个门店有绑定但目标店无同角色 → 只搬旧店那条，不碰其它店的绑定', async () => {
+    mockSelectByTable({
+      employee: [{ storeId: 'store-A', orgNodeId: 'org-dept' }],
+      orgNode: [{ type: '部门' }],
+      store: [[{ orgNodeId: 'org-store-A' }], [{ orgNodeId: 'org-store-B' }]],
+      // 查询只取旧/新两个 org_node 上的绑定；该员工在别的店还有绑定，但不在这次查询范围内
+      bindings: [{ id: 7, role: 'manager', scopeId: 'org-store-A' }],
+    })
+    mockUpdates()
+
+    const result = await updateEmployee('FY-001', { storeId: 'store-B' })
+
+    expect(result.success).toBe(true)
+    expect(db.update).toHaveBeenCalledTimes(2)   // 员工行 + 那一条绑定
+    expect(logOperation).toHaveBeenCalledWith(
+      mockSession, 'permission.scopeSync', 'permission_role', 'FY-001',
+      expect.objectContaining({ role: 'manager', newScopeId: 'org-store-B' }),
+    )
+  })
+
+  /** 旧店有两个不同角色、其中一个在新店已存在 → 搬不冲突的、跳过冲突的，各留一条审计 */
+  it('旧店多个角色部分冲突 → 逐条判定：搬 finance、跳过 manager', async () => {
+    mockSelectByTable({
+      employee: [{ storeId: 'store-A', orgNodeId: 'org-dept' }],
+      orgNode: [{ type: '部门' }],
+      store: [[{ orgNodeId: 'org-store-A' }], [{ orgNodeId: 'org-store-B' }]],
+      bindings: [
+        { id: 1, role: 'manager', scopeId: 'org-store-A' },
+        { id: 2, role: 'finance', scopeId: 'org-store-A' },
+        { id: 3, role: 'manager', scopeId: 'org-store-B' },   // 只有 manager 冲突
+      ],
+    })
+    mockUpdates()
+
+    const result = await updateEmployee('FY-001', { storeId: 'store-B' })
+
+    expect(result.success).toBe(true)
+    expect(db.update).toHaveBeenCalledTimes(2)   // 员工行 + finance 那一条
+    expect(logOperation).toHaveBeenCalledWith(
+      mockSession, 'permission.scopeSync', 'permission_role', 'FY-001',
+      expect.objectContaining({ role: 'finance' }),
+    )
+    expect(logOperation).toHaveBeenCalledWith(
+      mockSession, 'permission.scopeSync.skipped', 'permission_role', 'FY-001',
+      expect.objectContaining({ reason: 'role_already_bound_at_target', roles: ['manager'] }),
+    )
+  })
+})
+
+describe('#259 归属自洽 —— 只禁 orgNodeId 指向「另一个门店」', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockSession)
+    applyScopeFixture()
+    ;(isAdminScope as any).mockReturnValue(false)
+  })
+
+  function mockUpdateOk2() {
+    ;(db.update as any).mockReturnValue({
+      set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({ count: 1 }) }),
+    })
+  }
+
+  /**
+   * 生产上 2 条脏数据正是这个形态（王芳：门店=自贡富豪店 却挂「自贡双美店」节点）。
+   * 它也是 issue 描述的危害「同一员工同时出现在两个门店名册」的**唯一真实成因** ——
+   * `employeeScopeCondition` 是 store ∪ org 的 OR，挂另一个门店节点时那个门店就能看见他。
+   */
+  it('orgNodeId 指向另一个门店的节点 → 拒绝', async () => {
+    mockSelectByTable({
+      employee: [{ storeId: 'store-A', orgNodeId: 'org-store-A' }],
+      orgNode: [{ type: '门店' }],                      // 挂的是门店类型节点
+      store: [[{ orgNodeId: 'org-store-OTHER' }]],      // 而 store-A 的 org_node 是另一个
+      bindings: [],
+    })
+    mockUpdateOk2()
+
+    const result = await updateEmployee('FY-001', { orgNodeId: 'org-store-B' })
+
+    expect(result.success).toBe(false)
+    expect(result.message).toBe('所选组织节点属于另一个门店，请改选本门店或其所属部门')
+    expect(db.update).not.toHaveBeenCalled()
+  })
+
+  it('orgNodeId 就是本门店的节点 → 放行', async () => {
+    mockSelectByTable({
+      employee: [{ storeId: 'store-A', orgNodeId: 'org-dept' }],
+      orgNode: [{ type: '门店' }],
+      store: [[{ orgNodeId: 'org-store-B' }]],           // 与新 orgNodeId 一致
+      bindings: [],
+    })
+    mockUpdateOk2()
+
+    const result = await updateEmployee('FY-001', { orgNodeId: 'org-store-B' })
+
+    expect(result.success).toBe(true)
+  })
+
+  /**
+   * 13 个矩阵式归属（养生师挂养生部、数据主管挂财智部）必须放行 ——
+   * 这是有意的组织安排：门店是工作地点、部门是专业归属。
+   */
+  it('orgNodeId 指向部门节点（养生部/财智部那类矩阵归属）→ 放行，且不查 stores', async () => {
+    mockSelectByTable({
+      employee: [{ storeId: 'store-A', orgNodeId: 'org-store-A' }],
+      orgNode: [{ type: '部门' }],
+      store: [],      // 刻意不给 —— 部门类型不该触发 stores 查询
+      bindings: [],
+    })
+    mockUpdateOk2()
+
+    // dept-A 在 fixture 的 scope 内 —— 本例要验的是「部门类型放行」，不是 scope 校验
+    const result = await updateEmployee('FY-001', { orgNodeId: 'dept-A' })
+
+    expect(result.success).toBe(true)
+  })
+
+  it('orgNodeId 指向市场节点 → 放行', async () => {
+    mockSelectByTable({
+      employee: [{ storeId: 'store-A', orgNodeId: 'org-store-A' }],
+      orgNode: [{ type: '市场' }],
+      store: [],
+      bindings: [],
+    })
+    mockUpdateOk2()
+
+    const result = await updateEmployee('FY-001', { orgNodeId: 'market-1' })
+
+    expect(result.success).toBe(true)
+  })
+
+  /** storeId 为空时无从比对，跳过（96 个仅组织节点的在职员工走这条） */
+  it('storeId 为空 → 跳过归属自洽校验', async () => {
+    mockSelectByTable({
+      employee: [{ storeId: 'store-A', orgNodeId: 'org-store-A' }],
+      orgNode: [{ type: '门店' }],
+      store: [[{ orgNodeId: 'org-store-OTHER' }]],
+      bindings: [],
+    })
+    mockUpdateOk2()
+
+    // 同时清空 storeId + 挂市场节点（转市场直属岗）—— 没有 storeId 就没有「另一个门店」之说
+    const result = await updateEmployee('FY-001', { storeId: null, orgNodeId: 'market-1' })
+
+    expect(result.success).toBe(true)
+  })
+
+  /**
+   * 存量的 15 条不匹配记录（13 合法 + 2 脏）不该因新校验变成「不可编辑」——
+   * 校验只在归属**发生变更**时触发。
+   */
+  it('归属 no-op 回传（含存量不匹配记录）→ 不触发归属自洽校验', async () => {
+    mockSelectByTable({
+      employee: [{ storeId: 'store-A', orgNodeId: 'org-store-OTHER' }],  // 存量脏数据形态
+      orgNode: [{ type: '门店' }],
+      store: [[{ orgNodeId: 'org-store-A' }]],
+      bindings: [],
+    })
+    mockUpdateOk2()
+
+    const result = await updateEmployee('FY-001', { name: '李四' })
+
+    expect(result.success).toBe(true)
+    expect(db.update).toHaveBeenCalled()
+  })
+
+  it('createEmployee 侧同样拦住跨门店挂载（#228 教训：只修一侧等于没修）', async () => {
+    mockSelectByTable({
+      employee: [],
+      orgNode: [{ type: '门店' }],
+      store: [[{ orgNodeId: 'org-store-OTHER' }]],
+      bindings: [],
+    })
+    mockTransactionSuccess()
+
+    const result = await createEmployee({
+      name: '张三', phone: '13812345678', idCard: '110101199003078888',
+      storeId: 'store-A', orgNodeId: 'org-store-B',
+    })
+
+    expect(result.success).toBe(false)
+    expect(result.message).toBe('所选组织节点属于另一个门店，请改选本门店或其所属部门')
+    expect(db.transaction).not.toHaveBeenCalled()
+  })
+})
+
 describe('updateEmployee — §AFF-03 门店变更 scope 同步', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -1259,12 +1535,23 @@ describe('updateEmployee — §AFF-03 门店变更 scope 同步', () => {
    *   1. 更新员工记录
    *   2. 更新 permission_roles scope
    */
+  /**
+   * §AFF-03 的查询序列（#249 之后）：
+   *   1. currentEmployee（读旧值）
+   *   2. 旧门店 org_node
+   *   3. 新门店 org_node
+   *   4. **该员工在旧/新两个 org_node 上的全部角色绑定**（新增 —— 「允许多绑定」口径要求
+   *      先看清有哪些绑定，才能判断哪些可搬、哪些因目标已有同角色而必须跳过）
+   * 第 4 次是 `.where(...)` 直接 await（没有 `.limit()`），故 mock 要让 where 本身可 await。
+   */
   function setupScopeSyncMocks(opts: {
     oldStoreId: string
     oldOrgNodeId: string
     newOrgNodeId: string
-    scopeUpdateRowCount?: number
+    /** 该员工的角色绑定（默认：旧店一条 manager、新店无）*/
+    bindings?: Array<{ id: number; role: string; scopeId: string }>
   }) {
+    const bindings = opts.bindings ?? [{ id: 1, role: 'manager', scopeId: opts.oldOrgNodeId }]
     let selectCall = 0
     ;(db.select as any).mockImplementation(() => {
       selectCall++
@@ -1275,7 +1562,10 @@ describe('updateEmployee — §AFF-03 门店变更 scope 同步', () => {
         if (current === 3) return Promise.resolve([{ orgNodeId: opts.newOrgNodeId }])
         return Promise.resolve([])
       })
-      const where = vi.fn().mockReturnValue({ limit })
+      // 第 4 次查绑定：没有 .limit()，await 的是 where 的返回值本身
+      const where = current === 4
+        ? vi.fn().mockResolvedValue(bindings)
+        : vi.fn().mockReturnValue({ limit })
       const from = vi.fn().mockReturnValue({ where })
       return { from }
     })
@@ -1286,7 +1576,7 @@ describe('updateEmployee — §AFF-03 门店变更 scope 同步', () => {
       const current = updateCall
       const where = vi.fn().mockImplementation(() => {
         if (current === 1) return Promise.resolve({ count: 1 }) // employee update
-        if (current === 2) return Promise.resolve({ count: opts.scopeUpdateRowCount ?? 1 }) // scope sync
+        if (current >= 2) return Promise.resolve({ count: 1 }) // 逐条 permission_roles update
         return Promise.resolve({ count: 0 })
       })
       const set = vi.fn().mockReturnValue({ where })
@@ -1381,20 +1671,11 @@ describe('updateEmployee — §AFF-03 门店变更 scope 同步', () => {
    * 锁住（第 5 轮删掉事务外预查重后，查询序列从四次回落为三次）。
    */
   it('改手机号 + scope 内调店 → 员工更新、角色 scope 同步、审计日志三者都发生', async () => {
-    let call = 0
-    ;(db.select as any).mockImplementation(() => {
-      call++
-      const current = call
-      const limit = vi.fn().mockImplementation(() => {
-        // 预查重删除后回落为三次：旧员工行 → 旧门店 org_node → 新门店 org_node
-        if (current === 1) return Promise.resolve([{ storeId: 'store-A', orgNodeId: 'org-store-A' }])
-        if (current === 2) return Promise.resolve([{ orgNodeId: 'org-store-A' }])
-        if (current === 3) return Promise.resolve([{ orgNodeId: 'org-store-B' }])
-        return Promise.resolve([])
-      })
-      const where = vi.fn().mockReturnValue({ limit })
-      const from = vi.fn().mockReturnValue({ where })
-      return { from }
+    mockSelectByTable({
+      employee: [{ storeId: 'store-A', orgNodeId: 'org-store-A' }],
+      orgNode: [{ type: '部门' }],
+      store: [[{ orgNodeId: 'org-store-A' }], [{ orgNodeId: 'org-store-B' }]],
+      bindings: [{ id: 1, role: 'manager', scopeId: 'org-store-A' }],
     })
     ;(db.update as any).mockImplementation(() => ({
       set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({ count: 1 }) }),
@@ -1411,20 +1692,28 @@ describe('updateEmployee — §AFF-03 门店变更 scope 同步', () => {
     expect(logUpdate).toHaveBeenCalledTimes(1)
   })
 
-  it('scope 同步无匹配行（rowCount=0）→ 不写审计日志', async () => {
+  /**
+   * #249 问题 3：原先只在 `count > 0` 时写日志，「旧店本来就没有绑定」与「被并发改掉了」
+   * 都是静默的。现在无绑定可搬也留一条 `no_binding_at_old_store` 痕迹。
+   */
+  it('旧门店没有任何角色绑定 → 不动 permission_roles，但写一条 skipped 审计', async () => {
     setupScopeSyncMocks({
       oldStoreId: 'store-A',
       oldOrgNodeId: 'org-store-A',
       newOrgNodeId: 'org-store-B',
-      scopeUpdateRowCount: 0, // 无匹配的 store 级 scope
+      bindings: [], // 旧店与新店都没有绑定
     })
 
     const result = await updateEmployee('FY-001', { storeId: 'store-B' })
 
     expect(result.success).toBe(true)
-    // scope UPDATE 执行了但 rowCount=0 → 不写 scopeSync 日志
-    expect(logOperation).not.toHaveBeenCalled() // scopeSync 被跳过
-    expect(logUpdate).toHaveBeenCalledTimes(1) // 仅 employee.update
+    // 只有员工行那一次 UPDATE，permission_roles 不许被动
+    expect(db.update).toHaveBeenCalledTimes(1)
+    expect(logOperation).toHaveBeenCalledWith(
+      mockSession, 'permission.scopeSync.skipped', 'permission_role', 'FY-001',
+      expect.objectContaining({ reason: 'no_binding_at_old_store' }),
+    )
+    expect(logUpdate).toHaveBeenCalledTimes(1)
   })
 })
 
