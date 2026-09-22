@@ -16,6 +16,7 @@ import { logOperation, logUpdate } from '@/lib/operation-log'
 import { ApiError } from '@/lib/api-error'
 import { pgErrorCode, pgErrorConstraint, pgErrorDetail } from '@/lib/pg-error'
 import { countActiveAdmins, isAdminEmployee } from '@/lib/admin-guard'
+import { findNearestStoreAncestor, findRolesBoundWithinSubtree } from '@/lib/org-ancestry'
 import { shanghaiToday } from '@/lib/datetime'
 import {
   resolveExportBatchLimit,
@@ -590,43 +591,59 @@ export const getOrgLevel2ForFilter = withPermission(
  *
  * 口径已拍板，见 issue #259 的评论。
  */
+/**
+ * `assertOwnershipConsistent` 已把两端存在性挡在写库之前，但校验与写入之间仍有并发删除窗口
+ * （另一个管理员此刻删了那个门店/节点）。FK 撞 `23503` 时给这句，而不是 500（codex 谱系第 4 轮）。
+ */
+const FK_GONE_MESSAGE = '所选门店或组织节点已被删除，请刷新后重试'
+
 async function assertOwnershipConsistent(
   storeId: string | null,
   orgNodeId: string | null,
 ): Promise<string | null> {
-  if (!storeId || !orgNodeId) return null
-
-  // 自身及全部祖先里最近的那个「门店」型节点（path 防环，与 org.ts 的递归 CTE 同策略）
-  const chain = await db.execute(sql`
-    WITH RECURSIVE chain AS (
-      SELECT id, parent_id, type, 0 AS depth, ARRAY[id] AS path
-        FROM org_nodes WHERE id = ${orgNodeId}
-      UNION ALL
-      SELECT o.id, o.parent_id, o.type, c.depth + 1, c.path || o.id
-        FROM org_nodes o JOIN chain c ON o.id = c.parent_id
-       WHERE NOT o.id = ANY(c.path)
-    )
-    SELECT id FROM chain WHERE type = '门店' ORDER BY depth LIMIT 1
-  `)
-  const storeAncestor = (chain as unknown as Array<{ id: string }>)[0]?.id
-  // 无门店祖先（挂市场下的部门、或直接挂市场）→ 与门店维度无关，放行
-  if (!storeAncestor) return null
-
-  const [store] = await db
-    .select({ orgNodeId: stores.orgNodeId })
-    .from(stores)
-    .where(eq(stores.storeId, storeId))
-    .limit(1)
-  if (!store) return '所选门店不存在'
   /**
-   * `stores.org_node_id` 可空（schema 无 `.notNull()`）。为空时无从比对，但**不能放行** ——
-   * 员工挂着属于 store-B 的节点时 store-B 仍看得见他。给准确文案而不是复用「属于另一个门店」。
+   * ## 存在性先于一致性
+   *
+   * 两端的存在性**在比对之前单独校验**，哪一端为空就只校验另一端。早期版本先找门店祖先、
+   * 找不到就 `return null` 放行，于是两条缺口：
+   *   - `orgNodeId` 指向已删/不存在的节点 → CTE 返回空 → 被当成「市场直属」放行 → 写库时 FK
+   *     撞 `23503`，而 catch 只翻译 `23505` → 用户看到 500
+   *   - `orgNodeId` 是合法市场节点时提前 return，`storeId` 的存在性**从来没被验过** → 同样 500
+   *
+   * 这里报出的「不存在」不构成信息泄漏：调用点在新值已通过 `isInScope` / `isOrgNodeInScope`
+   * 之后，能问到的 id 本来就在操作者可见范围内。
    */
-  if (!store.orgNodeId) {
-    return '本门店未配置组织节点，无法校验归属，请先在组织管理中为该门店配置节点'
+  if (storeId) {
+    const [store] = await db
+      .select({ orgNodeId: stores.orgNodeId })
+      .from(stores)
+      .where(eq(stores.storeId, storeId))
+      .limit(1)
+    if (!store) return '所选门店不存在'
+
+    if (orgNodeId) {
+      const ancestor = await findNearestStoreAncestor(orgNodeId)
+      if (!ancestor.exists) return '所选组织节点不存在，请刷新后重新选择'
+      // 无门店祖先（挂市场下的部门、或直接挂市场）→ 与门店维度无关，放行
+      if (ancestor.storeAncestorId === null) return null
+      /**
+       * `stores.org_node_id` 可空（schema 无 `.notNull()`）。为空时无从比对，但**不能放行** ——
+       * 员工挂着属于 store-B 的节点时 store-B 仍看得见他。给准确文案而不是复用「属于另一个门店」。
+       */
+      if (!store.orgNodeId) {
+        return '本门店未配置组织节点，无法校验归属，请先在组织管理中为该门店配置节点'
+      }
+      if (store.orgNodeId === ancestor.storeAncestorId) return null
+      return '所选组织节点属于另一个门店，请改选本门店或其所属部门'
+    }
+    return null
   }
-  if (store.orgNodeId === storeAncestor) return null
-  return '所选组织节点属于另一个门店，请改选本门店或其所属部门'
+
+  if (orgNodeId) {
+    const ancestor = await findNearestStoreAncestor(orgNodeId)
+    if (!ancestor.exists) return '所选组织节点不存在，请刷新后重新选择'
+  }
+  return null
 }
 
 export const createEmployee = withPermission(
@@ -761,6 +778,7 @@ export const createEmployee = withPermission(
       }
       return { success: false, message: '数据冲突，请稍后重试' }
     }
+    if (pgErrorCode(err) === '23503') return { success: false, message: FK_GONE_MESSAGE }
     throw err
   }
 
@@ -997,6 +1015,7 @@ export const updateEmployee = withPermission(
       }
       return { success: false, message: '数据冲突，请稍后重试' }
     }
+    if (pgErrorCode(err) === '23503') return { success: false, message: FK_GONE_MESSAGE }
     throw err
   }
 
@@ -1068,16 +1087,19 @@ export const updateEmployee = withPermission(
    * `nextStoreId && …` 让这类请求一条审计都不记、也不回传，成了权限跟进盲区。
    */
   if (oldStoreId && nextStoreId !== oldStoreId) {
-    if (data.isResigned === true || currentEmployee.isResigned === true) {
+    if ((data.isResigned ?? currentEmployee.isResigned) === true) {
       /**
        * 离职判定必须在**最前面**（codex 谱系第 3 轮）：
        * 原先它排在 scope 判定之后，于是「跨 scope 调店 + 同批离职」会先命中
        * `old_store_out_of_scope` 并返回「可能仍有角色绑定」——而角色其实已被离职分支删光。
        *
-       * 两种时间轴都要覆盖（GLM 谱系第 3 轮）：
-       *   - `data.isResigned === true`：本次请求同批标离职，上面的事务刚把角色删完
-       *   - `currentEmployee.isResigned === true`：此前某次请求已离职，本次只改归属
-       * 后者不带 isResigned，原先会落进查询分支 → 必空 → 记「本来就没有」，同构失真。
+       * 判据是「**这次操作之后**是不是离职态」，三种时间轴各自落对：
+       *   - `data.isResigned === true`：本次同批标离职，上面的事务刚把角色删完
+       *   - `data.isResigned` 缺省 + 旧值已离职：此前已离职，本次只改归属，角色早已清空
+       *   - `data.isResigned === false` + 旧值已离职：**复职**同时调店 —— 必须落到下面的
+       *     查询分支。写成 `data.isResigned === true || currentEmployee.isResigned === true`
+       *     会把它误判成「角色已随离职撤销」并零提示，而复职后员工正处在角色真空里，
+       *     恰恰是最需要提醒管理员重新授权的一刻（GLM 谱系第 4 轮）。
        */
       await logOperation(session, 'permission.scopeSync.skipped', 'permission_role', employeeId, {
         reason: 'roles_revoked_by_resignation', oldStoreId, newStoreId: nextStoreId,
@@ -1107,26 +1129,14 @@ export const updateEmployee = withPermission(
         })
       } else {
         /**
-         * 查旧店节点**及其子树**上的绑定，不能只精确匹配那一个节点（GLM 谱系指出）——
-         * `assertOwnershipConsistent` 自己就依赖「部门可以挂在门店节点下」这条拓扑，
-         * 而角色完全可以 scope 在那个部门上。精确匹配会在「门店节点本身无绑定、
-         * 下属部门有绑定」时假报 `no_binding_at_old_store` + 干净的成功消息，
-         * 正是最需要提示的场景反而静默。
+         * 查旧店节点**及其子树**上的绑定。
+         *
+         * ⚠️ 第 2 轮采纳这条时给的理由（「角色完全可以 scope 在门店下的部门上」）
+         * 已被第 4 轮真库冒烟**证伪** —— DB trigger 不允许绑定挂部门型节点，且生产上门店节点
+         * 零子节点，子树在这里恒等于精确匹配。保留它纯粹是便宜的向前兼容，
+         * 口径与证据见 `@/lib/org-ancestry` 里 `findRolesBoundWithinSubtree` 的注释。
          */
-        const rows = await db.execute(sql`
-          WITH RECURSIVE subtree AS (
-            SELECT id, ARRAY[id] AS path FROM org_nodes WHERE id = ${oldStore.orgNodeId}
-            UNION ALL
-            SELECT o.id, s.path || o.id
-              FROM org_nodes o JOIN subtree s ON o.parent_id = s.id
-             WHERE NOT o.id = ANY(s.path)
-          )
-          SELECT DISTINCT pr.role
-            FROM permission_roles pr
-           WHERE pr.employee_id = ${employeeId}
-             AND pr.scope_id IN (SELECT id FROM subtree)
-        `)
-        const roles = (rows as unknown as Array<{ role: string }>).map((r) => r.role)
+        const roles = await findRolesBoundWithinSubtree(employeeId, oldStore.orgNodeId)
         if (roles.length > 0) {
           await logOperation(session, 'permission.scopeSync.skipped', 'permission_role', employeeId, {
             reason: 'manual_review_required', oldStoreId, newStoreId: nextStoreId, roles,

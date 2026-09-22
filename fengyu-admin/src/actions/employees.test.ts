@@ -51,6 +51,16 @@ vi.mock('@/lib/admin-guard', () => ({
   isAdminEmployee: vi.fn().mockResolvedValue(false),
 }))
 
+/**
+ * 两条递归 CTE 抽到 `@/lib/org-ancestry` 之后在这里整体 mock。本文件只负责
+ * 「action 拿到什么答案就走哪条分支」；CTE 自身的语义由真库冒烟
+ * `tests/e2e-actions/smoke-org-ancestry.mjs` 负责。理由见 `mockSelectByTable` 的注释。
+ */
+vi.mock('@/lib/org-ancestry', () => ({
+  findNearestStoreAncestor: vi.fn(),
+  findRolesBoundWithinSubtree: vi.fn(),
+}))
+
 vi.mock('@/lib/auth', () => ({
   getSession: vi.fn(),
 }))
@@ -118,6 +128,7 @@ import { isInScope, isOrgNodeInScope, isAdminScope, isEmployeeRowVisible } from 
 import { logOperation, logUpdate } from '@/lib/operation-log'
 import { eq, ilike, inArray, isNull, sql, gt } from 'drizzle-orm'
 import { countActiveAdmins, isAdminEmployee } from '@/lib/admin-guard'
+import { findNearestStoreAncestor, findRolesBoundWithinSubtree } from '@/lib/org-ancestry'
 import { getSkillTags } from '@/actions/skill-tags'
 
 const mockSession = {
@@ -163,35 +174,49 @@ describe('searchEmployees — 推荐员工检索（全部在职员工，可跨�
   })
 })
 
-function mockSelectEmpty() {
-  const limit = vi.fn().mockResolvedValue([])
-  const where = vi.fn().mockReturnValue({ limit })
-  const from = vi.fn().mockReturnValue({ where })
-  return vi.fn().mockReturnValue({ from })
+/**
+ * 这一组轻量辅助按**表**分派（与下面 `mockSelectByTable` 同策略，只是不带 plan）。
+ *
+ * `stores` 一律返回一行：#259 的存在性校验只要 `storeId` 非空就查 `stores`，返回空会被判成
+ * 「所选门店不存在」而提前退出 —— 本组用例测的是别的东西，不该被这一步拦住。行里
+ * `orgNodeId` 给 null 也不会走进「本门店未配置组织节点」：`beforeEach` 给
+ * `findNearestStoreAncestor` 的默认答案是「节点存在、无门店祖先」，归属自洽在比对之前就放行。
+ */
+function rowsForTable(table: unknown, employeeRow?: Record<string, unknown>) {
+  if (table === stores) return [{ orgNodeId: null }]
+  if (table === staffWechatUsers && employeeRow) return [employeeRow]
+  return []
 }
 
 /**
- * updateEmployee 的第 1 次 select = 读旧员工行。#228 之后「查不到」与「不可见」合并成了
- * 同一个立即返回分支（零写入），所以凡是期望流程走到 UPDATE 的用例都必须让这一次查到行。
- * 后续 select（手机号唯一性 / §AFF-03 的两次 org_node 查询）仍返回空。
+ * `@/lib/org-ancestry` 的默认答案：节点存在、无门店祖先 → 归属自洽放行。
+ * 凡是不测 #259/#249 的用例都用这个默认值，专测那两条的用例用 `mockSelectByTable` 覆盖。
  */
-function mockSelectExistingEmployee(row: Record<string, unknown> = { storeId: 'store-A', orgNodeId: 'org-store-A' }) {
-  let call = 0
-  return vi.fn().mockImplementation(() => {
-    call++
-    const current = call
-    const limit = vi.fn().mockImplementation(() => Promise.resolve(current === 1 ? [row] : []))
-    const where = vi.fn().mockReturnValue({ limit })
-    const from = vi.fn().mockReturnValue({ where })
-    return { from }
+function defaultAncestryMocks() {
+  ;(findNearestStoreAncestor as any).mockResolvedValue({ exists: true, storeAncestorId: null })
+  ;(findRolesBoundWithinSubtree as any).mockResolvedValue([])
+}
+
+function mockSelectEmpty() {
+  return vi.fn().mockReturnValue({
+    from: vi.fn().mockImplementation((table: unknown) => {
+      const limit = vi.fn().mockResolvedValue(rowsForTable(table))
+      return { where: vi.fn().mockReturnValue({ limit }), limit }
+    }),
   })
 }
 
-function mockSelectFound(row: any) {
-  const limit = vi.fn().mockResolvedValue([row])
-  const where = vi.fn().mockReturnValue({ limit })
-  const from = vi.fn().mockReturnValue({ where })
-  return vi.fn().mockReturnValue({ from })
+/**
+ * #228 之后「查不到」与「不可见」合并成了同一个立即返回分支（零写入），
+ * 所以凡是期望流程走到 UPDATE 的用例都必须让读旧行这一次查到行。
+ */
+function mockSelectExistingEmployee(row: Record<string, unknown> = { storeId: 'store-A', orgNodeId: 'org-store-A' }) {
+  return vi.fn().mockReturnValue({
+    from: vi.fn().mockImplementation((table: unknown) => {
+      const limit = vi.fn().mockResolvedValue(rowsForTable(table, row))
+      return { where: vi.fn().mockReturnValue({ limit }), limit }
+    }),
+  })
 }
 
 function mockTransactionSuccess(employeeId = 'FY-260315001') {
@@ -213,6 +238,7 @@ describe('createEmployee — 服务端输入校验', () => {
     ;(isInScope as any).mockReturnValue(true)
     ;(isOrgNodeInScope as any).mockReturnValue(true)
     ;(isEmployeeRowVisible as any).mockReturnValue(true)
+    defaultAncestryMocks()
   })
 
   it('姓名为空 → 拒绝', async () => {
@@ -367,6 +393,7 @@ describe('updateEmployee — 服务端输入校验 + 错误处理', () => {
     ;(isInScope as any).mockReturnValue(true)
     ;(isOrgNodeInScope as any).mockReturnValue(true)
     ;(isEmployeeRowVisible as any).mockReturnValue(true)
+    defaultAncestryMocks()
   })
 
   it('手机号格式错误 → 拒绝', async () => {
@@ -411,11 +438,11 @@ describe('updateEmployee — 服务端输入校验 + 错误处理', () => {
   })
 
   /**
-   * ⚠️ 这条曾经变成过假阳性（codex 谱系第 3 轮发现）：当手机号查重排在读旧行**之前**时，
+   * ⚠️ 这条曾经变成过假阳性（codex 谱系第 3 轮发现）：当年手机号查重排在读旧行**之前**，
    * 第一次 select 就是查重，而 `mockSelectExistingEmployee` 恰好在第一次返回一行 ——
    * 于是函数提前返回「手机号已被使用」，mock 的 23505 根本不执行，删掉生产代码里的
-   * 23505 catch 测试照样绿。查重移到可见性拦截之后就恢复了有效性，
-   * 下面那条 `db.update` 断言是为了让这种失效下次能被直接看出来。
+   * 23505 catch 测试照样绿。事务外查重后来**整体删除**（见「零写入信道」那组的终局注释），
+   * 本例因此恢复有效；下面那条 `db.update` 断言是为了让这类失效下次能被直接看出来。
    */
   it('DB 唯一冲突（23505）→ 友好消息', async () => {
     ;(db.select as any).mockImplementation(mockSelectExistingEmployee())
@@ -567,8 +594,7 @@ describe('updateEmployee — 服务端输入校验 + 错误处理', () => {
  */
 const FULL_FORM = {
   // idCard 必须给真值：`data.idCard !== undefined && !trim()` 会先一步拒「请输入身份证号」。
-  // phone 保持 null（前端手机号为空时确实传 null），这样不触发多余的唯一性 select，
-  // mockCurrentEmployee 的「第 1 次 select = 读旧值」假设才成立；带 phone 的形态另有一条用例。
+  // phone 保持 null，与前端「手机号留空时传 null」一致；带 phone 的形态另有一条用例。
   name: '张三', gender: '男', phone: null, idCard: '110101199003078888',
   storeId: 'store-A', orgNodeId: 'org-store-A', positionName: '美容师',
   avatarUrl: null, birthday: null, hiredAt: null,
@@ -598,40 +624,51 @@ const IN_SCOPE_NODES = new Set(['org-store-A', 'org-store-B', 'dept-A', 'market-
 function mockSelectByTable(plan: {
   employee?: Record<string, unknown>[]
   /**
-   * #259 的「向上最近的门店型祖先」递归 CTE 走 `db.execute`，不走 `db.select` ——
-   * 给节点 id 表示有门店祖先，不给表示没有（挂市场下的部门 → 放行）
+   * #259「向上最近的门店型祖先」的返回值。走 `@/lib/org-ancestry` 的
+   * `findNearestStoreAncestor`，本文件把它整个 mock 掉：
+   *   - 给 id → `{ exists: true, storeAncestorId: id }`（有门店祖先）
+   *   - `null` → `{ exists: true, storeAncestorId: null }`（挂市场下 → 放行）
+   *   - `'__missing__'` → `{ exists: false }`（节点不存在 / 并发被删）
+   *
+   * ⚠️ 这里 mock 的是**函数**而不是 SQL。上一版把 `db.execute` 换成按
+   * `text.includes('permission_roles')` 分派的替身，SQL 本身从不被检验 —— 把递归退化成
+   * 单表 `WHERE id=$1 AND type='门店'`、或把子树匹配退化成 `scope_id = $1`、或删掉环防护，
+   * 全套照样绿（第 4 轮两个评审谱系各自独立指出）。现在分工是：
+   *   - 本文件锁 **action 的分支逻辑**（哪个输入走哪条分支、记什么 reason、回传什么文案）
+   *   - `tests/e2e-actions/smoke-org-ancestry.mjs` 拿真 PG 锁 **两条 CTE 的语义**
+   *     （上溯方向、环防护、depth 取最近、子树覆盖任意深度）
+   * 一个替身同时假装两件事，就一件都锁不住。
    */
-  storeAncestor?: string
+  storeAncestor?: string | null
   orgNode?: Record<string, unknown>[]
   /**
-   * stores 被两处查询共用（#259 的归属自洽查 store.org_node_id、§AFF-03 查旧/新门店），
-   * 所以按**该表的调用次序**依次返回。让 orgNode 的 type 不是「门店」即可跳过 #259 那次查询，
-   * 此时次序就是 [旧门店, 新门店]。
+   * stores 被两处查询共用，按**该表的调用次序**依次返回，固定是：
+   *   1. #259 归属自洽 —— 查**新**门店（`nextStoreId`）。只要 `nextStoreId` 非空就查，
+   *      返回 `[]` 表示门店不存在 → 拒绝（`findNearestStoreAncestor` 都不会被调到）
+   *   2. §AFF-03 —— 查**旧**门店（`oldStoreId`）拿它的组织节点，再据此找子树上的绑定
+   *
+   * 所以「调店」类用例两项都要给，且第 1 项是新店的节点、第 2 项是旧店的节点。
+   * 只有归属字段无变更（no-op）时第 1 次查询才不发生。
    */
   store?: Array<Record<string, unknown>[]>
-  /** 旧店子树上的角色绑定（#249 走递归 CTE，只取 role） */
+  /** 旧店子树上的角色绑定（`findRolesBoundWithinSubtree` 的返回值） */
   bindings?: Array<{ role: string } & Record<string, unknown>>
 }) {
   let storeCall = 0
-  /**
-   * 两处 `db.execute`（都是递归 CTE）：
-   *   - #259 的「向上最近的门店祖先」
-   *   - #249 的「旧店节点及其**子树**上的角色绑定」
-   * 按 SQL 文本里的关键字分派 —— 不能只 mockResolvedValue 一个值。
-   */
-  ;(db.execute as any).mockImplementation((q: unknown) => {
-    const text = JSON.stringify(q ?? '')
-    if (text.includes('permission_roles')) {
-      return Promise.resolve((plan.bindings ?? []).map((b) => ({ role: b.role })))
-    }
-    return Promise.resolve(plan.storeAncestor ? [{ id: plan.storeAncestor }] : [])
-  })
+  ;(findNearestStoreAncestor as any).mockImplementation((id: string) =>
+    Promise.resolve(
+      plan.storeAncestor === '__missing__'
+        ? { exists: false }
+        : { exists: true, storeAncestorId: plan.storeAncestor ?? null, askedFor: id },
+    ),
+  )
+  ;(findRolesBoundWithinSubtree as any).mockResolvedValue((plan.bindings ?? []).map((b) => b.role))
   ;(db.select as any).mockImplementation(() => ({
     from: vi.fn().mockImplementation((table: unknown) => {
       if (table === permissionRoles) {
         /**
-         * **刻意返回空**。#249 的绑定检测必须走「旧店节点及其子树」的递归 CTE
-         * （`db.execute`），不能用 `db.select(permissionRoles)` 精确匹配单个节点 ——
+         * **刻意返回空**。#249 的绑定检测必须走 `findRolesBoundWithinSubtree`
+         * （旧店节点及其子树），不能用 `db.select(permissionRoles)` 精确匹配单个节点 ——
          * 那会漏掉挂在旧店下属部门上的绑定。
          * 让这条路返回空，退回精确匹配的实现就会假报 `no_binding_at_old_store` 而变红。
          */
@@ -697,6 +734,7 @@ describe('updateEmployee — #228 归属变更必须落在 scope 内', () => {
     ;(getSession as any).mockResolvedValue(mockSession)
     applyScopeFixture()
     ;(isAdminScope as any).mockReturnValue(false)
+    defaultAncestryMocks()
   })
 
   /**
@@ -783,25 +821,16 @@ describe('updateEmployee — #228 归属变更必须落在 scope 内', () => {
   })
 
   /**
-   * 同批改手机号会多一次「唯一性」select，把函数推进另一条分支序列。
+   * 同批改手机号把函数推进另一条分支序列（手机号要过格式校验、要进 updateData）。
    * 守卫不得因此被跳过（给它套 `if (data.phone === undefined)` 这类前置条件时本例变红）。
    *
-   * 注意查重现在排在**可见性拦截之后**（它查全表，放在前面会变成「任意手机号是否注册」
-   * 的探测器），所以 select 顺序是 1=旧员工行、2=手机号唯一性。
+   * 事务外的手机号查重已整体删除（它查全表，是零写入探测信道），唯一性交给 DB 约束 +
+   * 23505 转译 —— 所以这里不再有「第 2 次唯一性 select」。
    */
-  it('越权调店 + 同批改手机号（多一次 select）→ 仍拒绝', async () => {
-    let call = 0
-    ;(db.select as any).mockImplementation(() => {
-      call++
-      const current = call
-      const limit = vi.fn().mockImplementation(() =>
-        // 1=旧员工行 2=手机号唯一性（无冲突）
-        Promise.resolve(current === 1 ? [{ storeId: 'store-A', orgNodeId: 'org-store-A' }] : []),
-      )
-      const where = vi.fn().mockReturnValue({ limit })
-      const from = vi.fn().mockReturnValue({ where })
-      return { from }
-    })
+  it('越权调店 + 同批改手机号 → 仍拒绝', async () => {
+    ;(db.select as any).mockImplementation(
+      mockSelectExistingEmployee({ storeId: 'store-A', orgNodeId: 'org-store-A' }),
+    )
     mockUpdateOk()
 
     const result = await updateEmployee(
@@ -851,7 +880,8 @@ describe('updateEmployee — #228 归属变更必须落在 scope 内', () => {
   it('storeId 改到 scope 内门店 → 放行，且 permission_roles 一条都不动', async () => {
     mockSelectByTable({
       employee: [{ storeId: 'store-A', orgNodeId: 'org-dept' }],
-      store: [[{ orgNodeId: 'org-store-A' }]],
+      // [新店 store-B 的节点（归属自洽）, 旧店 store-A 的节点（§AFF-03 找绑定）]
+      store: [[{ orgNodeId: 'org-store-B' }], [{ orgNodeId: 'org-store-A' }]],
       bindings: [{ id: 1, role: 'manager', scopeId: 'org-store-A' }],
     })
     ;(db.update as any).mockImplementation(() => ({
@@ -1075,7 +1105,7 @@ describe('updateEmployee — #228 归属变更必须落在 scope 内', () => {
    * **手机号与员工编号的对应关系**。手机号查重带 `employee_id != $target`：
    *   - 拿一个**不存在**的 employeeId 提交手机号 P → 查重命中 P 的主人 → 「该手机号已被其他员工使用」
    *   - 拿 P 的**真正主人**（scope 外）的 employeeId 提交同一个 P → `!= 自己` 把该行排除 → 另一句话
-   * 两句话的差异即可确认「P 属于哪个 employeeId」。查重移到可见性拦截之后后，两者同句。
+   * 两句话的差异即可确认「P 属于哪个 employeeId」。事务外查重删除后，两者同句。
    */
   it('同一手机号 × 不存在的编号 / 其真正主人的编号 → 响应逐字相同', async () => {
     const probe = async (targetId: string, oldRow: Record<string, unknown> | null) => {
@@ -1090,7 +1120,7 @@ describe('updateEmployee — #228 归属变更必须落在 scope 内', () => {
         const limit = vi.fn().mockImplementation(() =>
           current === 1
             ? Promise.resolve(oldRow ? [oldRow] : [])
-            // 查重：手机号确实被 scope 外的某人占用
+            // 存量遗留形态：若还有任何全表手机号预查，就会命中 scope 外的这个占用者
             : Promise.resolve([{ employeeId: 'FY-OWNER' }]),
         )
         const where = vi.fn().mockReturnValue({ limit })
@@ -1218,6 +1248,7 @@ describe('createEmployee — #228 归属同样受 scope 约束', () => {
     ;(getSession as any).mockResolvedValue(mockSession)
     applyScopeFixture()
     ;(isAdminScope as any).mockReturnValue(false)
+    defaultAncestryMocks()
   })
 
   const BASE = { name: '张三', phone: '13812345678', idCard: '110101199003078888' }
@@ -1327,7 +1358,8 @@ describe('#249 调店不自动搬迁角色绑定 —— 只留审计 + 回传提
   it('旧店有角色绑定 → permission_roles 一条都不动，写 manual_review_required 并回传清单', async () => {
     mockSelectByTable({
       employee: [{ storeId: 'store-A', orgNodeId: 'org-dept' }],
-      store: [[{ orgNodeId: 'org-store-A' }]],
+      // [新店 store-B 的节点（归属自洽）, 旧店 store-A 的节点（§AFF-03 找绑定）]
+      store: [[{ orgNodeId: 'org-store-B' }], [{ orgNodeId: 'org-store-A' }]],
       bindings: [{ id: 1, role: 'manager', scopeId: 'org-store-A' }],
     })
     mockUpdateOnce()
@@ -1349,7 +1381,8 @@ describe('#249 调店不自动搬迁角色绑定 —— 只留审计 + 回传提
   it('旧店有多个角色 → 全部列入提示，去重', async () => {
     mockSelectByTable({
       employee: [{ storeId: 'store-A', orgNodeId: 'org-dept' }],
-      store: [[{ orgNodeId: 'org-store-A' }]],
+      // [新店 store-B 的节点（归属自洽）, 旧店 store-A 的节点（§AFF-03 找绑定）]
+      store: [[{ orgNodeId: 'org-store-B' }], [{ orgNodeId: 'org-store-A' }]],
       bindings: [
         { id: 1, role: 'manager', scopeId: 'org-store-A' },
         { id: 2, role: 'finance', scopeId: 'org-store-A' },
@@ -1372,7 +1405,8 @@ describe('#249 调店不自动搬迁角色绑定 —— 只留审计 + 回传提
   it('旧店没有绑定 → 记 no_binding_at_old_store，不加提示', async () => {
     mockSelectByTable({
       employee: [{ storeId: 'store-A', orgNodeId: 'org-dept' }],
-      store: [[{ orgNodeId: 'org-store-A' }]],
+      // [新店 store-B 的节点（归属自洽）, 旧店 store-A 的节点（§AFF-03 找绑定）]
+      store: [[{ orgNodeId: 'org-store-B' }], [{ orgNodeId: 'org-store-A' }]],
       bindings: [],
     })
     mockUpdateOnce()
@@ -1452,16 +1486,20 @@ describe('#249 调店不自动搬迁角色绑定 —— 只留审计 + 回传提
   })
 
   /**
-   * GLM 谱系第 2 轮：绑定检测原先精确匹配 `scope_id = 旧店节点`，
-   * 但 `org.ts` 许可「部门挂在门店节点下」、角色可 scope 在那个部门上。
-   * 「门店节点本身无绑定、下属部门有绑定」时会假报 no_binding + 干净的成功消息 ——
-   * 正是最需要提示的场景反而静默。现在查旧店节点**及其子树**。
+   * 绑定检测的根是 `stores.org_node_id`，查的是**它及其子树**。
+   *
+   * ⚠️ 这条用例原先叫「绑定挂在旧店的下属部门节点上 → 仍被检测到」，断言的是一个
+   * **DB 层造不出来的状态**：trigger `permission_validate_role_assignment_scope()` 不允许
+   * 角色绑到部门型节点，且生产上门店节点零子节点（第 4 轮真库冒烟证实，证据见
+   * `@/lib/org-ancestry`）。守护一个不可达的场景是虚假保障 —— 它让人以为覆盖了真实风险。
+   * 改成只断言这一层真正该负责的事：拿到什么绑定清单，就记什么 reason、回传什么文案。
+   * 子树语义本身（下探方向、去重、employee 过滤）由真库冒烟负责。
    */
-  it('绑定挂在旧店的下属部门节点上 → 仍被检测到并回传提示', async () => {
+  it('拿到非空绑定清单 → 记 manual_review_required 并回传该清单', async () => {
     mockSelectByTable({
       employee: [{ storeId: 'store-A', orgNodeId: 'org-dept' }],
-      store: [[{ orgNodeId: 'org-store-A' }]],
-      // 子树 CTE 的结果 —— 绑定实际挂在 org-store-A 下的某个部门节点上
+      // [新店 store-B 的节点（归属自洽）, 旧店 store-A 的节点（§AFF-03 找绑定）]
+      store: [[{ orgNodeId: 'org-store-B' }], [{ orgNodeId: 'org-store-A' }]],
       bindings: [{ role: 'finance' }],
     })
     mockUpdateOnce()
@@ -1469,6 +1507,8 @@ describe('#249 调店不自动搬迁角色绑定 —— 只留审计 + 回传提
     const result = await updateEmployee('FY-001', { storeId: 'store-B' })
 
     expect(result.success).toBe(true)
+    // 根必须是旧门店的组织节点，不是新门店的、也不是员工的 orgNodeId
+    expect(findRolesBoundWithinSubtree).toHaveBeenCalledWith('FY-001', 'org-store-A')
     expect(logOperation).toHaveBeenCalledWith(
       mockSession, 'permission.scopeSync.skipped', 'permission_role', 'FY-001',
       expect.objectContaining({ reason: 'manual_review_required', roles: ['finance'] }),
@@ -1484,7 +1524,8 @@ describe('#249 调店不自动搬迁角色绑定 —— 只留审计 + 回传提
   it('调店 + 同批离职 → 记 roles_revoked_by_resignation，不回传提示', async () => {
     mockSelectByTable({
       employee: [{ storeId: 'store-A', orgNodeId: 'org-dept' }],
-      store: [[{ orgNodeId: 'org-store-A' }]],
+      // [新店 store-B 的节点（归属自洽）, 旧店 store-A 的节点（§AFF-03 找绑定）]
+      store: [[{ orgNodeId: 'org-store-B' }], [{ orgNodeId: 'org-store-A' }]],
       bindings: [],
     })
     mockUpdateOnce()
@@ -1571,6 +1612,36 @@ describe('#249 调店不自动搬迁角色绑定 —— 只留审计 + 回传提
     )
   })
 
+  /**
+   * GLM 第 4 轮：**复职 + 调店** 必须落到查询分支。
+   *
+   * 第 3 轮把条件写成 `data.isResigned === true || currentEmployee.isResigned === true`，
+   * 于是「旧值已离职 + 本次 isResigned=false（复职）」会被误判成「角色已随离职撤销」而零提示 ——
+   * 复职后员工正处在角色真空里，恰恰是最需要提醒管理员重新授权的一刻。
+   * 判据应是「这次操作**之后**是不是离职态」：`data.isResigned ?? currentEmployee.isResigned`。
+   */
+  it('复职 + 同批调店 → 走查询分支并回传提示，而不是记 roles_revoked_by_resignation', async () => {
+    mockSelectByTable({
+      employee: [{ storeId: 'store-A', orgNodeId: 'org-dept', isResigned: true }],
+      store: [[{ orgNodeId: 'org-store-B' }], [{ orgNodeId: 'org-store-A' }]],
+      bindings: [{ role: 'manager' }],
+    })
+    mockUpdateOnce()
+
+    const result = await updateEmployee('FY-001', { storeId: 'store-B', isResigned: false })
+
+    expect(result.success).toBe(true)
+    expect(logOperation).toHaveBeenCalledWith(
+      mockSession, 'permission.scopeSync.skipped', 'permission_role', 'FY-001',
+      expect.objectContaining({ reason: 'manual_review_required', roles: ['manager'] }),
+    )
+    expect(logOperation).not.toHaveBeenCalledWith(
+      mockSession, 'permission.scopeSync.skipped', 'permission_role', 'FY-001',
+      expect.objectContaining({ reason: 'roles_revoked_by_resignation' }),
+    )
+    expect(result.message).toContain('manager')
+  })
+
   /** codex 第 3 轮：A → 无门店 时没有「新门店」，文案不能说「按新门店重新授权」 */
   it('storeId 从有到无时的文案说「撤销或改绑」，不说「按新门店」', async () => {
     mockSelectByTable({
@@ -1611,6 +1682,7 @@ describe('#259 归属自洽 —— 只禁 orgNodeId 指向「另一个门店」'
     ;(getSession as any).mockResolvedValue(mockSession)
     applyScopeFixture()
     ;(isAdminScope as any).mockReturnValue(false)
+    defaultAncestryMocks()
   })
 
   function mockUpdateOk2() {
@@ -1658,11 +1730,11 @@ describe('#259 归属自洽 —— 只禁 orgNodeId 指向「另一个门店」'
    * 13 个矩阵式归属（养生师挂养生部、数据主管挂财智部）必须放行 ——
    * 这是有意的组织安排：门店是工作地点、部门是专业归属。
    */
-  it('orgNodeId 指向部门节点（养生部/财智部那类矩阵归属）→ 放行，且不查 stores', async () => {
+  it('orgNodeId 指向部门节点（养生部/财智部那类矩阵归属）→ 放行', async () => {
     mockSelectByTable({
       employee: [{ storeId: 'store-A', orgNodeId: 'org-store-A' }],
-      // 不给 storeAncestor = 无门店祖先（挂市场下的部门）→ 不该触发 stores 查询
-      store: [],
+      // 不给 storeAncestor = 无门店祖先（挂市场下的部门）→ 与门店维度无关，放行
+      store: [[{ orgNodeId: 'org-store-A' }]],
       bindings: [],
     })
     mockUpdateOk2()
@@ -1676,7 +1748,7 @@ describe('#259 归属自洽 —— 只禁 orgNodeId 指向「另一个门店」'
   it('orgNodeId 指向市场节点 → 放行', async () => {
     mockSelectByTable({
       employee: [{ storeId: 'store-A', orgNodeId: 'org-store-A' }],
-      store: [],
+      store: [[{ orgNodeId: 'org-store-A' }]],
       bindings: [],
     })
     mockUpdateOk2()
@@ -1684,6 +1756,83 @@ describe('#259 归属自洽 —— 只禁 orgNodeId 指向「另一个门店」'
     const result = await updateEmployee('FY-001', { orgNodeId: 'market-1' })
 
     expect(result.success).toBe(true)
+  })
+
+  /**
+   * codex 谱系第 4 轮：早期版本先找门店祖先、找不到就放行，于是 `orgNodeId` 是合法市场节点时
+   * `storeId` 的存在性**从来没被验过** —— 一路走到写库撞 FK `23503`，而 catch 只翻译 `23505`，
+   * 用户看到 500。存在性校验现在与门店祖先无关，两端各自先验。
+   */
+  it('storeId 指向不存在的门店（orgNodeId 是市场节点，够不到门店祖先）→ 拒绝而非 500', async () => {
+    mockSelectByTable({
+      employee: [{ storeId: 'store-A', orgNodeId: 'org-store-A' }],
+      store: [[]],          // 新门店查不到
+      bindings: [],
+    })
+    mockUpdateOk2()
+
+    const result = await updateEmployee('FY-001', { storeId: 'store-B', orgNodeId: 'market-1' })
+
+    expect(result.success).toBe(false)
+    expect(result.message).toBe('所选门店不存在')
+    expect(db.update).not.toHaveBeenCalled()
+    // 门店都不存在，不必再去问组织树
+    expect(findNearestStoreAncestor).not.toHaveBeenCalled()
+  })
+
+  it('orgNodeId 指向不存在 / 已被删的节点 → 拒绝而非 500', async () => {
+    mockSelectByTable({
+      employee: [{ storeId: 'store-A', orgNodeId: 'org-store-A' }],
+      storeAncestor: '__missing__',                 // findNearestStoreAncestor → { exists: false }
+      store: [[{ orgNodeId: 'org-store-A' }]],
+      bindings: [],
+    })
+    mockUpdateOk2()
+
+    const result = await updateEmployee('FY-001', { orgNodeId: 'dept-A' })
+
+    expect(result.success).toBe(false)
+    expect(result.message).toBe('所选组织节点不存在，请刷新后重新选择')
+    expect(db.update).not.toHaveBeenCalled()
+  })
+
+  /** storeId 为空、只改 orgNodeId 时，节点存在性同样要验（否则同样 500） */
+  it('storeId 为空 + orgNodeId 不存在 → 仍拒绝', async () => {
+    mockSelectByTable({
+      employee: [{ storeId: 'store-A', orgNodeId: 'org-store-A' }],
+      storeAncestor: '__missing__',
+      store: [],
+      bindings: [],
+    })
+    mockUpdateOk2()
+
+    const result = await updateEmployee('FY-001', { storeId: null, orgNodeId: 'dept-A' })
+
+    expect(result.success).toBe(false)
+    expect(result.message).toBe('所选组织节点不存在，请刷新后重新选择')
+    expect(db.update).not.toHaveBeenCalled()
+  })
+
+  /**
+   * 校验与写库之间仍有并发删除窗口（另一个管理员此刻删了那个门店/节点）。
+   * FK `23503` 必须翻译成人话，而不是抛出去变 500。
+   */
+  it('校验通过后并发删除 → UPDATE 撞 23503 → 友好文案', async () => {
+    mockSelectByTable({
+      employee: [{ storeId: 'store-A', orgNodeId: 'org-store-A' }],
+      store: [[{ orgNodeId: 'org-store-B' }], [{ orgNodeId: 'org-store-A' }]],
+      bindings: [],
+    })
+    ;(db.update as any).mockReturnValue({
+      set: vi.fn().mockReturnValue({
+        where: vi.fn().mockRejectedValue(Object.assign(new Error('fk'), { code: '23503' })),
+      }),
+    })
+
+    const result = await updateEmployee('FY-001', { storeId: 'store-B' })
+
+    expect(result.success).toBe(false)
+    expect(result.message).toBe('所选门店或组织节点已被删除，请刷新后重试')
   })
 
   /** storeId 为空时无从比对，跳过（96 个仅组织节点的在职员工走这条） */
@@ -1751,6 +1900,7 @@ describe('updateEmployee — §AFF-03 门店变更 scope 同步', () => {
     ;(isInScope as any).mockReturnValue(true)
     ;(isOrgNodeInScope as any).mockReturnValue(true)
     ;(isEmployeeRowVisible as any).mockReturnValue(true)
+    defaultAncestryMocks()
   })
 
   /**
@@ -1770,7 +1920,8 @@ describe('updateEmployee — §AFF-03 门店变更 scope 同步', () => {
   it('storeId 变更 → 只写 skipped 审计，permission_roles 不动', async () => {
     mockSelectByTable({
       employee: [{ storeId: 'store-A', orgNodeId: 'org-dept' }],
-      store: [[{ orgNodeId: 'org-store-A' }]],
+      // [新店 store-B 的节点（归属自洽）, 旧店 store-A 的节点（§AFF-03 找绑定）]
+      store: [[{ orgNodeId: 'org-store-B' }], [{ orgNodeId: 'org-store-A' }]],
       bindings: [{ id: 1, role: 'manager', scopeId: 'org-store-A' }],
     })
     ;(db.update as any).mockImplementation(() => ({
@@ -1828,16 +1979,11 @@ describe('updateEmployee — §AFF-03 门店变更 scope 同步', () => {
   })
 
   it('原无门店（oldStoreId=null）→ 不触发 scope 同步', async () => {
-    // 旧 storeId 为 null（新入职未分配门店的员工）
-    let selectCall = 0
-    ;(db.select as any).mockImplementation(() => {
-      selectCall++
-      const limit = vi.fn().mockResolvedValue(
-        selectCall === 1 ? [{ storeId: null }] : [],
-      )
-      const where = vi.fn().mockReturnValue({ limit })
-      const from = vi.fn().mockReturnValue({ where })
-      return { from }
+    mockSelectByTable({
+      // 新入职未分配门店的员工
+      employee: [{ storeId: null, orgNodeId: null }],
+      store: [[{ orgNodeId: 'org-store-B' }]],   // 只有归属自洽那一次查询（没有旧门店可查）
+      bindings: [],
     })
     const where = vi.fn().mockResolvedValue({ count: 1 })
     const set = vi.fn().mockReturnValue({ where })
@@ -1848,11 +1994,12 @@ describe('updateEmployee — §AFF-03 门店变更 scope 同步', () => {
     expect(result.success).toBe(true)
     // 旧门店为 null，不做 scope 同步
     expect(db.update).toHaveBeenCalledTimes(1)
+    expect(findRolesBoundWithinSubtree).not.toHaveBeenCalled()
   })
 
   /**
-   * codex 谱系第 4 轮 P3：既有 §AFF-03 用例都不传手机号。这条把「改手机号 + 调店」合法路径
-   * 锁住（第 5 轮删掉事务外预查重后，查询序列从四次回落为三次）。
+   * codex 谱系第 4 轮 P3：既有 §AFF-03 用例都不传手机号。这条把「改手机号 + 调店」这条
+   * 合法路径整体锁住（含审计与回传提示）。
    */
   it('改手机号 + scope 内调店 → 员工更新与审计都发生，角色绑定不动', async () => {
     mockSelectByTable({
@@ -1882,7 +2029,8 @@ describe('updateEmployee — §AFF-03 门店变更 scope 同步', () => {
   it('旧门店没有任何角色绑定 → 不动 permission_roles，但写一条 skipped 审计', async () => {
     mockSelectByTable({
       employee: [{ storeId: 'store-A', orgNodeId: 'org-dept' }],
-      store: [[{ orgNodeId: 'org-store-A' }]],
+      // [新店 store-B 的节点（归属自洽）, 旧店 store-A 的节点（§AFF-03 找绑定）]
+      store: [[{ orgNodeId: 'org-store-B' }], [{ orgNodeId: 'org-store-A' }]],
       bindings: [],   // 旧店没有绑定
     })
     ;(db.update as any).mockImplementation(() => ({

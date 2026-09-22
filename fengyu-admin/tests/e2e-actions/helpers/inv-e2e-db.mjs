@@ -26,7 +26,6 @@ const PORT = 54397
 const TPL_DB = 'fengyu_inv_e2e_tpl'
 const RUN_DB = 'fengyu_inv_e2e'
 const TPL_CONN = `postgresql://postgres:test@127.0.0.1:${PORT}/${TPL_DB}`
-const RUN_CONN = `postgresql://postgres:test@127.0.0.1:${PORT}/${RUN_DB}`
 
 function run(cmd, args, options = {}) {
   return spawnSync(cmd, args, { encoding: 'utf8', ...options })
@@ -42,7 +41,15 @@ function migrationFileCount() {
     .length
 }
 
-export function ensureInventoryE2eDb() {
+/**
+ * @param {{ runDb?: string }} [opts] `runDb` 指定运行库名，默认 `fengyu_inv_e2e`。
+ *   每次调用都 `DROP … WITH (FORCE)` 再从模板重建 —— **两个冒烟同时跑同一个运行库会互相踢掉**，
+ *   所以别的冒烟要用就自己传一个库名（org-ancestry 传 `fengyu_org_ancestry_e2e`），
+ *   模板库与容器则共用（模板只读，重建是秒级的）。
+ */
+export function ensureInventoryE2eDb(opts = {}) {
+  const runDb = opts.runDb ?? RUN_DB
+  const runConn = `postgresql://postgres:test@127.0.0.1:${PORT}/${runDb}`
   const explicit = process.env.INV_E2E_DATABASE_URL
   if (explicit) {
     if (explicit.includes('118.178.196.26')) {
@@ -95,10 +102,10 @@ export function ensureInventoryE2eDb() {
   }
 
   // 4) 从模板重建纯净运行库（触发器/枚举/权限种子随模板整套复制）
-  const dropped = psql('postgres', `DROP DATABASE IF EXISTS ${RUN_DB} WITH (FORCE)`)
+  const dropped = psql('postgres', `DROP DATABASE IF EXISTS ${runDb} WITH (FORCE)`)
   if (dropped.status !== 0) throw new Error(`[inv-e2e-db] DROP 运行库失败：${dropped.stderr}`)
-  const created = psql('postgres', `CREATE DATABASE ${RUN_DB} TEMPLATE ${TPL_DB}`)
+  const created = psql('postgres', `CREATE DATABASE ${runDb} TEMPLATE ${TPL_DB}`)
   if (created.status !== 0) throw new Error(`[inv-e2e-db] 按模板重建运行库失败：${created.stderr}`)
 
-  return RUN_CONN
+  return runConn
 }

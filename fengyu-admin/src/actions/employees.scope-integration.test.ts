@@ -47,11 +47,22 @@ vi.mock('@/lib/admin-guard', () => ({
 }))
 vi.mock('next/cache', () => ({ revalidatePath: vi.fn() }))
 vi.mock('@/actions/skill-tags', () => ({ getSkillTags: vi.fn() }))
+/**
+ * 组织树的两条递归 CTE 要打真库，本文件专测 scope 判据，一律给「节点存在、无门店祖先」
+ * （即归属自洽放行），不然每条用例都会去连 dev 库。CTE 语义由
+ * `tests/e2e-actions/smoke-org-ancestry.mjs` 用一次性真库负责。
+ */
+vi.mock('@/lib/org-ancestry', () => ({
+  findNearestStoreAncestor: vi.fn().mockResolvedValue({ exists: true, storeAncestorId: null }),
+  findRolesBoundWithinSubtree: vi.fn().mockResolvedValue([]),
+}))
 
 // ⚠️ 刻意不 mock '@/lib/permissions' —— 本文件的全部价值就在于用它的真实实现。
 
 import { createEmployee, updateEmployee } from './employees'
 import { db } from '@/db'
+import { stores } from '@db/org'
+import { staffWechatUsers } from '@db/user'
 import { getSession } from '@/lib/auth'
 import type { AuthSession } from '@/lib/types'
 
@@ -121,25 +132,22 @@ const ADMIN = session({
 })
 
 /**
- * #259 的「向上最近的门店型祖先」走 `db.execute`（递归 CTE）。
- * 本文件的用例都在验 scope 判据，与归属自洽无关 —— 默认给空结果（无门店祖先 → 放行），
- * 需要验归属自洽的用例在 employees.test.ts 里。
+ * 按**表**分派，不数「第几次 select」。
+ *
+ * `stores` 必须返回一行：#259 的存在性校验只要 `nextStoreId` 非空就查它，空结果会被判成
+ * 「所选门店不存在」而提前退出 —— 本文件每条用例都会被那一步拦住。行里 `orgNodeId`
+ * 给什么无所谓：顶部已把 `findNearestStoreAncestor` 固定成「无门店祖先」，归属自洽在比对前放行。
  */
-function mockNoStoreAncestor() {
-  ;(db.execute as any).mockResolvedValue([])
-}
-
 function mockCurrentEmployee(row: Record<string, unknown>) {
-  mockNoStoreAncestor()
-  let call = 0
-  ;(db.select as any).mockImplementation(() => {
-    call++
-    const current = call
-    const limit = vi.fn().mockImplementation(() => Promise.resolve(current === 1 ? [row] : []))
-    const where = vi.fn().mockReturnValue({ limit })
-    const from = vi.fn().mockReturnValue({ where })
-    return { from }
-  })
+  ;(db.select as any).mockImplementation(() => ({
+    from: vi.fn().mockImplementation((table: unknown) => {
+      const rows = table === stores ? [{ orgNodeId: null }]
+        : table === staffWechatUsers ? [row]
+        : []
+      const limit = vi.fn().mockResolvedValue(rows)
+      return { where: vi.fn().mockReturnValue({ limit }), limit }
+    }),
+  }))
 }
 
 function mockUpdateOk() {
@@ -149,12 +157,14 @@ function mockUpdateOk() {
   return { set }
 }
 
+/** createEmployee 侧：员工表查空（没有旧行可读），stores 仍需返回一行，理由同上 */
 function mockSelectEmpty() {
-  mockNoStoreAncestor()
-  const limit = vi.fn().mockResolvedValue([])
-  const where = vi.fn().mockReturnValue({ limit })
-  const from = vi.fn().mockReturnValue({ where })
-  ;(db.select as any).mockReturnValue({ from })
+  ;(db.select as any).mockImplementation(() => ({
+    from: vi.fn().mockImplementation((table: unknown) => {
+      const limit = vi.fn().mockResolvedValue(table === stores ? [{ orgNodeId: null }] : [])
+      return { where: vi.fn().mockReturnValue({ limit }), limit }
+    }),
+  }))
 }
 
 function mockTransactionOk(employeeId = 'FY-260315001') {
