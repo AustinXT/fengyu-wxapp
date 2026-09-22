@@ -225,7 +225,7 @@ product.shopInit(门店商品初始化)
 
 **`expire_at` 的下发口径与这三条守卫同源**（issue #215）：判据写成 SQL 常量 `PENDING_AUTO_CLOSE_GUARD_SQL`，由 `order.detail` 的主查询算成 `auto_close_eligible` 列，**交给 PostgreSQL 求值**，只对「这一刻的懒清理真会关掉它」的订单下发 `expire_at`。
 
-**不在 JS 里镜像这个谓词**：镜像就要逐个处理 `IS NULL` vs `== null`、空串（SQL 里不是 NULL）、列没被 SELECT 出来是 `undefined`——全是跨语言复制凭空带来的自伤。代价是 L1 的 pg mock 测不到谓词语义，靠真库直验补上（2026-09-22 实测 10 例，含空串 / 纯空白 / 各状态，逐例与预期一致：仅 `待支付 + opened_by IS NULL + lakala_out_order_no IS NULL` 判 true）。
+**不在 JS 里镜像这个谓词**：镜像就要逐个处理 `IS NULL` vs `== null`、空串（SQL 里不是 NULL）、列没被 SELECT 出来是 `undefined`——全是跨语言复制凭空带来的自伤。代价是 L1 的 pg mock 测不到谓词语义，由 L2 真值表补上：`fengyu-client/tests/e2e-cloudfn/order/auto-close-guard-truthtable.spec.mjs`（**零写入**，纯 `VALUES` 构造行，判据从 `routes/order.js` 原样读取，10 例覆盖空串 / 纯空白 / 各状态）。
 
 `auto_close_eligible` 是服务端中间量，**不下发给前端**（下发出去会诱使前端拿它自己推导展示口径）。**可支付态（待支付 / 部分支付）必须重读该列**——主查询是懒清理**之前**的快照，而 `lakala_out_order_no` 双向可变，另一台设备的 `order.pay` 随时会写进来；只在「跑过懒清理」时重读的话，未超时的单照样会发出「有倒计时 + `has_active_payment_intent=false`」这种分叉。重读挂在既有的 `Promise.all` 批次里，不额外增加往返。
 

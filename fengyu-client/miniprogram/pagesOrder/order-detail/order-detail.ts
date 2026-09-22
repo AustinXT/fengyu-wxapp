@@ -460,9 +460,12 @@ Page({
     // 回退分支是为发版过渡期留的：旧云函数不带 expire_in_ms，退回绝对时间口径。
     // ⚠️ 必须判 `typeof === 'number'`：`Number(null)` 是 0 且 isFinite，
     // 会把「服务端没下发这个字段」静默当成「剩余 0」，而不是回退到绝对时间口径
+    // `authoritative` 记的是「这个剩余量是不是服务端亲口说的」——下面判「0」时要用
     let serverRemaining: number;
+    let authoritative: boolean;
     if (typeof order.expire_in_ms === 'number' && Number.isFinite(order.expire_in_ms)) {
       serverRemaining = order.expire_in_ms;
+      authoritative = true;
     } else {
       const rawExpire = String(order.expire_at);
       const expireMs = new Date(
@@ -474,26 +477,30 @@ Page({
         this.setData({ countdown: '' });
         return;
       }
+      // 绝对时间这条回退路径本来就是按「此刻」算的，传输耗时已经含在里面了，
+      // 下面不能再扣一次 RTT
       serverRemaining = expireMs - Date.now();
+      authoritative = false;
     }
 
-    // ⚠️ 这里必须区分两种「0」（双谱系评审 round-3）：
-    //   - **服务端**给的就是 0 → 它已经试过关单了（那边共用一个 nowMs 保证这点），
-    //     再打一次拿到的还是同一个答案 → 只清 UI，不重载。这是死循环的结构性断点。
-    //   - 服务端给的 > 0，只是**扣掉传输耗时**后归零 → 服务端还没试过关，
-    //     此时必须当成「走着走着归零」，重载一次让它去关。
-    //     把这两种混为一谈，页面就会永久停在「待支付 / 请完成支付 / 去支付」。
-    if (serverRemaining <= 0) {
+    // ⚠️ 必须区分两种「0」（双谱系评审 round-3 / round-4）：
+    //   - **服务端权威**地说 0 → 它已经试过关单了（那边补关复检与剩余量计算共用同一个
+    //     nowMs，严格保证这点）→ 只清 UI，不重载。这是死循环的结构性断点。
+    //   - 其它任何算出来的 0（旧云函数的绝对时间回退、扣掉 RTT 之后归零）→
+    //     服务端**还没试过关**，必须当成「走着走着归零」重载一次让它去关。
+    //     混为一谈，页面就会永久停在「待支付 / 请完成支付 / 去支付」。
+    if (authoritative && serverRemaining <= 0) {
       this._countdownDeadlineAt = 0;
       this.setData({ countdown: '' });
       return;
     }
 
-    const remainingAt0 = serverRemaining - this._lastLoadRttMs;
+    const remainingAt0 = authoritative ? serverRemaining - this._lastLoadRttMs : serverRemaining;
     if (remainingAt0 <= 0) {
       this._countdownDeadlineAt = 0;
       this.setData({ countdown: '' });
-      this.loadDetail(order.sale_order_id);
+      // 隐藏/已卸载时不发这一次后台请求；onShow 必定 loadDetail，不会漏刷新
+      if (!this._hidden && !this._destroyed) this.loadDetail(order.sale_order_id);
       return;
     }
 
@@ -516,8 +523,21 @@ Page({
       return;
     }
 
+    let lastTickAt = Date.now();
     const tick = () => {
-      const remaining = this._countdownDeadlineAt - Date.now();
+      const now = Date.now();
+      // 系统校时/用户手动改时间会让墙钟往回跳，截止点就被凭空延长了 —— 服务端那边
+      // 早关单了，页面还显示着剩余时间，顾客点「去支付」才被拒（issue #215）。
+      // 小程序没有可靠的单调时钟，退而求其次：察觉明显回拨就回服务端重新校准。
+      if (now - lastTickAt < -2000) {
+        this._stopCountdown();
+        this._countdownDeadlineAt = 0;
+        this.setData({ countdown: '' });
+        if (!this._hidden && !this._destroyed) this.loadDetail(saleOrderId);
+        return;
+      }
+      lastTickAt = now;
+      const remaining = this._countdownDeadlineAt - now;
       if (remaining <= 0) {
         this._stopCountdown();
         this._countdownDeadlineAt = 0;
@@ -571,7 +591,10 @@ Page({
     try {
       const paymentResult = await poller.promise;
       // onUnload / onHide 里的 `poller.clear()` 会 resolve 掉这个 promise（不是 reject），
-      // 所以卸载和隐藏也会走到这里。不拦的话会在看不见的页面上继续请求、弹 Toast（issue #215）
+      // 所以卸载和隐藏也会走到这里。不拦的话会在看不见的页面上继续请求、弹 Toast（issue #215）。
+      // ⚠️ 隐藏导致的中断要把「待确认」意图还回去：渠道可能已经扣款而回调延迟，
+      // 意图丢了就再也不会主动对账，顾客端会一直显示待支付（双谱系评审 round-4）。
+      if (this._hidden && !this._destroyed) this._needConfirm = true;
       if (this._destroyed || this._hidden) return;
       await this.loadDetail(saleOrderId);
       if (this._destroyed || this._hidden) return;

@@ -2260,9 +2260,13 @@ describe('order.detail — 支付倒计时下发口径 (#215)', () => {
     expect(closeUpdate).toContain("status = '待支付'")
     expect(closeUpdate).toContain('opened_by IS NULL')
     expect(closeUpdate).toContain('lakala_out_order_no IS NULL')
-    // 释放侧：退券 + 退积分
+    // 释放侧三样都要跑到（验收标准 2：「释放优惠券 / 积分 / 待结算储值卡」）
     expect(executed.some((s) => /UPDATE user_coupons/.test(s))).toBe(true)
     expect(executed.some((s) => /INSERT INTO point_transactions/.test(s))).toBe(true)
+    // 待结算储值卡归零 + 应付额重算，就在关单那条 UPDATE 里
+    expect(closeUpdate).toContain('pending_prepaid_card_amount = 0')
+    expect(closeUpdate).toMatch(/payable_amount\s*=\s*CASE/)
+    expect(closeUpdate).toContain('total_amount::numeric - prepaid_card_amount::numeric')
 
     expect(ctx.result.order.status).toBe('已关闭')
     expect(ctx.result.order.expire_at).toBeNull()
@@ -2347,7 +2351,8 @@ describe('order.detail — 支付倒计时下发口径 (#215)', () => {
 
     // ⚠️ 同样不能只做 `toContain`：`AND → OR` 会让充值路径去关**不属于当前顾客、
     // 或仍有在途支付意图**的订单，而四个子串照样都在（codex 评审 round-3 P1）。
-    // `conjuncts` 内部对 OR 直接判失败，并把条件规范化成集合做全等比较。
+    // `conjuncts` 内部对 OR 直接判失败，并把条件规范化成集合做**全等**比较 ——
+    // 给充值路径再加一条强化条件也会在这里转红，那时按新口径更新本断言即可。
     expect(conjuncts(cardWhere)).toEqual([
       "lakala_out_order_no IS NULL",
       "opened_by IS NULL",

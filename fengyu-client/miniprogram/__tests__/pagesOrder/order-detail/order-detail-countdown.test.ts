@@ -24,6 +24,24 @@ vi.mock('@vant/weapp/toast/toast', () => ({
   default: Object.assign(vi.fn(), { success: vi.fn(), fail: vi.fn(), clear: vi.fn() }),
 }));
 
+/**
+ * 支付确认轮询替身：把每个 poller 的 resolve 暴露出来，
+ * 让用例能精确复现「onHide 调 poller.clear() → promise 被 resolve」这条时序。
+ */
+const pollerControls: Array<{ resolve: (v: any) => void }> = [];
+vi.mock('../../../pagesOrder/utils/payment-poll', () => ({
+  pollPaymentConfirm: () => {
+    let resolveFn: (v: any) => void = () => {};
+    const promise = new Promise((resolve) => { resolveFn = resolve; });
+    pollerControls.push({ resolve: resolveFn });
+    return {
+      promise,
+      // 与真实实现一致：clear() 是 resolve 而不是 reject
+      clear: () => resolveFn({ sessionCompleted: false }),
+    };
+  },
+}));
+
 let pageOptions: any = null;
 (globalThis as any).Page = (opts: any) => {
   pageOptions = opts;
@@ -107,6 +125,7 @@ const PENDING_ORDER_WITH_REMAINING = (expireInMs: number) => ({
 
 beforeEach(() => {
   vi.clearAllMocks();
+  pollerControls.length = 0;
 });
 
 afterEach(() => {
@@ -152,13 +171,14 @@ describe('order-detail 待支付倒计时 (#215)', () => {
     expect(loadDetail).not.toHaveBeenCalled();
   });
 
-  test('装表时就已过期 → 只清 UI，不重载、不装定时器', () => {
-    // 这次 detail 响应本身刚跑过服务端的懒清理，再打一次拿到的还是同一个答案。
-    // 这一条正是死循环的结构性断点。
+  test('服务端权威地说剩 0 → 只清 UI，不重载、不装定时器', () => {
+    // 服务端那边补关复检与剩余量计算共用同一个 nowMs，所以「权威的 0」严格蕴含
+    // 「它已经试过关单了」，再打一次拿到的还是同一个答案。
+    // 这一条正是死循环的结构性断点 —— 注意**只有权威口径**才享受这个待遇，
+    // 旧云函数的绝对时间回退算出的 0 仍必须重载（见下面那条用例）。
     const { page, loadDetail } = createPageWithStubbedLoad();
-    const past = new Date(Date.now() - 1000).toISOString();
 
-    page.startCountdown(PENDING_ORDER(past));
+    page.startCountdown(PENDING_ORDER_WITH_REMAINING(0));
 
     expect(page.data.countdown).toBe('');
     expect(page._countdownTimer).toBeNull();
@@ -167,9 +187,8 @@ describe('order-detail 待支付倒计时 (#215)', () => {
 
   test('反复装表（模拟 onShow/下拉）也不会累积重载 —— 循环不可能形成', () => {
     const { page, loadDetail } = createPageWithStubbedLoad();
-    const past = new Date(Date.now() - 1000).toISOString();
 
-    for (let i = 0; i < 10; i++) page.startCountdown(PENDING_ORDER(past));
+    for (let i = 0; i < 10; i++) page.startCountdown(PENDING_ORDER_WITH_REMAINING(0));
 
     expect(loadDetail).not.toHaveBeenCalled();
   });
@@ -307,6 +326,56 @@ describe('order-detail 待支付倒计时 (#215)', () => {
     expect(page.data.order.expire_time_fmt).toBe('23:45');
   });
 
+  test('旧云函数回退口径：绝对时间已过期 → 必须重载（不能当成服务端权威的 0）', () => {
+    // 旧后端请求开头没关单、却返回了已过期的 expire_at。把它当成「服务端说 0 =
+    // 已经试过关单了」来处理，页面就会长期停在「请完成支付 + 去支付」——
+    // 只有**权威**的 expire_in_ms 为 0 才允许不重载。
+    const { page, loadDetail } = createPageWithStubbedLoad();
+    page.startCountdown(PENDING_ORDER(new Date(Date.now() - 1000).toISOString()));
+
+    expect(loadDetail).toHaveBeenCalledTimes(1);
+    expect(page.data.countdown).toBe('');
+  });
+
+  test('回退口径不再扣一次 RTT（绝对时间本就是按此刻算的）', () => {
+    const { page } = createPageWithStubbedLoad();
+    page._lastLoadRttMs = 5000;
+    page.startCountdown(PENDING_ORDER(new Date(Date.now() + 60_000).toISOString()));
+
+    // 若误扣 5 秒会变成 00:55
+    expect(page.data.countdown).toMatch(/^(00:59|01:00)$/);
+  });
+
+  test('隐藏态下 RTT 归零分支不发后台请求', () => {
+    const { page, loadDetail } = createPageWithStubbedLoad();
+    page._hidden = true;
+    page._lastLoadRttMs = 500;
+    page.startCountdown(PENDING_ORDER_WITH_REMAINING(50));
+
+    expect(loadDetail).not.toHaveBeenCalled();
+    expect(page.data.countdown).toBe('');
+  });
+
+  test('墙钟被回拨 → 停表并回服务端重新校准，不让倒计时被凭空延长', () => {
+    vi.useFakeTimers();
+    try {
+      const { page, loadDetail } = createPageWithStubbedLoad();
+      page.startCountdown(PENDING_ORDER_WITH_REMAINING(60_000));
+      expect(page._countdownTimer).not.toBeNull();
+
+      // 模拟系统校时往回跳 30 秒
+      const base = Date.now();
+      vi.setSystemTime(base - 30_000);
+      vi.advanceTimersByTime(1000);
+
+      expect(loadDetail).toHaveBeenCalledTimes(1);
+      expect(page._countdownTimer).toBeNull();
+      expect(page.data.countdown).toBe('');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   test('expire_at 解析不出来 → 不装表，不推 NaN:NaN', () => {
     const { page } = createPageWithStubbedLoad();
     page.startCountdown(PENDING_ORDER('不是时间'));
@@ -416,6 +485,22 @@ describe('order-detail 倒计时的生命周期与并发 (#215)', () => {
     page.onShow();
     expect(page._countdownTimer).not.toBeNull();
     expect(page.data.countdown).toMatch(/^(00:5\d|01:00)$/);
+  });
+
+  test('轮询启动后被 onHide 打断 → 待确认意图要还回去（否则永远不再主动对账）', async () => {
+    // 渠道可能已经扣款而回调延迟；意图被消费掉又不还，就再也不会主动对账，
+    // 顾客端会一直显示待支付（codex 评审 round-4 P1）
+    const page = createPageInstance();
+    page.loadDetail = vi.fn(async () => {});
+
+    const confirming = page.confirmAndRefresh('FY-215');
+    expect(pollerControls).toHaveLength(1);
+
+    page.onHide();            // onHide 会调 poller.clear() → resolve 掉 promise
+    await confirming;
+
+    expect(page._needConfirm).toBe(true);
+    expect(page.loadDetail).not.toHaveBeenCalled();   // 隐藏页不再继续请求
   });
 
   test('隐藏态下不消耗 paid=1 的待确认意图（下次 onShow 还能补上）', async () => {

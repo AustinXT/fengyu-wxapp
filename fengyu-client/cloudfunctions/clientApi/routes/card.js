@@ -208,7 +208,7 @@ async function _closeExpiredPendingByUser(client, userId) {
     [userId]
   )
   for (const row of expired.rows) {
-    await client.query(
+    const closed = await client.query(
       `UPDATE sale_orders SET status = '已关闭', updated_at = NOW()
        WHERE sale_order_id = $1 AND status = '待支付' AND opened_by IS NULL
          AND sale_order_type <> '转换单'
@@ -217,11 +217,17 @@ async function _closeExpiredPendingByUser(client, userId) {
          AND lakala_out_order_no IS NULL`,
       [row.sale_order_id]
     )
-    await client.query(
-      `UPDATE user_coupons SET status = '未使用', used_sale_order_id = NULL, used_at = NULL
-       WHERE used_sale_order_id = $1`,
-      [row.sale_order_id]
-    )
+    // ⚠️ 必须先看 CAS 是否命中再释放券（与 order.closeExpiredOrder 的
+    // `if (result.rowCount > 0)` 同一道门）。上面的 SELECT 没加行锁，选出来之后、
+    // CAS 之前这张单完全可能被并发支付掉；那时 UPDATE 影响 0 行，而无条件释放会把
+    // **已经用于支付**的券退回「未使用」—— 券可再次抵扣，是直接的资金损失。
+    if (closed.rowCount > 0) {
+      await client.query(
+        `UPDATE user_coupons SET status = '未使用', used_sale_order_id = NULL, used_at = NULL
+         WHERE used_sale_order_id = $1`,
+        [row.sale_order_id]
+      )
+    }
   }
 }
 
@@ -338,4 +344,9 @@ async function recharge(ctx) {
   }
 }
 
-module.exports = { list, balance, history, rechargeConfig, recharge, matchTier, _loadRechargeConfig }
+module.exports = {
+  list, balance, history, rechargeConfig, recharge, matchTier, _loadRechargeConfig,
+  // 导出仅供单测直接驱动「CAS 落空时不得释放优惠券」这条门（issue #215 round-4 的 P0）。
+  // index.js 的 action 映射是显式白名单，多导出一个函数不会多出可调用 action。
+  _closeExpiredPendingByUser,
+}

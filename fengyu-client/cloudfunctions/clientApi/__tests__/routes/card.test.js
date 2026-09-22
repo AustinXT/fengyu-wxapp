@@ -248,3 +248,44 @@ describe('card.history', () => {
     expect(ctx.result.records[1].amount).toBe(-120.5)
   })
 })
+
+/**
+ * `_closeExpiredPendingByUser`（充值时顺带关掉过期待支付单）的 CAS 门。
+ *
+ * 这是**第二条**会把待支付单置「已关闭」的路径，守卫与 order.closeExpiredOrder 同源，
+ * 但释放侧原本漏了一道门：CAS UPDATE 影响 0 行时仍无条件释放优惠券。
+ * 由于上面的 SELECT 没有行锁，选出来之后、CAS 之前这张单完全可能被并发支付掉；
+ * 那时把**已经用于支付**的券退回「未使用」，券可再次抵扣 —— 直接的资金损失。
+ * （issue #215 双谱系评审 round-4 报出的既有 P0，顺带修掉。）
+ */
+describe('card 充值路径的过期单清理 — 券释放必须跟着 CAS 走', () => {
+  /** 直接驱动 _closeExpiredPendingByUser，返回它执行过的 SQL 列表 */
+  async function runCleanup({ closeRowCount }) {
+    const executed = []
+    const clientQuery = vi.fn(async (sql) => {
+      executed.push(sql)
+      if (/SELECT sale_order_id FROM sale_orders/.test(sql)) {
+        return { rows: [{ sale_order_id: 'FY-EXPIRED' }], rowCount: 1 }
+      }
+      if (/UPDATE sale_orders SET status = '已关闭'/.test(sql)) {
+        return { rows: [], rowCount: closeRowCount }
+      }
+      return { rows: [], rowCount: 0 }
+    })
+    await routes._closeExpiredPendingByUser({ query: clientQuery }, 'user-001')
+    return executed
+  }
+
+  test('CAS 命中（关成了）→ 释放该单的优惠券', async () => {
+    const executed = await runCleanup({ closeRowCount: 1 })
+    expect(executed.some((s) => /UPDATE sale_orders SET status = '已关闭'/.test(s))).toBe(true)
+    expect(executed.some((s) => /UPDATE user_coupons/.test(s))).toBe(true)
+  })
+
+  test('CAS 落空（单子已被并发支付）→ 绝不释放优惠券', async () => {
+    const executed = await runCleanup({ closeRowCount: 0 })
+    expect(executed.some((s) => /UPDATE sale_orders SET status = '已关闭'/.test(s))).toBe(true)
+    // 这张单此刻已经是「已支付」，那张券正被它消费着，退回去就能再花一次
+    expect(executed.some((s) => /UPDATE user_coupons/.test(s))).toBe(false)
+  })
+})
