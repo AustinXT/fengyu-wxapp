@@ -1031,165 +1031,75 @@ export const updateEmployee = withPermission(
   }
 
   /**
-   * 未能随调店同步的角色清单，最后回传给调用方（两个谱系都指出：
-   * 「有时搬有时不搬」而调用方只拿到通用「保存成功」，不同步的事实只能靠人去翻审计日志）。
+   * 调店时仍绑在**旧门店**的角色清单，最后回传给调用方。
+   *
+   * 这不是可选的锦上添花：#249 拍板「调店不自动搬迁角色」之后，员工在新店没有任何
+   * store 级角色、而门店 manager 无权补 —— 操作者必须**当场看到**哪些角色需要有权者跟进，
+   * 不能只写进审计日志等人去翻。
    */
   const unsyncedRoles: string[] = []
 
-  // §AFF-03：门店变更时同步更新 permission_roles scope
-  // 仅更新 store 级别的 scope（旧门店 org_node → 新门店 org_node），不影响 market/headquarters 级 scope
+  /**
+   * §AFF-03 —— 调店**不再自动搬迁角色绑定**（#249 口径，甲方拍板）。
+   *
+   * 原行为是「门店变更时把 `permission_roles.scope_id` 从旧店节点改成新店节点」，
+   * 曾是架构要点之一。删除它的决定性理由（codex 谱系）：
+   * **数据模型里没有「这条绑定随主门店移动」的语义标记** —— 没有 primary / followsStore /
+   * 授权来源字段，仅凭「旧店有该角色 && 新店没有」无法区分那条绑定是主岗产生的、兼任的、
+   * 人工授予的、还是同步脚本推导的。自动搬迁本质上是在猜。
+   *
+   * 另一个理由是职责分离：`updateEmployee` 只闸 `employee:update`，而搬迁实质是
+   * 「旧店 revoke + 新店 grant」—— 与 #228 那道守卫的立论（「manager 根本不持有
+   * permission:assign / permission:revoke」）直接冲突。
+   *
+   * ⚠️ 这个决定有明确代价，已如实记录：员工调店后在新店没有任何 store 级角色，
+   * 而门店 manager 无权补 —— 每笔调店都需要 permission 持有者跟进。
+   * 所以「提示」不是可选项而是必需品：未同步的角色清单会回传给调用方（见函数末尾），
+   * 不能只躺在审计日志里。配套的一键迁移入口与待办闭环见 issue（本 PR 不含）。
+   *
+   * 删掉搬迁后连带消失的三个问题：唯一键冲突（无 UPDATE 就不会撞）、
+   * compare-and-set 的并发覆盖、0-rowCount 假审计。
+   */
   if (nextStoreId && oldStoreId && nextStoreId !== oldStoreId) {
-    const [oldStore] = await db
-      .select({ orgNodeId: stores.orgNodeId })
-      .from(stores)
-      .where(eq(stores.storeId, oldStoreId))
-      .limit(1)
-    const [newStore] = await db
-      .select({ orgNodeId: stores.orgNodeId })
-      .from(stores)
-      .where(eq(stores.storeId, nextStoreId))
-      .limit(1)
-
-    /**
-     * #228：旧门店也必须在操作者 scope 内，否则这段会**越权改写 permission_roles**。
-     *
-     * `scopeCond` 是 `store_id ∈ scope` **OR** `org_node_id ∈ scope` —— 员工靠 org_node_id
-     * 命中即可通过，此时它的 `store_id` 完全可以指向操作者看不见的门店。于是：
-     * 一个只有 S1 的门店 manager，对「store_id=S9（外店）、org_node_id=orgS1（本店节点）」
-     * 的员工调用 `updateEmployee(E, { storeId: 'S1' })` —— 新门店校验通过、行也可见，
-     * 接着这段会执行 `UPDATE permission_roles SET scope_id=orgS1 WHERE scope_id=orgS9`：
-     * 既**剥夺**了该员工对 S9 的角色，又**授予**了他对 S1 的角色。而 manager
-     * 根本不持有 `permission:assign` / `permission:revoke`。
-     *
-     * 不在 scope 内就跳过同步（员工归属照改，只是不动那条角色绑定），留给有权者显式处理。
-     */
     if (!isInScope(session, oldStoreId)) {
+      /**
+       * #228：旧门店不在操作者 scope 内。此前这里是「跳过搬迁」的唯一救济；
+       * 现在无论如何都不搬，但仍分开记 reason —— 这两种情形对管理员的含义不同
+       * （前者是「你无权管那条绑定」，后者是「需要有权者复核」）。
+       */
       await logOperation(session, 'permission.scopeSync.skipped', 'permission_role', employeeId, {
         reason: 'old_store_out_of_scope', oldStoreId, newStoreId: nextStoreId,
       })
-    } else if (!oldStore?.orgNodeId || !newStore?.orgNodeId) {
-      /**
-       * 旧店或新店未配置 org_node（`stores.org_node_id` 可空）→ 无可搬绑定。
-       * 原先这条路径**静默跳过、无审计**，与其它「不动则记审计」的约定不一致。
-       */
-      await logOperation(session, 'permission.scopeSync.skipped', 'permission_role', employeeId, {
-        reason: 'store_missing_org_node', oldStoreId, newStoreId: nextStoreId,
-        oldStoreHasNode: !!oldStore?.orgNodeId, newStoreHasNode: !!newStore?.orgNodeId,
-      })
     } else {
-      /**
-       * #249：**允许多绑定** —— 调店不得删除或合并任何角色绑定。口径已拍板（见 issue 评论）。
-       *
-       * 生产数据：31 个「员工 × 角色」对持有多条 scope 绑定，最多的一个 manager 绑 5 个门店、
-       * 另有两人各绑 6 个。**多店兼任是常态，不是异常**。所以原先无条件
-       * `UPDATE … SET scope_id = 新店 WHERE scope_id = 旧店` 有两个问题：
-       *   ① 旧店有多条绑定时，无从判断该动哪条；
-       *   ② 目标店已有同角色时直接撞 `uq_perm_roles_emp_role_scope`（23505）——
-       *      而员工行 UPDATE 已经提交，于是「人调过去了、角色没同步、调用方收到失败」。
-       *
-       * 现在只在**唯一无歧义的搬迁场景**下动它：某角色在旧店有绑定、而目标店没有同角色。
-       * （`uq_perm_roles_emp_role_scope` 保证 (employee, role, scope) 唯一，所以「旧店该角色的绑定」
-       * 天然最多一条 —— 代码里没有、也不需要计数判断。）
-       * 其余一律一条都不动 + 写审计，留给有权者（持 permission:assign/revoke）显式处理。
-       * 这样不删除任何绑定、不扩大授权，31 个兼任员工的调店既不失败也不丢权。
-       *
-       * ⚠️ **不要**把这段读成「唯一键冲突已彻底消除」：SELECT 与 UPDATE 之间没有锁，
-       * 并发授权仍可能撞 23505 —— 那条窗口由下面循环里的 per-row catch 降级处理。
-       * 冲突窗口只是被收窄到「并发 assignRole」，不是没有了。
-       *
-       * ⚠️ 顺带接受一个结果：#249 问题 2 的「两步绕过」（先 storeId→null 再设新值，
-       * 绑定永远停在旧门店）在这个口径下**不再是缺陷** —— 绑定停在旧门店本身就是允许的状态。
-       */
-      const bindings = await db
-        .select({ id: permissionRoles.id, role: permissionRoles.role, scopeId: permissionRoles.scopeId })
-        .from(permissionRoles)
-        .where(and(
-          eq(permissionRoles.employeeId, employeeId),
-          inArray(permissionRoles.scopeId, [oldStore.orgNodeId, newStore.orgNodeId]),
-        ))
-
-      const atOld = bindings.filter((b) => b.scopeId === oldStore.orgNodeId)
-      const rolesAtNew = new Set(bindings.filter((b) => b.scopeId === newStore.orgNodeId).map((b) => b.role))
-      // 仅搬「旧店独此一条、且新店没有同角色」的那些
-      const movable = atOld.filter((b) => !rolesAtNew.has(b.role))
-      const blocked = atOld.filter((b) => rolesAtNew.has(b.role))
-
-      const raced: string[] = []
-      const vanished: string[] = []
-      for (const b of movable) {
-        /**
-         * per-row catch 不可省。SELECT 与这些 UPDATE 之间没有锁 ——
-         * 并发的 `assignRole(emp, role, 新店节点)` 落在这个窗口里，`rolesAtNew` 就是过期快照，
-         * UPDATE 会撞 `uq_perm_roles_emp_role_scope`。不 catch 的后果比改动前更糟：
-         * 员工行 UPDATE 早已提交，异常直接穿出 `updateEmployee` 变成 500，
-         * 而改动前至少会走下面那个 23505 转译返回「数据冲突，请稍后重试」。
-         * `movable.length > 1` 时还会出现「搬了一半、审计只记一半、请求抛异常」。
-         *
-         * 降级为与「目标店已有同角色」相同的处理（不动那条 + 记审计）——
-         * 在「允许多绑定」口径下这两种情形的结果是一样的：该角色留在旧门店，属允许状态。
-         */
-        let moved: { count?: number }
-        try {
-          /**
-           * **compare-and-set**：除了行 id 还要比对 (employee_id, role, scope_id) ——
-           * 只按 id 更新会丢失并发写入（两个谱系独立指出）：这条绑定在 SELECT 之后
-           * 被另一笔调店搬到了 C，当前请求仍会把它覆盖成 B。加上旧 scope 条件后，
-           * 那种情形命中 0 行而不是覆盖。
-           */
-          moved = await db
-            .update(permissionRoles)
-            .set({ scopeId: newStore.orgNodeId, updatedBy: session.employeeId })
-            .where(and(
-              eq(permissionRoles.id, b.id),
-              eq(permissionRoles.employeeId, employeeId),
-              eq(permissionRoles.role, b.role),
-              eq(permissionRoles.scopeId, oldStore.orgNodeId),
-            )) as unknown as { count?: number }
-        } catch (err: unknown) {
-          // 按**约束名**收窄，不吞掉将来新增的其它唯一约束
-          if (pgErrorCode(err) === '23505'
-              && (pgErrorConstraint(err)?.includes('perm_roles') ?? false)) {
-            raced.push(b.role); continue
-          }
-          throw err
+      const [oldStore] = await db
+        .select({ orgNodeId: stores.orgNodeId })
+        .from(stores)
+        .where(eq(stores.storeId, oldStoreId))
+        .limit(1)
+      if (!oldStore?.orgNodeId) {
+        // `stores.org_node_id` 可空 —— 旧店没有节点就不可能有挂在它上面的绑定
+        await logOperation(session, 'permission.scopeSync.skipped', 'permission_role', employeeId, {
+          reason: 'store_missing_org_node', oldStoreId, newStoreId: nextStoreId,
+        })
+      } else {
+        const atOld = await db
+          .select({ role: permissionRoles.role })
+          .from(permissionRoles)
+          .where(and(
+            eq(permissionRoles.employeeId, employeeId),
+            eq(permissionRoles.scopeId, oldStore.orgNodeId),
+          ))
+        if (atOld.length > 0) {
+          const roles = Array.from(new Set(atOld.map((b) => b.role)))
+          await logOperation(session, 'permission.scopeSync.skipped', 'permission_role', employeeId, {
+            reason: 'manual_review_required', oldStoreId, newStoreId: nextStoreId, roles,
+          })
+          unsyncedRoles.push(...roles)
+        } else {
+          await logOperation(session, 'permission.scopeSync.skipped', 'permission_role', employeeId, {
+            reason: 'no_binding_at_old_store', oldStoreId, newStoreId: nextStoreId,
+          })
         }
-        /**
-         * 0 行 = 这条绑定在 SELECT 之后被并发改掉或撤销了。原先无条件记
-         * `permission.scopeSync` 成功 → **假审计**（两个谱系都点了这条）。
-         */
-        if ((moved.count ?? 0) === 0) { vanished.push(b.role); continue }
-        await logOperation(session, 'permission.scopeSync', 'permission_role', employeeId, {
-          oldStoreId, newStoreId: nextStoreId,
-          oldScopeId: oldStore.orgNodeId, newScopeId: newStore.orgNodeId, role: b.role,
-        })
-      }
-      if (raced.length > 0) {
-        await logOperation(session, 'permission.scopeSync.skipped', 'permission_role', employeeId, {
-          reason: 'role_already_bound_at_target', oldStoreId, newStoreId: nextStoreId,
-          roles: raced, concurrent: true,
-        })
-      }
-      if (vanished.length > 0) {
-        await logOperation(session, 'permission.scopeSync.skipped', 'permission_role', employeeId, {
-          reason: 'source_binding_changed', oldStoreId, newStoreId: nextStoreId, roles: vanished,
-        })
-      }
-      unsyncedRoles.push(...raced, ...vanished)
-      if (blocked.length > 0) {
-        await logOperation(session, 'permission.scopeSync.skipped', 'permission_role', employeeId, {
-          reason: 'role_already_bound_at_target', oldStoreId, newStoreId: nextStoreId,
-          roles: blocked.map((b) => b.role),
-        })
-        unsyncedRoles.push(...blocked.map((b) => b.role))
-      }
-      /**
-       * #249 问题 3：原先只在 `count > 0` 时写日志，「本来就没有绑定」与
-       * 「被并发改掉了」都静默。现在无绑定可搬也留一条痕。
-       */
-      if (atOld.length === 0) {
-        await logOperation(session, 'permission.scopeSync.skipped', 'permission_role', employeeId, {
-          reason: 'no_binding_at_old_store', oldStoreId, newStoreId: nextStoreId,
-        })
       }
     }
   }
@@ -1203,7 +1113,7 @@ export const updateEmployee = withPermission(
     const roles = Array.from(new Set(unsyncedRoles)).join('、')
     return {
       success: true,
-      message: `员工信息已更新；以下角色的权限范围未随调店同步，请到权限页确认：${roles}`,
+      message: `员工信息已更新。以下角色仍绑定在原门店，需到「权限管理」页按新门店重新授权：${roles}`,
     }
   }
   return { success: true, message: '员工信息已更新' }
