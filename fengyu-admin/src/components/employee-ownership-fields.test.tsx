@@ -114,9 +114,13 @@ describe('EmployeeOwnershipFields — 改门店 → 组织跟着改', () => {
 function selectOrgNode(name: string) {
   // 触发器：未选中时显示 placeholder
   fireEvent.click(screen.getByText(/请选择所属组织|总部\/|市场一/))
-  // 逐层展开（根 hq → m1），三角是纯文本节点
-  for (const arrow of screen.queryAllByText('▸')) fireEvent.click(arrow)
-  for (const arrow of screen.queryAllByText('▸')) fireEvent.click(arrow)
+  // 逐层展开：每轮把当前所有折叠三角点开，下一层随之出现。
+  // 用 testid 而不是 '▸' 字面 —— 换图标时不会碎（GLM 谱系第 9 轮 P3）。
+  for (let depth = 0; depth < 3; depth++) {
+    const toggles = screen.queryAllByTestId(/^org-tree-toggle-/)
+    if (toggles.length === 0) break
+    for (const t of toggles) if (t.textContent === '▸') fireEvent.click(t)
+  }
   fireEvent.click(screen.getByRole('button', { name }))
 }
 

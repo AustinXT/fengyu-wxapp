@@ -260,6 +260,8 @@ describe('createEmployee — 服务端输入校验', () => {
     ;(isOrgNodeInScope as any).mockReturnValue(true)
     ;(isEmployeeRowVisible as any).mockReturnValue(true)
     defaultAncestryMocks()
+    mockTxPassthrough()
+    resetAuditMocks()
   })
 
   it('姓名为空 → 拒绝', async () => {
@@ -525,6 +527,8 @@ describe('updateEmployee — 服务端输入校验 + 错误处理', () => {
     ;(isOrgNodeInScope as any).mockReturnValue(true)
     ;(isEmployeeRowVisible as any).mockReturnValue(true)
     defaultAncestryMocks()
+    mockTxPassthrough()
+    resetAuditMocks()
   })
 
   it('手机号格式错误 → 拒绝', async () => {
@@ -573,6 +577,50 @@ describe('updateEmployee — 服务端输入校验 + 错误处理', () => {
 
     expect(result.success).toBe(true)
     assertSet(set.mock.calls.at(-1)?.[0])
+  })
+
+  /**
+   * GLM 谱系第 9 轮：判据必须是「**本次操作之后**是否离职态」而不是「本次是否显式传了
+   * isResigned」。否则在职员工直调 `{ resignedAt }` 就能挂上离职日期。
+   */
+  it('在职员工只传 resignedAt（不带 isResigned）→ 日期被清空，不允许「在职挂离职日期」', async () => {
+    ;(db.select as any).mockImplementation(mockSelectExistingEmployee({
+      storeId: 'store-A', orgNodeId: 'org-store-A', isResigned: false, resignedAt: null,
+    }))
+    const set = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({ count: 1 }) })
+    ;(db.update as any).mockReturnValue({ set })
+
+    const result = await updateEmployee('FY-001', { resignedAt: '2026-01-01' })
+
+    expect(result.success).toBe(true)
+    expect(set).toHaveBeenCalledWith(expect.objectContaining({ resignedAt: null }))
+  })
+
+  it('在职员工只传 resignationReason → 一并清空（同一不变量的另一半）', async () => {
+    ;(db.select as any).mockImplementation(mockSelectExistingEmployee({
+      storeId: 'store-A', orgNodeId: 'org-store-A', isResigned: false, resignedAt: null,
+    }))
+    const set = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({ count: 1 }) })
+    ;(db.update as any).mockReturnValue({ set })
+
+    const result = await updateEmployee('FY-001', { resignationReason: '编的' })
+
+    expect(result.success).toBe(true)
+    expect(set).toHaveBeenCalledWith(expect.objectContaining({ resignationReason: null }))
+  })
+
+  /** ⚠️ 离职态缺日期时回落**旧值**，不能无条件写今天 —— 否则普通编辑会篡改离职日期 */
+  it('已离职员工普通编辑（不带 isResigned）→ 离职日期保持原值，不被重置为今天', async () => {
+    ;(db.select as any).mockImplementation(mockSelectExistingEmployee({
+      storeId: 'store-A', orgNodeId: 'org-store-A', isResigned: true, resignedAt: '2025-06-30',
+    }))
+    const set = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({ count: 1 }) })
+    ;(db.update as any).mockReturnValue({ set })
+
+    const result = await updateEmployee('FY-001', { name: '李四' })
+
+    expect(result.success).toBe(true)
+    expect(set).toHaveBeenCalledWith(expect.objectContaining({ resignedAt: '2025-06-30' }))
   })
 
   /** 复职时离职原因也要一起清 —— 否则在职员工挂着一条离职原因 */
@@ -802,8 +850,13 @@ describe('updateEmployee — 服务端输入校验 + 错误处理', () => {
       updateEmployee('FY-001', { isResigned: true }),
     ).rejects.toThrow(/INVALID_STATE: 该员工是系统最后一个活跃 admin/)
 
-    expect(db.update).not.toHaveBeenCalled()
-    expect(db.transaction).not.toHaveBeenCalled()
+    /**
+     * 守卫现在在**事务内**重读（codex 谱系第 9 轮）：两个 admin 被并发离职时，
+     * 事务外 check-then-act 会让双方都读到 count = 2、各自成功，最终零管理员。
+     * 所以这里事务会开、但整体回滚 —— 判据是「UPDATE 没发生」而不是「事务没开」。
+     */
+    expect(db.update, '守卫应在 UPDATE 之前抛出').not.toHaveBeenCalled()
+    expect(db.transaction, '守卫在事务内重读，所以事务会开（随后回滚）').toHaveBeenCalled()
   })
 
   it('isResigned=true admin 但 count=2 → 成功离职 + 角色清理', async () => {
@@ -863,6 +916,51 @@ describe('updateEmployee — 服务端输入校验 + 错误处理', () => {
     await expect(updateEmployee('FY-001', { isResigned: true })).rejects.toThrow('connection lost')
     expect(txUpdate, '员工行必须在事务内更新，否则角色删除失败时离职状态已经落盘').toHaveBeenCalled()
     expect(db.update, '离职路径不得走事务外的 db.update').not.toHaveBeenCalled()
+  })
+
+  /**
+   * GLM 谱系第 9 轮 P3：`23505`/`23503` 的既有用例全走非事务的 `db.update`，
+   * 离职路径换成 `tx.update` 之后这条翻译链没有用例。错误从事务回调传播到外层 catch，
+   * 代码路径明确 —— 但本项目的惯例是「锁住而非推断」。
+   */
+  it('离职事务内撞 FK 23503 → 翻译成友好文案（不是 500）', async () => {
+    ;(db.select as any).mockImplementation(mockSelectExistingEmployee())
+    ;(db.transaction as any).mockImplementation(async (fn: any) => fn({
+      update: vi.fn().mockReturnValue({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockRejectedValue(Object.assign(new Error('fk'), {
+            code: '23503', constraint: 'staff_wechat_users_org_node_id_org_nodes_id_fk',
+          })),
+        }),
+      }),
+      select: vi.fn(),
+      delete: vi.fn(),
+    }))
+
+    const result = await updateEmployee('FY-001', { isResigned: true })
+
+    expect(result.success).toBe(false)
+    expect(result.message).toBe('所选门店或组织节点已被删除，请刷新后重试')
+  })
+
+  it('离职事务内撞手机号唯一约束 23505 → 翻译成友好文案', async () => {
+    ;(db.select as any).mockImplementation(mockSelectExistingEmployee())
+    ;(db.transaction as any).mockImplementation(async (fn: any) => fn({
+      update: vi.fn().mockReturnValue({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockRejectedValue(Object.assign(new Error('dup'), {
+            code: '23505', constraint: 'uq_staff_users_phone',
+          })),
+        }),
+      }),
+      select: vi.fn(),
+      delete: vi.fn(),
+    }))
+
+    const result = await updateEmployee('FY-001', { isResigned: true, phone: '13900000009' })
+
+    expect(result.success).toBe(false)
+    expect(result.message).toBe('该手机号已被其他员工使用')
   })
 
   /** 乐观锁未命中时不该删角色 —— CAS 没改到行，角色也不该动 */
@@ -999,6 +1097,35 @@ function mockSelectByTable(plan: {
   }))
 }
 
+/**
+ * `updateEmployee` 的整个写入段现在在一个事务里（codex 谱系第 8/9 轮）：
+ * 员工行 UPDATE、离职清角色、§AFF-03 审计、`logUpdate` 全部走 `tx`。
+ *
+ * 这个默认实现把 `tx` 的各方法**直接指向同名的 `db.*` mock** —— 于是既有用例照旧
+ * 摆布 `db.update` / `db.select` 并断言它们，不必每条都重写一遍事务替身。
+ * 真正要区分「事务内 vs 事务外」的用例（例如「delete 失败时员工行是否一起回滚」）
+ * 自己覆盖 `db.transaction`。
+ */
+/**
+ * ⚠️ `vi.clearAllMocks()` 只清调用记录，**不清 mockImplementation** ——
+ * 某条用例把 `logOperation` 设成 reject 之后会一路泄漏到后面所有用例。
+ * 每个 beforeEach 显式恢复成 resolve。
+ */
+function resetAuditMocks() {
+  ;(logOperation as any).mockResolvedValue(undefined)
+  ;(logUpdate as any).mockResolvedValue(undefined)
+}
+
+function mockTxPassthrough() {
+  ;(db.transaction as any).mockImplementation(async (fn: any) => fn({
+    update: (db as any).update,
+    select: (db as any).select,
+    delete: (db as any).delete,
+    insert: (db as any).insert,
+    execute: (db as any).execute,
+  }))
+}
+
 /** 取某个判据被问过的 id 列表（用于断言「除旧值外没问过别的」） */
 function askedIds(fn: unknown): string[] {
   return ((fn as { mock: { calls: unknown[][] } }).mock.calls).map((c) => c[1] as string)
@@ -1044,6 +1171,8 @@ describe('updateEmployee — #228 归属变更必须落在 scope 内', () => {
     applyScopeFixture()
     ;(isAdminScope as any).mockReturnValue(false)
     defaultAncestryMocks()
+    mockTxPassthrough()
+    resetAuditMocks()
   })
 
   /**
@@ -1204,6 +1333,7 @@ describe('updateEmployee — #228 归属变更必须落在 scope 内', () => {
     expect(logOperation).toHaveBeenCalledWith(
       mockSession, 'permission.scopeSync.skipped', 'permission_role', 'FY-001',
       expect.objectContaining({ reason: 'manual_review_required', roles: ['manager'] }),
+      expect.anything(),   // 第 6 参 = executor（事务句柄）
     )
   })
 
@@ -1242,6 +1372,7 @@ describe('updateEmployee — #228 归属变更必须落在 scope 内', () => {
     expect(logOperation).toHaveBeenCalledWith(
       mockSession, 'permission.scopeSync.skipped', 'permission_role', 'FY-001',
       expect.objectContaining({ reason: 'old_store_out_of_scope', oldStoreId: 'store-OUT' }),
+      expect.anything(),   // 第 6 参 = executor（事务句柄）
     )
   })
 
@@ -1558,6 +1689,8 @@ describe('createEmployee — #228 归属同样受 scope 约束', () => {
     applyScopeFixture()
     ;(isAdminScope as any).mockReturnValue(false)
     defaultAncestryMocks()
+    mockTxPassthrough()
+    resetAuditMocks()
   })
 
   const BASE = { name: '张三', phone: '13812345678', idCard: '110101199003078888' }
@@ -1646,6 +1779,8 @@ describe('#249 调店不自动搬迁角色绑定 —— 只留审计 + 回传提
     applyScopeFixture()
     ;(isAdminScope as any).mockReturnValue(false)
     ;(isInScope as any).mockImplementation((_s: unknown, id: string) => IN_SCOPE_STORES.has(id))
+    mockTxPassthrough()
+    resetAuditMocks()
   })
 
   function mockUpdateOnce() {
@@ -1681,6 +1816,7 @@ describe('#249 调店不自动搬迁角色绑定 —— 只留审计 + 回传提
     expect(logOperation).toHaveBeenCalledWith(
       mockSession, 'permission.scopeSync.skipped', 'permission_role', 'FY-001',
       expect.objectContaining({ reason: 'manual_review_required', roles: ['manager'] }),
+      expect.anything(),   // 第 6 参 = executor（事务句柄）
     )
     // 操作者必须当场看到需要跟进的角色，不能只躺在审计里
     expect(result.message).toContain('仍绑定在原门店')
@@ -1708,6 +1844,7 @@ describe('#249 调店不自动搬迁角色绑定 —— 只留审计 + 回传提
     expect(logOperation).toHaveBeenCalledWith(
       mockSession, 'permission.scopeSync.skipped', 'permission_role', 'FY-001',
       expect.objectContaining({ reason: 'manual_review_required' }),
+      expect.anything(),   // 第 6 参 = executor（事务句柄）
     )
   })
 
@@ -1727,6 +1864,7 @@ describe('#249 调店不自动搬迁角色绑定 —— 只留审计 + 回传提
     expect(logOperation).toHaveBeenCalledWith(
       mockSession, 'permission.scopeSync.skipped', 'permission_role', 'FY-001',
       expect.objectContaining({ reason: 'no_binding_at_old_store' }),
+      expect.anything(),   // 第 6 参 = executor（事务句柄）
     )
   })
 
@@ -1749,6 +1887,7 @@ describe('#249 调店不自动搬迁角色绑定 —— 只留审计 + 回传提
     expect(logOperation).toHaveBeenCalledWith(
       mockSession, 'permission.scopeSync.skipped', 'permission_role', 'FY-001',
       expect.objectContaining({ reason: 'old_store_out_of_scope' }),
+      expect.anything(),   // 第 6 参 = executor（事务句柄）
     )
   })
 
@@ -1766,6 +1905,7 @@ describe('#249 调店不自动搬迁角色绑定 —— 只留审计 + 回传提
     expect(logOperation).toHaveBeenCalledWith(
       mockSession, 'permission.scopeSync.skipped', 'permission_role', 'FY-001',
       expect.objectContaining({ reason: 'store_missing_org_node' }),
+      expect.anything(),   // 第 6 参 = executor（事务句柄）
     )
   })
 
@@ -1790,6 +1930,7 @@ describe('#249 调店不自动搬迁角色绑定 —— 只留审计 + 回传提
     expect(logOperation).toHaveBeenCalledWith(
       mockSession, 'permission.scopeSync.skipped', 'permission_role', 'FY-001',
       expect.objectContaining({ reason: 'manual_review_required', roles: ['manager'] }),
+      expect.anything(),   // 第 6 参 = executor（事务句柄）
     )
     expect(result.message).toContain('仍绑定在原门店')
   })
@@ -1804,6 +1945,87 @@ describe('#249 调店不自动搬迁角色绑定 —— 只留审计 + 回传提
    * 改成只断言这一层真正该负责的事：拿到什么绑定清单，就记什么 reason、回传什么文案。
    * 子树语义本身（下探方向、去重、employee 过滤）由真库冒烟负责。
    */
+  /**
+   * codex 谱系第 9 轮 P1：**所有**审计都必须与 UPDATE 同生共死。
+   * 留在事务外时，`logUpdate` / `reinstated.*` / `scopeSync.skipped` 任一失败都会留下
+   * 「状态已改、前端显示失败」；复职那条更糟 —— 重试不再进入 `isReinstating`，提示永久丢失。
+   */
+  it.each([
+    ['employee.update 审计失败 → 整体回滚（不留下「已改但报失败」）', 'employee.update'],
+    ['复职审计失败 → 整体回滚（否则重试不再进复职分支，提示永久丢失）', 'permission.reinstated'],
+    ['§AFF-03 审计失败 → 整体回滚', 'permission.scopeSync.skipped'],
+  ])('%s', async (_label, failingAction) => {
+    mockSelectByTable({
+      employee: [{ storeId: 'store-A', orgNodeId: 'org-dept', isResigned: true }],
+      store: [[{ orgNodeId: 'org-store-B' }], [{ orgNodeId: 'org-store-A' }]],
+      bindings: [],
+    })
+    mockUpdateOnce()
+    ;(logOperation as any).mockImplementation((_s: unknown, action: string) =>
+      action.startsWith(failingAction) ? Promise.reject(new Error('audit down')) : Promise.resolve())
+    ;(logUpdate as any).mockImplementation(() =>
+      failingAction === 'employee.update' ? Promise.reject(new Error('audit down')) : Promise.resolve())
+
+    // 审计在事务内 → 失败即抛出，整笔回滚；不会出现「成功返回但审计缺失」
+    await expect(updateEmployee('FY-001', { storeId: 'store-B', isResigned: false })).rejects.toThrow('audit down')
+  })
+
+  /**
+   * 「审计失败会抛出」不等于「审计在事务里」—— 上一版红检（把 `logUpdate` 的 `tx` 去掉）
+   * **没有变红**，因为那组用例只断言抛出。判据必须是「审计收到的 executor 就是那个 tx」。
+   */
+  it('employee.update 审计与 UPDATE 共用同一个事务句柄', async () => {
+    mockSelectByTable({
+      employee: [{ storeId: 'store-A', orgNodeId: 'org-dept' }],
+      store: [[{ orgNodeId: 'org-store-B' }], [{ orgNodeId: 'org-store-A' }]],
+      bindings: [],
+    })
+    let handedTx: unknown
+    ;(db.transaction as any).mockImplementation(async (fn: any) => {
+      const tx = {
+        update: vi.fn().mockReturnValue({
+          set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({ count: 1 }) }),
+        }),
+        select: (db as any).select,
+        delete: vi.fn(),
+        insert: vi.fn(),
+        execute: (db as any).execute,
+      }
+      handedTx = tx
+      return fn(tx)
+    })
+
+    const result = await updateEmployee('FY-001', { storeId: 'store-B' })
+
+    expect(result.success).toBe(true)
+    // logUpdate(session, action, targetType, targetId, before, after, executor) —— 第 7 参
+    expect((logUpdate as any).mock.calls[0][6]).toBe(handedTx)
+    // §AFF-03 的审计（第 6 参）同理
+    expect((logOperation as any).mock.calls[0][5]).toBe(handedTx)
+  })
+
+  /**
+   * 事务扩大后，**审计日志自身**的 FK（operator / org_node）并发失效也会抛 `23503`，
+   * 那跟用户选的门店毫无关系 —— 给「所选门店或组织节点已被删除」是误导（codex 第 9 轮 P2）。
+   */
+  it('审计自身的 FK 冲突（非员工表约束）→ 通用并发文案，不谎称门店被删', async () => {
+    mockSelectByTable({
+      employee: [{ storeId: 'store-A', orgNodeId: 'org-dept' }],
+      store: [[{ orgNodeId: 'org-store-B' }], [{ orgNodeId: 'org-store-A' }]],
+      bindings: [],
+    })
+    mockUpdateOnce()
+    ;(logUpdate as any).mockRejectedValue(Object.assign(new Error('fk'), {
+      code: '23503', constraint: 'operation_logs_operator_employee_id_fk',
+    }))
+
+    const result = await updateEmployee('FY-001', { storeId: 'store-B' })
+
+    expect(result.success).toBe(false)
+    expect(result.message).toBe('数据冲突，请稍后重试')
+    expect(result.message).not.toContain('所选门店')
+  })
+
   it('拿到非空绑定清单 → 记 manual_review_required 并回传该清单', async () => {
     mockSelectByTable({
       employee: [{ storeId: 'store-A', orgNodeId: 'org-dept' }],
@@ -1817,10 +2039,11 @@ describe('#249 调店不自动搬迁角色绑定 —— 只留审计 + 回传提
 
     expect(result.success).toBe(true)
     // 根必须是旧门店的组织节点，不是新门店的、也不是员工的 orgNodeId
-    expect(findRolesBoundWithinSubtree).toHaveBeenCalledWith('FY-001', 'org-store-A')
+    expect(findRolesBoundWithinSubtree).toHaveBeenCalledWith('FY-001', 'org-store-A', expect.anything())
     expect(logOperation).toHaveBeenCalledWith(
       mockSession, 'permission.scopeSync.skipped', 'permission_role', 'FY-001',
       expect.objectContaining({ reason: 'manual_review_required', roles: ['finance'] }),
+      expect.anything(),   // 第 6 参 = executor（事务句柄）
     )
     expect(result.message).toContain('finance')
   })
@@ -1856,6 +2079,7 @@ describe('#249 调店不自动搬迁角色绑定 —— 只留审计 + 回传提
     expect(logOperation).toHaveBeenCalledWith(
       mockSession, 'permission.scopeSync.skipped', 'permission_role', 'FY-001',
       expect.objectContaining({ reason: 'roles_revoked_by_resignation' }),
+      expect.anything(),   // 第 6 参 = executor（事务句柄）
     )
   })
 
@@ -1906,6 +2130,7 @@ describe('#249 调店不自动搬迁角色绑定 —— 只留审计 + 回传提
     expect(logOperation).toHaveBeenCalledWith(
       mockSession, 'permission.scopeSync.skipped', 'permission_role', 'FY-001',
       expect.objectContaining({ reason: 'roles_revoked_by_resignation' }),
+      expect.anything(),   // 第 6 参 = executor（事务句柄）
     )
     // 不得再返回「可能仍有角色绑定」——角色已被离职分支删光
     expect(result.message).toBe('员工信息已更新')
@@ -1933,6 +2158,7 @@ describe('#249 调店不自动搬迁角色绑定 —— 只留审计 + 回传提
     expect(logOperation).toHaveBeenCalledWith(
       mockSession, 'permission.scopeSync.skipped', 'permission_role', 'FY-001',
       expect.objectContaining({ reason: 'no_binding_at_old_store' }),
+      expect.anything(),   // 第 6 参 = executor（事务句柄）
     )
   })
 
@@ -1955,6 +2181,7 @@ describe('#249 调店不自动搬迁角色绑定 —— 只留审计 + 回传提
     expect(logOperation).toHaveBeenCalledWith(
       mockSession, 'permission.scopeSync.skipped', 'permission_role', 'FY-001',
       expect.objectContaining({ reason: 'manual_review_required', roles: ['manager'] }),
+      expect.anything(),   // 第 6 参 = executor（事务句柄）
     )
     expect(result.message).toContain('manager')
   })
@@ -1986,6 +2213,7 @@ describe('#249 调店不自动搬迁角色绑定 —— 只留审计 + 回传提
     expect(logOperation).toHaveBeenCalledWith(
       mockSession, 'permission.reinstated.rolesEmpty', 'permission_role', 'FY-001',
       expect.objectContaining({ oldStoreId: 'store-A', newStoreId: 'store-B' }),
+      expect.anything(),   // 第 6 参 = executor（事务句柄）
     )
   })
 
@@ -2013,6 +2241,7 @@ describe('#249 调店不自动搬迁角色绑定 —— 只留审计 + 回传提
     expect(logOperation).toHaveBeenCalledWith(
       mockSession, 'permission.reinstated.rolesRetained', 'permission_role', 'FY-001',
       expect.objectContaining({ roles: ['manager', 'finance'] }),
+      expect.anything(),   // 第 6 参 = executor（事务句柄）
     )
   })
 
@@ -2139,6 +2368,8 @@ describe('#259 归属自洽 —— 只禁 orgNodeId 指向「另一个门店」'
     applyScopeFixture()
     ;(isAdminScope as any).mockReturnValue(false)
     defaultAncestryMocks()
+    mockTxPassthrough()
+    resetAuditMocks()
   })
 
   function mockUpdateOk2() {
@@ -2281,7 +2512,9 @@ describe('#259 归属自洽 —— 只禁 orgNodeId 指向「另一个门店」'
     })
     ;(db.update as any).mockReturnValue({
       set: vi.fn().mockReturnValue({
-        where: vi.fn().mockRejectedValue(Object.assign(new Error('fk'), { code: '23503' })),
+        where: vi.fn().mockRejectedValue(Object.assign(new Error('fk'), {
+          code: '23503', constraint: 'staff_wechat_users_store_id_stores_store_id_fk',
+        })),
       }),
     })
 
@@ -2291,7 +2524,14 @@ describe('#259 归属自洽 —— 只禁 orgNodeId 指向「另一个门店」'
     expect(result.message).toBe('所选门店或组织节点已被删除，请刷新后重试')
   })
 
-  /** storeId 为空时无从比对，跳过（96 个仅组织节点的在职员工走这条） */
+  /**
+   * storeId 为空时无从比对「另一个门店」，跳过。
+   *
+   * ⚠️ 原注释写「96 个仅组织节点的在职员工走这条」——**夸大了**：那 96 人里 95 人挂
+   * 总部/部门（本来就无门店祖先，走的是下面那条），只有 1 人（王志军 FY-260731005，
+   * `org_node_id` 直接指向门店节点）真正依赖这条放行，而那 1 条恰是脏数据。
+   * 这个口径缺口已在 `assertOwnershipConsistent` 的注释里记录并提交 issue #259 待拍板。
+   */
   it('storeId 为空 → 跳过归属自洽校验', async () => {
     mockSelectByTable({
       employee: [{ storeId: 'store-A', orgNodeId: 'org-store-A' }],
@@ -2357,6 +2597,8 @@ describe('updateEmployee — §AFF-03 门店变更 scope 同步', () => {
     ;(isOrgNodeInScope as any).mockReturnValue(true)
     ;(isEmployeeRowVisible as any).mockReturnValue(true)
     defaultAncestryMocks()
+    mockTxPassthrough()
+    resetAuditMocks()
   })
 
   it('storeId 变更 → 只写 skipped 审计，permission_roles 不动', async () => {
@@ -2378,6 +2620,7 @@ describe('updateEmployee — §AFF-03 门店变更 scope 同步', () => {
     expect(logOperation).toHaveBeenCalledWith(
       mockSession, 'permission.scopeSync.skipped', 'permission_role', 'FY-001',
       expect.objectContaining({ reason: 'manual_review_required' }),
+      expect.anything(),   // 第 6 参 = executor（事务句柄）
     )
     expect(logUpdate).toHaveBeenCalledTimes(1)
   })
@@ -2461,6 +2704,7 @@ describe('updateEmployee — §AFF-03 门店变更 scope 同步', () => {
     expect(logOperation).toHaveBeenCalledWith(
       mockSession, 'permission.scopeSync.skipped', 'permission_role', 'FY-001',
       expect.objectContaining({ reason: 'manual_review_required' }),
+      expect.anything(),   // 第 6 参 = executor（事务句柄）
     )
     expect(logUpdate).toHaveBeenCalledTimes(1)
   })
@@ -2488,6 +2732,7 @@ describe('updateEmployee — §AFF-03 门店变更 scope 同步', () => {
     expect(logOperation).toHaveBeenCalledWith(
       mockSession, 'permission.scopeSync.skipped', 'permission_role', 'FY-001',
       expect.objectContaining({ reason: 'no_binding_at_old_store' }),
+      expect.anything(),   // 第 6 参 = executor（事务句柄）
     )
     expect(logUpdate).toHaveBeenCalledTimes(1)
   })

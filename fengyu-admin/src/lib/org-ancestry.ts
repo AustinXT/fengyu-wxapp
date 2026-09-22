@@ -1,6 +1,9 @@
 import { sql } from 'drizzle-orm'
 import { db } from '@/db'
 
+/** 可传事务句柄 —— §AFF-03 的绑定查询与审计在同一事务里，读的必须是同一个快照 */
+type SqlExecutor = Pick<typeof db, 'execute'>
+
 /**
  * 组织树的两条递归查询，从 `actions/employees.ts` 里抽出来。
  *
@@ -80,8 +83,9 @@ export async function findNearestStoreAncestor(orgNodeId: string): Promise<Neare
 export async function findRolesBoundWithinSubtree(
   employeeId: string,
   rootOrgNodeId: string,
+  executor: SqlExecutor = db,
 ): Promise<string[]> {
-  const rows = await db.execute(sql`
+  const rows = await executor.execute(sql`
     WITH RECURSIVE subtree AS (
       SELECT id, ARRAY[id] AS path FROM org_nodes WHERE id = ${rootOrgNodeId}
       UNION ALL

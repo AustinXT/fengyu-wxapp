@@ -82,8 +82,12 @@ function pickStore(storeId: string) {
 /** 展开 OrgTreeSelect 的树并点选某个节点 */
 function pickOrgNode(name: string) {
   fireEvent.click(screen.getByText('请选择所属组织'))
-  for (let i = 0; i < 2; i++) {
-    for (const arrow of screen.queryAllByText('▸')) fireEvent.click(arrow)
+  // 逐层展开：每轮把当前所有折叠三角点开，下一层随之出现。
+  // 用 testid 而不是 '▸' 字面 —— 换图标时不会碎（GLM 谱系第 9 轮 P3）。
+  for (let depth = 0; depth < 3; depth++) {
+    const toggles = screen.queryAllByTestId(/^org-tree-toggle-/)
+    if (toggles.length === 0) break
+    for (const t of toggles) if (t.textContent === '▸') fireEvent.click(t)
   }
   fireEvent.click(screen.getByRole('button', { name }))
 }

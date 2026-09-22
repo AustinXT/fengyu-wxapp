@@ -174,9 +174,16 @@ admin 管理权限分配/撤销、WorkFine → PG 数据同步、操作日志查
   实查为空 → 提示「已全部撤销，需重新授权」；非空 → 提示「离职期间仍保留…，复职后即恢复生效」。
   同理 §AFF-03 的离职分支只认 `data.isResigned === true`（本请求刚删的，同一 action 内可信），
   旧值已离职的请求一律落到查询分支查事实，否则残留绑定会被静默吞掉。
-  标记离职时，**员工行 UPDATE + 角色查询/删除 + revoke 审计在同一个事务内**（`logOperation`
-  的可选 `executor` 参数传 `tx`）—— 否则「is_resigned 先落盘、角色事务失败」就会留下
-  「离职行 + 有效角色」，而审计还可能记了 revoke 却没真删（假审计）。
+  `updateEmployee` 的**整个写入段在一个事务内**：最后一个超级管理员守卫（事务内重读，
+  否则两个 admin 并发离职会双双通过、留下零管理员）→ 复职角色快照 → 员工行 UPDATE（乐观锁 CAS）
+  → 离职时清角色 + revoke 审计 → §AFF-03 审计 → 复职审计 → `employee.update` 审计。
+  `logOperation` / `logUpdate` / `countActiveAdmins` / `isAdminEmployee` /
+  `findAllRoleBindings` / `findRolesBoundWithinSubtree` 都接可选 executor，一律传 `tx`。
+  事务外只剩 `revalidatePath` 与文案组装。
+  理由：审计留在事务外时，它失败会留下「状态已改、前端显示失败」；复职那条更糟 ——
+  重试不再进入复职分支，权限提示永久丢失。
+  `23503` 只在约束名含 `staff_wechat_users` 时翻译成「门店/组织节点已被删除」，
+  审计日志自身的 FK 冲突走通用并发文案（否则是误导）。
   ⚠️ 生产实测（2026-09-22）当前 `is_resigned=true` 且仍有绑定的行是 0 条（27 个离职员工全干净）。
   **另一个相关缺口在本 PR 范围外，待独立处理**：
   `actions/auth.ts` 的 `login` 与 `lib/auth.ts` 取 session 都不校验 `is_resigned`，

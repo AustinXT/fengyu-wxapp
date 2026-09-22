@@ -2,6 +2,9 @@ import { eq } from 'drizzle-orm'
 import { db } from '@/db'
 import { permissionRoles } from '@db/permission'
 
+/** 可传事务句柄 —— 复职快照要与那次 UPDATE 在同一事务里读，否则快照与写入之间可被插队 */
+type RoleQueryExecutor = Pick<typeof db, 'select'>
+
 /**
  * 查某员工当前**全部**角色绑定（不按 scope 过滤）。
  *
@@ -29,8 +32,9 @@ import { permissionRoles } from '@db/permission'
  */
 export async function findAllRoleBindings(
   employeeId: string,
+  executor: RoleQueryExecutor = db,
 ): Promise<{ role: string; scopeId: string }[]> {
-  return db
+  return executor
     .select({ role: permissionRoles.role, scopeId: permissionRoles.scopeId })
     .from(permissionRoles)
     .where(eq(permissionRoles.employeeId, employeeId))

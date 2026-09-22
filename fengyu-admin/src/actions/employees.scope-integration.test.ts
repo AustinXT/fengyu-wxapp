@@ -157,6 +157,20 @@ function mockUpdateOk() {
   return { set }
 }
 
+/**
+ * `updateEmployee` 的整个写入段在一个事务里（codex 谱系第 8/9 轮）。
+ * 本文件只关心 scope 判据，所以把 `tx` 直接指向同名的 `db.*` mock，既有断言照旧生效。
+ */
+function mockTxPassthrough() {
+  ;(db.transaction as any).mockImplementation(async (fn: any) => fn({
+    update: (db as any).update,
+    select: (db as any).select,
+    delete: (db as any).delete,
+    insert: (db as any).insert,
+    execute: (db as any).execute,
+  }))
+}
+
 /** createEmployee 侧：员工表查空（没有旧行可读），stores 仍需返回一行，理由同上 */
 function mockSelectEmpty() {
   ;(db.select as any).mockImplementation(() => ({
@@ -179,6 +193,7 @@ function mockTransactionOk(employeeId = 'FY-260315001') {
 describe('#228 组合层 — updateEmployee × 真实 scope 判据', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    mockTxPassthrough()
   })
 
   it('门店 manager 把本店员工调到 scope 外门店 → 被真实判据拒绝，零写入', async () => {
@@ -268,6 +283,7 @@ describe('#228 组合层 — updateEmployee × 真实 scope 判据', () => {
 describe('#228 组合层 — 多角色 scope 收紧（不得跨角色串用）', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    mockTxPassthrough()
   })
 
   const MIXED = sessionOf(
