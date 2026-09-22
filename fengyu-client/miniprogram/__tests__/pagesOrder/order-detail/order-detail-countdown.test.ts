@@ -4,8 +4,10 @@
  * 守两件事：
  *  1. 后端不下发 expire_at 时（员工开单单、有在途支付意图的自助单）页面不起倒计时，
  *     文案走 wxml 的兜底分支「请完成支付」，不出现「请在 xx 前完成支付」
- *  2. 「归零重载」不会死循环。断点是**区分装表时机**：装表时已过期只清 UI 不重载，
- *     走着走着归零才重载一次 —— 重载回来必然落进前一条，两跳内收敛，无需任何状态
+ *  2. 「归零重载」不会死循环，且截止点过了之后页面不会承诺「可支付」。
+ *     现行口径（10 轮评审收敛，详见 startCountdown 的 jsdoc 口径表）：
+ *     权威正数正常计时 / 权威归零 → 关支付入口 + 重载（收敛靠服务端补关）/
+ *     非权威归零 → 每单只重载一次 / 墙钟回拨 → 重载但不关支付入口
  */
 
 import { vi } from 'vitest';
@@ -647,7 +649,52 @@ describe('order-detail 倒计时的生命周期与并发 (#215)', () => {
     expect(Toast.fail).not.toHaveBeenCalled();
   });
 
-});
+  test('权威剩余量被 RTT 扣光 → 同样关支付入口（与 tick 归零同后果）', () => {
+    // 这条孪生路径此前漏了置闸：重载一失败，页面就退回成静态的「请完成支付 + 去支付」
+    const { page } = createPageWithStubbedLoad();
+    page._lastLoadRttMs = 500;
+    page.startCountdown(PENDING_ORDER_WITH_REMAINING(50));
+
+    expect(page.data.payBlockedByExpiry).toBe(true);
+  });
+
+  test('非权威归零（旧云函数）不关支付入口 —— 那些单在旧后端本来就能付', () => {
+    const { page } = createPageWithStubbedLoad();
+    page.startCountdown(PENDING_ORDER(new Date(Date.now() - 1000).toISOString()));
+
+    expect(page.data.payBlockedByExpiry).toBe(false);
+  });
+
+  test('隐藏期间跨过截止点 → onShow 关支付入口（那次刷新可能失败）', () => {
+    vi.useFakeTimers();
+    try {
+      const { page } = createPageWithStubbedLoad();
+      page.setData({ order: { sale_order_id: 'FY-215', status: '待支付' } });
+      page.startCountdown(PENDING_ORDER_WITH_REMAINING(5_000));
+      page.onHide();
+      vi.setSystemTime(Date.now() + 10_000);
+      page.resumeCountdown();
+
+      expect(page.data.payBlockedByExpiry).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('墙钟回拨**不**关支付入口 —— 回拨不等于过期，关了是误伤一笔能付的单', () => {
+    vi.useFakeTimers();
+    try {
+      const { page } = createPageWithStubbedLoad();
+      page.startCountdown(PENDING_ORDER_WITH_REMAINING(120_000));
+      const base = Date.now();
+      vi.setSystemTime(base - 30_000);
+      vi.advanceTimersByTime(1000);
+
+      expect(page.data.payBlockedByExpiry).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 
   test('归零后那次刷新失败 → 支付入口关闭，不退回静态的「可支付」页', async () => {
     // 这里已经永久清掉了计时器和截止点；刷新再失败的话，不关闸页面就变成一个
@@ -687,6 +734,7 @@ describe('order-detail 倒计时的生命周期与并发 (#215)', () => {
 
     expect(page.data.payBlockedByExpiry).toBe(false);
   });
+});
 
 describe('order-detail.wxml 的倒计时文案分支 (#215)', () => {
   const wxml = readFileSync(

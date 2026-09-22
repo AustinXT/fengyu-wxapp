@@ -370,11 +370,17 @@ Page({
       // 本地 `getHours()` 取的是**设备时区**，顾客出境或改过时区时，同一行会变成
       // 「请在 03:15 前完成支付（剩余 09:30）」这种自相矛盾的句子：剩余量已经是服务端
       // 同源下发的，绝对时刻却还在本地推。回退分支同样是给发版过渡期留的。
+      // ⚠️ 只在**服务端给了 expire_clock** 或**确实拿到了权威剩余量**时才生成这个时刻。
+      // 新云函数的降级响应（补关失败）里 expire_clock 与 expire_in_ms 同为 null，
+      // 而 expire_at 是个已经过去的时刻 —— 那时本地推一个值出来既不会被渲染
+      //（countdown 必为空），又是个错的值，正好是下一个口径分叉的种子。
       let expireTimeFmt = '';
       if (order.status === '待支付' && order.expire_at) {
         if (order.expire_clock) {
           expireTimeFmt = order.expire_clock;
-        } else {
+        } else if (order.expire_in_ms == null) {
+          // 旧云函数形态：没有 expire_clock 也没有 expire_in_ms，只能本地推。
+          // 设备时区不对时这个 HH:mm 会错，是过渡期已知代价（见 expire_clock 的注释）。
           const rawExp = String(order.expire_at);
           const ed = new Date(rawExp.includes('T') ? rawExp : rawExp.replace(/-/g, '/'));
           expireTimeFmt = `${String(ed.getHours()).padStart(2,'0')}:${String(ed.getMinutes()).padStart(2,'0')}`;
@@ -489,11 +495,18 @@ Page({
    * 「归零重载」这条链原本会死循环：loadDetail → startCountdown → 归零 → loadDetail，
    * 靠「后端把 status 改成已关闭」才能终止，对关不掉的订单就按网络 RTT 空转。
    *
-   * 断点不是加一个「只重载一次」的标记，而是**区分装表时机**（issue #215）：
-   *   - 装表时就已经过期 → 只清 UI，**不重载**。这次 detail 响应本身就刚跑过服务端的
-   *     懒清理，再打一次拿到的还是同一个答案。
-   *   - 走着走着归零 → 重载一次取回懒清理后的状态。重载回来 `expire_at` 必已过期，
-   *     必然落进上一条 → **两跳内收敛，不需要任何状态**。
+   * 现行口径（历经 10 轮评审收敛，issue #215）：
+   *
+   * | 拿到的剩余量 | 行为 | 有界性来自 |
+   * |---|---|---|
+   * | 权威正数（`expire_in_ms > 0`），扣 RTT 后仍为正 | 正常计时 | — |
+   * | 权威正数，扣 RTT 后归零 | 清 UI + **关支付入口** + 重载 | 服务端侧补关：重载回来要么已关闭、要么降级成非权威 |
+   * | 走着走着归零（tick） | 清 UI + **关支付入口** + 重载 | 同上 |
+   * | 非权威归零（旧云函数只给 `expire_at`） | 清 UI + 重载，**按订单号只一次** | `_fallbackZeroReloadedOrderId` |
+   * | 墙钟回拨 | 清 UI + 重载，**不关支付入口** | 回拨不等于过期，关了是误伤 |
+   *
+   * 「关支付入口」= `payBlockedByExpiry`：截止点确实过了、而那次重载可能失败，
+   * 此刻页面并不知道这单关没关，继续显示「去支付」就是在承诺一件不知真假的事。
    */
   startCountdown(order: OrderDetailData) {
     this._stopCountdown();
@@ -543,9 +556,13 @@ Page({
     const remainingAt0 = authoritative ? serverRemaining - this._lastLoadRttMs : serverRemaining;
     if (remainingAt0 <= 0) {
       this._countdownDeadlineAt = 0;
-      this.setData({ countdown: '' });
-      // 非权威（旧云函数回退）那条路没有「服务端已试过关单」的保证，重载回来大概率
-      // 还是同一个答案 —— 按订单号只放行一次，否则就是每个 RTT 一圈的无界循环。
+      // 权威口径下走到这里 = 服务端说的剩余量被这次请求的往返耗时吃光了，
+      // 截止点**确实过了**。与 tick 归零同一后果，所以同样关掉支付入口：
+      // 紧接着那次重载可能失败，不关闸页面就退回成静态的「请完成支付 + 去支付」。
+      // 非权威（旧云函数）那条不关：在旧后端上这些单本来就还能付，关了是误伤。
+      this.setData({ countdown: '', ...(authoritative ? { payBlockedByExpiry: true } : null) });
+      // 非权威那条路没有「服务端已试过关单」的保证，重载回来大概率还是同一个答案 ——
+      // 按订单号只放行一次，否则就是每个 RTT 一圈的无界循环。
       // 权威路径不受此限：它的收敛由服务端侧的补关保证（见上面的注释）。
       if (!authoritative) {
         if (this._fallbackZeroReloadedOrderId === order.sale_order_id) return;
@@ -585,6 +602,9 @@ Page({
       if (now - lastTickAt < -2000) {
         this._stopCountdown();
         this._countdownDeadlineAt = 0;
+        // ⚠️ 这里刻意**不**置 payBlockedByExpiry：回拨只说明「没法再用这个本地截止点
+        // 量时间」，并**不**说明截止点已经过了 —— 多半还剩好几分钟。关了支付入口
+        // 就是拿一次系统校时去误伤一笔本来能付的单，比让它可能吃一个「订单已超时」更糟。
         this.setData({ countdown: '' });
         if (!this._hidden && !this._destroyed) this.loadDetail(saleOrderId);
         return;
@@ -638,14 +658,17 @@ Page({
     // 隐藏期发生的跳变）。丢掉它，等紧随其后的 loadDetail 从服务端重新校准。
     if (this._hiddenAtWallClock > 0 && Date.now() < this._hiddenAtWallClock - 2000) {
       this._countdownDeadlineAt = 0;
+      // 同 tick 里的回拨分支：不知道过没过期，不关支付入口（理由见那里）
       this.setData({ countdown: '' });
       return;
     }
-    // 已经过了截止点就别在这里发请求：紧跟着的 onShow loadDetail 会刷新，
-    // 在这儿再发一次只是白白多排一次 single-flight 的尾随刷新
+    // 隐藏期间跨过了截止点：与 tick 归零同一后果（截止点确实过了、状态待确认），
+    // 同样关掉支付入口。不在这里发请求 —— 紧跟着的 onShow loadDetail 会刷新，
+    // 在这儿再发一次只是白白多排一次 single-flight 的尾随刷新；
+    // 那次刷新成功就会解除闸门，失败则闸门留着（这正是它存在的意义）。
     if (this._countdownDeadlineAt - Date.now() <= 0) {
       this._countdownDeadlineAt = 0;
-      this.setData({ countdown: '' });
+      this.setData({ countdown: '', payBlockedByExpiry: true });
       return;
     }
     this._installCountdown(this._countdownDeadlineAt, this.data.order.sale_order_id);
