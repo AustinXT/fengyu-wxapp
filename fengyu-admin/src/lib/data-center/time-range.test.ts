@@ -31,20 +31,89 @@ describe('resolveTimeRange', () => {
     expect(r.presetLabel).toBe('今日')
   })
 
-  it('week：本周一至今 / 上周一至上周日 / 去年同区间', () => {
+  // #283：previous 是环比基期（分母），必须与 current 等长。
+  // 这两条用例原本断言 previous=整段上周/整段上月，把缺陷反向钉死了。
+  it('week：本周一至今 / 上周一至上周同一天（等长）/ 去年同区间', () => {
     const r = resolveTimeRange({ preset: 'week' }, NOW)
     expect(r.current).toEqual({ start: '2024-01-01', end: '2024-01-03' }) // 周一=01-01
-    expect(r.previous).toEqual({ start: '2023-12-25', end: '2023-12-31' })
+    // 上周三=2023-12-27，不是上周日 2023-12-31（那会拿 3 天比 7 天）
+    expect(r.previous).toEqual({ start: '2023-12-25', end: '2023-12-27' })
     expect(r.lastYear).toEqual({ start: '2023-01-01', end: '2023-01-03' })
     expect(r.presetLabel).toBe('本周')
   })
 
-  it('month：月初至今 / 整个上月 / 去年同区间', () => {
+  it('month：月初至今 / 上月初至上月同一日（等长）/ 去年同区间', () => {
     const r = resolveTimeRange({ preset: 'month' }, NOW)
     expect(r.current).toEqual({ start: '2024-01-01', end: '2024-01-03' })
-    expect(r.previous).toEqual({ start: '2023-12-01', end: '2023-12-31' })
+    // 上月第 3 天=2023-12-03，不是上月末 2023-12-31（那会拿 3 天比 31 天）
+    expect(r.previous).toEqual({ start: '2023-12-01', end: '2023-12-03' })
     expect(r.lastYear).toEqual({ start: '2023-01-01', end: '2023-01-03' })
     expect(r.presetLabel).toBe('本月')
+  })
+
+  it('week：周日看本周 → previous 恰是整段上周（此时才等长）', () => {
+    // 2024-01-07 是周日，current=01-01~01-07 共 7 天
+    const r = resolveTimeRange({ preset: 'week' }, new Date('2024-01-07T04:00:00Z'))
+    expect(r.current).toEqual({ start: '2024-01-01', end: '2024-01-07' })
+    expect(r.previous).toEqual({ start: '2023-12-25', end: '2023-12-31' })
+  })
+
+  it('month：月初第一天 → previous 也只取 1 天（原实现会 1 天比整月，徽章恒显 -97%）', () => {
+    const r = resolveTimeRange({ preset: 'month' }, new Date('2024-01-01T04:00:00Z'))
+    expect(r.current).toEqual({ start: '2024-01-01', end: '2024-01-01' })
+    expect(r.previous).toEqual({ start: '2023-12-01', end: '2023-12-01' })
+  })
+
+  it('month：上月天数不足时 clamp 到上月末（3/31 → 2/28，闰年 → 2/29）', () => {
+    const r = resolveTimeRange({ preset: 'month' }, new Date('2023-03-31T04:00:00Z'))
+    expect(r.current).toEqual({ start: '2023-03-01', end: '2023-03-31' })
+    // 要的是"上月第 31 天"，2023 年 2 月只有 28 天 → 落到 02-28（不得溢出到 03-03）
+    expect(r.previous).toEqual({ start: '2023-02-01', end: '2023-02-28' })
+
+    const leap = resolveTimeRange({ preset: 'month' }, new Date('2024-03-31T04:00:00Z'))
+    expect(leap.previous).toEqual({ start: '2024-02-01', end: '2024-02-29' })
+  })
+
+  /**
+   * #283 的回归闸门：缺陷的本质是"基期长于当期"，所以这里守的是**性质**而非具体日期。
+   * 原来没有任何测试校验这个性质，于是 week/month 两个分支的错误写法被逐字断言锁了下来。
+   * 扫 2024（闰年）+ 2023（平年）每一天 × 4 个 preset，基期一律不得长于当期。
+   */
+  it('previous 绝不长于 current（全 preset × 两年逐日性质断言）', () => {
+    const days = (r: { start: string; end: string }) =>
+      Math.round((Date.parse(`${r.end}T00:00:00Z`) - Date.parse(`${r.start}T00:00:00Z`)) / 86400000) + 1
+
+    for (const year of [2023, 2024]) {
+      for (let i = 0; i < 365 + (year === 2024 ? 1 : 0); i++) {
+        const now = new Date(Date.UTC(year, 0, 1, 4) + i * 86400000)
+        for (const preset of ['today', 'week', 'month', 'year'] as const) {
+          const r = resolveTimeRange({ preset }, now)
+          // 类型上 previous 可为 null（ComparisonRanges 共用该形状），但 resolveTimeRange
+          // 五个分支都必赋值 —— 顺带守住这个性质
+          const prevRange = r.previous
+          expect(prevRange, `${preset} @ ${r.current.end} 的 previous 不应为 null`).not.toBeNull()
+          if (!prevRange) continue
+
+          const cur = days(r.current)
+          const prev = days(prevRange)
+          const at = `${preset} @ ${r.current.end} (previous=${prevRange.start}~${prevRange.end})`
+
+          // 硬底线：基期长于当期就是 #283
+          expect(prev, at).toBeLessThanOrEqual(cur)
+
+          if (preset === 'today' || preset === 'week') {
+            expect(prev, at).toBe(cur) // 纯天数平移，恒等长
+          } else if (preset === 'month') {
+            // 上月天数不足时 clamp 到上月末 → 最多短 3 天（3/31 看 → 基期 2/1~2/28）
+            expect(prev, at).toBeGreaterThanOrEqual(cur - 3)
+          } else {
+            // year：跨闰年时 YTD 天数天然差 1（2024-03-01 起本年比去年同期多一天）。
+            // 属 addYears 的既有行为，不在 #283 范围。
+            expect(prev, at).toBeGreaterThanOrEqual(cur - 1)
+          }
+        }
+      }
+    }
   })
 
   it('year：年初至今 / 去年同区间（previous=lastYear）', () => {

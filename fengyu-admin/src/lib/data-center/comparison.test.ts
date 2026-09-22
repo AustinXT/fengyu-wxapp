@@ -14,6 +14,22 @@ describe('deltaPct', () => {
     expect(deltaPct(10, null)).toBeNull()
     expect(deltaPct(null, 10)).toBeNull()
   })
+
+  // #283：base<0 时 (cur-base)/base 符号翻转，"向好"会被渲染成红色下滑
+  it('base 为负 → null（不是把回正算成下滑）', () => {
+    // 生产实例：南昌梦时代 9 月净业绩 -6,104，次期回正到 +50,000
+    // 旧实现 (50000-(-6104))/(-6104) = -9.19 → 徽章显示「环比 -919.00%」红色
+    expect(deltaPct(50000, -6104)).toBeNull()
+    // 继续恶化也一样算不出（-100.68% ~ -54,080,100.00% 那一族）
+    expect(deltaPct(-20000, -6104)).toBeNull()
+    // 边界：base 恰为 -0.01
+    expect(deltaPct(100, -0.01)).toBeNull()
+  })
+
+  it('cur 为 0 或负、base 为正 → 照常计算（只有分母受限）', () => {
+    expect(deltaPct(0, 10)).toBeCloseTo(-1) // 归零 = -100%
+    expect(deltaPct(-5, 10)).toBeCloseTo(-1.5) // 由正转负 = -150%，方向正确
+  })
 })
 
 describe('withComparison', () => {

@@ -16,10 +16,19 @@ export interface ComparisonRanges {
   lastYear: ResolvedRange | null
 }
 
-/** delta% = (cur - base) / base；base 为 null/0 → null（前端 '--'） */
+/**
+ * delta% = (cur - base) / base；base 为 null 或 <= 0 → null（前端 '--'）
+ *
+ * base <= 0 一律不出徽章：=0 是除零；<0 时 (cur-base)/base 的**符号会翻转**——
+ * 净业绩由 -6,104 回正到 +50,000 本是向好，公式给 -919%，徽章渲染成红色巨幅下滑。
+ * 负基期的"增长率"没有可读语义（分母的方向性已丢失），按
+ * metrics.md:610「防除零 / 数据缺失 一律 '--'」归入"算不出"。
+ * 生产实测负基期 29 对 / 19 家门店，区间 -100.68% ~ -54,080,100.00%（#283）。
+ * 同比(yoy)同样走这里——负基期翻符号与是环比还是同比无关。
+ */
 export function deltaPct(cur: number | null, base: number | null): number | null {
   if (cur == null) return null
-  if (base == null || base === 0) return null
+  if (base == null || base <= 0) return null
   return (cur - base) / base
 }
 
