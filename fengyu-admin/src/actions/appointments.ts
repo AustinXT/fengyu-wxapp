@@ -13,6 +13,7 @@ import { logTransition, logOperation } from '@/lib/operation-log'
 import { pgErrorCode } from '@/lib/pg-error'
 import { nowTs, beijingBoundaryTs } from '@/lib/db-time'
 import { storeInMarketCondition } from '@/lib/market-store-sql'
+import { resolvePaging } from '@/lib/paging'
 
 function serializeAppointment(r: {
   appointment: typeof appointments.$inferSelect
@@ -89,9 +90,12 @@ export interface PaginatedAppointments {
 export const getAppointmentsPaginated = withPermission(
   'appointment:list',
   async (session, filters: AppointmentFilters = {}): Promise<PaginatedAppointments> => {
-  const page = Math.max(1, filters.page || 1)
-  const pageSize = [10, 20, 50].includes(filters.pageSize ?? 0) ? filters.pageSize! : 20
-  const offset = (page - 1) * pageSize
+  const { page, pageSize, offset } = resolvePaging({
+    page: filters.page,
+    pageSize: filters.pageSize,
+    defaultPageSize: 20,
+    allowedPageSizes: [10, 20, 50],
+  })
 
   // 构建 WHERE（DB 级过滤）
   const conditions: (SQL | undefined)[] = [

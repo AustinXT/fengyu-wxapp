@@ -24,6 +24,7 @@ import {
 } from '@/lib/export-pagination'
 import { resolveOrgNodeToStoreIds } from '@/lib/org-scope'
 import { clampCouponQuantity } from '@/lib/coupon-quantity'
+import { resolvePaging } from '@/lib/paging'
 
 /**
  * coupon_templates.valid_from / valid_to 写入：入参是 date input 日期串（'YYYY-MM-DD'）。
@@ -912,9 +913,12 @@ export const getCustomersForBatchIssue = withPermission(
       pageSize?: number
     },
   ): Promise<{ data: BatchCouponCustomer[]; total: number }> => {
-    const page = Math.max(1, filters.page || 1)
-    const pageSize = [10, 20, 50].includes(filters.pageSize ?? 0) ? filters.pageSize! : 20
-    const offset = (page - 1) * pageSize
+    const { page, pageSize, offset } = resolvePaging({
+      page: filters.page,
+      pageSize: filters.pageSize,
+      defaultPageSize: 20,
+      allowedPageSizes: [10, 20, 50],
+    })
 
     const conditions: (SQL | undefined)[] = [
       isNotNull(clientWechatUsers.phone),

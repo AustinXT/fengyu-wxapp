@@ -18,6 +18,7 @@ import { scopeCondition } from '@/lib/permissions'
 import { withPermission } from '@/lib/with-permission'
 import { parsePointFilters } from '@/lib/list-filters'
 import { storeInMarketCondition } from '@/lib/market-store-sql'
+import { resolvePaging } from '@/lib/paging'
 
 /**
  * 已知的 point_transactions.type 取值（自由文本字段，非 DB 枚举；下拉由 distinctTypes 动态填充）
@@ -128,9 +129,12 @@ export const getPointTransactionsPaginated = withPermission(
     session,
     filters: PointTransactionFilters = {},
   ): Promise<PaginatedPointTransactions> => {
-  const page = Math.max(1, filters.page || 1)
-  const pageSize = [10, 20, 50, 100].includes(filters.pageSize ?? 0) ? filters.pageSize! : 20
-  const offset = (page - 1) * pageSize
+  const { page, pageSize, offset } = resolvePaging({
+    page: filters.page,
+    pageSize: filters.pageSize,
+    defaultPageSize: 20,
+    allowedPageSizes: [10, 20, 50, 100],
+  })
 
   const conditions = buildConditions(session, filters)
   const whereClause = conditions.length > 0 ? and(...conditions) : undefined

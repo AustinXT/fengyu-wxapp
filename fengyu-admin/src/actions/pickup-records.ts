@@ -24,6 +24,7 @@ import { INVENTORY_LINKAGE_ENABLED } from '@/lib/inventory-feature-flags'
 import { computeAvailableByLot } from '@/lib/inventory/lot-availability'
 import { isConvertibleEntitlementRow } from '@/lib/home-product'
 import { businessErrorMessage } from '@/lib/action-error'
+import { resolvePaging } from '@/lib/paging'
 
 export interface AdminPickupRecord {
   id: number
@@ -348,9 +349,12 @@ export const getPickupRecordsPaginated = withPermission(
     session,
     filters: PickupRecordFilters = {},
   ): Promise<PaginatedPickupRecords> => {
-  const page = Math.max(1, filters.page || 1)
-  const pageSize = [10, 20, 50].includes(filters.pageSize ?? 0) ? filters.pageSize! : 20
-  const offset = (page - 1) * pageSize
+  const { page, pageSize, offset } = resolvePaging({
+    page: filters.page,
+    pageSize: filters.pageSize,
+    defaultPageSize: 20,
+    allowedPageSizes: [10, 20, 50],
+  })
 
   const conditions: (SQL | undefined)[] = [
     scopeCondition(session, pickupRecords.storeId),

@@ -35,6 +35,7 @@ import { storeInMarketCondition } from '@/lib/market-store-sql'
 import { nowTs } from '@/lib/db-time'
 import { getInvalidEmployeeAssignmentId } from '@/lib/employee-assignment-server'
 import { SERVICE_ORDER_ASSIGNABLE_SKILLS } from '@/lib/employee-anchor-market-sql'
+import { resolvePaging } from '@/lib/paging'
 
 function serializeServiceOrder(r: {
   service_order: typeof serviceOrders.$inferSelect
@@ -161,9 +162,12 @@ export interface PaginatedServiceOrders {
 export const getServiceOrdersPaginated = withPermission(
   'service:list',
   async (session, filters: ServiceOrderFilters = {}): Promise<PaginatedServiceOrders> => {
-  const page = Math.max(1, filters.page || 1)
-  const pageSize = [10, 20, 50].includes(filters.pageSize ?? 0) ? filters.pageSize! : 20
-  const offset = (page - 1) * pageSize
+  const { page, pageSize, offset } = resolvePaging({
+    page: filters.page,
+    pageSize: filters.pageSize,
+    defaultPageSize: 20,
+    allowedPageSizes: [10, 20, 50],
+  })
 
   // 构建 WHERE 条件（DB 级过滤，与导出共用同一构建器）
   const whereClause = and(...buildServiceOrderConditions(session, filters))

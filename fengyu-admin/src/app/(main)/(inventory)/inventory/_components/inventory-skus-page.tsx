@@ -27,6 +27,7 @@ import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
 import { actionErrorMessage } from '@/lib/action-error'
 import { useUrlFilters } from '@/lib/hooks/use-url-filters'
+import { normalizePage } from '@/lib/paging'
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50, 100]
 
@@ -178,7 +179,7 @@ export default function InventorySkusPage({
   }, [supplierOptions])
   const debounceRef = useState<ReturnType<typeof setTimeout> | null>(null)
 
-  const page = Math.max(1, Number(get('page', '1')) || 1)
+  const page = normalizePage(get('page', '1'))
   const pageSize = PAGE_SIZE_OPTIONS.includes(Number(get('size'))) ? Number(get('size')) : 20
 
   const handleSearchChange = useCallback((value: string) => {

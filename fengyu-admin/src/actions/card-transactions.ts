@@ -12,6 +12,7 @@ import type { AuthSession } from '@/lib/types'
 import { scopeCondition } from '@/lib/permissions'
 import { withPermission } from '@/lib/with-permission'
 import { storeInMarketCondition } from '@/lib/market-store-sql'
+import { resolvePaging } from '@/lib/paging'
 
 /** 充值卡流水筛选参数 */
 export interface CardTransactionFilters {
@@ -96,9 +97,12 @@ export const getCardTransactionsPaginated = withPermission(
     session,
     filters: CardTransactionFilters = {},
   ): Promise<PaginatedCardTransactions> => {
-  const page = Math.max(1, filters.page || 1)
-  const pageSize = [10, 20, 50, 100].includes(filters.pageSize ?? 0) ? filters.pageSize! : 20
-  const offset = (page - 1) * pageSize
+  const { page, pageSize, offset } = resolvePaging({
+    page: filters.page,
+    pageSize: filters.pageSize,
+    defaultPageSize: 20,
+    allowedPageSizes: [10, 20, 50, 100],
+  })
 
   const conditions = buildConditions(session, filters)
   const whereClause = conditions.length > 0 ? and(...conditions) : undefined

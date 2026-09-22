@@ -25,6 +25,7 @@ import { computeItemOverpayRemainders, type RefundSourceItem } from '@/lib/refun
 import { storeInMarketCondition } from '@/lib/market-store-sql'
 import { getPointsToYuanRate, getPointsDeductionMaxRate } from '@/lib/system-config'
 import { classifySaleOrderDocumentType } from '@/lib/document-type'
+import { resolvePaging } from '@/lib/paging'
 
 // ============================================================================
 // 管理端卡包列表（/cards 页面）
@@ -303,9 +304,12 @@ function buildCardConditions(
 export const getCardsPaginated = withPermission(
   'sale_item:list',
   async (session, filters: CardFilters = {}): Promise<PaginatedCards> => {
-  const page = Math.max(1, filters.page || 1)
-  const pageSize = [10, 20, 50].includes(filters.pageSize ?? 0) ? filters.pageSize! : 20
-  const offset = (page - 1) * pageSize
+  const { page, pageSize, offset } = resolvePaging({
+    page: filters.page,
+    pageSize: filters.pageSize,
+    defaultPageSize: 20,
+    allowedPageSizes: [10, 20, 50],
+  })
 
   const whereClause = and(...buildCardConditions(session, filters))
 

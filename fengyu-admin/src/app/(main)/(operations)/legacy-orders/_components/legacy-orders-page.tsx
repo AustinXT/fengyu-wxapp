@@ -37,6 +37,7 @@ import { formatPhoneSafe } from "@/lib/format"
 import { actionErrorMessage } from "@/lib/action-error"
 import PullWorkfineDialog from "./pull-workfine-dialog"
 import { formatDateTime as fmtDateTime } from "@/lib/utils"
+import { normalizePage } from "@/lib/paging"
 
 function formatDateTime(dt: string | null | undefined) {
   if (!dt) return "—"
@@ -54,6 +55,11 @@ interface Props {
   canUpdatePhone?: boolean
 }
 
+// 必须与服务端 `listLegacyOrders` 的 allowedPageSizes 一字不差（actions/legacy-orders.ts）——
+// 两侧不同源时 `?size=7` 会让服务端每页 20 条而 UI 按 7 条算页数，尾部数据翻到哪一页都够不到，
+// 且不会有任何报错。
+const PAGE_SIZE_OPTIONS = [10, 20, 50, 100]
+
 export default function LegacyOrdersPageClient({
   orders,
   total,
@@ -68,8 +74,8 @@ export default function LegacyOrdersPageClient({
   const { get, set, setMany } = useUrlFilters()
   const [, startTransition] = useTransition()
 
-  const page = Number(get("page") || 1)
-  const pageSize = Number(get("size") || 20)
+  const page = normalizePage(get("page") || 1)
+  const pageSize = PAGE_SIZE_OPTIONS.includes(Number(get("size"))) ? Number(get("size")) : 20
 
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [pending, setPending] = useState(false)
@@ -452,7 +458,7 @@ export default function LegacyOrdersPageClient({
               page={page}
               pageSize={pageSize}
               onPageChange={(p) => startTransition(() => set("page", String(p)))}
-              pageSizeOptions={[10, 20, 50, 100]}
+              pageSizeOptions={PAGE_SIZE_OPTIONS}
               onPageSizeChange={(s) =>
                 startTransition(() => setMany({ size: String(s), page: "" }))
               }

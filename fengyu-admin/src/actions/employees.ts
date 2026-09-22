@@ -33,6 +33,7 @@ import {
   marketSupportCondition,
   targetMarketJoin,
 } from '@/lib/employee-anchor-market-sql'
+import { resolvePaging } from '@/lib/paging'
 
 // drizzle 0.45 alias() 返回 PgTableWithColumns<Required<Update<any,...>>>，与 .leftJoin() 期望签名不兼容；cast 回原表类型解锁 build
 const storeNode = alias(orgNodes, 'store_node') as unknown as typeof orgNodes
@@ -381,9 +382,12 @@ async function buildEmployeeConditions(
 export const getEmployeesPaginated = withPermission(
   'employee:list',
   async (session, filters: EmployeeFilters = {}): Promise<PaginatedEmployees> => {
-  const page = Math.max(1, filters.page || 1)
-  const pageSize = [10, 20, 50].includes(filters.pageSize ?? 0) ? filters.pageSize! : 20
-  const offset = (page - 1) * pageSize
+  const { page, pageSize, offset } = resolvePaging({
+    page: filters.page,
+    pageSize: filters.pageSize,
+    defaultPageSize: 20,
+    allowedPageSizes: [10, 20, 50],
+  })
 
   const whereClause = and(...(await buildEmployeeConditions(session, filters)))
 

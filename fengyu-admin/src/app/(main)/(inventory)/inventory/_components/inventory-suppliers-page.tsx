@@ -22,6 +22,7 @@ import { Pagination } from '@/components/ui/pagination'
 import { Select } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
+import { normalizePage } from '@/lib/paging'
 
 interface SupplierForm {
   name: string
@@ -71,7 +72,7 @@ export default function InventorySuppliersPage({
 }) {
   const router = useRouter()
   const { get, setMany } = useUrlFilters()
-  const page = Math.max(1, Number(get('page', '1')) || 1)
+  const page = normalizePage(get('page', '1'))
   const pageSize = PAGE_SIZE_OPTIONS.includes(Number(get('size')))
     ? Number(get('size'))
     : 20

@@ -11,6 +11,7 @@ import { DataTable, type Column } from "@/components/ui/data-table"
 import { Pagination } from "@/components/ui/pagination"
 import { useUrlFilters } from "@/lib/hooks/use-url-filters"
 import { PreserveListContextLink } from "@/components/return-context"
+import { normalizePage } from "@/lib/paging"
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50]
 
@@ -38,7 +39,7 @@ export default function StoresPage({
 
   const search = get("q")
   const marketFilter = get("market")
-  const page = Number(get("page", "1"))
+  const page = normalizePage(get("page", "1"))
   const pageSize = PAGE_SIZE_OPTIONS.includes(Number(get("size"))) ? Number(get("size")) : 20
 
   const markets = useMemo(() => {
