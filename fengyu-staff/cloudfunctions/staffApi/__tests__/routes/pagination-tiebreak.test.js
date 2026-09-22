@@ -93,6 +93,12 @@ function collectRoutes(dir, acc = []) {
 }
 
 /**
+ * 第 2 层 EXPECTED 清单的条数。第 1 层的扫描下界与它联动 ——
+ * 清单里每条都必须能被扫到，删接口时两处一起改，语义自洽。
+ */
+const EXPECTED_CLAUSE_COUNT = 6
+
+/**
  * 提取源文件里所有模板串的内容（**正确处理嵌套模板**）。
  *
  * ⚠️ 不能用 `/`([^`]*)`/g` 按文档顺序配对反引号 —— 评审实测两种漏扫：
@@ -202,8 +208,14 @@ describe('#282 · 分页 SQL 的 ORDER BY 必须带唯一键 tie-break', () => {
         }
       }
       expect(offenders, `缺 tie-break 的分页 SQL:\n${offenders.join('\n')}`).toEqual([])
-      // 下界防「守护被掏空」：模板提取正则若手误失效，一条都扫不到、offenders 恒空而断言恒绿
-      expect(scanned).toBeGreaterThan(10)
+      // 下界防「守护被掏空」：模板提取若手误失效，一条都扫不到、offenders 恒空而断言恒绿。
+      //
+      // ⚠️ 与 clientApi 侧同姿态：不写死阈值（原为 `> 10`，实测 17、余量 7）——
+      // 一旦有 ≥7 条接口改成 keyset/游标分页（本 issue 自己写着那才是根治），
+      // scanned 掉下来就会以「守护被掏空」的名义误报，等于为做对的事而惩罚。
+      // 改成与第 2 层 EXPECTED 清单条数联动：清单里每条都必须能被扫到。
+      expect(scanned, '扫到的分页 SQL 少于 EXPECTED 清单条数 —— 模板提取可能失效')
+        .toBeGreaterThanOrEqual(EXPECTED_CLAUSE_COUNT)
     })
   })
 
@@ -239,15 +251,23 @@ describe('#282 · 分页 SQL 的 ORDER BY 必须带唯一键 tie-break', () => {
       // 不能是 `re.test(整份源码)` —— 后者在同一子句**重复出现**时对目标位置失效：
       // `c.user_id ASC` 在 `customer.js` 里出现 4 次（:257/:282/:307/:1544），
       // 删掉其中三处，`re.test(源码)` 照样为 true（评审实测）。
+      // ⚠️ 断言的是**出现次数**而不是「存在即可」：
+      // `c.user_id ASC` 在 `customer.js` 里是 **4 条分页查询共用的同一子句**，
+      // 存在性断言下改坏其中一支（比如换成外键 `c.bound_store_id ASC`），
+      // 其余 3 支仍能满足 `toContain` → 三层全绿（评审实证）。
+      // admin 侧的修法（改为对提取出的参数列表断言）在这里**不管用** ——
+      // 那边同子句分属「分页」与「keyset 导出」两类，这边 4 处全是分页。
       const SAFE = [
-        ['customer.js', 'c.user_id ASC', '顾客列表三支查询（#181 修的）'],
-        ['order.js', 'o.sale_order_datetime DESC, o.sale_order_id DESC', '订单列表'],
-        ['inventory.js', 'sku.product_name, sku.spec_name NULLS LAST, sku.sku_id', 'SKU 列表'],
+        ['customer.js', 'c.user_id ASC', 3, '顾客搜索 / 标签列表等三支分页查询（#181 修的）——同文件第 4 处无 OFFSET，不算分页'],
+        ['order.js', 'o.sale_order_datetime DESC, o.sale_order_id DESC', 1, '订单列表'],
+        ['inventory.js', 'sku.product_name, sku.spec_name NULLS LAST, sku.sku_id', 1, 'SKU 列表'],
       ]
-      for (const [fileName, clause, why] of SAFE) {
+      for (const [fileName, clause, count, why] of SAFE) {
         const source = readFileSync(join(ROUTES_DIR, fileName), 'utf8')
         const clauses = pagedSqlTemplates(source).map(orderByClause)
-        expect(clauses, `${fileName} 丢了本来就有的 tie-break（${why}）`).toContain(clause)
+        const hits = clauses.filter((c) => c === clause).length
+        expect(hits, `${fileName} 的「${clause}」应有 ${count} 支（${why}），实际 ${hits} 支`)
+          .toBe(count)
       }
     })
   })

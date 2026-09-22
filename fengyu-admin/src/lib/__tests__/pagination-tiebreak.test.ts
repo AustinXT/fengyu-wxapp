@@ -236,9 +236,18 @@ function pagedOrderBys(code: string, fileName = 'x.ts'): Array<{ index: number; 
           if (names.has(m2[2])) names.add(m2[1])
         }
       }
-      const hit = [...names].some((n) => new RegExp(
-        String.raw`\b${n}\s*(?:\.\s*\w+\s*\([^()]*(?:\([^()]*\)[^()]*)*\)\s*)*\.\s*offset\s*\(`,
-      ).test(body))
+      // ⚠️ 判「该变量的调用链上有没有 .offset(」要用 **chainTail 按括号深度扫**，
+      // 不能用正则匹配方法链 —— 手写的 `\([^()]*(?:\([^()]*\)[^()]*)*\)` 只容**一层**嵌套，
+      // `query.limit(Math.max(1, parseInt(x, 10) || 20)).offset(y)` 这种两层嵌套的实参
+      // 会让整条链失配、查询被静默漏扫（评审实证）。chainTail 对任意深度都正确。
+      const hit = [...names].some((n) => {
+        // 变量名里可能含 `$`（合法标识符），用 escapeRegExp 而不是直接插值
+        const nameRe = new RegExp(String.raw`\b${n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\b`, 'g')
+        for (const hitM of body.matchAll(nameRe)) {
+          if (/\.\s*offset\s*\(/.test(chainTail(body, hitM.index! + n.length))) return true
+        }
+        return false
+      })
       if (hit) { out.push({ index: at, args }); continue }
     }
   }
@@ -401,6 +410,26 @@ describe('#282 · admin 分页查询的 orderBy 必须带唯一键 tie-break', (
       const topN = '.orderBy(desc(t.createdAt))\n  .limit(1)'
       expect(pagedOrderBys(paged)).toHaveLength(1)
       expect(pagedOrderBys(topN)).toHaveLength(0)
+    })
+
+    it.each([
+      // 同链直连
+      ['.orderBy(desc(t.createdAt))\n  .limit(20)\n  .offset(40)', 1],
+      // deferred：变量关联
+      ['const query = db.select().orderBy(desc(t.createdAt))\n  const rows = await query.limit(20).offset(40)', 1],
+      // deferred + 一层别名
+      ['const q = db.select().orderBy(desc(t.createdAt))\n  const p = q.limit(10)\n  return p.offset(20)', 1],
+      // ⚠️ deferred + **两层嵌套括号**的 limit 实参 —— 手写方法链正则只容一层，
+      //    这种写法会整条失配、查询被静默漏扫（评审实证）。chainTail 按括号深度扫才对。
+      ['const query = db.select().orderBy(desc(t.createdAt))\n  const rows = await query.limit(Math.max(1, parseInt(size, 10) || 20)).offset(off)', 1],
+      // 变量名含 $（合法标识符），插值进正则时必须转义
+      ['const q$1 = db.select().orderBy(desc(t.createdAt))\n  await q$1.limit(10).offset(20)', 1],
+      // 不分页：只有 limit，没有 offset
+      ['.orderBy(desc(t.createdAt))\n  .limit(1)', 0],
+      // 不分页：同函数里另有别的查询用了 offset，但不是这个变量
+      ['const a = db.select().orderBy(desc(t.createdAt))\n  const b = db.select()\n  await b.limit(1).offset(2)', 0],
+    ])('pagedOrderBys 判据: %s', (code, expected) => {
+      expect(pagedOrderBys(code, 'x.ts')).toHaveLength(expected)
     })
 
     it('剥注释：注释里的假 orderBy 不算数', () => {

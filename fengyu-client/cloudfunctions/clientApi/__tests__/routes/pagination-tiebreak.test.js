@@ -255,11 +255,14 @@ describe('#282 · clientApi 分页 SQL 的 ORDER BY 必须带唯一键 tie-break
       // 这条改为守 `o.paid_at ASC NULLS LAST` 这个 **NULLS 姿态**：
       // 它是本仓对 paid_at 少见的显式 NULLS LAST 写法，改成默认（DESC→NULLS FIRST）
       // 会让未支付单跳到结果顶部，静默改变业务语义。
+      // ⚠️ 断言**出现次数**而不是 `re.test(整份源码)`：这个子句在 `order.js` 的
+      // 两个 UPDATE 子查询里重复出现，改坏一处、另一处保留则 `re.test` 仍为 true。
       const source = readFileSync(join(ROUTES_DIR, 'order.js'), 'utf8')
-      expect(
-        /o\.paid_at ASC NULLS LAST, o\.created_at ASC, o\.sale_order_id ASC/.test(source),
-        'order.js 的 paid_at NULLS LAST 姿态被改了（非分页查询，但会改变业务语义）',
-      ).toBe(true)
+      const hits = (source.match(
+        /o\.paid_at ASC NULLS LAST, o\.created_at ASC, o\.sale_order_id ASC/g,
+      ) || []).length
+      expect(hits, 'order.js 的 paid_at NULLS LAST 姿态被改了（非分页查询，但会改变业务语义）')
+        .toBe(2)
     })
   })
 
