@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { resolve, join } from 'node:path'
+import ts from 'typescript'
 import {
   normalizePage,
   resolvePaging,
@@ -274,7 +275,11 @@ describe('resolvePaging · 无条件契约', () => {
         allowedPageSizes: notArray as unknown as number[],
       })
       expect(Number.isSafeInteger(r.pageSize), String(notArray)).toBe(true)
-      expect(r.pageSize >= 1, String(notArray)).toBe(true)
+      // 不止「不抛」，还要钉死**退回 clamp 模式**：
+      // 只断言「不抛 + ≥1」的话，判据退回 `allowedPageSizes?.includes` 后
+      // `'1020'` 会走子串语义（`'1020'.includes(50)` 为 false）→ 回落 20，
+      // 断言照样绿。取 50（≠ default 20）才区分得出来。
+      expect(r.pageSize, String(notArray)).toBe(50)
     }
   })
 
@@ -327,41 +332,40 @@ function collectSources(dir: string, acc: string[] = []): string[] {
  * 真写了 `"Math.max(1, filters.page)"` 会误报。当前代码库无此形状；
  * 若将来撞上，在那一处加 `eslint-disable` 式的豁免注释比放宽守护更安全。
  */
-function stripComments(source: string): string {
-  let out = ''
-  let i = 0
-  // 状态：0=代码 1=行注释 2=块注释 3=单引号 4=双引号 5=模板串
-  let state = 0
-  while (i < source.length) {
-    const c = source[i]
-    const next = source[i + 1]
-    if (state === 0) {
-      if (c === '/' && next === '/') { state = 1; i += 2; continue }
-      if (c === '/' && next === '*') { state = 2; i += 2; continue }
-      // 进入字符串态：**内容照常保留**。守护正则本身就依赖字符串字面量
-      // （`get('page')` 里的 `'page'`），清空内容会把守护自己掏空
-      // —— 第一版这么写过，结果扫到的读取点直接变成 0 个、断言恒绿。
-      // 这里跟踪字符串态的唯一目的，是**不让串内的 `//` 与 `/*` 触发注释剥离**。
-      if (c === "'") { state = 3; out += c; i++; continue }
-      if (c === '"') { state = 4; out += c; i++; continue }
-      if (c === '`') { state = 5; out += c; i++; continue }
-      out += c; i++; continue
+function stripComments(source: string, fileName: string): string {
+  // 用 TypeScript 自己的 parser 定位注释区间，**不要手写词法状态机**。
+  // 手写版在这里翻过两次车：先是用 `/\*[\s\S]*?\*\//` 一把梭，把字符串里的
+  // 开闭符当注释、整段吃掉真违规；改成逐字符状态机后又栽在**正则字面量**
+  // （`const re = /['"]/` 的引号翻转字符串态）、**模板插值** `${...}` 里的双斜杠、
+  // 以及 JSX 文本里的撇号（`<div>don't</div>`）上 —— 每一种都能造成漏报或误报。
+  // ts.createSourceFile 处理这些上下文是它的本职，借它的力比自己造词法器可靠得多。
+  const sf = ts.createSourceFile(
+    fileName,
+    source,
+    ts.ScriptTarget.Latest,
+    /* setParentNodes */ true,
+    fileName.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
+  )
+  const holes: Array<[number, number]> = []
+  const visit = (node: ts.Node) => {
+    for (const r of ts.getLeadingCommentRanges(source, node.getFullStart()) ?? []) {
+      holes.push([r.pos, r.end])
     }
-    if (state === 1) { if (c === '\n') { state = 0; out += '\n' } ; i++; continue }
-    if (state === 2) {
-      if (c === '*' && next === '/') { state = 0; i += 2; continue }
-      if (c === '\n') out += '\n'   // 保住行号，方便定位
-      i++; continue
+    for (const r of ts.getTrailingCommentRanges(source, node.getEnd()) ?? []) {
+      holes.push([r.pos, r.end])
     }
-    // 字符串态：原样输出，只认转义与收尾引号
-    if (c === '\\') { out += source.slice(i, i + 2); i += 2; continue }
-    out += c
-    if ((state === 3 && c === "'") || (state === 4 && c === '"') || (state === 5 && c === '`')) {
-      state = 0
-    }
-    i++
+    node.forEachChild(visit)
   }
-  return out
+  visit(sf)
+  // 挖空而不是删除：保留换行与字符偏移，行号定位与 wrappedByNormalizePage 的
+  // 「往前跳空白」才不会被打乱。
+  const chars = [...source]
+  for (const [from, to] of holes) {
+    for (let i = from; i < to && i < chars.length; i++) {
+      if (chars[i] !== '\n') chars[i] = ' '
+    }
+  }
+  return chars.join('')
 }
 
 /**
@@ -375,8 +379,58 @@ function wrappedByNormalizePage(source: string, idx: number): boolean {
   let i = idx - 1
   while (i >= 0 && /\s/.test(source[i])) i--
   const CALL = 'normalizePage('
-  return source.slice(i - CALL.length + 1, i + 1) === CALL
+  if (source.slice(i - CALL.length + 1, i + 1) !== CALL) return false
+  // ⚠️ 后缀比对会把 `denormalizePage(` / `myNormalizePage(` 也算命中 —— 前者的后 14 个
+  // 字符恰好就是 `normalizePage(`。必须确认它是**独立标识符**而不是别的函数的词尾。
+  const before = source[i - CALL.length]
+  return before === undefined || !/[\w$]/.test(before)
 }
+
+describe('守护的底层工具自身（这两个函数错了，上面所有守护都失真）', () => {
+  // 这一组是**对守护的守护**。两次评审各抓出一批 stripComments 的翻车形状，
+  // 每修一次就把反例钉在这里 —— 否则下一次「顺手简化成正则」会把坑原样刨回来。
+  const OFFSET_RE = /\(\s*[\w$.?]*[Pp]age[\w$]*\s*-\s*1\s*\)\s*\*/
+  const BAD_RE = /Math\.max\(\s*1\s*,\s*(?:Number\(\s*)?[\w$]+(?:\??\.[\w$]+)*\??\.page\b/
+
+  it.each([
+    // [场景, 源码, 文件名, 正则, 期望命中]
+    ['正则字面量里的引号不该翻转字符串态（否则后面的真违规被吞）',
+      `const re = /['"]/;\nconst s = '/*';\nconst offset = (page - 1) * pageSize;\nconst t = '*/';`,
+      'a.ts', OFFSET_RE, true],
+    ['模板插值里的双斜杠不是行注释',
+      'const x = `${`//`}`; const offset = (page - 1) * pageSize',
+      'b.ts', OFFSET_RE, true],
+    ['插值内的块注释要剥掉（否则误报）',
+      'const x = `${1 /* Math.max(1, filters.page) */}`',
+      'c.ts', BAD_RE, false],
+    ['JSX 文本里的撇号不该进入字符串态',
+      `const A = () => <div>don't</div>\n// Math.max(1, filters.page)\nconst offset = (page - 1) * pageSize`,
+      'd.tsx', OFFSET_RE, true],
+    ['行尾注释里的反模式要剥掉（#250 踩过的误报）',
+      'const x = 1 // Math.max(1, filters.page || 1)',
+      'e.ts', BAD_RE, false],
+    ['字符串夹注释符不能吃掉中间的真违规',
+      `const a = "/*"; const offset = (page - 1) * pageSize; const b = "*/"`,
+      'f.ts', OFFSET_RE, true],
+    ['真实违规照常命中',
+      'const page = Math.max(1, filters.page || 1)',
+      'g.ts', BAD_RE, true],
+  ])('stripComments: %s', (_label, src, fileName, re, hit) => {
+    expect((re as RegExp).test(stripComments(src as string, fileName as string))).toBe(hit)
+  })
+
+  it.each([
+    ['normalizePage(get(…))', `normalizePage(get('page', '1'))`, true],
+    ['换行写法也算包裹', `normalizePage(\n  get('page', '1')\n)`, true],
+    // 后缀比对的经典漏报：`denormalizePage(` 的后 14 个字符恰好是 `normalizePage(`
+    ['denormalizePage(get(…)) 不算', `denormalizePage(get('page', '1'))`, false],
+    ['myNormalizePage(get(…)) 不算', `myNormalizePage(get('page', '1'))`, false],
+    ['裸 get 不算', `const p = get('page', '1')`, false],
+  ])('wrappedByNormalizePage: %s', (_label, src, expected) => {
+    const idx = (src as string).indexOf("get('page'")
+    expect(wrappedByNormalizePage(src as string, idx)).toBe(expected)
+  })
+})
 
 describe('防复发守护（#281 改完后不能再长回来）', () => {
   const SRC = resolve(__dirname, '..')
@@ -389,7 +443,7 @@ describe('防复发守护（#281 改完后不能再长回来）', () => {
     const offenders: string[] = []
     for (const root of ROOTS) {
       for (const file of collectSources(join(SRC, root))) {
-        const code = stripComments(readFileSync(file, 'utf8'))
+        const code = stripComments(readFileSync(file, 'utf8'), file)
         // 只认「页码」语义的那几种：`.page` 字段 与 `get('page', …)` URL 取值。
         // 数量夹取（`Math.max(1, Number(item.quantity) || 1)`）不在此列。
         //
@@ -434,7 +488,7 @@ describe('防复发守护（#281 改完后不能再长回来）', () => {
     for (const root of ['actions', 'lib']) {
       for (const file of collectSources(join(SRC, root))) {
         if (file.endsWith('/lib/paging.ts')) continue   // 单源自身就是算 offset 的地方
-        const code = stripComments(readFileSync(file, 'utf8'))
+        const code = stripComments(readFileSync(file, 'utf8'), file)
         // 覆盖两种等价写法：`(page - 1) * size` 与展开后的 `page * size - size`。
         // ⚠️ 这条守护**挡的是「顺手改回去」，挡不住蓄意等价改写** —— 字面量扫描的
         // 固有局限，任何算术恒等式都能绕过（`page * size - size`、`--page * size` …）。
@@ -454,7 +508,7 @@ describe('防复发守护（#281 改完后不能再长回来）', () => {
     // 改成存在性：**凡是出现 `.offset(` 的 action 文件，必须同时出现 `resolvePaging`**。
     const missing: string[] = []
     for (const file of collectSources(join(SRC, 'actions'))) {
-      const code = stripComments(readFileSync(file, 'utf8'))
+      const code = stripComments(readFileSync(file, 'utf8'), file)
       if (!/\.offset\(/.test(code)) continue
       // 导出走 keyset / 专用 helper，不经 resolvePaging
       if (/resolveExport(Keyset|Offset)Page|nonNegativeOffset/.test(code) && !/resolvePaging/.test(code)) continue
@@ -480,7 +534,7 @@ describe('防复发守护（#281 改完后不能再长回来）', () => {
     const unguarded: string[] = []
     let total = 0
     for (const file of collectSources(join(SRC, 'app'))) {
-      const code = stripComments(readFileSync(file, 'utf8'))
+      const code = stripComments(readFileSync(file, 'utf8'), file)
       for (const m of code.matchAll(/get\(\s*['"]page['"]/g)) {
         total++
         if (!wrappedByNormalizePage(code, m.index!)) {
