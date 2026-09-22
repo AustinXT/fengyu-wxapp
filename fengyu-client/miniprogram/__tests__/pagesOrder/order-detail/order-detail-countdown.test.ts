@@ -663,13 +663,14 @@ describe('order-detail 倒计时的生命周期与并发 (#215)', () => {
     };
     const inflight = page.loadDetail('FY-215');
     resolvers[0](degraded);
-    // 非权威归零会排一次尾随刷新（每单一次），把它也喂掉
-    await new Promise((r) => setTimeout(r, 0));
-    resolvers[1]?.(degraded);
     await inflight;
 
     // 服务端明说没关掉 → 闸门必须一直关着，哪怕刷新是成功的
     expect(page.data.payBlockedByExpiry).toBe(true);
+    // 且不该再白发一次重载：服务端已经说过「试过了、关不掉」
+    expect(callClientApiMock).toHaveBeenCalledTimes(1);
+    // 也不该本地推一个**已经过去**的截止时刻进 data（那是下一个口径分叉的种子）
+    expect(page.data.order.expire_time_fmt).toBe('');
   });
 
   test('旧云函数的非权威归零不关支付入口（那些单在旧后端本来就能付）', async () => {

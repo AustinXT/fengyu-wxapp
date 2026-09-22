@@ -393,8 +393,12 @@ Page({
       if (order.status === '待支付' && order.expire_at) {
         if (order.expire_clock) {
           expireTimeFmt = order.expire_clock;
-        } else if (order.expire_in_ms == null || typeof order.expire_in_ms === 'number') {
-          // 两种形态本地推：
+        } else if (order.expire_unresolved !== true) {
+          // ⚠️ 上一版这里写的是 `expire_in_ms == null || typeof ... === 'number'`，
+          // 对任何 JSON 值都恒真 —— 等于没排除降级响应，照样本地推一个**已经过去的**
+          // HH:mm 进 data，和上面那段注释自相矛盾。排除的判据只能是 unresolved 本身。
+          //
+          // 剩下两种形态才本地推：
           //  - 旧云函数：既无 expire_clock 也无 expire_in_ms；
           //  - 半下发（有正的 expire_in_ms 却没有 expire_clock）：生产不可达
           //    （两字段同条件产出），但灰度期人工改服务端可能出现 ——
@@ -534,6 +538,15 @@ Page({
     this._stopCountdown();
 
     if (order.status !== '待支付' || !order.expire_at) {
+      this._countdownDeadlineAt = 0;
+      this.setData({ countdown: '' });
+      return;
+    }
+
+    // 服务端明说「已过期、试过两次都没关掉」：状态已由 `_fetchDetail` 的
+    // `payBlockedByExpiry` 表达完了，再走下面的非权威归零分支只会白发一次重载 ——
+    // 那次几乎必然拿回同一个 unresolved（补关连输两次本就极罕见，第三次赢更悬）。
+    if (order.expire_unresolved === true) {
       this._countdownDeadlineAt = 0;
       this.setData({ countdown: '' });
       return;

@@ -2126,6 +2126,54 @@ describe('order.detail — 支付倒计时下发口径 (#215)', () => {
     expect(ctx.result.order.expire_in_ms).toBeLessThanOrEqual(9 * 60 * 1000)
   })
 
+  test('协议字段齐全：正常倒计时响应必须同时带 expire_in_ms / expire_clock / expire_unresolved / server_elapsed_ms', async () => {
+    // 前端测试是自己伪造这几个字段的，后端这边不断言的话，服务端漏发或改名时两边同时绿。
+    // 尤其 expire_unresolved 丢了：补关失败的过期单会被成功刷新解除支付闸门，
+    // 重新显示「去支付」，然后被支付接口以超时拒绝 —— 本 issue 的矛盾态复发。
+    mockDetailQueries({ auto_close_eligible: true })
+    const ctx = createBoundCtx({ orderNo: 'FY-215' })
+    await routes.detail(ctx)
+
+    const o = ctx.result.order
+    expect(o).toHaveProperty('expire_in_ms')
+    expect(o).toHaveProperty('expire_clock')
+    expect(o).toHaveProperty('expire_unresolved')
+    expect(o).toHaveProperty('server_elapsed_ms')
+    expect(typeof o.expire_in_ms).toBe('number')
+    expect(o.expire_in_ms).toBeGreaterThan(0)          // 权威值恒为严格正数
+    expect(o.expire_clock).toMatch(/^\d{2}:\d{2}$/)
+    expect(o.expire_unresolved).toBe(false)
+    expect(typeof o.server_elapsed_ms).toBe('number')
+    expect(o.server_elapsed_ms).toBeGreaterThanOrEqual(0)
+  })
+
+  test('降级响应：补关两次都没关掉 → expire_unresolved=true，两个时限字段为 null', async () => {
+    // 这是 expire_unresolved 唯一存在的理由：把它和「旧云函数根本不发这些字段」区分开，
+    // 前端对这两者的处理正好相反（前者关支付入口、后者不能关）。
+    const stale = new Date(Date.now() - 20 * 60 * 1000).toISOString()
+    const eligibleRow = {
+      sale_order_id: 'FY-215', client_user_id: 'user-001',
+      sale_order_datetime: stale, preferred_employee_id: null, coupon_id: null,
+      status: '待支付', opened_by: null, lakala_out_order_no: null,
+      auto_close_eligible: true,
+    }
+    pg.query.mockResolvedValueOnce([eligibleRow])
+    pg.query.mockResolvedValueOnce([])  // items
+    pg.query.mockResolvedValueOnce([])  // 行级退款额
+    pg.query.mockResolvedValueOnce([])  // payments
+    // 重读与两次补关复读都仍然「可关且已过期」——补关被并发意图连着挤掉
+    pg.query.mockResolvedValue([eligibleRow])
+
+    const ctx = createBoundCtx({ orderNo: 'FY-215' })
+    await routes.detail(ctx)
+
+    expect(ctx.result.order.expire_unresolved).toBe(true)
+    expect(ctx.result.order.expire_in_ms).toBeNull()
+    expect(ctx.result.order.expire_clock).toBeNull()
+    // 补关确实试过两次（有界重试）
+    expect(pg.transaction.mock.calls.length).toBeGreaterThanOrEqual(2)
+  })
+
   test('不下发 expire_at 时 expire_in_ms 也为 null', async () => {
     mockDetailQueries({ auto_close_eligible: false, opened_by: 'E001' })
     const ctx = createBoundCtx({ orderNo: 'FY-215' })
@@ -2343,18 +2391,34 @@ describe('order.detail — 支付倒计时下发口径 (#215)', () => {
     // 转换单只由 staff/admin 落且必写 opened_by。
     // 前提一破，转换单会被这里关掉，而释放侧不跑 rollbackPendingConversionOnClose ——
     // 疗程卡次数/家居数量永久蒸发（card.js 的注释里亲述过这个场景）。
-    const { readFileSync } = require('fs')
+    //
+    // ⚠️ 扫**全部** route，且每条 INSERT 都必须能静态解析出单据类型：
+    // 新增的 route、或把类型改成 `$N` 参数传进去，都要在这里报红而不是被静默漏扫。
+    const { readFileSync, readdirSync } = require('fs')
     const { resolve } = require('path')
-    const dir = resolve(__dirname, '../../routes')
-    const kinds = new Set()
-    for (const f of ['order.js', 'card.js']) {
+    const dir = resolve(__dirname, '../..', 'routes')
+
+    const inserts = []
+    for (const f of readdirSync(dir).filter((n) => n.endsWith('.js'))) {
       const src = readFileSync(resolve(dir, f), 'utf8')
-      const re = /INSERT INTO sale_orders[\s\S]{0,2000}?VALUES[\s\S]{0,1200}?(?=`)/g
-      for (const block of src.match(re) || []) {
-        for (const m of block.matchAll(/'(销售单|充值单|转换单|内部单|退款单|寄存单)'/g)) kinds.add(m[1])
+      for (const m of src.matchAll(/INSERT INTO sale_orders[\s\S]{0,2500}?(?=`)/g)) {
+        inserts.push({ file: f, sql: m[0] })
       }
     }
-    expect(kinds.size, '未在顾客端找到任何 INSERT INTO sale_orders 的单据类型字面量').toBeGreaterThan(0)
+    expect(inserts.length, '一条 INSERT INTO sale_orders 都没扫到，正则或目录错了').toBeGreaterThan(0)
+
+    const kinds = new Set()
+    for (const { file, sql } of inserts) {
+      const found = [...sql.matchAll(/'(销售单|充值单|转换单|内部单|退款单|寄存单)'/g)].map((m) => m[1])
+      // 解析不出字面量 = 类型走了参数化（`$N`）或新写法，这条前提就不再可静态验证
+      expect(
+        found.length,
+        `${file} 里有一条 INSERT INTO sale_orders 解析不出 sale_order_type 字面量，` +
+        '「顾客端绝不落转换单」这条前提失去静态守护，请手工复核后更新本用例',
+      ).toBeGreaterThan(0)
+      for (const k of found) kinds.add(k)
+    }
+
     expect([...kinds].sort()).toEqual(['充值单', '销售单'])
   })
 
