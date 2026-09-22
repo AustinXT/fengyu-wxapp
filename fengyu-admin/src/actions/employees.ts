@@ -1394,8 +1394,10 @@ export const updateEmployee = withPermission(
          *
          * 两谱系第 13 轮的共同诊断：此前的缺陷几乎全出自「同一份状态两套真相」
          * （事务外快照 vs 锁内重读），而同步靠注释纪律维持。所以这里把锁内固化的一切
-         * 收成一个对象，下面所有消费者（自洽复查、scope 复查、§AFF-03、复职审计、logUpdate）
-         * **只接它**，不再各自从闭包里捞 `preTx*`。
+         * 收成一个对象。下游分两类、**共同点是全都来自锁内**：
+         * 自洽复查 / scope 复查 / §AFF-03 / 复职审计接 `transition`；
+         * `logUpdate` 接 `lockedRow`（审计 before）与真正写库的 `updateData`。
+         * 关键不是「全都叫 transition」，而是**没有一个来自闭包里的 `preTx*`**。
          *
          * 它闭合的具体缺陷：
          *   - 归属 post-image 按事务外旧值算 → 并发合成出跨门店双重可见（codex 第 12 轮）
