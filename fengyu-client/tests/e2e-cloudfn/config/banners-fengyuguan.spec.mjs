@@ -6,7 +6,9 @@
  *
  * 实测要点：
  *   - 四个接口都是公开（无 auth 中间件） → 全部用 invokePublic
- *   - banners 返回 { count, v }（不再返回 URL 列表）：count/v 取自 system_configs.key='banner_count'
+ *   - banners 返回 { count, v, images }：images 是已施加 imageMogr2 缩略规则 + ?v= 版本号的
+ *     完整 URL 列表（issue #231 把 URL 构造从前端收回服务端）；count/v 取自
+ *     system_configs.key='banner_count'
  *     （admin saveSettings 写入，updated_at 当版本号 v）；无 banner_count 时按 banner_images 数组长度兜底
  *   - fengyuguan 读 system_configs.key='fengyuguan_image'，返回 { url, v }：value 是裸字符串 URL，
  *     v 取自 updated_at（缓存版本号，client 防缓存用）；行不存在返回 url='' / v=0
@@ -16,9 +18,11 @@
  *   - invalidateConfig 只清进程内 utils/config 缓存（getMemberThreshold 用），副作用不可直接观测；
  *     仅断言 code=0 + success=true
  *
- * 用例（12 个）：
- *   1. banners 有数据         — INSERT system_configs(banner_count='2') → { count:2, v:number }
- *   2. banners 无数据         — DELETE banner_count + banner_images → { count:0 }
+ * 用例（14 个）：
+ *   1. banners 有数据         — INSERT banner_count='2' → { count:2, v:number, images:[2 条已缩略 URL] }
+ *   2. banners 无数据         — DELETE banner_count + banner_images → { count:0, images:[] }
+ *   2b. banners 忽略 banner_images 的 host — 下发值恒走服务端钉死的 COS_BASE
+ *   2c. banners count 失控     — banner_count='999999' → images 被 clamp 到 20 条
  *   3. fengyuguan 有数据      — INSERT → 返回 url
  *   4. invalidateConfig       — code=0, success=true
  *   5. shareGift 无配置行      — { enabled:false }
@@ -81,8 +85,15 @@ let _serviceHotlineBackup = null
 // ─── shareGift 5 个公开字段（路由白名单） ───────────────────
 const SHARE_GIFT_PUBLIC_KEYS = ['enabled', 'percent', 'minFaceValue', 'maxFaceValue', 'validityDays']
 
+// 合法 COS host —— 必须真在 utils/image.js 的白名单里，否则整组退化成「全拒」的恒真断言
+const COS_HOST = 'https://6665-fengyu-client-prod-d1cga6909c0ba-1406056527.tcb.qcloud.la'
+
 async function caseBannersWithData() {
   await upsertConfig(BANNER_COUNT_KEY, '2')
+  // banner_images 存的是 admin 上传原件的随机名 URL，服务端只借它的 origin（issue #231）
+  await upsertConfig(BANNER_KEY, JSON.stringify([
+    `${COS_HOST}/fengyu-client/banner/1788156883695-gz1cdm.jpg`,
+  ]))
 
   const res = await invokePublic('config.banners', {})
   if (res.code !== 0) throw new Error(`expect code=0, got ${res.code}: ${res.message}`)
@@ -91,6 +102,70 @@ async function caseBannersWithData() {
   }
   if (typeof res.data.v !== 'number' || res.data.v <= 0) {
     throw new Error(`expect v>0 number (cache version), got ${JSON.stringify(res.data.v)}`)
+  }
+
+  // ─── issue #231：URL 构造收回服务端，下发值必须已缩略且带版本号 ───
+  const { images } = res.data
+  if (!Array.isArray(images) || images.length !== 2) {
+    throw new Error(`expect images to be 2 URLs, got ${JSON.stringify(images)}`)
+  }
+  images.forEach((url, i) => {
+    const expected = `${COS_HOST}/fengyu-client/banner/banner${i + 1}.jpg`
+      + `?imageMogr2/thumbnail/1080x1080&v=${res.data.v}`
+    if (url !== expected) {
+      throw new Error(`banner[${i}] mismatch:\n  expected ${expected}\n  got      ${url}`)
+    }
+  })
+  // 随机名原件绝不能出现在下发值里（前端要的是 reuploadToFixedPath 之后的固定名）
+  if (images.join().includes('1788156883695-gz1cdm')) {
+    throw new Error(`下发了 admin 上传原件的随机名 URL: ${JSON.stringify(images)}`)
+  }
+}
+
+/**
+ * issue #231：host 来源已钉死为云函数自己的 COS_BASE，**不从 banner_images 取**。
+ *
+ * banner_images 是 admin 可写且无校验的字段。拿它当 host 来源等于让持 system:config
+ * 的账号把全量顾客的首页图源指到任意桶，而 host 白名单只做后缀匹配、拦不住同后缀的桶。
+ * 这条正面证明：banner_images 指到哪里都不影响下发值。
+ */
+async function caseBannersIgnoresImagesHost() {
+  await upsertConfig(BANNER_COUNT_KEY, '1')
+  await upsertConfig(BANNER_KEY, JSON.stringify([
+    'https://636c-cloud1-3gpht4b01ff88838-1406056527.tcb.qcloud.la/x/y.jpg',
+  ]))
+
+  const res = await invokePublic('config.banners', {})
+  if (res.code !== 0) throw new Error(`expect code=0, got ${res.code}: ${res.message}`)
+  const expected = `${COS_HOST}/fengyu-client/banner/banner1.jpg`
+    + `?imageMogr2/thumbnail/1080x1080&v=${res.data.v}`
+  if (JSON.stringify(res.data.images) !== JSON.stringify([expected])) {
+    throw new Error(
+      `banner_images 的 host 不该影响下发值\n  expected [${expected}]\n  got      ${JSON.stringify(res.data.images)}`
+    )
+  }
+}
+
+/**
+ * count 是裸 text 且 admin 侧无长度校验，而它现在是服务端循环的上界。
+ * 不 clamp 的话 `999999` 会让这个公开未认证接口生成 99 万条 URL（实测响应 150MB / OOM）。
+ */
+async function caseBannersCountClamped() {
+  await upsertConfig(BANNER_COUNT_KEY, '999999')
+  await upsertConfig(BANNER_KEY, JSON.stringify([`${COS_HOST}/fengyu-client/banner/x.jpg`]))
+
+  const res = await invokePublic('config.banners', {})
+  if (res.code !== 0) throw new Error(`expect code=0, got ${res.code}: ${res.message}`)
+  if (!Array.isArray(res.data.images) || res.data.images.length !== 20) {
+    throw new Error(`expect images clamped to 20, got ${res.data.images?.length}`)
+  }
+  // count 也必须 clamp —— 存量客户端读它自拼 URL，拿到 999999 会构造 99 万个对象
+  if (res.data.count !== 20) {
+    throw new Error(`expect count clamped to 20, got ${res.data.count}`)
+  }
+  const bytes = JSON.stringify(res.data).length
+  if (bytes > 10 * 1024) {
+    throw new Error(`响应体应被 clamp 在 10KB 内，实际 ${(bytes / 1024).toFixed(1)}KB`)
   }
 }
 
@@ -101,6 +176,9 @@ async function caseBannersEmpty() {
   if (res.code !== 0) throw new Error(`expect code=0, got ${res.code}: ${res.message}`)
   if (res.data.count !== 0) {
     throw new Error(`expect count=0, got ${JSON.stringify(res.data)}`)
+  }
+  if (!Array.isArray(res.data.images) || res.data.images.length !== 0) {
+    throw new Error(`expect images=[], got ${JSON.stringify(res.data.images)}`)
   }
 }
 
@@ -252,6 +330,8 @@ async function caseShareGiftSensitiveFieldsNotLeaked() {
 const CASES = [
   ['banners with data → returns array of URLs', caseBannersWithData],
   ['banners no row → returns []', caseBannersEmpty],
+  ['banners 忽略 banner_images 的 host（来源钉死）', caseBannersIgnoresImagesHost],
+  ['banners count 失控被 clamp 到 20', caseBannersCountClamped],
   ['fengyuguan with data → returns url', caseFengyuguanWithData],
   ['serviceHotline with data → returns phone', caseServiceHotlineWithData],
   ['serviceHotline no row → {phone:"",v:0}', caseServiceHotlineNoRow],

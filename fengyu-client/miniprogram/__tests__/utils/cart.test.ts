@@ -4,6 +4,7 @@
  */
 
 import { createRequire } from 'node:module'
+import { getCosBase } from '../../utils/cloud-env'
 import {
   COS_ALLOWED_HOSTS,
   getCart,
@@ -402,6 +403,22 @@ describe('issue #230：存量购物车快照的封面净化', () => {
 describe('issue #230：净化器与云函数构造器的闭环守护', () => {
   const req = createRequire(import.meta.url)
   const img = req('../../../cloudfunctions/clientApi/utils/image.js')
+  const imgBanner = req('../../../cloudfunctions/clientApi/utils/image-banner.js')
+
+  /**
+   * issue #231：banner 的桶地址在**两端各有一份字面量**
+   * （云函数 `utils/image-banner.js` 的 COS_BASE / 前端 `utils/cloud-env.ts` 的 COS_BASE）。
+   * 项目禁止跨端共享代码目录，一致性只能靠这条守 ——
+   * 两者不一致时，云函数会下发一个指向**另一个桶**的 URL：图要么 404、要么是旧图。
+   *
+   * ⚠️ host 白名单救不了这种漂移，而且**理由已经变了**（#232 把后缀通配换成了精确 bucket 列表）：
+   * 现在 `COS_ALLOWED_HOSTS` 里**有两个** bucket（当前生产 + 历史 dev），
+   * COS_BASE 漂到名单内的另一个桶时照样放行，下发 404 且服务端毫无感知。
+   * 只有漂到名单外才 fail-closed（返回 null 走占位）——那反倒是能被发现的那一半。
+   */
+  test('banner 桶地址两端同值（云函数下发的 host 必须等于前端 getCosBase）', () => {
+    expect(imgBanner.COS_BASE).toBe(getCosBase())
+  })
 
   const H = '6665-fengyu-client-prod-d1cga6909c0ba-1406056527.tcb.qcloud.la'
 

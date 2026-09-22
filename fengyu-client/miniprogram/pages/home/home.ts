@@ -2,15 +2,11 @@
 import Toast from "@vant/weapp/toast/toast";
 import { getCartCount, clearCart } from "../../utils/cart";
 import { callClientApi } from "../../utils/cloud";
-import { getCosBase } from "../../utils/cloud-env";
 import { createCoverWindow, type CoverWindow } from "../../utils/cover-window";
 import { appendUniqueSpuRows, buildAppendPatch, decorateSpuRows, SPU_PAGE_SIZE } from "../../utils/spu-list";
 import { getIsMember } from "../../utils/member-pricing";
 
 const app = getApp<IAppOption>();
-
-// CloudBase CDN 基础 URL（随 env 切换 dev/prod 桶）
-const CDN_BASE = `${getCosBase()}/fengyu-client`;
 
 interface Banner {
   id: string;
@@ -560,21 +556,27 @@ Page({
   // ===== 数据加载 =====
 
   async loadBanners() {
-    // 走云函数取 count/v（不受 wx.request 域名白名单限制），图片仍用 CDN_BASE 拼固定路径。
+    // URL 由云函数下发并已带 imageMogr2 规则 + ?v=（issue #231）。
+    // 前端不做任何拼接或兜底：服务端拼不出时返回空数组，宁可不显示轮播。
     try {
-      const { count, v } = await callClientApi<{ count: number; v: number }>("config.banners", {});
-      if (count > 0) {
-        this.setData({
-          banners: Array.from({ length: count }, (_, i) => ({
-            id: String(i + 1),
-            title: "",
-            desc: "",
-            bgColor: "",
-            image: `${CDN_BASE}/banner/banner${i + 1}.jpg?v=${v}`,
-            link: "",
-          })),
-        });
-      }
+      const { images } = await callClientApi<{
+        count: number;
+        v: number;
+        images?: string[];
+      }>("config.banners", {});
+      // 显式覆盖而非「有值才写」：本函数目前只在 onLoad 调一次，但若将来挪进
+      // onShow / 下拉刷新，fail-closed 的空数组必须能清掉上一轮的 banners，
+      // 否则「宁可不显示轮播」就没落地。
+      this.setData({
+        banners: (Array.isArray(images) ? images : []).map((image, i) => ({
+          id: String(i + 1),
+          title: "",
+          desc: "",
+          bgColor: "",
+          image,
+          link: "",
+        })),
+      });
     } catch (err) {
       // 轮播图非关键路径，静默失败即可
       console.warn("[home] loadBanners failed", err);

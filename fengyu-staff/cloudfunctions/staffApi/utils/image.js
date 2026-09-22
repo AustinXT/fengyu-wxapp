@@ -49,6 +49,17 @@ const COS_ALLOWED_HOSTS = [
 ]
 
 /**
+ * 对象键白名单：两段、纯 ASCII、以图片扩展名结尾。
+ * admin `path=` 模式上传生成的键形如 `store-covers/1789097186265-apa9p0.png`。
+ * 详细理由见 parseProcessableUrl 里的注释。
+ *
+ * ⚠️ 端专属链路（如 banner 的三段固定键）**不要**放宽这条，
+ * 而是各自建更窄的白名单走 `parseProcessableUrl` 的 `objectKeyPattern` 参数
+ * —— 已有的先例是 `clientApi/utils/image-banner.js`（banner 的三段固定键）。
+ */
+const OBJECT_KEY_PATTERN = /^\/[\w-]+\/[\w.-]+\.(png|jpe?g|webp|gif)$/i
+
+/**
  * 入参 URL 的长度上界。现实封面 URL 约 110 字符，2048 已是数量级余量。
  * 存在的理由见 parseProcessableUrl 里的注释：挡的是「一条超长 URL 撑爆整个接口响应」。
  */
@@ -140,9 +151,20 @@ function decodeParamName(param) {
  * 保证两种模式的准入规则**逐字一致**——校验放两份必然漂移。
  *
  * @param {string} url 原始图片 URL
+ * @param {RegExp} [objectKeyPattern] 对象键白名单，默认 {@link OBJECT_KEY_PATTERN}。
+ *   端专属链路传更窄的（先例 `clientApi/utils/image-banner.js`）；**必须无 `g`/`y` 标志**，函数头会拒绝带标志的。
  * @returns {URL|null} 通过校验的 URL 对象（query 尚未写入规则）；不通过返回 null
  */
-function parseProcessableUrl(url) {
+function parseProcessableUrl(url, objectKeyPattern = OBJECT_KEY_PATTERN) {
+  // 只接受正则对象；传别的一律拒绝，不静默回退到默认。
+  //
+  // ⚠️ 必须同时拒绝 `g` **和** `y` —— 两者都会让 `.test()` 使用并更新 `lastIndex`，
+  // 也就是**同一个输入隔次返回 false**（实测 `ok null ok null`）。
+  // 后果是「偶数张 banner 随机消失」这类完全无规律、极难排查的故障。
+  // 一度只拒了 `g`，sticky 是评审探到的另一半。
+  if (!(objectKeyPattern instanceof RegExp)) return null
+  if (objectKeyPattern.global || objectKeyPattern.sticky) return null
+
   if (typeof url !== 'string' || url.trim() === '') return null
 
   // 长度上界：`products.cover_image` / `stores.cover_image` 都是无约束的 `text`，
@@ -182,7 +204,10 @@ function parseProcessableUrl(url) {
   // （`/` 的情形是 `store-covers` 为对象键、`oversize.png` 为样式名），
   // 代码层与正常两段键不可区分。本项目 bucket 须保持默认分隔符 `!`、
   // 且不得配置含缩放规则的样式。
-  if (!/^\/[\w-]+\/[\w.-]+\.(png|jpe?g|webp|gif)$/i.test(parsed.pathname)) {
+  //
+  // 默认是上面那条两段键规则；端专属链路可传更窄的（先例 clientApi/utils/image-banner.js）。
+  // 正则的无状态性已在函数头校验（拒绝 g / y）。
+  if (!objectKeyPattern.test(parsed.pathname)) {
     return null
   }
 
@@ -275,6 +300,7 @@ function safeThumbUrlByArea(url, maxPixels) {
   parsed.search = `?imageMogr2/thumbnail/${maxPixels}@`
   return parsed.toString()
 }
+
 
 /**
  * 门店列表卡片：显示尺寸 160rpx，3x 屏约 240 物理像素，取 300 留余量。
@@ -376,6 +402,10 @@ module.exports = {
   safeThumbUrl,
   safeThumbUrlByArea,
   isProcessableHost,
+  // 供**本端**的 image-* 兄弟模块复用（clientApi 侧已有 image-banner.js；staffApi 侧暂无）。
+  // 它返回的是已过全部准入校验的 URL 对象，调用方只负责写自己的 search。
+  parseProcessableUrl,
+  OBJECT_KEY_PATTERN,
   COS_ALLOWED_HOSTS,
   MAX_SOURCE_URL_LENGTH,
   MAX_THUMB_BOX,
