@@ -35,7 +35,9 @@ export interface ResolvedRange {
 /** resolveTimeRange 的输出：本期 + 上期(环比) + 去年同期(同比) */
 export interface ResolvedTimeRange {
   current: ResolvedRange
-  previous: ResolvedRange | null // 环比：上一个等长周期
+  // 环比：上一周期的**日历同期**（不是完整的上一周/上一月）。长度关系与两条日历例外
+  // （month clamp / year 跨闰年）见 time-range.ts 头注释与 metrics.md §数据中心板块专属指标
+  previous: ResolvedRange | null
   lastYear: ResolvedRange | null // 同比：去年同期
   presetLabel: string // '今日' / '本周' / '本月' / '今年' / 'YYYY-MM-DD ~ YYYY-MM-DD'
 }

@@ -90,17 +90,15 @@ describe('resolveTimeRange', () => {
     2029, // 平年 + 上年闰年 ← 下一个反例年
   ]
 
-  it('previous 绝不长于 current（全 preset × 逐日性质断言，含 year 的闰年反例年）', () => {
+  it('today/week/month 的 previous 绝不长于 current（逐日性质断言）', () => {
     const days = (r: { start: string; end: string }) =>
       Math.round((Date.parse(`${r.end}T00:00:00Z`) - Date.parse(`${r.start}T00:00:00Z`)) / 86400000) + 1
     const isLeap = (y: number) => (y % 4 === 0 && y % 100 !== 0) || y % 400 === 0
 
-    let yearBranchOverLong = 0
-
     for (const year of DAILY_SCAN_YEARS) {
       for (let i = 0; i < (isLeap(year) ? 366 : 365); i++) {
         const now = new Date(Date.UTC(year, 0, 1, 4) + i * 86400000)
-        for (const preset of ['today', 'week', 'month', 'year'] as const) {
+        for (const preset of ['today', 'week', 'month'] as const) {
           const r = resolveTimeRange({ preset }, now)
           // 类型上 previous 可为 null（ComparisonRanges 共用该形状），但 resolveTimeRange
           // 五个分支都必赋值 —— 顺带守住这个性质
@@ -112,26 +110,54 @@ describe('resolveTimeRange', () => {
           const prev = days(prevRange)
           const at = `${preset} @ ${r.current.end} (previous=${prevRange.start}~${prevRange.end})`
 
-          if (preset === 'today' || preset === 'week') {
-            expect(prev, at).toBe(cur) // 纯天数平移，恒等长
-          } else if (preset === 'month') {
-            // 硬底线：基期长于当期就是 #283
-            expect(prev, at).toBeLessThanOrEqual(cur)
+          // 硬底线：基期长于当期就是 #283
+          expect(prev, at).toBeLessThanOrEqual(cur)
+
+          if (preset === 'month') {
             // 上月天数不足时 clamp 到上月末 → 最多短 3 天（3/31 看 → 基期 2/1~2/28）
             expect(prev, at).toBeGreaterThanOrEqual(cur - 3)
           } else {
-            // year：**未被 #283 修复**，存在跨闰年 ±1 天偏差。这里如实钉住量级（±1 天），
-            // 既不假装它等长，也不放任它继续恶化。详见文件头注释。
-            expect(Math.abs(prev - cur), at).toBeLessThanOrEqual(1)
-            if (prev > cur) yearBranchOverLong++
+            expect(prev, at).toBe(cur) // 纯天数平移，恒等长
           }
         }
       }
     }
+  })
 
-    // 显式记录 year 分支的既有偏差规模：2025 与 2029 各 306 天，其余三年为 0。
-    // 若哪天 year 分支被修好，这个数会变 0 —— 届时请连同文件头注释一起更新，而不是删掉本断言。
-    expect(yearBranchOverLong).toBe(612)
+  /**
+   * year 分支**未被 #283 修复**，是一条 characterization test：钉住偏差量级（±1 天），
+   * 既不假装它等长，也不放任它恶化。锚点写死具体日期而不是统计总数——统计数会随扫描
+   * 年份清单变化而失败，那是测试脆弱不是行为回归。
+   */
+  it('year 的 previous 存在跨闰年 ±1 天偏差（既有缺陷，如实钉住量级）', () => {
+    const days = (r: { start: string; end: string }) =>
+      Math.round((Date.parse(`${r.end}T00:00:00Z`) - Date.parse(`${r.start}T00:00:00Z`)) / 86400000) + 1
+    const isLeap = (y: number) => (y % 4 === 0 && y % 100 !== 0) || y % 400 === 0
+
+    // 锚点 1：当年平年 + 上一年闰年 → 基期含 2/29 而当期没有 → 基期**长 1 天**
+    const y2025 = resolveTimeRange({ preset: 'year' }, new Date('2025-03-01T04:00:00Z'))
+    expect(y2025.current).toEqual({ start: '2025-01-01', end: '2025-03-01' })
+    expect(y2025.previous).toEqual({ start: '2024-01-01', end: '2024-03-01' })
+    expect(days(y2025.current)).toBe(60)
+    expect(days(y2025.previous!)).toBe(61) // ← 缺陷所在：基期比当期长 1 天
+
+    // 锚点 2：当年闰年 + 上一年平年 → 反向，基期短 1 天
+    const y2024 = resolveTimeRange({ preset: 'year' }, new Date('2024-03-01T04:00:00Z'))
+    expect(days(y2024.current)).toBe(61)
+    expect(days(y2024.previous!)).toBe(60)
+
+    // 锚点 3：两年都不含额外闰日 → 恰好等长（2026 对比 2025，即当前状态）
+    const y2026 = resolveTimeRange({ preset: 'year' }, new Date('2026-09-22T04:00:00Z'))
+    expect(days(y2026.current)).toBe(days(y2026.previous!))
+
+    // 量级上界：逐日扫描下偏差永远不超过 1 天（防止它从 ±1 恶化成 ±N）
+    for (const year of DAILY_SCAN_YEARS) {
+      for (let i = 0; i < (isLeap(year) ? 366 : 365); i++) {
+        const r = resolveTimeRange({ preset: 'year' }, new Date(Date.UTC(year, 0, 1, 4) + i * 86400000))
+        const at = `year @ ${r.current.end} (previous=${r.previous!.start}~${r.previous!.end})`
+        expect(Math.abs(days(r.previous!) - days(r.current)), at).toBeLessThanOrEqual(1)
+      }
+    }
   })
 
   it('year：年初至今 / 去年同区间（previous=lastYear）', () => {

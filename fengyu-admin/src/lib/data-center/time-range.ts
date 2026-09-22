@@ -80,9 +80,10 @@ function daysInclusive(start: string, end: string): number {
  *
  * ⚠️ 前提是**年份恰为 4 位**：`fmt()` 对年份不做 padStart，年份 <1000 或 >9999 时
  * 输出不再定长（`"10000-01-01" < "9999-12-31"` 会被判成真），字典序就崩了。
- * 当前唯一调用点在 month 分支，两个实参都锚定 `shanghaiToday()` 的真实当前年份，触不到边界；
- * 但**别把它复用到 custom 分支** —— 那里的 start/end 来自 URL，`params.ts` 的 DATE_RE
- * 只校验数字位数不校验日历合法性。要复用先改成基于 Date.parse 比较。
+ * 本函数当前唯一调用点在 month 分支，两个实参都锚定 `shanghaiToday()` 的真实当前年份，安全。
+ * 但**别把它复用到 custom 分支**：`params.ts` 的 `DATE_RE` 接受 `0000`–`0999`，
+ * `?preset=custom&start=0001-01-01` 实测会让 `addDays` 产出 `"0-12-31"` / `"NaN-NaN-NaN"`
+ * ——即"年份不足 4 位"在 custom 路径上**是可达的**，只是不经过本函数。要复用先改成基于 Date.parse 比较。
  */
 function minDate(a: string, b: string): string {
   return a < b ? a : b
