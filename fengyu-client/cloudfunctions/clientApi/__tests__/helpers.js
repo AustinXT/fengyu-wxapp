@@ -81,6 +81,9 @@ function createMockTransactionClient(queryResults = []) {
  * ⚠️ 守卫同源不能只断言「子串都在」——那样 `AND → OR`、或任一侧多加一条守卫，
  * 子串照样全在，漂移锁就成了摆设。这里连接符、条件集合、条件数量都锁住，
  * 出现 OR 直接抛错。`expect` 由调用方做，helper 只负责规范化。
+ *
+ * ⚠️ 已知限制：按 ` AND ` 切分，所以守卫里若出现**含 AND 的字符串字面量**会被误拆。
+ * 现有守卫的字面量（'待支付' / '转换单'）都不含，且误拆方向是转红而非静默通过（fail-loud）。
  */
 function sqlConjuncts(sqlText) {
   const body = sqlText

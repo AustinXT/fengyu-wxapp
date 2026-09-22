@@ -155,11 +155,11 @@ Page({
   _poller: null as PaymentPoller | null,
   // 从 scan-pay 支付完成跳入（?paid=1）：详情加载后若仍待支付，触发一次兜底轮询
   _needConfirm: false,
-  // loadDetail 的单调序号（issue #215），沿用 pages/home/home.ts 的同名 idiom。
-  // 触发源有 5 条（onLoad / onShow / 下拉 / 倒计时归零 / 支付回调），并发时
-  // 「后到者赢 setData」会让旧响应盖掉新响应 —— 最坏是把一张服务端已关闭的单
-  // 又画回「待支付」。只有最后一次发起的请求允许落 setData。
-  _loadingToken: 0,
+  // single-flight：在途的那次加载（含它的尾随刷新）。触发源有 5 条
+  // （onLoad / onShow / 下拉 / 倒计时归零 / 支付回调），让它们根本不并行，
+  // 「旧响应盖掉新响应」就不可能发生。详见 loadDetail 的注释。
+  _loadPromise: null as Promise<void> | null,
+  _loadQueued: false,
   // 页面已卸载（issue #215）。onUnload 之后仍可能有在途请求回来：
   // confirmAndRefresh 里 `poller.clear()` 会 resolve 掉那个 promise，后面紧跟着
   // 一句 loadDetail —— 不拦就会在死实例上重新装表，孤儿定时器每秒对它 setData。
@@ -220,15 +220,44 @@ Page({
     }
   },
 
-  async loadDetail(saleOrderId: string) {
+  /**
+   * 加载详情。**single-flight**：同一时刻最多一个在途请求，期间再来的请求合并成
+   * 一次「尾随刷新」，并且所有调用方都能 await 到最终完成（issue #215）。
+   *
+   * 原先用单调 token「后发起者获胜」，但那保证的是**发起顺序**赢，不是**数据新旧**赢：
+   * 先发起的请求完全可能后到服务端、因而读到更新的快照，却被判废。于是一张刚支付成功的
+   * 单子可能被画回「待支付」。让请求根本不并行，这个问题就不存在了；顺带把
+   * onShow / 归零重载 / 下拉同时触发的那一串合并成一次。
+   */
+  loadDetail(saleOrderId: string): Promise<void> {
+    if (this._destroyed) return Promise.resolve();
+    if (this._loadPromise) {
+      // 已有在途请求：合并成一次尾随刷新，并让本次调用等到那一次也跑完
+      this._loadQueued = true;
+      return this._loadPromise;
+    }
+    const run = (async () => {
+      try {
+        do {
+          this._loadQueued = false;
+          await this._fetchDetail(saleOrderId);
+        } while (this._loadQueued && !this._destroyed);
+      } finally {
+        this._loadPromise = null;
+        this._loadQueued = false;
+      }
+    })();
+    this._loadPromise = run;
+    return run;
+  },
+
+  async _fetchDetail(saleOrderId: string) {
     if (this._destroyed) return;
-    const token = ++this._loadingToken;
     this.setData({ isLoading: true });
     const sentAt = Date.now();
     try {
       const data = await callClientApi('order.detail', { saleOrderId });
-      // 飞在途中时又发起了更新的一次加载 → 本次结果作废，不落 setData
-      if (token !== this._loadingToken || this._destroyed) return;
+      if (this._destroyed) return;
       const order = (data?.order || {}) as OrderDetailData;
       // 记下实测往返耗时，交给 startCountdown 去扣（issue #215）。
       // ⚠️ 不能就地把 expire_in_ms 减掉 —— 那样「服务端说剩 0」和「服务端说剩 50ms、
@@ -426,14 +455,11 @@ Page({
         }
       }
     } catch {
-      // 被抢先的那次（或卸载后才失败的那次）不许弹 Toast：
-      // 用户会看到「加载失败」和随后成功落地的正确数据同时存在
-      if (token === this._loadingToken && !this._destroyed) Toast.fail('加载失败');
+      // 卸载后、或隐藏期间才失败的那次不弹 Toast：
+      // 前者是对着死实例弹，后者会让用户切回来时看到一条陈旧的错误提示
+      if (!this._destroyed && !this._hidden) Toast.fail('加载失败');
     } finally {
-      // 同理，被抢先的那次不许把 loading 关掉——真正在飞的那次还没回来
-      if (token === this._loadingToken && !this._destroyed) {
-        this.setData({ isLoading: false });
-      }
+      if (!this._destroyed) this.setData({ isLoading: false });
     }
   },
 
@@ -563,7 +589,9 @@ Page({
         this._stopCountdown();
         this._countdownDeadlineAt = 0;
         this.setData({ countdown: '' });
-        this.loadDetail(saleOrderId);
+        // 与上面回拨分支同款守卫。当前 onHide/onUnload 都已停表所以不可达，
+        // 但停表逻辑一旦改松，这里就是漏点（双谱系评审 round-6 P3）
+        if (!this._hidden && !this._destroyed) this.loadDetail(saleOrderId);
         return;
       }
       // 必须 ceil：floor 会让 (0, 1000) 毫秒这一拍显示 "00:00"，

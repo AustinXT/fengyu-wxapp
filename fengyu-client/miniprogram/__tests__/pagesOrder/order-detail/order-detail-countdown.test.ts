@@ -130,7 +130,7 @@ beforeEach(() => {
 
 afterEach(() => {
   for (const p of livePages) {
-    if (p._countdownTimer) clearInterval(p._countdownTimer);
+    if (p._countdownTimer) clearTimeout(p._countdownTimer);
   }
   livePages = [];
 });
@@ -598,26 +598,48 @@ describe('order-detail 倒计时的生命周期与并发 (#215)', () => {
     expect(page.data.confirmingPayment).toBe(false);
   });
 
-  test('被抢先的那次失败 → 不弹「加载失败」（否则错误提示与正确数据并存）', async () => {
+  test('single-flight：在途期间再来的加载被合并成一次尾随刷新', async () => {
+    // 原先用「后发起者获胜」的 token，但那保证的是**发起顺序**赢、不是**数据新旧**赢：
+    // 先发起的请求完全可能后到服务端、读到更新的快照却被判废，一张刚支付成功的单
+    // 就会被画回「待支付」。让请求根本不并行，这类乱序就不存在了。
     const { page, resolvers } = createPageWithManualApi();
-    const rejecters: Array<(e: any) => void> = [];
-    callClientApiMock.mockImplementation(
-      () => new Promise((resolve, reject) => { resolvers.push(resolve); rejecters.push(reject); }),
-    );
 
-    const first = page.loadDetail('FY-215');   // token=1
-    const second = page.loadDetail('FY-215');  // token=2
+    const a = page.loadDetail('FY-215');
+    const b = page.loadDetail('FY-215');   // 在途期间再来
+    const c = page.loadDetail('FY-215');   // 再来一次，仍只合并成一次
+    expect(resolvers).toHaveLength(1);     // 同一时刻只有一个在途请求
+
+    resolvers[0](detailResponse('待支付'));
+    await Promise.resolve();
+    await Promise.resolve();
+    // 尾随刷新这时才发出，而且只发一次
+    expect(resolvers).toHaveLength(2);
+
     resolvers[1](detailResponse('已关闭'));
-    await second;
+    await Promise.all([a, b, c]);
 
-    rejecters[0](new Error('network'));
-    await first;
-
-    expect(Toast.fail).not.toHaveBeenCalled();
+    // 所有调用方都等到了最终结果
     expect(page.data.order.status).toBe('已关闭');
+    expect(page.data.isLoading).toBe(false);
+    expect(callClientApiMock).toHaveBeenCalledTimes(2);
   });
 
-  test('卸载后才失败的请求 → 既不弹 Toast 也不动 loading', async () => {
+  test('await loadDetail 能等到尾随刷新跑完（confirmAndRefresh 依赖这一点）', async () => {
+    const { page, resolvers } = createPageWithManualApi();
+
+    const first = page.loadDetail('FY-215');
+    page.loadDetail('FY-215');            // 触发尾随刷新
+    resolvers[0](detailResponse('待支付'));
+    await Promise.resolve();
+    await Promise.resolve();
+    resolvers[1](detailResponse('已支付'));
+    await first;
+
+    // 若 await 只等到第一次，这里读到的会是「待支付」
+    expect(page.data.order.status).toBe('已支付');
+  });
+
+  test('隐藏期间加载失败 → 不弹「加载失败」（切回来才看到一条陈旧错误提示）', async () => {
     const { page } = createPageWithManualApi();
     const rejecters: Array<(e: any) => void> = [];
     callClientApiMock.mockImplementation(
@@ -625,43 +647,13 @@ describe('order-detail 倒计时的生命周期与并发 (#215)', () => {
     );
 
     const inflight = page.loadDetail('FY-215');
-    page.onUnload();
+    page.onHide();
     rejecters[0](new Error('network'));
     await inflight;
 
     expect(Toast.fail).not.toHaveBeenCalled();
-    expect(page.data.isLoading).toBe(true);  // 未被死实例改写
   });
 
-  test('并发 loadDetail：被抢先的那次不许落 setData（旧响应不能盖新响应）', async () => {
-    const { page, resolvers } = createPageWithManualApi();
-
-    const first = page.loadDetail('FY-215');   // token=1
-    const second = page.loadDetail('FY-215');  // token=2（更新的一次）
-    expect(resolvers).toHaveLength(2);
-
-    // 更新的那次先回（已关闭），随后旧的那次才回（待支付）
-    resolvers[1](detailResponse('已关闭'));
-    await second;
-    resolvers[0](detailResponse('待支付'));
-    await first;
-
-    expect(page.data.order.status).toBe('已关闭');
-    expect(page.data.isLoading).toBe(false);
-  });
-
-  test('被抢先的那次不许提前关掉 loading', async () => {
-    const { page, resolvers } = createPageWithManualApi();
-
-    const first = page.loadDetail('FY-215');
-    page.loadDetail('FY-215');
-
-    // 旧的那次先回 → 既不落 setData，也不把 loading 关掉（新的还在飞）
-    resolvers[0](detailResponse('待支付'));
-    await first;
-
-    expect(page.data.isLoading).toBe(true);
-  });
 });
 
 describe('order-detail.wxml 的倒计时文案分支 (#215)', () => {

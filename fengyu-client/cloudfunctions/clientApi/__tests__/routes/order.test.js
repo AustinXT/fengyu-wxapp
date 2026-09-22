@@ -2306,6 +2306,15 @@ describe('order.detail — 支付倒计时下发口径 (#215)', () => {
     // 空串、列没 SELECT 出来是 undefined 这一堆跨语言语义差就会重新找上门
     expect(guardDecl).not.toContain('===')
     expect(guardDecl).not.toContain('=> ')
+
+    // ⚠️ closeExpiredOrder **体内不得有时间谓词**（双谱系评审 round-6 P2）。
+    // detail 的「权威 0」契约架在这条前提上：它下发 expire_in_ms=0 时向前端承诺
+    // 「已经试到关不动为止」，而前端对权威 0 的处理是不再重载。这里一旦加上
+    // `sale_order_datetime < NOW() - INTERVAL ...`，补关成败就取决于 PG 与宿主的时钟差，
+    // PG 慢一点就关不掉而复读仍判 eligible —— 矛盾态从后门回来。
+    expect(closeBody).not.toMatch(/INTERVAL/)
+    expect(closeBody).not.toMatch(/NOW\(\)\s*-/)
+    expect(closeBody).not.toContain('sale_order_datetime')
   })
 })
 

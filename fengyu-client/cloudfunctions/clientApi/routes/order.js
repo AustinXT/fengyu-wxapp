@@ -1473,6 +1473,14 @@ function queryOrderGuardSnapshot(orderNo) {
  * (opened_by IS NOT NULL) 由 admin/staff 生成二维码交顾客扫码支付，扫码时刻
  * 往往已超过 10 分钟，不应被自助下单的懒清理误关（issue #27）。
  *
+ * ⚠️ **本函数体内不得有任何时间谓词**（issue #215）：「过没过 10 分钟」一律由调用方判。
+ * `order.detail` 的「权威 0」契约就架在这条前提上 —— 它下发 `expire_in_ms = 0` 时向前端
+ * 承诺「已经试到关不动为止」，而前端对权威 0 的处理是**不再重载**。
+ * 一旦这里加上 `sale_order_datetime < NOW() - INTERVAL '10 minutes'` 之类的「加固」，
+ * 补关是否成功就开始取决于 PG 与云函数宿主的时钟差：PG 慢一点就关不掉，
+ * 而复读仍判 eligible，页面于是停在「待支付 / 请完成支付 / 去支付」——
+ * 本 issue 要消灭的矛盾态从后门回来。由 `order.test.js` 的同源锁一并钉住。
+ *
  * @param {string} orderNo - 订单号
  * @returns {Promise<boolean>} true=确实关闭并释放了券；false=未命中（非待支付/员工单/不存在）
  */
@@ -2972,12 +2980,18 @@ async function detail(ctx) {
   const deadlineMs = new Date(order.sale_order_datetime).getTime() + 10 * 60 * 1000
 
   // 开头那次懒清理检查发生在请求**开头**，而查明细、查退款、查流水都要时间；
-  // 正好在这中间跨过 10 分钟的话，就得在这里补关一次，否则页面会长期停在
+  // 正好在这中间跨过 10 分钟的话，就得在这里补关，否则页面会长期停在
   //「请完成支付 + 去支付」而订单压根没被关。
-  if (order.auto_close_eligible && deadlineMs <= nowMs) {
+  //
+  // 为什么要**循环**而不是关一次就走：第一次的 CAS 可能输给并发写入的支付意图，
+  // 而那笔意图又在复读之前被清掉（预下单失败等），复读于是仍然「可关且已过期」——
+  // 这时直接下发权威的 0 就骗了前端：它对权威 0 的处理是「不再重载」，
+  // 那句话必须严格蕴含「服务端已经试到关不动为止」。两次就足以收住这类三方竞态。
+  for (let attempt = 0; attempt < 2 && order.auto_close_eligible && deadlineMs <= nowMs; attempt++) {
     await closeExpiredOrder(orderNo)
     const recheckedRows = await queryOrderGuardSnapshot(orderNo)
-    if (recheckedRows.length > 0) Object.assign(order, recheckedRows[0])
+    if (recheckedRows.length === 0) break
+    Object.assign(order, recheckedRows[0])
   }
 
   // 待支付订单返回过期时间。判据由数据库给出（PENDING_AUTO_CLOSE_GUARD_SQL），
