@@ -154,7 +154,7 @@ async function history(ctx) {
     SELECT ct.id, ct.type, ct.amount, ct.ref_order_id, ct.created_at
     FROM card_transactions ct
     WHERE ct.card_id = $1 AND ct.created_at >= NOW() - INTERVAL '6 months'
-    ORDER BY ct.created_at DESC
+    ORDER BY ct.created_at DESC, ct.id DESC
     LIMIT $2 OFFSET $3
   `, [cardId, pageSize, offset])
 

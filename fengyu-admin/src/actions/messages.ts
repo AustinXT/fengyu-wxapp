@@ -243,7 +243,7 @@ export const getMessagesPaginated = withPermission(
           : whereClause
       )
       // 例外：消息流水表无 updatedAt 列
-      .orderBy(desc(messages.createdAt))
+      .orderBy(desc(messages.createdAt), desc(messages.id))
       .limit(pageSize)
       .offset(offset),
   ])
@@ -465,7 +465,7 @@ export const getCustomersForBatchMessage = withPermission(
       .leftJoin(stores, eq(clientWechatUsers.boundStoreId, stores.storeId))
       .where(whereClause)
       // 例外：picker 字母序
-      .orderBy(asc(clientWechatUsers.name))
+      .orderBy(asc(clientWechatUsers.name), asc(clientWechatUsers.userId))
       .limit(pageSize)
       .offset(offset),
   ])

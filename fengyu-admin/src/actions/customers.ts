@@ -311,7 +311,7 @@ export const getCustomersPaginated = withPermission(
       .from(clientWechatUsers)
       .where(whereClause)
       // 例外：picker 字母序
-      .orderBy(asc(clientWechatUsers.name))
+      .orderBy(asc(clientWechatUsers.name), asc(clientWechatUsers.userId))
       .limit(pageSize)
       .offset(offset),
   ])

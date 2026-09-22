@@ -108,7 +108,7 @@ async function list(ctx) {
     LEFT JOIN service_reviews sr ON so.service_order_id = sr.service_order_id
     WHERE so.client_user_id = $1
       AND so.remark IS DISTINCT FROM $2
-    ORDER BY so.created_at DESC
+    ORDER BY so.created_at DESC, so.service_order_id DESC
     LIMIT $3 OFFSET $4
   `, [userId, DEPOSIT_REFUND_REMARK, pageSize, offset])
 

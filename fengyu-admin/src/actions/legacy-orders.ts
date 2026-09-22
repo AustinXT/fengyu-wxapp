@@ -151,7 +151,7 @@ export const listLegacyOrders = withPermission(
       .leftJoin(clientWechatUsers, eq(saleOrders.clientUserId, clientWechatUsers.userId))
       .where(whereClause)
       // 例外：业务时间优先（历史订单按销售日期倒序，与"最近编辑浮顶"语义不符）
-      .orderBy(desc(saleOrders.saleOrderDatetime))
+      .orderBy(desc(saleOrders.saleOrderDatetime), desc(saleOrders.saleOrderId))
       .limit(pageSize)
       .offset(offset)
 

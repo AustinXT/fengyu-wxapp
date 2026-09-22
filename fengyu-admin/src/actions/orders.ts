@@ -1302,7 +1302,7 @@ export const getOrdersPaginated = withPermission(
     .leftJoin(clientWechatUsers, eq(saleOrders.clientUserId, clientWechatUsers.userId))
     .where(whereClause)
     // 例外：业务时间优先（订单日期比"最近编辑"更符合管理员直觉）
-    .orderBy(desc(saleOrders.saleOrderDatetime))
+    .orderBy(desc(saleOrders.saleOrderDatetime), desc(saleOrders.saleOrderId))
     .limit(pageSize)
     .offset(offset)
 

@@ -149,7 +149,7 @@ export const getCardTransactionsPaginated = withPermission(
       .innerJoin(clientWechatUsers, eq(prepaidCards.userId, clientWechatUsers.userId))
       .where(whereClause)
       // 例外：流水型表无 updatedAt 列
-      .orderBy(desc(cardTransactions.createdAt))
+      .orderBy(desc(cardTransactions.createdAt), desc(cardTransactions.id))
       .limit(pageSize)
       .offset(offset),
     db

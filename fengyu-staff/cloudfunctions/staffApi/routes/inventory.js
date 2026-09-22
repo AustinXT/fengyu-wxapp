@@ -1090,7 +1090,7 @@ async function stockList(ctx) {
        FROM inventory_stock_lots st
   LEFT JOIN inventory_locations loc ON loc.location_id = st.location_id
        ${whereSql}
-   ORDER BY loc.location_type, loc.name, st.sku_name, st.batch_no
+   ORDER BY loc.location_type, loc.name, st.sku_name, st.batch_no, st.id
       LIMIT ${limit} OFFSET ${offset}`,
     params,
   )
@@ -1383,7 +1383,7 @@ async function docList(ctx) {
   LEFT JOIN inventory_locations source_loc ON source_loc.org_node_id = d.source_org_node_id
   LEFT JOIN inventory_locations target_loc ON target_loc.org_node_id = d.target_org_node_id
        ${whereSql}
-   ORDER BY d.doc_date DESC, d.created_at DESC
+   ORDER BY d.doc_date DESC, d.created_at DESC, d.id DESC
       LIMIT ${limit} OFFSET ${offset}`,
     params,
   )
