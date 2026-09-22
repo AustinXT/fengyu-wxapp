@@ -408,59 +408,77 @@ describe('#282 · admin 分页查询的 orderBy 必须带唯一键 tie-break', (
     })
   })
 
-  describe('覆盖率 · EXPECTED + SAFE 必须钉死全部 33 支分页查询', () => {
-    // 第 1 层是启发式（`looksUnique` 对任何 `*Id` 放行，**外键也算**），
-    // 真正的位置级保护只能靠清单。所以清单必须**全覆盖** ——
-    // 评审在 staffApi 侧实测过：未登记的几支改成外键排序后两层皆绿。
-    // 这条断言让「新增分页查询却忘了登记」立刻可见。
-    const PINNED = new Set([
-      // —— #282 本次修的（EXPECTED）——
-      'desc(appointments.appointmentTime), desc(appointments.appointmentId)',
-      'desc(cardTransactions.createdAt), desc(cardTransactions.id)',
-      'desc(saleOrders.paidAt), desc(saleItems.createdAt), asc(saleItems.saleItemId)',
-      'asc(clientWechatUsers.name), asc(clientWechatUsers.userId)',
-      'desc(saleOrders.saleOrderDatetime), desc(saleOrders.saleOrderId)',
-      'desc(operationLogs.createdAt), desc(operationLogs.id)',
-      'desc(lakalaMerchants.updatedAt), desc(lakalaMerchants.id)',
-      'desc(messages.createdAt), desc(messages.id)',
-      'desc(pickupRecords.createdAt), desc(pickupRecords.id)',
-      'desc(pointTransactions.createdAt), desc(pointTransactions.id)',
-      'desc(serviceOrders.updatedAt), desc(serviceOrders.createdAt), desc(serviceOrders.serviceOrderId)',
-      'asc(inventoryLocations.locationType), asc(inventoryLocations.name), asc(inventoryStockLots.skuName), asc(inventoryStockLots.batchNo), asc(inventoryStockLots.id)',
-      'desc(couponTemplates.updatedAt), desc(couponTemplates.createdAt), asc(couponTemplates.templateId)',
-      'asc(productSkus.sortOrder), asc(productSkus.skuId)',
-      'asc(products.sortOrder), asc(products.productId)',
-      // —— 本来就正确的（SAFE / #183 keyset 遗产 / #239 遗产）——
-      'desc(saleOrderPayments.paidAt), desc(saleOrderPayments.id)',
-      'desc(saleOrderPayments.createdAt), desc(saleOrderPayments.id)',
-      'desc(staffWechatUsers.updatedAt), desc(staffWechatUsers.createdAt), asc(staffWechatUsers.employeeId)',
-      'desc(inventoryDocs.docDate), desc(inventoryDocs.createdAt), desc(inventoryDocs.id)',
-      'desc(serviceOrders.createdAt), desc(serviceOrders.updatedAt), serviceItems.serviceItemId',
-      'desc(serviceOrders.createdAt), desc(serviceOrders.updatedAt), serviceCommissions.id',
-      // 多行 orderBy（末位带尾逗号，归一后保留）
-      'desc(saleOrders.saleOrderDatetime), saleOrders.saleOrderId, salePaymentItemReceipts.salePaymentId, salePaymentItemReceipts.id, salePaymentItemAllocations.id,',
-      'desc(saleOrders.saleOrderDatetime), saleOrders.saleOrderId, saleOrderPayments.id, salePaymentItemReceipts.id,',
-      'asc(inventoryLocations.locationType), asc(inventoryLocations.name), asc(inventoryStockLots.skuName), asc(inventoryStockLots.batchNo), asc(inventoryStockLots.id),',
-      // —— 走 UNIQUE_BY_INDEX 豁免（普通列带全表唯一索引，本身即全序）——
-      'asc(inventorySkus.productCode)',
-      'asc(inventorySuppliers.name)',
-    ])
+  describe('覆盖率 · 全部 33 支分页查询都被按「文件 + 子句 + 次数」钉死', () => {
+    // 第 1 层是启发式 —— `looksUnique` 对**任何** `*Id` 放行，**外键也算**。
+    // 真正的位置级保护只能靠这张表。
+    //
+    // ⚠️ 必须是 **(file, clause, count) 三元组**，不能是全局 `Set<string>` 白名单：
+    // 后者允许**不同查询互换已登记子句**。评审反例：把 `services.ts:491` 的末位
+    // `serviceCommissions.id` 换成 `serviceItems.serviceItemId` ——
+    // 后者对 `service_commissions` **不唯一**（约束是
+    // `serviceItemId + employeeId + roleType`，见 db/schema/service-commission.ts:20），
+    // 分页重新变成非全序，但该子句已在全局白名单里（同文件另外 3 支在用）→ 全绿。
+    // 按文件+次数核对之后，这种互换会让两边的计数同时对不上。
+    //
+    // 表的生成方式：跑一遍 `pagedOrderBys` 把 (相对路径, 归一化参数列表) 汇总计数。
+    // 新增分页查询时把它登记进来；改排序时同步改这里 —— 这是有意识的维护成本。
+    const PINNED: Array<[file: string, args: string, count: number]> = [
+      ['actions/allocations.ts', 'desc(saleOrderPayments.paidAt), desc(saleOrderPayments.id)', 1],
+      ['actions/appointments.ts', 'desc(appointments.appointmentTime), desc(appointments.appointmentId)', 1],
+      ['actions/card-transactions.ts', 'desc(cardTransactions.createdAt), desc(cardTransactions.id)', 1],
+      ['actions/cards.ts', 'desc(saleOrders.paidAt), desc(saleItems.createdAt), asc(saleItems.saleItemId)', 2],
+      ['actions/coupons.ts', 'asc(clientWechatUsers.name), asc(clientWechatUsers.userId)', 1],
+      ['actions/coupons.ts', 'desc(couponTemplates.updatedAt), desc(couponTemplates.createdAt), asc(couponTemplates.templateId)', 1],
+      ['actions/customers.ts', 'asc(clientWechatUsers.name), asc(clientWechatUsers.userId)', 1],
+      ['actions/employees.ts', 'desc(staffWechatUsers.updatedAt), desc(staffWechatUsers.createdAt), asc(staffWechatUsers.employeeId)', 1],
+      ['actions/legacy-orders.ts', 'desc(saleOrders.saleOrderDatetime), desc(saleOrders.saleOrderId)', 1],
+      ['actions/logs.ts', 'desc(operationLogs.createdAt), desc(operationLogs.id)', 1],
+      ['actions/merchants.ts', 'desc(lakalaMerchants.updatedAt), desc(lakalaMerchants.id)', 1],
+      ['actions/messages.ts', 'asc(clientWechatUsers.name), asc(clientWechatUsers.userId)', 1],
+      ['actions/messages.ts', 'desc(messages.createdAt), desc(messages.id)', 1],
+      ['actions/orders.ts', 'desc(saleOrders.saleOrderDatetime), desc(saleOrders.saleOrderId)', 1],
+      ['actions/orders.ts', 'desc(saleOrders.saleOrderDatetime), saleOrders.saleOrderId, saleOrderPayments.id, salePaymentItemReceipts.id,', 1],
+      ['actions/orders.ts', 'desc(saleOrders.saleOrderDatetime), saleOrders.saleOrderId, salePaymentItemReceipts.salePaymentId, salePaymentItemReceipts.id, salePaymentItemAllocations.id,', 1],
+      ['actions/pickup-records.ts', 'desc(pickupRecords.createdAt), desc(pickupRecords.id)', 1],
+      ['actions/points.ts', 'desc(pointTransactions.createdAt), desc(pointTransactions.id)', 2],
+      ['actions/products.ts', 'asc(productSkus.sortOrder), asc(productSkus.skuId)', 1],
+      ['actions/products.ts', 'asc(products.sortOrder), asc(products.productId)', 1],
+      ['actions/refunds.ts', 'desc(saleOrderPayments.createdAt), desc(saleOrderPayments.id)', 1],
+      ['actions/services.ts', 'desc(serviceOrders.createdAt), desc(serviceOrders.updatedAt), serviceCommissions.id', 1],
+      ['actions/services.ts', 'desc(serviceOrders.createdAt), desc(serviceOrders.updatedAt), serviceItems.serviceItemId', 3],
+      ['actions/services.ts', 'desc(serviceOrders.updatedAt), desc(serviceOrders.createdAt), desc(serviceOrders.serviceOrderId)', 1],
+      ['lib/inventory/engine.ts', 'asc(inventoryLocations.locationType), asc(inventoryLocations.name), asc(inventoryStockLots.skuName), asc(inventoryStockLots.batchNo), asc(inventoryStockLots.id),', 1],
+      ['lib/inventory/engine.ts', 'asc(inventoryLocations.locationType), asc(inventoryLocations.name), asc(inventoryStockLots.skuName), asc(inventoryStockLots.batchNo), asc(inventoryStockLots.id)', 1],
+      ['lib/inventory/engine.ts', 'asc(inventorySkus.productCode)', 1],
+      ['lib/inventory/engine.ts', 'asc(inventorySuppliers.name)', 1],
+      ['lib/inventory/engine.ts', 'desc(inventoryDocs.docDate), desc(inventoryDocs.createdAt), desc(inventoryDocs.id)', 1],
+    ]
 
-    it('没有未登记的分页查询', () => {
-      const unpinned: string[] = []
+    it('没有未登记的分页查询，且每处的子句与次数都对得上', () => {
+      const actual = new Map<string, number>()
       for (const root of ['actions', 'lib']) {
         for (const file of collectSources(join(SRC, root))) {
           const code = stripComments(readFileSync(file, 'utf8'), file)
-          for (const { index, args } of pagedOrderBys(code, file)) {
-            if (!PINNED.has(args)) {
-              const line = code.slice(0, index).split('\n').length
-              unpinned.push(`${relative(SRC, file)}:${line} · ${args}`)
-            }
+          for (const { args } of pagedOrderBys(code, file)) {
+            const key = `${relative(SRC, file)} ${args}`
+            actual.set(key, (actual.get(key) ?? 0) + 1)
           }
         }
       }
-      expect(unpinned, `这些分页查询没被任何清单钉死（新增了就登记进 PINNED）:\n${unpinned.join('\n')}`)
+      const expected = new Map(PINNED.map(([f, a, n]) => [`${f} ${a}`, n]))
+
+      const unpinned = [...actual].filter(([k]) => !expected.has(k)).map(([k, n]) => `${k}  ×${n}`)
+      expect(unpinned, `这些分页查询没被登记（新增了就加进 PINNED）:\n${unpinned.join('\n')}`)
         .toEqual([])
+
+      const mismatched = [...expected]
+        .filter(([k, n]) => (actual.get(k) ?? 0) !== n)
+        .map(([k, n]) => `${k}\n      期望 ×${n}，实际 ×${actual.get(k) ?? 0}`)
+      expect(mismatched, `登记的子句与实际对不上:\n${mismatched.join('\n')}`).toEqual([])
+
+      // 总数兜底：防两张表同时改错还互相抵消
+      const total = [...actual.values()].reduce((a, b) => a + b, 0)
+      expect(total, '分页查询总数变了 —— 确认是新增/删除还是提取器失效').toBe(33)
     })
   })
 
