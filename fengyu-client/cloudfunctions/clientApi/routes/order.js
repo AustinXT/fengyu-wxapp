@@ -2860,14 +2860,18 @@ async function detail(ctx) {
 
   // 懒清理过期的待支付订单（防止前端倒计时到 0 后无限重载，同时释放优惠券）
   // 员工单 closeExpiredOrder 内部跳过，不置已关闭（issue #27）
-  let attemptedLazyClose = false
   if (order.status === '待支付') {
     const orderTime = new Date(order.sale_order_datetime)
     if (Date.now() - orderTime.getTime() > 10 * 60 * 1000) {
-      attemptedLazyClose = true
       await closeExpiredOrder(orderNo)
     }
   }
+  // 可支付态的订单要重读判据列（issue #215）。不能只在「跑过懒清理」时重读：
+  // 主查询与组装响应之间，另一台设备或并发的 order.pay 都可能写入 lakala_out_order_no，
+  // 那会让这份响应既发着倒计时、又把 has_active_payment_intent 算成 false ——
+  // 正是本 issue 要消灭的那种「展示口径与关单规则分叉」。
+  // 挂在下面的 Promise.all 批次里，不额外增加往返。
+  const needsGuardRefresh = order.status === '待支付' || order.status === '部分支付'
 
   // 查询订单明细（使用快照字段 + 商品封面）
   const items = await pg.query(`
@@ -2937,13 +2941,9 @@ async function detail(ctx) {
        ORDER BY created_at ASC, id ASC`,
       [orderNo]
     ),
-    // issue #215：刚跑过懒清理就必须重读，上面那条 `SELECT o.*` 是关单**之前**的快照。
-    // `lakala_out_order_no` 双向可变（order.pay 写入、cancel/payNotify 清空），`status`
-    // 还可能被另一个并发 detail 抢先关掉 —— 拿旧快照算 expire_at 就会对一张已有在途意图
-    // （或已被关闭）的单发出一个当场就过期的倒计时，顾客那边表现为进页面即归零白闪一次。
-    // 本文件 :2550 对 order.pay 早已写明「状态必须 FOR UPDATE 后重读」，detail 这条展示
-    // 链路此前是唯一的例外。挂在这个并行批次里，不额外增加一个往返。
-    attemptedLazyClose
+    // 见上面 needsGuardRefresh 的说明。本文件 :2550 对 order.pay 早已写明
+    // 「状态必须 FOR UPDATE 后重读」，detail 这条展示链路此前是唯一的例外。
+    needsGuardRefresh
       ? pg.query(
           `SELECT o.status, o.lakala_out_order_no,
                   (${PENDING_AUTO_CLOSE_GUARD_SQL}) AS auto_close_eligible
@@ -2961,9 +2961,15 @@ async function detail(ctx) {
   // 待支付订单返回过期时间。判据由数据库给出（PENDING_AUTO_CLOSE_GUARD_SQL），
   // 只有「这一刻懒清理真会关掉它」的订单才发：员工开单单、以及有在途支付意图的自助单
   // 都关不掉，给它们发倒计时等于骗顾客，还会把前端的「归零重载」变成打不停的 order.detail。
-  const expireAt = order.auto_close_eligible
-    ? new Date(new Date(order.sale_order_datetime).getTime() + 10 * 60 * 1000).toISOString()
+  const expireAtMs = order.auto_close_eligible
+    ? new Date(order.sale_order_datetime).getTime() + 10 * 60 * 1000
     : null
+  const expireAt = expireAtMs === null ? null : new Date(expireAtMs).toISOString()
+  // issue #215：同时下发**服务端算好的剩余毫秒**。
+  // 只给绝对时间的话，前端要拿 `Date.now()` 去比 —— 手机时钟快几分钟就会把一个刚下发的
+  // 未来时限判成「已过期」，于是自助单彻底看不到倒计时（而服务端根本还没打算关它）。
+  // 判「过没过期」是服务端的事，前端只该按这个相对量倒着数。
+  const expireInMs = expireAtMs === null ? null : Math.max(0, expireAtMs - Date.now())
 
   // 精简 payments 字段（只给前端需要的）
   const payments = paymentRows.map(p => ({
@@ -3002,6 +3008,7 @@ async function detail(ctx) {
         && order.client_user_id === userId
       ),
       expire_at: expireAt,
+      expire_in_ms: expireInMs,
       preferred_staff_name: preferredStaffName,
       coupon_name: couponName,
     },

@@ -139,7 +139,7 @@
 
 **手机号拦截**: `order.create` 返回 `-403 PHONE_REQUIRED` → 绑定 overlay → CloudID → 自动重试
 
-**10 分钟超时**: `expire_at = created_at + 10min`；`order.list`/`order.create`/`order.pay` 时懒清理。**只对「顾客自助下单且无在途支付意图」的订单成立**——员工/店长开单的订单（`opened_by IS NOT NULL`）交顾客扫码，扫码时刻往往已超 10 分钟，不套用懒清理（issue #27）；已发起在线支付的订单由支付意图锁挡住关单。`order.detail` 据此**只对会真被关掉的订单下发 `expire_at`**，其余不下发（issue #215）
+**10 分钟超时**: `expire_at = sale_order_datetime + 10min`；`order.list`/`order.create`/`order.pay` 时懒清理。**只对「顾客自助下单且无在途支付意图」的订单成立**——员工/店长开单的订单（`opened_by IS NOT NULL`）交顾客扫码，扫码时刻往往已超 10 分钟，不套用懒清理（issue #27）；已发起在线支付的订单由支付意图锁挡住关单。`order.detail` 据此**只对会真被关掉的订单下发 `expire_at`**，其余不下发（issue #215）
 
 **核心规则**: 前端防连点+后端幂等（见 `backend.pr.spec.md` §2.8）| 价格快照不可变（见 `real.md`）| 已支付+指定美容师→自动创建营业额分配 | 消费协议复选框（未勾选禁用提交）| 按钮文本随支付方式变化 | 状态集见 `backend.pr.spec.md` §5
 

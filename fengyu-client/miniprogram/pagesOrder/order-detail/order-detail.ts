@@ -64,6 +64,9 @@ interface OrderDetailData {
   points_used?: number;
   points_discount?: number;
   expire_at: string | null;
+  // 服务端算好的剩余毫秒（issue #215）。倒计时按它走，不拿设备时钟去比绝对时间。
+  // 旧版本云函数不带这个字段，前端会回退到 expire_at（见 startCountdown）
+  expire_in_ms?: number | null;
   // Ticket 2026-04-26 sale-order-domain-refactor:
   //   - 字段 paid_amount → received（已到账金额聚合快照）
   //   - 新增 refunded_amount（已退款金额聚合快照）
@@ -158,6 +161,9 @@ Page({
   // confirmAndRefresh 里 `poller.clear()` 会 resolve 掉那个 promise，后面紧跟着
   // 一句 loadDetail —— 不拦就会在死实例上重新装表，孤儿定时器每秒对它 setData。
   _destroyed: false,
+  // 页面处于隐藏态（onHide → onShow 之间）。与 _destroyed 不能合并：隐藏是可逆的，
+  // onShow 会重新 loadDetail 并重建倒计时；卸载是终态。
+  _hidden: false,
 
   onLoad(options) {
     // 读全局灰度开关（未配置默认 false）
@@ -176,6 +182,7 @@ Page({
   },
 
   onShow() {
+    this._hidden = false;
     // 从预约页返回时刷新剩余次数
     if (this.data.order?.sale_order_id) {
       this.loadDetail(this.data.order.sale_order_id);
@@ -380,10 +387,12 @@ Page({
         }
       }
     } catch {
-      Toast.fail('加载失败');
+      // 被抢先的那次（或卸载后才失败的那次）不许弹 Toast：
+      // 用户会看到「加载失败」和随后成功落地的正确数据同时存在
+      if (token === this._loadingToken && !this._destroyed) Toast.fail('加载失败');
     } finally {
-      // 被抢先的那次不许把 loading 关掉——真正在飞的那次还没回来
-      if (token === this._loadingToken) {
+      // 同理，被抢先的那次不许把 loading 关掉——真正在飞的那次还没回来
+      if (token === this._loadingToken && !this._destroyed) {
         this.setData({ isLoading: false });
       }
     }
@@ -417,29 +426,56 @@ Page({
       return;
     }
 
-    // 解析只做一次：这是个不变量，放进 tick 就是每秒重算 600 次；
-    // 顺带让 tick 只捕获两个标量，不再钉住整个 order
-    const rawExpire = String(order.expire_at);
-    const expireMs = new Date(
-      rawExpire.includes('T') ? rawExpire : rawExpire.replace(/-/g, '/'),
-    ).getTime();
-
-    if (expireMs - Date.now() <= 0) {
+    // 隐藏态不装表（issue #215）：onHide 停掉的表不能被在途响应重新装上，
+    // 否则隐藏页面又拿到 1Hz 定时器、并在归零时发一次看不见的后台请求。
+    // onShow 必定 loadDetail，回来时会重建。
+    if (this._hidden) {
       this.setData({ countdown: '' });
       return;
     }
 
+    // 计时基准优先用服务端算好的剩余毫秒（issue #215）。
+    // 只比绝对时间的话，手机时钟快几分钟就会把一个刚下发的未来时限判成「已过期」，
+    // 自助单于是彻底看不到倒计时。这里只用设备时钟量**相对流逝**，不用它判绝对先后。
+    // 回退分支是为发版过渡期留的：小程序与云函数各自发版，旧云函数不带 expire_in_ms，
+    // 此时退回原来的绝对时间口径，比「没有倒计时」好。
+    const serverRemaining = Number(order.expire_in_ms);
+    let remainingAt0: number;
+    if (Number.isFinite(serverRemaining)) {
+      remainingAt0 = serverRemaining;
+    } else {
+      const rawExpire = String(order.expire_at);
+      const expireMs = new Date(
+        rawExpire.includes('T') ? rawExpire : rawExpire.replace(/-/g, '/'),
+      ).getTime();
+      if (!Number.isFinite(expireMs)) {
+        // 解析不出来就别装表——否则每秒推一个 "NaN:NaN"
+        this.setData({ countdown: '' });
+        return;
+      }
+      remainingAt0 = expireMs - Date.now();
+    }
+
+    if (remainingAt0 <= 0) {
+      this.setData({ countdown: '' });
+      return;
+    }
+
+    const startedAt = Date.now();
     const saleOrderId = order.sale_order_id;
     const tick = () => {
-      const remaining = expireMs - Date.now();
+      const remaining = remainingAt0 - (Date.now() - startedAt);
       if (remaining <= 0) {
         this._stopCountdown();
         this.setData({ countdown: '' });
         this.loadDetail(saleOrderId);
         return;
       }
-      const mins = Math.floor(remaining / 60000);
-      const secs = Math.floor((remaining % 60000) / 1000);
+      // 必须 ceil：floor 会让 (0, 1000) 毫秒这一拍显示 "00:00"，
+      // 而订单此刻仍是待支付、「去支付」照样能点 —— 正是本 issue 要消灭的矛盾态
+      const totalSecs = Math.ceil(remaining / 1000);
+      const mins = Math.floor(totalSecs / 60);
+      const secs = totalSecs % 60;
       const next = `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
       // setInterval 有漂移，相邻两 tick 落在同一秒是常态；setData 跨线程，别白推
       if (next !== this.data.countdown) this.setData({ countdown: next });
@@ -465,7 +501,11 @@ Page({
     this._poller = poller;
     try {
       const paymentResult = await poller.promise;
+      // onUnload 里的 `poller.clear()` 会 resolve 掉这个 promise（不是 reject），
+      // 所以卸载也会走到这里。不拦的话会对着已销毁的实例弹 Toast、setData（issue #215）
+      if (this._destroyed) return;
       await this.loadDetail(saleOrderId);
+      if (this._destroyed) return;
       // 以刷新后的本地 status 为准（轮询结果可能因网络抖动过时），判断是否需要提示
       const finalStatus = this.data.order?.status;
       if (finalStatus !== '已支付' && !paymentResult.sessionCompleted) {
@@ -474,7 +514,7 @@ Page({
       }
     } finally {
       if (this._poller === poller) this._poller = null;
-      this.setData({ confirmingPayment: false });
+      if (!this._destroyed) this.setData({ confirmingPayment: false });
     }
   },
 
@@ -490,6 +530,7 @@ Page({
   },
 
   onHide() {
+    this._hidden = true;
     // 页面隐藏（navigateTo 跳走 / tab 切换）停止轮询，避免后台继续请求
     if (this._poller) {
       this._poller.clear();

@@ -232,7 +232,7 @@
 >
 > **约束**: `UNIQUE(client_user_id) WHERE status='待支付' AND client_user_id IS NOT NULL`、`UNIQUE(client_phone, store_id) WHERE status='待支付' AND client_user_id IS NULL`。**索引**: `(store_id, status)`、`(ref_sale_order_id)`。
 >
-> **expire_at**：应用层计算（`created_at + 10min`），不存储，通过 SQL 条件懒清理。懒清理仅命中 `opened_by IS NULL AND lakala_out_order_no IS NULL` 的待支付单，`order.detail` 的 `expire_at` 下发口径与之同源（issue #215）。
+> **expire_at**：应用层计算（`sale_order_datetime + 10min`），不存储，通过 SQL 条件懒清理。懒清理仅命中 `opened_by IS NULL AND lakala_out_order_no IS NULL` 的待支付单，`order.detail` 的 `expire_at` 下发口径与之同源（issue #215）。
 
 **业绩归属规则（2026-08-17 已决）**：
 

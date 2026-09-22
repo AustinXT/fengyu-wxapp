@@ -11,6 +11,7 @@
 import { vi } from 'vitest';
 import { readFileSync } from 'fs';
 import { resolve } from 'path';
+import Toast from '@vant/weapp/toast/toast';
 
 const callClientApiMock = vi.fn();
 vi.mock('../../../utils/cloud', () => ({
@@ -89,10 +90,19 @@ const detailResponse = (status: string) => ({
   payments: [],
 });
 
+/** 旧云函数形态：只有绝对时间，没有 expire_in_ms（发版过渡期的回退分支） */
 const PENDING_ORDER = (expireAt: string | null) => ({
   sale_order_id: 'FY-215',
   status: '待支付',
   expire_at: expireAt,
+}) as any;
+
+/** 新云函数形态：服务端下发剩余毫秒，倒计时按它走 */
+const PENDING_ORDER_WITH_REMAINING = (expireInMs: number) => ({
+  sale_order_id: 'FY-215',
+  status: '待支付',
+  expire_at: new Date(Date.now() + expireInMs).toISOString(),
+  expire_in_ms: expireInMs,
 }) as any;
 
 beforeEach(() => {
@@ -184,6 +194,53 @@ describe('order-detail 待支付倒计时 (#215)', () => {
     }
   });
 
+  test('剩余不足 1 秒时显示 00:01 而不是 00:00', () => {
+    // floor 会让 (0,1000) 毫秒这一拍渲染成 00:00，而订单此刻仍是待支付、
+    // 「去支付」照样能点 —— 正是验收标准 3 要消灭的矛盾态
+    vi.useFakeTimers();
+    try {
+      const { page } = createPageWithStubbedLoad();
+      page.startCountdown(PENDING_ORDER_WITH_REMAINING(1500));
+      expect(page.data.countdown).toBe('00:02');
+
+      vi.advanceTimersByTime(1000);   // 还剩 500ms
+      expect(page.data.countdown).toBe('00:01');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('整分钟边界不跳格：剩余 60s 显示 01:00', () => {
+    const { page } = createPageWithStubbedLoad();
+    page.startCountdown(PENDING_ORDER_WITH_REMAINING(60_000));
+    expect(page.data.countdown).toBe('01:00');
+  });
+
+  test('设备时钟比服务端快很多时，倒计时仍按服务端下发的剩余量走', () => {
+    // 只比绝对时间的话，手机快 30 分钟就会把一个刚下发的时限判成「已过期」→
+    // 自助单彻底看不到倒计时，而服务端根本还没打算关它
+    const { page, loadDetail } = createPageWithStubbedLoad();
+    page.startCountdown({
+      sale_order_id: 'FY-215',
+      status: '待支付',
+      // 绝对时间取「设备看来早已过去」的值
+      expire_at: new Date(Date.now() - 30 * 60 * 1000).toISOString(),
+      expire_in_ms: 9 * 60 * 1000,
+    } as any);
+
+    expect(page.data.countdown).toBe('09:00');
+    expect(page._countdownTimer).not.toBeNull();
+    expect(loadDetail).not.toHaveBeenCalled();
+  });
+
+  test('expire_at 解析不出来 → 不装表，不推 NaN:NaN', () => {
+    const { page } = createPageWithStubbedLoad();
+    page.startCountdown(PENDING_ORDER('不是时间'));
+
+    expect(page.data.countdown).toBe('');
+    expect(page._countdownTimer).toBeNull();
+  });
+
   test('倒计时期间切到另一张单 → 旧定时器被清理，不并存两个', () => {
     const { page } = createPageWithStubbedLoad();
     const future = new Date(Date.now() + 60_000).toISOString();
@@ -236,6 +293,74 @@ describe('order-detail 倒计时的生命周期与并发 (#215)', () => {
     expect(page.data.countdown).toBe('');
   });
 
+  test('onHide 之后在途响应才回来 → 不重新装表（隐藏页不该有 1Hz 定时器）', async () => {
+    const { page, resolvers } = createPageWithManualApi();
+
+    const inflight = page.loadDetail('FY-215');
+    page.onHide();
+    expect(page._hidden).toBe(true);
+
+    resolvers[0]({
+      order: {
+        sale_order_id: 'FY-215', status: '待支付',
+        expire_at: new Date(Date.now() + 60_000).toISOString(),
+        expire_in_ms: 60_000,
+      },
+      items: [], payments: [],
+    });
+    await inflight;
+
+    // 数据照常落盘（onShow 回来时不用空等），但不装表
+    expect(page.data.order.status).toBe('待支付');
+    expect(page._countdownTimer).toBeNull();
+    expect(page.data.countdown).toBe('');
+  });
+
+  test('onShow 解除隐藏态，倒计时可以重建', async () => {
+    const { page } = createPageWithStubbedLoad();
+    page.onHide();
+    page.onShow();
+    expect(page._hidden).toBe(false);
+
+    page.startCountdown(PENDING_ORDER_WITH_REMAINING(60_000));
+    expect(page._countdownTimer).not.toBeNull();
+  });
+
+  test('被抢先的那次失败 → 不弹「加载失败」（否则错误提示与正确数据并存）', async () => {
+    const { page, resolvers } = createPageWithManualApi();
+    const rejecters: Array<(e: any) => void> = [];
+    callClientApiMock.mockImplementation(
+      () => new Promise((resolve, reject) => { resolvers.push(resolve); rejecters.push(reject); }),
+    );
+
+    const first = page.loadDetail('FY-215');   // token=1
+    const second = page.loadDetail('FY-215');  // token=2
+    resolvers[1](detailResponse('已关闭'));
+    await second;
+
+    rejecters[0](new Error('network'));
+    await first;
+
+    expect(Toast.fail).not.toHaveBeenCalled();
+    expect(page.data.order.status).toBe('已关闭');
+  });
+
+  test('卸载后才失败的请求 → 既不弹 Toast 也不动 loading', async () => {
+    const { page } = createPageWithManualApi();
+    const rejecters: Array<(e: any) => void> = [];
+    callClientApiMock.mockImplementation(
+      () => new Promise((_resolve, reject) => { rejecters.push(reject); }),
+    );
+
+    const inflight = page.loadDetail('FY-215');
+    page.onUnload();
+    rejecters[0](new Error('network'));
+    await inflight;
+
+    expect(Toast.fail).not.toHaveBeenCalled();
+    expect(page.data.isLoading).toBe(true);  // 未被死实例改写
+  });
+
   test('并发 loadDetail：被抢先的那次不许落 setData（旧响应不能盖新响应）', async () => {
     const { page, resolvers } = createPageWithManualApi();
 
@@ -281,9 +406,17 @@ describe('order-detail.wxml 的倒计时文案分支 (#215)', () => {
     expect(wxml).toMatch(pair);
   });
 
-  test('线下付款分支优先于倒计时分支', () => {
-    // 线下自助单同样会拿到 expire_at，但状态区必须先显示「请到店付款」，
-    // 不能被倒计时那条抢走
+  test('线下付款分支在倒计时分支之前（记录既有排布，不代表口径已确认）', () => {
+    // ⚠️ 这条只是**如实记录当前 DOM 排布**，不是本 PR 确认的产品口径。
+    //
+    // 线下**自助**单同样满足 `opened_by IS NULL AND lakala_out_order_no IS NULL`，
+    // 后端照发 expire_at，`closeExpiredOrder` 也照样在 T+10 把它关掉；
+    // 但状态区被「请到店付款，等待店长确认收款」占住，顾客从头到尾看不到任何时限。
+    // 这是**既有行为**（分支顺序早于本 issue），却与本 issue「让顾客看到的支付时限
+    // 与订单实际关闭规则一致」的目标相抵触 —— 顾客正往门店走的路上单子就没了。
+    //
+    // 改法有两种（显示时限 / 线下单不自动关闭），都属业务口径，已在 issue #215
+    // 评论里列给甲方拍板，**本 PR 不擅自改**。拍板后连这条断言一起调整。
     const offlineAt = wxml.indexOf("order.payment_method === '线下'");
     const countdownAt = wxml.indexOf('wx:if="{{countdown}}"');
     expect(offlineAt).toBeGreaterThanOrEqual(0);

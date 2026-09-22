@@ -200,7 +200,7 @@ product.shopInit(门店商品初始化)
 
 ## 9. 订单超时机制
 
-**10 分钟超时**：`expire_at = created_at + 10min`，不存储字段，应用层 SQL 条件懒清理。
+**10 分钟超时**：`expire_at = sale_order_datetime + 10min`，不存储字段，应用层 SQL 条件懒清理。
 
 清理时机（三处）：
 1. `order.create` — 创建前检查是否有超时待支付单
@@ -215,13 +215,19 @@ product.shopInit(门店商品初始化)
 | 2 | `opened_by IS NULL` | 员工/店长开单交顾客扫码，扫码时刻往往已超 10 分钟，不能被自助懒清理误关（issue #27） |
 | 3 | `lakala_out_order_no IS NULL` | 有在途支付意图时不能关单，否则渠道侧仍可支付 |
 
-另有**第二条**会把待支付单置「已关闭」的路径：`card.js` 的 `_closeExpiredPendingByUser`（顾客充值时触发），守卫是上面三条**再加**一条 `sale_order_type <> '转换单'`——它是 `closeExpiredOrder` 的超集（更窄），方向安全，不会关掉判据认为关不掉的单。改动任一边都要对照另一边。
+另有**第二条**会把待支付单置「已关闭」的路径：`card.js` 的 `_closeExpiredPendingByUser`（顾客充值时触发），守卫是上面三条**再加**一条 `sale_order_type <> '转换单'`——条件严格强化，**命中集合是真子集**，方向安全，不会关掉判据认为关不掉的单。改动任一边都要对照另一边。
+
+⚠️ **线下付款的自助单也在懒清理的命中集合里**（`closeExpiredOrder` 没有 `payment_method` 守卫），
+但订单详情的状态区被「请到店付款，等待店长确认收款」占住，顾客看不到任何时限，T+10 单子照关。
+这是早于 issue #215 的既有行为，口径待甲方拍板（见 issue #215 评论），当前实现未改。
 
 **`expire_at` 的下发口径与这三条守卫同源**（issue #215）：判据写成 SQL 常量 `PENDING_AUTO_CLOSE_GUARD_SQL`，由 `order.detail` 的主查询算成 `auto_close_eligible` 列，**交给 PostgreSQL 求值**，只对「这一刻的懒清理真会关掉它」的订单下发 `expire_at`。
 
-**不在 JS 里镜像这个谓词**：镜像就要逐个处理 `IS NULL` vs `== null`、空串（SQL 里不是 NULL）、列没被 SELECT 出来是 `undefined`——全是跨语言复制凭空带来的自伤。代价是 L1 的 pg mock 测不到谓词语义，靠真库真值表直验补上（脚本见 `_tmp/issue-215/verify-guard-truthtable.mjs`）。
+**不在 JS 里镜像这个谓词**：镜像就要逐个处理 `IS NULL` vs `== null`、空串（SQL 里不是 NULL）、列没被 SELECT 出来是 `undefined`——全是跨语言复制凭空带来的自伤。代价是 L1 的 pg mock 测不到谓词语义，靠真库直验补上（2026-09-22 实测 10 例，含空串 / 纯空白 / 各状态，逐例与预期一致：仅 `待支付 + opened_by IS NULL + lakala_out_order_no IS NULL` 判 true）。
 
-`auto_close_eligible` 是服务端中间量，**不下发给前端**（下发出去会诱使前端拿它自己推导展示口径）。跑过懒清理后必须重读该列——主查询是关单**之前**的快照，而 `lakala_out_order_no` 双向可变；重读挂在既有的 `Promise.all` 批次里，不额外增加往返。改 `closeExpiredOrder` 的 UPDATE 守卫必须同步改这个常量，由 `order.test.js` 的字面断言钉住。
+`auto_close_eligible` 是服务端中间量，**不下发给前端**（下发出去会诱使前端拿它自己推导展示口径）。**可支付态（待支付 / 部分支付）必须重读该列**——主查询是懒清理**之前**的快照，而 `lakala_out_order_no` 双向可变，另一台设备的 `order.pay` 随时会写进来；只在「跑过懒清理」时重读的话，未超时的单照样会发出「有倒计时 + `has_active_payment_intent=false`」这种分叉。重读挂在既有的 `Promise.all` 批次里，不额外增加往返。
+
+改 `closeExpiredOrder` 的 UPDATE 守卫必须同步改这个常量，由 `order.test.js` 钉住——断言是**规范化后的条件列表全等比较**（锁住连接符、条件集合与数量），不是子串包含：后者对 `AND → OR`、单侧多加一条守卫都判不出来。
 
 前端倒计时：待支付详情页 `MM:SS` 格式，1s 刷新。未下发 `expire_at` 时不起倒计时，文案退为「请完成支付」。
 
@@ -230,7 +236,13 @@ product.shopInit(门店商品初始化)
 | 时机 | 行为 | 理由 |
 |---|---|---|
 | 装表时就已过期 | 只清 UI，**不重载** | 这次 detail 响应本身刚跑过服务端的懒清理，再打一次拿到的还是同一个答案 |
-| 走着走着归零 | 重载一次取回懒清理后的状态 | 重载回来 `expire_at` 必已过期 → 落进上一行 → **两跳内收敛，不需要任何状态** |
+| 走着走着归零 | 重载一次取回懒清理后的状态 | 重载回来服务端给的剩余量必为 0 → 落进上一行 → **收敛，不需要任何状态标记** |
+
+计时基准用服务端下发的 `expire_in_ms`（剩余毫秒），**不拿设备时钟去比 `expire_at` 这个绝对时间**——手机时钟快几分钟就会把刚下发的时限判成「已过期」，自助单于是彻底看不到倒计时。设备时钟只用来量相对流逝。旧云函数不带该字段时前端回退到绝对时间口径（发版过渡期，比没有倒计时好）。
+
+秒数用 `Math.ceil`：`floor` 会让最后不足 1 秒的那一拍显示 `00:00`，而订单此刻仍是待支付、「去支付」照样能点——正是本 issue 要消灭的矛盾态。
+
+页面隐藏（`onHide`）与卸载（`onUnload`）都要停表，且**在途响应回来时不许重新装表**：隐藏页拿着 1Hz 定时器会在用户看不见时归零并发后台请求；死实例上的孤儿定时器会一直 `setData` 到 `expire_at` 到点。
 
 ## 10. 优惠券集成
 
