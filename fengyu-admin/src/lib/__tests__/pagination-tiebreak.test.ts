@@ -299,14 +299,16 @@ describe('#282 · admin 分页查询的 orderBy 必须带唯一键 tie-break', (
 
   describe('第 2 层 · #282 修的 18 处逐条钉死（防被改回去）', () => {
     // 通用规则是启发式，已修的这几处要把**完整参数列表**钉住。
-    const EXPECTED: Array<[file: string, args: string, why: string]> = [
+    // 第 4 项 = 该子句在**该文件源码**中应出现的次数（缺省 1）。
+    // 列表与导出共用同款排序的文件是 2，只在列表出现的是 1。
+    const EXPECTED: Array<[file: string, args: string, why: string, count?: number]> = [
       ['actions/appointments.ts', 'desc(appointments.appointmentTime), desc(appointments.appointmentId)',
         '整点预约大量并列'],
       ['actions/card-transactions.ts', 'desc(cardTransactions.createdAt), desc(cardTransactions.id)',
         '一次结算可写多笔'],
       ['actions/cards.ts', 'desc(saleOrders.paidAt), desc(saleItems.createdAt), asc(saleItems.saleItemId)',
         '⚠️ FROM 是 saleItems 不是 saleOrders，主键取 saleItemId；'
-        + '末位用 **asc** 是为了与同文件导出侧 `exportCards` 同向 —— 否则并列组在页面与 CSV 里顺序相反，对账会逐行错位'],
+        + '末位用 **asc** 是为了与同文件导出侧 `exportCards` 同向 —— 否则并列组在页面与 CSV 里顺序相反，对账会逐行错位', 2],
       ['actions/coupons.ts', 'asc(clientWechatUsers.name), asc(clientWechatUsers.userId)',
         '⚠️ 重名顾客即并列'],
       ['actions/customers.ts', 'asc(clientWechatUsers.name), asc(clientWechatUsers.userId)',
@@ -327,7 +329,7 @@ describe('#282 · admin 分页查询的 orderBy 必须带唯一键 tie-break', (
       ['actions/pickup-records.ts', 'desc(pickupRecords.createdAt), desc(pickupRecords.id)',
         '一次提货写多行'],
       ['actions/points.ts', 'desc(pointTransactions.createdAt), desc(pointTransactions.id)',
-        '⚠️ 一单多笔积分同事务写入，必然并列'],
+        '⚠️ 一单多笔积分同事务写入，必然并列', 2],
       ['actions/services.ts', 'desc(serviceOrders.updatedAt), desc(serviceOrders.createdAt), desc(serviceOrders.serviceOrderId)',
         '同批更新的服务单 updatedAt 相同'],
       // ⓘ `lib/inventory/engine.ts` 的 SKU 列表**刻意不在这张清单里**：
@@ -343,19 +345,38 @@ describe('#282 · admin 分页查询的 orderBy 必须带唯一键 tie-break', (
       //    不是「对单次全量结果切片」。第一轮把它们当豁免是错的。
       ['actions/coupons.ts',
         'desc(couponTemplates.updatedAt), desc(couponTemplates.createdAt), asc(couponTemplates.templateId)',
-        '优惠券模板列表：同批创建的模板 updatedAt/createdAt 都并列'],
+        '优惠券模板列表：同批创建的模板 updatedAt/createdAt 都并列', 2],
       ['actions/products.ts',
         'asc(productSkus.sortOrder), asc(productSkus.skuId)',
-        '⚠️ `sort_order` 默认 0 —— **未手工排序的 SKU 全部并列**，本次并列面最大的一处'],
+        '⚠️ `sort_order` 默认 0 —— **未手工排序的 SKU 全部并列**，本次并列面最大的一处', 2],
       ['actions/products.ts',
         'asc(products.sortOrder), asc(products.productId)',
-        '⚠️ 同上（mall 页）；同文件 getProductsByKind 的同款 orderBy 刻意不改 —— 那是开单 picker 一次性全量加载，不翻页'],
+        '⚠️ 同上（mall 页）；同文件 getProductsByKind 的同款 orderBy 刻意不改 —— 那是开单 picker 一次性全量加载，不翻页', 2],
     ]
 
-    it.each(EXPECTED)('%s 的「%s」在位', (file, args) => {
+    // ⚠️ 断言的是**该子句在源码中出现的次数**，不是 `toContain(存在即可)`。
+    // 两个独立的失效原因，都被评审实测过：
+    //
+    //  ① **列表与导出共用同款排序**：`cards` / `points` / `coupons` / `products` 等
+    //     文件里，列表分支与导出分支的 orderBy **一字不差**。存在性断言下把
+    //     列表末位改成外键（`saleItemId → storeId`、`id → userId`），
+    //     第 1 层因「长得像唯一键」放行、第 2 层被导出分支满足 → 全绿。
+    //
+    //  ② **内存分页的 action 里根本没有 `.offset(`**（slice 在组件里做），
+    //     `pagedOrderBys` 提取不到它们，EXPECTED 里那 3 条只能靠导出分支满足 ——
+    //     把列表改回两列排序，测试照样绿。
+    //
+    // 计数断言对两种情形都有效：改坏任一分支，次数就对不上。
+    const clauseCount = (file: string, args: string): number => {
       const code = stripComments(readFileSync(join(SRC, file), 'utf8'), file)
-      const all = pagedOrderBys(code, file).map((x) => x.args)
-      expect(all, `${file} 的分页 orderBy 实际有:\n${all.join('\n')}`).toContain(args)
+        .replace(/\s+/g, ' ')
+      return code.split(`.orderBy(${args})`).length - 1
+    }
+
+    it.each(EXPECTED)('%s 的「%s」在位', (file, args, _why, count) => {
+      const actual = clauseCount(file, args)
+      expect(actual, `${file} 的「${args}」应出现 ${count ?? 1} 次，实际 ${actual} 次`)
+        .toBe(count ?? 1)
     })
 
     it('已确认安全的那些不许被「统一风格」删掉', () => {

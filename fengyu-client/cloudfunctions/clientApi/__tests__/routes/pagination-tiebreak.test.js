@@ -93,12 +93,6 @@ function collectRoutes(dir, acc = []) {
 }
 
 /**
- * 第 2 层 EXPECTED 清单的条数。第 1 层的扫描下界与它联动 ——
- * 清单里每条都必须能被扫到，删接口时两处一起改，语义自洽。
- */
-const EXPECTED_CLAUSE_COUNT = 6
-
-/**
  * 提取源文件里所有模板串的内容（**正确处理嵌套模板**）。
  *
  * ⚠️ 不能用 `/`([^`]*)`/g` 按文档顺序配对反引号 —— 评审实测两种漏扫：
@@ -215,8 +209,15 @@ describe('#282 · clientApi 分页 SQL 的 ORDER BY 必须带唯一键 tie-break
       // （去掉 OFFSET），scanned 掉到 5 就会以「守护被掏空」的名义变红，
       // 等于为做对的事惩罚。改成与第 2 层 EXPECTED 清单联动：
       // 清单里每条都必须能被扫到，删接口时两处一起改，语义自洽。
-      expect(scanned, '扫到的分页 SQL 少于 EXPECTED 清单条数 —— 模板提取可能失效')
-        .toBeGreaterThanOrEqual(EXPECTED_CLAUSE_COUNT)
+      // ⚠️ 用**精确值**而不是「≥ EXPECTED 条数」的联动下界 —— 后者是**弱断言**：
+      // 提取器只要还能扫到 EXPECTED+SAFE 那几条就绿，漏掉其余几条完全不可见
+      // （评审实测）。精确值的代价是「合法改成 keyset 分页时要同步改这个数」，
+      // 但那本来就该是一次有意识的改动（改的人正好该看一眼守护还覆不覆盖）。
+      // admin 侧同姿态（`toBe(33)`）。
+      //
+      // routes 下共 6 条带 OFFSET 的分页 SQL
+      expect(scanned, '扫到的分页 SQL 数与 routes 下 OFFSET 的实际条数不符 —— 提取器可能漏了某种写法')
+        .toBe(6)
     })
   })
 
