@@ -2867,6 +2867,10 @@ async function list(ctx) {
  * 订单详情
  */
 async function detail(ctx) {
+  // 服务端处理耗时（issue #215）。`expire_in_ms` 是**处理完之后**才算出来的，
+  // 而前端只能量到整个往返；不把这段还给它，它就会把「服务端处理 + 上行」重复扣一遍，
+  // 倒计时提前结束、支付入口提前被关。补关那条路径动辄几百毫秒，值得精确。
+  const handlerStartedAt = Date.now()
   const { userId } = ctx.auth
   const payloadDtl = ctx.event.payload || {}
   const orderNo = payloadDtl.saleOrderId || payloadDtl.orderNo
@@ -3032,6 +3036,12 @@ async function detail(ctx) {
   const vouchable = eligible && deadlineMs > nowMs
   const expireInMs = vouchable ? deadlineMs - nowMs : null
   const expireClock = vouchable ? shanghaiClockHM(new Date(deadlineMs)) : null
+  // ⚠️ 别用「字段缺席」同时表达两件不同的事（双谱系评审 round-11）。
+  // `expire_in_ms` 为空有两种来源，前端要做的事**正好相反**：
+  //   - 旧版本云函数根本不发这个字段 → 那边的订单可能真的还能付，不该关支付入口；
+  //   - 新版本补关两次都被并发意图挤掉 → 这单确实过期了、只是关不掉，必须关支付入口。
+  // 所以把后者显式说出来。
+  const expireUnresolved = eligible && !vouchable
 
   // 精简 payments 字段（只给前端需要的）
   const payments = paymentRows.map(p => ({
@@ -3072,6 +3082,10 @@ async function detail(ctx) {
       expire_at: expireAt,
       expire_in_ms: expireInMs,
       expire_clock: expireClock,
+      // true = 已过截止点、服务端试过关但没关掉（与「旧云函数不发这些字段」区分开）
+      expire_unresolved: expireUnresolved,
+      // 本次请求的服务端处理耗时，供前端从实测 RTT 里扣掉，避免重复计算
+      server_elapsed_ms: Date.now() - handlerStartedAt,
       preferred_staff_name: preferredStaffName,
       coupon_name: couponName,
     },

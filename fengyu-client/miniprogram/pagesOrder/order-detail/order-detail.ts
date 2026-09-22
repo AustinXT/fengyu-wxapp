@@ -70,6 +70,11 @@ interface OrderDetailData {
   // 服务端按东八区格式化好的截止时刻 HH:mm（issue #215）。
   // 不用本地 getHours() 推——那取的是设备时区
   expire_clock?: string | null;
+  // true = 已过截止点、服务端试过关但没关掉（issue #215）。
+  // 与「旧版本云函数根本不发这些字段」区分开：前者要关支付入口，后者不能关
+  expire_unresolved?: boolean;
+  // 本次请求的服务端处理耗时，前端从实测 RTT 里扣掉它，避免重复计算
+  server_elapsed_ms?: number;
   // Ticket 2026-04-26 sale-order-domain-refactor:
   //   - 字段 paid_amount → received（已到账金额聚合快照）
   //   - 新增 refunded_amount（已退款金额聚合快照）
@@ -251,7 +256,10 @@ Page({
         do {
           this._loadQueued = false;
           await this._fetchDetail(saleOrderId);
-        } while (this._loadQueued && !this._destroyed);
+          // 尾随刷新也要看隐藏态（双谱系评审 round-11）：order.detail 不是纯读，
+          // 它会跑懒清理/补关。在途期间 show→hide 的话，首个请求回来时页面已经隐藏了，
+          // 这一发就违背了「隐藏态不发后台请求」的约定。onShow 必定重新加载，不会漏刷新。
+        } while (this._loadQueued && !this._destroyed && !this._hidden);
       } finally {
         this._loadPromise = null;
         this._loadQueued = false;
@@ -269,11 +277,18 @@ Page({
       const data = await callClientApi('order.detail', { saleOrderId });
       if (this._destroyed) return;
       const order = (data?.order || {}) as OrderDetailData;
-      // 记下实测往返耗时，交给 startCountdown 去扣（issue #215）。
+      // 记下**网络那段**的往返耗时，交给 startCountdown 去扣（issue #215）。
       // ⚠️ 不能就地把 expire_in_ms 减掉 —— 那样「服务端说剩 0」和「服务端说剩 50ms、
-      // 被本地扣成 0」就分不开了，而这两者的处理完全相反（前者不重载、后者必须重载）。
-      // 扣整个 RTT 而不是一半，是往「显示得更少」的方向偏，安全侧。
-      this._lastLoadRttMs = Math.max(0, Date.now() - sentAt);
+      // 被本地扣成 0」就分不开了，而这两者的处理完全相反。
+      // ⚠️ 也不能扣整个往返：`expire_in_ms` 是服务端**处理完之后**才算的，
+      // 把处理耗时也扣掉就是重复计算（补关那条路径动辄几百毫秒），
+      // 倒计时会提前结束、支付入口提前被关。减掉服务端自报的处理耗时后剩下的
+      // 才是真正的网络时间；仍扣整段（而非一半）是往「显示得更少」偏的安全侧。
+      const serverElapsed = typeof order.server_elapsed_ms === 'number'
+        && Number.isFinite(order.server_elapsed_ms)
+        ? Math.max(0, order.server_elapsed_ms)
+        : 0;
+      this._lastLoadRttMs = Math.max(0, (Date.now() - sentAt) - serverElapsed);
       const items: OrderDetailItem[] = data?.items || [];
       const paymentsRaw: OrderPayment[] = (data as any)?.payments || [];
       const iconMeta = STATUS_ICON[order.status] || STATUS_ICON['已关闭'];
@@ -378,8 +393,12 @@ Page({
       if (order.status === '待支付' && order.expire_at) {
         if (order.expire_clock) {
           expireTimeFmt = order.expire_clock;
-        } else if (order.expire_in_ms == null) {
-          // 旧云函数形态：没有 expire_clock 也没有 expire_in_ms，只能本地推。
+        } else if (order.expire_in_ms == null || typeof order.expire_in_ms === 'number') {
+          // 两种形态本地推：
+          //  - 旧云函数：既无 expire_clock 也无 expire_in_ms；
+          //  - 半下发（有正的 expire_in_ms 却没有 expire_clock）：生产不可达
+          //    （两字段同条件产出），但灰度期人工改服务端可能出现 ——
+          //    不推的话 wxml 会渲染出「请在  前完成支付（剩余 09:30）」这种空时刻。
           // 设备时区不对时这个 HH:mm 会错，是过渡期已知代价（见 expire_clock 的注释）。
           const rawExp = String(order.expire_at);
           const ed = new Date(rawExp.includes('T') ? rawExp : rawExp.replace(/-/g, '/'));
@@ -450,8 +469,11 @@ Page({
         payments,
         outstandingAmount: outstanding,
         canContinuePay,
-        // 拿到一份新的服务端状态了，「时限已到但状态未确认」的闸可以解除（issue #215）
-        payBlockedByExpiry: false,
+        // 拿到一份新的服务端状态了，「时限已到但状态未确认」的闸门原则上可以解除。
+        // ⚠️ 除非服务端明说「已过期但我没关掉」（`expire_unresolved`）—— 那正是
+        // 闸门该继续关着的形态：订单确实过期了、`order.pay` 会拒，只是服务端
+        // 连试两次都被并发的支付意图挤掉（双谱系评审 round-11）。
+        payBlockedByExpiry: order.expire_unresolved === true,
       });
 
       // 启动倒计时
@@ -559,7 +581,10 @@ Page({
       // 权威口径下走到这里 = 服务端说的剩余量被这次请求的往返耗时吃光了，
       // 截止点**确实过了**。与 tick 归零同一后果，所以同样关掉支付入口：
       // 紧接着那次重载可能失败，不关闸页面就退回成静态的「请完成支付 + 去支付」。
-      // 非权威（旧云函数）那条不关：在旧后端上这些单本来就还能付，关了是误伤。
+      // 这里只处理**本地判定**的过期（权威剩余量被 RTT 扣光）。
+      // 「服务端明说已过期但没关掉」那种由 `_fetchDetail` 落 setData 时统一表达 ——
+      // 一个原因一个地方，别在两处重复判同一件事。
+      // 旧云函数的非权威归零不关：在旧后端上那些单（尤其员工单）本来就还能付，关了是误伤。
       this.setData({ countdown: '', ...(authoritative ? { payBlockedByExpiry: true } : null) });
       // 非权威那条路没有「服务端已试过关单」的保证，重载回来大概率还是同一个答案 ——
       // 按订单号只放行一次，否则就是每个 RTT 一圈的无界循环。
@@ -724,6 +749,8 @@ Page({
   onHide() {
     this._hidden = true;
     this._hiddenAtWallClock = Date.now();
+    // 排队中的尾随刷新一并作废：onShow 会重新加载
+    this._loadQueued = false;
     // 页面隐藏（navigateTo 跳走 / tab 切换）停止轮询，避免后台继续请求
     if (this._poller) {
       this._poller.clear();

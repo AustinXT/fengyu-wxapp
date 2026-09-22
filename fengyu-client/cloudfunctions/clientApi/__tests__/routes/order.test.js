@@ -2336,6 +2336,28 @@ describe('order.detail — 支付倒计时下发口径 (#215)', () => {
     expect(closeBody).not.toMatch(/NOW\(\)\s*-/)
     expect(closeBody).not.toContain('sale_order_datetime')
   })
+  test('顾客端落单只会是销售单/充值单 —— closeExpiredOrder 不排除转换单的前提', () => {
+    // `closeExpiredOrder` 的三条守卫里**没有** `sale_order_type <> '转换单'`
+    //（card.js 的充值路径和 order.cancel 都有）。它安全，靠的是
+    //「转换单恒有 opened_by」这条定义域前提：顾客端自己落的单只有销售单和充值单，
+    // 转换单只由 staff/admin 落且必写 opened_by。
+    // 前提一破，转换单会被这里关掉，而释放侧不跑 rollbackPendingConversionOnClose ——
+    // 疗程卡次数/家居数量永久蒸发（card.js 的注释里亲述过这个场景）。
+    const { readFileSync } = require('fs')
+    const { resolve } = require('path')
+    const dir = resolve(__dirname, '../../routes')
+    const kinds = new Set()
+    for (const f of ['order.js', 'card.js']) {
+      const src = readFileSync(resolve(dir, f), 'utf8')
+      const re = /INSERT INTO sale_orders[\s\S]{0,2000}?VALUES[\s\S]{0,1200}?(?=`)/g
+      for (const block of src.match(re) || []) {
+        for (const m of block.matchAll(/'(销售单|充值单|转换单|内部单|退款单|寄存单)'/g)) kinds.add(m[1])
+      }
+    }
+    expect(kinds.size, '未在顾客端找到任何 INSERT INTO sale_orders 的单据类型字面量').toBeGreaterThan(0)
+    expect([...kinds].sort()).toEqual(['充值单', '销售单'])
+  })
+
 })
 
 describe('order.cancel', () => {

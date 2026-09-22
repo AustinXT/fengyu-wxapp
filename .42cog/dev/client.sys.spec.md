@@ -244,6 +244,8 @@ product.shopInit(门店商品初始化)
 
 改 `closeExpiredOrder` 的 UPDATE 守卫必须同步改这个常量，由 `order.test.js` 钉住——断言是**规范化后的条件列表全等比较**（锁住连接符、条件集合与数量），不是子串包含：后者对 `AND → OR`、单侧多加一条守卫都判不出来。
 
+⚠️ **`closeExpiredOrder` 不带 `sale_order_type <> '转换单'` 是有外部前提的**：同文件另外两条「置已关闭」（`card.js` 的充值路径、`order.cancel`）都带这条排除，唯独它不带，靠的是「转换单恒有 `opened_by`」这条**定义域前提**——顾客端 `order.create` 硬编码 `'销售单'`、`card.recharge` 硬编码 `'充值单'`，转换单只由 staff/admin 落单且必写 `opened_by`。前提一旦破（比如放开自助转换单、或新落单路径漏写 `opened_by`），转换单就会被这里关掉，而它的释放侧**不执行** `rollbackPendingConversionOnClose`——疗程卡次数 / 家居数量会永久蒸发。由 `order.test.js` 的字面断言钉住顾客端两处 `INSERT INTO sale_orders` 的单据类型。
+
 ⚠️ **`closeExpiredOrder` 体内不得有任何时间谓词**：「过没过 10 分钟」一律由调用方判。`order.detail` 的「补关到关不动为止、否则就不下发权威值」契约架在这条前提上（见下文）；这里一旦加上 `sale_order_datetime < NOW() - INTERVAL '10 minutes'` 之类的「加固」，补关成败就取决于 PG 与云函数宿主的时钟差 —— PG 慢一点就关不掉而复读仍判 eligible，矛盾态从后门回来。同源锁里有对应断言。
 
 ⚠️ **`order.scanDetail` 永不下发 `expire_at`**：它的主查询自带 `WHERE opened_by IS NOT NULL`（只服务员工开单订单），字段是显式映射、不含任何 expire 字段；`scan-pay` 页也没有任何时效文案。issue #215 验收标准 4「扫码支付页同步对齐」因此**天然成立**（2026-09-22 全页 grep 核实）。⚠️ 将来若让 scanDetail 也服务自助单或补下发时限，**必须走 `PENDING_AUTO_CLOSE_GUARD_SQL`**——否则口径分叉会从这一端复发，而那里目前没有任何同源锁。

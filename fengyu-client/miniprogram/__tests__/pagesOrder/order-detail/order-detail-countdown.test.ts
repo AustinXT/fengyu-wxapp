@@ -649,6 +649,69 @@ describe('order-detail 倒计时的生命周期与并发 (#215)', () => {
     expect(Toast.fail).not.toHaveBeenCalled();
   });
 
+  test('服务端说「已过期但没关掉」→ 关支付入口，且成功刷新也不解除', async () => {
+    // 别用「字段缺席」同时表达「旧云函数」和「新云函数补关失败」：前者不该关支付入口
+    //（那些单在旧后端本来就能付），后者必须关（单确实过期了，order.pay 会拒）
+    const { page, resolvers } = createPageWithManualApi();
+    const degraded = {
+      order: {
+        sale_order_id: 'FY-215', status: '待支付',
+        expire_at: new Date(Date.now() - 1000).toISOString(),
+        expire_in_ms: null, expire_clock: null, expire_unresolved: true,
+      },
+      items: [], payments: [],
+    };
+    const inflight = page.loadDetail('FY-215');
+    resolvers[0](degraded);
+    // 非权威归零会排一次尾随刷新（每单一次），把它也喂掉
+    await new Promise((r) => setTimeout(r, 0));
+    resolvers[1]?.(degraded);
+    await inflight;
+
+    // 服务端明说没关掉 → 闸门必须一直关着，哪怕刷新是成功的
+    expect(page.data.payBlockedByExpiry).toBe(true);
+  });
+
+  test('旧云函数的非权威归零不关支付入口（那些单在旧后端本来就能付）', async () => {
+    const { page, resolvers } = createPageWithManualApi();
+    const legacy = {
+      order: {
+        sale_order_id: 'FY-215', status: '待支付',
+        expire_at: new Date(Date.now() - 1000).toISOString(),
+        // 旧云函数：三个新字段全缺席
+      },
+      items: [], payments: [],
+    };
+    const inflight = page.loadDetail('FY-215');
+    resolvers[0](legacy);
+    await new Promise((r) => setTimeout(r, 0));
+    resolvers[1]?.(legacy);
+    await inflight;
+
+    expect(page.data.payBlockedByExpiry).toBe(false);
+  });
+
+  test('RTT 扣减要减掉服务端处理耗时，不能重复计算', async () => {
+    // expire_in_ms 是服务端**处理完之后**才算的；把处理耗时也扣掉，
+    // 倒计时会提前结束、支付入口提前被关
+    const { page, resolvers } = createPageWithManualApi();
+    const inflight = page.loadDetail('FY-215');
+    await new Promise((r) => setTimeout(r, 150));
+    resolvers[0]({
+      order: {
+        sale_order_id: 'FY-215', status: '待支付',
+        expire_at: new Date(Date.now() + 60_000).toISOString(),
+        expire_in_ms: 60_000,
+        server_elapsed_ms: 140,        // 这 150ms 里绝大部分是服务端处理
+      },
+      items: [], payments: [],
+    });
+    await inflight;
+
+    // 只该扣掉网络那一小段，而不是整个 150ms
+    expect(page._lastLoadRttMs).toBeLessThan(60);
+  });
+
   test('权威剩余量被 RTT 扣光 → 同样关支付入口（与 tick 归零同后果）', () => {
     // 这条孪生路径此前漏了置闸：重载一失败，页面就退回成静态的「请完成支付 + 去支付」
     const { page } = createPageWithStubbedLoad();
