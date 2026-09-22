@@ -35,6 +35,7 @@ import {
 } from "@/lib/analyst-scope"
 import { getSession } from "@/lib/auth"
 import { getMetric, type AnalystMetric } from "@/lib/metric-catalog"
+import { formatMetricDelta } from "@/lib/metric-delta"
 import {
   getNewCustomerFunnelDashboard,
   getNewCustomerFunnelFilterOptions,
@@ -105,29 +106,6 @@ function buildMonthOptions(months: string[], startMonth: string, endMonth: strin
   const start = Math.min(...indexes)
   const end = Math.max(...indexes)
   return Array.from({ length: end - start + 1 }, (_, index) => monthOptionFromIndex(end - index))
-}
-
-function formatDeltaPart(current: number, previous: number, type: "count" | "rate" | "money"): string {
-  if (previous === 0) return "无基数"
-  if (type === "rate") {
-    const delta = current - previous
-    if (delta === 0) return "持平"
-    return `${delta > 0 ? "+" : ""}${(delta * 100).toFixed(1)}pct`
-  }
-  const delta = (current - previous) / previous
-  if (delta === 0) return "持平"
-  return `${delta > 0 ? "+" : ""}${(delta * 100).toFixed(1)}%`
-}
-
-function formatMetricDelta(
-  current: number,
-  prevYear: number,
-  prevPeriod: number,
-  type: "count" | "rate" | "money" = "count",
-): { text: string; tone: "default" | "positive" | "negative" } {
-  const text = `同比 ${formatDeltaPart(current, prevYear, type)} / 环比 ${formatDeltaPart(current, prevPeriod, type)}`
-  if (prevYear === 0 || current === prevYear) return { text, tone: "default" }
-  return { text, tone: current > prevYear ? "positive" : "negative" }
 }
 
 function queryString(filters: Record<string, string | number | undefined>): string {
