@@ -154,8 +154,13 @@ function extractTemplates(source) {
 function pagedSqlTemplates(source) {
   const out = []
   for (const body of extractTemplates(source)) {
-    if (!/\bORDER\s+BY\b/i.test(body)) continue
-    // ⚠️ 翻页的标志是 **OFFSET**，不是 LIMIT。
+    // ⚠️ **不能**先过滤掉「没有 ORDER BY 的模板」—— 那正好放过最坏的情形：
+    // 有人把整条 ORDER BY 删了，查询从「排序键非唯一」变成「完全无序」，
+    // 而守护因为扫不到 ORDER BY 就不纳入统计、offenders 恒空（评审实测：
+    // 删掉 `allocation.js:269` 整条 ORDER BY，scanned 17→16，`16 > 10` 仍绿）。
+    // 改成只按 OFFSET 筛，无 ORDER BY 的交给下游 `clause === null` 分支报出来。
+    //
+    // 翻页的标志是 **OFFSET**，不是 LIMIT。
     // `LIMIT N` 无 OFFSET 是「取前 N 条」（如 `LIMIT 1` 取最新一条、员工搜索 `LIMIT 20`），
     // 不存在「第二页」，也就没有跨次执行的重复/漏行问题。
     // 那类查询的结果确定性问题属 **#251** 那一族（`LIMIT 1` 缺确定性 ORDER BY），
@@ -178,6 +183,16 @@ describe('#282 · 分页 SQL 的 ORDER BY 必须带唯一键 tie-break', () => {
           const clause = orderByClause(sql)
           if (clause === null) {
             offenders.push(`${relative(ROOT, file)} · 取不到最外层 ORDER BY（可能被下沉进子查询）\n    ${sql.replace(/\s+/g, ' ').slice(0, 120)}`)
+            continue
+          }
+          // ⚠️ 按裸逗号切末位键**对含逗号的括号表达式是 fail-open**（评审反例）：
+          // `ORDER BY COALESCE(t.amount, t.id) DESC, t.created_at DESC` 会先在第一个 `)`
+          // 处被 orderByClause 截断成 `COALESCE(t.amount, t.id`，再按逗号切出末位 ` t.id`
+          // → `looksUnique` 为真 → 放行，而真实末位是非唯一的 `t.created_at`。
+          // 所以**只要子句里有不配对的括号就直接报**，不再猜末位键。
+          const balanced = (clause.match(/\(/g) || []).length === (clause.match(/\)/g) || []).length
+          if (!balanced) {
+            offenders.push(`${relative(ROOT, file)} · ORDER BY 含括号表达式，解析不可靠（刻意 fail-closed）\n    ORDER BY ${clause}`)
             continue
           }
           const last = clause.split(',').pop()

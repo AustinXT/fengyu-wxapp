@@ -26,7 +26,12 @@ import ts from 'typescript'
  *
  * 1. **通用规则**：凡是 `.orderBy(...)` 后面跟着 `.limit(` + `.offset(` 的链，
  *    `orderBy` 的**末位参数**必须含唯一键。防将来新增的分页查询忘了加。
- * 2. **清单钉死**：#282 修的 16 处逐条断言。防已修的被改回去。
+ * 2. **清单钉死**：#282 修的 18 处逐条断言。防已修的被改回去。
+ *
+ * ⚠️ 数字变过两次，别照 issue 正文的「16 处」：
+ *   - `engine.ts` 的 `productCode` 撤销（它有全表唯一索引，补 tie-break 是冗余）→ −1
+ *   - 评审发现 3 处**内存分页**同样受影响（coupons / products / mall 页 force-dynamic，
+ *     翻页走 router.replace **重新执行查询**，不是「单次全量切片」）→ +3
  *
  * ## 与云函数侧的关系
  *
@@ -217,15 +222,24 @@ function pagedOrderBys(code: string, fileName = 'x.ts'): Array<{ index: number; 
     // 判据 1：同链
     if (/\.offset\s*\(/.test(chainTail(code, end + 1))) { out.push({ index: at, args }); continue }
 
-    // 判据 2：deferred —— 同函数体内，该变量被 `.offset(` 调用
+    // 判据 2：deferred —— 同函数体内，该变量（或它的别名）被 `.offset(` 调用
     const varName = enclosingVarName(sf, at)
     if (varName) {
       const [fnStart, fnEnd] = enclosingFunctionRange(sf, at)
       const body = code.slice(fnStart, fnEnd)
-      const deferred = new RegExp(
-        String.raw`\b${varName}\s*(?:\.\s*\w+\s*\([^()]*(?:\([^()]*\)[^()]*)*\)\s*)*\.\s*offset\s*\(`,
-      )
-      if (deferred.test(body)) { out.push({ index: at, args }); continue }
+      // 跟踪一层别名：`const q = …orderBy(…); const p = q.limit(10); p.offset(20)`
+      // 不跟的话这种写法会静默漏掉（评审反例）。一层足够覆盖本仓写法，
+      // 再深就该考虑换 AST 数据流分析了 —— 那超出字面量守护的定位。
+      const names = new Set([varName])
+      for (let round = 0; round < 3; round++) {
+        for (const m2 of body.matchAll(/(?:const|let|var)\s+([\w$]+)\s*=\s*(?:await\s+)?([\w$]+)\s*\./g)) {
+          if (names.has(m2[2])) names.add(m2[1])
+        }
+      }
+      const hit = [...names].some((n) => new RegExp(
+        String.raw`\b${n}\s*(?:\.\s*\w+\s*\([^()]*(?:\([^()]*\)[^()]*)*\)\s*)*\.\s*offset\s*\(`,
+      ).test(body))
+      if (hit) { out.push({ index: at, args }); continue }
     }
   }
   return out
@@ -274,7 +288,7 @@ describe('#282 · admin 分页查询的 orderBy 必须带唯一键 tie-break', (
     })
   })
 
-  describe('第 2 层 · #282 修的 16 处逐条钉死（防被改回去）', () => {
+  describe('第 2 层 · #282 修的 18 处逐条钉死（防被改回去）', () => {
     // 通用规则是启发式，已修的这几处要把**完整参数列表**钉住。
     const EXPECTED: Array<[file: string, args: string, why: string]> = [
       ['actions/appointments.ts', 'desc(appointments.appointmentTime), desc(appointments.appointmentId)',
@@ -314,6 +328,19 @@ describe('#282 · admin 分页查询的 orderBy 必须带唯一键 tie-break', (
       ['lib/inventory/engine.ts',
         'asc(inventoryLocations.locationType), asc(inventoryLocations.name), asc(inventoryStockLots.skuName), asc(inventoryStockLots.batchNo), asc(inventoryStockLots.id)',
         '同库位同 SKU 同批次可以有多个 lot 行'],
+      // —— 以下 3 处是**内存分页**（取回后在组件里 slice），评审发现同样受影响：
+      //    这三个页面都是 force-dynamic，翻页走 useUrlFilters 的 router.replace
+      //    → Server Component **重新执行查询** → 两次翻页是两次独立执行，
+      //    不是「对单次全量结果切片」。第一轮把它们当豁免是错的。
+      ['actions/coupons.ts',
+        'desc(couponTemplates.updatedAt), desc(couponTemplates.createdAt), asc(couponTemplates.templateId)',
+        '优惠券模板列表：同批创建的模板 updatedAt/createdAt 都并列'],
+      ['actions/products.ts',
+        'asc(productSkus.sortOrder), asc(productSkus.skuId)',
+        '⚠️ `sort_order` 默认 0 —— **未手工排序的 SKU 全部并列**，本次并列面最大的一处'],
+      ['actions/products.ts',
+        'asc(products.sortOrder), asc(products.productId)',
+        '⚠️ 同上（mall 页）；同文件 getProductsByKind 的同款 orderBy 刻意不改 —— 那是开单 picker 一次性全量加载，不翻页'],
     ]
 
     it.each(EXPECTED)('%s 的「%s」在位', (file, args) => {
@@ -324,14 +351,29 @@ describe('#282 · admin 分页查询的 orderBy 必须带唯一键 tie-break', (
 
     it('已确认安全的那些不许被「统一风格」删掉', () => {
       // issue #282 的「已确认安全」清单 —— 本来就有 tie-break，列此防重构抹平。
-      const SAFE: Array<[string, RegExp]> = [
-        ['actions/employees.ts', /asc\(staffWechatUsers\.employeeId\)/],
-        ['actions/allocations.ts', /desc\(saleOrderPayments\.id\)/],
-        ['lib/inventory/engine.ts', /desc\(inventoryDocs\.docDate\), desc\(inventoryDocs\.createdAt\), desc\(inventoryDocs\.id\)/],
+      //
+      // ⚠️ 断言对象必须是 **`pagedOrderBys` 提取出的分页参数列表**，
+      // 不能是 `re.test(整份源码)` —— 后者在同一子句**重复出现**时对目标位置失效：
+      // `asc(staffWechatUsers.employeeId)` 在 `employees.ts` 出现两次
+      // （`:402` 分页 / `:484` keyset 导出），把 :402 改成外键 `asc(storeId)` 之后，
+      // 第 1 层因 `storeId` 长得像唯一键而放行、SAFE 又被 :484 满足 → 两层皆绿（评审实测）。
+      const SAFE: Array<[file: string, args: string, why: string]> = [
+        // ⚠️ 写**完整参数列表**而不是子串 —— 改成 toContain 之后，
+        // 子串（如单写 `asc(staffWechatUsers.employeeId)`）不会匹配到任何一条。
+        ['actions/employees.ts',
+          'desc(staffWechatUsers.updatedAt), desc(staffWechatUsers.createdAt), asc(staffWechatUsers.employeeId)',
+          '员工列表分页（:402；同文件 :484 的 keyset 导出也有 employeeId，正是它让旧的 re.test 失效）'],
+        ['actions/allocations.ts',
+          'desc(saleOrderPayments.paidAt), desc(saleOrderPayments.id)',
+          '营业额分配待办列表'],
+        ['lib/inventory/engine.ts',
+          'desc(inventoryDocs.docDate), desc(inventoryDocs.createdAt), desc(inventoryDocs.id)',
+          '库存单据列表'],
       ]
-      for (const [file, re] of SAFE) {
-        const code = stripComments(readFileSync(join(SRC, file), 'utf8'), file).replace(/\s+/g, ' ')
-        expect(re.test(code), `${file} 丢了本来就有的 tie-break: ${re}`).toBe(true)
+      for (const [file, args, why] of SAFE) {
+        const code = stripComments(readFileSync(join(SRC, file), 'utf8'), file)
+        const all = pagedOrderBys(code, file).map((x) => x.args)
+        expect(all, `${file} 丢了本来就有的 tie-break（${why}）`).toContain(args)
       }
     })
   })
