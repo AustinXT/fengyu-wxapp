@@ -160,9 +160,12 @@ const PAGE_SIZE_WHITELIST = [10, 20, 50, 100]
 // 而其余 37 处调用点各写各的 `Math.max(1, filters.page || 1)`（无上夹）——
 // **真正会打出 `2e+22` 那个 500 的是后者，不是本文件**；本文件的上夹早就挡住了。
 //
-// ⚠️ 收编带来一处**行为变更**（方向是好的，但不是无差别等价）：判据从 `Number.isFinite`
-// 收紧成 `Number.isSafeInteger` 后，`?page=1e21` 在本文件 5 支查询上
-// 由「夹到第 1e6 页 → 空列表」变成「回落第 1 页 → 返回首页数据」。
+// ⚠️ 收编带来**两处**行为变更（方向都是好的，但不是无差别等价，故显式记下）：
+//  ① 判据从 `Number.isFinite` 收紧成 `Number.isSafeInteger`：`?page=1e21` 在本文件
+//     5 支查询上由「夹到第 1e6 页 → 空列表」变成「回落第 1 页 → 返回首页数据」。
+//  ② 新实现走 `Number(raw)`，会**接受数字字符串**：旧 `Number.isFinite('3')` 为 false
+//     → 第 1 页；新 `Number('3')` → 第 3 页。URL 路径下无差别（`filters.page` 在
+//     `list-filters.ts` 已经 `Number()` 过），差别只在 **action 被直调且传字符串**时。
 //
 // 另：offset 不再在本文件手算，全部由 `resolvePaging` 给出。见 `src/lib/paging.ts` 顶部注释。
 

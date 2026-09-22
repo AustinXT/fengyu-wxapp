@@ -138,39 +138,65 @@ export function resolvePaging(input: ResolvePagingInput): {
     clampInt(maxPageSize, MAX_PAGE_SIZE_CEILING, MAX_PAGE_SIZE),
   )
 
-  // 回落值本身也要过一遍归一：调用方传的 defaultPageSize 是常量，非法即编程错误，
-  // 但兜到 1 而不是放行 —— 失控的 pageSize 进 `.limit()` 的后果比「一页只返回 1 条」严重得多。
-  //
-  // ⚠️ 这里常被写成「`undefined` 会变成 `LIMIT NULL`，而 `LIMIT NULL` 等于不限行数」——
-  // 结论对，机制不对（drizzle 0.45 实测）：`pg-core/dialect.cjs:288` 的守卫是
-  // `typeof limit === 'object' || (typeof limit === 'number' && limit >= 0)`，
-  // 所以 `undefined` / `NaN` / 负数是**整条 limit 子句根本不发出**（比 LIMIT NULL 更隐蔽，
-  // EXPLAIN 里连 Limit 节点都没有）；只有字面 `null`（`typeof null === 'object'`）
-  // 才真走 `LIMIT $1` = NULL。两条路径后果相同：**静默全表返回**。
-  const fallbackPageSize = clampInt(defaultPageSize, cap, 1)
-
   const safePage = normalizePage(page)
-  // ⚠️ 判 `?.length` 而不是判真值：`allowedPageSizes: []` 是 truthy，
-  // 空白名单会让**任何** pageSize 入参都 miss 并静默回落，且毫无告警。
-  const safePageSize = allowedPageSizes?.length
-    // 白名单模式：严格相等匹配。`2.5` / `'20'` / `Infinity` 都不在白名单 → 回落。
+
+  // ⚠️ 判 `Array.isArray` 而不是判真值，也不是只判 `?.length`：
+  // - `allowedPageSizes: []` 是 **truthy**，判真值会让空白名单永远 miss、
+  //   pageSize 入参被静默忽略
+  // - `{ length: 2 }` 能过 `?.length` 却没有 `.includes`，会抛
+  //   `TypeError: allowedPageSizes.includes is not a function` → 全局 catch → 500，
+  //   正是本 issue 要消灭的降级类。TS 类型挡得住编译期，挡不住 action 直调
+  const safePageSize = Array.isArray(allowedPageSizes) && allowedPageSizes.length > 0
+    ? pickFromWhitelist(allowedPageSizes, pageSize, defaultPageSize)
+    // clamp 模式：非法值回落调用点默认值。
+    // ⚠️ 与改造前 `Math.min(100, Math.max(1, Number(x) || 20))` **不是逐值等价**，
+    // 有两处刻意的 delta（都是「非法值更早地回落到默认页长」，方向无风险）：
+    //   `?pageSize=0.5` 旧得 1（被 Math.max 抬上来）、新回落 20
+    //   `?pageSize=-5`  旧得 1（同上）、新回落 20
     //
-    // ⚠️ 命中后**不能再夹 `cap`**：`Math.min(cap, …)` 会让出口落在白名单之外
-    // （`allowedPageSizes:[10,20,50]` + `maxPageSize:30` + `pageSize=50` → 出口 30，
-    // 而 30 不是任何一个 UI 选项，服务端每页 30 条、UI 按 50 算页数 → 尾部数据够不到）。
-    // 白名单的语义就是「只允许这几个值」，cap 在这个模式下无话语权。
-    // 但仍要校验命中值本身合法 —— 白名单是代码常量，若哪天被写成 `[10, 20.5]`，
-    // 20.5 原样吐到 `.limit()` 就会从这一侧破掉「出口恒为安全整数」。
-    // `≤ CEILING` 这道也不能省：白名单若被写成 `[10, 1e15]`，命中后 offset 就越过 2^53 了
-    // ——「乘法不封闭」那条对白名单这一侧同样成立。
-    ? (allowedPageSizes.includes(pageSize as number)
-        && Number.isSafeInteger(pageSize)
-        && (pageSize as number) >= 1
-        && (pageSize as number) <= MAX_PAGE_SIZE_CEILING
-        ? (pageSize as number)
-        : fallbackPageSize)
-    // clamp 模式：非法值回落调用点默认值，语义与改造前的 `Number(pageSize) || <默认>` 一致。
-    : clampInt(pageSize, cap, fallbackPageSize)
+    // 回落值自己也过一遍归一，兜底到 1 而不是放行 —— 失控的 pageSize 进 `.limit()`
+    // 的后果比「一页只返回 1 条」严重得多：
+    // 这里常被写成「`undefined` 会变成 `LIMIT NULL`，而 `LIMIT NULL` 等于不限行数」——
+    // 结论对，机制不对（drizzle 0.45 实测）：`pg-core/dialect.cjs:288` 的守卫是
+    // `typeof limit === 'object' || (typeof limit === 'number' && limit >= 0)`，
+    // 所以 `undefined` / `NaN` / 负数是**整条 limit 子句根本不发出**（比 LIMIT NULL 更隐蔽，
+    // EXPLAIN 里连 Limit 节点都没有）；只有字面 `null`（`typeof null === 'object'`）
+    // 才真走 `LIMIT $1` = NULL。两条路径后果相同：**静默全表返回**。
+    : clampInt(pageSize, cap, clampInt(defaultPageSize, cap, 1))
 
   return { page: safePage, pageSize: safePageSize, offset: (safePage - 1) * safePageSize }
+}
+
+/**
+ * 白名单模式下挑一个合法页长。**出口一定落在白名单里**（白名单整个不可用时才兜 1）。
+ *
+ * 这里刻意**完全不碰 `maxPageSize`/`cap`**：白名单的语义就是「只允许这几个值」，
+ * cap 在这个模式下无话语权。夹一下 cap 会让出口落在白名单之外 ——
+ * `{allowedPageSizes:[10,20,50], maxPageSize:30}` 时 `pageSize=50` 会被压成 30、
+ * `pageSize=7` 会经 fallback 被压成 30，而 30 不是任何一个 UI 选项：
+ * 服务端每页 30 条、UI 按 50 算页数 → 尾部数据翻到哪一页都够不到，且零报错。
+ *
+ * 命中值仍要逐项校验 —— 白名单是代码常量，但若哪天被写成 `[10, 20.5]`，
+ * 20.5 原样吐到 `.limit()` 就从这一侧破掉了「出口恒为安全整数」；
+ * `≤ CEILING` 那道也不能省（`[10, 1e15]` 命中后 offset 越过 2^53，
+ * 「乘法不封闭」对白名单这一侧同样成立）。
+ */
+function pickFromWhitelist(
+  allowed: readonly number[],
+  pageSize: unknown,
+  defaultPageSize: unknown,
+): number {
+  const legal = (v: unknown): v is number =>
+    Number.isSafeInteger(v) && (v as number) >= 1 && (v as number) <= MAX_PAGE_SIZE_CEILING
+  const pick = (v: unknown): number | null =>
+    allowed.includes(v as number) && legal(v) ? (v as number) : null
+
+  return pick(pageSize)
+    // 调用点的 defaultPageSize 必须自己也在白名单里，否则它就是个「白名单外的出口」
+    ?? pick(defaultPageSize)
+    // defaultPageSize 也不在白名单（调用点写错了）→ 退而取白名单里第一个合法值，
+    // 至少保证出口是 UI 认得的选项之一
+    ?? allowed.find(legal)
+    // 整个白名单都不合法 → 宁可一页只返回 1 条，也不放任失控值进 LIMIT
+    ?? 1
 }

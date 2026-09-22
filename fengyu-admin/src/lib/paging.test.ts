@@ -211,10 +211,11 @@ describe('resolvePaging · 无条件契约', () => {
           expect(r.page >= 1, at).toBe(true)
           expect(r.pageSize >= 1, at).toBe(true)
           expect(r.offset >= 0, at).toBe(true)
-          // offset 是 String() 后按文本传给 PG 的 —— 指数记法就是本 issue 那个 500。
-          // （pageSize 侧不断言这条：它被 cap ≤ 1000 压着，距指数记法阈值 1e21 有 18 个
-          //   数量级，那条断言实质不可证伪 —— 把 clampInt 换成裸 Math.min 它照样绿。）
-          expect(String(r.offset), at).not.toMatch(/e/i)
+          // ⓘ 这里**刻意不再断言**「String(offset) 不含指数记法」：
+          //    `Number.isSafeInteger` 已保证 |offset| ≤ 9.0e15，而 JS 转指数记法的阈值
+          //    是 1e21 —— 差 5 个数量级，该断言在上面那行通过后**恒真、不可证伪**。
+          //    指数记法这条风险由「isSafeInteger + MAX_PAGE × CEILING 双上限」真正守住，
+          //    下面那条常量断言才是它的守护。
         }
       }
     }
@@ -239,6 +240,52 @@ describe('resolvePaging · 无条件契约', () => {
     const r = resolvePaging({ page: 2, pageSize: 50, defaultPageSize: 20, allowedPageSizes: [] })
     expect(Number.isSafeInteger(r.pageSize)).toBe(true)
     expect(r.pageSize).toBe(50)
+  })
+
+  it('白名单模式的**回落路径**也不受 maxPageSize 影响', () => {
+    // 评审反例：第一版只修了「命中路径不夹 cap」，回落值仍走 `clampInt(default, cap, 1)`，
+    // 于是 `maxPageSize:5` 会把 fallback 20 压成 5 —— 5 不在白名单，
+    // 服务端每页 5 条而 UI 按 20 算页数，尾部数据够不到，且零报错。
+    expect(resolvePaging({
+      page: 1, pageSize: 7, defaultPageSize: 20,
+      allowedPageSizes: [10, 20, 50], maxPageSize: 5,
+    })).toEqual({ page: 1, pageSize: 20, offset: 0 })
+  })
+
+  it('defaultPageSize 不在白名单时退到白名单首个合法值，而不是吐出白名单外的数', () => {
+    // 调用点把 default 写错（不在自己的白名单里）也不能让出口逃出白名单 ——
+    // 否则「服务端页长 ∈ UI 选项」这条不变量就从回落路径破了。
+    expect(resolvePaging({
+      page: 1, pageSize: 7, defaultPageSize: 33, allowedPageSizes: [10, 20, 50],
+    }).pageSize).toBe(10)
+    // 白名单整个不可用 → 兜 1（宁可一页少返回，也不放任失控值进 LIMIT）
+    expect(resolvePaging({
+      page: 1, pageSize: 7, defaultPageSize: 33, allowedPageSizes: [0, -5, NaN],
+    }).pageSize).toBe(1)
+  })
+
+  it('非数组 allowedPageSizes 不抛异常（.includes is not a function → 500）', () => {
+    // 评审 fuzz 实测：`{length: 2}` 能过 `?.length` 判真却没有 `.includes`，
+    // 抛 TypeError → 全局 catch → 500，正是本 issue 要消灭的降级类。
+    // TS 类型挡编译期，挡不住 Server Action 直调。
+    for (const notArray of [{ length: 2 }, '1020', 42, true]) {
+      const r = resolvePaging({
+        page: 1, pageSize: 50, defaultPageSize: 20,
+        allowedPageSizes: notArray as unknown as number[],
+      })
+      expect(Number.isSafeInteger(r.pageSize), String(notArray)).toBe(true)
+      expect(r.pageSize >= 1, String(notArray)).toBe(true)
+    }
+  })
+
+  it('clamp 模式对 (0,1) 小数与负数的行为 delta 已钉死（与改造前不逐值等价）', () => {
+    // 这两条是**刻意**的行为变更，评审要求显式声明而非留白：
+    //   旧 `Math.min(100, Math.max(1, Number(x) || 20))` 把 0.5 / -5 抬成 1
+    //   新实现回落到调用点默认值 20
+    // 方向无风险（两者都不报错），但要有用例钉住，避免日后被当成 bug「修回去」。
+    const base = { page: 1, defaultPageSize: 20, maxPageSize: 100 }
+    expect(resolvePaging({ ...base, pageSize: 0.5 }).pageSize).toBe(20)
+    expect(resolvePaging({ ...base, pageSize: -5 }).pageSize).toBe(20)
   })
 
   it('白名单含非法常量时不破契约（宁可回落也不吐出去）', () => {
@@ -271,28 +318,64 @@ function collectSources(dir: string, acc: string[] = []): string[] {
  * ⚠️ 必须剥**行尾**注释而不只是整行注释 —— 本仓 `a85cb17e`（#250）就因同型疏漏返工过一次：
  * `const x = 1 // Math.max(1, filters.page || 1)` 这种写法下，只剥「整行注释」的正则
  * 会把它原样留下 → 守护正则命中 → **误报变红**（不是被绕过，是反向踩雷）。
- * 同时要跳过引号内的双斜杠，否则 `'https://x'` 会被从协议分隔符处截断。
+ *
+ * ⚠️ 块注释也**不能**用 `/\*[\s\S]*?\*\/` 一把梭：那会把字符串里的开闭符当成注释，
+ * `const a = "(左星号)"; const offset = (page - 1) * pageSize; const b = "(右星号)"`
+ * 整段被吃掉，真违规反而被藏起来（评审给的反例）。所以走逐字符状态机。
+ *
+ * **已知局限（如实记下，不假装完备）**：字符串内容是保留的，所以字符串字面量里
+ * 真写了 `"Math.max(1, filters.page)"` 会误报。当前代码库无此形状；
+ * 若将来撞上，在那一处加 `eslint-disable` 式的豁免注释比放宽守护更安全。
  */
 function stripComments(source: string): string {
-  return source
-    .replace(/\/\*[\s\S]*?\*\//g, '')
-    .split('\n')
-    .map((line) => {
-      // 找第一个不是 `://` 一部分、且不在引号内的 `//`
-      let inSingle = false, inDouble = false, inTick = false
-      for (let i = 0; i < line.length - 1; i++) {
-        const c = line[i]
-        if (c === '\\') { i++; continue }
-        if (!inDouble && !inTick && c === "'") inSingle = !inSingle
-        else if (!inSingle && !inTick && c === '"') inDouble = !inDouble
-        else if (!inSingle && !inDouble && c === '`') inTick = !inTick
-        else if (!inSingle && !inDouble && !inTick && c === '/' && line[i + 1] === '/') {
-          return line.slice(0, i)
-        }
-      }
-      return line
-    })
-    .join('\n')
+  let out = ''
+  let i = 0
+  // 状态：0=代码 1=行注释 2=块注释 3=单引号 4=双引号 5=模板串
+  let state = 0
+  while (i < source.length) {
+    const c = source[i]
+    const next = source[i + 1]
+    if (state === 0) {
+      if (c === '/' && next === '/') { state = 1; i += 2; continue }
+      if (c === '/' && next === '*') { state = 2; i += 2; continue }
+      // 进入字符串态：**内容照常保留**。守护正则本身就依赖字符串字面量
+      // （`get('page')` 里的 `'page'`），清空内容会把守护自己掏空
+      // —— 第一版这么写过，结果扫到的读取点直接变成 0 个、断言恒绿。
+      // 这里跟踪字符串态的唯一目的，是**不让串内的 `//` 与 `/*` 触发注释剥离**。
+      if (c === "'") { state = 3; out += c; i++; continue }
+      if (c === '"') { state = 4; out += c; i++; continue }
+      if (c === '`') { state = 5; out += c; i++; continue }
+      out += c; i++; continue
+    }
+    if (state === 1) { if (c === '\n') { state = 0; out += '\n' } ; i++; continue }
+    if (state === 2) {
+      if (c === '*' && next === '/') { state = 0; i += 2; continue }
+      if (c === '\n') out += '\n'   // 保住行号，方便定位
+      i++; continue
+    }
+    // 字符串态：原样输出，只认转义与收尾引号
+    if (c === '\\') { out += source.slice(i, i + 2); i += 2; continue }
+    out += c
+    if ((state === 3 && c === "'") || (state === 4 && c === '"') || (state === 5 && c === '`')) {
+      state = 0
+    }
+    i++
+  }
+  return out
+}
+
+/**
+ * 判断 `source[idx]` 这个位置是否被 `normalizePage(` 直接包裹。
+ *
+ * ⚠️ 不能用「字符偏移相减 ≤ N」来配对 —— 第一版写的是 `+14±2`，
+ * `normalizePage(\n  get("page", "1")\n)` 这种完全合法的换行写法会同时
+ * 被「未归一」守护误报、又被配对逻辑漏掉。往前跳空白再比字面量对格式免疫。
+ */
+function wrappedByNormalizePage(source: string, idx: number): boolean {
+  let i = idx - 1
+  while (i >= 0 && /\s/.test(source[i])) i--
+  const CALL = 'normalizePage('
+  return source.slice(i - CALL.length + 1, i + 1) === CALL
 }
 
 describe('防复发守护（#281 改完后不能再长回来）', () => {
@@ -309,12 +392,27 @@ describe('防复发守护（#281 改完后不能再长回来）', () => {
         const code = stripComments(readFileSync(file, 'utf8'))
         // 只认「页码」语义的那几种：`.page` 字段 与 `get('page', …)` URL 取值。
         // 数量夹取（`Math.max(1, Number(item.quantity) || 1)`）不在此列。
-        if (/Math\.max\(\s*1\s*,\s*\w+\.page\b/.test(code)) offenders.push(`${file} (filters.page)`)
-        if (/Math\.max\(\s*1\s*,\s*Number\(\s*\w+\.page\b/.test(code)) offenders.push(`${file} (Number(params.page))`)
-        // 裸 `Number(get('page'))`（连 Math.max 都没有）——三个 reviewer 独立发现的那 4 处
-        // 正是这个形状，第一版三条正则全要求 `Math.max` 前缀，对它完全失明。
-        if (/(?<!normalizePage\()\bNumber\(\s*get\(\s*['"]page['"]/.test(code)) {
-          offenders.push(`${file} (裸 Number(get('page')))`)
+        //
+        // ⚠️ receiver 一律写成 `[\w.?]*` 而不是 `\w+\.`：后者对**可选链**
+        // （`filters?.page`）与**带命名空间的 receiver**（`searchParams.get('page')`）
+        // 双双失明，而这两种恰恰是最可能的真实复发形态（评审实测确认）。
+        const RECEIVER = String.raw`[\w$]+(?:\??\.[\w$]+)*\??\.`
+        const PATTERNS: Array<[RegExp, string]> = [
+          [new RegExp(String.raw`Math\.max\(\s*1\s*,\s*(?:Number\(\s*)?${RECEIVER}page\b`), 'Math.max(1, x.page)'],
+          [new RegExp(String.raw`Math\.max\(\s*1\s*,\s*Number\(\s*(?:${RECEIVER})?get\(\s*['"]page['"]`), "Math.max(1, Number(get('page')))"],
+          // 裸 `Number(get('page'))`（连 Math.max 都没有）——三个 reviewer 独立发现的那 4 处
+          // 正是这个形状，第一版三条正则全要求 `Math.max` 前缀，对它完全失明。
+          [new RegExp(String.raw`(?<!normalizePage\()\bNumber\(\s*(?:${RECEIVER})?get\(\s*['"]page['"]`), "裸 Number(get('page'))"],
+          // `get('page')` 是 URL 直读，结果必然当页码用，所以上一条不需要额外限定；
+          // 但 `x.page` 可能只是在转发入参，故下一条限定到 `const <page 变量> =`。
+          // ⚠️ 这条只认「结果**直接当页码变量用**」的形状（`const page = Number(x.page)`），
+          // 不能写成泛泛的 `Number(<receiver>.page)` —— 那会把 19 个 `page.tsx` 里的
+          // `page: params.page ? Number(params.page) : undefined` 一起抓进来，
+          // 而那些值是**传给已归一 action 的入参**，不是页码本身，归一在 action 内做。
+          [new RegExp(String.raw`const\s+[\w$]*[Pp]age[\w$]*\s*=\s*Number\(\s*${RECEIVER}page\b`), 'const page = Number(x.page)'],
+        ]
+        for (const [re, label] of PATTERNS) {
+          if (re.test(code)) offenders.push(`${file} (${label})`)
         }
       }
     }
@@ -337,7 +435,14 @@ describe('防复发守护（#281 改完后不能再长回来）', () => {
       for (const file of collectSources(join(SRC, root))) {
         if (file.endsWith('/lib/paging.ts')) continue   // 单源自身就是算 offset 的地方
         const code = stripComments(readFileSync(file, 'utf8'))
-        if (/\(\s*\w*[Pp]age\w*\s*-\s*1\s*\)\s*\*/.test(code)) offenders.push(file)
+        // 覆盖两种等价写法：`(page - 1) * size` 与展开后的 `page * size - size`。
+        // ⚠️ 这条守护**挡的是「顺手改回去」，挡不住蓄意等价改写** —— 字面量扫描的
+        // 固有局限，任何算术恒等式都能绕过（`page * size - size`、`--page * size` …）。
+        // 真正的兜底是 `resolvePaging` 的出口契约用例，这条只是让回退有摩擦。
+        if (/\(\s*[\w$.?]*[Pp]age[\w$]*\s*-\s*1\s*\)\s*\*/.test(code)
+          || /[\w$.?]*[Pp]age[\w$]*\s*\*\s*([\w$.?]*[Pp]ageSize[\w$]*)\s*-\s*\1\b/.test(code)) {
+          offenders.push(file)
+        }
       }
     }
     expect(offenders, `手算 offset 的文件:\n${offenders.join('\n')}`).toEqual([])
@@ -353,6 +458,11 @@ describe('防复发守护（#281 改完后不能再长回来）', () => {
       if (!/\.offset\(/.test(code)) continue
       // 导出走 keyset / 专用 helper，不经 resolvePaging
       if (/resolveExport(Keyset|Offset)Page|nonNegativeOffset/.test(code) && !/resolvePaging/.test(code)) continue
+      // ⚠️ 只查「文件里出现过 resolvePaging」是**存在性**，不是「这个 .offset() 用的是它给的值」。
+      // 一个 import 了 resolvePaging 却在别处手算 offset 的文件能同时骗过本条与上一条
+      // （评审给的反例：`const offset = page * pageSize - pageSize`）。
+      // 上一条已补上该等价式，但字面量守护无法穷尽 —— 这里如实记下局限，
+      // 不假装它是完备的。
       if (!/resolvePaging/.test(code)) missing.push(file)
     }
     expect(missing, `用了 .offset() 却没走 resolvePaging:\n${missing.join('\n')}`).toEqual([])
@@ -363,25 +473,26 @@ describe('防复发守护（#281 改完后不能再长回来）', () => {
     // 第一版守护写死 20，恰好漏掉了 products / stores / coupons / legacy-orders 四处
     // ——它们的写法是 `Number(get("page","1"))`（连 Math.max 都没有），
     // 计数型断言对「本来就没数到」的遗漏零保护，等式型才抓得住。
-    const reading: string[] = []
-    const normalized: string[] = []
+    // 配对方式：对每个 `get('page'` 匹配点，往前跳空白看是不是紧跟在 `normalizePage(`
+    // 后面。⚠️ **不要用字符偏移相减**（第一版是 `+14±2`）——
+    // `normalizePage(\n  get("page", "1")\n)` 这种合法换行会让偏移超差，
+    // 于是守护既误报「未归一」又漏配对。往前跳空白再比字面量对格式免疫。
+    const unguarded: string[] = []
+    let total = 0
     for (const file of collectSources(join(SRC, 'app'))) {
       const code = stripComments(readFileSync(file, 'utf8'))
       for (const m of code.matchAll(/get\(\s*['"]page['"]/g)) {
-        reading.push(`${file}@${m.index}`)
-      }
-      for (const m of code.matchAll(/normalizePage\(\s*get\(\s*['"]page['"]/g)) {
-        normalized.push(`${file}@${m.index}`)
+        total++
+        if (!wrappedByNormalizePage(code, m.index!)) {
+          const line = code.slice(0, m.index).split('\n').length
+          unguarded.push(`${file}:${line}`)
+        }
       }
     }
-    const unguarded = reading.filter((r) => {
-      const [file, idx] = r.split('@')
-      // normalizePage( 比 get( 早 14 个字符起头，用「同文件且偏移接近」配对
-      return !normalized.some((n) => n.split('@')[0] === file
-        && Math.abs(Number(n.split('@')[1]) + 14 - Number(idx)) <= 2)
-    })
     expect(unguarded, `未走归一的页码读取点:\n${unguarded.join('\n')}`).toEqual([])
-    expect(reading.length).toBeGreaterThanOrEqual(24)
+    // 下界防「守护自己被掏空」：若哪天 collectSources 或正则改坏导致一个都扫不到，
+    // `unguarded` 会是空数组而恒绿 —— 这行让那种失效可见。
+    expect(total).toBeGreaterThanOrEqual(24)
   })
 
   it('paging.ts 的两道防线都在（取整 + 安全整数判据 + 双上限）', () => {
