@@ -1560,7 +1560,7 @@ export const listInventorySkus = withPermission(
       // 而批次快照（inventory_stock_lots.supplier）保留下单时的旧名，两者语义不同。
       .leftJoin(inventorySuppliers, eq(inventorySkus.supplierId, inventorySuppliers.supplierId))
       .where(whereClause)
-      .orderBy(asc(inventorySkus.productCode))
+      .orderBy(asc(inventorySkus.productCode), asc(inventorySkus.skuId))
       .limit(pageSize)
       .offset(offset)
     const priceVisibility = inventoryPriceVisibility(session)
@@ -1987,7 +1987,7 @@ export const listInventoryLots = withPermission(
       .from(inventoryStockLots)
       .leftJoin(inventoryLocations, eq(inventoryStockLots.locationId, inventoryLocations.locationId))
       .where(whereClause)
-      .orderBy(asc(inventoryLocations.locationType), asc(inventoryLocations.name), asc(inventoryStockLots.skuName), asc(inventoryStockLots.batchNo))
+      .orderBy(asc(inventoryLocations.locationType), asc(inventoryLocations.name), asc(inventoryStockLots.skuName), asc(inventoryStockLots.batchNo), asc(inventoryStockLots.id))
       .limit(pageSize)
       .offset(offset)
     const priceVisibility = inventoryPriceVisibility(session)

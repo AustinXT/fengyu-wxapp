@@ -148,7 +148,7 @@ export const getLogsPaginated = withPermission(
       .from(operationLogs)
       .where(whereClause)
       // 例外：日志型表无 updatedAt 列
-      .orderBy(desc(operationLogs.createdAt))
+      .orderBy(desc(operationLogs.createdAt), desc(operationLogs.id))
       .limit(pageSize)
       .offset(offset)
 

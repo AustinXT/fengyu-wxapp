@@ -156,7 +156,7 @@ export const getAppointmentsPaginated = withPermission(
       .leftJoin(stores, eq(appointments.storeId, stores.storeId))
       .where(whereClause)
       // 例外：业务时间优先（预约时间比"最近编辑过"更符合管理员直觉）
-      .orderBy(desc(appointments.appointmentTime))
+      .orderBy(desc(appointments.appointmentTime), desc(appointments.appointmentId))
       .limit(pageSize)
       .offset(offset),
   ])

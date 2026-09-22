@@ -224,7 +224,7 @@ async function list(ctx) {
     LEFT JOIN stores s ON a.store_id = s.store_id
     LEFT JOIN staff_wechat_users sw ON a.employee_id = sw.employee_id
     ${whereClause}
-    ORDER BY a.appointment_time DESC
+    ORDER BY a.appointment_time DESC, a.appointment_id DESC
     LIMIT $${params.length - 1} OFFSET $${params.length}
   `, params)
 

@@ -413,7 +413,7 @@ export const getPickupRecordsPaginated = withPermission(
     .leftJoin(inventorySkus, eq(pickupRecords.inventorySkuId, inventorySkus.skuId))
     .where(whereClause)
     // 例外：提货流水型表无 updatedAt 列
-    .orderBy(desc(pickupRecords.createdAt))
+    .orderBy(desc(pickupRecords.createdAt), desc(pickupRecords.id))
     .limit(pageSize)
     .offset(offset)
 

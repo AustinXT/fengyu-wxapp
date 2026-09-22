@@ -2746,7 +2746,7 @@ async function list(ctx) {
     FROM sale_orders o
     LEFT JOIN stores s ON o.store_id = s.store_id
     ${whereClause}
-    ORDER BY o.created_at DESC
+    ORDER BY o.created_at DESC, o.sale_order_id DESC
     LIMIT $${params.length - 1} OFFSET $${params.length}
   `, params)
 

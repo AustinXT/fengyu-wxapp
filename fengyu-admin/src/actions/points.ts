@@ -173,7 +173,7 @@ export const getPointTransactionsPaginated = withPermission(
       .innerJoin(clientWechatUsers, eq(pointTransactions.userId, clientWechatUsers.userId))
       .where(whereClause)
       // 例外：积分流水型表无 updatedAt 列
-      .orderBy(desc(pointTransactions.createdAt))
+      .orderBy(desc(pointTransactions.createdAt), desc(pointTransactions.id))
       .limit(pageSize)
       .offset(offset),
     db

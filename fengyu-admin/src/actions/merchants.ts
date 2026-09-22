@@ -175,7 +175,7 @@ export const getMerchantsPaginated = withPermission(
       .where(whereClause)
       .groupBy(lakalaMerchants.id)
       // 配置型「编辑即浮顶」
-      .orderBy(desc(lakalaMerchants.updatedAt))
+      .orderBy(desc(lakalaMerchants.updatedAt), desc(lakalaMerchants.id))
       .limit(pageSize)
       .offset(offset)
 

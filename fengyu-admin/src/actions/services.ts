@@ -190,7 +190,7 @@ export const getServiceOrdersPaginated = withPermission(
     .leftJoin(clientWechatUsers, eq(serviceOrders.clientUserId, clientWechatUsers.userId))
     .where(whereClause)
     // 默认排序：最近开始/完成/修改的服务单浮顶（admin.sys.spec.md §5）
-    .orderBy(desc(serviceOrders.updatedAt), desc(serviceOrders.createdAt))
+    .orderBy(desc(serviceOrders.updatedAt), desc(serviceOrders.createdAt), desc(serviceOrders.serviceOrderId))
     .limit(pageSize)
     .offset(offset)
 

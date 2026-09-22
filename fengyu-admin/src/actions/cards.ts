@@ -362,7 +362,7 @@ export const getCardsPaginated = withPermission(
     .leftJoin(productCategories, eq(productSkus.categoryId, productCategories.categoryId))
     .where(whereClause)
     // 例外：业务时间优先（支付时间优于"最近编辑"）
-    .orderBy(desc(saleOrders.paidAt), desc(saleItems.createdAt))
+    .orderBy(desc(saleOrders.paidAt), desc(saleItems.createdAt), desc(saleItems.saleItemId))
     .limit(pageSize)
     .offset(offset)
 

@@ -6969,7 +6969,7 @@ async function pickupRecordsList(ctx) {
  LEFT JOIN sale_items si ON si.sale_item_id = pr.sale_item_id
  LEFT JOIN inventory_skus inventory_sku ON inventory_sku.sku_id = pr.inventory_sku_id
        ${whereSql}
-  ORDER BY pr.created_at DESC
+  ORDER BY pr.created_at DESC, pr.id DESC
      LIMIT ${limit} OFFSET ${offset}
   `
   const countSql = `SELECT COUNT(*)::int AS cnt FROM pickup_records pr ${whereSql}`
@@ -7090,7 +7090,7 @@ async function refundList(ctx) {
     LEFT JOIN staff_wechat_users approver ON sop.audit_employee_id = approver.employee_id
     WHERE so.store_id = $1 AND sop.change_type = '退款'
     ${whereExtra}
-    ORDER BY sop.created_at DESC
+    ORDER BY sop.created_at DESC, sop.id DESC
     LIMIT $2 OFFSET $3
   `, params)
 
