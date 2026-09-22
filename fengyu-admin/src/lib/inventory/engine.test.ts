@@ -1095,26 +1095,23 @@ describe('库存 SKU 来源与价格保护', () => {
     expect(lotBlock).not.toMatch(/storeActualUnitPrice: supplyVisible \?/)
   })
 
-  it('页码归一化兜住小数、Infinity 与巨大有限值', () => {
+  it('五支列表查询的页码全部走 @/lib/paging 单源，没有内联写法', () => {
     // `Math.max(1, page || 1)` 只兜得住 NaN/0。`?page=1.5` 会让 offset 变成
     // (1.5-1)*20 = 10 → 返回第 11–30 条，而客户端 Pagination 内部 floor 后高亮第 1 页，
     // 用户看到的既不是第 1 页也不是第 2 页；`?page=Infinity` 直接把 SQL 打挂。
+    //
+    // #281 起 `normalizePage` 的实现搬到 `src/lib/paging.ts`（admin 单源，另有 37 处调用点），
+    // **实现本身的守护挪到了 `src/lib/paging.test.ts`**；这里只守「本文件确实在用它」。
     const source = readFileSync(resolve(__dirname, 'engine.ts'), 'utf8')
-    // 右锚用「函数体自身的收尾 `\n}`」，不要用后面某个无关常量名 ——
-    // 拿 `const NO_MOVEMENT_DOC_TYPES` 当锚的话，日后有人在两者之间插入任何声明，
-    // slice 会把那段也吃进来，断言照绿，守护就悄悄失效了。
-    const fnStart = source.indexOf('function normalizePage')
-    expect(fnStart).toBeGreaterThan(-1)
-    const fn = source.slice(fnStart, source.indexOf('\n}', fnStart) + 2)
-    expect(fn).toMatch(/Number\.isFinite\(value\)/)
-    expect(fn).toMatch(/Math\.trunc/)
-    // `Number.isFinite` 放行 1e308 这种有限但巨大的值，乘页长后 offset 溢出成 Infinity
-    // → PG 拒绝 → 列表页 500。必须再夹一道上界。
-    expect(fn).toMatch(/Math\.min\(/)
-    expect(source).toMatch(/const MAX_PAGE = /)
+    // 必须是 import 进来的，不能是本文件又写了一份同名的
+    expect(source).toMatch(/import \{ normalizePage \} from '@\/lib\/paging'/)
+    expect(source).not.toMatch(/function normalizePage/)
     // 五支列表查询必须全部走它，不能有漏网的内联写法
     expect(source.match(/normalizePage\(filters\.page\)/g)).toHaveLength(5)
-    expect(source).not.toMatch(/Math\.max\(1, filters\.page/)
+    // 剥掉行注释再扫 —— 文件顶部的收编说明里就复述了这个旧写法当反例，
+    // 不剥的话这条断言会被自己的注释绊倒（而不是被真实复发绊倒）。
+    const code = source.replace(/^\s*\/\/.*$/gm, '')
+    expect(code).not.toMatch(/Math\.max\(1, filters\.page/)
   })
 
   it('SKU 映射的 total 取过滤后的长度，不是全量长度', () => {

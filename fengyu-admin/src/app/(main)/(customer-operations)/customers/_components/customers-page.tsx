@@ -20,6 +20,7 @@ import { formatPhone } from "@/lib/utils"
 import { actionErrorMessage } from "@/lib/action-error"
 import { ExportButton } from "@/components/ui/export-button"
 import { createCustomer } from "@/actions/customers"
+import { normalizePage } from "@/lib/paging"
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50]
 
@@ -79,7 +80,7 @@ export default function CustomersPage({
   const tierFilter = get("tier")
   const activityFilter = get("activity")
   const statusFilter = get("status")
-  const currentPage = Math.max(1, Number(get("page", "1")) || 1)
+  const currentPage = normalizePage(get("page", "1"))
   const pageSize = PAGE_SIZE_OPTIONS.includes(Number(get("size"))) ? Number(get("size")) : 20
 
   // 搜索防抖

@@ -41,6 +41,7 @@ import { DocActionDialog, type DocActionSpec } from './doc-action-dialog'
 import { InventoryDocCreateForm } from './inventory-doc-create-form'
 import { useUrlFilters } from '@/lib/hooks/use-url-filters'
 import { PreserveListContextLink } from '@/components/return-context'
+import { normalizePage } from '@/lib/paging'
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50, 100]
 const GENERIC_DOC_TYPE_SET = new Set<InventoryDocType>(INVENTORY_GENERIC_DOC_TYPES)
@@ -94,7 +95,7 @@ export default function InventoryDocsPage({
   const [open, setOpen] = useState(Boolean(initialDocType && GENERIC_DOC_TYPE_SET.has(initialDocType)))
   const debounceRef = useState<ReturnType<typeof setTimeout> | null>(null)
 
-  const page = Math.max(1, Number(get('page', '1')) || 1)
+  const page = normalizePage(get('page', '1'))
   const pageSize = PAGE_SIZE_OPTIONS.includes(Number(get('size'))) ? Number(get('size')) : 20
 
   const handleSearchChange = useCallback((value: string) => {

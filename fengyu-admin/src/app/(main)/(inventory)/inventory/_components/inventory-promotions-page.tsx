@@ -26,6 +26,7 @@ import { Input } from '@/components/ui/input'
 import { Pagination } from '@/components/ui/pagination'
 import { Select } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
+import { normalizePage } from '@/lib/paging'
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50, 100]
 
@@ -188,7 +189,7 @@ export default function InventoryPromotionsPage({
   // 分页在**筛选之后**做：本页三个筛选都在上面的 useMemo 里，
   // 若先切页再筛，用户只会筛到当前页那一屏的匹配项。
   const pageSize = PAGE_SIZE_OPTIONS.includes(Number(get('size'))) ? Number(get('size')) : 20
-  const rawPage = Math.max(1, Number(get('page', '1')) || 1)
+  const rawPage = normalizePage(get('page', '1'))
   // searchInput 是本地 state，打字时 filteredRows 立刻变短，而重置 page 的 setMany
   // 要等 300ms debounce —— 这中间 page 会越界，不夹一下会闪一屏空列表。
   const totalPages = Math.max(1, Math.ceil(filteredRows.length / pageSize))

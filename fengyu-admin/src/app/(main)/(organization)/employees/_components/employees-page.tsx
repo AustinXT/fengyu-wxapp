@@ -19,6 +19,7 @@ import { PreserveListContextLink } from "@/components/return-context";
 import { filterValidSkillValues } from "@/lib/list-filters";
 import { ExportButton } from "@/components/ui/export-button";
 import SkillTagManagementDialog from "./skill-tag-management-dialog";
+import { normalizePage } from "@/lib/paging";
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50];
 
@@ -83,7 +84,7 @@ export default function EmployeesPage({
     const arr = raw ? raw.split(",").map((s) => s.trim()).filter(Boolean) : [];
     return filterValidSkillValues(arr, validSkillNames) ?? [];
   }, [get, validSkillNames]);
-  const currentPage = Math.max(1, Number(get("page", "1")) || 1);
+  const currentPage = normalizePage(get("page", "1"));
   const pageSize = PAGE_SIZE_OPTIONS.includes(Number(get("size"))) ? Number(get("size")) : 20;
 
   const columns: Column<Employee>[] = [

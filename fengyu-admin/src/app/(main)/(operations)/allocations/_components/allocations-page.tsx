@@ -18,6 +18,7 @@ import type { ServiceOrder } from "@/lib/types"
 import type { MarketStoreFilterOptions } from "@/lib/market-store-filter-types"
 import MarketStoreFilter from "@/components/market-store-filter"
 import { formatDate as fmtDate, formatDateTime as fmtDateTime } from "@/lib/utils"
+import { normalizePage } from "@/lib/paging"
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50]
 
@@ -76,7 +77,7 @@ export default function AllocationsPageClient({
   canViewServices: boolean
 }) {
   const { get, set, setMany } = useUrlFilters()
-  const currentPage = Math.max(1, Number(get("page", "1")) || 1)
+  const currentPage = normalizePage(get("page", "1"))
   const pageSize = PAGE_SIZE_OPTIONS.includes(Number(get("size"))) ? Number(get("size")) : 20
 
   // Why: 切换 Tab / 分页走 router.replace 触发 Server Component 重渲染，

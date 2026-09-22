@@ -18,6 +18,7 @@ import { formatDateTime } from "@/lib/utils"
 import MarketStoreFilter from "@/components/market-store-filter"
 import { OnboardingList } from "../onboarding/_components/onboarding-page"
 import { PreserveListContextLink } from "@/components/return-context"
+import { normalizePage } from "@/lib/paging"
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50]
 
@@ -47,7 +48,7 @@ export default function MerchantsPage({
   const enabledFilter = get("enabled")
   const marketFilter = get("market")
   const storeFilter = get("store")
-  const currentPage = Math.max(1, Number(get("page", "1")) || 1)
+  const currentPage = normalizePage(get("page", "1"))
   const pageSize = PAGE_SIZE_OPTIONS.includes(Number(get("size"))) ? Number(get("size")) : 20
 
   // 搜索防抖 300ms

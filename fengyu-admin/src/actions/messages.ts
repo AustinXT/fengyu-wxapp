@@ -13,6 +13,7 @@ import { logOperation } from '@/lib/operation-log'
 import type { OrgNode, BatchMessageCustomer } from '@/lib/types'
 import { nowTs, beijingBoundaryTs } from '@/lib/db-time'
 import { resolveOrgNodeToStoreIds } from '@/lib/org-scope'
+import { resolvePaging } from '@/lib/paging'
 
 export interface AdminMessage {
   id: number
@@ -63,9 +64,12 @@ export const getMessagesPaginated = withPermission(
     session,
     filters: MessageFilters = {},
   ): Promise<PaginatedMessages> => {
-  const page = Math.max(1, filters.page || 1)
-  const pageSize = [10, 20, 50].includes(filters.pageSize ?? 0) ? filters.pageSize! : 20
-  const offset = (page - 1) * pageSize
+  const { page, pageSize, offset } = resolvePaging({
+    page: filters.page,
+    pageSize: filters.pageSize,
+    defaultPageSize: 20,
+    allowedPageSizes: [10, 20, 50],
+  })
 
   const conditions: (SQL | undefined)[] = [isNull(messages.deletedAt)]
 
@@ -428,9 +432,12 @@ export const getCustomersForBatchMessage = withPermission(
       pageSize?: number
     },
   ): Promise<{ data: BatchMessageCustomer[]; total: number }> => {
-  const page = Math.max(1, filters.page || 1)
-  const pageSize = [10, 20, 50].includes(filters.pageSize ?? 0) ? filters.pageSize! : 20
-  const offset = (page - 1) * pageSize
+  const { page, pageSize, offset } = resolvePaging({
+    page: filters.page,
+    pageSize: filters.pageSize,
+    defaultPageSize: 20,
+    allowedPageSizes: [10, 20, 50],
+  })
 
   const whereClause = await buildBatchMessageCustomerWhere({
     orgNodeId: filters.orgNodeId,

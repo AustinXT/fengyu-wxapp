@@ -50,6 +50,7 @@ import type {
   SaleOrderPayment,
   SalesCategory,
 } from '@/lib/types'
+import { resolvePaging } from '@/lib/paging'
 
 // drizzle 0.45 alias() 返回 PgTableWithColumns<Required<Update<any,...>>>，与 .leftJoin() 期望签名不兼容；cast 回原表类型解锁 build
 const operatorAlias = alias(staffWechatUsers, 'sop_operator') as unknown as typeof staffWechatUsers
@@ -1648,9 +1649,12 @@ async function selectRefundRows(
 export const listRefunds = withAnyPermission(
   ['sale_order:refund_create', 'sale_order:refund_approve'],
   async (session, filters: RefundListFilters = {}): Promise<RefundListResult> => {
-  const page = Math.max(1, filters.page || 1)
-  const pageSize = [10, 20, 50].includes(filters.pageSize ?? 0) ? (filters.pageSize as number) : 20
-  const offset = (page - 1) * pageSize
+  const { page, pageSize, offset } = resolvePaging({
+    page: filters.page,
+    pageSize: filters.pageSize,
+    defaultPageSize: 20,
+    allowedPageSizes: [10, 20, 50],
+  })
 
   const whereClause = and(...buildRefundListConditions(session, filters))
 

@@ -6,6 +6,7 @@ import { rowsAffected } from '@/lib/pg-rows'
 import { fmtDate, shanghaiToday, shanghaiYmd } from '@/lib/datetime'
 import { logOperation } from '@/lib/operation-log'
 import { hasPermission, isAdminScope } from '@/lib/permissions'
+import { normalizePage } from '@/lib/paging'
 import { withAnyPermission, withPermission } from '@/lib/with-permission'
 import {
   offsetPageResult,
@@ -154,23 +155,10 @@ const DOC_PREFIX: Record<InventoryDocType, string> = {
  */
 const PAGE_SIZE_WHITELIST = [10, 20, 50, 100]
 
-/**
- * 页码归一化。`Math.max(1, page || 1)` 只兜得住 NaN 和 0，兜不住小数与 Infinity：
- * - `?page=1.5` → offset 变成 `(1.5-1)*20 = 10`，返回第 11–30 条，
- *   而客户端 `Pagination` 内部 `Math.floor` 后高亮的是第 1 页 ——
- *   用户看到的既不是第 1 页也不是第 2 页，且翻页时会重复/跳过行
- * - `?page=Infinity` → offset 为 Infinity，直接把 SQL 打挂
- * 客户端已经 floor + clamp（pagination.tsx:23），服务端这里做同样的兜底。
- */
-const MAX_PAGE = 1_000_000
-
-function normalizePage(value: number | undefined): number {
-  if (!Number.isFinite(value)) return 1
-  // 还要夹上界：`Number.isFinite` 放行 1e308 这种**有限但巨大**的值，
-  // 乘以页长之后 offset 会溢出成 Infinity，PG 直接拒绝 → 列表页 500。
-  // 100 万页 × 100 条/页 = 1 亿行，远超任何业务规模，夹到这里不会误伤真实翻页。
-  return Math.min(Math.max(1, Math.trunc(value as number)), MAX_PAGE)
-}
+// 页码归一化已收编到 admin 单源 `@/lib/paging`（#281）—— 原先本文件自带一份 `normalizePage`，
+// 其余 37 处调用点各写各的 `Math.max(1, filters.page || 1)`。收编时顺带把判据从
+// `Number.isFinite` 收紧成 `Number.isSafeInteger`：前者放行 `1e21`，而 `String(1e21 * 20)`
+// 输出指数记法 `"2e+22"`，PG `int8in` 照样报错。见 `src/lib/paging.ts` 顶部注释。
 
 const NO_MOVEMENT_DOC_TYPES = new Set<InventoryDocType>([
   '门店报货',
