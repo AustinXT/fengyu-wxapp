@@ -422,7 +422,9 @@ const PAGE_ANTIPATTERNS: Array<[re: RegExp, label: string, mustHit: string]> = [
   [new RegExp(String.raw`Math\.max\(\s*1\s*,\s*(?:Number\(\s*)?${RECEIVER}page\b`),
     'Math.max(1, x.page)',
     'const page = Math.max(1, filters?.page ?? 1)'],
-  [new RegExp(String.raw`Math\.max\(\s*1\s*,\s*Number\(\s*(?:${RECEIVER})?get\(\s*['"]page['"]`),
+  // lookbehind 与 pattern-3 对齐：`normalizePage(Math.max(1, Number(get('page'))))`
+  // 这种双重包裹是合法的防御性写法，不该误报。
+  [new RegExp(String.raw`(?<!normalizePage\()Math\.max\(\s*1\s*,\s*Number\(\s*(?:${RECEIVER})?get\(\s*['"]page['"]`),
     "Math.max(1, Number(get('page')))",
     `const page = Math.max(1, Number(searchParams.get('page')) || 1)`],
   // 裸 `Number(get('page'))`（连 Math.max 都没有）—— 三个 reviewer 独立发现的那 4 处
@@ -434,7 +436,8 @@ const PAGE_ANTIPATTERNS: Array<[re: RegExp, label: string, mustHit: string]> = [
   // 不能写成泛泛的 `Number(<receiver>.page)` —— 那会把 19 个 `page.tsx` 里的
   // `page: params.page ? Number(params.page) : undefined` 一起抓进来，
   // 而那些值是**传给已归一 action 的入参**，不是页码本身，归一在 action 内做。
-  [new RegExp(String.raw`const\s+[\w$]*[Pp]age[\w$]*\s*=\s*Number\(\s*${RECEIVER}page\b`),
+  // `const|let|var` 都要认 —— 只写 `const` 的话换成 `let` 就脱网
+  [new RegExp(String.raw`(?:const|let|var)\s+[\w$]*[Pp]age[\w$]*\s*=\s*Number\(\s*${RECEIVER}page\b`),
     'const page = Number(x.page)',
     'const currentPage = Number(filters.page) || 1'],
 ]
@@ -485,10 +488,6 @@ describe('守护的底层工具自身（这两个函数错了，上面所有守�
     ['真实违规照常命中',
       'const page = Math.max(1, filters.page || 1)',
       'g.ts', BAD_RE, true],
-    // ⚠️ 挖空必须按 **UTF-16 code unit**（`split('')`）而不是码点（`[...source]`）——
-    // TS 的 comment range 是 UTF-16 偏移，用码点下标会让 emoji 之后的所有位置左移，
-    // 挖空错位一格，把下一行的首字母吃掉 → 真违规漏报。
-    // 扫描根内 refunds.ts / orders.ts 等确实含 emoji，不是理论问题。
     // ⚠️ 挖空必须按 **UTF-16 code unit**（`split('')`）而不是码点（`[...source]`）：
     // TS 的 comment range 是 UTF-16 偏移，而码点下标会让每个 emoji 把其后位置压缩 1 位，
     // 于是挖空区间整体**向后错位 N 格**（N = 之前的 emoji 个数）——
@@ -535,9 +534,17 @@ describe('防复发守护（#281 改完后不能再长回来）', () => {
     // 之后用例照样全绿，灵敏度回退完全不可见，这条用例就成了安慰剂。
     // ⚠️ 断言方向是「**样本必须被某条 pattern 抓住**」，不是「遍历 pattern 逐条自测」。
     // 后者对**删除**零保护：删掉一条 pattern，循环就少跑一次，用例照样全绿
-    // （红检实测踩到过）。样本清单独立于数组，删 pattern 必然让对应样本无人命中。
+    // （红检实测踩到过）。样本清单独立于数组，删 pattern 就会让对应样本无人命中。
+    //
+    // ⓘ 一处例外，别把上面这句读成绝对：pattern-2（`Math.max(1, Number(get('page')))`）
+    // 是 pattern-3（裸 `Number(get('page'))`）的**严格子集**，删掉 pattern-2 后
+    // 它的样本仍被 pattern-3 抓住 → 这一条删除不会变红。功能上零损失（子集关系意味着
+    // 删了也不漏），但守护对它没有删除保护，知道即可。
     const PAGE_MUST_BE_CAUGHT = [
       'const page = Math.max(1, filters?.page ?? 1)',
+      // 多级 receiver：RECEIVER 若被弱化成单段 `[\w$]+\??\.`，其余样本照常命中、
+      // 只有这条会脱网（GLM 实证）。样本集必须覆盖 receiver 的**每一段能力**。
+      'const page = Math.max(1, ctx.filters.page || 1)',
       `const page = Math.max(1, Number(searchParams.get('page')) || 1)`,
       `const page = Number(searchParams.get('page'))`,
       'const currentPage = Number(filters.page) || 1',
@@ -575,15 +582,20 @@ describe('防复发守护（#281 改完后不能再长回来）', () => {
     // 只认「页码」语义：`.page` 字段与 `get('page', …)` URL 取值；
     // 数量夹取（`Math.max(1, Number(item.quantity) || 1)`）不在此列。
     const offenders: string[] = []
+    let scanned = 0
     for (const root of ROOTS) {
       for (const file of collectSources(join(SRC, root))) {
         const code = stripComments(readFileSync(file, 'utf8'), file)
+        scanned++
         for (const [re, label] of PAGE_ANTIPATTERNS) {
           if (re.test(code)) offenders.push(`${file} (${label})`)
         }
       }
     }
     expect(offenders).toEqual([])
+    // 下界防「守护被掏空」：`collectSources` 的后缀正则若手误失效，一个文件都扫不到，
+    // `offenders` 就恒为空数组、断言恒绿。app 侧在 round-2 修过同型，这里补齐。
+    expect(scanned, '扫到的文件数异常偏少，collectSources 可能失效').toBeGreaterThan(100)
   })
 
   it('服务端不得手算 offset —— 只能由 resolvePaging 给出', () => {
@@ -598,6 +610,7 @@ describe('防复发守护（#281 改完后不能再长回来）', () => {
     // ⚠️ 扫描根必须含 `lib` —— 更早一版只扫 actions，而 `lib/inventory/engine.ts`
     // 当时正逐字匹配这条正则，守护恒绿**不是因为没有违规，是因为扫描根避开了现场**。
     const offenders: string[] = []
+    let scanned = 0
     for (const root of ['actions', 'lib']) {
       for (const file of collectSources(join(SRC, root))) {
         if (file.endsWith('/lib/paging.ts')) continue   // 单源自身就是算 offset 的地方
@@ -606,10 +619,12 @@ describe('防复发守护（#281 改完后不能再长回来）', () => {
         // ⚠️ 这条守护**挡的是「顺手改回去」，挡不住蓄意等价改写** —— 字面量扫描的
         // 固有局限，任何算术恒等式都能绕过（`--page * size`、`page * size - size * 1` …）。
         // 真正的兜底是 `resolvePaging` 的出口契约用例，这条只是让回退有摩擦。
+        scanned++
         if (OFFSET_ANTIPATTERNS.some(([re]) => re.test(code))) offenders.push(file)
       }
     }
     expect(offenders, `手算 offset 的文件:\n${offenders.join('\n')}`).toEqual([])
+    expect(scanned, '扫到的文件数异常偏少，collectSources 可能失效').toBeGreaterThan(50)
   })
 
   it('每个做 SQL 分页的 action 都调了 resolvePaging（存在性，不是计数）', () => {
@@ -617,6 +632,7 @@ describe('防复发守护（#281 改完后不能再长回来）', () => {
     // 维护者被训练成「直接把 17 改成 18」，守护退化成计数器。
     // 改成存在性：**凡是出现 `.offset(` 的 action 文件，必须同时出现 `resolvePaging`**。
     const missing: string[] = []
+    let withOffset = 0
     for (const file of collectSources(join(SRC, 'actions'))) {
       const code = stripComments(readFileSync(file, 'utf8'), file)
       if (!/\.offset\(/.test(code)) continue
@@ -627,9 +643,12 @@ describe('防复发守护（#281 改完后不能再长回来）', () => {
       // （评审给的反例：`const offset = page * pageSize - pageSize`）。
       // 上一条已补上该等价式，但字面量守护无法穷尽 —— 这里如实记下局限，
       // 不假装它是完备的。
+      withOffset++
       if (!/resolvePaging/.test(code)) missing.push(file)
     }
     expect(missing, `用了 .offset() 却没走 resolvePaging:\n${missing.join('\n')}`).toEqual([])
+    // 同理的下界：`.offset(` 一个都没扫到，说明扫描失效而不是「全都合规」
+    expect(withOffset, '没有任何 action 用到 .offset()，扫描多半失效了').toBeGreaterThan(5)
   })
 
   it('所有从 URL 读页码的组件都走 normalizePage，一个不漏', () => {
