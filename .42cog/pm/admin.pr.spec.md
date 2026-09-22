@@ -170,8 +170,9 @@ admin 管理权限分配/撤销、WorkFine → PG 数据同步、操作日志查
   另：**复职**必须给权限提示，判据与调不调店无关（挂在调店分支里会漏掉「复职不调店」），
   且必须**实查** `permission_roles` 而不是从 `is_resigned` 推断 ——
   「离职 ⇒ 角色已清空」这个不变量会破：写 `is_resigned=true` 的 UPDATE 与删角色的事务是两次
-  独立提交（**该来源已在本次事务化后堵上**，但存量数据里仍可能留有那时产生的残留行），
-  `db/scripts/sync-workfine.js:381` 的 UPSERT 更是直接改 `is_resigned` 而完全不碰角色（**仍存在**）。
+  独立提交 —— **那是历史实现，已由本次事务化修掉**；但它产生的存量残留行仍可能在库里。
+  另一条来源 `db/scripts/sync-workfine.js:381` 的 UPSERT 直接改 `is_resigned` 而完全不碰角色，
+  **至今有效**，所以判据仍然不能押注这个不变量。
   实查为空 → 提示「已全部撤销，需重新授权」；非空 → 提示「离职期间仍保留…，复职后即恢复生效」。
   同理 §AFF-03 的离职分支判据是 `rolesRevokedByRequest`（= `data.isResigned === true`，
   「角色是本请求刚删的」，同一 action 内可信）—— 注意**不是**状态迁移 `isResigning`
@@ -192,8 +193,10 @@ admin 管理权限分配/撤销、WorkFine → PG 数据同步、操作日志查
   重试不再进入复职分支，权限提示永久丢失。
   事务开头依次是：advisory lock → `FOR UPDATE` 锁住员工行重读**完整行** → 由它构造一个
   `transition` 对象（`before/after` 归属 + `isResigning` / `isReinstating`），
-  **所有下游消费者只接这个对象**：归属自洽复查、scope 与最终可见性复查、§AFF-03 审计、
-  复职审计、`logUpdate` 的 before。事务外那组值一律带 `preTx` 前缀、只用于早拒优化。
+  下游消费者分两类，**共同点是全都来自锁内**：归属自洽复查、scope 与最终可见性复查、
+  §AFF-03 审计、复职审计接 `transition`；`logUpdate` 接 `lockedRow`（审计 before）与真正写库的
+  `updateData`。关键不是「全都叫 transition」，而是「没有一个来自事务外」——
+  事务外那组值一律带 `preTx` 前缀、只用于早拒优化。
   这条结构规则是本 PR 十三轮评审的共同诊断 —— 此前的缺陷几乎全出自
   「同一份状态两套真相（事务外快照 vs 锁内重读），靠注释纪律而非结构来同步」：
   并发合成出跨门店双重可见、锁内只重算自洽却没重算 scope（员工被永久挤出可见范围）、
