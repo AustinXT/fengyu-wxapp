@@ -7,7 +7,7 @@
     "postinstall": "node ../../scripts/fix-vant-font.js",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:compile": "vitest run __tests__/compile",
+    "test:compile": "vitest run --config vitest.compile.config.ts",
     "typecheck": "tsc --noEmit"
   },
   "keywords": [],

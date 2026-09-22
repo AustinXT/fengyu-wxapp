@@ -95,6 +95,15 @@ jobs:
       - name: Install staffApi deps
         working-directory: fengyu-staff/cloudfunctions/staffApi
         run: npm ci || npm install
+
+      # 跨端 snapshot 会真的 `require()` 另一端的模块来做行为等价断言
+      # （如 cross-end-recharge 拿 clientApi 的 routes/card.js 比 matchTier），
+      # 而那条链最终会 `require('pg')` —— 只装 staffApi 依赖时它报
+      # `Cannot find module 'pg'`，整个测试文件加载失败。
+      # ⚠️ 改成跑全量之后才暴露：点名跑 4 个文件时这条根本不在清单里。
+      - name: Install clientApi deps (跨端 require 的目标)
+        working-directory: fengyu-client/cloudfunctions/clientApi
+        run: npm ci || npm install
       # ⚠️ 跑**全量**，不要退回手工文件清单（#232）。
       #
       # 这里原本只点名 4 个文件，于是 staffApi 的 64 个测试文件里只有 4 个进 CI，
