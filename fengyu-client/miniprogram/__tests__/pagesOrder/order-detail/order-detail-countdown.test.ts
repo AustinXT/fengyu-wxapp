@@ -229,6 +229,27 @@ describe('order-detail 待支付倒计时 (#215)', () => {
     }
   });
 
+  test('最后一拍恰好落在截止点上，截止后不会还显示 00:01', () => {
+    // 固定 1000ms 的 setInterval 会让最后一拍晚到最多 999ms —— 那段时间页面还写着
+    // 「剩余 00:01」而订单已过期，点「去支付」直接被后端拒（codex 评审 round-5 P1）
+    vi.useFakeTimers();
+    try {
+      const { page, loadDetail } = createPageWithStubbedLoad();
+      page.startCountdown(PENDING_ORDER_WITH_REMAINING(1500));
+      expect(page.data.countdown).toBe('00:02');
+
+      vi.advanceTimersByTime(500);          // 剩 1000ms
+      expect(page.data.countdown).toBe('00:01');
+
+      vi.advanceTimersByTime(1000);         // 恰好到截止点
+      expect(page.data.countdown).toBe('');
+      expect(loadDetail).toHaveBeenCalledTimes(1);
+      expect(page._countdownTimer).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   test('整分钟边界不跳格：剩余 60s 显示 01:00', () => {
     const { page } = createPageWithStubbedLoad();
     page.startCountdown(PENDING_ORDER_WITH_REMAINING(60_000));
@@ -326,7 +347,7 @@ describe('order-detail 待支付倒计时 (#215)', () => {
     expect(page.data.order.expire_time_fmt).toBe('23:45');
   });
 
-  test('旧云函数回退口径：绝对时间已过期 → 必须重载（不能当成服务端权威的 0）', () => {
+  test('旧云函数回退口径：绝对时间已过期 → 重载一次（不能当成服务端权威的 0）', () => {
     // 旧后端请求开头没关单、却返回了已过期的 expire_at。把它当成「服务端说 0 =
     // 已经试过关单了」来处理，页面就会长期停在「请完成支付 + 去支付」——
     // 只有**权威**的 expire_in_ms 为 0 才允许不重载。
@@ -335,6 +356,27 @@ describe('order-detail 待支付倒计时 (#215)', () => {
 
     expect(loadDetail).toHaveBeenCalledTimes(1);
     expect(page.data.countdown).toBe('');
+  });
+
+  test('回退口径重载回来还是归零 → 不再重载（否则每个 RTT 转一圈的无界循环）', () => {
+    // 旧后端对员工单、有在途意图的自助单**永远关不掉**却照发已过期的 expire_at。
+    // 权威口径靠服务端补关收敛，回退口径没这个保证，只能按订单号放行一次。
+    const { page, loadDetail } = createPageWithStubbedLoad();
+    const past = () => new Date(Date.now() - 1000).toISOString();
+
+    for (let i = 0; i < 10; i++) page.startCountdown(PENDING_ORDER(past()));
+
+    expect(loadDetail).toHaveBeenCalledTimes(1);
+  });
+
+  test('换一张单时回退口径各自还能重载一次（守卫按订单号记）', () => {
+    const { page, loadDetail } = createPageWithStubbedLoad();
+    const past = new Date(Date.now() - 1000).toISOString();
+
+    page.startCountdown({ sale_order_id: 'FY-A', status: '待支付', expire_at: past } as any);
+    page.startCountdown({ sale_order_id: 'FY-B', status: '待支付', expire_at: past } as any);
+
+    expect(loadDetail.mock.calls.map((c) => c[0])).toEqual(['FY-A', 'FY-B']);
   });
 
   test('回退口径不再扣一次 RTT（绝对时间本就是按此刻算的）', () => {
@@ -501,6 +543,47 @@ describe('order-detail 倒计时的生命周期与并发 (#215)', () => {
 
     expect(page._needConfirm).toBe(true);
     expect(page.loadDetail).not.toHaveBeenCalled();   // 隐藏页不再继续请求
+  });
+
+  test('隐藏期间墙钟被回拨 → onShow 丢弃旧截止点，等服务端重新校准', () => {
+    // tick 里的回拨检测看不见隐藏期发生的跳变（恢复时 lastTickAt 用的已是调整后的时间），
+    // 不丢弃的话倒计时会被回拨量凭空延长，而服务端仍按原截止点关单
+    vi.useFakeTimers();
+    try {
+      const { page } = createPageWithStubbedLoad();
+      page.setData({ order: { sale_order_id: 'FY-215', status: '待支付' } });
+      page.startCountdown(PENDING_ORDER_WITH_REMAINING(120_000));
+      expect(page._countdownDeadlineAt).toBeGreaterThan(0);
+
+      page.onHide();
+      vi.setSystemTime(Date.now() - 30 * 60 * 1000);   // 隐藏期间回拨 30 分钟
+      page.onShow();
+
+      expect(page._countdownDeadlineAt).toBe(0);
+      expect(page._countdownTimer).toBeNull();
+      expect(page.data.countdown).toBe('');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('隐藏期间跨过截止点 → onShow 不重复发请求（让紧随其后的加载去刷）', () => {
+    vi.useFakeTimers();
+    try {
+      const { page, loadDetail } = createPageWithStubbedLoad();
+      page.setData({ order: { sale_order_id: 'FY-215', status: '待支付' } });
+      page.startCountdown(PENDING_ORDER_WITH_REMAINING(5_000));
+
+      page.onHide();
+      vi.setSystemTime(Date.now() + 10_000);           // 隐藏期间走过了截止点
+      loadDetail.mockClear();
+      page.resumeCountdown();
+
+      expect(loadDetail).not.toHaveBeenCalled();
+      expect(page._countdownDeadlineAt).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   test('隐藏态下不消耗 paid=1 的待确认意图（下次 onShow 还能补上）', async () => {

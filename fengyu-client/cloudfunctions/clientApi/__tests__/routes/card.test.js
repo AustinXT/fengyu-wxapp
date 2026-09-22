@@ -4,7 +4,7 @@
  */
 
 const pg = globalThis.__mocks__.pg
-const { createBoundCtx, createCtx } = require('../helpers')
+const { createBoundCtx, createCtx, sqlConjuncts } = require('../helpers')
 
 let routes
 beforeEach(() => {
@@ -287,5 +287,47 @@ describe('card 充值路径的过期单清理 — 券释放必须跟着 CAS 走'
     expect(executed.some((s) => /UPDATE sale_orders SET status = '已关闭'/.test(s))).toBe(true)
     // 这张单此刻已经是「已支付」，那张券正被它消费着，退回去就能再花一次
     expect(executed.some((s) => /UPDATE user_coupons/.test(s))).toBe(false)
+  })
+})
+
+/**
+ * 充值路径的过期单清理，其关单守卫必须与 `order.closeExpiredOrder` 的 UPDATE 同源
+ * （issue #215）。
+ *
+ * ⚠️ 这条锁**必须待在 card.test.js**：改 card.js 守卫的人跑的是这个文件。
+ * 它先前借住在 order.test.js（为了复用 conjuncts），改守卫的人全绿通过却不会
+ * 想到去 order 的测试文件里看一眼（双谱系评审 round-5 P3）。
+ * 规范化 helper 已提到 `__tests__/helpers.js`，两边共用。
+ */
+describe('card 充值路径的关单守卫 — 与 order.closeExpiredOrder 同源', () => {
+  test('card.js 的第三份守卫副本：条件集合必须是三条守卫 + 转换单排除，且必须是纯合取', () => {
+    // `_closeExpiredPendingByUser` 是**第二条**会把待支付单置「已关闭」的路径（顾客充值时触发），
+    // 守卫在这三条之外多一条 `sale_order_type <> '转换单'` —— 条件严格强化、命中集合是真子集，
+    // 方向安全。少了任何一条，充值路径就会去关「顾客那边正显示着没有倒计时」的单，
+    // 口径分叉当场复发。
+    const { readFileSync } = require('fs')
+    const { resolve } = require('path')
+    const cardSrc = readFileSync(resolve(__dirname, '../../routes/card.js'), 'utf8')
+
+    const fnAt = cardSrc.indexOf('async function _closeExpiredPendingByUser(')
+    expect(fnAt, '未找到 _closeExpiredPendingByUser').toBeGreaterThanOrEqual(0)
+    const fnBody = cardSrc.slice(fnAt, fnAt + 2500)
+    const updateAt = fnBody.indexOf('UPDATE sale_orders')
+    expect(updateAt, '未找到充值路径的 UPDATE sale_orders').toBeGreaterThanOrEqual(0)
+    const whereAt = fnBody.indexOf('WHERE sale_order_id = $1', updateAt)
+    expect(whereAt, '未找到充值路径 UPDATE 的 WHERE 子句').toBeGreaterThan(updateAt)
+    const cardWhere = fnBody.slice(whereAt, fnBody.indexOf('`', whereAt))
+    expect(cardWhere.length, '充值路径 WHERE 切片异常').toBeGreaterThan(0)
+
+    // ⚠️ 同样不能只做 `toContain`：`AND → OR` 会让充值路径去关**不属于当前顾客、
+    // 或仍有在途支付意图**的订单，而四个子串照样都在（codex 评审 round-3 P1）。
+    // `conjuncts` 内部对 OR 直接判失败，并把条件规范化成集合做**全等**比较 ——
+    // 给充值路径再加一条强化条件也会在这里转红，那时按新口径更新本断言即可。
+    expect(sqlConjuncts(cardWhere)).toEqual([
+      "lakala_out_order_no IS NULL",
+      "opened_by IS NULL",
+      "sale_order_type <> '转换单'",
+      "status = '待支付'",
+    ])
   })
 })

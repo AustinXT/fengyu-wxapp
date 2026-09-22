@@ -4,7 +4,7 @@
  */
 
 const pg = globalThis.__mocks__.pg
-const { createCtx, createBoundCtx, createMockTransactionClient } = require('../helpers')
+const { createCtx, createBoundCtx, createMockTransactionClient, sqlConjuncts } = require('../helpers')
 
 /**
  * issue #230：订单行封面图下发前必须缩略。
@@ -2051,28 +2051,6 @@ describe('order.detail — 支付倒计时下发口径 (#215)', () => {
     ([sql]) => /AS auto_close_eligible/.test(sql) && !/LEFT JOIN stores/.test(sql)
   )
 
-  /**
-   * 把一段 SQL 的 WHERE 子句（或判据常量的反引号内容）规范化成**条件列表**。
-   *
-   * ⚠️ 守卫同源不能只断言「子串都在」——那样 `AND → OR`、或任一侧多加一条守卫，
-   * 子串照样全在，漂移锁就成了摆设（codex 评审 round-1 P1 / round-3 P1）。
-   * 这里连接符、条件集合、条件数量都锁住，OR 直接判失败。
-   */
-  const conjuncts = (sqlText) => {
-    const body = sqlText
-      .replace(/[\s\S]*?WHERE /, '')       // 只留 WHERE 之后
-      .replace(/[\s\S]*?=\s*\n?\s*`/, '')  // 常量声明则只留反引号内的
-      .replace(/--[^\n]*/g, '')            // SQL 行注释（card.js 的守卫里就有）
-      .replace(/`/g, '')
-      .replace(/\s+/g, ' ')
-      .trim()
-    expect(body, `守卫里出现了 OR：${body}`).not.toMatch(/\bOR\b/)
-    return body
-      .split(/\s+AND\s+/)
-      .map((c) => c.trim().replace(/^o\./, '').replace(/\s+/g, ' '))
-      .filter((c) => c && c !== 'sale_order_id = $1')
-      .sort()
-  }
 
   test('库判「会被自动关闭」→ 下发「下单时间 + 10 分钟」', async () => {
     mockDetailQueries({ auto_close_eligible: true })
@@ -2316,9 +2294,9 @@ describe('order.detail — 支付倒计时下发口径 (#215)', () => {
     expect(guardEnd, 'PENDING_AUTO_CLOSE_GUARD_SQL 声明未闭合').toBeGreaterThan(guardAt)
     const guardDecl = stripComments(source.slice(guardAt, guardEnd))
 
-    expect(conjuncts(guardDecl)).toEqual(conjuncts(closeWhere))
+    expect(sqlConjuncts(guardDecl)).toEqual(sqlConjuncts(closeWhere))
     // 再钉一次内容本身，防止两侧「一起改错」还互相对得上
-    expect(conjuncts(guardDecl)).toEqual([
+    expect(sqlConjuncts(guardDecl)).toEqual([
       "lakala_out_order_no IS NULL",
       "opened_by IS NULL",
       "status = '待支付'",
@@ -2328,37 +2306,6 @@ describe('order.detail — 支付倒计时下发口径 (#215)', () => {
     // 空串、列没 SELECT 出来是 undefined 这一堆跨语言语义差就会重新找上门
     expect(guardDecl).not.toContain('===')
     expect(guardDecl).not.toContain('=> ')
-  })
-
-  test('card.js 的第三份守卫副本：条件集合必须是三条守卫 + 转换单排除，且必须是纯合取', () => {
-    // `_closeExpiredPendingByUser` 是**第二条**会把待支付单置「已关闭」的路径（顾客充值时触发），
-    // 守卫在这三条之外多一条 `sale_order_type <> '转换单'` —— 条件严格强化、命中集合是真子集，
-    // 方向安全。所以这里做**包含**断言而非全等：少了任何一条都意味着充值路径会关掉
-    // 「顾客那边正显示着没有倒计时」的单，口径分叉当场复发。
-    const { readFileSync } = require('fs')
-    const { resolve } = require('path')
-    const cardSrc = readFileSync(resolve(__dirname, '../../routes/card.js'), 'utf8')
-
-    const fnAt = cardSrc.indexOf('async function _closeExpiredPendingByUser(')
-    expect(fnAt, '未找到 _closeExpiredPendingByUser').toBeGreaterThanOrEqual(0)
-    const fnBody = cardSrc.slice(fnAt, fnAt + 2500)
-    const updateAt = fnBody.indexOf('UPDATE sale_orders')
-    expect(updateAt, '未找到充值路径的 UPDATE sale_orders').toBeGreaterThanOrEqual(0)
-    const whereAt = fnBody.indexOf('WHERE sale_order_id = $1', updateAt)
-    expect(whereAt, '未找到充值路径 UPDATE 的 WHERE 子句').toBeGreaterThan(updateAt)
-    const cardWhere = fnBody.slice(whereAt, fnBody.indexOf('`', whereAt))
-    expect(cardWhere.length, '充值路径 WHERE 切片异常').toBeGreaterThan(0)
-
-    // ⚠️ 同样不能只做 `toContain`：`AND → OR` 会让充值路径去关**不属于当前顾客、
-    // 或仍有在途支付意图**的订单，而四个子串照样都在（codex 评审 round-3 P1）。
-    // `conjuncts` 内部对 OR 直接判失败，并把条件规范化成集合做**全等**比较 ——
-    // 给充值路径再加一条强化条件也会在这里转红，那时按新口径更新本断言即可。
-    expect(conjuncts(cardWhere)).toEqual([
-      "lakala_out_order_no IS NULL",
-      "opened_by IS NULL",
-      "sale_order_type <> '转换单'",
-      "status = '待支付'",
-    ])
   })
 })
 

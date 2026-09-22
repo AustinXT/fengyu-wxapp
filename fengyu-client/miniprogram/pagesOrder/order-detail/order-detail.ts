@@ -148,7 +148,7 @@ Page({
     confirmingPayment: false,
   },
 
-  _countdownTimer: null as ReturnType<typeof setInterval> | null,
+  _countdownTimer: null as ReturnType<typeof setTimeout> | null,
   // 从列表「继续支付」跳入（?repay=1）：详情加载完成后自动唤起回款弹层，触发一次后清除
   _autoRepay: false,
   // 支付结果轮询器（issue #37）；onUnload/onHide 清理防泄漏
@@ -174,6 +174,18 @@ Page({
   // 最近一次 loadDetail 的实测往返耗时。expire_in_ms 是服务端生成响应那一刻的剩余量，
   // 传到手上已经过去一段了；不扣的话倒计时会比真实关单时刻晚一个 RTT。
   _lastLoadRttMs: 0,
+  // 已经因「非权威的剩余量归零」重载过的订单号（issue #215）。
+  //
+  // 权威口径（`expire_in_ms`）那条路是**结构性收敛**的：服务端说 0 就蕴含它已经试过关单，
+  // 不需要任何标记。但发版过渡期的回退口径（旧云函数只给 `expire_at`）没这个保证 ——
+  // 旧后端对员工单、有在途意图的自助单**永远关不掉**却照发已过期的 expire_at，
+  // 于是「归零 → 重载 → 还是归零」每个 RTT 转一圈，正是本 issue 要消灭的那个循环。
+  // 回退路径按订单号只放行一次重载，之后退成静态的「请完成支付」——
+  // 与旧后端的真实语义一致（那些单在旧后端本来就能付）。
+  _fallbackZeroReloadedOrderId: null as string | null,
+  // onHide 那一刻观测到的墙钟。隐藏期间被系统校时往回拨的话，tick 里的回拨检测
+  // 看不见（onShow 恢复时 lastTickAt 用的已是调整后的时间），截止点会被凭空延长。
+  _hiddenAtWallClock: 0,
 
   onLoad(options) {
     // 读全局灰度开关（未配置默认 false）
@@ -428,7 +440,7 @@ Page({
   /** 停表（不动 countdown 文案，调用方按需自己清） */
   _stopCountdown() {
     if (this._countdownTimer) {
-      clearInterval(this._countdownTimer);
+      clearTimeout(this._countdownTimer);
       this._countdownTimer = null;
     }
   },
@@ -459,8 +471,9 @@ Page({
     // 自助单于是彻底看不到倒计时。这里只用设备时钟量**相对流逝**，不用它判绝对先后。
     // 回退分支是为发版过渡期留的：旧云函数不带 expire_in_ms，退回绝对时间口径。
     // ⚠️ 必须判 `typeof === 'number'`：`Number(null)` 是 0 且 isFinite，
-    // 会把「服务端没下发这个字段」静默当成「剩余 0」，而不是回退到绝对时间口径
-    // `authoritative` 记的是「这个剩余量是不是服务端亲口说的」——下面判「0」时要用
+    // 会把「服务端没下发这个字段」静默当成「剩余 0」，而不是回退到绝对时间口径。
+    //
+    // `authoritative` 记的是「这个剩余量是不是服务端亲口说的」——下面判「0」时要用。
     let serverRemaining: number;
     let authoritative: boolean;
     if (typeof order.expire_in_ms === 'number' && Number.isFinite(order.expire_in_ms)) {
@@ -499,6 +512,13 @@ Page({
     if (remainingAt0 <= 0) {
       this._countdownDeadlineAt = 0;
       this.setData({ countdown: '' });
+      // 非权威（旧云函数回退）那条路没有「服务端已试过关单」的保证，重载回来大概率
+      // 还是同一个答案 —— 按订单号只放行一次，否则就是每个 RTT 一圈的无界循环。
+      // 权威路径不受此限：它的收敛由服务端侧的补关保证（见上面的注释）。
+      if (!authoritative) {
+        if (this._fallbackZeroReloadedOrderId === order.sale_order_id) return;
+        this._fallbackZeroReloadedOrderId = order.sale_order_id;
+      }
       // 隐藏/已卸载时不发这一次后台请求；onShow 必定 loadDetail，不会漏刷新
       if (!this._hidden && !this._destroyed) this.loadDetail(order.sale_order_id);
       return;
@@ -525,6 +545,7 @@ Page({
 
     let lastTickAt = Date.now();
     const tick = () => {
+      this._countdownTimer = null;
       const now = Date.now();
       // 系统校时/用户手动改时间会让墙钟往回跳，截止点就被凭空延长了 —— 服务端那边
       // 早关单了，页面还显示着剩余时间，顾客点「去支付」才被拒（issue #215）。
@@ -551,12 +572,17 @@ Page({
       const mins = Math.floor(totalSecs / 60);
       const secs = totalSecs % 60;
       const next = `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
-      // setInterval 有漂移，相邻两 tick 落在同一秒是常态；setData 跨线程，别白推
+      // 同值不重复推：setData 跨线程
       if (next !== this.data.countdown) this.setData({ countdown: next });
+
+      // ⚠️ 不能用固定 1000ms 的 setInterval（双谱系评审 round-5）：截止点几乎从不落在
+      // 整秒边界上，最后一拍就会晚到最多 999ms —— 那段时间页面还显示着「剩余 00:01」
+      // 而订单已经过期，点「去支付」直接被后端拒。改成算准下一次**显示值该变**的时刻，
+      // 最后一拍就恰好落在截止点上。
+      this._countdownTimer = setTimeout(tick, Math.max(0, remaining - (totalSecs - 1) * 1000));
     };
 
     tick();
-    if (this._countdownDeadlineAt > 0) this._countdownTimer = setInterval(tick, 1000);
   },
 
   /**
@@ -569,6 +595,20 @@ Page({
     if (this._countdownDeadlineAt <= 0) return;
     if (this.data.order?.status !== '待支付') {
       this._countdownDeadlineAt = 0;
+      return;
+    }
+    // 隐藏期间墙钟被往回拨过 → 这个截止点已经不可信了（tick 里的回拨检测看不见
+    // 隐藏期发生的跳变）。丢掉它，等紧随其后的 loadDetail 从服务端重新校准。
+    if (this._hiddenAtWallClock > 0 && Date.now() < this._hiddenAtWallClock - 2000) {
+      this._countdownDeadlineAt = 0;
+      this.setData({ countdown: '' });
+      return;
+    }
+    // 已经过了截止点就别在这里发请求：紧跟着的 onShow loadDetail 会刷新，
+    // 在这儿再发一次只是白打一个必定被 token 判废的请求
+    if (this._countdownDeadlineAt - Date.now() <= 0) {
+      this._countdownDeadlineAt = 0;
+      this.setData({ countdown: '' });
       return;
     }
     this._installCountdown(this._countdownDeadlineAt, this.data.order.sale_order_id);
@@ -623,6 +663,7 @@ Page({
 
   onHide() {
     this._hidden = true;
+    this._hiddenAtWallClock = Date.now();
     // 页面隐藏（navigateTo 跳走 / tab 切换）停止轮询，避免后台继续请求
     if (this._poller) {
       this._poller.clear();
