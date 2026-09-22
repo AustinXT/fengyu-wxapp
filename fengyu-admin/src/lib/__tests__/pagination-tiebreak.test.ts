@@ -408,6 +408,62 @@ describe('#282 · admin 分页查询的 orderBy 必须带唯一键 tie-break', (
     })
   })
 
+  describe('覆盖率 · EXPECTED + SAFE 必须钉死全部 33 支分页查询', () => {
+    // 第 1 层是启发式（`looksUnique` 对任何 `*Id` 放行，**外键也算**），
+    // 真正的位置级保护只能靠清单。所以清单必须**全覆盖** ——
+    // 评审在 staffApi 侧实测过：未登记的几支改成外键排序后两层皆绿。
+    // 这条断言让「新增分页查询却忘了登记」立刻可见。
+    const PINNED = new Set([
+      // —— #282 本次修的（EXPECTED）——
+      'desc(appointments.appointmentTime), desc(appointments.appointmentId)',
+      'desc(cardTransactions.createdAt), desc(cardTransactions.id)',
+      'desc(saleOrders.paidAt), desc(saleItems.createdAt), asc(saleItems.saleItemId)',
+      'asc(clientWechatUsers.name), asc(clientWechatUsers.userId)',
+      'desc(saleOrders.saleOrderDatetime), desc(saleOrders.saleOrderId)',
+      'desc(operationLogs.createdAt), desc(operationLogs.id)',
+      'desc(lakalaMerchants.updatedAt), desc(lakalaMerchants.id)',
+      'desc(messages.createdAt), desc(messages.id)',
+      'desc(pickupRecords.createdAt), desc(pickupRecords.id)',
+      'desc(pointTransactions.createdAt), desc(pointTransactions.id)',
+      'desc(serviceOrders.updatedAt), desc(serviceOrders.createdAt), desc(serviceOrders.serviceOrderId)',
+      'asc(inventoryLocations.locationType), asc(inventoryLocations.name), asc(inventoryStockLots.skuName), asc(inventoryStockLots.batchNo), asc(inventoryStockLots.id)',
+      'desc(couponTemplates.updatedAt), desc(couponTemplates.createdAt), asc(couponTemplates.templateId)',
+      'asc(productSkus.sortOrder), asc(productSkus.skuId)',
+      'asc(products.sortOrder), asc(products.productId)',
+      // —— 本来就正确的（SAFE / #183 keyset 遗产 / #239 遗产）——
+      'desc(saleOrderPayments.paidAt), desc(saleOrderPayments.id)',
+      'desc(saleOrderPayments.createdAt), desc(saleOrderPayments.id)',
+      'desc(staffWechatUsers.updatedAt), desc(staffWechatUsers.createdAt), asc(staffWechatUsers.employeeId)',
+      'desc(inventoryDocs.docDate), desc(inventoryDocs.createdAt), desc(inventoryDocs.id)',
+      'desc(serviceOrders.createdAt), desc(serviceOrders.updatedAt), serviceItems.serviceItemId',
+      'desc(serviceOrders.createdAt), desc(serviceOrders.updatedAt), serviceCommissions.id',
+      // 多行 orderBy（末位带尾逗号，归一后保留）
+      'desc(saleOrders.saleOrderDatetime), saleOrders.saleOrderId, salePaymentItemReceipts.salePaymentId, salePaymentItemReceipts.id, salePaymentItemAllocations.id,',
+      'desc(saleOrders.saleOrderDatetime), saleOrders.saleOrderId, saleOrderPayments.id, salePaymentItemReceipts.id,',
+      'asc(inventoryLocations.locationType), asc(inventoryLocations.name), asc(inventoryStockLots.skuName), asc(inventoryStockLots.batchNo), asc(inventoryStockLots.id),',
+      // —— 走 UNIQUE_BY_INDEX 豁免（普通列带全表唯一索引，本身即全序）——
+      'asc(inventorySkus.productCode)',
+      'asc(inventorySuppliers.name)',
+    ])
+
+    it('没有未登记的分页查询', () => {
+      const unpinned: string[] = []
+      for (const root of ['actions', 'lib']) {
+        for (const file of collectSources(join(SRC, root))) {
+          const code = stripComments(readFileSync(file, 'utf8'), file)
+          for (const { index, args } of pagedOrderBys(code, file)) {
+            if (!PINNED.has(args)) {
+              const line = code.slice(0, index).split('\n').length
+              unpinned.push(`${relative(SRC, file)}:${line} · ${args}`)
+            }
+          }
+        }
+      }
+      expect(unpinned, `这些分页查询没被任何清单钉死（新增了就登记进 PINNED）:\n${unpinned.join('\n')}`)
+        .toEqual([])
+    })
+  })
+
   describe('解析工具自身（这两个错了，上面两层都失真）', () => {
     it.each([
       ['嵌套括号不切错', '.orderBy(desc(a.b), asc(c.d))', 'desc(a.b), asc(c.d)'],

@@ -267,6 +267,30 @@ describe('#282 · clientApi 分页 SQL 的 ORDER BY 必须带唯一键 tie-break
     })
   })
 
+    test('EXPECTED 覆盖全部 6 支分页 SQL（新增查询忘了登记会红）', () => {
+      // 第 1 层是启发式（`looksUnique` 对任何 `*_id` 放行，**外键也算**），
+      // 真正的位置级保护只能靠清单。staffApi 侧实测过：未登记的几支改成外键排序后
+      // 两层皆绿。clientApi 的 6 支恰好全在 EXPECTED 里，这条断言把这个事实钉住。
+      const pinned = new Set([
+        'a.appointment_time DESC, a.appointment_id DESC',
+        'ct.created_at DESC, ct.id DESC',
+        'created_at DESC, id DESC',
+        'o.created_at DESC, o.sale_order_id DESC',
+        'pt.created_at DESC, pt.id DESC',
+        'so.created_at DESC, so.service_order_id DESC',
+      ])
+      const unpinned = []
+      for (const file of collectRoutes(ROUTES_DIR)) {
+        for (const sql of pagedSqlTemplates(readFileSync(file, 'utf8'))) {
+          const clause = orderByClause(sql)
+          if (clause !== null && !pinned.has(clause)) {
+            unpinned.push(`${relative(ROOT, file)} · ${clause}`)
+          }
+        }
+      }
+      expect(unpinned, `这些分页 SQL 没被 EXPECTED 钉死:\n${unpinned.join('\n')}`).toEqual([])
+    })
+
   describe('orderByClause 自身（这个函数错了，上面两层都失真）', () => {
     test.each([
       ['最外层直取',
