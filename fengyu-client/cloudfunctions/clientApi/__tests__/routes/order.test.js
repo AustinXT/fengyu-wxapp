@@ -2135,6 +2135,20 @@ describe('order.detail — 支付倒计时下发口径 (#215)', () => {
     expect(ctx.result.order.expire_in_ms).toBeNull()
   })
 
+  test('重读查询必须带 client_user_id 归属条件（否则是跨顾客越权读）', async () => {
+    // 这行结果会被 Object.assign **整行**合进要下发的 order。只按订单号重读的话，
+    // 「管理员物理删掉这张单 + 当天最高序号被新单复用」（订单号是 MAX(...)+1 生成的）
+    // 就会把另一个顾客的整行订单装进本次响应 —— 姓名、手机号、金额、门店全泄露。
+    mockDetailQueries({ auto_close_eligible: true })
+    const ctx = createBoundCtx({ orderNo: 'FY-215' })
+    await routes.detail(ctx)
+
+    const refreshCall = findRefreshCall()
+    expect(refreshCall).toBeDefined()
+    expect(refreshCall[0]).toContain('o.client_user_id = $2')
+    expect(refreshCall[1]).toEqual(['FY-215', 'user-001'])
+  })
+
   test('非可支付态不发重读查询（不白花一个往返）', async () => {
     mockDetailQueries({ status: '已支付', auto_close_eligible: false })
     const ctx = createBoundCtx({ orderNo: 'FY-215' })
@@ -2313,8 +2327,8 @@ describe('order.detail — 支付倒计时下发口径 (#215)', () => {
     expect(guardDecl).not.toContain('=> ')
 
     // ⚠️ closeExpiredOrder **体内不得有时间谓词**（双谱系评审 round-6 P2）。
-    // detail 的「权威 0」契约架在这条前提上：它下发 expire_in_ms=0 时向前端承诺
-    // 「已经试到关不动为止」，而前端对权威 0 的处理是不再重载。这里一旦加上
+    // detail 的下发契约架在这条前提上：它只在**补关到关不动为止**之后才下发
+    // expire_in_ms（且恒为严格正数），关不动就不下发。这里一旦加上
     // `sale_order_datetime < NOW() - INTERVAL ...`，补关成败就取决于 PG 与宿主的时钟差，
     // PG 慢一点就关不掉而复读仍判 eligible —— 矛盾态从后门回来。
     expect(closeBody).not.toMatch(/INTERVAL/)

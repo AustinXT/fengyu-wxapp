@@ -20,6 +20,8 @@ module.exports.price = function(n) { return (Math.round(n * 100) / 100).toFixed(
     <text class="status-hint" wx:elif="{{order.status === '待支付' && order.payment_method === '线下'}}">请到店付款，等待店长确认收款</text>
     <block wx:elif="{{order.status === '待支付'}}">
       <text class="status-hint-countdown" wx:if="{{countdown}}">请在 {{order.expire_time_fmt}} 前完成支付（剩余 {{countdown}}）</text>
+      <!-- 时限已到但「归零后那次刷新」还没成功：不知道这单关没关，别承诺可支付（issue #215） -->
+      <text class="status-hint" wx:elif="{{payBlockedByExpiry}}">支付时限已到，正在确认订单状态</text>
       <text class="status-hint" wx:else>请完成支付</text>
     </block>
   </view>
@@ -180,6 +182,7 @@ module.exports.price = function(n) { return (Math.round(n * 100) / 100).toFixed(
         round
         size="normal"
         bindtap="onPay"
+        disabled="{{payBlockedByExpiry}}"
         class="pay-btn"
       >去支付</van-button>
     </view>

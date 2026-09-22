@@ -649,18 +649,64 @@ describe('order-detail 倒计时的生命周期与并发 (#215)', () => {
 
 });
 
+  test('归零后那次刷新失败 → 支付入口关闭，不退回静态的「可支付」页', async () => {
+    // 这里已经永久清掉了计时器和截止点；刷新再失败的话，不关闸页面就变成一个
+    // 静态的「请完成支付 + 去支付」，点下去只会被服务端以超时拒绝（评审 round-9 P1）
+    const { page } = createPageWithManualApi();
+    const rejecters: Array<(e: any) => void> = [];
+    callClientApiMock.mockImplementation(
+      () => new Promise((_resolve, reject) => { rejecters.push(reject); }),
+    );
+    page.setData({ order: { sale_order_id: 'FY-215', status: '待支付' } });
+
+    vi.useFakeTimers();
+    try {
+      page.startCountdown(PENDING_ORDER_WITH_REMAINING(1000));
+      vi.advanceTimersByTime(1500);          // 走到归零 → 发刷新
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(page.data.payBlockedByExpiry).toBe(true);
+
+    rejecters[0]?.(new Error('network'));
+    await new Promise((r) => setTimeout(r, 0));
+
+    // 刷新失败后闸门仍在，订单还停在旧的「待支付」但不许再点支付
+    expect(page.data.payBlockedByExpiry).toBe(true);
+    page.onPay();
+    expect(wxMock.navigateTo).not.toHaveBeenCalled();
+  });
+
+  test('任何一次成功的刷新都解除「时限已到」闸门', async () => {
+    const { page, resolvers } = createPageWithManualApi();
+    page.setData({ payBlockedByExpiry: true });
+
+    const inflight = page.loadDetail('FY-215');
+    resolvers[0](detailResponse('已关闭'));
+    await inflight;
+
+    expect(page.data.payBlockedByExpiry).toBe(false);
+  });
+
 describe('order-detail.wxml 的倒计时文案分支 (#215)', () => {
   const wxml = readFileSync(
     resolve(__dirname, '../../../pagesOrder/order-detail/order-detail.wxml'),
     'utf8',
   );
 
-  test('「请在 xx 前完成支付」与兜底文案是同一个 wx:if/wx:else 对', () => {
-    // 松断言（两行各自存在）会被文件里任何位置的同名分支满足。这里钉的是**成对且相邻**：
-    // countdown 为空（后端没下发 expire_at）必须落到兜底文案，
-    // 否则员工单会显示一个空的「请在  前完成支付」
-    const pair = /wx:if="\{\{countdown\}\}">请在 \{\{order\.expire_time_fmt\}\} 前完成支付（剩余 \{\{countdown\}\}）[\s\S]{0,120}?wx:else>请完成支付/;
-    expect(wxml).toMatch(pair);
+  test('待支付状态区是 countdown → payBlockedByExpiry → 兜底 三段同一条分支链', () => {
+    // 松断言（三行各自存在）会被文件里任何位置的同名分支满足。这里钉的是**同链且有序**：
+    //  - countdown 为空（后端没下发 expire_at）不能还显示「请在  前完成支付」
+    //  - 时限已到但状态未确认时，必须落到「正在确认」而不是「请完成支付」
+    const chain = /wx:if="\{\{countdown\}\}">请在 \{\{order\.expire_time_fmt\}\} 前完成支付（剩余 \{\{countdown\}\}）[\s\S]{0,400}?wx:elif="\{\{payBlockedByExpiry\}\}">支付时限已到，正在确认订单状态[\s\S]{0,200}?wx:else>请完成支付/;
+    expect(wxml).toMatch(chain);
+  });
+
+  test('「时限已到、状态未确认」期间支付按钮必须 disabled', () => {
+    // 归零后那次刷新失败时，页面不知道这单关没关 —— 放行只会让顾客跳到结算页
+    // 再吃一个「订单已超时」（评审 round-9 P1）
+    const payBtn = /bindtap="onPay"[\s\S]{0,200}?disabled="\{\{payBlockedByExpiry\}\}"/;
+    expect(wxml).toMatch(payBtn);
   });
 
   test('线下付款分支在倒计时分支之前（记录既有排布，不代表口径已确认）', () => {

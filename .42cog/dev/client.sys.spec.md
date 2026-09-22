@@ -206,12 +206,14 @@ product.shopInit(门店商品初始化)
 
 | 入口 | 形态 | 说明 |
 |---|---|---|
-| `order.create` / `order.list` | 批量，走 `closeExpiredOrdersByUser` | 候选 SELECT 是**超集**（只带 status + opened_by + `lakala_out_order_no IS NULL` + 时间），真正裁决在 `closeExpiredOrder` 的 UPDATE |
+| `order.create` / `order.list` | 批量，走 `closeExpiredOrdersByUser` | 候选 SELECT **刻意是超集**（只带 status + opened_by + 时间，⚠️ **不要加 `lakala_out_order_no IS NULL`**，见下），真正裁决在 `closeExpiredOrder` 的 UPDATE |
 | `order.pay` / `order.alipayPay` / `order.offlinePay` | 单笔，关成了就抛「订单已超时」 | 支付入口的拒绝守卫 |
 | `order.detail` | 单笔，关单 + **有界重试两次** | issue #215 新增：请求处理期间可能跨过截止点 |
 | `card.recharge` | 单笔批量，`_closeExpiredPendingByUser` | **独立实现**，守卫是超集（多一条 `sale_order_type <> '转换单'`），释放侧只回滚优惠券 |
 
 ⚠️ 候选 SELECT 侧（`closeExpiredOrdersByUser` 与 `closeExpiredOrder` 自身的 `SELECT ... FOR UPDATE`）都是**超集、fail-safe** 形态：选多了只是白跑空事务，不会错关（裁决全在 UPDATE 的 CAS 上）。同源锁只锁 UPDATE 侧与判据常量，不锁这两个 SELECT。
+
+**别往候选 SELECT 里加 `lakala_out_order_no IS NULL`**（issue #215 round-7 加过、round-8 撤回）：看起来能省掉几个空事务，实际会漏单 —— 该列双向可变，SELECT 之后、CAS 之前它可能被 payNotify / 对账 / 支付失败清理清成 NULL，那一刻这单已经该关了，而收窄过的候选集根本没把它选进来。后果是过期单继续占着 `uq_sale_orders_client_pending`，顾客再下自助单被唯一约束拒绝。**选多了是浪费，选漏了是功能错误。**
 
 **懒清理的三条守卫**（`closeExpiredOrder`，缺一不关）：
 
@@ -240,7 +242,7 @@ product.shopInit(门店商品初始化)
 
 改 `closeExpiredOrder` 的 UPDATE 守卫必须同步改这个常量，由 `order.test.js` 钉住——断言是**规范化后的条件列表全等比较**（锁住连接符、条件集合与数量），不是子串包含：后者对 `AND → OR`、单侧多加一条守卫都判不出来。
 
-⚠️ **`closeExpiredOrder` 体内不得有任何时间谓词**：「过没过 10 分钟」一律由调用方判。`order.detail` 的「权威 0」契约架在这条前提上（见下文）；这里一旦加上 `sale_order_datetime < NOW() - INTERVAL '10 minutes'` 之类的「加固」，补关成败就取决于 PG 与云函数宿主的时钟差 —— PG 慢一点就关不掉而复读仍判 eligible，矛盾态从后门回来。同源锁里有对应断言。
+⚠️ **`closeExpiredOrder` 体内不得有任何时间谓词**：「过没过 10 分钟」一律由调用方判。`order.detail` 的「补关到关不动为止、否则就不下发权威值」契约架在这条前提上（见下文）；这里一旦加上 `sale_order_datetime < NOW() - INTERVAL '10 minutes'` 之类的「加固」，补关成败就取决于 PG 与云函数宿主的时钟差 —— PG 慢一点就关不掉而复读仍判 eligible，矛盾态从后门回来。同源锁里有对应断言。
 
 ⚠️ **`order.scanDetail` 永不下发 `expire_at`**：它的主查询自带 `WHERE opened_by IS NOT NULL`（只服务员工开单订单），字段是显式映射、不含任何 expire 字段；`scan-pay` 页也没有任何时效文案。issue #215 验收标准 4「扫码支付页同步对齐」因此**天然成立**（2026-09-22 全页 grep 核实）。⚠️ 将来若让 scanDetail 也服务自助单或补下发时限，**必须走 `PENDING_AUTO_CLOSE_GUARD_SQL`**——否则口径分叉会从这一端复发，而那里目前没有任何同源锁。
 
@@ -266,7 +268,11 @@ product.shopInit(门店商品初始化)
 
 倒计时用 `setTimeout` 链而不是固定 1000ms 的 `setInterval`：每次按「显示值该变的时刻」调度，最后一拍恰好落在截止点。固定间隔会让截止后最多 999ms 里还显示着「剩余 00:01」，而订单已过期、点「去支付」直接被拒。
 
-前端必须**区分两种「剩余 0」**：服务端给的 0 意味着「它已经试到关不动为止」（补关复检与剩余量计算共用同一个 `nowMs`，且补关**有界重试两次** —— 第一次 CAS 可能输给并发写入的支付意图、而那笔意图又在复读前被清掉，复读于是仍然「可关且已过期」）→ 只清 UI 不重载；服务端给的 > 0、只是扣掉实测 RTT 后归零 → 服务端还没试过关，必须按「走着走着归零」重载一次。混为一谈页面就会永久停在「待支付 / 请完成支付 / 去支付」。
+**协议：权威值恒为严格正数。** 服务端只在剩余量 > 0 时才下发 `expire_in_ms`，下发即意味着「这一刻订单确实还开着、而且到点会被关掉」。走到「可关且已过期」还没关成（补关**有界重试两次**后仍被并发写入的支付意图挤掉）就**不下发**，让前端退到非权威口径。
+
+前端拿到 `<= 0` 一律视为协议降级（旧版本云函数、或上述服务端降级），走**带一次性闸门**的重载路径 —— 绝不当成「服务端已经处理完了」而永不重载。这样有界性不再依赖协议版本：任何「装表即过期」每单最多重载一次。
+
+倒计时归零后那次刷新**在成功之前**要关掉支付入口（`payBlockedByExpiry`）：此刻页面并不知道这单关没关，刷新又可能失败；继续显示「请完成支付 + 去支付」就是在承诺一件不知真假的事，顾客点下去只会拿到「订单已超时」。任何一次成功的详情刷新都会解除它。
 
 `loadDetail` 走 **single-flight**：同一时刻最多一个在途请求，期间再来的合并成一次尾随刷新，所有调用方都能 await 到最终完成。用单调 token「后发起者获胜」是不够的 —— 那保证的是**发起顺序**赢而非**数据新旧**赢，先发起的请求完全可能后到服务端、读到更新的快照却被判废，一张刚支付成功的单就会被画回「待支付」。
 

@@ -146,6 +146,12 @@ Page({
     repaySubmitting: false,
     // 支付结果确认中（issue #37）：轮询期间隐藏待支付倒计时防频闪
     confirmingPayment: false,
+    // 倒计时已归零、但「归零后那次刷新」还没成功（issue #215）。
+    // 此时页面**不知道**这单到底关没关：服务端大概率已经关了，而我们拿不到确认。
+    // 继续显示「请完成支付 + 去支付」就是在承诺一件不知真假的事 —— 顾客点下去
+    // 只会拿到「订单已超时」。所以这段时间把支付入口关掉、文案改成待确认。
+    // 任何一次成功的详情刷新都会解除它。
+    payBlockedByExpiry: false,
   },
 
   _countdownTimer: null as ReturnType<typeof setTimeout> | null,
@@ -223,6 +229,10 @@ Page({
   /**
    * 加载详情。**single-flight**：同一时刻最多一个在途请求，期间再来的请求合并成
    * 一次「尾随刷新」，并且所有调用方都能 await 到最终完成（issue #215）。
+   *
+   * ⚠️ 前提：**本页恒定只展示一张单**（onLoad / onShow / 下拉 / 归零 / 支付回调五个触发源
+   * 传的都是同一个 id），所以尾随刷新复用首个调用者的 `saleOrderId` 是安全的。
+   * 将来若让本页展示多张单，这里要改成每次读当前订单号。
    *
    * 原先用单调 token「后发起者获胜」，但那保证的是**发起顺序**赢，不是**数据新旧**赢：
    * 先发起的请求完全可能后到服务端、因而读到更新的快照，却被判废。于是一张刚支付成功的
@@ -434,6 +444,8 @@ Page({
         payments,
         outstandingAmount: outstanding,
         canContinuePay,
+        // 拿到一份新的服务端状态了，「时限已到但状态未确认」的闸可以解除（issue #215）
+        payBlockedByExpiry: false,
       });
 
       // 启动倒计时
@@ -522,11 +534,10 @@ Page({
       authoritative = false;
     }
 
-    // 服务端**只在剩余量严格为正时**才下发 `expire_in_ms`：它下发即意味着
-    // 「这一刻订单确实还开着、而且到点会被关掉」。拿到 <= 0 说明契约被破坏
-    //（旧版本云函数、或服务端补关被并发意图连续挤掉后的降级），
-    // 那就按非权威处理 —— 走下面那条**带一次性闸门**的重载路径，
-    // 绝不当成「服务端已经处理完了」而永不重载（双谱系评审 round-3 ~ round-7）。
+    // **协议：权威值恒为严格正数。** 服务端只在剩余量 > 0 时才下发 `expire_in_ms`，
+    // 下发即意味着「这一刻订单确实还开着、而且到点会被关掉」。
+    // 拿到 <= 0 只可能是协议降级（旧版本云函数、或服务端补关被并发意图连续挤掉），
+    // 一律按非权威处理 —— 走下面那条**带一次性闸门**的重载路径。
     if (authoritative && serverRemaining <= 0) authoritative = false;
 
     const remainingAt0 = authoritative ? serverRemaining - this._lastLoadRttMs : serverRemaining;
@@ -583,7 +594,10 @@ Page({
       if (remaining <= 0) {
         this._stopCountdown();
         this._countdownDeadlineAt = 0;
-        this.setData({ countdown: '' });
+        // 先把支付入口关掉再去刷新：那次刷新可能失败（断网/超时），
+        // 而这里已经永久清掉了计时器 —— 不关闸的话页面就退回成一个静态的
+        //「请完成支付 + 去支付」，点下去只会被服务端以超时拒绝（评审 round-9 P1）
+        this.setData({ countdown: '', payBlockedByExpiry: true });
         // 与上面回拨分支同款守卫。当前 onHide/onUnload 都已停表所以不可达，
         // 但停表逻辑一旦改松，这里就是漏点（双谱系评审 round-6 P3）
         if (!this._hidden && !this._destroyed) this.loadDetail(saleOrderId);
@@ -711,6 +725,13 @@ Page({
 
   onPay() {
     if (!this.data.order?.sale_order_id) return;
+    // 时限已到而「归零后那次刷新」还没成功：这单大概率已经被服务端关了，
+    // 放行只会让顾客跳到结算页再吃一个「订单已超时」。wxml 那边也 disabled 了，
+    // 这里是第二道（Vant 的 disabled 并非对所有组件都能挡住 tap）
+    if (this.data.payBlockedByExpiry) {
+      Toast('支付时限已到，正在确认订单状态，请下拉刷新');
+      return;
+    }
     const { sale_order_id } = this.data.order;
     wx.navigateTo({ url: `/pagesOrder/checkout/checkout?saleOrderId=${sale_order_id}` });
   },

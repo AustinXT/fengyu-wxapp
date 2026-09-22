@@ -1457,12 +1457,20 @@ async function createLakalaAlipayShareCode({
 const PENDING_AUTO_CLOSE_GUARD_SQL =
   `o.status = '待支付' AND o.opened_by IS NULL AND o.lakala_out_order_no IS NULL`
 
-/** 重读订单行 + 当下的自动关闭判据（issue #215）。取整行，见 detail 里的说明。 */
-function queryOrderGuardSnapshot(orderNo) {
+/**
+ * 重读订单行 + 当下的自动关闭判据（issue #215）。取整行，见 detail 里的说明。
+ *
+ * ⚠️ **必须和主查询一样带 `client_user_id` 归属条件**：这行结果会被
+ * `Object.assign` 整行合进要下发的 order。只按订单号重读的话，
+ * 「管理员物理删掉这张单 + 当天最高序号被新单复用」（订单号是 `MAX(...) + 1` 生成的）
+ * 就会把**另一个顾客**的整行订单装进本次响应 —— 姓名、手机号、金额、门店全泄露。
+ * 窗口只有毫秒级、极难触发，但这是一行就能封死的越权读。
+ */
+function queryOrderGuardSnapshot(orderNo, userId) {
   return pg.query(
     `SELECT o.*, (${PENDING_AUTO_CLOSE_GUARD_SQL}) AS auto_close_eligible
-       FROM sale_orders o WHERE o.sale_order_id = $1`,
-    [orderNo]
+       FROM sale_orders o WHERE o.sale_order_id = $1 AND o.client_user_id = $2`,
+    [orderNo, userId]
   )
 }
 
@@ -1474,11 +1482,11 @@ function queryOrderGuardSnapshot(orderNo) {
  * 往往已超过 10 分钟，不应被自助下单的懒清理误关（issue #27）。
  *
  * ⚠️ **本函数体内不得有任何时间谓词**（issue #215）：「过没过 10 分钟」一律由调用方判。
- * `order.detail` 的「权威 0」契约就架在这条前提上 —— 它下发 `expire_in_ms = 0` 时向前端
- * 承诺「已经试到关不动为止」，而前端对权威 0 的处理是**不再重载**。
+ * `order.detail` 的下发契约就架在这条前提上 —— 它只在**补关到关不动为止**之后才下发
+ * `expire_in_ms`（且恒为严格正数），关不动就干脆不下发、让前端退到非权威口径。
  * 一旦这里加上 `sale_order_datetime < NOW() - INTERVAL '10 minutes'` 之类的「加固」，
  * 补关是否成功就开始取决于 PG 与云函数宿主的时钟差：PG 慢一点就关不掉，
- * 而复读仍判 eligible，页面于是停在「待支付 / 请完成支付 / 去支付」——
+ * 而复读仍判 eligible，detail 于是反复降级、页面停在「待支付 / 请完成支付 / 去支付」——
  * 本 issue 要消灭的矛盾态从后门回来。由 `order.test.js` 的同源锁一并钉住。
  *
  * @param {string} orderNo - 订单号
@@ -2971,7 +2979,7 @@ async function detail(ctx) {
     ),
     // 见上面 needsGuardRefresh 的说明。本文件 :2550 对 order.pay 早已写明
     // 「状态必须 FOR UPDATE 后重读」，detail 这条展示链路此前是唯一的例外。
-    needsGuardRefresh ? queryOrderGuardSnapshot(orderNo) : Promise.resolve(null),
+    needsGuardRefresh ? queryOrderGuardSnapshot(orderNo, userId) : Promise.resolve(null),
   ])
 
   // 整行覆盖：只挑三列回填会把 status 与 received / paid_at / payable_amount 拆开——
@@ -2996,11 +3004,11 @@ async function detail(ctx) {
   //
   // 为什么要**循环**而不是关一次就走：第一次的 CAS 可能输给并发写入的支付意图，
   // 而那笔意图又在复读之前被清掉（预下单失败等），复读于是仍然「可关且已过期」——
-  // 这时直接下发权威的 0 就骗了前端：它对权威 0 的处理是「不再重载」，
-  // 那句话必须严格蕴含「服务端已经试到关不动为止」。两次就足以收住这类三方竞态。
+  // 下面那步只在「剩余量严格为正」时才下发权威值，所以这里关不动的话就会自动降级；
+  // 重试两次是为了让**常态**下别走到降级分支上去。
   for (let attempt = 0; attempt < 2 && order.auto_close_eligible && deadlineMs <= nowMs; attempt++) {
     await closeExpiredOrder(orderNo)
-    const recheckedRows = await queryOrderGuardSnapshot(orderNo)
+    const recheckedRows = await queryOrderGuardSnapshot(orderNo, userId)
     if (recheckedRows.length === 0) break
     Object.assign(order, recheckedRows[0])
   }
