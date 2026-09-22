@@ -364,7 +364,14 @@ function stripComments(source: string, fileName: string): string {
   visit(sf)
   // 挖空而不是删除：保留换行与字符偏移，行号定位与 wrappedByNormalizePage 的
   // 「往前跳空白」才不会被打乱。
-  const chars = [...source]
+  //
+  // ⚠️ 必须用 `split('')`（按 **UTF-16 code unit**）而不是 `[...source]`（按码点）——
+  // TS 的 comment range 是 UTF-16 偏移，而 `[...]` 会把一个 emoji 当 1 个元素、
+  // 其后所有下标整体左移，挖空位置随之错位：实测
+  // `const e = "(emoji)(emoji)"; // x` 之后那行的首字母 `M` 被擦成空格，
+  // `Math.max(1, filters.page)` 直接漏报。扫描根内 refunds.ts / orders.ts 等**确实有 emoji**，
+  // 这不是理论问题。
+  const chars = source.split('')
   for (const [from, to] of holes) {
     for (let i = from; i < to && i < chars.length; i++) {
       if (chars[i] !== '\n') chars[i] = ' '
@@ -393,8 +400,50 @@ function wrappedByNormalizePage(source: string, idx: number): boolean {
   // ⚠️ 后缀比对会把 `denormalizePage(` / `myNormalizePage(` 也算命中 —— 前者的后 14 个
   // 字符恰好就是 `normalizePage(`。必须确认它是**独立标识符**而不是别的函数的词尾。
   const before = source[i - NAME.length]
-  return before === undefined || !/[\w$]/.test(before)
+  // 边界字符集要含 `.` —— 否则 `fake.normalizePage(get('page'))` 也算命中，
+  // 而那个方法可能只是 `x => x`，页码根本没归一（漏报方向）。
+  return before === undefined || !/[\w$.]/.test(before)
 }
+
+/**
+ * 页码反模式清单 —— **守护与灵敏度用例共用的唯一一份**。
+ *
+ * ⚠️ 别在用例里另写一份正则副本：评审实测过，把守护里的 `RECEIVER` 退回 `\w+\.`
+ * 之后，用例因为用的是自己那份增强版正则、照样全绿 —— 灵敏度回退**完全不可见**，
+ * 「有灵敏度用例」反而成了安慰剂。单源之后，改坏守护必然同时打红灵敏度用例。
+ *
+ * receiver 写成 `[\w$]+(?:\??\.[\w$]+)*\??\.` 而不是 `\w+\.`：后者对**可选链**
+ * （`filters?.page`）与**带命名空间的 receiver**（`searchParams.get('page')`）双双失明，
+ * 而这两种恰恰是最可能的真实复发形态。
+ */
+const RECEIVER = String.raw`[\w$]+(?:\??\.[\w$]+)*\??\.`
+
+const PAGE_ANTIPATTERNS: Array<[re: RegExp, label: string, mustHit: string]> = [
+  [new RegExp(String.raw`Math\.max\(\s*1\s*,\s*(?:Number\(\s*)?${RECEIVER}page\b`),
+    'Math.max(1, x.page)',
+    'const page = Math.max(1, filters?.page ?? 1)'],
+  [new RegExp(String.raw`Math\.max\(\s*1\s*,\s*Number\(\s*(?:${RECEIVER})?get\(\s*['"]page['"]`),
+    "Math.max(1, Number(get('page')))",
+    `const page = Math.max(1, Number(searchParams.get('page')) || 1)`],
+  // 裸 `Number(get('page'))`（连 Math.max 都没有）—— 三个 reviewer 独立发现的那 4 处
+  // 正是这个形状，第一版三条正则全要求 `Math.max` 前缀，对它完全失明。
+  [new RegExp(String.raw`(?<!normalizePage\()\bNumber\(\s*(?:${RECEIVER})?get\(\s*['"]page['"]`),
+    "裸 Number(get('page'))",
+    `const page = Number(searchParams.get('page'))`],
+  // ⚠️ 这条只认「结果**直接当页码变量用**」的形状（`const page = Number(x.page)`），
+  // 不能写成泛泛的 `Number(<receiver>.page)` —— 那会把 19 个 `page.tsx` 里的
+  // `page: params.page ? Number(params.page) : undefined` 一起抓进来，
+  // 而那些值是**传给已归一 action 的入参**，不是页码本身，归一在 action 内做。
+  [new RegExp(String.raw`const\s+[\w$]*[Pp]age[\w$]*\s*=\s*Number\(\s*${RECEIVER}page\b`),
+    'const page = Number(x.page)',
+    'const currentPage = Number(filters.page) || 1'],
+]
+
+/** 手算 offset 的两种等价写法。同样是守护与灵敏度用例共用的单源。 */
+const OFFSET_ANTIPATTERNS: Array<[re: RegExp, mustHit: string]> = [
+  [/\(\s*[\w$.?]*[Pp]age[\w$]*\s*-\s*1\s*\)\s*\*/, 'const offset = (page - 1) * pageSize'],
+  [/[\w$.?]*[Pp]age[\w$]*\s*\*\s*([\w$.?]*[Pp]ageSize[\w$]*)\s*-\s*\1\b/, 'const offset = page * pageSize - pageSize'],
+]
 
 describe('守护的底层工具自身（这两个函数错了，上面所有守护都失真）', () => {
   // 这一组是**对守护的守护**。两次评审各抓出一批 stripComments 的翻车形状，
@@ -436,6 +485,22 @@ describe('守护的底层工具自身（这两个函数错了，上面所有守�
     ['真实违规照常命中',
       'const page = Math.max(1, filters.page || 1)',
       'g.ts', BAD_RE, true],
+    // ⚠️ 挖空必须按 **UTF-16 code unit**（`split('')`）而不是码点（`[...source]`）——
+    // TS 的 comment range 是 UTF-16 偏移，用码点下标会让 emoji 之后的所有位置左移，
+    // 挖空错位一格，把下一行的首字母吃掉 → 真违规漏报。
+    // 扫描根内 refunds.ts / orders.ts 等确实含 emoji，不是理论问题。
+    // ⚠️ 挖空必须按 **UTF-16 code unit**（`split('')`）而不是码点（`[...source]`）：
+    // TS 的 comment range 是 UTF-16 偏移，而码点下标会让每个 emoji 把其后位置压缩 1 位，
+    // 于是挖空区间整体**向后错位 N 格**（N = 之前的 emoji 个数）——
+    // 注释被擦掉的同时，紧随其后的真代码也被啃掉 N 个字符，真违规随之漏报。
+    // 扫描根内 refunds.ts / orders.ts 等确实含 emoji，不是理论问题。
+    //
+    // 这个用例的形状是调出来的：emoji 数要够多（3 个）、反模式要**紧贴注释下一行行首**，
+    // 错位才啃得到 `(page` 这几个字符。放宽任一条件都会让断言恒绿
+    // ——「emoji 放注释后面」「反模式不在行首」两种写法都试过，码点版照样命中。
+    ['emoji 造成的挖空错位会啃掉紧邻的真代码（UTF-16 偏移 vs 码点下标）',
+      'const e = "\u{1F600}\u{1F600}\u{1F600}"\n// xx\n(page - 1) * pageSize',
+      'h.ts', OFFSET_RE, true],
   ])('stripComments: %s', (_label, src, fileName, re, hit) => {
     expect((re as RegExp).test(stripComments(src as string, fileName as string))).toBe(hit)
   })
@@ -447,6 +512,9 @@ describe('守护的底层工具自身（这两个函数错了，上面所有守�
     ['denormalizePage(get(…)) 不算', `denormalizePage(get('page', '1'))`, false],
     ['myNormalizePage(get(…)) 不算', `myNormalizePage(get('page', '1'))`, false],
     ['名与括号间有空格也算包裹', `normalizePage (get('page', '1'))`, true],
+    // 边界字符集必须含 `.`，否则成员访问能冒充：`fake.normalizePage` 可能只是 `x => x`
+    ['fake.normalizePage(get(…)) 不算', `fake.normalizePage(get('page', '1'))`, false],
+    ['obj?.normalizePage(get(…)) 不算', `obj?.normalizePage(get('page', '1'))`, false],
     ['裸 get 不算', `const p = get('page', '1')`, false],
   ])('wrappedByNormalizePage: %s', (_label, src, expected) => {
     const idx = (src as string).indexOf("get('page'")
@@ -462,63 +530,55 @@ describe('防复发守护（#281 改完后不能再长回来）', () => {
   const ROOTS = ['actions', 'app', 'lib']
 
   it('守护正则本身有灵敏度（放宽/收窄了会被这条抓住）', () => {
-    // GLM 指出：RECEIVER 放宽与「page * pageSize - pageSize」等价式这两处强化，
-    // 只靠「全仓当前无 offender」间接成立 —— 把 RECEIVER 改回 `\w+\.`
-    // 或删掉等价式分支，43 条用例照样全绿，灵敏度回退**完全不可见**。
-    // 这条用最小输入正面钉住每个 pattern 必须命中什么。
-    const RECEIVER = String.raw`[\w$]+(?:\??\.[\w$]+)*\??\.`
-    const MUST_HIT: Array<[RegExp, string]> = [
-      [new RegExp(String.raw`Math\.max\(\s*1\s*,\s*(?:Number\(\s*)?${RECEIVER}page\b`),
-        'const page = Math.max(1, filters?.page ?? 1)'],
-      [new RegExp(String.raw`Math\.max\(\s*1\s*,\s*(?:Number\(\s*)?${RECEIVER}page\b`),
-        'const page = Math.max(1, ctx.filters.page || 1)'],
-      [new RegExp(String.raw`(?<!normalizePage\()\bNumber\(\s*(?:${RECEIVER})?get\(\s*['"]page['"]`),
-        `const page = Number(searchParams.get('page'))`],
-      [new RegExp(String.raw`const\s+[\w$]*[Pp]age[\w$]*\s*=\s*Number\(\s*${RECEIVER}page\b`),
-        'const currentPage = Number(filters.page) || 1'],
+    // ⚠️ 这里断言的是**模块级单源**里那几条正则，不是另抄一份 ——
+    // 评审实测：用例若持有自己的增强版副本，把守护里的 RECEIVER 退回 `\w+\.`
+    // 之后用例照样全绿，灵敏度回退完全不可见，这条用例就成了安慰剂。
+    // ⚠️ 断言方向是「**样本必须被某条 pattern 抓住**」，不是「遍历 pattern 逐条自测」。
+    // 后者对**删除**零保护：删掉一条 pattern，循环就少跑一次，用例照样全绿
+    // （红检实测踩到过）。样本清单独立于数组，删 pattern 必然让对应样本无人命中。
+    const PAGE_MUST_BE_CAUGHT = [
+      'const page = Math.max(1, filters?.page ?? 1)',
+      `const page = Math.max(1, Number(searchParams.get('page')) || 1)`,
+      `const page = Number(searchParams.get('page'))`,
+      'const currentPage = Number(filters.page) || 1',
     ]
-    for (const [re, sample] of MUST_HIT) {
-      expect(re.test(sample), sample).toBe(true)
+    for (const sample of PAGE_MUST_BE_CAUGHT) {
+      expect(PAGE_ANTIPATTERNS.some(([re]) => re.test(sample)), `无人命中: ${sample}`).toBe(true)
     }
-
-    const OFFSET_EQUIV = [
+    const OFFSET_MUST_BE_CAUGHT = [
       'const offset = (page - 1) * pageSize',
       'const offset = page * pageSize - pageSize',
     ]
-    for (const sample of OFFSET_EQUIV) {
-      const hit = /\(\s*[\w$.?]*[Pp]age[\w$]*\s*-\s*1\s*\)\s*\*/.test(sample)
-        || /[\w$.?]*[Pp]age[\w$]*\s*\*\s*([\w$.?]*[Pp]ageSize[\w$]*)\s*-\s*\1\b/.test(sample)
-      expect(hit, sample).toBe(true)
+    for (const sample of OFFSET_MUST_BE_CAUGHT) {
+      expect(OFFSET_ANTIPATTERNS.some(([re]) => re.test(sample)), `无人命中: ${sample}`).toBe(true)
+    }
+    // 每条 pattern 自带的 mustHit 也要各自成立（防某条被改成永不命中的死正则）
+    for (const [re, label, mustHit] of PAGE_ANTIPATTERNS) {
+      expect(re.test(mustHit), `${label} 应命中自己的样本: ${mustHit}`).toBe(true)
+    }
+    // 反向：正常写法不得命中（防把守护放宽成「什么都报」）
+    const CLEAN = [
+      'const { page, pageSize, offset } = resolvePaging({ page: filters.page, pageSize: filters.pageSize, defaultPageSize: 20 })',
+      `const currentPage = normalizePage(get('page', '1'))`,
+      'const quantity = Math.max(1, Number(item.quantity) || 1)',
+      'page: params.page ? Number(params.page) : undefined',
+    ]
+    for (const clean of CLEAN) {
+      for (const [re, label] of PAGE_ANTIPATTERNS) {
+        expect(re.test(clean), `${label} 不该命中: ${clean}`).toBe(false)
+      }
     }
   })
 
   it('全仓不得再出现不取整的页码写法', () => {
+    // 正则来自模块级 PAGE_ANTIPATTERNS 单源（与灵敏度用例同一份）。
+    // 只认「页码」语义：`.page` 字段与 `get('page', …)` URL 取值；
+    // 数量夹取（`Math.max(1, Number(item.quantity) || 1)`）不在此列。
     const offenders: string[] = []
     for (const root of ROOTS) {
       for (const file of collectSources(join(SRC, root))) {
         const code = stripComments(readFileSync(file, 'utf8'), file)
-        // 只认「页码」语义的那几种：`.page` 字段 与 `get('page', …)` URL 取值。
-        // 数量夹取（`Math.max(1, Number(item.quantity) || 1)`）不在此列。
-        //
-        // ⚠️ receiver 一律写成 `[\w.?]*` 而不是 `\w+\.`：后者对**可选链**
-        // （`filters?.page`）与**带命名空间的 receiver**（`searchParams.get('page')`）
-        // 双双失明，而这两种恰恰是最可能的真实复发形态（评审实测确认）。
-        const RECEIVER = String.raw`[\w$]+(?:\??\.[\w$]+)*\??\.`
-        const PATTERNS: Array<[RegExp, string]> = [
-          [new RegExp(String.raw`Math\.max\(\s*1\s*,\s*(?:Number\(\s*)?${RECEIVER}page\b`), 'Math.max(1, x.page)'],
-          [new RegExp(String.raw`Math\.max\(\s*1\s*,\s*Number\(\s*(?:${RECEIVER})?get\(\s*['"]page['"]`), "Math.max(1, Number(get('page')))"],
-          // 裸 `Number(get('page'))`（连 Math.max 都没有）——三个 reviewer 独立发现的那 4 处
-          // 正是这个形状，第一版三条正则全要求 `Math.max` 前缀，对它完全失明。
-          [new RegExp(String.raw`(?<!normalizePage\()\bNumber\(\s*(?:${RECEIVER})?get\(\s*['"]page['"]`), "裸 Number(get('page'))"],
-          // `get('page')` 是 URL 直读，结果必然当页码用，所以上一条不需要额外限定；
-          // 但 `x.page` 可能只是在转发入参，故下一条限定到 `const <page 变量> =`。
-          // ⚠️ 这条只认「结果**直接当页码变量用**」的形状（`const page = Number(x.page)`），
-          // 不能写成泛泛的 `Number(<receiver>.page)` —— 那会把 19 个 `page.tsx` 里的
-          // `page: params.page ? Number(params.page) : undefined` 一起抓进来，
-          // 而那些值是**传给已归一 action 的入参**，不是页码本身，归一在 action 内做。
-          [new RegExp(String.raw`const\s+[\w$]*[Pp]age[\w$]*\s*=\s*Number\(\s*${RECEIVER}page\b`), 'const page = Number(x.page)'],
-        ]
-        for (const [re, label] of PATTERNS) {
+        for (const [re, label] of PAGE_ANTIPATTERNS) {
           if (re.test(code)) offenders.push(`${file} (${label})`)
         }
       }
@@ -542,14 +602,11 @@ describe('防复发守护（#281 改完后不能再长回来）', () => {
       for (const file of collectSources(join(SRC, root))) {
         if (file.endsWith('/lib/paging.ts')) continue   // 单源自身就是算 offset 的地方
         const code = stripComments(readFileSync(file, 'utf8'), file)
-        // 覆盖两种等价写法：`(page - 1) * size` 与展开后的 `page * size - size`。
+        // 覆盖两种等价写法（来自 OFFSET_ANTIPATTERNS 单源）。
         // ⚠️ 这条守护**挡的是「顺手改回去」，挡不住蓄意等价改写** —— 字面量扫描的
-        // 固有局限，任何算术恒等式都能绕过（`page * size - size`、`--page * size` …）。
+        // 固有局限，任何算术恒等式都能绕过（`--page * size`、`page * size - size * 1` …）。
         // 真正的兜底是 `resolvePaging` 的出口契约用例，这条只是让回退有摩擦。
-        if (/\(\s*[\w$.?]*[Pp]age[\w$]*\s*-\s*1\s*\)\s*\*/.test(code)
-          || /[\w$.?]*[Pp]age[\w$]*\s*\*\s*([\w$.?]*[Pp]ageSize[\w$]*)\s*-\s*\1\b/.test(code)) {
-          offenders.push(file)
-        }
+        if (OFFSET_ANTIPATTERNS.some(([re]) => re.test(code))) offenders.push(file)
       }
     }
     expect(offenders, `手算 offset 的文件:\n${offenders.join('\n')}`).toEqual([])
