@@ -275,6 +275,32 @@ describe('createEmployee — 服务端输入校验', () => {
     expect(db.transaction).not.toHaveBeenCalled()
   })
 
+  /**
+   * 非法日期原先一路走到 INSERT，PG 日期转换失败抛出去 → 500。
+   * 它同时是零写入信道的一个触发器（GLM 谱系第 5 轮；边界见 invalidDateMessage 的注释）。
+   */
+  it('生日格式非法 → 打库前就拒，不进事务', async () => {
+    ;(db.select as any).mockImplementation(mockSelectEmpty())
+    const result = await createEmployee({
+      name: '张三', phone: '13812345678', idCard: '110101199003078888',
+      storeId: 'store-A', birthday: '1990/03/07',
+    })
+    expect(result.success).toBe(false)
+    expect(result.message).toBe('生日格式不正确（需为 YYYY-MM-DD）')
+    expect(db.transaction).not.toHaveBeenCalled()
+  })
+
+  it('入职日期格式非法 → 同样拒（两个日期列都校验）', async () => {
+    ;(db.select as any).mockImplementation(mockSelectEmpty())
+    const result = await createEmployee({
+      name: '张三', phone: '13812345678', idCard: '110101199003078888',
+      storeId: 'store-A', hiredAt: '2026-9-1',
+    })
+    expect(result.success).toBe(false)
+    expect(result.message).toBe('入职日期格式不正确（需为 YYYY-MM-DD）')
+    expect(db.transaction).not.toHaveBeenCalled()
+  })
+
   it('身份证格式错误 → 拒绝', async () => {
     const result = await createEmployee({ name: '张三', phone: '13812345678', idCard: '12345' })
     expect(result.success).toBe(false)
@@ -408,6 +434,25 @@ describe('updateEmployee — 服务端输入校验 + 错误处理', () => {
     expect(result.success).toBe(false)
     expect(result.message).toContain('身份证号格式不正确')
     expect(db.update).not.toHaveBeenCalled()
+  })
+
+  /** #228 的教训：只修一侧等于没修 —— update 侧同样在打库前校验三个日期列 */
+  it('生日 / 入职日期 / 离职日期格式非法 → 打库前就拒，不读旧行', async () => {
+    for (const [payload, message] of [
+      [{ birthday: '1990/03/07' }, '生日格式不正确（需为 YYYY-MM-DD）'],
+      [{ hiredAt: '2026-9-1' }, '入职日期格式不正确（需为 YYYY-MM-DD）'],
+      [{ resignedAt: '昨天' }, '离职日期格式不正确（需为 YYYY-MM-DD）'],
+    ] as const) {
+      vi.clearAllMocks()
+      ;(getSession as any).mockResolvedValue(mockSession)
+      ;(isAdminScope as any).mockReturnValue(true)
+      ;(db.select as any).mockImplementation(mockSelectExistingEmployee())
+      const result = await updateEmployee('FY-001', payload)
+      expect(result.success).toBe(false)
+      expect(result.message).toBe(message)
+      expect(db.select).not.toHaveBeenCalled()
+      expect(db.update).not.toHaveBeenCalled()
+    }
   })
 
   it('手机号 null → 跳过格式校验（合法清除）', async () => {
@@ -1613,37 +1658,75 @@ describe('#249 调店不自动搬迁角色绑定 —— 只留审计 + 回传提
   })
 
   /**
-   * GLM 第 4 轮：**复职 + 调店** 必须落到查询分支。
+   * **复职 = 角色真空**，必须提示重新授权（codex 谱系第 5 轮 P1）。
    *
-   * 第 3 轮把条件写成 `data.isResigned === true || currentEmployee.isResigned === true`，
-   * 于是「旧值已离职 + 本次 isResigned=false（复职）」会被误判成「角色已随离职撤销」而零提示 ——
-   * 复职后员工正处在角色真空里，恰恰是最需要提醒管理员重新授权的一刻。
-   * 判据应是「这次操作**之后**是不是离职态」：`data.isResigned ?? currentEmployee.isResigned`。
+   * ⚠️ 这条用例上一版给已离职员工**伪造**了一条 `manager` 绑定，于是它验的是
+   * 「复职时旧店还有绑定」—— 而标记离职的事务把该员工全部角色删光了，这个状态根本不存在。
+   * 伪造夹具正好避开了真实的角色真空，那次修复（把判据从 `||` 改成 `??`）也就没闭合任何东西：
+   * 旧店查出来必然是空 → 落进 `no_binding_at_old_store` → 返回干净的「员工信息已更新」。
+   * 与「守护 DB 造不出来的状态」同类的测试设计错误。
+   *
+   * 现在夹具用真实状态（`bindings: []`），断言复职提示确实出现。
    */
-  it('复职 + 同批调店 → 走查询分支并回传提示，而不是记 roles_revoked_by_resignation', async () => {
+  it('复职 + 同批调店（真实角色真空）→ 回传「需重新授权」提示', async () => {
     mockSelectByTable({
       employee: [{ storeId: 'store-A', orgNodeId: 'org-dept', isResigned: true }],
       store: [[{ orgNodeId: 'org-store-B' }], [{ orgNodeId: 'org-store-A' }]],
-      bindings: [{ role: 'manager' }],
+      bindings: [],           // 离职时已全部删除 —— 这才是真实状态
     })
     mockUpdateOnce()
 
     const result = await updateEmployee('FY-001', { storeId: 'store-B', isResigned: false })
 
     expect(result.success).toBe(true)
+    expect(result.message).toContain('离职时角色已全部撤销')
+    expect(result.message).toContain('重新授权')
     expect(logOperation).toHaveBeenCalledWith(
-      mockSession, 'permission.scopeSync.skipped', 'permission_role', 'FY-001',
-      expect.objectContaining({ reason: 'manual_review_required', roles: ['manager'] }),
+      mockSession, 'permission.reinstated.rolesEmpty', 'permission_role', 'FY-001',
+      expect.objectContaining({ oldStoreId: 'store-A', newStoreId: 'store-B' }),
     )
-    expect(logOperation).not.toHaveBeenCalledWith(
-      mockSession, 'permission.scopeSync.skipped', 'permission_role', 'FY-001',
-      expect.objectContaining({ reason: 'roles_revoked_by_resignation' }),
-    )
-    expect(result.message).toContain('manager')
   })
 
-  /** codex 第 3 轮：A → 无门店 时没有「新门店」，文案不能说「按新门店重新授权」 */
-  it('storeId 从有到无时的文案说「撤销或改绑」，不说「按新门店」', async () => {
+  /** 复职**不调店**同样是角色真空 —— 判据挂在调店分支里就漏了一半 */
+  it('复职但不调店 → 仍回传「需重新授权」提示', async () => {
+    mockSelectByTable({
+      employee: [{ storeId: 'store-A', orgNodeId: 'org-store-A', isResigned: true }],
+      store: [[{ orgNodeId: 'org-store-A' }]],
+      bindings: [],
+    })
+    mockUpdateOnce()
+
+    const result = await updateEmployee('FY-001', { isResigned: false })
+
+    expect(result.success).toBe(true)
+    expect(result.message).toContain('离职时角色已全部撤销')
+    // 没有调店 → §AFF-03 整块不进
+    expect(findRolesBoundWithinSubtree).not.toHaveBeenCalled()
+  })
+
+  /** 在职员工的普通编辑不该被这条提示打扰 */
+  it('在职员工普通调店 → 不出现复职提示', async () => {
+    mockSelectByTable({
+      employee: [{ storeId: 'store-A', orgNodeId: 'org-dept', isResigned: false }],
+      store: [[{ orgNodeId: 'org-store-B' }], [{ orgNodeId: 'org-store-A' }]],
+      bindings: [],
+    })
+    mockUpdateOnce()
+
+    const result = await updateEmployee('FY-001', { storeId: 'store-B', isResigned: false })
+
+    expect(result.success).toBe(true)
+    expect(result.message).not.toContain('离职时角色已全部撤销')
+  })
+
+  /**
+   * 文案必须**中性**（codex 谱系第 5 轮 P2）：
+   * 「旧店仍有绑定」≠「新店缺授权」—— 允许多绑定的口径下，员工在 A、B 都持 manager、
+   * 主门店 A→B 时 B 店本来就有授权，照「按新门店重新授权」去补会撞唯一约束；
+   * 旧店那条也完全可能是该保留的兼任。第 3 轮的 `A → null` 文案问题一并被这句涵盖
+   * （中性文案里根本不提「新门店」）。
+   */
+  it('提示文案中性：不预设「必须按新门店重新授权」', async () => {
     mockSelectByTable({
       employee: [{ storeId: 'store-A', orgNodeId: 'org-store-A' }],
       store: [[{ orgNodeId: 'org-store-A' }]],
@@ -1654,7 +1737,9 @@ describe('#249 调店不自动搬迁角色绑定 —— 只留审计 + 回传提
     const result = await updateEmployee('FY-001', { storeId: null, orgNodeId: 'market-1' })
 
     expect(result.success).toBe(true)
-    expect(result.message).toContain('判断撤销或改绑到合适范围')
+    expect(result.message).toContain('复核是保留兼任还是改绑')
+    expect(result.message).toContain('manager')
+    expect(result.message).not.toContain('重新授权')
     expect(result.message).not.toContain('按新门店')
   })
 
@@ -1903,20 +1988,6 @@ describe('updateEmployee — §AFF-03 门店变更 scope 同步', () => {
     defaultAncestryMocks()
   })
 
-  /**
-   * 构建 mock chain，支持 storeId 变更场景的多次 db.select / db.update 序列。
-   *
-   * db.select 调用顺序：
-   *   1. 获取旧 storeId（仅 data.storeId !== undefined 时）
-   *   2. 手机号唯一性校验（仅 data.phone 时）
-   *   3. 获取旧门店 orgNodeId（scope sync）
-   *   4. 获取新门店 orgNodeId（scope sync）
-   *
-   * db.update 调用顺序：
-   *   1. 更新员工记录
-   *   2. 更新 permission_roles scope
-   */
-
   it('storeId 变更 → 只写 skipped 审计，permission_roles 不动', async () => {
     mockSelectByTable({
       employee: [{ storeId: 'store-A', orgNodeId: 'org-dept' }],
@@ -2004,7 +2075,8 @@ describe('updateEmployee — §AFF-03 门店变更 scope 同步', () => {
   it('改手机号 + scope 内调店 → 员工更新与审计都发生，角色绑定不动', async () => {
     mockSelectByTable({
       employee: [{ storeId: 'store-A', orgNodeId: 'org-dept' }],
-      store: [[{ orgNodeId: 'org-store-A' }], [{ orgNodeId: 'org-store-B' }]],
+      // [新店 store-B 的节点（归属自洽）, 旧店 store-A 的节点（§AFF-03 找绑定）]
+      store: [[{ orgNodeId: 'org-store-B' }], [{ orgNodeId: 'org-store-A' }]],
       bindings: [{ id: 1, role: 'manager', scopeId: 'org-store-A' }],
     })
     ;(db.update as any).mockImplementation(() => ({
@@ -2014,7 +2086,7 @@ describe('updateEmployee — §AFF-03 门店变更 scope 同步', () => {
     const result = await updateEmployee('FY-001', { phone: '13900000005', storeId: 'store-B' })
 
     expect(result.success).toBe(true)
-    expect(db.update).toHaveBeenCalledTimes(1)   // #249：只改员工行，不动角色绑定   // 员工行 + permission_roles
+    expect(db.update).toHaveBeenCalledTimes(1)   // #249：只改员工行，不动角色绑定
     expect(logOperation).toHaveBeenCalledWith(
       mockSession, 'permission.scopeSync.skipped', 'permission_role', 'FY-001',
       expect.objectContaining({ reason: 'manual_review_required' }),

@@ -597,6 +597,36 @@ export const getOrgLevel2ForFilter = withPermission(
  */
 const FK_GONE_MESSAGE = '所选门店或组织节点已被删除，请刷新后重试'
 
+/**
+ * 纯入参的日期格式校验（`YYYY-MM-DD`，与 admin 表单 `<Input type="date">` 同格式）。
+ * 返回错误文案，全部合法则 null。
+ *
+ * 两个作用：
+ * ① 非法日期原先一路走到 INSERT/UPDATE，PG 日期转换失败抛出去变 500 —— 用户该看到的是
+ *    「生日格式不正确」；
+ * ② 顺带收窄一个零写入信道的触发器：「scope 内归属 + 合法必填 + 非法 birthday」能配出
+ *    「手机号已占用→占用文案 / 未占用→写库失败回滚」两种响应且都零持久化写入
+ *    （codex 谱系第 5 轮记下的残留）。
+ *
+ * ⚠️ ② **不等于关闭了整个信道类** —— 任何「必然失败且零写入」的入参都能重新配出一对
+ * （超长 position_name 撞 22001 之类）。彻底解法是入参全字段白名单校验，使通过校验后只剩
+ * 唯一约束与并发窗口会失败，不在本 PR 范围。实际曝光面也有限：持 `employee:create`
+ * 的角色同样持 `employee:list`，`searchEmployees` 的手机号 ilike 检索本就返回存在性，
+ * 泄漏不超过既有合法能力（GLM 谱系核实）。
+ *
+ * create / update 两侧都要调 —— #228 的教训是「只修一侧等于没修」。
+ */
+function invalidDateMessage(
+  fields: readonly (readonly [string, string | null | undefined])[],
+): string | null {
+  for (const [label, value] of fields) {
+    if (value && !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+      return `${label}格式不正确（需为 YYYY-MM-DD）`
+    }
+  }
+  return null
+}
+
 async function assertOwnershipConsistent(
   storeId: string | null,
   orgNodeId: string | null,
@@ -686,6 +716,11 @@ export const createEmployee = withPermission(
     return { success: false, message: '身份证号格式不正确' }
   }
 
+  {
+    const dateError = invalidDateMessage([['生日', data.birthday], ['入职日期', data.hiredAt]])
+    if (dateError) return { success: false, message: dateError }
+  }
+
   // 校验 storeId 在 scope 内（HR 角色受 scope 限制）— 在 DB 查询前快速失败
   if (data.storeId && !isInScope(session, data.storeId)) {
     return { success: false, message: '无权在该门店创建员工' }
@@ -717,12 +752,7 @@ export const createEmployee = withPermission(
     if (conflict) return { success: false, message: conflict }
   }
 
-  /**
-   * 同 updateEmployee：手机号唯一性交给 DB 约束 + 下面的 23505 转译，不做事务外预查重。
-   * 这里的预查同样是零写入信道 —— 提交一个 scope 内归属 + 合法必填字段 + **非法 birthday**，
-   * 手机号已占用时直接返回占用文案、未占用时 INSERT 因日期转换失败整事务回滚，
-   * 两者同样零持久化写入而响应可区分（codex 谱系第 5 轮）。
-   */
+  // 手机号唯一性交给 DB 约束 + 下面的 23505 转译，不做事务外预查重（它本身就是零写入探测信道）
   // 事务：ID 生成（advisory lock）+ 插入，原子提交防并发重复
   let employeeId: string
   try {
@@ -853,6 +883,13 @@ export const updateEmployee = withPermission(
     if (ls && le && le <= ls) {
       return { success: false, message: '请假结束时间须晚于开始时间' }
     }
+  }
+
+  {
+    const dateError = invalidDateMessage([
+      ['生日', data.birthday], ['入职日期', data.hiredAt], ['离职日期', data.resignedAt],
+    ])
+    if (dateError) return { success: false, message: dateError }
   }
 
   // 获取旧值用于日志 diff + storeId 变更检测
@@ -1087,19 +1124,25 @@ export const updateEmployee = withPermission(
    * `nextStoreId && …` 让这类请求一条审计都不记、也不回传，成了权限跟进盲区。
    */
   if (oldStoreId && nextStoreId !== oldStoreId) {
-    if ((data.isResigned ?? currentEmployee.isResigned) === true) {
+    if (data.isResigned === true || currentEmployee.isResigned === true) {
       /**
        * 离职判定必须在**最前面**（codex 谱系第 3 轮）：
        * 原先它排在 scope 判定之后，于是「跨 scope 调店 + 同批离职」会先命中
        * `old_store_out_of_scope` 并返回「可能仍有角色绑定」——而角色其实已被离职分支删光。
        *
-       * 判据是「**这次操作之后**是不是离职态」，三种时间轴各自落对：
+       * 判据是「**这次操作前后任一时刻处于离职态**」，也就是「角色是否已被离职清空」。
+       * 标记离职的事务把该员工**全部** `permission_roles` 删光，所以下面三种时间轴
+       * 旧店查询都必然为空，一律归这一类：
        *   - `data.isResigned === true`：本次同批标离职，上面的事务刚把角色删完
-       *   - `data.isResigned` 缺省 + 旧值已离职：此前已离职，本次只改归属，角色早已清空
-       *   - `data.isResigned === false` + 旧值已离职：**复职**同时调店 —— 必须落到下面的
-       *     查询分支。写成 `data.isResigned === true || currentEmployee.isResigned === true`
-       *     会把它误判成「角色已随离职撤销」并零提示，而复职后员工正处在角色真空里，
-       *     恰恰是最需要提醒管理员重新授权的一刻（GLM 谱系第 4 轮）。
+       *   - `data.isResigned` 缺省 + 旧值已离职：此前已离职，本次只改归属
+       *   - `data.isResigned === false` + 旧值已离职：**复职**同时调店
+       *
+       * ⚠️ 第 4 轮我把这里改成了 `data.isResigned ?? currentEmployee.isResigned`
+       * （「操作后是否离职态」），想让复职落进查询分支好拿到提示 —— 那是**修错了地方**：
+       * 旧店查出来必然是空，于是落进 `no_binding_at_old_store`，返回干净的「员工信息已更新」，
+       * 在最该提醒的时刻依然零提示（codex 谱系第 5 轮 P1）。真正缺的是复职提示本身，
+       * 它与调不调店无关，已独立放在函数末尾（见 `permission.reinstated.rolesEmpty`）。
+       * 改回 `||` 顺带省掉一次注定为空的查询和一条语义失真的审计。
        */
       await logOperation(session, 'permission.scopeSync.skipped', 'permission_role', employeeId, {
         reason: 'roles_revoked_by_resignation', oldStoreId, newStoreId: nextStoreId,
@@ -1161,25 +1204,44 @@ export const updateEmployee = withPermission(
    * 那对无 `permission:assign` 的操作者就是让他做做不到的事（GLM 谱系指出这处自相矛盾）。
    * 改为「请联系有权限的管理员」。
    */
+  const notes: string[] = []
   if (unsyncedRoles.length > 0) {
     const roles = Array.from(new Set(unsyncedRoles)).join('、')
     /**
-     * `A → 无门店`（转市场直属岗）时没有「新门店」可言，文案不能说「按新门店重新授权」
-     * （codex 谱系第 3 轮）—— 该由管理员判断撤销还是改绑到合适范围。
+     * 文案必须**中性**（codex 谱系第 5 轮）：早先写「需按新门店重新授权」是把
+     * 「旧店仍有绑定」直接等同于「新店缺授权」，与「允许多绑定」这条已拍板的口径冲突 ——
+     * 员工在 A、B 两店都持 manager、主门店 A→B 时，B 店本来就有授权，
+     * 照这句去补会撞 `uq_permission_roles`；而旧店那条绑定也完全可能是该保留的兼任。
+     * 本 action 刻意不查新店绑定做差集（那要额外一次只读查询 + 会把「该不该保留」写进代码），
+     * 留给有 `permission:assign` 的人当场判断。
      */
-    const action = nextStoreId ? '按新门店重新授权' : '判断撤销或改绑到合适范围'
-    return {
-      success: true,
-      message: `员工信息已更新。以下角色仍绑定在原门店，需联系有权限的管理员${action}：${roles}`,
-    }
+    notes.push(`以下角色仍绑定在原门店，请联系有权限的管理员复核是保留兼任还是改绑：${roles}`)
   }
   if (ownershipNeedsReview) {
-    return {
-      success: true,
-      message: '员工信息已更新。原门店不在你的管理范围内，该员工在原门店可能仍有角色绑定，请联系有权限的管理员复核',
-    }
+    notes.push('原门店不在你的管理范围内，该员工在原门店可能仍有角色绑定，请联系有权限的管理员复核')
   }
-  return { success: true, message: '员工信息已更新' }
+  /**
+   * **复职 = 角色真空**，与调不调店无关（codex 谱系第 5 轮的 P1）。
+   *
+   * 标记离职时事务把该员工全部 `permission_roles` 删光了，所以复职后他一条角色都没有。
+   * 上一轮只把「复职 + 调店」从离职分支挪进了查询分支 —— 但旧店查出来必然是空，
+   * 于是落进 `no_binding_at_old_store`，最终返回干干净净的「员工信息已更新」，
+   * 恰恰在最该提醒的时刻零提示。（而我那条测试给已离职员工**伪造**了一条 manager 绑定，
+   * 正好避开了真实的角色真空 —— 与「守护 DB 造不出来的状态」同类的测试设计错误。）
+   *
+   * 判据放在 §AFF-03 之外：§AFF-03 的入口是「离开原门店」，而「复职但不调店」同样是角色真空，
+   * 挂在调店分支里就漏了一半。
+   */
+  if (data.isResigned === false && currentEmployee.isResigned === true) {
+    await logOperation(session, 'permission.reinstated.rolesEmpty', 'permission_role', employeeId, {
+      oldStoreId, newStoreId: nextStoreId,
+    })
+    notes.push('该员工离职时角色已全部撤销，复职后需联系有权限的管理员重新授权')
+  }
+  return {
+    success: true,
+    message: notes.length > 0 ? `员工信息已更新。${notes.join('；')}` : '员工信息已更新',
+  }
   },
 )
 

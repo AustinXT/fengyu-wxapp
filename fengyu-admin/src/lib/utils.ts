@@ -76,7 +76,6 @@ export function buildOrgPath(nodeId: string | null, orgNodes: OrgNode[]): string
   return names.join("/")
 }
 
-/** 查找组织节点所属的市场节点 ID（向上遍历 parentId 链） */
 /**
  * 找 `nodeId` 自身及祖先里最近的「门店」型节点（#259）。
  *
@@ -134,6 +133,7 @@ export function resolveStoreIdForOrgNode(
   return undefined
 }
 
+/** 查找组织节点所属的市场节点 ID（自身及祖先里最近的「市场」型节点，向上遍历 parentId 链） */
 export function findAncestorMarketId(nodeId: string | null, orgNodes: OrgNode[]): string | null {
   if (!nodeId || orgNodes.length === 0) return null
   const map = new Map(orgNodes.map((n) => [n.id, n]))
