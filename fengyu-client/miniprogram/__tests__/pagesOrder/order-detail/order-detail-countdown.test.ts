@@ -233,6 +233,42 @@ describe('order-detail 待支付倒计时 (#215)', () => {
     expect(loadDetail).not.toHaveBeenCalled();
   });
 
+  test('expire_in_ms 显式为 null 时回退到绝对时间口径，不当成「剩余 0」', () => {
+    // `Number(null)` 是 0 且 isFinite —— 用 Number() 判别会把「字段缺席」
+    // 静默当成「没时间了」，倒计时凭空消失
+    const { page } = createPageWithStubbedLoad();
+    page.startCountdown({
+      sale_order_id: 'FY-215',
+      status: '待支付',
+      expire_at: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
+      expire_in_ms: null,
+    } as any);
+
+    expect(page.data.countdown).toMatch(/^0[45]:/);
+    expect(page._countdownTimer).not.toBeNull();
+  });
+
+  test('loadDetail 会从 expire_in_ms 里扣掉本次请求的往返耗时', async () => {
+    // 服务端给的是「生成响应那一刻」的剩余量，传到手上已经过去一段了；
+    // 不扣的话倒计时比真实关单时刻晚一个 RTT，顾客会在还显示剩余时间时被拒付
+    const { page, resolvers } = createPageWithManualApi();
+    const inflight = page.loadDetail('FY-215');
+
+    await new Promise((r) => setTimeout(r, 120));   // 模拟 120ms 网络耗时
+    resolvers[0]({
+      order: {
+        sale_order_id: 'FY-215', status: '待支付',
+        expire_at: new Date(Date.now() + 60_000).toISOString(),
+        expire_in_ms: 60_000,
+      },
+      items: [], payments: [],
+    });
+    await inflight;
+
+    expect(page.data.order.expire_in_ms).toBeLessThan(60_000);
+    expect(page.data.order.expire_in_ms).toBeGreaterThan(59_000);
+  });
+
   test('expire_at 解析不出来 → 不装表，不推 NaN:NaN', () => {
     const { page } = createPageWithStubbedLoad();
     page.startCountdown(PENDING_ORDER('不是时间'));

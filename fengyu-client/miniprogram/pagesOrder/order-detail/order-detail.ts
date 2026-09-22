@@ -199,11 +199,19 @@ Page({
     if (this._destroyed) return;
     const token = ++this._loadingToken;
     this.setData({ isLoading: true });
+    const sentAt = Date.now();
     try {
       const data = await callClientApi('order.detail', { saleOrderId });
       // 飞在途中时又发起了更新的一次加载 → 本次结果作废，不落 setData
       if (token !== this._loadingToken || this._destroyed) return;
       const order = (data?.order || {}) as OrderDetailData;
+      // 扣掉这次请求的往返耗时（issue #215）：expire_in_ms 是服务端**生成响应那一刻**的
+      // 剩余量，传到手上已经过去一段了。不扣的话倒计时会比真实关单时刻晚一个 RTT，
+      // 顾客在页面还显示剩余时间时点「去支付」，却被后端告知订单已超时。
+      // 扣整个 RTT 而不是一半，是往「显示得更少」的方向偏，安全侧。
+      if (typeof order.expire_in_ms === 'number' && Number.isFinite(order.expire_in_ms)) {
+        order.expire_in_ms = Math.max(0, order.expire_in_ms - (Date.now() - sentAt));
+      }
       const items: OrderDetailItem[] = data?.items || [];
       const paymentsRaw: OrderPayment[] = (data as any)?.payments || [];
       const iconMeta = STATUS_ICON[order.status] || STATUS_ICON['已关闭'];
@@ -439,10 +447,11 @@ Page({
     // 自助单于是彻底看不到倒计时。这里只用设备时钟量**相对流逝**，不用它判绝对先后。
     // 回退分支是为发版过渡期留的：小程序与云函数各自发版，旧云函数不带 expire_in_ms，
     // 此时退回原来的绝对时间口径，比「没有倒计时」好。
-    const serverRemaining = Number(order.expire_in_ms);
+    // ⚠️ 必须判 `typeof === 'number'`：`Number(null)` 是 0 且 isFinite，
+    // 会把「服务端没下发这个字段」静默当成「剩余 0」，而不是回退到绝对时间口径
     let remainingAt0: number;
-    if (Number.isFinite(serverRemaining)) {
-      remainingAt0 = serverRemaining;
+    if (typeof order.expire_in_ms === 'number' && Number.isFinite(order.expire_in_ms)) {
+      remainingAt0 = order.expire_in_ms;
     } else {
       const rawExpire = String(order.expire_at);
       const expireMs = new Date(

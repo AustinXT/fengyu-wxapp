@@ -1457,6 +1457,15 @@ async function createLakalaAlipayShareCode({
 const PENDING_AUTO_CLOSE_GUARD_SQL =
   `o.status = '待支付' AND o.opened_by IS NULL AND o.lakala_out_order_no IS NULL`
 
+/** 重读订单行 + 当下的自动关闭判据（issue #215）。取整行，见 detail 里的说明。 */
+function queryOrderGuardSnapshot(orderNo) {
+  return pg.query(
+    `SELECT o.*, (${PENDING_AUTO_CLOSE_GUARD_SQL}) AS auto_close_eligible
+       FROM sale_orders o WHERE o.sale_order_id = $1`,
+    [orderNo]
+  )
+}
+
 /**
  * 关闭过期订单并释放关联优惠券（原子操作）。
  *
@@ -2943,19 +2952,27 @@ async function detail(ctx) {
     ),
     // 见上面 needsGuardRefresh 的说明。本文件 :2550 对 order.pay 早已写明
     // 「状态必须 FOR UPDATE 后重读」，detail 这条展示链路此前是唯一的例外。
-    needsGuardRefresh
-      ? pg.query(
-          `SELECT o.status, o.lakala_out_order_no,
-                  (${PENDING_AUTO_CLOSE_GUARD_SQL}) AS auto_close_eligible
-             FROM sale_orders o WHERE o.sale_order_id = $1`,
-          [orderNo]
-        )
-      : Promise.resolve(null),
+    needsGuardRefresh ? queryOrderGuardSnapshot(orderNo) : Promise.resolve(null),
   ])
 
-  // 整行覆盖而不是逐列赋值：下一个可变列加进重读 SELECT 时这里不用跟着改
+  // 整行覆盖：只挑三列回填会把 status 与 received / paid_at / payable_amount 拆开——
+  // payNotify 在两次查询之间提交时，同一份响应就会出现「已支付但没有任何收款记录」。
+  // 主查询与重读各取整行，至少保证订单行内部自洽（与 items / payments 之间的
+  // 跨查询一致性是本函数早就有的性质，本 PR 不动）。
   if (refreshedRows && refreshedRows.length > 0) {
     Object.assign(order, refreshedRows[0])
+  }
+
+  // 组装响应前再校一次截止点。上面那次懒清理检查发生在请求**开头**，而查明细、
+  // 查退款、查流水都要时间；正好在这中间跨过 10 分钟的话，这里会下发
+  //「待支付 + 剩余 0」——前端据此只清倒计时、不重载（它有理由相信服务端已经试过关单了），
+  // 而订单其实压根没被关，页面就长期停在「请完成支付 + 去支付」的矛盾态上。
+  // 「我告诉你过期了」必须蕴含「我已经试过关它了」，这一步是为了让这句话成立。
+  if (order.auto_close_eligible
+      && new Date(order.sale_order_datetime).getTime() + 10 * 60 * 1000 <= Date.now()) {
+    await closeExpiredOrder(orderNo)
+    const recheckedRows = await queryOrderGuardSnapshot(orderNo)
+    if (recheckedRows.length > 0) Object.assign(order, recheckedRows[0])
   }
 
   // 待支付订单返回过期时间。判据由数据库给出（PENDING_AUTO_CLOSE_GUARD_SQL），

@@ -2146,6 +2146,45 @@ describe('order.detail — 支付倒计时下发口径 (#215)', () => {
     expect(ctx.result.order.has_active_payment_intent).toBe(true)
   })
 
+  test('请求处理期间跨过截止点 → 必须补关一次，不能下发「待支付 + 剩余 0」', async () => {
+    // 开头那次懒清理检查时还差几毫秒到 10 分钟 → 不触发；查明细/退款/流水期间跨过截止点。
+    // 不补这一下就会下发「待支付 + expire_in_ms=0」，前端据此只清倒计时不重载
+    // （它有理由相信服务端已经试过关单了），而订单压根没被关 —— 矛盾态复发。
+    const justUnder = new Date(Date.now() - (10 * 60 * 1000 - 50)).toISOString()
+    pg.query.mockResolvedValueOnce([{
+      sale_order_id: 'FY-215', client_user_id: 'user-001',
+      sale_order_datetime: justUnder, preferred_employee_id: null, coupon_id: null,
+      status: '待支付', opened_by: null, lakala_out_order_no: null,
+      auto_close_eligible: true,
+    }])
+    pg.query.mockResolvedValueOnce([])  // items
+    pg.query.mockResolvedValueOnce([])  // 行级退款额
+    pg.query.mockResolvedValueOnce([])  // payments
+    pg.query.mockResolvedValueOnce([{   // 第一次重读：仍待支付（此刻刚好跨过截止点）
+      sale_order_id: 'FY-215', status: '待支付', sale_order_datetime: justUnder,
+      lakala_out_order_no: null, auto_close_eligible: true,
+    }])
+    pg.query.mockResolvedValueOnce([{   // 补关之后的复读
+      sale_order_id: 'FY-215', status: '已关闭', sale_order_datetime: justUnder,
+      lakala_out_order_no: null, auto_close_eligible: false,
+    }])
+
+    // 让时间确实跨过截止点
+    const realNow = Date.now
+    Date.now = () => realNow() + 100
+    let ctx
+    try {
+      ctx = createBoundCtx({ orderNo: 'FY-215' })
+      await routes.detail(ctx)
+    } finally {
+      Date.now = realNow
+    }
+
+    expect(ctx.result.order.status).toBe('已关闭')
+    expect(ctx.result.order.expire_at).toBeNull()
+    expect(ctx.result.order.expire_in_ms).toBeNull()
+  })
+
   test('懒清理成功关单 → 响应里的 status 必须是重读后的「已关闭」', async () => {
     const stale = new Date(Date.now() - 20 * 60 * 1000).toISOString()
     pg.query.mockResolvedValueOnce([{
@@ -2270,6 +2309,29 @@ describe('order.detail — 支付倒计时下发口径 (#215)', () => {
     // 空串、列没 SELECT 出来是 undefined 这一堆跨语言语义差就会重新找上门
     expect(guardDecl).not.toContain('===')
     expect(guardDecl).not.toContain('=> ')
+  })
+
+  test('card.js 的第三份守卫副本必须包含这三条（否则充值路径会关掉判据认为关不掉的单）', () => {
+    // `_closeExpiredPendingByUser` 是**第二条**会把待支付单置「已关闭」的路径（顾客充值时触发），
+    // 守卫在这三条之外多一条 `sale_order_type <> '转换单'` —— 条件严格强化、命中集合是真子集，
+    // 方向安全。所以这里做**包含**断言而非全等：少了任何一条都意味着充值路径会关掉
+    // 「顾客那边正显示着没有倒计时」的单，口径分叉当场复发。
+    const { readFileSync } = require('fs')
+    const { resolve } = require('path')
+    const cardSrc = readFileSync(resolve(__dirname, '../../routes/card.js'), 'utf8')
+
+    const fnAt = cardSrc.indexOf('async function _closeExpiredPendingByUser(')
+    expect(fnAt, '未找到 _closeExpiredPendingByUser').toBeGreaterThanOrEqual(0)
+    const fnBody = cardSrc.slice(fnAt, fnAt + 2500)
+    const updateAt = fnBody.indexOf('UPDATE sale_orders')
+    expect(updateAt, '未找到充值路径的 UPDATE sale_orders').toBeGreaterThanOrEqual(0)
+    const cardUpdate = fnBody.slice(updateAt)
+
+    expect(cardUpdate).toContain("status = '待支付'")
+    expect(cardUpdate).toContain('opened_by IS NULL')
+    expect(cardUpdate).toContain('lakala_out_order_no IS NULL')
+    // 它是严格更窄的那一份，这条多出来的守卫也一并钉住
+    expect(cardUpdate).toContain("sale_order_type <> '转换单'")
   })
 })
 

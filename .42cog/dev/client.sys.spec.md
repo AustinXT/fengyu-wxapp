@@ -215,7 +215,9 @@ product.shopInit(门店商品初始化)
 | 2 | `opened_by IS NULL` | 员工/店长开单交顾客扫码，扫码时刻往往已超 10 分钟，不能被自助懒清理误关（issue #27） |
 | 3 | `lakala_out_order_no IS NULL` | 有在途支付意图时不能关单，否则渠道侧仍可支付 |
 
-另有**第二条**会把待支付单置「已关闭」的路径：`card.js` 的 `_closeExpiredPendingByUser`（顾客充值时触发），守卫是上面三条**再加**一条 `sale_order_type <> '转换单'`——条件严格强化，**命中集合是真子集**，方向安全，不会关掉判据认为关不掉的单。改动任一边都要对照另一边。
+另有**第二条**会把待支付单置「已关闭」的路径：`card.js` 的 `_closeExpiredPendingByUser`（顾客充值时触发），守卫是上面三条**再加**一条 `sale_order_type <> '转换单'`——条件严格强化，**命中集合是真子集**，方向安全，不会关掉判据认为关不掉的单。由 `order.test.js` 的包含性断言钉住（三条守卫少任何一条即报红）。
+
+⚠️ **「同源」仅限守卫侧，不含释放侧**：`closeExpiredOrder` 关单时会回滚优惠券、调 `releasePointsDeduction` 退还积分、并把 `pending_prepaid_card_amount` 归零、重算 `payable_amount`；`card.js` 那条**只回滚优惠券**。顾客用积分抵扣下单 → 弃付 → T+10 后直接进充值（没经过 order.detail/list/pay，懒清理没跑过）→ 单子被充值路径关掉，「消费抵扣」就永远等不来「消费抵扣退回」，积分凭空蒸发。这是早于 issue #215 的既有缺陷，已单列跟进项。
 
 ⚠️ **线下付款的自助单也在懒清理的命中集合里**（`closeExpiredOrder` 没有 `payment_method` 守卫），
 但订单详情的状态区被「请到店付款，等待店长确认收款」占住，顾客看不到任何时限，T+10 单子照关。
