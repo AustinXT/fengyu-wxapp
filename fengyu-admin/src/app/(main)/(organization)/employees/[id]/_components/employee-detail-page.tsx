@@ -19,7 +19,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 import { DataTable, type Column } from "@/components/ui/data-table"
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogTitle, AlertDialogDescription, AlertDialogFooter } from "@/components/ui/alert-dialog"
 import { Separator } from "@/components/ui/separator"
-import { formatDate, buildOrgPath, findAncestorMarketId } from "@/lib/utils"
+import { formatDate, buildOrgPath, findAncestorMarketId, findAncestorStoreNodeId } from "@/lib/utils"
 import { shanghaiToday } from "@/lib/datetime"
 import { formatPhoneSafe } from "@/lib/format"
 import { actionErrorMessage, actionErrorType } from "@/lib/action-error"
@@ -530,7 +530,22 @@ export default function EmployeeDetailPage({
                   {isEditing ? (
                     <Select
                       value={form.storeId}
-                      onChange={(e) => handleFormChange("storeId", e.target.value)}
+                      onChange={(e) => {
+                        const nextStoreId = e.target.value
+                        handleFormChange("storeId", nextStoreId)
+                        /**
+                         * #259：所属组织若归属于**旧**门店，跟着改成新门店的节点。
+                         * 不联动的话「同市场内改门店、不动所属组织」会提交
+                         * {新门店, 旧门店的节点} —— 被服务端归属自洽校验拒绝，
+                         * 而这正是生产上两条脏数据的成因。
+                         * 挂市场下的部门（养生部/财智部那类矩阵归属）没有门店祖先，不受影响。
+                         */
+                        const currentStoreAncestor = findAncestorStoreNodeId(form.orgNodeId || null, orgNodes)
+                        if (currentStoreAncestor) {
+                          const nextNode = stores.find((s) => s.storeId === nextStoreId)?.orgNodeId ?? ""
+                          if (nextNode !== currentStoreAncestor) handleFormChange("orgNodeId", nextNode)
+                        }
+                      }}
                     >
                       <option value="">请选择门店</option>
                       {filteredStores.map((s) => (

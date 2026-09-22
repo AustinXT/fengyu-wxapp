@@ -565,20 +565,28 @@ export const getOrgLevel2ForFilter = withPermission(
 
 
 /**
- * 归属自洽校验（#259）：`orgNodeId` 若指向**门店**类型的节点，必须正是该 `storeId` 的 org_node。
+ * 归属自洽校验（#259）：`orgNodeId` 若**归属于某个门店**（自身是门店节点，或挂在门店节点下），
+ * 那个门店必须正是 `storeId` 所指的门店。
  *
- * 为什么只禁「另一个门店」而不要求两端严格相等 —— 生产数据给出的答案：
- * 在职员工里 `store_id` 与 `org_node_id` 都非空且不相等的共 15 人，
+ * ## 为什么是「最近的门店型祖先」而不是「自身 type 是门店」
+ *
+ * 第一版只判 `node.type === '门店'`，被评审指出漏掉一整类 —— 而且正是它声称要堵的危害：
+ * `org.ts` 的 `validateParentType` 有一条 `门店节点下只能创建部门`，即**部门挂在门店下是
+ * 明确许可的形态**。于是市场级 manager 可以把员工的 `orgNodeId` 改成挂在 store-B 下的部门节点 D：
+ *   - `isOrgNodeInScope(M, D)` 成立（`scopeOrgNodeIds` 是「节点自身 + 任意层级后代」）
+ *   - `D.type === '部门'` → 第一版直接放行
+ *   - 而 store-B 的 manager（scope = `org-store-B` + 后代 ⊇ D）在名册里看得见该员工
+ * 「同一员工同时出现在两个门店名册」原样复现。
+ *
+ * ⚠️ 我最初的论证基于「生产 0 人的 org_node 是门店节点的后代」—— 那量的是**现存数据，
+ * 不是可达性**。org 模块正在鼓励创建这类节点，这个推断是错的。
+ *
+ * ## 为什么不要求两端严格相等
+ *
+ * 生产在职员工里 `store_id` 与 `org_node_id` 都非空且不相等的共 15 人：
  *   - **13 人**是矩阵式归属：养生师挂「养生部」、数据主管/助理挂「财智部」「财智管理中心」，
- *     人在具体门店上班。门店是工作地点、部门是专业归属，这是有意的组织安排。
- *   - **2 人**（王芳、王小凤）的 org_node_id 指向**另一个门店**节点（同市场内录入选错）——
- *     这才是脏数据。
- *   - **0 人**的 org_node_id 是该门店 org_node 的后代（部门节点挂在**市场**下，不是门店下），
- *     所以「必须是后代」这条规则对现网一个都不放行。
- *
- * 而 issue 描述的危害「同一员工同时出现在两个门店名册」**只由跨门店挂载造成** ——
- * `employeeScopeCondition` 是 `store_id ∈ scope OR org_node_id ∈ scope`，
- * 挂部门节点时另一个门店的账号看不见他（部门在市场下，只有市场及以上可见）。
+ *     这些部门节点挂在**市场**下（无门店祖先）→ 本规则放行。门店是工作地点、部门是专业归属。
+ *   - **2 人**（王芳、王小凤）的 org_node_id 直接指向**另一个门店**节点 → 本规则拦住。
  *
  * 口径已拍板，见 issue #259 的评论。
  */
@@ -587,20 +595,37 @@ async function assertOwnershipConsistent(
   orgNodeId: string | null,
 ): Promise<string | null> {
   if (!storeId || !orgNodeId) return null
-  const [node] = await db
-    .select({ type: orgNodes.type })
-    .from(orgNodes)
-    .where(eq(orgNodes.id, orgNodeId))
-    .limit(1)
-  // 节点不存在：交给 FK 约束报错，不在这里制造第二种「不存在」文案
-  if (!node || node.type !== '门店') return null
+
+  // 自身及全部祖先里最近的那个「门店」型节点（path 防环，与 org.ts 的递归 CTE 同策略）
+  const chain = await db.execute(sql`
+    WITH RECURSIVE chain AS (
+      SELECT id, parent_id, type, 0 AS depth, ARRAY[id] AS path
+        FROM org_nodes WHERE id = ${orgNodeId}
+      UNION ALL
+      SELECT o.id, o.parent_id, o.type, c.depth + 1, c.path || o.id
+        FROM org_nodes o JOIN chain c ON o.id = c.parent_id
+       WHERE NOT o.id = ANY(c.path)
+    )
+    SELECT id FROM chain WHERE type = '门店' ORDER BY depth LIMIT 1
+  `)
+  const storeAncestor = (chain as unknown as Array<{ id: string }>)[0]?.id
+  // 无门店祖先（挂市场下的部门、或直接挂市场）→ 与门店维度无关，放行
+  if (!storeAncestor) return null
 
   const [store] = await db
     .select({ orgNodeId: stores.orgNodeId })
     .from(stores)
     .where(eq(stores.storeId, storeId))
     .limit(1)
-  if (store?.orgNodeId && store.orgNodeId === orgNodeId) return null
+  if (!store) return '所选门店不存在'
+  /**
+   * `stores.org_node_id` 可空（schema 无 `.notNull()`）。为空时无从比对，但**不能放行** ——
+   * 员工挂着属于 store-B 的节点时 store-B 仍看得见他。给准确文案而不是复用「属于另一个门店」。
+   */
+  if (!store.orgNodeId) {
+    return '本门店未配置组织节点，无法校验归属，请先在组织管理中为该门店配置节点'
+  }
+  if (store.orgNodeId === storeAncestor) return null
   return '所选组织节点属于另一个门店，请改选本门店或其所属部门'
 }
 
@@ -1047,9 +1072,15 @@ export const updateEmployee = withPermission(
        *   ② 目标店已有同角色时直接撞 `uq_perm_roles_emp_role_scope`（23505）——
        *      而员工行 UPDATE 已经提交，于是「人调过去了、角色没同步、调用方收到失败」。
        *
-       * 现在只在**唯一无歧义的搬迁场景**下动它：旧店恰好一条该角色的绑定、且目标店没有同角色。
+       * 现在只在**唯一无歧义的搬迁场景**下动它：某角色在旧店有绑定、而目标店没有同角色。
+       * （`uq_perm_roles_emp_role_scope` 保证 (employee, role, scope) 唯一，所以「旧店该角色的绑定」
+       * 天然最多一条 —— 代码里没有、也不需要计数判断。）
        * 其余一律一条都不动 + 写审计，留给有权者（持 permission:assign/revoke）显式处理。
-       * 这样不删除任何绑定、不扩大授权、不再有唯一键冲突，31 个兼任员工的调店既不失败也不丢权。
+       * 这样不删除任何绑定、不扩大授权，31 个兼任员工的调店既不失败也不丢权。
+       *
+       * ⚠️ **不要**把这段读成「唯一键冲突已彻底消除」：SELECT 与 UPDATE 之间没有锁，
+       * 并发授权仍可能撞 23505 —— 那条窗口由下面循环里的 per-row catch 降级处理。
+       * 冲突窗口只是被收窄到「并发 assignRole」，不是没有了。
        *
        * ⚠️ 顺带接受一个结果：#249 问题 2 的「两步绕过」（先 storeId→null 再设新值，
        * 绑定永远停在旧门店）在这个口径下**不再是缺陷** —— 绑定停在旧门店本身就是允许的状态。
@@ -1068,14 +1099,37 @@ export const updateEmployee = withPermission(
       const movable = atOld.filter((b) => !rolesAtNew.has(b.role))
       const blocked = atOld.filter((b) => rolesAtNew.has(b.role))
 
+      const raced: string[] = []
       for (const b of movable) {
-        await db
-          .update(permissionRoles)
-          .set({ scopeId: newStore.orgNodeId, updatedBy: session.employeeId })
-          .where(eq(permissionRoles.id, b.id))
+        /**
+         * per-row catch 不可省。SELECT 与这些 UPDATE 之间没有锁 ——
+         * 并发的 `assignRole(emp, role, 新店节点)` 落在这个窗口里，`rolesAtNew` 就是过期快照，
+         * UPDATE 会撞 `uq_perm_roles_emp_role_scope`。不 catch 的后果比改动前更糟：
+         * 员工行 UPDATE 早已提交，异常直接穿出 `updateEmployee` 变成 500，
+         * 而改动前至少会走下面那个 23505 转译返回「数据冲突，请稍后重试」。
+         * `movable.length > 1` 时还会出现「搬了一半、审计只记一半、请求抛异常」。
+         *
+         * 降级为与「目标店已有同角色」相同的处理（不动那条 + 记审计）——
+         * 在「允许多绑定」口径下这两种情形的结果是一样的：该角色留在旧门店，属允许状态。
+         */
+        try {
+          await db
+            .update(permissionRoles)
+            .set({ scopeId: newStore.orgNodeId, updatedBy: session.employeeId })
+            .where(eq(permissionRoles.id, b.id))
+        } catch (err: unknown) {
+          if (pgErrorCode(err) === '23505') { raced.push(b.role); continue }
+          throw err
+        }
         await logOperation(session, 'permission.scopeSync', 'permission_role', employeeId, {
           oldStoreId, newStoreId: nextStoreId,
           oldScopeId: oldStore.orgNodeId, newScopeId: newStore.orgNodeId, role: b.role,
+        })
+      }
+      if (raced.length > 0) {
+        await logOperation(session, 'permission.scopeSync.skipped', 'permission_role', employeeId, {
+          reason: 'role_already_bound_at_target', oldStoreId, newStoreId: nextStoreId,
+          roles: raced, concurrent: true,
         })
       }
       if (blocked.length > 0) {

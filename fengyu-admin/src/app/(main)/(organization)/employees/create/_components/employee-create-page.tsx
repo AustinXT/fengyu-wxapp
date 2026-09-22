@@ -14,7 +14,7 @@ import { ImageUpload } from "@/components/ui/image-upload"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { createEmployee } from "@/actions/employees"
 import { actionErrorMessage } from "@/lib/action-error"
-import { findAncestorMarketId } from "@/lib/utils"
+import { findAncestorMarketId, findAncestorStoreNodeId } from "@/lib/utils"
 import { shanghaiToday } from "@/lib/datetime"
 import type { Store, OrgNode, SkillTag } from "@/lib/types"
 
@@ -212,7 +212,20 @@ export default function EmployeeCreatePage({ stores, orgNodes, skillTags }: Prop
               <label className="text-sm font-medium">所属门店</label>
               <Select
                 value={form.storeId}
-                onChange={(e) => handleChange("storeId", e.target.value)}
+                onChange={(e) => {
+                  const nextStoreId = e.target.value
+                  handleChange("storeId", nextStoreId)
+                  /**
+                   * #259：所属组织若归属于**别的**门店，跟着改成新门店的节点 ——
+                   * 否则提交 {新门店, 别的门店的节点} 会被服务端归属自洽校验拒绝。
+                   * 挂市场下的部门（养生部/财智部那类矩阵归属）没有门店祖先，不受影响。
+                   */
+                  const currentStoreAncestor = findAncestorStoreNodeId(form.orgNodeId || null, orgNodes)
+                  if (currentStoreAncestor) {
+                    const nextNode = stores.find((s) => s.storeId === nextStoreId)?.orgNodeId ?? ""
+                    if (nextNode !== currentStoreAncestor) handleChange("orgNodeId", nextNode)
+                  }
+                }}
               >
                 <option value="">请选择门店</option>
                 {filteredStores.map((s) => (

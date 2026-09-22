@@ -77,6 +77,29 @@ export function buildOrgPath(nodeId: string | null, orgNodes: OrgNode[]): string
 }
 
 /** 查找组织节点所属的市场节点 ID（向上遍历 parentId 链） */
+/**
+ * 找 `nodeId` 自身及祖先里最近的「门店」型节点（#259）。
+ *
+ * 与服务端 `assertOwnershipConsistent` 的递归 CTE 同口径 —— 两处都是「向上最近的门店祖先」。
+ * 用途：员工调店时若 `orgNodeId` 归属于**旧**门店，前端要跟着改成新门店的节点，
+ * 否则提交上去会被服务端的归属自洽校验拦住（而这正是生产两条脏数据的成因：
+ * 同市场内改门店、没动「所属组织」，于是 store 指向新店而 org_node 还指着旧店）。
+ *
+ * 挂在市场下的部门（养生部 / 财智部那类矩阵归属）没有门店祖先 → 返回 null → 不联动。
+ */
+export function findAncestorStoreNodeId(nodeId: string | null, orgNodes: OrgNode[]): string | null {
+  if (!nodeId || orgNodes.length === 0) return null
+  const map = new Map(orgNodes.map((n) => [n.id, n]))
+  const visited = new Set<string>()
+  let current = map.get(nodeId)
+  while (current && !visited.has(current.id)) {
+    if (current.type === "门店") return current.id
+    visited.add(current.id)
+    current = current.parentId ? map.get(current.parentId) : undefined
+  }
+  return null
+}
+
 export function findAncestorMarketId(nodeId: string | null, orgNodes: OrgNode[]): string | null {
   if (!nodeId || orgNodes.length === 0) return null
   const map = new Map(orgNodes.map((n) => [n.id, n]))

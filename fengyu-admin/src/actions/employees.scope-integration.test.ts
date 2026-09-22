@@ -120,7 +120,17 @@ const ADMIN = session({
   scopeStoreIds: [], scopeOrgNodeIds: [],
 })
 
+/**
+ * #259 的「向上最近的门店型祖先」走 `db.execute`（递归 CTE）。
+ * 本文件的用例都在验 scope 判据，与归属自洽无关 —— 默认给空结果（无门店祖先 → 放行），
+ * 需要验归属自洽的用例在 employees.test.ts 里。
+ */
+function mockNoStoreAncestor() {
+  ;(db.execute as any).mockResolvedValue([])
+}
+
 function mockCurrentEmployee(row: Record<string, unknown>) {
+  mockNoStoreAncestor()
   let call = 0
   ;(db.select as any).mockImplementation(() => {
     call++
@@ -140,6 +150,7 @@ function mockUpdateOk() {
 }
 
 function mockSelectEmpty() {
+  mockNoStoreAncestor()
   const limit = vi.fn().mockResolvedValue([])
   const where = vi.fn().mockReturnValue({ limit })
   const from = vi.fn().mockReturnValue({ where })
