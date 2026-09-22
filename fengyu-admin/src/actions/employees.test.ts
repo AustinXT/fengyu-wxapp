@@ -609,19 +609,35 @@ function mockSelectByTable(plan: {
    * 此时次序就是 [旧门店, 新门店]。
    */
   store?: Array<Record<string, unknown>[]>
-  /** permission_roles 的查询没有 .limit()，await 的是 where 的返回值 */
-  bindings?: Record<string, unknown>[]
+  /** 旧店子树上的角色绑定（#249 走递归 CTE，只取 role） */
+  bindings?: Array<{ role: string } & Record<string, unknown>>
 }) {
   let storeCall = 0
-  ;(db.execute as any).mockResolvedValue(plan.storeAncestor ? [{ id: plan.storeAncestor }] : [])
+  /**
+   * 两处 `db.execute`（都是递归 CTE）：
+   *   - #259 的「向上最近的门店祖先」
+   *   - #249 的「旧店节点及其**子树**上的角色绑定」
+   * 按 SQL 文本里的关键字分派 —— 不能只 mockResolvedValue 一个值。
+   */
+  ;(db.execute as any).mockImplementation((q: unknown) => {
+    const text = JSON.stringify(q ?? '')
+    if (text.includes('permission_roles')) {
+      return Promise.resolve((plan.bindings ?? []).map((b) => ({ role: b.role })))
+    }
+    return Promise.resolve(plan.storeAncestor ? [{ id: plan.storeAncestor }] : [])
+  })
   ;(db.select as any).mockImplementation(() => ({
     from: vi.fn().mockImplementation((table: unknown) => {
       if (table === permissionRoles) {
-        // 既可能 await where（查绑定），也可能 .where().limit()
-        const rows = plan.bindings ?? []
+        /**
+         * **刻意返回空**。#249 的绑定检测必须走「旧店节点及其子树」的递归 CTE
+         * （`db.execute`），不能用 `db.select(permissionRoles)` 精确匹配单个节点 ——
+         * 那会漏掉挂在旧店下属部门上的绑定。
+         * 让这条路返回空，退回精确匹配的实现就会假报 `no_binding_at_old_store` 而变红。
+         */
         const where: any = vi.fn().mockImplementation(() => {
-          const p: any = Promise.resolve(rows)
-          p.limit = vi.fn().mockResolvedValue(rows)
+          const p: any = Promise.resolve([])
+          p.limit = vi.fn().mockResolvedValue([])
           return p
         })
         return { where }
@@ -1408,6 +1424,107 @@ describe('#249 调店不自动搬迁角色绑定 —— 只留审计 + 回传提
       mockSession, 'permission.scopeSync.skipped', 'permission_role', 'FY-001',
       expect.objectContaining({ reason: 'store_missing_org_node' }),
     )
+  })
+
+  /**
+   * codex 谱系第 2 轮：入口条件原本是 `nextStoreId && oldStoreId && 两者不同`，
+   * 于是「A → 无门店」（转市场直属岗）**一条审计都不记、也不回传** ——
+   * 而旧店角色照样留在原地，成了权限跟进盲区。
+   */
+  it('storeId 从有到无（转市场直属岗）→ 仍检查旧店绑定并回传提示', async () => {
+    mockSelectByTable({
+      employee: [{ storeId: 'store-A', orgNodeId: 'org-store-A' }],
+      store: [[{ orgNodeId: 'org-store-A' }]],
+      bindings: [{ role: 'manager' }],
+    })
+    mockUpdateOnce()
+
+    // 清空门店 + 挂 scope 内的市场节点（合法的转直属岗路径）
+    const result = await updateEmployee('FY-001', { storeId: null, orgNodeId: 'market-1' })
+
+    expect(result.success).toBe(true)
+    expect(db.update).toHaveBeenCalledTimes(1)
+    expect(logOperation).toHaveBeenCalledWith(
+      mockSession, 'permission.scopeSync.skipped', 'permission_role', 'FY-001',
+      expect.objectContaining({ reason: 'manual_review_required', roles: ['manager'] }),
+    )
+    expect(result.message).toContain('仍绑定在原门店')
+  })
+
+  /**
+   * GLM 谱系第 2 轮：绑定检测原先精确匹配 `scope_id = 旧店节点`，
+   * 但 `org.ts` 许可「部门挂在门店节点下」、角色可 scope 在那个部门上。
+   * 「门店节点本身无绑定、下属部门有绑定」时会假报 no_binding + 干净的成功消息 ——
+   * 正是最需要提示的场景反而静默。现在查旧店节点**及其子树**。
+   */
+  it('绑定挂在旧店的下属部门节点上 → 仍被检测到并回传提示', async () => {
+    mockSelectByTable({
+      employee: [{ storeId: 'store-A', orgNodeId: 'org-dept' }],
+      store: [[{ orgNodeId: 'org-store-A' }]],
+      // 子树 CTE 的结果 —— 绑定实际挂在 org-store-A 下的某个部门节点上
+      bindings: [{ role: 'finance' }],
+    })
+    mockUpdateOnce()
+
+    const result = await updateEmployee('FY-001', { storeId: 'store-B' })
+
+    expect(result.success).toBe(true)
+    expect(logOperation).toHaveBeenCalledWith(
+      mockSession, 'permission.scopeSync.skipped', 'permission_role', 'FY-001',
+      expect.objectContaining({ reason: 'manual_review_required', roles: ['finance'] }),
+    )
+    expect(result.message).toContain('finance')
+  })
+
+  /**
+   * codex 谱系第 2 轮：「调店 + 同批离职」时离职分支已把角色全删，
+   * 再查旧店绑定必为空 → 记 `no_binding_at_old_store` 是语义失真
+   * （实际是「因离职撤销」）。单独给一个 reason，且不回传提示（角色确实已撤销）。
+   */
+  it('调店 + 同批离职 → 记 roles_revoked_by_resignation，不回传提示', async () => {
+    mockSelectByTable({
+      employee: [{ storeId: 'store-A', orgNodeId: 'org-dept' }],
+      store: [[{ orgNodeId: 'org-store-A' }]],
+      bindings: [],
+    })
+    mockUpdateOnce()
+    ;(db.transaction as any).mockImplementation(async (fn: any) => fn({
+      select: vi.fn().mockReturnValue({
+        from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([]) }),
+      }),
+      delete: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({}) }),
+    }))
+
+    const result = await updateEmployee('FY-001', { storeId: 'store-B', isResigned: true })
+
+    expect(result.success).toBe(true)
+    expect(result.message).toBe('员工信息已更新')   // 无跟进事项
+    expect(logOperation).toHaveBeenCalledWith(
+      mockSession, 'permission.scopeSync.skipped', 'permission_role', 'FY-001',
+      expect.objectContaining({ reason: 'roles_revoked_by_resignation' }),
+    )
+  })
+
+  /**
+   * GLM 谱系第 2 轮：`old_store_out_of_scope` 是四条路径里唯一**零回传**的 ——
+   * 而 PR 自己的注释写着「提示不是可选项」。跨 scope 调店恰恰最容易滞留。
+   * 这条路径刻意不读角色名（不向无权者披露），但要给不含角色名的降级提示。
+   */
+  it('旧门店不在 scope 内 → 回传不含角色名的降级提示', async () => {
+    mockSelectByTable({
+      employee: [{ storeId: 'store-OUT', orgNodeId: 'org-store-A' }],
+      store: [[{ orgNodeId: 'org-store-OUT' }]],
+      bindings: [{ role: 'manager' }],
+    })
+    mockUpdateOnce()
+
+    const result = await updateEmployee('FY-001', { storeId: 'store-A' })
+
+    expect(result.success).toBe(true)
+    expect(result.message).toContain('原门店不在你的管理范围内')
+    expect(result.message).toContain('请联系有权限的管理员复核')
+    // 不得泄露角色名
+    expect(result.message).not.toContain('manager')
   })
 
   /**

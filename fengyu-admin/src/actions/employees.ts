@@ -5,7 +5,7 @@ import { staffWechatUsers } from '@db/user'
 import { stores, orgNodes } from '@db/org'
 import { permissionRoles } from '@db/permission'
 import { adminPasswords } from '@db/admin-auth'
-import { eq, and, or, gt, sql, ilike, desc, asc, inArray } from 'drizzle-orm'
+import { eq, and, or, gt, sql, ilike, desc, asc } from 'drizzle-orm'
 import type { SQL } from 'drizzle-orm'
 import { alias } from 'drizzle-orm/pg-core'
 import { revalidatePath } from 'next/cache'
@@ -1038,6 +1038,8 @@ export const updateEmployee = withPermission(
    * 不能只写进审计日志等人去翻。
    */
   const unsyncedRoles: string[] = []
+  /** 跨 scope 调店：不披露角色名，但仍要让操作者知道「有事要有权者跟进」 */
+  let ownershipNeedsReview = false
 
   /**
    * §AFF-03 —— 调店**不再自动搬迁角色绑定**（#249 口径，甲方拍板）。
@@ -1060,15 +1062,33 @@ export const updateEmployee = withPermission(
    * 删掉搬迁后连带消失的三个问题：唯一键冲突（无 UPDATE 就不会撞）、
    * compare-and-set 的并发覆盖、0-rowCount 假审计。
    */
-  if (nextStoreId && oldStoreId && nextStoreId !== oldStoreId) {
+  /**
+   * 入口条件是「**离开**原门店」而不是「A→B」（codex 谱系第 2 轮）：
+   * `nextStoreId` 为 null 的转市场直属岗同样会把旧店角色留在原地 —— 原先那条
+   * `nextStoreId && …` 让这类请求一条审计都不记、也不回传，成了权限跟进盲区。
+   */
+  if (oldStoreId && nextStoreId !== oldStoreId) {
     if (!isInScope(session, oldStoreId)) {
       /**
-       * #228：旧门店不在操作者 scope 内。此前这里是「跳过搬迁」的唯一救济；
-       * 现在无论如何都不搬，但仍分开记 reason —— 这两种情形对管理员的含义不同
-       * （前者是「你无权管那条绑定」，后者是「需要有权者复核」）。
+       * #228 的守卫保留，但意义已变 —— 不再是「阻止越权 UPDATE」（现在反正不写），
+       * 而是 ① 不向无权者披露旧店有哪些角色 ② 在审计里标记「因权限不完整需另有人复核」。
+       *
+       * 这条路径刻意**不读**角色清单，所以回传的是不含角色名的降级提示 ——
+       * 跨 scope 调店恰恰最容易滞留，操作者不能当场毫无感知（GLM 谱系指出）。
        */
       await logOperation(session, 'permission.scopeSync.skipped', 'permission_role', employeeId, {
         reason: 'old_store_out_of_scope', oldStoreId, newStoreId: nextStoreId,
+      })
+      ownershipNeedsReview = true
+    } else if (data.isResigned === true) {
+      /**
+       * 「调店 + 同批离职」：离职分支在上面已经把该员工的角色全删了，
+       * 此时再查旧店绑定必为空，记 `no_binding_at_old_store` 是**语义失真**
+       * （实际是「因离职撤销」而非「本来就没有」）—— codex 谱系指出。
+       * 不回传提示是对的：角色确实已撤销，没有跟进事项。
+       */
+      await logOperation(session, 'permission.scopeSync.skipped', 'permission_role', employeeId, {
+        reason: 'roles_revoked_by_resignation', oldStoreId, newStoreId: nextStoreId,
       })
     } else {
       const [oldStore] = await db
@@ -1077,20 +1097,33 @@ export const updateEmployee = withPermission(
         .where(eq(stores.storeId, oldStoreId))
         .limit(1)
       if (!oldStore?.orgNodeId) {
-        // `stores.org_node_id` 可空 —— 旧店没有节点就不可能有挂在它上面的绑定
+        // `stores.org_node_id` 可空 —— 没有节点就不可能有挂在它（或其子树）上的绑定
         await logOperation(session, 'permission.scopeSync.skipped', 'permission_role', employeeId, {
           reason: 'store_missing_org_node', oldStoreId, newStoreId: nextStoreId,
         })
       } else {
-        const atOld = await db
-          .select({ role: permissionRoles.role })
-          .from(permissionRoles)
-          .where(and(
-            eq(permissionRoles.employeeId, employeeId),
-            eq(permissionRoles.scopeId, oldStore.orgNodeId),
-          ))
-        if (atOld.length > 0) {
-          const roles = Array.from(new Set(atOld.map((b) => b.role)))
+        /**
+         * 查旧店节点**及其子树**上的绑定，不能只精确匹配那一个节点（GLM 谱系指出）——
+         * `assertOwnershipConsistent` 自己就依赖「部门可以挂在门店节点下」这条拓扑，
+         * 而角色完全可以 scope 在那个部门上。精确匹配会在「门店节点本身无绑定、
+         * 下属部门有绑定」时假报 `no_binding_at_old_store` + 干净的成功消息，
+         * 正是最需要提示的场景反而静默。
+         */
+        const rows = await db.execute(sql`
+          WITH RECURSIVE subtree AS (
+            SELECT id, ARRAY[id] AS path FROM org_nodes WHERE id = ${oldStore.orgNodeId}
+            UNION ALL
+            SELECT o.id, s.path || o.id
+              FROM org_nodes o JOIN subtree s ON o.parent_id = s.id
+             WHERE NOT o.id = ANY(s.path)
+          )
+          SELECT DISTINCT pr.role
+            FROM permission_roles pr
+           WHERE pr.employee_id = ${employeeId}
+             AND pr.scope_id IN (SELECT id FROM subtree)
+        `)
+        const roles = (rows as unknown as Array<{ role: string }>).map((r) => r.role)
+        if (roles.length > 0) {
           await logOperation(session, 'permission.scopeSync.skipped', 'permission_role', employeeId, {
             reason: 'manual_review_required', oldStoreId, newStoreId: nextStoreId, roles,
           })
@@ -1109,11 +1142,22 @@ export const updateEmployee = withPermission(
   await logUpdate(session, 'employee.update', 'employee', employeeId, currentEmployee as Record<string, unknown>, updateData)
   revalidatePath('/employees')
   revalidatePath('/permissions')
+  /**
+   * 文案不能写成「请到权限管理页重新授权」—— 注释自己都说了「门店 manager 无权补」，
+   * 那对无 `permission:assign` 的操作者就是让他做做不到的事（GLM 谱系指出这处自相矛盾）。
+   * 改为「请联系有权限的管理员」。
+   */
   if (unsyncedRoles.length > 0) {
     const roles = Array.from(new Set(unsyncedRoles)).join('、')
     return {
       success: true,
-      message: `员工信息已更新。以下角色仍绑定在原门店，需到「权限管理」页按新门店重新授权：${roles}`,
+      message: `员工信息已更新。以下角色仍绑定在原门店，需联系有权限的管理员按新门店重新授权：${roles}`,
+    }
+  }
+  if (ownershipNeedsReview) {
+    return {
+      success: true,
+      message: '员工信息已更新。原门店不在你的管理范围内，该员工在原门店可能仍有角色绑定，请联系有权限的管理员复核',
     }
   }
   return { success: true, message: '员工信息已更新' }
