@@ -18,7 +18,8 @@ vi.mock('drizzle-orm', () => ({
   eq: vi.fn((a, b) => ({ type: 'eq', a, b })),
   and: vi.fn((...args) => ({ type: 'and', args })),
   or: vi.fn((...args) => ({ type: 'or', args })),
-  sql: Object.assign(vi.fn(() => ({})), { raw: vi.fn() }),
+  // 保留模板参数，否则断言不到 SQL 文本（与 employees.test.ts 的 mock 对齐）
+  sql: Object.assign(vi.fn((...args: unknown[]) => ({ type: 'sql', args })), { raw: vi.fn() }),
   ilike: vi.fn((a, b) => ({ type: 'ilike', a, b })),
   inArray: vi.fn((a, b) => ({ type: 'inArray', a, b })),
   desc: vi.fn((c) => ({ type: 'desc', c })),
@@ -65,10 +66,23 @@ function mockSelect(rows: any[]) {
   ;(db.select as any).mockReturnValue(chain)
 }
 
-/** 事务：staffWechatUsers 删除按 staffResult 控制（count 或 throw），其余从属删除恒成功 */
+/**
+ * 事务：staffWechatUsers 删除按 staffResult 控制（count 或 throw），其余从属删除恒成功。
+ *
+ * 守卫与 `employee.delete` 审计现在**都在事务内**（与 `updateEmployee` 同构，
+ * GLM 谱系第 10 轮 P2-2）：守卫留在事务外是 check-then-act，两个超级 admin 并发互删会
+ * 双双通过 → 零管理员；审计留在事务外则会留下「员工已删 + 前端 500」。
+ * 所以 tx 上还要有 `execute`（advisory lock）。
+ *
+ * @returns `tx()` 交出那个句柄，审计的 executor 断言要用**同一性**
+ *   —— 形状匹配对全局 `db` 也成立，等于没锁。
+ */
 function setupTx(staffResult: { count?: number; throwErr?: any }) {
+  let handedTx: any
+  const txExecute = vi.fn().mockResolvedValue([])
   ;(db.transaction as any).mockImplementation(async (fn: any) => {
-    const tx = {
+    handedTx = {
+      execute: txExecute,
       delete: vi.fn().mockImplementation((table: any) => ({
         where: vi.fn().mockImplementation(async () => {
           if (table === staffWechatUsers) {
@@ -79,8 +93,9 @@ function setupTx(staffResult: { count?: number; throwErr?: any }) {
         }),
       })),
     }
-    return fn(tx)
+    return fn(handedTx)
   })
+  return { tx: () => handedTx, txExecute }
 }
 
 describe('deleteEmployee — 守卫 + 级联 + FK 兜底', () => {
@@ -106,25 +121,51 @@ describe('deleteEmployee — 守卫 + 级联 + FK 兜底', () => {
     expect(db.transaction).not.toHaveBeenCalled()
   })
 
-  it('最后一个活跃管理员 → 拒绝', async () => {
+  /**
+   * 守卫**在事务内**（GLM 第 10 轮 P2-2）：事务会开、但整体回滚。
+   * 判据因此从「事务没开」变成「一行都没删 + 守卫的两次查询都走 tx + 取过 advisory lock」。
+   */
+  it('最后一个活跃管理员 → 拒绝，且事务回滚、一行未删', async () => {
     mockSelect([{ name: '张三', phone: '13800000000', storeId: 'S1', isResigned: false }])
     ;(isAdminEmployee as any).mockResolvedValue(true)
     ;(countActiveAdmins as any).mockResolvedValue(1)
+    const t = setupTx({ count: 1 })
+
     const result = await deleteEmployee('EMP-1')
+
     expect(result.success).toBe(false)
     expect(result.message).toContain('最后一个活跃管理员')
-    expect(db.transaction).not.toHaveBeenCalled()
+    expect(t.tx().delete, '守卫应在任何删除之前抛出').not.toHaveBeenCalled()
+    expect((isAdminEmployee as any).mock.calls[0][1], '守卫查询要走 tx').toBe(t.tx())
+    expect((countActiveAdmins as any).mock.calls[0][0], '计数查询要走 tx').toBe(t.tx())
+    expect(JSON.stringify(t.txExecute.mock.calls[0][0]), '守卫前要取 advisory lock')
+      .toContain('pg_advisory_xact_lock')
   })
 
-  it('纯测试号 → 级联删除成功 + 审计', async () => {
+  /** 两个超级 admin 并发互删的不变量：锁与离职路径**同一把**（源码守护，见 employees.test.ts） */
+  it('删除非最后管理员 → 放行，但仍取过 advisory lock', async () => {
+    mockSelect([{ name: '张三', phone: '13800000000', storeId: 'S1', isResigned: false }])
+    ;(isAdminEmployee as any).mockResolvedValue(true)
+    ;(countActiveAdmins as any).mockResolvedValue(3)
+    const t = setupTx({ count: 1 })
+
+    const result = await deleteEmployee('EMP-1')
+
+    expect(result.success).toBe(true)
+    expect(JSON.stringify(t.txExecute.mock.calls[0][0])).toContain('pg_advisory_xact_lock')
+  })
+
+  it('纯测试号 → 级联删除成功 + 审计走同一个事务', async () => {
     mockSelect([{ name: '测试', phone: '13800000001', storeId: 'S1', isResigned: false }])
-    setupTx({ count: 1 })
+    const t = setupTx({ count: 1 })
     const result = await deleteEmployee('EMP-TEST')
     expect(result.success).toBe(true)
     expect(result.message).toContain('已删除')
     expect(logOperation).toHaveBeenCalledWith(
       mockSession, 'employee.delete', 'employee', 'EMP-TEST',
       expect.objectContaining({ snapshot: expect.any(Object) }),
+      // 第 6 参必须是**那个 tx**：留在事务外时它失败会留下「员工已删 + 前端 500」
+      t.tx(),
     )
   })
 

@@ -186,8 +186,10 @@ admin 管理权限分配/撤销、WorkFine → PG 数据同步、操作日志查
   事务外读到的旧值到写入之间会被并发插队。离职守卫之前还要取
   `pg_advisory_xact_lock(hashtext('admin:active_count'))`：仅把计数查询传进 `tx` **不够串行**，
   READ COMMITTED 下两笔并发离职分别针对不同 admin 时各自都读到 `count = 2`。
-  ⚠️ 这把锁只覆盖本 action 的离职路径；`actions/permissions.ts` 撤销超级管理员角色也会减少
-  活跃 admin，要完全闭合该不变量得让它用**同一把**锁 —— 跨 action 的锁协议，待独立处理。
+  `deleteEmployee`（物理删除）共用同一把锁，守卫与 `employee.delete` 审计同样在事务内；
+  `createEmployee` 的 `employee.create` 审计也在事务内 —— 三个写入口同构（「只修一侧等于没修」）。
+  ⚠️ `actions/permissions.ts` 撤销超级管理员角色也会减少活跃 admin，要完全闭合该不变量
+  得让它取**同一把**锁 —— 跨 action 的锁协议，待独立处理。
   `23503` 只在**精确白名单**（`staff_wechat_users_store_id_stores_store_id_fk` /
   `staff_wechat_users_org_node_id_org_nodes_id_fk`）上翻译成「门店/组织节点已被删除」；
   ⚠️ 不能写 `includes('staff_wechat_users')` —— 审计表那条 FK 的真名

@@ -602,6 +602,24 @@ const FK_GONE_MESSAGE = '所选门店或组织节点已被删除，请刷新后�
  * `staff_wechat_users` **自己**指向门店/组织节点的两个外键，精确名（已用 `pg_constraint` 核对）。
  * 只有这两个撞 `23503` 才等于「用户选的门店/节点被删了」。
  */
+/**
+ * 「系统至少留一名在职超级管理员」这个不变量的串行化锁。
+ *
+ * 光把计数查询传进 `tx` **不够**（codex / GLM 第 10 轮各自独立指出）：
+ * READ COMMITTED 下每条语句只看已提交快照，两笔并发离职/删除分别针对 admin A、B 时
+ * 各自都读到 `count = 2`、改的又是不同行，双双提交 → 零管理员，系统锁死。
+ * 更要紧的是事务化**放大**了窗口（从「守卫→UPDATE」延长到「守卫→整个事务提交」），
+ * 所以必须配一把锁，不是可选优化。
+ *
+ * ⚠️ 凡是会减少活跃 admin 的路径都得用**同一把**锁。目前 `updateEmployee`（标记离职）与
+ * `deleteEmployee`（物理删除）已共用；`actions/permissions.ts` 的撤销超级管理员角色**尚未**，
+ * 要完全闭合该不变量需让它也取这把锁 —— 跨 action 的锁协议，待独立处理。
+ */
+async function lockActiveAdminCount(tx: EmployeeUpdateTx) {
+  await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${ACTIVE_ADMIN_LOCK_KEY})::bigint)`)
+}
+const ACTIVE_ADMIN_LOCK_KEY = 'admin:active_count'
+
 const EMPLOYEE_OWNERSHIP_FK_CONSTRAINTS = new Set([
   'staff_wechat_users_store_id_stores_store_id_fk',
   'staff_wechat_users_org_node_id_org_nodes_id_fk',
@@ -856,6 +874,12 @@ export const createEmployee = withPermission(
         resignedAt: null,
       })
 
+      /**
+       * 审计在事务内（GLM 谱系第 10 轮 P2-4，与 update / delete 侧同构）——
+       * 留在事务外时它失败会留下「员工已建、前端 500」，重试还会撞手机号唯一约束
+       * 报「该手机号已被其他员工使用」，把操作者带到完全错误的方向。
+       */
+      await logOperation(session, 'employee.create', 'employee', id, { name: data.name }, tx)
       return id
     })
   } catch (err: any) {
@@ -866,11 +890,18 @@ export const createEmployee = withPermission(
       }
       return { success: false, message: '数据冲突，请稍后重试' }
     }
-    if (pgErrorCode(err) === '23503') return { success: false, message: FK_GONE_MESSAGE }
+    // 与 update 侧同一套精确白名单（审计自身的 FK 名也含 `staff_wechat_users`，不能用 includes）
+    if (pgErrorCode(err) === '23503') {
+      return {
+        success: false,
+        message: EMPLOYEE_OWNERSHIP_FK_CONSTRAINTS.has(pgErrorConstraint(err) ?? '')
+          ? FK_GONE_MESSAGE
+          : '数据冲突，请稍后重试',
+      }
+    }
     throw err
   }
 
-  await logOperation(session, 'employee.create', 'employee', employeeId, { name: data.name })
   revalidatePath('/employees')
   return { success: true, message: '员工创建成功', employeeId }
   },
@@ -1222,9 +1253,11 @@ export const updateEmployee = withPermission(
          * 那是跨 action 的锁协议，不在本 PR 范围，已如实记录待独立处理。
          */
         if (data.isResigned === true) {
-          await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext('admin:active_count')::bigint)`)
+          await lockActiveAdminCount(tx)
           if (await isAdminEmployee(employeeId, tx) && await countActiveAdmins(tx) <= 1) {
-            throw new Error('INVALID_STATE: 该员工是系统最后一个活跃 admin，请先转移角色')
+            // 用 ApiError 而非裸 throw —— 前缀才走 errorType 白名单通道，前端能按类型路由
+            // （同文件 851 行的 P0 audit-CC5 已示范；GLM 谱系多轮提到）
+            throw new ApiError('INVALID_STATE', '该员工是系统最后一个活跃 admin，请先转移角色')
           }
         }
 
@@ -1513,16 +1546,21 @@ export const deleteEmployee = withPermission(
       return { success: false, message: '员工不存在或无权操作' }
     }
 
-    // 最后一个活跃 admin 守卫（删除会移除其 admin 角色 → 自锁）
-    if (await isAdminEmployee(employeeId)) {
-      const adminCount = await countActiveAdmins()
-      if (adminCount <= 1) {
-        return { success: false, message: '该员工是系统最后一个活跃管理员，请先转移角色' }
-      }
-    }
-
+    /**
+     * 守卫与审计都在事务内，与 `updateEmployee` 同构（GLM 谱系第 10 轮 P2：
+     * 「同构问题在姊妹函数未修」—— 正是 #228 那条「只修一侧等于没修」的教训）：
+     *   - 守卫留在事务外是 check-then-act，两个超级 admin 并发互删会双双通过 → 零管理员
+     *   - 审计留在事务外，它失败会留下「员工已删 + 前端 500」
+     * 锁用的是与离职路径**同一把** `lockActiveAdminCount`。
+     */
+    const ADMIN_GUARD_FAILED = 'LAST_ACTIVE_ADMIN'
     try {
       const txResult = await db.transaction(async (tx) => {
+        await lockActiveAdminCount(tx)
+        // 最后一个活跃 admin 守卫（删除会移除其 admin 角色 → 自锁）
+        if (await isAdminEmployee(employeeId, tx) && await countActiveAdmins(tx) <= 1) {
+          throw new Error(ADMIN_GUARD_FAILED)
+        }
         // 先删可随员工删除的从属行（登录凭证 + 权限角色）
         await tx.delete(adminPasswords).where(eq(adminPasswords.employeeId, employeeId))
         await tx.delete(permissionRoles).where(eq(permissionRoles.employeeId, employeeId))
@@ -1533,12 +1571,18 @@ export const deleteEmployee = withPermission(
         if ((result as any).count === 0) {
           throw new Error('EMPLOYEE_ROW_GONE')
         }
+        await logOperation(session, 'employee.delete', 'employee', employeeId, {
+          snapshot: { name: emp.name, phone: emp.phone, storeId: emp.storeId, isResigned: emp.isResigned },
+        }, tx)
         return true
       })
       if (!txResult) {
         return { success: false, message: '员工状态已变更，请刷新重试' }
       }
     } catch (e) {
+      if (e instanceof Error && e.message === ADMIN_GUARD_FAILED) {
+        return { success: false, message: '该员工是系统最后一个活跃管理员，请先转移角色' }
+      }
       if (e instanceof Error && e.message === 'EMPLOYEE_ROW_GONE') {
         return { success: false, message: '员工状态已变更，请刷新重试' }
       }
@@ -1547,10 +1591,6 @@ export const deleteEmployee = withPermission(
       }
       throw e
     }
-
-    await logOperation(session, 'employee.delete', 'employee', employeeId, {
-      snapshot: { name: emp.name, phone: emp.phone, storeId: emp.storeId, isResigned: emp.isResigned },
-    })
 
     revalidatePath('/employees')
     revalidatePath('/permissions')

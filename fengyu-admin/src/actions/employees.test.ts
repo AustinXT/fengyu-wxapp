@@ -480,6 +480,30 @@ describe('createEmployee — 服务端输入校验', () => {
     expect(isInScope).not.toHaveBeenCalled()
   })
 
+  /**
+   * `employee.create` 审计也在事务内（GLM 谱系第 10 轮 P2-4）——
+   * 留在事务外时它失败会留下「员工已建、前端 500」，重试还会撞手机号唯一约束报
+   * 「该手机号已被其他员工使用」，把操作者带到完全错误的方向。
+   */
+  it('创建成功时 employee.create 审计走同一个事务', async () => {
+    ;(db.select as any).mockImplementation(mockSelectEmpty())
+    let handedTx: unknown
+    ;(db.transaction as any).mockImplementation(async (fn: any) => {
+      handedTx = {
+        execute: vi.fn().mockResolvedValue([{ id: 'FY-260315001' }]),
+        insert: vi.fn().mockReturnValue({ values: vi.fn().mockResolvedValue({}) }),
+      }
+      return fn(handedTx)
+    })
+
+    const result = await createEmployee({
+      name: '张三', phone: '13812345678', idCard: '110101199003078888', storeId: 'store-A',
+    })
+
+    expect(result.success).toBe(true)
+    expect((logOperation as any).mock.calls[0][5]).toBe(handedTx)
+  })
+
   it('正常创建 → 成功', async () => {
     ;(db.select as any).mockImplementation(mockSelectEmpty())
     mockTransactionSuccess('FY-260315001')
@@ -824,16 +848,18 @@ describe('updateEmployee — 服务端输入校验 + 错误处理', () => {
     }))
     const txUpdateWhere = vi.fn().mockResolvedValue({ count: updateCount })
     const txUpdateSet = vi.fn().mockReturnValue({ where: txUpdateWhere })
+    let handedTx: any
     ;(db.transaction as any).mockImplementation(async (fn: any) => {
-      const tx = {
+      handedTx = {
         execute: vi.fn().mockResolvedValue([]),      // advisory lock
         update: vi.fn().mockReturnValue({ set: txUpdateSet }),
         select: txSelect,
         delete: vi.fn().mockReturnValue({ where: txDelete }),
       }
-      return fn(tx)
+      return fn(handedTx)
     })
-    return { txDelete, txUpdateSet }
+    // 导出句柄：revoke 审计的 executor 断言要用**同一性**，形状匹配对 db 也成立（GLM 第 10 轮 P2-3）
+    return { txDelete, txUpdateSet, tx: () => handedTx }
   }
 
   it('isResigned=true (非 admin) → 事务清理权限角色 + 逐条 logOperation', async () => {
@@ -841,7 +867,7 @@ describe('updateEmployee — 服务端输入校验 + 错误处理', () => {
     const empWhere = vi.fn().mockResolvedValue({ count: 1 })
     const empSet = vi.fn().mockReturnValue({ where: empWhere })
     ;(db.update as any).mockReturnValue({ set: empSet })
-    mockResignTransaction([
+    const resignTx = mockResignTransaction([
       { id: 11, role: 'manager', scopeId: 'store-A' },
       { id: 12, role: 'staff', scopeId: 'store-A' },
     ])
@@ -857,8 +883,12 @@ describe('updateEmployee — 服务端输入校验 + 错误处理', () => {
       'permission_role',
       '11',
       expect.objectContaining({ role: 'manager', scopeId: 'store-A', employeeId: 'FY-001', batch: 'resignation' }),
-      // 第 6 个参数是 executor —— 审计必须走同一个 tx，否则会留下「记了 revoke 但角色还在」的假审计
-      expect.objectContaining({ update: expect.any(Function), delete: expect.any(Function) }),
+      /**
+       * 第 6 参是 executor，必须是**那个 tx 本身**。
+       * ⚠️ 原来写的是 `objectContaining({ update: any(Function), delete: any(Function) })` ——
+       * mock 的 `db` 同样有这两个方法，形状匹配对 db 也成立，等于没锁（GLM 第 10 轮 P2-3）。
+       */
+      resignTx.tx(),
     )
   })
 
@@ -887,7 +917,7 @@ describe('updateEmployee — 服务端输入校验 + 错误处理', () => {
     const empWhere = vi.fn().mockResolvedValue({ count: 1 })
     const empSet = vi.fn().mockReturnValue({ where: empWhere })
     ;(db.update as any).mockReturnValue({ set: empSet })
-    mockResignTransaction([{ id: 99, role: 'admin', scopeId: 'hq-1' }])
+    const resignTx2 = mockResignTransaction([{ id: 99, role: 'admin', scopeId: 'hq-1' }])
 
     const result = await updateEmployee('FY-002', { isResigned: true })
 
@@ -899,7 +929,7 @@ describe('updateEmployee — 服务端输入校验 + 错误处理', () => {
       'permission_role',
       '99',
       expect.objectContaining({ role: 'admin', scopeId: 'hq-1', employeeId: 'FY-002', batch: 'resignation' }),
-      expect.objectContaining({ update: expect.any(Function) }),
+      resignTx2.tx(),
     )
   })
 
@@ -1078,14 +1108,22 @@ describe('updateEmployee — 服务端输入校验 + 错误处理', () => {
    * **它只防「被顺手删掉」，不证明隔离成立。** 要提高保障等级得上双连接并发冒烟
    * （真库 + 两个 client 同时提交），本 PR 未做 —— 那是独立的测试基建活。
    */
-  it('源码守护：锁行重读带 FOR UPDATE + 离职守卫前有 advisory lock', () => {
+  it('源码守护：锁行重读带 FOR UPDATE + 两条 admin 路径共用同一把 advisory lock', () => {
     const src = readFileSync(resolve(process.cwd(), 'src/actions/employees.ts'), 'utf8')
       .replace(/\/\*[\s\S]*?\*\//g, '')
       .replace(/(^|[^:'"])\/\/[^\n]*/g, '$1')
     expect(src, '事务内重读员工行必须 FOR UPDATE，否则双写不变量会被并发插队')
       .toMatch(/\.for\(\s*['"]update['"]\s*\)/)
-    expect(src, '最后-admin 守卫前必须取 advisory lock，传 tx 不足以串行')
-      .toMatch(/pg_advisory_xact_lock\(hashtext\('admin:active_count'\)/)
+    expect(src, 'advisory lock 的 key 必须收口成常量，两条路径共用')
+      .toMatch(/ACTIVE_ADMIN_LOCK_KEY = 'admin:active_count'/)
+    expect(src, '锁必须真的用 pg_advisory_xact_lock 取')
+      .toMatch(/pg_advisory_xact_lock\(hashtext\(\$\{ACTIVE_ADMIN_LOCK_KEY\}\)/)
+    /**
+     * 会减少活跃 admin 的**两条**路径（标记离职 / 物理删除）都必须取这把锁。
+     * 只修一侧等于没修（#228 的教训，GLM 谱系第 10 轮在 `deleteEmployee` 上又抓到一次）。
+     */
+    expect(src.match(/lockActiveAdminCount\(tx\)/g)?.length,
+      '标记离职与物理删除两处都要取锁').toBe(2)
   })
 
   /** 乐观锁未命中时不该删角色 —— CAS 没改到行，角色也不该动 */
@@ -2122,6 +2160,14 @@ describe('#249 调店不自动搬迁角色绑定 —— 只留审计 + 回传提
     expect((findRolesBoundWithinSubtree as any).mock.calls[0][2], '§AFF-03 绑定查询').toBe(handedTx)
     expect((logOperation as any).mock.calls[0][5], '§AFF-03 审计').toBe(handedTx)
     expect((logUpdate as any).mock.calls[0][6], 'employee.update 审计').toBe(handedTx)
+    /**
+     * 复职审计同样要同一性 —— 原来用 `expect.anything()`，传 db 也能过（GLM 第 10 轮 P2-3）。
+     * 它若跑在事务外，失败会让员工已复职而重试不再进 `isReinstating`，提示永久丢失。
+     */
+    const reinstated = (logOperation as any).mock.calls
+      .find((c: unknown[]) => String(c[1]).startsWith('permission.reinstated'))
+    expect(reinstated, '本用例是复职 + 调店，应有复职审计').toBeDefined()
+    expect(reinstated[5], '复职审计').toBe(handedTx)
   })
 
   /** 离职路径的两个 admin 守卫查询同样必须走 tx（否则守卫读的是另一个快照） */
