@@ -67,6 +67,9 @@ interface OrderDetailData {
   // 服务端算好的剩余毫秒（issue #215）。倒计时按它走，不拿设备时钟去比绝对时间。
   // 旧版本云函数不带这个字段，前端会回退到 expire_at（见 startCountdown）
   expire_in_ms?: number | null;
+  // 服务端按东八区格式化好的截止时刻 HH:mm（issue #215）。
+  // 不用本地 getHours() 推——那取的是设备时区
+  expire_clock?: string | null;
   // Ticket 2026-04-26 sale-order-domain-refactor:
   //   - 字段 paid_amount → received（已到账金额聚合快照）
   //   - 新增 refunded_amount（已退款金额聚合快照）
@@ -164,6 +167,13 @@ Page({
   // 页面处于隐藏态（onHide → onShow 之间）。与 _destroyed 不能合并：隐藏是可逆的，
   // onShow 会重新 loadDetail 并重建倒计时；卸载是终态。
   _hidden: false,
+  // 倒计时的本地截止点（`Date.now() + 剩余量`，设备相对时间，issue #215）。
+  // onHide 只停表不丢它，onShow 据此立刻恢复计时、随后的 loadDetail 只负责校准 ——
+  // 不留这个的话，onShow 那次请求一失败，页面就只剩「请完成支付」且到期不会自动刷新。
+  _countdownDeadlineAt: 0,
+  // 最近一次 loadDetail 的实测往返耗时。expire_in_ms 是服务端生成响应那一刻的剩余量，
+  // 传到手上已经过去一段了；不扣的话倒计时会比真实关单时刻晚一个 RTT。
+  _lastLoadRttMs: 0,
 
   onLoad(options) {
     // 读全局灰度开关（未配置默认 false）
@@ -183,6 +193,9 @@ Page({
 
   onShow() {
     this._hidden = false;
+    // 先按本地截止点恢复倒计时，再让下面的 loadDetail 去校准（issue #215）——
+    // 反过来（等请求回来才恢复）的话，这次请求一失败倒计时就永远回不来了
+    this.resumeCountdown();
     // 从预约页返回时刷新剩余次数
     if (this.data.order?.sale_order_id) {
       this.loadDetail(this.data.order.sale_order_id);
@@ -205,13 +218,11 @@ Page({
       // 飞在途中时又发起了更新的一次加载 → 本次结果作废，不落 setData
       if (token !== this._loadingToken || this._destroyed) return;
       const order = (data?.order || {}) as OrderDetailData;
-      // 扣掉这次请求的往返耗时（issue #215）：expire_in_ms 是服务端**生成响应那一刻**的
-      // 剩余量，传到手上已经过去一段了。不扣的话倒计时会比真实关单时刻晚一个 RTT，
-      // 顾客在页面还显示剩余时间时点「去支付」，却被后端告知订单已超时。
+      // 记下实测往返耗时，交给 startCountdown 去扣（issue #215）。
+      // ⚠️ 不能就地把 expire_in_ms 减掉 —— 那样「服务端说剩 0」和「服务端说剩 50ms、
+      // 被本地扣成 0」就分不开了，而这两者的处理完全相反（前者不重载、后者必须重载）。
       // 扣整个 RTT 而不是一半，是往「显示得更少」的方向偏，安全侧。
-      if (typeof order.expire_in_ms === 'number' && Number.isFinite(order.expire_in_ms)) {
-        order.expire_in_ms = Math.max(0, order.expire_in_ms - (Date.now() - sentAt));
-      }
+      this._lastLoadRttMs = Math.max(0, Date.now() - sentAt);
       const items: OrderDetailItem[] = data?.items || [];
       const paymentsRaw: OrderPayment[] = (data as any)?.payments || [];
       const iconMeta = STATUS_ICON[order.status] || STATUS_ICON['已关闭'];
@@ -304,12 +315,19 @@ Page({
         };
       });
 
-      // 格式化支付到期时间（仅时间 HH:mm）
+      // 支付到期时刻（HH:mm）。优先用服务端按东八区格式化好的 expire_clock（issue #215）——
+      // 本地 `getHours()` 取的是**设备时区**，顾客出境或改过时区时，同一行会变成
+      // 「请在 03:15 前完成支付（剩余 09:30）」这种自相矛盾的句子：剩余量已经是服务端
+      // 同源下发的，绝对时刻却还在本地推。回退分支同样是给发版过渡期留的。
       let expireTimeFmt = '';
       if (order.status === '待支付' && order.expire_at) {
-        const rawExp = String(order.expire_at);
-        const ed = new Date(rawExp.includes('T') ? rawExp : rawExp.replace(/-/g, '/'));
-        expireTimeFmt = `${String(ed.getHours()).padStart(2,'0')}:${String(ed.getMinutes()).padStart(2,'0')}`;
+        if (order.expire_clock) {
+          expireTimeFmt = order.expire_clock;
+        } else {
+          const rawExp = String(order.expire_at);
+          const ed = new Date(rawExp.includes('T') ? rawExp : rawExp.replace(/-/g, '/'));
+          expireTimeFmt = `${String(ed.getHours()).padStart(2,'0')}:${String(ed.getMinutes()).padStart(2,'0')}`;
+        }
       }
 
       // 款项流水视图（退款标红、金额绝对值显示）
@@ -388,7 +406,8 @@ Page({
         }
       }
       // 从 scan-pay 支付完成跳入（?paid=1）：回调延迟/丢失仍待支付时，兜底轮询确认（issue #37）
-      if (this._needConfirm) {
+      // 隐藏态下不启动轮询，**也不消耗这个意图**——下一次 onShow 的 loadDetail 会再走到这里
+      if (this._needConfirm && !this._hidden && !this._destroyed) {
         this._needConfirm = false;
         if (order.status === '待支付' || order.status === '部分支付') {
           this.confirmAndRefresh(order.sale_order_id);
@@ -430,14 +449,7 @@ Page({
     this._stopCountdown();
 
     if (order.status !== '待支付' || !order.expire_at) {
-      this.setData({ countdown: '' });
-      return;
-    }
-
-    // 隐藏态不装表（issue #215）：onHide 停掉的表不能被在途响应重新装上，
-    // 否则隐藏页面又拿到 1Hz 定时器、并在归零时发一次看不见的后台请求。
-    // onShow 必定 loadDetail，回来时会重建。
-    if (this._hidden) {
+      this._countdownDeadlineAt = 0;
       this.setData({ countdown: '' });
       return;
     }
@@ -445,13 +457,12 @@ Page({
     // 计时基准优先用服务端算好的剩余毫秒（issue #215）。
     // 只比绝对时间的话，手机时钟快几分钟就会把一个刚下发的未来时限判成「已过期」，
     // 自助单于是彻底看不到倒计时。这里只用设备时钟量**相对流逝**，不用它判绝对先后。
-    // 回退分支是为发版过渡期留的：小程序与云函数各自发版，旧云函数不带 expire_in_ms，
-    // 此时退回原来的绝对时间口径，比「没有倒计时」好。
+    // 回退分支是为发版过渡期留的：旧云函数不带 expire_in_ms，退回绝对时间口径。
     // ⚠️ 必须判 `typeof === 'number'`：`Number(null)` 是 0 且 isFinite，
     // 会把「服务端没下发这个字段」静默当成「剩余 0」，而不是回退到绝对时间口径
-    let remainingAt0: number;
+    let serverRemaining: number;
     if (typeof order.expire_in_ms === 'number' && Number.isFinite(order.expire_in_ms)) {
-      remainingAt0 = order.expire_in_ms;
+      serverRemaining = order.expire_in_ms;
     } else {
       const rawExpire = String(order.expire_at);
       const expireMs = new Date(
@@ -459,23 +470,57 @@ Page({
       ).getTime();
       if (!Number.isFinite(expireMs)) {
         // 解析不出来就别装表——否则每秒推一个 "NaN:NaN"
+        this._countdownDeadlineAt = 0;
         this.setData({ countdown: '' });
         return;
       }
-      remainingAt0 = expireMs - Date.now();
+      serverRemaining = expireMs - Date.now();
     }
 
-    if (remainingAt0 <= 0) {
+    // ⚠️ 这里必须区分两种「0」（双谱系评审 round-3）：
+    //   - **服务端**给的就是 0 → 它已经试过关单了（那边共用一个 nowMs 保证这点），
+    //     再打一次拿到的还是同一个答案 → 只清 UI，不重载。这是死循环的结构性断点。
+    //   - 服务端给的 > 0，只是**扣掉传输耗时**后归零 → 服务端还没试过关，
+    //     此时必须当成「走着走着归零」，重载一次让它去关。
+    //     把这两种混为一谈，页面就会永久停在「待支付 / 请完成支付 / 去支付」。
+    if (serverRemaining <= 0) {
+      this._countdownDeadlineAt = 0;
       this.setData({ countdown: '' });
       return;
     }
 
-    const startedAt = Date.now();
-    const saleOrderId = order.sale_order_id;
+    const remainingAt0 = serverRemaining - this._lastLoadRttMs;
+    if (remainingAt0 <= 0) {
+      this._countdownDeadlineAt = 0;
+      this.setData({ countdown: '' });
+      this.loadDetail(order.sale_order_id);
+      return;
+    }
+
+    this._installCountdown(Date.now() + remainingAt0, order.sale_order_id);
+  },
+
+  /**
+   * 按本地截止点装表。deadline 是**设备相对时间**（`Date.now() + 剩余量`），
+   * 只用来量流逝，不参与任何绝对先后判断。
+   * 单独抽出来是为了让 onShow 能在不依赖网络的情况下恢复计时（见 resumeCountdown）。
+   */
+  _installCountdown(deadlineAt: number, saleOrderId: string) {
+    this._stopCountdown();
+    this._countdownDeadlineAt = deadlineAt;
+
+    // 隐藏态记下截止点但不装表（issue #215）：隐藏页拿着 1Hz 定时器会在用户
+    // 看不见时归零并发一次后台请求。onShow 会据 _countdownDeadlineAt 恢复。
+    if (this._hidden || this._destroyed) {
+      this.setData({ countdown: '' });
+      return;
+    }
+
     const tick = () => {
-      const remaining = remainingAt0 - (Date.now() - startedAt);
+      const remaining = this._countdownDeadlineAt - Date.now();
       if (remaining <= 0) {
         this._stopCountdown();
+        this._countdownDeadlineAt = 0;
         this.setData({ countdown: '' });
         this.loadDetail(saleOrderId);
         return;
@@ -491,7 +536,22 @@ Page({
     };
 
     tick();
-    this._countdownTimer = setInterval(tick, 1000);
+    if (this._countdownDeadlineAt > 0) this._countdownTimer = setInterval(tick, 1000);
+  },
+
+  /**
+   * onShow 时先按本地截止点恢复计时，再让 loadDetail 去校准（issue #215）。
+   *
+   * 不恢复的话，onHide → onShow 那次 loadDetail 一旦失败（弱网），页面就只剩
+   * 「请完成支付」，到期也不会自动刷新 —— 自助单从此看不到时限。
+   */
+  resumeCountdown() {
+    if (this._countdownDeadlineAt <= 0) return;
+    if (this.data.order?.status !== '待支付') {
+      this._countdownDeadlineAt = 0;
+      return;
+    }
+    this._installCountdown(this._countdownDeadlineAt, this.data.order.sale_order_id);
   },
 
   /**
@@ -510,11 +570,11 @@ Page({
     this._poller = poller;
     try {
       const paymentResult = await poller.promise;
-      // onUnload 里的 `poller.clear()` 会 resolve 掉这个 promise（不是 reject），
-      // 所以卸载也会走到这里。不拦的话会对着已销毁的实例弹 Toast、setData（issue #215）
-      if (this._destroyed) return;
+      // onUnload / onHide 里的 `poller.clear()` 会 resolve 掉这个 promise（不是 reject），
+      // 所以卸载和隐藏也会走到这里。不拦的话会在看不见的页面上继续请求、弹 Toast（issue #215）
+      if (this._destroyed || this._hidden) return;
       await this.loadDetail(saleOrderId);
-      if (this._destroyed) return;
+      if (this._destroyed || this._hidden) return;
       // 以刷新后的本地 status 为准（轮询结果可能因网络抖动过时），判断是否需要提示
       const finalStatus = this.data.order?.status;
       if (finalStatus !== '已支付' && !paymentResult.sessionCompleted) {
@@ -548,7 +608,7 @@ Page({
     }
     // 倒计时同样停掉（issue #215）：隐藏期间 1Hz 的 setData 是纯浪费，
     // 更要紧的是它会在用户看不见的时候归零并发一次后台重载。
-    // onShow 必定 loadDetail，回来时倒计时会重建。
+    // ⚠️ 只停表，**不清 `_countdownDeadlineAt`** —— onShow 靠它恢复计时。
     this._stopCountdown();
     if (this.data.countdown) this.setData({ countdown: '' });
   },

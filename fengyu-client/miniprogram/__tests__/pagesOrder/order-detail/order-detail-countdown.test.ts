@@ -248,7 +248,7 @@ describe('order-detail 待支付倒计时 (#215)', () => {
     expect(page._countdownTimer).not.toBeNull();
   });
 
-  test('loadDetail 会从 expire_in_ms 里扣掉本次请求的往返耗时', async () => {
+  test('倒计时会扣掉本次请求的往返耗时', async () => {
     // 服务端给的是「生成响应那一刻」的剩余量，传到手上已经过去一段了；
     // 不扣的话倒计时比真实关单时刻晚一个 RTT，顾客会在还显示剩余时间时被拒付
     const { page, resolvers } = createPageWithManualApi();
@@ -265,8 +265,46 @@ describe('order-detail 待支付倒计时 (#215)', () => {
     });
     await inflight;
 
-    expect(page.data.order.expire_in_ms).toBeLessThan(60_000);
-    expect(page.data.order.expire_in_ms).toBeGreaterThan(59_000);
+    expect(page._lastLoadRttMs).toBeGreaterThanOrEqual(100);
+    // 服务端值保持原样（下面那条用例依赖这个区分），扣减体现在本地截止点上
+    expect(page.data.order.expire_in_ms).toBe(60_000);
+    expect(page._countdownDeadlineAt - Date.now()).toBeLessThan(60_000);
+  });
+
+  test('服务端说剩 0 → 不重载；服务端说剩 50ms 但被 RTT 扣成 0 → 必须重载一次', () => {
+    // 这两种「0」处理完全相反：前者意味着服务端已经试过关单了（那边共用同一个 nowMs
+    // 保证这点），再打一次拿到的还是同一个答案；后者服务端根本还没试过关，
+    // 混为一谈的话页面会永久停在「待支付 / 请完成支付 / 去支付」
+    const a = createPageWithStubbedLoad();
+    a.page._lastLoadRttMs = 0;
+    a.page.startCountdown(PENDING_ORDER_WITH_REMAINING(0));
+    expect(a.loadDetail).not.toHaveBeenCalled();
+    expect(a.page.data.countdown).toBe('');
+
+    const b = createPageWithStubbedLoad();
+    b.page._lastLoadRttMs = 500;          // 本次 RTT 比剩余量还长
+    b.page.startCountdown(PENDING_ORDER_WITH_REMAINING(50));
+    expect(b.loadDetail).toHaveBeenCalledTimes(1);
+    expect(b.page.data.countdown).toBe('');
+  });
+
+  test('服务端下发 expire_clock 时，截止时刻用它而不是设备时区推导', async () => {
+    // 本地 getHours() 取的是设备时区；顾客出境后同一行会变成
+    //「请在 03:15 前完成支付（剩余 09:30）」这种自相矛盾的句子
+    const { page, resolvers } = createPageWithManualApi();
+    const inflight = page.loadDetail('FY-215');
+    resolvers[0]({
+      order: {
+        sale_order_id: 'FY-215', status: '待支付',
+        expire_at: new Date(Date.now() + 60_000).toISOString(),
+        expire_in_ms: 60_000,
+        expire_clock: '23:45',
+      },
+      items: [], payments: [],
+    });
+    await inflight;
+
+    expect(page.data.order.expire_time_fmt).toBe('23:45');
   });
 
   test('expire_at 解析不出来 → 不装表，不推 NaN:NaN', () => {
@@ -360,6 +398,36 @@ describe('order-detail 倒计时的生命周期与并发 (#215)', () => {
 
     page.startCountdown(PENDING_ORDER_WITH_REMAINING(60_000));
     expect(page._countdownTimer).not.toBeNull();
+  });
+
+  test('onHide → onShow 那次请求失败，倒计时仍按本地截止点恢复', async () => {
+    // 不恢复的话页面就只剩「请完成支付」，到期也不会自动刷新 —— 自助单从此看不到时限
+    const { page } = createPageWithStubbedLoad();
+    page.setData({ order: { sale_order_id: 'FY-215', status: '待支付' } });
+    page.startCountdown(PENDING_ORDER_WITH_REMAINING(60_000));
+    const deadline = page._countdownDeadlineAt;
+    expect(deadline).toBeGreaterThan(0);
+
+    page.onHide();
+    expect(page._countdownTimer).toBeNull();
+    expect(page._countdownDeadlineAt).toBe(deadline);   // onHide 只停表，不丢截止点
+
+    // onShow：loadDetail 失败（替身直接返回），但恢复不依赖它
+    page.onShow();
+    expect(page._countdownTimer).not.toBeNull();
+    expect(page.data.countdown).toMatch(/^(00:5\d|01:00)$/);
+  });
+
+  test('隐藏态下不消耗 paid=1 的待确认意图（下次 onShow 还能补上）', async () => {
+    const { page, resolvers } = createPageWithManualApi();
+    page._needConfirm = true;
+    const inflight = page.loadDetail('FY-215');
+    page.onHide();
+    resolvers[0](detailResponse('待支付'));
+    await inflight;
+
+    expect(page._needConfirm).toBe(true);
+    expect(page.data.confirmingPayment).toBe(false);
   });
 
   test('被抢先的那次失败 → 不弹「加载失败」（否则错误提示与正确数据并存）', async () => {

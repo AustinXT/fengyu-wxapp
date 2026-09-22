@@ -15,7 +15,7 @@ const { capturePaymentAllocatables, refreshOrderAllocationRollup } = require('..
 const { getPerItemRefundedMap, getPerItemRefundedMapBatch, computeRefundAwareDirectedItems, itemRepayableAmount } = require('../utils/per-item-refund')
 const lakalaClient = require('../utils/lakala-client')
 const lakalaConfig = require('../utils/lakala-config')
-const { shanghaiYMD, shanghaiYYMMDD } = require('../utils/datetime')
+const { shanghaiYMD, shanghaiYYMMDD, shanghaiClockHM } = require('../utils/datetime')
 const { INVENTORY_LINKAGE_ENABLED } = require('../utils/feature-flags')
 const { classifySaleOrderDocumentType } = require('../utils/document-type')
 const { safeThumbUrl, PRODUCT_THUMB_BOX_SMALL } = require('../utils/image')
@@ -2963,13 +2963,18 @@ async function detail(ctx) {
     Object.assign(order, refreshedRows[0])
   }
 
-  // 组装响应前再校一次截止点。上面那次懒清理检查发生在请求**开头**，而查明细、
-  // 查退款、查流水都要时间；正好在这中间跨过 10 分钟的话，这里会下发
-  //「待支付 + 剩余 0」——前端据此只清倒计时、不重载（它有理由相信服务端已经试过关单了），
-  // 而订单其实压根没被关，页面就长期停在「请完成支付 + 去支付」的矛盾态上。
-  // 「我告诉你过期了」必须蕴含「我已经试过关它了」，这一步是为了让这句话成立。
-  if (order.auto_close_eligible
-      && new Date(order.sale_order_datetime).getTime() + 10 * 60 * 1000 <= Date.now()) {
+  // ⚠️ 下面的补关复检与剩余量计算**共用同一个 nowMs**（issue #215）。
+  // 分别取 `Date.now()` 的话，复检判「还没过期」、几微秒后算剩余量时已经过线，
+  // 就会下发「剩余 0 但没试过关单」—— 而前端对「剩余 0」的处理正是
+  //「只清倒计时、不重载」（它有理由相信服务端已经试过了）。共用一个读数，
+  //「我告诉你过期了」就严格蕴含「我已经试过关它了」，中间没有缝。
+  const nowMs = Date.now()
+  const deadlineMs = new Date(order.sale_order_datetime).getTime() + 10 * 60 * 1000
+
+  // 开头那次懒清理检查发生在请求**开头**，而查明细、查退款、查流水都要时间；
+  // 正好在这中间跨过 10 分钟的话，就得在这里补关一次，否则页面会长期停在
+  //「请完成支付 + 去支付」而订单压根没被关。
+  if (order.auto_close_eligible && deadlineMs <= nowMs) {
     await closeExpiredOrder(orderNo)
     const recheckedRows = await queryOrderGuardSnapshot(orderNo)
     if (recheckedRows.length > 0) Object.assign(order, recheckedRows[0])
@@ -2978,15 +2983,14 @@ async function detail(ctx) {
   // 待支付订单返回过期时间。判据由数据库给出（PENDING_AUTO_CLOSE_GUARD_SQL），
   // 只有「这一刻懒清理真会关掉它」的订单才发：员工开单单、以及有在途支付意图的自助单
   // 都关不掉，给它们发倒计时等于骗顾客，还会把前端的「归零重载」变成打不停的 order.detail。
-  const expireAtMs = order.auto_close_eligible
-    ? new Date(order.sale_order_datetime).getTime() + 10 * 60 * 1000
-    : null
-  const expireAt = expireAtMs === null ? null : new Date(expireAtMs).toISOString()
-  // issue #215：同时下发**服务端算好的剩余毫秒**。
-  // 只给绝对时间的话，前端要拿 `Date.now()` 去比 —— 手机时钟快几分钟就会把一个刚下发的
-  // 未来时限判成「已过期」，于是自助单彻底看不到倒计时（而服务端根本还没打算关它）。
-  // 判「过没过期」是服务端的事，前端只该按这个相对量倒着数。
-  const expireInMs = expireAtMs === null ? null : Math.max(0, expireAtMs - Date.now())
+  const eligible = Boolean(order.auto_close_eligible)
+  const expireAt = eligible ? new Date(deadlineMs).toISOString() : null
+  // issue #215：同时下发**服务端算好的剩余毫秒**与**东八区的截止时刻**。
+  // 只给绝对时间的话，前端要拿设备的 `Date.now()` / `getHours()` 去推 —— 手机时钟快几分钟
+  // 就会把刚下发的时限判成「已过期」，出境改了时区则会显示成「请在 03:15 前完成支付
+  //（剩余 09:30）」这种自相矛盾的句子。判过期、报时刻都是服务端的事。
+  const expireInMs = eligible ? Math.max(0, deadlineMs - nowMs) : null
+  const expireClock = eligible ? shanghaiClockHM(new Date(deadlineMs)) : null
 
   // 精简 payments 字段（只给前端需要的）
   const payments = paymentRows.map(p => ({
@@ -3026,6 +3030,7 @@ async function detail(ctx) {
       ),
       expire_at: expireAt,
       expire_in_ms: expireInMs,
+      expire_clock: expireClock,
       preferred_staff_name: preferredStaffName,
       coupon_name: couponName,
     },

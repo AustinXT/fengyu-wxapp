@@ -23,4 +23,15 @@ function shanghaiYYMMDD(date = new Date()) {
   return shanghaiDateStr(date).slice(2).replace(/-/g, '')
 }
 
-module.exports = { shanghaiDateStr, shanghaiYMD, shanghaiYYMMDD }
+/**
+ * 东八区时刻 HH:mm（issue #215：下发给前端直接展示的支付截止时刻）。
+ *
+ * 前端不能自己拿 `new Date(expire_at).getHours()` 推 —— 那取的是**设备时区**，
+ * 顾客出境或改过时区时，同一行会显示成「请在 03:15 前完成支付（剩余 09:30）」这种
+ * 自相矛盾的句子：剩余量已经由服务端同源下发，绝对时刻却还在本地推导。
+ */
+function shanghaiClockHM(date = new Date()) {
+  return new Date(date.getTime() + 8 * 3600 * 1000).toISOString().slice(11, 16)
+}
+
+module.exports = { shanghaiDateStr, shanghaiYMD, shanghaiYYMMDD, shanghaiClockHM }

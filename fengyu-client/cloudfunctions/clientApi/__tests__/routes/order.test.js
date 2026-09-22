@@ -2051,6 +2051,29 @@ describe('order.detail — 支付倒计时下发口径 (#215)', () => {
     ([sql]) => /AS auto_close_eligible/.test(sql) && !/LEFT JOIN stores/.test(sql)
   )
 
+  /**
+   * 把一段 SQL 的 WHERE 子句（或判据常量的反引号内容）规范化成**条件列表**。
+   *
+   * ⚠️ 守卫同源不能只断言「子串都在」——那样 `AND → OR`、或任一侧多加一条守卫，
+   * 子串照样全在，漂移锁就成了摆设（codex 评审 round-1 P1 / round-3 P1）。
+   * 这里连接符、条件集合、条件数量都锁住，OR 直接判失败。
+   */
+  const conjuncts = (sqlText) => {
+    const body = sqlText
+      .replace(/[\s\S]*?WHERE /, '')       // 只留 WHERE 之后
+      .replace(/[\s\S]*?=\s*\n?\s*`/, '')  // 常量声明则只留反引号内的
+      .replace(/--[^\n]*/g, '')            // SQL 行注释（card.js 的守卫里就有）
+      .replace(/`/g, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+    expect(body, `守卫里出现了 OR：${body}`).not.toMatch(/\bOR\b/)
+    return body
+      .split(/\s+AND\s+/)
+      .map((c) => c.trim().replace(/^o\./, '').replace(/\s+/g, ' '))
+      .filter((c) => c && c !== 'sale_order_id = $1')
+      .sort()
+  }
+
   test('库判「会被自动关闭」→ 下发「下单时间 + 10 分钟」', async () => {
     mockDetailQueries({ auto_close_eligible: true })
     const ctx = createBoundCtx({ orderNo: 'FY-215' })
@@ -2147,10 +2170,16 @@ describe('order.detail — 支付倒计时下发口径 (#215)', () => {
   })
 
   test('请求处理期间跨过截止点 → 必须补关一次，不能下发「待支付 + 剩余 0」', async () => {
-    // 开头那次懒清理检查时还差几毫秒到 10 分钟 → 不触发；查明细/退款/流水期间跨过截止点。
+    // 请求开头那次懒清理检查时还没到 10 分钟 → 不触发；查明细/退款/流水期间跨过截止点。
     // 不补这一下就会下发「待支付 + expire_in_ms=0」，前端据此只清倒计时不重载
     // （它有理由相信服务端已经试过关单了），而订单压根没被关 —— 矛盾态复发。
-    const justUnder = new Date(Date.now() - (10 * 60 * 1000 - 50)).toISOString()
+    //
+    // ⚠️ 时间偏移必须在**开头那次检查之后**才生效，否则测的就不是「补关」这条路径了。
+    // 这里挂在重读 mock 的副作用上：重读发生在 Promise.all 里，而 nowMs 在其之后才取。
+    const realNow = Date.now
+    let nowOffset = 0
+    const justUnder = new Date(realNow() - (10 * 60 * 1000 - 5000)).toISOString()
+
     pg.query.mockResolvedValueOnce([{
       sale_order_id: 'FY-215', client_user_id: 'user-001',
       sale_order_datetime: justUnder, preferred_employee_id: null, coupon_id: null,
@@ -2160,18 +2189,19 @@ describe('order.detail — 支付倒计时下发口径 (#215)', () => {
     pg.query.mockResolvedValueOnce([])  // items
     pg.query.mockResolvedValueOnce([])  // 行级退款额
     pg.query.mockResolvedValueOnce([])  // payments
-    pg.query.mockResolvedValueOnce([{   // 第一次重读：仍待支付（此刻刚好跨过截止点）
-      sale_order_id: 'FY-215', status: '待支付', sale_order_datetime: justUnder,
-      lakala_out_order_no: null, auto_close_eligible: true,
-    }])
+    pg.query.mockImplementationOnce(async () => {   // 重读：此刻把时间推过截止点
+      nowOffset = 6000
+      return [{
+        sale_order_id: 'FY-215', status: '待支付', sale_order_datetime: justUnder,
+        lakala_out_order_no: null, auto_close_eligible: true,
+      }]
+    })
     pg.query.mockResolvedValueOnce([{   // 补关之后的复读
       sale_order_id: 'FY-215', status: '已关闭', sale_order_datetime: justUnder,
       lakala_out_order_no: null, auto_close_eligible: false,
     }])
 
-    // 让时间确实跨过截止点
-    const realNow = Date.now
-    Date.now = () => realNow() + 100
+    Date.now = () => realNow() + nowOffset
     let ctx
     try {
       ctx = createBoundCtx({ orderNo: 'FY-215' })
@@ -2180,12 +2210,31 @@ describe('order.detail — 支付倒计时下发口径 (#215)', () => {
       Date.now = realNow
     }
 
+    // 关键：开头那次检查没触发（那时还差 5 秒），所以事务只可能来自补关那一次。
+    // 少了 `await closeExpiredOrder(orderNo)` 这行，本断言立刻转红。
+    expect(pg.transaction).toHaveBeenCalledTimes(1)
     expect(ctx.result.order.status).toBe('已关闭')
     expect(ctx.result.order.expire_at).toBeNull()
     expect(ctx.result.order.expire_in_ms).toBeNull()
   })
 
-  test('懒清理成功关单 → 响应里的 status 必须是重读后的「已关闭」', async () => {
+  test('懒清理真的关掉了单：UPDATE 生效 + 退券 + 退积分都执行到', async () => {
+    // ⚠️ 全局默认的 transaction mock 让 closeExpiredOrder 恒返回 false。只断言
+    // 「重读拿到已关闭」的话，把 closeExpiredOrder 整行删掉测试照样绿 —— 那只是
+    // 在验证我自己喂的 mock。这里把事务配成真会关单，并钉住释放侧确实跑到了。
+    const clientQuery = vi.fn(async (sql) => {
+      if (/FROM sale_orders[\s\S]*FOR UPDATE/.test(sql)) {
+        return { rows: [{ client_user_id: 'user-001', points_used: 100 }], rowCount: 1 }
+      }
+      if (/UPDATE sale_orders/.test(sql)) return { rows: [], rowCount: 1 }
+      if (/UPDATE user_coupons/.test(sql)) return { rows: [], rowCount: 1 }
+      if (/FROM client_wechat_users/.test(sql)) return { rows: [{ user_id: 'user-001' }], rowCount: 1 }
+      if (/FROM point_transactions/.test(sql)) return { rows: [{ deducted: 100, returned: 0 }], rowCount: 1 }
+      if (/INSERT INTO point_transactions/.test(sql)) return { rows: [{ id: 1 }], rowCount: 1 }
+      return { rows: [], rowCount: 0 }
+    })
+    pg.transaction.mockImplementation(async (cb) => cb({ query: clientQuery }))
+
     const stale = new Date(Date.now() - 20 * 60 * 1000).toISOString()
     pg.query.mockResolvedValueOnce([{
       sale_order_id: 'FY-215', client_user_id: 'user-001',
@@ -2196,43 +2245,28 @@ describe('order.detail — 支付倒计时下发口径 (#215)', () => {
     pg.query.mockResolvedValueOnce([])  // items
     pg.query.mockResolvedValueOnce([])  // 行级退款额
     pg.query.mockResolvedValueOnce([])  // payments
-    pg.query.mockResolvedValueOnce([{   // ← 重读：已被关掉
-      status: '已关闭', lakala_out_order_no: null, auto_close_eligible: false,
+    pg.query.mockResolvedValue([{       // 重读 / 复读：已被关掉
+      sale_order_id: 'FY-215', status: '已关闭', sale_order_datetime: stale,
+      lakala_out_order_no: null, auto_close_eligible: false,
     }])
 
     const ctx = createBoundCtx({ orderNo: 'FY-215' })
     await routes.detail(ctx)
+
+    const executed = clientQuery.mock.calls.map(([sql]) => sql)
+    // 关单 UPDATE 带三条守卫
+    const closeUpdate = executed.find((s) => /UPDATE sale_orders/.test(s))
+    expect(closeUpdate).toBeDefined()
+    expect(closeUpdate).toContain("status = '待支付'")
+    expect(closeUpdate).toContain('opened_by IS NULL')
+    expect(closeUpdate).toContain('lakala_out_order_no IS NULL')
+    // 释放侧：退券 + 退积分
+    expect(executed.some((s) => /UPDATE user_coupons/.test(s))).toBe(true)
+    expect(executed.some((s) => /INSERT INTO point_transactions/.test(s))).toBe(true)
 
     expect(ctx.result.order.status).toBe('已关闭')
     expect(ctx.result.order.expire_at).toBeNull()
     expect(ctx.result.order.expire_in_ms).toBeNull()
-  })
-
-  test('懒清理之后必须重读，不能拿关单前的快照算 expire_at', async () => {
-    // 场景：detail 的 SELECT 落地后、懒清理跑完前，顾客在别处点了「去支付」
-    // → lakala_out_order_no 被写入。用旧快照算就会发一个当场就过期的倒计时。
-    const stale = new Date(Date.now() - 20 * 60 * 1000).toISOString()
-    pg.query.mockResolvedValueOnce([{
-      sale_order_id: 'FY-215', client_user_id: 'user-001',
-      sale_order_datetime: stale, preferred_employee_id: null, coupon_id: null,
-      status: '待支付', opened_by: null, lakala_out_order_no: null,
-      auto_close_eligible: true,          // ← 关单前的快照
-    }])
-    // closeExpiredOrder 走 pg.transaction（默认 mock 返回空行 → 关不掉）
-    pg.query.mockResolvedValueOnce([])  // items
-    pg.query.mockResolvedValueOnce([])  // 行级退款额
-    pg.query.mockResolvedValueOnce([])  // payments
-    pg.query.mockResolvedValueOnce([{   // ← 重读拿到真相
-      status: '待支付', lakala_out_order_no: 'FY-215_1750000000', auto_close_eligible: false,
-    }])
-
-    const ctx = createBoundCtx({ orderNo: 'FY-215' })
-    await routes.detail(ctx)
-
-    expect(findRefreshCall()).toBeDefined()
-    expect(ctx.result.order.expire_at).toBeNull()
-    // 重读的值也应该反映到同一份响应的其它派生字段上
-    expect(ctx.result.order.has_active_payment_intent).toBe(true)
   })
 
   test('expire_at 下发口径与 closeExpiredOrder 的 UPDATE 守卫同源（字面断言）', () => {
@@ -2278,25 +2312,6 @@ describe('order.detail — 支付倒计时下发口径 (#215)', () => {
     expect(guardEnd, 'PENDING_AUTO_CLOSE_GUARD_SQL 声明未闭合').toBeGreaterThan(guardAt)
     const guardDecl = stripComments(source.slice(guardAt, guardEnd))
 
-    // ⚠️ 不能只断言「三个子串都在」——那样 AND 改成 OR、或者任一侧多加一条守卫，
-    // 三个子串照样都在，这把「唯一的漂移锁」就成了摆设（codex 评审 round-1 P1）。
-    // 改为把两侧规范化成**条件列表**做全等比较：连接符、条件集合、条件数量都锁住。
-    const conjuncts = (sqlText) => {
-      const body = sqlText
-        .replace(/[\s\S]*?WHERE /, '')       // 只留 WHERE 之后
-        .replace(/[\s\S]*?=\s*\n?\s*`/, '')  // 常量声明则只留反引号内的
-        .replace(/`/g, '')
-        .replace(/\s+/g, ' ')
-        .trim()
-      // 出现 OR 立刻判失败：本判据必须是纯合取
-      expect(body, `守卫里出现了 OR：${body}`).not.toMatch(/\bOR\b/)
-      return body
-        .split(/\s+AND\s+/)
-        .map((c) => c.trim().replace(/^o\./, '').replace(/\s+/g, ' '))
-        .filter((c) => c && c !== 'sale_order_id = $1')
-        .sort()
-    }
-
     expect(conjuncts(guardDecl)).toEqual(conjuncts(closeWhere))
     // 再钉一次内容本身，防止两侧「一起改错」还互相对得上
     expect(conjuncts(guardDecl)).toEqual([
@@ -2311,7 +2326,7 @@ describe('order.detail — 支付倒计时下发口径 (#215)', () => {
     expect(guardDecl).not.toContain('=> ')
   })
 
-  test('card.js 的第三份守卫副本必须包含这三条（否则充值路径会关掉判据认为关不掉的单）', () => {
+  test('card.js 的第三份守卫副本：条件集合必须是三条守卫 + 转换单排除，且必须是纯合取', () => {
     // `_closeExpiredPendingByUser` 是**第二条**会把待支付单置「已关闭」的路径（顾客充值时触发），
     // 守卫在这三条之外多一条 `sale_order_type <> '转换单'` —— 条件严格强化、命中集合是真子集，
     // 方向安全。所以这里做**包含**断言而非全等：少了任何一条都意味着充值路径会关掉
@@ -2325,13 +2340,20 @@ describe('order.detail — 支付倒计时下发口径 (#215)', () => {
     const fnBody = cardSrc.slice(fnAt, fnAt + 2500)
     const updateAt = fnBody.indexOf('UPDATE sale_orders')
     expect(updateAt, '未找到充值路径的 UPDATE sale_orders').toBeGreaterThanOrEqual(0)
-    const cardUpdate = fnBody.slice(updateAt)
+    const whereAt = fnBody.indexOf('WHERE sale_order_id = $1', updateAt)
+    expect(whereAt, '未找到充值路径 UPDATE 的 WHERE 子句').toBeGreaterThan(updateAt)
+    const cardWhere = fnBody.slice(whereAt, fnBody.indexOf('`', whereAt))
+    expect(cardWhere.length, '充值路径 WHERE 切片异常').toBeGreaterThan(0)
 
-    expect(cardUpdate).toContain("status = '待支付'")
-    expect(cardUpdate).toContain('opened_by IS NULL')
-    expect(cardUpdate).toContain('lakala_out_order_no IS NULL')
-    // 它是严格更窄的那一份，这条多出来的守卫也一并钉住
-    expect(cardUpdate).toContain("sale_order_type <> '转换单'")
+    // ⚠️ 同样不能只做 `toContain`：`AND → OR` 会让充值路径去关**不属于当前顾客、
+    // 或仍有在途支付意图**的订单，而四个子串照样都在（codex 评审 round-3 P1）。
+    // `conjuncts` 内部对 OR 直接判失败，并把条件规范化成集合做全等比较。
+    expect(conjuncts(cardWhere)).toEqual([
+      "lakala_out_order_no IS NULL",
+      "opened_by IS NULL",
+      "sale_order_type <> '转换单'",
+      "status = '待支付'",
+    ])
   })
 })
 
