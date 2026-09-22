@@ -891,8 +891,8 @@ describe('product.experienceCardList', () => {
  */
 describe('issue #230：商品封面图缩略下发', () => {
   /** 生产实际形态（45/45 条均为此格式）：CloudBase COS 域名 + 两段 ASCII 对象键 */
-  const COS_COVER_URL = 'https://test-env-1300000000.tcb.qcloud.la/product-covers/a.jpg'
-  const COS_DETAIL_URL = 'https://test-env-1300000000.tcb.qcloud.la/product-details/d1.jpg'
+  const COS_COVER_URL = 'https://6665-fengyu-client-prod-d1cga6909c0ba-1406056527.tcb.qcloud.la/product-covers/a.jpg'
+  const COS_DETAIL_URL = 'https://6665-fengyu-client-prod-d1cga6909c0ba-1406056527.tcb.qcloud.la/product-details/d1.jpg'
   /** 非 COS 域名：数据万象不生效，拼参数等于没保护，按 fail-closed 返回 null */
   const NON_COS_URL = 'https://img.example.com/a.jpg'
 
@@ -1012,7 +1012,7 @@ describe('issue #230：商品封面图缩略下发', () => {
     // server action 就能写进 50 张 → 50×8.6MB ≈ 430MB。下发侧必须自己截断，不能信上游。
     pg.query.mockResolvedValueOnce([mockProductRow({
       detail_images: Array.from({ length: 50 }, (_, i) =>
-        `https://test-env-1300000000.tcb.qcloud.la/product-details/d${i}.jpg`),
+        `https://6665-fengyu-client-prod-d1cga6909c0ba-1406056527.tcb.qcloud.la/product-details/d${i}.jpg`),
     })])
     pg.query.mockResolvedValueOnce([])
 
@@ -1030,7 +1030,7 @@ describe('issue #230：商品封面图缩略下发', () => {
     // 先 filter 再 slice：前 5 张不可缩略时，应拿到后面 9 张合规的，而不是只剩 4 张
     const bad = Array.from({ length: 5 }, () => 'https://img.example.com/x.jpg')
     const good = Array.from({ length: 12 }, (_, i) =>
-      `https://test-env-1300000000.tcb.qcloud.la/product-details/g${i}.jpg`)
+      `https://6665-fengyu-client-prod-d1cga6909c0ba-1406056527.tcb.qcloud.la/product-details/g${i}.jpg`)
     pg.query.mockResolvedValueOnce([mockProductRow({ detail_images: [...bad, ...good] })])
     pg.query.mockResolvedValueOnce([])
 

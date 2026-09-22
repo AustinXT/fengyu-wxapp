@@ -5,6 +5,7 @@
 
 import { createRequire } from 'node:module'
 import {
+  COS_ALLOWED_HOSTS,
   getCart,
   addToCart,
   updateQuantity,
@@ -200,7 +201,7 @@ describe('setAllSelected', () => {
  * 刻意不在前端重拼 URL —— URL 构造必须由服务端完全掌控。
  */
 describe('issue #230：存量购物车快照的封面净化', () => {
-  const COS = 'https://x.tcb.qcloud.la/product-covers/a.jpg'
+  const COS = 'https://6665-fengyu-client-prod-d1cga6909c0ba-1406056527.tcb.qcloud.la/product-covers/a.jpg'
 
   function seedStorage(items: any[]) {
     ;(wx.setStorageSync as any)('cart', { items, updatedAt: Date.now() })
@@ -259,7 +260,7 @@ describe('issue #230：存量购物车快照的封面净化', () => {
 
     test('把可信域名塞进 userinfo 伪装', () => {
       seedStorage([{ skuId: 's1', price: 100, quantity: 1,
-        coverImage: 'https://x.tcb.qcloud.la@evil.com/d/a.jpg?imageMogr2/thumbnail/400x400' }])
+        coverImage: 'https://6665-fengyu-client-prod-d1cga6909c0ba-1406056527.tcb.qcloud.la@evil.com/d/a.jpg?imageMogr2/thumbnail/400x400' }])
       expect(getCart().items[0].coverImage).toBe('')
     })
 
@@ -295,12 +296,12 @@ describe('issue #230：存量购物车快照的封面净化', () => {
 
     test('反斜杠伪装被拒 —— WHATWG URL 把 \\ 当 /，真实 host 是 evil.com', () => {
       seedStorage([{ skuId: 's1', price: 100, quantity: 1,
-        coverImage: 'https://evil.com\\x.tcb.qcloud.la/product-covers/a.jpg?imageMogr2/thumbnail/400x400' }])
+        coverImage: 'https://evil.com\\6665-fengyu-client-prod-d1cga6909c0ba-1406056527.tcb.qcloud.la/product-covers/a.jpg?imageMogr2/thumbnail/400x400' }])
       expect(getCart().items[0].coverImage).toBe('')
     })
 
     test('tab / 空格 / %23 同族变体一并被拒（host 字符集白名单）', () => {
-      for (const host of ['evil.com\tx.tcb.qcloud.la', 'evil.com x.tcb.qcloud.la', 'evil.com%23x.tcb.qcloud.la']) {
+      for (const host of ['evil.com\t6665-fengyu-client-prod-d1cga6909c0ba-1406056527.tcb.qcloud.la', 'evil.com 6665-fengyu-client-prod-d1cga6909c0ba-1406056527.tcb.qcloud.la', 'evil.com%236665-fengyu-client-prod-d1cga6909c0ba-1406056527.tcb.qcloud.la']) {
         seedStorage([{ skuId: 's1', price: 100, quantity: 1,
           coverImage: `https://${host}/product-covers/a.jpg?imageMogr2/thumbnail/400x400` }])
         expect(getCart().items[0].coverImage).toBe('')
@@ -312,9 +313,9 @@ describe('issue #230：存量购物车快照的封面净化', () => {
       // 真实 host 是 evil.com（WHATWG 把 \ 当 /，@可信域名 已属于 path）。
       // 这是连续第三个打穿「拆开逐段检查」思路的构造，故改为 authority 整体白名单。
       for (const u of [
-        'https://evil.com\\@x.tcb.qcloud.la/d/a.jpg?imageMogr2/thumbnail/400x400',
-        'https://evil.com\\@a@x.tcb.qcloud.la/d/a.jpg?imageMogr2/thumbnail/400x400',
-        'https://evil.com\\\\@x.tcb.qcloud.la/d/a.jpg?imageMogr2/thumbnail/400x400',
+        'https://evil.com\\@6665-fengyu-client-prod-d1cga6909c0ba-1406056527.tcb.qcloud.la/d/a.jpg?imageMogr2/thumbnail/400x400',
+        'https://evil.com\\@a@6665-fengyu-client-prod-d1cga6909c0ba-1406056527.tcb.qcloud.la/d/a.jpg?imageMogr2/thumbnail/400x400',
+        'https://evil.com\\\\@6665-fengyu-client-prod-d1cga6909c0ba-1406056527.tcb.qcloud.la/d/a.jpg?imageMogr2/thumbnail/400x400',
       ]) {
         seedStorage([{ skuId: 's1', price: 100, quantity: 1, coverImage: u }])
         expect(getCart().items[0].coverImage).toBe('')
@@ -326,25 +327,25 @@ describe('issue #230：存量购物车快照的封面净化', () => {
       // 「放行的 URL 一定能被加载端正常解析」这个性质成立。
       for (const port of ['65536', '99999999999']) {
         seedStorage([{ skuId: 's1', price: 100, quantity: 1,
-          coverImage: `https://x.tcb.qcloud.la:${port}/d/a.jpg?imageMogr2/thumbnail/400x400` }])
+          coverImage: `https://6665-fengyu-client-prod-d1cga6909c0ba-1406056527.tcb.qcloud.la:${port}/d/a.jpg?imageMogr2/thumbnail/400x400` }])
         expect(getCart().items[0].coverImage).toBe('')
       }
     })
 
     test('合法端口仍放行（云函数会原样下发非默认端口）', () => {
-      const u = 'https://x.tcb.qcloud.la:8443/d/a.jpg?imageMogr2/thumbnail/400x400'
+      const u = 'https://6665-fengyu-client-prod-d1cga6909c0ba-1406056527.tcb.qcloud.la:8443/d/a.jpg?imageMogr2/thumbnail/400x400'
       seedStorage([{ skuId: 's1', price: 100, quantity: 1, coverImage: u }])
       expect(getCart().items[0].coverImage).toBe(u)
-      const edge = 'https://x.tcb.qcloud.la:65535/d/a.jpg?imageMogr2/thumbnail/400x400'
+      const edge = 'https://6665-fengyu-client-prod-d1cga6909c0ba-1406056527.tcb.qcloud.la:65535/d/a.jpg?imageMogr2/thumbnail/400x400'
       seedStorage([{ skuId: 's1', price: 100, quantity: 1, coverImage: edge }])
       expect(getCart().items[0].coverImage).toBe(edge)
     })
 
     test('userinfo 含分隔符的伪装被拒', () => {
       for (const u of [
-        'https://evil.com/@x.tcb.qcloud.la/d/a.jpg?imageMogr2/thumbnail/400x400',
-        'https://evil.com?@x.tcb.qcloud.la/d/a.jpg?imageMogr2/thumbnail/400x400',
-        'https://evil.com#@x.tcb.qcloud.la/d/a.jpg?imageMogr2/thumbnail/400x400',
+        'https://evil.com/@6665-fengyu-client-prod-d1cga6909c0ba-1406056527.tcb.qcloud.la/d/a.jpg?imageMogr2/thumbnail/400x400',
+        'https://evil.com?@6665-fengyu-client-prod-d1cga6909c0ba-1406056527.tcb.qcloud.la/d/a.jpg?imageMogr2/thumbnail/400x400',
+        'https://evil.com#@6665-fengyu-client-prod-d1cga6909c0ba-1406056527.tcb.qcloud.la/d/a.jpg?imageMogr2/thumbnail/400x400',
       ]) {
         seedStorage([{ skuId: 's1', price: 100, quantity: 1, coverImage: u }])
         expect(getCart().items[0].coverImage).toBe('')
@@ -354,13 +355,13 @@ describe('issue #230：存量购物车快照的封面净化', () => {
     test('userinfo 里带可信域名的伪装被拒，但 user@可信域名 放行（与服务端一致）', () => {
       seedStorage([
         { skuId: 's1', price: 100, quantity: 1,
-          coverImage: `https://x.tcb.qcloud.la@evil.com/d/a.jpg?imageMogr2/thumbnail/400x400` },
+          coverImage: `https://6665-fengyu-client-prod-d1cga6909c0ba-1406056527.tcb.qcloud.la@evil.com/d/a.jpg?imageMogr2/thumbnail/400x400` },
         { skuId: 's2', price: 100, quantity: 1,
-          coverImage: `https://user@x.tcb.qcloud.la/d/a.jpg?imageMogr2/thumbnail/400x400` },
+          coverImage: `https://user@6665-fengyu-client-prod-d1cga6909c0ba-1406056527.tcb.qcloud.la/d/a.jpg?imageMogr2/thumbnail/400x400` },
       ])
       const items = getCart().items
       expect(items[0].coverImage).toBe('')
-      expect(items[1].coverImage).toBe('https://user@x.tcb.qcloud.la/d/a.jpg?imageMogr2/thumbnail/400x400')
+      expect(items[1].coverImage).toBe('https://user@6665-fengyu-client-prod-d1cga6909c0ba-1406056527.tcb.qcloud.la/d/a.jpg?imageMogr2/thumbnail/400x400')
     })
 
     test('缩略参数后面还跟着别的 query', () => {
@@ -402,7 +403,19 @@ describe('issue #230：净化器与云函数构造器的闭环守护', () => {
   const req = createRequire(import.meta.url)
   const img = req('../../../cloudfunctions/clientApi/utils/image.js')
 
-  const H = 'test-env-1300000000.tcb.qcloud.la'
+  const H = '6665-fengyu-client-prod-d1cga6909c0ba-1406056527.tcb.qcloud.la'
+
+  /**
+   * issue #232：bucket 白名单是这对判据的**第三份副本**（云函数 clientApi / staffApi /
+   * 本文件的 cart.ts），而漂移后果是静默的 ——
+   * 前端多一个 host = 本该被拒的形态被放行；少一个 = 那个环境的封面全变占位、无报错。
+   * 这条直接比对真实模块的导出，任一端增删而另一端没跟上就转红。
+   */
+  test('前端 bucket 白名单与云函数逐字一致（含顺序）', () => {
+    expect(COS_ALLOWED_HOSTS).toEqual(img.COS_ALLOWED_HOSTS)
+    // 下面所有用例都用 H 造 URL，它必须真在白名单里，否则整组退化成「全拒」的恒真测试
+    expect(COS_ALLOWED_HOSTS).toContain(H)
+  })
 
   /** 构造器**接受**的输入（服务端会下发）→ 净化器必须**接受**其输出 */
   const SERVER_ACCEPTS = [

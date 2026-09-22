@@ -55,6 +55,29 @@ const SANITIZE_MAX_AREA = 4000000;
 const URL_PARTS_PATTERN = /^(https?):\/\/([^/?#]+)(\/[^?#]*)\?(.*)$/i;
 
 /**
+ * 可做数据万象处理的 bucket hostname —— **必须与云函数 `clientApi/utils/image.js`
+ * 的 `COS_ALLOWED_HOSTS` 逐字一致**（issue #232）。
+ *
+ * 这是构造器（云函数）/ 校验器（本文件）那对判据的第三份副本，而它们分处两端、
+ * 漂移后果是**静默的**：校验器比构造器严 → 封面悄悄变占位、无报错；
+ * 校验器比构造器宽 → 本该被拒的形态被放行。
+ * 一致性由 `__tests__/utils/cart.test.ts` 的闭环守护断言（它 require 真实云函数模块比对），
+ * 任一端增删 host 而另一端没跟上，立刻转红。
+ *
+ * 为什么是精确 bucket 而不是 `.tcb.qcloud.la` 后缀：数据万象按 bucket 绑定，
+ * 同后缀但没开通的环境会把 `imageMogr2` 当普通 query 忽略、原样返回原图。
+ */
+export const COS_ALLOWED_HOSTS = [
+  '6665-fengyu-client-prod-d1cga6909c0ba-1406056527.tcb.qcloud.la',
+  '636c-cloud1-3gpht4b01ff88838-1406056527.tcb.qcloud.la',
+];
+
+/** 正则元字符转义（host 里的 `.` 必须按字面量匹配，否则 `a-bXtcb` 之类也会命中） */
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
  * authority（`[userinfo@]host[:port]`）的**整体白名单**。
  *
  * ⚠️ 这里必须一次性白名单整个 authority，**不能先拆再逐段检查** ——
@@ -75,13 +98,16 @@ const URL_PARTS_PATTERN = /^(https?):\/\/([^/?#]+)(\/[^?#]*)\?(.*)$/i;
  * 各段说明：
  * - `(?:[^@/\\?#]*@)?` —— 可选 userinfo。排除 `@` 保证**最多一个** `@`；
  *   排除 `/` `\` `?` `#` 保证它不会吃掉真正的分隔符。
- *   于是 `x.tcb.qcloud.la@evil.com`（伪装）会因 host 段不匹配而拒，
- *   `user@x.tcb.qcloud.la`（云函数会下发）正常放行。
- * - host —— 严格 `[\w-]` 分段，`\` / tab / 空格 / 全角一律不匹配
+ *   于是 `<可信 host>@evil.com`（伪装）会因 host 段不匹配而拒，
+ *   `user@<可信 host>`（云函数曾会下发）正常放行。
+ * - host —— **精确白名单**，见 {@link COS_ALLOWED_HOSTS}
  * - `\.?` 尾点、`(?::\d+)?` 端口 —— 云函数会原样下发，必须接受
  */
-const AUTHORITY_PATTERN =
-  /^(?:[^@/\\?#]*@)?[\w-]+(?:\.[\w-]+)*\.tcb\.qcloud\.la\.?(?::(\d+))?$/i;
+const AUTHORITY_PATTERN = new RegExp(
+  `^(?:[^@/\\\\?#]*@)?(?:${COS_ALLOWED_HOSTS.map(escapeRegExp).join('|')})` +
+    `\\.?(?::(\\d+))?$`,
+  'i',
+);
 
 /** WHATWG 端口上限。超出时 `new URL()` 判整条 URL 无效 → 加载失败图而非占位图 */
 const MAX_PORT = 65535;
