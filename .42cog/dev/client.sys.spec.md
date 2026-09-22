@@ -217,9 +217,20 @@ product.shopInit(门店商品初始化)
 
 另有**第二条**会把待支付单置「已关闭」的路径：`card.js` 的 `_closeExpiredPendingByUser`（顾客充值时触发），守卫是上面三条**再加**一条 `sale_order_type <> '转换单'`——它是 `closeExpiredOrder` 的超集（更窄），方向安全，不会关掉判据认为关不掉的单。改动任一边都要对照另一边。
 
-**`expire_at` 的下发口径与这三条守卫同源**（issue #215）：`order.detail` 用 `isPendingOrderAutoCloseEligible(order)` 判断，只对「这一刻的懒清理真会关掉它」的订单下发。两条守卫列都按 SQL 字面取 `== null`（空串在 SQL 里不是 NULL，不能按「有没有活动意图」的 `trim()` 语义判）；列没被 SELECT 出来（`undefined`）时 **fail-closed 返回 false**，防止有人把 `SELECT o.*` 收窄后判据静默退化。判据求值前必须**重读**这三列——`SELECT o.*` 是懒清理之前的快照，而 `lakala_out_order_no` 双向可变。改守卫必须同步改判据，由 `order.test.js` 的字面断言钉住。
+**`expire_at` 的下发口径与这三条守卫同源**（issue #215）：判据写成 SQL 常量 `PENDING_AUTO_CLOSE_GUARD_SQL`，由 `order.detail` 的主查询算成 `auto_close_eligible` 列，**交给 PostgreSQL 求值**，只对「这一刻的懒清理真会关掉它」的订单下发 `expire_at`。
 
-前端倒计时：待支付详情页 `MM:SS` 格式，1s 刷新。未下发 `expire_at` 时不起倒计时，文案退为「请完成支付」。归零后自动重载一次以取回懒清理后的状态，**每张单只触发一次**——重载靠「状态变已关闭」才能终止，矛盾态下无守卫就是按网络 RTT 空转的死循环。
+**不在 JS 里镜像这个谓词**：镜像就要逐个处理 `IS NULL` vs `== null`、空串（SQL 里不是 NULL）、列没被 SELECT 出来是 `undefined`——全是跨语言复制凭空带来的自伤。代价是 L1 的 pg mock 测不到谓词语义，靠真库真值表直验补上（脚本见 `_tmp/issue-215/verify-guard-truthtable.mjs`）。
+
+`auto_close_eligible` 是服务端中间量，**不下发给前端**（下发出去会诱使前端拿它自己推导展示口径）。跑过懒清理后必须重读该列——主查询是关单**之前**的快照，而 `lakala_out_order_no` 双向可变；重读挂在既有的 `Promise.all` 批次里，不额外增加往返。改 `closeExpiredOrder` 的 UPDATE 守卫必须同步改这个常量，由 `order.test.js` 的字面断言钉住。
+
+前端倒计时：待支付详情页 `MM:SS` 格式，1s 刷新。未下发 `expire_at` 时不起倒计时，文案退为「请完成支付」。
+
+**「归零重载」必须按装表时机分两种**（否则 `loadDetail → startCountdown → 归零 → loadDetail` 就是按网络 RTT 空转的死循环）：
+
+| 时机 | 行为 | 理由 |
+|---|---|---|
+| 装表时就已过期 | 只清 UI，**不重载** | 这次 detail 响应本身刚跑过服务端的懒清理，再打一次拿到的还是同一个答案 |
+| 走着走着归零 | 重载一次取回懒清理后的状态 | 重载回来 `expire_at` 必已过期 → 落进上一行 → **两跳内收敛，不需要任何状态** |
 
 ## 10. 优惠券集成
 
