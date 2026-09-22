@@ -215,7 +215,9 @@ product.shopInit(门店商品初始化)
 | 2 | `opened_by IS NULL` | 员工/店长开单交顾客扫码，扫码时刻往往已超 10 分钟，不能被自助懒清理误关（issue #27） |
 | 3 | `lakala_out_order_no IS NULL` | 有在途支付意图时不能关单，否则渠道侧仍可支付 |
 
-**`expire_at` 的下发口径与这三条守卫同源**（issue #215）：`order.detail` 用 `isPendingOrderAutoCloseEligible(order)` 判断，只对「这一刻的懒清理真会关掉它」的订单下发。守卫 3 按 SQL 字面取 `== null`（空串在 SQL 里不是 NULL，不能按「有没有活动意图」的 `trim()` 语义判）。改守卫必须同步改判据，由 `order.test.js` 的字面断言钉住。
+另有**第二条**会把待支付单置「已关闭」的路径：`card.js` 的 `_closeExpiredPendingByUser`（顾客充值时触发），守卫是上面三条**再加**一条 `sale_order_type <> '转换单'`——它是 `closeExpiredOrder` 的超集（更窄），方向安全，不会关掉判据认为关不掉的单。改动任一边都要对照另一边。
+
+**`expire_at` 的下发口径与这三条守卫同源**（issue #215）：`order.detail` 用 `isPendingOrderAutoCloseEligible(order)` 判断，只对「这一刻的懒清理真会关掉它」的订单下发。两条守卫列都按 SQL 字面取 `== null`（空串在 SQL 里不是 NULL，不能按「有没有活动意图」的 `trim()` 语义判）；列没被 SELECT 出来（`undefined`）时 **fail-closed 返回 false**，防止有人把 `SELECT o.*` 收窄后判据静默退化。判据求值前必须**重读**这三列——`SELECT o.*` 是懒清理之前的快照，而 `lakala_out_order_no` 双向可变。改守卫必须同步改判据，由 `order.test.js` 的字面断言钉住。
 
 前端倒计时：待支付详情页 `MM:SS` 格式，1s 刷新。未下发 `expire_at` 时不起倒计时，文案退为「请完成支付」。归零后自动重载一次以取回懒清理后的状态，**每张单只触发一次**——重载靠「状态变已关闭」才能终止，矛盾态下无守卫就是按网络 RTT 空转的死循环。
 

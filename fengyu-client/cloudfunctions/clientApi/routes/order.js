@@ -1455,9 +1455,21 @@ async function createLakalaAlipayShareCode({
  * @returns {boolean}
  */
 function isPendingOrderAutoCloseEligible(order) {
+  // fail-closed：两条守卫列必须**真的被 SELECT 出来**才敢下发倒计时。
+  // pg 对「选了但值是 NULL」返回 null，对「根本没选」返回 undefined —— 两者可区分。
+  // 不区分的话，将来谁把 detail 的 `SELECT o.*` 收窄成显式列表，这里就会静默退化成
+  // `undefined == null → true`，一路退回 #215 原状；而单测的手写 mock 行喂什么有什么，
+  // 根本测不出来。缺列时判「不下发」是安全方向：最多少一个倒计时，不会造出矛盾态。
+  if (order.opened_by === undefined || order.lakala_out_order_no === undefined) {
+    return false
+  }
   return order.status === '待支付'
-    // 守卫 2：员工开单交顾客扫码，扫码时刻往往已超 10 分钟，不套用自助懒清理（issue #27）
-    && !order.opened_by
+    // 守卫 2：员工开单交顾客扫码，扫码时刻往往已超 10 分钟，不套用自助懒清理（issue #27）。
+    // 与守卫 3 同样按 SQL 的 `IS NULL` 字面取 `== null`，不用 `!opened_by`——
+    // 后者对空串判「会被关」而 SQL 判「关不掉」。空串眼下被 FK
+    //（staff_wechat_users.employee_id）挡着不可达，但两条守卫写成一个形式才不会
+    // 让下一个人以为它们的口径有区别。
+    && order.opened_by == null
     // 守卫 3：有在途支付意图时 closeExpiredOrder 的 UPDATE 不命中，订单不会被关。
     //
     // ⚠️ 这里刻意**不用** #214 那套 `String(x || '').trim()` 判据。那套问的是「有没有一笔
@@ -2873,7 +2885,25 @@ async function detail(ctx) {
     const orderTime = new Date(order.sale_order_datetime)
     if (Date.now() - orderTime.getTime() > 10 * 60 * 1000) {
       const closed = await closeExpiredOrder(orderNo)
-      if (closed) order.status = '已关闭'
+      // issue #215：无论关成没关成都重读这三列再算 expire_at。上面那条 `SELECT o.*` 是
+      // 懒清理**之前**的快照，而 `lakala_out_order_no` 是双向可变的（order.pay 写入、
+      // cancel/payNotify 清空），`status` 还可能被另一个并发 detail 抢先关掉 ——
+      // 拿旧快照喂判据就会对一张已经有在途意图（或已被关闭）的单发出一个当场就过期的
+      // 倒计时，顾客那边表现为进页面即归零白闪一次。
+      // 本文件 :2550 对 order.pay 已经写明「状态必须 FOR UPDATE 后重读」，detail 这条
+      // 展示链路此前是唯一的例外。
+      const refreshed = await pg.query(
+        `SELECT status, opened_by, lakala_out_order_no
+           FROM sale_orders WHERE sale_order_id = $1`,
+        [orderNo]
+      )
+      if (refreshed.length > 0) {
+        order.status = refreshed[0].status
+        order.opened_by = refreshed[0].opened_by
+        order.lakala_out_order_no = refreshed[0].lakala_out_order_no
+      } else if (closed) {
+        order.status = '已关闭'
+      }
     }
   }
 
