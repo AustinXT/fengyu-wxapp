@@ -35,7 +35,6 @@ describe("formatDeltaPart · 负基期（#307）", () => {
     // #283 admin 侧实测案例：南昌梦祥店「本周」业绩，基期 −2,646.00、当期 +264.00。
     // 旧式 (264 − (−2646)) / (−2646) = −1.0998 → 渲染成 −110.0%「下降」，方向恰好反了。
     expect(formatDeltaPart(264, -2646, "money")).toBe(NO_BASE_TEXT)
-    // count 与 money 走同一条分支，输出逐字相同（模块头「count 与 money 行为完全相同」）。
     expect(formatDeltaPart(264, -2646, "count")).toBe(NO_BASE_TEXT)
   })
 
@@ -61,10 +60,21 @@ describe("formatDeltaPart · 负基期（#307）", () => {
     expect(formatDeltaPart(100, -0, "money")).toBe(NO_BASE_TEXT)
   })
 
-  it("当期为负零时不会渲染出 -0.0%", () => {
-    // (-0 * 100).toFixed(1) 是 "0.0" 不是 "-0.0"；且 delta === 0 会先命中「持平」。
+  it("当期为负零时按普通下跌处理，不走任何特殊分支", () => {
+    // delta = (-0 − 100) / 100 = −1，与 -0 无关。
+    // 「不会渲染出 -0.0%」由 renderScaledDelta 的 `delta === 0` 先命中「持平」保证
+    // （-0 === 0 为 true）；而 delta 本身取不到 -0——减法 x − x 恒为 +0。
     expect(formatDeltaPart(-0, 100, "money")).toBe("-100.0%")
+    expect(Object.is(100 - 100, 0)).toBe(true)
     expect(formatDeltaPart(100, 100, "money")).toBe("持平")
+  })
+
+  it("count 与 money 在除法分支上输出逐字相同", () => {
+    // 模块头声明「两者走同一条分支」。上面那条负基期用例两个 type 都在守卫处早退，
+    // 走不到除法，钉不住这个结构声明——这里补一组真正进入除法分支的对照。
+    expect(formatDeltaPart(120, 100, "count")).toBe(formatDeltaPart(120, 100, "money"))
+    expect(formatDeltaPart(80, 100, "count")).toBe(formatDeltaPart(80, 100, "money"))
+    expect(formatDeltaPart(120, 100, "count")).toBe("+20.0%")
   })
 
   it("正基期照常出数（对照组，确认守卫没误伤）", () => {
