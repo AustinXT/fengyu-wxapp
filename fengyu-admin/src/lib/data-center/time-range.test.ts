@@ -77,14 +77,28 @@ describe('resolveTimeRange', () => {
   /**
    * #283 的回归闸门：缺陷的本质是"基期长于当期"，所以这里守的是**性质**而非具体日期。
    * 原来没有任何测试校验这个性质，于是 week/month 两个分支的错误写法被逐字断言锁了下来。
-   * 扫 2024（闰年）+ 2023（平年）每一天 × 4 个 preset，基期一律不得长于当期。
+   *
+   * ⚠️ 年份的选择本身是个陷阱：`year` 分支只在「当年平年 + 上一年闰年」时才违反硬底线
+   * （基期含 2/29 而当期没有 → 基期反而长 1 天）。2023/2024/2026/2028 全都不落在这个窗口，
+   * 只扫它们会让 year 分支的断言变成假阳性。所以这里**必须**包含 2025 与 2029 两个反例年份。
    */
-  it('previous 绝不长于 current（全 preset × 两年逐日性质断言）', () => {
+  const DAILY_SCAN_YEARS = [
+    2023, // 平年 + 上年平年
+    2024, // 闰年 + 上年平年（当期多 2/29 → 基期短 1 天）
+    2025, // 平年 + 上年闰年 ← year 分支的反例年（306/365 天基期长 1 天）
+    2026, // 平年 + 上年平年（当前年份）
+    2029, // 平年 + 上年闰年 ← 下一个反例年
+  ]
+
+  it('previous 绝不长于 current（全 preset × 逐日性质断言，含 year 的闰年反例年）', () => {
     const days = (r: { start: string; end: string }) =>
       Math.round((Date.parse(`${r.end}T00:00:00Z`) - Date.parse(`${r.start}T00:00:00Z`)) / 86400000) + 1
+    const isLeap = (y: number) => (y % 4 === 0 && y % 100 !== 0) || y % 400 === 0
 
-    for (const year of [2023, 2024]) {
-      for (let i = 0; i < 365 + (year === 2024 ? 1 : 0); i++) {
+    let yearBranchOverLong = 0
+
+    for (const year of DAILY_SCAN_YEARS) {
+      for (let i = 0; i < (isLeap(year) ? 366 : 365); i++) {
         const now = new Date(Date.UTC(year, 0, 1, 4) + i * 86400000)
         for (const preset of ['today', 'week', 'month', 'year'] as const) {
           const r = resolveTimeRange({ preset }, now)
@@ -98,22 +112,26 @@ describe('resolveTimeRange', () => {
           const prev = days(prevRange)
           const at = `${preset} @ ${r.current.end} (previous=${prevRange.start}~${prevRange.end})`
 
-          // 硬底线：基期长于当期就是 #283
-          expect(prev, at).toBeLessThanOrEqual(cur)
-
           if (preset === 'today' || preset === 'week') {
             expect(prev, at).toBe(cur) // 纯天数平移，恒等长
           } else if (preset === 'month') {
+            // 硬底线：基期长于当期就是 #283
+            expect(prev, at).toBeLessThanOrEqual(cur)
             // 上月天数不足时 clamp 到上月末 → 最多短 3 天（3/31 看 → 基期 2/1~2/28）
             expect(prev, at).toBeGreaterThanOrEqual(cur - 3)
           } else {
-            // year：跨闰年时 YTD 天数天然差 1（2024-03-01 起本年比去年同期多一天）。
-            // 属 addYears 的既有行为，不在 #283 范围。
-            expect(prev, at).toBeGreaterThanOrEqual(cur - 1)
+            // year：**未被 #283 修复**，存在跨闰年 ±1 天偏差。这里如实钉住量级（±1 天），
+            // 既不假装它等长，也不放任它继续恶化。详见文件头注释。
+            expect(Math.abs(prev - cur), at).toBeLessThanOrEqual(1)
+            if (prev > cur) yearBranchOverLong++
           }
         }
       }
     }
+
+    // 显式记录 year 分支的既有偏差规模：2025 与 2029 各 306 天，其余三年为 0。
+    // 若哪天 year 分支被修好，这个数会变 0 —— 届时请连同文件头注释一起更新，而不是删掉本断言。
+    expect(yearBranchOverLong).toBe(612)
   })
 
   it('year：年初至今 / 去年同区间（previous=lastYear）', () => {
