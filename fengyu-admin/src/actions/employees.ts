@@ -700,6 +700,12 @@ function invalidDateMessage(
  *    员工 `(storeId=本店, orgNodeId=外市场节点)` 靠 store 维度可见，单清 storeId 后另一端
  *    虽非空却在 scope 外 —— 同样永久消失。
  *
+ * ⚠️ **这个不变量还有另一侧没守**（issue #318，codex 谱系第 15 轮，既有缺口非本 PR 引入）：
+ * `actions/org.ts` 的 `updateOrgNode` 改挂父节点时不检查子树下员工改挂后是否仍自洽，
+ * 也不与这里共用锁 —— 把部门 D 从市场改挂到 B 店节点下，挂着 D 的员工就会「仍属 A 店、
+ * 组织却在 B 店子树」。生产上门店节点当前零子节点所以不可直接触发，但 74 个员工挂着部门型节点。
+ * 与另两个同族缺口（permissions.ts 未共锁、login 不校验 is_resigned）一并在 #318 跟踪。
+ *
  * ⚠️ 只做 ② 不做 ① 会留一个并发越权口子：员工初始 `{store: B(越界), org: M(scope 内)}`，
  * 操作者先发一个回传旧值 `B` 的请求、再用另一个请求把 store 合法改成 `A`；
  * 旧请求锁行后实际执行 `A→B`，而 `M` 仍可见 → ② 放过 → 门店被写回越界的 B。
@@ -1110,10 +1116,12 @@ export const updateEmployee = withPermission(
    *
    * 下面的 `scopeCond` 只约束**旧**记录在不在 scope 内，对 `data.storeId` / `data.orgNodeId`
    * 这两个**新**值零校验 —— 于是一个只被授予单门店 scope 的 manager 可以把本店员工「调」到
-   * 系统内任意门店，而 §AFF-03 还会把该员工自身角色绑定的 `permission_roles.scope_id`
-   * 一并搬到目标门店。前端下拉只列 scope 内门店，但 Server Action 是可直调的安全边界。
+   * 系统内任意门店。前端下拉只列 scope 内门店，但 Server Action 是可直调的安全边界。
+   * （原先这里还写着「§AFF-03 会把角色绑定一并搬到目标门店」—— #249 拍板后搬迁已整体删除，
+   * 那句是迭代残留，已订正。）
    *
-   * 必须放在这里而非函数开头：判「是否真的发生变更」需要先读到旧值。此处仍早于任何写入。
+   * ⚠️ 这里是**早拒优化**，不是授权结论 —— 真正的授权判定在事务内按锁内 before/after 重做一遍
+   * （`ownershipTransitionError`）。放在这里的意义只是让非法请求不必开事务。
    *
    * 空串归一为 null：前端 `employee-detail-page.tsx` 已做 `form.storeId || null`，但
    * `createEmployee` 用的是 truthiness 判断（`data.storeId &&`），两边口径必须一致，
@@ -1285,12 +1293,13 @@ export const updateEmployee = withPermission(
   // ⚠️ 刻意**不在这里**调用 —— 它只能在事务内拿锁内旧值算一次，理由见事务体里那段注释
 
   /**
-   * 复职的角色快照必须在 UPDATE **之前**拍（codex 谱系第 7 轮 P1）。
+   * 复职的角色快照与整笔操作**同生共死**（当前实现：拍在事务内、CAS 成功之后）。
    *
-   * 放在 UPDATE 之后的话：残留 `manager` 的员工提交 `{ isResigned: false }` → 员工行已成功
-   * 变为在职 → `findAllRoleBindings` 遇到瞬时连接错误抛出 → 前端收到失败；**重试时旧值已是
-   * 在职**，复职分支不再进入，操作者从此看不到残留角色提示。提示丢了，权限却已恢复。
-   * 挪到 UPDATE 前，查询失败即零写入，重试仍走复职路径。
+   * 演化两步，注释以当前实现为准：
+   *   - 第 7 轮：那时写入还没进事务，快照必须排在 UPDATE **之前** —— 否则查询失败会留下
+   *     「员工已复职但前端报失败」，而重试时旧值已是在职、复职分支不再进入，提示永久丢失
+   *   - 第 10 轮：整个写入段进了事务，「零写入」由回滚承担，于是挪到 CAS **之后** ——
+   *     让快照与「员工已在职」这个事实更接近同一时点（codex 谱系第 10 轮 P2）
    *
    * ⚠️ 这里不构成零写入信道：只在「旧行已通过可见性校验 + 旧值确为离职」时才查，
    * 越权者到不了；失败是异常而非可区分文案。
@@ -1398,7 +1407,11 @@ export const updateEmployee = withPermission(
           afterOrgNodeId: data.orgNodeId === undefined
             ? (lockedRow.orgNodeId ?? null)
             : (data.orgNodeId || null),
-          /** 状态迁移「在职 → 离职」。只服务双写推导与最后-admin 守卫。 */
+          /**
+           * 状态迁移「在职 → 离职」。**只被最后-admin 守卫消费** ——
+           * 双写推导走的是 `applyResignationInvariant` 里的 `data.isResigned ?? prev.isResigned`，
+           * 不经这个字段（GLM 第 15 轮 P3 订正）。
+           */
           isResigning: data.isResigned === true && !lockedRow.isResigned,
           isReinstating: data.isResigned === false && lockedRow.isResigned === true,
           /**
@@ -1642,8 +1655,12 @@ export const updateEmployee = withPermission(
          * （第 6 轮两谱系各自独立指出；证据与生产实测见 `@/lib/employee-roles`）。
          * 押注它的后果是：残留绑定的员工调店时走进这一支，旧店绑定**不再被披露**，
          * 操作者以为角色早已撤销，实际静默保留。
-         * 旧值已离职的请求一律落到下面的查询分支去**查事实** —— 真没绑定就记
-         * `no_binding_at_old_store`，语义与这一支等价；有残留就如实披露。
+         * 旧值已离职**且本次没有再传 `isResigned: true`** 的请求，落到下面的查询分支去
+         * **查事实** —— 真没绑定就记 `no_binding_at_old_store`，语义与这一支等价；
+         * 有残留就如实披露。
+         * （若本次显式重传了 `isResigned: true`，角色确实被本事务删光了，
+         * 仍走这一支 —— 判据就是 `rolesRevokedByRequest`。第 15 轮订正了这里原本
+         * 写成「一律」的表述。）
          *
          * 至于「复职后是角色真空、需要重新授权」这条提示，与调不调店无关，
          * 独立放在函数末尾（见 `permission.reinstated.*`），同样基于实查而非推断。

@@ -172,10 +172,17 @@ admin 管理权限分配/撤销、WorkFine → PG 数据同步、操作日志查
   「离职 ⇒ 角色已清空」这个不变量会破：写 `is_resigned=true` 的 UPDATE 与删角色的事务是两次
   独立提交，`db/scripts/sync-workfine.js:381` 的 UPSERT 更是直接改 `is_resigned` 而完全不碰角色。
   实查为空 → 提示「已全部撤销，需重新授权」；非空 → 提示「离职期间仍保留…，复职后即恢复生效」。
-  同理 §AFF-03 的离职分支只认 `data.isResigned === true`（本请求刚删的，同一 action 内可信），
-  旧值已离职的请求一律落到查询分支查事实，否则残留绑定会被静默吞掉。
+  同理 §AFF-03 的离职分支判据是 `rolesRevokedByRequest`（= `data.isResigned === true`，
+  「角色是本请求刚删的」，同一 action 内可信）—— 注意**不是**状态迁移 `isResigning`
+  （后者多带 `!旧值已离职`，已离职员工再传一次 `isResigned: true` 时角色确实被删光了却会被
+  判成「旧店本来没绑定」）。旧值已离职且本次没重传 `isResigned: true` 的请求落到查询分支查事实，
+  否则残留绑定会被静默吞掉。
+  归属的授权判定（逐字段 scope + 变更后仍可见）由 `ownershipTransitionError(session, before, after)`
+  一份实现承担，事务外传 `preTx*` 早拒、锁内传 `transition` 做权威判定 ——
+  只判「最终可见性」不判「逐字段」会留并发越权口子：员工 `{store: 越界B, org: scope内M}` 时，
+  回传旧值 B 的请求在并发把 store 合法改成 A 之后落地，实际是 A→B 的越界迁移而 M 仍可见。
   `updateEmployee` 的**整个写入段在一个事务内**：最后一个超级管理员守卫（事务内重读，
-  否则两个 admin 并发离职会双双通过、留下零管理员）→ 复职角色快照 → 员工行 UPDATE（乐观锁 CAS）
+  否则两个 admin 并发离职会双双通过、留下零管理员）→ 员工行 UPDATE（乐观锁 CAS）→ 复职角色快照
   → 离职时清角色 + revoke 审计 → §AFF-03 审计 → 复职审计 → `employee.update` 审计。
   `logOperation` / `logUpdate` / `countActiveAdmins` / `isAdminEmployee` /
   `findAllRoleBindings` / `findRolesBoundWithinSubtree` 都接可选 executor，一律传 `tx`。
