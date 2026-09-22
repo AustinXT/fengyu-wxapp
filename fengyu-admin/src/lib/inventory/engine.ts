@@ -6,7 +6,7 @@ import { rowsAffected } from '@/lib/pg-rows'
 import { fmtDate, shanghaiToday, shanghaiYmd } from '@/lib/datetime'
 import { logOperation } from '@/lib/operation-log'
 import { hasPermission, isAdminScope } from '@/lib/permissions'
-import { normalizePage } from '@/lib/paging'
+import { resolvePaging } from '@/lib/paging'
 import { withAnyPermission, withPermission } from '@/lib/with-permission'
 import {
   offsetPageResult,
@@ -155,10 +155,16 @@ const DOC_PREFIX: Record<InventoryDocType, string> = {
  */
 const PAGE_SIZE_WHITELIST = [10, 20, 50, 100]
 
-// 页码归一化已收编到 admin 单源 `@/lib/paging`（#281）—— 原先本文件自带一份 `normalizePage`，
-// 其余 37 处调用点各写各的 `Math.max(1, filters.page || 1)`。收编时顺带把判据从
-// `Number.isFinite` 收紧成 `Number.isSafeInteger`：前者放行 `1e21`，而 `String(1e21 * 20)`
-// 输出指数记法 `"2e+22"`，PG `int8in` 照样报错。见 `src/lib/paging.ts` 顶部注释。
+// 分页归一已收编到 admin 单源 `@/lib/paging` 的 `resolvePaging`（#281）。
+// 原先本文件自带一份 `normalizePage`（判据 `Number.isFinite` + `MAX_PAGE` 上夹），
+// 而其余 37 处调用点各写各的 `Math.max(1, filters.page || 1)`（无上夹）——
+// **真正会打出 `2e+22` 那个 500 的是后者，不是本文件**；本文件的上夹早就挡住了。
+//
+// ⚠️ 收编带来一处**行为变更**（方向是好的，但不是无差别等价）：判据从 `Number.isFinite`
+// 收紧成 `Number.isSafeInteger` 后，`?page=1e21` 在本文件 5 支查询上
+// 由「夹到第 1e6 页 → 空列表」变成「回落第 1 页 → 返回首页数据」。
+//
+// 另：offset 不再在本文件手算，全部由 `resolvePaging` 给出。见 `src/lib/paging.ts` 顶部注释。
 
 const NO_MOVEMENT_DOC_TYPES = new Set<InventoryDocType>([
   '门店报货',
@@ -1499,9 +1505,12 @@ export const listInventorySkus = withPermission(
     filters: { keyword?: string; sourceType?: InventorySkuSourceType; onlyActive?: boolean; page?: number; pageSize?: number } = {},
   ): Promise<{ data: InventorySkuRow[]; total: number }> => {
     await syncInventoryLocations()
-    const page = normalizePage(filters.page)
-    const pageSize = PAGE_SIZE_WHITELIST.includes(filters.pageSize ?? 0) ? filters.pageSize! : 20
-    const offset = (page - 1) * pageSize
+    const { page, pageSize, offset } = resolvePaging({
+      page: filters.page,
+      pageSize: filters.pageSize,
+      defaultPageSize: 20,
+      allowedPageSizes: PAGE_SIZE_WHITELIST,
+    })
     const conditions: (SQL | undefined)[] = []
     const scoped = await scopedLocationIds(session)
     if (scoped !== null) {
@@ -1765,16 +1774,20 @@ export const listInventorySkuCompositions = withPermission(
     // 而不是 productRows.length。
     // 家居 SKU 是低基数主数据（dev 现有 101 行），全量取回可接受；
     // 若将来量级上来，得先把 configurationStatus 物化到列上才谈得上真正的 SQL 分页。
-    // 同 listInventorySuppliers：给了 pageSize 就必须过白名单，page 用 `|| 1` 兜 NaN。
+    // 同 listInventorySuppliers：`pageSize === undefined` 是**「不分页、返回全量」**的刻意语义
+    // （下拉选项等场景用），所以不能整段交给 resolvePaging —— 它保证 pageSize ≥ 1、表达不了
+    // 「不分页」。分页那一侧仍走单源，别在这里手算 offset。
     // 这一支尤其不能漏 —— `filtered.slice(NaN, NaN)` 返回**空数组**（ToInteger(NaN)=0），
-    // 而客户端 `Number(get('page','1')) || 1` 会认为自己在第 1 页、不触发越界自纠，
+    // 而客户端若不归一会认为自己在第 1 页、不触发越界自纠，
     // 于是 `?page=abc` 会永久停在「空表 + 共 101 条」，用户只能手改 URL 才能出来。
-    const pageSize = filters.pageSize === undefined
-      ? undefined
-      : (PAGE_SIZE_WHITELIST.includes(filters.pageSize) ? filters.pageSize : 20)
-    const offset = (normalizePage(filters.page) - 1) * (pageSize ?? 0)
+    const paged = filters.pageSize === undefined ? null : resolvePaging({
+      page: filters.page,
+      pageSize: filters.pageSize,
+      defaultPageSize: 20,
+      allowedPageSizes: PAGE_SIZE_WHITELIST,
+    })
     return {
-      data: pageSize ? filtered.slice(offset, offset + pageSize) : filtered,
+      data: paged ? filtered.slice(paged.offset, paged.offset + paged.pageSize) : filtered,
       total: filtered.length,
     }
   },
@@ -1935,9 +1948,12 @@ export const listInventoryLots = withPermission(
   ): Promise<{ data: InventoryLotRow[]; total: number; canViewPrice: boolean; priceVisibility: import('./types').InventoryPriceVisibility }> => {
     await syncInventoryLocations()
     const scoped = await scopedLocationIds(session)
-    const page = normalizePage(filters.page)
-    const pageSize = PAGE_SIZE_WHITELIST.includes(filters.pageSize ?? 0) ? filters.pageSize! : 20
-    const offset = (page - 1) * pageSize
+    const { page, pageSize, offset } = resolvePaging({
+      page: filters.page,
+      pageSize: filters.pageSize,
+      defaultPageSize: 20,
+      allowedPageSizes: PAGE_SIZE_WHITELIST,
+    })
     const conditions: (SQL | undefined)[] = []
     if (scoped !== null) {
       conditions.push(scoped.length > 0 ? inArray(inventoryStockLots.locationId, scoped) : sql`FALSE`)
@@ -2157,9 +2173,12 @@ export const listInventoryCoreDocs = withPermission(
   ): Promise<{ data: InventoryDocRow[]; total: number; pageSize: number; canViewPrice: boolean; priceVisibility: import('./types').InventoryPriceVisibility }> => {
     await syncInventoryLocations()
     const scoped = inventoryScopedOrgNodeIds(session)
-    const page = normalizePage(filters.page)
-    const pageSize = PAGE_SIZE_WHITELIST.includes(filters.pageSize ?? 0) ? filters.pageSize! : 20
-    const offset = (page - 1) * pageSize
+    const { page, pageSize, offset } = resolvePaging({
+      page: filters.page,
+      pageSize: filters.pageSize,
+      defaultPageSize: 20,
+      allowedPageSizes: PAGE_SIZE_WHITELIST,
+    })
     const conditions: (SQL | undefined)[] = []
     if (scoped !== null) {
       conditions.push(scoped.length > 0
@@ -3735,12 +3754,15 @@ export const listInventorySuppliers = withPermission(
     // `?size=7` 会让服务端每页 7 条而 UI 按 20 条算页数，尾部数据永远够不到；
     // `?size=-5` 更糟 —— drizzle 会静默丢弃负 limit 却照发负 offset，PG 直接
     // `OFFSET must not be negative`，生产脱敏后只剩一个通用 500 页。
-    // `page` 用 `|| 1` 而不是 `?? 1`：`?page=abc` 的 NaN 是 falsy，`??` 兜不住。
-    const pageSize = filters.pageSize === undefined
-      ? undefined
-      : (PAGE_SIZE_WHITELIST.includes(filters.pageSize) ? filters.pageSize : 20)
-    const rows = pageSize
-      ? await query.limit(pageSize).offset((normalizePage(filters.page) - 1) * pageSize)
+    // 归一走 `@/lib/paging` 单源；`undefined`（不分页）这一态它表达不了，故留在外层判。
+    const paged = filters.pageSize === undefined ? null : resolvePaging({
+      page: filters.page,
+      pageSize: filters.pageSize,
+      defaultPageSize: 20,
+      allowedPageSizes: PAGE_SIZE_WHITELIST,
+    })
+    const rows = paged
+      ? await query.limit(paged.pageSize).offset(paged.offset)
       : await query
     return {
       data: rows.map((row) => supplierRow({ ...row.supplier, linkedSkuCount: row.linkedSkuCount })),

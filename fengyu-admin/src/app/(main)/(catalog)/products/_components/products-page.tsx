@@ -14,6 +14,7 @@ import { ExportButton } from "@/components/ui/export-button"
 import { formatCurrency, formatDate } from "@/lib/utils"
 import { useUrlFilters } from "@/lib/hooks/use-url-filters"
 import { PreserveListContextLink } from "@/components/return-context"
+import { normalizePage } from "@/lib/paging"
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50]
 
@@ -61,7 +62,7 @@ export default function ProductsPageClient({
   const kindFilter = get("kind")
   const statusFilter = get("status", "enabled") // 默认"启用"：URL 无 status 时只显示启用商品
 
-  const page = Number(get("page", "1"))
+  const page = normalizePage(get("page", "1"))
   const pageSize = PAGE_SIZE_OPTIONS.includes(Number(get("size"))) ? Number(get("size")) : 20
 
   // Build dynamic KIND_COLORS

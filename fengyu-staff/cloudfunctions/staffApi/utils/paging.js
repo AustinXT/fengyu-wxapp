@@ -36,7 +36,9 @@ const MAX_PAGE_SIZE = 100
  * 此时 `String(offset)` 输出指数记法 `"2e+21"`，pg 按文本传参直接让 PG `int8in` 报错
  * —— 正是本 issue 要修的那个 500。
  * 封顶后 offset ≤ (1e6-1) × MAX_PAGE_SIZE_CEILING ≈ 1e9，恒为安全整数。
- * 口径与 admin `src/lib/inventory/engine.ts` 的 `normalizePage`（MAX_PAGE = 1_000_000）对齐。
+ * 口径与 admin `fengyu-admin/src/lib/paging.ts` 的 `normalizePage`（MAX_PAGE = 1_000_000）对齐。
+ * （#281 把 admin 那份从 `src/lib/inventory/engine.ts` 提到了 `src/lib/paging.ts`；
+ *   两端 MAX_PAGE / MAX_PAGE_SIZE / MAX_PAGE_SIZE_CEILING 三个常量取值仍完全一致。）
  */
 const MAX_PAGE = 1_000_000
 

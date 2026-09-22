@@ -9,14 +9,22 @@
  *
  * ## 为什么 `Math.min(max, Math.max(1, Number(x) || d))` 不够
  *
- * ① **`Math.max` / `Math.min` 不取整** —— `page = 2.5` 时 `2.5 > 1` 让夹子失效，
- *    `2.5` 原样进 `offset = (2.5 - 1) * 10 = 15`；`pageSize = 2.5` 时 `2.5 > 1` 且
- *    `2.5 < 100`，两个夹子双双失效直接进 `.limit()`。Drizzle 走 pg 扩展协议、参数无类型
- *    注解，PG 按 `LIMIT`/`OFFSET` 的上下文推断 `int8` 并对文本 `"2.5"` 调 `int8in`
- *    → 抛 `invalid input syntax for type bigint: "2.5"`。该串没有 9 项错误前缀，
- *    被全局 catch 降级成 500 而不是 -400。
- *    注意 `0.5` 恰好被 `Math.max(1, …)` 兜住 —— 只有 **2.5 ~ 99.9 区间的小数**会漏出去，
- *    所以不容易被随手测出来。
+ * ① **`Math.max` / `Math.min` 不取整** —— `Math.max(1, x)` 只把 `x ≤ 1` 的值抬到 1，
+ *    **任何 > 1 的小数原样透传，没有上界**（`1.1` / `150.5` / `1e7 + 0.5` 全漏）。
+ *    只有 `0 < x ≤ 1` 的小数（如 `0.5`）恰好被兜住。
+ *    pageSize 侧多一道 `Math.min(100, …)`，所以那条路径漏的是开区间 `(1, 100)` 的小数。
+ *
+ *    漏出去之后分两种后果，**别把它们混成一种**：
+ *    - **乘积恰好是整数 → 不报错，静默返回错误的行区间**。`?page=2.5&size=10` 的
+ *      `offset = (2.5 - 1) * 10 = 15`，`String(15)` 就是 `"15"`，PG 照单全收，
+ *      用户拿到第 16~35 条而 UI 高亮第 2 页 —— 翻页时必然重复/跳过行，且零报错。
+ *    - **乘积带浮点尾巴 → 500**。`?page=1.3&size=10` 的 `offset` 是
+ *      `3.0000000000000004`；`pageSize = 2.5` 直接进 `.limit()`。Drizzle 走 pg 扩展协议、
+ *      参数无类型注解，PG 按 `LIMIT`/`OFFSET` 的上下文推断 `int8` 并对文本调 `int8in`
+ *      → 抛 `invalid input syntax for type bigint`。该串没有 9 项错误前缀，
+ *      被全局 catch 降级成 500 而不是 -400。
+ *
+ *    后一种响，前一种不响却更危险 —— 这是这条缺陷难被随手测出来的真正原因。
  *
  * ② **`Math.trunc` 单独也不够** —— `page = Infinity` 经 trunc 仍是 `Infinity`；
  *    `page = 1e21` 是有限值，`Number.isFinite` 放行，但 `offset = 1e21 * 20 = 2e22`
@@ -58,9 +66,11 @@ export const MAX_PAGE_SIZE_CEILING = 1000
  * ⚠️ `Number(raw)` 会抛，触发形状**可以来自普通 JSON**：
  * `JSON.parse('{"toString": null}')` 是个普通对象，ToPrimitive 先试
  * `Object.prototype.valueOf`（返回对象本身，非原始值）再试 `toString`（被遮蔽成 null，
- * 不可调用）→ `TypeError: Cannot convert object to primitive value`。
- * admin 的列表入参目前都来自 URL query（都是 string），这条**当前不可达**，
- * 但本文件是该缺陷类的抄写模板，留破口会跟着扩散，故照样兜住。
+ * 不可调用）→ `TypeError: Cannot convert object to primitive value`。`Symbol()` 同样抛。
+ *
+ * 可达性：**URL 路径不可达**（query 过来的都是 string），但 **Server Action 直调路径可达**
+ * —— action 可被客户端任意构造调用，`{toString: null}` 是普通对象、能过 RSC 序列化边界。
+ * 抛出去会被全局 catch 降级成 500，正是本 issue 要消灭的那类非优雅降级。
  */
 function clampInt(raw: unknown, cap: number, fallback: number): number {
   let n: number
@@ -73,7 +83,10 @@ function clampInt(raw: unknown, cap: number, fallback: number): number {
 }
 
 /**
- * 页码归一。非法值（小数 / 0 / 负数 / NaN / ±Infinity / 超安全整数）一律回落 1，
+ * 页码归一。**小数按 `Math.trunc` 截断**（`2.5` → `2`、`1.3` → `1`），
+ * 不是回落 1 —— 截断后若仍 ≥ 1 就用截断值，这与客户端 `pagination.tsx` 的
+ * `Math.floor` 同向（页码恒为正，两者等价）。
+ * 真正**回落 1** 的是：`0` / 负数 / `NaN` / `±Infinity` / 超安全整数（如 `1e21`）/ 非数值。
  * 超过 {@link MAX_PAGE} 夹到 MAX_PAGE。
  *
  * @returns 恒为 `[1, MAX_PAGE]` 区间内的安全整数
@@ -126,18 +139,35 @@ export function resolvePaging(input: ResolvePagingInput): {
   )
 
   // 回落值本身也要过一遍归一：调用方传的 defaultPageSize 是常量，非法即编程错误，
-  // 但兜到 1 而不是放行 —— 尤其 `undefined` 会被 pg 序列化成 `null`，
-  // 而 `LIMIT NULL` 在 PG 等于**不限行数**（静默全表返回）。
+  // 但兜到 1 而不是放行 —— 失控的 pageSize 进 `.limit()` 的后果比「一页只返回 1 条」严重得多。
+  //
+  // ⚠️ 这里常被写成「`undefined` 会变成 `LIMIT NULL`，而 `LIMIT NULL` 等于不限行数」——
+  // 结论对，机制不对（drizzle 0.45 实测）：`pg-core/dialect.cjs:288` 的守卫是
+  // `typeof limit === 'object' || (typeof limit === 'number' && limit >= 0)`，
+  // 所以 `undefined` / `NaN` / 负数是**整条 limit 子句根本不发出**（比 LIMIT NULL 更隐蔽，
+  // EXPLAIN 里连 Limit 节点都没有）；只有字面 `null`（`typeof null === 'object'`）
+  // 才真走 `LIMIT $1` = NULL。两条路径后果相同：**静默全表返回**。
   const fallbackPageSize = clampInt(defaultPageSize, cap, 1)
 
   const safePage = normalizePage(page)
-  const safePageSize = allowedPageSizes
+  // ⚠️ 判 `?.length` 而不是判真值：`allowedPageSizes: []` 是 truthy，
+  // 空白名单会让**任何** pageSize 入参都 miss 并静默回落，且毫无告警。
+  const safePageSize = allowedPageSizes?.length
     // 白名单模式：严格相等匹配。`2.5` / `'20'` / `Infinity` 都不在白名单 → 回落。
-    // ⚠️ 命中后仍要走 `clampInt` 而不是 `Math.min(cap, …)`：白名单是**代码常量**，
-    // 但若哪天有人把它写成 `[10, 20.5]`，`Math.min` 会把 20.5 原样吐到 `.limit()`，
-    // 「出口恒为安全整数」这条契约就从白名单这一侧破了。
+    //
+    // ⚠️ 命中后**不能再夹 `cap`**：`Math.min(cap, …)` 会让出口落在白名单之外
+    // （`allowedPageSizes:[10,20,50]` + `maxPageSize:30` + `pageSize=50` → 出口 30，
+    // 而 30 不是任何一个 UI 选项，服务端每页 30 条、UI 按 50 算页数 → 尾部数据够不到）。
+    // 白名单的语义就是「只允许这几个值」，cap 在这个模式下无话语权。
+    // 但仍要校验命中值本身合法 —— 白名单是代码常量，若哪天被写成 `[10, 20.5]`，
+    // 20.5 原样吐到 `.limit()` 就会从这一侧破掉「出口恒为安全整数」。
+    // `≤ CEILING` 这道也不能省：白名单若被写成 `[10, 1e15]`，命中后 offset 就越过 2^53 了
+    // ——「乘法不封闭」那条对白名单这一侧同样成立。
     ? (allowedPageSizes.includes(pageSize as number)
-        ? clampInt(pageSize, cap, fallbackPageSize)
+        && Number.isSafeInteger(pageSize)
+        && (pageSize as number) >= 1
+        && (pageSize as number) <= MAX_PAGE_SIZE_CEILING
+        ? (pageSize as number)
         : fallbackPageSize)
     // clamp 模式：非法值回落调用点默认值，语义与改造前的 `Number(pageSize) || <默认>` 一致。
     : clampInt(pageSize, cap, fallbackPageSize)

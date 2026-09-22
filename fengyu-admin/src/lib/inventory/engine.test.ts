@@ -1002,19 +1002,24 @@ describe('库存 SKU 来源与价格保护', () => {
     expect(block).not.toMatch(/filters\.onlyActive \?\? true/)
   })
 
-  it('分页页长走白名单，page 用 || 兜 NaN', () => {
+  it('分页页长走白名单，且「不分页」那一态没被归一函数吃掉', () => {
     // `?size=7` 会让服务端每页 7 条而 UI 按 20 条算页数，尾部数据翻到哪页都够不到；
     // `?size=-5&page=2` 更糟：drizzle 丢弃负 limit 却照发负 offset → PG 报错 → 500。
-    // `?page=abc` 的 NaN 是 falsy，必须用 `|| 1` 而不是 `?? 1`。
+    //
+    // #281 起两支都收编进 `resolvePaging`，但 **`pageSize === undefined` 是「不分页、
+    // 返回全量」的刻意语义**（办理台下拉共用这两个函数），而 `resolvePaging` 保证
+    // pageSize ≥ 1、表达不了这一态 —— 所以必须保留外层的 `undefined` 三元判，
+    // 不能整段塞进归一函数。这条守的就是那个外层判还在。
     const source = readFileSync(resolve(__dirname, 'engine.ts'), 'utf8')
     for (const [from, to] of [
       ['export const listInventorySuppliers', 'export const listInventorySupplierOptions'],
       ['export const listInventorySkuCompositions', 'export const listInventorySkuCompositionOptions'],
     ] as const) {
       const block = source.slice(source.indexOf(from), source.indexOf(to))
-      expect(block).toMatch(/PAGE_SIZE_WHITELIST\.includes\(filters\.pageSize\)/)
-      expect(block).toMatch(/normalizePage\(filters\.page\)/)
-      expect(block).not.toMatch(/filters\.page \?\? 1/)
+      expect(block).toMatch(/filters\.pageSize === undefined \? null : resolvePaging\(\{/)
+      expect(block).toMatch(/allowedPageSizes: PAGE_SIZE_WHITELIST/)
+      // 归一后不得再有手算 offset（契约要由单源一次给全）
+      expect(block).not.toMatch(/\(\s*\w*[Pp]age\w*\s*-\s*1\s*\)\s*\*/)
     }
   })
 
@@ -1100,18 +1105,20 @@ describe('库存 SKU 来源与价格保护', () => {
     // (1.5-1)*20 = 10 → 返回第 11–30 条，而客户端 Pagination 内部 floor 后高亮第 1 页，
     // 用户看到的既不是第 1 页也不是第 2 页；`?page=Infinity` 直接把 SQL 打挂。
     //
-    // #281 起 `normalizePage` 的实现搬到 `src/lib/paging.ts`（admin 单源，另有 37 处调用点），
+    // #281 起归一实现搬到 `src/lib/paging.ts`（admin 单源，另有 37 处调用点），
     // **实现本身的守护挪到了 `src/lib/paging.test.ts`**；这里只守「本文件确实在用它」。
     const source = readFileSync(resolve(__dirname, 'engine.ts'), 'utf8')
-    // 必须是 import 进来的，不能是本文件又写了一份同名的
-    expect(source).toMatch(/import \{ normalizePage \} from '@\/lib\/paging'/)
+    // 必须是 import 进来的，不能是本文件又写了一份
+    expect(source).toMatch(/import \{ resolvePaging \} from '@\/lib\/paging'/)
     expect(source).not.toMatch(/function normalizePage/)
     // 五支列表查询必须全部走它，不能有漏网的内联写法
-    expect(source.match(/normalizePage\(filters\.page\)/g)).toHaveLength(5)
-    // 剥掉行注释再扫 —— 文件顶部的收编说明里就复述了这个旧写法当反例，
+    expect(source.match(/resolvePaging\(\{/g)).toHaveLength(5)
+    // 剥掉行注释再扫 —— 文件顶部的收编说明里就复述了这些旧写法当反例，
     // 不剥的话这条断言会被自己的注释绊倒（而不是被真实复发绊倒）。
     const code = source.replace(/^\s*\/\/.*$/gm, '')
     expect(code).not.toMatch(/Math\.max\(1, filters\.page/)
+    // offset 一律由单源给出，本文件不再手算
+    expect(code).not.toMatch(/\(\s*\w*[Pp]age\w*\s*-\s*1\s*\)\s*\*/)
   })
 
   it('SKU 映射的 total 取过滤后的长度，不是全量长度', () => {
@@ -1126,7 +1133,7 @@ describe('库存 SKU 来源与价格保护', () => {
     expect(block).toMatch(/total: filtered\.length/)
     expect(block).not.toMatch(/total: productRows\.length/)
     // 切片同样必须基于 filtered
-    expect(block).toMatch(/filtered\.slice\(offset, offset \+ pageSize\)/)
+    expect(block).toMatch(/filtered\.slice\(paged\.offset, paged\.offset \+ paged\.pageSize\)/)
   })
 
   it('供应商总数查询绕开 leftJoin（否则「共 N 条」会被关联 SKU 放大）', () => {
@@ -1153,8 +1160,10 @@ describe('库存 SKU 来源与价格保护', () => {
       source.indexOf('export const listInventorySuppliers'),
       source.indexOf('export const listInventorySupplierOptions'),
     )
-    expect(listBlock).toMatch(/const pageSize = filters\.pageSize\b/)
-    expect(listBlock).toMatch(/pageSize\s*\n?\s*\?\s*await query\.limit\(pageSize\)/)
+    // 收编后「不分页」这一态由 `paged === null` 表达（resolvePaging 保证 pageSize ≥ 1，
+    // 表达不了 undefined），三元判必须留在归一函数**外面**。
+    expect(listBlock).toMatch(/const paged = filters\.pageSize === undefined \? null : resolvePaging\(\{/)
+    expect(listBlock).toMatch(/paged\s*\n?\s*\?\s*await query\.limit\(paged\.pageSize\)\.offset\(paged\.offset\)/)
     expect(listBlock).toMatch(/:\s*await query\b/)
     // 不得出现 `filters.pageSize ?? 20` 这类默认值
     expect(listBlock).not.toMatch(/filters\.pageSize\s*\?\?/)

@@ -83,11 +83,15 @@ describe('normalizePage', () => {
   it('兜住 Number(raw) 抛 TypeError 的入参', () => {
     // `JSON.parse('{"toString": null}')` 是**普通 JSON 对象**，不需要用户代码：
     // ToPrimitive 先试 valueOf（返回对象本身，非原始值）再试 toString（被遮蔽成 null，
-    // 不可调用）→ TypeError。admin 当前入参都来自 URL query（都是串），这条不可达，
-    // 但本文件是该缺陷类的抄写模板，破口会跟着模板扩散。
+    // 不可调用）→ TypeError。URL 路径不可达（query 都是串），但 **Server Action
+    // 直调路径可达**：action 可被客户端任意构造调用，这个形状能过 RSC 序列化边界。
     const hostile = JSON.parse('{"toString": null}')
+    // ⓘ 下面这行断的是 V8 的 ToPrimitive 语义、与 paging.ts 实现无关，**不是守护**，
+    //    只是把「这个入参确实会抛」这个前提钉在测试里，免得日后有人以为用例在测假想场景。
     expect(() => Number(hostile)).toThrow(TypeError)
+    // 这行才是守护
     expect(normalizePage(hostile)).toBe(1)
+    expect(normalizePage(Symbol('x'))).toBe(1)
   })
 })
 
@@ -168,18 +172,38 @@ describe('resolvePaging · clamp 模式（allocations 用的口径）', () => {
 describe('resolvePaging · 无条件契约', () => {
   it('任意入参组合下，page / pageSize / offset 三者均为安全整数', () => {
     // 验收标准：「断言传给 Drizzle 的 limit/offset 均 Number.isSafeInteger 为真」。
-    // 这里穷举 hostile page × hostile pageSize × 两种模式。
+    //
+    // ⚠️ 第 3/4 参（defaultPageSize / allowedPageSizes / maxPageSize）**也必须敌意化**。
+    // 第一版矩阵只变 page × pageSize，三组 opts 里的第 3/4 参全是固定合法值 ——
+    // 「白名单 × maxPageSize 同传时出口落在白名单外」与「空白名单 truthy」这两个真缺陷
+    // 正好落在那个盲区里，648 组合一个都没碰到。
     const hostileSizes: unknown[] = [
       2.5, 0, -1, NaN, Infinity, 1e21, Number.MAX_SAFE_INTEGER, '50', null, undefined, {}, [],
     ]
+    const hostileOpts: Array<Record<string, unknown>> = [
+      { defaultPageSize: 20, allowedPageSizes: [10, 20, 50] },
+      { defaultPageSize: 20, maxPageSize: 100 },
+      { defaultPageSize: 20 },
+      // —— 以下是第 3/4 参的敌意集 ——
+      { defaultPageSize: 20, allowedPageSizes: [] },                        // 空白名单（truthy 陷阱）
+      { defaultPageSize: 20, allowedPageSizes: [0, -5, NaN] },              // 白名单全是非法值
+      { defaultPageSize: 20, allowedPageSizes: [10, 20.5] },                // 白名单含小数
+      { defaultPageSize: 20, allowedPageSizes: [10, 1e21] },                // 白名单含超安全整数
+      { defaultPageSize: 20, allowedPageSizes: [10, 20, 50], maxPageSize: 30 }, // 白名单 × cap 同传
+      { defaultPageSize: 0 },
+      { defaultPageSize: -5 },
+      { defaultPageSize: 20.7 },
+      { defaultPageSize: 5000 },                                            // 超 CEILING
+      { defaultPageSize: undefined },
+      { defaultPageSize: 20, maxPageSize: 0.5 },
+      { defaultPageSize: 20, maxPageSize: -10 },
+      { defaultPageSize: 20, maxPageSize: NaN },
+      { defaultPageSize: 20, maxPageSize: 1e21 },
+    ]
     for (const [label, page] of HOSTILE_PAGES) {
       for (const pageSize of hostileSizes) {
-        for (const opts of [
-          { defaultPageSize: 20, allowedPageSizes: [10, 20, 50] as const },
-          { defaultPageSize: 20, maxPageSize: 100 },
-          { defaultPageSize: 20 },
-        ]) {
-          const r = resolvePaging({ ...opts, page, pageSize })
+        for (const opts of hostileOpts) {
+          const r = resolvePaging({ ...opts, page, pageSize } as Parameters<typeof resolvePaging>[0])
           const at = `${label} × ${String(pageSize)} × ${JSON.stringify(opts)}`
           expect(Number.isSafeInteger(r.page), at).toBe(true)
           expect(Number.isSafeInteger(r.pageSize), at).toBe(true)
@@ -187,12 +211,41 @@ describe('resolvePaging · 无条件契约', () => {
           expect(r.page >= 1, at).toBe(true)
           expect(r.pageSize >= 1, at).toBe(true)
           expect(r.offset >= 0, at).toBe(true)
-          // offset 是 String() 后按文本传给 PG 的 —— 指数记法就是本 issue 那个 500
+          // offset 是 String() 后按文本传给 PG 的 —— 指数记法就是本 issue 那个 500。
+          // （pageSize 侧不断言这条：它被 cap ≤ 1000 压着，距指数记法阈值 1e21 有 18 个
+          //   数量级，那条断言实质不可证伪 —— 把 clampInt 换成裸 Math.min 它照样绿。）
           expect(String(r.offset), at).not.toMatch(/e/i)
-          expect(String(r.pageSize), at).not.toMatch(/e/i)
         }
       }
     }
+  })
+
+  it('白名单模式的出口一定落在白名单里（cap 在这个模式下无话语权）', () => {
+    // 反例来自边界评审：命中白名单后若再夹 cap，`maxPageSize:30` 会把 50 压成 30，
+    // 而 30 不是任何一个 UI 选项 —— 服务端每页 30 条、UI 按 50 算页数，尾部数据够不到。
+    expect(resolvePaging({
+      page: 1, pageSize: 50, defaultPageSize: 10,
+      allowedPageSizes: [10, 20, 50], maxPageSize: 30,
+    }).pageSize).toBe(50)
+  })
+
+  it('空白名单退回 clamp 模式，不是「白名单永远 miss」', () => {
+    // `allowedPageSizes: []` 是 truthy —— 判真值会让它走白名单模式且**永远 miss**，
+    // pageSize 入参被静默忽略；判 `?.length` 才会退回 clamp。
+    //
+    // ⚠️ 这里的 `pageSize` 必须**不等于** `defaultPageSize`，否则两种实现返回值相同、
+    // 断言区分不出来 —— 第一版就写成了 `pageSize: 20, defaultPageSize: 20`，
+    // 红检时把 `?.length` 改回 `allowedPageSizes` 竟然全绿（恒真断言）。
+    const r = resolvePaging({ page: 2, pageSize: 50, defaultPageSize: 20, allowedPageSizes: [] })
+    expect(Number.isSafeInteger(r.pageSize)).toBe(true)
+    expect(r.pageSize).toBe(50)
+  })
+
+  it('白名单含非法常量时不破契约（宁可回落也不吐出去）', () => {
+    // 白名单是代码常量，但它若被写成 `[10, 20.5]` / `[10, 1e21]`，
+    // 「出口恒为安全整数」就会从白名单这一侧破掉。
+    expect(resolvePaging({ page: 1, pageSize: 20.5, defaultPageSize: 10, allowedPageSizes: [10, 20.5] }).pageSize).toBe(10)
+    expect(resolvePaging({ page: 1, pageSize: 1e21, defaultPageSize: 10, allowedPageSizes: [10, 1e21] }).pageSize).toBe(10)
   })
 
   it('offset 与归一后的 page/pageSize 自洽', () => {
@@ -212,59 +265,123 @@ function collectSources(dir: string, acc: string[] = []): string[] {
   return acc
 }
 
-describe('防复发守护（#281 的 38 处改完后不能再长回来）', () => {
-  const SRC = resolve(__dirname, '..')
+/**
+ * 剥掉 JS/TS 注释，供源码字面量守护用。
+ *
+ * ⚠️ 必须剥**行尾**注释而不只是整行注释 —— 本仓 `a85cb17e`（#250）就因同型疏漏返工过一次：
+ * `const x = 1 // Math.max(1, filters.page || 1)` 这种写法下，只剥「整行注释」的正则
+ * 会把它原样留下 → 守护正则命中 → **误报变红**（不是被绕过，是反向踩雷）。
+ * 同时要跳过引号内的双斜杠，否则 `'https://x'` 会被从协议分隔符处截断。
+ */
+function stripComments(source: string): string {
+  return source
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .split('\n')
+    .map((line) => {
+      // 找第一个不是 `://` 一部分、且不在引号内的 `//`
+      let inSingle = false, inDouble = false, inTick = false
+      for (let i = 0; i < line.length - 1; i++) {
+        const c = line[i]
+        if (c === '\\') { i++; continue }
+        if (!inDouble && !inTick && c === "'") inSingle = !inSingle
+        else if (!inSingle && !inTick && c === '"') inDouble = !inDouble
+        else if (!inSingle && !inDouble && c === '`') inTick = !inTick
+        else if (!inSingle && !inDouble && !inTick && c === '/' && line[i + 1] === '/') {
+          return line.slice(0, i)
+        }
+      }
+      return line
+    })
+    .join('\n')
+}
 
-  it('src/actions 与 src/app 下不得再出现不取整的页码写法', () => {
-    // ⚠️ 必须**剥掉注释**再扫：本次改动在 engine.ts / paging.ts 的说明里复述了旧写法当反例，
-    // 不剥的话这条断言会被自己的注释绊倒，而不是被真实复发绊倒。
+describe('防复发守护（#281 改完后不能再长回来）', () => {
+  const SRC = resolve(__dirname, '..')
+  // ⚠️ 扫描根必须含 `lib` —— 第一版只扫 actions + app，而 `lib/inventory/engine.ts`
+  // 当时正逐字匹配「手算 offset」那条正则，守护恒绿**不是因为没有违规，
+  // 是因为扫描根避开了现场**。
+  const ROOTS = ['actions', 'app', 'lib']
+
+  it('全仓不得再出现不取整的页码写法', () => {
     const offenders: string[] = []
-    for (const file of [...collectSources(join(SRC, 'actions')), ...collectSources(join(SRC, 'app'))]) {
-      const code = readFileSync(file, 'utf8')
-        .replace(/\/\*[\s\S]*?\*\//g, '')   // 块注释
-        .replace(/^\s*\/\/.*$/gm, '')        // 行注释
-      // 只认「页码」语义的那几种：`.page` 字段 与 `get('page', …)` URL 取值。
-      // 数量夹取（`Math.max(1, Number(item.quantity) || 1)`）不在此列。
-      if (/Math\.max\(\s*1\s*,\s*\w+\.page\b/.test(code)) offenders.push(`${file} (filters.page)`)
-      if (/Math\.max\(\s*1\s*,\s*Number\(\s*\w+\.page\b/.test(code)) offenders.push(`${file} (Number(params.page))`)
-      if (/Math\.max\(\s*1\s*,\s*Number\(\s*get\(\s*['"]page['"]/.test(code)) offenders.push(`${file} (get('page'))`)
+    for (const root of ROOTS) {
+      for (const file of collectSources(join(SRC, root))) {
+        const code = stripComments(readFileSync(file, 'utf8'))
+        // 只认「页码」语义的那几种：`.page` 字段 与 `get('page', …)` URL 取值。
+        // 数量夹取（`Math.max(1, Number(item.quantity) || 1)`）不在此列。
+        if (/Math\.max\(\s*1\s*,\s*\w+\.page\b/.test(code)) offenders.push(`${file} (filters.page)`)
+        if (/Math\.max\(\s*1\s*,\s*Number\(\s*\w+\.page\b/.test(code)) offenders.push(`${file} (Number(params.page))`)
+        // 裸 `Number(get('page'))`（连 Math.max 都没有）——三个 reviewer 独立发现的那 4 处
+        // 正是这个形状，第一版三条正则全要求 `Math.max` 前缀，对它完全失明。
+        if (/(?<!normalizePage\()\bNumber\(\s*get\(\s*['"]page['"]/.test(code)) {
+          offenders.push(`${file} (裸 Number(get('page')))`)
+        }
+      }
     }
     expect(offenders).toEqual([])
   })
 
-  it('每个自己算 offset 的地方都得是 resolvePaging 给的', () => {
+  it('服务端不得手算 offset —— 只能由 resolvePaging 给出', () => {
     // `const offset = (page - 1) * pageSize` 手算一次，契约就退化成
     // 「靠调用点两个入参都恰好正确」—— 这正是 #281 的成因。
+    //
+    // ⚠️ 只管**服务端**（actions + lib）：`src/app` 下客户端组件的
+    // `filtered.slice((page - 1) * pageSize, …)` 是内存分页，不进 PG，
+    // 其安全性由「page 走 normalizePage + pageSize 走白名单」保证，
+    // 已由本文件另两条守护覆盖。把它们一起禁掉是过度收紧（第一版正则就是这么误伤的）。
+    //
+    // ⚠️ 扫描根必须含 `lib` —— 更早一版只扫 actions，而 `lib/inventory/engine.ts`
+    // 当时正逐字匹配这条正则，守护恒绿**不是因为没有违规，是因为扫描根避开了现场**。
     const offenders: string[] = []
-    for (const file of collectSources(join(SRC, 'actions'))) {
-      const code = readFileSync(file, 'utf8')
-        .replace(/\/\*[\s\S]*?\*\//g, '')
-        .replace(/^\s*\/\/.*$/gm, '')
-      if (/const offset = \(page - 1\) \* pageSize/.test(code)) offenders.push(file)
+    for (const root of ['actions', 'lib']) {
+      for (const file of collectSources(join(SRC, root))) {
+        if (file.endsWith('/lib/paging.ts')) continue   // 单源自身就是算 offset 的地方
+        const code = stripComments(readFileSync(file, 'utf8'))
+        if (/\(\s*\w*[Pp]age\w*\s*-\s*1\s*\)\s*\*/.test(code)) offenders.push(file)
+      }
     }
-    expect(offenders).toEqual([])
+    expect(offenders, `手算 offset 的文件:\n${offenders.join('\n')}`).toEqual([])
   })
 
-  it('17 处 action 调用点全部在位（少一处就是有人改回内联写法）', () => {
-    const files = collectSources(join(SRC, 'actions'))
-    const hits = files.flatMap((f) => {
-      const m = readFileSync(f, 'utf8').match(/resolvePaging\(\{/g)
-      return m ? [[f, m.length] as const] : []
+  it('每个做 SQL 分页的 action 都调了 resolvePaging（存在性，不是计数）', () => {
+    // 计数型断言（`toBe(17)`）的毛病：合法新增第 18 个分页 action 时它变红，
+    // 维护者被训练成「直接把 17 改成 18」，守护退化成计数器。
+    // 改成存在性：**凡是出现 `.offset(` 的 action 文件，必须同时出现 `resolvePaging`**。
+    const missing: string[] = []
+    for (const file of collectSources(join(SRC, 'actions'))) {
+      const code = stripComments(readFileSync(file, 'utf8'))
+      if (!/\.offset\(/.test(code)) continue
+      // 导出走 keyset / 专用 helper，不经 resolvePaging
+      if (/resolveExport(Keyset|Offset)Page|nonNegativeOffset/.test(code) && !/resolvePaging/.test(code)) continue
+      if (!/resolvePaging/.test(code)) missing.push(file)
+    }
+    expect(missing, `用了 .offset() 却没走 resolvePaging:\n${missing.join('\n')}`).toEqual([])
+  })
+
+  it('所有从 URL 读页码的组件都走 normalizePage，一个不漏', () => {
+    // 不写死数字，改成「读 page 的地方 == 走 normalizePage 的地方」的**等式**：
+    // 第一版守护写死 20，恰好漏掉了 products / stores / coupons / legacy-orders 四处
+    // ——它们的写法是 `Number(get("page","1"))`（连 Math.max 都没有），
+    // 计数型断言对「本来就没数到」的遗漏零保护，等式型才抓得住。
+    const reading: string[] = []
+    const normalized: string[] = []
+    for (const file of collectSources(join(SRC, 'app'))) {
+      const code = stripComments(readFileSync(file, 'utf8'))
+      for (const m of code.matchAll(/get\(\s*['"]page['"]/g)) {
+        reading.push(`${file}@${m.index}`)
+      }
+      for (const m of code.matchAll(/normalizePage\(\s*get\(\s*['"]page['"]/g)) {
+        normalized.push(`${file}@${m.index}`)
+      }
+    }
+    const unguarded = reading.filter((r) => {
+      const [file, idx] = r.split('@')
+      // normalizePage( 比 get( 早 14 个字符起头，用「同文件且偏移接近」配对
+      return !normalized.some((n) => n.split('@')[0] === file
+        && Math.abs(Number(n.split('@')[1]) + 14 - Number(idx)) <= 2)
     })
-    const total = hits.reduce((s, [, n]) => s + n, 0)
-    // issue 正文记的是「17 处 page + 1 处 pageSize」，但那 1 处 pageSize
-    // （allocations）与它的 page 是**同一个调用点** —— 合并后是 17 个，不是 18 个。
-    // 构成：16 处白名单型（15 个文件 + messages 第 2 处）+ allocations 的 1 处 clamp 型。
-    expect(total, `实际分布: ${hits.map(([f, n]) => `${f.split('/').pop()}×${n}`).join(', ')}`).toBe(17)
-  })
-
-  it('20 处组件调用点全部在位', () => {
-    const files = collectSources(join(SRC, 'app'))
-    const total = files.reduce((s, f) => {
-      const m = readFileSync(f, 'utf8').match(/normalizePage\(get\(/g)
-      return s + (m ? m.length : 0)
-    }, 0)
-    expect(total).toBe(20)
+    expect(unguarded, `未走归一的页码读取点:\n${unguarded.join('\n')}`).toEqual([])
+    expect(reading.length).toBeGreaterThanOrEqual(24)
   })
 
   it('paging.ts 的两道防线都在（取整 + 安全整数判据 + 双上限）', () => {
