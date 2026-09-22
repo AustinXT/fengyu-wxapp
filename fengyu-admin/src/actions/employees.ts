@@ -9,7 +9,7 @@ import { eq, and, or, gt, sql, ilike, desc, asc } from 'drizzle-orm'
 import type { SQL } from 'drizzle-orm'
 import { alias } from 'drizzle-orm/pg-core'
 import { revalidatePath } from 'next/cache'
-import type { AllocationEmployeeCandidate, Employee } from '@/lib/types'
+import type { AllocationEmployeeCandidate, AuthSession, Employee } from '@/lib/types'
 import { scopeCondition, isInScope, isOrgNodeInScope, isAdminScope, isEmployeeRowVisible, requireAdmin, employeeScopeCondition } from '@/lib/permissions'
 import { withPermission } from '@/lib/with-permission'
 import { logOperation, logUpdate } from '@/lib/operation-log'
@@ -683,6 +683,35 @@ function invalidDateMessage(
   return null
 }
 
+/**
+ * 归属变更后「该员工是否仍在操作者可见范围内」。返回错误文案，可见则 null。
+ *
+ * `employeeScopeCondition` 是 `store_id ∈ scope` **OR** `org_node_id ∈ scope`，
+ * 一旦变更后两个维度都不命中，这一步就**不可逆** —— 操作者自己也看不见了，想改回去
+ * UPDATE 会命中 0 行；而 `permission_roles` 一字不动，账号仍持有效角色、仍能登录，
+ * 却从所有非 admin 的员工名册里永久消失。这是审计盲区，不是显示问题。
+ *
+ * 写成「变更后仍可见」而非「两端不能都空」是因为后者漏掉一整类（GLM 谱系发现）：
+ * 员工 `(storeId=本店, orgNodeId=外市场节点)` 靠 store 维度可见，单清 storeId 后
+ * 另一端虽非空却在 scope 外 —— 同样永久消失。
+ *
+ * 事务外早拒与**锁内复查**共用这一份实现 —— 两处各写一遍就是「两套真相」的又一个入口
+ * （codex 谱系第 13 轮 P1：锁内只重算了自洽、没重算 scope 与最终可见性）。
+ */
+function ownershipVisibilityError(
+  session: AuthSession,
+  storeId: string | null,
+  orgNodeId: string | null,
+): string | null {
+  if (isAdminScope(session)) return null
+  const visible = (!!storeId && isInScope(session, storeId))
+    || (!!orgNodeId && isOrgNodeInScope(session, orgNodeId))
+  if (visible) return null
+  return !storeId && !orgNodeId
+    ? '员工必须归属门店或组织节点之一'
+    : '变更后该员工将不在你的管理范围内，请先转交给有权管理该归属的同事'
+}
+
 async function assertOwnershipConsistent(
   storeId: string | null,
   orgNodeId: string | null,
@@ -800,6 +829,12 @@ export const createEmployee = withPermission(
   // 与 update 侧同构（#228：只修一侧等于没修）—— 非数组会让 PG 解析 text[] 失败（22P02）→ 500
   if (data.skills !== undefined && data.skills !== null && !Array.isArray(data.skills)) {
     return { success: false, message: '技能标签格式不正确' }
+  }
+  // `socialInsurance` 同理：直调传非 boolean 会撞 PG boolean 转换失败 → 未翻译 → 500
+  // （codex 第 13 轮 P2：update 侧三个 boolean 刚修完，create 侧这个又漏了）
+  if (data.socialInsurance !== undefined && data.socialInsurance !== null
+      && typeof data.socialInsurance !== 'boolean') {
+    return { success: false, message: '参数格式不正确' }
   }
 
   // 校验 storeId 在 scope 内（HR 角色受 scope 限制）— 在 DB 查询前快速失败
@@ -1000,6 +1035,24 @@ export const updateEmployee = withPermission(
     if (dateError) return { success: false, message: dateError }
   }
 
+  /**
+   * 纯类型校验必须排在**任何打库之前**（codex 第 13 轮 P3）——
+   * 否则「参数格式不正确」这类结论会排在一次 `db.select` 之后，DB 抖动时用户先看到连接错误；
+   * 测试标题写「打库前拒」也就名不副实。
+   *
+   * `skills` 非数组 → PG 解析 `text[]` 失败（`22P02`）；
+   * 三个 notNull boolean 传 `null` → `23502`；两者 catch 都不翻译 → 500。
+   * 另外 `data.isResigned ?? prev.isResigned` 会把 `null` 当「未传」，双写推导也跟着失真。
+   */
+  if (data.skills !== undefined && data.skills !== null && !Array.isArray(data.skills)) {
+    return { success: false, message: '技能标签格式不正确' }
+  }
+  for (const key of ['isResigned', 'isOnBusinessTrip', 'socialInsurance'] as const) {
+    if (data[key] !== undefined && typeof data[key] !== 'boolean') {
+      return { success: false, message: '参数格式不正确' }
+    }
+  }
+
   // 获取旧值用于日志 diff + storeId 变更检测
   const [currentEmployee] = await db.select().from(staffWechatUsers).where(eq(staffWechatUsers.employeeId, employeeId)).limit(1)
   const oldStoreId = currentEmployee?.storeId ?? null
@@ -1043,18 +1096,29 @@ export const updateEmployee = withPermission(
    * `createEmployee` 用的是 truthiness 判断（`data.storeId &&`），两边口径必须一致，
    * 否则新调用方传 `''` 在 create 侧是「不填」、在 update 侧却撞出一句误导性的「无权…」。
    */
-  const nextStoreId = data.storeId === undefined ? oldStoreId : (data.storeId || null)
-  const nextOrgNodeId = data.orgNodeId === undefined ? oldOrgNodeId : (data.orgNodeId || null)
+  /**
+   * ⚠️ 变量名带 `preTx` 前缀是**故意的**：它们基于事务**外**读到的旧值，
+   * 只能用于「早拒优化」，**不能**当授权结论，也不能喂给审计。
+   *
+   * 两谱系第 13 轮的共同诊断：这个函数此前的缺陷几乎全是同一类病 ——
+   * 「同一份状态有两套真相（事务外快照 vs 锁内重读），靠注释纪律而非结构来保持同步」。
+   * 现在锁内会构造一个 `transition` 对象作为**唯一事实源**，所有消费者（自洽复查、
+   * scope 复查、§AFF-03、复职审计、logUpdate）只接它；这里的 `preTx*` 作用域收窄到
+   * 下面几行早拒判断，误用一眼可见。
+   */
+  const preTxNextStoreId = data.storeId === undefined ? oldStoreId : (data.storeId || null)
+  const preTxNextOrgNodeId = data.orgNodeId === undefined ? oldOrgNodeId : (data.orgNodeId || null)
 
   /**
    * ① 只在新值 `!== 旧值` 时校验 —— 编辑表单会把未改动的归属字段一并回传，
    *    对 no-op 提交报「无权」是纯误伤。且旧值若不在 scope 内，`scopeCond` 会让 UPDATE 命中 0 行兜底。
    */
-  if (nextStoreId !== oldStoreId && nextStoreId !== null && !isInScope(session, nextStoreId)) {
+  if (preTxNextStoreId !== oldStoreId && preTxNextStoreId !== null
+      && !isInScope(session, preTxNextStoreId)) {
     return { success: false, message: '无权将员工调至该门店' }
   }
-  if (nextOrgNodeId !== oldOrgNodeId && nextOrgNodeId !== null
-      && !isOrgNodeInScope(session, nextOrgNodeId)) {
+  if (preTxNextOrgNodeId !== oldOrgNodeId && preTxNextOrgNodeId !== null
+      && !isOrgNodeInScope(session, preTxNextOrgNodeId)) {
     return { success: false, message: '无权将员工调至该组织节点' }
   }
   /**
@@ -1077,16 +1141,10 @@ export const updateEmployee = withPermission(
    *
    *    只在归属**确实发生变更**时判；历史上就不可见的存量员工已被上面的 oldRowVisible 拦住。
    */
-  const ownershipChanged = nextStoreId !== oldStoreId || nextOrgNodeId !== oldOrgNodeId
-  const stillVisible = (!!nextStoreId && isInScope(session, nextStoreId))
-    || (!!nextOrgNodeId && isOrgNodeInScope(session, nextOrgNodeId))
-  if (!isAdminScope(session) && ownershipChanged && !stillVisible) {
-    return {
-      success: false,
-      message: !nextStoreId && !nextOrgNodeId
-        ? '员工必须归属门店或组织节点之一'
-        : '变更后该员工将不在你的管理范围内，请先转交给有权管理该归属的同事',
-    }
+  {
+    const changed = preTxNextStoreId !== oldStoreId || preTxNextOrgNodeId !== oldOrgNodeId
+    const message = ownershipVisibilityError(session, preTxNextStoreId, preTxNextOrgNodeId)
+    if (changed && message) return { success: false, message }
   }
 
   /**
@@ -1154,32 +1212,14 @@ export const updateEmployee = withPermission(
   ] as const) {
     assign(key)
   }
-  /**
-   * `skills` 单独处理：直调传个字符串会让 PG 解析数组字面量失败（`22P02`），
-   * 而两处 catch 都不翻译 → 500（GLM 第 11 轮 P3-4）。
-   */
-  if (data.skills !== undefined) {
-    if (data.skills !== null && !Array.isArray(data.skills)) {
-      return { success: false, message: '技能标签格式不正确' }
-    }
-    updateData.skills = data.skills
-  }
-  /**
-   * 三个 notNull 的 boolean 列：`assign` 只挡 `undefined`，直调传 `null` 会一路撞
-   * `23502`（not-null violation），而 catch 不翻译 → 500（GLM 第 11 轮 P3-1）。
-   * 同时 `data.isResigned ?? prev.isResigned` 会把 `null` 当「未传」，双写推导也跟着失真。
-   */
-  for (const key of ['isResigned', 'isOnBusinessTrip', 'socialInsurance'] as const) {
-    if (data[key] !== undefined && typeof data[key] !== 'boolean') {
-      return { success: false, message: '参数格式不正确' }
-    }
-  }
+  if (data.skills !== undefined) updateData.skills = data.skills
   // 请假字段空串归一为 null（清空请假区间）
   if (data.leaveStart !== undefined) updateData.leaveStart = data.leaveStart || null
   if (data.leaveEnd !== undefined) updateData.leaveEnd = data.leaveEnd || null
-  // #228：归属字段写库值必须与上面校验用的归一值一致，否则 `''` 会按 null 过校验却按 `''` 入库
-  if (data.storeId !== undefined) updateData.storeId = nextStoreId
-  if (data.orgNodeId !== undefined) updateData.orgNodeId = nextOrgNodeId
+  // #228：归属字段的空串归一为 null（`''` 会按 null 过校验却按 `''` 入库）。
+  // ⚠️ 这里只做归一；「相对锁内旧值算出的 post-image」由事务内的 transition 覆盖写入。
+  if (data.storeId !== undefined) updateData.storeId = data.storeId || null
+  if (data.orgNodeId !== undefined) updateData.orgNodeId = data.orgNodeId || null
   /**
    * date 列的空串同样要归一（GLM 谱系第 7 轮）—— 与上面 leave / 归属字段同一个道理。
    * `invalidDateMessage` 把空串当「不填」放行，若这里不归一，`''` 会直达 UPDATE 撞 PG `22007`，
@@ -1271,7 +1311,10 @@ export const updateEmployee = withPermission(
 
   async function runEmployeeUpdateTx(): Promise<
     | { failure: { success: false; message: string } }
-    | { unsyncedRoles: string[]; ownershipNeedsReview: boolean; rolesAtReinstate: string[]; isReinstating: boolean }
+    | {
+        unsyncedRoles: string[]; ownershipNeedsReview: boolean; rolesAtReinstate: string[]
+        isReinstating: boolean
+      }
   > {
     try {
       return await db.transaction(async (tx) => {
@@ -1313,38 +1356,67 @@ export const updateEmployee = withPermission(
          * （GLM 第 11 轮 P3-1）。
          */
         applyResignationInvariant(lockedRow as { isResigned: boolean; resignedAt: string | null })
-        // 复职判定同样以锁内旧值为准
-        const isReinstating = data.isResigned === false && lockedRow.isResigned === true
 
         /**
-         * 归属的 **post-image 要按锁内旧值重算并复查自洽**（codex 谱系第 12 轮 P1）。
+         * ## `transition` —— 锁内的唯一事实源
          *
-         * 事务外算出的 `nextStoreId` / `nextOrgNodeId` 只反映请求进来那一刻的旧值。
-         * 两个不带 `expectedUpdatedAt` 的并发请求分别提交 `{ storeId: B }` 与
-         * `{ orgNodeId: A店的部门 }`：各自按自己看到的旧状态都合法，先后提交后合成
-         * `store = B + org = A店部门` —— **恰好是 #259 要禁的跨门店双重可见**。
-         * 拿锁内旧值重算一遍即可：每一笔提交都对「它真正要写成的那个组合」负责。
+         * 两谱系第 13 轮的共同诊断：此前的缺陷几乎全出自「同一份状态两套真相」
+         * （事务外快照 vs 锁内重读），而同步靠注释纪律维持。所以这里把锁内固化的一切
+         * 收成一个对象，下面所有消费者（自洽复查、scope 复查、§AFF-03、复职审计、logUpdate）
+         * **只接它**，不再各自从闭包里捞 `preTx*`。
          *
-         * ⚠️ 这里只复查**自洽**（组合是否矛盾），不复查 scope ——
-         * 新值的 scope 早在事务外按请求里的显式值判过，而 scope 判据只依赖 session 与那个值本身，
-         * 与员工旧状态无关，锁内重判会得到同样结果。
+         * 它闭合的具体缺陷：
+         *   - 归属 post-image 按事务外旧值算 → 并发合成出跨门店双重可见（codex 第 12 轮）
+         *   - 锁内只重算了自洽、**没重算 scope 与最终可见性** → 员工可被并发挤出操作者范围
+         *     且不可逆（codex 第 13 轮 P1-1）
+         *   - §AFF-03 与复职审计闭包捕获事务外 `oldStoreId/nextStoreId` → 审错旧店、
+         *     漏披露「调回」与「调离」（两谱系第 13 轮共识）
          */
-        const lockedNextStoreId = data.storeId === undefined
-          ? (lockedRow.storeId ?? null)
-          : (data.storeId || null)
-        const lockedNextOrgNodeId = data.orgNodeId === undefined
-          ? (lockedRow.orgNodeId ?? null)
-          : (data.orgNodeId || null)
-        if (
-          lockedNextStoreId !== (lockedRow.storeId ?? null)
-          || lockedNextOrgNodeId !== (lockedRow.orgNodeId ?? null)
-        ) {
-          const conflict = await assertOwnershipConsistent(lockedNextStoreId, lockedNextOrgNodeId, tx)
+        const transition = {
+          beforeStoreId: lockedRow.storeId ?? null,
+          beforeOrgNodeId: lockedRow.orgNodeId ?? null,
+          afterStoreId: data.storeId === undefined
+            ? (lockedRow.storeId ?? null)
+            : (data.storeId || null),
+          afterOrgNodeId: data.orgNodeId === undefined
+            ? (lockedRow.orgNodeId ?? null)
+            : (data.orgNodeId || null),
+          isResigning: data.isResigned === true && !lockedRow.isResigned,
+          isReinstating: data.isResigned === false && lockedRow.isResigned === true,
+        }
+        const ownershipMoved = transition.afterStoreId !== transition.beforeStoreId
+          || transition.afterOrgNodeId !== transition.beforeOrgNodeId
+
+        if (ownershipMoved) {
+          /**
+           * scope 与最终可见性也要**按锁内 post-image 重判**（codex 第 13 轮 P1-1）：
+           * 事务外那次只是早拒优化。举例：非 admin 事务外看到 `{store=A, org=A}` 并提交
+           * `{ storeId: null }`；并发 admin 先把 org 改成 scope 外的市场节点 X ——
+           * 锁内 post-image 成了 `{null, X}`，两个维度都不在 scope 内，该员工从此对操作者
+           * 永久消失，而事务外那次判断看的是 `{null, A}`（可见）所以放过了。
+           */
+          const visibilityError = ownershipVisibilityError(
+            session, transition.afterStoreId, transition.afterOrgNodeId,
+          )
+          if (visibilityError) return { failure: { success: false as const, message: visibilityError } }
+
+          // #259 自洽：组合矛盾在锁内 post-image 上判
+          const conflict = await assertOwnershipConsistent(
+            transition.afterStoreId, transition.afterOrgNodeId, tx,
+          )
           if (conflict) return { failure: { success: false as const, message: conflict } }
         }
-        // 写库值也必须是锁内重算的那一组，否则复查过的组合与实际写入的不是同一个
-        if (data.storeId !== undefined) updateData.storeId = lockedNextStoreId
-        if (data.orgNodeId !== undefined) updateData.orgNodeId = lockedNextOrgNodeId
+        /**
+         * 写库值取自 `transition` —— 它是这一段唯一的事实源。
+         *
+         * ⚠️ 诚实说明：在 `data.X !== undefined` 这个前提下，`transition.afterX` 与事务外
+         * 算出的那组**恒等**（两者都等于 `data.X || null`），所以把这里换回事务外的值
+         * 红检不会变红。这不是「测试锁不住」，是**改动本身等价** —— 两种情况要分清。
+         * 仍然写成 `transition.afterX`：不依赖这个巧合，且让「锁内是唯一事实源」这条规则
+         * 在代码里没有例外（下一个人给 `afterX` 加个 clamp 之类的逻辑时才不会漏掉这里）。
+         */
+        if (data.storeId !== undefined) updateData.storeId = transition.afterStoreId
+        if (data.orgNodeId !== undefined) updateData.orgNodeId = transition.afterOrgNodeId
 
         /**
          * 最后一个超级管理员守卫必须**串行**（codex 谱系第 10 轮 P1）。
@@ -1358,7 +1430,7 @@ export const updateEmployee = withPermission(
          * 角色也会减少活跃 admin，要完全闭合得让它用**同一把**锁 —— 跨 action 的锁协议，
          * 不在本 PR 范围，已如实记录待独立处理。
          */
-        if (data.isResigned === true && !lockedRow.isResigned) {
+        if (transition.isResigning) {
           if (await isAdminEmployee(employeeId, tx) && await countActiveAdmins(tx) <= 1) {
             // 用 ApiError 而非裸 throw —— 前缀走 errorType 白名单通道，也不会撞跨端错误码守护
             throw new ApiError('INVALID_STATE', '该员工是系统最后一个活跃 admin，请先转移角色')
@@ -1383,7 +1455,7 @@ export const updateEmployee = withPermission(
          * ⚠️ 仍不是完全串行：普通 `SELECT` 不锁角色行，并发的授权/撤权仍可能插在中间。
          * 要完全串行需要角色变更路径共用员工级锁 —— 同上，跨 action，不在本 PR 范围。
          */
-        const rolesAtReinstate = isReinstating
+        const rolesAtReinstate = transition.isReinstating
           ? Array.from(new Set((await findAllRoleBindings(employeeId, tx)).map((r) => r.role)))
           : []
 
@@ -1404,20 +1476,20 @@ export const updateEmployee = withPermission(
           }
         }
 
-        const { unsyncedRoles, ownershipNeedsReview } = await auditOwnershipChange(tx)
+        const { unsyncedRoles, ownershipNeedsReview } = await auditOwnershipChange(tx, transition)
         /**
          * 复职审计也必须在事务内（codex 谱系第 9 轮）：留在事务外时，它插入失败会让
          * 员工**已经恢复在职**而前端显示失败，重试又不再进入 `isReinstating` ——
          * 权限提示永久丢失。与第 7 轮那条「快照要前置」同一个病，只是在写侧。
          */
-        if (isReinstating) {
+        if (transition.isReinstating) {
+          // 载荷也只用 transition —— 事务外那组值在并发下会记错门店
+          const payload = { oldStoreId: transition.beforeStoreId, newStoreId: transition.afterStoreId }
           await logOperation(
             session,
             rolesAtReinstate.length > 0 ? 'permission.reinstated.rolesRetained' : 'permission.reinstated.rolesEmpty',
             'permission_role', employeeId,
-            rolesAtReinstate.length > 0
-              ? { oldStoreId, newStoreId: nextStoreId, roles: rolesAtReinstate }
-              : { oldStoreId, newStoreId: nextStoreId },
+            rolesAtReinstate.length > 0 ? { ...payload, roles: rolesAtReinstate } : payload,
             tx,
           )
         }
@@ -1426,7 +1498,10 @@ export const updateEmployee = withPermission(
         // 审计的 before 也用锁内重读的行 —— 事务外那份可能已被并发改过
         await logUpdate(session, 'employee.update', 'employee', employeeId,
           lockedRow as Record<string, unknown>, updateData, tx)
-        return { unsyncedRoles, ownershipNeedsReview, rolesAtReinstate, isReinstating }
+        return {
+          unsyncedRoles, ownershipNeedsReview, rolesAtReinstate,
+          isReinstating: transition.isReinstating,
+        }
       })
     } catch (err: any) {
       if (pgErrorCode(err) === '23505') {
@@ -1470,8 +1545,22 @@ export const updateEmployee = withPermission(
    * store 级角色、而门店 manager 无权补 —— 操作者必须**当场看到**哪些角色需要有权者跟进，
    * 不能只写进审计日志等人去翻。
    */
-  /** §AFF-03 的审计与清单收集，整块在事务内执行（审计与 UPDATE 同生共死） */
-  async function auditOwnershipChange(tx: EmployeeUpdateTx) {
+  /**
+   * §AFF-03 的审计与清单收集，整块在事务内执行（审计与 UPDATE 同生共死）。
+   *
+   * ⚠️ 它**只吃 `transition`**（锁内固化的 before/after），不再从闭包里捞事务外的
+   * `oldStoreId` / `preTxNext*`（两谱系第 13 轮共识）。闭包捕获会在并发下审错旧店：
+   *   - 表单回传 `storeId=A`（未改动）而并发已把员工调到 B → 本次实际是 B→A 调店，
+   *     可事务外判据 `oldStoreId(A) === next(A)` 认为「没调店」→ 零审计零披露
+   *   - 事务外 `oldStoreId=null` 而并发已挂上 A 店 → 实际 A→null 调离，同样被跳过
+   *   - 真调店但锁内旧值已被改成 C → 披露的是 A 店角色、审计记 `oldStoreId=A`，披错店
+   */
+  async function auditOwnershipChange(
+    tx: EmployeeUpdateTx,
+    transition: { beforeStoreId: string | null; afterStoreId: string | null; isResigning: boolean },
+  ) {
+    const oldStoreId = transition.beforeStoreId
+    const nextStoreId = transition.afterStoreId
     const unsyncedRoles: string[] = []
     /** 跨 scope 调店：不披露角色名，但仍要让操作者知道「有事要有权者跟进」 */
     let ownershipNeedsReview = false
@@ -1503,7 +1592,7 @@ export const updateEmployee = withPermission(
      * `nextStoreId && …` 让这类请求一条审计都不记、也不回传，成了权限跟进盲区。
      */
     if (oldStoreId && nextStoreId !== oldStoreId) {
-      if (data.isResigned === true) {
+      if (transition.isResigning) {
         /**
          * 离职判定必须在**最前面**（codex 谱系第 3 轮）：
          * 原先它排在 scope 判定之后，于是「跨 scope 调店 + 同批离职」会先命中

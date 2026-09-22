@@ -182,10 +182,14 @@ admin 管理权限分配/撤销、WorkFine → PG 数据同步、操作日志查
   事务外只剩 `revalidatePath` 与文案组装。
   理由：审计留在事务外时，它失败会留下「状态已改、前端显示失败」；复职那条更糟 ——
   重试不再进入复职分支，权限提示永久丢失。
-  事务开头依次是：advisory lock → `FOR UPDATE` 锁住员工行重读**完整行**。
-  锁内旧值是唯一权威 —— 双写不变量、最后-admin 守卫、复职判定、归属 post-image 复算、
-  审计 before/快照全都用它；事务外读到的旧值到写入之间会被并发插队
-  （两笔并发请求分别改 store 与 org，各自按自己看到的旧状态都合法，合成后却是跨门店双重可见）。
+  事务开头依次是：advisory lock → `FOR UPDATE` 锁住员工行重读**完整行** → 由它构造一个
+  `transition` 对象（`before/after` 归属 + `isResigning` / `isReinstating`），
+  **所有下游消费者只接这个对象**：归属自洽复查、scope 与最终可见性复查、§AFF-03 审计、
+  复职审计、`logUpdate` 的 before。事务外那组值一律带 `preTx` 前缀、只用于早拒优化。
+  这条结构规则是本 PR 十三轮评审的共同诊断 —— 此前的缺陷几乎全出自
+  「同一份状态两套真相（事务外快照 vs 锁内重读），靠注释纪律而非结构来同步」：
+  并发合成出跨门店双重可见、锁内只重算自洽却没重算 scope（员工被永久挤出可见范围）、
+  §AFF-03 闭包捕获事务外旧店（审错店、漏披露「调回」与「调离」）。
   离职守卫之前要取
   `pg_advisory_xact_lock(hashtext('admin:active_count'))`：仅把计数查询传进 `tx` **不够串行**，
   READ COMMITTED 下两笔并发离职分别针对不同 admin 时各自都读到 `count = 2`。

@@ -516,6 +516,18 @@ describe('createEmployee — 服务端输入校验', () => {
     expect(db.transaction).not.toHaveBeenCalled()
   })
 
+  /** codex 第 13 轮 P2：update 侧三个 boolean 刚修完，create 侧这个又漏了（#228 同一教训） */
+  it('create 侧 socialInsurance 传非 boolean → 打库前拒，不进事务', async () => {
+    const result = await createEmployee({
+      name: '张三', phone: '13812345678', idCard: '110101199003078888',
+      storeId: 'store-A', socialInsurance: 'yes' as any,
+    })
+    expect(result.success).toBe(false)
+    expect(result.message).toBe('参数格式不正确')
+    expect(db.select).not.toHaveBeenCalled()
+    expect(db.transaction).not.toHaveBeenCalled()
+  })
+
   it('正常创建 → 成功', async () => {
     ;(db.select as any).mockImplementation(mockSelectEmpty())
     mockTransactionSuccess('FY-260315001')
@@ -1124,7 +1136,16 @@ describe('updateEmployee — 服务端输入校验 + 错误处理', () => {
     const src = readFileSync(resolve(process.cwd(), 'src/actions/employees.ts'), 'utf8')
       .replace(/\/\*[\s\S]*?\*\//g, '')
       .replace(/(^|[^:'"])\/\/[^\n]*/g, '$1')
-    expect(src, '事务内重读员工行必须 FOR UPDATE，否则双写不变量会被并发插队')
+    /**
+     * ⚠️ 必须**分别**锁两个 action（codex 第 13 轮 P1）：
+     * 原先只断言「全文件至少出现一次 `.for('update')`」，删掉任一处另一处仍让正则通过，
+     * 核心并发修复可以被单边回退而不报警。这里按函数体切开各判一次。
+     */
+    const updateBody = src.slice(src.indexOf('export const updateEmployee'), src.indexOf('export const deleteEmployee'))
+    const deleteBody = src.slice(src.indexOf('export const deleteEmployee'))
+    expect(updateBody, 'updateEmployee 的锁内重读必须 FOR UPDATE')
+      .toMatch(/\.for\(\s*['"]update['"]\s*\)/)
+    expect(deleteBody, 'deleteEmployee 的锁内重读必须 FOR UPDATE')
       .toMatch(/\.for\(\s*['"]update['"]\s*\)/)
     expect(src, 'advisory lock 的 key 必须收口成常量，两条路径共用')
       .toMatch(/ACTIVE_ADMIN_LOCK_KEY = 'admin:active_count'/)
@@ -1204,6 +1225,8 @@ describe('updateEmployee — 服务端输入校验 + 错误处理', () => {
 
     expect(result.success).toBe(false)
     expect(result.message).toBe('技能标签格式不正确')
+    expect(db.select, '纯类型校验必须排在任何打库之前').not.toHaveBeenCalled()
+    expect(db.transaction).not.toHaveBeenCalled()
     expect(db.update).not.toHaveBeenCalled()
   })
 
@@ -1357,6 +1380,9 @@ describe('updateEmployee — 服务端输入校验 + 错误处理', () => {
 
       expect(result.success).toBe(false)
       expect(result.message).toBe('参数格式不正确')
+      // 「打库前拒」要断到底：`db.select` / `db.transaction` 都不该被调（codex 第 13 轮 P3）
+      expect(db.select, '纯类型校验必须排在任何打库之前').not.toHaveBeenCalled()
+      expect(db.transaction).not.toHaveBeenCalled()
       expect(db.update).not.toHaveBeenCalled()
     },
   )
@@ -1621,6 +1647,110 @@ describe('updateEmployee — #228 归属变更必须落在 scope 内', () => {
    * 断言若放宽到「无权」二字，回退掉本条校验后测试会被那条兜底文案蒙混过关而依然全绿。
    * 同时断言 `db.update` 完全没被调用 —— 锁住「校验早于任何写入」。
    */
+  /**
+   * codex 第 13 轮 P1-1：锁内不仅要重算自洽，**scope 与最终可见性也要重判**。
+   *
+   * 非 admin 事务外看到 `{store: A, org: A店节点}` 并提交 `{ storeId: null }`；
+   * 并发 admin 先把 org 改成 scope 外的市场节点 → 锁内 post-image 是 `{null, 外部节点}`，
+   * 两个维度都不在 scope 内 → 该员工从此对操作者**永久消失**（改回去 UPDATE 命中 0 行）。
+   * 事务外那次判断看的是 `{null, A店节点}`（可见），所以放过了。
+   */
+  it('并发插队后锁内 post-image 已不可见 → 拒绝（不让员工永久消失）', async () => {
+    let selectCall = 0
+    ;(db.select as any).mockImplementation(() => ({
+      from: vi.fn().mockImplementation((table: unknown) => {
+        if (table === stores) return selectChain([{ orgNodeId: null }])
+        if (table !== staffWechatUsers) return selectChain([])
+        const outsideTx = selectCall++ === 0
+        return selectChain([outsideTx
+          ? { storeId: 'store-A', orgNodeId: 'org-store-A', isResigned: false, resignedAt: null }
+          // 并发把组织节点改到了 scope 外
+          : { storeId: 'store-A', orgNodeId: 'org-OUTSIDE', isResigned: false, resignedAt: null }])
+      }),
+    }))
+    ;(db.update as any).mockReturnValue({
+      set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({ count: 1 }) }),
+    })
+
+    const result = await updateEmployee('FY-001', { storeId: null })
+
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('不在你的管理范围内')
+    expect(db.update).not.toHaveBeenCalled()
+  })
+
+  /**
+   * 两谱系第 13 轮共识：§AFF-03 的入口与载荷必须用**锁内** transition。
+   *
+   * 表单回传 `storeId = A`（用户没动这个字段），而并发已把员工调到 B ——
+   * 本次实际是 **B→A 调店**，B 店的角色会滞留。闭包捕获事务外 `oldStoreId(A)` 时
+   * 判据 `A === A` 认为「没调店」→ 零审计零披露。
+   */
+  it('事务外旧店=A、锁内已是 B，表单回传 A → 按 B→A 披露（不是判成没调店）', async () => {
+    let selectCall = 0
+    let storeCall = 0
+    ;(db.select as any).mockImplementation(() => ({
+      from: vi.fn().mockImplementation((table: unknown) => {
+        if (table === stores) {
+          // 归属自洽查新店 A；§AFF-03 查旧店（锁内的 B）
+          return selectChain([[{ orgNodeId: 'org-store-A' }], [{ orgNodeId: 'org-store-B' }]][storeCall++] ?? [])
+        }
+        if (table === permissionRoles) return selectChain([])
+        if (table !== staffWechatUsers) return selectChain([])
+        const outsideTx = selectCall++ === 0
+        return selectChain([outsideTx
+          ? { storeId: 'store-A', orgNodeId: 'org-store-A', isResigned: false, resignedAt: null }
+          : { storeId: 'store-B', orgNodeId: 'org-store-A', isResigned: false, resignedAt: null }])
+      }),
+    }))
+    ;(findRolesBoundWithinSubtree as any).mockResolvedValue(['manager'])
+    ;(db.update as any).mockReturnValue({
+      set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({ count: 1 }) }),
+    })
+
+    const result = await updateEmployee('FY-001', { storeId: 'store-A' })
+
+    expect(result.success).toBe(true)
+    // 旧店必须是锁内的 store-B，而不是事务外的 store-A
+    expect(logOperation).toHaveBeenCalledWith(
+      mockSession, 'permission.scopeSync.skipped', 'permission_role', 'FY-001',
+      expect.objectContaining({ reason: 'manual_review_required', oldStoreId: 'store-B', newStoreId: 'store-A' }),
+      expect.anything(),
+    )
+    expect(findRolesBoundWithinSubtree).toHaveBeenCalledWith('FY-001', 'org-store-B', expect.anything())
+    expect(result.message).toContain('manager')
+  })
+
+  /** 反向：事务外无门店、锁内已被挂上 A 店 → 实际是 A→null 调离，同样要披露 */
+  it('事务外无门店、锁内已是 A，表单回传 null → 按 A→null 调离披露', async () => {
+    let selectCall = 0
+    ;(db.select as any).mockImplementation(() => ({
+      from: vi.fn().mockImplementation((table: unknown) => {
+        if (table === stores) return selectChain([{ orgNodeId: 'org-store-A' }])
+        if (table === permissionRoles) return selectChain([])
+        if (table !== staffWechatUsers) return selectChain([])
+        const outsideTx = selectCall++ === 0
+        return selectChain([outsideTx
+          ? { storeId: null, orgNodeId: 'market-1', isResigned: false, resignedAt: null }
+          : { storeId: 'store-A', orgNodeId: 'market-1', isResigned: false, resignedAt: null }])
+      }),
+    }))
+    ;(findRolesBoundWithinSubtree as any).mockResolvedValue(['finance'])
+    ;(db.update as any).mockReturnValue({
+      set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({ count: 1 }) }),
+    })
+
+    const result = await updateEmployee('FY-001', { storeId: null })
+
+    expect(result.success).toBe(true)
+    expect(logOperation).toHaveBeenCalledWith(
+      mockSession, 'permission.scopeSync.skipped', 'permission_role', 'FY-001',
+      expect.objectContaining({ reason: 'manual_review_required', oldStoreId: 'store-A', newStoreId: null }),
+      expect.anything(),
+    )
+    expect(result.message).toContain('finance')
+  })
+
   it('storeId 改到 scope 外门店 → 拒绝（完整表单 + 乐观锁的真实调用形态），且零写入', async () => {
     mockCurrentEmployee({ storeId: 'store-A', orgNodeId: 'org-store-A' })
     mockUpdateOk()
