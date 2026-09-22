@@ -12,14 +12,23 @@
  * 净额由负回正本是向好，却算出负增长。admin 侧实测案例（#283，南昌梦祥店「本周」业绩，
  * 基期 −2,646.00、当期 +264.00）旧式算出 −109.98%，方向恰好反了。
  *
- * ⚠️ 本站当前数据通路上 `previous < 0` **暂时不可达**，靠三道互不知情的护栏：
- *   ① 生产 `sale_orders.received - refunded_amount` 无负行（0/21329，实测）；
- *   ② `new-customer-funnel.ts` 的 SQL 逐行 `GREATEST(received - refunded_amount, 0)` 夹底；
- *   ③ `normalizeNumber` 把非有限值归 0、`safeRate`/`safeAverage` 分母 ≤ 0 时返 0。
- * 但负金额在库里**是真实存在的**，只是不在那一列上：`sale_items.received < 0` 有 2824 行，
+ * ⚠️ 本站当前数据通路上 `previous < 0` **暂时不可达**，但**挡住它的只有一道东西**：
+ * `new-customer-funnel.ts` 的 SQL 逐行 `GREATEST(received - refunded_amount, 0)` 夹底
+ * （`GREATEST` 在 `SUM` 的参数内，被加数恒 ≥ 0，聚合后不可能为负）。
+ *
+ * 别把 JS 侧那几个 helper 当成第二道护栏——**它们不挡负号**：
+ *   - `normalizeNumber(-100)` 返回 `-100`（只排除非有限值，不管符号）
+ *   - `safeAverage(-100, 2)` 返回 `-50`（只查分母 > 0，不管分子）
+ *   - `aggregateFunnelKpi` 的金额聚合是直接 `reduce` 求和，不夹底
+ * 加上「生产 `sale_orders.received - refunded_amount` 当前无负行（0/21329，实测）」这条
+ * **数据事实**（会变，不是代码保证），总共就两层，其中只有一层是代码。
+ *
+ * 而负金额在库里**是真实存在的**，只是不在那一列上：`sale_items.received < 0` 有 2824 行，
  * 47 个已支付销售/转换单的 Σitem 为负（最差 −19,370）。漏斗 SQL 已纳入「转换单」，
  * 而转换单正是携带负数转出行的单型——`sale_orders.received` 一旦改成按 item 净额派生，
- * 这 47 单立刻成为负基期。**所以这里的守卫是承重的，不是冗余，别当死代码删掉。**
+ * 这些单就会向基期注入负贡献（**是否足以把整段基期压成负数取决于切片粒度**，
+ * 门店 × 单月这种窄切片下单笔 −19,370 就够了，但不是必然）。
+ * **所以这里的守卫是承重的，不是冗余，别当死代码删掉。**
  *
  * ## rate 分支为什么不挡负基期
  *
@@ -66,6 +75,30 @@ function warnNonFinite(fn: string, values: Record<string, number>): void {
   console.warn(`[metric-delta] ${fn} 收到非有限值，上游数据管道可能有 bug`, values)
 }
 
+/**
+ * 把差值渲染成带符号的百分比/百分点文案，并在最后一刻挡住溢出。
+ *
+ * ⚠️ 守卫必须落在**最终要渲染的那个数**（`delta * 100`）上，查中间量都会漏。三条真实的溢出路径：
+ *   - 减法：`MAX_VALUE − (−MAX_VALUE)` → `delta` 直接是 `Infinity`
+ *   - 除法：`1 / 1e-320` → 入参各自有限，商是 `Infinity`
+ *   - 乘 100：`MAX_VALUE / 1` 的商**有限**（1.79e308），但 `× 100` 才溢出
+ * 第三条是最阴的——只查 `delta` 会以为已经封死，实际仍渲染出 `"+Infinity%"`。
+ */
+function renderScaledDelta(
+  fn: string,
+  delta: number,
+  suffix: "%" | "pct",
+  context: Record<string, number>,
+): string {
+  if (delta === 0) return "持平"
+  const scaled = delta * 100
+  if (!Number.isFinite(scaled)) {
+    warnNonFinite(fn, { ...context, delta })
+    return NO_BASE_TEXT
+  }
+  return `${scaled > 0 ? "+" : ""}${scaled.toFixed(1)}${suffix}`
+}
+
 export function formatDeltaPart(current: number, previous: number, type: MetricDeltaType): string {
   // NaN / ±Infinity 自己挡掉：`=== 0` 接不住 NaN，漏过去会渲染出 "NaN%" / "+Infinity%"。
   if (!Number.isFinite(current) || !Number.isFinite(previous)) {
@@ -74,22 +107,11 @@ export function formatDeltaPart(current: number, previous: number, type: MetricD
   }
   if (previous === 0) return NO_BASE_TEXT
   if (type === "rate") {
-    const delta = current - previous
-    if (delta === 0) return "持平"
-    return `${delta > 0 ? "+" : ""}${(delta * 100).toFixed(1)}pct`
+    return renderScaledDelta("formatDeltaPart(rate)", current - previous, "pct", { current, previous })
   }
   // 见文件头「基期为什么必须 > 0」。此处 previous 已排除 0，只剩负数要挡。
   if (previous < 0) return NO_BASE_TEXT
-  const delta = (current - previous) / previous
-  // 入参有限不代表商有限：|previous| 极小时商会溢出（c=1, p=1e-320 → Infinity）。
-  // analyst 侧不可达（previous 来自 round2，最小非零正值 0.01），但本模块是对外导出的，
-  // 不封死这个洞等于上面那道守卫只挡了一半。
-  if (!Number.isFinite(delta)) {
-    warnNonFinite("formatDeltaPart(商溢出)", { current, previous, delta })
-    return NO_BASE_TEXT
-  }
-  if (delta === 0) return "持平"
-  return `${delta > 0 ? "+" : ""}${(delta * 100).toFixed(1)}%`
+  return renderScaledDelta("formatDeltaPart", (current - previous) / previous, "%", { current, previous })
 }
 
 export function formatMetricDelta(
@@ -121,13 +143,16 @@ export function formatMetricDelta(
  */
 export function formatPointDelta(value: number | null): { text: string; tone: MetricDeltaTone } {
   if (value === null) return { text: NO_LAST_YEAR_TEXT, tone: "default" }
-  if (!Number.isFinite(value)) {
-    warnNonFinite("formatPointDelta", { value })
+  if (value === 0) return { text: "同比持平", tone: "default" }
+  // 同样查最终渲染值而非入参：`value` 有限但 `value * 100` 可溢出（MAX_VALUE → Infinity）。
+  // NaN 也走这条——`NaN === 0` 为 false，`NaN * 100` 仍是 NaN，一次检查两种都接住。
+  const scaled = value * 100
+  if (!Number.isFinite(scaled)) {
+    warnNonFinite("formatPointDelta", { value, scaled })
     return { text: NO_LAST_YEAR_TEXT, tone: "default" }
   }
-  if (value === 0) return { text: "同比持平", tone: "default" }
   return {
-    text: `同比 ${value > 0 ? "+" : ""}${(value * 100).toFixed(1)}pct`,
-    tone: value > 0 ? "positive" : "negative",
+    text: `同比 ${scaled > 0 ? "+" : ""}${scaled.toFixed(1)}pct`,
+    tone: scaled > 0 ? "positive" : "negative",
   }
 }

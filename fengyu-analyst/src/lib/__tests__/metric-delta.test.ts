@@ -103,6 +103,21 @@ describe("formatDeltaPart · 非有限值", () => {
     expect(formatDeltaPart(1, 1e-320, "money")).toBe(NO_BASE_TEXT)
   })
 
+  it("商有限但乘 100 才溢出时也挡住（最阴的一条）", () => {
+    // MAX_VALUE / 1 的商是 1.79e308，**有限**；只查 delta 会以为封死了，
+    // 实际渲染的是 delta * 100 = Infinity → "+Infinity%"。守卫必须落在最终渲染值上。
+    const delta = (Number.MAX_VALUE - 1) / 1
+    expect(Number.isFinite(delta)).toBe(true)
+    expect(Number.isFinite(delta * 100)).toBe(false)
+    expect(formatDeltaPart(Number.MAX_VALUE, 1, "money")).toBe(NO_BASE_TEXT)
+  })
+
+  it("rate 分支的减法溢出也挡住", () => {
+    // MAX_VALUE − (−MAX_VALUE) = Infinity，入参两个都有限。
+    expect(Number.MAX_VALUE - -Number.MAX_VALUE).toBe(Number.POSITIVE_INFINITY)
+    expect(formatDeltaPart(Number.MAX_VALUE, -Number.MAX_VALUE, "rate")).toBe(NO_BASE_TEXT)
+  })
+
   it("非有限值会落一条 console.warn（bug 信号不能被静默吞掉）", () => {
     warnSpy.mockClear()
     formatDeltaPart(100, Number.NaN, "money")
@@ -211,6 +226,12 @@ describe("formatPointDelta · 百分点差值型同比徽章（sibling audit P1�
     warnSpy.mockClear()
     formatPointDelta(Number.NaN)
     expect(warnSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it("入参有限但乘 100 溢出时也挡住", () => {
+    // 旧式：MAX_VALUE 有限 → 直接渲染 (MAX_VALUE*100).toFixed(1) → "同比 +Infinitypct"，tone 绿。
+    expect(Number.isFinite(Number.MAX_VALUE)).toBe(true)
+    expect(formatPointDelta(Number.MAX_VALUE)).toEqual({ text: NO_LAST_YEAR_TEXT, tone: "default" })
   })
 
   it("null 表示上一年区间不存在，用独立文案而非「无基数」", () => {
