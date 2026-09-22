@@ -1560,7 +1560,12 @@ export const listInventorySkus = withPermission(
       // 而批次快照（inventory_stock_lots.supplier）保留下单时的旧名，两者语义不同。
       .leftJoin(inventorySuppliers, eq(inventorySkus.supplierId, inventorySuppliers.supplierId))
       .where(whereClause)
-      .orderBy(asc(inventorySkus.productCode), asc(inventorySkus.skuId))
+      // `product_code` 有**全表**唯一索引（db/schema/inventory.ts:108
+      // `uniqueIndex(uq_inventory_skus_product_code)`，迁移 0007_moaning_salo.sql:498
+      // 无 WHERE 条件），本身即全序 —— #282 不给它补 tie-break 是刻意的：
+      // 补了纯属多余，还会让这条**唯一有精确匹配索引**的查询从 Index Scan
+      // 退化成 Index Scan + Incremental Sort。
+      .orderBy(asc(inventorySkus.productCode))
       .limit(pageSize)
       .offset(offset)
     const priceVisibility = inventoryPriceVisibility(session)

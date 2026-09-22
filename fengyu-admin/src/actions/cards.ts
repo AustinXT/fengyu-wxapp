@@ -362,7 +362,11 @@ export const getCardsPaginated = withPermission(
     .leftJoin(productCategories, eq(productSkus.categoryId, productCategories.categoryId))
     .where(whereClause)
     // 例外：业务时间优先（支付时间优于"最近编辑"）
-    .orderBy(desc(saleOrders.paidAt), desc(saleItems.createdAt), desc(saleItems.saleItemId))
+    // ⚠️ 末位 tie-break 用 **asc** 而非 desc —— 必须与导出侧（本文件 `exportCards`）
+    // 的 `asc(saleItems.saleItemId)` 同向，否则 paid_at + created_at 都并列的那几行，
+    // 页面上的顺序与导出 CSV 相反，对账逐行比对会在每个并列组上错位。
+    // 这也是本仓既有约定（employees.ts / coupons.ts 的 `desc, desc, asc(pk)`）。
+    .orderBy(desc(saleOrders.paidAt), desc(saleItems.createdAt), asc(saleItems.saleItemId))
     .limit(pageSize)
     .offset(offset)
 

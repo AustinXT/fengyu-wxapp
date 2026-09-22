@@ -93,6 +93,58 @@ function collectRoutes(dir, acc = []) {
 }
 
 /**
+ * 提取源文件里所有模板串的内容（**正确处理嵌套模板**）。
+ *
+ * ⚠️ 不能用 `/`([^`]*)`/g` 按文档顺序配对反引号 —— 评审实测两种漏扫：
+ *   ① 嵌套模板 `` `… ${cond ? `A` : `B`} …` `` 会把一条 SQL 切成两段，
+ *      含 ORDER BY 的那段没有 OFFSET → **静默跳过**（fail-open，不变红）
+ *   ② 转义反引号会让其后所有模板配对错位
+ * 本仓 staffApi `routes/order.js` 就有两处嵌套模板（5821 / 6872 的文案拼接），
+ * 位置在该文件的分页 SQL **之前** —— 正则版会让 order.js 的两条分页 SQL 整个漏扫。
+ *
+ * 这里跟踪 `${}` 深度逐字符扫，嵌套模板整段并入外层 body（对"找含 OFFSET 的 SQL"
+ * 这个目的足够），转义序列原样跳过。
+ */
+function extractTemplates(source) {
+  const out = []
+  let i = 0
+  while (i < source.length) {
+    if (source[i] === '\\') { i += 2; continue }
+    if (source[i] !== '`') { i++; continue }
+    let j = i + 1
+    let braceDepth = 0
+    let body = ''
+    while (j < source.length) {
+      const c = source[j]
+      if (c === '\\') { body += source.slice(j, j + 2); j += 2; continue }
+      if (braceDepth === 0 && c === '`') break
+      if (c === '$' && source[j + 1] === '{') { braceDepth++; body += '${'; j += 2; continue }
+      if (braceDepth > 0 && c === '}') { braceDepth--; body += '}'; j++; continue }
+      if (braceDepth > 0 && c === '`') {
+        // 插值里的嵌套模板：整段吞掉，别让它的反引号闭合外层
+        let k = j + 1
+        let d2 = 0
+        while (k < source.length) {
+          if (source[k] === '\\') { k += 2; continue }
+          if (d2 === 0 && source[k] === '`') break
+          if (source[k] === '$' && source[k + 1] === '{') { d2++; k += 2; continue }
+          if (d2 > 0 && source[k] === '}') { d2--; k++; continue }
+          k++
+        }
+        body += source.slice(j, k + 1)
+        j = k + 1
+        continue
+      }
+      body += c
+      j++
+    }
+    out.push(body)
+    i = j + 1
+  }
+  return out
+}
+
+/**
  * 从源文件里切出所有「带 LIMIT/OFFSET 的 SQL 模板」。
  *
  * 按反引号模板串切：本仓云函数的 SQL 一律写在 `pg.query(\`…\`)` 的模板串里。
@@ -101,10 +153,7 @@ function collectRoutes(dir, acc = []) {
  */
 function pagedSqlTemplates(source) {
   const out = []
-  const re = /`([^`]*)`/g
-  let m
-  while ((m = re.exec(source)) !== null) {
-    const body = m[1]
+  for (const body of extractTemplates(source)) {
     if (!/\bORDER\s+BY\b/i.test(body)) continue
     // ⚠️ 翻页的标志是 **OFFSET**，不是 LIMIT。
     // `LIMIT N` 无 OFFSET 是「取前 N 条」（如 `LIMIT 1` 取最新一条、员工搜索 `LIMIT 20`），
@@ -169,15 +218,21 @@ describe('#282 · 分页 SQL 的 ORDER BY 必须带唯一键 tie-break', () => {
 
     test('已确认安全的那些不许被「统一风格」删掉', () => {
       // issue #282 的「已确认安全」清单 —— 它们本来就有 tie-break。
-      // 列在这里是为了防有人重构时顺手抹平，也省得下次重复排查。
+      // 列在这里防重构抹平，也省得下次重复排查。
+      //
+      // ⚠️ 断言对象必须是 **`pagedSqlTemplates` 提取出的分页子句列表**，
+      // 不能是 `re.test(整份源码)` —— 后者在同一子句**重复出现**时对目标位置失效：
+      // `c.user_id ASC` 在 `customer.js` 里出现 4 次（:257/:282/:307/:1544），
+      // 删掉其中三处，`re.test(源码)` 照样为 true（评审实测）。
       const SAFE = [
-        ['customer.js', /c\.user_id ASC/],
-        ['order.js', /o\.sale_order_datetime DESC, o\.sale_order_id DESC/],
-        ['inventory.js', /sku\.product_name, sku\.spec_name NULLS LAST, sku\.sku_id/],
+        ['customer.js', 'c.user_id ASC', '顾客列表三支查询（#181 修的）'],
+        ['order.js', 'o.sale_order_datetime DESC, o.sale_order_id DESC', '订单列表'],
+        ['inventory.js', 'sku.product_name, sku.spec_name NULLS LAST, sku.sku_id', 'SKU 列表'],
       ]
-      for (const [fileName, re] of SAFE) {
+      for (const [fileName, clause, why] of SAFE) {
         const source = readFileSync(join(ROUTES_DIR, fileName), 'utf8')
-        expect(re.test(source), `${fileName} 丢了本来就有的 tie-break: ${re}`).toBe(true)
+        const clauses = pagedSqlTemplates(source).map(orderByClause)
+        expect(clauses, `${fileName} 丢了本来就有的 tie-break（${why}）`).toContain(clause)
       }
     })
   })
@@ -200,6 +255,19 @@ describe('#282 · 分页 SQL 的 ORDER BY 必须带唯一键 tie-break', () => {
       ['无 ORDER BY 返回 null', 'SELECT 1 FROM t\n LIMIT 10 OFFSET 0', null],
     ])('%s', (_label, sql, expected) => {
       expect(orderByClause(sql)).toBe(expected)
+    })
+
+    test.each([
+      // 评审实测的漏扫形状：嵌套模板把 SQL 切成两段，含 ORDER BY 的那段没有 OFFSET
+      ['嵌套模板不再把 SQL 切碎',
+        'pg.query(`SELECT 1 FROM t ${w} ORDER BY t.created_at DESC ${d ? `A` : `B`} LIMIT $1 OFFSET $2`, p)', 1],
+      // 本仓 staffApi routes/order.js 的真实形状：文案拼接用了嵌套模板，
+      // 位置在该文件的分页 SQL **之前** —— 正则版会让后面所有 SQL 配对错位
+      ['嵌套模板在前、分页 SQL 在后，后者仍能被扫到',
+        'const msg = `a${x ? `b` : `c`}d`\npg.query(`SELECT 1 FROM t\n ORDER BY t.created_at DESC, t.id DESC\n LIMIT $1 OFFSET $2`, p)', 1],
+      ['无 OFFSET 的模板不算分页', 'pg.query(`SELECT 1 FROM t ORDER BY a LIMIT 1`, p)', 0],
+    ])('extractTemplates/pagedSqlTemplates: %s', (_label, source, expected) => {
+      expect(pagedSqlTemplates(source)).toHaveLength(expected)
     })
 
     test('已知局限：ORDER BY 里含括号表达式会被截断（刻意 fail-closed）', () => {

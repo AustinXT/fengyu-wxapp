@@ -140,17 +140,72 @@ const UNIQUE_BY_INDEX: Array<[pattern: RegExp, why: string]> = [
   [/asc\(inventorySuppliers\.name\)$/,
     'db/schema/inventory.ts:345 `uniqueIndex(uq_inventory_suppliers_name).on(table.name)` '
     + '—— 全表唯一索引（非部分索引），ORDER BY name 本身即全序，不需要 tie-break'],
+  [/asc\(inventorySkus\.productCode\)$/,
+    'db/schema/inventory.ts:108 `uniqueIndex(uq_inventory_skus_product_code)` + notNull，'
+    + '迁移 0007_moaning_salo.sql:498 无 WHERE 条件 —— 全表唯一，本身即全序。'
+    + '#282 初版给它补过 skuId，评审指出冗余后撤掉：补了不但多余，还会让这条'
+    + '**唯一有精确匹配索引**的查询从 Index Scan 退化成 Index Scan + Incremental Sort'],
 ]
 
-/** 切出「`.orderBy(` 且同一条链上有 `.offset(`」的调用点 */
-function pagedOrderBys(code: string): Array<{ index: number; args: string }> {
+/**
+ * 找包含 `pos` 的**最内层** VariableDeclaration 的变量名（deferred 写法靠它关联）。
+ */
+function enclosingVarName(sf: ts.SourceFile, pos: number): string | null {
+  let name: string | null = null
+  const visit = (node: ts.Node) => {
+    if (node.getStart(sf) > pos || pos >= node.getEnd()) return
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name)) name = node.name.text
+    node.forEachChild(visit)
+  }
+  visit(sf)
+  return name
+}
+
+/** 找包含 `pos` 的**最内层**函数体范围（限定 deferred 关联的搜索窗口） */
+function enclosingFunctionRange(sf: ts.SourceFile, pos: number): [number, number] {
+  let range: [number, number] = [0, sf.getEnd()]
+  const visit = (node: ts.Node) => {
+    if (node.getStart(sf) > pos || pos >= node.getEnd()) return
+    if (
+      ts.isFunctionDeclaration(node) || ts.isArrowFunction(node)
+      || ts.isFunctionExpression(node) || ts.isMethodDeclaration(node)
+    ) {
+      range = [node.getStart(sf), node.getEnd()]
+    }
+    node.forEachChild(visit)
+  }
+  visit(sf)
+  return range
+}
+
+/**
+ * 切出所有**分页**的 `.orderBy(` 调用点。
+ *
+ * ⚠️ 判据有两条，缺一不可（第一版只有第 1 条，对本仓 **42% 的分页查询失明**）：
+ *
+ *   1. **同链**：`.orderBy(...).limit(...).offset(...)` —— 直连写法
+ *   2. **deferred**：`const query = db…orderBy(...)` 之后
+ *      `await query.limit(n).offset(m)` —— 这是本仓**导出/可选分页**的主流写法，
+ *      33 处 `.offset(` 里有 14 处是它。只认第 1 条时这 14 处完全隐形：
+ *      删掉它们的 tie-break，76 条用例全绿。
+ *
+ * deferred 关联用 **AST 取变量名 + 限定在最内层函数体内**搜索，
+ * 不能用「往后取 N 个字符」当窗口 —— 第一版取 1200 字符，`logs.ts` 里一个
+ * **不分页**的 `.orderBy()` 因此扫到了下一个函数的 `.offset(`，误判成分页查询。
+ */
+function pagedOrderBys(code: string, fileName = 'x.ts'): Array<{ index: number; args: string }> {
   const out: Array<{ index: number; args: string }> = []
+  const sf = ts.createSourceFile(
+    fileName, code, ts.ScriptTarget.Latest, true,
+    fileName.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
+  )
   for (const m of code.matchAll(/\.orderBy\s*\(/g)) {
     const at = m.index!
     const args = orderByArgs(code, at)
-    if (args === null) continue
-    // `.orderBy(<args>)` 的右括号位置 = at + '.orderBy('.length + args 原文长度…
-    // 原文可能含换行，不能用归一后的 args 长度算，重新扫一遍拿准确 end。
+    // ⚠️ 解析不出参数时**不能 continue**（那是 fail-open，整条查询被静默丢弃）——
+    // 推进 offenders 让人来看一眼，与云函数侧 `clause === null` 的 fail-closed 姿态对齐。
+    if (args === null) { out.push({ index: at, args: '<解析失败>' }); continue }
+
     const open = code.indexOf('(', at)
     let depth = 0
     let end = open
@@ -158,10 +213,20 @@ function pagedOrderBys(code: string): Array<{ index: number; args: string }> {
       if (code[end] === '(') depth++
       else if (code[end] === ')') { depth--; if (depth === 0) break }
     }
-    // 翻页的标志是 **offset**：只有 `.limit()` 是「取前 N 条」，不存在第二页，
-    // 也就没有跨次执行的重复/漏行问题（那类确定性问题属 #251 那一族）。
-    if (!/\.offset\s*\(/.test(chainTail(code, end + 1))) continue
-    out.push({ index: at, args })
+
+    // 判据 1：同链
+    if (/\.offset\s*\(/.test(chainTail(code, end + 1))) { out.push({ index: at, args }); continue }
+
+    // 判据 2：deferred —— 同函数体内，该变量被 `.offset(` 调用
+    const varName = enclosingVarName(sf, at)
+    if (varName) {
+      const [fnStart, fnEnd] = enclosingFunctionRange(sf, at)
+      const body = code.slice(fnStart, fnEnd)
+      const deferred = new RegExp(
+        String.raw`\b${varName}\s*(?:\.\s*\w+\s*\([^()]*(?:\([^()]*\)[^()]*)*\)\s*)*\.\s*offset\s*\(`,
+      )
+      if (deferred.test(body)) { out.push({ index: at, args }); continue }
+    }
   }
   return out
 }
@@ -174,7 +239,7 @@ describe('#282 · admin 分页查询的 orderBy 必须带唯一键 tie-break', (
       for (const root of ['actions', 'lib']) {
         for (const file of collectSources(join(SRC, root))) {
           const code = stripComments(readFileSync(file, 'utf8'), file)
-          for (const { index, args } of pagedOrderBys(code)) {
+          for (const { index, args } of pagedOrderBys(code, file)) {
             scanned++
             // 按顶层逗号切参数（`desc(a.b)` 内部没有逗号，但 `sql\`…\`` 可能有）
             let depth = 0
@@ -196,8 +261,16 @@ describe('#282 · admin 分页查询的 orderBy 必须带唯一键 tie-break', (
         }
       }
       expect(offenders, `缺 tie-break 的分页查询:\n${offenders.join('\n')}`).toEqual([])
-      // 下界防「守护被掏空」：切片逻辑若改坏，一个都扫不到、offenders 恒空而断言恒绿
-      expect(scanned).toBeGreaterThan(10)
+      // 下界防「守护被掏空」：切片逻辑若改坏，一个都扫不到、offenders 恒空而断言恒绿。
+      //
+      // ⚠️ 这个数字要与 **`src/` 下 `.offset(` 的实际总数**对齐（当前 33，
+      // `grep -rn "\.offset(" src --include="*.ts" | grep -v "\.test\." | wc -l`）。
+      // 初版判据只认同链写法，只扫到 19 —— 14 处 deferred 写法
+      // （`const query = …orderBy(…)` + `await query.limit().offset()`，本仓导出的主流写法）
+      // 完全隐形，删掉它们的 tie-break 全套用例照样绿。补上 deferred 关联后才是 100%。
+      const totalOffsetCalls = 33
+      expect(scanned, '扫到的分页查询数与 src 里 .offset( 的总数不符 —— 判据可能又漏了某种写法')
+        .toBe(totalOffsetCalls)
     })
   })
 
@@ -208,8 +281,9 @@ describe('#282 · admin 分页查询的 orderBy 必须带唯一键 tie-break', (
         '整点预约大量并列'],
       ['actions/card-transactions.ts', 'desc(cardTransactions.createdAt), desc(cardTransactions.id)',
         '一次结算可写多笔'],
-      ['actions/cards.ts', 'desc(saleOrders.paidAt), desc(saleItems.createdAt), desc(saleItems.saleItemId)',
-        '⚠️ FROM 是 saleItems 不是 saleOrders，主键取 saleItemId'],
+      ['actions/cards.ts', 'desc(saleOrders.paidAt), desc(saleItems.createdAt), asc(saleItems.saleItemId)',
+        '⚠️ FROM 是 saleItems 不是 saleOrders，主键取 saleItemId；'
+        + '末位用 **asc** 是为了与同文件导出侧 `exportCards` 同向 —— 否则并列组在页面与 CSV 里顺序相反，对账会逐行错位'],
       ['actions/coupons.ts', 'asc(clientWechatUsers.name), asc(clientWechatUsers.userId)',
         '⚠️ 重名顾客即并列'],
       ['actions/customers.ts', 'asc(clientWechatUsers.name), asc(clientWechatUsers.userId)',
@@ -233,8 +307,10 @@ describe('#282 · admin 分页查询的 orderBy 必须带唯一键 tie-break', (
         '⚠️ 一单多笔积分同事务写入，必然并列'],
       ['actions/services.ts', 'desc(serviceOrders.updatedAt), desc(serviceOrders.createdAt), desc(serviceOrders.serviceOrderId)',
         '同批更新的服务单 updatedAt 相同'],
-      ['lib/inventory/engine.ts', 'asc(inventorySkus.productCode), asc(inventorySkus.skuId)',
-        'productCode 可重复（不同市场同码）'],
+      // ⓘ `lib/inventory/engine.ts` 的 SKU 列表**刻意不在这张清单里**：
+      //    它的 `asc(inventorySkus.productCode)` 有全表唯一索引兜底，走 UNIQUE_BY_INDEX 豁免。
+      //    初版误判成「productCode 可重复（不同市场同码）」给它补了 skuId，与 schema 直接矛盾，
+      //    评审指出后已撤销 —— 这条注释留着，免得下次又被"补全"。
       ['lib/inventory/engine.ts',
         'asc(inventoryLocations.locationType), asc(inventoryLocations.name), asc(inventoryStockLots.skuName), asc(inventoryStockLots.batchNo), asc(inventoryStockLots.id)',
         '同库位同 SKU 同批次可以有多个 lot 行'],
@@ -242,7 +318,7 @@ describe('#282 · admin 分页查询的 orderBy 必须带唯一键 tie-break', (
 
     it.each(EXPECTED)('%s 的「%s」在位', (file, args) => {
       const code = stripComments(readFileSync(join(SRC, file), 'utf8'), file)
-      const all = pagedOrderBys(code).map((x) => x.args)
+      const all = pagedOrderBys(code, file).map((x) => x.args)
       expect(all, `${file} 的分页 orderBy 实际有:\n${all.join('\n')}`).toContain(args)
     })
 
