@@ -1751,6 +1751,38 @@ describe('updateEmployee — #228 归属变更必须落在 scope 内', () => {
     expect(result.message).toContain('finance')
   })
 
+  /**
+   * codex 第 14 轮 P1：锁内只重判「最终可见性」不够，**逐字段 scope 也要按 before→after 重判**。
+   *
+   * 员工初始 `{store: B(越界), org: M(scope 内)}`；操作者先发一个回传旧值 `B` 的请求、
+   * 再用另一个请求把 store 合法改成 `A`。旧请求锁行后实际执行 `A→B` ——
+   * 而 `M` 仍可见，只做「最终可见性」就会放过，门店被写回越界的 B。
+   */
+  it('锁内发生越界变化但另一维仍可见 → 仍拒绝（不能只看最终可见性）', async () => {
+    let selectCall = 0
+    ;(db.select as any).mockImplementation(() => ({
+      from: vi.fn().mockImplementation((table: unknown) => {
+        if (table === stores) return selectChain([{ orgNodeId: null }])
+        if (table !== staffWechatUsers) return selectChain([])
+        const outsideTx = selectCall++ === 0
+        return selectChain([outsideTx
+          // 事务外：旧店已经是越界的 store-OUT → 回传同值，事务外判据认为「没变」
+          ? { storeId: 'store-OUT', orgNodeId: 'market-1', isResigned: false, resignedAt: null }
+          // 锁内：并发已把门店合法改成 store-A → 本次实际是 A → OUT 的越界迁移
+          : { storeId: 'store-A', orgNodeId: 'market-1', isResigned: false, resignedAt: null }])
+      }),
+    }))
+    ;(db.update as any).mockReturnValue({
+      set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({ count: 1 }) }),
+    })
+
+    const result = await updateEmployee('FY-001', { storeId: 'store-OUT' })
+
+    expect(result.success).toBe(false)
+    expect(result.message).toBe('无权将员工调至该门店')
+    expect(db.update).not.toHaveBeenCalled()
+  })
+
   it('storeId 改到 scope 外门店 → 拒绝（完整表单 + 乐观锁的真实调用形态），且零写入', async () => {
     mockCurrentEmployee({ storeId: 'store-A', orgNodeId: 'org-store-A' })
     mockUpdateOk()
@@ -2931,6 +2963,45 @@ describe('#249 调店不自动搬迁角色绑定 —— 只留审计 + 回传提
 
     expect(result.success).toBe(true)
     expect(order).toEqual(['update', 'snapshot'])
+  })
+
+  /**
+   * 两谱系第 14 轮共识：§AFF-03 的判据必须是「**本次请求**撤销了角色」
+   * （`rolesRevokedByRequest`），不是状态迁移 `isResigning`。
+   *
+   * 已离职 + 残留绑定的员工（`sync-workfine.js` 可造出的真实态）直调
+   * `{ isResigned: true, storeId: B }`：角色删除分支照跑（判据是 `data.isResigned === true`），
+   * 残留被本事务删光；若用 `isResigning`（多带 `!lockedRow.isResigned`）就会落进查询分支、
+   * 查到刚被删空的集合、记成 `no_binding_at_old_store`（「旧店本来就没绑定」），语义相反。
+   */
+  it('已离职 + 再传 isResigned:true + 调店 → 记 roles_revoked_by_resignation（不是「本来没绑定」）', async () => {
+    mockSelectByTable({
+      employee: [{ storeId: 'store-A', orgNodeId: 'org-dept', isResigned: true }],
+      store: [[{ orgNodeId: 'org-store-B' }], [{ orgNodeId: 'org-store-A' }]],
+      bindings: [],
+    })
+    mockUpdateOnce()
+    ;(db.transaction as any).mockImplementation(async (fn: any) => fn({
+      execute: vi.fn().mockResolvedValue([]),
+      update: (db as any).update,
+      select: (db as any).select,
+      delete: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({}) }),
+      insert: (db as any).insert,
+    }))
+
+    const result = await updateEmployee('FY-001', { storeId: 'store-B', isResigned: true })
+
+    expect(result.success).toBe(true)
+    expect(logOperation).toHaveBeenCalledWith(
+      mockSession, 'permission.scopeSync.skipped', 'permission_role', 'FY-001',
+      expect.objectContaining({ reason: 'roles_revoked_by_resignation' }),
+      expect.anything(),
+    )
+    expect(logOperation).not.toHaveBeenCalledWith(
+      mockSession, 'permission.scopeSync.skipped', 'permission_role', 'FY-001',
+      expect.objectContaining({ reason: 'no_binding_at_old_store' }),
+      expect.anything(),
+    )
   })
 
   /** 复职**不调店**同样需要提示 —— 判据挂在调店分支里就漏了一半 */
