@@ -149,7 +149,10 @@ describe('payment-poll — 本场次完成判定', () => {
 
 // ============ 页面行为 ============
 describe('scan-pay 页面行为', () => {
-  test('微信支付面板取消后再次提交 → 复用同一 paymentParams，不重复调用 order.pay', async () => {
+  // #214（round-11）：页面级凭据缓存已移除——它会绕过服务端新增的渠道状态复核
+  // （顾客等到 token 过期、或微信其实已付成功但回调异常时，旧凭据会被一直重试）。
+  // 现在每次提交都回服务端，由它查渠道状态后决定复用同一场次还是重开。
+  test('微信支付面板取消后再次提交 → 每次都回服务端，由服务端决定复用', async () => {
     const paymentParams = { timeStamp: '1', nonceStr: 'n', package: 'prepay_id=x', signType: 'RSA', paySign: 'sig' };
     callClientApiMock.mockImplementation((action: string) => {
       if (action === 'order.pay') return Promise.resolve({ paymentParams });
@@ -172,14 +175,18 @@ describe('scan-pay 页面行为', () => {
     await expect(inst.executeConfirm()).rejects.toThrow(/cancel/);
     await inst.executeConfirm();
 
-    expect(callClientApiMock.mock.calls.filter((c: any[]) => c[0] === 'order.pay')).toHaveLength(1);
+    // 两次提交都问了服务端（服务端复用保证拿到的是同一笔场次的参数）
+    expect(callClientApiMock.mock.calls.filter((c: any[]) => c[0] === 'order.pay')).toHaveLength(2);
     expect(wxMock.requestPayment).toHaveBeenCalledTimes(2);
     expect(wxMock.requestPayment.mock.calls[0][0]).toBe(paymentParams);
     expect(wxMock.requestPayment.mock.calls[1][0]).toBe(paymentParams);
     expect(inst._wechatAttempt).toBeNull();
   });
 
-  test('取消后复用微信场次但待扣卡余额已下降 → 保留缓存场次并阻止再次调起渠道', async () => {
+  // 这条原本断言「复用本地缓存场次前重新校验卡余额」。缓存复用已移除，
+  // 余额校验的职责回到服务端（它在 reserve 事务里锁 prepaid_cards 判定），
+  // 页面只需保证每次提交都回服务端。
+  test('取消后再次提交且待扣卡余额已下降 → 仍回服务端，由它判定余额', async () => {
     const paymentParams = { timeStamp: '1', nonceStr: 'n', package: 'prepay_id=x', signType: 'RSA', paySign: 'sig' };
     callClientApiMock.mockImplementation((action: string) => {
       if (action === 'order.pay') return Promise.resolve({ paymentParams });
@@ -199,19 +206,15 @@ describe('scan-pay 页面行为', () => {
     inst.confirmAndRedirect = vi.fn(async () => {});
 
     await expect(inst.executeConfirm()).rejects.toThrow(/cancel/);
-    const cachedAttempt = inst._wechatAttempt;
-    await expect(inst.executeConfirm()).rejects.toMatchObject({
-      errorType: 'PAYMENT_INTENT_CARD_BALANCE_BLOCKED',
-    });
+    wxMock.requestPayment.mockResolvedValueOnce({});
+    await inst.executeConfirm();
 
-    expect(callClientApiMock.mock.calls.filter((c: any[]) => c[0] === 'order.pay')).toHaveLength(1);
-    expect(callClientApiMock.mock.calls.filter((c: any[]) => c[0] === 'card.balance')).toHaveLength(1);
-    expect(wxMock.requestPayment).toHaveBeenCalledTimes(1);
-    expect(inst._wechatAttempt).toBe(cachedAttempt);
-    expect(inst.data.cardBalance).toBe(50);
+    // 第二次提交同样回服务端，不再走「本地缓存 + 本地余额复核」那条捷径
+    expect(callClientApiMock.mock.calls.filter((c: any[]) => c[0] === 'order.pay')).toHaveLength(2);
+    expect(wxMock.requestPayment).toHaveBeenCalledTimes(2);
   });
 
-  test('支付宝吱口令弹层关闭后再次提交 → 复用现有 token，不重复预下单', async () => {
+  test('支付宝吱口令弹层关闭后再次提交 → 回服务端，由它决定复用同一 token', async () => {
     callClientApiMock.mockImplementation((action: string) => {
       if (action === 'order.alipayPay') {
         return Promise.resolve({ alipayShareToken: '¥same-token¥', paidAmount: 100 });
@@ -230,7 +233,8 @@ describe('scan-pay 页面行为', () => {
     inst.onAlipayShareClose();
     await inst.executeConfirm();
 
-    expect(callClientApiMock.mock.calls.filter((c: any[]) => c[0] === 'order.alipayPay')).toHaveLength(1);
+    // 两次都问服务端；服务端复用保证返回同一笔场次的吱口令
+    expect(callClientApiMock.mock.calls.filter((c: any[]) => c[0] === 'order.alipayPay')).toHaveLength(2);
     expect(inst.data.showAlipayShare).toBe(true);
     expect(inst.data.alipayShareToken).toBe('¥same-token¥');
   });

@@ -529,6 +529,10 @@ async function createLakalaPreorder({
   payAmountYuan, accountType, transType,
   openid, subAppid, requestIp,
   subject, attach,
+  // 仅用于预下单失败时的安全释放（需要按门店解析商户去查单/关单）
+  storeId: storeIdForRelease,
+  // 单次预下单的超时预算；不传则用微信口径。支付宝要给吱口令那一跳让出预算
+  timeoutMs: preorderTimeoutMs,
 }) {
   const totalAmountFen = Math.round(payAmountYuan * 100)
   if (!outTradeNo) {
@@ -545,35 +549,75 @@ async function createLakalaPreorder({
       subject: subject || `凤御美容订单 ${orderNo}`,
       attach: attach || orderNo,
       subAppid, openid,
-      timeoutExpressMin: 10,
+      timeoutExpressMin: LAKALA_PREORDER_TIMEOUT_MIN,
+      timeoutMs: preorderTimeoutMs || LAKALA_PREORDER_TIMEOUT_MS,
     })
   } catch (err) {
+    // 渠道明确回了业务失败码 → 确定没建单，直接本地释放，不必再跑一遍查单/关单。
+    //
+    // 状态集合是 ('待支付','部分支付')，**刻意不含 '支付失败'**：能走到预下单说明
+    // reserve 已经放行，而 reserve 只接受这两个状态（见其状态闸门）。与
+    // `releaseLakalaPaymentIntent`（含 '支付失败'，服务 staff/admin 的关单路径）用途不同。
     const definitelyNotCreated = err
       && /LAKALA_PREORDER_FAILED/.test(String(err.message || ''))
     if (definitelyNotCreated) {
-      await pg.query(
-        `UPDATE sale_orders
-         SET lakala_out_order_no = NULL, updated_at = NOW()
-         WHERE sale_order_id = $1
-           AND status IN ('待支付', '部分支付')
-           AND lakala_out_order_no = $2`,
-        [orderNo, outTradeNo]
-      )
+      // 释放失败不能盖掉真正的业务错误——那会让前端拿到一个无前缀的 DB 错误，
+      // 错误映射全乱（双谱系评审 round-7）
+      try {
+        await pg.query(
+          `UPDATE sale_orders
+           SET lakala_out_order_no = NULL, updated_at = NOW()
+           WHERE sale_order_id = $1
+             AND status IN ('待支付', '部分支付')
+             AND lakala_out_order_no = $2`,
+          [orderNo, outTradeNo]
+        )
+      } catch (releaseErr) {
+        console.warn('[order/preorder] 明确失败后的本地释放未完成，交由定时补偿兜底:',
+          orderNo, outTradeNo, releaseErr && releaseErr.message)
+      }
+    } else {
+      // 超时/网络异常：**不确定**渠道是否已建单。以前这里直接放着不管，留下「意图活跃
+      // 但没有快照」的状态——顾客重试只会撞 PAYMENT_INTENT_ACTIVE，得等渠道超时 + 定时
+      // 补偿才自愈，正是本 issue 要消灭的卡死（双谱系评审 round-6）。
+      // 改为走 fail-closed 的安全释放：查得到且未付款就关单后释放，查不到/查不准就保留，
+      // 既不会误释放一笔可能已被支付的单，也不会平白把订单锁死。
+      await releaseIntentAfterPreorderFailure(orderNo, outTradeNo, storeIdForRelease)
     }
     throw err
   }
 
   // 微信通道：校验拉卡拉返回的 app_id 与我方 subAppid 一致（防止拉卡拉商户绑定错误导致用户支付到别人账户）
+  //
+  // 这条抛错发生在预下单**成功之后**：渠道单已经建好、本地意图已占，但快照还没落。
+  // 不释放就又是「意图活跃但无快照」，顾客重试只会撞 PAYMENT_INTENT_ACTIVE
+  // （双谱系评审 round-7）。这笔单本来就不该被支付，安全释放正合适。
   if (accountType === 'WECHAT' && transType === '71') {
     if (subAppid && resp.lakalaAppId && resp.lakalaAppId !== subAppid) {
+      await releaseIntentAfterPreorderFailure(orderNo, outTradeNo, storeIdForRelease)
       throw new Error(`INVALID_STATE: LAKALA_APPID_MISMATCH: 拉卡拉返回 app_id=${resp.lakalaAppId} 与 sub_appid=${subAppid} 不一致`)
     }
   }
 
+  // 渠道回了成功码，但支付参数残缺（缺 package / paySign / 二维码 URL）——
+  // 此时渠道单很可能已经建好，本地意图已占。不拦的话会落盘一份**不可用的快照**，
+  // 顾客每次重试都复用它、每次都失败，直到场次过期（双谱系评审 round-7）。
+  // 按「渠道可能已建单」处理：走安全释放后抛，让顾客可以立刻重新发起。
   if (accountType === 'WECHAT' && transType === '71') {
-    return { outTradeNo, tradeNo: resp.tradeNo, paymentParams: resp.paymentParams }
+    // wx.requestPayment 的五个必需字段缺一不可（appId 由小程序 context 提供，不在此列）
+    const wxParams = resp.paymentParams
+    if (!wxParams || !wxParams.package || !wxParams.paySign
+        || !wxParams.timeStamp || !wxParams.nonceStr || !wxParams.signType) {
+      await releaseIntentAfterPreorderFailure(orderNo, outTradeNo, storeIdForRelease)
+      throw new Error('INVALID_STATE: LAKALA_PREORDER_INCOMPLETE: 渠道未返回完整的微信支付参数')
+    }
+    return { outTradeNo, tradeNo: resp.tradeNo, paymentParams: wxParams }
   }
   if (accountType === 'ALIPAY' && transType === '41') {
+    if (!resp.alipayQrUrl) {
+      await releaseIntentAfterPreorderFailure(orderNo, outTradeNo, storeIdForRelease)
+      throw new Error('INVALID_STATE: LAKALA_PREORDER_INCOMPLETE: 渠道未返回支付宝二维码地址')
+    }
     return { outTradeNo, tradeNo: resp.tradeNo, alipayQrUrl: resp.alipayQrUrl }
   }
   return { outTradeNo, tradeNo: resp.tradeNo }
@@ -590,16 +634,483 @@ function buildLakalaOutTradeNo(orderNo, excludedOutTradeNo) {
   return `${orderNo}_${suffix}`
 }
 
+/**
+ * 拉卡拉 trade_state 的三分类（官方取值：INIT / CREATE / SUCCESS / FAIL / DEAL /
+ * UNKNOWN / CLOSE / PART_REFUND / REFUND / REVOKED）。
+ *
+ * 历史上代码只认 ['FAIL','CLOSE'] 为可释放终态，漏掉 REVOKED（当日交易撤销）——
+ * 撤销过的单会永久卡住支付意图，谁也发不了新支付、谁也关不掉订单（issue #214）。
+ */
+const LAKALA_RELEASABLE_TRADE_STATES = ['FAIL', 'CLOSE', 'REVOKED']
+const LAKALA_PAID_TRADE_STATES = ['SUCCESS', 'PART_REFUND', 'REFUND']
+
+/**
+ * 允许关闭的订单状态（跨 env 作废接口的前置复核用）。
+ * 必须与 staffApi routes/order.js 的 CLOSEABLE_ORDER_STATUSES 同集合——
+ * 两端漂移会让「staff 放行但 clientApi 拒绝」这类状态变成误报，由 snapshot 守护。
+ */
+const CLOSEABLE_ORDER_STATUSES = ['待支付', '支付失败']
+
+/**
+ * 「渠道侧已收到钱」的统一错误。带结构化标记 `isPaymentAlreadySucceeded`，
+ * 调用方据此判断，不要去正则匹配错误文案——文案一重构，判断就会静默失效
+ * （双谱系评审 round-12）。
+ */
+function paymentAlreadySucceededError() {
+  const err = new Error('CONFLICT: PAYMENT_ALREADY_SUCCEEDED: 支付已成功，正在更新订单，请稍后刷新')
+  err.isPaymentAlreadySucceeded = true
+  return err
+}
+
+/** 与 payNotify 解析回调时的 `.toUpperCase()` 对齐，避免两端对同一笔单判定不一致。 */
+function normalizeTradeState(state) {
+  return String(state || '').trim().toUpperCase()
+}
+
+/**
+ * 作废意图路径上每次渠道调用的超时预算（双谱系评审 round-1）。
+ *
+ * 该路径最坏串行三次往返（queryTrade → closeTrade → 复核 queryTrade）。按 lakala-client
+ * 默认的 30s/次算最坏 90s，而 clientApi 的云函数超时只有 60s —— 会在复核完成前被平台
+ * 干掉，留下「渠道已关单、本地意图没释放」的不一致。7s × 3 ≈ 21s，留足余量。
+ * ⚠️ 改这个值或改 cloudbaserc 的函数超时，要回头核对 staffApi 桥的 DEFAULT_TIMEOUT_MS。
+ */
+const LAKALA_VOID_CALL_TIMEOUT_MS = 7000
+
+/**
+ * 作废 + 重建这条路径的总预算（双谱系评审 round-12）。
+ *
+ * ⚠️ 我最初的核算漏了一环：新场次**自己失败时还要再清理一次**。完整的最坏路径是
+ *   作废旧场次 21s + 预下单(支付宝还有吱口令) 28s + 新场次失败清理 21s ≈ 70s
+ * ——超过 clientApi 的 60s 函数超时，会在清理完成前被平台杀掉，留下「活动意图但无快照」，
+ * 也就是本 issue 要消灭的那个状态又回来了。
+ *
+ * 所以不能闷头重建：作废完成后先看还剩多少预算，不够跑完「重建 + 失败清理」就直接返回
+ * 一个可重试的错误（旧场次此时**已经作废干净**，顾客点一次重试就是全新的 60s 预算，
+ * 不会卡住）。正常情况下拉卡拉单次往返 1~2s，这条降级分支根本走不到。
+ */
+// 算式（改这个数之前先重算一遍）：
+//   函数超时 60s − 重建最坏耗时 = 允许的「已耗时」上限
+//   微信：  preorder 20s + 失败清理 21s = 41s → 上限 19s
+//   支付宝：preorder 15s + 吱口令 13s + 失败清理 21s = 49s → 上限 11s
+// 取两者更小的一侧（11s）再留余量 → 8s。
+//
+// 留这 3s 是因为 startedAt 从本 wrapper 入口起算，不含 action 的前置开销（鉴权、
+// advisory lock 等待、订单读取）——那部分也吃同一个 60s 函数预算（双谱系评审 round-14）。
+// 作废本身最坏 21s，走满就必然不重建（保守，正确）；正常 3 次往返 3~6s，照常重建。
+const LAKALA_REBUILD_MAX_ELAPSED_MS = 8000
+
+/**
+ * 预下单 / 吱口令的单次超时预算（双谱系评审 round-6）。
+ *
+ * 整条支付请求必须在 clientApi 的 60s 函数超时内跑完，**且要给失败后的安全释放留出余量**：
+ *   微信：preorder 20s + 释放 7s×3 = 41s
+ *   支付宝：preorder 20s + 吱口令(8s + 1s 退避 + 8s 重试) + 释放 21s ≈ 58s
+ * 用 lakala-client 的默认 30s 会让释放根本跑不完，留下「意图活跃但无快照」——
+ * 正是安全释放本身要消灭的状态。
+ */
+const LAKALA_PREORDER_TIMEOUT_MS = 20000
+
+/**
+ * 支付宝通道要多走一跳吱口令（且失败会自动重试一次），必须比微信更紧（双谱系评审 round-7）：
+ *   15s + (6s + 1s 退避 + 6s) + 释放 7s×3 = 49s，对 60s 函数超时留 11s。
+ * 用微信那套 20s/8s 会算到 58s——余量只剩 2s，扛不住冷启动 + PG 建连 + 十来次查询的开销，
+ * 而且最坏路径的几跳在网络劣化时高度相关（拉卡拉慢的时候，释放查询也慢），
+ * 不是可以相乘的独立小概率。释放跑不完就又留下「意图活跃但无快照」——它本该消灭的状态。
+ */
+const LAKALA_PREORDER_TIMEOUT_ALIPAY_MS = 15000
+const LAKALA_SHARE_CODE_TIMEOUT_MS = 6000
+
+/**
+ * 复用旧支付场次的最小剩余有效期。低于这个值不复用——顾客还没输完密码渠道单就过期了，
+ * 重新开一场比让他付一半失败更好。
+ */
+const PAYMENT_INTENT_REUSE_MIN_REMAINING_MS = 60 * 1000
+
+/**
+ * 预下单传给拉卡拉的 timeout_express（分钟）。渠道单在此之后自动转 CLOSE。
+ * 支付场次快照的 expiresAt 必须由同一个常量推出，否则「渠道已过期但本地判还能复用」
+ * 会让顾客点了支付才失败。
+ */
+const LAKALA_PREORDER_TIMEOUT_MIN = 10
+
+function lakalaIntentExpiresAt(nowMs = Date.now()) {
+  return new Date(nowMs + LAKALA_PREORDER_TIMEOUT_MIN * 60 * 1000).toISOString()
+}
+
+/**
+ * 构造微信场次快照（pay / repay 两处调用点共用，避免字段各自漂移——漏一个字段不会报错，
+ * 只会让复用判据静默落空，退化成「还是发不了新支付」）。
+ */
+function buildWechatIntentSnapshot(outTradeNo, payAmount, paymentParams) {
+  return {
+    outTradeNo,
+    expiresAt: lakalaIntentExpiresAt(),
+    paymentMethod: '微信',
+    payAmount,
+    paymentParams,
+  }
+}
+
+/** 构造支付宝吱口令场次快照（alipayPay / repay 两处调用点共用）。 */
+function buildAlipayIntentSnapshot(outTradeNo, payAmount, shareToken, expireDate) {
+  return {
+    outTradeNo,
+    // 吱口令自带有效期，可能短于 preorder 的 timeout_express，取更早者
+    expiresAt: earlierIntentExpiry(expireDate, lakalaIntentExpiresAt()),
+    paymentMethod: '支付宝',
+    payAmount,
+    paymentParams: { alipayShareToken: shareToken, alipayExpireDate: expireDate },
+  }
+}
+
+/**
+ * 支付宝吱口令自带 expire_date，可能早于 preorder 的 timeout_express。
+ * 复用截止取两者更早者；渠道值无法解析时退回 preorder 口径（宁可少复用一会儿）。
+ *
+ * ⚠️ 渠道返回的是不带时区的 `yyyy-MM-dd HH:mm:ss`（拉卡拉口径固定 GMT+8）。
+ * 不能用 `new Date(s.replace(/-/g,'/'))` —— 那按**运行时本地时区**解析，生产靠
+ * index.js 设 TZ=Asia/Shanghai 才恰好正确，而单测直接 require routes/ 不加载 index.js，
+ * 在 UTC 机器上会算晚 8 小时，`Math.min` 恒选 fallback、函数形同虚设且测不出来。
+ * 这里按 utils/datetime.js 的既有约定走纯 UTC 算术，不依赖 process.env.TZ。
+ */
+function earlierIntentExpiry(channelExpireDate, fallbackIso) {
+  if (!channelExpireDate) return fallbackIso
+  const m = String(channelExpireDate).trim()
+    .match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2}):(\d{2})/)
+  if (!m) return fallbackIso
+  // GMT+8 → UTC 毫秒
+  const channelMs = Date.UTC(
+    Number(m[1]), Number(m[2]) - 1, Number(m[3]),
+    Number(m[4]), Number(m[5]), Number(m[6]),
+  ) - 8 * 3600 * 1000
+  if (!Number.isFinite(channelMs)) return fallbackIso
+  return new Date(Math.min(channelMs, new Date(fallbackIso).getTime())).toISOString()
+}
+
+/**
+ * 按当前单号 CAS 释放支付意图。
+ *
+ * 状态集合含 '支付失败'（#214）：staffApi / admin 的关单入口都允许关闭 '支付失败' 单，
+ * 若这里不放行，那类单会走完 queryTrade + closeTrade（**渠道场次已被真的销毁**）却释放
+ * 不掉本地意图 → 订单永远关不掉，且每次重试都再关一次渠道单。
+ */
 async function releaseLakalaPaymentIntent(orderNo, outTradeNo) {
   return pg.query(
     `UPDATE sale_orders
      SET lakala_out_order_no = NULL, updated_at = NOW()
      WHERE sale_order_id = $1
-       AND status IN ('待支付', '部分支付')
+       AND status IN ('待支付', '部分支付', '支付失败')
        AND lakala_out_order_no = $2
      RETURNING sale_order_id`,
     [orderNo, outTradeNo]
   )
+}
+
+/**
+ * 释放 CAS 返回 0 行有三种语义，必须区分（#214）：
+ *   a) 别人（前端轮询 confirmPayment / reconcile）已经把同一笔意图释放了 → 目标已达成，放行
+ *   b) 意图被换成了新单号 → 必须拦
+ *   c) 订单状态已变 → 必须拦
+ * 一律当失败会造成可重现的误报：scan-pay 的轮询先释放，顾客随即点取消，就会吃一记
+ * 「支付状态已变化，请刷新订单后重试」，要点第二次才成功——正好抵消本 issue 的修复效果。
+ *
+ * @returns {Promise<boolean>} true = 可继续（已释放或本就无意图）
+ */
+async function confirmIntentReleased(orderNo, outTradeNo) {
+  const released = await releaseLakalaPaymentIntent(orderNo, outTradeNo)
+  if (released.length > 0) return true
+  const rows = await pg.query(
+    'SELECT lakala_out_order_no FROM sale_orders WHERE sale_order_id = $1',
+    [orderNo]
+  )
+  if (rows.length === 0) return false
+  // 当前已无意图，或已不是我们刚作废的那一笔 → 目标状态已达成
+  return !String(rows[0].lakala_out_order_no || '').trim()
+}
+
+/**
+ * 预下单成功后把本次支付场次快照落盘，供顾客中途退出后「继续支付」复用（issue #214）。
+ *
+ * CAS 锚 `lakala_out_order_no = $2`：并发场景下意图若已被换掉，快照就不该落到新场次上。
+ *
+ * 落盘失败**不抛**：此时支付参数已经拿到手，让顾客先把这笔付掉比什么都重要。代价是
+ * 这一场次失去复用能力（顾客中途退出后要等渠道超时），即退回改动前的行为——
+ * 与「预下单/吱口令失败」那条路径的安全释放不同，那里顾客根本没拿到可用的支付参数。
+ */
+async function persistLakalaPaymentIntentSnapshot(orderNo, outTradeNo, snapshot) {
+  try {
+    await pg.query(
+      `UPDATE sale_orders
+       SET lakala_payment_intent = $1
+       WHERE sale_order_id = $2
+         AND lakala_out_order_no = $3`,
+      [JSON.stringify(snapshot), orderNo, outTradeNo]
+    )
+  } catch (err) {
+    console.warn('[order/persistLakalaPaymentIntentSnapshot] 落盘失败（不影响本次支付）:',
+      orderNo, err && err.message)
+  }
+}
+
+/**
+ * 判断能否复用订单上已有的支付场次，能则返回可直接回发前端的 paymentParams。
+ *
+ * 六项判据全中才复用，任一不中返回 null（调用方退回「查渠道状态 → 释放 → 重建」的老路）：
+ *   1. 快照的 outTradeNo 与订单当前意图一致 —— 这是自校验锚点，也是本设计不依赖
+ *      「所有清空点同步清空快照列」的原因：单号对不上即自动失效，残留 jsonb 无害
+ *   2. **归属本人** —— paymentParams 里的 prepay_id 绑定的是建单那位顾客的 openid，
+ *      回发给第二个人不但泄漏他的 paySign，对方 wx.requestPayment 还必然失败，
+ *      且有效期内每次重试都命中同一快照 → 这张单对他永久不可支付。
+ *      员工开单在首次支付前 client_user_id 为空，此时任何快照都不该被复用。
+ *   3. 剩余有效期足够（见 PAYMENT_INTENT_REUSE_MIN_REMAINING_MS）
+ *   4. 金额一致 —— 防御性冗余，意图活跃期改抵扣/改储值卡/改线下三条路径都有既存守卫
+ *   5. 支付方式一致（微信场次不能拿去走支付宝）
+ *   6. 存在可用的 paymentParams
+ *
+ * @returns {{ paymentParams: object }|null}
+ */
+function tryReuseLakalaPaymentIntent(order, { payAmount, paymentMethod, userId }) {
+  // 没有活动意图就谈不上复用；不先判这一条，下面 outTradeNo 的比较会在「两边都空」时
+  // 误判为相等。
+  if (!order.lakala_out_order_no) return null
+
+  const raw = order.lakala_payment_intent
+  if (!raw) return null
+  const intent = typeof raw === 'string' ? safeParseJson(raw) : raw
+  if (!intent || typeof intent !== 'object' || Array.isArray(intent)) return null
+
+  if (String(intent.outTradeNo || '') !== String(order.lakala_out_order_no || '')) return null
+
+  if (!order.client_user_id || !userId || order.client_user_id !== userId) return null
+
+  const expiresAt = intent.expiresAt ? new Date(intent.expiresAt).getTime() : 0
+  if (!Number.isFinite(expiresAt)
+      || expiresAt - Date.now() < PAYMENT_INTENT_REUSE_MIN_REMAINING_MS) {
+    return null
+  }
+
+  const snapshotAmount = Math.round(Number(intent.payAmount || 0) * 100)
+  if (snapshotAmount !== Math.round(Number(payAmount || 0) * 100)) return null
+
+  if (String(intent.paymentMethod || '') !== String(paymentMethod || '')) return null
+
+  const paymentParams = intent.paymentParams
+  if (!paymentParams || typeof paymentParams !== 'object') return null
+
+  // 按通道校验必需字段：历史上可能落过畸形快照（渠道回成功却少字段），
+  // 复用它只会让顾客反复失败到场次过期。不复用即退回「查渠道 → 释放 → 重建」老路。
+  if (paymentMethod === '微信'
+      && (!paymentParams.package || !paymentParams.paySign
+          || !paymentParams.timeStamp || !paymentParams.nonceStr || !paymentParams.signType)) {
+    return null
+  }
+  if (paymentMethod === '支付宝' && !paymentParams.alipayShareToken) return null
+
+  return { paymentParams }
+}
+
+function safeParseJson(text) {
+  try {
+    return JSON.parse(text)
+  } catch {
+    return null
+  }
+}
+
+/**
+ * 复用旧支付场次前，确认它在渠道侧仍然可支付（双谱系评审 round-1 引入，round-2 补全）。
+ *
+ * 两类必须拦下的状态：
+ *   - **已支付**（SUCCESS / PART_REFUND / REFUND）：顾客付了款但回调还没入账就重新扫码，
+ *     不查渠道就回发旧 paymentParams，前端会去唤起一笔已成功的场次，只能得到误导性失败。
+ *   - **已终态但本地没释放**（FAIL / CLOSE / REVOKED）：例如关单成功但复核那一跳超时，
+ *     fail-closed 保留了意图与快照。此时复用会回发一个**已死亡**的场次，顾客每次重试都
+ *     命中同一快照、反复失败，直到快照过期才自愈——正是本 issue 要消灭的卡死的短时复刻。
+ *     这种情况直接释放本地意图并返回 false，调用方重新预占一笔新场次，顾客无感。
+ *
+ * 必须在事务**之外**调用：这是一次 HTTPS 往返，放进事务会把订单行锁持有到网络返回。
+ *
+ * 查单失败时选择**放行复用**而不是拒绝：复用的是同一笔渠道单，渠道对已支付/已关闭的
+ * 场次本身会拒绝付款，不存在重复扣款；而拒绝会让顾客重新卡在「发不了新支付」上。
+ *
+ * @returns {Promise<boolean>} true = 可继续复用；false = 已释放意图，调用方应重新预占
+ */
+async function ensureReusedIntentStillPayable(orderNo, outTradeNo, merchant) {
+  // 商户配置缺失（数据异常）时放行复用而不是拒绝：拒绝会让顾客直接卡在「发不了支付」，
+  // 而放行最坏也只是回发一个可能已失效的场次、由前端唤起失败——两害相权取轻。
+  // 能走到这里说明预下单当时是成功的，商户配置凭空消失属于需要人工介入的异常。
+  if (!merchant) return true
+  let trade
+  try {
+    trade = await lakalaClient.queryTrade({
+      merchantNo: merchant.merchantNo,
+      termNo: merchant.termNo,
+      outTradeNo,
+      timeoutMs: LAKALA_VOID_CALL_TIMEOUT_MS,
+    })
+  } catch (err) {
+    console.warn('[order/reuseIntent] 复用前查单失败，降级放行:', orderNo, err && err.message)
+    return true
+  }
+  if (!trade || trade.ok !== true) {
+    console.warn('[order/reuseIntent] 复用前查单未成功返回，降级放行:',
+      orderNo, trade && trade.code, trade && trade.msg)
+    return true
+  }
+
+  const state = normalizeTradeState(trade.tradeState)
+  if (LAKALA_PAID_TRADE_STATES.includes(state)) {
+    throw paymentAlreadySucceededError()
+  }
+  if (LAKALA_RELEASABLE_TRADE_STATES.includes(state)) {
+    // 渠道已终态：这笔场次再也付不了，留着它只会让顾客反复撞墙。释放后让调用方重建。
+    console.warn('[order/reuseIntent] 快照对应的渠道场次已终态，释放后重建:', orderNo, state)
+    // 返回值不能忽略（双谱系评审 round-12）：并发请求可能已经清掉这笔、预占了新的一笔，
+    // 此时 CAS 扑空。若还按「已释放」继续往下走，会进一步作废那笔尚未落快照的新意图。
+    if (!await confirmIntentReleased(orderNo, outTradeNo)) {
+      throw new Error('CONFLICT: PAYMENT_INTENT_CHANGED: 支付场次已变化，请刷新后重试')
+    }
+    return false
+  }
+  return true
+}
+
+/**
+ * 预下单已成功、但后续步骤（如支付宝吱口令）失败时的安全释放（双谱系评审 round-5）。
+ *
+ * 不释放的话会留下「意图活跃但没有可复用快照」的状态：顾客立刻重试只会撞
+ * PAYMENT_INTENT_ACTIVE，得等渠道超时 + 定时补偿才能自愈——正是本 issue 要消灭的卡死。
+ *
+ * 释放本身仍走 fail-closed 的 voidActiveLakalaPaymentIntent（查单确认非 SUCCESS → 关单
+ * → 复核）。释放失败不能盖掉真正的业务错误，所以这里只记日志。
+ */
+async function releaseIntentAfterPreorderFailure(orderNo, outTradeNo, storeId) {
+  // 契约：**本函数永不抛**。调用点都是 `await release(...)` 后紧跟 `throw err`（原始业务错误），
+  // 一旦这里漏出异常就会把真正的错误换掉，前端的错误映射全乱——正是下面那层 catch 的意义。
+  try {
+    await voidActiveLakalaPaymentIntent(orderNo, { outTradeNo, storeId })
+  } catch (err) {
+    console.warn('[order/preorderFailure] 安全释放未完成，交由定时补偿兜底:',
+      orderNo, outTradeNo, err && err.message)
+  }
+}
+
+/**
+ * 主动作废订单上的在线支付意图，成功后该订单可被取消/关闭（issue #214）。
+ *
+ * 全程 **fail-closed**：只有确认渠道侧已是「不可再支付」的终态才清本地意图。
+ * 关单失败、复核非终态、查单异常一律抛 CONFLICT 保留意图——宁可让用户重试，
+ * 也不制造「本地已关、渠道可付」的窗口（那会让 payNotify 因「非当前意图」拒绝入账，
+ * 变成钱收了订单不动的最坏事故）。
+ *
+ * @param {string} orderNo
+ * @param {{ outTradeNo: string, storeId: string }} ctx
+ * 调用方负责先判空 outTradeNo（`cancel` 与 `voidPaymentIntent` 都判了）；真漏判也是
+ * fail-closed —— lakala-client 的参数校验会先抛 INVALID_PARAMS，不会误释放意图。
+ *
+ * @returns {Promise<'released'>}
+ */
+async function voidActiveLakalaPaymentIntent(orderNo, { outTradeNo, storeId, merchant: knownMerchant }) {
+  // 调用方若已在事务里解析过商户就直接传进来，省一次 DB 往返
+  let merchant = knownMerchant || null
+  try {
+    if (!merchant) merchant = await resolveLakalaMerchant(storeId)
+  } catch (err) {
+    console.warn('[order/voidIntent] 商户配置读取失败:', orderNo, err && err.message)
+    merchant = null
+  }
+  if (!merchant) {
+    throw new Error('CONFLICT: PAYMENT_STATUS_UNCERTAIN: 暂时无法确认支付结果，请稍后重试')
+  }
+
+  let trade
+  try {
+    trade = await lakalaClient.queryTrade({
+      merchantNo: merchant.merchantNo,
+      termNo: merchant.termNo,
+      outTradeNo,
+      timeoutMs: LAKALA_VOID_CALL_TIMEOUT_MS,
+    })
+  } catch (err) {
+    console.warn('[order/voidIntent] 查单失败，保留意图:', orderNo, err && err.message)
+    throw new Error('CONFLICT: PAYMENT_STATUS_UNCERTAIN: 暂时无法确认支付结果，请稍后重试')
+  }
+
+  // 大小写归一：payNotify 解析回调时做了 toUpperCase，查单侧不做就会出现两端对同一笔单
+  // 判定不一致（渠道返回 `Success` 之类的变体时，这里会把已付款单当成非终态去关单）。
+  const state = normalizeTradeState(trade && trade.tradeState)
+
+  // 只有查单**成功**返回的 trade_state 才是权威的（双谱系评审 round-1）：
+  // `request()` 对非成功码不抛错，只把 ok 置 false，而错误响应里可能仍带一个
+  // 非权威的 resp_data.trade_state。若不看 ok 就按它释放意图、关闭订单，而渠道单
+  // 其实仍可支付，就会形成「本地已关、渠道可付」——正是本次改动最该避免的窟窿。
+  // 同理 tradeState 为空串也不能当「未付款」去关单：真实状态未知。
+  if (!trade || trade.ok !== true || !state) {
+    console.warn('[order/voidIntent] 查单未返回权威 trade_state，保留意图待人工核查:',
+      orderNo, outTradeNo, trade && trade.ok, trade && trade.code, trade && trade.msg)
+    throw new Error('CONFLICT: PAYMENT_STATUS_UNCERTAIN: 暂时无法确认支付结果，请稍后重试')
+  }
+
+  if (LAKALA_PAID_TRADE_STATES.includes(state)) {
+    throw paymentAlreadySucceededError()
+  }
+
+  // 已是终态：渠道侧不可能再被支付，直接释放。
+  if (LAKALA_RELEASABLE_TRADE_STATES.includes(state)) {
+    if (!await confirmIntentReleased(orderNo, outTradeNo)) {
+      throw new Error('CONFLICT: PAYMENT_INTENT_CHANGED: 支付状态已变化，请刷新订单后重试')
+    }
+    return 'released'
+  }
+
+  // 非终态（INIT / CREATE / DEAL / UNKNOWN）：顾客可能还握着可付款的支付面板，
+  // 必须先让渠道关单，否则本地关闭后仍可能收到钱。
+  try {
+    await lakalaClient.closeTrade({
+      merchantNo: merchant.merchantNo,
+      termNo: merchant.termNo,
+      outTradeNo,
+      timeoutMs: LAKALA_VOID_CALL_TIMEOUT_MS,
+    })
+  } catch (err) {
+    console.warn('[order/voidIntent] 关单请求失败，保留意图:', orderNo, err && err.message)
+    throw new Error('CONFLICT: PAYMENT_INTENT_ACTIVE: 暂时无法终止本次支付，请稍后重试')
+  }
+
+  // 关单返回成功不等于渠道已终态，必须复核——这是本流程唯一可信的放行依据。
+  let recheck
+  try {
+    recheck = await lakalaClient.queryTrade({
+      merchantNo: merchant.merchantNo,
+      termNo: merchant.termNo,
+      outTradeNo,
+      timeoutMs: LAKALA_VOID_CALL_TIMEOUT_MS,
+    })
+  } catch (err) {
+    console.warn('[order/voidIntent] 关单后复核失败，保留意图:', orderNo, err && err.message)
+    throw new Error('CONFLICT: PAYMENT_STATUS_UNCERTAIN: 暂时无法确认支付结果，请稍后重试')
+  }
+
+  const recheckState = normalizeTradeState(recheck && recheck.tradeState)
+  // 复核同样只认查单成功的响应——它是整个关单流程唯一的放行依据
+  if (!recheck || recheck.ok !== true) {
+    console.warn('[order/voidIntent] 关单后复核未成功返回，保留意图:',
+      orderNo, recheck && recheck.code, recheck && recheck.msg)
+    throw new Error('CONFLICT: PAYMENT_STATUS_UNCERTAIN: 暂时无法确认支付结果，请稍后重试')
+  }
+  if (LAKALA_PAID_TRADE_STATES.includes(recheckState)) {
+    throw paymentAlreadySucceededError()
+  }
+  if (!LAKALA_RELEASABLE_TRADE_STATES.includes(recheckState)) {
+    console.warn('[order/voidIntent] 关单后仍非终态，保留意图:', orderNo, recheckState)
+    throw new Error('CONFLICT: PAYMENT_INTENT_ACTIVE: 支付结果仍在确认中，请稍后再试')
+  }
+
+  if (!await confirmIntentReleased(orderNo, outTradeNo)) {
+    throw new Error('CONFLICT: PAYMENT_INTENT_CHANGED: 支付状态已变化，请刷新订单后重试')
+  }
+  return 'released'
 }
 
 function activePaymentIntentError(order) {
@@ -607,8 +1118,32 @@ function activePaymentIntentError(order) {
   err.activeOutTradeNo = order.lakala_out_order_no
   err.activeStoreId = order.store_id
   err.activeMerchant = order._lakalaMerchant
+  // 意图行的最后更新时刻，供「另一请求可能正在建单」的宽限期判断用
+  err.activeUpdatedAt = order.updated_at
+  // ⚠️ 必须判「快照是否属于**当前这笔**意图」，不能只判非空（双谱系评审 round-13）：
+  // 快照按设计是不清空的（靠单号匹配自失效），所以旧场次的残留 JSON 会让这里误判成
+  // 「已有快照、不在创建窗口」→ 跳过宽限期 → 关掉另一个请求正在建的新场次。
+  err.activeHasSnapshot = (() => {
+    const raw = order.lakala_payment_intent
+    if (!raw) return false
+    const intent = typeof raw === 'string' ? safeParseJson(raw) : raw
+    if (!intent || typeof intent !== 'object' || Array.isArray(intent)) return false
+    return String(intent.outTradeNo || '') === String(order.lakala_out_order_no || '')
+  })()
   return err
 }
+
+/**
+ * 「另一个请求刚预占、预下单还没跑完」的宽限期（双谱系评审 round-12）。
+ *
+ * 预占意图与落快照之间隔着一次渠道预下单往返。这段窗口里意图**有单号但没快照**，
+ * 看起来和「快照残缺、该作废」一模一样。若此时另一请求直接关单，会把前一个请求
+ * 正在建的渠道单关掉——它随后返回给前端的支付参数已经死了，顾客必然支付失败。
+ *
+ * 所以：意图很新 + 还没落快照时，不主动关单，只 fail-fast 让调用方稍后重试。
+ * 取 30s 是因为预下单最坏 20s（支付宝 15s + 吱口令 13s ≈ 28s），留一点余量。
+ */
+const INTENT_CREATION_GRACE_MS = 30000
 
 function normalizeRequestedPayAmount(payAmountInput) {
   if (payAmountInput === undefined || payAmountInput === null) return null
@@ -640,7 +1175,7 @@ async function reserveDirectOnlinePaymentIntent({
       `SELECT sale_order_id, status, sale_order_type, store_id, client_user_id, opened_by,
               sale_order_datetime, total_amount, payable_amount, prepaid_card_amount,
               pending_prepaid_card_amount, received, refunded_amount, first_payment_amount,
-              lakala_out_order_no
+              lakala_out_order_no, lakala_payment_intent, updated_at
        FROM sale_orders
        WHERE sale_order_id = $1
        FOR UPDATE`,
@@ -735,6 +1270,26 @@ async function reserveDirectOnlinePaymentIntent({
     }
 
     if (order.lakala_out_order_no) {
+      // issue #214：顾客唤起支付后没付就退出，渠道单仍在有效期内（trade_state=CREATE/INIT），
+      // 旧逻辑一律拒绝 → 再进来就「无法支付」。这里改为优先**复用**同一笔场次，把原
+      // paymentParams 回发给前端重新唤起。复用比「关旧单建新单」安全：全程只有一笔渠道单，
+      // 不会出现旧单被付款而 payNotify 判为「非当前意图」拒绝入账的资金窟窿。
+      const reusable = tryReuseLakalaPaymentIntent(order, { payAmount, paymentMethod, userId })
+      if (reusable) {
+        return {
+          prepaidFull: false,
+          reused: true,
+          orderNo,
+          outTradeNo: order.lakala_out_order_no,
+          storeId: order.store_id,
+          status: order.status,
+          totalAmount: order.total_amount,
+          payAmount,
+          pendingPrepaidAmount,
+          merchant,
+          paymentParams: reusable.paymentParams,
+        }
+      }
       order._lakalaMerchant = merchant
       throw activePaymentIntentError(order)
     }
@@ -785,6 +1340,7 @@ async function reserveDirectOnlinePaymentIntent({
 }
 
 async function reserveDirectOnlinePaymentIntentWithTerminalRetry(options) {
+  const startedAt = Date.now()
   let excludedOutTradeNo = null
   for (let attempt = 0; attempt < 2; attempt++) {
     const outTradeNo = buildLakalaOutTradeNo(options.orderNo, excludedOutTradeNo)
@@ -794,19 +1350,56 @@ async function reserveDirectOnlinePaymentIntentWithTerminalRetry(options) {
       if (!err || !err.activeOutTradeNo || attempt > 0) throw err
       const merchant = err.activeMerchant || await resolveLakalaMerchant(err.activeStoreId)
       if (!merchant) throw err
+      // 「有单号但还没落快照」且这笔意图很新 → 很可能是另一个请求正在建单的中间态，
+      // 不能当成「快照残缺该作废」去关它（双谱系评审 round-12）。让调用方稍后重试。
+      if (!err.activeHasSnapshot && err.activeUpdatedAt) {
+        const age = Date.now() - new Date(err.activeUpdatedAt).getTime()
+        // 负值也当「刚创建」：DB 时钟比函数实例略超前（NTP 毫秒级偏差）时 age 会是负数，
+        // 按原写法会跳过宽限期直接作废——恰好复现宽限期要防的那件事
+        if (Number.isFinite(age) && age < INTENT_CREATION_GRACE_MS) {
+          console.warn('[order/reserveDirectOnlinePaymentIntent] 意图可能正在创建中，不作废:',
+            options.orderNo, age)
+          throw err
+        }
+      }
+
+      // 走到这里说明旧意图**不可复用**（快照过期 / 残缺 / 方案不符 / 归属不符）。
+      //
+      // 此前只在渠道已是终态时才释放，非终态一律抛 PAYMENT_INTENT_ACTIVE —— 于是
+      // 「支付宝吱口令先于 10 分钟预下单过期」这种情况（快照不可复用、渠道仍 CREATE）
+      // 顾客还是只能干等渠道超时，本 issue 的症状原样复现（双谱系评审 round-11）。
+      //
+      // 现在改走与取消/关单同一套 fail-closed 作废：查单 → 已付款则拒绝 → 终态直接释放 →
+      // 非终态则关单 + 复核后释放。关不掉就仍然保留原错误，不会凭空造出第二笔可支付的单。
       try {
-        const oldTrade = await lakalaClient.queryTrade({
-          merchantNo: merchant.merchantNo,
-          termNo: merchant.termNo,
+        await voidActiveLakalaPaymentIntent(options.orderNo, {
           outTradeNo: err.activeOutTradeNo,
+          storeId: err.activeStoreId,
+          merchant,   // 事务内已解析过，不必再查一次
         })
-        if (!oldTrade || !['FAIL', 'CLOSE'].includes(oldTrade.tradeState)) throw err
-        await releaseLakalaPaymentIntent(options.orderNo, err.activeOutTradeNo)
         excludedOutTradeNo = err.activeOutTradeNo
-      } catch (queryErr) {
-        if (queryErr === err) throw err
-        console.warn('[order/reserveDirectOnlinePaymentIntent] 旧意图状态不确定，保留:', options.orderNo, queryErr && queryErr.message)
+      } catch (voidErr) {
+        // 「已支付」要如实告诉顾客（比含糊的「请勿重复发起」准确得多）；
+        // 其余情况（关不掉 / 查不准）保留原错误，语义不变。
+        if (voidErr && voidErr.isPaymentAlreadySucceeded) {
+          throw voidErr
+        }
+        console.warn('[order/reserveDirectOnlinePaymentIntent] 旧意图作废未完成，保留:',
+          options.orderNo, voidErr && voidErr.message)
         throw err
+      }
+
+      // ⚠️ 这段必须在 try/catch **之外**（双谱系评审 round-13）：写在 try 里的话，
+      // 它抛出的 PAYMENT_INTENT_CHANGED 会被下面自己的 catch 接住、降级成原始的
+      // PAYMENT_INTENT_ACTIVE —— 新设计的可重试错误成了不可达代码，日志还会打出
+      // 「作废未完成」这种与事实相反的话（此时作废其实已经成功）。
+      //
+      // 旧场次此时已作废干净。重建前确认剩余预算够跑完「预下单 + 万一失败的清理」，
+      // 不够就让顾客重试——重试是全新的函数预算，硬建可能在清理前被平台杀掉。
+      if (Date.now() - startedAt > LAKALA_REBUILD_MAX_ELAPSED_MS) {
+        console.warn('[order/reserveDirectOnlinePaymentIntent] 累计耗时超预算，本次不重建:',
+          options.orderNo, Date.now() - startedAt)
+        throw new Error('CONFLICT: PAYMENT_INTENT_CHANGED: 上一笔支付场次已关闭，请重新发起支付')
       }
     }
   }
@@ -836,7 +1429,12 @@ async function createLakalaAlipayShareCode({
     requestIp: requestIp || '0.0.0.0',
     source: cfg.alipayShareSource,
     bizLink,
+    timeoutMs: LAKALA_SHARE_CODE_TIMEOUT_MS,
   })
+  if (!resp.shareToken) {
+    // 同上：渠道回了成功但没给吱口令，落盘也是一份不可用的快照
+    throw new Error('INVALID_STATE: LAKALA_SHARE_CODE_INCOMPLETE: 渠道未返回吱口令')
+  }
   return { shareToken: resp.shareToken, expireDate: resp.expireDate, tradeNo: resp.tradeNo }
 }
 
@@ -1058,6 +1656,7 @@ async function _loadAndValidateBundle(bundleProductId, items) {
 async function scanDetail(ctx) {
   await requirePhone()(ctx, async () => {})
 
+  const { userId } = ctx.auth
   const { orderNo, saleOrderId } = ctx.event.payload || {}
   const targetOrderId = saleOrderId || orderNo
   if (!targetOrderId) {
@@ -1137,6 +1736,41 @@ async function scanDetail(ctx) {
     ? Number(order.first_payment_amount)
     : null
 
+  // #214：本人是否持有一笔**活动中**的支付意图。
+  //
+  // ⚠️ 这与「快照是否还能直接复用」是两件事，必须分开下发（双谱系评审 round-10）：
+  // 合成一个布尔的话，「意图还在、但快照只剩不到一分钟或刚过期」会被判成「没有可续付场次」，
+  // 前端于是转回 order.repay —— 而 repay 对活动意图是 fail-fast 的，顾客又被卡死。
+  // 正确的分工：**有没有意图**决定走 pay 还是 repay（pay 能查单释放后重建，repay 不能）；
+  // **快照能不能复用**只决定 pay 内部是复用还是重开一场。
+  const hasActiveIntentForUser = Boolean(
+    String(order.lakala_out_order_no || '').trim()
+    && order.client_user_id
+    && order.client_user_id === userId
+  )
+
+  // 可续付场次的元数据（只取金额/方式，绝不外发 paymentParams）
+  const resumableIntentMeta = (() => {
+    if (!hasActiveIntentForUser) return null
+    const activeOutTradeNo = String(order.lakala_out_order_no || '').trim()
+    const raw = order.lakala_payment_intent
+    const intent = typeof raw === 'string' ? safeParseJson(raw) : raw
+    if (!intent || typeof intent !== 'object' || Array.isArray(intent)) return null
+    if (String(intent.outTradeNo || '') !== activeOutTradeNo) return null
+    const expiresAt = intent.expiresAt ? new Date(intent.expiresAt).getTime() : 0
+    if (!Number.isFinite(expiresAt)
+        || expiresAt - Date.now() < PAYMENT_INTENT_REUSE_MIN_REMAINING_MS) {
+      return null
+    }
+    return {
+      payAmount: Number(intent.payAmount || 0),
+      paymentMethod: intent.paymentMethod || null,
+      // 预下单当时订单上的待扣卡额；快照没存就回落订单当前值（同一场次内它不会变——
+      // 意图活跃期改抵扣方案有服务端守卫）
+      prepaidCardAmount: pendingPrepaidCardAmount,
+    }
+  })()
+
   ctx.result = {
     order: {
       orderNo: order.sale_order_id,
@@ -1156,7 +1790,32 @@ async function scanDetail(ctx) {
       paymentMethod: order.payment_method || '微信',
       couponDiscount: Number(order.coupon_discount || 0),
       pointsUsed: Number(order.points_used || 0),
-      pointsDiscount: Number(order.points_discount || 0)
+      pointsDiscount: Number(order.points_discount || 0),
+      // #214：本人是否有一笔可续付的支付场次（双谱系评审 round-7）。
+      //
+      // 只下发布尔值，**绝不下发快照本身**（里面有 paySign/prepay_id）。前端据此决定
+      // 重入时走 order.pay（能复用场次）还是 order.repay（fail-fast，会撞
+      // PAYMENT_INTENT_ACTIVE）—— 普通回款此前固定走 repay，导致「退出后重新扫码
+      // 还是付不了」在回款场景下原样复现，正是本 issue 要消灭的症状。
+      //
+      // 判据含 client_user_id 匹配，对员工开单同样成立：归属是在**预占支付意图那一刻**
+      // 由 reserve 的 planRes 写入的（`client_user_id = CASE WHEN ... IS NULL AND
+      // opened_by IS NOT NULL THEN $1`），不是等支付成功才写。所以「顾客扫码建了场次
+      // 又退出」时归属已经落定，重入能正确识别（round-8 复核过这个时序）。
+      // 前端据此**路由**：有活动意图就必须走 pay/alipayPay（它们能查单释放后重建），
+      // 绝不能回落到 repay 的 fail-fast
+      hasActivePaymentIntent: hasActiveIntentForUser,
+      // 前端据此**复用与展示**：只有快照仍可直接复用时才有值
+      hasResumablePaymentIntent: Boolean(resumableIntentMeta),
+      // 可续付场次的**权威**金额与支付方式（不含 paySign/prepay_id 等任何凭据）。
+      //
+      // 下发它是因为前端自己推算这三个值会和快照对不上：前端的 remaining 是退款感知的
+      // 行级口径、还要再减待扣卡额，而快照里存的是预下单当时定死的线上金额。
+      // round-8/9 连着两轮因为这个口径分歧出问题（金额对不上导致复用失败、
+      // 抵扣展示与实际收款不符）——权威数据在快照里，就该由后端给出，不让前端二次推算。
+      resumablePayAmount: resumableIntentMeta ? resumableIntentMeta.payAmount : null,
+      resumablePaymentMethod: resumableIntentMeta ? resumableIntentMeta.paymentMethod : null,
+      resumablePrepaidCardAmount: resumableIntentMeta ? resumableIntentMeta.prepaidCardAmount : null,
     },
     items: items.map(i => ({
       saleItemId: i.sale_item_id,
@@ -1878,7 +2537,7 @@ async function pay(ctx) {
     }
   }
 
-  const reservation = await reserveDirectOnlinePaymentIntentWithTerminalRetry({
+  let reservation = await reserveDirectOnlinePaymentIntentWithTerminalRetry({
     orderNo,
     userId,
     payAmountInput,
@@ -1897,25 +2556,48 @@ async function pay(ctx) {
     return
   }
 
-  const cfg = lakalaConfig.readConfig()
-  const { paymentParams } = await createLakalaPreorder({
-    orderNo,
-    outTradeNo: reservation.outTradeNo,
-    merchantNo: reservation.merchant.merchantNo,
-    termNo: reservation.merchant.termNo,
-    payAmountYuan: reservation.payAmount,
-    accountType: 'WECHAT',
-    transType: '71',
-    openid: ctx.auth.openid,
-    subAppid: cfg.subAppid,
-    requestIp: getRequestIp(),
-  })
+  // issue #214：命中复用则不再向渠道下单，直接回发原场次参数让顾客继续付同一笔。
+  // 回发前先确认渠道侧这笔场次仍可支付（事务已提交，这里做 HTTPS 往返是安全的）；
+  // 若渠道已终态，helper 会释放意图并返回 false，这里重新预占一笔新场次，顾客无感。
+  if (reservation.reused
+      && !await ensureReusedIntentStillPayable(orderNo, reservation.outTradeNo, reservation.merchant)) {
+    reservation = await reserveDirectOnlinePaymentIntentWithTerminalRetry({
+      orderNo,
+      userId,
+      payAmountInput,
+      paymentMethod: '微信',
+    })
+  }
+  let paymentParams = reservation.paymentParams
+  if (!reservation.reused) {
+    const cfg = lakalaConfig.readConfig()
+    const preorderResp = await createLakalaPreorder({
+      orderNo,
+      outTradeNo: reservation.outTradeNo,
+      storeId: reservation.storeId,
+      merchantNo: reservation.merchant.merchantNo,
+      termNo: reservation.merchant.termNo,
+      payAmountYuan: reservation.payAmount,
+      accountType: 'WECHAT',
+      transType: '71',
+      openid: ctx.auth.openid,
+      subAppid: cfg.subAppid,
+      requestIp: getRequestIp(),
+    })
+    paymentParams = preorderResp.paymentParams
+    await persistLakalaPaymentIntentSnapshot(orderNo, reservation.outTradeNo,
+      buildWechatIntentSnapshot(reservation.outTradeNo, reservation.payAmount, paymentParams))
+  }
   // first_payment_amount 必须保留到真实支付回调入账；仅发起预下单不代表付款成功。
   // payNotify 成功写入首笔款项时再清空，避免顾客放弃付款后重新扫码被放大到全额。
   ctx.result = {
     orderNo,
     totalAmount: reservation.totalAmount,
     paidAmount: reservation.payAmount,
+    // 这笔渠道单实际预占的待扣卡额。前端据此冻结展示口径——
+    // 不下发的话它只能读自己的页面状态，而那份状态可能已被异步的余额刷新改过
+    // （双谱系评审 round-16：展示卡抵 ¥100、渠道单其实是 ¥0 全额线上付）
+    prepaidCardAmount: reservation.pendingPrepaidAmount,
     paymentMethod: '微信',
     paymentParams,  // wx.requestPayment 5 字段：timeStamp/nonceStr/package/signType/paySign
   }
@@ -2256,9 +2938,22 @@ async function detail(ctx) {
     audit_remark: p.audit_remark || null,
   }))
 
+  // #214：这里是 `SELECT o.*` 原样展开，新增的 lakala_payment_intent 里含 paySign 等支付凭据，
+  // 必须在下发前剥掉（schema 注释也写明「不随 order.detail 下发」）。scanDetail / list 是显式
+  // 字段映射，天然不受影响；只有本处的整行展开会把新列带出去。
+  const { lakala_payment_intent: _omitPaymentIntent, ...orderForClient } = order
+
   ctx.result = {
     order: {
-      ...order,
+      ...orderForClient,
+      // #214：本人是否持有活动中的支付意图（布尔，不含凭据）。
+      // checkout 页的「去支付」据此跳过 scanAdjust —— 意图活跃期改抵扣有服务端守卫，
+      // 不跳过的话这一步就被拒了，后面的 order.pay 根本执行不到（双谱系评审 round-13）。
+      has_active_payment_intent: Boolean(
+        String(order.lakala_out_order_no || '').trim()
+        && order.client_user_id
+        && order.client_user_id === userId
+      ),
       expire_at: expireAt,
       preferred_staff_name: preferredStaffName,
       coupon_name: couponName,
@@ -2281,6 +2976,18 @@ async function cancel(ctx) {
     throw new Error('INVALID_PARAMS: 缺少 saleOrderId 参数')
   }
 
+  // issue #214 的归属边界（双谱系评审 round-1 收紧）：
+  //
+  // 甲方诉求是「顾客扫码后未付款能立刻取消」。中途一度放宽到「未认领的员工开单也可取消」，
+  // 但订单号是可枚举的日序号（FY-XSD-WX-{YYMMDD}{4位序号}），那等于把**破坏性操作**的
+  // 授权凭据降级成一个可猜的字符串：攻击者枚举当日序号就能关掉别人的待支付单，还会顺带
+  // 把归属认领走。`order.pay` 允许未认领单是因为「替别人付钱」无害，取消不同源。
+  //
+  // 因此这里要求 client_user_id 必须已是本人。真实链路上这不影响核心诉求：顾客只要
+  // 调整过抵扣方案或发起过支付，client_user_id 就已写入——而「卡在支付意图上取消不掉」
+  // 恰恰只发生在发起过支付之后。扫码后零操作的单仍由店员关闭。
+  // 若将来要覆盖「扫码即可取消」，正解是给二维码带不可预测的一次性 capability token，
+  // 而不是继续放宽订单号本身的权限。
   const orders = await pg.query(
     'SELECT * FROM sale_orders WHERE sale_order_id = $1 AND client_user_id = $2',
     [orderNo, userId]
@@ -2299,39 +3006,6 @@ async function cancel(ctx) {
   // 同一道闸门（它已显式排除转换单）。
   if (order.sale_order_type === '转换单') {
     throw new Error('INVALID_PARAMS: 转换单不支持自行取消，请联系门店处理')
-  }
-
-  if (order.lakala_out_order_no) {
-    // wx.requestPayment 失败/取消只发生在小程序侧，云函数不会自动获知；预下单时写入的
-    // lakala_out_order_no 因此仍可能残留。取消前必须以渠道状态为准：仅 FAIL/CLOSE 是
-    // 可安全释放的明确终态，SUCCESS/处理中/查询异常都不能本地关单，避免已扣款未入账。
-    let merchant
-    try {
-      merchant = await resolveLakalaMerchant(order.store_id)
-      if (!merchant) {
-        throw new Error('拉卡拉商户配置不可用')
-      }
-      const trade = await lakalaClient.queryTrade({
-        merchantNo: merchant.merchantNo,
-        termNo: merchant.termNo,
-        outTradeNo: order.lakala_out_order_no,
-      })
-      if (trade && ['FAIL', 'CLOSE'].includes(trade.tradeState)) {
-        const released = await releaseLakalaPaymentIntent(orderNo, order.lakala_out_order_no)
-        if (released.length === 0) {
-          throw new Error('CONFLICT: PAYMENT_INTENT_CHANGED: 支付状态已变化，请刷新订单后重试')
-        }
-        order.lakala_out_order_no = null
-      } else if (trade && trade.tradeState === 'SUCCESS') {
-        throw new Error('CONFLICT: PAYMENT_ALREADY_SUCCEEDED: 支付已成功，正在更新订单，请稍后刷新')
-      } else {
-        throw new Error('CONFLICT: PAYMENT_INTENT_ACTIVE: 支付结果仍在确认中，请稍后再取消')
-      }
-    } catch (err) {
-      if (err && /^CONFLICT:/.test(String(err.message || ''))) throw err
-      console.warn('[order/cancel] 支付状态查询失败，保留活动意图:', orderNo, err && err.message)
-      throw new Error('CONFLICT: PAYMENT_STATUS_UNCERTAIN: 暂时无法确认支付结果，请稍后重试')
-    }
   }
 
   // 允许取消状态：待支付（常规）、已支付（仅全额抵扣单，需回冲储值卡）
@@ -2354,6 +3028,23 @@ async function cancel(ctx) {
     throw new Error('INVALID_PARAMS: 当前订单状态不允许取消')
   }
 
+  // 作废渠道意图必须排在状态闸门**之后**（双谱系评审 round-1）：
+  // 否则对一张「部分支付」单点取消，会先把顾客正在用的补款场次销毁掉，
+  // 然后才返回「当前订单状态不允许取消」——订单没关成，合法支付却被打断。
+  //
+  // wx.requestPayment 失败/取消只发生在小程序侧，云函数不会自动获知，预下单写入的
+  // lakala_out_order_no 因此可能残留。#214 之前这里只在渠道已是终态时才放行，未付款的
+  // 场次（CREATE/INIT）一律拒绝「请稍后再取消」——顾客得等拉卡拉 10 分钟超时 +
+  // payNotify 定时补偿扫到，实测约 20 分钟。现在改为主动向渠道关单后再取消；
+  // 关不掉就仍然不放行（fail-closed，见 helper 注释）。
+  if (order.lakala_out_order_no) {
+    await voidActiveLakalaPaymentIntent(orderNo, {
+      outTradeNo: order.lakala_out_order_no,
+      storeId: order.store_id,
+    })
+    order.lakala_out_order_no = null
+  }
+
   const now = new Date()
   await pg.transaction(async (client) => {
     // 事务内先查该订单是否已有扣款流水
@@ -2369,6 +3060,7 @@ async function cancel(ctx) {
 
     // audit-02 P0：cancel CAS 守卫——只在 status ∈ 允许列表 且 client_user_id 匹配时更新一行
     // 防并发：他端先 confirmOffline / payNotify 把单子置 '已支付' 时本端不可越权关闭
+    //
     const allowedStatusList = cancelableStatuses // 已根据 isPrepaidFull 计算
     const updRes = await client.query(
       `UPDATE sale_orders SET status = '已关闭',
@@ -2849,7 +3541,7 @@ async function alipayPay(ctx) {
     }
   }
 
-  const reservation = await reserveDirectOnlinePaymentIntentWithTerminalRetry({
+  let reservation = await reserveDirectOnlinePaymentIntentWithTerminalRetry({
     orderNo,
     userId,
     payAmountInput,
@@ -2866,37 +3558,70 @@ async function alipayPay(ctx) {
     return
   }
 
-  const cfgAli = lakalaConfig.readConfig()
-  const requestIpAli = getRequestIp()
-  // 步骤 1: preorder(ALIPAY, NATIVE=41) 拿二维码 URL
-  const preorderRespAli = await createLakalaPreorder({
-    orderNo,
-    outTradeNo: reservation.outTradeNo,
-    merchantNo: reservation.merchant.merchantNo,
-    termNo: reservation.merchant.termNo,
-    payAmountYuan: reservation.payAmount,
-    accountType: 'ALIPAY',
-    transType: '41',
-    requestIp: requestIpAli,
-  })
-  // 步骤 2: share_code 用 alipayQrUrl 作为 biz_link 换取吱口令
-  const shareCodeResp = await createLakalaAlipayShareCode({
-    orderNo,
-    merchantNo: reservation.merchant.merchantNo,
-    termNo: reservation.merchant.termNo,
-    outTradeNo: preorderRespAli.outTradeNo,
-    payAmountYuan: reservation.payAmount,
-    requestIp: requestIpAli,
-    bizLink: preorderRespAli.alipayQrUrl,
-  })
+  // issue #214：命中复用则直接回发原吱口令，顾客继续付同一笔，不再开新场次。
+  // 渠道已终态时 helper 释放意图并返回 false，这里重新预占，顾客无感（同 pay）。
+  if (reservation.reused
+      && !await ensureReusedIntentStillPayable(orderNo, reservation.outTradeNo, reservation.merchant)) {
+    reservation = await reserveDirectOnlinePaymentIntentWithTerminalRetry({
+      orderNo,
+      userId,
+      payAmountInput,
+      paymentMethod: '支付宝',
+      requireAlipayShareSource: true,
+    })
+  }
+  let alipayShareToken = reservation.paymentParams && reservation.paymentParams.alipayShareToken
+  let alipayExpireDate = reservation.paymentParams && reservation.paymentParams.alipayExpireDate
+  if (!reservation.reused) {
+    const cfgAli = lakalaConfig.readConfig()
+    const requestIpAli = getRequestIp()
+    // 步骤 1: preorder(ALIPAY, NATIVE=41) 拿二维码 URL
+    const preorderRespAli = await createLakalaPreorder({
+      orderNo,
+      outTradeNo: reservation.outTradeNo,
+      storeId: reservation.storeId,
+      timeoutMs: LAKALA_PREORDER_TIMEOUT_ALIPAY_MS,
+      merchantNo: reservation.merchant.merchantNo,
+      termNo: reservation.merchant.termNo,
+      payAmountYuan: reservation.payAmount,
+      accountType: 'ALIPAY',
+      transType: '41',
+      requestIp: requestIpAli,
+    })
+    // 步骤 2: share_code 用 alipayQrUrl 作为 biz_link 换取吱口令
+    let shareCodeResp
+    try {
+      shareCodeResp = await createLakalaAlipayShareCode({
+        orderNo,
+        merchantNo: reservation.merchant.merchantNo,
+        termNo: reservation.merchant.termNo,
+        outTradeNo: preorderRespAli.outTradeNo,
+        payAmountYuan: reservation.payAmount,
+        requestIp: requestIpAli,
+        bizLink: preorderRespAli.alipayQrUrl,
+      })
+    } catch (err) {
+      // preorder 已在渠道侧建单（CREATE），但吱口令没拿到 → 意图活跃却无快照可复用。
+      // 不释放的话顾客重试只会撞 PAYMENT_INTENT_ACTIVE，得等渠道超时才自愈。
+      await releaseIntentAfterPreorderFailure(orderNo, reservation.outTradeNo, reservation.storeId)
+      throw err
+    }
+    alipayShareToken = shareCodeResp.shareToken
+    alipayExpireDate = shareCodeResp.expireDate
+    await persistLakalaPaymentIntentSnapshot(orderNo, reservation.outTradeNo,
+      buildAlipayIntentSnapshot(reservation.outTradeNo, reservation.payAmount,
+        shareCodeResp.shareToken, shareCodeResp.expireDate))
+  }
   // 与微信一致：首付上限在 payNotify 确认真实到账时清空，预下单阶段继续保留。
   ctx.result = {
     orderNo,
     totalAmount: reservation.totalAmount,
     paidAmount: reservation.payAmount,
+    // 与微信通道同一口径，供前端冻结展示（双谱系评审 round-16）
+    prepaidCardAmount: reservation.pendingPrepaidAmount,
     paymentMethod: '支付宝',
-    alipayShareToken: shareCodeResp.shareToken,
-    alipayExpireDate: shareCodeResp.expireDate,
+    alipayShareToken,
+    alipayExpireDate,
     status: reservation.status,
   }
 }
@@ -3276,6 +4001,7 @@ async function repay(ctx) {
     ? buildLakalaOutTradeNo(saleOrderId)
     : null
   let repayMerchant = null
+  let repayStoreId = null   // 事务内读到的门店，供预下单失败时的安全释放使用
 
   await pg.transaction(async (client) => {
     // 1. 锁原单 + 校验归属 + 状态
@@ -3398,6 +4124,7 @@ async function repay(ctx) {
       if (paymentMethod === '支付宝' && !lakalaConfig.readConfig().alipayShareSource) {
         throw new Error('INVALID_STATE: ALIPAY_NOT_AVAILABLE: 暂不支持支付宝，请使用微信支付')
       }
+      repayStoreId = origOrder.store_id
       repayMerchant = await resolveLakalaMerchantInTransaction(client, origOrder.store_id)
       if (!repayMerchant) {
         throw new Error('INVALID_STATE: LAKALA_NOT_CONFIGURED: 该门店未启用拉卡拉聚合支付，请联系管理员')
@@ -3611,6 +4338,7 @@ async function repay(ctx) {
     const { paymentParams: repayPaymentParams } = await createLakalaPreorder({
       orderNo: saleOrderId,
       outTradeNo: reservedOutTradeNo,
+      storeId: repayStoreId,
       merchantNo: repayMerchant.merchantNo,
       termNo: repayMerchant.termNo,
       payAmountYuan: repayAmountInput,
@@ -3620,6 +4348,11 @@ async function repay(ctx) {
       subAppid: repayCfg.subAppid,
       requestIp: repayRequestIp,
     })
+    // issue #214：repay 自身保持「有活动意图即 fail-fast」（见上方事务注释——它的
+    // pending 作废与 payable 回写在预下单前已提交，无法与渠道意图 CAS 原子化）。
+    // 但仍落盘快照：顾客中断后从 order.pay 入口回来时可复用这一场次继续付。
+    await persistLakalaPaymentIntentSnapshot(saleOrderId, reservedOutTradeNo,
+      buildWechatIntentSnapshot(reservedOutTradeNo, repayAmountInput, repayPaymentParams))
     ctx.result = {
       saleOrderId,
       status: '待支付',
@@ -3636,6 +4369,8 @@ async function repay(ctx) {
     const repayPreorderResp = await createLakalaPreorder({
       orderNo: saleOrderId,
       outTradeNo: reservedOutTradeNo,
+      storeId: repayStoreId,
+      timeoutMs: LAKALA_PREORDER_TIMEOUT_ALIPAY_MS,
       merchantNo: repayMerchant.merchantNo,
       termNo: repayMerchant.termNo,
       payAmountYuan: repayAmountInput,
@@ -3643,15 +4378,25 @@ async function repay(ctx) {
       transType: '41',
       requestIp: repayRequestIp,
     })
-    const repayShareCodeResp = await createLakalaAlipayShareCode({
-      orderNo: saleOrderId,
-      merchantNo: repayMerchant.merchantNo,
-      termNo: repayMerchant.termNo,
-      outTradeNo: repayPreorderResp.outTradeNo,
-      payAmountYuan: repayAmountInput,
-      requestIp: repayRequestIp,
-      bizLink: repayPreorderResp.alipayQrUrl,
-    })
+    let repayShareCodeResp
+    try {
+      repayShareCodeResp = await createLakalaAlipayShareCode({
+        orderNo: saleOrderId,
+        merchantNo: repayMerchant.merchantNo,
+        termNo: repayMerchant.termNo,
+        outTradeNo: repayPreorderResp.outTradeNo,
+        payAmountYuan: repayAmountInput,
+        requestIp: repayRequestIp,
+        bizLink: repayPreorderResp.alipayQrUrl,
+      })
+    } catch (err) {
+      // 同 alipayPay：preorder 已建单但吱口令失败，安全释放后再抛，别把订单锁死
+      await releaseIntentAfterPreorderFailure(saleOrderId, reservedOutTradeNo, repayStoreId)
+      throw err
+    }
+    await persistLakalaPaymentIntentSnapshot(saleOrderId, reservedOutTradeNo,
+      buildAlipayIntentSnapshot(reservedOutTradeNo, repayAmountInput,
+        repayShareCodeResp.shareToken, repayShareCodeResp.expireDate))
     ctx.result = {
       saleOrderId,
       status: '待支付',
@@ -3710,8 +4455,10 @@ async function queryLakalaStatus(ctx) {
     termNo: merchant.termNo,
     outTradeNo: order.lakala_out_order_no,
   })
+  // 同样要求 ok===true 才解释状态：否则业务失败码携带的非权威 CLOSE 会释放意图
+  const queriedTradeState = (resp && resp.ok === true) ? normalizeTradeState(resp.tradeState) : ''
   let lakalaIntentReleased = false
-  if (resp && ['FAIL', 'CLOSE'].includes(resp.tradeState)) {
+  if (queriedTradeState && LAKALA_RELEASABLE_TRADE_STATES.includes(queriedTradeState)) {
     const released = await pg.query(
       `UPDATE sale_orders
        SET lakala_out_order_no = NULL, updated_at = NOW()
@@ -3846,8 +4593,11 @@ async function confirmPayment(ctx) {
     return
   }
 
-  const tradeState = resp.tradeState || ''
-  if (['FAIL', 'CLOSE'].includes(tradeState)) {
+  // ⚠️ 这条路径的 SUCCESS 会直接触发本地入账，非权威状态绝不能采信：
+  // 拉卡拉业务失败码的响应里也可能带 resp_data.trade_state，据此入账等于无真实到账却记账
+  // （双谱系评审 round-2）。ok 不为 true 时按「查不到状态」处理，交给下游降级分支。
+  const tradeState = resp.ok === true ? normalizeTradeState(resp.tradeState) : ''
+  if (tradeState && LAKALA_RELEASABLE_TRADE_STATES.includes(tradeState)) {
     const released = await pg.query(
       `UPDATE sale_orders
        SET lakala_out_order_no = NULL, updated_at = NOW()
@@ -3929,6 +4679,71 @@ async function confirmPayment(ctx) {
   }
 }
 
+/**
+ * 作废订单上进行中的在线支付意图（跨 env 内部接口，issue #214）。
+ *
+ * 仅供 staffApi 经 HTTP 触发器 + HMAC 调用：员工端/管理端关闭订单前，需要先让渠道关单，
+ * 否则顾客手机上残留的支付面板仍可付款。staffApi 所在的 CloudBase 账号没有拉卡拉凭据，
+ * 也不该有——把凭据面限制在 clientApi 一处，是这条跨 env 调用存在的理由。
+ *
+ * 鉴权完全依赖 index.js 的 HMAC 链路（签名 + 时间戳窗口 + action 白名单），
+ * 这里做与 auth.uploadStaffAvatar 同款的二次断言，防止 cloud.callFunction 直调绕过。
+ */
+async function voidPaymentIntent(ctx) {
+  if (!ctx.event._fromHttp || ctx.event._hmacVerified !== true) {
+    throw new Error('PERMISSION_DENIED: 该接口仅供内部服务调用')
+  }
+  const payload = ctx.event.payload || {}
+  const saleOrderId = payload.saleOrderId || payload.orderNo
+  if (!saleOrderId) {
+    throw new Error('INVALID_PARAMS: 缺少 saleOrderId 参数')
+  }
+  // 调用方预读到的意图单号，**必填**。本接口绝不能「读当前是哪笔就关哪笔」——见下方
+  // TOCTOU 说明。
+  //
+  // 这里刻意不做向后兼容的软校验（双谱系评审 round-4）：滚动部署期间必然存在「旧版
+  // staffApi 只发 saleOrderId」的窗口，软校验会在那段时间静默跳过比对、关掉顾客新发起的
+  // 合法支付。宁可让旧版调用直接失败（关单功能短暂不可用、店员重试即可），也不要静默
+  // 破坏一笔正在进行的支付。
+  const expectedOutTradeNo = String(payload.expectedOutTradeNo || '').trim()
+
+  const rows = await pg.query(
+    'SELECT sale_order_id, status, store_id, lakala_out_order_no FROM sale_orders WHERE sale_order_id = $1',
+    [saleOrderId]
+  )
+  if (rows.length === 0) {
+    throw new Error('NOT_FOUND: 订单不存在')
+  }
+  const order = rows[0]
+  if (!order.lakala_out_order_no) {
+    ctx.result = { saleOrderId, result: 'noop' }
+    return
+  }
+
+  // TOCTOU 防线：staffApi 预检时看到的是意图 A，但在跨 env 请求到达这里之前，A 可能已经
+  // 到账并清锁、顾客又发起了补款意图 B。若本接口只按订单号「关当前那笔」，就会把合法的 B
+  // 关掉——而 staff 侧事务随后会因订单已变「部分支付」拒绝关闭，最终订单没关成、顾客的
+  // 补款却被破坏。所以单号不匹配一律拒绝，绝不自动改为操作新意图。
+  if (!expectedOutTradeNo) {
+    // 必须排在任何渠道调用之前：缺参时一笔查单/关单都不能发出去
+    throw new Error('INVALID_PARAMS: 缺少 expectedOutTradeNo 参数')
+  }
+  if (expectedOutTradeNo !== String(order.lakala_out_order_no)) {
+    throw new Error('CONFLICT: PAYMENT_INTENT_CHANGED: 支付场次已变化，请刷新后重试')
+  }
+  // 状态同样要在任何渠道调用之前复核（调用方的预检与这里之间可能已经变化）。
+  // 集合与 staffApi 的 CLOSEABLE_ORDER_STATUSES 必须一致，由 cross-copy snapshot 守护。
+  if (!CLOSEABLE_ORDER_STATUSES.includes(order.status)) {
+    throw new Error('CONFLICT: PAYMENT_INTENT_CHANGED: 订单状态已变化，请刷新后重试')
+  }
+
+  const result = await voidActiveLakalaPaymentIntent(saleOrderId, {
+    outTradeNo: order.lakala_out_order_no,
+    storeId: order.store_id,
+  })
+  ctx.result = { saleOrderId, result }
+}
+
 module.exports = {
   create,
   pay,
@@ -3946,4 +4761,5 @@ module.exports = {
   queryLakalaStatus,
   confirmPayment,
   decideReconcile,
+  voidPaymentIntent,
 }

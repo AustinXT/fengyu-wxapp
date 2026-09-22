@@ -194,9 +194,108 @@ async function categories(ctx) {
 }
 
 /**
- * 内部函数：按分类获取商城商品列表（含 SKU）
+ * issue #248：商品列表硬分页。
+ *
+ * 默认 20：实测生产（dev 为 prod 副本）最大分类 10 个商品、最坏单字关键词搜索命中 15 个，
+ * 因此未发版的老前端（不传 limit/cursor）当前零截断；未来商品数增长时被截在 20 条，
+ * 是刻意的页面级解码量硬上限，优于改造前的无界返回。
+ * 上限 50：防客户端传 limit=9999 绕过硬上限。
  */
-async function getProductListByCategory({ categoryId, auth, keyword }) {
+const PRODUCT_PAGE_SIZE_DEFAULT = 20
+const PRODUCT_PAGE_SIZE_MAX = 50
+
+/**
+ * ⚠️ 分页入参归一在本仓有多份，**各自保留副本**（用户已 veto cloudfunctions-shared），
+ * 语义各不相同，改这里前先确认你要的是哪一份：
+ * - `fengyu-admin/src/lib/export-pagination.ts`：`limit == null` → 不分页返全量
+ * - `fengyu-staff/cloudfunctions/staffApi/utils/paging.js`：非法值回落默认，不抛（#240 修过 `Number()` 可抛的坑）
+ * - `clientApi/routes/points.js:72-85`：同端已有一份严格校验，口径与本函数一致
+ * - 本函数：非法值一律抛 `INVALID_PARAMS`（顾客端没有「全量」这个合法语义）
+ *
+ * clientApi 内还有 5 个列表接口是零校验/半校验的，收编工作见 issue #272，不在本函数范围。
+ *
+ * 只收 `number`，不做隐式转换：`Number(raw)` 对 `true` 给 1、对 `['20']` 给 20、
+ * 对 `'0x14'` 给 20（全部静默接受），对 `{toString:null}`（合法 JSON）直接抛
+ * `TypeError: Cannot convert object to primitive value` —— 那条错误没有白名单前缀，
+ * 会被全局 catch 降级成 `{code:-1,'服务器内部错误'}` 而不是 -400。
+ */
+function normalizeProductPageSize(raw, defaultSize = PRODUCT_PAGE_SIZE_DEFAULT) {
+  if (raw === undefined || raw === null) return defaultSize
+  if (typeof raw !== 'number' || !Number.isInteger(raw) || raw <= 0) {
+    throw new Error('INVALID_PARAMS: limit 必须是正整数')
+  }
+  return Math.min(raw, PRODUCT_PAGE_SIZE_MAX)
+}
+
+/**
+ * 复合游标 (sort_order, product_id)。
+ *
+ * products.sort_order 可重复（integer NOT NULL DEFAULT 0），单列游标会漏行/重行，
+ * 故与主键 product_id 组成复合键，配合行值比较保证全序。
+ * 对外是不透明 base64 串，前端只需原样回传。
+ */
+/**
+ * 游标长度上限。
+ *
+ * ⚠️ 这是个 **DoS 闸门，不是业务约束**：只为挡「10MB base64 走完 Buffer + JSON.parse
+ * 才被拒」这种浪费。`products.product_id` 是**无长度约束的 text**，所以单靠一个固定阈值
+ * 无法宣称「服务端生成的游标一定解得回来」—— 真正的自洽要靠写入侧约束 ID 长度，
+ * 而本 issue 已拍板不加迁移。
+ *
+ * 折中：阈值留到 8192（可容纳约 6000 字符的 product_id，生产实际值形如
+ * `prod-1786781954741` 约 18 字符，余量 300 倍以上）。真有 ID 长到撑爆它，
+ * 那是数据异常，此时游标解不开会显式报 -400 而不是静默翻错页 —— 暴露比掩盖好。
+ */
+const PRODUCT_CURSOR_MAX_LENGTH = 8192
+const INT4_MIN = -2147483648
+const INT4_MAX = 2147483647
+
+function encodeProductCursor(row) {
+  return Buffer.from(
+    JSON.stringify([Number(row.sort_order), String(row.product_id)]),
+    'utf8'
+  ).toString('base64')
+}
+
+function decodeProductCursor(raw) {
+  const bad = () => new Error('INVALID_PARAMS: cursor 不合法')
+
+  // 缺省即「首页」。CloudBase payload 是 JSON，表达不出 undefined，
+  // 所以 null 与 undefined 在本接口**等价**视为首页；空串 / 0 / 对象一律视为畸形游标。
+  if (raw === undefined || raw === null) return null
+  if (typeof raw !== 'string' || raw === '') throw bad()
+  // 先卡长度，别让 10MB 的串走完 Buffer + JSON.parse 才被拒（见上方常量注释）。
+  if (raw.length > PRODUCT_CURSOR_MAX_LENGTH) throw bad()
+
+  let parsed
+  try {
+    // Buffer.from(x, 'base64') 对非法字符是静默忽略而非抛错，真正的守门人是 JSON.parse
+    parsed = JSON.parse(Buffer.from(raw, 'base64').toString('utf8'))
+  } catch (e) {
+    throw bad()
+  }
+  if (!Array.isArray(parsed) || parsed.length !== 2) throw bad()
+
+  const [sortOrder, productId] = parsed
+  if (!Number.isInteger(sortOrder) || typeof productId !== 'string' || productId === '') throw bad()
+  // sort_order 是 int4。超范围的值走到 `$n::int` 会让 PG 抛 22003，
+  // 那条错误没有白名单前缀 → 降级成 -1「服务器内部错误」，而且库已经白打了一次。
+  if (sortOrder < INT4_MIN || sortOrder > INT4_MAX) throw bad()
+
+  return { sortOrder, productId }
+}
+
+/**
+ * 内部函数：按分类获取商城商品列表（含 SKU）
+ *
+ * issue #248：返回 { items, nextCursor, hasMore }（原先直接返回数组）。
+ * 三个入口 spuList / search / shopInit 共用，一处改写覆盖三者。
+ */
+async function getProductListByCategory({ categoryId, auth, keyword, limit, cursor }) {
+  // 入参校验先于任何查询
+  const pageSize = normalizeProductPageSize(limit)
+  const decodedCursor = decodeProductCursor(cursor)
+
   const params = []
   const productMarketScopeFilter = buildMarketScopeFilter(auth, params, 'p')
   let whereClause = `WHERE ${PRODUCT_VALID_FILTER} ${productMarketScopeFilter}`
@@ -212,6 +311,14 @@ async function getProductListByCategory({ categoryId, auth, keyword }) {
     whereClause += ` AND p.name ILIKE $${params.length}`
   }
 
+  // issue #248 keyset 翻页：行值比较取「排在游标之后」的行。
+  // sort_order / product_id 两列都是 NOT NULL，不存在 NULL 传播导致静默丢行。
+  // 参数按 text 下发，须显式转型，否则行值比较的类型推断会失败。
+  if (decodedCursor) {
+    params.push(decodedCursor.sortOrder, decodedCursor.productId)
+    whereClause += ` AND (p.sort_order, p.product_id) > ($${params.length - 1}::int, $${params.length}::text)`
+  }
+
   // 仅返回有有效 SKU 的商品
   const existsSkuMarketScopeFilter = buildCatalogSkuMarketScopeFilter(auth, params, 'sk')
   whereClause += ` AND EXISTS (
@@ -222,17 +329,24 @@ async function getProductListByCategory({ categoryId, auth, keyword }) {
       ${existsSkuMarketScopeFilter}
   )`
 
-  const productRows = await pg.query(`
+  // 多取一行作探测行，用于判定 hasMore（不额外打一次 count 查询）
+  params.push(pageSize + 1)
+  const probedRows = await pg.query(`
     SELECT
       p.product_id, p.name, p.category_id,
       mc.category_name,
-      p.cover_image, p.description, p.sort_order,
+      p.cover_image, p.sort_order,
       p.price, p.special_price, p.is_bundle
     FROM products p
     JOIN mall_categories mc ON p.category_id = mc.category_id
     ${whereClause}
-    ORDER BY p.sort_order ASC
+    ORDER BY p.sort_order ASC, p.product_id ASC
+    LIMIT $${params.length}
   `, params)
+
+  const hasMore = probedRows.length > pageSize
+  const productRows = hasMore ? probedRows.slice(0, pageSize) : probedRows
+  const nextCursor = hasMore ? encodeProductCursor(productRows[productRows.length - 1]) : null
 
   // 批量查询所有商品的 SKU（通过 mall_product_skus 关联）
   // PR-D：附带 product_kind + kind_display_color（一级行 display_color），
@@ -271,7 +385,7 @@ async function getProductListByCategory({ categoryId, auth, keyword }) {
     skuByProduct[sku.product_id].push(sku)
   }
 
-  return productRows.map(product => {
+  const spuList = productRows.map(product => {
     const skus = skuByProduct[product.product_id] || []
     const { priceFrom, listPriceFrom } = computeListPriceFrom(product, skus)
     return {
@@ -284,15 +398,18 @@ async function getProductListByCategory({ categoryId, auth, keyword }) {
       listPriceFrom
     }
   })
+
+  return { spuList, nextCursor, hasMore }
 }
 
 /**
  * 商品列表
+ *
+ * issue #248：支持 keyset 分页（limit / cursor），返回 nextCursor / hasMore。
  */
 async function spuList(ctx) {
-  const { categoryId } = ctx.event.payload || {}
-  const result = await getProductListByCategory({ categoryId, auth: ctx.auth })
-  ctx.result = { spuList: result }
+  const { categoryId, limit, cursor } = ctx.event.payload || {}
+  ctx.result = await getProductListByCategory({ categoryId, auth: ctx.auth, limit, cursor })
 }
 
 /**
@@ -301,40 +418,62 @@ async function spuList(ctx) {
  * 让顾客能搜到任何可见商品（含未浏览过分类的商品）。
  */
 async function search(ctx) {
-  const kw = (ctx.event.payload?.keyword || '').trim()
+  const { keyword, limit, cursor } = ctx.event.payload || {}
+  // 分页入参先校验再短路：空关键词也不该成为绕过 limit/cursor 校验的口子，
+  // 否则三个 action 的入参契约不一致（search 返回 code=0，另两个返回 -400）
+  normalizeProductPageSize(limit)
+  decodeProductCursor(cursor)
+
+  // 非字符串一律当空关键词短路：`(keyword || '').trim()` 对 `[]`（truthy）会抛
+  // `trim is not a function` → 没有白名单前缀 → 降级成 -1 而不是走空结果分支
+  const kw = typeof keyword === 'string' ? keyword.trim() : ''
   if (!kw) {
-    ctx.result = { spuList: [] }
+    ctx.result = { spuList: [], nextCursor: null, hasMore: false }
     return
   }
-  const result = await getProductListByCategory({ auth: ctx.auth, keyword: kw })
-  ctx.result = { spuList: result }
+  ctx.result = await getProductListByCategory({ auth: ctx.auth, keyword: kw, limit, cursor })
 }
 
 /**
  * Shop 页初始化接口（合并 categories + 第一个分类的商品列表）
+ *
+ * issue #248：额外下发 spuCategoryId —— 本批商品归属哪个分类由后端说了算。
+ * 改造前 shop.ts 把这批商品缓存到 `categories[0].category_id`，而这里取的是
+ * 「第一个 group 下的第一个二级分类」，两者不必然相同；分页后游标必须与分类严格
+ * 对应（否则「加载更多」会翻错分类的下一页），故由后端下发权威值。
  */
 async function shopInit(ctx) {
+  const { limit, cursor } = ctx.event.payload || {}
+  // 入参校验先于任何查询：shopInit 要并发打两个分类查询，畸形入参别让它们先白跑
+  normalizeProductPageSize(limit)
+  decodeProductCursor(cursor)
+
   const [groups, categoriesList] = await Promise.all([
     getCategoryGroups(ctx.auth),
     getCategoriesList(ctx.auth),
   ])
 
   // 找第一个 group 下的第一个二级分类，加载其商品
-  let firstSpuList = []
+  let firstCategoryId = null
   if (groups.length > 0 && categoriesList.length > 0) {
     const firstChild = categoriesList.find(c => c.category_group === groups[0].category_name)
-    if (firstChild) {
-      firstSpuList = await getProductListByCategory({ categoryId: firstChild.category_id, auth: ctx.auth })
-    }
+    if (firstChild) firstCategoryId = firstChild.category_id
   } else if (categoriesList.length > 0) {
     // 降级：无分组时取第一个分类
-    firstSpuList = await getProductListByCategory({ categoryId: categoriesList[0].category_id, auth: ctx.auth })
+    firstCategoryId = categoriesList[0].category_id
   }
+
+  // 透传 cursor：本接口既然下发 nextCursor，就必须收得回来，
+  // 否则调用方拿着 nextCursor 再调一次仍是第一页（重复行 / 死循环）
+  const firstPage = firstCategoryId
+    ? await getProductListByCategory({ categoryId: firstCategoryId, auth: ctx.auth, limit, cursor })
+    : { spuList: [], nextCursor: null, hasMore: false }
 
   ctx.result = {
     groups,
     categories: categoriesList,
-    spuList: firstSpuList
+    spuCategoryId: firstCategoryId,
+    ...firstPage,
   }
 }
 
@@ -388,9 +527,14 @@ async function skuDetail(ctx) {
 /**
  * 热门推荐列表
  */
+const HOT_LIST_DEFAULT_LIMIT = 6
+
 async function hotList(ctx) {
-  const { limit = 6 } = ctx.event.payload || {}
-  const params = [limit]
+  const { limit } = ctx.event.payload || {}
+  // issue #248：原先是 `const { limit = 6 }` 直进 `LIMIT $1`。解构默认值只对 undefined 生效，
+  // 所以 `{limit:null}` 会下发 `LIMIT NULL` —— **在 PG 里等于不限行数**，而本接口下发 cover_image；
+  // `{limit:'abc'}` 则让 PG 抛 int8in 语法错。与列表接口共用同一套归一。
+  const params = [normalizeProductPageSize(limit, HOT_LIST_DEFAULT_LIMIT)]
   const productMarketScopeFilter = buildMarketScopeFilter(ctx.auth, params, 'p')
   const existsSkuMarketScopeFilter = buildCatalogSkuMarketScopeFilter(ctx.auth, params, 'sk')
 
@@ -614,4 +758,12 @@ module.exports = {
   hotList,
   shopInit,
   experienceCardList,
+  // 分页口径的单一来源。index.js 的 action 路由只按名字取上面那些函数，
+  // 多这一个键不会变成可调用 action；导出它是为了让测试断言权威值而不是再抄一份字面量。
+  __pageSizeCaliber: {
+    PRODUCT_PAGE_SIZE_DEFAULT,
+    PRODUCT_PAGE_SIZE_MAX,
+    HOT_LIST_DEFAULT_LIMIT,
+    PRODUCT_CURSOR_MAX_LENGTH,
+  },
 }
