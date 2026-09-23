@@ -865,11 +865,36 @@ describe('revokeRole — scope + admin-only for admin roles', () => {
   })
 
   /**
-   * 守卫进事务后改为**返回**而不是裸抛 sentinel（#318）——
-   * `cross-end-error-codes-snapshot.test.js` 会 grep admin `actions/` 下未登记白名单的裸抛错。
-   * 判据因此从「rejects」变成「返回 failure + 一行都没删 + 取过那把锁」。
+   * ## 「先删再数」（#318）
+   *
+   * 判据是**删完之后** `countActiveAdmins === 0`，而不是删之前 `<= 1`。
+   * 前一版那个判据过紧：目标已离职（本就不在计数里）或还持另一个超管角色时，
+   * 删这条绑定一个活跃超管都不减，却会被拒 —— 离职残留绑定永远清不掉。
+   *
+   * 拒绝要回滚删除，所以走抛哨兵 + 外层 `.catch` 转文案（哨兵已登记进跨端 `TX_SENTINELS`）。
+   * 断言因此是「返回 failure + 事务整体被回滚（对调用方而言就是没提交）+ 取过那把锁」。
    */
-  it('撤销最后一个活跃 admin → 拒绝，且不删行、守卫前取过 advisory lock', async () => {
+  it('删完发现零活跃 admin → 拒绝（回滚），且取过 advisory lock', async () => {
+    ;(getSession as any).mockResolvedValue(adminSession)
+    ;(hasRole as any).mockReturnValue(true)
+    ;(countActiveAdmins as any).mockResolvedValue(0)
+    const t = setupRevokeDbCalls({ role: 'admin', scopeId: 'hq-1', employeeId: 'ADMIN-002' })
+
+    const result = await revokeRole(21)
+
+    expect(result.success).toBe(false)
+    expect(result.message).toBe('系统至少需保留 1 个活跃 admin')
+    expect(JSON.stringify(t.txExecute.mock.calls[0][0]), 'DELETE 前必须先取锁')
+      .toContain('pg_advisory_xact_lock')
+    expect((countActiveAdmins as any).mock.calls[0][0], '计数必须走 tx').toBe(t.tx())
+    expect(logOperation, '被回滚的撤销不该留审计').not.toHaveBeenCalled()
+  })
+
+  /**
+   * 目标已离职 / 还持另一个超管角色 → 删这条**不减少**活跃超管数，必须放行。
+   * 这两种情形合起来就是「删完还 ≥ 1」，用「先删再数」天然覆盖，不必枚举。
+   */
+  it('删完仍有活跃 admin（目标已离职或另持超管角色）→ 放行', async () => {
     ;(getSession as any).mockResolvedValue(adminSession)
     ;(hasRole as any).mockReturnValue(true)
     ;(countActiveAdmins as any).mockResolvedValue(1)
@@ -877,12 +902,8 @@ describe('revokeRole — scope + admin-only for admin roles', () => {
 
     const result = await revokeRole(21)
 
-    expect(result.success).toBe(false)
-    expect(result.message).toBe('系统至少需保留 1 个活跃 admin')
-    expect(t.deleteWhere, '守卫拦住后一行都不该删').not.toHaveBeenCalled()
-    expect(JSON.stringify(t.txExecute.mock.calls[0][0]), '守卫前必须取锁')
-      .toContain('pg_advisory_xact_lock')
-    expect((countActiveAdmins as any).mock.calls[0][0], '计数必须走 tx').toBe(t.tx())
+    expect(result.success).toBe(true)
+    expect(t.deleteWhere).toHaveBeenCalled()
   })
 
   /**
