@@ -284,6 +284,58 @@ describe('getSalesBoard — 明细表装配', () => {
     expect(m2.metrics.revenuePerStore).toBe(700)
   })
 
+  // ── 直挂市场/部门的产能技师必须进分母（#285）────────────────────────────
+  //
+  // ⚠️ 这三条是闸门 2 GLM round-3 变异测试补上的：它把 sales.ts 里「并入直挂技师」
+  // 那个循环整段删掉，11 条 sales.test.ts **全绿** —— 该分支此前零覆盖。
+
+  it('直挂市场的技师并入该市场分母，且只加一次（不按门店数重复累加）', async () => {
+    setupExecuteQueue({
+      skeleton,
+      detailMaps: [
+        [{ store_id: 'S1', v: 3 }, { store_id: 'S2', v: 2 }], // tech by store，M1 合计 5
+        [{ market_id: 'M1', market_name: '市场甲', v: 4 }], // 直挂 4 人
+        [], [], [], [], [], [],
+      ],
+    })
+    const res = await getSalesBoard(baseParams)
+    const m1 = res.byMarket.find((r) => r.groupId === 'M1')!
+    // 5 + 4 = 9。若在门店循环内累加，M1 有两个门店会变成 5 + 4×2 = 13。
+    expect(m1.metrics.technicianCount).toBe(9)
+  })
+
+  it('市场下一个门店都没有时仍凭直挂技师出行', async () => {
+    setupExecuteQueue({
+      skeleton,
+      detailMaps: [
+        [{ store_id: 'S1', v: 2 }],
+        [{ market_id: 'M9', market_name: '品项公司', v: 1 }], // 该市场无任何门店
+        [], [], [], [], [], [],
+      ],
+    })
+    const res = await getSalesBoard(baseParams)
+    const m9 = res.byMarket.find((r) => r.groupId === 'M9')
+    expect(m9, '无门店的市场应凭直挂技师出现在 byMarket').toBeDefined()
+    expect(m9!.groupName).toBe('品项公司')
+    expect(m9!.metrics.technicianCount).toBe(1)
+    expect(m9!.metrics.storeCount).toBe(0)
+  })
+
+  it('直挂行 market_id 为 null 时跳过，不产生空 groupId 的市场行', async () => {
+    setupExecuteQueue({
+      skeleton,
+      detailMaps: [
+        [{ store_id: 'S1', v: 2 }],
+        [{ market_id: null, market_name: null, v: 7 }], // 锚不到市场的脏行
+        [], [], [], [], [], [],
+      ],
+    })
+    const res = await getSalesBoard(baseParams)
+    expect(res.byMarket.map((r) => r.groupId).sort()).toEqual(['M1', 'M2'])
+    const m1 = res.byMarket.find((r) => r.groupId === 'M1')!
+    expect(m1.metrics.technicianCount).toBe(2) // 那 7 人没被算进任何市场
+  })
+
   it('byMarket 含 12 个 metrics 键（含 4 个店均派生）', async () => {
     setupExecuteQueue({ skeleton })
     const res = await getSalesBoard(baseParams)

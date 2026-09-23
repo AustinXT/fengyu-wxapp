@@ -152,8 +152,14 @@ describe('数据中心销售板块两端口径一致性守护', () => {
   })
 
   describe('员工数 — skills && ARRAY[美容师,养生师] + hired_at/resigned_at 历史化', () => {
-    it('admin sales.ts 含 skills && ARRAY[美容师,养生师]', () => {
-      expect(adminSrc).toMatch(/skills\s*&&\s*ARRAY\[\s*'美容师'\s*,\s*'养生师'\s*\]/)
+    it('admin 侧 skills 白名单在单源 technician-sql 里（sales.ts 自身只该剩注释）', () => {
+      // ⚠️ 原断言是 `expect(adminSrc).toMatch(skills白名单)`，而 adminSrc 是**含注释**的原文。
+      // #285 把口径抽走后，sales.ts 里只剩文件头注释提到这个词 —— 断言于是**空转**
+      //（闸门 2 GLM round-3 抓到）。现在改为：真实 SQL 必须在单源模块里，
+      // 而 sales.ts 剥注释后不得再有这个字面量。
+      const tech = fs.readFileSync(TECHNICIAN_SQL, 'utf-8')
+      expect(tech).toMatch(/skills\s*&&\s*ARRAY\[\s*'美容师'\s*,\s*'养生师'\s*\]/)
+      expect(adminBody).not.toMatch(/skills\s*&&\s*ARRAY\[\s*'美容师'\s*,\s*'养生师'\s*\]/)
     })
     it('staff mgmt-dashboard.js 含 skills && ARRAY[美容师,养生师]', () => {
       expect(staffSrc).toMatch(/skills\s*&&\s*ARRAY\[\s*'美容师'\s*,\s*'养生师'\s*\]/)

@@ -120,6 +120,54 @@ function assertHelperBody(adminSrc: string): void {
   expect(body.match(/\bAND\b/g) ?? [], 'helper 谓词个数变了：Part A/B 会与 Part C 静默分叉').toHaveLength(2)
 }
 
+
+/**
+ * 抽出一个 SQL 片段里所有**针对 `spe` 的过滤谓词**，归一化后排序返回。
+ *
+ * 用途：把「门店现金流」三处（Part A 全局大卡 / Part B by store / Part C 门店排名榜）
+ * 的谓词集做**集合相等**比较，而不只是逐条 `toMatch` 证明「存在」。
+ *
+ * ⚠️ 为什么必须比集合：闸门 2 两个谱系**独立**证明了同一个漏洞 ——
+ *   - codex：给 Part C 单独加聚合级 `FILTER (WHERE spe.amount > 0)` → 三层守护全绿
+ *   - GLM 变异测试：给 Part A **和** Part B 同时加 `AND spe.change_type <> '退款'`
+ *     （保持 A 与 B 逐字相同、Part C 不动）→ 53 条断言全绿
+ * 「逐条存在」证明不了「没有多出别的」；「A == B」在两边一起改时也失效。
+ * 只有「A 的谓词集 == B 的 == C 的」才挡得住。
+ */
+function spePredicateSet(segment: string): string[] {
+  // Part A/B 把 status + performance_date 交给 helper，Part C 写字面量。
+  // 先把 helper 调用展开成它实际产出的两个谓词，两边才可比。
+  const expanded = segment.replace(
+    /\$\{performanceEventDateBetween\('spe', cur\.start, cur\.end\)\}/g,
+    "spe.status = '已支付' AND spe.performance_date BETWEEN ${cur.start} AND ${cur.end}",
+  )
+  const out: string[] = []
+  // 逐个 `spe.<列> <剩余>` 地切；到下一个 AND/ON/GROUP/WHERE/反引号为止
+  const re = /spe\.(\w+)\s*(IS DISTINCT FROM|IN|BETWEEN|=|<>|>=|<=|>|<)\s*([^]*?)(?=\s+AND\s|\s+GROUP BY|\s+ORDER BY|\s+WHERE\s|`\)|$)/g
+  let m: RegExpExecArray | null
+  while ((m = re.exec(expanded)) !== null) {
+    const col = m[1]
+    // store_id 的关联条件（Part C 的 JOIN ON / Part A 的 scopeFilterSql 片段）不算业务谓词
+    if (col === 'store_id') continue
+    // 时间区间的变量名两处不同（cur.start vs range.start），归一掉
+    const rhs = m[3].replace(/\$\{[^}]*\}/g, '${ts}').replace(/\s+/g, ' ').trim()
+    out.push(`spe.${col} ${m[2]} ${rhs}`)
+  }
+  return [...new Set(out)].sort()
+}
+
+/** 聚合表达式必须**逐字**是 `COALESCE(SUM(spe.amount::numeric), 0)`，不许挂 FILTER/DISTINCT/CASE */
+function assertPlainSumAggregate(segment: string, label: string): void {
+  const sums = segment.match(/SUM\(\s*spe\.amount::numeric\s*\)[^,)]*/g) ?? []
+  expect(sums.length, `${label} 找不到 SUM(spe.amount::numeric)`).toBeGreaterThan(0)
+  for (const frag of sums) {
+    expect(
+      frag.replace(/\s+/g, ''),
+      `${label} 的聚合表达式被改过（FILTER / DISTINCT / CASE 都会让 KPI 与门店榜对不上）`,
+    ).toBe('SUM(spe.amount::numeric)')
+  }
+}
+
 describe('数据中心人效板块两端口径一致性守护', () => {
   let adminSrc: string
   let staffSrc: string
@@ -179,6 +227,28 @@ describe('数据中心人效板块两端口径一致性守护', () => {
       const n = sliceOrFail(adminSrc, 'const qRevenueByStore', 'const qConsumeByStore')
       expect(n).toMatch(/GROUP BY spe\.store_id/i)
       expect(n).not.toMatch(/GROUP BY so\.store_id/i)
+    })
+
+    it('⭐ Part A / Part B / Part C 的 spe 谓词集**完全相等**（不只是「都存在」）', () => {
+      // 闸门 2 两个谱系独立打穿了旧守护：
+      //   codex —— 给 Part C 加聚合级 FILTER (WHERE spe.amount > 0) → 全绿
+      //   GLM  —— 给 Part A 和 B **同时**加 AND spe.change_type <> '退款' → 全绿
+      // 逐条 toMatch 证明不了「没多出别的」，A==B 在两边一起改时也失效。
+      const a = spePredicateSet(sliceOrFail(adminSrc, 'const qRevenueTotal', 'const qConsumeTotal'))
+      const b = spePredicateSet(sliceOrFail(adminSrc, 'const qRevenueByStore', 'const qConsumeByStore'))
+      const c = spePredicateSet(sliceOrFail(adminSrc, 'const qStoreRankRevenue', 'const qStoreRankConsume'))
+
+      expect(a.length, 'Part A 至少应有 4 个 spe 业务谓词').toBeGreaterThanOrEqual(4)
+      expect(b, 'Part B 的 spe 谓词集必须与 Part A 相同').toEqual(a)
+      expect(c, 'Part C 门店排名榜的 spe 谓词集必须与 KPI 相同，否则「KPI == 门店榜」不成立').toEqual(a)
+    })
+
+    it('⭐ 三处的聚合表达式都必须是裸 SUM(spe.amount::numeric)，不许挂 FILTER/CASE', () => {
+      // codex 的攻击路径：Part C 单独写成 SUM(...) FILTER (WHERE spe.amount > 0) 剔除退款负行，
+      // WHERE 谓词一个没动 → 上面所有谓词类断言全绿，但门店榜合计不再等于 KPI。
+      assertPlainSumAggregate(sliceOrFail(adminSrc, 'const qRevenueTotal', 'const qConsumeTotal'), 'Part A')
+      assertPlainSumAggregate(sliceOrFail(adminSrc, 'const qRevenueByStore', 'const qConsumeByStore'), 'Part B')
+      assertPlainSumAggregate(sliceOrFail(adminSrc, 'const qStoreRankRevenue', 'const qStoreRankConsume'), 'Part C')
     })
 
     it('Part A 与 Part B 的 WHERE 子句逐字相同（两者只允许差 SELECT 列与 GROUP BY）', () => {
