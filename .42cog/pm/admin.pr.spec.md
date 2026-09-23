@@ -187,6 +187,11 @@ admin 管理权限分配/撤销、WorkFine → PG 数据同步、操作日志查
 
 **约束**: store_name 唯一；新增须选所属市场；经纬度格式校验
 
+**写库字段一律显式白名单**（#318）：`updateStore` 原先把 `{ ...data }` 裸 spread 进 `.set()` ——
+客户端多塞一个 `orgNodeId`（`stores` 的合法列）就能改掉门店↔节点映射、绕过建店那三层守卫；
+多塞 `storeId` 能改主键、多塞 `updatedAt` 能伪造乐观锁基线。`Partial<{…}>` 只是编译期类型，
+Server Action 是可直接调用的端点。`updateOrgNode` 同理（见 AFF-01）。
+
 **`createStore` 必须取 ① 组织树锁**（#318）：`stores.org_node_id` 是「门店 ↔ 组织节点」映射的
 写入方，而 AFF-01 改 `type` 的守卫要查「本节点上有没有门店映射」。两边不共锁就能交叉穿透 ——
 改类型事务查到「还没被门店引用」→ 建店事务把映射写上去并按旧类型过 trigger → 改类型提交
@@ -366,6 +371,14 @@ admin 管理权限分配/撤销、WorkFine → PG 数据同步、操作日志查
 `isNodeWithinScopeRoots` 按当前树判 —— 否则节点在操作者登录后被挪出其市场，他仍能
 对它授予/回收权限（未授权的权限回收与未授权的授予同等严重）。
 `deleteRoleDefinition` 的「还有人在用就不许删」同样与 `assignRole` 互斥（取 ②）。
+`assignRole` 还要锁内 `SELECT ... FOR UPDATE` 重读**被授权人**（锁序 ③）并重判在职/可见性 ——
+否则「授权读到在职」与「标离职并删光角色」并发交错后，离职员工会重新挂上角色，
+把 AFF-03「离职同步作废角色」这条不变量重新打开；失败文案与事务外那两条逐字相同。
+
+**权限矩阵兼容镜像**（`system_configs['permission_matrix']`，供 staffApi 30s 缓存读取）
+是「读全表 → UPSERT 一行」的 read-modify-write，三个写角色定义的事务必须共用 ④
+`permission_matrix:mirror`，否则丢更新 → 表里权限已收、镜像里还留着，
+小程序按旧矩阵继续放行直到下一次任意角色写。取锁点在 `writeCompatibilityMirror` 内部。
 
 #### AFF-08 业务操作（adminApi）
 
