@@ -12,7 +12,10 @@ import { hasRole } from '@/lib/auth'
 import { hasPermission, isAdminScope, isEmployeeRowVisible } from '@/lib/permissions'
 import { withPermission, withAnyPermission } from '@/lib/with-permission'
 import { logOperation } from '@/lib/operation-log'
+import { ApiError } from '@/lib/api-error'
 import { countActiveAdmins } from '@/lib/admin-guard'
+// 与 employees 侧共用同一把「活跃 admin 计数」锁；取锁顺序见该模块顶部（#318）
+import { lockActiveAdminCount } from '@/lib/invariant-locks'
 
 async function loadRoleDefinition(roleKey: string): Promise<{
   roleKey: string
@@ -410,18 +413,12 @@ export const revokeRole = withPermission(
     return { success: false, message: '只有系统管理员才能撤销系统管理员角色' }
   }
 
-  // admin 自删保护 + 最后 admin 保护（D-Q12-2026-04-26 / audit-22 P0-22-03）
-  if (definition.isSuperAdmin) {
-    if (target.employeeId === session.employeeId) {
-      throw new Error('INVALID_STATE: 不能撤销自己的 admin 角色')
-    }
-    const adminCount = await countActiveAdmins()
-    if (adminCount <= 1) {
-      throw new Error('INVALID_STATE: 系统至少需保留 1 个活跃 admin')
-    }
+  // admin 自删保护（纯 session 比对，不打库，放在事务外早拒）
+  if (definition.isSuperAdmin && target.employeeId === session.employeeId) {
+    throw new ApiError('INVALID_STATE', '不能撤销自己的 admin 角色')
   }
 
-  // 非 admin 用户不能撤销超出自身 scope 的角色
+  // 非 admin 用户不能撤销超出自身 scope 的角色（同样纯内存判定）
   if (!isAdminScope(session)) {
     const userScopeIds = permissionScopeIds(session)
     if (!userScopeIds.includes(target.scopeId)) {
@@ -429,19 +426,44 @@ export const revokeRole = withPermission(
     }
   }
 
-  const result = await db
-    .delete(permissionRoles)
-    .where(eq(permissionRoles.id, id))
+  /**
+   * ## 撤销超管必须与 employees 侧**共用同一把锁**（issue #318）
+   *
+   * 「系统至少留一名在职超级管理员」这个不变量的守卫散落在三个 action 里：
+   * `updateEmployee`（标离职）、`deleteEmployee`（物理删除）、以及这里（撤超管角色）。
+   * #249/#259 那轮把前两个收进了 `admin:active_count`，这里**没跟上** —— 于是
+   * 「撤销 A 的 admin 角色」与「标记 B 离职」并发时，两边各自读到 `count = 2`
+   * （READ COMMITTED 下看不见对方未提交的改动）、改的又是不同行，双双提交 → **零管理员**。
+   * 光把前两个收进锁反而给人「已经闭合」的错觉，这条是真正的缺口。
+   *
+   * 守卫 + DELETE + 审计整体进事务，`countActiveAdmins` 传 `tx`。
+   * 锁序见 `lib/invariant-locks.ts`：本路径只需 ②，不涉及组织树与员工行锁。
+   *
+   * 守卫失败走**返回值**而不是裸抛 sentinel —— `cross-end-error-codes-snapshot.test.js`
+   * 会 grep admin `actions/` 下未登记白名单的裸抛错（#249/#259 那轮踩过）。
+   */
+  const txResult = await db.transaction(async (tx): Promise<true | { failure: string }> => {
+    if (definition.isSuperAdmin) {
+      await lockActiveAdminCount(tx)
+      if (await countActiveAdmins(tx) <= 1) {
+        return { failure: '系统至少需保留 1 个活跃 admin' }
+      }
+    }
 
-  if ((result as any).count === 0) {
-    return { success: false, message: '角色记录不存在' }
-  }
+    const result = await tx.delete(permissionRoles).where(eq(permissionRoles.id, id))
+    if ((result as any).count === 0) return { failure: '角色记录不存在' }
 
-  await logOperation(session, 'permission.revoke', 'permission_role', String(id), {
-    role: target.role,
-    scopeId: target.scopeId,
-    employeeId: target.employeeId,
+    // 审计与删除同生共死 —— 留在事务外时它失败会留下「角色已撤销但前端显示失败」
+    await logOperation(session, 'permission.revoke', 'permission_role', String(id), {
+      role: target.role,
+      scopeId: target.scopeId,
+      employeeId: target.employeeId,
+    }, tx)
+    return true
   })
+  if (txResult !== true) {
+    return { success: false, message: txResult.failure }
+  }
 
   revalidatePath('/permissions')
   revalidatePath('/employees')

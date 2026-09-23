@@ -7,6 +7,8 @@ vi.mock('@/db', () => ({
     execute: vi.fn().mockResolvedValue([{}]),
     insert: vi.fn(),
     delete: vi.fn(),
+    // revokeRole 的守卫 + DELETE + 审计走事务（#318）
+    transaction: vi.fn(),
   },
 }))
 
@@ -737,10 +739,30 @@ describe('revokeRole — scope + admin-only for admin roles', () => {
     vi.clearAllMocks()
   })
 
+  /**
+   * 撤销走事务了（#318）：守卫 + DELETE + 审计整体在一个事务内，并与 employees 侧共用
+   * 那把 `admin:active_count` advisory lock。所以 tx 上要有 `execute`（取锁）、
+   * `select`（`countActiveAdmins` 传 tx）、`delete`、`insert`（审计）。
+   *
+   * @returns `tx()` 交出句柄 —— 审计的 executor 断言要用**同一性**，
+   *   形状匹配对全局 `db` 也成立（#249/#259 那轮的教训）。
+   */
   function setupRevokeDbCalls(target: any, deleteRowCount = 1) {
     ;(db.select as any).mockImplementation(() => mockSelectOnce(target)())
     const where = vi.fn().mockResolvedValue({ count: deleteRowCount })
     ;(db.delete as any).mockReturnValue({ where })
+    let handedTx: any
+    const txExecute = vi.fn().mockResolvedValue([])
+    ;(db.transaction as any).mockImplementation(async (fn: any) => {
+      handedTx = {
+        execute: txExecute,
+        select: (db as any).select,
+        delete: (db as any).delete,
+        insert: (db as any).insert,
+      }
+      return fn(handedTx)
+    })
+    return { tx: () => handedTx, txExecute, deleteWhere: where }
   }
 
   it('admin 撤销任意角色 → 成功', async () => {
@@ -842,21 +864,62 @@ describe('revokeRole — scope + admin-only for admin roles', () => {
     expect(countActiveAdmins).not.toHaveBeenCalled()
   })
 
-  it('撤销最后一个活跃 admin → 抛 INVALID_STATE', async () => {
+  /**
+   * 守卫进事务后改为**返回**而不是裸抛 sentinel（#318）——
+   * `cross-end-error-codes-snapshot.test.js` 会 grep admin `actions/` 下未登记白名单的裸抛错。
+   * 判据因此从「rejects」变成「返回 failure + 一行都没删 + 取过那把锁」。
+   */
+  it('撤销最后一个活跃 admin → 拒绝，且不删行、守卫前取过 advisory lock', async () => {
     ;(getSession as any).mockResolvedValue(adminSession)
     ;(hasRole as any).mockReturnValue(true)
-    ;(countActiveAdmins as any).mockResolvedValueOnce(1)
-    setupRevokeDbCalls({ role: 'admin', scopeId: 'hq-1', employeeId: 'ADMIN-002' })
+    ;(countActiveAdmins as any).mockResolvedValue(1)
+    const t = setupRevokeDbCalls({ role: 'admin', scopeId: 'hq-1', employeeId: 'ADMIN-002' })
 
-    await expect(revokeRole(21)).rejects.toThrow(/INVALID_STATE: 系统至少需保留 1 个活跃 admin/)
-    expect(db.delete).not.toHaveBeenCalled()
+    const result = await revokeRole(21)
+
+    expect(result.success).toBe(false)
+    expect(result.message).toBe('系统至少需保留 1 个活跃 admin')
+    expect(t.deleteWhere, '守卫拦住后一行都不该删').not.toHaveBeenCalled()
+    expect(JSON.stringify(t.txExecute.mock.calls[0][0]), '守卫前必须取锁')
+      .toContain('pg_advisory_xact_lock')
+    expect((countActiveAdmins as any).mock.calls[0][0], '计数必须走 tx').toBe(t.tx())
+  })
+
+  /**
+   * 与 employees 侧**同一把锁**（#318）—— 这条不变量的守卫散落在三个 action：
+   * `updateEmployee` 标离职、`deleteEmployee` 物理删除、这里撤超管角色。
+   * 前两个在 #249/#259 已收进锁，这里当时没跟上：并发「撤 A 的 admin」+「标 B 离职」
+   * 会双双读到 count=2 → 零管理员。
+   */
+  it('撤超管角色取的是 admin:active_count 那把锁（与 employees 侧同一把）', async () => {
+    ;(getSession as any).mockResolvedValue(adminSession)
+    ;(hasRole as any).mockReturnValue(true)
+    ;(countActiveAdmins as any).mockResolvedValue(5)
+    const t = setupRevokeDbCalls({ role: 'admin', scopeId: 'hq-1', employeeId: 'ADMIN-002' })
+
+    await revokeRole(23)
+
+    expect(JSON.stringify(t.txExecute.mock.calls[0][0])).toContain('admin:active_count')
+  })
+
+  /** 非超管角色不必取那把锁（撤它不影响活跃 admin 数） */
+  it('撤销普通角色 → 不取 advisory lock、不查 admin 计数', async () => {
+    ;(getSession as any).mockResolvedValue(adminSession)
+    ;(hasRole as any).mockReturnValue(true)
+    const t = setupRevokeDbCalls({ role: 'manager', scopeId: 'market-1', employeeId: 'EMP-1' })
+
+    const result = await revokeRole(24)
+
+    expect(result.success).toBe(true)
+    expect(t.txExecute).not.toHaveBeenCalled()
+    expect(countActiveAdmins).not.toHaveBeenCalled()
   })
 
   it('倒数第二 admin (count=2) 跨员工撤销 → 成功 + logOperation detail 含 employeeId/scopeId', async () => {
     ;(getSession as any).mockResolvedValue(adminSession)
     ;(hasRole as any).mockReturnValue(true)
-    ;(countActiveAdmins as any).mockResolvedValueOnce(2)
-    setupRevokeDbCalls({ role: 'admin', scopeId: 'hq-1', employeeId: 'ADMIN-002' })
+    ;(countActiveAdmins as any).mockResolvedValue(2)
+    const revokeTx = setupRevokeDbCalls({ role: 'admin', scopeId: 'hq-1', employeeId: 'ADMIN-002' })
 
     const result = await revokeRole(22)
 
@@ -872,6 +935,8 @@ describe('revokeRole — scope + admin-only for admin roles', () => {
         scopeId: 'hq-1',
         employeeId: 'ADMIN-002',
       }),
+      // 第 6 参是 executor —— 审计与 DELETE 必须同生共死，用**同一性**断言（形状匹配对 db 也成立）
+      revokeTx.tx(),
     )
   })
 })
