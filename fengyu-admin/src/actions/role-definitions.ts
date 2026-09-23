@@ -15,6 +15,8 @@ import {
 } from '@/lib/permission-contract'
 import { logOperation, logUpdate } from '@/lib/operation-log'
 import { pgErrorCode } from '@/lib/pg-error'
+// 取锁顺序（组织树 → admin 计数 → 行锁）见该模块顶部（#318）
+import { lockActiveAdminCount } from '@/lib/invariant-locks'
 import type { RoleDefinition } from '@/lib/types'
 
 const SUPER_ADMIN_REQUIRED_ACTIONS = [
@@ -307,19 +309,12 @@ export const updateRoleDefinition = withPermission(
       throw new Error('INVALID_STATE: 已在非总部范围分配的角色不能直接升级为超级管理员，请先撤销相关授权')
     }
 
-    if (before.isSuperAdmin && !nextSuper) {
-      const [{ count }] = await db
-        .select({ count: sql<number>`count(DISTINCT ${permissionRoles.employeeId})::int` })
-        .from(permissionRoles)
-        .innerJoin(permissionRoleDefinitions, eq(permissionRoles.role, permissionRoleDefinitions.roleKey))
-        .innerJoin(staffWechatUsers, eq(permissionRoles.employeeId, staffWechatUsers.employeeId))
-        .where(and(
-          eq(permissionRoleDefinitions.isSuperAdmin, true),
-          ne(permissionRoleDefinitions.roleKey, roleKey),
-          eq(staffWechatUsers.isResigned, false),
-        ))
-      if (count < 1) throw new Error('INVALID_STATE: 系统至少需保留 1 名在职超级管理员')
-    }
+    /**
+     * 「降级超管角色」也会减少活跃超管 —— 守卫见下面的事务内（#318）。
+     * 这里**不**做事务外预查：那份查询与 UPDATE 之间可被并发插队，
+     * 而这条不变量的另外三个入口（`updateEmployee` 标离职 / `deleteEmployee` /
+     * `revokeRole` 撤超管）都已经收进 `admin:active_count` 那把锁，只差这一处。
+     */
 
     const actions = normalizeActions(
       input.actions ?? sanitizeRoleDefinitionActions(
@@ -344,6 +339,26 @@ export const updateRoleDefinition = withPermission(
     const expectedUpdatedAt = input.expectedUpdatedAt ?? before.updatedAt.toISOString()
     try {
       const changed = await db.transaction(async (tx) => {
+        /**
+         * 与 employees / permissions 两侧共用**同一把** `admin:active_count` 锁（#318）。
+         * 光把计数塞进事务不够串行：READ COMMITTED 下「降级角色 R1」与「撤销某人的 R2 绑定」
+         * 各自都读到「还有别的在职超管」、改的又是不同行，双双提交 → 零超管，系统锁死。
+         * 锁序见 `lib/invariant-locks.ts`：本路径只需 ②。
+         */
+        if (before.isSuperAdmin && !nextSuper) {
+          await lockActiveAdminCount(tx)
+          const [{ count }] = await tx
+            .select({ count: sql<number>`count(DISTINCT ${permissionRoles.employeeId})::int` })
+            .from(permissionRoles)
+            .innerJoin(permissionRoleDefinitions, eq(permissionRoles.role, permissionRoleDefinitions.roleKey))
+            .innerJoin(staffWechatUsers, eq(permissionRoles.employeeId, staffWechatUsers.employeeId))
+            .where(and(
+              eq(permissionRoleDefinitions.isSuperAdmin, true),
+              ne(permissionRoleDefinitions.roleKey, roleKey),
+              eq(staffWechatUsers.isResigned, false),
+            ))
+          if (count < 1) throw new Error('INVALID_STATE: 系统至少需保留 1 名在职超级管理员')
+        }
         const rows = await tx
           .update(permissionRoleDefinitions)
           .set({

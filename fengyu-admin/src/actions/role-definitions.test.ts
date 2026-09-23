@@ -177,6 +177,107 @@ describe('updateRoleDefinition', () => {
     ))
     expect(lockCall?.[2]).toBe(expectedUpdatedAt)
   })
+
+  /**
+   * ## 降级超管角色是「至少保留 1 名在职超管」的第四个入口（#318）
+   *
+   * 另外三个是 `updateEmployee` 标离职、`deleteEmployee`、`revokeRole` 撤超管 ——
+   * 它们都取 `admin:active_count` 那把 advisory lock，这里当时既没取锁、计数还在事务外。
+   * 并发「降级角色 R1」+「撤销某人的 R2 绑定」各自都读到「还有别的在职超管」→ 双双提交 → 零超管。
+   */
+  describe('降级超管角色 —— 与其它三个入口共用 admin:active_count 锁（#318）', () => {
+    const superBefore = {
+      roleKey: 'role-super',
+      name: '超级管理员',
+      description: null,
+      actions: ['system:config', 'permission:assign_admin', 'admin:reset_password'],
+      allowedScopeTypes: ['总部'],
+      canAccessAdmin: true,
+      isSuperAdmin: true,
+      isStoreManager: false,
+      updatedAt: new Date('2026-09-01T00:00:00.000Z'),
+    }
+
+    /** @returns `txExecute` 断言取过锁；`txUpdate` 断言「守卫没过就不该写库」 */
+    function mockDowngradeTx(otherActiveSuperAdmins: number) {
+      const txExecute = vi.fn().mockResolvedValue(undefined)
+      const txUpdate = vi.fn(() => ({
+        set: vi.fn(() => ({
+          where: vi.fn(() => ({
+            returning: vi.fn().mockResolvedValue([{ roleKey: superBefore.roleKey }]),
+          })),
+        })),
+      }))
+      let handedTx: Record<string, unknown> = {}
+      ;(db.transaction as ReturnType<typeof vi.fn>).mockImplementationOnce(async (callback: Function) => {
+        handedTx = {
+          execute: txExecute,
+          update: txUpdate,
+          /**
+           * 事务内有两种 select：锁内的超管计数（`from().innerJoin().innerJoin().where()`）
+           * 与兼容镜像表的全量读（`await select().from()`）。所以 `from()` 的返回值既要能继续
+           * 链式 join，又要自身可 await —— 少了 `then` 就会在 `rows.map` 上炸。
+           */
+          select: vi.fn(() => ({
+            from: vi.fn(() => ({
+              innerJoin: vi.fn(() => ({
+                innerJoin: vi.fn(() => ({
+                  where: vi.fn().mockResolvedValue([{ count: otherActiveSuperAdmins }]),
+                })),
+              })),
+              then: (resolve: (v: unknown[]) => unknown) => resolve([]),
+            })),
+          })),
+        }
+        return callback(handedTx)
+      })
+      return { txExecute, txUpdate, tx: () => handedTx }
+    }
+
+    it('降级时取的是 admin:active_count 那把锁，且计数走事务句柄', async () => {
+      ;(db.select as ReturnType<typeof vi.fn>).mockReturnValueOnce(mockSelectOnce([superBefore]))
+      const t = mockDowngradeTx(3)
+
+      await updateRoleDefinition(superBefore.roleKey, {
+        name: superBefore.name,
+        isSuperAdmin: false,
+        actions: ['dashboard:view'],
+      })
+
+      expect(JSON.stringify(t.txExecute.mock.calls[0]?.[0])).toContain('admin:active_count')
+      expect(t.txUpdate).toHaveBeenCalled()
+    })
+
+    it('别无在职超管时拒绝降级，且不写库', async () => {
+      ;(db.select as ReturnType<typeof vi.fn>).mockReturnValueOnce(mockSelectOnce([superBefore]))
+      const t = mockDowngradeTx(0)
+
+      await expect(updateRoleDefinition(superBefore.roleKey, {
+        name: superBefore.name,
+        isSuperAdmin: false,
+        actions: ['dashboard:view'],
+      })).rejects.toThrow(/INVALID_STATE.*至少需保留 1 名在职超级管理员/)
+
+      expect(t.txUpdate).not.toHaveBeenCalled()
+    })
+
+    /** 不涉及降级的普通编辑不该取这把锁（别无谓串行化所有角色编辑） */
+    it('非降级的普通编辑 → 不取锁、不查计数', async () => {
+      const normalBefore = { ...superBefore, roleKey: 'role-custom', isSuperAdmin: false, actions: ['dashboard:view'] }
+      ;(db.select as ReturnType<typeof vi.fn>).mockReturnValueOnce(mockSelectOnce([normalBefore]))
+      const t = mockDowngradeTx(3)
+
+      await updateRoleDefinition(normalBefore.roleKey, {
+        name: normalBefore.name,
+        actions: ['dashboard:view'],
+      })
+
+      const lockTaken = t.txExecute.mock.calls.some(
+        (c) => JSON.stringify(c[0]).includes('admin:active_count'),
+      )
+      expect(lockTaken).toBe(false)
+    })
+  })
 })
 
 describe('normalizeAllowedScopeTypes — 进销存层级与可绑定范围', () => {
