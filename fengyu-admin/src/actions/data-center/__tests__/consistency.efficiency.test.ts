@@ -8,8 +8,13 @@
  * 因两端 ORM 不同（Drizzle sql`` vs 原生 pg）+ 时间窗口口径不同（本板块吃 TimeRange 区间，
  * staff 用 period 锚 NOW），完整 SQL snapshot 不可行。守护策略 = "关键不变量字面量匹配"
  * （stripComments 后，排除注释里的反例引用）：
- *   1. 业绩(员工) = SUM(sale_payment_item_allocations.allocated_amount) 归 employee_id
- *   2. 不按 role_type 白名单截断 ∩ is_void = FALSE
+ *   1. 业绩**两套口径，按聚合粒度分**（#285，2026-09-23）：
+ *      1a. Part A/B 全局大卡 + by store = SUM(sale_order_performance_events.amount) 门店现金流，
+ *          与 Part C 门店排名榜 / sales.ts runStoreRevenue / staff queryStoreRevenue 同源
+ *      1b. Part D/E 员工榜 + 技师明细 = SUM(spia.allocated_amount) 归 employee_id
+ *      ⚠️ 断言必须按 Part 分段（between()），文件级 toMatch 分不清两者 —— 2026-07-27
+ *          23405ddf 把 A/B 也写成 spia 时，旧的文件级断言恒绿，缺陷活了两个月
+ *   2. 员工榜不按 role_type 白名单截断 ∩ is_void = FALSE（恢复白名单不是 #285 的修法）
  *   3. 实耗 = unit_real_price * session_used ∩ status='已完成'
  *      3b. 员工维度归属 = service_commissions.employee_id ∩ is_void=FALSE，实耗乘 allocation_ratio
  *          （2026-09-03 变更；门店榜/大卡仍走 service_items.employee_id）
@@ -49,6 +54,51 @@ function between(src: string, start: string, end: string): string {
   return from === -1 ? '' : src.slice(from, to === -1 ? undefined : to)
 }
 
+/**
+ * 「门店现金流口径」= SUM(sale_order_performance_events.amount) 那一整套谓词。
+ *
+ * 用于三处同源查询：admin Part A/B 全局大卡与 by store（#285 起）、admin Part C 门店排名榜、
+ * staff 大卡 queryStoreRevenue。任一处漂移，KPI 就会和同页门店榜对不上账。
+ *
+ * `statusDateVia`：admin Part A/B/C 里「status + performance_date」有两种写法 ——
+ *   - `'literal'`：谓词直接写在 SQL 里（Part C / staff）
+ *   - `'helper'` ：走 `performanceEventDateBetween('spe', ...)`（Part A/B）
+ *     此时改为钉死 helper **自身**的实现（见下方 assertHelperBody），等价强度。
+ */
+function expectStoreRankCashflow(
+  src: string,
+  start: string,
+  end: string,
+  statusDateVia: 'literal' | 'helper' = 'literal',
+): void {
+  const n = normalize(stripComments(between(src, start, end)))
+  expect(n).toMatch(/(?:FROM|LEFT JOIN)\s+sale_order_performance_events\s+spe/i)
+  expect(n).toMatch(/SUM\(spe\.amount::numeric\)/i)
+  expect(n).toMatch(/spe\.change_type\s+IN\s*\(\s*'首次支付'\s*,\s*'回款'\s*,\s*'退款'\s*\)/)
+  expect(n).toMatch(/spe\.sale_order_type\s+IN\s*\(\s*'销售单'\s*,\s*'转换单'\s*,\s*'充值单'\s*\)/)
+  expect(n).toMatch(/legacy_source\s+IS\s+DISTINCT\s+FROM\s+'workfine'/i)
+  expect(n).not.toMatch(/refunded_amount|so\.received/i)
+  // #285 回归守护：这三处一律不得回退到 allocation 口径（跨员工求和 = 同一笔钱算 2~3 次）
+  expect(n).not.toMatch(/spia\.allocated_amount/i)
+
+  if (statusDateVia === 'literal') {
+    expect(n).toMatch(/spe\.status\s*=\s*'已支付'/)
+    // staff 两处归期写法不同：门店榜用 timeWindowPeriod(锚 NOW)，大卡用 timeWindow(锚 date 参数)
+    expect(n).toMatch(
+      /spe\.performance_date\s+BETWEEN|timeWindow(?:Period)?\('spe\.performance_date'|date_trunc\([^)]*spe\.performance_date/i,
+    )
+  } else {
+    expect(n).toMatch(/performanceEventDateBetween\('spe', cur\.start, cur\.end\)/)
+  }
+}
+
+/** helper 路径的等价强度来源：把 performanceEventDateBetween 自身的两个谓词钉死 */
+function assertHelperBody(adminSrc: string): void {
+  const body = normalize(stripComments(between(adminSrc, 'function performanceEventDateBetween', '/** 行表')))
+  expect(body).toMatch(/\$\{sql\.raw\(`\$\{eventAlias\}\.status`\)\}\s*=\s*'已支付'/)
+  expect(body).toMatch(/\$\{sql\.raw\(`\$\{eventAlias\}\.performance_date`\)\}\s*BETWEEN\s*\$\{start\}\s*AND\s*\$\{end\}/)
+}
+
 describe('数据中心人效板块两端口径一致性守护', () => {
   let adminSrc: string
   let staffSrc: string
@@ -62,25 +112,92 @@ describe('数据中心人效板块两端口径一致性守护', () => {
     staffBody = normalize(stripComments(staffSrc))
   })
 
-  describe('业绩(员工) = SUM(sale_payment_item_allocations.allocated_amount) 归 employee_id', () => {
-    it('admin efficiency.ts 含 SUM(spia.allocated_amount) 归 spia.employee_id', () => {
-      expect(adminBody).toMatch(/SUM\(\s*spia\.allocated_amount::numeric\s*\)/i)
-      expect(adminBody).toMatch(/spia\.employee_id/i)
+  // ─────────────────────────────────────────────────────────────────────────
+  // 业绩有**两套口径**，按聚合粒度分（#285，2026-09-23）
+  //
+  // 2026-07-27 `23405ddf` 换表时把「全局大卡 / by store」一并留在了 allocation 口径，
+  // 并把本文件的守护断言反向钉死（原断言是文件级 `toMatch`，分不清 Part A/B 与 Part D，
+  // 两边都写 spia 时恒绿）。结果 KPI 与同页门店排名榜差 111 万、虚高 32.3%。
+  // 现在按 Part 分段断言 —— 这是唯一能同时表达「A/B 必须是现金流」「D 必须是归属额」的写法。
+  // ─────────────────────────────────────────────────────────────────────────
+
+  describe('业绩 Part A/B（全局大卡 + by store）= 门店现金流，与门店排名榜同源', () => {
+    it('performanceEventDateBetween 自身钉死 已支付 + performance_date BETWEEN', () => {
+      assertHelperBody(adminSrc)
     })
-    it('staff mgmt-dashboard.js 含 SUM(spia.allocated_amount) 归 spia.employee_id', () => {
-      expect(staffBody).toMatch(/SUM\(\s*spia\.allocated_amount::numeric\s*\)/i)
-      expect(staffBody).toMatch(/spia\.employee_id/i)
+
+    it('admin efficiency.ts Part A qRevenueTotal 走 spe.amount 现金流', () => {
+      expectStoreRankCashflow(adminSrc, 'const qRevenueTotal', 'const qConsumeTotal', 'helper')
+    })
+
+    it('admin efficiency.ts Part B qRevenueByStore 走 spe.amount 现金流', () => {
+      expectStoreRankCashflow(adminSrc, 'const qRevenueByStore', 'const qConsumeByStore', 'helper')
+    })
+
+    it('staff mgmt-dashboard.js 大卡 queryStoreRevenue 走 spe.amount 现金流（两端同源）', () => {
+      expectStoreRankCashflow(
+        staffSrc,
+        'async function queryStoreRevenue',
+        'async function queryShengmeiRevenue',
+      )
+    })
+
+    it('Part B 分组列用 spe.store_id（与 Part C 同源；与 so.store_id 全表零不一致）', () => {
+      const n = normalize(stripComments(between(adminSrc, 'const qRevenueByStore', 'const qConsumeByStore')))
+      expect(n).toMatch(/GROUP BY spe\.store_id/i)
+      expect(n).not.toMatch(/GROUP BY so\.store_id/i)
+    })
+
+    it('Part A 与 Part B 的 WHERE 子句逐字相同（两者只允许差 SELECT 列与 GROUP BY）', () => {
+      // 这条才是「KPI 大卡 == byMarket 合计」的结构保证：上面的谓词清单断言只能证明
+      // 「四个业务过滤都在」，证明不了两段没有各自多出别的条件。
+      const whereOf = (start: string, end: string): string => {
+        const seg = normalize(stripComments(between(adminSrc, start, end)))
+        const from = seg.indexOf('WHERE ')
+        expect(from).toBeGreaterThan(-1)
+        const tail = seg.slice(from)
+        const stop = tail.search(/GROUP BY|`\)/)
+        return (stop === -1 ? tail : tail.slice(0, stop)).trim()
+      }
+      const a = whereOf('const qRevenueTotal', 'const qConsumeTotal')
+      const b = whereOf('const qRevenueByStore', 'const qConsumeByStore')
+      expect(a).not.toBe('')
+      expect(b).toBe(a)
     })
   })
 
-  describe('业绩维度不按 role_type 白名单截断 ∩ is_void = FALSE', () => {
-    it('admin efficiency.ts 不含 spia.role_type IN (美容师, 养生师)', () => {
-      expect(adminBody).not.toMatch(/spia\.role_type\s+IN\s*\(\s*'美容师'\s*,\s*'养生师'\s*\)/i)
-      expect(adminBody).toMatch(/is_void\s*=\s*FALSE/i)
+  describe('业绩 Part D/E（员工榜 + 技师明细）= 角色归属额，归 employee_id', () => {
+    it('admin efficiency.ts revenue_by_emp 含 SUM(spia.allocated_amount) 归 spia.employee_id', () => {
+      const n = normalize(stripComments(between(adminSrc, 'revenue_by_emp AS (', 'consume_by_emp AS (')))
+      expect(n).toMatch(/SUM\(\s*spia\.allocated_amount::numeric\s*\)/i)
+      expect(n).toMatch(/spia\.employee_id/i)
+      expect(n).toMatch(/GROUP BY spia\.employee_id/i)
+      expect(n).toMatch(/is_void\s*=\s*FALSE/i)
     })
-    it('staff mgmt-dashboard.js 不含 spia.role_type IN (美容师, 养生师)', () => {
-      expect(staffBody).not.toMatch(/spia\.role_type\s+IN\s*\(\s*'美容师'\s*,\s*'养生师'\s*\)/i)
-      expect(staffBody).toMatch(/is_void\s*=\s*FALSE/i)
+    it('staff mgmt-dashboard.js staffRankingRevenue 含 SUM(spia.allocated_amount) 归 spia.employee_id', () => {
+      const n = normalize(
+        stripComments(between(staffSrc, 'async function staffRankingRevenue', 'async function staffRankingConsume')),
+      )
+      expect(n).toMatch(/SUM\(\s*spia\.allocated_amount::numeric\s*\)/i)
+      expect(n).toMatch(/spia\.employee_id/i)
+      expect(n).toMatch(/is_void\s*=\s*FALSE/i)
+    })
+  })
+
+  describe('员工榜业绩不按 role_type 白名单截断（所有角色各算一份，用户拍板）', () => {
+    // ⚠️ 这条只约束 Part D/E。恢复白名单**不是** #285 的修法：
+    // 实测（2026-09-01~09-21 集团）白名单只留美容师+养生师 = 3,515,204.60，
+    // 距门店业绩 3,679,035.98 仍差 −4.45%，且偏差幅度随品项老师/推广部占比漂移，
+    // 是一次偶然的部分去重而非正确口径。真正的修法是 Part A/B 换成 spe.amount。
+    it('admin efficiency.ts 员工榜段不含 spia.role_type IN (美容师, 养生师)', () => {
+      const n = normalize(stripComments(between(adminSrc, 'revenue_by_emp AS (', 'consume_by_emp AS (')))
+      expect(n).not.toMatch(/spia\.role_type\s+IN\s*\(\s*'美容师'\s*,\s*'养生师'\s*\)/i)
+    })
+    it('staff mgmt-dashboard.js 员工榜段不含 spia.role_type IN (美容师, 养生师)', () => {
+      const n = normalize(
+        stripComments(between(staffSrc, 'async function staffRankingRevenue', 'async function staffRankingConsume')),
+      )
+      expect(n).not.toMatch(/spia\.role_type\s+IN\s*\(\s*'美容师'\s*,\s*'养生师'\s*\)/i)
     })
   })
 
@@ -286,18 +403,6 @@ describe('数据中心人效板块两端口径一致性守护', () => {
   })
 
   describe('门店排行榜业绩 = 付款流水现金流（员工榜/提成口径保持独立）', () => {
-    function expectStoreRankCashflow(src: string, start: string, end: string) {
-      const n = normalize(stripComments(between(src, start, end)))
-      expect(n).toMatch(/(?:FROM|LEFT JOIN)\s+sale_order_performance_events\s+spe/i)
-      expect(n).toMatch(/SUM\(spe\.amount::numeric\)/i)
-      expect(n).toMatch(/spe\.status\s*=\s*'已支付'/)
-      expect(n).toMatch(/spe\.change_type\s+IN\s*\(\s*'首次支付'\s*,\s*'回款'\s*,\s*'退款'\s*\)/)
-      expect(n).toMatch(/spe\.sale_order_type\s+IN\s*\(\s*'销售单'\s*,\s*'转换单'\s*,\s*'充值单'\s*\)/)
-      expect(n).toMatch(/spe\.performance_date\s+BETWEEN|timeWindowPeriod\('spe\.performance_date'|date_trunc\([^)]*spe\.performance_date/i)
-      expect(n).toMatch(/legacy_source\s+IS\s+DISTINCT\s+FROM\s+'workfine'/i)
-      expect(n).not.toMatch(/refunded_amount|so\.received/i)
-    }
-
     it('admin efficiency.ts 门店榜业绩按现金流', () => {
       expectStoreRankCashflow(adminSrc, 'const qStoreRankRevenue', 'const qStoreRankConsume')
     })
