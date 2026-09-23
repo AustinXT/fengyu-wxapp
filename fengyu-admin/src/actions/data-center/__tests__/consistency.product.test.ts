@@ -249,23 +249,133 @@ describe('品项板块两端口径一致性守护', () => {
     }
 
     /**
-     * 未经 SQL 清洗的模板原文 —— 下面「扫描器语法是超集」那条断言要用它。
+     * ★ 轻量 TS 词法扫描：切出 `queryCycleByStore` 的**真实函数体**，
+     * 沿途剥掉 TS 注释，**字符串与模板字面量原样保留**。
      *
-     * ⚠️ **必须先剥掉 TS 注释再切函数**（round-6 codex，已实测打穿）。切片正则
-     * `/async function queryCycleByStore\([\s\S]*?\n}/` 不懂 TS 词法，
-     * 在真函数开头放一段块注释就能劫持它：注释里塞一份完整的
-     * `db.execute(sql\`<当前这份安全模板>\`)` 再加一个**独占一行的 `}`**，
-     * 函数切片就在注释内部提前收尾 —— 于是
-     *   · `detailTemplateRaw` 取到的是注释里的**诱饵**
-     *   · `db.execute` 计数仍然是 1
-     *   · 全部 `adminDetail` 断言都在检查诱饵
-     *   · 注释之外真正执行、已回退成内连接的 SQL 完全不受守护
-     * 先 `stripComments` 就把诱饵连同注释一起抹掉了。
+     * ⚠️ 为什么不能继续用正则 `/async function queryCycleByStore\([\s\S]*?\n}/`
+     * （round-6 与 round-7 的 codex 连着打穿两次）：它把**第一个顶格 `}`** 当函数结尾，
+     * 而顶格 `}` 可以来自函数内部的任何嵌套块 ——
+     *
+     *   async function queryCycleByStore(…) {
+     *     if (false) {
+     *       await db.execute(sql`<复制一份当前的安全模板>`)   ← 诱饵
+     *   }                                                      ← 顶格，切片在此收尾
+     *     const rows = await db.execute(sql`<已回退成内连接的真 SQL>`)
+     *     …
+     *   }
+     *
+     * 此时：诱饵被当成"真模板"、`db.execute` 计数仍是 1、全部快照都在检查诱饵，
+     * 而 `if (false)` 运行时不执行，真正跑的是后面那条 —— 65.5% 漏数原样回归。
+     * round-6 只堵住了"注释里的顶格 `}`"（先 `stripComments`），堵不住 `if` 块的。
+     *
+     * 不引 TypeScript AST（会把 `typescript` 拉进测试依赖），改用按花括号深度扫描：
+     *   ① 括号深度跳过参数列表（参数可能有解构的 `{}`）
+     *   ② 尖括号深度跳过返回类型注解（`Promise<Map<string, { … }>>` 里有 `{}`），
+     *      函数体的 `{` 是尖括号深度为 0 时遇到的第一个
+     *   ③ 花括号深度扫到函数体结尾，沿途跳过 `//` / `/* *\/` / `'…'` / `"…"` / `` `…` ``
+     *      （模板字面量按 `${…}` 深度处理，不会被里面的 `}` 提前结束）
+     *
+     * 模板字面量原样保留是**故意的**：下面「禁 SQL 块注释」那条断言要检查真模板里有没有
+     * `/*`。round-7 codex 指出上一版把它跑在 `stripComments` 之后的文本上，
+     * 配对好的块注释在检查前就已经消失 —— **那条断言证明不了它声称的事**（空断言）。
      */
-    const detailTemplateRaw = (src: string): string => {
-      const fn = /async function queryCycleByStore\([\s\S]*?\n}/.exec(stripComments(src))?.[0] ?? ''
-      return /db\.execute\(sql`([\s\S]*?)`\)/.exec(fn)?.[1] ?? ''
+    const queryCycleByStoreBody = (src: string): string => {
+      const decl = /async function queryCycleByStore\s*\(/.exec(src)
+      if (!decl) return ''
+      let i = decl.index + decl[0].length
+      for (let paren = 1; i < src.length && paren > 0; i++) {
+        if (src[i] === '(') paren++
+        else if (src[i] === ')') paren--
+      }
+      let angle = 0
+      while (i < src.length) {
+        const c = src[i]
+        if (c === '<') angle++
+        else if (c === '>') angle = Math.max(0, angle - 1)
+        else if (c === '{' && angle === 0) break
+        i++
+      }
+      let out = ''
+      let depth = 0
+      while (i < src.length) {
+        const c = src[i]
+        if (c === '/' && src[i + 1] === '/') {
+          while (i < src.length && src[i] !== '\n') i++
+          out += ' '
+          continue
+        }
+        if (c === '/' && src[i + 1] === '*') {
+          i += 2
+          while (i < src.length && !(src[i] === '*' && src[i + 1] === '/')) i++
+          i += 2
+          out += ' '
+          continue
+        }
+        if (c === "'" || c === '"') {
+          const quote = c
+          out += c
+          i++
+          while (i < src.length) {
+            if (src[i] === '\\') {
+              out += src.slice(i, i + 2)
+              i += 2
+              continue
+            }
+            out += src[i]
+            i++
+            if (src[i - 1] === quote) break
+          }
+          continue
+        }
+        if (c === '`') {
+          out += c
+          i++
+          let tplDepth = 0
+          while (i < src.length) {
+            if (src[i] === '\\') {
+              out += src.slice(i, i + 2)
+              i += 2
+              continue
+            }
+            if (src[i] === '$' && src[i + 1] === '{') {
+              tplDepth++
+              out += '${'
+              i += 2
+              continue
+            }
+            if (src[i] === '}' && tplDepth > 0) {
+              tplDepth--
+              out += '}'
+              i++
+              continue
+            }
+            if (src[i] === '`' && tplDepth === 0) {
+              out += '`'
+              i++
+              break
+            }
+            out += src[i]
+            i++
+          }
+          continue
+        }
+        if (c === '{') depth++
+        else if (c === '}') {
+          depth--
+          out += c
+          i++
+          if (depth === 0) break
+          continue
+        }
+        out += c
+        i++
+      }
+      return out
     }
+
+    /** 未经 SQL 清洗的模板原文 —— 「扫描器语法是超集」那组断言要用它。 */
+    const detailTemplateRaw = (src: string): string =>
+      /db\.execute\(sql`([\s\S]*?)`\)/.exec(queryCycleByStoreBody(src))?.[1] ?? ''
 
     /** 切出 queryCycleByStore 的 SQL 模板，避免 KPI 侧同名 CTE 链顶替。 */
     const detailSql = (src: string): string => normalize(stripSqlNoise(detailTemplateRaw(src)))
@@ -359,10 +469,13 @@ describe('品项板块两端口径一致性守护', () => {
       for (const cte of ['entry_store', 'xinzeng', 'new_store', 'store_ids', 'period_agg']) {
         expect(adminDetail, `明细侧缺 ${cte} CTE`).toMatch(new RegExp(`${cte}\\s+AS\\s`))
       }
-      const fn = /async function queryCycleByStore\([\s\S]*?\n}/.exec(adminSrc)?.[0] ?? ''
+      // ⚠️ 必须用词法扫描出的真实函数体来数，不能再用正则切片 ——
+      // 正则会在第一个顶格 `}` 处收尾，于是「诱饵 + 真 SQL」两条 db.execute 只数到 1。
+      const body = queryCycleByStoreBody(adminSrc)
+      expect(body, 'queryCycleByStore 函数体未切出').toBeTruthy()
       expect(
-        (fn.match(/db\.execute\(/g) ?? []).length,
-        '明细侧出现多个 db.execute —— detailSql 的切片口径需同步更新',
+        (body.match(/db\.execute\(/g) ?? []).length,
+        '明细侧出现多个 db.execute —— 可能有一条是诱饵，也可能 detailSql 的切片口径需同步更新',
       ).toBe(1)
     })
 
