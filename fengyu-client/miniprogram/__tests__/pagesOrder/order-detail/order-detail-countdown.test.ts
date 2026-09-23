@@ -393,6 +393,66 @@ describe('order-detail 待支付倒计时 (#215)', () => {
     expect(page.data.countdown).toBe('');
   });
 
+  test('截止点锚在响应到手那一刻，不把视图组装耗时算进倒计时', async () => {
+    // 从 API resolve 到 startCountdown 之间还隔着分组疗程卡、映射流水、setData，
+    // 用那之后的 Date.now() 当锚点，这段耗时就被凭空加到倒计时上了
+    const { page, resolvers } = createPageWithManualApi();
+    const inflight = page.loadDetail('FY-215');
+    resolvers[0]({
+      order: {
+        sale_order_id: 'FY-215', status: '待支付',
+        expire_at: new Date(Date.now() + 60_000).toISOString(),
+        expire_in_ms: 60_000, expire_clock: '12:34', server_elapsed_ms: 0,
+      },
+      items: [], payments: [],
+    });
+    await inflight;
+
+    // 截止点不得晚于「到手时刻 + 服务端给的剩余量」
+    expect(page._countdownDeadlineAt).toBeLessThanOrEqual(page._lastLoadReceivedAt + 60_000);
+    expect(page._countdownDeadlineAt).toBeGreaterThan(page._lastLoadReceivedAt + 59_000);
+  });
+
+  test('墙钟回拨后校准失败 → 还会再重试一次（回拨不关支付入口，失败就没有恢复点了）', () => {
+    vi.useFakeTimers();
+    try {
+      const { page, loadDetail } = createPageWithStubbedLoad();
+      page.setData({ order: { sale_order_id: 'FY-215', status: '待支付' } });
+      page.startCountdown(PENDING_ORDER_WITH_REMAINING(120_000));
+
+      const base = Date.now();
+      vi.setSystemTime(base - 30_000);
+      vi.advanceTimersByTime(1000);
+      expect(loadDetail).toHaveBeenCalledTimes(1);      // 立刻校准那一次
+
+      vi.advanceTimersByTime(5000);
+      expect(loadDetail).toHaveBeenCalledTimes(2);      // 有界重试那一次
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('onHide / onUnload 会清掉待重试的校准定时器', () => {
+    vi.useFakeTimers();
+    try {
+      const { page, loadDetail } = createPageWithStubbedLoad();
+      page.setData({ order: { sale_order_id: 'FY-215', status: '待支付' } });
+      page.startCountdown(PENDING_ORDER_WITH_REMAINING(120_000));
+      const base = Date.now();
+      vi.setSystemTime(base - 30_000);
+      vi.advanceTimersByTime(1000);
+      expect(page._calibrationRetryTimer).not.toBeNull();
+
+      page.onHide();
+      expect(page._calibrationRetryTimer).toBeNull();
+      loadDetail.mockClear();
+      vi.advanceTimersByTime(10_000);
+      expect(loadDetail).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   test('墙钟被回拨 → 停表并回服务端重新校准，不让倒计时被凭空延长', () => {
     vi.useFakeTimers();
     try {

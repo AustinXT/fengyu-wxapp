@@ -185,6 +185,10 @@ Page({
   // 最近一次 loadDetail 的实测往返耗时。expire_in_ms 是服务端生成响应那一刻的剩余量，
   // 传到手上已经过去一段了；不扣的话倒计时会比真实关单时刻晚一个 RTT。
   _lastLoadRttMs: 0,
+  // 最近一次 detail 响应**到手那一刻**的墙钟。截止点必须锚在这里，
+  // 而不是 startCountdown 执行时的 `Date.now()` —— 两者之间还隔着分组疗程卡、
+  // 映射流水、setData 这一堆视图组装，那段耗时会被凭空加到倒计时上。
+  _lastLoadReceivedAt: 0,
   // 已经因「非权威的剩余量归零」重载过的订单号（issue #215）。
   //
   // 权威口径（`expire_in_ms`）那条路是**结构性收敛**的：服务端说 0 就蕴含它已经试过关单，
@@ -197,6 +201,10 @@ Page({
   // onHide 那一刻观测到的墙钟。隐藏期间被系统校时往回拨的话，tick 里的回拨检测
   // 看不见（onShow 恢复时 lastTickAt 用的已是调整后的时间），截止点会被凭空延长。
   _hiddenAtWallClock: 0,
+  // 墙钟回拨后的校准重试（issue #215）。回拨本身**不**关支付入口（理由见 tick 的回拨分支），
+  // 所以校准那一次请求要是失败了，页面就只剩「请完成支付」且再无自动恢复点。
+  // 这里排一次有界重试；仍失败就等用户动作（下拉 / onShow）。
+  _calibrationRetryTimer: null as ReturnType<typeof setTimeout> | null,
 
   onLoad(options) {
     // 读全局灰度开关（未配置默认 false）
@@ -289,6 +297,7 @@ Page({
         ? Math.max(0, order.server_elapsed_ms)
         : 0;
       this._lastLoadRttMs = Math.max(0, (Date.now() - sentAt) - serverElapsed);
+      this._lastLoadReceivedAt = Date.now();
       const items: OrderDetailItem[] = data?.items || [];
       const paymentsRaw: OrderPayment[] = (data as any)?.payments || [];
       const iconMeta = STATUS_ICON[order.status] || STATUS_ICON['已关闭'];
@@ -507,6 +516,23 @@ Page({
     }
   },
 
+  /**
+   * 墙钟回拨后的校准：立刻拉一次，再排一次有界重试（issue #215）。
+   * 回拨不关支付入口，所以这一次请求失败就没有自动恢复点了 —— 补一次重试，
+   * 仍失败就等用户动作（下拉 / onShow）。
+   */
+  _calibrateAfterClockJump(saleOrderId: string) {
+    if (this._hidden || this._destroyed) return;
+    this.loadDetail(saleOrderId);
+    if (this._calibrationRetryTimer) clearTimeout(this._calibrationRetryTimer);
+    this._calibrationRetryTimer = setTimeout(() => {
+      this._calibrationRetryTimer = null;
+      if (this._hidden || this._destroyed) return;
+      if (this.data.order?.status !== '待支付') return;   // 已经校准到位了
+      this.loadDetail(saleOrderId);
+    }, 5000);
+  },
+
   /** 停表（不动 countdown 文案，调用方按需自己清） */
   _stopCountdown() {
     if (this._countdownTimer) {
@@ -611,7 +637,10 @@ Page({
       return;
     }
 
-    this._installCountdown(Date.now() + remainingAt0, order.sale_order_id);
+    // 锚在响应到手那一刻：从那时到这里还隔着一整轮视图组装（见 _lastLoadReceivedAt）。
+    // 没有这个锚点（resumeCountdown 那条路）时才退回当前时刻。
+    const anchorAt = this._lastLoadReceivedAt > 0 ? this._lastLoadReceivedAt : Date.now();
+    this._installCountdown(anchorAt + remainingAt0, order.sale_order_id);
   },
 
   /**
@@ -644,7 +673,7 @@ Page({
         // 量时间」，并**不**说明截止点已经过了 —— 多半还剩好几分钟。关了支付入口
         // 就是拿一次系统校时去误伤一笔本来能付的单，比让它可能吃一个「订单已超时」更糟。
         this.setData({ countdown: '' });
-        if (!this._hidden && !this._destroyed) this.loadDetail(saleOrderId);
+        this._calibrateAfterClockJump(saleOrderId);
         return;
       }
       lastTickAt = now;
@@ -753,6 +782,10 @@ Page({
     // —— 否则孤儿定时器每秒对死实例 setData，最长烧到 expire_at 到点（issue #215）
     this._destroyed = true;
     this._stopCountdown();
+    if (this._calibrationRetryTimer) {
+      clearTimeout(this._calibrationRetryTimer);
+      this._calibrationRetryTimer = null;
+    }
     if (this._poller) {
       this._poller.clear();
       this._poller = null;
@@ -764,6 +797,10 @@ Page({
     this._hiddenAtWallClock = Date.now();
     // 排队中的尾随刷新一并作废：onShow 会重新加载
     this._loadQueued = false;
+    if (this._calibrationRetryTimer) {
+      clearTimeout(this._calibrationRetryTimer);
+      this._calibrationRetryTimer = null;
+    }
     // 页面隐藏（navigateTo 跳走 / tab 切换）停止轮询，避免后台继续请求
     if (this._poller) {
       this._poller.clear();

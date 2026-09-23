@@ -2981,7 +2981,7 @@ async function detail(ctx) {
        ORDER BY created_at ASC, id ASC`,
       [orderNo]
     ),
-    // 见上面 needsGuardRefresh 的说明。本文件 :2550 对 order.pay 早已写明
+    // 见上面 needsGuardRefresh 的说明。`order.pay` 的 preflight 注释早已写明
     // 「状态必须 FOR UPDATE 后重读」，detail 这条展示链路此前是唯一的例外。
     needsGuardRefresh ? queryOrderGuardSnapshot(orderNo, userId) : Promise.resolve(null),
   ])
