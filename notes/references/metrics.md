@@ -713,6 +713,8 @@ SELECT COUNT(*) FROM org_nodes WHERE type='store' [AND parent_id=$market]
 | **2026-09-22** | **「基期算不出」升级为跨站点规则（#307）**。`fengyu-analyst`（第 5 个子项目，独立部署的经营分析站，复用 admin 的库与认证）被发现有一份**完全独立**的增幅实现，同样只挡 `base === 0` 不挡 `base < 0`——它与 admin 无目录共享、无 snapshot 守护，纯粹因为上一行那条口径此前无人登记而把同一个符号翻转缺陷重写了一遍。现两边「算不出」判定已对齐（含非有限值），但**展示层刻意分叉**：admin 出 `--` 且徽章弃判方向，analyst 出「无基数」但**仍按 `current > prevYear` 判绿/红**（由负回正是真实的向好信息）。⚠ 该分叉是有意的，别当漏改去统一。详见文末基期章节的跨站点小节。 |
 | **2026-09-23** | **负基期改为「由负转正 / 未转正」两态展示，取代一律 `--`（#310 #315，拍板）**。此前 `base <= 0` 一律压成灰色 `--`（PR #305），挡住了假数字但丢掉了店长最关心的「由负转正」——实测南昌梦祥店「本周」业绩基期 −2,646、当期 +264（已回正），店长只能翻明细表才知道。现立**全站统一矩阵**（见文末基期章节）：`base<0 && cur>0` → 「由负转正」绿、`base<0 && cur<=0` → 「未转正」红、`base===0` 与非有限值仍 `--` 灰；硬约束**不再输出任何基于负分母的百分比**。同轮把 **admin 首页看板 `TrendArrow`** 纳入本口径——它此前 `base<=0` 时把幅度吞成 0 却仍走涨跌分支，渲染出「↑ 0%」，且**生产正在触发**（`yesterdayRevenue` 退款计负无夹底，只读实测 1020 门店日中 67 天非正 = 6.6%）。并落**伪持平**口径：按展示精度舍入后为 0 的并入「持平」，不再出 `+0.00%`。⚠️ 三处展示精度不同（数据中心 2 位 / 首页看板整数 / analyst 1 位），阈值随之不同，别互抄。⚠️ admin 侧单一真相源改为 `src/lib/delta-display.ts`，数据中心与首页看板共用；原 `comparison.ts` 的 `deltaPct` **已删除**（生产零调用且语义分叉，留着是「第三份实现」的诱饵）。 |
 
+| **2026-09-23** | **人效板「员工/技师人均业绩」分子改回门店现金流口径（#285）**，见文末「数据中心（admin）板块专属指标」节的「业绩两套口径」。原实现把 `SUM(spia.allocated_amount)` 跨员工求和当门店业绩用——`allocated_amount` 是**角色归属额**（写入侧按 `(sale_item_id, role_type)` 分池校验，单 receipt 的 ratio 合计 2.0/3.0 属正常形态），只在 `GROUP BY employee_id` 时才是钱。2026-09-01~09-21 集团实测虚高 **+32.30%**（4,867,397.55 vs 3,679,035.98），与同页「门店排名榜-业绩」差 111 万；另有 950 张零分配 receipt 反向漏计，**偏差不同向、无法用系数校正**。现分子改为 `SUM(spe.amount)`，与门店排名榜 / 销售板总业绩 / staff `queryStoreRevenue` 四处同源。<br>⚠ **恢复 role_type 白名单不是修法**（实测仍差 −4.45%，只是偶然的部分去重）。<br>⚠ 员工排行榜 / 按技师人效明细**维持** allocation 口径不变（分组到人时语义正确，见 §员工排行榜归属）。<br>**根因**：2026-07-27 `23405ddf` 换表时把全局大卡一并留在 allocation 口径，并把守护断言反向钉死；该断言是文件级 `toMatch`、分不清聚合粒度，两边都写 `spia` 时恒绿，缺陷存活两个月。现改为按 Part 分段断言 + Part A/B 的 WHERE 子句逐字相等。<br>**同轮修复分母**（评审抓出）：人均派生分母只按 `staff_wechat_users.store_id` 过滤，漏掉 13 名 `store_id IS NULL` 直挂市场/部门的在职产能技师（集团 150 vs 164，虚高 **+9.33%**；南昌凤御 +13.8%、南昌易大师 +5.3%；昭通凤御技师数少报 4 人；「品项公司」整个市场不出现在按市场表里）。现归属规则与 Part D `producer_base` 对齐。⚠️ 单店 scope 下直挂者仍不出现，`集团技师数 ≠ Σ门店技师数`（与员工榜同语义，非缺陷）。 |
+
 ---
 
 ## 销售数据页 — 分客型业绩 / 实耗 / 产品出库
@@ -973,6 +975,32 @@ tiyan AS (                                    -- 体验：期内有购买但全�
 | 流量客业绩 | 销售 | `SUM(spe.amount)` WHERE `c.customer_type = '流量客'` | 仅纯流量客（不含体验/小美客）；按组织层级现金流口径（`[spe.performance_date]`），详见上方「分客型业绩」表。**2026-09-14 订正**：原写 `SUM(sop.amount)` 的别名已随口径切换失效 |
 | 单次客耗 | 客量 | `生美实耗 ÷ 服务人次` | 分子=`SUM(unit_real_price*session_used) WHERE is_shengmei`（已完成 ∩ service_date 区间）；分母=已完成 service_orders 行数（服务人次）。KPI 与明细表统一此口径（**不用** Excel 原稿"÷频率"，亦不用"÷会员人次"）|
 | 店长人数 | 人效 | `COUNT(在营启用门店)` | 每店一店长口径：按 `stores` JOIN `org_nodes(type='门店', is_active=TRUE)` 在营计数（`opening_date<=区间末 ∩ (closed_at IS NULL OR closed_at>区间末)`），**不依赖** `position_name`。故 `店长人均X = 每店平均 X`（含 店长人均收入 = 门店全部产能员工提成合计 ÷ 门店数）|
+| 员工/技师人均业绩分子 | 人效 | `SUM(spe.amount)`（门店现金流） | **2026-09-23 #285 订正**。`empAvgRevenue` 与 `byMarket.techAvgRevenue` 的分子 = 上方 §派生指标的 `storeRevenue`，与同页「门店排名榜-业绩」、销售板「总业绩」、staff `queryStoreRevenue` **四处同源**。详见下方「业绩两套口径」|
+| 人均派生分母（技师数） | 人效 | 产能技师 ∩ 区间末在职 ∩ **含直挂市场/部门者** | **2026-09-23 #285 订正**。`skills && ARRAY['美容师','养生师']`，归属按 `COALESCE(sw.store_id, ds.store_id)`；回收后仍无门店的用 `anchor_market_id` 锚到市场。⚠️ **只按 `store_id` 过滤会漏人**：组织归属双轨（`store_id` + `org_node_id`），2026-09 实测 13 名在职产能技师 `store_id IS NULL`（12 人直挂各市场「养生部」、1 人直挂「品项公司」），产出进分子、人头不进分母 → 集团 150 vs 164、虚高 **+9.33%**。⚠️ **单店 scope 下直挂者不出现**（`orgAnchorScopeSql` 返回 FALSE），故 `集团技师数 ≠ Σ门店技师数`，与员工榜同语义。⚠️ 另有一条**潜在**缺口：「既无门店、又锚不到市场」的产能技师会进 KPI 总分母却进不了任何 byMarket 行（`orgAnchorScopeSql` 在 admin+scope=all 时返回 `TRUE`，不要求锚得到市场），即 `KPI 技师数 ≥ Σ byMarket 技师数`。2026-09-23 实测该类人数为 **0**，当前两数恒等；不收紧是有意的——收紧会把真实技师从集团口径整个抹掉，且与 `producer_employees` 人池定义分叉 |
+
+> ### ⚠️ 业绩有两套口径，按**聚合粒度**分（2026-09-23 #285 订正）
+>
+> | 粒度 | 公式 | 用在哪 |
+> |---|---|---|
+> | 门店/全局（不分组到人） | `SUM(sale_order_performance_events.amount)` ∩ 已支付 ∩ `change_type IN ('首次支付','回款','退款')` ∩ `sale_order_type IN ('销售单','转换单','充值单')` ∩ `legacy_source IS DISTINCT FROM 'workfine'` ∩ `[spe.performance_date]` | 人效板 KPI 大卡、按市场人效、门店排名榜；销售板总业绩；staff 大卡 |
+> | 员工（`GROUP BY employee_id`） | `SUM(sale_payment_item_allocations.allocated_amount)` ∩ `is_void=FALSE` ∩ 销售单/转换单 ∩ 已支付回款分配 | 员工排行榜、按技师人效明细（见上方 §员工排行榜归属） |
+>
+> **为什么不能混用**：`allocated_amount` 是**角色归属额**不是钱。写入侧按 `(sale_item_id, role_type)`
+> **分池**校验「池内 Σratio ≤ 1」，单 receipt 挂几个角色就有几个独立的 100% 池 —— ratio 合计
+> 2.0 / 3.0 是设计允许的正常形态。按 `employee_id` 分组时它是对的；**去掉 GROUP BY 跨员工求和，
+> 同一笔钱就被算 2~3 次**。
+>
+> 2026-09-01~09-21 集团实测：跨员工求和 4,867,397.55 vs 门店业绩 3,679,035.98，**虚高 +32.30%**。
+> 且同期 950 张 receipt 零分配、5.8 万反向漏计 → **偏差不同向，无法用统一系数校正**。
+>
+> **恢复 `role_type IN ('美容师','养生师')` 白名单不是修法**：同区间实测得 3,515,204.60，
+> 仍差 −4.45%，且偏差幅度随品项老师/推广部业务占比漂移 —— 那只是一次偶然的部分去重。
+>
+> **故障史**：2026-07-27 `23405ddf` 换表（`sale_allocations` → `sale_payment_item_allocations`）时
+> 把「全局大卡 / by store」一并留在了 allocation 口径，同时把 `consistency.efficiency.test.ts`
+> 的守护断言从「保留 role_type 白名单」反向改成「不按白名单截断」。因该断言是**文件级**
+> `toMatch`、分不清 Part A/B 与 Part D，两边都写 `spia` 时恒绿，缺陷存活两个月，
+> 表现为 KPI 与同页门店榜差 111 万。现已改为按 Part 分段断言 + Part A/B 的 WHERE 子句逐字相等。
 
 > **时间口径**：数据中心排名榜与上述区间指标统一走顶部时间维度 `col::date BETWEEN current.start AND current.end`
 > （TimeRange：今日/本周/本月/今年/自定义），而非 staff 端固定 month/lastMonth/year 锚 NOW()。
