@@ -134,26 +134,58 @@ function assertHelperBody(adminSrc: string): void {
  * 「逐条存在」证明不了「没有多出别的」；「A == B」在两边一起改时也失效。
  * 只有「A 的谓词集 == B 的 == C 的」才挡得住。
  */
-function spePredicateSet(segment: string): string[] {
+function expandSpeHelper(segment: string): string {
   // Part A/B 把 status + performance_date 交给 helper，Part C 写字面量。
   // 先把 helper 调用展开成它实际产出的两个谓词，两边才可比。
-  const expanded = segment.replace(
+  return segment.replace(
     /\$\{performanceEventDateBetween\('spe', cur\.start, cur\.end\)\}/g,
     "spe.status = '已支付' AND spe.performance_date BETWEEN ${cur.start} AND ${cur.end}",
   )
+}
+
+/** 抽谓词，**不去重**（计数核对要用） */
+function spePredicatesRaw(segment: string): string[] {
+  const expanded = expandSpeHelper(segment)
   const out: string[] = []
-  // 逐个 `spe.<列> <剩余>` 地切；到下一个 AND/ON/GROUP/WHERE/反引号为止
   const re = /spe\.(\w+)\s*(IS DISTINCT FROM|IN|BETWEEN|=|<>|>=|<=|>|<)\s*([^]*?)(?=\s+AND\s|\s+GROUP BY|\s+ORDER BY|\s+WHERE\s|`\)|$)/g
   let m: RegExpExecArray | null
   while ((m = re.exec(expanded)) !== null) {
     const col = m[1]
-    // store_id 的关联条件（Part C 的 JOIN ON / Part A 的 scopeFilterSql 片段）不算业务谓词
+    // store_id 的关联/范围条件（Part C 的 JOIN ON / Part A 的 scopeFilterSql 片段）不算业务谓词
     if (col === 'store_id') continue
-    // 时间区间的变量名两处不同（cur.start vs range.start），归一掉
     const rhs = m[3].replace(/\$\{[^}]*\}/g, '${ts}').replace(/\s+/g, ' ').trim()
     out.push(`spe.${col} ${m[2]} ${rhs}`)
   }
-  return [...new Set(out)].sort()
+  return out
+}
+
+function spePredicateSet(segment: string): string[] {
+  return [...new Set(spePredicatesRaw(segment))].sort()
+}
+
+/**
+ * **fail-closed 收口**：每一个 `spe.<列>` 引用都必须有归属 ——
+ * 要么在聚合 `SUM(spe.amount...)` 里，要么是 `spe.store_id` 的关联/范围条件，
+ * 要么是被 `spePredicatesRaw` 识别出的一条业务谓词。数不平就判红。
+ *
+ * ⚠️ 为什么需要这一层：闸门 2 round-4 codex 找到了第六种绕过 ——
+ * 在 Part C 加 `AND COALESCE(spe.amount, 0) > 0`（剔除退款负行）。
+ * 谓词正则要求 `spe.<列>` 后**紧跟**运算符，而这里跟的是逗号，
+ * 该谓词被**静默丢弃**，于是三处谓词集依然"相等"，55 条断言全绿。
+ * 实测复现属实 —— 任何把 `spe.*` 包进函数的写法都能逃掉。
+ * 所以不能只比「识别出来的那些」，必须证明「没有识别不出来的」。
+ */
+function assertEverySpeRefClassified(segment: string, label: string): void {
+  const expanded = expandSpeHelper(segment)
+  const total = (expanded.match(/\bspe\.\w+/g) ?? []).length
+  const inAggregate = (expanded.match(/SUM\(\s*spe\.amount/g) ?? []).length
+  const storeIdRefs = (expanded.match(/\bspe\.store_id\b/g) ?? []).length
+  const classified = spePredicatesRaw(segment).length
+  expect(
+    total,
+    `${label} 存在无法归类的 spe.* 引用（聚合 ${inAggregate} + store_id ${storeIdRefs} + 谓词 ${classified} ≠ 总计 ${total}）。` +
+      '把 spe.* 包进函数（如 COALESCE(spe.amount,0) > 0）就能骗过谓词正则，故此处 fail-closed。',
+  ).toBe(inAggregate + storeIdRefs + classified)
 }
 
 /** 聚合表达式必须**逐字**是 `COALESCE(SUM(spe.amount::numeric), 0)`，不许挂 FILTER/DISTINCT/CASE */
@@ -241,6 +273,12 @@ describe('数据中心人效板块两端口径一致性守护', () => {
       expect(a.length, 'Part A 至少应有 4 个 spe 业务谓词').toBeGreaterThanOrEqual(4)
       expect(b, 'Part B 的 spe 谓词集必须与 Part A 相同').toEqual(a)
       expect(c, 'Part C 门店排名榜的 spe 谓词集必须与 KPI 相同，否则「KPI == 门店榜」不成立').toEqual(a)
+    })
+
+    it('⭐ 三处都不得有**无法归类**的 spe.* 引用（fail-closed，防包装表达式逃逸）', () => {
+      assertEverySpeRefClassified(sliceOrFail(adminSrc, 'const qRevenueTotal', 'const qConsumeTotal'), 'Part A')
+      assertEverySpeRefClassified(sliceOrFail(adminSrc, 'const qRevenueByStore', 'const qConsumeByStore'), 'Part B')
+      assertEverySpeRefClassified(sliceOrFail(adminSrc, 'const qStoreRankRevenue', 'const qStoreRankConsume'), 'Part C')
     })
 
     it('⭐ 三处的聚合表达式都必须是裸 SUM(spe.amount::numeric)，不许挂 FILTER/CASE', () => {
