@@ -81,12 +81,15 @@ import { prepareBoardContext } from '@/lib/data-center/context'
 const v = (n: number) => [{ v: n }]
 
 /**
- * 按"调用顺序"配置 db.execute 返回值（29 次）。
+ * 按"调用顺序"配置 db.execute 返回值（共 `EXPECTED_QUERY_COUNT` 次）。
  * @param opts.scalars Part A 9 个标量（默认全 0）
  * @param opts.skeleton Part B 骨架行
- * @param opts.detail   Part B 9 个明细行表（manager/tech/rev/cons/shengmeiCons/salesComm/serviceComm/marketFootfall/project）
+ * @param opts.detail   Part B **10** 个明细行表
+ *   （manager / tech-by-store / **tech-direct-by-market** / rev / cons / shengmeiCons /
+ *    salesComm / serviceComm / marketFootfall / project）
  * @param opts.storeRanks Part C 5 个门店榜行表
  * @param opts.staffRanks Part D 5 个员工榜行表
+ * @param opts.staffDetail Part E 按技师人效明细行表
  */
 function setupQueue(opts: {
   scalars?: number[]
@@ -94,12 +97,14 @@ function setupQueue(opts: {
   detail?: Array<Array<Record<string, unknown>>>
   storeRanks?: Array<Array<Record<string, unknown>>>
   staffRanks?: Array<Array<Record<string, unknown>>>
+  staffDetail?: Array<Record<string, unknown>>
 }) {
   const scalars = opts.scalars ?? [0, 0, 0, 0, 0, 0, 0, 0, 0]
   const skeleton = opts.skeleton ?? []
   const detail = opts.detail ?? [[], [], [], [], [], [], [], [], [], []]
   const storeRanks = opts.storeRanks ?? [[], [], [], [], []]
   const staffRanks = opts.staffRanks ?? [[], [], [], [], []]
+  const staffDetail = opts.staffDetail ?? []
 
   // 位置喂数的前提：每段长度必须与 efficiency.ts 对得上。对不上就在这里炸，
   // 别让它一路错位到断言里（#285 实测：插一条查询会静默打翻 5 条用例）。
@@ -114,9 +119,28 @@ function setupQueue(opts: {
     ...detail,
     ...storeRanks,
     ...staffRanks,
+    staffDetail, // Part E：#285 之前根本没有这一槽，第 31 次调用被 `?? []` 静默吞掉
   ]
+  // 队列总长必须等于 efficiency.ts 的 db.execute 调用数。`?? []` 的兜底会把「少一槽」
+  // 伪装成「查询返回空」——那正是 Part E 长期零覆盖却没人发现的原因。
+  expect(queue, 'mock 队列总长必须等于 efficiency.ts 的查询数').toHaveLength(EXPECTED_QUERY_COUNT)
   let i = 0
   ;(db.execute as any).mockImplementation(() => Promise.resolve(queue[i++] ?? []))
+}
+
+/**
+ * `efficiency.ts` 的 `Promise.all` 元素个数。
+ * 改了那边的查询数就要同步改这里 —— 下面的 `assertAllQueriesConsumed` 会把不一致炸出来，
+ * 而不是让位置 mock 静默错位（#285 加 qTechDirectByMarket 时实测打翻 5 条用例）。
+ */
+const EXPECTED_QUERY_COUNT = 31
+
+/** 断言生产代码确实把队列**全部**消费掉了，既不多也不少 */
+function assertAllQueriesConsumed() {
+  expect(
+    (db.execute as any).mock.calls.length,
+    'db.execute 调用数与 mock 队列长度不符：Promise.all 里增删了查询',
+  ).toBe(EXPECTED_QUERY_COUNT)
 }
 
 function mockSessionOk() {
@@ -145,6 +169,8 @@ describe('getEfficiencyBoard — KPI 人均派生装配', () => {
   it('kpis 含全部 7 个键且单位正确', async () => {
     setupQueue({})
     const res = await getEfficiencyBoard(baseParams)
+    // 顺带把「生产代码的查询数 == mock 队列长度」钉死：位置喂数的前提就是这个等式。
+    assertAllQueriesConsumed()
     expect(Object.keys(res.kpis).sort()).toEqual(
       [
         'managerAvgMembers',

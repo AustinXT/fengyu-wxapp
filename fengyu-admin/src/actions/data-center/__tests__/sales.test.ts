@@ -38,6 +38,9 @@ vi.mock('@/lib/permissions', () => ({
 vi.mock('@/lib/data-center/scope-sql', () => ({
   scopeFilterSql: vi.fn(() => ({})),
   scopeStoreSkeletonSql: vi.fn(() => ({})),
+  // #285：员工数口径抽到 technician-sql 单源后，该模块会 import orgAnchorScopeSql
+  //（无门店技师按锚定市场判可见）。漏了它整个 suite 会在 import 期就炸。
+  orgAnchorScopeSql: vi.fn(() => ({})),
 }))
 
 const mockCtx = {
@@ -75,22 +78,30 @@ import { prepareBoardContext } from '@/lib/data-center/context'
  *   KPI 6: storeCount
  *   KPI 7: employeeCount
  *   明细 8: skeleton
- *   明细 9: technicianCount
- *   明细 10: storeRevenue(byStore)
- *   明细 11: shengmeiRevenue
- *   明细 12: newCustomerRevenue
- *   明细 13: trafficCustomerRevenue
- *   明细 14: storeConsume
- *   明细 15: shengmeiConsume
+ *   明细 9: technicianCount(by store)
+ *   明细 10: technicianDirectByMarket  ← #285 新增
+ *   明细 11: storeRevenue(byStore)
+ *   明细 12: shengmeiRevenue
+ *   明细 13: newCustomerRevenue
+ *   明细 14: trafficCustomerRevenue
+ *   明细 15: storeConsume
+ *   明细 16: shengmeiConsume
+ *
+ * ⚠️ 本 mock 按**位置**喂数，往 Promise.all 里插一条查询就会让其后全部错位。
+ * #285 加 technicianDirectByMarket 时实测打翻了 11 条用例。下面的长度断言就是为此加的。
  */
 function setupExecuteQueue(opts: {
   kpis?: number[] // 8 个标量值（默认全 100）
   skeleton?: Array<Record<string, unknown>>
-  detailMaps?: Array<Array<Record<string, unknown>>> // 7 个明细行表（tech + 6 业绩）
+  detailMaps?: Array<Array<Record<string, unknown>>> // 8 个明细行表（tech by store + tech by market + 6 业绩）
 }) {
   const kpiVals = opts.kpis ?? [1000, 200, 800, 150, 300, 500, 5, 12]
   const skeleton = opts.skeleton ?? []
-  const detail = opts.detailMaps ?? [[], [], [], [], [], [], []]
+  const detail = opts.detailMaps ?? [[], [], [], [], [], [], [], []]
+
+  // 位置喂数的前提：段长必须与 sales.ts 对得上，对不上就在这里炸，别一路错位到断言里。
+  expect(kpiVals, 'KPI 标量数').toHaveLength(8)
+  expect(detail, '明细行表数（含 technicianDirectByMarket）').toHaveLength(8)
 
   const queue: unknown[] = [
     ...kpiVals.map((v) => [{ v }]),
@@ -198,7 +209,8 @@ describe('getSalesBoard — 明细表装配', () => {
     setupExecuteQueue({
       skeleton,
       detailMaps: [
-        [{ store_id: 'S1', v: 3 }], // tech
+        [{ store_id: 'S1', v: 3 }], // tech by store
+        [], // tech direct by market（本用例无直挂技师）
         [{ store_id: 'S1', v: 1000 }], // storeRevenue
         [{ store_id: 'S1', v: 200 }], // shengmeiRevenue
         [{ store_id: 'S1', v: 300 }], // newCustomerRevenue
@@ -241,7 +253,8 @@ describe('getSalesBoard — 明细表装配', () => {
           { store_id: 'S1', v: 3 },
           { store_id: 'S2', v: 2 },
           { store_id: 'S3', v: 4 },
-        ], // tech
+        ], // tech by store
+        [], // tech direct by market
         [
           { store_id: 'S1', v: 1000 },
           { store_id: 'S2', v: 500 },

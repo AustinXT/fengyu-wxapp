@@ -37,6 +37,7 @@ const STAFF_MGMT_DASHBOARD = path.resolve(
   '../../../../../fengyu-staff/cloudfunctions/staffApi/routes/mgmt-dashboard.js',
 )
 const ADMIN_SALES = path.resolve(__dirname, '../sales.ts')
+const TECHNICIAN_SQL = path.resolve(__dirname, '../../../lib/data-center/technician-sql.ts')
 
 function normalize(src: string): string {
   return src.replace(/\s+/g, ' ').trim()
@@ -123,6 +124,7 @@ describe('数据中心人效板块两端口径一致性守护', () => {
   let adminSrc: string
   let staffSrc: string
   let salesSrc: string
+  let techSrc: string
   let adminBody: string
   let staffBody: string
 
@@ -130,6 +132,7 @@ describe('数据中心人效板块两端口径一致性守护', () => {
     adminSrc = fs.readFileSync(ADMIN_EFFICIENCY, 'utf-8')
     staffSrc = fs.readFileSync(STAFF_MGMT_DASHBOARD, 'utf-8')
     salesSrc = fs.readFileSync(ADMIN_SALES, 'utf-8')
+    techSrc = fs.readFileSync(TECHNICIAN_SQL, 'utf-8')
     adminBody = normalize(stripComments(adminSrc))
     staffBody = normalize(stripComments(staffSrc))
   })
@@ -203,36 +206,44 @@ describe('数据中心人效板块两端口径一致性守护', () => {
     // 见 memory project-employee-org-direct-attach-market。
 
     it('technician_base 用 COALESCE(sw.store_id, ds.store_id) 回收直挂门店节点的人', () => {
-      const n = sliceOrFail(adminSrc, 'const technicianCte', 'const qTechnicianCount')
-      expect(n).toMatch(/COALESCE\(\s*sw\.store_id\s*,\s*ds\.store_id\s*\)\s+AS store_id/i)
-      expect(n).toMatch(/LEFT JOIN stores ds ON ds\.org_node_id = sw\.org_node_id/i)
-      expect(n).toMatch(/skills && ARRAY\['美容师','养生师'\]/)
+      expect(techSrc).toMatch(/COALESCE\(\s*sw\.store_id\s*,\s*ds\.store_id\s*\)\s+AS store_id/i)
+      expect(techSrc).toMatch(/LEFT JOIN stores ds ON ds\.org_node_id = sw\.org_node_id/i)
+      expect(techSrc).toMatch(/skills && ARRAY\['美容师','养生师'\]/)
     })
 
     it('technician_scoped 保留 orgAnchorScopeSql 分支（无门店者按锚定市场判可见）', () => {
-      const n = sliceOrFail(adminSrc, 'const technicianCte', 'const qTechnicianCount')
-      expect(n).toMatch(/tb\.store_id IS NOT NULL AND/i)
-      expect(n).toMatch(/tb\.store_id IS NULL AND/i)
-      expect(n).toMatch(/orgAnchorScopeSql\(session, scope, 'tb\.anchor_market_id'\)/)
+      expect(techSrc).toMatch(/tb\.store_id IS NOT NULL AND/i)
+      expect(techSrc).toMatch(/tb\.store_id IS NULL AND/i)
+      expect(techSrc).toMatch(/orgAnchorScopeSql\(session, scope, 'tb\.anchor_market_id'\)/)
     })
 
-    it('两个分母查询都走 technician_scoped 单源，不再直接扫 staff_wechat_users', () => {
-      const total = sliceOrFail(adminSrc, 'const qTechnicianCount', '店长数 =')
-      expect(total).toMatch(/FROM technician_scoped/i)
-      expect(total).not.toMatch(/FROM staff_wechat_users/i)
-
-      const byStore = sliceOrFail(adminSrc, 'const qTechByStore', 'const qTechDirectByMarket')
-      expect(byStore).toMatch(/FROM technician_scoped/i)
+    it('by store / by market 两支互补不重叠', () => {
+      const byStore = sliceOrFail(techSrc, 'export function technicianByStoreSql', 'export function technicianDirectByMarketSql')
       expect(byStore).toMatch(/WHERE store_id IS NOT NULL/i)
-      expect(byStore).not.toMatch(/FROM staff_wechat_users/i)
+      expect(byStore).toMatch(/GROUP BY store_id/i)
+
+      const byMarket = techSrc.slice(techSrc.indexOf('export function technicianDirectByMarketSql'))
+      expect(byMarket).toMatch(/WHERE store_id IS NULL AND anchor_market_id IS NOT NULL/i)
+      expect(byMarket).toMatch(/GROUP BY anchor_market_id/i)
+      // market_name 必须带出：品项公司这类市场没有门店，拿不到 skelRows 的名字
+      expect(byMarket).toMatch(/anchor_market_name/i)
     })
 
-    it('qTechDirectByMarket 只取 store_id IS NULL 的那部分（与 by store 互补不重叠）', () => {
-      const n = sliceOrFail(adminSrc, 'const qTechDirectByMarket', 'Part C')
-      expect(n).toMatch(/WHERE store_id IS NULL AND anchor_market_id IS NOT NULL/i)
-      expect(n).toMatch(/GROUP BY anchor_market_id/i)
-      // market_name 必须带出：品项公司这类市场没有门店，拿不到 skelRows 的名字
-      expect(n).toMatch(/anchor_market_name/i)
+    it('⭐ 单源纪律：人效板与销售板都引用 technician-sql，且都不再自己扫 staff_wechat_users', () => {
+      // 这条是 #285 闸门 2 codex P0 的回归守护：分母只修人效板会让同一个数据中心
+      // 两个板块技师数差 14 人（人效 164 / 销售 150），而此前没有任何测试能发现。
+      for (const [name, src] of [['efficiency.ts', adminSrc], ['sales.ts', salesSrc]] as const) {
+        expect(src, `${name} 必须引用 technician-sql 单源`).toMatch(
+          /from '@\/lib\/data-center\/technician-sql'/,
+        )
+        // 不能笼统禁 `FROM staff_wechat_users`：efficiency.ts 的 Part D `producer_base`
+        // 合法地扫该表取员工榜人池（且刻意**不**按 skills 过滤）。
+        // 「自己数技师」的特征签名是 skills 白名单——stripComments 后它只该出现在单源模块里。
+        expect(
+          normalize(stripComments(src)),
+          `${name} 不得再自己按 skills 白名单数技师，口径只许来自 technician-sql`,
+        ).not.toMatch(/skills && ARRAY\['美容师','养生师'\]/)
+      }
     })
   })
 

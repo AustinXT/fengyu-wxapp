@@ -69,7 +69,7 @@
  *         按区间末 hired_at/resigned_at 历史化。
  *         ⚠️ **含直挂市场/部门的技师**（2026-09-23 #285 修正）：组织归属双轨，只按 store_id
  *         过滤会漏掉 13 名 store_id IS NULL 的在职产能技师（集团 150 vs 164，虚高 +9.33%）。
- *         归属规则见 `technicianCte`，与 Part D `producer_base` 对齐；
+ *         归属规则单源在 `@/lib/data-center/technician-sql`（销售板共用同一份），与 Part D `producer_base` 对齐；
  *         单店 scope 下直挂者不出现（`orgAnchorScopeSql` 返回 FALSE），与员工榜同语义。
  *   - 人均派生分母「员工数」= 技师（产能技师）口径，与 metrics.md §派生指标分母 employeeCount 对齐。
  *   - 「人均项目数 empAvgProjects / techAvgProjects」分子用 metrics.md 项目数口径
@@ -92,6 +92,11 @@ import type {
 import { prepareBoardContext } from '@/lib/data-center/context'
 import { scopeFilterSql, scopeStoreSkeletonSql, orgAnchorScopeSql } from '@/lib/data-center/scope-sql'
 import { excludeDepositRefundSql } from '@/lib/data-center/consume-filter'
+import {
+  technicianCountSql,
+  technicianByStoreSql,
+  technicianDirectByMarketSql,
+} from '@/lib/data-center/technician-sql'
 
 /** db.execute 返回数组，取首行标量并 Number 化（null→0，分母聚合无行时按 0 处理） */
 function scalar(rows: unknown, key = 'v'): number {
@@ -251,57 +256,13 @@ export const getEfficiencyBoard = withPermission(
     `)
 
     /**
-     * 产能技师基础集（所有人均派生的**分母**单源）。
+     * 员工数 = 产能技师（含直挂市场/部门者），人均派生分母。
      *
-     * 口径：skills && ARRAY['美容师','养生师'] ∩ 区间末在职历史化
-     *   （hired_at <= 区间末 ∩ (resigned_at IS NULL OR resigned_at > 区间末)），
-     * 对齐 metrics.md employeeCount。
-     *
-     * ⚠️ 禁止退回「只按 `staff_wechat_users.store_id` 过滤」（#285）：
-     * 员工组织归属是**双轨**的（`store_id` 门店 FK + `org_node_id` 组织节点 FK，
-     * 见 memory `project-employee-org-direct-attach-market`）。生产有 14 名在职产能技师
-     * `store_id IS NULL`——12 人直挂各市场「养生部」部门节点、1 人直挂「品项公司」市场节点、
-     * 1 人直挂门店组织节点但 store_id 为空。他们的产出**落在门店上、计入分子**，
-     * 人头却被分母整体剔除 → 2026-09 实测集团大卡虚高 **+9.33%**（150 vs 164）、
-     * 南昌凤御 +13.8%、南昌易大师 +5.3%，且「昭通凤御」技师数少报 4 人。
-     *
-     * 归属规则与同文件 Part D `producer_base` **逐条对齐**（同页两处不得再有两套人池）：
-     *   - `COALESCE(sw.store_id, ds.store_id)`：直挂**门店组织节点**的人回收进该门店
-     *   - 回收后仍为 NULL 的（直挂市场/部门）用 `anchor_market_id` 锚到市场，
-     *     交给 `orgAnchorScopeSql` 判可见性 —— 单店 scope 下它返回 FALSE，
-     *     即**选中单个门店时直挂员工不出现**（与员工榜同语义）
+     * ⚠️ 口径单源在 `@/lib/data-center/technician-sql`，**销售板 `sales.ts` 共用同一份**。
+     * 别在这里内联重写：#285 之前两个板块各写一份只按 `store_id` 过滤的查询，
+     * 只修一处会让同一个数据中心的两个板块技师数差 14 人（闸门 2 codex 判 P0）。
      */
-    const technicianCte = sql`
-      technician_base AS (
-        SELECT sw.employee_id,
-               COALESCE(sw.store_id, ds.store_id) AS store_id,
-               CASE WHEN o.type = '市场' THEN o.id
-                    WHEN op.type = '市场' THEN op.id
-                    ELSE NULL END AS anchor_market_id,
-               CASE WHEN o.type = '市场' THEN o.name
-                    WHEN op.type = '市场' THEN op.name END AS anchor_market_name
-        FROM staff_wechat_users sw
-        LEFT JOIN org_nodes o ON o.id = sw.org_node_id
-        LEFT JOIN org_nodes op ON op.id = o.parent_id
-        LEFT JOIN stores ds ON ds.org_node_id = sw.org_node_id
-        WHERE sw.skills && ARRAY['美容师','养生师']::text[]
-          AND sw.hired_at IS NOT NULL
-          AND sw.hired_at::date <= ${cur.end}
-          AND (sw.resigned_at IS NULL OR sw.resigned_at::date > ${cur.end})
-      ),
-      technician_scoped AS (
-        SELECT tb.employee_id, tb.store_id, tb.anchor_market_id, tb.anchor_market_name
-        FROM technician_base tb
-        WHERE (tb.store_id IS NOT NULL AND ${scopeFilterSql(session, scope, 'tb.store_id')})
-           OR (tb.store_id IS NULL AND ${orgAnchorScopeSql(session, scope, 'tb.anchor_market_id')})
-      )
-    `
-
-    /** 员工数 = 产能技师（含直挂市场/部门者），人均派生分母 */
-    const qTechnicianCount = db.execute(sql`
-      WITH ${technicianCte}
-      SELECT COUNT(*)::int AS v FROM technician_scoped
-    `)
+    const qTechnicianCount = db.execute(technicianCountSql(session, scope, cur.end))
 
     /**
      * 店长数 = 在营门店数（2026-05-26 用户拍板：每店一店长口径，不再按 position_name 识别）。
@@ -336,45 +297,11 @@ export const getEfficiencyBoard = withPermission(
         AND (s.closed_at IS NULL OR s.closed_at::date > ${cur.end})
     `)
 
-    /** 技师数 by store（有门店归属的部分）—— 与 Part A 同一个 technician_scoped 单源 */
-    const qTechByStore = db.execute(sql`
-      WITH ${technicianCte}
-      SELECT store_id, COUNT(*)::int AS v
-      FROM technician_scoped
-      WHERE store_id IS NOT NULL
-      GROUP BY store_id
-    `)
+    /** 技师数 by store（有门店归属的部分）—— 与 Part A 同一份 technician-sql 单源 */
+    const qTechByStore = db.execute(technicianByStoreSql(session, scope, cur.end))
 
-    /**
-     * 技师数 by market（**直挂**市场/部门、无门店归属的那部分）。
-     *
-     * 必须单独出一份按市场的数：byMarket 装配是逐门店累加的，`store_id IS NULL` 的人
-     * 没有任何门店可挂，只按 store 汇总会把他们又丢一次（这正是 #285 分母缺口的成因）。
-     * `market_name` 一并带出，因为「品项公司」这类市场底下一个门店都没有，
-     * 不会出现在门店骨架 skelRows 里，拿不到名字。
-     *
-     * ⚠️ **已知且有意的口径缺口**：本查询要求 `anchor_market_id IS NOT NULL`，
-     * 而 `technician_scoped` 的无门店分支走 `orgAnchorScopeSql` —— 后者在
-     * 「admin + scope=all」时直接返回 `TRUE`，**不要求锚得到市场**。
-     * 于是「既无门店、又锚不到市场」的产能技师会进 **KPI 总分母**，却进不了任何
-     * byMarket 行 → `KPI 技师数 ≥ Σ byMarket 技师数`。
-     *
-     * 不收紧 `technician_scoped` 是有意的：那会把一名真实的产能技师从集团口径里整个抹掉，
-     * 比「集团 ≥ 各市场之和」更糟；也会与 Part D `producer_employees` 的人池定义分叉。
-     * 与已登记的 `集团技师数 ≠ Σ门店技师数`（直挂者在单店 scope 不出现）是同一性质。
-     *
-     * 2026-09-23 生产实测该类人数为 **0**（全部 13 名无门店技师都锚得到市场），
-     * 故当前两个数恒等。若将来出现「直挂总部」或「父节点非市场」的产能技师即会分叉。
-     */
-    const qTechDirectByMarket = db.execute(sql`
-      WITH ${technicianCte}
-      SELECT anchor_market_id AS market_id,
-             MAX(anchor_market_name) AS market_name,
-             COUNT(*)::int AS v
-      FROM technician_scoped
-      WHERE store_id IS NULL AND anchor_market_id IS NOT NULL
-      GROUP BY anchor_market_id
-    `)
+    /** 技师数 by market（直挂市场/部门、无门店归属的部分）—— 详见 technician-sql 的注释 */
+    const qTechDirectByMarket = db.execute(technicianDirectByMarketSql(session, scope, cur.end))
 
     /**
      * 业绩 by store（门店口径）—— 与 Part A `qRevenueTotal` 同谓词集，仅多一个 GROUP BY。
