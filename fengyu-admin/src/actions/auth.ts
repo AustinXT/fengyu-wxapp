@@ -9,7 +9,7 @@ import { loginAttempts } from '@db/login-attempt'
 import { staffWechatUsers } from '@db/user'
 import { permissionRoleDefinitions, permissionRoles } from '@db/permission'
 import { orgNodes } from '@db/org'
-import { eq, sql } from 'drizzle-orm'
+import { eq, and, sql } from 'drizzle-orm'
 import { computeRoleActions, expandRoleScope, canAccessAdmin } from '@/lib/permissions'
 import { decryptPassword } from '@/lib/password-transit'
 import { JWT_SECRET } from '@/lib/jwt-secret'
@@ -122,11 +122,25 @@ export async function login(
     return { success: false, message: '手机号或密码错误' }
   }
 
-  // 通过 phone 查找员工
+  /**
+   * 通过 phone 查找员工 —— **必须排除离职**（issue #318）。
+   *
+   * 原先不判 `is_resigned`：只要 `admin_passwords` 还有记录，离职员工就能继续登录后台。
+   * 配上「离职 ⇒ 角色已清空」这个**会破的**不变量（`sync-workfine.js:381` 的 UPSERT
+   * 直接改 `is_resigned` 而完全不碰 `permission_roles`），一旦出现「离职行 + 残留角色」，
+   * 该账号就带着原有权限继续可用。
+   *
+   * 生产实测（2026-09-23）：2 人已离职却仍持后台登录凭证（王雯馨 2026-08-23 离职、
+   * 关文星 2026-08-08 离职），两人当前角色数均为 0、离职后无任何操作日志 ——
+   * 加这道过滤是纯收紧，零误伤。
+   *
+   * ⚠️ 查不到时走的是与密码错误**完全相同**的那一句 —— 不能让「此人已离职」变成
+   * 一个可探测的信号（登录接口本来就是无鉴权入口）。
+   */
   const [staff] = await db
     .select({ employeeId: staffWechatUsers.employeeId, name: staffWechatUsers.name, phone: staffWechatUsers.phone })
     .from(staffWechatUsers)
-    .where(eq(staffWechatUsers.phone, phone))
+    .where(and(eq(staffWechatUsers.phone, phone), eq(staffWechatUsers.isResigned, false)))
     .limit(1)
 
   if (!staff) {
@@ -247,7 +261,16 @@ export async function getSessionFromCookie(): Promise<AuthSession | null> {
     const employeeId = payload.employeeId as string
     if (!employeeId) return null
 
-    // 查询员工信息
+    /**
+     * 查询员工信息 —— 同样**排除离职**（issue #318）。
+     *
+     * 只在 `login` 加过滤不够：JWT 有 24h 有效期，登录之后被标离职的人手上那张 token
+     * 仍然通得过 `jwtVerify`。这里一并过滤，离职后**下一次请求**就失效
+     * （返回 null ⇒ middleware 按未登录处理 ⇒ redirect `/login`）。
+     *
+     * 代价是「误标离职」会立刻把人踢出后台 —— 那是期望行为，而不是缺陷：
+     * 改回在职即恢复，比让一个已离职账号继续持权限安全得多。
+     */
     const [staff] = await db
       .select({
         employeeId: staffWechatUsers.employeeId,
@@ -255,7 +278,7 @@ export async function getSessionFromCookie(): Promise<AuthSession | null> {
         phone: staffWechatUsers.phone,
       })
       .from(staffWechatUsers)
-      .where(eq(staffWechatUsers.employeeId, employeeId))
+      .where(and(eq(staffWechatUsers.employeeId, employeeId), eq(staffWechatUsers.isResigned, false)))
       .limit(1)
 
     if (!staff) return null

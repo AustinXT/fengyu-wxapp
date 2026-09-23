@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 // ── Mocks ─────────────────────────────────────────────────────────────────────
@@ -237,6 +239,37 @@ describe('login — 认证 + 锁定（PG 持久化）', () => {
     expect(result.message).toContain('手机号或密码错误')
     expect(db.insert).toHaveBeenCalledWith(loginAttempts)
     expect(onConflictDoUpdate).toHaveBeenCalled()
+  })
+
+  /**
+   * 离职员工不得登录（issue #318）。
+   *
+   * 原先 `login` 只按 phone 查、不判 `is_resigned` —— 只要 `admin_passwords` 还有记录，
+   * 离职员工就能继续登录后台；配上「离职 ⇒ 角色已清空」这个会破的不变量
+   * （`sync-workfine.js` 改 `is_resigned` 不碰角色），账号会带着原有权限继续可用。
+   *
+   * 这里用「查不到」来模拟过滤生效后的效果，并断言**文案与密码错误逐字相同** ——
+   * 不能让「此人已离职」成为可探测信号（登录是无鉴权入口）。
+   */
+  it('离职员工登录 → 与密码错误同一句文案，不泄露「已离职」', async () => {
+    // ① 未锁定 ② staff 查不到（is_resigned = false 的过滤把离职者排除了）
+    mockSelectSequence([[], []])
+
+    const result = await login('13900000009', enc('correct-password'))
+
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('手机号或密码错误')
+    expect(result.message).not.toContain('离职')
+  })
+
+  /** 源码守护：两处认证查询都必须带 `is_resigned` 过滤 —— 只加一处不够（JWT 有 24h 有效期） */
+  it('login 与 getSessionFromCookie 都按 is_resigned 过滤', () => {
+    const src = readFileSync(resolve(process.cwd(), 'src/actions/auth.ts'), 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/(^|[^:'"`])\/\/[^\n]*/g, '$1')
+    const hits = src.match(/eq\(staffWechatUsers\.isResigned,\s*false\)/g) ?? []
+    expect(hits.length, 'login 按 phone 查 + getSessionFromCookie 按 employeeId 查，两处都要过滤')
+      .toBe(2)
   })
 
   it('无 admin_passwords 记录 → 失败', async () => {
