@@ -73,6 +73,33 @@ async function checkLock(phone: string): Promise<string | null> {
 }
 
 /**
+ * 一个真实形状的 bcrypt hash（cost 12），内容是随机口令，**永远不会有人匹配上它**。
+ * 只用来在「查不到人 / 没有密码记录」这两条早退路径上烧掉一次等量的 bcrypt 计算。
+ */
+const DUMMY_PASSWORD_HASH = '$2a$12$C6UzMDM.H6dfI/f/IKcEe.KTSjS0Nn7Dm0MhJ7tVqCJIxMdkb5J5u'
+
+/**
+ * 拉平登录失败路径的耗时（issue #318，GLM 第 2 轮 P3）。
+ *
+ * 文案统一成同一句只挡住了**内容**信道，还剩一条**时序**信道：查不到人时直接返回，
+ * 不跑 bcrypt；「人存在但密码错」要跑一次 cost-12 的 compare（几十到上百毫秒）。
+ * 两者耗时差一个数量级，于是登录接口成了按手机号枚举「在职且有后台凭证」账号的 oracle。
+ *
+ * 本次给 `login` 加 `is_resigned = false` 过滤**放大**了这条信道 —— 离职的人从「慢路径」
+ * 掉到了「快路径」，等于把「此人已离职」重新变成可探测信息，正是 AC5 要挡的。
+ * 所以早退前烧掉一次等量 compare。
+ *
+ * ⚠️ 不追求严格恒定时间（JS 里做不到），只把数量级拉平到同一档。
+ */
+async function burnPasswordCompare(password: string): Promise<void> {
+  try {
+    await compare(password, DUMMY_PASSWORD_HASH)
+  } catch {
+    // 只为烧时间，任何异常都不该影响登录失败的返回值
+  }
+}
+
+/**
  * 记录一次登录失败：原子 UPSERT 自增 fail_count；
  * 达到阈值则写入 locked_until。并发安全（依赖 phone 唯一索引 + ON CONFLICT 原子自增）。
  */
@@ -144,6 +171,7 @@ export async function login(
     .limit(1)
 
   if (!staff) {
+    await burnPasswordCompare(password)
     await recordFailure(phone)
     return { success: false, message: '手机号或密码错误' }
   }
@@ -156,6 +184,7 @@ export async function login(
     .limit(1)
 
   if (!pwRow) {
+    await burnPasswordCompare(password)
     await recordFailure(phone)
     return { success: false, message: '手机号或密码错误' }
   }
@@ -454,10 +483,16 @@ export async function checkMustChange(): Promise<boolean> {
     const employeeId = payload.employeeId as string
     if (!employeeId) return false
 
+    /**
+     * 同样过滤离职（#318，GLM 第 2 轮 P3）—— 与 `login` / `getSessionFromCookie` 同一口径。
+     * 不过滤的话，离职者手里那张 24h 内的 JWT 仍能从这里拿到真实的 `mustChange`，
+     * 等于「token 还被系统部分承认」的信号，与 AC4「离职即失效」矛盾。
+     */
     const [pwRow] = await db
       .select({ mustChange: adminPasswords.mustChange })
       .from(adminPasswords)
-      .where(eq(adminPasswords.employeeId, employeeId))
+      .innerJoin(staffWechatUsers, eq(adminPasswords.employeeId, staffWechatUsers.employeeId))
+      .where(and(eq(adminPasswords.employeeId, employeeId), eq(staffWechatUsers.isResigned, false)))
       .limit(1)
 
     return pwRow?.mustChange ?? false

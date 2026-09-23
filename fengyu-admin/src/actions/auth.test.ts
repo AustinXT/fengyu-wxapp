@@ -285,14 +285,36 @@ describe('login — 认证 + 锁定（PG 持久化）', () => {
     expect(JSON.stringify(whereConds)).toContain('{"type":"eq","a":"is_resigned","b":false}')
   })
 
-  /** 源码守护：两处认证查询都必须带 `is_resigned` 过滤 —— 只加一处不够（JWT 有 24h 有效期） */
-  it('login 与 getSessionFromCookie 都按 is_resigned 过滤', () => {
+  /**
+   * ## 失败路径的**时序**也要拉平（#318，GLM 第 2 轮 P3）
+   *
+   * 文案统一只挡住内容信道。「查不到人」直接返回、不跑 bcrypt，而「密码错」要跑一次
+   * cost-12 compare（几十到上百毫秒）—— 差一个数量级，登录接口就成了按手机号枚举
+   * 「在职且有后台凭证」账号的 oracle。本次加的 `is_resigned` 过滤**放大**了它：
+   * 离职者从慢路径掉到快路径，等于把「此人已离职」重新做成可探测信息。
+   */
+  it.each([
+    ['员工查不到（含离职被过滤掉）', [[], []]],
+    ['员工存在但无密码记录', [[], [staffRow], []]],
+  ])('%s → 仍烧掉一次 bcrypt compare（拉平耗时）', async (_name, sequence) => {
+    mockSelectSequence(sequence as any[][])
+
+    await login('13900000009', enc('whatever'))
+
+    expect(compare, '早退路径必须跑一次等量 compare').toHaveBeenCalledTimes(1)
+  })
+
+  /**
+   * 源码守护：**三处**认证查询都必须带 `is_resigned` 过滤 ——
+   * `login`（按 phone）、`getSessionFromCookie`（按 employeeId）、`checkMustChange`（改密闸门）。
+   * 只加一处不够：JWT 有 24h 有效期，漏掉任一处都等于给离职者留一条「token 仍被承认」的路。
+   */
+  it('login / getSessionFromCookie / checkMustChange 都按 is_resigned 过滤', () => {
     const src = readFileSync(resolve(process.cwd(), 'src/actions/auth.ts'), 'utf8')
       .replace(/\/\*[\s\S]*?\*\//g, '')
       .replace(/(^|[^:'"`])\/\/[^\n]*/g, '$1')
     const hits = src.match(/eq\(staffWechatUsers\.isResigned,\s*false\)/g) ?? []
-    expect(hits.length, 'login 按 phone 查 + getSessionFromCookie 按 employeeId 查，两处都要过滤')
-      .toBe(2)
+    expect(hits.length, '三处认证查询都要过滤离职').toBe(3)
   })
 
   it('无 admin_passwords 记录 → 失败', async () => {
@@ -849,7 +871,8 @@ describe('checkMustChange — middleware 预检', () => {
     ;(db.select as any).mockImplementation(() => {
       const limit = vi.fn().mockResolvedValue([{ mustChange: true }])
       const where = vi.fn().mockReturnValue({ limit })
-      const from = vi.fn().mockReturnValue({ where })
+      // 查询 join 了 staff_wechat_users 以过滤离职（#318）
+      const from = vi.fn().mockReturnValue({ where, innerJoin: vi.fn().mockReturnValue({ where }) })
       return { from }
     })
 
@@ -862,7 +885,7 @@ describe('checkMustChange — middleware 预检', () => {
     ;(db.select as any).mockImplementation(() => {
       const limit = vi.fn().mockResolvedValue([{ mustChange: false }])
       const where = vi.fn().mockReturnValue({ limit })
-      const from = vi.fn().mockReturnValue({ where })
+      const from = vi.fn().mockReturnValue({ where, innerJoin: vi.fn().mockReturnValue({ where }) })
       return { from }
     })
 
