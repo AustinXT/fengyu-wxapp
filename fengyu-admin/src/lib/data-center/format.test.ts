@@ -19,7 +19,8 @@ describe('data-center format（移植 staff number.ts 口径）', () => {
   })
 
   it('无效值（null/undefined/NaN/Infinity）一律 --', () => {
-    for (const fn of [formatAmount, formatCount, formatPercent, formatDelta]) {
+    // formatDelta 自 #310 起吃判别联合，不再吃裸数值，所以从这个循环里摘出去单测。
+    for (const fn of [formatAmount, formatCount, formatPercent]) {
       expect(fn(null)).toBe('--')
       expect(fn(undefined)).toBe('--')
       expect(fn(NaN)).toBe('--')
@@ -33,9 +34,35 @@ describe('data-center format（移植 staff number.ts 口径）', () => {
     expect(formatByUnit(0.5, 'percent')).toBe('50.00%')
   })
 
-  it('formatDelta：带正负号', () => {
-    expect(formatDelta(0.12)).toBe('+12.00%')
-    expect(formatDelta(-0.05)).toBe('-5.00%')
-    expect(formatDelta(0)).toBe('0.00%')
+  describe('formatDelta（#310 决策 1 展示矩阵）', () => {
+    it('pct：带正负号，2 位小数', () => {
+      expect(formatDelta({ kind: 'pct', value: 0.12 })).toBe('+12.00%')
+      expect(formatDelta({ kind: 'pct', value: -0.05 })).toBe('-5.00%')
+    })
+
+    it('决策 3 · 舍入后为 0 出「持平」，不再出带符号的 0.00%', () => {
+      // 真 0
+      expect(formatDelta({ kind: 'pct', value: 0 })).toBe('持平')
+      // 伪持平：500,010 vs 500,000 = +0.002%，2 位小数下舍成 0.00
+      // ⚠️ 阈值比 analyst 严一位：那边 toFixed(1)，+0.02% 就已是伪持平；这里 +0.02% 照常出数。
+      expect(formatDelta({ kind: 'pct', value: 0.00002 })).toBe('持平')
+      // 负向伪持平同样并入，不出 '-0.00%'
+      expect(formatDelta({ kind: 'pct', value: -0.00002 })).toBe('持平')
+    })
+
+    it('决策 3 的边界：刚好够 0.01% 的仍出数，不被吞', () => {
+      expect(formatDelta({ kind: 'pct', value: 0.0001 })).toBe('+0.01%')
+      expect(formatDelta({ kind: 'pct', value: -0.0001 })).toBe('-0.01%')
+    })
+
+    it('负基期两态出专用文案而非 --（这是 #310 的核心诉求）', () => {
+      expect(formatDelta({ kind: 'turnedPositive' })).toBe('由负转正')
+      expect(formatDelta({ kind: 'notTurned' })).toBe('未转正')
+    })
+
+    it('算不出一律 --（含 undefined，即 withComparison:false 的明细表）', () => {
+      expect(formatDelta({ kind: 'na' })).toBe('--')
+      expect(formatDelta(undefined)).toBe('--')
+    })
   })
 })

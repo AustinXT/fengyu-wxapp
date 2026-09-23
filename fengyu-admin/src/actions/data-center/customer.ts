@@ -37,6 +37,7 @@ import { prepareBoardContext } from '@/lib/data-center/context'
 import { scopeFilterSql, scopeStoreSkeletonSql } from '@/lib/data-center/scope-sql'
 import { excludeDepositRefundSql } from '@/lib/data-center/consume-filter'
 import { withComparison } from '@/lib/data-center/comparison'
+import { resolveDeltaDisplay } from '@/lib/delta-display'
 import type { AuthSession } from '@/lib/types'
 import type {
   BoardParams,
@@ -1015,7 +1016,12 @@ export const getCustomerBoard = withPermission(
     const convRate: KpiCell = {
       value: safeDiv(newMembers.value ?? 0, trafficCustomers.value ?? 0),
       unit: 'percent',
-      ...(enabled ? { mom: null, yoy: null } : {}),
+      // 派生指标不算同比环比，但 enabled 时仍要占位，否则前端 `!== undefined` 判定会整行不渲染徽章。
+      // 走构造函数而不是手写 `{ kind: 'na' }` 字面量——types.ts 要求「构造一律走 resolveDeltaDisplay」，
+      // 手写字面量会给后人开效仿的口子，而手写 `pct` 会绕过「value*100 恒有限」的构造保证。
+      ...(enabled
+        ? { mom: resolveDeltaDisplay(null, null), yoy: resolveDeltaDisplay(null, null) }
+        : {}),
     }
     // 当月一次/二次人数（与客活同值，单列展示）—— 复用 visitOnce/visitTwice 的 value
     const visitOnceCell: KpiCell = { value: visitOnce.value, unit: 'count' }

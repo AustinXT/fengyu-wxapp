@@ -114,7 +114,14 @@ export async function prepareBoardContext(
         id: params.scope.type === 'market' || params.scope.type === 'store' ? params.scope.id : null,
         name: scopeName,
       },
-      timeRange: { start: tr.current.start, end: tr.current.end, presetLabel: tr.presetLabel },
+      timeRange: {
+        start: tr.current.start,
+        end: tr.current.end,
+        presetLabel: tr.presetLabel,
+        // tr 本来就持有这两个区间（toComparisonRanges 取的就是它们），此前只是没往前端送。
+        previous: tr.previous ? { start: tr.previous.start, end: tr.previous.end } : null,
+        lastYear: tr.lastYear ? { start: tr.lastYear.start, end: tr.lastYear.end } : null,
+      },
     },
     comparison: toComparisonRanges(tr),
     enabled: params.withComparison !== false,
