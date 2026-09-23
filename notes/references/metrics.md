@@ -395,21 +395,55 @@ WITH member_spend AS (
 **新增会员成交率分母（trialFootfall）**：
 
 ```sql
-SELECT COUNT(DISTINCT so.client_user_id)
-FROM service_orders so
-JOIN client_wechat_users c ON c.user_id = so.client_user_id
-WHERE so.status='已完成'
-  AND so.service_date BETWEEN $startDate AND $endDate
-  AND c.customer_type IN ('体验客','小美客')   -- 已决 D-conv-denom=B
-  AND <scope on so.store_id>
+SELECT COUNT(DISTINCT t.uid)
+FROM (
+  -- ① 本期到店 且 期初未达会员
+  SELECT so.client_user_id AS uid
+  FROM service_orders so
+  JOIN client_wechat_users c ON c.user_id = so.client_user_id
+  WHERE so.status='已完成'
+    AND so.client_user_id IS NOT NULL
+    AND so.service_date BETWEEN $startDate AND $endDate
+    AND (c.customer_type IN ('体验客','小美客')                 -- 当前仍未达会员
+         OR c.became_member_at::date BETWEEN $startDate AND $endDate)  -- 或本期内才转化
+    AND <scope on so.store_id>
+  UNION
+  -- ② 本期全部新增会员（兜住本期无已完成服务单者）
+  SELECT c.user_id AS uid
+  FROM client_wechat_users c
+  WHERE c.became_member_at IS NOT NULL
+    AND c.became_member_at::date BETWEEN $startDate AND $endDate
+    AND <scope on c.bound_store_id>
+) t
 ```
 
-> **D-conv-denom（已决 D-2=B）**：分母 = 区间内到店的"体验客 + 小美客"。
-> 与 `recalcCustomerType` 升级链路（流量客 → 体验客 → 小美客 → 会员客）完全对齐；
-> 分母含义 = "区间内有到店但未达会员"的活跃池。
+> **D-conv-denom（2026-09-22 改判 1c，推翻原 D-2=B）**：分母 = 期初未达会员的到店活跃池
+> **∪** 本期全部新增会员。
+>
+> **为什么推翻 B**：`customer_type` 是**只升不降的当前快照**（升级链 流量客 → 体验客 →
+> 小美客 → 会员客）。本期成功转化的人当期已是「会员客」，被 `IN ('体验客','小美客')`
+> 从分母整体剔除 —— **而他们正是分子**。实测集团 2026-09 有 141 人被抹掉：
+> 35 家有新会员的门店全部虚高、12 家超真实值 1.5 倍、单店最高出到 800%，
+> 分母归零的门店反而显示 '--'（#284）。
+>
+> **为什么是 1c 而不是「补回本期转化者」的 1a**：151 名本期新增会员里有 10 人本期
+> 没有任何已完成服务单。1a 下他们**进分子不进分母**，单店成交率仍可能 > 100%。
+> 分支 ② 的 UNION 让**分子成为分母的真子集**，上限 ≤ 100% 恒成立。
+>
+> **不含流量客**：维持升级链「体验客 + 小美客」这一层，只把本期已转化者补回。
+> 含流量客的方案 2 实测分母 1861 / 成交率 8.11%，与升级链口径脱钩且量级突变，已否决。
+>
+> **判定时点**：期初判定（当前 `customer_type` 仍未达会员 **OR** `became_member_at` 落在本期），
+> 不采用逐次到店日判定（方案 1b 实测只差 1.06pp，不值得引入 `service_date` 与
+> `became_member_at` 的逐行比较）。
+>
+> 各口径实测（生产只读库，2026-09-01~09-30 集团，分子 151）：
+> 现行 539 / 28.01%、1a 680 / 22.21%、1b 649 / 23.27%、**1c 690 / 21.88%（采纳）**、含流量客 1861 / 8.11%。
+>
 > **分子分母 store_id 来源不同**：分子用 `client_wechat_users.bound_store_id` 算 scope，
-> 分母用 `service_orders.store_id` 算 scope。两者通常一致（顾客在绑定店产生服务），
-> 但跨店服务时会形成微小漂移；接受当前精度。
+> 分母 ① 用 `service_orders.store_id`、② 用 `bound_store_id`（与分子同源）。
+> ① 在跨店服务时仍会形成微小漂移；2026-09-22 核实「只在非绑定店到店的新增会员」本期为 **0 人**，
+> 接受当前精度。**② 必须与分子同源**，子集关系全靠它成立。
 > **D-newMemberSpend（已决 D-3=A）**：分子 `newMemberSpend` = 这群新增会员在区间内的**全部消费**，
 > 不区分是"成为会员前"还是"成为会员后"的订单——UI 文案"新增会员对应消费"读作"对应这群人的整体经营贡献"。
 
@@ -641,6 +675,7 @@ SELECT COUNT(*) FROM org_nodes WHERE type='store' [AND parent_id=$market]
 | 2026-04-25 | 跨接口/前后端口径审计补丁：(a) `payNotify` INSERT `sale_allocations` 补 `role_type` + `is_void` 列（按 `staff.skills[1]` 派生，兜底 `'美容师'`），新增 `db/scripts/backfill-allocations-roletype.js` 双库回填存量 NULL 行；(b) `service.js` INSERT `service_commissions` 显式写 `is_void=FALSE`（防 schema drift）；(c) `staffRanking.producer_employees` CTE 由 `is_resigned=FALSE` 切 `hired_at/resigned_at + NOW()` 锚点（`is_resigned` 在 staffApi 查询路径退役）；(d) `mgmt-traffic.regMember` 切 `became_member_at::date <= endDate` 与首页 `memberCount` 对齐；(e) §3 `retainedStable/retainedActive` 与首页 `retainedMemberCount` 等价关系与 24h 滞后明示；(f) §派生指标修订 `monthlyAvgPerStore` 由后端预算的现实；(g) 废弃 `mgmt-customer-detail` 日历"≥1000 → X.Xk"折叠规则；(h) 前端 `retainRate` / 持卡占比统一走 `formatPercent` |
 | 2026-05-26 | admin 数据中心（`/data-center`）上线：新增 §「数据中心（admin）板块专属指标」+ 品项二级（category_name）粒度节。3 项用户拍板口径——流量客业绩=仅 `customer_type='流量客'`；单次客耗=`生美实耗÷服务人次`；店长人数=`在营门店数`（每店一店长，不依赖 position_name）。排名榜/区间指标统一走顶部 TimeRange（today/week/month/year/custom），同比环比仅作用 KPI 标量 |
 | 2026-08-08 | 数据中心经营统计统一仅纳入 `org_nodes.is_active=TRUE` 的门店：门店数、全部区间指标、门店/员工排行榜及范围下拉同步过滤；单店范围不再固定计 1，停用门店返回零数据 |
+| 2026-09-22 | **D-conv-denom 改判 B → 1c（#284）**：成交率分母由「区间内到店的体验客 + 小美客」改为「期初未达会员的到店活跃池 ∪ 本期全部新增会员」。`customer_type` 只升不降，本期已转化者当期已是会员客、被从分母整体剔除，而他们正是分子 —— 35 家有新会员的门店全部虚高、单店最高 800%、分母归零反显 '--'。分支 ② 保证分子 ⊆ 分母，上限 ≤ 100% 恒成立（纯活跃池方案 1a 做不到，本期有 10 名新增会员无已完成服务单）。集团 2026-09 由 28.01%（151/539）改为 **21.88%（151/690）**。两端同步：`customer.ts::queryTrialFootfall` + 明细 `traffic_cust` CTE、`mgmt-traffic.js::queryTrialFootfall` |
 | **2026-09-14** | **款项业绩归属日期收口（#137，迁移 0039 + 0040）**。视图 `sale_order_performance_events.performance_date` 改为**直读** `sale_order_payments.performance_attribution_date`，**查询侧不再有任何回退分支**；取值规则全部下沉到写入侧两个 trigger。0040 给该列加了 **CHECK 约束** `chk_sop_attribution_date_present`（列本身**不是** `NOT NULL`，Drizzle schema 里仍是 nullable）。<br>**影响面**：原文「首次支付取订单归属日、回款/退款取自身 `paid_at`」的表述在全文档失效——每一笔款项都有自己的归属日期。金额类指标按类型分流：**业绩/现金流类**（总业绩、分客型业绩、员工业绩、销售提成）走 `[spe.performance_date]`；**子项类**（生美业绩、产品出库、品项周期业绩）走 `[sipe.performance_date]`；**实耗 / 生美实耗 / 服务提成**仍走 `[service_date]`，不受本次收口影响。<br>⚠ **部署前置**：先 apply 0039 + 0040 再部署各端，否则未迁库时首次支付行归属日为 NULL，会被三值逻辑吞掉正数主体。 |
 | **2026-09-16** | **口径变更登记（#138 / #139 / #140 / #141）**，四条均为「从 `paid_at` 切到归属日期」：<br>· **#138** 客量数据子页 §4/§5：会员被经营 6 档分桶、会员客单价、新会员对应消费改按款项流水归属（`SUM(spe.amount) @ performance_date`；旧实现为 `SUM(o.received - COALESCE(o.refunded_amount,0)) @ o.paid_at::date` ∩ `o.status='已支付'`，旧文档曾误记为 `paid_amount`，该列已 DROP）。dev 实测 2026-08 经营人数 321→324、会员总数 470→413、消费合计 +7.78 万；含退款负行故 `spend` 可为负（本期净消费，不 clamp）。<br>· **#139** staff 订单列表 / 营业额分配列表的日期筛选固定按 `performance_attribution_date`。<br>· **#140** admin 工作台「今日实付 / 今日退款 / 昨日实付」改按 `spe.performance_date`（`total_paid_amount` 无日期条件不受影响）。⚠ 财务注意：这三项不再与银行流水逐日对齐。<br>· **#141** staff 顾客档案「年度消费」/ 列表「年消费」改按 `performance_attribution_date`（半开年区间）；**月度消费日历仍按 `paid_at`**，两个口径并存且有意。<br>同轮订正三处存量滞后表述：销售数据页总述、分客型业绩 `[sop.paid_at_period]`、分客型产品出库与品项维度汇总的 `SUM(si.received) @ paid_at`（实现早已是 `SUM(sipe.amount) @ sipe.performance_date`）；员工排行榜「复用 `[paid_at_period]`」。<br>另补登记一条历史遗漏：实耗 / 生美实耗 / 项目数等**消耗类**指标两端都套了 `excludeDepositRefundSql()` 剔除寄存单退款专用服务单（admin 19 处 / staff 12 处，由 `consistency.deposit-refund-filter.test.ts` 守护 31 处中的 29 处，且只校验文件级调用次数）——**客流 / 到店 / 服务人次 / 保有会员 / 提成不剔除**（寄存退款是真到店、假消耗）。本文档此前从未登记，照公式抄会多算。 |
 | **2026-09-22** | **环比基期（上期）长度首次登记（#283）**，见文末「数据中心（admin）板块专属指标」节。此前全文只登记了「上期」这个概念、从未定义其长度，`time-range.ts` 遂把本节「时间窗口补充」里 staff 端的**三选一并列维度**「上月=上月初~上月末」误当成环比分母，于是 `本周`/`本月` 两个 preset 拿 N 天的当期比整周/整月的基期（同文件 `今日`/`自定义` 恒等长，`今年` 另有跨闰年偏差）。现明确：**基期按日历同期对齐、不得无条件取完整上一周期**，`本周`→上周同一星期几、`本月`→上月同一日。同轮登记三条日历固有例外（`本月` 上月天数不足时 clamp 到上月末短 1~3 天；`今年` 的环比/同比基期跨闰年 ±1 天；`本周`/`自定义` 的**同比**基期跨闰年 ±1 天且星期漂移——后两条源自 `addYears` 的 2/29 归一化，**均尚未修复**）。并明确**同比基期与环比基期同受「不得长于当期」约束**（二者同走一个 `deltaPct`）。另补登记 `delta%` 的「算不出」情形含**基期 `<= 0`** 与**非有限值**（负基期会让符号翻转）。⚠ 「本月」与「自定义同起止日」的环比值本就不同，属语义差异非缺陷。 |
