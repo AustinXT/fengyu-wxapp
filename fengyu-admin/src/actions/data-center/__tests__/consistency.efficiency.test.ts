@@ -152,7 +152,7 @@ describe('数据中心人效板块两端口径一致性守护', () => {
       )
     })
 
-    it('Part B 分组列用 spe.store_id（与 Part C 同源；与 so.store_id 全表零不一致）', () => {
+    it('Part B 分组列用 spe.store_id（与 Part C 同源；视图里它就是 so.store_id 的投影，定义恒等）', () => {
       const n = sliceOrFail(adminSrc, 'const qRevenueByStore', 'const qConsumeByStore')
       expect(n).toMatch(/GROUP BY spe\.store_id/i)
       expect(n).not.toMatch(/GROUP BY so\.store_id/i)

@@ -308,7 +308,9 @@ export const getEfficiencyBoard = withPermission(
      * 业绩 by store（门店口径）—— 与 Part A `qRevenueTotal` 同谓词集，仅多一个 GROUP BY。
      * 该 map 喂给 byMarket 的 `techAvgRevenue`，故必须与全局大卡同源，否则「按市场人效」
      * 与 KPI 大卡自相矛盾（#285）。
-     * 分组列用 `spe.store_id`（非 `so.store_id`）与 Part C 对齐；两者全表零不一致，语义等价。
+     * 分组列用 `spe.store_id`（非 `so.store_id`）与 Part C 对齐。二者**定义恒等**：
+     * 视图 `sale_order_performance_events` 就是 `sale_order_payments JOIN sale_orders so`
+     * 再把 `so.store_id` 原样投影出来（`pg_get_viewdef` 可查），不是"实测出来零不一致"的经验结论。
      */
     const qRevenueByStore = db.execute(sql`
       SELECT spe.store_id, COALESCE(SUM(spe.amount::numeric), 0) AS v
