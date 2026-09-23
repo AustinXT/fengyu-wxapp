@@ -70,7 +70,7 @@ const customerRegistrationMetricColumns = [
   // 沉睡额外带 `customer_type='会员客'`（customer.ts:181 标量侧 / :545 明细侧，
   // 由 consistency.customer.test.ts 的三条断言钉死），冰冻/休眠没有 —— 导出件比页面
   // 更需要标出这层差异，否则三列看起来口径对等。
-  { key: 'dormant', label: '沉睡(截面·仅会员)', unit: 'count' },
+  { key: 'dormant', label: '沉睡(截面·仅会员客)', unit: 'count' },
   { key: 'reactivatedDormant', label: '激活沉睡', unit: 'count' },
   { key: 'frozen', label: '冰冻(截面)', unit: 'count' },
   { key: 'reactivatedFrozen', label: '激活冰冻', unit: 'count' },

@@ -411,9 +411,20 @@ describe('客量板块两端口径一致性守护', () => {
         /FILTER\s*\(WHERE c\.customer_status = '沉睡' AND c\.customer_type = '会员客'\)\s*AS dormant/,
       )
     })
+    /**
+     * ⚠ 本条是**黑名单**，与本文件 `stripComments` 上方记录的教训同源：正则黑名单
+     * 证明不了「没有任何客型条件」。这里显式锁两种语序（正序 / 反序），
+     * 仍可被 `c.customer_type IN (…)`、大小写变体、跨行拆分等写法绕过。
+     * 真正兜底的是上面两条正向断言 —— 它们锚定沉睡分支的完整形态，
+     * 任何把客型过滤挪到另两档的改法都会先让正向断言失配。
+     */
     it('冰冻 / 休眠不得附带客型过滤（否则三档口径对等，UI 角标即失真）', () => {
-      expect(adminCode).not.toMatch(/customer_status = '冰冻' AND c\.customer_type/)
-      expect(adminCode).not.toMatch(/customer_status = '休眠' AND c\.customer_type/)
+      for (const status of ['冰冻', '休眠']) {
+        // 正序：customer_status = 'X' AND c.customer_type ...
+        expect(adminCode).not.toMatch(new RegExp(`customer_status = '${status}' AND c\\.customer_type`))
+        // 反序：c.customer_type = '…' AND c.customer_status = 'X'（GLM r2 指出的绕过路径）
+        expect(adminCode).not.toMatch(new RegExp(`customer_type = '[^']*' AND c\\.customer_status = '${status}'`))
+      }
     })
   })
 
