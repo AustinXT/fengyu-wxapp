@@ -248,12 +248,14 @@ describe('品项板块两端口径一致性守护', () => {
       return out
     }
 
-    /** 切出 queryCycleByStore 的 SQL 模板，避免 KPI 侧同名 CTE 链顶替。 */
-    const detailSql = (src: string): string => {
+    /** 未经处理的原始模板 —— 下面「扫描器语法是超集」那条断言要用它。 */
+    const detailTemplateRaw = (src: string): string => {
       const fn = /async function queryCycleByStore\([\s\S]*?\n}/.exec(src)?.[0] ?? ''
-      const tpl = /db\.execute\(sql`([\s\S]*?)`\)/.exec(fn)?.[1] ?? ''
-      return normalize(stripSqlNoise(tpl))
+      return /db\.execute\(sql`([\s\S]*?)`\)/.exec(fn)?.[1] ?? ''
     }
+
+    /** 切出 queryCycleByStore 的 SQL 模板，避免 KPI 侧同名 CTE 链顶替。 */
+    const detailSql = (src: string): string => normalize(stripSqlNoise(detailTemplateRaw(src)))
     /**
      * 切出单个 CTE 块（以下一个 CTE 名为右边界），避免跨块的惰性匹配假红/假绿。
      * 两侧都容忍 `AS MATERIALIZED (` 这种带物化提示的写法。
@@ -282,6 +284,41 @@ describe('品项板块两端口径一致性守护', () => {
     let adminDetail: string
     beforeAll(() => {
       adminDetail = detailSql(adminSrc)
+    })
+
+    /**
+     * ★ 守护**守护自己**：`stripSqlNoise` 只认「普通单引号字符串（`''` 转义）」这一种字符串写法。
+     * PostgreSQL 还有两种它不认识的，一旦被写进模板，扫描器与数据库对「哪段是字符串」
+     * 的判断会**错位**（round-5 codex 提出 E-string 方向，美元引用是同类且更危险）：
+     *
+     *   1. `E'a\'b'` —— PG 认 `\'` 是转义引号、整体一个字符串；扫描器在那个引号处提前收尾，
+     *      此后**相位翻转**：PG 在串内它在串外，或反过来。
+     *   2. `$$ ... ' ... $$` / `$tag$ ... $tag$` —— PG 认整段是字符串；扫描器不懂美元引用，
+     *      会把里面的 `'` 当成字符串开始，于是**把真实代码当字符串剥掉**。
+     *      被剥掉的若正好是追加的过滤谓词，尾锚断言反而会通过 —— **假绿**。
+     *
+     * `new_store` 与最终 SELECT 钉的是字面快照（多一字少一字都红），相位错位对它们是 fail-closed；
+     * 但 `entry_store` / `xinzeng` / `store_ids` 用的是带 `$` 尾锚的正则，**有被剥出假绿的可能**。
+     *
+     * 与其把扫描器写成完整的 PG 词法分析器，不如**把允许的写法收窄到扫描器的语法之内** ——
+     * 让「扫描器认识的」成为「允许写的」的超集。当前模板这三样都是 0 处，不误红。
+     */
+    it('模板未使用扫描器不认识的字符串写法（否则剥离相位会与 PG 错位）', () => {
+      const raw = detailTemplateRaw(adminSrc)
+      expect(raw, '原始模板未切出').toBeTruthy()
+      expect(raw, "模板出现 E'...' 转义字符串 —— stripSqlNoise 不认 \\' 转义，剥离相位会与 PG 错位").not.toMatch(
+        /\bE'/i,
+      )
+      expect(raw, '模板出现美元引用字符串（$$ 或 $tag$）—— 扫描器会把其中的引号当字符串起点，可能把真实代码剥掉').not.toMatch(
+        /\$\$|\$[A-Za-z_]\w*\$/,
+      )
+      expect(raw, '模板出现反斜杠 —— 只要没有 E 前缀 PG 就按字面处理，但这是 E-string 的前置条件，一并禁掉').not.toMatch(
+        /\\/,
+      )
+      expect(
+        (raw.match(/'/g) ?? []).length % 2,
+        '模板里的单引号总数是奇数 —— 必有一处未闭合，扫描器之后的剥离全部失准',
+      ).toBe(0)
     })
 
     it('切片锚点有效（能切出明细侧 SQL 且含关键 CTE）', () => {
