@@ -422,12 +422,14 @@ describe('deleteRoleDefinition — 删除守卫与分配方互斥', () => {
   const target = { name: '自定义角色' }
 
   /** @returns `txExecute` 断言取锁；`txDelete` 断言「还有人在用就不该删」 */
-  function mockDeleteTx(assignedCount: number) {
+  function mockDeleteTx(assignedCount: number, deletedRows = 1) {
     const txExecute = vi.fn().mockResolvedValue([])
     const txDelete = vi.fn(() => ({
       where: vi.fn(() => ({
         // 并发双删要靠 returning 判 0 行（#318 第 7 轮）
-        returning: vi.fn().mockResolvedValue([{ roleKey: 'role-custom' }]),
+        returning: vi.fn().mockResolvedValue(
+          Array.from({ length: deletedRows }, () => ({ roleKey: 'role-custom' })),
+        ),
       })),
     }))
     ;(db.transaction as ReturnType<typeof vi.fn>).mockImplementationOnce(async (callback: Function) => callback({
@@ -457,6 +459,19 @@ describe('deleteRoleDefinition — 删除守卫与分配方互斥', () => {
     expect(result.success).toBe(true)
     expect(JSON.stringify(t.txExecute.mock.calls[0]?.[0])).toContain('admin:active_count')
     expect(t.txDelete).toHaveBeenCalled()
+  })
+
+  /**
+   * 并发双删：第二笔 DELETE 命中 0 行 —— 不能照样报「角色已删除」还写一条审计
+   * （GLM 第 7 轮 P3）。判据是 `returning` 的行数，不是「没抛错就算成功」。
+   */
+  it('并发双删：DELETE 命中 0 行 → 报角色不存在', async () => {
+    ;(db.select as ReturnType<typeof vi.fn>).mockReturnValueOnce(mockSelectOnce([target]))
+    mockDeleteTx(0, 0)
+
+    const result = await deleteRoleDefinition('role-custom')
+
+    expect(result).toEqual({ success: false, message: '角色不存在' })
   })
 
   it('锁内数到还有人在用 → 拒绝且不 DELETE', async () => {
