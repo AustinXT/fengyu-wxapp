@@ -15,7 +15,7 @@ const { capturePaymentAllocatables, refreshOrderAllocationRollup } = require('..
 const { getPerItemRefundedMap, getPerItemRefundedMapBatch, computeRefundAwareDirectedItems, itemRepayableAmount } = require('../utils/per-item-refund')
 const lakalaClient = require('../utils/lakala-client')
 const lakalaConfig = require('../utils/lakala-config')
-const { shanghaiYMD, shanghaiYYMMDD } = require('../utils/datetime')
+const { shanghaiYMD, shanghaiYYMMDD, shanghaiClockHM } = require('../utils/datetime')
 const { INVENTORY_LINKAGE_ENABLED } = require('../utils/feature-flags')
 const { classifySaleOrderDocumentType } = require('../utils/document-type')
 const { safeThumbUrl, PRODUCT_THUMB_BOX_SMALL } = require('../utils/image')
@@ -1439,11 +1439,62 @@ async function createLakalaAlipayShareCode({
 }
 
 /**
+ * 「这一刻的懒清理真会关掉这张待支付单」的判据（issue #215），与下面 closeExpiredOrder
+ * 的 UPDATE 守卫逐条同源。顾客端的支付倒计时只能按它下发。
+ *
+ * 原本 order.detail 只看 status 就按「下单时间 + 10 分钟」发 expire_at，而员工开单的订单
+ * 永远不会被懒清理关掉 —— 倒计时归零后订单照样可付，顾客看到的时限纯属误导。更要命的是
+ * order-detail 的「归零重载」靠「后端把 status 改成已关闭」才能终止，恒关不掉的订单
+ * 会让它按网络 RTT 持续打 order.detail。
+ *
+ * **写成 SQL 让库来判，不在 JS 里镜像一份**：镜像就得逐个处理 `IS NULL` vs `== null`、
+ * 空串（SQL 里不是 NULL）、列没被 SELECT 出来是 undefined —— 全是跨语言复制凭空带来的
+ * 自伤，而判据本身一行 SQL 就说清楚了。
+ *
+ * ⚠️ 改 closeExpiredOrder 的 UPDATE 守卫必须同步改这里，
+ * 由 `__tests__/routes/order.test.js` 的「expire_at 下发口径与 closeExpiredOrder 守卫同源」钉住。
+ */
+const PENDING_AUTO_CLOSE_GUARD_SQL =
+  `o.status = '待支付' AND o.opened_by IS NULL AND o.lakala_out_order_no IS NULL`
+
+/**
+ * 重读订单行 + 当下的自动关闭判据（issue #215）。取整行，见 detail 里的说明。
+ *
+ * ⚠️ **必须和主查询一样带 `client_user_id` 归属条件**：这行结果会被
+ * `Object.assign` 整行合进要下发的 order。只按订单号重读的话，
+ * 「管理员物理删掉这张单 + 当天最高序号被新单复用」（订单号是 `MAX(...) + 1` 生成的）
+ * 就会把**另一个顾客**的整行订单装进本次响应 —— 姓名、手机号、金额、门店全泄露。
+ * 窗口只有毫秒级、极难触发，但这是一行就能封死的越权读。
+ */
+function queryOrderGuardSnapshot(orderNo, userId) {
+  // ⚠️ `store_name` 要和主查询同口径。主查询是 `SELECT o.*, s.store_name`（同名列
+  // 后者胜出 → 当前门店名），而这里的 `o.*` 会带出 `sale_orders` 里的**下单时快照**；
+  // 不对齐的话，`Object.assign` 会把待支付单的门店名换成快照值，而已支付单
+  // 不走重读仍是当前值 —— 同一张单在支付前后门店名会跳变（评审 round-16）。
+  return pg.query(
+    `SELECT o.*, s.store_name,
+            (${PENDING_AUTO_CLOSE_GUARD_SQL}) AS auto_close_eligible
+       FROM sale_orders o
+       LEFT JOIN stores s ON o.store_id = s.store_id
+      WHERE o.sale_order_id = $1 AND o.client_user_id = $2`,
+    [orderNo, userId]
+  )
+}
+
+/**
  * 关闭过期订单并释放关联优惠券（原子操作）。
  *
  * 仅关闭「顾客自助下单」(opened_by IS NULL) 的过期订单。员工开单订单
  * (opened_by IS NOT NULL) 由 admin/staff 生成二维码交顾客扫码支付，扫码时刻
  * 往往已超过 10 分钟，不应被自助下单的懒清理误关（issue #27）。
+ *
+ * ⚠️ **本函数体内不得有任何时间谓词**（issue #215）：「过没过 10 分钟」一律由调用方判。
+ * `order.detail` 的下发契约就架在这条前提上 —— 它只在**补关到关不动为止**之后才下发
+ * `expire_in_ms`（且恒为严格正数），关不动就干脆不下发、让前端退到非权威口径。
+ * 一旦这里加上 `sale_order_datetime < NOW() - INTERVAL '10 minutes'` 之类的「加固」，
+ * 补关是否成功就开始取决于 PG 与云函数宿主的时钟差：PG 慢一点就关不掉，
+ * 而复读仍判 eligible，detail 于是反复降级、页面停在「待支付 / 请完成支付 / 去支付」——
+ * 本 issue 要消灭的矛盾态从后门回来。由 `order.test.js` 的同源锁一并钉住。
  *
  * @param {string} orderNo - 订单号
  * @returns {Promise<boolean>} true=确实关闭并释放了券；false=未命中（非待支付/员工单/不存在）
@@ -1499,6 +1550,13 @@ async function closeExpiredOrder(orderNo) {
  * @param {string} userId - 用户ID
  */
 async function closeExpiredOrdersByUser(userId) {
+  // ⚠️ 候选集**刻意是超集**，不要往这里加 `lakala_out_order_no IS NULL`（issue #215）。
+  // 看起来那样能省掉几个空事务（有意图的单反正会被 UPDATE 的 CAS 挡下），但
+  // `lakala_out_order_no` 是双向可变的：SELECT 之后、CAS 之前它完全可能被
+  // payNotify / 对账 / 支付失败清理清成 NULL —— 那一刻这单已经该关了，
+  // 而收窄过的候选集根本没把它选进来，这一趟就漏过去了。
+  // 后果是过期单继续占着 `uq_sale_orders_client_pending`，顾客再下自助单会被拒。
+  // 选多了只是白跑一个空事务（fail-safe），选漏了是功能错误。
   const expired = await pg.query(
     `SELECT sale_order_id FROM sale_orders
      WHERE client_user_id = $1 AND status = '待支付' AND opened_by IS NULL
@@ -2816,6 +2874,10 @@ async function list(ctx) {
  * 订单详情
  */
 async function detail(ctx) {
+  // 服务端处理耗时（issue #215）。`expire_in_ms` 是**处理完之后**才算出来的，
+  // 而前端只能量到整个往返；不把这段还给它，它就会把「服务端处理 + 上行」重复扣一遍，
+  // 倒计时提前结束、支付入口提前被关。补关那条路径动辄几百毫秒，值得精确。
+  const handlerStartedAt = Date.now()
   const { userId } = ctx.auth
   const payloadDtl = ctx.event.payload || {}
   const orderNo = payloadDtl.saleOrderId || payloadDtl.orderNo
@@ -2825,7 +2887,8 @@ async function detail(ctx) {
   }
 
   const orders = await pg.query(
-    `SELECT o.*, s.store_name
+    `SELECT o.*, s.store_name,
+            (${PENDING_AUTO_CLOSE_GUARD_SQL}) AS auto_close_eligible
      FROM sale_orders o
      LEFT JOIN stores s ON o.store_id = s.store_id
      WHERE o.sale_order_id = $1 AND o.client_user_id = $2`,
@@ -2840,13 +2903,22 @@ async function detail(ctx) {
 
   // 懒清理过期的待支付订单（防止前端倒计时到 0 后无限重载，同时释放优惠券）
   // 员工单 closeExpiredOrder 内部跳过，不置已关闭（issue #27）
-  if (order.status === '待支付') {
+  // 判据列一起看：员工单、有在途意图的单在这里是白开一个事务
+  //（`closeExpiredOrder` 的 SELECT ... FOR UPDATE 只有 status + opened_by 两条守卫，
+  // 对有意图的单会命中并短暂锁住该行，跟并发的 order.pay / payNotify 抢毫秒）。
+  // 下面的补关循环本来就用刷新后的行兜着，这里对不可关的单没有必要试。
+  if (order.status === '待支付' && order.auto_close_eligible) {
     const orderTime = new Date(order.sale_order_datetime)
     if (Date.now() - orderTime.getTime() > 10 * 60 * 1000) {
-      const closed = await closeExpiredOrder(orderNo)
-      if (closed) order.status = '已关闭'
+      await closeExpiredOrder(orderNo)
     }
   }
+  // 可支付态的订单要重读判据列（issue #215）。不能只在「跑过懒清理」时重读：
+  // 主查询与组装响应之间，另一台设备或并发的 order.pay 都可能写入 lakala_out_order_no，
+  // 那会让这份响应既发着倒计时、又把 has_active_payment_intent 算成 false ——
+  // 正是本 issue 要消灭的那种「展示口径与关单规则分叉」。
+  // 挂在下面的 Promise.all 批次里，不额外增加往返。
+  const needsGuardRefresh = order.status === '待支付' || order.status === '部分支付'
 
   // 查询订单明细（使用快照字段 + 商品封面）
   const items = await pg.query(`
@@ -2892,15 +2964,9 @@ async function detail(ctx) {
     it.cover_image = safeThumbUrl(it.cover_image, PRODUCT_THUMB_BOX_SMALL)
   }
 
-  // 待支付订单返回过期时间
-  let expireAt = null
-  if (order.status === '待支付') {
-    expireAt = new Date(new Date(order.sale_order_datetime).getTime() + 10 * 60 * 1000).toISOString()
-  }
-
-  // 并行查询美容师姓名、券名称和款项流水
+  // 并行查询美容师姓名、券名称、款项流水，以及懒清理后的订单快照
   // 退款流水通过同表 change_type='退款' 聚合（不再依赖独立 sale_order_type='退款单' 行）
-  const [preferredStaffName, couponName, paymentRows] = await Promise.all([
+  const [preferredStaffName, couponName, paymentRows, refreshedRows] = await Promise.all([
     order.preferred_employee_id
       ? pg.query('SELECT name FROM staff_wechat_users WHERE employee_id = $1', [order.preferred_employee_id])
           .then(rows => rows.length > 0 ? rows[0].name : null)
@@ -2921,8 +2987,19 @@ async function detail(ctx) {
        WHERE sale_order_id = $1
        ORDER BY created_at ASC, id ASC`,
       [orderNo]
-    )
+    ),
+    // 见上面 needsGuardRefresh 的说明。`order.pay` 的 preflight 注释早已写明
+    // 「状态必须 FOR UPDATE 后重读」，detail 这条展示链路此前是唯一的例外。
+    needsGuardRefresh ? queryOrderGuardSnapshot(orderNo, userId) : Promise.resolve(null),
   ])
+
+  // 整行覆盖：只挑三列回填会把 status 与 received / paid_at / payable_amount 拆开——
+  // payNotify 在两次查询之间提交时，同一份响应就会出现「已支付但没有任何收款记录」。
+  // 主查询与重读各取整行，至少保证订单行内部自洽（与 items / payments 之间的
+  // 跨查询一致性是本函数早就有的性质，本 PR 不动）。
+  if (refreshedRows && refreshedRows.length > 0) {
+    Object.assign(order, refreshedRows[0])
+  }
 
   // 精简 payments 字段（只给前端需要的）
   const payments = paymentRows.map(p => ({
@@ -2938,10 +3015,67 @@ async function detail(ctx) {
     audit_remark: p.audit_remark || null,
   }))
 
+  // ⚠️ 补关复检与剩余量计算放在**响应组装的最后一步**（评审 round-16）：
+  // 放在前面的话，payments 映射等尾部组装期间跨过截止点，服务端就会下发一个
+  // 严格为正的 expire_in_ms 却没有补关 —— 倒计时还在走、去支付却已经会被拒。
+  // 分别取 `Date.now()` 的话，复检判「还没过期」、几微秒后算剩余量时已经过线，
+  // 就会下发「剩余 0 但没试过关单」—— 而前端对「剩余 0」的处理正是
+  //「只清倒计时、不重载」（它有理由相信服务端已经试过了）。共用一个读数，
+  //「我告诉你过期了」就严格蕴含「我已经试过关它了」，中间没有缝。
+  const nowMs = Date.now()
+  const deadlineMs = new Date(order.sale_order_datetime).getTime() + 10 * 60 * 1000
+
+  // 开头那次懒清理检查发生在请求**开头**，而查明细、查退款、查流水都要时间；
+  // 正好在这中间跨过 10 分钟的话，就得在这里补关，否则页面会长期停在
+  //「请完成支付 + 去支付」而订单压根没被关。
+  //
+  // 为什么要**循环**而不是关一次就走：第一次的 CAS 可能输给并发写入的支付意图，
+  // 而那笔意图又在复读之前被清掉（预下单失败等），复读于是仍然「可关且已过期」——
+  // 下面那步只在「剩余量严格为正」时才下发权威值，所以这里关不动的话就会自动降级；
+  // 重试两次是为了让**常态**下别走到降级分支上去。
+  for (let attempt = 0; attempt < 2 && order.auto_close_eligible && deadlineMs <= nowMs; attempt++) {
+    await closeExpiredOrder(orderNo)
+    const recheckedRows = await queryOrderGuardSnapshot(orderNo, userId)
+    if (recheckedRows.length === 0) break
+    Object.assign(order, recheckedRows[0])
+  }
+
+  // 待支付订单返回过期时间。判据由数据库给出（PENDING_AUTO_CLOSE_GUARD_SQL），
+  // 只有「这一刻懒清理真会关掉它」的订单才发：员工开单单、以及有在途支付意图的自助单
+  // 都关不掉，给它们发倒计时等于骗顾客，还会把前端的「归零重载」变成打不停的 order.detail。
+  const eligible = Boolean(order.auto_close_eligible)
+  const expireAt = eligible ? new Date(deadlineMs).toISOString() : null
+  // issue #215：同时下发**服务端算好的剩余毫秒**与**东八区的截止时刻**。
+  // 只给绝对时间的话，前端要拿设备的 `Date.now()` / `getHours()` 去推 —— 手机时钟快几分钟
+  // 就会把刚下发的时限判成「已过期」，出境改了时区则会显示成「请在 03:15 前完成支付
+  //（剩余 09:30）」这种自相矛盾的句子。判过期、报时刻都是服务端的事。
+  //
+  // ⚠️ **只在剩余量严格为正时才下发**。走到这里还满足「可关且已过期」，说明上面两次
+  // 补关都被并发写入的支付意图挤掉了（`order.repay` 可以对待支付单写 `lakala_out_order_no`
+  // 且没有十分钟守卫）。这时下发一个「权威的 0」就是在骗前端 —— 它对权威值的处理是
+  // 不再重载，而这单确实还开着。宁可不下发：前端会退到绝对时间口径（非权威），
+  // 按它自己的一次性闸门重载一次，自愈且有界。
+  // 两个字段同条件下发：降级响应里只剩一个「已经过去的 HH:mm」对读日志的人是徒增困惑
+  const vouchable = eligible && deadlineMs > nowMs
+  const expireInMs = vouchable ? deadlineMs - nowMs : null
+  const expireClock = vouchable ? shanghaiClockHM(new Date(deadlineMs)) : null
+  // ⚠️ 别用「字段缺席」同时表达两件不同的事（双谱系评审 round-11）。
+  // `expire_in_ms` 为空有两种来源，前端要做的事**正好相反**：
+  //   - 旧版本云函数根本不发这个字段 → 那边的订单可能真的还能付，不该封支付入口；
+  //   - 新版本补关两次都被并发意图挤掉 → 这单确实过期了、只是关不掉，必须封。
+  // 所以把后者显式说出来。
+  const expireUnresolved = eligible && !vouchable
+
   // #214：这里是 `SELECT o.*` 原样展开，新增的 lakala_payment_intent 里含 paySign 等支付凭据，
   // 必须在下发前剥掉（schema 注释也写明「不随 order.detail 下发」）。scanDetail / list 是显式
   // 字段映射，天然不受影响；只有本处的整行展开会把新列带出去。
-  const { lakala_payment_intent: _omitPaymentIntent, ...orderForClient } = order
+  // issue #215：`auto_close_eligible` 也剥掉。它是服务端算 expire_at 的中间量，
+  // 下发出去只会诱使前端拿它自己推导展示口径 —— 前端要用的就是 expire_at 本身。
+  const {
+    lakala_payment_intent: _omitPaymentIntent,
+    auto_close_eligible: _omitAutoCloseEligible,
+    ...orderForClient
+  } = order
 
   ctx.result = {
     order: {
@@ -2955,6 +3089,12 @@ async function detail(ctx) {
         && order.client_user_id === userId
       ),
       expire_at: expireAt,
+      expire_in_ms: expireInMs,
+      expire_clock: expireClock,
+      // true = 已过截止点、服务端试过关但没关掉（与「旧云函数不发这些字段」区分开）
+      expire_unresolved: expireUnresolved,
+      // 本次请求的服务端处理耗时，供前端从实测 RTT 里扣掉，避免重复计算
+      server_elapsed_ms: Date.now() - handlerStartedAt,
       preferred_staff_name: preferredStaffName,
       coupon_name: couponName,
     },

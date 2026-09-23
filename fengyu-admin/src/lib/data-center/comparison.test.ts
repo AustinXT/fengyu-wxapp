@@ -1,46 +1,12 @@
 import { describe, it, expect, vi } from 'vitest'
-import { deltaPct, withComparison, toComparisonRanges } from './comparison'
+import { withComparison, toComparisonRanges } from './comparison'
 import type { ResolvedRange, ResolvedTimeRange } from './types'
 
 const R = (start: string, end: string): ResolvedRange => ({ start, end })
 
-describe('deltaPct', () => {
-  it('正常增减', () => {
-    expect(deltaPct(12, 10)).toBeCloseTo(0.2)
-    expect(deltaPct(8, 10)).toBeCloseTo(-0.2)
-  })
-  it('base 为 0 或 null / cur 为 null → null（前端 --）', () => {
-    expect(deltaPct(10, 0)).toBeNull()
-    expect(deltaPct(10, null)).toBeNull()
-    expect(deltaPct(null, 10)).toBeNull()
-  })
-
-  // #283：base<0 时 (cur-base)/base 符号翻转，"向好"会被渲染成红色下滑
-  it('base 为负 → null（不是把回正算成下滑）', () => {
-    // 生产实例（2026-09-22 只读库实测，南昌梦祥店「本周」业绩）：
-    // 基期 09-14~15 = -2,646，当期 09-21~22 = +264（已回正）
-    // 旧实现 (264-(-2646))/(-2646) = -1.0998 → 徽章显示「环比 -109.98%」红色下滑，方向反了
-    expect(deltaPct(264, -2646)).toBeNull()
-    // 继续恶化也一样算不出（-100.68% ~ -54,080,100.00% 那一族）
-    expect(deltaPct(-20000, -6104)).toBeNull()
-    // 边界：base 恰为 -0.01
-    expect(deltaPct(100, -0.01)).toBeNull()
-  })
-
-  it('cur 为 0 或负、base 为正 → 照常计算（只有分母受限）', () => {
-    expect(deltaPct(0, 10)).toBeCloseTo(-1) // 归零 = -100%
-    expect(deltaPct(-5, 10)).toBeCloseTo(-1.5) // 由正转负 = -150%，方向正确
-  })
-
-  // NaN 不等于 null，旧实现会把它原样除出去；判定权收回本函数
-  it('NaN / ±Infinity → null（不靠调用方过滤）', () => {
-    expect(deltaPct(NaN, 10)).toBeNull()
-    expect(deltaPct(10, NaN)).toBeNull()
-    expect(deltaPct(Infinity, 10)).toBeNull()
-    expect(deltaPct(-Infinity, 10)).toBeNull()
-    expect(deltaPct(10, Infinity)).toBeNull()
-  })
-})
+// deltaPct 的用例已随函数一并移除（#310/#315）——等价覆盖在
+// `src/lib/delta-display.test.ts` 的「resolveDeltaDisplay（决策 1 矩阵）」，
+// 含同一批生产实例（南昌梦祥店 -2,646 → +264 等）。
 
 describe('withComparison', () => {
   const ranges = {
@@ -65,12 +31,13 @@ describe('withComparison', () => {
     })
     const cell = await withComparison(runner, ranges, 'amount', true)
     expect(cell.value).toBe(120)
-    expect(cell.mom).toBeCloseTo(0.2) // (120-100)/100
-    expect(cell.yoy).toBeCloseTo(0.5) // (120-80)/80
+    // #310 起 mom/yoy 是判别联合而非裸数值 —— 展示层要区分「算不出」的三种成因。
+    expect(cell.mom).toEqual({ kind: 'pct', value: 0.2 }) // (120-100)/100
+    expect(cell.yoy).toEqual({ kind: 'pct', value: 0.5 }) // (120-80)/80
     expect(runner).toHaveBeenCalledTimes(3)
   })
 
-  it('previous/lastYear 为 null（无历史）→ mom/yoy = null', async () => {
+  it('previous/lastYear 为 null（无历史）→ mom/yoy = na', async () => {
     const runner = vi.fn(async () => 50)
     const cell = await withComparison(
       runner,
@@ -79,8 +46,8 @@ describe('withComparison', () => {
       true,
     )
     expect(cell.value).toBe(50)
-    expect(cell.mom).toBeNull()
-    expect(cell.yoy).toBeNull()
+    expect(cell.mom).toEqual({ kind: 'na' })
+    expect(cell.yoy).toEqual({ kind: 'na' })
     expect(runner).toHaveBeenCalledTimes(1) // 仅本期
   })
 

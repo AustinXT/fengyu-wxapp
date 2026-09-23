@@ -65,11 +65,16 @@ const customerRegistrationMetricColumns = [
   { key: 'visitOnceRate', label: '1次达成率', unit: 'percent' },
   { key: 'visitTwice', label: '回店2次', unit: 'count' },
   { key: 'visitTwiceRate', label: '2次达成率', unit: 'percent' },
-  { key: 'dormant', label: '沉睡', unit: 'count' },
+  // #294：三档状态人数读 cron 每日重算的 customer_status 截面，**不随导出所选区间变化**；
+  // 紧邻的「激活 X」三列才是区间统计。导出件脱离页面上下文，表头不标会被当同时态对比。
+  // 沉睡额外带 `customer_type='会员客'`（customer.ts:181 标量侧 / :545 明细侧，
+  // 由 consistency.customer.test.ts 的三条断言钉死），冰冻/休眠没有 —— 导出件比页面
+  // 更需要标出这层差异，否则三列看起来口径对等。
+  { key: 'dormant', label: '沉睡(截面·仅会员客)', unit: 'count' },
   { key: 'reactivatedDormant', label: '激活沉睡', unit: 'count' },
-  { key: 'frozen', label: '冰冻', unit: 'count' },
+  { key: 'frozen', label: '冰冻(截面)', unit: 'count' },
   { key: 'reactivatedFrozen', label: '激活冰冻', unit: 'count' },
-  { key: 'deep', label: '休眠', unit: 'count' },
+  { key: 'deep', label: '休眠(截面)', unit: 'count' },
   { key: 'reactivatedDeep', label: '激活休眠', unit: 'count' },
 ] as const satisfies readonly DataCenterMetricColumn[]
 
@@ -82,7 +87,10 @@ const customerOperationMetricColumns = [
   { key: 'bucketVIC', label: '≥10万', unit: 'count' },
   { key: 'operatedTotal', label: '被经营总数', unit: 'count' },
   { key: 'newMembers', label: '会员新增', unit: 'count' },
-  { key: 'trafficCustomers', label: '流量客', unit: 'count' },
+  // #284：与 KPI 卡同步改名。⚠ 它与下方 trafficVisits「流量人次」**不同口径**，
+  // 新分母含「本期已转会员的人」（其人次记入 memberVisits）和「本期没到过店的新会员」（无人次），
+  // 因此同一行出现「成交率分母 > 流量人次」甚至「流量人次 = 0」是合法的，不是数据 bug
+  { key: 'trafficCustomers', label: '成交率分母', unit: 'count' },
   { key: 'convRate', label: '成交率', unit: 'percent' },
   { key: 'memberAvgTicket', label: '会员客单', unit: 'amount' },
   { key: 'newCustomerAvgTicket', label: '新客客单', unit: 'amount' },
