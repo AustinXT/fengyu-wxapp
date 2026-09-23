@@ -67,6 +67,10 @@
  *         故 managerAvgX = 每店平均 X（m.income 本就是门店全部产能员工提成合计 → managerAvgIncome = 每店平均产能收入）。
  *       技师 = staff_wechat_users.skills && ARRAY['美容师','养生师']（= metrics.md employeeCount「产能技师在职数」），
  *         按区间末 hired_at/resigned_at 历史化。
+ *         ⚠️ **含直挂市场/部门的技师**（2026-09-23 #285 修正）：组织归属双轨，只按 store_id
+ *         过滤会漏掉 13 名 store_id IS NULL 的在职产能技师（集团 150 vs 164，虚高 +9.33%）。
+ *         归属规则见 `technicianCte`，与 Part D `producer_base` 对齐；
+ *         单店 scope 下直挂者不出现（`orgAnchorScopeSql` 返回 FALSE），与员工榜同语义。
  *   - 人均派生分母「员工数」= 技师（产能技师）口径，与 metrics.md §派生指标分母 employeeCount 对齐。
  *   - 「人均项目数 empAvgProjects / techAvgProjects」分子用 metrics.md 项目数口径
  *     （sales_category IN ('自销自耗','他销自耗')，非生美过滤）；任务描述「生美项目」措辞按 metrics.md 项目数对齐。
