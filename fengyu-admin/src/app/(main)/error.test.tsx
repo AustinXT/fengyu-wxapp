@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { render, screen } from '@testing-library/react'
-import ErrorPage from './error'
+import ErrorPage, { DIGEST_PATTERN_SOURCE } from './error'
 
 /**
  * 页面级 error boundary 的 401/403/500 判定守护。
@@ -75,5 +75,32 @@ describe('(main)/error.tsx 错误分级', () => {
   it('带 @E 错误码后缀的 Next 自动编号也认', () => {
     render(<ErrorPage error={errorWith({ message: SANITIZED, digest: '1956068727@E394' })} reset={vi.fn()} />)
     expect(screen.getByText('错误编号: 1956068727@E394')).toBeTruthy()
+  })
+})
+
+/**
+ * digest 白名单的跨端一致性（#316）。
+ *
+ * 这条正则在 `fengyu-analyst/src/components/analyst-error-state.tsx` 有一份**刻意的副本**
+ * （跨端共享目录已 veto）。#316 之前两边都写成 `@[A-Za-z][\w-]*`，`[\w-]` 含 `_` 与 `-`，
+ * 于是任何 snake_case / kebab-case 技术串都整串放行——"过滤"掉的只是标点，不是语义。
+ * analyst 侧先收紧，本文件同步；两侧各留一条字面量锚定，任一边漂移两边都红。
+ */
+describe('(main)/error.tsx digest 白名单（跨端副本，与 analyst 同步）', () => {
+  it('正则字面量锚定——与 analyst 那份逐字一致', () => {
+    // analyst 侧同名断言在
+    // fengyu-analyst/src/components/__tests__/analyst-error-state.test.tsx
+    expect(DIGEST_PATTERN_SOURCE).toBe('^\\d{1,10}(?:@E\\d{1,9})?$')
+  })
+
+  it.each([
+    ['snake_case 的底层错误', '1@ECONNREFUSED_127-0-0-1_5432'],
+    ['snake_case 的连接串（含口令）', '0@postgresql_fengyu_fengyu123_localhost_5432'],
+    ['snake_case 的业务串', '1@INVALID_STATE_CLIENT_SECRET_not_configured'],
+    ['无上界的长后缀（会撑破卡片）', `1@${'a'.repeat(60)}`],
+  ])('⚠️ %s 不得被当成错误编号渲染（收紧前整串放行）', (_label, leaky) => {
+    render(<ErrorPage error={errorWith({ message: SANITIZED, digest: leaky })} reset={vi.fn()} />)
+    expect(screen.queryByText(/错误编号/)).toBeNull()
+    expect(screen.queryByText(new RegExp(leaky.slice(0, 12)))).toBeNull()
   })
 })

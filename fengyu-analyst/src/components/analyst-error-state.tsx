@@ -14,7 +14,13 @@ import { useRouter } from "next/navigation"
 
 /**
  * Next 自动生成的错误编号形态：`stringHash(message + stack)`（无符号 32 位十进制），
- * 15.5 起对带 `__NEXT_ERROR_CODE` 的错误会追加 **`@E<数字>`**。
+ * 15.5 起对带 `__NEXT_ERROR_CODE` 的错误会追加 **`@E<数字>`**（`lib/error-telemetry-utils.js`
+ * 的 `createDigestWithErrorCode`；错误码注册表目前是 3~4 位，`\d{1,9}` 留足余量）。
+ *
+ * ⚠️ 不宣称覆盖 Next 的**全部** digest 形态：拼接函数原样追加 `__NEXT_ERROR_CODE`，
+ * 15.5.20 里还存在 `TurbopackInternalError` 这种非数字码（理论形态 `42@TurbopackInternalError`）。
+ * 那类会被本白名单拒掉 —— **fail-closed，只损失客服定位、不泄漏**，且它属构建链路、
+ * 通常进不到业务 RSC 边界。别为了"覆盖全"把后缀放回字母通配。
  *
  * ⚠️ **只有这种形态才允许渲染**，因为 `digest` 是这个组件唯一会打到页面上的外来字符串。
  * 生产环境 Next 会脱敏 `error.message`，但**不会碰 `digest`**——上游若把完整业务/技术文案
@@ -28,12 +34,22 @@ import { useRouter } from "next/navigation"
  * `project-url-sanitizer-case-sensitivity`（整条加 `/i` 会 fail-open）。
  *
  * ⚠️ 这条正则在 `fengyu-admin/src/app/(main)/error.tsx` 有一份**刻意的副本**
- * （跨端共享目录已 veto）。两边须保持一致，改一边必须同步另一边。
+ * （跨端共享目录已 veto）。**两侧各有一条字面量锚定测试钉住同一个 source**，
+ * 改一边不同步另一边时两边都会红。
  */
-const NEXT_AUTO_DIGEST_RE = /^\d{1,10}(?:@E\d{1,6})?$/
+const NEXT_AUTO_DIGEST_RE = /^\d{1,10}(?:@E\d{1,9})?$/
 
 /** 导出给测试做字面量锚定——两站点副本漂移时能立刻发现。 */
 export const DIGEST_PATTERN_SOURCE = NEXT_AUTO_DIGEST_RE.source
+
+/**
+ * 根段错误页的「真出口」。
+ *
+ * ⚠️ 默认值**不能写 `/`**：`app/page.tsx` 是 `redirect("/dashboard")`，而 `/dashboard`
+ * 就在挂掉的 `(main)` 段里——绕一圈又回到同一张错误页，是假出口的另一种形态（#316 闸门 2 揪出）。
+ * 这里与 `AnalystShell` 用同一个默认值，保持站内一致。
+ */
+const ADMIN_ORIGIN = process.env.NEXT_PUBLIC_ADMIN_ORIGIN || "http://localhost:3000"
 
 export function AnalystErrorState({
   digest,
@@ -125,7 +141,7 @@ export function AnalystErrorState({
                ⚠️ 也刻意**不**指向 `/dashboard`——那就在 `(main)` 段里，点了必然再跑一遍
                同一个 layout、转回同一张错误页，是个假出口。指向 admin 首页才是真出口。 */
             <a
-              href={process.env.NEXT_PUBLIC_ADMIN_ORIGIN || "/"}
+              href={ADMIN_ORIGIN}
               className="rounded-md border border-[var(--border)] px-4 py-2 text-sm font-medium text-neutral-700 transition-colors hover:bg-neutral-50"
             >
               返回管理后台

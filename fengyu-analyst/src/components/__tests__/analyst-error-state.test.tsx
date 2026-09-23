@@ -16,10 +16,13 @@ beforeEach(() => {
 afterEach(cleanup)
 
 describe("AnalystErrorState · digest 白名单（#316 验收 3）", () => {
-  it("正则字面量锚定——与 admin 侧那份刻意副本须一致", () => {
-    // 跨端共享目录已 veto，两份各留一份。断言写死字面量，改一边不同步另一边时这里先红。
-    // admin 侧同源实现在 fengyu-admin/src/app/(main)/error.tsx。
-    expect(DIGEST_PATTERN_SOURCE).toBe("^\\d{1,10}(?:@E\\d{1,6})?$")
+  it("正则字面量锚定——与 admin 侧那份刻意副本须逐字一致", () => {
+    // 跨端共享目录已 veto，两份各留一份。
+    // ⚠️ 初稿这条只比较 analyst 自己导出的常量和 analyst 自己的硬编码字符串——admin 漂移时
+    //    根本不会红，「跨端锚定」是假的（#316 闸门 2 两谱系同时揪出；当时 admin 确实还停在
+    //    宽松正则、同样的泄漏串照放）。现在两侧各有一条，钉的是同一个 source 字面量：
+    //    任一边改了不同步，两边都红。admin 侧见 fengyu-admin/src/app/(main)/error.test.tsx。
+    expect(DIGEST_PATTERN_SOURCE).toBe("^\\d{1,10}(?:@E\\d{1,9})?$")
   })
 
   it("Next 自动生成的编号照常展示，方便用户报障时对上服务端日志", () => {
@@ -86,6 +89,11 @@ describe("AnalystErrorState · 重试真的会重新取数（#316 验收 2）", 
 
     expect(mockRefresh).toHaveBeenCalledTimes(1)
     expect(reset).toHaveBeenCalledTimes(1)
+    // ⚠️ 顺序也要钉。只查「各调一次」的话，写成 `reset(); router.refresh()` 照样绿，
+    //    而那个顺序是错的：先 reset 会让边界在新 RSC 还没到手时就把子树放回去，
+    //    立刻再抛一次、再接住，refresh 的结果反而被这次多余的重渲染盖过去。
+    //    （#316 闸门 2 两谱系同时指出「断言与注释声称不符」，红检也确实没红。）
+    expect(mockRefresh.mock.invocationCallOrder[0]).toBeLessThan(reset.mock.invocationCallOrder[0])
   })
 
   it("文案不承诺「通常就能恢复」，只说会重新取数", () => {

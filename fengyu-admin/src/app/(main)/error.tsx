@@ -9,8 +9,20 @@ import { actionErrorMessage, actionErrorType } from "@/lib/action-error"
  * Next 自动生成的错误编号形态：`stringHash(message+stack).toString()`（无符号 32 位十进制），
  * 15.5 起对带 `__NEXT_ERROR_CODE` 的错误会追加 `@E<码>`（lib/error-telemetry-utils.js）。
  * 只有这种形态才是「给客服定位用的编号」，其余 digest 是业务/技术文案，不得原样渲染。
+ *
+ * ⚠️ **后缀必须锁死成 `@E<数字>`，别放宽成 `@[A-Za-z][\w-]*`**（本文件的旧写法，#316 揪出）：
+ * `[\w-]` 含 `_` 与 `-`，于是任何写成 snake_case / kebab-case 的技术串都会整串放行——
+ * 实测 `1@ECONNREFUSED_127-0-0-1_5432`、`0@postgresql_fengyu_fengyu123_localhost_5432`
+ * 全部通过。那样"过滤"掉的只是标点，不是语义。
+ * 同型教训见 memory `project-url-sanitizer-case-sensitivity`（整条加 `/i` 会 fail-open）。
+ *
+ * ⚠️ 这条正则在 `fengyu-analyst/src/components/analyst-error-state.tsx` 有一份**刻意的副本**
+ * （跨端共享目录已 veto）。两侧各有一条字面量锚定测试钉住同一个 source，改一边必须同步另一边。
  */
-const NEXT_AUTO_DIGEST_RE = /^\d{1,10}(?:@[A-Za-z][\w-]*)?$/
+const NEXT_AUTO_DIGEST_RE = /^\d{1,10}(?:@E\d{1,9})?$/
+
+/** 导出给测试做跨端字面量锚定——与 analyst 那份副本漂移时两侧都会红。 */
+export const DIGEST_PATTERN_SOURCE = NEXT_AUTO_DIGEST_RE.source
 
 /** 「没有可展示的业务理由」的哨兵。不可能与真实文案相等，故用它代替空串做判定。 */
 const NO_BUSINESS_REASON = "__no_business_reason__"
