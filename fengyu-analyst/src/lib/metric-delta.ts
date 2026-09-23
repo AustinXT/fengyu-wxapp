@@ -39,11 +39,16 @@
  * #307 阶段 `previous === 0` 曾排在 rate 之前，导致「到店率 0% → 30%」被吞成「无基数」，
  * 而「30% → 0%」照常出 `-30.0pct`，**只藏涨、不藏跌**。#314 把守卫挪到了 rate 之后，涨跌恢复对称。
  *
- * ⚠️ **已知代价：2027-01-01 之前，同比 rate 徽章显示的是割点伪影，不是经营变化。**
+ * ⚠️ **已知代价：同比 rate 徽章在相当长一段时间里显示的是割点伪影，不是经营变化。**
  * `service_orders`（已完成）最早只到 **2026-07-08**，而新客入口日期走首单（`sale_orders` 回溯到 2022-08），
  * 分子分母不同源 → 2022–2025 共 1,352 个新客的到店数**恒为 0**。
  * 于是任何落在割点前的同比基期都是 0，改动后**集团级到店率同比会渲染出约 `+86.7pct` 的绿色徽章**
  * （2026 年 3,156/3,639 = 86.7%）。量化依据见 issue #314 评论 `issuecomment-5788019145`。
+ *
+ * ⚠️ **别把失效日期写成「2027-01-01」**（本 PR 初稿犯过，闸门 2 codex 谱系揪出）：同比基期是
+ * 当期平移 12 个月，所以 2027 年 1–6 月查询的同比基期落在 2026 年 1–6 月，**仍在割点之前**；
+ * 「今年 / YTD」这类区间更会长期混入割点前月份。准确的判据是
+ * **同比基期的入客区间及其 90 天到店观察窗是否与 2026-07-08 重叠**，而不是某个固定日期。
  *
  * 这是**知情选择**：拍板人读过该数据后仍取本方案，理由是割点属全站问题、已由 #289 立案跟踪，
  * 不该由单个徽章承担。别再拿这份数据回头推翻本实现——那是已经否决过一次的建议。
@@ -80,13 +85,14 @@
  * 保留方向是刻意的——由负回正是真实的向好信息，不该跟着倍数一起丢。
  * 别为了「统一口径」把这里也改成 default。
  *
- * ⚠️ **tone 不读 `rendered` 的只有 `rendered === null` 那一族**（文案是「无基数」，没数字可跟，
- * 方向只能靠比大小补）。该族含三种来路，处置**故意不一致**：
- *   - 零基期（`count`/`money`）→ 弃判方向，灰
+ * ⚠️ **tone 不读 `rendered` 的只有 `rendered === null` 那一族**（文案是「无基数」，没数字可跟）。
+ * 该族含四种来路，但**只有负基期允许退而用差值补方向**，其余一律弃判置灰：
+ *   - 零基期（`count`/`money`）→ 灰（增幅本身无意义）
+ *   - 非有限入参 → 灰（脏数据不该被涂成红绿）
+ *   - 溢出（`delta * 100` 非有限）→ 灰（数都印不出来，配色不该假装知道方向）
  *   - 负基期 → **保留方向**（本节主题）
- *   - 溢出（`delta * 100` 非有限）→ 也走比大小，所以 `formatMetricDelta(MAX_VALUE, 1, 1, "money")`
- *     会产出「无基数 + 绿色」。**不可达**（`previous` 来自 `round2`，最小非零 0.01，
- *     要触发得有 1e17 量级的当期值），既有行为，登记在此免得下次 review 又发现一遍。
+ * 这四者靠 `DeltaRender.canInferDirection` 区分，**别把它退化回只看 `rendered === null`**：
+ * 那样溢出会顺着负基期这条路径被涂绿（#314 闸门 2 codex 谱系揪出的 P1，有测试钉住）。
  *
  * ⚠️ #314 决策 1 定了一套全站负基期展示矩阵（`base < 0 && cur > 0` → 「由负转正」🟢，
  * 否则 →「未转正」🔴），admin 侧由 PR #321 落地。**analyst 侧尚未落，不在 #314 本轮范围**
@@ -129,21 +135,21 @@ function warnNonFinite(fn: string, values: Record<string, number>): void {
 }
 
 /**
- * 把差值渲染成带符号的百分比/百分点文案，并在最后一刻挡住溢出。
+ * 一次渲染的完整结果。
  *
- * ⚠️ 守卫必须落在**最终要渲染的那个数**（`delta * 100`）上，查中间量都会漏。三条真实的溢出路径：
- *   - 减法：`MAX_VALUE − (−MAX_VALUE)` → `delta` 直接是 `Infinity`
- *   - 除法：`1 / 1e-320` → 入参各自有限，商是 `Infinity`
- *   - 乘 100：`MAX_VALUE / 1` 的商**有限**（1.79e308），但 `× 100` 才溢出
- * 第三条是最阴的——只查 `delta` 会以为已经封死，实际仍渲染出 `"+Infinity%"`。
- */
-/**
- * 一次渲染的完整结果。`rendered` 是**实际印在徽章上的那个数**（已按 `toFixed(1)` 舍入），
- * `null` 表示这次根本没渲染出数字（文案是 `NO_BASE_TEXT`）。
+ * - `rendered`：**实际印在徽章上的那个数**（已按 `toFixed(1)` 舍入）。
+ *   `null` 表示这次根本没渲染出数字（文案是 `NO_BASE_TEXT`）。tone 必须读它而不是自己重算方向
+ *   ——见文件头「文案与配色必须同源」。
+ * - `canInferDirection`：`rendered === null` 时，**能否退而用两期差值补出方向**。
  *
- * tone 必须读它而不是自己重算方向——见文件头「文案与配色必须同源」。
+ * ⚠️ 第二个字段是必需的，别为了「三态已经够了」把它删掉：`rendered === null` 一个值
+ * 至少压着**四种**成因——零基期 / 负基期 / 非有限入参 / 运算溢出——而它们对 tone 的期望不同：
+ * 只有**负基期**该补方向（由负回正是真实的向好信息），其余三种都该弃判置灰。
+ * 早先只有 `rendered` 一个字段时，溢出会顺着负基期那条路径被涂成绿色
+ * （`formatMetricDelta(MAX_VALUE, 1, 1, "money")` → 文案「无基数」配 `positive`），
+ * 是 #314 闸门 2 codex 谱系揪出的 P1。
  */
-type DeltaRender = { text: string; rendered: number | null }
+type DeltaRender = { text: string; rendered: number | null; canInferDirection: boolean }
 
 /**
  * 定点化 + 取回舍入后的真实数值，一处实现供两个导出函数共用。
@@ -156,6 +162,17 @@ function fixDelta(scaled: number): { fixed: string; rendered: number } {
   return { fixed, rendered: Number(fixed) }
 }
 
+/**
+ * 把差值渲染成带符号的百分比/百分点文案，并在最后一刻挡住溢出。
+ *
+ * ⚠️ 守卫必须落在**最终要渲染的那个数**（`delta * 100`）上，查中间量都会漏。三条真实的溢出路径：
+ *   - 减法：`MAX_VALUE − (−MAX_VALUE)` → `delta` 直接是 `Infinity`
+ *   - 除法：`1 / 1e-320` → 入参各自有限，商是 `Infinity`
+ *   - 乘 100：`MAX_VALUE / 1` 的商**有限**（1.79e308），但 `× 100` 才溢出
+ * 第三条是最阴的——只查 `delta` 会以为已经封死，实际仍渲染出 `"+Infinity%"`。
+ *
+ * 溢出时 `canInferDirection: false`：数都印不出来了，配色也不该假装知道方向。
+ */
 function renderScaledDelta(
   fn: string,
   delta: number,
@@ -165,28 +182,35 @@ function renderScaledDelta(
   const scaled = delta * 100
   if (!Number.isFinite(scaled)) {
     warnNonFinite(fn, { ...context, delta })
-    return { text: NO_BASE_TEXT, rendered: null }
+    return { text: NO_BASE_TEXT, rendered: null, canInferDirection: false }
   }
   const { fixed, rendered } = fixDelta(scaled)
   // 真持平（delta === 0）与伪持平（舍入到 0.0）在这里合流，共用「持平」。
-  if (rendered === 0) return { text: FLAT_TEXT, rendered: 0 }
-  return { text: `${rendered > 0 ? "+" : ""}${fixed}${suffix}`, rendered }
+  if (rendered === 0) return { text: FLAT_TEXT, rendered: 0, canInferDirection: true }
+  return { text: `${rendered > 0 ? "+" : ""}${fixed}${suffix}`, rendered, canInferDirection: true }
 }
 
-/** `formatDeltaPart` 的内部形态：多带一个 `rendered` 供 `formatMetricDelta` 判 tone。 */
+/**
+ * `formatDeltaPart` 的内部形态：多带 `rendered` / `canInferDirection` 供 `formatMetricDelta` 判 tone。
+ *
+ * 「哪种情况允许退而用差值补方向」的知识**收在这里**，不外泄给调用方——
+ * 只有负基期是 `true`，零基期与算不出（非有限 / 溢出）都是 `false`。
+ */
 function computeDeltaPart(current: number, previous: number, type: MetricDeltaType): DeltaRender {
   // NaN / ±Infinity 自己挡掉：`=== 0` 接不住 NaN，漏过去会渲染出 "NaN%" / "+Infinity%"。
   if (!Number.isFinite(current) || !Number.isFinite(previous)) {
     warnNonFinite("formatDeltaPart", { current, previous })
-    return { text: NO_BASE_TEXT, rendered: null }
+    return { text: NO_BASE_TEXT, rendered: null, canInferDirection: false }
   }
   // rate 走减法，两道基期守卫都不适用，必须排在它们**之前**（#314 决策 2）。
   if (type === "rate") {
     return renderScaledDelta("formatDeltaPart(rate)", current - previous, "pct", { current, previous })
   }
-  if (previous === 0) return { text: NO_BASE_TEXT, rendered: null }
+  // 零基期：增幅本身无意义，方向也一并弃判（与负基期的处置**故意不同**）。
+  if (previous === 0) return { text: NO_BASE_TEXT, rendered: null, canInferDirection: false }
   // 见文件头「基期为什么必须 > 0」。此处 previous 已排除 0，只剩负数要挡。
-  if (previous < 0) return { text: NO_BASE_TEXT, rendered: null }
+  // 负基期是**唯一**允许补方向的一种：倍数没意义，但「由负回正」这个方向是真实信息。
+  if (previous < 0) return { text: NO_BASE_TEXT, rendered: null, canInferDirection: true }
   return renderScaledDelta("formatDeltaPart", (current - previous) / previous, "%", { current, previous })
 }
 
@@ -215,27 +239,15 @@ export function formatMetricDelta(
   // ⚠️ tone 刻意**只看同比**：它的定义就是同比方向，环比脏了不该影响它。
   //    这是全文件唯一一处「守卫覆盖面不一致」，有测试钉住，别顺手"补齐"。
   const text = `同比 ${yoy.text} / 环比 ${formatDeltaPart(current, prevPeriod, type)}`
-  // 挡的只有非有限值：`current > NaN` 恒 false，不挡会把脏数据渲染成红色「下降」。
-  if (!Number.isFinite(current) || !Number.isFinite(prevYear)) return { text, tone: "default" }
   // 渲染出数字时，配色必须跟那个数同号——包括舍入到 0 的伪持平并入灰（#314 决策 3），
   // 以及 rate 零基期出数时跟着出方向（#314 决策 2；旧实现在这里撞 `prevYear === 0` 变灰）。
   if (yoy.rendered !== null) return { text, tone: toneFromSign(yoy.rendered) }
-  // 文案是「无基数」，没有数字可跟，方向只能从差值补：
-  // 零基期弃判（增幅无意义），负基期与溢出**保留方向**（见文件头）。
-  if (prevYear === 0) return { text, tone: "default" }
+  // 文案是「无基数」，没有数字可跟。能不能退而用差值补方向由 computeDeltaPart 决定：
+  // 只有负基期可以（由负回正是真实的向好信息），零基期与算不出（非有限 / 溢出）一律弃判置灰。
+  if (!yoy.canInferDirection) return { text, tone: "default" }
   return { text, tone: toneFromSign(current - prevYear) }
 }
 
-/**
- * 百分点差值型同比徽章（复购率看板用）。入参是**上游已算好的差值**，不是两期原值。
- *
- * 与 `formatDeltaPart` 的区别：这里不做任何除法，所以没有符号翻转问题；
- * 但 `value > 0` 的三元在 `value = NaN` 时恒 false，会把脏数据渲染成红色「下降」——
- * 与 `formatMetricDelta` 挡非有限值的理由**完全相同**，必须一起挡（#307 PR 内 sibling audit P1）。
- *
- * 上游 `repurchase.ts:422` 的 `round4(repurchaseRate - prevYearRate)` 不挡 NaN，
- * 只靠更上游 `rate()` 的 `entryCount > 0` 守卫兜着——与主修复同属「上游有护栏、本函数没有」的类别。
- */
 /**
  * `formatPointDelta` 的**无前缀内核**，返回 `null` 表示渲染不出数字
  * （入参为 `null` / 非有限 / 乘 100 溢出），由调用方决定填什么占位文案。
@@ -270,6 +282,18 @@ export function formatPointDeltaValue(
   }
 }
 
+/**
+ * 百分点差值型同比徽章（复购率看板用）。入参是**上游已算好的差值**，不是两期原值。
+ *
+ * 与 `formatDeltaPart` 的区别：这里不做任何除法，所以没有符号翻转问题；
+ * 但 `value > 0` 的三元在 `value = NaN` 时恒 false，会把脏数据渲染成红色「下降」——
+ * 与 `formatMetricDelta` 挡非有限值的理由**完全相同**，必须一起挡（#307 PR 内 sibling audit P1）。
+ *
+ * 上游 `repurchase.ts:422` 的 `round4(repurchaseRate - prevYearRate)` 不挡 NaN，
+ * 只靠更上游 `rate()` 的 `entryCount > 0` 守卫兜着——与主修复同属「上游有护栏、本函数没有」的类别。
+ *
+ * 本体只负责加「同比」前缀，数值与配色全部来自 `formatPointDeltaValue`。
+ */
 export function formatPointDelta(value: number | null): { text: string; tone: MetricDeltaTone } {
   const core = formatPointDeltaValue(value)
   if (core === null) return { text: NO_LAST_YEAR_TEXT, tone: "default" }

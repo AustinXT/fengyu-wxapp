@@ -260,9 +260,30 @@ describe("formatMetricDelta · tone 判定（#307 AC5）", () => {
   })
 
   it("负基期原地不动时不判方向（−1000 → −1000 不该是红色）", () => {
-    // tone 在负基期下靠 `current > prevYear` 补方向，而「相等」会让它取 false 落到 negative。
-    // 这条边界由 `current === prevYear` 提前拦掉。
+    // tone 在负基期下靠两期差值补方向，而「相等」的差值是 0——
+    // 由 `toneFromSign` 的 `value === 0 → default` 接住。若漏掉会渲染成红色「下降」。
     expect(formatMetricDelta(-1000, -1000, 100, "money").tone).toBe("default")
+  })
+
+  it("溢出时不判方向——数都印不出来，配色不能假装知道方向", () => {
+    // ⚠️ 这条钉的是 #314 闸门 2 codex 谱系揪出的 P1：`rendered === null` 压着四种成因
+    //    （零基期 / 负基期 / 非有限入参 / 溢出），早先只看 `rendered === null` 时，
+    //    溢出会顺着「负基期补方向」那条路径被涂成绿色。
+    // 三条溢出路径逐条钉住，别只留一条。
+    const divisionOverflow = formatMetricDelta(Number.MAX_VALUE, 1, 1, "money")
+    expect(divisionOverflow.text).toBe(`同比 ${NO_BASE_TEXT} / 环比 ${NO_BASE_TEXT}`)
+    expect(divisionOverflow.tone).toBe("default")
+    // 减法溢出（rate 型）。
+    expect(formatMetricDelta(Number.MAX_VALUE, -Number.MAX_VALUE, 0, "rate").tone).toBe("default")
+    // 除法本身溢出（1 / 1e-320）。
+    expect(formatMetricDelta(1, 1e-320, 1, "money").tone).toBe("default")
+  })
+
+  it("零基期与负基期的弃判/补方向差异仍然成立（没被溢出那条一起改掉）", () => {
+    // 同为「无基数」文案，三者 tone 故意不同：零基期灰、负基期有色、溢出灰。
+    expect(formatMetricDelta(120, 0, 100, "count").tone).toBe("default")
+    expect(formatMetricDelta(264, -2646, 200, "money").tone).toBe("positive")
+    expect(formatMetricDelta(Number.MAX_VALUE, 1, 1, "money").tone).toBe("default")
   })
 })
 
@@ -297,8 +318,8 @@ describe("formatMetricDelta · 配色与文案同源（#314 决策 2/3）", () =
     expect(result.tone).toBe("positive")
   })
 
-  it("负基期仍走比大小补方向，没被 rendered 分支抢走", () => {
-    // 负基期 rendered 为 null（文案是「无基数」），必须落到 `current > prevYear` 那条老路径。
+  it("负基期仍走差值补方向，没被 rendered 分支抢走", () => {
+    // 负基期 rendered 为 null（文案是「无基数」），必须落到 `canInferDirection` 那条补方向路径。
     expect(formatMetricDelta(264, -2646, 200, "money").tone).toBe("positive")
   })
 

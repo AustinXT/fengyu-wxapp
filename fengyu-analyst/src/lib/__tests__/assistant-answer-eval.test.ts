@@ -416,7 +416,9 @@ describe("assistant answer 20-question evaluation", () => {
     const response = await answerQuestionWithVisualizations(session, "今年复购率怎么样")
 
     expect(response.content).toContain("持平")
-    expect(response.content).not.toContain("0.0pct")
+    // ⚠️ 用正则而非 `not.toContain("0.0pct")`：后者会误伤「+10.0pct」这类合法子串，
+    //    模板日后多渲染一处 pct 就会莫名翻红（#314 闸门 2 GLM 谱系 P3）。
+    expect(response.content).not.toMatch(/[+-]0\.0pct/)
   })
 
   it("never renders NaNpct when the upstream delta goes non-finite (#314 / #317)", async () => {
