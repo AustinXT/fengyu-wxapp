@@ -29,9 +29,17 @@ import { AnalystErrorState } from "@/components/analyst-error-state"
  * 而 `redirect()` 的实现就是**抛一个特殊错误**。若被本边界当普通错误接住，
  * 未登录用户会看到「数据加载失败」而不是跳转登录——那是比原问题更糟的回归。
  *
- * Next 在框架层用 `isRedirectError` 把 `NEXT_REDIRECT` 与 `NEXT_NOT_FOUND` 摘出去，
- * 不交给 error boundary。**这条已实测确认**（见 PR 的实效验证记录），不是推断；
- * 升级 Next 大版本后建议重验一次。
+ * Next 在框架层把它摘出去了，不交给 error boundary。**这条有两重确认**，不是推断：
+ * ① 实测未登录访问 `/dashboard` 返回 307 跳登录页；
+ * ② 源码 `next/dist/client/components/error-boundary.js` 的 `getDerivedStateFromError`
+ *    首行就是 `if (isNextRouterError(error)) throw error`，而 `isNextRouterError`
+ *    = `isRedirectError(error) || isHTTPAccessFallbackError(error)`。
+ * 升级 Next 大版本后重看那 4 行即可。
+ *
+ * ## ⚠️ 这一层兜不住的：middleware
+ *
+ * `src/middleware.ts` 跑在 edge 层、在 React 树之外，它抛错（例如生产缺 `JWT_SECRET`）
+ * 是平台级 500，两个 error boundary 都接不到。那属于部署配置问题，不在本 issue 范围。
  */
 export default function RootError({
   error,
