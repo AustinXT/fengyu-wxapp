@@ -11,6 +11,8 @@ import { getSession } from '@/lib/auth'
 import { isNodeInScope } from '@/lib/node-scope'
 import { withPermission } from '@/lib/with-permission'
 import { logOperation, logUpdate } from '@/lib/operation-log'
+// stores.org_node_id 是「门店↔组织节点」映射的写入方，与 org 侧改类型的守卫共用 ①（#318）
+import { lockOrgTree } from '@/lib/invariant-locks'
 import { pgErrorCode, pgErrorConstraint } from '@/lib/pg-error'
 import { shanghaiToday } from '@/lib/datetime'
 import { lakalaMerchants } from '@db/lakala'
@@ -209,9 +211,35 @@ export const createStore = withPermission(
       if (!m) return { success: false, message: '所选收款商户不存在，请刷新后重试' }
     }
   }
-  // 3. 插入 stores 详情行（不自造节点）+ 可选建档收款配置，事务保证原子
+  /**
+   * 3. 插入 stores 详情行（不自造节点）+ 可选建档收款配置，事务保证原子。
+   *
+   * ## 必须取组织树锁（#318 第 5 轮，codex P1）
+   *
+   * `stores.org_node_id` 是「门店 ↔ 组织节点」映射的写入方，而
+   * `org.updateOrgNode` 改类型那条路径的守卫要查「本节点上有没有门店映射」
+   * （不许把挂着门店的节点改成非门店）。两边不共锁就能交叉穿透：
+   * 改类型事务查到「节点还没被门店引用」→ 本事务把门店映射上去并按**旧**类型过 trigger
+   * → 改类型事务再把节点改成非门店 → 留下「门店指向非门店节点」。
+   * 取 `org_nodes:reparent`（① ，锁序见 `lib/invariant-locks.ts`）即互斥。
+   */
+  type CreateOutcome = { ok: true } | { ok: false; message: string }
+  let created: CreateOutcome
   try {
-    await db.transaction(async (tx) => {
+    created = await db.transaction(async (tx): Promise<CreateOutcome> => {
+      await lockOrgTree(tx)
+
+      // 锁内重读节点类型 —— 事务外读到的可能已被并发改掉
+      const [lockedNode] = await tx
+        .select({ type: orgNodes.type })
+        .from(orgNodes)
+        .where(eq(orgNodes.id, data.orgNodeId))
+        .limit(1)
+      if (!lockedNode) return { ok: false, message: '门店节点不存在，请刷新后重试' }
+      if (lockedNode.type !== '门店') {
+        return { ok: false, message: '所选组织节点不是门店类型，请刷新后重新选择' }
+      }
+
       await tx.insert(stores).values({
         storeId: data.storeId,
         storeName: node.name,
@@ -233,6 +261,11 @@ export const createStore = withPermission(
         // 关联收款商户（N:1）：直接写外键，商户档案在 /merchants 维护
         lakalaMerchantId: data.lakalaMerchantId ?? null,
       })
+      await logOperation(
+        session, 'store.create', 'store', data.storeId,
+        { storeName: node.name, orgNodeId: data.orgNodeId }, tx,
+      )
+      return { ok: true }
     })
   } catch (err: unknown) {
     const code = pgErrorCode(err)
@@ -247,7 +280,8 @@ export const createStore = withPermission(
     throw err
   }
 
-  await logOperation(session, 'store.create', 'store', data.storeId, { storeName: node.name, orgNodeId: data.orgNodeId })
+  if (!created.ok) return { success: false, message: created.message }
+
   revalidatePath('/stores')
   return { success: true, message: '门店创建成功' }
   },

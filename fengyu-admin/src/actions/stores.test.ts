@@ -30,7 +30,11 @@ vi.mock('drizzle-orm', () => ({
   eq: vi.fn((a, b) => ({ type: 'eq', a, b })),
   and: vi.fn((...args) => ({ type: 'and', args })),
   asc: vi.fn((col) => ({ type: 'asc', col })),
-  sql: Object.assign(vi.fn(() => ({})), { raw: vi.fn() }),
+  // 保留模板实参：取锁那条断言要能看见 SQL 文本里的 lock key（#318）
+  sql: Object.assign(vi.fn((...args: unknown[]) => ({ type: 'sql', args })), {
+    raw: vi.fn((v: string) => v),
+    param: vi.fn((v: unknown) => ({ param: v })),
+  }),
 }))
 
 vi.mock('drizzle-orm/pg-core', () => ({
@@ -192,14 +196,68 @@ describe('createStore — 挂载到门店节点', () => {
     ;(db.select as any).mockReturnValue({ from })
   }
 
-  /** mock db.transaction：tx.insert(stores).values(...)；valuesImpl 控制 insert 行为（resolve/reject） */
-  function mockInsertTx(valuesImpl: any) {
+  /**
+   * mock db.transaction：tx.insert(stores).values(...)；valuesImpl 控制 insert 行为（resolve/reject）。
+   *
+   * 创建走事务了（#318 第 5 轮）：取组织树锁 + 锁内重读节点类型 + INSERT + 审计同一事务，
+   * 所以 tx 还要有 `execute`（取锁）与 `select`（重读节点类型）。
+   * @param lockedNodeType 锁内重读到的节点类型；传别的值就能造「事务外是门店、锁内已被改掉」
+   */
+  function mockInsertTx(valuesImpl: any, lockedNodeType: string | null = '门店') {
     const txInsert = vi.fn().mockReturnValue({ values: valuesImpl })
-    ;(db.transaction as any).mockImplementation(async (fn: any) => fn({ insert: txInsert }))
-    return { txInsert }
+    const txExecute = vi.fn().mockResolvedValue([])
+    const txSelect = vi.fn().mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue(lockedNodeType === null ? [] : [{ type: lockedNodeType }]),
+        }),
+      }),
+    })
+    ;(db.transaction as any).mockImplementation(async (fn: any) => fn({
+      insert: txInsert, execute: txExecute, select: txSelect,
+    }))
+    return { txInsert, txExecute }
   }
 
   const storeNode = { id: 'node-门店-1', name: '南昌蓝茉店', type: '门店' }
+
+  /**
+   * `stores.org_node_id` 是「门店 ↔ 组织节点」映射的写入方，而 org 侧改类型的守卫要查
+   * 「本节点上有没有门店映射」。两边不共锁就能交叉穿透（codex 第 5 轮 P1）。
+   */
+  it('创建取的是与 org 侧同一把组织树锁', async () => {
+    mockNodeLookup(storeNode)
+    const t = mockInsertTx(vi.fn().mockResolvedValue({}))
+
+    const result = await createStore(baseStoreData)
+
+    expect(result.success).toBe(true)
+    expect(JSON.stringify(t.txExecute.mock.calls[0][0])).toContain('org_nodes:reparent')
+  })
+
+  it('锁内重读发现节点已不是门店类型 → 拒绝且不 INSERT', async () => {
+    mockNodeLookup(storeNode)
+    const values = vi.fn().mockResolvedValue({})
+    mockInsertTx(values, '部门')
+
+    const result = await createStore(baseStoreData)
+
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('不是门店类型')
+    expect(values).not.toHaveBeenCalled()
+  })
+
+  it('锁内重读发现节点已被删除 → 拒绝且不 INSERT', async () => {
+    mockNodeLookup(storeNode)
+    const values = vi.fn().mockResolvedValue({})
+    mockInsertTx(values, null)
+
+    const result = await createStore(baseStoreData)
+
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('门店节点不存在')
+    expect(values).not.toHaveBeenCalled()
+  })
 
   it('节点不存在 → 友好提示', async () => {
     mockNodeLookup(null)
