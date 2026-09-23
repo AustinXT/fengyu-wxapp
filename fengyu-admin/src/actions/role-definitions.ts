@@ -15,7 +15,7 @@ import {
 import { logOperation, logUpdate } from '@/lib/operation-log'
 import { pgErrorCode } from '@/lib/pg-error'
 // 取锁顺序（组织树 → admin 计数 → 行锁）见该模块顶部（#318）
-import { lockOrgTree, lockActiveAdminCount } from '@/lib/invariant-locks'
+import { lockOrgTree, lockActiveAdminCount, lockPermissionMatrixMirror } from '@/lib/invariant-locks'
 import { countActiveAdmins } from '@/lib/admin-guard'
 import type { RoleDefinition } from '@/lib/types'
 
@@ -148,15 +148,21 @@ async function hasConflictingScopeAssignment(
   const rows = await executor.execute(sql`
     SELECT 1
       FROM permission_roles pr
-      JOIN org_nodes node ON node.id = pr.scope_id
+      LEFT JOIN org_nodes node ON node.id = pr.scope_id
      WHERE pr.role = ${roleKey}
-       AND NOT (node.type = ANY(${sql.param([...allowedScopeTypes])}::text[]))
+       AND (node.id IS NULL OR NOT (node.type = ANY(${sql.param([...allowedScopeTypes])}::text[])))
      LIMIT 1
   `)
   return (rows as unknown as unknown[]).length > 0
 }
 
 async function writeCompatibilityMirror(tx: any): Promise<void> {
+  /**
+   * 读全表 → 序列化 → UPSERT 是 read-modify-write，三个写角色定义的事务必须互斥
+   * （#318 第 7 轮 GLM P1；丢更新的后果是小程序侧按旧矩阵继续放行，无界期）。
+   * 锁序 ④ —— 取锁点刻意放在本函数内部而不是调用方，见 `lib/invariant-locks.ts` 的说明。
+   */
+  await lockPermissionMatrixMirror(tx)
   const rows = await tx
     .select({
       roleKey: permissionRoleDefinitions.roleKey,
@@ -463,7 +469,13 @@ export const deleteRoleDefinition = withPermission(
         .where(eq(permissionRoles.role, roleKey))
       if (count > 0) return { failure: `该角色仍分配给 ${count} 名员工，请先撤销授权` }
 
-      await tx.delete(permissionRoleDefinitions).where(eq(permissionRoleDefinitions.roleKey, roleKey))
+      const deleted = await tx
+        .delete(permissionRoleDefinitions)
+        .where(eq(permissionRoleDefinitions.roleKey, roleKey))
+        .returning({ roleKey: permissionRoleDefinitions.roleKey })
+      // 并发双删：第二笔删到 0 行，不能照样报「已删除」还写一条审计（GLM 第 7 轮 P3）
+      if (deleted.length === 0) return { failure: '角色不存在' }
+
       await writeCompatibilityMirror(tx)
       return true
     })

@@ -4,7 +4,10 @@ import { resolve } from 'node:path'
 
 vi.mock('@/db', () => ({ db: { execute: vi.fn() } }))
 
-import { lockOrgTree, lockActiveAdminCount, ORG_TREE_LOCK_KEY, ACTIVE_ADMIN_LOCK_KEY } from './invariant-locks'
+import {
+  lockOrgTree, lockActiveAdminCount, lockPermissionMatrixMirror,
+  ORG_TREE_LOCK_KEY, ACTIVE_ADMIN_LOCK_KEY, PERMISSION_MATRIX_LOCK_KEY,
+} from './invariant-locks'
 
 /**
  * 这里用**真** drizzle 的 `sql` 模板（不 mock），所以 `queryChunks` 里能读到实际 SQL 文本与绑定值。
@@ -47,15 +50,27 @@ describe('invariant-locks — 锁的取法', () => {
     const tx = { execute: vi.fn().mockResolvedValue([]) }
     await lockOrgTree(tx as never)
     await lockActiveAdminCount(tx as never)
+    await lockPermissionMatrixMirror(tx as never)
 
     for (const call of tx.execute.mock.calls) {
       expect(sqlTextOf(call[0])).not.toMatch(/pg_advisory_lock\(/)
     }
   })
 
-  /** 两个不变量互不相干，共用一把 key 会无谓串行化（也会掩盖「谁在等谁」） */
-  it('两把锁的 key 不同', () => {
-    expect(ORG_TREE_LOCK_KEY).not.toBe(ACTIVE_ADMIN_LOCK_KEY)
+  it('lockPermissionMatrixMirror 取的是 permission_matrix:mirror 这把事务级 advisory lock', async () => {
+    const tx = { execute: vi.fn().mockResolvedValue([]) }
+    await lockPermissionMatrixMirror(tx as never)
+
+    const text = sqlTextOf(tx.execute.mock.calls[0][0])
+    expect(text).toContain('pg_advisory_xact_lock')
+    expect(text).toContain(PERMISSION_MATRIX_LOCK_KEY)
+    expect(PERMISSION_MATRIX_LOCK_KEY).toBe('permission_matrix:mirror')
+  })
+
+  /** 不同不变量共用一把 key 会无谓串行化（也会掩盖「谁在等谁」） */
+  it('三把锁的 key 互不相同', () => {
+    const keys = [ORG_TREE_LOCK_KEY, ACTIVE_ADMIN_LOCK_KEY, PERMISSION_MATRIX_LOCK_KEY]
+    expect(new Set(keys).size).toBe(keys.length)
   })
 
   it('用传进来的事务句柄取锁，不落到全局 db 上', async () => {
@@ -262,6 +277,39 @@ describe('invariant-locks — 逐 action 的取锁期望（源码守护）', () 
       }
     }
     expect(offenders, '锁必须在 action 的事务里显式取，不要藏进 helper —— 藏了就没人守得住顺序').toEqual([])
+  })
+
+  /**
+   * ## 镜像锁：取锁点必须在 `writeCompatibilityMirror` **内部**（#318 第 7 轮 GLM P1）
+   *
+   * `system_configs['permission_matrix']` 的写法是「读全表 → UPSERT 一行」，
+   * 三个写角色定义的事务都会重写它，不互斥就会丢更新 —— 表里权限已收、镜像里还留着，
+   * staffApi 按旧矩阵继续放行直到下一次任意角色写（无界期）。
+   *
+   * 取锁点放在函数内部是**刻意**的：它必须是每个事务的最后一把（镜像写在 UPDATE/DELETE
+   * 之后，那些语句已持行锁），放进函数里就没人能把顺序写错。所以它是上面那条
+   * 「锁不得出现在非导出 helper 里」的唯一豁免，由这两条专门守着。
+   */
+  it('writeCompatibilityMirror 自己取镜像锁', () => {
+    const src = stripComments(readFileSync(resolve(ACTIONS_DIR, 'role-definitions.ts'), 'utf8'))
+    const start = src.indexOf('async function writeCompatibilityMirror')
+    expect(start, '找不到 writeCompatibilityMirror').toBeGreaterThan(-1)
+    const body = src.slice(start, src.indexOf('\n}', start))
+    expect(body, '镜像写必须自己取 ④ 锁').toContain('lockPermissionMatrixMirror(tx)')
+    // 取锁必须在读全表之前，否则读到的还是未互斥的快照
+    expect(body.indexOf('lockPermissionMatrixMirror(tx)')).toBeLessThan(body.indexOf('.select('))
+  })
+
+  it('三个写角色定义的路径都经由 writeCompatibilityMirror 写镜像（没人绕过去直接 UPSERT）', () => {
+    const src = stripComments(readFileSync(resolve(ACTIONS_DIR, 'role-definitions.ts'), 'utf8'))
+    for (const action of ['createRoleDefinition', 'updateRoleDefinition', 'deleteRoleDefinition']) {
+      const body = sliceAction(src, action)
+      expect(body, `找不到 ${action}`).not.toBe('')
+      expect(body, `${action} 必须走 writeCompatibilityMirror`).toContain('writeCompatibilityMirror(tx)')
+    }
+    // 直接 UPSERT permission_matrix 的地方只许有一处（就是那个函数里）
+    const upserts = src.match(/permission_matrix/g) ?? []
+    expect(upserts.length, '镜像的 UPSERT 只该出现在 writeCompatibilityMirror 里').toBe(1)
   })
 
   /**

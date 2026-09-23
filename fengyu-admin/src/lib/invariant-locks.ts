@@ -40,10 +40,11 @@ import { db } from '@/db'
  * ## ⚠️ 锁序：必须按此顺序取，否则死锁
  *
  * ```
- * ① lockOrgTree()          组织树结构（最粗）
- * ② lockActiveAdminCount() 全局 admin 计数
- * ②' 其它业务 advisory 锁   如 createEmployee 的 `employee_id_gen`
- * ③ SELECT ... FOR UPDATE  单行（最细）
+ * ① lockOrgTree()                 组织树结构（最粗）
+ * ② lockActiveAdminCount()        全局 admin 计数
+ * ②' 其它业务 advisory 锁          如 createEmployee 的 `employee_id_gen`
+ * ③ SELECT ... FOR UPDATE         单行（最细）
+ * ④ lockPermissionMatrixMirror()  权限矩阵镜像（**最后**，见该函数注释）
  * ```
  *
  * 粒度从粗到细。反序就是 lock ordering inversion —— PG 会抛 `40P01`，而各 action 的
@@ -61,6 +62,9 @@ export const ORG_TREE_LOCK_KEY = 'org_nodes:reparent'
 
 /** 活跃超级管理员计数锁的 key */
 export const ACTIVE_ADMIN_LOCK_KEY = 'admin:active_count'
+
+/** 权限矩阵兼容镜像锁的 key —— 三个写角色定义的事务共用（见下面的函数注释） */
+export const PERMISSION_MATRIX_LOCK_KEY = 'permission_matrix:mirror'
 
 /**
  * 取「组织树结构」锁（锁序 ①）。
@@ -83,4 +87,27 @@ export async function lockOrgTree(tx: LockExecutor) {
  */
 export async function lockActiveAdminCount(tx: LockExecutor) {
   await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${ACTIVE_ADMIN_LOCK_KEY})::bigint)`)
+}
+
+/**
+ * 取「权限矩阵兼容镜像」锁（锁序 ④，**最后**）。
+ *
+ * `system_configs['permission_matrix']` 是给 staffApi 用的兼容镜像
+ * （`staffApi/utils/permission-matrix.js` 读它、30 秒缓存）。它的写法是
+ * **读全表 → 序列化 → UPSERT 一行**，也就是典型的 read-modify-write。
+ *
+ * 三个写角色定义的事务（`createRoleDefinition` / `updateRoleDefinition` /
+ * `deleteRoleDefinition`）都会重写它，而它们之间没有共同互斥点：READ COMMITTED 下
+ * 各自的全表读都看不见对方未提交的改动，最终镜像内容取决于谁后拿到 `system_configs` 的行锁，
+ * **与表的真实终态无关**（GLM 第 7 轮 P1 给了完整交错）。丢更新的后果是
+ * 「表里权限已收、镜像里还留着」，小程序侧按旧矩阵继续放行，直到下一次任意角色写才被覆盖 ——
+ * 无界期。
+ *
+ * ⚠️ 这把锁**在 `writeCompatibilityMirror` 内部取**，不由调用方取 —— 刻意如此：
+ * 它必须是每个事务的最后一把（镜像写发生在 UPDATE/DELETE 之后，那些语句已经持有行锁），
+ * 放进函数里就没人能把顺序写错。因此它也是 `invariant-locks.test.ts` 那条
+ * 「锁不得出现在非导出 helper 里」的**唯一豁免**，并另有专门的断言守着。
+ */
+export async function lockPermissionMatrixMirror(tx: LockExecutor) {
+  await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${PERMISSION_MATRIX_LOCK_KEY})::bigint)`)
 }

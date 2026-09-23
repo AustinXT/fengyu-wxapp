@@ -424,7 +424,12 @@ describe('deleteRoleDefinition — 删除守卫与分配方互斥', () => {
   /** @returns `txExecute` 断言取锁；`txDelete` 断言「还有人在用就不该删」 */
   function mockDeleteTx(assignedCount: number) {
     const txExecute = vi.fn().mockResolvedValue([])
-    const txDelete = vi.fn(() => ({ where: vi.fn().mockResolvedValue({}) }))
+    const txDelete = vi.fn(() => ({
+      where: vi.fn(() => ({
+        // 并发双删要靠 returning 判 0 行（#318 第 7 轮）
+        returning: vi.fn().mockResolvedValue([{ roleKey: 'role-custom' }]),
+      })),
+    }))
     ;(db.transaction as ReturnType<typeof vi.fn>).mockImplementationOnce(async (callback: Function) => callback({
       execute: txExecute,
       delete: txDelete,
