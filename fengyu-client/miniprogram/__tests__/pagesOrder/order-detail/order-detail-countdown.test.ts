@@ -24,7 +24,7 @@ vi.mock('../../../utils/cloud', () => ({
 }));
 
 vi.mock('@vant/weapp/toast/toast', () => ({
-  default: Object.assign(vi.fn(), { success: vi.fn(), fail: vi.fn(), clear: vi.fn() }),
+  default: Object.assign(vi.fn(), { success: vi.fn(), fail: vi.fn(), clear: vi.fn(), loading: vi.fn() }),
 }));
 
 /**
@@ -508,16 +508,73 @@ describe('order-detail 待支付倒计时 (#215)', () => {
     expect(page.data.isLoading).toBe(false);           // 不再摘掉整页
   });
 
-  test('重试间隔指数退避到 60 秒封顶（unresolved 那条会一直排）', () => {
+  test('重试间隔指数退避到 60 秒封顶（unresolved 那条会一直排）', async () => {
+    // ⚠️ 必须**让每一发真的打出去**再看下一档：连着调 6 次 `_scheduleRefreshRetry`
+    // 是测不出退避的（调度器现在对「已排着的那发」幂等，见 round-20 的合并失败问题）。
     vi.useFakeTimers();
     try {
-      const { page } = createPageWithStubbedLoad();
+      const page = createPageInstance();
+      page.loadDetail = vi.fn(async () => false);   // 每次刷新都失败 → 一直按退避续排
+
       const delays: number[] = [];
-      for (let i = 0; i < 6; i++) {
-        page._scheduleRefreshRetry('FY-215');
+      page._refreshOrRetry('FY-215');
+      await vi.advanceTimersByTimeAsync(0);
+      delays.push(page._refreshRetryDelayMs);
+      for (let i = 0; i < 5; i++) {
+        await vi.advanceTimersByTimeAsync(page._refreshRetryDelayMs);
         delays.push(page._refreshRetryDelayMs);
       }
       expect(delays).toEqual([5000, 10000, 20000, 40000, 60000, 60000]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('取消成功但随后的刷新失败 → 页面立刻落到「已关闭」，不再挂着取消/去支付', async () => {
+    // 取消已经落库了，「已关闭」是已知事实。只等刷新回来纠正的话，刷新一失败
+    // 页面就继续挂着「取消订单 + 去支付」，顾客再点一次取消会吃到
+    //「订单状态不允许取消」（评审 round-20）。
+    const page = createPageInstance({
+      order: { sale_order_id: 'FY-215', status: '待支付' },
+      countdown: '09:59',
+      canContinuePay: true,
+      payBlockedByExpiry: true,
+    });
+    (globalThis as any).wx.showModal = vi.fn(async () => ({ confirm: true }));
+    callClientApiMock.mockResolvedValueOnce({});      // order.cancel 成功
+    page.loadDetail = vi.fn(async () => false);        // 随后的追平刷新失败
+
+    await page.onCancel();
+
+    expect(page.data.order.status).toBe('已关闭');
+    expect(page.data.countdown).toBe('');
+    expect(page.data.canContinuePay).toBe(false);
+    expect(page.data.payBlockedByExpiry).toBe(false);
+    expect(page._countdownTimer).toBeNull();
+    // 刷新失败并不阻止页面纠正状态，但仍要排上有界重试把余下字段补齐
+    expect(page._refreshRetryTimer).not.toBeNull();
+  });
+
+  test('同一次失败被多个调用方同时观察到 → 只排一发 5 秒重试（退避不被重复计数）', async () => {
+    // single-flight 把并发刷新合并成同一个 Promise，它失败时每个调用方都会走到
+    // `_scheduleRefreshRetry`。调度器若清掉重排，一次真实失败就被记成 N 次，
+    // 首轮重试直接膨胀到 40 秒 —— 取消/回款后的旧页面要多挂这么久（round-20）。
+    vi.useFakeTimers();
+    try {
+      const page = createPageInstance();
+      const loadDetail = vi.fn(async () => false);
+      page.loadDetail = loadDetail;
+
+      page._refreshOrRetry('FY-215');
+      page._refreshOrRetry('FY-215');
+      page._refreshOrRetry('FY-215');
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(page._refreshRetryDelayMs).toBe(5000);
+      const callsBeforeRetry = loadDetail.mock.calls.length;
+      await vi.advanceTimersByTimeAsync(5000);
+      // 只多打了一发（三个调用方没有各排一个定时器）
+      expect(loadDetail).toHaveBeenCalledTimes(callsBeforeRetry + 1);
     } finally {
       vi.useRealTimers();
     }

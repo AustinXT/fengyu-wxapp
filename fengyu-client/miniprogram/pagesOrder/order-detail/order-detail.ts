@@ -188,9 +188,9 @@ Page({
   _poller: null as PaymentPoller | null,
   // 从 scan-pay 支付完成跳入（?paid=1）：详情加载后若仍待支付，触发一次兜底轮询
   _needConfirm: false,
-  // single-flight：在途的那次加载（含它的尾随刷新）。触发源有 5 条
-  // （onLoad / onShow / 下拉 / 倒计时归零 / 支付回调），让它们根本不并行，
-  // 「旧响应盖掉新响应」就不可能发生。详见 loadDetail 的注释。
+  // single-flight：在途的那次加载（含它的尾随刷新）。页面里所有刷新入口都汇到这里
+  //（onLoad / onShow / 下拉 / 倒计时归零 / 支付回调 / 写操作成功后的追平 / 有界重试），
+  // 让它们根本不并行，「旧响应盖掉新响应」就不可能发生。详见 loadDetail 的注释。
   _loadPromise: null as Promise<boolean> | null,
   _loadQueued: false,
   // 页面已卸载（issue #215）。onUnload 之后仍可能有在途请求回来：
@@ -274,8 +274,9 @@ Page({
    * 加载详情。**single-flight**：同一时刻最多一个在途请求，期间再来的请求合并成
    * 一次「尾随刷新」，并且所有调用方都能 await 到最终完成（issue #215）。
    *
-   * ⚠️ 前提：**本页恒定只展示一张单**（onLoad / onShow / 下拉 / 归零 / 支付回调五个触发源
-   * 传的都是同一个 id），所以尾随刷新复用首个调用者的 `saleOrderId` 是安全的。
+   * ⚠️ 前提：**本页恒定只展示一张单** —— 所有触发源（onLoad / onShow / 下拉 / 倒计时归零 /
+   * 支付回调 / 取消与回款成功后的追平刷新 / 有界重试）传的都是同一个 id，
+   * 所以尾随刷新复用首个调用者的 `saleOrderId` 是安全的。
    * 将来若让本页展示多张单，这里要改成每次读当前订单号。
    *
    * 原先用单调 token「后发起者获胜」，但那保证的是**发起顺序**赢，不是**数据新旧**赢：
@@ -575,7 +576,10 @@ Page({
   /** 只排重试，不立刻再拉（调用方刚失败过一次的场景用它，别白打一发） */
   _scheduleRefreshRetry(saleOrderId: string) {
     if (this._hidden || this._destroyed) return;
-    this._clearRefreshRetry();
+    // ⚠️ 已经排着一发就复用它，**别清掉重排**：single-flight 把并发的刷新合并成同一个
+    // Promise，它失败时每个调用方都会走到这里 —— 清了重排等于把**一次**真实失败
+    // 记成 N 次，首轮重试从 5 秒直接膨胀到 10/20/40/60 秒（评审 round-20）。
+    if (this._refreshRetryTimer) return;
     const delay = this._refreshRetryDelayMs > 0
       ? Math.min(this._refreshRetryDelayMs * 2, REFRESH_RETRY_MAX_MS)
       : REFRESH_RETRY_BASE_MS;
@@ -926,9 +930,21 @@ Page({
       Toast.loading({ message: '取消中...', forbidClick: true, duration: 0 });
       await callClientApi('order.cancel', { saleOrderId: sale_order_id });
       Toast.success('订单已取消');
-      // 写操作已经成功了，这次刷新只是把页面追上去：失败就走有界重试，
-      // 别让页面停在「待支付 + 取消 + 去支付」——那会诱导顾客再点一次取消，
-      // 然后吃一条「订单状态不允许取消」（评审 round-19）。
+      // 取消已经落库了，「已关闭」是**已知事实**而不是猜测：先就地落到页面上。
+      // 只靠随后那次刷新的话，刷新失败时页面会继续挂着「取消 + 去支付」，
+      // 诱导顾客再点一次取消、然后吃一条「订单状态不允许取消」（评审 round-19/20）。
+      // 剩下的字段（金额、明细）仍由刷新补齐；失败就走有界重试。
+      this._stopCountdown();
+      const closedIcon = STATUS_ICON['已关闭'];
+      this.setData({
+        order: { ...this.data.order, status: '已关闭' },
+        statusIcon: closedIcon.icon,
+        statusIconColor: closedIcon.color,
+        countdown: '',
+        expiryPendingConfirm: false,
+        payBlockedByExpiry: false,
+        canContinuePay: false,
+      });
       this._refreshOrRetry(sale_order_id);
     } catch (err: any) {
       if (err.message !== 'USER_CANCELLED') {
