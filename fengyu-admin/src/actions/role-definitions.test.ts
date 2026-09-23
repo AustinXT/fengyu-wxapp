@@ -87,7 +87,7 @@ vi.mock('drizzle-orm', () => ({
 
 import { db } from '@/db'
 import { sql } from 'drizzle-orm'
-import { updateRoleDefinition } from './role-definitions'
+import { updateRoleDefinition, deleteRoleDefinition } from './role-definitions'
 import { countActiveAdmins } from '@/lib/admin-guard'
 
 function mockSelectOnce(rows: unknown[]) {
@@ -385,6 +385,60 @@ describe('updateRoleDefinition', () => {
       expect(lockTaken).toBe(false)
       expect(countActiveAdmins).not.toHaveBeenCalled()
     })
+  })
+})
+
+/**
+ * ## deleteRoleDefinition —— 「还有人在用就不许删」也要与分配方互斥（#318 第 3 轮，GLM P3）
+ *
+ * 计数留在事务外时，`assignRole` 能在 count 之后、DELETE 之前提交 —— 于是撞 FK
+ * （23503，这里没有 catch → 500）或留下指向已删角色的孤儿绑定。
+ */
+describe('deleteRoleDefinition — 删除守卫与分配方互斥', () => {
+  const target = { name: '自定义角色' }
+
+  /** @returns `txExecute` 断言取锁；`txDelete` 断言「还有人在用就不该删」 */
+  function mockDeleteTx(assignedCount: number) {
+    const txExecute = vi.fn().mockResolvedValue([])
+    const txDelete = vi.fn(() => ({ where: vi.fn().mockResolvedValue({}) }))
+    ;(db.transaction as ReturnType<typeof vi.fn>).mockImplementationOnce(async (callback: Function) => callback({
+      execute: txExecute,
+      delete: txDelete,
+      select: vi.fn(() => ({
+        from: vi.fn(() => ({
+          where: vi.fn().mockResolvedValue([{ count: assignedCount }]),
+          then: (resolve: (v: unknown[]) => unknown) => resolve([]),
+        })),
+      })),
+    }))
+    return { txExecute, txDelete }
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.mocked(db.execute).mockResolvedValue([] as never)
+  })
+
+  it('取的是 admin:active_count 那把锁（与分配方同一把），计数走事务句柄', async () => {
+    ;(db.select as ReturnType<typeof vi.fn>).mockReturnValueOnce(mockSelectOnce([target]))
+    const t = mockDeleteTx(0)
+
+    const result = await deleteRoleDefinition('role-custom')
+
+    expect(result.success).toBe(true)
+    expect(JSON.stringify(t.txExecute.mock.calls[0]?.[0])).toContain('admin:active_count')
+    expect(t.txDelete).toHaveBeenCalled()
+  })
+
+  it('锁内数到还有人在用 → 拒绝且不 DELETE', async () => {
+    ;(db.select as ReturnType<typeof vi.fn>).mockReturnValueOnce(mockSelectOnce([target]))
+    const t = mockDeleteTx(3)
+
+    const result = await deleteRoleDefinition('role-custom')
+
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('3 名员工')
+    expect(t.txDelete).not.toHaveBeenCalled()
   })
 })
 
