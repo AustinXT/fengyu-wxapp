@@ -105,6 +105,7 @@ vi.mock('@/lib/data-center/context', () => ({
 }))
 
 import { getCustomerBoard } from '../customer'
+import { db } from '@/db'
 import type { BoardParams } from '@/lib/data-center/types'
 
 const PARAMS: BoardParams = {
@@ -361,8 +362,44 @@ describe('getCustomerBoard 装配', () => {
       expect(res.kpis[key].mom, `${key}.mom 必须为 null（割点前基期会算出假数）`).toBeNull()
       expect(res.kpis[key].yoy, `${key}.yoy 必须为 null（割点前基期会算出假数）`).toBeNull()
     }
-    // 对照：允许比较的 KPI 仍然带出数值，证明 enabled=true 这条路径确实被走到了
-    expect(res.kpis.newMembers.mom, 'newMembers 的同比环比不该被一起禁掉').not.toBeNull()
+    // 对照：允许比较的 KPI 仍然带出**数值**，证明 enabled=true 这条路径确实被走到了。
+    // ⚠ 用 toBeTypeOf 而不是 not.toBeNull()：后者对 undefined 也通过，证明不了「仍出数值」
+    expect(res.kpis.newMembers.mom, 'newMembers 的同比环比不该被一起禁掉').toBeTypeOf('number')
+  })
+
+  /**
+   * #284：分母是「根本不算」基期，不是「算了再置 null」（round-2 codex P2）。
+   *
+   * 上一条用例只检查最终对象里 mom/yoy 为 null。若把 `withComparison(..., false)` 的
+   * `false` 改回 `enabled`，`withComparison` 会照常跑 previous + lastYear 两次查询，
+   * 随后 `trafficCustomersCell` 再把 mom/yoy 覆盖成 null —— 结果对，但那条重型
+   * `COUNT(DISTINCT … UNION …)` 从 1 次放大到 3 次，而上一条用例照样绿。
+   *
+   * 这里直接数分母 SQL 的实际执行次数，锁住注释声称的「不算」。
+   */
+  it('enabled=true 时分母 SQL 只执行一次（不跑基期查询，避免重型 UNION 放大 3 倍）', async () => {
+    ctxState.enabled = true
+    responder.scalarRow = { v: 5, total_count: 3, total_spend: 30 }
+    // ⚠ mock.calls 跨用例累积（本文件的 beforeEach 只重置 responder，不清 mock），
+    // 不先清就会把前面所有用例的调用一起数进来。mockClear 只清 calls、保留 implementation。
+    vi.mocked(db.execute).mockClear()
+
+    await getCustomerBoard(PARAMS)
+
+    const executes = vi.mocked(db.execute).mock.calls
+    const denomCalls = executes.filter(([q]) => /COUNT\(DISTINCT\s+t\.uid\)/.test(sqlText(q)))
+    expect(denomCalls, '分母 SQL 一次都没跑？mock 路由或 SQL 特征串已变').not.toHaveLength(0)
+    expect(
+      denomCalls,
+      `分母 SQL 跑了 ${denomCalls.length} 次 —— enabled=true 下它应只算当期，不算 previous/lastYear`,
+    ).toHaveLength(1)
+
+    // 对照：允许比较的 KPI 确实跑了 3 次（当期 + previous + lastYear），
+    // 证明本用例的 enabled=true 生效，而不是整体没开同比
+    const newMemberCalls = executes.filter(([q]) =>
+      /FROM\s+client_wechat_users\s+c\s+WHERE/.test(sqlText(q)) && /COUNT\(\*\)/.test(sqlText(q)),
+    )
+    expect(newMemberCalls.length, '对照组 KPI 未跑基期 —— enabled=true 可能没生效').toBeGreaterThan(1)
   })
 
   it('市场消费经营直接使用市场内去重结果，不累加跨店顾客', async () => {

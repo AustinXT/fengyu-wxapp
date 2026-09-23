@@ -596,22 +596,60 @@ describe('客量板块两端口径一致性守护', () => {
      */
     const secondBranch = (sqlText: string): string => sqlText.split(/\bUNION\b/)[1] ?? ''
 
-    const BRANCH2_INVARIANTS: Array<[string, RegExp]> = [
+    /**
+     * 切片前提自检（round-2 codex/DeepSeek P3）：`split(/\bUNION\b/)[1]` 隐含
+     * 「目标 SQL 里第一个 UNION 就是两分支的边界」。若日后 ① 内部引入子查询 UNION，
+     * `[1]` 会取到中段、② 的真过滤被静默漏检。这里把「恰好一个 UNION」钉死，
+     * 前提一破就红，不会静默漂移。
+     */
+    it('两端分母 SQL 恰有一个 UNION（secondBranch 切片的前提）', () => {
+      for (const [side, sqlText] of [['admin', adminTrial], ['staff', staffTrial]] as const) {
+        expect(sqlText.match(/\bUNION\b/g) ?? [], `${side} 的分母 SQL 不是恰好一个 UNION`).toHaveLength(1)
+      }
+    })
+
+    /**
+     * ② 分支的结构不变量。
+     *
+     * ⚠ 日期条件必须连同**边界实参**一起锁（round-2 codex P2）：只断言
+     * `became_member_at::date BETWEEN` 的话，`BETWEEN DATE '1900-01-01' AND ${range.end}`
+     * 或 `BETWEEN ${range.start} AND ${range.start}` 都照样绿 —— 前者正是 R11 要防的
+     * 「重新纳入全部历史会员」。两端的区间表达式不同名，所以分开列。
+     */
+    const BRANCH2_COMMON: Array<[string, RegExp]> = [
       ['② 从 client_wechat_users 取本期新增会员', /SELECT\s+c\.user_id\s+AS\s+uid[\s\S]*?FROM\s+client_wechat_users\s+c/],
       ['② 有 became_member_at IS NOT NULL 守卫', /c\.became_member_at\s+IS\s+NOT\s+NULL/],
-      ['② 限定在本期（缺它则纳入全部历史会员）', /c\.became_member_at::date\s+BETWEEN/],
     ]
+    /** 两端各自的「本期」区间表达式（连边界实参一起锁） */
+    const BRANCH2_RANGE: Record<'admin' | 'staff', [string, RegExp]> = {
+      admin: [
+        '② 的本期限定用 range.start/range.end（缺或改坏则纳入错误区间的会员）',
+        /c\.became_member_at::date\s+BETWEEN\s+\$\{range\.start\}\s+AND\s+\$\{range\.end\}/,
+      ],
+      staff: [
+        '② 的本期限定用 startDateExpr/endDateExpr（缺或改坏则纳入错误区间的会员）',
+        /c\.became_member_at::date\s+BETWEEN\s+\$\{startDateExpr\(period\)\}\s+AND\s+\$\{endDateExpr\(period\)\}/,
+      ],
+    }
 
-    it.each(BRANCH2_INVARIANTS)('admin ② 分支：%s', (_label, re) => {
+    it.each(BRANCH2_COMMON)('admin ② 分支：%s', (_label, re) => {
       const b2 = secondBranch(adminTrial)
       expect(b2, 'admin 的 UNION ② 分支切不出来').toBeTruthy()
       expect(b2).toMatch(re)
     })
 
-    it.each(BRANCH2_INVARIANTS)('staff ② 分支：%s', (_label, re) => {
+    it.each(BRANCH2_COMMON)('staff ② 分支：%s', (_label, re) => {
       const b2 = secondBranch(staffTrial)
       expect(b2, 'staff 的 UNION ② 分支切不出来').toBeTruthy()
       expect(b2).toMatch(re)
+    })
+
+    it('admin ② 分支：' + BRANCH2_RANGE.admin[0], () => {
+      expect(secondBranch(adminTrial)).toMatch(BRANCH2_RANGE.admin[1])
+    })
+
+    it('staff ② 分支：' + BRANCH2_RANGE.staff[0], () => {
+      expect(secondBranch(staffTrial)).toMatch(BRANCH2_RANGE.staff[1])
     })
 
     /**
@@ -1171,12 +1209,15 @@ describe('客量板块两端口径一致性守护', () => {
       // ⚠ 下面三条必须在**切出 UNION 之后的 ② 分支**上断言，不能对整个 CTE 断言：
       // `became_member_at::date BETWEEN` 在 ① 的 OR 右半边也有，对整块 toMatch 时
       // 删掉 ② 的日期限定（分母纳入全部历史会员）照样全绿。
+      expect(trafficCust!.match(/\bUNION\b/g) ?? [], '明细分母不是恰好一个 UNION（切片前提已破）').toHaveLength(1)
       const branch2 = trafficCust!.split(/\bUNION\b/)[1] ?? ''
       expect(branch2, '明细分母的 UNION ② 分支切不出来').toBeTruthy()
       expect(branch2, '② 未按 bound_store_id 归店').toMatch(/c\.bound_store_id\s+IS\s+NOT\s+NULL/)
       expect(branch2, '② 缺 became_member_at IS NOT NULL 守卫').toMatch(/c\.became_member_at\s+IS\s+NOT\s+NULL/)
-      expect(branch2, '② 缺本期限定 —— 分母会纳入全部历史会员').toMatch(
-        /c\.became_member_at::date\s+BETWEEN/,
+      // ⚠ 连边界实参一起锁：只判 BETWEEN 存在的话，改成 BETWEEN DATE '1900-01-01' AND ${end}
+      // （重新纳入全部历史会员）或 BETWEEN ${start} AND ${start} 都照样绿
+      expect(branch2, '② 的本期限定缺失或边界实参被改坏 —— 分母会纳入错误区间的会员').toMatch(
+        /c\.became_member_at::date\s+BETWEEN\s+\$\{start\}\s+AND\s+\$\{end\}/,
       )
       // 分子 newmem 的归店方式必须同步存在，否则「分子 ⊆ 分母」的对齐前提就没了
       expect(adminSql).toMatch(
