@@ -142,13 +142,15 @@ function normalizeActions(actions: readonly string[], isSuperAdmin: boolean): st
 async function hasConflictingScopeAssignment(
   roleKey: string,
   allowedScopeTypes: readonly ('总部' | '市场' | '门店')[],
+  /** 传事务句柄即可在锁内复核 —— 与 `assignRole` 互斥后这条守卫才真的闭合（#318 第 3 轮） */
+  executor: Pick<typeof db, 'execute'> = db,
 ): Promise<boolean> {
-  const rows = await db.execute(sql`
+  const rows = await executor.execute(sql`
     SELECT 1
       FROM permission_roles pr
       JOIN org_nodes node ON node.id = pr.scope_id
      WHERE pr.role = ${roleKey}
-       AND NOT (node.type = ANY(${allowedScopeTypes}::text[]))
+       AND NOT (node.type = ANY(${sql.param([...allowedScopeTypes])}::text[]))
      LIMIT 1
   `)
   return (rows as unknown as unknown[]).length > 0
@@ -305,6 +307,7 @@ export const updateRoleDefinition = withPermission(
       || nextAdminAccess !== before.canAccessAdmin
     if (capabilityChanged) requireAdmin(session)
 
+    // 早拒（省掉开事务的成本）；**权威那次在锁内**，见下面事务里的同名检查
     if (!before.isSuperAdmin && nextSuper && await hasConflictingScopeAssignment(roleKey, ['总部'])) {
       throw new Error('INVALID_STATE: 已在非总部范围分配的角色不能直接升级为超级管理员，请先撤销相关授权')
     }
@@ -331,12 +334,20 @@ export const updateRoleDefinition = withPermission(
     )
     // 编辑可能收窄层级（含 normalize 对进销存层级动作的强制收敛）；按目标层级复核
     // 存量分配，矛盾时拒绝，防止小程序端继续按旧绑定放行。
+    // 同样只是早拒 —— 权威那次在锁内（并发 assignRole 能在这次检查之后插进一条绑定）。
     if (await hasConflictingScopeAssignment(roleKey, allowedScopeTypes)) {
       throw new Error('INVALID_STATE: 存在与新可绑定层级冲突的角色分配，请先撤销相关授权后再保存')
     }
     // PostgreSQL 的 timestamptz 可保留微秒，而 JavaScript Date 只能保留毫秒。
     // 页面拿到的是 ISO 毫秒值，直接等值比较会让刚创建的角色也误判为并发冲突。
     const expectedUpdatedAt = input.expectedUpdatedAt ?? before.updatedAt.toISOString()
+    /**
+     * 取锁的条件不止 capability 变更 —— `allowedScopeTypes` 收窄同样在改判据
+     * （`assignRole` 按它判「这个角色能不能绑到这层」），所以白名单变了也要与分配方互斥。
+     */
+    const scopeTypesChanged = JSON.stringify([...allowedScopeTypes].sort())
+      !== JSON.stringify([...(before.allowedScopeTypes ?? [])].sort())
+    const locksNeeded = capabilityChanged || scopeTypesChanged
     try {
       const changed = await db.transaction(async (tx) => {
         /**
@@ -351,7 +362,7 @@ export const updateRoleDefinition = withPermission(
          * `assignRole` / `revokeRole` 是按锁内重读的 `is_super_admin` 决策的 ——
          * 升级方向不取锁，它们就会读到一个正在变的判据（GLM 报的那条击穿路径的上游）。
          */
-        if (capabilityChanged) await lockActiveAdminCount(tx)
+        if (locksNeeded) await lockActiveAdminCount(tx)
 
         const rows = await tx
           .update(permissionRoleDefinitions)
@@ -386,6 +397,18 @@ export const updateRoleDefinition = withPermission(
           throw new Error('INVALID_STATE: 系统至少需保留 1 名在职超级管理员')
         }
 
+        /**
+         * 存量分配与新白名单的矛盾也在锁内复核（#318 第 3 轮，GLM P2）。
+         * 事务外那次只是早拒：并发 `assignRole` 能在它之后、本 UPDATE 之前提交一条
+         * 门店/市场 scope 的绑定 —— DB trigger 只在绑定 INSERT 时按**当时**的定义校验，
+         * 改定义不回溯，于是留下一条违反新白名单的存量授权，而 staffApi 不读
+         * `allowed_scope_types`，它会一直按那条绑定放行。
+         * 同样是「先改再数」：UPDATE 已落盘，这里查的是新白名单下的真实矛盾。
+         */
+        if (await hasConflictingScopeAssignment(roleKey, allowedScopeTypes, tx)) {
+          throw new Error('INVALID_STATE: 存在与新可绑定层级冲突的角色分配，请先撤销相关授权后再保存')
+        }
+
         await writeCompatibilityMirror(tx)
         return true
       })
@@ -417,16 +440,25 @@ export const deleteRoleDefinition = withPermission(
       .limit(1)
     if (!target) return { success: false, message: '角色不存在' }
 
-    const [{ count }] = await db
-      .select({ count: sql<number>`count(DISTINCT ${permissionRoles.employeeId})::int` })
-      .from(permissionRoles)
-      .where(eq(permissionRoles.role, roleKey))
-    if (count > 0) return { success: false, message: `该角色仍分配给 ${count} 名员工，请先撤销授权` }
+    /**
+     * 「还有人在用就不许删」这条守卫也必须与 `assignRole` 互斥（#318 第 3 轮，GLM P3）：
+     * 计数留在事务外时，分配能在 count 之后、DELETE 之前提交 —— 于是撞 FK（23503，这里
+     * 没有 catch → 500）或留下指向已删角色的孤儿绑定。取同一把 `admin:active_count`
+     * （分配侧也取它）后重数，整类竞态消失。
+     */
+    const deleteOutcome = await db.transaction(async (tx): Promise<true | { failure: string }> => {
+      await lockActiveAdminCount(tx)
+      const [{ count }] = await tx
+        .select({ count: sql<number>`count(DISTINCT ${permissionRoles.employeeId})::int` })
+        .from(permissionRoles)
+        .where(eq(permissionRoles.role, roleKey))
+      if (count > 0) return { failure: `该角色仍分配给 ${count} 名员工，请先撤销授权` }
 
-    await db.transaction(async (tx) => {
       await tx.delete(permissionRoleDefinitions).where(eq(permissionRoleDefinitions.roleKey, roleKey))
       await writeCompatibilityMirror(tx)
+      return true
     })
+    if (deleteOutcome !== true) return { success: false, message: deleteOutcome.failure }
     await logOperation(session, 'role_definition.delete', 'permission_role_definition', roleKey, { name: target.name })
     invalidatePermissionMatrixCache()
     revalidatePath('/settings/permission-matrix')

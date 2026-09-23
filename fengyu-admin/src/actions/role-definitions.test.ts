@@ -77,7 +77,11 @@ vi.mock('drizzle-orm', () => ({
   ne: vi.fn((left: unknown, right: unknown) => ({ type: 'ne', left, right })),
   sql: Object.assign(
     vi.fn((strings: TemplateStringsArray, ...values: unknown[]) => ({ strings, values })),
-    { raw: vi.fn((value: string) => value) },
+    {
+      raw: vi.fn((value: string) => value),
+      // 数组参数必须走 sql.param（裸数组会被 drizzle 摊开成 ($1,$2)，真库 100% 报错）
+      param: vi.fn((value: unknown) => ({ param: value })),
+    },
   ),
 }))
 
@@ -107,7 +111,8 @@ function mockTxCapturingSet(): { setValues: () => Record<string, unknown> } {
   ;(db.transaction as ReturnType<typeof vi.fn>).mockImplementationOnce(async (callback: Function) => callback({
     update: vi.fn(() => ({ set })),
     select: vi.fn(() => ({ from: vi.fn().mockResolvedValue([]) })),
-    execute: vi.fn().mockResolvedValue(undefined),
+    // 锁内的 scope 冲突复核也走 tx.execute（#318 第 3 轮）；返回空数组 = 无冲突
+      execute: vi.fn().mockResolvedValue([]),
   }))
   return { setValues: () => captured }
 }
@@ -168,7 +173,8 @@ describe('updateRoleDefinition', () => {
         })),
       })),
       select: vi.fn(() => ({ from: vi.fn().mockResolvedValue([]) })),
-      execute: vi.fn().mockResolvedValue(undefined),
+      // 锁内的 scope 冲突复核也走 tx.execute（#318 第 3 轮）；返回空数组 = 无冲突
+      execute: vi.fn().mockResolvedValue([]),
     }))
 
     await expect(updateRoleDefinition(before.roleKey, {
@@ -207,8 +213,14 @@ describe('updateRoleDefinition', () => {
      * @param casRowCount CAS UPDATE 命中行数（0 = 乐观锁未命中）
      * @returns `txExecute` 断言取过锁；`txUpdate` 断言写库时机
      */
-    function mockDowngradeTx(casRowCount = 1) {
-      const txExecute = vi.fn().mockResolvedValue(undefined)
+    function mockDowngradeTx(casRowCount = 1, lockedScopeConflict = false) {
+      /**
+       * 锁内有两种 `tx.execute`：取锁，以及 scope 冲突复核（#318 第 3 轮）。
+       * 按 SQL 内容分派 —— 取锁那条不能被当成「查到冲突」。
+       */
+      const txExecute = vi.fn((arg: unknown) => Promise.resolve(
+        lockedScopeConflict && JSON.stringify(arg).includes('permission_roles') ? [{ hit: 1 }] : [],
+      ))
       const order: string[] = []
       const txUpdate = vi.fn(() => {
         order.push('update')
@@ -310,6 +322,50 @@ describe('updateRoleDefinition', () => {
         (c) => JSON.stringify(c[0]).includes('admin:active_count'),
       )
       expect(lockTaken).toBe(true)
+    })
+
+    /**
+     * 收窄 `allowedScopeTypes` 也在改判据（`assignRole` 按它判「这个角色能不能绑到这层」），
+     * 所以白名单变了也要与分配方互斥（#318 第 3 轮，GLM P2）。
+     */
+    it('只收窄 allowedScopeTypes（不动 capability）→ 也取锁', async () => {
+      const normalBefore = {
+        ...superBefore, roleKey: 'role-custom', isSuperAdmin: false,
+        actions: ['dashboard:view'], allowedScopeTypes: ['总部', '市场', '门店'],
+      }
+      ;(db.select as ReturnType<typeof vi.fn>).mockReturnValueOnce(mockSelectOnce([normalBefore]))
+      const t = mockDowngradeTx()
+
+      await updateRoleDefinition(normalBefore.roleKey, {
+        name: normalBefore.name,
+        actions: ['dashboard:view'],
+        allowedScopeTypes: ['门店'],
+      })
+
+      const lockTaken = t.txExecute.mock.calls.some(
+        (c) => JSON.stringify(c[0]).includes('admin:active_count'),
+      )
+      expect(lockTaken).toBe(true)
+    })
+
+    /**
+     * 存量分配与新白名单的矛盾在**锁内**复核 —— 事务外那次只是早拒：
+     * 并发 `assignRole` 能在它之后、本 UPDATE 之前插进一条不合新白名单的绑定。
+     */
+    it('锁内查出与新白名单冲突的存量分配 → 抛错回滚', async () => {
+      const normalBefore = {
+        ...superBefore, roleKey: 'role-custom', isSuperAdmin: false,
+        actions: ['dashboard:view'], allowedScopeTypes: ['总部', '市场', '门店'],
+      }
+      ;(db.select as ReturnType<typeof vi.fn>).mockReturnValueOnce(mockSelectOnce([normalBefore]))
+      // 事务外那次（走全局 db.execute）没查到冲突；锁内那次（走 tx.execute）查到了
+      mockDowngradeTx(1, true)
+
+      await expect(updateRoleDefinition(normalBefore.roleKey, {
+        name: normalBefore.name,
+        actions: ['dashboard:view'],
+        allowedScopeTypes: ['门店'],
+      })).rejects.toThrow(/INVALID_STATE.*与新可绑定层级冲突/)
     })
 
     /** 不动 capability 的普通编辑（改名/改动作）不该取锁 —— 别无谓串行化所有角色编辑 */
