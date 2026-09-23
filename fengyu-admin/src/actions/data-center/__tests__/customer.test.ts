@@ -394,12 +394,12 @@ describe('getCustomerBoard 装配', () => {
       `分母 SQL 跑了 ${denomCalls.length} 次 —— enabled=true 下它应只算当期，不算 previous/lastYear`,
     ).toHaveLength(1)
 
-    // 对照：允许比较的 KPI 确实跑了 3 次（当期 + previous + lastYear），
-    // 证明本用例的 enabled=true 生效，而不是整体没开同比
-    const newMemberCalls = executes.filter(([q]) =>
-      /FROM\s+client_wechat_users\s+c\s+WHERE/.test(sqlText(q)) && /COUNT\(\*\)/.test(sqlText(q)),
-    )
-    expect(newMemberCalls.length, '对照组 KPI 未跑基期 —— enabled=true 可能没生效').toBeGreaterThan(1)
+    // ⚠ 这里**不加**「对照组 KPI 跑了 3 次」那种断言：能匹配到的正则
+    // （`FROM client_wechat_users c WHERE` + `COUNT(*)`）会同时命中 queryRegistration 与
+    // queryNewMemberCount 的多次调用，而 `> 1` 这个阈值在 enabled=false 时也满足 ——
+    // 它证不了「enabled=true 已生效」这件它声称要证的事（round-3 DeepSeek P3）。
+    // enabled 传播失效这条由上一个用例的 `newMembers.mom` toBeTypeOf('number') 兜住
+    // （enabled=false 时该字段是 undefined，直接红）。
   })
 
   it('市场消费经营直接使用市场内去重结果，不累加跨店顾客', async () => {
