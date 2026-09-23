@@ -36,6 +36,7 @@ const STAFF_MGMT_DASHBOARD = path.resolve(
   __dirname,
   '../../../../../fengyu-staff/cloudfunctions/staffApi/routes/mgmt-dashboard.js',
 )
+const ADMIN_SALES = path.resolve(__dirname, '../sales.ts')
 
 function normalize(src: string): string {
   return src.replace(/\s+/g, ' ').trim()
@@ -102,22 +103,33 @@ function expectStoreRankCashflow(
   }
 }
 
-/** helper 路径的等价强度来源：把 performanceEventDateBetween 自身的两个谓词钉死 */
+/**
+ * helper 路径的等价强度来源：把 `performanceEventDateBetween` 自身的谓词钉死。
+ *
+ * ⚠️ 必须同时证「有这两条」和「**只有**这两条」。只证「有」的话，将来给 helper 追加一个条件，
+ * Part A/B（走 helper）会跟着变，而 Part C（字面量写法）不变 —— 两者静默分叉、
+ * 「KPI == 门店榜」的等式破裂，而所有断言照样全绿。用 `AND` 出现次数锁死谓词个数。
+ */
 function assertHelperBody(adminSrc: string): void {
-  const body = sliceOrFail(adminSrc, 'function performanceEventDateBetween', '/** 行表')
+  const body = sliceOrFail(adminSrc, 'function performanceEventDateBetween', 'function toMap')
   expect(body).toMatch(/\$\{sql\.raw\(`\$\{eventAlias\}\.status`\)\}\s*=\s*'已支付'/)
   expect(body).toMatch(/\$\{sql\.raw\(`\$\{eventAlias\}\.performance_date`\)\}\s*BETWEEN\s*\$\{start\}\s*AND\s*\$\{end\}/)
+  // 恰好 2 个 AND：① 连接 status 与 performance_date 两个谓词 ② `BETWEEN x AND y` 语法自带。
+  // 追加第三个谓词 → 3 个 → 红；把 BETWEEN 换成 >=/<= → 1 个 → 也红（同样是值得拦的改动）。
+  expect(body.match(/\bAND\b/g) ?? [], 'helper 谓词个数变了：Part A/B 会与 Part C 静默分叉').toHaveLength(2)
 }
 
 describe('数据中心人效板块两端口径一致性守护', () => {
   let adminSrc: string
   let staffSrc: string
+  let salesSrc: string
   let adminBody: string
   let staffBody: string
 
   beforeAll(() => {
     adminSrc = fs.readFileSync(ADMIN_EFFICIENCY, 'utf-8')
     staffSrc = fs.readFileSync(STAFF_MGMT_DASHBOARD, 'utf-8')
+    salesSrc = fs.readFileSync(ADMIN_SALES, 'utf-8')
     adminBody = normalize(stripComments(adminSrc))
     staffBody = normalize(stripComments(staffSrc))
   })
@@ -152,6 +164,14 @@ describe('数据中心人效板块两端口径一致性守护', () => {
       )
     })
 
+    it('sales.ts runStoreRevenue 同谓词集（efficiency.ts 注释自称与它对齐，这里把该声称变成守护）', () => {
+      // 本文件原本**不读** sales.ts，而 efficiency.ts 的注释声称「四处同源」。
+      // consistency.sales.test.ts 确实独立守着 sales.ts（实测删掉它的 '充值单' 会红），
+      // 但两边各持一份谓词清单、互不为超集 —— 给 sales.ts 加第 4 种单据类型并同步改它自己的
+      // 测试后，efficiency.ts 这边仍全绿，四处同源的声称就悄悄失效了。这条让本文件成为超集。
+      expectStoreRankCashflow(salesSrc, 'const runStoreRevenue', 'const runShengmeiRevenue')
+    })
+
     it('Part B 分组列用 spe.store_id（与 Part C 同源；视图里它就是 so.store_id 的投影，定义恒等）', () => {
       const n = sliceOrFail(adminSrc, 'const qRevenueByStore', 'const qConsumeByStore')
       expect(n).toMatch(/GROUP BY spe\.store_id/i)
@@ -183,6 +203,15 @@ describe('数据中心人效板块两端口径一致性守护', () => {
       expect(n).toMatch(/spia\.employee_id/i)
       expect(n).toMatch(/GROUP BY spia\.employee_id/i)
       expect(n).toMatch(/is_void\s*=\s*FALSE/i)
+    })
+    it('admin efficiency.ts Part E revenue_by_emp_cat 同为 allocation 口径', () => {
+      // describe 标题写的是 Part D/E，就得真的覆盖 E —— Part E 是「按技师人效明细」，
+      // 它与 Part D 同源但多一个 sales_category 维度，同样**不得**被改成 spe.amount。
+      const n = sliceOrFail(adminSrc, 'revenue_by_emp_cat AS (', 'consume_by_emp_cat AS (')
+      expect(n).toMatch(/SUM\(\s*spia\.allocated_amount::numeric\s*\)/i)
+      expect(n).toMatch(/spia\.employee_id/i)
+      expect(n).toMatch(/is_void\s*=\s*FALSE/i)
+      expect(n).not.toMatch(/SUM\(spe\.amount::numeric\)/i)
     })
     it('staff mgmt-dashboard.js staffRankingRevenue 含 SUM(spia.allocated_amount) 归 spia.employee_id', () => {
       const n = sliceOrFail(staffSrc, 'async function staffRankingRevenue', 'async function staffRankingConsume')

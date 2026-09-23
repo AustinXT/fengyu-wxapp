@@ -32,7 +32,9 @@
  *   - 业绩**有两套口径，按聚合粒度分**（2026-09-23 #285 修正，别再混用）：
  *       · Part A/B 全局大卡 + by store（喂 empAvgRevenue / byMarket.techAvgRevenue）
  *         = SUM(sale_order_performance_events.amount) ∩ 已支付 ∩ 首次支付/回款/退款 ∩
- *           销售单/转换单/**充值单** ∩ legacy_source ≠ 'workfine' ∩ performance_date 区间。
+ *           销售单/转换单/**充值单** ∩ `legacy_source IS DISTINCT FROM 'workfine'` ∩ performance_date 区间。
+ *           ⚠️ 该列生产全表 NULL，**必须用 IS DISTINCT FROM**；写成 `<> 'workfine'` 走三值逻辑
+ *           会把每一行都判成 NULL，结果恒为 0.00。
  *         与 Part C 门店排名榜 / sales.ts runStoreRevenue / staff queryStoreRevenue 同源。
  *       · Part D/E 员工榜 + 按技师人效明细
  *         = SUM(sale_payment_item_allocations.allocated_amount) 归 employee_id ∩
