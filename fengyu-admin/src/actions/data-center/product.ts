@@ -346,20 +346,30 @@ async function queryMemberCountByStore(
  *   - **新增**：`COALESCE(period_agg.store_id, xinzeng.entry_store_id)` —— 期内有销售单/转换单
  *     消费的落消费门店，**没有的落「进入达标日所在门店」**。
  *
- * ⚠️ 为什么新增必须兜底（#286，实测今年漏 **65.5%**）：`period_agg` 要求
+ * ⚠️ 为什么新增必须兜底（#286，实测漏 **65.5%**）：`period_agg` 要求
  * `purchase_received > 0`，而 `purchase_received` 只统计销售单/转换单、**不含寄存单**；
- * 而进入达标（`first_entry` → `xinzeng`）走的是 `day_received`，**含寄存单**。
+ * 而进入达标（`first_entry` → `entry_store` → `xinzeng`）走的是 `day_received`，**含寄存单**。
  * 于是「进入达标日金额全部来自寄存单」的顾客在 `xinzeng` 里有、在 `period_agg` 里没有 ——
- * 旧实现 `FROM period_agg pa JOIN xinzeng x` 用内连接归店，把他们整体丢弃。
- * 实测今年 KPI 2467 人而明细合计只有 852 人，派生的新增客单价与复购率因此双双虚高 **2.90 倍**。
+ * 旧实现以 `period_agg` 作主表再内连接回来，把他们整体丢弃，
+ * 派生的新增客单价与复购率因此双双虚高 **2.90 倍**。
  *
- * **与 KPI 总量的关系**：明细是组内 DISTINCT、KPI 是全局 DISTINCT，同一顾客跨门店消费会在
- * 多店各计一次，所以 **明细各门店人数相加 ≥ KPI 总量**（今年实测 2469 vs 2467，差 2 人）。
- * 这是归组语义决定的、与 sales 板块一致。**单店 scope 下二者严格相等**（跨店重复不存在），
- * 这条才是可锁死的不变量 —— 南昌梦祥店实测 KPI 133 / 明细 133（修正前明细只有 31）。
+ * **与 KPI 总量的关系**：明细是组内 DISTINCT、KPI 是全局 DISTINCT，
+ * 所以 **明细各门店人数相加 ≥ KPI 总量**，差额 = Σ(每位顾客落的门店数 − 1)。
+ * 这是归组语义决定的、与 sales 板块一致。**单店 scope 下二者严格相等**（跨店重复不存在）。
+ *
+ * **为什么不让集团也严格相等**：只要给每个 `(client, grp)` 强行保留一家门店即可做到，
+ * 但那样**人数与业绩会归到不同门店**（顾客在 A 店花的钱记在 A 店，人却可能计到 B 店），
+ * 该店的「新增客单价 = 新增业绩 ÷ 新增人数」随即失真，且与 sales 板的归组语义分叉。
+ * 权衡后保留「可多店」，由 UI/文档说明差额来源。
  *
  * 业绩不受影响：`SUM(pa.day_received)` 在 LEFT JOIN 后对无消费行取 NULL 被忽略，
  * 三个口径（KPI / 修正前明细 / 修正后明细）业绩完全相等 —— 本缺陷**只丢人、不丢钱**。
+ *
+ * ⚠️ 新形态：「本期只有寄存单进入、零销售单消费」的门店会出现
+ * `新增人数 N > 0` 而 `新增业绩 = 0` ⇒ 客单价显示 `0.00` 而非 `--`（`safeDiv` 分母 > 0）。
+ * 数值是诚实的，不是 bug。
+ *
+ * 具体数字（会随数据漂移）一律见 `_tmp/issue-286/verify.md`，不写进本注释。
  */
 async function queryCycleByStore(
   session: AuthSession,
@@ -440,15 +450,15 @@ async function queryCycleByStore(
     -- 结构上不存在「有日期却没门店」的组合，也不依赖任何等值匹配 —— 从而绕开了
     -- grp 可空（product_categories.product_kind 在 schema 里可空）带来的 NULL 不安全等值陷阱。
     -- 先前写成「先算 entry_date、再用 qd.grp = fe.grp 回查门店」的版本除了这个 NULL 洞，
-    -- 还是 O(|xinzeng| × |qualifying_days|) 的相关子查询，生产实测把本查询从 825ms 拖到
-    -- 2276ms（+177%），且两个因子都随历史数据线性增长。
+    -- 还是 O(|xinzeng| × |qualifying_days|) 的相关子查询，生产实测把本查询拖慢 **+177%**，
+    -- 且两个因子都随历史数据线性增长（具体耗时见 _tmp/issue-286/verify.md）。
     --
     -- ORDER BY purchase_date 取最早达标日，与 first_entry 的 MIN(purchase_date) 等价；
     -- 同日跨多店达标时按 store_id 兜底排序（store_id 形如 store-<建店毫秒时间戳>，
     -- 字典序≈建店先后，**无业务含义，仅为结果确定不随执行计划漂**）。
     --
-    -- ⚠️ MATERIALIZED 不是装饰：不加的话 planner 对 CTE 的行数估计失真上千倍
-    -- （first_entry 估 658 实际 4098），会选 nested loop 把耗时推回 1.6s+。
+    -- ⚠️ MATERIALIZED 不是装饰：不加的话 planner 对 CTE 的行数估计失真上千倍，
+    -- 会选 nested loop 把大部分收益吃掉（consistency.product.test.ts 有断言锁住它）。
     entry_store AS MATERIALIZED (
       SELECT DISTINCT ON (client_user_id, grp)
              client_user_id,
