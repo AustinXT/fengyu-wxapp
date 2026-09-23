@@ -193,6 +193,11 @@ Page({
   // 让它们根本不并行，「旧响应盖掉新响应」就不可能发生。详见 loadDetail 的注释。
   _loadPromise: null as Promise<boolean> | null,
   _loadQueued: false,
+  // 写操作纪元（评审 round-21）：顾客确认过的写（目前只有取消）会 +1。
+  // `_fetchDetail` 发请求时记下当时的纪元，响应回来发现纪元变了就**丢弃**这份数据 ——
+  // 它是在写操作之前读的快照，落盘会把「已关闭」画回「待支付」，
+  // 顾客于是又看到「取消 + 去支付」，再点一次得到「订单状态不允许取消」。
+  _mutationEpoch: 0,
   // 页面已卸载（issue #215）。onUnload 之后仍可能有在途请求回来：
   // confirmAndRefresh 里 `poller.clear()` 会 resolve 掉那个 promise，后面紧跟着
   // 一句 loadDetail —— 不拦就会在死实例上重新装表，孤儿定时器每秒对它 setData。
@@ -319,9 +324,14 @@ Page({
     // 会让整页每圈闪一次 —— 页面看起来就是坏的。
     this.setData({ isLoading: !this.data.order });
     const sentAt = Date.now();
+    const epochAtSend = this._mutationEpoch;
     try {
       const data = await callClientApi('order.detail', { saleOrderId });
       if (this._destroyed) return false;
+      // 这份快照是在本次请求之后发生的写操作**之前**读的，已经过时了：丢掉不落盘。
+      // 返回 false 让调用方按失败处理（排一发有界重试），页面就停在写操作刚落下的
+      // 已知状态上，而不是被旧响应画回去（评审 round-21）。
+      if (this._mutationEpoch !== epochAtSend) return false;
       const order = (data?.order || {}) as OrderDetailData;
       // 记下**网络那段**的往返耗时，交给 startCountdown 去扣（issue #215）。
       // ⚠️ 不能就地把 expire_in_ms 减掉 —— 那样「服务端说剩 0」和「服务端说剩 50ms、
@@ -929,6 +939,12 @@ Page({
 
       Toast.loading({ message: '取消中...', forbidClick: true, duration: 0 });
       await callClientApi('order.cancel', { saleOrderId: sale_order_id });
+      // 取消确实落库了 —— 推进纪元，让任何**先于它发出**的 order.detail 响应作废。
+      // 在途的那一发读到的是取消前的快照，落盘会把页面画回「待支付」。
+      this._mutationEpoch++;
+      // 请求在途时页面被卸载的话，到这里 Page 实例已经销毁：再 Toast/setData
+      // 就是往下一个页面上冒陈旧提示、往死实例上写数据（评审 round-21）。
+      if (this._destroyed) return;
       Toast.success('订单已取消');
       // 取消已经落库了，「已关闭」是**已知事实**而不是猜测：先就地落到页面上。
       // 只靠随后那次刷新的话，刷新失败时页面会继续挂着「取消 + 去支付」，

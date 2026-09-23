@@ -555,6 +555,67 @@ describe('order-detail 待支付倒计时 (#215)', () => {
     expect(page._refreshRetryTimer).not.toBeNull();
   });
 
+  test('取消落地后，先于它发出的旧 detail 响应不得把页面画回「待支付」', async () => {
+    // single-flight 只保证「不并行」，不保证在途那一发读的是写操作之后的快照。
+    // 取消成功 → 页面落「已关闭」→ 旧响应（取消前读的）回来 → 若照常落盘，
+    // 页面又变回「待支付 + 取消 + 去支付」，再点取消得到「订单状态不允许取消」。
+    // 这条时序必须用**真的 single-flight**复现：把 loadDetail 换成失败桩是测不到的。
+    const page = createPageInstance({
+      order: { sale_order_id: 'FY-215', status: '待支付' },
+    });
+    (globalThis as any).wx.showModal = vi.fn(async () => ({ confirm: true }));
+
+    // ⚠️ deferred 必须**先建好**：onCancel 要跨一个 await 才发 order.cancel，
+    // 在 mock 的 executor 里赋值 resolver 的话，用例这边拿到的还是初始空函数。
+    let resolveDetail: (v: any) => void = () => {};
+    let resolveCancel: (v: any) => void = () => {};
+    const detailPending = new Promise((r) => { resolveDetail = r; });
+    const cancelPending = new Promise((r) => { resolveCancel = r; });
+    let detailCount = 0;
+    callClientApiMock.mockImplementation((action: string) => {
+      if (action === 'order.detail') {
+        detailCount++;
+        if (detailCount === 1) return detailPending;
+        return Promise.reject(new Error('网络异常'));   // 尾随刷新也失败
+      }
+      if (action === 'order.cancel') return cancelPending;
+      return Promise.resolve({});
+    });
+
+    const inflight = page.loadDetail('FY-215');          // 旧 detail 在途
+    const cancelling = page.onCancel();
+    resolveCancel({});
+    await cancelling;
+    expect(page.data.order.status).toBe('已关闭');
+
+    resolveDetail(detailResponse('待支付'));             // 旧响应姗姗来迟
+    await inflight;
+
+    expect(page.data.order.status).toBe('已关闭');
+    expect(page.data.countdown).toBe('');
+  });
+
+  test('取消响应晚于 onUnload → 不往死实例上写数据、不冒陈旧成功提示', async () => {
+    const page = createPageInstance({
+      order: { sale_order_id: 'FY-215', status: '待支付' },
+    });
+    (globalThis as any).wx.showModal = vi.fn(async () => ({ confirm: true }));
+
+    let resolveCancel: (v: any) => void = () => {};
+    const cancelPending = new Promise((r) => { resolveCancel = r; });
+    callClientApiMock.mockImplementation((action: string) => (
+      action === 'order.cancel' ? cancelPending : Promise.resolve({})
+    ));
+
+    const cancelling = page.onCancel();
+    page.onUnload();
+    resolveCancel({});
+    await cancelling;
+
+    expect(page.data.order.status).toBe('待支付');       // 没往死实例上写
+    expect((Toast as any).success).not.toHaveBeenCalled();
+  });
+
   test('同一次失败被多个调用方同时观察到 → 只排一发 5 秒重试（退避不被重复计数）', async () => {
     // single-flight 把并发刷新合并成同一个 Promise，它失败时每个调用方都会走到
     // `_scheduleRefreshRetry`。调度器若清掉重排，一次真实失败就被记成 N 次，
