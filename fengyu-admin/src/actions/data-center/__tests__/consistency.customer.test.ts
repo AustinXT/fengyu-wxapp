@@ -11,7 +11,8 @@
  *   2. customer_status 枚举值 '沉睡'/'冰冻'/'休眠'（D-6 重命名后，禁 '预警沉睡'）
  *   3. 消费分桶阈值 1990 / 10000 / 30000 / 60000 / 100000（左闭右开）
  *   4. sales_category IN ('自销自耗','他销自耗')（项目数口径）
- *   5. 成交率分母 = 体验客 + 小美客
+ *   5. 成交率分母 = 期初未达会员的到店活跃池 ∪ 本期全部新增会员（D-conv-denom=1c，#284；
+ *      两端 KPI 侧走 `sqlInFunction` 切函数体断言，明细侧走 `adminSql` 块）
  *   6. spend = SUM(sale_order_performance_events.amount) @ performance_date（#138 起，与业绩 KPI 同源；
  *      不再按父订单 status 过滤、排除储值卡抵扣；非 metrics.md 的 paid_amount）
  *   7. anchor 反推关键字面量（visits_90d_prev / 6 months / 12 months / 90 days）
@@ -336,6 +337,52 @@ function sqlTextFromSource(src: string, fileName: string): string {
   )
 }
 
+/**
+ * 切出**指定函数体内**的全部 SQL 模板串，剥净 SQL 注释。
+ *
+ * ⚠ 为什么必须有这个函数，不能直接对 `adminSrc` / `staffSrc` 做 `toMatch`（pr-ready round-8）：
+ *
+ * 成交率分母的 KPI 侧不变量一度是对**源码原文**断言的，于是
+ * 「删掉 ① 的 `OR became_member_at` 分支和整个 ② 分支，再补一行
+ *   `-- c.customer_type IN ('体验客','小美客') OR c.became_member_at::date BETWEEN ...`」
+ * 能让全部断言照绿 —— 与 `EXPECTED_SPE_BLOCKS` 上方记载的假绿路径是同一条，换个位置复发了。
+ * 红检只测了「删代码」，没测「删代码 + 用注释把字面量补回去」，所以没抓住。
+ *
+ * `sqlTemplatesFromSource` 帮不上：它按设计只收含 `sale_order_performance_events` 的模板
+ * （那是 `EXPECTED_SPE_BLOCKS` 块数断言的基底，放宽采集条件会连带改块数、动了另一套守护）。
+ * 因此这里另起一个**按函数名定位**的 AST 采集器，复用同一个 `stripSqlComments` 词法状态机。
+ *
+ * 同时它天然解决了另一个问题：admin 的明细 `traffic_cust` CTE 是同口径副本，含一模一样的
+ * 字面量。对全文断言时，把 KPI 那处删掉、只留明细那处也照样绿（红检 R2 实测复现过）。
+ * 按函数名切片后，两处各自被独立守护。
+ *
+ * ScriptKind 按后缀选，因此对 staffApi 的 `.js` 同样有效。
+ */
+function sqlInFunction(src: string, fileName: string, fnName: string): string {
+  const sf = ts.createSourceFile(
+    fileName,
+    src,
+    ts.ScriptTarget.Latest,
+    true,
+    fileName.endsWith('.js') ? ts.ScriptKind.JS : ts.ScriptKind.TS,
+  )
+  const out: string[] = []
+  const collectTemplates = (n: ts.Node): void => {
+    if (ts.isTemplateExpression(n) || ts.isNoSubstitutionTemplateLiteral(n)) {
+      out.push(src.slice(n.getStart(sf) + 1, n.getEnd() - 1))
+    }
+    ts.forEachChild(n, collectTemplates)
+  }
+  const visit = (n: ts.Node): void => {
+    if (ts.isFunctionDeclaration(n) && n.name?.text === fnName) {
+      ts.forEachChild(n, collectTemplates)
+    }
+    ts.forEachChild(n, visit)
+  }
+  ts.forEachChild(sf, visit)
+  return normalize(out.map(stripSqlComments).join(' \n '))
+}
+
 describe('客量板块两端口径一致性守护', () => {
   let adminSrc: string
   let staffSrc: string
@@ -385,6 +432,46 @@ describe('客量板块两端口径一致性守护', () => {
       expect(adminSrc).toMatch(/保有会员-有效/)
       expect(staffSrc).toMatch(/保有会员-稳定/)
       expect(staffSrc).toMatch(/保有会员-有效/)
+    })
+
+    /**
+     * #294：本组三条断言把 UI 文案与 SQL 绑死。
+     *
+     * 客量板沉睡卡的 hint 写「截面快照（**仅会员客**）」、导出表头写「沉睡(截面·仅会员客)」，
+     * 而冰冻/休眠不带这个括注 —— 这个文案差异的唯一依据就是下面两处 SQL 里
+     * 沉睡独有的 `customer_type = '会员客'`。若它被删/被加到另两档上，文案立刻变成错的，
+     * 而在补这组断言之前**全仓没有任何守护**（上面四条只断言枚举字面量存在，
+     * 与本差异无关 —— 闸门 2 codex 指出原注释「被 consistency 守护」是不实陈述）。
+     *
+     * ⚠ 必须用 `adminCode`（剥过 JS 注释）而非 `adminSrc`：`customer.ts:174` 的 docstring
+     * 与 `:542` 的 SQL 行注释都写着「沉睡追加 customer_type='会员客'」，
+     * 用原文断言会被注释假绿。本组特征串含 `? sql` / `FILTER (WHERE` / `AS dormant`，
+     * 注释里不含这些 token，`stripComments` 不剥 SQL `--` 也不影响判定。
+     */
+    it("沉睡档独有 customer_type='会员客'（标量侧）—— UI「仅会员客」文案的依据", () => {
+      expect(adminCode).toMatch(
+        /status === '沉睡'\s*\?\s*sql` AND c\.customer_type = '会员客'`\s*:\s*sql``/,
+      )
+    })
+    it("沉睡档独有 customer_type='会员客'（明细 status_agg 侧）", () => {
+      expect(adminCode).toMatch(
+        /FILTER\s*\(WHERE c\.customer_status = '沉睡' AND c\.customer_type = '会员客'\)\s*AS dormant/,
+      )
+    })
+    /**
+     * ⚠ 本条是**黑名单**，与本文件 `stripComments` 上方记录的教训同源：正则黑名单
+     * 证明不了「没有任何客型条件」。这里显式锁两种语序（正序 / 反序），
+     * 仍可被 `c.customer_type IN (…)`、大小写变体、跨行拆分等写法绕过。
+     * 真正兜底的是上面两条正向断言 —— 它们锚定沉睡分支的完整形态，
+     * 任何把客型过滤挪到另两档的改法都会先让正向断言失配。
+     */
+    it('冰冻 / 休眠不得附带客型过滤（否则三档口径对等，UI 角标即失真）', () => {
+      for (const status of ['冰冻', '休眠']) {
+        // 正序：customer_status = 'X' AND c.customer_type ...
+        expect(adminCode).not.toMatch(new RegExp(`customer_status = '${status}' AND c\\.customer_type`))
+        // 反序：c.customer_type = '…' AND c.customer_status = 'X'（GLM r2 指出的绕过路径）
+        expect(adminCode).not.toMatch(new RegExp(`customer_type = '[^']*' AND c\\.customer_status = '${status}'`))
+      }
     })
   })
 
@@ -481,12 +568,190 @@ describe('客量板块两端口径一致性守护', () => {
     })
   })
 
-  describe('成交率分母 = 体验客 + 小美客（D-conv-denom=B）', () => {
-    it('admin', () => {
-      expect(adminSrc).toMatch(/customer_type\s+IN\s*\(\s*'体验客'\s*,\s*'小美客'\s*\)/)
+  /**
+   * #284（2026-09-22 拍板 D-conv-denom=1c，推翻原 D-2=B）：
+   * 分母 = ① 期初未达会员的到店活跃池 ∪ ② 本期全部新增会员。
+   *
+   * 旧断言只查「文件里存在 `customer_type IN ('体验客','小美客')`」—— 回退到旧口径后
+   * 该字面量依然留在 ① 分支里，断言恒绿，是个**空转守护**。这里改为逐条锁两个分支的结构。
+   *
+   * ⚠ KPI 侧的 `queryTrialFootfall` 不含 `sale_order_performance_events`，
+   * 不在 `adminSql`/`staffSql` 的采集范围内（见 `sqlTemplatesFromSource` 的过滤条件），
+   * 只能对源码原文断言；明细侧的同口径守护见「市场明细人数在市场内去重」，那条走 `adminSql`。
+   */
+  describe('成交率分母 = 期初未达会员活跃池 ∪ 本期全部新增会员（D-conv-denom=1c，#284）', () => {
+    let adminTrial: string
+    let staffTrial: string
+    beforeAll(() => {
+      adminTrial = sqlInFunction(adminSrc, ADMIN_CUSTOMER, 'queryTrialFootfall')
+      staffTrial = sqlInFunction(staffSrc, STAFF_MGMT_TRAFFIC, 'queryTrialFootfall')
     })
-    it('staff', () => {
-      expect(staffSrc).toMatch(/customer_type\s+IN\s*\(\s*'体验客'\s*,\s*'小美客'\s*\)/)
+
+    /**
+     * 切片完整性自检。两种退化都要拦：
+     *   - 函数被改名/删除 → 空串
+     *   - AST 只捞到半截（例如日后 SQL 被拆成多个模板、或函数被包进别的结构）
+     *     → 恰好只剩 ① 分支时，下面的 ② 断言才会红；先在这里就把「首尾都在」钉住，
+     *       失败信息更直接。
+     */
+    it('两端都能切出完整的 queryTrialFootfall SQL（切片锚点有效）', () => {
+      for (const [side, sqlText] of [['admin', adminTrial], ['staff', staffTrial]] as const) {
+        expect(sqlText, `${side} queryTrialFootfall 的 SQL 未切出`).toBeTruthy()
+        expect(sqlText, `${side} 切片缺 ① 分支的 FROM service_orders`).toMatch(/FROM\s+service_orders\s+so/)
+        expect(sqlText, `${side} 切片缺外层子查询别名 ) t —— 可能只捞到半截`).toMatch(/\)\s*t\b/)
+      }
+    })
+
+    /** 两端 KPI 分母查询共享的结构不变量（整体层面） */
+    const DENOM_INVARIANTS: Array<[string, RegExp]> = [
+      ['外层对 UNION 结果去重', /COUNT\(DISTINCT\s+t\.uid\)/],
+      ['① 到店活跃池取已完成服务单', /FROM\s+service_orders\s+so[\s\S]*?so\.status\s*=\s*'已完成'/],
+      [
+        '① 期初未达会员 = 当前仍未达会员 OR 本期内才转化（缺 OR 即回到只升不降的快照口径）',
+        /c\.customer_type\s+IN\s*\(\s*'体验客'\s*,\s*'小美客'\s*\)\s*OR\s+c\.became_member_at::date\s+BETWEEN/,
+      ],
+      [
+        '② 本期全部新增会员 UNION 进分母（缺它则分子 ⊄ 分母，单店成交率仍可能 > 100%）',
+        /UNION[\s\S]*?SELECT\s+c\.user_id\s+AS\s+uid[\s\S]*?FROM\s+client_wechat_users\s+c/,
+      ],
+    ]
+
+    it.each(DENOM_INVARIANTS)('admin：%s', (_label, re) => {
+      expect(adminTrial).toMatch(re)
+    })
+
+    it.each(DENOM_INVARIANTS)('staff：%s', (_label, re) => {
+      expect(staffTrial).toMatch(re)
+    })
+
+    /**
+     * 切出 `UNION` 之后的 ② 分支单独断言（codex round-1 P2）。
+     *
+     * ⚠ 为什么整体断言不够：`became_member_at::date BETWEEN` 这个字面量**① 分支里也有**
+     * （① 的 OR 右半边就是它）。于是「把 ② 的 `AND c.became_member_at::date BETWEEN ... `
+     * 整行删掉」——分母会纳入**全部历史会员**（回溯到 2022-08）、成交率被直接扭曲——
+     * 而上面 `DENOM_INVARIANTS` 的 BETWEEN 断言被 ① 顶上，守护照样全绿。
+     *
+     * 按 `UNION` 切分后 ① 的内容不在切片里，字面量无法互相顶替。
+     */
+    const secondBranch = (sqlText: string): string => sqlText.split(/\bUNION\b/)[1] ?? ''
+
+    /**
+     * 切片前提自检（round-2 codex/DeepSeek P3）：`split(/\bUNION\b/)[1]` 隐含
+     * 「目标 SQL 里第一个 UNION 就是两分支的边界」。若日后 ① 内部引入子查询 UNION，
+     * `[1]` 会取到中段、② 的真过滤被静默漏检。这里把「恰好一个 UNION」钉死，
+     * 前提一破就红，不会静默漂移。
+     */
+    it('两端分母 SQL 恰有一个 UNION（secondBranch 切片的前提）', () => {
+      for (const [side, sqlText] of [['admin', adminTrial], ['staff', staffTrial]] as const) {
+        expect(sqlText.match(/\bUNION\b/g) ?? [], `${side} 的分母 SQL 不是恰好一个 UNION`).toHaveLength(1)
+      }
+    })
+
+    /**
+     * ② 分支的结构不变量。
+     *
+     * ⚠ 日期条件必须连同**边界实参**一起锁（round-2 codex P2）：只断言
+     * `became_member_at::date BETWEEN` 的话，`BETWEEN DATE '1900-01-01' AND ${range.end}`
+     * 或 `BETWEEN ${range.start} AND ${range.start}` 都照样绿 —— 前者正是 R11 要防的
+     * 「重新纳入全部历史会员」。两端的区间表达式不同名，所以分开列。
+     */
+    const BRANCH2_COMMON: Array<[string, RegExp]> = [
+      ['② 从 client_wechat_users 取本期新增会员', /SELECT\s+c\.user_id\s+AS\s+uid[\s\S]*?FROM\s+client_wechat_users\s+c/],
+      ['② 有 became_member_at IS NOT NULL 守卫', /c\.became_member_at\s+IS\s+NOT\s+NULL/],
+    ]
+    /** 两端各自的「本期」区间表达式（连边界实参一起锁） */
+    const BRANCH2_RANGE: Record<'admin' | 'staff', [string, RegExp]> = {
+      admin: [
+        '② 的本期限定用 range.start/range.end（缺或改坏则纳入错误区间的会员）',
+        /c\.became_member_at::date\s+BETWEEN\s+\$\{range\.start\}\s+AND\s+\$\{range\.end\}/,
+      ],
+      staff: [
+        '② 的本期限定用 startDateExpr/endDateExpr（缺或改坏则纳入错误区间的会员）',
+        /c\.became_member_at::date\s+BETWEEN\s+\$\{startDateExpr\(period\)\}\s+AND\s+\$\{endDateExpr\(period\)\}/,
+      ],
+    }
+
+    it.each(BRANCH2_COMMON)('admin ② 分支：%s', (_label, re) => {
+      const b2 = secondBranch(adminTrial)
+      expect(b2, 'admin 的 UNION ② 分支切不出来').toBeTruthy()
+      expect(b2).toMatch(re)
+    })
+
+    it.each(BRANCH2_COMMON)('staff ② 分支：%s', (_label, re) => {
+      const b2 = secondBranch(staffTrial)
+      expect(b2, 'staff 的 UNION ② 分支切不出来').toBeTruthy()
+      expect(b2).toMatch(re)
+    })
+
+    it('admin ② 分支：' + BRANCH2_RANGE.admin[0], () => {
+      expect(secondBranch(adminTrial)).toMatch(BRANCH2_RANGE.admin[1])
+    })
+
+    it('staff ② 分支：' + BRANCH2_RANGE.staff[0], () => {
+      expect(secondBranch(staffTrial)).toMatch(BRANCH2_RANGE.staff[1])
+    })
+
+    /**
+     * 两段 scope 各自绑定到正确的列，且用在正确的分支上（codex round-1 P2 / DeepSeek P3）。
+     *
+     * ⚠ admin 侧的列名是 `scopeFilterSql` 的**字符串参数**，不落进 SQL 模板 ——
+     * 所以上面所有基于 SQL 文本的断言都看不见它。把 ① 的 `scVisit` 从 `so.store_id`
+     * 改成 `c.bound_store_id`（或把两个插值位置对调），admin KPI 就与 staff、与明细的
+     * 「按服务发生门店」口径分叉了，而 `customer.test.ts` 不执行真实 SQL，全绿。
+     * staff 侧因为 `buildSaleScope` 在运行期把 `so.store_id` 拼进 SQL，已被
+     * `mgmt-traffic.test.js` 的 market/store `test.each` 兜住，admin 侧此前没有对应断言。
+     */
+    it('admin 两段 scope 绑定正确的列，且分别用在 ①/② 分支上', () => {
+      expect(adminCode, '① 应按服务发生门店 so.store_id 取 scope').toMatch(
+        /scVisit\s*=\s*scopeFilterSql\(session,\s*scope,\s*'so\.store_id'\)/,
+      )
+      expect(adminCode, '② 应按顾客绑定门店 c.bound_store_id 取 scope（与分子同源）').toMatch(
+        /scMember\s*=\s*scopeFilterSql\(session,\s*scope,\s*'c\.bound_store_id'\)/,
+      )
+      // 插值占位在模板里原样保留，可据此锁住「哪段用哪个」
+      const [branch1, branch2] = [adminTrial.split(/\bUNION\b/)[0], secondBranch(adminTrial)]
+      expect(branch1, '① 分支未使用 scVisit').toContain('${scVisit}')
+      expect(branch1, '① 分支误用了 scMember').not.toContain('${scMember}')
+      expect(branch2, '② 分支未使用 scMember').toContain('${scMember}')
+      expect(branch2, '② 分支误用了 scVisit').not.toContain('${scVisit}')
+    })
+
+    /**
+     * staff 侧的同款守护（round-2 DeepSeek P2）。
+     *
+     * ⚠ 我在 round-1 误以为 `mgmt-traffic.test.js` 的 market/store `test.each` 已经兜住了
+     * 这条 —— **不成立**。那四个断言（`params===[scopeId,scopeId]`、`so.store_id = $1`、
+     * `c.bound_store_id = $2`、`$2` 存在）锁的是「列 → 参数号」的绑定，而参数号来自
+     * **变量声明顺序**（`scVisit` 用 1、`scMember` 用 `1 + scVisit.params.length`），
+     * 不是「哪个分支用哪个占位」。
+     *
+     * 攻击路径：只把模板里两行插值对调（`WHERE ${scMember.sql}` 放进 ①、
+     * `WHERE ${scVisit.sql}` 放进 ②），变量声明不动 —— SQL 里 `so.store_id = $1` 与
+     * `c.bound_store_id = $2` 仍双双出现、params 仍是两个 scopeId，全绿；
+     * 而 ① 变成按绑定门店取 scope、② 变成按服务发生门店，口径彻底反了。
+     *
+     * staff 的占位带 `.sql` 后缀（`buildXxxScope` 返回 `{sql, params}`），与 admin 不同。
+     */
+    it('staff 两段 scope 分别用在 ①/② 分支上（占位带 .sql 后缀）', () => {
+      const [branch1, branch2] = [staffTrial.split(/\bUNION\b/)[0], secondBranch(staffTrial)]
+      expect(branch1, '① 分支未使用 scVisit').toContain('${scVisit.sql}')
+      expect(branch1, '① 分支误用了 scMember').not.toContain('${scMember.sql}')
+      expect(branch2, '② 分支未使用 scMember').toContain('${scMember.sql}')
+      expect(branch2, '② 分支误用了 scVisit').not.toContain('${scVisit.sql}')
+    })
+
+    /**
+     * 这条断言的对象是**代码**（scope 由哪个 helper、按哪一列构造），不是 SQL 文本，
+     * 所以用剥过 JS 注释的 `adminCode` / `staffCode` 而非原文 —— 否则一行
+     * `// const scMember = scopeFilterSql(session, scope, 'c.bound_store_id')` 就能让它假绿。
+     */
+    it('两端 ② 分支都按 bound_store_id 归店（与各自的分子 newMemberCount 同源）', () => {
+      // ⚠ 锚到 scMember 这个绑定名，否则分子 queryNewMemberCount 里的同一行调用会让断言假绿
+      expect(adminCode).toMatch(/scMember\s*=\s*scopeFilterSql\(session,\s*scope,\s*'c\.bound_store_id'\)/)
+      expect(normalize(stripComments(staffSrc))).toMatch(
+        /buildClientScope\(scopeType,\s*scopeId,\s*'c',\s*1\s*\+\s*scVisit\.params\.length\)/,
+      )
     })
   })
 
@@ -951,8 +1216,53 @@ describe('客量板块两端口径一致性守护', () => {
     })
 
     it('流量客人数按分组 DISTINCT 顾客，不由门店人数求和', () => {
-      expect(adminCode).toMatch(/traffic_cust\s+AS\s*\([\s\S]*?COUNT\(DISTINCT\s+so\.client_user_id\)\s+AS\s+traffic_customers[\s\S]*?GROUP BY \$\{groupId\}/i)
+      // #284 起分母是 UNION 子查询，去重锚点从 so.client_user_id 移到内层统一别名 uid
+      expect(adminSql).toMatch(/traffic_cust\s+AS\s*\([\s\S]*?COUNT\(DISTINCT\s+uid\)\s+AS\s+traffic_customers[\s\S]*?GROUP BY\s+group_id/i)
       expect(adminCode).not.toMatch(/SUM\(traffic_cust\.traffic_customers\)/i)
+    })
+
+    /**
+     * #284：明细行的成交率分母必须与 KPI 同为方案 1c（期初未达会员活跃池 ∪ 本期全部新增会员），
+     * 且 ② 分支的归店方式与分子 `newmem` 逐字一致 —— 组内「分子 ⊆ 分母」全靠这个对齐，
+     * 破了它明细行就会重新出 > 100%（分母漏人）或 '--'（分母归零）。
+     *
+     * ⚠ 用 `adminSql`（AST 提取 + 剥净 SQL 注释）而非源码原文：否则把 ② 分支删掉、
+     * 再用 `-- UNION SELECT c.user_id AS uid FROM client_wechat_users c JOIN skel ...`
+     * 注释把字面量补回去，断言照样绿（本文件 round-5 已实测过这条假绿路径）。
+     */
+    it('明细分母 = 活跃池 ∪ 本期全部新增会员，② 分支与分子 newmem 同源（D-conv-denom=1c）', () => {
+      // 边界取到下一个 CTE，避免非贪婪在 COUNT(...) 的右括号上提前收口
+      const trafficCust = /traffic_cust\s+AS\s*\(([\s\S]*?)visits_agg\s+AS\s*\(/.exec(adminSql)?.[1]
+      expect(trafficCust, 'traffic_cust CTE 未能定位（被删除/改名，或 visits_agg 不再紧随其后）').toBeTruthy()
+      // ① 到店活跃池：期初未达会员 = 当前仍未达会员 OR 本期内才转化
+      expect(trafficCust).toMatch(/JOIN\s+skel\s+sk\s+ON\s+sk\.store_id\s*=\s*so\.store_id/)
+      expect(
+        trafficCust,
+        '① 分支缺 became_member_at OR 分支 —— 本期已转化的人会被重新抹出明细分母',
+      ).toMatch(
+        /c\.customer_type\s+IN\s*\(\s*'体验客'\s*,\s*'小美客'\s*\)\s*OR\s+c\.became_member_at::date\s+BETWEEN/,
+      )
+      // ② 本期全部新增会员，归店方式必须与 newmem 的 JOIN 逐字一致
+      expect(trafficCust, '② 分支（本期全部新增会员）缺失或未按 bound_store_id 归店').toMatch(
+        /UNION[\s\S]*?FROM\s+client_wechat_users\s+c\s+JOIN\s+skel\s+sk\s+ON\s+sk\.store_id\s*=\s*c\.bound_store_id/,
+      )
+      // ⚠ 下面三条必须在**切出 UNION 之后的 ② 分支**上断言，不能对整个 CTE 断言：
+      // `became_member_at::date BETWEEN` 在 ① 的 OR 右半边也有，对整块 toMatch 时
+      // 删掉 ② 的日期限定（分母纳入全部历史会员）照样全绿。
+      expect(trafficCust!.match(/\bUNION\b/g) ?? [], '明细分母不是恰好一个 UNION（切片前提已破）').toHaveLength(1)
+      const branch2 = trafficCust!.split(/\bUNION\b/)[1] ?? ''
+      expect(branch2, '明细分母的 UNION ② 分支切不出来').toBeTruthy()
+      expect(branch2, '② 未按 bound_store_id 归店').toMatch(/c\.bound_store_id\s+IS\s+NOT\s+NULL/)
+      expect(branch2, '② 缺 became_member_at IS NOT NULL 守卫').toMatch(/c\.became_member_at\s+IS\s+NOT\s+NULL/)
+      // ⚠ 连边界实参一起锁：只判 BETWEEN 存在的话，改成 BETWEEN DATE '1900-01-01' AND ${end}
+      // （重新纳入全部历史会员）或 BETWEEN ${start} AND ${start} 都照样绿
+      expect(branch2, '② 的本期限定缺失或边界实参被改坏 —— 分母会纳入错误区间的会员').toMatch(
+        /c\.became_member_at::date\s+BETWEEN\s+\$\{start\}\s+AND\s+\$\{end\}/,
+      )
+      // 分子 newmem 的归店方式必须同步存在，否则「分子 ⊆ 分母」的对齐前提就没了
+      expect(adminSql).toMatch(
+        /newmem\s+AS\s*\([\s\S]*?FROM\s+client_wechat_users\s+c\s+JOIN\s+skel\s+sk\s+ON\s+sk\.store_id\s*=\s*c\.bound_store_id/,
+      )
     })
   })
 

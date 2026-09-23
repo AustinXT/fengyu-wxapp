@@ -94,11 +94,18 @@ const fixedCtx = {
   },
   enabled: false, // 关同比环比 → 每个 KPI 仅 1 次 runner，DB 调用可预期
 }
+/**
+ * 同比/环比开关。默认 false（上面那条理由），但「分母禁用同比」这条不变量
+ * 只在 `enabled=true` 时才走到，固定 false 会让它零覆盖（#284 round-1 两个谱系都点名）。
+ * 用可变对象而不是改 fixedCtx，保证其余用例的 DB 调用次数仍然可预期。
+ */
+const ctxState = { enabled: false }
 vi.mock('@/lib/data-center/context', () => ({
-  prepareBoardContext: vi.fn(async () => fixedCtx),
+  prepareBoardContext: vi.fn(async () => ({ ...fixedCtx, enabled: ctxState.enabled })),
 }))
 
 import { getCustomerBoard } from '../customer'
+import { db } from '@/db'
 import type { BoardParams } from '@/lib/data-center/types'
 
 const PARAMS: BoardParams = {
@@ -108,6 +115,7 @@ const PARAMS: BoardParams = {
 }
 
 beforeEach(() => {
+  ctxState.enabled = false
   responder.scalarRow = { v: 0, total_count: 0, total_spend: 0 }
   responder.skeletonRows = []
   responder.regActiveRows = []
@@ -270,6 +278,128 @@ describe('getCustomerBoard 装配', () => {
     expect(m.metrics.newCustomerAvgTicket).toBeNull()
     expect(m.metrics.convRate).toBeNull()
     expect(m.metrics.consumePerVisit).toBeNull()
+  })
+
+  /**
+   * #284：「分子 > 0 而分母 = 0」是「分子 ⊄ 分母」的**唯一可观测症状**，而 `safeDiv`
+   * 会把它静默转成 null → UI 渲染 '--'，与「本期无人可成交」的正常空态**完全同形**，
+   * 永远不会有人报障。上一条用例喂的是全零行，覆盖不到这个态。
+   *
+   * 方案 1c 下该态**不应再从数据库产生**（分母 ② 分支与分子 `newmem` 用逐字相同的
+   * JOIN、scope 谓词与日期条件）。这里锁住的是「万一真出现了，装配层不会崩、也不会
+   * 算出 Infinity」，同时把「出现即分母漏人」这条判读写进用例名，留给下一个排障的人。
+   */
+  it('分子 > 0 而分母 = 0（分母漏人的症状态）：convRate → null，不产生 Infinity', async () => {
+    responder.scalarRow = { v: 0, total_count: 0, total_spend: 0 }
+    responder.skeletonRows = [
+      { market_id: 'm1', market_name: '市场A', store_id: 's1', store_name: '门店1' },
+    ]
+    responder.regActiveRows = [
+      { group_id: 'm1', group_name: '市场A', market_name: '市场A', registered: 0, retained: 0, visit_once: 0, visit_twice: 0, dormant: 0, react_dormant: 0, frozen: 0, react_frozen: 0, deep: 0, react_deep: 0 },
+      { group_id: 's1', group_name: '门店1', market_name: '市场A', registered: 0, retained: 0, visit_once: 0, visit_twice: 0, dormant: 0, react_dormant: 0, frozen: 0, react_frozen: 0, deep: 0, react_deep: 0 },
+    ]
+    // new_members=3 而 traffic_customers=0 —— 1c 下不可达，出现即分母漏人
+    responder.opsRows = [
+      { group_id: 'm1', bucket_d: 0, bucket_c: 0, bucket_b: 0, bucket_a: 0, bucket_v: 0, bucket_vic: 0, operated_total: 0, member_spend_total: 0, member_spend_count: 0, new_members: 3, new_spend: 0, traffic_customers: 0, traffic_visits: 0, member_visits: 0, project_count: 0, sm_total: 0 },
+      { group_id: 's1', bucket_d: 0, bucket_c: 0, bucket_b: 0, bucket_a: 0, bucket_v: 0, bucket_vic: 0, operated_total: 0, member_spend_total: 0, member_spend_count: 0, new_members: 3, new_spend: 0, traffic_customers: 0, traffic_visits: 0, member_visits: 0, project_count: 0, sm_total: 0 },
+    ]
+
+    const res = await getCustomerBoard(PARAMS)
+    const m = res.byMarket[0]
+    expect(m.metrics.newMembers).toBe(3)
+    expect(m.metrics.trafficCustomers).toBe(0)
+    expect(m.metrics.convRate).toBeNull()
+    expect(Number.isFinite(m.metrics.convRate as number)).toBe(false)
+  })
+
+  /**
+   * #284 的核心不变量：分子 ⊆ 分母 ⇒ 成交率 ≤ 100%。
+   * 上面的用例只验算术（2/5=0.4），验不了这条 —— 分母漏人时 convRate 会静静地跑出 1。
+   */
+  it('分母 ⊇ 分子时 convRate ≤ 1（成交率上限不变量）', async () => {
+    responder.skeletonRows = [
+      { market_id: 'm1', market_name: '市场A', store_id: 's1', store_name: '门店1' },
+    ]
+    responder.regActiveRows = [
+      { group_id: 'm1', group_name: '市场A', market_name: '市场A', registered: 0, retained: 0, visit_once: 0, visit_twice: 0, dormant: 0, react_dormant: 0, frozen: 0, react_frozen: 0, deep: 0, react_deep: 0 },
+      { group_id: 's1', group_name: '门店1', market_name: '市场A', registered: 0, retained: 0, visit_once: 0, visit_twice: 0, dormant: 0, react_dormant: 0, frozen: 0, react_frozen: 0, deep: 0, react_deep: 0 },
+    ]
+    // 全员转化的极端情形：分子 == 分母 → 恰好 1.0，仍须 ≤ 1
+    responder.opsRows = [
+      { group_id: 'm1', bucket_d: 0, bucket_c: 0, bucket_b: 0, bucket_a: 0, bucket_v: 0, bucket_vic: 0, operated_total: 0, member_spend_total: 0, member_spend_count: 0, new_members: 7, new_spend: 0, traffic_customers: 7, traffic_visits: 0, member_visits: 0, project_count: 0, sm_total: 0 },
+      { group_id: 's1', bucket_d: 0, bucket_c: 0, bucket_b: 0, bucket_a: 0, bucket_v: 0, bucket_vic: 0, operated_total: 0, member_spend_total: 0, member_spend_count: 0, new_members: 7, new_spend: 0, traffic_customers: 7, traffic_visits: 0, member_visits: 0, project_count: 0, sm_total: 0 },
+    ]
+
+    const res = await getCustomerBoard(PARAMS)
+    for (const row of [...res.byMarket, ...res.byStore]) {
+      const rate = row.metrics.convRate
+      expect(rate).not.toBeNull()
+      expect(rate as number).toBeLessThanOrEqual(1)
+    }
+  })
+
+  /**
+   * #284：成交率分母必须禁用同比/环比。
+   *
+   * 分母的两个分支数据深度差 50 个月（① 取自 service_orders，最早 2026-07-08；
+   * ② 取自 became_member_at，回溯 2022-08）。基期一旦落在割点前，① 恒空而 ② 仍出数百人，
+   * delta 就成了 100% 由 ② 构成的假数 —— 旧口径下这类基期恒 0、deltaPct 抑制成 '--'，
+   * 是诚实的「算不出」。
+   *
+   * ⚠ 本文件其余用例全程 `enabled=false`，这条不变量原本**零覆盖**：把
+   * `withComparison(queryTrialFootfall, …, false)` 的 false 改回 enabled、
+   * 或删掉 trafficCustomersCell 的显式 null，测试照样全绿（round-1 两个谱系独立点名）。
+   */
+  it('enabled=true 时成交率分母与成交率都不出同比/环比（其余 KPI 仍出）', async () => {
+    ctxState.enabled = true
+    responder.scalarRow = { v: 5, total_count: 3, total_spend: 30 }
+
+    const res = await getCustomerBoard(PARAMS)
+
+    // 分母与派生率：显式 null（前端渲染 '--'），不是字段缺失
+    for (const key of ['trafficCustomers', 'convRate']) {
+      expect(res.kpis[key], `${key} 应存在`).toBeDefined()
+      expect(res.kpis[key].mom, `${key}.mom 必须为 null（割点前基期会算出假数）`).toBeNull()
+      expect(res.kpis[key].yoy, `${key}.yoy 必须为 null（割点前基期会算出假数）`).toBeNull()
+    }
+    // 对照：允许比较的 KPI 仍然带出**数值**，证明 enabled=true 这条路径确实被走到了。
+    // ⚠ 用 toBeTypeOf 而不是 not.toBeNull()：后者对 undefined 也通过，证明不了「仍出数值」
+    expect(res.kpis.newMembers.mom, 'newMembers 的同比环比不该被一起禁掉').toBeTypeOf('number')
+  })
+
+  /**
+   * #284：分母是「根本不算」基期，不是「算了再置 null」（round-2 codex P2）。
+   *
+   * 上一条用例只检查最终对象里 mom/yoy 为 null。若把 `withComparison(..., false)` 的
+   * `false` 改回 `enabled`，`withComparison` 会照常跑 previous + lastYear 两次查询，
+   * 随后 `trafficCustomersCell` 再把 mom/yoy 覆盖成 null —— 结果对，但那条重型
+   * `COUNT(DISTINCT … UNION …)` 从 1 次放大到 3 次，而上一条用例照样绿。
+   *
+   * 这里直接数分母 SQL 的实际执行次数，锁住注释声称的「不算」。
+   */
+  it('enabled=true 时分母 SQL 只执行一次（不跑基期查询，避免重型 UNION 放大 3 倍）', async () => {
+    ctxState.enabled = true
+    responder.scalarRow = { v: 5, total_count: 3, total_spend: 30 }
+    // ⚠ mock.calls 跨用例累积（本文件的 beforeEach 只重置 responder，不清 mock），
+    // 不先清就会把前面所有用例的调用一起数进来。mockClear 只清 calls、保留 implementation。
+    vi.mocked(db.execute).mockClear()
+
+    await getCustomerBoard(PARAMS)
+
+    const executes = vi.mocked(db.execute).mock.calls
+    const denomCalls = executes.filter(([q]) => /COUNT\(DISTINCT\s+t\.uid\)/.test(sqlText(q)))
+    expect(denomCalls, '分母 SQL 一次都没跑？mock 路由或 SQL 特征串已变').not.toHaveLength(0)
+    expect(
+      denomCalls,
+      `分母 SQL 跑了 ${denomCalls.length} 次 —— enabled=true 下它应只算当期，不算 previous/lastYear`,
+    ).toHaveLength(1)
+
+    // ⚠ 这里**不加**「对照组 KPI 跑了 3 次」那种断言：能匹配到的正则
+    // （`FROM client_wechat_users c WHERE` + `COUNT(*)`）会同时命中 queryRegistration 与
+    // queryNewMemberCount 的多次调用，而 `> 1` 这个阈值在 enabled=false 时也满足 ——
+    // 它证不了「enabled=true 已生效」这件它声称要证的事（round-3 DeepSeek P3）。
+    // enabled 传播失效这条由上一个用例的 `newMembers.mom` toBeTypeOf('number') 兜住
+    // （enabled=false 时该字段是 undefined，直接红）。
   })
 
   it('市场消费经营直接使用市场内去重结果，不累加跨店顾客', async () => {

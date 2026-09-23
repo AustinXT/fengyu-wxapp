@@ -479,17 +479,48 @@ async function queryNewMemberSpend(scopeType, scopeId, period) {
   return Number(rows[0]?.v || 0)
 }
 
+/**
+ * 成交率分母 = 期初未达会员的到店活跃池 ∪ 本期全部新增会员
+ * （D-conv-denom=1c，#284 于 2026-09-22 拍板；推翻原 D-2=B）
+ *
+ * 为什么不能只用 `customer_type IN ('体验客','小美客')`：该字段是**只升不降的当前快照**
+ * （升级链 流量客 → 体验客 → 小美客 → 会员客），本期成功转化的人当期已是「会员客」，
+ * 被从分母整体剔除 —— **而他们正是分子**，成交率因此虚高、单店可出 800%、分母归零显示 '--'。
+ *
+ * 分支 ② 保证「分子 ⊆ 分母」：本期新增会员里有一部分当期没有任何已完成服务单，
+ * 不 UNION 进来的话他们进分子不进分母，单店仍可能 > 100%。
+ *
+ * 两分支 scope 列不同是有意的：① 按服务发生门店（`so.store_id`）、② 按顾客绑定门店
+ * （`c.bound_store_id`，与分子 queryNewMemberCount 同源）。⚠️ 参数占位符跨两段连号，
+ * 第二段起始下标必须按第一段实际 params 长度接续（all 档为 0，market/store 档为 1）。
+ *
+ * admin 侧同口径副本：fengyu-admin/src/actions/data-center/customer.ts::queryTrialFootfall
+ */
 async function queryTrialFootfall(scopeType, scopeId, period) {
-  const sc = buildSaleScope(scopeType, scopeId, 'so', 1)
+  const scVisit = buildSaleScope(scopeType, scopeId, 'so', 1)
+  const scMember = buildClientScope(scopeType, scopeId, 'c', 1 + scVisit.params.length)
   const rows = await pg.query(
-    `SELECT COUNT(DISTINCT so.client_user_id) AS v
-       FROM service_orders so
-       JOIN client_wechat_users c ON c.user_id = so.client_user_id
-      WHERE ${sc.sql}
-        AND so.status = '已完成'
-        AND so.service_date BETWEEN ${startDateExpr(period)} AND ${endDateExpr(period)}
-        AND c.customer_type IN ('体验客', '小美客')`,
-    sc.params,
+    `SELECT COUNT(DISTINCT t.uid) AS v
+       FROM (
+         SELECT so.client_user_id AS uid
+           FROM service_orders so
+           JOIN client_wechat_users c ON c.user_id = so.client_user_id
+          WHERE ${scVisit.sql}
+            AND so.status = '已完成'
+            AND so.client_user_id IS NOT NULL
+            AND so.service_date BETWEEN ${startDateExpr(period)} AND ${endDateExpr(period)}
+            AND (
+              c.customer_type IN ('体验客', '小美客')
+              OR c.became_member_at::date BETWEEN ${startDateExpr(period)} AND ${endDateExpr(period)}
+            )
+          UNION
+         SELECT c.user_id AS uid
+           FROM client_wechat_users c
+          WHERE ${scMember.sql}
+            AND c.became_member_at IS NOT NULL
+            AND c.became_member_at::date BETWEEN ${startDateExpr(period)} AND ${endDateExpr(period)}
+       ) t`,
+    [...scVisit.params, ...scMember.params],
   )
   return Number(rows[0]?.v || 0)
 }
