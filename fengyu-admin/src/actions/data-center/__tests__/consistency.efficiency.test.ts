@@ -201,6 +201,47 @@ function assertEverySpeRefClassified(segment: string, label: string): void {
   ).toBe(inAggregate + storeIdRefs + classified)
 }
 
+/**
+ * 约束 `WHERE` 子句的**形状**，而不只是里面的 `spe` 谓词。
+ *
+ * ⚠️ 前八层全部只盯 `spe.*`，对**门店侧**过滤完全失明 ——
+ * 闸门 2 round-6 codex 指出这个方向后实测确认：给 Part C 的
+ * `WHERE ${scopeFilterSql(session, scope, 's.store_id')}` 后面追加
+ * `AND s.closed_at IS NULL`，门店榜会少掉一批门店、合计不再等于 KPI，
+ * 而 56 条断言**全绿**。
+ *
+ * 规则：
+ *   - Part A/B（`spe` 单表）：WHERE 以 `${scopeFilterSql(..., 'spe.store_id')}` 起手，
+ *     其余每一项都必须是 `spe.` 谓词或 helper 调用
+ *   - Part C（`stores` 驱动 + LEFT JOIN spe）：WHERE **有且仅有**
+ *     `${scopeFilterSql(..., 's.store_id')}` 一项，业务过滤全在 JOIN ON 里
+ */
+function assertWhereShape(segment: string, kind: 'spe-table' | 'store-table', label: string): void {
+  const from = segment.indexOf('WHERE ')
+  expect(from, `${label} 找不到 WHERE`).toBeGreaterThan(-1)
+  const tail = segment.slice(from + 'WHERE '.length)
+  const stop = tail.search(/GROUP BY|ORDER BY|`\)/)
+  const where = (stop === -1 ? tail : tail.slice(0, stop)).trim()
+
+  if (kind === 'store-table') {
+    expect(where, `${label} 的 WHERE 只允许 scopeFilterSql 一项，业务过滤必须写在 JOIN ON 里`).toBe(
+      "${scopeFilterSql(session, scope, 's.store_id')}",
+    )
+    return
+  }
+
+  const terms = where.split(/\s+AND\s+/).map((t) => t.trim()).filter(Boolean)
+  expect(terms[0], `${label} 的 WHERE 必须以 scopeFilterSql 起手`).toBe(
+    "${scopeFilterSql(session, scope, 'spe.store_id')}",
+  )
+  for (const t of terms.slice(1)) {
+    expect(
+      /^spe\.\w+/.test(t) || t.startsWith('${performanceEventDateBetween('),
+      `${label} 的 WHERE 里混入了非 spe 过滤项：${t}`,
+    ).toBe(true)
+  }
+}
+
 /** 聚合表达式必须**逐字**是 `COALESCE(SUM(spe.amount::numeric), 0)`，不许挂 FILTER/DISTINCT/CASE */
 function assertPlainSumAggregate(segment: string, label: string): void {
   const sums = segment.match(/SUM\(\s*spe\.amount::numeric\s*\)[^,)]*/g) ?? []
@@ -286,6 +327,12 @@ describe('数据中心人效板块两端口径一致性守护', () => {
       expect(a.length, 'Part A 至少应有 4 个 spe 业务谓词').toBeGreaterThanOrEqual(4)
       expect(b, 'Part B 的 spe 谓词集必须与 Part A 相同').toEqual(a)
       expect(c, 'Part C 门店排名榜的 spe 谓词集必须与 KPI 相同，否则「KPI == 门店榜」不成立').toEqual(a)
+    })
+
+    it('⭐ 三处的 WHERE 形状受约束（门店侧过滤也不许偷加）', () => {
+      assertWhereShape(sliceOrFail(adminSrc, 'const qRevenueTotal', 'const qConsumeTotal'), 'spe-table', 'Part A')
+      assertWhereShape(sliceOrFail(adminSrc, 'const qRevenueByStore', 'const qConsumeByStore'), 'spe-table', 'Part B')
+      assertWhereShape(sliceOrFail(adminSrc, 'const qStoreRankRevenue', 'const qStoreRankConsume'), 'store-table', 'Part C')
     })
 
     it('⭐ 三处都不得有**无法归类**的 spe.* 引用（fail-closed，防包装表达式逃逸）', () => {
