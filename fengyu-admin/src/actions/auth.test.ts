@@ -73,6 +73,8 @@ vi.mock('@db/user', () => ({
     employeeId: 'employee_id',
     name: 'name',
     phone: 'phone',
+    // #318 的离职过滤用它；漏了这个键时 eq() 的左操作数是 undefined，断言会静默失效
+    isResigned: 'is_resigned',
   },
 }))
 
@@ -262,6 +264,27 @@ describe('login — 认证 + 锁定（PG 持久化）', () => {
     expect(result.message).not.toContain('离职')
   })
 
+  /**
+   * 上面那条用「查不到」模拟过滤生效，**锁不住过滤本身** —— mock 的 `where` 不解释条件，
+   * 把过滤删掉它照样返回空。真正的行为锁是这条：查条件里必须真的出现
+   * `eq(is_resigned, false)`。（`.where()` 收到的是 mock 过的 `and`/`eq` 结构，可直接比对。）
+   */
+  it('login 的员工查询把 is_resigned = false 真的传进 where', async () => {
+    const whereConds: unknown[] = []
+    ;(db.select as any).mockImplementation(() => {
+      const limit = vi.fn().mockResolvedValue([])
+      const where = vi.fn((cond: unknown) => {
+        whereConds.push(cond)
+        return { limit, then: (r: (v: unknown[]) => unknown) => r([]) }
+      })
+      return { from: vi.fn().mockReturnValue({ where, limit, innerJoin: vi.fn().mockReturnValue({ where }) }) }
+    })
+
+    await login('13900000009', enc('correct-password'))
+
+    expect(JSON.stringify(whereConds)).toContain('{"type":"eq","a":"is_resigned","b":false}')
+  })
+
   /** 源码守护：两处认证查询都必须带 `is_resigned` 过滤 —— 只加一处不够（JWT 有 24h 有效期） */
   it('login 与 getSessionFromCookie 都按 is_resigned 过滤', () => {
     const src = readFileSync(resolve(process.cwd(), 'src/actions/auth.ts'), 'utf8')
@@ -428,6 +451,30 @@ describe('getSessionFromCookie — JWT → AuthSession', () => {
     const result = await getSessionFromCookie()
 
     expect(result).toBeNull()
+  })
+
+  /**
+   * 离职后既有会话必须立即失效（#318）—— 只挡 `login` 不够，JWT 有效期 24h。
+   * 与 login 那侧同理：断言过滤**真的进了 where**，而不是靠 mock 返回空来假装。
+   */
+  it('员工查询把 is_resigned = false 真的传进 where（离职后旧 JWT 立即失效）', async () => {
+    mockCookieStore.get.mockReturnValue({ value: 'valid-token' })
+    ;(jwtVerify as any).mockResolvedValue({ payload: { employeeId: 'EMP-001' } })
+
+    const whereConds: unknown[] = []
+    ;(db.select as any).mockImplementation(() => {
+      const limit = vi.fn().mockResolvedValue([])
+      const where = vi.fn((cond: unknown) => {
+        whereConds.push(cond)
+        return { limit }
+      })
+      return { from: vi.fn().mockReturnValue({ where }) }
+    })
+
+    const result = await getSessionFromCookie()
+
+    expect(result).toBeNull()
+    expect(JSON.stringify(whereConds)).toContain('{"type":"eq","a":"is_resigned","b":false}')
   })
 
   it('JWT 验证失败 → null', async () => {
