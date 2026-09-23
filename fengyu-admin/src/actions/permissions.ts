@@ -413,6 +413,38 @@ export const assignRole = withAnyPermission(
         }
       }
 
+      /**
+       * ## 被授权人也要锁内重读 + 行锁（#318 第 8 轮 codex P1）
+       *
+       * 事务外读到的 `isResigned` / 归属只是早拒。反例：
+       *   T1 授权读到员工 E 在职 → T2 `updateEmployee` 取 ② 把 E 标离职并**删光角色**后提交
+       *   → T1 随后取到 ①② 并 INSERT → 离职员工重新挂上角色。
+       * 而「离职 ⇒ 角色清空」正是 #249 那轮事务化要保住的不变量，这条把它又打开了；
+       * 复职时那条残留绑定还会让权限自动恢复。
+       *
+       * `FOR UPDATE` 让 T2 的行 UPDATE 与本事务排队（锁序 ③，在 ①② 之后，合规）。
+       * 失败文案与事务外那两条**逐字相同** —— 不让竞态窗口变成另一个探测信道。
+       */
+      const [lockedEmployee] = await tx
+        .select({
+          storeId: staffWechatUsers.storeId,
+          orgNodeId: staffWechatUsers.orgNodeId,
+          isResigned: staffWechatUsers.isResigned,
+        })
+        .from(staffWechatUsers)
+        .where(eq(staffWechatUsers.employeeId, data.employeeId))
+        .for('update')
+        .limit(1)
+      if (
+        !lockedEmployee
+        || !isEmployeeRowVisible(session, lockedEmployee.storeId, lockedEmployee.orgNodeId)
+      ) {
+        return { failure: '员工不存在或不在您的权限范围内' }
+      }
+      if (lockedEmployee.isResigned) {
+        return { failure: '该员工已离职，无法分配角色' }
+      }
+
       await tx.insert(permissionRoles).values({
         employeeId: data.employeeId,
         role: data.role,

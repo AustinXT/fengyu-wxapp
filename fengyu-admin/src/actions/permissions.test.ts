@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 // Mock DB and schema modules before importing the action
@@ -229,7 +231,9 @@ describe('getRoles — scope filtering (AC-05)', () => {
 /** 为 select().from().where().limit() 链构建 mock，返回指定数据 */
 function mockSelectLimit(returnValue: any[]) {
   const limit = vi.fn().mockResolvedValue(returnValue)
-  const where = vi.fn().mockReturnValue({ limit })
+  // `.for('update')` 后再 `.limit(1)` —— assignRole 锁内重读员工行用它（#318 第 8 轮）
+  const forUpdate = vi.fn().mockReturnValue({ limit })
+  const where = vi.fn().mockReturnValue({ limit, for: forUpdate })
   const from = vi.fn().mockReturnValue({ where })
   return vi.fn().mockReturnValue({ from })
 }
@@ -263,17 +267,23 @@ const VISIBLE_EMPLOYEE = { storeId: null, orgNodeId: 'market-1', isResigned: fal
  * `lockedNode` 默认与 `node` 同值；给不同值就能造出「事务外合法、锁内已被改成别的类型」。
  */
 function mockAssignRoleSelects(
-  opts: { node?: any; employee?: any; existing?: any; lockedNode?: any } = {},
+  opts: {
+    node?: any; employee?: any; existing?: any
+    lockedNode?: any; lockedEmployee?: any
+  } = {},
 ) {
   const { node = { type: '市场' }, employee = VISIBLE_EMPLOYEE, existing = null } = opts
   const lockedNode = opts.lockedNode === undefined ? node : opts.lockedNode
+  // 锁内重读的员工默认与事务外同值；给不同值就能造「事务外在职、锁内已离职」
+  const lockedEmployee = opts.lockedEmployee === undefined ? employee : opts.lockedEmployee
   let call = 0
   ;(db.select as any).mockImplementation(() => {
     call++
     if (call === 1) return mockSelectOnce(node)()
     if (call === 2) return mockSelectOnce(employee)()
     if (call === 3) return mockSelectOnce(existing)()
-    return mockSelectOnce(lockedNode)()
+    if (call === 4) return mockSelectOnce(lockedNode)()
+    return mockSelectOnce(lockedEmployee)()
   })
 }
 
@@ -444,6 +454,58 @@ describe('assignRole — AC-09 & scope constraint', () => {
     expect(nodeId).toBe('store-fengyu')
     expect(roots).toEqual(['market-1'])
     expect(executor).toBe(t.tx())
+  })
+
+  /**
+   * ## 被授权人按**锁内**那份判（#318 第 8 轮 codex P1）
+   *
+   * 反例：T1 授权读到员工在职 → T2 `updateEmployee` 取 ② 把他标离职并**删光角色**后提交
+   * → T1 随后取到 ①② 并 INSERT → 离职员工重新挂上角色，而「离职 ⇒ 角色清空」正是 #249
+   * 那轮事务化要保住的不变量；复职时那条残留绑定还会让权限自动恢复。
+   */
+  it('事务外在职、锁内已离职 → 拒绝且不 INSERT', async () => {
+    ;(getSession as any).mockResolvedValue(adminSession)
+    ;(hasRole as any).mockReturnValue(true)
+    mockAssignRoleSelects({
+      node: { type: '市场' },
+      existing: null,
+      lockedEmployee: { ...VISIBLE_EMPLOYEE, isResigned: true },
+    })
+    const values = vi.fn().mockResolvedValue({})
+    ;(db.insert as any).mockReturnValue({ values })
+
+    const result = await assignRole({ employeeId: 'EMP-X', role: 'manager', scopeId: 'market-1' })
+
+    expect(result.success).toBe(false)
+    expect(result.message).toBe('该员工已离职，无法分配角色')
+    expect(values, '锁内判出已离职就不该 INSERT').not.toHaveBeenCalled()
+  })
+
+  it('锁内重读发现员工已被删除 → 与「不在权限范围内」同一句文案', async () => {
+    ;(getSession as any).mockResolvedValue(adminSession)
+    ;(hasRole as any).mockReturnValue(true)
+    mockAssignRoleSelects({ node: { type: '市场' }, existing: null, lockedEmployee: null })
+    const values = vi.fn().mockResolvedValue({})
+    ;(db.insert as any).mockReturnValue({ values })
+
+    const result = await assignRole({ employeeId: 'EMP-X', role: 'manager', scopeId: 'market-1' })
+
+    expect(result.success).toBe(false)
+    // 与事务外那条逐字相同 —— 竞态窗口不能变成「这个 employeeId 是否存在」的探测信道
+    expect(result.message).toBe('员工不存在或不在您的权限范围内')
+    expect(values).not.toHaveBeenCalled()
+  })
+
+  /** 员工行锁必须排在两把 advisory 之后（锁序 ①→②→③） */
+  it('员工行锁排在 ①② 之后', () => {
+    const src = readFileSync(resolve(process.cwd(), 'src/actions/permissions.ts'), 'utf8')
+    const body = src.slice(src.indexOf('export const assignRole'), src.indexOf('export const revokeRole'))
+    const orgAt = body.indexOf('lockOrgTree(')
+    const adminAt = body.indexOf('lockActiveAdminCount(')
+    const rowAt = body.search(/\.for\(\s*['"]update['"]\s*\)/)
+    expect(orgAt).toBeGreaterThan(-1)
+    expect(orgAt).toBeLessThan(adminAt)
+    expect(adminAt).toBeLessThan(rowAt)
   })
 
   it('admin → 不按树复判（不受 scope 限制）', async () => {
