@@ -10,6 +10,7 @@ import {
   findRolesBoundWithinSubtree,
   findSubtreeOwnershipConflicts,
   isNodeWithinScopeRoots,
+  findSiblingStoreIds,
 } from '@/lib/org-ancestry'
 
 const CONN = process.env.E2E_DATABASE_URL
@@ -374,6 +375,22 @@ async function main() {
     new Promise((_, rej) => setTimeout(() => rej(new Error('环检测超时 —— path 防环没生效')), 8000)),
   ])
   check('自成环的节点上溯 → 正常返回而不是打满连接', loopScope, false)
+
+  // ── findSiblingStoreIds（#318 第 8 轮）──────────────────────────────────
+  /**
+   * 这条 SQL 原先内联在 `getMarketStoreIds` 里，而那个 action 的单测把 `db.execute` 换成替身
+   * —— SQL 从不被执行。第 8 轮一个评审谱系据此把它误报成「列写错了、100% 必挂」，
+   * 而当时**没有任何测试能反驳**。现在它真的被跑一遍。
+   * 夹具里 MKT 下挂着 STORE_A / STORE_B 两个门店节点，分别映射 SA / SB。
+   */
+  check('同市场兄弟门店（含自身）',
+    (await findSiblingStoreIds(id('SA'))).sort(), [id('SA'), id('SB')].sort())
+
+  check('从另一个兄弟出发得到同一个集合',
+    (await findSiblingStoreIds(id('SB'))).sort(), [id('SA'), id('SB')].sort())
+
+  check('门店不存在 → 空集合（由调用方兜底成 [自身]）',
+    await findSiblingStoreIds(`${NS}_NOT_A_STORE`), [])
 
   // 不清理：一次性库下一跑就整库重建（见顶部对环夹具与 trigger 的说明）
   await sql.end()

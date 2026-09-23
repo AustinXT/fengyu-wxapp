@@ -234,3 +234,35 @@ export async function isNodeWithinScopeRoots(
   `)
   return (rows as unknown as unknown[]).length > 0
 }
+
+/**
+ * 同市场的兄弟门店 id（含自身）—— 「门店 → 它的市场节点 → 该市场下所有门店节点 → 门店」。
+ *
+ * ## 为什么从 action 里抽出来
+ *
+ * GLM 谱系第 8 轮把它报成 P1「写错了列 `s1.parent_id`，`stores` 没这一列 → 42703 必挂」。
+ * **那是误读**（`sn1` 看成了 `s1`）：真实写法一直是 `sn2.parent_id = sn1.parent_id`，
+ * 拿生产库跑一遍返回 5 个兄弟门店，`git log -S 's1.parent_id'` 也证明那个写法从未存在过。
+ *
+ * 但它能被合理地误读成必挂、而**没有任何测试能反驳**，本身就说明问题：
+ * 这条 SQL 原先内联在 `getMarketStoreIds` 里，而那个 action 的单测把 `db.execute` 换成了替身
+ * —— SQL 从不被执行。换句话说「它到底能不能跑」在当时确实无人守护。
+ *
+ * 所以抽出来，让真库冒烟（`tests/e2e-actions/smoke-org-ancestry.mjs`）真的执行它。
+ * 这是本 issue 反复用的同一手法：**让目标可测，而不是继续加断言**。
+ */
+export async function findSiblingStoreIds(
+  storeId: string,
+  executor: SqlExecutor = db,
+): Promise<string[]> {
+  const rows = await executor.execute(sql`
+    SELECT s2.store_id
+      FROM stores s1
+      JOIN org_nodes sn1 ON sn1.id = s1.org_node_id
+      JOIN org_nodes sn2 ON sn2.parent_id = sn1.parent_id AND sn2.type = '门店'
+      JOIN stores s2 ON s2.org_node_id = sn2.id
+     WHERE s1.store_id = ${storeId}
+     ORDER BY s2.store_id
+  `)
+  return (rows as unknown as Array<{ store_id: string }>).map((r) => r.store_id)
+}

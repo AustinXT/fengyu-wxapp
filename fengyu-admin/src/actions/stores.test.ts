@@ -66,6 +66,8 @@ vi.mock('@/lib/node-scope', () => ({
 // 「节点是否还在管辖范围内」按当前树判（#318 第 6 轮）；SQL 语义由真库冒烟负责
 vi.mock('@/lib/org-ancestry', () => ({
   isNodeWithinScopeRoots: vi.fn(() => Promise.resolve(true)),
+  // 那条 SQL 抽到 lib 里了，语义由真库冒烟负责（#318 第 8 轮）
+  findSiblingStoreIds: vi.fn(() => Promise.resolve([])),
 }))
 
 vi.mock('@/lib/operation-log', () => ({
@@ -81,7 +83,7 @@ vi.mock('next/cache', () => ({
 import { getStores, getAvailableStoreNodes, createStore, updateStore, getMarketStoreIds } from './stores'
 import { db } from '@/db'
 import { isAdminScope, isInScope } from '@/lib/permissions'
-import { isNodeWithinScopeRoots } from '@/lib/org-ancestry'
+import { isNodeWithinScopeRoots, findSiblingStoreIds } from '@/lib/org-ancestry'
 import { getSession } from '@/lib/auth'
 import { scopeCondition } from '@/lib/permissions'
 import { isNodeInScope } from '@/lib/node-scope'
@@ -95,6 +97,7 @@ beforeEach(() => {
   ;(isAdminScope as any).mockReturnValue(true)
   ;(isNodeWithinScopeRoots as any).mockResolvedValue(true)
   ;(isInScope as any).mockReturnValue(true)
+  ;(findSiblingStoreIds as any).mockResolvedValue([])
 })
 
 const mockSession = {
@@ -373,23 +376,20 @@ describe('getMarketStoreIds — scope 隔离', () => {
     ;(getSession as any).mockResolvedValue(mockSession)
   })
 
-  it('非 admin：入参门店不在 scope 内 → 直接返回空，不打库', async () => {
+  it('非 admin：入参门店不在 scope 内 → 直接返回空，连查询都不发', async () => {
     ;(isAdminScope as any).mockReturnValue(false)
     ;(isInScope as any).mockReturnValue(false)
 
     const result = await getMarketStoreIds('store-other-market')
 
     expect(result).toEqual([])
-    expect(db.execute).not.toHaveBeenCalled()
+    expect(findSiblingStoreIds).not.toHaveBeenCalled()
   })
 
   it('非 admin：结果里超出 scope 的兄弟门店被过滤掉', async () => {
     ;(isAdminScope as any).mockReturnValue(false)
     ;(isInScope as any).mockImplementation((_s: any, id: string) => id !== 'store-outside')
-    ;(db.execute as any).mockResolvedValue([
-      { store_id: 'store-mine' },
-      { store_id: 'store-outside' },
-    ])
+    ;(findSiblingStoreIds as any).mockResolvedValue(['store-mine', 'store-outside'])
 
     const result = await getMarketStoreIds('store-mine')
 
@@ -399,11 +399,20 @@ describe('getMarketStoreIds — scope 隔离', () => {
   it('admin：不过滤', async () => {
     ;(isAdminScope as any).mockReturnValue(true)
     ;(isInScope as any).mockReturnValue(true)
-    ;(db.execute as any).mockResolvedValue([{ store_id: 'a' }, { store_id: 'b' }])
+    ;(findSiblingStoreIds as any).mockResolvedValue(['a', 'b'])
 
     const result = await getMarketStoreIds('a')
 
     expect(result).toEqual(['a', 'b'])
+  })
+
+  /** 兄弟集合为空（门店没映射/查不到）→ 兜底成 [自身]，不能返回空让调用方误判 */
+  it('查不到兄弟 → 兜底返回自身', async () => {
+    ;(isAdminScope as any).mockReturnValue(true)
+    ;(isInScope as any).mockReturnValue(true)
+    ;(findSiblingStoreIds as any).mockResolvedValue([])
+
+    expect(await getMarketStoreIds('solo')).toEqual(['solo'])
   })
 })
 

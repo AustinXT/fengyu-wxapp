@@ -30,8 +30,10 @@ import { db } from '@/db'
  *
  * `db/scripts/sync-workfine.js` 的 UPSERT 直接写 `is_resigned` 而不取 ② —— 那个脚本自
  * 2026-04-16 起业务方决定上线后不再运行（仅历史迁移 / 上线前刷新），且要跑起来得连
- * WorkFine 的 SQL Server。#318 给它加了**生产库硬拒绝**（`ALLOW_PROD_WORKFINE_SYNC=1`
- * 才放行），并在 cron 侧加了 `activeAdminCount` 巡检（0 人 → critical）做事后兜底。
+ * WorkFine 的 SQL Server。#318 给它加了**对生产库的无条件硬拒绝**（没有环境变量阀门；
+ * 第一版留过 `ALLOW_PROD_WORKFINE_SYNC=1`，被指出「一个环境变量不构成决策成本」后去掉了 ——
+ * 真要跑只能改那个函数并走 code review），并在 cron 侧加了 `activeAdminCount` 巡检
+ * （0 人 → critical）做事后兜底。
  *
  * 归属自洽用的是**组织树那把锁**而不是新开一把：改挂父节点与判自洽是同一件事的两端 ——
  * 一边改树形态、一边依据树形态做判断，必须互斥。复用 `org_nodes:reparent` 也让

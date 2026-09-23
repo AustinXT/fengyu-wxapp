@@ -13,7 +13,7 @@ import { withPermission } from '@/lib/with-permission'
 import { logOperation, logUpdate } from '@/lib/operation-log'
 // stores.org_node_id 是「门店↔组织节点」映射的写入方，与 org 侧改类型的守卫共用 ①（#318）
 import { lockOrgTree } from '@/lib/invariant-locks'
-import { isNodeWithinScopeRoots } from '@/lib/org-ancestry'
+import { isNodeWithinScopeRoots, findSiblingStoreIds } from '@/lib/org-ancestry'
 import { pgErrorCode, pgErrorConstraint } from '@/lib/pg-error'
 import { shanghaiToday } from '@/lib/datetime'
 import { lakalaMerchants } from '@db/lakala'
@@ -283,13 +283,28 @@ export const createStore = withPermission(
   } catch (err: unknown) {
     const code = pgErrorCode(err)
     if (code === '23505') {
-      // org_node_id 唯一 → 该节点已挂过门店；store_name 唯一 → 同名门店已存在
-      if (pgErrorConstraint(err) === 'stores_org_node_id_unique') {
+      /**
+       * `stores` 上有三条能撞 23505 的约束，必须**按约束名三分支**（GLM 第 8 轮 P3）：
+       * 主键 `store_id`（客户端可传重复 storeId）、`org_node_id` 唯一、`store_name` 唯一。
+       * 原先只判 org_node_id、其余一律报「门店名称已被占用」—— 传重复 storeId 的人
+       * 会被指向完全错误的方向。
+       */
+      const constraint = pgErrorConstraint(err) ?? ''
+      if (constraint === 'stores_org_node_id_unique') {
         return { success: false, message: '该门店节点已创建过门店信息' }
+      }
+      if (constraint.includes('_pkey')) {
+        return { success: false, message: '门店编号已存在，请刷新后重试' }
       }
       return { success: false, message: '门店名称已被占用' }
     }
-    if (code === '23503') return { success: false, message: '门店节点不存在，请刷新后重试' }
+    if (code === '23503') {
+      // 收款商户的存在性是事务外查的，并发删除会在这里撞 FK（GLM 第 8 轮 P3）
+      if ((pgErrorConstraint(err) ?? '').includes('lakala_merchant')) {
+        return { success: false, message: '所选收款商户不存在，请刷新后重试' }
+      }
+      return { success: false, message: '门店节点不存在，请刷新后重试' }
+    }
     throw err
   }
 
@@ -401,6 +416,16 @@ export const updateStore = withPermission(
   } catch (err: unknown) {
     // 同步节点名可能撞 uq_org_nodes_parent_name（同市场同名）
     if (pgErrorCode(err) === '23505') return { success: false, message: '同市场下已有同名门店' }
+    /**
+     * 收款商户的存在性是事务外查的，并发删除会在这里撞 FK 而原先无 catch → 裸 500
+     * （GLM 第 8 轮 P3）。按约束名收窄，别把别的 FK 也吞成「商户不存在」。
+     */
+    if (
+      pgErrorCode(err) === '23503'
+      && (pgErrorConstraint(err) ?? '').includes('lakala_merchant')
+    ) {
+      return { success: false, message: '所选收款商户不存在，请刷新后重试' }
+    }
     throw err
   }
 
@@ -411,7 +436,8 @@ export const updateStore = withPermission(
     }
   }
 
-  await logUpdate(session, 'store.update', 'store', storeId, before as Record<string, unknown>, data)
+  // 审计的 after 用净化后的白名单对象，别把客户端多塞的键记进日志
+  await logUpdate(session, 'store.update', 'store', storeId, before as Record<string, unknown>, storeFields)
   revalidatePath('/stores')
   return { success: true, message: '门店信息已更新' }
   },
@@ -430,17 +456,13 @@ export const getMarketStoreIds = withPermission(
   'store:list',
   async (session, storeId: string): Promise<string[]> => {
     if (!isInScope(session, storeId)) return []
-    const rows = await db.execute(sql`
-      SELECT s2.store_id
-      FROM stores s1
-      JOIN org_nodes sn1 ON s1.org_node_id = sn1.id
-      JOIN org_nodes sn2 ON sn2.parent_id = sn1.parent_id AND sn2.type = '门店'
-      JOIN stores s2 ON s2.org_node_id = sn2.id
-      WHERE s1.store_id = ${storeId}
-    `)
-    const ids = (rows as any[])
-      .map((r: any) => r.store_id as string)
-      .filter((id) => isInScope(session, id))
+    /**
+     * SQL 抽到 `lib/org-ancestry.ts` 的 `findSiblingStoreIds` —— 它内联在这里时，
+     * 本 action 的单测把 `db.execute` 换成替身，**SQL 从不被执行**：
+     * 第 8 轮一个评审谱系据此把它误报成「列写错了、100% 必挂」而无人能反驳（#318）。
+     * 抽出去之后由真库冒烟真的跑一遍。
+     */
+    const ids = (await findSiblingStoreIds(storeId)).filter((id) => isInScope(session, id))
     return ids.length > 0 ? ids : [storeId]
   },
 )
