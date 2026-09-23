@@ -616,6 +616,28 @@ describe('order-detail 待支付倒计时 (#215)', () => {
     expect((Toast as any).success).not.toHaveBeenCalled();
   });
 
+  test('取消失败的响应晚于 onUnload → 也不往下一个页面冒提示', async () => {
+    // Vant 的 Toast 取 getCurrentPages() 栈顶渲染，页面已卸载时这条「取消失败」
+    // 会冒到下一个页面上。成功路径有守卫、失败路径没有就是不对称（评审 round-22）。
+    const page = createPageInstance({
+      order: { sale_order_id: 'FY-215', status: '待支付' },
+    });
+    (globalThis as any).wx.showModal = vi.fn(async () => ({ confirm: true }));
+
+    let rejectCancel: (e: any) => void = () => {};
+    const cancelPending = new Promise((_, reject) => { rejectCancel = reject; });
+    callClientApiMock.mockImplementation((action: string) => (
+      action === 'order.cancel' ? cancelPending : Promise.resolve({})
+    ));
+
+    const cancelling = page.onCancel();
+    page.onUnload();
+    rejectCancel(new Error('网络异常'));
+    await cancelling;
+
+    expect((Toast as any).fail).not.toHaveBeenCalled();
+  });
+
   test('同一次失败被多个调用方同时观察到 → 只排一发 5 秒重试（退避不被重复计数）', async () => {
     // single-flight 把并发刷新合并成同一个 Promise，它失败时每个调用方都会走到
     // `_scheduleRefreshRetry`。调度器若清掉重排，一次真实失败就被记成 N 次，

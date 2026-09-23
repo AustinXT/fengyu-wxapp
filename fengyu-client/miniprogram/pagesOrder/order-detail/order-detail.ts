@@ -963,6 +963,9 @@ Page({
       });
       this._refreshOrRetry(sale_order_id);
     } catch (err: any) {
+      // 与成功路径对称：请求在途时页面已卸载的话，这条提示会冒到**下一个页面**上
+      // （Vant 的 Toast 取 getCurrentPages() 栈顶渲染）——评审 round-22 P3。
+      if (this._destroyed) return;
       if (err.message !== 'USER_CANCELLED') {
         Toast.fail(err.message || '取消失败');
       }
