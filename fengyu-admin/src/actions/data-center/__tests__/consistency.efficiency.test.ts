@@ -383,6 +383,19 @@ describe('数据中心人效板块两端口径一致性守护', () => {
       assertWhereShape(sliceOrFail(adminSrc, 'const qStoreRankRevenue', 'const qStoreRankConsume'), 'store-table', 'Part C')
     })
 
+    it('⭐ Part C 的时间区间端点精确（防 BETWEEN cur.start AND cur.start 这类笔误）', () => {
+      // 闸门 2 round-12 codex：谓词集比较会把插值统一归一成 `${ts}`（因为 Part A/B 用
+      // cur.start/cur.end、sales.ts 用 range.start/range.end，不归一就没法比），
+      // 副作用是 `BETWEEN ${cur.start} AND ${cur.start}` 这种复制笔误与正确写法归一后相同，
+      // 十一层全绿。这是正常开发真会出的错，且只需一条精确断言即可挡住。
+      const c = sliceOrFail(adminSrc, 'const qStoreRankRevenue', 'const qStoreRankConsume')
+      expect(c, 'Part C 的 performance_date 区间端点写错了').toContain(
+        'spe.performance_date BETWEEN ${cur.start} AND ${cur.end}',
+      )
+      // Part A/B 走 helper，端点由 helper 调用的字面量形态保证
+      //（`performanceEventDateBetween('spe', cur.start, cur.end)`，见 expectStoreRankCashflow）
+    })
+
     it('⭐ 三处的表骨架被钉死（防新增 JOIN 引入聚合扇出）', () => {
       // Part A/B 是 spe 单表，一个 JOIN 都不该有
       assertTableSkeleton(
