@@ -481,12 +481,45 @@ describe('客量板块两端口径一致性守护', () => {
     })
   })
 
-  describe('成交率分母 = 体验客 + 小美客（D-conv-denom=B）', () => {
-    it('admin', () => {
-      expect(adminSrc).toMatch(/customer_type\s+IN\s*\(\s*'体验客'\s*,\s*'小美客'\s*\)/)
+  /**
+   * #284（2026-09-22 拍板 D-conv-denom=1c，推翻原 D-2=B）：
+   * 分母 = ① 期初未达会员的到店活跃池 ∪ ② 本期全部新增会员。
+   *
+   * 旧断言只查「文件里存在 `customer_type IN ('体验客','小美客')`」—— 回退到旧口径后
+   * 该字面量依然留在 ① 分支里，断言恒绿，是个**空转守护**。这里改为逐条锁两个分支的结构。
+   *
+   * ⚠ KPI 侧的 `queryTrialFootfall` 不含 `sale_order_performance_events`，
+   * 不在 `adminSql`/`staffSql` 的采集范围内（见 `sqlTemplatesFromSource` 的过滤条件），
+   * 只能对源码原文断言；明细侧的同口径守护见「市场明细人数在市场内去重」，那条走 `adminSql`。
+   */
+  describe('成交率分母 = 期初未达会员活跃池 ∪ 本期全部新增会员（D-conv-denom=1c，#284）', () => {
+    /** 两端 KPI 分母查询共享的结构不变量 */
+    const DENOM_INVARIANTS: Array<[string, RegExp]> = [
+      ['外层对 UNION 结果去重', /COUNT\(DISTINCT\s+t\.uid\)/],
+      ['① 到店活跃池取已完成服务单', /FROM\s+service_orders\s+so[\s\S]*?so\.status\s*=\s*'已完成'/],
+      [
+        '① 期初未达会员 = 当前仍未达会员 OR 本期内才转化（缺 OR 即回到只升不降的快照口径）',
+        /c\.customer_type\s+IN\s*\(\s*'体验客'\s*,\s*'小美客'\s*\)\s*OR\s+c\.became_member_at::date\s+BETWEEN/,
+      ],
+      [
+        '② 本期全部新增会员 UNION 进分母（缺它则分子 ⊄ 分母，单店成交率仍可能 > 100%）',
+        /UNION[\s\S]*?SELECT\s+c\.user_id\s+AS\s+uid[\s\S]*?FROM\s+client_wechat_users\s+c/,
+      ],
+    ]
+
+    it.each(DENOM_INVARIANTS)('admin：%s', (_label, re) => {
+      expect(adminSrc).toMatch(re)
     })
-    it('staff', () => {
-      expect(staffSrc).toMatch(/customer_type\s+IN\s*\(\s*'体验客'\s*,\s*'小美客'\s*\)/)
+
+    it.each(DENOM_INVARIANTS)('staff：%s', (_label, re) => {
+      expect(staffSrc).toMatch(re)
+    })
+
+    it('两端 ② 分支都按 bound_store_id 归店（与各自的分子 newMemberCount 同源）', () => {
+      // admin 用 scopeFilterSql(..., 'c.bound_store_id')，staff 用 buildClientScope(..., 'c', n)
+      // ⚠ 锚到 scMember 这个绑定名，否则分子 queryNewMemberCount 里的同一行调用会让断言假绿
+      expect(adminSrc).toMatch(/scMember\s*=\s*scopeFilterSql\(session,\s*scope,\s*'c\.bound_store_id'\)/)
+      expect(staffSrc).toMatch(/buildClientScope\(scopeType,\s*scopeId,\s*'c',\s*1\s*\+\s*scVisit\.params\.length\)/)
     })
   })
 
@@ -951,8 +984,42 @@ describe('客量板块两端口径一致性守护', () => {
     })
 
     it('流量客人数按分组 DISTINCT 顾客，不由门店人数求和', () => {
-      expect(adminCode).toMatch(/traffic_cust\s+AS\s*\([\s\S]*?COUNT\(DISTINCT\s+so\.client_user_id\)\s+AS\s+traffic_customers[\s\S]*?GROUP BY \$\{groupId\}/i)
+      // #284 起分母是 UNION 子查询，去重锚点从 so.client_user_id 移到内层统一别名 uid
+      expect(adminSql).toMatch(/traffic_cust\s+AS\s*\([\s\S]*?COUNT\(DISTINCT\s+uid\)\s+AS\s+traffic_customers[\s\S]*?GROUP BY\s+group_id/i)
       expect(adminCode).not.toMatch(/SUM\(traffic_cust\.traffic_customers\)/i)
+    })
+
+    /**
+     * #284：明细行的成交率分母必须与 KPI 同为方案 1c（期初未达会员活跃池 ∪ 本期全部新增会员），
+     * 且 ② 分支的归店方式与分子 `newmem` 逐字一致 —— 组内「分子 ⊆ 分母」全靠这个对齐，
+     * 破了它明细行就会重新出 > 100%（分母漏人）或 '--'（分母归零）。
+     *
+     * ⚠ 用 `adminSql`（AST 提取 + 剥净 SQL 注释）而非源码原文：否则把 ② 分支删掉、
+     * 再用 `-- UNION SELECT c.user_id AS uid FROM client_wechat_users c JOIN skel ...`
+     * 注释把字面量补回去，断言照样绿（本文件 round-5 已实测过这条假绿路径）。
+     */
+    it('明细分母 = 活跃池 ∪ 本期全部新增会员，② 分支与分子 newmem 同源（D-conv-denom=1c）', () => {
+      // 边界取到下一个 CTE，避免非贪婪在 COUNT(...) 的右括号上提前收口
+      const trafficCust = /traffic_cust\s+AS\s*\(([\s\S]*?)visits_agg\s+AS\s*\(/.exec(adminSql)?.[1]
+      expect(trafficCust, 'traffic_cust CTE 未能定位（被删除/改名，或 visits_agg 不再紧随其后）').toBeTruthy()
+      // ① 到店活跃池：期初未达会员 = 当前仍未达会员 OR 本期内才转化
+      expect(trafficCust).toMatch(/JOIN\s+skel\s+sk\s+ON\s+sk\.store_id\s*=\s*so\.store_id/)
+      expect(
+        trafficCust,
+        '① 分支缺 became_member_at OR 分支 —— 本期已转化的人会被重新抹出明细分母',
+      ).toMatch(
+        /c\.customer_type\s+IN\s*\(\s*'体验客'\s*,\s*'小美客'\s*\)\s*OR\s+c\.became_member_at::date\s+BETWEEN/,
+      )
+      // ② 本期全部新增会员，归店方式必须与 newmem 的 JOIN 逐字一致
+      expect(trafficCust, '② 分支（本期全部新增会员）缺失或未按 bound_store_id 归店').toMatch(
+        /UNION[\s\S]*?FROM\s+client_wechat_users\s+c\s+JOIN\s+skel\s+sk\s+ON\s+sk\.store_id\s*=\s*c\.bound_store_id/,
+      )
+      expect(trafficCust).toMatch(/c\.bound_store_id\s+IS\s+NOT\s+NULL/)
+      expect(trafficCust).toMatch(/c\.became_member_at\s+IS\s+NOT\s+NULL/)
+      // 分子 newmem 的归店方式必须同步存在，否则「分子 ⊆ 分母」的对齐前提就没了
+      expect(adminSql).toMatch(
+        /newmem\s+AS\s*\([\s\S]*?FROM\s+client_wechat_users\s+c\s+JOIN\s+skel\s+sk\s+ON\s+sk\.store_id\s*=\s*c\.bound_store_id/,
+      )
     })
   })
 
