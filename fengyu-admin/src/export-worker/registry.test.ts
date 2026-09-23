@@ -257,8 +257,10 @@ describe('数据中心客量门店导出列', () => {
 
     expect(content.columns.map((column) => column.header)).toEqual([
       '门店', '所属市场', '会员注册', '保有会员', '回店1次', '1次达成率(%)',
-      '回店2次', '2次达成率(%)', '沉睡', '激活沉睡', '冰冻', '激活冰冻',
-      '休眠', '激活休眠',
+      // #294：三档状态人数是 customer_status 截面快照，与紧邻的「激活 X」区间统计不同时态，
+      // 表头带 (截面) 角标；改动此处必须同步 columns.ts 的 customerRegistrationMetricColumns
+      '回店2次', '2次达成率(%)', '沉睡(截面)', '激活沉睡', '冰冻(截面)', '激活冰冻',
+      '休眠(截面)', '激活休眠',
     ])
     expect(content.columns.find((column) => column.header === '会员注册')?.value(board.byStore[0])).toBe(12)
   })

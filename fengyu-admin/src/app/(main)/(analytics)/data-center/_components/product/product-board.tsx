@@ -13,9 +13,12 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 import type { ProductBoardParams, ProductBoardResult } from "@/lib/data-center/types"
 
 // ── KPI 卡片矩阵（key 对应后端 ProductBoardResult.kpis）────────────────
+// #294：SQL（product.ts queryCardHolders）只看 si.paid_sessions > 0，**既不看 remaining
+// 也不看 product_type** —— 原 hint 的「未用完」「疗程卡」两个词都与实现不符。
+// 口径权威表述见 metrics.md:728「持卡 = 已解锁次数大于 0（paid_sessions > 0），不按 product_type 过滤」。
 const KPI_CARD: KpiGridItem[] = [
-  { key: "cardHolders", label: "持卡人数", hint: "以当前时刻未用完疗程卡为准，不随时间区间变化" },
-  { key: "cardHolderRate", label: "持卡占比", hint: "持卡人数 ÷ 会员数（以当前时刻未用完疗程卡为准）" },
+  { key: "cardHolders", label: "持卡人数", hint: "已解锁次数 > 0 即计入，不扣已核销、不限商品类型；截面快照" },
+  { key: "cardHolderRate", label: "持卡占比", hint: "持卡人数 ÷ 会员数，两者均为截面快照" },
 ]
 const KPI_CYCLE: KpiGridItem[] = [
   { key: "trialCount", label: "体验人数", hint: "区间内有购买但全历史未达标" },
@@ -119,7 +122,7 @@ export function ProductBoard() {
       <section className="flex flex-col gap-3">
         <h2 className="text-sm font-semibold text-[var(--foreground)]">持卡情况</h2>
         <div className="text-xs text-[var(--muted-foreground)]">
-          持卡人数 / 占比为截面快照（以当前时刻未用完疗程卡为准），不随时间区间变化。
+          持卡人数 / 占比为截面快照（持卡 = 已解锁次数 &gt; 0，不扣已核销、不限商品类型），不随时间区间变化。
         </div>
         <KpiGrid items={KPI_CARD} kpis={kpis} columns={2} />
       </section>
