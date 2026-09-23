@@ -516,6 +516,61 @@ describe('品项板块两端口径一致性守护', () => {
     })
 
     /**
+     * ★★ **函数壳字面快照** —— 整组守护的最后一道，也是最硬的一道。
+     *
+     * 前面每一条守护都在回答「函数体内某处写法对不对」，于是评审一轮换一个姿势，
+     * 让**守护检查的那段**与**数据库真正执行的那段**解耦。八轮下来的攻击谱系：
+     *
+     *   r6  注释里藏诱饵 `db.execute` + 独占行 `}`      → 切片提前收尾
+     *   r7  `if (false) { … }` 的顶格 `}`                → 切片提前收尾
+     *   r8  正则字面量 `/}/`（扫描器把 `}` 当花括号）     → 切片提前收尾
+     *   r9  **不截断**：安全 SQL 放进一个从不调用的箭头函数（于是 `return m\n}` 结尾正常、
+     *       正则先匹配到它），真正的调用改成 `db['execute'](…)` 计算属性 ——
+     *       字面量 `db.execute(` 全文仍是 8，**上面两条与载体无关的守护同时失效**
+     *
+     * r9 说明「逐条补词法分支」这条路走不到头。换成钉死**整个函数壳**：
+     * 取 `async function queryCycleByStore(` 到相邻唯一声明 `function buildMetrics(` 之间的全文，
+     * 把 SQL 模板整段替换成占位符（模板本身由上面的 CTE 快照逐块守护），剥注释、压平空白，
+     * 然后 `toBe` 全等。
+     *
+     * 于是**函数里多一行、少一行、换一种调用写法、插一个箭头函数，全部会红**，
+     * 不再依赖「扫描器是否认得某种词法」。
+     *
+     * ⚠️ 这是字面快照：改动这个函数（哪怕只是重命名局部变量）都会红。
+     * 看到红时请先确认**归店语义没变**，再把新快照同步进来 ——
+     * 别反过来把断言改宽，那正是 `23405ddf` 让 #285 的缺陷活两个月的原因。
+     */
+    it('queryCycleByStore 的函数壳未变（除 SQL 模板外全等）', () => {
+      expect(
+        (adminSrc.match(/function buildMetrics\(/g) ?? []).length,
+        '右边界锚点 buildMetrics 不唯一 —— 函数壳切片口径需同步更新',
+      ).toBe(1)
+      const from = adminSrc.indexOf('async function queryCycleByStore(')
+      const to = adminSrc.indexOf('function buildMetrics(')
+      expect(from >= 0 && to > from, '函数壳切片锚点失效').toBe(true)
+      // 先挖掉 SQL 模板再剥注释：模板内已禁块注释，两层剥离互不干扰
+      const shell = normalize(
+        stripComments(adminSrc.slice(from, to).replace(/sql`[\s\S]*?`/, 'sql`<TEMPLATE>`')),
+      )
+      expect(
+        shell,
+        'queryCycleByStore 的函数壳变了 —— 先确认归店语义没变（特别是 db.execute 的调用写法、' +
+          '有没有多出未被调用的函数、结果装配有没有改），再同步本快照',
+      ).toBe(
+          "async function queryCycleByStore( session: AuthSession, scope: DataCenterScope, range: R" +
+          "esolvedRange, threshold: number, groupCol: SQL, filter: SQL, ): Promise< Map< string, { " +
+          "trialCount: number newCount: number newRevenue: number repurchaseCount: number repurchas" +
+          "eRevenue: number } > > { const sc = scopeFilterSql(session, scope, 'so.store_id') const " +
+          "rows = await db.execute(sql`<TEMPLATE>`) const m = new Map< string, { trialCount: number" +
+          " newCount: number newRevenue: number repurchaseCount: number repurchaseRevenue: number }" +
+          " >() for (const raw of rows as unknown[]) { const r = raw as Record<string, unknown> con" +
+          "st id = String(r.store_id ?? '') if (!id) continue m.set(id, { trialCount: num(r.trial_c" +
+          "ount), newCount: num(r.new_count), newRevenue: round2(r.new_revenue), repurchaseCount: n" +
+          "um(r.repurchase_count), repurchaseRevenue: round2(r.repurchase_revenue), }) } return m }",
+      )
+    })
+
+    /**
      * `entry_date` 与 `entry_store_id` 必须出自**同一行**（`DISTINCT ON`），而不是
      * 「先算 entry_date、再用等值条件回查门店」。两个理由都由 round-1 实测背书：
      *   1. **NULL 安全**：回查要用 `qd.grp = fe.grp`，而 `product_kind` 在 schema 里可空，
