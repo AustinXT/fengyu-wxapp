@@ -340,10 +340,26 @@ async function queryMemberCountByStore(
 /**
  * 体验/新增/复购人数 + 新增业绩 + 复购业绩，按 store_id 归组（单查，全套 CTE）。
  *
- * store_id 归组采用 period_agg.store_id（消费发生的门店）。同一顾客在该品项的
- * entry_date 仍跨店合并（first_entry 不带 store_id），但人数落到「期内消费发生的门店」，
- * 与 KPI 总量（DISTINCT client 跨店去重）口径上的差异：明细各门店人数相加 ≥ KPI 总量
- * （同顾客跨门店购买会在多店各计一次），与 sales 板块明细的归组语义一致（业务接受）。
+ * **归店规则**（#286 修正后）：
+ *   - 体验 / 复购：`period_agg.store_id`（期内消费发生的门店）。这两类人必然在 `period_agg`
+ *     里有行 —— `tiyan` 本就从 `period_agg` 派生，`fugou` 要求 `purchase_received >= threshold > 0`。
+ *   - **新增**：`COALESCE(period_agg.store_id, xinzeng.entry_store_id)` —— 期内有销售单/转换单
+ *     消费的落消费门店，**没有的落「进入达标日所在门店」**。
+ *
+ * ⚠️ 为什么新增必须兜底（#286，实测今年漏 **65.5%**）：`period_agg` 要求
+ * `purchase_received > 0`，而 `purchase_received` 只统计销售单/转换单、**不含寄存单**；
+ * 而进入达标（`first_entry` → `xinzeng`）走的是 `day_received`，**含寄存单**。
+ * 于是「进入达标日金额全部来自寄存单」的顾客在 `xinzeng` 里有、在 `period_agg` 里没有 ——
+ * 旧实现 `FROM period_agg pa JOIN xinzeng x` 用内连接归店，把他们整体丢弃。
+ * 实测今年 KPI 2467 人而明细合计只有 852 人，派生的新增客单价与复购率因此双双虚高 **2.90 倍**。
+ *
+ * **与 KPI 总量的关系**：明细是组内 DISTINCT、KPI 是全局 DISTINCT，同一顾客跨门店消费会在
+ * 多店各计一次，所以 **明细各门店人数相加 ≥ KPI 总量**（今年实测 2469 vs 2467，差 2 人）。
+ * 这是归组语义决定的、与 sales 板块一致。**单店 scope 下二者严格相等**（跨店重复不存在），
+ * 这条才是可锁死的不变量 —— 南昌梦祥店实测 KPI 133 / 明细 133（修正前明细只有 31）。
+ *
+ * 业绩不受影响：`SUM(pa.day_received)` 在 LEFT JOIN 后对无消费行取 NULL 被忽略，
+ * 三个口径（KPI / 修正前明细 / 修正后明细）业绩完全相等 —— 本缺陷**只丢人、不丢钱**。
  */
 async function queryCycleByStore(
   session: AuthSession,
@@ -414,9 +430,22 @@ async function queryCycleByStore(
         AND purchase_received > 0
     ),
     xinzeng AS (
-      SELECT client_user_id, grp, entry_date
-      FROM first_entry
-      WHERE entry_date BETWEEN ${range.start} AND ${range.end}
+      SELECT fe.client_user_id,
+             fe.grp,
+             fe.entry_date,
+             -- 进入达标日所在门店：新增人数在期内无销售单/转换单消费时的归店兜底（#286）。
+             -- entry_date 取自 qualifying_days 的 MIN(purchase_date)，该日必有对应行，
+             -- 所以子查询恒非 NULL（生产实测解析失败 0 行）。同日跨多店达标取 MIN(store_id)，
+             -- 保证结果确定、不随执行计划漂。
+             (
+               SELECT MIN(qd.store_id)
+               FROM qualifying_days qd
+               WHERE qd.client_user_id = fe.client_user_id
+                 AND qd.grp = fe.grp
+                 AND qd.purchase_date = fe.entry_date
+             ) AS entry_store_id
+      FROM first_entry fe
+      WHERE fe.entry_date BETWEEN ${range.start} AND ${range.end}
     ),
     fugou AS (
       SELECT DISTINCT q.client_user_id, q.grp
@@ -441,13 +470,18 @@ async function queryCycleByStore(
       JOIN tiyan t ON t.client_user_id = pa.client_user_id AND t.grp = pa.grp
       GROUP BY pa.store_id
     ),
+    -- ⚠️ 主表必须是 xinzeng（#286）：反过来 FROM period_agg JOIN xinzeng 是内连接，
+    -- 「进入达标日金额全部来自寄存单」的顾客不在 period_agg 里，会被整体丢弃（实测漏 65.5%）。
+    -- 期内无销售单/转换单消费的新增顾客落回 entry_store_id；业绩仍只统计真实消费
+    -- （LEFT JOIN 后 pa.day_received 为 NULL，被 SUM 忽略）。
     new_store AS (
-      SELECT pa.store_id,
-             COUNT(DISTINCT pa.client_user_id) AS cnt,
+      SELECT COALESCE(pa.store_id, x.entry_store_id) AS store_id,
+             COUNT(DISTINCT x.client_user_id) AS cnt,
              COALESCE(SUM(pa.day_received), 0) AS revenue
-      FROM period_agg pa
-      JOIN xinzeng x ON x.client_user_id = pa.client_user_id AND x.grp = pa.grp
-      GROUP BY pa.store_id
+      FROM xinzeng x
+      LEFT JOIN period_agg pa
+        ON pa.client_user_id = x.client_user_id AND pa.grp = x.grp
+      GROUP BY COALESCE(pa.store_id, x.entry_store_id)
     ),
     repurchase_store AS (
       SELECT pa.store_id,
@@ -457,9 +491,14 @@ async function queryCycleByStore(
       JOIN fugou fg ON fg.client_user_id = pa.client_user_id AND fg.grp = pa.grp
       GROUP BY pa.store_id
     ),
-    -- 期内有消费的所有门店（并集），LEFT JOIN 各客群聚合避免 FULL OUTER 链路漏行
+    -- 出行门店骨架（并集），LEFT JOIN 各客群聚合避免 FULL OUTER 链路漏行。
+    -- ⚠️ 必须并上 xinzeng 的 entry 门店（#286）：只取 period_agg 的话，
+    -- 「期内只有寄存单进入、无销售单/转换单消费」的门店不会出现在骨架里，
+    -- new_store 算出来的人数又会在最后一步 JOIN 时丢掉。
     store_ids AS (
       SELECT DISTINCT store_id FROM period_agg
+      UNION
+      SELECT DISTINCT entry_store_id FROM xinzeng WHERE entry_store_id IS NOT NULL
     )
     SELECT
       s.store_id AS store_id,
