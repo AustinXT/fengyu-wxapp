@@ -646,6 +646,8 @@ SELECT COUNT(*) FROM org_nodes WHERE type='store' [AND parent_id=$market]
 | **2026-09-22** | **环比基期（上期）长度首次登记（#283）**，见文末「数据中心（admin）板块专属指标」节。此前全文只登记了「上期」这个概念、从未定义其长度，`time-range.ts` 遂把本节「时间窗口补充」里 staff 端的**三选一并列维度**「上月=上月初~上月末」误当成环比分母，于是 `本周`/`本月` 两个 preset 拿 N 天的当期比整周/整月的基期（同文件 `今日`/`自定义` 恒等长，`今年` 另有跨闰年偏差）。现明确：**基期按日历同期对齐、不得无条件取完整上一周期**，`本周`→上周同一星期几、`本月`→上月同一日。同轮登记三条日历固有例外（`本月` 上月天数不足时 clamp 到上月末短 1~3 天；`今年` 的环比/同比基期跨闰年 ±1 天；`本周`/`自定义` 的**同比**基期跨闰年 ±1 天且星期漂移——后两条源自 `addYears` 的 2/29 归一化，**均尚未修复**）。并明确**同比基期与环比基期同受「不得长于当期」约束**（二者同走一个 `deltaPct`）。另补登记 `delta%` 的「算不出」情形含**基期 `<= 0`** 与**非有限值**（负基期会让符号翻转）。⚠ 「本月」与「自定义同起止日」的环比值本就不同，属语义差异非缺陷。 |
 | **2026-09-22** | **「基期算不出」升级为跨站点规则（#307）**。`fengyu-analyst`（第 5 个子项目，独立部署的经营分析站，复用 admin 的库与认证）被发现有一份**完全独立**的增幅实现，同样只挡 `base === 0` 不挡 `base < 0`——它与 admin 无目录共享、无 snapshot 守护，纯粹因为上一行那条口径此前无人登记而把同一个符号翻转缺陷重写了一遍。现两边「算不出」判定已对齐（含非有限值），但**展示层刻意分叉**：admin 出 `--` 且徽章弃判方向，analyst 出「无基数」但**仍按 `current > prevYear` 判绿/红**（由负回正是真实的向好信息）。⚠ 该分叉是有意的，别当漏改去统一。详见文末基期章节的跨站点小节。 |
 
+| **2026-09-23** | **人效板「员工/技师人均业绩」分子改回门店现金流口径（#285）**，见文末「数据中心（admin）板块专属指标」节的「业绩两套口径」。原实现把 `SUM(spia.allocated_amount)` 跨员工求和当门店业绩用——`allocated_amount` 是**角色归属额**（写入侧按 `(sale_item_id, role_type)` 分池校验，单 receipt 的 ratio 合计 2.0/3.0 属正常形态），只在 `GROUP BY employee_id` 时才是钱。2026-09-01~09-21 集团实测虚高 **+32.30%**（4,867,397.55 vs 3,679,035.98），与同页「门店排名榜-业绩」差 111 万；另有 950 张零分配 receipt 反向漏计，**偏差不同向、无法用系数校正**。现分子改为 `SUM(spe.amount)`，与门店排名榜 / 销售板总业绩 / staff `queryStoreRevenue` 四处同源。<br>⚠ **恢复 role_type 白名单不是修法**（实测仍差 −4.45%，只是偶然的部分去重）。<br>⚠ 员工排行榜 / 按技师人效明细**维持** allocation 口径不变（分组到人时语义正确，见 §员工排行榜归属）。<br>**根因**：2026-07-27 `23405ddf` 换表时把全局大卡一并留在 allocation 口径，并把守护断言反向钉死；该断言是文件级 `toMatch`、分不清聚合粒度，两边都写 `spia` 时恒绿，缺陷存活两个月。现改为按 Part 分段断言 + Part A/B 的 WHERE 子句逐字相等。 |
+
 ---
 
 ## 销售数据页 — 分客型业绩 / 实耗 / 产品出库
@@ -906,6 +908,31 @@ tiyan AS (                                    -- 体验：期内有购买但全�
 | 流量客业绩 | 销售 | `SUM(spe.amount)` WHERE `c.customer_type = '流量客'` | 仅纯流量客（不含体验/小美客）；按组织层级现金流口径（`[spe.performance_date]`），详见上方「分客型业绩」表。**2026-09-14 订正**：原写 `SUM(sop.amount)` 的别名已随口径切换失效 |
 | 单次客耗 | 客量 | `生美实耗 ÷ 服务人次` | 分子=`SUM(unit_real_price*session_used) WHERE is_shengmei`（已完成 ∩ service_date 区间）；分母=已完成 service_orders 行数（服务人次）。KPI 与明细表统一此口径（**不用** Excel 原稿"÷频率"，亦不用"÷会员人次"）|
 | 店长人数 | 人效 | `COUNT(在营启用门店)` | 每店一店长口径：按 `stores` JOIN `org_nodes(type='门店', is_active=TRUE)` 在营计数（`opening_date<=区间末 ∩ (closed_at IS NULL OR closed_at>区间末)`），**不依赖** `position_name`。故 `店长人均X = 每店平均 X`（含 店长人均收入 = 门店全部产能员工提成合计 ÷ 门店数）|
+| 员工/技师人均业绩分子 | 人效 | `SUM(spe.amount)`（门店现金流） | **2026-09-23 #285 订正**。`empAvgRevenue` 与 `byMarket.techAvgRevenue` 的分子 = 上方 §派生指标的 `storeRevenue`，与同页「门店排名榜-业绩」、销售板「总业绩」、staff `queryStoreRevenue` **四处同源**。详见下方「业绩两套口径」|
+
+> ### ⚠️ 业绩有两套口径，按**聚合粒度**分（2026-09-23 #285 订正）
+>
+> | 粒度 | 公式 | 用在哪 |
+> |---|---|---|
+> | 门店/全局（不分组到人） | `SUM(sale_order_performance_events.amount)` ∩ 已支付 ∩ `change_type IN ('首次支付','回款','退款')` ∩ `sale_order_type IN ('销售单','转换单','充值单')` ∩ `legacy_source <> 'workfine'` ∩ `[spe.performance_date]` | 人效板 KPI 大卡、按市场人效、门店排名榜；销售板总业绩；staff 大卡 |
+> | 员工（`GROUP BY employee_id`） | `SUM(sale_payment_item_allocations.allocated_amount)` ∩ `is_void=FALSE` ∩ 销售单/转换单 ∩ 已支付回款分配 | 员工排行榜、按技师人效明细（见上方 §员工排行榜归属） |
+>
+> **为什么不能混用**：`allocated_amount` 是**角色归属额**不是钱。写入侧按 `(sale_item_id, role_type)`
+> **分池**校验「池内 Σratio ≤ 1」，单 receipt 挂几个角色就有几个独立的 100% 池 —— ratio 合计
+> 2.0 / 3.0 是设计允许的正常形态。按 `employee_id` 分组时它是对的；**去掉 GROUP BY 跨员工求和，
+> 同一笔钱就被算 2~3 次**。
+>
+> 2026-09-01~09-21 集团实测：跨员工求和 4,867,397.55 vs 门店业绩 3,679,035.98，**虚高 +32.30%**。
+> 且同期 950 张 receipt 零分配、5.8 万反向漏计 → **偏差不同向，无法用统一系数校正**。
+>
+> **恢复 `role_type IN ('美容师','养生师')` 白名单不是修法**：同区间实测得 3,515,204.60，
+> 仍差 −4.45%，且偏差幅度随品项老师/推广部业务占比漂移 —— 那只是一次偶然的部分去重。
+>
+> **故障史**：2026-07-27 `23405ddf` 换表（`sale_allocations` → `sale_payment_item_allocations`）时
+> 把「全局大卡 / by store」一并留在了 allocation 口径，同时把 `consistency.efficiency.test.ts`
+> 的守护断言从「保留 role_type 白名单」反向改成「不按白名单截断」。因该断言是**文件级**
+> `toMatch`、分不清 Part A/B 与 Part D，两边都写 `spia` 时恒绿，缺陷存活两个月，
+> 表现为 KPI 与同页门店榜差 111 万。现已改为按 Part 分段断言 + Part A/B 的 WHERE 子句逐字相等。
 
 > **时间口径**：数据中心排名榜与上述区间指标统一走顶部时间维度 `col::date BETWEEN current.start AND current.end`
 > （TimeRange：今日/本周/本月/今年/自定义），而非 staff 端固定 month/lastMonth/year 锚 NOW()。
