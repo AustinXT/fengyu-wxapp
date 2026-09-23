@@ -199,27 +199,60 @@ describe('品项板块两端口径一致性守护', () => {
    */
   describe('明细新增人数以 xinzeng 为主表归店（#286）', () => {
     /**
-     * 切出 queryCycleByStore 的 SQL 模板，避免 KPI 侧同名 CTE 链顶替。
+     * 单遍扫描剥掉 SQL 里的「噪音」，供结构断言使用。剥三类：
+     *   1. **单引号字符串字面量**（含 `''` 转义）—— 堵「在块内塞一个
+     *      `'FROM xinzeng x LEFT JOIN period_agg pa'` 字符串」的注入（round-1 GLM）
+     *   2. **块注释 `/* *\/`，且按深度计数** —— PostgreSQL 的块注释**可嵌套**
+     *   3. **行注释 `--`** —— 堵「删真实代码 + 用 `--` 把字面量补回去」
      *
-     * 剥掉三类东西，顺序不可调换：
-     *   1. **单引号字符串字面量** —— 堵「在块内塞一个 `'FROM xinzeng x LEFT JOIN period_agg pa'`
-     *      字符串」的注入（round-1 GLM）。必须第一个剥，否则字符串里的 `--` / `/*` 会先被当注释。
-     *   2. **`/* *\/` 块注释** —— 堵 `(/* c *\/SELECT 0)` 这类把关键字与括号拆开、
-     *      绕过 `\(\s*SELECT` 子查询禁令的写法（round-3 GLM 探针实测可绕）。
-     *   3. **`--` 行注释** —— 堵「删真实代码 + 用 `--` 把字面量补回去」。
+     * ⚠️ **为什么不能用三条 `replace` 正则**（round-4 codex 实测打穿）：
+     * `/\/\*[\s\S]*?\*\//` 只吃到**第一个** `*\/`，而 PG 允许嵌套。于是
+     * `(/* outer /* inner *\/ still outer *\/SELECT 0)` 剥完剩下
+     * `( still outer *\/SELECT 0)`，`\(\s*SELECT` 看不见这个子查询 ——
+     * 把它乘进 `cnt` 就能让新增人数恒为 0，而块内全部断言仍绿。
      *
-     * 模板内的字符串只有中文枚举值、块注释零处，剥掉不影响任何断言。
-     * 即便正则在边缘情形误删，后果也是正向断言误红（fail-closed），不会假绿。
+     * 单遍交替扫描同时保证了三者的嵌套顺序正确：先遇到 `'` 就整段吃字符串
+     * （连同其中的 `--` / `/*`），先遇到注释就整段吃注释（连同其中的引号）。
+     * 未闭合的 `/*` 会把剩余全部吞掉 → 切片失败 → 断言误红（fail-closed）。
      */
+    const stripSqlNoise = (tpl: string): string => {
+      let out = ''
+      let i = 0
+      let depth = 0
+      while (i < tpl.length) {
+        if (depth > 0) {
+          if (tpl.startsWith('/*', i)) { depth++; i += 2; continue }
+          if (tpl.startsWith('*/', i)) { depth--; i += 2; if (depth === 0) out += ' '; continue }
+          i++
+          continue
+        }
+        if (tpl.startsWith('/*', i)) { depth = 1; i += 2; continue }
+        if (tpl.startsWith('--', i)) {
+          while (i < tpl.length && tpl[i] !== '\n') i++
+          out += ' '
+          continue
+        }
+        if (tpl[i] === "'") {
+          i++
+          while (i < tpl.length) {
+            if (tpl[i] === "'" && tpl[i + 1] === "'") { i += 2; continue }
+            if (tpl[i] === "'") { i++; break }
+            i++
+          }
+          out += ' '
+          continue
+        }
+        out += tpl[i]
+        i++
+      }
+      return out
+    }
+
+    /** 切出 queryCycleByStore 的 SQL 模板，避免 KPI 侧同名 CTE 链顶替。 */
     const detailSql = (src: string): string => {
       const fn = /async function queryCycleByStore\([\s\S]*?\n}/.exec(src)?.[0] ?? ''
       const tpl = /db\.execute\(sql`([\s\S]*?)`\)/.exec(fn)?.[1] ?? ''
-      return normalize(
-        tpl
-          .replace(/'(?:[^']|'')*'/g, ' ')
-          .replace(/\/\*[\s\S]*?\*\//g, ' ')
-          .replace(/--[^\n]*/g, ' '),
-      )
+      return normalize(stripSqlNoise(tpl))
     }
     /**
      * 切出单个 CTE 块（以下一个 CTE 名为右边界），避免跨块的惰性匹配假红/假绿。
@@ -371,16 +404,39 @@ describe('品项板块两端口径一致性守护', () => {
         'new_store 体内出现 HAVING —— 「只有寄存单进入」的门店 revenue=0，会被整组滤掉（#286 换个写法回归）',
       ).not.toMatch(/\bHAVING\b/i)
       // 计数主体必须是 xinzeng 的顾客：兜底分组里 pa.* 全是 NULL
-      expect(block, 'new_store 的计数主体不是 x.client_user_id —— 兜底分组会数出 0').toMatch(
-        /COUNT\(DISTINCT\s+x\.client_user_id\)/,
-      )
       expect(block, 'new_store 回退成按 pa 计数').not.toMatch(/COUNT\(DISTINCT\s+pa\.client_user_id\)/)
-      // 归店列与 GROUP BY 必须是同一个 COALESCE 表达式
-      expect(block, '归店列不是 COALESCE(消费门店, entry 门店)').toMatch(
-        /COALESCE\(pa\.store_id,\s*x\.entry_store_id\)\s+AS\s+store_id/,
-      )
-      expect(block, 'GROUP BY 未与投影的归店表达式一致').toMatch(
-        /GROUP\s+BY\s+COALESCE\(pa\.store_id,\s*x\.entry_store_id\)/,
+
+      /**
+       * ★ 整块钉成**字面快照**（round-4 codex 打穿了上一版的"关键子表达式出现过即可"）。
+       *
+       * 只断言「`COUNT(DISTINCT x.client_user_id)` 出现过」时，下面这两条全绿：
+       *
+       *   COUNT(DISTINCT x.client_user_id)
+       *   - COUNT(DISTINCT CASE WHEN pa.client_user_id IS NULL THEN x.client_user_id END) AS cnt
+       *     ↑ 恰好减掉没有 period 行的兜底顾客 —— #286 的主缺陷原地复活
+       *
+       *   GROUP BY COALESCE(pa.store_id, x.entry_store_id), (pa.client_user_id IS NULL)
+       *     ↑ 同一门店裂成两行，product.ts 的 `m.set(store_id, ...)` 后一行覆盖前一行，
+       *       **不确定性漏数**（漏哪家取决于行序）
+       *
+       * 所以这里锁整条投影 + 整条 FROM/JOIN/ON + GROUP BY 锚到块尾，中间不留缝。
+       *
+       * ⚠️ **这是有意为之的字面快照，不是结构断言**：交换等值条件左右、加括号、
+       * 改别名、补显式 ASC 都会误红。这是三轮评审反复打穿"部分结构断言"后的取舍 ——
+       * 宁可拦住合理重构（fail-closed，看到红就来读这段注释、确认语义没变再同步更新），
+       * 也不能再放过一个让 65.5% 漏损复活的等价变形。
+       */
+      expect(
+        block.trim(),
+        'new_store 块与字面快照不符 —— 先确认语义没变（尤其是计数主体与 GROUP BY 维度），再同步更新本断言',
+      ).toBe(
+        'SELECT COALESCE(pa.store_id, x.entry_store_id) AS store_id, ' +
+          'COUNT(DISTINCT x.client_user_id) AS cnt, ' +
+          'COALESCE(SUM(pa.day_received), 0) AS revenue ' +
+          'FROM xinzeng x ' +
+          'LEFT JOIN period_agg pa ' +
+          'ON pa.client_user_id = x.client_user_id AND pa.grp = x.grp ' +
+          'GROUP BY COALESCE(pa.store_id, x.entry_store_id)',
       )
     })
 
@@ -392,6 +448,39 @@ describe('品项板块两端口径一致性守护', () => {
       // 而 entry-only 门店就不进骨架、new_store 算出的人数在最终 JOIN 再次丢失（round-2 codex）
       expect(block, 'store_ids 未并上 xinzeng 的 entry 门店，或 UNION 分支被追加了额外谓词').toMatch(
         /FROM\s+period_agg\s+UNION\s+SELECT\s+DISTINCT\s+entry_store_id\s+FROM\s+xinzeng\s+WHERE\s+entry_store_id\s+IS\s+NOT\s+NULL\s*$/,
+      )
+    })
+
+    /**
+     * ★ 最终 SELECT 也必须守护（round-4 codex）。
+     *
+     * 前面所有断言都切到 `store_ids` 就结束了 —— CTE 全部算对，结果仍可在**消费端**被丢掉：
+     *
+     *   LEFT JOIN new_store n ON n.store_id = s.store_id AND n.revenue > 0
+     *
+     * 这一条就把「只有寄存单进入、零销售单消费」的门店（revenue = 0）重新滤掉，
+     * 正好抵消 `store_ids` 第二个 UNION 分支要保护的场景，而上面的断言无一触发。
+     *
+     * 同理，把 `COALESCE(n.cnt, 0) AS new_count` 改成 `COALESCE(n.cnt, 0) * 0` 之类也无人拦。
+     * 与 `new_store` 同样处理：**字面快照**，见上面那段关于 fail-closed 取舍的说明。
+     */
+    it('最终 SELECT 未被追加过滤（CTE 算对了也能在消费端丢行）', () => {
+      const finalSelect = /\)\s*(SELECT\s[\s\S]*)$/.exec(adminDetail)?.[1] ?? ''
+      expect(finalSelect, '最终 SELECT 未切出 —— 切片口径需同步更新').toBeTruthy()
+      expect(
+        finalSelect.trim(),
+        '最终 SELECT 与字面快照不符 —— 尤其检查三条 LEFT JOIN 的 ON 有没有被追加谓词（会再次丢行）',
+      ).toBe(
+        'SELECT s.store_id AS store_id, ' +
+          'COALESCE(t.cnt, 0) AS trial_count, ' +
+          'COALESCE(n.cnt, 0) AS new_count, ' +
+          'COALESCE(n.revenue, 0) AS new_revenue, ' +
+          'COALESCE(r.cnt, 0) AS repurchase_count, ' +
+          'COALESCE(r.revenue, 0) AS repurchase_revenue ' +
+          'FROM store_ids s ' +
+          'LEFT JOIN trial_store t ON t.store_id = s.store_id ' +
+          'LEFT JOIN new_store n ON n.store_id = s.store_id ' +
+          'LEFT JOIN repurchase_store r ON r.store_id = s.store_id',
       )
     })
 
