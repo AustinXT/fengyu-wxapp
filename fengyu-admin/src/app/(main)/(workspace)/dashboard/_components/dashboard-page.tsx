@@ -5,27 +5,81 @@ import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import type { DashboardStats } from "@/lib/types"
 import { hasUiCapability } from "@/lib/permission-contract"
+import {
+  FLAT_TEXT,
+  NA_TEXT,
+  NOT_TURNED_TEXT,
+  TURNED_POSITIVE_TEXT,
+  deltaTone,
+  isFlatAfterRounding,
+  resolveDeltaDisplay,
+} from "@/lib/delta-display"
+import { cn } from "@/lib/utils"
 
-function TrendArrow({ current, previous }: { current: number; previous: number }) {
-  const diff = current - previous
-  const pct = previous > 0 ? Math.round(Math.abs(diff) / previous * 100) : 0
-  if (diff > 0) {
+/** 首页看板的展示精度：整数百分比。数据中心用 2 位小数，**两处阈值不同，别互抄**。 */
+const TREND_DIGITS = 0
+
+const ARROW_UP = <path d="M12 19V5M5 12l7-7 7 7" />
+const ARROW_DOWN = <path d="M12 5v14M5 12l7 7 7-7" />
+
+/**
+ * 「vs 昨日」涨跌徽章（#315）。
+ *
+ * 旧实现 `previous > 0 ? Math.round(Math.abs(diff)/previous*100) : 0` 有两个缺陷：
+ * 基期 ≤ 0 时幅度被**吞成 0** 却仍走 `diff` 的绿/红分支，渲染出「↑ 0%」这种
+ * 「涨了、涨幅是 0」的自相矛盾展示；而昨日业绩**真的会 ≤ 0**——
+ * `yesterdayRevenue` 的 SQL 把退款以负数计入且无 `GREATEST` 夹底，
+ * 生产实测 1020 个门店日里 67 天非正（6.6%，最差 −22,800），
+ * 即每 15 个门店日就有 1 个门店负责人第二天看到「↑ 0%」。
+ *
+ * 现在与数据中心共用 `resolveDeltaDisplay`（决策 1 全站统一），基期为负时改出
+ * 「由负转正」/「未转正」，零基期出 '--'，并按决策 3 把舍入后为 0 的并入「持平」。
+ *
+ * 导出仅为可测——该组件此前零覆盖，直接原因就是它没被导出。
+ */
+export function TrendArrow({ current, previous }: { current: number; previous: number }) {
+  const display = resolveDeltaDisplay(current, previous)
+  const tone = deltaTone(display, TREND_DIGITS)
+
+  if (display.kind === "pct" && !isFlatAfterRounding(display.value, TREND_DIGITS)) {
+    // 必须与 isFlatAfterRounding / deltaTone 用同一套舍入（toFixed），不能用 Math.round：
+    // Math.round(-0.5) === -0 而 (-0.5).toFixed(0) === '-1'，两者分叉会让
+    // 「不算持平」的值渲染成 0%，把刚修掉的「↑ 0%」又造回来。
+    const pct = Math.abs(Number((display.value * 100).toFixed(TREND_DIGITS)))
+    const up = tone === "positive"
     return (
-      <span className="text-xs text-[#3D8A5A] flex items-center gap-0.5">
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 19V5M5 12l7-7 7 7" /></svg>
+      <span
+        className={cn("text-xs flex items-center gap-0.5", up ? "text-[#3D8A5A]" : "text-[#D94040]")}
+      >
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+          {up ? ARROW_UP : ARROW_DOWN}
+        </svg>
         {pct}%
       </span>
     )
   }
-  if (diff < 0) {
+
+  // pct 但舍入为 0（决策 3）、以及 na —— 都没有方向可言，走灰色无箭头。
+  if (display.kind === "pct" || display.kind === "na") {
     return (
-      <span className="text-xs text-[#D94040] flex items-center gap-0.5">
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 5v14M5 12l7 7 7-7" /></svg>
-        {pct}%
+      <span className="text-xs text-[#999999]">
+        {display.kind === "na" ? NA_TEXT : FLAT_TEXT}
       </span>
     )
   }
-  return <span className="text-xs text-[#999999]">持平</span>
+
+  // 负基期两态：保留箭头传达方向，但文案说的是「转正与否」而不是一个假的百分比。
+  const turned = display.kind === "turnedPositive"
+  return (
+    <span
+      className={cn("text-xs flex items-center gap-0.5", turned ? "text-[#3D8A5A]" : "text-[#D94040]")}
+    >
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+        {turned ? ARROW_UP : ARROW_DOWN}
+      </svg>
+      {turned ? TURNED_POSITIVE_TEXT : NOT_TURNED_TEXT}
+    </span>
+  )
 }
 
 interface Props {
