@@ -127,6 +127,9 @@ const MAX_TRUSTED_TICK_GAP_MS = 30_000;
 
 /** 刷新重试的首个间隔与封顶（issue #215）。unresolved 那条会一直排，必须退避 */
 const REFRESH_RETRY_BASE_MS = 5_000;
+
+/** 墙钟回拨多少就认定本地截止点不可信（issue #215）。可见期与隐藏期共用 */
+const CLOCK_ROLLBACK_TOLERANCE_MS = 2_000;
 const REFRESH_RETRY_MAX_MS = 60_000;
 
 const STATUS_ICON: Record<string, { icon: string; color: string }> = {
@@ -252,9 +255,11 @@ Page({
     // 先按本地截止点恢复倒计时，再让下面的 loadDetail 去校准（issue #215）——
     // 反过来（等请求回来才恢复）的话，这次请求一失败倒计时就永远回不来了
     this.resumeCountdown();
-    // 从预约页返回时刷新剩余次数
+    // 从预约页返回时刷新剩余次数。走 _refreshOrRetry 而不是裸 loadDetail：
+    // 隐藏期跨过截止点那条路指望的就是这一发（resumeCountdown 只置文案不发请求），
+    // 它失败了得有人接着确认（评审 round-17）。
     if (this.data.order?.sale_order_id) {
-      this.loadDetail(this.data.order.sale_order_id);
+      this._refreshOrRetry(this.data.order.sale_order_id);
     }
   },
 
@@ -524,7 +529,9 @@ Page({
       });
 
       this._clearRefreshRetry();
-      this._refreshRetryDelayMs = 0;   // 成功了，退避复位
+      // ⚠️ 退避只在**已解决**时复位。「成功拿到一份仍是 unresolved 的响应」不算解决 ——
+      // 那条会由 startCountdown 再排一次，复位的话就永远停在 5 秒一圈，退避形同虚设。
+      if (order.expire_unresolved !== true) this._refreshRetryDelayMs = 0;
 
       // 启动倒计时
       this.startCountdown(order);
@@ -574,7 +581,10 @@ Page({
     this._refreshRetryTimer = setTimeout(() => {
       this._refreshRetryTimer = null;
       if (this._hidden || this._destroyed) return;
-      this.loadDetail(saleOrderId);
+      // ⚠️ 必须按结果**续排**：裸调用的话，重试本身再失败就没人接着确认了，
+      // 页面会永久停在「正在确认订单状态」而实际上无人在确认 ——
+      // 那正是这套重试当初要兑现的那句话（评审 round-17）。
+      this._refreshOrRetry(saleOrderId);
     }, delay);
   },
 
@@ -604,13 +614,14 @@ Page({
    * | 拿到的剩余量 | 行为 | 有界性来自 |
    * |---|---|---|
    * | 权威正数（`expire_in_ms > 0`），扣 RTT 后仍为正 | 正常计时 | — |
-   * | 权威正数，扣 RTT 后归零 | 清 UI + **关支付入口** + 重载 | 服务端侧补关：重载回来要么已关闭、要么降级成非权威 |
-   * | 走着走着归零（tick） | 清 UI + **关支付入口** + 重载 | 同上 |
+   * | 权威正数，扣下行后归零 | 清 UI + **只改文案** + 有界重试 | 服务端侧补关：重载回来要么已关闭、要么降级成非权威 |
+   * | 走着走着归零（tick） | 清 UI + **只改文案** + 有界重试 | 同上 |
    * | 非权威归零（旧云函数只给 `expire_at`） | 清 UI + 重载，**按订单号只一次** | `_fallbackZeroReloadedOrderId` |
-   * | 墙钟回拨 | 清 UI + 重载，**不关支付入口** | 回拨不等于过期，关了是误伤 |
+   * | 墙钟跳变（任一方向） | 清 UI + 校准，**不改文案也不封** | 跳变不等于过期，判过期是误伤 |
    *
-   * 「关支付入口」= `payBlockedByExpiry`：截止点确实过了、而那次重载可能失败，
-   * 此刻页面并不知道这单关没关，继续显示「去支付」就是在承诺一件不知真假的事。
+   * ⚠️ **本地判到期一律只改文案（`expiryPendingConfirm`），不封支付入口**。
+   * 只有服务端明说 `expire_unresolved` 才封（`payBlockedByExpiry`）——
+   * 详见 data 里那两个字段的注释。
    */
   startCountdown(order: OrderDetailData) {
     this._stopCountdown();
@@ -730,7 +741,7 @@ Page({
       // 观测到的间隔离谱（任一方向）就认定时钟不可信，回服务端重新校准，
       // **不**当成过期（所以不关支付入口）。
       const drift = now - lastTickAt;
-      if (drift < -2000 || drift > MAX_TRUSTED_TICK_GAP_MS) {
+      if (drift < -CLOCK_ROLLBACK_TOLERANCE_MS || drift > MAX_TRUSTED_TICK_GAP_MS) {
         this._stopCountdown();
         this._countdownDeadlineAt = 0;
         // ⚠️ 这里刻意**不**置 payBlockedByExpiry：回拨只说明「没法再用这个本地截止点
@@ -745,8 +756,8 @@ Page({
       if (remaining <= 0) {
         this._stopCountdown();
         this._countdownDeadlineAt = 0;
-        // 改文案而不封支付入口；刷新走有界重试 —— 页面写着「正在确认」，
-        // 那就得真的有人在确认，单发失败不能把页面晾在那（评审 round-16）
+        // 只改文案、不封支付入口；刷新走有界重试 —— 页面写着「正在确认」，
+        // 那就得真的有人在确认，单发失败不能把页面晾在那（评审 round-16/17）
         this.setData({ countdown: '', expiryPendingConfirm: true });
         this._refreshOrRetry(saleOrderId);
         return;
@@ -784,7 +795,8 @@ Page({
     }
     // 隐藏期间墙钟被往回拨过 → 这个截止点已经不可信了（tick 里的回拨检测看不见
     // 隐藏期发生的跳变）。丢掉它，等紧随其后的 loadDetail 从服务端重新校准。
-    if (this._hiddenAtWallClock > 0 && Date.now() < this._hiddenAtWallClock - 2000) {
+    if (this._hiddenAtWallClock > 0
+        && Date.now() < this._hiddenAtWallClock - CLOCK_ROLLBACK_TOLERANCE_MS) {
       this._countdownDeadlineAt = 0;
       // 同 tick 里的回拨分支：不知道过没过期，不关支付入口（理由见那里）
       this.setData({ countdown: '' });
@@ -792,7 +804,7 @@ Page({
     }
     // 隐藏期间跨过了截止点。注意隐藏期**无法区分**「真的过了 10 分钟」和
     //「用户把钟拨快了」—— 正因如此这里只改文案、不封支付入口。
-    // 刷新交给紧跟着的 onShow loadDetail；它失败时由 _refreshOrRetry 兜底。
+    // 刷新交给紧跟着的 onShow —— 它走的就是 _refreshOrRetry，失败有兜底。
     if (this._countdownDeadlineAt - Date.now() <= 0) {
       this._countdownDeadlineAt = 0;
       this.setData({ countdown: '', expiryPendingConfirm: true });

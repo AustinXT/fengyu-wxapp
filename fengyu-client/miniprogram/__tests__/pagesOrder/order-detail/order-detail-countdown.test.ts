@@ -5,9 +5,10 @@
  *  1. 后端不下发 expire_at 时（员工开单单、有在途支付意图的自助单）页面不起倒计时，
  *     文案走 wxml 的兜底分支「请完成支付」，不出现「请在 xx 前完成支付」
  *  2. 「归零重载」不会死循环，且截止点过了之后页面不会承诺「可支付」。
- *     现行口径（10 轮评审收敛，详见 startCountdown 的 jsdoc 口径表）：
- *     权威正数正常计时 / 权威归零 → 关支付入口 + 重载（收敛靠服务端补关）/
- *     非权威归零 → 每单只重载一次 / 墙钟回拨 → 重载但不关支付入口
+ *     现行口径（17 轮评审收敛，详见 startCountdown 的 jsdoc 口径表）：
+ *     权威正数正常计时 / 权威归零 → **只改文案** + 有界重试（收敛靠服务端补关）/
+ *     非权威归零 → 每单只重载一次 / 墙钟跳变 → 校准，不改文案也不封。
+ *     **本地判到期一律不封支付入口**，只有服务端的 expire_unresolved 才封。
  */
 
 import { vi } from 'vitest';
@@ -493,6 +494,64 @@ describe('order-detail 待支付倒计时 (#215)', () => {
         delays.push(page._refreshRetryDelayMs);
       }
       expect(delays).toEqual([5000, 10000, 20000, 40000, 60000, 60000]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('重试本身再失败 → 仍按退避继续排（链不能断）', async () => {
+    // 裸调用的话，重试一失败就没人接着确认了，页面永久停在「正在确认订单状态」
+    vi.useFakeTimers();
+    try {
+      const page = createPageInstance();
+      const loadDetail = vi.fn(async () => false);
+      page.loadDetail = loadDetail;
+
+      page._refreshOrRetry('FY-215');
+      await vi.advanceTimersByTimeAsync(0);
+      expect(loadDetail).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(5000);     // 第一次重试，又失败
+      expect(loadDetail).toHaveBeenCalledTimes(2);
+      expect(page._refreshRetryTimer).not.toBeNull();
+
+      await vi.advanceTimersByTimeAsync(10_000);   // 退避到 10 秒的那次
+      expect(loadDetail).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('成功但仍 unresolved → 退避**不**复位（否则永远 5 秒一圈）', async () => {
+    const { page, resolvers } = createPageWithManualApi();
+    const degraded = {
+      order: {
+        sale_order_id: 'FY-215', status: '待支付',
+        expire_at: new Date(Date.now() - 1000).toISOString(),
+        expire_in_ms: null, expire_clock: null, expire_unresolved: true,
+      },
+      items: [], payments: [],
+    };
+    page._refreshRetryDelayMs = 20_000;
+    const inflight = page.loadDetail('FY-215');
+    resolvers[0](degraded);
+    await inflight;
+
+    expect(page._refreshRetryDelayMs).toBe(40_000);   // 由 startCountdown 再排一次，翻倍
+  });
+
+  test('onShow 的刷新失败也有兜底（隐藏期跨点那条路指望的就是这一发）', async () => {
+    vi.useFakeTimers();
+    try {
+      const page = createPageInstance();
+      const loadDetail = vi.fn(async () => false);
+      page.loadDetail = loadDetail;
+      page.setData({ order: { sale_order_id: 'FY-215', status: '待支付' } });
+
+      page.onShow();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(loadDetail).toHaveBeenCalledTimes(1);
+      expect(page._refreshRetryTimer).not.toBeNull();
     } finally {
       vi.useRealTimers();
     }
