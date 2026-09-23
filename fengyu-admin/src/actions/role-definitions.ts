@@ -2,10 +2,9 @@
 
 import { randomUUID } from 'crypto'
 import { revalidatePath } from 'next/cache'
-import { and, asc, eq, ne, sql } from 'drizzle-orm'
+import { and, asc, eq, sql } from 'drizzle-orm'
 import { db } from '@/db'
 import { permissionRoleDefinitions, permissionRoles } from '@db/permission'
-import { staffWechatUsers } from '@db/user'
 import { withAnyPermission, withPermission } from '@/lib/with-permission'
 import { requireAdmin, invalidatePermissionMatrixCache, KNOWN_PERMISSION_ACTIONS } from '@/lib/permissions'
 import {
@@ -17,6 +16,7 @@ import { logOperation, logUpdate } from '@/lib/operation-log'
 import { pgErrorCode } from '@/lib/pg-error'
 // 取锁顺序（组织树 → admin 计数 → 行锁）见该模块顶部（#318）
 import { lockActiveAdminCount } from '@/lib/invariant-locks'
+import { countActiveAdmins } from '@/lib/admin-guard'
 import type { RoleDefinition } from '@/lib/types'
 
 const SUPER_ADMIN_REQUIRED_ACTIONS = [
@@ -340,25 +340,19 @@ export const updateRoleDefinition = withPermission(
     try {
       const changed = await db.transaction(async (tx) => {
         /**
-         * 与 employees / permissions 两侧共用**同一把** `admin:active_count` 锁（#318）。
+         * ## 与另外三个入口共用**同一把** `admin:active_count` 锁（#318）
+         *
          * 光把计数塞进事务不够串行：READ COMMITTED 下「降级角色 R1」与「撤销某人的 R2 绑定」
          * 各自都读到「还有别的在职超管」、改的又是不同行，双双提交 → 零超管，系统锁死。
          * 锁序见 `lib/invariant-locks.ts`：本路径只需 ②。
+         *
+         * ⚠️ **capability 变更的两个方向都取锁**，不只降级（#318 第 2 轮）：
+         * 「谁是活跃超管」这个集合由**绑定**和**角色定义的超管位**共同决定，而
+         * `assignRole` / `revokeRole` 是按锁内重读的 `is_super_admin` 决策的 ——
+         * 升级方向不取锁，它们就会读到一个正在变的判据（GLM 报的那条击穿路径的上游）。
          */
-        if (before.isSuperAdmin && !nextSuper) {
-          await lockActiveAdminCount(tx)
-          const [{ count }] = await tx
-            .select({ count: sql<number>`count(DISTINCT ${permissionRoles.employeeId})::int` })
-            .from(permissionRoles)
-            .innerJoin(permissionRoleDefinitions, eq(permissionRoles.role, permissionRoleDefinitions.roleKey))
-            .innerJoin(staffWechatUsers, eq(permissionRoles.employeeId, staffWechatUsers.employeeId))
-            .where(and(
-              eq(permissionRoleDefinitions.isSuperAdmin, true),
-              ne(permissionRoleDefinitions.roleKey, roleKey),
-              eq(staffWechatUsers.isResigned, false),
-            ))
-          if (count < 1) throw new Error('INVALID_STATE: 系统至少需保留 1 名在职超级管理员')
-        }
+        if (capabilityChanged) await lockActiveAdminCount(tx)
+
         const rows = await tx
           .update(permissionRoleDefinitions)
           .set({
@@ -377,8 +371,23 @@ export const updateRoleDefinition = withPermission(
             sql`date_trunc('milliseconds', ${permissionRoleDefinitions.updatedAt}) = ${expectedUpdatedAt}`,
           ))
           .returning({ roleKey: permissionRoleDefinitions.roleKey })
-        if (rows.length > 0) await writeCompatibilityMirror(tx)
-        return rows.length > 0
+        if (rows.length === 0) return false
+
+        /**
+         * ## 「先改再数」——守卫必须排在 CAS UPDATE **之后**（#318 第 2 轮，codex P2）
+         *
+         * 排在前面时，一次注定失败的乐观锁提交会先撞上「至少保留 1 名超管」，
+         * 把用户带到完全错误的方向（他该看到的是「角色已被其他人修改，请刷新重试」）。
+         * 放在后面还顺带简化了判据：UPDATE 已经把本角色的超管位写成 false，
+         * 所以直接数**全局**活跃超管即可（`countActiveAdmins` 与另外三个入口同一个 helper），
+         * 不必再写 `ne(roleKey)` 去手工排除自己。归零就抛出去回滚。
+         */
+        if (before.isSuperAdmin && !nextSuper && await countActiveAdmins(tx) === 0) {
+          throw new Error('INVALID_STATE: 系统至少需保留 1 名在职超级管理员')
+        }
+
+        await writeCompatibilityMirror(tx)
+        return true
       })
       if (!changed) return { success: false, message: '角色已被其他人修改，请刷新重试' }
     } catch (error) {
