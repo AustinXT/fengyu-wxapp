@@ -403,6 +403,22 @@ describe('getEfficiencyBoard — byMarket 明细装配', () => {
 })
 
 describe('getEfficiencyBoard — 排名榜装配 + assignRanks 并列跳号', () => {
+  it('⭐ 门店排行榜不截断：12 行进 → 12 行出（防将来加 Top N 截断）', async () => {
+    // 闸门 2 收敛轮 codex：给排行榜加 `LIMIT 10` 是极常见的首屏优化，
+    // 会让「排行榜合计 == KPI 分子」失效。SQL 侧由 consistency 测试禁 LIMIT/OFFSET 拦；
+    // 这条拦 JS 侧的同型风险（`.slice(0, 10)`）—— 用 12 行刻意超过常见的 Top 10。
+    const rows = Array.from({ length: 12 }, (_, k) => ({
+      store_id: `S${k + 1}`,
+      store_name: `门店${k + 1}`,
+      market_name: '市场甲',
+      value: 1200 - k * 100,
+    }))
+    setupQueue({ storeRanks: [rows, [], [], [], []] })
+    const res = await getEfficiencyBoard(baseParams)
+    expect(res.storeRankings.revenue).toHaveLength(12)
+    expect(res.storeRankings.revenue.at(-1)).toMatchObject({ id: 'S12', rank: 12 })
+  })
+
   it('storeRankings / staffRankings 各 metric 键存在', async () => {
     setupQueue({})
     const res = await getEfficiencyBoard(baseParams)

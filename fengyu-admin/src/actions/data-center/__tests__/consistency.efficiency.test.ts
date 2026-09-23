@@ -335,6 +335,23 @@ describe('数据中心人效板块两端口径一致性守护', () => {
       assertWhereShape(sliceOrFail(adminSrc, 'const qStoreRankRevenue', 'const qStoreRankConsume'), 'store-table', 'Part C')
     })
 
+    it('⭐ Part A/B/C 都不得出现 LIMIT / OFFSET / FETCH（结果集完整性）', () => {
+      // 闸门 2 收敛轮 codex 的发现，也是迄今**最现实**的一条：
+      // 给门店排行榜加 `LIMIT 10` 是极常见的首屏优化，完全不是刻意构造的反常 SQL，
+      // 但它会让「排行榜合计 == KPI 分子」直接失效，而前九层一条都不会红
+      //（它们只约束聚合、spe 谓词、WHERE 形状与分母单源，**不约束结果集基数**）。
+      for (const [label, seg] of [
+        ['Part A', sliceOrFail(adminSrc, 'const qRevenueTotal', 'const qConsumeTotal')],
+        ['Part B', sliceOrFail(adminSrc, 'const qRevenueByStore', 'const qConsumeByStore')],
+        ['Part C', sliceOrFail(adminSrc, 'const qStoreRankRevenue', 'const qStoreRankConsume')],
+      ] as const) {
+        expect(
+          seg,
+          `${label} 出现了 LIMIT/OFFSET/FETCH：排行榜一旦截断，其合计就不再等于 KPI 分子`,
+        ).not.toMatch(/\b(?:LIMIT|OFFSET|FETCH)\b/i)
+      }
+    })
+
     it('⭐ 三处都不得有**无法归类**的 spe.* 引用（fail-closed，防包装表达式逃逸）', () => {
       assertEverySpeRefClassified(sliceOrFail(adminSrc, 'const qRevenueTotal', 'const qConsumeTotal'), 'Part A')
       assertEverySpeRefClassified(sliceOrFail(adminSrc, 'const qRevenueByStore', 'const qConsumeByStore'), 'Part B')
