@@ -386,6 +386,35 @@ describe('客量板块两端口径一致性守护', () => {
       expect(staffSrc).toMatch(/保有会员-稳定/)
       expect(staffSrc).toMatch(/保有会员-有效/)
     })
+
+    /**
+     * #294：本组三条断言把 UI 文案与 SQL 绑死。
+     *
+     * 客量板沉睡卡的 hint 写「截面快照（**仅会员客**）」、导出表头写「沉睡(截面·仅会员)」，
+     * 而冰冻/休眠不带这个括注 —— 这个文案差异的唯一依据就是下面两处 SQL 里
+     * 沉睡独有的 `customer_type = '会员客'`。若它被删/被加到另两档上，文案立刻变成错的，
+     * 而在补这组断言之前**全仓没有任何守护**（上面四条只断言枚举字面量存在，
+     * 与本差异无关 —— 闸门 2 codex 指出原注释「被 consistency 守护」是不实陈述）。
+     *
+     * ⚠ 必须用 `adminCode`（剥过 JS 注释）而非 `adminSrc`：`customer.ts:174` 的 docstring
+     * 与 `:542` 的 SQL 行注释都写着「沉睡追加 customer_type='会员客'」，
+     * 用原文断言会被注释假绿。本组特征串含 `? sql` / `FILTER (WHERE` / `AS dormant`，
+     * 注释里不含这些 token，`stripComments` 不剥 SQL `--` 也不影响判定。
+     */
+    it("沉睡档独有 customer_type='会员客'（标量侧）—— UI「仅会员客」文案的依据", () => {
+      expect(adminCode).toMatch(
+        /status === '沉睡'\s*\?\s*sql` AND c\.customer_type = '会员客'`\s*:\s*sql``/,
+      )
+    })
+    it("沉睡档独有 customer_type='会员客'（明细 status_agg 侧）", () => {
+      expect(adminCode).toMatch(
+        /FILTER\s*\(WHERE c\.customer_status = '沉睡' AND c\.customer_type = '会员客'\)\s*AS dormant/,
+      )
+    })
+    it('冰冻 / 休眠不得附带客型过滤（否则三档口径对等，UI 角标即失真）', () => {
+      expect(adminCode).not.toMatch(/customer_status = '冰冻' AND c\.customer_type/)
+      expect(adminCode).not.toMatch(/customer_status = '休眠' AND c\.customer_type/)
+    })
   })
 
   describe('消费分桶阈值（左闭右开，6 档）', () => {

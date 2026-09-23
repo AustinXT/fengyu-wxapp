@@ -13,24 +13,28 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 import type { ProductBoardParams, ProductBoardResult } from "@/lib/data-center/types"
 
 // ── KPI 卡片矩阵（key 对应后端 ProductBoardResult.kpis）────────────────
-// #294：SQL（product.ts queryCardHolders）只看 si.paid_sessions > 0，**既不看 remaining
-// 也不看 product_type** —— 原 hint 的「未用完」「疗程卡」两个词都与实现不符。
-// 口径权威表述见 metrics.md:728「持卡 = 已解锁次数大于 0（paid_sessions > 0），不按 product_type 过滤」。
+// #294：原 hint 的「未用完」「疗程卡」两个词都与 product.ts queryCardHolders 不符。
+// 权威口径见 metrics.md:728「持卡 = 已解锁次数大于 0（paid_sessions > 0），不按 product_type 过滤」。
+//
 // ⚠ 用词取「已付次数」而非 metrics.md 的内部术语「已解锁次数」：admin UI 全仓
 // 对 paid_sessions 的既有称呼是「已付」（order-detail-page.tsx:678「已用/已付/共」，
 // ticket 2026-05-19 D10=A），本 issue 治的就是文案不一致，不该再造第三个词。
-// ⚠ 措辞两条守则（评审提出，见 .claude/notes/pr-ready/concurrency.md）：
-// ① 不说「不限商品类型」——紧邻的筛选器就叫「一级/二级品项」，用户会把它读成
-//    「不受本页筛选影响」，而事实相反（resolveGrouping 的 filter 真的会收窄卡片数字）。
-//    改用 product_type 的枚举值原文，并显式说明受筛选器影响。
-// ② 占比不写「两者均为截面快照」——那是**正向保证**不是中立描述：用户看到
+//
+// ⚠ 三条措辞守则（均由闸门 1/2 评审提出，详见 _tmp/issue-294/review/）：
+// ① **不能说「不分疗程卡/家居产品」**——字面对、语义反。SQL 确无 product_type 过滤，
+//    但家居产品 session_count 为空 ⇒ paid_sessions 恒 NULL（lib/paid-sessions.ts:43，
+//    并由 sale_items 的 chk_item_paid_sessions CHECK 兜住）⇒ `> 0` 对它恒 false，
+//    **实际只统计得到疗程卡**。照字面写会比原缺陷更隐蔽地误导。放进 section 完整说明。
+// ② 不说「不限商品类型」——紧邻的筛选器就叫「一级/二级品项」，用户会读成
+//    「不受本页筛选影响」，而事实相反（resolveGrouping 的 filter 真会收窄卡片数字）。
+// ③ 占比不写「两者均为截面快照」——那是**正向保证**不是中立描述：用户看到
 //    集团恒 253%（issue #287）时的第一怀疑是「有时差」，这句恰好堵死该路径却不给真因，
 //    等于替 bug 背书。只点出分母口径，让异常自己暴露。
 const KPI_CARD: KpiGridItem[] = [
   {
     key: "cardHolders",
     label: "持卡人数",
-    hint: "已付次数 > 0 即计入，不扣已核销、不分疗程卡/家居产品；随上方品项筛选变化",
+    hint: "已支付订单中已付次数 > 0 即计入，不扣已核销；随上方品项筛选变化",
   },
   { key: "cardHolderRate", label: "持卡占比", hint: "持卡人数 ÷ 会员数（分母 = 全部会员）" },
 ]
@@ -136,8 +140,9 @@ export function ProductBoard() {
       <section className="flex flex-col gap-3">
         <h2 className="text-sm font-semibold text-[var(--foreground)]">持卡情况</h2>
         <div className="text-xs text-[var(--muted-foreground)]">
-          持卡人数 / 占比为截面快照（持卡 = 已付次数 &gt; 0，不扣已核销、不分疗程卡/家居产品，
-          订单类型限销售单/转换单/寄存单），不随时间区间变化。
+          持卡人数 / 占比为截面快照（持卡 = 已支付的销售单/转换单/寄存单中「已付次数 &gt; 0」，
+          不扣已核销；口径不按商品类型过滤，但家居产品无次数，实际只会统计到疗程卡），
+          不随时间区间变化。
         </div>
         <KpiGrid items={KPI_CARD} kpis={kpis} columns={2} />
       </section>
