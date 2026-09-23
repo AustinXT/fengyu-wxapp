@@ -94,8 +94,14 @@ const fixedCtx = {
   },
   enabled: false, // 关同比环比 → 每个 KPI 仅 1 次 runner，DB 调用可预期
 }
+/**
+ * 同比/环比开关。默认 false（上面那条理由），但「分母禁用同比」这条不变量
+ * 只在 `enabled=true` 时才走到，固定 false 会让它零覆盖（#284 round-1 两个谱系都点名）。
+ * 用可变对象而不是改 fixedCtx，保证其余用例的 DB 调用次数仍然可预期。
+ */
+const ctxState = { enabled: false }
 vi.mock('@/lib/data-center/context', () => ({
-  prepareBoardContext: vi.fn(async () => fixedCtx),
+  prepareBoardContext: vi.fn(async () => ({ ...fixedCtx, enabled: ctxState.enabled })),
 }))
 
 import { getCustomerBoard } from '../customer'
@@ -108,6 +114,7 @@ const PARAMS: BoardParams = {
 }
 
 beforeEach(() => {
+  ctxState.enabled = false
   responder.scalarRow = { v: 0, total_count: 0, total_spend: 0 }
   responder.skeletonRows = []
   responder.regActiveRows = []
@@ -328,6 +335,34 @@ describe('getCustomerBoard 装配', () => {
       expect(rate).not.toBeNull()
       expect(rate as number).toBeLessThanOrEqual(1)
     }
+  })
+
+  /**
+   * #284：成交率分母必须禁用同比/环比。
+   *
+   * 分母的两个分支数据深度差 50 个月（① 取自 service_orders，最早 2026-07-08；
+   * ② 取自 became_member_at，回溯 2022-08）。基期一旦落在割点前，① 恒空而 ② 仍出数百人，
+   * delta 就成了 100% 由 ② 构成的假数 —— 旧口径下这类基期恒 0、deltaPct 抑制成 '--'，
+   * 是诚实的「算不出」。
+   *
+   * ⚠ 本文件其余用例全程 `enabled=false`，这条不变量原本**零覆盖**：把
+   * `withComparison(queryTrialFootfall, …, false)` 的 false 改回 enabled、
+   * 或删掉 trafficCustomersCell 的显式 null，测试照样全绿（round-1 两个谱系独立点名）。
+   */
+  it('enabled=true 时成交率分母与成交率都不出同比/环比（其余 KPI 仍出）', async () => {
+    ctxState.enabled = true
+    responder.scalarRow = { v: 5, total_count: 3, total_spend: 30 }
+
+    const res = await getCustomerBoard(PARAMS)
+
+    // 分母与派生率：显式 null（前端渲染 '--'），不是字段缺失
+    for (const key of ['trafficCustomers', 'convRate']) {
+      expect(res.kpis[key], `${key} 应存在`).toBeDefined()
+      expect(res.kpis[key].mom, `${key}.mom 必须为 null（割点前基期会算出假数）`).toBeNull()
+      expect(res.kpis[key].yoy, `${key}.yoy 必须为 null（割点前基期会算出假数）`).toBeNull()
+    }
+    // 对照：允许比较的 KPI 仍然带出数值，证明 enabled=true 这条路径确实被走到了
+    expect(res.kpis.newMembers.mom, 'newMembers 的同比环比不该被一起禁掉').not.toBeNull()
   })
 
   it('市场消费经营直接使用市场内去重结果，不累加跨店顾客', async () => {

@@ -486,8 +486,17 @@ describe('mgmtTraffic.summary 新会员经营 + trialFootfall', () => {
     expect(trialSql, '② 分支（本期全部新增会员）缺失，成交率上限不再成立').toMatch(
       /UNION[\s\S]*?SELECT c\.user_id AS uid[\s\S]*?FROM client_wechat_users c/,
     )
-    expect(trialSql).toMatch(/c\.became_member_at\s+IS\s+NOT\s+NULL/)
-    expect(trialSql).toMatch(/c\.became_member_at::date\s+BETWEEN/)
+
+    // ⚠ 必须切出 UNION 之后的 ② 分支再断言日期条件：`became_member_at::date BETWEEN`
+    // 在 ① 的 OR 右半边也有，对整条 SQL toMatch 时，把 ② 的日期限定删掉
+    // （分母纳入全部历史会员、回溯到 2022-08）守护照样全绿。
+    const branch2 = trialSql.split(/\bUNION\b/)[1] || ''
+    expect(branch2, 'UNION ② 分支切不出来').toBeTruthy()
+    expect(branch2, '② 缺 became_member_at IS NOT NULL 守卫').toMatch(/c\.became_member_at\s+IS\s+NOT\s+NULL/)
+    expect(branch2, '② 缺本期限定 —— 分母会纳入全部历史会员').toMatch(/c\.became_member_at::date\s+BETWEEN/)
+    // ⚠ 不在这里断言 ② 的 scope 列：本用例是 scopeType='all'，
+    // buildManagementStoreScope 此档返回字面量 'TRUE'，SQL 里根本不出现 bound_store_id。
+    // 「② 按 bound_store_id 取 scope」由下面 market/store 两档的 test.each 覆盖。
   })
 
   test.each([

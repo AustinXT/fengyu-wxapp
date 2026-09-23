@@ -562,7 +562,7 @@ describe('客量板块两端口径一致性守护', () => {
       }
     })
 
-    /** 两端 KPI 分母查询共享的结构不变量 */
+    /** 两端 KPI 分母查询共享的结构不变量（整体层面） */
     const DENOM_INVARIANTS: Array<[string, RegExp]> = [
       ['外层对 UNION 结果去重', /COUNT\(DISTINCT\s+t\.uid\)/],
       ['① 到店活跃池取已完成服务单', /FROM\s+service_orders\s+so[\s\S]*?so\.status\s*=\s*'已完成'/],
@@ -582,6 +582,61 @@ describe('客量板块两端口径一致性守护', () => {
 
     it.each(DENOM_INVARIANTS)('staff：%s', (_label, re) => {
       expect(staffTrial).toMatch(re)
+    })
+
+    /**
+     * 切出 `UNION` 之后的 ② 分支单独断言（codex round-1 P2）。
+     *
+     * ⚠ 为什么整体断言不够：`became_member_at::date BETWEEN` 这个字面量**① 分支里也有**
+     * （① 的 OR 右半边就是它）。于是「把 ② 的 `AND c.became_member_at::date BETWEEN ... `
+     * 整行删掉」——分母会纳入**全部历史会员**（回溯到 2022-08）、成交率被直接扭曲——
+     * 而上面 `DENOM_INVARIANTS` 的 BETWEEN 断言被 ① 顶上，守护照样全绿。
+     *
+     * 按 `UNION` 切分后 ① 的内容不在切片里，字面量无法互相顶替。
+     */
+    const secondBranch = (sqlText: string): string => sqlText.split(/\bUNION\b/)[1] ?? ''
+
+    const BRANCH2_INVARIANTS: Array<[string, RegExp]> = [
+      ['② 从 client_wechat_users 取本期新增会员', /SELECT\s+c\.user_id\s+AS\s+uid[\s\S]*?FROM\s+client_wechat_users\s+c/],
+      ['② 有 became_member_at IS NOT NULL 守卫', /c\.became_member_at\s+IS\s+NOT\s+NULL/],
+      ['② 限定在本期（缺它则纳入全部历史会员）', /c\.became_member_at::date\s+BETWEEN/],
+    ]
+
+    it.each(BRANCH2_INVARIANTS)('admin ② 分支：%s', (_label, re) => {
+      const b2 = secondBranch(adminTrial)
+      expect(b2, 'admin 的 UNION ② 分支切不出来').toBeTruthy()
+      expect(b2).toMatch(re)
+    })
+
+    it.each(BRANCH2_INVARIANTS)('staff ② 分支：%s', (_label, re) => {
+      const b2 = secondBranch(staffTrial)
+      expect(b2, 'staff 的 UNION ② 分支切不出来').toBeTruthy()
+      expect(b2).toMatch(re)
+    })
+
+    /**
+     * 两段 scope 各自绑定到正确的列，且用在正确的分支上（codex round-1 P2 / DeepSeek P3）。
+     *
+     * ⚠ admin 侧的列名是 `scopeFilterSql` 的**字符串参数**，不落进 SQL 模板 ——
+     * 所以上面所有基于 SQL 文本的断言都看不见它。把 ① 的 `scVisit` 从 `so.store_id`
+     * 改成 `c.bound_store_id`（或把两个插值位置对调），admin KPI 就与 staff、与明细的
+     * 「按服务发生门店」口径分叉了，而 `customer.test.ts` 不执行真实 SQL，全绿。
+     * staff 侧因为 `buildSaleScope` 在运行期把 `so.store_id` 拼进 SQL，已被
+     * `mgmt-traffic.test.js` 的 market/store `test.each` 兜住，admin 侧此前没有对应断言。
+     */
+    it('admin 两段 scope 绑定正确的列，且分别用在 ①/② 分支上', () => {
+      expect(adminCode, '① 应按服务发生门店 so.store_id 取 scope').toMatch(
+        /scVisit\s*=\s*scopeFilterSql\(session,\s*scope,\s*'so\.store_id'\)/,
+      )
+      expect(adminCode, '② 应按顾客绑定门店 c.bound_store_id 取 scope（与分子同源）').toMatch(
+        /scMember\s*=\s*scopeFilterSql\(session,\s*scope,\s*'c\.bound_store_id'\)/,
+      )
+      // 插值占位在模板里原样保留，可据此锁住「哪段用哪个」
+      const [branch1, branch2] = [adminTrial.split(/\bUNION\b/)[0], secondBranch(adminTrial)]
+      expect(branch1, '① 分支未使用 scVisit').toContain('${scVisit}')
+      expect(branch1, '① 分支误用了 scMember').not.toContain('${scMember}')
+      expect(branch2, '② 分支未使用 scMember').toContain('${scMember}')
+      expect(branch2, '② 分支误用了 scVisit').not.toContain('${scVisit}')
     })
 
     /**
@@ -1089,8 +1144,16 @@ describe('客量板块两端口径一致性守护', () => {
       expect(trafficCust, '② 分支（本期全部新增会员）缺失或未按 bound_store_id 归店').toMatch(
         /UNION[\s\S]*?FROM\s+client_wechat_users\s+c\s+JOIN\s+skel\s+sk\s+ON\s+sk\.store_id\s*=\s*c\.bound_store_id/,
       )
-      expect(trafficCust).toMatch(/c\.bound_store_id\s+IS\s+NOT\s+NULL/)
-      expect(trafficCust).toMatch(/c\.became_member_at\s+IS\s+NOT\s+NULL/)
+      // ⚠ 下面三条必须在**切出 UNION 之后的 ② 分支**上断言，不能对整个 CTE 断言：
+      // `became_member_at::date BETWEEN` 在 ① 的 OR 右半边也有，对整块 toMatch 时
+      // 删掉 ② 的日期限定（分母纳入全部历史会员）照样全绿。
+      const branch2 = trafficCust!.split(/\bUNION\b/)[1] ?? ''
+      expect(branch2, '明细分母的 UNION ② 分支切不出来').toBeTruthy()
+      expect(branch2, '② 未按 bound_store_id 归店').toMatch(/c\.bound_store_id\s+IS\s+NOT\s+NULL/)
+      expect(branch2, '② 缺 became_member_at IS NOT NULL 守卫').toMatch(/c\.became_member_at\s+IS\s+NOT\s+NULL/)
+      expect(branch2, '② 缺本期限定 —— 分母会纳入全部历史会员').toMatch(
+        /c\.became_member_at::date\s+BETWEEN/,
+      )
       // 分子 newmem 的归店方式必须同步存在，否则「分子 ⊆ 分母」的对齐前提就没了
       expect(adminSql).toMatch(
         /newmem\s+AS\s*\([\s\S]*?FROM\s+client_wechat_users\s+c\s+JOIN\s+skel\s+sk\s+ON\s+sk\.store_id\s*=\s*c\.bound_store_id/,
