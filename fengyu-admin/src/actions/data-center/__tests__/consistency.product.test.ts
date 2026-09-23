@@ -522,12 +522,44 @@ describe('品项板块两端口径一致性守护', () => {
      * 归店聚合。若确认是归店明细，必须同步 #286 的「xinzeng 主表 + entry_store_id 兜底」口径。
      */
     it('staff 的 GROUP BY 清单未变（新增归店聚合时必须同步 #286 的归店口径）', () => {
-      // 先剥 SQL 行注释（保留换行，GROUP BY 在 staff 源码里都是单行），
-      // 避免 `GROUP BY store_id -- performance_date` 这类注入；大小写不敏感。
+      // 先剥 SQL 行注释，避免 `GROUP BY store_id -- performance_date` 这类注入；大小写不敏感。
       const staffSqlOnly = stripComments(staffSrc).replace(/--[^\n]*/g, ' ')
-      const groupBys = (staffSqlOnly.match(/group\s+by\s+[^\n`]*/gi) ?? []).map((g) =>
-        g.replace(/\s+/g, ' ').trim(),
-      )
+      /**
+       * ⚠️ **不能用「`group\s+by\s+` 后跟 `[^\n` + 反引号 `]*`」这种匹配**
+       * （round-3 codex 实测打穿）：它在换行处停，于是**续行追加的分组键看不见** ——
+       *
+       *   GROUP BY x.product_kind
+       *          , x.store_id        ← 提取结果仍是 'GROUP BY x.product_kind'
+       *
+       * 清单不变、`withStoreId` 仍只有 1 条，哨兵**静默假绿**，而 staff 已经长出归店聚合。
+       *
+       * ⚠️ **也不能简单拿 `)` / `),` 当终止符**（round-2 GLM 指出的 v2 缺陷）：
+       * `GROUP BY COALESCE(a, b)` 会在函数的闭括号处被截断。
+       *
+       * 所以先把空白压平（跨行 GROUP BY 变成一条），再**按括号深度扫描**找真正的右边界：
+       * 深度 0 时遇到多余的 `)`（CTE 收尾）、反引号、分号，或 `HAVING` / `UNION` /
+       * `ORDER BY` / `LIMIT` / `WINDOW` 关键字才停；函数调用里的括号不会误判。
+       */
+      const flat = staffSqlOnly.replace(/\s+/g, ' ')
+      const readGroupBy = (from: number): string => {
+        let i = from
+        let depth = 0
+        while (i < flat.length) {
+          const ch = flat[i]
+          if (ch === '(') depth++
+          else if (ch === ')') {
+            if (depth === 0) break
+            depth--
+          } else if (ch === '`' || ch === ';') break
+          else if (depth === 0 && i > from && /^(?:having|union|order\s+by|limit|window)\b/i.test(flat.slice(i))) break
+          i++
+        }
+        return flat.slice(from, i).replace(/\s+/g, ' ').trim()
+      }
+      const groupBys: string[] = []
+      const gbRe = /group\s+by\s+/gi
+      let gbMatch: RegExpExecArray | null
+      while ((gbMatch = gbRe.exec(flat)) !== null) groupBys.push(readGroupBy(gbMatch.index))
       expect(groupBys, 'staff 的 GROUP BY 清单发生变化 —— 新增按门店的归店聚合时请同步 #286').toEqual([
         'GROUP BY pc.product_kind',
         'GROUP BY so.client_user_id, so.store_id, pc.product_kind, sipe.performance_date',
