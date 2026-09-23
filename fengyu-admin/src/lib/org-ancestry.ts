@@ -135,6 +135,11 @@ export async function findRolesBoundWithinSubtree(
  *   - `store_id` 为空时没有「另一个门店」可言 —— 甲方 2026-09-23 拍板保持放行（#259 选项 A），
  *     所以这里也必须放过，否则两侧口径又分叉了
  *
+ * 末尾那个 JOIN 用 `LEFT JOIN` 而不是 `JOIN`，同样是**防御性**的（GLM 第 6 轮 P3）：
+ * 内连接会在 `store_id` 指向不存在的门店行时把该员工整行丢掉 → 静默放行改挂（fail-open），
+ * 而 `LEFT JOIN` 下 `st.org_node_id` 为 NULL、`IS DISTINCT FROM` 非空祖先成立 → 报冲突（fail-closed）。
+ * FK 让这个状态当下造不出来，但方向要和下面 `IS DISTINCT FROM` 的立场一致：安全边界一律 fail-closed。
+ *
  * 末尾用 `IS DISTINCT FROM` 而不是 `!=` 是**防御性**的：真库里 `stores.org_node_id` 为空造不出来
  * （trigger `inventory_sync_location_from_store()` 对 NULL 直接 `RAISE`，见 `db/migrations/0009`；
  * 生产 43/43 全有映射），所以两种写法当下等价 —— 但 `!=` 一旦遇到 NULL 会静默放过（fail-open），
@@ -173,7 +178,7 @@ export async function findSubtreeOwnershipConflicts(
     )
     SELECT n.employee_id, n.name, n.store_id, count(*) OVER () AS total
       FROM nearest n
-      JOIN stores st ON st.store_id = n.store_id
+      LEFT JOIN stores st ON st.store_id = n.store_id
      WHERE st.org_node_id IS DISTINCT FROM n.store_ancestor
      ORDER BY n.employee_id
      LIMIT ${limit}
