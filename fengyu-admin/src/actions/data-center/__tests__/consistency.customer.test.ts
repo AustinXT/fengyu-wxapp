@@ -493,6 +493,29 @@ describe('客量板块两端口径一致性守护', () => {
    * 只能对源码原文断言；明细侧的同口径守护见「市场明细人数在市场内去重」，那条走 `adminSql`。
    */
   describe('成交率分母 = 期初未达会员活跃池 ∪ 本期全部新增会员（D-conv-denom=1c，#284）', () => {
+    /**
+     * 切出 `queryTrialFootfall` 的函数体（KPI 分母）再断言。
+     *
+     * ⚠ 必须收窄到函数体，不能对整份源码断言：admin 的明细 `traffic_cust` CTE 是同口径副本，
+     * 含一模一样的 `customer_type IN (…) OR became_member_at::date BETWEEN` 字面量。
+     * 对全文 `toMatch` 时，把 KPI 那处的 OR 删掉、只留明细那处，断言照样绿 —— 红检实测复现，
+     * 与本文件 456 行「只判存在则单处漏改全绿」是同一个坑。
+     */
+    const trialFootfallBody = (src: string): string =>
+      /(async )?function queryTrialFootfall\([\s\S]*?\n}/.exec(src)?.[0] ?? ''
+
+    let adminTrial: string
+    let staffTrial: string
+    beforeAll(() => {
+      adminTrial = trialFootfallBody(adminSrc)
+      staffTrial = trialFootfallBody(staffSrc)
+    })
+
+    it('两端都能定位到 queryTrialFootfall 函数体（切片锚点有效）', () => {
+      expect(adminTrial, 'admin queryTrialFootfall 未定位到').toBeTruthy()
+      expect(staffTrial, 'staff queryTrialFootfall 未定位到').toBeTruthy()
+    })
+
     /** 两端 KPI 分母查询共享的结构不变量 */
     const DENOM_INVARIANTS: Array<[string, RegExp]> = [
       ['外层对 UNION 结果去重', /COUNT\(DISTINCT\s+t\.uid\)/],
@@ -508,11 +531,11 @@ describe('客量板块两端口径一致性守护', () => {
     ]
 
     it.each(DENOM_INVARIANTS)('admin：%s', (_label, re) => {
-      expect(adminSrc).toMatch(re)
+      expect(adminTrial).toMatch(re)
     })
 
     it.each(DENOM_INVARIANTS)('staff：%s', (_label, re) => {
-      expect(staffSrc).toMatch(re)
+      expect(staffTrial).toMatch(re)
     })
 
     it('两端 ② 分支都按 bound_store_id 归店（与各自的分子 newMemberCount 同源）', () => {
