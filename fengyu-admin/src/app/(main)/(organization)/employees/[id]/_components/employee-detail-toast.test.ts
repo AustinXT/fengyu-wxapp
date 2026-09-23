@@ -30,7 +30,8 @@ describe('员工详情页保存成功的 toast（#249 的 UI 闭环）', () => {
   it('成功分支必须显示 result.message，不能硬编码文案', () => {
     const src = pageSource()
     // updateEmployee 的成功分支
-    expect(src, 'updateEmployee 的成功提示必须用服务端 message —— 它带着未同步的角色清单')
+    expect(src, 'updateEmployee 的成功提示必须用服务端 message —— 它可能带着旧店角色清单，'
+      + '也可能是不披露角色名的权限复核提示（见文件头三种分支）')
       .toMatch(/toast\.success\(result\.message\)/)
     /**
      * 同一文件里还有 handleSaveRoles 的 `toast.success('权限角色已更新')` ——

@@ -1087,7 +1087,8 @@ export const updateEmployee = withPermission(
     }
   }
 
-  // 获取旧值用于日志 diff + storeId 变更检测
+  // 事务外读一次旧行：**只用于**可见性拦截与 `preTx*` 早拒。
+  // 审计 diff 的 before 与双写判据都用锁内 `FOR UPDATE` 重读的那份（见事务体）。
   const [currentEmployee] = await db.select().from(staffWechatUsers).where(eq(staffWechatUsers.employeeId, employeeId)).limit(1)
   const oldStoreId = currentEmployee?.storeId ?? null
   const oldOrgNodeId = currentEmployee?.orgNodeId ?? null
@@ -1263,8 +1264,9 @@ export const updateEmployee = withPermission(
   /**
    * 离职状态与离职日期是**双写不变量**：在职 ⇒ 日期与原因均为 null，离职 ⇒ 日期非 null。
    *
-   * 判据是**本次操作之后**的离职态（`data.isResigned ?? currentEmployee.isResigned`），
-   * 而不是「本次是否显式传了 isResigned」。三轮下来这里错过三次：
+   * 判据是**本次操作之后**的离职态（`data.isResigned ?? prev.isResigned`，
+   * 其中 `prev` 是锁内 `FOR UPDATE` 重读的那一行），而不是「本次是否显式传了 isResigned」。
+   * 三轮下来这里错过三次：
    *   - `{ isResigned: true, resignedAt: '' }` —— 空串归一成 null 后，
    *     `data.resignedAt === undefined` 判据不成立 → 跳过推导 → 「已离职但无离职日期」
    *     （codex 第 8 轮）
