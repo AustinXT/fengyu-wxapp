@@ -24,8 +24,12 @@ const KPI_REGISTER: KpiGridItem[] = [
 // 集团会显示 68 vs 1273（18.7 倍）—— 这是口径差异不是数据错，靠角标区分。
 // metrics.md:240 的权威措辞即「截面快照」/「区间统计」。
 // 口径本身不改（历史重建代价大，metrics.md:244-246 已记录该取舍）。
+// ⚠ 沉睡格的 hint 与另两档**不能**逐字相同：queryStatusCount（customer.ts:181）只在
+// status === '沉睡' 时追加 AND c.customer_type = '会员客'，冰冻/休眠没有这层过滤。
+// 该差异是 metrics.md:251 的既定决策（D-6）且被 consistency.customer.test.ts 守护，
+// 三卡并排用同一句会制造「三档口径对等」的错觉（评审 P1，见 concurrency.md）。
 const KPI_STATUS: KpiGridItem[] = [
-  { key: "dormant", label: "沉睡人数", hint: "截面快照，不随时间区间变化" },
+  { key: "dormant", label: "沉睡人数", hint: "截面快照（仅会员客），不随时间区间变化" },
   { key: "reactivatedDormant", label: "激活沉睡", hint: "区间统计" },
   { key: "frozen", label: "冰冻人数", hint: "截面快照，不随时间区间变化" },
   { key: "reactivatedFrozen", label: "激活冰冻", hint: "区间统计" },

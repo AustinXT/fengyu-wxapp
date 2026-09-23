@@ -264,6 +264,25 @@ describe('数据中心客量门店导出列', () => {
     ])
     expect(content.columns.find((column) => column.header === '会员注册')?.value(board.byStore[0])).toBe(12)
   })
+
+  // #294：市场维度此前只被 `it.each(breakdownViews)` 那条通用测试覆盖，而它的 expected
+  // 是用 headersForBreakdown() 从**被测对象** columns.ts 现读的 —— 重言式，label 打错字也照样绿。
+  // market 与 store 共享同一个 customerRegistrationMetricColumns 数组引用，
+  // 于是市场维度的「正确」一直是蒙对的、没有守护。这里补一条硬编码字面量断言钉死。
+  it('市场注册客活导出表头与门店维度一致（字面量钉死，防重言式漏检）', async () => {
+    vi.mocked(getCustomerBoard).mockResolvedValue(board as never)
+
+    const content = await createExportContent('data-center', {
+      view: 'customer-market-reg',
+      params: {},
+    })
+
+    expect(content.columns.map((column) => column.header)).toEqual([
+      '市场', '会员注册', '保有会员', '回店1次', '1次达成率(%)',
+      '回店2次', '2次达成率(%)', '沉睡(截面)', '激活沉睡', '冰冻(截面)', '激活冰冻',
+      '休眠(截面)', '激活休眠',
+    ])
+  })
 })
 
 describe('数据中心全部导出视图', () => {

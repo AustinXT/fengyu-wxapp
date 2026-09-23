@@ -15,13 +15,16 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 const KPI_ITEMS: KpiGridItem[] = [
   { key: "storeRevenue", label: "总业绩" },
   // 生美业绩与生美实耗的标记分别来自 sale_items / service_items 两张表（#294 AC5：
-  // 存量有 23 行 is_shengmei 为 NULL、父子标记 4 行不一致，口径来源在 hint 里标明而非改数）
-  { key: "shengmeiRevenue", label: "生美业绩", hint: "按销售明细行的生美标记统计（sale_items.is_shengmei）" },
+  // 存量有 23 行 is_shengmei 为 NULL、父子标记 4 行不一致，口径来源在 hint 里标明而非改数）。
+  // ⚠ 表名与列名**必须拆开写**，不能连成 `sale_items.is_shengmei`：hint 容器
+  // （kpi-card.tsx:45）没有 break-words，而 columns=4 在 <lg 视口是 grid-cols-2
+  // （不降到 1 列），单卡内容宽仅约 130px —— 26 字符的不可断词会溢出卡片（评审 P2）。
+  { key: "shengmeiRevenue", label: "生美业绩", hint: "取自 sale_items 的 is_shengmei 标记" },
   { key: "storeConsume", label: "总实耗" },
   {
     key: "shengmeiConsume",
     label: "生美实耗",
-    hint: "按服务明细行的生美标记统计（service_items.is_shengmei），与业绩侧非同一张表",
+    hint: "取自 service_items 的 is_shengmei 标记，与业绩侧非同一张表",
   },
   { key: "newCustomerRevenue", label: "新增客业绩", hint: "新增会员业绩" },
   // #294：SQL 是 customer_type = '流量客'（2026-05-26 拍板，metrics.md:675），
