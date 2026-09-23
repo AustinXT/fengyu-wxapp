@@ -328,6 +328,30 @@ describe('updateRoleDefinition', () => {
      * 收窄 `allowedScopeTypes` 也在改判据（`assignRole` 按它判「这个角色能不能绑到这层」），
      * 所以白名单变了也要与分配方互斥（#318 第 3 轮，GLM P2）。
      */
+    /**
+     * 白名单变了要取 **①**：锁内那条冲突复核判的是「存量绑定所在**节点的类型** ∈ 新白名单」，
+     * 而节点类型会被 `updateOrgNode` 改类型那条路径改掉（它取 ①）——
+     * 只取 ② 的话两边各自按旧状态通过（codex 第 4 轮 P1）。顺序必须 ① → ②。
+     */
+    it('白名单变更 → ① 组织树 + ② admin 计数都取，顺序 ①→②', async () => {
+      const normalBefore = {
+        ...superBefore, roleKey: 'role-custom', isSuperAdmin: false,
+        actions: ['dashboard:view'], allowedScopeTypes: ['总部', '市场', '门店'],
+      }
+      ;(db.select as ReturnType<typeof vi.fn>).mockReturnValueOnce(mockSelectOnce([normalBefore]))
+      const t = mockDowngradeTx()
+
+      await updateRoleDefinition(normalBefore.roleKey, {
+        name: normalBefore.name,
+        actions: ['dashboard:view'],
+        allowedScopeTypes: ['门店'],
+      })
+
+      const locks = t.txExecute.mock.calls.map((c) => JSON.stringify(c[0]))
+      expect(locks[0]).toContain('org_nodes:reparent')
+      expect(locks[1]).toContain('admin:active_count')
+    })
+
     it('只收窄 allowedScopeTypes（不动 capability）→ 也取锁', async () => {
       const normalBefore = {
         ...superBefore, roleKey: 'role-custom', isSuperAdmin: false,

@@ -414,6 +414,32 @@ describe('updateOrgNode — 结构性变更后复核子树员工归属自洽（#
     expect(findSubtreeOwnershipConflicts).toHaveBeenCalledWith('dept-1', t.tx())
   })
 
+  /**
+   * 改 `type` 要**两把都取**（#318 第 4 轮 codew P1）：它判的「节点类型 × 角色白名单 ×
+   * 存量绑定」这个三元关系，同时被 `assignRole` 与 `updateRoleDefinition` 改白名单读写，
+   * 而那两条路径取的是 ②。只取 ① 的话两边各自按旧状态通过，留下违规授权。
+   */
+  it('改 type → ① 组织树 + ② admin 计数两把都取，且顺序为 ①→②', async () => {
+    const t = setupTx()
+
+    await updateOrgNode('dept-1', { type: '门店' })
+
+    const locks = t.txExecute.mock.calls.map((c: any) => JSON.stringify(c[0]))
+    expect(locks[0]).toContain('org_nodes:reparent')
+    expect(locks[1]).toContain('admin:active_count')
+  })
+
+  /** 只改父节点不改类型 → 不涉及白名单那个三元关系，不必取 ②（别无谓串行化） */
+  it('只改挂父节点（不改 type）→ 只取 ①，不取 ②', async () => {
+    const t = setupTx()
+
+    await updateOrgNode('dept-1', { parentId: 'market-2' })
+
+    const locks = t.txExecute.mock.calls.map((c: any) => JSON.stringify(c[0])).join('|')
+    expect(locks).toContain('org_nodes:reparent')
+    expect(locks).not.toContain('admin:active_count')
+  })
+
   it('改挂路径取的是与员工侧同一把组织树锁', async () => {
     const t = setupTx()
 
@@ -603,6 +629,26 @@ describe('updateOrgNode — 结构性变更后复核子树员工归属自洽（#
       // 事务外早拒一次 + 锁内权威一次
       expect((isNodeWithinScopeRoots as any).mock.calls.length).toBe(2)
       expect((isNodeWithinScopeRoots as any).mock.calls[1][2], '锁内那次必须走事务句柄').toBe(t.tx())
+    })
+
+    /** 目标父节点也可能在 session 构造之后被挪出管辖范围（codex 第 4 轮 P1） */
+    it('非 admin：目标父节点已被挪出管辖子树 → 拒绝', async () => {
+      ;(getSession as any).mockResolvedValue({
+        ...nonAdminSession,
+        permissions: { ...nonAdminSession.permissions, scopeOrgNodeIds: ['market-1', 'dept-1', 'market-2'] },
+      })
+      ;(isAdminScope as any).mockReturnValue(false)
+      // 被编辑节点自身还在范围内；目标父节点不在
+      ;(isNodeWithinScopeRoots as any).mockImplementation(
+        async (nodeId: string) => nodeId !== 'market-2',
+      )
+      const t = setupTx()
+
+      const result = await updateOrgNode('dept-1', { parentId: 'market-2' })
+
+      expect(result.success).toBe(false)
+      expect(result.message).toContain('无权将节点移动到该位置')
+      expect(t.txUpdate).not.toHaveBeenCalled()
     })
 
     it('admin → 不查树（不受 scope 限制）', async () => {

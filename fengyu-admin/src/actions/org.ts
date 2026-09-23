@@ -12,7 +12,7 @@ import { isNodeInScope } from '@/lib/node-scope'
 import { withPermission } from '@/lib/with-permission'
 import { requireAdmin, isAdminScope } from '@/lib/permissions'
 import { logOperation, logUpdate } from '@/lib/operation-log'
-import { lockOrgTree } from '@/lib/invariant-locks'
+import { lockOrgTree, lockActiveAdminCount } from '@/lib/invariant-locks'
 import { findSubtreeOwnershipConflicts, isNodeWithinScopeRoots } from '@/lib/org-ancestry'
 
 const VALID_NODE_TYPES = ['总部', '市场', '门店', '部门'] as const
@@ -127,6 +127,14 @@ export const createOrgNode = withPermission(
         if (!parent) return { ok: false, message: '父节点不存在' }
         const parentTypeError = validateParentType(data.type, parent.type)
         if (parentTypeError) return { ok: false, message: parentTypeError }
+
+        // 父节点是否还在管辖范围内，也要按**当前树**复判（codex 第 4 轮 P1）
+        if (!isAdminScope(session)) {
+          const scopeRoots = session.roles.map((role) => role.scopeId)
+          if (!(await isNodeWithinScopeRoots(data.parentId, scopeRoots, tx))) {
+            return { ok: false, message: '无权在该节点下创建子节点' }
+          }
+        }
       }
 
       await tx.insert(orgNodes).values({
@@ -228,9 +236,21 @@ async function validateStructuralChange(
   const parentTypeError = validateParentType(targetType, newParent.type)
   if (parentTypeError) return parentTypeError
 
-  // scope 隔离：非 admin 只能移动到自己 scope 内的父节点下。
-  if (targetParentId !== current.parentId && !(await isNodeInScope(session, targetParentId))) {
-    return '无权将节点移动到该位置'
+  /**
+   * scope 隔离：非 admin 只能移动到自己 scope 内的父节点下。
+   *
+   * 两条判据都要：`isNodeInScope` 是纯内存的**早拒**，`isNodeWithinScopeRoots` 按**当前树**判
+   * —— 目标父节点也可能在 session 构造之后被挪出操作者的管辖范围（codex 第 4 轮 P1）。
+   * 只判前者的话，锁内那次等于没判（同一纯函数同一入参）。
+   */
+  if (targetParentId !== current.parentId) {
+    if (!(await isNodeInScope(session, targetParentId))) return '无权将节点移动到该位置'
+    if (!isAdminScope(session)) {
+      const scopeRoots = session.roles.map((role) => role.scopeId)
+      if (!(await isNodeWithinScopeRoots(targetParentId, scopeRoots, executor))) {
+        return '无权将节点移动到该位置'
+      }
+    }
   }
   return null
 }
@@ -360,6 +380,15 @@ export const updateOrgNode = withPermission(
       ? await db.transaction(async (tx): Promise<TxOutcome> => {
         // 与员工侧的归属自洽校验共用同一把锁；取锁顺序见 lib/invariant-locks.ts（#318）
         await lockOrgTree(tx)
+        /**
+         * 改 `type` 还要取 ② —— 它判的「节点上的角色绑定是否被新类型允许」这个三元关系
+         * （节点类型 × 角色白名单 × 存量绑定）同时被 `assignRole` 与
+         * `updateRoleDefinition` 改白名单读写，而那两条路径取的是 ②（codex 第 4 轮 P1）。
+         * 只取 ① 的话：「门店→市场」与「白名单 门店+市场 → 仅门店」并发各自按旧状态通过，
+         * 提交后留下一条「角色不允许挂在市场节点」的存量授权，而权限计算会一直采用它。
+         * 顺序必须 ① → ②（见 lib/invariant-locks.ts），反了就是 40P01。
+         */
+        if (data.type !== undefined) await lockActiveAdminCount(tx)
 
         // 锁内重读才是权威旧值：审计 before、层级校验、复核都依赖它
         const [locked] = await tx.select().from(orgNodes).where(eq(orgNodes.id, id)).limit(1)

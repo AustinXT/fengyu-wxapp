@@ -15,7 +15,7 @@ import { logOperation } from '@/lib/operation-log'
 import { ApiError } from '@/lib/api-error'
 import { countActiveAdmins } from '@/lib/admin-guard'
 // 与 employees 侧共用同一把「活跃 admin 计数」锁；取锁顺序见该模块顶部（#318）
-import { lockActiveAdminCount } from '@/lib/invariant-locks'
+import { lockOrgTree, lockActiveAdminCount } from '@/lib/invariant-locks'
 
 async function loadRoleDefinition(
   roleKey: string,
@@ -368,12 +368,34 @@ export const assignRole = withAnyPermission(
   let assignOutcome: true | { failure: string }
   try {
     assignOutcome = await db.transaction(async (tx): Promise<true | { failure: string }> => {
+      /**
+       * 锁序 ① 组织树 → ② admin 计数（见 `lib/invariant-locks.ts`，反了就是 40P01）。
+       *
+       * 为什么这里也要 ①：本 action 判的是「节点类型 ∈ 角色白名单」，而**节点类型**会被
+       * `updateOrgNode` 改类型那条路径改掉（它取的是 ①）。只取 ② 的话，
+       * 「把绑定挂到门店节点」与「把那个节点改成市场」并发各自按旧状态通过 →
+       * 提交后留下一条 DB trigger 在 INSERT 时点本该拒掉的绑定（codex 第 4 轮 P1）。
+       */
+      await lockOrgTree(tx)
       await lockActiveAdminCount(tx)
 
       const lockedDefinition = await loadRoleDefinition(data.role, tx)
       if (!lockedDefinition) return { failure: '角色不存在' }
       if (lockedDefinition.isSuperAdmin && !hasPermission(session, 'permission:assign_admin')) {
         return { failure: '无权分配系统管理员角色' }
+      }
+
+      // 节点类型也要锁内重读 —— 事务外那次只是早拒
+      const [lockedNode] = await tx
+        .select({ type: orgNodes.type })
+        .from(orgNodes)
+        .where(eq(orgNodes.id, data.scopeId))
+        .limit(1)
+      if (!lockedNode) return { failure: '组织节点不存在' }
+      if (!lockedDefinition.allowedScopeTypes.includes(lockedNode.type as '总部' | '市场' | '门店')) {
+        return {
+          failure: `角色“${lockedDefinition.name}”只能绑定到${lockedDefinition.allowedScopeTypes.join('、')}节点，不能绑定到${lockedNode.type}节点`,
+        }
       }
 
       await tx.insert(permissionRoles).values({

@@ -15,7 +15,7 @@ import {
 import { logOperation, logUpdate } from '@/lib/operation-log'
 import { pgErrorCode } from '@/lib/pg-error'
 // 取锁顺序（组织树 → admin 计数 → 行锁）见该模块顶部（#318）
-import { lockActiveAdminCount } from '@/lib/invariant-locks'
+import { lockOrgTree, lockActiveAdminCount } from '@/lib/invariant-locks'
 import { countActiveAdmins } from '@/lib/admin-guard'
 import type { RoleDefinition } from '@/lib/types'
 
@@ -362,6 +362,15 @@ export const updateRoleDefinition = withPermission(
          * `assignRole` / `revokeRole` 是按锁内重读的 `is_super_admin` 决策的 ——
          * 升级方向不取锁，它们就会读到一个正在变的判据（GLM 报的那条击穿路径的上游）。
          */
+        /**
+         * 锁序 ① 组织树 → ② admin 计数（见 `lib/invariant-locks.ts`，反了就是 40P01）。
+         *
+         * 白名单变了要取 ①：锁内那条 `hasConflictingScopeAssignment` 判的是
+         * 「存量绑定所在**节点的类型** ∈ 新白名单」，而节点类型会被 `updateOrgNode`
+         * 改类型那条路径改掉（它取 ①）。只取 ② 的话，「白名单收窄」与「节点改类型」
+         * 并发各自按旧状态通过 → 留下违反新白名单的存量授权（codex 第 4 轮 P1）。
+         */
+        if (scopeTypesChanged) await lockOrgTree(tx)
         if (locksNeeded) await lockActiveAdminCount(tx)
 
         const rows = await tx

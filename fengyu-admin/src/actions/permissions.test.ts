@@ -250,14 +250,24 @@ const VISIBLE_EMPLOYEE = { storeId: null, orgNodeId: 'market-1', isResigned: fal
  * 既有用例原先写死「第 1 次是节点、其余都是重复检查」，插入第 ② 段后全部错位
  * （12 条一起变红）。统一收到这个 helper 里，下次再插入查询只改一处。
  */
-function mockAssignRoleSelects(opts: { node?: any; employee?: any; existing?: any } = {}) {
+/**
+ * `assignRole` 的 select 序列：① 事务外读节点类型 ② 读被授权人 ③ 查重复绑定
+ * ④ **锁内重读节点类型**（#318 第 4 轮：节点类型会被 updateOrgNode 改类型那条路径改掉）。
+ *
+ * `lockedNode` 默认与 `node` 同值；给不同值就能造出「事务外合法、锁内已被改成别的类型」。
+ */
+function mockAssignRoleSelects(
+  opts: { node?: any; employee?: any; existing?: any; lockedNode?: any } = {},
+) {
   const { node = { type: '市场' }, employee = VISIBLE_EMPLOYEE, existing = null } = opts
+  const lockedNode = opts.lockedNode === undefined ? node : opts.lockedNode
   let call = 0
   ;(db.select as any).mockImplementation(() => {
     call++
     if (call === 1) return mockSelectOnce(node)()
     if (call === 2) return mockSelectOnce(employee)()
-    return mockSelectOnce(existing)()
+    if (call === 3) return mockSelectOnce(existing)()
+    return mockSelectOnce(lockedNode)()
   })
 }
 
@@ -359,7 +369,43 @@ describe('assignRole — AC-09 & scope constraint', () => {
 
     await assignRole({ employeeId: 'EMP-X', role: 'admin', scopeId: 'hq-1' })
 
-    expect(JSON.stringify(t.txExecute.mock.calls[0][0])).toContain('admin:active_count')
+    const locks = t.txExecute.mock.calls.map((c) => JSON.stringify(c[0]))
+    // 锁序 ① 组织树 → ② admin 计数（判的是「节点类型 ∈ 角色白名单」，两把都要）
+    expect(locks[0]).toContain('org_nodes:reparent')
+    expect(locks[1]).toContain('admin:active_count')
+  })
+
+  /**
+   * 节点类型按**锁内**那次判（#318 第 4 轮 codex P1）：事务外读到「市场」（合法），
+   * 锁内重读已被 `updateOrgNode` 改成「部门」—— 必须拒，否则留下一条 DB trigger 在
+   * INSERT 时点本该拒掉的绑定。
+   */
+  it('事务外节点是市场、锁内已被改成部门 → 拒绝且不 INSERT', async () => {
+    ;(getSession as any).mockResolvedValue(adminSession)
+    ;(hasRole as any).mockReturnValue(true)
+    mockAssignRoleSelects({ node: { type: '市场' }, lockedNode: { type: '部门' }, existing: null })
+    const values = vi.fn().mockResolvedValue({})
+    ;(db.insert as any).mockReturnValue({ values })
+
+    const result = await assignRole({ employeeId: 'EMP-X', role: 'manager', scopeId: 'node-1' })
+
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('不能绑定到部门节点')
+    expect(values).not.toHaveBeenCalled()
+  })
+
+  it('锁内重读发现节点已被删除 → 拒绝且不 INSERT', async () => {
+    ;(getSession as any).mockResolvedValue(adminSession)
+    ;(hasRole as any).mockReturnValue(true)
+    mockAssignRoleSelects({ node: { type: '市场' }, lockedNode: null, existing: null })
+    const values = vi.fn().mockResolvedValue({})
+    ;(db.insert as any).mockReturnValue({ values })
+
+    const result = await assignRole({ employeeId: 'EMP-X', role: 'manager', scopeId: 'node-1' })
+
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('组织节点不存在')
+    expect(values).not.toHaveBeenCalled()
   })
 
   it('admin 分配 admin 角色到非 headquarters 节点 → 拒绝', async () => {
