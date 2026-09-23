@@ -1024,8 +1024,9 @@ export const getCustomerBoard = withPermission(
       withComparison((r) => queryOperatedMembers(session, scope, r), comparison, 'count', enabled),
       // 会员新增
       withComparison((r) => queryNewMemberCount(session, scope, r), comparison, 'count', enabled),
-      // 当月流量客人数（成交率分母）
-      withComparison((r) => queryTrialFootfall(session, scope, r), comparison, 'count', enabled),
+      // 成交率分母（#284 起为「期初未达会员活跃池 ∪ 本期全部新增会员」）
+      // ⚠ 第 4 参传 false = **不算同比/环比**，见下方 trafficCustomersCell 处的理由
+      withComparison((r) => queryTrialFootfall(session, scope, r), comparison, 'count', false),
       // 会员客单价
       withComparison((r) => queryMemberAvgTicket(session, scope, r), comparison, 'amount', enabled),
       // 新客客单价
@@ -1060,7 +1061,24 @@ export const getCustomerBoard = withPermission(
       ),
     ])
 
-    // 成交率 = 会员新增 ÷ 当月流量客（派生自上面已算的两个 KPI 的 value）
+    /**
+     * 成交率分母禁用同比/环比（#284）。
+     *
+     * 分母的两个分支数据深度差 50 个月：① 取自 `service_orders`（最早 2026-07-08）、
+     * ② 取自 `became_member_at`（回溯 2022-08）。基期一旦落在 2026-07-08 之前，
+     * ① 恒空而 ② 仍有数百人 —— 算出来的 delta **100% 由 ② 构成**，是个看着合理的假数。
+     *
+     * 旧口径分母只读 `service_orders`，这类基期恒 0，`deltaPct` 会抑制成 null → UI '--'，
+     * 是诚实的「算不出」。不把这条禁掉，本次修复就会把一个诚实的空值换成静默的错数。
+     *
+     * 与同页 `convRate` 同样处理：显式给 null（前端渲染 '--'），而不是省略字段。
+     * 割点背景见 memory `project-data-timeline-cutoff-20260703`。
+     */
+    const trafficCustomersCell: KpiCell = {
+      ...trafficCustomers,
+      ...(enabled ? { mom: null, yoy: null } : {}),
+    }
+    // 成交率 = 会员新增 ÷ 成交率分母（派生自上面已算的两个 KPI 的 value）
     const convRate: KpiCell = {
       value: safeDiv(newMembers.value ?? 0, trafficCustomers.value ?? 0),
       unit: 'percent',
@@ -1083,7 +1101,7 @@ export const getCustomerBoard = withPermission(
       reactivatedDeep,
       operatedMembers,
       newMembers,
-      trafficCustomers,
+      trafficCustomers: trafficCustomersCell,
       convRate,
       memberAvgTicket,
       newCustomerAvgTicket,

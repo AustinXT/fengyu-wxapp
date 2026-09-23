@@ -31,8 +31,10 @@ const KPI_STATUS: KpiGridItem[] = [
 const KPI_OPERATION: KpiGridItem[] = [
   { key: "operatedMembers", label: "会员经营人数", hint: "区间内消费合计 ≥ 1990" },
   { key: "newMembers", label: "会员新增" },
-  { key: "trafficCustomers", label: "当月流量客人数" },
-  { key: "convRate", label: "成交率", hint: "会员新增 ÷ 流量客" },
+  // #284：分母不再是「流量客」这个 customer_type 枚举值（新口径恰恰不含流量客），
+  // 改名避免与「流量人次」「流量客业绩」两个真·流量客指标混淆
+  { key: "trafficCustomers", label: "成交率分母", hint: "期初未达会员的到店活跃池 ∪ 本期全部新增会员" },
+  { key: "convRate", label: "成交率", hint: "会员新增 ÷ 成交率分母" },
   { key: "memberAvgTicket", label: "会员客单" },
   { key: "newCustomerAvgTicket", label: "新客客单" },
   { key: "serviceCount", label: "服务人次" },

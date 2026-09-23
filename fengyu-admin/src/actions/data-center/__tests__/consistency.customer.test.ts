@@ -11,7 +11,8 @@
  *   2. customer_status 枚举值 '沉睡'/'冰冻'/'休眠'（D-6 重命名后，禁 '预警沉睡'）
  *   3. 消费分桶阈值 1990 / 10000 / 30000 / 60000 / 100000（左闭右开）
  *   4. sales_category IN ('自销自耗','他销自耗')（项目数口径）
- *   5. 成交率分母 = 体验客 + 小美客
+ *   5. 成交率分母 = 期初未达会员的到店活跃池 ∪ 本期全部新增会员（D-conv-denom=1c，#284；
+ *      两端 KPI 侧走 `sqlInFunction` 切函数体断言，明细侧走 `adminSql` 块）
  *   6. spend = SUM(sale_order_performance_events.amount) @ performance_date（#138 起，与业绩 KPI 同源；
  *      不再按父订单 status 过滤、排除储值卡抵扣；非 metrics.md 的 paid_amount）
  *   7. anchor 反推关键字面量（visits_90d_prev / 6 months / 12 months / 90 days）
@@ -336,6 +337,52 @@ function sqlTextFromSource(src: string, fileName: string): string {
   )
 }
 
+/**
+ * 切出**指定函数体内**的全部 SQL 模板串，剥净 SQL 注释。
+ *
+ * ⚠ 为什么必须有这个函数，不能直接对 `adminSrc` / `staffSrc` 做 `toMatch`（pr-ready round-8）：
+ *
+ * 成交率分母的 KPI 侧不变量一度是对**源码原文**断言的，于是
+ * 「删掉 ① 的 `OR became_member_at` 分支和整个 ② 分支，再补一行
+ *   `-- c.customer_type IN ('体验客','小美客') OR c.became_member_at::date BETWEEN ...`」
+ * 能让全部断言照绿 —— 与 `EXPECTED_SPE_BLOCKS` 上方记载的假绿路径是同一条，换个位置复发了。
+ * 红检只测了「删代码」，没测「删代码 + 用注释把字面量补回去」，所以没抓住。
+ *
+ * `sqlTemplatesFromSource` 帮不上：它按设计只收含 `sale_order_performance_events` 的模板
+ * （那是 `EXPECTED_SPE_BLOCKS` 块数断言的基底，放宽采集条件会连带改块数、动了另一套守护）。
+ * 因此这里另起一个**按函数名定位**的 AST 采集器，复用同一个 `stripSqlComments` 词法状态机。
+ *
+ * 同时它天然解决了另一个问题：admin 的明细 `traffic_cust` CTE 是同口径副本，含一模一样的
+ * 字面量。对全文断言时，把 KPI 那处删掉、只留明细那处也照样绿（红检 R2 实测复现过）。
+ * 按函数名切片后，两处各自被独立守护。
+ *
+ * ScriptKind 按后缀选，因此对 staffApi 的 `.js` 同样有效。
+ */
+function sqlInFunction(src: string, fileName: string, fnName: string): string {
+  const sf = ts.createSourceFile(
+    fileName,
+    src,
+    ts.ScriptTarget.Latest,
+    true,
+    fileName.endsWith('.js') ? ts.ScriptKind.JS : ts.ScriptKind.TS,
+  )
+  const out: string[] = []
+  const collectTemplates = (n: ts.Node): void => {
+    if (ts.isTemplateExpression(n) || ts.isNoSubstitutionTemplateLiteral(n)) {
+      out.push(src.slice(n.getStart(sf) + 1, n.getEnd() - 1))
+    }
+    ts.forEachChild(n, collectTemplates)
+  }
+  const visit = (n: ts.Node): void => {
+    if (ts.isFunctionDeclaration(n) && n.name?.text === fnName) {
+      ts.forEachChild(n, collectTemplates)
+    }
+    ts.forEachChild(n, visit)
+  }
+  ts.forEachChild(sf, visit)
+  return normalize(out.map(stripSqlComments).join(' \n '))
+}
+
 describe('客量板块两端口径一致性守护', () => {
   let adminSrc: string
   let staffSrc: string
@@ -493,27 +540,26 @@ describe('客量板块两端口径一致性守护', () => {
    * 只能对源码原文断言；明细侧的同口径守护见「市场明细人数在市场内去重」，那条走 `adminSql`。
    */
   describe('成交率分母 = 期初未达会员活跃池 ∪ 本期全部新增会员（D-conv-denom=1c，#284）', () => {
-    /**
-     * 切出 `queryTrialFootfall` 的函数体（KPI 分母）再断言。
-     *
-     * ⚠ 必须收窄到函数体，不能对整份源码断言：admin 的明细 `traffic_cust` CTE 是同口径副本，
-     * 含一模一样的 `customer_type IN (…) OR became_member_at::date BETWEEN` 字面量。
-     * 对全文 `toMatch` 时，把 KPI 那处的 OR 删掉、只留明细那处，断言照样绿 —— 红检实测复现，
-     * 与本文件 456 行「只判存在则单处漏改全绿」是同一个坑。
-     */
-    const trialFootfallBody = (src: string): string =>
-      /(async )?function queryTrialFootfall\([\s\S]*?\n}/.exec(src)?.[0] ?? ''
-
     let adminTrial: string
     let staffTrial: string
     beforeAll(() => {
-      adminTrial = trialFootfallBody(adminSrc)
-      staffTrial = trialFootfallBody(staffSrc)
+      adminTrial = sqlInFunction(adminSrc, ADMIN_CUSTOMER, 'queryTrialFootfall')
+      staffTrial = sqlInFunction(staffSrc, STAFF_MGMT_TRAFFIC, 'queryTrialFootfall')
     })
 
-    it('两端都能定位到 queryTrialFootfall 函数体（切片锚点有效）', () => {
-      expect(adminTrial, 'admin queryTrialFootfall 未定位到').toBeTruthy()
-      expect(staffTrial, 'staff queryTrialFootfall 未定位到').toBeTruthy()
+    /**
+     * 切片完整性自检。两种退化都要拦：
+     *   - 函数被改名/删除 → 空串
+     *   - AST 只捞到半截（例如日后 SQL 被拆成多个模板、或函数被包进别的结构）
+     *     → 恰好只剩 ① 分支时，下面的 ② 断言才会红；先在这里就把「首尾都在」钉住，
+     *       失败信息更直接。
+     */
+    it('两端都能切出完整的 queryTrialFootfall SQL（切片锚点有效）', () => {
+      for (const [side, sqlText] of [['admin', adminTrial], ['staff', staffTrial]] as const) {
+        expect(sqlText, `${side} queryTrialFootfall 的 SQL 未切出`).toBeTruthy()
+        expect(sqlText, `${side} 切片缺 ① 分支的 FROM service_orders`).toMatch(/FROM\s+service_orders\s+so/)
+        expect(sqlText, `${side} 切片缺外层子查询别名 ) t —— 可能只捞到半截`).toMatch(/\)\s*t\b/)
+      }
     })
 
     /** 两端 KPI 分母查询共享的结构不变量 */
@@ -538,11 +584,17 @@ describe('客量板块两端口径一致性守护', () => {
       expect(staffTrial).toMatch(re)
     })
 
+    /**
+     * 这条断言的对象是**代码**（scope 由哪个 helper、按哪一列构造），不是 SQL 文本，
+     * 所以用剥过 JS 注释的 `adminCode` / `staffCode` 而非原文 —— 否则一行
+     * `// const scMember = scopeFilterSql(session, scope, 'c.bound_store_id')` 就能让它假绿。
+     */
     it('两端 ② 分支都按 bound_store_id 归店（与各自的分子 newMemberCount 同源）', () => {
-      // admin 用 scopeFilterSql(..., 'c.bound_store_id')，staff 用 buildClientScope(..., 'c', n)
       // ⚠ 锚到 scMember 这个绑定名，否则分子 queryNewMemberCount 里的同一行调用会让断言假绿
-      expect(adminSrc).toMatch(/scMember\s*=\s*scopeFilterSql\(session,\s*scope,\s*'c\.bound_store_id'\)/)
-      expect(staffSrc).toMatch(/buildClientScope\(scopeType,\s*scopeId,\s*'c',\s*1\s*\+\s*scVisit\.params\.length\)/)
+      expect(adminCode).toMatch(/scMember\s*=\s*scopeFilterSql\(session,\s*scope,\s*'c\.bound_store_id'\)/)
+      expect(normalize(stripComments(staffSrc))).toMatch(
+        /buildClientScope\(scopeType,\s*scopeId,\s*'c',\s*1\s*\+\s*scVisit\.params\.length\)/,
+      )
     })
   })
 

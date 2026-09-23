@@ -272,6 +272,64 @@ describe('getCustomerBoard 装配', () => {
     expect(m.metrics.consumePerVisit).toBeNull()
   })
 
+  /**
+   * #284：「分子 > 0 而分母 = 0」是「分子 ⊄ 分母」的**唯一可观测症状**，而 `safeDiv`
+   * 会把它静默转成 null → UI 渲染 '--'，与「本期无人可成交」的正常空态**完全同形**，
+   * 永远不会有人报障。上一条用例喂的是全零行，覆盖不到这个态。
+   *
+   * 方案 1c 下该态**不应再从数据库产生**（分母 ② 分支与分子 `newmem` 用逐字相同的
+   * JOIN、scope 谓词与日期条件）。这里锁住的是「万一真出现了，装配层不会崩、也不会
+   * 算出 Infinity」，同时把「出现即分母漏人」这条判读写进用例名，留给下一个排障的人。
+   */
+  it('分子 > 0 而分母 = 0（分母漏人的症状态）：convRate → null，不产生 Infinity', async () => {
+    responder.scalarRow = { v: 0, total_count: 0, total_spend: 0 }
+    responder.skeletonRows = [
+      { market_id: 'm1', market_name: '市场A', store_id: 's1', store_name: '门店1' },
+    ]
+    responder.regActiveRows = [
+      { group_id: 'm1', group_name: '市场A', market_name: '市场A', registered: 0, retained: 0, visit_once: 0, visit_twice: 0, dormant: 0, react_dormant: 0, frozen: 0, react_frozen: 0, deep: 0, react_deep: 0 },
+      { group_id: 's1', group_name: '门店1', market_name: '市场A', registered: 0, retained: 0, visit_once: 0, visit_twice: 0, dormant: 0, react_dormant: 0, frozen: 0, react_frozen: 0, deep: 0, react_deep: 0 },
+    ]
+    // new_members=3 而 traffic_customers=0 —— 1c 下不可达，出现即分母漏人
+    responder.opsRows = [
+      { group_id: 'm1', bucket_d: 0, bucket_c: 0, bucket_b: 0, bucket_a: 0, bucket_v: 0, bucket_vic: 0, operated_total: 0, member_spend_total: 0, member_spend_count: 0, new_members: 3, new_spend: 0, traffic_customers: 0, traffic_visits: 0, member_visits: 0, project_count: 0, sm_total: 0 },
+      { group_id: 's1', bucket_d: 0, bucket_c: 0, bucket_b: 0, bucket_a: 0, bucket_v: 0, bucket_vic: 0, operated_total: 0, member_spend_total: 0, member_spend_count: 0, new_members: 3, new_spend: 0, traffic_customers: 0, traffic_visits: 0, member_visits: 0, project_count: 0, sm_total: 0 },
+    ]
+
+    const res = await getCustomerBoard(PARAMS)
+    const m = res.byMarket[0]
+    expect(m.metrics.newMembers).toBe(3)
+    expect(m.metrics.trafficCustomers).toBe(0)
+    expect(m.metrics.convRate).toBeNull()
+    expect(Number.isFinite(m.metrics.convRate as number)).toBe(false)
+  })
+
+  /**
+   * #284 的核心不变量：分子 ⊆ 分母 ⇒ 成交率 ≤ 100%。
+   * 上面的用例只验算术（2/5=0.4），验不了这条 —— 分母漏人时 convRate 会静静地跑出 1。
+   */
+  it('分母 ⊇ 分子时 convRate ≤ 1（成交率上限不变量）', async () => {
+    responder.skeletonRows = [
+      { market_id: 'm1', market_name: '市场A', store_id: 's1', store_name: '门店1' },
+    ]
+    responder.regActiveRows = [
+      { group_id: 'm1', group_name: '市场A', market_name: '市场A', registered: 0, retained: 0, visit_once: 0, visit_twice: 0, dormant: 0, react_dormant: 0, frozen: 0, react_frozen: 0, deep: 0, react_deep: 0 },
+      { group_id: 's1', group_name: '门店1', market_name: '市场A', registered: 0, retained: 0, visit_once: 0, visit_twice: 0, dormant: 0, react_dormant: 0, frozen: 0, react_frozen: 0, deep: 0, react_deep: 0 },
+    ]
+    // 全员转化的极端情形：分子 == 分母 → 恰好 1.0，仍须 ≤ 1
+    responder.opsRows = [
+      { group_id: 'm1', bucket_d: 0, bucket_c: 0, bucket_b: 0, bucket_a: 0, bucket_v: 0, bucket_vic: 0, operated_total: 0, member_spend_total: 0, member_spend_count: 0, new_members: 7, new_spend: 0, traffic_customers: 7, traffic_visits: 0, member_visits: 0, project_count: 0, sm_total: 0 },
+      { group_id: 's1', bucket_d: 0, bucket_c: 0, bucket_b: 0, bucket_a: 0, bucket_v: 0, bucket_vic: 0, operated_total: 0, member_spend_total: 0, member_spend_count: 0, new_members: 7, new_spend: 0, traffic_customers: 7, traffic_visits: 0, member_visits: 0, project_count: 0, sm_total: 0 },
+    ]
+
+    const res = await getCustomerBoard(PARAMS)
+    for (const row of [...res.byMarket, ...res.byStore]) {
+      const rate = row.metrics.convRate
+      expect(rate).not.toBeNull()
+      expect(rate as number).toBeLessThanOrEqual(1)
+    }
+  })
+
   it('市场消费经营直接使用市场内去重结果，不累加跨店顾客', async () => {
     responder.skeletonRows = [
       { market_id: 'm1', market_name: '市场A', store_id: 's1', store_name: '门店1' },
