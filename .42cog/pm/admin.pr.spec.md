@@ -160,6 +160,22 @@ admin 管理权限分配/撤销、WorkFine → PG 数据同步、操作日志查
 （自身及祖先中最近的门店型节点），也共用**同一把锁**，否则两侧并发交叉会合成出不自洽状态。
 取锁顺序见 `src/lib/invariant-locks.ts`：① 组织树 → ② admin 计数 → ③ 行锁，反序即死锁（`40P01`）。
 
+**改 `type` 的三项连带校验**（锁内）：存量**直接子节点**与新类型不兼容则拒（`部门` 下不能挂门店）；
+节点上有**该层级不允许的角色绑定**则拒（DB trigger 只在绑定 INSERT 时按当时白名单校验、改节点
+类型不回溯）；`stores.org_node_id` **指向本节点**时不许改成非门店（否则门店失去组织挂载点）。
+改 `type` 还要额外取 ② —— 它读写的「节点类型 × 角色白名单 × 存量绑定」三元关系同时被
+`assignRole` / `updateRoleDefinition` 改写，那两条取的是 ②。
+
+**创建与删除同样改变树形态，也必须取 ①**：`createOrgNode` 锁内重读父节点类型；
+`deleteOrgNode` 把四项引用检查（子节点/员工/门店/角色）全部收进锁内重跑。
+删除不取锁的后果不只是守卫失效，而是让改挂/授权那两侧撞出**未翻译的 `23503` → 500**。
+
+**scope 判定一律按「当前树」而不是 session 快照**：`session.permissions.scopeOrgNodeIds` 是
+构造 session 时按**当时**的树展开好的，窗口是整个 JWT 寿命（24h）。所以锁内用
+`isNodeWithinScopeRoots(nodeId, 角色绑定的根节点, tx)` 重判 —— 对被编辑节点、目标父节点、
+创建时的父节点、删除的节点都要判。⚠️ 「锁内重跑 `isNodeInScope`」是 **no-op**（纯内存、
+同一入参必然同一答案），别那么改。
+
 #### AFF-02 门店信息管理
 
 **操作对象**: `stores` | 权限：admin, hr | 操作：新增（同时创建 org_nodes）、编辑、关闭（`is_closed = true`）
@@ -170,6 +186,11 @@ admin 管理权限分配/撤销、WorkFine → PG 数据同步、操作日志查
 - 展示内容：cover_image, images[], description, announcement, parking_info
 
 **约束**: store_name 唯一；新增须选所属市场；经纬度格式校验
+
+**`createStore` 必须取 ① 组织树锁**（#318）：`stores.org_node_id` 是「门店 ↔ 组织节点」映射的
+写入方，而 AFF-01 改 `type` 的守卫要查「本节点上有没有门店映射」。两边不共锁就能交叉穿透 ——
+改类型事务查到「还没被门店引用」→ 建店事务把映射写上去并按旧类型过 trigger → 改类型提交
+→ 留下「门店指向非门店节点」。锁内重读节点类型，不是门店就拒。`updateStore` 不改该列，无需取锁。
 
 #### AFF-03 员工档案管理
 
@@ -338,6 +359,13 @@ admin 管理权限分配/撤销、WorkFine → PG 数据同步、操作日志查
 导致离职残留绑定永远清不掉）；`updateRoleDefinition` 先 CAS UPDATE 再数（守卫排在前面时，
 一次注定失败的乐观锁提交会先撞上「至少保留 1 名超管」，把用户带到错误方向）。
 拒绝时靠抛哨兵回滚。撤自己的超管角色照旧直接拒。
+
+**`assignRole` / `revokeRole` 取 ①→② 两把**：它们判的「节点类型 ∈ 角色白名单」与
+「该 scope 节点是否还在操作者管辖范围内」都依赖**当前树**，而树由取 ① 的那些路径改。
+两条判据都在锁内重判（事务外那次只是早拒）：节点类型锁内重读；scope 用
+`isNodeWithinScopeRoots` 按当前树判 —— 否则节点在操作者登录后被挪出其市场，他仍能
+对它授予/回收权限（未授权的权限回收与未授权的授予同等严重）。
+`deleteRoleDefinition` 的「还有人在用就不许删」同样与 `assignRole` 互斥（取 ②）。
 
 #### AFF-08 业务操作（adminApi）
 
