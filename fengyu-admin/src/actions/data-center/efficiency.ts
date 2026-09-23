@@ -353,6 +353,19 @@ export const getEfficiencyBoard = withPermission(
      * 没有任何门店可挂，只按 store 汇总会把他们又丢一次（这正是 #285 分母缺口的成因）。
      * `market_name` 一并带出，因为「品项公司」这类市场底下一个门店都没有，
      * 不会出现在门店骨架 skelRows 里，拿不到名字。
+     *
+     * ⚠️ **已知且有意的口径缺口**：本查询要求 `anchor_market_id IS NOT NULL`，
+     * 而 `technician_scoped` 的无门店分支走 `orgAnchorScopeSql` —— 后者在
+     * 「admin + scope=all」时直接返回 `TRUE`，**不要求锚得到市场**。
+     * 于是「既无门店、又锚不到市场」的产能技师会进 **KPI 总分母**，却进不了任何
+     * byMarket 行 → `KPI 技师数 ≥ Σ byMarket 技师数`。
+     *
+     * 不收紧 `technician_scoped` 是有意的：那会把一名真实的产能技师从集团口径里整个抹掉，
+     * 比「集团 ≥ 各市场之和」更糟；也会与 Part D `producer_employees` 的人池定义分叉。
+     * 与已登记的 `集团技师数 ≠ Σ门店技师数`（直挂者在单店 scope 不出现）是同一性质。
+     *
+     * 2026-09-23 生产实测该类人数为 **0**（全部 13 名无门店技师都锚得到市场），
+     * 故当前两个数恒等。若将来出现「直挂总部」或「父节点非市场」的产能技师即会分叉。
      */
     const qTechDirectByMarket = db.execute(sql`
       WITH ${technicianCte}
