@@ -1072,12 +1072,20 @@ export const getCustomerBoard = withPermission(
      * 旧口径分母只读 `service_orders`，这类基期恒 0，`deltaPct` 会抑制成 null → UI '--'，
      * 是诚实的「算不出」。不把这条禁掉，本次修复就会把一个诚实的空值换成静默的错数。
      *
-     * 与同页 `convRate` 同样处理：显式给 null（前端渲染 '--'），而不是省略字段。
+     * 与同页 `convRate` 同样处理：显式给「算不出」占位（前端渲染 '--'），而不是省略字段——
+     * 省略会让前端的 `!== undefined` 判定整行不渲染徽章。
      * 割点背景见 memory `project-data-timeline-cutoff-20260703`。
+     *
+     * ⚠️ 这里原本写的是 `{ mom: null, yoy: null }`（#284 落地时 `KpiCell.mom` 还是
+     * `DeltaPct | null`）。#310/#315 把类型收紧为 `DeltaDisplay`、用 `{ kind: 'na' }`
+     * 表达「算不出」后，`null` 不再合法——两个 PR 各自绿灯、合并进 dev 才撞上。
+     * 构造一律走 `resolveDeltaDisplay`（`types.ts` 的要求），别手写 `{ kind: 'na' }` 字面量。
      */
     const trafficCustomersCell: KpiCell = {
       ...trafficCustomers,
-      ...(enabled ? { mom: null, yoy: null } : {}),
+      ...(enabled
+        ? { mom: resolveDeltaDisplay(null, null), yoy: resolveDeltaDisplay(null, null) }
+        : {}),
     }
     // 成交率 = 会员新增 ÷ 成交率分母（派生自上面已算的两个 KPI 的 value）
     const convRate: KpiCell = {
