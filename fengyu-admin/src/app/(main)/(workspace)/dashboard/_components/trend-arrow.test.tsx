@@ -104,11 +104,17 @@ describe('TrendArrow · 基期 ≤ 0（#315 的核心缺陷）', () => {
 /**
  * #315 AC2：`previous > 0` 的常规路径**渲染逐字不变**。
  *
+ * ⚠️ **AC2 的字面表述与决策 3 天然冲突**，别拿字面 AC2 当回归依据：
+ * 在 `0 < |Δ%| < 0.5%` 区间，旧实现渲染 `↑ 0%`，而决策 3 要求改出「持平」——
+ * 这正是本 PR 的**目标行为**，不是回归。AC2 的精确含义是
+ * **「旧实现输出非 `0%` 的那些输入，逐字不变」**。
+ *
  * 本次把展示值从 `Math.round` 换成了 `toFixed`，属于会改渲染的那类改动，
  * 所以这里用**旧实现原样复刻**做逐输入对照，而不是靠推理。
  *
  * 结论（见断言）：两者在 `previous > 0` 上逐字等价——旧实现先 `Math.abs` 再 `Math.round`，
  * 对正数即 away-from-zero，与 `toFixed` 一致。
+ * 闸门 2（GLM）另以 4800+ 输入 fuzz 复核：唯一差异恰是 13 例 `0%` → 「持平」，零其他 mismatch。
  * ⚠️ 但若写成 `Math.abs(Math.round(delta * 100))`（先 round 后 abs）就会分叉：
  * `Math.round(-0.5) === -0` → 渲染 `0%`，把缺陷造回来。这正是不能用 Math.round 的原因。
  */
@@ -158,8 +164,11 @@ describe('TrendArrow · 基期为正的回归对照（AC2 逐字不变）', () =
   })
 })
 
-describe('TrendArrow · 可访问性回归', () => {
-  it('有方向的三态都带箭头 svg，无方向的两态不带', () => {
+describe('TrendArrow · DOM 结构回归', () => {
+  // ⚠️ 本组只验 DOM 结构，**不是可访问性测试**（闸门 2 codex 指出原命名名不副实）。
+  // 箭头是纯 svg、无 aria-label，屏幕阅读器只会读到「20%」，读不出涨跌方向——
+  // 真正的可访问性改造不在 #310/#315 范围内，这里只诚实描述测的是什么。
+  it('有方向的四态都带箭头 svg，无方向的两态不带', () => {
     const withArrow = [
       [120, 100],
       [80, 100],
@@ -183,7 +192,7 @@ describe('TrendArrow · 可访问性回归', () => {
     }
   })
 
-  it('screen 查询可达（冒烟：组件确实挂载进了 DOM）', () => {
+  it('冒烟：组件确实挂载进了 DOM（getByText 只证明文本存在，不证明语义可达）', () => {
     render(<TrendArrow current={120} previous={100} />)
     expect(screen.getByText('20%')).toBeTruthy()
   })

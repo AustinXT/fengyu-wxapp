@@ -106,8 +106,11 @@ function scaledDelta(value: number, digits: number): number {
  * 因为数据中心（`text-[#3D8A5A]`）与首页看板用的是同一套色号但不同的类名组合。
  *
  * `pct` 且舍入后为 0 → `neutral`（决策 3）。`digits` 传展示精度：
- * 数据中心 2 位小数、首页看板整数、analyst 1 位——**精度不同，但舍入方式统一走
- * `scaledDelta`（`toFixed`）**，别在调用点自行 `Math.round`。
+ * **本模块的两个消费方**——数据中心 2 位小数、首页看板整数——精度不同，
+ * 但舍入方式统一走 `scaledDelta`（`toFixed`），别在调用点自行 `Math.round`。
+ *
+ * （analyst 也用 1 位精度，但那是**独立实现** `metric-delta.ts`，不经过本模块，
+ * 别把它读成「三处共用 scaledDelta」。）
  */
 export function deltaTone(
   display: DeltaDisplay,

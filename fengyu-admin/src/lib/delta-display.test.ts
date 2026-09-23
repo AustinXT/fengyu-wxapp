@@ -56,9 +56,16 @@ describe('resolveDeltaDisplay（决策 1 矩阵）', () => {
       expect(resolveDeltaDisplay(-10, 0)).toEqual({ kind: 'na' })
     })
 
-    it('负零走零分支，不被误判成负基期', () => {
+    it('负零作基期：走零分支，不被误判成负基期', () => {
       // -0 < 0 为 false、-0 > 0 也为 false，所以必须落在 base === 0 这一格。
       expect(resolveDeltaDisplay(10, -0)).toEqual({ kind: 'na' })
+    })
+
+    it('负零作当期：不被误判成「已转正」', () => {
+      // `cur > 0` 对 -0 为 false，所以 base<0 时落 notTurned（与 cur===0 同格，符合「未转正」的措辞）。
+      expect(resolveDeltaDisplay(-0, -10)).toEqual({ kind: 'notTurned' })
+      // base>0 时 -0 照常参与除法：(-0-10)/10 = -1 → -100%
+      expect(resolveDeltaDisplay(-0, 10)).toEqual({ kind: 'pct', value: -1 })
     })
 
     it('null / undefined', () => {
