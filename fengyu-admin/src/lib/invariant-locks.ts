@@ -14,14 +14,24 @@ import { db } from '@/db'
  *
  * ## 两个不变量与对应的锁
  *
- * | 不变量 | 锁 | 谁必须取 |
+ * | 锁 | 守的是什么 | 谁必须取 |
  * |---|---|---|
- * | 员工 `store_id` 与 `org_node_id` 归属自洽（#259） | `org_nodes:reparent` | `org.updateOrgNode` 改父/改类型、`employees.createEmployee`、`employees.updateEmployee`（动归属或复职） |
- * | 系统至少留一名在职超级管理员 | `admin:active_count` | `employees.updateEmployee` 标离职、`employees.deleteEmployee`、`permissions.revokeRole` 撤超管绑定、`role-definitions.updateRoleDefinition` 把角色降级成非超管 |
+ * | ① `org_nodes:reparent` | **组织树形态**，以及一切按树形态做的判断：员工归属自洽（#259）、节点是否在操作者 scope 内、「节点类型 × 角色白名单 × 存量绑定」三元关系、门店↔节点映射 | `org.createOrgNode` / `updateOrgNode`（改父或改类型）/ `deleteOrgNode`、`employees.createEmployee` / `updateEmployee`（动归属或复职）、`permissions.assignRole` / `revokeRole`、`role-definitions.updateRoleDefinition`（白名单变更）、`stores.createStore` |
+ * | ② `admin:active_count` | **「谁是活跃超管」这个集合** —— 由角色**绑定**与角色定义的**超管位**共同决定，所以两类写入都要取 | `employees.updateEmployee`（标离职）/ `deleteEmployee`、`permissions.assignRole` / `revokeRole`、`role-definitions.updateRoleDefinition`（capability 或白名单变更）/ `deleteRoleDefinition`、`org.updateOrgNode`（改 type） |
  *
- * ⚠️ 这两张「谁必须取」的清单会随功能增长 —— 新写一个会**改组织树形态**或**减少活跃超管**的
- * 路径时，回来把它加进对应行并取锁。判断标准不是「这个 action 叫什么」，而是
- * 「它的写入会不会让别人的守卫结论失效」。
+ * ⚠️ 这张表会随功能增长，而**它不是靠自觉维护的**：
+ * `invariant-locks.test.ts` 有一张逐 action 的期望清单（`EXPECTATIONS`），既断言每个 action
+ * 取了哪几把锁、顺序对不对，也反向抓「取了锁却没登记」的 action。改这里记得同步那张表。
+ *
+ * 判断标准不是「这个 action 叫什么」，而是**「它的写入会不会让别人的守卫结论失效」**。
+ * 反过来也成立：它的守卫依赖谁的写入，就得和那个写入方共锁。
+ *
+ * ## 不在协议里的写入方（已知、有意）
+ *
+ * `db/scripts/sync-workfine.js` 的 UPSERT 直接写 `is_resigned` 而不取 ② —— 那个脚本自
+ * 2026-04-16 起业务方决定上线后不再运行（仅历史迁移 / 上线前刷新），且要跑起来得连
+ * WorkFine 的 SQL Server。#318 给它加了**生产库硬拒绝**（`ALLOW_PROD_WORKFINE_SYNC=1`
+ * 才放行），并在 cron 侧加了 `activeAdminCount` 巡检（0 人 → critical）做事后兜底。
  *
  * 归属自洽用的是**组织树那把锁**而不是新开一把：改挂父节点与判自洽是同一件事的两端 ——
  * 一边改树形态、一边依据树形态做判断，必须互斥。复用 `org_nodes:reparent` 也让
