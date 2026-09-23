@@ -1149,10 +1149,15 @@ describe('updateEmployee — 服务端输入校验 + 错误处理', () => {
       .toMatch(/\.for\(\s*['"]update['"]\s*\)/)
     expect(deleteBody, 'deleteEmployee 的锁内重读必须 FOR UPDATE')
       .toMatch(/\.for\(\s*['"]update['"]\s*\)/)
-    expect(src, 'advisory lock 的 key 必须收口成常量，两条路径共用')
-      .toMatch(/ACTIVE_ADMIN_LOCK_KEY = 'admin:active_count'/)
-    expect(src, '锁必须真的用 pg_advisory_xact_lock 取')
-      .toMatch(/pg_advisory_xact_lock\(hashtext\(\$\{ACTIVE_ADMIN_LOCK_KEY\}\)/)
+    /**
+     * 锁的定义已收口到 `lib/invariant-locks.ts`（#318）—— 那里同时是取锁**顺序**的
+     * 单一来源（组织树 → admin 计数 → 行锁）。本文件只断言 employees 侧确实从那里取，
+     * key 与 `pg_advisory_xact_lock` 的写法由该模块自己的用例守护。
+     */
+    expect(src, 'admin 计数锁必须从共用模块取')
+      .toMatch(/lockActiveAdminCount\(tx\)/)
+    expect(src, '归属路径必须取组织树锁 —— 否则 updateOrgNode 改挂能绕过自洽校验')
+      .toMatch(/lockOrgTree\(tx\)/)
     /**
      * 会减少活跃 admin 的**两条**路径（标记离职 / 物理删除）都必须取这把锁。
      * 只修一侧等于没修（#228 的教训，GLM 谱系第 10 轮在 `deleteEmployee` 上又抓到一次）。
