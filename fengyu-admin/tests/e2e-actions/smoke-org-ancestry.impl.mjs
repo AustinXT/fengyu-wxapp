@@ -273,6 +273,33 @@ async function main() {
     { conflicts: [], total: 0 })
 
   /**
+   * ## 「改挂**出**门店子树」这个方向刻意放行（GLM 第 4 轮 P1 的正面回答）
+   *
+   * 上一条是「根是市场直属部门」，这一条把它做成真正的**改挂后形态**：
+   * 把 A 店下的部门 DEPT_A 改挂到市场下 → 挂 DEPT_A 的员工（store_id 仍指 SA）
+   * 最近门店祖先从 A 店变成 NULL。判据必须与员工侧一致 ——
+   * `assertOwnershipConsistent` 对 `storeAncestorId === null` 是直接放行的。
+   * 改完把树复原，后面的断言仍按原拓扑。
+   */
+  check('改挂前：A 店子树里这两人是冲突（对照组）',
+    who(await findSubtreeOwnershipConflicts(id('MKT'))),
+    ['BAD_A', 'DEEP'])
+  await sql`UPDATE org_nodes SET parent_id = ${id('MKT')} WHERE id = ${id('DEPT_A')}`
+  /**
+   * 改挂后 DEPT_A 及其子节点 SUB_A 都脱离了门店子树 → 挂在它们上面的三个人
+   * （OWN_OK_A / OWN_BAD_A / OWN_DEEP）最近门店祖先全变成 NULL → 一个都不报。
+   * 连原本**是**冲突的 BAD_A 也不再是 —— 这正是「放行 null 分支」的完整后果，
+   * 与员工侧 `assertOwnershipConsistent` 对 `storeAncestorId === null` 直接放行一致。
+   */
+  check('改挂出门店子树（最近门店祖先变 NULL）→ 一个都不报（与员工侧同口径）',
+    who(await findSubtreeOwnershipConflicts(id('MKT'))),
+    [])
+  await sql`UPDATE org_nodes SET parent_id = ${id('STORE_A')} WHERE id = ${id('DEPT_A')}`
+  check('复原后对照组回来（确认上一条不是夹具被永久改坏）',
+    who(await findSubtreeOwnershipConflicts(id('MKT'))),
+    ['BAD_A', 'DEEP'])
+
+  /**
    * `store_id IS NULL`（半填状态）—— 甲方 2026-09-23 拍板 **#259 选项 A：保持放行**。
    * ⚠️ 这一条**不是红检守护**：`JOIN stores ON st.store_id = n.store_id` 是内连接，
    * store_id 为空的行本来就连不上、会被丢掉，所以把 `AND e.store_id IS NOT NULL` 删掉
