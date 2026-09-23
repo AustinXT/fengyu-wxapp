@@ -144,8 +144,14 @@ describe('invariant-locks — 逐 action 的取锁期望（源码守护）', () 
       why: '父节点类型必须锁内重读，否则与改类型那侧交叉穿透出非法树',
     },
     {
-      file: 'org.ts', action: 'updateOrgNode', locks: ['org', 'admin'],
-      why: '改树形态要 ①；改 type 会动「节点类型 × 角色白名单 × 存量绑定」三元关系要 ②',
+      /**
+       * 两个 `org` 是**两条互斥分支**各取一次：非结构性分支（改名/排序/启停）取 ① 是为了
+       * 按当前树复判 scope；结构性分支（改父/改类型）取 ① 是为了树形态本身。
+       * 精确序列比较会把分支结构一起钉住 —— 这是「精确」的代价，也是它的价值：
+       * 谁往其中一条分支里多加一把锁都会在这里现形。
+       */
+      file: 'org.ts', action: 'updateOrgNode', locks: ['org', 'org', 'admin'],
+      why: '非结构性分支取 ① 复判 scope；结构性分支取 ①，改 type 再叠 ②（三元关系）',
     },
     {
       file: 'org.ts', action: 'deleteOrgNode', locks: ['org'],

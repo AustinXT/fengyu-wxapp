@@ -77,6 +77,7 @@ import { stores } from '@db/org'
 import { getSession } from '@/lib/auth'
 import { isAdminScope } from '@/lib/permissions'
 import { findSubtreeOwnershipConflicts, isNodeWithinScopeRoots } from '@/lib/org-ancestry'
+import { logUpdate } from '@/lib/operation-log'
 
 const mockSession = {
   employeeId: 'ADMIN-001',
@@ -679,15 +680,48 @@ describe('updateOrgNode — 结构性变更后复核子树员工归属自洽（#
     expect(written.name, '白名单内的字段照常写').toBe('新名称')
   })
 
-  it('非结构性的普通更新（改名）→ 不进事务、不取锁、不复核', async () => {
-    setupTx()
-    setupUpdate(1)
+  /**
+   * 非结构性更新（改名 / 排序 / 启停）**也进事务、也取 ①**（#318 第 9 轮 GLM P2）——
+   * 它不改树形态，但 scope 判定依赖树形态，要按当前树判就得有个一致的快照。
+   * 不做的是「子树员工归属复核」（树没变，没什么可复核）。
+   */
+  it('非结构性的普通更新（改名）→ 进事务、取 ①、但不复核子树', async () => {
+    const t = setupTx()
 
     const result = await updateOrgNode('dept-1', { name: '新名称' })
 
     expect(result.success).toBe(true)
-    expect(db.transaction).not.toHaveBeenCalled()
+    expect(db.transaction).toHaveBeenCalled()
+    expect(JSON.stringify(t.txExecute.mock.calls[0][0])).toContain('org_nodes:reparent')
+    // 树没变 → 不必复核子树员工归属
     expect(findSubtreeOwnershipConflicts).not.toHaveBeenCalled()
+  })
+
+  /** 非结构性路径也按当前树复判 scope —— 三步反例无需并发（见实现里的注释） */
+  it('非结构性更新：非 admin 且节点已被挪出管辖子树 → 拒绝且不写库', async () => {
+    const t = setupTx()
+    ;(getSession as any).mockResolvedValue({
+      employeeId: 'HR-001',
+      roles: [{ role: 'hr', scopeId: 'market-1' }],
+      permissions: { actions: ['org:update'], scopeStoreIds: [], scopeOrgNodeIds: ['market-1', 'dept-1'] },
+    })
+    ;(isAdminScope as any).mockReturnValue(false)
+    ;(isNodeWithinScopeRoots as any).mockResolvedValue(false)
+
+    const result = await updateOrgNode('dept-1', { name: '新名称' })
+
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('无权编辑该节点')
+    expect(t.txUpdate).not.toHaveBeenCalled()
+  })
+
+  /** 审计也在事务内（写成功但审计抛错时不能留下「用户看到失败、改名已生效」） */
+  it('非结构性更新的审计走事务句柄', async () => {
+    const t = setupTx()
+
+    await updateOrgNode('dept-1', { name: '新名称' })
+
+    expect((logUpdate as any).mock.calls[0][6], '审计的 executor 必须是事务句柄').toBe(t.tx())
   })
 })
 

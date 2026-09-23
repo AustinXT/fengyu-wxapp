@@ -398,61 +398,95 @@ export const updateOrgNode = withPermission(
   let ownershipConflictTotal = 0
   let outcome: TxOutcome
   try {
-    outcome = structural
-      ? await db.transaction(async (tx): Promise<TxOutcome> => {
-        // 与员工侧的归属自洽校验共用同一把锁；取锁顺序见 lib/invariant-locks.ts（#318）
-        await lockOrgTree(tx)
-        /**
-         * 改 `type` 还要取 ② —— 它判的「节点上的角色绑定是否被新类型允许」这个三元关系
-         * （节点类型 × 角色白名单 × 存量绑定）同时被 `assignRole` 与
-         * `updateRoleDefinition` 改白名单读写，而那两条路径取的是 ②（codex 第 4 轮 P1）。
-         * 只取 ① 的话：「门店→市场」与「白名单 门店+市场 → 仅门店」并发各自按旧状态通过，
-         * 提交后留下一条「角色不允许挂在市场节点」的存量授权，而权限计算会一直采用它。
-         * 顺序必须 ① → ②（见 lib/invariant-locks.ts），反了就是 40P01。
-         */
-        if (data.type !== undefined) await lockActiveAdminCount(tx)
+    /**
+     * ## 两条路径都走事务 + ① 锁（#318 第 9 轮 GLM P2）
+     *
+     * 非结构性更新（改名 / 排序 / 启停）**不改树形态**，本来不需要 ①。但它的 scope 判定
+     * 依赖树形态：事务外那次 `isNodeInScope` 是纯内存的（session 构造时展开的快照，
+     * 窗口 = 24h JWT）。反例无需并发：
+     *   ① hr 登录，scope 集合含部门 X；② admin 把 X 改挂到另一个市场（结构性路径，合法提交）；
+     *   ③ hr 在 JWT 有效期内改 X 的名字 → 旧集合放行 → 越管辖范围写入。
+     * 要按当前树判就得有个一致的快照，取 ① 最省事，顺带让**审计也进事务**
+     * （非结构性路径原先在事务外写审计，写成功、审计抛错时用户看到失败但改名已生效 ——
+     * create / assign / revoke / 结构性路径都已收口，全仓就剩这一处）。
+     *
+     * 代价是改名也开一个事务 + 一把纯 advisory 锁 —— 组织节点编辑是低频管理操作，可忽略。
+     */
+    outcome = await db.transaction(async (tx): Promise<TxOutcome> => {
+      if (structural) return await runStructuralUpdate(tx)
 
-        // 锁内重读才是权威旧值：审计 before、层级校验、复核都依赖它
-        const [locked] = await tx.select().from(orgNodes).where(eq(orgNodes.id, id)).limit(1)
-        if (!locked) return { kind: 'failure', message: '节点不存在' }
-        before = locked as Record<string, unknown>
-
-        const lockedError = await validateStructuralChange(session, id, data, locked, tx)
-        if (lockedError) return { kind: 'failure', message: lockedError }
-
-        const updated = await tx.update(orgNodes).set(updateData).where(whereConditions)
-        const rowCount = (updated as any).count ?? 0
-        if (rowCount === 0) return { kind: 'written', rowCount: 0 }
-
-        /**
-         * ## 改完必须复核子树内员工的归属自洽（issue #318）
-         *
-         * #259 只在**员工侧**加了「`org_node_id` 的最近门店祖先 = `store_id` 所指门店」，
-         * 这一侧没守：把部门 D 从市场改挂到 B 店节点下，挂着 D 的员工就成了
-         * 「仍属 A 店、组织却在 B 店子树」—— 通过 store / org 两维同时出现在两个门店的
-         * scope，正是 #259 要禁的危害。
-         *
-         * **先 UPDATE 再复核**：这样查的是改完**之后**的真实树形态，不必在 SQL 里模拟
-         * 新父节点或新类型。不自洽就抛哨兵回滚，等价于拒绝这次变更。
-         *
-         * 锁已在事务开头取到，而员工侧的归属校验取的是**同一把** —— 所以「这边判完子树自洽」
-         * 与「员工那边判完自己的新组织自洽」不会并发交错后合成出不自洽状态。
-         */
-        const found = await findSubtreeOwnershipConflicts(id, tx)
-        if (found.conflicts.length > 0) {
-          ownershipConflicts = found.conflicts
-          ownershipConflictTotal = found.total
-          throw new Error(ORG_OWNERSHIP_CONFLICT)
+      await lockOrgTree(tx)
+      if (!isAdminScope(session)) {
+        const scopeRoots = session.roles.map((role) => role.scopeId)
+        if (!(await isNodeWithinScopeRoots(id, scopeRoots, tx))) {
+          return { kind: 'failure', message: '无权编辑该节点' }
         }
-
-        // 审计与写入同生共死（GLM 第 5 轮 P3：create/assign/revoke 都收进事务了，就差这里）
-        await logUpdate(session, 'org.update', 'org_node', id, before, updateData, tx)
-        return { kind: 'written', rowCount }
-      })
-      : {
-        kind: 'written',
-        rowCount: ((await db.update(orgNodes).set(updateData).where(whereConditions)) as any).count ?? 0,
       }
+      const [locked] = await tx.select().from(orgNodes).where(eq(orgNodes.id, id)).limit(1)
+      if (!locked) return { kind: 'failure', message: '节点不存在' }
+      before = locked as Record<string, unknown>
+
+      const updated = await tx.update(orgNodes).set(updateData).where(whereConditions)
+      const rowCount = (updated as any).count ?? 0
+      if (rowCount === 0) return { kind: 'written', rowCount: 0 }
+
+      await logUpdate(session, 'org.update', 'org_node', id, before, updateData, tx)
+      return { kind: 'written', rowCount }
+    })
+
+    /** 结构性路径（改父 / 改类型）的事务体 —— 由上面那个事务回调按 `structural` 分派进来 */
+    async function runStructuralUpdate(
+      tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
+    ): Promise<TxOutcome> {
+      // 与员工侧的归属自洽校验共用同一把锁；取锁顺序见 lib/invariant-locks.ts（#318）
+      await lockOrgTree(tx)
+      /**
+       * 改 `type` 还要取 ② —— 它判的「节点上的角色绑定是否被新类型允许」这个三元关系
+       * （节点类型 × 角色白名单 × 存量绑定）同时被 `assignRole` 与
+       * `updateRoleDefinition` 改白名单读写，而那两条路径取的是 ②（codex 第 4 轮 P1）。
+       * 只取 ① 的话：「门店→市场」与「白名单 门店+市场 → 仅门店」并发各自按旧状态通过，
+       * 提交后留下一条「角色不允许挂在市场节点」的存量授权，而权限计算会一直采用它。
+       * 顺序必须 ① → ②（见 lib/invariant-locks.ts），反了就是 40P01。
+       */
+      if (data.type !== undefined) await lockActiveAdminCount(tx)
+
+      // 锁内重读才是权威旧值：审计 before、层级校验、复核都依赖它
+      const [locked] = await tx.select().from(orgNodes).where(eq(orgNodes.id, id)).limit(1)
+      if (!locked) return { kind: 'failure', message: '节点不存在' }
+      before = locked as Record<string, unknown>
+
+      const lockedError = await validateStructuralChange(session, id, data, locked, tx)
+      if (lockedError) return { kind: 'failure', message: lockedError }
+
+      const updated = await tx.update(orgNodes).set(updateData).where(whereConditions)
+      const rowCount = (updated as any).count ?? 0
+      if (rowCount === 0) return { kind: 'written', rowCount: 0 }
+
+      /**
+       * ## 改完必须复核子树内员工的归属自洽（issue #318）
+       *
+       * #259 只在**员工侧**加了「`org_node_id` 的最近门店祖先 = `store_id` 所指门店」，
+       * 这一侧没守：把部门 D 从市场改挂到 B 店节点下，挂着 D 的员工就成了
+       * 「仍属 A 店、组织却在 B 店子树」—— 通过 store / org 两维同时出现在两个门店的
+       * scope，正是 #259 要禁的危害。
+       *
+       * **先 UPDATE 再复核**：这样查的是改完**之后**的真实树形态，不必在 SQL 里模拟
+       * 新父节点或新类型。不自洽就抛哨兵回滚，等价于拒绝这次变更。
+       *
+       * 锁已在事务开头取到，而员工侧的归属校验取的是**同一把** —— 所以「这边判完子树自洽」
+       * 与「员工那边判完自己的新组织自洽」不会并发交错后合成出不自洽状态。
+       */
+      const found = await findSubtreeOwnershipConflicts(id, tx)
+      if (found.conflicts.length > 0) {
+        ownershipConflicts = found.conflicts
+        ownershipConflictTotal = found.total
+        throw new Error(ORG_OWNERSHIP_CONFLICT)
+      }
+
+      // 审计与写入同生共死（GLM 第 5 轮 P3：create/assign/revoke 都收进事务了，就差这里）
+      await logUpdate(session, 'org.update', 'org_node', id, before, updateData, tx)
+      return { kind: 'written', rowCount }
+    }
   } catch (err: any) {
     if (err instanceof Error && err.message === ORG_OWNERSHIP_CONFLICT) {
       // 姓名兜底成工号：`name` 理论上非空，但空串会渲染出孤零零的顿号（GLM 第 1 轮 P3）
@@ -478,10 +512,7 @@ export const updateOrgNode = withPermission(
     }
   }
 
-  // 结构性变更那条路径的审计已在事务内写过；非结构性路径（改名等）没有事务，在这里写
-  if (!structural) {
-    await logUpdate(session, 'org.update', 'org_node', id, before, updateData)
-  }
+  // 审计两条路径都在事务内写过了
   revalidatePath('/org')
   return { success: true, message: '节点已更新' }
   },
