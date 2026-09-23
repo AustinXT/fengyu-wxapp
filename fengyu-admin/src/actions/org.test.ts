@@ -794,6 +794,83 @@ describe('deleteOrgNode — 真实删除', () => {
 
 // ── scope 隔离测试 ───────────────────────────────────────────────────────────
 
+/**
+ * ## deleteOrgNode 也是「改变树形态」的写入，必须取 ①（#318 第 5 轮 GLM P2）
+ *
+ * 不取锁的后果不只是守卫失效，而是两条**用户可见的 500**：
+ * `updateOrgNode` 在锁内读到目标父节点后本 action 并发删掉它 → 那边 UPDATE 撞 23503 而
+ * catch 不认；`assignRole` 锁内确认节点存在后 INSERT → scope 侧 23503 同样不被 catch。
+ */
+describe('deleteOrgNode — 取组织树锁 + 四项引用检查收进锁内（#318）', () => {
+  /** @returns `txExecute` 断言取锁；`txDelete` 断言「引用检查没过就不该删」 */
+  function setupDeleteTx(deleteCount = 1) {
+    const txExecute = vi.fn().mockResolvedValue([])
+    const txDelete = vi.fn(() => ({ where: vi.fn().mockResolvedValue({ count: deleteCount }) }))
+    ;(db.transaction as any).mockImplementation(async (fn: any) => fn({
+      execute: txExecute,
+      select: (...a: any[]) => (db as any).select(...a),
+      delete: txDelete,
+    }))
+    return { txExecute, txDelete }
+  }
+
+  /** 四项引用检查按**调用次序**喂：子节点 / 员工 / 门店 / 角色 */
+  function mockRefChecks(rows: any[][]) {
+    let i = 0
+    ;(db.select as any).mockImplementation(() => {
+      const r = rows[i] ?? []
+      i++
+      const chain: any = {}
+      chain.from = vi.fn().mockReturnValue(chain)
+      chain.where = vi.fn().mockReturnValue(chain)
+      chain.limit = vi.fn().mockResolvedValue(r)
+      chain.then = (resolve: (v: any[]) => unknown) => resolve(r)
+      return chain
+    })
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockSession)
+  })
+
+  it('取的是与改挂/创建同一把组织树锁', async () => {
+    const t = setupDeleteTx()
+    mockRefChecks([[], [], [], []])
+
+    const result = await deleteOrgNode('dept-1')
+
+    expect(result.success).toBe(true)
+    expect(JSON.stringify(t.txExecute.mock.calls[0][0])).toContain('org_nodes:reparent')
+  })
+
+  it.each([
+    [0, '该节点下存在子节点'],
+    [1, '该节点下仍有员工'],
+    [2, '该节点关联了门店'],
+    [3, '该节点被权限角色引用'],
+  ])('锁内第 %i 项引用检查命中 → 拒绝且不 DELETE', async (hitIndex, expected) => {
+    const t = setupDeleteTx()
+    mockRefChecks([0, 1, 2, 3].map((i) => (i === hitIndex ? [{ id: 'x', employeeId: 'x', storeId: 'x' }] : [])))
+
+    const result = await deleteOrgNode('dept-1')
+
+    expect(result.success).toBe(false)
+    expect(result.message).toContain(expected)
+    expect(t.txDelete, '引用检查没过就不该删').not.toHaveBeenCalled()
+  })
+
+  it('DELETE 命中 0 行（已被并发删除）→ 报节点不存在', async () => {
+    setupDeleteTx(0)
+    mockRefChecks([[], [], [], []])
+
+    const result = await deleteOrgNode('dept-1')
+
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('节点不存在')
+  })
+})
+
 describe('org scope 隔离 — 非 admin 用户', () => {
   const hrSession = {
     employeeId: 'HR-001',

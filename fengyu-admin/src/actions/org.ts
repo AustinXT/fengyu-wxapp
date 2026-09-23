@@ -422,6 +422,9 @@ export const updateOrgNode = withPermission(
           ownershipConflictTotal = found.total
           throw new Error(ORG_OWNERSHIP_CONFLICT)
         }
+
+        // 审计与写入同生共死（GLM 第 5 轮 P3：create/assign/revoke 都收进事务了，就差这里）
+        await logUpdate(session, 'org.update', 'org_node', id, before, data, tx)
         return { kind: 'written', rowCount }
       })
       : {
@@ -453,7 +456,10 @@ export const updateOrgNode = withPermission(
     }
   }
 
-  await logUpdate(session, 'org.update', 'org_node', id, before, data)
+  // 结构性变更那条路径的审计已在事务内写过；非结构性路径（改名等）没有事务，在这里写
+  if (!structural) {
+    await logUpdate(session, 'org.update', 'org_node', id, before, data)
+  }
   revalidatePath('/org')
   return { success: true, message: '节点已更新' }
   },
@@ -466,57 +472,70 @@ export const deleteOrgNode = withPermission(
     id: string,
   ): Promise<{ success: boolean; message: string }> => {
   requireAdmin(session)
-  // scope 隔离
+  // scope 隔离（纯内存早拒；锁内按当前树复判）
   if (!(await isNodeInScope(session, id))) {
     return { success: false, message: '无权操作该节点' }
   }
 
-  // 检查子节点
-  const [child] = await db
-    .select({ id: orgNodes.id })
-    .from(orgNodes)
-    .where(eq(orgNodes.parentId, id))
-    .limit(1)
-  if (child) {
-    return { success: false, message: '该节点下存在子节点，请先删除子节点' }
-  }
-
-  // 检查员工绑定
-  const [empRef] = await db
-    .select({ employeeId: staffWechatUsers.employeeId })
-    .from(staffWechatUsers)
-    .where(eq(staffWechatUsers.orgNodeId, id))
-    .limit(1)
-  if (empRef) {
-    return { success: false, message: '该节点下仍有员工，请先移除员工归属' }
-  }
-
-  // 检查门店绑定
-  const [storeRef] = await db
-    .select({ storeId: stores.storeId })
-    .from(stores)
-    .where(eq(stores.orgNodeId, id))
-    .limit(1)
-  if (storeRef) {
-    return { success: false, message: '该节点关联了门店，请先移除门店' }
-  }
-
-  // 检查权限角色引用
-  const [roleRef] = await db
-    .select({ id: permissionRoles.id })
-    .from(permissionRoles)
-    .where(eq(permissionRoles.scopeId, id))
-    .limit(1)
-  if (roleRef) {
-    return { success: false, message: '该节点被权限角色引用，请先移除关联权限' }
-  }
-
-  // 真实删除
+  /**
+   * ## 删除也要取组织树锁（#318 第 5 轮，GLM P2）
+   *
+   * 删除同样是**改变树形态**的写入，却是协议里唯一漏网的入口。不取锁的后果不只是
+   * 「守卫失效」，而是**两条用户可见的 500**：
+   *   - `updateOrgNode` 在锁内读到了目标父节点，本 action 并发把它删掉 →
+   *     那边的 UPDATE 撞 FK `23503`，而它的 catch 只认 `ORG_OWNERSHIP_CONFLICT` → 裸抛
+   *   - `assignRole` 在锁内确认节点存在后 INSERT，本 action 并发删掉它 → scope 侧 FK `23503`，
+   *     不匹配它 catch 里的 `permission_roles_employee_id_` 前缀 → 裸抛
+   * 四项引用检查全部收进锁内重跑 —— 事务外那几次只是早拒。
+   */
+  type DeleteOutcome = { ok: true } | { ok: false; message: string }
+  let outcome: DeleteOutcome
   try {
-    const result = await db.delete(orgNodes).where(eq(orgNodes.id, id))
-    if ((result as any).count === 0) {
-      return { success: false, message: '节点不存在' }
-    }
+    outcome = await db.transaction(async (tx): Promise<DeleteOutcome> => {
+      await lockOrgTree(tx)
+
+      if (!isAdminScope(session)) {
+        const scopeRoots = session.roles.map((role) => role.scopeId)
+        if (!(await isNodeWithinScopeRoots(id, scopeRoots, tx))) {
+          return { ok: false, message: '无权操作该节点' }
+        }
+      }
+
+      const [child] = await tx
+        .select({ id: orgNodes.id })
+        .from(orgNodes)
+        .where(eq(orgNodes.parentId, id))
+        .limit(1)
+      if (child) return { ok: false, message: '该节点下存在子节点，请先删除子节点' }
+
+      const [empRef] = await tx
+        .select({ employeeId: staffWechatUsers.employeeId })
+        .from(staffWechatUsers)
+        .where(eq(staffWechatUsers.orgNodeId, id))
+        .limit(1)
+      if (empRef) return { ok: false, message: '该节点下仍有员工，请先移除员工归属' }
+
+      const [storeRef] = await tx
+        .select({ storeId: stores.storeId })
+        .from(stores)
+        .where(eq(stores.orgNodeId, id))
+        .limit(1)
+      if (storeRef) return { ok: false, message: '该节点关联了门店，请先移除门店' }
+
+      const [roleRef] = await tx
+        .select({ id: permissionRoles.id })
+        .from(permissionRoles)
+        .where(eq(permissionRoles.scopeId, id))
+        .limit(1)
+      if (roleRef) return { ok: false, message: '该节点被权限角色引用，请先移除关联权限' }
+
+      const result = await tx.delete(orgNodes).where(eq(orgNodes.id, id))
+      if ((result as any).count === 0) return { ok: false, message: '节点不存在' }
+
+      // 审计与删除同生共死（与 create 侧一致）
+      await logOperation(session, 'org.delete', 'org_node', id, undefined, tx)
+      return { ok: true }
+    })
   } catch (err: any) {
     if (pgErrorCode(err) === '23503') {
       return { success: false, message: '该节点仍有关联数据，无法删除' }
@@ -524,7 +543,8 @@ export const deleteOrgNode = withPermission(
     throw err
   }
 
-  await logOperation(session, 'org.delete', 'org_node', id)
+  if (!outcome.ok) return { success: false, message: outcome.message }
+
   revalidatePath('/org')
   return { success: true, message: '节点已删除' }
   },
