@@ -202,6 +202,26 @@ function assertEverySpeRefClassified(segment: string, label: string): void {
 }
 
 /**
+ * 约束查询的**表骨架**（FROM + 全部 JOIN），按类封死「聚合扇出」。
+ *
+ * ⚠️ 闸门 2 round-9 codex：为排行榜补一列「员工数」而加
+ * `LEFT JOIN staff_wechat_users sw_rank ON sw_rank.store_id = s.store_id`
+ * 是完全正常的开发行为，但它是 **1:N**，会在聚合前把 `spe` 行按员工数放大，
+ * `SUM(spe.amount)` 随之虚高 —— 而前十层一条都不会红：
+ * `spe` 谓词没变、裸 `SUM` 没变、WHERE 形状没变、没有 LIMIT/HAVING，
+ * 单源纪律只禁本地 skills 白名单、不禁读 `staff_wechat_users`，
+ * 而「12 行进 12 行出」喂的是 mock 结果、根本不执行 SQL。
+ *
+ * 扇出是聚合查询的经典缺陷类，逐个补正则挡不完。这里直接钉死**表集合**：
+ * 今后往这三个查询里加任何一张表都会红，改动者必须显式来改这条断言并说明为什么安全
+ *（正确做法通常是「先按门店聚合完，再 JOIN 展示维度」）。
+ */
+function assertTableSkeleton(segment: string, expected: string[], label: string): void {
+  const tables = [...segment.matchAll(/\b(?:FROM|JOIN)\s+([a-z_]+)\b/gi)].map((m) => m[1])
+  expect(tables, `${label} 的表骨架变了（新增 JOIN 可能引入聚合扇出，令 SUM 虚高）`).toEqual(expected)
+}
+
+/**
  * 约束 `WHERE` 子句的**形状**，而不只是里面的 `spe` 谓词。
  *
  * ⚠️ 前八层全部只盯 `spe.*`，对**门店侧**过滤完全失明 ——
@@ -333,6 +353,26 @@ describe('数据中心人效板块两端口径一致性守护', () => {
       assertWhereShape(sliceOrFail(adminSrc, 'const qRevenueTotal', 'const qConsumeTotal'), 'spe-table', 'Part A')
       assertWhereShape(sliceOrFail(adminSrc, 'const qRevenueByStore', 'const qConsumeByStore'), 'spe-table', 'Part B')
       assertWhereShape(sliceOrFail(adminSrc, 'const qStoreRankRevenue', 'const qStoreRankConsume'), 'store-table', 'Part C')
+    })
+
+    it('⭐ 三处的表骨架被钉死（防新增 JOIN 引入聚合扇出）', () => {
+      // Part A/B 是 spe 单表，一个 JOIN 都不该有
+      assertTableSkeleton(
+        sliceOrFail(adminSrc, 'const qRevenueTotal', 'const qConsumeTotal'),
+        ['sale_order_performance_events'],
+        'Part A',
+      )
+      assertTableSkeleton(
+        sliceOrFail(adminSrc, 'const qRevenueByStore', 'const qConsumeByStore'),
+        ['sale_order_performance_events'],
+        'Part B',
+      )
+      // Part C：stores 驱动 → 两级 org_nodes 拿市场名 → LEFT JOIN spe
+      assertTableSkeleton(
+        sliceOrFail(adminSrc, 'const qStoreRankRevenue', 'const qStoreRankConsume'),
+        ['stores', 'org_nodes', 'org_nodes', 'sale_order_performance_events'],
+        'Part C',
+      )
     })
 
     it('⭐ Part A/B/C 都不得出现 LIMIT / OFFSET / FETCH / HAVING（结果集完整性）', () => {
