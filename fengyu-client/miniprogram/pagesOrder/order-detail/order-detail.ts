@@ -169,7 +169,7 @@ Page({
   // single-flight：在途的那次加载（含它的尾随刷新）。触发源有 5 条
   // （onLoad / onShow / 下拉 / 倒计时归零 / 支付回调），让它们根本不并行，
   // 「旧响应盖掉新响应」就不可能发生。详见 loadDetail 的注释。
-  _loadPromise: null as Promise<void> | null,
+  _loadPromise: null as Promise<boolean> | null,
   _loadQueued: false,
   // 页面已卸载（issue #215）。onUnload 之后仍可能有在途请求回来：
   // confirmAndRefresh 里 `poller.clear()` 会 resolve 掉那个 promise，后面紧跟着
@@ -201,10 +201,12 @@ Page({
   // onHide 那一刻观测到的墙钟。隐藏期间被系统校时往回拨的话，tick 里的回拨检测
   // 看不见（onShow 恢复时 lastTickAt 用的已是调整后的时间），截止点会被凭空延长。
   _hiddenAtWallClock: 0,
-  // 墙钟回拨后的校准重试（issue #215）。回拨本身**不**关支付入口（理由见 tick 的回拨分支），
-  // 所以校准那一次请求要是失败了，页面就只剩「请完成支付」且再无自动恢复点。
-  // 这里排一次有界重试；仍失败就等用户动作（下拉 / onShow）。
-  _calibrationRetryTimer: null as ReturnType<typeof setTimeout> | null,
+  // 「这一次刷新必须成功，否则页面会停在一个不可信的状态」时的有界重试（issue #215）。
+  // 两处用它：① 墙钟回拨后的校准 —— 回拨刻意不关支付入口，那次请求失败就没有恢复点了；
+  // ② 支付确认轮询收尾的那次刷新 —— 轮询自己会清掉支付意图，订单因此重新进入
+  // 「会被自动关闭」的集合，而页面还停在「请完成支付 + 去支付」。
+  // 只在**确知失败**时才排（loadDetail 现在会如实返回成败），成功就不排。
+  _refreshRetryTimer: null as ReturnType<typeof setTimeout> | null,
 
   onLoad(options) {
     // 读全局灰度开关（未配置默认 false）
@@ -252,18 +254,19 @@ Page({
    * 单子可能被画回「待支付」。让请求根本不并行，这个问题就不存在了；顺带把
    * onShow / 归零重载 / 下拉同时触发的那一串合并成一次。
    */
-  loadDetail(saleOrderId: string): Promise<void> {
-    if (this._destroyed) return Promise.resolve();
+  loadDetail(saleOrderId: string): Promise<boolean> {
+    if (this._destroyed) return Promise.resolve(false);
     if (this._loadPromise) {
       // 已有在途请求：合并成一次尾随刷新，并让本次调用等到那一次也跑完
       this._loadQueued = true;
       return this._loadPromise;
     }
+    let ok = false;
     const run = (async () => {
       try {
         do {
           this._loadQueued = false;
-          await this._fetchDetail(saleOrderId);
+          ok = await this._fetchDetail(saleOrderId);
           // 尾随刷新也要看隐藏态（双谱系评审 round-11）：order.detail 不是纯读，
           // 它会跑懒清理/补关。在途期间 show→hide 的话，首个请求回来时页面已经隐藏了，
           // 这一发就违背了「隐藏态不发后台请求」的约定。onShow 必定重新加载，不会漏刷新。
@@ -272,18 +275,20 @@ Page({
         this._loadPromise = null;
         this._loadQueued = false;
       }
+      return ok;
     })();
     this._loadPromise = run;
     return run;
   },
 
-  async _fetchDetail(saleOrderId: string) {
-    if (this._destroyed) return;
+  /** @returns 是否成功拿到并落盘了一份新的服务端状态 */
+  async _fetchDetail(saleOrderId: string): Promise<boolean> {
+    if (this._destroyed) return false;
     this.setData({ isLoading: true });
     const sentAt = Date.now();
     try {
       const data = await callClientApi('order.detail', { saleOrderId });
-      if (this._destroyed) return;
+      if (this._destroyed) return false;
       const order = (data?.order || {}) as OrderDetailData;
       // 记下**网络那段**的往返耗时，交给 startCountdown 去扣（issue #215）。
       // ⚠️ 不能就地把 expire_in_ms 减掉 —— 那样「服务端说剩 0」和「服务端说剩 50ms、
@@ -507,30 +512,41 @@ Page({
           this.confirmAndRefresh(order.sale_order_id);
         }
       }
+      return true;
     } catch {
       // 卸载后、或隐藏期间才失败的那次不弹 Toast：
       // 前者是对着死实例弹，后者会让用户切回来时看到一条陈旧的错误提示
       if (!this._destroyed && !this._hidden) Toast.fail('加载失败');
+      return false;
     } finally {
       if (!this._destroyed) this.setData({ isLoading: false });
     }
   },
 
-  /**
-   * 墙钟回拨后的校准：立刻拉一次，再排一次有界重试（issue #215）。
-   * 回拨不关支付入口，所以这一次请求失败就没有自动恢复点了 —— 补一次重试，
-   * 仍失败就等用户动作（下拉 / onShow）。
-   */
-  _calibrateAfterClockJump(saleOrderId: string) {
+  /** 拉一次详情；**只有确实失败**才排一次有界重试（issue #215） */
+  _refreshOrRetry(saleOrderId: string) {
     if (this._hidden || this._destroyed) return;
-    this.loadDetail(saleOrderId);
-    if (this._calibrationRetryTimer) clearTimeout(this._calibrationRetryTimer);
-    this._calibrationRetryTimer = setTimeout(() => {
-      this._calibrationRetryTimer = null;
+    this.loadDetail(saleOrderId).then((ok) => {
+      if (!ok) this._scheduleRefreshRetry(saleOrderId);
+    });
+  },
+
+  /** 只排重试，不立刻再拉（调用方刚失败过一次的场景用它，别白打一发） */
+  _scheduleRefreshRetry(saleOrderId: string) {
+    if (this._hidden || this._destroyed) return;
+    this._clearRefreshRetry();
+    this._refreshRetryTimer = setTimeout(() => {
+      this._refreshRetryTimer = null;
       if (this._hidden || this._destroyed) return;
-      if (this.data.order?.status !== '待支付') return;   // 已经校准到位了
       this.loadDetail(saleOrderId);
     }, 5000);
+  },
+
+  _clearRefreshRetry() {
+    if (this._refreshRetryTimer) {
+      clearTimeout(this._refreshRetryTimer);
+      this._refreshRetryTimer = null;
+    }
   },
 
   /** 停表（不动 countdown 文案，调用方按需自己清） */
@@ -673,7 +689,7 @@ Page({
         // 量时间」，并**不**说明截止点已经过了 —— 多半还剩好几分钟。关了支付入口
         // 就是拿一次系统校时去误伤一笔本来能付的单，比让它可能吃一个「订单已超时」更糟。
         this.setData({ countdown: '' });
-        this._calibrateAfterClockJump(saleOrderId);
+        this._refreshOrRetry(saleOrderId);
         return;
       }
       lastTickAt = now;
@@ -763,8 +779,13 @@ Page({
       // 意图丢了就再也不会主动对账，顾客端会一直显示待支付（双谱系评审 round-4）。
       if (this._hidden && !this._destroyed) this._needConfirm = true;
       if (this._destroyed || this._hidden) return;
-      await this.loadDetail(saleOrderId);
+      // ⚠️ 这次刷新必须拿到权威状态：轮询自己可能已经把 `lakala_out_order_no` 清掉了
+      //（渠道终态失败时 `order.confirmPayment` 会清），订单因此重新进入
+      // 「会被自动关闭」的集合 —— 拿不到新状态的话，页面会长期停在
+      // 「请完成支付 + 去支付」，到点顾客点下去才被拒（双谱系评审 round-14）。
+      const refreshed = await this.loadDetail(saleOrderId);
       if (this._destroyed || this._hidden) return;
+      if (!refreshed) this._scheduleRefreshRetry(saleOrderId);
       // 以刷新后的本地 status 为准（轮询结果可能因网络抖动过时），判断是否需要提示
       const finalStatus = this.data.order?.status;
       if (finalStatus !== '已支付' && !paymentResult.sessionCompleted) {
@@ -782,10 +803,7 @@ Page({
     // —— 否则孤儿定时器每秒对死实例 setData，最长烧到 expire_at 到点（issue #215）
     this._destroyed = true;
     this._stopCountdown();
-    if (this._calibrationRetryTimer) {
-      clearTimeout(this._calibrationRetryTimer);
-      this._calibrationRetryTimer = null;
-    }
+    this._clearRefreshRetry();
     if (this._poller) {
       this._poller.clear();
       this._poller = null;
@@ -797,10 +815,7 @@ Page({
     this._hiddenAtWallClock = Date.now();
     // 排队中的尾随刷新一并作废：onShow 会重新加载
     this._loadQueued = false;
-    if (this._calibrationRetryTimer) {
-      clearTimeout(this._calibrationRetryTimer);
-      this._calibrationRetryTimer = null;
-    }
+    this._clearRefreshRetry();
     // 页面隐藏（navigateTo 跳走 / tab 切换）停止轮询，避免后台继续请求
     if (this._poller) {
       this._poller.clear();

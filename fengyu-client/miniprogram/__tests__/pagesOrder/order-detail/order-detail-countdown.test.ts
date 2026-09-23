@@ -413,40 +413,82 @@ describe('order-detail 待支付倒计时 (#215)', () => {
     expect(page._countdownDeadlineAt).toBeGreaterThan(page._lastLoadReceivedAt + 59_000);
   });
 
-  test('墙钟回拨后校准失败 → 还会再重试一次（回拨不关支付入口，失败就没有恢复点了）', () => {
+  /** 触发一次墙钟回拨，返回 loadDetail 替身 */
+  async function triggerClockRollback(loadResult: boolean) {
+    const page = createPageInstance();
+    const loadDetail = vi.fn(async () => loadResult);
+    page.loadDetail = loadDetail;
+    page.setData({ order: { sale_order_id: 'FY-215', status: '待支付' } });
+    page.startCountdown(PENDING_ORDER_WITH_REMAINING(120_000));
+    vi.setSystemTime(Date.now() - 30_000);
+    vi.advanceTimersByTime(1000);
+    await vi.advanceTimersByTimeAsync(0);
+    return { page, loadDetail };
+  }
+
+  test('墙钟回拨后校准**失败** → 才排一次有界重试（回拨不关支付入口，失败就没有恢复点了）', async () => {
     vi.useFakeTimers();
     try {
-      const { page, loadDetail } = createPageWithStubbedLoad();
-      page.setData({ order: { sale_order_id: 'FY-215', status: '待支付' } });
-      page.startCountdown(PENDING_ORDER_WITH_REMAINING(120_000));
-
-      const base = Date.now();
-      vi.setSystemTime(base - 30_000);
-      vi.advanceTimersByTime(1000);
+      const { loadDetail } = await triggerClockRollback(false);
       expect(loadDetail).toHaveBeenCalledTimes(1);      // 立刻校准那一次
 
-      vi.advanceTimersByTime(5000);
+      await vi.advanceTimersByTimeAsync(5000);
       expect(loadDetail).toHaveBeenCalledTimes(2);      // 有界重试那一次
     } finally {
       vi.useRealTimers();
     }
   });
 
-  test('onHide / onUnload 会清掉待重试的校准定时器', () => {
+  test('墙钟回拨后校准**成功** → 不再多打一次（别白闪一次骨架屏）', async () => {
     vi.useFakeTimers();
     try {
-      const { page, loadDetail } = createPageWithStubbedLoad();
+      const { page, loadDetail } = await triggerClockRollback(true);
+      expect(loadDetail).toHaveBeenCalledTimes(1);
+      expect(page._refreshRetryTimer).toBeNull();
+
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(loadDetail).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('确认轮询收尾的那次刷新失败 → 有界重试（轮询自己会清掉支付意图）', async () => {
+    // 渠道终态失败时 order.confirmPayment 会清 lakala_out_order_no，订单因此重新进入
+    //「会被自动关闭」的集合。这次刷新拿不到新状态，页面就会长期停在
+    //「请完成支付 + 去支付」，到点顾客点下去才被拒（codex 评审 round-14 P1）
+    vi.useFakeTimers();
+    try {
+      const page = createPageInstance();
+      const loadDetail = vi.fn(async () => false);   // 收尾刷新失败
+      page.loadDetail = loadDetail;
       page.setData({ order: { sale_order_id: 'FY-215', status: '待支付' } });
-      page.startCountdown(PENDING_ORDER_WITH_REMAINING(120_000));
-      const base = Date.now();
-      vi.setSystemTime(base - 30_000);
-      vi.advanceTimersByTime(1000);
-      expect(page._calibrationRetryTimer).not.toBeNull();
+
+      const confirming = page.confirmAndRefresh('FY-215');
+      expect(pollerControls).toHaveLength(1);
+      pollerControls[0].resolve({ sessionCompleted: false });
+      await confirming;
+
+      expect(loadDetail).toHaveBeenCalledTimes(1);
+      expect(page._refreshRetryTimer).not.toBeNull();
+
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(loadDetail).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('onHide 会清掉待重试的刷新定时器', async () => {
+    vi.useFakeTimers();
+    try {
+      const { page, loadDetail } = await triggerClockRollback(false);
+      expect(page._refreshRetryTimer).not.toBeNull();
 
       page.onHide();
-      expect(page._calibrationRetryTimer).toBeNull();
+      expect(page._refreshRetryTimer).toBeNull();
       loadDetail.mockClear();
-      vi.advanceTimersByTime(10_000);
+      await vi.advanceTimersByTimeAsync(10_000);
       expect(loadDetail).not.toHaveBeenCalled();
     } finally {
       vi.useRealTimers();
@@ -651,6 +693,23 @@ describe('order-detail 倒计时的生命周期与并发 (#215)', () => {
 
     expect(page._needConfirm).toBe(true);
     expect(page.data.confirmingPayment).toBe(false);
+  });
+
+  test('loadDetail 如实返回成败（调用方据此决定要不要重试）', async () => {
+    // 它一度把失败吞掉只返回 void，逼得调用方只能盲目重试 ——
+    // 「校准成功也白打一发」和「轮询收尾失败无人兜底」都是那么来的
+    const { page, resolvers } = createPageWithManualApi();
+    const okRun = page.loadDetail('FY-215');
+    resolvers[0](detailResponse('已关闭'));
+    expect(await okRun).toBe(true);
+
+    const rejecters: Array<(e: any) => void> = [];
+    callClientApiMock.mockImplementation(
+      () => new Promise((_resolve, reject) => { rejecters.push(reject); }),
+    );
+    const failRun = page.loadDetail('FY-215');
+    rejecters[0](new Error('network'));
+    expect(await failRun).toBe(false);
   });
 
   test('single-flight：在途期间再来的加载被合并成一次尾随刷新', async () => {
