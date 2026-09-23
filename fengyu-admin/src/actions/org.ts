@@ -13,7 +13,7 @@ import { withPermission } from '@/lib/with-permission'
 import { requireAdmin, isAdminScope } from '@/lib/permissions'
 import { logOperation, logUpdate } from '@/lib/operation-log'
 import { lockOrgTree } from '@/lib/invariant-locks'
-import { findSubtreeOwnershipConflicts } from '@/lib/org-ancestry'
+import { findSubtreeOwnershipConflicts, isNodeWithinScopeRoots } from '@/lib/org-ancestry'
 
 const VALID_NODE_TYPES = ['总部', '市场', '门店', '部门'] as const
 
@@ -97,32 +97,48 @@ export const createOrgNode = withPermission(
   if (!data.parentId) {
     if (data.type !== '总部') return { success: false, message: '只有总部节点可以作为根节点' }
     if (!isAdminScope(session)) return { success: false, message: '无权创建根节点' }
-  } else {
-    const [parent] = await db
-      .select({ type: orgNodes.type })
-      .from(orgNodes)
-      .where(eq(orgNodes.id, data.parentId))
-      .limit(1)
-    if (!parent) {
-      return { success: false, message: '父节点不存在' }
-    }
-    const parentTypeError = validateParentType(data.type, parent.type)
-    if (parentTypeError) return { success: false, message: parentTypeError }
-
-    // scope 隔离：非 admin 只能在自己 scope 内的父节点下创建子节点
-    if (!(await isNodeInScope(session, data.parentId))) {
-      return { success: false, message: '无权在该节点下创建子节点' }
-    }
+  } else if (!(await isNodeInScope(session, data.parentId))) {
+    // scope 隔离：非 admin 只能在自己 scope 内的父节点下创建子节点（纯内存判据，先拒省事务）
+    return { success: false, message: '无权在该节点下创建子节点' }
   }
 
+  /**
+   * ## 创建也要取组织树锁（#318 第 3 轮，codex P2）
+   *
+   * 父节点类型原先是**无锁**读的，于是与 `updateOrgNode` 改类型并发时能合成出非法树：
+   * 建子节点的事务读到父节点是「市场」，改类型的事务查直接子节点时这个子节点还没提交，
+   * 两边都放行 → 提交后成了「部门下挂门店」。改类型那侧现在会复核存量子节点
+   * （`validateTypeChangeImpact`），但只有两侧**共用同一把锁**才真的闭合。
+   *
+   * 锁内重读父节点类型 —— 事务外那次读到的类型可能已经变了。
+   */
+  type CreateOutcome = { ok: true } | { ok: false; message: string }
+  let created: CreateOutcome
   try {
-    await db.insert(orgNodes).values({
-      id: data.id,
-      name: data.name,
-      type: data.type,
-      parentId: data.parentId,
-      sortOrder: data.sortOrder,
-      isActive: data.isActive,
+    created = await db.transaction(async (tx): Promise<CreateOutcome> => {
+      await lockOrgTree(tx)
+
+      if (data.parentId) {
+        const [parent] = await tx
+          .select({ type: orgNodes.type })
+          .from(orgNodes)
+          .where(eq(orgNodes.id, data.parentId))
+          .limit(1)
+        if (!parent) return { ok: false, message: '父节点不存在' }
+        const parentTypeError = validateParentType(data.type, parent.type)
+        if (parentTypeError) return { ok: false, message: parentTypeError }
+      }
+
+      await tx.insert(orgNodes).values({
+        id: data.id,
+        name: data.name,
+        type: data.type,
+        parentId: data.parentId,
+        sortOrder: data.sortOrder,
+        isActive: data.isActive,
+      })
+      await logOperation(session, 'org.create', 'org_node', data.id, { name: data.name, type: data.type }, tx)
+      return { ok: true }
     })
   } catch (err: any) {
     if (pgErrorCode(err) === '23505') return { success: false, message: '节点编号已存在' }
@@ -130,7 +146,8 @@ export const createOrgNode = withPermission(
     throw err
   }
 
-  await logOperation(session, 'org.create', 'org_node', data.id, { name: data.name, type: data.type })
+  if (!created.ok) return { success: false, message: created.message }
+
   revalidatePath('/org')
   return { success: true, message: '节点创建成功' }
   },
@@ -167,6 +184,27 @@ async function validateStructuralChange(
   const targetParentId = data.parentId === undefined ? current.parentId : data.parentId
   const targetType = data.type ?? current.type
 
+  /**
+   * 被编辑节点**自身**是否还在操作者管辖范围内 —— 按**当前树**判（#318 第 3 轮，两谱系共识）。
+   *
+   * ⚠️ 这里刻意**不**复用 `isNodeInScope`：它判的是 `session.permissions.scopeOrgNodeIds`
+   * 这份在构造 session 时展开好的内存集合，与「现在的树」无关，锁内再调一次是 **no-op**
+   * （两个谱系都建议「锁内重跑 isNodeInScope」，那个改法测不出也防不住）。
+   * 用角色绑定的根节点去查当前树才真的能发现「并发把节点挪出了我的 scope」。
+   */
+  if (!isAdminScope(session)) {
+    // 用角色绑定的**根节点**（不是展开后的集合）去查树；展开集合本身就是那份过期快照
+    const scopeRoots = session.roles.map((role) => role.scopeId)
+    if (!(await isNodeWithinScopeRoots(id, scopeRoots, executor))) {
+      return '无权编辑该节点'
+    }
+  }
+
+  if (data.type !== undefined && data.type !== current.type) {
+    const impactError = await validateTypeChangeImpact(id, data.type, executor)
+    if (impactError) return impactError
+  }
+
   // 不能将节点移动到自己或自己的子孙节点下（防止循环引用）
   if (targetParentId && targetParentId !== current.parentId) {
     if (await checkIsDescendant(id, targetParentId, executor)) {
@@ -193,6 +231,64 @@ async function validateStructuralChange(
   // scope 隔离：非 admin 只能移动到自己 scope 内的父节点下。
   if (targetParentId !== current.parentId && !(await isNodeInScope(session, targetParentId))) {
     return '无权将节点移动到该位置'
+  }
+  return null
+}
+
+/**
+ * 改 `type` 的**连带影响**校验（#318 第 3 轮，codex P1/P2）。返回错误文案；`null` = 通过。
+ *
+ * `validateParentType` 只管「新类型 × 父节点类型」这一对，剩下三样它看不见 ——
+ * 而这三样在**创建**路径上都有守卫，改类型这条路上一个都没有，典型的「同一条规则只守了一侧」：
+ *
+ * 1. **已有直接子节点**：市场（下挂门店）改成部门 → 成了「部门下挂门店」，
+ *    而 `validateParentType` 只在新建子节点时判，存量子节点不回溯。
+ * 2. **已有角色绑定**：门店节点上有 `permission_roles` 时改成部门 → 留下
+ *    「角色绑定挂部门节点」，DB trigger `permission_validate_role_assignment_scope()`
+ *    只在绑定行 INSERT 时按当时的 `allowed_scope_types` 校验，改定义/改节点类型都不回溯。
+ * 3. **已有门店映射**：`stores.org_node_id` 指向本节点时把它从门店改成别的类型 →
+ *    门店失去组织挂载点（`inventory_sync_location_from_store()` 明确要求门店必须指向
+ *    市场下的门店型节点，而它只在写 `stores` 时触发，改 `org_nodes.type` 绕开它）。
+ */
+async function validateTypeChangeImpact(
+  id: string,
+  newType: OrgNode['type'],
+  executor: OrgExecutor,
+): Promise<string | null> {
+  const children = await executor
+    .select({ id: orgNodes.id, name: orgNodes.name, type: orgNodes.type })
+    .from(orgNodes)
+    .where(eq(orgNodes.parentId, id))
+  for (const child of children) {
+    const err = validateParentType(child.type, newType)
+    if (err) return `该节点下已有子节点「${child.name}」，改为「${newType}」后层级不合法：${err}`
+  }
+
+  const [mappedStore] = await executor
+    .select({ storeName: stores.storeName })
+    .from(stores)
+    .where(eq(stores.orgNodeId, id))
+    .limit(1)
+  if (mappedStore && newType !== '门店') {
+    return `门店「${mappedStore.storeName}」挂载在该节点上，不能改为「${newType}」，请先调整门店的组织归属`
+  }
+
+  /**
+   * 绑定这一侧按角色定义的 `allowed_scope_types` 判。走原生 SQL 是因为
+   * `permission_role_definitions` 的 `allowed_scope_types` 是数组列，
+   * 用 `= ANY` 判包含比拼 drizzle 的数组算子更直观。
+   */
+  const bindingRows = await executor.execute(sql`
+    SELECT d.name AS role_name
+      FROM permission_roles pr
+      JOIN permission_role_definitions d ON d.role_key = pr.role
+     WHERE pr.scope_id = ${id}
+       AND NOT (${newType} = ANY(d.allowed_scope_types))
+     LIMIT 1
+  `)
+  const blocked = (bindingRows as unknown as Array<{ role_name: string }>)[0]
+  if (blocked) {
+    return `该节点上已有「${blocked.role_name}」角色授权，不能改为「${newType}」（该角色不允许绑定此层级），请先撤销授权`
   }
   return null
 }

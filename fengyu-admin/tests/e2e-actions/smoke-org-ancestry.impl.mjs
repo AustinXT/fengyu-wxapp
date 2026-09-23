@@ -1,7 +1,7 @@
 /**
- * `src/lib/org-ancestry.ts` 三条递归 CTE 的真库语义冒烟（实现体，由 wrapper 引导）。
+ * `src/lib/org-ancestry.ts` 四条递归 CTE 的真库语义冒烟（实现体，由 wrapper 引导）。
  *
- * 断言的是**生产代码里那一份 SQL**（直接 import 那三个函数），不抄副本 ——
+ * 断言的是**生产代码里那一份 SQL**（直接 import 那几个函数），不抄副本 ——
  * 抄本会各自漂移，那就退化成「守护一个假的」。
  */
 import postgres from 'postgres'
@@ -9,6 +9,7 @@ import {
   findNearestStoreAncestor,
   findRolesBoundWithinSubtree,
   findSubtreeOwnershipConflicts,
+  isNodeWithinScopeRoots,
 } from '@/lib/org-ancestry'
 
 const CONN = process.env.E2E_DATABASE_URL
@@ -308,6 +309,44 @@ async function main() {
     new Promise((_, rej) => setTimeout(() => rej(new Error('环检测超时 —— path 防环没生效')), 8000)),
   ])
   check('自成环的子树 → 正常返回而不是打满连接', loopConflicts, { conflicts: [], total: 0 })
+
+  // ── isNodeWithinScopeRoots（#318 第 3 轮）────────────────────────────────
+  /**
+   * 「这个节点现在还在我的管辖范围内吗」—— 按**当前树**判，而不是按 session 里那份
+   * 构造时展开好的集合（后者与现在的树无关，锁内再判一次是 no-op）。
+   */
+  check('根就是自己 → 在范围内（depth=0 也算）',
+    await isNodeWithinScopeRoots(id('STORE_A'), [id('STORE_A')]), true)
+
+  check('根是祖先（任意深度）→ 在范围内',
+    await isNodeWithinScopeRoots(id('SUB_A'), [id('MKT')]), true)
+
+  /**
+   * 这条锁**上溯方向**：把 `JOIN org_nodes p ON p.id = c.parent_id` 写反成
+   * `p.parent_id = c.id` 就变成下探，从 SUB_A 出发永远遇不到 MKT → 上一条变红；
+   * 而从 MKT 出发能下探到 SUB_A → 这一条会**误判为 true** → 也变红。两条一起把方向钉死。
+   */
+  check('根是后代 → 不在范围内（方向不能反）',
+    await isNodeWithinScopeRoots(id('MKT'), [id('SUB_A')]), false)
+
+  check('另一条链上的根 → 不在范围内（不串链）',
+    await isNodeWithinScopeRoots(id('DEPT_A'), [id('STORE_B')]), false)
+
+  check('多个根命中任意一个即可',
+    await isNodeWithinScopeRoots(id('DEPT_B'), [id('STORE_A'), id('STORE_B')]), true)
+
+  check('根清单为空 → false（没有管辖根的非 admin 不该改任何节点）',
+    await isNodeWithinScopeRoots(id('DEPT_A'), []), false)
+
+  check('节点不存在 → false',
+    await isNodeWithinScopeRoots(id('NOT_THERE'), [id('HQ')]), false)
+
+  /** 防环：环里的节点上溯时不能打满连接 */
+  const loopScope = await Promise.race([
+    isNodeWithinScopeRoots(id('LOOP_Y'), [id('MKT')]),
+    new Promise((_, rej) => setTimeout(() => rej(new Error('环检测超时 —— path 防环没生效')), 8000)),
+  ])
+  check('自成环的节点上溯 → 正常返回而不是打满连接', loopScope, false)
 
   // 不清理：一次性库下一跑就整库重建（见顶部对环夹具与 trigger 的说明）
   await sql.end()

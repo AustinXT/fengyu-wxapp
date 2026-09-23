@@ -24,7 +24,7 @@ vi.mock('@db/org', () => ({
     isActive: 'is_active',
     updatedAt: 'updated_at',
   },
-  stores: { storeId: 'store_id', orgNodeId: 'org_node_id' },
+  stores: { storeId: 'store_id', storeName: 'store_name', orgNodeId: 'org_node_id' },
 }))
 
 vi.mock('@db/user', () => ({
@@ -61,7 +61,9 @@ vi.mock('@/lib/operation-log', () => ({
 
 /** 改挂复核走这个纯查询（#318）—— 它的 SQL 语义由真库冒烟负责，这里只测分支 */
 vi.mock('@/lib/org-ancestry', () => ({
-  findSubtreeOwnershipConflicts: vi.fn().mockResolvedValue([]),
+  findSubtreeOwnershipConflicts: vi.fn().mockResolvedValue({ conflicts: [], total: 0 }),
+  // 「节点自身是否还在我的管辖范围内」按当前树判（#318 第 3 轮）；SQL 语义由真库冒烟负责
+  isNodeWithinScopeRoots: vi.fn().mockResolvedValue(true),
 }))
 vi.mock('@/lib/invariant-locks', async (orig) => await orig())
 
@@ -71,15 +73,42 @@ vi.mock('next/cache', () => ({
 
 import { createOrgNode, updateOrgNode, deleteOrgNode } from './org'
 import { db } from '@/db'
+import { stores } from '@db/org'
 import { getSession } from '@/lib/auth'
 import { isAdminScope } from '@/lib/permissions'
-import { findSubtreeOwnershipConflicts } from '@/lib/org-ancestry'
+import { findSubtreeOwnershipConflicts, isNodeWithinScopeRoots } from '@/lib/org-ancestry'
 
 const mockSession = {
   employeeId: 'ADMIN-001',
   roles: [{ role: 'admin', scopeId: 'hq' }],
   permissions: { actions: ['org:list', 'org:create', 'org:update', 'org:delete'], scopeStoreIds: [] },
 }
+
+/**
+ * ⚠️ `vi.clearAllMocks()` 只清调用记录、**不清 mockImplementation** —— 某条用例给共享桩设的
+ * 实现会一路泄漏到后面所有用例（症状是「无辜的下游用例红」，排查时容易怀疑刚改的实现）。
+ *
+ * 这个**顶层** `beforeEach` 在每条用例前把共享桩复位成默认值。它先于各 describe 自己的
+ * `beforeEach` 执行，而后者的 `clearAllMocks()` 不会把这里设的实现清掉，所以顺序是安全的。
+ */
+beforeEach(() => {
+  ;(isAdminScope as any).mockReturnValue(true)
+  ;(db.execute as any).mockResolvedValue([])
+  ;(findSubtreeOwnershipConflicts as any).mockResolvedValue({ conflicts: [], total: 0 })
+  ;(isNodeWithinScopeRoots as any).mockResolvedValue(true)
+  ;(getSession as any).mockResolvedValue(mockSession)
+  /**
+   * 默认事务桩：一律委托给全局 `db` 的各个桩，这样「只关心业务分支」的用例不必各自接线。
+   * 需要拿到句柄本身做同一性断言的用例在自己的 `beforeEach` 里覆盖它（跑在这之后，会赢）。
+   */
+  ;(db.transaction as any).mockImplementation(async (fn: any) => fn({
+    execute: (...a: any[]) => (db as any).execute(...a),
+    select: (...a: any[]) => (db as any).select(...a),
+    insert: (...a: any[]) => (db as any).insert(...a),
+    update: (...a: any[]) => (db as any).update(...a),
+    delete: (...a: any[]) => (db as any).delete(...a),
+  }))
+})
 
 function makeSelectChain(result: any[]) {
   const limit = vi.fn().mockResolvedValue(result)
@@ -103,9 +132,49 @@ function setupDelete(count: number) {
 // ── createOrgNode ─────────────────────────────────────────────────────────────
 
 describe('createOrgNode — 输入校验 + 错误处理', () => {
+  /**
+   * 创建走事务了（#318 第 3 轮）：取组织树锁 + 锁内重读父节点类型 + INSERT + 审计同一事务。
+   * tx 一律委托给全局 `db` 的桩，既有用例照旧 mock `db.select` / `db.insert` 即可。
+   * @returns 记录调用的 `txExecute`（断言取锁用）
+   */
+  function mockCreateTx() {
+    const txExecute = vi.fn().mockResolvedValue([])
+    ;(db.transaction as any).mockImplementation(async (fn: any) => fn({
+      execute: txExecute,
+      select: (...a: any[]) => (db as any).select(...a),
+      insert: (...a: any[]) => (db as any).insert(...a),
+    }))
+    return { txExecute }
+  }
+
   beforeEach(() => {
     vi.clearAllMocks()
     ;(getSession as any).mockResolvedValue(mockSession)
+    mockCreateTx()
+  })
+
+  /** 与 updateOrgNode 改类型那侧**共用同一把锁** —— 只有两侧互斥，「复核存量子节点」才真的闭合 */
+  it('创建取的是与改挂/改类型同一把组织树锁', async () => {
+    const t = mockCreateTx()
+    ;(db.select as any).mockImplementation(makeSelectChain([{ type: '市场' }]))
+    ;(db.insert as any).mockReturnValue({ values: vi.fn().mockResolvedValue({}) })
+
+    await createOrgNode({ id: 'n-1', name: '新店', type: '门店', parentId: 'market-1', sortOrder: 0, isActive: true })
+
+    expect(JSON.stringify(t.txExecute.mock.calls[0][0])).toContain('org_nodes:reparent')
+  })
+
+  /** 锁内重读父节点类型 —— 事务外读到的可能已被并发改掉 */
+  it('锁内重读父节点类型不合法 → 拒绝且不 INSERT', async () => {
+    mockCreateTx()
+    ;(db.select as any).mockImplementation(makeSelectChain([{ type: '部门' }]))
+    const values = vi.fn().mockResolvedValue({})
+    ;(db.insert as any).mockReturnValue({ values })
+
+    const result = await createOrgNode({ id: 'n-1', name: '子部门', type: '部门', parentId: 'dept-1', sortOrder: 0, isActive: true })
+
+    expect(result.success).toBe(false)
+    expect(values).not.toHaveBeenCalled()
   })
 
   it('无效节点类型 → 拒绝，不查 DB', async () => {
@@ -194,28 +263,45 @@ describe('updateOrgNode — 结构性变更后复核子树员工归属自洽（#
   const PARENT_ROW = { type: '市场' }
 
   /**
-   * 合法改挂的默认 select 序列：① 事务外快照 ② 事务外读目标父节点
-   * ③ 锁内重读本节点 ④ 锁内读目标父节点。层级校验事务内外各跑一次，所以是四次。
+   * ## 按「查的是什么」分派，而不是按调用次序
+   *
+   * `updateOrgNode` 的结构性路径要发四类 select（节点自身 / 目标父节点 / 直接子节点 /
+   * 门店映射），且层级校验事务内外各跑一遍 —— 按次序喂的话每加一个查询就要重排所有夹具，
+   * 而且排错时症状是「在一个假原因上失败」。这里用 `from()` 的表和 `where()` 的条件分派：
+   * `eq` 已被 mock 成 `{ type:'eq', a, b }`，所以 `a === 'parent_id'` 就是查子节点，
+   * `b === TARGET_ID` 就是查节点自身。
+   *
+   * `nodeQueue` / `parentQueue` 支持给**同一类查询**的先后两次不同答案 ——
+   * 「事务外读到的与锁内重读的不一致」这类并发场景要靠它。
    */
-  function mockLegalReparent() {
-    mockSelectSequence([[NODE_ROW], [PARENT_ROW], [NODE_ROW], [PARENT_ROW]])
-  }
-
-  /**
-   * 按调用次序给 select 不同返回值 —— 事务外快照、锁内重读、目标父节点类型是三次不同的查询，
-   * 「锁内重读拿不到行」这类场景必须能分别喂。
-   */
-  function mockSelectSequence(sequence: any[][]) {
-    let i = 0
+  const TARGET_ID = 'dept-1'
+  function mockOrgSelect(opts: {
+    nodeQueue?: any[][]
+    parentQueue?: any[][]
+    children?: any[]
+    storeRows?: any[]
+  } = {}) {
+    const nodeQueue = [...(opts.nodeQueue ?? [[NODE_ROW]])]
+    const parentQueue = [...(opts.parentQueue ?? [[PARENT_ROW]])]
+    const children = opts.children ?? []
+    const storeRows = opts.storeRows ?? []
+    const shift = (q: any[][], fallback: any[]) => (q.length > 1 ? q.shift()! : (q[0] ?? fallback))
     ;(db.select as any).mockImplementation(() => {
-      const rows = sequence[i] ?? sequence[sequence.length - 1]
-      i++
       const chain: any = {}
-      chain.from = vi.fn().mockReturnValue(chain)
-      chain.where = vi.fn().mockReturnValue(chain)
-      chain.limit = vi.fn().mockResolvedValue(rows)
-      chain.leftJoin = vi.fn().mockReturnValue(chain)
-      chain.orderBy = vi.fn().mockReturnValue(chain)
+      let table: unknown
+      let cond: any
+      chain.from = vi.fn((t: unknown) => { table = t; return chain })
+      chain.where = vi.fn((c: any) => { cond = c; return chain })
+      chain.leftJoin = vi.fn(() => chain)
+      chain.orderBy = vi.fn(() => chain)
+      const rows = () => {
+        if (table === stores) return storeRows
+        if (cond?.a === 'parent_id') return children
+        return cond?.b === TARGET_ID ? shift(nodeQueue, []) : shift(parentQueue, [])
+      }
+      chain.limit = vi.fn(() => Promise.resolve(rows()))
+      // 查直接子节点是 `.from(t).where(c)` 直接 await（无 .limit()），所以链自身要可 await
+      chain.then = (resolve: (v: any[]) => unknown) => resolve(rows())
       return chain
     })
   }
@@ -237,7 +323,11 @@ describe('updateOrgNode — 结构性变更后复核子树员工归属自洽（#
       }
     })
     ;(db.transaction as any).mockImplementation(async (fn: any) => {
-      handedTx = { execute: txExecute, update: txUpdate, select: (...a: any[]) => (db as any).select(...a) }
+      handedTx = {
+        execute: txExecute,
+        update: txUpdate,
+        select: (...a: any[]) => (db as any).select(...a),
+      }
       return fn(handedTx)
     })
     return { tx: () => handedTx, txExecute, txUpdate, order }
@@ -247,7 +337,7 @@ describe('updateOrgNode — 结构性变更后复核子树员工归属自洽（#
     vi.clearAllMocks()
     ;(getSession as any).mockResolvedValue(mockSession)
     ;(findSubtreeOwnershipConflicts as any).mockResolvedValue({ conflicts: [], total: 0 })
-    mockLegalReparent()
+    mockOrgSelect()
   })
 
   it('改挂后子树内有员工归属不自洽 → 拒绝并列出姓名，事务回滚', async () => {
@@ -314,8 +404,7 @@ describe('updateOrgNode — 结构性变更后复核子树员工归属自洽（#
    */
   it('只改 type（不动 parentId）→ 同样进事务、取锁、复核', async () => {
     const t = setupTx()
-    // 事务外快照 / 锁内重读都是「市场下的部门」；第三次是目标父节点（市场）
-    mockLegalReparent()
+
 
     const result = await updateOrgNode('dept-1', { type: '门店' })
 
@@ -367,7 +456,8 @@ describe('updateOrgNode — 结构性变更后复核子树员工归属自洽（#
   it('锁内重读节点已不存在 → 报节点不存在，且不 UPDATE', async () => {
     const t = setupTx()
     // ① 事务外快照有 ② 锁内重读空
-    mockSelectSequence([[NODE_ROW], [PARENT_ROW], []])
+    // 事务外读到节点，锁内重读为空（被并发删除）
+    mockOrgSelect({ nodeQueue: [[NODE_ROW], []] })
 
     const result = await updateOrgNode('dept-1', { parentId: 'market-2' })
 
@@ -383,18 +473,145 @@ describe('updateOrgNode — 结构性变更后复核子树员工归属自洽（#
    */
   it('锁内层级校验失败 → 拒绝且不 UPDATE（事务外读到的是合法类型）', async () => {
     const t = setupTx()
-    mockSelectSequence([
-      [NODE_ROW],          // ① 事务外快照
-      [PARENT_ROW],        // ② 事务外读目标父节点：合法（市场）
-      [NODE_ROW],          // ③ 锁内重读本节点
-      [{ type: '部门' }],  // ④ 锁内读目标父节点：已被并发改成部门
-    ])
+    // 事务外读到的目标父节点是市场（合法），锁内重读时已被并发改成部门
+    mockOrgSelect({ parentQueue: [[PARENT_ROW], [{ type: '部门' }]] })
 
     const result = await updateOrgNode('dept-1', { parentId: 'market-2' })
 
     expect(result.success).toBe(false)
     expect(result.message).toContain('部门不可嵌套')
     expect(t.txUpdate).not.toHaveBeenCalled()
+  })
+
+  /**
+   * ## 改 `type` 的连带影响（#318 第 3 轮，codex P1/P2）
+   *
+   * `validateParentType` 只管「新类型 × 父节点类型」这一对。另外三样在**创建**路径上都有守卫，
+   * 改类型这条路上一个都没有 —— 又是「同一条规则只守了一侧」。
+   */
+  describe('改 type 的连带影响校验', () => {
+    it('节点下已有子节点且新类型容不下它 → 拒绝', async () => {
+      const t = setupTx()
+      // 市场下挂着一个门店子节点，把它改成部门 → 「门店节点下只能创建部门」那条规则反过来被破
+      mockOrgSelect({
+        nodeQueue: [[{ parentId: 'hq-1', type: '市场' }]],
+        parentQueue: [[{ type: '总部' }]],
+        children: [{ id: 'store-x', name: 'X 店', type: '门店' }],
+      })
+
+      const result = await updateOrgNode('dept-1', { type: '部门' })
+
+      expect(result.success).toBe(false)
+      expect(result.message).toContain('X 店')
+      expect(t.txUpdate).not.toHaveBeenCalled()
+    })
+
+    it('节点上挂着门店（stores.org_node_id 指向它）→ 不许改成非门店类型', async () => {
+      const t = setupTx()
+      mockOrgSelect({
+        nodeQueue: [[{ parentId: 'market-1', type: '门店' }]],
+        parentQueue: [[{ type: '市场' }]],
+        storeRows: [{ storeName: '凤御一店' }],
+      })
+
+      const result = await updateOrgNode('dept-1', { type: '部门' })
+
+      expect(result.success).toBe(false)
+      expect(result.message).toContain('凤御一店')
+      expect(t.txUpdate).not.toHaveBeenCalled()
+    })
+
+    /**
+     * DB trigger `permission_validate_role_assignment_scope()` 只在绑定行 INSERT 时按当时的
+     * `allowed_scope_types` 校验，改节点类型完全不回溯 —— 于是能留下「角色绑定挂部门节点」
+     * 这种 trigger 本该禁止的状态。
+     */
+    it('节点上已有该层级不允许的角色授权 → 拒绝', async () => {
+      const t = setupTx()
+      mockOrgSelect({
+        nodeQueue: [[{ parentId: 'market-1', type: '门店' }]],
+        parentQueue: [[{ type: '市场' }]],
+      })
+      // 绑定检查走原生 SQL；返回一行表示「有不兼容的授权」
+      ;(db.execute as any).mockImplementation((arg: unknown) => (
+        JSON.stringify(arg).includes('permission_role_definitions')
+          ? Promise.resolve([{ role_name: '门店店长' }])
+          : Promise.resolve([])
+      ))
+
+      const result = await updateOrgNode('dept-1', { type: '部门' })
+
+      expect(result.success).toBe(false)
+      expect(result.message).toContain('门店店长')
+      expect(t.txUpdate).not.toHaveBeenCalled()
+    })
+
+    it('三样都干净 → 放行', async () => {
+      setupTx()
+      mockOrgSelect({
+        nodeQueue: [[{ parentId: 'market-1', type: '部门' }]],
+        parentQueue: [[{ type: '市场' }]],
+      })
+
+      const result = await updateOrgNode('dept-1', { type: '门店' })
+
+      expect(result.success).toBe(true)
+    })
+  })
+
+  /**
+   * ## 节点自身的 scope 按**当前树**判（#318 第 3 轮，两谱系共识）
+   *
+   * ⚠️ 两个谱系都建议「锁内重跑 `isNodeInScope`」—— 那是 **no-op**：它判的是
+   * `session.permissions.scopeOrgNodeIds`（构造 session 时展开好的内存集合），
+   * 与现在的树无关，同一个纯函数同一份入参，锁内锁外答案必然一样。
+   * 所以改用 `isNodeWithinScopeRoots` 拿角色绑定的根节点去查当前树。
+   */
+  describe('节点自身 scope 按当前树复判', () => {
+    const nonAdminSession = {
+      employeeId: 'HR-001',
+      roles: [{ role: 'hr', scopeId: 'market-1' }],
+      permissions: { actions: ['org:update'], scopeStoreIds: [], scopeOrgNodeIds: ['market-1', 'dept-1'] },
+    }
+
+    it('非 admin：节点已被并发挪出管辖子树 → 拒绝且不 UPDATE', async () => {
+      ;(getSession as any).mockResolvedValue(nonAdminSession)
+      ;(isAdminScope as any).mockReturnValue(false)
+      ;(isNodeWithinScopeRoots as any).mockResolvedValue(false)
+      const t = setupTx()
+
+      const result = await updateOrgNode('dept-1', { parentId: 'market-2' })
+
+      expect(result.success).toBe(false)
+      expect(result.message).toContain('无权编辑该节点')
+      expect(t.txUpdate).not.toHaveBeenCalled()
+      // 判据必须是「角色绑定的根节点」，不是展开后的那份过期集合
+      expect((isNodeWithinScopeRoots as any).mock.calls[0][1]).toEqual(['market-1'])
+    })
+
+    it('非 admin：节点仍在管辖子树内 → 放行，且锁内也复判过一次', async () => {
+      ;(getSession as any).mockResolvedValue(nonAdminSession)
+      ;(isAdminScope as any).mockReturnValue(false)
+      ;(isNodeWithinScopeRoots as any).mockResolvedValue(true)
+      const t = setupTx()
+
+      // 刻意只改 type、不动父节点 —— 换父节点会额外触发「目标父节点是否在我 scope 内」
+      // 那条纯内存判据（market-2 不在这个 hr 的 scope 里），会盖掉本条要验的东西
+      const result = await updateOrgNode('dept-1', { type: '门店' })
+
+      expect(result.success).toBe(true)
+      // 事务外早拒一次 + 锁内权威一次
+      expect((isNodeWithinScopeRoots as any).mock.calls.length).toBe(2)
+      expect((isNodeWithinScopeRoots as any).mock.calls[1][2], '锁内那次必须走事务句柄').toBe(t.tx())
+    })
+
+    it('admin → 不查树（不受 scope 限制）', async () => {
+      setupTx()
+
+      await updateOrgNode('dept-1', { parentId: 'market-2' })
+
+      expect(isNodeWithinScopeRoots).not.toHaveBeenCalled()
+    })
   })
 
   it('非结构性的普通更新（改名）→ 不进事务、不取锁、不复核', async () => {

@@ -182,3 +182,40 @@ export async function findSubtreeOwnershipConflicts(
     total: list.length > 0 ? Number(list[0].total) : 0,
   }
 }
+
+/**
+ * 按**当前树形态**判断 `nodeId` 是否落在 `scopeRootIds` 任一节点的子树内（含自身）。
+ *
+ * ## 与 `lib/node-scope.ts` 的 `isNodeInScope` 有什么不同
+ *
+ * `isNodeInScope` 判的是 `session.permissions.scopeOrgNodeIds.includes(nodeId)` —— **纯内存**，
+ * 那份集合是**构造 session 时**按当时的树展开的。所以它的答案与「现在的树」无关：
+ * 并发把节点挪出操作者的 scope 之后，事务内再调一次 `isNodeInScope` 仍返回 true
+ * （两个评审谱系第 3 轮都建议「锁内重跑 isNodeInScope」—— 那是个 **no-op**，
+ * 同一个纯函数、同一个入参，答案不会变。别照着改）。
+ *
+ * 本函数改用**角色绑定的根节点**去查当前树：锁内调用时读到的是锁内快照，
+ * 所以「这个节点现在还在我的管辖范围内吗」这个问题才真的被回答。
+ *
+ * `scopeRootIds` 为空 → 恒 false（没有任何管辖根的非 admin 不该改任何节点）。
+ * admin 由调用方用 `isAdminScope(session)` 提前短路，本函数不认识 admin。
+ */
+export async function isNodeWithinScopeRoots(
+  nodeId: string,
+  scopeRootIds: readonly string[],
+  executor: SqlExecutor = db,
+): Promise<boolean> {
+  if (scopeRootIds.length === 0) return false
+  const roots = [...scopeRootIds]
+  const rows = await executor.execute(sql`
+    WITH RECURSIVE chain AS (
+      SELECT id, parent_id, ARRAY[id] AS path FROM org_nodes WHERE id = ${nodeId}
+      UNION ALL
+      SELECT p.id, p.parent_id, c.path || p.id
+        FROM chain c JOIN org_nodes p ON p.id = c.parent_id
+       WHERE NOT p.id = ANY(c.path)
+    )
+    SELECT 1 FROM chain WHERE id = ANY(${sql.param(roots)}::text[]) LIMIT 1
+  `)
+  return (rows as unknown as unknown[]).length > 0
+}
