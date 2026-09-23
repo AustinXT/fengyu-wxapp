@@ -27,7 +27,8 @@ import type { ProductBoardParams, ProductBoardResult } from "@/lib/data-center/t
 //    家居产品」字面对、语义反。但反过来写「只统计疗程卡」同样错：**本页是 product_kind
 //    维度**（护理项目/家居产品/充值卡/体验卡，metrics.md:712/733），「疗程卡」是
 //    product_type 的值（enums.ts:14 二元枚举），在本页筛选器里根本找不到；而体验卡
-//    （is_experience capability，product.ts:76-79）的 product_type 正是疗程卡、必有次数，
+//    （is_experience capability，见 db/schema/product.ts:81 —— 全路径，**不是**同族的
+//    actions/data-center/product.ts）的 product_type 正是疗程卡、必有次数，
 //    用户照「只统计疗程卡」推断「选体验卡时持卡≈0」会与实际相反。
 //    → 连「家居产品无次数故不参与统计」也不能写：那是**数据惯例不是 SQL 保证**
 //      （products.ts 只要求疗程卡必须有次数，**并未反向禁止家居产品携带次数**；
