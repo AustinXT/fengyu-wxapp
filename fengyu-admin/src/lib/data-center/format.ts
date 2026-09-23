@@ -8,7 +8,17 @@
  *   - 缺失（null/undefined/NaN/Infinity）：返回 '--'
  *
  * ⚠️ 跨端口径一致性：与 staff number.ts 保持字面一致，consistency 测试守护。
+ *    该守护覆盖的是金额/计数/占比三个格式化器；`formatDelta` 是数据中心独有的徽章文案，
+ *    staff 端无对应副本（#310/#315 改造前后均如此）。
  */
+import {
+  FLAT_TEXT,
+  NA_TEXT,
+  NOT_TURNED_TEXT,
+  TURNED_POSITIVE_TEXT,
+  isFlatAfterRounding,
+  type DeltaDisplay,
+} from '@/lib/delta-display'
 
 function isInvalid(value: number | null | undefined): boolean {
   return value == null || !Number.isFinite(value)
@@ -45,13 +55,29 @@ export function formatByUnit(
   return formatCount(value)
 }
 
+/** 数据中心徽章的展示精度：2 位小数。首页看板用整数，**两处阈值不同，别互抄**。 */
+export const DELTA_DIGITS = 2
+
 /**
- * 同比/环比 delta% 文案：输入小数（0.12 → "+12.00%"），null → '--'
- * 正负号显式，便于前端按符号上色。
+ * 同比/环比徽章文案（#310/#315 起吃判别联合，不再吃裸数值）。
+ *
+ * 四种展示态的文案在 `@/lib/delta-display` 定义，这里只负责把 `pct` 渲染成百分比字符串。
+ * 决策 3：舍入后为 0 的一律出「持平」，不再输出 `+0.00%` 那种自相矛盾的展示。
  */
-export function formatDelta(value: number | null | undefined): string {
-  if (isInvalid(value)) return '--'
-  const v = value as number
-  const sign = v > 0 ? '+' : ''
-  return sign + (v * 100).toFixed(2) + '%'
+export function formatDelta(display: DeltaDisplay | undefined): string {
+  if (display == null) return NA_TEXT
+  switch (display.kind) {
+    case 'na':
+      return NA_TEXT
+    case 'turnedPositive':
+      return TURNED_POSITIVE_TEXT
+    case 'notTurned':
+      return NOT_TURNED_TEXT
+    case 'pct': {
+      if (isFlatAfterRounding(display.value, DELTA_DIGITS)) return FLAT_TEXT
+      const shown = (display.value * 100).toFixed(DELTA_DIGITS)
+      // 用舍入后的值判符号，与「持平」的判定保持同一套精度。
+      return (Number(shown) > 0 ? '+' : '') + shown + '%'
+    }
+  }
 }

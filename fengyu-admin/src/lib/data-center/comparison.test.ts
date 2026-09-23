@@ -65,12 +65,13 @@ describe('withComparison', () => {
     })
     const cell = await withComparison(runner, ranges, 'amount', true)
     expect(cell.value).toBe(120)
-    expect(cell.mom).toBeCloseTo(0.2) // (120-100)/100
-    expect(cell.yoy).toBeCloseTo(0.5) // (120-80)/80
+    // #310 起 mom/yoy 是判别联合而非裸数值 —— 展示层要区分「算不出」的三种成因。
+    expect(cell.mom).toEqual({ kind: 'pct', value: 0.2 }) // (120-100)/100
+    expect(cell.yoy).toEqual({ kind: 'pct', value: 0.5 }) // (120-80)/80
     expect(runner).toHaveBeenCalledTimes(3)
   })
 
-  it('previous/lastYear 为 null（无历史）→ mom/yoy = null', async () => {
+  it('previous/lastYear 为 null（无历史）→ mom/yoy = na', async () => {
     const runner = vi.fn(async () => 50)
     const cell = await withComparison(
       runner,
@@ -79,8 +80,8 @@ describe('withComparison', () => {
       true,
     )
     expect(cell.value).toBe(50)
-    expect(cell.mom).toBeNull()
-    expect(cell.yoy).toBeNull()
+    expect(cell.mom).toEqual({ kind: 'na' })
+    expect(cell.yoy).toEqual({ kind: 'na' })
     expect(runner).toHaveBeenCalledTimes(1) // 仅本期
   })
 

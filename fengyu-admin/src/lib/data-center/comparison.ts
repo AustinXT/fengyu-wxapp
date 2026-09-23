@@ -9,6 +9,7 @@
  * 明细表/排名榜不做逐行对比（见 plan 风险 §2）。
  */
 import type { KpiCell, MetricUnit, ResolvedRange, ResolvedTimeRange } from './types'
+import { resolveDeltaDisplay } from '@/lib/delta-display'
 
 export interface ComparisonRanges {
   current: ResolvedRange
@@ -27,6 +28,12 @@ export interface ComparisonRanges {
  * metrics.md §数字格式化规则「防除零 / 数据缺失 一律 '--'」（:610）归入"算不出"。
  * 审计跨相邻区间统计到负基期 29 对 / 19 家门店，区间 -100.68% ~ -54,080,100.00%（#283）。
  * 同比(yoy)同样走这里——负基期翻符号与是环比还是同比无关。
+ *
+ * ⚠️ **本函数已不再是 KPI 徽章的展示口径**（#310/#315 起）。
+ * 它把 `base <= 0` 的三种成因（负基期已转正 / 负基期未转正 / 零基期）一律压成 `null`，
+ * 而决策 1 要求前两者分别显示「由负转正」「未转正」——展示走
+ * `@/lib/delta-display` 的 `resolveDeltaDisplay`，那里是单一真相源。
+ * 这里保留纯数值口径，供内部计算与既有测试使用；**新代码要出徽章别调它**。
  */
 export function deltaPct(cur: number | null, base: number | null): number | null {
   if (cur == null || base == null) return null
@@ -66,8 +73,8 @@ export async function withComparison(
   ])
   return {
     value,
-    mom: deltaPct(value, prev),
-    yoy: deltaPct(value, ly),
+    mom: resolveDeltaDisplay(value, prev),
+    yoy: resolveDeltaDisplay(value, ly),
     unit,
   }
 }

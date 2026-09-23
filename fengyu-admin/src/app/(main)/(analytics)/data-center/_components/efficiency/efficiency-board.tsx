@@ -67,7 +67,7 @@ export function EfficiencyBoard() {
       {/* 人均派生 KPI */}
       <section className="flex flex-col gap-3">
         <h2 className="text-sm font-semibold text-[var(--foreground)]">人均效能</h2>
-        <KpiGrid items={KPI_ITEMS} kpis={kpis} columns={4} />
+        <KpiGrid items={KPI_ITEMS} kpis={kpis} columns={4} baseRanges={data?.timeRange} />
       </section>
 
       {/* 明细 + 排名榜分 Tab（排名榜跟随顶部时间维度，不算同比环比）*/}
