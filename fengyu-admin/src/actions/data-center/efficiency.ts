@@ -336,7 +336,6 @@ export const getEfficiencyBoard = withPermission(
         AND (s.closed_at IS NULL OR s.closed_at::date > ${cur.end})
     `)
 
-    /** 技师数 by store */
     /** 技师数 by store（有门店归属的部分）—— 与 Part A 同一个 technician_scoped 单源 */
     const qTechByStore = db.execute(sql`
       WITH ${technicianCte}
