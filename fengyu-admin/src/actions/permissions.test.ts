@@ -303,12 +303,16 @@ describe('assignRole — AC-09 & scope constraint', () => {
    */
   function mockAssignTx() {
     const txExecute = vi.fn((...a: unknown[]) => (db as any).execute(...a))
-    ;(db.transaction as any).mockImplementation(async (fn: any) => fn({
-      execute: txExecute,
-      select: (...a: unknown[]) => (db as any).select(...a),
-      insert: (...a: unknown[]) => (db as any).insert(...a),
-    }))
-    return { txExecute }
+    let handedTx: any
+    ;(db.transaction as any).mockImplementation(async (fn: any) => {
+      handedTx = {
+        execute: txExecute,
+        select: (...a: unknown[]) => (db as any).select(...a),
+        insert: (...a: unknown[]) => (db as any).insert(...a),
+      }
+      return fn(handedTx)
+    })
+    return { txExecute, tx: () => handedTx }
   }
 
   beforeEach(() => {
@@ -413,6 +417,44 @@ describe('assignRole — AC-09 & scope constraint', () => {
     expect(result.success).toBe(false)
     expect(result.message).toContain('组织节点不存在')
     expect(values).not.toHaveBeenCalled()
+  })
+
+  /**
+   * ## 目标节点是否**还**在管辖范围内：按当前树、锁内判（#318 第 5 轮，两谱系共识）
+   *
+   * 事务外那次 `userScopeIds.includes(data.scopeId)` 判的是 session 构造时展开好的内存集合，
+   * 窗口是**整个 JWT 寿命（24h）**：节点在 hr 登录后被挪出他的市场，他仍能把角色绑上去。
+   */
+  it('非 admin：目标节点已被挪出管辖子树 → 拒绝且不 INSERT', async () => {
+    ;(getSession as any).mockResolvedValue(hrSession)
+    ;(hasRole as any).mockReturnValue(true)
+    mockAssignRoleSelects({ node: { type: '门店' }, existing: null })
+    const values = vi.fn().mockResolvedValue({})
+    ;(db.insert as any).mockReturnValue({ values })
+    const t = mockAssignTx()
+    ;(isNodeWithinScopeRoots as any).mockResolvedValue(false)
+
+    const result = await assignRole({ employeeId: 'EMP-X', role: 'manager', scopeId: 'store-fengyu' })
+
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('不能分配超出自身权限范围的角色')
+    expect(values, 'scope 复判没过就不该 INSERT').not.toHaveBeenCalled()
+    // 判据必须是「目标节点 + 角色绑定的根节点 + 事务句柄」
+    const [nodeId, roots, executor] = (isNodeWithinScopeRoots as any).mock.calls[0]
+    expect(nodeId).toBe('store-fengyu')
+    expect(roots).toEqual(['market-1'])
+    expect(executor).toBe(t.tx())
+  })
+
+  it('admin → 不按树复判（不受 scope 限制）', async () => {
+    ;(getSession as any).mockResolvedValue(adminSession)
+    ;(hasRole as any).mockReturnValue(true)
+    mockAssignRoleSelects({ node: { type: '总部' }, existing: null })
+    ;(db.insert as any).mockReturnValue({ values: vi.fn().mockResolvedValue({}) })
+
+    await assignRole({ employeeId: 'EMP-X', role: 'admin', scopeId: 'hq-1' })
+
+    expect(isNodeWithinScopeRoots).not.toHaveBeenCalled()
   })
 
   it('admin 分配 admin 角色到非 headquarters 节点 → 拒绝', async () => {
@@ -1103,6 +1145,21 @@ describe('revokeRole — scope + admin-only for admin roles', () => {
     expect(result.success, '锁内已是超管 → hr 撤不动').toBe(false)
     expect(result.message).toContain('只有系统管理员')
     expect(t.deleteWhere, '判据没过就不该删').not.toHaveBeenCalled()
+  })
+
+  /** 撤销侧同款：未授权的权限**回收**与未授权的授予同等严重（GLM 第 5 轮 P2） */
+  it('非 admin：绑定的 scope 节点已被挪出管辖子树 → 拒绝且不 DELETE', async () => {
+    ;(getSession as any).mockResolvedValue(hrSession)
+    ;(hasRole as any).mockReturnValue(true)
+    const t = setupRevokeDbCalls({ role: 'manager', scopeId: 'market-1', employeeId: 'EMP-1' })
+    ;(isNodeWithinScopeRoots as any).mockResolvedValue(false)
+
+    const result = await revokeRole(26)
+
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('不能撤销超出自身权限范围的角色')
+    expect(t.deleteWhere, 'scope 复判没过就不该删').not.toHaveBeenCalled()
+    expect((isNodeWithinScopeRoots as any).mock.calls[0][0]).toBe('market-1')
   })
 
   it('倒数第二 admin (count=2) 跨员工撤销 → 成功 + logOperation detail 含 employeeId/scopeId', async () => {
