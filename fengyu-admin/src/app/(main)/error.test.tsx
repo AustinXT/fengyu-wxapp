@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { render, screen } from '@testing-library/react'
-import ErrorPage, { DIGEST_PATTERN_SOURCE } from './error'
+import ErrorPage, { DIGEST_PATTERN } from './error'
 
 /**
  * 页面级 error boundary 的 401/403/500 判定守护。
@@ -87,10 +87,22 @@ describe('(main)/error.tsx 错误分级', () => {
  * analyst 侧先收紧，本文件同步；两侧各留一条字面量锚定，任一边漂移两边都红。
  */
 describe('(main)/error.tsx digest 白名单（跨端副本，与 analyst 同步）', () => {
-  it('正则字面量锚定——与 analyst 那份逐字一致', () => {
-    // analyst 侧同名断言在
-    // fengyu-analyst/src/components/__tests__/analyst-error-state.test.tsx
-    expect(DIGEST_PATTERN_SOURCE).toBe('^\\d{1,10}(?:@E\\d{1,9})?$')
+  it('正则含 flags 的字面量锚定——与 analyst 那份逐字一致', () => {
+    // ⚠️ 真正的跨端比对（读本文件源码 vs analyst 实际正则）在 analyst 侧的
+    //    src/lib/__tests__/digest-whitelist-cross-end.test.ts。这里钉本端形态，两条合起来才够：
+    //    只比「本端导出 vs 本端硬编码」，两边一起改就双绿（闸门 2 codex 指出）。
+    // 比 toString() 而不是 .source：后者不含 flags，同时误加 m 会放行多行串。
+    expect(DIGEST_PATTERN.toString()).toBe('/^\\d{1,10}(?:@E\\d{1,9})?$/')
+  })
+
+  it('⚠️ 没有 m flag——多行 digest 不得被当成错误编号', () => {
+    render(
+      <ErrorPage
+        error={errorWith({ message: SANITIZED, digest: '123\npostgresql_fengyu_fengyu123' })}
+        reset={vi.fn()}
+      />,
+    )
+    expect(screen.queryByText(/错误编号/)).toBeNull()
   })
 
   it.each([
