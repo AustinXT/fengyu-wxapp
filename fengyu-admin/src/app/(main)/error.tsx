@@ -21,8 +21,14 @@ import { actionErrorMessage, actionErrorType } from "@/lib/action-error"
  */
 const NEXT_AUTO_DIGEST_RE = /^\d{1,10}(?:@E\d{1,9})?$/
 
-/** 导出给测试做跨端字面量锚定——与 analyst 那份副本漂移时两侧都会红。 */
-export const DIGEST_PATTERN_SOURCE = NEXT_AUTO_DIGEST_RE.source
+/**
+ * 导出给测试做跨端锚定。
+ *
+ * ⚠️ 导的是**整个正则**而不是 `.source`：`.source` 不含 flags，
+ * 两边同时误加 `m` 后 `.source` 逐字不变、两套测试双绿，但 `m` 让 `^`/`$` 匹配行首行尾，
+ * `"123\npostgresql_fengyu_fengyu123_..."` 这种多行串就会整串放行（#316 闸门 2 codex 揪出，已实测）。
+ */
+export const DIGEST_PATTERN = NEXT_AUTO_DIGEST_RE
 
 /** 「没有可展示的业务理由」的哨兵。不可能与真实文案相等，故用它代替空串做判定。 */
 const NO_BUSINESS_REASON = "__no_business_reason__"

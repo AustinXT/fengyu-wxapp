@@ -39,8 +39,14 @@ import { useRouter } from "next/navigation"
  */
 const NEXT_AUTO_DIGEST_RE = /^\d{1,10}(?:@E\d{1,9})?$/
 
-/** 导出给测试做字面量锚定——两站点副本漂移时能立刻发现。 */
-export const DIGEST_PATTERN_SOURCE = NEXT_AUTO_DIGEST_RE.source
+/**
+ * 导出给测试做跨端锚定。
+ *
+ * ⚠️ 导的是**整个正则**而不是 `.source`：`.source` 不含 flags，
+ * 两边同时误加 `m` 后 `.source` 逐字不变、两套测试双绿，但 `m` 让 `^`/`$` 匹配行首行尾，
+ * `"123\npostgresql_fengyu_fengyu123_..."` 这种多行串就会整串放行（#316 闸门 2 codex 揪出，已实测）。
+ */
+export const DIGEST_PATTERN = NEXT_AUTO_DIGEST_RE
 
 /**
  * 根段错误页的「真出口」。

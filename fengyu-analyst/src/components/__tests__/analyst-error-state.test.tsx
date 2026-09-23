@@ -3,7 +3,7 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react"
 import "@testing-library/jest-dom/vitest"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { AnalystErrorState, DIGEST_PATTERN_SOURCE } from "@/components/analyst-error-state"
+import { AnalystErrorState, DIGEST_PATTERN } from "@/components/analyst-error-state"
 
 const mockRefresh = vi.fn()
 vi.mock("next/navigation", () => ({
@@ -16,13 +16,12 @@ beforeEach(() => {
 afterEach(cleanup)
 
 describe("AnalystErrorState · digest 白名单（#316 验收 3）", () => {
-  it("正则字面量锚定——与 admin 侧那份刻意副本须逐字一致", () => {
-    // 跨端共享目录已 veto，两份各留一份。
-    // ⚠️ 初稿这条只比较 analyst 自己导出的常量和 analyst 自己的硬编码字符串——admin 漂移时
-    //    根本不会红，「跨端锚定」是假的（#316 闸门 2 两谱系同时揪出；当时 admin 确实还停在
-    //    宽松正则、同样的泄漏串照放）。现在两侧各有一条，钉的是同一个 source 字面量：
-    //    任一边改了不同步，两边都红。admin 侧见 fengyu-admin/src/app/(main)/error.test.tsx。
-    expect(DIGEST_PATTERN_SOURCE).toBe("^\\d{1,10}(?:@E\\d{1,9})?$")
+  it("正则含 flags 的字面量锚定", () => {
+    // ⚠️ 真正的**跨端**守护（直接读 admin 源文件比对）在
+    //    src/lib/__tests__/digest-whitelist-cross-end.test.ts —— 这里只钉本端形态。
+    //    初稿把「比较本端导出值与本端硬编码字符串」当成跨端锚定，是假的（闸门 2 codex 指出）。
+    // 比 toString() 而不是 .source：后者不含 flags，两边同时误加 m 会双绿放行多行串。
+    expect(DIGEST_PATTERN.toString()).toBe("/^\\d{1,10}(?:@E\\d{1,9})?$/")
   })
 
   it("Next 自动生成的编号照常展示，方便用户报障时对上服务端日志", () => {
