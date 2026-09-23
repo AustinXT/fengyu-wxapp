@@ -291,9 +291,9 @@ describe('order-detail 待支付倒计时 (#215)', () => {
     expect(page._countdownTimer).not.toBeNull();
   });
 
-  test('倒计时会扣掉本次请求的往返耗时', async () => {
+  test('倒计时会扣掉下行耗时（网络残差的一半）', async () => {
     // 服务端给的是「生成响应那一刻」的剩余量，传到手上已经过去一段了；
-    // 不扣的话倒计时比真实关单时刻晚一个 RTT，顾客会在还显示剩余时间时被拒付
+    // 不扣的话倒计时比真实关单时刻晚，顾客会在还显示剩余时间时被拒付
     const { page, resolvers } = createPageWithManualApi();
     const inflight = page.loadDetail('FY-215');
 
@@ -308,7 +308,9 @@ describe('order-detail 待支付倒计时 (#215)', () => {
     });
     await inflight;
 
-    expect(page._lastLoadRttMs).toBeGreaterThanOrEqual(100);
+    // 只扣残差的一半（单向估计）：扣整段会在弱网上行慢时提前封掉还能付的单
+    expect(page._lastLoadDownlinkMs).toBeGreaterThanOrEqual(50);
+    expect(page._lastLoadDownlinkMs).toBeLessThan(120);
     // 服务端值保持原样（下面那条用例依赖这个区分），扣减体现在本地截止点上
     expect(page.data.order.expire_in_ms).toBe(60_000);
     expect(page._countdownDeadlineAt - Date.now()).toBeLessThan(60_000);
@@ -316,7 +318,7 @@ describe('order-detail 待支付倒计时 (#215)', () => {
 
   test('服务端给的剩余量为正、但被 RTT 扣成 0 → 重载一次（服务端还没试过关）', () => {
     const { page, loadDetail } = createPageWithStubbedLoad();
-    page._lastLoadRttMs = 500;            // 本次 RTT 比剩余量还长
+    page._lastLoadDownlinkMs = 500;            // 下行估计比剩余量还长
     page.startCountdown(PENDING_ORDER_WITH_REMAINING(50));
 
     expect(loadDetail).toHaveBeenCalledTimes(1);
@@ -376,7 +378,7 @@ describe('order-detail 待支付倒计时 (#215)', () => {
 
   test('回退口径不再扣一次 RTT（绝对时间本就是按此刻算的）', () => {
     const { page } = createPageWithStubbedLoad();
-    page._lastLoadRttMs = 5000;
+    page._lastLoadDownlinkMs = 5000;
     page.startCountdown(PENDING_ORDER(new Date(Date.now() + 60_000).toISOString()));
 
     // 若误扣 5 秒会变成 00:55
@@ -386,7 +388,7 @@ describe('order-detail 待支付倒计时 (#215)', () => {
   test('隐藏态下 RTT 归零分支不发后台请求', () => {
     const { page, loadDetail } = createPageWithStubbedLoad();
     page._hidden = true;
-    page._lastLoadRttMs = 500;
+    page._lastLoadDownlinkMs = 500;
     page.startCountdown(PENDING_ORDER_WITH_REMAINING(50));
 
     expect(loadDetail).not.toHaveBeenCalled();
@@ -425,6 +427,48 @@ describe('order-detail 待支付倒计时 (#215)', () => {
     await vi.advanceTimersByTimeAsync(0);
     return { page, loadDetail };
   }
+
+  test('墙钟**向前**跳过截止点 → 按「时钟不可信」校准，不当成过期、不关支付入口', async () => {
+    // 自从归零会封支付入口，把一次系统校时误判成过期就会封掉一张服务端还认可的单
+    vi.useFakeTimers();
+    try {
+      const page = createPageInstance();
+      const loadDetail = vi.fn(async () => true);
+      page.loadDetail = loadDetail;
+      page.setData({ order: { sale_order_id: 'FY-215', status: '待支付' } });
+      page.startCountdown(PENDING_ORDER_WITH_REMAINING(120_000));
+
+      vi.setSystemTime(Date.now() + 10 * 60 * 1000);   // 向前跳 10 分钟
+      vi.advanceTimersByTime(1000);
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(page.data.payBlockedByExpiry).toBe(false);
+      expect(loadDetail).toHaveBeenCalledTimes(1);
+      expect(page.data.countdown).toBe('');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('成功刷新会取消已排的重试（别在有新鲜数据的页面上白闪一次）', async () => {
+    vi.useFakeTimers();
+    try {
+      const { page, resolvers } = createPageWithManualApi();
+      page._scheduleRefreshRetry('FY-215');
+      expect(page._refreshRetryTimer).not.toBeNull();
+
+      const inflight = page.loadDetail('FY-215');
+      resolvers[0](detailResponse('已关闭'));
+      await inflight;
+
+      expect(page._refreshRetryTimer).toBeNull();
+      callClientApiMock.mockClear();
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(callClientApiMock).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 
   test('墙钟回拨后校准**失败** → 才排一次有界重试（回拨不关支付入口，失败就没有恢复点了）', async () => {
     vi.useFakeTimers();
@@ -786,8 +830,10 @@ describe('order-detail 倒计时的生命周期与并发 (#215)', () => {
 
     // 服务端明说没关掉 → 闸门必须一直关着，哪怕刷新是成功的
     expect(page.data.payBlockedByExpiry).toBe(true);
-    // 且不该再白发一次重载：服务端已经说过「试过了、关不掉」
+    // 不该**立刻**再打一发（服务端刚说过它试不动了），但必须排一次延迟的权威刷新 ——
+    // 页面此刻写着「正在确认订单状态」，没人去确认这句话就是假的
     expect(callClientApiMock).toHaveBeenCalledTimes(1);
+    expect(page._refreshRetryTimer).not.toBeNull();
     // 也不该本地推一个**已经过去**的截止时刻进 data（那是下一个口径分叉的种子）
     expect(page.data.order.expire_time_fmt).toBe('');
   });
@@ -811,8 +857,8 @@ describe('order-detail 倒计时的生命周期与并发 (#215)', () => {
     expect(page.data.payBlockedByExpiry).toBe(false);
   });
 
-  test('RTT 扣减要减掉服务端处理耗时，不能重复计算', async () => {
-    // expire_in_ms 是服务端**处理完之后**才算的；把处理耗时也扣掉，
+  test('时延扣减要先减掉服务端处理耗时，再取一半', async () => {
+    // expire_in_ms 是服务端**处理完之后**才算的；把处理耗时也扣掉就是重复计算，
     // 倒计时会提前结束、支付入口提前被关
     const { page, resolvers } = createPageWithManualApi();
     const inflight = page.loadDetail('FY-215');
@@ -828,14 +874,14 @@ describe('order-detail 倒计时的生命周期与并发 (#215)', () => {
     });
     await inflight;
 
-    // 只该扣掉网络那一小段，而不是整个 150ms
-    expect(page._lastLoadRttMs).toBeLessThan(60);
+    // 只该扣掉「网络那一小段」的一半，而不是整个 150ms
+    expect(page._lastLoadDownlinkMs).toBeLessThan(30);
   });
 
   test('权威剩余量被 RTT 扣光 → 同样关支付入口（与 tick 归零同后果）', () => {
     // 这条孪生路径此前漏了置闸：重载一失败，页面就退回成静态的「请完成支付 + 去支付」
     const { page } = createPageWithStubbedLoad();
-    page._lastLoadRttMs = 500;
+    page._lastLoadDownlinkMs = 500;
     page.startCountdown(PENDING_ORDER_WITH_REMAINING(50));
 
     expect(page.data.payBlockedByExpiry).toBe(true);

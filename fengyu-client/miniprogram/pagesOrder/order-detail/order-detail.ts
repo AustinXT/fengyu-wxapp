@@ -118,6 +118,13 @@ interface OrderPaymentView {
   audit_remark: string | null;
 }
 
+/**
+ * 一拍之间最多允许的墙钟流逝（issue #215）。tick 最多只排 1 秒，
+ * 超出这么多只可能是系统校时/手动改时间/进程被长时间冻结 —— 本地截止点不再可信。
+ * 给到 30 秒是留足余量：小程序在前台被短暂挂起（来电、通知中心）也不该误判。
+ */
+const MAX_TRUSTED_TICK_GAP_MS = 30_000;
+
 const STATUS_ICON: Record<string, { icon: string; color: string }> = {
   '待支付':     { icon: 'clock-o',   color: '#FAAD14' },
   '部分支付':   { icon: 'clock-o',   color: '#D48806' },
@@ -182,9 +189,10 @@ Page({
   // onHide 只停表不丢它，onShow 据此立刻恢复计时、随后的 loadDetail 只负责校准 ——
   // 不留这个的话，onShow 那次请求一失败，页面就只剩「请完成支付」且到期不会自动刷新。
   _countdownDeadlineAt: 0,
-  // 最近一次 loadDetail 的实测往返耗时。expire_in_ms 是服务端生成响应那一刻的剩余量，
-  // 传到手上已经过去一段了；不扣的话倒计时会比真实关单时刻晚一个 RTT。
-  _lastLoadRttMs: 0,
+  // 最近一次 detail 响应的**下行**耗时估计（网络残差的一半）。`expire_in_ms` 是服务端
+  // 生成响应那一刻的剩余量，传到手上已经过去一段了 —— 不扣，倒计时会晚于真实关单时刻；
+  // 扣整段（含上行），弱网下又会提前封掉一张还能付的单。
+  _lastLoadDownlinkMs: 0,
   // 最近一次 detail 响应**到手那一刻**的墙钟。截止点必须锚在这里，
   // 而不是 startCountdown 执行时的 `Date.now()` —— 两者之间还隔着分组疗程卡、
   // 映射流水、setData 这一堆视图组装，那段耗时会被凭空加到倒计时上。
@@ -294,14 +302,18 @@ Page({
       // ⚠️ 不能就地把 expire_in_ms 减掉 —— 那样「服务端说剩 0」和「服务端说剩 50ms、
       // 被本地扣成 0」就分不开了，而这两者的处理完全相反。
       // ⚠️ 也不能扣整个往返：`expire_in_ms` 是服务端**处理完之后**才算的，
-      // 把处理耗时也扣掉就是重复计算（补关那条路径动辄几百毫秒），
-      // 倒计时会提前结束、支付入口提前被关。减掉服务端自报的处理耗时后剩下的
-      // 才是真正的网络时间；仍扣整段（而非一半）是往「显示得更少」偏的安全侧。
+      // 把处理耗时也扣掉就是重复计算（补关那条路径动辄几百毫秒）。
+      // 减掉服务端自报的处理耗时，剩下的是「上行 + 下行」；我们只该扣**下行**那一段。
+      // 取一半是标准的单向估计。
+      // ⚠️ 早先这里扣的是整段，理由是「往显示得更少偏，安全侧」—— 自从归零会
+      // **关掉支付入口**，过度扣减就不再无害了：上行 5 秒、下行 0.5 秒的弱网下，
+      // 页面会比真实截止早 5 秒封掉一张还能付的单。
       const serverElapsed = typeof order.server_elapsed_ms === 'number'
         && Number.isFinite(order.server_elapsed_ms)
         ? Math.max(0, order.server_elapsed_ms)
         : 0;
-      this._lastLoadRttMs = Math.max(0, (Date.now() - sentAt) - serverElapsed);
+      const networkResidual = Math.max(0, (Date.now() - sentAt) - serverElapsed);
+      this._lastLoadDownlinkMs = Math.floor(networkResidual / 2);
       this._lastLoadReceivedAt = Date.now();
       const items: OrderDetailItem[] = data?.items || [];
       const paymentsRaw: OrderPayment[] = (data as any)?.payments || [];
@@ -487,12 +499,17 @@ Page({
         payments,
         outstandingAmount: outstanding,
         canContinuePay,
-        // 拿到一份新的服务端状态了，「时限已到但状态未确认」的闸门原则上可以解除。
+        // 拿到一份新的服务端状态了，排着的重试就没必要再打了（评审 round-15 P2）
+        // —— 否则顾客下拉刷新成功后，5 秒前排的那一发还是会来，白闪一次骨架屏，
+        // 它要是再失败还会在已有新鲜数据的页面上弹「加载失败」。
+        // 「时限已到但状态未确认」的闸门原则上可以解除。
         // ⚠️ 除非服务端明说「已过期但我没关掉」（`expire_unresolved`）—— 那正是
         // 闸门该继续关着的形态：订单确实过期了、`order.pay` 会拒，只是服务端
         // 连试两次都被并发的支付意图挤掉（双谱系评审 round-11）。
         payBlockedByExpiry: order.expire_unresolved === true,
       });
+
+      this._clearRefreshRetry();
 
       // 启动倒计时
       this.startCountdown(order);
@@ -585,12 +602,15 @@ Page({
       return;
     }
 
-    // 服务端明说「已过期、试过两次都没关掉」：状态已由 `_fetchDetail` 的
-    // `payBlockedByExpiry` 表达完了，再走下面的非权威归零分支只会白发一次重载 ——
-    // 那次几乎必然拿回同一个 unresolved（补关连输两次本就极罕见，第三次赢更悬）。
+    // 服务端明说「已过期、试过两次都没关掉」。不走下面的非权威归零分支（那会**立刻**
+    // 再打一发，而服务端刚说过它试不动了），但也**不能就这么干等着**：页面此刻写着
+    //「支付时限已到，正在确认订单状态」，要是再没有任何人去确认，这句话就是假的 ——
+    // 订单一直挂在待支付，券/积分/待结算储值卡都不释放，只能等用户下拉。
+    // 排一次延迟的权威刷新：挡路的支付意图是瞬态的，隔几秒服务端多半就能关掉了。
     if (order.expire_unresolved === true) {
       this._countdownDeadlineAt = 0;
       this.setData({ countdown: '' });
+      this._scheduleRefreshRetry(order.sale_order_id);
       return;
     }
 
@@ -630,7 +650,7 @@ Page({
     // 一律按非权威处理 —— 走下面那条**带一次性闸门**的重载路径。
     if (authoritative && serverRemaining <= 0) authoritative = false;
 
-    const remainingAt0 = authoritative ? serverRemaining - this._lastLoadRttMs : serverRemaining;
+    const remainingAt0 = authoritative ? serverRemaining - this._lastLoadDownlinkMs : serverRemaining;
     if (remainingAt0 <= 0) {
       this._countdownDeadlineAt = 0;
       // 权威口径下走到这里 = 服务端说的剩余量被这次请求的往返耗时吃光了，
@@ -679,10 +699,15 @@ Page({
     const tick = () => {
       this._countdownTimer = null;
       const now = Date.now();
-      // 系统校时/用户手动改时间会让墙钟往回跳，截止点就被凭空延长了 —— 服务端那边
-      // 早关单了，页面还显示着剩余时间，顾客点「去支付」才被拒（issue #215）。
-      // 小程序没有可靠的单调时钟，退而求其次：察觉明显回拨就回服务端重新校准。
-      if (now - lastTickAt < -2000) {
+      // 系统校时/用户手动改时间会让墙钟跳变，本地截止点就不可信了：
+      //   - 往**回**跳 → 截止点被凭空延长，服务端早关单了页面还显示着剩余时间；
+      //   - 往**前**跳 → 直接跨过截止点，页面把一张服务端还认可的单判成过期、
+      //     关掉支付入口（自从归零会封支付入口，这个方向的误伤不再是小事）。
+      // 小程序没有可靠的单调时钟，退而求其次：这一拍最多只排了 1 秒，
+      // 观测到的间隔离谱（任一方向）就认定时钟不可信，回服务端重新校准，
+      // **不**当成过期（所以不关支付入口）。
+      const drift = now - lastTickAt;
+      if (drift < -2000 || drift > MAX_TRUSTED_TICK_GAP_MS) {
         this._stopCountdown();
         this._countdownDeadlineAt = 0;
         // ⚠️ 这里刻意**不**置 payBlockedByExpiry：回拨只说明「没法再用这个本地截止点
