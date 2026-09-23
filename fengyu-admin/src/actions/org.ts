@@ -93,8 +93,14 @@ export const createOrgNode = withPermission(
     return { success: false, message: `无效的节点类型: ${data.type}` }
   }
 
-  // 根节点只允许总部，且只有 admin 可创建，避免非 admin 趁无父节点绕过 scope 校验。
-  if (!data.parentId) {
+  /**
+   * 根节点只允许总部，且只有 admin 可创建，避免非 admin 趁无父节点绕过 scope 校验。
+   *
+   * ⚠️ 判据是「显式为 null / undefined」而不是 `!data.parentId` —— 后者会把 `''` 也当成
+   * 「建根节点」（GLM 第 6 轮 P3）。空串该走「父节点不存在」那条路，
+   * 而不是悄悄进入只校验 type + admin 的根分支。
+   */
+  if (data.parentId === null || data.parentId === undefined) {
     if (data.type !== '总部') return { success: false, message: '只有总部节点可以作为根节点' }
     if (!isAdminScope(session)) return { success: false, message: '无权创建根节点' }
   } else if (!(await isNodeInScope(session, data.parentId))) {
