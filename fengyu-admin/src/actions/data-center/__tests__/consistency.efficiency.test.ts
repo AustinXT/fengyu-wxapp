@@ -244,9 +244,27 @@ function assertWhereShape(segment: string, kind: 'spe-table' | 'store-table', la
   const where = (stop === -1 ? tail : tail.slice(0, stop)).trim()
 
   if (kind === 'store-table') {
-    expect(where, `${label} 的 WHERE 只允许 scopeFilterSql 一项，业务过滤必须写在 JOIN ON 里`).toBe(
-      "${scopeFilterSql(session, scope, 's.store_id')}",
+    // ⚠️ 消息措辞很重要：原文写的是「业务过滤必须写在 JOIN ON 里」——
+    // 闸门 2 round-11 GLM 指出，这句话会把被本断言拦下的开发者**直接引向**
+    // 下面那个当时还没守护的位置（`LEFT JOIN spe ON` 里挂 `s.*` 谓词）。
+    // 守护自己的报错不该成为下一个盲区的路标。
+    expect(
+      where,
+      `${label} 的 WHERE 只允许 scopeFilterSql 一项；门店侧过滤（无论写在 WHERE 还是 JOIN ON）` +
+        '都会让门店榜合计 ≠ KPI 分子，加之前先评估这条等式',
+    ).toBe("${scopeFilterSql(session, scope, 's.store_id')}")
+
+    // `spe` 的 JOIN ON 内，门店侧（`s.*`）引用只许 `spe.store_id = s.store_id` 关联这一处。
+    // 在 ON 链尾偷挂 `AND s.closed_at IS NULL` 会静默剔除门店业绩、破坏等式，
+    // 而 spe 谓词层 / WHERE 形状层**都不看 ON 子句**（GLM 实测 227 条全绿）。
+    const speJoinOn = segment.slice(
+      segment.indexOf('LEFT JOIN sale_order_performance_events spe'),
+      from,
     )
+    expect(
+      (speJoinOn.match(/\bs\.\w+/g) ?? []).length,
+      `${label} 的 spe JOIN ON 里混入门店侧（s.*）过滤，门店榜会与 KPI 静默分叉`,
+    ).toBe(1)
     return
   }
 
