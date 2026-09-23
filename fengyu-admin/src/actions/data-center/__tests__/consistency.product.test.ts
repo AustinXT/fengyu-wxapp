@@ -473,6 +473,26 @@ describe('品项板块两端口径一致性守护', () => {
       // 正则会在第一个顶格 `}` 处收尾，于是「诱饵 + 真 SQL」两条 db.execute 只数到 1。
       const body = queryCycleByStoreBody(adminSrc)
       expect(body, 'queryCycleByStore 函数体未切出').toBeTruthy()
+      /**
+       * ★ **通用截断探测** —— 不去追每一种能骗过词法扫描器的写法，直接检查
+       * 切出来的函数体是不是**一路切到了真正的结尾**。
+       *
+       * round-6 / round-7 / round-8 的攻击本质完全相同：让切片提前收尾，
+       * 使后面真正执行的 SQL 落在守护视野之外。载体换了三次 ——
+       * 注释里的顶格 `}` → `if (false) {…}` 的顶格 `}` → 正则字面量 `/}/`
+       * （最后这条是 round-8 DeepSeek 实测打穿的：扫描器不认正则字面量，
+       * 把 `/}/` 里的 `}` 当成花括号，深度归零就 break）。
+       *
+       * 与其给扫描器补第四、第五个词法分支（正则 vs 除法要靠前一个 token 判别，
+       * 本身就容易再错），不如锁住**结尾**：只要提前收尾，这条必红。
+       * 它对所有「早收尾」类攻击同时生效，包括还没被想到的那些。
+       */
+      expect(
+        body.trimEnd().endsWith('return m\n}'),
+        'queryCycleByStore 函数体没切到真正的结尾 —— 切片被提前截断了，' +
+          '后面可能藏着真正执行、却不受本组守护检查的 SQL',
+      ).toBe(true)
+      expect(body, '函数体缺少结果装配段 —— 同上，切片可能被截断').toMatch(/m\.set\(id,\s*\{/)
       expect(
         (body.match(/db\.execute\(/g) ?? []).length,
         '明细侧出现多个 db.execute —— 可能有一条是诱饵，也可能 detailSql 的切片口径需同步更新',
