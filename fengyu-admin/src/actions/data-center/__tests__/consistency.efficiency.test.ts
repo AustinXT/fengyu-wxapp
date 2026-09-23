@@ -196,6 +196,46 @@ describe('数据中心人效板块两端口径一致性守护', () => {
     })
   })
 
+  describe('人均派生分母 = 产能技师，且必须纳入直挂市场/部门者（#285）', () => {
+    // 员工组织归属双轨：store_id（门店 FK）+ org_node_id（组织节点 FK）。
+    // 只按 store_id 过滤会漏掉直挂市场/部门的产能技师 —— 他们的产出落在门店上进了分子，
+    // 人头却不进分母。2026-09 实测集团 150 vs 164、虚高 +9.33%。
+    // 见 memory project-employee-org-direct-attach-market。
+
+    it('technician_base 用 COALESCE(sw.store_id, ds.store_id) 回收直挂门店节点的人', () => {
+      const n = sliceOrFail(adminSrc, 'const technicianCte', 'const qTechnicianCount')
+      expect(n).toMatch(/COALESCE\(\s*sw\.store_id\s*,\s*ds\.store_id\s*\)\s+AS store_id/i)
+      expect(n).toMatch(/LEFT JOIN stores ds ON ds\.org_node_id = sw\.org_node_id/i)
+      expect(n).toMatch(/skills && ARRAY\['美容师','养生师'\]/)
+    })
+
+    it('technician_scoped 保留 orgAnchorScopeSql 分支（无门店者按锚定市场判可见）', () => {
+      const n = sliceOrFail(adminSrc, 'const technicianCte', 'const qTechnicianCount')
+      expect(n).toMatch(/tb\.store_id IS NOT NULL AND/i)
+      expect(n).toMatch(/tb\.store_id IS NULL AND/i)
+      expect(n).toMatch(/orgAnchorScopeSql\(session, scope, 'tb\.anchor_market_id'\)/)
+    })
+
+    it('两个分母查询都走 technician_scoped 单源，不再直接扫 staff_wechat_users', () => {
+      const total = sliceOrFail(adminSrc, 'const qTechnicianCount', '店长数 =')
+      expect(total).toMatch(/FROM technician_scoped/i)
+      expect(total).not.toMatch(/FROM staff_wechat_users/i)
+
+      const byStore = sliceOrFail(adminSrc, 'const qTechByStore', 'const qTechDirectByMarket')
+      expect(byStore).toMatch(/FROM technician_scoped/i)
+      expect(byStore).toMatch(/WHERE store_id IS NOT NULL/i)
+      expect(byStore).not.toMatch(/FROM staff_wechat_users/i)
+    })
+
+    it('qTechDirectByMarket 只取 store_id IS NULL 的那部分（与 by store 互补不重叠）', () => {
+      const n = sliceOrFail(adminSrc, 'const qTechDirectByMarket', 'Part C')
+      expect(n).toMatch(/WHERE store_id IS NULL AND anchor_market_id IS NOT NULL/i)
+      expect(n).toMatch(/GROUP BY anchor_market_id/i)
+      // market_name 必须带出：品项公司这类市场没有门店，拿不到 skelRows 的名字
+      expect(n).toMatch(/anchor_market_name/i)
+    })
+  })
+
   describe('业绩 Part D/E（员工榜 + 技师明细）= 角色归属额，归 employee_id', () => {
     it('admin efficiency.ts revenue_by_emp 含 SUM(spia.allocated_amount) 归 spia.employee_id', () => {
       const n = sliceOrFail(adminSrc, 'revenue_by_emp AS (', 'consume_by_emp AS (')
