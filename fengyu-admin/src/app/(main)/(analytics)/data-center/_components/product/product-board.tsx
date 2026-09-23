@@ -29,8 +29,12 @@ import type { ProductBoardParams, ProductBoardResult } from "@/lib/data-center/t
 //    product_type 的值（enums.ts:14 二元枚举），在本页筛选器里根本找不到；而体验卡
 //    （is_experience capability，product.ts:76-79）的 product_type 正是疗程卡、必有次数，
 //    用户照「只统计疗程卡」推断「选体验卡时持卡≈0」会与实际相反。
-//    → 只用功能性表述「按次数计入，家居产品无次数故不参与统计」——「家居产品」
-//      在两个维度里同名，是唯一安全的锚点。
+//    → 连「家居产品无次数故不参与统计」也不能写：那是**数据惯例不是 SQL 保证**
+//      （products.ts 只要求疗程卡必须有次数，**并未反向禁止家居产品携带次数**；
+//      memory `project_product_session_count_invariant` 记过真出现脏数据的先例），
+//      而且「家居产品」同时是 product_kind 的筛选项名，照样会被读成「选它必为 0」。
+//    → 最终只描述 SQL 实际做的事：「存在『已付次数 > 0』品项的顾客去重计 1 人」，
+//      一个品类名都不提。
 // ② 不说「不限商品类型」——紧邻的筛选器就叫「一级/二级品项」，用户会读成
 //    「不受本页筛选影响」，而事实相反（resolveGrouping 的 filter 真会收窄卡片数字）。
 // ③ 占比不写「两者均为截面快照」——那是**正向保证**不是中立描述：用户看到
@@ -43,7 +47,7 @@ const KPI_CARD: KpiGridItem[] = [
   {
     key: "cardHolders",
     label: "持卡人数",
-    hint: "已支付订单中已付次数 > 0 即计入，不扣已核销；随上方品项筛选变化",
+    hint: "已支付的销售/转换/寄存单中，已付次数 > 0 即计入；不扣已核销；随上方品项筛选变化",
   },
   { key: "cardHolderRate", label: "持卡占比", hint: "持卡人数 ÷ 会员数（分母 = 全部会员）" },
 ]
@@ -149,8 +153,8 @@ export function ProductBoard() {
       <section className="flex flex-col gap-3">
         <h2 className="text-sm font-semibold text-[var(--foreground)]">持卡情况</h2>
         <div className="text-xs text-[var(--muted-foreground)]">
-          持卡人数为截面快照（持卡 = 已支付的销售单/转换单/寄存单中「已付次数 &gt; 0」，
-          不扣已核销；按次数计入，家居产品无次数故不参与统计），不随时间区间变化。
+          持卡人数为截面快照（已支付的销售单/转换单/寄存单中，存在「已付次数 &gt; 0」品项的顾客
+          去重计 1 人；不扣已核销），不随时间区间变化。
         </div>
         <KpiGrid items={KPI_CARD} kpis={kpis} columns={2} />
       </section>
