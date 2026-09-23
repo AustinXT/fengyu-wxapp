@@ -29,8 +29,18 @@
  *   排名榜不算同比环比。
  *
  * ★ 口径红线（consistency.efficiency.test.ts 字面量守护，禁止偏离）：
- *   - 业绩(员工) = SUM(sale_payment_item_allocations.allocated_amount) 归 employee_id ∩
- *     is_void=FALSE ∩ 销售单/转换单 ∩ 已支付回款分配；不按 role_type 白名单截断
+ *   - 业绩**有两套口径，按聚合粒度分**（2026-09-23 #285 修正，别再混用）：
+ *       · Part A/B 全局大卡 + by store（喂 empAvgRevenue / byMarket.techAvgRevenue）
+ *         = SUM(sale_order_performance_events.amount) ∩ 已支付 ∩ 首次支付/回款/退款 ∩
+ *           销售单/转换单/**充值单** ∩ legacy_source ≠ 'workfine' ∩ performance_date 区间。
+ *         与 Part C 门店排名榜 / sales.ts runStoreRevenue / staff queryStoreRevenue 同源。
+ *       · Part D/E 员工榜 + 按技师人效明细
+ *         = SUM(sale_payment_item_allocations.allocated_amount) 归 employee_id ∩
+ *           is_void=FALSE ∩ 销售单/转换单 ∩ 已支付回款分配；不按 role_type 白名单截断。
+ *     ⚠️ `allocated_amount` 是**角色归属额**，只在 GROUP BY employee_id 时才是钱。
+ *     2026-07-27 `23405ddf` 换表时把 Part A/B 一并留在了 allocation 口径（并把守护断言
+ *     反向钉死），导致 KPI 与同页门店榜差 111 万、虚高 32.3%，直到 #285 才纠正。
+ *     恢复 role_type 白名单**不是**修法（实测仍差 −4.45%，只是偶然的部分去重）。
  *   - 实耗(员工) = SUM(unit_real_price * session_used * service_commissions.allocation_ratio)
  *     归 service_commissions.employee_id ∩ is_void=FALSE ∩ 已完成（2026-09-03 改，见下「员工归属口径」）
  *   - 收入 = 销售提成 SUM(sale_payment_item_allocations.commission_amount) + 服务提成 SUM(service_commissions.commission_amount)
@@ -137,17 +147,29 @@ export const getEfficiencyBoard = withPermission(
     //  Part A — 全局聚合标量（KPI 分子/分母用，单一区间，不算同比环比）
     // ═══════════════════════════════════════════════════════════════════
 
-    /** 业绩（员工归属，全局合计）= SUM(sale_payment_item_allocations.allocated_amount) */
+    /**
+     * 业绩（门店口径，全局合计）= SUM(sale_order_performance_events.amount)
+     *
+     * ⚠️ 禁止改回 SUM(spia.allocated_amount)（#285）：`allocated_amount` 是**角色归属额**不是钱。
+     * 写入侧 staffApi/routes/allocation.js 按 (sale_item_id, role_type) **分池**校验「池内 Σratio ≤ 1」，
+     * 单 receipt 挂几个角色就有几个独立的 100% 池 —— ratio 合计 2.0 / 3.0 是设计允许的正常形态。
+     * 按 employee_id 分组时它是对的（Part D 员工榜保留该口径）；去掉 GROUP BY 跨员工求和，
+     * 同一笔钱就被算了 2~3 次（2026-09-01~09-21 集团实测虚高 +32.30%，且 950 张零分配 receipt
+     * 反向漏计 → 偏差不同向，**无法用统一系数校正**）。
+     *
+     * 谓词集与下列四处**逐字对齐**，任一处漂移都会让 KPI 与同页门店排行榜对不上账：
+     *   - 同文件 Part C `qStoreRankRevenue`（同页门店排名榜-业绩）
+     *   - `sales.ts` `runStoreRevenue`（销售板总业绩 = metrics.md 的 storeRevenue）
+     *   - staff `mgmt-dashboard.js` `queryStoreRevenue`（两端同名指标同源）
+     * 缺 `充值单` / `change_type` / `legacy_source` 任一条都会与门店榜产生差额。
+     */
     const qRevenueTotal = db.execute(sql`
-      SELECT COALESCE(SUM(spia.allocated_amount::numeric), 0) AS v
-      FROM sale_payment_item_allocations spia
-      JOIN sale_payment_item_receipts spir ON spir.id = spia.sale_payment_item_receipt_id
-      JOIN sale_items si ON si.sale_item_id = spir.sale_item_id
-      JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
-      JOIN sale_order_performance_events spe ON spe.sale_payment_id = spir.sale_payment_id
-      WHERE ${scopeFilterSql(session, scope, 'so.store_id')}
-        AND spia.is_void = FALSE
-        AND so.sale_order_type IN ('销售单', '转换单')
+      SELECT COALESCE(SUM(spe.amount::numeric), 0) AS v
+      FROM sale_order_performance_events spe
+      WHERE ${scopeFilterSql(session, scope, 'spe.store_id')}
+        AND spe.change_type IN ('首次支付', '回款', '退款')
+        AND spe.sale_order_type IN ('销售单', '转换单', '充值单')
+        AND spe.legacy_source IS DISTINCT FROM 'workfine'
         AND ${performanceEventDateBetween('spe', cur.start, cur.end)}
     `)
 
@@ -282,19 +304,21 @@ export const getEfficiencyBoard = withPermission(
       GROUP BY s.store_id
     `)
 
-    /** 业绩 by store（员工归属 total_amount） */
+    /**
+     * 业绩 by store（门店口径）—— 与 Part A `qRevenueTotal` 同谓词集，仅多一个 GROUP BY。
+     * 该 map 喂给 byMarket 的 `techAvgRevenue`，故必须与全局大卡同源，否则「按市场人效」
+     * 与 KPI 大卡自相矛盾（#285）。
+     * 分组列用 `spe.store_id`（非 `so.store_id`）与 Part C 对齐；两者全表零不一致，语义等价。
+     */
     const qRevenueByStore = db.execute(sql`
-      SELECT so.store_id, COALESCE(SUM(spia.allocated_amount::numeric), 0) AS v
-      FROM sale_payment_item_allocations spia
-      JOIN sale_payment_item_receipts spir ON spir.id = spia.sale_payment_item_receipt_id
-      JOIN sale_items si ON si.sale_item_id = spir.sale_item_id
-      JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
-      JOIN sale_order_performance_events spe ON spe.sale_payment_id = spir.sale_payment_id
-      WHERE ${scopeFilterSql(session, scope, 'so.store_id')}
-        AND spia.is_void = FALSE
-        AND so.sale_order_type IN ('销售单', '转换单')
+      SELECT spe.store_id, COALESCE(SUM(spe.amount::numeric), 0) AS v
+      FROM sale_order_performance_events spe
+      WHERE ${scopeFilterSql(session, scope, 'spe.store_id')}
+        AND spe.change_type IN ('首次支付', '回款', '退款')
+        AND spe.sale_order_type IN ('销售单', '转换单', '充值单')
+        AND spe.legacy_source IS DISTINCT FROM 'workfine'
         AND ${performanceEventDateBetween('spe', cur.start, cur.end)}
-      GROUP BY so.store_id
+      GROUP BY spe.store_id
     `)
 
     /** 实耗 by store */
