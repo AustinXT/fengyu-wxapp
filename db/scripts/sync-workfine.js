@@ -50,22 +50,25 @@ if (require.main === module) assertDbTargetOrExit(process.env.DATABASE_URL)
  * 「至少留一名在职超级管理员」。#318 收紧认证之后，一旦把最后一名超管标成离职，
  * 后果是**没人能登录管理后台**。
  *
- * 所以这里挡在门口：指向生产库时必须显式 `ALLOW_PROD_WORKFINE_SYNC=1` 才放行 ——
- * 让「我确实要对生产库跑这个已停用的脚本」成为一个必须写出来的决定，而不是默认行为。
- * cron 侧另有 `activeAdminCount` 巡检做事后兜底（0 人 → critical）。
+ * 所以这里挡在门口，而且是**无条件**的 —— 不留环境变量开关。
+ *
+ * 第一版留了 `ALLOW_PROD_WORKFINE_SYNC=1` 作为放行阀门，codex 谱系第 6 轮指出那等于没关：
+ * 「生产只剩一名超管时设置该变量运行同步」这条反例照样能把后台锁死，而 cron 巡检只能事后告警。
+ * 它说得对 —— 一个环境变量不构成决策成本。既然业务上「上线后不再执行」，就让它在代码层面
+ * 也不可执行：真有必要（比如某次一次性数据补录）只能改这里的代码并走一次 code review，
+ * 那才是与后果相称的门槛。
+ *
+ * cron 侧的 `activeAdminCount` 巡检（0 人 → critical）仍保留 —— 它兜的是裸 SQL 等本函数
+ * 管不到的路径。
  */
 function assertProdSyncAllowedOrExit() {
   if (!isProdDbTarget(process.env.DATABASE_URL)) return
-  if (process.env.ALLOW_PROD_WORKFINE_SYNC === '1') {
-    console.warn('⚠️  ALLOW_PROD_WORKFINE_SYNC=1 —— 正在对生产库运行已停用的 WorkFine 同步')
-    return
-  }
   console.error([
-    '✗ 拒绝对生产库运行 WorkFine 同步。',
+    '✗ 拒绝对生产库运行 WorkFine 同步（无条件，没有环境变量可以放行）。',
     '  业务方 2026-04-16 已决定上线后不再执行该同步；本脚本仅用于历史迁移 / 上线前刷新。',
     '  它的 staff_wechat_users UPSERT 会直接写 is_resigned，且不校验「至少留一名在职超级管理员」——',
     '  把最后一名超管标成离职就会让所有人无法登录管理后台（#318）。',
-    '  确需执行请显式：ALLOW_PROD_WORKFINE_SYNC=1 node db/scripts/sync-workfine.js …',
+    '  确需对生产库执行：改掉本函数并走 code review —— 门槛就是要与后果相称。',
   ].join('\n'))
   process.exit(1)
 }

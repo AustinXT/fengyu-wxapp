@@ -38,22 +38,36 @@ test('isProdDbTarget 只认生产 host', () => {
   assert.equal(isProdDbTarget(undefined), false)
 })
 
-test('指向生产库且未显式放行 → 退出码 1 且给出理由', () => {
-  const r = run({ DATABASE_URL: PROD_URL, ALLOW_PROD_WORKFINE_SYNC: '' })
+test('指向生产库 → 退出码 1 且写清后果', () => {
+  const r = run({ DATABASE_URL: PROD_URL })
   assert.equal(r.status, 1)
   assert.match(r.stderr, /拒绝对生产库运行 WorkFine 同步/)
-  assert.match(r.stderr, /ALLOW_PROD_WORKFINE_SYNC=1/)
-  // 必须写清后果，否则下一个人只会照着提示加环境变量
+  // 必须写清后果，否则下一个人只会想办法绕过它
   assert.match(r.stderr, /无法登录管理后台/)
 })
 
-test('显式 ALLOW_PROD_WORKFINE_SYNC=1 → 不在这一步被拦（放行并告警）', () => {
-  const r = run({ DATABASE_URL: PROD_URL, ALLOW_PROD_WORKFINE_SYNC: '1' })
-  assert.doesNotMatch(r.stderr, /拒绝对生产库运行 WorkFine 同步/)
-  assert.match(r.stderr + r.stdout, /正在对生产库运行已停用的 WorkFine 同步/)
+/**
+ * **无条件**拒绝：不留环境变量阀门。
+ *
+ * 第一版留了 `ALLOW_PROD_WORKFINE_SYNC=1`，codex 第 6 轮指出那等于没关 ——
+ * 「生产只剩一名超管时设置该变量运行同步」这条反例照样能把后台锁死。
+ * 一个环境变量不构成决策成本；真要跑就改代码、走 review。
+ * 这条用例遍历几个看起来像阀门的变量名，任何一个能放行都算退步。
+ */
+test('没有任何环境变量能放行（无条件拒绝）', () => {
+  for (const key of [
+    'ALLOW_PROD_WORKFINE_SYNC',
+    'ALLOW_PROD_SYNC',
+    'FORCE',
+    'FORCE_PROD',
+  ]) {
+    const r = run({ DATABASE_URL: PROD_URL, [key]: '1' })
+    assert.equal(r.status, 1, `${key}=1 竟然放行了`)
+    assert.match(r.stderr, /拒绝对生产库运行 WorkFine 同步/)
+  }
 })
 
 test('指向 dev 库 → 不受这道闸影响', () => {
-  const r = run({ DATABASE_URL: DEV_URL, ALLOW_PROD_WORKFINE_SYNC: '' })
+  const r = run({ DATABASE_URL: DEV_URL })
   assert.doesNotMatch(r.stderr, /拒绝对生产库运行 WorkFine 同步/)
 })
