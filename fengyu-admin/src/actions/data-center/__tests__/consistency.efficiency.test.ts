@@ -12,7 +12,7 @@
  *      1a. Part A/B 全局大卡 + by store = SUM(sale_order_performance_events.amount) 门店现金流，
  *          与 Part C 门店排名榜 / sales.ts runStoreRevenue / staff queryStoreRevenue 同源
  *      1b. Part D/E 员工榜 + 技师明细 = SUM(spia.allocated_amount) 归 employee_id
- *      ⚠️ 断言必须按 Part 分段（between()），文件级 toMatch 分不清两者 —— 2026-07-27
+ *      ⚠️ 断言必须按 Part 分段（sliceOrFail()），文件级 toMatch 分不清两者 —— 2026-07-27
  *          23405ddf 把 A/B 也写成 spia 时，旧的文件级断言恒绿，缺陷活了两个月
  *   2. 员工榜不按 role_type 白名单截断 ∩ is_void = FALSE（恢复白名单不是 #285 的修法）
  *   3. 实耗 = unit_real_price * session_used ∩ status='已完成'
@@ -48,10 +48,20 @@ function stripComments(src: string): string {
     .replace(/(^|[^:])\/\/[^\n]*/g, '$1 ')
 }
 
-function between(src: string, start: string, end: string): string {
+/**
+ * 按首尾锚点切片 + 归一化，并**断言两个锚点都命中**。
+ *
+ * ⚠️ 前身 `between()` 是 fail-open 的：`start` 找不到返回**空串**，`end` 找不到一路切到**文件尾**。
+ * 空串能通过任何 `not.toMatch`（本文件有 4 条），文件尾则让切片范围静默膨胀到全文 ——
+ * 两种都是「守护恒绿不是因为没违规，而是扫描根避开了现场」。本仓在 #281 / #282 反复踩过，
+ * 这次切片锚点是函数名/变量名（重命名即失效），必须 fail-closed。
+ */
+function sliceOrFail(src: string, start: string, end: string): string {
   const from = src.indexOf(start)
+  expect(from, `切片起点锚未命中：${start}`).toBeGreaterThan(-1)
   const to = src.indexOf(end, from + start.length)
-  return from === -1 ? '' : src.slice(from, to === -1 ? undefined : to)
+  expect(to, `切片终点锚未命中：${end}`).toBeGreaterThan(-1)
+  return normalize(stripComments(src.slice(from, to)))
 }
 
 /**
@@ -71,7 +81,7 @@ function expectStoreRankCashflow(
   end: string,
   statusDateVia: 'literal' | 'helper' = 'literal',
 ): void {
-  const n = normalize(stripComments(between(src, start, end)))
+  const n = sliceOrFail(src, start, end)
   expect(n).toMatch(/(?:FROM|LEFT JOIN)\s+sale_order_performance_events\s+spe/i)
   expect(n).toMatch(/SUM\(spe\.amount::numeric\)/i)
   expect(n).toMatch(/spe\.change_type\s+IN\s*\(\s*'首次支付'\s*,\s*'回款'\s*,\s*'退款'\s*\)/)
@@ -94,7 +104,7 @@ function expectStoreRankCashflow(
 
 /** helper 路径的等价强度来源：把 performanceEventDateBetween 自身的两个谓词钉死 */
 function assertHelperBody(adminSrc: string): void {
-  const body = normalize(stripComments(between(adminSrc, 'function performanceEventDateBetween', '/** 行表')))
+  const body = sliceOrFail(adminSrc, 'function performanceEventDateBetween', '/** 行表')
   expect(body).toMatch(/\$\{sql\.raw\(`\$\{eventAlias\}\.status`\)\}\s*=\s*'已支付'/)
   expect(body).toMatch(/\$\{sql\.raw\(`\$\{eventAlias\}\.performance_date`\)\}\s*BETWEEN\s*\$\{start\}\s*AND\s*\$\{end\}/)
 }
@@ -143,7 +153,7 @@ describe('数据中心人效板块两端口径一致性守护', () => {
     })
 
     it('Part B 分组列用 spe.store_id（与 Part C 同源；与 so.store_id 全表零不一致）', () => {
-      const n = normalize(stripComments(between(adminSrc, 'const qRevenueByStore', 'const qConsumeByStore')))
+      const n = sliceOrFail(adminSrc, 'const qRevenueByStore', 'const qConsumeByStore')
       expect(n).toMatch(/GROUP BY spe\.store_id/i)
       expect(n).not.toMatch(/GROUP BY so\.store_id/i)
     })
@@ -152,7 +162,7 @@ describe('数据中心人效板块两端口径一致性守护', () => {
       // 这条才是「KPI 大卡 == byMarket 合计」的结构保证：上面的谓词清单断言只能证明
       // 「四个业务过滤都在」，证明不了两段没有各自多出别的条件。
       const whereOf = (start: string, end: string): string => {
-        const seg = normalize(stripComments(between(adminSrc, start, end)))
+        const seg = sliceOrFail(adminSrc, start, end)
         const from = seg.indexOf('WHERE ')
         expect(from).toBeGreaterThan(-1)
         const tail = seg.slice(from)
@@ -168,16 +178,14 @@ describe('数据中心人效板块两端口径一致性守护', () => {
 
   describe('业绩 Part D/E（员工榜 + 技师明细）= 角色归属额，归 employee_id', () => {
     it('admin efficiency.ts revenue_by_emp 含 SUM(spia.allocated_amount) 归 spia.employee_id', () => {
-      const n = normalize(stripComments(between(adminSrc, 'revenue_by_emp AS (', 'consume_by_emp AS (')))
+      const n = sliceOrFail(adminSrc, 'revenue_by_emp AS (', 'consume_by_emp AS (')
       expect(n).toMatch(/SUM\(\s*spia\.allocated_amount::numeric\s*\)/i)
       expect(n).toMatch(/spia\.employee_id/i)
       expect(n).toMatch(/GROUP BY spia\.employee_id/i)
       expect(n).toMatch(/is_void\s*=\s*FALSE/i)
     })
     it('staff mgmt-dashboard.js staffRankingRevenue 含 SUM(spia.allocated_amount) 归 spia.employee_id', () => {
-      const n = normalize(
-        stripComments(between(staffSrc, 'async function staffRankingRevenue', 'async function staffRankingConsume')),
-      )
+      const n = sliceOrFail(staffSrc, 'async function staffRankingRevenue', 'async function staffRankingConsume')
       expect(n).toMatch(/SUM\(\s*spia\.allocated_amount::numeric\s*\)/i)
       expect(n).toMatch(/spia\.employee_id/i)
       expect(n).toMatch(/is_void\s*=\s*FALSE/i)
@@ -190,13 +198,11 @@ describe('数据中心人效板块两端口径一致性守护', () => {
     // 距门店业绩 3,679,035.98 仍差 −4.45%，且偏差幅度随品项老师/推广部占比漂移，
     // 是一次偶然的部分去重而非正确口径。真正的修法是 Part A/B 换成 spe.amount。
     it('admin efficiency.ts 员工榜段不含 spia.role_type IN (美容师, 养生师)', () => {
-      const n = normalize(stripComments(between(adminSrc, 'revenue_by_emp AS (', 'consume_by_emp AS (')))
+      const n = sliceOrFail(adminSrc, 'revenue_by_emp AS (', 'consume_by_emp AS (')
       expect(n).not.toMatch(/spia\.role_type\s+IN\s*\(\s*'美容师'\s*,\s*'养生师'\s*\)/i)
     })
     it('staff mgmt-dashboard.js 员工榜段不含 spia.role_type IN (美容师, 养生师)', () => {
-      const n = normalize(
-        stripComments(between(staffSrc, 'async function staffRankingRevenue', 'async function staffRankingConsume')),
-      )
+      const n = sliceOrFail(staffSrc, 'async function staffRankingRevenue', 'async function staffRankingConsume')
       expect(n).not.toMatch(/spia\.role_type\s+IN\s*\(\s*'美容师'\s*,\s*'养生师'\s*\)/i)
     })
   })
