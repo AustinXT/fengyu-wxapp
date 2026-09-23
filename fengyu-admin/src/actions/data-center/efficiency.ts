@@ -247,18 +247,56 @@ export const getEfficiencyBoard = withPermission(
     `)
 
     /**
-     * 员工数 = 技师（产能技师，区间末历史化）：skills && ARRAY['美容师','养生师']
-     *   ∩ hired_at <= 区间末 ∩ (resigned_at IS NULL OR resigned_at > 区间末)。
-     * 对齐 metrics.md employeeCount（人均派生分母）。
+     * 产能技师基础集（所有人均派生的**分母**单源）。
+     *
+     * 口径：skills && ARRAY['美容师','养生师'] ∩ 区间末在职历史化
+     *   （hired_at <= 区间末 ∩ (resigned_at IS NULL OR resigned_at > 区间末)），
+     * 对齐 metrics.md employeeCount。
+     *
+     * ⚠️ 禁止退回「只按 `staff_wechat_users.store_id` 过滤」（#285）：
+     * 员工组织归属是**双轨**的（`store_id` 门店 FK + `org_node_id` 组织节点 FK，
+     * 见 memory `project-employee-org-direct-attach-market`）。生产有 14 名在职产能技师
+     * `store_id IS NULL`——12 人直挂各市场「养生部」部门节点、1 人直挂「品项公司」市场节点、
+     * 1 人直挂门店组织节点但 store_id 为空。他们的产出**落在门店上、计入分子**，
+     * 人头却被分母整体剔除 → 2026-09 实测集团大卡虚高 **+9.33%**（150 vs 164）、
+     * 南昌凤御 +13.8%、南昌易大师 +5.3%，且「昭通凤御」技师数少报 4 人。
+     *
+     * 归属规则与同文件 Part D `producer_base` **逐条对齐**（同页两处不得再有两套人池）：
+     *   - `COALESCE(sw.store_id, ds.store_id)`：直挂**门店组织节点**的人回收进该门店
+     *   - 回收后仍为 NULL 的（直挂市场/部门）用 `anchor_market_id` 锚到市场，
+     *     交给 `orgAnchorScopeSql` 判可见性 —— 单店 scope 下它返回 FALSE，
+     *     即**选中单个门店时直挂员工不出现**（与员工榜同语义）
      */
+    const technicianCte = sql`
+      technician_base AS (
+        SELECT sw.employee_id,
+               COALESCE(sw.store_id, ds.store_id) AS store_id,
+               CASE WHEN o.type = '市场' THEN o.id
+                    WHEN op.type = '市场' THEN op.id
+                    ELSE NULL END AS anchor_market_id,
+               CASE WHEN o.type = '市场' THEN o.name
+                    WHEN op.type = '市场' THEN op.name END AS anchor_market_name
+        FROM staff_wechat_users sw
+        LEFT JOIN org_nodes o ON o.id = sw.org_node_id
+        LEFT JOIN org_nodes op ON op.id = o.parent_id
+        LEFT JOIN stores ds ON ds.org_node_id = sw.org_node_id
+        WHERE sw.skills && ARRAY['美容师','养生师']::text[]
+          AND sw.hired_at IS NOT NULL
+          AND sw.hired_at::date <= ${cur.end}
+          AND (sw.resigned_at IS NULL OR sw.resigned_at::date > ${cur.end})
+      ),
+      technician_scoped AS (
+        SELECT tb.employee_id, tb.store_id, tb.anchor_market_id, tb.anchor_market_name
+        FROM technician_base tb
+        WHERE (tb.store_id IS NOT NULL AND ${scopeFilterSql(session, scope, 'tb.store_id')})
+           OR (tb.store_id IS NULL AND ${orgAnchorScopeSql(session, scope, 'tb.anchor_market_id')})
+      )
+    `
+
+    /** 员工数 = 产能技师（含直挂市场/部门者），人均派生分母 */
     const qTechnicianCount = db.execute(sql`
-      SELECT COUNT(*)::int AS v
-      FROM staff_wechat_users s
-      WHERE ${scopeFilterSql(session, scope, 's.store_id')}
-        AND s.skills && ARRAY['美容师','养生师']::text[]
-        AND s.hired_at IS NOT NULL
-        AND s.hired_at::date <= ${cur.end}
-        AND (s.resigned_at IS NULL OR s.resigned_at::date > ${cur.end})
+      WITH ${technicianCte}
+      SELECT COUNT(*)::int AS v FROM technician_scoped
     `)
 
     /**
@@ -295,15 +333,31 @@ export const getEfficiencyBoard = withPermission(
     `)
 
     /** 技师数 by store */
+    /** 技师数 by store（有门店归属的部分）—— 与 Part A 同一个 technician_scoped 单源 */
     const qTechByStore = db.execute(sql`
-      SELECT s.store_id, COUNT(*)::int AS v
-      FROM staff_wechat_users s
-      WHERE ${scopeFilterSql(session, scope, 's.store_id')}
-        AND s.skills && ARRAY['美容师','养生师']::text[]
-        AND s.hired_at IS NOT NULL
-        AND s.hired_at::date <= ${cur.end}
-        AND (s.resigned_at IS NULL OR s.resigned_at::date > ${cur.end})
-      GROUP BY s.store_id
+      WITH ${technicianCte}
+      SELECT store_id, COUNT(*)::int AS v
+      FROM technician_scoped
+      WHERE store_id IS NOT NULL
+      GROUP BY store_id
+    `)
+
+    /**
+     * 技师数 by market（**直挂**市场/部门、无门店归属的那部分）。
+     *
+     * 必须单独出一份按市场的数：byMarket 装配是逐门店累加的，`store_id IS NULL` 的人
+     * 没有任何门店可挂，只按 store 汇总会把他们又丢一次（这正是 #285 分母缺口的成因）。
+     * `market_name` 一并带出，因为「品项公司」这类市场底下一个门店都没有，
+     * 不会出现在门店骨架 skelRows 里，拿不到名字。
+     */
+    const qTechDirectByMarket = db.execute(sql`
+      WITH ${technicianCte}
+      SELECT anchor_market_id AS market_id,
+             MAX(anchor_market_name) AS market_name,
+             COUNT(*)::int AS v
+      FROM technician_scoped
+      WHERE store_id IS NULL AND anchor_market_id IS NOT NULL
+      GROUP BY anchor_market_id
     `)
 
     /**
@@ -790,7 +844,7 @@ export const getEfficiencyBoard = withPermission(
       revenueTotalR, consumeTotalR, salesCommTotalR, serviceCommTotalR,
       footfallTotalR, projectCountTotalR, memberCountR, technicianCountR, managerCountR,
       // Part B
-      skelRows, managerByStoreR, techByStoreR, revenueByStoreR, consumeByStoreR,
+      skelRows, managerByStoreR, techByStoreR, techDirectByMarketR, revenueByStoreR, consumeByStoreR,
       shengmeiConsumeByStoreR, salesCommByStoreR, serviceCommByStoreR,
       footfallByMarketR, projectByStoreR,
       // Part C
@@ -802,7 +856,7 @@ export const getEfficiencyBoard = withPermission(
     ] = await Promise.all([
       qRevenueTotal, qConsumeTotal, qSalesCommTotal, qServiceCommTotal,
       qFootfallTotal, qProjectCountTotal, qMemberCount, qTechnicianCount, qManagerCount,
-      qStoreSkeleton, qManagerByStore, qTechByStore, qRevenueByStore, qConsumeByStore,
+      qStoreSkeleton, qManagerByStore, qTechByStore, qTechDirectByMarket, qRevenueByStore, qConsumeByStore,
       qShengmeiConsumeByStore, qSalesCommByStore, qServiceCommByStore,
       qFootfallByMarket, qProjectByStore,
       qStoreRankRevenue, qStoreRankConsume, qStoreRankRetainedMember, qStoreRankNewMember, qStoreRankProjectCount,
@@ -855,14 +909,12 @@ export const getEfficiencyBoard = withPermission(
       projectCount: number
     }
     const marketMap = new Map<string, MarketAgg>()
-    for (const r of skelRows as Array<Record<string, unknown>>) {
-      const storeId = String(r.store_id)
-      const marketId = String(r.market_id ?? '')
+    const marketRowOf = (marketId: string, marketName: string): MarketAgg => {
       let m = marketMap.get(marketId)
       if (!m) {
         m = {
           marketId,
-          marketName: String(r.market_name ?? ''),
+          marketName,
           managerCount: 0,
           technicianCount: 0,
           revenue: 0,
@@ -873,6 +925,12 @@ export const getEfficiencyBoard = withPermission(
         }
         marketMap.set(marketId, m)
       }
+      return m
+    }
+
+    for (const r of skelRows as Array<Record<string, unknown>>) {
+      const storeId = String(r.store_id)
+      const m = marketRowOf(String(r.market_id ?? ''), String(r.market_name ?? ''))
       m.managerCount += managerMap.get(storeId) ?? 0
       m.technicianCount += techMap.get(storeId) ?? 0
       m.revenue += revMap.get(storeId) ?? 0
@@ -880,6 +938,22 @@ export const getEfficiencyBoard = withPermission(
       m.shengmeiConsume += shengmeiConsMap.get(storeId) ?? 0
       m.income += (salesCommMap.get(storeId) ?? 0) + (serviceCommMap.get(storeId) ?? 0)
       m.projectCount += projectMap.get(storeId) ?? 0
+    }
+
+    /**
+     * 并入**直挂市场/部门**的产能技师（#285）。
+     *
+     * 上面的循环是逐门店累加的，`store_id IS NULL` 的技师没有任何门店可挂，只走那个循环
+     * 会把他们二次丢失 —— 这正是分母缺口的成因（2026-09 实测南昌凤御漏 8 人、昭通凤御漏 4 人）。
+     *
+     * ⚠️ 必须在循环**外**按市场加一次：放进循环会按该市场的门店数重复累加。
+     * ⚠️ 用 `marketRowOf` 建行：「品项公司」这类市场底下一个门店都没有，
+     * 压根不出现在门店骨架 skelRows 里，只能在这里补出行（表现为新增一行 1 技师 / 0 业绩）。
+     */
+    for (const r of techDirectByMarketR as Array<Record<string, unknown>>) {
+      if (r.market_id == null) continue
+      const m = marketRowOf(String(r.market_id), String(r.market_name ?? ''))
+      m.technicianCount += Number(r.v ?? 0)
     }
 
     const byMarket: BreakdownRow[] = Array.from(marketMap.values()).map((m) => ({

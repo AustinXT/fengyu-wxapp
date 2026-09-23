@@ -16,11 +16,17 @@
  * db.execute 调用顺序（与 efficiency.ts Promise.all 顺序一致）：
  *   Part A（0-8）：revenueTotal / consumeTotal / salesCommTotal / serviceCommTotal /
  *                 footfallTotal / projectCountTotal / memberCount / technicianCount / managerCount
- *   Part B（9-18）：skeleton / managerByStore / techByStore / revenueByStore / consumeByStore /
- *                 shengmeiConsumeByStore / salesCommByStore / serviceCommByStore /
- *                 footfallByMarket / projectByStore
- *   Part C（19-23）：storeRank revenue / consume / retainedMember / newMember / projectCount
- *   Part D（24-28）：staffRank revenue / consume / newMember / projectCount / income
+ *   Part B（9-19）：skeleton / managerByStore / techByStore / **techDirectByMarket** /
+ *                 revenueByStore / consumeByStore / shengmeiConsumeByStore /
+ *                 salesCommByStore / serviceCommByStore / footfallByMarket / projectByStore
+ *   Part C（20-24）：storeRank revenue / consume / retainedMember / newMember / projectCount
+ *   Part D（25-29）：staffRank revenue / consume / newMember / projectCount / income
+ *   Part E（30）：staffDetail
+ *
+ * ⚠️ 本 mock 按**位置**喂数据，往 Promise.all 里插一条查询就会让其后全部错位。
+ * #285 加 techDirectByMarket 时实测打翻了 5 条用例。`setupQueue` 末尾的长度断言
+ * 就是为此加的：队列长度与 efficiency.ts 的实际查询数对不上时**立即报错**，
+ * 而不是让错位静默地把断言变成测另一个查询的结果。
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
@@ -91,9 +97,16 @@ function setupQueue(opts: {
 }) {
   const scalars = opts.scalars ?? [0, 0, 0, 0, 0, 0, 0, 0, 0]
   const skeleton = opts.skeleton ?? []
-  const detail = opts.detail ?? [[], [], [], [], [], [], [], [], []]
+  const detail = opts.detail ?? [[], [], [], [], [], [], [], [], [], []]
   const storeRanks = opts.storeRanks ?? [[], [], [], [], []]
   const staffRanks = opts.staffRanks ?? [[], [], [], [], []]
+
+  // 位置喂数的前提：每段长度必须与 efficiency.ts 对得上。对不上就在这里炸，
+  // 别让它一路错位到断言里（#285 实测：插一条查询会静默打翻 5 条用例）。
+  expect(scalars, 'Part A 标量数').toHaveLength(9)
+  expect(detail, 'Part B 明细表数（含 techDirectByMarket）').toHaveLength(10)
+  expect(storeRanks, 'Part C 门店榜数').toHaveLength(5)
+  expect(staffRanks, 'Part D 员工榜数').toHaveLength(5)
 
   const queue: unknown[] = [
     ...scalars.map((n) => v(n)),
@@ -215,6 +228,7 @@ describe('getEfficiencyBoard — byMarket 明细装配', () => {
       detail: [
         [{ store_id: 'S1', v: 1 }, { store_id: 'S2', v: 1 }, { store_id: 'S3', v: 1 }], // manager
         [{ store_id: 'S1', v: 3 }, { store_id: 'S2', v: 2 }, { store_id: 'S3', v: 4 }], // tech
+        [], // techDirectByMarket（本用例无直挂技师）
         [{ store_id: 'S1', v: 1000 }, { store_id: 'S2', v: 500 }], // revenue
         [{ store_id: 'S1', v: 800 }], // consume
         [{ store_id: 'S1', v: 200 }], // shengmeiConsume
@@ -255,6 +269,7 @@ describe('getEfficiencyBoard — byMarket 明细装配', () => {
       detail: [
         [], // manager 0
         [], // tech 0
+        [], // techDirectByMarket 0
         [{ store_id: 'S1', v: 1000 }], // revenue
         [], [], [], [], [], [],
       ],
@@ -276,6 +291,7 @@ describe('getEfficiencyBoard — byMarket 明细装配', () => {
       detail: [
         [{ store_id: 'S1', v: 1 }, { store_id: 'S2', v: 1 }], // manager
         [{ store_id: 'S1', v: 2 }, { store_id: 'S2', v: 2 }], // tech
+        [], // techDirectByMarket
         [], [], [], [], [],
         // 两门店客流如果相加会是 6；市场查询已去重，返回 4。
         [{ market_id: 'M1', v: 4 }],
@@ -288,6 +304,69 @@ describe('getEfficiencyBoard — byMarket 明细装配', () => {
 
     expect(market.metrics.technicianCount).toBe(4)
     expect(market.metrics.techAvgMembers).toBe(1)
+  })
+
+  // ── 直挂市场/部门的产能技师必须进分母（#285 gate-1 sibling P1）───────────
+  //
+  // 员工组织归属是双轨的（store_id 门店 FK + org_node_id 组织节点 FK）。生产有 13 名在职
+  // 产能技师 store_id IS NULL、直挂市场或部门节点，他们的产出落在门店上、计入分子，
+  // 人头却被只按 store_id 过滤的分母整体剔除 → 集团大卡虚高 +9.33%、南昌凤御 +13.8%。
+
+  it('直挂市场的技师并入该市场分母，且只加一次（不按门店数重复累加）', async () => {
+    setupQueue({
+      skeleton: [
+        { store_id: 'S1', store_name: '门店一', market_id: 'M1', market_name: '市场甲' },
+        { store_id: 'S2', store_name: '门店二', market_id: 'M1', market_name: '市场甲' },
+      ],
+      detail: [
+        [], // manager
+        [{ store_id: 'S1', v: 3 }, { store_id: 'S2', v: 2 }], // tech by store = 5
+        [{ market_id: 'M1', market_name: '市场甲', v: 4 }], // 直挂 4 人
+        [{ store_id: 'S1', v: 900 }], // revenue
+        [], [], [], [], [], [],
+      ],
+    })
+    const res = await getEfficiencyBoard(baseParams)
+    const m1 = res.byMarket.find((r) => r.groupId === 'M1')!
+
+    // 5 + 4 = 9。若在门店循环内累加，M1 有两个门店会变成 5 + 4×2 = 13。
+    expect(m1.metrics.technicianCount).toBe(9)
+    expect(m1.metrics.techAvgRevenue).toBe(100) // 900 / 9
+  })
+
+  it('市场下一个门店都没有时（如「品项公司」）仍凭直挂技师出行', async () => {
+    setupQueue({
+      skeleton: [{ store_id: 'S1', store_name: '门店一', market_id: 'M1', market_name: '市场甲' }],
+      detail: [
+        [], // manager
+        [{ store_id: 'S1', v: 2 }], // tech by store
+        [{ market_id: 'M9', market_name: '品项公司', v: 1 }], // 该市场无任何门店
+        [], [], [], [], [], [], [],
+      ],
+    })
+    const res = await getEfficiencyBoard(baseParams)
+
+    // 门店骨架里没有 M9，只能由直挂技师那一步补出行
+    const m9 = res.byMarket.find((r) => r.groupId === 'M9')
+    expect(m9, '无门店的市场应凭直挂技师出现在 byMarket').toBeDefined()
+    expect(m9!.groupName).toBe('品项公司')
+    expect(m9!.metrics.technicianCount).toBe(1)
+    expect(m9!.metrics.techAvgRevenue).toBe(0) // 0 业绩 / 1 技师
+  })
+
+  it('直挂行 market_id 为 null 时跳过，不产生空 groupId 的市场行', async () => {
+    setupQueue({
+      skeleton: [{ store_id: 'S1', store_name: '门店一', market_id: 'M1', market_name: '市场甲' }],
+      detail: [
+        [],
+        [{ store_id: 'S1', v: 2 }],
+        [{ market_id: null, market_name: null, v: 7 }], // 锚不到市场的脏行
+        [], [], [], [], [], [], [],
+      ],
+    })
+    const res = await getEfficiencyBoard(baseParams)
+    expect(res.byMarket.map((r) => r.groupId)).toEqual(['M1'])
+    expect(res.byMarket[0].metrics.technicianCount).toBe(2) // 那 7 人没被算进任何市场
   })
 
   it('空骨架 → byMarket 为空数组', async () => {
