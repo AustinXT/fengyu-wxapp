@@ -2,13 +2,12 @@
 
 import { db } from '@/db'
 import { pgErrorCode } from '@/lib/pg-error'
-import { businessErrorMessage } from '@/lib/action-error'
 import { orgNodes, stores } from '@db/org'
 import { staffWechatUsers } from '@db/user'
 import { permissionRoles } from '@db/permission'
 import { eq, and, asc, sql } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
-import type { OrgNode } from '@/lib/types'
+import type { AuthSession, OrgNode } from '@/lib/types'
 import { isNodeInScope } from '@/lib/node-scope'
 import { withPermission } from '@/lib/with-permission'
 import { requireAdmin, isAdminScope } from '@/lib/permissions'
@@ -31,16 +30,16 @@ function validateParentType(nodeType: OrgNode['type'], parentType: OrgNode['type
 
 /**
  * 检查 targetId 是否是 nodeId 的子孙节点。
- * 递归 CTE 单条查询（path 数组防 parent 环无限递归）；tx 可选传入以便在
- * reparent 事务内对最新已提交状态复核。
+ * 递归 CTE 单条查询（path 数组防 parent 环无限递归）；`executor` 传事务句柄即可在
+ * 锁内对最新已提交状态复核。
  */
 async function checkIsDescendant(
   nodeId: string,
   targetId: string,
-  tx?: Parameters<Parameters<typeof db.transaction>[0]>[0],
+  executor: OrgExecutor = db,
 ): Promise<boolean> {
   if (nodeId === targetId) return true
-  const client = tx ?? db
+  const client = executor
   const rows = await client.execute(sql`
     WITH RECURSIVE descendants(id, path) AS (
       SELECT ${nodeId}::text, ARRAY[${nodeId}::text]
@@ -144,6 +143,60 @@ export const createOrgNode = withPermission(
  */
 const ORG_OWNERSHIP_CONFLICT = 'ORG_OWNERSHIP_CONFLICT'
 
+/** 全局 `db` 与事务句柄的公共读取面 —— 层级校验事务内外各跑一次，两处共用一份实现 */
+type OrgExecutor = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0]
+
+/**
+ * 结构性变更（改父节点 / 改类型）的层级校验。返回错误文案；`null` = 通过。
+ *
+ * 抽成函数是因为它要跑**两次**：事务外一次当早拒（省掉开事务的成本），锁内一次才算权威。
+ * 只在事务外跑不行 —— 目标父节点的存在性/类型、以及本节点自己的 `parentId`/`type`
+ * 都可能在校验与写入之间被并发改掉（GLM 第 1 轮 P3）。
+ *
+ * `current` 必须是**调用方那一侧读到的**当前行：事务外传事务外快照，锁内传锁内重读的行。
+ * 别把锁内的判断建在事务外的快照上 —— 「同一份状态两套真相」是 #249/#259 那轮几乎所有
+ * 缺陷的共同根因。
+ */
+async function validateStructuralChange(
+  session: AuthSession,
+  id: string,
+  data: { parentId?: string | null; type?: OrgNode['type'] },
+  current: { parentId: string | null; type: OrgNode['type'] },
+  executor: OrgExecutor,
+): Promise<string | null> {
+  const targetParentId = data.parentId === undefined ? current.parentId : data.parentId
+  const targetType = data.type ?? current.type
+
+  // 不能将节点移动到自己或自己的子孙节点下（防止循环引用）
+  if (targetParentId && targetParentId !== current.parentId) {
+    if (await checkIsDescendant(id, targetParentId, executor)) {
+      return '不能将节点移动到自己的子节点下'
+    }
+  }
+
+  if (!targetParentId) {
+    if (targetType !== '总部') return '只有总部节点可以作为根节点'
+    if (!isAdminScope(session)) return '无权将节点移动为根节点'
+    return null
+  }
+
+  const [newParent] = await executor
+    .select({ type: orgNodes.type })
+    .from(orgNodes)
+    .where(eq(orgNodes.id, targetParentId))
+    .limit(1)
+  if (!newParent) return '目标父节点不存在'
+
+  const parentTypeError = validateParentType(targetType, newParent.type)
+  if (parentTypeError) return parentTypeError
+
+  // scope 隔离：非 admin 只能移动到自己 scope 内的父节点下。
+  if (targetParentId !== current.parentId && !(await isNodeInScope(session, targetParentId))) {
+    return '无权将节点移动到该位置'
+  }
+  return null
+}
+
 export const updateOrgNode = withPermission(
   'org:update',
   async (
@@ -169,110 +222,113 @@ export const updateOrgNode = withPermission(
     return { success: false, message: '无权编辑该节点' }
   }
 
-  // 获取旧值用于日志 diff
-  const [before] = await db.select().from(orgNodes).where(eq(orgNodes.id, id)).limit(1)
-  if (!before) return { success: false, message: '节点不存在' }
+  // 事务外快照：给早拒与审计 before 兜底；结构性变更会在锁内换成重读的那份
+  const [preTxBefore] = await db.select().from(orgNodes).where(eq(orgNodes.id, id)).limit(1)
+  if (!preTxBefore) return { success: false, message: '节点不存在' }
 
-  // 修改父节点或类型时，都需要重新校验完整的层级约束。
-  if (data.parentId !== undefined || data.type !== undefined) {
-    const targetParentId = data.parentId === undefined ? before.parentId : data.parentId
-    const targetType = data.type ?? before.type
+  /**
+   * ## 什么算「结构性变更」——判据只看 `!== undefined`（#318）
+   *
+   * 改 `parentId` **或** `type` 都会改变「员工 org 节点的最近门店祖先」这个判据：
+   *   - 改父：部门 D 从市场挪进 B 店子树 → 挂 D 的员工多出一个门店祖先
+   *   - 改类型：市场下的部门 D 直接改成「门店」→ 挂 D 的员工的最近门店祖先变成 D 自己
+   *     （生产 74 人挂部门型节点，正是这个形态；两个评审谱系第 1 轮都报了这条）
+   *
+   * ⚠️ 判据**不与事务外旧值比较**（原先是 `data.parentId !== before.parentId`）：
+   *   - 那是拿事务外快照当真相 —— 并发下「看起来没变」也可能实际完成了改挂，
+   *     于是走进无锁的 UPDATE 分支，把节点改回去且不复核
+   *   - 真要比也得等锁内读到旧值才知道，那时再取锁顺序就反了
+   * 多开一次事务 + 一把纯 advisory 锁的成本可忽略，换掉一整类 TOCTOU。
+   */
+  const structural = data.parentId !== undefined || data.type !== undefined
 
-    // 不能将节点移动到自己或自己的子孙节点下（防止循环引用）
-    if (targetParentId && targetParentId !== before.parentId) {
-      const isDescendant = await checkIsDescendant(id, targetParentId)
-      if (isDescendant) {
-        return { success: false, message: '不能将节点移动到自己的子节点下' }
-      }
-    }
-
-    if (!targetParentId) {
-      if (targetType !== '总部') return { success: false, message: '只有总部节点可以作为根节点' }
-      if (!isAdminScope(session)) return { success: false, message: '无权将节点移动为根节点' }
-    } else {
-      const [newParent] = await db
-        .select({ type: orgNodes.type })
-        .from(orgNodes)
-        .where(eq(orgNodes.id, targetParentId))
-        .limit(1)
-      if (!newParent) {
-        return { success: false, message: '目标父节点不存在' }
-      }
-
-      const parentTypeError = validateParentType(targetType, newParent.type)
-      if (parentTypeError) return { success: false, message: parentTypeError }
-
-      // scope 隔离：非 admin 只能移动到自己 scope 内的父节点下。
-      if (targetParentId !== before.parentId && !(await isNodeInScope(session, targetParentId))) {
-        return { success: false, message: '无权将节点移动到该位置' }
-      }
-    }
+  if (structural) {
+    // 早拒：省掉开事务的成本。**权威版本在锁内**，这里判过的锁内一律重判。
+    const preTxError = await validateStructuralChange(session, id, data, preTxBefore, db)
+    if (preTxError) return { success: false, message: preTxError }
   }
 
   const whereConditions = expectedUpdatedAt
     ? and(eq(orgNodes.id, id), sql`date_trunc('milliseconds', ${orgNodes.updatedAt}) = ${expectedUpdatedAt}`)
     : eq(orgNodes.id, id)
 
-  // 移动父节点的更新走事务 + advisory lock 串行化：两个并发交叉移动（A→B / B→A）
-  // 各自的无锁环检查都能通过，先后提交即成环；锁内复核关闭该 TOCTOU 窗口。
-  const reparenting = data.parentId !== undefined && data.parentId !== before.parentId
-  let result: any
+  /** 事务出口：要么写了（带 rowCount），要么带着文案失败（此时还没写任何东西） */
+  type TxOutcome = { kind: 'written'; rowCount: number } | { kind: 'failure'; message: string }
+
+  let before: Record<string, unknown> = preTxBefore as Record<string, unknown>
   let ownershipConflicts: { employeeId: string; name: string; storeId: string }[] = []
+  let ownershipConflictTotal = 0
+  let outcome: TxOutcome
   try {
-    result = reparenting
-      ? await db.transaction(async (tx) => {
+    outcome = structural
+      ? await db.transaction(async (tx): Promise<TxOutcome> => {
         // 与员工侧的归属自洽校验共用同一把锁；取锁顺序见 lib/invariant-locks.ts（#318）
         await lockOrgTree(tx)
-        if (data.parentId && await checkIsDescendant(id, data.parentId, tx)) {
-          throw new Error('INVALID_STATE: 不能将节点移动到自己的子节点下')
-        }
+
+        // 锁内重读才是权威旧值：审计 before、层级校验、复核都依赖它
+        const [locked] = await tx.select().from(orgNodes).where(eq(orgNodes.id, id)).limit(1)
+        if (!locked) return { kind: 'failure', message: '节点不存在' }
+        before = locked as Record<string, unknown>
+
+        const lockedError = await validateStructuralChange(session, id, data, locked, tx)
+        if (lockedError) return { kind: 'failure', message: lockedError }
+
         const updated = await tx.update(orgNodes).set(data).where(whereConditions)
-        if ((updated as any).count === 0) return updated
+        const rowCount = (updated as any).count ?? 0
+        if (rowCount === 0) return { kind: 'written', rowCount: 0 }
 
         /**
-         * ## 改挂后必须复核子树内员工的归属自洽（issue #318）
+         * ## 改完必须复核子树内员工的归属自洽（issue #318）
          *
          * #259 只在**员工侧**加了「`org_node_id` 的最近门店祖先 = `store_id` 所指门店」，
          * 这一侧没守：把部门 D 从市场改挂到 B 店节点下，挂着 D 的员工就成了
          * 「仍属 A 店、组织却在 B 店子树」—— 通过 store / org 两维同时出现在两个门店的
          * scope，正是 #259 要禁的危害。
          *
-         * **先 UPDATE 再复核**：这样查的是改挂**之后**的真实树形态，不必在 SQL 里模拟
-         * 新父节点。不自洽就抛出去回滚，等价于拒绝这次改挂。
+         * **先 UPDATE 再复核**：这样查的是改完**之后**的真实树形态，不必在 SQL 里模拟
+         * 新父节点或新类型。不自洽就抛哨兵回滚，等价于拒绝这次变更。
          *
-         * 锁已在事务开头取到，而员工侧的归属校验取的是**同一把** —— 所以「改挂判完子树自洽」
-         * 与「员工判完自己的新组织自洽」不会并发交错后合成出不自洽状态。
+         * 锁已在事务开头取到，而员工侧的归属校验取的是**同一把** —— 所以「这边判完子树自洽」
+         * 与「员工那边判完自己的新组织自洽」不会并发交错后合成出不自洽状态。
          */
-        ownershipConflicts = await findSubtreeOwnershipConflicts(id, tx)
-        if (ownershipConflicts.length > 0) {
+        const found = await findSubtreeOwnershipConflicts(id, tx)
+        if (found.conflicts.length > 0) {
+          ownershipConflicts = found.conflicts
+          ownershipConflictTotal = found.total
           throw new Error(ORG_OWNERSHIP_CONFLICT)
         }
-        return updated
+        return { kind: 'written', rowCount }
       })
-      : await db.update(orgNodes).set(data).where(whereConditions)
+      : {
+        kind: 'written',
+        rowCount: ((await db.update(orgNodes).set(data).where(whereConditions)) as any).count ?? 0,
+      }
   } catch (err: any) {
     if (err instanceof Error && err.message === ORG_OWNERSHIP_CONFLICT) {
-      const who = ownershipConflicts.map((c) => c.name).join('、')
+      // 姓名兜底成工号：`name` 理论上非空，但空串会渲染出孤零零的顿号（GLM 第 1 轮 P3）
+      const who = ownershipConflicts.map((c) => c.name?.trim() || c.employeeId).join('、')
+      // 名单被 limit 截断时告诉总数，否则管理员改完 5 个再点一次又冒出 5 个
+      const more = ownershipConflictTotal > ownershipConflicts.length
+        ? `（共 ${ownershipConflictTotal} 人）`
+        : ''
       return {
         success: false,
-        message: `改挂后这些员工的门店与组织归属将不一致，请先调整他们的归属：${who}`,
+        message: `变更后这些员工的门店与组织归属将不一致，请先调整他们的归属：${who}${more}`,
       }
-    }
-    if (err instanceof Error && err.message.includes('不能将节点移动到自己的子节点下')) {
-      // 原样回传会把 `INVALID_STATE: ` 前缀一起端给用户；走白名单闸门剥掉前缀（issue #133）。
-      return { success: false, message: businessErrorMessage(err, '不能将节点移动到自己的子节点下') }
     }
     throw err
   }
 
-  if ((result as any).count === 0) {
+  if (outcome.kind === 'failure') return { success: false, message: outcome.message }
+
+  if (outcome.rowCount === 0) {
     return {
       success: false,
       message: expectedUpdatedAt ? '数据已被其他人修改，请刷新后重试' : '节点不存在',
     }
   }
 
-  await logUpdate(session, 'org.update', 'org_node', id, before as Record<string, unknown>, data)
+  await logUpdate(session, 'org.update', 'org_node', id, before, data)
   revalidatePath('/org')
   return { success: true, message: '节点已更新' }
   },

@@ -134,7 +134,7 @@ export async function findSubtreeOwnershipConflicts(
   rootOrgNodeId: string,
   executor: SqlExecutor = db,
   limit = 5,
-): Promise<{ employeeId: string; name: string; storeId: string }[]> {
+): Promise<{ conflicts: { employeeId: string; name: string; storeId: string }[]; total: number }> {
   const rows = await executor.execute(sql`
     WITH RECURSIVE subtree AS (
       SELECT id, ARRAY[id] AS path FROM org_nodes WHERE id = ${rootOrgNodeId}
@@ -161,13 +161,24 @@ export async function findSubtreeOwnershipConflicts(
       SELECT DISTINCT ON (employee_id) employee_id, name, store_id, cur AS store_ancestor
         FROM chain WHERE type = '门店' ORDER BY employee_id, depth
     )
-    SELECT n.employee_id, n.name, n.store_id
+    SELECT n.employee_id, n.name, n.store_id, count(*) OVER () AS total
       FROM nearest n
       JOIN stores st ON st.store_id = n.store_id
      WHERE st.org_node_id IS DISTINCT FROM n.store_ancestor
      ORDER BY n.employee_id
      LIMIT ${limit}
   `)
-  return (rows as unknown as Array<{ employee_id: string; name: string; store_id: string }>)
-    .map((r) => ({ employeeId: r.employee_id, name: r.name, storeId: r.store_id }))
+  const list = rows as unknown as Array<{
+    employee_id: string; name: string; store_id: string; total: string | number
+  }>
+  return {
+    conflicts: list.map((r) => ({ employeeId: r.employee_id, name: r.name, storeId: r.store_id })),
+    /**
+     * 窗口函数在 `LIMIT` **之前**求值，所以这是截断前的总数 —— 提示里要告诉管理员
+     * 「还有多少人没列出来」，否则他改完 5 个再点一次又冒出 5 个。
+     * ⚠️ `count(*)` 是 `int8`，走 `execute()` 不经 drizzle 列映射 → 返回的是 **string**，
+     * 必须显式 `Number()`（见 fengyu-admin/CLAUDE.md「原生 SQL 的 bigint 返回 string」）。
+     */
+    total: list.length > 0 ? Number(list[0].total) : 0,
+  }
 }

@@ -187,21 +187,44 @@ describe('createOrgNode — 输入校验 + 错误处理', () => {
  * 这一侧不守的话，把部门 D 从市场改挂到 B 店节点下，挂着 D 的员工就成了
  * 「仍属 A 店、组织却在 B 店子树」—— 通过 store / org 两维同时出现在两个门店的 scope。
  */
-describe('updateOrgNode — 改挂后复核子树员工归属自洽（#318）', () => {
-  function mockSelectBefore(rows: any[] = [{ parentId: 'market-1' }]) {
-    const chain: any = {}
-    chain.from = vi.fn().mockReturnValue(chain)
-    chain.where = vi.fn().mockReturnValue(chain)
-    chain.limit = vi.fn().mockResolvedValue(rows)
-    chain.leftJoin = vi.fn().mockReturnValue(chain)
-    chain.orderBy = vi.fn().mockReturnValue(chain)
-    ;(db.select as any).mockReturnValue(chain)
+describe('updateOrgNode — 结构性变更后复核子树员工归属自洽（#318）', () => {
+  /** 被改的节点：市场下的部门 */
+  const NODE_ROW = { parentId: 'market-1', type: '部门' }
+  /** 目标父节点：市场（部门挂市场合法） */
+  const PARENT_ROW = { type: '市场' }
+
+  /**
+   * 合法改挂的默认 select 序列：① 事务外快照 ② 事务外读目标父节点
+   * ③ 锁内重读本节点 ④ 锁内读目标父节点。层级校验事务内外各跑一次，所以是四次。
+   */
+  function mockLegalReparent() {
+    mockSelectSequence([[NODE_ROW], [PARENT_ROW], [NODE_ROW], [PARENT_ROW]])
   }
 
   /**
-   * @returns `txExecute` 用于断言取过组织树锁；`txUpdate` 用于断言「先 UPDATE 再复核」
+   * 按调用次序给 select 不同返回值 —— 事务外快照、锁内重读、目标父节点类型是三次不同的查询，
+   * 「锁内重读拿不到行」这类场景必须能分别喂。
    */
-  function setupReparentTx(updateCount = 1) {
+  function mockSelectSequence(sequence: any[][]) {
+    let i = 0
+    ;(db.select as any).mockImplementation(() => {
+      const rows = sequence[i] ?? sequence[sequence.length - 1]
+      i++
+      const chain: any = {}
+      chain.from = vi.fn().mockReturnValue(chain)
+      chain.where = vi.fn().mockReturnValue(chain)
+      chain.limit = vi.fn().mockResolvedValue(rows)
+      chain.leftJoin = vi.fn().mockReturnValue(chain)
+      chain.orderBy = vi.fn().mockReturnValue(chain)
+      return chain
+    })
+  }
+
+  /**
+   * @returns `txExecute` 断言取过组织树锁；`order` 断言「先 UPDATE 再复核」；
+   *   `tx()` 交出句柄本身（executor 同一性断言要用它，形状匹配对全局 `db` 也成立）
+   */
+  function setupTx(updateCount = 1) {
     let handedTx: any
     const txExecute = vi.fn().mockResolvedValue([])
     const order: string[] = []
@@ -214,25 +237,28 @@ describe('updateOrgNode — 改挂后复核子树员工归属自洽（#318）', 
       }
     })
     ;(db.transaction as any).mockImplementation(async (fn: any) => {
-      handedTx = { execute: txExecute, update: txUpdate, select: (db as any).select }
+      handedTx = { execute: txExecute, update: txUpdate, select: (...a: any[]) => (db as any).select(...a) }
       return fn(handedTx)
     })
-    return { tx: () => handedTx, txExecute, order }
+    return { tx: () => handedTx, txExecute, txUpdate, order }
   }
 
   beforeEach(() => {
     vi.clearAllMocks()
     ;(getSession as any).mockResolvedValue(mockSession)
-    ;(findSubtreeOwnershipConflicts as any).mockResolvedValue([])
-    mockSelectBefore()
+    ;(findSubtreeOwnershipConflicts as any).mockResolvedValue({ conflicts: [], total: 0 })
+    mockLegalReparent()
   })
 
   it('改挂后子树内有员工归属不自洽 → 拒绝并列出姓名，事务回滚', async () => {
-    const t = setupReparentTx()
-    ;(findSubtreeOwnershipConflicts as any).mockResolvedValue([
-      { employeeId: 'FY-001', name: '张三', storeId: 'S001' },
-      { employeeId: 'FY-002', name: '李四', storeId: 'S001' },
-    ])
+    const t = setupTx()
+    ;(findSubtreeOwnershipConflicts as any).mockResolvedValue({
+      conflicts: [
+        { employeeId: 'FY-001', name: '张三', storeId: 'S001' },
+        { employeeId: 'FY-002', name: '李四', storeId: 'S001' },
+      ],
+      total: 2,
+    })
 
     const result = await updateOrgNode('dept-1', { parentId: 'store-b-node' })
 
@@ -240,12 +266,40 @@ describe('updateOrgNode — 改挂后复核子树员工归属自洽（#318）', 
     expect(result.message).toContain('张三')
     expect(result.message).toContain('李四')
     expect(result.message).toContain('请先调整他们的归属')
-    // 复核查的必须是被改挂的那个节点，且走同一个 tx
+    // 名单没被截断时不要画蛇添足地加「共 N 人」
+    expect(result.message).not.toContain('共 2 人')
+    // 复核查的必须是被改的那个节点，且走同一个 tx
     expect(findSubtreeOwnershipConflicts).toHaveBeenCalledWith('dept-1', t.tx())
   })
 
+  /** 名单被 limit 截断时必须告诉总数，否则管理员改完 5 个再点一次又冒出 5 个 */
+  it('冲突人数超过名单上限 → 文案带总人数', async () => {
+    setupTx()
+    ;(findSubtreeOwnershipConflicts as any).mockResolvedValue({
+      conflicts: [{ employeeId: 'FY-001', name: '张三', storeId: 'S001' }],
+      total: 9,
+    })
+
+    const result = await updateOrgNode('dept-1', { parentId: 'store-b-node' })
+
+    expect(result.message).toContain('共 9 人')
+  })
+
+  /** 姓名空串会渲染出孤零零的顿号；兜底成工号 */
+  it('冲突员工姓名为空 → 用工号兜底', async () => {
+    setupTx()
+    ;(findSubtreeOwnershipConflicts as any).mockResolvedValue({
+      conflicts: [{ employeeId: 'FY-007', name: '   ', storeId: 'S001' }],
+      total: 1,
+    })
+
+    const result = await updateOrgNode('dept-1', { parentId: 'store-b-node' })
+
+    expect(result.message).toContain('FY-007')
+  })
+
   it('改挂后子树自洽 → 放行', async () => {
-    setupReparentTx()
+    setupTx()
 
     const result = await updateOrgNode('dept-1', { parentId: 'market-2' })
 
@@ -253,8 +307,26 @@ describe('updateOrgNode — 改挂后复核子树员工归属自洽（#318）', 
     expect(findSubtreeOwnershipConflicts).toHaveBeenCalled()
   })
 
+  /**
+   * **只改 type 也必须复核**（两谱系第 1 轮都报了这条）：市场下的部门 D 改成「门店」，
+   * 挂 D 的员工的最近门店祖先立刻变成 D 自己 —— 与 `store_id` 所指门店不符。
+   * 生产 74 人挂部门型节点，正是这个形态。
+   */
+  it('只改 type（不动 parentId）→ 同样进事务、取锁、复核', async () => {
+    const t = setupTx()
+    // 事务外快照 / 锁内重读都是「市场下的部门」；第三次是目标父节点（市场）
+    mockLegalReparent()
+
+    const result = await updateOrgNode('dept-1', { type: '门店' })
+
+    expect(result.success).toBe(true)
+    expect(db.transaction).toHaveBeenCalled()
+    expect(JSON.stringify(t.txExecute.mock.calls[0][0])).toContain('org_nodes:reparent')
+    expect(findSubtreeOwnershipConflicts).toHaveBeenCalledWith('dept-1', t.tx())
+  })
+
   it('改挂路径取的是与员工侧同一把组织树锁', async () => {
-    const t = setupReparentTx()
+    const t = setupTx()
 
     await updateOrgNode('dept-1', { parentId: 'market-2' })
 
@@ -263,14 +335,14 @@ describe('updateOrgNode — 改挂后复核子树员工归属自洽（#318）', 
   })
 
   /**
-   * **先 UPDATE 再复核** —— 这样查的是改挂**之后**的真实树形态，
+   * **先 UPDATE 再复核** —— 这样查的是改完**之后**的真实树形态，
    * 不必在 SQL 里模拟新父节点。顺序反了就会按旧形态判，等于没判。
    */
-  it('复核发生在 UPDATE 之后（按改挂后的树形态判）', async () => {
-    const t = setupReparentTx()
+  it('复核发生在 UPDATE 之后（按变更后的树形态判）', async () => {
+    const t = setupTx()
     ;(findSubtreeOwnershipConflicts as any).mockImplementation(() => {
       t.order.push('check')
-      return Promise.resolve([])
+      return Promise.resolve({ conflicts: [], total: 0 })
     })
 
     await updateOrgNode('dept-1', { parentId: 'market-2' })
@@ -279,7 +351,7 @@ describe('updateOrgNode — 改挂后复核子树员工归属自洽（#318）', 
   })
 
   it('CAS 未命中（rowCount=0）→ 不做复核（没改到行就没有新形态）', async () => {
-    setupReparentTx(0)
+    setupTx(0)
 
     const result = await updateOrgNode('dept-1', { parentId: 'market-2' }, '2026-01-01T00:00:00.000Z')
 
@@ -288,8 +360,45 @@ describe('updateOrgNode — 改挂后复核子树员工归属自洽（#318）', 
     expect(findSubtreeOwnershipConflicts).not.toHaveBeenCalled()
   })
 
-  it('非改挂的普通更新（改名）→ 不进事务、不取锁、不复核', async () => {
-    setupReparentTx()
+  /**
+   * 锁内重读拿不到行 = 事务外读到过、取到锁时已被并发删除。
+   * 必须在 UPDATE **之前**就退出，别拿事务外快照当真相继续写。
+   */
+  it('锁内重读节点已不存在 → 报节点不存在，且不 UPDATE', async () => {
+    const t = setupTx()
+    // ① 事务外快照有 ② 锁内重读空
+    mockSelectSequence([[NODE_ROW], [PARENT_ROW], []])
+
+    const result = await updateOrgNode('dept-1', { parentId: 'market-2' })
+
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('节点不存在')
+    expect(t.txUpdate).not.toHaveBeenCalled()
+    expect(findSubtreeOwnershipConflicts).not.toHaveBeenCalled()
+  })
+
+  /**
+   * 层级校验在锁内**重跑**（事务外那次只是早拒）：并发把目标父节点改成了「部门」型，
+   * 锁内必须发现并拒掉，而不是沿用事务外读到的合法类型。
+   */
+  it('锁内层级校验失败 → 拒绝且不 UPDATE（事务外读到的是合法类型）', async () => {
+    const t = setupTx()
+    mockSelectSequence([
+      [NODE_ROW],          // ① 事务外快照
+      [PARENT_ROW],        // ② 事务外读目标父节点：合法（市场）
+      [NODE_ROW],          // ③ 锁内重读本节点
+      [{ type: '部门' }],  // ④ 锁内读目标父节点：已被并发改成部门
+    ])
+
+    const result = await updateOrgNode('dept-1', { parentId: 'market-2' })
+
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('部门不可嵌套')
+    expect(t.txUpdate).not.toHaveBeenCalled()
+  })
+
+  it('非结构性的普通更新（改名）→ 不进事务、不取锁、不复核', async () => {
+    setupTx()
     setupUpdate(1)
 
     const result = await updateOrgNode('dept-1', { name: '新名称' })

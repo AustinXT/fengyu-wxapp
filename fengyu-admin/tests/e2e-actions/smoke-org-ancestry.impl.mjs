@@ -222,7 +222,7 @@ async function main() {
 
   // ── findSubtreeOwnershipConflicts（#318）─────────────────────────────────
   /** 只取 employee_id 的短名，读断言时一眼看出是谁；全字段形状由下面第一条单独锁 */
-  const who = (rows) => rows.map((r) => r.employeeId.replace(`${NS}_OWN_`, ''))
+  const who = (res) => res.conflicts.map((r) => r.employeeId.replace(`${NS}_OWN_`, ''))
 
   /**
    * 全字段形状锁这一条就够：`name` 是 `updateOrgNode` 拼给用户的那串姓名，
@@ -230,10 +230,13 @@ async function main() {
    */
   check('门店节点为根 → 报出子树内所有归属不自洽的员工（含全字段形状）',
     await findSubtreeOwnershipConflicts(id('STORE_A')),
-    [
-      { employeeId: id('OWN_BAD_A'), name: '冒烟错挂A', storeId: id('SB') },
-      { employeeId: id('OWN_DEEP'), name: '冒烟深层错挂', storeId: id('SB') },
-    ])
+    {
+      conflicts: [
+        { employeeId: id('OWN_BAD_A'), name: '冒烟错挂A', storeId: id('SB') },
+        { employeeId: id('OWN_DEEP'), name: '冒烟深层错挂', storeId: id('SB') },
+      ],
+      total: 2,
+    })
 
   /**
    * 三处语义同时锁在这一条的「没出现」里：
@@ -258,7 +261,7 @@ async function main() {
 
   check('另一个门店为根 → 空（该子树内只有自洽的人，也不串到 A 店那条链）',
     await findSubtreeOwnershipConflicts(id('STORE_B')),
-    [])
+    { conflicts: [], total: 0 })
 
   /**
    * 无门店祖先 = 合法的矩阵式归属（生产 74 人挂在部门型节点上）。
@@ -266,7 +269,7 @@ async function main() {
    */
   check('市场直属部门为根 → 空（挂在那儿的人没有门店祖先，不构成冲突）',
     await findSubtreeOwnershipConflicts(id('MKT_DEPT')),
-    [])
+    { conflicts: [], total: 0 })
 
   /**
    * `store_id IS NULL`（半填状态）—— 甲方 2026-09-23 拍板 **#259 选项 A：保持放行**。
@@ -282,19 +285,29 @@ async function main() {
 
   check('根节点不存在 → 空（而不是报全库）',
     await findSubtreeOwnershipConflicts(id('NOT_THERE')),
-    [])
+    { conflicts: [], total: 0 })
 
-  /** LIMIT 透传：提示只列前几个人，穿参写死成常量或漏掉 `LIMIT` 时这里变红 */
-  check('limit 生效 → 只取前 N 个（按 employee_id 排序，结果稳定）',
-    who(await findSubtreeOwnershipConflicts(id('HQ'), undefined, 1)),
-    ['BAD_A'])
+  /**
+   * LIMIT 透传：提示只列前几个人，穿参写死成常量或漏掉 `LIMIT` 时这里变红。
+   * `total` 必须是**截断前**的总数（窗口函数在 LIMIT 之前求值）—— 否则提示里的
+   * 「共 N 人」会退化成「共 1 人」，管理员以为改完一个就完事了。
+   */
+  {
+    const truncated = await findSubtreeOwnershipConflicts(id('HQ'), undefined, 1)
+    check('limit 生效 → 只取前 N 个（按 employee_id 排序，结果稳定）',
+      who(truncated), ['BAD_A'])
+    check('total 是截断前的总数（count(*) OVER () 在 LIMIT 之前求值）',
+      truncated.total, 2)
+    check('total 是 number 而不是 int8 原样返回的 string',
+      typeof truncated.total, 'number')
+  }
 
   /** 防环：subtree 与 chain 两条递归各有一份 path 防环，删任一条这里挂起而不是返回 */
   const loopConflicts = await Promise.race([
     findSubtreeOwnershipConflicts(id('LOOP_X')),
     new Promise((_, rej) => setTimeout(() => rej(new Error('环检测超时 —— path 防环没生效')), 8000)),
   ])
-  check('自成环的子树 → 正常返回而不是打满连接', loopConflicts, [])
+  check('自成环的子树 → 正常返回而不是打满连接', loopConflicts, { conflicts: [], total: 0 })
 
   // 不清理：一次性库下一跑就整库重建（见顶部对环夹具与 trigger 的说明）
   await sql.end()
