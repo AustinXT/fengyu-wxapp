@@ -272,6 +272,16 @@ function assertPlainSumAggregate(segment: string, label: string): void {
       `${label} 的聚合表达式被改过（FILTER / DISTINCT / CASE 都会让 KPI 与门店榜对不上）`,
     ).toBe('SUM(spe.amount::numeric)')
   }
+  // ⚠️ 上面只锁住**内层** SUM。闸门 2 round-10 codex 指出注释比代码强，实测确认：
+  // 把输出列包一层 `GREATEST(COALESCE(SUM(...), 0), 0)`（把负业绩门店钳到 0，
+  // 是极自然的「别显示负数」改法，本仓 analyst 侧就用过 GREATEST 挡负数）
+  // 能让 59 条断言全绿，而门店榜合计不再等于 KPI。
+  // 故再锁**完整输出表达式**：`COALESCE(SUM(...), 0)` 后面必须紧跟 ` AS `，
+  // 一旦外面再套一层函数，这个子串就不成立。
+  expect(
+    segment.replace(/\s+/g, ' '),
+    `${label} 的输出列被外层函数包过（如 GREATEST(...)），会把负业绩钳掉并破坏等式`,
+  ).toContain('COALESCE(SUM(spe.amount::numeric), 0) AS ')
 }
 
 describe('数据中心人效板块两端口径一致性守护', () => {
