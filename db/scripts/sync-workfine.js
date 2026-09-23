@@ -37,8 +37,39 @@ const MSSQL_CONFIG = {
 // DATABASE_URL 必填且必须精确指向业务库（db/CLAUDE.md 硬规则：显式传值 + 断言 host/port/dbname）。
 // 实现见 _lib/assert-db-target.js —— 它同时挡住 `?host=` 与 `?%68ost=`（百分号编码）两层 query 覆盖绕过。
 // 仅在直接执行时校验——本目录部分脚本的导出函数被 __tests__ require，顶层 exit 会打断测试进程。
-const { assertDbTargetOrExit } = require('./_lib/assert-db-target')
+const { assertDbTargetOrExit, isProdDbTarget } = require('./_lib/assert-db-target')
 if (require.main === module) assertDbTargetOrExit(process.env.DATABASE_URL)
+
+/**
+ * 对**生产库**硬拒绝（issue #318）。
+ *
+ * 业务方 2026-04-16 已决定「上线后不再执行 WorkFine 同步」（见
+ * `notes/tickets/2026-04-16-client-rebind-phone.md`），本脚本自那以后只用于历史迁移与
+ * 上线前刷新。但这只是**流程约定**，代码层面谁都能对着生产库跑 —— 而它的
+ * `staff_wechat_users` UPSERT 直接写 `is_resigned`、既不取 `admin:active_count` 也不复核
+ * 「至少留一名在职超级管理员」。#318 收紧认证之后，一旦把最后一名超管标成离职，
+ * 后果是**没人能登录管理后台**。
+ *
+ * 所以这里挡在门口：指向生产库时必须显式 `ALLOW_PROD_WORKFINE_SYNC=1` 才放行 ——
+ * 让「我确实要对生产库跑这个已停用的脚本」成为一个必须写出来的决定，而不是默认行为。
+ * cron 侧另有 `activeAdminCount` 巡检做事后兜底（0 人 → critical）。
+ */
+function assertProdSyncAllowedOrExit() {
+  if (!isProdDbTarget(process.env.DATABASE_URL)) return
+  if (process.env.ALLOW_PROD_WORKFINE_SYNC === '1') {
+    console.warn('⚠️  ALLOW_PROD_WORKFINE_SYNC=1 —— 正在对生产库运行已停用的 WorkFine 同步')
+    return
+  }
+  console.error([
+    '✗ 拒绝对生产库运行 WorkFine 同步。',
+    '  业务方 2026-04-16 已决定上线后不再执行该同步；本脚本仅用于历史迁移 / 上线前刷新。',
+    '  它的 staff_wechat_users UPSERT 会直接写 is_resigned，且不校验「至少留一名在职超级管理员」——',
+    '  把最后一名超管标成离职就会让所有人无法登录管理后台（#318）。',
+    '  确需执行请显式：ALLOW_PROD_WORKFINE_SYNC=1 node db/scripts/sync-workfine.js …',
+  ].join('\n'))
+  process.exit(1)
+}
+if (require.main === module) assertProdSyncAllowedOrExit()
 
 const PG_CONFIG = {
   connectionString: process.env.DATABASE_URL?.trim(),
