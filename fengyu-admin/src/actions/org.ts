@@ -195,6 +195,14 @@ async function validateStructuralChange(
   current: { parentId: string | null; type: OrgNode['type'] },
   executor: OrgExecutor,
 ): Promise<string | null> {
+  /**
+   * ⚠️ 空串**不是**「移动为根节点」。`data.parentId === ''` 时：`!targetParentId` 为真 →
+   * 落进根分支的规则（总部 + admin 即放行）→ UPDATE 写 `parent_id = ''` → 撞 FK `23503`
+   * 而 catch 不认它 → 用户看到 500（GLM 第 10 轮 P3）。
+   * 与 `createOrgNode` 的判据保持一致：只有显式 `null` 才是根，空串按「父节点不存在」拒。
+   */
+  if (data.parentId === '') return '目标父节点不存在'
+
   const targetParentId = data.parentId === undefined ? current.parentId : data.parentId
   const targetType = data.type ?? current.type
 
@@ -488,6 +496,14 @@ export const updateOrgNode = withPermission(
       return { kind: 'written', rowCount }
     }
   } catch (err: any) {
+    /**
+     * FK 兜底：目标父节点在校验与写入之间被并发删除（`deleteOrgNode` 现在取了同一把 ①，
+     * 但 DB 层的裸 SQL 运维仍可能造成）。`createOrgNode` 一直有这条，改挂这侧原先没有 →
+     * 裸抛 500（GLM 第 10 轮 P3）。
+     */
+    if (pgErrorCode(err) === '23503') {
+      return { success: false, message: '目标父节点不存在，请刷新后重试' }
+    }
     if (err instanceof Error && err.message === ORG_OWNERSHIP_CONFLICT) {
       // 姓名兜底成工号：`name` 理论上非空，但空串会渲染出孤零零的顿号（GLM 第 1 轮 P3）
       const who = ownershipConflicts.map((c) => c.name?.trim() || c.employeeId).join('、')

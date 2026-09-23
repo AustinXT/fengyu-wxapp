@@ -685,6 +685,33 @@ describe('updateOrgNode — 结构性变更后复核子树员工归属自洽（#
    * 它不改树形态，但 scope 判定依赖树形态，要按当前树判就得有个一致的快照。
    * 不做的是「子树员工归属复核」（树没变，没什么可复核）。
    */
+  /**
+   * 空串**不是**「移动为根节点」：`!targetParentId` 为真会落进根分支（总部 + admin 放行）→
+   * UPDATE 写 `parent_id = ''` → 撞 FK 23503 而 catch 不认 → 500（GLM 第 10 轮 P3）。
+   */
+  /** 目标父节点被并发删除 → 友好文案而不是裸 500（与 createOrgNode 对称） */
+  it('写库撞 FK 23503 → 报目标父节点不存在', async () => {
+    // 用真 `pgErrorCode`（沿 cause 链读 `.code`），所以抛一个带 code 的错就够
+    ;(db.transaction as any).mockImplementation(async () => {
+      throw Object.assign(new Error('fk'), { code: '23503' })
+    })
+
+    const result = await updateOrgNode('dept-1', { parentId: 'market-2' })
+
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('目标父节点不存在')
+  })
+
+  it("parentId 传空串 → 按「目标父节点不存在」拒，不写库", async () => {
+    const t = setupTx()
+
+    const result = await updateOrgNode('dept-1', { parentId: '' })
+
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('目标父节点不存在')
+    expect(t.txUpdate).not.toHaveBeenCalled()
+  })
+
   it('非结构性的普通更新（改名）→ 进事务、取 ①、但不复核子树', async () => {
     const t = setupTx()
 
