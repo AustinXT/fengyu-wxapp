@@ -16,8 +16,12 @@ import { db } from '@/db'
  *
  * | 不变量 | 锁 | 谁必须取 |
  * |---|---|---|
- * | 员工 `store_id` 与 `org_node_id` 归属自洽（#259） | `org_nodes:reparent` | `updateOrgNode` 改挂、`createEmployee` / `updateEmployee` 判自洽 |
- * | 系统至少留一名在职超级管理员 | `admin:active_count` | `updateEmployee` 标离职、`deleteEmployee`、`revokeRole` 撤超管 |
+ * | 员工 `store_id` 与 `org_node_id` 归属自洽（#259） | `org_nodes:reparent` | `org.updateOrgNode` 改父/改类型、`employees.createEmployee`、`employees.updateEmployee`（动归属或复职） |
+ * | 系统至少留一名在职超级管理员 | `admin:active_count` | `employees.updateEmployee` 标离职、`employees.deleteEmployee`、`permissions.revokeRole` 撤超管绑定、`role-definitions.updateRoleDefinition` 把角色降级成非超管 |
+ *
+ * ⚠️ 这两张「谁必须取」的清单会随功能增长 —— 新写一个会**改组织树形态**或**减少活跃超管**的
+ * 路径时，回来把它加进对应行并取锁。判断标准不是「这个 action 叫什么」，而是
+ * 「它的写入会不会让别人的守卫结论失效」。
  *
  * 归属自洽用的是**组织树那把锁**而不是新开一把：改挂父节点与判自洽是同一件事的两端 ——
  * 一边改树形态、一边依据树形态做判断，必须互斥。复用 `org_nodes:reparent` 也让
@@ -28,6 +32,7 @@ import { db } from '@/db'
  * ```
  * ① lockOrgTree()          组织树结构（最粗）
  * ② lockActiveAdminCount() 全局 admin 计数
+ * ②' 其它业务 advisory 锁   如 createEmployee 的 `employee_id_gen`
  * ③ SELECT ... FOR UPDATE  单行（最细）
  * ```
  *

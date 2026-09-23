@@ -879,17 +879,39 @@ export const createEmployee = withPermission(
   if (!isAdminScope(session) && !data.storeId && !data.orgNodeId) {
     return { success: false, message: '员工必须归属门店或组织节点之一' }
   }
-  // #259：归属自洽 —— orgNodeId 指向「另一个门店」时拒绝（挂部门/市场放行）
+  /**
+   * #259：归属自洽 —— orgNodeId 指向「另一个门店」时拒绝（挂部门/市场放行）。
+   * 这里只是**早拒**，权威那次在下面的事务内、组织树锁之后。
+   */
   {
     const conflict = await assertOwnershipConsistent(data.storeId ?? null, data.orgNodeId ?? null)
     if (conflict) return { success: false, message: conflict }
   }
 
   // 手机号唯一性交给 DB 约束 + 下面的 23505 转译，不做事务外预查重（它本身就是零写入探测信道）
-  // 事务：ID 生成（advisory lock）+ 插入，原子提交防并发重复
-  let employeeId: string
+  // 事务：归属自洽复核（组织树锁内）+ ID 生成（advisory lock）+ 插入，原子提交防并发重复
+  type CreateOutcome = { ok: true; id: string } | { ok: false; message: string }
+  let created: CreateOutcome
   try {
-    employeeId = await db.transaction(async (tx) => {
+    created = await db.transaction(async (tx): Promise<CreateOutcome> => {
+      /**
+       * ## 归属自洽必须在锁内复核（issue #318，codex 第 1 轮 P1）
+       *
+       * 事务外那次校验与 INSERT 之间有并发窗口：`updateOrgNode` 同时把目标部门改挂进
+       * 另一个门店的子树 —— 改挂事务复核「子树内员工都自洽」时这条员工还没 INSERT，
+       * 本事务校验时树还没改，两边都放行 → 提交后合成出跨门店双重可见的员工。
+       * `updateEmployee` 侧已经在锁内复核了，创建这一侧当时漏了。
+       *
+       * 锁序（见 `lib/invariant-locks.ts`）：① 组织树 → 本事务后面那把 `employee_id_gen`
+       * → ③ 行锁。组织树锁必须排在最前。
+       */
+      if (data.storeId || data.orgNodeId) {
+        await lockOrgTree(tx)
+        const conflict = await assertOwnershipConsistent(
+          data.storeId ?? null, data.orgNodeId ?? null, tx,
+        )
+        if (conflict) return { ok: false, message: conflict }
+      }
       const idRows = await tx.execute(sql`
         WITH lock AS (
           SELECT pg_advisory_xact_lock(hashtext('employee_id_gen')::bigint)
@@ -938,7 +960,7 @@ export const createEmployee = withPermission(
        * 报「该手机号已被其他员工使用」，把操作者带到完全错误的方向。
        */
       await logOperation(session, 'employee.create', 'employee', id, { name: data.name }, tx)
-      return id
+      return { ok: true, id }
     })
   } catch (err: any) {
     // PG 唯一约束冲突（手机号或员工编号并发重复）
@@ -960,8 +982,10 @@ export const createEmployee = withPermission(
     throw err
   }
 
+  if (!created.ok) return { success: false, message: created.message }
+
   revalidatePath('/employees')
-  return { success: true, message: '员工创建成功', employeeId }
+  return { success: true, message: '员工创建成功', employeeId: created.id }
   },
 )
 
@@ -1350,7 +1374,12 @@ export const updateEmployee = withPermission(
          *    那时再取锁就晚了（顺序会反）。多取一次纯 advisory 锁的成本可忽略。
          * ② admin 计数锁：只在标离职时需要。
          */
-        if (data.storeId !== undefined || data.orgNodeId !== undefined) await lockOrgTree(tx)
+        if (
+          data.storeId !== undefined
+          || data.orgNodeId !== undefined
+          // 复职也要按组织树判一次（见下面 `needsOwnershipRecheck`）
+          || data.isResigned === false
+        ) await lockOrgTree(tx)
         if (data.isResigned === true) await lockActiveAdminCount(tx)
 
         /**
@@ -1428,8 +1457,24 @@ export const updateEmployee = withPermission(
         }
         const ownershipMoved = transition.afterStoreId !== transition.beforeStoreId
           || transition.afterOrgNodeId !== transition.beforeOrgNodeId
+        /**
+         * ## 复职必须重判归属自洽（issue #318，codex 第 1 轮 P1）
+         *
+         * 子树复核只看**在职**员工（离职的不在任何门店名册里，构不成「同时出现在两个门店」）。
+         * 代价是：员工离职**期间**他挂的部门被改挂进另一个门店的子树，那条脏状态没人拦；
+         * 等他复职、且本次请求**不动归属字段**时，`ownershipMoved` 为 false → 一次校验都不跑
+         * → 复职成功的那一刻直接形成跨门店双重可见。
+         *
+         * 所以判据是「归属变了 **或** 正在复职」。复职时 post-image 等于旧值，判的就是
+         * 「他原来的归属在**今天的**组织树上还成不成立」。不成立就拒，让操作者在同一次提交里
+         * 把归属改对（编辑表单里门店/组织两个字段本来就在）。
+         *
+         * `ownershipTransitionError` 在 before == after 时恒返回 null（它自己有
+         * `if (!moved) return null`），所以复职不会被 scope 判据误拦。
+         */
+        const needsOwnershipRecheck = ownershipMoved || transition.isReinstating
 
-        if (ownershipMoved) {
+        if (needsOwnershipRecheck) {
           /**
            * scope 与最终可见性也要**按锁内 post-image 重判**（codex 第 13 轮 P1-1）：
            * 事务外那次只是早拒优化。举例：非 admin 事务外看到 `{store=A, org=A}` 并提交
