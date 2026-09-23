@@ -266,3 +266,52 @@ export async function findSiblingStoreIds(
   `)
   return (rows as unknown as Array<{ store_id: string }>).map((r) => r.store_id)
 }
+
+/**
+ * 按**当前树**判断某员工是否落在 `scopeRootIds` 的管辖范围内 —— `store ∪ org` 两维的 OR 语义。
+ *
+ * ## 与 `lib/permissions.ts` 的 `isEmployeeRowVisible` 有什么不同
+ *
+ * 后者判的是 `session.permissions.scopeStoreIds / scopeOrgNodeIds` —— **纯内存**，那两份集合
+ * 是构造 session 时按**当时**的树展开的，窗口是整个 JWT 寿命（24h）。于是：
+ * 部门 D 在 hr 登录后被改挂到另一个市场，挂着 D 的员工已经不属他管，
+ * 而 `scopeOrgNodeIds` 里 D 还在 —— 他仍能对那个员工授权（codex 第 9 轮 P1）。
+ *
+ * 本函数两维都按当前树上溯：
+ * - org 维：`org_node_id` 的祖先链是否命中任一根
+ * - store 维：`store_id` → `stores.org_node_id` → 祖先链是否命中任一根
+ * OR 语义与 `isEmployeeRowVisible` 保持一致（两维任一命中即可见），否则两处口径会分叉。
+ *
+ * 两端都为空 → false（既不属任何门店也不挂任何组织的员工，非 admin 不该碰）。
+ * admin 由调用方用 `isAdminScope(session)` 提前短路。
+ */
+export async function isEmployeeWithinScopeRoots(
+  employee: { storeId: string | null; orgNodeId: string | null },
+  scopeRootIds: readonly string[],
+  executor: SqlExecutor = db,
+): Promise<boolean> {
+  if (scopeRootIds.length === 0) return false
+  if (!employee.storeId && !employee.orgNodeId) return false
+  const roots = [...scopeRootIds]
+  const rows = await executor.execute(sql`
+    WITH RECURSIVE seed AS (
+      -- org 维：员工挂的组织节点
+      SELECT id, parent_id, ARRAY[id] AS path
+        FROM org_nodes WHERE id = ${employee.orgNodeId ?? null}
+      UNION ALL
+      -- store 维：员工主门店所映射的组织节点
+      SELECT o.id, o.parent_id, ARRAY[o.id]
+        FROM stores st JOIN org_nodes o ON o.id = st.org_node_id
+       WHERE st.store_id = ${employee.storeId ?? null}
+    ),
+    chain AS (
+      SELECT id, parent_id, path FROM seed
+      UNION ALL
+      SELECT p.id, p.parent_id, c.path || p.id
+        FROM chain c JOIN org_nodes p ON p.id = c.parent_id
+       WHERE NOT p.id = ANY(c.path)
+    )
+    SELECT 1 FROM chain WHERE id = ANY(${sql.param(roots)}::text[]) LIMIT 1
+  `)
+  return (rows as unknown as unknown[]).length > 0
+}

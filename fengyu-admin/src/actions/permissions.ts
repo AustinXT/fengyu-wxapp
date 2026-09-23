@@ -14,7 +14,7 @@ import { withPermission, withAnyPermission } from '@/lib/with-permission'
 import { logOperation } from '@/lib/operation-log'
 import { ApiError } from '@/lib/api-error'
 import { countActiveAdmins } from '@/lib/admin-guard'
-import { isNodeWithinScopeRoots } from '@/lib/org-ancestry'
+import { isNodeWithinScopeRoots, isEmployeeWithinScopeRoots } from '@/lib/org-ancestry'
 // 与 employees 侧共用同一把「活跃 admin 计数」锁；取锁顺序见该模块顶部（#318）
 import { lockOrgTree, lockActiveAdminCount } from '@/lib/invariant-locks'
 
@@ -204,7 +204,32 @@ export const getRoleCountsByScope = withPermission(
  */
 export const getEmployeeRoles = withPermission(
   'employee:list',
-  async (_session, employeeId: string): Promise<PermissionRole[]> => {
+  async (session, employeeId: string): Promise<PermissionRole[]> => {
+  /**
+   * ## 被查员工必须过可见性（#318 第 9 轮 GLM P2）
+   *
+   * 原先零校验，只在注释里声称「页面级 `scopeCondition` 已保证」—— 而本仓的既有判断是
+   * 「Server Action 是可直接调用的端点、入参原样到达」（`updateStore` / `updateOrgNode`
+   * 的字段白名单就是据此收口的），页面级保证对直调无效：市场 M 的 hr 直调本 action 传一个
+   * 市场 N 员工的 id，就能拿到那人全部角色绑定（角色名 / scope 名 / 授权人 / 时间戳），
+   * 换个不存在的 id 返回 `[]` 还顺带成了「该员工是否存在」的 oracle。
+   * 同文件的 `getRoles` / `getRolesByScope` 都按 scope 过滤，唯独这条裸奔。
+   *
+   * 判据与 `assignRole` 同款（`store ∪ org` 两维、按**当前树**上溯）—— 不新造口径：
+   * 「我能不能碰这个员工」这件事已经由那边定义过了。
+   * 不可见返回 `[]` 而不是报错，与 `assignRole` 合并文案同理，不额外泄露存在性。
+   */
+  if (!isAdminScope(session)) {
+    const [target] = await db
+      .select({ storeId: staffWechatUsers.storeId, orgNodeId: staffWechatUsers.orgNodeId })
+      .from(staffWechatUsers)
+      .where(eq(staffWechatUsers.employeeId, employeeId))
+      .limit(1)
+    if (!target) return []
+    const scopeRoots = session.roles.map((role) => role.scopeId)
+    if (!(await isEmployeeWithinScopeRoots(target, scopeRoots))) return []
+  }
+
   const rows = await db
     .select({
       id: permissionRoles.id,
@@ -435,10 +460,23 @@ export const assignRole = withAnyPermission(
         .where(eq(staffWechatUsers.employeeId, data.employeeId))
         .for('update')
         .limit(1)
-      if (
-        !lockedEmployee
-        || !isEmployeeRowVisible(session, lockedEmployee.storeId, lockedEmployee.orgNodeId)
-      ) {
+      /**
+       * 可见性也按**当前树**判（codex 第 9 轮 P1）—— `isEmployeeRowVisible` 是纯内存的，
+       * 判的是 session 构造时展开好的 `scopeStoreIds / scopeOrgNodeIds`。反例：
+       * 部门 D 在 hr 登录后被改挂到另一个市场（子树复核对 `store_id IS NULL` 的员工按
+       * #259 选项 A 放行、正常提交），挂着 D 的员工已经不属他管，而旧集合里 D 还在 ——
+       * 他仍能给那个员工授权。`isEmployeeWithinScopeRoots` 两维都上溯当前树，OR 语义一致。
+       */
+      const visible = !lockedEmployee ? false : (
+        isAdminScope(session)
+          ? true
+          : await isEmployeeWithinScopeRoots(
+            lockedEmployee,
+            session.roles.map((role) => role.scopeId),
+            tx,
+          )
+      )
+      if (!visible) {
         return { failure: '员工不存在或不在您的权限范围内' }
       }
       if (lockedEmployee.isResigned) {

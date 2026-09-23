@@ -80,6 +80,8 @@ vi.mock('@/lib/operation-log', () => ({
 // 「节点是否还在管辖范围内」按当前树判（#318 第 5 轮）；SQL 语义由真库冒烟负责
 vi.mock('@/lib/org-ancestry', () => ({
   isNodeWithinScopeRoots: vi.fn().mockResolvedValue(true),
+  // 员工可见性也按当前树判（#318 第 9 轮）；SQL 语义由真库冒烟负责
+  isEmployeeWithinScopeRoots: vi.fn().mockResolvedValue(true),
 }))
 
 vi.mock('@/lib/admin-guard', () => ({
@@ -100,12 +102,12 @@ vi.mock('drizzle-orm', () => ({
   sql: Object.assign(vi.fn((...args: unknown[]) => ({ type: 'sql', args })), { raw: vi.fn((s: string) => s) }),
 }))
 
-import { getRoles, assignRole, revokeRole } from './permissions'
+import { getRoles, getEmployeeRoles, assignRole, revokeRole } from './permissions'
 import { db } from '@/db'
 import { getSession, hasRole } from '@/lib/auth'
 import { inArray, eq } from 'drizzle-orm'
 import { countActiveAdmins } from '@/lib/admin-guard'
-import { isNodeWithinScopeRoots } from '@/lib/org-ancestry'
+import { isNodeWithinScopeRoots, isEmployeeWithinScopeRoots } from '@/lib/org-ancestry'
 import { hasPermission } from '@/lib/permissions'
 import { logOperation } from '@/lib/operation-log'
 
@@ -133,6 +135,65 @@ function setupDbSelect(returnValue: any[]) {
   ;(db.select as any).mockReturnValue({ from })
   return { where }
 }
+
+/**
+ * `getEmployeeRoles` 原先对 `employeeId` **零可见性校验**，只在注释里声称「页面级
+ * scopeCondition 已保证」—— 而 Server Action 是可直接调用的端点，页面级保证对直调无效：
+ * 市场 M 的 hr 直调它传市场 N 员工的 id，就能拿到那人全部角色绑定（#318 第 9 轮 GLM P2）。
+ */
+describe('getEmployeeRoles — 被查员工的可见性', () => {
+  const hrSession = {
+    employeeId: 'HR-001',
+    roles: [{ role: 'hr', scopeId: 'market-1' }],
+    permissions: { actions: ['employee:list'], scopeStoreIds: [], scopeOrgNodeIds: ['market-1'] },
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(isEmployeeWithinScopeRoots as any).mockReset().mockResolvedValue(true)
+  })
+
+  it('非 admin：员工不在管辖范围 → 返回空，且不查角色', async () => {
+    ;(getSession as any).mockResolvedValue(hrSession)
+    ;(hasRole as any).mockReturnValue(true)
+    ;(db.select as any).mockImplementation(() => mockSelectOnce({ storeId: 's', orgNodeId: 'o' })())
+    ;(isEmployeeWithinScopeRoots as any).mockResolvedValue(false)
+
+    const result = await getEmployeeRoles('EMP-OTHER-MARKET')
+
+    expect(result).toEqual([])
+    // 只发了「查这个员工的归属」那一次，没去查角色
+    expect((db.select as any).mock.calls.length).toBe(1)
+  })
+
+  it('非 admin：员工不存在 → 同样返回空（不泄露存在性）', async () => {
+    ;(getSession as any).mockResolvedValue(hrSession)
+    ;(hasRole as any).mockReturnValue(true)
+    ;(db.select as any).mockImplementation(() => mockSelectOnce(null)())
+
+    expect(await getEmployeeRoles('NOPE')).toEqual([])
+    expect(isEmployeeWithinScopeRoots).not.toHaveBeenCalled()
+  })
+
+  it('admin：不做可见性判定', async () => {
+    ;(getSession as any).mockResolvedValue({
+      employeeId: 'ADMIN-001',
+      roles: [{ role: 'admin', scopeId: 'hq-1' }],
+      permissions: { actions: ['employee:list'], scopeStoreIds: [] },
+    })
+    ;(hasRole as any).mockReturnValue(true)
+    const chain: any = {}
+    chain.from = vi.fn().mockReturnValue(chain)
+    chain.innerJoin = vi.fn().mockReturnValue(chain)
+    chain.leftJoin = vi.fn().mockReturnValue(chain)
+    chain.where = vi.fn().mockReturnValue(chain)
+    chain.orderBy = vi.fn().mockResolvedValue([])
+    ;(db.select as any).mockReturnValue(chain)
+
+    expect(await getEmployeeRoles('EMP-1')).toEqual([])
+    expect(isEmployeeWithinScopeRoots).not.toHaveBeenCalled()
+  })
+})
 
 describe('getRoles — scope filtering (AC-05)', () => {
   beforeEach(() => {
@@ -332,6 +393,7 @@ describe('assignRole — AC-09 & scope constraint', () => {
     ;(db.execute as any).mockReset().mockResolvedValue([{}])
     ;(hasPermission as any).mockReset().mockReturnValue(true)
     ;(isNodeWithinScopeRoots as any).mockReset().mockResolvedValue(true)
+    ;(isEmployeeWithinScopeRoots as any).mockReset().mockResolvedValue(true)
     mockAssignTx()
   })
 
@@ -479,6 +541,45 @@ describe('assignRole — AC-09 & scope constraint', () => {
     expect(result.success).toBe(false)
     expect(result.message).toBe('该员工已离职，无法分配角色')
     expect(values, '锁内判出已离职就不该 INSERT').not.toHaveBeenCalled()
+  })
+
+  /**
+   * 可见性也按**当前树**判（#318 第 9 轮 codex P1）：`isEmployeeRowVisible` 是纯内存的，
+   * 判 session 构造时展开好的集合。反例 —— 部门 D 在 hr 登录后被改挂到另一个市场
+   * （子树复核对 `store_id IS NULL` 的员工按 #259 选项 A 放行、正常提交），
+   * 挂着 D 的员工已经不属他管，而旧集合里 D 还在 → 他仍能给那人授权。
+   */
+  it('非 admin：员工按当前树已不在管辖范围 → 拒绝且不 INSERT', async () => {
+    ;(getSession as any).mockResolvedValue(hrSession)
+    ;(hasRole as any).mockReturnValue(true)
+    mockAssignRoleSelects({ node: { type: '门店' }, existing: null })
+    const values = vi.fn().mockResolvedValue({})
+    ;(db.insert as any).mockReturnValue({ values })
+    const t = mockAssignTx()
+    // 事务外的内存判据放行（旧快照里还有），锁内按当前树判出「已不属他管」
+    ;(isEmployeeWithinScopeRoots as any).mockResolvedValue(false)
+
+    const result = await assignRole({ employeeId: 'EMP-X', role: 'manager', scopeId: 'store-fengyu' })
+
+    expect(result.success).toBe(false)
+    expect(result.message).toBe('员工不存在或不在您的权限范围内')
+    expect(values).not.toHaveBeenCalled()
+    // 判据必须吃「锁内重读到的员工行 + 角色根节点 + 事务句柄」
+    const [emp, roots, executor] = (isEmployeeWithinScopeRoots as any).mock.calls[0]
+    expect(emp).toEqual(expect.objectContaining({ storeId: VISIBLE_EMPLOYEE.storeId }))
+    expect(roots).toEqual(['market-1'])
+    expect(executor).toBe(t.tx())
+  })
+
+  it('admin → 不按树判员工可见性', async () => {
+    ;(getSession as any).mockResolvedValue(adminSession)
+    ;(hasRole as any).mockReturnValue(true)
+    mockAssignRoleSelects({ node: { type: '总部' }, existing: null })
+    ;(db.insert as any).mockReturnValue({ values: vi.fn().mockResolvedValue({}) })
+
+    await assignRole({ employeeId: 'EMP-X', role: 'admin', scopeId: 'hq-1' })
+
+    expect(isEmployeeWithinScopeRoots).not.toHaveBeenCalled()
   })
 
   it('锁内重读发现员工已被删除 → 与「不在权限范围内」同一句文案', async () => {
@@ -962,6 +1063,7 @@ describe('revokeRole — scope + admin-only for admin roles', () => {
     // ⚠️ clearAllMocks 不清 mockImplementation —— 双快照那条用例设的分派会泄漏
     ;(db.execute as any).mockReset().mockResolvedValue([{}])
     ;(isNodeWithinScopeRoots as any).mockReset().mockResolvedValue(true)
+    ;(isEmployeeWithinScopeRoots as any).mockReset().mockResolvedValue(true)
   })
 
   /**

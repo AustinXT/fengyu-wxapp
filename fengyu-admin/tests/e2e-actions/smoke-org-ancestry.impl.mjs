@@ -11,6 +11,7 @@ import {
   findSubtreeOwnershipConflicts,
   isNodeWithinScopeRoots,
   findSiblingStoreIds,
+  isEmployeeWithinScopeRoots,
 } from '@/lib/org-ancestry'
 
 const CONN = process.env.E2E_DATABASE_URL
@@ -391,6 +392,46 @@ async function main() {
 
   check('门店不存在 → 空集合（由调用方兜底成 [自身]）',
     await findSiblingStoreIds(`${NS}_NOT_A_STORE`), [])
+
+  // ── isEmployeeWithinScopeRoots（#318 第 9 轮）───────────────────────────
+  /**
+   * 「这个员工现在还在我的管辖范围内吗」—— `store ∪ org` 两维都按当前树上溯。
+   * 夹具里 OWN_OK_A 是 {store: SA, org: DEPT_A}（都在 A 店子树内），
+   * OWN_BAD_A 是 {store: SB, org: DEPT_A} —— 两维分别落在 B 店与 A 店，正好验 OR 语义。
+   */
+  const EMP_OK_A = { storeId: id('SA'), orgNodeId: id('DEPT_A') }
+  const EMP_BAD_A = { storeId: id('SB'), orgNodeId: id('DEPT_A') }
+
+  check('两维都在根的子树内 → 可见',
+    await isEmployeeWithinScopeRoots(EMP_OK_A, [id('MKT')]), true)
+
+  check('org 维命中（store 维在另一条链）→ 可见（OR 语义）',
+    await isEmployeeWithinScopeRoots(EMP_BAD_A, [id('STORE_A')]), true)
+
+  check('store 维命中（org 维在另一条链）→ 可见（OR 语义）',
+    await isEmployeeWithinScopeRoots(EMP_BAD_A, [id('STORE_B')]), true)
+
+  check('两维都不在根的子树内 → 不可见',
+    await isEmployeeWithinScopeRoots(EMP_OK_A, [id('STORE_B')]), false)
+
+  check('只挂组织、无主门店 → 只看 org 维',
+    await isEmployeeWithinScopeRoots({ storeId: null, orgNodeId: id('MKT_DEPT') }, [id('MKT')]), true)
+
+  check('只有主门店、不挂组织 → 只看 store 维',
+    await isEmployeeWithinScopeRoots({ storeId: id('SA'), orgNodeId: null }, [id('STORE_A')]), true)
+
+  check('两端都空 → false（非 admin 不该碰这种员工）',
+    await isEmployeeWithinScopeRoots({ storeId: null, orgNodeId: null }, [id('HQ')]), false)
+
+  check('根清单为空 → false',
+    await isEmployeeWithinScopeRoots(EMP_OK_A, []), false)
+
+  /** 防环：员工挂在环里的节点上，上溯不能打满连接 */
+  const loopEmp = await Promise.race([
+    isEmployeeWithinScopeRoots({ storeId: null, orgNodeId: id('LOOP_Y') }, [id('MKT')]),
+    new Promise((_, rej) => setTimeout(() => rej(new Error('环检测超时 —— path 防环没生效')), 8000)),
+  ])
+  check('员工挂在自成环的节点上 → 正常返回', loopEmp, false)
 
   // 不清理：一次性库下一跑就整库重建（见顶部对环夹具与 trigger 的说明）
   await sql.end()
