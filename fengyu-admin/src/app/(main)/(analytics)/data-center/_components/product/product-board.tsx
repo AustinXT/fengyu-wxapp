@@ -121,13 +121,13 @@ export function ProductBoard() {
         <div className="text-xs text-[var(--muted-foreground)]">
           持卡人数 / 占比为截面快照（以当前时刻未用完疗程卡为准），不随时间区间变化。
         </div>
-        <KpiGrid items={KPI_CARD} kpis={kpis} columns={2} baseRanges={data?.timeRange} />
+        <KpiGrid items={KPI_CARD} kpis={kpis} columns={2} baseRanges={loading ? undefined : data?.timeRange} />
       </section>
 
       {/* KPI：体验 / 进入 / 复购（区间）*/}
       <section className="flex flex-col gap-3">
         <h2 className="text-sm font-semibold text-[var(--foreground)]">体验 / 进入 / 复购</h2>
-        <KpiGrid items={KPI_CYCLE} kpis={kpis} columns={4} baseRanges={data?.timeRange} />
+        <KpiGrid items={KPI_CYCLE} kpis={kpis} columns={4} baseRanges={loading ? undefined : data?.timeRange} />
       </section>
 
       {/* 明细表分 Tab：按市场 / 按门店 */}

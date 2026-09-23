@@ -16,6 +16,7 @@ import {
   NA_TEXT,
   NOT_TURNED_TEXT,
   TURNED_POSITIVE_TEXT,
+  deltaScaled,
   isFlatAfterRounding,
   type DeltaDisplay,
 } from '@/lib/delta-display'
@@ -26,7 +27,7 @@ function isInvalid(value: number | null | undefined): boolean {
 
 /** 金额格式化：千分位 + 2 位小数 */
 export function formatAmount(value: number | null | undefined): string {
-  if (isInvalid(value)) return '--'
+  if (isInvalid(value)) return NA_TEXT
   return (value as number).toLocaleString('en-US', {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
@@ -35,13 +36,13 @@ export function formatAmount(value: number | null | undefined): string {
 
 /** 计数格式化：整数 + 千分位 */
 export function formatCount(value: number | null | undefined): string {
-  if (isInvalid(value)) return '--'
+  if (isInvalid(value)) return NA_TEXT
   return Math.round(value as number).toLocaleString('en-US')
 }
 
 /** 占比格式化：保留 2 位 + %（输入为 0-1 小数） */
 export function formatPercent(value: number | null | undefined): string {
-  if (isInvalid(value)) return '--'
+  if (isInvalid(value)) return NA_TEXT
   return ((value as number) * 100).toFixed(2) + '%'
 }
 
@@ -75,9 +76,10 @@ export function formatDelta(display: DeltaDisplay | undefined): string {
       return NOT_TURNED_TEXT
     case 'pct': {
       if (isFlatAfterRounding(display.value, DELTA_DIGITS)) return FLAT_TEXT
-      const shown = (display.value * 100).toFixed(DELTA_DIGITS)
-      // 用舍入后的值判符号，与「持平」的判定保持同一套精度。
-      return (Number(shown) > 0 ? '+' : '') + shown + '%'
+      // 走 deltaScaled 而非自行 toFixed：判平/判向/出文案三处必须同一套舍入，
+      // 否则会出现「不算持平却渲染 0.00%」（本 PR 在 TrendArrow 上踩过）。
+      const shown = deltaScaled(display.value, DELTA_DIGITS)
+      return (shown > 0 ? '+' : '') + shown.toFixed(DELTA_DIGITS) + '%'
     }
   }
 }

@@ -1016,8 +1016,8 @@ export const getCustomerBoard = withPermission(
       value: safeDiv(newMembers.value ?? 0, trafficCustomers.value ?? 0),
       unit: 'percent',
       // 派生指标不算同比环比，但 enabled 时仍要占位，否则前端 `!== undefined` 判定会整行不渲染徽章。
-    // #310 起占位值是 `{ kind: 'na' }`（展示 '--'）而不是裸 null。
-    ...(enabled ? { mom: { kind: 'na' } as const, yoy: { kind: 'na' } as const } : {}),
+      // #310 起占位值是 `{ kind: 'na' }`（展示 '--'）而不是裸 null。
+      ...(enabled ? { mom: { kind: 'na' } as const, yoy: { kind: 'na' } as const } : {}),
     }
     // 当月一次/二次人数（与客活同值，单列展示）—— 复用 visitOnce/visitTwice 的 value
     const visitOnceCell: KpiCell = { value: visitOnce.value, unit: 'count' }

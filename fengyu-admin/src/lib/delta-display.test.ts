@@ -74,9 +74,23 @@ describe('resolveDeltaDisplay（决策 1 矩阵）', () => {
       expect(resolveDeltaDisplay(10, -Infinity)).toEqual({ kind: 'na' })
     })
 
-    it('入参有限但商溢出 → na（守卫必须落在最终值上）', () => {
-      // 这是 #307 闸门 2 codex 那条 P3 的同型陷阱：两个入参都有限，商却是 Infinity。
+    it('入参有限但商溢出 → na', () => {
+      // 弱版本：商本身就是 Infinity。
       expect(resolveDeltaDisplay(1, 1e-320)).toEqual({ kind: 'na' })
+    })
+
+    it('商有限、仅 ×100 才溢出 → na（守卫必须落在最终渲染值上）', () => {
+      // ⚠️ 这一档才是 #307 闸门 2 codex 那条 P3 的真正形态，也是本模块初版漏掉的：
+      // (1 - 1e-307)/1e-307 ≈ 1.0e307 —— **有限**，只查 value 会放行；
+      // 但渲染的是 value*100 = Infinity，会输出 "+Infinity%" 且被 deltaTone 判成绿色。
+      const d = resolveDeltaDisplay(1, 1e-307)
+      expect(d).toEqual({ kind: 'na' })
+      // 反向确认：商确实有限，证明这不是上一条的重复
+      expect(Number.isFinite((1 - 1e-307) / 1e-307)).toBe(true)
+    })
+
+    it('负向的 ×100 溢出同样挡住', () => {
+      expect(resolveDeltaDisplay(-1, 1e-307)).toEqual({ kind: 'na' })
     })
   })
 })

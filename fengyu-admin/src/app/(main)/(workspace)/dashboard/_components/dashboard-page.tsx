@@ -10,6 +10,7 @@ import {
   NA_TEXT,
   NOT_TURNED_TEXT,
   TURNED_POSITIVE_TEXT,
+  deltaScaled,
   deltaTone,
   isFlatAfterRounding,
   resolveDeltaDisplay,
@@ -42,10 +43,9 @@ export function TrendArrow({ current, previous }: { current: number; previous: n
   const tone = deltaTone(display, TREND_DIGITS)
 
   if (display.kind === "pct" && !isFlatAfterRounding(display.value, TREND_DIGITS)) {
-    // 必须与 isFlatAfterRounding / deltaTone 用同一套舍入（toFixed），不能用 Math.round：
-    // Math.round(-0.5) === -0 而 (-0.5).toFixed(0) === '-1'，两者分叉会让
-    // 「不算持平」的值渲染成 0%，把刚修掉的「↑ 0%」又造回来。
-    const pct = Math.abs(Number((display.value * 100).toFixed(TREND_DIGITS)))
+    // 走 deltaScaled 而非自行 Math.round —— 那两者在 -0.5 处分叉
+    // （Math.round(-0.5) === -0），会让「不算持平」的值渲染成 0%，把缺陷造回来。
+    const pct = Math.abs(deltaScaled(display.value, TREND_DIGITS))
     const up = tone === "positive"
     return (
       <span
@@ -69,7 +69,13 @@ export function TrendArrow({ current, previous }: { current: number; previous: n
   }
 
   // 负基期两态：保留箭头传达方向，但文案说的是「转正与否」而不是一个假的百分比。
-  const turned = display.kind === "turnedPositive"
+  //
+  // ⚠️ 这里是 if 链收尾，不像 deltaTone/formatDelta 的 switch 那样有 TS 穷尽性检查兜底。
+  // 下面这行断言把漏网的 kind 变成**编译错误**：若将来给 DeltaDisplay 加第 5 个成员却忘了
+  // 在本组件处理，`display` 就不再是 never，TS2322 会当场报错——
+  // 否则新态会静默渲染成红色「未转正」，零告警。
+  const exhaustive: "turnedPositive" | "notTurned" = display.kind
+  const turned = exhaustive === "turnedPositive"
   return (
     <span
       className={cn("text-xs flex items-center gap-0.5", turned ? "text-[#3D8A5A]" : "text-[#D94040]")}

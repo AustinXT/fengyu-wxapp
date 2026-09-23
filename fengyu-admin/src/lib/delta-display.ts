@@ -73,10 +73,32 @@ export function resolveDeltaDisplay(
   if (base === 0) return { kind: "na" }
 
   const value = (cur - base) / base
-  // 商可能溢出：入参各自有限不代表商有限（`1 / 1e-320` → Infinity）。
-  // 守卫必须落在最终值上，这是 #307 闸门 2 codex 那条 P3 的教训。
-  if (!Number.isFinite(value)) return { kind: "na" }
+  // ⚠️ 守卫必须落在**最终要渲染的那个数**（`value * 100`）上，查中间量会漏。两条路径：
+  //   - 除法：`1 / 1e-320` → 商直接 Infinity
+  //   - 乘 100：`MAX_VALUE / 1` 的商**有限**（1.798e308），`× 100` 才溢出
+  // 第二条是最阴的——只查 `value` 会以为已经封死，实际仍渲染出 `"+Infinity%"`
+  // 且 `deltaTone` 把它判成 positive（绿色）。
+  // 这是 #307 闸门 2 codex 那条 P3 的教训，analyst `metric-delta.ts` 已守住；
+  // 本模块初版重写时没继承，由 #310 的 sibling audit 揪出来。
+  if (!Number.isFinite(value * 100)) return { kind: "na" }
   return { kind: "pct", value }
+}
+
+/**
+ * 把 delta 小数换算成**要渲染的那个百分比数**，按展示精度舍入。
+ *
+ * ⚠️ **判平、判方向、出文案三处必须都走这里，不能各写各的舍入。**
+ * 本 PR 内就踩过一次：`TrendArrow` 原本用 `Math.round`、守卫用 `toFixed`，
+ * 而 `Math.round(-0.5) === -0` 但 `(-0.5).toFixed(0) === '-1'` ——
+ * 于是「不算持平」的值渲染成了 `0%`，正是 #315 要消灭的那种自相矛盾。
+ * 收敛到单一 helper 是为了让第五个调用方**没有机会**再写出第二套舍入。
+ *
+ * 返回值恒有限：`kind: 'pct'` 的构造点（`resolveDeltaDisplay`）已经把
+ * `value * 100` 溢出的情形挡在 `na` 分支，所以这里不会吐出 `Infinity`。
+ * ⚠️ 若将来有人手工构造 `{kind:'pct', value}` 绕过构造函数，该保证就断了——别那么干。
+ */
+function scaledDelta(value: number, digits: number): number {
+  return Number((value * 100).toFixed(digits))
 }
 
 /**
@@ -84,7 +106,8 @@ export function resolveDeltaDisplay(
  * 因为数据中心（`text-[#3D8A5A]`）与首页看板用的是同一套色号但不同的类名组合。
  *
  * `pct` 且舍入后为 0 → `neutral`（决策 3）。`digits` 传展示精度：
- * 数据中心 `toFixed(2)`、首页看板 `Math.round` 整数，**两处阈值不同，必须各自传**。
+ * 数据中心 2 位小数、首页看板整数、analyst 1 位——**精度不同，但舍入方式统一走
+ * `scaledDelta`（`toFixed`）**，别在调用点自行 `Math.round`。
  */
 export function deltaTone(
   display: DeltaDisplay,
@@ -99,12 +122,20 @@ export function deltaTone(
       return "neutral"
     case "pct": {
       // 先按展示精度舍入再判方向，否则会出现「显示持平、颜色是绿」的错配。
-      const shown = Number((display.value * 100).toFixed(digits))
+      const shown = scaledDelta(display.value, digits)
       if (shown > 0) return "positive"
       if (shown < 0) return "negative"
       return "neutral"
     }
   }
+}
+
+/**
+ * 渲染用的百分比数值（绝对值由调用方决定取不取）。
+ * 对外导出是为了让展示层**不必重算** —— 重算就有写出第二套舍入的机会。
+ */
+export function deltaScaled(value: number, digits: number): number {
+  return scaledDelta(value, digits)
 }
 
 /**
@@ -115,5 +146,5 @@ export function deltaTone(
  * 取舍是：`+0.00%` 那种「涨了、涨幅为 0」的自相矛盾展示，比「持平」的精度损失更容易误导。
  */
 export function isFlatAfterRounding(value: number, digits: number): boolean {
-  return Number((value * 100).toFixed(digits)) === 0
+  return scaledDelta(value, digits) === 0
 }

@@ -12,12 +12,21 @@ const TONE_CLASS = {
   neutral: "text-[#999999]",
 } as const
 
-/** 基期区间 → hover 文案，如「环比基期：2026-08-01 ~ 2026-08-22（22 天）」 */
+/**
+ * 基期区间 → hover 文案，如「环比基期：2026-08-01 ~ 2026-08-22（22 天）」。
+ *
+ * ⚠️ 天数可能算不出。`previous`/`lastYear` 是本 PR **首次**送到客户端的
+ * （此前它们从不出仓），等于新增了一块暴露面：`params.ts` 的 `DATE_RE` 接受 `0000`-`0999` 年，
+ * 而 `time-range.ts` 的 `fmt` 对年份不做 padStart，于是 `?start=0001-01-01` 这种手改 URL
+ * 会让 `addDays(start,-1)` 产出 `"0-12-31"`，`Date.parse("0-12-31T00:00:00Z")` → `NaN`，
+ * 渲染出「（NaN 天）」。算不出就只报区间、不报天数，不把垃圾数字摆给用户。
+ */
 function basePeriodTitle(label: string, range: { start: string; end: string } | null): string | undefined {
   if (!range) return undefined
-  // 含首尾两端，所以 +1；start/end 都是 'YYYY-MM-DD' 的纯日期串，用 UTC 解析避免本地时区偏移。
-  const days =
-    Math.round((Date.parse(`${range.end}T00:00:00Z`) - Date.parse(`${range.start}T00:00:00Z`)) / 86400000) + 1
+  // 含首尾两端，所以 +1；start/end 应是 'YYYY-MM-DD' 纯日期串，用 UTC 解析避免本地时区偏移。
+  const span = Date.parse(`${range.end}T00:00:00Z`) - Date.parse(`${range.start}T00:00:00Z`)
+  const days = Math.round(span / 86400000) + 1
+  if (!Number.isFinite(days) || days <= 0) return `${label}基期：${range.start} ~ ${range.end}`
   return `${label}基期：${range.start} ~ ${range.end}（${days} 天）`
 }
 

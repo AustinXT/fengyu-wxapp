@@ -71,7 +71,7 @@ export function SalesBoard() {
 
   return (
     <div className="flex flex-col gap-6">
-      <KpiGrid items={KPI_ITEMS} kpis={kpis} columns={4} baseRanges={data?.timeRange} />
+      <KpiGrid items={KPI_ITEMS} kpis={kpis} columns={4} baseRanges={loading ? undefined : data?.timeRange} />
       {/* 明细表分 Tab：按市场 / 按门店 */}
       <Tabs defaultValue="market">
         <TabsList>

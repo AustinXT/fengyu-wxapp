@@ -91,19 +91,19 @@ export function CustomerBoard() {
       {/* KPI：注册 + 保有 + 回店 */}
       <section className="flex flex-col gap-3">
         <h2 className="text-sm font-semibold text-[var(--foreground)]">注册与保有</h2>
-        <KpiGrid items={KPI_REGISTER} kpis={kpis} columns={4} baseRanges={data?.timeRange} />
+        <KpiGrid items={KPI_REGISTER} kpis={kpis} columns={4} baseRanges={loading ? undefined : data?.timeRange} />
       </section>
 
       {/* KPI：会员状态 + 客活激活 */}
       <section className="flex flex-col gap-3">
         <h2 className="text-sm font-semibold text-[var(--foreground)]">会员状态与客活</h2>
-        <KpiGrid items={KPI_STATUS} kpis={kpis} columns={3} baseRanges={data?.timeRange} />
+        <KpiGrid items={KPI_STATUS} kpis={kpis} columns={3} baseRanges={loading ? undefined : data?.timeRange} />
       </section>
 
       {/* KPI：经营 */}
       <section className="flex flex-col gap-3">
         <h2 className="text-sm font-semibold text-[var(--foreground)]">经营</h2>
-        <KpiGrid items={KPI_OPERATION} kpis={kpis} columns={3} baseRanges={data?.timeRange} />
+        <KpiGrid items={KPI_OPERATION} kpis={kpis} columns={3} baseRanges={loading ? undefined : data?.timeRange} />
       </section>
 
       {/* 明细表分 Tab：每张表独立标签（维度 × 表型）*/}

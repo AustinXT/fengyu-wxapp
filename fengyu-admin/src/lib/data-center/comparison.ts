@@ -18,32 +18,15 @@ export interface ComparisonRanges {
 }
 
 /**
- * delta% = (cur - base) / base；base 为 null 或 <= 0 → null（前端 '--'）
+ * ⚠️ 这里曾有一个 `deltaPct(cur, base)`，#310/#315 起**已删除**。
  *
- * base <= 0 一律不出徽章：=0 是除零；<0 时 (cur-base)/base 的**符号会翻转**。
- * 生产实例（2026-09-22 只读库实测，南昌梦祥店「本周」业绩）：
- * 基期 09-14~15 = -2,646.00（退款多于收入），当期 09-21~22 = +264.00（已回正）。
- * 旧式算出 (264-(-2646))/(-2646) = -109.98%，徽章渲染成红色下滑 —— 方向恰好反了。
- * 负基期的"增长率"没有可读语义（分母的方向性已丢失），按
- * metrics.md §数字格式化规则「防除零 / 数据缺失 一律 '--'」（:610）归入"算不出"。
- * 审计跨相邻区间统计到负基期 29 对 / 19 家门店，区间 -100.68% ~ -54,080,100.00%（#283）。
- * 同比(yoy)同样走这里——负基期翻符号与是环比还是同比无关。
- *
- * ⚠️ **本函数已不再是 KPI 徽章的展示口径**（#310/#315 起）。
  * 它把 `base <= 0` 的三种成因（负基期已转正 / 负基期未转正 / 零基期）一律压成 `null`，
- * 而决策 1 要求前两者分别显示「由负转正」「未转正」——展示走
- * `@/lib/delta-display` 的 `resolveDeltaDisplay`，那里是单一真相源。
- * 这里保留纯数值口径，供内部计算与既有测试使用；**新代码要出徽章别调它**。
+ * 与决策 1 要求的两态展示语义分叉；生产已无调用方，留着只会成为
+ * 「第三份增幅实现」的诱饵（两个评审谱系都点了这一条）。
+ *
+ * 要算增幅一律用 `@/lib/delta-display` 的 `resolveDeltaDisplay` —— 那是 admin 全站单一真相源，
+ * 负基期的历史案例与口径依据也都记在那个文件头与 `notes/references/metrics.md` 的基期章节。
  */
-export function deltaPct(cur: number | null, base: number | null): number | null {
-  if (cur == null || base == null) return null
-  // NaN / ±Infinity 自己挡掉：`cur == null` 接不住 NaN（NaN == null 为 false）。
-  // 现在四个板块的 scalar()/num() 都已 Number.isFinite 过滤、前端 DeltaBadge 也兜了一层，
-  // 但「算不出」的判定权应该在本函数手里 —— 否则第 5 个调用方忘了过滤就会把 NaN 漏到下游。
-  if (!Number.isFinite(cur) || !Number.isFinite(base)) return null
-  if (base <= 0) return null
-  return (cur - base) / base
-}
 
 /** 从 resolveTimeRange 输出抽出 comparison 三区间 */
 export function toComparisonRanges(tr: ResolvedTimeRange): ComparisonRanges {
