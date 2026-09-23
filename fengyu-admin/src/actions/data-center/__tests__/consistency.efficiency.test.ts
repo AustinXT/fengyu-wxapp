@@ -118,6 +118,15 @@ function assertHelperBody(adminSrc: string): void {
   // 恰好 2 个 AND：① 连接 status 与 performance_date 两个谓词 ② `BETWEEN x AND y` 语法自带。
   // 追加第三个谓词 → 3 个 → 红；把 BETWEEN 换成 >=/<= → 1 个 → 也红（同样是值得拦的改动）。
   expect(body.match(/\bAND\b/g) ?? [], 'helper 谓词个数变了：Part A/B 会与 Part C 静默分叉').toHaveLength(2)
+  // ⚠️ 只数 AND 不够：闸门 2 round-5 GLM 在 helper 尾部追加
+  // `OR ${eventAlias}.status = '部分支付'`，AND 计数不变、两条 toMatch 照样命中，
+  // 却把 Part A/B 的状态过滤放宽成「已支付 OR 部分支付」而 Part C 不变（实测 56 条全绿）。
+  expect(body, 'helper 里出现 OR：谓词语义被放宽，Part A/B 会与 Part C 分叉').not.toMatch(/\bOR\b/)
+  // 同理禁止任何额外的 `${eventAlias}.` 引用（只该有 status 与 performance_date 两处）
+  expect(
+    (body.match(/\$\{eventAlias\}\./g) ?? []).length,
+    'helper 里 ${eventAlias}. 的引用数变了',
+  ).toBe(2)
 }
 
 
@@ -135,9 +144,13 @@ function assertHelperBody(adminSrc: string): void {
  * 只有「A 的谓词集 == B 的 == C 的」才挡得住。
  */
 function expandSpeHelper(segment: string): string {
+  // ⚠️ 先把别名大小写归一：PG 对**未加引号**的标识符大小写不敏感，`SPE.change_type`
+  // 与 `spe.change_type` 在运行时等价，但正则默认区分大小写 —— 闸门 2 round-5 GLM
+  // 就是用 `AND SPE.change_type <> '退款'` 骗过了全部六层（实测 56 条全绿）。
+  const normalized = segment.replace(/\bspe\./gi, 'spe.')
   // Part A/B 把 status + performance_date 交给 helper，Part C 写字面量。
   // 先把 helper 调用展开成它实际产出的两个谓词，两边才可比。
-  return segment.replace(
+  return normalized.replace(
     /\$\{performanceEventDateBetween\('spe', cur\.start, cur\.end\)\}/g,
     "spe.status = '已支付' AND spe.performance_date BETWEEN ${cur.start} AND ${cur.end}",
   )
