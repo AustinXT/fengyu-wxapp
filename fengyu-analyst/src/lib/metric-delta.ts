@@ -30,12 +30,40 @@
  * 门店 × 单月这种窄切片下单笔 −19,370 就够了，但不是必然）。
  * **所以这里的守卫是承重的，不是冗余，别当死代码删掉。**
  *
- * ## rate 分支为什么不挡负基期
+ * ## rate 分支为什么零基期与负基期都不挡（#314 决策 2）
  *
- * `type === "rate"` 走的是百分点差值（减法），没有除法，不存在符号翻转。
- * 但 `previous === 0` 仍统一返回「无基数」——那是改动前就有的行为，此次不动（#307 AC3）。
- * ⚠️ 已知代价：「到店率 0% → 30%」会被吞成「无基数」，而「30% → 0%」照常出 `-30.0pct`，
- * 涨跌方向不对称。新店/新市场的同比基期必然全 0，命中不低。此项已另行登记，不在 #307 范围内。
+ * `type === "rate"` 走的是百分点差值（减法），没有除法，**不需要非零分母，也不会符号翻转**。
+ * 所以两道基期守卫（`previous === 0` / `previous < 0`）都排在 rate 分支**之后**——
+ * 它们是除法分支的必需品，对减法纯属拖累。
+ *
+ * #307 阶段 `previous === 0` 曾排在 rate 之前，导致「到店率 0% → 30%」被吞成「无基数」，
+ * 而「30% → 0%」照常出 `-30.0pct`，**只藏涨、不藏跌**。#314 把守卫挪到了 rate 之后，涨跌恢复对称。
+ *
+ * ⚠️ **已知代价：2027-01-01 之前，同比 rate 徽章显示的是割点伪影，不是经营变化。**
+ * `service_orders`（已完成）最早只到 **2026-07-08**，而新客入口日期走首单（`sale_orders` 回溯到 2022-08），
+ * 分子分母不同源 → 2022–2025 共 1,352 个新客的到店数**恒为 0**。
+ * 于是任何落在割点前的同比基期都是 0，改动后**集团级到店率同比会渲染出约 `+86.7pct` 的绿色徽章**
+ * （2026 年 3,156/3,639 = 86.7%）。量化依据见 issue #314 评论 `issuecomment-5788019145`。
+ *
+ * 这是**知情选择**：拍板人读过该数据后仍取本方案，理由是割点属全站问题、已由 #289 立案跟踪，
+ * 不该由单个徽章承担。别再拿这份数据回头推翻本实现——那是已经否决过一次的建议。
+ * 真正的治本方案（上游 `safeRate` 返回 `number | null`，区分「真实 0%」「算不出」「数据缺失伪影」）
+ * 登记为未来选项，不在本轮范围。
+ *
+ * ## 伪持平：舍入到 0 的一律并入「持平」（#314 决策 3）
+ *
+ * `toFixed(1)` 会把极小的真实变化舍成 `0.0`，旧实现仍带符号前缀，渲染出 `+0.0%` / `-0.0%`
+ * ——「涨了、涨幅是 0」自相矛盾，比直接说「持平」更费解（`-0.0%` 不来自 `-0`，
+ * 来自 `(-0.0002).toFixed(1)`）。money 类完全可达：50 万的基数差几百块就舍成 `0.0`。
+ *
+ * ⚠️ 代价是精度损失：500,100 vs 500,000（真实 +0.02%）与 500,000 vs 500,000（真实 0）
+ * **显示成同一个词**。取舍在拍板时已知：带符号的 0 比「持平」更容易误导。
+ *
+ * ## 文案与配色必须同源
+ *
+ * tone 不自己重算方向，而是读 `computeDeltaPart` 返回的 `rendered`——**实际印在徽章上的那个数**。
+ * 否则会出现「持平 + 绿色」（伪持平走 tone 的除法方向）或「+30.0pct + 灰色」（rate 零基期
+ * 撞上 tone 的 `prevYear === 0` 弃判）这类自相矛盾的组合。**唯一的例外是负基期**，见下一节。
  *
  * ## 与 admin `src/lib/data-center/comparison.ts` 的差异（有意分叉，不是漏改）
  *
@@ -44,6 +72,13 @@
  * 两站点指标集不重叠（admin 是门店业绩等，这里是新客漏斗），不会对同一现象给出相反结论；
  * 保留方向是刻意的——由负回正是真实的向好信息，不该跟着倍数一起丢。
  * 别为了「统一口径」把这里也改成 default。
+ *
+ * ⚠️ **这是全模块唯一一处 tone 不读 `rendered` 的地方**：负基期没渲染出数字（`rendered === null`），
+ * 方向只能靠比大小补出来。零基期同样 `rendered === null` 却弃判方向，二者的差别是**有意的**。
+ *
+ * ⚠️ #314 决策 1 定了一套全站负基期展示矩阵（`base < 0 && cur > 0` → 「由负转正」🟢，
+ * 否则 →「未转正」🔴），admin 侧由 PR #321 落地。**analyst 侧尚未落，不在 #314 本轮范围**
+ * （#314 五条验收标准均未涉及）。要接入时改的是这一节，不是上面 rate 那节。
  *
  * ## `count` 与 `money` 行为完全相同
  *
@@ -61,6 +96,12 @@ export const NO_BASE_TEXT = "无基数"
 
 /** `formatPointDelta` 专用：上一年区间根本不存在。与「基期不可用」语义不同，刻意不合并。 */
 export const NO_LAST_YEAR_TEXT = "无上一年对比"
+
+/**
+ * 变化量渲染成 0 时的文案。**真持平与伪持平共用它**（#314 决策 3）——
+ * 后者是 `toFixed(1)` 把 `+0.02%` 舍成 `0.0` 的情形，旧实现会输出自相矛盾的 `+0.0%`。
+ */
+export const FLAT_TEXT = "持平"
 
 /**
  * 非有限值是**上游数据管道的 bug 信号**，不是正常的「没有基数」。
@@ -84,34 +125,61 @@ function warnNonFinite(fn: string, values: Record<string, number>): void {
  *   - 乘 100：`MAX_VALUE / 1` 的商**有限**（1.79e308），但 `× 100` 才溢出
  * 第三条是最阴的——只查 `delta` 会以为已经封死，实际仍渲染出 `"+Infinity%"`。
  */
+/**
+ * 一次渲染的完整结果。`rendered` 是**实际印在徽章上的那个数**（已按 `toFixed(1)` 舍入），
+ * `null` 表示这次根本没渲染出数字（文案是 `NO_BASE_TEXT`）。
+ *
+ * tone 必须读它而不是自己重算方向——见文件头「文案与配色必须同源」。
+ */
+type DeltaRender = { text: string; rendered: number | null }
+
+/**
+ * 定点化 + 取回舍入后的真实数值，一处实现供两个导出函数共用。
+ *
+ * ⚠️ 判零必须看 `Number(fixed)` 而不是 `scaled`：`scaled = 0.02` 非零，但印出来是 `0.0`。
+ * `Number("-0.0")` 得到 `-0`，而 `-0 === 0` 为 true，所以 `+0.0` 与 `-0.0` 一次都接住。
+ */
+function fixDelta(scaled: number): { fixed: string; rendered: number } {
+  const fixed = scaled.toFixed(1)
+  return { fixed, rendered: Number(fixed) }
+}
+
 function renderScaledDelta(
   fn: string,
   delta: number,
   suffix: "%" | "pct",
   context: Record<string, number>,
-): string {
-  if (delta === 0) return "持平"
+): DeltaRender {
   const scaled = delta * 100
   if (!Number.isFinite(scaled)) {
     warnNonFinite(fn, { ...context, delta })
-    return NO_BASE_TEXT
+    return { text: NO_BASE_TEXT, rendered: null }
   }
-  return `${scaled > 0 ? "+" : ""}${scaled.toFixed(1)}${suffix}`
+  const { fixed, rendered } = fixDelta(scaled)
+  // 真持平（delta === 0）与伪持平（舍入到 0.0）在这里合流，共用「持平」。
+  if (rendered === 0) return { text: FLAT_TEXT, rendered: 0 }
+  return { text: `${rendered > 0 ? "+" : ""}${fixed}${suffix}`, rendered }
 }
 
-export function formatDeltaPart(current: number, previous: number, type: MetricDeltaType): string {
+/** `formatDeltaPart` 的内部形态：多带一个 `rendered` 供 `formatMetricDelta` 判 tone。 */
+function computeDeltaPart(current: number, previous: number, type: MetricDeltaType): DeltaRender {
   // NaN / ±Infinity 自己挡掉：`=== 0` 接不住 NaN，漏过去会渲染出 "NaN%" / "+Infinity%"。
   if (!Number.isFinite(current) || !Number.isFinite(previous)) {
     warnNonFinite("formatDeltaPart", { current, previous })
-    return NO_BASE_TEXT
+    return { text: NO_BASE_TEXT, rendered: null }
   }
-  if (previous === 0) return NO_BASE_TEXT
+  // rate 走减法，两道基期守卫都不适用，必须排在它们**之前**（#314 决策 2）。
   if (type === "rate") {
     return renderScaledDelta("formatDeltaPart(rate)", current - previous, "pct", { current, previous })
   }
+  if (previous === 0) return { text: NO_BASE_TEXT, rendered: null }
   // 见文件头「基期为什么必须 > 0」。此处 previous 已排除 0，只剩负数要挡。
-  if (previous < 0) return NO_BASE_TEXT
+  if (previous < 0) return { text: NO_BASE_TEXT, rendered: null }
   return renderScaledDelta("formatDeltaPart", (current - previous) / previous, "%", { current, previous })
+}
+
+export function formatDeltaPart(current: number, previous: number, type: MetricDeltaType): string {
+  return computeDeltaPart(current, previous, type).text
 }
 
 export function formatMetricDelta(
@@ -120,13 +188,22 @@ export function formatMetricDelta(
   prevPeriod: number,
   type: MetricDeltaType = "count",
 ): { text: string; tone: MetricDeltaTone } {
-  const text = `同比 ${formatDeltaPart(current, prevYear, type)} / 环比 ${formatDeltaPart(current, prevPeriod, type)}`
-  // tone 只看同比，且走直接比大小而非除法——所以负基期下方向依然正确
-  // （prevYear=−2646、current=264 → positive 绿），不需要跟着 formatDeltaPart 一起挡。
-  // ⚠️ 刻意**不查 prevPeriod**：tone 的定义就是同比方向，环比脏了不该影响它。
+  const yoy = computeDeltaPart(current, prevYear, type)
+  // ⚠️ tone 刻意**只看同比**：它的定义就是同比方向，环比脏了不该影响它。
   //    这是全文件唯一一处「守卫覆盖面不一致」，有测试钉住，别顺手"补齐"。
+  const text = `同比 ${yoy.text} / 环比 ${formatDeltaPart(current, prevPeriod, type)}`
   // 挡的只有非有限值：`current > NaN` 恒 false，不挡会把脏数据渲染成红色「下降」。
   if (!Number.isFinite(current) || !Number.isFinite(prevYear)) return { text, tone: "default" }
+  // 渲染出数字时，配色必须跟那个数同号——包括舍入到 0 的伪持平并入灰（#314 决策 3），
+  // 以及 rate 零基期出数时跟着出方向（#314 决策 2；旧实现在这里撞 `prevYear === 0` 变灰）。
+  if (yoy.rendered !== null) {
+    if (yoy.rendered === 0) return { text, tone: "default" }
+    return { text, tone: yoy.rendered > 0 ? "positive" : "negative" }
+  }
+  // 以下是文案为「无基数」的两种，没有数字可跟，方向只能靠比大小补：
+  // 零基期弃判（增幅无意义），负基期**保留方向**（由负回正是真实的向好信息，见文件头）。
+  // ⚠️ `current === prevYear` 必须在比大小之前拦掉：负基期原地不动（−1000 → −1000）
+  //    会让 `current > prevYear` 取 false 而渲染成红色「下降」。
   if (prevYear === 0 || current === prevYear) return { text, tone: "default" }
   return { text, tone: current > prevYear ? "positive" : "negative" }
 }
@@ -143,16 +220,20 @@ export function formatMetricDelta(
  */
 export function formatPointDelta(value: number | null): { text: string; tone: MetricDeltaTone } {
   if (value === null) return { text: NO_LAST_YEAR_TEXT, tone: "default" }
-  if (value === 0) return { text: "同比持平", tone: "default" }
   // 同样查最终渲染值而非入参：`value` 有限但 `value * 100` 可溢出（MAX_VALUE → Infinity）。
-  // NaN 也走这条——`NaN === 0` 为 false，`NaN * 100` 仍是 NaN，一次检查两种都接住。
+  // NaN 也走这条——`NaN * 100` 仍是 NaN，一次检查两种都接住。
   const scaled = value * 100
   if (!Number.isFinite(scaled)) {
     warnNonFinite("formatPointDelta", { value, scaled })
     return { text: NO_LAST_YEAR_TEXT, tone: "default" }
   }
+  const { fixed, rendered } = fixDelta(scaled)
+  // 与 `renderScaledDelta` 同源判零（#314 决策 3）。这里的伪持平**可达**：上游
+  // `repurchase.ts` 的 `round4` 最小非零值 0.0001 → scaled 0.01 → 印出来就是 `0.0`。
+  // 真持平（value === 0）也在这条合流，所以不再需要单独的 `value === 0` 早退。
+  if (rendered === 0) return { text: `同比${FLAT_TEXT}`, tone: "default" }
   return {
-    text: `同比 ${scaled > 0 ? "+" : ""}${scaled.toFixed(1)}pct`,
-    tone: scaled > 0 ? "positive" : "negative",
+    text: `同比 ${rendered > 0 ? "+" : ""}${fixed}pct`,
+    tone: rendered > 0 ? "positive" : "negative",
   }
 }

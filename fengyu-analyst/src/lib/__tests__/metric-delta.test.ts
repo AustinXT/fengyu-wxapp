@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import {
+  FLAT_TEXT,
   NO_BASE_TEXT,
   NO_LAST_YEAR_TEXT,
   formatDeltaPart,
@@ -25,8 +26,9 @@ describe("文案常量锚定", () => {
   it("文案串本身钉住字面量", () => {
     expect(NO_BASE_TEXT).toBe("无基数")
     expect(NO_LAST_YEAR_TEXT).toBe("无上一年对比")
-    // 两者刻意不合并：「基期不可用」≠「上一年区间根本不存在」。
-    expect(NO_BASE_TEXT).not.toBe(NO_LAST_YEAR_TEXT)
+    expect(FLAT_TEXT).toBe("持平")
+    // 三者刻意不合并：「基期不可用」≠「上一年区间根本不存在」≠「变化量为 0」。
+    expect(new Set([NO_BASE_TEXT, NO_LAST_YEAR_TEXT, FLAT_TEXT]).size).toBe(3)
   })
 })
 
@@ -62,11 +64,11 @@ describe("formatDeltaPart · 负基期（#307）", () => {
 
   it("当期为负零时按普通下跌处理，不走任何特殊分支", () => {
     // delta = (-0 − 100) / 100 = −1，与 -0 无关。
-    // 「不会渲染出 -0.0%」由 renderScaledDelta 的 `delta === 0` 先命中「持平」保证
-    // （-0 === 0 为 true）；而 delta 本身取不到 -0——减法 x − x 恒为 +0。
+    // 「不会渲染出 -0.0%」由 renderScaledDelta 的 `Number(fixed) === 0` 判零保证
+    // （`Number("-0.0")` 是 -0，而 -0 === 0 为 true）；delta 本身也取不到 -0——减法 x − x 恒为 +0。
     expect(formatDeltaPart(-0, 100, "money")).toBe("-100.0%")
     expect(Object.is(100 - 100, 0)).toBe(true)
-    expect(formatDeltaPart(100, 100, "money")).toBe("持平")
+    expect(formatDeltaPart(100, 100, "money")).toBe(FLAT_TEXT)
   })
 
   it("count 与 money 在除法分支上输出逐字相同", () => {
@@ -144,7 +146,7 @@ describe("formatDeltaPart · 非有限值", () => {
   })
 })
 
-describe("formatDeltaPart · rate 分支维持现状（#307 AC3）", () => {
+describe("formatDeltaPart · rate 分支不挡零基期也不挡负基期（#314 决策 2）", () => {
   it("负基期仍按百分点差值出数——减法不翻转符号", () => {
     // 与 money/count 分支刻意不同：rate 走 current − previous，没有除法。
     // ⚠️ 该输入在 analyst **当前数据通路不可达**：rate 型 previous 全部来自 safeRate
@@ -154,17 +156,71 @@ describe("formatDeltaPart · rate 分支维持现状（#307 AC3）", () => {
     expect(formatDeltaPart(-0.2, -0.05, "rate")).toBe("-15.0pct")
   })
 
-  it("基期为 0 仍返回无基数（改动前就有的行为，未动）", () => {
-    // ⚠️ 已知代价：「到店率 0% → 30%」被吞成无基数，而「30% → 0%」照常出 -30.0pct，
-    //    涨跌不对称。新店/新市场的同比基期必然全 0，命中不低。已另行登记，不在 #307 范围内。
-    expect(formatDeltaPart(0.3, 0, "rate")).toBe(NO_BASE_TEXT)
+  it("基期为 0 照常出百分点差值，涨跌两侧对称", () => {
+    // #307 阶段这里返回「无基数」，导致只藏涨不藏跌。#314 决策 2 把守卫挪到 rate 分支之后。
+    // 减法不需要非零分母，旧的守卫位置是沿用 count/money 除法分支的历史巧合。
+    expect(formatDeltaPart(0.3, 0, "rate")).toBe("+30.0pct")
     expect(formatDeltaPart(0, 0.3, "rate")).toBe("-30.0pct")
+  })
+
+  it("⚠️ 零基期出数在 2027-01-01 前显示的是割点伪影，不是经营变化", () => {
+    // service_orders（已完成）最早 2026-07-08，新客入口走首单（回溯到 2022-08），
+    // 分子分母不同源 → 2022–2025 的 1,352 个新客到店恒为 0，任何落在割点前的同比基期都是 0。
+    // 集团级 2026 到店率 3156/3639 = 86.7% → 同比徽章将渲染成 "+86.7pct" 绿色。
+    // 这是**知情选择**（#314 决策 2，量化依据 issuecomment-5788019145，根因登记在 #289），
+    // 不是本模块的 bug。钉住它，省得后来者看到夸张正值就来「修」。
+    expect(formatDeltaPart(0.867, 0, "rate")).toBe("+86.7pct")
+    expect(formatMetricDelta(0.867, 0, 0.8, "rate").tone).toBe("positive")
+  })
+
+  it("零基期且当期也是 0 时出「持平」而非「无基数」", () => {
+    // 两期都是 0% 确实是持平，减法给得出这个结论——不该再借用除法分支的「无基数」。
+    expect(formatDeltaPart(0, 0, "rate")).toBe(FLAT_TEXT)
+  })
+
+  it("count / money 的零基期**不受影响**，仍是无基数（守卫只对 rate 让路）", () => {
+    // 决策 2 只松开 rate；除法分支的零基期仍然算不出，别顺手一起改了。
+    expect(formatDeltaPart(100, 0, "count")).toBe(NO_BASE_TEXT)
+    expect(formatDeltaPart(100, 0, "money")).toBe(NO_BASE_TEXT)
   })
 
   it("正常百分点差值与持平", () => {
     expect(formatDeltaPart(0.3, 0.2, "rate")).toBe("+10.0pct")
     expect(formatDeltaPart(0.2, 0.3, "rate")).toBe("-10.0pct")
-    expect(formatDeltaPart(0.2, 0.2, "rate")).toBe("持平")
+    expect(formatDeltaPart(0.2, 0.2, "rate")).toBe(FLAT_TEXT)
+  })
+})
+
+describe("formatDeltaPart · 伪持平并入「持平」（#314 决策 3）", () => {
+  it("money 舍入到 0.0 时不再输出自相矛盾的 +0.0%", () => {
+    // 真实 +0.02%。旧实现输出 "+0.0%"——「涨了、涨幅是 0」。
+    expect(formatDeltaPart(500100, 500000, "money")).toBe(FLAT_TEXT)
+  })
+
+  it("负向舍入同样并入，不再输出 -0.0%", () => {
+    // 真实 −0.0002%。-0.0 不来自 -0，来自 (-0.0002).toFixed(1)——旧实现照样带符号印出来。
+    expect((-0.0002).toFixed(1)).toBe("-0.0")
+    expect(formatDeltaPart(499999, 500000, "money")).toBe(FLAT_TEXT)
+  })
+
+  it("count 需基期 > 2000 才可达，舍入边界两侧都钉住", () => {
+    // 1/2000 = 0.05% 恰好进位到 "0.1"，仍出数；基期再大一点才舍成 "0.0"。
+    // 这条实测印证了 issue 正文的可达性判断，别把它当成「随手挑的数」改掉。
+    expect(formatDeltaPart(2001, 2000, "count")).toBe("+0.1%")
+    expect(formatDeltaPart(2501, 2500, "count")).toBe(FLAT_TEXT)
+    expect(formatDeltaPart(10001, 10000, "count")).toBe(FLAT_TEXT)
+  })
+
+  it("rate 分支同样适用", () => {
+    // 0.3000 → 0.30002：差 0.002pct，印出来是 0.0pct。
+    expect(formatDeltaPart(0.30002, 0.3, "rate")).toBe(FLAT_TEXT)
+  })
+
+  it("判零看的是印出来的那个数，不是原始 delta", () => {
+    // (100.05 − 100) / 100 * 100 = 0.04999999999999716 —— 数学上 0.05 该进位，
+    // 浮点减法的余数让它落在边界下侧印成 "0.0"。判零跟着渲染值走，所以这里是持平。
+    expect(((100.05 - 100) / 100) * 100).toBeLessThan(0.05)
+    expect(formatDeltaPart(100.05, 100, "money")).toBe(FLAT_TEXT)
   })
 })
 
@@ -200,6 +256,49 @@ describe("formatMetricDelta · tone 判定（#307 AC5）", () => {
 
   it("同比基期为 0 时不判方向", () => {
     expect(formatMetricDelta(120, 0, 100).tone).toBe("default")
+  })
+
+  it("负基期原地不动时不判方向（−1000 → −1000 不该是红色）", () => {
+    // tone 在负基期下靠 `current > prevYear` 补方向，而「相等」会让它取 false 落到 negative。
+    // 这条边界由 `current === prevYear` 提前拦掉。
+    expect(formatMetricDelta(-1000, -1000, 100, "money").tone).toBe("default")
+  })
+})
+
+describe("formatMetricDelta · 配色与文案同源（#314 决策 2/3）", () => {
+  it("rate 零基期出数时配色跟着出方向，不再是灰色", () => {
+    // 旧实现：文案走 formatDeltaPart（改后出 +30.0pct），tone 却撞 `prevYear === 0` 变灰
+    // → 「+30.0pct + 灰色」自相矛盾。tone 现在读实际渲染出的那个数。
+    const result = formatMetricDelta(0.3, 0, 0.2, "rate")
+    expect(result.text).toBe("同比 +30.0pct / 环比 +10.0pct")
+    expect(result.tone).toBe("positive")
+  })
+
+  it("rate 零基期跌向也对称——0 基期不是只给绿色", () => {
+    expect(formatMetricDelta(0, 0.3, 0.3, "rate").tone).toBe("negative")
+  })
+
+  it("伪持平的配色并入灰，不出现「持平 + 绿色」", () => {
+    // 旧实现：文案 "+0.0%"、tone positive。改后文案「持平」，配色必须跟着变灰。
+    const result = formatMetricDelta(500100, 500000, 500000, "money")
+    expect(result.text).toBe(`同比 ${FLAT_TEXT} / 环比 ${FLAT_TEXT}`)
+    expect(result.tone).toBe("default")
+  })
+
+  it("负向伪持平同样并入灰，不出现「持平 + 红色」", () => {
+    expect(formatMetricDelta(499999, 500000, 500000, "money").tone).toBe("default")
+  })
+
+  it("tone 只跟同比那一半走——环比伪持平不影响同比方向", () => {
+    // 与「tone 刻意不查 prevPeriod」同一条规则，换成伪持平这个新分支再钉一次。
+    const result = formatMetricDelta(120, 100, 120.01, "money")
+    expect(result.text).toBe(`同比 +20.0% / 环比 ${FLAT_TEXT}`)
+    expect(result.tone).toBe("positive")
+  })
+
+  it("负基期仍走比大小补方向，没被 rendered 分支抢走", () => {
+    // 负基期 rendered 为 null（文案是「无基数」），必须落到 `current > prevYear` 那条老路径。
+    expect(formatMetricDelta(264, -2646, 200, "money").tone).toBe("positive")
   })
 
   it("非有限值不判方向，不会渲染成红色「下降」", () => {
@@ -253,6 +352,23 @@ describe("formatPointDelta · 百分点差值型同比徽章（sibling audit P1�
   it("正常涨跌与持平（对照组，确认守卫没误伤）", () => {
     expect(formatPointDelta(0.1)).toEqual({ text: "同比 +10.0pct", tone: "positive" })
     expect(formatPointDelta(-0.1)).toEqual({ text: "同比 -10.0pct", tone: "negative" })
-    expect(formatPointDelta(0)).toEqual({ text: "同比持平", tone: "default" })
+    expect(formatPointDelta(0)).toEqual({ text: `同比${FLAT_TEXT}`, tone: "default" })
+  })
+
+  it("伪持平并入「同比持平」——这里可达，不是理论边界（#314 决策 3）", () => {
+    // 上游 repurchase.ts:422 的 round4 最小非零值就是 0.0001 → scaled 0.01 → 印成 "0.0"。
+    // 旧实现输出「同比 +0.0pct」且 tone 绿，是复购率看板上真会出现的自相矛盾徽章。
+    expect(formatPointDelta(0.0001)).toEqual({ text: `同比${FLAT_TEXT}`, tone: "default" })
+    expect(formatPointDelta(-0.0001)).toEqual({ text: `同比${FLAT_TEXT}`, tone: "default" })
+  })
+
+  it("舍入边界外侧仍照常出数", () => {
+    expect(formatPointDelta(0.001)).toEqual({ text: "同比 +0.1pct", tone: "positive" })
+  })
+
+  it("与 formatDeltaPart 的判零规则同源", () => {
+    // 两个导出函数共用 fixDelta，同一个输入应当同时被判为持平（防后来者只改一处）。
+    expect(formatPointDelta(0.0002).tone).toBe("default")
+    expect(formatDeltaPart(0.0002, 0, "rate")).toBe(FLAT_TEXT)
   })
 })
