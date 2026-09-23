@@ -71,7 +71,7 @@ interface OrderDetailData {
   // 不用本地 getHours() 推——那取的是设备时区
   expire_clock?: string | null;
   // true = 已过截止点、服务端试过关但没关掉（issue #215）。
-  // 与「旧版本云函数根本不发这些字段」区分开：前者要关支付入口，后者不能关
+  // 与「旧版本云函数根本不发这些字段」区分开：前者才封支付入口，后者不能封
   expire_unresolved?: boolean;
   // 本次请求的服务端处理耗时，前端从实测 RTT 里扣掉它，避免重复计算
   server_elapsed_ms?: number;
@@ -225,10 +225,11 @@ Page({
   // 看不见（onShow 恢复时 lastTickAt 用的已是调整后的时间），截止点会被凭空延长。
   _hiddenAtWallClock: 0,
   // 「这一次刷新必须成功，否则页面会停在一个不可信的状态」时的有界重试（issue #215）。
-  // 两处用它：① 墙钟回拨后的校准 —— 回拨刻意不关支付入口，那次请求失败就没有恢复点了；
-  // ② 支付确认轮询收尾的那次刷新 —— 轮询自己会清掉支付意图，订单因此重新进入
-  // 「会被自动关闭」的集合，而页面还停在「请完成支付 + 去支付」。
-  // 只在**确知失败**时才排（loadDetail 现在会如实返回成败），成功就不排。
+  // 用它的地方：① 本地判到期的三条路径（页面写着「正在确认」，就得真的有人在确认）；
+  // ② 墙钟跳变后的校准；③ 支付确认轮询收尾（轮询自己会清掉支付意图，订单因此重新
+  // 进入「会被自动关闭」的集合）；④ onShow 的刷新。
+  // 只在**确知失败**时才排（loadDetail 会如实返回成败），成功就不排；
+  // 定时器回调按结果**续排**，别让链在一次失败后断掉。
   _refreshRetryTimer: null as ReturnType<typeof setTimeout> | null,
   // 下一次重试的间隔。unresolved 那条会一直排下去（挡路的意图什么时候被渠道超时清掉
   // 说不准），固定 5 秒就是一个无界轮询 —— 指数退避到 60 秒封顶，成功即复位。
@@ -739,7 +740,7 @@ Page({
       //     关掉支付入口（自从归零会封支付入口，这个方向的误伤不再是小事）。
       // 小程序没有可靠的单调时钟，退而求其次：这一拍最多只排了 1 秒，
       // 观测到的间隔离谱（任一方向）就认定时钟不可信，回服务端重新校准，
-      // **不**当成过期（所以不关支付入口）。
+      // **不**当成过期（所以连「正在确认」的文案都不改，更不会封支付入口）。
       const drift = now - lastTickAt;
       if (drift < -CLOCK_ROLLBACK_TOLERANCE_MS || drift > MAX_TRUSTED_TICK_GAP_MS) {
         this._stopCountdown();
@@ -798,7 +799,7 @@ Page({
     if (this._hiddenAtWallClock > 0
         && Date.now() < this._hiddenAtWallClock - CLOCK_ROLLBACK_TOLERANCE_MS) {
       this._countdownDeadlineAt = 0;
-      // 同 tick 里的回拨分支：不知道过没过期，不关支付入口（理由见那里）
+      // 同 tick 里的跳变分支：不知道过没过期，不改文案也不封（理由见那里）
       this.setData({ countdown: '' });
       return;
     }

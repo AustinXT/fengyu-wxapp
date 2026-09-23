@@ -87,10 +87,14 @@ function createPageInstance(initialData: any = {}) {
   return instance;
 }
 
-/** loadDetail 用替身，只关心 startCountdown 自身的行为 */
+/**
+ * loadDetail 用替身，只关心 startCountdown 自身的行为。
+ * ⚠️ 必须返回 `true`：实现把 falsy 当成「加载失败」并挂上续排链，
+ * 替身返回 undefined 的话，「只重载一次」这类断言只是**赶在重试触发前结束**而已。
+ */
 function createPageWithStubbedLoad() {
   const page = createPageInstance();
-  const loadDetail = vi.fn(async () => {});
+  const loadDetail = vi.fn(async () => true);
   page.loadDetail = loadDetail;
   return { page, loadDetail };
 }
@@ -134,6 +138,8 @@ beforeEach(() => {
 afterEach(() => {
   for (const p of livePages) {
     if (p._countdownTimer) clearTimeout(p._countdownTimer);
+    // 重试链的定时器也要收，否则会漏到下一条用例里
+    if (p._refreshRetryTimer) clearTimeout(p._refreshRetryTimer);
   }
   livePages = [];
 });
@@ -187,12 +193,20 @@ describe('order-detail 待支付倒计时 (#215)', () => {
     expect(loadDetail).toHaveBeenCalledTimes(1);
   });
 
-  test('反复装表（模拟 onShow/下拉）也只重载一次 —— 循环不可能形成', () => {
-    const { page, loadDetail } = createPageWithStubbedLoad();
+  test('反复装表（模拟 onShow/下拉）也只重载一次 —— 循环不可能形成', async () => {
+    vi.useFakeTimers();
+    try {
+      const { page, loadDetail } = createPageWithStubbedLoad();
 
-    for (let i = 0; i < 10; i++) page.startCountdown(PENDING_ORDER_WITH_REMAINING(0));
+      for (let i = 0; i < 10; i++) page.startCountdown(PENDING_ORDER_WITH_REMAINING(0));
+      expect(loadDetail).toHaveBeenCalledTimes(1);
 
-    expect(loadDetail).toHaveBeenCalledTimes(1);
+      // 跨过重试间隔再确认一次：否则这条只是赶在续排触发前结束
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(loadDetail).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   test('走着走着归零 → 重载一次并停表（假时钟跑满一拍）', () => {
@@ -1091,9 +1105,9 @@ describe('order-detail.wxml 的倒计时文案分支 (#215)', () => {
     expect(wxml).toMatch(chain);
   });
 
-  test('「时限已到、状态未确认」期间支付按钮必须 disabled', () => {
-    // 归零后那次刷新失败时，页面不知道这单关没关 —— 放行只会让顾客跳到结算页
-    // 再吃一个「订单已超时」（评审 round-9 P1）
+  test('只有服务端返回 expire_unresolved 时支付按钮才 disabled', () => {
+    // 本地判到期（expiryPendingConfirm）只改文案、**不**封按钮 ——
+    // 一次本地时钟误判不该把顾客的支付通道堵死（评审 round-16 的回退）
     const payBtn = /bindtap="onPay"[\s\S]{0,200}?disabled="\{\{payBlockedByExpiry\}\}"/;
     expect(wxml).toMatch(payBtn);
   });
