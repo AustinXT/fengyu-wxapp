@@ -640,6 +640,30 @@ describe('客量板块两端口径一致性守护', () => {
     })
 
     /**
+     * staff 侧的同款守护（round-2 DeepSeek P2）。
+     *
+     * ⚠ 我在 round-1 误以为 `mgmt-traffic.test.js` 的 market/store `test.each` 已经兜住了
+     * 这条 —— **不成立**。那四个断言（`params===[scopeId,scopeId]`、`so.store_id = $1`、
+     * `c.bound_store_id = $2`、`$2` 存在）锁的是「列 → 参数号」的绑定，而参数号来自
+     * **变量声明顺序**（`scVisit` 用 1、`scMember` 用 `1 + scVisit.params.length`），
+     * 不是「哪个分支用哪个占位」。
+     *
+     * 攻击路径：只把模板里两行插值对调（`WHERE ${scMember.sql}` 放进 ①、
+     * `WHERE ${scVisit.sql}` 放进 ②），变量声明不动 —— SQL 里 `so.store_id = $1` 与
+     * `c.bound_store_id = $2` 仍双双出现、params 仍是两个 scopeId，全绿；
+     * 而 ① 变成按绑定门店取 scope、② 变成按服务发生门店，口径彻底反了。
+     *
+     * staff 的占位带 `.sql` 后缀（`buildXxxScope` 返回 `{sql, params}`），与 admin 不同。
+     */
+    it('staff 两段 scope 分别用在 ①/② 分支上（占位带 .sql 后缀）', () => {
+      const [branch1, branch2] = [staffTrial.split(/\bUNION\b/)[0], secondBranch(staffTrial)]
+      expect(branch1, '① 分支未使用 scVisit').toContain('${scVisit.sql}')
+      expect(branch1, '① 分支误用了 scMember').not.toContain('${scMember.sql}')
+      expect(branch2, '② 分支未使用 scMember').toContain('${scMember.sql}')
+      expect(branch2, '② 分支误用了 scVisit').not.toContain('${scVisit.sql}')
+    })
+
+    /**
      * 这条断言的对象是**代码**（scope 由哪个 helper、按哪一列构造），不是 SQL 文本，
      * 所以用剥过 JS 注释的 `adminCode` / `staffCode` 而非原文 —— 否则一行
      * `// const scMember = scopeFilterSql(session, scope, 'c.bound_store_id')` 就能让它假绿。
