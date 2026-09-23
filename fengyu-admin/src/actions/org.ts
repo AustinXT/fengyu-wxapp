@@ -13,6 +13,8 @@ import { isNodeInScope } from '@/lib/node-scope'
 import { withPermission } from '@/lib/with-permission'
 import { requireAdmin, isAdminScope } from '@/lib/permissions'
 import { logOperation, logUpdate } from '@/lib/operation-log'
+import { lockOrgTree } from '@/lib/invariant-locks'
+import { findSubtreeOwnershipConflicts } from '@/lib/org-ancestry'
 
 const VALID_NODE_TYPES = ['总部', '市场', '门店', '部门'] as const
 
@@ -135,6 +137,13 @@ export const createOrgNode = withPermission(
   },
 )
 
+/**
+ * 事务内回滚哨兵：改挂后子树员工归属不自洽。
+ * 外层 catch 按 message 匹配后转成友好文案（已登记进
+ * `cross-end-error-codes-snapshot.test.js` 的 `TX_SENTINELS` 白名单）。
+ */
+const ORG_OWNERSHIP_CONFLICT = 'ORG_OWNERSHIP_CONFLICT'
+
 export const updateOrgNode = withPermission(
   'org:update',
   async (
@@ -208,17 +217,47 @@ export const updateOrgNode = withPermission(
   // 各自的无锁环检查都能通过，先后提交即成环；锁内复核关闭该 TOCTOU 窗口。
   const reparenting = data.parentId !== undefined && data.parentId !== before.parentId
   let result: any
+  let ownershipConflicts: { employeeId: string; name: string; storeId: string }[] = []
   try {
     result = reparenting
       ? await db.transaction(async (tx) => {
-        await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext('org_nodes:reparent'))`)
+        // 与员工侧的归属自洽校验共用同一把锁；取锁顺序见 lib/invariant-locks.ts（#318）
+        await lockOrgTree(tx)
         if (data.parentId && await checkIsDescendant(id, data.parentId, tx)) {
           throw new Error('INVALID_STATE: 不能将节点移动到自己的子节点下')
         }
-        return tx.update(orgNodes).set(data).where(whereConditions)
+        const updated = await tx.update(orgNodes).set(data).where(whereConditions)
+        if ((updated as any).count === 0) return updated
+
+        /**
+         * ## 改挂后必须复核子树内员工的归属自洽（issue #318）
+         *
+         * #259 只在**员工侧**加了「`org_node_id` 的最近门店祖先 = `store_id` 所指门店」，
+         * 这一侧没守：把部门 D 从市场改挂到 B 店节点下，挂着 D 的员工就成了
+         * 「仍属 A 店、组织却在 B 店子树」—— 通过 store / org 两维同时出现在两个门店的
+         * scope，正是 #259 要禁的危害。
+         *
+         * **先 UPDATE 再复核**：这样查的是改挂**之后**的真实树形态，不必在 SQL 里模拟
+         * 新父节点。不自洽就抛出去回滚，等价于拒绝这次改挂。
+         *
+         * 锁已在事务开头取到，而员工侧的归属校验取的是**同一把** —— 所以「改挂判完子树自洽」
+         * 与「员工判完自己的新组织自洽」不会并发交错后合成出不自洽状态。
+         */
+        ownershipConflicts = await findSubtreeOwnershipConflicts(id, tx)
+        if (ownershipConflicts.length > 0) {
+          throw new Error(ORG_OWNERSHIP_CONFLICT)
+        }
+        return updated
       })
       : await db.update(orgNodes).set(data).where(whereConditions)
   } catch (err: any) {
+    if (err instanceof Error && err.message === ORG_OWNERSHIP_CONFLICT) {
+      const who = ownershipConflicts.map((c) => c.name).join('、')
+      return {
+        success: false,
+        message: `改挂后这些员工的门店与组织归属将不一致，请先调整他们的归属：${who}`,
+      }
+    }
     if (err instanceof Error && err.message.includes('不能将节点移动到自己的子节点下')) {
       // 原样回传会把 `INVALID_STATE: ` 前缀一起端给用户；走白名单闸门剥掉前缀（issue #133）。
       return { success: false, message: businessErrorMessage(err, '不能将节点移动到自己的子节点下') }

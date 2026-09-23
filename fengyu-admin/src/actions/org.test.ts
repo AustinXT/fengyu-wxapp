@@ -6,6 +6,11 @@ vi.mock('@/db', () => ({
     insert: vi.fn(),
     update: vi.fn(),
     delete: vi.fn(),
+    // 事务外的 checkIsDescendant 走它（org.ts:44）。⚠️ 返回**空数组**表示「不是子孙」——
+    // 它判的是 `rows.length > 0`，给一行（哪怕是 `[{c:0}]`）就等于「成环」，改挂会被提前驳回。
+    execute: vi.fn().mockResolvedValue([]),
+    // 改挂走事务（取组织树锁 + 复核子树员工归属自洽，#318）
+    transaction: vi.fn(),
   },
 }))
 
@@ -34,7 +39,8 @@ vi.mock('drizzle-orm', () => ({
   eq: vi.fn((a, b) => ({ type: 'eq', a, b })),
   and: vi.fn((...args) => ({ type: 'and', args })),
   asc: vi.fn((col) => ({ type: 'asc', col })),
-  sql: Object.assign(vi.fn(() => ({})), { raw: vi.fn() }),
+  // 保留模板实参：取锁那条断言要能看见 SQL 文本里的 lock key（#318）
+  sql: Object.assign(vi.fn((...args: unknown[]) => ({ type: 'sql', args })), { raw: vi.fn((s: string) => s) }),
 }))
 
 vi.mock('@/lib/auth', () => ({
@@ -53,6 +59,12 @@ vi.mock('@/lib/operation-log', () => ({
   logTransition: vi.fn(),
 }))
 
+/** 改挂复核走这个纯查询（#318）—— 它的 SQL 语义由真库冒烟负责，这里只测分支 */
+vi.mock('@/lib/org-ancestry', () => ({
+  findSubtreeOwnershipConflicts: vi.fn().mockResolvedValue([]),
+}))
+vi.mock('@/lib/invariant-locks', async (orig) => await orig())
+
 vi.mock('next/cache', () => ({
   revalidatePath: vi.fn(),
 }))
@@ -61,6 +73,7 @@ import { createOrgNode, updateOrgNode, deleteOrgNode } from './org'
 import { db } from '@/db'
 import { getSession } from '@/lib/auth'
 import { isAdminScope } from '@/lib/permissions'
+import { findSubtreeOwnershipConflicts } from '@/lib/org-ancestry'
 
 const mockSession = {
   employeeId: 'ADMIN-001',
@@ -166,6 +179,126 @@ describe('createOrgNode — 输入校验 + 错误处理', () => {
 })
 
 // ── updateOrgNode ─────────────────────────────────────────────────────────────
+
+/**
+ * 改挂父节点必须复核子树内员工的归属自洽（issue #318 —— #259 的另一侧）。
+ *
+ * #259 只在员工侧守了「`org_node_id` 的最近门店祖先 = `store_id` 所指门店」；
+ * 这一侧不守的话，把部门 D 从市场改挂到 B 店节点下，挂着 D 的员工就成了
+ * 「仍属 A 店、组织却在 B 店子树」—— 通过 store / org 两维同时出现在两个门店的 scope。
+ */
+describe('updateOrgNode — 改挂后复核子树员工归属自洽（#318）', () => {
+  function mockSelectBefore(rows: any[] = [{ parentId: 'market-1' }]) {
+    const chain: any = {}
+    chain.from = vi.fn().mockReturnValue(chain)
+    chain.where = vi.fn().mockReturnValue(chain)
+    chain.limit = vi.fn().mockResolvedValue(rows)
+    chain.leftJoin = vi.fn().mockReturnValue(chain)
+    chain.orderBy = vi.fn().mockReturnValue(chain)
+    ;(db.select as any).mockReturnValue(chain)
+  }
+
+  /**
+   * @returns `txExecute` 用于断言取过组织树锁；`txUpdate` 用于断言「先 UPDATE 再复核」
+   */
+  function setupReparentTx(updateCount = 1) {
+    let handedTx: any
+    const txExecute = vi.fn().mockResolvedValue([])
+    const order: string[] = []
+    const txUpdate = vi.fn().mockImplementation(() => {
+      order.push('update')
+      return {
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue({ count: updateCount }),
+        }),
+      }
+    })
+    ;(db.transaction as any).mockImplementation(async (fn: any) => {
+      handedTx = { execute: txExecute, update: txUpdate, select: (db as any).select }
+      return fn(handedTx)
+    })
+    return { tx: () => handedTx, txExecute, order }
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockSession)
+    ;(findSubtreeOwnershipConflicts as any).mockResolvedValue([])
+    mockSelectBefore()
+  })
+
+  it('改挂后子树内有员工归属不自洽 → 拒绝并列出姓名，事务回滚', async () => {
+    const t = setupReparentTx()
+    ;(findSubtreeOwnershipConflicts as any).mockResolvedValue([
+      { employeeId: 'FY-001', name: '张三', storeId: 'S001' },
+      { employeeId: 'FY-002', name: '李四', storeId: 'S001' },
+    ])
+
+    const result = await updateOrgNode('dept-1', { parentId: 'store-b-node' })
+
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('张三')
+    expect(result.message).toContain('李四')
+    expect(result.message).toContain('请先调整他们的归属')
+    // 复核查的必须是被改挂的那个节点，且走同一个 tx
+    expect(findSubtreeOwnershipConflicts).toHaveBeenCalledWith('dept-1', t.tx())
+  })
+
+  it('改挂后子树自洽 → 放行', async () => {
+    setupReparentTx()
+
+    const result = await updateOrgNode('dept-1', { parentId: 'market-2' })
+
+    expect(result.success).toBe(true)
+    expect(findSubtreeOwnershipConflicts).toHaveBeenCalled()
+  })
+
+  it('改挂路径取的是与员工侧同一把组织树锁', async () => {
+    const t = setupReparentTx()
+
+    await updateOrgNode('dept-1', { parentId: 'market-2' })
+
+    expect(JSON.stringify(t.txExecute.mock.calls[0][0])).toContain('pg_advisory_xact_lock')
+    expect(JSON.stringify(t.txExecute.mock.calls[0][0])).toContain('org_nodes:reparent')
+  })
+
+  /**
+   * **先 UPDATE 再复核** —— 这样查的是改挂**之后**的真实树形态，
+   * 不必在 SQL 里模拟新父节点。顺序反了就会按旧形态判，等于没判。
+   */
+  it('复核发生在 UPDATE 之后（按改挂后的树形态判）', async () => {
+    const t = setupReparentTx()
+    ;(findSubtreeOwnershipConflicts as any).mockImplementation(() => {
+      t.order.push('check')
+      return Promise.resolve([])
+    })
+
+    await updateOrgNode('dept-1', { parentId: 'market-2' })
+
+    expect(t.order).toEqual(['update', 'check'])
+  })
+
+  it('CAS 未命中（rowCount=0）→ 不做复核（没改到行就没有新形态）', async () => {
+    setupReparentTx(0)
+
+    const result = await updateOrgNode('dept-1', { parentId: 'market-2' }, '2026-01-01T00:00:00.000Z')
+
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('已被其他人修改')
+    expect(findSubtreeOwnershipConflicts).not.toHaveBeenCalled()
+  })
+
+  it('非改挂的普通更新（改名）→ 不进事务、不取锁、不复核', async () => {
+    setupReparentTx()
+    setupUpdate(1)
+
+    const result = await updateOrgNode('dept-1', { name: '新名称' })
+
+    expect(result.success).toBe(true)
+    expect(db.transaction).not.toHaveBeenCalled()
+    expect(findSubtreeOwnershipConflicts).not.toHaveBeenCalled()
+  })
+})
 
 describe('updateOrgNode — rowCount=0 静默成功修复', () => {
   /** mock db.select() 链，用于 update 前获取旧值 */

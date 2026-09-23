@@ -175,6 +175,7 @@ describe('audit-CC5 P0：admin actions/ 范围 0 处非白名单裸 throw（除�
       'SKILL_TAG_DUP_NAME', // skill-tags.ts: 改名撞唯一约束 23505 → 外层 catch 转 {success:false}「该标签名称已存在」
       'SKILL_TAG_OPTIMISTIC_MISS', // skill-tags.ts: 改名字典行乐观锁 rowCount=0 → 外层 catch 转 {success:false}「数据已被其他人修改，请刷新后重试」
       'SKILL_TAG_GONE', // skill-tags.ts: 删除时行已被并发删 → 外层 catch 转 {success:false}「标签不存在」
+      'ORG_OWNERSHIP_CONFLICT', // org.ts: 改挂后子树员工门店/组织归属不自洽 → 外层 catch 转 {success:false}「请先调整他们的归属：<姓名>」（#318：#259 的另一侧守卫）
     ]
     const violationCount = stdout
       .split('\n')
