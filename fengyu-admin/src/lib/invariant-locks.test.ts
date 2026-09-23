@@ -96,8 +96,17 @@ describe('invariant-locks — 逐 action 的取锁期望（源码守护）', () 
     file: string
     /** action 的导出名，用来定位它的代码区间 */
     action: string
-    /** 该 action 的事务里必须出现的锁，按**期望顺序**列出 */
+    /**
+     * 该 action 里出现的锁调用序列，**精确**匹配（不是「至少包含」）。
+     *
+     * 精确比较是 codex 第 6 轮 P3 的要求：只查「期望锁第一次出现的位置」时，
+     * 往 `deleteRoleDefinition` 的 ② 后面新增一个 ① 会形成 `admin → org` 反序，
+     * 而它仍已登记、期望的 admin 锁仍在 —— 两条守护都通过。精确序列才抓得到。
+     * 条件取锁（`if (...) await lockX(tx)`）也算一次出现，顺序按文本先后。
+     */
     locks: LockKind[]
+    /** 该 action 是否必须有 `FOR UPDATE` 行锁（③）。缺了要报错，不能静默跳过 */
+    rowLock?: true
     /** 为什么需要这些锁 —— 出现在断言失败信息里，省得下一个人去翻 issue */
     why: string
   }
@@ -108,12 +117,12 @@ describe('invariant-locks — 逐 action 的取锁期望（源码守护）', () 
       why: '归属自洽按组织树形态判；与 updateOrgNode 改挂/改类型互斥',
     },
     {
-      file: 'employees.ts', action: 'updateEmployee', locks: ['org', 'admin'],
-      why: '动归属或复职要 ①；标离职会减少活跃超管要 ②',
+      file: 'employees.ts', action: 'updateEmployee', locks: ['org', 'admin'], rowLock: true,
+      why: '动归属或复职要 ①；标离职会减少活跃超管要 ②；锁内重读员工行要 ③',
     },
     {
-      file: 'employees.ts', action: 'deleteEmployee', locks: ['admin'],
-      why: '物理删除会减少活跃超管',
+      file: 'employees.ts', action: 'deleteEmployee', locks: ['admin'], rowLock: true,
+      why: '物理删除会减少活跃超管；锁内重读员工行要 ③',
     },
     {
       file: 'org.ts', action: 'createOrgNode', locks: ['org'],
@@ -151,6 +160,13 @@ describe('invariant-locks — 逐 action 的取锁期望（源码守护）', () 
 
   const CALL: Record<LockKind, string> = { org: 'lockOrgTree(', admin: 'lockActiveAdminCount(' }
 
+  /** 剥注释（保留长度与行号），避免注释里提到 `lockOrgTree(` 被算成一次取锁 */
+  function stripComments(src: string): string {
+    return src
+      .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))
+      .replace(/(^|[^:'"`\\])\/\/[^\n]*/gm, (m, p1) => p1 + ' '.repeat(m.length - p1.length))
+  }
+
   /** 取出某个导出 action 的源码区间：从 `export const <name>` 到下一个顶层 `export ` */
   function sliceAction(src: string, action: string): string {
     const start = src.search(new RegExp(`export const ${action}\\b`))
@@ -160,27 +176,44 @@ describe('invariant-locks — 逐 action 的取锁期望（源码守护）', () 
     return next === -1 ? src.slice(start) : src.slice(start, start + 1 + next)
   }
 
-  it.each(EXPECTATIONS)('$file › $action 取 [$locks]（$why）', ({ file, action, locks, why }) => {
-    const src = readFileSync(resolve(ACTIONS_DIR, file), 'utf8')
+  /** 按文本先后取出实际的锁调用序列 */
+  function lockSequence(body: string): LockKind[] {
+    const hits: { at: number; kind: LockKind }[] = []
+    for (const [kind, call] of Object.entries(CALL) as [LockKind, string][]) {
+      let at = body.indexOf(call)
+      while (at !== -1) {
+        hits.push({ at, kind })
+        at = body.indexOf(call, at + 1)
+      }
+    }
+    return hits.sort((a, b) => a.at - b.at).map((h) => h.kind)
+  }
+
+  it.each(EXPECTATIONS)('$file › $action 取 [$locks]（$why）', (exp) => {
+    const { file, action, locks, why, rowLock } = exp
+    const src = stripComments(readFileSync(resolve(ACTIONS_DIR, file), 'utf8'))
     const body = sliceAction(src, action)
     expect(body, `${file} 里找不到 ${action}`).not.toBe('')
 
-    const positions = locks.map((kind) => {
-      const at = body.indexOf(CALL[kind])
-      expect(at, `${action} 必须取 ${CALL[kind]} —— ${why}`).toBeGreaterThan(-1)
-      return at
-    })
-    // 期望顺序即文本顺序（① 组织树 → ② admin 计数）
-    for (let i = 1; i < positions.length; i++) {
-      expect(positions[i - 1], `${action} 的取锁顺序必须是 ${locks.join(' → ')}（反了就是 40P01）`)
-        .toBeLessThan(positions[i])
-    }
+    /**
+     * **精确**比较序列，而不是「至少包含期望的那几把」。
+     * 「至少包含」挡不住「在 ② 后面又加了一个 ①」这种反序（codex 第 6 轮 P3），
+     * 也挡不住「helper 里悄悄多取一把」（GLM 第 6 轮 P3-1）。
+     */
+    expect(lockSequence(body), `${action} 的取锁序列必须恰好是 [${locks.join(', ')}] —— ${why}`)
+      .toEqual(locks)
 
-    // 行锁必须排在所有 advisory 锁之后
+    // 行锁必须排在所有 advisory 锁之后；期望有却找不到 → 报错，不静默跳过
     const rowLockAt = body.search(/\.for\(\s*['"]update['"]\s*\)/)
+    if (rowLock) {
+      expect(rowLockAt, `${action} 期望有 FOR UPDATE 行锁却找不到（被重构进 helper 了？）`)
+        .toBeGreaterThan(-1)
+    }
     if (rowLockAt > -1) {
-      expect(Math.max(...positions), `${action}: ③ 行锁必须排在 advisory 锁之后`)
-        .toBeLessThan(rowLockAt)
+      const lastAdvisory = Math.max(
+        body.lastIndexOf(CALL.org), body.lastIndexOf(CALL.admin),
+      )
+      expect(lastAdvisory, `${action}: ③ 行锁必须排在 advisory 锁之后`).toBeLessThan(rowLockAt)
     }
   })
 
@@ -193,7 +226,7 @@ describe('invariant-locks — 逐 action 的取锁期望（源码守护）', () 
     const unregistered: string[] = []
     for (const file of readdirSync(ACTIONS_DIR)) {
       if (!file.endsWith('.ts') || file.endsWith('.test.ts')) continue
-      const src = readFileSync(resolve(ACTIONS_DIR, file), 'utf8')
+      const src = stripComments(readFileSync(resolve(ACTIONS_DIR, file), 'utf8'))
       if (!src.includes('lockOrgTree(') && !src.includes('lockActiveAdminCount(')) continue
       for (const m of src.matchAll(/export const (\w+) = with/g)) {
         const body = sliceAction(src, m[1])
@@ -202,5 +235,53 @@ describe('invariant-locks — 逐 action 的取锁期望（源码守护）', () 
       }
     }
     expect(unregistered, '这些 action 取了锁但没登记进 EXPECTATIONS，锁序与锁集合都没人守').toEqual([])
+  })
+
+  /**
+   * 取锁只许出现在**导出的 action 区间**里（GLM 第 6 轮 P3-1）。
+   *
+   * `sliceAction` 切到下一个顶层 `export` 为止，所以夹在两个 export 之间的 helper
+   * 会被算进**前一个** action 的切片 —— 往那种 helper 里加锁，反向守护会把它归因到
+   * 一个已登记的 action，而正向守护若用「至少包含」就查不出多出来的那把。
+   * 现在正向已改精确序列，这条再从另一头钉住：锁调用不得出现在非导出函数体内。
+   */
+  it('取锁调用不出现在非导出的 helper 里', () => {
+    const offenders: string[] = []
+    for (const file of readdirSync(ACTIONS_DIR)) {
+      if (!file.endsWith('.ts') || file.endsWith('.test.ts')) continue
+      const src = stripComments(readFileSync(resolve(ACTIONS_DIR, file), 'utf8'))
+      if (!src.includes('lockOrgTree(') && !src.includes('lockActiveAdminCount(')) continue
+      // 把所有 export const 区间挖掉，剩下的就是顶层 helper / import 等
+      let rest = src
+      for (const m of src.matchAll(/export const (\w+) = /g)) {
+        const body = sliceAction(src, m[1])
+        if (body) rest = rest.replace(body, '')
+      }
+      for (const call of Object.values(CALL)) {
+        if (rest.includes(call)) offenders.push(`${file} → ${call}`)
+      }
+    }
+    expect(offenders, '锁必须在 action 的事务里显式取，不要藏进 helper —— 藏了就没人守得住顺序').toEqual([])
+  })
+
+  /**
+   * 反方向的守护（GLM 第 6 轮 P3-3）：「改树形态 / 改门店↔节点映射的路径必须取 ①」这条
+   * 目前靠人评维持。`updateStore` 之所以不必取锁，唯一理由是**它不碰 `org_node_id`** ——
+   * 那是一条**载重断言**，将来有人给它加上那列就无感回退（不取锁、不进 EXPECTATIONS、无人报警）。
+   */
+  it('updateStore 不得写 org_node_id（它是「无需取锁」的唯一依据）', () => {
+    const src = stripComments(readFileSync(resolve(ACTIONS_DIR, 'stores.ts'), 'utf8'))
+    const body = sliceAction(src, 'updateStore')
+    expect(body, 'stores.ts 里找不到 updateStore').not.toBe('')
+    /**
+     * 判的是**写**（对象字面量里的 `orgNodeId:`）而不是「提到这个标识符」——
+     * `updateStore` 会**读** `before.orgNodeId` 去同步节点名（改 name 不改树形态，不需要锁）。
+     * 第一版写成 `includes('orgNodeId')` 直接误报，正好说明判据要卡在「写」上。
+     */
+    const writes = body.match(/orgNodeId\s*:/g) ?? []
+    expect(
+      writes,
+      'updateStore 开始写 org_node_id 了 —— 它必须像 createStore 一样取 ① 并登记进 EXPECTATIONS',
+    ).toEqual([])
   })
 })
