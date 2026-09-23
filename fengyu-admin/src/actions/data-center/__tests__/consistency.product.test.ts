@@ -248,9 +248,22 @@ describe('品项板块两端口径一致性守护', () => {
       return out
     }
 
-    /** 未经处理的原始模板 —— 下面「扫描器语法是超集」那条断言要用它。 */
+    /**
+     * 未经 SQL 清洗的模板原文 —— 下面「扫描器语法是超集」那条断言要用它。
+     *
+     * ⚠️ **必须先剥掉 TS 注释再切函数**（round-6 codex，已实测打穿）。切片正则
+     * `/async function queryCycleByStore\([\s\S]*?\n}/` 不懂 TS 词法，
+     * 在真函数开头放一段块注释就能劫持它：注释里塞一份完整的
+     * `db.execute(sql\`<当前这份安全模板>\`)` 再加一个**独占一行的 `}`**，
+     * 函数切片就在注释内部提前收尾 —— 于是
+     *   · `detailTemplateRaw` 取到的是注释里的**诱饵**
+     *   · `db.execute` 计数仍然是 1
+     *   · 全部 `adminDetail` 断言都在检查诱饵
+     *   · 注释之外真正执行、已回退成内连接的 SQL 完全不受守护
+     * 先 `stripComments` 就把诱饵连同注释一起抹掉了。
+     */
     const detailTemplateRaw = (src: string): string => {
-      const fn = /async function queryCycleByStore\([\s\S]*?\n}/.exec(src)?.[0] ?? ''
+      const fn = /async function queryCycleByStore\([\s\S]*?\n}/.exec(stripComments(src))?.[0] ?? ''
       return /db\.execute\(sql`([\s\S]*?)`\)/.exec(fn)?.[1] ?? ''
     }
 
@@ -319,6 +332,26 @@ describe('品项板块两端口径一致性守护', () => {
         (raw.match(/'/g) ?? []).length % 2,
         '模板里的单引号总数是奇数 —— 必有一处未闭合，扫描器之后的剥离全部失准',
       ).toBe(0)
+      /**
+       * round-6 codex：上面那条「禁美元引用」写成 `/\$[A-Za-z_]\w*\$/` 不够 ——
+       * PG 的 dollar tag **允许非 ASCII 字母**（`$探针$ … $探针$` 合法），正则不命中；
+       * 双引号标识符更可以容纳任意非零字符，而 `stripSqlNoise` 压根不认识它。
+       * 两者都能把一整段**诱饵 CTE 链**伪装成常量列 / 长别名，让 `cteBlock()` 先切到诱饵，
+       * 真正的 `new_store` 则可以恢复成内连接。继续沿「收窄语法」这条路一并禁掉。
+       */
+      expect(raw, '模板出现裸 $（非 ${...} 插值）—— PG 的 dollar tag 允许非 ASCII 标签，可藏整段诱饵 CTE 链').not.toMatch(
+        /\$(?!\{)/,
+      )
+      expect(raw, '模板出现双引号 —— PG 的双引号标识符可容纳任意字符，扫描器不认识它，可藏整段诱饵 CTE 链').not.toMatch(
+        /"/,
+      )
+      expect(raw, '模板出现 SQL 块注释 —— 会把「先剥 TS 注释」那一步带偏，两层剥离必须解耦').not.toMatch(
+        /\/\*|\*\//,
+      )
+      expect(
+        (adminSrc.match(/async function queryCycleByStore/g) ?? []).length,
+        'queryCycleByStore 不止一处声明 —— 切片只取第一处，另一处可能才是真正执行的',
+      ).toBe(1)
     })
 
     it('切片锚点有效（能切出明细侧 SQL 且含关键 CTE）', () => {
