@@ -37,10 +37,30 @@ const ARROW_DOWN = <path d="M12 5v14M5 12l7 7 7-7" />
  * 「由负转正」/「未转正」，零基期出 '--'，并按决策 3 把舍入后为 0 的并入「持平」。
  *
  * 导出仅为可测——该组件此前零覆盖，直接原因就是它没被导出。
+ *
+ * ## `baseLabel`：把决策 1 吃掉的信息补回来
+ *
+ * 「今日客流」是 `COUNT(DISTINCT client_user_id)`（`actions/dashboard.ts`），**恒 ≥ 0，
+ * 只会零基期、不会负基期**。生产实测：1993 个门店日里 231 个客流为 0（**11.6%**）。
+ * 决策 1 要求 `base === 0` → `--` 灰，于是「昨日 0 人 → 今日 5 人」从绿色箭头变成一根灰杠——
+ * 这是拍板的既定结果不是回归，但信息损失面比 issue 里估计的大。
+ *
+ * 所以给徽章挂 hover 露出基期原值（「昨日 0 人」），把「为什么算不出」说清楚。
+ * 与 #310 给 DeltaBadge 挂基期区间是同一个思路，不与决策 1 冲突。
  */
-export function TrendArrow({ current, previous }: { current: number; previous: number }) {
+export function TrendArrow({
+  current,
+  previous,
+  baseLabel,
+}: {
+  current: number
+  previous: number
+  /** 基期原值的展示文案（如「0 人」/「¥1,200」）。由调用点按卡片单位格式化后传入。 */
+  baseLabel?: string
+}) {
   const display = resolveDeltaDisplay(current, previous)
   const tone = deltaTone(display, TREND_DIGITS)
+  const title = baseLabel === undefined ? undefined : `昨日 ${baseLabel}`
 
   if (display.kind === "pct" && !isFlatAfterRounding(display.value, TREND_DIGITS)) {
     // 走 deltaScaled 而非自行 Math.round —— 那两者在 -0.5 处分叉
@@ -50,6 +70,7 @@ export function TrendArrow({ current, previous }: { current: number; previous: n
     return (
       <span
         className={cn("text-xs flex items-center gap-0.5", up ? "text-[#3D8A5A]" : "text-[#D94040]")}
+        title={title}
       >
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
           {up ? ARROW_UP : ARROW_DOWN}
@@ -62,7 +83,7 @@ export function TrendArrow({ current, previous }: { current: number; previous: n
   // pct 但舍入为 0（决策 3）、以及 na —— 都没有方向可言，走灰色无箭头。
   if (display.kind === "pct" || display.kind === "na") {
     return (
-      <span className="text-xs text-[#999999]">
+      <span className="text-xs text-[#999999]" title={title}>
         {display.kind === "na" ? NA_TEXT : FLAT_TEXT}
       </span>
     )
@@ -79,6 +100,7 @@ export function TrendArrow({ current, previous }: { current: number; previous: n
   return (
     <span
       className={cn("text-xs flex items-center gap-0.5", turned ? "text-[#3D8A5A]" : "text-[#D94040]")}
+      title={title}
     >
       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
         {turned ? ARROW_UP : ARROW_DOWN}
@@ -175,7 +197,7 @@ function BusinessDashboard({ stats, actions }: Props) {
                 <p className="mt-2 text-2xl font-bold text-[var(--foreground)]">{card.format(card.value)}</p>
                 {card.prev !== null && (
                   <div className="mt-1 flex items-center gap-1 text-xs text-[#999999]">
-                    vs 昨日 <TrendArrow current={card.value} previous={card.prev} />
+                    vs 昨日 <TrendArrow current={card.value} previous={card.prev} baseLabel={card.format(card.prev)} />
                   </div>
                 )}
                 {card.hint && (

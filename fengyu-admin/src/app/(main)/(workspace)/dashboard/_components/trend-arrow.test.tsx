@@ -5,9 +5,14 @@ import { TrendArrow } from './dashboard-page'
 /**
  * #315 的守护。该组件此前**零测试覆盖**（直接原因是它没被导出）。
  *
- * 生产背景：`yesterdayRevenue` 的 SQL 把退款以负数计入且无 GREATEST 夹底，
- * 只读实测 1020 个门店日中 67 天非正（6.6%，最差 −22,800）——
+ * 生产背景（2026-09-23 只读实测，含 legacy_source 过滤）：
+ * `yesterdayRevenue` 把退款以负数计入且无 GREATEST 夹底 →
+ * 单店 scope 1036 门店日中 41 负 + 26 零 = **6.5%**，最差 −22,800，最近一次 2026-09-19。
  * 负基期在这里是**正在触发**的，不是潜伏的。
+ *
+ * 另一侧：`todayVisitors` 是 COUNT(DISTINCT) **恒 ≥ 0**，只会零基期——
+ * 1993 门店日中 231 个客流为 0（**11.6%**），决策 1 下这些会从绿色箭头变成灰 `--`，
+ * 由 `baseLabel` 的 hover 补回基期原值。
  */
 
 /** 取渲染出的可见文本（去掉 svg），便于逐字对照。 */
@@ -161,6 +166,32 @@ describe('TrendArrow · 基期为正的回归对照（AC2 逐字不变）', () =
     expect(legacyText(996, 1000)).toBe('0%')
     expect(renderText(1004, 1000)).toBe('持平')
     expect(renderText(996, 1000)).toBe('持平')
+  })
+})
+
+describe('TrendArrow · baseLabel hover（补回决策 1 吃掉的信息）', () => {
+  function renderTitle(current: number, previous: number, baseLabel?: string): string | null {
+    const { container, unmount } = render(
+      <TrendArrow current={current} previous={previous} baseLabel={baseLabel} />,
+    )
+    const t = container.querySelector('span')?.getAttribute('title') ?? null
+    unmount()
+    return t
+  }
+
+  it('零基期（客流卡的 11.6% 门店日）hover 露出「昨日 0 人」', () => {
+    // 这正是决策 1 把绿色箭头变成灰 -- 的那一档，信息靠 hover 补回。
+    expect(renderTitle(5, 0, '0 人')).toBe('昨日 0 人')
+  })
+
+  it('常规涨跌与负基期两态同样挂 title（三条渲染路径都要有）', () => {
+    expect(renderTitle(120, 100, '100 人')).toBe('昨日 100 人')
+    expect(renderTitle(1000, -22800, '¥-22,800')).toBe('昨日 ¥-22,800')
+  })
+
+  it('未传 baseLabel 时不挂 title（向后兼容，不渲染「昨日 undefined」）', () => {
+    expect(renderTitle(120, 100)).toBeNull()
+    expect(renderTitle(5, 0)).toBeNull()
   })
 })
 
