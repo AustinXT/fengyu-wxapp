@@ -335,11 +335,19 @@ describe('数据中心人效板块两端口径一致性守护', () => {
       assertWhereShape(sliceOrFail(adminSrc, 'const qStoreRankRevenue', 'const qStoreRankConsume'), 'store-table', 'Part C')
     })
 
-    it('⭐ Part A/B/C 都不得出现 LIMIT / OFFSET / FETCH（结果集完整性）', () => {
+    it('⭐ Part A/B/C 都不得出现 LIMIT / OFFSET / FETCH / HAVING（结果集完整性）', () => {
       // 闸门 2 收敛轮 codex 的发现，也是迄今**最现实**的一条：
       // 给门店排行榜加 `LIMIT 10` 是极常见的首屏优化，完全不是刻意构造的反常 SQL，
       // 但它会让「排行榜合计 == KPI 分子」直接失效，而前九层一条都不会红
       //（它们只约束聚合、spe 谓词、WHERE 形状与分母单源，**不约束结果集基数**）。
+      //
+      // `HAVING` 是下一轮 GLM 补的同族逃逸，且它更隐蔽：
+      // `HAVING SUM(spe.amount) > 0`（**不带** `::numeric`）能让十层全绿 ——
+      //   · 第 2 层谓词正则要求 `spe.<列>` 后紧跟运算符，这里跟的是 `)`，不被抽取
+      //   · 第 6 层 fail-closed 的 `SUM(\s*spe.amount` 不要求 cast，把它也算成合法聚合
+      //   · 第 9 层 WHERE 形状切到 `GROUP BY` 就停，HAVING 在其后
+      // 写成带 `::numeric` 反而会被第 3 层拦下 —— 缺口恰在最自然的手写形态上。
+      // 本仓 `product.ts:209` 就有 `HAVING SUM(sipe.amount::numeric) > 0` 的既有先例。
       for (const [label, seg] of [
         ['Part A', sliceOrFail(adminSrc, 'const qRevenueTotal', 'const qConsumeTotal')],
         ['Part B', sliceOrFail(adminSrc, 'const qRevenueByStore', 'const qConsumeByStore')],
@@ -348,7 +356,7 @@ describe('数据中心人效板块两端口径一致性守护', () => {
         expect(
           seg,
           `${label} 出现了 LIMIT/OFFSET/FETCH：排行榜一旦截断，其合计就不再等于 KPI 分子`,
-        ).not.toMatch(/\b(?:LIMIT|OFFSET|FETCH)\b/i)
+        ).not.toMatch(/\b(?:LIMIT|OFFSET|FETCH|HAVING)\b/i)
       }
     })
 
