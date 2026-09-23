@@ -243,6 +243,19 @@ describe('品项板块两端口径一致性守护', () => {
     const lastCteBlock = (sqlText: string, name: string): string =>
       new RegExp(`${name}\\s+AS\\s+(?:MATERIALIZED\\s+)?\\(([\\s\\S]*?)\\)\\s*SELECT\\s`).exec(sqlText)?.[1] ?? ''
 
+    /**
+     * 块内**禁止嵌套 CTE / LATERAL**（round-2 GLM）。
+     *
+     * `cteBlock` 以「`),` + 下一个 CTE 名 + ` AS `」为右边界。若块内自己嵌一个
+     * `WITH decoy AS (...), repurchase_store AS (SELECT 1) SELECT ...` —— 撞名会让右边界
+     * **提前闭合**，真正的坏代码落在切片之外，所有正向/反向断言都只检查到诱饵前缀。
+     * 这四个聚合 CTE 本就不该嵌 CTE，一刀切禁掉（当前块内零 WITH，不误红）。
+     */
+    const assertNoNestedCte = (block: string, name: string): void => {
+      expect(block, `${name} 块内出现嵌套 WITH —— 可用撞名 CTE 让切片右边界提前闭合`).not.toMatch(/\bWITH\b/i)
+      expect(block, `${name} 块内出现 LATERAL —— 可借它注入零行子查询破坏结果`).not.toMatch(/\bLATERAL\b/i)
+    }
+
     let adminDetail: string
     beforeAll(() => {
       adminDetail = detailSql(adminSrc)
@@ -271,6 +284,7 @@ describe('品项板块两端口径一致性守护', () => {
     it('entry_store：entry_date 与 entry_store_id 出自同一行（DISTINCT ON，非等值回查）', () => {
       const block = cteBlock(adminDetail, 'entry_store', 'xinzeng')
       expect(block, 'entry_store CTE 未切出').toBeTruthy()
+      assertNoNestedCte(block, 'entry_store')
       expect(block, '未用 DISTINCT ON (client_user_id, grp)').toMatch(
         /SELECT\s+DISTINCT\s+ON\s*\(\s*client_user_id,\s*grp\s*\)/,
       )
@@ -297,6 +311,7 @@ describe('品项板块两端口径一致性守护', () => {
     it('xinzeng 直接从 entry_store 派生（四列投影，不回退到 first_entry + 回查）', () => {
       const block = cteBlock(adminDetail, 'xinzeng', 'fugou')
       expect(block, 'xinzeng CTE 未切出').toBeTruthy()
+      assertNoNestedCte(block, 'xinzeng')
       expect(block, 'xinzeng 不是从 entry_store 派生').toMatch(/FROM\s+entry_store\b/)
       expect(block, 'xinzeng 的四列投影不完整').toMatch(
         /SELECT\s+client_user_id,\s*grp,\s*entry_date,\s*entry_store_id/,
@@ -305,6 +320,11 @@ describe('品项板块两端口径一致性守护', () => {
         /FROM\s+first_entry/,
       )
       expect(block, 'xinzeng 体内出现子查询 —— 回查写法复活').not.toMatch(/\(\s*SELECT\s/i)
+      // xinzeng 合法地有 WHERE entry_date BETWEEN ...，但不得追加别的谓词
+      // ——「过滤掉 grp 为 NULL 的人」正是本 PR 文档化的失败模式
+      expect(block, 'xinzeng 的 WHERE 追加了区间之外的谓词').toMatch(
+        /WHERE\s+entry_date\s+BETWEEN\s+\$\{range\.start\}\s+AND\s+\$\{range\.end\}\s*$/,
+      )
     })
 
     /**
@@ -320,6 +340,9 @@ describe('品项板块两端口径一致性守护', () => {
     it('new_store：以 xinzeng 为主表、恰一条 LEFT JOIN、无 WHERE/HAVING、计数主体是 x', () => {
       const block = cteBlock(adminDetail, 'new_store', 'repurchase_store')
       expect(block, 'new_store 块未切出（CTE 顺序变了？）').toBeTruthy()
+      assertNoNestedCte(block, 'new_store')
+      // 堵「, LATERAL (SELECT 1 LIMIT 0)」这类零行破坏，以及任何回查子查询
+      expect(block, 'new_store 体内出现子查询').not.toMatch(/\(\s*SELECT\s/i)
 
       expect(block, 'new_store 的主表不是 xinzeng').toMatch(
         /FROM\s+xinzeng\s+x\s+LEFT\s+JOIN\s+period_agg\s+pa\b/,
@@ -358,8 +381,11 @@ describe('品项板块两端口径一致性守护', () => {
     it('store_ids 骨架并上 entry 门店（否则只有寄存单进入的门店会漏行）', () => {
       const block = lastCteBlock(adminDetail, 'store_ids')
       expect(block, 'store_ids 块未切出').toBeTruthy()
-      expect(block, 'store_ids 未并上 xinzeng 的 entry 门店').toMatch(
-        /FROM\s+period_agg\s+UNION\s+SELECT\s+DISTINCT\s+entry_store_id\s+FROM\s+xinzeng/,
+      assertNoNestedCte(block, 'store_ids')
+      // ⚠️ 必须锚到**块尾**：只匹配前缀的话，追加 `AND FALSE` 之类谓词仍然全绿，
+      // 而 entry-only 门店就不进骨架、new_store 算出的人数在最终 JOIN 再次丢失（round-2 codex）
+      expect(block, 'store_ids 未并上 xinzeng 的 entry 门店，或 UNION 分支被追加了额外谓词').toMatch(
+        /FROM\s+period_agg\s+UNION\s+SELECT\s+DISTINCT\s+entry_store_id\s+FROM\s+xinzeng\s+WHERE\s+entry_store_id\s+IS\s+NOT\s+NULL\s*$/,
       )
     })
 
@@ -383,23 +409,38 @@ describe('品项板块两端口径一致性守护', () => {
      * （`daily_agg` 的 `(client_user_id, store_id, product_kind, performance_date)` 四键基础聚合），
      * 那是**逐日逐店的原始聚合**、不是归店输出，必须放行。
      *
-     * ⚠️ 此前这条哨兵写成 `/GROUP BY\s+[\w.]*store_id/`，要求 `store_id` **紧跟** GROUP BY，
-     * 于是 `GROUP BY product_kind, store_id`（staff 日后写 byStore 明细最自然的形态之一）
-     * 会假绿放过（round-1 codex + GLM 同时指出），且当时的注释「全文零 GROUP BY store_id」
-     * 与事实不符 —— 它绿只是因为逗号挡住了正则。
+     * ⚠️ 这条哨兵前两版都被评审打穿过，所以改用**全量 snapshot**：
+     *   v1 `/GROUP BY\s+[\w.]*store_id/` —— 要求 store_id 紧跟 GROUP BY，
+     *      `GROUP BY product_kind, store_id` 被逗号挡住而假绿；且当时注释声称
+     *      「staff 全文零 GROUP BY store_id」**与事实不符**（`mgmt-product.js:259` 就有）。
+     *   v2 「凡含 store_id 的 GROUP BY 必须同时含 performance_date」—— 判据方向对，但实现
+     *      退化成字面单空格 + 大小写敏感 + 用 `)` 当终止符（`COALESCE(a, b)` 会截断），
+     *      且 `GROUP BY 1, 2` 这种序号分组根本不含 store_id 字面量，全部漏检（fail-open）。
      *
-     * 改判据：**凡含 `store_id` 的 GROUP BY，必须同时含 `performance_date`**
-     * （即只能是 daily_agg 那条逐日基础聚合）。归店聚合不会带日期维度，因而必被拦下。
+     * 现在锁**整份清单**：staff 任何 GROUP BY 的新增/改写都会红，强制人工确认它是不是
+     * 归店聚合。若确认是归店明细，必须同步 #286 的「xinzeng 主表 + entry_store_id 兜底」口径。
      */
-    it('staff 端仍无按门店的归店聚合（长出来时必须同步 #286 的归店口径）', () => {
-      const groupBys = staffCode.match(/GROUP BY [^`]*?(?=`|\)|$)/g) ?? []
-      const withStoreId = groupBys.filter((g) => /store_id/.test(g))
-      for (const g of withStoreId) {
-        expect(
-          g,
-          `staffApi 出现了按门店的归店聚合，请同步 #286 的「xinzeng 主表 + entry_store_id 兜底」口径：${g}`,
-        ).toMatch(/performance_date/)
-      }
+    it('staff 的 GROUP BY 清单未变（新增归店聚合时必须同步 #286 的归店口径）', () => {
+      // 先剥 SQL 行注释（保留换行，GROUP BY 在 staff 源码里都是单行），
+      // 避免 `GROUP BY store_id -- performance_date` 这类注入；大小写不敏感。
+      const staffSqlOnly = stripComments(staffSrc).replace(/--[^\n]*/g, ' ')
+      const groupBys = (staffSqlOnly.match(/group\s+by\s+[^\n`]*/gi) ?? []).map((g) =>
+        g.replace(/\s+/g, ' ').trim(),
+      )
+      expect(groupBys, 'staff 的 GROUP BY 清单发生变化 —— 新增按门店的归店聚合时请同步 #286').toEqual([
+        'GROUP BY pc.product_kind',
+        'GROUP BY so.client_user_id, so.store_id, pc.product_kind, sipe.performance_date',
+        'GROUP BY client_user_id, product_kind',
+        'GROUP BY t.product_kind',
+        'GROUP BY x.product_kind',
+        'GROUP BY f.product_kind',
+      ])
+      // 双保险：清单里唯一允许含 store_id 的那条，必须是带日期维度的逐日基础聚合
+      const withStoreId = groupBys.filter((g) => /store_id/i.test(g))
+      expect(withStoreId, '含 store_id 的 GROUP BY 不止一条').toHaveLength(1)
+      expect(withStoreId[0], '唯一含 store_id 的 GROUP BY 不是逐日基础聚合 —— 这是归店聚合').toMatch(
+        /performance_date/,
+      )
     })
   })
 
