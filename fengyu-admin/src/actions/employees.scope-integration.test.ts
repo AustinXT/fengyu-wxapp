@@ -47,11 +47,22 @@ vi.mock('@/lib/admin-guard', () => ({
 }))
 vi.mock('next/cache', () => ({ revalidatePath: vi.fn() }))
 vi.mock('@/actions/skill-tags', () => ({ getSkillTags: vi.fn() }))
+/**
+ * 组织树的两条递归 CTE 要打真库，本文件专测 scope 判据，一律给「节点存在、无门店祖先」
+ * （即归属自洽放行），不然每条用例都会去连 dev 库。CTE 语义由
+ * `tests/e2e-actions/smoke-org-ancestry.mjs` 用一次性真库负责。
+ */
+vi.mock('@/lib/org-ancestry', () => ({
+  findNearestStoreAncestor: vi.fn().mockResolvedValue({ exists: true, storeAncestorId: null }),
+  findRolesBoundWithinSubtree: vi.fn().mockResolvedValue([]),
+}))
 
 // ⚠️ 刻意不 mock '@/lib/permissions' —— 本文件的全部价值就在于用它的真实实现。
 
 import { createEmployee, updateEmployee } from './employees'
 import { db } from '@/db'
+import { stores } from '@db/org'
+import { staffWechatUsers } from '@db/user'
 import { getSession } from '@/lib/auth'
 import type { AuthSession } from '@/lib/types'
 
@@ -120,16 +131,33 @@ const ADMIN = session({
   scopeStoreIds: [], scopeOrgNodeIds: [],
 })
 
+/**
+ * 按**表**分派，不数「第几次 select」。
+ *
+ * `stores` 必须返回一行：#259 的存在性校验只要 `nextStoreId` 非空就查它，空结果会被判成
+ * 「所选门店不存在」而提前退出 —— 本文件每条用例都会被那一步拦住。行里 `orgNodeId`
+ * 给什么无所谓：顶部已把 `findNearestStoreAncestor` 固定成「无门店祖先」，归属自洽在比对前放行。
+ */
+/**
+ * 事务内的锁行重读是 `.where(...).for('update').limit(1)`，而查角色是 `.where(...)` 直接
+ * await —— 所以 `where` 的返回值要**既可 await 又能继续链**（codex 谱系第 10 轮加的 FOR UPDATE）。
+ */
+function selectChain(rows: unknown) {
+  const limit = vi.fn().mockResolvedValue(rows)
+  const whereResult: any = Promise.resolve(rows)
+  whereResult.limit = limit
+  whereResult.for = vi.fn().mockReturnValue({ limit })
+  return { where: vi.fn().mockReturnValue(whereResult), limit }
+}
+
 function mockCurrentEmployee(row: Record<string, unknown>) {
-  let call = 0
-  ;(db.select as any).mockImplementation(() => {
-    call++
-    const current = call
-    const limit = vi.fn().mockImplementation(() => Promise.resolve(current === 1 ? [row] : []))
-    const where = vi.fn().mockReturnValue({ limit })
-    const from = vi.fn().mockReturnValue({ where })
-    return { from }
-  })
+  ;(db.select as any).mockImplementation(() => ({
+    from: vi.fn().mockImplementation((table: unknown) => selectChain(
+      table === stores ? [{ orgNodeId: null }]
+        : table === staffWechatUsers ? [row]
+        : [],
+    )),
+  }))
 }
 
 function mockUpdateOk() {
@@ -139,11 +167,26 @@ function mockUpdateOk() {
   return { set }
 }
 
+/**
+ * `updateEmployee` 的整个写入段在一个事务里（codex 谱系第 8/9 轮）。
+ * 本文件只关心 scope 判据，所以把 `tx` 直接指向同名的 `db.*` mock，既有断言照旧生效。
+ */
+function mockTxPassthrough() {
+  ;(db.transaction as any).mockImplementation(async (fn: any) => fn({
+    update: (db as any).update,
+    select: (db as any).select,
+    delete: (db as any).delete,
+    insert: (db as any).insert,
+    execute: (db as any).execute,
+  }))
+}
+
+/** createEmployee 侧：员工表查空（没有旧行可读），stores 仍需返回一行，理由同上 */
 function mockSelectEmpty() {
-  const limit = vi.fn().mockResolvedValue([])
-  const where = vi.fn().mockReturnValue({ limit })
-  const from = vi.fn().mockReturnValue({ where })
-  ;(db.select as any).mockReturnValue({ from })
+  ;(db.select as any).mockImplementation(() => ({
+    from: vi.fn().mockImplementation((table: unknown) =>
+      selectChain(table === stores ? [{ orgNodeId: null }] : [])),
+  }))
 }
 
 function mockTransactionOk(employeeId = 'FY-260315001') {
@@ -158,6 +201,7 @@ function mockTransactionOk(employeeId = 'FY-260315001') {
 describe('#228 组合层 — updateEmployee × 真实 scope 判据', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    mockTxPassthrough()
   })
 
   it('门店 manager 把本店员工调到 scope 外门店 → 被真实判据拒绝，零写入', async () => {
@@ -247,6 +291,7 @@ describe('#228 组合层 — updateEmployee × 真实 scope 判据', () => {
 describe('#228 组合层 — 多角色 scope 收紧（不得跨角色串用）', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    mockTxPassthrough()
   })
 
   const MIXED = sessionOf(

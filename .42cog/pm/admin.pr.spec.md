@@ -156,7 +156,93 @@ admin 管理权限分配/撤销、WorkFine → PG 数据同步、操作日志查
 - 组织：store_id, org_node_id, position_name（先选门店再选部门）
 - 档案：birthday, skills[]
 
-**约束**: phone 唯一；编辑门店/部门时需同步更新 permission_roles scope
+**约束**: phone 唯一
+
+**归属与角色的两条口径**（#249 / #259，2026-09-22 拍板；决策依据见对应 issue 的评论）:
+- **调店不自动搬迁角色绑定** —— 变更 store_id **不**改 `permission_roles.scope_id`。
+  数据模型没有「该绑定随主门店移动」的语义标记（无 primary / followsStore / 授权来源字段），
+  仅凭「旧店有该角色 && 新店没有」无法区分主岗 / 兼任 / 人工授予 / 同步脚本推导，自动搬迁等于猜；
+  且搬迁实质是「旧店 revoke + 新店 grant」，而该 action 只闸 `employee:update`。
+  旧店残留绑定随成功响应回传 —— **但分三种**：旧店在操作者 scope 内且查到绑定则附角色清单；
+  旧店超出 scope 时刻意**不查、不披露角色名**，只给「可能仍有绑定，请联系有权限的管理员复核」
+  的降级提示；确实没有绑定则只回普通成功文案。文案**中性**：「旧店仍有绑定」≠「新店缺授权」——
+  允许多绑定下员工在 A、B 两店都持 manager 是常态，主门店 A→B 时 B 店本来就有授权，
+  照「按新门店重新授权」去补会撞 `uq_permission_roles`；旧店那条也可能是该保留的兼任。
+  由持 `permission:assign` 的人当场判断（本 action 刻意不查新店绑定做差集）。
+  另：**复职**必须给权限提示，判据与调不调店无关（挂在调店分支里会漏掉「复职不调店」），
+  且必须**实查** `permission_roles` 而不是从 `is_resigned` 推断 ——
+  「离职 ⇒ 角色已清空」这个不变量会破：写 `is_resigned=true` 的 UPDATE 与删角色的事务是两次
+  独立提交 —— **那是历史实现，已由本次事务化修掉**；但它产生的存量残留行仍可能在库里。
+  另一条来源 `db/scripts/sync-workfine.js:381` 的 UPSERT 直接改 `is_resigned` 而完全不碰角色，
+  **至今有效**，所以判据仍然不能押注这个不变量。
+  实查为空 → 提示「已全部撤销，需重新授权」；非空 → 提示「离职期间仍保留…，复职后即恢复生效」。
+  同理 §AFF-03 的离职分支判据是 `rolesRevokedByRequest`（= `data.isResigned === true`，
+  「角色是本请求刚删的」，同一 action 内可信）—— 注意**不是**状态迁移 `isResigning`
+  （后者多带 `!旧值已离职`，已离职员工再传一次 `isResigned: true` 时角色确实被删光了却会被
+  判成「旧店本来没绑定」）。旧值已离职且本次没重传 `isResigned: true` 的请求落到查询分支查事实，
+  否则残留绑定会被静默吞掉。
+  归属的授权判定（逐字段 scope + 变更后仍可见）由 `ownershipTransitionError(session, before, after)`
+  一份实现承担，事务外传 `preTx*` 早拒、锁内传 `transition` 做权威判定 ——
+  只判「最终可见性」不判「逐字段」会留并发越权口子：员工 `{store: 越界B, org: scope内M}` 时，
+  回传旧值 B 的请求在并发把 store 合法改成 A 之后落地，实际是 A→B 的越界迁移而 M 仍可见。
+  `updateEmployee` 的**整个写入段在一个事务内**：最后一个超级管理员守卫（事务内重读，
+  否则两个 admin 并发离职会双双通过、留下零管理员）→ 员工行 UPDATE（乐观锁 CAS）→ 复职角色快照
+  → 离职时清角色 + revoke 审计 → §AFF-03 审计 → 复职审计 → `employee.update` 审计。
+  `logOperation` / `logUpdate` / `countActiveAdmins` / `isAdminEmployee` /
+  `findAllRoleBindings` / `findRolesBoundWithinSubtree` 都接可选 executor，一律传 `tx`。
+  事务外只剩 `revalidatePath` 与文案组装。
+  理由：审计留在事务外时，它失败会留下「状态已改、前端显示失败」；复职那条更糟 ——
+  重试不再进入复职分支，权限提示永久丢失。
+  事务开头依次是：advisory lock → `FOR UPDATE` 锁住员工行重读**完整行** → 由它构造一个
+  `transition` 对象（`before/after` 归属 + `isResigning` / `isReinstating`），
+  下游消费者分两类，**共同点是全都来自锁内**：归属自洽复查、scope 与最终可见性复查、
+  §AFF-03 审计、复职审计接 `transition`；`logUpdate` 接 `lockedRow`（审计 before）与真正写库的
+  `updateData`。关键不是「全都叫 transition」，而是「没有一个来自事务外」——
+  事务外那组值一律带 `preTx` 前缀、只用于早拒优化。
+  这条结构规则是本 PR 十三轮评审的共同诊断 —— 此前的缺陷几乎全出自
+  「同一份状态两套真相（事务外快照 vs 锁内重读），靠注释纪律而非结构来同步」：
+  并发合成出跨门店双重可见、锁内只重算自洽却没重算 scope（员工被永久挤出可见范围）、
+  §AFF-03 闭包捕获事务外旧店（审错店、漏披露「调回」与「调离」）。
+  离职守卫之前要取
+  `pg_advisory_xact_lock(hashtext('admin:active_count'))`：仅把计数查询传进 `tx` **不够串行**，
+  READ COMMITTED 下两笔并发离职分别针对不同 admin 时各自都读到 `count = 2`。
+  **写库字段必须显式白名单拣选**——`{ ...data }` 全量展开会让直调方写进任意同名表列，
+  而 `staff_wechat_users.openid` 是真实列、`staffApi` 用 `WHERE u.openid = $1` 认证员工 →
+  持 `employee:update` 者可接管 scope 内任一员工的小程序账号（账号接管级越权）。
+  锁序统一为「advisory lock → 员工行锁」，两个 action 同序（反序会 `40P01` 死锁）；
+  守卫要判「目标当前在职」（`countActiveAdmins` 只数在职，对离职残留 admin 会误拒且文案说反）。
+  `deleteEmployee`（物理删除）共用同一把锁，守卫与 `employee.delete` 审计同样在事务内；
+  `createEmployee` 的 `employee.create` 审计也在事务内 —— 三个写入口同构（「只修一侧等于没修」）。
+  ⚠️ `actions/permissions.ts` 撤销超级管理员角色也会减少活跃 admin，要完全闭合该不变量
+  得让它取**同一把**锁 —— 跨 action 的锁协议，待独立处理。
+  `23503` 只在**精确白名单**（`staff_wechat_users_store_id_stores_store_id_fk` /
+  `staff_wechat_users_org_node_id_org_nodes_id_fk`）上翻译成「门店/组织节点已被删除」；
+  ⚠️ 不能写 `includes('staff_wechat_users')` —— 审计表那条 FK 的真名
+  `operation_logs_operator_employee_id_staff_wechat_users_employee_id_fk` 也含该子串。
+  ⚠️ 生产实测（2026-09-22）当前 `is_resigned=true` 且仍有绑定的行是 0 条（27 个离职员工全干净）。
+  **另一个相关缺口在本 PR 范围外，待独立处理**：
+  `actions/auth.ts` 的 `login` 与 `lib/auth.ts` 取 session 都不校验 `is_resigned`，
+  一旦出现残留绑定（`sync-workfine.js` 随时能造出来），离职员工能直接登录后台行使那些权限。
+  离职状态与离职日期是**双写不变量**：以本次操作后的 `isResigned` 为权威统一推导 `resigned_at`，
+  不让显式传入的 `resignedAt` 绕过（否则会写出「已离职无日期」或「在职却有离职日期」）。
+  ⚠️ 生产上多店兼任是常态（31 个「员工 × 角色」对持多条 scope 绑定，最多一人绑 5-6 个门店）。
+  ⚠️ 「旧店有哪些绑定」查的是旧店组织节点**及其子树**，但这只是便宜的向前兼容：
+  DB trigger `permission_validate_role_assignment_scope()` 按
+  `permission_role_definitions.allowed_scope_types` 限制 scope_id 只能是 总部/市场/门店 型节点
+  （现有 10 个角色无一含「部门」），且生产上门店型节点零子节点 —— 子树在此恒等于精确匹配。
+  **别据此推断 scope_id 能挂部门。**
+- **org_node_id 归属自洽** —— 若 org_node_id 归属于某门店（自身是门店节点，或挂在门店节点下），
+  那个门店必须正是 store_id 所指。挂**市场**下的部门放行 —— 生产上 13 人是这种矩阵式归属
+  （养生师挂养生部、数据主管挂财智部，门店是工作地点、部门是专业归属）。
+  只在归属字段发生变更时校验，存量不一致记录不影响其它字段编辑。
+  两端的**存在性**在比对之前各自单独校验（门店不存在 / 组织节点不存在都直接拒），
+  写库阶段的并发删除窗口由 `23503` 转译兜底 —— 否则用户看到的是 500。
+  前端两个方向都联动：改门店时跟改组织、改组织时跟改门店，否则合法操作会被这条校验拒掉
+  （生产两条脏数据正是「同市场内改门店、没动所属组织」造出来的）。
+  联动收口在共用组件 `components/employee-ownership-fields.tsx`，两个页面都委托给它 ——
+  口径由纯函数单测钉住、接线由该组件的交互测试钉住、采用由页面结构守护钉住，三层各管一段。
+  日期列（birthday / hiredAt / resignedAt / leaveStart / leaveEnd）在打库前校验格式与
+  **日期存在性**，空串归一为 null —— 否则 `2026-02-30` / `''` 会撞 PG `22007/22008` 变 500。
 
 #### AFF-04 商品目录管理
 
