@@ -75,6 +75,11 @@ vi.mock('@/lib/operation-log', () => ({
   logOperation: vi.fn(),
 }))
 
+// 「节点是否还在管辖范围内」按当前树判（#318 第 5 轮）；SQL 语义由真库冒烟负责
+vi.mock('@/lib/org-ancestry', () => ({
+  isNodeWithinScopeRoots: vi.fn().mockResolvedValue(true),
+}))
+
 vi.mock('@/lib/admin-guard', () => ({
   countActiveAdmins: vi.fn().mockResolvedValue(5),
   isAdminEmployee: vi.fn().mockResolvedValue(false),
@@ -98,6 +103,7 @@ import { db } from '@/db'
 import { getSession, hasRole } from '@/lib/auth'
 import { inArray, eq } from 'drizzle-orm'
 import { countActiveAdmins } from '@/lib/admin-guard'
+import { isNodeWithinScopeRoots } from '@/lib/org-ancestry'
 import { hasPermission } from '@/lib/permissions'
 import { logOperation } from '@/lib/operation-log'
 
@@ -311,6 +317,7 @@ describe('assignRole — AC-09 & scope constraint', () => {
     // 设的分派会泄漏到后面所有用例
     ;(db.execute as any).mockReset().mockResolvedValue([{}])
     ;(hasPermission as any).mockReset().mockReturnValue(true)
+    ;(isNodeWithinScopeRoots as any).mockReset().mockResolvedValue(true)
     mockAssignTx()
   })
 
@@ -850,6 +857,7 @@ describe('revokeRole — scope + admin-only for admin roles', () => {
     vi.clearAllMocks()
     // ⚠️ clearAllMocks 不清 mockImplementation —— 双快照那条用例设的分派会泄漏
     ;(db.execute as any).mockReset().mockResolvedValue([{}])
+    ;(isNodeWithinScopeRoots as any).mockReset().mockResolvedValue(true)
   })
 
   /**
@@ -1039,7 +1047,10 @@ describe('revokeRole — scope + admin-only for admin roles', () => {
 
     await revokeRole(23)
 
-    expect(JSON.stringify(t.txExecute.mock.calls[0][0])).toContain('admin:active_count')
+    // 锁序 ① 组织树 → ② admin 计数（撤销也要按当前树复判 scope，所以两把都取）
+    const locks = t.txExecute.mock.calls.map((c) => JSON.stringify(c[0]))
+    expect(locks[0]).toContain('org_nodes:reparent')
+    expect(locks[1]).toContain('admin:active_count')
   })
 
   /**
@@ -1055,8 +1066,9 @@ describe('revokeRole — scope + admin-only for admin roles', () => {
     const result = await revokeRole(24)
 
     expect(result.success).toBe(true)
-    expect(JSON.stringify(t.txExecute.mock.calls[0][0]), '锁无条件先取')
-      .toContain('admin:active_count')
+    const takenLocks = t.txExecute.mock.calls.map((c) => JSON.stringify(c[0])).join('|')
+    expect(takenLocks, '两把锁都无条件先取').toContain('admin:active_count')
+    expect(takenLocks).toContain('org_nodes:reparent')
     expect(countActiveAdmins, '非超管角色不必查计数').not.toHaveBeenCalled()
   })
 

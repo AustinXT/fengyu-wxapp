@@ -14,6 +14,7 @@ import { withPermission, withAnyPermission } from '@/lib/with-permission'
 import { logOperation } from '@/lib/operation-log'
 import { ApiError } from '@/lib/api-error'
 import { countActiveAdmins } from '@/lib/admin-guard'
+import { isNodeWithinScopeRoots } from '@/lib/org-ancestry'
 // 与 employees 侧共用同一把「活跃 admin 计数」锁；取锁顺序见该模块顶部（#318）
 import { lockOrgTree, lockActiveAdminCount } from '@/lib/invariant-locks'
 
@@ -392,6 +393,20 @@ export const assignRole = withAnyPermission(
         .where(eq(orgNodes.id, data.scopeId))
         .limit(1)
       if (!lockedNode) return { failure: '组织节点不存在' }
+      /**
+       * 目标节点是否**还**在操作者管辖范围内 —— 按当前树判（#318 第 5 轮，两谱系共识）。
+       *
+       * 事务外那次 `userScopeIds.includes(data.scopeId)` 判的是 session 构造时展开好的
+       * 内存集合，窗口不是毫秒级竞态而是**整个 JWT 寿命（24h）**：节点 X 在 hr 登录后
+       * 被挪出他的市场，他仍能把角色绑到 X 上 —— 向管辖范围外授出权限。
+       * 与 `org.ts` 两处同款判据。
+       */
+      if (!isAdminScope(session)) {
+        const scopeRoots = session.roles.map((role) => role.scopeId)
+        if (!(await isNodeWithinScopeRoots(data.scopeId, scopeRoots, tx))) {
+          return { failure: '不能分配超出自身权限范围的角色' }
+        }
+      }
       if (!lockedDefinition.allowedScopeTypes.includes(lockedNode.type as '总部' | '市场' | '门店')) {
         return {
           failure: `角色“${lockedDefinition.name}”只能绑定到${lockedDefinition.allowedScopeTypes.join('、')}节点，不能绑定到${lockedNode.type}节点`,
@@ -536,7 +551,20 @@ export const revokeRole = withPermission(
      *
      * 纯 advisory 锁的成本可忽略（撤销角色是低频管理操作），无条件取它换掉整类竞态。
      */
+    /**
+     * 锁序 ① 组织树 → ② admin 计数。这里要 ① 的理由与 `assignRole` 对称：
+     * 「这条绑定的 scope 节点是否还在我的管辖范围内」要按**当前树**判，而树由取 ① 的
+     * 那些路径改（GLM 第 5 轮 P2）。未授权的权限**回收**与未授权的授予同等严重。
+     */
+    await lockOrgTree(tx)
     await lockActiveAdminCount(tx)
+
+    if (!isAdminScope(session)) {
+      const scopeRoots = session.roles.map((role) => role.scopeId)
+      if (!(await isNodeWithinScopeRoots(target.scopeId, scopeRoots, tx))) {
+        return { failure: '不能撤销超出自身权限范围的角色' }
+      }
+    }
 
     const definition = await loadRoleDefinition(target.role, tx)
     if (!definition) return { failure: '角色定义不存在' }
