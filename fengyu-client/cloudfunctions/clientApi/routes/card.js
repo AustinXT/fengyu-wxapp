@@ -198,12 +198,17 @@ async function rechargeConfig(ctx) {
  * 与 admin deleteOrder（事务内闸门读到「已关闭」即跳过回滚）都不会再补回，资产永久蒸发。
  */
 async function _closeExpiredPendingByUser(client, userId) {
+  // ⚠️ 候选集**刻意是超集**，别往这里加 `lakala_out_order_no IS NULL`
+  //（与 order.closeExpiredOrdersByUser 同一条原则，issue #215）：
+  // 该列双向可变，SELECT 之后、CAS 之前它可能被 payNotify/对账清成 NULL ——
+  // 那一刻这单已经该关了，而收窄过的候选集根本没把它选进来，这一趟就漏过去了。
+  // 漏关的后果是它继续占着 uq_sale_orders_client_pending，紧随的充值单 INSERT 撞唯一约束。
+  // 真正决定关不关的是下面 UPDATE 的 CAS 守卫，选多了只是白跑一个空事务。
   const expired = await client.query(
     `SELECT sale_order_id FROM sale_orders
      WHERE client_user_id = $1 AND status = '待支付'
      AND opened_by IS NULL
      AND sale_order_type <> '转换单'
-     AND lakala_out_order_no IS NULL
      AND sale_order_datetime < NOW() - INTERVAL '10 minutes'`,
     [userId]
   )

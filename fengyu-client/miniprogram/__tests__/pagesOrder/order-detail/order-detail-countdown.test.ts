@@ -450,6 +450,54 @@ describe('order-detail 待支付倒计时 (#215)', () => {
     }
   });
 
+  test('只有服务端明说「已过期没关掉」才封支付入口，本地判定不封', async () => {
+    const { page, resolvers } = createPageWithManualApi();
+    const degraded = {
+      order: {
+        sale_order_id: 'FY-215', status: '待支付',
+        expire_at: new Date(Date.now() - 1000).toISOString(),
+        expire_in_ms: null, expire_clock: null, expire_unresolved: true,
+      },
+      items: [], payments: [],
+    };
+    const inflight = page.loadDetail('FY-215');
+    resolvers[0](degraded);
+    await inflight;
+
+    expect(page.data.payBlockedByExpiry).toBe(true);
+    page.onPay();
+    expect(wxMock.navigateTo).not.toHaveBeenCalled();
+  });
+
+  test('刷新型加载不置 isLoading —— unresolved 轮询不能让整页每圈闪一次', async () => {
+    // wxml 的 `wx:if="{{!isLoading}}"` 会把整个 container 摘掉；
+    // 刷新也置它的话，5 秒一圈的 unresolved 轮询会让页面看起来是坏的
+    const { page, resolvers } = createPageWithManualApi();
+    const first = page.loadDetail('FY-215');
+    expect(page.data.isLoading).toBe(true);           // 首载：该有骨架屏
+    resolvers[0](detailResponse('待支付'));
+    await first;
+    expect(page.data.isLoading).toBe(false);
+
+    page.loadDetail('FY-215');                         // 刷新
+    expect(page.data.isLoading).toBe(false);           // 不再摘掉整页
+  });
+
+  test('重试间隔指数退避到 60 秒封顶（unresolved 那条会一直排）', () => {
+    vi.useFakeTimers();
+    try {
+      const { page } = createPageWithStubbedLoad();
+      const delays: number[] = [];
+      for (let i = 0; i < 6; i++) {
+        page._scheduleRefreshRetry('FY-215');
+        delays.push(page._refreshRetryDelayMs);
+      }
+      expect(delays).toEqual([5000, 10000, 20000, 40000, 60000, 60000]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   test('成功刷新会取消已排的重试（别在有新鲜数据的页面上白闪一次）', async () => {
     vi.useFakeTimers();
     try {
@@ -878,13 +926,15 @@ describe('order-detail 倒计时的生命周期与并发 (#215)', () => {
     expect(page._lastLoadDownlinkMs).toBeLessThan(30);
   });
 
-  test('权威剩余量被 RTT 扣光 → 同样关支付入口（与 tick 归零同后果）', () => {
-    // 这条孪生路径此前漏了置闸：重载一失败，页面就退回成静态的「请完成支付 + 去支付」
+  test('权威剩余量被扣光 → 只改文案，**不**封支付入口', () => {
+    // 本地判到期一律只说「正在确认」：一次本地时钟误判不该把顾客的支付通道堵死。
+    // 真过期了由服务端拒绝（一条可恢复的错误提示）。
     const { page } = createPageWithStubbedLoad();
     page._lastLoadDownlinkMs = 500;
     page.startCountdown(PENDING_ORDER_WITH_REMAINING(50));
 
-    expect(page.data.payBlockedByExpiry).toBe(true);
+    expect(page.data.expiryPendingConfirm).toBe(true);
+    expect(page.data.payBlockedByExpiry).toBe(false);
   });
 
   test('非权威归零（旧云函数）不关支付入口 —— 那些单在旧后端本来就能付', () => {
@@ -894,7 +944,7 @@ describe('order-detail 倒计时的生命周期与并发 (#215)', () => {
     expect(page.data.payBlockedByExpiry).toBe(false);
   });
 
-  test('隐藏期间跨过截止点 → onShow 关支付入口（那次刷新可能失败）', () => {
+  test('隐藏期间跨过截止点 → 只改文案（隐藏期分不清真过期还是把钟拨快了）', () => {
     vi.useFakeTimers();
     try {
       const { page } = createPageWithStubbedLoad();
@@ -904,7 +954,8 @@ describe('order-detail 倒计时的生命周期与并发 (#215)', () => {
       vi.setSystemTime(Date.now() + 10_000);
       page.resumeCountdown();
 
-      expect(page.data.payBlockedByExpiry).toBe(true);
+      expect(page.data.expiryPendingConfirm).toBe(true);
+      expect(page.data.payBlockedByExpiry).toBe(false);
     } finally {
       vi.useRealTimers();
     }
@@ -925,9 +976,9 @@ describe('order-detail 倒计时的生命周期与并发 (#215)', () => {
     }
   });
 
-  test('归零后那次刷新失败 → 支付入口关闭，不退回静态的「可支付」页', async () => {
-    // 这里已经永久清掉了计时器和截止点；刷新再失败的话，不关闸页面就变成一个
-    // 静态的「请完成支付 + 去支付」，点下去只会被服务端以超时拒绝（评审 round-9 P1）
+  test('归零后那次刷新失败 → 文案停在「正在确认」并继续重试，但不封支付入口', async () => {
+    // 页面不退回裸的「请完成支付」（那是在承诺不知真假的事），
+    // 但也不封支付入口（本地判定不足以封） —— 靠有界重试去拿服务端的答案
     const { page } = createPageWithManualApi();
     const rejecters: Array<(e: any) => void> = [];
     callClientApiMock.mockImplementation(
@@ -942,15 +993,17 @@ describe('order-detail 倒计时的生命周期与并发 (#215)', () => {
     } finally {
       vi.useRealTimers();
     }
-    expect(page.data.payBlockedByExpiry).toBe(true);
+    expect(page.data.expiryPendingConfirm).toBe(true);
 
     rejecters[0]?.(new Error('network'));
     await new Promise((r) => setTimeout(r, 0));
 
-    // 刷新失败后闸门仍在，订单还停在旧的「待支付」但不许再点支付
-    expect(page.data.payBlockedByExpiry).toBe(true);
+    // 文案还在、重试已排，但支付入口没被本地判断堵死
+    expect(page.data.expiryPendingConfirm).toBe(true);
+    expect(page.data.payBlockedByExpiry).toBe(false);
+    expect(page._refreshRetryTimer).not.toBeNull();
     page.onPay();
-    expect(wxMock.navigateTo).not.toHaveBeenCalled();
+    expect(wxMock.navigateTo).toHaveBeenCalled();
   });
 
   test('任何一次成功的刷新都解除「时限已到」闸门', async () => {
@@ -971,11 +1024,11 @@ describe('order-detail.wxml 的倒计时文案分支 (#215)', () => {
     'utf8',
   );
 
-  test('待支付状态区是 countdown → payBlockedByExpiry → 兜底 三段同一条分支链', () => {
+  test('待支付状态区是 countdown → 待确认 → 兜底 三段同一条分支链', () => {
     // 松断言（三行各自存在）会被文件里任何位置的同名分支满足。这里钉的是**同链且有序**：
     //  - countdown 为空（后端没下发 expire_at）不能还显示「请在  前完成支付」
     //  - 时限已到但状态未确认时，必须落到「正在确认」而不是「请完成支付」
-    const chain = /wx:if="\{\{countdown\}\}">请在 \{\{order\.expire_time_fmt\}\} 前完成支付（剩余 \{\{countdown\}\}）[\s\S]{0,400}?wx:elif="\{\{payBlockedByExpiry\}\}">支付时限已到，正在确认订单状态[\s\S]{0,200}?wx:else>请完成支付/;
+    const chain = /wx:if="\{\{countdown\}\}">请在 \{\{order\.expire_time_fmt\}\} 前完成支付（剩余 \{\{countdown\}\}）[\s\S]{0,400}?wx:elif="\{\{expiryPendingConfirm \|\| payBlockedByExpiry\}\}">支付时限已到，正在确认订单状态[\s\S]{0,200}?wx:else>请完成支付/;
     expect(wxml).toMatch(chain);
   });
 

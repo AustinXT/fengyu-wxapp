@@ -2059,10 +2059,15 @@ describe('order.detail — 支付倒计时下发口径 (#215)', () => {
     }])
   }
 
-  /** 找出「重读判据列」那一次查询（与主查询区分：它没有 JOIN stores） */
-  const findRefreshCall = () => pg.query.mock.calls.find(
-    ([sql]) => /AS auto_close_eligible/.test(sql) && !/LEFT JOIN stores/.test(sql)
-  )
+  /**
+   * 找出「重读判据列」那一次查询。
+   * ⚠️ 判别式不能用「有没有 JOIN stores」—— 重读现在也 JOIN（要和主查询同口径拿
+   * 当前门店名）。改为「**第一次之后**带 auto_close_eligible 的那次」：
+   * 主查询恒为 calls[0]。
+   */
+  const findRefreshCall = () => pg.query.mock.calls
+    .slice(1)
+    .find(([sql]) => /AS auto_close_eligible/.test(sql))
 
 
   test('库判「会被自动关闭」→ 下发「下单时间 + 10 分钟」', async () => {

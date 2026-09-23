@@ -125,6 +125,10 @@ interface OrderPaymentView {
  */
 const MAX_TRUSTED_TICK_GAP_MS = 30_000;
 
+/** 刷新重试的首个间隔与封顶（issue #215）。unresolved 那条会一直排，必须退避 */
+const REFRESH_RETRY_BASE_MS = 5_000;
+const REFRESH_RETRY_MAX_MS = 60_000;
+
 const STATUS_ICON: Record<string, { icon: string; color: string }> = {
   '待支付':     { icon: 'clock-o',   color: '#FAAD14' },
   '部分支付':   { icon: 'clock-o',   color: '#D48806' },
@@ -158,11 +162,19 @@ Page({
     repaySubmitting: false,
     // 支付结果确认中（issue #37）：轮询期间隐藏待支付倒计时防频闪
     confirmingPayment: false,
-    // 倒计时已归零、但「归零后那次刷新」还没成功（issue #215）。
-    // 此时页面**不知道**这单到底关没关：服务端大概率已经关了，而我们拿不到确认。
-    // 继续显示「请完成支付 + 去支付」就是在承诺一件不知真假的事 —— 顾客点下去
-    // 只会拿到「订单已超时」。所以这段时间把支付入口关掉、文案改成待确认。
-    // 任何一次成功的详情刷新都会解除它。
+    // 本地判定「时限已到、状态待确认」——**只驱动文案，不封支付入口**（issue #215）。
+    //
+    // 第 9 轮起这两件事是绑在一起的，结果此后每一轮都在补一条新的时钟异常路径
+    //（RTT 扣光 / 隐藏期跨点 / 墙钟回拨 / 墙钟前跳 / 上下行不对称……）——
+    // 因为任何一次**本地**误判都会封掉一张还能付的单。失败模式极不对称：
+    // 误封 = 收不到钱且顾客无从下手；误放 = 一条「订单已超时」提示，可恢复。
+    // 而且订单列表页的「去支付」本来就绕过本页直达结算，这道闸从来不严丝合缝。
+    // 所以判据回归后端：本地只说「正在确认」，真过期了由服务端拒绝。
+    expiryPendingConfirm: false,
+    // 服务端明说「已过期、我试过关但没关掉」（`expire_unresolved`）。
+    // 这时 `order.pay` 必拒（预检关单后抛超时；即便预检 CAS 输给并发意图，
+    // `reserveDirectOnlinePaymentIntent` 的行锁内还有一道十分钟守卫），
+    // 封禁是**有服务端证据**的，不是本地猜的。
     payBlockedByExpiry: false,
   },
 
@@ -215,6 +227,9 @@ Page({
   // 「会被自动关闭」的集合，而页面还停在「请完成支付 + 去支付」。
   // 只在**确知失败**时才排（loadDetail 现在会如实返回成败），成功就不排。
   _refreshRetryTimer: null as ReturnType<typeof setTimeout> | null,
+  // 下一次重试的间隔。unresolved 那条会一直排下去（挡路的意图什么时候被渠道超时清掉
+  // 说不准），固定 5 秒就是一个无界轮询 —— 指数退避到 60 秒封顶，成功即复位。
+  _refreshRetryDelayMs: 0,
 
   onLoad(options) {
     // 读全局灰度开关（未配置默认 false）
@@ -292,7 +307,10 @@ Page({
   /** @returns 是否成功拿到并落盘了一份新的服务端状态 */
   async _fetchDetail(saleOrderId: string): Promise<boolean> {
     if (this._destroyed) return false;
-    this.setData({ isLoading: true });
+    // 骨架屏只留给**首载**（issue #215）：wxml 的 `wx:if="{{!isLoading}}"` 会把整个
+    // container 从 DOM 摘掉，刷新型加载也置它的话，unresolved 那条 5 秒轮询
+    // 会让整页每圈闪一次 —— 页面看起来就是坏的。
+    this.setData({ isLoading: !this.data.order });
     const sentAt = Date.now();
     try {
       const data = await callClientApi('order.detail', { saleOrderId });
@@ -499,17 +517,14 @@ Page({
         payments,
         outstandingAmount: outstanding,
         canContinuePay,
-        // 拿到一份新的服务端状态了，排着的重试就没必要再打了（评审 round-15 P2）
-        // —— 否则顾客下拉刷新成功后，5 秒前排的那一发还是会来，白闪一次骨架屏，
-        // 它要是再失败还会在已有新鲜数据的页面上弹「加载失败」。
-        // 「时限已到但状态未确认」的闸门原则上可以解除。
-        // ⚠️ 除非服务端明说「已过期但我没关掉」（`expire_unresolved`）—— 那正是
-        // 闸门该继续关着的形态：订单确实过期了、`order.pay` 会拒，只是服务端
-        // 连试两次都被并发的支付意图挤掉（双谱系评审 round-11）。
+        // 拿到一份新的服务端状态：本地那句「正在确认」可以收了；
+        // 封禁则**只认服务端证据** —— 它明说「已过期但我没关掉」时才继续关着。
+        expiryPendingConfirm: order.expire_unresolved === true,
         payBlockedByExpiry: order.expire_unresolved === true,
       });
 
       this._clearRefreshRetry();
+      this._refreshRetryDelayMs = 0;   // 成功了，退避复位
 
       // 启动倒计时
       this.startCountdown(order);
@@ -552,11 +567,15 @@ Page({
   _scheduleRefreshRetry(saleOrderId: string) {
     if (this._hidden || this._destroyed) return;
     this._clearRefreshRetry();
+    const delay = this._refreshRetryDelayMs > 0
+      ? Math.min(this._refreshRetryDelayMs * 2, REFRESH_RETRY_MAX_MS)
+      : REFRESH_RETRY_BASE_MS;
+    this._refreshRetryDelayMs = delay;
     this._refreshRetryTimer = setTimeout(() => {
       this._refreshRetryTimer = null;
       if (this._hidden || this._destroyed) return;
       this.loadDetail(saleOrderId);
-    }, 5000);
+    }, delay);
   },
 
   _clearRefreshRetry() {
@@ -656,11 +675,13 @@ Page({
       // 权威口径下走到这里 = 服务端说的剩余量被这次请求的往返耗时吃光了，
       // 截止点**确实过了**。与 tick 归零同一后果，所以同样关掉支付入口：
       // 紧接着那次重载可能失败，不关闸页面就退回成静态的「请完成支付 + 去支付」。
-      // 这里只处理**本地判定**的过期（权威剩余量被 RTT 扣光）。
-      // 「服务端明说已过期但没关掉」那种由 `_fetchDetail` 落 setData 时统一表达 ——
-      // 一个原因一个地方，别在两处重复判同一件事。
-      // 旧云函数的非权威归零不关：在旧后端上那些单（尤其员工单）本来就还能付，关了是误伤。
-      this.setData({ countdown: '', ...(authoritative ? { payBlockedByExpiry: true } : null) });
+      // 本地判到期只改文案、不封支付入口（理由见 expiryPendingConfirm 的注释）。
+      // 旧云函数的非权威归零连文案都不改：在旧后端上那些单（尤其员工单）本来就还能付。
+      if (authoritative) {
+        this.setData({ countdown: '', expiryPendingConfirm: true });
+      } else {
+        this.setData({ countdown: '' });
+      }
       // 非权威那条路没有「服务端已试过关单」的保证，重载回来大概率还是同一个答案 ——
       // 按订单号只放行一次，否则就是每个 RTT 一圈的无界循环。
       // 权威路径不受此限：它的收敛由服务端侧的补关保证（见上面的注释）。
@@ -668,8 +689,10 @@ Page({
         if (this._fallbackZeroReloadedOrderId === order.sale_order_id) return;
         this._fallbackZeroReloadedOrderId = order.sale_order_id;
       }
-      // 隐藏/已卸载时不发这一次后台请求；onShow 必定 loadDetail，不会漏刷新
-      if (!this._hidden && !this._destroyed) this.loadDetail(order.sale_order_id);
+      // 隐藏/已卸载时不发这一次后台请求；onShow 必定 loadDetail，不会漏刷新。
+      // 走 _refreshOrRetry 而不是裸 loadDetail：页面写着「正在确认」，
+      // 那一发失败就得有人接着确认（评审 round-16）
+      this._refreshOrRetry(order.sale_order_id);
       return;
     }
 
@@ -722,13 +745,10 @@ Page({
       if (remaining <= 0) {
         this._stopCountdown();
         this._countdownDeadlineAt = 0;
-        // 先把支付入口关掉再去刷新：那次刷新可能失败（断网/超时），
-        // 而这里已经永久清掉了计时器 —— 不关闸的话页面就退回成一个静态的
-        //「请完成支付 + 去支付」，点下去只会被服务端以超时拒绝（评审 round-9 P1）
-        this.setData({ countdown: '', payBlockedByExpiry: true });
-        // 与上面回拨分支同款守卫。当前 onHide/onUnload 都已停表所以不可达，
-        // 但停表逻辑一旦改松，这里就是漏点（双谱系评审 round-6 P3）
-        if (!this._hidden && !this._destroyed) this.loadDetail(saleOrderId);
+        // 改文案而不封支付入口；刷新走有界重试 —— 页面写着「正在确认」，
+        // 那就得真的有人在确认，单发失败不能把页面晾在那（评审 round-16）
+        this.setData({ countdown: '', expiryPendingConfirm: true });
+        this._refreshOrRetry(saleOrderId);
         return;
       }
       // 必须 ceil：floor 会让 (0, 1000) 毫秒这一拍显示 "00:00"，
@@ -770,13 +790,12 @@ Page({
       this.setData({ countdown: '' });
       return;
     }
-    // 隐藏期间跨过了截止点：与 tick 归零同一后果（截止点确实过了、状态待确认），
-    // 同样关掉支付入口。不在这里发请求 —— 紧跟着的 onShow loadDetail 会刷新，
-    // 在这儿再发一次只是白白多排一次 single-flight 的尾随刷新；
-    // 那次刷新成功就会解除闸门，失败则闸门留着（这正是它存在的意义）。
+    // 隐藏期间跨过了截止点。注意隐藏期**无法区分**「真的过了 10 分钟」和
+    //「用户把钟拨快了」—— 正因如此这里只改文案、不封支付入口。
+    // 刷新交给紧跟着的 onShow loadDetail；它失败时由 _refreshOrRetry 兜底。
     if (this._countdownDeadlineAt - Date.now() <= 0) {
       this._countdownDeadlineAt = 0;
-      this.setData({ countdown: '', payBlockedByExpiry: true });
+      this.setData({ countdown: '', expiryPendingConfirm: true });
       return;
     }
     this._installCountdown(this._countdownDeadlineAt, this.data.order.sale_order_id);
@@ -868,6 +887,8 @@ Page({
     // 时限已到而「归零后那次刷新」还没成功：这单大概率已经被服务端关了，
     // 放行只会让顾客跳到结算页再吃一个「订单已超时」。wxml 那边也 disabled 了，
     // 这里是第二道（Vant 的 disabled 并非对所有组件都能挡住 tap）
+    // 只有服务端明说「已过期且没关掉」时才拦（那时 order.pay 必拒）。
+    // 本地判定的「正在确认」不拦 —— 一次本地时钟误判不该把顾客的支付通道堵死。
     if (this.data.payBlockedByExpiry) {
       Toast('支付时限已到，正在确认订单状态，请下拉刷新');
       return;

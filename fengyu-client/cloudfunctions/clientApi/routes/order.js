@@ -1467,9 +1467,16 @@ const PENDING_AUTO_CLOSE_GUARD_SQL =
  * 窗口只有毫秒级、极难触发，但这是一行就能封死的越权读。
  */
 function queryOrderGuardSnapshot(orderNo, userId) {
+  // ⚠️ `store_name` 要和主查询同口径。主查询是 `SELECT o.*, s.store_name`（同名列
+  // 后者胜出 → 当前门店名），而这里的 `o.*` 会带出 `sale_orders` 里的**下单时快照**；
+  // 不对齐的话，`Object.assign` 会把待支付单的门店名换成快照值，而已支付单
+  // 不走重读仍是当前值 —— 同一张单在支付前后门店名会跳变（评审 round-16）。
   return pg.query(
-    `SELECT o.*, (${PENDING_AUTO_CLOSE_GUARD_SQL}) AS auto_close_eligible
-       FROM sale_orders o WHERE o.sale_order_id = $1 AND o.client_user_id = $2`,
+    `SELECT o.*, s.store_name,
+            (${PENDING_AUTO_CLOSE_GUARD_SQL}) AS auto_close_eligible
+       FROM sale_orders o
+       LEFT JOIN stores s ON o.store_id = s.store_id
+      WHERE o.sale_order_id = $1 AND o.client_user_id = $2`,
     [orderNo, userId]
   )
 }
@@ -2994,7 +3001,23 @@ async function detail(ctx) {
     Object.assign(order, refreshedRows[0])
   }
 
-  // ⚠️ 下面的补关复检与剩余量计算**共用同一个 nowMs**（issue #215）。
+  // 精简 payments 字段（只给前端需要的）
+  const payments = paymentRows.map(p => ({
+    change_type: p.change_type,
+    amount: Number(p.amount),
+    payment_method: p.payment_method,
+    status: p.status,
+    paid_at: p.paid_at,
+    created_at: p.created_at,
+    note: p.note,
+    refund_reason: p.refund_reason || null,
+    audit_at: p.audit_at || null,
+    audit_remark: p.audit_remark || null,
+  }))
+
+  // ⚠️ 补关复检与剩余量计算放在**响应组装的最后一步**（评审 round-16）：
+  // 放在前面的话，payments 映射等尾部组装期间跨过截止点，服务端就会下发一个
+  // 严格为正的 expire_in_ms 却没有补关 —— 倒计时还在走、去支付却已经会被拒。
   // 分别取 `Date.now()` 的话，复检判「还没过期」、几微秒后算剩余量时已经过线，
   // 就会下发「剩余 0 但没试过关单」—— 而前端对「剩余 0」的处理正是
   //「只清倒计时、不重载」（它有理由相信服务端已经试过了）。共用一个读数，
@@ -3038,24 +3061,10 @@ async function detail(ctx) {
   const expireClock = vouchable ? shanghaiClockHM(new Date(deadlineMs)) : null
   // ⚠️ 别用「字段缺席」同时表达两件不同的事（双谱系评审 round-11）。
   // `expire_in_ms` 为空有两种来源，前端要做的事**正好相反**：
-  //   - 旧版本云函数根本不发这个字段 → 那边的订单可能真的还能付，不该关支付入口；
-  //   - 新版本补关两次都被并发意图挤掉 → 这单确实过期了、只是关不掉，必须关支付入口。
+  //   - 旧版本云函数根本不发这个字段 → 那边的订单可能真的还能付，不该封支付入口；
+  //   - 新版本补关两次都被并发意图挤掉 → 这单确实过期了、只是关不掉，必须封。
   // 所以把后者显式说出来。
   const expireUnresolved = eligible && !vouchable
-
-  // 精简 payments 字段（只给前端需要的）
-  const payments = paymentRows.map(p => ({
-    change_type: p.change_type,
-    amount: Number(p.amount),
-    payment_method: p.payment_method,
-    status: p.status,
-    paid_at: p.paid_at,
-    created_at: p.created_at,
-    note: p.note,
-    refund_reason: p.refund_reason || null,
-    audit_at: p.audit_at || null,
-    audit_remark: p.audit_remark || null,
-  }))
 
   // #214：这里是 `SELECT o.*` 原样展开，新增的 lakala_payment_intent 里含 paySign 等支付凭据，
   // 必须在下发前剥掉（schema 注释也写明「不随 order.detail 下发」）。scanDetail / list 是显式
