@@ -15,6 +15,7 @@ import {
 } from "@/lib/assistant-domain-terms"
 import { getSystemProductTermOptions } from "@/lib/assistant-product-terms"
 import type { AssistantChatResponse, AssistantVisualization } from "@/lib/assistant-types"
+import { formatPointDeltaValue } from "@/lib/metric-delta"
 import {
   getNewCustomerFunnelCustomerList,
   getNewCustomerFunnelFilterOptions,
@@ -681,10 +682,18 @@ function formatMoney(value: number): string {
   })
 }
 
+/**
+ * 复购率同比的百分点差值文案。**数值渲染统一走 `metric-delta`，这里只负责占位文案**。
+ *
+ * 曾经是一份逐字重写的实现，与看板侧吃同一个 `repurchase.ts` 的 `kpi.delta` 却各自判零：
+ * `delta = 0.0001`（`round4` 最小非零值）在看板出「持平」、在这里出 `+0.0pct`；
+ * 且不挡非有限值，`NaN` 会被拼成读起来通顺的一句话里夹着 `NaNpct`（#317）。
+ *
+ * ⚠️ 占位文案保留「无同比」而非复用 `NO_LAST_YEAR_TEXT`：这是 **AI 回答里的用户可见措辞**，
+ * 与看板徽章不必同词；统一的是数值渲染规则，不是文案。
+ */
 function formatSignedRate(value: number | null): string {
-  if (value === null) return "无同比"
-  const sign = value > 0 ? "+" : ""
-  return `${sign}${(value * 100).toFixed(1)}pct`
+  return formatPointDeltaValue(value)?.text ?? "无同比"
 }
 
 function inferYear(question: string, now: Date): number | undefined {

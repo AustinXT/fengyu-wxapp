@@ -6,6 +6,7 @@ import {
   formatDeltaPart,
   formatMetricDelta,
   formatPointDelta,
+  formatPointDeltaValue,
 } from "../metric-delta"
 
 // 非有限值分支会 console.warn（有意的可观测性设计，见模块内 warnNonFinite 的注释）。
@@ -367,8 +368,42 @@ describe("formatPointDelta · 百分点差值型同比徽章（sibling audit P1�
   })
 
   it("与 formatDeltaPart 的判零规则同源", () => {
-    // 两个导出函数共用 fixDelta，同一个输入应当同时被判为持平（防后来者只改一处）。
+    // 两个导出函数共用 fixDelta，同一个 scaled（0.02）应当同时被判为持平（防后来者只改一处）。
+    // ⚠️ 这里刻意用**非零基期**的 rate 输入：若借道 `formatDeltaPart(0.0002, 0, "rate")`，
+    //    这条断言就同时依赖决策 2，日后回退决策 2 会以误导性信息翻红（双谱系评审 P3）。
     expect(formatPointDelta(0.0002).tone).toBe("default")
-    expect(formatDeltaPart(0.0002, 0, "rate")).toBe(FLAT_TEXT)
+    expect(formatDeltaPart(0.3002, 0.3, "rate")).toBe(FLAT_TEXT)
+  })
+})
+
+describe("formatPointDeltaValue · 无前缀内核，AI 助手与看板共用（#314 评审 P1）", () => {
+  it("渲染不出数字时返回 null，由调用方决定占位文案", () => {
+    expect(formatPointDeltaValue(null)).toBeNull()
+    expect(formatPointDeltaValue(Number.NaN)).toBeNull()
+    expect(formatPointDeltaValue(Number.POSITIVE_INFINITY)).toBeNull()
+    // 入参有限但乘 100 溢出。
+    expect(formatPointDeltaValue(Number.MAX_VALUE)).toBeNull()
+  })
+
+  it("文案不带「同比」前缀——调用点外层自带，套带前缀的会出「同比变化 同比 +1.0pct」", () => {
+    expect(formatPointDeltaValue(0.01)).toEqual({ text: "+1.0pct", tone: "positive" })
+    expect(formatPointDeltaValue(-0.01)).toEqual({ text: "-1.0pct", tone: "negative" })
+  })
+
+  it("伪持平在内核层就并入「持平」，两个消费方因此不可能再分叉", () => {
+    // 这是评审 P1 的核心：assistant-answer.ts 曾各自判零，同一个 delta 在看板出「持平」、
+    // 在 AI 助手出「+0.0pct」。内核统一后，任何消费方都拿到同一个判定。
+    expect(formatPointDeltaValue(0.0001)).toEqual({ text: FLAT_TEXT, tone: "default" })
+    expect(formatPointDeltaValue(0)).toEqual({ text: FLAT_TEXT, tone: "default" })
+  })
+
+  it("formatPointDelta 是它加前缀的薄壳，两者结论必须一致", () => {
+    for (const value of [0.0001, 0, 0.01, -0.01, null, Number.NaN]) {
+      const core = formatPointDeltaValue(value)
+      const wrapped = formatPointDelta(value)
+      expect(wrapped.tone).toBe(core?.tone ?? "default")
+      if (core) expect(wrapped.text).toContain(core.text)
+      else expect(wrapped.text).toBe(NO_LAST_YEAR_TEXT)
+    }
   })
 })

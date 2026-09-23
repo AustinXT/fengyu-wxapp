@@ -47,8 +47,15 @@
  *
  * 这是**知情选择**：拍板人读过该数据后仍取本方案，理由是割点属全站问题、已由 #289 立案跟踪，
  * 不该由单个徽章承担。别再拿这份数据回头推翻本实现——那是已经否决过一次的建议。
- * 真正的治本方案（上游 `safeRate` 返回 `number | null`，区分「真实 0%」「算不出」「数据缺失伪影」）
- * 登记为未来选项，不在本轮范围。
+ *
+ * ⚠️ **第二类零基期与割点无关，不随 2027-01-01 失效**（#314 双谱系评审，两谱系独立命中）：
+ * `safeRate(n, d) = d > 0 ? round4(n/d) : 0`（`new-customer-funnel-utils.ts`）把
+ * **「分母为 0，算不出」** 与 **「真实 0%」** 压成同一个 `0`。于是
+ *   - 去年同期**一个新客都没有**的门店 × 月窄切片（分母 0），
+ *   - `memberConversionRate` 的分母是 `arrivedCount`，**有新客但零到店**时同样为 0，
+ * 都会渲染成绿色的 `+X pct`。这类切片**长期存在**，割点过去后也不会消失。
+ * 真正的治本方案（`safeRate` 返回 `number | null`，三态区分「真实 0%」「算不出」「数据缺失伪影」）
+ * 登记为未来选项，不在本轮范围——在**那之前**，同比 rate 徽章的绿色不可直接当经营结论用。
  *
  * ## 伪持平：舍入到 0 的一律并入「持平」（#314 决策 3）
  *
@@ -73,8 +80,13 @@
  * 保留方向是刻意的——由负回正是真实的向好信息，不该跟着倍数一起丢。
  * 别为了「统一口径」把这里也改成 default。
  *
- * ⚠️ **这是全模块唯一一处 tone 不读 `rendered` 的地方**：负基期没渲染出数字（`rendered === null`），
- * 方向只能靠比大小补出来。零基期同样 `rendered === null` 却弃判方向，二者的差别是**有意的**。
+ * ⚠️ **tone 不读 `rendered` 的只有 `rendered === null` 那一族**（文案是「无基数」，没数字可跟，
+ * 方向只能靠比大小补）。该族含三种来路，处置**故意不一致**：
+ *   - 零基期（`count`/`money`）→ 弃判方向，灰
+ *   - 负基期 → **保留方向**（本节主题）
+ *   - 溢出（`delta * 100` 非有限）→ 也走比大小，所以 `formatMetricDelta(MAX_VALUE, 1, 1, "money")`
+ *     会产出「无基数 + 绿色」。**不可达**（`previous` 来自 `round2`，最小非零 0.01，
+ *     要触发得有 1e17 量级的当期值），既有行为，登记在此免得下次 review 又发现一遍。
  *
  * ⚠️ #314 决策 1 定了一套全站负基期展示矩阵（`base < 0 && cur > 0` → 「由负转正」🟢，
  * 否则 →「未转正」🔴），admin 侧由 PR #321 落地。**analyst 侧尚未落，不在 #314 本轮范围**
@@ -182,6 +194,17 @@ export function formatDeltaPart(current: number, previous: number, type: MetricD
   return computeDeltaPart(current, previous, type).text
 }
 
+/**
+ * 符号 → 配色。**`0` 必须归 default**：既接住真持平与伪持平（`rendered === 0`），
+ * 也接住负基期原地不动（`−1000 → −1000` 的差值为 0）——后者若漏掉，
+ * `current > prevYear` 会取 false 而把「没变化」渲染成红色「下降」。
+ * `-0 === 0` 为 true，负零一并接住。
+ */
+function toneFromSign(value: number): MetricDeltaTone {
+  if (value === 0) return "default"
+  return value > 0 ? "positive" : "negative"
+}
+
 export function formatMetricDelta(
   current: number,
   prevYear: number,
@@ -196,16 +219,11 @@ export function formatMetricDelta(
   if (!Number.isFinite(current) || !Number.isFinite(prevYear)) return { text, tone: "default" }
   // 渲染出数字时，配色必须跟那个数同号——包括舍入到 0 的伪持平并入灰（#314 决策 3），
   // 以及 rate 零基期出数时跟着出方向（#314 决策 2；旧实现在这里撞 `prevYear === 0` 变灰）。
-  if (yoy.rendered !== null) {
-    if (yoy.rendered === 0) return { text, tone: "default" }
-    return { text, tone: yoy.rendered > 0 ? "positive" : "negative" }
-  }
-  // 以下是文案为「无基数」的两种，没有数字可跟，方向只能靠比大小补：
-  // 零基期弃判（增幅无意义），负基期**保留方向**（由负回正是真实的向好信息，见文件头）。
-  // ⚠️ `current === prevYear` 必须在比大小之前拦掉：负基期原地不动（−1000 → −1000）
-  //    会让 `current > prevYear` 取 false 而渲染成红色「下降」。
-  if (prevYear === 0 || current === prevYear) return { text, tone: "default" }
-  return { text, tone: current > prevYear ? "positive" : "negative" }
+  if (yoy.rendered !== null) return { text, tone: toneFromSign(yoy.rendered) }
+  // 文案是「无基数」，没有数字可跟，方向只能从差值补：
+  // 零基期弃判（增幅无意义），负基期与溢出**保留方向**（见文件头）。
+  if (prevYear === 0) return { text, tone: "default" }
+  return { text, tone: toneFromSign(current - prevYear) }
 }
 
 /**
@@ -218,22 +236,44 @@ export function formatMetricDelta(
  * 上游 `repurchase.ts:422` 的 `round4(repurchaseRate - prevYearRate)` 不挡 NaN，
  * 只靠更上游 `rate()` 的 `entryCount > 0` 守卫兜着——与主修复同属「上游有护栏、本函数没有」的类别。
  */
-export function formatPointDelta(value: number | null): { text: string; tone: MetricDeltaTone } {
-  if (value === null) return { text: NO_LAST_YEAR_TEXT, tone: "default" }
+/**
+ * `formatPointDelta` 的**无前缀内核**，返回 `null` 表示渲染不出数字
+ * （入参为 `null` / 非有限 / 乘 100 溢出），由调用方决定填什么占位文案。
+ *
+ * 之所以要把内核单独导出：`assistant-answer.ts` 的 AI 回答里曾有一份逐字重写的
+ * `formatSignedRate`，吃的是**同一个** `repurchase.ts` 的 `kpi.delta`，却各自判零
+ * ——同一个数值在看板出「持平」、在助手出 `+0.0pct`（#314 双谱系评审 P1）。
+ * 那边的三个调用点外层已经自带「同比变化 」「同比 」前缀，套不了带前缀的
+ * `formatPointDelta`（会出「同比变化 同比 +1.0pct」），所以分层而不是复制。
+ *
+ * ⚠️ **再有第四个消费方，也 import 这里，别再抄第三份。**
+ */
+export function formatPointDeltaValue(
+  value: number | null,
+): { text: string; tone: MetricDeltaTone } | null {
+  if (value === null) return null
   // 同样查最终渲染值而非入参：`value` 有限但 `value * 100` 可溢出（MAX_VALUE → Infinity）。
   // NaN 也走这条——`NaN * 100` 仍是 NaN，一次检查两种都接住。
   const scaled = value * 100
   if (!Number.isFinite(scaled)) {
-    warnNonFinite("formatPointDelta", { value, scaled })
-    return { text: NO_LAST_YEAR_TEXT, tone: "default" }
+    warnNonFinite("formatPointDeltaValue", { value, scaled })
+    return null
   }
   const { fixed, rendered } = fixDelta(scaled)
   // 与 `renderScaledDelta` 同源判零（#314 决策 3）。这里的伪持平**可达**：上游
   // `repurchase.ts` 的 `round4` 最小非零值 0.0001 → scaled 0.01 → 印出来就是 `0.0`。
   // 真持平（value === 0）也在这条合流，所以不再需要单独的 `value === 0` 早退。
-  if (rendered === 0) return { text: `同比${FLAT_TEXT}`, tone: "default" }
+  if (rendered === 0) return { text: FLAT_TEXT, tone: "default" }
   return {
-    text: `同比 ${rendered > 0 ? "+" : ""}${fixed}pct`,
+    text: `${rendered > 0 ? "+" : ""}${fixed}pct`,
     tone: rendered > 0 ? "positive" : "negative",
   }
+}
+
+export function formatPointDelta(value: number | null): { text: string; tone: MetricDeltaTone } {
+  const core = formatPointDeltaValue(value)
+  if (core === null) return { text: NO_LAST_YEAR_TEXT, tone: "default" }
+  // 「同比持平」不带空格（既有字面量，读起来是一个词），「同比 +5.0pct」要分隔。
+  const text = core.text === FLAT_TEXT ? `同比${core.text}` : `同比 ${core.text}`
+  return { text, tone: core.tone }
 }

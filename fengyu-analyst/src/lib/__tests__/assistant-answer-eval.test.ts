@@ -405,6 +405,33 @@ describe("assistant answer 20-question evaluation", () => {
     expect(mocks.getStoreRanking).toHaveBeenCalled()
   })
 
+  it("renders 同比 via metric-delta so AI answers can't drift from the dashboard (#314)", async () => {
+    // formatSignedRate 曾是 formatPointDelta 的逐字复制品，吃同一个 kpi.delta 却各自判零：
+    // delta = 0.0001（repurchase.ts 的 round4 最小非零值）在看板出「持平」、在这里出 "+0.0pct"。
+    // 现已收敛到 metric-delta 的无前缀内核 formatPointDeltaValue，两条路径不可能再分叉。
+    mocks.getRepurchaseKpi.mockResolvedValue({
+      threshold: 1980,
+      kpi: { entryCount: 200, repurchaseCount: 76, repurchaseRate: 0.38, prevYearRate: 0.3799, delta: 0.0001 },
+    })
+    const response = await answerQuestionWithVisualizations(session, "今年复购率怎么样")
+
+    expect(response.content).toContain("持平")
+    expect(response.content).not.toContain("0.0pct")
+  })
+
+  it("never renders NaNpct when the upstream delta goes non-finite (#314 / #317)", async () => {
+    // round4 不挡 NaN，只靠更上游 rate() 的 entryCount > 0 守卫兜着。护栏一旦被动，
+    // 旧实现会把 "NaNpct" 拼进一句读起来通顺的话里——比看板徽章更难被发现。
+    mocks.getRepurchaseKpi.mockResolvedValue({
+      threshold: 1980,
+      kpi: { entryCount: 200, repurchaseCount: 76, repurchaseRate: 0.38, prevYearRate: 0.31, delta: Number.NaN },
+    })
+    const response = await answerQuestionWithVisualizations(session, "今年复购率怎么样")
+
+    expect(response.content).not.toContain("NaN")
+    expect(response.content).toContain("无同比")
+  })
+
   it("answers customer-list questions instead of asking for clarification", async () => {
     const response = await answerQuestionWithVisualizations(session, "顾客名单有哪些")
 
