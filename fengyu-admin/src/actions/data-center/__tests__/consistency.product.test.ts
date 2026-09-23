@@ -182,6 +182,89 @@ describe('品项板块两端口径一致性守护', () => {
     })
   })
 
+  /**
+   * #286：明细「新增人数」的归店必须以 `xinzeng` 为主表 LEFT JOIN `period_agg`。
+   *
+   * 缺陷原理：`period_agg` 要求 `purchase_received > 0`（只统计销售单/转换单，**不含寄存单**），
+   * 而进入达标（`first_entry` → `xinzeng`）走 `day_received`（**含寄存单**）。
+   * 以 `period_agg` 作主表再内连接回来，会把「进入达标日金额全部来自寄存单」的顾客整体丢弃 ——
+   * 生产实测今年 KPI 2470 人而明细合计只有 852 人（**漏 65.5%**），
+   * 派生的新增客单价与复购率因此双双虚高 **2.90 倍**。
+   *
+   * ⚠️ 这些断言只对**明细侧**（`queryCycleByStore`）的 SQL 模板生效：KPI 侧 `queryCycle`
+   * 有一份同名 CTE 链，对整份源码 `toMatch` 时它的字面量会把明细侧的漏改顶掉
+   * （与 `consistency.customer.test.ts` 记载的「单处漏改全绿」同型）。
+   *
+   * ⚠️ 本文件的 `adminCode` 只剥 JS 注释、**不剥 SQL 注释**，所以正向断言理论上可被
+   * 「删真实代码 + 用 `--` 把字面量补回去」绕过。**反向断言（`not.toMatch`）是这里的主力**：
+   * 注释注入只会让它误红（fail-closed），永远不会让它假绿。
+   */
+  describe('明细新增人数以 xinzeng 为主表归店（#286）', () => {
+    /** 切出 queryCycleByStore 的 SQL 模板，避免 KPI 侧同名 CTE 链顶替 */
+    const detailSql = (src: string): string => {
+      const fn = /async function queryCycleByStore\([\s\S]*?\n}/.exec(src)?.[0] ?? ''
+      return normalize(/db\.execute\(sql`([\s\S]*?)`\)/.exec(fn)?.[1] ?? '')
+    }
+    let adminDetail: string
+    beforeAll(() => {
+      adminDetail = detailSql(adminSrc)
+    })
+
+    it('切片锚点有效（能切出明细侧 SQL 且含三个关键 CTE）', () => {
+      expect(adminDetail, 'queryCycleByStore 的 SQL 模板未切出').toBeTruthy()
+      for (const cte of ['xinzeng', 'new_store', 'store_ids', 'period_agg']) {
+        expect(adminDetail, `明细侧缺 ${cte} CTE`).toMatch(new RegExp(`${cte}\\s+AS\\s*\\(`))
+      }
+    })
+
+    it('new_store 以 xinzeng 为主表 LEFT JOIN period_agg', () => {
+      expect(adminDetail).toMatch(
+        /new_store\s+AS\s*\([\s\S]*?FROM\s+xinzeng\s+x\s+LEFT\s+JOIN\s+period_agg\s+pa/,
+      )
+      // ★ 主力断言：回退成「period_agg 作主表内连接 xinzeng」会丢掉
+      //   「进入达标日金额全部来自寄存单」的顾客（实测漏 65.5%）
+      expect(
+        adminDetail,
+        '明细新增回退成了内连接归店 —— 进入达标日只有寄存单的顾客会被整体丢弃（#286）',
+      ).not.toMatch(/FROM\s+period_agg\s+pa\s+JOIN\s+xinzeng/)
+    })
+
+    it('xinzeng 带 entry_store_id（期内无销售单消费时的归店兜底）', () => {
+      expect(adminDetail, 'xinzeng 缺 entry_store_id 列').toMatch(
+        /xinzeng\s+AS\s*\([\s\S]*?AS\s+entry_store_id/,
+      )
+      // 兜底门店必须取自进入达标日当天，且同日多店时确定性地取 MIN
+      expect(adminDetail, 'entry_store_id 未按「进入达标日当天」解析').toMatch(
+        /MIN\(qd\.store_id\)[\s\S]*?FROM\s+qualifying_days\s+qd[\s\S]*?qd\.purchase_date\s*=\s*fe\.entry_date/,
+      )
+    })
+
+    it('new_store 归店列 = COALESCE(消费门店, entry 门店)', () => {
+      expect(adminDetail).toMatch(
+        /COALESCE\(pa\.store_id,\s*x\.entry_store_id\)\s+AS\s+store_id/,
+      )
+      expect(adminDetail, 'GROUP BY 未与投影的归店表达式一致').toMatch(
+        /GROUP\s+BY\s+COALESCE\(pa\.store_id,\s*x\.entry_store_id\)/,
+      )
+    })
+
+    it('store_ids 骨架并上 entry 门店（否则只有寄存单进入的门店会漏行）', () => {
+      expect(adminDetail).toMatch(
+        /store_ids\s+AS\s*\([\s\S]*?FROM\s+period_agg\s+UNION\s+SELECT\s+DISTINCT\s+entry_store_id\s+FROM\s+xinzeng/,
+      )
+    })
+
+    /**
+     * 体验/复购不需要兜底：`tiyan` 本就从 `period_agg` 派生，
+     * `fugou` 要求 `purchase_received >= threshold > 0`，两者必然在 `period_agg` 里有行。
+     * 锁住这一点，免得日后有人"顺手"把它们也改成 LEFT JOIN 兜底，反而引入无处归店的行。
+     */
+    it('体验/复购仍以 period_agg 为主表（它们必然有 period 行，无需兜底）', () => {
+      expect(adminDetail).toMatch(/trial_store\s+AS\s*\([\s\S]*?FROM\s+period_agg\s+pa\s+JOIN\s+tiyan\s+t/)
+      expect(adminDetail).toMatch(/repurchase_store\s+AS\s*\([\s\S]*?FROM\s+period_agg\s+pa\s+JOIN\s+fugou\s+fg/)
+    })
+  })
+
   describe('业绩 = SUM(支付事件 amount)（禁 paid_amount）', () => {
     it('两端禁用 paid_amount（已 DROP，防回归）', () => {
       expect(adminCode).not.toMatch(/paid_amount/)
