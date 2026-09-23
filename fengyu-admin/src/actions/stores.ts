@@ -6,13 +6,14 @@ import { eq, and, sql, asc } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import { alias } from 'drizzle-orm/pg-core'
 import type { Store } from '@/lib/types'
-import { scopeCondition, hasPermission } from '@/lib/permissions'
+import { scopeCondition, hasPermission, isAdminScope } from '@/lib/permissions'
 import { getSession } from '@/lib/auth'
 import { isNodeInScope } from '@/lib/node-scope'
 import { withPermission } from '@/lib/with-permission'
 import { logOperation, logUpdate } from '@/lib/operation-log'
 // stores.org_node_id 是「门店↔组织节点」映射的写入方，与 org 侧改类型的守卫共用 ①（#318）
 import { lockOrgTree } from '@/lib/invariant-locks'
+import { isNodeWithinScopeRoots } from '@/lib/org-ancestry'
 import { pgErrorCode, pgErrorConstraint } from '@/lib/pg-error'
 import { shanghaiToday } from '@/lib/datetime'
 import { lakalaMerchants } from '@db/lakala'
@@ -238,6 +239,17 @@ export const createStore = withPermission(
       if (!lockedNode) return { ok: false, message: '门店节点不存在，请刷新后重试' }
       if (lockedNode.type !== '门店') {
         return { ok: false, message: '所选组织节点不是门店类型，请刷新后重新选择' }
+      }
+      /**
+       * 节点是否**还**在操作者管辖范围内 —— 按当前树判（codex 第 6 轮 P1）。
+       * 事务外那次走的是 `isNodeInScope`（session 构造时展开好的内存集合），
+       * 窗口是整个 JWT 寿命：节点在登录后被改挂到另一个市场，旧 session 照样放行。
+       */
+      if (!isAdminScope(session)) {
+        const scopeRoots = session.roles.map((role) => role.scopeId)
+        if (!(await isNodeWithinScopeRoots(data.orgNodeId, scopeRoots, tx))) {
+          return { ok: false, message: '无权在该节点下创建门店' }
+        }
       }
 
       await tx.insert(stores).values({

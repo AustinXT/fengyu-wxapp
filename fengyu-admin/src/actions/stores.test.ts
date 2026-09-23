@@ -53,10 +53,16 @@ vi.mock('@/lib/permissions', () => ({
   requirePermission: vi.fn(),
   scopeCondition: vi.fn(() => undefined), // admin 返回 undefined（不过滤）
   hasPermission: vi.fn((session: any, action: string) => session.permissions.actions.includes(action)),
+  isAdminScope: vi.fn(() => true), // 默认 admin（不按树复判 scope）
 }))
 
 vi.mock('@/lib/node-scope', () => ({
   isNodeInScope: vi.fn(() => Promise.resolve(true)), // 默认在 scope 内
+}))
+
+// 「节点是否还在管辖范围内」按当前树判（#318 第 6 轮）；SQL 语义由真库冒烟负责
+vi.mock('@/lib/org-ancestry', () => ({
+  isNodeWithinScopeRoots: vi.fn(() => Promise.resolve(true)),
 }))
 
 vi.mock('@/lib/operation-log', () => ({
@@ -71,9 +77,21 @@ vi.mock('next/cache', () => ({
 
 import { getStores, getAvailableStoreNodes, createStore, updateStore } from './stores'
 import { db } from '@/db'
+import { isAdminScope } from '@/lib/permissions'
+import { isNodeWithinScopeRoots } from '@/lib/org-ancestry'
 import { getSession } from '@/lib/auth'
 import { scopeCondition } from '@/lib/permissions'
 import { isNodeInScope } from '@/lib/node-scope'
+
+/**
+ * ⚠️ `vi.clearAllMocks()` 只清调用记录、**不清 mockImplementation** —— 某条用例给共享桩设的
+ * 实现会泄漏到后面所有用例。这个**顶层** `beforeEach` 先于各 describe 自己的那个执行，
+ * 而后者的 `clearAllMocks()` 不会清掉这里设的实现，所以顺序是安全的。
+ */
+beforeEach(() => {
+  ;(isAdminScope as any).mockReturnValue(true)
+  ;(isNodeWithinScopeRoots as any).mockResolvedValue(true)
+})
 
 const mockSession = {
   employeeId: 'ADMIN-001',
@@ -244,6 +262,25 @@ describe('createStore — 挂载到门店节点', () => {
 
     expect(result.success).toBe(false)
     expect(result.message).toContain('不是门店类型')
+    expect(values).not.toHaveBeenCalled()
+  })
+
+  /**
+   * 节点是否**还**在管辖范围内要按当前树判（codex 第 6 轮 P1）：
+   * 事务外走的是 session 快照，窗口是整个 JWT 寿命 —— 节点在登录后被改挂到另一个市场，
+   * 旧 session 照样放行。
+   */
+  it('非 admin：节点已被挪出管辖子树 → 拒绝且不 INSERT', async () => {
+    mockNodeLookup(storeNode)
+    const values = vi.fn().mockResolvedValue({})
+    mockInsertTx(values)
+    ;(isAdminScope as any).mockReturnValue(false)
+    ;(isNodeWithinScopeRoots as any).mockResolvedValue(false)
+
+    const result = await createStore(baseStoreData)
+
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('无权在该节点下创建门店')
     expect(values).not.toHaveBeenCalled()
   })
 
