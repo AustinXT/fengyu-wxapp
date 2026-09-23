@@ -82,7 +82,10 @@ const customerOperationMetricColumns = [
   { key: 'bucketVIC', label: '≥10万', unit: 'count' },
   { key: 'operatedTotal', label: '被经营总数', unit: 'count' },
   { key: 'newMembers', label: '会员新增', unit: 'count' },
-  { key: 'trafficCustomers', label: '流量客', unit: 'count' },
+  // #284：与 KPI 卡同步改名。⚠ 它与下方 trafficVisits「流量人次」**不同口径**，
+  // 新分母含「本期已转会员的人」（其人次记入 memberVisits）和「本期没到过店的新会员」（无人次），
+  // 因此同一行出现「成交率分母 > 流量人次」甚至「流量人次 = 0」是合法的，不是数据 bug
+  { key: 'trafficCustomers', label: '成交率分母', unit: 'count' },
   { key: 'convRate', label: '成交率', unit: 'percent' },
   { key: 'memberAvgTicket', label: '会员客单', unit: 'amount' },
   { key: 'newCustomerAvgTicket', label: '新客客单', unit: 'amount' },
