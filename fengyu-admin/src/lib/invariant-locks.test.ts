@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
 import { resolve } from 'node:path'
 
 vi.mock('@/db', () => ({ db: { execute: vi.fn() } }))
@@ -78,33 +78,65 @@ describe('invariant-locks — 锁的取法', () => {
  * 是「advisory → 行锁」，两个评审谱系各自独立报出）。
  *
  * 这是**源码守护**：运行时测不出来（要真造并发死锁），但顺序写反是最容易犯的错，
- * 所以按文本位置钉住。新增同时取两把锁的 action 时，把文件名加进 `BOTH_LOCK_FILES`。
+ * 所以按文本位置钉住。
+ *
+ * ⚠️ 必须**按事务块分别判**，不能拿整文件的首次出现比（codex 第 2 轮 P3）：
+ * `employees.ts` 里 `lockOrgTree` 的第一次出现在 `createEmployee`，于是把
+ * `updateEmployee` 的组织树锁挪到行锁之后，整文件口径照样通过 —— 那是个假绿。
  */
 describe('invariant-locks — 取锁顺序（源码守护）', () => {
   const ACTIONS_DIR = resolve(__dirname, '..', 'actions')
-  /** 同时取两把锁的文件 —— 目前只有 employees（标离职既动归属字段又减 admin 数） */
-  const BOTH_LOCK_FILES = ['employees.ts']
-
-  it.each(BOTH_LOCK_FILES)('%s：组织树锁必须排在 admin 计数锁之前', (file) => {
-    const src = readFileSync(resolve(ACTIONS_DIR, file), 'utf8')
-    const orgAt = src.indexOf('lockOrgTree(')
-    const adminAt = src.indexOf('lockActiveAdminCount(')
-
-    expect(orgAt, `${file} 应当调用 lockOrgTree`).toBeGreaterThan(-1)
-    expect(adminAt, `${file} 应当调用 lockActiveAdminCount`).toBeGreaterThan(-1)
-    expect(orgAt, '① 组织树 → ② admin 计数，反序即 40P01').toBeLessThan(adminAt)
-  })
+  /** 取过锁的 action 文件 —— 新增取锁路径时把文件名加进来 */
+  const LOCKING_FILES = ['employees.ts', 'org.ts', 'permissions.ts', 'role-definitions.ts']
 
   /**
-   * 行锁（`.for('update')`）必须排在两把 advisory lock**之后**。
-   * 只看 import 顺序会漏 —— 这里比的是调用点位置。
+   * 按 `db.transaction(` 切开，每段就是一个事务体（含其后所有文本，但下一段起点即本段终点）。
+   * 粗糙但足够：判的是同一事务内三类锁的**相对位置**。
    */
-  it.each(BOTH_LOCK_FILES)('%s：行锁排在 advisory lock 之后', (file) => {
-    const src = readFileSync(resolve(ACTIONS_DIR, file), 'utf8')
-    const lastAdvisory = Math.max(src.indexOf('lockOrgTree('), src.indexOf('lockActiveAdminCount('))
-    const firstRowLock = src.search(/\.for\(\s*['"]update['"]\s*\)/)
+  function transactionBlocks(src: string): string[] {
+    const parts = src.split('db.transaction(')
+    return parts.slice(1)
+  }
 
-    expect(firstRowLock, `${file} 应当有 FOR UPDATE 行锁`).toBeGreaterThan(-1)
-    expect(lastAdvisory, '②/① 之后才轮到 ③ 行锁').toBeLessThan(firstRowLock)
+  it.each(LOCKING_FILES)('%s：每个事务块内的取锁顺序都是 ① 组织树 → ② admin 计数 → ③ 行锁', (file) => {
+    const src = readFileSync(resolve(ACTIONS_DIR, file), 'utf8')
+    const blocks = transactionBlocks(src)
+    expect(blocks.length, `${file} 应当至少有一个事务`).toBeGreaterThan(0)
+
+    for (const block of blocks) {
+      const orgAt = block.indexOf('lockOrgTree(')
+      const adminAt = block.indexOf('lockActiveAdminCount(')
+      const rowAt = block.search(/\.for\(\s*['"]update['"]\s*\)/)
+
+      if (orgAt > -1 && adminAt > -1) {
+        expect(orgAt, `${file}: ① 组织树必须排在 ② admin 计数之前`).toBeLessThan(adminAt)
+      }
+      const lastAdvisory = Math.max(orgAt, adminAt)
+      if (lastAdvisory > -1 && rowAt > -1) {
+        expect(lastAdvisory, `${file}: advisory 锁必须排在 ③ 行锁之前`).toBeLessThan(rowAt)
+      }
+    }
+
+    /**
+     * 上面的断言是条件式的（两把锁同时出现才比顺序），所以必须另外钉住
+     * 「这个文件真的在事务里取过锁」—— 否则谁把取锁整段删掉，这条守护会静默通过。
+     * 只有一把锁、或没有行锁的文件（`org.ts` / `permissions.ts` / `role-definitions.ts`）
+     * 本来就没有相对顺序可比，那不是缺陷。
+     */
+    const locksInsideTx = blocks.some((b) => (
+      b.includes('lockOrgTree(') || b.includes('lockActiveAdminCount(')
+    ))
+    expect(locksInsideTx, `${file} 登记在 LOCKING_FILES 里，却没有任何事务块在取锁`).toBe(true)
+  })
+
+  /** 清单本身的守护：取锁函数只应出现在 `LOCKING_FILES` 列的文件里，新增了就得登记 */
+  it('没有未登记的文件在取锁', () => {
+    const unlisted = readdirSync(ACTIONS_DIR)
+      .filter((f) => f.endsWith('.ts') && !f.endsWith('.test.ts') && !LOCKING_FILES.includes(f))
+      .filter((f) => {
+        const src = readFileSync(resolve(ACTIONS_DIR, f), 'utf8')
+        return src.includes('lockOrgTree(') || src.includes('lockActiveAdminCount(')
+      })
+    expect(unlisted, '这些文件取了锁但没登记进 LOCKING_FILES，锁序守护覆盖不到它们').toEqual([])
   })
 })
