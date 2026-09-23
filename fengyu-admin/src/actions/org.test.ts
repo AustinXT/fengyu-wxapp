@@ -660,6 +660,25 @@ describe('updateOrgNode — 结构性变更后复核子树员工归属自洽（#
     })
   })
 
+  /**
+   * ## 写库字段走显式白名单（#318 第 8 轮 codex P1）
+   *
+   * 客户端多塞 `updatedAt` 并写成一个旧时刻 → **持旧版本的请求也能命中 CAS**，
+   * 乐观锁整体失效；`id` / `createdAt` 同理。`data: Partial<{…}>` 只是编译期类型。
+   */
+  it.each(['updatedAt', 'createdAt', 'id'])('多塞的 %s 不会被写进库', async (extraKey) => {
+    // 只改 name → 非结构性路径，走全局 db.update（不进事务）
+    const set = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({ count: 1 }) })
+    ;(db.update as any).mockReturnValue({ set })
+
+    const result = await updateOrgNode('dept-1', { name: '新名称', [extraKey]: 'INJECTED' } as any)
+
+    expect(result.success).toBe(true)
+    const written = set.mock.calls[0][0]
+    expect(Object.keys(written), `${extraKey} 不该出现在写库字段里`).not.toContain(extraKey)
+    expect(written.name, '白名单内的字段照常写').toBe('新名称')
+  })
+
   it('非结构性的普通更新（改名）→ 不进事务、不取锁、不复核', async () => {
     setupTx()
     setupUpdate(1)

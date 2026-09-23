@@ -364,6 +364,22 @@ export const updateOrgNode = withPermission(
    */
   const structural = data.parentId !== undefined || data.type !== undefined
 
+  /**
+   * ## 写库字段走**显式白名单**（#318 第 8 轮 codex P1）
+   *
+   * `data: Partial<{…}>` 只是编译期类型；Server Action 是可直接调用的端点、入参原样到达。
+   * 裸 `.set(data)` 时客户端可以多塞 `updatedAt` —— 把它写成一个旧时刻，
+   * 那么**持旧版本的请求也能命中 CAS**，乐观锁整体失效；`id` / `createdAt` 同理。
+   * 与 `updateStore` / `updateEmployee` 同一条规则（#249/#259 起）。
+   *
+   * ⚠️ 新增可编辑字段必须在这里登记一行，否则会静默不生效（比静默写坏安全得多）。
+   * `structural` 的判据用的是**原始入参**：多塞的键不参与结构性判断，也就进不了锁内路径。
+   */
+  const updateData: Record<string, unknown> = {}
+  for (const key of ['name', 'type', 'parentId', 'sortOrder', 'isActive'] as const) {
+    if (data[key] !== undefined) updateData[key] = data[key]
+  }
+
   if (structural) {
     // 早拒：省掉开事务的成本。**权威版本在锁内**，这里判过的锁内一律重判。
     const preTxError = await validateStructuralChange(session, id, data, preTxBefore, db)
@@ -404,7 +420,7 @@ export const updateOrgNode = withPermission(
         const lockedError = await validateStructuralChange(session, id, data, locked, tx)
         if (lockedError) return { kind: 'failure', message: lockedError }
 
-        const updated = await tx.update(orgNodes).set(data).where(whereConditions)
+        const updated = await tx.update(orgNodes).set(updateData).where(whereConditions)
         const rowCount = (updated as any).count ?? 0
         if (rowCount === 0) return { kind: 'written', rowCount: 0 }
 
@@ -430,12 +446,12 @@ export const updateOrgNode = withPermission(
         }
 
         // 审计与写入同生共死（GLM 第 5 轮 P3：create/assign/revoke 都收进事务了，就差这里）
-        await logUpdate(session, 'org.update', 'org_node', id, before, data, tx)
+        await logUpdate(session, 'org.update', 'org_node', id, before, updateData, tx)
         return { kind: 'written', rowCount }
       })
       : {
         kind: 'written',
-        rowCount: ((await db.update(orgNodes).set(data).where(whereConditions)) as any).count ?? 0,
+        rowCount: ((await db.update(orgNodes).set(updateData).where(whereConditions)) as any).count ?? 0,
       }
   } catch (err: any) {
     if (err instanceof Error && err.message === ORG_OWNERSHIP_CONFLICT) {
@@ -464,7 +480,7 @@ export const updateOrgNode = withPermission(
 
   // 结构性变更那条路径的审计已在事务内写过；非结构性路径（改名等）没有事务，在这里写
   if (!structural) {
-    await logUpdate(session, 'org.update', 'org_node', id, before, data)
+    await logUpdate(session, 'org.update', 'org_node', id, before, updateData)
   }
   revalidatePath('/org')
   return { success: true, message: '节点已更新' }
