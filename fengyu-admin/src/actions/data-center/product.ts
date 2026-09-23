@@ -429,23 +429,39 @@ async function queryCycleByStore(
       WHERE purchase_date BETWEEN ${range.start} AND ${range.end}
         AND purchase_received > 0
     ),
+    -- 进入达标日 + 当日所在门店，一次取齐（#286）。
+    --
+    -- entry_store_id 是新增人数在「期内无销售单/转换单消费」时的归店兜底。
+    -- ⚠️ 这是主干不是边角：生产实测今年的新增顾客里有 84% 期内没有任何销售单/转换单消费，
+    -- 完全靠这一列归店。一旦它为 NULL，那批人会静默丢三次（COALESCE 得 NULL 组
+    -- → store_ids 排除 NULL → 最终 LEFT JOIN 永不匹配），与 #286 本身是同一个失败模式。
+    --
+    -- 所以刻意用 DISTINCT ON 让 entry_date 与 entry_store_id **出自同一行**：二者同生共死，
+    -- 结构上不存在「有日期却没门店」的组合，也不依赖任何等值匹配 —— 从而绕开了
+    -- grp 可空（product_categories.product_kind 在 schema 里可空）带来的 NULL 不安全等值陷阱。
+    -- 先前写成「先算 entry_date、再用 qd.grp = fe.grp 回查门店」的版本除了这个 NULL 洞，
+    -- 还是 O(|xinzeng| × |qualifying_days|) 的相关子查询，生产实测把本查询从 825ms 拖到
+    -- 2276ms（+177%），且两个因子都随历史数据线性增长。
+    --
+    -- ORDER BY purchase_date 取最早达标日，与 first_entry 的 MIN(purchase_date) 等价；
+    -- 同日跨多店达标时按 store_id 兜底排序（store_id 形如 store-<建店毫秒时间戳>，
+    -- 字典序≈建店先后，**无业务含义，仅为结果确定不随执行计划漂**）。
+    --
+    -- ⚠️ MATERIALIZED 不是装饰：不加的话 planner 对 CTE 的行数估计失真上千倍
+    -- （first_entry 估 658 实际 4098），会选 nested loop 把耗时推回 1.6s+。
+    entry_store AS MATERIALIZED (
+      SELECT DISTINCT ON (client_user_id, grp)
+             client_user_id,
+             grp,
+             purchase_date AS entry_date,
+             store_id AS entry_store_id
+      FROM qualifying_days
+      ORDER BY client_user_id, grp, purchase_date, store_id
+    ),
     xinzeng AS (
-      SELECT fe.client_user_id,
-             fe.grp,
-             fe.entry_date,
-             -- 进入达标日所在门店：新增人数在期内无销售单/转换单消费时的归店兜底（#286）。
-             -- entry_date 取自 qualifying_days 的 MIN(purchase_date)，该日必有对应行，
-             -- 所以子查询恒非 NULL（生产实测解析失败 0 行）。同日跨多店达标取 MIN(store_id)，
-             -- 保证结果确定、不随执行计划漂。
-             (
-               SELECT MIN(qd.store_id)
-               FROM qualifying_days qd
-               WHERE qd.client_user_id = fe.client_user_id
-                 AND qd.grp = fe.grp
-                 AND qd.purchase_date = fe.entry_date
-             ) AS entry_store_id
-      FROM first_entry fe
-      WHERE fe.entry_date BETWEEN ${range.start} AND ${range.end}
+      SELECT client_user_id, grp, entry_date, entry_store_id
+      FROM entry_store
+      WHERE entry_date BETWEEN ${range.start} AND ${range.end}
     ),
     fugou AS (
       SELECT DISTINCT q.client_user_id, q.grp

@@ -200,42 +200,155 @@ describe('品项板块两端口径一致性守护', () => {
    * 注释注入只会让它误红（fail-closed），永远不会让它假绿。
    */
   describe('明细新增人数以 xinzeng 为主表归店（#286）', () => {
-    /** 切出 queryCycleByStore 的 SQL 模板，避免 KPI 侧同名 CTE 链顶替 */
+    /**
+     * 切出 queryCycleByStore 的 SQL 模板，避免 KPI 侧同名 CTE 链顶替。
+     *
+     * 同时剥掉 SQL 行注释 —— 这样正向断言不能被「删真实代码 + 用 `--` 把字面量补回去」满足，
+     * 反向断言也不会被源码注释里出现的 SQL 片段误伤（否则那就成了一条零守护的措辞约定）。
+     *
+     * ⚠️ 用正则剥 `--` 在一般情况下不可靠（`--` 出现在字符串字面量里会误删后续条件，
+     * `consistency.customer.test.ts` 为此专门写了词法状态机）。本模板里的字符串字面量
+     * 只有 `'销售单'`/`'转换单'`/`'寄存单'`/`'已关闭'` 这类中文枚举值，**零 `--`**，
+     * 所以这里是安全的；即便日后误删，后果也是正向断言误红（fail-closed），不会假绿。
+     */
     const detailSql = (src: string): string => {
       const fn = /async function queryCycleByStore\([\s\S]*?\n}/.exec(src)?.[0] ?? ''
-      return normalize(/db\.execute\(sql`([\s\S]*?)`\)/.exec(fn)?.[1] ?? '')
+      const tpl = /db\.execute\(sql`([\s\S]*?)`\)/.exec(fn)?.[1] ?? ''
+      return normalize(tpl.replace(/--[^\n]*/g, ' '))
     }
+    /**
+     * 切出单个 CTE 块（以下一个 CTE 名为右边界），避免跨块的惰性匹配假红/假绿。
+     * 两侧都容忍 `AS MATERIALIZED (` 这种带物化提示的写法。
+     */
+    const cteBlock = (sqlText: string, name: string, nextName: string): string =>
+      new RegExp(
+        `${name}\\s+AS\\s+(?:MATERIALIZED\\s+)?\\(([\\s\\S]*?)\\),\\s*${nextName}\\s+AS\\s`,
+      ).exec(sqlText)?.[1] ?? ''
+
     let adminDetail: string
     beforeAll(() => {
       adminDetail = detailSql(adminSrc)
     })
 
-    it('切片锚点有效（能切出明细侧 SQL 且含三个关键 CTE）', () => {
+    it('切片锚点有效（能切出明细侧 SQL 且含关键 CTE）', () => {
       expect(adminDetail, 'queryCycleByStore 的 SQL 模板未切出').toBeTruthy()
       for (const cte of ['xinzeng', 'new_store', 'store_ids', 'period_agg']) {
         expect(adminDetail, `明细侧缺 ${cte} CTE`).toMatch(new RegExp(`${cte}\\s+AS\\s*\\(`))
       }
-    })
-
-    it('new_store 以 xinzeng 为主表 LEFT JOIN period_agg', () => {
-      expect(adminDetail).toMatch(
-        /new_store\s+AS\s*\([\s\S]*?FROM\s+xinzeng\s+x\s+LEFT\s+JOIN\s+period_agg\s+pa/,
-      )
-      // ★ 主力断言：回退成「period_agg 作主表内连接 xinzeng」会丢掉
-      //   「进入达标日金额全部来自寄存单」的顾客（实测漏 65.5%）
+      // 明细侧只应有一条 db.execute；日后拆成多查时切片会静默只盯前半段，这里先钉死
+      const fn = /async function queryCycleByStore\([\s\S]*?\n}/.exec(adminSrc)?.[0] ?? ''
       expect(
-        adminDetail,
-        '明细新增回退成了内连接归店 —— 进入达标日只有寄存单的顾客会被整体丢弃（#286）',
-      ).not.toMatch(/FROM\s+period_agg\s+pa\s+JOIN\s+xinzeng/)
+        (fn.match(/db\.execute\(/g) ?? []).length,
+        '明细侧出现多个 db.execute —— detailSql 的切片口径需同步更新',
+      ).toBe(1)
     })
 
-    it('xinzeng 带 entry_store_id（期内无销售单消费时的归店兜底）', () => {
-      expect(adminDetail, 'xinzeng 缺 entry_store_id 列').toMatch(
-        /xinzeng\s+AS\s*\([\s\S]*?AS\s+entry_store_id/,
+    /**
+     * ★ 计数主体必须是 `x.client_user_id`（xinzeng 的顾客），不能是 `pa.client_user_id`。
+     *
+     * 这是 sibling-auditor 在 round-1 抓到的守护缺口：把计数主体改回 `pa.client_user_id`，
+     * **65.5% 的漏损会原样复现**（兜底分组里 `pa.*` 全是 NULL，`COUNT(DISTINCT pa.client_user_id) = 0`），
+     * 而其余 6 条断言**全部照绿** —— 主表仍是 `FROM xinzeng x LEFT JOIN period_agg pa`、
+     * `COALESCE(...)` 与 `GROUP BY` 都在、`store_ids` 的 UNION 也在。
+     *
+     * ⚠️ 反向断言必须限制在 `new_store` 块内：`trial_store` / `repurchase_store`
+     * **合法地**使用 `COUNT(DISTINCT pa.client_user_id)`，跨块惰性匹配会假红。
+     */
+    it('new_store 的计数主体是 x.client_user_id（不是 pa —— 兜底分组里 pa.* 全 NULL）', () => {
+      const block = cteBlock(adminDetail, 'new_store', 'repurchase_store')
+      expect(block, 'new_store 块未切出（CTE 顺序变了？）').toBeTruthy()
+      expect(block, 'new_store 的计数主体不是 x.client_user_id —— 兜底分组会数出 0（#286）').toMatch(
+        /COUNT\(DISTINCT\s+x\.client_user_id\)/,
       )
-      // 兜底门店必须取自进入达标日当天，且同日多店时确定性地取 MIN
-      expect(adminDetail, 'entry_store_id 未按「进入达标日当天」解析').toMatch(
-        /MIN\(qd\.store_id\)[\s\S]*?FROM\s+qualifying_days\s+qd[\s\S]*?qd\.purchase_date\s*=\s*fe\.entry_date/,
+      expect(block, 'new_store 回退成按 pa 计数 —— 期内无销售单消费的新增顾客会被数成 0').not.toMatch(
+        /COUNT\(DISTINCT\s+pa\.client_user_id\)/,
+      )
+    })
+
+    /**
+     * staff 端哨兵：目前 `mgmt-product.js` **没有**任何按门店/市场的明细口径
+     * （全文零 `GROUP BY ... store_id`，三段 UNION ALL 都按 product_kind 分组），
+     * 所以本 issue 不涉及跨端。这条哨兵在 staff 日后长出 byStore 明细时立刻转红，
+     * 提醒必须同步 #286 的归店修复，否则会原样复刻这个 65.5% 的缺陷。
+     */
+    it('staff 端仍无按门店明细（长出来时必须同步 #286 的归店口径）', () => {
+      expect(
+        staffCode,
+        'staffApi 出现了按门店分组 —— 请同步 #286 的「xinzeng 主表 + entry_store_id 兜底」归店口径',
+      ).not.toMatch(/GROUP\s+BY\s+[\w.]*store_id/)
+    })
+
+    /**
+     * ★ 全部断言收进 `new_store` 的 CTE 体内。
+     *
+     * round-1 的 boundary-critic 在内存里实测出：断言写成
+     * `/new_store\s+AS\s*\([\s\S]*?FROM\s+xinzeng\s+x\s+LEFT\s+JOIN.../` 时
+     * **`[\s\S]*?` 没有右边界** —— 那个字面量只要出现在 `new_store AS (` 之后的任意位置
+     * （后面别的 CTE 里、甚至一行注释里）就算数。于是三种改法都能让 65.5% 的漏损
+     * 100% 复活而断言全绿：
+     *   E) 计数主体改回 `pa.client_user_id`（兜底分组里 pa.* 全 NULL → 数出 0）
+     *   F) 体内加一行 `WHERE pa.store_id IS NOT NULL`（把 LEFT JOIN 打回内连接）
+     *   A) 换别名写成内连接（`period_agg p JOIN xinzeng z`）+ 注释补字面量
+     * 反向断言当时也只钉死一种拼法，对 `INNER JOIN` / 逗号连接 / 别名变更全免疫。
+     */
+    it('new_store 以 xinzeng 为主表 LEFT JOIN period_agg（体内断言，堵别名/INNER/逗号连接）', () => {
+      const block = cteBlock(adminDetail, 'new_store', 'repurchase_store')
+      expect(block, 'new_store 块未切出（CTE 顺序变了？）').toBeTruthy()
+
+      expect(block, 'new_store 的主表不是 xinzeng').toMatch(
+        /FROM\s+xinzeng\s+x\s+LEFT\s+JOIN\s+period_agg\s+pa\b/,
+      )
+      // 任何非 LEFT 的 JOIN 都会把「进入达标日只有寄存单」的顾客丢掉
+      expect(block, 'new_store 出现了非 LEFT 的 JOIN —— 会丢掉无 period 行的新增顾客').not.toMatch(
+        /\b(INNER|RIGHT|FULL|CROSS)\s+JOIN\b/i,
+      )
+      // 逗号连接 + WHERE 关联等价于内连接
+      expect(block, 'new_store 用逗号连接了两个表 —— 等价于内连接').not.toMatch(
+        /FROM\s+\w+\s+\w+\s*,/,
+      )
+      // 体内任何 WHERE 都可能把 LEFT JOIN 打回内连接（最典型：WHERE pa.store_id IS NOT NULL）
+      expect(
+        block,
+        'new_store 体内出现 WHERE —— 对 LEFT JOIN 的右表加过滤会退化成内连接（#286 原缺陷）',
+      ).not.toMatch(/\bWHERE\b/i)
+    })
+
+    /**
+     * `entry_date` 与 `entry_store_id` 必须出自**同一行**（`DISTINCT ON`），而不是
+     * 「先算 entry_date、再用等值条件回查门店」。
+     *
+     * 两个理由，都由 round-1 评审实测背书：
+     *   1. **NULL 安全**：回查写法要用 `qd.grp = fe.grp`，而 `product_kind` 在 schema 里可空，
+     *      grp 为 NULL 时等值不匹配 → `entry_store_id` 为 NULL → 那批人静默丢三次
+     *      （COALESCE 得 NULL 组 → store_ids 排除 NULL → 最终 LEFT JOIN 永不匹配）。
+     *      同生共死的 DISTINCT ON 在结构上排除了这种组合。
+     *   2. **性能**：回查是相关子查询，复杂度 O(|xinzeng| × |qualifying_days|)，
+     *      生产实测把这条明细查询从 825ms 拖到 **2276ms（+177%）**，且两者都随历史数据线性增长。
+     *      DISTINCT ON 版实测 **843ms**，与基线持平，结果双向 EXCEPT 为 0 行。
+     */
+    it('entry_date 与 entry_store_id 出自同一行（DISTINCT ON，非等值回查）', () => {
+      expect(adminDetail, 'xinzeng 缺 entry_store_id 列').toMatch(
+        /xinzeng\s+AS\s*\([\s\S]*?entry_store_id/,
+      )
+      const block = cteBlock(adminDetail, 'entry_store', 'xinzeng')
+      expect(block, 'entry_store CTE 未切出').toBeTruthy()
+      expect(block, 'entry_store 未用 DISTINCT ON (client_user_id, grp)').toMatch(
+        /SELECT\s+DISTINCT\s+ON\s*\(\s*client_user_id,\s*grp\s*\)/,
+      )
+      expect(block, 'entry_date 与 entry_store_id 未出自同一行').toMatch(
+        /purchase_date\s+AS\s+entry_date[\s\S]*?store_id\s+AS\s+entry_store_id/,
+      )
+      // 最早达标日 + 同日多店的确定性 tie-break
+      expect(block, 'ORDER BY 未按 purchase_date 取最早、未用 store_id 兜底排序').toMatch(
+        /ORDER\s+BY\s+client_user_id,\s*grp,\s*purchase_date,\s*store_id/,
+      )
+      // MATERIALIZED 被摘掉会让 planner 因行数估计失真选 nested loop，耗时回到 1.6s+
+      expect(block === '' ? '' : adminDetail, 'entry_store 丢了 MATERIALIZED —— 执行计划会退化').toMatch(
+        /entry_store\s+AS\s+MATERIALIZED\s*\(/,
+      )
+      // 回查写法（相关子查询）不得复活
+      expect(adminDetail, 'entry_store_id 退回等值回查 —— NULL 不安全且 O(n²)').not.toMatch(
+        /MIN\(qd\.store_id\)/,
       )
     })
 
