@@ -105,7 +105,11 @@ export default function ErrorPage({
           {/* 只展示 Next 自动生成的错误编号（供客服定位）。digest 也可能是完整业务 / 技术文案
               （如 `INVALID_STATE: CLIENT_SECRET is not configured`），原样渲染会绕过
               actionErrorMessage 的全部闸门把技术细节泄漏出去（评审 round 1 指出）。 */}
-          {error.digest && NEXT_AUTO_DIGEST_RE.test(error.digest) && (
+          {/* ⚠️ `typeof === "string"` 不能省：`digest` 的 TS 类型是 `string | undefined`，
+              运行时不保证。若上游给了个 `{ toString() {...} }`，`RE.test()` 的隐式 String()
+              会让它通过，随后 React 渲染对象抛 "Objects are not valid as a React child"
+              ——**错误边界自己崩了**，会冒泡到 Next 内建页。与 analyst 那份副本对齐（#316）。 */}
+          {typeof error.digest === 'string' && NEXT_AUTO_DIGEST_RE.test(error.digest) && (
             <p className="text-xs text-[#999999]">错误编号: {error.digest}</p>
           )}
           <div className="flex justify-center gap-3 mt-4">

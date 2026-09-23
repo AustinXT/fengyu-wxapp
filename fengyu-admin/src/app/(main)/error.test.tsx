@@ -95,6 +95,17 @@ describe('(main)/error.tsx digest 白名单（跨端副本，与 analyst 同步�
     expect(DIGEST_PATTERN.toString()).toBe('/^\\d{1,10}(?:@E\\d{1,9})?$/')
   })
 
+  it('⚠️ digest 不是字符串时不得进入渲染——否则错误边界自己会崩', () => {
+    // 与 analyst 那份副本对齐（#316 闸门 2 GLM 指出两侧防御深度不对称）。
+    // `RE.test()` 的隐式 String() 会让 `{ toString: () => "123" }` 通过，
+    // 随后 React 渲染对象抛 "Objects are not valid as a React child"。
+    const objectDigest = { toString: () => '123' } as unknown as string
+    expect(() =>
+      render(<ErrorPage error={errorWith({ message: SANITIZED, digest: objectDigest })} reset={vi.fn()} />),
+    ).not.toThrow()
+    expect(screen.queryByText(/错误编号/)).toBeNull()
+  })
+
   it('⚠️ 没有 m flag——多行 digest 不得被当成错误编号', () => {
     render(
       <ErrorPage

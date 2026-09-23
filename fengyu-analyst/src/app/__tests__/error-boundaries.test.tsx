@@ -2,13 +2,19 @@
 
 import { cleanup, render, screen } from "@testing-library/react"
 import "@testing-library/jest-dom/vitest"
-import { afterEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import MainError from "@/app/(main)/error"
 import RootError from "@/app/error"
 
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ refresh: vi.fn() }),
 }))
+
+// 两个 wrapper 的 useEffect 都会 console.error 完整 Error（有意的可观测性设计）。
+// 这里静音，避免每次渲染往 stderr 刷 stack 噪音——与 admin 侧 error.test.tsx 的做法一致。
+beforeEach(() => {
+  vi.spyOn(console, "error").mockImplementation(() => {})
+})
 
 afterEach(cleanup)
 
