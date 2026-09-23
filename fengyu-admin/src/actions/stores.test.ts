@@ -6,6 +6,8 @@ vi.mock('@/db', () => ({
     update: vi.fn(),
     insert: vi.fn(),
     transaction: vi.fn(),
+    // getMarketStoreIds 走原生 SQL
+    execute: vi.fn().mockResolvedValue([]),
   },
 }))
 
@@ -54,6 +56,7 @@ vi.mock('@/lib/permissions', () => ({
   scopeCondition: vi.fn(() => undefined), // admin 返回 undefined（不过滤）
   hasPermission: vi.fn((session: any, action: string) => session.permissions.actions.includes(action)),
   isAdminScope: vi.fn(() => true), // 默认 admin（不按树复判 scope）
+  isInScope: vi.fn(() => true),
 }))
 
 vi.mock('@/lib/node-scope', () => ({
@@ -75,9 +78,9 @@ vi.mock('next/cache', () => ({
   revalidatePath: vi.fn(),
 }))
 
-import { getStores, getAvailableStoreNodes, createStore, updateStore } from './stores'
+import { getStores, getAvailableStoreNodes, createStore, updateStore, getMarketStoreIds } from './stores'
 import { db } from '@/db'
-import { isAdminScope } from '@/lib/permissions'
+import { isAdminScope, isInScope } from '@/lib/permissions'
 import { isNodeWithinScopeRoots } from '@/lib/org-ancestry'
 import { getSession } from '@/lib/auth'
 import { scopeCondition } from '@/lib/permissions'
@@ -91,6 +94,7 @@ import { isNodeInScope } from '@/lib/node-scope'
 beforeEach(() => {
   ;(isAdminScope as any).mockReturnValue(true)
   ;(isNodeWithinScopeRoots as any).mockResolvedValue(true)
+  ;(isInScope as any).mockReturnValue(true)
 })
 
 const mockSession = {
@@ -227,7 +231,10 @@ describe('createStore — 挂载到门店节点', () => {
     const txSelect = vi.fn().mockReturnValue({
       from: vi.fn().mockReturnValue({
         where: vi.fn().mockReturnValue({
-          limit: vi.fn().mockResolvedValue(lockedNodeType === null ? [] : [{ type: lockedNodeType }]),
+          limit: vi.fn().mockResolvedValue(
+            // 门店名以组织节点为权威，锁内一并复读（#318 第 7 轮）
+            lockedNodeType === null ? [] : [{ type: lockedNodeType, name: '南昌蓝茉店' }],
+          ),
         }),
       }),
     })
@@ -356,6 +363,50 @@ describe('createStore — 挂载到门店节点', () => {
 
 // ── updateStore ─────────────────────────────────────────────────────────────
 
+/**
+ * `getMarketStoreIds` 原先既不校验入参门店是否在 scope 内、也不过滤结果 ——
+ * 市场 A 的管理员传一个市场 B 的 storeId 就能枚举 B 的全部门店 id（#318 第 7 轮 GLM P2）。
+ */
+describe('getMarketStoreIds — scope 隔离', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockSession)
+  })
+
+  it('非 admin：入参门店不在 scope 内 → 直接返回空，不打库', async () => {
+    ;(isAdminScope as any).mockReturnValue(false)
+    ;(isInScope as any).mockReturnValue(false)
+
+    const result = await getMarketStoreIds('store-other-market')
+
+    expect(result).toEqual([])
+    expect(db.execute).not.toHaveBeenCalled()
+  })
+
+  it('非 admin：结果里超出 scope 的兄弟门店被过滤掉', async () => {
+    ;(isAdminScope as any).mockReturnValue(false)
+    ;(isInScope as any).mockImplementation((_s: any, id: string) => id !== 'store-outside')
+    ;(db.execute as any).mockResolvedValue([
+      { store_id: 'store-mine' },
+      { store_id: 'store-outside' },
+    ])
+
+    const result = await getMarketStoreIds('store-mine')
+
+    expect(result).toEqual(['store-mine'])
+  })
+
+  it('admin：不过滤', async () => {
+    ;(isAdminScope as any).mockReturnValue(true)
+    ;(isInScope as any).mockReturnValue(true)
+    ;(db.execute as any).mockResolvedValue([{ store_id: 'a' }, { store_id: 'b' }])
+
+    const result = await getMarketStoreIds('a')
+
+    expect(result).toEqual(['a', 'b'])
+  })
+})
+
 describe('updateStore — count 检测 + 节点名同步', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -427,6 +478,37 @@ describe('updateStore — count 检测 + 节点名同步', () => {
     expect(result.success).toBe(false)
     expect(result.message).toContain('同市场下已有同名门店')
   })
+  /**
+   * ## 写库字段必须走显式白名单（#318 第 7 轮 GLM P1）
+   *
+   * `data: Partial<{…}>` 只是编译期类型；Server Action 是可直接调用的端点，
+   * 入参原样到达。裸 `{ ...data }` 进 `.set()` 时，客户端多塞一个 `orgNodeId`
+   * （`stores` 的合法列）就能改掉「门店 ↔ 组织节点」映射 ——
+   * 绕过 `createStore` 那三层守卫（① 锁 / 锁内复读节点类型 / 按树复判 scope）。
+   * 同理还能改 `storeId`（主键）与 `updatedAt`（伪造乐观锁基线）。
+   */
+  it.each(['orgNodeId', 'storeId', 'updatedAt', 'createdAt'])(
+    '多塞的 %s 不会被写进库（显式白名单）',
+    async (extraKey) => {
+      const { txUpdate } = setupUpdateTx(1)
+      ;(db.select as any).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ storeName: '旧名' }]) }),
+        }),
+      })
+
+      const result = await updateStore('store-1', {
+        storeName: '新名',
+        [extraKey]: 'INJECTED',
+      } as any)
+
+      expect(result.success).toBe(true)
+      const written = txUpdate.mock.results[0].value.set.mock.calls[0][0]
+      expect(Object.keys(written), `${extraKey} 不该出现在写库字段里`).not.toContain(extraKey)
+      expect(written.storeName, '白名单内的字段照常写').toBe('新名')
+    },
+  )
+
 })
 
 // ── updateStore — 关联收款商户 ─────────────────────────────────────────────

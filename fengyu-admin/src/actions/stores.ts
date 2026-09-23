@@ -6,7 +6,7 @@ import { eq, and, sql, asc } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import { alias } from 'drizzle-orm/pg-core'
 import type { Store } from '@/lib/types'
-import { scopeCondition, hasPermission, isAdminScope } from '@/lib/permissions'
+import { scopeCondition, hasPermission, isAdminScope, isInScope } from '@/lib/permissions'
 import { getSession } from '@/lib/auth'
 import { isNodeInScope } from '@/lib/node-scope'
 import { withPermission } from '@/lib/with-permission'
@@ -232,7 +232,7 @@ export const createStore = withPermission(
 
       // 锁内重读节点类型 —— 事务外读到的可能已被并发改掉
       const [lockedNode] = await tx
-        .select({ type: orgNodes.type })
+        .select({ type: orgNodes.type, name: orgNodes.name })
         .from(orgNodes)
         .where(eq(orgNodes.id, data.orgNodeId))
         .limit(1)
@@ -254,7 +254,8 @@ export const createStore = withPermission(
 
       await tx.insert(stores).values({
         storeId: data.storeId,
-        storeName: node.name,
+        // 门店名以组织节点为权威 → 用**锁内**复读到的名字，事务外那个可能已被并发改掉
+        storeName: lockedNode.name,
         orgNodeId: data.orgNodeId,
         openingDate: data.openingDate ?? null,
         bedCount: data.bedCount ?? null,
@@ -275,7 +276,7 @@ export const createStore = withPermission(
       })
       await logOperation(
         session, 'store.create', 'store', data.storeId,
-        { storeName: node.name, orgNodeId: data.orgNodeId }, tx,
+        { storeName: lockedNode.name, orgNodeId: data.orgNodeId }, tx,
       )
       return { ok: true }
     })
@@ -354,11 +355,28 @@ export const updateStore = withPermission(
     ? and(eq(stores.storeId, storeId), sql`date_trunc('milliseconds', ${stores.updatedAt}) = ${expectedUpdatedAt}`, scopeCond)
     : and(eq(stores.storeId, storeId), scopeCond)
 
-  // is_closed ↔ closed_at 双写一致：调用方仅传 isClosed 时由 action 自动推导 closedAt
-  // - isClosed=true 且未显式给 closedAt：写 today
-  // - isClosed=false：清空 closedAt（重新开业）
-  // lakalaMerchantId 是 stores 列，直接进 generic SET（无需剥离）。
-  const storeFields = { ...data }
+  /**
+   * ## 写库字段走**显式白名单**，不要 `{ ...data }`（#318 第 7 轮 GLM P1）
+   *
+   * `data: Partial<{…}>` 只是**编译期**类型。Server Action 是可直接调用的端点，
+   * 入参原样到达，没有任何运行时白名单 —— 裸 spread 进 `.set()` 时，客户端只要多塞一个
+   * `orgNodeId`（`stores` 的合法列）就能改掉「门店 ↔ 组织节点」映射：
+   * 绕过 `createStore` 那三层守卫（① 锁 / 锁内复读节点类型 / 按树复判 scope），
+   * 「门店只能映射门店型节点」直接破；同理还能改 `storeId`（主键）与 `updatedAt`（伪造乐观锁基线）。
+   * 这与 `updateEmployee` 的字段白名单是同一条教训（#249/#259），`updateStore` 当时漏了。
+   *
+   * ⚠️ 新增可编辑字段时**必须**在这里登记一行，否则会静默不生效（比静默写坏安全得多）。
+   */
+  const storeFields: Record<string, unknown> = {}
+  const EDITABLE = [
+    'storeName', 'openingDate', 'bedCount', 'isClosed', 'closedAt',
+    'coverImage', 'images', 'district', 'streetAddress', 'latitude', 'longitude',
+    'phone', 'businessHours', 'description', 'announcement', 'parkingInfo',
+    'lakalaMerchantId',
+  ] as const
+  for (const key of EDITABLE) {
+    if (data[key] !== undefined) storeFields[key] = data[key]
+  }
   // is_closed ↔ closed_at 双写一致：调用方仅传 isClosed 时由 action 自动推导 closedAt
   // - isClosed=true 且未显式给 closedAt：写 today
   // - isClosed=false：清空 closedAt（重新开业）
@@ -400,9 +418,18 @@ export const updateStore = withPermission(
 )
 
 /** 根据门店 ID 获取同市场下所有门店 ID（含自身） */
+/**
+ * 同市场的兄弟门店 id（含自身）。
+ *
+ * ⚠️ 必须过 scope（#318 第 7 轮 GLM P2）：本 action 原先既不校验入参门店是否在操作者
+ * scope 内、也不过滤结果 —— 市场 A 的管理员传一个市场 B 的 storeId 就能枚举 B 的全部门店 id，
+ * 而同文件的 `getStores` / `getStoreById` / `getMarketStoreFilterOptions` 都套了 `scopeCondition`。
+ * 这里走原生 SQL，所以在**入参**与**结果**两侧各判一次（admin 由 `isInScope` 内部短路）。
+ */
 export const getMarketStoreIds = withPermission(
   'store:list',
-  async (_session, storeId: string): Promise<string[]> => {
+  async (session, storeId: string): Promise<string[]> => {
+    if (!isInScope(session, storeId)) return []
     const rows = await db.execute(sql`
       SELECT s2.store_id
       FROM stores s1
@@ -411,7 +438,9 @@ export const getMarketStoreIds = withPermission(
       JOIN stores s2 ON s2.org_node_id = sn2.id
       WHERE s1.store_id = ${storeId}
     `)
-    const ids = (rows as any[]).map((r: any) => r.store_id as string)
+    const ids = (rows as any[])
+      .map((r: any) => r.store_id as string)
+      .filter((id) => isInScope(session, id))
     return ids.length > 0 ? ids : [storeId]
   },
 )
