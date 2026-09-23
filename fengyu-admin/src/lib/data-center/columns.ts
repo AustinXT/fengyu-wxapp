@@ -65,11 +65,16 @@ const customerRegistrationMetricColumns = [
   { key: 'visitOnceRate', label: '1次达成率', unit: 'percent' },
   { key: 'visitTwice', label: '回店2次', unit: 'count' },
   { key: 'visitTwiceRate', label: '2次达成率', unit: 'percent' },
-  { key: 'dormant', label: '沉睡', unit: 'count' },
+  // #294：三档状态人数读 cron 每日重算的 customer_status 截面，**不随导出所选区间变化**；
+  // 紧邻的「激活 X」三列才是区间统计。导出件脱离页面上下文，表头不标会被当同时态对比。
+  // 沉睡额外带 `customer_type='会员客'`（customer.ts:181 标量侧 / :545 明细侧，
+  // 由 consistency.customer.test.ts 的三条断言钉死），冰冻/休眠没有 —— 导出件比页面
+  // 更需要标出这层差异，否则三列看起来口径对等。
+  { key: 'dormant', label: '沉睡(截面·仅会员客)', unit: 'count' },
   { key: 'reactivatedDormant', label: '激活沉睡', unit: 'count' },
-  { key: 'frozen', label: '冰冻', unit: 'count' },
+  { key: 'frozen', label: '冰冻(截面)', unit: 'count' },
   { key: 'reactivatedFrozen', label: '激活冰冻', unit: 'count' },
-  { key: 'deep', label: '休眠', unit: 'count' },
+  { key: 'deep', label: '休眠(截面)', unit: 'count' },
   { key: 'reactivatedDeep', label: '激活休眠', unit: 'count' },
 ] as const satisfies readonly DataCenterMetricColumn[]
 
