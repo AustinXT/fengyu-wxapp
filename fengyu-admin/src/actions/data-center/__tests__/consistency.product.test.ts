@@ -186,23 +186,6 @@ describe('品项板块两端口径一致性守护', () => {
    * #286：明细「新增人数」的归店必须以 `xinzeng` 为主表 LEFT JOIN `period_agg`。
    *
    * 缺陷原理：`period_agg` 要求 `purchase_received > 0`（只统计销售单/转换单，**不含寄存单**），
-   * 而进入达标（`first_entry` → `xinzeng`）走 `day_received`（**含寄存单**）。
-   * 以 `period_agg` 作主表再内连接回来，会把「进入达标日金额全部来自寄存单」的顾客整体丢弃 ——
-   * 生产实测今年 KPI 2470 人而明细合计只有 852 人（**漏 65.5%**），
-   * 派生的新增客单价与复购率因此双双虚高 **2.90 倍**。
-   *
-   * ⚠️ 这些断言只对**明细侧**（`queryCycleByStore`）的 SQL 模板生效：KPI 侧 `queryCycle`
-   * 有一份同名 CTE 链，对整份源码 `toMatch` 时它的字面量会把明细侧的漏改顶掉
-   * （与 `consistency.customer.test.ts` 记载的「单处漏改全绿」同型）。
-   *
-   * ⚠️ 本文件的 `adminCode` 只剥 JS 注释、**不剥 SQL 注释**，所以正向断言理论上可被
-   * 「删真实代码 + 用 `--` 把字面量补回去」绕过。**反向断言（`not.toMatch`）是这里的主力**：
-   * 注释注入只会让它误红（fail-closed），永远不会让它假绿。
-   */
-  /**
-   * #286：明细「新增人数」的归店必须以 `xinzeng` 为主表 LEFT JOIN `period_agg`。
-   *
-   * 缺陷原理：`period_agg` 要求 `purchase_received > 0`（只统计销售单/转换单，**不含寄存单**），
    * 而进入达标（`first_entry` → `entry_store` → `xinzeng`）走 `day_received`（**含寄存单**）。
    * 以 `period_agg` 作主表再内连接回来，会把「进入达标日金额全部来自寄存单」的顾客整体丢弃 ——
    * 生产实测明细合计只有 KPI 的三分之一（**漏 65.5%**），派生的新增客单价与复购率双双虚高 **2.90 倍**。
@@ -218,18 +201,25 @@ describe('品项板块两端口径一致性守护', () => {
     /**
      * 切出 queryCycleByStore 的 SQL 模板，避免 KPI 侧同名 CTE 链顶替。
      *
-     * 剥掉 SQL 行注释**与单引号字符串字面量**：前者堵「删真实代码 + 用 `--` 把字面量补回去」，
-     * 后者堵「在块内塞一个 `'FROM xinzeng x LEFT JOIN period_agg pa'` 字符串」的注入
-     * （round-1 GLM 指出）。模板内的字符串只有中文枚举值，剥掉不影响任何断言。
+     * 剥掉三类东西，顺序不可调换：
+     *   1. **单引号字符串字面量** —— 堵「在块内塞一个 `'FROM xinzeng x LEFT JOIN period_agg pa'`
+     *      字符串」的注入（round-1 GLM）。必须第一个剥，否则字符串里的 `--` / `/*` 会先被当注释。
+     *   2. **`/* *\/` 块注释** —— 堵 `(/* c *\/SELECT 0)` 这类把关键字与括号拆开、
+     *      绕过 `\(\s*SELECT` 子查询禁令的写法（round-3 GLM 探针实测可绕）。
+     *   3. **`--` 行注释** —— 堵「删真实代码 + 用 `--` 把字面量补回去」。
      *
-     * ⚠️ 正则剥 `--` 在一般情况下不可靠（`--` 出现在字符串里会误删后续条件），
-     * 但这里**先剥字符串再剥注释**，且剥完只用于结构断言；即便误删，后果也是正向断言
-     * 误红（fail-closed），不会假绿。
+     * 模板内的字符串只有中文枚举值、块注释零处，剥掉不影响任何断言。
+     * 即便正则在边缘情形误删，后果也是正向断言误红（fail-closed），不会假绿。
      */
     const detailSql = (src: string): string => {
       const fn = /async function queryCycleByStore\([\s\S]*?\n}/.exec(src)?.[0] ?? ''
       const tpl = /db\.execute\(sql`([\s\S]*?)`\)/.exec(fn)?.[1] ?? ''
-      return normalize(tpl.replace(/'(?:[^']|'')*'/g, ' ').replace(/--[^\n]*/g, ' '))
+      return normalize(
+        tpl
+          .replace(/'(?:[^']|'')*'/g, ' ')
+          .replace(/\/\*[\s\S]*?\*\//g, ' ')
+          .replace(/--[^\n]*/g, ' '),
+      )
     }
     /**
      * 切出单个 CTE 块（以下一个 CTE 名为右边界），避免跨块的惰性匹配假红/假绿。
@@ -291,9 +281,16 @@ describe('品项板块两端口径一致性守护', () => {
       expect(block, 'entry_date 与 entry_store_id 未出自同一行').toMatch(
         /purchase_date\s+AS\s+entry_date[\s\S]*?store_id\s+AS\s+entry_store_id/,
       )
-      expect(block, 'ORDER BY 未按 purchase_date 取最早、未用 store_id 兜底排序').toMatch(
-        /ORDER\s+BY\s+client_user_id,\s*grp,\s*purchase_date,\s*store_id/,
+      // 连续锚：`FROM qualifying_days` 与 `ORDER BY` 之间不许插任何东西 ——
+      // 追加一条 `JOIN foo ON ...` 或 `WHERE grp IS NOT NULL` 就能把达标日来源筛掉一部分人，
+      // 而上面的投影/DISTINCT ON/ORDER BY 断言全都照样绿（round-3 GLM 探针 P-c 实测）。
+      expect(block, 'entry_store 的 FROM 与 ORDER BY 之间被插入了 JOIN / WHERE 等过滤').toMatch(
+        /FROM\s+qualifying_days\s+ORDER\s+BY\s+client_user_id,\s*grp,\s*purchase_date,\s*store_id\s*$/,
       )
+      expect(
+        (block.match(/\bJOIN\b/gi) ?? []).length,
+        'entry_store 出现 JOIN —— 它必须是 qualifying_days 的纯去重投影',
+      ).toBe(0)
       expect(adminDetail, 'entry_store 丢了 MATERIALIZED —— 执行计划会退化').toMatch(
         /entry_store\s+AS\s+MATERIALIZED\s*\(/,
       )
@@ -321,10 +318,16 @@ describe('品项板块两端口径一致性守护', () => {
       )
       expect(block, 'xinzeng 体内出现子查询 —— 回查写法复活').not.toMatch(/\(\s*SELECT\s/i)
       // xinzeng 合法地有 WHERE entry_date BETWEEN ...，但不得追加别的谓词
-      // ——「过滤掉 grp 为 NULL 的人」正是本 PR 文档化的失败模式
-      expect(block, 'xinzeng 的 WHERE 追加了区间之外的谓词').toMatch(
-        /WHERE\s+entry_date\s+BETWEEN\s+\$\{range\.start\}\s+AND\s+\$\{range\.end\}\s*$/,
+      // ——「过滤掉 grp 为 NULL 的人」正是本 PR 文档化的失败模式。
+      // ⚠️ 连续锚：只钉 WHERE 的尾巴挡不住在 FROM 与 WHERE **之间**插一条
+      // `JOIN foo ON ... AND grp IS NOT NULL`（round-3 GLM 探针 P-a 实测可绕）。
+      expect(block, 'xinzeng 的 FROM 与 WHERE 之间被插入了 JOIN，或 WHERE 追加了区间之外的谓词').toMatch(
+        /FROM\s+entry_store\s+WHERE\s+entry_date\s+BETWEEN\s+\$\{range\.start\}\s+AND\s+\$\{range\.end\}\s*$/,
       )
+      expect(
+        (block.match(/\bJOIN\b/gi) ?? []).length,
+        'xinzeng 出现 JOIN —— 它必须是 entry_store 的纯区间切片，任何连接都可能筛掉人',
+      ).toBe(0)
     })
 
     /**
@@ -344,8 +347,11 @@ describe('品项板块两端口径一致性守护', () => {
       // 堵「, LATERAL (SELECT 1 LIMIT 0)」这类零行破坏，以及任何回查子查询
       expect(block, 'new_store 体内出现子查询').not.toMatch(/\(\s*SELECT\s/i)
 
-      expect(block, 'new_store 的主表不是 xinzeng').toMatch(
-        /FROM\s+xinzeng\s+x\s+LEFT\s+JOIN\s+period_agg\s+pa\b/,
+      // ON 子句整条钉死：JOIN 计数 = 1 只管「有几条连接」，管不住在这一条的 ON 里
+      // 追加谓词（如 `AND pa.store_id IS DISTINCT FROM 'store-x'` 把某店业绩挪走，
+      // 或 `AND pa.day_received > 0` 把兜底人群的消费行打掉）—— round-3 GLM 探针 P-b 实测可绕。
+      expect(block, 'new_store 的主表不是 xinzeng，或 ON 子句被追加了连接键以外的谓词').toMatch(
+        /FROM\s+xinzeng\s+x\s+LEFT\s+JOIN\s+period_agg\s+pa\s+ON\s+pa\.client_user_id\s*=\s*x\.client_user_id\s+AND\s+pa\.grp\s*=\s*x\.grp\s+GROUP\s+BY\b/,
       )
       // 恰好一条 JOIN，且必是 LEFT —— 堵「追加一条裸 JOIN 当过滤闸」
       expect(
@@ -395,12 +401,18 @@ describe('品项板块两端口径一致性守护', () => {
      * 锁住这一点，免得日后有人"顺手"把它们也改成 LEFT JOIN 兜底，反而引入无处归店的行。
      */
     it('体验/复购仍以 period_agg 为主表（它们必然有 period 行，无需兜底）', () => {
-      expect(cteBlock(adminDetail, 'trial_store', 'new_store')).toMatch(
-        /FROM\s+period_agg\s+pa\s+JOIN\s+tiyan\s+t/,
-      )
-      expect(cteBlock(adminDetail, 'repurchase_store', 'store_ids')).toMatch(
-        /FROM\s+period_agg\s+pa\s+JOIN\s+fugou\s+fg/,
-      )
+      const trial = cteBlock(adminDetail, 'trial_store', 'new_store')
+      const repurchase = cteBlock(adminDetail, 'repurchase_store', 'store_ids')
+      expect(trial, 'trial_store 块未切出').toBeTruthy()
+      expect(repurchase, 'repurchase_store 块未切出').toBeTruthy()
+      expect(trial).toMatch(/FROM\s+period_agg\s+pa\s+JOIN\s+tiyan\s+t/)
+      expect(repurchase).toMatch(/FROM\s+period_agg\s+pa\s+JOIN\s+fugou\s+fg/)
+      // 与 new_store 同理：正向断言只认前缀，追加第二条 JOIN 当过滤闸仍然全绿
+      expect((trial.match(/\bJOIN\b/gi) ?? []).length, 'trial_store 的 JOIN 不止一条').toBe(1)
+      expect(
+        (repurchase.match(/\bJOIN\b/gi) ?? []).length,
+        'repurchase_store 的 JOIN 不止一条',
+      ).toBe(1)
     })
 
     /**
