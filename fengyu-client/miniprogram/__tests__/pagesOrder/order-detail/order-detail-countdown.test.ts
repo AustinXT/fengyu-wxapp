@@ -331,13 +331,23 @@ describe('order-detail 待支付倒计时 (#215)', () => {
     expect(page._countdownDeadlineAt - Date.now()).toBeLessThan(60_000);
   });
 
-  test('服务端给的剩余量为正、但被 RTT 扣成 0 → 重载一次（服务端还没试过关）', () => {
-    const { page, loadDetail } = createPageWithStubbedLoad();
-    page._lastLoadDownlinkMs = 500;            // 下行估计比剩余量还长
-    page.startCountdown(PENDING_ORDER_WITH_REMAINING(50));
+  test('服务端给的剩余量为正、但被 RTT 扣成 0 → 重载一次（服务端还没试过关）', async () => {
+    vi.useFakeTimers();
+    try {
+      const { page, loadDetail } = createPageWithStubbedLoad();
+      page._lastLoadDownlinkMs = 500;            // 下行估计比剩余量还长
+      page.startCountdown(PENDING_ORDER_WITH_REMAINING(50));
 
-    expect(loadDetail).toHaveBeenCalledTimes(1);
-    expect(page.data.countdown).toBe('');
+      expect(loadDetail).toHaveBeenCalledTimes(1);
+      expect(page.data.countdown).toBe('');
+
+      // 与「反复装表」那条对称：刷新成功就**不该**续排重试。不推进时间的话，
+      // 把 `_refreshOrRetry` 的 `if (!ok)` 改成无条件续排，这条照样绿。
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(loadDetail).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   test('服务端下发 expire_clock 时，截止时刻用它而不是设备时区推导', async () => {

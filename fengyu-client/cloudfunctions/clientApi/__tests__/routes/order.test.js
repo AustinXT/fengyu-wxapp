@@ -2154,7 +2154,7 @@ describe('order.detail — 支付倒计时下发口径 (#215)', () => {
 
   test('降级响应：补关两次都没关掉 → expire_unresolved=true，两个时限字段为 null', async () => {
     // 这是 expire_unresolved 唯一存在的理由：把它和「旧云函数根本不发这些字段」区分开，
-    // 前端对这两者的处理正好相反（前者关支付入口、后者不能关）。
+    // 前端对这两者的处理正好相反（前者才封支付入口，后者连文案都不该改）。
     const stale = new Date(Date.now() - 20 * 60 * 1000).toISOString()
     const eligibleRow = {
       sale_order_id: 'FY-215', client_user_id: 'user-001',
@@ -2175,8 +2175,40 @@ describe('order.detail — 支付倒计时下发口径 (#215)', () => {
     expect(ctx.result.order.expire_unresolved).toBe(true)
     expect(ctx.result.order.expire_in_ms).toBeNull()
     expect(ctx.result.order.expire_clock).toBeNull()
-    // 补关确实试过两次（有界重试）
-    expect(pg.transaction.mock.calls.length).toBeGreaterThanOrEqual(2)
+    // 开头的懒清理 1 次 + 补关循环 2 次 = 3。写成 `>= 2` 是测不出「循环退化成一次」的
+    // ——那时总数仍是 2（开头 1 + 补关 1），断言照样绿（双谱系评审 round-19）。
+    expect(pg.transaction).toHaveBeenCalledTimes(3)
+  })
+
+  test('主查询时有在途意图、重读时意图已释放 → 补关循环独自跑满两次', async () => {
+    // 上一条里开头那次懒清理也会计数，掩盖了「循环上限」本身。这里让主查询带着
+    // 在途支付意图（auto_close_eligible=false）进来，开头的懒清理因此被跳过，
+    // 于是**每一次事务都只可能来自补关循环** —— 把 `attempt < 2` 改成 `attempt < 1`
+    // 立刻报红。这个时序在生产里真实存在：预下单失败会在两次查询之间清掉
+    // lakala_out_order_no，订单从「关不掉」变回「该关」。
+    const stale = new Date(Date.now() - 20 * 60 * 1000).toISOString()
+    pg.query.mockResolvedValueOnce([{
+      sale_order_id: 'FY-215', client_user_id: 'user-001',
+      sale_order_datetime: stale, preferred_employee_id: null, coupon_id: null,
+      status: '待支付', opened_by: null, lakala_out_order_no: 'LKL-INFLIGHT',
+      auto_close_eligible: false,
+    }])
+    pg.query.mockResolvedValueOnce([])  // items
+    pg.query.mockResolvedValueOnce([])  // 行级退款额
+    pg.query.mockResolvedValueOnce([])  // payments
+    // 重读与两次补关复读：意图已被清掉，单子重新「可关且已过期」，但 CAS 始终没关成
+    pg.query.mockResolvedValue([{
+      sale_order_id: 'FY-215', client_user_id: 'user-001',
+      sale_order_datetime: stale, status: '待支付',
+      opened_by: null, lakala_out_order_no: null, auto_close_eligible: true,
+    }])
+
+    const ctx = createBoundCtx({ orderNo: 'FY-215' })
+    await routes.detail(ctx)
+
+    expect(pg.transaction).toHaveBeenCalledTimes(2)
+    expect(ctx.result.order.expire_unresolved).toBe(true)
+    expect(ctx.result.order.expire_in_ms).toBeNull()
   })
 
   test('不下发 expire_at 时 expire_in_ms 也为 null', async () => {

@@ -227,7 +227,7 @@ Page({
   // 「这一次刷新必须成功，否则页面会停在一个不可信的状态」时的有界重试（issue #215）。
   // 用它的地方：① 本地判到期的三条路径（页面写着「正在确认」，就得真的有人在确认）；
   // ② 墙钟跳变后的校准；③ 支付确认轮询收尾（轮询自己会清掉支付意图，订单因此重新
-  // 进入「会被自动关闭」的集合）；④ onShow 的刷新。
+  // 进入「会被自动关闭」的集合）；④ onShow 的刷新；⑤ 取消 / 回款成功后的追平刷新。
   // 只在**确知失败**时才排（loadDetail 会如实返回成败），成功就不排；
   // 定时器回调按结果**续排**，别让链在一次失败后断掉。
   _refreshRetryTimer: null as ReturnType<typeof setTimeout> | null,
@@ -329,9 +329,10 @@ Page({
       // 把处理耗时也扣掉就是重复计算（补关那条路径动辄几百毫秒）。
       // 减掉服务端自报的处理耗时，剩下的是「上行 + 下行」；我们只该扣**下行**那一段。
       // 取一半是标准的单向估计。
-      // ⚠️ 早先这里扣的是整段，理由是「往显示得更少偏，安全侧」—— 自从归零会
-      // **关掉支付入口**，过度扣减就不再无害了：上行 5 秒、下行 0.5 秒的弱网下，
-      // 页面会比真实截止早 5 秒封掉一张还能付的单。
+      // ⚠️ 早先这里扣的是整段，理由是「往显示得更少偏，安全侧」—— 但上行 5 秒、
+      // 下行 0.5 秒的弱网下，页面会比真实截止早 5 秒切进「正在确认订单状态」并开始
+      // 空转重试；虽然不封支付入口（封禁只认服务端 `expire_unresolved`），
+      // 也是在拿本地估计去否定一段服务端刚刚承认的剩余时间。
       const serverElapsed = typeof order.server_elapsed_ms === 'number'
         && Number.isFinite(order.server_elapsed_ms)
         ? Math.max(0, order.server_elapsed_ms)
@@ -685,9 +686,8 @@ Page({
     if (remainingAt0 <= 0) {
       this._countdownDeadlineAt = 0;
       // 权威口径下走到这里 = 服务端说的剩余量被这次请求的往返耗时吃光了，
-      // 截止点**确实过了**。与 tick 归零同一后果，所以同样关掉支付入口：
-      // 紧接着那次重载可能失败，不关闸页面就退回成静态的「请完成支付 + 去支付」。
-      // 本地判到期只改文案、不封支付入口（理由见 expiryPendingConfirm 的注释）。
+      // 截止点**确实过了**。与 tick 归零同一后果：只切文案、不封支付入口
+      //（理由见 expiryPendingConfirm 的注释），刷新走按结果续排的有界重试。
       // 旧云函数的非权威归零连文案都不改：在旧后端上那些单（尤其员工单）本来就还能付。
       if (authoritative) {
         this.setData({ countdown: '', expiryPendingConfirm: true });
@@ -736,8 +736,8 @@ Page({
       const now = Date.now();
       // 系统校时/用户手动改时间会让墙钟跳变，本地截止点就不可信了：
       //   - 往**回**跳 → 截止点被凭空延长，服务端早关单了页面还显示着剩余时间；
-      //   - 往**前**跳 → 直接跨过截止点，页面把一张服务端还认可的单判成过期、
-      //     关掉支付入口（自从归零会封支付入口，这个方向的误伤不再是小事）。
+      //   - 往**前**跳 → 直接跨过截止点，页面把一张服务端还认可的单判成过期，
+      //     无谓地切进「正在确认订单状态」并开始空转重试。
       // 小程序没有可靠的单调时钟，退而求其次：这一拍最多只排了 1 秒，
       // 观测到的间隔离谱（任一方向）就认定时钟不可信，回服务端重新校准，
       // **不**当成过期（所以连「正在确认」的文案都不改，更不会封支付入口）。
@@ -745,9 +745,9 @@ Page({
       if (drift < -CLOCK_ROLLBACK_TOLERANCE_MS || drift > MAX_TRUSTED_TICK_GAP_MS) {
         this._stopCountdown();
         this._countdownDeadlineAt = 0;
-        // ⚠️ 这里刻意**不**置 payBlockedByExpiry：回拨只说明「没法再用这个本地截止点
-        // 量时间」，并**不**说明截止点已经过了 —— 多半还剩好几分钟。关了支付入口
-        // 就是拿一次系统校时去误伤一笔本来能付的单，比让它可能吃一个「订单已超时」更糟。
+        // ⚠️ 这里连 expiryPendingConfirm 都刻意不置：时钟跳变只说明「没法再用这个
+        // 本地截止点量时间」，并**不**说明截止点已经过了 —— 多半还剩好几分钟。
+        // 写成「正在确认订单状态」就是拿一次系统校时去吓一笔本来能付的单。
         this.setData({ countdown: '' });
         this._refreshOrRetry(saleOrderId);
         return;
@@ -926,7 +926,10 @@ Page({
       Toast.loading({ message: '取消中...', forbidClick: true, duration: 0 });
       await callClientApi('order.cancel', { saleOrderId: sale_order_id });
       Toast.success('订单已取消');
-      this.loadDetail(sale_order_id);
+      // 写操作已经成功了，这次刷新只是把页面追上去：失败就走有界重试，
+      // 别让页面停在「待支付 + 取消 + 去支付」——那会诱导顾客再点一次取消，
+      // 然后吃一条「订单状态不允许取消」（评审 round-19）。
+      this._refreshOrRetry(sale_order_id);
     } catch (err: any) {
       if (err.message !== 'USER_CANCELLED') {
         Toast.fail(err.message || '取消失败');
@@ -1046,14 +1049,14 @@ Page({
       if (method === '储值卡') {
         this.setData({ repayModalVisible: false });
         Toast.success('回款成功');
-        this.loadDetail(order.sale_order_id);
+        this._refreshOrRetry(order.sale_order_id);
         return;
       }
       if (method === '线下') {
         // 线下仅标记意向，由店长确认收款落账；订单状态不变
         this.setData({ repayModalVisible: false });
         Toast.success('已提交，等待店长确认收款');
-        this.loadDetail(order.sale_order_id);
+        this._refreshOrRetry(order.sale_order_id);
         return;
       }
       if (method === '微信') {
