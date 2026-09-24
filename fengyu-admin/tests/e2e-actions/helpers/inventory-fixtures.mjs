@@ -377,7 +377,7 @@ export async function docHeader(docId) {
 
 export async function docItems(docId) {
   return pgQuery(
-    `SELECT id, sku_id, is_gift, quantity, request_quantity, fulfilled_quantity,
+    `SELECT id, sku_id, batch_no, is_gift, quantity, request_quantity, fulfilled_quantity,
             supplier_id, market_id,
             standard_unit_price, unit_discount, actual_unit_price, amount,
             supply_chain_unit_cost, market_actual_unit_price, store_actual_unit_price, lot_id

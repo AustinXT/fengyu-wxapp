@@ -502,7 +502,7 @@ export const INVENTORY_OPERATION_INBOX_ACTIONS = {
   'shipment-cancel-approval': ['cancellation-approve', 'cancellation-reject'],
   'market-receipt': ['shipment-receive-full', 'shipment-receive-goto'],
   'store-receipt': ['shipment-receive-full', 'shipment-receive-goto'],
-  // 供应链采购入库要逐行填批号/效期，留空会让实物并进「无批号」批次（实质性数据损失），
+  // 供应链采购入库要逐行核对效期（批号留空已自动生成，#345；效期推断不出来），
   // 所以只给「去收货」跳转，没有一键整单收货。
   'supply-chain-receipt': ['purchase-receive-goto'],
   'supply-chain-purchase-cancel': ['purchase-close'],
