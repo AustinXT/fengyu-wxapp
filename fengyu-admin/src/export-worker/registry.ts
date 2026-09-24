@@ -47,11 +47,13 @@ import {
 } from '@/lib/export-row-aggregation'
 import {
   exportJobLabel,
+  type DataCenterBoardExportView,
   type DataCenterExportPayload,
   type ExportJobPayload,
   type ExportJobType,
 } from '@/lib/export-job-types'
 import type { WorkerExportColumn, ExportCell } from './xlsx-writer'
+import { isDataCenterReportView, queryDataCenterReport } from './report-views'
 import type { ExportContextMeta } from './export-meta'
 
 export interface ExportContent {
@@ -487,7 +489,7 @@ const inventoryColumns = (canViewPrice: boolean) => mapColumns([
 ])
 
 function breakdownContent(
-  view: DataCenterExportPayload['view'],
+  view: DataCenterBoardExportView,
   rows: BreakdownRow[],
 ): ExportContent {
   const config = getDataCenterBreakdownConfig(view)
@@ -536,9 +538,12 @@ function rankingContent(
 async function queryDataCenter(
   payload: DataCenterExportPayload,
 ): Promise<ExportContent> {
+  const view = payload.view
+  // 经营明细报表视图必须先于下方的前缀分发：视图名一旦撞上 sales- / customer- / product- 前缀，
+  // 会被派给旧板块取数、静默导出错误内容（前缀守护见 registry.test.ts）
+  if (isDataCenterReportView(view)) return queryDataCenterReport({ ...payload, view })
   const raw = payload.params
   const base = parseBoardParams(raw)
-  const view = payload.view
   if (view.startsWith('sales-')) {
     const board = await getSalesBoard(base)
     const rows = view === 'sales-market' ? board.byMarket : board.byStore

@@ -30,7 +30,7 @@ import {
   getDataCenterBreakdownConfig,
   getDataCenterRankingConfig,
 } from '@/lib/data-center/columns'
-import { DATA_CENTER_EXPORT_VIEWS } from '@/lib/export-job-types'
+import { DATA_CENTER_BOARD_EXPORT_VIEWS } from '@/lib/export-job-types'
 import { createExportContent } from './registry'
 
 function metricValue(unit: 'amount' | 'count' | 'percent'): number {
@@ -39,7 +39,7 @@ function metricValue(unit: 'amount' | 'count' | 'percent'): number {
   return 3.6
 }
 
-function headersForBreakdown(view: (typeof DATA_CENTER_EXPORT_VIEWS)[number]): string[] {
+function headersForBreakdown(view: (typeof DATA_CENTER_BOARD_EXPORT_VIEWS)[number]): string[] {
   const config = getDataCenterBreakdownConfig(view)
   return [
     config.groupLabel,
@@ -48,7 +48,7 @@ function headersForBreakdown(view: (typeof DATA_CENTER_EXPORT_VIEWS)[number]): s
   ]
 }
 
-function boardRow(view: (typeof DATA_CENTER_EXPORT_VIEWS)[number]) {
+function boardRow(view: (typeof DATA_CENTER_BOARD_EXPORT_VIEWS)[number]) {
   const config = DATA_CENTER_VIEW_CONFIG[view]
   if (config.kind !== 'breakdown') throw new Error(`预期明细视图: ${view}`)
   return {
@@ -288,7 +288,7 @@ describe('数据中心客量门店导出列', () => {
 })
 
 describe('数据中心全部导出视图', () => {
-  const breakdownViews = DATA_CENTER_EXPORT_VIEWS.filter(
+  const breakdownViews = DATA_CENTER_BOARD_EXPORT_VIEWS.filter(
     (view) => DATA_CENTER_VIEW_CONFIG[view].kind === 'breakdown',
   )
 
@@ -307,7 +307,7 @@ describe('数据中心全部导出视图', () => {
     }
   })
 
-  const rankingViews = DATA_CENTER_EXPORT_VIEWS.filter(
+  const rankingViews = DATA_CENTER_BOARD_EXPORT_VIEWS.filter(
     (view) => DATA_CENTER_VIEW_CONFIG[view].kind === 'ranking',
   )
 
