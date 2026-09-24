@@ -356,15 +356,28 @@ describe('getCustomerBoard 装配', () => {
 
     const res = await getCustomerBoard(PARAMS)
 
-    // 分母与派生率：显式 null（前端渲染 '--'），不是字段缺失
+    // 分母与派生率：显式给「算不出」占位（前端渲染 '--'），不是字段缺失。
+    // ⚠️ 原断言写的是 `.toBeNull()`（#284 落地时 KpiCell.mom 还是 `DeltaPct | null`）。
+    //    #310/#315 把类型收紧为 `DeltaDisplay`、用 `{ kind: 'na' }` 表达「算不出」后，
+    //    这两条断言连同实现里的 `mom: null` 一起失效——两个 PR 各自绿灯、合并进 dev 才撞上。
+    //    语义没变（仍是「不出同比环比」），变的是承载它的形态。
     for (const key of ['trafficCustomers', 'convRate']) {
       expect(res.kpis[key], `${key} 应存在`).toBeDefined()
-      expect(res.kpis[key].mom, `${key}.mom 必须为 null（割点前基期会算出假数）`).toBeNull()
-      expect(res.kpis[key].yoy, `${key}.yoy 必须为 null（割点前基期会算出假数）`).toBeNull()
+      expect(res.kpis[key].mom, `${key}.mom 必须是「算不出」占位（割点前基期会算出假数）`).toEqual({
+        kind: 'na',
+      })
+      expect(res.kpis[key].yoy, `${key}.yoy 必须是「算不出」占位（割点前基期会算出假数）`).toEqual({
+        kind: 'na',
+      })
     }
     // 对照：允许比较的 KPI 仍然带出**数值**，证明 enabled=true 这条路径确实被走到了。
-    // ⚠ 用 toBeTypeOf 而不是 not.toBeNull()：后者对 undefined 也通过，证明不了「仍出数值」
-    expect(res.kpis.newMembers.mom, 'newMembers 的同比环比不该被一起禁掉').toBeTypeOf('number')
+    // ⚠ 断言 `kind: 'pct'` 而不是「不是 na」：后者对 turnedPositive / notTurned 也通过，
+    //   证明不了「算出了一个具体的增幅」——与原用例用 toBeTypeOf 而非 not.toBeNull() 同一考虑
+    //   （#310/#315 把 DeltaPct 换成判别联合后，「有数值」的表达形态从 number 变成了 kind:'pct'）。
+    expect(res.kpis.newMembers.mom, 'newMembers 的同比环比不该被一起禁掉').toMatchObject({
+      kind: 'pct',
+    })
+    expect((res.kpis.newMembers.mom as { value: number }).value).toBeTypeOf('number')
   })
 
   /**
