@@ -267,10 +267,10 @@ export function InventorySkuSearchSelect({
       </button>
 
       {open && (
-        // 办理台的 FormField 是 <label>：面板里任何点击（选项 / 加载更多 / 搜索框）的**默认动作**
-        // 都会被 label 转发成一次「点它的第一个可标注控件」——也就是上面的触发按钮，
-        // 于是刚选完收起的面板又被 toggle 打开（真浏览器与 jsdom 都复现）。
-        // 在面板上统一取消点击的默认动作即可截住 label 激活；各按钮的 onClick 照常执行。
+        // 防御：调用方若把选择器放进 <label>（办理台 / 报货福利已改用 role=group，见 FormField 的 group），
+        // 面板里任何点击的**默认动作**都会被 label 转发成一次「点第一个可标注控件」= 触发按钮，
+        // 刚选完收起的面板又被 toggle 打开（真浏览器与 jsdom 都复现过）。统一取消点击默认动作即可截住，
+        // 各按钮的 onClick 照常执行。
         <div
           className="absolute z-50 mt-1 w-full min-w-[18rem] rounded-[var(--radius)] border border-[var(--border)] bg-[var(--card)] shadow-md"
           onClick={(event) => event.preventDefault()}

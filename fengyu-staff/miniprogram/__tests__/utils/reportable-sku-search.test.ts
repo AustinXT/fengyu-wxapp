@@ -124,8 +124,9 @@ describe('门店报货页面接线（#339 源码守护）', () => {
     expect(form).toMatch(/this\.skuSearch\(\)\.clearKeyword\(\)/)
     expect(form).toMatch(/onSkuListReachBottom\(\) \{\s*this\.skuSearch\(\)\.loadMore\(\)/)
     expect(form).toMatch(/this\._skuSearch\?\.dispose\(\)/)
-    expect(form).toMatch(/pageSize: SKU_PAGE_SIZE/)
-    expect(form).not.toMatch(/pageSize: 100 \},?\s*\)\s*\n\s*const skuOptions/)
+    // 可报货 SKU 只有一处取数，且分页走状态机的 SKU_PAGE_SIZE（不再一次预拉 100 条）
+    expect(form.match(/'inventory\.reportableSkuOptions'/g)).toHaveLength(1)
+    expect(form).toMatch(/'inventory\.reportableSkuOptions',\s*\{[^}]*page, pageSize: SKU_PAGE_SIZE \}/)
   })
 
   test('已选商品存独立副本：换关键词后名称不依赖当前列表', () => {
