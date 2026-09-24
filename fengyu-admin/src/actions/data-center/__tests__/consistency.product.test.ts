@@ -89,13 +89,23 @@ describe('品项板块两端口径一致性守护', () => {
      * 「会员表驱动 + `COUNT(DISTINCT c.user_id)`」。所以这里按端分别断言，不做字面量对齐。
      */
     describe('持卡占比分子分母同源（#287）', () => {
-      /** 切出 admin 的两个持卡查询模板（全局 + byStore） */
+      /** 切出 admin 某个查询函数的 **SQL 模板** */
       const adminCardSql = (fn: string): string => {
         const body = new RegExp(
           `async function ${fn}\\((?:[\\s\\S]*?)db\\.execute\\(sql\`([\\s\\S]*?)\`\\)`,
         ).exec(adminSrc)?.[1]
         return normalize(body ?? '')
       }
+      /**
+       * 切出 admin 某个查询函数的 **函数体**（含 `const sc = scopeFilterSql(...)` 那行）。
+       *
+       * ⚠️ scope 断言必须打在函数体上，**不能打在 SQL 模板上** —— 模板里只有 `${sc}`
+       * 这个占位符，看不出 `sc` 是用哪一列构造的。本轮第一版就写成了
+       * `toMatch(/scopeFilterSql\(…'c\.bound_store_id'\)|WHERE \$\{sc\}/)`，
+       * 而 `WHERE ${sc}` 恒存在 ⇒ 整条断言**永远为真**（空断言），红检 R3 当场打出 GREEN。
+       */
+      const adminFnBody = (fn: string): string =>
+        normalize(new RegExp(`async function ${fn}\\([\\s\\S]*?\\n}`).exec(adminSrc)?.[0] ?? '')
 
       it('admin 两个持卡查询都以「分母的壳 + EXISTS」为形状', () => {
         for (const fn of ['queryCardHolders', 'queryCardHoldersByStore']) {
@@ -108,9 +118,15 @@ describe('品项板块两端口径一致性守护', () => {
           expect(s, `${fn} 缺 became_member_at 条件 —— 分子人群与分母不同`).toMatch(
             /c\.became_member_at\s+IS\s+NOT\s+NULL/,
           )
-          // ② 归店同源：scope 打在 bound_store_id 上
-          expect(s, `${fn} 的 scope 不是打在 c.bound_store_id 上 —— 归店键与分母不同`).toMatch(
-            /scopeFilterSql\(session,\s*scope,\s*'c\.bound_store_id'\)|WHERE\s+\$\{sc\}/,
+          // ② 归店同源：scope 必须由 c.bound_store_id 构造（打在函数体上，不是模板上）
+          const fnBody = adminFnBody(fn)
+          expect(fnBody, `${fn} 的函数体未切出`).toBeTruthy()
+          expect(
+            fnBody,
+            `${fn} 的 scope 不是用 c.bound_store_id 构造 —— 归店键与分母不同`,
+          ).toMatch(/scopeFilterSql\(session,\s*scope,\s*'c\.bound_store_id'\)/)
+          expect(fnBody, `${fn} 的 scope 仍用 so.store_id 构造`).not.toMatch(
+            /scopeFilterSql\(session,\s*scope,\s*'so\.store_id'\)/,
           )
           // 结构：购买条件收在 EXISTS 里，而不是把 sale_orders 拉成驱动表
           expect(s, `${fn} 未用 EXISTS 收窄 —— 分子 ⊆ 分母 不再是结构性事实`).toMatch(
