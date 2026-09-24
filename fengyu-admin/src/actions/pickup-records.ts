@@ -532,6 +532,8 @@ export interface AvailablePickupItem {
   unitRealPrice: string
   storeId: string
   storeName: string | null
+  /** 下单日期（sale_orders.created_at 的上海日历日，YYYY-MM-DD），提货录入按销售单分组的组头用（#350） */
+  orderDate: string | null
 }
 
 /**
@@ -624,6 +626,9 @@ export const getAvailablePickupItems = withPermission(
              si.unit_real_price,
              o.store_id,
              o.paid_at,
+             -- #350：提货录入按销售单分组，组头显示下单日期（sale_orders.created_at，按上海日历日）。
+             -- 与 staffApi availablePickupItems 同写法。
+             to_char(o.created_at AT TIME ZONE 'Asia/Shanghai', 'YYYY-MM-DD') AS order_date,
              s.store_name
         FROM sale_items si
         JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
@@ -659,6 +664,7 @@ export const getAvailablePickupItems = withPermission(
            SUM(pending_pickup_quantity)::int AS pending_pickup_quantity,
            MIN(unit_real_price) AS unit_real_price,
            MIN(store_id) AS store_id,
+           MIN(order_date) AS order_date,
            MIN(store_name) AS store_name
       FROM pickup_balances
   GROUP BY sale_item_group_id
@@ -682,6 +688,7 @@ export const getAvailablePickupItems = withPermission(
     unitRealPrice: (r.unit_real_price as string) ?? '0',
     storeId: r.store_id as string,
     storeName: (r.store_name as string | null) ?? null,
+    orderDate: (r.order_date as string | null) ?? null,
   }))
   },
 )
