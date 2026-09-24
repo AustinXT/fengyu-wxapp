@@ -3365,16 +3365,35 @@ describe('order.homeProducts', () => {
     // （剥注释后仍用全词断言，比只挡 /(FROM|JOIN)\s+pickup_records/ 更强——
     //  后者放过 `FROM a, pickup_records b` 这类隐式 cross join 写法）。
     // ⚠️ 本用例**所有**形状断言都必须比对 sqlCode（剥掉注释的版本），不能比对原始 sql。
-    // 否则「删掉代码 + 用 `--` 注释把原字面量补回去」就能让正向 toContain 照样匹配：
-    // 实测把 picked 的外层 LEAST 换成 GREATEST、同时在下一行注释里保留旧写法，
-    // 180 tests 全绿穿网（闸门 2 的 GLM 提出此向量，本地复现确认）。
-    // 这与 #284 踩过的「注释注入」是同一个坑。
+    // 否则「把代码改坏 + 用 `--` 注释把原字面量补回去」就能让正向 toContain 照样匹配。
+    // 两种形态都实测穿过网：整行注释补回（GLM 提出）、行尾注释补回
+    //   `AND si.product_type = '疗程项目' -- AND si.product_type = '家居产品'`（codex 提出）。
+    // 这与 #284 踩过的「注释注入」同型：守护只看文本时，注释是免费的伪造材料。
     //
-    // 只丢弃**整行**注释，不要用 /--.*$/ 去截断任意位置：SQL 里合法的字符串字面量
-    // 可以含 `--`（例如 `'--' AS marker`），按位置截断会把该行后面的真实代码一起抹掉，
-    // 于是藏在同一行后半段的 `FROM pickup_records` 反而看不见了（闸门 2 的 codex 指出）。
-    // 代价是行尾注释留在文本里——那只会造成误报（多报一次红），方向是安全的。
-    const sqlCode = sql.split('\n').filter((line) => !/^\s*--/.test(line)).join('\n')
+    // 剥注释必须**跟踪单引号状态**，不能图省事按行 `replace(/--.*$/, '')`：
+    // SQL 字符串字面量里可以含 `--`（例如 `'--' AS marker`），无状态截断会把该行后面的
+    // 真实代码一起抹掉，藏在后半段的 `FROM pickup_records` 反而看不见（codex 提出）。
+    const stripSqlComments = (text) => {
+      let out = ''
+      let inStr = false
+      for (let i = 0; i < text.length; i += 1) {
+        const c = text[i]
+        if (inStr) {
+          out += c
+          if (c === "'") inStr = text[i + 1] === "'" ? (i += 1, out += "'", true) : false
+          continue
+        }
+        if (c === "'") { inStr = true; out += c; continue }
+        if (c === '-' && text[i + 1] === '-') {          // 引号外的行注释，吃到行尾
+          while (i < text.length && text[i] !== '\n') i += 1
+          out += '\n'
+          continue
+        }
+        out += c
+      }
+      return out
+    }
+    const sqlCode = stripSqlComments(sql)
     // 小写化再比：PG 对未加引号的标识符折叠成小写，`FROM PICKUP_RECORDS` 与小写等价，
     // 大小写敏感的字面量匹配会被它绕过。
     expect(sqlCode.toLowerCase()).not.toContain('pickup_records')

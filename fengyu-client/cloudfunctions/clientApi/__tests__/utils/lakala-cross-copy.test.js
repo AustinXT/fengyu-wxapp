@@ -170,11 +170,14 @@ describe('lakala 跨副本一致性守护', () => {
     for (const key of ['paths-ignore', 'branches', 'branches-ignore']) {
       expect(triggers.pull_request[key], `pull_request.${key} 会让触发面塌掉`).toBeUndefined()
     }
-    // types 不能省掉 synchronize：只留 `[opened]` 的话，PR 开出后续 push 的代码全部免检，
-    // 第一个 commit 之后想怎么改都不会再跑守护。不写 types 时 GitHub 默认含 synchronize。
+    // types 是第五个开关，而且**两个方向都能漏**：只留 `[opened]` 会让 PR 后续 push
+    // 全部免检；只留 `[synchronize]` 则让「用已有提交新建的 PR」压根不触发（首次只发
+    // opened 事件）。缺省值 opened+synchronize+reopened 就是对的，所以直接要求不写它，
+    // 真要写必须写全（闸门 2 codex round-3 → round-4 连续两次收紧）。
     const types = triggers.pull_request.types
     if (types !== undefined) {
-      expect(types, 'types 省掉 synchronize 会让 PR 后续 push 免检').toContain('synchronize')
+      expect([...types].sort(), 'types 写了就必须覆盖默认三事件，否则总有一类 PR 免检')
+        .toEqual(['opened', 'reopened', 'synchronize'])
     }
 
     // paths 必须覆盖本守护实际读到的**全部**文件，否则「改了但不触发」等于没有守护。
@@ -211,20 +214,26 @@ describe('lakala 跨副本一致性守护', () => {
       expect(paths, `paths 缺 ${p}，依赖升级 PR 不会触发任何 job`).toContain(p)
     }
 
-    const job = wf.jobs['clientapi-tests']
-    expect(job, 'lint.yml 里没有 clientapi-tests job').toBeDefined()
-
-    // job 级的跳过/放水：`if:` 让整个 job 不跑，`continue-on-error:` 让它红了也算通过。
-    // 两者都不改 run 命令文本，纯文本断言看不见。
-    expect(job.if, 'clientapi-tests 被 if: 条件化，可能整个 job 被跳过').toBeUndefined()
-    expect(job['continue-on-error'], 'clientapi-tests 失败也会算通过').toBeUndefined()
-    expect(job.needs, 'clientapi-tests 挂了 needs，上游 job 跳过会连带跳过它').toBeUndefined()
-
-    const steps = job.steps || []
-    for (const s of steps) {
-      expect(s.if, `step「${s.name || s.uses}」被 if: 条件化`).toBeUndefined()
-      expect(s['continue-on-error'], `step「${s.name || s.uses}」失败也算通过`).toBeUndefined()
+    // job 级与 step 级的跳过/放水：`if:` 让它不跑，`continue-on-error:` 让它红了也算通过，
+    // `needs:` 让上游跳过时连带跳过。三者都不改 run 命令文本，纯文本断言看不见。
+    // ⚠️ 两个 job 都要查 —— canary 只守了 node 版本、没守执行与失败传播时，
+    // 给它加一条 `if: ${{ false }}` 就能让生产运行时兼容性悄悄回到零覆盖
+    // （闸门 2 codex round-4 指出）。
+    const assertJobActuallyRuns = (jobName) => {
+      const j = wf.jobs[jobName]
+      expect(j, `lint.yml 里没有 ${jobName} job`).toBeDefined()
+      expect(j.if, `${jobName} 被 if: 条件化，可能整个 job 被跳过`).toBeUndefined()
+      expect(j['continue-on-error'], `${jobName} 失败也会算通过`).toBeUndefined()
+      expect(j.needs, `${jobName} 挂了 needs，上游 job 跳过会连带跳过它`).toBeUndefined()
+      for (const s of j.steps || []) {
+        expect(s.if, `${jobName} 的 step「${s.name || s.uses}」被 if: 条件化`).toBeUndefined()
+        expect(s['continue-on-error'], `${jobName} 的 step「${s.name || s.uses}」失败也算通过`).toBeUndefined()
+      }
+      return j
     }
+
+    const job = assertJobActuallyRuns('clientapi-tests')
+    const steps = job.steps || []
 
     const inClientApi = steps.filter(
       (s) => s['working-directory'] === 'fengyu-client/cloudfunctions/clientApi',
@@ -258,8 +267,7 @@ describe('lakala 跨副本一致性守护', () => {
     // 已一并把 config 改成真正生效的 include）。
     // node 18 canary：补上「主 job 跑 node 22，测不出生产运行时 Nodejs18.15」的缺口。
     // 它不跑测试、只 require 生产模块，所以不受 vite 7 不支持 node 18 的限制。
-    const canary = wf.jobs['clientapi-node18-canary']
-    expect(canary, '缺 node18 canary job，生产运行时兼容性零覆盖').toBeDefined()
+    const canary = assertJobActuallyRuns('clientapi-node18-canary')
     // ⚠️ 必须读 setup-node 的 `with.node-version` 本身。不要用「steps 的 JSON 里
     // 含字符串 18.15」这种糊涂写法 —— step 名字「Require ... under Nodejs18.15」
     // 自己就含这串，把 node-version 改成 22 照样绿（闸门 2 codex round-3 实测）。
@@ -267,8 +275,19 @@ describe('lakala 跨副本一致性守护', () => {
       .filter((s) => String(s.uses || '').startsWith('actions/setup-node'))
       .map((s) => String((s.with || {})['node-version']))
     expect(canaryNode, 'canary 必须跑在 18.15（与 cloudbaserc 的 runtime 对齐）').toEqual(['18.15'])
+    // 命令本身也要锁：缩成只 `require('./index.js')` 的话，路由模块顶层的 node 20+ API
+    // 就测不到了，canary 名存实亡（闸门 2 codex round-4 指出）。
+    const canaryRun = (canary.steps || []).map((s) => s.run || '').join('\n')
+    expect(canaryRun, 'canary 必须遍历 routes/ 逐个 require，不能只 require 入口')
+      .toMatch(/readdirSync\('routes'\)/)
+    expect(canaryRun, 'canary 必须 require 入口 index.js').toMatch(/require\('\.\/index\.js'\)/)
 
+    // ⚠️ 剥掉 JS 行注释再断言：否则「把旧 include 留在注释里、下一行写窄的」就能让
+    // 下面的 toContain 照样匹配到注释（闸门 2 codex round-4 实测）。与 SQL 侧同型的坑。
     const vitestConfig = read(path.resolve(__dirname, '../../vitest.config.js'))
+      .split('\n')
+      .filter((line) => !/^\s*\/\//.test(line))
+      .join('\n')
     expect(vitestConfig, 'include 被改窄会让测试文件静默出网').toContain(
       "include: ['**/__tests__/**/*.test.js']",
     )
