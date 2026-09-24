@@ -39,6 +39,114 @@ function stripComments(src: string): string {
     .replace(/(^|[^:])\/\/[^\n]*/g, '$1 ')
 }
 
+/**
+ * ★ 轻量 TS 词法扫描：切出指定 `async function` 的**真实函数体**，
+ * 沿途剥掉 TS 注释，**字符串与模板字面量原样保留**。
+ *
+ * ⚠️ 为什么不能用正则 `/async function X\([\s\S]*?\n}/`（#286 闸门 2 连着打穿三次）：
+ * 它把**第一个顶格 `}`** 当函数结尾，而顶格 `}` 可以来自注释、`if (false) {…}` 块、
+ * 甚至正则字面量 `/}/`。切片一旦提前收尾，后面真正执行的 SQL 就落在守护视野之外。
+ *
+ * 做法：① 括号深度跳过参数列表 ② 尖括号深度跳过返回类型注解
+ * （`Promise<Map<string,{…}>>` 里有 `{}`）③ 花括号深度扫到函数体结尾，
+ * 沿途跳过 `//` `/* *\/` `'…'` `"…"` 与模板字面量（按 `${…}` 深度，不被里面的 `}` 提前结束）。
+ *
+ * #287 把它从 `queryCycleByStore` 专用**提为通用**，两个 describe 共用一份。
+ */
+function functionBody(src: string, name: string): string {
+const decl = new RegExp(`async function ${name}\\s*\\(`).exec(src)
+    if (!decl) return ''
+    let i = decl.index + decl[0].length
+    for (let paren = 1; i < src.length && paren > 0; i++) {
+      if (src[i] === '(') paren++
+      else if (src[i] === ')') paren--
+    }
+    let angle = 0
+    while (i < src.length) {
+      const c = src[i]
+      if (c === '<') angle++
+      else if (c === '>') angle = Math.max(0, angle - 1)
+      else if (c === '{' && angle === 0) break
+      i++
+    }
+    let out = ''
+    let depth = 0
+    while (i < src.length) {
+      const c = src[i]
+      if (c === '/' && src[i + 1] === '/') {
+        while (i < src.length && src[i] !== '\n') i++
+        out += ' '
+        continue
+      }
+      if (c === '/' && src[i + 1] === '*') {
+        i += 2
+        while (i < src.length && !(src[i] === '*' && src[i + 1] === '/')) i++
+        i += 2
+        out += ' '
+        continue
+      }
+      if (c === "'" || c === '"') {
+        const quote = c
+        out += c
+        i++
+        while (i < src.length) {
+          if (src[i] === '\\') {
+            out += src.slice(i, i + 2)
+            i += 2
+            continue
+          }
+          out += src[i]
+          i++
+          if (src[i - 1] === quote) break
+        }
+        continue
+      }
+      if (c === '`') {
+        out += c
+        i++
+        let tplDepth = 0
+        while (i < src.length) {
+          if (src[i] === '\\') {
+            out += src.slice(i, i + 2)
+            i += 2
+            continue
+          }
+          if (src[i] === '$' && src[i + 1] === '{') {
+            tplDepth++
+            out += '${'
+            i += 2
+            continue
+          }
+          if (src[i] === '}' && tplDepth > 0) {
+            tplDepth--
+            out += '}'
+            i++
+            continue
+          }
+          if (src[i] === '`' && tplDepth === 0) {
+            out += '`'
+            i++
+            break
+          }
+          out += src[i]
+          i++
+        }
+        continue
+      }
+      if (c === '{') depth++
+      else if (c === '}') {
+        depth--
+        out += c
+        i++
+        if (depth === 0) break
+        continue
+      }
+      out += c
+      i++
+    }
+    return out
+}
+
 describe('品项板块两端口径一致性守护', () => {
   let adminSrc: string
   let staffSrc: string
@@ -97,6 +205,42 @@ describe('品项板块两端口径一致性守护', () => {
         return normalize(body ?? '')
       }
       /**
+       * ★★ **守护检查的那段，必须就是数据库真正执行的那段**（round-2 DeepSeek）。
+       *
+       * `adminCardSql` 取的是「函数锚点后**第一个** `db.execute(sql\`…\`)`」。
+       * DeepSeek 实测打穿：在函数里塞一条**诱饵** `db.execute(sql\`<当前安全 SQL>\`)`，
+       * 把真正执行的那条改成计算属性 `db['execute'](sql\`<已回退成 so.store_id 归店>\`)` ——
+       * 切片取到诱饵、全文件 `db.execute(` 计数仍是 8（诱饵 +1、真查询 −1），
+       * **26 条断言全绿**，而 253%/2600% 的两处根因原样复活。
+       *
+       * 与 #286 round-9 是同一个攻击（那次是「未调用的箭头函数 + `db['execute']`」）。
+       * 两条一起堵：
+       *   ① 四个函数体内 `db.execute(` **恰好一条** —— 用词法扫描器切真实函数体，
+       *      不再用会被顶格 `}` 截断的正则（这同时关掉 DeepSeek 的 P3）
+       *   ② 全文件禁掉 `db[...]` 计算属性访问 —— 生产代码零处，这条让整类解耦失效
+       */
+      it('四个查询各自只有一条 db.execute，且全文件禁用计算属性访问', () => {
+        for (const fn of [
+          'queryCardHolders',
+          'queryCardHoldersByStore',
+          'queryMemberCount',
+          'queryMemberCountByStore',
+        ]) {
+          const body = functionBody(adminSrc, fn)
+          expect(body, `${fn} 的函数体未切出 —— 切片锚点需同步更新`).toBeTruthy()
+          expect(
+            (body.match(/db\.execute\(/g) ?? []).length,
+            `${fn} 里的 db.execute 不止一条 —— 可能有一条是诱饵，守护会检查到错误的那条`,
+          ).toBe(1)
+        }
+        expect(
+          adminSrc,
+          'product.ts 出现 db[...] 计算属性访问 —— 它不计入 db.execute( 字面量统计，' +
+            '可让「守护检查的那段」与「真正执行的那段」解耦（#286 round-9 / #287 round-2 同款攻击）',
+        ).not.toMatch(/\bdb\s*\[/)
+      })
+
+      /**
        * 切出 admin 某个查询函数的 **函数体**（含 `const sc = scopeFilterSql(...)` 那行）。
        *
        * ⚠️ scope 断言必须打在函数体上，**不能打在 SQL 模板上** —— 模板里只有 `${sc}`
@@ -104,8 +248,7 @@ describe('品项板块两端口径一致性守护', () => {
        * `toMatch(/scopeFilterSql\(…'c\.bound_store_id'\)|WHERE \$\{sc\}/)`，
        * 而 `WHERE ${sc}` 恒存在 ⇒ 整条断言**永远为真**（空断言），红检 R3 当场打出 GREEN。
        */
-      const adminFnBody = (fn: string): string =>
-        normalize(new RegExp(`async function ${fn}\\([\\s\\S]*?\\n}`).exec(adminSrc)?.[0] ?? '')
+      const adminFnBody = (fn: string): string => normalize(functionBody(adminSrc, fn))
 
       /**
        * ★★★ **分子逐字等于「分母 + EXISTS 收窄」** —— 整组守护里最硬的一条。
@@ -309,7 +452,7 @@ describe('品项板块两端口径一致性守护', () => {
          * `cycleStats` 将来也改走 `bound_store_id` 就会**误报红**，且报错信息指向错误的原因。
          * 「切不出就兜底到全文」本身就是空断言的温床（同 `82e3f1e7` 修掉的那条）。
          */
-        const fnBody = /async function cardHolders\([\s\S]*?\n}/.exec(staffSrc)?.[0] ?? ''
+        const fnBody = functionBody(staffSrc, 'cardHolders')
         expect(fnBody, 'cardHolders 函数体未切出 —— 切片锚点需同步更新').toBeTruthy()
         /**
          * ⚠️ 数的是 **`buildClientScope(` 的调用次数**，不是 `const cs = …` 这个字面量 ——
@@ -546,103 +689,10 @@ describe('品项板块两端口径一致性守护', () => {
      * `/*`。round-7 codex 指出上一版把它跑在 `stripComments` 之后的文本上，
      * 配对好的块注释在检查前就已经消失 —— **那条断言证明不了它声称的事**（空断言）。
      */
-    const queryCycleByStoreBody = (src: string): string => {
-      const decl = /async function queryCycleByStore\s*\(/.exec(src)
-      if (!decl) return ''
-      let i = decl.index + decl[0].length
-      for (let paren = 1; i < src.length && paren > 0; i++) {
-        if (src[i] === '(') paren++
-        else if (src[i] === ')') paren--
-      }
-      let angle = 0
-      while (i < src.length) {
-        const c = src[i]
-        if (c === '<') angle++
-        else if (c === '>') angle = Math.max(0, angle - 1)
-        else if (c === '{' && angle === 0) break
-        i++
-      }
-      let out = ''
-      let depth = 0
-      while (i < src.length) {
-        const c = src[i]
-        if (c === '/' && src[i + 1] === '/') {
-          while (i < src.length && src[i] !== '\n') i++
-          out += ' '
-          continue
-        }
-        if (c === '/' && src[i + 1] === '*') {
-          i += 2
-          while (i < src.length && !(src[i] === '*' && src[i + 1] === '/')) i++
-          i += 2
-          out += ' '
-          continue
-        }
-        if (c === "'" || c === '"') {
-          const quote = c
-          out += c
-          i++
-          while (i < src.length) {
-            if (src[i] === '\\') {
-              out += src.slice(i, i + 2)
-              i += 2
-              continue
-            }
-            out += src[i]
-            i++
-            if (src[i - 1] === quote) break
-          }
-          continue
-        }
-        if (c === '`') {
-          out += c
-          i++
-          let tplDepth = 0
-          while (i < src.length) {
-            if (src[i] === '\\') {
-              out += src.slice(i, i + 2)
-              i += 2
-              continue
-            }
-            if (src[i] === '$' && src[i + 1] === '{') {
-              tplDepth++
-              out += '${'
-              i += 2
-              continue
-            }
-            if (src[i] === '}' && tplDepth > 0) {
-              tplDepth--
-              out += '}'
-              i++
-              continue
-            }
-            if (src[i] === '`' && tplDepth === 0) {
-              out += '`'
-              i++
-              break
-            }
-            out += src[i]
-            i++
-          }
-          continue
-        }
-        if (c === '{') depth++
-        else if (c === '}') {
-          depth--
-          out += c
-          i++
-          if (depth === 0) break
-          continue
-        }
-        out += c
-        i++
-      }
-      return out
-    }
 
     /** 未经 SQL 清洗的模板原文 —— 「扫描器语法是超集」那组断言要用它。 */
     const detailTemplateRaw = (src: string): string =>
-      /db\.execute\(sql`([\s\S]*?)`\)/.exec(queryCycleByStoreBody(src))?.[1] ?? ''
+      /db\.execute\(sql`([\s\S]*?)`\)/.exec(functionBody(src, 'queryCycleByStore'))?.[1] ?? ''
 
     /** 切出 queryCycleByStore 的 SQL 模板，避免 KPI 侧同名 CTE 链顶替。 */
     const detailSql = (src: string): string => normalize(stripSqlNoise(detailTemplateRaw(src)))
@@ -738,7 +788,7 @@ describe('品项板块两端口径一致性守护', () => {
       }
       // ⚠️ 必须用词法扫描出的真实函数体来数，不能再用正则切片 ——
       // 正则会在第一个顶格 `}` 处收尾，于是「诱饵 + 真 SQL」两条 db.execute 只数到 1。
-      const body = queryCycleByStoreBody(adminSrc)
+      const body = functionBody(adminSrc, 'queryCycleByStore')
       expect(body, 'queryCycleByStore 函数体未切出').toBeTruthy()
       /**
        * ★ **通用截断探测** —— 不去追每一种能骗过词法扫描器的写法，直接检查
