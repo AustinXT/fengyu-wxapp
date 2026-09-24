@@ -8,11 +8,13 @@
  */
 import './setup.mjs'
 import {
-  NS, TEST_STORE_ID, TEST_MANAGER_OPENID, TEST_MANAGER_EMP_ID,
+  NS, TEST_STORE_ID, TEST_STORE_ORG_ID, TEST_MANAGER_OPENID, TEST_MANAGER_EMP_ID,
   pgQuery, closePool,
 } from './setup.mjs'
 import { invokeStaffApi } from './helpers/invoke.mjs'
-import { ensureTestStore, createTestStaff, cleanupTestData } from './helpers/fixtures.mjs'
+import {
+  ensureTestStore, createTestStaff, createTestPermissionRole, cleanupTestData,
+} from './helpers/fixtures.mjs'
 
 const INV_DOC_ID = `${NS}_INV_PROC_1`
 const INV_SKU_ID = `${NS}_INV_SKU_1`
@@ -38,26 +40,42 @@ async function createInventoryFixture() {
     [TEST_STORE_ID],
   )
   await pgQuery(
-    `INSERT INTO inventory_skus (sku_id, product_code, product_name, spec_name, retail_price, is_active)
-     VALUES ($1, $2, $3, '默认规格', 100, true)
+    // market_purchase_price_mode 必须显式给：0039 的 trigger
+    // trg_inventory_skus_validate_market_price_mode 对非「公式」模式要求同时有
+    // market_purchase_price 与 override_reason，而这三列的默认值都是 NULL ——
+    // 不写就会在建夹具阶段抛「手工覆盖市场进货价必须填写价格和原因」。
+    // 这里走「公式」：trigger 自己用 accounting_price × discount 算出进货价。
+    `INSERT INTO inventory_skus (
+       sku_id, product_code, product_name, spec_name, retail_price, is_active,
+       accounting_price, market_purchase_discount, market_purchase_price_mode
+     )
+     VALUES ($1, $2, $3, '默认规格', 100, true, 50, 0.8, '公式')
      ON CONFLICT (sku_id) DO UPDATE
        SET product_code = EXCLUDED.product_code,
            product_name = EXCLUDED.product_name,
            spec_name = EXCLUDED.spec_name,
            retail_price = EXCLUDED.retail_price,
+           accounting_price = EXCLUDED.accounting_price,
+           market_purchase_discount = EXCLUDED.market_purchase_discount,
+           market_purchase_price_mode = EXCLUDED.market_purchase_price_mode,
            is_active = true,
            updated_at = NOW()`,
     [INV_SKU_ID, `${NS}_PCODE_1`, `${NS}_采购商品`],
   )
   const lots = await pgQuery(
+    // 余额必须是 0 且不能在 DO UPDATE 里改：0009 的
+    // trg_inventory_stock_lots_guard_balance 要求新批次从零起步、余额只能经
+    // inventory_movements 写入。而 movements 是 append-only（删不掉），在共享
+    // dev 库里入账会给 cleanupTestData 留下删不掉的残留 —— 所以这里不入账。
+    // 本 smoke 只测 docList / docDetail 两个只读接口，明细数量取自
+    // inventory_doc_items（不受余额守护约束），零余额批次完全够用。
     `INSERT INTO inventory_stock_lots (
        location_id, sku_id, lot_key, sku_name, spec_name, batch_no, expiry_date_key,
        is_gift, quantity_on_hand, store_standard_unit_price, store_actual_unit_price
      )
-     VALUES ($1, $2, $2 || '|INV||||100', $3, '默认规格', 'INV', '', false, 5, 100, 100)
+     VALUES ($1, $2, $2 || '|INV||||100', $3, '默认规格', 'INV', '', false, 0, 100, 100)
      ON CONFLICT (location_id, lot_key)
-     DO UPDATE SET quantity_on_hand = 5,
-                   sku_name = EXCLUDED.sku_name,
+     DO UPDATE SET sku_name = EXCLUDED.sku_name,
                    spec_name = EXCLUDED.spec_name,
                    updated_at = NOW()
      RETURNING id`,
@@ -95,6 +113,16 @@ async function main() {
   await cleanupTestData(NS)
   await ensureTestStore()
   await createTestStaff()
+  // 门店库存单据的可见性挂在库存角色上：middleware/auth.js 只给带
+  // inventory:store_operate / market_operate / market_approve 的绑定填
+  // auth.inventoryStoreIds，而 buildInventoryLocationScope 在该集合为空时直接
+  // 退化成 WHERE FALSE。只有 manager 角色的店长查不到任何库存单据（设计如此），
+  // 所以夹具必须显式补一条门店库存员绑定。
+  await createTestPermissionRole({
+    employeeId: TEST_MANAGER_EMP_ID,
+    role: 'inventory_store_operator',
+    scopeId: TEST_STORE_ORG_ID,
+  })
   await createInventoryFixture()
 
   const errors = []
