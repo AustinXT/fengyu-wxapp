@@ -15,6 +15,9 @@ vi.mock('@/actions/data-center/efficiency', () => ({
 vi.mock('@/actions/refunds', () => ({
   exportRefunds: vi.fn(),
 }))
+vi.mock('@/actions/data-center/remaining-cards', () => ({
+  exportRemainingCardsReport: vi.fn(),
+}))
 // 员工导出分支会立即查 org_nodes 建路径映射（其余分支的 rows 都是惰性的，不碰 db）
 vi.mock('@/db', () => ({
   db: { select: vi.fn(() => ({ from: vi.fn().mockResolvedValue([]) })) },
@@ -25,12 +28,17 @@ import { getCustomerBoard } from '@/actions/data-center/customer'
 import { getProductBoard } from '@/actions/data-center/product'
 import { getEfficiencyBoard } from '@/actions/data-center/efficiency'
 import { exportRefunds } from '@/actions/refunds'
+import { exportRemainingCardsReport } from '@/actions/data-center/remaining-cards'
 import {
   DATA_CENTER_VIEW_CONFIG,
   getDataCenterBreakdownConfig,
   getDataCenterRankingConfig,
 } from '@/lib/data-center/columns'
-import { DATA_CENTER_BOARD_EXPORT_VIEWS } from '@/lib/export-job-types'
+import {
+  DATA_CENTER_BOARD_EXPORT_VIEWS,
+  DATA_CENTER_REPORT_EXPORT_VIEWS,
+  DATA_CENTER_REPORT_VIEW_PREFIX,
+} from '@/lib/export-job-types'
 import { createExportContent } from './registry'
 
 function metricValue(unit: 'amount' | 'count' | 'percent'): number {
@@ -325,5 +333,55 @@ describe('数据中心全部导出视图', () => {
       ])
       expect(content.columns[3]?.value(rankingRow)).toBe(metric.unit === 'amount' ? 123.46 : 123)
     }
+  })
+})
+
+/**
+ * 经营明细报表视图的分发守护（#371 补）：queryDataCenter 过去只按 `sales-` / `customer-` / `product-`
+ * 前缀分发，报表视图名一旦撞前缀就会被派给旧板块取数——导出内容整张错、任务照样 ready，不报错。
+ * 现在报表视图先于前缀分发；这里同时钉住命名约定与分发结果。
+ */
+describe('经营明细报表视图分发', () => {
+  const BOARD_PREFIXES = ['sales-', 'customer-', 'product-', 'efficiency-']
+
+  it.each([...DATA_CENTER_REPORT_EXPORT_VIEWS])('%s 以 report- 开头，且不撞任何旧板块前缀', (view) => {
+    expect(view.startsWith(DATA_CENTER_REPORT_VIEW_PREFIX)).toBe(true)
+    for (const prefix of BOARD_PREFIXES) expect(view.startsWith(prefix), prefix).toBe(false)
+  })
+
+  it('旧板块视图都不以 report- 开头（两组视图不交叉）', () => {
+    for (const view of DATA_CENTER_BOARD_EXPORT_VIEWS) {
+      expect(view.startsWith(DATA_CENTER_REPORT_VIEW_PREFIX), view).toBe(false)
+    }
+  })
+
+  it('report-remaining-cards 走报表取数，不触碰任何旧板块取数函数；URL 参数原样透传', async () => {
+    vi.clearAllMocks()
+    vi.mocked(exportRemainingCardsReport).mockResolvedValue({
+      columns: [{ categoryId: 'C1', categoryName: '招牌', kind: '招牌', kindSort: 1, sort: 1 }],
+      rows: [{
+        key: 'U1:S1', clientUserId: 'U1', storeId: 'S1', storeName: '蓝莱店', customerName: '张三',
+        phoneMasked: '138****2222', level: '会员客', remaining: 3,
+        cells: { C1: { state: 'remaining', remaining: 3, unpaid: 0, served: 1, convertedOut: 0, deposit: true, frozen: false } },
+      }],
+      totals: { remaining: 3, 'cat:C1': 3 },
+      params: { scope: { type: 'all' }, q: '', show: 'all' },
+      asOf: '2026-09-25',
+    })
+    const params = { q: '张', show: 'remaining', tab: 'x' }
+    const content = await createExportContent('data-center', { view: 'report-remaining-cards', params })
+
+    expect(exportRemainingCardsReport).toHaveBeenCalledWith(params)
+    for (const board of [getSalesBoard, getCustomerBoard, getProductBoard, getEfficiencyBoard]) {
+      expect(board).not.toHaveBeenCalled()
+    }
+    expect(content.columns.map((column) => column.header)).toEqual(['门店', '顾客', '会员等级', '招牌', '剩余次数'])
+    expect(content.columns.map((column) => column.total ?? null)).toEqual([null, null, null, 3, 3])
+    expect(content.frozenColumns).toBe(3)
+    expect(content.totalsLabel).toBe('合计')
+    expect(content.meta).toMatchObject({ period: null, scope: '全部' })
+    const rows = []
+    for await (const row of content.rows) rows.push(row)
+    expect(content.columns.map((column) => column.value(rows[0]))).toEqual(['蓝莱店', '张三 138****2222', '会员客', 3, 3])
   })
 })

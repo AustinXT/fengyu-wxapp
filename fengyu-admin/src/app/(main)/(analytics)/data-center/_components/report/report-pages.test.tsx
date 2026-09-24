@@ -43,6 +43,30 @@ vi.mock('next/navigation', () => ({
 }))
 vi.mock('@/actions/data-center/shared', () => actions)
 
+/** 已交付内容的报表页各自的取数 action（页面单合入时登记于此） */
+const reportActions = vi.hoisted(() => ({
+  getRemainingCardsReport: vi.fn(),
+}))
+vi.mock('@/actions/data-center/remaining-cards', () => reportActions)
+vi.mock('@/actions/export-jobs', () => ({ createExportJob: vi.fn() }))
+
+const emptyRemainingCardsReport = {
+  columns: [],
+  rows: [],
+  total: 0,
+  filteredCustomerCount: 0,
+  filtered: false,
+  page: 1,
+  pageSize: 50,
+  totals: { remaining: 0 },
+  summary: {
+    rowCount: 0, customerCount: 0, remainingCustomerCount: 0, remainingCustomerRate: null,
+    remainingSessions: 0, remainingCategoryCount: 0, remainingCells: 0, unpaidCells: 0,
+    doneCells: 0, neverCells: 0, expiredCells: 0, categoryCount: 0, kindCount: 0,
+  },
+  asOf: '2026-09-25',
+}
+
 import DailyOverviewPage from '../../daily-overview/page'
 import CustomerFrequencyPage from '../../customer-frequency/page'
 import RemainingCardsPage from '../../remaining-cards/page'
@@ -127,6 +151,7 @@ beforeEach(() => {
   vi.useFakeTimers({ toFake: ['Date'] })
   vi.setSystemTime(new Date('2026-09-25T10:00:00+08:00'))
   actions.getDataStartDates.mockResolvedValue(starts)
+  reportActions.getRemainingCardsReport.mockResolvedValue(emptyRemainingCardsReport)
 })
 
 afterEach(() => {
@@ -225,6 +250,34 @@ describe('报表页 · 骨架渲染', () => {
     expect(screen.queryByRole('note', { name: '数据起点提示' })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: '重置' })).toBeInTheDocument()
     expect(screen.getByTestId('report-info-bar')).not.toHaveTextContent('期间')
+    // 取数 action 收到的是 URL 参数本身（同一份参数给导出任务，页面与导出看同一份筛选）
+    expect(reportActions.getRemainingCardsReport).toHaveBeenCalledWith({})
+  })
+
+  it('剩余卡项：URL 参数原样交给取数 action，信息条写明顾客数与筛选结果', async () => {
+    mockScope(hqOptions)
+    reportActions.getRemainingCardsReport.mockResolvedValue({
+      ...emptyRemainingCardsReport,
+      filtered: true,
+      filteredCustomerCount: 3,
+      summary: { ...emptyRemainingCardsReport.summary, customerCount: 120, kindCount: 2, categoryCount: 5, remainingCells: 40, remainingSessions: 321 },
+    })
+    await renderPage('remainingCards', { q: '张', show: 'remaining' })
+
+    expect(reportActions.getRemainingCardsReport).toHaveBeenCalledWith({ q: '张', show: 'remaining' })
+    const bar = screen.getByTestId('report-info-bar')
+    expect(bar).toHaveTextContent('顾客筛出 3 位（共 120 位）')
+    expect(bar).toHaveTextContent('品项一级 2 / 二级 5')
+    expect(bar).toHaveTextContent('有余额品项40 项次')
+    expect(bar).toHaveTextContent('待服务剩余321 次')
+  })
+
+  it('剩余卡项：非总部无可查看范围时不取数', async () => {
+    mockScope(noStoreOptions)
+    await renderPage('remainingCards')
+
+    expect(screen.getByText('当前账号暂无可查看的数据范围')).toBeInTheDocument()
+    expect(reportActions.getRemainingCardsReport).not.toHaveBeenCalled()
   })
 
   it('单店账号的完整区间不出提示（只看本店起点）', async () => {

@@ -91,6 +91,18 @@ const PROBES: Probe[] = [
     pattern: /^SELECT DISTINCT so\.client_user_id, \$\{col\} AS visit_date$/,
     minLines: 1,
   },
+  {
+    label: '剩余卡项 · 寄存单只计已支付（#371）',
+    file: 'src/lib/data-center/remaining-cards-query.ts',
+    pattern: /^AND \(sale_orders\.sale_order_type <> '寄存单' OR sale_orders\.status = '已支付'\)$/,
+    minLines: 1,
+  },
+  {
+    label: '剩余卡项 · 格剩余 = 未过期卡行的已付未用（#371）',
+    file: 'src/lib/data-center/remaining-cards-query.ts',
+    pattern: /^COALESCE\(SUM\(s\.paid_unused\) FILTER \(WHERE NOT s\.expired\), 0\) AS remaining,$/,
+    minLines: 1,
+  },
 ]
 
 describe('dist/export-worker.mjs 新鲜度（改了 data-center SQL 口径必须重建产物）', () => {
