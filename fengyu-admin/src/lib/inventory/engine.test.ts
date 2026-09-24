@@ -38,7 +38,9 @@ import {
   listInventoryCoreDocs,
   listInventoryLocationFilterOptions,
   listInventoryLots,
+  listInventorySkus,
   listInventorySuppliers,
+  inventorySkuOptionConditions,
   rejectInventoryCoreDoc,
   syncInventoryLocations,
   updateInventorySku,
@@ -4392,5 +4394,62 @@ describe('#200 建单鉴权端的前提不变量与代建 / 调货正向回归',
         + '一个自己有权的无关主体过鉴权、把库存改动落到无权的那一端',
       ).toBe(true)
     }
+  })
+})
+
+describe('SKU 候选检索过滤（#339）', () => {
+  const dialect = new PgDialect()
+  function render(filters: Parameters<typeof inventorySkuOptionConditions>[0]) {
+    const conditions = inventorySkuOptionConditions(filters)
+    return conditions.map((condition) => dialect.sqlToQuery(condition))
+  }
+
+  it('门店报货：reportable + 可用于门店所属市场（供应链放行，非供应链须归属该市场）', () => {
+    const [reportable, market] = render({ reportable: true, availableToMarketId: 'M1' })
+    expect(reportable.sql).toBe('"inventory_skus"."is_reportable" = $1')
+    expect(reportable.params).toEqual([true])
+    expect(market.sql).toBe('("inventory_skus"."source_type" = $1 or "inventory_skus"."owner_market_id" = $2)')
+    expect(market.params).toEqual(['供应链', 'M1'])
+  })
+
+  it('品项公司报货需求：只出供应链来源 + reportable', () => {
+    const rendered = render({ sourceType: '供应链', reportable: true })
+    expect(rendered.map((q) => q.sql)).toEqual([
+      '"inventory_skus"."source_type" = $1',
+      '"inventory_skus"."is_reportable" = $1',
+    ])
+    expect(rendered.map((q) => q.params)).toEqual([['供应链'], [true]])
+  })
+
+  it('自采入库：只出归属本市场的非供应链商品（AND，不是 OR）', () => {
+    const [owned] = render({ ownedByMarketId: 'M1' })
+    expect(owned.sql).toBe('("inventory_skus"."source_type" <> $1 and "inventory_skus"."owner_market_id" = $2)')
+    expect(owned.params).toEqual(['供应链', 'M1'])
+  })
+
+  it('关键词按编号/名称/规格/系列匹配，转义 LIKE 通配符与反斜杠，空白关键词不加条件', () => {
+    const [keyword] = render({ keyword: ' 5%_\\x ' })
+    expect(keyword.sql).toContain('"inventory_skus"."product_code" ilike')
+    expect(keyword.sql).toContain('"inventory_skus"."product_name" ilike')
+    expect(keyword.sql).toContain('"inventory_skus"."spec_name" ilike')
+    expect(keyword.params[0]).toBe('%5\\%\\_\\\\x%')
+    expect(render({ keyword: '   ' })).toEqual([])
+  })
+
+  it('非法参数拒绝：未知来源 / 非字符串市场 id', () => {
+    expect(() => render({ sourceType: '其他' as never })).toThrow(/无效库存商品来源/)
+    expect(() => render({ availableToMarketId: 123 as never })).toThrow(/可用市场无效/)
+    expect(() => render({ ownedByMarketId: '  ' })).toThrow(/归属市场无效/)
+  })
+
+  it('skuIds 为空数组时不查库直接返回空；超过 100 个拒绝', async () => {
+    mockGetSession.mockResolvedValue(SESSION)
+    mockDb.select.mockClear()
+    mockDb.execute.mockClear()
+    await expect(listInventorySkus({ skuIds: [] })).resolves.toEqual({ data: [], total: 0 })
+    expect(mockDb.select).not.toHaveBeenCalled()
+    expect(mockDb.execute).not.toHaveBeenCalled()
+    const tooMany = Array.from({ length: 101 }, (_, index) => `SKU-${index}`)
+    await expect(listInventorySkus({ skuIds: tooMany })).rejects.toThrow(/最多 100 个/)
   })
 })
