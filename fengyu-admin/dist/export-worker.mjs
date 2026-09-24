@@ -175684,6 +175684,17 @@ function inventoryPriceVisibilityForOrgNodes(tiers, orgNodeIds) {
     return "market";
   return "none";
 }
+var INVENTORY_PROMOTION_MAINTAIN_ACTION = "inventory:supply_chain_master_data_manage";
+function isInventoryPromotionMaintainer(session4) {
+  if (isAdminScope(session4))
+    return true;
+  return session4.roles.some((role) => role.scopeType === "总部" && Array.isArray(role.actions) && role.actions.includes(INVENTORY_PROMOTION_MAINTAIN_ACTION));
+}
+function assertInventoryPromotionMaintainer(session4) {
+  if (!isInventoryPromotionMaintainer(session4)) {
+    throw new ApiError("PERMISSION_DENIED", "报货福利方案只能由总部供应链维护");
+  }
+}
 
 // src/lib/inventory/engine.ts
 var sourceLocation = alias(inventoryLocations, "source_loc");
@@ -176619,6 +176630,20 @@ var listInventoryMarketTransferTargets = withAnyPermission([...inventoryDelegata
   await syncInventoryLocations();
   const rows = await db2.select({ orgNodeId: inventoryLocations.orgNodeId, name: inventoryLocations.name }).from(inventoryLocations).where(import_drizzle_orm57.and(import_drizzle_orm57.eq(inventoryLocations.isActive, true), import_drizzle_orm57.eq(inventoryLocations.locationType, "市场"), import_drizzle_orm57.isNotNull(inventoryLocations.orgNodeId))).orderBy(import_drizzle_orm57.asc(inventoryLocations.name));
   return rows.flatMap((row) => row.orgNodeId ? [{ orgNodeId: row.orgNodeId, name: row.name }] : []);
+});
+var listInventoryPromotionMarketOptions = withPermission("inventory:stock_list", async (session4) => {
+  await syncInventoryLocations();
+  const conditions3 = [
+    import_drizzle_orm57.eq(inventoryLocations.isActive, true),
+    import_drizzle_orm57.eq(inventoryLocations.locationType, "市场")
+  ];
+  if (!isInventoryPromotionMaintainer(session4)) {
+    const scoped = await scopedLocationIds(session4);
+    if (scoped !== null) {
+      conditions3.push(scoped.length > 0 ? import_drizzle_orm57.inArray(inventoryLocations.locationId, scoped) : import_drizzle_orm57.sql`FALSE`);
+    }
+  }
+  return db2.select({ locationId: inventoryLocations.locationId, name: inventoryLocations.name }).from(inventoryLocations).where(import_drizzle_orm57.and(...conditions3)).orderBy(import_drizzle_orm57.asc(inventoryLocations.name));
 });
 var listInventoryLocations = withPermission("inventory:stock_list", async (session4) => {
   await syncInventoryLocations();
@@ -178336,41 +178361,26 @@ var updateInventorySupplier = withPermission("inventory:supply_chain_master_data
   import_cache11.revalidatePath("/inventory/suppliers");
   return { success: true };
 });
-async function assertPromotionMarketScope(session4, marketId) {
+async function assertPromotionMarketScope(marketId) {
   const normalized = normalizeText(marketId);
-  if (!normalized) {
-    if (!isAdminScope(session4) && !session4.roles.some((role) => role.scopeType === "总部")) {
-      throw new ApiError("PERMISSION_DENIED", "市场用户只能维护本市场的福利方案");
-    }
+  if (!normalized)
     return null;
-  }
   await syncInventoryLocations();
   const [location] = await db2.select({ locationType: inventoryLocations.locationType }).from(inventoryLocations).where(import_drizzle_orm57.eq(inventoryLocations.locationId, normalized)).limit(1);
   if (!location || location.locationType !== "市场") {
     throw new ApiError("INVALID_PARAMS", "福利方案所属主体必须是市场");
   }
-  await assertLocationVisible(session4, normalized);
   return normalized;
 }
-async function assertPromotionPlanMutableScope(session4, scopeMarketId) {
-  if (scopeMarketId === null) {
-    if (isAdminScope(session4) || session4.roles.some((role) => role.scopeType === "总部"))
-      return;
-    throw new ApiError("PERMISSION_DENIED", "市场用户不能修改或停用全局福利方案");
-  }
-  await assertLocationVisible(session4, scopeMarketId);
-}
-async function lockPromotionPlanScopeForMutation(tx, id) {
+async function lockPromotionPlanForMutation(tx, id) {
   const rows = await tx.execute(import_drizzle_orm57.sql`
-    SELECT scope_market_id
+    SELECT id
       FROM inventory_promotion_plans
      WHERE id = ${id}
      FOR UPDATE
   `);
-  const row = rows[0];
-  if (!row)
+  if (!rows[0])
     throw new ApiError("NOT_FOUND", "福利方案不存在或无权查看");
-  return row.scope_market_id ?? null;
 }
 function normalizePromotionRuleType(value) {
   if (value === undefined || value === null || value === "")
@@ -178476,7 +178486,7 @@ function promotionItemRow(row) {
 }
 async function promotionPlanRows(session4, onlyId) {
   const priceVisible = canViewPrice(session4);
-  const scoped = await scopedLocationIds(session4);
+  const scoped = isInventoryPromotionMaintainer(session4) ? null : await scopedLocationIds(session4);
   const conditions3 = [];
   if (onlyId)
     conditions3.push(import_drizzle_orm57.eq(inventoryPromotionPlans.id, onlyId));
@@ -178538,8 +178548,9 @@ var getInventoryPromotionPlanById = withPermission("inventory:stock_list", async
   const id = normalizeRequired(idInput, "福利方案");
   return (await promotionPlanRows(session4, id))[0] ?? null;
 });
-var createInventoryPromotionPlan = withAnyPermission(["inventory:supply_chain_master_data_manage", "inventory:market_operate"], async (session4, input) => {
+var createInventoryPromotionPlan = withPermission(INVENTORY_PROMOTION_MAINTAIN_ACTION, async (session4, input) => {
   assertPromotionPriceWritable(session4);
+  assertInventoryPromotionMaintainer(session4);
   const name = normalizeRequired(input.name, "方案名称");
   const startsAt = normalizeYmd(input.startsAt, "开始日期");
   const endsAt = normalizeYmd(input.endsAt, "结束日期");
@@ -178549,7 +178560,7 @@ var createInventoryPromotionPlan = withAnyPermission(["inventory:supply_chain_ma
   if (input.status && input.status !== "启用" && input.status !== "停用") {
     throw new ApiError("INVALID_PARAMS", "福利方案状态无效");
   }
-  const scopeMarketId = await assertPromotionMarketScope(session4, input.scopeMarketId);
+  const scopeMarketId = await assertPromotionMarketScope(input.scopeMarketId);
   const items = normalizePromotionItems(input.items, ruleType);
   await assertPromotionSkus(items);
   const id = `INV-PROMO-${crypto.randomUUID()}`;
@@ -178584,8 +178595,9 @@ var createInventoryPromotionPlan = withAnyPermission(["inventory:supply_chain_ma
   import_cache11.revalidatePath("/inventory/promotions");
   return { id };
 });
-var updateInventoryPromotionPlan = withAnyPermission(["inventory:supply_chain_master_data_manage", "inventory:market_operate"], async (session4, idInput, input) => {
+var updateInventoryPromotionPlan = withPermission(INVENTORY_PROMOTION_MAINTAIN_ACTION, async (session4, idInput, input) => {
   assertPromotionPriceWritable(session4);
+  assertInventoryPromotionMaintainer(session4);
   const id = normalizeRequired(idInput, "福利方案");
   const name = normalizeRequired(input.name, "方案名称");
   const startsAt = normalizeYmd(input.startsAt, "开始日期");
@@ -178599,11 +178611,10 @@ var updateInventoryPromotionPlan = withAnyPermission(["inventory:supply_chain_ma
   const current = (await promotionPlanRows(session4, id))[0];
   if (!current)
     throw new ApiError("NOT_FOUND", "福利方案不存在或无权查看");
-  const scopeMarketId = await assertPromotionMarketScope(session4, input.scopeMarketId);
+  const scopeMarketId = await assertPromotionMarketScope(input.scopeMarketId);
   const items = normalizePromotionItems(input.items, ruleType);
   await db2.transaction(async (tx) => {
-    const currentScopeMarketId = await lockPromotionPlanScopeForMutation(tx, id);
-    await assertPromotionPlanMutableScope(session4, currentScopeMarketId);
+    await lockPromotionPlanForMutation(tx, id);
     await assertPromotionSkus(items);
     await tx.update(inventoryPromotionPlans).set({
       name,
@@ -178632,14 +178643,14 @@ var updateInventoryPromotionPlan = withAnyPermission(["inventory:supply_chain_ma
   import_cache11.revalidatePath("/inventory/promotions");
   return { success: true };
 });
-var disableInventoryPromotionPlan = withAnyPermission(["inventory:supply_chain_master_data_manage", "inventory:market_operate"], async (session4, idInput) => {
+var disableInventoryPromotionPlan = withPermission(INVENTORY_PROMOTION_MAINTAIN_ACTION, async (session4, idInput) => {
+  assertInventoryPromotionMaintainer(session4);
   const id = normalizeRequired(idInput, "福利方案");
   const current = (await promotionPlanRows(session4, id))[0];
   if (!current)
     throw new ApiError("NOT_FOUND", "福利方案不存在或无权查看");
   await db2.transaction(async (tx) => {
-    const currentScopeMarketId = await lockPromotionPlanScopeForMutation(tx, id);
-    await assertPromotionPlanMutableScope(session4, currentScopeMarketId);
+    await lockPromotionPlanForMutation(tx, id);
     await tx.update(inventoryPromotionPlans).set({ status: "停用", updatedAt: new Date }).where(import_drizzle_orm57.eq(inventoryPromotionPlans.id, id));
   });
   await logOperation(session4, "inventory.promotion.disable", "inventory_promotion_plans", id);
