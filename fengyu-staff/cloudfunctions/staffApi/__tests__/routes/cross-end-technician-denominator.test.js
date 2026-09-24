@@ -22,10 +22,20 @@
  *   6. 无门店分支的三分支语义：all→TRUE / market→锚定相等 / store 及未知→FALSE
  *   7. 门店分支两端都叠「仅启用门店」过滤
  *
- * ⚠️ 要件 6、7 是第一轮双谱系评审（codex P2-1 + GLM P2-1 独立命中同一处）补的：
- * 要件 1~5 抽的是 `queryEmployeeCount` 的源文本，真正决定可见性的两个 helper
- * （`buildTechnicianOrgAnchorScope` / `buildStaffScope`）在归一化后只剩一个 `?`，
- * 把它们改坏五条要件照样全绿 —— 「守护看起来很全但恰好漏掉承重那一段」。
+ * ⚠️ 要件 6~9 是双谱系评审逐轮逼出来的，成因都是同一个：**钉住了一层，就漏下一层**。
+ * 第 1 轮漏可见性 helper（归一化后只剩 `?`）、第 2 轮漏「有没有真的调它」、
+ * 第 4 轮漏「调的那个 helper 内部有没有被掏空」和「计数读的是哪张 CTE」。
+ * 加断言时请顺着这条链往外再想一跳。
+ *
+ * ## 本文件**不**负责的一层（别在这里重复造断言）
+ *
+ * 「路由 handler 有没有真的调用 `queryEmployeeCount`」由**行为测试**覆盖：
+ * `__tests__/routes/mgmt-dashboard.test.js` 直接 `await summary(ctx)`，再从
+ * `pg.query.mock.calls` 里找 `technician_base` 那条 SQL 并断言其形态与**实参数组**
+ * （market/store/all 三个 scope 各一组）。行为测试比字面量更强 —— 它连「函数存在但没人调」
+ * 都能抓到。admin 侧同理：`fengyu-admin/src/actions/data-center/__tests__/consistency.sales.test.ts`
+ * 断言 `sales.ts` 出现 `technicianCountSql(session, scope, range.end)` 且
+ * 不再出现 `FROM staff_wechat_users`。
  */
 
 const fs = require('node:fs')
@@ -81,6 +91,28 @@ function squeeze(src) {
   return src.replace(/\s+/g, ' ').trim()
 }
 
+/**
+ * 抽出计数查询那条 `WHERE`（到 SQL 模板结束为止），用于**整段等值比较**。
+ *
+ * 为什么必须等值比较而不是「包含若干子串」：见要件 5 的注释 —— 追加一个 `OR` 分支
+ * 就能让单店 scope 重新计入全部直挂技师，而子串式断言一条都不会红。
+ *
+ * 入参是**已归一化**（`${}`/`$n` → `?`、空白压缩）的片段。
+ *
+ * ⚠️ admin 侧这条 WHERE 在 `technician_scoped` CTE 里，结尾多一个**独立成段**的 `)`。
+ * 剥它必须只认「空白 + `)`」这种形态 —— 写成 `[\s)]*$` 会把分支自己的 `AND ?)` 那个
+ * 右括号一起吃掉，两端都退化成松断言（等值比较就白做了）。
+ */
+function countingWhere(normalizedSection) {
+  const i = normalizedSection.indexOf('WHERE (tb.store_id')
+  if (i < 0) throw new Error('未找到计数查询的 WHERE（形态已变，先读要件 5 的注释）')
+  return normalizedSection
+    .slice(i)
+    .split('`')[0]
+    .trim()
+    .replace(/(?:\s\))+$/, '')
+}
+
 describe('产能技师分母跨端字面量守护（#320）', () => {
   let staffSection
   let adminSection
@@ -89,7 +121,9 @@ describe('产能技师分母跨端字面量守护（#320）', () => {
   let adminAnchorFn
   /** 两端「启用门店过滤」与「门店分支 scope 构造」的源文本 */
   let staffActiveFn
+  let staffWithActiveFn
   let staffStaffScopeFn
+  let staffMgmtScopeFn
   let adminActiveFn
   let adminScopeFilterFn
 
@@ -121,8 +155,18 @@ describe('产能技师分母跨端字面量守护（#320）', () => {
     staffActiveFn = squeeze(
       extractSection(staffSrc, 'function activeStoreCondition(column)', '\n/**'),
     )
+    staffWithActiveFn = squeeze(
+      extractSection(staffSrc, 'function withActiveStoreCondition(', '\n/**'),
+    )
     staffStaffScopeFn = squeeze(
       extractSection(staffSrc, 'function buildStaffScope(', '\n/**'),
+    )
+    staffMgmtScopeFn = squeeze(
+      extractSection(
+        readFile(path.resolve(__dirname, '../../utils/scope.js')),
+        'function buildManagementStoreScope(',
+        '\n/**',
+      ),
     )
     adminActiveFn = squeeze(
       extractSection(adminScopeSrc, 'function activeStoreCondition(storeCol: SQL)', '\n/**'),
@@ -180,12 +224,20 @@ describe('产能技师分母跨端字面量守护（#320）', () => {
     }
   })
 
-  it('要件 5：两端可见性都是「有门店走 store scope / 无门店走市场锚」二选一', () => {
+  /**
+   * 要件 5 —— 计数那条 WHERE 必须**逐字**是这两个分支，不能多一条。
+   *
+   * 第 4 轮 GLM 变异实测：原先三条松 regex
+   * （`store_id IS NOT NULL AND` / `store_id IS NULL AND` / 两者以 OR 相连）
+   * 挡不住**追加第三个 OR 分支** —— 例如加 `OR (tb.anchor_market_id IS NOT NULL)`：
+   * 不动任何 helper、不加参数，单店 scope 就重新计入全部直挂技师（#320 直接复发、
+   * 违反「单店不计入」这条验收标准），而当时 13 条断言全绿。括号与优先级也完全没钉。
+   * 所以改成**整段等值比较**。
+   */
+  it('要件 5：两端计数 WHERE 逐字等于「门店分支 OR 无门店分支」两条，不得追加第三条', () => {
+    const EXPECTED = 'WHERE (tb.store_id IS NOT NULL AND ?) OR (tb.store_id IS NULL AND ?)'
     for (const [end, src] of [['staff', staffSection], ['admin', adminSection]]) {
-      expect(src, `${end} 侧缺门店分支`).toMatch(/store_id IS NOT NULL AND/)
-      expect(src, `${end} 侧缺市场锚分支`).toMatch(/store_id IS NULL AND/)
-      // 两个分支必须是 OR 关系（AND 会把无门店的人整体排除，退回 #320 之前）
-      expect(src).toMatch(/store_id IS NOT NULL AND[\s\S]*OR[\s\S]*store_id IS NULL AND/)
+      expect(countingWhere(src), `${end} 侧计数 WHERE 形态漂移`).toBe(EXPECTED)
     }
   })
 
@@ -225,9 +277,16 @@ describe('产能技师分母跨端字面量守护（#320）', () => {
     expect(adminAnchorFn, 'admin 侧 all 分支对超管恒真').toMatch(
       /if \(isAdminScope\(session\)\) return sql`TRUE`/,
     )
-    expect(adminAnchorFn, 'admin 侧非超管 all 分支必须走可见启用门店 EXISTS').toMatch(
-      /EXISTS \([\s\S]*vn\.type = '门店'[\s\S]*vn\.is_active = TRUE[\s\S]*vn\.parent_id = \$\{col\}/,
+    /**
+     * ⚠️ 必须钉 `return sql`EXISTS (`` 这个完整开头，不能只写 `/EXISTS \(/` ——
+     * 后者能被 `NOT EXISTS (` 命中。第 4 轮 GLM 变异实测：在这里加一个 `NOT`，
+     * 非超管的集团分母就翻成「锚定市场下**没有**可见启用门店」的补集（生产上约 1 人），
+     * 而当时 13 条断言全绿。
+     */
+    expect(adminAnchorFn, 'admin 侧非超管 all 分支必须走可见启用门店 EXISTS（且不得取反）').toMatch(
+      /return sql`EXISTS \([\s\S]*vn\.type = '门店'[\s\S]*vn\.is_active = TRUE[\s\S]*vn\.parent_id = \$\{col\}/,
     )
+    expect(adminAnchorFn, 'admin 侧 EXISTS 被取反了').not.toMatch(/NOT EXISTS/)
   })
 
   /**
@@ -279,6 +338,29 @@ describe('产能技师分母跨端字面量守护（#320）', () => {
     )
     expect(adminScopeFilterFn, 'admin 的 scopeFilterSql 未叠加启用门店过滤').toMatch(
       /parts: SQL\[\] = \[activeStoreCondition\(col\)\]/,
+    )
+    /**
+     * ⚠️ 只钉「`buildStaffScope` 里出现了 `withActiveStoreCondition(` 这个名字」还不够 ——
+     * 第 4 轮 GLM 变异实测：把 `withActiveStoreCondition` 的**函数体**改成 `return scope`
+     * （整条过滤消失），`buildStaffScope` 的文本一个字没变，13 条断言全绿，
+     * 停用门店的技师全部回流进分母、且与 admin 分叉。链路中段那一节也得钉。
+     */
+    expect(staffWithActiveFn, 'staff 的 withActiveStoreCondition 未把过滤以 AND 拼进来').toContain(
+      '`(${scope.sql}) AND ${activeStoreCondition(column)}`',
+    )
+    /**
+     * admin 门店分支的 market 展开与权限交集同理 —— 只钉 `activeStoreCondition` 那一行时，
+     * 把 market 分支改成「只取直接子门店」或丢掉权限交集都不会红。
+     */
+    expect(adminScopeFilterFn, 'admin 的 market 分支未走递归后代展开').toContain(
+      '${col} IN ${orgNodeStoreIdsSubquery(scope.id)}',
+    )
+    expect(adminScopeFilterFn, 'admin 丢了账号权限交集（非超管应按 scopeStoreIds 收窄）').toMatch(
+      /if \(!isAdminScope\(session\)\)[\s\S]*session\.permissions\.scopeStoreIds[\s\S]*if \(ids\.length === 0\) return sql`FALSE`/,
+    )
+    // staff 镜像：market 展开必须落到那条递归 CTE 上
+    expect(staffMgmtScopeFn, 'staff 的 market 分支未走 descendantStoresSqlForRoot').toContain(
+      'descendantStoresSqlForRoot(column, startIndex)',
     )
   })
 
@@ -335,6 +417,29 @@ describe('产能技师分母跨端字面量守护（#320）', () => {
     expect(adminSrc).toMatch(
       /import \{ scopeFilterSql, orgAnchorScopeSql \} from '@\/lib\/data-center\/scope-sql'/,
     )
+    /**
+     * ⚠️ **消费端**也要钉。admin 的 CTE 分两段（`technician_base` 未过滤 →
+     * `technician_scoped` 过滤后），最终计数必须读**过滤后**那张。
+     * 第 4 轮 GLM 变异实测：把 `FROM technician_scoped` 改成 `FROM technician_base`，
+     * scoped 段留成死代码 —— 任何角色任何 scope 都拿到全集团分母，而当时 13 条断言全绿
+     * （`technicianCountSql` 整个落在抽取区间之外）。
+     *
+     * staff 侧不存在这个形态：它只有一张 `technician_base`，过滤条件直接写在计数的
+     * WHERE 上，由要件 5 的**整段等值比较**守住。
+     */
+    const adminCount = squeeze(
+      extractSection(
+        readFile(FILES.adminTechnicianSql),
+        'export function technicianCountSql(',
+        '/** 产能技师数 by store',
+      ),
+    )
+    expect(adminCount, 'admin 计数没读过滤后的 CTE').toContain(
+      'SELECT COUNT(*)::int AS v FROM technician_scoped',
+    )
+    expect(adminCount, 'admin 计数没复用 technicianCteSql').toContain(
+      'WITH ${technicianCteSql(session, scope, endDate)}',
+    )
   })
 
   /**
@@ -370,6 +475,17 @@ describe('产能技师分母跨端字面量守护（#320）', () => {
         /WHERE NOT child\.id = ANY\(descendants\.path\)/,
       )
     }
+    /**
+     * 种子行也要钉：必须以**根节点自身**起算、path 以自身初始化。
+     * 若 seed 改成「根的直接子节点」，挂在市场节点自己名下的那批门店会被静默丢掉
+     * （市场口径分母偏小），而递推与防环两条断言照绿（GLM 第 4 轮 P3-1）。
+     */
+    expect(staffExpand, 'staff 侧种子行不含根自身').toContain(
+      'SELECT $${startIndex}::text, ARRAY[$${startIndex}::text]',
+    )
+    expect(adminExpand, 'admin 侧种子行不含根自身').toContain(
+      'SELECT ${rootNodeId}::text, ARRAY[${rootNodeId}::text]',
+    )
     // 落店那一跳：staff 在同一段内 JOIN stores，admin 在外层 orgNodeStoreIdsSubquery 里
     expect(staffExpand).toMatch(/FROM stores s JOIN descendants ON s\.org_node_id = descendants\.id/)
     const adminOuter = squeeze(
@@ -405,7 +521,13 @@ describe('产能技师分母跨端字面量守护（#320）', () => {
       const code = src
         .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))
         .replace(/(^|[^:'"`\\])\/\/[^\n]*/gm, (m, p1) => p1 + ' '.repeat(m.length - p1.length))
-      const hits = code.match(/skills && ARRAY\['美容师','养生师'\]/g) ?? []
+      /**
+       * ⚠️ 探测必须**宽松**。精确串 `skills && ARRAY['美容师','养生师']` 在「漏报」方向
+       * fail-open：新抄一份写成 `ARRAY[ '美容师' , '养生师' ]`、换成 `skills @> ...`，
+       * 语义一样却因格式不匹配而放过 —— 而这条守护的全部价值就在于抓「又抄了一份」。
+       * 所以红线是「出现了对 `skills` 的人池过滤」这件事本身（GLM 第 4 轮 P2-3）。
+       */
+      const hits = code.match(/skills\s*(?:&&\s*ARRAY\s*\[|@>|<@|=\s*ANY)/g) ?? []
       expect(
         hits,
         `${name} 里又出现了独立的技师人池查询 —— 必须复用 lib/data-center/technician-sql.ts`,

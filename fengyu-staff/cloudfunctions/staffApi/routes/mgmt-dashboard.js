@@ -431,18 +431,6 @@ async function queryRetainedMemberCount(scopeType, scopeId, date) {
 }
 
 /**
- * 员工数（截面快照，2026-04-25 T3 起按 selectedDate 历史化）
- *
- * 口径：「$date 那天为止已入职且未离职」 =
- *   COUNT(s.hired_at::date <= $date AND (s.resigned_at IS NULL OR s.resigned_at::date > $date))
- *
- * 不再用 s.is_resigned = FALSE（那是当前快照，无法反映历史日期）。
- * 改为用 s.hired_at + s.resigned_at 时间戳，任意 $date 都可还原"那一天的在职员工数"。
- *
- * 字段维护：admin 员工管理表单写入；当前 hired_at 由 created_at::date 兜底（WorkFine 无入职日期源），
- * resigned_at 由 updated_at::date 兜底。后续由管理后台维护。
- */
-/**
  * 无门店产能技师（直挂市场/部门组织节点）的可见性片段 —— 与 admin
  * `lib/data-center/scope-sql.ts` 的 `orgAnchorScopeSql` **逐条对齐**（#320）。
  *
@@ -475,6 +463,14 @@ function buildTechnicianOrgAnchorScope(scopeType, scopeId, startIdx) {
 
 /**
  * 产能技师在职数（人均派生指标的**分母**）。
+ *
+ * ## 在职判定（2026-04-25 T3 起按 selectedDate 历史化）
+ *
+ * 「$date 那天为止已入职且未离职」 =
+ *   `sw.hired_at::date <= $date AND (sw.resigned_at IS NULL OR sw.resigned_at::date > $date)`。
+ * 不再用 `is_resigned = FALSE`（那是当前快照，无法反映历史日期）。
+ * 字段维护：admin 员工管理表单写入；当前 `hired_at` 由 `created_at::date` 兜底
+ * （WorkFine 无入职日期源），`resigned_at` 由 `updated_at::date` 兜底。
  *
  * ## 为什么不能只按 `staff_wechat_users.store_id` 过滤（#320）
  *
