@@ -1438,6 +1438,13 @@ export const listInventoryMarketTransferTargets = withAnyPermission(
  * 沿用 listInventoryLocations 会让它的下拉只剩「全部市场」、建不了市场专属方案；
  * 所以维护方取全部启用市场，其余（市场只读账号的列表筛选）仍按库存 scope。
  */
+/**
+ * 福利方案读路径的角色收紧集合（#354）：入口仍只要 stock_list，但收紧时一并保留授予维护动作的绑定，
+ * 否则 MANAGE 与 stock_list 落在两条绑定上时，维护方判定会随 stock_list 收紧丢掉，
+ * 与写路径（按 MANAGE 收紧）判据分叉 —— 能建方案却看不到。
+ */
+const PROMOTION_READ_SCOPE = { scopeActions: ['inventory:stock_list', INVENTORY_PROMOTION_MAINTAIN_ACTION] } as const
+
 export const listInventoryPromotionMarketOptions = withPermission(
   'inventory:stock_list',
   async (session): Promise<Array<{ locationId: string; name: string }>> => {
@@ -1458,6 +1465,7 @@ export const listInventoryPromotionMarketOptions = withPermission(
       .where(and(...conditions))
       .orderBy(asc(inventoryLocations.name))
   },
+  PROMOTION_READ_SCOPE,
 )
 
 export const listInventoryLocations = withPermission(
@@ -4339,6 +4347,7 @@ async function promotionPlanRows(
 export const listInventoryPromotionPlans = withPermission(
   'inventory:stock_list',
   async (session): Promise<InventoryPromotionPlanRow[]> => promotionPlanRows(session),
+  PROMOTION_READ_SCOPE,
 )
 
 export const getInventoryPromotionPlanById = withPermission(
@@ -4347,6 +4356,7 @@ export const getInventoryPromotionPlanById = withPermission(
     const id = normalizeRequired(idInput, '福利方案')
     return (await promotionPlanRows(session, id))[0] ?? null
   },
+  PROMOTION_READ_SCOPE,
 )
 
 export const createInventoryPromotionPlan = withPermission(

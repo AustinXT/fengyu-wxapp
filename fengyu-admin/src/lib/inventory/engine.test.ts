@@ -2380,57 +2380,15 @@ describe('全局福利方案引擎权限（#354 起市场用户一律拒绝维�
     mockDb.transaction.mockReset()
   })
 
+  // 旧口径下市场用户能走到读库 / 锁行再被「只拦全局方案」拒绝；#354 起在任何读写之前就拒绝
   it('市场用户直调引擎时不能停用全局福利方案', async () => {
-    const now = new Date()
-    mockDb.select
-      .mockReturnValueOnce(promotionPlanSelect([{
-        id: 'INV-PROMO-GLOBAL',
-        planNo: 'GLOBAL-1',
-        name: '全局方案',
-        startsAt: '2026-01-01',
-        endsAt: '2026-12-31',
-        scopeMarketId: null,
-        scopeMarketName: null,
-        status: '启用',
-        remark: null,
-        createdAt: now,
-        updatedAt: now,
-      }]))
-      .mockReturnValueOnce(promotionItemSelect([]))
-    mockDb.transaction.mockImplementation(async (callback: (tx: unknown) => unknown) => callback({
-      execute: vi.fn().mockResolvedValue([{ scope_market_id: null }]),
-    }))
-
     await expect(disableInventoryPromotionPlan('INV-PROMO-GLOBAL'))
       .rejects.toThrow('PERMISSION_DENIED: 报货福利方案只能由总部供应链维护')
+    expect(mockDb.select).not.toHaveBeenCalled()
     expect(mockDb.transaction).not.toHaveBeenCalled()
   })
 
   it('市场用户直调引擎时不能修改全局福利方案', async () => {
-    const now = new Date()
-    mockDb.execute.mockResolvedValue([])
-    mockDb.select
-      .mockReturnValueOnce(promotionPlanSelect([{
-        id: 'INV-PROMO-GLOBAL',
-        planNo: 'GLOBAL-1',
-        name: '全局方案',
-        startsAt: '2026-01-01',
-        endsAt: '2026-12-31',
-        scopeMarketId: null,
-        scopeMarketName: null,
-        status: '启用',
-        remark: null,
-        createdAt: now,
-        updatedAt: now,
-      }]))
-      .mockReturnValueOnce(promotionItemSelect([]))
-      .mockReturnValueOnce(selectWithLimit([{ locationType: '市场' }]))
-      .mockReturnValueOnce(selectWithoutLimit([]))
-      .mockReturnValueOnce(selectWithoutLimit([{ skuId: 'SKU-1' }]))
-    mockDb.transaction.mockImplementation(async (callback: (tx: unknown) => unknown) => callback({
-      execute: vi.fn().mockResolvedValue([{ scope_market_id: null }]),
-    }))
-
     await expect(updateInventoryPromotionPlan('INV-PROMO-GLOBAL', {
       name: '修改后的全局方案',
       startsAt: '2026-01-01',
@@ -2438,6 +2396,7 @@ describe('全局福利方案引擎权限（#354 起市场用户一律拒绝维�
       scopeMarketId: 'MARKET-1',
       items: [{ skuId: 'SKU-1', marketUnitDiscount: 0 }],
     })).rejects.toThrow('PERMISSION_DENIED: 报货福利方案只能由总部供应链维护')
+    expect(mockDb.select).not.toHaveBeenCalled()
     expect(mockDb.transaction).not.toHaveBeenCalled()
   })
 })
@@ -4590,6 +4549,9 @@ describe('报货福利方案只由总部供应链维护（#354，引擎层）', 
 
   beforeEach(() => {
     vi.clearAllMocks()
+    // clearAllMocks 不清 mockReturnValueOnce 队列；别的 describe 排入却没消费的 select 会串进来
+    mockDb.select.mockReset()
+    mockDb.transaction.mockReset()
     vi.mocked(isAdminScope).mockReturnValue(false)
     vi.mocked(hasPermission).mockReturnValue(true)
     mockDb.execute.mockResolvedValue([{ drifted: false }])
@@ -4645,6 +4607,31 @@ describe('报货福利方案只由总部供应链维护（#354，引擎层）', 
     await updateInventoryPromotionPlan('P1', INPUT).catch(() => undefined)
     await disableInventoryPromotionPlan('P1').catch(() => undefined)
     expect(vi.mocked(requirePermission).mock.calls.map((call) => call[1])).toEqual([MANAGE, MANAGE, MANAGE])
+  })
+
+  it('维护动作与 stock_list 分在两条总部绑定上：列表与市场候选仍按维护方口径（与写路径同源）', async () => {
+    const { listInventoryPromotionMarketOptions, listInventoryPromotionPlans } = await import('./engine')
+    const dialect = new PgDialect()
+    mockGetSession.mockResolvedValue({
+      employeeId: 'E-HQ2', name: '拆分绑定', phone: '13800000004',
+      roles: [role('总部', 'HQ', ['inventory:stock_list']), role('总部', 'HQ', [MANAGE, 'inventory:supply_chain_price_view'])],
+      permissions: { actions: ['inventory:stock_list', MANAGE, 'inventory:supply_chain_price_view'], scopeStoreIds: [], scopeOrgNodeIds: ['HQ'] },
+    })
+    const listWhere = captureListWhere()
+    await listInventoryPromotionPlans()
+    expect(listWhere.where).toBeUndefined()
+
+    const optionsWhere: { where?: unknown } = {}
+    mockDb.select.mockReturnValueOnce({
+      from: () => ({
+        where: (where: unknown) => {
+          optionsWhere.where = where
+          return { orderBy: async () => [] }
+        },
+      }),
+    })
+    await listInventoryPromotionMarketOptions()
+    expect(dialect.sqlToQuery(optionsWhere.where as never).params).toEqual([true, '市场'])
   })
 
   it('市场库存财务调用新建、修改、停用均 PERMISSION_DENIED，且不读库', async () => {
