@@ -199,7 +199,7 @@
 }
 
 .sku-option-active .sku-option-name {
-  color: #C0322A;
+  color: var(--color-primary);
 }
 
 .sku-option-name {

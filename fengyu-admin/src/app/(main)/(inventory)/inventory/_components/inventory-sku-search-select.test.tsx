@@ -217,4 +217,59 @@ describe('InventorySkuSearchSelect（#339）', () => {
     await flush()
     expect(screen.queryByRole('button', { name: '加载更多' })).not.toBeInTheDocument()
   })
+
+  it('键盘选中 / Esc 收起后焦点回到触发按钮（面板控件卸载后不能掉到 body）', async () => {
+    mockListSkus.mockResolvedValue({ data: [sku('A', '精华液')], total: 1 })
+    render(<Harness />)
+    const trigger = screen.getByRole('combobox')
+    fireEvent.click(trigger)
+    await flush()
+    const input = screen.getByLabelText('搜索库存商品')
+    input.focus()
+    fireEvent.keyDown(input, { key: 'ArrowDown' })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(document.activeElement).toBe(trigger)
+    fireEvent.click(trigger)
+    await flush()
+    screen.getByLabelText('搜索库存商品').focus()
+    fireEvent.keyDown(document.body, { key: 'Escape' })
+    expect(document.activeElement).toBe(trigger)
+  })
+
+  it('选中后立即再展开：按空关键词查，不会先用旧关键词查一轮', async () => {
+    mockListSkus.mockResolvedValue({ data: [sku('A', '精华液')], total: 1 })
+    render(<Harness />)
+    fireEvent.click(screen.getByRole('combobox'))
+    fireEvent.change(screen.getByLabelText('搜索库存商品'), { target: { value: '精华' } })
+    await act(async () => { vi.advanceTimersByTime(SKU_SEARCH_DEBOUNCE_MS) })
+    await flush()
+    fireEvent.click(screen.getByRole('option', { name: /精华液/ }))
+    mockListSkus.mockClear()
+    fireEvent.click(screen.getByRole('combobox'))
+    await flush()
+    expect(mockListSkus).toHaveBeenCalledTimes(1)
+    expect(mockListSkus.mock.calls[0][0]).toMatchObject({ keyword: undefined, page: 1 })
+  })
+
+  it('回显查询失败：先按 id 显示；换走再换回来时会重新查（失败不被永久缓存）', async () => {
+    mockListSkus.mockRejectedValueOnce(new Error('NETWORK'))
+    function Switcher() {
+      const [value, setValue] = useState('Z9')
+      return (
+        <>
+          <InventorySkuSearchSelect value={value} onChange={() => {}} />
+          <button type="button" onClick={() => setValue((v) => (v === 'Z9' ? '' : 'Z9'))}>切换</button>
+        </>
+      )
+    }
+    render(<Switcher />)
+    await flush()
+    expect(screen.getByRole('combobox')).toHaveTextContent('Z9')
+    mockListSkus.mockResolvedValueOnce({ data: [sku('Z9', '终于查到了', 'P009')], total: 1 })
+    fireEvent.click(screen.getByRole('button', { name: '切换' }))
+    fireEvent.click(screen.getByRole('button', { name: '切换' }))
+    await flush()
+    expect(mockListSkus).toHaveBeenCalledTimes(2)
+    expect(screen.getByRole('combobox')).toHaveTextContent('终于查到了 · P009')
+  })
 })

@@ -25,7 +25,8 @@ vi.mock('next/navigation', () => ({
   useSearchParams: () => new URLSearchParams(''),
 }))
 
-vi.mock('sonner', () => ({ toast: { error: vi.fn(), success: vi.fn(), info: vi.fn() } }))
+vi.mock('sonner', () => ({ toast: { error: vi.fn(), success: vi.fn(), info: vi.fn(), warning: vi.fn() } }))
+vi.mock('@/actions/inventory/skus', () => ({ listInventorySkus: vi.fn() }))
 vi.mock('./inventory-sku-search-select', () => import('./__stubs__/inventory-sku-search-select.stub'))
 
 vi.mock('@/actions/inventory/docs', () => ({
@@ -75,6 +76,8 @@ vi.mock('@/actions/inventory/business', () =>
   ),
 )
 
+import { listInventoryLotOptions } from '@/actions/inventory/stocks'
+import { listInventorySkus } from '@/actions/inventory/skus'
 import { toast } from 'sonner'
 import {
   confirmInventoryCoreReceive,
@@ -1543,5 +1546,52 @@ describe('SKU 候选按业务口径交给服务端过滤（#339）', () => {
     unmount()
     renderPage({ level: 'supply-chain', operation: 'supply-chain-conversion', locations: LOCATIONS })
     expect(filtersOf(pickers()[1])).toEqual({ sourceType: '供应链' })
+  })
+})
+
+/**
+ * 分院配货的门店标准单价（#339）：原先查办理台预加载的前 100 条 SKU，排在后面的商品静默退回
+ * 明细快照价；现在按本单明细的 skuIds 精确查，分块各自生效，失败时提示且不阻断。
+ */
+describe('分院配货按 skuIds 精确取当前门店进货价（#339）', () => {
+  const request = docRow({ id: 'DBH-1', docType: '门店报货', status: '已完成' })
+  function item(id: number, skuId: string, standardUnitPrice: number | null) {
+    return {
+      id, docId: 'DBH-1', lotId: null, skuId, skuName: `商品${skuId}`, specName: null, quantity: 2, fulfilledQuantity: 0,
+      standardUnitPrice, actualUnitPrice: null, unitDiscount: 0,
+    } as unknown as InventoryDocDetail['items'][number]
+  }
+  const prices = () => screen.queryAllByText('门店标准单价').map((label) => label.nextElementSibling?.textContent)
+
+  beforeEach(() => {
+    mockDocs({})
+    vi.mocked(listInventorySkus).mockReset()
+    vi.mocked(toast.warning).mockReset()
+    // 每行的市场批次下拉会取数，给个空结果即可
+    vi.mocked(listInventoryLotOptions).mockResolvedValue([])
+  })
+
+  async function pickRequest(items: InventoryDocDetail['items']) {
+    vi.mocked(getInventoryCoreDocById).mockResolvedValue({ ...docDetail(request), items })
+    renderPage({ level: 'market', operation: 'store-allocation', workflowDocs: [request] })
+    const option = await screen.findByRole<HTMLOptionElement>('option', { name: /^DBH-1/ })
+    fireEvent.change(option.closest('select') as HTMLSelectElement, { target: { value: 'DBH-1' } })
+  }
+
+  it('取到档案价就覆盖快照价；只补价格列、按明细 skuIds 精确查（含已停用）', async () => {
+    vi.mocked(listInventorySkus).mockResolvedValue({
+      data: [{ skuId: 'S-200', storePurchasePrice: 88.5 } as never], total: 1,
+    })
+    await pickRequest([item(1, 'S-200', 60), item(2, 'S-201', 70)])
+    await waitFor(() => expect(prices()).toEqual(['88.50', '70.00']))
+    expect(listInventorySkus).toHaveBeenCalledWith({ skuIds: ['S-200', 'S-201'], onlyActive: false, page: 1, pageSize: 100 })
+    expect(toast.warning).not.toHaveBeenCalled()
+  })
+
+  it('取价失败：退回快照价并提示，不阻断配货', async () => {
+    vi.mocked(listInventorySkus).mockRejectedValue(new Error('NETWORK'))
+    await pickRequest([item(1, 'S-200', 60)])
+    await waitFor(() => expect(toast.warning).toHaveBeenCalled())
+    expect(prices()).toEqual(['60.00'])
   })
 })

@@ -83,6 +83,7 @@ export function InventorySkuSearchSelect({
 }) {
   const listboxId = useId()
   const containerRef = useRef<HTMLDivElement>(null)
+  const triggerRef = useRef<HTMLButtonElement>(null)
   const [open, setOpen] = useState(false)
   const [keyword, setKeyword] = useState('')
   const [debouncedKeyword, setDebouncedKeyword] = useState('')
@@ -95,6 +96,8 @@ export function InventorySkuSearchSelect({
   const [retryNonce, setRetryNonce] = useState(0)
   const [activeIndex, setActiveIndex] = useState(-1)
   const [labels, setLabels] = useState<Map<string, string>>(() => new Map())
+  // 回显查询失败的那个值：只影响显示（退回 id），不写进 labels —— 否则 knownLabel 变真值，永远不会再查
+  const [failedValue, setFailedValue] = useState<string | null>(null)
   // 只有最后一次发出的请求能落地：关键词连打、翻页与换过滤条件交错时，过时的结果必须丢掉。
   const requestSeqRef = useRef(0)
 
@@ -164,8 +167,8 @@ export function InventorySkuSearchSelect({
         if (!cancelled) setLabels((previous) => new Map(previous).set(value, label))
       })
       .catch(() => {
-        // 查不到名称时退回显示 id；不写进本地记录，value 下次变化回来时还会再查
-        if (!cancelled) setLabels((previous) => new Map(previous).set(value, value))
+        // 查询失败时退回显示 id；不写进 labels，value 下次变化回来时还会再查（缓存里的失败条目已被移除）
+        if (!cancelled) setFailedValue(value)
       })
     return () => {
       cancelled = true
@@ -184,7 +187,7 @@ export function InventorySkuSearchSelect({
       if (event.key !== 'Escape') return
       event.preventDefault()
       event.stopPropagation()
-      setOpen(false)
+      closeAndRefocus()
     }
     document.addEventListener('mousedown', handleClickOutside)
     document.addEventListener('keydown', handleEscape, true)
@@ -198,12 +201,21 @@ export function InventorySkuSearchSelect({
     if (disabled) setOpen(false)
   }, [disabled])
 
+  // 键盘 / 选中 / 清除收起时，面板里持有焦点的控件会被卸载 —— 焦点必须还给触发按钮，
+  // 否则落到 body，纯键盘用户接着 Tab 会从页首重来
+  function closeAndRefocus() {
+    setOpen(false)
+    triggerRef.current?.focus()
+  }
+
   function select(sku: InventorySkuRow) {
     rememberSkuLabel(sku)
     setLabels((previous) => new Map(previous).set(sku.skuId, formatInventorySkuLabel(sku)))
     onChange(sku.skuId, sku)
-    setOpen(false)
     setKeyword('')
+    // 连带清掉已落定的防抖关键词：否则 300ms 内再次展开会先按旧关键词查一轮
+    setDebouncedKeyword('')
+    closeAndRefocus()
   }
 
   function handleKeyDown(event: KeyboardEvent<HTMLInputElement>) {
@@ -223,11 +235,12 @@ export function InventorySkuSearchSelect({
 
   // 满页才可能还有下一页：翻页期间有人新建 SKU 会让后续页错位、被去重掉，只看 rows < total 会让按钮永远点不完
   const hasMore = !error && rows.length < total && lastPageSize === SKU_SEARCH_PAGE_SIZE
-  const displayText = value ? (knownLabel ?? '加载中…') : null
+  const displayText = value ? (knownLabel ?? (failedValue === value ? value : '加载中…')) : null
 
   return (
     <div ref={containerRef} className="relative">
       <button
+        ref={triggerRef}
         type="button"
         role="combobox"
         aria-label={ariaLabel ?? placeholder}
@@ -316,7 +329,7 @@ export function InventorySkuSearchSelect({
             <span>{total > 0 ? `已显示 ${rows.length} / ${total}` : ''}</span>
             <span className="flex items-center gap-3">
               {value && (
-                <button type="button" className="hover:text-[var(--foreground)]" onClick={() => { onChange('', null); setOpen(false) }}>
+                <button type="button" className="hover:text-[var(--foreground)]" onClick={() => { onChange('', null); closeAndRefocus() }}>
                   清除选择
                 </button>
               )}

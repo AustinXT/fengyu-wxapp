@@ -1,6 +1,7 @@
 // packageMy/inventory/form.ts — 门店库存业务办理
 import { callStaffApi } from '../../utils/cloud'
 import { getCurrentStoreId, requireInventoryStoreOperate } from '../../utils/role'
+import { ReportableSkuSearch, SKU_PAGE_SIZE } from '../../utils/reportable-sku-search'
 
 type OperateDocType = '门店报货' | '分院调货出库' | '院退货' | '院产品报损'
 type ItemMode = 'reportableSku' | 'stockLot'
@@ -80,11 +81,6 @@ const FORM_CONFIG: Record<OperateDocType, FormConfig> = {
   },
 }
 
-/** 门店报货选品弹层每页条数；staffApi reportableSkuOptions 上限 100 */
-const SKU_PAGE_SIZE = 20
-/** 关键词防抖：逐字输入不逐字发请求（#339） */
-const SKU_SEARCH_DEBOUNCE_MS = 300
-
 function validDocType(value: string): value is OperateDocType {
   return Object.prototype.hasOwnProperty.call(FORM_CONFIG, value)
 }
@@ -131,9 +127,7 @@ Page({
     skuError: '',
   },
 
-  _skuSearchTimer: null as ReturnType<typeof setTimeout> | null,
-  /** 只有最后一次发出的检索能落地：关键词连打与上拉翻页交错时丢弃先发后到的旧结果 */
-  _skuRequestSeq: 0,
+  _skuSearch: null as ReportableSkuSearch<ReportableSku> | null,
 
   onLoad(query: { docType?: string }) {
     if (!requireInventoryStoreOperate()) {
@@ -173,7 +167,7 @@ Page({
     if (!this.data.sourceStoreId) return
     this.setData({ loadingOptions: true })
     try {
-      // 可报货产品不在这里预拉：打开选品弹层时按关键词分页检索（loadSkuPage）
+      // 可报货产品不在这里预拉：打开选品弹层时按关键词分页检索（utils/reportable-sku-search）
       if (this.data.itemMode === 'stockLot') {
         const res = await callStaffApi<{ items: Omit<StockLot, 'displayName'>[] }>(
           'inventory.stockList',
@@ -200,10 +194,32 @@ Page({
   },
 
   onUnload() {
-    if (this._skuSearchTimer) clearTimeout(this._skuSearchTimer)
-    this._skuSearchTimer = null
-    // 作废在途检索：页面卸载后回来的结果不再 setData
-    this._skuRequestSeq += 1
+    // 取消防抖并作废在途检索：页面卸载后回来的结果不再 setData
+    this._skuSearch?.dispose()
+  },
+
+  /** 门店报货选品检索状态机（懒创建：只有门店报货用得到） */
+  skuSearch(): ReportableSkuSearch<ReportableSku> {
+    if (!this._skuSearch) {
+      this._skuSearch = new ReportableSkuSearch<ReportableSku>({
+        fetchPage: async (keyword, page) => {
+          const res = await callStaffApi<{ items: Omit<ReportableSku, 'displayName'>[]; total: number }>(
+            'inventory.reportableSkuOptions',
+            { locationId: this.data.sourceStoreId, keyword: keyword || undefined, page, pageSize: SKU_PAGE_SIZE },
+          )
+          return {
+            total: res.total,
+            items: (res.items || []).map((item) => ({
+              ...item,
+              stockReference: Number(item.stockReference || 0),
+              displayName: displaySku(item),
+            })),
+          }
+        },
+        onState: (patch) => this.setData(patch),
+      })
+    }
+    return this._skuSearch
   },
 
   onOpenSkuPicker() {
@@ -212,18 +228,16 @@ Page({
       return
     }
     this.setData({ showSkuPicker: true })
-    // 首次打开时拉第一页（首页请求仍在途就不重复发）；关掉再开保留上次的关键词与结果
-    if (this.data.skuPage === 0 && !this.data.skuLoading) this.loadSkuPage(true)
+    // 关掉再开保留上次的关键词与结果
+    this.skuSearch().open()
   },
 
   onRetrySkuPage() {
-    if (this.data.skuLoading) return
-    // 第 N 页失败只重试那一页，不清掉已加载的
-    this.loadSkuPage(this.data.skuPage === 0)
+    this.skuSearch().retry()
   },
 
   onLoadMoreSku() {
-    this.onSkuListReachBottom()
+    this.skuSearch().loadMore()
   },
 
   onCloseSkuPicker() {
@@ -234,60 +248,16 @@ Page({
     // van-search 边缘事件形态下 detail 可能不是字符串
     const value = typeof e.detail === 'string' ? e.detail : ''
     this.setData({ skuKeyword: value })
-    if (this._skuSearchTimer) clearTimeout(this._skuSearchTimer)
-    this._skuSearchTimer = setTimeout(() => {
-      this._skuSearchTimer = null
-      this.loadSkuPage(true)
-    }, SKU_SEARCH_DEBOUNCE_MS)
+    this.skuSearch().onKeyword(value)
   },
 
   onSkuKeywordClear() {
-    if (this._skuSearchTimer) clearTimeout(this._skuSearchTimer)
-    this._skuSearchTimer = null
     this.setData({ skuKeyword: '' })
-    this.loadSkuPage(true)
+    this.skuSearch().clearKeyword()
   },
 
   onSkuListReachBottom() {
-    if (this.data.skuLoading || !this.data.skuHasMore || this.data.skuError) return
-    this.loadSkuPage(false)
-  },
-
-  async loadSkuPage(reset: boolean) {
-    const seq = ++this._skuRequestSeq
-    const page = reset ? 1 : this.data.skuPage + 1
-    const patch: Record<string, unknown> = { skuLoading: true, skuError: '' }
-    if (reset) Object.assign(patch, { skuOptions: [], skuPage: 0, skuTotal: 0, skuHasMore: true })
-    this.setData(patch)
-    try {
-      const keyword = this.data.skuKeyword.trim()
-      const res = await callStaffApi<{ items: Omit<ReportableSku, 'displayName'>[]; total: number }>(
-        'inventory.reportableSkuOptions',
-        { locationId: this.data.sourceStoreId, keyword: keyword || undefined, page, pageSize: SKU_PAGE_SIZE },
-      )
-      if (seq !== this._skuRequestSeq) return
-      const incoming = (res.items || []).map((item) => ({
-        ...item,
-        stockReference: Number(item.stockReference || 0),
-        displayName: displaySku(item),
-      }))
-      const existing = reset ? [] : this.data.skuOptions
-      const seen = new Set(existing.map((item) => item.skuId))
-      const skuOptions = existing.concat(incoming.filter((item) => !seen.has(item.skuId)))
-      const skuTotal = Number(res.total || 0)
-      this.setData({
-        skuOptions,
-        skuPage: page,
-        skuTotal,
-        // 以服务端 total 为准；本页不足一页也视为到底（total 统计口径万一漂移也不会无限上拉）
-        skuHasMore: skuOptions.length < skuTotal && incoming.length === SKU_PAGE_SIZE,
-      })
-    } catch (err: any) {
-      if (seq !== this._skuRequestSeq) return
-      this.setData({ skuError: err?.message || '加载可报货产品失败' })
-    } finally {
-      if (seq === this._skuRequestSeq) this.setData({ skuLoading: false })
-    }
+    this.skuSearch().loadMore()
   },
 
   onSelectSku(e: WechatMiniprogram.CustomEvent) {

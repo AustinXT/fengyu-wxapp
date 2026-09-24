@@ -816,7 +816,6 @@ export default function InventoryOperationsPage({
               busy={workspaceBusy}
               onBusyChange={setWorkspaceBusy}
               locations={locations}
-             
               suppliers={suppliers}
               workflowDocs={workflowDocs}
               canViewPrice={canViewPrice}
@@ -943,7 +942,6 @@ function OperationWorkspace({
             <InventoryDocCreateForm
               visible
               locations={locations}
-             
               initialDocType={card.docType}
               allowedDocTypes={[card.docType]}
               onSuccess={(docId) => onSuccess(`${card.title}单据已创建：${docId}`)}
@@ -3300,10 +3298,13 @@ function StoreAllocationForm({
     const skuIds = Array.from(new Set(doc.items.map((item) => item.skuId)))
     const chunks: string[][] = []
     for (let index = 0; index < skuIds.length; index += 100) chunks.push(skuIds.slice(index, index + 100))
-    void Promise.all(chunks.map((ids) => listInventorySkus({ skuIds: ids, onlyActive: false, page: 1, pageSize: 100 })))
+    void Promise.allSettled(chunks.map((ids) => listInventorySkus({ skuIds: ids, onlyActive: false, page: 1, pageSize: 100 })))
       .then((results) => {
         if (cancelled) return
-        const skuById = new Map(results.flatMap((result) => result.data).map((sku) => [sku.skuId, sku]))
+        // 分块各自生效：某一块失败不连累已成功的那些行
+        const skuById = new Map(results
+          .flatMap((result) => (result.status === 'fulfilled' ? result.value.data : []))
+          .map((sku) => [sku.skuId, sku]))
         const itemById = new Map(doc.items.map((item) => [item.id, item]))
         setLines((previous) => previous.map((line) => {
           const item = itemById.get(line.requestItemId)
@@ -3312,9 +3313,11 @@ function StoreAllocationForm({
           const priced = lineFor(item, sku)
           return { ...line, storeStandardUnitPrice: priced.storeStandardUnitPrice, sourceActualUnitPrice: priced.sourceActualUnitPrice }
         }))
-      })
-      .catch(() => {
-        // 取价失败退回明细快照价（与改造前「商品不在前 100 条」时同一行为），不阻断配货
+        // 取价失败退回明细快照价（与改造前「商品不在前 100 条」时同一口径），不阻断配货；
+        // 但要让人知道预览里的门店标准单价可能不是当前档案价
+        if (results.some((result) => result.status === 'rejected')) {
+          toast.warning('部分商品的当前门店进货价加载失败，价格预览暂按报货单快照显示，以提交后服务端计算为准')
+        }
       })
     return () => {
       cancelled = true
