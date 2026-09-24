@@ -3318,8 +3318,11 @@ describe('order.homeProducts', () => {
     // 三个语义必须各取各列。SQL 侧断言只守到「SQL 文本长什么样」，守不住 mapper 取错列；
     // 把 convertedQuantity 改读 row.refunded_quantity，上面那些 SQL 形状断言全都察觉不到
     // （闸门 2 codex round-3 指出）。这条不需要真 PG，mock 数据的单测就能闭合。
+    // paid 与 pending 也要断言：夹具里 4 ≠ 2，互换两者才测得出来。
+    // （闸门 2 的 GLM 实测：只断言三语义列时，把这两列对调 180 tests 全绿。）
     expect(ctx.result.items[0]).toMatchObject({
       pickedQuantity: 2, refundedQuantity: 1, convertedQuantity: 3, remainingQuantity: 2,
+      paidQuantity: 4, pendingPickupQuantity: 2,
     })
     expect(pg.query.mock.calls[0][1]).toEqual([ctx.auth.userId])
   })
@@ -3373,9 +3376,14 @@ describe('order.homeProducts', () => {
     // 剥注释必须**跟踪单引号状态**，不能图省事按行 `replace(/--.*$/, '')`：
     // SQL 字符串字面量里可以含 `--`（例如 `'--' AS marker`），无状态截断会把该行后面的
     // 真实代码一起抹掉，藏在后半段的 `FROM pickup_records` 反而看不见（codex 提出）。
+    // ⚠️ 两种注释语法都要覆盖：只剥 `--` 的话，用块注释一样能伪造
+    // （`/* AND si.product_type = '家居产品' */` 让谓词断言从注释里匹配到，
+    //  而实际谓词已被换掉——闸门 2 的 GLM 实测穿网）。
+    // ⚠️ PG 的块注释**可以嵌套**，必须计数层级，不能见到第一个 `*/` 就收工。
     const stripSqlComments = (text) => {
       let out = ''
       let inStr = false
+      let depth = 0
       for (let i = 0; i < text.length; i += 1) {
         const c = text[i]
         if (inStr) {
@@ -3383,7 +3391,13 @@ describe('order.homeProducts', () => {
           if (c === "'") inStr = text[i + 1] === "'" ? (i += 1, out += "'", true) : false
           continue
         }
+        if (depth > 0) {                                  // 块注释内，只跟踪嵌套层级
+          if (c === '/' && text[i + 1] === '*') { depth += 1; i += 1; continue }
+          if (c === '*' && text[i + 1] === '/') { depth -= 1; i += 1; if (depth === 0) out += ' ' }
+          continue
+        }
         if (c === "'") { inStr = true; out += c; continue }
+        if (c === '/' && text[i + 1] === '*') { depth = 1; i += 1; continue }
         if (c === '-' && text[i + 1] === '-') {          // 引号外的行注释，吃到行尾
           while (i < text.length && text[i] !== '\n') i += 1
           out += '\n'

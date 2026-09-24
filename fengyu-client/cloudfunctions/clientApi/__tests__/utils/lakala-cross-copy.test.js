@@ -277,6 +277,9 @@ describe('lakala 跨副本一致性守护', () => {
     expect(canaryNode, 'canary 必须跑在 18.15（与 cloudbaserc 的 runtime 对齐）').toEqual(['18.15'])
     // 命令本身也要锁：缩成只 `require('./index.js')` 的话，路由模块顶层的 node 20+ API
     // 就测不到了，canary 名存实亡（闸门 2 codex round-4 指出）。
+    // ⚠️ 声明极限：这是**文本**匹配，不是行为验证。在 run 里 echo 一句同样的字面量、
+    // 或把真调用塞进 `if (false)` 死代码，断言照样绿而模块并没被 require
+    // （闸门 2 的 GLM 指出）。与 SQL 侧「守形状不守取值」同族——挡自然疏忽，挡不住刻意构造。
     const canaryRun = (canary.steps || []).map((s) => s.run || '').join('\n')
     expect(canaryRun, 'canary 必须遍历 routes/ 逐个 require，不能只 require 入口')
       .toMatch(/readdirSync\('routes'\)/)
