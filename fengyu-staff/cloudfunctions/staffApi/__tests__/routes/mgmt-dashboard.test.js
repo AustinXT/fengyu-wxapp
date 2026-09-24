@@ -996,6 +996,23 @@ describe('mgmtDashboard.summary 门店状况 + 人效（截面字段）', () => 
     expectRecursiveDescendantScope(empSql, 2)
     // #320：市场 scope 下无门店技师按锚定市场判可见，$3 是同一个 scopeId
     expect(empSql).toMatch(/tb\.anchor_market_id\s*=\s*\$3/)
+    /**
+     * #320：光断言 SQL 里出现 `$2` / `$3` 不够 —— 两个占位符分属**不同 helper**
+     * （门店分支 `buildStaffScope` 与锚分支 `buildTechnicianOrgAnchorScope`），
+     * 实参是 `[date, ...sc.params, ...anchor.params]` 拼出来的。
+     * 若将来某个 helper 的 params 长度变了，SQL 形态测试全绿而实参错位，
+     * 会静默返回错误人数。所以必须把**实参数组**本身钉住。
+     *
+     * ⚠️ 诚实标注红检结果：把拼接顺序**对调**（`[date, ...anchor.params, ...sc.params]`）
+     * 本条**不会**变红 —— market 口径下两个 helper 收到的是同一个 `scopeId`，对调后数组逐元素
+     * 相同；store/all 口径下锚分支不带参数，对调是恒等变换。即「顺序」今天不可观测。
+     * 真正能被它抓住的是**params 长度漂移**（实测：锚分支返回 `[scopeId, scopeId]` → 本条红）。
+     */
+    const empCalls = pg.query.mock.calls.filter((c) => /technician_base/.test(c[0]))
+    expect(empCalls.length).toBe(2) // day + month 两次
+    for (const c of empCalls) {
+      expect(c[1]).toEqual([expect.any(String), 'mkt-A', 'mkt-A'])
+    }
   })
 
   test('scopeType=store：staff/client 截面 SQL 走单值过滤', async () => {
@@ -1017,6 +1034,10 @@ describe('mgmtDashboard.summary 门店状况 + 人效（截面字段）', () => 
     // #320：单店 scope 下无门店技师一律不计入（与员工榜同语义）
     expect(empSql).toMatch(/tb\.store_id\s+IS\s+NULL\s+AND\s+FALSE/)
     expect(empSql).toMatch(/active_node\.is_active\s*=\s*TRUE/)
+    // #320：锚分支恒假不带参数，实参只有 [date, storeId]（见 market 段对参数错位的说明）
+    for (const c of pg.query.mock.calls.filter((x) => /technician_base/.test(x[0]))) {
+      expect(c[1]).toEqual([expect.any(String), 'store-001'])
+    }
   })
 
   test('T2/T3 后 memberCount 与 employeeCount 都依赖 date（$1::date 出现），且都不走 date_trunc 月份聚合', async () => {
@@ -1059,10 +1080,15 @@ describe('mgmtDashboard.summary 门店状况 + 人效（截面字段）', () => 
          */
         expect(s).not.toMatch(/WITH\s+RECURSIVE/i)
         expect(s).toMatch(/tb\.store_id\s+IS\s+NOT\s+NULL\s+AND\s+\(TRUE\)/)
+        // #320：all 口径两个分支都不带 scope 参数，实参只有 [date]
+        expect(s).toMatch(/tb\.store_id\s+IS\s+NULL\s+AND\s+TRUE/)
       } else {
         expect(s).toMatch(/WHERE\s+\(TRUE\)\s+AND/)
         expect(s).not.toMatch(/parent_id/)
       }
+    }
+    for (const c of pg.query.mock.calls.filter((x) => /technician_base/.test(x[0]))) {
+      expect(c[1]).toEqual([expect.any(String)])
     }
   })
 
