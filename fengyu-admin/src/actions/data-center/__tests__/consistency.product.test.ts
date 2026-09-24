@@ -69,9 +69,108 @@ describe('品项板块两端口径一致性守护', () => {
       expect(adminCode).not.toMatch(/'单品'/)
       expect(staffCode).not.toMatch(/'单品'/)
     })
-    it('两端持卡用 COUNT(DISTINCT so.client_user_id)', () => {
-      expect(adminCode).toMatch(/COUNT\(DISTINCT\s+so\.client_user_id\)/)
-      expect(staffCode).toMatch(/COUNT\(DISTINCT\s+so\.client_user_id\)/)
+    /**
+     * ★★ **持卡占比的分子必须与分母同源**（#287）—— 这一组是本文件最重要的守护。
+     *
+     * ⚠️ **此处原本钉死的是错误写法**：旧断言要求两端都出现
+     * `COUNT(DISTINCT so.client_user_id)`，而那正是缺陷本身 ——
+     * 以 `sale_orders` 为驱动表数人，既不限客型（分子含非会员）、又按 `so.store_id` 归店
+     * （与分母的 `c.bound_store_id` 不是一个键）。
+     * 2026-09-22 审计实测：集团占比恒 **253%**、单店最高 **2600%**、40 家在营门店 36 家 > 100%，
+     * 而这条守护全程绿灯 —— **守护钉住了错误口径，反倒让缺陷活得更久**。
+     * 同型教训见 `notes/research/data-center-accuracy-audit-2026-09-22.md`。
+     *
+     * 现在改为钉「同源」这件事本身，分两个维度：
+     *   ① **人群**：分子的驱动表是 `client_wechat_users` 且带 `became_member_at IS NOT NULL`
+     *   ② **归店**：分子的 scope / 分组键是 `bound_store_id`，**不是** `so.store_id`
+     *
+     * 两端写法不同但同源性等价：admin 用「分母的壳 + `EXISTS`」，
+     * staff 因分组键 `pc.product_kind` 在连接表上、写不进 `EXISTS`，改用
+     * 「会员表驱动 + `COUNT(DISTINCT c.user_id)`」。所以这里按端分别断言，不做字面量对齐。
+     */
+    describe('持卡占比分子分母同源（#287）', () => {
+      /** 切出 admin 的两个持卡查询模板（全局 + byStore） */
+      const adminCardSql = (fn: string): string => {
+        const body = new RegExp(
+          `async function ${fn}\\((?:[\\s\\S]*?)db\\.execute\\(sql\`([\\s\\S]*?)\`\\)`,
+        ).exec(adminSrc)?.[1]
+        return normalize(body ?? '')
+      }
+
+      it('admin 两个持卡查询都以「分母的壳 + EXISTS」为形状', () => {
+        for (const fn of ['queryCardHolders', 'queryCardHoldersByStore']) {
+          const s = adminCardSql(fn)
+          expect(s, `${fn} 的 SQL 模板未切出`).toBeTruthy()
+          // ① 人群同源：驱动表是会员表，且带会员条件
+          expect(s, `${fn} 的驱动表不是 client_wechat_users —— 分子会含非会员`).toMatch(
+            /FROM\s+client_wechat_users\s+c\b/,
+          )
+          expect(s, `${fn} 缺 became_member_at 条件 —— 分子人群与分母不同`).toMatch(
+            /c\.became_member_at\s+IS\s+NOT\s+NULL/,
+          )
+          // ② 归店同源：scope 打在 bound_store_id 上
+          expect(s, `${fn} 的 scope 不是打在 c.bound_store_id 上 —— 归店键与分母不同`).toMatch(
+            /scopeFilterSql\(session,\s*scope,\s*'c\.bound_store_id'\)|WHERE\s+\$\{sc\}/,
+          )
+          // 结构：购买条件收在 EXISTS 里，而不是把 sale_orders 拉成驱动表
+          expect(s, `${fn} 未用 EXISTS 收窄 —— 分子 ⊆ 分母 不再是结构性事实`).toMatch(
+            /AND\s+EXISTS\s*\(/,
+          )
+          // 反向：绝不能回到以订单表数人的老写法
+          expect(s, `${fn} 回到了 COUNT(DISTINCT so.client_user_id) —— #287 的缺陷原样复活`).not.toMatch(
+            /COUNT\(DISTINCT\s+so\.client_user_id\)/,
+          )
+        }
+      })
+
+      it('admin byStore 的分组键与分母一致（都是 c.bound_store_id）', () => {
+        expect(adminCardSql('queryCardHoldersByStore'), '持卡 byStore 未按 c.bound_store_id 分组').toMatch(
+          /GROUP\s+BY\s+c\.bound_store_id\s*$/,
+        )
+        expect(adminCardSql('queryCardHoldersByStore'), '持卡 byStore 仍按 so.store_id 分组').not.toMatch(
+          /GROUP\s+BY\s+so\.store_id/,
+        )
+        // 分母侧同键（改一侧没改另一侧时这条会红）
+        expect(adminCardSql('queryMemberCountByStore'), '会员 byStore 未按 c.bound_store_id 分组').toMatch(
+          /GROUP\s+BY\s+c\.bound_store_id\s*$/,
+        )
+      })
+
+      it('staff 持卡 SQL 同源（会员表驱动 + buildClientScope）', () => {
+        const card = normalize(/const cardSql = `([\s\S]*?)`/.exec(staffSrc)?.[1] ?? '')
+        expect(card, 'staff cardSql 未切出').toBeTruthy()
+        expect(card, 'staff 分子的驱动表不是 client_wechat_users —— 分子会含非会员').toMatch(
+          /FROM\s+client_wechat_users\s+c\b/,
+        )
+        expect(card, 'staff 分子缺 became_member_at 条件').toMatch(
+          /c\.became_member_at\s+IS\s+NOT\s+NULL/,
+        )
+        expect(card, 'staff 分子回到了以订单表数人的老写法').not.toMatch(
+          /COUNT\(DISTINCT\s+so\.client_user_id\)/,
+        )
+        expect(card, 'staff 分子未按会员去重').toMatch(/COUNT\(DISTINCT\s+c\.user_id\)/)
+        // 归店：必须走 buildClientScope（bound_store_id），不是 buildSaleScope（so.store_id）
+        const holder = /持卡 SQL（占比分子）[\s\S]*?const cardSql = `/.exec(staffSrc)?.[0] ?? ''
+        expect(holder, 'staff 持卡的 scope 仍用 buildSaleScope —— 归店键与分母不同').not.toMatch(
+          /const\s+sc\s*=\s*buildSaleScope/,
+        )
+        expect(holder, 'staff 持卡未用 buildClientScope 构造 scope').toMatch(
+          /const\s+cs\s*=\s*buildClientScope\(scopeType,\s*scopeId,\s*'c',\s*1\)/,
+        )
+      })
+
+      it('staff 分子分母复用同一个 scope 构造（cs 只声明一次，两条查询都用它）', () => {
+        const fnBody = /async function .*?mgmtProductCycle[\s\S]*?\n}/.exec(staffSrc)?.[0] ?? staffSrc
+        expect(
+          (fnBody.match(/const\s+cs\s*=\s*buildClientScope/g) ?? []).length,
+          'cs 被声明了多次 —— 分子分母各建一个 scope，「归店键一致」会退化成靠自觉维护',
+        ).toBe(1)
+        expect(
+          staffSrc,
+          '持卡查询仍在用 sc.params —— scope 参数与分母不同源',
+        ).not.toMatch(/pg\.query\(cardSql,\s*sc\.params\)/)
+        expect(staffSrc, '两条查询未共用 cs.params').toMatch(/pg\.query\(cardSql,\s*cs\.params\)/)
+      })
     })
   })
 
