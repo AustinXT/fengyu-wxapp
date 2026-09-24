@@ -19,6 +19,13 @@
  *   3. `LEFT JOIN stores ds ON ds.org_node_id = …` —— 回收用的那条 join
  *   4. 人池过滤：`skills && ARRAY['美容师','养生师']` ∩ hired_at/resigned_at 历史化
  *   5. 可见性二选一：门店分支走 store scope、无门店分支走市场锚
+ *   6. 无门店分支的三分支语义：all→TRUE / market→锚定相等 / store 及未知→FALSE
+ *   7. 门店分支两端都叠「仅启用门店」过滤
+ *
+ * ⚠️ 要件 6、7 是第一轮双谱系评审（codex P2-1 + GLM P2-1 独立命中同一处）补的：
+ * 要件 1~5 抽的是 `queryEmployeeCount` 的源文本，真正决定可见性的两个 helper
+ * （`buildTechnicianOrgAnchorScope` / `buildStaffScope`）在归一化后只剩一个 `?`，
+ * 把它们改坏五条要件照样全绿 —— 「守护看起来很全但恰好漏掉承重那一段」。
  */
 
 const fs = require('node:fs')
@@ -29,6 +36,10 @@ const FILES = {
   adminTechnicianSql: path.resolve(
     __dirname,
     '../../../../../fengyu-admin/src/lib/data-center/technician-sql.ts',
+  ),
+  adminScopeSql: path.resolve(
+    __dirname,
+    '../../../../../fengyu-admin/src/lib/data-center/scope-sql.ts',
   ),
 }
 
@@ -58,14 +69,37 @@ function normalizeSql(sql) {
     .trim()
 }
 
+/**
+ * 只压空白、**保留 `${}`**。
+ *
+ * 可见性 helper 不能用 `normalizeSql` —— 它把 `${}` 抹成 `?`，而两端的可见性语义恰恰
+ * 全在 `${}` 里（admin 的 `sql`${col} = ${scope.id}`` 会变成 `? = ?`，等于什么都没钉）。
+ * 这正是本文件第一版的盲区：要件 1~5 抽的是 `queryEmployeeCount` 的源文本，而
+ * `${sc.sql}` / `${anchor.sql}` 归一化后成了 `?`，两端 helper 改坏了 5 条要件照样全绿。
+ */
+function squeeze(src) {
+  return src.replace(/\s+/g, ' ').trim()
+}
+
 describe('产能技师分母跨端字面量守护（#320）', () => {
   let staffSection
   let adminSection
+  /** 两端「无门店技师可见性」helper 的源文本（保留 `${}`） */
+  let staffAnchorFn
+  let adminAnchorFn
+  /** 两端「启用门店过滤」与「门店分支 scope 构造」的源文本 */
+  let staffActiveFn
+  let staffStaffScopeFn
+  let adminActiveFn
+  let adminScopeFilterFn
 
   beforeAll(() => {
+    const staffSrc = readFile(FILES.staffDashboard)
+    const adminScopeSrc = readFile(FILES.adminScopeSql)
+
     staffSection = normalizeSql(
       extractSection(
-        readFile(FILES.staffDashboard),
+        staffSrc,
         'async function queryEmployeeCount(',
         '\n/**\n * 门店数（截面快照',
       ),
@@ -76,6 +110,25 @@ describe('产能技师分母跨端字面量守护（#320）', () => {
         'export function technicianCteSql(',
         '/** 产能技师总数',
       ),
+    )
+
+    staffAnchorFn = squeeze(
+      extractSection(staffSrc, 'function buildTechnicianOrgAnchorScope(', '\n/**'),
+    )
+    adminAnchorFn = squeeze(
+      extractSection(adminScopeSrc, 'export function orgAnchorScopeSql(', '\n/**'),
+    )
+    staffActiveFn = squeeze(
+      extractSection(staffSrc, 'function activeStoreCondition(column)', '\n/**'),
+    )
+    staffStaffScopeFn = squeeze(
+      extractSection(staffSrc, 'function buildStaffScope(', '\n/**'),
+    )
+    adminActiveFn = squeeze(
+      extractSection(adminScopeSrc, 'function activeStoreCondition(storeCol: SQL)', '\n/**'),
+    )
+    adminScopeFilterFn = squeeze(
+      extractSection(adminScopeSrc, 'export function scopeFilterSql(', '\n/**'),
     )
   })
 
@@ -137,9 +190,79 @@ describe('产能技师分母跨端字面量守护（#320）', () => {
   })
 
   /**
+   * 要件 6 —— 真正决定「单店不计入 / 市场锚计入」的是**可见性 helper**，不是 CTE。
+   *
+   * 要件 1~5 抽的是 `queryEmployeeCount` 的源文本，而里面的 `${sc.sql}` / `${anchor.sql}`
+   * 是运行期拼出来的字符串：helper 改坏（market 比错 id、store 改成 TRUE）五条要件照样全绿。
+   * 两端语言不同（JS 字符串拼接 vs drizzle `sql` 模板），无法逐字比对，
+   * 因此各自钉三分支语义，再断言两端分支划分一致。
+   */
+  it('要件 6：两端无门店技师可见性都是 all→TRUE / market→锚定相等 / store→FALSE', () => {
+    // --- staff 侧 ---
+    expect(staffAnchorFn, 'staff 侧 all 分支必须按名字显式命中').toMatch(
+      /if \(scopeType === 'all'\) return \{ sql: 'TRUE', params: \[\] \}/,
+    )
+    expect(staffAnchorFn, 'staff 侧 market 分支必须比锚定市场').toMatch(
+      /if \(scopeType === 'market'\)[\s\S]*tb\.anchor_market_id = \$\$\{startIdx\}/,
+    )
+    /**
+     * fail-closed：整个函数里 `'TRUE'` 只允许出现一次，且必须在 `'all'` 那一行。
+     * 写成「先排掉 store/market、兜底 return TRUE」时未知 scopeType 会让分母
+     * 静默膨胀成「全部直挂技师」（门店分支近乎空集、锚分支恒真）。
+     */
+    expect(staffAnchorFn.match(/'TRUE'/g) ?? []).toHaveLength(1)
+    expect(staffAnchorFn, 'staff 侧兜底必须是 FALSE').toMatch(
+      /return \{ sql: 'FALSE', params: \[\] \} \}$/,
+    )
+
+    // --- admin 侧 ---
+    expect(adminAnchorFn, 'admin 侧 store 分支必须恒假').toMatch(
+      /if \(scope\.type === 'store'\) return sql`FALSE`/,
+    )
+    expect(adminAnchorFn, 'admin 侧 market 分支必须比锚定市场').toMatch(
+      /if \(scope\.type === 'market'\) return sql`\$\{col\} = \$\{scope\.id\}`/,
+    )
+    expect(adminAnchorFn, 'admin 侧 all 分支对超管恒真').toMatch(
+      /if \(isAdminScope\(session\)\) return sql`TRUE`/,
+    )
+    /**
+     * admin 多一个 staff 没有的分支：非超管选 all/authorized 时按「锚定市场下是否有本账号
+     * 可见的启用门店」判定。staff 侧的 `all` 已由 `validateManagementScope` 要求持总部 scope，
+     * 等价于 admin 的 `isAdminScope → TRUE`，所以这个分支**不构成口径分叉**。
+     * 但它必须继续带启用门店条件，否则 admin 侧会把停用门店当可见凭据。
+     */
+    expect(adminAnchorFn, 'admin 侧非超管 all 分支必须走可见启用门店 EXISTS').toMatch(
+      /EXISTS \([\s\S]*vn\.type = '门店'[\s\S]*vn\.is_active = TRUE[\s\S]*vn\.parent_id = \$\{col\}/,
+    )
+  })
+
+  /**
+   * 要件 7 —— 门店分支覆盖九成以上人头，它的 scope 语义同样必须两端一致。
+   * 若只有一端叠「启用门店」过滤，凡停用门店还挂着在职技师，两端分母立刻分叉，
+   * 而要件 1~6 一条都不会红（那些只看 CTE 与锚分支）。
+   */
+  it('要件 7：两端门店分支都叠加「仅启用门店」过滤', () => {
+    for (const [end, active] of [['staff', staffActiveFn], ['admin', adminActiveFn]]) {
+      expect(active, `${end} 侧启用门店过滤缺 type='门店'`).toMatch(/type = '门店'/)
+      expect(active, `${end} 侧启用门店过滤缺 is_active = TRUE`).toMatch(/is_active = TRUE/)
+    }
+    // 过滤器存在还不够，必须真的被技师分母那条 scope 用上
+    expect(staffStaffScopeFn, 'staff 的 buildStaffScope 未叠加启用门店过滤').toMatch(
+      /withActiveStoreCondition\(/,
+    )
+    expect(adminScopeFilterFn, 'admin 的 scopeFilterSql 未叠加启用门店过滤').toMatch(
+      /parts: SQL\[\] = \[activeStoreCondition\(col\)\]/,
+    )
+  })
+
+  /**
    * 反向守护：admin 侧那份注释声明「这是单源，别在别处再抄一份」。
    * 若 admin 内部又出现只按 `store_id` 过滤的技师查询，两端就会再次分叉 ——
    * #285 的 codex 谱系把这种情形判过 P0（同一数据中心两个板块差 14 人）。
+   *
+   * ⚠️ 局限（有意接受）：① 注释剥离是启发式的，字符串字面量里出现 `/*` 会造成漏报；
+   * ② 只盯 `efficiency.ts` / `sales.ts` 两个文件 —— 它们是历史上出过分叉的那两处。
+   * 新板块若自己抄一份技师人池，本条抓不到，靠代码评审。
    */
   it('admin 侧的技师查询只有 technician-sql.ts 这一份单源', () => {
     const efficiency = readFile(

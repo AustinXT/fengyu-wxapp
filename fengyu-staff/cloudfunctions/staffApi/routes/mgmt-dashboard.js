@@ -446,19 +446,25 @@ async function queryRetainedMemberCount(scopeType, scopeId, date) {
  * 无门店产能技师（直挂市场/部门组织节点）的可见性片段 —— 与 admin
  * `lib/data-center/scope-sql.ts` 的 `orgAnchorScopeSql` **逐条对齐**（#320）。
  *
- *   - `store`  → 无门店的人不归属任何单店，一律不出现（故 集团技师数 ≠ Σ门店技师数，有意）
- *   - `market` → 锚定市场等于所选市场才出现
  *   - `all`    → 恒真。`validateManagementScope` 已要求 `all` 必须持总部 scope，
  *                等价于 admin 侧的 `isAdminScope(session) → TRUE` 分支
+ *   - `market` → 锚定市场等于所选市场才出现
+ *   - `store` 及**任何未知取值** → FALSE
+ *
+ * ⚠️ `all` 必须**按名字显式命中**、未知取值一律 fail-closed，不能写成
+ * 「先排掉 store/market，兜底 return TRUE」——那样未知 scopeType 会让门店分支近乎空集
+ * （`buildManagementStoreScope` 把未知当 market、按一个不存在的根展开）而锚分支恒真，
+ * 分母静默膨胀成「全部直挂技师」。`validateManagementScope` 虽已拒掉未知取值，
+ * 但那是另一个函数的责任，这里不借它的势。
  *
  * @param {number} startIdx 本片段自己的 $n 起始下标（不与门店分支共用参数）
  */
 function buildTechnicianOrgAnchorScope(scopeType, scopeId, startIdx) {
-  if (scopeType === 'store') return { sql: 'FALSE', params: [] }
+  if (scopeType === 'all') return { sql: 'TRUE', params: [] }
   if (scopeType === 'market') {
     return { sql: `tb.anchor_market_id = $${startIdx}`, params: [scopeId] }
   }
-  return { sql: 'TRUE', params: [] }
+  return { sql: 'FALSE', params: [] }
 }
 
 /**
@@ -485,8 +491,18 @@ function buildTechnicianOrgAnchorScope(scopeType, scopeId, startIdx) {
  * 2. 回收后仍为 NULL 的（直挂市场/部门）用 `anchor_market_id` 锚到市场，
  *    交给 `buildTechnicianOrgAnchorScope` 判可见性
  *
+ * ## 两个容易被当成缺陷的点（已核实，别再"修"）
+ *
+ * - **回收 join 不会扇出重复计数**：`stores.org_node_id` 上有唯一索引
+ *   `stores_org_node_id_unique`（生产已核，2026-09-24 实测该 CTE 166 行 / 166 个不同
+ *   `employee_id`），所以 `LEFT JOIN stores ds` 至多匹配一行，`COUNT(*)` 不需要 DISTINCT。
+ * - **门店分支叠了启用门店过滤、市场锚分支没有**：这与 admin 一致（admin 的
+ *   `scopeFilterSql` 内含 `activeStoreCondition`，`orgAnchorScopeSql` 的 market 分支只比锚定市场）。
+ *   代价是「门店全停的市场 + 直挂技师」会分母含人、分子近零 → 人均偏低。属已知取舍：
+ *   直挂者不属于任何门店，没有可供判断启停的门店。改它必须两端同步改。
+ *
  * ⚠️ 两端是**独立副本**（禁止跨端共享代码目录，见根 CLAUDE.md），一致性由
- * `__tests__/routes/mgmt-dashboard-technician-parity.test.js` 的字面量断言守护。改一端必同步另一端。
+ * `__tests__/routes/cross-end-technician-denominator.test.js` 的字面量断言守护。改一端必同步另一端。
  */
 async function queryEmployeeCount(scopeType, scopeId, date) {
   // $1 = date；门店分支 scope 从 $2 起；市场锚分支接在其后
