@@ -31,6 +31,8 @@ beforeEach(() => {
   vi.mocked(listInventoryDocCandidates).mockReset()
   vi.mocked(listInventoryDocCandidateIds).mockReset()
   vi.mocked(toast.success).mockReset()
+  vi.mocked(toast.error).mockReset()
+  vi.mocked(toast.info).mockReset()
 })
 
 describe('InventoryDocCandidatePicker（#338）', () => {
@@ -126,7 +128,8 @@ describe('InventoryDocCandidatePicker（#338）', () => {
     fireEvent.click(screen.getByRole('button', { name: '来源报货单 开始日期' }))
     const dialog = await screen.findByRole('dialog', { name: '选择日期' })
     const day = Array.from(dialog.querySelectorAll('td:not([data-outside]) button')).find((button) => button.textContent === '15')
-    fireEvent.click(day!)
+    expect(day, '日期面板里找不到当月 15 日（DatePicker DOM 变了？）').toBeDefined()
+    fireEvent.click(day as Element)
     await waitFor(() => expect(listInventoryDocCandidates).toHaveBeenLastCalledWith(expect.objectContaining({ startDate: expect.stringMatching(/-15$/) })))
     await act(async () => { resolveIds({ ids: ['MHZ-OLD-RANGE'] }) })
     expect(onChange).not.toHaveBeenCalled()
