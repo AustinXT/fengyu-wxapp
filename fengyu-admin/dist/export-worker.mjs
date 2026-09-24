@@ -85812,6 +85812,32 @@ function scopeSessionToActions(session4, actions) {
     }
   };
 }
+function scopeSessionToAllActions(session4, actions) {
+  const hasRoleScopeMetadata = session4.roles.every((role) => Array.isArray(role.actions) && Array.isArray(role.scopeStoreIds) && Array.isArray(role.scopeOrgNodeIds));
+  if (!hasRoleScopeMetadata)
+    return session4;
+  const roles3 = session4.roles.filter((role) => actions.every((action) => role.actions.includes(action)));
+  if (roles3.length === 0) {
+    return {
+      ...session4,
+      roles: [],
+      permissions: {
+        ...session4.permissions,
+        scopeStoreIds: [],
+        scopeOrgNodeIds: []
+      }
+    };
+  }
+  return {
+    ...session4,
+    roles: roles3,
+    permissions: {
+      ...session4.permissions,
+      scopeStoreIds: Array.from(new Set(roles3.flatMap((role) => role.scopeStoreIds))),
+      scopeOrgNodeIds: Array.from(new Set(roles3.flatMap((role) => role.scopeOrgNodeIds)))
+    }
+  };
+}
 
 // ../../../../fengyu-admin/node_modules/next/dist/server/web/spec-extension/adapters/reflect.js
 var require_reflect = __commonJS((exports) => {
@@ -90571,6 +90597,26 @@ function withAnyPermission(actions, fn) {
     }
   };
 }
+function withAllPermissions(actions, fn) {
+  return async (...args) => {
+    const session4 = await getActionSession();
+    const [firstAction, ...remainingActions] = actions;
+    if (!firstAction)
+      throw new Error("INVALID_PARAMS: withAllPermissions 至少需要一个权限项");
+    requirePermission(session4, firstAction);
+    for (const action of remainingActions)
+      requirePermission(session4, action);
+    try {
+      const scopedSession = scopeSessionToAllActions(session4, actions);
+      if (scopedSession.roles.length === 0) {
+        throw new Error("PERMISSION_DENIED: 多项权限必须由同一角色授权范围同时提供");
+      }
+      return await fn(scopedSession, ...args);
+    } catch (err) {
+      rethrowWithDigest(err);
+    }
+  };
+}
 var init_with_permission = __esm(() => {
   init_permissions();
   init_api_error();
@@ -92466,9 +92512,9 @@ var require_shared_formula = __commonJS((exports, module) => {
   var colCache = require_col_cache();
   var replacementCandidateRx = /(([a-z_\-0-9]*)!)?([a-z0-9_$]{2,})([(])?/gi;
   var CRrx = /^([$])?([a-z]+)([$])?([1-9][0-9]*)$/i;
-  function slideFormula(formula, fromCell, toCell) {
+  function slideFormula(formula, fromCell, toCell2) {
     const offset = colCache.decode(fromCell);
-    const to = colCache.decode(toCell);
+    const to = colCache.decode(toCell2);
     return formula.replace(replacementCandidateRx, (refMatch, sheet, sheetMaybe, addrPart, trailingParen) => {
       if (trailingParen) {
         return refMatch;
@@ -109842,17 +109888,17 @@ var require_saxes = __commonJS((exports) => {
         this.fail(this.isName(entity2) ? "undefined entity." : "disallowed character in entity name.");
         return `&${entity2};`;
       }
-      let num3 = NaN;
+      let num4 = NaN;
       if (entity2[1] === "x" && /^#x[0-9a-f]+$/i.test(entity2)) {
-        num3 = parseInt(entity2.slice(2), 16);
+        num4 = parseInt(entity2.slice(2), 16);
       } else if (/^#[0-9]+$/.test(entity2)) {
-        num3 = parseInt(entity2.slice(1), 10);
+        num4 = parseInt(entity2.slice(1), 10);
       }
-      if (!this.isChar(num3)) {
+      if (!this.isChar(num4)) {
         this.fail("malformed character entity.");
         return `&${entity2};`;
       }
-      return String.fromCodePoint(num3);
+      return String.fromCodePoint(num4);
     }
   }
   exports.SaxesParser = SaxesParser;
@@ -120292,7 +120338,7 @@ var require_lodash12 = __commonJS((exports, module) => {
   function assocIndexOf(array3, key) {
     var length = array3.length;
     while (length--) {
-      if (eq20(array3[length][0], key)) {
+      if (eq21(array3[length][0], key)) {
         return length;
       }
     }
@@ -120430,7 +120476,7 @@ var require_lodash12 = __commonJS((exports, module) => {
       case boolTag:
       case dateTag:
       case numberTag:
-        return eq20(+object, +other);
+        return eq21(+object, +other);
       case errorTag:
         return object.name == other.name && object.message == other.message;
       case regexpTag:
@@ -120588,7 +120634,7 @@ var require_lodash12 = __commonJS((exports, module) => {
     }
     return "";
   }
-  function eq20(value2, other) {
+  function eq21(value2, other) {
     return value2 === other || value2 !== value2 && other !== other;
   }
   var isArguments = baseIsArguments(function() {
@@ -121446,7 +121492,7 @@ var require_lodash16 = __commonJS((exports, module) => {
   function assocIndexOf(array3, key) {
     var length = array3.length;
     while (length--) {
-      if (eq20(array3[length][0], key)) {
+      if (eq21(array3[length][0], key)) {
         return length;
       }
     }
@@ -121531,7 +121577,7 @@ var require_lodash16 = __commonJS((exports, module) => {
   function uniq(array3) {
     return array3 && array3.length ? baseUniq(array3) : [];
   }
-  function eq20(value2, other) {
+  function eq21(value2, other) {
     return value2 === other || value2 !== value2 && other !== other;
   }
   function isFunction(value2) {
@@ -121878,7 +121924,7 @@ var require_lodash17 = __commonJS((exports, module) => {
   function assocIndexOf(array3, key) {
     var length = array3.length;
     while (length--) {
-      if (eq20(array3[length][0], key)) {
+      if (eq21(array3[length][0], key)) {
         return length;
       }
     }
@@ -122141,7 +122187,7 @@ var require_lodash17 = __commonJS((exports, module) => {
       case boolTag:
       case dateTag:
       case numberTag:
-        return eq20(+object, +other);
+        return eq21(+object, +other);
       case errorTag:
         return object.name == other.name && object.message == other.message;
       case regexpTag:
@@ -122355,7 +122401,7 @@ var require_lodash17 = __commonJS((exports, module) => {
     return memoized;
   }
   memoize.Cache = MapCache;
-  function eq20(value2, other) {
+  function eq21(value2, other) {
     return value2 === other || value2 !== value2 && other !== other;
   }
   function isArguments(value2) {
@@ -129969,14 +130015,14 @@ var require_lodash18 = __commonJS((exports, module) => {
     return result;
   }
   function assignInDefaults(objValue, srcValue, key, object) {
-    if (objValue === undefined || eq20(objValue, objectProto[key]) && !hasOwnProperty.call(object, key)) {
+    if (objValue === undefined || eq21(objValue, objectProto[key]) && !hasOwnProperty.call(object, key)) {
       return srcValue;
     }
     return objValue;
   }
   function assignValue(object, key, value2) {
     var objValue = object[key];
-    if (!(hasOwnProperty.call(object, key) && eq20(objValue, value2)) || value2 === undefined && !(key in object)) {
+    if (!(hasOwnProperty.call(object, key) && eq21(objValue, value2)) || value2 === undefined && !(key in object)) {
       object[key] = value2;
     }
   }
@@ -130046,7 +130092,7 @@ var require_lodash18 = __commonJS((exports, module) => {
     }
     var type = typeof index3;
     if (type == "number" ? isArrayLike(object) && isIndex(index3, object.length) : type == "string" && (index3 in object)) {
-      return eq20(object[index3], value2);
+      return eq21(object[index3], value2);
     }
     return false;
   }
@@ -130063,7 +130109,7 @@ var require_lodash18 = __commonJS((exports, module) => {
     }
     return result;
   }
-  function eq20(value2, other) {
+  function eq21(value2, other) {
     return value2 === other || value2 !== value2 && other !== other;
   }
   function isArguments(value2) {
@@ -132316,7 +132362,7 @@ var require_lodash20 = __commonJS((exports, module) => {
   function assocIndexOf(array3, key) {
     var length = array3.length;
     while (length--) {
-      if (eq20(array3[length][0], key)) {
+      if (eq21(array3[length][0], key)) {
         return length;
       }
     }
@@ -132429,7 +132475,7 @@ var require_lodash20 = __commonJS((exports, module) => {
   var difference = baseRest(function(array3, values2) {
     return isArrayLikeObject(array3) ? baseDifference(array3, baseFlatten(values2, 1, isArrayLikeObject, true)) : [];
   });
-  function eq20(value2, other) {
+  function eq21(value2, other) {
     return value2 === other || value2 !== value2 && other !== other;
   }
   function isArguments(value2) {
@@ -132705,7 +132751,7 @@ var require_lodash21 = __commonJS((exports, module) => {
   function assocIndexOf(array3, key) {
     var length = array3.length;
     while (length--) {
-      if (eq20(array3[length][0], key)) {
+      if (eq21(array3[length][0], key)) {
         return length;
       }
     }
@@ -132827,7 +132873,7 @@ var require_lodash21 = __commonJS((exports, module) => {
   var union3 = baseRest(function(arrays) {
     return baseUniq(baseFlatten(arrays, 1, isArrayLikeObject, true));
   });
-  function eq20(value2, other) {
+  function eq21(value2, other) {
     return value2 === other || value2 !== value2 && other !== other;
   }
   function isArguments(value2) {
@@ -134812,10 +134858,10 @@ var require_glob = __commonJS((exports, module) => {
       this.emit("resume");
       this.paused = false;
       if (this._emitQueue.length) {
-        var eq20 = this._emitQueue.slice(0);
+        var eq21 = this._emitQueue.slice(0);
         this._emitQueue.length = 0;
-        for (var i = 0;i < eq20.length; i++) {
-          var e = eq20[i];
+        for (var i = 0;i < eq21.length; i++) {
+          var e = eq21[i];
           this._emitMatch(e[0], e[1]);
         }
       }
@@ -136770,9 +136816,9 @@ var require_buffer_crc32 = __commonJS((exports, module) => {
       throw new Error("input must be buffer, number, or string, received " + typeof input);
     }
   }
-  function bufferizeInt(num3) {
+  function bufferizeInt(num4) {
     var tmp = ensureBuffer(4);
-    tmp.writeInt32BE(num3, 0);
+    tmp.writeInt32BE(num4, 0);
     return tmp;
   }
   function _crc32(buf, previous) {
@@ -138135,9 +138181,9 @@ var require_headers3 = __commonJS((exports) => {
     }
     return 0;
   };
-  var indexOf = function(block, num3, offset, end) {
+  var indexOf = function(block, num4, offset, end) {
     for (;offset < end; offset++) {
-      if (block[offset] === num3)
+      if (block[offset] === num4)
         return offset;
     }
     return end;
@@ -155373,7 +155419,7 @@ var require_excel = __commonJS((exports, module) => {
 
 // src/export-worker/index.ts
 init_db2();
-var import_drizzle_orm67 = __toESM(require_drizzle_orm(), 1);
+var import_drizzle_orm69 = __toESM(require_drizzle_orm(), 1);
 import { createReadStream } from "node:fs";
 import { mkdtemp, rm as rm2 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -159483,7 +159529,7 @@ var DATA_CENTER_REPORTS = {
     title: "顾客剩余卡项清单",
     periodKind: "none",
     requiredActions: DATA_CENTER_CUSTOMER_DETAIL_ACTIONS,
-    menu: { section: "经营明细", enabled: false }
+    menu: { section: "经营明细", enabled: true }
   },
   operatingMaster: {
     path: "/data-center/operating-master",
@@ -159541,7 +159587,9 @@ var DATA_CENTER_BOARD_EXPORT_VIEWS = [
   "efficiency-store-ranking",
   "efficiency-staff-ranking"
 ];
-var DATA_CENTER_REPORT_EXPORT_VIEWS = [];
+var DATA_CENTER_REPORT_EXPORT_VIEWS = [
+  "report-remaining-cards"
+];
 var DATA_CENTER_EXPORT_VIEWS = [
   ...DATA_CENTER_BOARD_EXPORT_VIEWS,
   ...DATA_CENTER_REPORT_EXPORT_VIEWS
@@ -159597,7 +159645,8 @@ function exportJobLabel(exportType, payload) {
     "efficiency-market": "人效明细-按市场",
     "efficiency-staff": "人效明细-按技师",
     "efficiency-store-ranking": "人效-门店排名榜",
-    "efficiency-staff-ranking": "人效-员工排名榜"
+    "efficiency-staff-ranking": "人效-员工排名榜",
+    "report-remaining-cards": "顾客剩余卡项清单"
   };
   return viewLabels[payload.view];
 }
@@ -174726,8 +174775,27 @@ init_user();
 init_prepaid_card();
 init_permissions();
 init_with_permission();
-var import_drizzle_orm54 = __toESM(require_drizzle_orm(), 1);
+var import_drizzle_orm55 = __toESM(require_drizzle_orm(), 1);
 init_db_time();
+
+// src/lib/card-entitlement.ts
+init_order();
+var import_drizzle_orm53 = __toESM(require_drizzle_orm(), 1);
+var CARD_ENTITLEMENT_ORDER_STATUSES = ["已支付", "部分支付", "已完成"];
+function cardEntitlementDirectionCondition() {
+  return import_drizzle_orm53.or(import_drizzle_orm53.eq(saleItems.itemDirection, "购买"), import_drizzle_orm53.and(import_drizzle_orm53.eq(saleOrders.saleOrderType, "转换单"), import_drizzle_orm53.eq(saleItems.itemDirection, "转入")));
+}
+function cardBaseConditions() {
+  return [
+    cardEntitlementDirectionCondition(),
+    import_drizzle_orm53.inArray(saleOrders.status, [...CARD_ENTITLEMENT_ORDER_STATUSES]),
+    import_drizzle_orm53.eq(saleItems.productType, "疗程卡"),
+    import_drizzle_orm53.isNotNull(saleItems.remainingSessions)
+  ];
+}
+function cardNotFullyRefundedCondition() {
+  return import_drizzle_orm53.sql`(${saleItems.productType} <> '疗程卡' OR NOT EXISTS (SELECT 1 FROM sale_order_payments sop WHERE sop.sale_order_id = ${saleItems.saleOrderId} AND sop.change_type = '退款' AND sop.status = '已支付') OR ${saleItems.paidSessions} IS NULL OR ${saleItems.paidSessions} > (${saleItems.sessionCount} - ${saleItems.remainingSessions}))`;
+}
 
 // src/lib/recharge.ts
 init_db2();
@@ -174741,7 +174809,7 @@ var systemConfigs = pgTable2("system_configs", {
 });
 
 // src/lib/recharge.ts
-var import_drizzle_orm53 = __toESM(require_drizzle_orm(), 1);
+var import_drizzle_orm54 = __toESM(require_drizzle_orm(), 1);
 
 // src/lib/recharge-tier.ts
 function matchTier(amount, cfg) {
@@ -174775,7 +174843,7 @@ function matchTier(amount, cfg) {
 
 // src/lib/recharge.ts
 async function loadRechargeConfig() {
-  const rows = await db2.select({ key: systemConfigs.key, value: systemConfigs.value }).from(systemConfigs).where(import_drizzle_orm53.inArray(systemConfigs.key, ["recharge.tiers", "recharge.minAmount", "recharge.maxAmount"]));
+  const rows = await db2.select({ key: systemConfigs.key, value: systemConfigs.value }).from(systemConfigs).where(import_drizzle_orm54.inArray(systemConfigs.key, ["recharge.tiers", "recharge.minAmount", "recharge.maxAmount"]));
   const cfg = {};
   for (const r of rows)
     cfg[r.key] = r.value;
@@ -174810,7 +174878,6 @@ init_operation_log2();
 init_api_error();
 var import_cache10 = __toESM(require_cache3(), 1);
 "use server";
-var CARD_ENTITLEMENT_ORDER_STATUSES = ["已支付", "部分支付", "已完成"];
 function computeCardRemainingRemainder(item) {
   const source = {
     sale_item_id: item.saleItemId,
@@ -174836,12 +174903,12 @@ function computeCardRemainingRemainder(item) {
 }
 var getCardFilterOptions = withPermission("sale_item:list", async (_session) => {
   const [kindRows, categoryRows] = await Promise.all([
-    db2.select({ categoryName: productCategories.categoryName }).from(productCategories).where(import_drizzle_orm54.isNull(productCategories.productKind)).orderBy(import_drizzle_orm54.asc(productCategories.sortOrder), import_drizzle_orm54.asc(productCategories.categoryName)),
+    db2.select({ categoryName: productCategories.categoryName }).from(productCategories).where(import_drizzle_orm55.isNull(productCategories.productKind)).orderBy(import_drizzle_orm55.asc(productCategories.sortOrder), import_drizzle_orm55.asc(productCategories.categoryName)),
     db2.select({
       categoryId: productCategories.categoryId,
       categoryName: productCategories.categoryName,
       productKind: productCategories.productKind
-    }).from(productCategories).where(import_drizzle_orm54.isNotNull(productCategories.productKind)).orderBy(import_drizzle_orm54.asc(productCategories.sortOrder), import_drizzle_orm54.asc(productCategories.categoryName))
+    }).from(productCategories).where(import_drizzle_orm55.isNotNull(productCategories.productKind)).orderBy(import_drizzle_orm55.asc(productCategories.sortOrder), import_drizzle_orm55.asc(productCategories.categoryName))
   ]);
   return {
     productKinds: kindRows.map((row) => row.categoryName),
@@ -174852,15 +174919,9 @@ var getCardFilterOptions = withPermission("sale_item:list", async (_session) => 
     }))
   };
 });
-function cardEntitlementDirectionCondition() {
-  return import_drizzle_orm54.or(import_drizzle_orm54.eq(saleItems.itemDirection, "购买"), import_drizzle_orm54.and(import_drizzle_orm54.eq(saleOrders.saleOrderType, "转换单"), import_drizzle_orm54.eq(saleItems.itemDirection, "转入")));
-}
 function buildCardBaseConditions(session4) {
   return [
-    cardEntitlementDirectionCondition(),
-    import_drizzle_orm54.inArray(saleOrders.status, [...CARD_ENTITLEMENT_ORDER_STATUSES]),
-    import_drizzle_orm54.eq(saleItems.productType, "疗程卡"),
-    import_drizzle_orm54.isNotNull(saleItems.remainingSessions),
+    ...cardBaseConditions(),
     scopeCondition(session4, saleItems.storeId)
   ];
 }
@@ -174870,32 +174931,32 @@ function buildCardConditions(session4, filters) {
     conditions3.push(storeInMarketCondition(saleItems.storeId, filters.marketId));
   }
   if (filters.storeId) {
-    conditions3.push(import_drizzle_orm54.eq(saleItems.storeId, filters.storeId));
+    conditions3.push(import_drizzle_orm55.eq(saleItems.storeId, filters.storeId));
   }
   if (filters.type === "疗程卡") {
-    conditions3.push(import_drizzle_orm54.gte(saleItems.sessionCount, 2));
+    conditions3.push(import_drizzle_orm55.gte(saleItems.sessionCount, 2));
   } else if (filters.type === "单次卡") {
-    conditions3.push(import_drizzle_orm54.eq(saleItems.sessionCount, 1));
+    conditions3.push(import_drizzle_orm55.eq(saleItems.sessionCount, 1));
   }
   if (filters.status === "active") {
-    conditions3.push(import_drizzle_orm54.sql`${saleItems.remainingSessions} > 0`);
-    conditions3.push(import_drizzle_orm54.or(import_drizzle_orm54.isNull(saleItems.expireDate), import_drizzle_orm54.sql`${saleItems.expireDate} >= CURRENT_DATE`));
+    conditions3.push(import_drizzle_orm55.sql`${saleItems.remainingSessions} > 0`);
+    conditions3.push(import_drizzle_orm55.or(import_drizzle_orm55.isNull(saleItems.expireDate), import_drizzle_orm55.sql`${saleItems.expireDate} >= CURRENT_DATE`));
   } else if (filters.status === "exhausted") {
-    conditions3.push(import_drizzle_orm54.eq(saleItems.remainingSessions, 0));
+    conditions3.push(import_drizzle_orm55.eq(saleItems.remainingSessions, 0));
   } else if (filters.status === "expired") {
-    conditions3.push(import_drizzle_orm54.isNotNull(saleItems.expireDate));
-    conditions3.push(import_drizzle_orm54.sql`${saleItems.expireDate} < CURRENT_DATE`);
+    conditions3.push(import_drizzle_orm55.isNotNull(saleItems.expireDate));
+    conditions3.push(import_drizzle_orm55.sql`${saleItems.expireDate} < CURRENT_DATE`);
   }
   if (filters.productKind) {
-    conditions3.push(import_drizzle_orm54.eq(productCategories.productKind, filters.productKind));
+    conditions3.push(import_drizzle_orm55.eq(productCategories.productKind, filters.productKind));
   }
   if (filters.categoryId) {
-    conditions3.push(import_drizzle_orm54.eq(productSkus.categoryId, filters.categoryId));
+    conditions3.push(import_drizzle_orm55.eq(productSkus.categoryId, filters.categoryId));
   }
   if (filters.search) {
     const escaped = filters.search.replace(/[%_]/g, "\\$&");
     const pattern = `%${escaped}%`;
-    conditions3.push(import_drizzle_orm54.or(import_drizzle_orm54.eq(saleOrders.saleOrderId, filters.search), import_drizzle_orm54.ilike(clientWechatUsers.name, pattern), import_drizzle_orm54.ilike(clientWechatUsers.phone, pattern), import_drizzle_orm54.ilike(saleItems.productName, pattern)));
+    conditions3.push(import_drizzle_orm55.or(import_drizzle_orm55.eq(saleOrders.saleOrderId, filters.search), import_drizzle_orm55.ilike(clientWechatUsers.name, pattern), import_drizzle_orm55.ilike(clientWechatUsers.phone, pattern), import_drizzle_orm55.ilike(saleItems.productName, pattern)));
   }
   return conditions3;
 }
@@ -174906,14 +174967,14 @@ var getCardsPaginated = withPermission("sale_item:list", async (session4, filter
     defaultPageSize: 20,
     allowedPageSizes: [10, 20, 50]
   });
-  const whereClause = import_drizzle_orm54.and(...buildCardConditions(session4, filters));
-  const marketNameExpr = import_drizzle_orm54.sql`(
+  const whereClause = import_drizzle_orm55.and(...buildCardConditions(session4, filters));
+  const marketNameExpr = import_drizzle_orm55.sql`(
     SELECT n.name FROM stores s
     JOIN org_nodes sn ON sn.id = s.org_node_id
     JOIN org_nodes n ON n.id = sn.parent_id
     WHERE s.store_id = ${saleItems.storeId}
   )`.as("market_name");
-  const countQuery = db2.select({ count: import_drizzle_orm54.sql`cast(count(*) as int)` }).from(saleItems).leftJoin(saleOrders, import_drizzle_orm54.eq(saleItems.saleOrderId, saleOrders.saleOrderId)).leftJoin(clientWechatUsers, import_drizzle_orm54.eq(saleOrders.clientUserId, clientWechatUsers.userId)).leftJoin(productSkus, import_drizzle_orm54.eq(saleItems.skuId, productSkus.skuId)).leftJoin(productCategories, import_drizzle_orm54.eq(productSkus.categoryId, productCategories.categoryId)).where(whereClause);
+  const countQuery = db2.select({ count: import_drizzle_orm55.sql`cast(count(*) as int)` }).from(saleItems).leftJoin(saleOrders, import_drizzle_orm55.eq(saleItems.saleOrderId, saleOrders.saleOrderId)).leftJoin(clientWechatUsers, import_drizzle_orm55.eq(saleOrders.clientUserId, clientWechatUsers.userId)).leftJoin(productSkus, import_drizzle_orm55.eq(saleItems.skuId, productSkus.skuId)).leftJoin(productCategories, import_drizzle_orm55.eq(productSkus.categoryId, productCategories.categoryId)).where(whereClause);
   const dataQuery = db2.select({
     saleItemId: saleItems.saleItemId,
     saleOrderId: saleItems.saleOrderId,
@@ -174925,8 +174986,8 @@ var getCardsPaginated = withPermission("sale_item:list", async (session4, filter
     paidUnusedSessions: paidUnusedSessionsExpr,
     unitRealPrice: saleItems.unitRealPrice,
     received: saleItems.received,
-    convertedQuantity: import_drizzle_orm54.sql`COALESCE((SELECT SUM(out_item.quantity) FROM sale_items out_item JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id WHERE out_item.ref_sale_item_id = ${saleItems.saleItemId} AND out_item.item_direction = '转出' AND conv_order.status <> '已关闭'), 0)::int`,
-    convertedAmount: import_drizzle_orm54.sql`COALESCE((SELECT SUM(GREATEST(0, -out_item.received::numeric)) FROM sale_items out_item JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id WHERE out_item.ref_sale_item_id = ${saleItems.saleItemId} AND out_item.item_direction = '转出' AND conv_order.status <> '已关闭'), 0)`,
+    convertedQuantity: import_drizzle_orm55.sql`COALESCE((SELECT SUM(out_item.quantity) FROM sale_items out_item JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id WHERE out_item.ref_sale_item_id = ${saleItems.saleItemId} AND out_item.item_direction = '转出' AND conv_order.status <> '已关闭'), 0)::int`,
+    convertedAmount: import_drizzle_orm55.sql`COALESCE((SELECT SUM(GREATEST(0, -out_item.received::numeric)) FROM sale_items out_item JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id WHERE out_item.ref_sale_item_id = ${saleItems.saleItemId} AND out_item.item_direction = '转出' AND conv_order.status <> '已关闭'), 0)`,
     quantity: saleItems.quantity,
     expireDate: saleItems.expireDate,
     paidAt: saleOrders.paidAt,
@@ -174936,7 +174997,7 @@ var getCardsPaginated = withPermission("sale_item:list", async (session4, filter
     clientUserId: saleOrders.clientUserId,
     clientName: clientWechatUsers.name,
     clientPhone: clientWechatUsers.phone
-  }).from(saleItems).leftJoin(saleOrders, import_drizzle_orm54.eq(saleItems.saleOrderId, saleOrders.saleOrderId)).leftJoin(stores, import_drizzle_orm54.eq(saleItems.storeId, stores.storeId)).leftJoin(clientWechatUsers, import_drizzle_orm54.eq(saleOrders.clientUserId, clientWechatUsers.userId)).leftJoin(productSkus, import_drizzle_orm54.eq(saleItems.skuId, productSkus.skuId)).leftJoin(productCategories, import_drizzle_orm54.eq(productSkus.categoryId, productCategories.categoryId)).where(whereClause).orderBy(import_drizzle_orm54.desc(saleOrders.paidAt), import_drizzle_orm54.desc(saleItems.createdAt), import_drizzle_orm54.asc(saleItems.saleItemId)).limit(pageSize).offset(offset);
+  }).from(saleItems).leftJoin(saleOrders, import_drizzle_orm55.eq(saleItems.saleOrderId, saleOrders.saleOrderId)).leftJoin(stores, import_drizzle_orm55.eq(saleItems.storeId, stores.storeId)).leftJoin(clientWechatUsers, import_drizzle_orm55.eq(saleOrders.clientUserId, clientWechatUsers.userId)).leftJoin(productSkus, import_drizzle_orm55.eq(saleItems.skuId, productSkus.skuId)).leftJoin(productCategories, import_drizzle_orm55.eq(productSkus.categoryId, productCategories.categoryId)).where(whereClause).orderBy(import_drizzle_orm55.desc(saleOrders.paidAt), import_drizzle_orm55.desc(saleItems.createdAt), import_drizzle_orm55.asc(saleItems.saleItemId)).limit(pageSize).offset(offset);
   const [[countRow], rows] = await Promise.all([countQuery, dataQuery]);
   return {
     data: rows.map((r) => ({
@@ -174970,9 +175031,9 @@ var numOrNull = (v) => {
 };
 var exportCards = withPermission("sale_item:list", async (session4, params, options) => {
   const filters = parseCardFilters(params);
-  const whereClause = import_drizzle_orm54.and(...buildCardConditions(session4, filters));
+  const whereClause = import_drizzle_orm55.and(...buildCardConditions(session4, filters));
   const page = resolveExportOffsetPage(options);
-  const marketNameExpr = import_drizzle_orm54.sql`(
+  const marketNameExpr = import_drizzle_orm55.sql`(
       SELECT n.name FROM stores s
       JOIN org_nodes sn ON sn.id = s.org_node_id
       JOIN org_nodes n ON n.id = sn.parent_id
@@ -174991,8 +175052,8 @@ var exportCards = withPermission("sale_item:list", async (session4, params, opti
     unitRealPrice: saleItems.unitRealPrice,
     saleAmount: saleItems.saleAmount,
     received: saleItems.received,
-    convertedQuantity: import_drizzle_orm54.sql`COALESCE((SELECT SUM(out_item.quantity) FROM sale_items out_item JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id WHERE out_item.ref_sale_item_id = ${saleItems.saleItemId} AND out_item.item_direction = '转出' AND conv_order.status <> '已关闭'), 0)::int`,
-    convertedAmount: import_drizzle_orm54.sql`COALESCE((SELECT SUM(GREATEST(0, -out_item.received::numeric)) FROM sale_items out_item JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id WHERE out_item.ref_sale_item_id = ${saleItems.saleItemId} AND out_item.item_direction = '转出' AND conv_order.status <> '已关闭'), 0)`,
+    convertedQuantity: import_drizzle_orm55.sql`COALESCE((SELECT SUM(out_item.quantity) FROM sale_items out_item JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id WHERE out_item.ref_sale_item_id = ${saleItems.saleItemId} AND out_item.item_direction = '转出' AND conv_order.status <> '已关闭'), 0)::int`,
+    convertedAmount: import_drizzle_orm55.sql`COALESCE((SELECT SUM(GREATEST(0, -out_item.received::numeric)) FROM sale_items out_item JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id WHERE out_item.ref_sale_item_id = ${saleItems.saleItemId} AND out_item.item_direction = '转出' AND conv_order.status <> '已关闭'), 0)`,
     productKind: productCategories.productKind,
     categoryName: productCategories.categoryName,
     storeName: stores.storeName,
@@ -175005,7 +175066,7 @@ var exportCards = withPermission("sale_item:list", async (session4, params, opti
     saleOrderDatetime: saleOrders.saleOrderDatetime,
     orderStatus: saleOrders.status,
     paidAt: saleOrders.paidAt
-  }).from(saleItems).leftJoin(saleOrders, import_drizzle_orm54.eq(saleItems.saleOrderId, saleOrders.saleOrderId)).leftJoin(stores, import_drizzle_orm54.eq(saleItems.storeId, stores.storeId)).leftJoin(clientWechatUsers, import_drizzle_orm54.eq(saleOrders.clientUserId, clientWechatUsers.userId)).leftJoin(productSkus, import_drizzle_orm54.eq(saleItems.skuId, productSkus.skuId)).leftJoin(productCategories, import_drizzle_orm54.eq(productSkus.categoryId, productCategories.categoryId)).where(whereClause).orderBy(import_drizzle_orm54.desc(saleOrders.paidAt), import_drizzle_orm54.desc(saleItems.createdAt), import_drizzle_orm54.asc(saleItems.saleItemId));
+  }).from(saleItems).leftJoin(saleOrders, import_drizzle_orm55.eq(saleItems.saleOrderId, saleOrders.saleOrderId)).leftJoin(stores, import_drizzle_orm55.eq(saleItems.storeId, stores.storeId)).leftJoin(clientWechatUsers, import_drizzle_orm55.eq(saleOrders.clientUserId, clientWechatUsers.userId)).leftJoin(productSkus, import_drizzle_orm55.eq(saleItems.skuId, productSkus.skuId)).leftJoin(productCategories, import_drizzle_orm55.eq(productSkus.categoryId, productCategories.categoryId)).where(whereClause).orderBy(import_drizzle_orm55.desc(saleOrders.paidAt), import_drizzle_orm55.desc(saleItems.createdAt), import_drizzle_orm55.asc(saleItems.saleItemId));
   const raw = page ? await query.limit(page.limit + 1).offset(page.offset) : await query;
   const rows = raw.map((r) => {
     const sessionCount = r.sessionCount ?? 0;
@@ -175038,7 +175099,7 @@ var exportCards = withPermission("sale_item:list", async (session4, params, opti
 var getCardById = withPermission("sale_item:list", async (session4, saleItemId) => {
   if (!saleItemId)
     return null;
-  const marketNameExpr = import_drizzle_orm54.sql`(
+  const marketNameExpr = import_drizzle_orm55.sql`(
       SELECT n.name FROM stores s
       JOIN org_nodes sn ON sn.id = s.org_node_id
       JOIN org_nodes n ON n.id = sn.parent_id
@@ -175070,7 +175131,7 @@ var getCardById = withPermission("sale_item:list", async (session4, saleItemId) 
     paidAt: saleOrders.paidAt,
     orderCreatedAt: saleOrders.createdAt,
     orderStatus: saleOrders.status
-  }).from(saleItems).leftJoin(saleOrders, import_drizzle_orm54.eq(saleItems.saleOrderId, saleOrders.saleOrderId)).leftJoin(stores, import_drizzle_orm54.eq(saleItems.storeId, stores.storeId)).leftJoin(clientWechatUsers, import_drizzle_orm54.eq(saleOrders.clientUserId, clientWechatUsers.userId)).leftJoin(productSkus, import_drizzle_orm54.eq(saleItems.skuId, productSkus.skuId)).where(import_drizzle_orm54.and(import_drizzle_orm54.eq(saleItems.saleItemId, saleItemId), ...buildCardBaseConditions(session4))).limit(1);
+  }).from(saleItems).leftJoin(saleOrders, import_drizzle_orm55.eq(saleItems.saleOrderId, saleOrders.saleOrderId)).leftJoin(stores, import_drizzle_orm55.eq(saleItems.storeId, stores.storeId)).leftJoin(clientWechatUsers, import_drizzle_orm55.eq(saleOrders.clientUserId, clientWechatUsers.userId)).leftJoin(productSkus, import_drizzle_orm55.eq(saleItems.skuId, productSkus.skuId)).where(import_drizzle_orm55.and(import_drizzle_orm55.eq(saleItems.saleItemId, saleItemId), ...buildCardBaseConditions(session4))).limit(1);
   if (rows.length === 0)
     return null;
   const r = rows[0];
@@ -175114,7 +175175,7 @@ var getCardTransactions = withPermission("sale_item:list", async (_session, sale
     unitRealPriceSnapshot: serviceItems.unitRealPrice,
     employeeId: serviceItems.employeeId,
     employeeName: staffWechatUsers.name
-  }).from(serviceItems).innerJoin(serviceOrders, import_drizzle_orm54.eq(serviceItems.serviceOrderId, serviceOrders.serviceOrderId)).leftJoin(staffWechatUsers, import_drizzle_orm54.eq(serviceItems.employeeId, staffWechatUsers.employeeId)).where(import_drizzle_orm54.eq(serviceItems.saleItemId, saleItemId)).orderBy(import_drizzle_orm54.desc(serviceOrders.serviceDate), import_drizzle_orm54.desc(serviceItems.createdAt));
+  }).from(serviceItems).innerJoin(serviceOrders, import_drizzle_orm55.eq(serviceItems.serviceOrderId, serviceOrders.serviceOrderId)).leftJoin(staffWechatUsers, import_drizzle_orm55.eq(serviceItems.employeeId, staffWechatUsers.employeeId)).where(import_drizzle_orm55.eq(serviceItems.saleItemId, saleItemId)).orderBy(import_drizzle_orm55.desc(serviceOrders.serviceDate), import_drizzle_orm55.desc(serviceItems.createdAt));
   return rows.map((r) => ({
     serviceItemId: r.serviceItemId,
     serviceOrderId: r.serviceOrderId,
@@ -175156,7 +175217,7 @@ var getCustomerHeldCards = withPermission("sale_order:list", async (session4, cl
     pickedUpQuantity: saleItems.pickedUpQuantity,
     refundedQuantity: saleItems.refundedQuantity,
     convertedQuantity: saleItems.convertedQuantity,
-    homeConvertedAmount: import_drizzle_orm54.sql`COALESCE((SELECT SUM(GREATEST(0, -out_item.received::numeric)) FROM sale_items out_item JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id WHERE out_item.ref_sale_item_id = ${saleItems.saleItemId} AND out_item.item_direction = '转出' AND conv_order.status <> '已关闭'), 0)`,
+    homeConvertedAmount: import_drizzle_orm55.sql`COALESCE((SELECT SUM(GREATEST(0, -out_item.received::numeric)) FROM sale_items out_item JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id WHERE out_item.ref_sale_item_id = ${saleItems.saleItemId} AND out_item.item_direction = '转出' AND conv_order.status <> '已关闭'), 0)`,
     unitPrice: saleItems.unitPrice,
     unitRealPrice: saleItems.unitRealPrice,
     saleAmount: saleItems.saleAmount,
@@ -175168,7 +175229,7 @@ var getCustomerHeldCards = withPermission("sale_order:list", async (session4, cl
     productKind: productCategories.productKind,
     categoryId: productSkus.categoryId,
     categoryName: productCategories.categoryName
-  }).from(saleItems).innerJoin(saleOrders, import_drizzle_orm54.eq(saleItems.saleOrderId, saleOrders.saleOrderId)).leftJoin(productSkus, import_drizzle_orm54.eq(saleItems.skuId, productSkus.skuId)).leftJoin(productCategories, import_drizzle_orm54.eq(productSkus.categoryId, productCategories.categoryId)).where(import_drizzle_orm54.and(import_drizzle_orm54.eq(saleItems.storeId, storeId), import_drizzle_orm54.eq(saleOrders.clientUserId, clientUserId), cardEntitlementDirectionCondition(), import_drizzle_orm54.inArray(saleOrders.status, [...CARD_ENTITLEMENT_ORDER_STATUSES]), import_drizzle_orm54.inArray(saleItems.productType, ["疗程卡", "家居产品"]), import_drizzle_orm54.sql`(
+  }).from(saleItems).innerJoin(saleOrders, import_drizzle_orm55.eq(saleItems.saleOrderId, saleOrders.saleOrderId)).leftJoin(productSkus, import_drizzle_orm55.eq(saleItems.skuId, productSkus.skuId)).leftJoin(productCategories, import_drizzle_orm55.eq(productSkus.categoryId, productCategories.categoryId)).where(import_drizzle_orm55.and(import_drizzle_orm55.eq(saleItems.storeId, storeId), import_drizzle_orm55.eq(saleOrders.clientUserId, clientUserId), cardEntitlementDirectionCondition(), import_drizzle_orm55.inArray(saleOrders.status, [...CARD_ENTITLEMENT_ORDER_STATUSES]), import_drizzle_orm55.inArray(saleItems.productType, ["疗程卡", "家居产品"]), import_drizzle_orm55.sql`(
           CASE WHEN ${saleOrders.saleOrderType} = '寄存单' OR ${saleItems.saleAmount} <= 0
                THEN (
                  CASE WHEN ${saleItems.productType} = '疗程卡'
@@ -175184,7 +175245,7 @@ var getCustomerHeldCards = withPermission("sale_order:list", async (session4, cl
                  - COALESCE((SELECT SUM(GREATEST(0, -out_item.received::numeric)) FROM sale_items out_item JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id WHERE out_item.ref_sale_item_id = ${saleItems.saleItemId} AND out_item.item_direction = '转出' AND conv_order.status <> '已关闭'), 0)
                )
           END
-        ) > 0`, import_drizzle_orm54.sql`NOT EXISTS (SELECT 1 FROM sale_order_payments sop WHERE sop.sale_order_id = ${saleItems.saleOrderId} AND sop.change_type = '退款' AND sop.status = '待审批')`, import_drizzle_orm54.sql`(${saleItems.productType} <> '疗程卡' OR NOT EXISTS (SELECT 1 FROM sale_order_payments sop WHERE sop.sale_order_id = ${saleItems.saleOrderId} AND sop.change_type = '退款' AND sop.status = '已支付') OR ${saleItems.paidSessions} IS NULL OR ${saleItems.paidSessions} > (${saleItems.sessionCount} - ${saleItems.remainingSessions}))`));
+        ) > 0`, import_drizzle_orm55.sql`NOT EXISTS (SELECT 1 FROM sale_order_payments sop WHERE sop.sale_order_id = ${saleItems.saleOrderId} AND sop.change_type = '退款' AND sop.status = '待审批')`, cardNotFullyRefundedCondition()));
   return rows.map((r) => {
     const isHomeProduct = r.productType === "家居产品";
     const remSess = r.remainingSessions ?? 0;
@@ -175259,7 +175320,7 @@ var getRechargeCardTiers = withPermission("sale_order:create", async (_session) 
 var getCustomerCardBalance = withPermission("sale_order:create", async (_session, clientUserId) => {
   if (!clientUserId)
     return 0;
-  const rows = await db2.select({ balance: prepaidCards.balance }).from(prepaidCards).where(import_drizzle_orm54.eq(prepaidCards.userId, clientUserId)).limit(1);
+  const rows = await db2.select({ balance: prepaidCards.balance }).from(prepaidCards).where(import_drizzle_orm55.eq(prepaidCards.userId, clientUserId)).limit(1);
   if (!rows.length)
     return 0;
   const n = Number(rows[0].balance);
@@ -175273,7 +175334,7 @@ var getCustomerPointsBalance = withPermission("sale_order:create", async (_sessi
   if (!clientUserId) {
     return { pointsBalance: 0, pointsToYuanRate, pointsDeductionMaxRate };
   }
-  const rows = await db2.select({ pointsBalance: clientWechatUsers.pointsBalance }).from(clientWechatUsers).where(import_drizzle_orm54.eq(clientWechatUsers.userId, clientUserId)).limit(1);
+  const rows = await db2.select({ pointsBalance: clientWechatUsers.pointsBalance }).from(clientWechatUsers).where(import_drizzle_orm55.eq(clientWechatUsers.userId, clientUserId)).limit(1);
   const n = Number(rows[0]?.pointsBalance ?? 0);
   return {
     pointsBalance: Number.isFinite(n) && n > 0 ? Math.floor(n) : 0,
@@ -175318,10 +175379,10 @@ var createRechargeOrder = withPermission("sale_order:create", async (session4, d
     userId: clientWechatUsers.userId,
     name: clientWechatUsers.name,
     phone: clientWechatUsers.phone
-  }).from(clientWechatUsers).where(import_drizzle_orm54.eq(clientWechatUsers.userId, data.clientUserId)).limit(1);
+  }).from(clientWechatUsers).where(import_drizzle_orm55.eq(clientWechatUsers.userId, data.clientUserId)).limit(1);
   if (!client2)
     return { success: false, message: "顾客不存在" };
-  const storeRows = await db2.execute(import_drizzle_orm54.sql`
+  const storeRows = await db2.execute(import_drizzle_orm55.sql`
       SELECT s.store_id, pm.name AS market_name
       FROM stores s
       LEFT JOIN org_nodes sn ON s.org_node_id = sn.id
@@ -175332,7 +175393,7 @@ var createRechargeOrder = withPermission("sale_order:create", async (session4, d
   if (storeRows.length === 0)
     return { success: false, message: "入账门店不存在" };
   const marketName2 = storeRows[0].market_name || "";
-  const existing = await db2.select({ saleOrderId: saleOrders.saleOrderId }).from(saleOrders).where(import_drizzle_orm54.and(import_drizzle_orm54.eq(saleOrders.clientUserId, data.clientUserId), import_drizzle_orm54.eq(saleOrders.status, "待支付"))).limit(1);
+  const existing = await db2.select({ saleOrderId: saleOrders.saleOrderId }).from(saleOrders).where(import_drizzle_orm55.and(import_drizzle_orm55.eq(saleOrders.clientUserId, data.clientUserId), import_drizzle_orm55.eq(saleOrders.status, "待支付"))).limit(1);
   if (existing.length > 0) {
     return {
       success: false,
@@ -175342,7 +175403,7 @@ var createRechargeOrder = withPermission("sale_order:create", async (session4, d
   let saleOrderId;
   try {
     saleOrderId = await db2.transaction(async (tx) => {
-      const idRows = await tx.execute(import_drizzle_orm54.sql`
+      const idRows = await tx.execute(import_drizzle_orm55.sql`
           WITH lock AS (
             SELECT pg_advisory_xact_lock(hashtext('sale_order_id_gen')::bigint)
           )
@@ -175368,7 +175429,7 @@ var createRechargeOrder = withPermission("sale_order:create", async (session4, d
         documentType,
         marketName: marketName2,
         storeId: data.storeId,
-        storeName: import_drizzle_orm54.sql`(SELECT store_name FROM stores WHERE store_id = ${data.storeId})`,
+        storeName: import_drizzle_orm55.sql`(SELECT store_name FROM stores WHERE store_id = ${data.storeId})`,
         saleOrderDatetime: nowTs(),
         clientUserId: data.clientUserId,
         clientPhone: client2.phone || "",
@@ -175410,9 +175471,9 @@ init_api_error();
 import"server-only";
 
 // src/lib/inventory/retained-sql.ts
-var import_drizzle_orm55 = __toESM(require_drizzle_orm(), 1);
+var import_drizzle_orm56 = __toESM(require_drizzle_orm(), 1);
 function cancelledMarketReportRetainedSql(reportItemIds) {
-  return import_drizzle_orm55.sql`
+  return import_drizzle_orm56.sql`
     SELECT
       retained_ranked.from_item_id AS report_item_id,
       retained_ranked.to_item_id AS purchase_item_id,
@@ -175488,13 +175549,13 @@ init_inventory();
 init_org();
 init_product();
 init_pg_core();
-var import_drizzle_orm57 = __toESM(require_drizzle_orm(), 1);
+var import_drizzle_orm58 = __toESM(require_drizzle_orm(), 1);
 var import_cache11 = __toESM(require_cache3(), 1);
 
 // src/lib/inventory/cutover.ts
 init_db2();
 init_api_error();
-var import_drizzle_orm56 = __toESM(require_drizzle_orm(), 1);
+var import_drizzle_orm57 = __toESM(require_drizzle_orm(), 1);
 var WORKFINE_INVENTORY_CUTOVER_KEY = "workfine_inventory";
 function stateFromRows(value) {
   const row = value[0];
@@ -175502,12 +175563,12 @@ function stateFromRows(value) {
   return status === "已初始化" || status === "待核验" ? status : "待初始化";
 }
 async function assertInventoryBusinessWritable(tx) {
-  await tx.execute(import_drizzle_orm56.sql`
+  await tx.execute(import_drizzle_orm57.sql`
     INSERT INTO inventory_cutover_states (cutover_key, status)
     VALUES (${WORKFINE_INVENTORY_CUTOVER_KEY}, '待初始化')
     ON CONFLICT (cutover_key) DO NOTHING
   `);
-  const result = await tx.execute(import_drizzle_orm56.sql`
+  const result = await tx.execute(import_drizzle_orm57.sql`
     SELECT status
       FROM inventory_cutover_states
      WHERE cutover_key = ${WORKFINE_INVENTORY_CUTOVER_KEY}
@@ -176179,7 +176240,7 @@ function makeLotKey(skuId, item) {
   ].join("|");
 }
 async function syncInventoryLocations() {
-  const probe = await db2.execute(import_drizzle_orm57.sql`
+  const probe = await db2.execute(import_drizzle_orm58.sql`
     SELECT EXISTS (
       SELECT 1
         FROM org_nodes o
@@ -176208,7 +176269,7 @@ async function syncInventoryLocations() {
   const drifted = probe?.[0]?.drifted;
   if (drifted === false)
     return;
-  await db2.execute(import_drizzle_orm57.sql`
+  await db2.execute(import_drizzle_orm58.sql`
     INSERT INTO inventory_locations (location_id, location_type, name, org_node_id, parent_location_id, is_active)
     SELECT id, type, name, id, parent_id, is_active
       FROM org_nodes
@@ -176221,7 +176282,7 @@ async function syncInventoryLocations() {
           is_active = EXCLUDED.is_active,
           updated_at = NOW()
   `);
-  await db2.execute(import_drizzle_orm57.sql`
+  await db2.execute(import_drizzle_orm58.sql`
     INSERT INTO inventory_locations (location_id, location_type, name, org_node_id, store_id, parent_location_id, is_active)
     SELECT s.store_id, '门店', s.store_name, s.org_node_id, s.store_id, o.parent_id,
            COALESCE(o.is_active, false) AND NOT s.is_closed
@@ -176268,7 +176329,7 @@ async function loadTransferLocations(sourceOrgNodeId, targetOrgNodeId) {
     orgNodeId: inventoryLocations.orgNodeId,
     locationType: inventoryLocations.locationType,
     parentLocationId: inventoryLocations.parentLocationId
-  }).from(inventoryLocations).where(import_drizzle_orm57.inArray(inventoryLocations.orgNodeId, [sourceOrgNodeId, targetOrgNodeId]));
+  }).from(inventoryLocations).where(import_drizzle_orm58.inArray(inventoryLocations.orgNodeId, [sourceOrgNodeId, targetOrgNodeId]));
   if (list.length !== 2) {
     throw new ApiError("NOT_FOUND", "调货库存主体不存在");
   }
@@ -176296,7 +176357,7 @@ async function assertMarketTransferLocations(sourceOrgNodeId, targetOrgNodeId) {
   }
 }
 async function assertLocationType(orgNodeId, expectedType, label) {
-  const [location] = await db2.select({ locationType: inventoryLocations.locationType }).from(inventoryLocations).where(import_drizzle_orm57.eq(inventoryLocations.orgNodeId, orgNodeId)).limit(1);
+  const [location] = await db2.select({ locationType: inventoryLocations.locationType }).from(inventoryLocations).where(import_drizzle_orm58.eq(inventoryLocations.orgNodeId, orgNodeId)).limit(1);
   if (!location)
     throw new ApiError("NOT_FOUND", `${label}不存在`);
   if (location.locationType !== expectedType) {
@@ -176352,7 +176413,7 @@ async function ensureOrgNodeLocation(orgNodeId) {
     locationType: inventoryLocations.locationType,
     parentLocationId: inventoryLocations.parentLocationId,
     isActive: inventoryLocations.isActive
-  }).from(inventoryLocations).where(import_drizzle_orm57.eq(inventoryLocations.orgNodeId, orgNodeId)).limit(1);
+  }).from(inventoryLocations).where(import_drizzle_orm58.eq(inventoryLocations.orgNodeId, orgNodeId)).limit(1);
   const row = rows[0];
   if (!row)
     throw new ApiError("NOT_FOUND", "组织节点没有对应库存主体");
@@ -176366,7 +176427,7 @@ async function ensureOrgNodeLocation(orgNodeId) {
   };
 }
 async function orgNodeLocationIdForUpdate(tx, orgNodeId) {
-  const rows = await tx.execute(import_drizzle_orm57.sql`
+  const rows = await tx.execute(import_drizzle_orm58.sql`
     SELECT location_id
       FROM inventory_locations
      WHERE org_node_id = ${orgNodeId}
@@ -176390,7 +176451,7 @@ async function normalizeSkuOwnerMarket(session4, sourceType, ownerMarketIdInput)
     throw new ApiError("INVALID_PARAMS", "市场自采或转让店 SKU 必须设置归属市场");
   }
   await syncInventoryLocations();
-  const [market] = await db2.select({ id: orgNodes.id }).from(orgNodes).where(import_drizzle_orm57.and(import_drizzle_orm57.eq(orgNodes.id, ownerMarketId), import_drizzle_orm57.eq(orgNodes.type, "市场"), import_drizzle_orm57.eq(orgNodes.isActive, true))).limit(1);
+  const [market] = await db2.select({ id: orgNodes.id }).from(orgNodes).where(import_drizzle_orm58.and(import_drizzle_orm58.eq(orgNodes.id, ownerMarketId), import_drizzle_orm58.eq(orgNodes.type, "市场"), import_drizzle_orm58.eq(orgNodes.isActive, true))).limit(1);
   if (!market)
     throw new ApiError("NOT_FOUND", "归属市场不存在或已停用");
   await assertLocationVisible(session4, ownerMarketId);
@@ -176414,8 +176475,8 @@ function assertSelfPurchasedSkuEditor(session4, sourceType) {
 async function generateDocNo(tx, docType) {
   const prefix = DOC_PREFIX[docType];
   const ymd = shanghaiYmd();
-  await tx.execute(import_drizzle_orm57.sql`SELECT pg_advisory_xact_lock(hashtext(${`inventory_docs:${prefix}:${ymd}`}))`);
-  const rows = await tx.execute(import_drizzle_orm57.sql`
+  await tx.execute(import_drizzle_orm58.sql`SELECT pg_advisory_xact_lock(hashtext(${`inventory_docs:${prefix}:${ymd}`}))`);
+  const rows = await tx.execute(import_drizzle_orm58.sql`
     SELECT id
       FROM inventory_docs
      WHERE id LIKE ${`${prefix}-${ymd}-%`}
@@ -176429,8 +176490,8 @@ async function generateDocNo(tx, docType) {
 async function generateInventorySkuNo(tx) {
   const prefix = "INV-SKU";
   const ymd = shanghaiYmd();
-  await tx.execute(import_drizzle_orm57.sql`SELECT pg_advisory_xact_lock(hashtext(${`inventory_skus:${prefix}:${ymd}`}))`);
-  const rows = await tx.execute(import_drizzle_orm57.sql`
+  await tx.execute(import_drizzle_orm58.sql`SELECT pg_advisory_xact_lock(hashtext(${`inventory_skus:${prefix}:${ymd}`}))`);
+  const rows = await tx.execute(import_drizzle_orm58.sql`
     SELECT product_code AS value
       FROM inventory_skus
      WHERE product_code LIKE ${`${prefix}-${ymd}-%`}
@@ -176444,8 +176505,8 @@ async function generateInventorySkuNo(tx) {
 async function generateInventoryPromotionNo(tx) {
   const prefix = "PROMO";
   const ymd = shanghaiYmd();
-  await tx.execute(import_drizzle_orm57.sql`SELECT pg_advisory_xact_lock(hashtext(${`inventory_promotion_plans:${prefix}:${ymd}`}))`);
-  const rows = await tx.execute(import_drizzle_orm57.sql`
+  await tx.execute(import_drizzle_orm58.sql`SELECT pg_advisory_xact_lock(hashtext(${`inventory_promotion_plans:${prefix}:${ymd}`}))`);
+  const rows = await tx.execute(import_drizzle_orm58.sql`
     SELECT plan_no AS value
       FROM inventory_promotion_plans
      WHERE plan_no LIKE ${`${prefix}-${ymd}-%`}
@@ -176457,7 +176518,7 @@ async function generateInventoryPromotionNo(tx) {
   return `${prefix}-${ymd}-${String(seq).padStart(4, "0")}`;
 }
 async function lockLotById(tx, lotId, locationId) {
-  const rows = await tx.execute(import_drizzle_orm57.sql`
+  const rows = await tx.execute(import_drizzle_orm58.sql`
     SELECT id, location_id, sku_id, sku_name, spec_name, supplier, supplier_id, product_series,
            batch_no, expiry_date, is_gift, quantity_on_hand,
            supply_chain_unit_cost, market_standard_unit_price, market_unit_discount,
@@ -176497,7 +176558,7 @@ async function lockLotById(tx, lotId, locationId) {
 async function assertSkuAvailableAtLocation(tx, sku, locationId) {
   if (sku.sourceType === "供应链")
     return;
-  const rows = await tx.execute(import_drizzle_orm57.sql`
+  const rows = await tx.execute(import_drizzle_orm58.sql`
     SELECT location_id, location_type, parent_location_id
       FROM inventory_locations
      WHERE location_id = ${locationId}
@@ -176512,7 +176573,7 @@ async function assertSkuAvailableAtLocation(tx, sku, locationId) {
   }
 }
 async function assertSkuIdAvailableAtLocation(tx, skuId, locationId) {
-  const rows = await tx.execute(import_drizzle_orm57.sql`
+  const rows = await tx.execute(import_drizzle_orm58.sql`
     SELECT product_name, source_type, owner_market_id
       FROM inventory_skus
      WHERE sku_id = ${skuId}
@@ -176529,7 +176590,7 @@ async function assertSkuIdAvailableAtLocation(tx, skuId, locationId) {
 }
 async function ensureLotFromSku(tx, locationId, item, trace) {
   const skuId = normalizeRequired(item.skuId, "库存 SKU");
-  const skuRows = await tx.execute(import_drizzle_orm57.sql`
+  const skuRows = await tx.execute(import_drizzle_orm58.sql`
     SELECT sku_id, product_name, spec_name, supplier, supplier_id, product_series,
            source_type, owner_market_id, supply_chain_purchase_price,
            market_purchase_price, store_purchase_price
@@ -176570,7 +176631,7 @@ async function ensureLotFromSku(tx, locationId, item, trace) {
     supplierId,
     sourceDocId
   });
-  const rows = await tx.execute(import_drizzle_orm57.sql`
+  const rows = await tx.execute(import_drizzle_orm58.sql`
     INSERT INTO inventory_stock_lots (
       location_id, sku_id, lot_key, sku_name, spec_name, supplier, supplier_id, product_series,
       batch_no, expiry_date, expiry_date_key, is_gift, quantity_on_hand,
@@ -176603,11 +176664,11 @@ async function skuOnHandByLocation(tx, locationId, skuIds) {
   const result = new Map;
   if (skuIds.length === 0)
     return result;
-  const rows = await tx.execute(import_drizzle_orm57.sql`
+  const rows = await tx.execute(import_drizzle_orm58.sql`
     SELECT sku_id, COALESCE(SUM(quantity_on_hand), 0) AS quantity
       FROM inventory_stock_lots
      WHERE location_id = ${locationId}
-       AND sku_id IN (${import_drizzle_orm57.sql.join(skuIds.map((skuId) => import_drizzle_orm57.sql`${skuId}`), import_drizzle_orm57.sql`, `)})
+       AND sku_id IN (${import_drizzle_orm58.sql.join(skuIds.map((skuId) => import_drizzle_orm58.sql`${skuId}`), import_drizzle_orm58.sql`, `)})
      GROUP BY sku_id
   `);
   for (const row of rows) {
@@ -176616,7 +176677,7 @@ async function skuOnHandByLocation(tx, locationId, skuIds) {
   return result;
 }
 async function skuSnapshot(tx, skuId) {
-  const rows = await tx.execute(import_drizzle_orm57.sql`
+  const rows = await tx.execute(import_drizzle_orm58.sql`
     SELECT sku_id, product_name, spec_name, supplier, product_series
       FROM inventory_skus
      WHERE sku_id = ${skuId}
@@ -176634,7 +176695,7 @@ async function skuSnapshot(tx, skuId) {
   };
 }
 async function activeReservedQuantity(tx, lotId) {
-  const rows = await tx.execute(import_drizzle_orm57.sql`
+  const rows = await tx.execute(import_drizzle_orm58.sql`
     SELECT COALESCE(SUM(quantity - fulfilled_quantity - released_quantity), 0) AS quantity
       FROM inventory_stock_reservations
      WHERE lot_id = ${lotId}
@@ -176656,7 +176717,7 @@ async function applyMovement(tx, params) {
   if (after < 0) {
     throw new ApiError("INVALID_STATE", `库存不足：${params.lot.skuName} 当前 ${before}`);
   }
-  await tx.execute(import_drizzle_orm57.sql`
+  await tx.execute(import_drizzle_orm58.sql`
     INSERT INTO inventory_movements (
       movement_key, lot_id, location_id, sku_id, doc_id, doc_item_id,
       direction, quantity_delta, quantity_before, quantity_after, created_by, remark
@@ -176751,7 +176812,7 @@ function docRow(row) {
     partiallyReceived: row.partiallyReceived === true
   };
 }
-var partiallyReceivedSql = import_drizzle_orm57.sql`(
+var partiallyReceivedSql = import_drizzle_orm58.sql`(
   ${inventoryDocs.docType} = '采购订单'
   AND ${inventoryDocs.status} = '待收货'
   AND EXISTS (
@@ -176760,7 +176821,7 @@ var partiallyReceivedSql = import_drizzle_orm57.sql`(
        AND COALESCE(received_item.fulfilled_quantity, 0) > 0
   )
 )`;
-var activeReservedQuantitySql = import_drizzle_orm57.sql`(
+var activeReservedQuantitySql = import_drizzle_orm58.sql`(
   SELECT COALESCE(SUM(reservation.quantity - reservation.fulfilled_quantity - reservation.released_quantity), 0)
     FROM inventory_stock_reservations reservation
    WHERE reservation.lot_id = ${inventoryStockLots.id}
@@ -176794,7 +176855,7 @@ function lotRow(row, priceTiers) {
 }
 var listInventoryMarketTransferTargets = withAnyPermission([...inventoryDelegatableOperateActions("market")], async () => {
   await syncInventoryLocations();
-  const rows = await db2.select({ orgNodeId: inventoryLocations.orgNodeId, name: inventoryLocations.name }).from(inventoryLocations).where(import_drizzle_orm57.and(import_drizzle_orm57.eq(inventoryLocations.isActive, true), import_drizzle_orm57.eq(inventoryLocations.locationType, "市场"), import_drizzle_orm57.isNotNull(inventoryLocations.orgNodeId))).orderBy(import_drizzle_orm57.asc(inventoryLocations.name));
+  const rows = await db2.select({ orgNodeId: inventoryLocations.orgNodeId, name: inventoryLocations.name }).from(inventoryLocations).where(import_drizzle_orm58.and(import_drizzle_orm58.eq(inventoryLocations.isActive, true), import_drizzle_orm58.eq(inventoryLocations.locationType, "市场"), import_drizzle_orm58.isNotNull(inventoryLocations.orgNodeId))).orderBy(import_drizzle_orm58.asc(inventoryLocations.name));
   return rows.flatMap((row) => row.orgNodeId ? [{ orgNodeId: row.orgNodeId, name: row.name }] : []);
 });
 var PROMOTION_READ_SCOPE = { scopeActions: ["inventory:stock_list", INVENTORY_PROMOTION_MAINTAIN_ACTION] };
@@ -176806,23 +176867,23 @@ async function promotionVisibleLocationIds(session4) {
 var listInventoryPromotionMarketOptions = withPermission("inventory:stock_list", async (session4) => {
   await syncInventoryLocations();
   const conditions3 = [
-    import_drizzle_orm57.eq(inventoryLocations.isActive, true),
-    import_drizzle_orm57.eq(inventoryLocations.locationType, "市场")
+    import_drizzle_orm58.eq(inventoryLocations.isActive, true),
+    import_drizzle_orm58.eq(inventoryLocations.locationType, "市场")
   ];
   const scoped = await promotionVisibleLocationIds(session4);
   if (scoped !== null) {
-    conditions3.push(scoped.length > 0 ? import_drizzle_orm57.inArray(inventoryLocations.locationId, scoped) : import_drizzle_orm57.sql`FALSE`);
+    conditions3.push(scoped.length > 0 ? import_drizzle_orm58.inArray(inventoryLocations.locationId, scoped) : import_drizzle_orm58.sql`FALSE`);
   }
-  return db2.select({ locationId: inventoryLocations.locationId, name: inventoryLocations.name }).from(inventoryLocations).where(import_drizzle_orm57.and(...conditions3)).orderBy(import_drizzle_orm57.asc(inventoryLocations.name));
+  return db2.select({ locationId: inventoryLocations.locationId, name: inventoryLocations.name }).from(inventoryLocations).where(import_drizzle_orm58.and(...conditions3)).orderBy(import_drizzle_orm58.asc(inventoryLocations.name));
 }, PROMOTION_READ_SCOPE);
 var listInventoryLocations = withPermission("inventory:stock_list", async (session4) => {
   await syncInventoryLocations();
   const scoped = await scopedLocationIds(session4);
-  const conditions3 = [import_drizzle_orm57.eq(inventoryLocations.isActive, true)];
+  const conditions3 = [import_drizzle_orm58.eq(inventoryLocations.isActive, true)];
   if (scoped !== null) {
-    conditions3.push(scoped.length > 0 ? import_drizzle_orm57.inArray(inventoryLocations.locationId, scoped) : import_drizzle_orm57.sql`FALSE`);
+    conditions3.push(scoped.length > 0 ? import_drizzle_orm58.inArray(inventoryLocations.locationId, scoped) : import_drizzle_orm58.sql`FALSE`);
   }
-  const rows = await db2.select().from(inventoryLocations).where(import_drizzle_orm57.and(...conditions3)).orderBy(import_drizzle_orm57.asc(inventoryLocations.locationType), import_drizzle_orm57.asc(inventoryLocations.name));
+  const rows = await db2.select().from(inventoryLocations).where(import_drizzle_orm58.and(...conditions3)).orderBy(import_drizzle_orm58.asc(inventoryLocations.locationType), import_drizzle_orm58.asc(inventoryLocations.name));
   return rows.map((row) => ({
     locationId: row.locationId,
     locationType: row.locationType,
@@ -176836,7 +176897,7 @@ var listInventoryLocations = withPermission("inventory:stock_list", async (sessi
 async function inventoryLocationFilterOptions(session4) {
   await syncInventoryLocations();
   const scoped = await scopedLocationIds(session4);
-  const rows = await db2.select().from(inventoryLocations).where(import_drizzle_orm57.eq(inventoryLocations.isActive, true)).orderBy(import_drizzle_orm57.asc(inventoryLocations.locationType), import_drizzle_orm57.asc(inventoryLocations.name));
+  const rows = await db2.select().from(inventoryLocations).where(import_drizzle_orm58.eq(inventoryLocations.isActive, true)).orderBy(import_drizzle_orm58.asc(inventoryLocations.locationType), import_drizzle_orm58.asc(inventoryLocations.name));
   return buildInventoryLocationFilterOptions(rows.map((row) => ({
     locationId: row.locationId,
     locationType: row.locationType,
@@ -176850,7 +176911,7 @@ async function inventoryLocationFilterOptions(session4) {
 async function inventoryDocLocationFilterOptions(session4) {
   await syncInventoryLocations();
   const scoped = inventoryScopedOrgNodeIds(session4);
-  const rows = await db2.select().from(inventoryLocations).orderBy(import_drizzle_orm57.asc(inventoryLocations.locationType), import_drizzle_orm57.asc(inventoryLocations.name));
+  const rows = await db2.select().from(inventoryLocations).orderBy(import_drizzle_orm58.asc(inventoryLocations.locationType), import_drizzle_orm58.asc(inventoryLocations.name));
   return buildInventoryLocationFilterOptions(rows.filter((row) => row.orgNodeId).map((row) => ({
     locationId: row.orgNodeId,
     locationType: row.locationType,
@@ -176869,7 +176930,7 @@ async function resolveSkuSupplier(tx, supplierIdInput, currentSupplierId) {
   const id = normalizeText(supplierIdInput);
   if (!id)
     return { supplierId: null, supplier: null, onlyIfCurrent: false };
-  const [supplier] = await tx.select({ name: inventorySuppliers.name, isActive: inventorySuppliers.isActive }).from(inventorySuppliers).where(import_drizzle_orm57.eq(inventorySuppliers.supplierId, id)).limit(1).for("share");
+  const [supplier] = await tx.select({ name: inventorySuppliers.name, isActive: inventorySuppliers.isActive }).from(inventorySuppliers).where(import_drizzle_orm58.eq(inventorySuppliers.supplierId, id)).limit(1).for("share");
   if (!supplier)
     throw new ApiError("NOT_FOUND", "供应商不存在");
   if (!supplier.isActive && id !== currentSupplierId) {
@@ -176903,22 +176964,22 @@ function inventorySkuOptionConditions(filters) {
     if (!INVENTORY_SKU_SOURCE_TYPES.includes(filters.sourceType)) {
       throw new ApiError("INVALID_PARAMS", "无效库存商品来源");
     }
-    conditions3.push(import_drizzle_orm57.eq(inventorySkus.sourceType, filters.sourceType));
+    conditions3.push(import_drizzle_orm58.eq(inventorySkus.sourceType, filters.sourceType));
   }
   if (filters.reportable)
-    conditions3.push(import_drizzle_orm57.eq(inventorySkus.isReportable, true));
+    conditions3.push(import_drizzle_orm58.eq(inventorySkus.isReportable, true));
   const availableToMarketId = optionalFilterId(filters.availableToMarketId, "可用市场");
   if (availableToMarketId) {
-    conditions3.push(import_drizzle_orm57.or(import_drizzle_orm57.eq(inventorySkus.sourceType, "供应链"), import_drizzle_orm57.eq(inventorySkus.ownerMarketId, availableToMarketId)));
+    conditions3.push(import_drizzle_orm58.or(import_drizzle_orm58.eq(inventorySkus.sourceType, "供应链"), import_drizzle_orm58.eq(inventorySkus.ownerMarketId, availableToMarketId)));
   }
   const ownedByMarketId = optionalFilterId(filters.ownedByMarketId, "归属市场");
   if (ownedByMarketId) {
-    conditions3.push(import_drizzle_orm57.and(import_drizzle_orm57.ne(inventorySkus.sourceType, "供应链"), import_drizzle_orm57.eq(inventorySkus.ownerMarketId, ownedByMarketId)));
+    conditions3.push(import_drizzle_orm58.and(import_drizzle_orm58.ne(inventorySkus.sourceType, "供应链"), import_drizzle_orm58.eq(inventorySkus.ownerMarketId, ownedByMarketId)));
   }
   const keyword = typeof filters.keyword === "string" ? filters.keyword.trim() : "";
   if (keyword) {
     const pattern = `%${keyword.replace(/[%_\\]/g, "\\$&")}%`;
-    conditions3.push(import_drizzle_orm57.or(import_drizzle_orm57.ilike(inventorySkus.skuId, pattern), import_drizzle_orm57.ilike(inventorySkus.productCode, pattern), import_drizzle_orm57.ilike(inventorySkus.productName, pattern), import_drizzle_orm57.ilike(inventorySkus.specName, pattern), import_drizzle_orm57.ilike(inventorySkus.productSeries, pattern)));
+    conditions3.push(import_drizzle_orm58.or(import_drizzle_orm58.ilike(inventorySkus.skuId, pattern), import_drizzle_orm58.ilike(inventorySkus.productCode, pattern), import_drizzle_orm58.ilike(inventorySkus.productName, pattern), import_drizzle_orm58.ilike(inventorySkus.specName, pattern), import_drizzle_orm58.ilike(inventorySkus.productSeries, pattern)));
   }
   return conditions3;
 }
@@ -176937,22 +176998,22 @@ var listInventorySkus = withPermission("inventory:stock_list", async (session4, 
   const conditions3 = [];
   const scoped = await scopedLocationIds(session4);
   if (scoped !== null) {
-    const marketRows = scoped.length === 0 ? [] : await db2.select({ locationId: inventoryLocations.locationId, locationType: inventoryLocations.locationType, parentLocationId: inventoryLocations.parentLocationId }).from(inventoryLocations).where(import_drizzle_orm57.inArray(inventoryLocations.locationId, scoped));
+    const marketRows = scoped.length === 0 ? [] : await db2.select({ locationId: inventoryLocations.locationId, locationType: inventoryLocations.locationType, parentLocationId: inventoryLocations.parentLocationId }).from(inventoryLocations).where(import_drizzle_orm58.inArray(inventoryLocations.locationId, scoped));
     const marketIds = Array.from(new Set(marketRows.flatMap((location) => {
       if (location.locationType === "市场")
         return [location.locationId];
       return location.parentLocationId ? [location.parentLocationId] : [];
     })));
-    conditions3.push(marketIds.length > 0 ? import_drizzle_orm57.or(import_drizzle_orm57.eq(inventorySkus.sourceType, "供应链"), import_drizzle_orm57.inArray(inventorySkus.ownerMarketId, marketIds)) : import_drizzle_orm57.eq(inventorySkus.sourceType, "供应链"));
+    conditions3.push(marketIds.length > 0 ? import_drizzle_orm58.or(import_drizzle_orm58.eq(inventorySkus.sourceType, "供应链"), import_drizzle_orm58.inArray(inventorySkus.ownerMarketId, marketIds)) : import_drizzle_orm58.eq(inventorySkus.sourceType, "供应链"));
   }
   if (filters.onlyActive ?? true)
-    conditions3.push(import_drizzle_orm57.eq(inventorySkus.isActive, true));
+    conditions3.push(import_drizzle_orm58.eq(inventorySkus.isActive, true));
   if (skuIds !== undefined)
-    conditions3.push(import_drizzle_orm57.inArray(inventorySkus.skuId, skuIds));
+    conditions3.push(import_drizzle_orm58.inArray(inventorySkus.skuId, skuIds));
   conditions3.push(...inventorySkuOptionConditions(filters));
-  const whereClause = conditions3.length > 0 ? import_drizzle_orm57.and(...conditions3) : undefined;
-  const [countRow] = await db2.select({ count: import_drizzle_orm57.sql`cast(count(*) as int)` }).from(inventorySkus).where(whereClause);
-  const rows = await db2.select({ sku: inventorySkus, ownerMarketName: orgNodes.name, supplierName: inventorySuppliers.name }).from(inventorySkus).leftJoin(orgNodes, import_drizzle_orm57.eq(inventorySkus.ownerMarketId, orgNodes.id)).leftJoin(inventorySuppliers, import_drizzle_orm57.eq(inventorySkus.supplierId, inventorySuppliers.supplierId)).where(whereClause).orderBy(import_drizzle_orm57.asc(inventorySkus.productCode)).limit(pageSize).offset(offset);
+  const whereClause = conditions3.length > 0 ? import_drizzle_orm58.and(...conditions3) : undefined;
+  const [countRow] = await db2.select({ count: import_drizzle_orm58.sql`cast(count(*) as int)` }).from(inventorySkus).where(whereClause);
+  const rows = await db2.select({ sku: inventorySkus, ownerMarketName: orgNodes.name, supplierName: inventorySuppliers.name }).from(inventorySkus).leftJoin(orgNodes, import_drizzle_orm58.eq(inventorySkus.ownerMarketId, orgNodes.id)).leftJoin(inventorySuppliers, import_drizzle_orm58.eq(inventorySkus.supplierId, inventorySuppliers.supplierId)).where(whereClause).orderBy(import_drizzle_orm58.asc(inventorySkus.productCode)).limit(pageSize).offset(offset);
   const priceVisibility = inventoryPriceVisibility(session4);
   return { data: rows.map((row) => skuRow({ ...row, priceVisibility })), total: countRow?.count ?? 0 };
 });
@@ -177007,7 +177068,7 @@ var updateInventorySku = withAnyPermission(["inventory:supply_chain_master_data_
     sourceType: inventorySkus.sourceType,
     ownerMarketId: inventorySkus.ownerMarketId,
     supplierId: inventorySkus.supplierId
-  }).from(inventorySkus).where(import_drizzle_orm57.eq(inventorySkus.skuId, id)).limit(1);
+  }).from(inventorySkus).where(import_drizzle_orm58.eq(inventorySkus.skuId, id)).limit(1);
   if (!current)
     throw new ApiError("NOT_FOUND", "库存 SKU 不存在");
   const currentSourceType = current.sourceType;
@@ -177024,7 +177085,7 @@ var updateInventorySku = withAnyPermission(["inventory:supply_chain_master_data_
   const priceValues = skuPriceValues(input, inventoryPriceVisibility(session4), sourceType, current);
   await db2.transaction(async (tx) => {
     const supplierValues = await resolveSkuSupplier(tx, input.supplierId, current.supplierId);
-    const supplierGuard = supplierValues?.onlyIfCurrent && supplierValues.supplierId ? import_drizzle_orm57.eq(inventorySkus.supplierId, supplierValues.supplierId) : undefined;
+    const supplierGuard = supplierValues?.onlyIfCurrent && supplierValues.supplierId ? import_drizzle_orm58.eq(inventorySkus.supplierId, supplierValues.supplierId) : undefined;
     const updateResult = await tx.update(inventorySkus).set({
       productName: normalizeText(input.productName) ?? undefined,
       specName: input.specName === undefined ? undefined : normalizeText(input.specName),
@@ -177041,7 +177102,7 @@ var updateInventorySku = withAnyPermission(["inventory:supply_chain_master_data_
       isActive: input.isActive,
       remark: input.remark === undefined ? undefined : normalizeText(input.remark),
       updatedAt: new Date
-    }).where(supplierGuard ? import_drizzle_orm57.and(import_drizzle_orm57.eq(inventorySkus.skuId, id), supplierGuard) : import_drizzle_orm57.eq(inventorySkus.skuId, id));
+    }).where(supplierGuard ? import_drizzle_orm58.and(import_drizzle_orm58.eq(inventorySkus.skuId, id), supplierGuard) : import_drizzle_orm58.eq(inventorySkus.skuId, id));
     if (supplierGuard && rowsAffected(updateResult) === 0) {
       throw new ApiError("CONFLICT", "该库存商品的供货商已被他人修改，请刷新后重试");
     }
@@ -177056,11 +177117,11 @@ var listInventorySkuCompositions = withPermission("inventory:stock_list", async 
       productSkuId: productSkus.skuId,
       productSkuName: productSkus.specName,
       productSkuEnabled: productSkus.isEnabled
-    }).from(productSkus).where(import_drizzle_orm57.and(import_drizzle_orm57.eq(productSkus.productType, "家居产品"), import_drizzle_orm57.isNull(productSkus.deletedAt))).orderBy(import_drizzle_orm57.asc(productSkus.specName), import_drizzle_orm57.asc(productSkus.skuId)),
+    }).from(productSkus).where(import_drizzle_orm58.and(import_drizzle_orm58.eq(productSkus.productType, "家居产品"), import_drizzle_orm58.isNull(productSkus.deletedAt))).orderBy(import_drizzle_orm58.asc(productSkus.specName), import_drizzle_orm58.asc(productSkus.skuId)),
     db2.select({
       mapping: inventorySkuProductSkuMappings,
       inventorySku: inventorySkus
-    }).from(inventorySkuProductSkuMappings).innerJoin(inventorySkus, import_drizzle_orm57.eq(inventorySkuProductSkuMappings.inventorySkuId, inventorySkus.skuId)).where(import_drizzle_orm57.eq(inventorySkuProductSkuMappings.isActive, true)).orderBy(import_drizzle_orm57.asc(inventorySkus.productName), import_drizzle_orm57.asc(inventorySkus.productCode))
+    }).from(inventorySkuProductSkuMappings).innerJoin(inventorySkus, import_drizzle_orm58.eq(inventorySkuProductSkuMappings.inventorySkuId, inventorySkus.skuId)).where(import_drizzle_orm58.eq(inventorySkuProductSkuMappings.isActive, true)).orderBy(import_drizzle_orm58.asc(inventorySkus.productName), import_drizzle_orm58.asc(inventorySkus.productCode))
   ]);
   const componentsByProduct = new Map;
   const updatedAtByProduct = new Map;
@@ -177114,13 +177175,13 @@ var listInventorySkuCompositions = withPermission("inventory:stock_list", async 
 });
 var listInventorySkuCompositionOptions = withPermission("inventory:stock_list", async (_session) => {
   const [productRows, inventoryRows] = await Promise.all([
-    db2.select({ skuId: productSkus.skuId, specName: productSkus.specName }).from(productSkus).where(import_drizzle_orm57.and(import_drizzle_orm57.eq(productSkus.productType, "家居产品"), import_drizzle_orm57.eq(productSkus.isEnabled, true), import_drizzle_orm57.isNull(productSkus.deletedAt))).orderBy(import_drizzle_orm57.asc(productSkus.specName)),
+    db2.select({ skuId: productSkus.skuId, specName: productSkus.specName }).from(productSkus).where(import_drizzle_orm58.and(import_drizzle_orm58.eq(productSkus.productType, "家居产品"), import_drizzle_orm58.eq(productSkus.isEnabled, true), import_drizzle_orm58.isNull(productSkus.deletedAt))).orderBy(import_drizzle_orm58.asc(productSkus.specName)),
     db2.select({
       skuId: inventorySkus.skuId,
       productCode: inventorySkus.productCode,
       productName: inventorySkus.productName,
       specName: inventorySkus.specName
-    }).from(inventorySkus).where(import_drizzle_orm57.eq(inventorySkus.isActive, true)).orderBy(import_drizzle_orm57.asc(inventorySkus.productName), import_drizzle_orm57.asc(inventorySkus.productCode))
+    }).from(inventorySkus).where(import_drizzle_orm58.eq(inventorySkus.isActive, true)).orderBy(import_drizzle_orm58.asc(inventorySkus.productName), import_drizzle_orm58.asc(inventorySkus.productCode))
   ]);
   return { productSkus: productRows, inventorySkus: inventoryRows };
 });
@@ -177140,11 +177201,11 @@ async function saveInventorySkuComposition(session4, input) {
     throw new ApiError("INVALID_PARAMS", "同一库存商品不能重复添加");
   }
   const result = await db2.transaction(async (tx) => {
-    await tx.execute(import_drizzle_orm57.sql`SELECT pg_advisory_xact_lock(hashtext(${`inventory-composition:${productSkuId}`})::bigint)`);
+    await tx.execute(import_drizzle_orm58.sql`SELECT pg_advisory_xact_lock(hashtext(${`inventory-composition:${productSkuId}`})::bigint)`);
     const [[productSku], currentRows, inventoryRows] = await Promise.all([
-      tx.select({ skuId: productSkus.skuId, productType: productSkus.productType }).from(productSkus).where(import_drizzle_orm57.and(import_drizzle_orm57.eq(productSkus.skuId, productSkuId), import_drizzle_orm57.isNull(productSkus.deletedAt))).limit(1),
-      tx.select().from(inventorySkuProductSkuMappings).where(import_drizzle_orm57.and(import_drizzle_orm57.eq(inventorySkuProductSkuMappings.productSkuId, productSkuId), import_drizzle_orm57.eq(inventorySkuProductSkuMappings.isActive, true))),
-      tx.select({ skuId: inventorySkus.skuId, isActive: inventorySkus.isActive }).from(inventorySkus).where(import_drizzle_orm57.inArray(inventorySkus.skuId, components.map((component) => component.inventorySkuId)))
+      tx.select({ skuId: productSkus.skuId, productType: productSkus.productType }).from(productSkus).where(import_drizzle_orm58.and(import_drizzle_orm58.eq(productSkus.skuId, productSkuId), import_drizzle_orm58.isNull(productSkus.deletedAt))).limit(1),
+      tx.select().from(inventorySkuProductSkuMappings).where(import_drizzle_orm58.and(import_drizzle_orm58.eq(inventorySkuProductSkuMappings.productSkuId, productSkuId), import_drizzle_orm58.eq(inventorySkuProductSkuMappings.isActive, true))),
+      tx.select({ skuId: inventorySkus.skuId, isActive: inventorySkus.isActive }).from(inventorySkus).where(import_drizzle_orm58.inArray(inventorySkus.skuId, components.map((component) => component.inventorySkuId)))
     ]);
     if (!productSku || productSku.productType !== "家居产品") {
       throw new ApiError("INVALID_PARAMS", "销售 SKU 不存在或不是家居产品");
@@ -177161,7 +177222,7 @@ async function saveInventorySkuComposition(session4, input) {
       quantityPerSaleUnit: row.quantityPerSaleUnit
     }));
     const now = new Date;
-    await tx.update(inventorySkuProductSkuMappings).set({ isActive: false, updatedAt: now }).where(import_drizzle_orm57.and(import_drizzle_orm57.eq(inventorySkuProductSkuMappings.productSkuId, productSkuId), import_drizzle_orm57.eq(inventorySkuProductSkuMappings.isActive, true)));
+    await tx.update(inventorySkuProductSkuMappings).set({ isActive: false, updatedAt: now }).where(import_drizzle_orm58.and(import_drizzle_orm58.eq(inventorySkuProductSkuMappings.productSkuId, productSkuId), import_drizzle_orm58.eq(inventorySkuProductSkuMappings.isActive, true)));
     for (const component of components) {
       await tx.insert(inventorySkuProductSkuMappings).values({
         productSkuId,
@@ -177202,29 +177263,29 @@ var listInventoryLots = withPermission("inventory:stock_list", async (session4, 
   });
   const conditions3 = [];
   if (scoped !== null) {
-    conditions3.push(scoped.length > 0 ? import_drizzle_orm57.inArray(inventoryStockLots.locationId, scoped) : import_drizzle_orm57.sql`FALSE`);
+    conditions3.push(scoped.length > 0 ? import_drizzle_orm58.inArray(inventoryStockLots.locationId, scoped) : import_drizzle_orm58.sql`FALSE`);
   }
   if (filters.locationId)
-    conditions3.push(import_drizzle_orm57.eq(inventoryStockLots.locationId, filters.locationId));
+    conditions3.push(import_drizzle_orm58.eq(inventoryStockLots.locationId, filters.locationId));
   if (filters.locationType)
-    conditions3.push(import_drizzle_orm57.eq(inventoryLocations.locationType, filters.locationType));
+    conditions3.push(import_drizzle_orm58.eq(inventoryLocations.locationType, filters.locationType));
   if (filters.skuId)
-    conditions3.push(import_drizzle_orm57.eq(inventoryStockLots.skuId, filters.skuId));
+    conditions3.push(import_drizzle_orm58.eq(inventoryStockLots.skuId, filters.skuId));
   if (filters.onlyPositive)
-    conditions3.push(import_drizzle_orm57.sql`${inventoryStockLots.quantityOnHand} > 0`);
+    conditions3.push(import_drizzle_orm58.sql`${inventoryStockLots.quantityOnHand} > 0`);
   if (filters.keyword) {
     const pattern = `%${filters.keyword.replace(/[%_]/g, "\\$&")}%`;
-    conditions3.push(import_drizzle_orm57.or(import_drizzle_orm57.ilike(inventoryStockLots.skuId, pattern), import_drizzle_orm57.ilike(inventoryStockLots.skuName, pattern), import_drizzle_orm57.ilike(inventoryStockLots.specName, pattern), import_drizzle_orm57.ilike(inventoryStockLots.batchNo, pattern), import_drizzle_orm57.ilike(inventoryLocations.name, pattern)));
+    conditions3.push(import_drizzle_orm58.or(import_drizzle_orm58.ilike(inventoryStockLots.skuId, pattern), import_drizzle_orm58.ilike(inventoryStockLots.skuName, pattern), import_drizzle_orm58.ilike(inventoryStockLots.specName, pattern), import_drizzle_orm58.ilike(inventoryStockLots.batchNo, pattern), import_drizzle_orm58.ilike(inventoryLocations.name, pattern)));
   }
-  const whereClause = conditions3.length > 0 ? import_drizzle_orm57.and(...conditions3) : undefined;
-  const [countRow] = await db2.select({ count: import_drizzle_orm57.sql`cast(count(*) as int)` }).from(inventoryStockLots).leftJoin(inventoryLocations, import_drizzle_orm57.eq(inventoryStockLots.locationId, inventoryLocations.locationId)).where(whereClause);
+  const whereClause = conditions3.length > 0 ? import_drizzle_orm58.and(...conditions3) : undefined;
+  const [countRow] = await db2.select({ count: import_drizzle_orm58.sql`cast(count(*) as int)` }).from(inventoryStockLots).leftJoin(inventoryLocations, import_drizzle_orm58.eq(inventoryStockLots.locationId, inventoryLocations.locationId)).where(whereClause);
   const rows = await db2.select({
     lot: inventoryStockLots,
     locationName: inventoryLocations.name,
     locationType: inventoryLocations.locationType,
     locationOrgNodeId: inventoryLocations.orgNodeId,
     reservedQuantity: activeReservedQuantitySql
-  }).from(inventoryStockLots).leftJoin(inventoryLocations, import_drizzle_orm57.eq(inventoryStockLots.locationId, inventoryLocations.locationId)).where(whereClause).orderBy(import_drizzle_orm57.asc(inventoryLocations.locationType), import_drizzle_orm57.asc(inventoryLocations.name), import_drizzle_orm57.asc(inventoryStockLots.skuName), import_drizzle_orm57.asc(inventoryStockLots.batchNo), import_drizzle_orm57.asc(inventoryStockLots.id)).limit(pageSize).offset(offset);
+  }).from(inventoryStockLots).leftJoin(inventoryLocations, import_drizzle_orm58.eq(inventoryStockLots.locationId, inventoryLocations.locationId)).where(whereClause).orderBy(import_drizzle_orm58.asc(inventoryLocations.locationType), import_drizzle_orm58.asc(inventoryLocations.name), import_drizzle_orm58.asc(inventoryStockLots.skuName), import_drizzle_orm58.asc(inventoryStockLots.batchNo), import_drizzle_orm58.asc(inventoryStockLots.id)).limit(pageSize).offset(offset);
   const priceVisibility = inventoryPriceVisibility(session4);
   const priceTiers = inventoryPriceScopeByTier(session4);
   return {
@@ -177245,7 +177306,7 @@ var listInventoryLotOptions = withPermission("inventory:stock_list", async (sess
     locationType: inventoryLocations.locationType,
     locationOrgNodeId: inventoryLocations.orgNodeId,
     reservedQuantity: activeReservedQuantitySql
-  }).from(inventoryStockLots).leftJoin(inventoryLocations, import_drizzle_orm57.eq(inventoryStockLots.locationId, inventoryLocations.locationId)).where(import_drizzle_orm57.and(import_drizzle_orm57.eq(inventoryStockLots.locationId, normalizedLocationId), import_drizzle_orm57.eq(inventoryStockLots.skuId, normalizedSkuId), import_drizzle_orm57.sql`${inventoryStockLots.quantityOnHand} > 0`)).orderBy(import_drizzle_orm57.asc(inventoryStockLots.expiryDate), import_drizzle_orm57.asc(inventoryStockLots.batchNo), import_drizzle_orm57.asc(inventoryStockLots.id));
+  }).from(inventoryStockLots).leftJoin(inventoryLocations, import_drizzle_orm58.eq(inventoryStockLots.locationId, inventoryLocations.locationId)).where(import_drizzle_orm58.and(import_drizzle_orm58.eq(inventoryStockLots.locationId, normalizedLocationId), import_drizzle_orm58.eq(inventoryStockLots.skuId, normalizedSkuId), import_drizzle_orm58.sql`${inventoryStockLots.quantityOnHand} > 0`)).orderBy(import_drizzle_orm58.asc(inventoryStockLots.expiryDate), import_drizzle_orm58.asc(inventoryStockLots.batchNo), import_drizzle_orm58.asc(inventoryStockLots.id));
   const priceTiers = inventoryPriceScopeByTier(session4);
   return rows.map((row) => lotRow(row, priceTiers));
 });
@@ -177258,28 +177319,28 @@ var exportInventoryLots = withPermission("inventory:export", async (session4, pa
   const keyword = params.keyword ?? params.q;
   const conditions3 = [];
   if (scoped !== null) {
-    conditions3.push(scoped.length > 0 ? import_drizzle_orm57.inArray(inventoryStockLots.locationId, scoped) : import_drizzle_orm57.sql`FALSE`);
+    conditions3.push(scoped.length > 0 ? import_drizzle_orm58.inArray(inventoryStockLots.locationId, scoped) : import_drizzle_orm58.sql`FALSE`);
   }
   if (locationId)
-    conditions3.push(import_drizzle_orm57.eq(inventoryStockLots.locationId, locationId));
+    conditions3.push(import_drizzle_orm58.eq(inventoryStockLots.locationId, locationId));
   if (locationType)
-    conditions3.push(import_drizzle_orm57.eq(inventoryLocations.locationType, locationType));
+    conditions3.push(import_drizzle_orm58.eq(inventoryLocations.locationType, locationType));
   if (params.skuId)
-    conditions3.push(import_drizzle_orm57.eq(inventoryStockLots.skuId, params.skuId));
+    conditions3.push(import_drizzle_orm58.eq(inventoryStockLots.skuId, params.skuId));
   if (params.onlyPositive === "1")
-    conditions3.push(import_drizzle_orm57.sql`${inventoryStockLots.quantityOnHand} > 0`);
+    conditions3.push(import_drizzle_orm58.sql`${inventoryStockLots.quantityOnHand} > 0`);
   if (keyword) {
     const pattern = `%${keyword.replace(/[%_]/g, "\\$&")}%`;
-    conditions3.push(import_drizzle_orm57.or(import_drizzle_orm57.ilike(inventoryStockLots.skuId, pattern), import_drizzle_orm57.ilike(inventoryStockLots.skuName, pattern), import_drizzle_orm57.ilike(inventoryStockLots.specName, pattern), import_drizzle_orm57.ilike(inventoryStockLots.batchNo, pattern), import_drizzle_orm57.ilike(inventoryLocations.name, pattern)));
+    conditions3.push(import_drizzle_orm58.or(import_drizzle_orm58.ilike(inventoryStockLots.skuId, pattern), import_drizzle_orm58.ilike(inventoryStockLots.skuName, pattern), import_drizzle_orm58.ilike(inventoryStockLots.specName, pattern), import_drizzle_orm58.ilike(inventoryStockLots.batchNo, pattern), import_drizzle_orm58.ilike(inventoryLocations.name, pattern)));
   }
-  const whereClause = conditions3.length > 0 ? import_drizzle_orm57.and(...conditions3) : undefined;
+  const whereClause = conditions3.length > 0 ? import_drizzle_orm58.and(...conditions3) : undefined;
   const query = db2.select({
     lot: inventoryStockLots,
     locationName: inventoryLocations.name,
     locationType: inventoryLocations.locationType,
     locationOrgNodeId: inventoryLocations.orgNodeId,
     reservedQuantity: activeReservedQuantitySql
-  }).from(inventoryStockLots).leftJoin(inventoryLocations, import_drizzle_orm57.eq(inventoryStockLots.locationId, inventoryLocations.locationId)).where(whereClause).orderBy(import_drizzle_orm57.asc(inventoryLocations.locationType), import_drizzle_orm57.asc(inventoryLocations.name), import_drizzle_orm57.asc(inventoryStockLots.skuName), import_drizzle_orm57.asc(inventoryStockLots.batchNo), import_drizzle_orm57.asc(inventoryStockLots.id));
+  }).from(inventoryStockLots).leftJoin(inventoryLocations, import_drizzle_orm58.eq(inventoryStockLots.locationId, inventoryLocations.locationId)).where(whereClause).orderBy(import_drizzle_orm58.asc(inventoryLocations.locationType), import_drizzle_orm58.asc(inventoryLocations.name), import_drizzle_orm58.asc(inventoryStockLots.skuName), import_drizzle_orm58.asc(inventoryStockLots.batchNo), import_drizzle_orm58.asc(inventoryStockLots.id));
   const priceVisibility = inventoryPriceVisibility(session4);
   const priceTiers = inventoryPriceScopeByTier(session4);
   const page = resolveExportOffsetPage(options);
@@ -177312,11 +177373,11 @@ var listInventoryCoreDocs = withPermission("inventory:list", async (session4, fi
   });
   const conditions3 = [];
   if (scoped !== null) {
-    conditions3.push(scoped.length > 0 ? import_drizzle_orm57.or(import_drizzle_orm57.inArray(inventoryDocs.sourceOrgNodeId, scoped), import_drizzle_orm57.inArray(inventoryDocs.targetOrgNodeId, scoped)) : import_drizzle_orm57.sql`FALSE`);
+    conditions3.push(scoped.length > 0 ? import_drizzle_orm58.or(import_drizzle_orm58.inArray(inventoryDocs.sourceOrgNodeId, scoped), import_drizzle_orm58.inArray(inventoryDocs.targetOrgNodeId, scoped)) : import_drizzle_orm58.sql`FALSE`);
   }
   if (filters.scopeRole && scoped !== null) {
     const endpointColumn = filters.scopeRole === "source" ? inventoryDocs.sourceOrgNodeId : inventoryDocs.targetOrgNodeId;
-    conditions3.push(scoped.length > 0 ? import_drizzle_orm57.inArray(endpointColumn, scoped) : import_drizzle_orm57.sql`FALSE`);
+    conditions3.push(scoped.length > 0 ? import_drizzle_orm58.inArray(endpointColumn, scoped) : import_drizzle_orm58.sql`FALSE`);
   }
   if (filters.orgNodeId) {
     const locations = await db2.select({ orgNodeId: inventoryLocations.orgNodeId, parentOrgNodeId: inventoryLocations.parentLocationId }).from(inventoryLocations);
@@ -177332,43 +177393,43 @@ var listInventoryCoreDocs = withPermission("inventory:list", async (session4, fi
       }
     }
     const selectedOrgNodeIds = [...descendants];
-    conditions3.push(import_drizzle_orm57.or(import_drizzle_orm57.inArray(inventoryDocs.sourceOrgNodeId, selectedOrgNodeIds), import_drizzle_orm57.inArray(inventoryDocs.targetOrgNodeId, selectedOrgNodeIds)));
+    conditions3.push(import_drizzle_orm58.or(import_drizzle_orm58.inArray(inventoryDocs.sourceOrgNodeId, selectedOrgNodeIds), import_drizzle_orm58.inArray(inventoryDocs.targetOrgNodeId, selectedOrgNodeIds)));
   }
   if (filters.locationType) {
-    const typedLocations = await db2.select({ orgNodeId: inventoryLocations.orgNodeId }).from(inventoryLocations).where(import_drizzle_orm57.eq(inventoryLocations.locationType, filters.locationType));
+    const typedLocations = await db2.select({ orgNodeId: inventoryLocations.orgNodeId }).from(inventoryLocations).where(import_drizzle_orm58.eq(inventoryLocations.locationType, filters.locationType));
     const typedOrgNodeIds = typedLocations.flatMap((location) => location.orgNodeId ? [location.orgNodeId] : []);
-    conditions3.push(typedOrgNodeIds.length > 0 ? import_drizzle_orm57.or(import_drizzle_orm57.inArray(inventoryDocs.sourceOrgNodeId, typedOrgNodeIds), import_drizzle_orm57.inArray(inventoryDocs.targetOrgNodeId, typedOrgNodeIds)) : import_drizzle_orm57.sql`FALSE`);
+    conditions3.push(typedOrgNodeIds.length > 0 ? import_drizzle_orm58.or(import_drizzle_orm58.inArray(inventoryDocs.sourceOrgNodeId, typedOrgNodeIds), import_drizzle_orm58.inArray(inventoryDocs.targetOrgNodeId, typedOrgNodeIds)) : import_drizzle_orm58.sql`FALSE`);
   }
   if (filters.docType)
-    conditions3.push(import_drizzle_orm57.eq(inventoryDocs.docType, filters.docType));
+    conditions3.push(import_drizzle_orm58.eq(inventoryDocs.docType, filters.docType));
   if (filters.docTypes) {
-    conditions3.push(filters.docTypes.length > 0 ? import_drizzle_orm57.inArray(inventoryDocs.docType, [...filters.docTypes]) : import_drizzle_orm57.sql`FALSE`);
+    conditions3.push(filters.docTypes.length > 0 ? import_drizzle_orm58.inArray(inventoryDocs.docType, [...filters.docTypes]) : import_drizzle_orm58.sql`FALSE`);
   }
   if (filters.status)
-    conditions3.push(import_drizzle_orm57.eq(inventoryDocs.status, filters.status));
+    conditions3.push(import_drizzle_orm58.eq(inventoryDocs.status, filters.status));
   if (filters.statuses) {
-    conditions3.push(filters.statuses.length > 0 ? import_drizzle_orm57.inArray(inventoryDocs.status, [...filters.statuses]) : import_drizzle_orm57.sql`FALSE`);
+    conditions3.push(filters.statuses.length > 0 ? import_drizzle_orm58.inArray(inventoryDocs.status, [...filters.statuses]) : import_drizzle_orm58.sql`FALSE`);
   }
   if (filters.cancellationRequested) {
-    conditions3.push(import_drizzle_orm57.isNotNull(inventoryDocs.cancellationRequestReason));
+    conditions3.push(import_drizzle_orm58.isNotNull(inventoryDocs.cancellationRequestReason));
   }
   if (filters.pendingItemScope) {
-    conditions3.push(import_drizzle_orm57.sql`EXISTS (
+    conditions3.push(import_drizzle_orm58.sql`EXISTS (
         SELECT 1 FROM ${inventoryDocItems} pending_item
          WHERE pending_item.doc_id = ${inventoryDocs.id}
            AND COALESCE(pending_item.fulfilled_quantity, 0) < pending_item.quantity
       )`);
   }
   if (filters.startDate)
-    conditions3.push(import_drizzle_orm57.gte(inventoryDocs.docDate, filters.startDate));
+    conditions3.push(import_drizzle_orm58.gte(inventoryDocs.docDate, filters.startDate));
   if (filters.endDate)
-    conditions3.push(import_drizzle_orm57.lte(inventoryDocs.docDate, filters.endDate));
+    conditions3.push(import_drizzle_orm58.lte(inventoryDocs.docDate, filters.endDate));
   if (filters.keyword) {
     const pattern = `%${filters.keyword.replace(/[%_]/g, "\\$&")}%`;
-    conditions3.push(import_drizzle_orm57.or(import_drizzle_orm57.ilike(inventoryDocs.id, pattern), import_drizzle_orm57.ilike(inventoryDocs.customerName, pattern), import_drizzle_orm57.ilike(inventoryDocs.employeeName, pattern), import_drizzle_orm57.ilike(inventoryDocs.remark, pattern)));
+    conditions3.push(import_drizzle_orm58.or(import_drizzle_orm58.ilike(inventoryDocs.id, pattern), import_drizzle_orm58.ilike(inventoryDocs.customerName, pattern), import_drizzle_orm58.ilike(inventoryDocs.employeeName, pattern), import_drizzle_orm58.ilike(inventoryDocs.remark, pattern)));
   }
-  const whereClause = conditions3.length > 0 ? import_drizzle_orm57.and(...conditions3) : undefined;
-  const [countRow] = await db2.select({ count: import_drizzle_orm57.sql`cast(count(*) as int)` }).from(inventoryDocs).where(whereClause);
+  const whereClause = conditions3.length > 0 ? import_drizzle_orm58.and(...conditions3) : undefined;
+  const [countRow] = await db2.select({ count: import_drizzle_orm58.sql`cast(count(*) as int)` }).from(inventoryDocs).where(whereClause);
   const rows = await db2.select({
     doc: inventoryDocs,
     sourceOrgNodeName: sourceLocation.name,
@@ -177376,7 +177437,7 @@ var listInventoryCoreDocs = withPermission("inventory:list", async (session4, fi
     targetOrgNodeName: targetLocation.name,
     targetOrgNodeType: targetLocation.locationType,
     partiallyReceived: partiallyReceivedSql
-  }).from(inventoryDocs).leftJoin(sourceLocation, import_drizzle_orm57.eq(sourceLocation.orgNodeId, inventoryDocs.sourceOrgNodeId)).leftJoin(targetLocation, import_drizzle_orm57.eq(targetLocation.orgNodeId, inventoryDocs.targetOrgNodeId)).where(whereClause).orderBy(import_drizzle_orm57.desc(inventoryDocs.docDate), import_drizzle_orm57.desc(inventoryDocs.createdAt), import_drizzle_orm57.desc(inventoryDocs.id)).limit(pageSize).offset(offset);
+  }).from(inventoryDocs).leftJoin(sourceLocation, import_drizzle_orm58.eq(sourceLocation.orgNodeId, inventoryDocs.sourceOrgNodeId)).leftJoin(targetLocation, import_drizzle_orm58.eq(targetLocation.orgNodeId, inventoryDocs.targetOrgNodeId)).where(whereClause).orderBy(import_drizzle_orm58.desc(inventoryDocs.docDate), import_drizzle_orm58.desc(inventoryDocs.createdAt), import_drizzle_orm58.desc(inventoryDocs.id)).limit(pageSize).offset(offset);
   const priceVisibility = inventoryPriceVisibility(session4);
   const priceTiers = inventoryPriceScopeByTier(session4);
   return {
@@ -177393,7 +177454,7 @@ var listInventoryCoreDocs = withPermission("inventory:list", async (session4, fi
 function candidateItemDoneSql(kind) {
   if (kind === "shipped" || kind === "allocated") {
     const relationType = kind === "shipped" ? "采购订单发货" : "门店报货配货";
-    return import_drizzle_orm57.sql`(
+    return import_drizzle_orm58.sql`(
       SELECT COALESCE(SUM(cand_link.quantity), 0)
         FROM inventory_doc_links cand_link
         JOIN inventory_docs cand_link_doc ON cand_link_doc.id = cand_link.to_doc_id
@@ -177402,13 +177463,13 @@ function candidateItemDoneSql(kind) {
          AND cand_link_doc.status <> '已取消'
     )`;
   }
-  return import_drizzle_orm57.sql`COALESCE(cand_item.fulfilled_quantity, 0)`;
+  return import_drizzle_orm58.sql`COALESCE(cand_item.fulfilled_quantity, 0)`;
 }
 function candidateItemFilterSql(kind) {
-  return kind === "shipped" ? import_drizzle_orm57.sql`AND cand_item.market_id IS NOT NULL` : import_drizzle_orm57.sql``;
+  return kind === "shipped" ? import_drizzle_orm58.sql`AND cand_item.market_id IS NOT NULL` : import_drizzle_orm58.sql``;
 }
 function candidateRemainingSql(kind) {
-  return import_drizzle_orm57.sql`EXISTS (
+  return import_drizzle_orm58.sql`EXISTS (
     SELECT 1 FROM inventory_doc_items cand_item
      WHERE cand_item.doc_id = ${inventoryDocs.id}
        ${candidateItemFilterSql(kind)}
@@ -177416,13 +177477,13 @@ function candidateRemainingSql(kind) {
   )`;
 }
 function candidateProgressSql(kind) {
-  const total = import_drizzle_orm57.sql`(
+  const total = import_drizzle_orm58.sql`(
     SELECT COALESCE(SUM(cand_item.quantity), 0)
       FROM inventory_doc_items cand_item
      WHERE cand_item.doc_id = ${inventoryDocs.id}
        ${candidateItemFilterSql(kind)}
   )`;
-  const done = kind === "none" ? import_drizzle_orm57.sql`NULL` : import_drizzle_orm57.sql`(
+  const done = kind === "none" ? import_drizzle_orm58.sql`NULL` : import_drizzle_orm58.sql`(
       SELECT COALESCE(SUM(LEAST(${candidateItemDoneSql(kind)}, cand_item.quantity)), 0)
         FROM inventory_doc_items cand_item
        WHERE cand_item.doc_id = ${inventoryDocs.id}
@@ -177472,16 +177533,16 @@ function candidateConditions(session4, definition, filters, { onlyRemaining }) {
   const conditions3 = [];
   if (scoped !== null) {
     if (scoped.length === 0)
-      return import_drizzle_orm57.sql`FALSE`;
-    conditions3.push(import_drizzle_orm57.or(import_drizzle_orm57.inArray(inventoryDocs.sourceOrgNodeId, scoped), import_drizzle_orm57.inArray(inventoryDocs.targetOrgNodeId, scoped)));
+      return import_drizzle_orm58.sql`FALSE`;
+    conditions3.push(import_drizzle_orm58.or(import_drizzle_orm58.inArray(inventoryDocs.sourceOrgNodeId, scoped), import_drizzle_orm58.inArray(inventoryDocs.targetOrgNodeId, scoped)));
     const endpointColumn = definition.scopeRole === "source" ? inventoryDocs.sourceOrgNodeId : inventoryDocs.targetOrgNodeId;
-    conditions3.push(import_drizzle_orm57.inArray(endpointColumn, scoped));
+    conditions3.push(import_drizzle_orm58.inArray(endpointColumn, scoped));
   }
-  conditions3.push(import_drizzle_orm57.or(...definition.rules.map((rule) => import_drizzle_orm57.and(import_drizzle_orm57.eq(inventoryDocs.docType, rule.docType), rule.statuses ? import_drizzle_orm57.inArray(inventoryDocs.status, [...rule.statuses]) : import_drizzle_orm57.ne(inventoryDocs.status, "已取消")))));
+  conditions3.push(import_drizzle_orm58.or(...definition.rules.map((rule) => import_drizzle_orm58.and(import_drizzle_orm58.eq(inventoryDocs.docType, rule.docType), rule.statuses ? import_drizzle_orm58.inArray(inventoryDocs.status, [...rule.statuses]) : import_drizzle_orm58.ne(inventoryDocs.status, "已取消")))));
   if (definition.cancellationRequested)
-    conditions3.push(import_drizzle_orm57.isNotNull(inventoryDocs.cancellationRequestReason));
+    conditions3.push(import_drizzle_orm58.isNotNull(inventoryDocs.cancellationRequestReason));
   if (definition.requireNoReceipt) {
-    conditions3.push(import_drizzle_orm57.sql`NOT EXISTS (
+    conditions3.push(import_drizzle_orm58.sql`NOT EXISTS (
       SELECT 1 FROM inventory_doc_items cand_received
        WHERE cand_received.doc_id = ${inventoryDocs.id}
          AND COALESCE(cand_received.fulfilled_quantity, 0) > 0
@@ -177490,7 +177551,7 @@ function candidateConditions(session4, definition, filters, { onlyRemaining }) {
   if (onlyRemaining || definition.requireRemaining) {
     conditions3.push(candidateRemainingSql(definition.progress));
   } else if (definition.progress === "shipped") {
-    conditions3.push(import_drizzle_orm57.sql`EXISTS (
+    conditions3.push(import_drizzle_orm58.sql`EXISTS (
       SELECT 1 FROM inventory_doc_items cand_item
        WHERE cand_item.doc_id = ${inventoryDocs.id}
          AND cand_item.market_id IS NOT NULL
@@ -177498,16 +177559,16 @@ function candidateConditions(session4, definition, filters, { onlyRemaining }) {
   }
   const { targetOrgNodeId, startDate, endDate, keyword } = filters;
   if (targetOrgNodeId)
-    conditions3.push(import_drizzle_orm57.eq(inventoryDocs.targetOrgNodeId, targetOrgNodeId));
+    conditions3.push(import_drizzle_orm58.eq(inventoryDocs.targetOrgNodeId, targetOrgNodeId));
   if (startDate)
-    conditions3.push(import_drizzle_orm57.gte(inventoryDocs.docDate, startDate));
+    conditions3.push(import_drizzle_orm58.gte(inventoryDocs.docDate, startDate));
   if (endDate)
-    conditions3.push(import_drizzle_orm57.lte(inventoryDocs.docDate, endDate));
+    conditions3.push(import_drizzle_orm58.lte(inventoryDocs.docDate, endDate));
   if (keyword) {
     const pattern = `%${keyword.replace(/[\\%_]/g, "\\$&")}%`;
-    conditions3.push(import_drizzle_orm57.or(import_drizzle_orm57.ilike(inventoryDocs.id, pattern), import_drizzle_orm57.ilike(sourceLocation.name, pattern), import_drizzle_orm57.ilike(targetLocation.name, pattern)));
+    conditions3.push(import_drizzle_orm58.or(import_drizzle_orm58.ilike(inventoryDocs.id, pattern), import_drizzle_orm58.ilike(sourceLocation.name, pattern), import_drizzle_orm58.ilike(targetLocation.name, pattern)));
   }
-  return import_drizzle_orm57.and(...conditions3) ?? import_drizzle_orm57.sql`TRUE`;
+  return import_drizzle_orm58.and(...conditions3) ?? import_drizzle_orm58.sql`TRUE`;
 }
 var listInventoryDocCandidates = withPermission("inventory:list", async (session4, filters) => {
   const definition = resolveInventoryDocCandidate(filters?.purpose);
@@ -177523,7 +177584,7 @@ var listInventoryDocCandidates = withPermission("inventory:list", async (session
   });
   const onlyRemaining = definition.remainingToggle && !parsed.includeExhausted;
   const whereClause = candidateConditions(session4, definition, parsed, { onlyRemaining });
-  const [countRow] = await db2.select({ count: import_drizzle_orm57.sql`cast(count(*) as int)` }).from(inventoryDocs).leftJoin(sourceLocation, import_drizzle_orm57.eq(sourceLocation.orgNodeId, inventoryDocs.sourceOrgNodeId)).leftJoin(targetLocation, import_drizzle_orm57.eq(targetLocation.orgNodeId, inventoryDocs.targetOrgNodeId)).where(whereClause);
+  const [countRow] = await db2.select({ count: import_drizzle_orm58.sql`cast(count(*) as int)` }).from(inventoryDocs).leftJoin(sourceLocation, import_drizzle_orm58.eq(sourceLocation.orgNodeId, inventoryDocs.sourceOrgNodeId)).leftJoin(targetLocation, import_drizzle_orm58.eq(targetLocation.orgNodeId, inventoryDocs.targetOrgNodeId)).where(whereClause);
   const progress = candidateProgressSql(definition.progress);
   const rows = await db2.select({
     doc: inventoryDocs,
@@ -177534,7 +177595,7 @@ var listInventoryDocCandidates = withPermission("inventory:list", async (session
     partiallyReceived: partiallyReceivedSql,
     progressTotal: progress.total,
     progressDone: progress.done
-  }).from(inventoryDocs).leftJoin(sourceLocation, import_drizzle_orm57.eq(sourceLocation.orgNodeId, inventoryDocs.sourceOrgNodeId)).leftJoin(targetLocation, import_drizzle_orm57.eq(targetLocation.orgNodeId, inventoryDocs.targetOrgNodeId)).where(whereClause).orderBy(import_drizzle_orm57.desc(inventoryDocs.docDate), import_drizzle_orm57.desc(inventoryDocs.createdAt), import_drizzle_orm57.desc(inventoryDocs.id)).limit(pageSize).offset(offset);
+  }).from(inventoryDocs).leftJoin(sourceLocation, import_drizzle_orm58.eq(sourceLocation.orgNodeId, inventoryDocs.sourceOrgNodeId)).leftJoin(targetLocation, import_drizzle_orm58.eq(targetLocation.orgNodeId, inventoryDocs.targetOrgNodeId)).where(whereClause).orderBy(import_drizzle_orm58.desc(inventoryDocs.docDate), import_drizzle_orm58.desc(inventoryDocs.createdAt), import_drizzle_orm58.desc(inventoryDocs.id)).limit(pageSize).offset(offset);
   return {
     data: rows.map((row) => ({
       ...docRow({ ...row, includePrice: false }),
@@ -177554,7 +177615,7 @@ var listInventoryDocCandidateIds = withPermission("inventory:list", async (sessi
   const parsed = parseCandidateFilters(filters);
   await syncInventoryLocations();
   const whereClause = candidateConditions(session4, definition, parsed, { onlyRemaining: true });
-  const rows = await db2.select({ id: inventoryDocs.id }).from(inventoryDocs).leftJoin(sourceLocation, import_drizzle_orm57.eq(sourceLocation.orgNodeId, inventoryDocs.sourceOrgNodeId)).leftJoin(targetLocation, import_drizzle_orm57.eq(targetLocation.orgNodeId, inventoryDocs.targetOrgNodeId)).where(whereClause).orderBy(import_drizzle_orm57.asc(inventoryDocs.docDate), import_drizzle_orm57.asc(inventoryDocs.createdAt), import_drizzle_orm57.asc(inventoryDocs.id)).limit(INVENTORY_DOC_CANDIDATE_BULK_LIMIT + 1);
+  const rows = await db2.select({ id: inventoryDocs.id }).from(inventoryDocs).leftJoin(sourceLocation, import_drizzle_orm58.eq(sourceLocation.orgNodeId, inventoryDocs.sourceOrgNodeId)).leftJoin(targetLocation, import_drizzle_orm58.eq(targetLocation.orgNodeId, inventoryDocs.targetOrgNodeId)).where(whereClause).orderBy(import_drizzle_orm58.asc(inventoryDocs.docDate), import_drizzle_orm58.asc(inventoryDocs.createdAt), import_drizzle_orm58.asc(inventoryDocs.id)).limit(INVENTORY_DOC_CANDIDATE_BULK_LIMIT + 1);
   if (rows.length > INVENTORY_DOC_CANDIDATE_BULK_LIMIT) {
     throw new ApiError("INVALID_PARAMS", `符合条件的单据超过 ${INVENTORY_DOC_CANDIDATE_BULK_LIMIT} 张，请缩小日期区间后再带出`);
   }
@@ -177562,29 +177623,29 @@ var listInventoryDocCandidateIds = withPermission("inventory:list", async (sessi
 });
 function inventoryDocScopeSql(scoped, sourceColumn, targetColumn) {
   if (scoped === null)
-    return import_drizzle_orm57.sql`TRUE`;
+    return import_drizzle_orm58.sql`TRUE`;
   if (scoped.length === 0)
-    return import_drizzle_orm57.sql`FALSE`;
-  const values2 = import_drizzle_orm57.sql.join(scoped.map((locationId) => import_drizzle_orm57.sql`${locationId}`), import_drizzle_orm57.sql`, `);
-  return import_drizzle_orm57.sql`(${sourceColumn} IN (${values2}) OR ${targetColumn} IN (${values2}))`;
+    return import_drizzle_orm58.sql`FALSE`;
+  const values2 = import_drizzle_orm58.sql.join(scoped.map((locationId) => import_drizzle_orm58.sql`${locationId}`), import_drizzle_orm58.sql`, `);
+  return import_drizzle_orm58.sql`(${sourceColumn} IN (${values2}) OR ${targetColumn} IN (${values2}))`;
 }
 function visibleInventoryDocsSql(scoped) {
-  return import_drizzle_orm57.sql`
+  return import_drizzle_orm58.sql`
     SELECT visible_doc.id
       FROM inventory_docs visible_doc
-     WHERE ${inventoryDocScopeSql(scoped, import_drizzle_orm57.sql`visible_doc.source_org_node_id`, import_drizzle_orm57.sql`visible_doc.target_org_node_id`)}
+     WHERE ${inventoryDocScopeSql(scoped, import_drizzle_orm58.sql`visible_doc.source_org_node_id`, import_drizzle_orm58.sql`visible_doc.target_org_node_id`)}
   `;
 }
 function asDocDate(value) {
   return fmtDate(value);
 }
 async function loadInventoryDocLineage(docId, scoped) {
-  const linkedDocVisible = scoped === null ? import_drizzle_orm57.sql`TRUE` : import_drizzle_orm57.sql`(
-      (doc_link.from_doc_id = ${docId} AND ${inventoryDocScopeSql(scoped, import_drizzle_orm57.sql`to_doc.source_org_node_id`, import_drizzle_orm57.sql`to_doc.target_org_node_id`)})
+  const linkedDocVisible = scoped === null ? import_drizzle_orm58.sql`TRUE` : import_drizzle_orm58.sql`(
+      (doc_link.from_doc_id = ${docId} AND ${inventoryDocScopeSql(scoped, import_drizzle_orm58.sql`to_doc.source_org_node_id`, import_drizzle_orm58.sql`to_doc.target_org_node_id`)})
       OR
-      (doc_link.to_doc_id = ${docId} AND ${inventoryDocScopeSql(scoped, import_drizzle_orm57.sql`from_doc.source_org_node_id`, import_drizzle_orm57.sql`from_doc.target_org_node_id`)})
+      (doc_link.to_doc_id = ${docId} AND ${inventoryDocScopeSql(scoped, import_drizzle_orm58.sql`from_doc.source_org_node_id`, import_drizzle_orm58.sql`from_doc.target_org_node_id`)})
     )`;
-  const rows = await db2.execute(import_drizzle_orm57.sql`
+  const rows = await db2.execute(import_drizzle_orm58.sql`
     SELECT
       CASE WHEN doc_link.from_doc_id = ${docId} THEN '下游' ELSE '上游' END AS direction,
       doc_link.relation_type,
@@ -177639,7 +177700,7 @@ function reportFulfillmentItem(row, includeOrder) {
   };
 }
 async function loadMarketReportFulfillmentProgress(docId, scoped) {
-  const rows = await db2.execute(import_drizzle_orm57.sql`
+  const rows = await db2.execute(import_drizzle_orm58.sql`
     WITH visible_docs AS (${visibleInventoryDocsSql(scoped)}),
     root_items AS (
       SELECT item.id AS item_id, item.quantity
@@ -177696,7 +177757,7 @@ async function loadMarketReportFulfillmentProgress(docId, scoped) {
     ),
     -- 已取消的采购单只剩已入库那部分仍算已采购：按分做最大余数分配，与建单容量
     -- （business.ts allocateSummaryToMarketReportItems）共用同一片段，保证同源。
-    cancelled_retained AS (${cancelledMarketReportRetainedSql(import_drizzle_orm57.sql`SELECT item_id FROM root_items`)}),
+    cancelled_retained AS (${cancelledMarketReportRetainedSql(import_drizzle_orm58.sql`SELECT item_id FROM root_items`)}),
     -- 有效采购单按血缘量、已取消采购单按保留量，两部分各自聚合后相加：
     -- 同一对 (原始行, 采购行) 可能有多条血缘，逐行连接 cancelled_retained 会重复累计。
     -- 各自一次 GROUP BY 再左连接，避免按 root_items 逐行跑相关子查询。
@@ -177785,7 +177846,7 @@ async function loadMarketReportFulfillmentProgress(docId, scoped) {
   };
 }
 async function loadStoreReportFulfillmentProgress(docId, scoped) {
-  const rows = await db2.execute(import_drizzle_orm57.sql`
+  const rows = await db2.execute(import_drizzle_orm58.sql`
     WITH visible_docs AS (${visibleInventoryDocsSql(scoped)}),
     root_items AS (
       SELECT item.id AS item_id, item.quantity
@@ -177854,7 +177915,7 @@ async function loadStoreReportFulfillmentProgress(docId, scoped) {
   };
 }
 async function loadItemCompanyRequestFulfillmentProgress(docId, scoped) {
-  const rows = await db2.execute(import_drizzle_orm57.sql`
+  const rows = await db2.execute(import_drizzle_orm58.sql`
     WITH visible_docs AS (${visibleInventoryDocsSql(scoped)}),
     request_items AS (
       SELECT item.id AS item_id, item.quantity
@@ -177946,7 +178007,7 @@ async function loadItemCompanyRequestFulfillmentProgress(docId, scoped) {
   };
 }
 async function loadSupplyChainPurchaseReceiptProgress(docId, scoped) {
-  const rows = await db2.execute(import_drizzle_orm57.sql`
+  const rows = await db2.execute(import_drizzle_orm58.sql`
     WITH visible_docs AS (${visibleInventoryDocsSql(scoped)}),
     purchase_items AS (
       SELECT item.id AS item_id, item.quantity, purchase_doc.status AS purchase_status
@@ -178013,7 +178074,7 @@ async function loadSupplyChainPurchaseReceiptProgress(docId, scoped) {
   };
 }
 async function loadShipmentReceiptProgress(docId, scoped) {
-  const rows = await db2.execute(import_drizzle_orm57.sql`
+  const rows = await db2.execute(import_drizzle_orm58.sql`
     WITH visible_docs AS (${visibleInventoryDocsSql(scoped)}),
     shipment_items AS (
       -- visible_docs 只暴露 id；status 必须回表 inventory_docs 取
@@ -178095,9 +178156,9 @@ var getInventoryCoreDocsByIds = withPermission("inventory:list", async (_session
 var getInventoryCoreDocById = withPermission("inventory:list", async (session4, id) => {
   const priceTiers = inventoryPriceScopeByTier(session4);
   const scoped = inventoryScopedOrgNodeIds(session4);
-  const conditions3 = [import_drizzle_orm57.eq(inventoryDocs.id, id)];
+  const conditions3 = [import_drizzle_orm58.eq(inventoryDocs.id, id)];
   if (scoped !== null) {
-    conditions3.push(scoped.length > 0 ? import_drizzle_orm57.or(import_drizzle_orm57.inArray(inventoryDocs.sourceOrgNodeId, scoped), import_drizzle_orm57.inArray(inventoryDocs.targetOrgNodeId, scoped)) : import_drizzle_orm57.sql`FALSE`);
+    conditions3.push(scoped.length > 0 ? import_drizzle_orm58.or(import_drizzle_orm58.inArray(inventoryDocs.sourceOrgNodeId, scoped), import_drizzle_orm58.inArray(inventoryDocs.targetOrgNodeId, scoped)) : import_drizzle_orm58.sql`FALSE`);
   }
   const [headRow] = await db2.select({
     doc: inventoryDocs,
@@ -178106,7 +178167,7 @@ var getInventoryCoreDocById = withPermission("inventory:list", async (session4, 
     targetOrgNodeName: targetLocation.name,
     targetOrgNodeType: targetLocation.locationType,
     partiallyReceived: partiallyReceivedSql
-  }).from(inventoryDocs).leftJoin(sourceLocation, import_drizzle_orm57.eq(sourceLocation.orgNodeId, inventoryDocs.sourceOrgNodeId)).leftJoin(targetLocation, import_drizzle_orm57.eq(targetLocation.orgNodeId, inventoryDocs.targetOrgNodeId)).where(import_drizzle_orm57.and(...conditions3)).limit(1);
+  }).from(inventoryDocs).leftJoin(sourceLocation, import_drizzle_orm58.eq(sourceLocation.orgNodeId, inventoryDocs.sourceOrgNodeId)).leftJoin(targetLocation, import_drizzle_orm58.eq(targetLocation.orgNodeId, inventoryDocs.targetOrgNodeId)).where(import_drizzle_orm58.and(...conditions3)).limit(1);
   if (!headRow)
     return null;
   const priceVisibility = inventoryPriceVisibilityForOrgNodes(priceTiers, [headRow.doc.sourceOrgNodeId, headRow.doc.targetOrgNodeId]);
@@ -178114,12 +178175,12 @@ var getInventoryCoreDocById = withPermission("inventory:list", async (session4, 
   const itemPriceVisibility = AMOUNTLESS_DOC_TYPES.has(head.docType) ? "none" : priceVisibility;
   const includeItemAmount = itemPriceVisibility !== "none";
   const [items, lineage, fulfillmentProgress] = await Promise.all([
-    db2.select().from(inventoryDocItems).where(import_drizzle_orm57.eq(inventoryDocItems.docId, id)).orderBy(import_drizzle_orm57.asc(inventoryDocItems.id)),
+    db2.select().from(inventoryDocItems).where(import_drizzle_orm58.eq(inventoryDocItems.docId, id)).orderBy(import_drizzle_orm58.asc(inventoryDocItems.id)),
     loadInventoryDocLineage(id, scoped),
     loadInventoryDocFulfillmentProgress(head.docType, id, scoped)
   ]);
   const itemMarketIds = [...new Set(items.map((item) => item.marketId).filter((id2) => Boolean(id2)))];
-  const itemMarketNameByOrgNodeId = new Map(itemMarketIds.length > 0 ? (await db2.select({ orgNodeId: inventoryLocations.orgNodeId, name: inventoryLocations.name }).from(inventoryLocations).where(import_drizzle_orm57.inArray(inventoryLocations.orgNodeId, itemMarketIds))).map((row) => [row.orgNodeId, row.name]) : []);
+  const itemMarketNameByOrgNodeId = new Map(itemMarketIds.length > 0 ? (await db2.select({ orgNodeId: inventoryLocations.orgNodeId, name: inventoryLocations.name }).from(inventoryLocations).where(import_drizzle_orm58.inArray(inventoryLocations.orgNodeId, itemMarketIds))).map((row) => [row.orgNodeId, row.name]) : []);
   return {
     ...head,
     items: items.map((item) => ({
@@ -178359,7 +178420,7 @@ var createInventoryCoreDoc = withAnyPermission(["inventory:supply_chain_operate"
     await tx.update(inventoryDocs).set({
       totalAmount: hasCalculatedAmount ? numString(calculatedTotalAmount) : null,
       updatedAt: new Date
-    }).where(import_drizzle_orm57.eq(inventoryDocs.id, docId));
+    }).where(import_drizzle_orm58.eq(inventoryDocs.id, docId));
     return docId;
   });
   await logOperation(session4, "create", "inventory_docs", id, {
@@ -178377,7 +178438,7 @@ var approveInventoryCoreDoc = withAnyPermission(["inventory:supply_chain_approve
   const docId = normalizeRequired(id, "单据号");
   await db2.transaction(async (tx) => {
     await assertInventoryBusinessWritable(tx);
-    const headRows = await tx.execute(import_drizzle_orm57.sql`
+    const headRows = await tx.execute(import_drizzle_orm58.sql`
         SELECT id, doc_type, status, source_org_node_id
           FROM inventory_docs
          WHERE id = ${docId}
@@ -178396,7 +178457,7 @@ var approveInventoryCoreDoc = withAnyPermission(["inventory:supply_chain_approve
       throw new ApiError("INVALID_STATE", "审批单据缺少出库主体");
     await assertOrgNodeVisible(session4, head.source_org_node_id);
     const sourceLocationId = await orgNodeLocationIdForUpdate(tx, head.source_org_node_id);
-    const items = await tx.execute(import_drizzle_orm57.sql`
+    const items = await tx.execute(import_drizzle_orm58.sql`
         SELECT id, lot_id, quantity
           FROM inventory_doc_items
          WHERE doc_id = ${docId}
@@ -178423,7 +178484,7 @@ var approveInventoryCoreDoc = withAnyPermission(["inventory:supply_chain_approve
       approvedAt: new Date,
       auditRemark: normalizeText(auditRemark),
       updatedAt: new Date
-    }).where(import_drizzle_orm57.eq(inventoryDocs.id, docId));
+    }).where(import_drizzle_orm58.eq(inventoryDocs.id, docId));
   });
   await logOperation(session4, "approve", "inventory_docs", docId, { auditRemark });
   import_cache11.revalidatePath("/inventory/docs");
@@ -178434,7 +178495,7 @@ var rejectInventoryCoreDoc = withAnyPermission(["inventory:supply_chain_approve"
   const docId = normalizeRequired(id, "单据号");
   await db2.transaction(async (tx) => {
     await assertInventoryBusinessWritable(tx);
-    const rows = await tx.execute(import_drizzle_orm57.sql`
+    const rows = await tx.execute(import_drizzle_orm58.sql`
         SELECT doc_type, status, source_org_node_id, target_org_node_id
           FROM inventory_docs
          WHERE id = ${docId}
@@ -178450,7 +178511,7 @@ var rejectInventoryCoreDoc = withAnyPermission(["inventory:supply_chain_approve"
       throw new ApiError("INVALID_STATE", "待审批单据缺少出库主体，无法驳回");
     }
     await assertOrgNodeVisible(session4, doc.source_org_node_id);
-    const updated = await tx.execute(import_drizzle_orm57.sql`
+    const updated = await tx.execute(import_drizzle_orm58.sql`
         UPDATE inventory_docs
            SET status = '已驳回',
                rejected_by = ${session4.employeeId},
@@ -178474,7 +178535,7 @@ var confirmInventoryCoreReceive = withAnyPermission([...INVENTORY_CORE_RECEIVE_A
   let inboundDocId = "";
   await db2.transaction(async (tx) => {
     await assertInventoryBusinessWritable(tx);
-    const headRows = await tx.execute(import_drizzle_orm57.sql`
+    const headRows = await tx.execute(import_drizzle_orm58.sql`
         SELECT id, doc_type, status, source_org_node_id, target_org_node_id,
                total_quantity, remark
           FROM inventory_docs
@@ -178513,7 +178574,7 @@ var confirmInventoryCoreReceive = withAnyPermission([...INVENTORY_CORE_RECEIVE_A
       confirmedBy: session4.employeeId,
       confirmedAt: new Date
     });
-    const itemRows = await tx.execute(import_drizzle_orm57.sql`
+    const itemRows = await tx.execute(import_drizzle_orm58.sql`
         SELECT item.id AS source_item_id, item.sku_id, item.batch_no, item.expiry_date, item.is_gift, item.quantity,
                item.standard_unit_price, item.unit_discount, item.actual_unit_price, item.amount,
                item.supply_chain_unit_cost, item.market_standard_unit_price, item.market_unit_discount,
@@ -178603,7 +178664,7 @@ var confirmInventoryCoreReceive = withAnyPermission([...INVENTORY_CORE_RECEIVE_A
       confirmedBy: session4.employeeId,
       confirmedAt: new Date,
       updatedAt: new Date
-    }).where(import_drizzle_orm57.eq(inventoryDocs.id, id));
+    }).where(import_drizzle_orm58.eq(inventoryDocs.id, id));
   });
   await logOperation(session4, "confirm_receive", "inventory_docs", id, { inboundDocId });
   import_cache11.revalidatePath("/inventory/docs");
@@ -178633,19 +178694,19 @@ function supplierRow(row) {
 var listInventorySuppliers = withPermission("inventory:stock_list", async (_session, filters = {}) => {
   const conditions3 = [];
   if (filters.onlyActive === true)
-    conditions3.push(import_drizzle_orm57.eq(inventorySuppliers.isActive, true));
+    conditions3.push(import_drizzle_orm58.eq(inventorySuppliers.isActive, true));
   else if (filters.onlyActive === false)
-    conditions3.push(import_drizzle_orm57.eq(inventorySuppliers.isActive, false));
+    conditions3.push(import_drizzle_orm58.eq(inventorySuppliers.isActive, false));
   if (filters.keyword) {
     const pattern = `%${filters.keyword.replace(/[%_]/g, "\\$&")}%`;
-    conditions3.push(import_drizzle_orm57.or(import_drizzle_orm57.ilike(inventorySuppliers.name, pattern), import_drizzle_orm57.ilike(inventorySuppliers.contactName, pattern), import_drizzle_orm57.ilike(inventorySuppliers.phone, pattern)));
+    conditions3.push(import_drizzle_orm58.or(import_drizzle_orm58.ilike(inventorySuppliers.name, pattern), import_drizzle_orm58.ilike(inventorySuppliers.contactName, pattern), import_drizzle_orm58.ilike(inventorySuppliers.phone, pattern)));
   }
-  const whereClause = conditions3.length > 0 ? import_drizzle_orm57.and(...conditions3) : undefined;
-  const [totalRow] = await db2.select({ total: import_drizzle_orm57.sql`cast(count(*) as int)` }).from(inventorySuppliers).where(whereClause);
+  const whereClause = conditions3.length > 0 ? import_drizzle_orm58.and(...conditions3) : undefined;
+  const [totalRow] = await db2.select({ total: import_drizzle_orm58.sql`cast(count(*) as int)` }).from(inventorySuppliers).where(whereClause);
   const query = db2.select({
     supplier: inventorySuppliers,
-    linkedSkuCount: import_drizzle_orm57.sql`cast(count(${inventorySkus.skuId}) as int)`
-  }).from(inventorySuppliers).leftJoin(inventorySkus, import_drizzle_orm57.eq(inventorySkus.supplierId, inventorySuppliers.supplierId)).where(whereClause).groupBy(inventorySuppliers.supplierId).orderBy(import_drizzle_orm57.asc(inventorySuppliers.name));
+    linkedSkuCount: import_drizzle_orm58.sql`cast(count(${inventorySkus.skuId}) as int)`
+  }).from(inventorySuppliers).leftJoin(inventorySkus, import_drizzle_orm58.eq(inventorySkus.supplierId, inventorySuppliers.supplierId)).where(whereClause).groupBy(inventorySuppliers.supplierId).orderBy(import_drizzle_orm58.asc(inventorySuppliers.name));
   const paged = filters.pageSize === undefined ? null : resolvePaging({
     page: filters.page,
     pageSize: filters.pageSize,
@@ -178659,11 +178720,11 @@ var listInventorySuppliers = withPermission("inventory:stock_list", async (_sess
   };
 });
 var listInventorySupplierOptions = withPermission("inventory:stock_list", async () => {
-  return db2.select({ supplierId: inventorySuppliers.supplierId, name: inventorySuppliers.name }).from(inventorySuppliers).where(import_drizzle_orm57.eq(inventorySuppliers.isActive, true)).orderBy(import_drizzle_orm57.asc(inventorySuppliers.name));
+  return db2.select({ supplierId: inventorySuppliers.supplierId, name: inventorySuppliers.name }).from(inventorySuppliers).where(import_drizzle_orm58.eq(inventorySuppliers.isActive, true)).orderBy(import_drizzle_orm58.asc(inventorySuppliers.name));
 });
 var countInventorySkusBySupplier = withPermission("inventory:stock_list", async (_session, supplierIdInput) => {
   const supplierId = normalizeRequired(supplierIdInput, "供应商");
-  const [row] = await db2.select({ count: import_drizzle_orm57.sql`cast(count(*) as int)` }).from(inventorySkus).where(import_drizzle_orm57.eq(inventorySkus.supplierId, supplierId));
+  const [row] = await db2.select({ count: import_drizzle_orm58.sql`cast(count(*) as int)` }).from(inventorySkus).where(import_drizzle_orm58.eq(inventorySkus.supplierId, supplierId));
   return row?.count ?? 0;
 });
 var createInventorySupplier = withPermission("inventory:supply_chain_master_data_manage", async (session4, input) => {
@@ -178688,13 +178749,13 @@ var createInventorySupplier = withPermission("inventory:supply_chain_master_data
 });
 var updateInventorySupplier = withPermission("inventory:supply_chain_master_data_manage", async (session4, supplierIdInput, input) => {
   const supplierId = normalizeRequired(supplierIdInput, "供应商");
-  const [current] = await db2.select({ supplierId: inventorySuppliers.supplierId, name: inventorySuppliers.name }).from(inventorySuppliers).where(import_drizzle_orm57.eq(inventorySuppliers.supplierId, supplierId)).limit(1);
+  const [current] = await db2.select({ supplierId: inventorySuppliers.supplierId, name: inventorySuppliers.name }).from(inventorySuppliers).where(import_drizzle_orm58.eq(inventorySuppliers.supplierId, supplierId)).limit(1);
   if (!current)
     throw new ApiError("NOT_FOUND", "供应商不存在");
   const nextName = input.name === undefined ? undefined : normalizeRequired(input.name, "供应商名称");
   try {
     await db2.transaction(async (tx) => {
-      const [locked] = await tx.select({ name: inventorySuppliers.name }).from(inventorySuppliers).where(import_drizzle_orm57.eq(inventorySuppliers.supplierId, supplierId)).limit(1).for("update");
+      const [locked] = await tx.select({ name: inventorySuppliers.name }).from(inventorySuppliers).where(import_drizzle_orm58.eq(inventorySuppliers.supplierId, supplierId)).limit(1).for("update");
       if (!locked)
         throw new ApiError("NOT_FOUND", "供应商不存在");
       await tx.update(inventorySuppliers).set({
@@ -178705,9 +178766,9 @@ var updateInventorySupplier = withPermission("inventory:supply_chain_master_data
         isActive: input.isActive,
         remark: input.remark === undefined ? undefined : normalizeText(input.remark),
         updatedAt: new Date
-      }).where(import_drizzle_orm57.eq(inventorySuppliers.supplierId, supplierId));
+      }).where(import_drizzle_orm58.eq(inventorySuppliers.supplierId, supplierId));
       if (nextName !== undefined && nextName !== locked.name) {
-        await tx.update(inventorySkus).set({ supplier: nextName, updatedAt: new Date }).where(import_drizzle_orm57.eq(inventorySkus.supplierId, supplierId));
+        await tx.update(inventorySkus).set({ supplier: nextName, updatedAt: new Date }).where(import_drizzle_orm58.eq(inventorySkus.supplierId, supplierId));
       }
     });
   } catch (error) {
@@ -178722,14 +178783,14 @@ async function assertPromotionMarketScope(marketId) {
   if (!normalized)
     return null;
   await syncInventoryLocations();
-  const [location] = await db2.select({ locationType: inventoryLocations.locationType }).from(inventoryLocations).where(import_drizzle_orm57.eq(inventoryLocations.locationId, normalized)).limit(1);
+  const [location] = await db2.select({ locationType: inventoryLocations.locationType }).from(inventoryLocations).where(import_drizzle_orm58.eq(inventoryLocations.locationId, normalized)).limit(1);
   if (!location || location.locationType !== "市场") {
     throw new ApiError("INVALID_PARAMS", "福利方案所属主体必须是市场");
   }
   return normalized;
 }
 async function lockPromotionPlanForMutation(tx, id) {
-  const rows = await tx.execute(import_drizzle_orm57.sql`
+  const rows = await tx.execute(import_drizzle_orm58.sql`
     SELECT id
       FROM inventory_promotion_plans
      WHERE id = ${id}
@@ -178813,7 +178874,7 @@ function normalizePromotionItems(items, ruleType) {
 }
 async function assertPromotionSkus(items) {
   const skuIds = Array.from(new Set(items.map((item) => item.skuId)));
-  const rows = await db2.select({ skuId: inventorySkus.skuId, productName: inventorySkus.productName, marketPurchasePrice: inventorySkus.marketPurchasePrice }).from(inventorySkus).where(import_drizzle_orm57.and(import_drizzle_orm57.inArray(inventorySkus.skuId, skuIds), import_drizzle_orm57.eq(inventorySkus.isActive, true)));
+  const rows = await db2.select({ skuId: inventorySkus.skuId, productName: inventorySkus.productName, marketPurchasePrice: inventorySkus.marketPurchasePrice }).from(inventorySkus).where(import_drizzle_orm58.and(import_drizzle_orm58.inArray(inventorySkus.skuId, skuIds), import_drizzle_orm58.eq(inventorySkus.isActive, true)));
   if (rows.length !== skuIds.length) {
     throw new ApiError("NOT_FOUND", "福利方案包含不存在或已停用的库存 SKU");
   }
@@ -178845,11 +178906,11 @@ async function promotionPlanRows(session4, onlyId) {
   const scoped = await promotionVisibleLocationIds(session4);
   const conditions3 = [];
   if (onlyId)
-    conditions3.push(import_drizzle_orm57.eq(inventoryPromotionPlans.id, onlyId));
+    conditions3.push(import_drizzle_orm58.eq(inventoryPromotionPlans.id, onlyId));
   if (scoped !== null) {
-    conditions3.push(scoped.length > 0 ? import_drizzle_orm57.or(import_drizzle_orm57.isNull(inventoryPromotionPlans.scopeMarketId), import_drizzle_orm57.inArray(inventoryPromotionPlans.scopeMarketId, scoped)) : import_drizzle_orm57.isNull(inventoryPromotionPlans.scopeMarketId));
+    conditions3.push(scoped.length > 0 ? import_drizzle_orm58.or(import_drizzle_orm58.isNull(inventoryPromotionPlans.scopeMarketId), import_drizzle_orm58.inArray(inventoryPromotionPlans.scopeMarketId, scoped)) : import_drizzle_orm58.isNull(inventoryPromotionPlans.scopeMarketId));
   }
-  const whereClause = conditions3.length > 0 ? import_drizzle_orm57.and(...conditions3) : undefined;
+  const whereClause = conditions3.length > 0 ? import_drizzle_orm58.and(...conditions3) : undefined;
   const plans = await db2.select({
     id: inventoryPromotionPlans.id,
     planNo: inventoryPromotionPlans.planNo,
@@ -178863,7 +178924,7 @@ async function promotionPlanRows(session4, onlyId) {
     remark: inventoryPromotionPlans.remark,
     createdAt: inventoryPromotionPlans.createdAt,
     updatedAt: inventoryPromotionPlans.updatedAt
-  }).from(inventoryPromotionPlans).leftJoin(orgNodes, import_drizzle_orm57.eq(inventoryPromotionPlans.scopeMarketId, orgNodes.id)).where(whereClause).orderBy(import_drizzle_orm57.desc(inventoryPromotionPlans.startsAt), import_drizzle_orm57.asc(inventoryPromotionPlans.planNo));
+  }).from(inventoryPromotionPlans).leftJoin(orgNodes, import_drizzle_orm58.eq(inventoryPromotionPlans.scopeMarketId, orgNodes.id)).where(whereClause).orderBy(import_drizzle_orm58.desc(inventoryPromotionPlans.startsAt), import_drizzle_orm58.asc(inventoryPromotionPlans.planNo));
   if (plans.length === 0)
     return [];
   const items = await db2.select({
@@ -178875,7 +178936,7 @@ async function promotionPlanRows(session4, onlyId) {
     reportMinQuantity: inventoryPromotionPlanItems.reportMinQuantity,
     reportMaxQuantity: inventoryPromotionPlanItems.reportMaxQuantity,
     remark: inventoryPromotionPlanItems.remark
-  }).from(inventoryPromotionPlanItems).innerJoin(inventorySkus, import_drizzle_orm57.eq(inventoryPromotionPlanItems.skuId, inventorySkus.skuId)).where(import_drizzle_orm57.inArray(inventoryPromotionPlanItems.planId, plans.map((plan) => plan.id))).orderBy(import_drizzle_orm57.asc(inventoryPromotionPlanItems.skuId), import_drizzle_orm57.asc(inventoryPromotionPlanItems.reportMinQuantity));
+  }).from(inventoryPromotionPlanItems).innerJoin(inventorySkus, import_drizzle_orm58.eq(inventoryPromotionPlanItems.skuId, inventorySkus.skuId)).where(import_drizzle_orm58.inArray(inventoryPromotionPlanItems.planId, plans.map((plan) => plan.id))).orderBy(import_drizzle_orm58.asc(inventoryPromotionPlanItems.skuId), import_drizzle_orm58.asc(inventoryPromotionPlanItems.reportMinQuantity));
   const itemsByPlan = new Map;
   for (const item of items) {
     const collection = itemsByPlan.get(item.planId) ?? [];
@@ -178981,8 +179042,8 @@ var updateInventoryPromotionPlan = withPermission(INVENTORY_PROMOTION_MAINTAIN_A
       status: input.status ?? "启用",
       remark: normalizeText(input.remark),
       updatedAt: new Date
-    }).where(import_drizzle_orm57.eq(inventoryPromotionPlans.id, id));
-    await tx.delete(inventoryPromotionPlanItems).where(import_drizzle_orm57.eq(inventoryPromotionPlanItems.planId, id));
+    }).where(import_drizzle_orm58.eq(inventoryPromotionPlans.id, id));
+    await tx.delete(inventoryPromotionPlanItems).where(import_drizzle_orm58.eq(inventoryPromotionPlanItems.planId, id));
     await tx.insert(inventoryPromotionPlanItems).values(items.map((item) => ({
       planId: id,
       skuId: item.skuId,
@@ -179007,7 +179068,7 @@ var disableInventoryPromotionPlan = withPermission(INVENTORY_PROMOTION_MAINTAIN_
     throw new ApiError("NOT_FOUND", "福利方案不存在或无权查看");
   await db2.transaction(async (tx) => {
     await lockPromotionPlanForMutation(tx, id);
-    await tx.update(inventoryPromotionPlans).set({ status: "停用", updatedAt: new Date }).where(import_drizzle_orm57.eq(inventoryPromotionPlans.id, id));
+    await tx.update(inventoryPromotionPlans).set({ status: "停用", updatedAt: new Date }).where(import_drizzle_orm58.eq(inventoryPromotionPlans.id, id));
   });
   await logOperation(session4, "inventory.promotion.disable", "inventory_promotion_plans", id);
   import_cache11.revalidatePath("/inventory/promotions");
@@ -179024,14 +179085,14 @@ var listInventoryLotOptions2 = withPermission("inventory:stock_list", async (_se
 // src/actions/data-center/sales.ts
 init_db2();
 init_with_permission();
-var import_drizzle_orm62 = __toESM(require_drizzle_orm(), 1);
+var import_drizzle_orm63 = __toESM(require_drizzle_orm(), 1);
 
 // src/lib/data-center/context.ts
 init_db2();
 init_org();
 init_permissions();
 init_time_range();
-var import_drizzle_orm58 = __toESM(require_drizzle_orm(), 1);
+var import_drizzle_orm59 = __toESM(require_drizzle_orm(), 1);
 
 // src/lib/delta-display.ts
 function resolveDeltaDisplay(cur, base) {
@@ -179104,10 +179165,10 @@ async function resolveScopeName(scope) {
   if (scope.type === "authorized")
     return "全部授权门店";
   if (scope.type === "market") {
-    const [row2] = await db2.select({ name: orgNodes.name }).from(orgNodes).where(import_drizzle_orm58.eq(orgNodes.id, scope.id)).limit(1);
+    const [row2] = await db2.select({ name: orgNodes.name }).from(orgNodes).where(import_drizzle_orm59.eq(orgNodes.id, scope.id)).limit(1);
     return row2?.name ?? "未知市场";
   }
-  const [row] = await db2.select({ name: stores.storeName }).from(stores).where(import_drizzle_orm58.eq(stores.storeId, scope.id)).limit(1);
+  const [row] = await db2.select({ name: stores.storeName }).from(stores).where(import_drizzle_orm59.eq(stores.storeId, scope.id)).limit(1);
   return row?.name ?? "未知门店";
 }
 async function prepareBoardContext(session4, params) {
@@ -179137,9 +179198,9 @@ async function prepareBoardContext(session4, params) {
 
 // src/lib/data-center/scope-sql.ts
 init_permissions();
-var import_drizzle_orm59 = __toESM(require_drizzle_orm(), 1);
+var import_drizzle_orm60 = __toESM(require_drizzle_orm(), 1);
 function activeStoreCondition(storeCol) {
-  return import_drizzle_orm59.sql`
+  return import_drizzle_orm60.sql`
     ${storeCol} IN (
       SELECT active_store.store_id
       FROM stores active_store
@@ -179150,44 +179211,44 @@ function activeStoreCondition(storeCol) {
   `;
 }
 function scopeFilterSql(session4, scope, storeCol = "so.store_id") {
-  const col = import_drizzle_orm59.sql.raw(storeCol);
+  const col = import_drizzle_orm60.sql.raw(storeCol);
   const parts = [activeStoreCondition(col)];
   if (!isAdminScope(session4)) {
     const ids = session4.permissions.scopeStoreIds;
     if (ids.length === 0)
-      return import_drizzle_orm59.sql`FALSE`;
-    parts.push(import_drizzle_orm59.sql`${col} IN (${import_drizzle_orm59.sql.join(ids.map((i) => import_drizzle_orm59.sql`${i}`), import_drizzle_orm59.sql`, `)})`);
+      return import_drizzle_orm60.sql`FALSE`;
+    parts.push(import_drizzle_orm60.sql`${col} IN (${import_drizzle_orm60.sql.join(ids.map((i) => import_drizzle_orm60.sql`${i}`), import_drizzle_orm60.sql`, `)})`);
   }
   if (scope.type === "store") {
-    parts.push(import_drizzle_orm59.sql`${col} = ${scope.id}`);
+    parts.push(import_drizzle_orm60.sql`${col} = ${scope.id}`);
   } else if (scope.type === "market") {
-    parts.push(import_drizzle_orm59.sql`${col} IN ${orgNodeStoreIdsSubquery(scope.id)}`);
+    parts.push(import_drizzle_orm60.sql`${col} IN ${orgNodeStoreIdsSubquery(scope.id)}`);
   }
-  return import_drizzle_orm59.sql.join(parts, import_drizzle_orm59.sql` AND `);
+  return import_drizzle_orm60.sql.join(parts, import_drizzle_orm60.sql` AND `);
 }
 function orgAnchorScopeSql(session4, scope, anchorCol = "pb.anchor_market_id") {
-  const col = import_drizzle_orm59.sql.raw(anchorCol);
+  const col = import_drizzle_orm60.sql.raw(anchorCol);
   if (scope.type === "store")
-    return import_drizzle_orm59.sql`FALSE`;
+    return import_drizzle_orm60.sql`FALSE`;
   if (scope.type === "market")
-    return import_drizzle_orm59.sql`${col} = ${scope.id}`;
+    return import_drizzle_orm60.sql`${col} = ${scope.id}`;
   if (isAdminScope(session4))
-    return import_drizzle_orm59.sql`TRUE`;
+    return import_drizzle_orm60.sql`TRUE`;
   const ids = session4.permissions.scopeStoreIds;
   if (ids.length === 0)
-    return import_drizzle_orm59.sql`FALSE`;
-  return import_drizzle_orm59.sql`EXISTS (
+    return import_drizzle_orm60.sql`FALSE`;
+  return import_drizzle_orm60.sql`EXISTS (
     SELECT 1
     FROM stores vs
     JOIN org_nodes vn ON vs.org_node_id = vn.id
     WHERE vn.type = '门店'
       AND vn.is_active = TRUE
       AND vn.parent_id = ${col}
-      AND vs.store_id IN (${import_drizzle_orm59.sql.join(ids.map((i) => import_drizzle_orm59.sql`${i}`), import_drizzle_orm59.sql`, `)})
+      AND vs.store_id IN (${import_drizzle_orm60.sql.join(ids.map((i) => import_drizzle_orm60.sql`${i}`), import_drizzle_orm60.sql`, `)})
   )`;
 }
 function scopeStoreSkeletonSql(session4, scope) {
-  return import_drizzle_orm59.sql`
+  return import_drizzle_orm60.sql`
     SELECT s.store_id, s.store_name, o_mkt.id AS market_id, o_mkt.name AS market_name
     FROM stores s
     JOIN org_nodes o_store ON s.org_node_id = o_store.id AND o_store.type = '门店'
@@ -179197,15 +179258,15 @@ function scopeStoreSkeletonSql(session4, scope) {
 }
 
 // src/lib/data-center/consume-filter.ts
-var import_drizzle_orm60 = __toESM(require_drizzle_orm(), 1);
+var import_drizzle_orm61 = __toESM(require_drizzle_orm(), 1);
 function excludeDepositRefundSql(soAlias = "so") {
-  return import_drizzle_orm60.sql`${import_drizzle_orm60.sql.raw(soAlias)}.remark IS DISTINCT FROM ${DEPOSIT_REFUND_REMARK}`;
+  return import_drizzle_orm61.sql`${import_drizzle_orm61.sql.raw(soAlias)}.remark IS DISTINCT FROM ${DEPOSIT_REFUND_REMARK}`;
 }
 
 // src/lib/data-center/technician-sql.ts
-var import_drizzle_orm61 = __toESM(require_drizzle_orm(), 1);
+var import_drizzle_orm62 = __toESM(require_drizzle_orm(), 1);
 function technicianCteSql(session4, scope, endDate) {
-  return import_drizzle_orm61.sql`
+  return import_drizzle_orm62.sql`
       technician_base AS (
         SELECT sw.employee_id,
                COALESCE(sw.store_id, ds.store_id) AS store_id,
@@ -179232,13 +179293,13 @@ function technicianCteSql(session4, scope, endDate) {
     `;
 }
 function technicianCountSql(session4, scope, endDate) {
-  return import_drizzle_orm61.sql`
+  return import_drizzle_orm62.sql`
       WITH ${technicianCteSql(session4, scope, endDate)}
       SELECT COUNT(*)::int AS v FROM technician_scoped
     `;
 }
 function technicianByStoreSql(session4, scope, endDate) {
-  return import_drizzle_orm61.sql`
+  return import_drizzle_orm62.sql`
       WITH ${technicianCteSql(session4, scope, endDate)}
       SELECT store_id, COUNT(*)::int AS v
       FROM technician_scoped
@@ -179247,7 +179308,7 @@ function technicianByStoreSql(session4, scope, endDate) {
     `;
 }
 function technicianDirectByMarketSql(session4, scope, endDate) {
-  return import_drizzle_orm61.sql`
+  return import_drizzle_orm62.sql`
       WITH ${technicianCteSql(session4, scope, endDate)}
       SELECT anchor_market_id AS market_id,
              MAX(anchor_market_name) AS market_name,
@@ -179276,7 +179337,7 @@ var getSalesBoard = withPermission("data_center:dashboard", async (session4, par
   const ctx = await prepareBoardContext(session4, params);
   const { scope } = ctx;
   const cur = ctx.comparison.current;
-  const runStoreRevenue = async (range) => scalar(await db2.execute(import_drizzle_orm62.sql`
+  const runStoreRevenue = async (range) => scalar(await db2.execute(import_drizzle_orm63.sql`
           SELECT COALESCE(SUM(spe.amount::numeric), 0) AS v
           FROM sale_order_performance_events spe
           WHERE ${scopeFilterSql(session4, scope, "spe.store_id")}
@@ -179286,7 +179347,7 @@ var getSalesBoard = withPermission("data_center:dashboard", async (session4, par
             AND spe.legacy_source IS DISTINCT FROM 'workfine'
             AND spe.performance_date BETWEEN ${range.start} AND ${range.end}
         `));
-  const runShengmeiRevenue = async (range) => scalar(await db2.execute(import_drizzle_orm62.sql`
+  const runShengmeiRevenue = async (range) => scalar(await db2.execute(import_drizzle_orm63.sql`
           SELECT COALESCE(SUM(sipe.amount::numeric), 0) AS v
           FROM sale_item_performance_events sipe
           JOIN sale_items si ON si.sale_item_id = sipe.sale_item_id
@@ -179297,7 +179358,7 @@ var getSalesBoard = withPermission("data_center:dashboard", async (session4, par
             AND si.is_shengmei = TRUE
             AND sipe.performance_date BETWEEN ${range.start} AND ${range.end}
         `));
-  const runStoreConsume = async (range) => scalar(await db2.execute(import_drizzle_orm62.sql`
+  const runStoreConsume = async (range) => scalar(await db2.execute(import_drizzle_orm63.sql`
           SELECT COALESCE(SUM(sit.unit_real_price::numeric * sit.session_used), 0) AS v
           FROM service_orders so
           JOIN service_items sit ON sit.service_order_id = so.service_order_id
@@ -179307,7 +179368,7 @@ var getSalesBoard = withPermission("data_center:dashboard", async (session4, par
             AND so.service_date BETWEEN ${range.start} AND ${range.end}
             AND ${excludeDepositRefundSql("so")}
         `));
-  const runShengmeiConsume = async (range) => scalar(await db2.execute(import_drizzle_orm62.sql`
+  const runShengmeiConsume = async (range) => scalar(await db2.execute(import_drizzle_orm63.sql`
           SELECT COALESCE(SUM(sit.unit_real_price::numeric * sit.session_used), 0) AS v
           FROM service_orders so
           JOIN service_items sit ON sit.service_order_id = so.service_order_id
@@ -179318,7 +179379,7 @@ var getSalesBoard = withPermission("data_center:dashboard", async (session4, par
             AND so.service_date BETWEEN ${range.start} AND ${range.end}
             AND ${excludeDepositRefundSql("so")}
         `));
-  const runNewCustomerRevenue = async (range) => scalar(await db2.execute(import_drizzle_orm62.sql`
+  const runNewCustomerRevenue = async (range) => scalar(await db2.execute(import_drizzle_orm63.sql`
           SELECT COALESCE(SUM(spe.amount::numeric), 0) AS v
           FROM sale_order_performance_events spe
           JOIN sale_orders so ON so.sale_order_id = spe.sale_order_id
@@ -179332,7 +179393,7 @@ var getSalesBoard = withPermission("data_center:dashboard", async (session4, par
             AND c.became_member_at::date >= ${range.start}
             AND spe.performance_date BETWEEN ${range.start} AND ${range.end}
         `));
-  const runTrafficCustomerRevenue = async (range) => scalar(await db2.execute(import_drizzle_orm62.sql`
+  const runTrafficCustomerRevenue = async (range) => scalar(await db2.execute(import_drizzle_orm63.sql`
           SELECT COALESCE(SUM(spe.amount::numeric), 0) AS v
           FROM sale_order_performance_events spe
           JOIN sale_orders so ON so.sale_order_id = spe.sale_order_id
@@ -179346,7 +179407,7 @@ var getSalesBoard = withPermission("data_center:dashboard", async (session4, par
             AND spe.performance_date BETWEEN ${range.start} AND ${range.end}
         `));
   const runStoreCount = async (range) => {
-    return scalar(await db2.execute(import_drizzle_orm62.sql`
+    return scalar(await db2.execute(import_drizzle_orm63.sql`
           SELECT COUNT(*)::int AS v
           FROM stores s
           JOIN org_nodes o ON s.org_node_id = o.id
@@ -179418,7 +179479,7 @@ var getSalesBoard = withPermission("data_center:dashboard", async (session4, par
     db2.execute(skeleton),
     db2.execute(technicianByStoreSql(session4, scope, cur.end)),
     db2.execute(technicianDirectByMarketSql(session4, scope, cur.end)),
-    db2.execute(import_drizzle_orm62.sql`
+    db2.execute(import_drizzle_orm63.sql`
         SELECT spe.store_id, COALESCE(SUM(spe.amount::numeric), 0) AS v
         FROM sale_order_performance_events spe
         WHERE ${scopeFilterSql(session4, scope, "spe.store_id")}
@@ -179429,7 +179490,7 @@ var getSalesBoard = withPermission("data_center:dashboard", async (session4, par
           AND spe.performance_date BETWEEN ${cur.start} AND ${cur.end}
         GROUP BY spe.store_id
       `),
-    db2.execute(import_drizzle_orm62.sql`
+    db2.execute(import_drizzle_orm63.sql`
         SELECT so.store_id, COALESCE(SUM(sipe.amount::numeric), 0) AS v
         FROM sale_item_performance_events sipe
         JOIN sale_items si ON si.sale_item_id = sipe.sale_item_id
@@ -179441,7 +179502,7 @@ var getSalesBoard = withPermission("data_center:dashboard", async (session4, par
           AND sipe.performance_date BETWEEN ${cur.start} AND ${cur.end}
         GROUP BY so.store_id
       `),
-    db2.execute(import_drizzle_orm62.sql`
+    db2.execute(import_drizzle_orm63.sql`
         SELECT so.store_id, COALESCE(SUM(spe.amount::numeric), 0) AS v
         FROM sale_order_performance_events spe
         JOIN sale_orders so ON so.sale_order_id = spe.sale_order_id
@@ -179456,7 +179517,7 @@ var getSalesBoard = withPermission("data_center:dashboard", async (session4, par
           AND spe.performance_date BETWEEN ${cur.start} AND ${cur.end}
         GROUP BY so.store_id
       `),
-    db2.execute(import_drizzle_orm62.sql`
+    db2.execute(import_drizzle_orm63.sql`
         SELECT so.store_id, COALESCE(SUM(spe.amount::numeric), 0) AS v
         FROM sale_order_performance_events spe
         JOIN sale_orders so ON so.sale_order_id = spe.sale_order_id
@@ -179470,7 +179531,7 @@ var getSalesBoard = withPermission("data_center:dashboard", async (session4, par
           AND spe.performance_date BETWEEN ${cur.start} AND ${cur.end}
         GROUP BY so.store_id
       `),
-    db2.execute(import_drizzle_orm62.sql`
+    db2.execute(import_drizzle_orm63.sql`
         SELECT so.store_id, COALESCE(SUM(sit.unit_real_price::numeric * sit.session_used), 0) AS v
         FROM service_orders so
         JOIN service_items sit ON sit.service_order_id = so.service_order_id
@@ -179481,7 +179542,7 @@ var getSalesBoard = withPermission("data_center:dashboard", async (session4, par
           AND ${excludeDepositRefundSql("so")}
         GROUP BY so.store_id
       `),
-    db2.execute(import_drizzle_orm62.sql`
+    db2.execute(import_drizzle_orm63.sql`
         SELECT so.store_id, COALESCE(SUM(sit.unit_real_price::numeric * sit.session_used), 0) AS v
         FROM service_orders so
         JOIN service_items sit ON sit.service_order_id = so.service_order_id
@@ -179605,10 +179666,10 @@ var getSalesBoard = withPermission("data_center:dashboard", async (session4, par
 // src/actions/data-center/customer.ts
 init_db2();
 init_with_permission();
-var import_drizzle_orm64 = __toESM(require_drizzle_orm(), 1);
+var import_drizzle_orm65 = __toESM(require_drizzle_orm(), 1);
 
 // src/lib/data-center/visit-days.ts
-var import_drizzle_orm63 = __toESM(require_drizzle_orm(), 1);
+var import_drizzle_orm64 = __toESM(require_drizzle_orm(), 1);
 var VISIT_DAY_AXIS_COLUMN = {
   service_date: "so.service_date"
 };
@@ -179616,8 +179677,8 @@ function visitDaysSql(opts) {
   const column2 = Object.hasOwn(VISIT_DAY_AXIS_COLUMN, opts.axis) ? VISIT_DAY_AXIS_COLUMN[opts.axis] : undefined;
   if (!column2)
     throw new Error(`visitDaysSql: 未知日期轴 ${String(opts.axis)}`);
-  const col = import_drizzle_orm63.sql.raw(column2);
-  return import_drizzle_orm63.sql`
+  const col = import_drizzle_orm64.sql.raw(column2);
+  return import_drizzle_orm64.sql`
     SELECT DISTINCT so.client_user_id, ${col} AS visit_date
     FROM service_orders so
     WHERE ${opts.scope}
@@ -179638,7 +179699,7 @@ var first = (rows) => rows[0] ?? {};
 async function queryRegistration(session4, scope, range, customerType) {
   const sc = scopeFilterSql(session4, scope, "c.bound_store_id");
   if (customerType === "会员客") {
-    const rows2 = await db2.execute(import_drizzle_orm64.sql`
+    const rows2 = await db2.execute(import_drizzle_orm65.sql`
       SELECT COUNT(*) AS v
       FROM client_wechat_users c
       WHERE ${sc}
@@ -179647,8 +179708,8 @@ async function queryRegistration(session4, scope, range, customerType) {
     `);
     return num(first(rows2).v);
   }
-  const typeClause = customerType ? import_drizzle_orm64.sql` AND c.customer_type = ${customerType}` : import_drizzle_orm64.sql``;
-  const rows = await db2.execute(import_drizzle_orm64.sql`
+  const typeClause = customerType ? import_drizzle_orm65.sql` AND c.customer_type = ${customerType}` : import_drizzle_orm65.sql``;
+  const rows = await db2.execute(import_drizzle_orm65.sql`
     SELECT COUNT(*) AS v
     FROM client_wechat_users c
     WHERE ${sc}
@@ -179658,9 +179719,9 @@ async function queryRegistration(session4, scope, range, customerType) {
 }
 async function queryTrafficCount(session4, scope, range, customerType, metric) {
   const sc = scopeFilterSql(session4, scope, "so.store_id");
-  const typeClause = customerType ? import_drizzle_orm64.sql` AND c.customer_type = ${customerType}` : import_drizzle_orm64.sql``;
-  const expr = metric === "users" ? import_drizzle_orm64.sql`COUNT(DISTINCT so.client_user_id)` : import_drizzle_orm64.sql`COUNT(*)`;
-  const rows = await db2.execute(import_drizzle_orm64.sql`
+  const typeClause = customerType ? import_drizzle_orm65.sql` AND c.customer_type = ${customerType}` : import_drizzle_orm65.sql``;
+  const expr = metric === "users" ? import_drizzle_orm65.sql`COUNT(DISTINCT so.client_user_id)` : import_drizzle_orm65.sql`COUNT(*)`;
+  const rows = await db2.execute(import_drizzle_orm65.sql`
     SELECT ${expr} AS v
     FROM service_orders so
     JOIN client_wechat_users c ON c.user_id = so.client_user_id
@@ -179672,7 +179733,7 @@ async function queryTrafficCount(session4, scope, range, customerType, metric) {
 }
 async function queryProjectCount(session4, scope, range) {
   const sc = scopeFilterSql(session4, scope, "so.store_id");
-  const rows = await db2.execute(import_drizzle_orm64.sql`
+  const rows = await db2.execute(import_drizzle_orm65.sql`
     SELECT COALESCE(SUM(sit.session_used), 0) AS v
     FROM service_orders so
     JOIN service_items sit ON sit.service_order_id = so.service_order_id
@@ -179686,7 +179747,7 @@ async function queryProjectCount(session4, scope, range) {
 }
 async function queryServiceCount(session4, scope, range) {
   const sc = scopeFilterSql(session4, scope, "so.store_id");
-  const rows = await db2.execute(import_drizzle_orm64.sql`
+  const rows = await db2.execute(import_drizzle_orm65.sql`
     SELECT COUNT(*) AS v
     FROM service_orders so
     WHERE ${sc}
@@ -179697,7 +179758,7 @@ async function queryServiceCount(session4, scope, range) {
 }
 async function queryShengmeiConsume(session4, scope, range) {
   const sc = scopeFilterSql(session4, scope, "so.store_id");
-  const rows = await db2.execute(import_drizzle_orm64.sql`
+  const rows = await db2.execute(import_drizzle_orm65.sql`
     SELECT COALESCE(SUM(sit.unit_real_price::numeric * sit.session_used::numeric), 0) AS v
     FROM service_orders so
     JOIN service_items sit ON sit.service_order_id = so.service_order_id
@@ -179711,8 +179772,8 @@ async function queryShengmeiConsume(session4, scope, range) {
 }
 async function queryStatusCount(session4, scope, status) {
   const sc = scopeFilterSql(session4, scope, "c.bound_store_id");
-  const memberClause = status === "沉睡" ? import_drizzle_orm64.sql` AND c.customer_type = '会员客'` : import_drizzle_orm64.sql``;
-  const rows = await db2.execute(import_drizzle_orm64.sql`
+  const memberClause = status === "沉睡" ? import_drizzle_orm65.sql` AND c.customer_type = '会员客'` : import_drizzle_orm65.sql``;
+  const rows = await db2.execute(import_drizzle_orm65.sql`
     SELECT COUNT(*) AS v
     FROM client_wechat_users c
     WHERE ${sc}
@@ -179723,8 +179784,8 @@ async function queryStatusCount(session4, scope, status) {
 async function queryActive(session4, scope, range, mode) {
   const ssc = scopeFilterSql(session4, scope, "so.store_id");
   const csc = scopeFilterSql(session4, scope, "c.bound_store_id");
-  const daysClause = mode === "once" ? import_drizzle_orm64.sql`vc.days = 1` : import_drizzle_orm64.sql`vc.days >= 2`;
-  const rows = await db2.execute(import_drizzle_orm64.sql`
+  const daysClause = mode === "once" ? import_drizzle_orm65.sql`vc.days = 1` : import_drizzle_orm65.sql`vc.days >= 2`;
+  const rows = await db2.execute(import_drizzle_orm65.sql`
     WITH visit_days AS (${visitDaysSql({ axis: "service_date", scope: ssc, range })}),
     visit_count AS (
       SELECT vd.client_user_id, COUNT(DISTINCT vd.visit_date) AS days
@@ -179746,17 +179807,17 @@ async function queryReactivated(session4, scope, range, bucket) {
   const start = range.start;
   let lastDtClause;
   if (bucket === "warn") {
-    lastDtClause = import_drizzle_orm64.sql`a.last_dt IS NOT NULL
+    lastDtClause = import_drizzle_orm65.sql`a.last_dt IS NOT NULL
       AND a.last_dt >= (${start}::date - 1 - INTERVAL '6 months')::date`;
   } else if (bucket === "frozen") {
-    lastDtClause = import_drizzle_orm64.sql`a.last_dt IS NOT NULL
+    lastDtClause = import_drizzle_orm65.sql`a.last_dt IS NOT NULL
       AND a.last_dt < (${start}::date - 1 - INTERVAL '6 months')::date
       AND a.last_dt >= (${start}::date - 1 - INTERVAL '12 months')::date`;
   } else {
-    lastDtClause = import_drizzle_orm64.sql`(a.last_dt IS NULL
+    lastDtClause = import_drizzle_orm65.sql`(a.last_dt IS NULL
       OR a.last_dt < (${start}::date - 1 - INTERVAL '12 months')::date)`;
   }
-  const rows = await db2.execute(import_drizzle_orm64.sql`
+  const rows = await db2.execute(import_drizzle_orm65.sql`
     WITH visited_in_period AS (
       SELECT DISTINCT so.client_user_id
       FROM service_orders so
@@ -179794,7 +179855,7 @@ async function queryReactivated(session4, scope, range, bucket) {
 }
 async function queryOperatedMembers(session4, scope, range) {
   const sc = scopeFilterSql(session4, scope, "o.store_id");
-  const rows = await db2.execute(import_drizzle_orm64.sql`
+  const rows = await db2.execute(import_drizzle_orm65.sql`
     WITH member_spend AS (
       SELECT o.client_user_id,
              SUM(spe.amount::numeric) AS spend
@@ -179817,7 +179878,7 @@ async function queryOperatedMembers(session4, scope, range) {
 }
 async function queryMemberAvgTicket(session4, scope, range) {
   const sc = scopeFilterSql(session4, scope, "o.store_id");
-  const rows = await db2.execute(import_drizzle_orm64.sql`
+  const rows = await db2.execute(import_drizzle_orm65.sql`
     WITH member_spend AS (
       SELECT o.client_user_id,
              SUM(spe.amount::numeric) AS spend
@@ -179842,7 +179903,7 @@ async function queryMemberAvgTicket(session4, scope, range) {
 }
 async function queryNewMemberCount(session4, scope, range) {
   const sc = scopeFilterSql(session4, scope, "c.bound_store_id");
-  const rows = await db2.execute(import_drizzle_orm64.sql`
+  const rows = await db2.execute(import_drizzle_orm65.sql`
     SELECT COUNT(*) AS v
     FROM client_wechat_users c
     WHERE ${sc}
@@ -179853,7 +179914,7 @@ async function queryNewMemberCount(session4, scope, range) {
 }
 async function queryNewMemberSpend(session4, scope, range) {
   const sc = scopeFilterSql(session4, scope, "o.store_id");
-  const rows = await db2.execute(import_drizzle_orm64.sql`
+  const rows = await db2.execute(import_drizzle_orm65.sql`
     SELECT COALESCE(SUM(spe.amount::numeric), 0) AS v
     FROM sale_order_performance_events spe
     JOIN sale_orders o ON o.sale_order_id = spe.sale_order_id
@@ -179872,7 +179933,7 @@ async function queryNewMemberSpend(session4, scope, range) {
 async function queryTrialFootfall(session4, scope, range) {
   const scVisit = scopeFilterSql(session4, scope, "so.store_id");
   const scMember = scopeFilterSql(session4, scope, "c.bound_store_id");
-  const rows = await db2.execute(import_drizzle_orm64.sql`
+  const rows = await db2.execute(import_drizzle_orm65.sql`
     SELECT COUNT(DISTINCT t.uid) AS v
     FROM (
       -- ① 本期到店 且 期初未达会员（当前仍未达会员 OR 本期内才转化）
@@ -179900,7 +179961,7 @@ async function queryTrialFootfall(session4, scope, range) {
 }
 async function queryRetainedMembers(session4, scope, range) {
   const sc = scopeFilterSql(session4, scope, "c.bound_store_id");
-  const rows = await db2.execute(import_drizzle_orm64.sql`
+  const rows = await db2.execute(import_drizzle_orm65.sql`
     SELECT COUNT(DISTINCT so.client_user_id) AS v
     FROM service_orders so
     JOIN client_wechat_users c ON c.user_id = so.client_user_id
@@ -179915,12 +179976,12 @@ async function queryRetainedMembers(session4, scope, range) {
 }
 async function queryRegActiveBreakdown(session4, scope, range, group) {
   const skeleton = scopeStoreSkeletonSql(session4, scope);
-  const groupId = group === "market" ? import_drizzle_orm64.sql.raw("sk.market_id") : import_drizzle_orm64.sql.raw("sk.store_id");
+  const groupId = group === "market" ? import_drizzle_orm65.sql.raw("sk.market_id") : import_drizzle_orm65.sql.raw("sk.store_id");
   const start = range.start;
   const end = range.end;
   const serviceScope = scopeFilterSql(session4, scope, "so.store_id");
   const customerScope = scopeFilterSql(session4, scope, "c.bound_store_id");
-  const rows = await db2.execute(import_drizzle_orm64.sql`
+  const rows = await db2.execute(import_drizzle_orm65.sql`
     WITH skel AS (${skeleton}),
     -- 注册（会员客口径，became_member_at 截面）按 bound_store_id 归组
     reg AS (
@@ -180029,7 +180090,7 @@ async function queryRegActiveBreakdown(session4, scope, range, group) {
     )
     SELECT
       ${groupId} AS group_id,
-      ${group === "market" ? import_drizzle_orm64.sql.raw("MAX(sk.market_name)") : import_drizzle_orm64.sql.raw("MAX(sk.store_name)")} AS group_name,
+      ${group === "market" ? import_drizzle_orm65.sql.raw("MAX(sk.market_name)") : import_drizzle_orm65.sql.raw("MAX(sk.store_name)")} AS group_name,
       MAX(sk.market_name) AS market_name,
       COALESCE(SUM(reg.registered), 0) AS registered,
       COALESCE(SUM(ret.retained), 0) AS retained,
@@ -180072,11 +180133,11 @@ async function queryRegActiveBreakdown(session4, scope, range, group) {
 }
 async function queryOpsBreakdown(session4, scope, range, group) {
   const skeleton = scopeStoreSkeletonSql(session4, scope);
-  const groupId = group === "market" ? import_drizzle_orm64.sql.raw("sk.market_id") : import_drizzle_orm64.sql.raw("sk.store_id");
-  const groupName = group === "market" ? import_drizzle_orm64.sql.raw("sk.market_name") : import_drizzle_orm64.sql.raw("sk.store_name");
+  const groupId = group === "market" ? import_drizzle_orm65.sql.raw("sk.market_id") : import_drizzle_orm65.sql.raw("sk.store_id");
+  const groupName = group === "market" ? import_drizzle_orm65.sql.raw("sk.market_name") : import_drizzle_orm65.sql.raw("sk.store_name");
   const start = range.start;
   const end = range.end;
-  const rows = await db2.execute(import_drizzle_orm64.sql`
+  const rows = await db2.execute(import_drizzle_orm65.sql`
     WITH skel AS (${skeleton}),
     group_skel AS (
       SELECT ${groupId} AS group_id,
@@ -180455,7 +180516,7 @@ var getCustomerBoard = withPermission("data_center:dashboard", async (session4, 
 // src/actions/data-center/product.ts
 init_db2();
 init_with_permission();
-var import_drizzle_orm65 = __toESM(require_drizzle_orm(), 1);
+var import_drizzle_orm66 = __toESM(require_drizzle_orm(), 1);
 "use server";
 var num2 = (v) => {
   const n = Number(v ?? 0);
@@ -180469,23 +180530,23 @@ function resolveGrouping(params) {
   const category = params.categoryName?.trim() || "";
   if (category) {
     return {
-      groupCol: import_drizzle_orm65.sql.raw("pc.category_name"),
-      filter: import_drizzle_orm65.sql`pc.product_kind = ${kind} AND pc.category_name = ${category}`
+      groupCol: import_drizzle_orm66.sql.raw("pc.category_name"),
+      filter: import_drizzle_orm66.sql`pc.product_kind = ${kind} AND pc.category_name = ${category}`
     };
   }
   if (kind) {
     return {
-      groupCol: import_drizzle_orm65.sql.raw("pc.product_kind"),
-      filter: import_drizzle_orm65.sql`pc.product_kind = ${kind}`
+      groupCol: import_drizzle_orm66.sql.raw("pc.product_kind"),
+      filter: import_drizzle_orm66.sql`pc.product_kind = ${kind}`
     };
   }
   return {
-    groupCol: import_drizzle_orm65.sql.raw("pc.product_kind"),
-    filter: import_drizzle_orm65.sql`pc.product_kind IS NOT NULL`
+    groupCol: import_drizzle_orm66.sql.raw("pc.product_kind"),
+    filter: import_drizzle_orm66.sql`pc.product_kind IS NOT NULL`
   };
 }
 async function queryFilterOptions() {
-  const rows = await db2.execute(import_drizzle_orm65.sql`
+  const rows = await db2.execute(import_drizzle_orm66.sql`
     SELECT DISTINCT pc.product_kind AS kind, pc.category_name AS category
     FROM product_categories pc
     WHERE pc.product_kind IS NOT NULL
@@ -180507,7 +180568,7 @@ async function queryFilterOptions() {
 }
 async function queryCardHolders(session4, scope, filter) {
   const sc = scopeFilterSql(session4, scope, "so.store_id");
-  const rows = await db2.execute(import_drizzle_orm65.sql`
+  const rows = await db2.execute(import_drizzle_orm66.sql`
     SELECT COUNT(DISTINCT so.client_user_id) AS v
     FROM sale_items si
     JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
@@ -180524,7 +180585,7 @@ async function queryCardHolders(session4, scope, filter) {
 }
 async function queryMemberCount(session4, scope) {
   const sc = scopeFilterSql(session4, scope, "c.bound_store_id");
-  const rows = await db2.execute(import_drizzle_orm65.sql`
+  const rows = await db2.execute(import_drizzle_orm66.sql`
     SELECT COUNT(*) AS v
     FROM client_wechat_users c
     WHERE ${sc}
@@ -180534,7 +180595,7 @@ async function queryMemberCount(session4, scope) {
 }
 async function queryCycle(session4, scope, range, threshold, groupCol, filter, group, metric) {
   const sc = scopeFilterSql(session4, scope, "so.store_id");
-  const rows = await db2.execute(import_drizzle_orm65.sql`
+  const rows = await db2.execute(import_drizzle_orm66.sql`
     WITH daily_agg AS (
       SELECT so.client_user_id,
              so.store_id,
@@ -180603,7 +180664,7 @@ async function queryCycle(session4, scope, range, threshold, groupCol, filter, g
       )
     ),
     cohort AS (
-      ${group === "trial" ? import_drizzle_orm65.sql`SELECT client_user_id, grp FROM tiyan` : group === "new" ? import_drizzle_orm65.sql`SELECT client_user_id, grp FROM xinzeng` : import_drizzle_orm65.sql`SELECT client_user_id, grp FROM fugou`}
+      ${group === "trial" ? import_drizzle_orm66.sql`SELECT client_user_id, grp FROM tiyan` : group === "new" ? import_drizzle_orm66.sql`SELECT client_user_id, grp FROM xinzeng` : import_drizzle_orm66.sql`SELECT client_user_id, grp FROM fugou`}
     )
     SELECT
       COUNT(DISTINCT c.client_user_id) AS count,
@@ -180617,7 +180678,7 @@ async function queryCycle(session4, scope, range, threshold, groupCol, filter, g
 }
 async function queryCardHoldersByStore(session4, scope, filter) {
   const sc = scopeFilterSql(session4, scope, "so.store_id");
-  const rows = await db2.execute(import_drizzle_orm65.sql`
+  const rows = await db2.execute(import_drizzle_orm66.sql`
     SELECT so.store_id, COUNT(DISTINCT so.client_user_id) AS v
     FROM sale_items si
     JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
@@ -180642,7 +180703,7 @@ async function queryCardHoldersByStore(session4, scope, filter) {
 }
 async function queryMemberCountByStore(session4, scope) {
   const sc = scopeFilterSql(session4, scope, "c.bound_store_id");
-  const rows = await db2.execute(import_drizzle_orm65.sql`
+  const rows = await db2.execute(import_drizzle_orm66.sql`
     SELECT c.bound_store_id AS store_id, COUNT(*) AS v
     FROM client_wechat_users c
     WHERE ${sc}
@@ -180661,7 +180722,7 @@ async function queryMemberCountByStore(session4, scope) {
 }
 async function queryCycleByStore(session4, scope, range, threshold, groupCol, filter) {
   const sc = scopeFilterSql(session4, scope, "so.store_id");
-  const rows = await db2.execute(import_drizzle_orm65.sql`
+  const rows = await db2.execute(import_drizzle_orm66.sql`
     WITH daily_agg AS (
       SELECT so.client_user_id,
              so.store_id,
@@ -180974,7 +181035,7 @@ var getProductBoard = withPermission("data_center:dashboard", async (session4, p
 // src/actions/data-center/efficiency.ts
 init_db2();
 init_with_permission();
-var import_drizzle_orm66 = __toESM(require_drizzle_orm(), 1);
+var import_drizzle_orm67 = __toESM(require_drizzle_orm(), 1);
 "use server";
 function scalar2(rows, key = "v") {
   const r = rows[0];
@@ -180989,8 +181050,8 @@ function ratio(num3, den) {
   return num3 / den;
 }
 function performanceEventDateBetween(eventAlias, start, end) {
-  return import_drizzle_orm66.sql`${import_drizzle_orm66.sql.raw(`${eventAlias}.status`)} = '已支付'
-    AND ${import_drizzle_orm66.sql.raw(`${eventAlias}.performance_date`)} BETWEEN ${start} AND ${end}`;
+  return import_drizzle_orm67.sql`${import_drizzle_orm67.sql.raw(`${eventAlias}.status`)} = '已支付'
+    AND ${import_drizzle_orm67.sql.raw(`${eventAlias}.performance_date`)} BETWEEN ${start} AND ${end}`;
 }
 function toMap(rows) {
   const m = new Map;
@@ -181016,7 +181077,7 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
   const ctx = await prepareBoardContext(session4, params);
   const { scope } = ctx;
   const cur = ctx.comparison.current;
-  const qRevenueTotal = db2.execute(import_drizzle_orm66.sql`
+  const qRevenueTotal = db2.execute(import_drizzle_orm67.sql`
       SELECT COALESCE(SUM(spe.amount::numeric), 0) AS v
       FROM sale_order_performance_events spe
       WHERE ${scopeFilterSql(session4, scope, "spe.store_id")}
@@ -181025,7 +181086,7 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
         AND spe.legacy_source IS DISTINCT FROM 'workfine'
         AND ${performanceEventDateBetween("spe", cur.start, cur.end)}
     `);
-  const qConsumeTotal = db2.execute(import_drizzle_orm66.sql`
+  const qConsumeTotal = db2.execute(import_drizzle_orm67.sql`
       SELECT COALESCE(SUM(sit.unit_real_price::numeric * sit.session_used), 0) AS v
       FROM service_items sit
       JOIN service_orders so ON so.service_order_id = sit.service_order_id
@@ -181034,7 +181095,7 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
         AND so.service_date BETWEEN ${cur.start} AND ${cur.end}
         AND ${excludeDepositRefundSql("so")}
     `);
-  const qSalesCommTotal = db2.execute(import_drizzle_orm66.sql`
+  const qSalesCommTotal = db2.execute(import_drizzle_orm67.sql`
       SELECT COALESCE(SUM(spia.commission_amount::numeric), 0) AS v
       FROM sale_payment_item_allocations spia
       JOIN sale_payment_item_receipts spir ON spir.id = spia.sale_payment_item_receipt_id
@@ -181046,7 +181107,7 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
         AND so.sale_order_type IN ('销售单', '转换单')
         AND ${performanceEventDateBetween("spe", cur.start, cur.end)}
     `);
-  const qServiceCommTotal = db2.execute(import_drizzle_orm66.sql`
+  const qServiceCommTotal = db2.execute(import_drizzle_orm67.sql`
       SELECT COALESCE(SUM(sc.commission_amount::numeric), 0) AS v
       FROM service_commissions sc
       JOIN service_items sit ON sit.service_item_id = sc.service_item_id
@@ -181056,7 +181117,7 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
         AND so.status = '已完成'
         AND so.service_date BETWEEN ${cur.start} AND ${cur.end}
     `);
-  const qFootfallTotal = db2.execute(import_drizzle_orm66.sql`
+  const qFootfallTotal = db2.execute(import_drizzle_orm67.sql`
       SELECT COUNT(DISTINCT so.client_user_id) AS v
       FROM service_orders so
       WHERE ${scopeFilterSql(session4, scope, "so.store_id")}
@@ -181064,7 +181125,7 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
         AND so.client_user_id IS NOT NULL
         AND so.service_date BETWEEN ${cur.start} AND ${cur.end}
     `);
-  const qProjectCountTotal = db2.execute(import_drizzle_orm66.sql`
+  const qProjectCountTotal = db2.execute(import_drizzle_orm67.sql`
       SELECT COALESCE(SUM(sit.session_used), 0) AS v
       FROM service_orders so
       JOIN service_items sit ON sit.service_order_id = so.service_order_id
@@ -181074,7 +181135,7 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
         AND so.service_date BETWEEN ${cur.start} AND ${cur.end}
         AND ${excludeDepositRefundSql("so")}
     `);
-  const qMemberCount = db2.execute(import_drizzle_orm66.sql`
+  const qMemberCount = db2.execute(import_drizzle_orm67.sql`
       SELECT COUNT(*) AS v
       FROM client_wechat_users c
       WHERE ${scopeFilterSql(session4, scope, "c.bound_store_id")}
@@ -181082,7 +181143,7 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
         AND c.became_member_at::date <= ${cur.end}
     `);
   const qTechnicianCount = db2.execute(technicianCountSql(session4, scope, cur.end));
-  const qManagerCount = db2.execute(import_drizzle_orm66.sql`
+  const qManagerCount = db2.execute(import_drizzle_orm67.sql`
       SELECT COUNT(*)::int AS v
       FROM stores s
       JOIN org_nodes o ON s.org_node_id = o.id AND o.type = '门店'
@@ -181093,7 +181154,7 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
     `);
   const skeleton = scopeStoreSkeletonSql(session4, scope);
   const qStoreSkeleton = db2.execute(skeleton);
-  const qManagerByStore = db2.execute(import_drizzle_orm66.sql`
+  const qManagerByStore = db2.execute(import_drizzle_orm67.sql`
       SELECT s.store_id, 1::int AS v
       FROM stores s
       JOIN org_nodes o ON s.org_node_id = o.id AND o.type = '门店'
@@ -181104,7 +181165,7 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
     `);
   const qTechByStore = db2.execute(technicianByStoreSql(session4, scope, cur.end));
   const qTechDirectByMarket = db2.execute(technicianDirectByMarketSql(session4, scope, cur.end));
-  const qRevenueByStore = db2.execute(import_drizzle_orm66.sql`
+  const qRevenueByStore = db2.execute(import_drizzle_orm67.sql`
       SELECT spe.store_id, COALESCE(SUM(spe.amount::numeric), 0) AS v
       FROM sale_order_performance_events spe
       WHERE ${scopeFilterSql(session4, scope, "spe.store_id")}
@@ -181114,7 +181175,7 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
         AND ${performanceEventDateBetween("spe", cur.start, cur.end)}
       GROUP BY spe.store_id
     `);
-  const qConsumeByStore = db2.execute(import_drizzle_orm66.sql`
+  const qConsumeByStore = db2.execute(import_drizzle_orm67.sql`
       SELECT so.store_id, COALESCE(SUM(sit.unit_real_price::numeric * sit.session_used), 0) AS v
       FROM service_items sit
       JOIN service_orders so ON so.service_order_id = sit.service_order_id
@@ -181124,7 +181185,7 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
         AND ${excludeDepositRefundSql("so")}
       GROUP BY so.store_id
     `);
-  const qShengmeiConsumeByStore = db2.execute(import_drizzle_orm66.sql`
+  const qShengmeiConsumeByStore = db2.execute(import_drizzle_orm67.sql`
       SELECT so.store_id, COALESCE(SUM(sit.unit_real_price::numeric * sit.session_used), 0) AS v
       FROM service_items sit
       JOIN service_orders so ON so.service_order_id = sit.service_order_id
@@ -181135,7 +181196,7 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
         AND ${excludeDepositRefundSql("so")}
       GROUP BY so.store_id
     `);
-  const qSalesCommByStore = db2.execute(import_drizzle_orm66.sql`
+  const qSalesCommByStore = db2.execute(import_drizzle_orm67.sql`
       SELECT so.store_id, COALESCE(SUM(spia.commission_amount::numeric), 0) AS v
       FROM sale_payment_item_allocations spia
       JOIN sale_payment_item_receipts spir ON spir.id = spia.sale_payment_item_receipt_id
@@ -181148,7 +181209,7 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
         AND ${performanceEventDateBetween("spe", cur.start, cur.end)}
       GROUP BY so.store_id
     `);
-  const qServiceCommByStore = db2.execute(import_drizzle_orm66.sql`
+  const qServiceCommByStore = db2.execute(import_drizzle_orm67.sql`
       SELECT so.store_id, COALESCE(SUM(sc.commission_amount::numeric), 0) AS v
       FROM service_commissions sc
       JOIN service_items sit ON sit.service_item_id = sc.service_item_id
@@ -181159,7 +181220,7 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
         AND so.service_date BETWEEN ${cur.start} AND ${cur.end}
       GROUP BY so.store_id
     `);
-  const qFootfallByMarket = db2.execute(import_drizzle_orm66.sql`
+  const qFootfallByMarket = db2.execute(import_drizzle_orm67.sql`
       WITH skel AS (${skeleton})
       SELECT sk.market_id, COUNT(DISTINCT so.client_user_id) AS v
       FROM service_orders so
@@ -181169,7 +181230,7 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
         AND so.service_date BETWEEN ${cur.start} AND ${cur.end}
       GROUP BY sk.market_id
     `);
-  const qProjectByStore = db2.execute(import_drizzle_orm66.sql`
+  const qProjectByStore = db2.execute(import_drizzle_orm67.sql`
       SELECT so.store_id, COALESCE(SUM(sit.session_used), 0) AS v
       FROM service_orders so
       JOIN service_items sit ON sit.service_order_id = so.service_order_id
@@ -181180,7 +181241,7 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
         AND ${excludeDepositRefundSql("so")}
       GROUP BY so.store_id
     `);
-  const qStoreRankRevenue = db2.execute(import_drizzle_orm66.sql`
+  const qStoreRankRevenue = db2.execute(import_drizzle_orm67.sql`
       SELECT s.store_id, s.store_name, o.name AS market_name,
         COALESCE(SUM(spe.amount::numeric), 0) AS value
       FROM stores s
@@ -181197,7 +181258,7 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
       GROUP BY s.store_id, s.store_name, o.name
       ORDER BY value DESC, s.store_name ASC
     `);
-  const qStoreRankConsume = db2.execute(import_drizzle_orm66.sql`
+  const qStoreRankConsume = db2.execute(import_drizzle_orm67.sql`
       SELECT s.store_id, s.store_name, o.name AS market_name,
         COALESCE(SUM(sit.unit_real_price::numeric * sit.session_used), 0) AS value
       FROM stores s
@@ -181213,7 +181274,7 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
       GROUP BY s.store_id, s.store_name, o.name
       ORDER BY value DESC, s.store_name ASC
     `);
-  const qStoreRankRetainedMember = db2.execute(import_drizzle_orm66.sql`
+  const qStoreRankRetainedMember = db2.execute(import_drizzle_orm67.sql`
       SELECT s.store_id, s.store_name, o.name AS market_name,
         COUNT(DISTINCT c.user_id) AS value
       FROM stores s
@@ -181233,7 +181294,7 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
       GROUP BY s.store_id, s.store_name, o.name
       ORDER BY value DESC, s.store_name ASC
     `);
-  const qStoreRankNewMember = db2.execute(import_drizzle_orm66.sql`
+  const qStoreRankNewMember = db2.execute(import_drizzle_orm67.sql`
       SELECT s.store_id, s.store_name, o.name AS market_name,
         COUNT(c.user_id) AS value
       FROM stores s
@@ -181247,7 +181308,7 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
       GROUP BY s.store_id, s.store_name, o.name
       ORDER BY value DESC, s.store_name ASC
     `);
-  const qStoreRankProjectCount = db2.execute(import_drizzle_orm66.sql`
+  const qStoreRankProjectCount = db2.execute(import_drizzle_orm67.sql`
       SELECT s.store_id, s.store_name, o.name AS market_name,
         COALESCE(SUM(sit.session_used), 0) AS value
       FROM stores s
@@ -181265,7 +181326,7 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
       GROUP BY s.store_id, s.store_name, o.name
       ORDER BY value DESC, s.store_name ASC
     `);
-  const producerCte = import_drizzle_orm66.sql`
+  const producerCte = import_drizzle_orm67.sql`
       WITH producer_base AS (
         SELECT sw.employee_id, sw.name AS employee_name,
                COALESCE(sw.store_id, ds.store_id) AS store_id,
@@ -181298,7 +181359,7 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
            OR (pb.store_id IS NULL AND ${orgAnchorScopeSql(session4, scope)})
       )
     `;
-  const qStaffRankRevenue = db2.execute(import_drizzle_orm66.sql`
+  const qStaffRankRevenue = db2.execute(import_drizzle_orm67.sql`
       ${producerCte},
       revenue_by_emp AS (
         SELECT spia.employee_id, COALESCE(SUM(spia.allocated_amount::numeric), 0) AS v
@@ -181319,7 +181380,7 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
       WHERE (pe.has_skills OR COALESCE(r.v, 0) <> 0)
       ORDER BY (COALESCE(r.v, 0) <> 0) DESC, COALESCE(r.v, 0) DESC, pe.employee_name ASC, pe.employee_id ASC
     `);
-  const qStaffRankConsume = db2.execute(import_drizzle_orm66.sql`
+  const qStaffRankConsume = db2.execute(import_drizzle_orm67.sql`
       ${producerCte},
       consume_by_emp AS (
         SELECT sc.employee_id,
@@ -181340,7 +181401,7 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
       WHERE (pe.has_skills OR COALESCE(c.v, 0) <> 0)
       ORDER BY (COALESCE(c.v, 0) <> 0) DESC, COALESCE(c.v, 0) DESC, pe.employee_name ASC, pe.employee_id ASC
     `);
-  const qStaffRankNewMember = db2.execute(import_drizzle_orm66.sql`
+  const qStaffRankNewMember = db2.execute(import_drizzle_orm67.sql`
       ${producerCte},
       new_member_by_emp AS (
         SELECT c.bound_employee_id AS employee_id, COUNT(*) AS v
@@ -181357,7 +181418,7 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
       WHERE (pe.has_skills OR COALESCE(n.v, 0) <> 0)
       ORDER BY (COALESCE(n.v, 0) <> 0) DESC, COALESCE(n.v, 0) DESC, pe.employee_name ASC, pe.employee_id ASC
     `);
-  const qStaffRankProjectCount = db2.execute(import_drizzle_orm66.sql`
+  const qStaffRankProjectCount = db2.execute(import_drizzle_orm67.sql`
       ${producerCte},
       project_by_emp AS (
         SELECT employee_id, COALESCE(SUM(session_used), 0) AS v
@@ -181381,7 +181442,7 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
       WHERE (pe.has_skills OR COALESCE(p.v, 0) <> 0)
       ORDER BY (COALESCE(p.v, 0) <> 0) DESC, COALESCE(p.v, 0) DESC, pe.employee_name ASC, pe.employee_id ASC
     `);
-  const qStaffRankIncome = db2.execute(import_drizzle_orm66.sql`
+  const qStaffRankIncome = db2.execute(import_drizzle_orm67.sql`
       ${producerCte},
       sales_comm AS (
         SELECT spia.employee_id, COALESCE(SUM(spia.commission_amount::numeric), 0) AS v
@@ -181413,7 +181474,7 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
       WHERE (pe.has_skills OR COALESCE(sc1.v, 0) + COALESCE(sc2.v, 0) <> 0)
       ORDER BY (COALESCE(sc1.v, 0) + COALESCE(sc2.v, 0) <> 0) DESC, COALESCE(sc1.v, 0) + COALESCE(sc2.v, 0) DESC, pe.employee_name ASC, pe.employee_id ASC
     `);
-  const qStaffDetail = db2.execute(import_drizzle_orm66.sql`
+  const qStaffDetail = db2.execute(import_drizzle_orm67.sql`
       ${producerCte},
       revenue_by_emp_cat AS (
         SELECT spia.employee_id,
@@ -181950,6 +182011,563 @@ function headerWithUnit(label, unit) {
 
 // src/export-worker/registry.ts
 init_datetime();
+
+// src/actions/data-center/remaining-cards.ts
+init_with_permission();
+
+// src/lib/data-center/remaining-cards-query.ts
+init_db2();
+var import_drizzle_orm68 = __toESM(require_drizzle_orm(), 1);
+var num3 = (value) => {
+  const parsed = Number(value ?? 0);
+  return Number.isFinite(parsed) ? parsed : 0;
+};
+function parseJson(value) {
+  return typeof value === "string" ? JSON.parse(value) : value;
+}
+function toCell(raw) {
+  const [categoryId, remaining, unpaid, activeRows, expiredRows, served, convertedOut, deposit, frozen] = raw;
+  return {
+    categoryId: categoryId == null ? null : String(categoryId),
+    remaining: num3(remaining),
+    unpaid: num3(unpaid),
+    activeRows: num3(activeRows),
+    expiredRows: num3(expiredRows),
+    served: num3(served),
+    convertedOut: num3(convertedOut),
+    deposit: deposit === true,
+    frozen: frozen === true
+  };
+}
+async function loadRemainingCardsSnapshot(session4, scope, today) {
+  return db2.transaction(async (tx) => {
+    await tx.execute(import_drizzle_orm68.sql`SET TRANSACTION READ ONLY`);
+    await tx.execute(import_drizzle_orm68.sql`SET LOCAL jit = off`);
+    await tx.execute(import_drizzle_orm68.sql`SET LOCAL enable_nestloop = off`);
+    const rows = await queryRemainingCardsRows(tx, session4, scope, today);
+    const categories = await queryRemainingCardsCategories(tx);
+    return { rows, categories };
+  });
+}
+async function queryRemainingCardsRows(executor, session4, scope, today) {
+  const rows = await executor.execute(import_drizzle_orm68.sql`
+    WITH card AS MATERIALIZED (
+      SELECT sale_items.sale_item_id,
+             sale_orders.client_user_id,
+             sale_items.store_id,
+             ps.category_id,
+             sale_items.remaining_sessions,
+             ${paidUnusedSessionsExpr.sql} AS paid_unused,
+             (sale_items.expire_date IS NOT NULL AND sale_items.expire_date < ${today}::date) AS expired,
+             (sale_orders.sale_order_type = '寄存单') AS deposit,
+             EXISTS (
+               SELECT 1 FROM sale_order_payments frozen_sop
+               WHERE frozen_sop.sale_order_id = sale_items.sale_order_id
+                 AND frozen_sop.change_type = '退款' AND frozen_sop.status = '待审批'
+             ) AS frozen
+      FROM sale_items
+      JOIN sale_orders ON sale_orders.sale_order_id = sale_items.sale_order_id
+      LEFT JOIN product_skus ps ON ps.sku_id = sale_items.sku_id
+      WHERE ${import_drizzle_orm68.and(...cardBaseConditions(), cardNotFullyRefundedCondition())}
+        AND (sale_orders.sale_order_type <> '寄存单' OR sale_orders.status = '已支付')
+        AND sale_orders.legacy_source IS NULL
+        AND sale_orders.client_user_id IS NOT NULL
+    ),
+    scoped AS MATERIALIZED (
+      SELECT * FROM card WHERE ${scopeFilterSql(session4, scope, "card.store_id")}
+    ),
+    -- 已服务 / 转出次数按全表聚合后再 LEFT JOIN：两张表都只有几万行，
+    -- 用 IN (scoped) 预过滤反而逼出 11 万次索引探测（prod 实测多 350ms）
+    served AS (
+      SELECT sit.sale_item_id, SUM(sit.session_used) AS served
+      FROM service_items sit
+      JOIN service_orders svo ON svo.service_order_id = sit.service_order_id
+      WHERE svo.status = '已完成'
+      GROUP BY sit.sale_item_id
+    ),
+    converted AS (
+      SELECT out_item.ref_sale_item_id AS sale_item_id, SUM(out_item.quantity) AS converted_out
+      FROM sale_items out_item
+      JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id
+      WHERE out_item.item_direction = '转出'
+        AND conv_order.status <> '已关闭'
+      GROUP BY out_item.ref_sale_item_id
+    ),
+    cells AS (
+      SELECT s.client_user_id, s.store_id, s.category_id,
+             COALESCE(SUM(s.paid_unused) FILTER (WHERE NOT s.expired), 0) AS remaining,
+             COALESCE(SUM(s.remaining_sessions - s.paid_unused) FILTER (WHERE NOT s.expired), 0) AS unpaid,
+             COUNT(*) FILTER (WHERE NOT s.expired) AS active_rows,
+             COUNT(*) FILTER (WHERE s.expired) AS expired_rows,
+             COALESCE(SUM(sv.served), 0) AS served,
+             COALESCE(SUM(cv.converted_out), 0) AS converted_out,
+             BOOL_OR(s.deposit) AS deposit,
+             COALESCE(BOOL_OR(s.frozen) FILTER (WHERE NOT s.expired), FALSE) AS frozen
+      FROM scoped s
+      LEFT JOIN served sv ON sv.sale_item_id = s.sale_item_id
+      LEFT JOIN converted cv ON cv.sale_item_id = s.sale_item_id
+      GROUP BY s.client_user_id, s.store_id, s.category_id
+    ),
+    card_rows AS (
+      SELECT client_user_id, store_id,
+             json_agg(json_build_array(category_id, remaining, unpaid, active_rows, expired_rows, served, converted_out, deposit, frozen)) AS cells
+      FROM cells
+      GROUP BY client_user_id, store_id
+    ),
+    no_card_rows AS (
+      SELECT c.user_id AS client_user_id, c.bound_store_id AS store_id, NULL::json AS cells
+      FROM client_wechat_users c
+      WHERE c.bound_store_id IS NOT NULL
+        AND ${scopeFilterSql(session4, scope, "c.bound_store_id")}
+        AND NOT EXISTS (SELECT 1 FROM card WHERE card.client_user_id = c.user_id)
+    )
+    SELECT r.client_user_id, r.store_id, r.cells,
+           u.name AS customer_name, u.phone,
+           u.member_level::text AS member_level, u.customer_type::text AS customer_type,
+           st.store_name
+    FROM (SELECT * FROM card_rows UNION ALL SELECT * FROM no_card_rows) r
+    JOIN client_wechat_users u ON u.user_id = r.client_user_id
+    JOIN stores st ON st.store_id = r.store_id
+  `);
+  return rows.map((row) => {
+    const cells = parseJson(row.cells);
+    return {
+      clientUserId: String(row.client_user_id),
+      storeId: String(row.store_id),
+      storeName: String(row.store_name ?? ""),
+      customerName: row.customer_name == null ? null : String(row.customer_name),
+      phone: row.phone == null ? null : String(row.phone),
+      memberLevel: row.member_level == null ? null : String(row.member_level),
+      customerType: row.customer_type == null ? null : String(row.customer_type),
+      cells: Array.isArray(cells) ? cells.map(toCell) : []
+    };
+  });
+}
+async function queryRemainingCardsCategories(executor) {
+  const rows = await executor.execute(import_drizzle_orm68.sql`
+    SELECT c.category_id, c.category_name, c.product_kind, c.sort_order,
+           kind_row.sort_order AS kind_sort
+    FROM product_categories c
+    LEFT JOIN product_categories kind_row
+      ON kind_row.product_kind IS NULL AND kind_row.category_name = c.product_kind
+    WHERE c.product_kind IS NOT NULL
+  `);
+  return rows.map((row) => ({
+    categoryId: String(row.category_id),
+    categoryName: String(row.category_name),
+    kind: String(row.product_kind),
+    kindSort: row.kind_sort == null ? Number.MAX_SAFE_INTEGER - 1 : num3(row.kind_sort),
+    sort: num3(row.sort_order)
+  }));
+}
+
+// src/lib/format.ts
+init_pii();
+var formatPhoneSafe = maskPhone;
+
+// src/lib/data-center/remaining-cards.ts
+var REMAINING_CARDS_PAGE_SIZES = [20, 50, 100];
+var REMAINING_CARDS_DEFAULT_PAGE_SIZE = 50;
+function parseRemainingCardsParams(raw) {
+  const page = Number.parseInt(raw.page ?? "", 10);
+  const size2 = Number.parseInt(raw.size ?? "", 10);
+  return {
+    scope: parseScope({ scope: raw.scope, scopeId: raw.scopeId }),
+    q: (raw.q ?? "").trim().slice(0, 50),
+    show: raw.show === "remaining" ? "remaining" : "all",
+    direction: raw.dir === "asc" ? "asc" : "desc",
+    page: Number.isFinite(page) && page > 0 ? page : 1,
+    pageSize: REMAINING_CARDS_PAGE_SIZES.includes(size2) ? size2 : REMAINING_CARDS_DEFAULT_PAGE_SIZE
+  };
+}
+var UNCATEGORIZED_KEY = "__none__";
+var UNCATEGORIZED = {
+  categoryName: "未分类",
+  kind: "未分类",
+  kindSort: Number.MAX_SAFE_INTEGER,
+  sort: 0
+};
+function resolveCellState(cell) {
+  if (cell.activeRows > 0) {
+    if (cell.remaining > 0)
+      return "remaining";
+    if (cell.unpaid > 0)
+      return "unpaid";
+    return "done";
+  }
+  return cell.expiredRows > 0 ? "expired" : null;
+}
+function categoryKey(categoryId) {
+  return categoryId ?? UNCATEGORIZED_KEY;
+}
+function buildRemainingCardsModel(sqlRows, dictionary) {
+  const byId = new Map(dictionary.map((category) => [category.categoryId, category]));
+  const used = new Map;
+  const rows = sqlRows.map((source) => {
+    const cells = {};
+    let remaining = 0;
+    for (const aggregate3 of source.cells) {
+      const state = resolveCellState(aggregate3);
+      if (!state)
+        continue;
+      const key = categoryKey(aggregate3.categoryId);
+      if (!used.has(key)) {
+        const known = aggregate3.categoryId ? byId.get(aggregate3.categoryId) : undefined;
+        used.set(key, known ?? { categoryId: key, ...UNCATEGORIZED });
+      }
+      const cellRemaining = state === "remaining" ? aggregate3.remaining : 0;
+      remaining += cellRemaining;
+      cells[key] = {
+        state,
+        remaining: cellRemaining,
+        unpaid: aggregate3.unpaid,
+        served: aggregate3.served,
+        convertedOut: aggregate3.convertedOut,
+        deposit: aggregate3.deposit,
+        frozen: aggregate3.frozen
+      };
+    }
+    const memberLevel = source.memberLevel ?? "";
+    const customerType = source.customerType ?? "";
+    return {
+      key: `${source.clientUserId}:${source.storeId}`,
+      clientUserId: source.clientUserId,
+      storeId: source.storeId,
+      storeName: source.storeName,
+      customerName: source.customerName ?? "",
+      phoneMasked: source.phone ? formatPhoneSafe(source.phone) : "",
+      level: memberLevel || customerType,
+      remaining,
+      cells,
+      rawPhone: source.phone ?? "",
+      memberLevel,
+      customerType
+    };
+  });
+  const columns3 = [...used.values()].sort((a, b2) => a.kindSort - b2.kindSort || a.kind.localeCompare(b2.kind, "zh-CN") || a.sort - b2.sort || a.categoryName.localeCompare(b2.categoryName, "zh-CN") || (a.categoryId < b2.categoryId ? -1 : a.categoryId > b2.categoryId ? 1 : 0));
+  return { columns: columns3, rows };
+}
+function summarizeRemainingCards(model) {
+  const customers = new Set;
+  const remainingCustomers = new Set;
+  const remainingCategories = new Set;
+  let remainingSessions = 0;
+  let remainingCells = 0;
+  let unpaidCells = 0;
+  let doneCells = 0;
+  let expiredCells = 0;
+  for (const row of model.rows) {
+    customers.add(row.clientUserId);
+    if (row.remaining > 0)
+      remainingCustomers.add(row.clientUserId);
+    remainingSessions += row.remaining;
+    for (const [key, cell] of Object.entries(row.cells)) {
+      if (cell.state === "remaining") {
+        remainingCells += 1;
+        remainingCategories.add(key);
+      } else if (cell.state === "unpaid")
+        unpaidCells += 1;
+      else if (cell.state === "done")
+        doneCells += 1;
+      else
+        expiredCells += 1;
+    }
+  }
+  const categoryCount = model.columns.length;
+  const rowCount = model.rows.length;
+  return {
+    rowCount,
+    customerCount: customers.size,
+    remainingCustomerCount: remainingCustomers.size,
+    remainingCustomerRate: customers.size > 0 ? remainingCustomers.size / customers.size : null,
+    remainingSessions,
+    remainingCategoryCount: remainingCategories.size,
+    remainingCells,
+    unpaidCells,
+    doneCells,
+    neverCells: rowCount * categoryCount - remainingCells - unpaidCells - doneCells,
+    expiredCells,
+    categoryCount,
+    kindCount: new Set(model.columns.map((column2) => column2.kind)).size
+  };
+}
+var FULL_PHONE = /^1\d{10}$/;
+function filterRemainingCardsRows(rows, filter) {
+  const q = filter.q.trim().toLowerCase();
+  const phone = FULL_PHONE.test(q) ? q : null;
+  return rows.filter((row) => {
+    if (filter.show === "remaining" && row.remaining <= 0)
+      return false;
+    if (!q)
+      return true;
+    if (phone && row.rawPhone === phone)
+      return true;
+    return [row.customerName, row.storeName, row.memberLevel, row.customerType].some((text5) => text5.toLowerCase().includes(q));
+  });
+}
+var NAME_COLLATOR = new Intl.Collator("zh-CN");
+function compareText(a, b2) {
+  return a < b2 ? -1 : a > b2 ? 1 : 0;
+}
+function sortRemainingCardsRows(rows, direction) {
+  const sign = direction === "asc" ? 1 : -1;
+  return [...rows].sort((a, b2) => (a.remaining - b2.remaining) * sign || NAME_COLLATOR.compare(a.customerName, b2.customerName) || compareText(a.customerName, b2.customerName) || compareText(a.clientUserId, b2.clientUserId) || compareText(a.storeId, b2.storeId));
+}
+function remainingCardsTotals(rows, columns3) {
+  const totals = { [REMAINING_TOTAL_KEY]: 0 };
+  for (const column2 of columns3)
+    totals[columnKey(column2)] = 0;
+  for (const row of rows) {
+    totals[REMAINING_TOTAL_KEY] = (totals[REMAINING_TOTAL_KEY] ?? 0) + row.remaining;
+    for (const [key, cell] of Object.entries(row.cells)) {
+      if (cell.state !== "remaining")
+        continue;
+      const column2 = `${CATEGORY_KEY_PREFIX}${key}`;
+      totals[column2] = (totals[column2] ?? 0) + cell.remaining;
+    }
+  }
+  return totals;
+}
+function toPublicRow(row) {
+  return {
+    key: row.key,
+    clientUserId: row.clientUserId,
+    storeId: row.storeId,
+    storeName: row.storeName,
+    customerName: row.customerName,
+    phoneMasked: row.phoneMasked,
+    level: row.level,
+    remaining: row.remaining,
+    cells: row.cells
+  };
+}
+var CATEGORY_KEY_PREFIX = "cat:";
+var REMAINING_TOTAL_KEY = "remaining";
+function columnKey(column2) {
+  return `${CATEGORY_KEY_PREFIX}${column2.categoryId}`;
+}
+var REMAINING_CELL_LABELS = {
+  remaining: "✓",
+  unpaid: "待付清",
+  done: "已服务完",
+  expired: "已过期"
+};
+function remainingCellExportValue(cell) {
+  if (!cell)
+    return "";
+  return cell.state === "remaining" ? cell.remaining : REMAINING_CELL_LABELS[cell.state];
+}
+var REMAINING_CARDS_FROZEN_WIDTHS = { store: 120, customer: 168, level: 88, remaining: 96 };
+function remainingCardsColumnSpecs(columns3) {
+  return [
+    {
+      key: "store",
+      header: "门店",
+      freeze: "left",
+      width: REMAINING_CARDS_FROZEN_WIDTHS.store,
+      exportValue: (row) => row.storeName,
+      exportWidth: 16
+    },
+    {
+      key: "customer",
+      header: "顾客",
+      freeze: "left",
+      width: REMAINING_CARDS_FROZEN_WIDTHS.customer,
+      exportValue: (row) => [row.customerName, row.phoneMasked].filter(Boolean).join(" "),
+      exportWidth: 22
+    },
+    {
+      key: "level",
+      header: "会员等级",
+      freeze: "left",
+      width: REMAINING_CARDS_FROZEN_WIDTHS.level,
+      exportValue: (row) => row.level,
+      exportWidth: 12
+    },
+    ...columns3.map((column2) => ({
+      key: columnKey(column2),
+      header: column2.categoryName,
+      group: { key: `kind:${column2.kind}`, header: column2.kind },
+      unit: "count",
+      aggregate: { kind: "server" },
+      value: (row) => row.cells[column2.categoryId]?.state === "remaining" ? row.cells[column2.categoryId].remaining : null,
+      exportValue: (row) => remainingCellExportValue(row.cells[column2.categoryId]),
+      exportWidth: 12
+    })),
+    {
+      key: REMAINING_TOTAL_KEY,
+      header: "剩余次数",
+      freeze: "right",
+      width: REMAINING_CARDS_FROZEN_WIDTHS.remaining,
+      unit: "count",
+      aggregate: { kind: "server" },
+      value: (row) => row.remaining,
+      exportWidth: 12
+    }
+  ];
+}
+
+// src/actions/data-center/remaining-cards.ts
+init_time_range();
+"use server";
+async function loadFiltered(session4, params) {
+  await validateScope(session4, params.scope);
+  const asOf = shanghaiToday();
+  const snapshot = await loadRemainingCardsSnapshot(session4, params.scope, asOf);
+  const model = buildRemainingCardsModel(snapshot.rows, snapshot.categories);
+  const rows = sortRemainingCardsRows(filterRemainingCardsRows(model.rows, params), params.direction);
+  return { model, rows, asOf };
+}
+var getRemainingCardsReport = withAllPermissions(DATA_CENTER_CUSTOMER_DETAIL_ACTIONS, async (session4, raw) => {
+  const params = parseRemainingCardsParams(raw);
+  const { model, rows, asOf } = await loadFiltered(session4, params);
+  const pageCount = Math.max(1, Math.ceil(rows.length / params.pageSize));
+  const page = Math.min(params.page, pageCount);
+  const start = (page - 1) * params.pageSize;
+  return {
+    columns: model.columns,
+    rows: rows.slice(start, start + params.pageSize).map(toPublicRow),
+    total: rows.length,
+    filteredCustomerCount: new Set(rows.map((row) => row.clientUserId)).size,
+    filtered: params.q !== "" || params.show === "remaining",
+    page,
+    pageSize: params.pageSize,
+    totals: remainingCardsTotals(rows, model.columns),
+    summary: summarizeRemainingCards(model),
+    asOf
+  };
+});
+var exportRemainingCardsReport = withAllPermissions(DATA_CENTER_CUSTOMER_DETAIL_ACTIONS, async (session4, raw) => {
+  const params = parseRemainingCardsParams(raw);
+  const { model, rows, asOf } = await loadFiltered(session4, params);
+  return {
+    columns: model.columns,
+    rows: rows.map(toPublicRow),
+    totals: remainingCardsTotals(rows, model.columns),
+    params: { scope: params.scope, q: params.q, show: params.show },
+    asOf
+  };
+});
+
+// src/lib/data-center/matrix.ts
+function buildMatrixHeaderLayout(columns3) {
+  const groupStartKeys = new Set;
+  const grouped = columns3.some((column2) => column2.group);
+  if (!grouped) {
+    return {
+      depth: 1,
+      rows: [columns3.map((column2, index3) => ({
+        key: column2.key,
+        columnKey: column2.key,
+        colSpan: 1,
+        rowSpan: 1,
+        firstLeafIndex: index3
+      }))],
+      groupStartKeys
+    };
+  }
+  const top = [];
+  const bottom = [];
+  const closedGroups = new Set;
+  let current = null;
+  columns3.forEach((column2, index3) => {
+    const groupKey2 = column2.group?.key;
+    if (current && current.groupKey !== groupKey2) {
+      closedGroups.add(current.groupKey);
+      current = null;
+    }
+    if (!groupKey2) {
+      top.push({ key: column2.key, columnKey: column2.key, colSpan: 1, rowSpan: 2, firstLeafIndex: index3 });
+      return;
+    }
+    if (current) {
+      current.colSpan += 1;
+    } else {
+      if (closedGroups.has(groupKey2)) {
+        throw new Error(`INVALID_STATE: 矩阵表分组「${groupKey2}」的列不相邻`);
+      }
+      current = { key: `group:${groupKey2}`, groupKey: groupKey2, colSpan: 1, rowSpan: 1, firstLeafIndex: index3 };
+      top.push(current);
+      groupStartKeys.add(column2.key);
+    }
+    bottom.push({ key: column2.key, columnKey: column2.key, colSpan: 1, rowSpan: 1, firstLeafIndex: index3 });
+  });
+  return { depth: 2, rows: [top, bottom], groupStartKeys };
+}
+function toTotal(value) {
+  const parsed = typeof value === "string" && value.trim() !== "" ? Number(value) : value;
+  return typeof parsed === "number" && Number.isFinite(parsed) ? parsed : null;
+}
+
+// src/lib/data-center/matrix-export.ts
+var NUM_FMT = { amount: "#,##0.00", percent: "0.00", count: "#,##0" };
+function toWorkerExportColumns(columns3, serverTotals) {
+  return columns3.map((column2) => {
+    const unit = column2.unit ?? "amount";
+    const numeric5 = !column2.exportValue && !!column2.value;
+    const hasTotal = !!serverTotals && Object.prototype.hasOwnProperty.call(serverTotals, column2.key);
+    return {
+      header: numeric5 ? headerWithUnit(column2.header, unit) : column2.header,
+      width: column2.exportWidth,
+      group: column2.group ? { key: column2.group.key, header: column2.group.header } : undefined,
+      value: column2.exportValue ?? (column2.value ? (row) => metricCell(column2.value(row), unit) : () => ""),
+      ...numeric5 ? { numFmt: NUM_FMT[unit] } : {},
+      ...hasTotal ? { total: metricCell(toTotal(serverTotals[column2.key]), unit) } : {}
+    };
+  });
+}
+function countLeftFrozen(columns3) {
+  let count = 0;
+  while (count < columns3.length && columns3[count].freeze === "left")
+    count += 1;
+  return count;
+}
+
+// src/export-worker/report-views.ts
+var REPORT_VIEWS = new Set(DATA_CENTER_REPORT_EXPORT_VIEWS);
+function isDataCenterReportView(view3) {
+  return REPORT_VIEWS.has(view3);
+}
+async function scopeMetaLabel(scope) {
+  const name = await resolveScopeName(scope);
+  if (scope.type === "market")
+    return `市场 · ${name}`;
+  if (scope.type === "store")
+    return `门店 · ${name}`;
+  return name;
+}
+async function* fromArray(rows) {
+  for (const row of rows)
+    yield row;
+}
+async function remainingCardsContent(params) {
+  const report = await exportRemainingCardsReport(params);
+  const specs = remainingCardsColumnSpecs(report.columns);
+  return {
+    sheetName: "顾客剩余卡项清单",
+    columns: toWorkerExportColumns(specs, report.totals),
+    rows: fromArray(report.rows),
+    frozenColumns: countLeftFrozen(specs),
+    totalsLabel: "合计",
+    meta: {
+      period: null,
+      scope: await scopeMetaLabel(report.params.scope),
+      extra: [
+        { label: "快照日", value: report.asOf },
+        { label: "显示范围", value: report.params.show === "remaining" ? "只看有剩余" : "全部顾客" },
+        ...report.params.q ? [{ label: "顾客搜索", value: report.params.q }] : []
+      ]
+    }
+  };
+}
+var REPORT_CONTENT = {
+  "report-remaining-cards": remainingCardsContent
+};
+function queryDataCenterReport(payload) {
+  return REPORT_CONTENT[payload.view](payload.params);
+}
+
+// src/export-worker/registry.ts
 function value(row, key) {
   return row[key];
 }
@@ -182341,9 +182959,11 @@ function rankingContent(rows, metric) {
   };
 }
 async function queryDataCenter(payload) {
+  const view3 = payload.view;
+  if (isDataCenterReportView(view3))
+    return queryDataCenterReport({ ...payload, view: view3 });
   const raw = payload.params;
   const base = parseBoardParams(raw);
-  const view3 = payload.view;
   if (view3.startsWith("sales-")) {
     const board2 = await getSalesBoard(base);
     const rows = view3 === "sales-market" ? board2.byMarket : board2.byStore;
@@ -182553,54 +183173,6 @@ function exportCloudPath(jobId, fileName) {
 
 // src/export-worker/xlsx-writer.ts
 var import_exceljs = __toESM(require_excel(), 1);
-
-// src/lib/data-center/matrix.ts
-function buildMatrixHeaderLayout(columns3) {
-  const groupStartKeys = new Set;
-  const grouped = columns3.some((column2) => column2.group);
-  if (!grouped) {
-    return {
-      depth: 1,
-      rows: [columns3.map((column2, index3) => ({
-        key: column2.key,
-        columnKey: column2.key,
-        colSpan: 1,
-        rowSpan: 1,
-        firstLeafIndex: index3
-      }))],
-      groupStartKeys
-    };
-  }
-  const top = [];
-  const bottom = [];
-  const closedGroups = new Set;
-  let current = null;
-  columns3.forEach((column2, index3) => {
-    const groupKey2 = column2.group?.key;
-    if (current && current.groupKey !== groupKey2) {
-      closedGroups.add(current.groupKey);
-      current = null;
-    }
-    if (!groupKey2) {
-      top.push({ key: column2.key, columnKey: column2.key, colSpan: 1, rowSpan: 2, firstLeafIndex: index3 });
-      return;
-    }
-    if (current) {
-      current.colSpan += 1;
-    } else {
-      if (closedGroups.has(groupKey2)) {
-        throw new Error(`INVALID_STATE: 矩阵表分组「${groupKey2}」的列不相邻`);
-      }
-      current = { key: `group:${groupKey2}`, groupKey: groupKey2, colSpan: 1, rowSpan: 1, firstLeafIndex: index3 };
-      top.push(current);
-      groupStartKeys.add(column2.key);
-    }
-    bottom.push({ key: column2.key, columnKey: column2.key, colSpan: 1, rowSpan: 1, firstLeafIndex: index3 });
-  });
-  return { depth: 2, rows: [top, bottom], groupStartKeys };
-}
-
-// src/export-worker/xlsx-writer.ts
 var EXPORT_META_SHEET_NAME = "导出说明";
 var XLSX_ROWS_PER_SHEET = 1e6;
 function safeSheetName(input, sequence3) {
@@ -182825,7 +183397,7 @@ function asClaimedId(rows) {
   return Number.isSafeInteger(id) && id > 0 ? id : null;
 }
 async function recoverExpiredLeases() {
-  await db2.execute(import_drizzle_orm67.sql`
+  await db2.execute(import_drizzle_orm69.sql`
     UPDATE admin_export_jobs
        SET status = CASE
              WHEN attempt_count >= ${MAX_ATTEMPTS} THEN 'failed'
@@ -182849,12 +183421,12 @@ async function recoverExpiredLeases() {
   `);
 }
 async function claimNextJob() {
-  const claimed = await db2.execute(import_drizzle_orm67.sql`
+  const claimed = await db2.execute(import_drizzle_orm69.sql`
     UPDATE admin_export_jobs
        SET status = 'running',
            attempt_count = attempt_count + 1,
            started_at = COALESCE(started_at, NOW()),
-           lease_expires_at = NOW() + ${import_drizzle_orm67.sql.raw(`interval '${LEASE_MINUTES} minutes'`)},
+           lease_expires_at = NOW() + ${import_drizzle_orm69.sql.raw(`interval '${LEASE_MINUTES} minutes'`)},
            error_code = NULL,
            error_message = NULL,
            updated_at = NOW()
@@ -182872,13 +183444,13 @@ async function claimNextJob() {
   const id = asClaimedId(claimed);
   if (!id)
     return null;
-  const [job] = await db2.select().from(adminExportJobs).where(import_drizzle_orm67.eq(adminExportJobs.id, id)).limit(1);
+  const [job] = await db2.select().from(adminExportJobs).where(import_drizzle_orm69.eq(adminExportJobs.id, id)).limit(1);
   return job ?? null;
 }
 async function renewLease(id) {
-  await db2.execute(import_drizzle_orm67.sql`
+  await db2.execute(import_drizzle_orm69.sql`
     UPDATE admin_export_jobs
-       SET lease_expires_at = NOW() + ${import_drizzle_orm67.sql.raw(`interval '${LEASE_MINUTES} minutes'`)},
+       SET lease_expires_at = NOW() + ${import_drizzle_orm69.sql.raw(`interval '${LEASE_MINUTES} minutes'`)},
            updated_at = NOW()
      WHERE id = ${id}
        AND status = 'running'
@@ -182901,7 +183473,7 @@ async function failJob(job, err) {
     completedAt: shouldRetry ? null : new Date,
     errorCode: failure.code,
     errorMessage: shouldRetry ? `${failure.message}（第 ${job.attemptCount} 次失败，正在重试）` : failure.message
-  }).where(import_drizzle_orm67.and(import_drizzle_orm67.eq(adminExportJobs.id, job.id), import_drizzle_orm67.eq(adminExportJobs.status, "running")));
+  }).where(import_drizzle_orm69.and(import_drizzle_orm69.eq(adminExportJobs.id, job.id), import_drizzle_orm69.eq(adminExportJobs.status, "running")));
   if (!shouldRetry) {
     const session4 = parseExportSession(job.scopeSnapshot);
     await logOperation(session4, "export_job.failed", "admin_export_jobs", String(job.id), {
@@ -182912,12 +183484,12 @@ async function failJob(job, err) {
   }
 }
 async function expireFinishedFiles() {
-  const expired = await db2.select({ id: adminExportJobs.id, fileCloudPath: adminExportJobs.fileCloudPath }).from(adminExportJobs).where(import_drizzle_orm67.and(import_drizzle_orm67.inArray(adminExportJobs.status, ["ready", "expired"]), import_drizzle_orm67.isNotNull(adminExportJobs.fileCloudPath), import_drizzle_orm67.lt(adminExportJobs.expiresAt, new Date))).limit(100);
+  const expired = await db2.select({ id: adminExportJobs.id, fileCloudPath: adminExportJobs.fileCloudPath }).from(adminExportJobs).where(import_drizzle_orm69.and(import_drizzle_orm69.inArray(adminExportJobs.status, ["ready", "expired"]), import_drizzle_orm69.isNotNull(adminExportJobs.fileCloudPath), import_drizzle_orm69.lt(adminExportJobs.expiresAt, new Date))).limit(100);
   for (const job of expired) {
     try {
       if (job.fileCloudPath)
         await deleteByCloudPaths([job.fileCloudPath]);
-      await db2.update(adminExportJobs).set({ status: "expired", fileCloudPath: null, updatedAt: new Date }).where(import_drizzle_orm67.and(import_drizzle_orm67.eq(adminExportJobs.id, job.id), import_drizzle_orm67.inArray(adminExportJobs.status, ["ready", "expired"])));
+      await db2.update(adminExportJobs).set({ status: "expired", fileCloudPath: null, updatedAt: new Date }).where(import_drizzle_orm69.and(import_drizzle_orm69.eq(adminExportJobs.id, job.id), import_drizzle_orm69.inArray(adminExportJobs.status, ["ready", "expired"])));
     } catch (err) {
       console.error(`[export-worker] cleanup failed for job ${job.id}:`, err);
     }
@@ -182971,7 +183543,7 @@ async function processJob(job) {
           if (rowCount - lastProgress < 1000)
             return;
           lastProgress = rowCount;
-          await db2.update(adminExportJobs).set({ progressRows: rowCount }).where(import_drizzle_orm67.and(import_drizzle_orm67.eq(adminExportJobs.id, job.id), import_drizzle_orm67.eq(adminExportJobs.status, "running")));
+          await db2.update(adminExportJobs).set({ progressRows: rowCount }).where(import_drizzle_orm69.and(import_drizzle_orm69.eq(adminExportJobs.id, job.id), import_drizzle_orm69.eq(adminExportJobs.status, "running")));
         }
       });
       return { content, fileName, filePath, writeResult };
@@ -182987,7 +183559,7 @@ async function processJob(job) {
         progressRows: 0,
         errorCode: null,
         errorMessage: null
-      }).where(import_drizzle_orm67.and(import_drizzle_orm67.eq(adminExportJobs.id, job.id), import_drizzle_orm67.eq(adminExportJobs.status, "running")));
+      }).where(import_drizzle_orm69.and(import_drizzle_orm69.eq(adminExportJobs.id, job.id), import_drizzle_orm69.eq(adminExportJobs.status, "running")));
       await logOperation(session4, "export_job.empty", "admin_export_jobs", String(job.id), {
         exportType
       }).catch((logError) => console.error("[export-worker] empty audit log error:", logError));
@@ -183012,7 +183584,7 @@ async function processJob(job) {
       fileName: output.fileName,
       errorCode: null,
       errorMessage: null
-    }).where(import_drizzle_orm67.and(import_drizzle_orm67.eq(adminExportJobs.id, job.id), import_drizzle_orm67.eq(adminExportJobs.status, "running")));
+    }).where(import_drizzle_orm69.and(import_drizzle_orm69.eq(adminExportJobs.id, job.id), import_drizzle_orm69.eq(adminExportJobs.status, "running")));
     await logOperation(session4, "export_job.ready", "admin_export_jobs", String(job.id), {
       exportType,
       rowCount: output.writeResult.rowCount,
