@@ -283,6 +283,13 @@ describe('lakala 跨副本一致性守护', () => {
     // ⚠️ 声明极限：这是**文本**匹配，不是行为验证。在 run 里 echo 一句同样的字面量、
     // 或把真调用塞进 `if (false)` 死代码，断言照样绿而模块并没被 require
     // （闸门 2 的 GLM 指出）。与 SQL 侧「守形状不守取值」同族——挡自然疏忽，挡不住刻意构造。
+    // canary 的装依赖同样只能是干净的 npm ci（主 job 锁了、它没锁，lockfile 漂移
+    // 会在 canary 侧静默通过 —— 闸门 2 GLM 指出）。
+    const canaryInstalls = (canary.steps || [])
+      .map((s) => (s.run || '').trim())
+      .filter((c) => /npm (ci|install)/.test(c))
+    expect(canaryInstalls, 'canary 装依赖也必须恰好是干净的 npm ci').toEqual(['npm ci'])
+
     const canaryRun = (canary.steps || []).map((s) => s.run || '').join('\n')
     expect(canaryRun, 'canary 必须遍历 routes/ 逐个 require，不能只 require 入口')
       .toMatch(/readdirSync\('routes'\)/)
@@ -327,6 +334,31 @@ describe('lakala 跨副本一致性守护', () => {
     expect(configImports, 'vitest.config.js 只应 import vitest/config，不得从外部文件引入配置')
       .toHaveLength(1)
     expect(vitestConfig, 'config 里出现对象展开，配置可能来自外部文件').not.toContain('...')
+
+    // ⚠️ 上面这些文本断言读的都是 `vitest.config.js` 这一份。vitest 的配置解析有优先级：
+    // 存在 `vitest.config.ts` 时它**抢占**掉 .js，而本守护对 .ts 完全不可见 ——
+    // 拷一份 .js 到 .ts 再塞 `shard: '1/2'`，实测 run 只跑 18 文件 / 266 条，
+    // 本守护落在另一半压根不执行，`vitest list` 也不走 sequencer 照样 36==36
+    // （闸门 2 GLM 实测穿网，这是 shard 的第 ④ 条路径）。
+    //
+    // 这里用**闭集**断言而不是继续禁语法变体：会被 vitest 解析的配置文件名是由它的
+    // 解析规则决定的有限集合，可以枚举完整。
+    const root = path.resolve(__dirname, '../..')
+    const CONFIG_EXTS = ['ts', 'mts', 'cts', 'mjs', 'cjs']
+    const forbidden = [
+      ...CONFIG_EXTS.map((e) => `vitest.config.${e}`),
+      ...['js', ...CONFIG_EXTS].map((e) => `vite.config.${e}`),
+      ...['js', 'ts', 'json', 'mjs', 'cjs'].flatMap((e) => [
+        `vitest.workspace.${e}`,
+        `vitest.projects.${e}`,
+      ]),
+    ]
+    for (const name of forbidden) {
+      expect(
+        fs.existsSync(path.join(root, name)),
+        `${name} 会抢占或接管 vitest 配置，而本守护只读 vitest.config.js`,
+      ).toBe(false)
+    }
     expect(vitestConfig, 'testMatch 不是 vitest 选项，会被静默忽略，别用它').not.toContain('testMatch')
     expect(vitestConfig, '加 exclude 同样能让文件出网').not.toContain('exclude:')
     // `projects` 会整个接管文件收集，留着上面的 include 也没用（闸门 2 的 GLM 指出）。
@@ -372,15 +404,23 @@ describe('lakala 跨副本一致性守护', () => {
       .map((l) => path.relative(root, path.resolve(root, l)))
       .sort()
 
+    // ⚠️ 盘点范围必须**扫整个包**，不能只扫 `__tests__`：include 是
+    // `**/__tests__/**`，把某个测试挪到 `middleware/order.test.js` 之后，vitest 不收集它、
+    // 只扫 __tests__ 的盘点也看不见它 —— 两边同时消失、集合仍相等，而那 179 条用例
+    // 静默死亡（闸门 2 GLM 实测：挪走后 35 文件 / 698 passed / exit 0 全绿）。
+    // 这是 round-7 那个 `.spec.js` 问题的目录维度同胞：「两侧用同一判据」当时只对齐了
+    // 后缀、没对齐目录范围。而「测试文件放源码旁边」在很多仓库是默认惯例，属自然疏忽。
+    const SKIP_DIRS = new Set(['node_modules', '_tmp', '.git', 'coverage'])
     const onDisk = []
     const walk = (dir) => {
       for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+        if (SKIP_DIRS.has(e.name)) continue
         const p = path.join(dir, e.name)
         if (e.isDirectory()) walk(p)
         else if (isTestFile(e.name)) onDisk.push(path.relative(root, p))
       }
     }
-    walk(path.join(root, '__tests__'))
+    walk(root)
     onDisk.sort()
 
     // ⚠️ 比对**路径集合**而不是数量：数量相等但收了别的文件同样是漏（codex round-7 建议）。
@@ -389,5 +429,9 @@ describe('lakala 跨副本一致性守护', () => {
       '被 vitest 收集的测试文件与磁盘上真实存在的不一致 —— '
         + '有东西在改收集范围（配置字段 / vitest.workspace.* / vitest.projects.* / shard / 改后缀）',
     ).toEqual(onDisk)
-  })
+    // ⚠️ 第三参 60s 不能省：本用例要 spawn 一个 vitest 子进程，全套并行跑时 vite 冷启动
+    // 在满载下实测可达 6s+，超过默认 testTimeout 5000ms 会**间歇假红**。方向虽是
+    // fail-closed，但后果是随机挡住所有命中 workflow 的 PR —— 那正是 #276 要解决的
+    // 原始问题，别让守护自己变成新的路障（闸门 2 GLM 本机 3 次跑红 2 次）。
+  }, 60000)
 })

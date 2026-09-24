@@ -167,7 +167,7 @@ jobs:
   # 只装 clientApi 自己的依赖即可：测试零跨端 `require()`，跨端一致性守护全部走
   # `fs.readFileSync` 纯文本比对（不加载对端模块，因而不需要对端 node_modules）；
   # `db/pg` 由 `__tests__/setup.js` 注入 require.cache mock 掉，不碰数据库。
-  # 本地 36 文件 / 885 用例约 2.7 秒。
+  # 本地 36 文件 / 887 用例约 2.7 秒。
   clientapi-tests:
     runs-on: ubuntu-latest
     steps:
