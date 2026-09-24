@@ -180892,7 +180892,8 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
                ) AS market_name,
                CASE WHEN o.type = '市场' THEN o.id
                     WHEN op.type = '市场' THEN op.id
-                    ELSE NULL END AS anchor_market_id
+                    ELSE NULL END AS anchor_market_id,
+               (COALESCE(cardinality(array_remove(array_remove(sw.skills, ''), NULL)), 0) > 0) AS has_skills
         FROM staff_wechat_users sw
         LEFT JOIN stores s ON s.store_id = sw.store_id
         LEFT JOIN org_nodes o_store ON s.org_node_id = o_store.id AND o_store.type = '门店'
@@ -180906,7 +180907,7 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
       ),
       producer_employees AS (
         SELECT pb.employee_id, pb.employee_name, pb.store_id, pb.store_name,
-               pb.position_name, pb.market_name
+               pb.position_name, pb.market_name, pb.has_skills
         FROM producer_base pb
         WHERE (pb.store_id IS NOT NULL AND ${scopeFilterSql(session4, scope, "pb.store_id")})
            OR (pb.store_id IS NULL AND ${orgAnchorScopeSql(session4, scope)})
@@ -180930,8 +180931,8 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
         COALESCE(r.v, 0)::numeric AS value
       FROM producer_employees pe
       LEFT JOIN revenue_by_emp r ON r.employee_id = pe.employee_id
-      WHERE COALESCE(r.v, 0) > 0
-      ORDER BY value DESC, pe.employee_name ASC, pe.employee_id ASC
+      WHERE (pe.has_skills OR COALESCE(r.v, 0) <> 0)
+      ORDER BY (COALESCE(r.v, 0) <> 0) DESC, COALESCE(r.v, 0) DESC, pe.employee_name ASC, pe.employee_id ASC
     `);
   const qStaffRankConsume = db2.execute(import_drizzle_orm65.sql`
       ${producerCte},
@@ -180951,8 +180952,8 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
         COALESCE(c.v, 0)::numeric AS value
       FROM producer_employees pe
       LEFT JOIN consume_by_emp c ON c.employee_id = pe.employee_id
-      WHERE COALESCE(c.v, 0) > 0
-      ORDER BY value DESC, pe.employee_name ASC, pe.employee_id ASC
+      WHERE (pe.has_skills OR COALESCE(c.v, 0) <> 0)
+      ORDER BY (COALESCE(c.v, 0) <> 0) DESC, COALESCE(c.v, 0) DESC, pe.employee_name ASC, pe.employee_id ASC
     `);
   const qStaffRankNewMember = db2.execute(import_drizzle_orm65.sql`
       ${producerCte},
@@ -180968,8 +180969,8 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
         COALESCE(n.v, 0)::numeric AS value
       FROM producer_employees pe
       LEFT JOIN new_member_by_emp n ON n.employee_id = pe.employee_id
-      WHERE COALESCE(n.v, 0) > 0
-      ORDER BY value DESC, pe.employee_name ASC, pe.employee_id ASC
+      WHERE (pe.has_skills OR COALESCE(n.v, 0) <> 0)
+      ORDER BY (COALESCE(n.v, 0) <> 0) DESC, COALESCE(n.v, 0) DESC, pe.employee_name ASC, pe.employee_id ASC
     `);
   const qStaffRankProjectCount = db2.execute(import_drizzle_orm65.sql`
       ${producerCte},
@@ -180992,8 +180993,8 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
         COALESCE(p.v, 0)::numeric AS value
       FROM producer_employees pe
       LEFT JOIN project_by_emp p ON p.employee_id = pe.employee_id
-      WHERE COALESCE(p.v, 0) > 0
-      ORDER BY value DESC, pe.employee_name ASC, pe.employee_id ASC
+      WHERE (pe.has_skills OR COALESCE(p.v, 0) <> 0)
+      ORDER BY (COALESCE(p.v, 0) <> 0) DESC, COALESCE(p.v, 0) DESC, pe.employee_name ASC, pe.employee_id ASC
     `);
   const qStaffRankIncome = db2.execute(import_drizzle_orm65.sql`
       ${producerCte},
@@ -181024,8 +181025,8 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
       FROM producer_employees pe
       LEFT JOIN sales_comm sc1 ON sc1.employee_id = pe.employee_id
       LEFT JOIN service_comm sc2 ON sc2.employee_id = pe.employee_id
-      WHERE COALESCE(sc1.v, 0) + COALESCE(sc2.v, 0) > 0
-      ORDER BY value DESC, pe.employee_name ASC, pe.employee_id ASC
+      WHERE (pe.has_skills OR COALESCE(sc1.v, 0) + COALESCE(sc2.v, 0) <> 0)
+      ORDER BY (COALESCE(sc1.v, 0) + COALESCE(sc2.v, 0) <> 0) DESC, COALESCE(sc1.v, 0) + COALESCE(sc2.v, 0) DESC, pe.employee_name ASC, pe.employee_id ASC
     `);
   const qStaffDetail = db2.execute(import_drizzle_orm65.sql`
       ${producerCte},

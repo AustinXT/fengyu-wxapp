@@ -302,6 +302,567 @@ function assertPlainSumAggregate(segment: string, label: string): void {
   ).toContain('COALESCE(SUM(spe.amount::numeric), 0) AS ')
 }
 
+/**
+ * 抽出一个排行榜查询**最外层**的 `WHERE` 子句正文。
+ *
+ * ⚠️ 不能取第一个 `WHERE`：这些查询普遍带 CTE（`revenue_by_emp AS (... WHERE ...)`）与
+ * 相关子查询（门店榜保有会员的 `EXISTS (... WHERE ...)`），第一个 WHERE 必落在内层，
+ * 拿它去比对外层口径会得到「口径没守住」的假红 —— 更危险的是反过来：若内层恰好长得像
+ * 期望形状，就成了假绿。
+ *
+ * 也不能用 `GROUP BY` 当尾锚：员工榜的 CTE 内有 `GROUP BY spia.employee_id`，它在外层
+ * WHERE **之前**，会把外层 WHERE 整个切掉。
+ *
+ * 外层 `ORDER BY` 是唯一可靠的尾锚（两端排行榜都以它收尾，CTE 内不出现排序）；
+ * staff 端排序经插值函数 `${staffOrderBy(<value 表达式>)}` 拼出，一并识别。取尾锚之前的**最后一个** WHERE。
+ */
+const ORDER_BY_ANCHOR = /ORDER BY|\$\{staffOrderBy\(/g
+
+/**
+ * ★ `whereClauseOf` 的 fail-closed 前置条件（闸门 1 · boundary-critic P1-2 / P2-1，
+ *   concurrency P2-2 / P2-3 —— 两个 reviewer 独立复现了同一族绕过）。
+ *
+ * 「取尾锚之前最后一个 WHERE」这套定位法**只在切片恰好是一个完整查询时**才等价于
+ * 「最外层 WHERE」。实测有两条路径能让它静默放行：
+ *
+ *   1. **外层再包一层**：`SELECT * FROM (<原查询>) z WHERE z.value > 0`
+ *      —— 新 WHERE 落在尾锚**之后**，被 `slice(0, anchor)` 整段丢弃 → GREEN
+ *   2. **切片里混进两个查询**：切片锚点是「下一个查询的变量名」，在两个榜之间插入
+ *      一个新榜，切片会同时含两个查询，取到的是**第一个**的 WHERE，新榜一字未检 → GREEN
+ *      （新增 metric 是完全可预期的常规演进，不是刻意构造）
+ *
+ * 所以在抽 WHERE 之前先证明「这个切片只有一个查询、且尾锚之后没有过滤」。
+ */
+function assertSingleOuterQuery(segment: string, label: string): void {
+  const anchors = segment.match(ORDER_BY_ANCHOR) ?? []
+  expect(
+    anchors.length,
+    `${label} 的切片里出现了 ${anchors.length} 个 ORDER BY，期望恰好 1 个。两种成因：\n` +
+      `  · 切片跨了多个查询（多半是在两个榜之间新增了 metric）—— 请同步给新榜补一条切片断言；\n` +
+      '  · CTE 内引入了合法排序（窗口函数 / array_agg(... ORDER BY ...)）—— 请改用不含\n' +
+      '    ORDER BY 字面量的写法，或重构本 helper 的尾锚策略。\n' +
+      '无论哪种，都不能让入榜口径检查落到错误的 WHERE 上。',
+  ).toBe(1)
+
+  const anchorAt = segment.search(ORDER_BY_ANCHOR)
+  expect(
+    /\bWHERE\b/i.test(segment.slice(anchorAt)),
+    `${label} 在 ORDER BY **之后**仍出现 WHERE —— 典型形态是把整个查询包一层\n` +
+      '`SELECT * FROM (<原查询>) z WHERE z.value > 0`，它能在不动内层 WHERE 的前提下\n' +
+      '重新按 value 剔行，等于静默回退 #290。',
+  ).toBe(false)
+}
+
+/**
+ * 抽出一个排行榜查询**最外层**的 `WHERE` 子句正文。
+ *
+ * ⚠️ 不能取第一个 `WHERE`：这些查询普遍带 CTE（`revenue_by_emp AS (... WHERE ...)`）与
+ * 相关子查询（门店榜保有会员的 `EXISTS (... WHERE ...)`），第一个 WHERE 必落在内层，
+ * 拿它去比对外层口径会得到「口径没守住」的假红 —— 更危险的是反过来：若内层恰好长得像
+ * 期望形状，就成了假绿。
+ *
+ * 也不能用 `GROUP BY` 当尾锚：员工榜的 CTE 内有 `GROUP BY spia.employee_id`，它在外层
+ * WHERE **之前**，会把外层 WHERE 整个切掉。
+ *
+ * 以**唯一的** `ORDER BY` 为尾锚（唯一性由 `assertSingleOuterQuery` 先行保证），
+ * 取其之前的最后一个 WHERE。staff 端排序经插值函数 `${staffOrderBy(<value 表达式>)}` 拼出，一并识别。
+ */
+function whereClauseOf(segment: string, label: string): string {
+  assertSingleOuterQuery(segment, label)
+  const tailAnchor = segment.search(ORDER_BY_ANCHOR)
+  expect(tailAnchor, `${label} 找不到外层 ORDER BY，无法定位最外层 WHERE`).toBeGreaterThan(-1)
+  const outer = segment.slice(0, tailAnchor)
+  const from = outer.lastIndexOf('WHERE ')
+  expect(from, `${label} 找不到外层 WHERE`).toBeGreaterThan(-1)
+  const raw = outer.slice(from + 'WHERE '.length)
+  // 门店榜是 `WHERE <scope> GROUP BY ... ORDER BY ...`，需再截掉 GROUP BY 尾巴；
+  // 员工榜外层无 GROUP BY（CTE 内那个在本切片起点之前），此处对它是 no-op。
+  const groupBy = raw.search(/GROUP BY/)
+  return (groupBy === -1 ? raw : raw.slice(0, groupBy)).trim()
+}
+
+/**
+ * ★ 金额/次数列**不得设正值下界**（闸门 1 · boundary-critic P2-2）。
+ *
+ * 前面所有守护都盯着**外层** WHERE，对 metric CTE 内部完全失明。在
+ * `revenue_by_emp` / `consume_by_emp` / `sales_comm` / `service_comm` 任一 CTE 里追加
+ * `AND spia.allocated_amount > 0`，退款负行会在**聚合前**被剔除 —— 员工净额由负转正，
+ * 而外层 WHERE 一字未动、全部形状断言照绿。这与 #290 是同一个缺陷，只是下沉了一层。
+ *
+ * Part A/B/C 侧由 `assertEverySpeRefClassified` 堵这一层（fail-closed 要求每个 `spe.*`
+ * 引用都能被归类），但 Part D 走的是 `spia` / `sc` / `sit`，没有对应分类器。
+ *
+ * 注：`${producerCte}` 在切片里是**插值引用**而非展开文本，故候选池里那句
+ * `cardinality(sw.skills) > 0` 不在扫描范围内，不会误伤。
+ */
+// ⚠️ 闸门 2 round-1 GLM：原正则要求金额列**紧跟**比较符，隔一个 `)` 或 `,` 即穿透 ——
+// `AND COALESCE(spia.allocated_amount, 0) > 0` 就能绕过。现放宽为「列名与 `> 0` 之间
+// 允许若干包装字符（不跨行、不跨比较符）」，覆盖 COALESCE/GREATEST/NULLIF 等常见包装。
+// 正向的聚合输出行钉死见 assertCteAggregateShape —— 反向枚举只作辅助。
+const AMOUNT_FLOOR_RE =
+  /\b\w+\.(?:allocated_amount|commission_amount|session_used|unit_real_price|amount|received)\b[^><\n]{0,40}>=?\s*0/i
+
+function assertNoAmountFloorInCte(segment: string, label: string): void {
+  const hit = segment.match(AMOUNT_FLOOR_RE)
+  expect(
+    hit?.[0] ?? null,
+    `${label} 对金额/次数列设了正值下界（命中：${hit?.[0]}）。这会在聚合前剔掉退款负行，` +
+      '让员工净额由负转正 —— 与 #290 同型，只是下沉到 CTE 层，外层 WHERE 形状断言看不见它。',
+  ).toBeNull()
+}
+
+/**
+ * ★ metric CTE 的聚合输出行**正向钉死**（闸门 2 round-1 GLM P1-2）。
+ *
+ * 外层 WHERE 有正向形状钉死（`assertStaffRankAdmissionShape`），所以那一层可以放弃反向枚举；
+ * 但 CTE 层此前**只有反向枚举**（`AMOUNT_FLOOR_RE`），防护是不对称的 —— 而反向枚举
+ * 永远列不完：`COALESCE(x, 0) > 0`、`GREATEST(SUM(...), 0)`、`>= 1`、`FILTER (WHERE ...)`
+ * 都能在不动外层的前提下把退款负行在聚合前剔掉，让榜上显示 0.00、负额被吞。
+ *
+ * 这里改为正向：每个 `AS v` 输出列必须是「裸聚合 + COALESCE 兜底」这几种已知形态之一，
+ * 多包一层函数、挂 FILTER、换成条件聚合，都会红。
+ */
+const CTE_AGG_SHAPES = [
+  /^COALESCE\(SUM\([^()]*(?:\([^()]*\)[^()]*)*\), 0\)$/, // COALESCE(SUM(<表达式>), 0)
+  /^COUNT\(\*\)$/, // 新会员榜
+  /^COUNT\(DISTINCT [\w.]+\)$/, // staff 客流榜（admin 无此 metric）
+]
+// 注：两种 COUNT 形态恒非负，本就不存在「聚合前剔掉退款负行」的风险；
+// 收紧它们只是为了让白名单闭合 —— 换成 SUM 类聚合时必须回来改这条断言。
+
+/** 聚合内部禁止出现的**条件构造** —— 它们能在不改变外层形态的前提下把负值转成 0 */
+/** 金额/次数列参与比较（任一侧）—— 它们只应出现在聚合表达式内 */
+const AMOUNT_IN_PREDICATE_RE = new RegExp(
+  '\\b\\w+\\.(?:allocated_amount|commission_amount|session_used|unit_real_price|amount|received)\\b\\s*(?:=|<>|<=|>=|<|>)' +
+    '|(?:=|<>|<=|>=|<|>)\\s*\\w*\\(?\\s*\\w+\\.(?:allocated_amount|commission_amount|session_used|unit_real_price|amount|received)\\b',
+  'i',
+)
+
+const COND_IN_AGG_RE = /\b(?:CASE|WHEN|FILTER|NULLIF|GREATEST|LEAST|SIGN|ABS|ROUND|FLOOR|CEIL|CEILING)\b/i
+
+function assertCteAggregateShape(segment: string, label: string): void {
+  // ⚠️ 起点必须锚到 `SELECT ` 或 `, `：否则 `[A-Za-z_][\w.]*\(` 会从片段最前面的
+  // `db.execute(` / `pg.query(` 开始匹配，一路吞到 `AS v`，把整段当成"聚合表达式"。
+  const outputs = [
+    ...segment.matchAll(/(?:SELECT|,)\s+([A-Za-z_][\w.]*\((?:[^()]|\([^()]*\))*\))\s+AS v\b/g),
+  ].map((m) => m[1].replace(/\s+/g, ' ').trim())
+
+  // ★ 计数对账（闸门 2 round-2 codex P1）：提取器只支持两层括号嵌套，
+  // `GREATEST(COALESCE(SUM(x), 0), 0) AS v` 这类三层包装会被**静默跳过** ——
+  // 而只要同切片内还有另一个合法 `AS v`（收入榜就有两个），`outputs.length > 0`
+  // 依然成立，整条守护假绿、销售负提成被钳成零。故必须证明「一个都没漏抽」。
+  const declared = (segment.match(/\bAS v\b/g) ?? []).length
+  expect(
+    outputs.length,
+    `${label} 有 \`AS v\` 输出列没被提取到（声明 ${declared} 个，只抽到 ${outputs.length} 个）。` +
+      '多半是被外层函数包了一层（如 GREATEST(COALESCE(SUM(...), 0), 0)）导致嵌套超出提取器能力 —— ' +
+      '这正是需要被拦下的形态，不能因为"抽不到"就放行。',
+  ).toBe(declared)
+  expect(declared, `${label} 抽不到任何 \`AS v\` 聚合输出列 —— 切片结构变了（fail-closed）`).toBeGreaterThan(0)
+
+  for (const out of outputs) {
+    expect(
+      CTE_AGG_SHAPES.some((re) => re.test(out)),
+      `${label} 的 CTE 聚合输出列形态变了：\`${out}\`。\n` +
+        '只允许 `COALESCE(SUM(<表达式>), 0)` / `COUNT(*)` / `COUNT(DISTINCT <列>)`。',
+    ).toBe(true)
+    // ★ SUM 内部此前几乎不受约束（闸门 2 round-2 codex P1）：
+    // `COALESCE(SUM(CASE WHEN spia.allocated_amount < 0 THEN 0 ELSE ... END), 0)`
+    // 完全符合上面的白名单形态，却把退款负行就地转成 0 —— 与 #290 等效。
+    expect(
+      COND_IN_AGG_RE.test(out),
+      `${label} 的聚合内部出现条件构造：\`${out}\`。CASE/WHEN/FILTER/NULLIF/` +
+        'GREATEST/LEAST/SIGN 都能在不改变外层形态的前提下把负值转成 0，等同于 #290 原缺陷。',
+    ).toBe(false)
+  }
+}
+
+/**
+ * ★ 排序表达式必须与该榜的 WHERE 表达式**逐字一致**（闸门 2 round-2 codex P1）。
+ *
+ * 此前只检查了「ORDER BY 首键长成 `(<某个展开表达式> <> 0) DESC`」与
+ * 「staffOrderBy 的模板形状 + 调用次数」，**从未比较它与 WHERE 用的是不是同一个表达式**。
+ * （更糟的是当时的注释还提到了一个根本不存在的 `assertOrderMatchesWhere`。）
+ *
+ * 复现：把 staff revenue 的调用改成 `staffOrderBy('COALESCE(r.v, 1)')` ——
+ * helper 模板断言、六次调用计数、排序正则全部通过，但无产能员工的排序值变成 1，
+ * 重新排到负值员工之前，`(value <> 0)` 首键形同虚设。
+ */
+function assertOrderMatchesWhere(segment: string, label: string): void {
+  const norm = (x: string) => x.replace(/\s+/g, ' ').trim()
+  /** 去掉 ::cast 与最外层冗余括号，让 SELECT / WHERE / ORDER BY 三处可比 */
+  const canon = (x: string) => {
+    let v = norm(x).replace(/::\w+\s*$/, '').trim()
+    while (/^\(([\s\S]*)\)$/.test(v)) {
+      const inner = v.slice(1, -1)
+      let d = 0
+      let balanced = true
+      for (const ch of inner) {
+        if (ch === '(') d++
+        else if (ch === ')') d--
+        if (d < 0) { balanced = false; break }
+      }
+      if (!balanced || d !== 0) break
+      v = inner.trim()
+    }
+    return v
+  }
+
+  const whereExpr = whereClauseOf(segment, label).match(
+    /^\(\s*pe\.has_skills\s+OR\s+([\s\S]+?)\s*<>\s*0\s*\)$/,
+  )?.[1]
+  expect(whereExpr, `${label} 的 WHERE 里抽不出 value 表达式（形状已被上游断言保证）`).toBeTruthy()
+  const base = canon(whereExpr!)
+
+  // ★ 外层 SELECT 的 `AS value` 也必须是同一个表达式（闸门 2 round-3 GLM P1-1）：
+  // 把它改成 `GREATEST(COALESCE(r.v, 0), 0)::numeric AS value` 时，行数、名次、排序全对，
+  // 唯独**显示值被钳成 0.00** —— 负值员工照常在榜，修复却在 UI 层静默归零。
+  // 本文件 Part C 侧早为同型风险加过 `assertPlainSumAggregate` 的 GREATEST 防线，员工榜外层此前完全空白。
+  // ⚠️ 必须从 `AS value` **反向**找最近的逗号：正向 `/,\s*([\s\S]+?)\s+AS value/` 会从
+  // 片段最前面的逗号开始匹配，把整段 CTE 当成"输出表达式"。
+  const asValueAt = segment.indexOf(' AS value')
+  expect(asValueAt, `${label} 找不到外层 SELECT 的 \`AS value\`（fail-closed）`).toBeGreaterThan(-1)
+  const beforeAsValue = segment.slice(0, asValueAt)
+  // 再反向扫出**括号深度为 0** 的那个逗号：`COALESCE(r.v, 0)` 内部也有逗号，
+  // 裸 lastIndexOf(',') 会切在它上面，只抽到 `0)`。
+  let depth = 0
+  let commaAt = -1
+  for (let i = beforeAsValue.length - 1; i >= 0; i--) {
+    const ch = beforeAsValue[i]
+    if (ch === ')') depth++
+    else if (ch === '(') depth--
+    else if (ch === ',' && depth === 0) {
+      commaAt = i
+      break
+    }
+  }
+  expect(commaAt, `${label} 定位不到 \`AS value\` 所属的输出列（fail-closed）`).toBeGreaterThan(-1)
+  const selectExpr = beforeAsValue.slice(commaAt + 1)
+  expect(selectExpr, `${label} 抽不到外层 SELECT 的 \`AS value\` 输出列（fail-closed）`).toBeTruthy()
+  expect(
+    canon(selectExpr!),
+    `${label} 外层 SELECT 的 value 表达式与 WHERE 用的不是同一个。` +
+      '任何包装（GREATEST/ABS/ROUND…）都会让负值在**显示层**归零 —— 行还在、数字没了。',
+  ).toBe(base)
+
+  const staffCall = segment.match(/\$\{staffOrderBy\('([^']*)'\)\}/)
+  if (staffCall) {
+    expect(
+      canon(staffCall[1]),
+      `${label} 传给 staffOrderBy 的表达式与 WHERE 用的不是同一个 —— 排序会按另一个值算`,
+    ).toBe(base)
+    return
+  }
+  const orderExpr = segment
+    .slice(segment.search(ORDER_BY_ANCHOR))
+    .match(/^ORDER BY \(\s*([\s\S]+?)\s*<>\s*0\s*\)\s+DESC,\s*([\s\S]+?)\s+DESC,/)
+  expect(orderExpr, `${label} 的 ORDER BY 首键形状不可解析`).toBeTruthy()
+  expect(
+    [canon(orderExpr![1]), canon(orderExpr![2])],
+    `${label} 的 ORDER BY 表达式与 WHERE 用的不是同一个 —— 排序会按另一个值算`,
+  ).toEqual([base, base])
+}
+
+/**
+ * ★ metric CTE 与候选池 CTE 的 **WHERE 不得出现任何数值比较**（闸门 2 round-3 GLM P1-2/P1-3）。
+ *
+ * 反向枚举列名（`AMOUNT_FLOOR_RE`）永远列不完，GLM 实测两条穿透：
+ *   · `AND 0 < spia.allocated_amount` —— 比较符在列名**左侧**
+ *   · `AND spia.allocated_amount BETWEEN 0.01 AND 1e9` —— 根本没有 `>` 字符
+ * 还有 P1-3：在 `producer_base` 的 WHERE 追加 skills 判定，能把无标签员工**整池**吞掉，
+ * 连「OR 非零」兜底要救的人一起拔除 —— 外层 `has_skills OR v<>0` 救不了已不在池里的人。
+ *
+ * 改为一刀切：这些 CTE 的合法谓词只有 `=` / `IN` / `IS [NOT] NULL` / `IS DISTINCT FROM` /
+ * 时间列 `BETWEEN ${插值} AND ${插值}`。**任何**数值比较都判红，改动者必须回来说明理由。
+ * 插值 `${...}` 先剔除再判（helper 内部的比较不算）。
+ */
+function assertCteWhereNoNumericCompare(segment: string, label: string): void {
+  const names = [...new Set([...segment.matchAll(/(\w+) AS \(/g)].map((m) => m[1]))]
+  expect(names.length, `${label} 抽不到任何 CTE 定义（fail-closed）`).toBeGreaterThan(0)
+  for (const name of names) {
+    const body = cteBodyOf(segment, name)
+    if (!body) continue
+    const w = body.indexOf('WHERE ')
+    if (w === -1) continue
+    const g = body.indexOf('GROUP BY', w)
+    const rawWhere = body.slice(w + 'WHERE '.length, g === -1 ? undefined : g)
+    const where = rawWhere.replace(/\$\{[^}]*\}/g, ' ') // 插值 helper 内部不算
+
+    // ★ 金额/次数列**不得参与任何比较**（闸门 2 round-4 codex P1-2/P1-3）。
+    // 两条穿透了「禁 < >」这条：
+    //   · `AND spia.allocated_amount = ABS(spia.allocated_amount)` —— 等式，无 `<`/`>` 字符
+    //   · JOIN ON 里挂 `AND 0 < spia.allocated_amount` —— 在 WHERE **之前**，原扫描够不着
+    // 故扫描范围从「WHERE 段」扩到「FROM → GROUP BY」全段（含所有 JOIN ON），
+    // 判据改为「这些列只许出现在聚合表达式里，不许出现在任何比较的任一侧」。
+    const fromAt = body.indexOf('FROM ')
+    if (fromAt !== -1) {
+      const predicateArea = body
+        .slice(fromAt, g === -1 ? undefined : g)
+        .replace(/\$\{[^}]*\}/g, ' ')
+      const hit = predicateArea.match(AMOUNT_IN_PREDICATE_RE)
+      expect(
+        hit?.[0] ?? null,
+        `${label} 的 CTE \`${name}\` 让金额/次数列参与了比较（命中：${hit?.[0]}）。\n` +
+          '这些列只应出现在聚合表达式内。出现在 WHERE 或 JOIN ON 的任一侧，' +
+          '都会在聚合前剔掉退款负行 —— 等式（`= ABS(x)`）与反向不等式（`0 < x`）同样致命。',
+      ).toBeNull()
+    }
+
+    expect(
+      /[<>]/.test(where),
+      `${label} 的 CTE \`${name}\` 的 WHERE 出现数值比较：\`${rawWhere.trim()}\`。\n` +
+        '这些 CTE 只允许 = / IN / IS [NOT] NULL / IS DISTINCT FROM / 时间 BETWEEN ${插值}。\n' +
+        '任何数值比较都可能在聚合前剔掉退款负行（或把无标签员工整池吞掉），与 #290 同型。',
+    ).toBe(false)
+
+    // BETWEEN 必须在**原始** WHERE 上判（插值已被替换成空格，替换后判会抓到 `AND`）：
+    // 左端点必须是 ${} 插值，杜绝 `allocated_amount BETWEEN 0.01 AND 1e9` 这类数值下界。
+    for (const m of rawWhere.matchAll(/BETWEEN\s+(\S+)/g)) {
+      expect(
+        m[1].startsWith('${'),
+        `${label} 的 CTE \`${name}\` 出现字面量 BETWEEN（\`${m[0]}\`）—— ` +
+          '时间窗必须走 ${} 插值；对金额列做 BETWEEN 等同于设下界',
+      ).toBe(true)
+    }
+  }
+}
+
+/**
+ * ★ 时间窗端点必须是 `${cur.start}` → `${cur.end}`（闸门 2 round-3 GLM P2-6）。
+ *
+ * 把 `BETWEEN ${cur.start} AND ${cur.end}` 写成 `AND ${cur.start}` 会让区间塌成一天，
+ * 退款负行落到窗外 → 员工净额由负转正。Part C 侧早有同型端点断言，Part D 此前零守护。
+ */
+function assertTimeWindowEndpoints(segment: string, label: string): void {
+  const spans = [...segment.matchAll(/BETWEEN\s+\$\{([^}]*)\}\s+AND\s+\$\{([^}]*)\}/g)]
+  // ★ fail-closed（闸门 2 round-4 codex P1-4）：零命中不能算通过 ——
+  // 把 `service_date BETWEEN ${cur.start} AND ${cur.end}` 改成 `service_date = ${cur.end}`
+  // 时本函数一条都抽不到，for 循环空转即绿，而该榜区间已缩成一天。
+  // 业绩/收入榜的时间窗走 helper 插值（admin `performanceEventDateBetween`、
+  // staff `performanceEventPeriodWindow`），不是字面 BETWEEN —— 两种形式都算数。
+  // admin: performanceEventDateBetween / 字面 BETWEEN；
+  // staff: performanceEventPeriodWindow（业绩、收入）、timeWindowPeriod（实耗、项目数、客流、新会员）
+  const viaHelper =
+    /\$\{(?:performanceEvent(?:DateBetween|PeriodWindow)|timeWindowPeriod)\(/.test(segment)
+  expect(
+    spans.length > 0 || viaHelper,
+    `${label} 既无 \`BETWEEN \${...} AND \${...}\` 字面时间窗、也不走 performanceEvent* / timeWindowPeriod helper ` +
+      '—— 多半是被改成了单点等值（区间缩成一天，退款负行落到窗外）。',
+  ).toBe(true)
+  for (const m of spans) {
+    expect(
+      [m[1].trim(), m[2].trim()],
+      `${label} 的时间窗端点不是 cur.start → cur.end（实得 ${m[1]} → ${m[2]}）—— ` +
+        '区间被截窄会让退款负行落在窗外，净额由负转正',
+    ).toEqual(['cur.start', 'cur.end'])
+  }
+}
+
+/**
+ * ★ 排序首键必须是「非零优先」（2026-09-24 用户拍板，#290）。
+ *
+ * 入榜口径放开后，「有标签但本期零产能」的员工大量进榜 —— 生产实测本月业绩榜 94 行、
+ * **今日视图 247 行**为 0.00。此时纯 `ORDER BY value DESC` 会把本次要救的负值员工
+ * 压到那些 0.00 行**之下**（实测第 252/253 名），修复反而比修复前更难被看见。
+ *
+ * 加 `(value <> 0) DESC` 首键后：正值 1~157 → 负值 158/159 → 零值并列垫底。
+ * 去掉它不会让任何行消失、不会让任何断言红，却会让本次修复的可见性归零 ——
+ * 属于「静默削弱」类回归，故必须正面钉死。
+ *
+ * staff 侧排序经插值函数 `${staffOrderBy(...)}` 拼出，切片里看不到字面量，
+ * 由下方单独一条 it 校验常量定义本身。
+ */
+function assertZeroLastOrdering(segment: string, label: string): void {
+  // staff 切片走 ${staffOrderBy(...)} 插值，由单独一条 it 校验函数定义本身。
+  // ⚠️ fail-closed：两种锚都找不到时必须红，不能静默跳过（闸门 2 round-1 GLM P3）——
+  // 否则 admin 将来若也重构成插值 helper，排序首键检查会无声消失。
+  if (!segment.includes('ORDER BY')) {
+    expect(
+      /\$\{staffOrderBy\(/.test(segment),
+      `${label} 既无 ORDER BY 字面量、也不走 staffOrderBy 插值 —— 排序守护无从施加`,
+    ).toBe(true)
+    return
+  }
+  const at = segment.indexOf('ORDER BY')
+  const clause = segment.slice(at + 'ORDER BY'.length).replace(/`\)[\s\S]*$/, '').trim()
+  expect(
+    clause,
+    `${label} 的排序首键不再是「非零优先」。缺了 (value <> 0) DESC，零产能员工会排在` +
+      '负值员工**之前**（实测把负值压到第 252/253 名），本次修复在 UI 上等于白做。',
+    // ⚠️ 必须是**展开的数值表达式**，不能是 SELECT 别名 `value`：PG 只允许别名作为
+    // 独立排序项，参与表达式时按真实列解析 → `column "value" does not exist`
+    //（闸门 2 round-1 codex 抓到，当时本断言反把无效语法钉死了）。
+    // 同时要求排序表达式与该榜 WHERE 里的表达式一致（下方 assertOrderMatchesWhere）。
+  ).toMatch(/^\((?!\s*value\s*<>)[^)]*(?:\)[^)]*)*?<>\s*0\)\s+DESC\s*,/)
+}
+
+/**
+ * 按**括号配对**取出 `<name> AS ( ... )` 的完整 CTE 体。
+ * 正则做不到：CTE 体内有嵌套括号（JOIN/函数调用），`[\s\S]*?\)` 会在第一个 `)` 就停。
+ *
+ * ⚠️ 已知限制：**不感知字符串字面量**。生产 SQL 里的字面量（'销售单' 等）都不含括号，
+ * 故现状正确；将来若 CTE 内出现含 `(` / `)` 的字面量，本函数会返回 null 或截断片段 ——
+ * 两个失效方向都是 fail-closed（断言判红），但报错会是费解的「不是本切片内定义的 CTE」。
+ */
+function cteBodyOf(segment: string, name: string): string | null {
+  const head = `${name} AS (`
+  const start = segment.indexOf(head)
+  if (start === -1) return null
+  let depth = 1
+  let i = start + head.length
+  while (i < segment.length && depth > 0) {
+    if (segment[i] === '(') depth++
+    else if (segment[i] === ')') depth--
+    i++
+  }
+  return depth === 0 ? segment.slice(start, i) : null
+}
+
+/**
+ * ★ 员工榜的 metric JOIN 形状（闸门 1 · concurrency P2-2 判定为**最危险**的一条）。
+ *
+ * 两条绕过路径，都能在**完全不动外层 WHERE** 的前提下回滚本次修复：
+ *
+ *   1. **把过滤挪进 ON**：`LEFT JOIN revenue_by_emp r ON r.employee_id = pe.employee_id AND r.v > 0`
+ *      —— ON 不满足时 LEFT JOIN 产出 NULL → `COALESCE(r.v, 0)` 兜成 0：
+ *      无标签者被外层 WHERE 剔除，**有标签者的 `value` 被静默篡改成 0.00**，
+ *      负值员工的金额直接消失。这是最像"性能优化"的一种写法。
+ *   2. **`LEFT JOIN` 退化成 `JOIN`** —— 比原缺陷更糟：连"有标签零值"者也全部掉榜，
+ *      而 WHERE 形状逐字未变，形状断言照绿。
+ *
+ * 故此处钉死：`FROM producer_employees pe` 之后的每个 JOIN 都必须是 `LEFT JOIN`，
+ * 且每个 `ON` 子句**有且仅有** `<别名>.employee_id = pe.employee_id` 一项。
+ */
+function assertMetricJoinShape(segment: string, label: string): void {
+  const fromAt = segment.indexOf('FROM producer_employees pe')
+  expect(fromAt, `${label} 找不到 FROM producer_employees pe`).toBeGreaterThan(-1)
+  const anchorAt = segment.search(ORDER_BY_ANCHOR)
+  const joinArea = segment.slice(fromAt, anchorAt === -1 ? undefined : anchorAt)
+
+  expect(
+    /(?<!LEFT\s)(?<!LEFT OUTER\s)\bJOIN\b/i.test(joinArea),
+    `${label} 的 metric 关联出现了非 LEFT 的 JOIN —— 内连接会把「有技能标签但本期零产能」` +
+      '的员工整体剔除，比 #290 原缺陷更狠，且外层 WHERE 形状逐字未变、形状断言发现不了。',
+  ).toBe(false)
+
+  // 用 [\s\S] 而非 `.` + `s` 标志：dotAll 需要 target es2018+，本仓 tsconfig 低于该版本
+  // （vitest/esbuild 不校验、`tsc --noEmit` 会报 TS1501，两道关卡口径不同）
+  // ⚠️ JOIN 数据源必须是裸 CTE 名，不能是内联子查询：
+  // `LEFT JOIN (SELECT * FROM revenue_by_emp WHERE v > 0) r ON r.employee_id = pe.employee_id`
+  // 能同时通过「是 LEFT JOIN」「ON 只有 employee_id」两条，却让负值关联落空、
+  // 有标签员工的 value 被篡改成 0.00（闸门 2 round-1 codex）。
+  expect(
+    /\bLEFT JOIN\s*\(/i.test(joinArea),
+    `${label} 的 metric 关联用了**内联子查询**做数据源。子查询里可以藏任意 value 过滤，` +
+      '而 JOIN 类型与 ON 正文两条断言都看不见它 —— 数据源必须是裸 CTE 名。',
+  ).toBe(false)
+
+  // ★ 关联的必须是本切片内定义的**聚合** CTE（闸门 2 round-2 codex P1）：
+  // 新增一个转发 CTE `positive_revenue_by_emp AS (SELECT * FROM revenue_by_emp WHERE v > 0)`
+  // 再 `LEFT JOIN positive_revenue_by_emp r` —— 它仍是裸 CTE 名、仍是 LEFT JOIN、
+  // ON 仍只有 employee_id，全部既有断言通过，负值却在转发层被剔掉、兜成 0。
+  // 判据：切片内每个 CTE 定义都必须是真聚合（含 GROUP BY），转发 CTE 没有 GROUP BY。
+  // `AS <别名>` 是合法写法，正则必须认（闸门 2 round-3 GLM P2-5：不认则多 JOIN 榜只抽到一个就放行）
+  const joined = [...joinArea.matchAll(/LEFT JOIN\s+(\w+)\s+(?:AS\s+)?\w+\s+ON/gi)].map((m) => m[1])
+  const joinCount = (joinArea.match(/\bLEFT JOIN\b/gi) ?? []).length
+  expect(
+    joined.length,
+    `${label} 有 LEFT JOIN 没被提取到（共 ${joinCount} 个，只抽到 ${joined.length} 个）—— 漏掉的那个不受来源校验`,
+  ).toBe(joinCount)
+  expect(joined.length, `${label} 抽不到 LEFT JOIN 的 CTE 名（fail-closed）`).toBeGreaterThan(0)
+  for (const name of joined) {
+    const body = cteBodyOf(segment, name)
+    expect(body, `${label} 关联的 \`${name}\` 不是本切片内定义的 CTE —— 来源不可验`).toBeTruthy()
+    expect(
+      /\bGROUP BY\b/i.test(body!),
+      `${label} 关联的 CTE \`${name}\` 没有 GROUP BY —— 它是**转发 CTE**（如 ` +
+        '`SELECT * FROM revenue_by_emp WHERE v > 0`），可以在不动任何既有断言的前提下' +
+        '把负值行剔掉。metric 关联必须直接指向做聚合的那个 CTE。',
+    ).toBe(true)
+  }
+
+  const onClauses = [...joinArea.matchAll(/\bON\s+([\s\S]+?)(?=\s*(?:LEFT JOIN|JOIN|WHERE)\b|$)/gi)]
+  expect(
+    onClauses.length,
+    `${label} 没抽到任何 JOIN ... ON —— 切片结构变了，本断言可能已失效（fail-closed）`,
+  ).toBeGreaterThan(0)
+  for (const m of onClauses) {
+    expect(
+      m[1].trim(),
+      `${label} 的 JOIN ON 里混入了关联之外的条件。把 value 过滤挪进 ON（如 ` +
+        '`AND r.v > 0`）会让 LEFT JOIN 落空、COALESCE 兜成 0，从而**静默篡改榜单数值**' +
+        '而不改变行数 —— 外层 WHERE 形状断言对此完全失明。',
+    ).toMatch(/^\w+\.employee_id\s*=\s*pe\.employee_id$/)
+  }
+}
+
+/**
+ * ★ #290 —— 员工榜（Part D）的入榜口径，**正向钉死整个 WHERE 形状**。
+ *
+ * 规则：`WHERE (pe.has_skills OR COALESCE(<别名>.v, 0) <> 0)`，收入榜是两项相加。
+ * 有且仅有这一项 —— 追加任何 `AND ...` 都会红。
+ *
+ * ⚠️ 为什么钉形状而不是反向禁 `> 0`：反向列举挡不完（`>= 1`、`> 0.0`、`FILTER`、
+ * `HAVING`、`GREATEST(...,0)`、把值包进函数……本文件 Part C 侧为此积累了六层守护，
+ * 每一层都是被闸门 2 打穿后补的）。正向钉死「WHERE 必须逐字长这样」是 fail-closed 的：
+ * 任何改动都必须回来改这条断言并说明为什么安全。
+ */
+function assertStaffRankAdmissionShape(segment: string, label: string): void {
+  // ⚠️ 结果集完整性：`:492` 的同族禁令只喂了 Part A/B/C 三个切片，**不覆盖员工榜**。
+  // 本改动把负值员工放进榜单，而排序是 `ORDER BY value DESC` —— 负值必然排在**最末**。
+  // 此时给员工榜加 `LIMIT 20`（"253 行太长了截断一下" 是本改动后最可能的后续优化，
+  // 且看起来完全无害）会**第一个砍掉负值行**，把本次修复静默抹掉，而其余守护一条都不会红。
+  // `:493-495` 早已预言过这个形态（"给排行榜加 LIMIT 10 是极常见的首屏优化"），
+  // 只是当时没把 Part D 纳进去。
+  expect(
+    /\b(?:LIMIT|OFFSET|FETCH|HAVING)\b/i.test(segment),
+    `${label} 出现 LIMIT/OFFSET/FETCH/HAVING —— 员工榜按 value DESC 排序，负值恒在末尾，` +
+      '任何截断或聚合级剔行都会优先吃掉它们，等于回退 #290',
+  ).toBe(false)
+  // 同族防线：外层 WHERE 形状对 CTE 内部与 JOIN ON 都完全失明，各堵一道
+  assertNoAmountFloorInCte(segment, label)
+  assertCteWhereNoNumericCompare(segment, label)
+  assertTimeWindowEndpoints(segment, label)
+  assertCteAggregateShape(segment, label)
+  assertMetricJoinShape(segment, label)
+  assertZeroLastOrdering(segment, label)
+  assertOrderMatchesWhere(segment, label)
+  expect(
+    whereClauseOf(segment, label),
+    `${label} 的入榜口径变了。必须是「有技能标签者无条件入榜（含零值/负值），` +
+      '无标签者仅在有非零产能时入榜」；任何按 value 设下界的写法都会重新吞掉退款净额为负的员工' +
+      '（#290：2026-09-01~22 实测 2 人、−10,902.00），与同板块门店榜规则分裂',
+  ).toMatch(
+    // 空白放宽为 \s+/\s*：income 那行已 68 字符，手动折行不该判红（fail-closed 方向不变，
+    // 因为形状仍被 ^...$ 逐项锚定，只是不再对空格数量斤斤计较）
+    /^\(\s*pe\.has_skills\s+OR\s+COALESCE\(\s*\w+\.v\s*,\s*0\s*\)(?:\s*\+\s*COALESCE\(\s*\w+\.v\s*,\s*0\s*\))?\s*<>\s*0\s*\)$/,
+  )
+}
+
+/**
+ * ★ #290 —— 门店榜（Part C）对照面：**不得按 value 剔任何行**。
+ *
+ * 门店榜的 WHERE 有且仅有 scope 一项（业务过滤在 JOIN ON 里），零值/负值门店照常出行。
+ * 2026-09-01~22 实测：43 家门店全部出行（35 正 / 7 零 / 1 负）。
+ * 这是 AC4「两榜零值/负值处理规则一致」的另一半 —— 员工榜守 has_skills OR ≠0，
+ * 门店榜守「压根不按 value 过滤」，两条合起来才叫规则一致。
+ */
+function assertStoreRankNoValueCutoff(segment: string, label: string): void {
+  // ⚠️ `:492` 的同族禁令在门店榜侧也只喂了 `qStoreRankRevenue` 一个切片，
+  // 另外四个（consume / retainedMember / newMember / projectCount）此前无守护。
+  // 本 helper 本就遍历全部 5 个切片，顺手覆盖成本为零 ——「站在缺口正上方不补」是闸门 1 的原话。
+  expect(
+    /\b(?:LIMIT|OFFSET|FETCH|HAVING)\b/i.test(segment),
+    `${label} 出现 LIMIT/OFFSET/FETCH/HAVING —— 门店榜不得截断或按聚合值剔行` +
+      '（会吞掉净额为负的门店，并让门店榜合计 ≠ KPI 分子）',
+  ).toBe(false)
+  expect(
+    whereClauseOf(segment, label),
+    `${label} 的 WHERE 只允许 scopeFilterSql 一项；任何 value 过滤都会让门店榜` +
+      '与员工榜的零值/负值规则重新分裂（#290 AC4）',
+  ).toBe("${scopeFilterSql(session, scope, 's.store_id')}")
+}
+
 describe('数据中心人效板块两端口径一致性守护', () => {
   let adminSrc: string
   let staffSrc: string
@@ -737,13 +1298,241 @@ describe('数据中心人效板块两端口径一致性守护', () => {
       expect(staffBody).toMatch(/vn\.is_active\s*=\s*TRUE/i)
       expect(adminBody).toMatch(/orgAnchorScopeSql\(session,\s*scope\)/i)
     })
-    it('产能员工不再用 skills 过滤（2026-05-20 起，两端一致）', () => {
-      // producer_employees CTE 内不应出现 skills 过滤（员工榜候选池口径）。
+    it('产能员工候选池不用 skills **白名单**截断（2026-05-20 起，两端一致）', () => {
+      // 禁的是 `skills && ARRAY[...]` 这种**白名单截断**：2026-09-01~22 实测它会把
+      // 品项老师 1,061,191.30 / 推广部 231,767.01 / 售前老师 97,728.00 共 139 万（27.8%）
+      // 排出榜单，且与 2026-09-03「品项老师/养生部应当入榜」的放宽改造矛盾。
+      //
+      // ⚠️ 不禁 has_skills（skills 非空判定）：#290 起它是**入榜口径的左半边**，语义是
+      // 「有技能标签 ⇒ 纳入产能考核、无条件入榜」，与白名单截断是两回事 —— 它不排除任何
+      // 有产能事实的人（无标签但有非零产能者由 OR 右半边兜底）。`&&` 是数组重叠运算符，
+      // 只会命中白名单写法，命不中 `IS NOT NULL AND cardinality(...)`。
       // 注：efficiency.ts 在「店长/技师头数」处仍合法使用 skills，故只校验 producer CTE 段落。
       const adminProducer = adminBody.match(/producer_employees\s+AS\s*\([^)]*?\)/i)?.[0] ?? ''
       const staffProducer = staffBody.match(/producer_employees\s+AS\s*\([^)]*?\)/i)?.[0] ?? ''
       expect(adminProducer).not.toMatch(/skills\s*&&/i)
       expect(staffProducer).not.toMatch(/skills\s*&&/i)
+    })
+    it('候选池带 has_skills 标记并透传给入榜口径，两端镜像（#290）', () => {
+      for (const [body, label] of [
+        [adminBody, 'admin efficiency.ts'],
+        [staffBody, 'staff mgmt-dashboard.js'],
+      ] as const) {
+        expect(body, `${label} 的 producer_base 缺 has_skills 列`).toMatch(
+          /\(COALESCE\(cardinality\(array_remove\(array_remove\(sw\.skills, ''\), NULL\)\), 0\) > 0\) AS has_skills/i,
+        )
+        expect(body, `${label} 的 producer_employees 没透传 has_skills`).toMatch(/pb\.has_skills/i)
+      }
+    })
+  })
+
+  /**
+   * ★ #290 AC4：员工榜（Part D）与门店榜（Part C）的零值/负值处理规则必须一致。
+   *
+   * 两榜此前分裂：门店榜从不按 value 剔行（43 家全出行，含 7 零 1 负），员工榜却用
+   * `WHERE COALESCE(v,0) > 0` 把净额为负的员工整行吞掉（实测 2 人、−10,902.00），
+   * 与「退款负数冲销不删行」硬口径冲突。本组断言把两侧规则同时钉死。
+   */
+  describe('★ #290 入榜口径：员工榜与门店榜的零值/负值规则一致（两端镜像）', () => {
+    it('admin Part D 五个员工榜：WHERE 逐字是 has_skills OR 非零', () => {
+      const slices: Array<[string, string, string]> = [
+        ['业绩', 'const qStaffRankRevenue', 'const qStaffRankConsume'],
+        ['实耗', 'const qStaffRankConsume', 'const qStaffRankNewMember'],
+        ['新会员', 'const qStaffRankNewMember', 'const qStaffRankProjectCount'],
+        ['项目数', 'const qStaffRankProjectCount', 'const qStaffRankIncome'],
+        ['收入', 'const qStaffRankIncome', 'Part E'],
+      ]
+      for (const [label, start, end] of slices) {
+        assertStaffRankAdmissionShape(sliceOrFail(adminSrc, start, end), `admin 员工榜-${label}`)
+      }
+    })
+
+    it('staff 六个员工榜：WHERE 逐字是 has_skills OR 非零（含 admin 无的 footfall）', () => {
+      const slices: Array<[string, string, string]> = [
+        ['业绩', 'async function staffRankingRevenue', 'async function staffRankingConsume'],
+        ['实耗', 'async function staffRankingConsume', 'async function staffRankingNewMember'],
+        ['新会员', 'async function staffRankingNewMember', 'async function staffRankingFootfall'],
+        ['客流', 'async function staffRankingFootfall', 'async function staffRankingProjectCount'],
+        ['项目数', 'async function staffRankingProjectCount', 'async function staffRankingIncome'],
+        ['收入', 'async function staffRankingIncome', 'async function staffRanking(ctx)'],
+      ]
+      for (const [label, start, end] of slices) {
+        assertStaffRankAdmissionShape(sliceOrFail(staffSrc, start, end), `staff 员工榜-${label}`)
+      }
+    })
+
+    it('admin Part C 五个门店榜：WHERE 只有 scope，不按 value 剔任何行', () => {
+      const slices: Array<[string, string, string]> = [
+        ['业绩', 'const qStoreRankRevenue', 'const qStoreRankConsume'],
+        ['实耗', 'const qStoreRankConsume', 'const qStoreRankRetainedMember'],
+        ['保有会员', 'const qStoreRankRetainedMember', 'const qStoreRankNewMember'],
+        ['新会员', 'const qStoreRankNewMember', 'const qStoreRankProjectCount'],
+        ['项目数', 'const qStoreRankProjectCount', 'Part D'],
+      ]
+      for (const [label, start, end] of slices) {
+        assertStoreRankNoValueCutoff(sliceOrFail(adminSrc, start, end), `admin 门店榜-${label}`)
+      }
+    })
+
+    /**
+     * ★ 切片数与查询数对账（闸门 1 · boundary-critic P2-1 的第二道防线）。
+     *
+     * 上面三条 it 的切片清单是**硬编码**的（admin 5 / staff 6）。新增一个员工榜 metric 时，
+     * 只要没人回来往清单里加一行，那个新榜就永远不会被检查 —— 而
+     * `assertSingleOuterQuery` 只能发现「切片内混进了第二个查询」这一种形态，
+     * 发现不了「新榜被加在清单覆盖范围之外」（比如加在最后一个榜之后）。
+     *
+     * 这里直接钉死消费 `producer_employees` 的查询总数：多一个就红，改动者必须回来
+     * 同步切片清单并说明新榜为何安全。
+     */
+    /**
+     * ★ JS 装配层不得按 value 剔行（闸门 2 round-3 GLM P1-4）。
+     *
+     * 本组此前**全部**是 SQL 文本断言，JS 后处理完全在视野外。GLM 实测：
+     * 在 staff `rawRows.map(...)` 前插一个 `.filter((r) => Number(r.value || 0) > 0)`
+     * → SQL 层十几道守护全部正确，却在最后一层被一行 filter 抹平，66 条断言全绿。
+     *
+     * 「0.00 行太多，过滤一下」与「榜单太长，加个 LIMIT」是同族的常规演进动机 ——
+     * 后者已有禁令，前者此前没有。
+     */
+    /**
+     * ★ 候选池 `producer_base` 的 WHERE **正向钉死**（闸门 2 round-3 GLM P1-3）。
+     *
+     * 它定义在 `${producerCte}` / `producerEmployeesCte()` 里，各榜切片内只有插值引用、
+     * 没有展开文本 —— 所以 `assertCteWhereNoNumericCompare` 等逐榜断言**扫不到它**（实测漏网）。
+     *
+     * 在这里追加一句 `AND cardinality(array_remove(sw.skills,'')) > 0`，就能把无标签员工
+     * **整池**吞掉，连「OR 非零」兜底要救的那批人一起拔除 —— 外层 `has_skills OR v<>0`
+     * 救不了已经不在候选池里的人。这正是 2026-05-20 漏算 33% 业绩的同型事故。
+     *
+     * 该 WHERE 的合法内容只有「入职非空 + 入职早于锚点 + 未离职或离职晚于锚点」三项，
+     * 且本就含合法的时间比较（`<=` / `>`），无法用「禁数值比较」一刀切，故逐字钉死。
+     */
+    it('候选池 producer_base 的 WHERE 只有 hired_at / resigned_at 三项（两端镜像）', () => {
+      for (const [body, label, anchor] of [
+        [adminBody, 'admin efficiency.ts', '\\$\\{cur\\.end\\}'],
+        [staffBody, 'staff mgmt-dashboard.js', 'NOW\\(\\)::date'],
+      ] as const) {
+        const m = body.match(
+          new RegExp(
+            'WHERE sw\\.hired_at IS NOT NULL' +
+              ' AND sw\\.hired_at::date <= ' + anchor +
+              ' AND \\(sw\\.resigned_at IS NULL OR sw\\.resigned_at::date > ' + anchor + '\\)' +
+              '\\s*\\)',
+          ),
+        )
+        expect(
+          m,
+          `${label} 的 producer_base WHERE 形状变了。只允许「入职非空 + 入职 <= 锚点 + ` +
+            '未离职或离职 > 锚点」三项；在此追加任何条件（尤其 skills 判定）都会把整批员工' +
+            '挡在候选池外，外层的 has_skills OR 兜底救不回来（#290 / 2026-05-20 同型事故）。',
+        ).toBeTruthy()
+      }
+    })
+
+    /**
+     * ★ 候选池**第二层** `producer_employees` 的 WHERE（闸门 2 round-4 codex P1-1）。
+     *
+     * round-3 补的是第一层 `producer_base`；第二层的 scope WHERE 同样没人看守 ——
+     * 在它外面包一层再追加 `AND pb.has_skills`，第一层三项断言、外层
+     * `has_skills OR v<>0`、查询计数全都不变，但**无标签且有非零产能**的员工
+     * 在进入榜单前已被删除（正是「OR 兜底」要救的那批人）。
+     */
+    it('候选池 producer_employees 的 WHERE 只有两个 scope 分支（两端镜像）', () => {
+      for (const [body, label, storeScope, orgScope] of [
+        [adminBody, 'admin efficiency.ts',
+         "\\$\\{scopeFilterSql\\(session, scope, 'pb\\.store_id'\\)\\}",
+         '\\$\\{orgAnchorScopeSql\\(session, scope\\)\\}'],
+        [staffBody, 'staff mgmt-dashboard.js',
+         '\\$\\{storeFilter\\.sql\\}', '\\$\\{orgScope\\.sql\\}'],
+      ] as const) {
+        const re = new RegExp(
+          'WHERE \\(pb\\.store_id IS NOT NULL AND ' + storeScope + '\\)' +
+            ' OR \\(pb\\.store_id IS NULL AND ' + orgScope + '\\)\\s*\\)',
+        )
+        expect(
+          re.test(body),
+          `${label} 的 producer_employees WHERE 形状变了。只允许「有门店走 store scope、` +
+            '无门店走 org anchor scope」两个分支；在此追加任何条件（尤其 has_skills）' +
+            '都会把「无标签但有产能」的员工在进榜前删掉 —— 外层的 OR 兜底救不回来。',
+        ).toBe(true)
+      }
+    })
+
+    it('两端 JS 装配层不得按 value 剔行（SQL 守住了，别在 map 前 filter 掉）', () => {
+      // ⚠️ 正向钉死而非禁 `.filter(`（闸门 2 round-4 codex P1-6）：黑名单列不完 ——
+      // `.flatMap((r) => r.value < 0 ? [] : [r])`、`.reduce(...)`、`.slice(0, 50)` 都能剔行。
+      // 判据改为「`assignRanks(` 之后必须**紧跟** `.map(`」，中间插入任何调用都会红。
+      const adminAssembly = sliceOrFail(adminSrc, 'const mapStoreRank', 'const storeRankings')
+      const adminChains = [
+        ...adminAssembly.matchAll(/assignRanks\(\s*\(rows as [^)]*\)\s*(\.\w+)\(/g),
+      ].map((m) => m[1])
+      expect(
+        adminChains.length,
+        'admin 抽不到 mapStoreRank/mapStaffRank 的装配链（fail-closed，结构变了）',
+      ).toBe(2)
+      expect(
+        adminChains,
+        'admin 排行榜装配层在 assignRanks 与 .map 之间插入了别的调用 —— ' +
+          '任何按 value 剔行/截断都会把 SQL 侧所有「不剔负」守护静默抹平（#290 回退）',
+      ).toEqual(['.map', '.map'])
+
+      // staff 两处装配（storeRanking 与 staffRanking）同理
+      for (const [start, end, which, src] of [
+        ['const rawRows = await METRIC_DISPATCH', 'if (elapsed > 800)', 'storeRanking', 'rawRows'],
+        ['const rawRows = await STAFF_METRIC_DISPATCH', 'if (elapsed > 800)', 'staffRanking', 'rawRows'],
+      ] as const) {
+        const seg = sliceOrFail(staffSrc, start, end)
+        const m = seg.match(new RegExp(`assignRanks\\(\\s*${src}\\s*(\\.\\w+)\\(`))
+        expect(m, `staff ${which} 抽不到装配链（fail-closed，结构变了）`).toBeTruthy()
+        expect(
+          m![1],
+          `staff ${which} 在 assignRanks 与 .map 之间插入了 ${m![1]}() —— 同上，会把 SQL 侧守护一次抹平`,
+        ).toBe('.map')
+      }
+    })
+
+    it('staff 的 staffOrderBy 单源同样「非零优先」，且六个榜都经由它（两端排序镜像）', () => {
+      // staff 六个榜共用一个排序拼接函数，切片里只看得到 ${staffOrderBy(...)} 插值，
+      // 故在此校验函数定义本身 + 全部调用点。两端排序必须一致，
+      // 否则同一名员工在 admin 榜和 staff 小程序榜上的名次会对不上。
+      // `=>` 与模板串之间可能被 prettier 折行；staffBody 虽已 normalize（空白压成单空格），
+      // 但仍用 \s* 容错，避免格式化后假红（闸门 2 round-1 GLM）
+      const decl = staffBody.match(/const staffOrderBy = \(valueExpr\) =>\s*`([^`]*)`/)?.[1]
+      expect(decl, 'staff 找不到 staffOrderBy 单源定义（重命名了？）').toBeTruthy()
+      expect(
+        decl,
+        'staff 排序首键不再是「非零优先」，会与 admin 员工榜名次分叉，' +
+          '且负值员工在小程序端会被零值行压到榜底',
+      ).toMatch(/^ORDER BY \(\$\{valueExpr\} <> 0\) DESC, \$\{valueExpr\} DESC,/)
+
+      // ⚠️ 排序表达式必须与各榜 SELECT 的 `AS value` **逐字相同**：写成别名 `value` 会让
+      // PG 报 `column "value" does not exist`（别名只能做独立排序项，不能参与表达式）。
+      // 故此处同时钉死「六个榜都走 staffOrderBy」，不许某个榜自己拼 ORDER BY。
+      expect(
+        (staffBody.match(/\$\{staffOrderBy\('/g) ?? []).length,
+        'staff 六个员工榜必须全部经由 staffOrderBy 拼排序；' +
+          '某个榜自己写 ORDER BY 会绕过本组守护，且极易写成别名形式而在运行时报错',
+      ).toBe(6)
+      expect(
+        /ORDER BY \(value <> 0\)/.test(staffBody),
+        'staff 出现了 `ORDER BY (value <> 0)` 这种**别名参与表达式**的写法 —— ' +
+          'PG 会报 column "value" does not exist，整个 staffRanking 直接失败',
+      ).toBe(false)
+    })
+
+    it('消费 producer_employees 的查询总数与切片清单对账（新增 metric 必须同步补断言）', () => {
+      expect(
+        (adminBody.match(/FROM producer_employees pe/g) ?? []).length,
+        'admin 侧消费 producer_employees 的查询数变了。期望 6 = Part D 五个员工榜 + Part E 技师明细。\n' +
+          '  · 新增员工榜 metric → 请往上面「admin Part D 五个员工榜」的 slices 里补一行；\n' +
+          '  · 新增 Part E 同类明细 → 请确认它不按 value 剔行后再改本断言。',
+      ).toBe(6)
+      expect(
+        (staffBody.match(/FROM producer_employees pe/g) ?? []).length,
+        'staff 侧消费 producer_employees 的查询数变了。期望 6 个员工榜（比 admin 多 footfall、无 Part E）。\n' +
+          '新增 metric 请同步补「staff 六个员工榜」的 slices。',
+      ).toBe(6)
     })
   })
 
