@@ -38,6 +38,7 @@ import {
   listInventoryCoreDocs,
   listInventoryLocationFilterOptions,
   listInventoryLots,
+  listInventoryMarketTransferTargets,
   listInventorySuppliers,
   rejectInventoryCoreDoc,
   syncInventoryLocations,
@@ -1793,6 +1794,109 @@ describe('库存主体筛选 scope', () => {
       }],
       defaultLocationId: 'M1',
     })
+  })
+})
+
+describe('市场间调货接收主体候选（#340）', () => {
+  /** 只绑一个市场的「市场库存财务」：scope 里只有 M1 与其下属门店 */
+  const SINGLE_MARKET_SESSION = {
+    employeeId: 'E-MK',
+    name: '市场库存财务',
+    phone: '13800000001',
+    roles: [{
+      role: 'inventory_market_finance',
+      scopeId: 'M1',
+      scopeType: '市场',
+      actions: ['inventory:market_operate', 'inventory:stock_list'],
+      scopeStoreIds: ['S1'],
+      scopeOrgNodeIds: ['M1', 'N-S1'],
+    }],
+    permissions: {
+      actions: ['inventory:market_operate', 'inventory:stock_list'],
+      scopeStoreIds: ['S1'],
+      scopeOrgNodeIds: ['M1', 'N-S1'],
+    },
+  }
+
+  function captureSelect(rows: unknown[]) {
+    const sink: { fields?: Record<string, unknown>; where?: unknown } = {}
+    mockDb.select.mockImplementation((fields: Record<string, unknown>) => {
+      sink.fields = fields
+      return {
+        from: () => ({
+          where: (cond: unknown) => {
+            sink.where = cond
+            return { orderBy: async () => rows }
+          },
+        }),
+      }
+    })
+    return sink
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockDb.select.mockReset()
+    mockDb.execute.mockReset()
+    mockDb.execute.mockResolvedValue([])
+    vi.mocked(isAdminScope).mockReturnValue(false)
+    mockGetSession.mockResolvedValue(SINGLE_MARKET_SESSION)
+  })
+
+  it('单市场账号也能拿到其他市场：条件里没有任何 scope 收窄', async () => {
+    const sink = captureSelect([
+      { orgNodeId: 'M1', name: '南昌市场' },
+      { orgNodeId: 'M2', name: '九江市场' },
+    ])
+
+    await expect(listInventoryMarketTransferTargets()).resolves.toEqual([
+      { orgNodeId: 'M1', name: '南昌市场' },
+      { orgNodeId: 'M2', name: '九江市场' },
+    ])
+    const { text, params } = compile(sink.where)
+    // scope 收窄在 listInventoryLocations 里是 `location_id IN (...)`；这里一个都不能有，
+    // 也不能把本账号的 scope 节点当参数带进去 —— 否则 M2 会被滤掉，#340 原样复现。
+    expect(text).not.toContain('"location_id" in')
+    expect(params).not.toContain('N-S1')
+    expect(params).not.toContain('S1')
+  })
+
+  it('只要启用的市场：is_active = true 且 location_type = 市场（停用市场、门店、总部都不出现）', async () => {
+    const sink = captureSelect([])
+    await listInventoryMarketTransferTargets()
+    const { text, params } = compile(sink.where)
+    expect(text).toContain('"inventory_locations"."is_active" = $')
+    expect(text).toContain('"inventory_locations"."location_type" = $')
+    expect(text).toContain('"inventory_locations"."org_node_id" is not null')
+    expect(params).toContain('true')
+    expect(params).toContain('市场')
+    expect(params).not.toContain('门店')
+    expect(params).not.toContain('总部')
+  })
+
+  it('越过 scope 的查询只取名称与 orgNodeId 两列', async () => {
+    const sink = captureSelect([{ orgNodeId: 'M2', name: '九江市场' }])
+    const rows = await listInventoryMarketTransferTargets()
+    expect(Object.keys(sink.fields ?? {}).sort()).toEqual(['name', 'orgNodeId'])
+    expect(Object.keys(rows[0]).sort()).toEqual(['name', 'orgNodeId'])
+  })
+
+  it('没有市场/供应链办理权限的只读账号被拒', async () => {
+    mockGetSession.mockResolvedValue({
+      ...SINGLE_MARKET_SESSION,
+      roles: [{ ...SINGLE_MARKET_SESSION.roles[0], actions: ['inventory:stock_list'] }],
+      permissions: { ...SINGLE_MARKET_SESSION.permissions, actions: ['inventory:stock_list'] },
+    })
+    const { requireAnyPermission } = await import('@/lib/permissions')
+    vi.mocked(requireAnyPermission).mockImplementationOnce(() => {
+      throw new Error('PERMISSION_DENIED: 无权限')
+    })
+    await expect(listInventoryMarketTransferTargets()).rejects.toThrow('PERMISSION_DENIED')
+    expect(vi.mocked(requireAnyPermission)).toHaveBeenCalledWith(
+      expect.anything(),
+      ['inventory:supply_chain_operate', 'inventory:market_operate'],
+    )
+    expect(mockDb.select).not.toHaveBeenCalled()
   })
 })
 

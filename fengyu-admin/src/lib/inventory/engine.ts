@@ -57,6 +57,7 @@ import {
   type InventoryDocRow,
   type InventoryDocType,
   type InventoryLocationRow,
+  type InventoryMarketTransferTarget,
   type InventoryLocationFilterOptions,
   type InventoryLocationType,
   type InventoryLotRow,
@@ -1372,6 +1373,38 @@ function lotRow(
     updatedAt: row.lot.updatedAt.toISOString(),
   }
 }
+
+/**
+ * 「市场间调货出库」的接收主体候选（#340）：全部启用的市场，**不按操作人 scope 过滤**。
+ *
+ * 调货的接收方是对方市场，只管一个市场的账号（如「市场库存财务」）按 scope 本就看不见它 ——
+ * 继续用 `listInventoryLocations` 当候选源，下拉里永远只有自己，流程第一步就走不下去。
+ * 服务端建单对 RECEIVE_REQUIRED 类型的 target 同样刻意不做 scope 鉴权（见
+ * `createInventoryCoreDoc` 端点校验段的注释），两边口径一致。
+ *
+ * 因为越过了 scope，返回字段收到最少：只有名称与 orgNodeId —— 不带 locationId / storeId /
+ * parentLocationId，也不带门店与总部。「排除调出市场自己」依赖用户在表单里选的发起主体，
+ * 由表单按当前 source 过滤，这里不做。
+ *
+ * 权限只放给能建这张单的两层 operate（市场本层 + 供应链代建），别放宽成 stock_list ——
+ * 否则只读账号也能拿到本不在自己 scope 内的市场名单。
+ */
+export const listInventoryMarketTransferTargets = withAnyPermission(
+  ['inventory:supply_chain_operate', 'inventory:market_operate'],
+  async (): Promise<InventoryMarketTransferTarget[]> => {
+    await syncInventoryLocations()
+    const rows = await db
+      .select({ orgNodeId: inventoryLocations.orgNodeId, name: inventoryLocations.name })
+      .from(inventoryLocations)
+      .where(and(
+        eq(inventoryLocations.isActive, true),
+        eq(inventoryLocations.locationType, '市场'),
+        isNotNull(inventoryLocations.orgNodeId),
+      ))
+      .orderBy(asc(inventoryLocations.name))
+    return rows.flatMap((row) => (row.orgNodeId ? [{ orgNodeId: row.orgNodeId, name: row.name }] : []))
+  },
+)
 
 export const listInventoryLocations = withPermission(
   'inventory:stock_list',

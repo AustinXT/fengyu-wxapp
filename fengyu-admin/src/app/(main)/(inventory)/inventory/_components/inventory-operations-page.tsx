@@ -68,6 +68,7 @@ import type {
   InventoryDocRow,
   InventoryDocType,
   InventoryLocationRow,
+  InventoryMarketTransferTarget,
   InventoryLotRow,
   InventorySkuRow,
   InventorySupplierRow,
@@ -593,6 +594,7 @@ function SourceDocumentItems({
 export default function InventoryOperationsPage({
   level,
   locations,
+  marketTransferTargets,
   skuOptions,
   suppliers,
   workflowDocs,
@@ -606,6 +608,8 @@ export default function InventoryOperationsPage({
 }: {
   level: InventoryBusinessLevel
   locations: InventoryLocationRow[]
+  /** 市场间调货出库的接收主体候选（#340），只喂给通用建单表单，见其同名 prop */
+  marketTransferTargets?: readonly InventoryMarketTransferTarget[]
   skuOptions: InventorySkuRow[]
   suppliers: InventorySupplierRow[]
   workflowDocs: InventoryDocRow[]
@@ -810,6 +814,7 @@ export default function InventoryOperationsPage({
               busy={workspaceBusy}
               onBusyChange={setWorkspaceBusy}
               locations={locations}
+              marketTransferTargets={marketTransferTargets}
               skuOptions={skuOptions}
               suppliers={suppliers}
               workflowDocs={workflowDocs}
@@ -832,6 +837,7 @@ function OperationWorkspace({
   busy,
   onBusyChange,
   locations,
+  marketTransferTargets,
   skuOptions,
   suppliers,
   workflowDocs,
@@ -854,6 +860,7 @@ function OperationWorkspace({
    */
   onBusyChange: (busy: boolean) => void
   locations: InventoryLocationRow[]
+  marketTransferTargets?: readonly InventoryMarketTransferTarget[]
   skuOptions: InventorySkuRow[]
   suppliers: InventorySupplierRow[]
   workflowDocs: InventoryDocRow[]
@@ -939,6 +946,7 @@ function OperationWorkspace({
             <InventoryDocCreateForm
               visible
               locations={locations}
+              marketTransferTargets={marketTransferTargets}
               skuOptions={skuOptions}
               initialDocType={card.docType}
               allowedDocTypes={[card.docType]}

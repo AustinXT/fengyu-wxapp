@@ -20,6 +20,7 @@ import {
   type InventoryLotRow,
   type InventoryLocationFilterOptions,
   type InventoryLocationRow,
+  type InventoryMarketTransferTarget,
   type InventorySkuRow,
   type InventoryDocType,
 } from '@/lib/inventory/types'
@@ -65,6 +66,7 @@ export default function InventoryDocsPage({
   rows,
   total,
   locations,
+  marketTransferTargets,
   skuOptions,
   canCreate,
   canApprove,
@@ -78,6 +80,8 @@ export default function InventoryDocsPage({
   rows: InventoryDocRow[]
   total: number
   locations: InventoryLocationRow[]
+  /** 市场间调货出库的接收主体候选（#340），见共享表单同名 prop */
+  marketTransferTargets?: readonly InventoryMarketTransferTarget[]
   skuOptions: InventorySkuRow[]
   canCreate: boolean
   canApprove: boolean
@@ -310,6 +314,7 @@ export default function InventoryDocsPage({
           open={open}
           onOpenChange={setOpen}
           locations={locations}
+          marketTransferTargets={marketTransferTargets}
           skuOptions={skuOptions}
           onSuccess={() => startTransition(() => router.refresh())}
           onStale={() => startTransition(() => router.refresh())}
@@ -412,6 +417,7 @@ function CreateDocDialog({
   open,
   onOpenChange,
   locations,
+  marketTransferTargets,
   skuOptions,
   onSuccess,
   onStale,
@@ -422,6 +428,7 @@ function CreateDocDialog({
   open: boolean
   onOpenChange: (open: boolean) => void
   locations: InventoryLocationRow[]
+  marketTransferTargets?: readonly InventoryMarketTransferTarget[]
   skuOptions: InventorySkuRow[]
   onSuccess: () => void
   /** 状态/权限已变化时刷新列表（不关弹窗） */
@@ -457,6 +464,7 @@ function CreateDocDialog({
           // 原生 <dialog> 关闭不卸载 children：关着时绝不能取批次数（见共享组件的 visible 注释）
           visible={open}
           locations={locations}
+          marketTransferTargets={marketTransferTargets}
           skuOptions={skuOptions}
           initialDocType={initialDocType}
           allowedDocTypes={allowedDocTypes}

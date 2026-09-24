@@ -3,6 +3,7 @@ import { listInventoryCoreDocs } from '@/actions/inventory/docs'
 import {
   listInventoryDocLocationFilterOptions,
   listInventoryLocations,
+  listInventoryMarketTransferTargets,
 } from '@/actions/inventory/locations'
 import { listInventorySkus } from '@/actions/inventory/skus'
 import { getSession } from '@/lib/auth'
@@ -50,9 +51,11 @@ export default async function Page({
     ? requestedCreateType
     : undefined
 
-  const [filterOptions, locations, skus] = await Promise.all([
+  const [filterOptions, locations, marketTransferTargets, skus] = await Promise.all([
     listInventoryDocLocationFilterOptions(),
     allowedCreateDocTypes.length > 0 ? listInventoryLocations() : Promise.resolve([]),
+    // 市场间调货出库的接收主体候选（#340）：不按 scope，只在能建这种单时取
+    allowedCreateDocTypes.includes('市场间调货出库') ? listInventoryMarketTransferTargets() : Promise.resolve([]),
     allowedCreateDocTypes.length > 0
       ? listInventorySkus({ page: 1, pageSize: 100, onlyActive: true })
       : Promise.resolve({ data: [], total: 0 }),
@@ -81,6 +84,7 @@ export default async function Page({
           rows={docs.data}
           total={docs.total}
           locations={locations}
+          marketTransferTargets={marketTransferTargets}
           skuOptions={skus.data}
           canCreate={allowedCreateDocTypes.length > 0}
           canApprove={hasUiCapability(actions, 'inventory:supply_chain_approve') || hasUiCapability(actions, 'inventory:market_approve')}
