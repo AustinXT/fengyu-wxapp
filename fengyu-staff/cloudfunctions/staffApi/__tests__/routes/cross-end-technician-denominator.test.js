@@ -422,12 +422,48 @@ describe('产能技师分母跨端字面量守护（#320）', () => {
       'function activeStoreCondition(storeCol: SQL): SQL {' +
         ` return sql\` \${storeCol} IN ( ${SUBQUERY} ) \` }`,
     )
-    // 过滤器存在还不够，必须真的被技师分母那条 scope 用上
-    expect(staffStaffScopeFn, 'staff 的 buildStaffScope 未叠加启用门店过滤').toMatch(
-      /withActiveStoreCondition\(/,
+    /**
+     * 过滤器存在还不够，必须真的被技师分母那条 scope 用上 —— 而且整段等值。
+     *
+     * 第 7 轮 GLM：这个函数体此前只有一条 presence 断言（含 `withActiveStoreCondition(`），
+     * 它对 `buildManagementStoreScope` 的调用、`column` 的列推导、`scopeType`/`startIdx` 透传
+     * 全部裸奔。要件 7 把 `buildManagementStoreScope` 三分支整行钉死了 ——
+     * 但没人调它就是死代码。三种绿变异：
+     *   · 内联 `{ sql: 'TRUE' }` 或写死 `buildManagementStoreScope('all', …)`
+     *     → 单店/市场口径分母膨胀成全部启用门店技师（单店看板直接显示集团数）
+     *   · `column` 改错列 → 门店分支整池消失，`all` 口径退回 152（#320 反向复发）
+     *   · `startIdx` 写死 → 现有三个 scope 下恒等、不可观测（同要件 8 第三种形态）
+     *
+     * ⚠️ 同文件有**三个**同构的 scope helper：`buildSaleScope` / `buildClientScope` /
+     * `buildStaffScope`，函数体除列名外逐字相同（分别取 `store_id` / `bound_store_id` /
+     * `store_id`）。本守护只钉 `buildStaffScope` —— 分母走的是它。
+     * 做红检时用函数名定位，别按「第一处匹配」改，否则会改到 `buildSaleScope` 上、
+     * 结果不红而误判成守护失灵（我第二次栽在同一个坑上，另一次是 `utils/scope.js` 的孪生函数）。
+     */
+    expect(staffStaffScopeFn, 'staff 的 buildStaffScope 形态漂移').toBe(
+      'function buildStaffScope(scopeType, scopeId, alias, startIdx) {' +
+        ' const column = `${alias}.store_id`' +
+        ' return withActiveStoreCondition(' +
+        ' buildManagementStoreScope(scopeType, scopeId, column, startIdx), column, ) }',
     )
     expect(adminScopeFilterFn, 'admin 的 scopeFilterSql 未叠加启用门店过滤').toMatch(
       /parts: SQL\[\] = \[activeStoreCondition\(col\)\]/,
+    )
+    /**
+     * admin `scopeFilterSql` 的**store 分支**与**最终拼接**也要钉。
+     * （第 7 轮 GLM P2-1。注意它与已撤销的那条 P3-2 不同：那条说的是消费者
+     * byStore/byMarket 的 WHERE、已有 admin 测试覆盖；这条是 scope helper 内部。）
+     * 删掉 store 分支的 `parts.push`、或把 `join` 的 ` AND ` 改成 ` OR `，
+     * admin 单店口径分母就变成「权限交集 ∩ 全部启用门店」（超管 = 全集团），与 staff 分叉。
+     *
+     * 这里不做整段等值：该函数体内有三条行内 `//` 注释，整段钉会让任何注释改动都变红 ——
+     * 口径守护不该被注释措辞绑死。
+     */
+    expect(adminScopeFilterFn, 'admin 的 store 分支丢了等值收窄').toContain(
+      "if (scope.type === 'store') { parts.push(sql`${col} = ${scope.id}`) }",
+    )
+    expect(adminScopeFilterFn, 'admin 的 scope 片段不是以 AND 拼接').toContain(
+      'return sql.join(parts, sql` AND `)',
     )
     /**
      * ⚠️ 只钉「`buildStaffScope` 里出现了 `withActiveStoreCondition(` 这个名字」还不够 ——
@@ -642,8 +678,17 @@ describe('产能技师分母跨端字面量守护（#320）', () => {
         '/** 任意组织节点列是否落在指定组织节点子树内。 */',
       ),
     )
-    expect(adminOuter).toMatch(
-      /FROM stores s WHERE s\.org_node_id IN \$\{descendantOrgNodeIdsSubquery\(rootNodeId\)\}/,
+    /**
+     * 整段等值 —— 只钉 FROM/WHERE 会漏掉**投影列**。第 7 轮 GLM 指出：
+     * `SELECT s.store_id` → `SELECT s.org_node_id` 时 FROM/WHERE 一字未动、regex 照旧命中，
+     * 而运行期 `tb.store_id IN (组织节点 id 集合)` 恒假 → admin 的 market 口径门店分支塌缩，
+     * 只剩直挂锚定者（生产上南昌凤御 68 → 约 8），与 staff 静默分叉。
+     * 这与第 6 轮变异 B（`active_store.store_id` → `active_node.id`）是同一类，只是落在下一跳。
+     */
+    expect(adminOuter, 'admin 落店那一跳形态漂移').toBe(
+      'export function orgNodeStoreIdsSubquery(rootNodeId: string): SQL {' +
+        ' return sql`( SELECT s.store_id FROM stores s' +
+        ' WHERE s.org_node_id IN ${descendantOrgNodeIdsSubquery(rootNodeId)} )` }',
     )
   })
 
@@ -681,7 +726,17 @@ describe('产能技师分母跨端字面量守护（#320）', () => {
        * 语义一样却因格式不匹配而放过 —— 而这条守护的全部价值就在于抓「又抄了一份」。
        * 所以红线是「出现了对 `skills` 的人池过滤」这件事本身（GLM 第 4 轮 P2-3）。
        */
-      const hits = code.match(/skills\s*(?:&&\s*ARRAY\s*\[|@>|<@|=\s*ANY)/g) ?? []
+      /**
+       * 两个方向都要探：`skills` 在操作符**左侧**（`skills && ARRAY[…]`、`skills @> …`）
+       * 与在**右侧**（`'美容师' = ANY(sw.skills)`、`unnest(sw.skills) IN (…)`）——
+       * 后者是数组成员判定的自然写法，第 7 轮 GLM 指出只探左侧等于留了一道现成的绕行门。
+       */
+      const PROBES = [
+        /skills\s*(?:&&\s*ARRAY\s*\[|@>|<@|=\s*ANY)/g,
+        /ANY\s*\(\s*[\w.]*skills/g,
+        /unnest\s*\(\s*[\w.]*skills/g,
+      ]
+      const hits = PROBES.flatMap((re) => code.match(re) ?? [])
       expect(
         hits,
         `${name} 里又出现了独立的技师人池查询 —— 必须复用 lib/data-center/technician-sql.ts`,
