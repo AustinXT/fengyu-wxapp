@@ -176631,6 +176631,7 @@ var listInventoryMarketTransferTargets = withAnyPermission([...inventoryDelegata
   const rows = await db2.select({ orgNodeId: inventoryLocations.orgNodeId, name: inventoryLocations.name }).from(inventoryLocations).where(import_drizzle_orm57.and(import_drizzle_orm57.eq(inventoryLocations.isActive, true), import_drizzle_orm57.eq(inventoryLocations.locationType, "市场"), import_drizzle_orm57.isNotNull(inventoryLocations.orgNodeId))).orderBy(import_drizzle_orm57.asc(inventoryLocations.name));
   return rows.flatMap((row) => row.orgNodeId ? [{ orgNodeId: row.orgNodeId, name: row.name }] : []);
 });
+var PROMOTION_READ_SCOPE = { scopeActions: ["inventory:stock_list", INVENTORY_PROMOTION_MAINTAIN_ACTION] };
 var listInventoryPromotionMarketOptions = withPermission("inventory:stock_list", async (session4) => {
   await syncInventoryLocations();
   const conditions3 = [
@@ -176644,7 +176645,7 @@ var listInventoryPromotionMarketOptions = withPermission("inventory:stock_list",
     }
   }
   return db2.select({ locationId: inventoryLocations.locationId, name: inventoryLocations.name }).from(inventoryLocations).where(import_drizzle_orm57.and(...conditions3)).orderBy(import_drizzle_orm57.asc(inventoryLocations.name));
-});
+}, PROMOTION_READ_SCOPE);
 var listInventoryLocations = withPermission("inventory:stock_list", async (session4) => {
   await syncInventoryLocations();
   const scoped = await scopedLocationIds(session4);
@@ -178543,11 +178544,11 @@ async function promotionPlanRows(session4, onlyId) {
     updatedAt: plan.updatedAt.toISOString()
   }));
 }
-var listInventoryPromotionPlans = withPermission("inventory:stock_list", async (session4) => promotionPlanRows(session4));
+var listInventoryPromotionPlans = withPermission("inventory:stock_list", async (session4) => promotionPlanRows(session4), PROMOTION_READ_SCOPE);
 var getInventoryPromotionPlanById = withPermission("inventory:stock_list", async (session4, idInput) => {
   const id = normalizeRequired(idInput, "福利方案");
   return (await promotionPlanRows(session4, id))[0] ?? null;
-});
+}, PROMOTION_READ_SCOPE);
 var createInventoryPromotionPlan = withPermission(INVENTORY_PROMOTION_MAINTAIN_ACTION, async (session4, input) => {
   assertPromotionPriceWritable(session4);
   assertInventoryPromotionMaintainer(session4);
