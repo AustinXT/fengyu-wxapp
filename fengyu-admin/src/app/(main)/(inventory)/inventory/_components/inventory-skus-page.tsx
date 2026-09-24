@@ -71,7 +71,21 @@ function text(value: string | null | undefined): string {
   return value ?? ''
 }
 
-function emptyForm(): SkuForm {
+/**
+ * 当前账号可以新建 / 编辑的来源，顺序沿用 `INVENTORY_SKU_SOURCE_TYPES`。
+ * 判定与服务端 `assertSelfPurchasedSkuEditor` 同源：供应链看供应链资料权限，其余看市场自采权限。
+ */
+function allowedSourceTypes(canManageSupplySkus: boolean, canManageMarketSkus: boolean): InventorySkuSourceType[] {
+  return INVENTORY_SKU_SOURCE_TYPES.filter((source) => source === '供应链' ? canManageSupplySkus : canManageMarketSkus)
+}
+
+/**
+ * #355：新建的来源初值取「可选来源」的第一项，不能写死「供应链」。
+ * 只有市场权限的账号下拉里没有「供应链」，原生 select 会显示第一项「市场自采」，
+ * 而表单 state 仍是「供应链」—— 归属市场被隐藏、提交被服务端拒。
+ * 两把权限都没有时拿不到「新建」按钮，这里的兜底值不会被用到。
+ */
+function emptyForm(sourceType: InventorySkuSourceType = '供应链'): SkuForm {
   return {
     productName: '',
     specName: '',
@@ -80,7 +94,7 @@ function emptyForm(): SkuForm {
     brand: '',
     productSeries: '',
     purchaseCategory: '',
-    sourceType: '供应链',
+    sourceType,
     ownerMarketId: '',
     retailPrice: '',
     accountingPrice: '',
@@ -367,7 +381,9 @@ function SkuFormDialog({
   onSupplierCreated: (option: InventorySupplierOption) => void
   onSuccess: () => void
 }) {
-  const [form, setForm] = useState<SkuForm>(() => row ? formFromRow(row) : emptyForm())
+  const sourceOptions = allowedSourceTypes(canManageSupplySkus, canManageMarketSkus)
+  const defaultSourceType = sourceOptions[0]
+  const [form, setForm] = useState<SkuForm>(() => row ? formFromRow(row) : emptyForm(defaultSourceType))
   const [submitting, setSubmitting] = useState(false)
   // 用户有没有动过供货商下拉。没有它就分不清「没碰」和「选了档案又改回未指定」——
   // 两者的 form.supplierId 都是 ''，而前者要保住存量旧文本、后者是明确要清空。
@@ -379,7 +395,7 @@ function SkuFormDialog({
 
   useEffect(() => {
     if (!open) return
-    setForm(row ? formFromRow(row) : emptyForm())
+    setForm(row ? formFromRow(row) : emptyForm(defaultSourceType))
     // 把弹窗内的其余状态一并重置。
     // ⚠️ 诚实标注：当前**不靠**这几行也能重置 —— 关闭时 editing 变 undefined，
     // `key` 从 skuId 变成 'create'，React 会卸载旧实例、state 自然清空
@@ -389,7 +405,7 @@ function SkuFormDialog({
     setSupplierTouched(false)
     setSupplierFormOpen(false)
     setSupplierDraft({ name: '', contactName: '', phone: '' })
-  }, [open, row])
+  }, [open, row, defaultSourceType])
 
   /**
    * 存量里 supplier 文本没匹配上档案的旧 SKU（migration 0042 匹配不上就留 NULL）。
@@ -663,9 +679,7 @@ function SkuFormDialog({
             <Field label="采购分类"><Input value={form.purchaseCategory} onChange={(event) => setField('purchaseCategory', event.target.value)} /></Field>
             <Field label="来源 *">
               <Select value={form.sourceType} disabled={!!row} onChange={(event) => setField('sourceType', event.target.value as InventorySkuSourceType)}>
-                {INVENTORY_SKU_SOURCE_TYPES
-                  .filter((source) => source === '供应链' ? canManageSupplySkus : canManageMarketSkus)
-                  .map((source) => <option key={source} value={source}>{source}</option>)}
+                {sourceOptions.map((source) => <option key={source} value={source}>{source}</option>)}
               </Select>
             </Field>
             {form.sourceType !== '供应链' && (
