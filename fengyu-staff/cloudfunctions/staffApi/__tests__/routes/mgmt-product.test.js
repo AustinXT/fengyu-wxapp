@@ -14,6 +14,26 @@ const config = globalThis.__mocks__.config
 const { createCtx, createManagerCtx } = require('../helpers')
 const { cardHolders, cycleStats } = require('../../routes/mgmt-product')
 
+/**
+ * ★ 运行时核对**两条查询的绑定参数**（#287 闸门 2 round-3 codex）。
+ *
+ * 三档 scope 用例此前只检查 SQL 文本，没有检查 `pg.query` 的第二参数 ——
+ * 于是 `pg.query(memberSql, [])` 这类「分子分母参数脱钩」**测不出来**：
+ * all 档恰好能跑（无占位符），market/store 档的 memberSql 含 `$1` 却没绑参数，
+ * 要到运行时才炸。分子分母必须绑**同一份**参数。
+ */
+function expectSharedScopeParams(expected) {
+  const calls = pg.query.mock.calls.filter(
+    (c) => /FROM\s+client_wechat_users\s+c/.test(c[0]) && /became_member_at/.test(c[0]),
+  )
+  expect(calls, '未捕获到持卡与会员两条查询').toHaveLength(2)
+  for (const c of calls) {
+    expect(c[1] ?? [], `scope 参数与预期不符：${String(c[0]).slice(0, 60)}`).toEqual(expected)
+  }
+  // 两条必须是同一份数组引用 —— 各建一份就为「一侧改了另一侧没改」留了门
+  expect(calls[0][1], '两条查询未共用同一个 params 数组').toBe(calls[1][1])
+}
+
 // ---- ctx 构造 ----
 function makeHqCtx(payload = {}) {
   return createCtx({
@@ -216,6 +236,7 @@ describe('mgmtProduct.cardHolders SQL 形态', () => {
     expect(memberSql).toMatch(/WHERE\s+TRUE/)
     expect(cardSql).not.toMatch(/store_id\s*=\s*\$/)
     expect(memberSql).not.toMatch(/bound_store_id\s*=\s*\$/)
+    expectSharedScopeParams([])
   })
 
   test('scopeType=market：持卡与会员数均走递归后代组织树', async () => {
@@ -240,6 +261,7 @@ describe('mgmtProduct.cardHolders SQL 形态', () => {
 
     expect(memberSql).toMatch(/c\.bound_store_id\s+IN\s*\(/)
     expectRecursiveDescendantScope(memberSql, 1)
+    expectSharedScopeParams(['mkt-A'])
   })
 
   test('scopeType=store：持卡与 memberCount **都**用 c.bound_store_id = $1（同源，#287）', async () => {
@@ -263,6 +285,7 @@ describe('mgmtProduct.cardHolders SQL 形态', () => {
     expect(cardSql).not.toMatch(/so\.store_id\s*=\s*\$1/)
     expect(cardSql).not.toMatch(/store_id\s+IN\s*\(/)
     expect(memberSql).toMatch(/c\.bound_store_id\s*=\s*\$1/)
+    expectSharedScopeParams(['store-001'])
   })
 })
 

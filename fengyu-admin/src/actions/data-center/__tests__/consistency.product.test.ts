@@ -219,6 +219,53 @@ describe('品项板块两端口径一致性守护', () => {
        *      不再用会被顶格 `}` 截断的正则（这同时关掉 DeepSeek 的 P3）
        *   ② 全文件禁掉 `db[...]` 计算属性访问 —— 生产代码零处，这条让整类解耦失效
        */
+      /**
+       * ★★★ **四个函数的壳字面快照** —— 终结「守护检查的那段 ≠ 真正执行的那段」这条攻击线。
+       *
+       * round-2/round-3 连着被打穿三种变形，全是同一件事：
+       *   · 诱饵 `db.execute` + 真查询走 `db['execute']` 计算属性（round-2 DeepSeek）
+       *   · 诱饵 + `const execute = db.execute.bind(db)` **别名调用**（round-3 codex）——
+       *     函数体内仍恰好一个 `db.execute(`、没有 `db[...]`，全部结构断言检查的都是诱饵
+       *   · 扫描器不识别正则字面量 `/}/`，函数体可被提前截断；而我把扫描器「提为通用」时
+       *     **没把 #286 的函数尾锚一起带过来**，四个函数因此缺了那层 fail-closed
+       *
+       * 逐条补词法分支走不到头 —— #286 在第 10 轮用**函数壳快照**终结过同一场拉锯。
+       * 这四个函数很短（130~290 字符），直接全钉：把 SQL 模板换成占位符
+       * （模板本身由上面的「逐字派生」等式守着），剥注释、压平空白后全等。
+       *
+       * 于是函数里多一条语句、多一个诱饵、换一种调用写法（计算属性 / 别名 / bind）、
+       * 或被截断，**全部会红**，不再依赖「扫描器认不认得某种词法」。
+       *
+       * ⚠️ 这是字面快照：改这四个函数（哪怕只是重命名局部变量）都会红。
+       * 看到红先确认**分子分母同源没变**，再同步更新快照 —— 别反过来把断言改宽。
+       */
+      it('四个查询的函数壳未变（除 SQL 模板外全等）', () => {
+        const shellOf = (fn: string): string =>
+          normalize(functionBody(adminSrc, fn).replace(/sql`[\s\S]*?`/, 'sql`<SQL>`'))
+
+        const SCOPE_LINE = "const sc = scopeFilterSql(session, scope, 'c.bound_store_id')"
+        const SCALAR_TAIL = 'return num(first(rows).v) }'
+        const MAP_TAIL =
+          'const m = new Map<string, number>() for (const raw of rows as unknown[]) ' +
+          "{ const r = raw as Record<string, unknown> const id = String(r.store_id ?? '') " +
+          'if (id) m.set(id, num(r.v)) } return m }'
+        const head = `{ ${SCOPE_LINE} const rows = await db.execute(sql\`<SQL>\`) `
+
+        const expected: Record<string, string> = {
+          queryCardHolders: head + SCALAR_TAIL,
+          queryMemberCount: head + SCALAR_TAIL,
+          queryCardHoldersByStore: head + MAP_TAIL,
+          queryMemberCountByStore: head + MAP_TAIL,
+        }
+        for (const [fn, want] of Object.entries(expected)) {
+          expect(
+            shellOf(fn),
+            `${fn} 的函数壳变了 —— 先确认分子分母同源没变（尤其 db.execute 的调用写法、` +
+              '有没有多出诱饵查询、scope 是怎么构造的），再同步本快照',
+          ).toBe(want)
+        }
+      })
+
       it('四个查询各自只有一条 db.execute，且全文件禁用计算属性访问', () => {
         for (const fn of [
           'queryCardHolders',
@@ -306,6 +353,32 @@ describe('品项板块两端口径一致性守护', () => {
             (adminCardSql(fn).match(/\$\{sc\}/g) ?? []).length,
             `${fn} 未恰好消费一次 \${sc} —— scopeFilterSql 算了却没用进 WHERE，scope 形同虚设`,
           ).toBe(1)
+        }
+
+        /**
+         * ④ **四条 SQL 一律禁 `OR`** —— round-3 codex 打穿了「逐字派生 ⇒ 逻辑收窄」这个推论。
+         *
+         * 给**分母**末尾加 ` OR FALSE`，两边同步后逐字等式**仍然成立**，
+         * 但 PostgreSQL 按优先级解析成：
+         *     (scope AND member) OR (FALSE AND EXISTS)
+         * ⇒ 所有会员都成了持卡会员、占比恒 100%，而 `${sc}` 仍恰好一次、
+         *   会员条件 / EXISTS / scope 列 / 分组断言**全部满足**。
+         *
+         * 所以「任何外层 WHERE 改动都会让等式不成立」这句话是**错的** ——
+         * `AND` 链上追加的 `OR` 不改变字符串派生关系，却把整个谓词变成析取。
+         * 这四条 SQL 目前没有任何合法的 `OR` 需求，一刀切禁掉（fail-closed）。
+         */
+        for (const fn of [
+          'queryCardHolders',
+          'queryCardHoldersByStore',
+          'queryMemberCount',
+          'queryMemberCountByStore',
+        ]) {
+          expect(
+            adminCardSql(fn),
+            `${fn} 的 SQL 出现 OR —— AND 链上追加 OR 不破坏逐字派生等式，` +
+              '却会把整个 WHERE 变成析取（(scope AND member) OR (…)），占比可恒 100%',
+          ).not.toMatch(/\bOR\b/i)
         }
       })
 
@@ -477,8 +550,15 @@ describe('品项板块两端口径一致性守护', () => {
          * 把 `pg.query(memberSql, [])` 写进去，断言照绿，而 market/store 档的
          * memberSql 含 `$1` 却没有绑定参数，运行时直接报错。
          */
-        expect(staffSrc, '持卡查询未共用 cs.params').toMatch(/pg\.query\(cardSql,\s*cs\.params\)/)
-        expect(staffSrc, '会员查询未共用 cs.params —— 与分子的 scope 参数脱钩').toMatch(
+        /**
+         * ⚠️ 必须跑在**剥注释后**的源码上（round-3 codex 找出的第四条空断言）：
+         * 原来直接 `toMatch(staffSrc)`，而 `staffSrc` 是未剥注释的整份原文 ——
+         * 在**注释里**写一行 `pg.query(cardSql, cs.params)` 就能满足断言，
+         * 真正的调用却可以传别的参数。
+         */
+        const staffExec = normalize(stripComments(staffSrc))
+        expect(staffExec, '持卡查询未共用 cs.params').toMatch(/pg\.query\(cardSql,\s*cs\.params\)/)
+        expect(staffExec, '会员查询未共用 cs.params —— 与分子的 scope 参数脱钩').toMatch(
           /pg\.query\(memberSql,\s*cs\.params\)/,
         )
       })
