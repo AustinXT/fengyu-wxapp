@@ -259,6 +259,34 @@ describe('lakala 跨副本一致性守护', () => {
     const testRuns = inClientApi.map((s) => (s.run || '').trim()).filter((c) => c.includes('vitest'))
     expect(testRuns, 'CI 必须跑 clientApi 全量 vitest').toEqual(['npx vitest run'])
 
+    // node 18 canary：补上「主 job 跑 node 22，测不出生产运行时 Nodejs18.15」的缺口。
+    // 它不跑测试、只 require 生产模块，所以不受 vite 7 不支持 node 18 的限制。
+    const canary = assertJobActuallyRuns('clientapi-node18-canary')
+    // ⚠️ 必须读 setup-node 的 `with.node-version` 本身。不要用「steps 的 JSON 里含字符串
+    // 18.15」这种糊涂写法 —— step 名字「Require … under Nodejs18.15」自己就含这串，
+    // 把 node-version 改成 22 照样绿（闸门 2 codex round-3 实测）。
+    const canaryNode = (canary.steps || [])
+      .filter((s) => String(s.uses || '').startsWith('actions/setup-node'))
+      .map((s) => String((s.with || {})['node-version']))
+    expect(canaryNode, 'canary 必须跑在 18.15（与 cloudbaserc 的 runtime 对齐）').toEqual(['18.15'])
+
+    // canary 的装依赖同样只能是干净的 npm ci（主 job 锁了、它没锁，lockfile 漂移
+    // 会在 canary 侧静默通过 —— 闸门 2 GLM 指出）。
+    const canaryInstalls = (canary.steps || [])
+      .map((s) => (s.run || '').trim())
+      .filter((c) => /npm (ci|install)/.test(c))
+    expect(canaryInstalls, 'canary 装依赖也必须恰好是干净的 npm ci').toEqual(['npm ci'])
+
+    // 命令本身也要锁：缩成只 `require('./index.js')` 的话，路由模块顶层的 node 20+ API
+    // 就测不到了，canary 名存实亡（闸门 2 codex round-4 指出）。
+    // ⚠️ 声明极限：这是**文本**匹配，不是行为验证。在 run 里 echo 一句同样的字面量、
+    // 或把真调用塞进 `if (false)` 死代码，断言照样绿而模块并没被 require
+    // （闸门 2 的 GLM 指出）。与 SQL 侧「守形状不守取值」同族。
+    const canaryRun = (canary.steps || []).map((s) => s.run || '').join('\n')
+    expect(canaryRun, 'canary 必须遍历 routes/ 逐个 require，不能只 require 入口')
+      .toMatch(/readdirSync\('routes'\)/)
+    expect(canaryRun, 'canary 必须 require 入口 index.js').toMatch(/require\('\.\/index\.js'\)/)
+
     // 最后一环：`npx vitest run` 到底收集哪些文件，由 vitest.config.js 决定，不是 lint.yml。
     // 缩小收集范围后 CI 命令一字未动、本守护自己（在 utils 下）照样执行，
     // 另外 35 个文件却全部出网 —— 这比改 lint.yml 更顺手，也更像「配置调整」。
