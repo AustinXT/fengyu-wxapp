@@ -29,6 +29,9 @@ on:
       # 而依赖升级（尤其 vitest 主版本改 mock 行为）恰恰是最该让守护跑一遍的那次。
       - 'fengyu-client/cloudfunctions/clientApi/package.json'
       - 'fengyu-client/cloudfunctions/clientApi/package-lock.json'
+      # vitest 会自动发现 vitest.workspace.* / vitest.projects.*，它们能整个接管
+      # 文件收集。非 .js 后缀（如 .json）不在上面的 glob 里，得单列。
+      - 'fengyu-client/cloudfunctions/clientApi/vitest.*'
       - 'fengyu-staff/cloudfunctions/staffApi/package.json'
       - 'fengyu-staff/cloudfunctions/staffApi/package-lock.json'
       # 测试目录也要触发：只删守护断言（不动 src）的 PR 同样该让 CI 跑一遍。

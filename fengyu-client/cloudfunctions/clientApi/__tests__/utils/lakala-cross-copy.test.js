@@ -301,6 +301,9 @@ describe('lakala 跨副本一致性守护', () => {
     // test 块的 include 必须**有且只有一条**（coverage 块里那条缩进更深，不计入）。
     const testIncludes = vitestConfig.match(/^ {4}include:/gm) || []
     expect(testIncludes, 'test.include 出现多次时后者生效，会悄悄缩小收集范围').toHaveLength(1)
+    // `shard: '1/2'` 只跑一半文件，而本守护恰好落在前半所以自己照样执行
+    // —— 「想给 CI 分片却漏配第二个 shard」是自然疏忽（闸门 2 codex round-6 指出）。
+    expect(vitestConfig, 'shard 会让每次只跑一部分文件').not.toContain('shard')
     expect(vitestConfig, 'testMatch 不是 vitest 选项，会被静默忽略，别用它').not.toContain('testMatch')
     expect(vitestConfig, '加 exclude 同样能让文件出网').not.toContain('exclude:')
     // `projects` 会整个接管文件收集，留着上面的 include 也没用（闸门 2 的 GLM 指出）。
@@ -310,5 +313,48 @@ describe('lakala 跨副本一致性守护', () => {
     // （闸门 2 codex round-3 指出）。
     expect(vitestConfig, 'testNamePattern 会让绝大多数用例静默跳过').not.toContain('testNamePattern')
     expect(vitestConfig, 'dir 会换掉测试根目录').not.toMatch(/^\s*dir:/m)
+  })
+
+  /**
+   * 上面那条 meta 守的是「配置长什么样」，靠**枚举**所有能缩小收集范围的写法
+   * （exclude / projects / testNamePattern / dir / 重复键 / shard …）。双谱系评审
+   * 连着三轮每轮都能再举出一个没被枚举到的 —— 那是个开放集合，枚举永远不完备。
+   *
+   * 这条换个路子：**不看配置，直接核对实际收集结果**。`vitest list` 只做收集、不执行
+   * 用例（所以不会递归触发本文件），把它列出的文件数与磁盘上真实存在的 `*.test.js`
+   * 数对齐，一次性关掉整个类别 —— 不管是哪个配置字段、自动发现的
+   * `vitest.workspace.*` / `vitest.projects.*`、还是分片，只要最终少收集了文件，这里就红。
+   *
+   * 上面那条枚举式断言**保留**：它快，且能直接点出是哪个字段出的问题；
+   * 这条负责兜住枚举不到的部分。
+   */
+  test('meta：vitest 实际收集到的文件数 == 磁盘上真实存在的测试文件数', () => {
+    const { execFileSync } = require('child_process')
+    const root = path.resolve(__dirname, '../..')
+
+    const listed = execFileSync('npx', ['vitest', 'list', '--filesOnly'], {
+      cwd: root,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    })
+      .split('\n')
+      .map((l) => l.trim())
+      .filter((l) => l.endsWith('.test.js'))
+
+    const onDisk = []
+    const walk = (dir) => {
+      for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+        const p = path.join(dir, e.name)
+        if (e.isDirectory()) walk(p)
+        else if (e.name.endsWith('.test.js')) onDisk.push(p)
+      }
+    }
+    walk(path.join(root, '__tests__'))
+
+    expect(
+      listed.length,
+      `vitest 只收集到 ${listed.length} 个文件，磁盘上却有 ${onDisk.length} 个`
+        + ' —— 有东西在缩小收集范围（配置字段 / vitest.workspace.* / vitest.projects.* / shard）',
+    ).toBe(onDisk.length)
   })
 })
