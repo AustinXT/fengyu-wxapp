@@ -209,7 +209,7 @@ describe('单据中心 · 可收货的 target 集合', () => {
 
   it('超管 → null（不受限）', async () => {
     const props = await renderRoles([
-      { role: 'admin', scopeId: 'HQ', scopeType: '总部', actions: [...BASE_ACTIONS, MARKET], scopeStoreIds: [], scopeOrgNodeIds: ['HQ'] },
+      { role: 'admin', isSuperAdmin: true, scopeId: 'HQ', scopeType: '总部', actions: [...BASE_ACTIONS, MARKET], scopeStoreIds: [], scopeOrgNodeIds: ['HQ'] },
     ])
     expect(props.receivableTargetOrgNodeIds).toBeNull()
   })

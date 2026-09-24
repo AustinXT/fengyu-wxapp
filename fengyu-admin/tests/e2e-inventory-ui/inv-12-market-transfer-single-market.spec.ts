@@ -28,7 +28,7 @@
 import { test, expect, type Page } from '@playwright/test'
 import { BASE, INVT_ACCOUNTS, INVT_PASS, NS, TOPO, login, psql, readCtx } from './_helpers/env'
 import { isGateOpen, openCutoverGate } from './_helpers/cutover'
-import { docIdByRemark, docStatus, lotQtyAll, openOperation, selectContaining } from './_helpers/ui'
+import { docIdByRemark, docStatus, lotQtyAll, openOperation, peekToast, selectContaining } from './_helpers/ui'
 
 test.setTimeout(300_000)
 
@@ -134,9 +134,9 @@ test('INV-12：市场库存财务（单市场）发起市场间调货，调入�
   await inbox.getByRole('button', { name: `确认收货 ${mtoId}` }).click()
   const dlg = page.getByRole('dialog').filter({ hasText: mtoId })
   await dlg.getByRole('button', { name: '确认收货', exact: true }).click()
-  const toastLocator = page.locator('[data-sonner-toast]').first()
-  await expect(toastLocator).toContainText(/收货已确认/, { timeout: 30_000 })
-  const toast = (await toastLocator.textContent()) ?? ''
+  // 先读出真实 toast 再断言：失败时报错里带的是服务端文案（如 PERMISSION_DENIED），而不只是「不匹配」
+  const toast = await peekToast(page, 30_000)
+  expect(toast, `收货 toast：${toast || '(未出现任何 toast)'}`).toMatch(/收货已确认/)
   expect(docStatus(mtoId)).toBe('已完成')
   // 入库单是否继承备注以实现为准（INV-05 同样两路取号）：先按备注找，找不到再从 toast 里取
   const mtiId = docIdByRemark('市场间调货入库', REMARK) || (toast.match(/已生成入库单\s*(\S+)/)?.[1] ?? '')

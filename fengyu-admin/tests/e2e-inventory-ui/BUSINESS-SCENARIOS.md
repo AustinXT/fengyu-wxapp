@@ -66,7 +66,7 @@ INVALID_STATE: 库存期初尚未导入并核验完成，暂不可办理库存�
 
 ### 3.2 测试账号
 
-dev 库没有 `FY-TEST-*` 账号，`e2e-chains` 的 `TEST_PHONES` + `fengyu2026` 对本库无效。本套件自建 4 个账号，**各只绑一个角色 + 一个 scope** —— 多绑定会触发 `inventoryPriceScopeByTier()` 的跨绑定 fail-closed 路径（`src/lib/inventory/access.ts:87-117`），把价格档打成空集。
+dev 库没有 `FY-TEST-*` 账号，`e2e-chains` 的 `TEST_PHONES` + `fengyu2026` 对本库无效。本套件自建 5 个账号（INVT-MK-02 为 #340 新增的自贡市场财务，INV-12 的调入方），**各只绑一个角色 + 一个 scope** —— 多绑定会触发 `inventoryPriceScopeByTier()` 的跨绑定 fail-closed 路径（`src/lib/inventory/access.ts:87-117`），把价格档打成空集。
 
 | employee_id | 手机号 | 角色 | scope | 用途 |
 |---|---|---|---|---|
@@ -74,6 +74,7 @@ dev 库没有 `FY-TEST-*` 账号，`e2e-chains` 的 `TEST_PHONES` + `fengyu2026`
 | `INVT-SC-01` | 19900001002 | `inventory_supply_chain_operator` | `ORG-HQ` | 供应链侧 + 边界断言 |
 | `INVT-MK-01` | 19900001003 | `inventory_market_finance` | `org-市场-1779327286268` | 市场侧 + 边界断言 |
 | `INVT-ST-01` | 19900001004 | `inventory_store_operator` | `org-门店-1780295730424` | **仅断言其无法登录 admin** |
+| `INVT-MK-02` | 19900001005 | `inventory_market_finance` | `org-市场-1779767525664` | INV-12 市场间调货调入方（自贡凤御），办理台待办收货（#340） |
 
 `admin_passwords.must_change` 必须置 `false`，否则登录后被重定向到 `/change-password`。
 登录连错 5 次会被 `login_attempts` 锁 15 分钟（`src/actions/auth.ts:50-52`）。

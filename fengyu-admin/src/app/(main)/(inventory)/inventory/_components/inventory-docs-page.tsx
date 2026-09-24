@@ -221,8 +221,9 @@ export default function InventoryDocsPage({
             </>
           )}
           {GENERIC_DOC_TYPE_SET.has(r.docType) && canReceive && r.status === '待收货'
-            && (receivableTargetOrgNodeIds === null
-              || (r.targetOrgNodeId !== null && receivableTargetOrgNodeIds.includes(r.targetOrgNodeId))) && (
+            // target 为空的单服务端必拒（「出库单缺少收货主体」），超管也不给按钮
+            && r.targetOrgNodeId !== null
+            && (receivableTargetOrgNodeIds === null || receivableTargetOrgNodeIds.includes(r.targetOrgNodeId)) && (
             <Button
               variant="ghost"
               size="sm"

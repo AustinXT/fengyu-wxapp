@@ -9,6 +9,7 @@ import {
   rejectInventoryCoreDoc as rejectInventoryCoreDocImpl,
 } from '@/lib/inventory/engine'
 import type { CreateInventoryDocInput, InventoryCoreDocStatus, InventoryDocType, InventoryLocationType } from '@/lib/inventory/types'
+import { INVENTORY_CORE_RECEIVE_ACTIONS } from '@/lib/inventory/business-level'
 import { resolveOperationDocQuery } from '@/lib/inventory/operation-doc-types'
 import type { InventoryOperationDocFilter } from '@/lib/inventory/operation-doc-types'
 import { ApiError } from '@/lib/api-error'
@@ -110,7 +111,8 @@ export const rejectInventoryCoreDoc = withAnyPermission(
 )
 
 export const confirmInventoryCoreReceive = withAnyPermission(
-  ['inventory:market_operate', 'inventory:store_operate'],
+  // 与 engine 内层闸、单据中心收货按钮的行级判据同一单源（#340）
+  [...INVENTORY_CORE_RECEIVE_ACTIONS],
   async (_session, outboundDocId: string, remark?: string | null) =>
     confirmInventoryCoreReceiveImpl(outboundDocId, remark),
 )
