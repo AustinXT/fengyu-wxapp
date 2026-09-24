@@ -176632,17 +176632,20 @@ var listInventoryMarketTransferTargets = withAnyPermission([...inventoryDelegata
   return rows.flatMap((row) => row.orgNodeId ? [{ orgNodeId: row.orgNodeId, name: row.name }] : []);
 });
 var PROMOTION_READ_SCOPE = { scopeActions: ["inventory:stock_list", INVENTORY_PROMOTION_MAINTAIN_ACTION] };
+async function promotionVisibleLocationIds(session4) {
+  if (isInventoryPromotionMaintainer(session4))
+    return null;
+  return scopedLocationIds(scopeSessionToActions(session4, ["inventory:stock_list"]));
+}
 var listInventoryPromotionMarketOptions = withPermission("inventory:stock_list", async (session4) => {
   await syncInventoryLocations();
   const conditions3 = [
     import_drizzle_orm57.eq(inventoryLocations.isActive, true),
     import_drizzle_orm57.eq(inventoryLocations.locationType, "市场")
   ];
-  if (!isInventoryPromotionMaintainer(session4)) {
-    const scoped = await scopedLocationIds(session4);
-    if (scoped !== null) {
-      conditions3.push(scoped.length > 0 ? import_drizzle_orm57.inArray(inventoryLocations.locationId, scoped) : import_drizzle_orm57.sql`FALSE`);
-    }
+  const scoped = await promotionVisibleLocationIds(session4);
+  if (scoped !== null) {
+    conditions3.push(scoped.length > 0 ? import_drizzle_orm57.inArray(inventoryLocations.locationId, scoped) : import_drizzle_orm57.sql`FALSE`);
   }
   return db2.select({ locationId: inventoryLocations.locationId, name: inventoryLocations.name }).from(inventoryLocations).where(import_drizzle_orm57.and(...conditions3)).orderBy(import_drizzle_orm57.asc(inventoryLocations.name));
 }, PROMOTION_READ_SCOPE);
@@ -178487,7 +178490,7 @@ function promotionItemRow(row) {
 }
 async function promotionPlanRows(session4, onlyId) {
   const priceVisible = canViewPrice(session4);
-  const scoped = isInventoryPromotionMaintainer(session4) ? null : await scopedLocationIds(session4);
+  const scoped = await promotionVisibleLocationIds(session4);
   const conditions3 = [];
   if (onlyId)
     conditions3.push(import_drizzle_orm57.eq(inventoryPromotionPlans.id, onlyId));
