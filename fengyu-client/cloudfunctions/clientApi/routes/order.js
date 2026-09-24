@@ -3506,7 +3506,14 @@ function mapHomeProductRow(row) {
   }
 }
 
-/** 当前顾客已购家居产品资产；pickup_records 是真实提货数量的权威来源。 */
+/**
+ * 当前顾客已购家居产品资产。
+ *
+ * #154 起提货/退款/转换件数各自直读 sale_items 的独立列（picked_up_quantity /
+ * refunded_quantity / converted_quantity），「已结算」是三者之和的派生量。
+ * `pickup_records` 已降级为审计明细表（只供 cron 的 C5 守恒对账），**不再是查询口径**
+ * —— 本函数刻意不读它，避免引入会与权威列分叉的第二来源。
+ */
 async function homeProducts(ctx) {
   const { userId } = ctx.auth
   const rows = await pg.query(

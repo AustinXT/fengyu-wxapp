@@ -158,6 +158,13 @@ describe('lakala 跨副本一致性守护', () => {
     // "手工清单长什么样"——负向匹配挡不住 `--dir __tests__/utils`、`-t <pattern>`、
     // `--project` 这些同样会缩小范围的写法。
     //
+    // ⚠️ 已知且**刻意**的代价：把 job 改成 `run: |` 块标量、`run: >-` 折叠标量，
+    // 或改成 `npm test`（哪怕 package.json 的 test 脚本一字不差就是 `vitest run`），
+    // 本守护都会**误报**变红。这是「宁可误杀等价重构，也不放过任何缩小范围的写法」
+    // 的取舍——误报方向是安全的，漏报方向才会让守护失效。
+    // **遇到这条误报时不要把正则放宽去兼容**（放宽一旦写漏就重新打开漏报口子），
+    // 正确做法是把 job 写回单行字面量 `run: npx vitest run`。
+    //
     // 注意同一个 working-directory 在 lint.yml 里出现多次（staff job 也要装
     // clientApi 依赖供跨端 require），所以先按 vitest 过滤再比对。
     const clientApiVitestRuns = [...yml.matchAll(

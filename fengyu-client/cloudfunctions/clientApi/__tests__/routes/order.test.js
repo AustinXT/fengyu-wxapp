@@ -3348,12 +3348,25 @@ describe('order.homeProducts', () => {
     // （剥注释后仍用全词断言，比只挡 /(FROM|JOIN)\s+pickup_records/ 更强——
     //  后者放过 `FROM a, pickup_records b` 这类隐式 cross join 写法）。
     const sqlCode = sql.split('\n').map((line) => line.replace(/--.*$/, '')).join('\n')
-    expect(sqlCode).not.toContain('pickup_records')
+    // 小写化再比：PG 对未加引号的标识符折叠成小写，`FROM PICKUP_RECORDS` 与小写等价，
+    // 大小写敏感的字面量匹配会被它绕过。
+    expect(sqlCode.toLowerCase()).not.toContain('pickup_records')
 
-    // 三语义各自直读独立列，互不倒推
-    expect(sql).toContain('COALESCE(si.picked_up_quantity, 0)))::int AS picked_quantity')
-    expect(sql).toContain('COALESCE(si.refunded_quantity, 0)))::int AS refunded_quantity')
-    expect(sql).toContain('COALESCE(si.converted_quantity, 0)))::int AS converted_quantity')
+    // 三语义各自直读独立列，互不倒推。
+    // ⚠️ 锚点必须**含 `LEAST(si.quantity, GREATEST(0, ` 前缀**，不能只锚后缀：
+    // 外层 LEAST 是「封顶在已购数量」这条不变量的唯一载体，把它换成 GREATEST，
+    // 该列就从"封顶"变成"保底"、恒等于 si.quantity —— 顾客端会把每件家居产品都
+    // 显示成「已全部提货」，且 remaining/pending 连带恒为 0（整行锁死不能再提）。
+    // 只锚后缀时这个改动测不出来（闸门 1 的 boundary-critic 实测 180 tests 全绿）。
+    expect(sql).toContain(
+      'LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0)))::int AS picked_quantity',
+    )
+    expect(sql).toContain(
+      'LEAST(si.quantity, GREATEST(0, COALESCE(si.refunded_quantity, 0)))::int AS refunded_quantity',
+    )
+    expect(sql).toContain(
+      'LEAST(si.quantity, GREATEST(0, COALESCE(si.converted_quantity, 0)))::int AS converted_quantity',
+    )
 
     // 「已结算」才是派生量 = 已提货 + 已退款 + 已转换。
     // ⚠️ 必须锚到 `AS settled_quantity`：这串三列之和在本 SQL 里出现 3 次
@@ -3362,12 +3375,28 @@ describe('order.homeProducts', () => {
     // 让它照样绿（红检 R3 实测到的 fail-open）。漏计退款与转换会让「已结算」偏小
     // → remaining_quantity 偏大 → 顾客看到的剩余件数虚高。
     expect(sql).toContain(
-      'COALESCE(si.picked_up_quantity, 0) + COALESCE(si.refunded_quantity, 0)'
+      'LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0)'
+      + ' + COALESCE(si.refunded_quantity, 0)'
       + ' + COALESCE(si.converted_quantity, 0)))::int AS settled_quantity',
     )
 
-    // 反向：「已退款」不得再由 settled − 已提货 − 已转换 倒推（#154 前的写法）
-    expect(sql).not.toMatch(/settled_quantity\s*-\s*picked_quantity/)
+    // 反向：「已退款」不得再由 settled − 已提货 − 已转换 倒推（#154 前的写法）。
+    // 三项减法的顺序可以随意交换（数学等价），所以负向正则不能只挡一种排列。
+    expect(sql).not.toMatch(/settled_quantity\s*-\s*(picked|converted)_quantity/)
+
+    // ⚠️ 上面那条负向正则**不足以**防住倒推复活：PG 允许结果集出现重复列名，
+    // 下游 CTE 只要在 `SELECT *,` 后插一条同名的 refunded_quantity 影子列，
+    // pg 驱动转 JS 对象时后写的会覆盖先写的 —— 上游正确的直读定义原文还在（正向断言
+    // 照样匹配），实际下发给顾客的却是影子列的倒推值。闸门 1 的 boundary-critic
+    // 实测复现过：叠加"减法换序"后整条用例仍 180 tests 全绿。
+    //
+    // 字符串断言天然验证不了「这一列最终取的是哪个值」，所以这里改守**别名的唯一性**：
+    // 四个派生列各自只应在两处出现（home_product_rows 定义 + home_products 聚合），
+    // 多出任何一处就意味着有人在下游重定义了它。
+    for (const alias of ['settled_quantity', 'picked_quantity', 'refunded_quantity', 'converted_quantity']) {
+      const hits = sqlCode.match(new RegExp(`AS ${alias}\\b`, 'g')) || []
+      expect(hits, `AS ${alias} 出现 ${hits.length} 次，预期 2 次（定义 + 聚合）`).toHaveLength(2)
+    }
 
     expect(sql).toContain("o.status IN ('已支付', '部分支付', '已完成')")
     expect(sql).toContain("si.item_direction = '购买'")

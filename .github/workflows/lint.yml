@@ -23,6 +23,14 @@ on:
       - 'fengyu-admin/package.json'
       - 'fengyu-admin/package-lock.json'
       - 'fengyu-admin/bun.lock'
+      # 云函数两端的依赖清单同理（#276）。上面那条 `fengyu-*/cloudfunctions/**/*.js`
+      # 的 glob **不匹配 .json**，所以「只升 vitest/pg 版本号」的 PR 一个 paths 条目都
+      # 命中不到 → 整个 workflow 的全部 job 都不触发 → 877 + 2343 个用例一条不跑，
+      # 而依赖升级（尤其 vitest 主版本改 mock 行为）恰恰是最该让守护跑一遍的那次。
+      - 'fengyu-client/cloudfunctions/clientApi/package.json'
+      - 'fengyu-client/cloudfunctions/clientApi/package-lock.json'
+      - 'fengyu-staff/cloudfunctions/staffApi/package.json'
+      - 'fengyu-staff/cloudfunctions/staffApi/package-lock.json'
       # 测试目录也要触发：只删守护断言（不动 src）的 PR 同样该让 CI 跑一遍。
       # ⚠️ E2E（tests/e2e-inventory-ui）需要活的 dev 实例 + PG，CI 里跑不了，
       #    触发它只是为了让**单测**守护有机会拦下「只改测试」的回归。
