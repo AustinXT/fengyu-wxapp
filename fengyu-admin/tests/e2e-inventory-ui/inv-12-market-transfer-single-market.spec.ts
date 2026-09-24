@@ -9,7 +9,9 @@
  *   1  MK 打开单据中心建单，选「市场间调货出库」：发起端只读固定为本市场；
  *      接收端列出他市场（自贡凤御），且**不含**本市场
  *   2  MK 以他市场为接收主体提交成功 → MTO 待收货，南昌凤御在手量 −N
- *   3  调入方（ADM 代收，dev 没有只绑自贡的账号）在单据中心确认收货 → 自贡凤御在手量 +N
+ *   3  调出方 MK 的市场办理台「市场间调货」卡：这张单在「本业务产出」里，**不在**「待我处理」
+ *   4  调入方 MK2（只绑自贡凤御的市场库存财务）在同一张卡的「待我处理」里确认收货
+ *      （用户 2026-09-24 拍板 inbox=A）→ MTI 生成、自贡凤御在手量 +N
  *
  * ⚠️ 破坏性：与 INV-05 第 4 段同样，会把 `QTY` 件供应链品**永久**搬进自贡凤御
  *    （inventory_movements append-only）。README 已声明本套件直连 dev 共享库且不清理。
@@ -26,13 +28,24 @@
 import { test, expect, type Page } from '@playwright/test'
 import { BASE, INVT_ACCOUNTS, INVT_PASS, NS, TOPO, login, psql, readCtx } from './_helpers/env'
 import { isGateOpen, openCutoverGate } from './_helpers/cutover'
-import { docIdByRemark, docStatus, lotQtyAll, rowAction, selectContaining } from './_helpers/ui'
+import { docIdByRemark, docStatus, lotQtyAll, openOperation, selectContaining } from './_helpers/ui'
 
 test.setTimeout(300_000)
 
 const STAMP = Date.now().toString().slice(-8)
 const REMARK = `${NS}-单市场发起调货-${STAMP}`
 const QTY = 1
+
+/** 打开市场办理台「市场间调货」卡的「单据」Tab，返回两段的定位器 */
+async function openMarketTransferDocsTab(page: Page) {
+  await openOperation(page, 'market', '市场间调货')
+  await page.getByRole('tab', { name: /^单据/ }).click()
+  const inbox = page.getByRole('region', { name: '待我处理' })
+  const produced = page.getByRole('region', { name: '本业务产出' })
+  await expect(produced).toBeVisible({ timeout: 20_000 })
+  await expect(inbox).toBeVisible({ timeout: 20_000 })
+  return { inbox, produced }
+}
 
 async function openCreateDialog(page: Page) {
   await page.goto(`${BASE}/inventory/docs`)
@@ -107,10 +120,23 @@ test('INV-12：市场库存财务（单市场）发起市场间调货，调入�
   expect(docStatus(mtoId)).toBe('待收货')
   expect(srcBefore - lotQtyAll(TOPO.MARKET, inv01.supplySkuId), `${TOPO.MARKET_NAME} 在手量 −${QTY}`).toBe(QTY)
 
-  // ══ 3. 调入方在单据中心确认收货 ═══════════════════════════════════
-  await login(page, INVT_ACCOUNTS.ADM.phone, INVT_PASS)
-  const toast = await rowAction(page, mtoId, '收货')
-  expect(toast).toMatch(/收货已确认/)
+  // ══ 3. 调出方的待办里没有这张单（scopeRole=target），产出区里有 ═════
+  {
+    const { inbox, produced } = await openMarketTransferDocsTab(page)
+    await expect(produced.getByText(mtoId)).toBeVisible({ timeout: 20_000 })
+    await expect(inbox.getByText(mtoId)).toHaveCount(0)
+    await expect(inbox.getByRole('button', { name: `确认收货 ${mtoId}` })).toHaveCount(0)
+  }
+
+  // ══ 4. 调入方（MK2，只绑自贡凤御）在办理台待办里确认收货 ═══════════
+  await login(page, INVT_ACCOUNTS.MK2.phone, INVT_PASS)
+  const { inbox } = await openMarketTransferDocsTab(page)
+  await inbox.getByRole('button', { name: `确认收货 ${mtoId}` }).click()
+  const dlg = page.getByRole('dialog').filter({ hasText: mtoId })
+  await dlg.getByRole('button', { name: '确认收货', exact: true }).click()
+  const toastLocator = page.locator('[data-sonner-toast]').first()
+  await expect(toastLocator).toContainText(/收货已确认/, { timeout: 30_000 })
+  const toast = (await toastLocator.textContent()) ?? ''
   expect(docStatus(mtoId)).toBe('已完成')
   // 入库单是否继承备注以实现为准（INV-05 同样两路取号）：先按备注找，找不到再从 toast 里取
   const mtiId = docIdByRemark('市场间调货入库', REMARK) || (toast.match(/已生成入库单\s*(\S+)/)?.[1] ?? '')

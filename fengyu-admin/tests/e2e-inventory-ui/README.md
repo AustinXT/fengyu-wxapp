@@ -56,7 +56,7 @@ INVT_PROBE=1 bunx playwright test --config=tests/e2e-inventory-ui/playwright.inv
 
 | 项 | 说明 |
 |---|---|
-| 测试账号 | INV-00 自动 seed 4 个 `INVT-*` 账号（幂等），密码见 `_helpers/env.ts` |
+| 测试账号 | INV-00 自动 seed 5 个 `INVT-*` 账号（幂等；INVT-MK-02 为 #340 新增的自贡市场财务），密码见 `_helpers/env.ts` |
 | 期初门禁 | INV-02 会把 `inventory_cutover_states` 置「已初始化」并**保持开启**（已获用户确认） |
 | 基础档案 | INV-01 自建供应商与 SKU；dev 库库存域原本是空的 |
 | psql | 断言直连 `101.34.242.103:5433/fengyu_wxapp`，需本机有 `psql` 且能连通 |
@@ -90,7 +90,7 @@ fail-closed 分支（`src/lib/inventory/access.ts:87-117`），把价格档打�
 ```
 _helpers/
   env.ts            BASE / psql / 账号常量 / 组织拓扑 / login / tryLogin / 上下文读写
-  seed-accounts.ts  幂等建 4 个测试账号（pg 参数化，bcrypt hash 带 $ 不能走 psql -c）
+  seed-accounts.ts  幂等建 5 个测试账号（pg 参数化，bcrypt hash 带 $ 不能走 psql -c）
   cutover.ts        期初门禁开/关
   ui.ts             定位与操作原语（每个函数的注释都对应一个踩过的坑）
   ux-audit.ts       交互合理性启发式规则 + 报告渲染

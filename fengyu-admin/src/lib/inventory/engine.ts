@@ -36,6 +36,7 @@ import { revalidatePath } from 'next/cache'
 import type { AuthSession } from '@/lib/types'
 import { assertInventoryBusinessWritable } from './cutover'
 import {
+  INVENTORY_CORE_RECEIVE_ACTIONS,
   genericDocBusinessLevel,
   inventoryDelegatableOperateActions,
   inventoryLevelOperateDeniedMessage,
@@ -3526,7 +3527,7 @@ export const rejectInventoryCoreDoc = withAnyPermission(
 )
 
 export const confirmInventoryCoreReceive = withAnyPermission(
-  ['inventory:market_operate', 'inventory:store_operate'],
+  [...INVENTORY_CORE_RECEIVE_ACTIONS],
   async (session, outboundDocId: string, remark?: string | null): Promise<{ success: true; inboundDocId: string }> => {
     const id = normalizeRequired(outboundDocId, '出库单号')
     let inboundDocId = ''

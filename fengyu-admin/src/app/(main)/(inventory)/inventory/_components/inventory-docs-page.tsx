@@ -71,6 +71,7 @@ export default function InventoryDocsPage({
   canCreate,
   canApprove,
   canReceive,
+  receivableTargetOrgNodeIds,
   canViewPrice,
   initialDocType,
   allowedCreateDocTypes,
@@ -86,6 +87,11 @@ export default function InventoryDocsPage({
   canCreate: boolean
   canApprove: boolean
   canReceive: boolean
+  /**
+   * 能收货的 target 组织节点（按收货权限收窄后的 scope，#340）；`null` = 不受限（超管）。
+   * 刻意必传、不给缺省：缺省成 null 就是 fail-open，漏传的调用方会把按钮放给所有行。
+   */
+  receivableTargetOrgNodeIds: readonly string[] | null
   canViewPrice: boolean
   initialDocType?: InventoryDocType
   allowedCreateDocTypes?: readonly InventoryDocType[]
@@ -214,7 +220,9 @@ export default function InventoryDocsPage({
               </Button>
             </>
           )}
-          {GENERIC_DOC_TYPE_SET.has(r.docType) && canReceive && r.status === '待收货' && (
+          {GENERIC_DOC_TYPE_SET.has(r.docType) && canReceive && r.status === '待收货'
+            && (receivableTargetOrgNodeIds === null
+              || (r.targetOrgNodeId !== null && receivableTargetOrgNodeIds.includes(r.targetOrgNodeId))) && (
             <Button
               variant="ghost"
               size="sm"

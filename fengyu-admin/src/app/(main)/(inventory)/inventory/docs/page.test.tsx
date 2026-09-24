@@ -57,6 +57,7 @@ vi.mock('../_components/inventory-docs-page', () => ({
 import Page from './page'
 
 interface DocsPageProps {
+  receivableTargetOrgNodeIds: readonly string[] | null
   marketTransferTargets: readonly { orgNodeId: string; name: string }[]
   canCreate: boolean
   canApprove: boolean
@@ -176,5 +177,45 @@ describe('单据中心 · 市场间调货接收主体候选（#340）', () => {
       expect(mockListMarketTargets, action).not.toHaveBeenCalled()
       expect(props.marketTransferTargets, action).toEqual([])
     }
+  })
+})
+
+/**
+ * 「收货」按钮的行级判据（#340 评审 P1）：与 confirmInventoryCoreReceive 同一套收窄 ——
+ * 只按持有收货权限（market/store operate）的角色绑定展开 scope。只有审批权限的绑定不算。
+ */
+describe('单据中心 · 可收货的 target 集合', () => {
+  async function renderRoles(roles: unknown[]) {
+    mockGetSession.mockResolvedValue({
+      employeeId: 'E-1',
+      permissions: {
+        actions: [...BASE_ACTIONS, MARKET, 'inventory:market_approve'],
+        scopeStoreIds: [],
+        scopeOrgNodeIds: ['M1', 'N-S1', 'M2'],
+      },
+      roles,
+    })
+    render(await Page({ searchParams: Promise.resolve({}) }))
+    return captured.props as unknown as DocsPageProps
+  }
+
+  it('只按持有收货权限的绑定展开：市场 A 可办理 + 市场 B 只能审批 → 只能收 A 的', async () => {
+    const props = await renderRoles([
+      { role: 'r1', scopeId: 'M1', scopeType: '市场', actions: [...BASE_ACTIONS, MARKET], scopeStoreIds: ['S1'], scopeOrgNodeIds: ['M1', 'N-S1'] },
+      { role: 'r2', scopeId: 'M2', scopeType: '市场', actions: [...BASE_ACTIONS, 'inventory:market_approve'], scopeStoreIds: [], scopeOrgNodeIds: ['M2'] },
+    ])
+    expect([...(props.receivableTargetOrgNodeIds ?? [])].sort()).toEqual(['M1', 'N-S1'])
+  })
+
+  it('超管 → null（不受限）', async () => {
+    const props = await renderRoles([
+      { role: 'admin', scopeId: 'HQ', scopeType: '总部', actions: [...BASE_ACTIONS, MARKET], scopeStoreIds: [], scopeOrgNodeIds: ['HQ'] },
+    ])
+    expect(props.receivableTargetOrgNodeIds).toBeNull()
+  })
+
+  it('没有收货权限 → 空集', async () => {
+    const props = await renderWith(SUPPLY)
+    expect(props.receivableTargetOrgNodeIds).toEqual([])
   })
 })

@@ -108,6 +108,7 @@ const baseProps = {
   canCreate: true,
   canApprove: true,
   canReceive: true,
+  receivableTargetOrgNodeIds: null,
   canViewPrice: true,
 }
 
@@ -1532,5 +1533,58 @@ describe('建单失败的提示（#134）', () => {
     await waitFor(() => expect(toast.error).toHaveBeenCalledWith('单据号已被占用'))
     await waitFor(() => expect(mockRefresh).toHaveBeenCalled())
     expect(screen.getByRole('dialog')).toBeInTheDocument()
+  })
+})
+
+describe('「收货」按钮按行判定：只给能收这张单 target 的账号（#340 评审 P1）', () => {
+  /** M1 → M2 的市场间调货，待收货 */
+  const mto: InventoryDocRow = {
+    ...row,
+    id: 'MTO-260924-0001',
+    docType: '市场间调货出库',
+    status: '待收货',
+    sourceOrgNodeId: 'M1',
+    targetOrgNodeId: 'M2',
+    targetOrgNodeName: '九江市场',
+    targetOrgNodeType: '市场',
+  }
+
+  function renderWithReceivable(ids: readonly string[] | null) {
+    render(
+      <InventoryDocsPage
+        {...baseProps}
+        rows={[mto]}
+        receivableTargetOrgNodeIds={ids}
+        allowedCreateDocTypes={['市场产品报损']}
+      />,
+    )
+  }
+
+  it('调出市场（scope 只有 M1）看得到这张单，但没有「收货」按钮', () => {
+    renderWithReceivable(['M1', 'N-S1'])
+    expect(screen.getByText('MTO-260924-0001')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: '收货' })).toBeNull()
+  })
+
+  it('调入市场（scope 含 M2）有「收货」按钮', () => {
+    renderWithReceivable(['M2'])
+    expect(screen.getByRole('button', { name: '收货' })).toBeTruthy()
+  })
+
+  it('不受限（超管，null）有「收货」按钮', () => {
+    renderWithReceivable(null)
+    expect(screen.getByRole('button', { name: '收货' })).toBeTruthy()
+  })
+
+  it('target 为空的单不给按钮（服务端必拒「缺少收货主体」）', () => {
+    render(
+      <InventoryDocsPage
+        {...baseProps}
+        rows={[{ ...mto, targetOrgNodeId: null }]}
+        receivableTargetOrgNodeIds={['M2']}
+        allowedCreateDocTypes={['市场产品报损']}
+      />,
+    )
+    expect(screen.queryByRole('button', { name: '收货' })).toBeNull()
   })
 })
