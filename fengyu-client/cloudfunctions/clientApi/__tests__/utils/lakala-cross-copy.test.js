@@ -306,7 +306,27 @@ describe('lakala 跨副本一致性守护', () => {
     expect(testIncludes, 'test.include 出现多次时后者生效，会悄悄缩小收集范围').toHaveLength(1)
     // `shard: '1/2'` 只跑一半文件，而本守护恰好落在前半所以自己照样执行
     // —— 「想给 CI 分片却漏配第二个 shard」是自然疏忽（闸门 2 codex round-6 指出）。
+    // `shard: '1/2'` 只跑一半文件，而本守护恰好落在前半所以自己照样执行
+    // —— 「想给 CI 分片却漏配第二个 shard」是自然疏忽（闸门 2 codex round-6 指出）。
+    //
+    // ⚠️ shard 有三条进入路径，三条都要堵：
+    //   ① CLI 传 `--shard` —— 被上面 `testRuns.toEqual(['npx vitest run'])` 挡住
+    //   ② config 里直接写 —— 被下面这条挡住
+    //   ③ 把配置抽到外部文件再展开（`import opts from './ci-options.js'` + `...opts`）
+    //      —— 被再下面那条「config 必须自包含」挡住（codex round-8 指出这条路径）
+    //
+    // ⚠️ 为什么不能靠下一条 meta（核对实际收集结果）兜底：`vitest list --filesOnly`
+    // **不经过 sequencer**，实测 `list --filesOnly --shard=1/2` 照样返回全部 36 个文件，
+    // 而 `run --shard=1/2` 只跑 18 个 / 266 条。分片是这条兜底断言唯一盖不住的缺口，
+    // 所以必须在这里按路径逐条堵死。
     expect(vitestConfig, 'shard 会让每次只跑一部分文件').not.toContain('shard')
+
+    // config 必须自包含：只要允许从别的文件 import 配置再展开，任何缩小范围的字段
+    // （shard / exclude / projects …）都能藏在外部文件里，本 meta 的全部文本断言一起失效。
+    const configImports = vitestConfig.match(/^\s*(?:import\s.*?from|const\s.*?=\s*require\()\s*['"](.+?)['"]/gm) || []
+    expect(configImports, 'vitest.config.js 只应 import vitest/config，不得从外部文件引入配置')
+      .toHaveLength(1)
+    expect(vitestConfig, 'config 里出现对象展开，配置可能来自外部文件').not.toContain('...')
     expect(vitestConfig, 'testMatch 不是 vitest 选项，会被静默忽略，别用它').not.toContain('testMatch')
     expect(vitestConfig, '加 exclude 同样能让文件出网').not.toContain('exclude:')
     // `projects` 会整个接管文件收集，留着上面的 include 也没用（闸门 2 的 GLM 指出）。
