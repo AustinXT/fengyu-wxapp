@@ -190,6 +190,35 @@ describe('MatrixTable · 冻结列与样式', () => {
   })
 })
 
+describe('MatrixTable · 右冻结分组 / 浮点噪声', () => {
+  it('右冻结分组表头按末列吸附：right = 0 而不是首列的偏移', () => {
+    const columns: MatrixColumn<Row>[] = [
+      { key: 'name', header: '员工', width: 120, freeze: 'left', cell: (r) => r.name },
+      { key: 'd1', header: '1日', width: 90, value: (r) => r.cells['d1:sales'] },
+      { key: 'sum:sales', header: '业绩', width: 90, freeze: 'right', group: { key: 'sum', header: '合计' }, value: (r) => r.cells['d1:sales'] },
+      { key: 'sum:consume', header: '消耗', width: 90, freeze: 'right', group: { key: 'sum', header: '合计' }, value: (r) => r.cells['d1:consume'] },
+    ]
+    const { container } = render(<MatrixTable columns={columns} rows={ROWS} rowKey={(r) => r.id} />)
+    const groupCell = Array.from(container.querySelectorAll('thead tr:first-child th')).find((th) => th.textContent === '合计') as HTMLTableCellElement
+    expect(groupCell.colSpan).toBe(2)
+    expect(groupCell.style.right).toBe('0px')
+    const [sales, consume] = Array.from(container.querySelectorAll('thead tr:nth-child(2) th')) as HTMLElement[]
+    expect(sales.style.right).toBe('90px')
+    expect(consume.style.right).toBe('0px')
+  })
+
+  it('相抵后的浮点噪声不显示成红色 -0.00', () => {
+    const columns: MatrixColumn<Row>[] = [
+      { key: 'name', header: '门店', cell: (r) => r.name },
+      { key: 'v', header: '金额', value: () => 0.1 + 0.2 - 0.3 - 1e-16 * 3 - 0.0000000001 },
+    ]
+    const { container } = render(<MatrixTable columns={columns} rows={ROWS.slice(0, 1)} rowKey={(r) => r.id} />)
+    const cell = container.querySelectorAll('tbody td')[1].querySelector('span') as HTMLElement
+    expect(cell.textContent).toBe('0.00')
+    expect(cell.className).not.toContain('destructive')
+  })
+})
+
 describe('MatrixTable · 排序与提示', () => {
   it('点可排序表头按 desc → asc 切换并回调，aria-sort 标注当前列', () => {
     const onSortChange = vi.fn()
@@ -215,6 +244,16 @@ describe('MatrixTable · 排序与提示', () => {
     expect(tooltip?.textContent).toBe('已付清单数 ÷ 总单数')
     expect(container.contains(tooltip)).toBe(false)
     fireEvent.mouseLeave(trigger.parentElement!)
+    expect(document.body.querySelector('[role="tooltip"]')).toBeNull()
+  })
+
+  it('浮层在任意滚动时收起；上方空间不足时翻到下方', () => {
+    const { container } = render(<MatrixTable columns={buildColumns(['d1'])} rows={ROWS} rowKey={(r) => r.id} />)
+    const host = (container.querySelector('[aria-label="已付清单数 ÷ 总单数"]') as HTMLElement).parentElement!
+    // happy-dom 不排版，getBoundingClientRect 全 0 → 视为贴着视口顶部，应翻到下方
+    fireEvent.mouseEnter(host)
+    expect(document.body.querySelector('[role="tooltip"]')?.getAttribute('data-placement')).toBe('bottom')
+    fireEvent.scroll(container.querySelector('table')!.parentElement!)
     expect(document.body.querySelector('[role="tooltip"]')).toBeNull()
   })
 })

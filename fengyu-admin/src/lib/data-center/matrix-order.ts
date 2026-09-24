@@ -7,17 +7,22 @@
 import { sql, type SQL } from 'drizzle-orm'
 import type { MatrixSort, MatrixSortDirection } from './matrix'
 
+function isSortable(sortable: Readonly<Record<string, SQL>>, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(sortable, key)
+}
+
 /**
- * 解析 `?sort=<key>&dir=asc|desc`。key 不在白名单 → 回退默认排序（不抛错：URL 可被手改，
- * 排序参数不合法不值得让整页 400）。方向缺省或非法 → desc。
+ * 解析 `?sort=<key>&dir=asc|desc`。白名单就是传给 matrixOrderBySql 的同一张 `sortable` 表，
+ * 两边不会漂移。key 不在白名单 → 回退默认排序（不抛错：URL 可被手改，排序参数不合法不值得让整页 400）。
+ * 方向缺省或非法 → desc。
  */
 export function parseMatrixSort(
   raw: { sort?: string | null; dir?: string | null },
-  allowedKeys: readonly string[],
+  sortable: Readonly<Record<string, SQL>>,
   fallback: MatrixSort,
 ): MatrixSort {
   const key = raw.sort?.trim()
-  if (!key || !allowedKeys.includes(key)) return fallback
+  if (!key || !isSortable(sortable, key)) return fallback
   const direction: MatrixSortDirection = raw.dir === 'asc' ? 'asc' : 'desc'
   return { key, direction }
 }
@@ -37,7 +42,7 @@ export function matrixOrderBySql(
   if (tiebreak.length === 0) {
     throw new Error('INVALID_STATE: 矩阵表排序必须提供唯一键兜底（#282）')
   }
-  const expression = Object.prototype.hasOwnProperty.call(sortable, sort.key) ? sortable[sort.key] : undefined
+  const expression = isSortable(sortable, sort.key) ? sortable[sort.key] : undefined
   if (!expression) {
     throw new Error(`INVALID_PARAMS: 不支持按「${sort.key}」排序`)
   }

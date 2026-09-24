@@ -88,24 +88,47 @@ const HEADER_ROW_HEIGHT = 36
 
 // ─── 浮层提示：portal 到 body + fixed 定位，逃出 overflow:auto 容器的裁剪 ──────
 
+/** 触发点上方不足这么多像素时浮层翻到下方（sticky 表头贴着视口顶部时尤其如此） */
+const HINT_FLIP_THRESHOLD = 96
+
 function FloatingHint({ content, children, className }: {
   content: React.ReactNode
   children: React.ReactNode
   className?: string
 }) {
   const triggerRef = React.useRef<HTMLSpanElement>(null)
-  const [position, setPosition] = React.useState<{ left: number; top: number } | null>(null)
+  const [position, setPosition] = React.useState<{
+    left: number
+    top: number
+    below: boolean
+    container: HTMLElement
+  } | null>(null)
 
   const show = () => {
-    const rect = triggerRef.current?.getBoundingClientRect()
-    if (!rect) return
+    const trigger = triggerRef.current
+    const rect = trigger?.getBoundingClientRect()
+    if (!trigger || !rect) return
     // 浮层最宽 320px、以触发点居中：把中心夹在视口内，贴边的列头说明不会被窗口边缘截断
     const half = 160 + 8
     const center = rect.left + rect.width / 2
     const left = window.innerWidth > half * 2 ? Math.min(Math.max(center, half), window.innerWidth - half) : center
-    setPosition({ left, top: rect.top })
+    const below = rect.top < HINT_FLIP_THRESHOLD
+    // 表格在模态 <dialog> 里时挂到 dialog 上：挂 body 会被 top layer 盖住（同 date-picker）
+    const container = trigger.closest<HTMLElement>("dialog[open]") ?? document.body
+    setPosition({ left, top: below ? rect.bottom : rect.top, below, container })
   }
   const hide = () => setPosition(null)
+
+  // 定位是 hover 那一刻的快照：表格或页面一滚动就收起，不留一个飘在原处的浮层
+  React.useEffect(() => {
+    if (!position) return
+    window.addEventListener("scroll", hide, true)
+    window.addEventListener("resize", hide)
+    return () => {
+      window.removeEventListener("scroll", hide, true)
+      window.removeEventListener("resize", hide)
+    }
+  }, [position])
 
   return (
     <span
@@ -117,15 +140,19 @@ function FloatingHint({ content, children, className }: {
       onBlur={hide}
     >
       {children}
-      {position && typeof document !== "undefined" && createPortal(
+      {position && createPortal(
         <div
           role="tooltip"
           style={{ left: position.left, top: position.top }}
-          className="pointer-events-none fixed z-[100] w-max max-w-[320px] -translate-x-1/2 -translate-y-[calc(100%+6px)] whitespace-normal rounded-[var(--radius)] bg-[var(--foreground)] px-3 py-1.5 text-xs leading-relaxed text-[var(--background)] shadow-md"
+          data-placement={position.below ? "bottom" : "top"}
+          className={cn(
+            "pointer-events-none fixed z-[100] w-max max-w-[320px] -translate-x-1/2 whitespace-normal rounded-[var(--radius)] bg-[var(--foreground)] px-3 py-1.5 text-xs leading-relaxed text-[var(--background)] shadow-md",
+            position.below ? "translate-y-[6px]" : "-translate-y-[calc(100%+6px)]",
+          )}
         >
           {content}
         </div>,
-        document.body,
+        position.container,
       )}
     </span>
   )
@@ -152,12 +179,20 @@ export function MatrixCheck() {
   return <span className="font-semibold text-[var(--color-brand)]">✓</span>
 }
 
-/** 金额：千分位 2 位小数，负数红色（退款冲销） */
+/** 各单位的展示精度（小数位，占比按 0-1 小数计） */
+const DISPLAY_DIGITS: Record<MetricUnit, number> = { amount: 2, percent: 4, count: 0 }
+
+/**
+ * 按单位格式化的数值，负数红色（退款冲销）。先按展示精度取整再判正负：
+ * 退款相抵后的浮点噪声（-2.7e-17）不能显示成一个红色的「-0.00」。
+ */
 export function MatrixAmount({ value, unit = "amount" }: { value: number | null | undefined; unit?: MetricUnit }) {
-  const negative = value != null && Number.isFinite(value) && value < 0
+  const scale = 10 ** DISPLAY_DIGITS[unit]
+  // `|| 0` 顺带把 -0 归成 0
+  const shown = value != null && Number.isFinite(value) ? Math.round(value * scale) / scale || 0 : value
   return (
-    <span className={cn("tabular-nums", negative && "text-[var(--destructive)]")}>
-      {formatByUnit(value, unit)}
+    <span className={cn("tabular-nums", shown != null && shown < 0 && "text-[var(--destructive)]")}>
+      {formatByUnit(shown, unit)}
     </span>
   )
 }
@@ -317,8 +352,12 @@ function MatrixTable<T>({
                 {headerRow.map((cell) => {
                   const column = cell.columnKey ? columnByKey.get(cell.columnKey) : undefined
                   const group = cell.groupKey ? columns[cell.firstLeafIndex].group : undefined
-                  // 分组格跨多列：只要首列冻结就按首列吸附（分组不会跨越冻结边界，否则冻结列不是前缀）
-                  const position = frozen.get(columns[cell.firstLeafIndex].key)
+                  // 分组格跨多列（computeFrozenPositions 保证分组不跨冻结边界）：左冻结按首列吸附；
+                  // 右冻结必须按**末列**吸附 —— 首列的 right 偏移已含它右边各列的宽度，拿来给整个分组格就错位
+                  const lastLeaf = columns[cell.firstLeafIndex + cell.colSpan - 1]
+                  const firstPosition = frozen.get(columns[cell.firstLeafIndex].key)
+                  const position = firstPosition?.side === "right" ? frozen.get(lastLeaf.key) : firstPosition
+                  const edgeKey = firstPosition?.side === "right" ? columns[cell.firstLeafIndex].key : lastLeaf.key
                   const weekend = column
                     ? column.weekend
                     : columns.slice(cell.firstLeafIndex, cell.firstLeafIndex + cell.colSpan).every((leaf) => leaf.weekend)
@@ -335,8 +374,8 @@ function MatrixTable<T>({
                         position ? "z-30" : "z-20",
                         weekend ? "bg-[#F0EFEA]" : "bg-[var(--muted)]",
                         group ? "text-center" : alignClass(column?.align),
-                        (group || (column && layout.groupStartKeys.has(column.key))) && "border-l border-l-[var(--border)]",
-                        position && frozenEdgeClass(columns[cell.firstLeafIndex].key),
+                        group ? "border-l border-l-[var(--border)]" : column && groupStartClass(column.key),
+                        position && frozenEdgeClass(edgeKey),
                       )}
                     >
                       {group ? (

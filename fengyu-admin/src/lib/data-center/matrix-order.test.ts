@@ -12,13 +12,14 @@ const FALLBACK = { key: 'sales', direction: 'desc' as const }
 
 describe('parseMatrixSort', () => {
   it('白名单内的 key 与方向原样采用', () => {
-    expect(parseMatrixSort({ sort: 'name', dir: 'asc' }, ['sales', 'name'], FALLBACK)).toEqual({ key: 'name', direction: 'asc' })
+    expect(parseMatrixSort({ sort: 'name', dir: 'asc' }, SORTABLE, FALLBACK)).toEqual({ key: 'name', direction: 'asc' })
   })
 
-  it('key 不在白名单 / 缺失 → 回退默认；方向非法 → desc', () => {
-    expect(parseMatrixSort({ sort: 'x; DROP TABLE', dir: 'asc' }, ['sales'], FALLBACK)).toEqual(FALLBACK)
-    expect(parseMatrixSort({}, ['sales'], FALLBACK)).toEqual(FALLBACK)
-    expect(parseMatrixSort({ sort: 'sales', dir: 'ASC ' }, ['sales'], FALLBACK)).toEqual({ key: 'sales', direction: 'desc' })
+  it('key 不在白名单（与 matrixOrderBySql 同一张 sortable 表）/ 缺失 / 原型链属性 → 回退默认；方向非法 → desc', () => {
+    expect(parseMatrixSort({ sort: 'x; DROP TABLE', dir: 'asc' }, SORTABLE, FALLBACK)).toEqual(FALLBACK)
+    expect(parseMatrixSort({ sort: 'toString' }, SORTABLE, FALLBACK)).toEqual(FALLBACK)
+    expect(parseMatrixSort({}, SORTABLE, FALLBACK)).toEqual(FALLBACK)
+    expect(parseMatrixSort({ sort: 'sales', dir: 'ASC ' }, SORTABLE, FALLBACK)).toEqual({ key: 'sales', direction: 'desc' })
   })
 })
 

@@ -53,6 +53,36 @@ describe('computeMatrixTotals', () => {
     expect(totals.paidRate).not.toBeCloseTo(0.25, 5)
   })
 
+  it('比率：分子或分母任一为空的行整行不计入（只计一半会拉偏合计）', () => {
+    const rows: Row[] = [
+      { id: 'a', store: 'a', sales: 100, paid: 50, visits: 0 },
+      { id: 'b', store: 'b', sales: 100, paid: null, visits: 0 }, // 分子空：若分母照计，合计变 50/200
+      { id: 'c', store: 'c', sales: null, paid: 30, visits: 0 }, // 分母空：若分子照计，合计变 80/100
+    ]
+    const columns: MatrixColumnSpec<Row>[] = [
+      { key: 'rate', aggregate: { kind: 'ratio', numerator: (r) => r.paid, denominator: (r) => r.sales } },
+    ]
+    expect(computeMatrixTotals(columns, rows, { paginated: false }).rate).toBe(0.5)
+  })
+
+  it('比率分母合计 ≤ 0 → null（与 efficiency.ratio 一致）', () => {
+    const columns: MatrixColumnSpec<Row>[] = [
+      { key: 'rate', aggregate: { kind: 'ratio', numerator: (r) => r.paid, denominator: (r) => r.sales } },
+    ]
+    const rows: Row[] = [{ id: 'a', store: 'a', sales: -100, paid: 10, visits: 0 }]
+    expect(computeMatrixTotals(columns, rows, { paginated: false }).rate).toBeNull()
+  })
+
+  it('服务端合计是 PG numeric 字符串时按数值解析，而不是显示为空', () => {
+    const totals = computeMatrixTotals(COLUMNS, [], {
+      paginated: true,
+      serverTotals: { sales: '1234.50' as unknown as number, paid: '' as unknown as number, technicians: 'abc' as unknown as number },
+    })
+    expect(totals.sales).toBe(1234.5)
+    expect(totals.paid).toBeNull()
+    expect(totals.technicians).toBeNull()
+  })
+
   it('比率分母合计为 0 → null，不出 Infinity / NaN', () => {
     const totals = computeMatrixTotals(COLUMNS, [{ id: 'x', store: 'x', sales: 0, paid: 5, visits: 0 }], { paginated: false })
     expect(totals.paidRate).toBeNull()
@@ -164,6 +194,24 @@ describe('computeFrozenPositions', () => {
     expect(positions.get('d')).toEqual({ side: 'right', offset: 70, edge: true })
   })
 
+  it('分组跨越冻结边界 → 抛错；整组同侧冻结放行', () => {
+    const group = { key: 'g', header: 'G' }
+    expect(() => computeFrozenPositions([
+      { key: 'a', width: 10, freeze: 'left', group },
+      { key: 'b', group },
+    ])).toThrow(/跨越冻结边界/)
+    expect(() => computeFrozenPositions([
+      { key: 'x' },
+      { key: 'a', group },
+      { key: 'b', width: 10, freeze: 'right', group },
+    ])).toThrow(/跨越冻结边界/)
+    expect(() => computeFrozenPositions([
+      { key: 'x' },
+      { key: 'a', width: 10, freeze: 'right', group },
+      { key: 'b', width: 10, freeze: 'right', group },
+    ])).not.toThrow()
+  })
+
   it('冻结列夹在中间 / 超过 4 列 / 缺宽度 → 抛错', () => {
     expect(() => computeFrozenPositions([{ key: 'a' }, { key: 'b', width: 10, freeze: 'left' }, { key: 'c' }])).toThrow(/前缀或右侧后缀/)
     expect(() => computeFrozenPositions(
@@ -185,6 +233,11 @@ describe('sortMatrixRows / nextMatrixSort', () => {
   it('排序值相同按唯一键兜底，空值升降序都在最后', () => {
     expect(sortMatrixRows(rows, (r) => r.sales, 'desc', rowKey).map(rowKey)).toEqual(['b', 'a', 'c', 'n'])
     expect(sortMatrixRows(rows, (r) => r.sales, 'asc', rowKey).map(rowKey)).toEqual(['a', 'c', 'b', 'n'])
+  })
+
+  it('数字字符串按数值序（"20" 在 "100" 前）', () => {
+    const items = [{ id: 'x', v: '100' }, { id: 'y', v: '20' }]
+    expect(sortMatrixRows(items, (r) => r.v, 'asc', (r) => r.id).map((r) => r.id)).toEqual(['y', 'x'])
   })
 
   it('输入顺序不影响结果（稳定可复现）', () => {
@@ -212,5 +265,6 @@ describe('listMonthDays', () => {
   it('非法月份抛 INVALID_PARAMS', () => {
     expect(() => listMonthDays('2026-13')).toThrow(/INVALID_PARAMS/)
     expect(() => listMonthDays('2026-9')).toThrow(/INVALID_PARAMS/)
+    expect(() => listMonthDays('0099-02')).toThrow(/INVALID_PARAMS/)
   })
 })

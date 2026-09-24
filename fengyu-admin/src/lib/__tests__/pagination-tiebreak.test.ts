@@ -275,7 +275,11 @@ describe('#282 · admin 分页查询的 orderBy 必须带唯一键 tie-break', (
               cur += ch
             }
             last = cur || last
+            // 矩阵表（#368）的排序走 matrixOrderBySql：它把唯一键兜底做成必填参数、空数组直接抛错
+            // （matrix-order.test.ts 守着），调用形如 `.orderBy(matrixOrderBySql(sort, SORTABLE, [c.id]))`，
+            // 末位参数以 `])` 结尾，looksUnique 认不出来。兜底键本身是否唯一由调用方 review 负责。
             const exempt = UNIQUE_BY_INDEX.some(([re]) => re.test(last.trim()))
+              || /^matrixOrderBySql\(/.test(last.trim())
             if (!looksUnique(last) && !exempt) {
               const line = code.slice(0, index).split('\n').length
               offenders.push(`${relative(SRC, file)}:${line} · 末位「${last.trim()}」不像唯一键\n    orderBy(${args})`)

@@ -182165,10 +182165,17 @@ var EXPORT_META_SHEET_NAME = "导出说明";
 var XLSX_ROWS_PER_SHEET = 1e6;
 function safeSheetName(input, sequence3) {
   const suffix = sequence3 === 1 ? "" : `-${sequence3}`;
-  const base = input.replace(/[\\/?*\[\]:]/g, " ").trim() || "导出数据";
+  let base = input.replace(/[\\/?*\[\]:]/g, " ").trim() || "导出数据";
+  if (base.toLowerCase() === EXPORT_META_SHEET_NAME.toLowerCase())
+    base = `${base}数据`;
   return `${base.slice(0, Math.max(1, 31 - suffix.length))}${suffix}`;
 }
 async function writeStreamXlsx(options) {
+  const layout = buildMatrixHeaderLayout(options.columns.map((column2, index3) => ({ key: String(index3), group: column2.group })));
+  const rawFrozen = Math.floor(Number(options.frozenColumns ?? 0));
+  const frozenColumns = Number.isFinite(rawFrozen) ? Math.min(Math.max(0, rawFrozen), options.columns.length) : 0;
+  const groupStarts = new Set([...layout.groupStartKeys].map(Number));
+  const rowsPerSheet = Math.min(XLSX_ROWS_PER_SHEET, Math.max(1, Math.floor(options.rowsPerSheet ?? XLSX_ROWS_PER_SHEET)));
   const workbook = new import_exceljs.default.stream.xlsx.WorkbookWriter({
     filename: options.filePath,
     useStyles: true,
@@ -182177,25 +182184,20 @@ async function writeStreamXlsx(options) {
   let rowCount = 0;
   let sheetCount = 0;
   let rowsInSheet = 0;
-  const rowsPerSheet = Math.min(XLSX_ROWS_PER_SHEET, Math.max(1, Math.floor(options.rowsPerSheet ?? XLSX_ROWS_PER_SHEET)));
-  const layout = buildMatrixHeaderLayout(options.columns.map((column2, index3) => ({ key: String(index3), group: column2.group })));
-  const frozenColumns = Math.max(0, Math.floor(options.frozenColumns ?? 0));
-  const groupStarts = new Set([...layout.groupStartKeys].map(Number));
   const createSheet = () => {
     sheetCount += 1;
     rowsInSheet = 0;
-    const worksheet2 = workbook.addWorksheet(safeSheetName(options.sheetName, sheetCount), {
+    const worksheet = workbook.addWorksheet(safeSheetName(options.sheetName, sheetCount), {
       views: [{ state: "frozen", ySplit: layout.depth, ...frozenColumns > 0 ? { xSplit: frozenColumns } : {} }]
     });
-    worksheet2.columns = options.columns.map((column2) => ({
+    worksheet.columns = options.columns.map((column2) => ({
       width: column2.width ?? 16,
       ...column2.numFmt ? { style: { numFmt: column2.numFmt } } : {}
     }));
-    const headerRows = layout.rows.map(() => worksheet2.addRow([]));
+    const headerRows = layout.rows.map(() => worksheet.addRow([]));
     layout.rows.forEach((cells, rowIndex) => {
       for (const cell of cells) {
-        const columnIndex = cell.firstLeafIndex + 1;
-        const target = headerRows[rowIndex].getCell(columnIndex);
+        const target = headerRows[rowIndex].getCell(cell.firstLeafIndex + 1);
         target.value = cell.groupKey ? options.columns[cell.firstLeafIndex].group.header : options.columns[cell.firstLeafIndex].header;
         if (layout.depth === 2) {
           target.alignment = { vertical: "middle", horizontal: cell.groupKey ? "center" : undefined };
@@ -182208,51 +182210,58 @@ async function writeStreamXlsx(options) {
     for (const cell of layout.rows[0]) {
       if (cell.colSpan > 1 || cell.rowSpan > 1) {
         const column2 = cell.firstLeafIndex + 1;
-        worksheet2.mergeCells(1, column2, cell.rowSpan, column2 + cell.colSpan - 1);
+        worksheet.mergeCells(1, column2, cell.rowSpan, column2 + cell.colSpan - 1);
       }
     }
     for (const header of headerRows) {
       header.font = { bold: true };
       header.commit();
     }
-    return worksheet2;
+    return worksheet;
   };
-  let worksheet = createSheet();
-  for await (const sourceRow of options.rows) {
-    if (rowsInSheet >= rowsPerSheet) {
-      worksheet.commit();
-      worksheet = createSheet();
-    }
-    const values2 = options.columns.map((column2) => column2.value(sourceRow) ?? "");
-    const row = worksheet.addRow(values2);
-    if (options.isEmphasisRow?.(sourceRow))
-      row.font = { bold: true };
-    row.commit();
-    rowsInSheet += 1;
-    rowCount += 1;
-    if (rowCount % 1000 === 0)
-      await options.onProgress?.(rowCount);
-  }
-  if (options.totalsRow !== undefined && rowCount > 0) {
-    const totals = worksheet.addRow(options.columns.map((column2) => column2.value(options.totalsRow) ?? ""));
-    totals.font = { bold: true };
-    totals.eachCell((cell) => {
-      cell.border = { top: { style: "thin" } };
-    });
-    totals.commit();
-  }
-  worksheet.commit();
-  if (options.meta && options.meta.length > 0) {
-    const metaSheet = workbook.addWorksheet(EXPORT_META_SHEET_NAME);
-    metaSheet.columns = [{ width: 18 }, { width: 48 }];
-    for (const entry of options.meta) {
-      const row = metaSheet.addRow([entry.label, entry.value]);
-      row.getCell(1).font = { bold: true };
+  try {
+    let worksheet = createSheet();
+    for await (const sourceRow of options.rows) {
+      if (rowsInSheet >= rowsPerSheet) {
+        worksheet.commit();
+        worksheet = createSheet();
+      }
+      const values2 = options.columns.map((column2) => column2.value(sourceRow) ?? "");
+      const row = worksheet.addRow(values2);
+      if (options.isEmphasisRow?.(sourceRow))
+        row.font = { bold: true };
       row.commit();
+      rowsInSheet += 1;
+      rowCount += 1;
+      if (rowCount % 1000 === 0)
+        await options.onProgress?.(rowCount);
     }
-    metaSheet.commit();
+    if (options.totalsLabel !== undefined && rowCount > 0) {
+      const totals = worksheet.addRow(options.columns.map((column2, index3) => index3 === 0 ? options.totalsLabel : column2.total ?? ""));
+      totals.font = { bold: true };
+      totals.eachCell((cell) => {
+        cell.border = { top: { style: "thin" } };
+      });
+      totals.commit();
+    }
+    worksheet.commit();
+    if (options.meta && options.meta.length > 0) {
+      const metaSheet = workbook.addWorksheet(EXPORT_META_SHEET_NAME);
+      metaSheet.columns = [{ width: 18 }, { width: 48 }];
+      for (const entry of options.meta) {
+        const row = metaSheet.addRow([entry.label, entry.value]);
+        row.getCell(1).font = { bold: true };
+        row.commit();
+      }
+      metaSheet.commit();
+    }
+    await workbook.commit();
+  } catch (error) {
+    const internals = workbook;
+    internals.zip?.abort?.();
+    internals.stream?.destroy?.();
+    throw error;
   }
-  await workbook.commit();
   return { rowCount, sheetCount };
 }
 
@@ -182262,8 +182271,11 @@ function completeExportMeta(meta, audit) {
   if (!meta)
     return;
   return [
-    ...meta,
-    { label: "导出时间", value: fmtDateTime(audit.requestedAt) },
+    { label: "时间区间", value: meta.period ?? "不限（仅按范围）" },
+    { label: "范围", value: meta.scope.trim() || "—" },
+    ...meta.basePeriod ? [{ label: "基期区间", value: meta.basePeriod }] : [],
+    ...meta.extra ?? [],
+    { label: "导出时间（申请时刻）", value: fmtDateTime(audit.requestedAt) || "—" },
     { label: "导出人", value: audit.exporterName?.trim() || "—" }
   ];
 }
@@ -182497,7 +182509,7 @@ async function processJob(job) {
         columns: content.columns,
         rows: content.rows,
         frozenColumns: content.frozenColumns,
-        totalsRow: content.totalsRow,
+        totalsLabel: content.totalsLabel,
         isEmphasisRow: content.isEmphasisRow,
         meta: completeExportMeta(content.meta, { requestedAt: job.createdAt, exporterName: session4.name }),
         onProgress: async (rowCount) => {

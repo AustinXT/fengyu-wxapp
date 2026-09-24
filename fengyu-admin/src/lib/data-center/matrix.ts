@@ -11,8 +11,9 @@ export type MatrixAggregate<T> =
   /** 可加列：合计 = 逐行求和（小计行不参与，否则同一笔钱会被算两遍） */
   | { kind: 'sum' }
   /**
-   * 比率列：合计 = Σ分子 ÷ Σ分母，**不取各行比率的平均**。分母合计为 0 时给 null。
-   * 分子分母用访问器取，允许它们不是页面上展示的列。
+   * 比率列：合计 = Σ分子 ÷ Σ分母，**不取各行比率的平均**。分母合计 ≤ 0 时给 null
+   * （与 actions/data-center/efficiency.ts 的 ratio() 一致）。分子分母用访问器取，允许它们不是页面上展示的列；
+   * 分子或分母任一为空的行**整行不计入**，否则只计入一半会把合计比率拉偏。
    */
   | { kind: 'ratio'; numerator: (row: T) => number | null | undefined; denominator: (row: T) => number | null | undefined }
   /** 只认服务端口径（去重计数，如美容师人数 #297）：逐行相加没有意义，服务端不给就留空 */
@@ -149,6 +150,18 @@ export function computeFrozenPositions<T>(
     throw new Error(`INVALID_STATE: 左侧最多冻结 ${MATRIX_MAX_LEFT_FROZEN} 列`)
   }
 
+  // 分组不能跨越冻结边界：分组表头是一个跨多列的 sticky 格，一半冻结一半滚动时它会整块钉住、盖住滚动区的表头
+  const groupFreeze = new Map<string, MatrixColumnSpec<T>['freeze'] | 'none'>()
+  for (const column of columns) {
+    if (!column.group) continue
+    const side = column.freeze ?? 'none'
+    const seen = groupFreeze.get(column.group.key)
+    if (seen !== undefined && seen !== side) {
+      throw new Error(`INVALID_STATE: 矩阵表分组「${column.group.key}」不能跨越冻结边界`)
+    }
+    groupFreeze.set(column.group.key, side)
+  }
+
   const widthOf = (column: MatrixColumnSpec<T>) => {
     if (!column.width || column.width <= 0) {
       throw new Error(`INVALID_STATE: 冻结列「${column.key}」必须指定正数宽度`)
@@ -191,6 +204,15 @@ function finite(value: number | null | undefined): value is number {
   return value != null && Number.isFinite(value)
 }
 
+/**
+ * 服务端合计的归一：PG numeric 的聚合结果经 postgres.js 返回的是字符串（"123.45"），
+ * 直接 Number.isFinite 判为非数会把合计显示成空。字符串按数值解析，其余非有限值一律 null。
+ */
+export function toTotal(value: unknown): number | null {
+  const parsed = typeof value === 'string' && value.trim() !== '' ? Number(value) : value
+  return typeof parsed === 'number' && Number.isFinite(parsed) ? parsed : null
+}
+
 function sumOf<T>(rows: readonly T[], accessor: (row: T) => number | null | undefined): number | null {
   let total = 0
   let seen = false
@@ -214,8 +236,7 @@ export function computeMatrixTotals<T>(
   for (const column of columns) {
     const server = options.serverTotals
     if (server && Object.prototype.hasOwnProperty.call(server, column.key)) {
-      const value = server[column.key]
-      totals[column.key] = finite(value) ? value : null
+      totals[column.key] = toTotal(server[column.key])
       continue
     }
     const aggregate = column.aggregate ?? { kind: 'none' }
@@ -227,9 +248,16 @@ export function computeMatrixTotals<T>(
       totals[column.key] = column.value ? sumOf(detailRows, column.value) : null
       continue
     }
-    const numerator = sumOf(detailRows, aggregate.numerator)
-    const denominator = sumOf(detailRows, aggregate.denominator)
-    totals[column.key] = numerator != null && denominator ? numerator / denominator : null
+    let numerator = 0
+    let denominator = 0
+    for (const row of detailRows) {
+      const top = aggregate.numerator(row)
+      const bottom = aggregate.denominator(row)
+      if (!finite(top) || !finite(bottom)) continue
+      numerator += top
+      denominator += bottom
+    }
+    totals[column.key] = denominator > 0 ? numerator / denominator : null
   }
   return totals
 }
@@ -270,7 +298,7 @@ export function sortMatrixRows<T>(
     if (!leftMissing && !rightMissing && left !== right) {
       const order = typeof left === 'number' && typeof right === 'number'
         ? left - right
-        : String(left).localeCompare(String(right), 'zh-CN')
+        : String(left).localeCompare(String(right), 'zh-CN', { numeric: true })
       if (order !== 0) return order * sign
     }
     const leftKey = rowKey(a)
@@ -297,7 +325,8 @@ export function listMonthDays(month: string): MatrixMonthDay[] {
   if (!match) throw new Error(`INVALID_PARAMS: 月份格式应为 YYYY-MM：${month}`)
   const year = Number(match[1])
   const monthIndex = Number(match[2]) - 1
-  if (monthIndex < 0 || monthIndex > 11) throw new Error(`INVALID_PARAMS: 月份格式应为 YYYY-MM：${month}`)
+  // Date.UTC 把 0~99 年映射到 1900+y，四位年份但 < 1000 的也拒掉，免得算出错的星期
+  if (year < 1000 || monthIndex < 0 || monthIndex > 11) throw new Error(`INVALID_PARAMS: 月份格式应为 YYYY-MM：${month}`)
   const dayCount = new Date(Date.UTC(year, monthIndex + 1, 0)).getUTCDate()
   return Array.from({ length: dayCount }, (_, offset) => {
     const day = offset + 1

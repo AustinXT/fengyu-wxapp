@@ -1,8 +1,9 @@
-import { mkdtemp, rm } from 'node:fs/promises'
+import { access, mkdtemp, rm } from 'node:fs/promises'
+import { Writable } from 'node:stream'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import ExcelJS from 'exceljs'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { EXPORT_META_SHEET_NAME, writeStreamXlsx, type WorkerExportColumn } from './xlsx-writer'
 
 const tempDirs: string[] = []
@@ -76,8 +77,10 @@ describe('writeStreamXlsx', () => {
         numFmt: '0.00',
         value: (row: Row) => row.cells[`${day}:${label}`],
       }))),
-      { header: '合计业绩', value: (row) => row.cells.total },
+      { header: '合计业绩', value: (row) => row.cells.total, total: 100.5 },
     ]
+    columns[1].total = 100.5
+    columns[4].total = -5
     async function* rows(): AsyncGenerator<Row> {
       yield { store: '一店', cells: { '09-01:业绩': 100.5, '09-01:消耗': 20, '09-02:业绩': 0, '09-02:消耗': -5, total: 100.5 } }
       yield { store: '南昌小计', subtotal: true, cells: { '09-01:业绩': 100.5, '09-01:消耗': 20, '09-02:业绩': 0, '09-02:消耗': -5, total: 100.5 } }
@@ -90,7 +93,7 @@ describe('writeStreamXlsx', () => {
       columns,
       frozenColumns: 1,
       isEmphasisRow: (row) => !!row.subtotal,
-      totalsRow: { store: '合计', cells: { '09-01:业绩': 100.5, '09-01:消耗': 20, '09-02:业绩': 0, '09-02:消耗': -5, total: 100.5 } },
+      totalsLabel: '合计',
       meta: [
         { label: '时间区间', value: '2026-09-01 ~ 2026-09-30' },
         { label: '导出人', value: '张三' },
@@ -116,6 +119,9 @@ describe('writeStreamXlsx', () => {
     expect(sheet.getCell('A4').font?.bold).toBe(true)
     expect(sheet.getCell('A5').text).toBe('合计')
     expect(sheet.getCell('A5').font?.bold).toBe(true)
+    expect(sheet.getCell('B5').value).toBe(100.5)
+    expect(sheet.getCell('C5').value ?? '').toBe('') // 没给 total 的列留空，不套数据行取值函数
+    expect(sheet.getCell('E5').value).toBe(-5)
     expect(sheet.getCell('F5').value).toBe(100.5)
     expect(sheet.rowCount).toBe(5)
 
@@ -133,9 +139,9 @@ describe('writeStreamXlsx', () => {
       rowsPerSheet: 2,
       columns: [
         { header: '编号', value: (row) => row.id },
-        { header: '名称', group: { key: 'g', header: '组' }, value: (row) => row.name },
+        { header: '名称', group: { key: 'g', header: '组' }, value: (row) => row.name, total: '共 3 人' },
       ],
-      totalsRow: { id: 0, name: '合计' },
+      totalsLabel: '合计',
     })
     const workbook = await readBack(filePath)
     const [first, second] = workbook.worksheets
@@ -145,7 +151,9 @@ describe('writeStreamXlsx', () => {
     }
     expect(first.rowCount).toBe(4)
     expect(second.rowCount).toBe(4) // 2 表头 + 1 数据 + 1 合计
-    expect(second.getCell('B4').text).toBe('合计')
+    expect(second.getCell('A4').text).toBe('合计')
+    expect(second.getCell('B4').text).toBe('共 3 人')
+    expect(first.getCell('A4').text).not.toBe('合计')
   })
 
   it('没有数据行时不写合计行', async () => {
@@ -156,11 +164,62 @@ describe('writeStreamXlsx', () => {
       sheetName: '空',
       rows: none(),
       columns: [{ header: '编号', value: (row) => row.id }],
-      totalsRow: { id: 0, name: '合计' },
+      totalsLabel: '合计',
     })
     expect(result.rowCount).toBe(0)
     const workbook = await readBack(filePath)
     expect(workbook.worksheets[0].rowCount).toBe(1)
+  })
+})
+
+describe('writeStreamXlsx · 失败路径与防御', () => {
+  it('列定义错误在打开文件之前就抛，不留半个文件', async () => {
+    const filePath = await tempFile()
+    await expect(writeStreamXlsx({
+      filePath,
+      sheetName: 'x',
+      rows: sampleRows(),
+      columns: [
+        { header: 'a', group: { key: 'g', header: 'G' }, value: (row) => row.id },
+        { header: 'b', value: (row) => row.id },
+        { header: 'c', group: { key: 'g', header: 'G' }, value: (row) => row.id },
+      ],
+    })).rejects.toThrow(/不相邻/)
+    await expect(access(filePath)).rejects.toThrow()
+  })
+
+  it('取数中途失败：原错误抛出，写流被关闭（长驻 worker 不漏 fd）', async () => {
+    const filePath = await tempFile()
+    const destroy = vi.spyOn(Writable.prototype, 'destroy')
+    async function* broken() {
+      yield { id: 1, name: 'a' }
+      throw new Error('boom: db gone')
+    }
+    await expect(writeStreamXlsx({
+      filePath,
+      sheetName: 'x',
+      rows: broken(),
+      columns: [{ header: '编号', value: (row) => row.id }],
+    })).rejects.toThrow('boom: db gone')
+    expect(destroy).toHaveBeenCalled()
+    destroy.mockRestore()
+  })
+
+  it('数据 sheet 与「导出说明」同名时避让；冻结列数超出列数按列数夹紧', async () => {
+    const filePath = await tempFile()
+    await writeStreamXlsx({
+      filePath,
+      sheetName: EXPORT_META_SHEET_NAME,
+      rows: sampleRows(),
+      frozenColumns: 99,
+      columns: [{ header: '编号', value: (row) => row.id }],
+      meta: [{ label: '范围', value: '全部' }],
+    })
+    const workbook = await readBack(filePath)
+    const names = workbook.worksheets.map((sheet) => sheet.name)
+    expect(new Set(names).size).toBe(names.length)
+    expect(names).toEqual([`${EXPORT_META_SHEET_NAME}数据`, EXPORT_META_SHEET_NAME])
+    expect((workbook.worksheets[0].views[0] as { xSplit?: number }).xSplit).toBe(1)
   })
 })
 

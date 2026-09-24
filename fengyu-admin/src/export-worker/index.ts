@@ -221,7 +221,7 @@ async function processJob(job: ExportJob): Promise<void> {
         columns: content.columns,
         rows: content.rows,
         frozenColumns: content.frozenColumns,
-        totalsRow: content.totalsRow,
+        totalsLabel: content.totalsLabel,
         isEmphasisRow: content.isEmphasisRow,
         meta: completeExportMeta(content.meta, { requestedAt: job.createdAt, exporterName: session.name }),
         onProgress: async (rowCount) => {
