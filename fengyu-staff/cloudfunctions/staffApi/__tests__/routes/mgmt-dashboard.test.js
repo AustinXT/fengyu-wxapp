@@ -1795,7 +1795,7 @@ describe('mgmtDashboard.staffRanking', () => {
         // 「品项老师/养生部应当入榜」的放宽改造矛盾。has_skills（非空判定）不在此列。
         expect(sql).not.toMatch(/sw\.skills\s*&&\s*ARRAY/)
         // 候选池带 has_skills 标记（skills 非空），供末尾入榜口径使用
-        expect(sql).toMatch(/\(COALESCE\(cardinality\(array_remove\(sw\.skills, ''\)\), 0\) > 0\)\s+AS has_skills/)
+        expect(sql).toMatch(/\(COALESCE\(cardinality\(array_remove\(array_remove\(sw\.skills, ''\), NULL\)\), 0\) > 0\)\s+AS has_skills/)
         expect(sql).toMatch(/pb\.has_skills/)
         // ★ 入榜口径（#290）：有技能标签者无条件入榜（含零值/负值），无标签者仅在有非零产能时入榜
         //

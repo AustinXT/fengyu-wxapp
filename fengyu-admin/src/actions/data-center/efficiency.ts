@@ -556,7 +556,7 @@ export const getEfficiencyBoard = withPermission(
                CASE WHEN o.type = '市场' THEN o.id
                     WHEN op.type = '市场' THEN op.id
                     ELSE NULL END AS anchor_market_id,
-               (COALESCE(cardinality(array_remove(sw.skills, '')), 0) > 0) AS has_skills
+               (COALESCE(cardinality(array_remove(array_remove(sw.skills, ''), NULL)), 0) > 0) AS has_skills
         FROM staff_wechat_users sw
         LEFT JOIN stores s ON s.store_id = sw.store_id
         LEFT JOIN org_nodes o_store ON s.org_node_id = o_store.id AND o_store.type = '门店'
@@ -599,8 +599,15 @@ export const getEfficiencyBoard = withPermission(
       ORDER BY (COALESCE(r.v, 0) <> 0) DESC, COALESCE(r.v, 0) DESC, pe.employee_name ASC, pe.employee_id ASC
     `)
 
-    // 实耗(员工)：2026-09-03 起归属改 service_commissions（见文件头「员工归属口径」说明），
-    // 与 staff mgmt-dashboard.js staffRankingConsume 镜像。
+    // 实耗(员工)：2026-09-03 起归属改 service_commissions（见文件头「员工归属口径」说明）。
+    //
+    // ⚠️ 与 staff `mgmt-dashboard.js staffRankingConsume` **并非逐字镜像**（原注释称「镜像」
+    //    不准确，2026-09-24 #290 闸门 2 订正）：staff 侧的 `consume_by_emp` 多挂一个
+    //    `JOIN sale_items si ON si.sale_item_id = sit.sale_item_id`，而 `si` 在其 SELECT/WHERE
+    //    中零引用 —— 是旧口径残留，现在唯一作用是 INNER 存在性过滤。
+    //    生产实测（当期 + 全历史）`service_items.sale_item_id` 无空值、无悬空引用，
+    //    故两端当前结果一致；但它是**潜在分裂点**（无数据库约束保证该列非空）。
+    //    删它属口径改动、超出 #290 范围，已转范围外报告，勿在本文件单边"对齐"。
     const qStaffRankConsume = db.execute(sql`
       ${producerCte},
       consume_by_emp AS (

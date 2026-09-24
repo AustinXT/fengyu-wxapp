@@ -395,8 +395,12 @@ function whereClauseOf(segment: string, label: string): string {
  * 注：`${producerCte}` 在切片里是**插值引用**而非展开文本，故候选池里那句
  * `cardinality(sw.skills) > 0` 不在扫描范围内，不会误伤。
  */
+// ⚠️ 闸门 2 round-1 GLM：原正则要求金额列**紧跟**比较符，隔一个 `)` 或 `,` 即穿透 ——
+// `AND COALESCE(spia.allocated_amount, 0) > 0` 就能绕过。现放宽为「列名与 `> 0` 之间
+// 允许若干包装字符（不跨行、不跨比较符）」，覆盖 COALESCE/GREATEST/NULLIF 等常见包装。
+// 正向的聚合输出行钉死见 assertCteAggregateShape —— 反向枚举只作辅助。
 const AMOUNT_FLOOR_RE =
-  /\b\w+\.(?:allocated_amount|commission_amount|session_used|unit_real_price|amount|received)(?:::\w+)?\s*>=?\s*0/i
+  /\b\w+\.(?:allocated_amount|commission_amount|session_used|unit_real_price|amount|received)\b[^><\n]{0,40}>=?\s*0/i
 
 function assertNoAmountFloorInCte(segment: string, label: string): void {
   const hit = segment.match(AMOUNT_FLOOR_RE)
@@ -405,6 +409,46 @@ function assertNoAmountFloorInCte(segment: string, label: string): void {
     `${label} 对金额/次数列设了正值下界（命中：${hit?.[0]}）。这会在聚合前剔掉退款负行，` +
       '让员工净额由负转正 —— 与 #290 同型，只是下沉到 CTE 层，外层 WHERE 形状断言看不见它。',
   ).toBeNull()
+}
+
+/**
+ * ★ metric CTE 的聚合输出行**正向钉死**（闸门 2 round-1 GLM P1-2）。
+ *
+ * 外层 WHERE 有正向形状钉死（`assertStaffRankAdmissionShape`），所以那一层可以放弃反向枚举；
+ * 但 CTE 层此前**只有反向枚举**（`AMOUNT_FLOOR_RE`），防护是不对称的 —— 而反向枚举
+ * 永远列不完：`COALESCE(x, 0) > 0`、`GREATEST(SUM(...), 0)`、`>= 1`、`FILTER (WHERE ...)`
+ * 都能在不动外层的前提下把退款负行在聚合前剔掉，让榜上显示 0.00、负额被吞。
+ *
+ * 这里改为正向：每个 `AS v` 输出列必须是「裸聚合 + COALESCE 兜底」这几种已知形态之一，
+ * 多包一层函数、挂 FILTER、换成条件聚合，都会红。
+ */
+const CTE_AGG_SHAPES = [
+  /^COALESCE\(SUM\([^()]*(?:\([^()]*\)[^()]*)*\), 0\)$/, // COALESCE(SUM(<表达式>), 0)
+  /^COUNT\(\*\)$/, // 新会员榜
+  /^COUNT\(DISTINCT [\w.]+\)$/, // staff 客流榜（admin 无此 metric）
+]
+// 注：两种 COUNT 形态恒非负，本就不存在「聚合前剔掉退款负行」的风险；
+// 收紧它们只是为了让白名单闭合 —— 换成 SUM 类聚合时必须回来改这条断言。
+
+function assertCteAggregateShape(segment: string, label: string): void {
+  // ⚠️ 起点必须锚到 `SELECT ` 或 `, `：否则 `[A-Za-z_][\w.]*\(` 会从片段最前面的
+  // `db.execute(` / `pg.query(` 开始匹配，一路吞到 `AS v`，把整段当成"聚合表达式"。
+  // 括号用「最多两层嵌套」的显式写法而非 `[\s\S]*?`，保证只吃掉这一个表达式。
+  const outputs = [
+    ...segment.matchAll(/(?:SELECT|,)\s+([A-Za-z_][\w.]*\((?:[^()]|\([^()]*\))*\))\s+AS v\b/g),
+  ].map((m) => m[1].replace(/\s+/g, ' ').trim())
+  expect(
+    outputs.length,
+    `${label} 抽不到任何 \`... AS v\` 聚合输出列 —— 切片结构变了，本断言可能已失效（fail-closed）`,
+  ).toBeGreaterThan(0)
+  for (const out of outputs) {
+    expect(
+      CTE_AGG_SHAPES.some((re) => re.test(out)),
+      `${label} 的 CTE 聚合输出列形态变了：\`${out}\`。\n` +
+        '只允许 `COALESCE(SUM(<表达式>), 0)` 或 `COUNT(*)`。任何外层包装（GREATEST/NULLIF）、' +
+        'FILTER 子句或条件聚合都可能在聚合前剔掉退款负行 —— 与 #290 同型，只是下沉到 CTE 层。',
+    ).toBe(true)
+  }
 }
 
 /**
@@ -422,7 +466,16 @@ function assertNoAmountFloorInCte(segment: string, label: string): void {
  * 由下方单独一条 it 校验常量定义本身。
  */
 function assertZeroLastOrdering(segment: string, label: string): void {
-  if (!segment.includes('ORDER BY')) return // staff 切片走 ${staffOrderBy(...)} 插值，另行校验
+  // staff 切片走 ${staffOrderBy(...)} 插值，由单独一条 it 校验函数定义本身。
+  // ⚠️ fail-closed：两种锚都找不到时必须红，不能静默跳过（闸门 2 round-1 GLM P3）——
+  // 否则 admin 将来若也重构成插值 helper，排序首键检查会无声消失。
+  if (!segment.includes('ORDER BY')) {
+    expect(
+      /\$\{staffOrderBy\(/.test(segment),
+      `${label} 既无 ORDER BY 字面量、也不走 staffOrderBy 插值 —— 排序守护无从施加`,
+    ).toBe(true)
+    return
+  }
   const at = segment.indexOf('ORDER BY')
   const clause = segment.slice(at + 'ORDER BY'.length).replace(/`\)[\s\S]*$/, '').trim()
   expect(
@@ -458,7 +511,7 @@ function assertMetricJoinShape(segment: string, label: string): void {
   const joinArea = segment.slice(fromAt, anchorAt === -1 ? undefined : anchorAt)
 
   expect(
-    /(?<!LEFT\s)\bJOIN\b/i.test(joinArea),
+    /(?<!LEFT\s)(?<!LEFT OUTER\s)\bJOIN\b/i.test(joinArea),
     `${label} 的 metric 关联出现了非 LEFT 的 JOIN —— 内连接会把「有技能标签但本期零产能」` +
       '的员工整体剔除，比 #290 原缺陷更狠，且外层 WHERE 形状逐字未变、形状断言发现不了。',
   ).toBe(false)
@@ -515,6 +568,7 @@ function assertStaffRankAdmissionShape(segment: string, label: string): void {
   ).toBe(false)
   // 同族防线：外层 WHERE 形状对 CTE 内部与 JOIN ON 都完全失明，各堵一道
   assertNoAmountFloorInCte(segment, label)
+  assertCteAggregateShape(segment, label)
   assertMetricJoinShape(segment, label)
   assertZeroLastOrdering(segment, label)
   expect(
@@ -980,7 +1034,7 @@ describe('数据中心人效板块两端口径一致性守护', () => {
         [staffBody, 'staff mgmt-dashboard.js'],
       ] as const) {
         expect(body, `${label} 的 producer_base 缺 has_skills 列`).toMatch(
-          /\(COALESCE\(cardinality\(array_remove\(sw\.skills, ''\)\), 0\) > 0\) AS has_skills/i,
+          /\(COALESCE\(cardinality\(array_remove\(array_remove\(sw\.skills, ''\), NULL\)\), 0\) > 0\) AS has_skills/i,
         )
         expect(body, `${label} 的 producer_employees 没透传 has_skills`).toMatch(/pb\.has_skills/i)
       }
@@ -1050,7 +1104,9 @@ describe('数据中心人效板块两端口径一致性守护', () => {
       // staff 六个榜共用一个排序拼接函数，切片里只看得到 ${staffOrderBy(...)} 插值，
       // 故在此校验函数定义本身 + 全部调用点。两端排序必须一致，
       // 否则同一名员工在 admin 榜和 staff 小程序榜上的名次会对不上。
-      const decl = staffBody.match(/const staffOrderBy = \(valueExpr\) => `([^`]*)`/)?.[1]
+      // `=>` 与模板串之间可能被 prettier 折行；staffBody 虽已 normalize（空白压成单空格），
+      // 但仍用 \s* 容错，避免格式化后假红（闸门 2 round-1 GLM）
+      const decl = staffBody.match(/const staffOrderBy = \(valueExpr\) =>\s*`([^`]*)`/)?.[1]
       expect(decl, 'staff 找不到 staffOrderBy 单源定义（重命名了？）').toBeTruthy()
       expect(
         decl,
