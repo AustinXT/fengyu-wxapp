@@ -27,6 +27,9 @@ const check = (name, ok, detail = '') => {
   if (!ok) failed++
 }
 const setSession = (s) => { globalThis.__INV_SESSION = s }
+/** #345 自动批号 =「单号-行号」，行号是明细在单内的写入序号（docItems 按 id 升序即写入序） */
+const expectedLineBatchNo = (docId, items, item) =>
+  `${docId}-${String(items.findIndex((row) => row.id === item?.id) + 1).padStart(2, '0')}`
 const num = (v) => (v === null || v === undefined ? null : Number(v))
 async function expectThrow(name, pattern, fn) {
   try {
@@ -321,7 +324,7 @@ try {
     gfhItems.length === 2 && num(gfhNormal?.quantity) === 6 && num(gfhGift?.quantity) === 2,
     `items=${gfhItems.length}`)
   check('品项公司发货：正常行沿用来源批号，赠送行按「发货单号-行号」生成独立批号(#345)',
-    gfhNormal?.batch_no === 'B100' && gfhGift?.batch_no === `${gfhId}-02`,
+    gfhNormal?.batch_no === 'B100' && gfhGift?.batch_no === expectedLineBatchNo(gfhId, gfhItems, gfhGift),
     JSON.stringify({ normal: gfhNormal?.batch_no, gift: gfhGift?.batch_no }))
   check('品项公司发货明细不携带价格快照(§5.3)',
     gfhItems.every((item) => item.actual_unit_price === null
@@ -372,8 +375,18 @@ try {
     JSON.stringify({ normal: mkaNormalLot?.quantity_on_hand, gift: mkaGiftLot?.quantity_on_hand }))
   // 分院配货的批次下拉按 batch_no 展示：赠送批次与同源正常批次必须能区分
   check('市场收货沿用发货明细批号：赠送批次与正常批次批号不同(#345)',
-    mkaNormalLot?.batch_no === 'B100' && mkaGiftLot?.batch_no === `${gfhId}-02`,
+    mkaNormalLot?.batch_no === 'B100' && mkaGiftLot?.batch_no === expectedLineBatchNo(gfhId, gfhItems, gfhGift),
     JSON.stringify({ normal: mkaNormalLot?.batch_no, gift: mkaGiftLot?.batch_no }))
+  // 走 LotPicker 的同一个数据源（listInventoryLotOptions），按页面文案拼出两条选项，必须互不相同
+  const lotStocks = await import(A('src', 'actions', 'inventory', 'stocks.ts'))
+  const mkaLotOptions = await lotStocks.listInventoryLotOptions(MKA_ORG, SKU_SUPPLY)
+  const mkaOptionLabels = mkaLotOptions.map((lot) => `批次 ${lot.batchNo || '未填写'}`)
+  check('分院配货批次下拉数据源：正常与赠送两条选项批号不同(#345)',
+    mkaLotOptions.length === 2
+      && mkaLotOptions.some((lot) => lot.batchNo === mkaNormalLot?.batch_no)
+      && mkaLotOptions.some((lot) => lot.batchNo === mkaGiftLot?.batch_no)
+      && new Set(mkaOptionLabels).size === 2,
+    JSON.stringify(mkaOptionLabels))
 
   const mbhDetail = await docs.getInventoryCoreDocById(mbhId)
   const mbhProgress = mbhDetail?.fulfillmentProgress
@@ -404,7 +417,7 @@ try {
     JSON.stringify({ std: fphNormal?.standard_unit_price, disc: fphNormal?.unit_discount, act: fphNormal?.actual_unit_price, total: fphHead?.total_amount }))
   check('分院配货赠送行金额 0(§7.2)', num(fphGift?.amount) === 0, `gift amount=${fphGift?.amount}`)
   check('分院配货从正常批次拨赠送：赠送行按「配货单号-行号」生成独立批号(#345)',
-    fphNormal?.batch_no === 'B100' && fphGift?.batch_no === `${fphId}-02`,
+    fphNormal?.batch_no === 'B100' && fphGift?.batch_no === expectedLineBatchNo(fphId, fphItems, fphGift),
     JSON.stringify({ normal: fphNormal?.batch_no, gift: fphGift?.batch_no }))
   await expectThrow('分院配货超出门店报货未配数量被拒(CONFLICT)', /CONFLICT/, () =>
     biz.createStoreAllocation({
@@ -433,7 +446,7 @@ try {
     JSON.stringify({ qty: storeNormalLot?.quantity_on_hand, act: storeNormalLot?.store_actual_unit_price }))
   const storeGiftLot = storeLots.find((lot) => lot.is_gift)
   check('院入库沿用配货明细批号：门店赠送批次与正常批次批号不同(#345)',
-    storeNormalLot?.batch_no === 'B100' && storeGiftLot?.batch_no === `${fphId}-02`,
+    storeNormalLot?.batch_no === 'B100' && storeGiftLot?.batch_no === expectedLineBatchNo(fphId, fphItems, fphGift),
     JSON.stringify({ normal: storeNormalLot?.batch_no, gift: storeGiftLot?.batch_no }))
 
   const dbhDetail = await docs.getInventoryCoreDocById(dbhId)
@@ -930,7 +943,7 @@ try {
   const fphFlipNormal = fphFlipItems.find((item) => !item.is_gift)
   const fphFlipGift = fphFlipItems.find((item) => item.is_gift)
   check('赠送批次按正常数量配出：正常行按「配货单号-行号」换批号，赠送行沿用赠送批号(#345)',
-    fphFlipNormal?.batch_no === `${fphFlipId}-01` && fphFlipGift?.batch_no === giftLotBefore.batch_no,
+    fphFlipNormal?.batch_no === expectedLineBatchNo(fphFlipId, fphFlipItems, fphFlipNormal) && fphFlipGift?.batch_no === giftLotBefore.batch_no,
     JSON.stringify({ normal: fphFlipNormal?.batch_no, gift: fphFlipGift?.batch_no, source: giftLotBefore?.batch_no }))
   setSession(storeA1Session())
   await biz.receiveStoreAllocation({

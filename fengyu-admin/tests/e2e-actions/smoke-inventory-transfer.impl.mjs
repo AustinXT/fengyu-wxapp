@@ -381,6 +381,44 @@ try {
       && autoSelfLots.length === 3
       && autoSelfLots.filter((lot) => lot.is_gift).length === 1,
     JSON.stringify({ items: autoSelfItems.map((item) => item.batch_no), lots: autoSelfLots.map((lot) => [lot.batch_no, lot.is_gift]) }))
+
+  // 并发：两个市场各自自采入库，不共享主体 / 单据行锁。进销存写入统一先取 cutover 状态行
+  // FOR UPDATE（cutover.ts assertInventoryBusinessWritable），再在 generateDocId 取 advisory lock，
+  // 最后由 inventory_docs 主键兜底 —— 单号唯一有三道保证，批号 = 单号-行号随之唯一（#345）。
+  // 本用例钉的是「并发提交两单都成功且批号互异」这一结果，不单独证明 advisory lock（它被 cutover 行锁遮住）。
+  const SKU_SELF_B = `${INS}_SKU_SELF_B`
+  await pgQuery(
+    `INSERT INTO inventory_skus (
+       sku_id, product_code, product_name, spec_name, source_type, owner_market_id,
+       supplier, supplier_id, market_purchase_price, store_purchase_price, is_reportable, is_active
+     ) VALUES ($1, $2, $3, '件', '市场自采', $4, $6, $5, 30, 40, true, true)
+     ON CONFLICT (sku_id) DO UPDATE SET is_active = true, owner_market_id = $4`,
+    [SKU_SELF_B, `${INS}-SELF-B-001`, `${INS}_市场B自采品`, MKB_ORG, SUPPLIER_ID, `${INS}_供应商1`],
+  )
+  const bothMarkets = marketASession()
+  const marketB = marketBSession()
+  bothMarkets.roles.push(...marketB.roles)
+  bothMarkets.permissions.scopeStoreIds.push(...marketB.permissions.scopeStoreIds)
+  bothMarkets.permissions.scopeOrgNodeIds.push(...marketB.permissions.scopeOrgNodeIds)
+  setSession(bothMarkets)
+  const concurrentSelf = await Promise.allSettled([
+    biz.createSelfPurchasedReceipt({
+      marketId: MKA_ORG, supplierId: SUPPLIER_ID,
+      items: [{ skuId: SKU_SELF, quantity: 1, marketActualUnitPrice: 28, storeUnitDiscount: 0 }],
+    }),
+    biz.createSelfPurchasedReceipt({
+      marketId: MKB_ORG, supplierId: SUPPLIER_ID,
+      items: [{ skuId: SKU_SELF_B, quantity: 1, marketActualUnitPrice: 28, storeUnitDiscount: 0 }],
+    }),
+  ])
+  const concurrentIds = concurrentSelf.map((result) => (result.status === 'fulfilled' ? result.value.id : null))
+  const concurrentBatchNos = (await Promise.all(concurrentIds.map((id) => (id ? docItems(id) : [])))).flat().map((item) => item.batch_no)
+  check('两市场并发自采入库：两单都成功，单号、批号互不相同(#345)',
+    concurrentIds.every(Boolean) && concurrentIds[0] !== concurrentIds[1]
+      && concurrentBatchNos.length === 2
+      && concurrentBatchNos.every((batchNo, index) => batchNo === `${concurrentIds[index]}-01`)
+      && concurrentBatchNos[0] !== concurrentBatchNos[1],
+    JSON.stringify({ results: concurrentSelf.map((result) => result.status === 'fulfilled' ? result.value.id : String(result.reason?.message ?? result.reason)), batchNos: concurrentBatchNos }))
 } catch (e) {
   check('冒烟整体', false, '致命错误：' + (e?.stack || e?.message || String(e)))
 } finally {
