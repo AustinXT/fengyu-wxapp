@@ -305,6 +305,39 @@ describe('产能技师分母跨端字面量守护（#320）', () => {
   })
 
   /**
+   * 要件 8b —— **admin 侧的接线同样要钉**。
+   *
+   * 这是第 1 轮那个缺陷的镜像：`adminSection` 经 `normalizeSql` 后，
+   * `${scopeFilterSql(session, scope, 'tb.store_id')}` 与 `${orgAnchorScopeSql(...)}`
+   * 都成了 `?`。codex 第 4 轮实测：把 admin 门店分支的 `scopeFilterSql(...)` 换成
+   * `sql`TRUE``，归一化结果**完全相同**、要件 1~8 全绿，而 admin 会整体越过门店 scope
+   * （任何角色看任何 scope 都拿到全集团分母）。所以这里必须读**未归一化**的原文。
+   */
+  it('要件 8b：admin technicianCteSql 必须真的调用两个 scope helper（未归一化原文）', () => {
+    const adminRaw = squeeze(
+      extractSection(
+        readFile(FILES.adminTechnicianSql),
+        'export function technicianCteSql(',
+        '/** 产能技师总数',
+      ),
+    )
+    expect(adminRaw, 'admin 门店分支未走 scopeFilterSql').toContain(
+      "${scopeFilterSql(session, scope, 'tb.store_id')}",
+    )
+    expect(adminRaw, 'admin 锚分支未走 orgAnchorScopeSql').toContain(
+      "${orgAnchorScopeSql(session, scope, 'tb.anchor_market_id')}",
+    )
+    // 历史化的两个时间锚也必须真的绑 endDate，而不是写死日期或漏掉
+    expect(adminRaw).toContain('sw.hired_at::date <= ${endDate}')
+    expect(adminRaw).toContain('(sw.resigned_at IS NULL OR sw.resigned_at::date > ${endDate})')
+    // 两个 helper 必须是从 scope-sql 模块 import 进来的，不能在本文件另起一份
+    const adminSrc = readFile(FILES.adminTechnicianSql)
+    expect(adminSrc).toMatch(
+      /import \{ scopeFilterSql, orgAnchorScopeSql \} from '@\/lib\/data-center\/scope-sql'/,
+    )
+  })
+
+  /**
    * 要件 9 —— market scope 下「市场 → 门店集合」的展开必须两端同构。
    *
    * 门店分支覆盖九成以上人头，而它在 market 口径下的取值完全由这段展开决定：
