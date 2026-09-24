@@ -26,14 +26,19 @@ vi.mock('@/lib/export-job-types', async (importOriginal) => {
   }
 })
 
-const { mockGetSession, db, insertReturning, selectLimit, updateWhere, logOperation } = vi.hoisted(() => {
+const { mockGetSession, db, insertReturning, insertValues, updateSet, selectLimit, updateWhere, logOperation } = vi.hoisted(() => {
   const insertReturning = vi.fn()
+  const insertValues = vi.fn()
+  const updateSet = vi.fn()
   const selectLimit = vi.fn()
   const updateWhere = vi.fn()
   const chain = <T extends object>(obj: T) => obj
   const db = {
     insert: vi.fn(() => chain({
-      values: () => chain({ onConflictDoNothing: () => chain({ returning: insertReturning }) }),
+      values: (values: unknown) => {
+        insertValues(values)
+        return chain({ onConflictDoNothing: () => chain({ returning: insertReturning }) })
+      },
     })),
     select: vi.fn(() => chain({
       from: () => chain({
@@ -43,12 +48,19 @@ const { mockGetSession, db, insertReturning, selectLimit, updateWhere, logOperat
         }),
       }),
     })),
-    update: vi.fn(() => chain({ set: () => chain({ where: updateWhere }) })),
+    update: vi.fn(() => chain({
+      set: (values: unknown) => {
+        updateSet(values)
+        return chain({ where: updateWhere })
+      },
+    })),
   }
   return {
     mockGetSession: vi.fn(),
     db,
     insertReturning,
+    insertValues,
+    updateSet,
     selectLimit,
     updateWhere,
     logOperation: vi.fn(),
@@ -136,10 +148,45 @@ describe('createExportJob · data-center 视图权限（全部满足）', () => 
     expect(db.insert).not.toHaveBeenCalled()
   })
 
+  it('权限快照收窄到同时持有全部权限的角色授权：只有 dashboard 的另一条授权范围不进 worker', async () => {
+    mockGetSession.mockResolvedValue(session([
+      role(['data_center:dashboard', 'data_center:customer_detail'], 'M1'),
+      role(['data_center:dashboard'], 'M2'),
+    ]))
+
+    await createExportJob(dataCenterInput(FIXTURE_VIEW))
+    const snapshot = insertValues.mock.calls[0][0].scopeSnapshot as AuthSession
+    expect(snapshot.roles.map((r) => r.scopeId)).toEqual(['M1'])
+    expect(snapshot.permissions.scopeStoreIds).toEqual(['M1-S1'])
+  })
+
+  it('旧 4 板块视图仍只要求 dashboard（不回归），快照保留全部导出相关授权', async () => {
+    mockGetSession.mockResolvedValue(session([role(['data_center:dashboard'], 'M1'), role(['data_center:dashboard'], 'M2')]))
+    await createExportJob(dataCenterInput('sales-market'))
+    const snapshot = insertValues.mock.calls[0][0].scopeSnapshot as AuthSession
+    expect(snapshot.roles.map((r) => r.scopeId)).toEqual(['M1', 'M2'])
+  })
+
   it('旧 4 板块视图仍只要求 dashboard（不回归）', async () => {
     mockGetSession.mockResolvedValue(dashboardOnly)
 
     await expect(createExportJob(dataCenterInput('sales-market'))).resolves.toEqual({ id: 7, reused: false })
+  })
+})
+
+describe('createExportJob · tab 参数', () => {
+  it('旧板块视图剔除遗留的 tab；报表视图保留（页内视角参与取数与去重）', async () => {
+    mockGetSession.mockResolvedValue(withCustomerDetail)
+    const input = (view: string) => ({
+      exportType: 'data-center' as const,
+      payload: { view, params: { scope: 'authorized', tab: 'category', page: '2' } },
+    }) as Parameters<typeof createExportJob>[0]
+
+    await createExportJob(input('sales-market'))
+    await createExportJob(input(FIXTURE_VIEW))
+    expect(insertValues.mock.calls[0][0].requestPayload.params).toEqual({ scope: 'authorized' })
+    expect(insertValues.mock.calls[1][0].requestPayload.params).toEqual({ scope: 'authorized', tab: 'category' })
+    expect(insertValues.mock.calls[0][0].requestHash).not.toBe(insertValues.mock.calls[1][0].requestHash)
   })
 })
 
@@ -163,12 +210,17 @@ describe('retryMyExportJob · data-center 视图权限（全部满足）', () =>
     expect(db.update).not.toHaveBeenCalled()
   })
 
-  it('同一角色同时持有两项时可重试', async () => {
-    mockGetSession.mockResolvedValue(withCustomerDetail)
+  it('同一角色同时持有两项时可重试，重取的快照同样收窄', async () => {
+    mockGetSession.mockResolvedValue(session([
+      role(['data_center:dashboard', 'data_center:customer_detail'], 'M1'),
+      role(['data_center:dashboard'], 'M2'),
+    ]))
     selectLimit.mockResolvedValueOnce([failedJob(FIXTURE_VIEW)]).mockResolvedValueOnce([])
 
     await expect(retryMyExportJob(7)).resolves.toEqual({ id: 7 })
     expect(db.update).toHaveBeenCalledTimes(1)
+    const snapshot = updateSet.mock.calls[0][0].scopeSnapshot as AuthSession
+    expect(snapshot.roles.map((r) => r.scopeId)).toEqual(['M1'])
   })
 
   it('任务参数无法解析时按 INVALID_STATE 拒绝，不放行', async () => {

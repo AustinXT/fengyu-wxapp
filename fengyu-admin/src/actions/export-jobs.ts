@@ -12,6 +12,7 @@ import { scopeSessionToAllActions } from '@/lib/action-scope'
 import { withAnyPermission } from '@/lib/with-permission'
 import type { AuthSession } from '@/lib/types'
 import {
+  DATA_CENTER_BOARD_EXPORT_VIEWS,
   DATA_CENTER_VIEW_REQUIRED_ACTIONS,
   EXPORT_LABEL_BY_TYPE,
   EXPORT_PERMISSION_ACTIONS,
@@ -36,11 +37,15 @@ import {
 const ACTIVE_STATUSES = ['queued', 'running'] as const
 const RETRYABLE_STATUSES = ['failed', 'empty', 'expired'] as const
 
+/** 只有旧 4 板块的 `tab` 是遗留深链参数；经营明细报表的 `tab` 是页内视角，参与取数与去重（#367）。 */
+const BOARD_EXPORT_VIEWS: ReadonlySet<string> = new Set(DATA_CENTER_BOARD_EXPORT_VIEWS)
+
 function normalizePayload(input: CreateExportJobInput): CreateExportJobInput {
   if (input.exportType === 'data-center') {
+    const dropped = BOARD_EXPORT_VIEWS.has(input.payload.view) ? ['page', 'size', 'tab'] : ['page', 'size']
     const params = Object.fromEntries(
       Object.entries(input.payload.params)
-        .filter(([key, value]) => !['page', 'size', 'tab'].includes(key) && value !== '')
+        .filter(([key, value]) => !dropped.includes(key) && value !== '')
         .sort(([left], [right]) => left.localeCompare(right)),
     )
     return {
@@ -67,12 +72,16 @@ function normalizePayload(input: CreateExportJobInput): CreateExportJobInput {
  * 导出任务的权限闸门：先按 exportType 的「任一即可」取记账用的 permissionAction，
  * data-center 再按视图要求「全部满足」（#367，见 `DATA_CENTER_VIEW_REQUIRED_ACTIONS`）。
  * 发起与重试共用，保证两条入口口径一致。
+ *
+ * 返回的 `snapshotSession` 是写进任务的权限快照：多权限视图收窄到「同时持有全部权限的角色授权」。
+ * worker 按快照执行、不再复核视图权限；若沿用按任一导出权限收窄的会话，只有 dashboard 的另一条
+ * 角色授权的范围会被一起导出——正是页面闸门要堵的跨角色拼接。
  */
 function requireExportPermission(
   session: AuthSession,
   exportType: ExportJobType,
   payload: ExportJobPayload,
-): string {
+): { permissionAction: string; snapshotSession: AuthSession } {
   const permissionAction = findExportPermissionAction(
     exportType,
     session.permissions.actions,
@@ -84,12 +93,16 @@ function requireExportPermission(
     const required = DATA_CENTER_VIEW_REQUIRED_ACTIONS[(payload as DataCenterExportPayload).view]
     if (!required) throw new Error('INVALID_PARAMS: 导出视图无效')
     for (const action of required) requirePermission(session, action)
-    // 与 withAllPermissions 同口径：多项权限必须落在同一条角色授权上，不能拼接两个角色的范围。
-    if (required.length > 1 && scopeSessionToAllActions(session, required).roles.length === 0) {
-      throw new Error('PERMISSION_DENIED: 多项权限必须由同一角色授权范围同时提供')
+    if (required.length > 1) {
+      // 与 withAllPermissions 同口径：多项权限必须落在同一条角色授权上，不能拼接两个角色的范围。
+      const scoped = scopeSessionToAllActions(session, required)
+      if (scoped.roles.length === 0) {
+        throw new Error('PERMISSION_DENIED: 多项权限必须由同一角色授权范围同时提供')
+      }
+      return { permissionAction, snapshotSession: scoped }
     }
   }
-  return permissionAction
+  return { permissionAction, snapshotSession: session }
 }
 
 function requestHash(input: CreateExportJobInput): string {
@@ -123,7 +136,7 @@ export const createExportJob = withAnyPermission(
   EXPORT_PERMISSION_ACTIONS,
   async (session, rawInput: CreateExportJobInput) => {
     const input = normalizePayload(parseCreateExportJobInput(rawInput))
-    const permissionAction = requireExportPermission(session, input.exportType, input.payload)
+    const { permissionAction, snapshotSession } = requireExportPermission(session, input.exportType, input.payload)
 
     const hash = requestHash(input)
     const inserted = await db
@@ -134,7 +147,7 @@ export const createExportJob = withAnyPermission(
         exportType: input.exportType,
         permissionAction,
         requestPayload: input.payload,
-        scopeSnapshot: snapshotExportSession(session),
+        scopeSnapshot: snapshotExportSession(snapshotSession),
         requestHash: hash,
       })
       .onConflictDoNothing({
@@ -209,7 +222,7 @@ export const retryMyExportJob = withAnyPermission(
     } catch {
       throw new Error('INVALID_STATE: 导出任务参数异常')
     }
-    const permissionAction = requireExportPermission(session, exportType, payload)
+    const { permissionAction, snapshotSession } = requireExportPermission(session, exportType, payload)
     if (!RETRYABLE_STATUSES.includes(job.status as (typeof RETRYABLE_STATUSES)[number])) {
       throw new Error('INVALID_STATE: 当前任务不能重新导出')
     }
@@ -244,7 +257,7 @@ export const retryMyExportJob = withAnyPermission(
         status: 'queued',
         requestedByName: session.name,
         permissionAction,
-        scopeSnapshot: snapshotExportSession(session),
+        scopeSnapshot: snapshotExportSession(snapshotSession),
         attemptCount: 0,
         nextAttemptAt: new Date(),
         leaseExpiresAt: null,
