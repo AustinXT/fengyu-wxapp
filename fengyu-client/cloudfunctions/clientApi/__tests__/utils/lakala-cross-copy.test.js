@@ -213,6 +213,9 @@ describe('lakala 跨副本一致性守护', () => {
       // vitest 会自动发现 vitest.workspace.* / vitest.projects.*，它们能整个接管文件收集；
       // 非 .js 后缀（如 .json）不在上面的 `cloudfunctions/**/*.js` 里，必须单列。
       'fengyu-client/cloudfunctions/clientApi/vitest.*',
+      // .npmrc 左右 npm ci 的行为：一条 engine-strict=true 就能让 node18 canary
+      // 因 vite 的 engines 直接装不上依赖。改 npm 策略是自然操作，必须触发 CI。
+      'fengyu-client/cloudfunctions/clientApi/.npmrc',
     ]) {
       expect(paths, `paths 缺 ${p}，改了它却不触发任何 job`).toContain(p)
     }

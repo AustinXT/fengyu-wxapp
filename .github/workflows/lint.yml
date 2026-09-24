@@ -32,6 +32,9 @@ on:
       # vitest 会自动发现 vitest.workspace.* / vitest.projects.*，它们能整个接管
       # 文件收集。非 .js 后缀（如 .json）不在上面的 glob 里，得单列。
       - 'fengyu-client/cloudfunctions/clientApi/vitest.*'
+      # .npmrc 也左右 npm ci 的行为（engine-strict 等），改它必须让 CI 跑一遍 ——
+      # 尤其 node18 canary：engine-strict=true 会让它因 vite 的 engines 直接装不上。
+      - 'fengyu-client/cloudfunctions/clientApi/.npmrc'
       - 'fengyu-staff/cloudfunctions/staffApi/package.json'
       - 'fengyu-staff/cloudfunctions/staffApi/package-lock.json'
       # 测试目录也要触发：只删守护断言（不动 src）的 PR 同样该让 CI 跑一遍。
