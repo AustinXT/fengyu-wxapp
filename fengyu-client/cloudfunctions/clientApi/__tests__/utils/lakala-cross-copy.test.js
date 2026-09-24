@@ -144,87 +144,103 @@ describe('lakala 跨副本一致性守护', () => {
    * CI job 而一次没跑过。#232 想加 job，被 `__tests__/routes/order.test.js` 里
    * 一条 #154 漏改的过时断言挡住；断言在 #276 修好后，job 才补上。
    *
-   * 仿 `fengyu-staff/.../__tests__/utils/image-cross-copy.test.js` 的同型 meta-guard。
-   *
-   * ⚠️ 断言的是**性质**（跑全量、不准写手工清单），不是「本文件名出现在 lint.yml 里」。
-   * 守文件名等于把「手工维护清单」这个错误形状写进守护：以后每加一个守护都要改两处，
-   * 而漏改的那一次正好就是守护失效的那一次。守住「跑全量」，谁都不会被漏掉。
+   * 仿 `fengyu-staff/.../__tests__/utils/image-cross-copy.test.js` 的同型 meta-guard，
+   * 但**解析 YAML 而不是用正则猜它**。初版是正则版，双谱系评审连着两轮从它身上找出
+   * 一整串绕过：行尾注释（`- 'README.md' # - '...'` 让 toContain 匹配到注释里的串）、
+   * 带引号的键（`"if": ${{ false }}` 躲开 /^\s*if:/）、块标量 `run: |` 误报……
+   * 每堵一个就再冒一个，因为用正则模拟 YAML 语义本身就是条走不通的路。
+   * 改成真解析器后这一整类绕过一次性消失 —— 断言的是**解析后的语义**，
+   * 写法怎么变都不影响。
    */
   test('meta：CI 跑的是 clientApi 全量 vitest，不是手工文件清单', () => {
+    const YAML = require('yaml')
     const lintYml = path.resolve(__dirname, '../../../../../.github/workflows/lint.yml')
-    const rawYml = read(lintYml)
+    const wf = YAML.parse(read(lintYml))
 
-    // ⚠️ 先剥掉整行 YAML 注释再做全部文本断言。否则把一条 paths 改成
-    // `# - 'fengyu-client/.../package.json'` 时，下面的 toContain 照样匹配到注释里的
-    // 那一串 —— 触发面实际已经没了，守护却全绿（闸门 2 的 codex 指出）。
-    const yml = rawYml.split('\n').filter((line) => !/^\s*#/.test(line)).join('\n')
+    // `on` 在 YAML 1.1 里是布尔真值，js 侧键名可能是 true 也可能是 'on'
+    const triggers = wf.on || wf[true]
+    const paths = triggers.pull_request.paths || []
 
-    // ⚠️ 断言命令**恰好**是不带任何参数的 `npx vitest run`，而不是用负向正则去猜
-    // "手工清单长什么样"——负向匹配挡不住 `--dir __tests__/utils`、`-t <pattern>`、
-    // `--project` 这些同样会缩小范围的写法。
-    //
-    // ⚠️ 已知且**刻意**的代价：把 job 改成 `run: |` 块标量、`run: >-` 折叠标量，
-    // 或改成 `npm test`（哪怕 package.json 的 test 脚本一字不差就是 `vitest run`），
-    // 本守护都会**误报**变红。这是「宁可误杀等价重构，也不放过任何缩小范围的写法」
-    // 的取舍——误报方向是安全的，漏报方向才会让守护失效。
-    // **遇到这条误报时不要把正则放宽去兼容**（放宽一旦写漏就重新打开漏报口子），
-    // 正确做法是把 job 写回单行字面量 `run: npx vitest run`。
-    //
-    // 注意同一个 working-directory 在 lint.yml 里出现多次（staff job 也要装
-    // clientApi 依赖供跨端 require），所以先按 vitest 过滤再比对。
-    const clientApiVitestRuns = [...yml.matchAll(
-      /working-directory: fengyu-client\/cloudfunctions\/clientApi\n\s*run: (.+)$/gm,
-    )]
-      .map((m) => m[1].trim())
-      .filter((cmd) => cmd.includes('vitest'))
-
-    expect(clientApiVitestRuns).toEqual(['npx vitest run'])
+    // `paths-ignore` 是触发面的否定开关：一条 `paths-ignore: ['.../clientApi/**']`
+    // 就能让只改 clientApi 的 PR 一个 job 都不触发。仓库现在一处都没用，全面禁掉零成本。
+    expect(triggers.pull_request['paths-ignore'], 'paths-ignore 会让触发面归零').toBeUndefined()
 
     // paths 必须覆盖本守护实际读到的**全部**文件，否则「改了但不触发」等于没有守护。
     // 本文件跨四个目录读源码做字面比对：
     // - clientApi / payNotify 的 lakala-*.js 与 routes/order.js、index.js
-    expect(yml).toContain("- 'fengyu-client/cloudfunctions/**/*.js'")
     // - staffApi 的 routes/order.js（可关闭订单状态集合三端一致）
-    expect(yml).toContain("- 'fengyu-staff/cloudfunctions/**/*.js'")
     // - admin 的 lib/lakala-client.ts 与 actions/orders.ts（v3 路径、终态集合、CAS 锚单号）
-    expect(yml).toContain("- 'fengyu-admin/src/**/*.ts'")
-    // - lint.yml 自身：改 workflow 必须让 meta-guard 有机会拦下「把全量改回清单」
-    expect(yml).toContain("- '.github/workflows/lint.yml'")
+    // - lint.yml 自身：改 workflow 必须让本守护有机会拦下「把全量改回清单」
+    for (const p of [
+      'fengyu-client/cloudfunctions/**/*.js',
+      'fengyu-staff/cloudfunctions/**/*.js',
+      'fengyu-admin/src/**/*.ts',
+      '.github/workflows/lint.yml',
+    ]) {
+      expect(paths, `paths 缺 ${p}，改了它却不触发 CI = 守护失效`).toContain(p)
+    }
 
     // 本 job 靠 `npm ci` 装依赖才跑得起来，所以依赖清单也必须在触发面内。
-    // ⚠️ 上面那条 `fengyu-client/cloudfunctions/**/*.js` 的 glob **不匹配 .json** ——
-    // 少了这两条，「只升 vitest/pg 版本号」的 PR 命中不到任何 paths 条目，
-    // 整个 workflow 的 7 个 job 全不触发，而依赖升级（vitest 主版本可能改 mock 行为）
-    // 恰恰是最该让全量守护跑一遍的那一次。admin 侧早已为此加过同款三条（#232）。
-    expect(yml).toContain("- 'fengyu-client/cloudfunctions/clientApi/package.json'")
-    expect(yml).toContain("- 'fengyu-client/cloudfunctions/clientApi/package-lock.json'")
+    // ⚠️ 上面 `fengyu-client/cloudfunctions/**/*.js` 的 glob **不匹配 .json** ——
+    // 少了这两条，「只升 vitest/pg 版本号」的 PR 命中不到任何条目，整个 workflow
+    // 全不触发，而依赖升级恰恰是最该让全量守护跑一遍的那次。admin 侧早为此加过同款（#232）。
+    for (const p of [
+      'fengyu-client/cloudfunctions/clientApi/package.json',
+      'fengyu-client/cloudfunctions/clientApi/package-lock.json',
+    ]) {
+      expect(paths, `paths 缺 ${p}，依赖升级 PR 不会触发任何 job`).toContain(p)
+    }
 
-    // `paths-ignore` 是触发面的否定开关：加一条
-    // `paths-ignore: ['fengyu-client/cloudfunctions/clientApi/**']` 就能让只改 clientApi
-    // 的 PR 一个 job 都不触发，而上面 8 条 paths 断言照样全绿（文本都还在）。
-    // 仓库现在一处都没用，全面禁掉零成本（闸门 2 的 GLM 指出）。
-    expect(yml).not.toMatch(/paths-ignore/)
+    const job = wf.jobs['clientapi-tests']
+    expect(job, 'lint.yml 里没有 clientapi-tests job').toBeDefined()
 
-    // 命令对了、触发面也对了，job 仍可能被「跳过」或「失败不计」：
-    // `if: ${{ false }}` 让整个 job 不跑，`continue-on-error: true` 让它红了也算通过。
-    // 两者都不改 run 命令文本，纯文本断言看不见（闸门 2 的 codex + GLM 各自指出）。
-    // 这里把 clientapi-tests 的 job 块切出来单独检查。
-    const jobBlock = yml.match(/\n {2}clientapi-tests:\n([\s\S]*?)(?=\n {2}\w[\w-]*:\n|$)/)
-    expect(jobBlock, 'lint.yml 里找不到 clientapi-tests job').not.toBeNull()
-    expect(jobBlock[1], 'clientapi-tests 被 if: 条件化，可能整个 job 被跳过').not.toMatch(/^\s*if:/m)
-    expect(jobBlock[1], 'clientapi-tests 带 continue-on-error，失败也会算通过').not.toMatch(/continue-on-error/)
+    // job 级的跳过/放水：`if:` 让整个 job 不跑，`continue-on-error:` 让它红了也算通过。
+    // 两者都不改 run 命令文本，纯文本断言看不见。
+    expect(job.if, 'clientapi-tests 被 if: 条件化，可能整个 job 被跳过').toBeUndefined()
+    expect(job['continue-on-error'], 'clientapi-tests 失败也会算通过').toBeUndefined()
+    expect(job.needs, 'clientapi-tests 挂了 needs，上游 job 跳过会连带跳过它').toBeUndefined()
 
-    // 装依赖只能是干净的 `npm ci`。加回 `|| npm install` 兜底会让「package.json 与
-    // lockfile 不一致」这个本该失败的情形就地重写 lockfile 后变绿，
-    // 正好抵消把依赖清单加进 paths 的目的。
-    expect(jobBlock[1], 'npm ci 不得带 || npm install 兜底').not.toMatch(/npm ci\s*\|\|/)
+    const steps = job.steps || []
+    for (const s of steps) {
+      expect(s.if, `step「${s.name || s.uses}」被 if: 条件化`).toBeUndefined()
+      expect(s['continue-on-error'], `step「${s.name || s.uses}」失败也算通过`).toBeUndefined()
+    }
 
-    // 最后一环：`npx vitest run` 到底跑哪些文件，由 vitest.config.js 的 testMatch 决定。
-    // 把它改成 `['**/__tests__/utils/**/*.test.js']`，CI 命令一字未动、本守护自己
-    // （在 utils 下）照样执行，但另外 35 个测试文件全部出网 —— 这比改 lint.yml 更顺手，
-    // 也更像「配置调整」而非「写手工清单」，是本守护威胁模型里最可能的无意回退形态
-    // （闸门 2 的 GLM 指出）。
+    const inClientApi = steps.filter(
+      (s) => s['working-directory'] === 'fengyu-client/cloudfunctions/clientApi',
+    )
+
+    // 装依赖只能是干净的 `npm ci`。`npm install` / `npm ci || npm install` 都不行：
+    // 前者在 package.json 与 lockfile 不一致时就地重写 lockfile 继续跑，让本该失败的
+    // 情形变绿，正好抵消把依赖清单加进 paths 的目的。
+    const installRuns = inClientApi.map((s) => (s.run || '').trim()).filter((c) => /npm (ci|install)/.test(c))
+    expect(installRuns, '装依赖必须恰好是干净的 npm ci').toEqual(['npm ci'])
+
+    // ⚠️ 断言测试命令**恰好**是不带任何参数的 `npx vitest run`，而不是用负向正则去猜
+    // 「手工清单长什么样」——负向匹配挡不住 `--dir __tests__/utils`、`-t <pattern>`、
+    // `--project` 这些同样会缩小范围的写法。
+    //
+    // 已知且**刻意**的代价：改成 `npm test`（哪怕 package.json 的 test 脚本一字不差
+    // 就是 `vitest run`）本守护会误报变红。这是「宁可误杀等价重构，也不放过任何缩小
+    // 范围的写法」的取舍——误报方向安全，漏报方向才让守护失效。
+    // **遇到误报不要放宽断言**，把 job 写回 `npx vitest run` 即可。
+    const testRuns = inClientApi.map((s) => (s.run || '').trim()).filter((c) => c.includes('vitest'))
+    expect(testRuns, 'CI 必须跑 clientApi 全量 vitest').toEqual(['npx vitest run'])
+
+    // 最后一环：`npx vitest run` 到底收集哪些文件，由 vitest.config.js 的 include/exclude
+    // 决定，不是 lint.yml。缩小 include（或加一条 exclude）后 CI 命令一字未动、本守护
+    // 自己（在 utils 下）照样执行，另外 35 个文件却全部出网 —— 这比改 lint.yml 更顺手，
+    // 也更像「配置调整」而非「写手工清单」。
+    //
+    // ⚠️ 这里断言的是 `include`/`exclude` 而不是 `testMatch`：`testMatch` **不是 vitest
+    // 的选项**（jest 才是），写在 config 里会被静默忽略。本仓库原先就写着它，实测把它
+    // 缩到只剩 utils，36 个文件照跑不误 —— 守它等于守了个空字段（双谱系 round-2 发现，
+    // 已一并把 config 改成真正生效的 include）。
     const vitestConfig = read(path.resolve(__dirname, '../../vitest.config.js'))
-    expect(vitestConfig).toContain("testMatch: ['**/__tests__/**/*.test.js']")
+    expect(vitestConfig, 'include 被改窄会让测试文件静默出网').toContain(
+      "include: ['**/__tests__/**/*.test.js']",
+    )
+    expect(vitestConfig, 'testMatch 不是 vitest 选项，会被静默忽略，别用它').not.toContain('testMatch')
+    expect(vitestConfig, '加 exclude 同样能让文件出网').not.toContain('exclude:')
   })
 })

@@ -3357,7 +3357,11 @@ describe('order.homeProducts', () => {
     // toContain 会误伤将来"解释 pickup_records 与本列的守恒关系"这类纯注释
     // （剥注释后仍用全词断言，比只挡 /(FROM|JOIN)\s+pickup_records/ 更强——
     //  后者放过 `FROM a, pickup_records b` 这类隐式 cross join 写法）。
-    const sqlCode = sql.split('\n').map((line) => line.replace(/--.*$/, '')).join('\n')
+    // ⚠️ 只丢弃**整行**注释，不要用 /--.*$/ 去截断任意位置：SQL 里合法的字符串字面量
+    // 可以含 `--`（例如 `'--' AS marker`），按位置截断会把该行后面的真实代码一起抹掉，
+    // 于是藏在同一行后半段的 `FROM pickup_records` 反而看不见了（闸门 2 的 codex 指出）。
+    // 代价是行尾注释留在文本里——那只会造成误报（多报一次红），方向是安全的。
+    const sqlCode = sql.split('\n').filter((line) => !/^\s*--/.test(line)).join('\n')
     // 小写化再比：PG 对未加引号的标识符折叠成小写，`FROM PICKUP_RECORDS` 与小写等价，
     // 大小写敏感的字面量匹配会被它绕过。
     expect(sqlCode.toLowerCase()).not.toContain('pickup_records')
@@ -3407,11 +3411,21 @@ describe('order.homeProducts', () => {
     // 多出任何一处就意味着有人在下游重定义了它。
     // ⚠️ 必须小写化再数：PG 把未加引号的标识符折叠成小写，插一条 `AS REFUNDED_QUANTITY`
     // 的影子列照样生效，而大小写敏感的计数会漏看它（闸门 2 的 GLM 变异实测穿网）。
+    // 别名也可能写成带双引号的 `AS "picked_quantity"`（PG 合法，且绕开裸词匹配）。
     const sqlLower = sqlCode.toLowerCase()
     for (const alias of ['settled_quantity', 'picked_quantity', 'refunded_quantity', 'converted_quantity']) {
-      const hits = sqlLower.match(new RegExp(`as ${alias}\\b`, 'g')) || []
+      const hits = sqlLower.match(new RegExp(`as\\s+"?${alias}"?(?![\\w$])`, 'g')) || []
       expect(hits, `AS ${alias} 出现 ${hits.length} 次，预期 2 次（定义 + 聚合）`).toHaveLength(2)
     }
+
+    // ⚠️ 方法论局限，写在这里以免后人误以为这套断言是密不透风的：
+    // 本用例断言的是 **SQL 文本的形状**，而真正该守的是「这一列最终取到哪个值」。
+    // 只要 PG 允许结果集出现重复列名（后写覆盖先写），文本断言就存在结构性缺口 ——
+    // 双谱系评审已实证过影子列、减法换序、带引号别名、隐式别名（省略 AS）等多种穿法，
+    // 每堵一种就会再冒一种。上面这些断言挡住的是「自然疏忽」，挡不住刻意构造。
+    // 要真正闭合，得靠真 PG 的行为测试（给定 picked=2/refunded=1 断言下发值），
+    // 那属于 L2 层，见 issue 里列的后续项。别在这里继续叠正则。
+
 
     // 聚合层的四条映射必须各取各列。只守上游定义是不够的：把聚合改成
     // `SUM(si.refunded_quantity)::int AS picked_quantity`，上游三个直读表达式原文仍在、
@@ -3433,10 +3447,17 @@ describe('order.homeProducts', () => {
     // 测不出来，而那会让「全部折抵转走」的行（converted=quantity、picked=0、remaining=0）
     // 从顾客端整行消失（闸门 2 的 GLM 变异实测全绿穿网）。本用例声称守三语义，
     // 放行口径就不能只锁 2/3。
-    expect(sql).toContain(
-      'WHERE picked_quantity > 0 OR remaining_quantity > 0 OR converted_quantity > 0',
+    // ⚠️ 比对最终 WHERE 的**完整内容**（切到 ORDER BY 为止），不是 toContain 子串：
+    // 子串断言挡不住在后面追加谓词，例如
+    // `... OR converted_quantity > 0 AND converted_quantity = 0` ——
+    // 三条件字面量原样还在（断言绿），但 AND 优先级高于 OR，第三分支恒假，
+    // converted-only 的行照样整行消失（闸门 2 的 codex 指出）。
+    const finalSelect = sqlCode.slice(sqlCode.lastIndexOf('FROM home_product_balances'))
+    const whereClause = finalSelect.match(/WHERE([\s\S]*?)ORDER BY/)
+    expect(whereClause, '最终查询缺 WHERE…ORDER BY 结构').not.toBeNull()
+    expect(whereClause[1].replace(/\s+/g, ' ').trim()).toBe(
+      'picked_quantity > 0 OR remaining_quantity > 0 OR converted_quantity > 0',
     )
-    expect(sql).not.toContain('WHERE picked_quantity > 0 OR pending_pickup_quantity > 0')
     expect(sql).toContain("(o.sale_order_type = '寄存单') AS is_deposit")
     expect(sql).toContain('CASE WHEN is_deposit THEN NULL')
   })
