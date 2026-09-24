@@ -17,6 +17,7 @@ import {
   assertSkuAvailableToMarket,
   cancelSupplyChainPurchaseOrder,
   cancelItemCompanyShipment,
+  createInventoryConversion,
   createItemCompanyShipment,
   createItemCompanyReplenishment,
   createMarketStaffPurchase,
@@ -1251,6 +1252,66 @@ describe('createPurchaseOrder 供应链 scope 归属', () => {
       supplyChainLocationId: 'HQ',
       items: [{ sourceItemId: 1, quantity: 1 }],
     })).rejects.toThrow('PERMISSION_DENIED')
+  })
+})
+
+describe('库存转换仅供应链可做（#343）', () => {
+  const hqRow = { location_id: 'HQ', org_node_id: 'HQ', location_type: '总部', name: '供应链', parent_location_id: null }
+  const lotRow = { ...shipmentSourceLotRow(), quantity_on_hand: '10' }
+  function mockTx(...results: unknown[]) {
+    const txExecute = vi.fn()
+    for (const result of results) txExecute.mockResolvedValueOnce(result)
+    txExecute.mockResolvedValue([])
+    vi.mocked(db.execute).mockResolvedValue([] as never)
+    vi.mocked(db.transaction).mockImplementationOnce(async (callback) => callback({
+      execute: initializedCutoverExecutor(txExecute),
+    } as never))
+    return txExecute
+  }
+  const input = (locationId: string) => ({
+    locationId,
+    items: [{ sourceLotId: 101, sourceQuantity: 1, targetSkuId: 'SKU-2', targetQuantity: 1 }],
+  })
+
+  it.each([
+    ['市场', 'M1'],
+    ['门店', 'S1'],
+  ])('%s主体被拒（lib 层按主体类型兜底，不依赖 action 权限闸）', async (locationType, locationId) => {
+    mockTx([{ location_id: locationId, org_node_id: locationId, location_type: locationType, name: locationType, parent_location_id: 'HQ' }])
+    await expect(createInventoryConversion(SESSION, input(locationId)))
+      .rejects.toThrow('库存转换主体必须是总部库存主体')
+  })
+
+  it('非 admin 的供应链会话（scope 仅总部）传入市场主体：先报主体类型错，不是 PERMISSION_DENIED', async () => {
+    const supplyChainOnly = {
+      employeeId: 'E-SC1',
+      name: '供应链库存员',
+      phone: '13800000012',
+      roles: [{
+        role: 'inventory_supply_chain_operator', scopeId: 'HQ', scopeType: '总部',
+        actions: ['inventory:supply_chain_operate'], scopeStoreIds: [], scopeOrgNodeIds: ['HQ'],
+      }],
+      permissions: { actions: ['inventory:supply_chain_operate'], scopeStoreIds: [] },
+    } as never
+    mockTx([{ location_id: 'M1', org_node_id: 'M1', location_type: '市场', name: '市场', parent_location_id: 'HQ' }])
+    await expect(createInventoryConversion(supplyChainOnly, input('M1')))
+      .rejects.toThrow('库存转换主体必须是总部库存主体')
+  })
+
+  it('来源批次的 SKU 是自建商品（市场自采）时拒绝，文案指明自建商品', async () => {
+    mockTx([hqRow], [lotRow], [{ quantity: '0' }], [{ ...supplierBoundSkuRow('SKU-1'), source_type: '市场自采', owner_market_id: 'M1' }])
+    await expect(createInventoryConversion(SESSION, input('HQ')))
+      .rejects.toThrow('自建商品不能转换')
+  })
+
+  it('目标 SKU 是自建商品（转让店）时拒绝，文案指明自建商品', async () => {
+    mockTx(
+      [hqRow], [lotRow], [{ quantity: '0' }],
+      [supplierBoundSkuRow('SKU-1')],
+      [{ ...supplierBoundSkuRow('SKU-2'), source_type: '转让店', owner_market_id: 'M1' }],
+    )
+    await expect(createInventoryConversion(SESSION, input('HQ')))
+      .rejects.toThrow('自建商品不能转换')
   })
 })
 

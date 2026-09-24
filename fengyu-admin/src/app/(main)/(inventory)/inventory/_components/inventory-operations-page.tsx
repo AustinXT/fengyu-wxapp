@@ -178,11 +178,9 @@ const OPERATIONS: OperationDefinition[] = [
   { id: 'shipment-cancel', level: 'market', title: '申请撤回品项发货', group: '发货、收货与退货', icon: RefreshCcw, tone: 'text-[#D94040] bg-[#FFF0F0]', shipmentCancellationAccess: '申请' },
   { id: 'staff-purchase', level: 'market', title: '市场员工购', group: '市场特殊业务', icon: UserRoundCheck, tone: 'text-[#8A4B7A] bg-[#FCF1F9]' },
   { id: 'self-purchase', level: 'market', title: '自采产品入库', group: '市场特殊业务', icon: Warehouse, tone: 'text-[#3D8A5A] bg-[#F0F9F2]', selfPurchaseOnly: true },
-  { id: 'market-conversion', level: 'market', title: '市场库存转换', group: '市场特殊业务', icon: ArrowLeftRight, tone: 'text-[#5E8BB3] bg-[#F0F5FA]' },
   { id: 'store-request', level: 'store', title: '门店报货', group: '需求与采购', icon: PackagePlus, tone: 'text-[#C0322A] bg-[#FFF0EE]' },
   { id: 'store-receipt', level: 'store', title: '分院收货入库', group: '发货、收货与退货', icon: ClipboardCheck, tone: 'text-[#3D8A5A] bg-[#F0F9F2]' },
   { id: 'store-return', level: 'store', title: '门店退货申请', group: '发货、收货与退货', icon: Undo2, tone: 'text-[#D4820A] bg-[#FFF8E6]' },
-  { id: 'store-conversion', level: 'store', title: '门店库存转换', group: '市场特殊业务', icon: ArrowLeftRight, tone: 'text-[#5E8BB3] bg-[#F0F5FA]' },
 ]
 
 /**
@@ -1009,8 +1007,6 @@ function OperationWorkspace({
           {operation === 'self-purchase' && <SelfPurchaseForm locations={locations} suppliers={suppliers} canViewPrice={canViewPrice} onSuccess={onSuccess} />}
           {operation === 'external-outbound' && <ExternalOutboundForm locations={locations} onSuccess={onSuccess} />}
           {operation === 'supply-chain-conversion' && <ConversionForm locations={locations} locationType="总部" onSuccess={onSuccess} />}
-          {operation === 'market-conversion' && <ConversionForm locations={locations} locationType="市场" onSuccess={onSuccess} />}
-          {operation === 'store-conversion' && <ConversionForm locations={locations} locationType="门店" onSuccess={onSuccess} />}
         </TabsContent>
         {/*
           * keepMounted：单据面板切走时也不卸载。两个理由，缺一不可 ——

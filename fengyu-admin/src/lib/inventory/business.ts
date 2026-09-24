@@ -5202,7 +5202,17 @@ export async function createExternalMarketOutbound(
   return { id }
 }
 
-/** 库存转换在同一事务内创建关联的出入库单，任何一侧失败都会回滚。 */
+/**
+ * 与 assertSupplyChainSku 判据相同、文案不同：库存转换要告诉操作员「自建商品不能转换」（#343 验收）。
+ * 不合并成带文案参数的一个函数，是为了不动品项公司报货 / 采购入库那一族的调用点。
+ */
+function assertConvertibleSku(sku: Pick<SkuSnapshot, 'sourceType' | 'productName'>): void {
+  if (sku.sourceType !== '供应链') {
+    throw new ApiError('INVALID_STATE', `自建商品不能转换：${sku.productName}`)
+  }
+}
+
+/** 库存转换在同一事务内创建关联的出入库单，任何一侧失败都会回滚。仅供应链（总部主体）可做（#343）。 */
 export async function createInventoryConversion(
   session: AuthSession,
   input: CreateInventoryConversionInput,
@@ -5215,8 +5225,10 @@ export async function createInventoryConversion(
   const ids = await db.transaction(async (tx) => {
     await assertInventoryBusinessWritable(tx)
     const location = await locationForUpdate(tx, locationId)
-    // 转换是主体内部 SKU↔SKU 动作，总部/市场/门店皆可发起（engine SPECIALIZED 注释亦归为
-    // 通用库存动作）；主体归属由 assertLocationWritable 按 session scope 校验，不再限总部。
+    // 9/18 会议 §2.15：库存转换统一在供应链处理，市场/门店不可转换（#343）。
+    // 动作级已只认 inventory:supply_chain_operate，这里再按主体类型兜底：
+    // 持有供应链权限的账号传入市场/门店主体同样拒绝。
+    assertType(location, '总部', '库存转换主体')
     assertLocationWritable(session, location)
     const seenLots = new Set<number>()
     const prepared: Array<{
@@ -5238,8 +5250,14 @@ export async function createInventoryConversion(
       const sourceQuantity = positive(line.sourceQuantity, '转换出库数量')
       const targetQuantity = positive(line.targetQuantity, '转换入库数量')
       await assertLotAvailable(tx, sourceLot, sourceQuantity)
-      await loadLotSkuForMarket(tx, sourceLot, marketIdForLocation(location))
+      // 自建商品（市场自采 / 转让店）不能转换（§2.16）。总部主体下它们本就会被下面的
+      // assertSkuAvailableToMarket(null) 拒掉，这里抢在它前面断言只为给出明确文案；
+      // 后者保留作纵深兜底（将来若放开主体类型，它仍按市场归属把关）。
+      const sourceSku = await loadSku(tx, sourceLot.skuId, false, false)
+      assertConvertibleSku(sourceSku)
+      assertSkuAvailableToMarket(sourceSku, marketIdForLocation(location))
       const targetSku = await loadSku(tx, required(line.targetSkuId, '转换目标 SKU'))
+      assertConvertibleSku(targetSku)
       assertSkuAvailableToMarket(targetSku, marketIdForLocation(location))
       if (targetSku.skuId === sourceLot.skuId) {
         throw new ApiError('INVALID_PARAMS', '库存转换目标 SKU 不能与来源 SKU 相同')

@@ -16,7 +16,7 @@
 import path from 'node:path'
 import { closePool, pgQuery } from './setup.mjs'
 import {
-  INS,
+  INS, HQ_ORG,
   MKA_ORG, MKB_ORG, STA1_ID, STA1_ORG, STA2_ID, STA2_ORG, STB1_ID, STB1_ORG,
   SKU_SELF, SKU_SUPPLY, SUPPLIER_ID,
   cleanupInventoryFixture, ensureInventoryFixture, insertSeedLot,
@@ -291,6 +291,62 @@ try {
       && storeSelfLots.length === 1 && num(storeSelfLots[0]?.quantity_on_hand) === 5
       && num(storeSelfLots[0]?.store_actual_unit_price) === 35,
     JSON.stringify({ qty: storeSelfLots[0]?.quantity_on_hand, act: storeSelfLots[0]?.store_actual_unit_price }))
+
+  // ════ #343 库存转换仅供应链可做 ════
+  // 正向：供应链账号对总部批次转换，产出出库 + 入库两张单、双向流水与转换血缘；
+  // 反向：市场账号被权限闸拒、供应链账号传市场主体被拒、自建商品不能作转换目标。
+  const SKU_SUPPLY2 = `${INS}_SKU_SC2`
+  await pgQuery(
+    `INSERT INTO inventory_skus (
+       sku_id, product_code, product_name, spec_name, source_type, supplier, supplier_id,
+       accounting_price, market_purchase_discount, market_purchase_price, market_purchase_price_mode,
+       supply_chain_purchase_price, store_purchase_price, is_reportable, is_active
+     ) VALUES ($1, $2, $3, '瓶', '供应链', $5, $4, 4000, 0.25, 1000, '公式', 800, 1200, true, true)
+     ON CONFLICT (sku_id) DO UPDATE SET is_active = true`,
+    [SKU_SUPPLY2, `${INS}-SC-002`, `${INS}_供应链产品2`, SUPPLIER_ID, `${INS}_供应商1`],
+  )
+  const hqConvLotId = await insertSeedLot({
+    locationId: HQ_ORG, skuId: SKU_SUPPLY, skuName: 'TE2AI_供应链产品',
+    quantity: 5, batchNo: 'TSEED-HQ-CONV', supplyChainUnitCost: 800,
+  })
+  setSession(marketASession())
+  await expectThrow('#343 市场账号不能做库存转换(PERMISSION_DENIED)', /PERMISSION_DENIED/, () =>
+    biz.createInventoryConversion({
+      locationId: MKA_ORG,
+      items: [{ sourceLotId: marketLotId, sourceQuantity: 1, targetSkuId: SKU_SUPPLY2, targetQuantity: 1 }],
+    }))
+  setSession(supplyChainSession())
+  // 只认主体类型文案：删掉 assertType 的话 scope 闸会报 PERMISSION_DENIED，这里必须转红
+  await expectThrow('#343 供应链账号传市场主体被拒（主体类型闸）', /INVALID_PARAMS.*库存转换主体必须是总部库存主体/, () =>
+    biz.createInventoryConversion({
+      locationId: MKA_ORG,
+      items: [{ sourceLotId: marketLotId, sourceQuantity: 1, targetSkuId: SKU_SUPPLY2, targetQuantity: 1 }],
+    }))
+  await expectThrow('#343 自建商品不能作转换目标', /自建商品不能转换/, () =>
+    biz.createInventoryConversion({
+      locationId: HQ_ORG,
+      items: [{ sourceLotId: hqConvLotId, sourceQuantity: 1, targetSkuId: SKU_SELF, targetQuantity: 1 }],
+    }))
+  const conversion = await biz.createInventoryConversion({
+    locationId: HQ_ORG,
+    items: [{ sourceLotId: hqConvLotId, sourceQuantity: 2, targetSkuId: SKU_SUPPLY2, targetQuantity: 2, targetBatchNo: 'CONV-1' }],
+  })
+  const convLinks = await pgQuery(
+    `SELECT relation_type FROM inventory_doc_links WHERE from_doc_id = $1 AND to_doc_id = $2`,
+    [conversion.outboundId, conversion.inboundId])
+  const convTargetLots = await locationLots(HQ_ORG, SKU_SUPPLY2)
+  const convMovements = await pgQuery(
+    `SELECT doc_id, direction, quantity_delta FROM inventory_movements WHERE doc_id IN ($1, $2) ORDER BY doc_id`,
+    [conversion.outboundId, conversion.inboundId])
+  check('#343 供应链账号总部转换成功：出/入库两单 + 来源扣 2 + 目标入 2 + 转换血缘',
+    (await docHeader(conversion.outboundId))?.doc_type === '库存转换出库'
+      && (await docHeader(conversion.inboundId))?.doc_type === '库存转换入库'
+      && (await lotQuantity(hqConvLotId)) === 3
+      && convTargetLots.length === 1 && num(convTargetLots[0]?.quantity_on_hand) === 2
+      && convLinks.some((link) => link.relation_type === '库存转换')
+      && convMovements.some((m) => m.doc_id === conversion.outboundId && m.direction === '出库' && num(m.quantity_delta) === -2)
+      && convMovements.some((m) => m.doc_id === conversion.inboundId && m.direction === '入库' && num(m.quantity_delta) === 2),
+    JSON.stringify({ conversion, links: convLinks, movements: convMovements, target: convTargetLots.map((lot) => lot.quantity_on_hand) }))
 } catch (e) {
   check('冒烟整体', false, '致命错误：' + (e?.stack || e?.message || String(e)))
 } finally {

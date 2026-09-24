@@ -80,20 +80,17 @@ describe('业务 → 产出单据类型映射（#190）', () => {
     }
   })
 
-  it('三个层级的库存转换各自带 locationType，否则会串看别层的转换单', () => {
-    // `库存转换出库` / `库存转换入库` 是三层共用的 docType（business.ts 的
-    // createInventoryConversion 不按层级分类型），只按 docType 查，
-    // 市场办理台会看到门店的转换单。locationType 是唯一的分层依据。
-    const conversions: Array<[InventoryOperationId, string]> = [
-      ['supply-chain-conversion', '总部'],
-      ['market-conversion', '市场'],
-      ['store-conversion', '门店'],
-    ]
-    for (const [operation, locationType] of conversions) {
-      const query = INVENTORY_OPERATION_DOC_QUERY[operation]
-      expect(query.produced.docTypes).toEqual(['库存转换出库', '库存转换入库'])
-      expect(query.produced.locationType, operation).toBe(locationType)
-    }
+  it('库存转换只剩供应链一张卡，且带 locationType=总部（#343）', () => {
+    // `库存转换出库` / `库存转换入库` 的存量单据仍可能挂在市场 / 门店主体上（#343 只禁新建），
+    // 只按 docType 查，供应链办理台会看到这些存量单。locationType 是唯一的分层依据。
+    const query = INVENTORY_OPERATION_DOC_QUERY['supply-chain-conversion']
+    expect(query.produced.docTypes).toEqual(['库存转换出库', '库存转换入库'])
+    expect(query.produced.locationType).toBe('总部')
+    const ids: readonly string[] = INVENTORY_OPERATION_IDS
+    expect(ids).not.toContain('market-conversion')
+    expect(ids).not.toContain('store-conversion')
+    expect(resolveOperationDocQuery('market-conversion')).toBeNull()
+    expect(resolveOperationDocQuery('store-conversion')).toBeNull()
   })
 
   it('只有共用 docType 的转换业务需要 locationType，其余业务不画蛇添足', () => {
@@ -104,7 +101,7 @@ describe('业务 → 产出单据类型映射（#190）', () => {
       .filter(([, query]) => query.produced.locationType !== undefined || query.inbox?.locationType !== undefined)
       .map(([operation]) => operation)
       .sort()
-    expect(withLocationType).toEqual(['market-conversion', 'store-conversion', 'supply-chain-conversion'])
+    expect(withLocationType).toEqual(['supply-chain-conversion'])
   })
 
   it('不产出新单的三个业务靠 statuses / cancellationRequested 收窄，不会把全部同类单据倒出来', () => {
@@ -202,12 +199,12 @@ describe('业务 → 产出单据类型映射（#190）', () => {
     expect(INVENTORY_OPERATION_DOC_QUERY['market-return-approval'].produced.docTypes).toEqual(['供应链退货入库'])
   })
 
-  it('12 个自建单业务 + 3 个转换业务逐条钉「哪个函数写哪个 docType」，互换任意两条都会转红', () => {
+  it('12 个自建单业务 + 供应链转换业务逐条钉「哪个函数写哪个 docType」，互换任意两条都会转红', () => {
     /*
      * 存在性断言（下面那条用例）挡不住互换：把两个业务的 docType 对调，两个字面量
      * 都还在 business.ts 里，测试照样全绿，而用户在 Tab 里看到的是另一个业务的单。
      * 这里对**每个自己调 insertDocHeader 的业务**钉死「函数 → 类型」：
-     * 12 条各有专属函数 + 3 个转换业务共用 createInventoryConversion（一次写两张单）。
+     * 12 条各有专属函数 + 供应链转换业务的 createInventoryConversion（一次写两张单；#343 后只剩这一层）。
      * 剩下 9 条各有专门断言：收货 ×2（receivePhysicalShipment 实参）、
      * 退货 ×2（按 source.locationType 分叉）、退货审批 ×2（三元）、撤回/关闭 ×3（不建单）。
      */
@@ -230,7 +227,7 @@ describe('业务 → 产出单据类型映射（#190）', () => {
       expect(exportedFnBody(fnName), `${fnName} 应写入 ${docType}`).toContain(`docType: '${docType}'`)
     }
 
-    // 三个转换业务共用同一个函数，一次产出出库 + 入库两张。
+    // 转换业务（#343 起只剩供应链一层）一次产出出库 + 入库两张。
     const conversion = exportedFnBody('createInventoryConversion')
     expect(conversion).toContain(`docType: '库存转换出库'`)
     expect(conversion).toContain(`docType: '库存转换入库'`)
@@ -594,11 +591,11 @@ describe('通用建单业务 id（#191）', () => {
   })
 
   it('内置业务仍走映射表，与通用分支互不串台', () => {
-    expect(resolveOperationDocQuery('market-conversion')).toEqual({
-      produced: { docTypes: ['库存转换出库', '库存转换入库'], locationType: '市场' },
+    expect(resolveOperationDocQuery('supply-chain-conversion')).toEqual({
+      produced: { docTypes: ['库存转换出库', '库存转换入库'], locationType: '总部' },
     })
     // 内置 id 加上 generic: 前缀不应该被当成通用业务
-    expect(resolveOperationDocQuery('generic:market-conversion')).toBeNull()
+    expect(resolveOperationDocQuery('generic:supply-chain-conversion')).toBeNull()
   })
 
   it('门店调拨（分院调货出库）带 inbox —— 门店层最大的一批待办不在 store-receipt 上', () => {
