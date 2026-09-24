@@ -16,6 +16,8 @@
  *   6. spend = SUM(sale_order_performance_events.amount) @ performance_date（#138 起，与业绩 KPI 同源；
  *      不再按父订单 status 过滤、排除储值卡抵扣；非 metrics.md 的 paid_amount）
  *   7. anchor 反推关键字面量（visits_90d_prev / 6 months / 12 months / 90 days）
+ *   8. 一次/二次客活 = 到店天数，(顾客, service_date) 去重（#298）—— 跨定义：admin visitDaysSql /
+ *      staff mgmt-traffic / cron refresh-monthly-activity 三方由同一组口径常量拼出整段快照
  *
  * 任一端口径变更必须双端同步，否则数据中心客量板块与员工端 mgmtTraffic 数字对不上。
  */
@@ -23,6 +25,10 @@ import fs from 'node:fs'
 import path from 'node:path'
 import ts from 'typescript'
 import { describe, it, expect, beforeAll } from 'vitest'
+import { sql } from 'drizzle-orm'
+import { PgDialect } from 'drizzle-orm/pg-core'
+import { visitDaysSql } from '@/lib/data-center/visit-days'
+import { UPDATE_MONTHLY_ACTIVITY_SQL } from '@/cron/steps/refresh-monthly-activity'
 
 const ADMIN_CUSTOMER = path.resolve(__dirname, '../customer.ts')
 const STAFF_MGMT_TRAFFIC = path.resolve(
@@ -1306,6 +1312,137 @@ describe('客量板块两端口径一致性守护', () => {
   describe('维护者提醒 — 漂移时双端对照', () => {
     it('admin 注释提及移植源 mgmt-traffic', () => {
       expect(adminSrc).toMatch(/mgmt-traffic/i)
+    })
+  })
+  /**
+   * 8. 一次/二次客活 = 到店天数（#298）—— **跨定义**一致性守护
+   *
+   * 同名概念「一次客活 / 二次客活」在仓里有四处定义，2026-09 审计发现前两处按服务单行数、
+   * 后一处按到店天数，同一个 admin 里差 62 人：
+   *   ① admin 数据中心 KPI（queryActive）与明细（queryRegActiveBreakdown）→ 共用 visitDaysSql
+   *   ② staffApi mgmt-traffic（queryActiveOnce / queryActiveTwice）→ 独立副本
+   *   ③ cron refresh-monthly-activity（顾客列表「月度客活」筛选的数据源）
+   * 三方的预期文本都由下面同一组口径常量拼出来：改任何一方的去重列 / 过滤条件 / 档位阈值，
+   * 要么它自己的整段快照红，要么（改了常量）其余两方一起红 —— 不存在只改一侧还全绿的路径。
+   *
+   * 整段逐字等值，不做「含某字面量」匹配（见 EXPECTED_SPE_BLOCKS 上方四轮评审记录）。
+   * visitDaysSql 按 **Drizzle 实际渲染出的 SQL** 比对，连同日期轴白名单的取值一起锁住。
+   */
+  describe('一次/二次客活 = 到店天数，(顾客, service_date) 去重（#298，跨定义）', () => {
+    const VISIT_DAY_COL = 'so.service_date'
+    const VISIT_FILTER = "so.status = '已完成' AND so.client_user_id IS NOT NULL"
+    const RETAINED = "c.customer_status IN ('保有会员-稳定', '保有会员-有效')"
+
+    const staffExpected = (daysClause: string): string =>
+      `WITH visit_count AS ( SELECT so.client_user_id, COUNT(DISTINCT ${VISIT_DAY_COL}) AS days ` +
+      `FROM service_orders so WHERE \${ssc.sql} AND ${VISIT_FILTER} ` +
+      `AND ${VISIT_DAY_COL} BETWEEN \${startDateExpr(period)} AND \${endDateExpr(period)} ` +
+      `GROUP BY so.client_user_id ) SELECT COUNT(*) AS v FROM visit_count vc ` +
+      `JOIN client_wechat_users c ON c.user_id = vc.client_user_id ` +
+      `WHERE \${csc.sql} AND ${RETAINED} AND ${daysClause}`
+
+    const cronActivity = (src: string): string => normalize(stripSqlComments(src))
+
+    it('admin visitDaysSql 渲染结果：DISTINCT (client_user_id, service_date) + 已完成 + 挂顾客', () => {
+      const q = new PgDialect().sqlToQuery(
+        visitDaysSql({ axis: 'service_date', scope: sql`TRUE`, range: { start: '2026-09-01', end: '2026-09-24' } }),
+      )
+      expect(normalize(q.sql)).toBe(
+        `SELECT DISTINCT so.client_user_id, ${VISIT_DAY_COL} AS visit_date FROM service_orders so ` +
+          `WHERE TRUE AND ${VISIT_FILTER} AND ${VISIT_DAY_COL} BETWEEN $1 AND $2`,
+      )
+      expect(q.params).toEqual(['2026-09-01', '2026-09-24'])
+    })
+
+    it('visitDaysSql 拒绝白名单外的日期轴（sql.raw 只吃闭集）', () => {
+      expect(() =>
+        visitDaysSql({
+          axis: 'completed_at' as never,
+          scope: sql`TRUE`,
+          range: { start: '2026-09-01', end: '2026-09-24' },
+        }),
+      ).toThrow(/未知日期轴/)
+    })
+
+    it('admin KPI queryActive 整段快照（经 visitDaysSql，按天数分档）', () => {
+      expect(sqlInFunction(adminSrc, ADMIN_CUSTOMER, 'queryActive')).toBe(
+        'vc.days = 1 vc.days >= 2 ' +
+          "WITH visit_days AS (${visitDaysSql({ axis: 'service_date', scope: ssc, range })}), " +
+          'visit_count AS ( SELECT vd.client_user_id, COUNT(DISTINCT vd.visit_date) AS days ' +
+          'FROM visit_days vd GROUP BY vd.client_user_id ) ' +
+          'SELECT COUNT(*) AS v FROM visit_count vc JOIN client_wechat_users c ON c.user_id = vc.client_user_id ' +
+          `WHERE \${csc} AND ${RETAINED} AND \${daysClause}`,
+      )
+    })
+
+    it('admin 明细 queryRegActiveBreakdown 的客活段整段快照（与 KPI 同一 visitDaysSql）', () => {
+      const bd = sqlInFunction(adminSrc, ADMIN_CUSTOMER, 'queryRegActiveBreakdown')
+      const from = bd.indexOf('visit_days AS (')
+      const to = bd.indexOf('status_agg AS (')
+      expect(from).toBeGreaterThan(0)
+      expect(to).toBeGreaterThan(from)
+      expect(bd.slice(from, to)).toBe(
+        "visit_days AS (${visitDaysSql({ axis: 'service_date', scope: serviceScope, range })}), " +
+          'visit_count AS ( SELECT vd.client_user_id, c.bound_store_id AS store_id, ' +
+          'COUNT(DISTINCT vd.visit_date) AS days, c.customer_status AS cstatus ' +
+          'FROM visit_days vd JOIN client_wechat_users c ON c.user_id = vd.client_user_id ' +
+          'WHERE ${customerScope} AND c.bound_store_id IS NOT NULL ' +
+          'GROUP BY vd.client_user_id, c.bound_store_id, c.customer_status ), ' +
+          'active AS ( SELECT store_id, COUNT(*) FILTER (WHERE days = 1) AS visit_once, ' +
+          'COUNT(*) FILTER (WHERE days >= 2) AS visit_twice FROM visit_count ' +
+          "WHERE cstatus IN ('保有会员-稳定', '保有会员-有效') GROUP BY store_id ), ",
+      )
+      // visitDaysSql 在整个 customer.ts 里恰好两处调用（KPI + 明细），防新增一处绕开守护的副本
+      expect(adminCode.match(/visitDaysSql\(/g)).toHaveLength(2)
+    })
+
+    it('staff queryActiveOnce / queryActiveTwice 整段快照', () => {
+      expect(sqlInFunction(staffSrc, STAFF_MGMT_TRAFFIC, 'queryActiveOnce')).toBe(staffExpected('vc.days = 1'))
+      expect(sqlInFunction(staffSrc, STAFF_MGMT_TRAFFIC, 'queryActiveTwice')).toBe(staffExpected('vc.days >= 2'))
+    })
+
+    it('cron monthly_activity 段 2 整段快照（顾客列表「月度客活」筛选的数据源）', () => {
+      expect(cronActivity(UPDATE_MONTHLY_ACTIVITY_SQL)).toBe(
+        `WITH visit_days AS ( SELECT so.client_user_id, COUNT(DISTINCT ${VISIT_DAY_COL}) AS days ` +
+          `FROM service_orders so WHERE ${VISIT_FILTER} ` +
+          `AND ${VISIT_DAY_COL} >= date_trunc('month', CURRENT_DATE)::date ` +
+          `AND ${VISIT_DAY_COL} < (date_trunc('month', CURRENT_DATE) + INTERVAL '1 month')::date ` +
+          'GROUP BY so.client_user_id ) UPDATE client_wechat_users u SET monthly_activity = ' +
+          "(CASE WHEN vd.days >= 2 THEN '二次客活' ELSE '一次客活' END)::monthly_activity, updated_at = NOW() " +
+          'FROM visit_days vd WHERE u.user_id = vd.client_user_id',
+      )
+    })
+
+    it('反向验证：任一侧回退到服务单行数口径都会红', () => {
+      const mutate = (src: string, from: string, to: string): string => {
+        expect(src).toContain(from)
+        return src.replace(from, to)
+      }
+      // staff 只改 once 函数（孪生函数 twice 保持原样，确认按函数名定位而非全文）
+      const staffOnceStart = staffSrc.indexOf('async function queryActiveOnce')
+      const staffMut =
+        staffSrc.slice(0, staffOnceStart) +
+        mutate(staffSrc.slice(staffOnceStart), 'COUNT(DISTINCT so.service_date) AS days', 'COUNT(*) AS days')
+      expect(sqlInFunction(staffMut, STAFF_MGMT_TRAFFIC, 'queryActiveOnce')).not.toBe(staffExpected('vc.days = 1'))
+      expect(sqlInFunction(staffMut, STAFF_MGMT_TRAFFIC, 'queryActiveTwice')).toBe(staffExpected('vc.days >= 2'))
+      // 用 SQL 注释把字面量补回去也不行
+      const staffCommentMut =
+        staffSrc.slice(0, staffOnceStart) +
+        mutate(
+          staffSrc.slice(staffOnceStart),
+          'COUNT(DISTINCT so.service_date) AS days',
+          'COUNT(*) AS days -- COUNT(DISTINCT so.service_date) AS days',
+        )
+      expect(sqlInFunction(staffCommentMut, STAFF_MGMT_TRAFFIC, 'queryActiveOnce')).not.toBe(
+        staffExpected('vc.days = 1'),
+      )
+      // cron 改成按行数
+      const cronMut = mutate(UPDATE_MONTHLY_ACTIVITY_SQL, 'COUNT(DISTINCT so.service_date)', 'COUNT(so.service_date)')
+      expect(cronActivity(cronMut)).not.toBe(cronActivity(UPDATE_MONTHLY_ACTIVITY_SQL))
+      // admin 明细绕开 visitDaysSql 直接数行
+      const adminMut = mutate(adminSrc, 'COUNT(DISTINCT vd.visit_date) AS days,', 'COUNT(*) AS days,')
+      const bd = sqlInFunction(adminMut, ADMIN_CUSTOMER, 'queryRegActiveBreakdown')
+      expect(bd).not.toContain('COUNT(DISTINCT vd.visit_date) AS days, c.customer_status')
     })
   })
 })
