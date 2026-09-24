@@ -3412,11 +3412,30 @@ describe('order.homeProducts', () => {
     // ⚠️ 必须小写化再数：PG 把未加引号的标识符折叠成小写，插一条 `AS REFUNDED_QUANTITY`
     // 的影子列照样生效，而大小写敏感的计数会漏看它（闸门 2 的 GLM 变异实测穿网）。
     // 别名也可能写成带双引号的 `AS "picked_quantity"`（PG 合法，且绕开裸词匹配）。
+    // 四个派生列各出现 2 次（home_product_rows 定义 + home_products 聚合）；
+    // remaining/unpaid 是 home_product_balances 里的末端派生，各 1 次。
     const sqlLower = sqlCode.toLowerCase()
-    for (const alias of ['settled_quantity', 'picked_quantity', 'refunded_quantity', 'converted_quantity']) {
+    for (const [alias, times] of Object.entries({
+      settled_quantity: 2,
+      picked_quantity: 2,
+      refunded_quantity: 2,
+      converted_quantity: 2,
+      remaining_quantity: 1,
+      unpaid_amount: 1,
+    })) {
       const hits = sqlLower.match(new RegExp(`as\\s+"?${alias}"?(?![\\w$])`, 'g')) || []
-      expect(hits, `AS ${alias} 出现 ${hits.length} 次，预期 2 次（定义 + 聚合）`).toHaveLength(2)
+      expect(hits, `AS ${alias} 出现 ${hits.length} 次，预期 ${times} 次`).toHaveLength(times)
     }
+
+    // 末端两个派生列的公式本身也要锚 —— 它们才是顾客直接看到的数字，
+    // 而上面那些断言只覆盖到「已结算」为止。
+    //
+    // remaining 把减数从 settled 换成 picked，就漏掉了已退款与已转换：
+    // 退 3 件、转走 2 件的行剩余虚高 5 件，顾客以为还能提那么多。这与本用例开头
+    // 修过的 settled 漏项完全同型，是自然疏忽级别的改动（闸门 2 的 GLM 实测穿网）。
+    expect(sql).toContain('(purchased_quantity - settled_quantity)::int AS remaining_quantity')
+    // unpaid 去掉 GREATEST 会让多付的行显示负欠款；把被减数写反则是凭空造出一笔欠款。
+    expect(sql).toContain('GREATEST(0, sale_amount_total - received_total)::numeric(12, 2)')
 
     // ⚠️ 方法论局限，写在这里以免后人误以为这套断言是密不透风的：
     // 本用例断言的是 **SQL 文本的形状**，而真正该守的是「这一列最终取到哪个值」。

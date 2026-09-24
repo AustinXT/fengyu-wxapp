@@ -161,9 +161,21 @@ describe('lakala 跨副本一致性守护', () => {
     const triggers = wf.on || wf[true]
     const paths = triggers.pull_request.paths || []
 
-    // `paths-ignore` 是触发面的否定开关：一条 `paths-ignore: ['.../clientApi/**']`
-    // 就能让只改 clientApi 的 PR 一个 job 都不触发。仓库现在一处都没用，全面禁掉零成本。
-    expect(triggers.pull_request['paths-ignore'], 'paths-ignore 会让触发面归零').toBeUndefined()
+    // 触发面有**四个**否定开关，堵一个不够（闸门 2 的 GLM 逐个实测穿网）：
+    // - paths-ignore：一条 `['.../clientApi/**']` 就让只改 clientApi 的 PR 全不触发
+    // - branches：⚠️ 本仓 PR base 是 **dev 不是 main**，从别的仓库拷片段带一条
+    //   `branches: [main]` 进来，**所有** PR 都不再触发任何 job——这是最自然的误改
+    // - branches-ignore：同理，反向写法
+    // 四个当前一处都没用，全面禁掉零成本。
+    for (const key of ['paths-ignore', 'branches', 'branches-ignore']) {
+      expect(triggers.pull_request[key], `pull_request.${key} 会让触发面塌掉`).toBeUndefined()
+    }
+    // types 不能省掉 synchronize：只留 `[opened]` 的话，PR 开出后续 push 的代码全部免检，
+    // 第一个 commit 之后想怎么改都不会再跑守护。不写 types 时 GitHub 默认含 synchronize。
+    const types = triggers.pull_request.types
+    if (types !== undefined) {
+      expect(types, 'types 省掉 synchronize 会让 PR 后续 push 免检').toContain('synchronize')
+    }
 
     // paths 必须覆盖本守护实际读到的**全部**文件，否则「改了但不触发」等于没有守护。
     // 本文件跨四个目录读源码做字面比对：
@@ -236,11 +248,22 @@ describe('lakala 跨副本一致性守护', () => {
     // 的选项**（jest 才是），写在 config 里会被静默忽略。本仓库原先就写着它，实测把它
     // 缩到只剩 utils，36 个文件照跑不误 —— 守它等于守了个空字段（双谱系 round-2 发现，
     // 已一并把 config 改成真正生效的 include）。
+    // node 18 canary：补上「主 job 跑 node 22，测不出生产运行时 Nodejs18.15」的缺口。
+    // 它不跑测试、只 require 生产模块，所以不受 vite 7 不支持 node 18 的限制。
+    const canary = wf.jobs['clientapi-node18-canary']
+    expect(canary, '缺 node18 canary job，生产运行时兼容性零覆盖').toBeDefined()
+    expect(
+      JSON.stringify(canary.steps).includes('18.15'),
+      'canary 必须跑在 18.15（与 cloudbaserc 的 runtime 对齐）',
+    ).toBe(true)
+
     const vitestConfig = read(path.resolve(__dirname, '../../vitest.config.js'))
     expect(vitestConfig, 'include 被改窄会让测试文件静默出网').toContain(
       "include: ['**/__tests__/**/*.test.js']",
     )
     expect(vitestConfig, 'testMatch 不是 vitest 选项，会被静默忽略，别用它').not.toContain('testMatch')
     expect(vitestConfig, '加 exclude 同样能让文件出网').not.toContain('exclude:')
+    // `projects` 会整个接管文件收集，留着上面的 include 也没用（闸门 2 的 GLM 指出）。
+    expect(vitestConfig, 'projects 会接管收集，绕过 include').not.toMatch(/^\s*projects:/m)
   })
 })

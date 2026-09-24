@@ -192,6 +192,38 @@ jobs:
         working-directory: fengyu-client/cloudfunctions/clientApi
         run: npx vitest run
 
+  # 上面那个 job 跑在 node 22（vite 7 不支持 18），测不出只在生产运行时 Nodejs18.15
+  # 炸的写法。这个 canary 把那个缺口补上一半：**生产代码是纯 CJS、不依赖 vite**，
+  # 所以哪怕 vitest 跑不起来，也能用 node 18.15 逐个 require 生产模块 ——
+  # 顶层语法错误、以及 require 链上用到的 20+ API（如 Array.prototype.toSorted）
+  # 会在这里当场炸。
+  #
+  # 诚实的局限：只覆盖**模块加载期**，handler 函数体深处才走到的 20+ API 仍测不出来。
+  # 要完整覆盖得把 vite 降到 6（vitest 3.2.4 允许 ^5 || ^6 || ^7），那是独立的依赖
+  # 变更，应单独 PR 以便回滚。
+  clientapi-node18-canary:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '18.15'
+      - name: Install clientApi deps
+        working-directory: fengyu-client/cloudfunctions/clientApi
+        run: npm ci
+      - name: Require all production modules under Nodejs18.15
+        working-directory: fengyu-client/cloudfunctions/clientApi
+        run: |
+          node -e "
+          const fs = require('fs')
+          const mods = fs.readdirSync('routes').filter((f) => f.endsWith('.js'))
+          for (const m of mods) require('./routes/' + m)
+          require('./index.js')
+          console.log('OK: required ' + mods.length + ' route modules + index.js on ' + process.version)
+          "
+
   cross-end-snapshots-admin:
     runs-on: ubuntu-latest
     steps:
