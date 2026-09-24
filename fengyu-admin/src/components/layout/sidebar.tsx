@@ -3,7 +3,7 @@
 import Image from 'next/image'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { ChevronDown, ChevronsLeft, ChevronsRight } from 'lucide-react'
 import logoFull from '../../../public/logo.png'
 import logoIcon from '../../../public/logo-icon.png'
@@ -56,6 +56,20 @@ export function Sidebar({ collapsed, onToggle, session }: SidebarProps) {
       document.removeEventListener('keydown', onKeyDown)
     }
   }, [popupLabel])
+
+  /**
+   * 子项按 section 分段：可见子项跨两个及以上分段时，才在每段首项前插入小标题
+   * （只剩一个分段时标题没有信息量，保持原样）。
+   */
+  function renderChildren(children: MenuItem[], renderItem: (item: MenuItem) => ReactNode, headingClass: string) {
+    const sectioned = new Set(children.map((item) => item.section).filter(Boolean)).size > 1
+    return children.flatMap((item, index) => {
+      const startsSection = sectioned && item.section && item.section !== children[index - 1]?.section
+      return startsSection
+        ? [<div key={`section-${item.section}`} role="presentation" className={headingClass}>{item.section}</div>, renderItem(item)]
+        : [renderItem(item)]
+    })
+  }
 
   function renderLeaf(item: MenuItem, nested = false) {
     const Icon = item.icon
@@ -147,7 +161,11 @@ export function Sidebar({ collapsed, onToggle, session }: SidebarProps) {
 
               {!collapsed && expanded && (
                 <div id={regionId} className="mt-1 space-y-0.5">
-                  {node.children.map((item) => renderLeaf(item, true))}
+                  {renderChildren(
+                    node.children,
+                    (item) => renderLeaf(item, true),
+                    'px-3 pl-10 pt-2 pb-0.5 text-xs text-[#999999]',
+                  )}
                 </div>
               )}
 
@@ -158,7 +176,7 @@ export function Sidebar({ collapsed, onToggle, session }: SidebarProps) {
                   className="absolute left-full top-0 z-50 ml-2 min-w-52 rounded-[var(--radius)] border border-[var(--border)] bg-white p-1 shadow-lg"
                 >
                   <div className="px-2 py-1.5 text-xs font-medium text-[#888888]">{node.label}</div>
-                  {node.children.map((item) => {
+                  {renderChildren(node.children, (item) => {
                     const ChildIcon = item.icon
                     const activeChild = item.href === activeHref
                     return (
@@ -178,7 +196,7 @@ export function Sidebar({ collapsed, onToggle, session }: SidebarProps) {
                         {item.label}
                       </Link>
                     )
-                  })}
+                  }, 'px-2 pt-2 pb-0.5 text-xs text-[#999999]')}
                 </div>
               )}
             </div>

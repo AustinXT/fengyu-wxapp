@@ -12,7 +12,10 @@
  *   service      服务单，按 service_date
  * 某门店在某条轴上一条数据都没有时不参与该轴判定（没有起点可比，列出来只会永久误报）。
  */
-import type { DataCenterScope, DataCenterScopeOptions, ResolvedRange } from './types'
+import type { ScopeStoreEntry } from './scope-options'
+import type { ResolvedRange } from './types'
+
+export { scopeStores } from './scope-options'
 
 export const DATA_START_AXES = ['performance', 'service'] as const
 export type DataStartAxis = (typeof DATA_START_AXES)[number]
@@ -25,12 +28,7 @@ export const DATA_START_AXIS_LABELS: Record<DataStartAxis, string> = {
 /** 门店 → 各轴数据起点（YYYY-MM-DD）。没有该轴数据的门店不带该键。 */
 export type StoreDataStarts = Record<string, Partial<Record<DataStartAxis, string>>>
 
-export interface ScopeStore {
-  storeId: string
-  storeName: string
-  marketId: string
-  marketName: string
-}
+export type ScopeStore = ScopeStoreEntry
 
 export interface DataStartGroup {
   axis: DataStartAxis
@@ -44,22 +42,6 @@ export interface DataStartRangeResult {
   label: string
   range: ResolvedRange
   groups: DataStartGroup[]
-}
-
-/** 当前 scope 覆盖的门店（按筛选器数据源展开，与页面取数同一范围）。 */
-export function scopeStores(scopeOptions: DataCenterScopeOptions, scope: DataCenterScope): ScopeStore[] {
-  const result: ScopeStore[] = []
-  const seen = new Set<string>()
-  for (const market of scopeOptions.markets) {
-    if (scope.type === 'market' && market.id !== scope.id) continue
-    for (const store of market.stores) {
-      if (scope.type === 'store' && store.storeId !== scope.id) continue
-      if (seen.has(store.storeId)) continue
-      seen.add(store.storeId)
-      result.push({ storeId: store.storeId, storeName: store.storeName, marketId: market.id, marketName: market.name })
-    }
-  }
-  return result
 }
 
 /** 单段期间在某条轴上受影响的门店，按市场分组。 */

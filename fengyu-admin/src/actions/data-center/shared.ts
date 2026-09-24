@@ -22,7 +22,7 @@ import { loadStoreDataStarts } from '@/lib/data-center/data-start-query'
 import {
   DATA_CENTER_CUSTOMER_DETAIL_ACTIONS,
   DATA_CENTER_STAFF_COMMISSION_ACTIONS,
-} from '@/lib/data-center/report-permissions'
+} from '@/lib/data-center/reports'
 import type { StoreDataStarts } from '@/lib/data-center/data-start'
 import type { DataCenterScopeOptions } from '@/lib/data-center/types'
 import type { AuthSession } from '@/lib/types'
