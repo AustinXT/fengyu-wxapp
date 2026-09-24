@@ -1620,6 +1620,7 @@ describe('分院配货按 skuIds 精确取当前门店进货价（#339）', () =
     await pickRequest([item(1, 'S-200', 60)])
     const normal = await screen.findByRole<HTMLOptionElement>('option', { name: /^批次 B100 · 可用 6$/ })
     const gift = screen.getByRole<HTMLOptionElement>('option', { name: /^批次 GFH-20260925-0001-02 · 可用 2$/ })
+    expect(normal.closest('select')).not.toBeNull()
     expect(normal.closest('select')).toBe(gift.closest('select'))
     expect(listInventoryLotOptions).toHaveBeenCalledWith(expect.any(String), 'S-200')
   })
