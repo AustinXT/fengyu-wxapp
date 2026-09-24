@@ -4,7 +4,7 @@
  *
  * 纯常量 + 纯函数，不 import React / DB。
  */
-import { listMonthDays, type MatrixTotals } from './matrix'
+import { listMonthDays, sortMatrixRows, type MatrixSort, type MatrixTotals } from './matrix'
 import type { MatrixExportColumnSpec } from './matrix-export'
 import {
   COMMISSION_SOURCE_LABELS,
@@ -150,6 +150,41 @@ export function commissionDailyTotalsMap(
     map[column.key] = column.value(pseudo) ?? null
   }
   return map
+}
+
+/** 默认排序：本期提成合计降序（各视图一致，不随视图的右侧合计列 key 变化） */
+export const DEFAULT_COMMISSION_SORT: MatrixSort = { key: 'total', direction: 'desc' }
+
+/**
+ * 解析 `?sort=&dir=`：只认当前视图里存在的列（白名单 = 列定义本身），否则按默认。
+ * 不抛错：URL 可被手改，排序参数不合法不值得让整页报错。
+ */
+export function parseCommissionSort(
+  raw: { sort?: string | null; dir?: string | null },
+  columns: readonly CommissionDailyColumn[],
+): MatrixSort {
+  const key = raw.sort?.trim()
+  if (!key || !columns.some((column) => column.key === key)) return DEFAULT_COMMISSION_SORT
+  return { key, direction: raw.dir === 'asc' ? 'asc' : 'desc' }
+}
+
+/**
+ * 行排序（页面与导出同一顺序）。排序值相同按行键兜底（#282，sortMatrixRows 内置）。
+ * 默认键 'total' 在双列 / 仅业绩 / 仅消耗视图下不是列 key，按行的提成合计排。
+ */
+export function sortCommissionDailyRows(
+  rows: readonly CommissionDailyRow[],
+  columns: readonly CommissionDailyColumn[],
+  sort: MatrixSort,
+): CommissionDailyRow[] {
+  const column = columns.find((item) => item.key === sort.key)
+  const sortValue = (row: CommissionDailyRow): number | string | null | undefined => {
+    if (!column) return cellTotal(row.total)
+    if (column.value) return column.value(row)
+    const exported = column.exportValue?.(row)
+    return exported == null || exported instanceof Date || typeof exported === 'boolean' ? null : exported
+  }
+  return sortMatrixRows(rows, sortValue, sort.direction, (row) => row.key)
 }
 
 /** 表尾标签：「合计（N 人）」/ 按岗位「合计（N 个岗位）」 */
