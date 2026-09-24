@@ -917,6 +917,37 @@ try {
       supplyChainLocationId: HQ_ORG,
       items: [{ sourceItemId: mixMhzItem.id, quantity: 2 }],
     })).id.length > 0, '')
+
+  // ════ #345 赠送批次按正常数量配出：属性翻转也要换批号，门店不能出现同批号不同赠送属性的两条批次 ════
+  setSession(marketASession())
+  const giftLotBefore = (await locationLots(MKA_ORG, SKU_SUPPLY)).find((lot) => lot.is_gift)
+  const { id: fphFlipId } = await biz.createStoreAllocation({
+    storeRequestId: dbhId,
+    sourceMarketId: MKA_ORG,
+    items: [{ requestItemId: dbhItem.id, lotId: giftLotBefore.id, quantity: 1, giftQuantity: 1 }],
+  })
+  const fphFlipItems = await docItems(fphFlipId)
+  const fphFlipNormal = fphFlipItems.find((item) => !item.is_gift)
+  const fphFlipGift = fphFlipItems.find((item) => item.is_gift)
+  check('赠送批次按正常数量配出：正常行按「配货单号-行号」换批号，赠送行沿用赠送批号(#345)',
+    fphFlipNormal?.batch_no === `${fphFlipId}-01` && fphFlipGift?.batch_no === giftLotBefore.batch_no,
+    JSON.stringify({ normal: fphFlipNormal?.batch_no, gift: fphFlipGift?.batch_no, source: giftLotBefore?.batch_no }))
+  setSession(storeA1Session())
+  await biz.receiveStoreAllocation({
+    shipmentId: fphFlipId,
+    items: [
+      { shipmentItemId: fphFlipNormal.id, receivedQuantity: 1 },
+      { shipmentItemId: fphFlipGift.id, receivedQuantity: 1 },
+    ],
+  })
+  const storeLotsAfterFlip = await locationLots(STA1_ID, SKU_SUPPLY)
+  const giftFlagsByBatch = new Map()
+  for (const lot of storeLotsAfterFlip) {
+    giftFlagsByBatch.set(lot.batch_no, new Set([...(giftFlagsByBatch.get(lot.batch_no) ?? []), lot.is_gift]))
+  }
+  check('门店批次：同一批号不会同时出现赠送与正常两种属性(#345)',
+    storeLotsAfterFlip.length >= 4 && [...giftFlagsByBatch.values()].every((flags) => flags.size === 1),
+    JSON.stringify(storeLotsAfterFlip.map((lot) => [lot.batch_no, lot.is_gift])))
 } catch (e) {
   check('冒烟整体', false, '致命错误：' + (e?.stack || e?.message || String(e)))
 } finally {

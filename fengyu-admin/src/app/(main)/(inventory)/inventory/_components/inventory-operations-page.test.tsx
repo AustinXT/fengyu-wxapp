@@ -873,7 +873,7 @@ describe('待办区的按钮可见性矩阵（#192）', () => {
     { operation: 'shipment-cancel-approval', docType: '品项公司发货', status: '待审批', actions: ['通过', '驳回'] },
     { operation: 'market-receipt', docType: '品项公司发货', status: '待收货', actions: ['一键收货', '去收货'] },
     { operation: 'store-receipt', docType: '分院配货', status: '待收货', actions: ['一键收货', '去收货'] },
-    // 供应链采购入库要逐行填批号/效期，刻意没有一键版
+    // 供应链采购入库要逐行核对效期（批号可自动生成，#345），刻意没有一键版
     { operation: 'supply-chain-receipt', docType: '采购订单', status: '待收货', actions: ['去收货'] },
     { operation: 'supply-chain-purchase-cancel', docType: '采购订单', status: '待收货', actions: ['关闭采购'] },
     { operation: 'generic:分院调货出库', docType: '分院调货出库', status: '待收货', actions: ['确认收货'] },
@@ -1559,6 +1559,7 @@ describe('SKU 候选按业务口径交给服务端过滤（#339）', () => {
     expect(pickers()[0]).toBeDisabled()
     chooseSubject('请选择市场', 'M1')
     expect(filtersOf(pickers()[0])).toEqual({ ownedByMarketId: 'M1' })
+    expect(screen.getAllByPlaceholderText('留空自动生成')).toHaveLength(1) // #345
   })
 
   it('库存转换目标：总部主体 → 仅供应链；来源商品不加过滤（批次兜底）', () => {
@@ -1567,6 +1568,7 @@ describe('SKU 候选按业务口径交给服务端过滤（#339）', () => {
     const [source, target] = pickers()
     expect(filtersOf(source)).toEqual({})
     expect(filtersOf(target)).toEqual({ sourceType: '供应链' })
+    expect(screen.getAllByPlaceholderText('留空自动生成')).toHaveLength(1) // #345：目标批号留空生成新批号
   })
 })
 
@@ -1663,6 +1665,8 @@ describe('采购订单市场行走供应链采购入库（#335）', () => {
     expect(screen.getAllByText('市场行').length).toBeGreaterThan(0)
     expect(screen.getByDisplayValue('17')).toBeInTheDocument()
     expect(screen.getByDisplayValue('6')).toBeInTheDocument()
+    // 批号留空由服务端生成（#345），每行批号框都要提示
+    expect(screen.getAllByPlaceholderText('留空自动生成')).toHaveLength(2)
   })
 
   it('品项公司发货的剩余可发量看发货进度，不看已入库量', async () => {

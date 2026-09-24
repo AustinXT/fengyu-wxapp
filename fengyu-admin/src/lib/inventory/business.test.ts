@@ -14,6 +14,7 @@ vi.mock('next/cache', () => ({ revalidatePath: vi.fn() }))
 import {
   allocateMarketReportSourceLinks,
   autoBatchNo,
+  lineBatchNo,
   approveItemCompanyShipmentCancellation,
   assertSkuAvailableToMarket,
   cancelSupplyChainPurchaseOrder,
@@ -1217,6 +1218,17 @@ describe('批号自动生成（#345）', () => {
     expect(generated.size).toBe(50 * 120)
     // 不同单据类型前缀不会撞号
     expect(autoBatchNo('ZRK-20260925-0001', 1)).not.toBe(autoBatchNo('GRK-20260925-0001', 1))
+  })
+
+  it('lineBatchNo：赠送属性与来源批次一致时沿用来源批号，翻转（任一方向）时按单号-行号换批号', () => {
+    const normalLot = { batchNo: 'B-1', isGift: false }
+    const giftLot = { batchNo: 'GFH-20260925-0001-02', isGift: true }
+    expect(lineBatchNo(normalLot, false, 'FPH-20260925-0001', 1)).toBe('B-1')
+    expect(lineBatchNo(normalLot, true, 'FPH-20260925-0001', 2)).toBe('FPH-20260925-0001-02')
+    expect(lineBatchNo(giftLot, true, 'FPH-20260925-0001', 2)).toBe('GFH-20260925-0001-02')
+    expect(lineBatchNo(giftLot, false, 'FPH-20260925-0001', 1)).toBe('FPH-20260925-0001-01')
+    // 来源批次无批号（存量）拨赠送同样生成
+    expect(lineBatchNo({ batchNo: '', isGift: false }, true, 'GFH-20260925-0003', 1)).toBe('GFH-20260925-0003-01')
   })
 
   it('autoBatchNo：行号必须是正整数', () => {

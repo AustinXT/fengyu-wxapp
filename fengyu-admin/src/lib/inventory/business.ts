@@ -724,7 +724,8 @@ function roundCents(value: number): number {
 
 /**
  * 自动批号（#345，格式 A：单号-行号，如 `GRK-20260925-0001-01`）。全仓唯一的生成规则，
- * 各入口批号留空时调用；手填批号原样保存。
+ * 供应链采购入库 / 自采产品入库 / 库存转换入库批号留空时调用，发货 / 配货的赠送行经 lineBatchNo 调用；
+ * 手填批号原样保存。通用建单（盘溢、顾客退货，engine.ts）与 staffApi 建单不在 #345 范围内，仍允许空批号。
  * 单号由 generateDocId 在 advisory lock 下生成且是 inventory_docs 主键，行号在单内唯一，
  * 所以拼出来的批号全局不重号，不需要序列或额外加锁（并发事务拿不到同一个单号）。
  * 行号是明细在该单内的写入序号（1 起），与详情页明细顺序一致。
@@ -735,12 +736,12 @@ export function autoBatchNo(docId: string, lineNo: number): string {
 }
 
 /**
- * 出库明细行的批号。正常行沿用来源批号；赠送行从正常批次里拨出时生成独立批号（单号+行号），
- * 收货方沿用明细批号落成赠送批次，于是批次下拉里赠送货与同源正常货批号不同（#345 §2.7）。
- * 来源批次本身已是赠送批次（已有独立批号）时沿用，保留追溯。
+ * 出库明细行的批号。明细的赠送属性与来源批次一致时沿用来源批号；不一致时（正常批次拨赠送、
+ * 或赠送批次按正常数量配出）按单号+行号生成独立批号。收货方沿用明细批号落成新批次，
+ * 于是同一主体里赠送批次与正常批次的批号永远不同，批次下拉能区分（#345 §2.7）。
  */
-function lineBatchNo(sourceLot: Pick<LotSnapshot, 'batchNo' | 'isGift'>, isGift: boolean, docId: string, lineNo: number): string {
-  return isGift && !sourceLot.isGift ? autoBatchNo(docId, lineNo) : sourceLot.batchNo
+export function lineBatchNo(sourceLot: Pick<LotSnapshot, 'batchNo' | 'isGift'>, isGift: boolean, docId: string, lineNo: number): string {
+  return isGift !== sourceLot.isGift ? autoBatchNo(docId, lineNo) : sourceLot.batchNo
 }
 
 function lotKey(input: {
@@ -4177,7 +4178,7 @@ export async function createStoreAllocation(
           specName: line.lot.specName,
           supplier: line.lot.supplier,
           productSeries: line.lot.productSeries,
-          batchNo: line.lot.batchNo,
+          batchNo: lineBatchNo(line.lot, false, docId, lineNo),
           expiryDate: line.lot.expiryDate,
           isGift: false,
           quantity: line.quantity,
