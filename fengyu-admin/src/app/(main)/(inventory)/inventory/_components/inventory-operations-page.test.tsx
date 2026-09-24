@@ -95,6 +95,7 @@ import {
 } from '@/actions/inventory/business'
 import InventoryOperationsPage, { OperationDocsTab } from './inventory-operations-page'
 import type { InventoryAnyOperationId } from '@/lib/inventory/operation-doc-types'
+import { asGenericDocType, parseGenericOperationId } from '@/lib/inventory/operation-doc-types'
 
 /**
  * 办理台（inventory-operations-page.tsx）的表单一致性守护（#135）。
@@ -445,13 +446,13 @@ describe('通用建单业务卡片（#191）', () => {
     // 有 `id:` 就说明又开始手写 id 了 —— 那正是借错 id 的入口。
     expect(genericBlock).not.toMatch(/\bid: '/)
     const docTypes = [...genericBlock.matchAll(/docType: '([^']+)'/g)].map((m) => m[1])
-    expect(docTypes.length).toBe(10)
+    expect(docTypes.length).toBe(9)
     // 每张卡的类型必须真属于「无需上游血缘」的通用建单类型，
     // 混进 '品项公司发货' 这种业务单类型就等于从通用入口绕过专用服务的校验。
     for (const docType of docTypes) {
       expect(INVENTORY_GENERIC_DOC_TYPES, `${docType} 不是通用建单类型`).toContain(docType)
     }
-    // 10 张卡覆盖全部 10 种通用类型，不重不漏
+    // 9 张卡覆盖全部 9 种通用类型，不重不漏（#350 起「顾客产品出库」是跳转卡，不在这里）
     expect([...docTypes].sort()).toEqual([...INVENTORY_GENERIC_DOC_TYPES].sort())
   })
 
@@ -481,10 +482,16 @@ describe('通用建单业务卡片（#191）', () => {
     expect(workspace).toMatch(/initialDocType=\{card\.docType\}/)
   })
 
-  it('卡片渲染不再有 href/Link 分支', () => {
-    const cardsBlock = source.slice(source.indexOf('{levelOperations.filter('), source.indexOf('{active && ('))
+  it('内置 / 通用卡的渲染没有 href/Link 分支（跳转卡是单独一张表）', () => {
+    // 只切到内置 + 通用卡的 map 为止：#350 的跳转卡（LINK_OPERATIONS）刻意单独渲染成 Link，
+    // 它不进 levelOperations，也就不会借用业务 id、不会有工作区与单据 Tab。
+    const cardsBlock = source.slice(source.indexOf('{levelOperations.filter('), source.indexOf('{levelLinkOperations.filter('))
+    expect(cardsBlock.length).toBeGreaterThan(0)
     expect(cardsBlock).not.toMatch(/operation\.href/)
     expect(cardsBlock).not.toMatch(/<Link/)
+    // 跳转卡不得混进 levelOperations（否则 `?op=` 能把它当工作区打开）
+    const levelOpsBlock = source.slice(source.indexOf('const levelOperations = useMemo'), source.indexOf('const operationEnabled'))
+    expect(levelOpsBlock).not.toContain('LINK_OPERATIONS')
   })
 })
 
@@ -778,10 +785,11 @@ function renderTab(
  */
 function renderPage(options: {
   level: InventoryBusinessLevel
-  operation: InventoryAnyOperationId
+  operation?: InventoryAnyOperationId
   workflowDocs?: InventoryDocRow[]
   locations?: InventoryLocationRow[]
   canSelfPurchase?: boolean
+  canCreatePickupRecord?: boolean
 }) {
   return render(
     <InventoryOperationsPage
@@ -795,6 +803,7 @@ function renderPage(options: {
       canRequestShipmentCancellation={false}
       canApproveShipmentCancellation={false}
       canViewPrice
+      canCreatePickupRecord={options.canCreatePickupRecord ?? true}
       // 深链入口：省掉「先点卡片」这一步，工作区直接展开在目标业务上
       initialOperationId={options.operation}
     />,
@@ -1693,5 +1702,33 @@ describe('库存转换卡片只剩供应链一张（#343）', () => {
     const calls = source.match(/<ConversionForm\b[^>]*\/>/g) ?? []
     expect(calls).toHaveLength(1)
     expect(calls[0]).toContain('locationType="总部"')
+  })
+})
+
+describe('门店办理台「顾客产品出库」改为跳转提货录入（#350）', () => {
+  it('有提货录入权限：渲染成指向 /pickup-records/create 的链接，不再是通用建单卡', () => {
+    renderPage({ level: 'store', canCreatePickupRecord: true })
+    const link = screen.getByRole('link', { name: /顾客产品出库/ })
+    expect(link.getAttribute('href')).toBe('/pickup-records/create')
+    // 不再有打开通用建单工作区的按钮
+    expect(screen.queryByRole('button', { name: /顾客产品出库/ })).toBeNull()
+  })
+
+  it('没有提货录入权限（如代建门店业务的市场财务）：卡片置灰且不是链接', () => {
+    renderPage({ level: 'store', canCreatePickupRecord: false })
+    expect(screen.queryByRole('link', { name: /顾客产品出库/ })).toBeNull()
+    const card = screen.getByRole('button', { name: /顾客产品出库/ })
+    expect((card as HTMLButtonElement).disabled).toBe(true)
+    expect(card.textContent).toContain('需提货录入权限')
+  })
+
+  it('市场 / 供应链办理台没有这张跳转卡', () => {
+    renderPage({ level: 'market', canCreatePickupRecord: true })
+    expect(screen.queryByRole('link', { name: /顾客产品出库/ })).toBeNull()
+  })
+
+  it('深链 ?create=院顾客产品出库 不再打开任何工作区', () => {
+    expect(asGenericDocType('院顾客产品出库')).toBeNull()
+    expect(parseGenericOperationId('generic:院顾客产品出库')).toBeNull()
   })
 })

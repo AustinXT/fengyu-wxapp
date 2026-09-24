@@ -384,7 +384,6 @@ describe('库存通用建单边界', () => {
 
   it.each([
     ['内部领用', 'sourceOrgNodeId', '市场', '内部领用出库主体必须是总部'],
-    ['院顾客产品出库', 'sourceOrgNodeId', '市场', '院顾客产品出库出库主体必须是门店'],
     ['院顾客退货', 'targetOrgNodeId', '市场', '院顾客退货入库主体必须是门店'],
     ['市场产品报损', 'sourceOrgNodeId', '门店', '市场产品报损出库主体必须是市场'],
     ['院产品报损', 'sourceOrgNodeId', '市场', '院产品报损出库主体必须是门店'],
@@ -400,6 +399,17 @@ describe('库存通用建单边界', () => {
     }
 
     await expect(createInventoryCoreDoc(input as never)).rejects.toThrow(expectedMessage)
+  })
+
+  it('院顾客产品出库不能走通用建单：只能由提货服务产生（#350）', async () => {
+    mockDb.select.mockImplementation(() => selectWithLimit([{ locationType: '门店' }]))
+    await expect(createInventoryCoreDoc({
+      docType: '院顾客产品出库',
+      sourceOrgNodeId: 'LOCATION-1',
+      items: [{ skuId: 'SKU-1', quantity: 1 }],
+    } as never)).rejects.toThrow('INVALID_STATE: 该库存单据必须从对应的专用业务流程创建')
+    // 拒绝发生在任何库存写入之前
+    expect(mockDb.transaction).not.toHaveBeenCalled()
   })
 
   it('分院库存盘点按组织节点 id 校验主体，不误用门店行的 location_id', async () => {
@@ -549,21 +559,17 @@ describe('#200 建单 scope 按真正被改动的主体校验', () => {
   })
 
   it('出库类：source 无权限时必须拒', async () => {
+    // #350 前用「院顾客产品出库」；它移出通用白名单后改用同为出库、按 source 鉴权的门店报损
     await expect(createInventoryCoreDoc({
-      docType: '院顾客产品出库',
+      docType: '院产品报损',
       sourceOrgNodeId: 'ORG-S2',
       items: [{ skuId: 'SKU-1', quantity: 1 }],
     } as never)).rejects.toThrow('无权操作该组织节点单据')
   })
 
   it('单边单据传另一边的主体时拒绝，而不是静默忽略', async () => {
-    await expect(createInventoryCoreDoc({
-      docType: '院顾客产品出库',
-      sourceOrgNodeId: 'ORG-S1',
-      targetOrgNodeId: 'ORG-S1',
-      items: [{ skuId: 'SKU-1', quantity: 1 }],
-    } as never)).rejects.toThrow('院顾客产品出库不接受入库主体')
-
+    // #350 后通用类型里已没有「只出不进」的单边类型（院顾客产品出库移出白名单），
+    // 「…不接受入库主体」那一支由 locationRole 推导保留、当前不可达，只剩入库单边这一半可测。
     await expect(createInventoryCoreDoc({
       docType: '院顾客退货',
       sourceOrgNodeId: 'ORG-S1',
@@ -3957,7 +3963,6 @@ describe('#191 通用建单按 docType 校验层级 operate 权限', () => {
   const DOWNWARD_CASES: Array<[string, string]> = [
     ['院产品报损', 'inventory:market_operate'],
     ['分院库存盘点', 'inventory:market_operate'],
-    ['院顾客产品出库', 'inventory:market_operate'],
   ]
 
   it.each(DOWNWARD_CASES)('向下代建放行：%s 可由持有 %s 的账号建', async (docType, heldAction) => {

@@ -7308,6 +7308,30 @@ describe('提货查询门店范围', () => {
     expect(pg.query.mock.calls[0][1]).toEqual(['customer-001', 'store-001'])
   })
 
+  test('#350 可提货商品带下单日期（上海日历日）与顾客实际单价，供按销售单分组', async () => {
+    const ctx = createManagerCtx({ clientUserId: 'customer-001' })
+    pg.query.mockResolvedValueOnce([{
+      sale_item_id: 'SI-1', sale_item_group_id: 'SI-1', source_sale_item_ids: ['SI-1'],
+      sale_order_id: 'FY-XSD-WX-2609240001', sku_id: 'sku-1', product_name: '面霜',
+      quantity: 2, picked_up_quantity: 0, paid_quantity: 2, pending_pickup_quantity: 2,
+      unit_real_price: '199.00', store_id: 'store-001', store_name: '红谷滩店',
+      paid_at: new Date('2026-09-24T02:00:00Z'), order_date: '2026-09-24',
+    }])
+
+    await orderRoutes.availablePickupItems(ctx)
+
+    const sql = pg.query.mock.calls[0][0]
+    // 下单日期取 sale_orders.sale_order_datetime，并在服务端按上海时区截成日历日
+    expect(sql).toContain("to_char(o.sale_order_datetime AT TIME ZONE 'Asia/Shanghai', 'YYYY-MM-DD') AS order_date")
+    expect(sql).toContain('MIN(order_date) AS order_date')
+    expect(ctx.result[0]).toMatchObject({
+      saleOrderId: 'FY-XSD-WX-2609240001',
+      orderDate: '2026-09-24',
+      storeName: '红谷滩店',
+      unitRealPrice: '199.00',
+    })
+  })
+
   test('提货记录列表只使用当前有效门店，而非全量 scope', async () => {
     const ctx = createManagerCtx({}, {
       effectiveStoreId: 'store-current',

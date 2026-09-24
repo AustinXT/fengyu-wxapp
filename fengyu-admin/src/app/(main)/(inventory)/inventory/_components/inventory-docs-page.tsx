@@ -1,5 +1,6 @@
 'use client'
 
+import Link from 'next/link'
 import { useCallback, useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
 import { ClipboardList, Plus } from 'lucide-react'
@@ -71,6 +72,7 @@ export default function InventoryDocsPage({
   canApprove,
   canReceive,
   receivableTargetOrgNodeIds,
+  canOpenOrderDetail = false,
   canViewPrice,
   initialDocType,
   allowedCreateDocTypes,
@@ -90,6 +92,11 @@ export default function InventoryDocsPage({
    * 刻意必传、不给缺省：缺省成 null 就是 fail-open，漏传的调用方会把按钮放给所有行。
    */
   receivableTargetOrgNodeIds: readonly string[] | null
+  /**
+   * 「关联销售单」能否点进订单详情（#350），与 /orders/[id] 页面守卫同源。
+   * 缺省 false = 只显示单号纯文本（fail-closed：漏传不会给出点了 404 的链接）。
+   */
+  canOpenOrderDetail?: boolean
   canViewPrice: boolean
   initialDocType?: InventoryDocType
   allowedCreateDocTypes?: readonly InventoryDocType[]
@@ -164,6 +171,24 @@ export default function InventoryDocsPage({
       key: 'targetOrgNodeName',
       header: '入库/接收',
       cell: (r) => r.targetOrgNodeName ?? '—',
+    },
+    {
+      // #350：顾客出库（GCK）由提货服务产生，记着是哪张销售单的货；其余类型多为空
+      key: 'relatedSaleOrderId',
+      header: '关联销售单',
+      cell: (r) => {
+        if (!r.relatedSaleOrderId) return '—'
+        return canOpenOrderDetail && !anyDialogOpen && !actionBusy ? (
+          <Link
+            href={`/orders/${encodeURIComponent(r.relatedSaleOrderId)}`}
+            className="font-mono text-xs text-[var(--primary)] hover:underline"
+          >
+            {r.relatedSaleOrderId}
+          </Link>
+        ) : (
+          <span className="font-mono text-xs">{r.relatedSaleOrderId}</span>
+        )
+      },
     },
     { key: 'docDate', header: '日期', cell: (r) => formatDate(r.docDate) },
     {

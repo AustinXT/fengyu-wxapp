@@ -363,7 +363,7 @@ export function genericOperationId(docType: InventoryDocType): InventoryGenericO
 
 /**
  * 解析通用业务 id → docType。**白名单校验在这里**：
- * 只认 `INVENTORY_GENERIC_DOC_TYPES`（那 10 种无需上游血缘的类型），
+ * 只认 `INVENTORY_GENERIC_DOC_TYPES`（那 9 种无需上游血缘的类型，#350 移出院顾客产品出库），
  * 拼一个 `generic:品项公司发货` 进来会被拒 —— 否则就能从通用入口绕过
  * 专用服务的数量、价格、批次校验去建业务单。
  */

@@ -542,6 +542,24 @@ describe('inventory.createDoc 权限与状态', () => {
     )
   })
 
+  test('#350 院顾客产品出库不能走通用建单：顾客出库只能由提货服务产生', async () => {
+    const ctx = createCtx({
+      payload: {
+        docType: '院顾客产品出库',
+        sourceOrgNodeId: 'store-001',
+        relatedSaleOrderId: 'FY-XSD-WX-2609240001',
+        items: [{ lotId: 10, skuId: 'sku-1', quantity: 1 }],
+      },
+    })
+
+    await expect(inventoryRoutes.createDoc(ctx)).rejects.toThrow(
+      'INVALID_PARAMS: staff 端不支持创建该库存单据',
+    )
+    // 拒绝发生在任何查询 / 事务之前
+    expect(pg.query).not.toHaveBeenCalled()
+    expect(pg.transaction).not.toHaveBeenCalled()
+  })
+
   test('产品报损必须填写原因', async () => {
     const ctx = createCtx({
       payload: {

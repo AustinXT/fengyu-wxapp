@@ -2834,6 +2834,18 @@ describe('转换单换入家居产品可见可提跨端守护', () => {
     ['admin 提货', FILES.adminPickupRecordsTs],
   ]
 
+  // #350：提货候选按销售单分组，组头「下单日期」两端同口径 —— 取 sale_order_datetime（真实下单时间；
+  // 历史导入 / 补录单的 created_at 是导入当天），在 SQL 里按上海日历日截成 YYYY-MM-DD。
+  // 一端改字段或时区、另一端没跟，两个提货页的组头日期就会对不上。
+  test.each(PICKUP_QUERY_FILES)('%s 下单日期两端字面同源（#350）', (_name, file) => {
+    const src = normalizeSql(stripComments(readFile(file)))
+    expect(src).toContain("to_char(o.sale_order_datetime AT TIME ZONE 'Asia/Shanghai', 'YYYY-MM-DD') AS order_date")
+    expect(src).toContain('MIN(order_date) AS order_date')
+    expect(src, '组头日期不得回退到 created_at（历史单会显示导入当天）').not.toContain('to_char(o.created_at')
+    // 组头「开单门店」取订单快照 sale_orders.store_name，缺快照才回退实时门店名（门店改名后历史单不漂）
+    expect(src).toContain("COALESCE(NULLIF(o.store_name, ''), s.store_name) AS store_name")
+  })
+
   // 可提件数与折抵额度必须共用「剩余已付 = 行实收 − 已提货金额 − 已转走金额」口径。
   // 曾经折抵按金额扣、提货按件数扣，两者在折抵金额含余数时对不上：折 4 件带走 ¥450 后
   // 再回款 ¥50，提货侧按件数会多放出 1 件，累计兑现 ¥550 > 累计实收 ¥500（对抗审查实证）。

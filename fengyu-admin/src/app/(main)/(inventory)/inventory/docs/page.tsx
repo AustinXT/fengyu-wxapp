@@ -12,6 +12,7 @@ import { INVENTORY_CORE_RECEIVE_ACTIONS, inventoryCreatableGenericDocTypes } fro
 import { resolveInventoryFilterLocationId } from '@/lib/inventory/location-filter'
 import { type InventoryDocType } from '@/lib/inventory/types'
 import { hasUiCapability } from '@/lib/permission-contract'
+import { canOpenOrderDetail } from '@/lib/order-detail-access'
 import { requireAllUiPageCapabilities } from '@/lib/page-capability'
 import InventoryDocsPage from '../_components/inventory-docs-page'
 
@@ -32,10 +33,10 @@ export default async function Page({
   /*
    * 建单下拉走「本层级 ∪ scope 能向下展开的上级层级」的代建口径（#191，甲方 2026-09-21 拍板）。
    * 层级表的单源在 business-level.ts —— 这里不再手搓一份三元映射，否则服务端放开了
-   * 代建，市场账号的下拉里还是看不到 5 种门店类型，等于什么都没发生。
+   * 代建，市场账号的下拉里还是看不到门店类型（#350 起 4 种），等于什么都没发生。
    * 反过来也一样：总部 scope 不展开后代（access.ts 的 inventoryScopedOrgNodeIds），
-   * 所以只有 supply_chain_operate 的账号这里只拿到「内部领用」一种，而不是 10 种里
-   * 有 9 种点进去必 403 的死路。
+   * 所以只有 supply_chain_operate 的账号这里只拿到「内部领用」一种，而不是 9 种里
+   * 有 8 种点进去必 403 的死路。
    */
   const allowedCreateDocTypes = inventoryCreatableGenericDocTypes(
     (action) => hasUiCapability(actions, action),
@@ -98,6 +99,8 @@ export default async function Page({
           canApprove={hasUiCapability(actions, 'inventory:supply_chain_approve') || hasUiCapability(actions, 'inventory:market_approve')}
           canReceive={canReceive}
           receivableTargetOrgNodeIds={receivableTargetOrgNodeIds}
+          // 「关联销售单」链接：与 /orders/[id] 页面守卫同源（#350）
+          canOpenOrderDetail={canOpenOrderDetail(actions)}
           canViewPrice={docs.canViewPrice}
           initialDocType={initialDocType}
           allowedCreateDocTypes={allowedCreateDocTypes}

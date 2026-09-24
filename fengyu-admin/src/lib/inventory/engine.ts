@@ -252,6 +252,8 @@ const SPECIALIZED_DOC_TYPES = new Set<InventoryDocType>([
   '院退货',
   '库存转换出库',
   '库存转换入库',
+  // #350：顾客出库只能由提货服务（createPickupRecord / staffApi order.createPickup）产生
+  '院顾客产品出库',
 ])
 
 /**
@@ -692,7 +694,7 @@ async function assertGenericDocLocationRules(
   actingOrgNodeId: string,
 ): Promise<void> {
   /**
-   * 这里的 case 集合必须与 `INVENTORY_GENERIC_DOC_TYPES`（types.ts，10 个）一一对应 ——
+   * 这里的 case 集合必须与 `INVENTORY_GENERIC_DOC_TYPES`（types.ts，#350 起 9 个）一一对应 ——
    * 本函数只有一个调用点（`createInventoryCoreDoc`），而那里在更靠前的位置就把
    * `SPECIALIZED_DOC_TYPES` 整体拒了（「该库存单据必须从对应的专用业务流程创建」），
    * 所以任何专用类型的 case 写在这里都是**不可达**的。
@@ -717,7 +719,6 @@ async function assertGenericDocLocationRules(
       if (!sourceOrgNodeId) throw new ApiError('INVALID_PARAMS', '内部领用缺少出库主体')
       await assertLocationType(sourceOrgNodeId, '总部', '内部领用出库主体')
       return
-    case '院顾客产品出库':
     case '院产品报损':
       if (!sourceOrgNodeId) throw new ApiError('INVALID_PARAMS', `${input.docType}缺少出库主体`)
       await assertLocationType(sourceOrgNodeId, '门店', `${input.docType}出库主体`)
