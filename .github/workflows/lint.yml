@@ -269,6 +269,16 @@ jobs:
         working-directory: fengyu-admin
         run: npx vitest run src/lib/__tests__/action-error.test.ts
 
+      # 客量板口径守护（#298）：一次/二次客活「到店天数」的跨定义整段快照
+      # （admin visitDaysSql / staff mgmt-traffic / cron monthly_activity 三方）+ once/twice 映射行为测试。
+      # 不进 CI 的话，任一侧改回服务单行数或对调一次/二次，GitHub 检查照样全绿。
+      - name: Run customer board caliber guards (#298)
+        working-directory: fengyu-admin
+        run: |
+          npx vitest run \
+            src/actions/data-center/__tests__/consistency.customer.test.ts \
+            src/actions/data-center/__tests__/customer.test.ts
+
       # SKU 供货商关联档案（#132）：`supplierId` 三态（undefined=不动 / null=清空 / id=写两列）
       # 与「供货商必须是 select 而不是自由文本」的守护。不进 CI 的话，把下拉改回 <Input>、
       # 或让 engine 重新收自由文本，GitHub 检查照样全绿 —— 而 issue 的根因正是自由文本。

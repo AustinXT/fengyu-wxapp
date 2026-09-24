@@ -307,13 +307,13 @@ WHERE c.customer_status IN ('保有会员-稳定','保有会员-有效')
 
 | 实现 | 位置 |
 |---|---|
-| admin 数据中心 KPI + 市场/门店明细 | `fengyu-admin/src/lib/data-center/visit-days.ts` `visitDaysSql`（日期轴为白名单参数，#370 顾客频率表复用） |
+| admin 数据中心 KPI + 市场/门店明细 | `fengyu-admin/src/lib/data-center/visit-days.ts` `visitDaysSql`（日期轴为白名单参数；#370 的「服务日 ∪ 支付日」并集轴需要把它改成按轴构造整段事件 SQL，输出列契约不变） |
 | staff 管理层客量页 | `fengyu-staff/cloudfunctions/staffApi/routes/mgmt-traffic.js` `queryActiveOnce` / `queryActiveTwice`（独立副本） |
 | 顾客列表「月度客活」筛选 | cron `refresh-monthly-activity.ts`（见下节 `monthly_activity`） |
 
 #### 月度客活 `client_wechat_users.monthly_activity`（顾客列表筛选项）
 
-> 枚举 `'二次客活' / '一次客活' / '0次客活'`，由 cron-worker STEP 3 `fengyu-admin/src/cron/steps/refresh-monthly-activity.ts` 每日 03:00 重算，
+> 枚举 `'二次客活' / '一次客活' / '0次客活'`，由 cron-worker STEP 3 `fengyu-admin/src/cron/steps/refresh-monthly-activity.ts` 每日重算（03:00 触发，先跑完数据库备份才执行 STEP，实际时点略晚于 03:00），
 > admin 顾客列表与 staff 顾客列表都能按它筛选。**与上面一次/二次客活是同一个到店天数口径、同一条日期轴。**
 
 | 取值 | 判定 |
@@ -323,11 +323,13 @@ WHERE c.customer_status IN ('保有会员-稳定','保有会员-有效')
 | 0次客活 | `customer_type='会员客'` 且当月没有到店 |
 | NULL | 非会员客当月没有到店 |
 
-与数据中心一次/二次客活的三点差别（口径相同，只是范围不同，数字对不上时先查这三条）：
+与数据中心一次/二次客活的差别（口径相同，只是范围不同，数字对不上时先逐条查）：
 
 1. **不限保有会员**：`monthly_activity` 对当月到店的所有顾客（含非会员）都打标；数据中心只数 `customer_status IN ('保有会员-稳定','保有会员-有效')` 的人
-2. **不限门店 scope**：cron 按全部门店的服务单数到店天数；数据中心在服务单侧加 `so.store_id` scope、顾客侧加 `bound_store_id` scope
-3. **快照时点**：`monthly_activity` 是最近一次 cron（03:00）的快照，此后新完成的服务单要等下一次 cron 才计入；数据中心实时查
+2. **不限门店**：cron 按全部门店（含已停用门店）的服务单数到店天数。admin 数据中心的 `scopeFilterSql` 即使选「全部」也恒带在营门店过滤（`org_nodes.is_active`），服务单侧按 `so.store_id`、顾客侧按 `bound_store_id` 各过滤一次；staff 管理层客量页选「全部」时不带在营门店过滤。所以在停用门店有服务单、或绑定在停用门店的顾客，三端可能分到不同档
+3. **单店 scope 下跨店到店不计**：顾客绑定 A 店，1 号去 A、2 号去 B —— scope=A 时服务单侧只留 A 店的单，算「一次」；scope=全部时明细 A 行算「二次」（改口径前即如此）
+4. **快照时点**：`monthly_activity` 是最近一次 cron 的快照，此后新完成的服务单要等下一次 cron 才计入；数据中心实时查。每月 1 号的快照里当月几乎全是 0次客活 / NULL
+5. **区间长度**：`monthly_activity` 固定自然月；数据中心跟随顶部时间筛选。选「今日」这类单日区间时，到店天数最多 1 天，「二次」恒为 0（改口径前同日两单会被算成二次）
 
 验证（prod，2026-09-25）：按当天 cron 快照时点（`completed_at` 早于 03:01:58）、全部在营门店、限保有会员复算，数据中心口径得一次 615 / 二次 922，与 `monthly_activity` **逐人比对 0 差异**（1537 人，双向 EXCEPT 均为空）。
 

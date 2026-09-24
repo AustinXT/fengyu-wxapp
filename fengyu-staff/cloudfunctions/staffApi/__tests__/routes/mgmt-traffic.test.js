@@ -302,6 +302,20 @@ describe('mgmtTraffic.summary 会员状态 + 客活 SQL 形态', () => {
     for (const s of [onceSql, twiceSql]) expect(s).not.toMatch(/COUNT\(\*\) AS n\b/)
   })
 
+  test('#298 activeOnce / activeTwice 结果不对调（days=1 → activeOnce）', async () => {
+    setupDefaultMocks()
+    const base = pg.query.getMockImplementation()
+    pg.query.mockImplementation(async (sql, params) => {
+      if (/WITH visit_count AS/.test(sql) && /vc\.days = 1\b/.test(sql)) return [{ v: 11 }]
+      if (/WITH visit_count AS/.test(sql) && /vc\.days >= 2\b/.test(sql)) return [{ v: 22 }]
+      return base(sql, params)
+    })
+    const ctx = makeHqCtx({ period: 'month', scopeType: 'all' })
+    await summary(ctx)
+    expect(ctx.result.status.activeOnce).toBe(11)
+    expect(ctx.result.status.activeTwice).toBe(22)
+  })
+
   test('本月激活 3 项含 anchor=startDate-1 展开 + visits_90d_prev=0', async () => {
     setupDefaultMocks()
     const ctx = makeHqCtx({ period: 'month', scopeType: 'all' })

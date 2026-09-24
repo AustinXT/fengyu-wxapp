@@ -22,6 +22,7 @@ import { describe, it, expect, beforeAll } from 'vitest'
  *   - `7d695743` build(admin): 重建 export-worker 产物同步客量新口径 (#138)
  *   - `c88ed9bf` build(admin): 重建 export-worker 产物同步成交率新口径 (#284)
  *   - 本次 (#290) —— 员工榜入榜口径
+ *   - #298 —— 客量板一次/二次客活按到店天数（sibling 审计发现）
  *
  * ## 设计：动态提取，不硬编码期望值
  *
@@ -76,6 +77,18 @@ const PROBES: Probe[] = [
     label: '人效板 · 产能员工候选池 has_skills 标记（#290）',
     file: 'src/actions/data-center/efficiency.ts',
     pattern: /^\(COALESCE\(cardinality\(array_remove\(array_remove\(sw\.skills, ''\), NULL\)\), 0\) > 0\) AS has_skills$/,
+    minLines: 1,
+  },
+  {
+    label: '客量板 · 一次/二次客活按到店天数（#298，KPI + 明细两处）',
+    file: 'src/actions/data-center/customer.ts',
+    pattern: /COUNT\(DISTINCT vd\.visit_date\) AS days/,
+    minLines: 2,
+  },
+  {
+    label: '客量板 · 到店日事件集 (顾客, service_date) 去重（#298，visitDaysSql）',
+    file: 'src/lib/data-center/visit-days.ts',
+    pattern: /^SELECT DISTINCT so\.client_user_id, \$\{col\} AS visit_date$/,
     minLines: 1,
   },
 ]

@@ -8,9 +8,11 @@
  *   - 与 cron `refresh-monthly-activity.ts`（`COUNT(DISTINCT so.service_date)`）同一条轴，
  *     故顾客列表「月度客活」筛选与数据中心「一次/二次人数」同一时点可逐人对上
  *
- * 日期轴做成白名单参数：#370 顾客频率表将来要接「服务日 ∪ 支付日」等别的轴，
- * 加轴 = 往 VISIT_DAY_AXIS_COLUMN 加一项（及对应 FROM 形态），调用方不用改去重逻辑。
- * 目前只有 service_date 一种取值。
+ * 日期轴做成白名单参数，目前只有 service_date 一种取值。
+ * ⚠️ #370 顾客频率表的「服务日 ∪ 支付日(paid_at)」并集轴**不能**只加一项白名单：它要 UNION
+ * 款项表、排除寄存单款项、scope 改走 bound_store_id —— 届时须把本函数改成「按轴构造整段事件 SQL」，
+ * 并同步 consistency.customer.test.ts 的渲染快照。输出列契约（client_user_id / visit_date，
+ * 每个 (顾客, 日期) 一行）保持不变，调用方的按天计数不用动。
  *
  * ⚠️ staffApi `routes/mgmt-traffic.js` 客活两函数是同口径独立副本（禁止跨端共享代码），
  * 一致性由 `actions/data-center/__tests__/consistency.customer.test.ts` 守护。
@@ -29,7 +31,8 @@ const VISIT_DAY_AXIS_COLUMN: Record<VisitDayAxis, string> = {
 }
 
 export function visitDaysSql(opts: { axis: VisitDayAxis; scope: SQL; range: ResolvedRange }): SQL {
-  const column = VISIT_DAY_AXIS_COLUMN[opts.axis]
+  // Object.hasOwn：挡住 'toString' / '__proto__' 这类原型链键（sql.raw 只能吃闭集字面量）
+  const column = Object.hasOwn(VISIT_DAY_AXIS_COLUMN, opts.axis) ? VISIT_DAY_AXIS_COLUMN[opts.axis] : undefined
   if (!column) throw new Error(`visitDaysSql: 未知日期轴 ${String(opts.axis)}`)
   const col = sql.raw(column)
   return sql`
