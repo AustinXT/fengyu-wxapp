@@ -13,7 +13,11 @@ import type { DataCenterScope, DataCenterScopeOptions, ResolvedRange } from './t
 export type ReportPeriodKind = 'range' | 'month' | 'none'
 
 export interface ReportPageContext {
-  scope: DataCenterScope
+  /**
+   * 生效的 scope。非总部且没有可查看门店（noViewableScope）时为 null——此时 URL 里只可能是 'all'，
+   * 拿它取数必被 validateScope 拒成 PERMISSION_DENIED；置 null 让页面漏判 noViewableScope 在 tsc 就报错。
+   */
+  scope: DataCenterScope | null
   /** 仅范围型页面为 null */
   period: ReportPeriod | null
   /** 非总部却没有可查看的门店：页面渲染空态，不取数 */
@@ -45,12 +49,18 @@ export function resolveReportPage(input: {
 
   // URL 指向的市场 / 门店不在筛选器数据源里（调岗后的旧书签、已撤市场、手改 URL）：回到权限默认范围，
   // 保留其余参数。不这么做，页面会显示「未知门店（0 家门店）」且下拉回显错位，取数时再被 validateScope 拒成 403。
-  // 默认范围一定在数据源内，下一跳必然进入 render，不会循环。
-  if (!entry.noViewableScope && !isScopeInOptions(scope, input.scopeOptions)) {
-    const next = collapseQuery(input.query, ['scope', 'scopeId'])
-    for (const [key, value] of Object.entries(defaultQuery)) next.set(key, value)
-    const qs = next.toString()
-    return { kind: 'redirect', url: `${input.path}${qs ? `?${qs}` : ''}` }
+  // 终止性显式校验：默认范围本身必须在数据源内才跳（按构造恒成立：authorized / 数据源里的门店 / 总部 all），
+  // 否则降级成空态，绝不冒无限重定向的险。
+  let noViewableScope = entry.noViewableScope
+  if (!noViewableScope && !isScopeInOptions(scope, input.scopeOptions)) {
+    const fallback = parseScope({ scope: defaultQuery.scope, scopeId: defaultQuery.scopeId })
+    if (isScopeInOptions(fallback, input.scopeOptions)) {
+      const next = collapseQuery(input.query, ['scope', 'scopeId'])
+      for (const [key, value] of Object.entries(defaultQuery)) next.set(key, value)
+      const qs = next.toString()
+      return { kind: 'redirect', url: `${input.path}${qs ? `?${qs}` : ''}` }
+    }
+    noViewableScope = true
   }
 
   const period: ReportPeriod | null =
@@ -62,7 +72,7 @@ export function resolveReportPage(input: {
 
   return {
     kind: 'render',
-    context: { scope, period, noViewableScope: entry.noViewableScope, defaultQuery, today },
+    context: { scope: noViewableScope ? null : scope, period, noViewableScope, defaultQuery, today },
   }
 }
 

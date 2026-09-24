@@ -53,14 +53,29 @@ import CommissionDetailPage from '../../commission-daily/detail/page'
 type Query = Record<string, string | string[] | undefined>
 type PageComponent = (props: { searchParams: Promise<Query> }) => Promise<ReactElement>
 
-const PAGES: Record<DataCenterReportKey, { page: PageComponent; loader: keyof typeof actions; needsStarts: boolean }> = {
-  dailyOverview: { page: DailyOverviewPage, loader: 'getDataCenterScopeOptions', needsStarts: true },
-  customerFrequency: { page: CustomerFrequencyPage, loader: 'getCustomerDetailScopeOptions', needsStarts: true },
-  remainingCards: { page: RemainingCardsPage, loader: 'getCustomerDetailScopeOptions', needsStarts: false },
-  operatingMaster: { page: OperatingMasterPage, loader: 'getDataCenterScopeOptions', needsStarts: true },
-  commissionDaily: { page: CommissionDailyPage, loader: 'getStaffCommissionScopeOptions', needsStarts: true },
-  commissionDetail: { page: CommissionDetailPage, loader: 'getStaffCommissionScopeOptions', needsStarts: true },
+const PAGE_COMPONENTS: Record<DataCenterReportKey, { page: PageComponent; needsStarts: boolean }> = {
+  dailyOverview: { page: DailyOverviewPage, needsStarts: true },
+  customerFrequency: { page: CustomerFrequencyPage, needsStarts: true },
+  remainingCards: { page: RemainingCardsPage, needsStarts: false },
+  operatingMaster: { page: OperatingMasterPage, needsStarts: true },
+  commissionDaily: { page: CommissionDailyPage, needsStarts: true },
+  commissionDetail: { page: CommissionDetailPage, needsStarts: true },
 }
+
+/**
+ * 该页必须使用的 scope 数据源（= SSR 闸门），由登记表的 requiredActions **推导**而不是手抄：
+ * 把顾客明细页错配成 dashboard 数据源（任何 dashboard 角色都能看顾客明细）时这里会红。
+ */
+function expectedLoader(key: DataCenterReportKey): 'getDataCenterScopeOptions' | 'getCustomerDetailScopeOptions' | 'getStaffCommissionScopeOptions' {
+  const required: readonly string[] = DATA_CENTER_REPORTS[key].requiredActions
+  if (required.includes('data_center:customer_detail')) return 'getCustomerDetailScopeOptions'
+  if (required.includes('data_center:staff_commission')) return 'getStaffCommissionScopeOptions'
+  return 'getDataCenterScopeOptions'
+}
+
+const PAGES = Object.fromEntries(
+  (Object.keys(PAGE_COMPONENTS) as DataCenterReportKey[]).map((key) => [key, { ...PAGE_COMPONENTS[key], loader: expectedLoader(key) }]),
+) as Record<DataCenterReportKey, { page: PageComponent; needsStarts: boolean; loader: ReturnType<typeof expectedLoader> }>
 
 const hqOptions: DataCenterScopeOptions = {
   topLevel: 'all',

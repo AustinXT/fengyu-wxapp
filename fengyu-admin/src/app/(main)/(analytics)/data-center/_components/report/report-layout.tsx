@@ -31,14 +31,13 @@ export function ReportLayout({
   infoItems?: readonly ReportInfoItem[]
   children: ReactNode
 }) {
-  const { period } = context
-  const baseItems: ReportInfoItem[] = [
-    {
-      label: "范围",
-      value: `${scopeLabel(scopeOptions, context.scope)}（${scopeStores(scopeOptions, context.scope).length} 家门店）`,
-    },
-    ...(period ? [{ label: "期间", value: `${period.label} ${period.current.start} ~ ${period.current.end}` }] : []),
-  ]
+  const { period, scope } = context
+  const baseItems: ReportInfoItem[] = scope
+    ? [
+        { label: "范围", value: `${scopeLabel(scopeOptions, scope)}（${scopeStores(scopeOptions, scope).length} 家门店）` },
+        ...(period ? [{ label: "期间", value: `${period.label} ${period.current.start} ~ ${period.current.end}` }] : []),
+      ]
+    : []
 
   return (
     <div className="flex flex-col gap-4">
@@ -50,7 +49,7 @@ export function ReportLayout({
         defaultQuery={context.defaultQuery}
         today={context.today}
       />
-      {context.noViewableScope ? (
+      {!scope ? (
         <Card>
           <CardContent className="p-8 text-center text-sm text-[var(--muted-foreground)]">
             当前账号暂无可查看的数据范围

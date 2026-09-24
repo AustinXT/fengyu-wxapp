@@ -168,11 +168,13 @@ export function parseReportRange(
   if (preset === 'thisMonth') {
     // 与板块页「本月」同口径：基期 = 上月同期（上月天数不足时截到上月末，只会更短，见 time-range.ts）
     const resolved = resolveTimeRange({ preset: 'month' }, new Date(`${today}T12:00:00+08:00`))
+    // month 预设恒有基期；万一没有也不能拿本期充当基期（环比恒为 0% 会误导），直接报错
+    if (!resolved.previous) throw new Error('INVALID_STATE: 本月预设缺少上月同期基期')
     return {
       kind: 'range',
       preset,
       current: resolved.current,
-      previous: resolved.previous ?? resolved.current,
+      previous: resolved.previous,
       label: REPORT_RANGE_PRESET_LABELS.thisMonth,
     }
   }

@@ -52,7 +52,7 @@ export async function prepareReport(input: {
   if (page.kind === "redirect") redirect(page.url)
   const { context } = page
 
-  const notice = needsStarts && !context.noViewableScope
+  const notice = needsStarts && context.scope
     ? evaluateDataStart({
         ranges: reportNoticeRanges(context.period),
         axes: input.axes,

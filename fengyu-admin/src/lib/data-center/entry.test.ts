@@ -60,3 +60,10 @@ describe('resolveReportPage · URL 范围不在授权数据源内', () => {
     }
   })
 })
+
+describe('resolveReportPage · 无可查看范围', () => {
+  it('scope 置 null（页面漏判 noViewableScope 时 tsc 报错，而不是拿 all 取数被拒成 403）', () => {
+    const result = resolveReportPage({ path: '/p', query: {}, scopeOptions: none, periodKind: 'month', today: '2026-09-25' })
+    expect(result).toMatchObject({ kind: 'render', context: { scope: null, noViewableScope: true } })
+  })
+})
