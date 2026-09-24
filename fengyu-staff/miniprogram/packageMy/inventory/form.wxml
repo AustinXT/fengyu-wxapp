@@ -10,9 +10,7 @@
 
     <view wx:if="{{itemMode === 'reportableSku'}}" class="field">
       <text class="field-label">可报货产品</text>
-      <picker range="{{skuOptions}}" range-key="displayName" value="{{selectedSkuIndex < 0 ? 0 : selectedSkuIndex}}" bindchange="onSkuChange">
-        <view class="selector {{selectedSku ? '' : 'placeholder'}}">{{selectedSku ? selectedSku.displayName : '请选择可报货产品'}}</view>
-      </picker>
+      <view class="selector {{selectedSku ? '' : 'placeholder'}}" bindtap="onOpenSkuPicker">{{selectedSku ? selectedSku.displayName : '请选择可报货产品'}}</view>
       <view wx:if="{{selectedSku}}" class="stock-reference">本店库存参考：{{selectedSku.stockReference}}</view>
     </view>
 
@@ -65,6 +63,41 @@
     <view class="section-title">备注</view>
     <textarea class="remark" placeholder="选填" value="{{remark}}" bindinput="onRemarkInput" maxlength="200" auto-height />
   </view>
+
+  <!-- 门店报货选品弹层（#339）：关键词防抖检索 + 上拉分页，替换只拉前 100 条的原生 picker -->
+  <van-popup
+    show="{{showSkuPicker}}"
+    position="bottom"
+    round
+    custom-style="height: 75%;"
+    bind:close="onCloseSkuPicker"
+  >
+    <view class="sku-picker">
+      <view class="sku-picker-title">选择可报货产品</view>
+      <van-search
+        value="{{skuKeyword}}"
+        placeholder="输入编号 / 名称 / 规格搜索"
+        bind:change="onSkuKeywordChange"
+        bind:clear="onSkuKeywordClear"
+      />
+      <scroll-view scroll-y class="sku-picker-list" lower-threshold="80" bindscrolltolower="onSkuListReachBottom">
+        <view
+          wx:for="{{skuOptions}}"
+          wx:key="skuId"
+          class="sku-option {{selectedSku && selectedSku.skuId === item.skuId ? 'sku-option-active' : ''}}"
+          data-index="{{index}}"
+          bindtap="onSelectSku"
+        >
+          <text class="sku-option-name">{{item.displayName}}</text>
+          <text class="sku-option-stock">本店库存 {{item.stockReference}}</text>
+        </view>
+        <view wx:if="{{skuLoading}}" class="sku-picker-tip">加载中…</view>
+        <view wx:elif="{{skuError}}" class="sku-picker-tip sku-picker-error" bindtap="onOpenSkuPicker">{{skuError}}，点击重试</view>
+        <view wx:elif="{{skuOptions.length === 0}}" class="sku-picker-tip">{{skuKeyword ? '没有匹配的可报货产品' : '暂无可报货产品'}}</view>
+        <view wx:elif="{{!skuHasMore}}" class="sku-picker-tip">已显示全部 {{skuTotal}} 个产品</view>
+      </scroll-view>
+    </view>
+  </van-popup>
 
   <view class="submit-bar">
     <button class="submit-button" bindtap="onSubmit" loading="{{submitting}}" disabled="{{submitting || loadingOptions}}">提交单据</button>
