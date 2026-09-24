@@ -3341,9 +3341,15 @@ describe('order.homeProducts', () => {
     expect(sql).toContain('COALESCE(si.refunded_quantity, 0)))::int AS refunded_quantity')
     expect(sql).toContain('COALESCE(si.converted_quantity, 0)))::int AS converted_quantity')
 
-    // 「已结算」才是派生量 = 已提货 + 已退款 + 已转换
+    // 「已结算」才是派生量 = 已提货 + 已退款 + 已转换。
+    // ⚠️ 必须锚到 `AS settled_quantity`：这串三列之和在本 SQL 里出现 3 次
+    // （settled_quantity 定义 1 次 + row_pending_pickup 的 CASE 两分支各 1 次），
+    // 不锚位置的话，把 settled_quantity 改坏成只算已提货时，另外两处会顶替断言
+    // 让它照样绿（红检 R3 实测到的 fail-open）。漏计退款与转换会让「已结算」偏小
+    // → remaining_quantity 偏大 → 顾客看到的剩余件数虚高。
     expect(sql).toContain(
-      'COALESCE(si.picked_up_quantity, 0) + COALESCE(si.refunded_quantity, 0) + COALESCE(si.converted_quantity, 0)',
+      'COALESCE(si.picked_up_quantity, 0) + COALESCE(si.refunded_quantity, 0)'
+      + ' + COALESCE(si.converted_quantity, 0)))::int AS settled_quantity',
     )
 
     // 反向：「已退款」不得再由 settled − 已提货 − 已转换 倒推（#154 前的写法）
