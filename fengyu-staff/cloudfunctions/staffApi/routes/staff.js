@@ -738,7 +738,7 @@ async function performanceDetail(ctx) {
   // 服务提成明细（基于 service_commissions 表）
   // 口径：commission_amount = fixed_fee + consume_amount
   //       fixed_fee = sale_items.service_fee × session_used （固定手工费快照）
-  //       consume_amount = unit_real_price × session_used × commission_rate （消耗提成）
+  //       consume_amount = max(unit_real_price, 矩阵 price_threshold) × session_used × commission_rate （消耗提成，#379 阈值保底）
   // 旧实现曾用 unit_real_price × session_used 作为"服务提成"，这是消耗业绩金额口径，
   // 导致员工看到的数字虚高 3-5 倍，已修复。
   // 同上：salesCategory 不进 SQL，汇总恒全量

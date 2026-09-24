@@ -82,6 +82,7 @@ module.exports.pct = function(rate) {
           <text class="derived-item">提成 <text class="{{line.commissionRate > 0 ? 'derived-strong' : 'derived-warn'}}">{{fmt.pct(line.commissionRate)}}%</text></text>
           <text class="derived-item">分配额 ¥{{line.allocAmount}}</text>
           <text class="derived-item derived-primary">提成额 ¥{{line.commissionAmount}}</text>
+          <text wx:if="{{line.thresholdApplied}}" class="derived-item derived-warn">按阈值 ¥{{line.priceThreshold}} 计</text>
         </view>
       </view>
 

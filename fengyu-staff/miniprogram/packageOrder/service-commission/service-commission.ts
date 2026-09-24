@@ -4,7 +4,7 @@
 import { callStaffApi } from '../../utils/cloud';
 import { requireManager } from '../../utils/role';
 import {
-  lookupServiceRate, computeServiceLine, computeServiceSummary, ServiceRateRow,
+  lookupServiceRate, computeServiceLine, computeServiceSummary, effServiceConsumeBase, ServiceRateRow,
 } from '../utils/service-commission-calc';
 
 const RATIO_OPTIONS = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100];
@@ -80,6 +80,8 @@ interface CommLine {
   commissionRate: number;  // 提成比例，只读，按 roleType+salesCat+consumeBase 查表
   allocAmount: string;     // 分配额 = consumeBase × 比例
   commissionAmount: string; // 提成额 = fixedFee + consumeAmount
+  priceThreshold: number;   // #379 命中矩阵行的划卡单价阈值（0=不启用）
+  thresholdApplied: boolean; // 本行提成是否按阈值计（wxml 提示用）
 }
 
 interface DisplayItem {
@@ -88,6 +90,7 @@ interface DisplayItem {
   sales_category: string | null;
   session_used: number;
   unit: string;
+  perSession: number;   // 单次实价 unit_real_price（#379 阈值比较用）
   consumeBase: number;  // unit_real_price × session_used（整池基数）
   fixedFeeBase: number; // service_fee × session_used（整池）
   allocLines: CommLine[];
@@ -164,7 +167,8 @@ Page({
 
       const displayItems: DisplayItem[] = (detailData.items || []).map(item => {
         const sessionUsed = Number(item.session_used) || 0;
-        const consumeBase = round2(Number(item.unit_real_price || 0) * sessionUsed);
+        const perSession = Number(item.unit_real_price || 0);
+        const consumeBase = round2(perSession * sessionUsed);
         const fixedFeeBase = round2(Number(item.service_fee || 0) * sessionUsed);
         const salesCat = item.sales_category || '自销自耗';
 
@@ -172,21 +176,20 @@ Page({
         const lines: CommLine[] = (existingByItem.get(item.service_item_id) || []).map(c => {
           const ratioPercent = Number(((Number(c.allocation_ratio) || 0) * 100).toFixed(1));
           const roleType = c.role_type || '';
-          const commissionRate = roleType ? lookupServiceRate(roleType, salesCat, consumeBase, rates) : 0;
-          const { allocAmount, commissionAmount } = computeServiceLine(
-            consumeBase, fixedFeeBase, ratioPercent / 100, commissionRate
-          );
-          return {
+          const hit = roleType ? lookupServiceRate(roleType, salesCat, consumeBase, rates) : { rate: 0, priceThreshold: 0 };
+          return this.computeLine({
             serviceItemId: item.service_item_id,
             roleType,
             staffWfId: c.employee_id,
             staffName: staffNameMap.get(c.employee_id) || c.employee_name || c.employee_id,
             salesCategory: salesCat,
             ratioPercent,
-            commissionRate,
-            allocAmount,
-            commissionAmount,
-          };
+            commissionRate: hit.rate,
+            priceThreshold: hit.priceThreshold,
+            allocAmount: '0.00',
+            commissionAmount: '0.00',
+            thresholdApplied: false,
+          }, { perSession, session_used: sessionUsed, consumeBase, fixedFeeBase });
         });
 
         return {
@@ -195,6 +198,7 @@ Page({
           sales_category: item.sales_category,
           session_used: sessionUsed,
           unit: item.unit || '次',
+          perSession,
           consumeBase,
           fixedFeeBase,
           allocLines: lines,
@@ -218,12 +222,18 @@ Page({
     }
   },
 
-  /** 重算单行：分配额 = consumeBase×比例；提成额 = fixedFee + consumeAmount */
-  computeLine(line: CommLine, consumeBase: number, fixedFeeBase: number): CommLine {
+  /** 重算单行：分配额 = consumeBase×比例；提成额 = fixedFee + consumeAmount（#379 消耗部分按 max(单价, 阈值) 计） */
+  computeLine(
+    line: CommLine,
+    di: Pick<DisplayItem, 'perSession' | 'session_used' | 'consumeBase' | 'fixedFeeBase'>
+  ): CommLine {
+    const rate = line.commissionRate || 0;
+    const effConsumeBase = effServiceConsumeBase(di.perSession, di.session_used, line.priceThreshold);
     const { allocAmount, commissionAmount } = computeServiceLine(
-      consumeBase, fixedFeeBase, line.ratioPercent / 100, line.commissionRate || 0
+      di.consumeBase, di.fixedFeeBase, line.ratioPercent / 100, rate, effConsumeBase
     );
-    return { ...line, allocAmount, commissionAmount };
+    const thresholdApplied = rate > 0 && line.priceThreshold > di.perSession;
+    return { ...line, allocAmount, commissionAmount, thresholdApplied };
   },
 
   /** 按技能过滤后保持「本店 → 本市场出差 → 跨市场出差」顺序。 */
@@ -247,8 +257,10 @@ Page({
       salesCategory: di.sales_category || '自销自耗',
       ratioPercent: 0,
       commissionRate: 0,
+      priceThreshold: 0,
       allocAmount: '0.00',
       commissionAmount: '0.00',
+      thresholdApplied: false,
     };
     this.setData({ [`displayItems[${itemIdx}].allocLines`]: [...di.allocLines, newLine] });
   },
@@ -277,10 +289,10 @@ Page({
     if (!di) { this.closeSkillSheet(); return; }
     const line = di.allocLines[lineIdx];
     // 切换技能：清空已选员工 + 重查提成比例
-    const commissionRate = lookupServiceRate(roleType, line.salesCategory, di.consumeBase, this.data.rates);
+    const hit = lookupServiceRate(roleType, line.salesCategory, di.consumeBase, this.data.rates);
     const updated = this.computeLine(
-      { ...line, roleType, staffWfId: '', staffName: '', commissionRate },
-      di.consumeBase, di.fixedFeeBase
+      { ...line, roleType, staffWfId: '', staffName: '', commissionRate: hit.rate, priceThreshold: hit.priceThreshold },
+      di
     );
     this.setData({
       [`displayItems[${itemIdx}].allocLines[${lineIdx}]`]: updated,
@@ -360,7 +372,7 @@ Page({
     if (!di) { this.closeRatioSheet(); return; }
     const updated = this.computeLine(
       { ...di.allocLines[lineIdx], ratioPercent: percent },
-      di.consumeBase, di.fixedFeeBase
+      di
     );
     this.setData({
       [`displayItems[${itemIdx}].allocLines[${lineIdx}]`]: updated,
@@ -387,7 +399,7 @@ Page({
     const percent = Number(val.toFixed(1));
     const updated = this.computeLine(
       { ...di.allocLines[lineIdx], ratioPercent: percent },
-      di.consumeBase, di.fixedFeeBase
+      di
     );
     this.setData({
       [`displayItems[${itemIdx}].allocLines[${lineIdx}]`]: updated,

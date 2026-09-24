@@ -24,6 +24,7 @@ import { createRate, updateRate, deleteRate, type MarketOption } from "@/actions
 import { useUrlFilters } from "@/lib/hooks/use-url-filters"
 import type { SkillTag } from "@/lib/types"
 import { SALES_CATEGORIES } from "@/lib/sales-categories"
+import { DEFAULT_PRICE_THRESHOLD, isPriceThresholdEligible, parsePriceThreshold } from "@/lib/commission-threshold"
 
 const ORDER_TYPE_OPTIONS = ["销售单", "服务单"]
 
@@ -35,6 +36,8 @@ interface RateFormData {
   amountTierMin: string
   amountTierMax: string
   commissionRate: string
+  /** #379 划卡单价阈值；空串 = 不启用（仅服务单自销自耗 / 他销自耗可配） */
+  priceThreshold: string
 }
 
 const emptyForm = (defaultOrgId: string, skillTags: SkillTag[]): RateFormData => ({
@@ -45,6 +48,7 @@ const emptyForm = (defaultOrgId: string, skillTags: SkillTag[]): RateFormData =>
   amountTierMin: "0",
   amountTierMax: "",
   commissionRate: "",
+  priceThreshold: DEFAULT_PRICE_THRESHOLD,
 })
 
 interface CommissionPageProps {
@@ -111,6 +115,8 @@ const salesCategories = useMemo(
       amountTierMin: row.amountTierMin,
       amountTierMax: row.amountTierMax ?? "",
       commissionRate: row.commissionRate,
+      // 不可配行（阈值恒 null）切到可配类目时预填默认 100，与服务端「切入可配取默认」一致
+      priceThreshold: row.priceThreshold ?? (isPriceThresholdEligible(row.orderType, row.salesCategory) ? "" : DEFAULT_PRICE_THRESHOLD),
     })
     setDialogOpen(true)
   }
@@ -143,6 +149,16 @@ const salesCategories = useMemo(
         return
       }
     }
+    const thresholdEligible = isPriceThresholdEligible(form.orderType, form.salesCategory.trim())
+    if (thresholdEligible) {
+      const parsed = parsePriceThreshold(form.priceThreshold)
+      if (!parsed.ok) {
+        toast.error(parsed.message)
+        return
+      }
+    }
+    // 可配行：空串 → null（不启用）；不可配行一律 null（服务端同样清空）
+    const priceThreshold = thresholdEligible ? (form.priceThreshold.trim() || null) : null
 
     setSaving(true)
     try {
@@ -155,6 +171,7 @@ const salesCategories = useMemo(
           amountTierMin: form.amountTierMin,
           amountTierMax: maxStr || null,
           commissionRate: form.commissionRate,
+          priceThreshold,
         }, editingRate.updatedAt)
         if (!rateResult.success) {
           toast.error(rateResult.message)
@@ -171,6 +188,7 @@ const salesCategories = useMemo(
           amountTierMin: form.amountTierMin,
           amountTierMax: maxStr || null,
           commissionRate: form.commissionRate,
+          priceThreshold,
         })
         if (!createResult.success) {
           toast.error(createResult.message)
@@ -236,6 +254,13 @@ const salesCategories = useMemo(
         <span className="font-medium text-[#C0322A]">
           {(parseFloat(row.commissionRate) * 100).toFixed(1)}%
         </span>
+      ),
+    },
+    {
+      key: "priceThreshold",
+      header: "单价阈值",
+      cell: (row) => (
+        <span>{row.priceThreshold != null ? formatCurrency(row.priceThreshold) : "—"}</span>
       ),
     },
     {
@@ -430,6 +455,22 @@ const salesCategories = useMemo(
               placeholder="例如 0.15 表示 15%"
             />
           </div>
+          {isPriceThresholdEligible(form.orderType, form.salesCategory) && (
+            <div className="space-y-2">
+              <label className="text-sm font-medium">单价阈值（元）</label>
+              <Input
+                type="number"
+                min={0}
+                step={0.01}
+                value={form.priceThreshold}
+                onChange={(e) => setForm({ ...form, priceThreshold: e.target.value })}
+                placeholder="留空表示不启用"
+              />
+              <p className="text-xs text-[#999999]">
+                划卡单次实价低于阈值时，按「阈值 × 次数 × 提成比例」计消耗提成（赠送 0 元同样适用）；手工费照常叠加
+              </p>
+            </div>
+          )}
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={() => setDialogOpen(false)} disabled={saving}>

@@ -166,7 +166,7 @@ async function detail(ctx) {
   if (order.market_name) {
     const rateRows = await pg.query(`
       SELECT crm.role_type, crm.sales_category,
-             crm.amount_tier_min, crm.amount_tier_max, crm.commission_rate
+             crm.amount_tier_min, crm.amount_tier_max, crm.commission_rate, crm.price_threshold
       FROM commission_rate_matrix crm
       JOIN org_nodes n ON n.id = crm.org_id
       WHERE n.name = $1 AND crm.order_type = '服务单'
@@ -183,9 +183,12 @@ async function detail(ctx) {
           amountMin: r.amount_tier_min != null ? Number(r.amount_tier_min) : -9999.9,
           amountMax: r.amount_tier_max != null ? Number(r.amount_tier_max) : 10000000,
           serviceRates: createSalesCategoryRates(),
+          // #379 划卡单价阈值（按销售分类；null = 不启用），小程序预览与 save 同口径算提成
+          serviceThresholds: {},
         })
       }
       grouped.get(key).serviceRates[r.sales_category] = Number(r.commission_rate) || 0
+      grouped.get(key).serviceThresholds[r.sales_category] = r.price_threshold != null ? Number(r.price_threshold) : null
     }
     rates = [...grouped.values()]
   }

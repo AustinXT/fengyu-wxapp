@@ -122,6 +122,21 @@ describe('serviceCommission.detail', () => {
     expect(ctx.result.rates[0].serviceRates['护理项目']).toBe(0.3)
   })
 
+  test('#379 rates 下发 serviceThresholds（按销售分类，null = 不启用）', async () => {
+    const ctx = createManagerCtx({ serviceOrderId: 'SO-1' })
+    pg.query
+      .mockResolvedValueOnce([{ service_order_id: 'SO-1', status: '已完成', market_name: '测试市场', commission_status: '待分配' }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        { role_type: '美容师', sales_category: '自销自耗', amount_tier_min: '0', amount_tier_max: null, commission_rate: '0.1500', price_threshold: '100.00' },
+        { role_type: '美容师', sales_category: '他销他耗', amount_tier_min: '0', amount_tier_max: null, commission_rate: '0.0200', price_threshold: null },
+      ])
+    await routes.detail(ctx)
+    expect(ctx.result.rates).toHaveLength(1)
+    expect(ctx.result.rates[0].serviceThresholds).toEqual({ 自销自耗: 100, 他销他耗: null })
+  })
+
   test('候选支持所有技能跨市场出差并按三级范围排序', async () => {
     const ctx = createManagerCtx({ serviceOrderId: 'SO-1' })
     pg.query
