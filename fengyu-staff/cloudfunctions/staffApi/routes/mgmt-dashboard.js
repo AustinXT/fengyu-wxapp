@@ -442,17 +442,77 @@ async function queryRetainedMemberCount(scopeType, scopeId, date) {
  * 字段维护：admin 员工管理表单写入；当前 hired_at 由 created_at::date 兜底（WorkFine 无入职日期源），
  * resigned_at 由 updated_at::date 兜底。后续由管理后台维护。
  */
+/**
+ * 无门店产能技师（直挂市场/部门组织节点）的可见性片段 —— 与 admin
+ * `lib/data-center/scope-sql.ts` 的 `orgAnchorScopeSql` **逐条对齐**（#320）。
+ *
+ *   - `store`  → 无门店的人不归属任何单店，一律不出现（故 集团技师数 ≠ Σ门店技师数，有意）
+ *   - `market` → 锚定市场等于所选市场才出现
+ *   - `all`    → 恒真。`validateManagementScope` 已要求 `all` 必须持总部 scope，
+ *                等价于 admin 侧的 `isAdminScope(session) → TRUE` 分支
+ *
+ * @param {number} startIdx 本片段自己的 $n 起始下标（不与门店分支共用参数）
+ */
+function buildTechnicianOrgAnchorScope(scopeType, scopeId, startIdx) {
+  if (scopeType === 'store') return { sql: 'FALSE', params: [] }
+  if (scopeType === 'market') {
+    return { sql: `tb.anchor_market_id = $${startIdx}`, params: [scopeId] }
+  }
+  return { sql: 'TRUE', params: [] }
+}
+
+/**
+ * 产能技师在职数（人均派生指标的**分母**）。
+ *
+ * ## 为什么不能只按 `staff_wechat_users.store_id` 过滤（#320）
+ *
+ * 员工组织归属是**双轨**的：`store_id`（门店 FK）+ `org_node_id`（组织节点 FK，
+ * 可指向 部门/市场/门店 任一类型）。只认 `store_id` 会整体漏掉直挂市场/部门的人 ——
+ * 2026-09-24 生产实测：在职产能技师 **166** 人，旧写法只数到 **152**，漏掉 **14** 人：
+ * 8 人锚到南昌凤御、4 人锚到昭通凤御、1 人锚到「品项公司」（它 `type` 其实是市场，
+ * id 前缀 `org-部门-` 是历史遗留），以上 13 人走市场锚分支；
+ * 另 1 人（王志军）直挂门店组织节点、`store_id` 为空，被 `COALESCE` 回收进南昌云暖店。
+ *
+ * ⚠️ **14 是「产能技师 ∩ `store_id` 为空」这个子集**，不是「全部直挂员工」——
+ * 后者生产实测 **95** 人（组织侧的数据治理见 #302）。别把两个数字混用。
+ * 他们的产出**落在门店上、计入分子**，人头却不进分母 → 首页所有人均派生指标虚高 **+9.2%**
+ * （人均业绩 / 人均生美业绩 / 人均实耗 / 人均生美实耗 / 人均客流 / 人均客量 / 人均新客 /
+ * 人均项目数 / 人均提成收入，见 `notes/references/metrics.md` §派生指标）。
+ *
+ * ## 归属规则（与 admin `lib/data-center/technician-sql.ts` 的 `technicianCteSql` 镜像）
+ *
+ * 1. `COALESCE(sw.store_id, ds.store_id)` —— 直挂**门店组织节点**的人回收进该门店
+ * 2. 回收后仍为 NULL 的（直挂市场/部门）用 `anchor_market_id` 锚到市场，
+ *    交给 `buildTechnicianOrgAnchorScope` 判可见性
+ *
+ * ⚠️ 两端是**独立副本**（禁止跨端共享代码目录，见根 CLAUDE.md），一致性由
+ * `__tests__/routes/mgmt-dashboard-technician-parity.test.js` 的字面量断言守护。改一端必同步另一端。
+ */
 async function queryEmployeeCount(scopeType, scopeId, date) {
-  const sc = buildStaffScope(scopeType, scopeId, 's', 2)
+  // $1 = date；门店分支 scope 从 $2 起；市场锚分支接在其后
+  const sc = buildStaffScope(scopeType, scopeId, 'tb', 2)
+  const anchor = buildTechnicianOrgAnchorScope(scopeType, scopeId, 2 + sc.params.length)
   const rows = await pg.query(
-    `SELECT COUNT(*) AS v
-       FROM staff_wechat_users s
-      WHERE ${sc.sql}
-        AND s.skills && ARRAY['美容师','养生师']::text[]
-        AND s.hired_at IS NOT NULL
-        AND s.hired_at::date <= $1::date
-        AND (s.resigned_at IS NULL OR s.resigned_at::date > $1::date)`,
-    [date, ...sc.params],
+    `WITH technician_base AS (
+       SELECT sw.employee_id,
+              COALESCE(sw.store_id, ds.store_id) AS store_id,
+              CASE WHEN o.type = '市场' THEN o.id
+                   WHEN op.type = '市场' THEN op.id
+                   ELSE NULL END AS anchor_market_id
+         FROM staff_wechat_users sw
+         LEFT JOIN org_nodes o  ON o.id  = sw.org_node_id
+         LEFT JOIN org_nodes op ON op.id = o.parent_id
+         LEFT JOIN stores ds    ON ds.org_node_id = sw.org_node_id
+        WHERE sw.skills && ARRAY['美容师','养生师']::text[]
+          AND sw.hired_at IS NOT NULL
+          AND sw.hired_at::date <= $1::date
+          AND (sw.resigned_at IS NULL OR sw.resigned_at::date > $1::date)
+     )
+     SELECT COUNT(*) AS v
+       FROM technician_base tb
+      WHERE (tb.store_id IS NOT NULL AND ${sc.sql})
+         OR (tb.store_id IS NULL AND ${anchor.sql})`,
+    [date, ...sc.params, ...anchor.params],
   )
   return Number(rows[0]?.v || 0)
 }
