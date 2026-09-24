@@ -3364,7 +3364,13 @@ describe('order.homeProducts', () => {
     // toContain 会误伤将来"解释 pickup_records 与本列的守恒关系"这类纯注释
     // （剥注释后仍用全词断言，比只挡 /(FROM|JOIN)\s+pickup_records/ 更强——
     //  后者放过 `FROM a, pickup_records b` 这类隐式 cross join 写法）。
-    // ⚠️ 只丢弃**整行**注释，不要用 /--.*$/ 去截断任意位置：SQL 里合法的字符串字面量
+    // ⚠️ 本用例**所有**形状断言都必须比对 sqlCode（剥掉注释的版本），不能比对原始 sql。
+    // 否则「删掉代码 + 用 `--` 注释把原字面量补回去」就能让正向 toContain 照样匹配：
+    // 实测把 picked 的外层 LEAST 换成 GREATEST、同时在下一行注释里保留旧写法，
+    // 180 tests 全绿穿网（闸门 2 的 GLM 提出此向量，本地复现确认）。
+    // 这与 #284 踩过的「注释注入」是同一个坑。
+    //
+    // 只丢弃**整行**注释，不要用 /--.*$/ 去截断任意位置：SQL 里合法的字符串字面量
     // 可以含 `--`（例如 `'--' AS marker`），按位置截断会把该行后面的真实代码一起抹掉，
     // 于是藏在同一行后半段的 `FROM pickup_records` 反而看不见了（闸门 2 的 codex 指出）。
     // 代价是行尾注释留在文本里——那只会造成误报（多报一次红），方向是安全的。
@@ -3379,13 +3385,13 @@ describe('order.homeProducts', () => {
     // 该列就从"封顶"变成"保底"、恒等于 si.quantity —— 顾客端会把每件家居产品都
     // 显示成「已全部提货」，且 remaining/pending 连带恒为 0（整行锁死不能再提）。
     // 只锚后缀时这个改动测不出来（闸门 1 的 boundary-critic 实测 180 tests 全绿）。
-    expect(sql).toContain(
+    expect(sqlCode).toContain(
       'LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0)))::int AS picked_quantity',
     )
-    expect(sql).toContain(
+    expect(sqlCode).toContain(
       'LEAST(si.quantity, GREATEST(0, COALESCE(si.refunded_quantity, 0)))::int AS refunded_quantity',
     )
-    expect(sql).toContain(
+    expect(sqlCode).toContain(
       'LEAST(si.quantity, GREATEST(0, COALESCE(si.converted_quantity, 0)))::int AS converted_quantity',
     )
 
@@ -3395,7 +3401,7 @@ describe('order.homeProducts', () => {
     // 不锚位置的话，把 settled_quantity 改坏成只算已提货时，另外两处会顶替断言
     // 让它照样绿（红检 R3 实测到的 fail-open）。漏计退款与转换会让「已结算」偏小
     // → remaining_quantity 偏大 → 顾客看到的剩余件数虚高。
-    expect(sql).toContain(
+    expect(sqlCode).toContain(
       'LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0)'
       + ' + COALESCE(si.refunded_quantity, 0)'
       + ' + COALESCE(si.converted_quantity, 0)))::int AS settled_quantity',
@@ -3405,7 +3411,7 @@ describe('order.homeProducts', () => {
     // 三项减法的顺序可以随意交换（数学等价），所以负向正则不能只挡一种排列；
     // 列名还可能带 `si.` 限定前缀（`SUM(si.settled_quantity - si.picked_quantity ...)`），
     // 不认前缀就会被穿透（闸门 2 的 GLM 变异实测全绿穿网）。大小写同理。
-    expect(sql).not.toMatch(/(si\.)?settled_quantity\s*-\s*(si\.)?(picked|converted)_quantity/i)
+    expect(sqlCode).not.toMatch(/(si\.)?settled_quantity\s*-\s*(si\.)?(picked|converted)_quantity/i)
 
     // ⚠️ 上面那条负向正则**不足以**防住倒推复活：PG 允许结果集出现重复列名，
     // 下游 CTE 只要在 `SELECT *,` 后插一条同名的 refunded_quantity 影子列，
@@ -3440,9 +3446,9 @@ describe('order.homeProducts', () => {
     // remaining 把减数从 settled 换成 picked，就漏掉了已退款与已转换：
     // 退 3 件、转走 2 件的行剩余虚高 5 件，顾客以为还能提那么多。这与本用例开头
     // 修过的 settled 漏项完全同型，是自然疏忽级别的改动（闸门 2 的 GLM 实测穿网）。
-    expect(sql).toContain('(purchased_quantity - settled_quantity)::int AS remaining_quantity')
+    expect(sqlCode).toContain('(purchased_quantity - settled_quantity)::int AS remaining_quantity')
     // unpaid 去掉 GREATEST 会让多付的行显示负欠款；把被减数写反则是凭空造出一笔欠款。
-    expect(sql).toContain('GREATEST(0, sale_amount_total - received_total)::numeric(12, 2)')
+    expect(sqlCode).toContain('GREATEST(0, sale_amount_total - received_total)::numeric(12, 2)')
 
     // ⚠️ 方法论局限，写在这里以免后人误以为这套断言是密不透风的：
     // 本用例断言的是 **SQL 文本的形状**，而真正该守的是「这一列最终取到哪个值」。
@@ -3457,15 +3463,15 @@ describe('order.homeProducts', () => {
     // `SUM(si.refunded_quantity)::int AS picked_quantity`，上游三个直读表达式原文仍在、
     // 别名仍各 2 次、负向正则也不命中，但顾客拿到的 pickedQuantity 会变成已退款件数
     // （闸门 2 的 codex 指出）。
-    expect(sql).toContain('SUM(si.settled_quantity)::int AS settled_quantity')
-    expect(sql).toContain('SUM(si.picked_quantity)::int AS picked_quantity')
-    expect(sql).toContain('SUM(si.refunded_quantity)::int AS refunded_quantity')
-    expect(sql).toContain('SUM(si.converted_quantity)::int AS converted_quantity')
+    expect(sqlCode).toContain('SUM(si.settled_quantity)::int AS settled_quantity')
+    expect(sqlCode).toContain('SUM(si.picked_quantity)::int AS picked_quantity')
+    expect(sqlCode).toContain('SUM(si.refunded_quantity)::int AS refunded_quantity')
+    expect(sqlCode).toContain('SUM(si.converted_quantity)::int AS converted_quantity')
 
-    expect(sql).toContain("o.status IN ('已支付', '部分支付', '已完成')")
-    expect(sql).toContain("si.item_direction = '购买'")
-    expect(sql).toContain("si.product_type = '家居产品'")
-    expect(sql).toMatch(/FLOOR\(GREATEST\(0, si\.received::numeric\) \* si\.quantity \/ NULLIF\(si\.sale_amount::numeric, 0\)\)/)
+    expect(sqlCode).toContain("o.status IN ('已支付', '部分支付', '已完成')")
+    expect(sqlCode).toContain("si.item_direction = '购买'")
+    expect(sqlCode).toContain("si.product_type = '家居产品'")
+    expect(sqlCode).toMatch(/FLOOR\(GREATEST\(0, si\.received::numeric\) \* si\.quantity \/ NULLIF\(si\.sale_amount::numeric, 0\)\)/)
     // issue #120：放行口径改为按物理剩余份额，旧的 pending 过滤会吞掉未付清的行。
     // 注意不能只断言 'pending_pickup_quantity > 0'——那串在 ORDER BY 里也有，测不出过滤口径。
     //
@@ -3484,8 +3490,8 @@ describe('order.homeProducts', () => {
     expect(whereClause[1].replace(/\s+/g, ' ').trim()).toBe(
       'picked_quantity > 0 OR remaining_quantity > 0 OR converted_quantity > 0',
     )
-    expect(sql).toContain("(o.sale_order_type = '寄存单') AS is_deposit")
-    expect(sql).toContain('CASE WHEN is_deposit THEN NULL')
+    expect(sqlCode).toContain("(o.sale_order_type = '寄存单') AS is_deposit")
+    expect(sqlCode).toContain('CASE WHEN is_deposit THEN NULL')
   })
 
   // issue #120：买 1 件未付清 → FLOOR=0 → pending=0，旧 WHERE 把整行剔除，
