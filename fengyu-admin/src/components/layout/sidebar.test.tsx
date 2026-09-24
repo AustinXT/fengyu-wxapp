@@ -94,6 +94,9 @@ describe('Sidebar 二级菜单', () => {
     for (const label of ['销售', '人效', '品项']) {
       expect(screen.getByRole('link', { name: label })).not.toHaveClass('text-[var(--primary)]')
     }
+    // #367 出厂态：经营明细报表入口未打开时只剩「看板」一个分段，不渲染分段小标题（与改动前一致）
+    expect(screen.queryByText('看板')).not.toBeInTheDocument()
+    expect(screen.queryByText('经营明细')).not.toBeInTheDocument()
   })
 
   it('折叠态点击数据中心弹出 4 个板块浮层', async () => {

@@ -2,6 +2,7 @@ import { render, screen } from "@testing-library/react"
 import type { ReactNode } from "react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { DATA_CENTER_BOARD_LABELS, DATA_CENTER_TABS } from "@/lib/data-center/params"
+import { DATA_CENTER_REPORT_LIST } from "@/lib/data-center/reports"
 
 const RETURN_TO = "/products?category=cat-2&kind=护理项目&page=2"
 
@@ -61,5 +62,40 @@ describe("BreadcrumbNav return context", () => {
     render(<BreadcrumbNav />)
 
     expect(screen.getByRole("link", { name: "数据中心" })).toHaveAttribute("href", "/data-center")
+  })
+
+  // 经营明细报表（#367）：入口未打开（menu.enabled=false）时父级「数据中心」仍由 MENU_CONFIG 推出
+  // （getMenuParentForPath 不看 hidden），深链进来的面包屑与入口打开后一致。
+  it.each(DATA_CENTER_REPORT_LIST.filter((report) => !report.parent))(
+    "经营明细报表 $path 显示「数据中心 / 报表名」两级",
+    (report) => {
+      nav.pathname = report.path
+      nav.search = ""
+      render(<BreadcrumbNav />)
+
+      const nodes = screen.getByRole("navigation", { name: "面包屑导航" })
+      expect(nodes).toHaveTextContent(`数据中心${report.title}`)
+      expect(nodes).not.toHaveTextContent("详情")
+    },
+  )
+
+  it("提成明细显示「数据中心 / 员工提成日报 / 提成明细」，中间一级可点且恢复下钻前的筛选", () => {
+    const returnTo = "/data-center/commission-daily?month=2026-08&scope=market&scopeId=M1"
+    nav.pathname = "/data-center/commission-daily/detail"
+    nav.search = new URLSearchParams({ returnTo, employeeId: "E1" }).toString()
+    render(<BreadcrumbNav />)
+
+    const nodes = screen.getByRole("navigation", { name: "面包屑导航" })
+    expect(nodes).toHaveTextContent("数据中心员工提成日报提成明细")
+    expect(screen.getByRole("link", { name: "员工提成日报" })).toHaveAttribute("href", returnTo)
+    expect(screen.queryByRole("link", { name: "提成明细" })).not.toBeInTheDocument()
+  })
+
+  it("提成明细没有 returnTo 时中间一级回到日报默认页", () => {
+    nav.pathname = "/data-center/commission-daily/detail"
+    nav.search = ""
+    render(<BreadcrumbNav />)
+
+    expect(screen.getByRole("link", { name: "员工提成日报" })).toHaveAttribute("href", "/data-center/commission-daily")
   })
 })

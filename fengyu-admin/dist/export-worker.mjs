@@ -42399,7 +42399,7 @@ var require_wxCloudToken = __commonJS((exports) => {
 
 // ../../../../fengyu-admin/node_modules/@cloudbase/node-sdk/dist/utils/version.js
 var require_version2 = __commonJS((exports) => {
-  var __dirname = "/Users/nv/proj.xt.com/fengyu-wxapp/fengyu-admin/node_modules/@cloudbase/node-sdk/dist/utils";
+  var __dirname = "/Users/nv/proj.xt.com/worktrees/fengyu-wxapp/release/fengyu-wxapp/fengyu-admin/node_modules/@cloudbase/node-sdk/dist/utils";
   var __createBinding = exports && exports.__createBinding || (Object.create ? function(o, m, k, k2) {
     if (k2 === undefined)
       k2 = k;
@@ -75376,7 +75376,7 @@ var require_is_thenable = __commonJS((exports) => {
 
 // ../../../../fengyu-admin/node_modules/next/dist/compiled/@opentelemetry/api/index.js
 var require_api = __commonJS((exports, module) => {
-  var __dirname = "/Users/nv/proj.xt.com/fengyu-wxapp/fengyu-admin/node_modules/next/dist/compiled/@opentelemetry/api";
+  var __dirname = "/Users/nv/proj.xt.com/worktrees/fengyu-wxapp/release/fengyu-wxapp/fengyu-admin/node_modules/next/dist/compiled/@opentelemetry/api";
   (() => {
     var e = { 491: (e2, t2, r2) => {
       Object.defineProperty(t2, "__esModule", { value: true });
@@ -85271,7 +85271,9 @@ var init_permission_presentation = __esm(() => {
       "customer:list": "查看顾客",
       "customer:update": "修改顾客",
       "dashboard:view": "查看工作台",
+      "data_center:customer_detail": "查看数据中心顾客明细报表",
       "data_center:dashboard": "查看数据中心",
+      "data_center:staff_commission": "查看数据中心员工提成报表",
       "employee:create": "新增员工",
       "employee:delete": "删除员工",
       "employee:list": "查看员工",
@@ -85427,7 +85429,9 @@ var init_permission_presentation = __esm(() => {
       "inventory:supply_chain_price_view": ["inventory:list", "inventory:stock_list"],
       "merchant:create": ["merchant:list"],
       "merchant:update": ["merchant:list"],
-      "merchant:delete": ["merchant:list"]
+      "merchant:delete": ["merchant:list"],
+      "data_center:customer_detail": ["data_center:dashboard"],
+      "data_center:staff_commission": ["data_center:dashboard"]
     }
   };
 });
@@ -85621,7 +85625,9 @@ var init_permissions = __esm(() => {
       "customer:list",
       "customer:update",
       "dashboard:view",
+      "data_center:customer_detail",
       "data_center:dashboard",
+      "data_center:staff_commission",
       "employee:create",
       "employee:list",
       "employee:update",
@@ -85666,7 +85672,9 @@ var init_permissions = __esm(() => {
       "coupon:list",
       "customer:list",
       "dashboard:view",
+      "data_center:customer_detail",
       "data_center:dashboard",
+      "data_center:staff_commission",
       "employee:list",
       "legacy_order:approve",
       "legacy_order:list",
@@ -95663,7 +95671,7 @@ var require_process_nextick_args = __commonJS((exports, module) => {
   }
 });
 
-// ../../../../fengyu-admin/node_modules/isarray/index.js
+// ../../../../fengyu-admin/node_modules/jszip/node_modules/isarray/index.js
 var require_isarray = __commonJS((exports, module) => {
   var toString = {}.toString;
   module.exports = Array.isArray || function(arr) {
@@ -127947,6 +127955,14 @@ GFS4: `);
   }
 });
 
+// ../../../../fengyu-admin/node_modules/lazystream/node_modules/isarray/index.js
+var require_isarray2 = __commonJS((exports, module) => {
+  var toString = {}.toString;
+  module.exports = Array.isArray || function(arr) {
+    return toString.call(arr) == "[object Array]";
+  };
+});
+
 // ../../../../fengyu-admin/node_modules/lazystream/node_modules/readable-stream/node_modules/safe-buffer/index.js
 var require_safe_buffer3 = __commonJS((exports, module) => {
   var buffer2 = __require("buffer");
@@ -128948,7 +128964,7 @@ var require_string_decoder3 = __commonJS((exports) => {
 var require__stream_readable3 = __commonJS((exports, module) => {
   var pna = require_process_nextick_args();
   module.exports = Readable;
-  var isArray = require_isarray();
+  var isArray = require_isarray2();
   var Duplex;
   Readable.ReadableState = ReadableState;
   var EE = __require("events").EventEmitter;
@@ -130095,6 +130111,14 @@ var require_lodash18 = __commonJS((exports, module) => {
   module.exports = defaults;
 });
 
+// ../../../../fengyu-admin/node_modules/archiver-utils/node_modules/isarray/index.js
+var require_isarray3 = __commonJS((exports, module) => {
+  var toString = {}.toString;
+  module.exports = Array.isArray || function(arr) {
+    return toString.call(arr) == "[object Array]";
+  };
+});
+
 // ../../../../fengyu-admin/node_modules/archiver-utils/node_modules/readable-stream/node_modules/safe-buffer/index.js
 var require_safe_buffer4 = __commonJS((exports, module) => {
   var buffer2 = __require("buffer");
@@ -131096,7 +131120,7 @@ var require_string_decoder4 = __commonJS((exports) => {
 var require__stream_readable4 = __commonJS((exports, module) => {
   var pna = require_process_nextick_args();
   module.exports = Readable;
-  var isArray = require_isarray();
+  var isArray = require_isarray3();
   var Duplex;
   Readable.ReadableState = ReadableState;
   var EE = __require("events").EventEmitter;
@@ -146047,6 +146071,14 @@ var require_Buffer = __commonJS((exports, module) => {
   module.exports = Buffer2;
 });
 
+// ../../../../fengyu-admin/node_modules/unzipper/node_modules/isarray/index.js
+var require_isarray4 = __commonJS((exports, module) => {
+  var toString = {}.toString;
+  module.exports = Array.isArray || function(arr) {
+    return toString.call(arr) == "[object Array]";
+  };
+});
+
 // ../../../../fengyu-admin/node_modules/unzipper/node_modules/readable-stream/node_modules/safe-buffer/index.js
 var require_safe_buffer5 = __commonJS((exports, module) => {
   var buffer2 = __require("buffer");
@@ -147048,7 +147080,7 @@ var require_string_decoder5 = __commonJS((exports) => {
 var require__stream_readable5 = __commonJS((exports, module) => {
   var pna = require_process_nextick_args();
   module.exports = Readable;
-  var isArray = require_isarray();
+  var isArray = require_isarray4();
   var Duplex;
   Readable.ReadableState = ReadableState;
   var EE = __require("events").EventEmitter;
@@ -148332,6 +148364,14 @@ var require_parse4 = __commonJS((exports, module) => {
   module.exports = Parse;
 });
 
+// ../../../../fengyu-admin/node_modules/duplexer2/node_modules/isarray/index.js
+var require_isarray5 = __commonJS((exports, module) => {
+  var toString = {}.toString;
+  module.exports = Array.isArray || function(arr) {
+    return toString.call(arr) == "[object Array]";
+  };
+});
+
 // ../../../../fengyu-admin/node_modules/duplexer2/node_modules/readable-stream/node_modules/safe-buffer/index.js
 var require_safe_buffer6 = __commonJS((exports, module) => {
   var buffer2 = __require("buffer");
@@ -149333,7 +149373,7 @@ var require_string_decoder6 = __commonJS((exports) => {
 var require__stream_readable6 = __commonJS((exports, module) => {
   var pna = require_process_nextick_args();
   module.exports = Readable;
-  var isArray = require_isarray();
+  var isArray = require_isarray5();
   var Duplex;
   Readable.ReadableState = ReadableState;
   var EE = __require("events").EventEmitter;
@@ -159443,6 +159483,64 @@ var coerce = {
   date: (arg) => ZodDate.create({ ...arg, coerce: true })
 };
 var NEVER = INVALID;
+// src/lib/data-center/reports.ts
+var DATA_CENTER_DASHBOARD_ACTION = "data_center:dashboard";
+var DATA_CENTER_CUSTOMER_DETAIL_ACTION = "data_center:customer_detail";
+var DATA_CENTER_STAFF_COMMISSION_ACTION = "data_center:staff_commission";
+var DATA_CENTER_CUSTOMER_DETAIL_ACTIONS = [
+  DATA_CENTER_DASHBOARD_ACTION,
+  DATA_CENTER_CUSTOMER_DETAIL_ACTION
+];
+var DATA_CENTER_STAFF_COMMISSION_ACTIONS = [
+  DATA_CENTER_DASHBOARD_ACTION,
+  DATA_CENTER_STAFF_COMMISSION_ACTION
+];
+var DATA_CENTER_REPORTS = {
+  dailyOverview: {
+    path: "/data-center/daily-overview",
+    title: "日常数据一览表",
+    periodKind: "range",
+    requiredActions: [DATA_CENTER_DASHBOARD_ACTION],
+    menu: { section: "经营明细", enabled: false }
+  },
+  customerFrequency: {
+    path: "/data-center/customer-frequency",
+    title: "顾客频率表",
+    periodKind: "month",
+    requiredActions: DATA_CENTER_CUSTOMER_DETAIL_ACTIONS,
+    menu: { section: "经营明细", enabled: false }
+  },
+  remainingCards: {
+    path: "/data-center/remaining-cards",
+    title: "顾客剩余卡项清单",
+    periodKind: "none",
+    requiredActions: DATA_CENTER_CUSTOMER_DETAIL_ACTIONS,
+    menu: { section: "经营明细", enabled: false }
+  },
+  operatingMaster: {
+    path: "/data-center/operating-master",
+    title: "经营数据主表",
+    periodKind: "month",
+    requiredActions: [DATA_CENTER_DASHBOARD_ACTION],
+    menu: { section: "经营明细", enabled: false }
+  },
+  commissionDaily: {
+    path: "/data-center/commission-daily",
+    title: "员工提成日报",
+    periodKind: "month",
+    requiredActions: DATA_CENTER_STAFF_COMMISSION_ACTIONS,
+    menu: { section: "员工收入", enabled: false }
+  },
+  commissionDetail: {
+    path: "/data-center/commission-daily/detail",
+    title: "提成明细",
+    periodKind: "month",
+    requiredActions: DATA_CENTER_STAFF_COMMISSION_ACTIONS,
+    parent: "commissionDaily"
+  }
+};
+var DATA_CENTER_REPORT_LIST = Object.keys(DATA_CENTER_REPORTS).map((key) => ({ key, ...DATA_CENTER_REPORTS[key] }));
+
 // src/lib/export-job-types.ts
 var EXPORT_JOB_TYPES = [
   "orders",
@@ -159461,7 +159559,7 @@ var EXPORT_JOB_TYPES = [
   "coupons",
   "data-center"
 ];
-var DATA_CENTER_EXPORT_VIEWS = [
+var DATA_CENTER_BOARD_EXPORT_VIEWS = [
   "sales-market",
   "sales-store",
   "customer-market-reg",
@@ -159474,6 +159572,11 @@ var DATA_CENTER_EXPORT_VIEWS = [
   "efficiency-staff",
   "efficiency-store-ranking",
   "efficiency-staff-ranking"
+];
+var DATA_CENTER_REPORT_EXPORT_VIEWS = [];
+var DATA_CENTER_EXPORT_VIEWS = [
+  ...DATA_CENTER_BOARD_EXPORT_VIEWS,
+  ...DATA_CENTER_REPORT_EXPORT_VIEWS
 ];
 var EXPORT_PERMISSIONS_BY_TYPE = {
   orders: ["sale_order:list"],

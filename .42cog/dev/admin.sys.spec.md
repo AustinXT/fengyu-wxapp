@@ -152,6 +152,7 @@ adminApi:sync.trigger → 互斥锁检查
 | sync 触发 | ✅ | - | - | - | - | - |
 | operation_log | ✅ | - | - | - | - | - |
 | data_center | - | ✅ scope | ✅ scope | - | - | - |
+| data_center:customer_detail / staff_commission（#367） | ✅ | ✅ scope | ✅ scope | 待定 | - | - |
 
 ### 数据隔离规则
 

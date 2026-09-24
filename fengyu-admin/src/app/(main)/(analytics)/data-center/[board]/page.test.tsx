@@ -1,7 +1,8 @@
-import { existsSync } from 'node:fs'
+import { existsSync, readdirSync } from 'node:fs'
 import path from 'node:path'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { DataCenterScopeOptions } from '@/lib/data-center/types'
+import { DATA_CENTER_REPORT_LIST } from '@/lib/data-center/reports'
 
 /**
  * 守护数据中心板块页的入口控制流（#212）。
@@ -202,13 +203,34 @@ describe('数据中心板块页 · 动态段收口', () => {
   // （硬导航正常，确认是 Suspense 边界与同段 notFound() 的组合问题；放到 [board]/ 下同样复现，
   //  而 /orders/<不存在 id> 的 404 页软导航正常，可见是本段特有。）
   // 骨架屏的收益远不及「404 页点什么都没反应」的代价，故不设 loading 边界。
-  it('data-center 段下不得存在 loading.tsx', () => {
+  //
+  // #367 起 data-center 下多了经营明细报表的静态段（含 commission-daily/detail 两层），
+  // 守护改为递归扫描整个 data-center 目录，并显式核对登记表里的每个报表段都在扫描范围内。
+  it('data-center 段下（含全部子段）不得存在 loading.tsx', () => {
     const dir = path.resolve(__dirname, '..')
-    for (const p of [
-      path.join(dir, 'loading.tsx'),
-      path.join(dir, '[board]', 'loading.tsx'),
-    ]) {
-      expect(existsSync(p), `${p} 会让非法板块段的 404 页客户端导航失效`).toBe(false)
+    const offenders: string[] = []
+    const scanned = new Set<string>()
+    const walk = (current: string) => {
+      scanned.add(current)
+      for (const entry of readdirSync(current, { withFileTypes: true })) {
+        const target = path.join(current, entry.name)
+        if (entry.isDirectory()) walk(target)
+        else if (/^loading\.(tsx|ts|jsx|js)$/.test(entry.name)) offenders.push(target)
+      }
+    }
+    walk(dir)
+    // 祖先段（(analytics) / (main)）的 loading 同样会在 data-center 段外包一层 Suspense 边界
+    for (const ancestor of [path.resolve(dir, '..'), path.resolve(dir, '..', '..')]) {
+      for (const name of ['loading.tsx', 'loading.ts', 'loading.jsx', 'loading.js']) {
+        if (existsSync(path.join(ancestor, name))) offenders.push(path.join(ancestor, name))
+      }
+    }
+    expect(offenders, '这些 loading 文件会让同段 404 页客户端导航失效').toEqual([])
+
+    for (const report of DATA_CENTER_REPORT_LIST) {
+      const segment = path.join(dir, ...report.path.replace(/^\/data-center\//, '').split('/'))
+      expect(existsSync(path.join(segment, 'page.tsx')), `${report.path} 缺 page.tsx`).toBe(true)
+      expect(scanned.has(segment), `${report.path} 不在扫描范围`).toBe(true)
     }
   })
 
