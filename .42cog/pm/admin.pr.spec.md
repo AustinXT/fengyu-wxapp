@@ -319,9 +319,9 @@ Server Action 是可直接调用的端点。`updateOrgNode` 同理（见 AFF-01�
 
 **操作对象**: `commission_rate_matrix` | 权限：仅 admin
 
-**字段**: org_id（市场节点）, order_type, role_type, sales_category, amount_tier_min/max, commission_rate [0,1]
+**字段**: org_id（市场节点）, order_type, role_type, sales_category, amount_tier_min/max, commission_rate [0,1], price_threshold（划卡单价阈值，元）
 
-**约束**: UNIQUE `(org_id, order_type, role_type, sales_category, amount_tier_min)`；金额阶段不可重叠；物理删除（快照在 sale_allocations）
+**约束**: UNIQUE `(org_id, order_type, role_type, sales_category, amount_tier_min)`；金额阶段不可重叠；物理删除（快照在 sale_allocations）；price_threshold 仅服务单的自销自耗 / 他销自耗规则可填（新建默认 100，留空 = 不启用），其它规则不可填、改成其它分类时自动清空
 
 #### AFF-06 顾客档案管理
 
