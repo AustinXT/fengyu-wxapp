@@ -15,6 +15,7 @@ import { createExportContent } from './registry'
 import { exportCloudPath, exportFileName } from './file-name'
 import { writeStreamXlsx } from './xlsx-writer'
 import { completeExportMeta } from './export-meta'
+import { shouldRetryExportFailure } from './retry-policy'
 import { writeWorkerHeartbeat } from '@/lib/worker-heartbeat'
 import { createSerializedAsyncRunner, runWorkerSlots } from './worker-slots'
 
@@ -126,7 +127,7 @@ function safeFailure(err: unknown): { code: string; message: string } {
 
 async function failJob(job: ExportJob, err: unknown): Promise<void> {
   const failure = safeFailure(err)
-  const shouldRetry = job.attemptCount < MAX_ATTEMPTS
+  const shouldRetry = shouldRetryExportFailure(failure.code, job.attemptCount, MAX_ATTEMPTS)
   await db
     .update(adminExportJobs)
     .set({

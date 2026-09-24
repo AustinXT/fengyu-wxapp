@@ -246,6 +246,16 @@ describe('sortMatrixRows / nextMatrixSort', () => {
     expect(sortMatrixRows(items, (r) => r.v, 'asc', (r) => r.id).map((r) => r.id)).toEqual(['y', 'x'])
   })
 
+  it('数字与文本混排时整列按文本比，比较器保持传递性：任意输入排列结果相同', () => {
+    const items = [{ id: 'a', v: '2' }, { id: 'b', v: '10' }, { id: 'c', v: '15x' }]
+    const permutations = [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]]
+    const results = permutations.map((order) =>
+      sortMatrixRows(order.map((i) => items[i]), (r) => r.v, 'asc', (r) => r.id).map((r) => r.id).join())
+    expect(new Set(results).size).toBe(1)
+    // 文本模式保留自然序：店2 在 店10 前
+    expect(sortMatrixRows([{ id: 'x', v: '店10' }, { id: 'y', v: '店2' }], (r) => r.v, 'asc', (r) => r.id).map((r) => r.id)).toEqual(['y', 'x'])
+  })
+
   it('输入顺序不影响结果（稳定可复现）', () => {
     const reversed = [...rows].reverse()
     expect(sortMatrixRows(reversed, (r) => r.sales, 'desc', rowKey)).toEqual(sortMatrixRows(rows, (r) => r.sales, 'desc', rowKey))

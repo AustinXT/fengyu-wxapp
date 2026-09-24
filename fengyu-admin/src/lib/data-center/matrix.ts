@@ -277,17 +277,20 @@ export function nextMatrixSort(current: MatrixSort | null | undefined, key: stri
   return { key, direction: 'desc' }
 }
 
-/**
- * 客户端稳定排序（不分页的小表用；分页表由服务端排序，见 matrix-order.ts）。
- * - 空值无论升降序都排最后，与 SQL `NULLS LAST` 一致；
- * - 排序值相同时按 rowKey 升序兜底（#282），同一数据集多次排序结果恒定。
- */
 function numericString(value: string | number): number | null {
   if (typeof value !== 'string' || value.trim() === '') return null
   const parsed = Number(value)
   return Number.isFinite(parsed) ? parsed : null
 }
 
+/**
+ * 客户端稳定排序（不分页的小表用；分页表由服务端排序，见 matrix-order.ts）。
+ * - 空值无论升降序都排最后，与 SQL `NULLS LAST` 一致；
+ * - 排序值相同时按 rowKey 升序兜底（#282），同一数据集多次排序结果恒定。
+ * - 比较模式**按整列定一次**：非空值全是数值 / 数字字符串（如 PG numeric）→ 按数值比，否则整列按文本比。
+ *   不能逐对判定：「"2"<"10" 按数值、"10"<"15x" 按文本、"15x"<"2" 按文本」会形成环，比较器失去传递性，
+ *   结果随输入排列变化。数值模式下的精度：金额 / 计数都远小于 2^53，Number 足够。
+ */
 export function sortMatrixRows<T>(
   rows: readonly T[],
   sortValue: (row: T) => number | string | null | undefined,
@@ -295,25 +298,26 @@ export function sortMatrixRows<T>(
   rowKey: (row: T) => string,
 ): T[] {
   const sign = direction === 'asc' ? 1 : -1
-  return [...rows].sort((a, b) => {
-    const left = sortValue(a)
-    const right = sortValue(b)
-    const leftMissing = left == null || (typeof left === 'number' && Number.isNaN(left))
-    const rightMissing = right == null || (typeof right === 'number' && Number.isNaN(right))
-    if (leftMissing !== rightMissing) return leftMissing ? 1 : -1
-    if (!leftMissing && !rightMissing && left !== right) {
-      // 数字字符串（如 PG numeric）直接按数值比：localeCompare 的 numeric 选项在精简 ICU 下不可靠
-      const leftNumber = typeof left === 'number' ? left : numericString(left)
-      const rightNumber = typeof right === 'number' ? right : numericString(right)
-      const order = leftNumber != null && rightNumber != null
-        ? leftNumber - rightNumber
-        : String(left).localeCompare(String(right), 'zh-CN')
+  const keyed = rows.map((row) => {
+    const raw = sortValue(row)
+    const missing = raw == null || (typeof raw === 'number' && Number.isNaN(raw))
+    return { row, raw, missing, key: rowKey(row) }
+  })
+  const numeric = keyed.every((item) => item.missing || (typeof item.raw === 'number' ? true : numericString(item.raw!) != null))
+  const collator = new Intl.Collator('zh-CN', { numeric: true })
+  const valueOf = (raw: string | number) => (typeof raw === 'number' ? raw : numericString(raw)!)
+
+  keyed.sort((a, b) => {
+    if (a.missing !== b.missing) return a.missing ? 1 : -1
+    if (!a.missing && !b.missing) {
+      const order = numeric
+        ? valueOf(a.raw!) - valueOf(b.raw!)
+        : collator.compare(String(a.raw), String(b.raw))
       if (order !== 0) return order * sign
     }
-    const leftKey = rowKey(a)
-    const rightKey = rowKey(b)
-    return leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : 0
+    return a.key < b.key ? -1 : a.key > b.key ? 1 : 0
   })
+  return keyed.map((item) => item.row)
 }
 
 // ─── 日期列 ──────────────────────────────────────────────────────────────────

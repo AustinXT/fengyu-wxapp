@@ -36,6 +36,7 @@ describe('completeExportMeta', () => {
     const audit = { generatedAt: new Date(0), exporterName: 'a' }
     expect(() => completeExportMeta({ period: ' ', scope: '全部' }, audit)).toThrow(/INVALID_STATE.*时间区间/)
     expect(() => completeExportMeta({ period: 'x', scope: ' ' }, audit)).toThrow(/INVALID_STATE.*范围/)
+    expect(() => completeExportMeta({ period: 'x' } as never, audit)).toThrow(/INVALID_STATE.*范围/)
   })
 
   it('空白基期不写；缺姓名 / 非法时间写占位；两端空白裁掉', () => {

@@ -182268,7 +182268,7 @@ async function writeStreamXlsx(options) {
 // src/export-worker/export-meta.ts
 init_datetime();
 function required(label, value2) {
-  const trimmed = value2.trim();
+  const trimmed = (value2 ?? "").trim();
   if (!trimmed)
     throw new Error(`INVALID_STATE: 导出元信息缺少${label}`);
   return trimmed;
@@ -182285,6 +182285,14 @@ function completeExportMeta(meta, audit) {
     { label: "导出时间", value: fmtDateTime(audit.generatedAt) || "—" },
     { label: "导出人", value: audit.exporterName?.trim() || "—" }
   ];
+}
+
+// src/export-worker/retry-policy.ts
+var DETERMINISTIC_FAILURE_CODES = new Set(["INVALID_PARAMS", "INVALID_STATE"]);
+function shouldRetryExportFailure(code, attemptCount, maxAttempts) {
+  if (DETERMINISTIC_FAILURE_CODES.has(code))
+    return false;
+  return attemptCount < maxAttempts;
 }
 
 // src/lib/worker-heartbeat.ts
@@ -182445,7 +182453,7 @@ function safeFailure(err) {
 }
 async function failJob(job, err) {
   const failure = safeFailure(err);
-  const shouldRetry = job.attemptCount < MAX_ATTEMPTS;
+  const shouldRetry = shouldRetryExportFailure(failure.code, job.attemptCount, MAX_ATTEMPTS);
   await db2.update(adminExportJobs).set({
     status: shouldRetry ? "queued" : "failed",
     nextAttemptAt: shouldRetry ? new Date(Date.now() + job.attemptCount * 30000) : new Date,

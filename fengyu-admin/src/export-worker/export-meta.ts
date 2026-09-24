@@ -16,8 +16,9 @@ export interface ExportContextMeta {
   extra?: ExportMetaEntry[]
 }
 
-function required(label: string, value: string): string {
-  const trimmed = value.trim()
+function required(label: string, value: string | null | undefined): string {
+  // 类型上是必填，但 view 漏传时运行时仍可能是 undefined：同样落到 INVALID_STATE，而不是一个无前缀的 TypeError
+  const trimmed = (value ?? '').trim()
   // 元信息是导出件自证口径的唯一依据：空白的「时间区间 / 范围」看似字段齐全实则无法追溯，宁可让任务失败
   if (!trimmed) throw new Error(`INVALID_STATE: 导出元信息缺少${label}`)
   return trimmed

@@ -105,21 +105,26 @@ function looksUnique(arg: string): boolean {
   return /\.\s*(id|[a-zA-Z0-9]*Id)\s*\)?\s*$/.test(arg.trim())
 }
 
-/** `matrixOrderBySql(sort, SORTABLE, [a, b])` → 兜底键数组的末位 `b`（按顶层逗号切，括号/方括号/模板内的逗号不算） */
+/**
+ * `matrixOrderBySql(sort, SORTABLE, [a, b])` → 兜底键数组的末位 `b` 的源码文本。
+ *
+ * 用 TypeScript AST 精确取**第三个实参**，不做字符扫描：「取最后一对方括号」会被第二个实参里的数组骗过
+ * （`matrixOrderBySql(sort, make([sql`c.id`]), TIEBREAK)` 会误取 `c.id`），模板字符串里的逗号 / 括号也会让
+ * 手写的深度计数失真。第三个实参缺失、不是数组字面量（如传变量）、数组为空、解析失败 → 一律返回 ''，判不通过。
+ */
 function matrixTiebreakTail(call: string): string {
-  const open = call.lastIndexOf('[')
-  const close = call.lastIndexOf(']')
-  if (open < 0 || close < open) return ''
-  let depth = 0
-  let cur = ''
-  let tail = ''
-  for (const ch of call.slice(open + 1, close)) {
-    if ('([{`'.includes(ch)) depth++
-    else if (')]}'.includes(ch)) depth--
-    if (ch === ',' && depth === 0) { tail = cur; cur = ''; continue }
-    cur += ch
-  }
-  return (cur.trim() || tail).trim()
+  const sf = ts.createSourceFile('matrix-order-call.ts', `(${call})`, ts.ScriptTarget.Latest, true)
+  const statement = sf.statements[0]
+  if (!statement || !ts.isExpressionStatement(statement)) return ''
+  let expression: ts.Expression = statement.expression
+  while (ts.isParenthesizedExpression(expression)) expression = expression.expression
+  if (!ts.isCallExpression(expression)) return ''
+  if (!ts.isIdentifier(expression.expression) || expression.expression.text !== 'matrixOrderBySql') return ''
+  const tiebreak = expression.arguments[2]
+  if (!tiebreak || !ts.isArrayLiteralExpression(tiebreak)) return ''
+  const last = tiebreak.elements[tiebreak.elements.length - 1]
+  if (!last || ts.isSpreadElement(last)) return ''
+  return last.getText(sf)
 }
 
 /** 原生 SQL 模板里的兜底键：sql`c.customer_id` / sql`${customers.userId}` */
@@ -294,6 +299,12 @@ describe('#368 · matrixOrderBySql 兜底键判据的灵敏度（解析坏了会
     expect(verdict('matrixOrderBySql(sort, SORTABLE, [sql`c.customer_id`, sql`c.name`])')).toBe(false)
     expect(verdict('matrixOrderBySql(sort, SORTABLE, TIEBREAK)')).toBe(false)
     expect(verdict('matrixOrderBySql(sort, SORTABLE, [sql`c.paid_id_text`])')).toBe(false)
+    // 第二个实参里的数组不能被当成兜底键（字符扫描「取最后一对方括号」的版本会被这条骗过）
+    expect(verdict('matrixOrderBySql(sort, make([sql`c.id`]), TIEBREAK)')).toBe(false)
+    expect(verdict('matrixOrderBySql(sort, SORTABLE, [])')).toBe(false)
+    expect(verdict('matrixOrderBySql(sort, SORTABLE, [...KEYS])')).toBe(false)
+    expect(verdict('matrixOrderBySql(sort, SORTABLE)')).toBe(false)
+    expect(verdict('matrixOrderBySql(sort, SORTABLE, [sql`c.id`, sql`c.name, c.x`])')).toBe(false)
   })
 })
 
