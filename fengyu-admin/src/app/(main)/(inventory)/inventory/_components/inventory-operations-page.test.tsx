@@ -1552,15 +1552,12 @@ describe('SKU 候选按业务口径交给服务端过滤（#339）', () => {
     expect(filtersOf(pickers()[0])).toEqual({ ownedByMarketId: 'M1' })
   })
 
-  it('库存转换目标：市场主体 → 本市场可用；总部主体 → 仅供应链；来源商品不加过滤（批次兜底）', () => {
-    const { unmount } = renderPage({ level: 'market', operation: 'market-conversion', locations: LOCATIONS })
-    chooseSubject('请选择市场', 'M1')
+  it('库存转换目标：总部主体 → 仅供应链；来源商品不加过滤（批次兜底）', () => {
+    // #343 起库存转换只剩供应链（总部主体）一层，市场 / 门店转换卡已下线
+    renderPage({ level: 'supply-chain', operation: 'supply-chain-conversion', locations: LOCATIONS })
     const [source, target] = pickers()
     expect(filtersOf(source)).toEqual({})
-    expect(filtersOf(target)).toEqual({ availableToMarketId: 'M1' })
-    unmount()
-    renderPage({ level: 'supply-chain', operation: 'supply-chain-conversion', locations: LOCATIONS })
-    expect(filtersOf(pickers()[1])).toEqual({ sourceType: '供应链' })
+    expect(filtersOf(target)).toEqual({ sourceType: '供应链' })
   })
 })
 
@@ -1681,5 +1678,20 @@ describe('采购订单市场行走供应链采购入库（#335）', () => {
     const row = docRow({ id: 'CGD-336', docType: '采购订单', status: '待收货', partiallyReceived: true })
     renderPage({ level: 'supply-chain', operation: 'supply-chain-receipt', workflowDocs: [row] })
     expect(await screen.findByRole('option', { name: /^CGD-336 · .* · 部分入库$/ })).toBeInTheDocument()
+  })
+})
+
+describe('库存转换卡片只剩供应链一张（#343）', () => {
+  const source = readFileSync(resolve(__dirname, 'inventory-operations-page.tsx'), 'utf8')
+
+  it('卡片数组与渲染分支里都没有市场 / 门店转换', () => {
+    expect(source).not.toMatch(/id: 'market-conversion'/)
+    expect(source).not.toMatch(/id: 'store-conversion'/)
+    expect(source).not.toMatch(/operation === '(market|store)-conversion'/)
+    expect(source).toMatch(/id: 'supply-chain-conversion', level: 'supply-chain'/)
+    // 唯一的 ConversionForm 调用点固定总部主体
+    const calls = source.match(/<ConversionForm\b[^>]*\/>/g) ?? []
+    expect(calls).toHaveLength(1)
+    expect(calls[0]).toContain('locationType="总部"')
   })
 })

@@ -229,7 +229,7 @@ const RECEIVE_INBOUND_TYPE: Partial<Record<InventoryDocType, InventoryDocType>> 
 
 /**
  * 这些单据必须由专用业务服务创建，才能保留需求、优惠、批次与履约关系。
- * 通用建单只负责盘点、领用、报损、转换等没有上游业务血缘的库存动作。
+ * 通用建单只负责盘点、领用、报损等没有上游业务血缘的库存动作（库存转换走专用的 createInventoryConversion）。
  */
 const SPECIALIZED_DOC_TYPES = new Set<InventoryDocType>([
   '门店报货',

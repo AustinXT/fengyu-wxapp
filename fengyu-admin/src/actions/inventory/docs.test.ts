@@ -141,9 +141,9 @@ describe('listInventoryOperationDocs 入参闸门', () => {
     })
 
     vi.clearAllMocks()
-    await listInventoryOperationDocs({ operationId: 'market-conversion', page: 1 })
+    await listInventoryOperationDocs({ operationId: 'supply-chain-conversion', page: 1 })
     expect(mockEngine.listInventoryCoreDocs).toHaveBeenLastCalledWith({
-      docTypes: ['库存转换出库', '库存转换入库'], statuses: undefined, locationType: '市场', scopeRole: undefined,
+      docTypes: ['库存转换出库', '库存转换入库'], statuses: undefined, locationType: '总部', scopeRole: undefined,
       cancellationRequested: undefined, pendingItemScope: undefined, page: 1, pageSize: undefined,
     })
 

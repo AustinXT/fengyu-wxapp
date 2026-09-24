@@ -28,9 +28,8 @@ export const INVENTORY_OPERATION_IDS = [
   'supply-chain-staff-purchase',
   'self-purchase',
   'external-outbound',
+  // 库存转换仅供应链可做（#343）：市场 / 门店两张转换卡已下线
   'supply-chain-conversion',
-  'market-conversion',
-  'store-conversion',
   'shipment-cancel',
   'shipment-cancel-approval',
 ] as const
@@ -52,9 +51,8 @@ export interface InventoryOperationDocFilter {
    */
   statuses?: readonly InventoryCoreDocStatus[]
   /**
-   * 层级收窄。`库存转换出库` / `库存转换入库` 是供应链、市场、门店三层**共用**的
-   * docType（`business.ts` 的 createInventoryConversion 不按层级分单据类型），
-   * 只按 docType 查会让市场办理台看到门店的转换单。
+   * 层级收窄。`库存转换出库` / `库存转换入库` 不按层级分单据类型；#343 起新建只在总部，
+   * 但市场 / 门店的存量转换单仍在（只禁新建），只按 docType 查会让供应链办理台看到它们。
    */
   locationType?: InventoryLocationType
   /**
@@ -316,12 +314,6 @@ export const INVENTORY_OPERATION_DOC_QUERY: Record<InventoryOperationId, Invento
   'shipment-cancel': { produced: { docTypes: ['品项公司发货'], cancellationRequested: true } },
   'staff-purchase': { produced: { docTypes: ['员工购出库'] } },
   'self-purchase': { produced: { docTypes: ['自采产品入库'] } },
-  'market-conversion': {
-    produced: {
-      docTypes: ['库存转换出库', '库存转换入库'],
-      locationType: '市场',
-    },
-  },
 
   // —— 门店 ——
   'store-request': { produced: { docTypes: ['门店报货'] } },
@@ -345,18 +337,12 @@ export const INVENTORY_OPERATION_DOC_QUERY: Record<InventoryOperationId, Invento
     inbox: { docTypes: ['分院配货'], statuses: ['待收货'], scopeRole: 'target' },
   },
   'store-return': { produced: { docTypes: ['院退货'] } },
-  'store-conversion': {
-    produced: {
-      docTypes: ['库存转换出库', '库存转换入库'],
-      locationType: '门店',
-    },
-  },
 }
 
 /*
  * ────────── 通用建单业务（#191） ──────────
  *
- * 10 张「通用业务」卡片（内部领用 / 报损 / 盘点 / 调货 / 顾客产品出入库）与上面 24 个
+ * 10 张「通用业务」卡片（内部领用 / 报损 / 盘点 / 调货 / 顾客产品出入库）与上面 22 个
  * 内置业务的区别：它们没有专属的业务函数，就是**直接建一张某类型的单**。
  * 所以 id 直接由 docType 派生、映射天然为「查这一种单据」，零维护。
  *
