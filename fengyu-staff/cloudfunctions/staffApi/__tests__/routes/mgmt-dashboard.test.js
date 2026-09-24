@@ -1991,7 +1991,7 @@ describe('mgmtDashboard.staffRanking', () => {
 
         const sql = pg.query.mock.calls[0][0]
         expect(sql).toMatch(
-          /ORDER BY\s+\(\s*value\s*<>\s*0\s*\)\s+DESC,\s*value\s+DESC,\s*pe\.employee_name\s+ASC,\s*pe\.employee_id\s+ASC/,
+          /ORDER BY\s+\(COALESCE\([\s\S]*?<>\s*0\)\s+DESC,\s*COALESCE\([\s\S]*?DESC,\s*pe\.employee_name\s+ASC,\s*pe\.employee_id\s+ASC/,
         )
       },
     )

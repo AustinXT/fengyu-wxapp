@@ -314,9 +314,9 @@ function assertPlainSumAggregate(segment: string, label: string): void {
  * WHERE **之前**，会把外层 WHERE 整个切掉。
  *
  * 外层 `ORDER BY` 是唯一可靠的尾锚（两端排行榜都以它收尾，CTE 内不出现排序）；
- * staff 端排序是插值常量 `${STAFF_ORDER_BY}`，一并识别。取尾锚之前的**最后一个** WHERE。
+ * staff 端排序经插值函数 `${staffOrderBy(<value 表达式>)}` 拼出，一并识别。取尾锚之前的**最后一个** WHERE。
  */
-const ORDER_BY_ANCHOR = /ORDER BY|\$\{STAFF_ORDER_BY\}/g
+const ORDER_BY_ANCHOR = /ORDER BY|\$\{staffOrderBy\(/g
 
 /**
  * ★ `whereClauseOf` 的 fail-closed 前置条件（闸门 1 · boundary-critic P1-2 / P2-1，
@@ -365,7 +365,7 @@ function assertSingleOuterQuery(segment: string, label: string): void {
  * WHERE **之前**，会把外层 WHERE 整个切掉。
  *
  * 以**唯一的** `ORDER BY` 为尾锚（唯一性由 `assertSingleOuterQuery` 先行保证），
- * 取其之前的最后一个 WHERE。staff 端排序是插值常量 `${STAFF_ORDER_BY}`，一并识别。
+ * 取其之前的最后一个 WHERE。staff 端排序经插值函数 `${staffOrderBy(<value 表达式>)}` 拼出，一并识别。
  */
 function whereClauseOf(segment: string, label: string): string {
   assertSingleOuterQuery(segment, label)
@@ -418,18 +418,22 @@ function assertNoAmountFloorInCte(segment: string, label: string): void {
  * 去掉它不会让任何行消失、不会让任何断言红，却会让本次修复的可见性归零 ——
  * 属于「静默削弱」类回归，故必须正面钉死。
  *
- * staff 侧排序是插值常量 `${STAFF_ORDER_BY}`，切片里看不到字面量，
+ * staff 侧排序经插值函数 `${staffOrderBy(...)}` 拼出，切片里看不到字面量，
  * 由下方单独一条 it 校验常量定义本身。
  */
 function assertZeroLastOrdering(segment: string, label: string): void {
-  if (!segment.includes('ORDER BY')) return // staff 切片走 ${STAFF_ORDER_BY} 插值，另行校验
+  if (!segment.includes('ORDER BY')) return // staff 切片走 ${staffOrderBy(...)} 插值，另行校验
   const at = segment.indexOf('ORDER BY')
   const clause = segment.slice(at + 'ORDER BY'.length).replace(/`\)[\s\S]*$/, '').trim()
   expect(
     clause,
     `${label} 的排序首键不再是「非零优先」。缺了 (value <> 0) DESC，零产能员工会排在` +
       '负值员工**之前**（实测把负值压到第 252/253 名），本次修复在 UI 上等于白做。',
-  ).toMatch(/^\(\s*value\s*<>\s*0\s*\)\s+DESC\s*,\s*value\s+DESC\b/)
+    // ⚠️ 必须是**展开的数值表达式**，不能是 SELECT 别名 `value`：PG 只允许别名作为
+    // 独立排序项，参与表达式时按真实列解析 → `column "value" does not exist`
+    //（闸门 2 round-1 codex 抓到，当时本断言反把无效语法钉死了）。
+    // 同时要求排序表达式与该榜 WHERE 里的表达式一致（下方 assertOrderMatchesWhere）。
+  ).toMatch(/^\((?!\s*value\s*<>)[^)]*(?:\)[^)]*)*?<>\s*0\)\s+DESC\s*,/)
 }
 
 /**
@@ -461,6 +465,16 @@ function assertMetricJoinShape(segment: string, label: string): void {
 
   // 用 [\s\S] 而非 `.` + `s` 标志：dotAll 需要 target es2018+，本仓 tsconfig 低于该版本
   // （vitest/esbuild 不校验、`tsc --noEmit` 会报 TS1501，两道关卡口径不同）
+  // ⚠️ JOIN 数据源必须是裸 CTE 名，不能是内联子查询：
+  // `LEFT JOIN (SELECT * FROM revenue_by_emp WHERE v > 0) r ON r.employee_id = pe.employee_id`
+  // 能同时通过「是 LEFT JOIN」「ON 只有 employee_id」两条，却让负值关联落空、
+  // 有标签员工的 value 被篡改成 0.00（闸门 2 round-1 codex）。
+  expect(
+    /\bLEFT JOIN\s*\(/i.test(joinArea),
+    `${label} 的 metric 关联用了**内联子查询**做数据源。子查询里可以藏任意 value 过滤，` +
+      '而 JOIN 类型与 ON 正文两条断言都看不见它 —— 数据源必须是裸 CTE 名。',
+  ).toBe(false)
+
   const onClauses = [...joinArea.matchAll(/\bON\s+([\s\S]+?)(?=\s*(?:LEFT JOIN|JOIN|WHERE)\b|$)/gi)]
   expect(
     onClauses.length,
@@ -1032,16 +1046,31 @@ describe('数据中心人效板块两端口径一致性守护', () => {
      * 这里直接钉死消费 `producer_employees` 的查询总数：多一个就红，改动者必须回来
      * 同步切片清单并说明新榜为何安全。
      */
-    it('staff 的 STAFF_ORDER_BY 常量同样「非零优先」（两端排序镜像）', () => {
-      // staff 六个榜共用插值常量，切片里只看得到 ${STAFF_ORDER_BY}，故在此校验常量定义本身。
-      // 两端排序必须一致，否则同一名员工在 admin 榜和 staff 小程序榜上的名次会对不上。
-      const decl = staffBody.match(/const STAFF_ORDER_BY = `([^`]*)`/)?.[1]
-      expect(decl, 'staff 找不到 STAFF_ORDER_BY 常量定义（重命名了？）').toBeTruthy()
+    it('staff 的 staffOrderBy 单源同样「非零优先」，且六个榜都经由它（两端排序镜像）', () => {
+      // staff 六个榜共用一个排序拼接函数，切片里只看得到 ${staffOrderBy(...)} 插值，
+      // 故在此校验函数定义本身 + 全部调用点。两端排序必须一致，
+      // 否则同一名员工在 admin 榜和 staff 小程序榜上的名次会对不上。
+      const decl = staffBody.match(/const staffOrderBy = \(valueExpr\) => `([^`]*)`/)?.[1]
+      expect(decl, 'staff 找不到 staffOrderBy 单源定义（重命名了？）').toBeTruthy()
       expect(
         decl,
         'staff 排序首键不再是「非零优先」，会与 admin 员工榜名次分叉，' +
           '且负值员工在小程序端会被零值行压到榜底',
-      ).toMatch(/^ORDER BY \(\s*value\s*<>\s*0\s*\)\s+DESC\s*,\s*value\s+DESC\b/)
+      ).toMatch(/^ORDER BY \(\$\{valueExpr\} <> 0\) DESC, \$\{valueExpr\} DESC,/)
+
+      // ⚠️ 排序表达式必须与各榜 SELECT 的 `AS value` **逐字相同**：写成别名 `value` 会让
+      // PG 报 `column "value" does not exist`（别名只能做独立排序项，不能参与表达式）。
+      // 故此处同时钉死「六个榜都走 staffOrderBy」，不许某个榜自己拼 ORDER BY。
+      expect(
+        (staffBody.match(/\$\{staffOrderBy\('/g) ?? []).length,
+        'staff 六个员工榜必须全部经由 staffOrderBy 拼排序；' +
+          '某个榜自己写 ORDER BY 会绕过本组守护，且极易写成别名形式而在运行时报错',
+      ).toBe(6)
+      expect(
+        /ORDER BY \(value <> 0\)/.test(staffBody),
+        'staff 出现了 `ORDER BY (value <> 0)` 这种**别名参与表达式**的写法 —— ' +
+          'PG 会报 column "value" does not exist，整个 staffRanking 直接失败',
+      ).toBe(false)
     })
 
     it('消费 producer_employees 的查询总数与切片清单对账（新增 metric 必须同步补断言）', () => {

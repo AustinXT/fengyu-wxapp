@@ -1046,7 +1046,16 @@ function buildOrgAnchorScope(visibleStoreIds, startIdx) {
 // 负值紧跟正值（第 158/159 名），零值整体垫底。
 // ⚠️ assignRanks 只比较相邻值是否相等、不要求单调，故名次仍正确：
 //    正值 1~157 → 负值 158/159 → 零值并列 160。
-const STAFF_ORDER_BY = `ORDER BY (value <> 0) DESC, value DESC, pe.employee_name ASC, pe.employee_id ASC`
+/**
+ * 员工榜排序（单源）。`valueExpr` 必须与该榜 SELECT 里 `AS value` 的表达式**逐字相同**。
+ *
+ * ⚠️ 不能写成 `ORDER BY (value <> 0) DESC`：PostgreSQL 只允许 SELECT 输出别名作为
+ * **独立排序项**，一旦参与表达式就按真实列解析，而来源表里没有 value 列 →
+ * `column "value" does not exist`，整个 staffRanking 直接报错。
+ * （闸门 2 round-1 codex 抓到；当时单测只匹配 SQL 文本，反把无效语法钉死了。）
+ */
+const staffOrderBy = (valueExpr) =>
+  `ORDER BY (${valueExpr} <> 0) DESC, ${valueExpr} DESC, pe.employee_name ASC, pe.employee_id ASC`
 
 /* ----- 6 个员工排行榜 metric 子查询 ----- */
 
@@ -1076,7 +1085,7 @@ SELECT
 FROM producer_employees pe
 LEFT JOIN revenue_by_emp r ON r.employee_id = pe.employee_id
 WHERE (pe.has_skills OR COALESCE(r.v, 0) <> 0)
-${STAFF_ORDER_BY}`,
+${staffOrderBy('COALESCE(r.v, 0)')}`,
     storeFilter.params,
   )
 }
@@ -1124,7 +1133,7 @@ SELECT
 FROM producer_employees pe
 LEFT JOIN consume_by_emp c ON c.employee_id = pe.employee_id
 WHERE (pe.has_skills OR COALESCE(c.v, 0) <> 0)
-${STAFF_ORDER_BY}`,
+${staffOrderBy('COALESCE(c.v, 0)')}`,
     storeFilter.params,
   )
 }
@@ -1158,7 +1167,7 @@ SELECT
 FROM producer_employees pe
 LEFT JOIN new_member_by_emp n ON n.employee_id = pe.employee_id
 WHERE (pe.has_skills OR COALESCE(n.v, 0) <> 0)
-${STAFF_ORDER_BY}`,
+${staffOrderBy('COALESCE(n.v, 0)')}`,
     storeFilter.params,
   )
 }
@@ -1192,7 +1201,7 @@ SELECT
 FROM producer_employees pe
 LEFT JOIN footfall_by_emp f ON f.employee_id = pe.employee_id
 WHERE (pe.has_skills OR COALESCE(f.v, 0) <> 0)
-${STAFF_ORDER_BY}`,
+${staffOrderBy('COALESCE(f.v, 0)')}`,
     storeFilter.params,
   )
 }
@@ -1233,7 +1242,7 @@ SELECT
 FROM producer_employees pe
 LEFT JOIN project_by_emp p ON p.employee_id = pe.employee_id
 WHERE (pe.has_skills OR COALESCE(p.v, 0) <> 0)
-${STAFF_ORDER_BY}`,
+${staffOrderBy('COALESCE(p.v, 0)')}`,
     storeFilter.params,
   )
 }
@@ -1284,7 +1293,7 @@ FROM producer_employees pe
 LEFT JOIN sales_comm   sc1 ON sc1.employee_id = pe.employee_id
 LEFT JOIN service_comm sc2 ON sc2.employee_id = pe.employee_id
 WHERE (pe.has_skills OR COALESCE(sc1.v, 0) + COALESCE(sc2.v, 0) <> 0)
-${STAFF_ORDER_BY}`,
+${staffOrderBy('COALESCE(sc1.v, 0) + COALESCE(sc2.v, 0)')}`,
     storeFilter.params,
   )
 }

@@ -66,6 +66,13 @@ const PROBES: Probe[] = [
     minLines: 5,
   },
   {
+    label: '人效板 · 员工榜排序「非零优先」（#290）',
+    file: 'src/actions/data-center/efficiency.ts',
+    // 排序同样是承重口径：改了不重建产物，页面与 Excel 的顺序及 assignRanks 名次会分裂
+    pattern: /^ORDER BY \(COALESCE\([\s\S]*<> 0\) DESC,/,
+    minLines: 5,
+  },
+  {
     label: '人效板 · 产能员工候选池 has_skills 标记（#290）',
     file: 'src/actions/data-center/efficiency.ts',
     pattern: /^\(COALESCE\(cardinality\(array_remove\(sw\.skills, ''\)\), 0\) > 0\) AS has_skills$/,
