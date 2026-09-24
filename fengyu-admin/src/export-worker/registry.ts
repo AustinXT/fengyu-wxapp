@@ -51,12 +51,19 @@ import {
   type ExportJobPayload,
   type ExportJobType,
 } from '@/lib/export-job-types'
-import type { WorkerExportColumn, ExportCell } from './xlsx-writer'
+import type { WorkerExportColumn, ExportCell, ExportMetaEntry } from './xlsx-writer'
 
 export interface ExportContent {
   sheetName: string
   columns: WorkerExportColumn<Record<string, unknown>>[]
   rows: AsyncIterable<Record<string, unknown>>
+  /** 以下为矩阵报表（#368）可选项，旧导出类型不填即保持原样 */
+  frozenColumns?: number
+  /** 服务端按全量筛选算好的合计行（与数据行同形） */
+  totalsRow?: Record<string, unknown>
+  isEmphasisRow?: (row: Record<string, unknown>) => boolean
+  /** 业务元信息（时间区间 / scope / 基期）；导出时间与导出人由 worker 追加 */
+  meta?: ExportMetaEntry[]
 }
 
 type Row = Record<string, unknown>

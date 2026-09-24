@@ -14,6 +14,7 @@ import { exportJobLabel } from '@/lib/export-job-types'
 import { createExportContent } from './registry'
 import { exportCloudPath, exportFileName } from './file-name'
 import { writeStreamXlsx } from './xlsx-writer'
+import { completeExportMeta } from './export-meta'
 import { writeWorkerHeartbeat } from '@/lib/worker-heartbeat'
 import { createSerializedAsyncRunner, runWorkerSlots } from './worker-slots'
 
@@ -219,6 +220,10 @@ async function processJob(job: ExportJob): Promise<void> {
         sheetName: content.sheetName,
         columns: content.columns,
         rows: content.rows,
+        frozenColumns: content.frozenColumns,
+        totalsRow: content.totalsRow,
+        isEmphasisRow: content.isEmphasisRow,
+        meta: completeExportMeta(content.meta, { requestedAt: job.createdAt, exporterName: session.name }),
         onProgress: async (rowCount) => {
           if (rowCount - lastProgress < 1_000) return
           lastProgress = rowCount
