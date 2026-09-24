@@ -46,11 +46,16 @@ import {
   aggregateOrderExportRows,
 } from '@/lib/export-row-aggregation'
 import {
+  DATA_CENTER_REPORT_EXPORT_VIEWS,
   exportJobLabel,
+  type DataCenterBoardExportView,
   type DataCenterExportPayload,
+  type DataCenterExportView,
+  type DataCenterReportExportView,
   type ExportJobPayload,
   type ExportJobType,
 } from '@/lib/export-job-types'
+import { DATA_CENTER_REPORT_EXPORT_HANDLERS } from './report-views'
 import type { WorkerExportColumn, ExportCell } from './xlsx-writer'
 import type { ExportContextMeta } from './export-meta'
 
@@ -487,7 +492,7 @@ const inventoryColumns = (canViewPrice: boolean) => mapColumns([
 ])
 
 function breakdownContent(
-  view: DataCenterExportPayload['view'],
+  view: DataCenterBoardExportView,
   rows: BreakdownRow[],
 ): ExportContent {
   const config = getDataCenterBreakdownConfig(view)
@@ -533,12 +538,31 @@ function rankingContent(
   }
 }
 
+const REPORT_EXPORT_VIEWS: ReadonlySet<string> = new Set(DATA_CENTER_REPORT_EXPORT_VIEWS)
+
+export function isReportExportView(view: DataCenterExportView): view is DataCenterReportExportView {
+  return REPORT_EXPORT_VIEWS.has(view)
+}
+
+/**
+ * data-center 导出分发。⚠️ 报表视图（report-*）必须**先于**板块分发：板块按 `sales-` / `customer-` /
+ * `product-` 前缀判定、其余一律落进人效分支，报表视图若漏在这之后会被静默派给板块取数函数（#367 记录的坑）。
+ * 报表视图的处理函数登记在 `./report-views`（`Record<报表视图, handler>`，漏登记 tsc 即报错）。
+ */
 async function queryDataCenter(
+  payload: DataCenterExportPayload,
+): Promise<ExportContent> {
+  const view = payload.view
+  if (isReportExportView(view)) return DATA_CENTER_REPORT_EXPORT_HANDLERS[view](payload.params)
+  return queryDataCenterBoard(view, payload)
+}
+
+async function queryDataCenterBoard(
+  view: DataCenterBoardExportView,
   payload: DataCenterExportPayload,
 ): Promise<ExportContent> {
   const raw = payload.params
   const base = parseBoardParams(raw)
-  const view = payload.view
   if (view.startsWith('sales-')) {
     const board = await getSalesBoard(base)
     const rows = view === 'sales-market' ? board.byMarket : board.byStore

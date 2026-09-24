@@ -7,6 +7,7 @@
 import { firstQueryValue } from './params'
 import { isValidCalendarDate } from './report-period'
 import type { SearchQuery } from './entry'
+import { DATA_CENTER_REPORTS } from './reports'
 
 // ─── 日报参数 ────────────────────────────────────────────────────────────────
 
@@ -307,4 +308,43 @@ export function compareCommissionKeys(a: CommissionDetailKey, b: CommissionDetai
   if (a.d !== b.d) return a.d < b.d ? 1 : -1
   if (a.t !== b.t) return a.t < b.t ? -1 : 1
   return b.id - a.id
+}
+
+// ─── 下钻链接 ────────────────────────────────────────────────────────────────
+
+const DETAIL_PATH = DATA_CENTER_REPORTS.commissionDetail.path
+
+/**
+ * 日报 → 明细的链接。范围与月份沿用日报（明细在同一 scope 内再按员工 / 门店收窄）；
+ * 合并视图不带门店（不限门店）；日期格带 date，双列视图的业绩 / 消耗格带 type。
+ * `returnTo` 让面包屑中间一级「员工提成日报」回到下钻前的筛选状态。
+ */
+export function commissionDetailHref(input: {
+  scope?: string | null
+  scopeId?: string | null
+  month: string
+  employeeId: string
+  storeId?: string | null
+  date?: string | null
+  source?: CommissionSource | null
+  returnTo?: string | null
+}): string {
+  const params = new URLSearchParams()
+  if (input.scope) params.set('scope', input.scope)
+  if (input.scopeId) params.set('scopeId', input.scopeId)
+  params.set('month', input.month)
+  params.set('employeeId', input.employeeId)
+  if (input.storeId) params.set('storeId', input.storeId)
+  if (input.date) params.set('date', input.date)
+  if (input.source) params.set('type', input.source)
+  if (input.returnTo) params.set('returnTo', input.returnTo)
+  return `${DETAIL_PATH}?${params.toString()}`
+}
+
+/** 明细页的非取数参数：导出时剔除（游标、分页大小、返回地址——returnTo 可能超过导出参数的 240 字上限） */
+export const COMMISSION_NON_FILTER_PARAMS = ['after', 'before', 'size', 'returnTo', 'page'] as const
+
+export function commissionExportParams(entries: Iterable<[string, string]>): Record<string, string> {
+  const dropped = new Set<string>(COMMISSION_NON_FILTER_PARAMS)
+  return Object.fromEntries([...entries].filter(([key, value]) => !dropped.has(key) && value !== ''))
 }

@@ -126,6 +126,8 @@ export interface CommissionDailyResult {
   kpis: CommissionDailyKpis
   /** 待分配提示（口径同 /allocations「待分配」） */
   pending: { count: number; amount: number }
+  /** 有 allocation:list 时「待分配」提示可点到 /allocations */
+  canLinkAllocations: boolean
 }
 
 export const getCommissionDaily = withAllPermissions(
@@ -183,6 +185,7 @@ export const getCommissionDaily = withAllPermissions(
         perOrder: ratio(total, orders),
       },
       pending: { count: toNumber(pending.count), amount: toNumber(pending.amount) },
+      canLinkAllocations: hasUiCapability(session.permissions.actions, 'allocation:list'),
     }
   },
 )
