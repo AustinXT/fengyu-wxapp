@@ -540,9 +540,37 @@ describe('品项板块两端口径一致性守护', () => {
      * 看到红时请先确认**归店语义没变**，再把新快照同步进来 ——
      * 别反过来把断言改宽，那正是 `23405ddf` 让 #285 的缺陷活两个月的原因。
      */
+    /**
+     * ★ **生产调用点守护**（round-10 codex）。
+     *
+     * 上面那条把函数**定义**钉死了，却没锁住「这个函数是不是真的被用」。绕过路径：
+     *   ① 安全版 `queryCycleByStore` 原封不动（函数壳快照、CTE 快照全绿）
+     *   ② 在 `buildMetrics` 之后新增一个 `legacyCycleByStore`，恢复旧的内连接 SQL
+     *      （用 `db['execute']` 或干脆放到别的文件，绕开 `db.execute(` 计数）
+     *   ③ 把 `Promise.all` 里那一行改成调用 `legacyCycleByStore(…)`
+     * 于是全部守护检查的都是一个**没人调用**的函数，明细重新漏 65.5%。
+     *
+     * 两条一起堵：调用点钉字面快照 + `queryCycleByStore(` 在剥注释后的源码里恰好两处
+     * （一处声明、一处调用）。
+     */
+    it('queryCycleByStore 的生产调用点未被换掉', () => {
+      const code = stripComments(adminSrc)
+      expect(
+        (code.match(/queryCycleByStore\(/g) ?? []).length,
+        'queryCycleByStore 的出现次数不是「一处声明 + 一处调用」—— ' +
+          '可能新增了旁路实现，也可能调用点被换成了别的函数',
+      ).toBe(2)
+      expect(
+        normalize(code),
+        '明细侧的生产调用点变了 —— 确认 Promise.all 第三项仍直接调 queryCycleByStore 且实参未变',
+      ).toContain('queryCycleByStore(session, scope, cur, threshold, groupCol, filter),')
+    })
+
     it('queryCycleByStore 的函数壳未变（除 SQL 模板外全等）', () => {
       expect(
-        (adminSrc.match(/function buildMetrics\(/g) ?? []).length,
+        // ⚠️ 必须在**剥注释后**计数：注释里写一行 `// function buildMetrics(`
+        // 就能把「声明唯一」这条伪造掉，从而挪动函数壳的右边界（round-10 codex）
+        (stripComments(adminSrc).match(/function buildMetrics\(/g) ?? []).length,
         '右边界锚点 buildMetrics 不唯一 —— 函数壳切片口径需同步更新',
       ).toBe(1)
       const from = adminSrc.indexOf('async function queryCycleByStore(')
