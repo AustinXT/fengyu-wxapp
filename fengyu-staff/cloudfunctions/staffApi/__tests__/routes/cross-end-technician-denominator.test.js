@@ -394,10 +394,34 @@ describe('产能技师分母跨端字面量守护（#320）', () => {
    * 而要件 1~6 一条都不会红（那些只看 CTE 与锚分支）。
    */
   it('要件 7：两端门店分支都叠加「仅启用门店」过滤', () => {
-    for (const [end, active] of [['staff', staffActiveFn], ['admin', adminActiveFn]]) {
-      expect(active, `${end} 侧启用门店过滤缺 type='门店'`).toMatch(/type = '门店'/)
-      expect(active, `${end} 侧启用门店过滤缺 is_active = TRUE`).toMatch(/is_active = TRUE/)
-    }
+    /**
+     * 整段等值，不是 token presence。第 6 轮 GLM 变异实测：只钉 `type = '门店'` 与
+     * `is_active = TRUE` 两个 token 时，下面三种改法全绿且在真实数据上静默算错分母 ——
+     *   A. `IN (` → `NOT IN (`：门店分支取补集（集团口径变成「直挂 + 停用门店技师」）
+     *   B. `SELECT active_store.store_id` → `SELECT active_node.id`：
+     *      store_id 与组织节点 id 空间不相交 → 子查询恒空集 → 门店分支整池消失
+     *   C. 子查询内追加 `AND active_node.parent_id IS NOT NULL`（该列真实存在）→
+     *      启用门店集合缩水、staff 单端与 admin 静默分叉
+     * 这个函数被 sale / client / staff 三条 scope 共用，「顺手改一处」的现实概率不低。
+     *
+     * 两端除插值名（`${column}` vs `${storeCol}`）与 `sql` 模板标记外逐字同构，
+     * 故按端各写期望字面量（不违反禁止跨端共享代码目录那条 invariant —— 这里共享的是断言，
+     * 不是实现）。
+     */
+    const SUBQUERY =
+      'SELECT active_store.store_id' +
+      ' FROM stores active_store' +
+      ' JOIN org_nodes active_node ON active_store.org_node_id = active_node.id' +
+      " WHERE active_node.type = '门店'" +
+      ' AND active_node.is_active = TRUE'
+    expect(staffActiveFn, 'staff 侧启用门店过滤形态漂移').toBe(
+      'function activeStoreCondition(column) {' +
+        ` return \`\${column} IN ( ${SUBQUERY} )\` }`,
+    )
+    expect(adminActiveFn, 'admin 侧启用门店过滤形态漂移').toBe(
+      'function activeStoreCondition(storeCol: SQL): SQL {' +
+        ` return sql\` \${storeCol} IN ( ${SUBQUERY} ) \` }`,
+    )
     // 过滤器存在还不够，必须真的被技师分母那条 scope 用上
     expect(staffStaffScopeFn, 'staff 的 buildStaffScope 未叠加启用门店过滤').toMatch(
       /withActiveStoreCondition\(/,
@@ -470,6 +494,18 @@ describe('产能技师分母跨端字面量守护（#320）', () => {
     expect(staffRaw, 'staff 两个 scope 片段的槽位被对调了').toContain(
       'WHERE (tb.store_id IS NOT NULL AND ${sc.sql})' +
         ' OR (tb.store_id IS NULL AND ${anchor.sql})',
+    )
+    /**
+     * base CTE 里那两个 `$1` 也只有读原文才钉得住（归一化后都是 `?`）。
+     * 改成 `$2` 会绑到 scopeId 上 —— 后果是**响亮的**报错（date 转换失败或参数不存在）
+     * 而非静默错数，所以级别不高；但项目 invariant 明列「占位符序号错位」是已知风险点，
+     * 而守护成本只有两行。
+     */
+    expect(staffRaw, 'base CTE 的 hired_at 绑错了参数序号').toContain(
+      'AND sw.hired_at::date <= $1::date',
+    )
+    expect(staffRaw, 'base CTE 的 resigned_at 绑错了参数序号').toContain(
+      'AND (sw.resigned_at IS NULL OR sw.resigned_at::date > $1::date)',
     )
   })
 
@@ -558,25 +594,44 @@ describe('产能技师分母跨端字面量守护（#320）', () => {
         '/** 返回某组织节点子树内所有关联门店的子查询。 */',
       ),
     )
-    for (const [end, src] of [['staff', staffExpand], ['admin', adminExpand]]) {
-      expect(src, `${end} 侧展开不是递归 CTE`).toMatch(/WITH RECURSIVE descendants\(id, path\) AS/)
-      expect(src, `${end} 侧展开缺 parent_id 递推`).toMatch(
-        /JOIN descendants ON child\.parent_id = descendants\.id/,
-      )
-      expect(src, `${end} 侧展开缺 path 防环`).toMatch(
-        /WHERE NOT child\.id = ANY\(descendants\.path\)/,
-      )
-    }
     /**
-     * 种子行也要钉：必须以**根节点自身**起算、path 以自身初始化。
-     * 若 seed 改成「根的直接子节点」，挂在市场节点自己名下的那批门店会被静默丢掉
-     * （市场口径分母偏小），而递推与防环两条断言照绿（GLM 第 4 轮 P3-1）。
+     * 同样整段等值。第 6 轮 GLM 变异实测：presence 式的五条断言（递归 CTE / 递推 / 防环 /
+     * 种子 / 落店）挡不住在递推的 `WHERE` 后追加 `AND child.is_active = TRUE`
+     * （`org_nodes` 真有这一列）—— 停用组织节点被剔出后代树、其下门店整批丢失
+     * → **market 口径分母静默缩水**，而当时断言全绿（防环那条 regex 没有尾锚）。
+     *
+     * staff 侧这一段**单独决定 market 口径的分母**，所以必须逐字钉死。
+     *
+     * ⚠️ `utils/scope.js` 里有一对孪生函数：`descendantStoresSqlForRoots`（**复数**，收 text[]）
+     * 与 `descendantStoresSqlForRoot`（单数，收单个根）。本守护只钉**单数**那个 ——
+     * 它才在技师分母链路上（`buildManagementStoreScope` 用它）；复数版服务于
+     * `expandScopeStoreIds`（登录时展开账号可见门店），不影响本口径。
+     * 做红检时别改错那一个：改复数版**不会**红，那是对的，不是守护失灵（我第一次就改错了）。
+     *
+     * ⚠️ 用**函数式** replacement：`replaceAll` 的字符串 replacement 里 `$$` 是转义序列
+     * （会被折成一个 `$`），直接写 `'$${startIndex}'` 会被悄悄改成 `'${startIndex}'`，
+     * 断言变成「期望少一个 `$`」—— 恰好是本文件在防的那类「看着钉住其实钉错」。
      */
-    expect(staffExpand, 'staff 侧种子行不含根自身').toContain(
-      'SELECT $${startIndex}::text, ARRAY[$${startIndex}::text]',
+    const recursion = (seed) =>
+      'WITH RECURSIVE descendants(id, path) AS (' +
+      ` SELECT ${seed}::text, ARRAY[${seed}::text]` +
+      ' UNION ALL' +
+      ' SELECT child.id, descendants.path || child.id' +
+      ' FROM org_nodes child' +
+      ' JOIN descendants ON child.parent_id = descendants.id' +
+      ' WHERE NOT child.id = ANY(descendants.path) )'
+    expect(staffExpand, 'staff 侧市场展开形态漂移').toBe(
+      'function descendantStoresSqlForRoot(column, startIndex) {' +
+        ' return `${column} IN ( ' +
+        recursion('$${startIndex}') +
+        ' SELECT DISTINCT s.store_id FROM stores s' +
+        ' JOIN descendants ON s.org_node_id = descendants.id )` }',
     )
-    expect(adminExpand, 'admin 侧种子行不含根自身').toContain(
-      'SELECT ${rootNodeId}::text, ARRAY[${rootNodeId}::text]',
+    expect(adminExpand, 'admin 侧市场展开形态漂移').toBe(
+      'export function descendantOrgNodeIdsSubquery(rootNodeId: string): SQL {' +
+        ' return sql`( ' +
+        recursion('${rootNodeId}') +
+        ' SELECT id FROM descendants )` }',
     )
     // 落店那一跳：staff 在同一段内 JOIN stores，admin 在外层 orgNodeStoreIdsSubquery 里
     expect(staffExpand).toMatch(/FROM stores s JOIN descendants ON s\.org_node_id = descendants\.id/)
