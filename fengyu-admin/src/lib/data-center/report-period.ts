@@ -124,7 +124,7 @@ export function reportMonthOptions(today: string = shanghaiToday(), selected?: s
   }
   if (selected && isValidMonth(selected) && selected < REPORT_MIN_MONTH && !options.includes(selected)) {
     options.push(selected)
-    options.sort((a, b) => (a < b ? 1 : -1))
+    options.sort((a, b) => b.localeCompare(a))
   }
   return options
 }
