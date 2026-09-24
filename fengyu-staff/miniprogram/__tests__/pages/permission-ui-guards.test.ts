@@ -164,6 +164,75 @@ describe('顾客详情权限门禁', () => {
     expect(page.data.customer.preferredStaffName).toBe('美容师乙')
     expect(page.data.profileSaving).toBe(false)
   })
+
+  test('普通员工不能打开基本档案编辑器', () => {
+    const page = createPage('customerDetail')
+    page.data.customer = { clientUserId: 'customer-1', updatedAt: '2026-08-26T00:00:00.000Z' }
+
+    page.onOpenProfileEditor()
+
+    expect(page.data.showProfileEditor).toBe(false)
+  })
+
+  test('店长保存时只提交实际变化字段并即时回填', async () => {
+    setGlobalData({ managerStoreIds: ['store-1'] })
+    const page = createPage('customerDetail')
+    page.data.customer = {
+      clientUserId: 'customer-1', updatedAt: '2026-08-26T00:00:00.000Z',
+      promoterEmployeeId: null, promoterEmployeeName: null, customerSource: '美团', birthday: null,
+      occupation: null, isMarried: null, skinIssue: null, wellnessPreference: null, isCrossStoreTemp: false,
+    }
+    page.onOpenProfileEditor()
+    page.data.profileForm = { ...page.data.profileForm, occupation: '教师', isCrossStoreTemp: true }
+    vi.mocked(callStaffApi).mockResolvedValueOnce({
+      updatedAt: '2026-08-26T01:00:00.000Z',
+      changes: { occupation: '教师', isCrossStoreTemp: true },
+    })
+
+    await page.onSaveProfile()
+
+    expect(callStaffApi).toHaveBeenCalledWith('customer.updateProfile', {
+      clientUserId: 'customer-1',
+      expectedUpdatedAt: '2026-08-26T00:00:00.000Z',
+      changes: { occupation: '教师', isCrossStoreTemp: true },
+    })
+    expect(page.data.customer.occupation).toBe('教师')
+    expect(page.data.customer.isCrossStoreTemp).toBe(true)
+    expect(page.data.showProfileEditor).toBe(false)
+  })
+
+  test('推荐员工输入2个字符即可搜索且结果只提交 employeeId', async () => {
+    setGlobalData({ managerStoreIds: ['store-1'] })
+    const page = createPage('customerDetail')
+    page.data.customer = { clientUserId: 'customer-1' }
+    page.data.promoterSearchKeyword = '王芳'
+    vi.mocked(callStaffApi).mockResolvedValueOnce([
+      { employeeId: 'EMP-1', name: '王员工', phoneMasked: '138****5678', storeName: '测试店' },
+    ])
+
+    await page.onSearchPromoterEmployees()
+    page.onSelectPromoterEmployee({ currentTarget: { dataset: { id: 'EMP-1' } } })
+
+    expect(callStaffApi).toHaveBeenCalledWith('customer.searchPromoterEmployees', {
+      clientUserId: 'customer-1', keyword: '王芳',
+    })
+    expect(page.data.profileForm.promoterEmployeeId).toBe('EMP-1')
+    expect(page.data.profileForm.promoterEmployeeName).toBe('王员工')
+  })
+
+  test('推荐员工输入少于2个字符时提示且不发起搜索', async () => {
+    setGlobalData({ managerStoreIds: ['store-1'] })
+    const page = createPage('customerDetail')
+    page.data.customer = { clientUserId: 'customer-1' }
+    page.data.promoterSearchKeyword = ' 王 '
+
+    await page.onSearchPromoterEmployees()
+
+    expect(callStaffApi).not.toHaveBeenCalled()
+    expect((globalThis as any).wx.showToast).toHaveBeenCalledWith({
+      title: '请输入至少2个字符', icon: 'none',
+    })
+  })
 })
 
 describe('顾客分配数据契约', () => {
@@ -220,6 +289,33 @@ describe('管理层详情只读', () => {
     expect(page.data.isReadOnly).toBe(true)
     expect((globalThis as any).wx.showModal).not.toHaveBeenCalled()
     expect(callStaffApi).not.toHaveBeenCalled()
+  })
+
+  test('本店店长查看外店订单时统一按只读处理', async () => {
+    setGlobalData({ managerStoreIds: ['store-1'] })
+    const page = createPage('orderDetail')
+    page.onLoad({})
+    vi.mocked(callStaffApi).mockResolvedValueOnce({
+      order: {
+        sale_order_id: 'order-store-2',
+        store_id: 'store-2',
+        status: '已支付',
+        performance_attribution_date: '2026-08-20',
+        total_amount: '100.00',
+        received: '100.00',
+        refunded_amount: '0.00',
+      },
+      items: [],
+      payments: [],
+    } as never)
+
+    await page.loadDetail('order-store-2')
+    page.onPerformanceAttributionChange({ detail: { value: '2026-08-21' } })
+
+    expect(page.data.isManager).toBe(true)
+    expect(page.data.isReadOnly).toBe(true)
+    expect((globalThis as any).wx.showModal).not.toHaveBeenCalled()
+    expect(callStaffApi).toHaveBeenCalledTimes(1)
   })
 })
 

@@ -1,0 +1,51 @@
+<view class="business-filter">
+  <van-search
+    value="{{value}}"
+    placeholder="{{placeholder}}"
+    shape="round"
+    background="transparent"
+    custom-class="business-filter__search"
+    bind:change="onKeywordChange"
+    bind:search="onSearch"
+    bind:clear="onSearchClear"
+    use-action-slot
+  >
+    <view slot="action" class="business-filter__search-action" bindtap="onSearch">搜索</view>
+  </van-search>
+
+  <view class="business-filter__controls">
+    <view class="business-filter__status">
+      <van-dropdown-menu active-color="#C0322A" custom-class="business-filter__dropdown">
+        <van-dropdown-item value="{{status}}" options="{{statusOptions}}" bind:change="onStatusChange" />
+      </van-dropdown-menu>
+    </view>
+
+    <view class="business-filter__date-range {{startDate || endDate ? 'business-filter__date-range--active' : ''}}">
+      <van-icon name="calendar-o" size="28rpx" color="{{startDate || endDate ? '#C0322A' : '#999999'}}" />
+      <picker class="business-filter__date-picker" mode="date" value="{{startDate}}" end="{{endDate}}" bindchange="onStartDateChange">
+        <view class="business-filter__date {{startDate ? 'business-filter__date--selected' : ''}}">
+          {{startDate || '开始日期'}}
+        </view>
+      </picker>
+      <view class="business-filter__date-separator">—</view>
+      <picker class="business-filter__date-picker" mode="date" value="{{endDate}}" start="{{startDate}}" bindchange="onEndDateChange">
+        <view class="business-filter__date {{endDate ? 'business-filter__date--selected' : ''}}">
+          {{endDate || '结束日期'}}
+        </view>
+      </picker>
+      <view
+        wx:if="{{startDate || endDate}}"
+        class="business-filter__date-clear"
+        catchtap="onClearDates"
+        aria-role="button"
+        aria-label="清除日期筛选"
+      >
+        <van-icon name="cross" size="28rpx" color="#999999" />
+      </view>
+    </view>
+  </view>
+
+  <!-- 日期口径说明：各页面日期筛选走的字段不同（业绩归属日期 / 服务日期 / 预约时间），
+       由调用方显式传入，不传则不渲染，避免默认文案误导 -->
+  <view wx:if="{{dateHint}}" class="business-filter__date-hint">{{dateHint}}</view>
+</view>

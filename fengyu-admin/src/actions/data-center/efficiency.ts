@@ -29,11 +29,33 @@
  *   排名榜不算同比环比。
  *
  * ★ 口径红线（consistency.efficiency.test.ts 字面量守护，禁止偏离）：
- *   - 业绩(员工) = SUM(sale_payment_item_allocations.allocated_amount) 归 employee_id ∩
- *     is_void=FALSE ∩ 销售单/转换单 ∩ 已支付回款分配；不按 role_type 白名单截断
- *   - 实耗(员工) = SUM(service_items.unit_real_price * session_used) 归 employee_id ∩ 已完成
+ *   - 业绩**有两套口径，按聚合粒度分**（2026-09-23 #285 修正，别再混用）：
+ *       · Part A/B 全局大卡 + by store（喂 empAvgRevenue / byMarket.techAvgRevenue）
+ *         = SUM(sale_order_performance_events.amount) ∩ 已支付 ∩ 首次支付/回款/退款 ∩
+ *           销售单/转换单/**充值单** ∩ `legacy_source IS DISTINCT FROM 'workfine'` ∩ performance_date 区间。
+ *           ⚠️ 该列生产全表 NULL，**必须用 IS DISTINCT FROM**；写成 `<> 'workfine'` 走三值逻辑
+ *           会把每一行都判成 NULL，结果恒为 0.00。
+ *         与 Part C 门店排名榜 / sales.ts runStoreRevenue / staff queryStoreRevenue 同源。
+ *       · Part D/E 员工榜 + 按技师人效明细
+ *         = SUM(sale_payment_item_allocations.allocated_amount) 归 employee_id ∩
+ *           is_void=FALSE ∩ 销售单/转换单 ∩ 已支付回款分配；不按 role_type 白名单截断。
+ *     ⚠️ `allocated_amount` 是**角色归属额**，只在 GROUP BY employee_id 时才是钱。
+ *     2026-07-27 `23405ddf` 换表时把 Part A/B 一并留在了 allocation 口径（并把守护断言
+ *     反向钉死），导致 KPI 与同页门店榜差 111 万、虚高 32.3%，直到 #285 才纠正。
+ *     恢复 role_type 白名单**不是**修法（实测仍差 −4.45%，只是偶然的部分去重）。
+ *   - 实耗(员工) = SUM(unit_real_price * session_used * service_commissions.allocation_ratio)
+ *     归 service_commissions.employee_id ∩ is_void=FALSE ∩ 已完成（2026-09-03 改，见下「员工归属口径」）
  *   - 收入 = 销售提成 SUM(sale_payment_item_allocations.commission_amount) + 服务提成 SUM(service_commissions.commission_amount)
  *   - 新会员 = became_member_at 归 bound_employee_id；项目数 sales_category IN ('自销自耗','他销自耗')
+ *
+ * ★ 员工归属口径（2026-09-03 变更，两端镜像 staff mgmt-dashboard.js）
+ *   实耗 / 项目数 / 客量人次 的员工归属从 service_items.employee_id 改为 service_commissions.employee_id。
+ *   原因：service_items.employee_id 是开单时选定的负责美容师，全仓无任何路径可修改；门店事后用
+ *   「营业额分配-服务提成」改归属时改不动它，导致实耗记在没拿这单提成的人头上
+ *   （2026-09 生产实测 103 项 / 7.7 万元错位，占当月实耗 23%）。
+ *   ⚠️ 所有 role_type 各算一份（用户拍板，不做角色去重）：同一项目同时挂美容师 + 品项老师时
+ *   两人各全额计入，故**员工榜/明细表合计会大于门店实耗**（2026-09 实测高约 25%）。
+ *   门店榜 / 全局大卡实耗（Part A/B）仍走 service_items 原口径，不受影响。
  *   - 产能员工 producer_employees：hired_at/resigned_at 历史化（2026-05-20 起不再用 skills 过滤，
  *     以已归属业绩自然过滤 + 末尾 value>0 排除零值；与 mgmt-dashboard.js producerEmployeesCte 一致）
  *
@@ -45,6 +67,10 @@
  *         故 managerAvgX = 每店平均 X（m.income 本就是门店全部产能员工提成合计 → managerAvgIncome = 每店平均产能收入）。
  *       技师 = staff_wechat_users.skills && ARRAY['美容师','养生师']（= metrics.md employeeCount「产能技师在职数」），
  *         按区间末 hired_at/resigned_at 历史化。
+ *         ⚠️ **含直挂市场/部门的技师**（2026-09-23 #285 修正）：组织归属双轨，只按 store_id
+ *         过滤会漏掉 13 名 store_id IS NULL 的在职产能技师（集团 150 vs 164，虚高 +9.33%）。
+ *         归属规则单源在 `@/lib/data-center/technician-sql`（销售板共用同一份），与 Part D `producer_base` 对齐；
+ *         单店 scope 下直挂者不出现（`orgAnchorScopeSql` 返回 FALSE），与员工榜同语义。
  *   - 人均派生分母「员工数」= 技师（产能技师）口径，与 metrics.md §派生指标分母 employeeCount 对齐。
  *   - 「人均项目数 empAvgProjects / techAvgProjects」分子用 metrics.md 项目数口径
  *     （sales_category IN ('自销自耗','他销自耗')，非生美过滤）；任务描述「生美项目」措辞按 metrics.md 项目数对齐。
@@ -64,8 +90,13 @@ import type {
   RankingRow,
 } from '@/lib/data-center/types'
 import { prepareBoardContext } from '@/lib/data-center/context'
-import { scopeFilterSql, scopeStoreSkeletonSql } from '@/lib/data-center/scope-sql'
+import { scopeFilterSql, scopeStoreSkeletonSql, orgAnchorScopeSql } from '@/lib/data-center/scope-sql'
 import { excludeDepositRefundSql } from '@/lib/data-center/consume-filter'
+import {
+  technicianCountSql,
+  technicianByStoreSql,
+  technicianDirectByMarketSql,
+} from '@/lib/data-center/technician-sql'
 
 /** db.execute 返回数组，取首行标量并 Number 化（null→0，分母聚合无行时按 0 处理） */
 function scalar(rows: unknown, key = 'v'): number {
@@ -127,17 +158,29 @@ export const getEfficiencyBoard = withPermission(
     //  Part A — 全局聚合标量（KPI 分子/分母用，单一区间，不算同比环比）
     // ═══════════════════════════════════════════════════════════════════
 
-    /** 业绩（员工归属，全局合计）= SUM(sale_payment_item_allocations.allocated_amount) */
+    /**
+     * 业绩（门店口径，全局合计）= SUM(sale_order_performance_events.amount)
+     *
+     * ⚠️ 禁止改回 SUM(spia.allocated_amount)（#285）：`allocated_amount` 是**角色归属额**不是钱。
+     * 写入侧 staffApi/routes/allocation.js 按 (sale_item_id, role_type) **分池**校验「池内 Σratio ≤ 1」，
+     * 单 receipt 挂几个角色就有几个独立的 100% 池 —— ratio 合计 2.0 / 3.0 是设计允许的正常形态。
+     * 按 employee_id 分组时它是对的（Part D 员工榜保留该口径）；去掉 GROUP BY 跨员工求和，
+     * 同一笔钱就被算了 2~3 次（2026-09-01~09-21 集团实测虚高 +32.30%，且 950 张零分配 receipt
+     * 反向漏计 → 偏差不同向，**无法用统一系数校正**）。
+     *
+     * 谓词集与下列四处**逐字对齐**，任一处漂移都会让 KPI 与同页门店排行榜对不上账：
+     *   - 同文件 Part C `qStoreRankRevenue`（同页门店排名榜-业绩）
+     *   - `sales.ts` `runStoreRevenue`（销售板总业绩 = metrics.md 的 storeRevenue）
+     *   - staff `mgmt-dashboard.js` `queryStoreRevenue`（两端同名指标同源）
+     * 缺 `充值单` / `change_type` / `legacy_source` 任一条都会与门店榜产生差额。
+     */
     const qRevenueTotal = db.execute(sql`
-      SELECT COALESCE(SUM(spia.allocated_amount::numeric), 0) AS v
-      FROM sale_payment_item_allocations spia
-      JOIN sale_payment_item_receipts spir ON spir.id = spia.sale_payment_item_receipt_id
-      JOIN sale_items si ON si.sale_item_id = spir.sale_item_id
-      JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
-      JOIN sale_order_performance_events spe ON spe.sale_payment_id = spir.sale_payment_id
-      WHERE ${scopeFilterSql(session, scope, 'so.store_id')}
-        AND spia.is_void = FALSE
-        AND so.sale_order_type IN ('销售单', '转换单')
+      SELECT COALESCE(SUM(spe.amount::numeric), 0) AS v
+      FROM sale_order_performance_events spe
+      WHERE ${scopeFilterSql(session, scope, 'spe.store_id')}
+        AND spe.change_type IN ('首次支付', '回款', '退款')
+        AND spe.sale_order_type IN ('销售单', '转换单', '充值单')
+        AND spe.legacy_source IS DISTINCT FROM 'workfine'
         AND ${performanceEventDateBetween('spe', cur.start, cur.end)}
     `)
 
@@ -213,19 +256,13 @@ export const getEfficiencyBoard = withPermission(
     `)
 
     /**
-     * 员工数 = 技师（产能技师，区间末历史化）：skills && ARRAY['美容师','养生师']
-     *   ∩ hired_at <= 区间末 ∩ (resigned_at IS NULL OR resigned_at > 区间末)。
-     * 对齐 metrics.md employeeCount（人均派生分母）。
+     * 员工数 = 产能技师（含直挂市场/部门者），人均派生分母。
+     *
+     * ⚠️ 口径单源在 `@/lib/data-center/technician-sql`，**销售板 `sales.ts` 共用同一份**。
+     * 别在这里内联重写：#285 之前两个板块各写一份只按 `store_id` 过滤的查询，
+     * 只修一处会让同一个数据中心的两个板块技师数差 14 人（闸门 2 codex 判 P0）。
      */
-    const qTechnicianCount = db.execute(sql`
-      SELECT COUNT(*)::int AS v
-      FROM staff_wechat_users s
-      WHERE ${scopeFilterSql(session, scope, 's.store_id')}
-        AND s.skills && ARRAY['美容师','养生师']::text[]
-        AND s.hired_at IS NOT NULL
-        AND s.hired_at::date <= ${cur.end}
-        AND (s.resigned_at IS NULL OR s.resigned_at::date > ${cur.end})
-    `)
+    const qTechnicianCount = db.execute(technicianCountSql(session, scope, cur.end))
 
     /**
      * 店长数 = 在营门店数（2026-05-26 用户拍板：每店一店长口径，不再按 position_name 识别）。
@@ -260,31 +297,29 @@ export const getEfficiencyBoard = withPermission(
         AND (s.closed_at IS NULL OR s.closed_at::date > ${cur.end})
     `)
 
-    /** 技师数 by store */
-    const qTechByStore = db.execute(sql`
-      SELECT s.store_id, COUNT(*)::int AS v
-      FROM staff_wechat_users s
-      WHERE ${scopeFilterSql(session, scope, 's.store_id')}
-        AND s.skills && ARRAY['美容师','养生师']::text[]
-        AND s.hired_at IS NOT NULL
-        AND s.hired_at::date <= ${cur.end}
-        AND (s.resigned_at IS NULL OR s.resigned_at::date > ${cur.end})
-      GROUP BY s.store_id
-    `)
+    /** 技师数 by store（有门店归属的部分）—— 与 Part A 同一份 technician-sql 单源 */
+    const qTechByStore = db.execute(technicianByStoreSql(session, scope, cur.end))
 
-    /** 业绩 by store（员工归属 total_amount） */
+    /** 技师数 by market（直挂市场/部门、无门店归属的部分）—— 详见 technician-sql 的注释 */
+    const qTechDirectByMarket = db.execute(technicianDirectByMarketSql(session, scope, cur.end))
+
+    /**
+     * 业绩 by store（门店口径）—— 与 Part A `qRevenueTotal` 同谓词集，仅多一个 GROUP BY。
+     * 该 map 喂给 byMarket 的 `techAvgRevenue`，故必须与全局大卡同源，否则「按市场人效」
+     * 与 KPI 大卡自相矛盾（#285）。
+     * 分组列用 `spe.store_id`（非 `so.store_id`）与 Part C 对齐。二者**定义恒等**：
+     * 视图 `sale_order_performance_events` 就是 `sale_order_payments JOIN sale_orders so`
+     * 再把 `so.store_id` 原样投影出来（`pg_get_viewdef` 可查），不是"实测出来零不一致"的经验结论。
+     */
     const qRevenueByStore = db.execute(sql`
-      SELECT so.store_id, COALESCE(SUM(spia.allocated_amount::numeric), 0) AS v
-      FROM sale_payment_item_allocations spia
-      JOIN sale_payment_item_receipts spir ON spir.id = spia.sale_payment_item_receipt_id
-      JOIN sale_items si ON si.sale_item_id = spir.sale_item_id
-      JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
-      JOIN sale_order_performance_events spe ON spe.sale_payment_id = spir.sale_payment_id
-      WHERE ${scopeFilterSql(session, scope, 'so.store_id')}
-        AND spia.is_void = FALSE
-        AND so.sale_order_type IN ('销售单', '转换单')
+      SELECT spe.store_id, COALESCE(SUM(spe.amount::numeric), 0) AS v
+      FROM sale_order_performance_events spe
+      WHERE ${scopeFilterSql(session, scope, 'spe.store_id')}
+        AND spe.change_type IN ('首次支付', '回款', '退款')
+        AND spe.sale_order_type IN ('销售单', '转换单', '充值单')
+        AND spe.legacy_source IS DISTINCT FROM 'workfine'
         AND ${performanceEventDateBetween('spe', cur.start, cur.end)}
-      GROUP BY so.store_id
+      GROUP BY spe.store_id
     `)
 
     /** 实耗 by store */
@@ -477,19 +512,44 @@ export const getEfficiencyBoard = withPermission(
     /**
      * producer_employees CTE 头部（与 staff producerEmployeesCte 同构，锚点改 cur.end）。
      * 额外 JOIN org_nodes 拿员工所属市场名（RankingRow.marketName 用，员工榜「所属市场」列）。
+     *
+     * ★ 2026-09-03 放宽：候选池 = 门店员工 ∪ 直挂组织节点员工（品项公司品项老师 / 各市场
+     *   养生部养生师等 store_id 为空的产能人员）。三段兜底与 staff 端镜像：
+     *     1. store_id  —— 档案 store_id 空但直挂门店节点时反查该门店；
+     *     2. 展示名    —— store_name 空时显示直挂节点名（「品项公司」「养生部」），不留空白列；
+     *     3. 可见性锚  —— anchor_market_id = 直挂节点自身（若为市场）或其父节点，交
+     *        orgAnchorScopeSql 判定；品项公司下无门店故仅 admin/总部可见。
      */
     const producerCte = sql`
-      WITH producer_employees AS (
-        SELECT sw.employee_id, sw.name AS employee_name, sw.store_id, s.store_name,
-               sw.position_name, o_mkt.name AS market_name
+      WITH producer_base AS (
+        SELECT sw.employee_id, sw.name AS employee_name,
+               COALESCE(sw.store_id, ds.store_id) AS store_id,
+               COALESCE(s.store_name, ds.store_name, o.name) AS store_name,
+               sw.position_name,
+               COALESCE(
+                 o_mkt.name,
+                 CASE WHEN o.type = '市场' THEN o.name WHEN op.type = '市场' THEN op.name END
+               ) AS market_name,
+               CASE WHEN o.type = '市场' THEN o.id
+                    WHEN op.type = '市场' THEN op.id
+                    ELSE NULL END AS anchor_market_id
         FROM staff_wechat_users sw
         LEFT JOIN stores s ON s.store_id = sw.store_id
         LEFT JOIN org_nodes o_store ON s.org_node_id = o_store.id AND o_store.type = '门店'
         LEFT JOIN org_nodes o_mkt ON o_store.parent_id = o_mkt.id
+        LEFT JOIN org_nodes o ON o.id = sw.org_node_id
+        LEFT JOIN org_nodes op ON op.id = o.parent_id
+        LEFT JOIN stores ds ON ds.org_node_id = sw.org_node_id
         WHERE sw.hired_at IS NOT NULL
           AND sw.hired_at::date <= ${cur.end}
           AND (sw.resigned_at IS NULL OR sw.resigned_at::date > ${cur.end})
-          AND ${scopeFilterSql(session, scope, 'sw.store_id')}
+      ),
+      producer_employees AS (
+        SELECT pb.employee_id, pb.employee_name, pb.store_id, pb.store_name,
+               pb.position_name, pb.market_name
+        FROM producer_base pb
+        WHERE (pb.store_id IS NOT NULL AND ${scopeFilterSql(session, scope, 'pb.store_id')})
+           OR (pb.store_id IS NULL AND ${orgAnchorScopeSql(session, scope)})
       )
     `
 
@@ -515,16 +575,21 @@ export const getEfficiencyBoard = withPermission(
       ORDER BY value DESC, pe.employee_name ASC, pe.employee_id ASC
     `)
 
+    // 实耗(员工)：2026-09-03 起归属改 service_commissions（见文件头「员工归属口径」说明），
+    // 与 staff mgmt-dashboard.js staffRankingConsume 镜像。
     const qStaffRankConsume = db.execute(sql`
       ${producerCte},
       consume_by_emp AS (
-        SELECT sit.employee_id, COALESCE(SUM(sit.unit_real_price::numeric * sit.session_used), 0) AS v
-        FROM service_items sit
+        SELECT sc.employee_id,
+          COALESCE(SUM(sit.unit_real_price::numeric * sit.session_used * sc.allocation_ratio), 0) AS v
+        FROM service_commissions sc
+        JOIN service_items sit ON sit.service_item_id = sc.service_item_id
         JOIN service_orders so2 ON so2.service_order_id = sit.service_order_id
-        WHERE so2.status = '已完成'
+        WHERE sc.is_void = FALSE
+          AND so2.status = '已完成'
           AND so2.service_date BETWEEN ${cur.start} AND ${cur.end}
           AND ${excludeDepositRefundSql('so2')}
-        GROUP BY sit.employee_id
+        GROUP BY sc.employee_id
       )
       SELECT pe.employee_id, pe.employee_name, pe.store_id, pe.store_name, pe.market_name,
         COALESCE(c.v, 0)::numeric AS value
@@ -552,17 +617,24 @@ export const getEfficiencyBoard = withPermission(
       ORDER BY value DESC, pe.employee_name ASC, pe.employee_id ASC
     `)
 
+    // 项目数(员工)：归属同上改 service_commissions；次数为计数指标不乘 allocation_ratio，
+    // 内层 DISTINCT 防同一员工同一项目多 role_type 重复累加（镜像 staff staffRankingProjectCount）。
     const qStaffRankProjectCount = db.execute(sql`
       ${producerCte},
       project_by_emp AS (
-        SELECT sit.employee_id, COALESCE(SUM(sit.session_used), 0) AS v
-        FROM service_items sit
-        JOIN service_orders so2 ON so2.service_order_id = sit.service_order_id
-        WHERE so2.status = '已完成'
-          AND sit.sales_category IN ('自销自耗', '他销自耗')
-          AND so2.service_date BETWEEN ${cur.start} AND ${cur.end}
-          AND ${excludeDepositRefundSql('so2')}
-        GROUP BY sit.employee_id
+        SELECT employee_id, COALESCE(SUM(session_used), 0) AS v
+        FROM (
+          SELECT DISTINCT sc.employee_id, sit.service_item_id, sit.session_used
+          FROM service_commissions sc
+          JOIN service_items sit ON sit.service_item_id = sc.service_item_id
+          JOIN service_orders so2 ON so2.service_order_id = sit.service_order_id
+          WHERE sc.is_void = FALSE
+            AND so2.status = '已完成'
+            AND sit.sales_category IN ('自销自耗', '他销自耗')
+            AND so2.service_date BETWEEN ${cur.start} AND ${cur.end}
+            AND ${excludeDepositRefundSql('so2')}
+        ) t
+        GROUP BY employee_id
       )
       SELECT pe.employee_id, pe.employee_name, pe.store_id, pe.store_name, pe.market_name,
         COALESCE(p.v, 0)::numeric AS value
@@ -615,6 +687,8 @@ export const getEfficiencyBoard = withPermission(
     //    计本店实耗」是门店口径，技师实际服务即计入其个人实耗）。
     //    项目数沿用员工榜口径（仅自销自耗+他销自耗，受一致性测试守护）。
     // 销售额 4 列之和 = 当月业绩 revenue（同一 receipt 子分配口径，仅拆分维度不同）。
+    // 2026-09-03：实耗 / 项目数 / 客量人次 三项归属随员工榜一并改 service_commissions
+    //    （见文件头「员工归属口径」）；销售额侧不动，仍走 sale_payment_item_allocations。
     const qStaffDetail = db.execute(sql`
       ${producerCte},
       revenue_by_emp_cat AS (
@@ -635,17 +709,19 @@ export const getEfficiencyBoard = withPermission(
         GROUP BY spia.employee_id
       ),
       consume_by_emp_cat AS (
-        SELECT sit.employee_id,
-          COALESCE(SUM(sit.unit_real_price::numeric * sit.session_used) FILTER (WHERE sit.sales_category = '自销自耗'), 0) AS consume_zxzh,
-          COALESCE(SUM(sit.unit_real_price::numeric * sit.session_used) FILTER (WHERE sit.sales_category = '他销自耗'), 0) AS consume_txzh,
-          COALESCE(SUM(sit.unit_real_price::numeric * sit.session_used) FILTER (WHERE sit.sales_category = '他销他耗'), 0) AS consume_txth,
-          COALESCE(SUM(sit.unit_real_price::numeric * sit.session_used) FILTER (WHERE sit.sales_category = '生态合作'), 0) AS consume_eco
-        FROM service_items sit
+        SELECT sc.employee_id,
+          COALESCE(SUM(sit.unit_real_price::numeric * sit.session_used * sc.allocation_ratio) FILTER (WHERE sit.sales_category = '自销自耗'), 0) AS consume_zxzh,
+          COALESCE(SUM(sit.unit_real_price::numeric * sit.session_used * sc.allocation_ratio) FILTER (WHERE sit.sales_category = '他销自耗'), 0) AS consume_txzh,
+          COALESCE(SUM(sit.unit_real_price::numeric * sit.session_used * sc.allocation_ratio) FILTER (WHERE sit.sales_category = '他销他耗'), 0) AS consume_txth,
+          COALESCE(SUM(sit.unit_real_price::numeric * sit.session_used * sc.allocation_ratio) FILTER (WHERE sit.sales_category = '生态合作'), 0) AS consume_eco
+        FROM service_commissions sc
+        JOIN service_items sit ON sit.service_item_id = sc.service_item_id
         JOIN service_orders so2 ON so2.service_order_id = sit.service_order_id
-        WHERE so2.status = '已完成'
+        WHERE sc.is_void = FALSE
+          AND so2.status = '已完成'
           AND so2.service_date BETWEEN ${cur.start} AND ${cur.end}
           AND ${excludeDepositRefundSql('so2')}
-        GROUP BY sit.employee_id
+        GROUP BY sc.employee_id
       ),
       new_member_by_emp AS (
         SELECT c.bound_employee_id AS employee_id, COUNT(*) AS v
@@ -656,24 +732,31 @@ export const getEfficiencyBoard = withPermission(
         GROUP BY c.bound_employee_id
       ),
       project_by_emp AS (
-        SELECT sit.employee_id, COALESCE(SUM(sit.session_used), 0) AS v
-        FROM service_items sit
-        JOIN service_orders so2 ON so2.service_order_id = sit.service_order_id
-        WHERE so2.status = '已完成'
-          AND sit.sales_category IN ('自销自耗', '他销自耗')
-          AND so2.service_date BETWEEN ${cur.start} AND ${cur.end}
-          AND ${excludeDepositRefundSql('so2')}
-        GROUP BY sit.employee_id
+        SELECT employee_id, COALESCE(SUM(session_used), 0) AS v
+        FROM (
+          SELECT DISTINCT sc.employee_id, sit.service_item_id, sit.session_used
+          FROM service_commissions sc
+          JOIN service_items sit ON sit.service_item_id = sc.service_item_id
+          JOIN service_orders so2 ON so2.service_order_id = sit.service_order_id
+          WHERE sc.is_void = FALSE
+            AND so2.status = '已完成'
+            AND sit.sales_category IN ('自销自耗', '他销自耗')
+            AND so2.service_date BETWEEN ${cur.start} AND ${cur.end}
+            AND ${excludeDepositRefundSql('so2')}
+        ) t
+        GROUP BY employee_id
       ),
       service_count_by_emp AS (
-        SELECT sit.employee_id,
+        SELECT sc.employee_id,
           COUNT(DISTINCT so2.client_user_id) AS headcount,
           COUNT(DISTINCT sit.service_order_id) AS visits
-        FROM service_items sit
+        FROM service_commissions sc
+        JOIN service_items sit ON sit.service_item_id = sc.service_item_id
         JOIN service_orders so2 ON so2.service_order_id = sit.service_order_id
-        WHERE so2.status = '已完成'
+        WHERE sc.is_void = FALSE
+          AND so2.status = '已完成'
           AND so2.service_date BETWEEN ${cur.start} AND ${cur.end}
-        GROUP BY sit.employee_id
+        GROUP BY sc.employee_id
       )
       SELECT pe.employee_id, pe.employee_name, pe.store_name, pe.position_name, pe.market_name,
         COALESCE(r.total, 0)::numeric AS revenue,
@@ -704,7 +787,7 @@ export const getEfficiencyBoard = withPermission(
       revenueTotalR, consumeTotalR, salesCommTotalR, serviceCommTotalR,
       footfallTotalR, projectCountTotalR, memberCountR, technicianCountR, managerCountR,
       // Part B
-      skelRows, managerByStoreR, techByStoreR, revenueByStoreR, consumeByStoreR,
+      skelRows, managerByStoreR, techByStoreR, techDirectByMarketR, revenueByStoreR, consumeByStoreR,
       shengmeiConsumeByStoreR, salesCommByStoreR, serviceCommByStoreR,
       footfallByMarketR, projectByStoreR,
       // Part C
@@ -716,7 +799,7 @@ export const getEfficiencyBoard = withPermission(
     ] = await Promise.all([
       qRevenueTotal, qConsumeTotal, qSalesCommTotal, qServiceCommTotal,
       qFootfallTotal, qProjectCountTotal, qMemberCount, qTechnicianCount, qManagerCount,
-      qStoreSkeleton, qManagerByStore, qTechByStore, qRevenueByStore, qConsumeByStore,
+      qStoreSkeleton, qManagerByStore, qTechByStore, qTechDirectByMarket, qRevenueByStore, qConsumeByStore,
       qShengmeiConsumeByStore, qSalesCommByStore, qServiceCommByStore,
       qFootfallByMarket, qProjectByStore,
       qStoreRankRevenue, qStoreRankConsume, qStoreRankRetainedMember, qStoreRankNewMember, qStoreRankProjectCount,
@@ -769,14 +852,12 @@ export const getEfficiencyBoard = withPermission(
       projectCount: number
     }
     const marketMap = new Map<string, MarketAgg>()
-    for (const r of skelRows as Array<Record<string, unknown>>) {
-      const storeId = String(r.store_id)
-      const marketId = String(r.market_id ?? '')
+    const marketRowOf = (marketId: string, marketName: string): MarketAgg => {
       let m = marketMap.get(marketId)
       if (!m) {
         m = {
           marketId,
-          marketName: String(r.market_name ?? ''),
+          marketName,
           managerCount: 0,
           technicianCount: 0,
           revenue: 0,
@@ -787,6 +868,12 @@ export const getEfficiencyBoard = withPermission(
         }
         marketMap.set(marketId, m)
       }
+      return m
+    }
+
+    for (const r of skelRows as Array<Record<string, unknown>>) {
+      const storeId = String(r.store_id)
+      const m = marketRowOf(String(r.market_id ?? ''), String(r.market_name ?? ''))
       m.managerCount += managerMap.get(storeId) ?? 0
       m.technicianCount += techMap.get(storeId) ?? 0
       m.revenue += revMap.get(storeId) ?? 0
@@ -794,6 +881,22 @@ export const getEfficiencyBoard = withPermission(
       m.shengmeiConsume += shengmeiConsMap.get(storeId) ?? 0
       m.income += (salesCommMap.get(storeId) ?? 0) + (serviceCommMap.get(storeId) ?? 0)
       m.projectCount += projectMap.get(storeId) ?? 0
+    }
+
+    /**
+     * 并入**直挂市场/部门**的产能技师（#285）。
+     *
+     * 上面的循环是逐门店累加的，`store_id IS NULL` 的技师没有任何门店可挂，只走那个循环
+     * 会把他们二次丢失 —— 这正是分母缺口的成因（2026-09 实测南昌凤御漏 8 人、昭通凤御漏 4 人）。
+     *
+     * ⚠️ 必须在循环**外**按市场加一次：放进循环会按该市场的门店数重复累加。
+     * ⚠️ 用 `marketRowOf` 建行：「品项公司」这类市场底下一个门店都没有，
+     * 压根不出现在门店骨架 skelRows 里，只能在这里补出行（表现为新增一行 1 技师 / 0 业绩）。
+     */
+    for (const r of techDirectByMarketR as Array<Record<string, unknown>>) {
+      if (r.market_id == null) continue
+      const m = marketRowOf(String(r.market_id), String(r.market_name ?? ''))
+      m.technicianCount += Number(r.v ?? 0)
     }
 
     const byMarket: BreakdownRow[] = Array.from(marketMap.values()).map((m) => ({

@@ -36,6 +36,8 @@ interface CustomerInfo {
   boundStoreId?: string | null;
   /** 顾客绑定门店名（展示「非本店」标签用） */
   storeName?: string;
+  /** 临时跨门店标记；true 时允许在外店充值/转入 */
+  isCrossStoreTemp?: boolean;
   /** 是否非本店顾客（boundStoreId 缺失时为 false，放行后端兜底） */
   crossStore?: boolean;
 }
@@ -142,13 +144,16 @@ Page({
     // 可选：从 URL 参数预填顾客
     if (query?.clientUserId && query?.customerName) {
       this.setData({
-        customerInfo: {
+        customerInfo: markCrossStore({
           id: null,
           clientUserId: query.clientUserId,
           name: query.customerName,
           phone: query.customerPhone || '',
           phoneMasked: query.customerPhone ? query.customerPhone.replace(/(\d{3})\d{4}(\d{4})/, '$1****$2') : '',
-        },
+          boundStoreId: query.boundStoreId || null,
+          storeName: query.storeName || '',
+          isCrossStoreTemp: query.isCrossStoreTemp === '1',
+        }),
       });
     }
 
@@ -394,7 +399,7 @@ Page({
       wx.showToast({ title: '请选择顾客', icon: 'none' });
       return;
     }
-    if (customerInfo.crossStore) {
+    if (customerInfo.crossStore && !customerInfo.isCrossStoreTemp) {
       wx.showModal({
         title: '无法充值',
         content: `该顾客属于「${customerInfo.storeName || '其他'}」门店，非本店顾客无法充值。`,
@@ -465,6 +470,7 @@ Page({
       if (c.phone) parts.push(`customerPhone=${encodeURIComponent(c.phone)}`);
       if (c.boundStoreId) parts.push(`boundStoreId=${encodeURIComponent(c.boundStoreId)}`);
       if (c.storeName) parts.push(`storeName=${encodeURIComponent(c.storeName)}`);
+      if (c.isCrossStoreTemp) parts.push('isCrossStoreTemp=1');
       url += `?${parts.join('&')}`;
     }
     wx.navigateTo({ url });

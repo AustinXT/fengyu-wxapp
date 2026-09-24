@@ -49,6 +49,9 @@ Page({
 
     // 手机绑定
     showPhoneBind: false,
+    phoneBinding: false,
+    // 绑定成功后延迟自动重提期间锁定提交入口，防止手点+定时器双触发重复建单
+    autoResubmitPending: false,
   },
 
   _config: null as RechargeConfig | null,
@@ -248,6 +251,7 @@ Page({
   },
 
   async doRecharge(faceValue: number) {
+    if (this.data.submitting || this.data.autoResubmitPending) return;
     this.setData({ submitting: true });
     try {
       // 仅建单，付款方式选择 + 支付触发由 checkout 页统一处理
@@ -260,6 +264,20 @@ Page({
       });
     } catch (err: any) {
       if (err?.errorType === 'PHONE_REQUIRED') {
+        // 登出态先免费 OPENID 恢复会话（同号老账号免消耗付费手机号验证），失败才弹付费授权
+        if (app.isLoggedOut()) {
+          const status = await app.syncLoginState(true);
+          if (status === 'authenticated') {
+            Toast.success('已恢复登录');
+            const pending = this._pendingFaceValue;
+            // 本 catch 无 finally，须手动释放提交锁后再延迟重试
+            this.setData({ submitting: false });
+            if (pending > 0) {
+              setTimeout(() => this.doRecharge(pending), 0);
+            }
+            return;
+          }
+        }
         this.setData({ showPhoneBind: true, submitting: false });
         return;
       }
@@ -290,21 +308,30 @@ Page({
   },
 
   async onGetPhoneNumber(e: WechatMiniprogram.CustomEvent<{ cloudID?: string; errMsg?: string }>) {
+    if (this.data.phoneBinding) return;
     const { cloudID, errMsg } = e.detail;
     if (!cloudID) {
       if (errMsg?.includes('auth deny')) Toast.fail('您拒绝了授权');
       return;
     }
+    this.setData({ phoneBinding: true });
     try {
       await bindPhoneWithCloudID(cloudID);
       this.setData({ showPhoneBind: false });
       Toast.success('绑定成功');
       const pending = this._pendingFaceValue;
       if (pending > 0) {
-        setTimeout(() => this.doRecharge(pending), 800);
+        // 延迟窗口内锁住提交入口防手点+定时器双触发重复建单
+        this.setData({ autoResubmitPending: true });
+        setTimeout(() => {
+          this.setData({ autoResubmitPending: false });
+          this.doRecharge(pending);
+        }, 800);
       }
     } catch (err: any) {
       Toast.fail(err?.message || '绑定失败，请重试');
+    } finally {
+      this.setData({ phoneBinding: false });
     }
   },
 });

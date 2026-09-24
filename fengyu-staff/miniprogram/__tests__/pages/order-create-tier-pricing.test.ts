@@ -305,4 +305,70 @@ describe('开单疗程卡阶梯价', () => {
       }),
     )
   })
+
+  test('积分抵扣上限为 0 时保留禁用语义', async () => {
+    const callStaffApiMock = vi.mocked(callStaffApi)
+    callStaffApiMock.mockReset()
+    callStaffApiMock.mockResolvedValueOnce({
+      balance: 100,
+      cardId: 'card-001',
+      pointsBalance: 10000,
+      pointsToYuanRate: 0.01,
+      pointsDeductionMaxRate: 0,
+    })
+    const recomputePrepaidAmounts = vi.fn()
+    const page = {
+      ...pageDefinition,
+      data: {
+        ...pageDefinition.data,
+        customerInfo: { clientUserId: 'client-001' },
+        prepaidCardLoaded: false,
+      },
+      setData(update: Record<string, unknown>) {
+        Object.assign(this.data, update)
+      },
+      recomputePrepaidAmounts,
+    }
+
+    await page.loadCustomerBalance()
+
+    expect(page.data.pointsDeductionMaxRate).toBe(0)
+    expect(recomputePrepaidAmounts).toHaveBeenCalledTimes(1)
+  })
+
+  test('积分按券后行应付比例分摊，部分实付按行裁剪', () => {
+    const page = {
+      ...pageDefinition,
+      data: {
+        ...pageDefinition.data,
+        saleOrderType: '销售单',
+        couponDiscount: 0,
+        payableTotal: '400.00',
+        receivedTotal: '320.00',
+        customerPointsBalance: 1200,
+        usePoints: true,
+        pointsToYuanRate: 0.01,
+        pointsDeductionMaxRate: 0.03,
+        customerCardBalance: 0,
+        useCard: false,
+        prepaidCardAmountInput: '0.00',
+        cart: [
+          { ...createCartItem('sku-a', 1, 100), saleAmount: '100.00', received: '20.00' },
+          { ...createCartItem('sku-b', 1, 300), saleAmount: '300.00', received: '300.00' },
+        ],
+      },
+      setData(update: Record<string, unknown>) {
+        Object.assign(this.data, update)
+      },
+    }
+
+    page.recomputePrepaidAmounts()
+
+    expect(page.data.pointsDiscount).toBe(12)
+    expect(page.data.cart[0]).toMatchObject({ pointsShare: '3.00', finalSaleAmount: '97.00', finalReceived: '20.00' })
+    expect(page.data.cart[1]).toMatchObject({ pointsShare: '9.00', finalSaleAmount: '291.00', finalReceived: '291.00' })
+    expect(page.data.payableAfterPoints).toBe('388.00')
+    expect(page.data.receivedAfterPoints).toBe('311.00')
+    expect(page.data.prepaidCardMax).toBe('0.00')
+  })
 })

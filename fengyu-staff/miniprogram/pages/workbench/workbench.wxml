@@ -61,18 +61,18 @@
         <text class="func-label">收入查看</text>
       </view>
       <!-- 营业额分配（仅店长可点；非店长显示但点按拦截） -->
-      <view class="func-item func-item--half" style="background: linear-gradient(135deg, #BC77E2 0%, #A33FCF 100%);" bindtap="goAllocationList">
+      <view class="func-item {{inventoryEntryEnabled ? 'func-item--half' : 'func-item--bar'}}" style="background: linear-gradient(135deg, #BC77E2 0%, #A33FCF 100%);" bindtap="goAllocationList">
         <view wx:if="{{pendingAllocationCount > 0}}" class="func-badge">{{pendingAllocationCount > 99 ? '99+' : pendingAllocationCount}}</view>
         <van-icon name="balance-o" size="60rpx" color="#FFFFFF" />
         <text class="func-label">营业额分配</text>
       </view>
       <!-- 库存管理（仅店长可点；非店长显示但点按拦截） -->
-      <view class="func-item func-item--half" style="background: linear-gradient(135deg, #F86B71 0%, #EF3640 100%);" bindtap="goInventory">
+      <view wx:if="{{inventoryEntryEnabled && canAccessInventory}}" class="func-item func-item--half" style="background: linear-gradient(135deg, #F86B71 0%, #EF3640 100%);" bindtap="goInventory">
         <van-icon name="goods-collect-o" size="60rpx" color="#FFFFFF" />
         <text class="func-label">库存管理</text>
       </view>
       <!-- 提货核销（仅店长可点；非店长显示但点按拦截） -->
-      <view class="func-item func-item--bar" style="background: linear-gradient(135deg, #FBC04F 0%, #F5A623 100%);" bindtap="goPickup">
+      <view wx:if="{{inventoryEntryEnabled}}" class="func-item func-item--bar" style="background: linear-gradient(135deg, #FBC04F 0%, #F5A623 100%);" bindtap="goPickup">
         <van-icon name="cart-o" size="52rpx" color="#FFFFFF" />
         <text class="func-label">提货核销</text>
       </view>

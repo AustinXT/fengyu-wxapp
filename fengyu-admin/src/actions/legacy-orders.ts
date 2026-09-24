@@ -24,6 +24,8 @@ import {
   type WorkfineOrder,
 } from '@/lib/workfine-mssql'
 import { storeInMarketCondition } from '@/lib/market-store-sql'
+import { classifySaleOrderDocumentType } from '@/lib/document-type'
+import { resolvePaging } from '@/lib/paging'
 
 /**
  * 业务错误：把可读 message 同时写入 `digest`。
@@ -85,9 +87,12 @@ export interface PaginatedLegacyOrders {
 export const listLegacyOrders = withPermission(
   'legacy_order:list',
   async (session, filters: LegacyOrderFilters = {}): Promise<PaginatedLegacyOrders> => {
-    const page = Math.max(1, filters.page || 1)
-    const pageSize = [10, 20, 50, 100].includes(filters.pageSize ?? 0) ? filters.pageSize! : 20
-    const offset = (page - 1) * pageSize
+    const { page, pageSize, offset } = resolvePaging({
+      page: filters.page,
+      pageSize: filters.pageSize,
+      defaultPageSize: 20,
+      allowedPageSizes: [10, 20, 50, 100],
+    })
 
     const conditions: (SQL | undefined)[] = [
       eq(saleOrders.legacySource, 'workfine'),
@@ -146,7 +151,7 @@ export const listLegacyOrders = withPermission(
       .leftJoin(clientWechatUsers, eq(saleOrders.clientUserId, clientWechatUsers.userId))
       .where(whereClause)
       // 例外：业务时间优先（历史订单按销售日期倒序，与"最近编辑浮顶"语义不符）
-      .orderBy(desc(saleOrders.saleOrderDatetime))
+      .orderBy(desc(saleOrders.saleOrderDatetime), desc(saleOrders.saleOrderId))
       .limit(pageSize)
       .offset(offset)
 
@@ -186,9 +191,23 @@ export const approveLegacyOrder = withPermission(
     expectedUpdatedAt: string,
   ): Promise<{ success: true; clientUserId: string | null }> => {
     const clientUserId = await db.transaction(async (tx) => {
+      const currentRows = await tx.execute(sql`
+        SELECT client_user_id
+        FROM sale_orders
+        WHERE sale_order_id = ${saleOrderId}
+          AND legacy_source = 'workfine'
+          AND status = '未审核'
+          AND date_trunc('milliseconds', updated_at) = ${expectedUpdatedAt}
+        FOR UPDATE
+      `) as unknown as Array<{ client_user_id: string | null }>
+      if (currentRows.length === 0) {
+        throw new LegacyOrderError('CONFLICT: 订单已被审核或状态已变更，请刷新后重试')
+      }
+      const documentType = await classifySaleOrderDocumentType(tx, currentRows[0].client_user_id, saleOrderId)
       const updRes = await tx.execute(sql`
         UPDATE sale_orders
            SET status = '已支付'::order_status,
+               document_type = ${documentType}::document_type,
                received = total_amount,
                paid_at = sale_order_datetime,
                audited_at = NOW(),
@@ -289,9 +308,27 @@ export const batchApproveLegacyOrders = withPermission(
 
     await db.transaction(async (tx) => {
       for (const it of items) {
+        const currentRows = await tx.execute(sql`
+          SELECT client_user_id
+          FROM sale_orders
+          WHERE sale_order_id = ${it.saleOrderId}
+            AND legacy_source = 'workfine'
+            AND status = '未审核'
+            AND date_trunc('milliseconds', updated_at) = ${it.expectedUpdatedAt}
+          FOR UPDATE
+        `) as unknown as Array<{ client_user_id: string | null }>
+        if (currentRows.length === 0) {
+          throw new LegacyOrderError(`CONFLICT: 订单 ${it.saleOrderId} 已被审核或状态变更，整批已回滚`)
+        }
+        const documentType = await classifySaleOrderDocumentType(
+          tx,
+          currentRows[0].client_user_id,
+          it.saleOrderId,
+        )
         const updRes = await tx.execute(sql`
           UPDATE sale_orders
              SET status = '已支付'::order_status,
+                 document_type = ${documentType}::document_type,
                  received = total_amount,
                  paid_at = sale_order_datetime,
                  audited_at = NOW(),
@@ -750,14 +787,16 @@ export const importWorkfineOrdersByCustomer = withPermission(
           ...(o.originalOrderNo ? { original_order_no: o.originalOrderNo } : {}),
         }
 
+        const documentType = await classifySaleOrderDocumentType(tx, clientUserId, o.legacyOrderNo)
+
         const insRes = await tx.execute(sql`
           INSERT INTO sale_orders (
-            sale_order_id, status, sale_order_type, market_name, store_id, store_name,
+            sale_order_id, status, sale_order_type, document_type, market_name, store_id, store_name,
             sale_order_datetime, performance_attribution_date, client_user_id, client_phone, customer_name,
             total_amount, payable_amount, received, payment_method,
             legacy_source, legacy_customer_id, legacy_raw_snapshot
           ) VALUES (
-            ${o.legacyOrderNo}, '未审核'::order_status, '销售单'::sale_order_type, ${marketName}, ${storeId}, ${o.storeName},
+            ${o.legacyOrderNo}, '未审核'::order_status, '销售单'::sale_order_type, ${documentType}::document_type, ${marketName}, ${storeId}, ${o.storeName},
             ${o.saleDate}::timestamp AT TIME ZONE 'Asia/Shanghai', ${o.saleDate}::date, ${clientUserId}, ${o.phone}, ${o.customerName},
             ${amountStr}::numeric, ${amountStr}::numeric, 0, '无',
             'workfine', ${o.legacyCustomerId}, ${JSON.stringify(snapshot)}::jsonb

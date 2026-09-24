@@ -15,6 +15,14 @@ interface ServiceDetail {
   completedTime: string | null;
   appointmentId: string | null;
   remark: string;
+  // #224 两个判据均由云函数下发，与后端两道门一一对应，前端不自行推导：
+  //   inCurrentStore —— 第一道门（单是否属本店）。取消/代客户确认仍归开单门店
+  //   canOperate     —— 第二道门（本单店长 ∨ 指派给本人）。顾客档案可点进「本店但指派给同事」
+  //                     的单，那时 inCurrentStore 为 true 却操作不了
+  storeName: string;
+  inCurrentStore: boolean;
+  canOperate: boolean;
+  canViewReview: boolean;   // 店长对这张单是否有评价/全号特权，由后端判（前端不知道顾客归属）
   items: Array<{
     saleItemId: string;
     itemName: string;

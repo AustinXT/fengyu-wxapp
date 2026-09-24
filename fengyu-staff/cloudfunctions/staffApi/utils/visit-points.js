@@ -71,13 +71,27 @@ async function grantVisitPoints(client, so, items, now, rewardAmount) {
 
   const serviceDate = normalizeServiceDate(so.service_date)
   const externalRef = buildVisitPointsExternalRef(so.client_user_id, serviceDate)
+  // ⚠ 必须同时建 point_batches：余额（points_balance）与批次（point_batches）是两本账，
+  // 不变量 I3 要求 balance = Σ 未过期批次 remaining，且**过期处理只扫批次**。
+  // 漏建的后果：到店积分永不过期（与 #67 的 365 天口径相悖）+ I3 每日告警。
+  // 消费赠送侧由 utils/points.js 的 grantPointBatch 建，此处与它逐字同口径（365 天、
+  // earned_at 取流水 created_at）。跨端三份副本（staffApi / clientApi / admin lib）须同步。
   const result = await client.query(
     `WITH inserted AS (
        INSERT INTO point_transactions
          (user_id, type, amount, ref_order_id, external_ref, created_at)
        VALUES ($1, '到店赠送', $2, NULL, $3, $4)
        ON CONFLICT DO NOTHING
-       RETURNING amount
+       RETURNING id, amount, created_at
+     ),
+     granted_batch AS (
+       INSERT INTO point_batches
+         (user_id, source_transaction_id, source_type, ref_order_id,
+          original_amount, remaining_amount, earned_at, expire_at, created_at, updated_at)
+       SELECT $1, i.id, '到店赠送', NULL,
+              i.amount, i.amount, i.created_at,
+              i.created_at + INTERVAL '365 days', NOW(), NOW()
+         FROM inserted i
      )
      UPDATE client_wechat_users
         SET points_balance = COALESCE(points_balance, 0) + (SELECT amount FROM inserted),

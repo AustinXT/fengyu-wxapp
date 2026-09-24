@@ -12,7 +12,7 @@ vi.mock('next/navigation', () => ({ redirect: mockRedirect }))
 const { mockGetSession } = vi.hoisted(() => ({ mockGetSession: vi.fn() }))
 vi.mock('@/lib/auth', () => ({ getSession: mockGetSession }))
 
-import { withPermission, withAnyPermission } from './with-permission'
+import { withAllPermissions, withPermission, withAnyPermission } from './with-permission'
 import { ApiError } from './api-error'
 
 function makeSession(actions: string[]): AuthSession {
@@ -164,6 +164,71 @@ describe('withAnyPermission', () => {
 
     const wrapped = withAnyPermission(['anything'], fn)
     await expect(wrapped()).rejects.toThrow('NEXT_REDIRECT:/login?expired=1')
+    expect(fn).not.toHaveBeenCalled()
+  })
+})
+
+describe('withAllPermissions', () => {
+  beforeEach(() => {
+    mockRedirect.mockClear()
+    mockGetSession.mockReset()
+  })
+
+  it('AND 关系：库存特殊操作必须同时具备基础和特殊权限', async () => {
+    const fn = vi.fn(async (session: AuthSession) => session.employeeId)
+    const wrapped = withAllPermissions([
+      'inventory:create_doc',
+      'inventory:self_purchase_receive',
+    ], fn)
+
+    mockGetSession.mockResolvedValue(makeSession(['inventory:create_doc']))
+    await expect(wrapped()).rejects.toThrow('PERMISSION_DENIED: 无权执行 inventory:self_purchase_receive')
+    expect(fn).not.toHaveBeenCalled()
+
+    mockGetSession.mockResolvedValue(makeSession([
+      'inventory:create_doc',
+      'inventory:self_purchase_receive',
+    ]))
+    await expect(wrapped()).resolves.toBe('EMP-001')
+    expect(fn).toHaveBeenCalledTimes(1)
+  })
+
+  it('说明.md §9.3：跨绑定拼接多权限必须 PERMISSION_DENIED，fn 不被调用', async () => {
+    // 市场 A 绑定持基础动作、市场 B 绑定持特殊动作，动作并集齐全但没有任何
+    // 单一绑定同时具备两者——requirePermission 逐项能过，收紧后 roles 必须为空并拒绝。
+    const session: AuthSession = {
+      employeeId: 'EMP-SPLIT',
+      name: '测试用户',
+      phone: '13800138000',
+      roles: [
+        {
+          role: 'inventory_market_finance', scopeId: 'MKT-A', scopeType: '市场',
+          actions: ['inventory:create_doc'],
+          scopeStoreIds: ['STORE-A1'], scopeOrgNodeIds: ['MKT-A'],
+        },
+        {
+          role: 'inventory_market_finance', scopeId: 'MKT-B', scopeType: '市场',
+          actions: ['inventory:self_purchase_receive'],
+          scopeStoreIds: ['STORE-B1'], scopeOrgNodeIds: ['MKT-B'],
+        },
+      ],
+      permissions: {
+        actions: ['inventory:create_doc', 'inventory:self_purchase_receive'],
+        scopeStoreIds: ['STORE-A1', 'STORE-B1'],
+        scopeOrgNodeIds: ['MKT-A', 'MKT-B'],
+      },
+    }
+    mockGetSession.mockResolvedValue(session)
+    const fn = vi.fn()
+
+    const wrapped = withAllPermissions([
+      'inventory:create_doc',
+      'inventory:self_purchase_receive',
+    ], fn)
+
+    await expect(wrapped()).rejects.toThrow(
+      'PERMISSION_DENIED: 多项权限必须由同一角色授权范围同时提供',
+    )
     expect(fn).not.toHaveBeenCalled()
   })
 })

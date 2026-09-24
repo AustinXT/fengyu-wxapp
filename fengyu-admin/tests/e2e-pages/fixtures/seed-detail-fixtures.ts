@@ -12,7 +12,6 @@ import fs from 'node:fs'
 import fsp from 'node:fs/promises'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
-// @ts-expect-error: pg 类型在测试环境未声明（仅 e2e-pages seed 用，无需 admin runtime 类型）
 import { Pool } from 'pg'
 
 // Playwright 以 cwd=fengyu-admin/ 运行；不依赖 import.meta.url（Playwright 把本模块
@@ -39,7 +38,7 @@ function connString(): string {
     process.env.E2E_DATABASE_URL ||
     process.env.PG_CONNECTION_STRING ||
     process.env.DATABASE_URL ||
-    'postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp'
+    'postgresql://fengyu:fengyu123@101.34.242.103:5433/fengyu_wxapp'
   )
 }
 

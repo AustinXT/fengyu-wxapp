@@ -12,6 +12,7 @@
  */
 
 // ====== Mock: pg ======
+const crypto = require('crypto')
 // pool.query 用于入口幂等检查；pool.connect() 返回事务 client
 const mockPoolQuery = vi.fn()
 const mockClientQuery = vi.fn()
@@ -106,11 +107,27 @@ require.cache[lakalaSignPath] = {
 
 // 全局启用 payNotify（测试需要业务逻辑生效）
 process.env.PAYNOTIFY_ENABLED = 'true'
+// 部署态一定有（deploy-cloudfunctions.sh 已把它纳入 --require 回读校验）。
+// 缺失时对账 fail-closed 跳过，那条分支在 reconcile.test.js 专项覆盖。
+process.env.PAYNOTIFY_FN_NAME = 'payNotify'
 
 function loadFreshIndex() {
   const p = require.resolve('../index')
   delete require.cache[p]
   return require('../index')
+}
+
+function healthPayload(service) {
+  const timestamp = String(Date.now())
+  const nonce = '12345678-1234-1234-1234-123456789abc'
+  return {
+    service,
+    timestamp,
+    nonce,
+    signature: crypto.createHmac('sha256', process.env.CLIENT_SECRET)
+      .update(`${service}\n${timestamp}\n${nonce}`)
+      .digest('hex'),
+  }
 }
 
 /**
@@ -160,6 +177,10 @@ function defaultPaymentsRoutes({ cashPaidSum = '300', receivedSum = cashPaidSum 
       result: { rows: [{ id: 1 }], rowCount: 1 },
     },
     {
+      match: /UPDATE sale_order_payments SET allocation_status = '待分配'/,
+      result: { rows: [], rowCount: 1 },
+    },
+    {
       match: /UPDATE sale_orders[\s\S]*SET status = \$1::order_status/,
       result: { rows: [], rowCount: 1 },
     },
@@ -203,6 +224,7 @@ function setupClientQueryRouter(routes) {
 
 describe('payNotify index.js', () => {
   beforeEach(() => {
+    process.env.CLIENT_SECRET = 'health-test-secret'
     vi.clearAllMocks()
     mockPoolQuery.mockReset()
     mockClientQuery.mockReset()
@@ -211,6 +233,26 @@ describe('payNotify index.js', () => {
       query: mockClientQuery,
       release: mockClientRelease,
     }))
+  })
+
+  test('system.health 先于支付开关分流，仅执行 HMAC + SELECT 1', async () => {
+    const { main } = loadFreshIndex()
+    mockPoolQuery.mockResolvedValueOnce({ rows: [{ ok: 1 }], rowCount: 1 })
+    const result = await main({ action: 'system.health', payload: healthPayload('payNotify') })
+    expect(result.code).toBe(0)
+    expect(result.data.ok).toBe(true)
+    expect(mockPoolQuery).toHaveBeenCalledWith('SELECT 1 AS ok')
+  })
+
+  test('system.health 拒绝无效签名', async () => {
+    const { main } = loadFreshIndex()
+    const result = await main({
+      action: 'system.health',
+      payload: { ...healthPayload('payNotify'), signature: '0'.repeat(64) },
+    })
+    expect(result.code).toBe(-401)
+    expect(result.errorType).toBe('UNAUTHORIZED')
+    expect(mockPoolQuery).not.toHaveBeenCalled()
   })
 
   test('1. 无 prepaid 的普通订单 → 充值分支无记录 + 业绩分配正常 + 状态翻 已支付', async () => {
@@ -231,6 +273,14 @@ describe('payNotify index.js', () => {
       {
         match: /SELECT sale_order_type, legacy_source FROM sale_orders/,
         result: { rows: [{ sale_order_type: '销售单', legacy_source: null }], rowCount: 1 },
+      },
+      // 全额到账路径先读取退款感知的逐项可分配额。
+      {
+        match: /SELECT sale_item_id, sale_amount::numeric AS sale_amount, received::numeric AS received\s+FROM sale_items/,
+        result: {
+          rows: [{ sale_item_id: 'item-001', sale_amount: '300.00', received: '300.00' }],
+          rowCount: 1,
+        },
       },
       // sale_items 查询（业绩分配）——补齐 capturePaymentAllocatables 所需字段，走正常比例分摊而非兜底
       {
@@ -368,6 +418,21 @@ describe('payNotify index.js', () => {
     // 事务应 COMMIT
     expect(calls.map((c) => c[0])).toContain('COMMIT')
     expect(calls.map((c) => c[0])).not.toContain('ROLLBACK')
+
+    // Bug A 修复断言：在线首次混合支付的卡兑现分支必须复用同事务主流水的 `now`，
+    // 让 0038 trigger Branch A 用 `paid_at IS NOT DISTINCT FROM` 能配对两条流水。
+    const sopInserts = calls.filter(([sql]) => /INSERT INTO sale_order_payments/.test(sql))
+    const mainstreamInsert = sopInserts.find(([sql]) => /ON CONFLICT \(sale_order_id, payment_method, external_txn_id\)/.test(sql))
+    const cardDeductInsert = sopInserts.find(([sql]) => /'储值卡抵扣'/.test(sql))
+    expect(mainstreamInsert).toBeDefined()
+    expect(cardDeductInsert).toBeDefined()
+    // 主流水 line 974-988：params 数组 [orderNo, changeType, amount, paymentMethod, txnId, note, now, tradeInfo]
+    // 占位符按数字升序映射：$1→[0], $2→[1], $3→[2], $4→[3], $5→[4], $6→[5]=note, $7→[6]=now, $8→[7]=tradeInfo
+    // paid_at = $7 → params[6]
+    // 卡兑现 line 604：params = [orderNo, amount, note, now]
+    // 占位符 $1→[0]=orderNo, $2→[1]=amount, $3→[2]=note, $4→[3]=now
+    // paid_at = $4 → params[3]
+    expect(mainstreamInsert[1][6]).toBe(cardDeductInsert[1][3])
   })
 
   test('部分现金到账也先兑现本场次 pending 储值卡，再以现金+卡重算 received/部分支付状态', async () => {

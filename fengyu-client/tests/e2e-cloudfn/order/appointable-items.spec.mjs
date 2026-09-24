@@ -37,6 +37,7 @@ async function newPaidCourseOrder({
   remainingSessions = 5,
   productType = '疗程卡',
   totalAmount = 500,
+  orderRemark = null,
 } = {}) {
   await createTestPendingSaleOrder({
     saleOrderId: orderNo, totalAmount, productType, sessionCount,
@@ -44,13 +45,15 @@ async function newPaidCourseOrder({
   })
   // 改状态为 '已支付'
   await pgQuery(
-    `UPDATE sale_orders SET status = '已支付', received = $1, paid_at = NOW()
-     WHERE sale_order_id = $2`,
-    [totalAmount, orderNo]
+    `UPDATE sale_orders
+     SET status = '已支付', received = $1, paid_at = NOW(), remark = $2
+     WHERE sale_order_id = $3`,
+    [totalAmount, orderRemark, orderNo]
   )
-  // 直接写 remaining_sessions（schema 实际列名）
+  // 已支付订单同步写满 paid_sessions，匹配当前可预约接口的“已付未用”过滤口径。
   await pgQuery(
-    `UPDATE sale_items SET session_count = $1, remaining_sessions = $2
+    `UPDATE sale_items
+     SET session_count = $1, remaining_sessions = $2, paid_sessions = $1
      WHERE sale_order_id = $3`,
     [sessionCount, remainingSessions, orderNo]
   )
@@ -59,7 +62,8 @@ async function newPaidCourseOrder({
 async function caseHappyHasRemaining() {
   await createTestClient()
   const orderNo = `${NS}_AP_OK1`.slice(0, 30)
-  await newPaidCourseOrder({ orderNo, sessionCount: 5, remainingSessions: 5 })
+  const orderRemark = '顾客希望安排安静房间'
+  await newPaidCourseOrder({ orderNo, sessionCount: 5, remainingSessions: 5, orderRemark })
   const res = await invokeAs(TEST_CLIENT_OPENID, 'order.appointableItems', {})
   if (res.code !== 0) throw new Error(`expect code=0, got ${res.code}: ${res.message}`)
   const orders = res.data?.orders || []
@@ -70,6 +74,7 @@ async function caseHappyHasRemaining() {
   if (!Array.isArray(hit.items) || hit.items.length !== 1) {
     throw new Error(`expect 1 item, got ${hit.items?.length}`)
   }
+  if (hit.orderRemark !== orderRemark) throw new Error(`orderRemark=${hit.orderRemark}`)
   const item = hit.items[0]
   if (item.remainingSessions !== 5) throw new Error(`remainingSessions=${item.remainingSessions}`)
   if (item.productType !== '疗程卡') throw new Error(`productType=${item.productType}`)

@@ -7,9 +7,6 @@
  *   - 订单状态单向推进
  *   - 美容师行级过滤
  */
-
-
-
 const pg = globalThis.__mocks__.pg
 const { createManagerCtx, createBeauticianCtx } = require('../helpers')
 const orderRoutes = require('../../routes/order')
@@ -41,7 +38,57 @@ function mockScopeAllow(storeId = 'store-001') {
  * 默认 client.query 返回结果（识别 RETURNING / bool_and 等需要 rows[0] 的 SQL）。
  * 内联 vi.fn 中 fallthrough 也应使用此函数，否则 .rows[0].id 会 undefined。
  */
-function defaultQueryResult(sql) {
+/**
+ * #182 折抵额度复算的 mock 支撑。
+ *
+ * 实现侧在取得 `FOR UPDATE OF si` 行锁**之后**另起一条语句复算折抵额度（并发正确性要求，
+ * 与锁行同语句会拿到子表的旧快照）。这里用一个透明包装器统一响应那条语句：
+ * 记住锁行返回的行，按同一口径算出 deductible_quantity / deductible_amount。
+ *
+ * 兜底约定：mock 行未显式声明 `received` 时视为**已付清**（received = sale_amount 或
+ * 单价 × 次数/件数）。这样只关心折抵数量的老用例不必逐个补金额字段，而显式声明了
+ * received 的用例（部分支付、余数、二次折抵）走真实口径。
+ */
+function deductibleRowsFor(rows) {
+  return (rows || []).map((r) => {
+    const unit = Number(r.unit_real_price || 0)
+    const isCard = r.product_type === '疗程卡'
+    const qty = isCard
+      ? Number(r.remaining_sessions || 0)
+      : Math.max(0, Number(r.quantity || 0) - Number(r.picked_up_quantity || 0))
+    const delivered = isCard
+      ? (Number(r.session_count || 0) - Number(r.remaining_sessions || 0)) * unit
+      : Number(r.picked_quantity ?? r.home_picked_quantity ?? 0) * unit
+    const fullPrice = unit * Number(isCard ? (r.session_count || 0) : (r.quantity || 0))
+    const saleAmount = r.sale_amount != null ? Number(r.sale_amount) : fullPrice
+    const received = r.received != null ? Number(r.received) : saleAmount
+    const depositOrGift = r.sale_order_type === '寄存单' || saleAmount <= 0
+    const remainingPaid = Math.max(0, received - delivered
+      - Number(r.converted_amount ?? r.home_converted_amount ?? 0))
+    return {
+      sale_item_id: r.sale_item_id,
+      deductible_quantity: qty,
+      deductible_amount: String(depositOrGift ? unit * qty : remainingPaid),
+    }
+  })
+}
+
+function withDeductible(inner) {
+  let held = []
+  return async (sql, params) => {
+    if (sql.includes('deductible_quantity') && !sql.includes('FOR UPDATE')) {
+      const rows = deductibleRowsFor(held)
+      return { rows, rowCount: rows.length }
+    }
+    const res = await inner(sql, params)
+    if (sql.includes('FROM sale_items si') && sql.includes('FOR UPDATE OF si')) {
+      held = (res && res.rows) || []
+    }
+    return res
+  }
+}
+
+function defaultQueryResult(sql, params) {
   if (typeof sql === 'string' && /RETURNING\s+id/i.test(sql)) {
     return { rows: [{ id: 1 }], rowCount: 1 }
   }
@@ -67,11 +114,24 @@ function defaultQueryResult(sql) {
   if (typeof sql === 'string' && /bool_and\s*\(\s*is_experience/i.test(sql)) {
     return { rows: [{ all_experience: false, all_normal: true }], rowCount: 1 }
   }
+  if (typeof sql === 'string' && /FROM inventory_sku_product_sku_mappings mapping/.test(sql)) {
+    return {
+      rows: [{
+        product_sku_id: params?.[0]?.[0] || 'sku-home',
+        inventory_sku_id: 'inventory-sku-001',
+        product_code: 'I001',
+        product_name: '库存商品',
+        spec_name: null,
+        quantity_per_sale_unit: 1,
+      }],
+      rowCount: 1,
+    }
+  }
   return { rows: [], rowCount: 1 }
 }
 
 function makeClientQueryMock(_defaultResult) {
-  return vi.fn(async (sql, _params) => defaultQueryResult(sql))
+  return vi.fn(async (sql, params) => defaultQueryResult(sql, params))
 }
 
 // confirmOffline 的订单/明细/payment 分类读取已收进同一事务。旧用例仍用 pg.query
@@ -116,6 +176,19 @@ function makeCloseQuery(handler = async (sql) => defaultQueryResult(sql)) {
 describe('order.create', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+  })
+
+  test('跨市场出差美容师不能通过 preferredStaffWfId 绕过候选列表', async () => {
+    const ctx = createManagerCtx({
+      clientPhone: '13800001111',
+      clientName: '测试顾客',
+      items: [{ skuId: 'sku-001', quantity: 1 }],
+      paymentMethod: '线下',
+      preferredStaffWfId: 'emp-cross-market',
+    })
+    pg.query.mockResolvedValueOnce([])
+
+    await expect(orderRoutes.create(ctx)).rejects.toThrow(/INVALID_PARAMS.*不属于本门店/)
   })
 
   test('店长开单成功 — 普通订单', async () => {
@@ -275,12 +348,12 @@ describe('order.create', () => {
     // mock 事务内 client.query 的守卫查询返回「已有待支付订单」
     pg.transaction.mockImplementation(async (cb) => {
       const client = {
-        query: vi.fn(async (sql) => {
+        query: vi.fn(withDeductible(async (sql) => {
           if (typeof sql === 'string' && /sale_orders/.test(sql) && /'待支付'/.test(sql)) {
             return { rows: [{ sale_order_id: 'FY-exist' }], rowCount: 1 }
           }
           return { rows: [], rowCount: 0 }
-        }),
+        })),
       }
       return await cb(client)
     })
@@ -324,12 +397,12 @@ describe('order.create', () => {
     // mock 事务内 client.query 的守卫查询返回「同店已有待支付订单」
     pg.transaction.mockImplementation(async (cb) => {
       const client = {
-        query: vi.fn(async (sql) => {
+        query: vi.fn(withDeductible(async (sql) => {
           if (typeof sql === 'string' && /sale_orders/.test(sql) && /'待支付'/.test(sql)) {
             return { rows: [{ sale_order_id: 'FY-exist' }], rowCount: 1 }
           }
           return { rows: [], rowCount: 0 }
-        }),
+        })),
       }
       return await cb(client)
     })
@@ -1259,11 +1332,11 @@ describe('order.create', () => {
     let orderInsertParams = null
     pg.transaction.mockImplementation(async (cb) => {
       const client = {
-        query: vi.fn(async (sql, params) => {
+        query: vi.fn(withDeductible(async (sql, params) => {
           if (sql.includes('INSERT INTO sale_orders')) orderInsertParams = params
           if (sql.includes('INSERT INTO sale_order_payments')) paymentInserts.push({ sql, params })
           return defaultQueryResult(sql)
-        }),
+        })),
       }
       return await cb(client)
     })
@@ -1286,10 +1359,10 @@ describe('order.create', () => {
     const paymentInserts = []
     pg.transaction.mockImplementation(async (cb) => {
       const client = {
-        query: vi.fn(async (sql, params) => {
+        query: vi.fn(withDeductible(async (sql, params) => {
           if (sql.includes('INSERT INTO sale_order_payments')) paymentInserts.push({ sql, params })
           return defaultQueryResult(sql)
-        }),
+        })),
       }
       return await cb(client)
     })
@@ -1311,10 +1384,10 @@ describe('order.create', () => {
     const paymentInserts = []
     pg.transaction.mockImplementation(async (cb) => {
       const client = {
-        query: vi.fn(async (sql, params) => {
+        query: vi.fn(withDeductible(async (sql, params) => {
           if (sql.includes('INSERT INTO sale_order_payments')) paymentInserts.push({ sql, params })
           return defaultQueryResult(sql)
-        }),
+        })),
       }
       return await cb(client)
     })
@@ -1346,7 +1419,7 @@ describe('order.create', () => {
     const cardTxnInserts = []
     pg.transaction.mockImplementation(async (cb) => {
       const client = {
-        query: vi.fn(async (sql, params) => {
+        query: vi.fn(withDeductible(async (sql, params) => {
           if (sql.includes('INSERT INTO sale_order_payments')) {
             paymentInserts.push({ sql, params })
           }
@@ -1354,7 +1427,7 @@ describe('order.create', () => {
             cardTxnInserts.push({ sql, params })
           }
           return defaultQueryResult(sql)
-        }),
+        })),
       }
       return await cb(client)
     })
@@ -1434,7 +1507,7 @@ describe('order.create', () => {
     const cardTxnInserts = []
     pg.transaction.mockImplementation(async (cb) => {
       const client = {
-        query: vi.fn(async (sql, params) => {
+        query: vi.fn(withDeductible(async (sql, params) => {
           if (sql.includes('INSERT INTO sale_order_payments')) {
             let changeType = null
             if (sql.includes("'储值卡抵扣'")) changeType = '储值卡抵扣'
@@ -1445,7 +1518,7 @@ describe('order.create', () => {
             cardTxnInserts.push({ sql, params })
           }
           return defaultQueryResult(sql)
-        }),
+        })),
       }
       return await cb(client)
     })
@@ -1536,11 +1609,10 @@ describe('order.create', () => {
     expect(orderInsertParams[9]).toBe('徐丽珍')        // clientName 来自客户档案（非入参 '13800001111'）
   })
 
-  // PR #55（2026-07-13）：document_type 移除金额达标分支 B，改为仅按下单时会员身份判
-  // （售前=非会员客，售后=会员客）。「成为会员那一单」下单时仍非会员客 → 售前。
+  // 开单只写预测值；首次成功入账时由数据库按达标次数冻结权威分类。
   // order.js:904-915 在事务前单独 SELECT customer_type 决定 documentType（与 clientUsers 首查无关）。
   // 参数顺序：0:saleOrderId, 1:saleOrderType, 2:documentType, 3:marketName, 4:storeId, 5:now, ...
-  test('document_type 仅按会员身份判：非会员客 + 大额 → 售前', async () => {
+  test('document_type 开单预测：非会员客 → 售前一次', async () => {
     const ctx = createManagerCtx({
       clientPhone: '13800001111',
       clientName: '测试顾客',
@@ -1585,11 +1657,10 @@ describe('order.create', () => {
     await orderRoutes.create(ctx)
 
     expect(orderInsertParams).not.toBeNull()
-    // params[2] = documentType：非会员客即使大额（5000）也判「售前」
-    expect(orderInsertParams[2]).toBe('售前')
+    expect(orderInsertParams[2]).toBe('售前一次')
   })
 
-  test('document_type 仅按会员身份判：会员客 → 售后', async () => {
+  test('document_type 不由会员身份直接决定：无历史达标单仍为售前一次', async () => {
     const ctx = createManagerCtx({
       clientPhone: '13800001111',
       clientName: '测试顾客',
@@ -1610,9 +1681,6 @@ describe('order.create', () => {
         service_fee: '0', is_shengmei: false, is_experience: false, is_manager_special: false,
         sales_category: '自销自耗', product_kind: '护理',
       }])
-      // document_type 专项查询：会员客
-      .mockResolvedValueOnce([{ customer_type: '会员客' }])
-
     let orderInsertParams = null
     pg.transaction.mockImplementation(async (fn) => {
       const client = {
@@ -1630,8 +1698,8 @@ describe('order.create', () => {
     await orderRoutes.create(ctx)
 
     expect(orderInsertParams).not.toBeNull()
-    // params[2] = documentType：会员客判「售后」
-    expect(orderInsertParams[2]).toBe('售后')
+    // params[2] = documentType：会员身份不参与阶段分类
+    expect(orderInsertParams[2]).toBe('售前一次')
   })
 })
 
@@ -2375,6 +2443,120 @@ describe('order.close', () => {
     expect(clientQueryMock.mock.calls.some(([sql]) => /SET status = '已关闭'|SET status = '已作废'/.test(sql))).toBe(false)
   })
 
+  // ===== #214 关闭订单前先请 clientApi 向渠道关单 =====
+  // 背景：顾客唤起支付后没付款，渠道单仍在有效期内，旧实现只能拒绝关闭，店员实测要等
+  // 约 20 分钟（等拉卡拉 10 分钟超时 + payNotify 定时补偿扫到）。staffApi 没有拉卡拉
+  // 凭据（也不该有），所以委托 clientApi 完成关单。
+  describe('#214 关闭前作废在线支付意图', () => {
+    test('通道已配置 + 存在活动意图 → 调 clientApi 作废后按原流程关闭', async () => {
+      const ctx = createManagerCtx({ saleOrderId: 'FY-CLOSE-VOID' })
+
+      mockScopeOk()
+      __mocks__.clientApiBridge.isConfigured.mockReturnValue(true)
+      // 第一次 pg.query 是关单前预读，第二次给事务内的订单锁（makeCloseQuery 委托 pg.query）
+      pg.query.mockResolvedValueOnce([{ status: '待支付', lakala_out_order_no: 'FY-CLOSE-VOID_500' }])
+      pg.query.mockResolvedValueOnce([{
+        sale_order_id: 'FY-CLOSE-VOID',
+        status: '待支付',
+        store_id: 'store-001',
+        opened_by: 'emp-other',
+        lakala_out_order_no: null,   // clientApi 已把它清空
+      }])
+
+      pg.transaction.mockImplementation(async (cb) => cb({
+        query: makeCloseQuery(async (sql) => {
+          if (sql.includes('sale_items')) return { rows: [{ sale_item_id: 'item-1' }], rowCount: 1 }
+          return defaultQueryResult(sql)
+        }),
+      }))
+
+      await orderRoutes.close(ctx)
+
+      expect(ctx.result.status).toBe('已关闭')
+      // 必须带上预读到的单号，clientApi 侧据此拒绝「关到另一笔新意图」（TOCTOU 防线）
+      expect(__mocks__.clientApiBridge.callClientApi).toHaveBeenCalledWith(
+        'order.voidPaymentIntent',
+        { saleOrderId: 'FY-CLOSE-VOID', expectedOutTradeNo: 'FY-CLOSE-VOID_500' },
+      )
+    })
+
+    test('clientApi 判定不可作废（支付已成功）→ 原样抛出，绝不本地强关', async () => {
+      const ctx = createManagerCtx({ saleOrderId: 'FY-CLOSE-PAID' })
+
+      mockScopeOk()
+      __mocks__.clientApiBridge.isConfigured.mockReturnValue(true)
+      __mocks__.clientApiBridge.callClientApi.mockRejectedValueOnce(
+        new Error('CONFLICT: PAYMENT_ALREADY_SUCCEEDED: 支付已成功，正在更新订单，请稍后刷新'),
+      )
+      pg.query.mockResolvedValueOnce([{ status: '待支付', lakala_out_order_no: 'FY-CLOSE-PAID_500' }])
+
+      await expect(orderRoutes.close(ctx)).rejects.toThrow(/PAYMENT_ALREADY_SUCCEEDED/)
+      expect(pg.transaction).not.toHaveBeenCalled()
+    })
+
+    test('无活动意图 → 不调 clientApi，行为与改动前一致', async () => {
+      const ctx = createManagerCtx({ saleOrderId: 'FY-CLOSE-PLAIN' })
+
+      mockScopeOk()
+      __mocks__.clientApiBridge.isConfigured.mockReturnValue(true)
+      pg.query.mockResolvedValueOnce([{ status: '待支付', lakala_out_order_no: null }])
+      pg.query.mockResolvedValueOnce([{
+        sale_order_id: 'FY-CLOSE-PLAIN',
+        status: '待支付',
+        store_id: 'store-001',
+        opened_by: 'emp-other',
+      }])
+
+      pg.transaction.mockImplementation(async (cb) => cb({
+        query: makeCloseQuery(async (sql) => {
+          if (sql.includes('sale_items')) return { rows: [{ sale_item_id: 'item-1' }], rowCount: 1 }
+          return defaultQueryResult(sql)
+        }),
+      }))
+
+      await orderRoutes.close(ctx)
+
+      expect(ctx.result.status).toBe('已关闭')
+      expect(__mocks__.clientApiBridge.callClientApi).not.toHaveBeenCalled()
+    })
+
+    // 状态闸门排在关单之前：对一张已支付单点关闭，不该先跑跨 env 查单甚至发关单请求
+    test('已支付订单不触发跨 env 作废调用', async () => {
+      const ctx = createManagerCtx({ saleOrderId: 'FY-CLOSE-PAIDSTATUS' })
+
+      mockScopeOk()
+      __mocks__.clientApiBridge.isConfigured.mockReturnValue(true)
+      pg.query.mockResolvedValueOnce([{ status: '已支付', lakala_out_order_no: 'FY-X_500' }])
+      pg.query.mockResolvedValueOnce([{
+        sale_order_id: 'FY-CLOSE-PAIDSTATUS', status: '已支付',
+        store_id: 'store-001', opened_by: 'emp-other',
+      }])
+      pg.transaction.mockImplementation(async (cb) => cb({ query: makeCloseQuery() }))
+
+      await expect(orderRoutes.close(ctx)).rejects.toThrow(/不允许关闭|不允许取消/)
+      expect(__mocks__.clientApiBridge.callClientApi).not.toHaveBeenCalled()
+    })
+
+    test('通道未配置 → 连预读都不发，事务内守卫照常拦住活动意图', async () => {
+      const ctx = createManagerCtx({ saleOrderId: 'FY-CLOSE-NOBRIDGE' })
+
+      mockScopeOk()
+      __mocks__.clientApiBridge.isConfigured.mockReturnValue(false)
+      pg.query.mockResolvedValueOnce([{
+        sale_order_id: 'FY-CLOSE-NOBRIDGE',
+        status: '待支付',
+        store_id: 'store-001',
+        opened_by: 'emp-other',
+        lakala_out_order_no: 'FY-CLOSE-NOBRIDGE_500',
+      }])
+      pg.transaction.mockImplementation(async (cb) => cb({ query: makeCloseQuery() }))
+
+      await expect(orderRoutes.close(ctx))
+        .rejects.toThrow(/CONFLICT.*ONLINE_PAYMENT_INTENT_ACTIVE/)
+      expect(__mocks__.clientApiBridge.callClientApi).not.toHaveBeenCalled()
+    })
+  })
+
   test('关闭待支付转换单时恢复源卡次数并作废转换权益', async () => {
     const ctx = createManagerCtx({ saleOrderId: 'FY-CONV-001' })
 
@@ -2711,6 +2893,125 @@ describe('order.list', () => {
   })
 })
 
+describe('order.updatePerformanceAttribution', () => {
+  const input = {
+    saleOrderId: 'FY-XSD-WX-2608260004',
+    performanceAttributionDate: '2026-09-02',
+    expectedUpdatedAt: '2026-08-26T05:39:21.991Z',
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  function mockAttributionTransaction({
+    adjustedAt = null,
+    currentDate = '2026-08-26',
+    updatedRows = [{
+      performance_attribution_date: '2026-09-02',
+      performance_attribution_adjusted_at: new Date('2026-08-26T06:00:00.000Z'),
+      performance_attribution_adjusted_by: 'emp-001',
+      updated_at: new Date('2026-08-26T06:00:00.000Z'),
+    }],
+    // node-pg 对 int8(OID 20) 不转换、原样返回 string —— mock 必须用字符串，
+    // 否则 order.js 里那句 Number(row.id) 的归一化完全没被覆盖（invariant：bigint id 是 string）。
+    // 顺序按真实 SQL 的 ORDER BY id 升序。
+    syncedRows = [{ id: '41' }, { id: '43' }],
+    staleRows = [{ stale: 0 }],
+  } = {}) {
+    const query = vi.fn()
+      .mockResolvedValueOnce({
+        rows: [{
+          sale_order_id: input.saleOrderId,
+          store_id: 'store-001',
+          performance_attribution_date: currentDate,
+          performance_attribution_adjusted_at: adjustedAt,
+          original_order_date: '2026-08-26',
+          min_performance_date: '2026-08-19',
+          max_performance_date: '2026-09-02',
+        }],
+        rowCount: 1,
+      })
+      .mockResolvedValueOnce({ rows: updatedRows, rowCount: updatedRows.length })
+      .mockResolvedValueOnce({ rows: syncedRows, rowCount: syncedRows.length })
+      // 部署顺序闸门的回读：stale=0 表示 trigger 已同步
+      .mockResolvedValueOnce({ rows: staleRows, rowCount: staleRows.length })
+      .mockResolvedValue({ rows: [], rowCount: 1 })
+    pg.transaction.mockImplementation(async (callback) => callback({ query }))
+    return query
+  }
+
+  test('店长可在原始订单日期 +7 天边界修改，并写一次性 CAS 与审计日志', async () => {
+    const ctx = createManagerCtx(input)
+    const query = mockAttributionTransaction()
+
+    await orderRoutes.updatePerformanceAttribution(ctx)
+
+    expect(ctx.result.performanceAttributionDate).toBe('2026-09-02')
+    expect(ctx.result.message).toMatch(/不可再次调整/)
+    expect(query.mock.calls[0][0]).toMatch(/FOR UPDATE/)
+    expect(query.mock.calls[1][0]).toMatch(/performance_attribution_adjusted_at IS NULL/)
+    expect(query.mock.calls[1][0]).toMatch(/date_trunc\('milliseconds', updated_at\)/)
+    // 款项行同步已下沉为 sale_orders 的 AFTER UPDATE trigger（迁移 0041）：
+    // 查询侧改为直读款项级归属日期列后，漏同步会直接出错数，同步必须由 DB 保证。
+    // 应用层只回读受影响的行用于审计日志，不再自己发 UPDATE。
+    expect(query.mock.calls[2][0]).toMatch(/SELECT id/)
+    // 回读集合 = trigger 覆盖的行（首次支付 + 同次已支付卡行），不按日期比
+    expect(query.mock.calls[2][0]).toMatch(/p\.change_type = '首次支付'/)
+    expect(query.mock.calls[2][0]).toMatch(/p\.change_type = '储值卡抵扣'/)
+    expect(query.mock.calls[2][0]).toMatch(/first_payment\.paid_at IS NOT DISTINCT FROM p\.paid_at/)
+    expect(query.mock.calls[2][0]).not.toMatch(/performance_attribution_date = \$2/)
+    expect(query.mock.calls[2][1]).toEqual([input.saleOrderId])
+    expect(query.mock.calls.some(([s]) => /UPDATE sale_order_payments/.test(s))).toBe(false)
+    expect(query.mock.calls.some(([sql]) => /INSERT INTO operation_logs/.test(sql))).toBe(true)
+    const auditInsert = query.mock.calls.find(([sql]) => /INSERT INTO operation_logs/.test(sql))
+    expect(JSON.parse(auditInsert[1][8]).changes.syncedPaymentIds).toEqual({ from: [], to: [41, 43] })
+  })
+
+  test('迁移 0041 未落地（trigger 缺席）→ 响亮失败而不是静默出错数', async () => {
+    const ctx = createManagerCtx(input)
+    mockAttributionTransaction({ staleRows: [{ stale: 1 }] })
+
+    await expect(orderRoutes.updatePerformanceAttribution(ctx))
+      .rejects.toThrow(/INVALID_STATE.*迁移 0041/)
+  })
+
+  test('同日提交不消耗修改机会', async () => {
+    const ctx = createManagerCtx({ ...input, performanceAttributionDate: '2026-08-26' })
+    const query = mockAttributionTransaction()
+
+    await expect(orderRoutes.updatePerformanceAttribution(ctx))
+      .rejects.toThrow(/INVALID_PARAMS.*当前日期相同/)
+    expect(query).toHaveBeenCalledTimes(1)
+  })
+
+  test('超出原始订单日期前后 7 天时拒绝', async () => {
+    const ctx = createManagerCtx({ ...input, performanceAttributionDate: '2026-09-03' })
+    const query = mockAttributionTransaction()
+
+    await expect(orderRoutes.updatePerformanceAttribution(ctx))
+      .rejects.toThrow(/INVALID_PARAMS.*前后 7 天/)
+    expect(query).toHaveBeenCalledTimes(1)
+  })
+
+  test('已调整订单不能再次修改', async () => {
+    const ctx = createManagerCtx(input)
+    const query = mockAttributionTransaction({ adjustedAt: new Date('2026-08-26T05:50:00.000Z') })
+
+    await expect(orderRoutes.updatePerformanceAttribution(ctx))
+      .rejects.toThrow(/CONFLICT.*已经调整过/)
+    expect(query).toHaveBeenCalledTimes(1)
+  })
+
+  test('普通员工无权调用修改接口', async () => {
+    const ctx = createBeauticianCtx(input)
+
+    await expect(orderRoutes.updatePerformanceAttribution(ctx))
+      .rejects.toThrow(/PERMISSION_DENIED.*仅店长/)
+    expect(pg.transaction).not.toHaveBeenCalled()
+  })
+})
+
 describe('order.detail', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -2737,6 +3038,36 @@ describe('order.detail', () => {
 
     expect(ctx.result.order.sale_order_id).toBe('FY-001')
     expect(ctx.result.items).toHaveLength(1)
+  })
+
+  // #214：新增的 lakala_payment_intent 含 paySign / prepay_id，只对归属顾客本人有意义。
+  // 这里是 `SELECT o.*` 原样展开，漏剥离就会把支付凭据下发给员工端（双谱系评审 round-3）。
+  test('订单详情不得下发 lakala_payment_intent 支付凭据 (#214)', async () => {
+    const ctx = createManagerCtx({ saleOrderId: 'FY-001' })
+
+    pg.query
+      .mockResolvedValueOnce([{
+        sale_order_id: 'FY-001',
+        status: '待支付',
+        store_id: 'store-001',
+        preferred_employee_id: 'emp-b1',
+        client_phone: '138',
+        customer_name: '顾客A',
+        coupon_id: null,
+        lakala_out_order_no: 'FY-001_1700000000',
+        lakala_payment_intent: {
+          outTradeNo: 'FY-001_1700000000',
+          paymentParams: { package: 'prepay_id=secret', paySign: 'should-not-leak' },
+        },
+      }])
+      .mockResolvedValueOnce([{ name: '美容师A' }])
+      .mockResolvedValueOnce([{ sale_item_id: 'item-1' }])
+      .mockResolvedValueOnce([])
+
+    await orderRoutes.detail(ctx)
+
+    expect(ctx.result.order.lakala_payment_intent).toBeUndefined()
+    expect(JSON.stringify(ctx.result)).not.toContain('should-not-leak')
   })
 
   test('缺少 saleOrderId 时拒绝', async () => {
@@ -2979,8 +3310,58 @@ describe('order.qrcode', () => {
     // 实际需支付 = Σ商品实付(pending_received 500) − 储值卡抵扣(0) = 500
     expect(ctx.result.actualPayable).toBe(500)
     expect(ctx.result.items).toHaveLength(1)
-    expect(wxacode.generateWxacode).toHaveBeenCalledWith('FY-QR-001', expect.any(String))
+    // 第三参是经 effectiveEnvVersion 净化后的值：未传 _envVersion 时，
+    // 正式函数回落到自身部署身份 'release'（影子函数则恒为 'develop'，见 utils/wxacode.test.js）
+    expect(wxacode.generateWxacode).toHaveBeenCalledWith('FY-QR-001', expect.any(String), 'release')
     expect(pg.transaction).not.toHaveBeenCalled()
+  })
+
+  test('小程序码按调用方版本生成，开发版与体验版互不顶替缓存', async () => {
+    // 单 CloudBase 环境下开发版和体验版共用同一个 staffApiDev 实例，
+    // 而 develop 码只能开发版打开、trial 码只能体验版打开。
+    // 若缓存键和云存储路径不带版本，先请求的那个版本会把码占住，另一个版本扫出来打不开。
+    const mockOrderRows = () => {
+      pg.query
+        .mockResolvedValueOnce([{
+          sale_order_id: 'FY-QR-ENV', status: '待支付', sale_order_type: '销售单',
+          client_phone: '138', customer_name: '张三', payment_method: '微信',
+          paid_at: null, store_id: 'store-001', opened_by: 'emp-001',
+          total_amount: '500', prepaid_card_amount: '0',
+        }])
+        .mockResolvedValueOnce([
+          { sale_item_id: 'item-1', received: '0', pending_received: '500', sale_amount: '500', product_name: '面部护理' },
+        ])
+    }
+
+    mockOrderRows()
+    await orderRoutes.qrcode(createManagerCtx({ saleOrderId: 'FY-QR-ENV', _envVersion: 'develop' }))
+    mockOrderRows()
+    await orderRoutes.qrcode(createManagerCtx({ saleOrderId: 'FY-QR-ENV', _envVersion: 'trial' }))
+
+    expect(wxacode.generateWxacode).toHaveBeenCalledTimes(2)
+    expect(wxacode.generateWxacode).toHaveBeenNthCalledWith(1, 'FY-QR-ENV', expect.any(String), 'develop')
+    expect(wxacode.generateWxacode).toHaveBeenNthCalledWith(2, 'FY-QR-ENV', expect.any(String), 'trial')
+
+    const cloudPaths = wxacode.uploadToCloudStorage.mock.calls.map((call) => call[1])
+    expect(new Set(cloudPaths).size).toBe(2)
+  })
+
+  test('正式版沿用不带版本后缀的云存储路径', async () => {
+    // release 保持原路径，避免改动生产已有的小程序码
+    pg.query
+      .mockResolvedValueOnce([{
+        sale_order_id: 'FY-QR-REL', status: '待支付', sale_order_type: '销售单',
+        client_phone: '138', customer_name: '张三', payment_method: '微信',
+        paid_at: null, store_id: 'store-001', opened_by: 'emp-001',
+        total_amount: '500', prepaid_card_amount: '0',
+      }])
+      .mockResolvedValueOnce([
+        { sale_item_id: 'item-1', received: '0', pending_received: '500', sale_amount: '500', product_name: '面部护理' },
+      ])
+
+    await orderRoutes.qrcode(createManagerCtx({ saleOrderId: 'FY-QR-REL', _envVersion: 'release' }))
+
+    expect(wxacode.uploadToCloudStorage).toHaveBeenCalledWith(expect.anything(), 'wxacode/order/FY-QR-REL.png')
   })
 
   test('储值卡抵扣后实际需支付 = 商品实付 − 储值卡（不显示应付）', async () => {
@@ -3067,7 +3448,7 @@ describe('order.qrcode', () => {
     const ctx = createManagerCtx({ saleOrderId: 'FY-QR-CONV-REPAY', paymentAmount: 500 })
     const txCalls = []
     pg.transaction.mockImplementationOnce(async (cb) => cb({
-      query: vi.fn(async (sql, params) => {
+      query: vi.fn(withDeductible(async (sql, params) => {
         txCalls.push({ sql, params })
         if (sql.includes('FOR UPDATE')) {
           return {
@@ -3083,7 +3464,7 @@ describe('order.qrcode', () => {
           return { rows: [], rowCount: 1 }
         }
         return defaultQueryResult(sql)
-      }),
+      })),
     }))
     pg.query
       .mockResolvedValueOnce([{
@@ -3110,7 +3491,7 @@ describe('order.qrcode', () => {
     const ctx = createManagerCtx({ saleOrderId: 'FY-QR-CONV-IDEMP', paymentAmount: 500 })
     const txCalls = []
     pg.transaction.mockImplementationOnce(async (cb) => cb({
-      query: vi.fn(async (sql, params) => {
+      query: vi.fn(withDeductible(async (sql, params) => {
         txCalls.push({ sql, params })
         if (sql.includes('FOR UPDATE')) {
           return {
@@ -3124,7 +3505,7 @@ describe('order.qrcode', () => {
           }
         }
         return defaultQueryResult(sql)
-      }),
+      })),
     }))
     await expect(orderRoutes.qrcode(ctx)).rejects.toThrow(/CONFLICT.*已有进行中的在线回款/)
 
@@ -3136,7 +3517,7 @@ describe('order.qrcode', () => {
     const ctx = createManagerCtx({ saleOrderId: 'FY-QR-CONV-OLD-O1', paymentAmount: 300 })
     const txCalls = []
     pg.transaction.mockImplementationOnce(async (cb) => cb({
-      query: vi.fn(async (sql, params) => {
+      query: vi.fn(withDeductible(async (sql, params) => {
         txCalls.push({ sql, params })
         if (sql.includes('FOR UPDATE')) {
           return {
@@ -3150,7 +3531,7 @@ describe('order.qrcode', () => {
           }
         }
         return defaultQueryResult(sql)
-      }),
+      })),
     }))
 
     await expect(orderRoutes.qrcode(ctx)).rejects.toThrow(/CONFLICT.*已有进行中的在线回款/)
@@ -3164,7 +3545,7 @@ describe('order.qrcode', () => {
     const ctx = createManagerCtx({ saleOrderId: 'FY-QR-CONV-CONFLICT', paymentAmount: 300 })
     const txCalls = []
     pg.transaction.mockImplementationOnce(async (cb) => cb({
-      query: vi.fn(async (sql, params) => {
+      query: vi.fn(withDeductible(async (sql, params) => {
         txCalls.push({ sql, params })
         if (sql.includes('FOR UPDATE')) {
           return {
@@ -3178,7 +3559,7 @@ describe('order.qrcode', () => {
           }
         }
         return defaultQueryResult(sql)
-      }),
+      })),
     }))
 
     await expect(orderRoutes.qrcode(ctx)).rejects.toThrow(/CONFLICT.*已有进行中的在线回款/)
@@ -3189,7 +3570,7 @@ describe('order.qrcode', () => {
   test('冻结的转换单在线回款金额不得超过订单欠款', async () => {
     const ctx = createManagerCtx({ saleOrderId: 'FY-QR-CONV-OVER', paymentAmount: 1500 })
     pg.transaction.mockImplementationOnce(async (cb) => cb({
-      query: vi.fn(async (sql) => {
+      query: vi.fn(withDeductible(async (sql) => {
         if (sql.includes('FOR UPDATE')) {
           return {
             rows: [{
@@ -3201,7 +3582,7 @@ describe('order.qrcode', () => {
           }
         }
         return defaultQueryResult(sql)
-      }),
+      })),
     }))
 
     await expect(orderRoutes.qrcode(ctx)).rejects.toThrow(/INVALID_PARAMS.*不能超过订单欠款/)
@@ -3211,7 +3592,7 @@ describe('order.qrcode', () => {
   test('非转换单不能借 qrcode 写入在线回款上限', async () => {
     const ctx = createManagerCtx({ saleOrderId: 'FY-QR-NORMAL-CAP', paymentAmount: 100 })
     pg.transaction.mockImplementationOnce(async (cb) => cb({
-      query: vi.fn(async (sql) => {
+      query: vi.fn(withDeductible(async (sql) => {
         if (sql.includes('FOR UPDATE')) {
           return {
             rows: [{
@@ -3223,7 +3604,7 @@ describe('order.qrcode', () => {
           }
         }
         return defaultQueryResult(sql)
-      }),
+      })),
     }))
 
     await expect(orderRoutes.qrcode(ctx)).rejects.toThrow(/INVALID_STATE.*仅普通转换单/)
@@ -3233,7 +3614,7 @@ describe('order.qrcode', () => {
   test('跨店订单不能写入在线回款上限', async () => {
     const ctx = createManagerCtx({ saleOrderId: 'FY-QR-OTHER-STORE', paymentAmount: 100 })
     pg.transaction.mockImplementationOnce(async (cb) => cb({
-      query: vi.fn(async (sql) => {
+      query: vi.fn(withDeductible(async (sql) => {
         if (sql.includes('FOR UPDATE')) {
           return {
             rows: [{
@@ -3245,7 +3626,7 @@ describe('order.qrcode', () => {
           }
         }
         return defaultQueryResult(sql)
-      }),
+      })),
     }))
 
     await expect(orderRoutes.qrcode(ctx)).rejects.toThrow(/PERMISSION_DENIED.*不属于当前门店/)
@@ -3871,10 +4252,14 @@ describe.skip('order.approveRefund', () => {
         return { rows: [{ id: 9001 }], rowCount: 1 }
       }
       if (sql.includes('FROM sale_payment_item_allocations') && sql.includes('GROUP BY')) {
-        const positiveTotal = cascadeAllocs.reduce((s, r) => s + Number(r.sum_total || 0), 0)
+        const positiveReceiptTotal = cascadeAllocs.length > 0
+          ? Number(cascadeAllocs[0].positive_receipt_total ?? orderReceived)
+          : orderReceived
         const rows = cascadeAllocs.map((r) => ({
-          positive_total: positiveTotal.toFixed(2),
-          other_negative_total: '0',
+          prior_negative_total: '0',
+          prior_negative_comm: '0',
+          positive_receipt_total: positiveReceiptTotal.toFixed(2),
+          prior_refund_receipt_total: '0',
           ...r,
         }))
         return { rows, rowCount: rows.length }
@@ -4076,9 +4461,10 @@ describe.skip('order.approveRefund', () => {
     // 该 item（orig-item-1）有一条活跃正数子分配（emp-1 美容师，营业额 500）→ 退款 500 应记一条负数冲销行
     const { calls } = makeApproveTxnSpy({
       cascadeAllocs: [{
-        employee_id: 'emp-1', role_type: '美容师', ratio: '1.00',
+        employee_id: 'emp-1', role_type: '美容师',
         dept: null, sum_total: '500.00', rate: '0.1000', sum_comm: '50.00',
-        positive_total: '500.00', other_negative_total: '0',
+        prior_negative_total: '0', prior_negative_comm: '0',
+        positive_receipt_total: '500.00', prior_refund_receipt_total: '0',
       }],
     })
 
@@ -4439,7 +4825,7 @@ describe.skip('order.createRepayment', () => {
     }
     pg.transaction.mockImplementation(async (cb) => {
       const client = {
-        query: vi.fn(async (sql, params) => {
+        query: vi.fn(withDeductible(async (sql, params) => {
           txCalls.push({ sql, params })
           // generateOrderNo 子事务（advisory_xact_lock 后 SELECT sale_order_id LIKE）
           if (sql.includes('pg_advisory_xact_lock')) {
@@ -4467,7 +4853,7 @@ describe.skip('order.createRepayment', () => {
             return { rows: [{ customer_type: '会员客' }], rowCount: 1 }
           }
           return defaultQueryResult(sql)
-        }),
+        })),
       }
       return await cb(client)
     })
@@ -4739,7 +5125,7 @@ describe('order.createRepayment — 活动渠道意图互斥', () => {
 
     const txCalls = []
     pg.transaction.mockImplementationOnce(async (cb) => cb({
-      query: vi.fn(async (sql, params) => {
+      query: vi.fn(withDeductible(async (sql, params) => {
         txCalls.push({ sql, params })
         if (sql.includes('FROM sale_orders WHERE sale_order_id = $1 FOR UPDATE')) {
           return {
@@ -4756,7 +5142,7 @@ describe('order.createRepayment — 活动渠道意图互斥', () => {
           }
         }
         return defaultQueryResult(sql)
-      }),
+      })),
     }))
 
     await expect(orderRoutes.createRepayment(ctx))
@@ -4779,7 +5165,7 @@ describe('order.createConversion', () => {
   function mockPositiveDifferenceConversion(cardBalance, source = {}) {
     const calls = []
     pg.transaction.mockImplementationOnce(async (cb) => cb({
-      query: vi.fn(async (sql, params) => {
+      query: vi.fn(withDeductible(async (sql, params) => {
         calls.push({ sql, params })
         if (sql.includes('advisory_xact_lock')) return { rows: [], rowCount: 1 }
         if (sql.includes('FROM sale_orders') && sql.includes('LIKE $1')) return { rows: [], rowCount: 0 }
@@ -4812,7 +5198,7 @@ describe('order.createConversion', () => {
           return { rows: cardBalance == null ? [] : [{ balance: cardBalance }], rowCount: cardBalance == null ? 0 : 1 }
         }
         return defaultQueryResult(sql)
-      }),
+      })),
     }))
     return calls
   }
@@ -4886,7 +5272,7 @@ describe('order.createConversion', () => {
 
     const calls = []
     pg.transaction.mockImplementationOnce(async (cb) => cb({
-      query: vi.fn(async (sql, params) => {
+      query: vi.fn(withDeductible(async (sql, params) => {
         calls.push({ sql, params })
         if (sql.includes('advisory_xact_lock')) return { rows: [], rowCount: 1 }
         if (sql.includes('FROM sale_orders') && sql.includes('LIKE $1')) return { rows: [], rowCount: 0 }
@@ -4936,7 +5322,7 @@ describe('order.createConversion', () => {
           }
         }
         return defaultQueryResult(sql)
-      }),
+      })),
     }))
 
     await orderRoutes.createConversion(ctx)
@@ -4970,7 +5356,7 @@ describe('order.createConversion', () => {
       user_id: 'cu-001', phone: '138', name: '王莉', customer_type: '会员客', bound_store_id: 'store-001',
     }])
     pg.transaction.mockImplementationOnce(async (cb) => cb({
-      query: vi.fn(async (sql) => {
+      query: vi.fn(withDeductible(async (sql) => {
         if (sql.includes('advisory_xact_lock')) return { rows: [], rowCount: 1 }
         if (sql.includes('FROM sale_orders') && sql.includes('LIKE $1')) return { rows: [], rowCount: 0 }
         if (sql.includes('FROM sale_items si') && sql.includes('FOR UPDATE OF si')) {
@@ -5001,7 +5387,7 @@ describe('order.createConversion', () => {
           }
         }
         return defaultQueryResult(sql)
-      }),
+      })),
     }))
 
     await expect(orderRoutes.createConversion(ctx)).rejects.toThrow(/BUNDLE_SKU_NOT_BELONG/)
@@ -5020,7 +5406,7 @@ describe('order.createConversion', () => {
     }])
     const calls = []
     pg.transaction.mockImplementationOnce(async (cb) => cb({
-      query: vi.fn(async (sql, params) => {
+      query: vi.fn(withDeductible(async (sql, params) => {
         calls.push({ sql, params })
         if (sql.includes('advisory_xact_lock')) return { rows: [], rowCount: 1 }
         if (sql.includes('FROM sale_orders') && sql.includes('LIKE $1')) return { rows: [], rowCount: 0 }
@@ -5055,7 +5441,7 @@ describe('order.createConversion', () => {
           return { rows: [], rowCount: 0 }
         }
         return defaultQueryResult(sql)
-      }),
+      })),
     }))
 
     await expect(orderRoutes.createConversion(ctx)).rejects.toThrow(/商品 sku-disabled 不存在/)
@@ -5152,7 +5538,7 @@ describe('order.createConversion', () => {
     mockPositiveDifferenceConversion(null, { itemDirection: '转入', saleOrderType: '销售单' })
 
     await expect(orderRoutes.createConversion(ctx))
-      .rejects.toThrow(/INVALID_PARAMS.*有效疗程权益/)
+      .rejects.toThrow(/INVALID_PARAMS.*不是有效权益/)
   })
 
   test('转换转入疗程卡 quantity=2 按两张独立权益落库并共享分组号', async () => {
@@ -5191,7 +5577,7 @@ describe('order.createConversion', () => {
 
     const txCalls = []
     pg.transaction.mockImplementationOnce(async (cb) => cb({
-      query: vi.fn(async (sql, params) => {
+      query: vi.fn(withDeductible(async (sql, params) => {
         txCalls.push({ sql, params })
         if (sql.includes('pg_advisory_xact_lock') || sql.includes('sale_order_id LIKE')) {
           return { rows: [], rowCount: 0 }
@@ -5222,7 +5608,7 @@ describe('order.createConversion', () => {
         }
         if (sql.includes('WHERE s.sku_id = ANY($1)')) return { rows: [], rowCount: 0 }
         return defaultQueryResult(sql)
-      }),
+      })),
     }))
 
     await expect(orderRoutes.createConversion(ctx))
@@ -5246,7 +5632,7 @@ describe('order.createConversion', () => {
     const calls = []
     pg.transaction.mockImplementationOnce(async (cb) => {
       const tx = {
-        query: vi.fn(async (sql, params) => {
+        query: vi.fn(withDeductible(async (sql, params) => {
           calls.push({ sql, params })
           if (sql.includes('pg_advisory_xact_lock')) return { rows: [], rowCount: 1 }
           if (sql.includes('SELECT sale_order_id FROM sale_orders')) return { rows: [], rowCount: 0 }
@@ -5291,7 +5677,7 @@ describe('order.createConversion', () => {
             return { rows: [{ receipt_positive_total: '0', order_received: '0' }], rowCount: 1 }
           }
           return defaultQueryResult(sql)
-        }),
+        })),
       }
       return cb(tx)
     })
@@ -5325,7 +5711,7 @@ describe('order.createConversion', () => {
 
     const calls = []
     pg.transaction.mockImplementationOnce(async (cb) => cb({
-      query: vi.fn(async (sql, params) => {
+      query: vi.fn(withDeductible(async (sql, params) => {
         calls.push({ sql, params })
         if (sql.includes('pg_advisory_xact_lock')) return { rows: [], rowCount: 1 }
         if (sql.includes('SELECT sale_order_id FROM sale_orders')) return { rows: [], rowCount: 0 }
@@ -5354,7 +5740,7 @@ describe('order.createConversion', () => {
         }
         if (sql.includes('WHERE s.category_id = ANY')) return { rows: [], rowCount: 0 }
         return defaultQueryResult(sql)
-      }),
+      })),
     }))
 
     await expect(orderRoutes.createConversion(ctx))
@@ -5384,6 +5770,10 @@ describe('order.createConversion', () => {
           .mockResolvedValueOnce({ rows: [], rowCount: 1 })
           // generateOrderNo: SELECT sale_order_id FROM sale_orders WHERE LIKE → seq=1
           .mockResolvedValueOnce({ rows: [], rowCount: 0 })
+          // #182 锁序：先按 sale_order_id 升序锁原单（sale_orders），再锁源行（sale_items）。
+          // 返回空集 → 实现跳过第二条 FOR UPDATE，只消耗本条；锁序本身由
+          // 「折抵先锁原单、再锁源行」用例断言。
+          .mockResolvedValueOnce({ rows: [], rowCount: 0 })
           // SELECT held items（FOR UPDATE）— 余 1 次（整张卡折抵 → totalOut=1000）
           .mockResolvedValueOnce({
             rows: [{
@@ -5396,6 +5786,10 @@ describe('order.createConversion', () => {
               client_user_id: 'cu-001', order_status: '已支付', product_kind: '护理项目',
             }], rowCount: 1,
           })
+          // #182 折抵额度复算（锁取得后另起语句，与锁行同语句会拿到子表旧快照）
+          .mockResolvedValueOnce({ rows: [{ sale_item_id: 'item-001', deductible_quantity: 1, deductible_amount: '1000' }], rowCount: 1 })
+          // #182 行级已退款额（Δ 必须扣掉它，received 是净额）——空集即无退款
+          .mockResolvedValueOnce({ rows: [], rowCount: 0 })
           .mockResolvedValueOnce({ rows: [], rowCount: 0 }) // 预扣汇总
           // 转入 SKU 查询（quantity=10 → totalIn=15000）
           .mockResolvedValueOnce({
@@ -5488,11 +5882,15 @@ describe('order.createConversion', () => {
     const txCalls = []
     pg.transaction.mockImplementationOnce(async (cb) => {
       const tx = {
-        query: vi.fn(async (sql, params) => {
+        query: vi.fn(withDeductible(async (sql, params) => {
           txCalls.push({ sql, params })
           return defaultQueryResult(sql)
-        })
+        }))
           .mockResolvedValueOnce({ rows: [], rowCount: 1 })
+          .mockResolvedValueOnce({ rows: [], rowCount: 0 })
+          // #182 锁序：先按 sale_order_id 升序锁原单（sale_orders），再锁源行（sale_items）。
+          // 返回空集 → 实现跳过第二条 FOR UPDATE，只消耗本条；锁序本身由
+          // 「折抵先锁原单、再锁源行」用例断言。
           .mockResolvedValueOnce({ rows: [], rowCount: 0 })
           .mockResolvedValueOnce({
             rows: [{
@@ -5515,6 +5913,10 @@ describe('order.createConversion', () => {
               product_kind: '护理项目',
             }], rowCount: 1,
           })
+          // #182 折抵额度复算（锁取得后另起语句，与锁行同语句会拿到子表旧快照）
+          .mockResolvedValueOnce({ rows: [{ sale_item_id: 'item-special-old', deductible_quantity: 1, deductible_amount: '100' }], rowCount: 1 })
+          // #182 行级已退款额（Δ 必须扣掉它，received 是净额）——空集即无退款
+          .mockResolvedValueOnce({ rows: [], rowCount: 0 })
           .mockResolvedValueOnce({ rows: [], rowCount: 0 }) // 预扣汇总
           .mockResolvedValueOnce({
             rows: [{
@@ -5569,7 +5971,7 @@ describe('order.createConversion', () => {
 
     const txCalls = []
     pg.transaction.mockImplementationOnce(async (cb) => cb({
-      query: vi.fn(async (sql, params) => {
+      query: vi.fn(withDeductible(async (sql, params) => {
         txCalls.push({ sql, params })
         if (sql.includes('advisory_xact_lock')) return { rows: [], rowCount: 1 }
         if (sql.includes('FROM sale_orders') && sql.includes('LIKE $1')) return { rows: [], rowCount: 0 }
@@ -5695,7 +6097,7 @@ describe('order.createConversion', () => {
           }
         }
         return defaultQueryResult(sql)
-      }),
+      })),
     }))
 
     await orderRoutes.createConversion(ctx)
@@ -5745,7 +6147,7 @@ describe('order.createConversion', () => {
 
     const txCalls = []
     pg.transaction.mockImplementationOnce(async (cb) => cb({
-      query: vi.fn(async (sql, params) => {
+      query: vi.fn(withDeductible(async (sql, params) => {
         txCalls.push({ sql, params })
         if (sql.includes('advisory_xact_lock')) return { rows: [], rowCount: 1 }
         if (sql.includes('FROM sale_orders') && sql.includes('LIKE $1')) return { rows: [], rowCount: 0 }
@@ -5766,21 +6168,25 @@ describe('order.createConversion', () => {
           return { rows: [{ sku_id: 'sku-new', product_type: '疗程卡', spec_name: '新项目', price: '500', session_count: 1, service_fee: '0', sales_category: '自销自耗' }], rowCount: 1 }
         }
         return defaultQueryResult(sql)
-      }),
+      })),
     }))
 
-    await orderRoutes.createConversion(ctx)
+    // #182：折抵改为「整行退出」后与在途服务预扣互斥——钱已全额折走却留下 2 次给服务，
+    // 那 2 次就是白送；而把预扣一起注销会让 service.confirm 的扣次守卫失败、
+    // 服务单永久卡在「待客户确认」且预扣不释放。故整行拒绝，要求先处理服务单。
+    await expect(orderRoutes.createConversion(ctx))
+      .rejects.toThrow(/INVALID_STATE: CARD_RESERVED: 部分项目有服务进行中/)
 
-    expect(ctx.result.totalOut).toBe(300)
     const heldLock = txCalls.find((call) => call.sql.includes('FOR UPDATE OF si'))
-    expect(heldLock.sql).not.toMatch(/GROUP BY|SUM\s*\(/)
+    // held 锁行查询不得在**顶层**聚合（会改变返回行数与锁定范围）。
+    expect(heldLock.sql).not.toMatch(/\n\s*GROUP BY/)
     expect(heldLock.sql).toMatch(/ORDER BY si\.sale_item_id\s+FOR UPDATE OF si/)
     const reservedQuery = txCalls.find((call) => call.sql.includes('GROUP BY sit.sale_item_id'))
     expect(reservedQuery.sql).not.toMatch(/FOR UPDATE/)
     expect(reservedQuery.sql).toMatch(/JOIN service_orders reserved_order/)
     expect(reservedQuery.sql).toMatch(/reserved_order\.status IN \('服务中', '待客户确认'\)/)
-    const sourceUpdate = txCalls.find((call) => call.sql.includes('SET remaining_sessions = remaining_sessions - $4'))
-    expect(sourceUpdate.params[3]).toBe(3)
+    // 拒绝发生在扣减之前：源卡的 remaining_sessions 一次都没被动过
+    expect(txCalls.some((call) => call.sql.includes('SET remaining_sessions = remaining_sessions - $4'))).toBe(false)
   })
 
   test('缺少 clientUserId 拒绝', async () => {
@@ -5867,6 +6273,10 @@ describe('order.createConversion', () => {
     const txQuery = vi.fn(async (sql) => defaultQueryResult(sql))
       .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // generateOrderNo: advisory_xact_lock
       .mockResolvedValueOnce({ rows: [], rowCount: 0 }) // generateOrderNo: SELECT sale_order_id LIKE
+      // #182 锁序：先按 sale_order_id 升序锁原单（sale_orders），再锁源行（sale_items）。
+      // 返回空集 → 实现跳过第二条 FOR UPDATE，只消耗本条；锁序本身由
+      // 「折抵先锁原单、再锁源行」用例断言。
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 })
       .mockResolvedValueOnce({
         rows: [{
           sale_item_id: 'item-eq-001', store_id: 'store-001', item_direction: '购买',
@@ -5878,6 +6288,10 @@ describe('order.createConversion', () => {
           client_user_id: 'cu-001', order_status: '已支付', product_kind: '护理项目',
         }], rowCount: 1,
       })
+      // #182 折抵额度复算（锁取得后另起语句，与锁行同语句会拿到子表旧快照）
+      .mockResolvedValueOnce({ rows: [{ sale_item_id: 'item-eq-001', deductible_quantity: 2, deductible_amount: '1000' }], rowCount: 1 })
+      // #182 行级已退款额（Δ 必须扣掉它，received 是净额）——空集即无退款
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 })
       .mockResolvedValueOnce({ rows: [], rowCount: 0 }) // 预扣汇总
       .mockResolvedValueOnce({
         rows: [{
@@ -5885,6 +6299,8 @@ describe('order.createConversion', () => {
           price: '500', session_count: 10, service_fee: '0', sales_category: '自销自耗',
         }], rowCount: 1,
       })
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // document_type: 顾客级 advisory lock
+      .mockResolvedValueOnce({ rows: [{ document_type: '售前一次' }], rowCount: 1 }) // document_type: 阶段分类
       .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // INSERT sale_orders
       .mockResolvedValueOnce({ rows: [], rowCount: 0 }) // SELECT max sale_item_id
       .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // INSERT 转出行
@@ -5920,6 +6336,10 @@ describe('order.createConversion', () => {
     const txQuery = vi.fn(async (sql) => defaultQueryResult(sql))
       .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // generateOrderNo: advisory_xact_lock
       .mockResolvedValueOnce({ rows: [], rowCount: 0 }) // generateOrderNo: SELECT sale_order_id LIKE
+      // #182 锁序：先按 sale_order_id 升序锁原单（sale_orders），再锁源行（sale_items）。
+      // 返回空集 → 实现跳过第二条 FOR UPDATE，只消耗本条；锁序本身由
+      // 「折抵先锁原单、再锁源行」用例断言。
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 })
       .mockResolvedValueOnce({
         rows: [{
           sale_item_id: 'item-neg-001', store_id: 'store-001', item_direction: '购买',
@@ -5931,6 +6351,10 @@ describe('order.createConversion', () => {
           client_user_id: 'cu-001', order_status: '已支付', product_kind: '护理项目',
         }], rowCount: 1,
       })
+      // #182 折抵额度复算（锁取得后另起语句，与锁行同语句会拿到子表旧快照）
+      .mockResolvedValueOnce({ rows: [{ sale_item_id: 'item-neg-001', deductible_quantity: 2, deductible_amount: '2000' }], rowCount: 1 })
+      // #182 行级已退款额（Δ 必须扣掉它，received 是净额）——空集即无退款
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 })
       .mockResolvedValueOnce({ rows: [], rowCount: 0 }) // 预扣汇总
       .mockResolvedValueOnce({
         rows: [{
@@ -5938,6 +6362,8 @@ describe('order.createConversion', () => {
           price: '500', session_count: 5, service_fee: '0', sales_category: '自销自耗',
         }], rowCount: 1,
       })
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // document_type: 顾客级 advisory lock
+      .mockResolvedValueOnce({ rows: [{ document_type: '售前一次' }], rowCount: 1 }) // document_type: 阶段分类
       .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // INSERT sale_orders
       .mockResolvedValueOnce({ rows: [], rowCount: 0 }) // SELECT max sale_item_id
       .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // INSERT 转出行
@@ -6061,6 +6487,10 @@ describe('order.createConversion', () => {
     const txQuery = vi.fn(async (sql) => defaultQueryResult(sql))
       .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // generateOrderNo: advisory_xact_lock
       .mockResolvedValueOnce({ rows: [], rowCount: 0 }) // generateOrderNo: SELECT sale_order_id LIKE
+      // #182 锁序：先按 sale_order_id 升序锁原单（sale_orders），再锁源行（sale_items）。
+      // 返回空集 → 实现跳过第二条 FOR UPDATE，只消耗本条；锁序本身由
+      // 「折抵先锁原单、再锁源行」用例断言。
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 })
       .mockResolvedValueOnce({
         rows: [{
           sale_item_id: 'item-race', store_id: 'store-001', item_direction: '购买',
@@ -6072,6 +6502,10 @@ describe('order.createConversion', () => {
           client_user_id: 'cu-001', order_status: '已支付', product_kind: '护理项目',
         }], rowCount: 1,
       })
+      // #182 折抵额度复算（锁取得后另起语句，与锁行同语句会拿到子表旧快照）
+      .mockResolvedValueOnce({ rows: [{ sale_item_id: 'item-race', deductible_quantity: 3, deductible_amount: '300' }], rowCount: 1 })
+      // #182 行级已退款额（Δ 必须扣掉它，received 是净额）——空集即无退款
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 })
       .mockResolvedValueOnce({ rows: [], rowCount: 0 }) // 预扣汇总
       .mockResolvedValueOnce({
         rows: [{
@@ -6079,6 +6513,8 @@ describe('order.createConversion', () => {
           price: '200', session_count: 5, service_fee: '0', sales_category: '自销自耗',
         }], rowCount: 1,
       })
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // document_type: 顾客级 advisory lock
+      .mockResolvedValueOnce({ rows: [{ document_type: '售前一次' }], rowCount: 1 }) // document_type: 阶段分类
       .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // INSERT sale_orders
       .mockResolvedValueOnce({ rows: [], rowCount: 0 }) // SELECT max sale_item_id
       .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // INSERT 转出行
@@ -6110,6 +6546,10 @@ describe('order.createConversion', () => {
     const txQuery = vi.fn(async (sql) => defaultQueryResult(sql))
       .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // generateOrderNo: advisory_xact_lock
       .mockResolvedValueOnce({ rows: [], rowCount: 0 }) // generateOrderNo: SELECT sale_order_id LIKE
+      // #182 锁序：先按 sale_order_id 升序锁原单（sale_orders），再锁源行（sale_items）。
+      // 返回空集 → 实现跳过第二条 FOR UPDATE，只消耗本条；锁序本身由
+      // 「折抵先锁原单、再锁源行」用例断言。
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 })
       .mockResolvedValueOnce({
         rows: [{
           sale_item_id: 'item-exp-001', store_id: 'store-001', item_direction: '购买',
@@ -6123,6 +6563,10 @@ describe('order.createConversion', () => {
           is_recharge_card: false, is_experience: true,
         }], rowCount: 1,
       })
+      // #182 折抵额度复算（锁取得后另起语句，与锁行同语句会拿到子表旧快照）
+      .mockResolvedValueOnce({ rows: [{ sale_item_id: 'item-exp-001', deductible_quantity: 3, deductible_amount: '600' }], rowCount: 1 })
+      // #182 行级已退款额（Δ 必须扣掉它，received 是净额）——空集即无退款
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 })
       .mockResolvedValueOnce({ rows: [], rowCount: 0 }) // 预扣汇总
       .mockResolvedValueOnce({
         rows: [{
@@ -6155,10 +6599,9 @@ describe('order.createConversion', () => {
     expect(updateCall[1][3]).toBe(3)
   })
 
-  // PR #55（2026-07-13）：document_type 移除金额达标分支 B，仅按下单时会员身份判。
-  // createConversion 的 documentType 直接取 client.customer_type（order.js:3045），无金额分支。
+  // 转换单开单只写预测值，结清时由数据库按其现付净额计算最终分类。
   // INSERT INTO sale_orders 参数顺序：0:convOrderId, 1:orderStatus, 2:documentType, 3:marketName, ...
-  test('document_type 仅按会员身份判：非会员客 → 售前', async () => {
+  test('转换单 document_type 开单预测：非会员客 → 售前一次', async () => {
     const ctx = createManagerCtx({
       clientUserId: 'cu-001',
       convertOutSaleItemIds: ['item-dt-out'],
@@ -6176,7 +6619,7 @@ describe('order.createConversion', () => {
     const txCalls = []
     pg.transaction.mockImplementationOnce(async (cb) => {
       const tx = {
-        query: vi.fn(async (sql, params) => {
+        query: vi.fn(withDeductible(async (sql, params) => {
           txCalls.push({ sql, params })
           if (sql.includes('advisory_xact_lock')) return { rows: [], rowCount: 1 }
           // generateOrderNo: SELECT sale_order_id LIKE → empty → seq=1
@@ -6203,7 +6646,7 @@ describe('order.createConversion', () => {
             }
           }
           return defaultQueryResult(sql)
-        }),
+        })),
       }
       return await cb(tx)
     })
@@ -6212,11 +6655,10 @@ describe('order.createConversion', () => {
 
     const insertCall = txCalls.find(c => c.sql.includes('INSERT INTO sale_orders'))
     expect(insertCall).toBeDefined()
-    // params[2] = documentType：非会员客判「售前」
-    expect(insertCall.params[2]).toBe('售前')
+    expect(insertCall.params[2]).toBe('售前一次')
   })
 
-  test('document_type 仅按会员身份判：会员客 → 售后', async () => {
+  test('document_type 不由会员身份直接决定：无历史达标单仍为售前一次', async () => {
     const ctx = createManagerCtx({
       clientUserId: 'cu-001',
       convertOutSaleItemIds: ['item-dt-out-mb'],
@@ -6229,12 +6671,11 @@ describe('order.createConversion', () => {
       user_id: 'cu-001', phone: '138', name: '赵六',
       customer_type: '会员客', bound_store_id: 'store-001',
     }])
-
     // 2) 单一主事务：捕获 INSERT INTO sale_orders 参数
     const txCalls = []
     pg.transaction.mockImplementationOnce(async (cb) => {
       const tx = {
-        query: vi.fn(async (sql, params) => {
+        query: vi.fn(withDeductible(async (sql, params) => {
           txCalls.push({ sql, params })
           if (sql.includes('advisory_xact_lock')) return { rows: [], rowCount: 1 }
           if (sql.includes('FROM sale_orders') && sql.includes('LIKE $1')) return { rows: [], rowCount: 0 }
@@ -6260,7 +6701,7 @@ describe('order.createConversion', () => {
             }
           }
           return defaultQueryResult(sql)
-        }),
+        })),
       }
       return await cb(tx)
     })
@@ -6269,8 +6710,8 @@ describe('order.createConversion', () => {
 
     const insertCall = txCalls.find(c => c.sql.includes('INSERT INTO sale_orders'))
     expect(insertCall).toBeDefined()
-    // params[2] = documentType：会员客判「售后」
-    expect(insertCall.params[2]).toBe('售后')
+    // params[2] = documentType：会员身份不参与阶段分类
+    expect(insertCall.params[2]).toBe('售前一次')
   })
 })
 
@@ -6290,6 +6731,7 @@ describe('order.createDeposit', () => {
         name: '顾客甲',
         customer_type: '会员客',
         bound_store_id: 'store-001',
+        is_cross_store_temp: false,
       }])
       .mockResolvedValueOnce([{
         sku_id: 'sku-001',
@@ -6308,10 +6750,10 @@ describe('order.createDeposit', () => {
     const txCalls = []
     pg.transaction.mockImplementation(async (cb) => {
       const client = {
-        query: vi.fn(async (sql, params) => {
+        query: vi.fn(withDeductible(async (sql, params) => {
           txCalls.push({ sql, params })
           return defaultQueryResult(sql)
-        }),
+        })),
       }
       return await cb(client)
     })
@@ -6339,7 +6781,7 @@ describe('order.createDeposit', () => {
     }, { effectiveStoreId: 'store-current', scopeStoreIds: ['store-other'] })
     pg.query
       .mockResolvedValueOnce([{
-        user_id: 'cu-001', phone: '138', name: '顾客甲', customer_type: '会员客', bound_store_id: 'store-current',
+        user_id: 'cu-001', phone: '138', name: '顾客甲', customer_type: '会员客', bound_store_id: 'store-current', is_cross_store_temp: false,
       }])
       .mockResolvedValueOnce([{
         sku_id: 'sku-other-market', product_type: '疗程卡', spec_name: '仅限其他市场商品',
@@ -6370,6 +6812,7 @@ describe('order.createDeposit', () => {
         name: '顾客甲',
         customer_type: '会员客',
         bound_store_id: 'store-001',
+        is_cross_store_temp: false,
       }])
       .mockResolvedValueOnce([{
         sku_id: 'sku-001',
@@ -6401,10 +6844,10 @@ describe('order.createDeposit', () => {
     const txCalls = []
     pg.transaction.mockImplementation(async (cb) => {
       const client = {
-        query: vi.fn(async (sql, params) => {
+        query: vi.fn(withDeductible(async (sql, params) => {
           txCalls.push({ sql, params })
           return defaultQueryResult(sql)
-        }),
+        })),
       }
       return await cb(client)
     })
@@ -6438,6 +6881,7 @@ describe('order.createDeposit', () => {
         name: '顾客甲',
         customer_type: '会员客',
         bound_store_id: 'store-001',
+        is_cross_store_temp: false,
       }])
       .mockResolvedValueOnce([{
         sku_id: 'sku-home',
@@ -6456,10 +6900,10 @@ describe('order.createDeposit', () => {
     const txCalls = []
     pg.transaction.mockImplementation(async (cb) => {
       const client = {
-        query: vi.fn(async (sql, params) => {
+        query: vi.fn(withDeductible(async (sql, params) => {
           txCalls.push({ sql, params })
           return defaultQueryResult(sql)
-        }),
+        })),
       }
       return await cb(client)
     })
@@ -6482,10 +6926,61 @@ describe('order.createDeposit', () => {
       paymentMethod: '线下',
     })
     pg.query.mockResolvedValueOnce([{
-      user_id: 'cu-999', phone: '138', name: '外店顾客', customer_type: '会员客', bound_store_id: 'store-999',
+      user_id: 'cu-999', phone: '138', name: '外店顾客', customer_type: '会员客', bound_store_id: 'store-999', is_cross_store_temp: false,
     }])
     await expect(orderRoutes.createDeposit(ctx))
       .rejects.toThrow(/PERMISSION_DENIED.*不属于当前门店/)
+  })
+
+  test('临时跨店顾客（绑定他店）允许开寄存单，订单仍按当前操作门店结算', async () => {
+    const ctx = createManagerCtx({
+      clientUserId: 'cu-temp',
+      items: [{ skuId: 'sku-001', quantity: 1, received: 300 }],
+      remark: '临时跨店顾客寄存',
+    })
+    pg.query
+      .mockResolvedValueOnce([{
+        user_id: 'cu-temp',
+        phone: '13800002222',
+        name: '临时跨店顾客',
+        customer_type: '会员客',
+        bound_store_id: 'store-999',
+        is_cross_store_temp: true,
+      }])
+      .mockResolvedValueOnce([{
+        sku_id: 'sku-001',
+        product_type: '疗程卡',
+        spec_name: '水光卡',
+        price: '500.00',
+        special_price: null,
+        session_count: 5,
+        service_fee: '0',
+        is_shengmei: false,
+        is_experience: false,
+        sales_category: '自销自耗',
+        product_kind: '护理项目',
+      }])
+
+    const txCalls = []
+    pg.transaction.mockImplementation(async (cb) => {
+      const client = {
+        query: vi.fn(withDeductible(async (sql, params) => {
+          txCalls.push({ sql, params })
+          return defaultQueryResult(sql)
+        })),
+      }
+      return await cb(client)
+    })
+
+    await orderRoutes.createDeposit(ctx)
+
+    expect(ctx.result.status).toBe('待审批')
+    expect(ctx.result.message).toBe('寄存单已提交审批')
+    const orderInsert = txCalls.find(c => typeof c.sql === 'string' && c.sql.includes('INSERT INTO sale_orders'))
+    expect(orderInsert).toBeTruthy()
+    // INSERT 参数 $4 = storeId（effectiveStoreId），寄存单必须落在当前操作门店而非绑定门店
+    expect(orderInsert.params[3]).toBe('store-001')
+    expect(orderInsert.params).not.toContain('store-999')
   })
 })
 
@@ -6559,14 +7054,16 @@ describe('order.customerHeldCards', () => {
     expect(sql).toMatch(/si\.item_direction\s*=\s*'转入'/)
   })
 
-  test('SQL 守卫：status 必须 IN (已支付, 已完成)', async () => {
+  test('SQL 守卫：status 必须 IN (已支付, 部分支付, 已完成)（#125 放开订单级部分支付）', async () => {
     const ctx = createManagerCtx({ clientUserId: 'cu-001' })
     pg.query.mockResolvedValueOnce([])
 
     await orderRoutes.customerHeldCards(ctx)
 
     const sql = pg.query.mock.calls[0][0]
-    expect(sql).toMatch(/so\.status IN \('已支付', '已完成'\)/)
+    // 甲方 2026-09-14 拍板：订单级「部分支付」也可折抵（疗程卡与家居同时放开），
+    // 与 admin 卡包列表 CARD_ENTITLEMENT_ORDER_STATUSES 口径统一；欠款按方案 A 留原单
+    expect(sql).toMatch(/so\.status IN \('已支付', '部分支付', '已完成'\)/)
   })
 
   test('SQL 守卫：疗程卡 remaining_sessions=0 不出现（> 0 过滤）', async () => {
@@ -6628,6 +7125,7 @@ describe('order.createPickup', () => {
   test('幂等查询和回读均锁定当前门店', async () => {
     const ctx = createManagerCtx({
       saleItemId: 'item-001',
+      inventorySkuId: 'inventory-sku-001',
       pickupQuantity: 1,
       idempotencyKey: 'pickup-idempotency-key',
     })
@@ -6643,13 +7141,17 @@ describe('order.createPickup', () => {
     expect(pg.query.mock.calls[1][1]).toEqual(['item-001', 'store-001'])
   })
 
-  test('取货成功', async () => {
-    const ctx = createManagerCtx({ saleItemId: 'item-001', pickupQuantity: 2 })
+  test('取货成功并按库存组成出库', async () => {
+    const ctx = createManagerCtx({ saleItemId: 'item-001', inventorySkuId: 'inventory-sku-001', pickupQuantity: 2 })
+    let transactionClient
 
     // createPickup 主体在 pg.transaction(cb) 内，调用 client.query；用 mockImplementation 替换 transaction
     pg.transaction.mockImplementation(async (cb) => {
       const client = {
-        query: vi.fn(async (sql) => {
+        query: vi.fn(withDeductible(async (sql, params) => {
+          if (/FROM inventory_cutover_states/.test(sql)) {
+            return { rows: [{ status: '已初始化' }], rowCount: 1 }
+          }
           if (/FOR UPDATE OF si/.test(sql) && /AS paid_quantity/.test(sql)) {
             return {
               rows: [{
@@ -6671,22 +7173,34 @@ describe('order.createPickup', () => {
                 product_name: '家居产品A',
                 quantity: 5,
                 picked_up_quantity: 2,
+                inventory_composition_snapshot: {
+                  version: 1,
+                  components: [
+                    { inventorySkuId: 'inventory-sku-001', productCode: 'I001', productName: '库存品A', specName: null, quantityPerSaleUnit: 1 },
+                    { inventorySkuId: 'inventory-sku-002', productCode: 'I002', productName: '库存品B', specName: null, quantityPerSaleUnit: 2 },
+                  ],
+                },
               }],
               rowCount: 1,
             }
           }
-          if (/FROM store_inventory_stocks/.test(sql)) {
-            return { rows: [{ id: 1, store_id: 'store-001', sku_id: 'sku-001', sku_name: '家居产品A', batch_no: 'B1', expiry_date: null, quantity_on_hand: 5 }], rowCount: 1 }
+          if (/FROM inventory_stock_lots/.test(sql)) {
+            const skuId = params[1]
+            return { rows: [{ id: skuId === 'inventory-sku-001' ? 1 : 2, location_id: 'store-001', sku_id: skuId, sku_name: skuId, batch_no: 'B1', expiry_date: null, quantity_on_hand: 10 }], rowCount: 1 }
           }
-          if (/SELECT id FROM store_inventory_docs/.test(sql)) {
+          if (/SELECT id FROM inventory_docs/.test(sql)) {
             return { rows: [], rowCount: 0 }
           }
-          if (/INSERT INTO store_inventory_doc_items/.test(sql)) {
+          if (/SELECT org_node_id/.test(sql) && /FROM inventory_locations/.test(sql)) {
+            return { rows: [{ org_node_id: 'org-node-store-001' }], rowCount: 1 }
+          }
+          if (/INSERT INTO inventory_doc_items/.test(sql)) {
             return { rows: [{ id: 10 }], rowCount: 1 }
           }
           return { rows: [], rowCount: 1 }
-        }),
+        })),
       }
+      transactionClient = client
       return await cb(client)
     })
 
@@ -6695,12 +7209,20 @@ describe('order.createPickup', () => {
     expect(ctx.result.saleItemId).toBe('item-001')
     expect(ctx.result.pickedUp).toBe(2)
     expect(ctx.result.remaining).toBe(3) // 5 - 2
+    expect(ctx.result.inventoryMode).toBe('composition')
     expect(ctx.result.message).toContain('取货成功')
+    expect(transactionClient.query.mock.calls.some(([sql]) => /FROM inventory_cutover_states/.test(sql))).toBe(true)
+    expect(transactionClient.query.mock.calls.some(([sql]) => /FROM inventory_stock_lots/.test(sql))).toBe(true)
+    expect(transactionClient.query.mock.calls.some(([sql]) => /INSERT INTO inventory_docs/.test(sql))).toBe(true)
+    expect(transactionClient.query.mock.calls.some(([sql]) => /INSERT INTO inventory_movements/.test(sql))).toBe(true)
+    const pickupInsert = transactionClient.query.mock.calls.find(([sql]) => /INSERT INTO pickup_records/.test(sql))
+    expect(pickupInsert[0]).toMatch(/VALUES \(\$1, NULL/)
   })
 
   test('超出可提货数量拒绝', async () => {
-    const ctx = createManagerCtx({ saleItemId: 'item-001', pickupQuantity: 10 })
+    const ctx = createManagerCtx({ saleItemId: 'item-001', inventorySkuId: 'inventory-sku-001', pickupQuantity: 10 })
     const clientResults = [
+      { rows: [{ status: '已初始化' }], rowCount: 1 },
       { rows: [{
         sale_item_id: 'item-001', sale_order_id: 'FY-001', store_id: 'store-001',
         product_type: '家居产品', item_direction: '购买', quantity: 5,
@@ -6716,8 +7238,9 @@ describe('order.createPickup', () => {
   })
 
   test('跨店提货拒绝 — sale_items.store_id 与员工当前门店不一致', async () => {
-    const ctx = createManagerCtx({ saleItemId: 'item-other-store', pickupQuantity: 1 })
+    const ctx = createManagerCtx({ saleItemId: 'item-other-store', inventorySkuId: 'inventory-sku-001', pickupQuantity: 1 })
     const clientResults = [
+      { rows: [{ status: '已初始化' }], rowCount: 1 },
       { rows: [{
         sale_item_id: 'item-other-store', sale_order_id: 'FY-OTHER', store_id: 'store-999',
         product_type: '家居产品', item_direction: '购买', quantity: 5,
@@ -6735,16 +7258,22 @@ describe('order.createPickup', () => {
   test('部分支付仅允许提已付整件数', async () => {
     const ctx = createManagerCtx({ saleItemId: 'item-partial', pickupQuantity: 3 })
     pg.transaction.mockImplementation(async (cb) => cb({
-      query: vi.fn(async (sql) => {
+      query: vi.fn(withDeductible(async (sql) => {
+        if (/FROM inventory_cutover_states/.test(sql)) {
+          return { rows: [{ status: '已初始化' }], rowCount: 1 }
+        }
         if (/FOR UPDATE OF si/.test(sql)) {
           return { rows: [{
             sale_item_id: 'item-partial', sale_order_id: 'FY-PARTIAL', store_id: 'store-001',
             product_type: '家居产品', item_direction: '购买', quantity: 10,
-            settled_quantity: 0, picked_quantity: 0, paid_quantity: 2, order_status: '部分支付',
+            settled_quantity: 0, picked_quantity: 0, order_status: '部分支付',
+            // #145/#153：可提件数按「剩余已付 / 单价」算 —— 10 件 ¥100，实收 ¥200 → 2 件
+            sale_order_type: '销售单', sale_amount: '1000', unit_real_price: '100',
+            received: '200', converted_amount: '0',
           }], rowCount: 1 }
         }
         return { rows: [], rowCount: 0 }
-      }),
+      })),
     }))
 
     await expect(orderRoutes.createPickup(ctx)).rejects.toThrow(/INVALID_STATE.*当前可提 2/)
@@ -6756,7 +7285,7 @@ describe('order.createPickup', () => {
   })
 
   test('取货数量 <= 0 拒绝', async () => {
-    const ctx = createManagerCtx({ saleItemId: 'item-001', pickupQuantity: 0 })
+    const ctx = createManagerCtx({ saleItemId: 'item-001', inventorySkuId: 'inventory-sku-001', pickupQuantity: 0 })
     await expect(orderRoutes.createPickup(ctx)).rejects.toThrow(/INVALID_PARAMS.*取货数量/)
   })
 })
@@ -6775,7 +7304,7 @@ describe('提货查询门店范围', () => {
 
     expect(pg.query.mock.calls[0][0]).toMatch(/o\.store_id\s*=\s*\$2/)
     expect(pg.query.mock.calls[0][0]).toContain("o.status IN ('已支付', '部分支付', '已完成')")
-    expect(pg.query.mock.calls[0][0]).toContain('GREATEST(paid_quantity - picked_quantity, 0)')
+    expect(pg.query.mock.calls[0][0]).toContain('row_pending_pickup AS pending_pickup_quantity')
     expect(pg.query.mock.calls[0][1]).toEqual(['customer-001', 'store-001'])
   })
 
@@ -6808,6 +7337,63 @@ describe('提货查询门店范围', () => {
     await expect(orderRoutes.pickupRecordsList(ctx)).rejects.toThrow(/PERMISSION_DENIED/)
     expect(pg.query).not.toHaveBeenCalled()
   })
+
+  // ---------- #240 日期入参校验（同类「非优雅降级」的漏网处）----------
+  // 原先零校验：`startDate='abc'` 直接绑进 `pr.created_at >= $n` → PG 22007
+  // → 全局 catch 降级成 {code:-1,'服务器内部错误'}，而非 -400 INVALID_PARAMS。
+  test.each([
+    [{ startDate: 'abc' }, /INVALID_PARAMS.*startDate/],
+    [{ endDate: '26-08-01' }, /INVALID_PARAMS.*endDate/],
+    [{ startDate: '2026-02-30' }, /INVALID_PARAMS.*startDate/],
+    [{ startDate: '2026-08-27', endDate: '2026-08-26' }, /INVALID_PARAMS.*不能晚于/],
+  ])('#240 非法日期入参抛 INVALID_PARAMS 而非打到 PG：%#', async (payload, re) => {
+    const ctx = createManagerCtx(payload)
+    await expect(orderRoutes.pickupRecordsList(ctx)).rejects.toThrow(re)
+    // 关键：必须在发 SQL **之前**拦住
+    expect(pg.query).not.toHaveBeenCalled()
+  })
+
+  test('#240 合法 YYYY-MM-DD 仍正常进 SQL（前端 picker 的既有格式不受影响）', async () => {
+    const ctx = createManagerCtx({ startDate: '2026-08-01', endDate: '2026-08-31' })
+    pg.query.mockResolvedValueOnce([]).mockResolvedValueOnce([{ cnt: 0 }])
+    await orderRoutes.pickupRecordsList(ctx)
+    expect(pg.query.mock.calls[0][1]).toContain('2026-08-01')
+    expect(pg.query.mock.calls[0][1]).toContain('2026-08-31')
+  })
+
+  // ---------- #240 分页归一（本接口上限 50，与其它接口的 100 不同）----------
+  // 原先 `parseInt(pageSize,10) || 20`：`parseInt('1e21',10) === 1` 会**静默取错值**（不崩，
+  // 但用户看到一页 1 条）；且 `page` 在算 offset 与返回信封里各归一一遍，两条路径天然会漂。
+  test('#240 pickupRecordsList 分页归一：上限 50、page 只归一一次', async () => {
+    const pickupLimit = (ctx) => {
+      const sql = pg.query.mock.calls[0][0]
+      const m = sql.match(/LIMIT\s+(\d+)\s+OFFSET\s+(\d+)/)
+      return { limit: Number(m[1]), offset: Number(m[2]), result: ctx.result }
+    }
+
+    // 超上限被夹到 50（不是 100）
+    const ctxBig = createManagerCtx({ page: 1, pageSize: 999 })
+    pg.query.mockResolvedValueOnce([]).mockResolvedValueOnce([{ cnt: 0 }])
+    await orderRoutes.pickupRecordsList(ctxBig)
+    expect(pickupLimit(ctxBig).limit).toBe(50)
+    expect(ctxBig.result.pageSize).toBe(50)
+
+    // '1e21' 旧写法经 parseInt 截断成 1（静默取错值）；新写法回落默认 20
+    pg.query.mockClear()
+    const ctxExp = createManagerCtx({ page: 1, pageSize: '1e21' })
+    pg.query.mockResolvedValueOnce([]).mockResolvedValueOnce([{ cnt: 0 }])
+    await orderRoutes.pickupRecordsList(ctxExp)
+    expect(pickupLimit(ctxExp).limit).toBe(20)
+
+    // page 归一只发生一次：SQL 的 offset 与返回信封的 page 必须同源
+    pg.query.mockClear()
+    const ctxPage = createManagerCtx({ page: 3.9, pageSize: 10 })
+    pg.query.mockResolvedValueOnce([]).mockResolvedValueOnce([{ cnt: 0 }])
+    await orderRoutes.pickupRecordsList(ctxPage)
+    const { offset, result } = pickupLimit(ctxPage)
+    expect(result.page).toBe(3)
+    expect(offset).toBe((result.page - 1) * result.pageSize)
+  })
 })
 
 // ============================================================
@@ -6838,7 +7424,7 @@ describe('order.create — 储值卡预选（店长开单 = 预选，不扣卡�
     let txCalls = []
     pg.transaction.mockImplementation(async (cb) => {
       const client = {
-        query: vi.fn(async (sql, params) => {
+        query: vi.fn(withDeductible(async (sql, params) => {
           txCalls.push({ sql, params })
           // 扣卡块：SELECT card_id, balance FROM prepaid_cards ... FOR UPDATE → 返回足额账户
           if (typeof sql === 'string' && /SELECT card_id, balance FROM prepaid_cards/i.test(sql)) {
@@ -6853,7 +7439,7 @@ describe('order.create — 储值卡预选（店长开单 = 预选，不扣卡�
             return { rows: [{ customer_type: '流量客' }], rowCount: 1 }
           }
           return defaultQueryResult(sql)
-        }),
+        })),
       }
       return await cb(client)
     })
@@ -7060,7 +7646,7 @@ describe('order.confirmOffline — 储值卡扣款（staffApi 唯一扣卡点）
     pg.transaction.mockImplementation(async (cb) => cb({ query: makeConfirmOfflineQuery() }))
   })
 
-  test('prepaid_card_amount > 0 确认收款：扣 balance + INSERT card_transactions + 置 已支付', async () => {
+  test('prepaid_card_amount > 0 确认收款：混合支付先写现付、再写储值卡抵扣', async () => {
     const ctx = createManagerCtx({ saleOrderId: 'FY-PD-001' })
 
     pg.query
@@ -7117,6 +7703,12 @@ describe('order.confirmOffline — 储值卡扣款（staffApi 唯一扣卡点）
     expect(insertCall).toBeDefined()
     expect(Number(insertCall.params[1])).toBe(-300)
     expect(insertCall.params[2]).toBe('FY-PD-001')
+    const paymentWrites = txCalls.filter(c => c.sql.includes('INSERT INTO sale_order_payments'))
+    expect(paymentWrites).toHaveLength(2)
+    expect(paymentWrites[0].params[1]).toBe('首次支付')
+    expect(paymentWrites[0].sql).not.toContain("'储值卡抵扣'")
+    expect(paymentWrites[1].sql).toContain("'储值卡抵扣'")
+    expect(paymentWrites[1].params[4]).toBe(paymentWrites[0].params[5])
   })
 
   test('prepaid_card_amount > 0 但已有扣款流水：幂等跳过不重复扣', async () => {
@@ -7452,7 +8044,7 @@ describe('order.createConversion — schema 变更：UPSERT 按 user_id、不含
     const txCalls = []
     pg.transaction.mockImplementationOnce(async (cb) => {
       const tx = {
-        query: vi.fn(async (sql, params) => {
+        query: vi.fn(withDeductible(async (sql, params) => {
           txCalls.push({ sql, params })
           if (sql.includes('advisory_xact_lock')) return { rows: [], rowCount: 1 }
           // generateOrderNo: SELECT sale_order_id LIKE → empty → seq=1
@@ -7482,7 +8074,7 @@ describe('order.createConversion — schema 变更：UPSERT 按 user_id、不含
             return { rows: [{ card_id: 'card-credit-neg' }], rowCount: 1 }
           }
           return defaultQueryResult(sql)
-        }),
+        })),
       }
       return await cb(tx)
     })
@@ -7514,7 +8106,7 @@ describe('order.createConversion — schema 变更：UPSERT 按 user_id、不含
     const txCalls = []
     pg.transaction.mockImplementationOnce(async (cb) => {
       const tx = {
-        query: vi.fn(async (sql) => {
+        query: vi.fn(withDeductible(async (sql) => {
           txCalls.push({ sql })
           if (sql.includes('advisory_xact_lock')) return { rows: [], rowCount: 1 }
           // generateOrderNo: SELECT sale_order_id LIKE → empty → seq=1
@@ -7541,7 +8133,7 @@ describe('order.createConversion — schema 变更：UPSERT 按 user_id、不含
             }
           }
           return defaultQueryResult(sql)
-        }),
+        })),
       }
       return await cb(tx)
     })
@@ -7556,5 +8148,635 @@ describe('order.createConversion — schema 变更：UPSERT 按 user_id、不含
     const hasDeduct = txCalls.some(c => c.sql.includes('INSERT INTO card_transactions'))
     expect(hasUpsert).toBe(false)
     expect(hasDeduct).toBe(false)
+  })
+})
+
+// ============================================================
+// #125 家居产品参与转换折抵
+// ============================================================
+describe('order.createConversion — 家居产品折抵（#125）', () => {
+  beforeEach(() => { vi.clearAllMocks() })
+
+  /**
+   * 源行：家居产品 10 盒、已结算（提货+退款+已折抵）3 盒，单价 100，行应付 1000。
+   * 默认已付清（received=1000）→ 可折抵 10−3 = 7 盒、金额 1000−3×100 = 700。
+   * 转入：sku-new 疗程卡 1 次 300 → 差额 -400（旧值高，走储值卡补差）。
+   *
+   * ⚠ `home_deductible_quantity` / `home_deductible_amount` 是锁行 SQL 里算好的列
+   * （#145/#153 收紧口径）。这里按同一公式在 JS 侧复算，改 overrides 时自动跟随；
+   * SQL 表达式本身由 cross-end snapshot + L2 smoke 守护。
+   */
+  function mockHomeProductConversion(overrides = {}) {
+    const calls = []
+    const row = {
+      sale_item_id: 'item-home-1', sale_order_id: 'order-old', store_id: 'store-001',
+      item_direction: '购买',
+      sku_id: 'sku-home', product_name: '家居精华', product_type: '家居产品',
+      session_count: null, remaining_sessions: null,
+      quantity: 10, picked_up_quantity: 3,
+      unit_price: '120', unit_real_price: '100', sale_amount: '1000', received: '1000',
+      // 默认 3 件已结算且全部来自物理提货；退款/折抵场景由各用例显式覆盖
+      home_picked_quantity: 3, home_converted_amount: '0',
+      sales_category: '自销自耗', service_fee: '0',
+      client_user_id: 'cu-001', sale_order_type: '销售单',
+      order_status: '已支付', product_kind: '家居',
+      ...overrides,
+    }
+    pg.transaction.mockImplementationOnce(async (cb) => cb({
+      query: vi.fn(withDeductible(async (sql, params) => {
+        calls.push({ sql, params })
+        if (sql.includes('advisory_xact_lock')) return { rows: [], rowCount: 1 }
+        if (sql.includes('FROM sale_orders') && sql.includes('LIKE $1')) return { rows: [], rowCount: 0 }
+        // #182 锁序第一步：查涉及的原单（不加锁）
+        if (sql.includes('SELECT DISTINCT sale_order_id FROM sale_items')) {
+          return { rows: [{ sale_order_id: row.sale_order_id }], rowCount: 1 }
+        }
+        // #182 锁序第二步：按 sale_order_id 升序锁原单
+        if (sql.includes('FROM sale_orders') && sql.includes('ORDER BY sale_order_id') && sql.includes('FOR UPDATE')) {
+          return { rows: [{ sale_order_id: row.sale_order_id }], rowCount: 1 }
+        }
+        if (sql.includes('FROM sale_items si') && sql.includes('FOR UPDATE OF si')) {
+          return { rows: [row], rowCount: 1 }
+        }
+        // 折抵额度复算由 withDeductible 统一响应（#182 起疗程卡与家居同一条语句）
+        if (sql.includes('FROM service_items sit')) return { rows: [], rowCount: 0 }
+        // #182 欠款归零：锁原单读金额快照
+        if (sql.includes('FROM sale_orders WHERE sale_order_id = $1 FOR UPDATE')) {
+          return {
+            rows: [{
+              total_amount: row.sale_amount, received: row.received,
+              prepaid_card_amount: '0', pending_prepaid_card_amount: '0',
+              status: row.order_status, paid_at: null, sale_order_type: row.sale_order_type,
+            }],
+            rowCount: 1,
+          }
+        }
+        if (sql.includes('FROM product_skus')) {
+          return {
+            rows: [{
+              sku_id: 'sku-new', product_type: '疗程卡', spec_name: '新项目',
+              price: '300', special_price: null, session_count: 1, service_fee: '0',
+              sales_category: '自销自耗', is_manager_special: false,
+            }],
+            rowCount: 1,
+          }
+        }
+        if (sql.includes('SELECT balance FROM prepaid_cards')) return { rows: [], rowCount: 0 }
+        return defaultQueryResult(sql, params)
+      })),
+    }))
+    return calls
+  }
+
+  function homeConversionCtx() {
+    const ctx = createManagerCtx({
+      clientUserId: 'cu-001',
+      convertOutSaleItemIds: ['item-home-1'],
+      convertInItems: [{ skuId: 'sku-new', quantity: 1 }],
+      paymentMethod: '线下',
+    })
+    pg.query.mockResolvedValueOnce([{
+      user_id: 'cu-001', phone: '138', name: '张三', customer_type: '会员客', bound_store_id: 'store-001',
+    }])
+    return ctx
+  }
+
+  test('付清的家居行按未结算件数折抵：7 盒 × 100 = 700，转出行金额为负', async () => {
+    const ctx = homeConversionCtx()
+    const calls = mockHomeProductConversion()
+
+    await orderRoutes.createConversion(ctx)
+
+    // 折抵 700 − 转入 300 = −400（旧值高于新值，差额入储值卡）
+    expect(ctx.result.priceDiff).toBe(-400)
+
+    const outInsert = calls.find(({ sql }) =>
+      sql.includes('INSERT INTO sale_items') && sql.includes("'转出'"))
+    expect(outInsert).toBeDefined()
+    // quantity 落未提货数量 7；sale_amount / received 均为 −700
+    expect(outInsert.params).toEqual(expect.arrayContaining([7, -700]))
+  })
+
+  test('转出数量落 converted_quantity，守卫按「已结算」三列之和判不可超转', async () => {
+    const ctx = homeConversionCtx()
+    const calls = mockHomeProductConversion()
+
+    await orderRoutes.createConversion(ctx)
+
+    // #154：折抵写独立的 converted_quantity；写回 picked_up_quantity 会让「删一条提货记录」
+    // 把折抵占用的额度重新放出来（缺陷 1）。
+    const deduct = calls.find(({ sql }) =>
+      sql.includes('UPDATE sale_items') && sql.includes('converted_quantity = COALESCE(converted_quantity, 0) +'))
+    expect(deduct).toBeDefined()
+    expect(deduct.sql).not.toContain('picked_up_quantity = COALESCE(picked_up_quantity, 0) +')
+    // 守卫：三列之和加完不得超过 quantity，并发第二笔 rowCount=0 → 抛冲突
+    expect(deduct.sql).toContain('COALESCE(picked_up_quantity, 0) + COALESCE(refunded_quantity, 0)')
+    expect(deduct.sql).toContain('+ COALESCE(converted_quantity, 0) + $4) <= quantity')
+    expect(deduct.params).toEqual(expect.arrayContaining(['item-home-1', 'store-001', 7]))
+    // 家居不得走疗程卡的 remaining_sessions 扣减
+    const sessionDeduct = calls.find(({ sql }) =>
+      sql.includes('SET remaining_sessions = remaining_sessions -'))
+    expect(sessionDeduct).toBeUndefined()
+  })
+
+  test('#125 部分支付订单的家居行可折抵（订单级状态已放开）', async () => {
+    const ctx = homeConversionCtx()
+    const calls = mockHomeProductConversion({ order_status: '部分支付' })
+
+    await orderRoutes.createConversion(ctx)
+
+    // 未被 order_status 闸门拦下，正常产出转出行
+    const outInsert = calls.find(({ sql }) =>
+      sql.includes('INSERT INTO sale_items') && sql.includes("'转出'"))
+    expect(outInsert).toBeDefined()
+    expect(outInsert.params).toEqual(expect.arrayContaining([7, -700]))
+  })
+
+  // #145/#153 收紧：折抵以「已付未结算」为准。旧口径按未提货数量全额折抵，会把
+  // 未兑现价值洗成全额可提（10 件 ¥1000 只付 ¥400 → 折 ¥1000 换等额家居 → 新行全可提）。
+  // #182 改口径：折抵 = 整行退出。件数带走**全部**未结算件，金额只折「剩余已付」。
+  // #145 的「件数按已付整件数收敛」已被取代——那会把未付部分的货留在原单继续挂欠款，
+  // 而新口径把欠款一并归零，货与钱同时结清。
+  test('#182 未付清：件数整行退出、金额只折剩余已付（10 件付 600 已结算 3 → 7 件 / ¥300）', async () => {
+    const ctx = homeConversionCtx()
+    const calls = mockHomeProductConversion({ order_status: '部分支付', received: '600' })
+
+    await orderRoutes.createConversion(ctx)
+
+    const outInsert = calls.find(({ sql }) =>
+      sql.includes('INSERT INTO sale_items') && sql.includes("'转出'"))
+    expect(outInsert).toBeDefined()
+    // 件数 = 10 − 3 = 7（整行退出）；金额 = 已付 600 − 已提 3 × 100 = 300
+    expect(outInsert.params).toEqual(expect.arrayContaining([7, -300]))
+    // 折抵 300 − 转入 300 = 0
+    expect(ctx.result.priceDiff).toBe(0)
+    // 欠款归零：原行应付下调 400（1000 − 600），差额记在转出行 waived_amount 上
+    expect(outInsert.params).toEqual(expect.arrayContaining([400]))
+    const waiveUpd = calls.find(({ sql }) => sql.includes('waived_amount = waived_amount +'))
+    expect(waiveUpd).toBeDefined()
+  })
+
+  // 金额含不足一整件的已付余数（2026-09-14 拍板，顾客付的钱一分不丢）；
+  // #182 起件数不再向下取整，整行退出带走全部未结算件。
+  test('#182 折抵金额含不足一整件的已付余数（付 450 → 10 件 / ¥450）', async () => {
+    const ctx = homeConversionCtx()
+    const calls = mockHomeProductConversion({
+      order_status: '部分支付', received: '450', picked_up_quantity: 0, home_picked_quantity: 0,
+    })
+
+    await orderRoutes.createConversion(ctx)
+
+    const outInsert = calls.find(({ sql }) =>
+      sql.includes('INSERT INTO sale_items') && sql.includes("'转出'"))
+    expect(outInsert).toBeDefined()
+    // 件数 10（全部未结算件），金额 450（含不足一件的 ¥50 余数，而非 4 × 100 = 400）
+    expect(outInsert.params).toEqual(expect.arrayContaining([10, -450]))
+  })
+
+  // 寄存单与 0 元赠品行没有"实收"可言，维持原口径（单价 × 未结算件数），否则折抵额恒为 0
+  test('#145 寄存单维持原口径：按单价 × 未结算件数折抵', async () => {
+    const ctx = homeConversionCtx()
+    const calls = mockHomeProductConversion({ sale_order_type: '寄存单', received: '0' })
+
+    await orderRoutes.createConversion(ctx)
+
+    const outInsert = calls.find(({ sql }) =>
+      sql.includes('INSERT INTO sale_items') && sql.includes("'转出'"))
+    expect(outInsert).toBeDefined()
+    expect(outInsert.params).toEqual(expect.arrayContaining([7, -700]))
+  })
+
+  test('#125 已关闭订单仍不可折抵（只放开部分支付，不是放开全部状态）', async () => {
+    const ctx = homeConversionCtx()
+    mockHomeProductConversion({ order_status: '已关闭' })
+
+    await expect(orderRoutes.createConversion(ctx))
+      .rejects.toThrow(/INVALID_PARAMS: 原订单状态不允许转换/)
+  })
+
+  test('已全部结算的家居行拒绝折抵', async () => {
+    const ctx = homeConversionCtx()
+    mockHomeProductConversion({
+      quantity: 4, picked_up_quantity: 4, home_picked_quantity: 4,
+      sale_amount: '400', received: '400',
+    })
+
+    await expect(orderRoutes.createConversion(ctx))
+      .rejects.toThrow(/INVALID_STATE: DEDUCTIBLE_EMPTY: 部分折抵项没有可折抵的已付金额/)
+  })
+
+  // #145/#153：`received` 已由 STEP 1.5 扣过退款，`picked_up_quantity` 又含退款结算数，
+  // 两边都减就是重复扣减（顾客少折）。退款件只能通过 received 反映一次。
+  test('#145 退款件不重复扣减（付清 10 件退 2 件 → 仍可折 8 件 / ¥800）', async () => {
+    const ctx = homeConversionCtx()
+    const calls = mockHomeProductConversion({
+      quantity: 10, picked_up_quantity: 2, home_picked_quantity: 0,
+      sale_amount: '1000', received: '800', unit_real_price: '100',
+    })
+
+    await orderRoutes.createConversion(ctx)
+
+    const outInsert = calls.find(({ sql }) =>
+      sql.includes('INSERT INTO sale_items') && sql.includes("'转出'"))
+    expect(outInsert).toBeDefined()
+    expect(outInsert.params).toEqual(expect.arrayContaining([8, -800]))
+  })
+
+  // 已转走金额取自转出行 received，不是「已转走件数 × 单价」——折抵金额含余数时两者不等，
+  // 用件数推算会让多次折抵累计超过累计实收。
+  test('#182 二次折抵按实际已转走金额扣减：只剩 ¥50 余数仍可折走', async () => {
+    const ctx = homeConversionCtx()
+    const calls = mockHomeProductConversion({
+      order_status: '部分支付', quantity: 10, picked_up_quantity: 4,
+      home_picked_quantity: 0, home_converted_amount: '450',
+      sale_amount: '1000', received: '500', unit_real_price: '100',
+    })
+
+    await orderRoutes.createConversion(ctx)
+
+    const outInsert = calls.find(({ sql }) =>
+      sql.includes('INSERT INTO sale_items') && sql.includes("'转出'"))
+    expect(outInsert).toBeDefined()
+    // 剩余已付 = 500 − 0 − 450 = 50。#145 时因「不足一整件没有载体」整行拒绝，
+    // #182 放宽 chk_item_quantity 后带全部未结算件（10 − 4 = 6）+ ¥50 一起走。
+    expect(outInsert.params).toEqual(expect.arrayContaining([6, -50]))
+  })
+
+  // 本单核心场景，对应 prod FY-XSD-WX-2608170136（净肤清颜啫喱 1 件 ¥680 已付 ¥594）。
+  // 旧口径 FLOOR(594/680)=0 → 整行被剔除，顾客的 ¥594 既折不掉也提不出。
+  test('#182 已付不足一整件：按余数折走并把原单欠款归零', async () => {
+    const ctx = homeConversionCtx()
+    const calls = mockHomeProductConversion({
+      order_status: '部分支付', quantity: 1, picked_up_quantity: 0, home_picked_quantity: 0,
+      sale_amount: '680', received: '594', unit_real_price: '680',
+    })
+
+    await orderRoutes.createConversion(ctx)
+
+    const outInsert = calls.find(({ sql }) =>
+      sql.includes('INSERT INTO sale_items') && sql.includes("'转出'"))
+    expect(outInsert).toBeDefined()
+    // 件数 1（整行退出）、金额 594（剩余已付）、豁免 86（680 − 594）
+    expect(outInsert.params).toEqual(expect.arrayContaining([1, -594, 86]))
+    // 原行应付下调 + 留底
+    const waiveUpd = calls.find(({ sql }) =>
+      sql.includes('sale_amount = sale_amount -') && sql.includes('waived_amount = waived_amount +'))
+    expect(waiveUpd).toBeDefined()
+    expect(waiveUpd.params).toEqual(expect.arrayContaining([86, 680]))
+    // 原单 total_amount 同步下调到 594，欠款归零
+    const orderUpd = calls.find(({ sql }) =>
+      sql.includes('UPDATE sale_orders') && sql.includes('total_amount = $2'))
+    expect(orderUpd).toBeDefined()
+    expect(orderUpd.params[1]).toBe(594)
+  })
+
+  // #182 F1：锁序必须与入账路径同向（sale_orders → sale_items）。折抵事务要在末尾锁原单
+  // 改 total_amount，若留到那时才锁，本事务足迹就是 sale_items → sale_orders，与
+  // confirmOffline / createRepayment / payNotify（先锁 sale_orders）互为反向 → 40P01 死锁，
+  // 且中间隔着十余条语句、持锁窗口很长。
+  test('#182 锁序：先锁原单（sale_orders）再锁源行（sale_items）', async () => {
+    const ctx = homeConversionCtx()
+    const calls = mockHomeProductConversion()
+
+    await orderRoutes.createConversion(ctx)
+
+    const refLookup = calls.findIndex(({ sql }) =>
+      sql.includes('SELECT DISTINCT sale_order_id FROM sale_items'))
+    const orderLock = calls.findIndex(({ sql }) =>
+      sql.includes('FROM sale_orders') && sql.includes('ORDER BY sale_order_id') && sql.includes('FOR UPDATE'))
+    const itemLock = calls.findIndex(({ sql }) => sql.includes('FOR UPDATE OF si'))
+    expect(refLookup).toBeGreaterThanOrEqual(0)
+    expect(orderLock).toBeGreaterThan(refLookup)
+    expect(itemLock).toBeGreaterThan(orderLock)
+    // 多单必须定序加锁，否则两笔并发折抵跨相同两张原单时会反向互等
+    expect(calls[orderLock].sql).toMatch(/ORDER BY sale_order_id\s+FOR UPDATE/)
+  })
+})
+
+describe('order.close — 家居转出回滚（#125）', () => {
+  beforeEach(() => { vi.clearAllMocks() })
+
+  // assertOrderInScope helper 先 SELECT store_id FROM sale_orders
+  const mockScopeOk = (storeId = 'store-001') =>
+    pg.query.mockResolvedValueOnce([{ store_id: storeId }])
+
+  test('关闭待支付转换单时把家居转出数量退回 picked_up_quantity', async () => {
+    const ctx = createManagerCtx({ saleOrderId: 'FY-CONV-HOME-001' })
+
+    mockScopeOk()
+    pg.query.mockResolvedValueOnce([{
+      sale_order_id: 'FY-CONV-HOME-001',
+      status: '待支付',
+      sale_order_type: '转换单',
+      store_id: 'store-001',
+      opened_by: 'emp-other',
+    }])
+
+    const closeEffectsQuery = vi.fn(async (sql) => defaultQueryResult(sql))
+    const clientQueryMock = makeCloseQuery(closeEffectsQuery)
+    pg.transaction.mockImplementation(async (cb) => cb({ query: clientQueryMock }))
+
+    await orderRoutes.close(ctx)
+
+    const homeRestore = clientQueryMock.mock.calls.find(([sql]) =>
+      String(sql).includes('restore_quantity') &&
+      String(sql).includes("product_type = '家居产品'"))
+    expect(homeRestore).toBeTruthy()
+    // #154：折抵记在 converted_quantity，撤销也退回同一列
+    expect(String(homeRestore[0])).toContain('converted_quantity = GREATEST')
+    expect(String(homeRestore[0])).not.toContain('picked_up_quantity = GREATEST')
+    expect(homeRestore[1]).toEqual(expect.arrayContaining(['FY-CONV-HOME-001']))
+
+    // 疗程卡回滚段必须仍在（两类资产各回各的）
+    const sessionRestore = clientQueryMock.mock.calls.find(([sql]) =>
+      String(sql).includes('restore_sessions'))
+    expect(sessionRestore).toBeTruthy()
+  })
+})
+
+describe('order.close — 欠款归零的回滚（#182）', () => {
+  beforeEach(() => { vi.clearAllMocks() })
+
+  // 构造「关闭待支付转换单」场景，并让豁免还原 CTE 返回一行。
+  // rowWaived = 行级豁免额，rowRefunded = 该行已退款额 → 订单级还原量 = max(0, 差)。
+  const runClose = async ({
+    rowWaived, rowRefunded, restoredOk = true, sourceFound = true, orderTotal = '1000.00',
+  }) => {
+    const ctx = createManagerCtx({ saleOrderId: 'FY-CONV-WAIVE-001' })
+    pg.query.mockResolvedValueOnce([{ store_id: 'store-001' }])
+    pg.query.mockResolvedValueOnce([{
+      sale_order_id: 'FY-CONV-WAIVE-001',
+      status: '待支付',
+      sale_order_type: '转换单',
+      store_id: 'store-001',
+      opened_by: 'emp-other',
+    }])
+
+    const clientQueryMock = makeCloseQuery(async (sql, params) => {
+      const text = String(sql)
+      // 豁免还原 CTE（唯一带 orig_pending 的语句）
+      if (text.includes('orig_pending')) {
+        return {
+          rows: [{
+            sale_order_id: 'FY-SRC-001',
+            sale_item_id: 'ITEM-SRC-001',
+            waived: rowWaived,
+            source_found: sourceFound,
+            restored_ok: restoredOk,
+          }],
+          rowCount: 1,
+        }
+      }
+      // 行级已退款额聚合
+      if (text.includes('refund_items') && text.includes('GROUP BY sale_item_id')) {
+        return {
+          rows: rowRefunded > 0
+            ? [{ sale_item_id: 'ITEM-SRC-001', refunded: String(rowRefunded) }]
+            : [],
+          rowCount: 1,
+        }
+      }
+      // 原单加锁读
+      if (text.includes('SELECT total_amount, received, prepaid_card_amount') && text.includes('FOR UPDATE')) {
+        return {
+          rows: [{
+            total_amount: orderTotal,
+            received: '600.00',
+            prepaid_card_amount: '0.00',
+            pending_prepaid_card_amount: '0.00',
+            status: '已支付',
+            sale_order_type: '销售单',
+          }],
+          rowCount: 1,
+        }
+      }
+      return defaultQueryResult(sql, params)
+    })
+    pg.transaction.mockImplementation(async (cb) => cb({ query: clientQueryMock }))
+    await orderRoutes.close(ctx)
+    return clientQueryMock
+  }
+
+  test('订单级还原量 > 0：原单 total_amount 加回 + 该行 paid_sessions 重算', async () => {
+    const q = await runClose({ rowWaived: '400.00', rowRefunded: 0 })
+
+    const orderRestore = q.mock.calls.find(([sql]) =>
+      String(sql).includes('UPDATE sale_orders') && String(sql).includes('total_amount = $2'))
+    expect(orderRestore).toBeTruthy()
+    // 1000 + 400（行级豁免额无已退款可扣，订单级 = 行级）
+    expect(orderRestore[1][1]).toBe(1400)
+    // 本语句写 status，CAS 必须与正向 6b 对称（lint-cas-guards 也守这条）。
+    // 缺 CAS 时它就是一条无守卫的状态机 UPDATE：并发/在途在线支付下会与支付回调竞争改写 total。
+    expect(String(orderRestore[0])).toContain('AND status = $6')
+    expect(String(orderRestore[0])).toContain('AND lakala_out_order_no IS NULL')
+    expect(orderRestore[1][5]).toBe('已支付') // CAS 期望值 = 锁内读到的旧状态
+
+    const recalc = q.mock.calls.find(([sql]) =>
+      String(sql).includes('SET paid_sessions = CASE')
+      && String(sql).includes("out_item.waived_amount::numeric > 0"))
+    expect(recalc).toBeTruthy()
+  })
+
+  // codex 第 4 轮 P1-3：paid_sessions 重算曾被写在「订单级还原量 > 0」的循环内，
+  // 于是「付清后部分退款」的行（订单级 = 0）源行 sale_amount 已被 CTE 无条件还原、
+  // paid_sessions 却停在满付 → 已退款的权益被重新放出。
+  test('订单级还原量 = 0 时仍必须重算 paid_sessions（不得随订单级一起跳过）', async () => {
+    const q = await runClose({ rowWaived: '400.00', rowRefunded: 400 })
+
+    // 订单 total 不该动（那 400 已经退给顾客，不是欠款）
+    const orderRestore = q.mock.calls.find(([sql]) =>
+      String(sql).includes('UPDATE sale_orders') && String(sql).includes('total_amount = $2'))
+    expect(orderRestore).toBeFalsy()
+
+    // 但行级 paid_sessions 必须重算
+    const recalc = q.mock.calls.find(([sql]) =>
+      String(sql).includes('SET paid_sessions = CASE')
+      && String(sql).includes("out_item.waived_amount::numeric > 0"))
+    expect(recalc).toBeTruthy()
+    expect(recalc[1]).toEqual(['FY-CONV-WAIVE-001', 'FY-SRC-001'])
+  })
+
+  // CI 的 lint-cas-guards 抓到过这条：回滚的订单 UPDATE 写 status 却没带 CAS。
+  // rowCount=0 既可能是原单孤儿、也可能是有在途在线支付，两者都必须整笔失败。
+  test('订单还原 CAS 不命中（在途支付/状态已变）必须抛 CONFLICT', async () => {
+    const ctx = createManagerCtx({ saleOrderId: 'FY-CONV-WAIVE-001' })
+    pg.query.mockResolvedValueOnce([{ store_id: 'store-001' }])
+    pg.query.mockResolvedValueOnce([{
+      sale_order_id: 'FY-CONV-WAIVE-001',
+      status: '待支付',
+      sale_order_type: '转换单',
+      store_id: 'store-001',
+      opened_by: 'emp-other',
+    }])
+    const clientQueryMock = makeCloseQuery(async (sql, params) => {
+      const text = String(sql)
+      if (text.includes('orig_pending')) {
+        return {
+          rows: [{
+            sale_order_id: 'FY-SRC-001',
+            sale_item_id: 'ITEM-SRC-001',
+            waived: '400.00',
+            source_found: true,
+            restored_ok: true,
+          }],
+          rowCount: 1,
+        }
+      }
+      if (text.includes('SELECT total_amount, received, prepaid_card_amount') && text.includes('FOR UPDATE')) {
+        return {
+          rows: [{
+            total_amount: '1000.00',
+            received: '600.00',
+            prepaid_card_amount: '0.00',
+            pending_prepaid_card_amount: '0.00',
+            status: '已支付',
+            sale_order_type: '销售单',
+          }],
+          rowCount: 1,
+        }
+      }
+      // 只让**还原**那条 UPDATE 的 CAS 不命中（close 自己那条关单 UPDATE 也带
+      // lakala_out_order_no IS NULL，匹配太宽会先撞它的守卫）
+      if (text.includes('UPDATE sale_orders') && text.includes('total_amount = $2')
+          && text.includes('AND status = $6')) {
+        return { rows: [], rowCount: 0 }
+      }
+      return defaultQueryResult(sql, params)
+    })
+    pg.transaction.mockImplementation(async (cb) => cb({ query: clientQueryMock }))
+
+    await expect(orderRoutes.close(ctx))
+      .rejects.toThrow(/CONFLICT: 原订单状态已变更或有在途支付，无法还原折抵豁免的欠款/)
+  })
+
+  // codex 第 4 轮 P2：自校验 CAS 失败时 restored 只会静默少行，而权益已被前两段无条件加回 →
+  // 「货已还给顾客、欠款仍被豁免」。必须整笔关单事务回滚。
+  test('还原 CAS 失败（restored_ok=false）必须抛 CONFLICT 而不是静默放过', async () => {
+    const ctx = createManagerCtx({ saleOrderId: 'FY-CONV-WAIVE-001' })
+    pg.query.mockResolvedValueOnce([{ store_id: 'store-001' }])
+    pg.query.mockResolvedValueOnce([{
+      sale_order_id: 'FY-CONV-WAIVE-001',
+      status: '待支付',
+      sale_order_type: '转换单',
+      store_id: 'store-001',
+      opened_by: 'emp-other',
+    }])
+    const clientQueryMock = makeCloseQuery(async (sql, params) => {
+      if (String(sql).includes('orig_pending')) {
+        return {
+          rows: [{
+            sale_order_id: 'FY-SRC-001',
+            sale_item_id: 'ITEM-SRC-001',
+            waived: '400.00',
+            source_found: true,
+            restored_ok: false,
+          }],
+          rowCount: 1,
+        }
+      }
+      return defaultQueryResult(sql, params)
+    })
+    pg.transaction.mockImplementation(async (cb) => cb({ query: clientQueryMock }))
+
+    await expect(orderRoutes.close(ctx)).rejects.toThrow(/CONFLICT: 原订单的折抵豁免额已被改动/)
+  })
+
+  // codex 第 5 轮 P1-3：自校验若从 locked_source（内连接）出发，源行已被删时这条归因会
+  // **整条消失**，restored_ok 根本看不见它 —— 权益已被前两段无条件加回、欠款却没还原。
+  // 改为从 waived 左连出发并显式带出 source_found。
+  test('源行已不存在（source_found=false）必须抛 CONFLICT', async () => {
+    await expect(runClose({ rowWaived: '400.00', rowRefunded: 0, sourceFound: false }))
+      .rejects.toThrow(/CONFLICT: 折抵的原订单明细已不存在/)
+  })
+
+  // codex 第 5 轮 P1-3（另一半）：paid_sessions 重算的 op 子查询取不到原单时只会影响 0 行，
+  // 之前没有断言 → 源行金额已还原、paid_sessions 没还原，而收尾还会把归因凭据清零。
+  test('paid_sessions 重算影响 0 行（原单孤儿）必须抛 CONFLICT', async () => {
+    const ctx = createManagerCtx({ saleOrderId: 'FY-CONV-WAIVE-001' })
+    pg.query.mockResolvedValueOnce([{ store_id: 'store-001' }])
+    pg.query.mockResolvedValueOnce([{
+      sale_order_id: 'FY-CONV-WAIVE-001',
+      status: '待支付',
+      sale_order_type: '转换单',
+      store_id: 'store-001',
+      opened_by: 'emp-other',
+    }])
+    const clientQueryMock = makeCloseQuery(async (sql, params) => {
+      const text = String(sql)
+      if (text.includes('orig_pending')) {
+        return {
+          rows: [{
+            sale_order_id: 'FY-SRC-001',
+            sale_item_id: 'ITEM-SRC-001',
+            waived: '400.00',
+            source_found: true,
+            restored_ok: true,
+          }],
+          rowCount: 1,
+        }
+      }
+      // 行级已退款额 400 → 订单级还原量 0 → 不走订单 UPDATE，只走 paid_sessions 重算
+      if (text.includes('refund_items') && text.includes('GROUP BY sale_item_id')) {
+        return { rows: [{ sale_item_id: 'ITEM-SRC-001', refunded: '400' }], rowCount: 1 }
+      }
+      if (text.includes('SET paid_sessions = CASE') && text.includes('out_item.waived_amount')) {
+        return { rows: [], rowCount: 0 }
+      }
+      return defaultQueryResult(sql, params)
+    })
+    pg.transaction.mockImplementation(async (cb) => cb({ query: clientQueryMock }))
+
+    await expect(orderRoutes.close(ctx))
+      .rejects.toThrow(/CONFLICT: 原订单已不存在，无法还原折抵行的已支付次数/)
+  })
+})
+
+// ============================================================
+// order.refundList — #240 分页守卫
+// ============================================================
+// 原先零守卫：`const offset = (page-1)*pageSize` + `params = [storeId, pageSize, offset]`，
+// 入参直接进 `LIMIT $2 OFFSET $3`。`pageSize=2.5` 即复现本 issue 的 500
+// （PG `invalid input syntax for type bigint: "2.5"`）；无上限时 `pageSize=999999`
+// 一次吐全店退款流水。前端恒传 20，但云函数 payload 是可直接构造的边界。
+describe('order.refundList — 分页入参守卫（#240）', () => {
+  const listCall = () => pg.query.mock.calls.find(c => /sale_order_payments/.test(c[0]) && /LIMIT/.test(c[0]))
+
+  test('小数 pageSize 被取整，LIMIT/OFFSET 恒为整数', async () => {
+    const ctx = createManagerCtx({ page: 2.7, pageSize: 2.5 })
+    pg.query.mockResolvedValue([])
+    await orderRoutes.refundList(ctx)
+
+    const params = listCall()[1]
+    // [storeId, LIMIT, OFFSET]：pageSize=2.5→2，page=2.7→2，offset=(2-1)*2=2
+    expect(params[1]).toBe(2)
+    expect(params[2]).toBe(2)
+    expect(Number.isInteger(params[1])).toBe(true)
+    expect(Number.isInteger(params[2])).toBe(true)
+    // 返回的分页信封也应是归一后的值，不是原始入参
+    expect(ctx.result.page).toBe(2)
+    expect(ctx.result.pageSize).toBe(2)
+  })
+
+  test('pageSize 超上限被夹到 100，不会一次吐全店退款流水', async () => {
+    const ctx = createManagerCtx({ page: 1, pageSize: 999999 })
+    pg.query.mockResolvedValue([])
+    await orderRoutes.refundList(ctx)
+
+    expect(listCall()[1][1]).toBe(100)
+    expect(ctx.result.pageSize).toBe(100)
+  })
+
+  test("非安全整数（'Infinity' / 1e21）回落默认 20 / 第 1 页", async () => {
+    const ctxInf = createManagerCtx({ page: 'Infinity', pageSize: 'Infinity' })
+    pg.query.mockResolvedValue([])
+    await orderRoutes.refundList(ctxInf)
+    expect(listCall()[1].slice(1)).toEqual([20, 0])
+
+    pg.query.mockClear()
+    const ctxHuge = createManagerCtx({ page: 1e21, pageSize: 1e21 })
+    pg.query.mockResolvedValue([])
+    await orderRoutes.refundList(ctxHuge)
+    expect(listCall()[1].slice(1)).toEqual([20, 0])
+    expect(ctxHuge.result.page).toBe(1)
   })
 })

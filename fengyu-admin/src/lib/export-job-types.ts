@@ -6,6 +6,8 @@
 
 export const EXPORT_JOB_TYPES = [
   'orders',
+  'payments',
+  'refunds',
   'allocation-sales',
   'allocation-services',
   'services',
@@ -88,28 +90,40 @@ export interface ExportJobListItem {
   expiresAt: string | null
 }
 
-export const EXPORT_PERMISSION_BY_TYPE: Record<ExportJobType, string> = {
-  orders: 'sale_order:list',
-  'allocation-sales': 'sale_order:list',
-  'allocation-services': 'service:list',
-  services: 'service:list',
-  customers: 'customer:list',
-  employees: 'employee:list',
-  points: 'point_transaction:list',
-  cards: 'sale_item:list',
-  'inventory-stocks': 'inventory:export',
-  products: 'product:list',
-  'mall-products': 'product:list',
-  coupons: 'coupon:list',
-  'data-center': 'data_center:dashboard',
+export const EXPORT_PERMISSIONS_BY_TYPE: Record<ExportJobType, readonly [string, ...string[]]> = {
+  orders: ['sale_order:list'],
+  payments: ['sale_order:list'],
+  refunds: ['sale_order:refund_create', 'sale_order:refund_approve'],
+  'allocation-sales': ['sale_order:list'],
+  'allocation-services': ['service:list'],
+  services: ['service:list'],
+  customers: ['customer:list'],
+  employees: ['employee:list'],
+  points: ['point_transaction:list'],
+  cards: ['sale_item:list'],
+  'inventory-stocks': ['inventory:export'],
+  products: ['product:list'],
+  'mall-products': ['product:list'],
+  coupons: ['coupon:list'],
+  'data-center': ['data_center:dashboard'],
 }
 
 export const EXPORT_PERMISSION_ACTIONS = Array.from(
-  new Set(Object.values(EXPORT_PERMISSION_BY_TYPE)),
+  new Set(Object.values(EXPORT_PERMISSIONS_BY_TYPE).flat()),
 )
+
+export function findExportPermissionAction(
+  exportType: ExportJobType,
+  grantedActions: readonly string[],
+): string | null {
+  return EXPORT_PERMISSIONS_BY_TYPE[exportType]
+    .find((action) => grantedActions.includes(action)) ?? null
+}
 
 export const EXPORT_LABEL_BY_TYPE: Record<ExportJobType, string> = {
   orders: '订单明细',
+  payments: '回款明细',
+  refunds: '退款明细',
   'allocation-sales': '营业额分配-销售提成',
   'allocation-services': '营业额分配-服务提成',
   services: '服务单明细',

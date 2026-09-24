@@ -1,0 +1,178 @@
+#!/usr/bin/env node
+
+import fs from 'node:fs'
+import path from 'node:path'
+
+const root = path.resolve(import.meta.dirname, '..')
+const auditDir = process.argv[2]
+
+if (!auditDir) {
+  console.error('Usage: node scripts/reconcile-env-files.mjs <prod-audit-dir>')
+  process.exit(1)
+}
+
+function parseEnv(text) {
+  const result = {}
+  const lines = text.replace(/\r\n/g, '\n').split('\n')
+  for (let index = 0; index < lines.length; index += 1) {
+    const match = lines[index].match(/^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/)
+    if (!match) continue
+    const [, key] = match
+    let value = match[2]
+    if (value.startsWith('"') && !(value.length > 1 && value.endsWith('"'))) {
+      while (index + 1 < lines.length) {
+        value += `\n${lines[++index]}`
+        if (lines[index].endsWith('"') && !lines[index].endsWith('\\"')) break
+      }
+    }
+    if (value.startsWith('"') && value.endsWith('"')) {
+      value = value.slice(1, -1).replace(/\\n/g, '\n').replace(/\\"/g, '"').replace(/\\\\/g, '\\')
+    }
+    result[key] = value
+  }
+  return result
+}
+
+function readEnv(file) {
+  return fs.existsSync(file) ? parseEnv(fs.readFileSync(file, 'utf8')) : {}
+}
+
+function functionEnv(name) {
+  const parsed = JSON.parse(fs.readFileSync(path.join(auditDir, `${name}.json`), 'utf8'))
+  const fns = parsed.functions ?? []
+  // 必须按名精确取，不能退化到 [0]。
+  // 单个 CloudBase env 里现在并存正式函数与影子函数（clientApi / clientApiDev …），
+  // 若 dump 是 env 级产物而非单函数 `tcb fn detail`，functions[0] 完全可能是 clientApiDev——
+  // 它的 PG_CONNECTION_STRING 指向 dev 库，而本脚本会把读到的值**写回 envs/prod.env**。
+  // 那正是本仓库在 deploy-cloudfunctions.sh 的 assert_db_prereqs 里修过的同型陷阱。
+  const matched = fns.find((fn) => fn?.name === name)
+  if (!matched) {
+    const available = fns.map((fn) => fn?.name).filter(Boolean).join(', ') || '(空)'
+    throw new Error(
+      `${name}.json 里找不到名为 ${name} 的函数（现有：${available}）。` +
+      `dump 必须是 \`tcb fn detail <fn>\` 的单函数产物，不能用 env 级的 fn list。`
+    )
+  }
+  return matched.envVariables ?? {}
+}
+
+function containerEnv(name) {
+  const entries = JSON.parse(fs.readFileSync(path.join(auditDir, `${name}-container.json`), 'utf8'))
+  return Object.fromEntries(entries.map((entry) => {
+    const separator = entry.indexOf('=')
+    return [entry.slice(0, separator), entry.slice(separator + 1)]
+  }))
+}
+
+function encode(value) {
+  const stringValue = String(value ?? '')
+  if (!/[\n\r"#]|^\s|\s$/.test(stringValue)) return stringValue
+  return `"${stringValue.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\r?\n/g, '\\n')}"`
+}
+
+function templateKeys(text) {
+  return [...text.matchAll(/^([A-Za-z_][A-Za-z0-9_]*)=/gm)].map((match) => match[1])
+}
+
+function render(template, values) {
+  return template.replace(/^([A-Za-z_][A-Za-z0-9_]*)=.*$/gm, (_, key) => `${key}=${encode(values[key])}`)
+}
+
+const prodTemplatePath = path.join(root, 'envs/prod.env.example')
+const devTemplatePath = path.join(root, 'envs/dev.env.example')
+const prodTemplate = fs.readFileSync(prodTemplatePath, 'utf8')
+const devTemplate = fs.readFileSync(devTemplatePath, 'utf8')
+const prodTemplateValues = parseEnv(prodTemplate)
+const devTemplateValues = parseEnv(devTemplate)
+
+const prodPath = path.join(root, 'envs/prod.env')
+const devPath = path.join(root, 'envs/dev.env')
+const currentProd = readEnv(prodPath)
+const currentDev = readEnv(devPath)
+const staffAccount = readEnv(path.join(root, 'fengyu-staff/.env'))
+const admin = readEnv(path.join(auditDir, 'admin.env'))
+const adminContainer = containerEnv('admin')
+const analystContainer = containerEnv('analyst')
+const clientApi = functionEnv('clientApi')
+const payNotify = functionEnv('payNotify')
+const staffApi = functionEnv('staffApi')
+
+// 权威顺序：模板安全默认值 < 本地已有值 < prod 主机源文件/容器运行态 < 对应线上云函数。
+const prod = {
+  ...prodTemplateValues,
+  ...currentProd,
+  ...admin,
+  ...adminContainer,
+  ...analystContainer,
+  ...clientApi,
+  ...payNotify,
+  ...staffApi,
+}
+
+// 容器内的派生键不进入中央 env；只反向映射实际部署值所对应的规范键。
+Object.assign(prod, {
+  ADMIN_DATABASE_URL: adminContainer.DATABASE_URL ?? prod.ADMIN_DATABASE_URL,
+  ADMIN_JWT_SECRET: adminContainer.JWT_SECRET ?? prod.ADMIN_JWT_SECRET,
+  ADMIN_RSA_PRIVATE_KEY: adminContainer.RSA_PRIVATE_KEY ?? prod.ADMIN_RSA_PRIVATE_KEY,
+  ANALYST_ADMIN_LOGIN_URL: analystContainer.ADMIN_LOGIN_URL ?? prod.ANALYST_ADMIN_LOGIN_URL,
+  ANALYST_ADMIN_ORIGIN: analystContainer.NEXT_PUBLIC_ADMIN_ORIGIN ?? prod.ANALYST_ADMIN_ORIGIN,
+  ANALYST_PUBLIC_ORIGIN: analystContainer.NEXT_PUBLIC_ANALYST_ORIGIN ?? prod.ANALYST_PUBLIC_ORIGIN,
+  STAFF_TENCENTCLOUD_SECRETID: adminContainer.STAFF_TENCENTCLOUD_SECRETID || staffAccount.TENCENTCLOUD_SECRETID || prod.STAFF_TENCENTCLOUD_SECRETID,
+  STAFF_TENCENTCLOUD_SECRETKEY: adminContainer.STAFF_TENCENTCLOUD_SECRETKEY || staffAccount.TENCENTCLOUD_SECRETKEY || prod.STAFF_TENCENTCLOUD_SECRETKEY,
+  ENV_PROFILE: 'prod',
+})
+
+// PG_CONNECTION_STRING 以线上【正式】云函数使用的 PG 为准，远程 admin 的同名遗留值不参与。
+// 影子函数（clientApiDev 等）连的是 dev 库，绝不能作为 prod.env 的来源——
+// 这里再加一道 host 断言兜底，口径与 deploy-cloudfunctions.sh 的 assert_rc 一致：
+// 即便上游 dump 取错了函数，也要在写回 envs/prod.env 之前**响亮失败**，而不是静默污染。
+const PROD_PG_HOST = '118.178.196.26'
+{
+  const conn = clientApi.PG_CONNECTION_STRING
+  if (!conn) throw new Error('clientApi 的 PG_CONNECTION_STRING 为空，拒绝写回 envs/prod.env')
+  let host
+  try {
+    host = new URL(conn).hostname
+  } catch {
+    throw new Error('clientApi 的 PG_CONNECTION_STRING 无法解析，拒绝写回 envs/prod.env')
+  }
+  if (host !== PROD_PG_HOST) {
+    throw new Error(
+      `clientApi 的 PG_CONNECTION_STRING 指向 ${host}，不是生产库 ${PROD_PG_HOST}。` +
+      `很可能 dump 取到了影子函数(*Dev)。拒绝把 dev 连接串写进 envs/prod.env。`
+    )
+  }
+}
+prod.PG_CONNECTION_STRING = clientApi.PG_CONNECTION_STRING
+
+const dev = { ...devTemplateValues, ...currentDev, ENV_PROFILE: 'dev' }
+
+// 值是否仍是 example 模板里的占位符（而非真实值）。
+// 背景：独立 test 环境退役后 dev 不再从 test.env 继承值，只剩「本地 dev.env → example 模板」两级。
+// 而模板含全部键，所以 `undefined` 检查永远发现不了「真实值丢了、回落成占位符」——必须单独查。
+const isPlaceholder = (value, templateDefault) => {
+  const v = String(value ?? '')
+  if (!v) return false // 空值由各自的部署门禁判定，不在这里误报
+  return /^<.*>$/.test(v) || /PLACEHOLDER/.test(v) || (templateDefault !== undefined && v === String(templateDefault) && /^<.*>$/.test(String(templateDefault)))
+}
+
+for (const [file, template, values] of [
+  [prodPath, prodTemplate, prod],
+  [devPath, devTemplate, dev],
+]) {
+  const keys = templateKeys(template)
+  const missing = keys.filter((key) => values[key] === undefined)
+  if (missing.length) throw new Error(`${path.basename(file)} missing keys: ${missing.join(', ')}`)
+
+  const templateValues = parseEnv(template)
+  const placeholders = keys.filter((key) => isPlaceholder(values[key], templateValues[key]))
+  if (placeholders.length) {
+    console.warn(
+      `WARN ${path.basename(file)}: 以下键仍是模板占位符，写回后部署会拿到假值，请补真实值后重跑：\n  ${placeholders.join(', ')}`,
+    )
+  }
+
+  fs.writeFileSync(file, render(template, values), { mode: 0o600 })
+}
+
+console.log(`Reconciled ${templateKeys(prodTemplate).length} keys across prod/dev without printing values.`)

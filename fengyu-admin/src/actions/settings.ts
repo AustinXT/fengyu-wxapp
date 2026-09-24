@@ -12,6 +12,7 @@ import {
   normalizeShareGiftConfig,
 } from '@/lib/share-gift-config'
 import { rechargeCardConfigSchema, type RechargeCardConfigInput } from '@/lib/schemas'
+import { clampCouponQuantity } from '@/lib/coupon-quantity'
 import {
   type ConsumeAgreementConfig,
   DEFAULT_CONSUME_AGREEMENT,
@@ -30,6 +31,8 @@ export interface MemberLevelBenefit {
   points: number
   /** 发放的优惠券模板 ID 数组（templateId 来自 coupon_templates） */
   couponTemplateIds: string[]
+  /** 每个模板的发放数量（templateId → 张数，值域 [1, 99]）。缺省=1，兼容无此字段的旧配置 */
+  couponQuantities: Record<string, number>
   /** 消息标题（空字符串表示不发消息） */
   messageTitle: string
   /** 消息正文 */
@@ -58,11 +61,15 @@ export interface SystemSettings {
   visitPointsReward: string
   bannerImages: string[]
   fengyuguanImage: string
+  serviceHotline: string
+  /** 积分抵扣上限比例（文本小数，0.03=3%）。值域 [0,1]，保存时 clamp。 */
+  pointsDeductionMaxRate: string
 }
 
 const DEFAULT_BENEFIT: MemberLevelBenefit = {
   points: 0,
   couponTemplateIds: [],
+  couponQuantities: {},
   messageTitle: '',
   messageBody: '',
 }
@@ -81,6 +88,8 @@ const DEFAULT_SETTINGS: SystemSettings = {
   visitPointsReward: '20',
   bannerImages: [],
   fengyuguanImage: '',
+  serviceHotline: '',
+  pointsDeductionMaxRate: '0.03',
 }
 
 const SCENARIO_CONFIG_KEY: Record<BenefitScenario, string> = {
@@ -118,9 +127,20 @@ function normalizeBenefits(input: unknown): MemberLevelBenefitsMap {
     const couponTemplateIds = Array.isArray(r.couponTemplateIds)
       ? [...new Set(r.couponTemplateIds.map((id) => String(id).trim()).filter(Boolean))]
       : []
+    // 每个选中模板的发放数量：读 raw.couponQuantities[id] 并 clamp 到 [1,99]，缺省/非法=1。
+    // 仅保留 couponTemplateIds 中的 key，丢弃历史残留；兼容无此字段的旧 JSON。
+    const rawQty =
+      r.couponQuantities && typeof r.couponQuantities === 'object'
+        ? (r.couponQuantities as Record<string, unknown>)
+        : {}
+    const couponQuantities: Record<string, number> = {}
+    for (const id of couponTemplateIds) {
+      couponQuantities[id] = clampCouponQuantity(rawQty[id])
+    }
     result[level] = {
       points,
       couponTemplateIds,
+      couponQuantities,
       messageTitle: typeof r.messageTitle === 'string' ? r.messageTitle.trim() : '',
       messageBody: typeof r.messageBody === 'string' ? r.messageBody.trim() : '',
     }
@@ -134,7 +154,7 @@ export const getSettings = withPermission(
   try {
     const rows = await db.execute<{ key: string; value: string }>(sql`
       SELECT key, value FROM system_configs
-      WHERE key IN ('new_member_threshold', 'order_timeout', 'visit_points_reward', 'banner_images', 'fengyuguan_image')
+      WHERE key IN ('new_member_threshold', 'order_timeout', 'visit_points_reward', 'banner_images', 'fengyuguan_image', 'service_hotline', 'points_deduction_max_rate')
     `)
 
     const settings: SystemSettings = { ...DEFAULT_SETTINGS }
@@ -146,6 +166,8 @@ export const getSettings = withPermission(
         try { settings.bannerImages = JSON.parse(row.value) } catch { /* keep default */ }
       }
       if (row.key === 'fengyuguan_image') settings.fengyuguanImage = row.value
+      if (row.key === 'service_hotline') settings.serviceHotline = row.value
+      if (row.key === 'points_deduction_max_rate') settings.pointsDeductionMaxRate = row.value
     }
     return settings
   } catch {
@@ -182,12 +204,20 @@ export const saveSettings = withPermission(
       )
     `)
 
+    // 积分抵扣比例 clamp 到 [0,1]，非法值降级为默认 0.03（与 lib/system-config 口径一致）
+    const deductRateNum = Number(settings.pointsDeductionMaxRate)
+    const deductRateValue = Number.isFinite(deductRateNum) && deductRateNum >= 0 && deductRateNum <= 1
+      ? String(deductRateNum)
+      : '0.03'
+
     const entries = [
       { key: 'new_member_threshold', value: settings.newMemberThreshold },
       { key: 'order_timeout', value: settings.orderTimeout },
       { key: 'visit_points_reward', value: normalizedVisitPointsReward },
       { key: 'banner_images', value: JSON.stringify(settings.bannerImages) },
       { key: 'fengyuguan_image', value: settings.fengyuguanImage },
+      { key: 'service_hotline', value: settings.serviceHotline.trim() },
+      { key: 'points_deduction_max_rate', value: deductRateValue },
     ]
 
     for (const entry of entries) {
@@ -246,10 +276,14 @@ export const saveSettings = withPermission(
       normalizedSettings as unknown as Record<string, unknown>,
     )
 
-    // 会员门槛变化时，主动失效 admin 自身 + clientApi 内存缓存
-    // staffApi / cronTask 在另一个 envId，依赖 utils/config 的被动 updated_at 戳核对（30 秒内生效）
-    if (oldSettings.newMemberThreshold !== settings.newMemberThreshold) {
-      invalidateMemberThreshold()
+    // 会员门槛 / 积分抵扣比例变化时，主动失效缓存：
+    //   - invalidateMemberThreshold 仅清 admin 自身 member threshold 缓存（deduct rate 在 admin 侧无缓存，直读）
+    //   - 广播 invalidateConfig 清 clientApi 整个 utils/config 缓存（含两个配置的缓存）
+    // staffApi / payNotify 在另一个 envId，依赖 utils/config 的被动 updated_at 戳核对（30 秒内生效）
+    const thresholdChanged = oldSettings.newMemberThreshold !== settings.newMemberThreshold
+    const deductRateChanged = oldSettings.pointsDeductionMaxRate !== deductRateValue
+    if (thresholdChanged || deductRateChanged) {
+      if (thresholdChanged) invalidateMemberThreshold()
       await Promise.allSettled([
         callClientFunction('clientApi', { action: 'config.invalidateConfig' }),
       ]).then((results) => {

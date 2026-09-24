@@ -1,3 +1,5 @@
+type LoginSyncStatus = 'authenticated' | 'phone_required' | 'skipped' | 'failed';
+
 interface IAppOption {
   globalData: {
     userInfo: WechatMiniprogram.UserInfo | null;
@@ -16,7 +18,7 @@ interface IAppOption {
   };
   initNavBarInfo(): void;
   restoreFromCache(): void;
-  syncLoginState(force?: boolean): Promise<void>;
+  syncLoginState(force?: boolean): Promise<LoginSyncStatus>;
   isLoggedOut(): boolean;
   clearLoginState(): void;
   setMemberFlag(profile: { isMember?: boolean; customerType?: string | null; memberLevel?: string | null }): void;

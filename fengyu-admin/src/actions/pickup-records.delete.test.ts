@@ -16,7 +16,12 @@ vi.mock('@db/pickup', () => ({
 }))
 
 vi.mock('@db/order', () => ({
-  saleItems: { saleItemId: 'sale_item_id', pickedUpQuantity: 'picked_up_quantity' },
+  saleItems: {
+    saleItemId: 'sale_item_id',
+    pickedUpQuantity: 'picked_up_quantity',
+    refundedQuantity: 'refunded_quantity',
+    convertedQuantity: 'converted_quantity',
+  },
 }))
 
 vi.mock('@db/org', () => ({ stores: { storeId: 'store_id', storeName: 'store_name' } }))
@@ -36,7 +41,15 @@ vi.mock('drizzle-orm', () => ({
   ilike: vi.fn((a, b) => ({ type: 'ilike', a, b })),
   lte: vi.fn((a, b) => ({ type: 'lte', a, b })),
   or: vi.fn((...args) => ({ type: 'or', args })),
-  sql: Object.assign(vi.fn(() => ({})), { raw: vi.fn() }),
+  // 捕获模板文本：原 mock 返回空对象，SQL 写错（比如顺手把 refunded_quantity 一起减掉）
+  // 在单测里完全看不见 —— 而这正是 #154 缺陷 1 的形态。
+  sql: Object.assign(
+    vi.fn((strings: TemplateStringsArray, ...values: unknown[]) => ({
+      __sqlText: strings.join('?'),
+      values,
+    })),
+    { raw: vi.fn() },
+  ),
 }))
 
 vi.mock('@/lib/auth', () => ({ getSession: vi.fn() }))
@@ -107,6 +120,29 @@ describe('deletePickupRecord — 删除 + 回退已提数量', () => {
       mockSession, 'pickup_record.delete', 'pickup_record', '1',
       expect.objectContaining({ snapshot: expect.any(Object) }),
     )
+  })
+
+  // #154 缺陷 1 的回归锁：issue 给的 4 步时间线是
+  //   quantity=10 → 提 3 盒（picked_up=3）→ 折抵 7 盒 → 删掉那条 3 盒的提货记录。
+  // 拆列前三类数量共用 picked_up_quantity，这里的无条件减法作用在合计值上，
+  // 删完 picked_up=7、pending=10−7=3，顾客能把已折进另一张转换单的 3 盒再提一次。
+  // 拆列后本列只记物理提货，等量回退即天然正确——前提是这条 UPDATE **只碰这一列**。
+  it('回退语句只减 picked_up_quantity，不触碰已退款/已转换（#154 缺陷 1）', async () => {
+    mockSelect([{ saleItemId: 'SI-1', pickupQuantity: 3, storeId: 'S1', clientUserId: 'U1', confirmedBy: 'E1' }])
+    const executed: string[] = []
+    setupTx(1, (arg) => { executed.push(arg?.__sqlText ?? '') })
+
+    const result = await deletePickupRecord(1)
+
+    expect(result.success).toBe(true)
+    const update = executed.find((t) => t.includes('UPDATE sale_items'))
+    expect(update, '未发出回退语句').toBeDefined()
+    expect(update).toContain('picked_up_quantity = GREATEST(COALESCE(picked_up_quantity, 0) -')
+    // 只要这条语句碰了另外两列，被退款/折抵占用的额度就会被释放回去
+    expect(update, '删除提货记录不得改动已退款列').not.toContain('refunded_quantity =')
+    expect(update, '删除提货记录不得改动已转换列').not.toContain('converted_quantity =')
+    // GREATEST 防越界为负仍须在
+    expect(update).toContain(', 0)')
   })
 
   it('删除 rowCount=0（并发）→ 回滚提示', async () => {

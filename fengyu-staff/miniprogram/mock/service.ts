@@ -14,9 +14,14 @@ const MOCK_SERVICES = [
     completedTime: null as string | null,
     appointmentId: 'appt-001',
     remark: '',
+    storeName: '南昌世纪店',
+    inCurrentStore: true,
+    canOperate: true,
+    canViewReview: true,
     items: [
       {
         saleItemId: 'XSLSH-WX-20260205001',
+        serviceItemId: 'si-mock-001',
         itemName: '蜜语精华护理疗程',
         spec: '10次卡',
         sessionCount: 1,
@@ -38,9 +43,14 @@ const MOCK_SERVICES = [
     completedTime: null as string | null,
     appointmentId: null,
     remark: '',
+    storeName: '红谷滩旗舰店',
+    inCurrentStore: false,
+    canOperate: true,
+    canViewReview: true,   // #224：本地可目视验证「非本店单」标签与按钮隐藏
     items: [
       {
         saleItemId: 'XSLSH-WX-20260210001',
+        serviceItemId: 'si-mock-002',
         itemName: '明眸祛皱疗程',
         spec: '单次',
         sessionCount: 1,
@@ -62,9 +72,14 @@ const MOCK_SERVICES = [
     completedTime: '2026-02-26 11:30',
     appointmentId: null,
     remark: '顾客反馈良好',
+    storeName: '南昌世纪店',
+    inCurrentStore: true,
+    canOperate: true,
+    canViewReview: true,
     items: [
       {
         saleItemId: 'XSLSH-WX-20260120001',
+        serviceItemId: 'si-mock-003',
         itemName: '眉眼提升疗程',
         spec: '20次卡',
         sessionCount: 1,
@@ -86,9 +101,14 @@ const MOCK_SERVICES = [
     completedTime: '2026-02-25 16:20',
     appointmentId: 'appt-002',
     remark: '',
+    storeName: '南昌世纪店',
+    inCurrentStore: true,
+    canOperate: true,
+    canViewReview: true,
     items: [
       {
         saleItemId: 'XSLSH-WX-20260205001',
+        serviceItemId: 'si-mock-004',
         itemName: '蜜语精华护理疗程',
         spec: '10次卡',
         sessionCount: 1,
@@ -102,10 +122,22 @@ const MOCK_SERVICES = [
 export const serviceHandlers: Record<string, (payload: Record<string, any>) => any> = {
   'service.list': (payload) => {
     const { status } = payload
+    let list = [...MOCK_SERVICES]
     if (status) {
-      return MOCK_SERVICES.filter(s => s.status === status)
+      list = list.filter(s => s.status === status)
     }
-    return MOCK_SERVICES
+    const keyword = String(payload.keyword || '').trim().toLowerCase()
+    if (keyword) {
+      const phoneKeyword = keyword.replace(/\D/g, '')
+      list = list.filter(s => s.customerName.toLowerCase().includes(keyword)
+        || (!!phoneKeyword && s.customerPhone.replace(/\D/g, '').includes(phoneKeyword)))
+    }
+    if (payload.startDate) list = list.filter(s => s.serviceTime.slice(0, 10) >= payload.startDate)
+    if (payload.endDate) list = list.filter(s => s.serviceTime.slice(0, 10) <= payload.endDate)
+    list.sort((a, b) => b.serviceTime.localeCompare(a.serviceTime) || b.serviceOrderId.localeCompare(a.serviceOrderId))
+    const page = Math.max(1, Number(payload.page) || 1)
+    const pageSize = Math.max(1, Number(payload.pageSize) || 20)
+    return list.slice((page - 1) * pageSize, page * pageSize)
   },
 
   'service.detail': (payload) => {

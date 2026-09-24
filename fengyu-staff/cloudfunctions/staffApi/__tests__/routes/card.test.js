@@ -1,6 +1,6 @@
 /**
  * 充值卡路由测试
- * 覆盖：recharge 的门店归属校验（非本店顾客禁止充值）
+ * 覆盖：recharge / inflow 的门店归属校验（临时跨店放行，普通外店拒绝）
  */
 
 const pg = globalThis.__mocks__.pg
@@ -29,7 +29,7 @@ describe('card.recharge', () => {
       .mockResolvedValueOnce(mockRechargeConfigRows()) // loadRechargeConfig
       .mockResolvedValueOnce([{ // 顾客绑定其他门店
         user_id: 'cu-999', phone: '138', name: '外店顾客',
-        customer_type: '会员客', bound_store_id: 'store-999',
+        customer_type: '会员客', bound_store_id: 'store-999', is_cross_store_temp: false,
       }])
 
     await expect(cardRoutes.recharge(ctx))
@@ -46,7 +46,7 @@ describe('card.recharge', () => {
       .mockResolvedValueOnce(mockRechargeConfigRows()) // loadRechargeConfig
       .mockResolvedValueOnce([{ // 绑定本店
         user_id: 'cu-001', phone: '138', name: '本店顾客',
-        customer_type: '会员客', bound_store_id: 'store-001',
+        customer_type: '会员客', bound_store_id: 'store-001', is_cross_store_temp: false,
       }])
       .mockResolvedValueOnce([]) // 无待支付订单
     pg.transaction.mockImplementation(async (cb) => {
@@ -59,6 +59,30 @@ describe('card.recharge', () => {
     expect(ctx.result.faceValue).toBe(1000)
     expect(ctx.result.payAmount).toBe(900)
   })
+
+  test('临时跨店顾客可在外店充值，订单仍由当前门店创建', async () => {
+    const ctx = createManagerCtx({
+      clientUserId: 'cu-temp',
+      faceValue: 1000,
+      paymentMethod: '线下',
+    })
+    pg.query
+      .mockResolvedValueOnce(mockRechargeConfigRows())
+      .mockResolvedValueOnce([{
+        user_id: 'cu-temp', phone: '139', name: '临时跨店顾客',
+        bound_store_id: 'store-999', is_cross_store_temp: true,
+      }])
+    const clientQuery = vi.fn(async () => ({ rows: [], rowCount: 1 }))
+    pg.transaction.mockImplementation(async (cb) => cb({ query: clientQuery }))
+
+    await cardRoutes.recharge(ctx)
+
+    expect(ctx.result.saleOrderId).toMatch(/^FY-XSD-WX-/)
+    expect(ctx.result.faceValue).toBe(1000)
+    const orderInsert = clientQuery.mock.calls.find(([sql]) => /INSERT INTO sale_orders/.test(sql))
+    expect(orderInsert).toBeTruthy()
+    expect(orderInsert[1][4]).toBe('store-001')
+  })
 })
 
 describe('card.inflow — 幂等防重复入账', () => {
@@ -68,9 +92,43 @@ describe('card.inflow — 幂等防重复入账', () => {
   function mockCustomerInScope() {
     pg.query.mockResolvedValueOnce([{
       user_id: 'cu-001', phone: '138', name: '本店顾客',
-      customer_type: '会员客', bound_store_id: 'store-001',
+      customer_type: '会员客', bound_store_id: 'store-001', is_cross_store_temp: false,
     }])
   }
+
+  test('普通外店顾客拒绝转入', async () => {
+    const ctx = createManagerCtx({ clientUserId: 'cu-999', amount: 500, requestId: 'req-reject' })
+    pg.query.mockResolvedValueOnce([{
+      user_id: 'cu-999', phone: '138', name: '外店顾客',
+      bound_store_id: 'store-999', is_cross_store_temp: false,
+    }])
+
+    await expect(cardRoutes.inflow(ctx))
+      .rejects.toThrow(/PERMISSION_DENIED.*不属于当前门店/)
+  })
+
+  test('临时跨店顾客可在外店转入', async () => {
+    const ctx = createManagerCtx({ clientUserId: 'cu-temp', amount: 500, requestId: 'req-temp' })
+    pg.query.mockResolvedValueOnce([{
+      user_id: 'cu-temp', phone: '139', name: '临时跨店顾客',
+      bound_store_id: 'store-999', is_cross_store_temp: true,
+    }])
+    const clientQuery = vi.fn(async (sql) => {
+      if (/INSERT INTO prepaid_cards/.test(sql)) {
+        return { rows: [{ card_id: 'FY-CARD-cu-temp' }], rowCount: 1 }
+      }
+      return { rows: [], rowCount: 1 }
+    })
+    pg.transaction.mockImplementation(async (cb) => cb({ query: clientQuery }))
+
+    await cardRoutes.inflow(ctx)
+
+    expect(ctx.result.saleOrderId).toMatch(/^FY-XSD-WX-/)
+    expect(ctx.result.message).toBe('转入成功')
+    const orderInsert = clientQuery.mock.calls.find(([sql]) => /INSERT INTO sale_orders/.test(sql))
+    expect(orderInsert).toBeTruthy()
+    expect(orderInsert[1][3]).toBe('store-001')
+  })
 
   test('相同 requestId 已转入 → 幂等短路复用既有订单，不重复建单 / 不重复入账', async () => {
     const ctx = createManagerCtx({ clientUserId: 'cu-001', amount: 500, requestId: 'req-xyz' })

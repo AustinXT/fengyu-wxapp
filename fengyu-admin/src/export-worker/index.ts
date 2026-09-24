@@ -14,21 +14,34 @@ import { exportJobLabel } from '@/lib/export-job-types'
 import { createExportContent } from './registry'
 import { exportCloudPath, exportFileName } from './file-name'
 import { writeStreamXlsx } from './xlsx-writer'
+import { writeWorkerHeartbeat } from '@/lib/worker-heartbeat'
+import { createSerializedAsyncRunner, runWorkerSlots } from './worker-slots'
 
 const POLL_INTERVAL_MS = 2_000
 const MAINTENANCE_INTERVAL_MS = 60_000
 const LEASE_MINUTES = 10
 const MAX_ATTEMPTS = 3 // 首次执行 + 自动重试 2 次
 const RETENTION_MS = 24 * 60 * 60 * 1_000
+const MAX_CONCURRENT_JOBS = 2
 
 let stopping = false
 let maintenanceAt = 0
+const activeJobIds = new Set<number>()
 
 type ExportJob = typeof adminExportJobs.$inferSelect
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
+
+const publishWorkerHeartbeat = createSerializedAsyncRunner(async () => {
+  const activeCount = activeJobIds.size
+  await writeWorkerHeartbeat(
+    'export-worker',
+    activeCount > 0 ? 'busy' : 'idle',
+    activeCount > 0 ? `正在处理 ${activeCount} 个导出任务` : undefined,
+  )
+})
 
 function asClaimedId(rows: unknown): number | null {
   const row = (rows as Array<{ id?: number | string }>)[0]
@@ -175,24 +188,27 @@ async function runMaintenance(): Promise<void> {
 }
 
 async function processJob(job: ExportJob): Promise<void> {
-  const exportType = parseExportType(job.exportType)
-  if (!exportType) {
-    await failJob(job, new Error('INVALID_STATE: 导出任务类型异常'))
-    return
-  }
-
   let tempDir: string | null = null
   let cloudPath: string | null = null
+  const jobStartedAt = Date.now()
+  activeJobIds.add(job.id)
+  await publishWorkerHeartbeat().catch(() => undefined)
   const heartbeat = setInterval(() => {
     void renewLease(job.id).catch((err) => console.error(`[export-worker] lease renew failed for ${job.id}:`, err))
   }, 30_000)
   heartbeat.unref()
 
   try {
+    const exportType = parseExportType(job.exportType)
+    if (!exportType) {
+      await failJob(job, new Error('INVALID_STATE: 导出任务类型异常'))
+      return
+    }
     const session = parseExportSession(job.scopeSnapshot)
     const payload = parseExportPayload(exportType, job.requestPayload)
     tempDir = await mkdtemp(path.join(tmpdir(), 'fengyu-export-'))
 
+    const generateStartedAt = Date.now()
     const output = await runWithExportSession(session, async () => {
       const content = await createExportContent(exportType, payload)
       const fileName = exportFileName(exportJobLabel(exportType, payload))
@@ -214,6 +230,7 @@ async function processJob(job: ExportJob): Promise<void> {
       })
       return { content, fileName, filePath, writeResult }
     })
+    const generateMs = Date.now() - generateStartedAt
 
     if (output.writeResult.rowCount === 0) {
       await db
@@ -232,6 +249,7 @@ async function processJob(job: ExportJob): Promise<void> {
       await logOperation(session, 'export_job.empty', 'admin_export_jobs', String(job.id), {
         exportType,
       }).catch((logError) => console.error('[export-worker] empty audit log error:', logError))
+      console.log(`[export-worker] job ${job.id} empty (generate=${generateMs}ms total=${Date.now() - jobStartedAt}ms)`)
       return
     }
 
@@ -240,7 +258,9 @@ async function processJob(job: ExportJob): Promise<void> {
     // uploadFile 内部已调用 getTempFileURL 验证上传 + 返回临时 URL（含 CDN_BASE 兜底），
     // 无需外部二次调用 getTempFileUrl 验证——其失败会把已成功上传的任务误标为 failed。
     const uploadPath = exportCloudPath(job.id, output.fileName)
+    const uploadStartedAt = Date.now()
     await uploadFile(createReadStream(output.filePath), uploadPath)
+    const uploadMs = Date.now() - uploadStartedAt
     cloudPath = uploadPath
     const expiresAt = new Date(Date.now() + RETENTION_MS)
     await db
@@ -264,7 +284,10 @@ async function processJob(job: ExportJob): Promise<void> {
       rowCount: output.writeResult.rowCount,
       sheetCount: output.writeResult.sheetCount,
     }).catch((logError) => console.error('[export-worker] ready audit log error:', logError))
-    console.log(`[export-worker] job ${job.id} ready (${output.writeResult.rowCount} rows)`)
+    const queueWaitMs = Math.max(0, jobStartedAt - job.createdAt.getTime())
+    console.log(
+      `[export-worker] job ${job.id} ready (${output.writeResult.rowCount} rows, queue=${queueWaitMs}ms generate=${generateMs}ms upload=${uploadMs}ms total=${Date.now() - jobStartedAt}ms)`,
+    )
   } catch (err) {
     console.error(`[export-worker] job ${job.id} failed:`, err)
     if (cloudPath) {
@@ -275,6 +298,8 @@ async function processJob(job: ExportJob): Promise<void> {
     await failJob(job, err)
   } finally {
     clearInterval(heartbeat)
+    activeJobIds.delete(job.id)
+    await publishWorkerHeartbeat().catch(() => undefined)
     if (tempDir) await rm(tempDir, { recursive: true, force: true }).catch((err) => {
       console.error(`[export-worker] temp cleanup failed for ${job.id}:`, err)
     })
@@ -282,21 +307,26 @@ async function processJob(job: ExportJob): Promise<void> {
 }
 
 async function run(): Promise<void> {
-  console.log('[export-worker] started (global concurrency: 1)')
-  while (!stopping) {
-    try {
-      await runMaintenance()
-      const job = await claimNextJob()
-      if (job) {
-        await processJob(job)
-      } else {
-        await sleep(POLL_INTERVAL_MS)
-      }
-    } catch (err) {
-      console.error('[export-worker] loop error:', err)
-      await sleep(POLL_INTERVAL_MS)
-    }
-  }
+  console.log(`[export-worker] started (global concurrency: ${MAX_CONCURRENT_JOBS})`)
+  await publishWorkerHeartbeat()
+  const workerHeartbeat = setInterval(() => {
+    void publishWorkerHeartbeat().catch(() => undefined)
+  }, 30_000)
+  workerHeartbeat.unref()
+  await runWorkerSlots({
+    concurrency: MAX_CONCURRENT_JOBS,
+    shouldStop: () => stopping,
+    runMaintenance,
+    claimNextJob,
+    processJob: async (job, slot) => {
+      console.log(`[export-worker] slot ${slot} claimed job ${job.id}`)
+      await processJob(job)
+    },
+    waitWhenIdle: () => sleep(POLL_INTERVAL_MS),
+    onLoopError: (err, slot) => console.error(`[export-worker] slot ${slot} loop error:`, err),
+  })
+  clearInterval(workerHeartbeat)
+  await publishWorkerHeartbeat().catch(() => undefined)
   console.log('[export-worker] stopped')
 }
 

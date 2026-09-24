@@ -30,6 +30,14 @@ interface ScanOrder {
   paymentMethod: PayMethod;
   couponDiscount: number;
   isExperienceConversion: boolean;
+  // #214：本人是否持有活动中的支付意图 —— 决定走 pay 还是 repay
+  hasActivePaymentIntent?: boolean;
+  // 快照是否仍可直接复用 —— 决定 pay 内部复用还是重开一场，以及展示口径
+  hasResumablePaymentIntent?: boolean;
+  // 可续付场次的权威金额/方式/待扣卡额（不含凭据）；前端不再自行推算，避免口径分歧
+  resumablePayAmount?: number | null;
+  resumablePaymentMethod?: PayMethod | null;
+  resumablePrepaidCardAmount?: number | null;
 }
 
 interface ScanOrderItem {
@@ -82,6 +90,14 @@ Page({
     isFirstPartialScan: false,
     // 回款（部分支付订单）：普通回款可选卡；员工冻结金额的受限回款禁卡，方式限微信/支付宝。
     isRepayment: false,
+    // #214：订单上是否已有本人可续付的支付场次（由 scanDetail 下发，不含任何凭据）。
+    // 为 true 时普通回款也走 pay/alipayPay 以复用场次，否则会撞 PAYMENT_INTENT_ACTIVE。
+    // 本人是否持有活动中的支付意图（决定路由到 pay 而非 repay）
+    hasActivePaymentIntent: false,
+    hasResumablePaymentIntent: false,
+    // 有可续付场次时锁死抵扣与支付方式：那笔渠道单的金额/方式已定，服务端也有守卫，
+    // 让顾客以为能改、改完付的还是老方案，就是展示与资金结果不一致的来源
+    intentLocked: false,
     // 员工冻结 first_payment_amount 的受限回款：本场次不允许顾客再选储值卡。
     isRestrictedRepayment: false,
     showPayMethodGroup: true,
@@ -143,7 +159,13 @@ Page({
       // 历史 pending 只能按 min(pending, 当前余额) 恢复。余额下降时立即同步服务端，
       // 确保随后现金应付额和 payNotify 待扣卡额来自同一份新快照。
       const restoredPending = restorePendingPrepaid(pendingPrepaid, cardBalance);
-      if (orderData.status === '待支付'
+      // #214（round-9）：有可续付场次时**不能**自动回写抵扣方案——意图活跃期改抵扣有服务端
+      // 守卫，scanAdjust 会抛 PAYMENT_INTENT_ACTIVE，整页落进「无法获取订单」的错误态，
+      // 连新加的取消入口都一起消失，顾客彻底没有出路。
+      // 这种场景（预留卡额后余额又降了）保留原方案只读展示，提交时由服务端按真实余额判定。
+      const skipAutoAdjust = orderData.hasResumablePaymentIntent === true
+      if (!skipAutoAdjust
+          && orderData.status === '待支付'
           && pendingPrepaid > 0
           && Math.round(restoredPending * 100) !== Math.round(pendingPrepaid * 100)) {
         const validMethods: PayMethod[] = ['微信', '支付宝', '线下'];
@@ -181,6 +203,13 @@ Page({
       // 回款（部分支付）用行级口径：已退行不计入，只有「未退且未付清」的行可继续支付；
       // 首次支付（待支付）无退款，沿用订单级 payable - 净到账（行级 Σ 未扣储值卡意向，首次场景不适用）
       const isRepayment = orderData.status === '部分支付';
+      // #214：两个信号分工不同，不能混用（双谱系评审 round-10）
+      //   hasActiveIntent  —— 有活动意图 → 必须走 pay/alipayPay（它们能查单释放后重建）
+      //   hasResumableIntent —— 快照还能直接复用 → 决定展示口径与是否复用
+      // 合成一个布尔的话，「意图还在但快照刚过期」会被判成没有场次、转回 repay 的
+      // fail-fast，顾客又被卡死。
+      const hasActiveIntent = orderData.hasActivePaymentIntent === true;
+      const hasResumableIntent = orderData.hasResumablePaymentIntent === true;
       let remaining;
       if (isRepayment) {
         if (orderData.orderType === '转换单') {
@@ -208,9 +237,20 @@ Page({
       // 也用于员工在部分支付转换单上发起的订单级部分回款。
       const isFirstPartialScan = firstPaymentAmount > 0 && received === 0;
       const isRestrictedRepayment = isRepayment && firstPaymentAmount > 0;
-      const paid = firstPaymentAmount > 0
-        ? Math.min(firstPaymentAmount, remaining)
-        : remaining;
+      // #214：有可续付场次时，金额/方式/待扣卡额一律以**后端下发的快照口径**为准。
+      // 前端自己推算会和快照对不上（round-8/9 连着两轮栽在这里）：本地 remaining 是
+      // 退款感知的行级口径，而快照存的是预下单当时定死的线上金额。
+      // 用 typeof 而不是 Number.isFinite(Number(x))：后者对 null 会得到 0 并判为有效，
+      // 当前靠 hasResumableIntent 门控不可达，但那是隐式耦合（双谱系评审 round-10）
+      const resumablePay = hasResumableIntent && typeof orderData.resumablePayAmount === 'number'
+        ? orderData.resumablePayAmount
+        : null;
+      const resumableCard = hasResumableIntent && typeof orderData.resumablePrepaidCardAmount === 'number'
+        ? orderData.resumablePrepaidCardAmount
+        : null;
+      const paid = resumablePay != null
+        ? resumablePay
+        : (firstPaymentAmount > 0 ? Math.min(firstPaymentAmount, remaining) : remaining);
       const couponDiscount = Number(orderData.couponDiscount || 0);
       const validMethods: PayMethod[] = ['微信', '支付宝', '线下'];
       const restoredMethod = validMethods.includes(orderData.paymentMethod)
@@ -218,7 +258,13 @@ Page({
         : '微信';
       // 回款场景：部分支付订单（已有首付到账，扫码付剩余应付）；受限回款由 isRestrictedRepayment 禁卡。
       // （isRepayment 已在上方 remaining 计算前定义）
-      const effectiveMethod: PayMethod = isRepayment && restoredMethod === '线下' ? '微信' : restoredMethod;
+      const baseMethod: PayMethod = isRepayment && restoredMethod === '线下' ? '微信' : restoredMethod;
+      // 复用场次的支付方式必须与快照一致（复用判据之一），直接采用后端下发值
+      const effectiveMethod: PayMethod = (hasResumableIntent
+        && orderData.resumablePaymentMethod
+        && validMethods.includes(orderData.resumablePaymentMethod))
+        ? (orderData.resumablePaymentMethod as PayMethod)
+        : baseMethod;
 
       this.setData({
         order: {
@@ -235,8 +281,16 @@ Page({
         },
         items: data.items || [],
         cardBalance,
-        useCard: isRepayment ? false : prepaid > 0,
-        prepaidCardAmount: isRepayment ? 0 : prepaid,
+        // #214：有可续付场次时严格按**该场次的**待扣卡额展示。
+        // 不能用 `prepaid`（它带 `pendingPrepaid > 0 ? pendingPrepaid : actualPrepaid` 的兜底）：
+        // 订单早期若有已结算的卡扣，而复用的场次本身不带卡计划，会误显示「使用储值卡 ¥80」
+        // ——开关还被锁死，顾客无法纠正（round-9 两个谱系都指到这里）。
+        useCard: resumableCard != null
+          ? resumableCard > 0
+          : (isRepayment ? false : prepaid > 0),
+        prepaidCardAmount: resumableCard != null
+          ? resumableCard
+          : (isRepayment ? 0 : prepaid),
         paidAmount: paid,
         paymentMethod: effectiveMethod,
         couponDiscount,
@@ -246,6 +300,12 @@ Page({
         isFirstPartialScan,
         isRepayment,
         isRestrictedRepayment,
+        // #214：后端只下发布尔标识，不含任何支付凭据
+        hasActivePaymentIntent: hasActiveIntent,
+        hasResumablePaymentIntent: hasResumableIntent,
+        // 锁绑「有活动意图」而非「可复用」：意图还在时改抵扣/改方式都会被服务端守卫拒，
+        // 放开只会让顾客改完才吃报错
+        intentLocked: hasActiveIntent,
         showPayMethodGroup: paid > 0,
         balanceUpdatedAt,
       });
@@ -301,6 +361,13 @@ Page({
 
   /** 储值卡开关 */
   async onUseCardChange(e: WxEvent<boolean>) {
+    // #214：与支付方式同理——wxml 上的 disabled 只是 UI 层，handler 自己也要挡。
+    // 复用场次的抵扣方案已经定死在那笔渠道单里（服务端改抵扣也有守卫），
+    // 这里若放行，顾客改完看到的金额和实际扣款就对不上了。
+    if (this.data.intentLocked) {
+      Toast('本次支付已在进行中，如需调整抵扣请先取消订单');
+      return;
+    }
     if (this.data.isRestrictedRepayment) {
       this.setData({ useCard: false, prepaidCardAmount: 0 });
       return;
@@ -323,6 +390,15 @@ Page({
   /** 支付方式选择 */
   async onPayMethodChange(e: WxEvent<string>) {
     const method = e.detail as PayMethod;
+    // #214（round-9）：锁不能只加在 onPayMethodTap —— van-radio-group 的 change 事件
+    // 可以直接改值、绕过单元格点击那条路；改完提交会因方式与快照不符撞 PAYMENT_INTENT_ACTIVE。
+    if (this.data.intentLocked) {
+      if (method !== this.data.paymentMethod) {
+        Toast('本次支付已在进行中，如需更换方式请先取消订单');
+        this.setData({ paymentMethod: this.data.paymentMethod });
+      }
+      return;
+    }
     if (method !== this.data.paymentMethod) {
       this._wechatAttempt = null;
       this._alipayAttempt = null;
@@ -336,6 +412,13 @@ Page({
 
   onPayMethodTap(e: WechatMiniprogram.TouchEvent) {
     const { method } = e.currentTarget.dataset as { method: PayMethod };
+    // #214（round-8）：有可续付场次时支付方式已经定死在那笔渠道单里（复用判据要求方式一致，
+    // 服务端改抵扣/改方式也都有守卫）。让顾客以为能改、改完付的还是老方案，是展示与资金
+    // 结果不一致的来源。
+    if (this.data.intentLocked && method !== this.data.paymentMethod) {
+      Toast('本次支付已在进行中，如需更换方式请先取消订单');
+      return;
+    }
     if (method !== this.data.paymentMethod) {
       this._wechatAttempt = null;
       this._alipayAttempt = null;
@@ -402,6 +485,47 @@ Page({
     }
   },
 
+  /**
+   * 取消订单（issue #214）
+   *
+   * 扫码页此前没有取消入口，顾客要取消只能绕回订单详情页；而未付款的在线支付意图
+   * 又会让取消被拒，实测要等约 20 分钟。云函数侧现在会先向渠道关单再取消，这里
+   * 只需把入口补上。失败文案直接透传云函数（「支付已成功」/「请稍后重试」都是它判的）。
+   */
+  async onCancelOrder() {
+    const { orderNo, submitting } = this.data;
+    if (!orderNo || submitting) return;
+
+    // 防抖必须在弹窗**之前**置位：await showModal 期间页面仍可响应点击，
+    // 置位放在 await 之后的话连点两次会弹两个确认框、发两次取消请求，
+    // 第二次撞上已关闭的单，顾客刚看到「订单已取消」又吃一记红 Toast。
+    this.setData({ submitting: true });
+
+    const confirmRes = await wx.showModal({
+      title: '确认取消',
+      content: '确定要取消该订单吗？取消后无法恢复。',
+      confirmText: '确定取消',
+      confirmColor: '#FF4D4F',
+    });
+    if (!confirmRes.confirm) {
+      this.setData({ submitting: false });
+      return;
+    }
+
+    try {
+      Toast.loading({ message: '取消中...', forbidClick: true, duration: 0 });
+      await callClientApi('order.cancel', { saleOrderId: orderNo });
+      Toast.clear();
+      Toast.success('订单已取消');
+      this.setData({ statusMsg: '该订单已关闭' });
+    } catch (err: any) {
+      Toast.clear();
+      Toast.fail(err?.message || '取消失败');
+    } finally {
+      this.setData({ submitting: false });
+    }
+  },
+
   /** 确认支付 */
   async onSubmit() {
     if (this.data.submitting) return;
@@ -432,9 +556,25 @@ Page({
         });
         return;
       }
-      // 2026-05-19 dirty-read 修复：CONFLICT 优先于 INSUFFICIENT_BALANCE
-      // CONFLICT 表示余额在 scanAdjust → confirmPrepaidFull 期间被改动，需要用户重选抵扣方案
-      if (errorType === 'CONFLICT' || /CONFLICT/.test(msg)) {
+      // #214（round-12）：CONFLICT 不再一律当成「储值卡余额被改动」。
+      //
+      // 支付意图链路引入了好几类 CONFLICT——「支付已成功」「状态不确定」「场次已变化」——
+      // 把它们统一提示成「储值卡余额已变动」并清掉本地状态，会把真实的支付结果盖掉：
+      // 顾客明明已经付成功了，页面却让他重选抵扣方案。按二级标签分开处理。
+      if (msg.includes('PAYMENT_ALREADY_SUCCEEDED')) {
+        Toast.success('支付已成功，正在更新订单');
+        setTimeout(() => {
+          wx.redirectTo({ url: `/pagesOrder/order-detail/order-detail?saleOrderId=${this.data.orderNo}&paid=1` });
+        }, 1200);
+      } else if (msg.includes('PAYMENT_INTENT_CHANGED') || msg.includes('PAYMENT_INTENT_ACTIVE')) {
+        // 场次变了或仍在进行中：重新拉一次订单，让页面回到与服务端一致的状态
+        Toast.fail('支付场次已变化，正在刷新');
+        setTimeout(() => this.loadOrder(this.data.orderNo), 800);
+      } else if (msg.includes('PAYMENT_STATUS_UNCERTAIN')) {
+        Toast.fail('暂时无法确认支付结果，请稍后重试');
+      } else if (errorType === 'CONFLICT' || /CONFLICT/.test(msg)) {
+        // 2026-05-19 dirty-read 修复：余额在 scanAdjust → confirmPrepaidFull 期间被改动，
+        // 需要用户重选抵扣方案
         await this.handleBalanceConflict(msg);
       } else if (msg.includes('INSUFFICIENT_BALANCE')) {
         await this.handleInsufficientBalance();
@@ -477,7 +617,16 @@ Page({
 
     // 普通回款走 order.repay；员工已冻结 first_payment_amount 的转换单部分回款
     // 改走 pay/alipayPay，复用其服务端硬上限并允许本次金额小于整笔剩余欠款。
-    if (this.data.isRepayment && firstPaymentAmount <= 0) {
+    //
+    // #214 例外：订单上已有本人的可续付场次时，普通回款也改走 pay/alipayPay。
+    // order.repay 对活动意图是 fail-fast 的（它的 pending 作废与 payable 回写在预下单前
+    // 已提交，无法与渠道意图 CAS 原子化），顾客退出后重新扫码只会撞 PAYMENT_INTENT_ACTIVE
+    // ——回款场景下原样复现本 issue 的症状。pay 路径能复用同一笔场次继续付。
+    // 意图活跃时抵扣方案改不了（服务端有守卫），所以本次金额与快照一致，复用判据能命中。
+    // 路由看的是「有没有活动意图」，不是「快照能不能复用」：
+    // 意图还在但快照过期时，pay 会查单释放后重建；repay 则直接 fail-fast 卡死。
+    const canResumeViaPay = this.data.hasActivePaymentIntent === true;
+    if (this.data.isRepayment && firstPaymentAmount <= 0 && !canResumeViaPay) {
       await this.executeRepayConfirm();
       return;
     }
@@ -511,17 +660,23 @@ Page({
       const aliAmount = firstPaymentAmount > 0 ? firstPaymentAmount : paidAmount;
       const attemptKey = `order.alipayPay|${orderNo}|${aliAmount}`;
       let aliData: { status?: string; reason?: string; alipayShareToken?: string; paidAmount?: number };
-      if (this._alipayAttempt?.key === attemptKey) {
-        await this.assertCachedAttemptCardBalance(Number(this.data.order?.pendingPrepaidCardAmount || 0));
-        aliData = {
-          alipayShareToken: this._alipayAttempt.shareToken,
-          paidAmount: Number(this._alipayAttempt.amount),
-        };
-      } else {
+      // #214（round-11）：**不再用页面级缓存直接复用凭据**。
+      //
+      // 服务端现在有了真正的场次复用（而且会先查渠道状态），页面级缓存反而会绕过它：
+      // 顾客关掉吱口令弹窗等到 token 过期、或微信那边其实已经付成功但客户端回调异常时，
+      // 再点支付会一直拿旧凭据重试——既认不出 SUCCESS，也没法让服务端释放 CLOSE 后重建。
+      // 每次提交都问服务端，由它决定复用还是重开，是唯一不会和渠道真实状态脱节的做法。
+      {
         aliData = await callClientApi(
           'order.alipayPay', {
             saleOrderId: orderNo,
-            ...(firstPaymentAmount > 0 ? { payAmount: firstPaymentAmount } : {}),
+            // 回款必须显式传金额：前端的 remaining 是**退款感知的行级口径**（已退款行不计），
+            // 而后端 reserve 走订单级 total-received，会把退款额加回去。不传的话，有退款行的
+            // 订单两边算出的金额对不上，复用判据直接失败 → 又撞 PAYMENT_INTENT_ACTIVE
+            // （双谱系评审 round-8）。
+            ...(firstPaymentAmount > 0
+              ? { payAmount: firstPaymentAmount }
+              : (this.data.isRepayment ? { payAmount: paidAmount } : {})),
           },
         );
       }
@@ -539,6 +694,7 @@ Page({
         Toast.fail('支付宝吱口令获取失败');
         return;
       }
+      this.setData({ hasActivePaymentIntent: true, intentLocked: true });
       this._alipayAttempt = {
         key: attemptKey,
         shareToken,
@@ -557,25 +713,28 @@ Page({
     const payPayload: { saleOrderId: string; payAmount?: number } = { saleOrderId: orderNo };
     if (firstPaymentAmount > 0) {
       payPayload.payAmount = firstPaymentAmount;
+    } else if (this.data.isRepayment) {
+      // 同支付宝分支：回款走 pay 时必须显式传行级口径的金额，否则有退款行的订单
+      // 会因前后端算法不一致而复用失败（双谱系评审 round-8）
+      payPayload.payAmount = paidAmount;
     }
     const attemptAmount = firstPaymentAmount > 0 ? firstPaymentAmount : paidAmount;
     const attemptKey = `order.pay|${orderNo}|${attemptAmount}`;
-    const cachedWechatAttempt = this._wechatAttempt?.key === attemptKey ? this._wechatAttempt : null;
-    const reusingWechatAttempt = !!cachedWechatAttempt;
-    let payParams = cachedWechatAttempt?.paymentParams || null;
-    if (!payParams) {
+    // #214（round-11）：同支付宝分支，不再用页面级缓存复用微信支付参数——
+    // 服务端的场次复用会先查渠道状态，页面缓存会绕过这层校验。
+    let payParams = null as any;
+    {
       const data = await callClientApi<{ paymentParams?: any }>('order.pay', payPayload);
       payParams = data.paymentParams;
       if (payParams?.paySign) {
         this._wechatAttempt = { key: attemptKey, paymentParams: payParams };
+        // 场次已建立：同页面内再次点击一律回服务端，由它查渠道状态后决定复用还是重开
+        this.setData({ hasActivePaymentIntent: true, intentLocked: true });
       }
     }
     if (!payParams || !payParams.paySign) {
       Toast.fail('支付参数获取失败');
       return;
-    }
-    if (reusingWechatAttempt) {
-      await this.assertCachedAttemptCardBalance(Number(this.data.order?.pendingPrepaidCardAmount || 0));
     }
     await wx.requestPayment(payParams);
     this._wechatAttempt = null;
@@ -610,18 +769,15 @@ Page({
     // 支付宝：聚合主扫吱口令（可叠加储值卡抵扣）
     if (paymentMethod === '支付宝') {
       const attemptKey = `order.repay.alipay|${orderNo}|${paidAmount}|${prepaidCardAmount}`;
-      let aliData: { alipayShareToken?: string };
-      if (this._alipayAttempt?.key === attemptKey) {
-        await this.assertCachedAttemptCardBalance(prepaidCardAmount);
-        aliData = { alipayShareToken: this._alipayAttempt.shareToken };
-      } else {
-        aliData = await callClientApi<{ alipayShareToken?: string }>('order.repay', {
-          saleOrderId: orderNo,
-          paymentMethod: '支付宝',
-          repayAmount: paidAmount,
-          prepaidCardAmount,
-        });
-      }
+      // #214（round-11）：不再用页面级缓存复用凭据——服务端的场次复用会先查渠道状态，
+      // 缓存会绕过它。repay 建单成功后把 hasActivePaymentIntent 置起来，
+      // 同页面内再次点击就会走 pay/alipayPay 由服务端决定复用还是重开。
+      const aliData = await callClientApi<{ alipayShareToken?: string }>('order.repay', {
+        saleOrderId: orderNo,
+        paymentMethod: '支付宝',
+        repayAmount: paidAmount,
+        prepaidCardAmount,
+      });
       const shareToken = aliData?.alipayShareToken;
       if (!shareToken) {
         Toast.fail('支付宝吱口令获取失败');
@@ -636,16 +792,17 @@ Page({
         showAlipayShare: true,
         alipayShareToken: shareToken,
         alipayAmount: Number(paidAmount).toFixed(2),
+        // 场次已建立：同页面内再次点击改由服务端决定复用还是重开
+        hasActivePaymentIntent: true,
+        intentLocked: true,
       });
       return;
     }
 
     // 微信：聚合主扫 wx.requestPayment（可叠加储值卡抵扣）
     const attemptKey = `order.repay.wechat|${orderNo}|${paidAmount}|${prepaidCardAmount}`;
-    const cachedWechatAttempt = this._wechatAttempt?.key === attemptKey ? this._wechatAttempt : null;
-    const reusingWechatAttempt = !!cachedWechatAttempt;
-    let payParams = cachedWechatAttempt?.paymentParams || null;
-    if (!payParams) {
+    let payParams = null as any;
+    {
       const data = await callClientApi<{ paymentParams?: any }>('order.repay', {
         saleOrderId: orderNo,
         paymentMethod: '微信',
@@ -655,14 +812,13 @@ Page({
       payParams = data.paymentParams;
       if (payParams?.paySign) {
         this._wechatAttempt = { key: attemptKey, paymentParams: payParams };
+        // 场次已建立：同页面内再次点击一律回服务端，由它查渠道状态后决定复用还是重开
+        this.setData({ hasActivePaymentIntent: true, intentLocked: true });
       }
     }
     if (!payParams || !payParams.paySign) {
       Toast.fail('支付参数获取失败');
       return;
-    }
-    if (reusingWechatAttempt) {
-      await this.assertCachedAttemptCardBalance(prepaidCardAmount);
     }
     await wx.requestPayment(payParams);
     this._wechatAttempt = null;

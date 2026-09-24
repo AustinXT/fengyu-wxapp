@@ -1,0 +1,156 @@
+:host {
+  display: block;
+  position: sticky;
+  top: 0;
+  z-index: 20;
+}
+
+.business-filter {
+  box-sizing: border-box;
+  width: 100%;
+  padding-bottom: 16rpx;
+  background: #FFFFFF;
+  border-bottom: 1rpx solid #EEEEEE;
+  box-shadow: 0 4rpx 12rpx rgba(45, 32, 23, 0.04);
+}
+
+.business-filter__search {
+  box-sizing: border-box !important;
+  width: 100% !important;
+  padding: 16rpx 24rpx 12rpx !important;
+  --search-background-color: #F5F6F7;
+  --search-input-height: 68rpx;
+}
+
+.business-filter__search-action {
+  box-sizing: border-box;
+  width: 96rpx;
+  height: 68rpx;
+  margin-left: 12rpx;
+  border-radius: 34rpx;
+  background: #C0322A;
+  color: #FFFFFF;
+  font-size: 26rpx;
+  font-weight: 500;
+  line-height: 68rpx;
+  text-align: center;
+}
+
+.business-filter__controls {
+  display: flex;
+  align-items: center;
+  gap: 12rpx;
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  padding: 0 24rpx;
+}
+
+.business-filter__status {
+  flex: 0 0 210rpx;
+  min-width: 0;
+  height: 72rpx;
+  border: 1rpx solid #E8E8E8;
+  border-radius: 12rpx;
+  background: #FAFAFA;
+}
+
+.business-filter__dropdown {
+  width: 100% !important;
+  --dropdown-menu-height: 72rpx;
+  --dropdown-menu-background-color: transparent;
+  --dropdown-menu-box-shadow: none;
+  --dropdown-menu-title-font-size: 24rpx;
+  --dropdown-menu-title-line-height: 32rpx;
+  --dropdown-menu-title-padding: 0 40rpx 0 16rpx;
+}
+
+.business-filter__date-range {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 8rpx;
+  box-sizing: border-box;
+  min-width: 0;
+  height: 72rpx;
+  padding: 0 14rpx;
+  border: 1rpx solid #E8E8E8;
+  border-radius: 12rpx;
+  background: #FAFAFA;
+}
+
+.business-filter__date-range--active {
+  border-color: rgba(192, 50, 42, 0.28);
+  background: #FFF7F6;
+}
+
+.business-filter__date-picker {
+  flex: 1;
+  min-width: 0;
+}
+
+.business-filter__date {
+  overflow: hidden;
+  color: #777777;
+  font-size: 22rpx;
+  line-height: 70rpx;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.business-filter__date--selected {
+  color: #C0322A;
+  font-weight: 500;
+}
+
+.business-filter__date-separator {
+  flex-shrink: 0;
+  color: #BBBBBB;
+  font-size: 20rpx;
+}
+
+.business-filter__date-clear {
+  display: flex;
+  flex: 0 0 36rpx;
+  align-items: center;
+  justify-content: center;
+  width: 36rpx;
+  height: 56rpx;
+}
+
+.business-filter__date-hint {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 8rpx 24rpx 0;
+  color: #999999;
+  font-size: 20rpx;
+  line-height: 28rpx;
+  text-align: right;
+}
+
+@media (max-width: 340px) {
+  .business-filter__status {
+    flex-basis: 184rpx;
+  }
+
+  .business-filter__controls {
+    gap: 8rpx;
+    padding-right: 20rpx;
+    padding-left: 20rpx;
+  }
+
+  .business-filter__date-hint {
+    padding-right: 20rpx;
+    padding-left: 20rpx;
+  }
+
+  .business-filter__date-range {
+    gap: 4rpx;
+    padding: 0 10rpx;
+  }
+
+  .business-filter__date {
+    font-size: 20rpx;
+  }
+}

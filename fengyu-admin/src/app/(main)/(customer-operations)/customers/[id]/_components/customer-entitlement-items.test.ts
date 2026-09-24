@@ -1,0 +1,203 @@
+import { describe, expect, it } from "vitest"
+import type { SaleItem, SaleOrder } from "@/lib/types"
+import { getCustomerVisibleSaleItems } from "./customer-entitlement-items"
+
+function makeItem(overrides: Partial<SaleItem> = {}): SaleItem {
+  return {
+    saleItemId: "SI-1",
+    saleOrderId: "SO-1",
+    itemDirection: "购买",
+    refSaleItemId: null,
+    skuId: "SKU-1",
+    productType: "疗程卡",
+    unit: "次",
+    sessionCount: 1,
+    remainingSessions: 1,
+    paidSessions: 1,
+    unitPrice: "211.00",
+    quantity: 1,
+    unitRealPrice: "211.00",
+    saleAmount: "211.00",
+    received: "211.00",
+    prepaidCardReceived: "0",
+    cashReceived: "211.00",
+    pendingReceived: "0",
+    expireDate: null,
+    remark: null,
+    salesCategory: null,
+    createdAt: "2026-07-25T09:00:00.000Z",
+    updatedAt: "2026-07-25T09:00:00.000Z",
+    productName: "肩颈舒缓SPA",
+    ...overrides,
+  }
+}
+
+function makeOrder(overrides: Partial<SaleOrder> = {}): SaleOrder {
+  return {
+    saleOrderId: "SO-1",
+    status: "已支付",
+    saleOrderType: "销售单",
+    documentType: "售前一次",
+    refSaleOrderId: null,
+    legacySource: null,
+    marketName: "南昌市场",
+    storeId: "STORE-1",
+    saleOrderDatetime: "2026-07-25T09:00:00.000Z",
+    performanceAttributionDate: "2026-07-25",
+    performanceAttributionAdjustedAt: null,
+    performanceAttributionAdjustedBy: null,
+    clientUserId: "USER-1",
+    clientPhone: "13800000000",
+    customerName: "欧阳娟娟",
+    totalAmount: "211.00",
+    prepaidCardAmount: "0",
+    pendingPrepaidCardAmount: "0",
+    payableAmount: "211.00",
+    received: "211.00",
+    refundedAmount: "0",
+    paymentMethod: "线下",
+    openedBy: null,
+    preferredEmployeeId: null,
+    paidAt: "2026-07-25T09:00:00.000Z",
+    allocationStatus: null,
+    couponId: null,
+    couponDiscount: null,
+    remark: null,
+    createdAt: "2026-07-25T09:00:00.000Z",
+    updatedAt: "2026-07-25T09:00:00.000Z",
+    items: [makeItem()],
+    ...overrides,
+  }
+}
+
+describe("getCustomerVisibleSaleItems", () => {
+  it("排除已关闭订单里的疗程卡明细", () => {
+    const closedItem = makeItem({ saleItemId: "SI-CLOSED", paidSessions: 0 })
+    const paidItem = makeItem({ saleItemId: "SI-PAID" })
+
+    const result = getCustomerVisibleSaleItems([
+      makeOrder({ saleOrderId: "SO-CLOSED", status: "已关闭", items: [closedItem] }),
+      makeOrder({ saleOrderId: "SO-PAID", status: "已支付", items: [paidItem] }),
+    ])
+
+    expect(result.map((item) => item.saleItemId)).toEqual(["SI-PAID"])
+  })
+
+  // issue #122：可用次数 0 的卡（部分支付未买满次数）不再隐藏——顾客买了卡却在档案里看不到。
+  // 展示门槛改为物理剩余次数；可用次数 0 由 UI 呈现，核销限额走 service 侧独立校验。
+  it("按物理剩余次数展示权益卡，可用次数为 0 的卡不再隐藏", () => {
+    const unpaidItem = makeItem({ saleItemId: "SI-UNPAID", paidSessions: 0 })
+    const exhaustedItem = makeItem({ saleItemId: "SI-EXHAUSTED", remainingSessions: 0 })
+    const paidUsedUpItem = makeItem({
+      saleItemId: "SI-PAID-USED-UP",
+      sessionCount: 10,
+      remainingSessions: 5,
+      paidSessions: 5,
+    })
+    const paidUnusedItem = makeItem({
+      saleItemId: "SI-PAID-UNUSED",
+      sessionCount: 10,
+      remainingSessions: 5,
+      paidSessions: 6,
+    })
+
+    const result = getCustomerVisibleSaleItems([
+      makeOrder({ items: [unpaidItem, exhaustedItem, paidUsedUpItem, paidUnusedItem] }),
+    ])
+
+    // 仍有剩余次数的都展示；只有 remainingSessions=0（已用完）的卡被排除
+    expect(result.map((item) => item.saleItemId).sort()).toEqual(
+      ["SI-PAID-UNUSED", "SI-PAID-USED-UP", "SI-UNPAID"].sort(),
+    )
+    expect(result.map((item) => item.saleItemId)).not.toContain("SI-EXHAUSTED")
+  })
+
+  it("排除具有余次数据的家居产品", () => {
+    const treatmentCard = makeItem({ saleItemId: "SI-CARD" })
+    const homeProduct = makeItem({
+      saleItemId: "SI-HOME",
+      productType: "家居产品",
+      unit: "盒",
+      sessionCount: 10,
+      remainingSessions: 2,
+      paidSessions: 2,
+    })
+
+    const result = getCustomerVisibleSaleItems([
+      makeOrder({ items: [treatmentCard, homeProduct] }),
+    ])
+
+    expect(result.map((item) => item.saleItemId)).toEqual(["SI-CARD"])
+  })
+
+  it("兼容 paidSessions 为 NULL 的历史行，按物理剩余显示", () => {
+    const legacyNullItem = makeItem({
+      saleItemId: "SI-LEGACY-NULL",
+      sessionCount: 10,
+      remainingSessions: 3,
+      paidSessions: null,
+    })
+
+    const result = getCustomerVisibleSaleItems([
+      makeOrder({ items: [legacyNullItem] }),
+    ])
+
+    expect(result.map((item) => item.saleItemId)).toEqual(["SI-LEGACY-NULL"])
+  })
+
+  it("保留有效转换单的转入疗程卡", () => {
+    const transferIn = makeItem({ saleItemId: "SI-IN", itemDirection: "转入" })
+    const transferOut = makeItem({ saleItemId: "SI-OUT", itemDirection: "转出" })
+
+    const result = getCustomerVisibleSaleItems([
+      makeOrder({ saleOrderType: "转换单", status: "已完成", items: [transferIn, transferOut] }),
+    ])
+
+    expect(result.map((item) => item.saleItemId)).toEqual(["SI-IN"])
+  })
+
+  it("合并业务字段相同的疗程卡，并累计展示数值", () => {
+    const first = makeItem({ saleItemId: "SI-1", createdAt: "2026-07-25T09:00:00.000Z" })
+    const second = makeItem({
+      saleItemId: "SI-2",
+      createdAt: "2026-07-26T09:00:00.000Z",
+      updatedAt: "2026-07-26T09:00:00.000Z",
+    })
+
+    const [item] = getCustomerVisibleSaleItems([
+      makeOrder({ items: [first, second] }),
+    ])
+
+    expect(item).toMatchObject({
+      saleItemId: "SI-1",
+      cardCount: 2,
+      quantity: 2,
+      sessionCount: 2,
+      remainingSessions: 2,
+      paidSessions: 2,
+      saleAmount: "422.00",
+      received: "422.00",
+      pendingReceived: "0.00",
+    })
+  })
+
+  it("来源订单不同但业务快照一致时合并疗程卡", () => {
+    const first = makeItem({ saleItemId: "SI-ORDER-1", saleOrderId: "SO-1" })
+    const second = makeItem({ saleItemId: "SI-ORDER-2", saleOrderId: "SO-2" })
+
+    const result = getCustomerVisibleSaleItems([
+      makeOrder({ saleOrderId: "SO-1", items: [first] }),
+      makeOrder({ saleOrderId: "SO-2", items: [second] }),
+    ])
+
+    expect(result).toHaveLength(1)
+    expect(result[0]).toMatchObject({
+      saleItemId: "SI-ORDER-1",
+      cardCount: 2,
+      quantity: 2,
+      sessionCount: 2,
+      remainingSessions: 2,
+      paidSessions: 2,
+    })
+  })
+})

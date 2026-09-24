@@ -1,39 +1,41 @@
-# docker-compose.remote.yml — 远程 admin 覆盖层（dev / prod 共用）
+# docker-compose.remote.yml — 远程 admin / analyst 覆盖层（dev / prod 共用）
 #
-# 用法由 .claude/skills/remote-deploy/deploy-admin.sh 统一封装：
-# 它会从 envs/<env>.env 生成仅含 DEPLOY_CLOUDBASE_ENV_ID / DEPLOY_CDN_BASE 的
-# .admin-runtime.env，并以第二个 --env-file 传入。本文件禁止硬编码任一环境的桶。
+# 用法由 .claude/skills/remote-deploy 下的部署脚本封装。部署脚本从本地
+# envs/<env>.env 生成按服务白名单隔离的 0600 env 文件，保存在不可变 release 目录。
+# 远端历史 .env 不参与新版 compose 解析，也不再整包注入任何容器。
 
 name: fengyu-wxapp
 services:
   admin:
-    environment:
-      DATABASE_URL: ${ADMIN_DATABASE_URL}
-      # 留空 = 由 server action 按请求 x-forwarded-proto 自动判定 Secure：
-      # 当前纯 HTTP 部署 → 不加 Secure（否则浏览器丢弃 cookie → 登录后误报「未登录」）；
-      # 将来接入 TLS 反代（x-forwarded-proto=https）→ 自动加 Secure，无需改配置。
-      COOKIE_SECURE: ""
-      JWT_SECRET: ${ADMIN_JWT_SECRET:?remote .env missing ADMIN_JWT_SECRET}
-      # 登录密码 RSA 解密私钥（运行期）。缺失则 login server action fail-fast → 500。
-      # 必须与构建期 inline 的 NEXT_PUBLIC_RSA_PUBLIC_KEY 同一对（见 envs/<env>.env）。
-      RSA_PRIVATE_KEY: ${ADMIN_RSA_PRIVATE_KEY}
-      # 与目标环境一致：worker 写入、admin 换取临时 URL 必须使用同一个 CloudBase 桶。
-      CLOUDBASE_ENV_ID: ${DEPLOY_CLOUDBASE_ENV_ID:?deploy runtime env missing CLOUDBASE_ENV_ID}
-      CDN_BASE: ${DEPLOY_CDN_BASE:?deploy runtime env missing CDN_BASE}
+    image: ${ADMIN_IMAGE:-fengyu-admin:latest}
+    env_file: !override
+      - ${ADMIN_ENV_FILE:-.admin-service.env}
+    environment: !override
+      TZ: Asia/Shanghai
+    depends_on: !reset []
+
+  analyst:
+    image: ${ANALYST_IMAGE:-fengyu-analyst:latest}
+    env_file: !override
+      - ${ANALYST_ENV_FILE:-.analyst-service.env}
+    environment: !override
+      TZ: Asia/Shanghai
     depends_on: !reset []
 
   cron-worker:
-    environment:
-      DATABASE_URL: ${ADMIN_DATABASE_URL}
+    image: ${ADMIN_IMAGE:-fengyu-admin:latest}
+    env_file: !override
+      - ${CRON_ENV_FILE:-.cron-worker-service.env}
+    environment: !override
+      TZ: Asia/Shanghai
     depends_on: !reset []
 
   export-worker:
-    environment:
-      DATABASE_URL: ${ADMIN_DATABASE_URL}
-      # worker 会加载导出权限校验模块，必须使用与 admin 相同的 JWT 密钥。
-      JWT_SECRET: ${ADMIN_JWT_SECRET:?remote .env missing ADMIN_JWT_SECRET}
-      CLOUDBASE_ENV_ID: ${DEPLOY_CLOUDBASE_ENV_ID:?deploy runtime env missing CLOUDBASE_ENV_ID}
-      CDN_BASE: ${DEPLOY_CDN_BASE:?deploy runtime env missing CDN_BASE}
+    image: ${ADMIN_IMAGE:-fengyu-admin:latest}
+    env_file: !override
+      - ${EXPORT_ENV_FILE:-.export-worker-service.env}
+    environment: !override
+      TZ: Asia/Shanghai
     depends_on: !reset []
 
   # 远程 admin 连接宿主业务库 5433，不启动 compose 内的本地 PostgreSQL。

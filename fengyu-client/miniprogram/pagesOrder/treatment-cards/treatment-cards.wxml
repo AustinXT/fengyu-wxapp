@@ -61,6 +61,17 @@
         </view>
       </view>
 
+      <!-- 未付清提示：仅订单未付清且该卡未买满次数时下发金额（寄存单/已付清一律不显示） -->
+      <view wx:if="{{item.unpaidAmountFmt}}" class="tc-card__unpaid">
+        待付清 ¥{{item.unpaidAmountFmt}}
+      </view>
+
+      <!-- 员工开单时填写的订单备注；空备注不占空间 -->
+      <view wx:if="{{item.orderRemark}}" class="tc-card__remark">
+        <text class="tc-card__remark-label">订单备注</text>
+        <text class="tc-card__remark-value">{{item.orderRemark}}</text>
+      </view>
+
       <!-- 底部：门店 + 有效期 + 预约按钮 -->
       <view class="tc-card__footer">
         <view class="tc-card__meta">
@@ -80,6 +91,8 @@
           data-sale-item-id="{{item.saleItemId}}"
         >预约</view>
         <view wx:elif="{{item.active && item.paidSessionsNull}}" class="tc-card__status-text">不可预约</view>
+        <!-- issue #122：卡还在有效期内、只是没付清 —— 说「已失效」会让顾客以为卡作废了 -->
+        <view wx:elif="{{item.active && item.unpaidAmountFmt}}" class="tc-card__status-text">付清后可预约</view>
         <view wx:else class="tc-card__status-text">已失效</view>
       </view>
     </view>

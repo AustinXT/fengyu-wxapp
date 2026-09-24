@@ -37,6 +37,7 @@
 .product-name {
   min-width: 0;
   flex: 1;
+  display: block;
   overflow: hidden;
   color: #333;
   font-size: 30rpx;
@@ -48,7 +49,8 @@
 
 .count-grid {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  /* 家居计数格数量随「已转换」出现而变（3~4 格），用 auto-fit 避免第 4 格换行错位 */
+  grid-template-columns: repeat(auto-fit, minmax(140rpx, 1fr));
   margin-top: 24rpx;
   padding: 18rpx 8rpx;
   border-radius: 12rpx;
@@ -81,6 +83,15 @@
 .count-item--remaining .count-value,
 .count-item--remaining .count-label {
   color: var(--color-primary);
+}
+
+.unpaid-hint {
+  margin-top: 16rpx;
+  padding: 12rpx 20rpx;
+  border-radius: 8rpx;
+  background: #fff8e6;
+  color: #d4820a;
+  font-size: 24rpx;
 }
 
 .product-meta {

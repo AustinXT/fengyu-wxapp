@@ -21,7 +21,8 @@ export async function loginStaffWithTestOpenid(miniProgram, testOpenid = TEST_OP
   const result = await miniProgram.evaluate((openid) => {
     return new Promise((resolve, reject) => {
       wx.cloud.callFunction({
-        name: 'staffApi',
+        // 单 env 内并存 staffApi(prod 库) 与 staffApiDev(dev 库)：写死会让断言库与被测页面写入库分裂
+        name: (() => { try { const v = wx.getAccountInfoSync().miniProgram.envVersion; return v === 'release' || v === 'trial' ? 'staffApi' : 'staffApiDev' } catch (e) { return 'staffApiDev' } })(),
         data: {
           action: 'auth.login',
           payload: { _testOpenid: openid },
@@ -98,7 +99,8 @@ export async function loginClientWithTestOpenid(miniProgram, testOpenid = TEST_O
   const result = await miniProgram.evaluate((openid) => {
     return new Promise((resolve, reject) => {
       wx.cloud.callFunction({
-        name: 'clientApi',
+        // 单 env 内并存 clientApi(prod 库) 与 clientApiDev(dev 库)：写死会让断言库与被测页面写入库分裂
+        name: (() => { try { const v = wx.getAccountInfoSync().miniProgram.envVersion; return v === 'release' || v === 'trial' ? 'clientApi' : 'clientApiDev' } catch (e) { return 'clientApiDev' } })(),
         data: {
           action: 'auth.login',
           payload: { _testOpenid: openid },
@@ -150,7 +152,8 @@ export async function callStaffApiWithTestOpenid(miniProgram, action, payload = 
   const result = await miniProgram.evaluate((act, pl) => {
     return new Promise((resolve, reject) => {
       wx.cloud.callFunction({
-        name: 'staffApi',
+        // 单 env 内并存 staffApi(prod 库) 与 staffApiDev(dev 库)：写死会让断言库与被测页面写入库分裂
+        name: (() => { try { const v = wx.getAccountInfoSync().miniProgram.envVersion; return v === 'release' || v === 'trial' ? 'staffApi' : 'staffApiDev' } catch (e) { return 'staffApiDev' } })(),
         data: { action: act, payload: pl },
         success: (res) => resolve(res.result),
         fail: (err) => reject(new Error(err && err.errMsg ? err.errMsg : String(err))),

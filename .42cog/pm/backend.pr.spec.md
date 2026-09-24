@@ -232,7 +232,7 @@
 >
 > **约束**: `UNIQUE(client_user_id) WHERE status='待支付' AND client_user_id IS NOT NULL`、`UNIQUE(client_phone, store_id) WHERE status='待支付' AND client_user_id IS NULL`。**索引**: `(store_id, status)`、`(ref_sale_order_id)`。
 >
-> **expire_at**：应用层计算（`created_at + 10min`），不存储，通过 SQL 条件懒清理。
+> **expire_at**：应用层计算（`sale_order_datetime + 10min`），不存储，通过 SQL 条件懒清理。懒清理仅命中 `opened_by IS NULL AND lakala_out_order_no IS NULL` 的待支付单，`order.detail` 的 `expire_at` 下发口径与之同源（issue #215）。
 
 **业绩归属规则（2026-08-17 已决）**：
 
@@ -240,12 +240,153 @@
 - admin 动作 `sale_order:performance_attribution_update` 仅默认授予系统管理员、店长、财务；必须通过 scope 校验。
 - 操作时间不限；目标日期必须在原始订单上海自然日前后 7 天内（含边界）。同日提交不消耗机会。
 - 更新使用 `FOR UPDATE` + `performance_attribution_adjusted_at IS NULL` + `updated_at` CAS，保证并发下仅一次成功，并在同一事务写 `operation_logs`。
-- `sale_order_performance_events`：首次支付，或没有更早成功正向款项的首笔纯储值卡抵扣，使用订单归属日；其他回款/退款使用流水 `paid_at` 的上海自然日。
+- `sale_order_payments` 为**全部**款项（含首次支付）维护 `performance_attribution_date`、`performance_attribution_adjusted_at`、`performance_attribution_adjusted_by`；该列由数据库 trigger 保证恒有值（迁移 0040/0041，并由 `chk_sop_attribution_date_present` 约束兜底）：首次支付镜像订单归属日、其余入账时按 `paid_at` 上海自然日初始化、未入账（待支付/待审批）按 `created_at` 占位并在入账那一刻按 `paid_at` 重算。同订单、同精确 `paid_at`、同状态的首次支付/回款与储值卡抵扣视为同次混合支付，卡流水继承主流水归属字段。Admin 与 Staff 的混合线下收款必须统一按“现付后卡”写入：先写首次支付/回款主流水，再写储值卡抵扣流水，两行使用同一个 `paid_at`。
+- admin 款项调整动作复用 `sale_order:performance_attribution_update`；仅已支付、非首次支付且有 `paid_at` 的主流水或纯储值卡流水可改一次，目标日期为 `paid_at` 上海自然日前后 7 天，同日不消耗机会。混合支付调整主流水时必须在同一事务同步卡流水，卡流水不得单独调整。
+- `sale_order_performance_events`：`performance_date` **一律直读** `sale_order_payments.performance_attribution_date`，查询侧没有任何回退分支（迁移 0041）。上述"首次支付随订单 / 同次卡行跟随主流水 / 其余按 paid_at"的规则全部下沉到写入侧的两个 trigger：`initialize_payment_performance_attribution_date()`（BEFORE INSERT/UPDATE on sale_order_payments）与 `sync_order_performance_attribution_to_payments()`（AFTER UPDATE on sale_orders，订单级改期时同步首次支付行与同次卡行）。
 - `sale_item_performance_events`：将已支付 receipt 按上述事件日期展开；旧数据无完整 receipt 时用订单归属日补齐 `sale_items.received` 差额。
 
 ### 2.9 sale_items（销售明细）
 
 > **复用说明**：sale_items 用于**销售单 / 内部单 / 转换单**三类的明细行；退款 / 回款已下沉至 `sale_order_payments`，部分退款时通过 `sale_order_payments.ref_sale_item_id` 关联原明细行。`item_direction` 标识行的方向语义：
+
+家居产品购买/转入行使用 `inventory_composition_snapshot`（JSONB）冻结下单时的库存组成，格式为 `{ version: 1, components: [{ inventorySkuId, productCode, productName, specName, quantityPerSaleUnit }] }`。新订单的家居行必须有非空有效快照；疗程卡为 NULL。历史空快照不回填，提货时读取最新有效组成。
+
+**家居产品「转入行」的可见性与可提性（#145 / #153）**：转换单换入的家居行（`item_direction='转入'`）与购买行**同权**——四端顾客档案可见、可提货、可被再次折抵转出，放行判据与疗程卡侧同源：`item_direction = '购买' OR (sale_order_type = '转换单' AND item_direction = '转入')`。可提数量沿用 `FLOOR(received × quantity / sale_amount)`：`sale_amount > 0` 的转入行 `received` 由 paid-sessions STEP 1.6 重建为「转出旧卡价值 + 本单净到账，封顶转入总价」，因而差额未结清时按比例逐件释放、结清后恢复满额；`sale_amount <= 0` 的转入行走赠品分支全额可提（STEP 1.6 带 `sale_amount > 0` 过滤，刻意不碰 0 元行），与购买侧 0 元赠品行同口径。**不得为转入行另加满付分支**——那会让差额未结清的货被提前解锁。
+
+**折抵与提货的「剩余已付」额度口径（#145 / #153 立，#182 统一到疗程卡）**：
+
+```
+剩余已付 = 行实收 − 已交付价值 − 已转走金额
+  疗程卡：已交付价值 = 已消费次数 × 单价 =（session_count − remaining_sessions）× 单价
+  家居：  已交付价值 = pickup_records 物理提货件数 × 单价
+
+可折抵金额 = 剩余已付（含不足一整次/一整件的余数）        ← 疗程卡与家居同口径
+可折抵数量 = 该行**全部**剩余权益                          ← #182「折抵 = 整行退出」
+  疗程卡：remaining_sessions − 在途服务预扣
+  家居：  物理未结算件数 = quantity − picked_up_quantity
+可提件数   = min(物理未结算件数, floor(剩余已付 / 单价))    ← 提货口径**不变**
+```
+
+> ⚠️ **金额共用、件数分家**（#182 起）。提货仍要一件件付满才放行（`floor`），而折抵是「这个项目不要了」——
+> 把该行剩余权益一次性注销、剩余已付一次性折走。守恒仍成立：折抵把物理件与已付金额**同时**清空，
+> 折后 `可提件数 = min(0, …) = 0`。**不要**再把这两个数量当成同一个值（#145 时它们确实相等）。
+
+> ⚠️ **不得回退到「可折抵件数 = floor(剩余已付 / 单价)」**：该口径会把「1 件 ¥680 只付 ¥594」
+> 整行剔除（`floor(594/680) = 0`），顾客已付的钱既折不掉也提不出（prod 实测 3 行 / ¥814，issue #182）。
+
+- **已提货金额**按 `pickup_records` 的物理提货合计 × 单价算；**已转走金额**取自**转出行的 `received` 聚合**（排除已关闭的转换单）。
+- **已转走金额不得用「已转走件数 × 单价」推算**：折抵金额含余数时两者不等（折 4 件可能带走 ¥450 而非 ¥400），用件数推算会让多次折抵累计超过累计实收。
+- **退款不在此处扣**：`received` 已由 paid-sessions STEP 1.5 扣过逐项退款，而 `picked_up_quantity` 又包含退款结算数，两边都减就是重复扣减（顾客少提 / 少折）。`picked_up_quantity` 只用于「物理未结算」那一项（已提货 + 已退款 + 已折抵都占用物理件）。
+- **全程按「分」整除**，与 `numeric(10,2)` 对齐；admin 侧用 JS 浮点直除会与 PG 分叉（`16.67 × 3 = 50.01` 时浮点得 2、PG 得 3）。
+- 寄存单与 0 元赠品行没有「实收」可言，只受物理未结算件数封顶。
+
+> **转出行可以只有金额、没有数量**（#182）：`chk_item_quantity` 已放宽为
+> 「`quantity > 0` 或（`item_direction = '转出'` 且 `quantity = 0`）」。疗程卡次数已用完 /
+> 家居件已全提、只剩不足一整次(件)的已付余额时，仍要让顾客把这笔钱换走——此时转出行
+> `quantity = 0`、`sale_amount = received = −余数`。购买 / 转入行仍必须 > 0。
+>
+> ⚠️ **不得回退到 #125 的「未提货件数 × 单价、不看付款进度」**：那会把未兑现价值洗成全额可提——dev 真库实证，10 件 ¥1000 只付 ¥400（欠 ¥600）时，旧口径可折 ¥1000 换入等额家居，新行 10 件全部可提，而欠款仍留原单，资金缺口 ¥600。收紧后同一场景折 4 件 / ¥400，新单差额 ¥600 待支付，实付 ¥400 + 两单欠款 ¥1200 = 货值 ¥1600，完全守恒。
+>
+> ⚠️ **提货与折抵必须共用这一口径**。曾经折抵按金额扣、提货按件数扣：折 4 件带走 ¥450 后再回款 ¥50，提货侧按件数会多放出 1 件，累计兑现 ¥550 > 累计实收 ¥500。
+>
+> ⚠️ **子表聚合不得与 `FOR UPDATE OF si` 同语句**：READ COMMITTED 下语句先取快照再等锁，唤醒后 EvalPlanQual 只刷新 `sale_items` 自身的行版本，`pickup_records` 与转出行聚合仍是旧快照——两笔并发折抵会各自读到已转走金额为 0，把同一批已付价值折两遍，物理件数守卫拦不住。必须**锁取得后用另一条语句**复算。
+>
+> **疗程卡已于 #182（甲方 2026-09-18 拍板）并入同一口径**，#125 的「按物理 `remaining_sessions` 全额折抵、
+> 不看付款进度」作废：1 次 ¥19800 只付 ¥14000 时旧口径可折 ¥19800，把未付的 ¥5800 洗成资产，
+> 配上「欠款归零」即每笔净亏 ¥5800。现在折抵额 = 剩余已付（¥14000）。存量影响 prod 575 行 / 实收 ¥14.8 万。
+
+**折抵后原单该行「欠款归零」（#182）**：折抵 = 整行退出，原单不该再为已经不存在的权益挂欠款。
+
+```
+仅当 sale_order_type <> '寄存单' AND sale_amount > 0 AND received > 0 AND Δ_row > 0：
+  行级 Δ_row   = sale_amount − received（received 是行级**净**实收；Δ_row > 0 即 received < sale_amount）
+  订单级 Δ_ord = Δ_row − 该行已退款额 = 真实欠款
+  原行：sale_amount -= Δ_row；waived_amount += Δ_row（留底，供关单回滚）；
+        pending_received = received + 该行已退款额（= **毛已付**，见下方 ⚠）
+        该行 paid_sessions 行级重算 —— **与 Δ_ord 是否 > 0 无关**
+  原单（仅 Δ_ord > 0 时）：total_amount -= Δ_ord；payable_amount 按
+        total − 已结算储值卡 − 待结算储值卡 重算；status 仅从'部分支付'向前推进；
+        **不写 paid_at**（豁免不是收款；回滚也不清它，保持对称）
+```
+
+**两个下调额不是同一个数，必须分开**：
+- 行级压到**净实收**才能让 `paid_sessions` 重算到满付，从而在 `remaining_sessions` 注销为 0 后
+  仍满足 D3。少扣这一截 → 付清后部分退款的行（¥1000 付清后退 4 次 → `received=600`、
+  `paid_sessions=6`）折抵后 `(10 − 0) > 6` 立刻违反 D3。
+- 订单级是**真实欠款**，多扣这一截就是把已经退给顾客的钱又当欠款豁免一次，按
+  `total_amount − refunded_amount` 统计的净额会被重复扣减。
+- **`Δ_ord = 0` 时仍必须做行级那一半**（含 `paid_sessions` 重算）。正向与关单回滚两侧都要遵守
+  这条对称纪律；把行级重算写在「订单级是否有欠款可扣」的循环里是同一个缺陷的两种形态。
+
+三个守卫条件缺一不可：
+- **排除寄存单** —— `received` 恒 0，`sale_amount` 是原价快照不是欠款，下调会把快照抹成 0
+- **`received > 0`** —— 否则新 `sale_amount` 落到 0，踩 `WHEN sale_amount <= 0 THEN quantity` 的赠品全放分支，未付的货凭空解锁
+- **`received < sale_amount`** —— overpay 行 `received > sale_amount`，不能反向**上调**应付
+
+> ⚠️ **「欠款归零」不是可选的善后，而是注销权益的前置条件**。不变量 D3
+> `(session_count − remaining_sessions) <= paid_sessions` 由 `recalcPaidSessionsForOrder` 末尾
+> **按整单**执法。只扣 `remaining_sessions` 而不下调应付，部分支付行立刻违反 D3 →
+> 源订单**从此无法回款、无法退款、payNotify 回调直接抛 `CONFLICT`**。应付下调到实收后
+> `paid_sessions = LEAST(sc, FLOOR(received × sc / sale_amount))` 恒为满付，D3 自动成立。
+
+> ⚠️ **折抵路径刻意不跑整单 `recalcPaidSessionsForOrder`**，改为行级重算 `paid_sessions`
+> + 手工同步 `payable_amount`。两个原因：① prod 实测 338 行 / 28 单**本就**违反 D3，整单守护会让
+> 这些单的折抵直接失败；② 整单重算的 Branch B 会按新 `sale_cap` 重分行级 `received`，触发
+> `0040` 视图的 residual 凭空产出营业额事件。绕开 STEP 0 就必须自己写 `payable_amount`，
+> 否则撞 cron 的 I5 资金不变量告警。
+
+> ⚠️ **已折抵退出的行在 STEP 1 Branch B 里走「固定预留」，不参与比例瀑布**。折抵时把
+> `pending_received` 钉到该行**毛已付**（净实收 + 该行已退款额）；Branch B 见 `waived_amount > 0`
+> 就按这一列固定预留该行的 `received`（`pend_cap = sale_cap = 0`），预留额**同时从 `untargeted`
+> 扣除**，之后由 STEP 1.5 扣该行退款额得到净额 = 下调后的 `sale_amount` → `paid_sessions` 满付。
+> 三种错误写法都踩过：
+> - 钉成**净**实收 → STEP 1.5 再扣一次退款，付清后退过款的行终值低于新应付 → 永久违反 D3；
+> - 仍丢回比例池 → `untargeted < Σpend_cap` 时被摊薄到钉住值以下 → 同样违反 D3；
+> - 事后单行抬 `received` 下限 → `Σ行级 received` 超过订单级实收（凭空多出行级实收、污染
+>   `0040` residual），且同单其它行被少分。
+> 另：不得把 `sale_cap` 放大成 `sale_amount + waived_amount`——已退出行会吸走本该给同单欠款行的回款
+> （两行各 ¥100 各付 ¥50，A 折抵后回款 ¥50：放大后 A=75/B=75，正确应 A=50/B=100）。
+>
+> ⚠️ **残留已知风险（三条，均非本单引入）**：
+> 1. 「固定预留」只存在于 Branch B。若折抵后该订单从 Branch B 切到 Branch A（正向 receipt 变完整）
+>    而历史付款没有对应 receipt，折抵行会只拿到新 receipt 的份额、低于新应付 → 违反 D3，
+>    该单此后任何 recalc 都抛 CONFLICT（单子永久不可操作，不是数据损坏）。订单级覆盖判据
+>    （`Σ正向 receipt >= order.received`）挡住了常见路径。**运维禁令：不得为含折抵行
+>    （`waived_amount > 0`）的订单补写/回填 `sale_payment_item_receipts`**——那会把它推过覆盖阈值。
+>    彻底根治要行级 receipt 保真。
+> 2. Branch B 两段瀑布对非预留行是**逐行 `ROUND(…, 2)`**、没有尾差吸收，`Σ行级 received`
+>    可能比订单级实收多几分钱（订单实收 ¥0.02、四行等权 → 每行 ¥0.01、Σ=¥0.04）。
+>    这个分币漂移自 2026-06-08 两段瀑布落地起就在，本单未改它、也不放大它（折抵只把该行当时的
+>    `received` 原样钉住）。**不要用「折抵前断言 Σ钉住值 <= 订单毛实收，否则抛 CONFLICT」来堵**：
+>    历史单若已有这种漂移，合法折抵会被直接拒绝。要修就整体改成累计边界差（STEP 1.6 / STEP 1.75
+>    已是这种写法），那会影响全部订单，属独立重构、需独立基线对跑。
+> 3. Branch B 的 `pend_cap_total = 0 AND sale_cap_total = 0` 兜底分支会把 `untargeted`
+>    在**行级静默丢弃**（订单级 `received` 仍计），`Σ行级 < 订单级` → `0040` 视图出现无归属差额。
+>    这是 overpay（多收）在行级的既有落点（由 `computeItemOverpayRemainders` 单独处理），
+>    折抵把折抵行的两段产能强制为 0 只是扩大了该状态的可达面，未改变行为。
+
+> ⚠️ **关单/删单回滚必须还原金额**：`sale_amount += waived_amount`、`waived_amount` 清零、
+> `pending_received` 还原成折抵前快照（存在**转出行**的 `pending_received` 上）、`total_amount`
+> 加回、状态退回'部分支付'。Δ 记在**转出行**的 `waived_amount` 上（原行那份是累计值，
+> 归因不到具体转换单）。不补这一步，「开转换单 → 关闭」= 永久抹掉原单欠款。
+> 还原的 CAS（`原行 waived_amount >= 本次归因额`）**失败必须抛 `CONFLICT`**：此时权益
+> （`remaining_sessions` / `picked_up_quantity`）已被前两段无条件加回，静默放过 = 货已还给顾客、
+> 欠款仍被豁免。幂等靠收尾把转出/转入行的 `waived_amount` 清零来保证，不是靠吞掉 CAS 失败。
+
+> ⚠️ **折抵与在途服务预扣互斥**：存在「服务中 / 待客户确认」的预扣时整行拒绝折抵。钱已全额折走却
+> 留下几次给服务就是白送；而把预扣一起注销会让 `service.confirm` 的扣次守卫 `remaining_sessions >= $1`
+> 失败 → finalize 事务回滚、服务单永久卡在「待客户确认」且预扣不释放。
+
+> ⚠️ **已转走金额的聚合不得限 `out_item.product_type`**：`ref_sale_item_id` 已唯一定位原行，
+> 限定类型会漏掉疗程卡与纯余数转出行（`quantity = 0`），后果是同一笔已付被反复折走、
+> 或折走的 overpay 余数还能再退一次。同理 `computeItemOverpayRemainders` 的疗程卡分支
+> 必须把已转走金额计入「已消耗价值」。
+
+> ⚠️ **`reconcileOrderStatusAfterRefund` 的 `consumed_value` 必须排除已转走数量**：折抵会把
+> `remaining_sessions` 扣光 / `picked_up_quantity` 抬满，不排除则该值膨胀成整行标价价值，
+> 同单其它行退款时会把已结清的折抵行误判回「部分支付」。
+
+> ⚠️ **转入行「可提不可退」是既定语义**：转换单整单禁止退款（仅销售单支持），退款候选与 `refund-cascade` 的 effItems 取数均只取 `item_direction='购买'` 行。换入的货只能沿源头销售单退，而源头此时 `refundable = quantity − picked_up_quantity` 已因折抵归零。**若将来放开转换单退款，必须同步让 `refund-cascade` 的 effItems 覆盖转入行**，否则转入家居行的 `picked_up_quantity` 不会被抬、`refundable` 不归零，即成可重复退的资损。
 > - `购买`（默认）：正常购买行
 > - `转出`：转换退出行，`quantity` = 退次数，`received` = 负数
 > - `转入`：转换转入行，创建新的 sale_item
@@ -282,6 +423,8 @@
 ### 2.10 sale_allocations（营业额分配）
 
 > **多单据复用**：退款业绩 `total_amount` 为负数，转换/回款保持正数。
+>
+> **退款冲销不变量**：以 `(sale_item_id, role_type)` 为独立角色池；每个池按其剩余正向分配占商品行剩余实收的覆盖率计算本次负数冲销，池内按员工剩余份额拆分。跨角色池不得共享一份退款目标额；累计营业额/提成负数不得超过同员工同角色的正数。完整 100% 角色池全退后的净营业额与净提成必须归零。
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
@@ -495,6 +638,14 @@
 **余额缓存** `client_wechat_users.points_balance` + `points_updated_at`
 - 缓存语义：`SUM(point_transactions.amount WHERE user_id = u.user_id)`
 - 运行时由业务触发点同事务双写维护；`cronTask` 夜间做一致性校验（仅告警，不自动修）
+
+#### 2.21.1.1 消费积分抵扣
+
+- 仅普通销售单可用；内部单、转换单、充值单不参与。
+- 金额顺序固定为：成交价/店长特价 → 优惠券 → 积分 → 商品行最终应付 → 充值卡/现金支付。
+- 积分抵扣上限按优惠券、积分使用前的订单金额 × `points_deduction_max_rate` 计算，同时不得超过扣券后剩余应付。
+- 积分金额以扣券后各行 `sale_amount` 为权重按比例分摊，分精度四舍五入，末行吸收尾差，保证行合计与 `sale_orders.points_discount` 守恒。
+- 分摊后的行 `sale_amount` 是营业额、提成和行实付上限的权威口径；部分实付不参与积分分摊权重。
 
 #### 2.21.2 发放规则（订单链净额差值法）
 
@@ -731,13 +882,21 @@ login 返回中包含 `permissions` 字段：
 22. **回款/转换/退款仅员工端操作**
 23. **capability 列 SSoT**（2026-04-26 ticket 落地）：体验卡 / 充值卡 等"特殊 SKU 行为"判定一律读 `product_skus.is_experience` / `is_recharge_card`，**禁止**写 `WHERE product_kind = '体验卡'` / `'充值卡'` 字面量。两列互斥（`chk_sku_not_both_capabilities` CHECK 保护）。`product_kind` 仅作组织/分类标签。开单时 `sale_items` 自动快照同名列，行级不可变（admin 后续修改 SKU capability 不影响历史订单）。
 24. **D4 充值卡严格独立**：同一订单 `sale_items.is_recharge_card` 必须全 true 或全 false；混合下单抛 `INVALID_PARAMS: MIXED_RECHARGE_NOT_ALLOWED`。三端应用层（admin / staff / client）已加显式守卫，DB trigger `trg_check_no_mixed_recharge` 在 COMMIT 兜底。
-25. **customer_type 跃迁（event-driven）**：在三处收款触发点同步重算 — `payNotify`（线上支付回调）/ `staffApi.order.confirmOffline`（线下确认）/ `admin.recordPayment`（后台补录）。跃迁 SQL **三端独立副本**（admin `actions/orders.ts` + staffApi `routes/order.js` + payNotify `index.js`），由 `staffApi/__tests__/routes/recalc-customer-type-sql.test.js` 字节守卫一致性。判定逻辑：
-    - `EXISTS(销售单 total_amount ≥ threshold)` → `会员客`
-    - `EXISTS(销售单 sale_items.is_experience = false)` → `小美客`（充值卡的 `is_experience = false`，自动计入此通道，D1=A 决策）
-    - `EXISTS(销售单 sale_items.is_experience = true)` → `体验客`
+25. **customer_type 跃迁（event-driven）**：在收款触发点同步重算 — `payNotify`（线上支付回调）/ `clientApi` 支付完成 / `staffApi.order.confirmOffline` + `order.createRepayment` + 全额储值卡抵扣开单 / `admin.confirmOfflinePayment` + `recordPayment` + 零应付开单 + 全额抵扣转换。跃迁 SQL **八处独立副本**：五处运行时（staffApi `routes/order.js`、clientApi `routes/order.js`、payNotify `index.js`、admin `actions/orders.ts`、admin `lib/recompute-customer-tags.ts`）逐字一致 + 三个全库批量脚本（`db/scripts/recalc-all-customer-types.js`、`db/scripts/recalc-became-member-at.js`、`db/scripts/backfill-membership-upgrade-doc-type.js`）结构对齐，由 `staffApi/__tests__/routes/recalc-customer-type-sql.test.js` 守卫一致性。
+
+    判定逻辑（#187，2026-09-18 落地 2026-04-26 Q5.2 决策）——先按**单笔订单**聚合金额，再走三档 CASE：
+    - `non_trial` / `trial` = 该订单非体验 / 体验明细行的**毛实收**合计；毛实收 = `sale_items.received`（净额）+ 该行逐项退款额，即"曾经收到的钱"（退款不扣减）
+    - 聚合范围：`status IN ('已支付','已完成')` 的销售单、`item_direction='购买'` 行；部分支付订单不参与判定
+    - `EXISTS(某单 non_trial ≥ threshold)` → `会员客`
+    - `EXISTS(某单 non_trial > 0)` → `小美客`（充值卡的 `is_experience = false`，自动计入此通道，D1=A 决策）
+    - `EXISTS(某单 trial > 0)` → `体验客`
     - 否则 `流量客`
+    - **混合订单按非体验部分判**：体验卡 500 + 普通商品 1600（阈值 1980）→ 小美客，不因合计 2100 达标而判会员客
     - 客户分类**只升不降**（取 max(current, computed)）
     - `customer_type='会员客'` 早退出，无需重算
+    - `became_member_at` 与 `is_membership_upgrade` 归因同源同序（`non_trial ≥ threshold` 的单里按 `paid_at ASC NULLS LAST, created_at ASC, sale_order_id ASC` 取首笔；末位唯一键是确定性兜底，两键相同时保证两处选同一单）
+    - 毛实收按 `sale_amount` 封顶；无明细行的历史单回退订单级 `received`（全额计入 non_trial）
+    - ⚠️ 全额退款后原单状态变 `'已退款'`，整单退出判定 —— 「退款不扣减」只对**部分退款**成立
 
 ---
 

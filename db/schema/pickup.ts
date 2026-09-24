@@ -3,6 +3,7 @@ import { sql } from 'drizzle-orm'
 import { saleItems } from './order'
 import { stores } from './org'
 import { clientWechatUsers, staffWechatUsers } from './user'
+import { inventorySkus } from './inventory'
 
 /**
  * 提货记录
@@ -19,6 +20,8 @@ export const pickupRecords = pgTable(
     saleItemId: varchar('sale_item_id', { length: 30 })
       .notNull()
       .references(() => saleItems.saleItemId),
+    /** 旧版单库存 SKU 提货记录；组成式提货写 NULL，实际明细以 inventory_doc_items 为准。 */
+    inventorySkuId: text('inventory_sku_id').references(() => inventorySkus.skuId),
     /** 本次提货数量 */
     pickupQuantity: integer('pickup_quantity').notNull(),
     /** 提货门店 */
@@ -38,6 +41,7 @@ export const pickupRecords = pgTable(
   },
   (table) => [
     index('idx_pickup_records_sale_item').on(table.saleItemId),
+    index('idx_pickup_records_inventory_sku').on(table.inventorySkuId),
     index('idx_pickup_records_client').on(table.clientUserId),
     uniqueIndex('uq_pickup_idempotency')
       .on(table.saleItemId, table.idempotencyKey)

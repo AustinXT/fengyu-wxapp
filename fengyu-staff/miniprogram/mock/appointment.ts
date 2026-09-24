@@ -57,10 +57,18 @@ export const appointmentHandlers: Record<string, (payload: Record<string, any>) 
     if (payload.status && payload.status !== 'all') {
       list = list.filter(a => a.status === payload.status)
     }
-    if (payload.todayOnly) {
-      list = list.filter(a => a.appointmentTime.startsWith('2026-02-27'))
+    const keyword = String(payload.keyword || '').trim().toLowerCase()
+    if (keyword) {
+      const phoneKeyword = keyword.replace(/\D/g, '')
+      list = list.filter(a => a.customerName.toLowerCase().includes(keyword)
+        || (!!phoneKeyword && a.customerPhone.replace(/\D/g, '').includes(phoneKeyword)))
     }
-    return list
+    if (payload.startDate) list = list.filter(a => a.appointmentTime.slice(0, 10) >= payload.startDate)
+    if (payload.endDate) list = list.filter(a => a.appointmentTime.slice(0, 10) <= payload.endDate)
+    list.sort((a, b) => b.appointmentTime.localeCompare(a.appointmentTime) || b.id.localeCompare(a.id))
+    const page = Math.max(1, Number(payload.page) || 1)
+    const pageSize = Math.max(1, Number(payload.pageSize) || 20)
+    return list.slice((page - 1) * pageSize, page * pageSize)
   },
 
   'appointment.detail': (payload) => {

@@ -10,7 +10,10 @@
  *
  * 选取哪个：
  *   - 凡是"现在"语义的，用 `nowTs()`（推荐，不依赖任何 TZ）。
- *   - 凡是 Date 已经过算术 / 来自外部入参的，用 `beijingTs(d)`。
+ *   - 需要**亚秒精度**的绝对时刻（水位列、`>=` / `<` 阈值比较），用 `instantTs(d)` ——
+ *     `beijingTs` 截断到秒，当阈值用会把窗口放宽最多 999ms，当水位写会在同秒内倒退（#253）。
+ *   - 其余「Date 已经过算术 / 来自外部入参」且是墙钟语义的（到期日、按日归属的锚点），
+ *     用 `beijingTs(d)`。
  *
  * 历史（已修）：曾因 1114（timestamp without tz）+ drizzle `+0000` reader 致 T+8，靠 nowTs/beijingTs
  * 写北京墙钟 + 读取侧 setTypeParser(1114) 补偿。0076 改 1184 后读写语义统一，补偿链拆除。
@@ -42,8 +45,32 @@ export function nowTs() {
  *      报表筛选边界 `beijingTs(new Date(filters.dateFrom))`（与 sale_order_datetime 同语义）。
  */
 export function beijingTs(d: Date) {
+  // fmtDateTime 是**展示**用 helper，对 Invalid Date 返回 ''（UI 里留白是对的）。
+  // 但拼进 SQL 会变成 `''::timestamp` → 运行时 22007，错误信息离现场很远。这里提前 fail-fast。
+  if (!(d instanceof Date) || Number.isNaN(d.getTime())) {
+    throw new TypeError(`beijingTs 需要有效的 Date，收到：${String(d)}`)
+  }
   const wallClock = fmtDateTime(d) // 'YYYY-MM-DD HH:mm:ss' Asia/Shanghai 墙钟
   return sql`${wallClock}::timestamp AT TIME ZONE 'Asia/Shanghai'`
+}
+
+/**
+ * **绝对时刻**（保留毫秒）：`'<ISO8601 带 Z>'::timestamptz`。
+ *
+ * 与 `beijingTs` 的分工：
+ *   - `beijingTs(d)` 走 `fmtDateTime` 落北京墙钟字面，**截断到秒**。适合"这一天/这个钟点"
+ *     这类墙钟语义（到期日、报表边界、按日归属的锚点）。
+ *   - `instantTs(d)` 直接绑 `toISOString()`（带 `Z`，PG 无歧义解析），**毫秒不丢**。适合
+ *     拿来做 `>=` / `<` **阈值比较**的时刻 —— 秒级截断会把比较窗口放宽最多 999ms，
+ *     落在金额口径上就是真金白银（见 `actions/refunds.ts` 的会员跌档超额扣除阈值）。
+ *
+ * 列自 migration 0076 起是 timestamptz(1184)，ISO+Z 与列语义直接对齐，无需 `AT TIME ZONE`。
+ */
+export function instantTs(d: Date) {
+  if (!(d instanceof Date) || Number.isNaN(d.getTime())) {
+    throw new TypeError(`instantTs 需要有效的 Date，收到：${String(d)}`)
+  }
+  return sql`${d.toISOString()}::timestamptz`
 }
 
 /**
@@ -60,4 +87,14 @@ export function beijingTs(d: Date) {
  */
 export function beijingBoundaryTs(dateStr: string, time: '00:00:00' | '23:59:59') {
   return sql`${`${dateStr} ${time}`}::timestamp AT TIME ZONE 'Asia/Shanghai'`
+}
+
+/**
+ * 日期筛选结束边界的次日零点，供半开区间 `[from, nextDay(to))` 使用。
+ *
+ * 不能使用 `< 当日 23:59:59`：timestamptz 保留微秒，该写法会漏掉结束日
+ * `23:59:59.000000` 及之后的最后一秒数据。日期加法留在 PG 内完成，避免 JS 时区漂移。
+ */
+export function beijingNextDayBoundaryTs(dateStr: string) {
+  return sql`(${dateStr}::date + 1)::timestamp AT TIME ZONE 'Asia/Shanghai'`
 }

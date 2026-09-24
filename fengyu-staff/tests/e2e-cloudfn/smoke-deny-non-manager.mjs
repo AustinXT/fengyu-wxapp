@@ -4,8 +4,9 @@
  *
  * 覆盖 3 个 case：所有都期望 PERMISSION_DENIED：
  *   1. finance@门店 调 order.create → middleware/auth.js:273 "仅店长可执行此操作"
- *   2. 给员工绑 type='部门' 的 scope → staffLevel=null（scope.js:43 部门级被忽略）
- *      → 调任何业务 action 应被 requireManager 或类似中间件拒绝
+ *   2. 给员工绑 type='部门' 的 scope → 迁移 0039 起被 DB trigger 直接拒绝
+ *      （没有任何角色的 allowed_scope_types 含 '部门'）。原先"绑上了但 staffLevel=null"
+ *      的场景已不可达，本用例改为守护这条约束本身仍然生效。
  *   3. customer_mgr@门店 调 order.create → 同 case 1（覆盖另一个非 manager 角色）
  */
 import './setup.mjs'
@@ -42,12 +43,23 @@ async function run() {
     storeId: S_A1.storeId, orgNodeId: S_A1.orgId,
     bindings: [{ role: 'customer_mgr', scopeId: S_A1.orgId }],
   })
-  // 这名员工 binding 在 type='部门' scope 上 — utils/scope.js 会忽略它，staffLevel=null
-  await createTestStaffWithRoles({
-    employeeId: DEPT_EMP.empId, openid: DEPT_EMP.oid, phone: DEPT_EMP.phone, name: `${NS}_部门绑定员工`,
-    storeId: S_A1.storeId, orgNodeId: S_A1.orgId,
-    bindings: [{ role: 'manager', scopeId: DEPT_ID }],
-  })
+  // 「部门 scope 员工」这个场景自迁移 0039 起在**数据库层**就造不出来了：
+  // trigger permission_validate_role_assignment_scope 拿 role 查
+  // permission_role_definitions.allowed_scope_types，而没有任何角色允许 '部门'
+  // （现矩阵只有 总部/市场/门店）。原 case 3/4 依赖这种绑定已存在，现已不可达。
+  // 于是把它翻过来守护约束本身：真去建一次，必须被 DB 拒绝。
+  let deptBindingRejected = false
+  let deptBindingError = ''
+  try {
+    await createTestStaffWithRoles({
+      employeeId: DEPT_EMP.empId, openid: DEPT_EMP.oid, phone: DEPT_EMP.phone, name: `${NS}_部门绑定员工`,
+      storeId: S_A1.storeId, orgNodeId: S_A1.orgId,
+      bindings: [{ role: 'manager', scopeId: DEPT_ID }],
+    })
+  } catch (e) {
+    deptBindingError = e.message || ''
+    deptBindingRejected = /不能绑定到/.test(deptBindingError)
+  }
 
   const CLI = `${NS}_DENY_NM_CLI`
   await createTestClient({
@@ -77,24 +89,14 @@ async function run() {
     'PERMISSION_DENIED',
     'customer_mgr-store.order.create'))
 
-  // 3) 部门 scope 员工：先验证 auth.login 返回 staffLevel=null
-  const loginR = await invokeStaffApi('auth.login', { _testOpenid: DEPT_EMP.oid })
-  if (loginR.code !== 0) {
-    results.push({ ok: false, label: 'dept-scope.auth.login', reason: `code=${loginR.code} ${loginR.message}` })
-  } else if (loginR.data?.staffLevel !== null) {
-    results.push({
-      ok: false, label: 'dept-scope.staffLevel',
-      reason: `expected null (部门 scope 不归并), got ${loginR.data?.staffLevel}; roleBindings=${JSON.stringify(loginR.data?.roleBindings)}`,
-    })
-  } else {
-    results.push({ ok: true, label: 'dept-scope.auth.login.staffLevel=null' })
-  }
-
-  // 4) 部门 scope 员工调 order.create → PERMISSION_DENIED
-  results.push(await expectFail('order.create',
-    { ...minimalCreate, _testOpenid: DEPT_EMP.oid },
-    'PERMISSION_DENIED',
-    'dept-scope.order.create'))
+  // 3) 部门 scope 绑定必须被数据库拒绝（迁移 0039 的 trigger）
+  results.push({
+    ok: deptBindingRejected,
+    label: 'dept-scope.binding-rejected-by-db',
+    reason: deptBindingRejected
+      ? ''
+      : `期望建「manager@部门」绑定时被 trigger 拒绝，实际${deptBindingError ? '报错但文案不符: ' + deptBindingError : '建成功了——0039 的 permission_validate_role_assignment_scope 可能被去掉'}`,
+  })
 
   return results
 }

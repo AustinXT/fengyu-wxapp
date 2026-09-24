@@ -1,13 +1,23 @@
 <!-- pages/appointment/appointment.wxml — 预约管理 -->
 <view class="container">
-  <van-tabs active="{{tabActive}}" bind:change="onTabChange" color="#C0322A">
-    <van-tab title="待确认" name="pending" />
-    <van-tab title="已确认" name="confirmed" />
-    <van-tab title="今日到店" name="today" />
-    <van-tab title="全部" name="all" />
-  </van-tabs>
+  <business-list-filter
+    value="{{searchInput}}"
+    placeholder="搜索顾客姓名或手机号"
+    status="{{status}}"
+    status-options="{{statusOptions}}"
+    start-date="{{startDate}}"
+    end-date="{{endDate}}"
+    date-hint="日期按预约时间筛选"
+    bind:keyword-change="onSearchChange"
+    bind:search="onSearch"
+    bind:search-clear="onSearchClear"
+    bind:status-change="onStatusChange"
+    bind:start-date-change="onStartDateChange"
+    bind:end-date-change="onEndDateChange"
+    bind:clear-dates="clearDates"
+  />
 
-  <view wx:if="{{loading}}" class="loading-wrap">
+  <view wx:if="{{loading && list.length === 0}}" class="loading-wrap">
     <van-loading type="spinner" color="#C0322A" />
   </view>
 
@@ -15,7 +25,7 @@
     <van-empty description="暂无预约记录" />
   </view>
 
-  <scroll-view wx:else scroll-y class="list-scroll" bindscrolltolower="onLoadMore">
+  <view wx:else class="list-wrap">
     <view class="appt-item" wx:for="{{list}}" wx:key="id" bindtap="onItemTap" data-id="{{item.id}}">
       <view class="appt-header">
         <text class="appt-customer">{{item.customerName || '未知顾客'}}</text>
@@ -48,5 +58,9 @@
         </van-button>
       </view>
     </view>
-  </scroll-view>
+    <view wx:if="{{loading}}" class="loading-more">
+      <van-loading size="24px" color="#999">加载中...</van-loading>
+    </view>
+    <view wx:if="{{!hasMore && list.length > 0}}" class="no-more">没有更多了</view>
+  </view>
 </view>

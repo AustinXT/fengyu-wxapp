@@ -6,6 +6,42 @@
   min-height: 100vh;
 }
 
+.pc-date-bar {
+  display: flex;
+  align-items: center;
+  gap: 12rpx;
+  padding: 12rpx var(--spacing-card);
+  background: var(--color-bg-page);
+}
+
+.pc-date-field {
+  display: flex;
+  align-items: center;
+  gap: 8rpx;
+  height: 56rpx;
+  padding: 0 18rpx;
+  border: 1rpx solid var(--color-divider-soft);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-card);
+}
+
+.pc-date-label {
+  font-size: 22rpx;
+  color: var(--color-text-hint);
+}
+
+.pc-date-value {
+  font-size: 24rpx;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.pc-date-sep {
+  font-size: 22rpx;
+  color: var(--color-text-hint);
+}
+
 /* Section 标题 */
 .pc-section-title {
   font-size: 30rpx;
@@ -93,6 +129,15 @@
 .pc-col-num {
   color: var(--color-text-primary);
   font-weight: 600;
+}
+
+.pc-table--repurchase .pc-col-name {
+  flex: 1.25;
+}
+
+.pc-table--repurchase .pc-col-num {
+  flex: 0.9;
+  font-size: 24rpx;
 }
 
 .pc-table-header .pc-col-num,

@@ -1,6 +1,7 @@
 // utils/auth.ts — 员工端登录与手机号绑定
 
 import { callStaffApi, sanitizeErrorMessage } from './cloud';
+import { getApiFnName } from './cloud-env';
 
 interface LoginPayload {
   staffWfId: string;
@@ -15,6 +16,7 @@ interface LoginPayload {
   roleBindings?: RoleBinding[];
   availableLoginLevels?: LoginLevel[];
   scopedStores?: ScopedStore[];
+  inventoryStoreIds?: string[];
 }
 
 /** 把云函数返回的登录数据写入 globalData，并推导 loginLevel / currentStoreId */
@@ -48,7 +50,7 @@ export async function syncLogin(): Promise<void> {
  */
 export async function bindPhone(cloudID: string): Promise<void> {
   const res = await wx.cloud.callFunction({
-    name: 'staffApi',
+    name: getApiFnName(),
     data: {
       action: 'auth.bindPhone',
       payload: {},

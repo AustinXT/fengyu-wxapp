@@ -9,20 +9,24 @@ import {
   salePaymentItemReceipts,
   salePaymentItemAllocations,
 } from '@db/order'
+import type { SaleItemInventoryCompositionSnapshotV1 } from '@db/order'
 import { userCoupons, couponTemplates } from '@db/coupon'
 import { stores, orgNodes } from '@db/org'
 import { clientWechatUsers, staffWechatUsers } from '@db/user'
 import { productSkus, productCategories, products, mallBundleGroups, mallProductSkus } from '@db/product'
+import { inventorySkuProductSkuMappings, inventorySkus } from '@db/inventory'
 import { prepaidCards, cardTransactions } from '@db/prepaid-card'
 import { eq, desc, asc, and, or, sql, ilike, gte, lt, gt, inArray, isNull } from 'drizzle-orm'
 import { alias } from 'drizzle-orm/pg-core'
+import { queryTrade, closeTrade, isReady as lakalaIsReady } from '@/lib/lakala-client'
 import type { SQL } from 'drizzle-orm'
-import type { AuthSession, SaleOrder, SaleItem, OrderStatus, SaleOrderType } from '@/lib/types'
+import type { AuthSession, SaleOrder, SaleItem, DateBasis, OrderStatus, SaleOrderType, SalesCategory } from '@/lib/types'
 import { revalidatePath } from 'next/cache'
 import { scopeCondition, isInScope, requireAdmin, isDepositOrderApprover } from '@/lib/permissions'
 import { withPermission, withAnyPermission } from '@/lib/with-permission'
 import { logOperation, logTransition, logUpdate } from '@/lib/operation-log'
 import { ApiError, parseErrorPrefix } from '@/lib/api-error'
+import { businessErrorMessage } from '@/lib/action-error'
 import { hasPendingRefund } from '@/lib/refund-cascade'
 import { pgErrorCode, pgErrorConstraint } from '@/lib/pg-error'
 import { calcCouponDiscount } from '@/lib/utils'
@@ -31,12 +35,14 @@ import { isMember, resolveUnitPrice } from '@/lib/member-pricing'
 import { calculateTreatmentTierLineAmounts } from '@/lib/treatment-tier-pricing'
 // TODO: 后续若 admin 需自建充值订单入口，从 '@/lib/recharge' 引入 loadRechargeConfig + matchTier
 import { settlePointsSafe } from '@/lib/points-settle'
+import { grantPointBatch, consumePointBatches } from '@/lib/points-batches'
 import { recalcPaidSessionsForOrder, paidUnusedSessionsExpr } from '@/lib/paid-sessions'
+import { homeDeductible, isConvertibleEntitlementRow } from '@/lib/home-product'
 import { capturePaymentAllocatables, refreshOrderAllocationRollup } from '@/lib/payment-allocatable'
 import { getPerItemRefundedMap } from '@/lib/per-item-refund'
 import { storeInMarketCondition } from '@/lib/market-store-sql'
 import { shanghaiYmd } from '@/lib/datetime'
-import { nowTs, beijingBoundaryTs } from '@/lib/db-time'
+import { nowTs, beijingBoundaryTs, beijingNextDayBoundaryTs } from '@/lib/db-time'
 import {
   resolveExportBatchLimit,
   type ExportBatchOptions,
@@ -44,10 +50,25 @@ import {
 } from '@/lib/export-pagination'
 import { parseOrderFilters, parseAllocationOrderFilters } from '@/lib/list-filters'
 import {
+  paymentAttributionRangeConditions,
+  resolvePaymentAttributionDate,
+} from '@/lib/performance-attribution'
+import {
+  amountToCents,
+  derivePaymentChannelSplit,
+  splitCentsWithLastRemainder,
+} from '@/lib/export-row-aggregation'
+import { getPointsToYuanRate, getPointsDeductionMaxRate } from '@/lib/system-config'
+import {
   orderMarketScopeCondition,
   resolveCustomerOrderMarketScope,
   type CustomerOrderMarketScope,
 } from '@/lib/order-market-scope'
+import { INVENTORY_LINKAGE_ENABLED } from '@/lib/inventory-feature-flags'
+import { getInvalidEmployeeAssignmentId } from '@/lib/employee-assignment-server'
+import { classifySaleOrderDocumentType } from '@/lib/document-type'
+import { cashAmountDisplay, isWorkfineLegacy, paymentMethodDisplay } from '@/lib/workfine-legacy'
+import { resolvePaging } from '@/lib/paging'
 
 // drizzle 0.45 alias() 返回 PgTableWithColumns<Required<Update<any,...>>>，与 .leftJoin() 期望签名不兼容；cast 回原表类型解锁 build
 const opener = alias(staffWechatUsers, 'opener') as unknown as typeof staffWechatUsers
@@ -56,6 +77,7 @@ const preferredStaff = alias(staffWechatUsers, 'preferredStaff') as unknown as t
 const offlineConfirmer = alias(staffWechatUsers, 'offlineConfirmer') as unknown as typeof staffWechatUsers
 const auditor = alias(staffWechatUsers, 'auditor') as unknown as typeof staffWechatUsers
 const performanceAttributionAdjuster = alias(staffWechatUsers, 'performanceAttributionAdjuster') as unknown as typeof staffWechatUsers
+const paymentPerformanceAttributionAdjuster = alias(staffWechatUsers, 'paymentPerformanceAttributionAdjuster') as unknown as typeof staffWechatUsers
 
 // 寄存单历史实收流水的 note 标记（change_type='回款' 行）。
 // 编辑寄存单实收时按此标记删重建；与 staff 端 routes/order.js 字面量保持一致。
@@ -67,6 +89,81 @@ const LEGACY_INFLOW_NOTE = '旧系统充值金转入'
 // 寄存单事务客户端类型（与 lib/paid-sessions.ts AdminTx 同义）
 type OrderTx = Parameters<Parameters<typeof db.transaction>[0]>[0]
 type DepositTx = OrderTx
+
+type CompositionSkuRow = {
+  skuId: string
+  productType: '疗程卡' | '家居产品' | null
+  specName?: string | null
+  productName?: string | null
+}
+
+/**
+ * 联动开启时冻结家居产品在下单当时的库存组成；临时关闭时返回空 Map，
+ * 允许主流程写入 null 快照且不访问库存表。
+ */
+async function loadInventoryCompositionSnapshots(
+  tx: OrderTx,
+  skuRows: CompositionSkuRow[],
+): Promise<Map<string, SaleItemInventoryCompositionSnapshotV1>> {
+  if (!INVENTORY_LINKAGE_ENABLED) return new Map()
+  const homeRows = [...new Map(
+    skuRows
+      .filter((row) => row.productType === '家居产品')
+      .map((row) => [row.skuId, row]),
+  ).values()]
+  if (homeRows.length === 0) return new Map()
+
+  const componentRows = await tx
+    .select({
+      productSkuId: inventorySkuProductSkuMappings.productSkuId,
+      inventorySkuId: inventorySkuProductSkuMappings.inventorySkuId,
+      productCode: inventorySkus.productCode,
+      productName: inventorySkus.productName,
+      specName: inventorySkus.specName,
+      inventorySkuActive: inventorySkus.isActive,
+      quantityPerSaleUnit: inventorySkuProductSkuMappings.quantityPerSaleUnit,
+    })
+    .from(inventorySkuProductSkuMappings)
+    .innerJoin(inventorySkus, eq(inventorySkuProductSkuMappings.inventorySkuId, inventorySkus.skuId))
+    .where(and(
+      inArray(inventorySkuProductSkuMappings.productSkuId, homeRows.map((row) => row.skuId)),
+      eq(inventorySkuProductSkuMappings.isActive, true),
+    ))
+    .orderBy(asc(inventorySkus.productName), asc(inventorySkus.productCode))
+
+  const snapshots = new Map<string, SaleItemInventoryCompositionSnapshotV1>()
+  const invalidProductSkuIds = new Set<string>()
+  for (const component of componentRows) {
+    if (!component.inventorySkuActive) {
+      invalidProductSkuIds.add(component.productSkuId)
+      continue
+    }
+    const snapshot = snapshots.get(component.productSkuId) ?? { version: 1 as const, components: [] }
+    snapshot.components.push({
+      inventorySkuId: component.inventorySkuId,
+      productCode: component.productCode,
+      productName: component.productName,
+      specName: component.specName,
+      quantityPerSaleUnit: component.quantityPerSaleUnit,
+    })
+    snapshots.set(component.productSkuId, snapshot)
+  }
+  const invalid = homeRows.find((row) => invalidProductSkuIds.has(row.skuId))
+  if (invalid) {
+    throw new ApiError(
+      'INVALID_STATE',
+      `INVENTORY_COMPOSITION_INVALID: 商品「${invalid.specName || invalid.productName || invalid.skuId}」的库存组成含停用商品`,
+    )
+  }
+  const missing = homeRows.find((row) => !snapshots.has(row.skuId))
+  if (missing) {
+    throw new ApiError(
+      'INVALID_STATE',
+      `INVENTORY_COMPOSITION_MISSING: 商品「${missing.specName || missing.productName || missing.skuId}」尚未配置库存组成`,
+    )
+  }
+  return snapshots
+}
 
 type SkuPurchaseLimitRow = {
   skuId: string
@@ -99,6 +196,197 @@ function findPurchaseLimitViolation(
 function purchaseLimitExceededMessage(row: SkuPurchaseLimitRow): string {
   const name = row.specName || row.skuId
   return `商品「${name}」每单最多可购买 ${row.purchaseLimit} 件`
+}
+
+function roundMoney(value: number): number {
+  return Math.round((Number(value) || 0) * 100) / 100
+}
+
+function moneyToCents(value: number | string | null | undefined): number {
+  return Math.max(0, Math.round((Number(value) || 0) * 100))
+}
+
+function pointsToDiscountCents(points: number, rate: number): number {
+  return Math.floor(points * rate * 100 + 1e-6)
+}
+
+function computePointsDeduction(input: {
+  usePoints?: boolean
+  requestedPoints?: number | null
+  pointsBalance: number | string | null | undefined
+  rawTotal: number
+  currentAmount: number
+  pointsToYuanRate: number
+  pointsDeductionMaxRate: number
+}): { pointsUsed: number; pointsDiscount: number } {
+  const explicit = input.requestedPoints !== undefined && input.requestedPoints !== null
+  const enabled = input.usePoints === true || (explicit && Number(input.requestedPoints) > 0)
+  if (!enabled) return { pointsUsed: 0, pointsDiscount: 0 }
+
+  const balance = Math.floor(Number(input.pointsBalance) || 0)
+  const rate = Number(input.pointsToYuanRate) || 0
+  const maxRate = Number(input.pointsDeductionMaxRate) || 0
+  const capCents = Math.min(
+    Math.floor(Math.max(0, input.rawTotal) * maxRate * 100 + 1e-6),
+    moneyToCents(input.currentAmount),
+  )
+  if (balance <= 0 || rate <= 0 || maxRate <= 0 || capCents <= 0) {
+    if (explicit && Number(input.requestedPoints) > 0) {
+      throw new ApiError('INSUFFICIENT_BALANCE', '积分余额不足或当前订单不可抵扣')
+    }
+    return { pointsUsed: 0, pointsDiscount: 0 }
+  }
+
+  if (explicit) {
+    const points = Number(input.requestedPoints)
+    if (!Number.isInteger(points) || points < 0) {
+      throw new ApiError('INVALID_PARAMS', '积分抵扣数量必须为非负整数')
+    }
+    if (points === 0) return { pointsUsed: 0, pointsDiscount: 0 }
+    if (points > balance) {
+      throw new ApiError('INSUFFICIENT_BALANCE', '积分余额不足')
+    }
+    const discountCents = pointsToDiscountCents(points, rate)
+    if (discountCents <= 0) {
+      throw new ApiError('INVALID_PARAMS', '积分抵扣金额过小')
+    }
+    if (discountCents > capCents) {
+      throw new ApiError('INVALID_PARAMS', '积分抵扣金额超过本单上限')
+    }
+    return { pointsUsed: points, pointsDiscount: discountCents / 100 }
+  }
+
+  const maxPointsByCap = Math.floor(capCents / (rate * 100))
+  const pointsUsed = Math.max(0, Math.min(balance, maxPointsByCap))
+  const discountCents = Math.min(capCents, pointsToDiscountCents(pointsUsed, rate))
+  return discountCents > 0
+    ? { pointsUsed, pointsDiscount: discountCents / 100 }
+    : { pointsUsed: 0, pointsDiscount: 0 }
+}
+
+function applyOrderLevelDiscountToItems(
+  items: Array<{ saleAmount?: string; unitRealPrice: string; quantity: number; received?: string }>,
+  discountAmount: number,
+): void {
+  const discountCents = moneyToCents(discountAmount)
+  if (!discountCents || items.length === 0) return
+
+  const saleCentsList = items.map((item) =>
+    moneyToCents(item.saleAmount ?? Number(item.unitRealPrice) * item.quantity),
+  )
+  const totalCents = saleCentsList.reduce((sum, value) => sum + value, 0)
+  if (!totalCents) return
+
+  let distributedCents = 0
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i]
+    const baseCents = saleCentsList[i]
+    const shareCents = i === items.length - 1
+      ? discountCents - distributedCents
+      : Math.min(baseCents, Math.round(discountCents * (baseCents / totalCents)))
+    distributedCents += shareCents
+
+    const newSale = Math.max(0, baseCents - shareCents) / 100
+    item.saleAmount = newSale.toFixed(2)
+    // 同步重算 unitRealPrice（与 staff 端 applyOrderLevelDiscountToItems 保持一致）
+    item.unitRealPrice = (item.quantity > 0 ? newSale / item.quantity : newSale).toFixed(2)
+    const inputReceived = item.received != null ? Number(item.received) : baseCents / 100
+    item.received = Math.min(inputReceived, newSale).toFixed(2)
+  }
+}
+
+async function availablePointsBalanceTx(tx: DepositTx, userId: string): Promise<number> {
+  const rows = await tx.execute(sql`
+    SELECT COALESCE(SUM(remaining_amount), 0)::bigint AS balance
+      FROM (
+        SELECT remaining_amount
+          FROM point_batches
+         WHERE user_id = ${userId}
+           AND remaining_amount > 0
+           AND expire_at > NOW()
+         FOR UPDATE
+      ) locked_batches
+  `) as unknown as Array<{ balance: string | number }>
+  return Number(rows[0]?.balance ?? 0)
+}
+
+async function recomputePointsBalanceTx(tx: DepositTx, userId: string): Promise<void> {
+  await tx.execute(sql`
+    UPDATE client_wechat_users c
+       SET points_balance = COALESCE((
+             SELECT SUM(pb.remaining_amount)
+               FROM point_batches pb
+              WHERE pb.user_id = c.user_id
+                AND pb.expire_at > NOW()
+           ), 0),
+           points_updated_at = NOW()
+     WHERE c.user_id = ${userId}
+  `)
+}
+
+async function deductPointsAtCreationTx(
+  tx: DepositTx,
+  input: { saleOrderId: string; userId: string; pointsUsed: number },
+): Promise<void> {
+  if (!input.pointsUsed || input.pointsUsed <= 0) return
+  // 积分相关锁序固定为 point_batches -> client_wechat_users，与过期任务一致。
+  const available = await availablePointsBalanceTx(tx, input.userId)
+  if (available < input.pointsUsed) {
+    throw new ApiError('INSUFFICIENT_BALANCE', '积分余额不足')
+  }
+  await tx.execute(sql`SELECT user_id FROM client_wechat_users WHERE user_id = ${input.userId} FOR UPDATE`)
+  const inserted = await tx.execute(sql`
+    INSERT INTO point_transactions (user_id, type, amount, ref_order_id, external_ref, created_at)
+    VALUES (${input.userId}, '消费抵扣', ${-input.pointsUsed}, ${input.saleOrderId}, ${`points-deduct-${input.saleOrderId}`}, NOW())
+    ON CONFLICT (external_ref) WHERE external_ref IS NOT NULL DO NOTHING
+    RETURNING id
+  `) as unknown as Array<{ id: number }>
+  const pointTransactionId = Number(inserted[0]?.id ?? 0)
+  if (pointTransactionId) {
+    await consumePointBatches(tx, {
+      userId: input.userId,
+      amount: -input.pointsUsed,
+      refOrderId: input.saleOrderId,
+    })
+    await recomputePointsBalanceTx(tx, input.userId)
+  }
+}
+
+async function releasePointsDeductionTx(
+  tx: DepositTx,
+  input: { saleOrderId: string; userId?: string | null; pointsUsed?: number | string | null },
+): Promise<void> {
+  if (!input.saleOrderId || !input.userId || Number(input.pointsUsed ?? 0) <= 0) return
+  await tx.execute(sql`SELECT user_id FROM client_wechat_users WHERE user_id = ${input.userId} FOR UPDATE`)
+  const rows = await tx.execute(sql`
+    SELECT
+      COALESCE(SUM(CASE WHEN type = '消费抵扣' THEN -amount ELSE 0 END), 0)::bigint AS deducted,
+      COALESCE(SUM(CASE WHEN type = '消费抵扣退回' THEN amount ELSE 0 END), 0)::bigint AS returned
+    FROM point_transactions
+    WHERE ref_order_id = ${input.saleOrderId}
+      AND user_id = ${input.userId}
+      AND type IN ('消费抵扣','消费抵扣退回')
+  `) as unknown as Array<{ deducted: string | number; returned: string | number }>
+  const pointsToRelease = Number(rows[0]?.deducted ?? 0) - Number(rows[0]?.returned ?? 0)
+  if (pointsToRelease <= 0) return
+
+  const inserted = await tx.execute(sql`
+    INSERT INTO point_transactions (user_id, type, amount, ref_order_id, external_ref, created_at)
+    VALUES (${input.userId}, '消费抵扣退回', ${pointsToRelease}, ${input.saleOrderId}, ${`points-deduct-rev-${input.saleOrderId}`}, NOW())
+    ON CONFLICT (external_ref) WHERE external_ref IS NOT NULL DO NOTHING
+    RETURNING id
+  `) as unknown as Array<{ id: number }>
+  const pointTransactionId = Number(inserted[0]?.id ?? 0)
+  if (pointTransactionId) {
+    await grantPointBatch(tx, {
+      userId: input.userId,
+      pointTransactionId,
+      type: '消费抵扣退回',
+      amount: pointsToRelease,
+      refOrderId: input.saleOrderId,
+    })
+    await recomputePointsBalanceTx(tx, input.userId)
+  }
 }
 
 function splitMoneyByCount(value: number | string, count: number): number[] {
@@ -155,10 +443,54 @@ function assertCanApproveDepositOrder(session: AuthSession): void {
 }
 
 /**
- * 待支付/支付失败转换单被关闭时撤销创建时的即时资产变更。
+ * 待支付/支付失败转换单被关闭时撤销创建时的即时资产变更：
+ * - 恢复被转出的原卡 remaining_sessions；
+ * - 恢复被转出的家居产品 picked_up_quantity（2026-09-14 #125）；
+ * - 作废本转换单的转入/转出权益计数。
+ *
+ * **只可对「待支付 / 支付失败」的转换单调用一次**：疗程卡侧靠 LEAST 封顶天然幂等，
+ * 家居侧是等量减法，重复调用会把数量多退一次（顾客凭空多出可提量）。
+ *
  * staffApi/routes/order.js 有同义 SQL 副本；修改时保持语义一致。
  */
 async function rollbackPendingConversionOnClose(tx: OrderTx, saleOrderId: string): Promise<void> {
+  // 0a. 先锁**原单**（#182，与 createConversionOrder 同一锁序）：本函数末尾要 UPDATE 原单的
+  // total_amount/status 还原欠款，若留到那时才锁，足迹就是 sale_items → sale_orders，
+  // 与入账路径（先锁 sale_orders）反向成环。按 sale_order_id 升序一次锁完。
+  await tx.execute(sql`
+    SELECT sale_order_id FROM sale_orders
+     WHERE sale_order_id IN (
+       SELECT DISTINCT src.sale_order_id
+         FROM sale_items src
+         JOIN (
+           SELECT DISTINCT ref_sale_item_id
+             FROM sale_items
+            WHERE sale_order_id = ${saleOrderId}
+              AND item_direction = '转出'
+              AND ref_sale_item_id IS NOT NULL
+         ) refs ON refs.ref_sale_item_id = src.sale_item_id
+     )
+     ORDER BY sale_order_id
+     FOR UPDATE
+  `)
+
+  // 0. 先用一条语句按全局 sale_item_id 顺序锁住本单引用的**全部**源行。
+  //    createConversionOrder 折抵时是单语句 ORDER BY si.sale_item_id ... FOR UPDATE OF si（不分类型），
+  //    若这里分「疗程卡段→家居段」两次加锁，混选转换单在家居行 id < 疗程卡行 id 时会形成反向锁序而死锁。
+  await tx.execute(sql`
+    SELECT src.sale_item_id
+      FROM sale_items src
+      JOIN (
+        SELECT DISTINCT ref_sale_item_id
+          FROM sale_items
+         WHERE sale_order_id = ${saleOrderId}
+           AND item_direction = '转出'
+           AND ref_sale_item_id IS NOT NULL
+      ) refs ON refs.ref_sale_item_id = src.sale_item_id
+     ORDER BY src.sale_item_id
+     FOR UPDATE OF src
+  `)
+
   await tx.execute(sql`
     WITH restore AS (
       SELECT ref_sale_item_id, SUM(quantity)::integer AS restore_sessions
@@ -176,6 +508,9 @@ async function rollbackPendingConversionOnClose(tx: OrderTx, saleOrderId: string
              restore.restore_sessions
         FROM sale_items src
         JOIN restore ON restore.ref_sale_item_id = src.sale_item_id
+       -- 按 sale_item_id 升序加锁，与 createConversionOrder 折抵时的加锁顺序保持一致；
+       -- 两段回滚是独立语句，不定序会与开单事务反向加锁而死锁。
+       ORDER BY src.sale_item_id
        FOR UPDATE OF src
     )
     UPDATE sale_items src
@@ -188,6 +523,227 @@ async function rollbackPendingConversionOnClose(tx: OrderTx, saleOrderId: string
      WHERE src.sale_item_id = locked_source.sale_item_id
   `)
 
+  // 家居产品转出把数量并进了 picked_up_quantity，撤销时必须等量退回；
+  // 否则订单一关这批货既提不出（pending 恒 0）也退不掉（refundable 恒 0）。
+  await tx.execute(sql`
+    WITH restore AS (
+      SELECT ref_sale_item_id, SUM(quantity)::integer AS restore_quantity
+        FROM sale_items
+       WHERE sale_order_id = ${saleOrderId}
+         AND item_direction = '转出'
+         AND product_type = '家居产品'
+         AND ref_sale_item_id IS NOT NULL
+       GROUP BY ref_sale_item_id
+    ),
+    locked_source AS (
+      SELECT src.sale_item_id,
+             restore.restore_quantity
+        FROM sale_items src
+        JOIN restore ON restore.ref_sale_item_id = src.sale_item_id
+       ORDER BY src.sale_item_id
+       FOR UPDATE OF src
+    )
+    UPDATE sale_items src
+       SET converted_quantity = GREATEST(
+             0,
+             COALESCE(src.converted_quantity, 0) - locked_source.restore_quantity
+           ),
+           updated_at = NOW()
+      FROM locked_source
+     WHERE src.sale_item_id = locked_source.sale_item_id
+  `)
+
+  // #182 欠款归零的回滚。折抵时把原行应付下调到实收、差额记在**转出行**的 waived_amount 上
+  // （原行那份是累计值，归因不到具体转换单）。关单必须等量还回，否则
+  // 「开转换单 → 关闭」= 永久抹掉原单欠款。与 staff rollbackPendingConversionOnClose 同源。
+  const restoredWaiveRaw = await tx.execute(sql`
+    WITH waived AS (
+      SELECT ref_sale_item_id,
+             SUM(waived_amount::numeric) AS waived,
+             -- 原行 pending_received 快照（新口径下同一行只折一次，MAX 即该次快照）
+             MAX(pending_received::numeric) AS orig_pending
+        FROM sale_items
+       WHERE sale_order_id = ${saleOrderId}
+         AND item_direction = '转出'
+         AND ref_sale_item_id IS NOT NULL
+       GROUP BY ref_sale_item_id
+      HAVING SUM(waived_amount::numeric) > 0
+    ),
+    locked_source AS (
+      SELECT src.sale_item_id, src.sale_order_id, waived.waived, waived.orig_pending
+        FROM sale_items src
+        JOIN waived ON waived.ref_sale_item_id = src.sale_item_id
+       ORDER BY src.sale_item_id
+       FOR UPDATE OF src
+    ),
+    restored AS (
+      UPDATE sale_items src
+         SET sale_amount = (src.sale_amount::numeric + locked_source.waived)::numeric(10, 2),
+             waived_amount = (src.waived_amount::numeric - locked_source.waived)::numeric(10, 2),
+             -- 还原折抵时被钉住的 pending_received，避免永久改写 Branch B 的分摊权重
+             pending_received = locked_source.orig_pending::numeric(10, 2),
+             updated_at = NOW()
+        FROM locked_source
+       WHERE src.sale_item_id = locked_source.sale_item_id
+         -- 自校验：原行累计豁免额必须够扣。只夹下界（GREATEST）会把「重复还原」静默吃掉
+         -- （sale_amount 被 +Δ 两次、waived 只减到 0），破坏「原始应付 = sale_amount + waived_amount」。
+         AND src.waived_amount::numeric >= locked_source.waived
+      RETURNING locked_source.sale_order_id, locked_source.sale_item_id, locked_source.waived
+    )
+    -- 按**行**返回：订单级还原量要逐行扣掉该行已退款额（与正向 orderWaiveAmount 同公式），
+    -- 直接把行级总额加回 total_amount 会把「已退给顾客的钱」变成假欠款。
+    -- ⚠ 必须从 waived（转出行归因凭据）**左连**出发，不能从 locked_source 出发：
+    -- locked_source 是内连接，源行若已不存在，这条归因会**整条消失**，下面的 restored_ok
+    -- 检查也就看不见它 —— 权益已被前两段无条件加回、欠款却没还原。
+    -- restored_ok 单独一列：上面那道自校验 CAS 失败时 restored 只会**静默少行**。
+    -- ⚠ locked_source 在本文件另外两条语句里是以原名限定的（FROM locked_source +
+    -- locked_source. 限定符）。这里不能再起别名：CTE 别名守护按**文件**聚合主查询文本，
+    -- 同一个 CTE 名一处用别名、另一处用原名会被判成混用（business.test.ts 的
+    -- 「CTE 起了别名就必须全程用别名」）。全文件统一用原名，顺带免掉读代码时的两套称呼。
+    SELECT w.ref_sale_item_id AS sale_item_id,
+           locked_source.sale_order_id,
+           w.waived,
+           (locked_source.sale_item_id IS NOT NULL) AS source_found,
+           (r.sale_item_id IS NOT NULL) AS restored_ok
+      FROM waived w
+      LEFT JOIN locked_source ON locked_source.sale_item_id = w.ref_sale_item_id
+      LEFT JOIN restored r ON r.sale_item_id = w.ref_sale_item_id
+     ORDER BY locked_source.sale_order_id, w.ref_sale_item_id
+  `)
+  // 没有任何行被豁免过时这条语句返回空集；非数组一律按「无可还原」处理
+  const restoredWaive: Array<Record<string, unknown>> = Array.isArray(restoredWaiveRaw)
+    ? (restoredWaiveRaw as unknown as Array<Record<string, unknown>>)
+    : []
+  if (restoredWaive.some((r) => r.source_found !== true)) {
+    throw new ApiError('CONFLICT', 'SOURCE_ITEM_GONE: 折抵的原订单明细已不存在，无法还原欠款')
+  }
+  if (restoredWaive.some((r) => r.restored_ok !== true)) {
+    throw new ApiError('CONFLICT', 'WAIVE_CHANGED: 原订单的折抵豁免额已被改动，无法还原欠款，请刷新后重试')
+  }
+
+  // 逐行换算成订单级还原量：Σ max(0, 行级 waived − 该行已退款额)。
+  // SQL 与 lib/per-item-refund.ts 同源；事务体内必须走 tx。
+  const orderRestoreMap = new Map<string, number>()
+  for (const orderId of [...new Set(restoredWaive.map((r) => r.sale_order_id as string))].sort()) {
+    const refundedRows = (await tx.execute(sql`
+      WITH refund_items AS (
+        SELECT elem ->> 'refSaleItemId' AS sale_item_id,
+               COALESCE((elem ->> 'refundAmount')::numeric, 0) AS refund_amount
+        FROM sale_order_payments sop
+        CROSS JOIN LATERAL jsonb_array_elements(
+          CASE WHEN sop.note LIKE '{%'
+               THEN CASE WHEN jsonb_typeof((sop.note)::jsonb -> 'items') = 'array'
+                         THEN (sop.note)::jsonb -> 'items'
+                         ELSE '[]'::jsonb END
+               ELSE '[]'::jsonb END
+        ) AS elem
+        WHERE sop.sale_order_id = ${orderId}
+          AND sop.change_type = '退款'
+          AND sop.status = '已支付'
+          AND elem ->> 'refSaleItemId' IS NOT NULL
+          AND elem ->> 'refSaleItemId' <> 'OVERPAY'
+      )
+      SELECT sale_item_id, SUM(refund_amount) AS refunded
+        FROM refund_items GROUP BY sale_item_id
+    `)) as unknown as Array<Record<string, unknown>>
+    const refundedMap = new Map<string, number>(
+      (Array.isArray(refundedRows) ? refundedRows : []).map(
+        (r) => [r.sale_item_id as string, Number(r.refunded ?? 0)],
+      ),
+    )
+    let total = 0
+    for (const r of restoredWaive) {
+      if ((r.sale_order_id as string) !== orderId) continue
+      const rowWaived = Math.round(Number(r.waived ?? 0) * 100) / 100
+      const refunded = Math.round(Number(refundedMap.get(r.sale_item_id as string) ?? 0) * 100) / 100
+      total += Math.max(0, Math.round((rowWaived - refunded) * 100) / 100)
+    }
+    orderRestoreMap.set(orderId, Math.round(total * 100) / 100)
+  }
+
+  for (const refOrderId of [...orderRestoreMap.keys()].sort()) {
+    const waived = orderRestoreMap.get(refOrderId) as number
+    if (!(waived > 0)) continue
+    const lockedRows = (await tx.execute(sql`
+      SELECT total_amount, received, prepaid_card_amount, pending_prepaid_card_amount,
+             status, sale_order_type
+        FROM sale_orders WHERE sale_order_id = ${refOrderId} FOR UPDATE
+    `)) as unknown as Array<Record<string, unknown>>
+    const o = lockedRows[0]
+    // 前面的 CTE 已经还原了源行 sale_amount / waived_amount / pending_received，
+    // 此时订单不存在就会留下「行已还原、单未还原」的永久不一致；必须让整笔关单事务回滚。
+    if (!o) throw new ApiError('CONFLICT', 'ORDER_GONE: 原订单已不存在，无法还原折抵豁免的欠款')
+    const newTotal = Math.round((Number(o.total_amount ?? 0) + waived) * 100) / 100
+    const orderReceived = Math.round(Number(o.received ?? 0) * 100) / 100
+    const keepsPayable = ['销售单', '内部单', '转换单'].includes(o.sale_order_type as string)
+    const newPayable = keepsPayable
+      ? Math.max(0, Math.round((newTotal
+          - Number(o.prepaid_card_amount ?? 0)
+          - Number(o.pending_prepaid_card_amount ?? 0)) * 100) / 100)
+      : null
+    // 欠款恢复后从'已支付'退回'部分支付'；'已完成'是终态不回退
+    const targetStatus = o.status === '已支付' && orderReceived + 0.001 < newTotal
+      ? '部分支付'
+      : (o.status as string)
+    // CAS 与正向折抵的订单 UPDATE 逐字对称（`AND status = <旧值> AND lakala_out_order_no IS NULL`）：
+    // 本语句写 status，缺 CAS 就是无守卫的状态机 UPDATE。行虽已在上一句 FOR UPDATE 持锁，
+    // 但在途在线支付意味着回调随时会按当前 total 结算，此时改写 total/status 会与回调竞争 ——
+    // 宁可整笔关单失败让操作者重试。
+    const updRestored = await tx.execute(sql`
+      UPDATE sale_orders
+         SET total_amount = ${newTotal.toFixed(2)},
+             payable_amount = ${newPayable === null ? sql`payable_amount` : sql`${newPayable.toFixed(2)}`},
+             status = ${targetStatus}::order_status,
+             updated_at = NOW()
+       WHERE sale_order_id = ${refOrderId}
+         AND status = ${o.status as string}::order_status
+         AND lakala_out_order_no IS NULL
+    `)
+    // 行已在上一句 FOR UPDATE 持锁，正常必为 1；为 0 = 原单在持锁期间消失（孤儿数据）或
+    // 有在途在线支付。此时源行 sale_amount 已还原而订单 total 未还原，必须显式抛出。
+    if (rowsAffected(updRestored) === 0) {
+      throw new ApiError('CONFLICT', 'ORDER_GONE: 原订单状态已变更或有在途支付，无法还原折抵豁免的欠款')
+    }
+  }
+
+  // 应付恢复 → paid_sessions 退回未满付（公式与 PAID_SESSIONS_RECALC_SQL 同源）。
+  // ⚠ 必须**独立于订单级还原量**循环，与正向 6b 同一条对称纪律：订单级还原量为 0
+  // （行级豁免额全部来自已退款、本无真实欠款）时上面会 continue，但源行 sale_amount 已被
+  // CTE **无条件**还原 —— 不重算就会留下偏高的 paid_sessions（付清后退款 40% 的 10 次卡会
+  // 停在 10，正确值 6），把已退款的权益重新放出来。
+  for (const refOrderId of [...new Set(restoredWaive.map((r) => r.sale_order_id as string))].sort()) {
+    const recalcRes = await tx.execute(sql`
+      UPDATE sale_items
+         SET paid_sessions = CASE
+               WHEN sale_items.session_count IS NULL THEN NULL
+               WHEN op.total_amount <= 0 THEN sale_items.session_count
+               WHEN sale_items.sale_amount <= 0 THEN sale_items.session_count
+               ELSE LEAST(sale_items.session_count, FLOOR(sale_items.received::numeric * sale_items.session_count / sale_items.sale_amount::numeric)::integer)
+             END,
+             updated_at = NOW()
+        FROM (SELECT total_amount FROM sale_orders WHERE sale_order_id = ${refOrderId}) op
+       WHERE sale_items.sale_item_id IN (
+         SELECT out_item.ref_sale_item_id
+           FROM sale_items out_item
+          WHERE out_item.sale_order_id = ${saleOrderId}
+            AND out_item.item_direction = '转出'
+            AND out_item.ref_sale_item_id IS NOT NULL
+            -- 必须与正向作用域一致（只含真正被豁免过的行）。少了这条会把同单其它被折抵行
+            -- 一起重算——已全退、被 STEP 2.5 压成 paid_sessions=0 的 0 元赠品卡会命中
+            -- sale_amount <= 0 兜底重回满次数，而 paid_sessions 是「已退款卡消失」的唯一机制。
+            AND out_item.waived_amount::numeric > 0
+       )
+         AND sale_items.sale_order_id = ${refOrderId}
+    `)
+    // 影响行数必为 >= 1：作用域来自「本单 waived_amount > 0 的转出行」，其源行刚被上面的 CTE
+    // 还原过、source_found / restored_ok 都已校验。为 0 只可能是 op 子查询取不到原单
+    // （孤儿数据）—— 此时源行金额已还原、paid_sessions 没还原，而下面还会把归因凭据清零，
+    // 必须显式抛出。订单级还原量为 0 的那条路径也走这里，不会被上面的 continue 绕过。
+    if (rowsAffected(recalcRes) === 0) {
+      throw new ApiError('CONFLICT', 'ORDER_GONE: 原订单已不存在，无法还原折抵行的已支付次数')
+    }
+  }
+
   await tx.execute(sql`
     UPDATE sale_items
        SET received = 0,
@@ -199,6 +755,9 @@ async function rollbackPendingConversionOnClose(tx: OrderTx, saleOrderId: string
              WHEN session_count IS NULL THEN NULL
              ELSE 0
            END,
+           -- #182：归因额清零，让本函数对同一张转换单幂等。上面那道「CAS 失败即抛 CONFLICT」
+           -- 的自校验没有它就会把「已还原过」误判成「豁免额被外部改动」而报错。
+           waived_amount = 0,
            updated_at = NOW()
      WHERE sale_order_id = ${saleOrderId}
        AND item_direction IN ('转出', '转入')
@@ -267,22 +826,76 @@ async function applyRechargeOnOrderPaid(
 /**
  * customer_type 跃迁（admin recordPayment 触发点）。
  *
- * 三端跃迁触发点之一（与 fengyu-staff/cloudfunctions/staffApi/routes/order.js
- * recalcCustomerType + fengyu-client/cloudfunctions/payNotify/index.js 镜像一致）。
+ * 八处跃迁 SQL 副本之一（staffApi routes/order.js + clientApi routes/order.js + payNotify index.js
+ * + admin actions/orders.ts + admin lib/recompute-customer-tags.ts
+ * + db/scripts/recalc-all-customer-types.js + db/scripts/recalc-became-member-at.js
+ * + db/scripts/backfill-membership-upgrade-doc-type.js）。
  *
- * 业务口径（2026-04-26 体验卡 ticket Round 2）：
- *   - 会员客：销售单 total_amount >= memberThreshold
- *   - 小美客：销售单中存在非体验卡明细行（si.is_experience = false）
- *   - 体验客：销售单中存在体验卡明细行（si.is_experience = true）
+ * 业务口径（#187，2026-09-18 落地 2026-04-26 Q5.2 决策）——按**单笔订单的非体验部分毛实收**判定：
+ *   - 会员客：存在一张销售单，其 non_trial >= memberThreshold
+ *   - 小美客：存在一张销售单，其 non_trial > 0
+ *   - 体验客：存在一张销售单，其 trial > 0
  *   - 流量客：兜底
+ * 毛实收 = sale_items.received（净额）+ 该行逐项退款额，即"曾经收到的钱"（退款不扣减）。
+ * 旧口径按订单应付额 o.total_amount，会把混合订单里的体验卡金额也算进会员门槛。
  *
  * 只升不降；跃迁为"会员客"时同步写入 became_member_at = COALESCE(首笔达标单 paid_at, created_at)（非检测时刻 NOW()）。
  *
- * SQL 关键字段（is_experience capability 列、不再 JOIN product_categories）必须与
- * staffApi/routes/order.js + payNotify/index.js 字面一致 —— 守卫测试
- * recalc-customer-type-sql.test.js 跨三个文件比对。
+ * SQL 必须与其余七处字面一致 —— 守卫测试 recalc-customer-type-sql.test.js 跨八个文件比对。
  */
 type AdminTx = Parameters<Parameters<typeof db.transaction>[0]>[0]
+
+/**
+ * 顾客分类跃迁的订单级金额 CTE（#187）。产出每张已结清销售单的
+ * non_trial / trial = 非体验 / 体验行的毛实收合计。
+ * refund_by_item 用 public.try_jsonb / public.try_numeric（migration 0045）做安全转换：
+ * 非法 JSON / 非数字文本降级为 NULL 而非抛 22P02。全仓退款 note 解析已统一此写法，LIKE 假守门已废除。
+ * item_direction='购买' 与 STEP 1.5 扣减作用域一致；FILTER 聚合的 NULL 由 COALESCE 归零。
+ */
+const recalcCustomerTypeCte = (clientUserId: string) => sql`WITH refund_by_item AS (
+       SELECT sop.sale_order_id,
+              elem ->> 'refSaleItemId' AS sale_item_id,
+              SUM(COALESCE(public.try_numeric(elem ->> 'refundAmount'), 0)) AS refunded
+       FROM sale_order_payments sop
+       JOIN sale_orders ro ON ro.sale_order_id = sop.sale_order_id
+       CROSS JOIN LATERAL jsonb_array_elements(
+         CASE WHEN jsonb_typeof(public.try_jsonb(sop.note) -> 'items') = 'array'
+              THEN public.try_jsonb(sop.note) -> 'items'
+              ELSE '[]'::jsonb END
+       ) AS elem
+       WHERE ro.client_user_id = ${clientUserId}
+         AND ro.status IN ('已支付', '已完成')
+         AND ro.sale_order_type = '销售单'
+         AND sop.change_type = '退款'
+         AND sop.status = '已支付'
+         AND elem ->> 'refSaleItemId' <> 'OVERPAY'
+       -- 序号绑定 SELECT 的前 2 列（sale_order_id, refSaleItemId）；重排 SELECT 列须同步改这里
+       GROUP BY 1, 2
+     ),
+     order_amounts AS (
+       SELECT o.sale_order_id,
+              CASE WHEN NOT EXISTS (SELECT 1 FROM sale_items si2 WHERE si2.sale_order_id = o.sale_order_id)
+                   THEN GREATEST(o.received::numeric, 0)
+                   ELSE COALESCE(SUM(LEAST(si.received::numeric + COALESCE(rbi.refunded, 0),
+                                           si.sale_amount::numeric))
+                                 FILTER (WHERE si.is_experience = false), 0)
+              END AS non_trial,
+              CASE WHEN NOT EXISTS (SELECT 1 FROM sale_items si2 WHERE si2.sale_order_id = o.sale_order_id)
+                   THEN 0
+                   ELSE COALESCE(SUM(LEAST(si.received::numeric + COALESCE(rbi.refunded, 0),
+                                           si.sale_amount::numeric))
+                                 FILTER (WHERE si.is_experience = true), 0)
+              END AS trial
+       FROM sale_orders o
+       LEFT JOIN sale_items si ON si.sale_order_id = o.sale_order_id
+                              AND si.item_direction = '购买'
+       LEFT JOIN refund_by_item rbi ON rbi.sale_order_id = o.sale_order_id
+                                   AND rbi.sale_item_id = si.sale_item_id
+       WHERE o.client_user_id = ${clientUserId}
+         AND o.status IN ('已支付', '已完成')
+         AND o.sale_order_type = '销售单'
+       GROUP BY o.sale_order_id, o.received
+     )`
 
 async function recalcCustomerType(tx: AdminTx, clientUserId: string): Promise<void> {
   if (!clientUserId) return
@@ -295,36 +908,14 @@ async function recalcCustomerType(tx: AdminTx, clientUserId: string): Promise<vo
 
   const threshold = await getMemberThreshold()
 
-  // 三端 SQL 独立副本（admin actions/orders.ts + staffApi routes/order.js + payNotify index.js）
-  // 修改时必须同步另外两端；一致性由 staffApi __tests__/routes/recalc-customer-type-sql.test.js
-  // 与 cross-end-sql-snapshot.test.js 守护，任一端漂移立即触发测试失败。
+  // 八处 SQL 独立副本，修改时必须同步其余七处；一致性由 staffApi
+  // __tests__/routes/recalc-customer-type-sql.test.js 与 cross-end-sql-snapshot.test.js 守护。
   const typeRes = await tx.execute(sql`
+    ${recalcCustomerTypeCte(clientUserId)}
     SELECT CASE
-       WHEN EXISTS (
-         SELECT 1 FROM sale_orders o
-         WHERE o.client_user_id = ${clientUserId}
-           AND o.status IN ('已支付', '已完成')
-           AND o.sale_order_type = '销售单'
-           AND o.total_amount >= ${threshold}
-       ) THEN '会员客'
-       WHEN EXISTS (
-         SELECT 1
-         FROM sale_orders o
-         JOIN sale_items si ON si.sale_order_id = o.sale_order_id
-         WHERE o.client_user_id = ${clientUserId}
-           AND o.status IN ('已支付', '已完成')
-           AND o.sale_order_type = '销售单'
-           AND si.is_experience = false
-       ) THEN '小美客'
-       WHEN EXISTS (
-         SELECT 1
-         FROM sale_orders o
-         JOIN sale_items si ON si.sale_order_id = o.sale_order_id
-         WHERE o.client_user_id = ${clientUserId}
-           AND o.status IN ('已支付', '已完成')
-           AND o.sale_order_type = '销售单'
-           AND si.is_experience = true
-       ) THEN '体验客'
+       WHEN EXISTS (SELECT 1 FROM order_amounts WHERE non_trial >= ${threshold}) THEN '会员客'
+       WHEN EXISTS (SELECT 1 FROM order_amounts WHERE non_trial > 0)   THEN '小美客'
+       WHEN EXISTS (SELECT 1 FROM order_amounts WHERE trial > 0)       THEN '体验客'
        ELSE '流量客'
      END AS computed_type
   `)
@@ -352,27 +943,25 @@ async function recalcCustomerType(tx: AdminTx, clientUserId: string): Promise<vo
     // became_member_at 记为确立会员资格的首笔达标单时间（COALESCE(paid_at, created_at)）；
     // 选单子查询与下方 is_membership_upgrade 归因同源、选同一单。
     await tx.execute(sql`
-      UPDATE client_wechat_users SET became_member_at = (
+      UPDATE client_wechat_users SET became_member_at = COALESCE((
+        ${recalcCustomerTypeCte(clientUserId)}
         SELECT COALESCE(o.paid_at, o.created_at) FROM sale_orders o
-        WHERE o.client_user_id = ${clientUserId}
-          AND o.status IN ('已支付', '已完成')
-          AND o.sale_order_type = '销售单'
-          AND o.total_amount >= ${threshold}
-        ORDER BY o.paid_at ASC NULLS LAST, o.created_at ASC
+        JOIN order_amounts oa ON oa.sale_order_id = o.sale_order_id
+        WHERE oa.non_trial >= ${threshold}
+        ORDER BY o.paid_at ASC NULLS LAST, o.created_at ASC, o.sale_order_id ASC
         LIMIT 1
-      ) WHERE user_id = ${clientUserId}
+      ), became_member_at) WHERE user_id = ${clientUserId}
     `)
-    // 给触发本次首次跃迁的达标销售单打会员升级标记（WHERE 与会员客判定 CASE 同源；四端镜像）。
+    // 给触发本次首次跃迁的达标销售单打会员升级标记（WHERE 与会员客判定 CASE 同源；八处镜像）。
     // 函数开头“已是会员客即 return”保证只在首次跃迁时执行一次；paid_at 最早 = 确立会员资格的首笔达标单。
     await tx.execute(sql`
       UPDATE sale_orders SET is_membership_upgrade = true
       WHERE sale_order_id = (
+        ${recalcCustomerTypeCte(clientUserId)}
         SELECT o.sale_order_id FROM sale_orders o
-        WHERE o.client_user_id = ${clientUserId}
-          AND o.status IN ('已支付', '已完成')
-          AND o.sale_order_type = '销售单'
-          AND o.total_amount >= ${threshold}
-        ORDER BY o.paid_at ASC NULLS LAST, o.created_at ASC
+        JOIN order_amounts oa ON oa.sale_order_id = o.sale_order_id
+        WHERE oa.non_trial >= ${threshold}
+        ORDER BY o.paid_at ASC NULLS LAST, o.created_at ASC, o.sale_order_id ASC
         LIMIT 1
       )
     `)
@@ -417,7 +1006,9 @@ async function deductPrepaidCardAtCreation(
   }
   const currentBalance = Number(balRows[0].balance)
   if (currentBalance + 0.001 < amount) {
-    throw new Error(`INSUFFICIENT_BALANCE:${currentBalance}: 顾客储值卡余额不足，期望扣 ${amount}，实际 ${currentBalance}`)
+    // 余额不放子标签位：这里的数字无人解析（只有下方 recordPayment 的纯数字抛点被解析），
+    // 放在子标签位只会以「320.5: 」的形式漏进用户 toast（issue #133 评审 round 3）
+    throw new Error(`INSUFFICIENT_BALANCE: 顾客储值卡余额不足，期望扣 ${amount}，实际 ${currentBalance}`)
   }
   const cardId = balRows[0].card_id as string
   await tx.execute(sql`
@@ -485,6 +1076,8 @@ export const getOrders = withPermission(
     customerName: r.custName || r.order.customerName || null,
     totalAmount: r.order.totalAmount,
     prepaidCardAmount: r.order.prepaidCardAmount ?? '0',
+    pointsUsed: r.order.pointsUsed ?? 0,
+    pointsDiscount: r.order.pointsDiscount ?? '0',
     pendingPrepaidCardAmount: r.order.pendingPrepaidCardAmount ?? '0',
     payableAmount: r.order.payableAmount ?? '0',
     received: r.order.received ?? '0',
@@ -511,14 +1104,21 @@ export const getOrders = withPermission(
 /** 订单列表筛选参数 */
 export interface OrderFilters {
   status?: string
+  /** 订单状态多选；由 URL `status=待支付,待审批` 解析而来。 */
+  statuses?: OrderStatus[]
   /** 订单类型多选；由 URL `type=销售单,转换单` 解析而来。 */
   types?: SaleOrderType[]
   marketId?: string
   storeId?: string
   dateFrom?: string
   dateTo?: string
+  /**
+   * 日期筛选口径：默认 attribution（款项业绩归属日期）；
+   * payment 按已入账款项发生时间；order 按下单时间。
+   */
+  dateBasis?: DateBasis
   search?: string
-  /** 支付方式筛选（含 `'无'` = 全额储值卡抵扣） */
+  /** 支付方式筛选（`'无'` = 原生全额抵扣；`'未知'` = WorkFine 历史单虚拟通道） */
   paymentMethod?: string
   /** 是否仅筛选"有储值卡抵扣"的订单（prepaid_card_amount > 0） */
   hasPrepaidDeduction?: boolean
@@ -543,9 +1143,14 @@ function buildOrderConditions(
   const conditions: (SQL | undefined)[] = [
     scopeCondition(session, saleOrders.storeId),
   ]
+  // 缺省口径与 URL 解析（parseDateBasis）保持一致，避免「页面默认归属、直调默认下单」的双口径
+  const dateBasis: DateBasis = filters.dateBasis ?? 'attribution'
 
   if (filters.status) {
     conditions.push(eq(saleOrders.status, filters.status as typeof saleOrders.status.enumValues[number]))
+  }
+  if (filters.statuses?.length) {
+    conditions.push(inArray(saleOrders.status, filters.statuses))
   }
   if (filters.types?.length) {
     conditions.push(inArray(saleOrders.saleOrderType, filters.types))
@@ -561,15 +1166,50 @@ function buildOrderConditions(
   if (filters.storeId) {
     conditions.push(eq(saleOrders.storeId, filters.storeId))
   }
-  if (filters.dateFrom) {
-    // dateFrom 是日期串（date input 'YYYY-MM-DD'）：ES 规范按 UTC 午夜解析 new Date(dateFrom)，
-    // postgres.js 发 UTC ISO → PG 当墙钟早 8h，漏当天 00:00-08:00。直接拼北京字面 00:00:00::timestamp
-    // （与 sale_order_datetime 北京字面同语义，不经 new Date/beijingTs）。
-    conditions.push(gte(saleOrders.saleOrderDatetime, beijingBoundaryTs(filters.dateFrom, '00:00:00')))
-  }
-  if (filters.dateTo) {
-    // 同上：dateTo 日期串拼 23:59:59 北京字面，取当天结束。
-    conditions.push(lt(saleOrders.saleOrderDatetime, beijingBoundaryTs(filters.dateTo, '23:59:59')))
+  if (dateBasis === 'payment' && (filters.dateFrom || filters.dateTo)) {
+    // 款项日期只决定订单是否入选，导出金额仍是订单当前累计快照。
+    // status='已支付' 同时覆盖首次支付、回款、储值卡抵扣和已完成退款。
+    conditions.push(sql`EXISTS (
+      SELECT 1
+      FROM ${saleOrderPayments} AS payment_date_filter
+      WHERE payment_date_filter.sale_order_id = ${saleOrders.saleOrderId}
+        AND payment_date_filter.status = '已支付'
+        ${filters.dateFrom
+          ? sql`AND payment_date_filter.paid_at >= ${beijingBoundaryTs(filters.dateFrom, '00:00:00')}`
+          : sql``}
+        ${filters.dateTo
+          ? sql`AND payment_date_filter.paid_at < ${beijingNextDayBoundaryTs(filters.dateTo)}`
+          : sql``}
+    )`)
+  } else if (dateBasis === 'attribution' && (filters.dateFrom || filters.dateTo)) {
+    // 默认口径：订单只要存在任一笔「业绩归属日期」落在区间内的**已入账**款项就入选
+    // （与 payment 口径同为 EXISTS 半连接：命中的是订单，导出金额仍是订单累计快照）。
+    // ⚠ 下面的 status 条件是语义闸门，不是索引优化，删掉会改变结果集：
+    // 迁移 0040 起未入账行的 performance_attribution_date 由 created_at 占位（不再是 NULL），
+    // 首次支付行的列值又是订单级的镜像（与本行是否入账无关），两者都会让未入账款项把订单带进结果。
+    // 规范要求「按已入账的首次支付/回款/储值卡抵扣/退款判断订单是否入选」（admin.pr.spec.md §订单管理）。
+    // 附带后果（非缺陷）：0 笔款项的 WorkFine 历史单在款项口径下不入选，要看它们须切「下单日期」。
+    const [fromCond, toCond] = paymentAttributionRangeConditions(
+      filters.dateFrom,
+      filters.dateTo,
+      'payment_attribution_filter',
+    )
+    conditions.push(sql`EXISTS (
+      SELECT 1
+      FROM ${saleOrderPayments} AS payment_attribution_filter
+      WHERE payment_attribution_filter.sale_order_id = ${saleOrders.saleOrderId}
+        AND payment_attribution_filter.status = '已支付'
+        ${fromCond ? sql`AND ${fromCond}` : sql``}
+        ${toCond ? sql`AND ${toCond}` : sql``}
+    )`)
+  } else {
+    if (filters.dateFrom) {
+      conditions.push(gte(saleOrders.saleOrderDatetime, beijingBoundaryTs(filters.dateFrom, '00:00:00')))
+    }
+    if (filters.dateTo) {
+      // 半开区间取次日零点，完整包含结束日所有微秒。
+      conditions.push(lt(saleOrders.saleOrderDatetime, beijingNextDayBoundaryTs(filters.dateTo)))
+    }
   }
   if (filters.search) {
     const pattern = `%${filters.search}%`
@@ -581,14 +1221,21 @@ function buildOrderConditions(
       ),
     )
   }
-  // 支付方式筛选（枚举已扩展为 4 值：微信/支付宝/线下/无）
-  if (
+  // WorkFine 历史单复用 DB 枚举值「无」，但业务语义是支付通道未知；
+  // 筛选时把两者拆开，避免「无（全额抵扣）」混入历史订单。
+  // SQL 字面量受筛选测试约束；支付方式与现付展示口径见 @/lib/workfine-legacy。
+  if (filters.paymentMethod === '未知') {
+    conditions.push(sql`${saleOrders.legacySource} = 'workfine'`)
+  } else if (
     filters.paymentMethod === '微信' ||
     filters.paymentMethod === '支付宝' ||
     filters.paymentMethod === '线下' ||
     filters.paymentMethod === '无'
   ) {
     conditions.push(eq(saleOrders.paymentMethod, filters.paymentMethod))
+    if (filters.paymentMethod === '无') {
+      conditions.push(sql`${saleOrders.legacySource} IS DISTINCT FROM 'workfine'`)
+    }
   }
   // 有储值卡抵扣（prepaid_card_amount > 0）
   if (filters.hasPrepaidDeduction) {
@@ -621,9 +1268,12 @@ export interface PaginatedOrders {
 export const getOrdersPaginated = withPermission(
   'sale_order:list',
   async (session, filters: OrderFilters = {}): Promise<PaginatedOrders> => {
-  const page = Math.max(1, filters.page || 1)
-  const pageSize = [10, 20, 50].includes(filters.pageSize ?? 0) ? filters.pageSize! : 20
-  const offset = (page - 1) * pageSize
+  const { page, pageSize, offset } = resolvePaging({
+    page: filters.page,
+    pageSize: filters.pageSize,
+    defaultPageSize: 20,
+    allowedPageSizes: [10, 20, 50],
+  })
 
   // 构建 WHERE 条件（DB 级过滤，与导出共用同一构建器）
   const whereClause = and(...buildOrderConditions(session, filters))
@@ -652,7 +1302,7 @@ export const getOrdersPaginated = withPermission(
     .leftJoin(clientWechatUsers, eq(saleOrders.clientUserId, clientWechatUsers.userId))
     .where(whereClause)
     // 例外：业务时间优先（订单日期比"最近编辑"更符合管理员直觉）
-    .orderBy(desc(saleOrders.saleOrderDatetime))
+    .orderBy(desc(saleOrders.saleOrderDatetime), desc(saleOrders.saleOrderId))
     .limit(pageSize)
     .offset(offset)
 
@@ -674,6 +1324,8 @@ export const getOrdersPaginated = withPermission(
     customerName: r.custName || r.order.customerName || null,
     totalAmount: r.order.totalAmount,
     prepaidCardAmount: r.order.prepaidCardAmount ?? '0',
+    pointsUsed: r.order.pointsUsed ?? 0,
+    pointsDiscount: r.order.pointsDiscount ?? '0',
     pendingPrepaidCardAmount: r.order.pendingPrepaidCardAmount ?? '0',
     payableAmount: r.order.payableAmount ?? '0',
     received: r.order.received ?? '0',
@@ -709,7 +1361,9 @@ export const getOrdersPaginated = withPermission(
  * 订单号/状态/顾客/支付方式等订单级字段在每条明细行内重复；
  * 金额列走「商品行口径」（与 exportAllocationOrders 对齐）：订单金额=sale_items.sale_amount（行应付）、
  *   实付=sale_items.received（行级净实收，已扣该行退款）；储值卡抵扣/现付分别直接取
- *   sale_items.prepaid_card_received / cash_received。充值单取订单级 total_amount(面额)/received(实付)。
+ *   sale_items.prepaid_card_received / cash_received。充值单及无明细兜底行按订单级快照换算净实收，
+ *   与商品行保持相同的退款后口径。WorkFine 历史单没有支付流水，实收仅作消费痕迹；导出时现付固定为 0、
+ *   支付方式展示为「未知」（底层 payment_method 复用枚举值「无」）。
  * 行级字段（商品类型/品质一二级/总次数/可用次数/单次价格/经营类型/商品明细）按 item 各自展示；充值单无 item 留空。
  * 寄存单 5 个销售口径金额列留空（exportOrders 内 isDeposit 分支：total=0 与 received>0 并存会误导）。
  * 历史订单（legacySource='workfine'）默认纳入，与列表分页口径一致。
@@ -730,7 +1384,7 @@ export interface ExportOrderRow {
   totalAmount: string
   /** 储值卡抵扣：sale_items.prepaid_card_received（行级实付分摊） */
   prepaidCardAmount: string
-  /** 现付：sale_items.cash_received = received - prepaid_card_received */
+  /** 现付：通常为 sale_items.cash_received；WorkFine 历史单固定为 0 */
   cashAmount: string
   /** 实付：sale_items.received（行级净实收，已扣该行退款） */
   received: string
@@ -771,7 +1425,7 @@ export interface ExportOrderRow {
   remark: string | null
   /** 以下字段仅供异步导出 worker 跨分页聚合，不映射到 Excel 列。 */
   __sourceId?: string
-  __sourceKind?: 'item' | 'recharge' | 'cardCredit'
+  __sourceKind?: 'item' | 'recharge' | 'cardCredit' | 'orderFallback'
   __skuId?: string | null
   __itemDirection?: string | null
   __quantity?: number
@@ -780,10 +1434,106 @@ export interface ExportOrderRow {
   __itemRefundedAmount?: string | number | null
 }
 
+/**
+ * 回款明细导出行：一行 = 一笔 sale_order_payments × 一个商品子项（sale_payment_item_receipts）。
+ *
+ * 粒度与列顺序：前 34 个字段按 registry.ts 的 orderColumns 逐列对齐（表头/顺序完全一致），
+ * 款项专属字段全部排在其后，使回款块可直接粘贴到订单明细导出下方按品项/顾客求和
+ * （2026-09-05 需求沟通会「回款导出与订单明细合并」决议）。
+ *
+ * 覆盖保证（禁止改成 INNER JOIN）：capturePaymentAllocatables 只对
+ * sale_order_type ∈ ('销售单','转换单') 且 legacy_source <> 'workfine' 写 receipt，
+ * 因此内部单 / 充值单 / 未入账款项没有 receipt 行。这类款项改由 sale_items 补出商品明细
+ * （内部单等）或输出占位行（充值单），绝不能丢：那既是相对旧导出的数据回归，也会破坏
+ * iterateExportPages「hasMore 时 rows 不得为空」的前提，让整个导出任务失败。
+ *
+ * 金额口径：
+ * - received（实付）＝ receipt.amount（有符号：转换单转出为负、退款为负），
+ *   是唯一可跨行求和的金额列；
+ * - prepaidCardAmount / cashAmount 由 derivePaymentChannelSplit 从
+ *   (Σreceipt, payment.amount) 还原后按实付比例分摊到各行，恒满足 实付 = 储值卡抵扣 + 现付；
+ * - 兜底行：未入账 / 寄存单 / 被折叠的储值卡抵扣从行留空，避免与主流水重复计数；
+ * - totalAmount / sessionCount / paidUnusedSessions / unitRealPrice 是 sale_items 快照，
+ *   同一商品的多笔款项行上重复出现，不可求和；
+ * - paymentAmount（款项金额）是整笔值，同一款项的多行重复，不可求和，仅供兜底与对账。
+ */
+export interface ExportPaymentRow {
+  // ── 对齐段 1-9：订单 / 顾客 ──
+  marketName: string
+  storeName: string | null
+  saleOrderId: string
+  saleOrderType: string
+  documentType: string | null
+  customerName: string | null
+  clientPhone: string | null
+  customerSource: string | null
+  promoterEmployeeName: string | null
+  // ── 对齐段 10-16：商品维度（兜底行为空） ──
+  productType: string | null
+  categoryL1: string | null
+  categoryL2: string | null
+  /** 兜底行写占位文案：储值卡充值 / 历史订单（无商品明细）/ 款项未拆分到商品 */
+  productName: string | null
+  sessionCount: number | null
+  unit: string | null
+  paidUnusedSessions: number | null
+  // ── 对齐段 17-22：金额（'' 表示该列留空，与 ExportOrderRow 同为 string） ──
+  totalAmount: string
+  prepaidCardAmount: string
+  cashAmount: string
+  received: string
+  refundedAmount: string
+  unitRealPrice: number | null
+  // ── 对齐段 23-34：订单属性与时间 ──
+  status: string
+  /** 款项级支付方式（比订单级快照更贴近这笔钱的真实通道） */
+  paymentMethod: string
+  isMembershipUpgrade: boolean
+  isActivity: boolean
+  isExperienceConversion: boolean
+  salesCategory: string | null
+  customerType: string | null
+  openedByName: string | null
+  saleOrderDatetime: string
+  /** 款项业绩归属日期：直读款项级列（迁移 0041 起由 trigger + CHECK 保证恒有值） */
+  performanceAttributionDate: string | null
+  /** 款项创建时间 */
+  createdAt: string
+  /** 订单备注（款项备注见 note） */
+  remark: string | null
+  // ── 款项专属段 35-47 ──
+  paymentId: number
+  changeType: string
+  paymentStatus: string
+  /** 款项金额（整笔，同款项多行重复，不可求和） */
+  paymentAmount: string
+  sourceEnd: string
+  operatorName: string | null
+  externalTxnId: string | null
+  paidAt: string | null
+  performanceAttributionStatus: '随订单' | '系统默认' | '已人工调整' | '未入账'
+  performanceAttributionAdjustedByName: string | null
+  performanceAttributionAdjustedAt: string | null
+  refundReason: string | null
+  /** 款项备注 */
+  note: string | null
+}
+
+type ExportOrderSource = 'item' | 'recharge' | 'orderFallback' | 'cardCredit'
+
+const EXPORT_ORDER_SOURCE_PRIORITY: Record<ExportOrderSource, number> = {
+  item: 0,
+  recharge: 1,
+  orderFallback: 2,
+  cardCredit: 3,
+}
+
+/** Worker 内部使用的全局键集游标；时间保留 PG 原始精度，避免 Date 毫秒截断导致跨页漏行。 */
 export interface ExportOrdersCursor {
-  itemOffset: number
-  rechargeOffset: number
-  cardCreditOffset: number
+  sortDatetime: string
+  saleOrderId: string
+  source: ExportOrderSource
+  sourceId: string
 }
 
 export interface ExportAllocationOrdersCursor {
@@ -794,6 +1544,476 @@ export interface ExportAllocationOrdersCursor {
 function nonNegativeOffset(value: unknown): number {
   return Math.max(0, Math.floor(Number(value) || 0))
 }
+
+function normalizeExportOrdersCursor(cursor: ExportOrdersCursor | undefined): ExportOrdersCursor | null {
+  if (!cursor) return null
+  if (
+    !cursor.sortDatetime ||
+    !Number.isFinite(Date.parse(cursor.sortDatetime)) ||
+    !cursor.saleOrderId ||
+    !cursor.sourceId ||
+    !(cursor.source in EXPORT_ORDER_SOURCE_PRIORITY)
+  ) {
+    throw new ApiError('INVALID_STATE', '导出分页游标无效')
+  }
+  if (cursor.source === 'cardCredit') {
+    const id = Number(cursor.sourceId)
+    if (!Number.isSafeInteger(id) || id <= 0) {
+      throw new ApiError('INVALID_STATE', '导出分页游标无效')
+    }
+  }
+  return cursor
+}
+
+/**
+ * 四类来源共享同一个全局排序游标。sourceIdAfter 仅在游标与当前来源相同时求值，
+ * 避免把其他来源的字符串主键误当成 card_transactions bigint。
+ */
+function exportOrderSeekCondition(
+  cursor: ExportOrdersCursor | null,
+  source: ExportOrderSource,
+  sourceIdAfter: () => SQL,
+): SQL | undefined {
+  if (!cursor) return undefined
+  const sourcePriority = EXPORT_ORDER_SOURCE_PRIORITY[source]
+  const cursorPriority = EXPORT_ORDER_SOURCE_PRIORITY[cursor.source]
+  const sameOrderTail = sourcePriority > cursorPriority
+    ? sql`TRUE`
+    : sourcePriority === cursorPriority
+      ? sourceIdAfter()
+      : sql`FALSE`
+  const cursorDatetime = sql`${cursor.sortDatetime}::timestamptz`
+  return or(
+    lt(saleOrders.saleOrderDatetime, cursorDatetime),
+    and(
+      eq(saleOrders.saleOrderDatetime, cursorDatetime),
+      or(
+        gt(saleOrders.saleOrderId, cursor.saleOrderId),
+        and(eq(saleOrders.saleOrderId, cursor.saleOrderId), sameOrderTail),
+      ),
+    ),
+  )
+}
+
+/** 二/三阶段按订单号批量捞明细时的分块大小，避免 limit==null 全量导出把 IN 参数撑爆。 */
+const PAYMENT_RECEIPT_LOOKUP_CHUNK = 500
+
+/** 商品行的展示快照；回款导出的商品明细列一律取自这里，与订单明细导出同源。 */
+interface PaymentProductSnapshot {
+  saleItemId: string
+  productType: string | null
+  productName: string | null
+  categoryL1: string | null
+  categoryL2: string | null
+  sessionCount: number | null
+  skuUnit: string | null
+  paidUnusedSessions: number | null
+  saleAmount: string | null
+  unitRealPrice: string | null
+  itemSalesCategory: string | null
+}
+
+/** 一笔款项落到单个商品子项的实收明细 + 该商品行的展示快照。 */
+interface PaymentReceiptDetail extends PaymentProductSnapshot {
+  salePaymentId: number
+  amount: string
+  receiptSalesCategory: string | null
+}
+
+/**
+ * 商品明细列取值，**逐字沿用订单明细导出 exportOrders 的 item 行口径**（含 unit 按商品
+ * 类型的回退），使两段导出粘成一张表后同一商品的这些列完全一致（2026-09-10 用户反馈）。
+ * 改这里必须同步 exportOrders 的 item 行 map。
+ */
+function paymentProductColumns(item: PaymentProductSnapshot) {
+  return {
+    productType: item.productType,
+    categoryL1: item.categoryL1,
+    categoryL2: item.categoryL2,
+    productName: item.productName,
+    sessionCount: item.sessionCount ?? null,
+    unit: item.skuUnit ?? (item.productType === '家居产品' ? '盒' : '次'),
+    paidUnusedSessions: item.paidUnusedSessions ?? null,
+    // 行应付；同一商品会在该订单的每笔款项里重复出现，不可跨行求和
+    totalAmount: item.saleAmount ?? '',
+    unitRealPrice: item.unitRealPrice == null ? null : Number(item.unitRealPrice),
+  }
+}
+
+/**
+ * 导出当前订单列表筛选命中的全部款项流水，下沉到商品子项维度。
+ * 款项日期口径按当前行 paid_at 逐笔筛选。
+ *
+ * **寄存单与 WorkFine 历史单整类排除**：它们不存在真实回款，见下方 WHERE 处的注释。
+ *
+ * 三阶段查询：一阶段按 payment 做 keyset 分页（cursor 仍是 payment.id），二阶段按本批
+ * 订单号批量捞 sale_payment_item_receipts，三阶段为无 receipt 的款项补捞 sale_items。
+ * 这样一笔款项的 N 行永远落在同一页，不需要复合游标，也不会把混合支付的通道推导劈成两半。
+ *
+ * 每笔款项按以下三条路径之一展开（见下方 rows.push 处的注释）：
+ *   1. 有 receipt          → 按 receipt 展开，金额精确到该次回款落在该子项上的实收；
+ *   2. 无 receipt 有 items → 按 sale_items 展开，金额按行应付权重分摊；
+ *   3. 无商品明细          → 一行占位（充值单不写 sale_items）。
+ *
+ * 注意 limit 语义：它限制的是「每页款项数」而非「每页 Excel 行数」，实际行数是扇出后的结果。
+ */
+export const exportOrderPayments = withPermission(
+  'sale_order:list',
+  async (
+    session,
+    params: Record<string, string | undefined>,
+    options?: ExportBatchOptions<number>,
+  ): Promise<ExportBatchResult<ExportPaymentRow, number>> => {
+    const filters = parseOrderFilters(params)
+    // 回款明细以款项为粒度，日期必须约束当前这一行款项；不能沿用订单管理的 EXISTS 口径，
+    // 否则命中订单的**全部**款项都会被带出来（区间外的也在内）。
+    const hasDateRange = Boolean(filters.dateFrom || filters.dateTo)
+    const usesPaymentDate = filters.dateBasis === 'payment' && hasDateRange
+    const usesAttributionDate = filters.dateBasis === 'attribution' && hasDateRange
+    const orderFilters = usesPaymentDate || usesAttributionDate
+      ? { ...filters, dateFrom: undefined, dateTo: undefined }
+      : filters
+    const attributionDateConditions = usesAttributionDate
+      ? [
+          // 「无 paid_at 的未入账流水在这两种款项口径下都不命中」（admin.pr.spec.md §回款明细导出）。
+          // payment 口径靠 paid_at 比较天然落选（NULL 比较恒为 NULL）；attribution 口径必须显式挡：
+          // 迁移 0040 起未入账行的 performance_attribution_date 由 created_at 占位，首次支付行的
+          // 列值又是订单级的镜像（与本行是否入账无关），两者都会让未入账流水错误命中。
+          // 用 paid_at IS NOT NULL 而非 status='已支付'：前者才是规范的字面判据，且不会连带把
+          // 「已作废但有 paid_at」的流水从 payment 口径里剔掉（那类流水应出现、金额留空，见 §金额留空规则）。
+          sql`${saleOrderPayments.paidAt} IS NOT NULL`,
+          ...paymentAttributionRangeConditions(filters.dateFrom, filters.dateTo),
+        ]
+      : []
+    const limit = resolveExportBatchLimit(options?.limit)
+    const cursor = options?.cursor == null ? null : Number(options.cursor)
+    if (cursor != null && (!Number.isSafeInteger(cursor) || cursor <= 0)) {
+      throw new ApiError('INVALID_STATE', '导出分页游标无效')
+    }
+
+    // ── 一阶段：按款项分页 ────────────────────────────────────────────────
+    // 门店取 sale_orders.storeName 快照（不是 JOIN 实时 stores），与订单明细导出同源，
+    // 门店改名后两段粘一起仍能按同一个门店名求和。
+    const query = db
+      .select({
+        payment: saleOrderPayments,
+        marketName: saleOrders.marketName,
+        storeName: saleOrders.storeName,
+        saleOrderType: saleOrders.saleOrderType,
+        documentType: saleOrders.documentType,
+        orderStatus: saleOrders.status,
+        orderCustomerName: saleOrders.customerName,
+        orderClientPhone: saleOrders.clientPhone,
+        customerName: clientWechatUsers.name,
+        clientPhone: clientWechatUsers.phone,
+        customerSource: clientWechatUsers.customerSource,
+        promoterEmployeeName: clientWechatUsers.promoterEmployeeName,
+        customerType: clientWechatUsers.customerType,
+        isMembershipUpgrade: saleOrders.isMembershipUpgrade,
+        isActivity: saleOrders.isActivity,
+        isExperienceConversion: saleOrders.isExperienceConversion,
+        saleOrderDatetime: saleOrders.saleOrderDatetime,
+        remark: saleOrders.remark,
+        openedByName: opener.name,
+        orderPerformanceAttributionDate: saleOrders.performanceAttributionDate,
+        orderPerformanceAttributionAdjustedAt: saleOrders.performanceAttributionAdjustedAt,
+        orderPerformanceAttributionAdjustedByName: performanceAttributionAdjuster.name,
+        paymentPerformanceAttributionAdjustedByName: paymentPerformanceAttributionAdjuster.name,
+        operatorName: staffWechatUsers.name,
+      })
+      .from(saleOrderPayments)
+      .innerJoin(saleOrders, eq(saleOrderPayments.saleOrderId, saleOrders.saleOrderId))
+      .leftJoin(clientWechatUsers, eq(saleOrders.clientUserId, clientWechatUsers.userId))
+      .leftJoin(staffWechatUsers, eq(saleOrderPayments.operatorEmployeeId, staffWechatUsers.employeeId))
+      .leftJoin(opener, eq(saleOrders.openedBy, opener.employeeId))
+      .leftJoin(
+        performanceAttributionAdjuster,
+        eq(saleOrders.performanceAttributionAdjustedBy, performanceAttributionAdjuster.employeeId),
+      )
+      .leftJoin(
+        paymentPerformanceAttributionAdjuster,
+        eq(saleOrderPayments.performanceAttributionAdjustedBy, paymentPerformanceAttributionAdjuster.employeeId),
+      )
+      .where(and(
+        ...buildOrderConditions(session, orderFilters),
+        // 寄存单与 WorkFine 历史单不存在真实回款，一律排除在回款明细之外（2026-09-10 决议）：
+        // - 寄存单的 sale_order_payments 是历史寄存初始化的记账痕迹，金额列本就按 isDeposit
+        //   口径全部留空，留着只是 8.4 万行空金额噪音，对任何求和贡献为零；
+        // - 历史单没有支付流水（prod 17,766 单全部 0 笔款项），这里是防御性排除。
+        // 注意：订单明细导出**不做**此排除，两份导出的订单类型覆盖面本就不同。
+        sql`${saleOrders.saleOrderType} <> '寄存单'`,
+        sql`${saleOrders.legacySource} IS DISTINCT FROM 'workfine'`,
+        usesPaymentDate && filters.dateFrom
+          ? gte(saleOrderPayments.paidAt, beijingBoundaryTs(filters.dateFrom, '00:00:00'))
+          : undefined,
+        usesPaymentDate && filters.dateTo
+          ? lt(saleOrderPayments.paidAt, beijingNextDayBoundaryTs(filters.dateTo))
+          : undefined,
+        ...attributionDateConditions,
+        cursor == null ? undefined : lt(saleOrderPayments.id, cursor),
+      ))
+      // 例外：款项流水按不可变主键倒序做 keyset 分页，覆盖 paid_at 为空的未入账状态。
+      .orderBy(desc(saleOrderPayments.id))
+
+    const candidates = limit == null ? await query : await query.limit(limit + 1)
+    const selected = limit == null ? candidates : candidates.slice(0, limit)
+
+    // ── 二阶段：按订单号捞商品子项实收 ──────────────────────────────────────
+    // 按订单号（不是款项 id）捞的原因：除了本页各款项自己的 receipt，还需要知道
+    // 「该订单是否存在任何 receipt」，用来区分「混合支付里被折叠的储值卡从行」
+    // （其兄弟现金主流水可能不在本页）与「receipt 机制上线前的历史款项」。
+    const receiptsByPayment = new Map<number, PaymentReceiptDetail[]>()
+    const ordersWithReceipts = new Set<string>()
+    const selectedPaymentIds = new Set(selected.map((row) => row.payment.id))
+    const orderIds = Array.from(new Set(selected.map((row) => row.payment.saleOrderId)))
+    for (let offset = 0; offset < orderIds.length; offset += PAYMENT_RECEIPT_LOOKUP_CHUNK) {
+      const chunk = orderIds.slice(offset, offset + PAYMENT_RECEIPT_LOOKUP_CHUNK)
+      const receiptRows = await db
+        .select({
+          salePaymentId: salePaymentItemReceipts.salePaymentId,
+          saleOrderId: salePaymentItemReceipts.saleOrderId,
+          saleItemId: salePaymentItemReceipts.saleItemId,
+          amount: salePaymentItemReceipts.amount,
+          receiptSalesCategory: salePaymentItemReceipts.salesCategory,
+          productType: saleItems.productType,
+          productName: saleItems.productName,
+          categoryL1: productCategories.productKind,
+          categoryL2: productCategories.categoryName,
+          sessionCount: saleItems.sessionCount,
+          skuUnit: productSkus.unit,
+          paidUnusedSessions: paidUnusedSessionsExpr,
+          saleAmount: saleItems.saleAmount,
+          unitRealPrice: saleItems.unitRealPrice,
+          itemSalesCategory: saleItems.salesCategory,
+        })
+        .from(salePaymentItemReceipts)
+        .innerJoin(saleItems, eq(salePaymentItemReceipts.saleItemId, saleItems.saleItemId))
+        .leftJoin(productSkus, eq(saleItems.skuId, productSkus.skuId))
+        .leftJoin(productCategories, eq(productSkus.categoryId, productCategories.categoryId))
+        .where(inArray(salePaymentItemReceipts.saleOrderId, chunk))
+        .orderBy(salePaymentItemReceipts.salePaymentId, salePaymentItemReceipts.saleItemId)
+      for (const receipt of receiptRows) {
+        // 同订单其他款项的 receipt 只用于「该订单是否有 receipt」判定，不展开成导出行
+        ordersWithReceipts.add(receipt.saleOrderId)
+        const paymentId = Number(receipt.salePaymentId)
+        if (!selectedPaymentIds.has(paymentId)) continue
+        const bucket = receiptsByPayment.get(paymentId)
+        const detail: PaymentReceiptDetail = { ...receipt, salePaymentId: paymentId }
+        if (bucket) bucket.push(detail)
+        else receiptsByPayment.set(paymentId, [detail])
+      }
+    }
+
+    // ── 三阶段：无 receipt 的款项按 sale_items 补商品明细 ──────────────────
+    // 内部单、receipt 机制上线前的历史销售单/转换单在库里没有 receipt，但订单仍有完整
+    // sale_items。若照旧只输出占位行，商品明细列就整段留空、与订单明细导出对不上
+    // （2026-09-10 用户反馈）。这里按订单号补捞商品行，取值与 exportOrders 的 itemQuery 同源。
+    //
+    // 寄存单已在上面的 WHERE 里整类排除，这里不必再防它扇出成 486 万行。
+    const itemsByOrder = new Map<string, PaymentProductSnapshot[]>()
+    const fallbackOrderIds = Array.from(new Set(
+      selected
+        .filter((row) => !receiptsByPayment.has(row.payment.id))
+        .map((row) => row.payment.saleOrderId),
+    ))
+    for (let offset = 0; offset < fallbackOrderIds.length; offset += PAYMENT_RECEIPT_LOOKUP_CHUNK) {
+      const chunk = fallbackOrderIds.slice(offset, offset + PAYMENT_RECEIPT_LOOKUP_CHUNK)
+      const itemRows = await db
+        .select({
+          saleOrderId: saleItems.saleOrderId,
+          saleItemId: saleItems.saleItemId,
+          productType: saleItems.productType,
+          productName: saleItems.productName,
+          categoryL1: productCategories.productKind,
+          categoryL2: productCategories.categoryName,
+          sessionCount: saleItems.sessionCount,
+          skuUnit: productSkus.unit,
+          paidUnusedSessions: paidUnusedSessionsExpr,
+          saleAmount: saleItems.saleAmount,
+          unitRealPrice: saleItems.unitRealPrice,
+          itemSalesCategory: saleItems.salesCategory,
+        })
+        .from(saleItems)
+        .innerJoin(saleOrders, eq(saleItems.saleOrderId, saleOrders.saleOrderId))
+        .leftJoin(productSkus, eq(saleItems.skuId, productSkus.skuId))
+        .leftJoin(productCategories, eq(productSkus.categoryId, productCategories.categoryId))
+        .where(and(
+          inArray(saleItems.saleOrderId, chunk),
+          // 与 exportOrders 的 itemQuery 同一套方向过滤：转换单无「购买」行，
+          // 必须把转出+转入两行一并带上，否则这类款项会退回占位行。
+          or(
+            eq(saleItems.itemDirection, '购买'),
+            and(
+              eq(saleOrders.saleOrderType, '转换单'),
+              inArray(saleItems.itemDirection, ['转出', '转入']),
+            ),
+          ),
+        ))
+        .orderBy(saleItems.saleItemId)
+      for (const item of itemRows) {
+        const bucket = itemsByOrder.get(item.saleOrderId)
+        if (bucket) bucket.push(item)
+        else itemsByOrder.set(item.saleOrderId, [item])
+      }
+    }
+
+    const money = (amountCents: number) => (amountCents / 100).toFixed(2)
+    const rows: ExportPaymentRow[] = []
+    for (const row of selected) {
+      const payment = row.payment
+      const isFirstPayment = payment.changeType === '首次支付'
+      const adjustedAt = isFirstPayment
+        ? row.orderPerformanceAttributionAdjustedAt
+        : payment.performanceAttributionAdjustedAt
+      const adjustedByName = isFirstPayment
+        ? row.orderPerformanceAttributionAdjustedByName
+        : row.paymentPerformanceAttributionAdjustedByName
+      const shared = {
+        marketName: row.marketName,
+        storeName: row.storeName ?? null,
+        saleOrderId: payment.saleOrderId,
+        saleOrderType: row.saleOrderType,
+        documentType: row.documentType,
+        customerName: row.customerName || row.orderCustomerName || null,
+        clientPhone: row.clientPhone || row.orderClientPhone || null,
+        customerSource: row.customerSource ?? null,
+        promoterEmployeeName: row.promoterEmployeeName ?? null,
+        status: row.orderStatus,
+        paymentMethod: payment.paymentMethod,
+        isMembershipUpgrade: row.isMembershipUpgrade ?? false,
+        isActivity: row.isActivity ?? false,
+        isExperienceConversion: row.isExperienceConversion ?? false,
+        customerType: row.customerType ?? null,
+        openedByName: row.openedByName ?? null,
+        saleOrderDatetime: row.saleOrderDatetime.toISOString(),
+        // 款项粒度导出恒有款项行 → 直读款项级归属日期列（迁移 0041 起该列由 trigger 保证有值，
+        // 首次支付那一行本身就是订单级的镜像）。**不要**在这里补订单级兜底：
+        // 那会让极端情况下列为空的行（约束上线前的残留）伪装成"有归属日期"，掩盖数据问题。
+        performanceAttributionDate: payment.performanceAttributionDate ?? null,
+        createdAt: payment.createdAt.toISOString(),
+        remark: row.remark,
+        paymentId: payment.id,
+        changeType: payment.changeType,
+        paymentStatus: payment.status,
+        paymentAmount: payment.amount,
+        sourceEnd: payment.sourceEnd,
+        operatorName: row.operatorName ?? null,
+        externalTxnId: payment.externalTxnId,
+        paidAt: payment.paidAt?.toISOString() ?? null,
+        performanceAttributionStatus: (isFirstPayment
+          ? '随订单'
+          : !payment.paidAt
+            ? '未入账'
+            : adjustedAt
+              ? '已人工调整'
+              : '系统默认') as ExportPaymentRow['performanceAttributionStatus'],
+        performanceAttributionAdjustedByName: adjustedByName ?? null,
+        performanceAttributionAdjustedAt: adjustedAt?.toISOString() ?? null,
+        refundReason: payment.refundReason,
+        note: payment.note,
+      }
+
+      const receipts = receiptsByPayment.get(payment.id) ?? []
+      const fallbackItems = receipts.length === 0
+        ? (itemsByOrder.get(payment.saleOrderId) ?? [])
+        : []
+
+      // 两条金额留空规则，漏掉任一条都会造成重复计数：
+      // 1) 未入账/已作废的钱还没到账 —— **三条路径都适用**；
+      // 2) 混合支付被折叠的储值卡从行，其金额已经算在同事件现金主流水的 receipt 里
+      //    —— 只适用于两条**无 receipt** 路径，有 receipt 那条见下方 suppressReceiptAmount。
+      // （原先的「寄存单」规则已上移为 WHERE 层整类排除。）
+      const suppressAmount =
+        payment.status !== '已支付' ||
+        (payment.changeType === '储值卡抵扣' && ordersWithReceipts.has(payment.saleOrderId))
+      const viaPrepaidCard = payment.changeType === '储值卡抵扣'
+      const channelAmounts = (netCents: number | null) => ({
+        prepaidCardAmount: netCents == null ? '' : money(viaPrepaidCard ? netCents : 0),
+        cashAmount: netCents == null ? '' : money(viaPrepaidCard ? 0 : netCents),
+        received: netCents == null ? '' : money(netCents),
+        refundedAmount: netCents == null
+          ? ''
+          : money(payment.changeType === '退款' ? Math.abs(netCents) : 0),
+      })
+
+      if (receipts.length === 0 && fallbackItems.length === 0) {
+        // 占位行。禁止删除：充值单不写 sale_items，它既没有 receipt 也没有可展开的商品行；
+        // 丢掉它既是相对旧导出的数据回归，也会让 iterateExportPages 在整页都是这类款项时
+        // 报「导出分页未返回数据」。
+        rows.push({
+          ...shared,
+          productType: null,
+          categoryL1: null,
+          categoryL2: null,
+          productName: row.saleOrderType === '充值单' ? '储值卡充值' : '款项未拆分到商品',
+          sessionCount: null,
+          unit: null,
+          paidUnusedSessions: null,
+          totalAmount: '',
+          ...channelAmounts(suppressAmount ? null : (amountToCents(payment.amount) ?? 0)),
+          unitRealPrice: null,
+          salesCategory: null,
+        })
+        continue
+      }
+
+      if (receipts.length === 0) {
+        // 无 receipt 但订单有商品行：商品列按订单明细口径填满，款项金额按各行应付权重分摊，
+        // 使「实付」列跨行求和仍等于款项金额（splitCentsWithLastRemainder 保证分摊守恒）。
+        const parts = splitCentsWithLastRemainder(
+          amountToCents(payment.amount) ?? 0,
+          fallbackItems.map((item) => Math.abs(amountToCents(item.saleAmount) ?? 0)),
+        )
+        fallbackItems.forEach((item, index) => {
+          rows.push({
+            ...shared,
+            ...paymentProductColumns(item),
+            ...channelAmounts(suppressAmount ? null : (parts[index] ?? 0)),
+            salesCategory: item.itemSalesCategory,
+          })
+        })
+        continue
+      }
+
+      const amountCents = receipts.map((receipt) => amountToCents(receipt.amount) ?? 0)
+      const { prepaidCents } = derivePaymentChannelSplit(amountCents, {
+        changeType: payment.changeType,
+        paymentMethod: payment.paymentMethod,
+        paymentAmountCents: amountToCents(payment.amount),
+      })
+      // 有 receipt 路径只共用规则 1（未入账）。规则 2 在这里**必须不生效**：能走到这里说明
+      // 该款项自己有 receipt，金额是独立记录的，并非已计入兄弟现金主流水——而 suppressAmount
+      // 的规则 2 判的是「订单有 receipt」，对这类行恒为真。照搬会把它们的金额全部清空
+      // （prod 实测 21 笔已支付储值卡抵扣自带 receipt，而漏掉规则 1 的只有 1 笔已作废款项）。
+      const suppressReceiptAmount = payment.status !== '已支付'
+      receipts.forEach((receipt, index) => {
+        const receivedCents = amountCents[index]
+        const prepaidCardCents = prepaidCents[index] ?? 0
+        rows.push({
+          ...shared,
+          ...paymentProductColumns(receipt),
+          prepaidCardAmount: suppressReceiptAmount ? '' : money(prepaidCardCents),
+          cashAmount: suppressReceiptAmount ? '' : money(receivedCents - prepaidCardCents),
+          received: suppressReceiptAmount ? '' : money(receivedCents),
+          refundedAmount: suppressReceiptAmount
+            ? ''
+            : money(payment.changeType === '退款' ? Math.abs(receivedCents) : 0),
+          salesCategory: receipt.receiptSalesCategory ?? receipt.itemSalesCategory,
+        })
+      })
+    }
+
+    if (limit == null) return { rows, truncated: false, hasMore: false }
+    const hasMore = candidates.length > limit
+    const last = selected.at(-1)
+    return {
+      rows,
+      truncated: false,
+      hasMore,
+      ...(hasMore && last ? { nextCursor: last.payment.id } : {}),
+    }
+  },
+)
 
 /** 导出订单（明细级，一行一 sale_items 行；按筛选条件导出全量）。 */
 export const exportOrders = withPermission(
@@ -806,11 +2026,7 @@ export const exportOrders = withPermission(
     const filters = parseOrderFilters(params)
     const whereClause = and(...buildOrderConditions(session, filters))
     const limit = resolveExportBatchLimit(options?.limit)
-    const cursor: ExportOrdersCursor = {
-      itemOffset: nonNegativeOffset(options?.cursor?.itemOffset),
-      rechargeOffset: nonNegativeOffset(options?.cursor?.rechargeOffset),
-      cardCreditOffset: nonNegativeOffset(options?.cursor?.cardCreditOffset),
-    }
+    const cursor = limit == null ? null : normalizeExportOrdersCursor(options?.cursor)
 
     // 从 sale_items 出发（明细级）；innerJoin sale_orders 保证每行有归属订单
     // leftJoin 客户/员工/门店/商品三级：NULL 安全，缺失分类/skus 历史订单仍可导出
@@ -839,15 +2055,8 @@ export const exportOrders = withPermission(
           cashAmount: saleItems.cashReceived,
           received: saleItems.received,             // 行级净实收（商品行口径）
           refundedAmount: saleOrders.refundedAmount,
-          itemRefundedAmount: sql<string>`COALESCE((
-            SELECT ABS(SUM(spir.amount::numeric))
-              FROM sale_payment_item_receipts spir
-              JOIN sale_order_payments sop ON sop.id = spir.sale_payment_id
-             WHERE spir.sale_item_id = ${saleItems.saleItemId}
-               AND sop.status = '已支付'
-               AND sop.change_type = '退款'
-          ), 0)`,
           paymentMethod: saleOrders.paymentMethod,
+          legacySource: saleOrders.legacySource,
           isMembershipUpgrade: saleOrders.isMembershipUpgrade,
           isActivity: saleOrders.isActivity,
           isExperienceConversion: saleOrders.isExperienceConversion,
@@ -873,6 +2082,7 @@ export const exportOrders = withPermission(
           categoryL1: productCategories.productKind,
           categoryL2: productCategories.categoryName,
           sourceId: saleItems.saleItemId,
+          sortDatetime: sql<string>`${saleOrders.saleOrderDatetime}::text`,
       })
       .from(saleItems)
       .innerJoin(saleOrders, eq(saleItems.saleOrderId, saleOrders.saleOrderId))
@@ -890,11 +2100,12 @@ export const exportOrders = withPermission(
             inArray(saleItems.itemDirection, ['转出', '转入']),
           ),
         ),
+        exportOrderSeekCondition(cursor, 'item', () => gt(saleItems.saleItemId, cursor!.sourceId)),
       ))
       .orderBy(desc(saleOrders.saleOrderDatetime), saleOrders.saleOrderId, saleItems.saleItemId)
     const itemRows = limit == null
       ? await itemQuery
-      : await itemQuery.limit(limit + 1).offset(cursor.itemOffset)
+      : await itemQuery.limit(limit + 1)
 
     const num = (v: string | null) => (v == null ? null : Number(v))
 
@@ -917,9 +2128,9 @@ export const exportOrders = withPermission(
           totalAmount: saleOrders.totalAmount,
           prepaidCardAmount: saleOrders.prepaidCardAmount,
           orderReceived: saleOrders.received,
-          received: saleOrders.received,
           refundedAmount: saleOrders.refundedAmount,
           paymentMethod: saleOrders.paymentMethod,
+          legacySource: saleOrders.legacySource,
           isMembershipUpgrade: saleOrders.isMembershipUpgrade,
           isActivity: saleOrders.isActivity,
           isExperienceConversion: saleOrders.isExperienceConversion,
@@ -930,19 +2141,27 @@ export const exportOrders = withPermission(
           createdAt: saleOrders.createdAt,
           remark: saleOrders.remark,
           sourceId: saleOrders.saleOrderId,
+          sortDatetime: sql<string>`${saleOrders.saleOrderDatetime}::text`,
       })
       .from(saleOrders)
       .leftJoin(clientWechatUsers, eq(saleOrders.clientUserId, clientWechatUsers.userId))
       .leftJoin(stores, eq(saleOrders.storeId, stores.storeId))
       .leftJoin(opener, eq(saleOrders.openedBy, opener.employeeId))
-      .where(and(whereClause, eq(saleOrders.saleOrderType, '充值单')))
+      .where(and(
+        whereClause,
+        eq(saleOrders.saleOrderType, '充值单'),
+        exportOrderSeekCondition(cursor, 'recharge', () => gt(saleOrders.saleOrderId, cursor!.sourceId)),
+      ))
       .orderBy(desc(saleOrders.saleOrderDatetime), saleOrders.saleOrderId)
     const rechargeOrders = limit == null
       ? await rechargeQuery
-      : await rechargeQuery.limit(limit + 1).offset(cursor.rechargeOffset)
+      : await rechargeQuery.limit(limit + 1)
 
     // 普通转换单旧卡价值高于转入商品时，差额会形成一笔 card_transactions 充值流水。
-    // 该资产变动不属于支付，但在订单明细导出中归入储值卡通道，才能与转换单的转出/转入金额逐行勾稽。
+    // 该资产变动不属于储值卡抵扣；订单明细导出按业务记账口径归入正数现付。
+    // 订单金额/实付同样保留正数，使转出、转入和储值金入账的各金额列均可勾稽为 0。
+    // admin 转换差额路径（含现行 createConversionOrder）不写 external_ref；staff 正常路径固定写 card-conv-{订单号}。
+    // 仅白名单这两类来源，避免退款/取消回冲（同为“充值”正数且关联原订单）被误导出为转换差额。
     const cardCreditQuery = db
       .select({
         marketName: saleOrders.marketName,
@@ -969,6 +2188,7 @@ export const exportOrders = withPermission(
         createdAt: cardTransactions.createdAt,
         remark: saleOrders.remark,
         sourceId: cardTransactions.id,
+        sortDatetime: sql<string>`${saleOrders.saleOrderDatetime}::text`,
       })
       .from(cardTransactions)
       .innerJoin(saleOrders, eq(cardTransactions.refOrderId, saleOrders.saleOrderId))
@@ -980,27 +2200,126 @@ export const exportOrders = withPermission(
         eq(saleOrders.saleOrderType, '转换单'),
         eq(cardTransactions.type, '充值'),
         gt(cardTransactions.amount, '0'),
+        or(
+          isNull(cardTransactions.externalRef),
+          eq(
+            cardTransactions.externalRef,
+            sql<string>`'card-conv-' || ${saleOrders.saleOrderId}`,
+          ),
+        ),
+        exportOrderSeekCondition(cursor, 'cardCredit', () => gt(cardTransactions.id, Number(cursor!.sourceId))),
       ))
       .orderBy(desc(saleOrders.saleOrderDatetime), saleOrders.saleOrderId, cardTransactions.id)
     const cardCreditRows = limit == null
       ? await cardCreditQuery
-      : await cardCreditQuery.limit(limit + 1).offset(cursor.cardCreditOffset)
+      : await cardCreditQuery.limit(limit + 1)
+
+    // WorkFine 历史销售单没有 sale_items；未来若出现同类异常原生单，也不能从订单导出中静默消失。
+    // 仅为完全没有可导出明细的非充值订单造一条订单级兜底行，正常商品行不会重复。
+    const orderFallbackQuery = db
+      .select({
+        marketName: saleOrders.marketName,
+        storeName: saleOrders.storeName,
+        saleOrderId: saleOrders.saleOrderId,
+        saleOrderType: saleOrders.saleOrderType,
+        documentType: saleOrders.documentType,
+        status: saleOrders.status,
+        custName: clientWechatUsers.name,
+        custPhone: clientWechatUsers.phone,
+        customerSource: clientWechatUsers.customerSource,
+        promoterEmployeeName: clientWechatUsers.promoterEmployeeName,
+        fallbackName: saleOrders.customerName,
+        fallbackPhone: saleOrders.clientPhone,
+        totalAmount: saleOrders.totalAmount,
+        prepaidCardAmount: saleOrders.prepaidCardAmount,
+        orderReceived: saleOrders.received,
+        refundedAmount: saleOrders.refundedAmount,
+        paymentMethod: saleOrders.paymentMethod,
+        isMembershipUpgrade: saleOrders.isMembershipUpgrade,
+        isActivity: saleOrders.isActivity,
+        isExperienceConversion: saleOrders.isExperienceConversion,
+        customerType: clientWechatUsers.customerType,
+        openedByName: opener.name,
+        saleOrderDatetime: saleOrders.saleOrderDatetime,
+        performanceAttributionDate: saleOrders.performanceAttributionDate,
+        createdAt: saleOrders.createdAt,
+        remark: saleOrders.remark,
+        legacySource: saleOrders.legacySource,
+        sourceId: saleOrders.saleOrderId,
+        sortDatetime: sql<string>`${saleOrders.saleOrderDatetime}::text`,
+      })
+      .from(saleOrders)
+      .leftJoin(clientWechatUsers, eq(saleOrders.clientUserId, clientWechatUsers.userId))
+      .leftJoin(stores, eq(saleOrders.storeId, stores.storeId))
+      .leftJoin(opener, eq(saleOrders.openedBy, opener.employeeId))
+      .where(and(
+        whereClause,
+        sql`${saleOrders.saleOrderType} <> '充值单'`,
+        sql`NOT EXISTS (
+          SELECT 1
+          FROM ${saleItems} AS export_item
+          WHERE export_item.sale_order_id = ${saleOrders.saleOrderId}
+            AND (
+              export_item.item_direction = '购买'
+              OR (${saleOrders.saleOrderType} = '转换单' AND export_item.item_direction IN ('转出', '转入'))
+            )
+        )`,
+        exportOrderSeekCondition(cursor, 'orderFallback', () => gt(saleOrders.saleOrderId, cursor!.sourceId)),
+      ))
+      .orderBy(desc(saleOrders.saleOrderDatetime), saleOrders.saleOrderId)
+    const orderFallbackRows = limit == null
+      ? await orderFallbackQuery
+      : await orderFallbackQuery.limit(limit + 1)
+
+    // 退款 receipt 按当前批次一次性聚合，避免 item 主查询对每条明细重复全表扫描。
+    // legacy 无分页调用可能返回很多 item，此时直接聚合全量退款 receipt，避免超大 IN 参数列表。
+    const itemRefundRows = itemRows.length === 0
+      ? []
+      : await db
+          .select({
+            saleItemId: salePaymentItemReceipts.saleItemId,
+            amount: sql<string>`ABS(SUM(${salePaymentItemReceipts.amount}::numeric))`,
+          })
+          .from(salePaymentItemReceipts)
+          .innerJoin(
+            saleOrderPayments,
+            eq(saleOrderPayments.id, salePaymentItemReceipts.salePaymentId),
+          )
+          .where(and(
+            eq(saleOrderPayments.status, '已支付'),
+            eq(saleOrderPayments.changeType, '退款'),
+            limit == null
+              ? undefined
+              : inArray(
+                  salePaymentItemReceipts.saleItemId,
+                  itemRows.map((row) => row.sourceId),
+                ),
+          ))
+          .groupBy(salePaymentItemReceipts.saleItemId)
+    const itemRefundedAmountById = new Map(
+      itemRefundRows.map((row) => [row.saleItemId, row.amount]),
+    )
 
     const toAmount = (value: string | number | null | undefined) => {
       const amount = Number(value ?? 0)
       return Number.isFinite(amount) ? Math.round(amount * 100) / 100 : 0
     }
     const formatAmount = (amount: number) => amount.toFixed(2)
-    const resolveRechargeAmounts = (order: {
+    // 充值单与无商品明细兜底行没有 item 级净实收可直接读取，统一从订单级毛实收换算。
+    // 当前退款策略全部走现金，因此 refundedAmount 从现金通道扣减；received 必须同步转为净额，
+    // 才能与商品行口径一致并始终满足 received = prepaidCardAmount + cashAmount。
+    const resolveOrderLevelAmounts = (order: {
       prepaidCardAmount: string | null
       orderReceived: string | null
       refundedAmount: string | null
     }) => {
       const orderReceived = toAmount(order.orderReceived)
       const prepaidCardAmount = toAmount(order.prepaidCardAmount)
+      const netReceived = orderReceived - toAmount(order.refundedAmount)
       return {
+        received: formatAmount(netReceived),
         prepaidCardAmount: formatAmount(prepaidCardAmount),
-        cashAmount: formatAmount(orderReceived - prepaidCardAmount - toAmount(order.refundedAmount)),
+        cashAmount: formatAmount(netReceived - prepaidCardAmount),
       }
     }
 
@@ -1008,8 +2327,9 @@ export const exportOrders = withPermission(
     // 导出按筛选条件返回全量，合并后仅做整体排序。
     const combined: Array<{
       row: ExportOrderRow
-      source: 'item' | 'recharge' | 'cardCredit'
+      source: ExportOrderSource
       sourceId: string
+      sortDatetime: string
     }> = [
       ...itemRows.map((r) => {
         // 寄存单 total_amount 设计为 0、received 为真金实付（「寄存单初始化实收」回款行），
@@ -1019,6 +2339,7 @@ export const exportOrders = withPermission(
         return {
           source: 'item' as const,
           sourceId: String(r.sourceId ?? r.saleOrderId),
+          sortDatetime: r.sortDatetime ?? r.saleOrderDatetime.toISOString(),
           row: {
           // 订单级
           marketName: r.marketName,
@@ -1033,10 +2354,10 @@ export const exportOrders = withPermission(
           promoterEmployeeName: r.promoterEmployeeName ?? null,
           totalAmount: isDeposit ? '' : r.totalAmount,
           prepaidCardAmount: isDeposit ? '' : (r.prepaidCardAmount ?? '0.00'),
-          cashAmount: isDeposit ? '' : (r.cashAmount ?? '0.00'),
+          cashAmount: isDeposit ? '' : cashAmountDisplay(r.legacySource, r.cashAmount ?? '0.00'),
           received: isDeposit ? '' : (r.received ?? '0'),
           refundedAmount: isDeposit ? '' : (r.refundedAmount ?? '0'),
-          paymentMethod: r.paymentMethod,
+          paymentMethod: paymentMethodDisplay(r.legacySource, r.paymentMethod),
           isMembershipUpgrade: r.isMembershipUpgrade ?? false,
           isActivity: r.isActivity ?? false,
           isExperienceConversion: r.isExperienceConversion ?? false,
@@ -1063,15 +2384,16 @@ export const exportOrders = withPermission(
           __quantity: r.quantity ?? 1,
           __remainingSessions: r.remainingSessions ?? null,
           __paidSessions: r.paidSessions ?? null,
-          __itemRefundedAmount: r.itemRefundedAmount ?? null,
+          __itemRefundedAmount: itemRefundedAmountById.get(String(r.sourceId ?? r.saleOrderId)) ?? '0',
           },
         }
       }),
       ...rechargeOrders.map((r) => {
-        const settledAmounts = resolveRechargeAmounts(r)
+        const orderAmounts = resolveOrderLevelAmounts(r)
         return {
           source: 'recharge' as const,
           sourceId: String(r.sourceId ?? r.saleOrderId),
+          sortDatetime: r.sortDatetime ?? r.saleOrderDatetime.toISOString(),
           row: {
           // 订单级
           marketName: r.marketName,
@@ -1085,11 +2407,11 @@ export const exportOrders = withPermission(
           customerSource: r.customerSource ?? null,
           promoterEmployeeName: r.promoterEmployeeName ?? null,
           totalAmount: r.totalAmount,
-          prepaidCardAmount: settledAmounts.prepaidCardAmount,
-          cashAmount: settledAmounts.cashAmount,
-          received: r.received ?? '0',
+          prepaidCardAmount: orderAmounts.prepaidCardAmount,
+          cashAmount: cashAmountDisplay(r.legacySource, orderAmounts.cashAmount),
+          received: orderAmounts.received,
           refundedAmount: r.refundedAmount ?? '0',
-          paymentMethod: r.paymentMethod,
+          paymentMethod: paymentMethodDisplay(r.legacySource, r.paymentMethod),
           isMembershipUpgrade: r.isMembershipUpgrade ?? false,
           isActivity: r.isActivity ?? false,
           isExperienceConversion: r.isExperienceConversion ?? false,
@@ -1114,9 +2436,59 @@ export const exportOrders = withPermission(
           },
         }
       }),
+      ...orderFallbackRows.map((r) => {
+        const orderAmounts = resolveOrderLevelAmounts(r)
+        const isLegacy = isWorkfineLegacy(r.legacySource)
+        return {
+          source: 'orderFallback' as const,
+          sourceId: String(r.sourceId ?? r.saleOrderId),
+          sortDatetime: r.sortDatetime ?? r.saleOrderDatetime.toISOString(),
+          row: {
+            marketName: r.marketName,
+            storeName: r.storeName,
+            saleOrderId: r.saleOrderId,
+            saleOrderType: r.saleOrderType,
+            documentType: r.documentType,
+            status: r.status,
+            customerName: r.custName || r.fallbackName || null,
+            clientPhone: r.custPhone || r.fallbackPhone || null,
+            customerSource: r.customerSource ?? null,
+            promoterEmployeeName: r.promoterEmployeeName ?? null,
+            totalAmount: r.totalAmount,
+            prepaidCardAmount: orderAmounts.prepaidCardAmount,
+            cashAmount: cashAmountDisplay(r.legacySource, orderAmounts.cashAmount),
+            received: orderAmounts.received,
+            refundedAmount: r.refundedAmount ?? '0',
+            paymentMethod: paymentMethodDisplay(r.legacySource, r.paymentMethod),
+            isMembershipUpgrade: r.isMembershipUpgrade ?? false,
+            isActivity: r.isActivity ?? false,
+            isExperienceConversion: r.isExperienceConversion ?? false,
+            salesCategory: null,
+            customerType: r.customerType,
+            openedByName: r.openedByName,
+            saleOrderDatetime: r.saleOrderDatetime.toISOString(),
+            performanceAttributionDate: r.performanceAttributionDate,
+            createdAt: r.createdAt.toISOString(),
+            productType: null,
+            categoryL1: null,
+            categoryL2: null,
+            productName: isLegacy
+              ? '历史订单（无商品明细）'
+              : '订单（无商品明细）',
+            sessionCount: null,
+            unit: null,
+            paidUnusedSessions: null,
+            unitRealPrice: null,
+            remark: r.remark,
+            __sourceId: String(r.sourceId ?? r.saleOrderId),
+            __sourceKind: 'orderFallback' as const,
+          },
+        }
+      }),
       ...cardCreditRows.map((r) => ({
         source: 'cardCredit' as const,
         sourceId: String(r.sourceId),
+        sortDatetime: r.sortDatetime ?? r.saleOrderDatetime.toISOString(),
         row: {
           marketName: r.marketName,
           storeName: r.storeName,
@@ -1129,8 +2501,8 @@ export const exportOrders = withPermission(
           customerSource: r.customerSource ?? null,
           promoterEmployeeName: r.promoterEmployeeName ?? null,
           totalAmount: r.amount,
-          prepaidCardAmount: r.amount,
-          cashAmount: '0.00',
+          prepaidCardAmount: '0.00',
+          cashAmount: formatAmount(toAmount(r.amount)),
           received: r.amount,
           refundedAmount: '0.00',
           paymentMethod: null,
@@ -1159,39 +2531,40 @@ export const exportOrders = withPermission(
     ]
 
     combined.sort((left, right) => {
-      const byTime = left.row.saleOrderDatetime < right.row.saleOrderDatetime
+      const byTime = left.sortDatetime < right.sortDatetime
         ? 1
-        : left.row.saleOrderDatetime > right.row.saleOrderDatetime
+        : left.sortDatetime > right.sortDatetime
           ? -1
           : 0
       if (byTime !== 0) return byTime
       const byOrder = left.row.saleOrderId.localeCompare(right.row.saleOrderId)
       if (byOrder !== 0) return byOrder
-      const sourcePriority = { item: 0, recharge: 1, cardCredit: 2 } as const
-      const bySource = sourcePriority[left.source] - sourcePriority[right.source]
-      return bySource || left.sourceId.localeCompare(right.sourceId)
+      const bySource = EXPORT_ORDER_SOURCE_PRIORITY[left.source]
+        - EXPORT_ORDER_SOURCE_PRIORITY[right.source]
+      if (bySource !== 0) return bySource
+      if (left.source === 'cardCredit' && right.source === 'cardCredit') {
+        return Number(left.sourceId) - Number(right.sourceId)
+      }
+      return left.sourceId.localeCompare(right.sourceId)
     })
 
     const selected = limit == null ? combined : combined.slice(0, limit)
     const rows = selected.map((item) => item.row)
     if (limit == null) return { rows, truncated: false, hasMore: false }
 
-    const itemCount = selected.filter((item) => item.source === 'item').length
-    const rechargeCount = selected.filter((item) => item.source === 'recharge').length
-    const cardCreditCount = selected.filter((item) => item.source === 'cardCredit').length
-    const hasMore = itemRows.length > itemCount
-      || rechargeOrders.length > rechargeCount
-      || cardCreditRows.length > cardCreditCount
+    const hasMore = combined.length > limit
+    const lastSelected = selected.at(-1)
     return {
       rows,
       truncated: false,
       hasMore,
-      ...(hasMore
+      ...(hasMore && lastSelected
         ? {
             nextCursor: {
-              itemOffset: cursor.itemOffset + itemCount,
-              rechargeOffset: cursor.rechargeOffset + rechargeCount,
-              cardCreditOffset: cursor.cardCreditOffset + cardCreditCount,
+              sortDatetime: lastSelected.sortDatetime,
+              saleOrderId: lastSelected.row.saleOrderId,
+              source: lastSelected.source,
+              sourceId: lastSelected.sourceId,
             },
           }
         : {}),
@@ -1243,6 +2616,8 @@ export interface ExportAllocationOrderRow {
   customerType: string | null
   openedByName: string | null
   paidAt: string | null
+  /** 回款归属日期：直读款项级列（迁移 0041 收敛，与回款明细导出同源） */
+  performanceAttributionDate: string | null
   remark: string | null
   /** 以下字段仅供异步导出 worker 按完整回款聚合，不映射到 Excel 列。 */
   __sourceId?: string
@@ -1288,6 +2663,28 @@ export const exportAllocationOrders = withPermission(
     const filters = parseAllocationOrderFilters(params)
     filters.status = undefined
     filters.allocationStatus = undefined
+    // 销售提成以回款为列表粒度，款项日期必须约束当前 JOIN 到的 payment；
+    // 不能复用订单管理的 EXISTS 口径，否则会带出同订单范围外的其他回款。
+    const hasDateRange = Boolean(filters.dateFrom || filters.dateTo)
+    const usesPaymentDate = filters.dateBasis === 'payment' && hasDateRange
+    const usesAttributionDate = filters.dateBasis === 'attribution' && hasDateRange
+    const orderFilters = usesPaymentDate || usesAttributionDate
+      ? { ...filters, dateFrom: undefined, dateTo: undefined }
+      : filters
+    const paymentDateConditions = usesPaymentDate
+      ? [
+          filters.dateFrom
+            ? gte(saleOrderPayments.paidAt, beijingBoundaryTs(filters.dateFrom, '00:00:00'))
+            : undefined,
+          filters.dateTo
+            ? lt(saleOrderPayments.paidAt, beijingNextDayBoundaryTs(filters.dateTo))
+            : undefined,
+        ]
+      : usesAttributionDate
+        // 旧的订单维度分配 sale_payment_id 为 NULL，LEFT JOIN 出来的归属日期同样为 NULL
+        // → 与 paid_at 口径一致地落选，不需要额外分支。
+        ? paymentAttributionRangeConditions(filters.dateFrom, filters.dateTo)
+        : []
     const allocStatus = params.allocStatus
     const limit = resolveExportBatchLimit(options?.limit)
     const cursor: ExportAllocationOrdersCursor = {
@@ -1311,7 +2708,12 @@ export const exportAllocationOrders = withPermission(
 
     // 已分配明细段（一行 = 一条有效 sale_payment_item_allocations，每被分配员工一行）
     if (allocStatus !== '待分配') {
-      const whereClause = and(eq(salePaymentItemAllocations.isVoid, false), ...buildOrderConditions(session, filters))
+      const whereClause = and(
+        eq(salePaymentItemAllocations.isVoid, false),
+        ...buildOrderConditions(session, orderFilters),
+        usesPaymentDate || usesAttributionDate ? eq(saleOrderPayments.status, '已支付') : undefined,
+        ...paymentDateConditions,
+      )
       const query = db
         .select({
           market: saleOrders.marketName,
@@ -1359,6 +2761,8 @@ export const exportAllocationOrders = withPermission(
           customerType: clientWechatUsers.customerType,
           openedByName: opener.name,
           payPaidAt: saleOrderPayments.paidAt,
+          payAttributionDate: saleOrderPayments.performanceAttributionDate,
+          orderAttributionDate: saleOrders.performanceAttributionDate,
           salePaymentId: salePaymentItemReceipts.salePaymentId,
           receiptId: salePaymentItemReceipts.id,
           saleItemId: salePaymentItemReceipts.saleItemId,
@@ -1436,6 +2840,14 @@ export const exportAllocationOrders = withPermission(
             customerType: r.customerType,
             openedByName: r.openedByName,
             paidAt: r.payPaidAt?.toISOString() ?? r.orderPaidAt?.toISOString() ?? null,
+            // 旧的订单维度分配没有 sale_payment_id（payAttributionDate 为空）→ 只能用订单级。
+            // 0041 之后 payment 为空**严格等价于**"没有款项实体"：该列由 trigger 赋值 +
+            // chk_sop_attribution_date_present 兜底，"有款项行但列为空"已不可达，
+            // 所以这里的订单级兜底不会掩盖数据异常（对照 exportOrderPayments 的留空策略）。
+            performanceAttributionDate: resolvePaymentAttributionDate({
+              payment: r.payAttributionDate,
+              order: r.orderAttributionDate ?? null,
+            }),
             remark: r.remark,
             __sourceId: String(r.sourceId),
             __salePaymentId: r.salePaymentId,
@@ -1467,7 +2879,8 @@ export const exportAllocationOrders = withPermission(
       const whereClause = and(
         eq(saleOrderPayments.allocationStatus, '待分配'),
         eq(saleOrderPayments.status, '已支付'),
-        ...buildOrderConditions(session, filters),
+        ...buildOrderConditions(session, orderFilters),
+        ...paymentDateConditions,
       )
       const query = db
         .select({
@@ -1508,6 +2921,8 @@ export const exportAllocationOrders = withPermission(
           customerType: clientWechatUsers.customerType,
           openedByName: opener.name,
           payPaidAt: saleOrderPayments.paidAt,
+          payAttributionDate: saleOrderPayments.performanceAttributionDate,
+          orderAttributionDate: saleOrders.performanceAttributionDate,
           salePaymentId: salePaymentItemReceipts.salePaymentId,
           receiptId: salePaymentItemReceipts.id,
           saleItemId: salePaymentItemReceipts.saleItemId,
@@ -1583,6 +2998,14 @@ export const exportAllocationOrders = withPermission(
             customerType: r.customerType,
             openedByName: r.openedByName,
             paidAt: r.payPaidAt?.toISOString() ?? r.orderPaidAt?.toISOString() ?? null,
+            // 旧的订单维度分配没有 sale_payment_id（payAttributionDate 为空）→ 只能用订单级。
+            // 0041 之后 payment 为空**严格等价于**"没有款项实体"：该列由 trigger 赋值 +
+            // chk_sop_attribution_date_present 兜底，"有款项行但列为空"已不可达，
+            // 所以这里的订单级兜底不会掩盖数据异常（对照 exportOrderPayments 的留空策略）。
+            performanceAttributionDate: resolvePaymentAttributionDate({
+              payment: r.payAttributionDate,
+              order: r.orderAttributionDate ?? null,
+            }),
             remark: r.remark,
             __sourceId: String(r.sourceId),
             __salePaymentId: r.salePaymentId,
@@ -1712,6 +3135,8 @@ export const getOrderById = withAnyPermission(
     pendingReceived: ir.item.pendingReceived,
     expireDate: ir.item.expireDate,
     pickedUpQuantity: ir.item.pickedUpQuantity,
+    refundedQuantity: ir.item.refundedQuantity,
+    convertedQuantity: ir.item.convertedQuantity,
     remark: ir.item.remark,
     salesCategory: ir.item.salesCategory as SaleItem['salesCategory'],
     createdAt: ir.item.createdAt.toISOString(),
@@ -1739,6 +3164,8 @@ export const getOrderById = withAnyPermission(
     customerName: r.custName || r.order.customerName || null,
     totalAmount: r.order.totalAmount,
     prepaidCardAmount: r.order.prepaidCardAmount ?? '0',
+    pointsUsed: r.order.pointsUsed ?? 0,
+    pointsDiscount: r.order.pointsDiscount ?? '0',
     pendingPrepaidCardAmount: r.order.pendingPrepaidCardAmount ?? '0',
     payableAmount: r.order.payableAmount ?? '0',
     received: r.order.received ?? '0',
@@ -1890,16 +3317,67 @@ export const updatePerformanceAttributionDate = withPermission(
         throw new ApiError('CONFLICT', '订单已被其他人修改，请刷新后重试')
       }
 
+      // 款项行的同步由 DB trigger `sync_order_performance_attribution_to_payments()`
+      // （sale_orders 的 AFTER UPDATE，迁移 0041）完成，应用层不再各写一份 UPDATE：
+      // 查询侧已改为直读 sale_order_payments.performance_attribution_date，
+      // 任何漏同步的写入路径都会直接出错数，同步动作必须由 DB 保证而不是靠每个入口记得写。
+      // 这里只回读受影响的行用于审计日志（staffApi order.js 的同语义副本改法一致）。
+      // 回读条件与 trigger 的两条 UPDATE **同一个集合**（首次支付行 + 同次已支付卡行），
+      // 不是"日期等于目标值的行" —— 后者会把碰巧同日、但不归本次同步管的卡行也记进日志。
+      const syncedRes = await tx.execute(sql`
+        SELECT id
+        FROM sale_order_payments p
+        WHERE p.sale_order_id = ${saleOrderId}
+          AND (
+            p.change_type = '首次支付'
+            OR (
+              p.change_type = '储值卡抵扣'
+              AND p.status = '已支付'
+              AND EXISTS (
+                SELECT 1
+                FROM sale_order_payments first_payment
+                WHERE first_payment.sale_order_id = p.sale_order_id
+                  AND first_payment.change_type = '首次支付'
+                  AND first_payment.status = p.status
+                  AND first_payment.paid_at IS NOT DISTINCT FROM p.paid_at
+              )
+            )
+          )
+        ORDER BY p.id
+      `)
+      // tx.execute 走原生 SQL，不经 drizzle 列映射：bigint(int8) 由 postgres.js 原样返回 string，须显式 Number()
+      const syncedPaymentIds = (syncedRes as unknown as Array<{ id: number | string }>)
+        .map((row) => Number(row.id))
+
+      // 部署顺序闸门：本函数依赖迁移 0041 的 trigger 完成同步。若代码先于迁移上线，
+      // 上面的 UPDATE 只改了 sale_orders、款项行纹丝不动，而查询侧已直读款项列
+      // —— 那是静默出错数。这里花一次廉价回读把它变成响亮失败并回滚整个事务。
+      const attributionCheck = await tx.execute(sql`
+        SELECT COUNT(*)::int AS stale
+        FROM sale_order_payments
+        WHERE sale_order_id = ${saleOrderId}
+          AND change_type = '首次支付'
+          AND performance_attribution_date IS DISTINCT FROM ${targetDate}::date
+      `)
+      const stale = Number((attributionCheck as unknown as Array<{ stale: number }>)[0]?.stale ?? 0)
+      if (stale > 0) {
+        throw new ApiError(
+          'INVALID_STATE',
+          '业绩归属日期未能同步到款项流水，请确认数据库迁移 0041 已执行后重试',
+        )
+      }
+
       await logUpdate(
         session,
         'order.performanceAttribution.update',
         'sale_order',
         saleOrderId,
-        { performanceAttributionDate: locked.performance_attribution_date },
+        { performanceAttributionDate: locked.performance_attribution_date, syncedPaymentIds: [] },
         {
           performanceAttributionDate: updated.performance_attribution_date,
           performanceAttributionAdjustedAt: new Date(updated.performance_attribution_adjusted_at).toISOString(),
           performanceAttributionAdjustedBy: updated.performance_attribution_adjusted_by,
+          syncedPaymentIds,
         },
         tx,
       )
@@ -1918,6 +3396,222 @@ export const updatePerformanceAttributionDate = withPermission(
       success: true,
       message: '业绩归属日期已修改；该订单不可再次调整',
       data: {
+        ...result,
+        performanceAttributionAdjustedByName: session.name,
+      },
+    }
+  },
+)
+
+export interface UpdatePaymentPerformanceAttributionDateInput {
+  paymentId: number
+  performanceAttributionDate: string
+  expectedAttributionDate: string
+}
+
+export interface UpdatePaymentPerformanceAttributionDateResult {
+  success: true
+  message: string
+  data: {
+    paymentId: number
+    saleOrderId: string
+    performanceAttributionDate: string
+    performanceAttributionAdjustedAt: string
+    performanceAttributionAdjustedBy: string
+    performanceAttributionAdjustedByName: string
+  }
+}
+
+/**
+ * 一次性修改非首次支付款项的业绩归属日期。
+ *
+ * 目标日期必须位于该款项 paid_at 上海自然日前后 7 天（含边界）；
+ * 同次回款中被合并的储值卡流水与主流水原子同步，共用一次调整机会；
+ * FOR UPDATE + adjusted_at IS NULL + 当前归属日期 CAS 保证并发下仅一个请求成功。
+ */
+export const updatePaymentPerformanceAttributionDate = withPermission(
+  'sale_order:performance_attribution_update',
+  async (
+    session,
+    input: UpdatePaymentPerformanceAttributionDateInput,
+  ): Promise<UpdatePaymentPerformanceAttributionDateResult> => {
+    const paymentId = Number(input.paymentId)
+    const targetDate = input.performanceAttributionDate?.trim()
+    const expectedAttributionDate = input.expectedAttributionDate?.trim()
+    if (!Number.isSafeInteger(paymentId) || paymentId <= 0 || !isValidIsoDateOnly(targetDate)) {
+      throw new ApiError('INVALID_PARAMS', '款项流水号和有效的业绩归属日期必传')
+    }
+    if (!isValidIsoDateOnly(expectedAttributionDate)) {
+      throw new ApiError('INVALID_PARAMS', '款项归属日期版本无效，请刷新后重试')
+    }
+
+    const result = await db.transaction(async (tx) => {
+      // 先单独锁订单行，再锁款项行 —— 顺序必须是 sale_orders → sale_order_payments。
+      // 不能靠下面那条 JOIN 语句的 `FOR UPDATE OF sop, so` 代劳：它按 sop.id 主键扫描，
+      // 物理上是先锁 sop 再锁 so，正好把锁序倒过来，与订单级改期（先锁订单、
+      // AFTER trigger 再回写款项行）撞成 40P01。
+      await tx.execute(sql`
+        SELECT 1
+        FROM sale_orders
+        WHERE sale_order_id = (
+          SELECT sale_order_id FROM sale_order_payments WHERE id = ${paymentId}
+        )
+        FOR UPDATE
+      `)
+      const lockedRes = await tx.execute(sql`
+        SELECT
+          sop.id,
+          sop.sale_order_id,
+          sop.change_type,
+          sop.status,
+          sop.paid_at,
+          sop.performance_attribution_date::text AS performance_attribution_date,
+          sop.performance_attribution_adjusted_at,
+          EXISTS (
+            SELECT 1
+            FROM sale_order_payments primary_payment
+            WHERE primary_payment.sale_order_id = sop.sale_order_id
+              AND primary_payment.change_type IN ('首次支付', '回款')
+              AND primary_payment.status = sop.status
+              AND primary_payment.paid_at IS NOT DISTINCT FROM sop.paid_at
+          ) AS has_mixed_payment_primary,
+          ARRAY(
+            SELECT card.id
+            FROM sale_order_payments card
+            WHERE sop.change_type IN ('首次支付', '回款')
+              AND card.sale_order_id = sop.sale_order_id
+              AND card.change_type = '储值卡抵扣'
+              AND card.status = sop.status
+              AND card.paid_at IS NOT DISTINCT FROM sop.paid_at
+            ORDER BY card.id
+          ) AS paired_card_payment_ids,
+          so.store_id,
+          (sop.paid_at AT TIME ZONE 'Asia/Shanghai')::date::text AS original_paid_date,
+          ((sop.paid_at AT TIME ZONE 'Asia/Shanghai')::date - 7)::text AS min_performance_date,
+          ((sop.paid_at AT TIME ZONE 'Asia/Shanghai')::date + 7)::text AS max_performance_date
+        FROM sale_order_payments sop
+        JOIN sale_orders so ON so.sale_order_id = sop.sale_order_id
+        WHERE sop.id = ${paymentId}
+        -- 只锁 sop：订单行已由上面那条语句先锁住了。
+        FOR UPDATE OF sop
+      `)
+      const locked = (lockedRes as unknown as Array<{
+        id: number
+        sale_order_id: string
+        change_type: string
+        status: string
+        paid_at: Date | string | null
+        performance_attribution_date: string | null
+        performance_attribution_adjusted_at: Date | string | null
+        has_mixed_payment_primary: boolean
+        /** bigint[]（OID 1016）同样不经 drizzle 映射，postgres.js 回 string[] */
+        paired_card_payment_ids: Array<number | string>
+        store_id: string
+        original_paid_date: string | null
+        min_performance_date: string | null
+        max_performance_date: string | null
+      }>)[0]
+
+      if (!locked || !isInScope(session, locked.store_id)) {
+        throw new ApiError('NOT_FOUND', '款项流水不存在或不在当前数据权限范围内')
+      }
+      if (locked.change_type === '首次支付') {
+        throw new ApiError('INVALID_STATE', '首次支付跟随订单业绩归属日期，不能单独修改')
+      }
+      if (locked.change_type === '储值卡抵扣' && locked.has_mixed_payment_primary) {
+        throw new ApiError('INVALID_STATE', '该储值卡抵扣跟随同次现付归属日期，不能单独修改')
+      }
+      if (locked.status !== '已支付' || !locked.paid_at || !locked.original_paid_date) {
+        throw new ApiError('INVALID_STATE', '仅已入账且存在支付时间的款项可以修改归属日期')
+      }
+      if (locked.performance_attribution_adjusted_at) {
+        throw new ApiError('CONFLICT', '该款项的业绩归属日期已经调整过，不能再次修改')
+      }
+      // 迁移 0041 起该列由 trigger + chk_sop_attribution_date_present 保证恒有值，
+      // 这里直读。不再兜底 original_paid_date：兜底会把"列为空"这种数据异常
+      // 伪装成"当前归属日期 = 支付日"，让 CAS 误判成功。
+      const currentDate = locked.performance_attribution_date
+      if (currentDate !== expectedAttributionDate) {
+        throw new ApiError('CONFLICT', '款项归属日期已变化，请刷新后重试')
+      }
+      if (targetDate === currentDate) {
+        throw new ApiError('INVALID_PARAMS', '新归属日期与当前日期相同，未消耗修改机会')
+      }
+      if (targetDate < locked.min_performance_date! || targetDate > locked.max_performance_date!) {
+        throw new ApiError(
+          'INVALID_PARAMS',
+          `归属日期必须在款项发生日期 ${locked.original_paid_date} 前后 7 天内（${locked.min_performance_date} 至 ${locked.max_performance_date}）`,
+        )
+      }
+
+      const updatedRes = await tx.execute(sql`
+        UPDATE sale_order_payments payment
+        SET performance_attribution_date = ${targetDate}::date,
+            performance_attribution_adjusted_at = NOW(),
+            performance_attribution_adjusted_by = ${session.employeeId}
+        WHERE payment.id = ${paymentId}
+          AND EXISTS (
+            SELECT 1
+            FROM sale_order_payments target
+            WHERE target.id = ${paymentId}
+              AND target.performance_attribution_adjusted_at IS NULL
+              AND target.performance_attribution_date = ${expectedAttributionDate}::date
+          )
+        RETURNING
+          id,
+          sale_order_id,
+          performance_attribution_date::text AS performance_attribution_date,
+          performance_attribution_adjusted_at,
+          performance_attribution_adjusted_by
+      `)
+      // tx.execute 走原生 SQL，不经 drizzle 列映射：id 是 bigint(int8)，postgres.js 原样返回 string，
+      // 直接 `row.id === paymentId` 恒为 false，会把成功的 UPDATE 误判成并发冲突并回滚（2026-09-10 修复）。
+      const updated = (updatedRes as unknown as Array<{
+        id: number | string
+        sale_order_id: string
+        performance_attribution_date: string
+        performance_attribution_adjusted_at: Date | string
+        performance_attribution_adjusted_by: string
+      }>).find((row) => Number(row.id) === paymentId)
+      if (!updated) {
+        throw new ApiError('CONFLICT', '款项已被其他人修改，请刷新后重试')
+      }
+
+      await logUpdate(
+        session,
+        'payment.performanceAttribution.update',
+        'sale_order_payment',
+        String(paymentId),
+        { performanceAttributionDate: currentDate, affectedPaymentIds: [paymentId] },
+        {
+          performanceAttributionDate: updated.performance_attribution_date,
+          performanceAttributionAdjustedAt: new Date(updated.performance_attribution_adjusted_at).toISOString(),
+          performanceAttributionAdjustedBy: updated.performance_attribution_adjusted_by,
+          affectedPaymentIds: [paymentId, ...locked.paired_card_payment_ids.map((id) => Number(id))],
+        },
+        tx,
+      )
+
+      return {
+        saleOrderId: updated.sale_order_id,
+        performanceAttributionDate: updated.performance_attribution_date,
+        performanceAttributionAdjustedAt: new Date(updated.performance_attribution_adjusted_at).toISOString(),
+        performanceAttributionAdjustedBy: updated.performance_attribution_adjusted_by,
+      }
+    })
+
+    revalidatePath('/orders')
+    revalidatePath(`/orders/${result.saleOrderId}`)
+    revalidatePath('/allocations')
+    // 'layout' 模式才能级联到 /data-center 下的 4 条板块路径（默认 'page' 模式只命中裸 redirect 页）。
+    // 注意这只清路由缓存：板块页是 force-dynamic、看板数据走客户端 Server Action，
+    // 所以它不是「让看板见到新数字」的机制，别依赖它。
+    revalidatePath('/data-center', 'layout')
+    return {
+      success: true,
+      message: '款项业绩归属日期已修改；该次付款不可再次调整',
+      data: {
+        paymentId,
         ...result,
         performanceAttributionAdjustedByName: session.name,
       },
@@ -1950,11 +3644,16 @@ export const getOrderPayments = withAnyPermission(
     .select({
       payment: saleOrderPayments,
       operatorName: staffWechatUsers.name,
+      performanceAttributionAdjustedByName: paymentPerformanceAttributionAdjuster.name,
       skuUnit: productSkus.unit,
       refundProductType: saleItems.productType,
     })
     .from(saleOrderPayments)
     .leftJoin(staffWechatUsers, eq(saleOrderPayments.operatorEmployeeId, staffWechatUsers.employeeId))
+    .leftJoin(
+      paymentPerformanceAttributionAdjuster,
+      eq(saleOrderPayments.performanceAttributionAdjustedBy, paymentPerformanceAttributionAdjuster.employeeId),
+    )
     .leftJoin(saleItems, eq(saleOrderPayments.refSaleItemId, saleItems.saleItemId))
     .leftJoin(productSkus, eq(saleItems.skuId, productSkus.skuId))
     .where(eq(saleOrderPayments.saleOrderId, saleOrderId))
@@ -1974,7 +3673,11 @@ export const getOrderPayments = withAnyPermission(
     note: r.payment.note ?? null,
     createdAt: r.payment.createdAt.toISOString(),
     paidAt: r.payment.paidAt?.toISOString() ?? null,
+    performanceAttributionDate: r.payment.performanceAttributionDate ?? null,
+    performanceAttributionAdjustedAt: r.payment.performanceAttributionAdjustedAt?.toISOString() ?? null,
+    performanceAttributionAdjustedBy: r.payment.performanceAttributionAdjustedBy ?? null,
     operatorName: r.operatorName ?? null,
+    performanceAttributionAdjustedByName: r.performanceAttributionAdjustedByName ?? null,
     refundReason: r.payment.refundReason ?? null,
     refSaleItemId: r.payment.refSaleItemId ?? null,
     sessionCount: r.payment.sessionCount ?? null,
@@ -2080,13 +3783,39 @@ export const confirmOfflinePayment = withPermission(
           AND expire_date IS NULL
       `)
 
-      // ========== 储值卡抵扣扣款（ticket 2026-05-19）==========
-      // 锁余额 → 扣减 → 写 card_transactions(type='扣款') + 写 sale_order_payments(change_type='储值卡抵扣')
-      // 与 staff confirmOffline 字面对齐；幂等键 card-deduct-${id}。首次确认时扣全额预选卡。
       const clientUserId = locked.client_user_id as string | null
       // 回款事件主流水行 id（现金行优先；纯储值卡则取储值卡抵扣行）—— 按回款逐笔分配的归属键
       let cashPaymentId: number | string | null = null
       let cardPaymentId: number | string | null = null
+
+      // 混合支付统一按“现付后卡”写入：先写首次支付/回款主流水，再写储值卡抵扣。
+      // change_type 必须在任何本次流水写入前判定，避免刚写入的卡流水把首次现付误判成回款。
+      let cashChangeType: '首次支付' | '回款' | null = null
+      if (cashAmount > 0) {
+        const existRes = await tx.execute(sql`
+          SELECT 1 FROM sale_order_payments
+          WHERE sale_order_id = ${saleOrderId} AND status = '已支付'
+            AND amount::numeric > 0
+            AND change_type IN ('首次支付','回款','储值卡抵扣') LIMIT 1
+        `)
+        const existRows = existRes as unknown as any[]
+        cashChangeType = existRows.length > 0 ? '回款' : '首次支付'
+        const cashIns = await tx.execute(sql`
+          INSERT INTO sale_order_payments (
+            sale_order_id, change_type, payment_method, amount, status,
+            paid_at, source_end, operator_employee_id, note, created_at
+          ) VALUES (
+            ${saleOrderId}, ${cashChangeType}, '线下', ${cashAmount.toFixed(2)}::numeric, '已支付',
+            NOW(), 'admin', ${session.employeeId}, '管理后台确认线下收款', NOW()
+          )
+          RETURNING id
+        `)
+        cashPaymentId = (cashIns as unknown as Array<{ id: number | string }>)[0]?.id ?? null
+      }
+
+      // ========== 储值卡抵扣扣款（ticket 2026-05-19）==========
+      // 锁余额 → 扣减 → 写 card_transactions(type='扣款') + 写 sale_order_payments(change_type='储值卡抵扣')
+      // 与 staff confirmOffline 字面对齐；幂等键 card-deduct-${id}。首次确认时扣全额预选卡。
       if (orderPendingPrepaid > 0 && clientUserId) {
         const dupRes = await tx.execute(sql`
           SELECT 1 FROM card_transactions
@@ -2104,7 +3833,8 @@ export const confirmOfflinePayment = withPermission(
           }
           const currentBalance = Number(balRows[0].balance)
           if (currentBalance + 0.001 < orderPendingPrepaid) {
-            throw new Error(`INSUFFICIENT_BALANCE:${currentBalance}: 顾客储值卡余额不足，期望扣 ${orderPendingPrepaid}，实际 ${currentBalance}`)
+            // 同上：余额不放子标签位（issue #133 评审 round 3）
+            throw new Error(`INSUFFICIENT_BALANCE: 顾客储值卡余额不足，期望扣 ${orderPendingPrepaid}，实际 ${currentBalance}`)
           }
           const cardId = balRows[0].card_id as string
           await tx.execute(sql`
@@ -2132,30 +3862,6 @@ export const confirmOfflinePayment = withPermission(
         }
       }
 
-      // 现金流水：confirmAmount > 0 时写 1 行（首次/回款）。
-      // change_type：整单已有更早成功正向款（含储值卡抵扣）→ '回款'，否则 '首次支付'。
-      if (cashAmount > 0) {
-        const existRes = await tx.execute(sql`
-          SELECT 1 FROM sale_order_payments
-          WHERE sale_order_id = ${saleOrderId} AND status = '已支付'
-            AND amount::numeric > 0
-            AND change_type IN ('首次支付','回款','储值卡抵扣') LIMIT 1
-        `)
-        const existRows = existRes as unknown as any[]
-        const cashChangeType = existRows.length > 0 ? '回款' : '首次支付'
-        const cashIns = await tx.execute(sql`
-          INSERT INTO sale_order_payments (
-            sale_order_id, change_type, payment_method, amount, status,
-            paid_at, source_end, operator_employee_id, note, created_at
-          ) VALUES (
-            ${saleOrderId}, ${cashChangeType}, '线下', ${cashAmount.toFixed(2)}::numeric, '已支付',
-            NOW(), 'admin', ${session.employeeId}, '管理后台确认线下收款', NOW()
-          )
-          RETURNING id
-        `)
-        cashPaymentId = (cashIns as unknown as Array<{ id: number | string }>)[0]?.id ?? null
-      }
-
       // 重算 received / prepaid_card_amount（跨端字面对齐 staff confirmOffline / recordPayment）：
       //   received = Σ(amount WHERE status='已支付' AND change_type IN ('首次支付','回款','储值卡抵扣'))
       //   prepaid_card_amount = Σ(amount WHERE status='已支付' AND change_type='储值卡抵扣')
@@ -2177,11 +3883,13 @@ export const confirmOfflinePayment = withPermission(
         ? Math.round(orderPayable * 100) / 100
         : Math.round(orderTotal * 100) / 100
       const targetStatus: OrderStatus = newReceived + 0.005 >= settleTarget ? '已支付' : '部分支付'
+      const documentType = await classifySaleOrderDocumentType(tx, clientUserId, saleOrderId)
       // paid_at 写北京墙钟字面（见 lib/db-time）：结清→NOW()，未结清→NULL（保留原行为）。
       const paidAtExpr = targetStatus === '已支付' ? nowTs() : sql`NULL`
       const updRes = await tx.execute(sql`
         UPDATE sale_orders
         SET status = ${targetStatus}::order_status,
+            document_type = ${documentType}::document_type,
             received = ${newReceived.toFixed(2)}::numeric,
             prepaid_card_amount = ${newPrepaid.toFixed(2)}::numeric,
             pending_prepaid_card_amount = 0,
@@ -2241,11 +3949,8 @@ export const confirmOfflinePayment = withPermission(
       }
     })
   } catch (err: any) {
-    if (err instanceof ApiError && err.prefix === 'INVALID_PARAMS') {
-      return { success: false, message: err.message.replace(/^INVALID_PARAMS:\s*/, '') }
-    }
-    if (err instanceof ApiError && err.prefix === 'CONFLICT') {
-      return { success: false, message: err.message.replace(/^CONFLICT:\s*/, '') }
+    if (err instanceof ApiError && (err.prefix === 'INVALID_PARAMS' || err.prefix === 'CONFLICT')) {
+      return { success: false, message: businessErrorMessage(err, '确认收款失败，请稍后重试') }
     }
     // 透传 INSUFFICIENT_BALANCE（储值卡余额不足 / 无卡）
     const msg: string = err?.message || ''
@@ -2276,6 +3981,181 @@ export const confirmOfflinePayment = withPermission(
 )
 
 /** C4: 关闭订单 — 仅待支付/支付失败可关闭，同时作废关联的分配记录 */
+/** 拉卡拉 trade_state 三分类（官方 10 个取值），与 clientApi routes/order.js 同源。 */
+const LAKALA_RELEASABLE_TRADE_STATES = ['FAIL', 'CLOSE', 'REVOKED']
+
+/**
+ * 作废意图路径上每次渠道调用的超时预算，与 clientApi 的 LAKALA_VOID_CALL_TIMEOUT_MS 同值。
+ * 该路径最坏串行三次往返；按客户端默认 30s/次算最坏 90s，前端或反向代理会先超时，
+ * 而渠道可能已经关单、本地意图却还没释放（双谱系评审 round-2）。
+ */
+const LAKALA_VOID_CALL_TIMEOUT_MS = 12000
+
+/** 与 payNotify 解析回调时的 toUpperCase 对齐，避免两端对同一笔单判定不一致。 */
+function normalizeTradeState(state: string | null | undefined): string {
+  return String(state ?? '').trim().toUpperCase()
+}
+const LAKALA_PAID_TRADE_STATES = ['SUCCESS', 'PART_REFUND', 'REFUND']
+
+/**
+ * close 允许关闭的订单状态。关单前的意图作废闸门、释放意图的 CAS、以及事务内 closeOrder
+ * 的 CAS 共用这一份——三处字面量各自漂移过一次（释放 CAS 曾误写成 '部分支付'，导致
+ * '支付失败' 单渠道已关、本地永远关不掉）。
+ */
+const CLOSEABLE_ORDER_STATUSES = ['待支付', '支付失败'] as const
+
+/**
+ * 按门店解析拉卡拉商户号/终端号。
+ *
+ * 刻意保持与 clientApi `resolveLakalaMerchant` **逐字同源的原生 SQL**（而不是改写成
+ * Drizzle query builder）：这是四端副本之一，字面一致才能靠对照发现漂移。
+ */
+async function resolveLakalaMerchantForStore(
+  storeId: string | null,
+): Promise<{ merchantNo: string; termNo: string } | null> {
+  if (!storeId) return null
+  const rows = await db.execute(sql`
+    SELECT lm.merchant_no, lm.term_no, lm.enabled
+      FROM stores s
+      JOIN lakala_merchants lm ON lm.id = s.lakala_merchant_id
+     WHERE s.store_id = ${storeId}
+  `)
+  const row = rows[0] as { merchant_no?: string; term_no?: string; enabled?: boolean } | undefined
+  if (!row || !row.enabled || !row.merchant_no || !row.term_no) return null
+  return { merchantNo: row.merchant_no, termNo: row.term_no }
+}
+
+/**
+ * 主动作废订单上进行中的在线支付意图，成功后订单才允许关闭（issue #214）。
+ *
+ * 全程 **fail-closed**：只有确认渠道侧已是「不可再支付」的终态才清本地意图。关单失败、
+ * 复核非终态、查单异常一律保留意图并返回失败——宁可让店员重试，也不制造「本地已关、
+ * 渠道可付」的窗口（那会让顾客残留的支付面板付进来的钱因 payNotify 的「非当前意图」
+ * 校验而无法入账，变成收了钱订单不动的最坏事故）。
+ *
+ * 与 clientApi routes/order.js 的 voidActiveLakalaPaymentIntent 是同源副本：
+ * admin 直连拉卡拉而不经 clientApi，是为了不把「关单能力」压在另一个云函数的可用性上，
+ * 也避免引入「函数名 env 配错 → dev 打到 prod 库」这条本项目标记过的最危险路径。
+ * 两份实现的终态集合与放行条件必须保持一致。
+ */
+async function voidActiveOnlinePaymentIntent(
+  session: AuthSession,
+  saleOrderId: string,
+  outTradeNo: string,
+  storeId: string | null,
+): Promise<{ success: true } | { success: false; message: string }> {
+  let merchant: { merchantNo: string; termNo: string } | null = null
+  try {
+    merchant = await resolveLakalaMerchantForStore(storeId)
+  } catch (e) {
+    console.error('voidActiveOnlinePaymentIntent resolve merchant failed:', saleOrderId, e)
+  }
+  if (!merchant) {
+    return { success: false, message: '暂时无法确认支付结果，请稍后重试' }
+  }
+
+  let tradeState: string
+  try {
+    const trade = await queryTrade({
+      merchantNo: merchant.merchantNo,
+      termNo: merchant.termNo,
+      outTradeNo,
+      timeoutMs: LAKALA_VOID_CALL_TIMEOUT_MS,
+    })
+    // 只有查单成功返回的 trade_state 才权威：request() 对非成功码不抛错，只置 ok=false，
+    // 而错误响应里可能仍带一个非权威的 trade_state。按它释放意图会形成「本地已关、渠道可付」。
+    // 大小写归一与 payNotify 的 toUpperCase 对齐。
+    if (!trade.ok) {
+      console.error('voidActiveOnlinePaymentIntent queryTrade not ok:', saleOrderId, trade.code, trade.msg)
+      return { success: false, message: '暂时无法确认支付结果，请稍后重试' }
+    }
+    tradeState = normalizeTradeState(trade.tradeState)
+  } catch (e) {
+    console.error('voidActiveOnlinePaymentIntent queryTrade failed:', saleOrderId, e)
+    return { success: false, message: '暂时无法确认支付结果，请稍后重试' }
+  }
+  if (!tradeState) {
+    console.error('voidActiveOnlinePaymentIntent empty trade_state:', saleOrderId)
+    return { success: false, message: '暂时无法确认支付结果，请稍后重试' }
+  }
+
+  if (LAKALA_PAID_TRADE_STATES.includes(tradeState)) {
+    return { success: false, message: '该订单支付已成功，请刷新后按已支付订单处理' }
+  }
+
+  // 非终态（INIT / CREATE / DEAL / UNKNOWN）：顾客可能还握着可付款的支付面板，
+  // 必须先让渠道关单，再复核——关单返回成功不等于渠道已终态。
+  if (!LAKALA_RELEASABLE_TRADE_STATES.includes(tradeState)) {
+    try {
+      await closeTrade({
+        merchantNo: merchant.merchantNo,
+        termNo: merchant.termNo,
+        outTradeNo,
+        timeoutMs: LAKALA_VOID_CALL_TIMEOUT_MS,
+      })
+    } catch (e) {
+      console.error('voidActiveOnlinePaymentIntent closeTrade failed:', saleOrderId, e)
+      return { success: false, message: '暂时无法终止本次在线支付，请稍后重试' }
+    }
+
+    try {
+      const recheck = await queryTrade({
+        merchantNo: merchant.merchantNo,
+        termNo: merchant.termNo,
+        outTradeNo,
+        timeoutMs: LAKALA_VOID_CALL_TIMEOUT_MS,
+      })
+      if (!recheck.ok) {
+        console.error('voidActiveOnlinePaymentIntent recheck not ok:', saleOrderId, recheck.code, recheck.msg)
+        return { success: false, message: '暂时无法确认支付结果，请稍后重试' }
+      }
+      tradeState = normalizeTradeState(recheck.tradeState)
+    } catch (e) {
+      console.error('voidActiveOnlinePaymentIntent recheck failed:', saleOrderId, e)
+      return { success: false, message: '暂时无法确认支付结果，请稍后重试' }
+    }
+
+    if (LAKALA_PAID_TRADE_STATES.includes(tradeState)) {
+      return { success: false, message: '该订单支付已成功，请刷新后按已支付订单处理' }
+    }
+    if (!LAKALA_RELEASABLE_TRADE_STATES.includes(tradeState)) {
+      return { success: false, message: '在线支付仍在处理中，请稍后重试' }
+    }
+  }
+
+  // CAS 锚当前单号：期间若顾客重新发起了支付（换了新单号），这里不匹配即不释放，
+  // 后续事务的 `lakala_out_order_no IS NULL` 守卫会照常拦住关闭。
+  //
+  // ⚠️ 状态集合必须与下面 closeOrder 的 CAS（'待支付' OR '支付失败'）同源，不能照抄
+  // clientApi 的 ('待支付','部分支付')：'支付失败' 单在那种写法下渠道已被关掉、本地却
+  // 永远释放不了意图 → 这张单再也关不掉，且提示还把店员引向无效重试。
+  const released = await db.execute(sql`
+    UPDATE sale_orders
+       SET lakala_out_order_no = NULL, updated_at = NOW()
+     WHERE sale_order_id = ${saleOrderId}
+       AND status IN ('待支付', '支付失败')
+       AND lakala_out_order_no = ${outTradeNo}
+       AND ${scopeCondition(session, saleOrders.storeId) ?? sql`TRUE`}
+     RETURNING sale_order_id
+  `)
+  if (released.length === 0) {
+    // CAS 0 行有三种语义，不能一律当失败（双谱系评审 round-1，与 clientApi 的
+    // confirmIntentReleased 同源）：
+    //   a) 顾客侧 cancel / 前端轮询已经把同一笔意图释放了 → 目标已达成，放行
+    //   b) 意图被换成了新单号 → 必须拦
+    //   c) 状态已变 → 必须拦
+    // 把 (a) 误报成失败，会让管理员在与顾客并发时看到「支付状态已变化」，要点第二次才成功。
+    const recheckRows = await db.execute(sql`
+      SELECT lakala_out_order_no FROM sale_orders WHERE sale_order_id = ${saleOrderId}
+    `)
+    const current = recheckRows[0] as { lakala_out_order_no?: string | null } | undefined
+    if (!current || String(current.lakala_out_order_no ?? '').trim()) {
+      return { success: false, message: '支付状态已变化，请刷新后重试' }
+    }
+  }
+  return { success: true }
+}
+
 export const closeOrder = withPermission(
   'sale_order:update',
   async (session, saleOrderId: string): Promise<{ success: boolean; message: string }> => {
@@ -2287,11 +4167,41 @@ export const closeOrder = withPermission(
       totalAmount: saleOrders.totalAmount,
       saleOrderType: saleOrders.saleOrderType,
       storeId: saleOrders.storeId,
+      clientUserId: saleOrders.clientUserId,
+      pointsUsed: saleOrders.pointsUsed,
       lakalaOutOrderNo: saleOrders.lakalaOutOrderNo,
     })
     .from(saleOrders)
-    .where(eq(saleOrders.saleOrderId, saleOrderId))
+    // scope 必须参与这次查询（双谱系评审 round-1）：下面会据此向渠道关单，
+    // 若只在事务的 CAS 里带 scope，越域账号提交一个可枚举的订单号就能把别的门店
+    // 正在进行的支付打断——事务最终会拒绝，但渠道单已经被关掉了。
+    .where(and(eq(saleOrders.saleOrderId, saleOrderId), scopeCondition(session, saleOrders.storeId)))
     .limit(1)
+
+  // issue #214：顾客唤起支付后没付款，渠道单仍在有效期内，旧实现只能拒绝关闭
+  // （「在线支付处理中，暂不能关闭订单」），店员得等约 20 分钟。这里先向渠道关单并
+  // 释放意图，再走下面**原样不动**的事务与 CAS（`AND lakala_out_order_no IS NULL`）。
+  //
+  // 必须在事务之外：这是一次外部 HTTPS 往返，放进事务会把订单行锁持有到网络返回。
+  // 作废与事务之间若有顾客重新发起支付，事务内的 CAS 会重新拦住（fail-closed）。
+  // 拉卡拉未配置时整段跳过：行为退回改动前（下面的 CAS 会给出「在线支付处理中，暂不能
+  // 关闭订单」），而不是让这类订单彻底关不掉。与 staffApi 的通道未配置分支同口径。
+  //
+  // 状态闸门排在关单之前：对一张「已支付」单点关闭，本该直接回「状态不允许关闭」，
+  // 不该先去渠道查单甚至发关单请求。
+  if (orderCtx?.lakalaOutOrderNo
+      && lakalaIsReady()
+      && (CLOSEABLE_ORDER_STATUSES as readonly string[]).includes(orderCtx.status ?? '')) {
+    const voidResult = await voidActiveOnlinePaymentIntent(
+      session,
+      saleOrderId,
+      orderCtx.lakalaOutOrderNo,
+      orderCtx.storeId,
+    )
+    if (!voidResult.success) {
+      return { success: false, message: voidResult.message }
+    }
+  }
 
   // 事务：关闭订单 + 作废分配，原子提交
   try {
@@ -2319,7 +4229,10 @@ export const closeOrder = withPermission(
         return { matched: false }
       }
 
-      if (orderCtx?.saleOrderType === '转换单' && orderCtx.storeId) {
+      // rollbackPendingConversionOnClose 只按 saleOrderId 定位转出行（跨店转换单修复 PR #74 起
+      // 不再按 store_id 过滤源卡），因此这里不得再附加 storeId 条件——否则 orderCtx.storeId
+      // 缺失时会静默跳过回滚，与 staff routes/order.js:2462 的判定也不等价。
+      if (orderCtx?.saleOrderType === '转换单') {
         await rollbackPendingConversionOnClose(tx, saleOrderId)
       }
 
@@ -2352,6 +4265,12 @@ export const closeOrder = withPermission(
         .set({ status: '未使用', usedSaleOrderId: null, usedAt: null })
         .where(eq(userCoupons.usedSaleOrderId, saleOrderId))
 
+      await releasePointsDeductionTx(tx, {
+        saleOrderId,
+        userId: orderCtx?.clientUserId,
+        pointsUsed: orderCtx?.pointsUsed,
+      })
+
       return { matched: true }
     })
 
@@ -2363,7 +4282,8 @@ export const closeOrder = withPermission(
           : '订单状态已变更，无法关闭',
       }
     }
-  } catch {
+  } catch (e) {
+    console.error('closeOrder transaction failed:', saleOrderId, e instanceof Error ? e.message : String(e))
     return { success: false, message: '关闭订单失败，请稍后重试' }
   }
 
@@ -2436,6 +4356,7 @@ export const deleteOrder = withPermission(
         customerName: saleOrders.customerName,
         totalAmount: saleOrders.totalAmount,
         saleOrderType: saleOrders.saleOrderType,
+        storeId: saleOrders.storeId,
         // 历史已作废单的删除分支会读这个字段写入 audit snapshot；
         // 同时事务内 DELETE 守卫通过它识别"是否 WorkFine 历史单"以放行。
         legacySource: saleOrders.legacySource,
@@ -2511,6 +4432,59 @@ export const deleteOrder = withPermission(
     // 2. 事务级联删除（仅安全从属表 + 释放券；再删主单并复核可删条件）
     try {
       const txResult = await db.transaction(async (tx) => {
+        // 锁序 `sale_orders` → `sale_order_payments`（硬约束见 db/CLAUDE.md），**无条件**取，必须是第一条。
+        // 本事务是「先删子表（spia → receipts → payments → items）、最后删主单」，天然反向；
+        // 而营业额分配 / 改期 / 收款等事务都是先锁订单行再写款项与分配。两者交错即 40P01：
+        //   T_分配: 锁 sale_orders ✓ → 等 sale_payment_item_allocations
+        //   T_删除: 删 sale_payment_item_allocations ✓ → 等 sale_orders
+        // 此前这条锁只在「转换单」分支里取，非转换单路径整条链不持订单锁（issue #148 评审发现）。
+        //
+        // 它同时供下面的转换单状态闸门读新鲜状态——该闸门不可省，且**必须在锁内读**：
+        // 外层 `order.status` 是事务外读的，closeOrder‖deleteOrder 交错时（close 先提交并已回滚）
+        // 会拿陈旧的 '待支付' 再回滚一次，把家居 picked_up_quantity 多减一遍 →
+        // 已提货/已退款的数量凭空复活成可提可退。DELETE 复检允许 '已关闭'，那笔 delete 仍会提交，
+        // 错误不会被任何守卫拦下。
+        const freshRows = await tx.execute(sql`
+          SELECT status FROM sale_orders WHERE sale_order_id = ${saleOrderId} FOR UPDATE
+        `) as unknown as Array<{ status?: string }> | undefined
+        const freshStatus = freshRows?.[0]?.status
+
+        // 锁内复检：本单不得存在任何退款流水（含「待审批」）。
+        //
+        // 业务上：有退款在走的订单本就不该物理删除；上面那批守卫是在**事务外**读的（TOCTOU），
+        // 且只挡 `status='已支付'` 的款项流水，待审批退款行漏网。
+        //
+        // 并发上：这条复检是新加的订单锁能成立的前提。退款审批（staff order.js / admin refunds.ts /
+        // staff card.js）是「先拿退款行锁 → 再 UPDATE sale_orders」，与本事务「先锁订单 → 再删全单款项行」
+        // 恰好反向。之所以不成环，靠的是两者**不可能并存**：
+        //   1. 本事务持 `FOR UPDATE`，它与外键 INSERT 取的 `FOR KEY SHARE` 冲突 ——
+        //      持锁期间没人能给这张单新建退款流水；
+        //   2. 已存在的退款流水被这条复检挡下，直接退出、根本不进入 DELETE。
+        // ⚠ 因此**不要把这条复检删掉或移到锁之前**，那会让 deleteOrder × 退款审批变成真实的死锁对。
+        //
+        // ⚠ 上面第 1 条隐含一个假设：**退款流水只由 INSERT 产生**。若将来出现「UPDATE 既有款项行、
+        // 把 change_type 改写成 '退款'」的路径，它不取父行的 FOR KEY SHARE，这条锁就挡不住它，
+        // 论证随之失效。（2026-09-18 已 grep 全仓确认无此路径；两个评审谱系独立指出该假设应写明。）
+        //
+        // 另需知道：申请侧仍有一个**可检测**的暂态环 —— createRefund 先插入 tuple、其 FK 检查卡在本锁上，
+        // 而本事务随后的 DELETE 会撞上那条未提交 tuple。它是毫秒级窗口、双方都有 40P01→可重试翻译、
+        // 且删除是低频运维操作，故按可接受处理（详见 db/CLAUDE.md）。
+        const refundRows = await tx.execute(sql`
+          SELECT 1 FROM sale_order_payments
+          WHERE sale_order_id = ${saleOrderId} AND change_type = '退款'
+          LIMIT 1
+        `) as unknown as unknown[]
+        if (refundRows.length > 0) {
+          throw new Error('ORDER_HAS_REFUND_FLOW')
+        }
+
+        // 待支付/支付失败转换单：撤销创建时对源疗程卡 remaining_sessions / 家居 picked_up_quantity 的即时扣减。
+        if (order.saleOrderType === '转换单') {
+          if (freshStatus === '待支付' || freshStatus === '支付失败') {
+            await rollbackPendingConversionOnClose(tx, saleOrderId)
+          }
+        }
+
         await tx
           .update(userCoupons)
           .set({ status: '未使用', usedSaleOrderId: null, usedAt: null })
@@ -2559,6 +4533,9 @@ export const deleteOrder = withPermission(
     } catch (e) {
       if (e instanceof Error && e.message === 'ORDER_STATE_CHANGED') {
         return { success: false, message: '订单状态已变更，请刷新重试' }
+      }
+      if (e instanceof Error && e.message === 'ORDER_HAS_REFUND_FLOW') {
+        return { success: false, message: '订单存在退款流水，不可删除' }
       }
       if (pgErrorCode(e) === '23503') {
         return { success: false, message: '订单存在关联业务数据，无法删除' }
@@ -2791,6 +4768,10 @@ export const createOrder = withPermission(
   prepaidCardAmount?: number
   /** 组合套餐主商品 ID；套餐子项必须全部归属该套餐。 */
   bundleProductId?: string
+  /** 是否使用积分抵扣 */
+  usePoints?: boolean
+  /** 本次使用的积分数量；未传且 usePoints=true 时按可用上限自动计算 */
+  pointsUsed?: number
   items: Array<{
     skuId: string
     productName: string
@@ -2803,7 +4784,7 @@ export const createOrder = withPermission(
     saleAmount?: string
     /** 手动实付金额（可选，覆盖 saleAmount） */
     received?: string
-    salesCategory?: '自销自耗' | '他销自耗' | '他销他耗' | '生态合作' | null
+    salesCategory?: SalesCategory | null
     /**
      * 套餐子项标记（前端 BundlePicker 加购时置 true）：套餐价是独立机制，
      * 后端「会员价分流权威定价」对其豁免（维持现状，沿用前端套餐价）。
@@ -2847,6 +4828,13 @@ export const createOrder = withPermission(
   if (!isInScope(session, data.storeId)) {
     return { success: false, message: '无权在该门店创建订单' }
   }
+  if (data.preferredEmployeeId && await getInvalidEmployeeAssignmentId(
+    [data.preferredEmployeeId],
+    data.storeId,
+    { requireServiceSkills: true },
+  )) {
+    return { success: false, message: '所选美容师不属于本门店' }
+  }
 
   // 充值卡剥离 SKU 化（2026-05-20）：充值订单走独立 createRechargeOrder action，
   // 不再走 createSaleOrder。这里删除原"isRechargeOrder 识别 + 字段强制覆盖"块。
@@ -2861,6 +4849,9 @@ export const createOrder = withPermission(
   // service_fee（手工费）不受影响，仍按 SKU 快照。
   if (data.saleOrderType === '内部单' && data.couponId) {
     return { success: false, message: '内部单不允许叠加优惠券' }
+  }
+  if (data.saleOrderType !== '销售单' && (data.usePoints || Number(data.pointsUsed ?? 0) > 0)) {
+    return { success: false, message: '仅销售单支持积分抵扣' }
   }
 
   const getCustomerMarketScope = createCustomerMarketScopeProvider(data.clientUserId)
@@ -2952,8 +4943,6 @@ export const createOrder = withPermission(
   }
 
   // 会员判定：会员客 或 有钻石等级（member_level 非空），任一满足。
-  // 顺带缓存 customerType 供下方 document_type 快照复用（省一次查询）。
-  let buyerCustomerType: string | null = null
   let buyerIsMember = false
   if (data.clientUserId) {
     const [buyerRow] = await db
@@ -2961,7 +4950,6 @@ export const createOrder = withPermission(
       .from(clientWechatUsers)
       .where(eq(clientWechatUsers.userId, data.clientUserId))
       .limit(1)
-    buyerCustomerType = buyerRow?.customerType ?? null
     buyerIsMember = isMember(buyerRow?.customerType, buyerRow?.memberLevel)
   }
 
@@ -3318,7 +5306,47 @@ export const createOrder = withPermission(
     }
   }
 
-  const totalAmount = Math.round(Math.max(0, rawTotal - couponDiscount) * 100) / 100
+  let pointsUsed = 0
+  let pointsDiscount = 0
+  if (data.usePoints || data.pointsUsed != null) {
+    try {
+      const [[pointsRow], pointsToYuanRate, pointsDeductionMaxRate] = await Promise.all([
+        db
+          .select({ pointsBalance: clientWechatUsers.pointsBalance })
+          .from(clientWechatUsers)
+          .where(eq(clientWechatUsers.userId, data.clientUserId))
+          .limit(1),
+        getPointsToYuanRate(),
+        getPointsDeductionMaxRate(),
+      ])
+      const deduction = computePointsDeduction({
+        usePoints: data.usePoints,
+        requestedPoints: data.pointsUsed ?? null,
+        pointsBalance: pointsRow?.pointsBalance,
+        rawTotal,
+        currentAmount: roundMoney(data.items.reduce((sum, item) => {
+          const itemSale = item.saleAmount ? Number(item.saleAmount) : Number(item.unitRealPrice) * item.quantity
+          return sum + Math.round(itemSale * 100) / 100
+        }, 0)),
+        pointsToYuanRate,
+        pointsDeductionMaxRate,
+      })
+      pointsUsed = deduction.pointsUsed
+      pointsDiscount = deduction.pointsDiscount
+      if (pointsDiscount > 0) {
+        data = { ...data, items: data.items.map((it) => ({ ...it })) }
+        applyOrderLevelDiscountToItems(data.items, pointsDiscount)
+      }
+    } catch (err) {
+      // fail-closed：积分抵扣的业务拒绝带白名单前缀会照常透传，未知异常走兜底（issue #133）
+      return { success: false, message: businessErrorMessage(err, '积分抵扣参数无效') }
+    }
+  }
+
+  const totalAmount = roundMoney(data.items.reduce((sum, item) => {
+    const itemSale = item.saleAmount ? Number(item.saleAmount) : Number(item.unitRealPrice) * item.quantity
+    return sum + Math.round(itemSale * 100) / 100
+  }, 0))
 
   // ── 款项流水 / 部分支付基础（ticket 2026-04-24 PR-3） ─────────────
   // 充值卡从本次逐行实付中抵扣。欠款场景下，不能把未来待收部分提前拿来抵扣；
@@ -3366,29 +5394,25 @@ export const createOrder = withPermission(
       ? Math.min(receivedAmount, payableAmount)
       : null
 
-  // 全额储值卡抵扣（payable==0 且 prepaid>0）：无现金可收，挂"待支付"会卡死
+  // 全额抵扣（payable==0）：无现金可收，挂"待支付"会卡死
   //   （payment_method='无' 走不了 confirmOfflinePayment），故创建事务内直接扣卡 + 结清。
   //   用户 2026-05-21 拍板：销售单/转换单全额抵扣均在提交订单时即时抵扣。
   const isFullCardCoverage = prepaidCardAmount > 0 && payableAmount === 0
+  const zeroPayable = payableAmount === 0
 
   // 决策树（三端对齐"先付款、后转态记账"不变量）：
-  //   - 全额储值卡抵扣：'已支付'（事务内即时扣卡 + 结算）
+  //   - 全额抵扣：'已支付'（含储值卡时事务内即时扣卡 + 结算）
   //   - 微信/支付宝：'待支付'（等 payNotify 回调入账，无论首付与否）
   //   - 线下：'待支付'（开单不记款；现金 + 部分储值卡抵扣都在「确认收款」confirmOfflinePayment 入账翻态）
-  // createOrder 仅全额抵扣场景产出 '已支付'，其余款项流水/状态机由确认收款 / 录入回款 / payNotify 驱动。
-  const initialStatus: typeof saleOrders.$inferInsert['status'] = isFullCardCoverage ? '已支付' : '待支付'
+  // createOrder 仅零应付场景产出 '已支付'，其余款项流水/状态机由确认收款 / 录入回款 / payNotify 驱动。
+  const initialStatus: typeof saleOrders.$inferInsert['status'] = zeroPayable ? '已支付' : '待支付'
 
   // 全额抵扣时 payment_method 落 '无'（现金通道无需使用，与 staff order.create 对齐）。
-  const effectivePaymentMethod = isFullCardCoverage ? '无' : data.paymentMethod
+  const effectivePaymentMethod = zeroPayable ? '无' : data.paymentMethod
 
-  // received 创建时：全额抵扣 = prepaid（已结清）；其余一律 0（线上等 payNotify，线下等 confirmOfflinePayment）。
+  // received 创建时：零应付 = prepaid（积分/券全额时为 0）；其余一律 0（线上等 payNotify，线下等 confirmOfflinePayment）。
   // （2026-04-26 sale-order-domain-refactor：paid_amount 列已 DROP，统一用 received）
-  const paidAmountSnapshot = isFullCardCoverage ? prepaidCardAmount : 0
-
-  // 计算 document_type（售前/售后快照）：仅按下单时会员身份判——售前=非会员客，售后=会员客。
-  // 复用上方会员价分流已查得的 buyerCustomerType（省一次 client_wechat_users 查询）。
-  // 「成为会员那一单」下单时仍非会员客 → 售前；跃迁发生在支付后 recalcCustomerType，不影响本快照。
-  const documentType: '售前' | '售后' = buyerCustomerType === '会员客' ? '售后' : '售前'
+  const paidAmountSnapshot = zeroPayable ? prepaidCardAmount : 0
 
   // 事务外批量查询本次涉及 sku 的 service_fee（固定手工费）、session_count（疗程卡次数）
   // 与 is_experience（capability 权威源）。
@@ -3400,6 +5424,8 @@ export const createOrder = withPermission(
   const skuFeeMap = new Map<string, string>()
   const skuSessionMap = new Map<string, number | null>()
   const skuExperienceMap = new Map<string, boolean>()
+  const skuProductTypeMap = new Map<string, '疗程卡' | '家居产品'>()
+  const skuSpecNameMap = new Map<string, string>()
   // 店长特别优惠行级快照源（is_manager_special 权威 = DB，不信前端）
   const skuManagerSpecialMap = new Map<string, boolean>()
   // 生美 / 销售分类行级快照源（权威 = DB，不信前端）：
@@ -3413,6 +5439,8 @@ export const createOrder = withPermission(
     const skuRows = await db
       .select({
         skuId: productSkus.skuId,
+        productType: productSkus.productType,
+        specName: productSkus.specName,
         serviceFee: productSkus.serviceFee,
         sessionCount: productSkus.sessionCount,
         isExperience: productSkus.isExperience,
@@ -3427,6 +5455,8 @@ export const createOrder = withPermission(
       skuFeeMap.set(r.skuId, r.serviceFee)
       skuSessionMap.set(r.skuId, r.sessionCount)
       skuExperienceMap.set(r.skuId, r.isExperience === true)
+      skuProductTypeMap.set(r.skuId, r.productType)
+      skuSpecNameMap.set(r.skuId, r.specName)
       skuManagerSpecialMap.set(r.skuId, r.isManagerSpecial === true)
       skuShengmeiMap.set(r.skuId, r.isShengmei)
       skuSalesCategoryMap.set(r.skuId, r.salesCategory)
@@ -3455,6 +5485,11 @@ export const createOrder = withPermission(
   let saleOrderId: string
   try {
     saleOrderId = await db.transaction(async (tx) => {
+      const compositionSnapshots = await loadInventoryCompositionSnapshots(tx, data.items.map((item) => ({
+        ...item,
+        productType: skuProductTypeMap.get(item.skuId) ?? item.productType,
+        specName: skuSpecNameMap.get(item.skuId) ?? item.productName,
+      })))
       // advisory lock 在事务内持有，直到 commit 才释放
       const idRows = await tx.execute(sql`
         WITH lock AS (
@@ -3473,6 +5508,7 @@ export const createOrder = withPermission(
       `)
       const id = (idRows as any[])[0]?.id as string
       if (!id) throw new ApiError('INVALID_STATE', '订单号生成失败')
+      const documentType = await classifySaleOrderDocumentType(tx, data.clientUserId, id)
 
       // 顾客维度全量待支付单互斥：业务守卫查所有待支付单（含自助单），本事务 order-gen
       // advisory lock 串行化开单使其原子；DB uq 仅兜底 opened_by IS NULL 自助单
@@ -3526,13 +5562,15 @@ export const createOrder = withPermission(
         firstPaymentAmount: firstPaymentAmount != null ? firstPaymentAmount.toFixed(2) : null,
         couponId: data.couponId ?? null,
         couponDiscount: couponDiscount > 0 ? couponDiscount.toFixed(2) : '0',
+        pointsUsed,
+        pointsDiscount: pointsDiscount.toFixed(2),
         paymentMethod: effectivePaymentMethod,
         openedBy: data.openedBy || session.employeeId,
         preferredEmployeeId: data.preferredEmployeeId || null,
         allocationStatus: '待分配',
         remark: data.remark || null,
         isActivity: data.isActivity ?? false,
-        paidAt: isFullCardCoverage ? nowTs() : null,
+        paidAt: zeroPayable ? nowTs() : null,
       })
 
       // 开单时不写款项流水（统一"先付款、后记账"不变量）：
@@ -3551,6 +5589,14 @@ export const createOrder = withPermission(
         if ((voidResult as any).count === 0) {
           throw new ApiError('CONFLICT', '优惠券已被使用，请刷新后重试')
         }
+      }
+
+      if (pointsUsed > 0) {
+        await deductPointsAtCreationTx(tx, {
+          saleOrderId: id,
+          userId: data.clientUserId,
+          pointsUsed,
+        })
       }
 
       for (let i = 0; i < data.items.length; i++) {
@@ -3598,6 +5644,7 @@ export const createOrder = withPermission(
           skuId: item.skuId,
           productName: item.productName,
           productType: item.productType,
+          inventoryCompositionSnapshot: compositionSnapshots.get(item.skuId) ?? null,
           sessionCount,
           remainingSessions: sessionCount,
           unitPrice,
@@ -3649,8 +5696,8 @@ export const createOrder = withPermission(
       // 行级实付草稿现落 sale_items.pending_received，确认收款/payNotify 入账后才驱动 received→paid_sessions）。
       await recalcPaidSessionsForOrder(tx, id)
 
-      // 全额抵扣即结清：触发积分发放 + 客户分类跃迁（与 confirmOfflinePayment 已支付分支一致）。
-      if (isFullCardCoverage) {
+      // 零应付即结清：触发积分发放 + 客户分类跃迁（与 confirmOfflinePayment 已支付分支一致）。
+      if (zeroPayable) {
         await settlePointsSafe(tx, id, 'admin.createOrder')
         if (data.clientUserId) {
           await recalcCustomerType(tx, data.clientUserId)
@@ -3666,12 +5713,15 @@ export const createOrder = withPermission(
     // 修复 f4248169 把这些 throw 迁移到 ApiError（带 "<PREFIX>: " 前缀）后，
     // 旧的 err.message === / startsWith('<中文>') 匹配器全部失配，被吞成通用「创建订单失败」的回归。
     if (err instanceof ApiError) {
-      const parsed = parseErrorPrefix(err.message)
-      return { success: false, message: parsed?.displayMessage ?? err.message }
+      // 走 businessErrorMessage 而非 parsed.displayMessage：后者只剥一级前缀，
+      // 会把 HOME_PRODUCT_NO_PENDING: 这类二级子标签送进 toast（issue #133 评审 round 3）
+      return { success: false, message: businessErrorMessage(err, '创建订单失败，请稍后重试') }
     }
     // 全额储值卡抵扣扣卡失败：deductPrepaidCardAtCreation 抛 plain Error（非 ApiError），
-    // 消息形如 'INSUFFICIENT_BALANCE:NO_CARD: ...' / 'INSUFFICIENT_BALANCE:<余额>: ...'，
-    // 需用专用正则连子标签一起剥掉（parseErrorPrefix 会残留 NO_CARD/数字子标签）。
+    // 消息形如 'INSUFFICIENT_BALANCE:NO_CARD: ...'，需用专用正则连子标签一起剥掉
+    // （parseErrorPrefix 会残留 NO_CARD 子标签）。
+    // 注：`INSUFFICIENT_BALANCE:<余额>:` 形态在本 catch 的可达面内已消灭（余额已移进中文正文，
+    // 见 issue #133 评审 round 3）；仅 recordPayment 自抛自解的那对还保留数字子标签。
     if (typeof err?.message === 'string' && err.message.startsWith('INSUFFICIENT_BALANCE')) {
       const stripped = err.message.replace(/^INSUFFICIENT_BALANCE:?(NO_CARD)?:?\s*/, '')
       return { success: false, message: stripped || '顾客储值卡余额不足' }
@@ -3696,6 +5746,8 @@ export const createOrder = withPermission(
   await logOperation(session, 'order.create', 'sale_order', saleOrderId, {
     storeId: data.storeId, totalAmount: totalAmount.toFixed(2), itemCount: data.items.length,
     couponId: data.couponId ?? null, couponDiscount: couponDiscount > 0 ? couponDiscount.toFixed(2) : null,
+    pointsUsed: pointsUsed > 0 ? pointsUsed : null,
+    pointsDiscount: pointsDiscount > 0 ? pointsDiscount.toFixed(2) : null,
   })
 
   revalidatePath('/orders')
@@ -3749,7 +5801,7 @@ export const createConversionOrder = withPermission(
     /** 店长特价行手填应付金额（转换单同销售单，后端按 DB is_manager_special 采纳） */
     saleAmount?: string
     quantity: number
-    salesCategory?: '自销自耗' | '他销自耗' | '他销他耗' | '生态合作' | null
+    salesCategory?: SalesCategory | null
   }>
   /** 充值卡抵扣金额（仅正补差额 priceDiff > 0 时有效） */
   prepaidCardAmount?: number
@@ -3779,6 +5831,13 @@ export const createConversionOrder = withPermission(
   }> => {
   if (!isInScope(session, data.storeId)) {
     return { success: false, message: '无权在该门店创建订单' }
+  }
+  if (data.preferredEmployeeId && await getInvalidEmployeeAssignmentId(
+    [data.preferredEmployeeId],
+    data.storeId,
+    { requireServiceSkills: true },
+  )) {
+    return { success: false, message: '所选美容师不属于本门店' }
   }
   if (!data.clientUserId) {
     return { success: false, message: '转换单必须指定顾客' }
@@ -3839,7 +5898,30 @@ export const createConversionOrder = withPermission(
 
   try {
     result = await db.transaction(async (tx) => {
-      // 1. 先锁住转出候选行；service.start 使用同一把 sale_items 行锁写预扣。
+      // 0b. 先锁**原单**（#182）。项目锁序约定 sale_orders → sale_order_payments，既有入账路径
+      // （confirmOffline / recordPayment / payNotify）一律先锁 sale_orders、再由
+      // recalcPaidSessionsForOrder 更新 sale_items。欠款归零那段要锁原单，若等到那时才锁，
+      // 本事务足迹就是 sale_items → sale_orders，与入账路径互为反向，中间还隔着十余条语句，
+      // 持锁窗口长、40P01 命中率高。故先按 sale_order_id 升序锁住涉及的原单，
+      // 把锁序统一回 sale_orders → sale_items；后面那次 FOR UPDATE 变成同事务重入。
+      const refOrderRows = (await tx.execute(sql`
+        SELECT DISTINCT sale_order_id FROM sale_items
+         WHERE sale_item_id IN (${sql.join(data.convertOutSaleItemIds.map((id) => sql`${id}`), sql`, `)})
+         ORDER BY sale_order_id
+      `)) as unknown as Array<Record<string, unknown>>
+      const refOrderIds = Array.isArray(refOrderRows)
+        ? refOrderRows.map((r) => r.sale_order_id as string)
+        : []
+      if (refOrderIds.length > 0) {
+        await tx.execute(sql`
+          SELECT sale_order_id FROM sale_orders
+           WHERE sale_order_id IN (${sql.join(refOrderIds.map((id) => sql`${id}`), sql`, `)})
+           ORDER BY sale_order_id
+           FOR UPDATE
+        `)
+      }
+
+      // 1. 再锁住转出候选行；service.start 使用同一把 sale_items 行锁写预扣。
       const heldRows = await tx.execute(sql`
         SELECT
           si.sale_item_id,
@@ -3853,8 +5935,13 @@ export const createConversionOrder = withPermission(
           si.remaining_sessions,
           si.quantity,
           si.picked_up_quantity,
+          si.refunded_quantity,
+          si.converted_quantity,
           si.unit_price,
           si.unit_real_price,
+          si.sale_amount,
+          si.received,
+          si.pending_received,
           si.sales_category,
           COALESCE(si.is_shengmei, psk.is_shengmei) AS is_shengmei,
           si.service_fee,
@@ -3876,6 +5963,34 @@ export const createConversionOrder = withPermission(
       `)
 
       const held = Array.from(heldRows as unknown as Iterable<Record<string, unknown>>)
+      // #145/#153：折抵**金额**必须在**锁取得之后**用另一条语句复算。
+      // `FOR UPDATE OF si` 只锁 sale_items：READ COMMITTED 下语句先取快照再等锁，
+      // 唤醒后 EvalPlanQual 只刷新 si 自身的行版本，转出行聚合仍是旧快照
+      // → 两笔并发折抵会各自读到 converted_amount=0，把同一批已付价值折两遍。
+      // ⚠ #182 起**疗程卡也走这条复算**：折抵额改「剩余已付」后同样依赖转出行聚合。
+      //
+      // #154：件数三列（picked_up / refunded / converted）都在 si 自己身上，EvalPlanQual 会刷新，
+      // 已随持锁查询一并取到，不再需要事后聚合 pickup_records —— 这条语句现在只为**金额**而存在，
+      // 因此作用域必须覆盖**两类**（疗程卡也要扣已转走金额），不能像 #154 那样只取家居。
+      const deductibleIds = held.map((row) => row.sale_item_id as string)
+      if (deductibleIds.length > 0) {
+        const consumedRows = (await tx.execute(sql`
+          SELECT si.sale_item_id,
+                 COALESCE((SELECT SUM(GREATEST(0, -out_item.received::numeric))
+                             FROM sale_items out_item
+                             JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id
+                            WHERE out_item.ref_sale_item_id = si.sale_item_id
+                              AND out_item.item_direction = '转出'
+                              AND conv_order.status <> '已关闭'), 0) AS home_converted_amount
+            FROM sale_items si
+           WHERE si.sale_item_id IN (${sql.join(deductibleIds.map((id) => sql`${id}`), sql`, `)})
+        `)) as unknown as Array<Record<string, unknown>>
+        const consumedById = new Map(consumedRows.map((r) => [r.sale_item_id as string, r]))
+        for (const row of held) {
+          const c = consumedById.get(row.sale_item_id as string)
+          row.home_converted_amount = c?.home_converted_amount ?? 0
+        }
+      }
       if (held.length !== data.convertOutSaleItemIds.length) {
         throw new ApiError('NOT_FOUND', 'CARD_NOT_FOUND: 部分卡不存在或已失效')
       }
@@ -3903,6 +6018,42 @@ export const createConversionOrder = withPermission(
       }
 
       let totalOut = 0
+      // #182：Δ（欠款豁免额）必须扣掉**行级已退款额**。`received` 是行级**净**实收
+      // （paid-sessions STEP 1.5 已按逐项退款扣过），直接用 sale_amount − received 会把
+      // 「已经退给顾客的钱」也当成欠款豁免掉：原价 ¥100 已付 ¥100 已退 ¥40 → received=60 →
+      // 错误 Δ=40（真实欠款为 0）；订单 total 再减 40 后 total − refunded_amount 的净额
+      // 从 60 掉到 20，污染报表 / 会员阈值 / 状态判定。SQL 与 lib/per-item-refund.ts 同源，
+      // 此处必须走 tx（事务体内不得有非-tx await）。
+      const refundedRows = (await tx.execute(sql`
+        WITH refund_items AS (
+          SELECT elem ->> 'refSaleItemId' AS sale_item_id,
+                 COALESCE((elem ->> 'refundAmount')::numeric, 0) AS refund_amount
+          FROM sale_order_payments sop
+          CROSS JOIN LATERAL jsonb_array_elements(
+            CASE WHEN sop.note LIKE '{%'
+                 THEN CASE WHEN jsonb_typeof((sop.note)::jsonb -> 'items') = 'array'
+                           THEN (sop.note)::jsonb -> 'items'
+                           ELSE '[]'::jsonb END
+                 ELSE '[]'::jsonb END
+          ) AS elem
+          WHERE sop.sale_order_id IN (
+                  SELECT DISTINCT sale_order_id FROM sale_items
+                   WHERE sale_item_id IN (${sql.join(data.convertOutSaleItemIds.map((id) => sql`${id}`), sql`, `)})
+                )
+            AND sop.change_type = '退款'
+            AND sop.status = '已支付'
+            AND elem ->> 'refSaleItemId' IS NOT NULL
+            AND elem ->> 'refSaleItemId' <> 'OVERPAY'
+        )
+        SELECT sale_item_id, SUM(refund_amount) AS refunded
+          FROM refund_items GROUP BY sale_item_id
+      `)) as unknown as Array<Record<string, unknown>>
+      const refundedByItem = new Map<string, number>(
+        (Array.isArray(refundedRows) ? refundedRows : []).map(
+          (r) => [r.sale_item_id as string, Number(r.refunded ?? 0)],
+        ),
+      )
+
       type OutItem = {
         refSaleItemId: string
         skuId: string | null
@@ -3917,6 +6068,15 @@ export const createConversionOrder = withPermission(
         serviceFee: number
         isExperience: boolean
         isShengmei: boolean | null
+        /** #182 欠款归零：原单 id / 原行应付快照（CAS 期望值）/ 本次豁免额 Δ / 原 pending 快照 */
+        refSaleOrderId: string
+        refSaleAmount: number
+        waiveAmount: number
+        /** 订单级真实欠款豁免额（= 行级 − 行级已退款额），只有它能进 total_amount */
+        orderWaiveAmount: number
+        /** 折抵后钉给 pending_received 的**毛已付**（净实收 + 该行已退款额） */
+        pinnedPendingReceived: number
+        refPendingReceived: number
       }
       const outItems: OutItem[] = []
 
@@ -3924,10 +6084,13 @@ export const createConversionOrder = withPermission(
         // 归属校验：store_id / client_user_id / direction / 状态
         if (row.store_id !== data.storeId) throw new ApiError('INVALID_STATE', 'CARD_STORE_MISMATCH: 所选卡不属于当前门店')
         if (row.client_user_id !== data.clientUserId) throw new ApiError('INVALID_STATE', 'CARD_OWNER_MISMATCH: 所选卡不属于该顾客')
-        const isEntitlement = row.item_direction === '购买'
-          || (row.sale_order_type === '转换单' && row.item_direction === '转入')
-        if (!isEntitlement) throw new ApiError('INVALID_STATE', 'CARD_DIRECTION_INVALID: 所选行不是有效疗程权益，不可折抵')
-        if (row.order_status !== '已支付' && row.order_status !== '已完成') {
+        const isEntitlement = isConvertibleEntitlementRow({
+          item_direction: row.item_direction as string,
+          sale_order_type: row.sale_order_type as string,
+        })
+        if (!isEntitlement) throw new ApiError('INVALID_STATE', 'CARD_DIRECTION_INVALID: 所选行不是有效权益，不可折抵')
+        // 订单级「部分支付」同样放行（#125 甲方拍板），与 getCustomerHeldCards 的 WHERE 保持一致
+        if (row.order_status !== '已支付' && row.order_status !== '部分支付' && row.order_status !== '已完成') {
           throw new ApiError('INVALID_STATE', 'CARD_ORDER_STATUS_INVALID: 原订单状态不允许转换')
         }
         // 冻结闭环（Bug I）：源卡所属订单有待审批退款时禁止折抵（与 staff createConversion 对齐）
@@ -3938,30 +6101,101 @@ export const createConversionOrder = withPermission(
         const unit = Number(row.unit_real_price)
         const productType = row.product_type as string
 
-        // 2026-05-21 单品合并：折抵统一按 remaining_sessions（含原"体验卡单品"=1 次卡）；家居产品不可折抵
+        // 2026-05-21 单品合并：折抵统一按 remaining_sessions（含原"体验卡单品"=1 次卡）
         // 2026-08-06 预扣机制：可折抵数量 = remaining_sessions - 服务预扣（total_reserved）
+        // 2026-09-14 #125：家居产品可作为折抵来源
+        // ⚠ #145/#153 收紧：家居改按「已付未结算」折抵（件数向下取整、金额含余数，见 homeDeductible）。
+        //   旧的「未提货数量全额折抵」会把未兑现价值洗成全额可提（dev 真库实证）。疗程卡口径不变。
+        // #182 统一口径：折抵额 = 该行「剩余已付」（含不足一整次/一整件的余数），
+        // 折抵数量 = 该行全部剩余权益（整行退出）。与 staff createConversion 同源。
+        if (productType !== '疗程卡' && productType !== '家居产品') {
+          throw new ApiError('INVALID_PARAMS', 'CARD_TYPE_INVALID: 所选行类型不支持折抵')
+        }
+        const toCents = (v: unknown) => Math.round((Number(v ?? 0) || 0) * 100)
+        const isDepositOrGift = row.sale_order_type === '寄存单' || Number(row.sale_amount ?? 0) <= 0
+        const unitCents = toCents(row.unit_real_price)
         let qty = 0
+        let lineAmount = 0
         if (productType === '疗程卡') {
           const rem = Number(row.remaining_sessions ?? 0)
           const reserved = reservedBySaleItemId.get(row.sale_item_id as string) ?? 0
-          if (rem <= 0) {
-            throw new ApiError('INVALID_STATE', 'CARD_EXHAUSTED: 所选卡已耗尽，无法折抵')
+          // 整行退出与「留几次给在途服务」互斥：钱已全额折走，留下的次数就是白送，
+          // 而把预扣一起注销会让 service.confirm 的扣次守卫失败、服务单永久卡在
+          // 「待客户确认」且预扣不释放。故存在在途预扣时整行拒绝。
+          if (reserved > 0) {
+            throw new ApiError('INVALID_STATE', 'CARD_RESERVED: 所选项目有服务进行中，请先完成或取消服务单后再折抵')
           }
-          const available = rem - reserved
-          if (available <= 0) {
-            throw new ApiError('INVALID_STATE', 'CARD_RESERVED: 所选卡可用次数不足（存在服务中预留）')
-          }
-          qty = available  // 折抵数量改为可用次数（扣除预扣）
+          qty = rem
+          const deliveredCents = Math.max(0, Number(row.session_count ?? 0) - rem) * unitCents
+          const remainingPaidCents = Math.max(
+            0,
+            toCents(row.received) - deliveredCents - toCents(row.home_converted_amount),
+          )
+          lineAmount = isDepositOrGift ? (unitCents * rem) / 100 : remainingPaidCents / 100
         } else {
-          throw new ApiError('INVALID_PARAMS', 'CARD_TYPE_INVALID: 所选行类型不支持折抵')
+          // 金额沿用 homeDeductible 的「剩余已付」；**件数不再取它的提货口径**，
+          // 整行退出带走全部未结算件（折后可提 = min(0, …) = 0，守恒仍成立）。
+          const home = homeDeductible({
+            saleOrderType: row.sale_order_type as string,
+            quantity: Number(row.quantity ?? 0),
+            pickedUpQuantity: Number(row.picked_up_quantity ?? 0),
+            refundedQuantity: Number(row.refunded_quantity ?? 0),
+            convertedQuantity: Number(row.converted_quantity ?? 0),
+            convertedAmount: row.home_converted_amount as string,
+            saleAmount: row.sale_amount as string,
+            received: row.received as string,
+            unitRealPrice: row.unit_real_price as string,
+          })
+          qty = Math.max(0, Number(row.quantity ?? 0) - Number(row.picked_up_quantity ?? 0))
+          lineAmount = Math.round(home.amount * 100) / 100
         }
 
-        const amount = Math.round(unit * qty * 100) / 100
+        // 纯余数行（疗程卡次数已用完 / 家居物理件已结算完）Q=0 但 A>0 仍放行——
+        // 让顾客把这笔不足一整次(件)的已付款换走，DB 侧已放宽 chk_item_quantity。
+        //
+        // ⚠ 本闸门必须与 getCustomerHeldCards 的候选 WHERE **同口径**，宽一点都不行：
+        // 若写成 `qty <= 0 && lineAmount <= 0`，则「Q>0 且 A=0」会被放行——候选加载后一次
+        // 服务核销（delivered 涨满、预扣随服务完成释放）就能构造出来。后果是落一条 0 元转出行、
+        // 把剩余权益凭空注销（顾客一分钱没换走），又因 Δ=0 不走欠款归零，于是
+        // (session_count − remaining_sessions) > paid_sessions 永久违反 D3，该原单此后任何
+        // recalc（回款/退款/支付回调）都抛 PAID_SESSIONS_UNDERFLOW 而彻底锁死。
+        if (isDepositOrGift ? qty <= 0 : lineAmount <= 0) {
+          throw new ApiError('INVALID_STATE', 'DEDUCTIBLE_EMPTY: 所选折抵项没有可折抵的已付金额')
+        }
+
+        // #182 欠款归零额 Δ。三个守卫缺一不可：寄存单（received 恒 0，sale_amount 是
+        // 原价快照）、received > 0（否则新 sale_amount 落 0，踩 sale_amount<=0 的赠品
+        // 全放分支）、Δ > 0（overpay 行 received > sale_amount，不能反向上调应付）。
+        const refSaleAmount = Math.round(Number(row.sale_amount ?? 0) * 100) / 100
+        const refReceived = Math.round(Number(row.received ?? 0) * 100) / 100
+        const refRefunded = Math.round(
+          Number(refundedByItem.get(row.sale_item_id as string) ?? 0) * 100,
+        ) / 100
+        // ⚠ 行级与订单级的下调额**不是同一个数**：
+        //  · 行级 = sale_amount − 净实收，作用是让 paid_sessions 重算到满付，从而在
+        //    remaining_sessions 注销为 0 后仍满足 D3（10 次卡付清后退 4 次 → received=600 /
+        //    paid_sessions=6，折抵后 (10 − 0) > 6 会立刻违反 D3 并提交坏状态）。
+        //  · 订单级 = 行级 − 行级已退款额，即真实欠款；多扣就是把已退给顾客的钱
+        //    又当欠款豁免一次，total_amount − refunded_amount 的净额被重复扣减。
+        const rowWaiveRaw = Math.round((refSaleAmount - refReceived) * 100) / 100
+        const orderWaiveRaw = Math.round((rowWaiveRaw - refRefunded) * 100) / 100
+        const waiveEligible = row.sale_order_type !== '寄存单'
+          && refSaleAmount > 0 && refReceived > 0
+        const waiveAmount = waiveEligible && rowWaiveRaw > 0 ? rowWaiveRaw : 0
+        const orderWaiveAmount = waiveEligible && orderWaiveRaw > 0 ? orderWaiveRaw : 0
+
+        const amount = lineAmount
         totalOut += amount
-        // 按折抵数量比例扣减 service_fee（负值）
+        // 按折抵数量比例扣减 service_fee（负值）；纯余数行 qty=0 → 不扣手工费。
+        // ⚠ 分母必须与 qty 同量纲：service_fee 快照口径是 sku.service_fee × quantity(**张数**)，
+        // 而疗程卡的 qty 是**次数**。用张数作分母会把手工费放大 session_count 倍。
         const origServiceFee = Number(row.service_fee ?? 0)
-        const origQty = Number(row.quantity) || 1
-        const outServiceFee = -Math.round((origServiceFee * qty / origQty) * 100) / 100
+        const feeBase = productType === '疗程卡'
+          ? (Number(row.session_count) || 1)
+          : (Number(row.quantity) || 1)
+        const outServiceFee = qty > 0
+          ? -Math.round((origServiceFee * qty / feeBase) * 100) / 100
+          : 0
 
         outItems.push({
           refSaleItemId: row.sale_item_id as string,
@@ -3977,6 +6211,19 @@ export const createConversionOrder = withPermission(
           serviceFee: outServiceFee,
           isExperience: row.is_experience === true,
           isShengmei: (row.is_shengmei as boolean | null) ?? null,
+          // #182 欠款归零：Δ 同时写在转出行 waived_amount 上用于归因（原行那份是累计值）
+          refSaleOrderId: row.sale_order_id as string,
+          refSaleAmount,
+          waiveAmount,
+          orderWaiveAmount,
+          // 欠款归零会把 pending_received 钉到该行**毛已付** = 净实收 + 该行已退款额。
+          // 必须是毛额：STEP 1 重建的是毛额语义，钉住值随后要经 STEP 1.5 扣一次退款才成净额。
+          // 钉成净实收会被 STEP 1.5 再扣一次（付清后退过款的行终值 = 净额 − 退款额 < 新应付）
+          // → paid_sessions 不满付，而 remaining_sessions 已注销为 0 → 永久违反 D3。
+          pinnedPendingReceived: Math.round((refReceived + refRefunded) * 100) / 100,
+          // 原行 pending_received 快照：关单回滚必须还原，否则历史行（原本 pending=0）的
+          // 分摊权重被永久改写。
+          refPendingReceived: Math.round(Number(row.pending_received ?? 0) * 100) / 100,
         })
       }
 
@@ -4053,6 +6300,10 @@ export const createConversionOrder = withPermission(
         const unitRealPrice = inDenom > 0 ? (amount / inDenom).toFixed(2) : amount.toFixed(2)
         inItems.push({ item: inItem, sku, amount, unitPrice, unitRealPrice, serviceFee, categoryId: sku.categoryId })
       }
+      const compositionSnapshots = await loadInventoryCompositionSnapshots(
+        tx,
+        inItems.map((row) => row.sku),
+      )
 
       // 疗程卡累计梯度价：按 category_id + spec_name 汇总本次全部转入次数，
       // 使用同组可命中的最高档位统一折算每次价格。必须先于体验转换覆盖和优惠券分摊执行。
@@ -4297,8 +6548,8 @@ export const createConversionOrder = withPermission(
       const saleOrderId = (idRows as any[])[0]?.id as string
       if (!saleOrderId) throw new ApiError('INVALID_STATE', 'ORDER_ID_GEN_FAILED: 订单号生成失败')
 
-      // 4. 计算 documentType（售前/售后）：仅按下单时会员身份判（售前=非会员客，售后=会员客）
-      const documentType: '售前' | '售后' = client.customerType === '会员客' ? '售后' : '售前'
+      // 4. 按既有达标单次数写开单预测值；首次入账时会再次冻结权威快照。
+      const documentType = await classifySaleOrderDocumentType(tx, data.clientUserId, saleOrderId)
 
       // 5. 插入订单主表
       // 顾客补现场景：priceDiff > 0 → total_amount=priceDiff，status 按抵扣后应付决定
@@ -4382,13 +6633,18 @@ export const createConversionOrder = withPermission(
           isExperience: out.isExperience,
           // 转出行镜像原 sale_items.is_shengmei（COALESCE product_skus 兜底）
           isShengmei: out.isShengmei,
+          // #182：本次为该行豁免掉的原单欠款，关单回滚靠它归因到本张转换单
+          waivedAmount: out.waiveAmount.toFixed(2),
+          // #182：原行 pending_received 快照。转出行自身不参与 STEP 1 的 caps（只取「购买」行），
+          // 故借这一列存快照不影响既有计算。
+          pendingReceived: out.refPendingReceived.toFixed(2),
         })
 
         // 原子扣减本次实际折抵的次数；服务中预扣仍留在源卡，供后续确认核销。
         if (out.productType === '疗程卡') {
           const upd = await tx
             .update(saleItems)
-            .set({ remainingSessions: sql`${saleItems.remainingSessions} - ${out.quantity}` })
+            .set({ remainingSessions: sql`${saleItems.remainingSessions} - ${out.quantity}`, updatedAt: sql`NOW()` })
             .where(
               and(
                 eq(saleItems.saleItemId, out.refSaleItemId),
@@ -4396,8 +6652,141 @@ export const createConversionOrder = withPermission(
                 sql`COALESCE(${saleItems.remainingSessions}, 0) >= ${out.quantity}`,
               ),
             )
-          if ((upd as any).count === 0) throw new ApiError('CONFLICT', 'CARD_CONCURRENT_CHANGED: 卡状态变化，请重试')
+          if (rowsAffected(upd) === 0) throw new ApiError('CONFLICT', 'CARD_CONCURRENT_CHANGED: 卡状态变化，请重试')
+        } else if (out.productType === '家居产品') {
+          // 2026-09-14 #125：家居转出数量占用源行额度；#154 起写入独立的 converted_quantity
+          // （拆列前与已提货/已退款共用 picked_up_quantity）。提货与退款两侧的可用量都从
+          // 「已结算 = 已提货 + 已退款 + 已转换」扣，故守卫必须算三者之和而不只是本列。
+          // 守卫式加法与 createPickup 一致，并发双开转换单时第二笔 count=0 直接冲突，不会静默超转。
+          const upd = await tx
+            .update(saleItems)
+            .set({ convertedQuantity: sql`COALESCE(${saleItems.convertedQuantity}, 0) + ${out.quantity}`, updatedAt: sql`NOW()` })
+            .where(
+              and(
+                eq(saleItems.saleItemId, out.refSaleItemId),
+                eq(saleItems.storeId, data.storeId),
+                eq(saleItems.productType, '家居产品'),
+                sql`(COALESCE(${saleItems.pickedUpQuantity}, 0) + COALESCE(${saleItems.refundedQuantity}, 0) + COALESCE(${saleItems.convertedQuantity}, 0) + ${out.quantity}) <= ${saleItems.quantity}`,
+              ),
+            )
+          // 影响行数必须走 rowsAffected：postgres.js 的 RowList 只有 .count，
+          // 裸 `.count === 0` 在 driver 变更/mock 漂移时会 undefined === 0 → 静默放行守卫。
+          if (rowsAffected(upd) === 0) throw new ApiError('CONFLICT', 'HOME_PRODUCT_CONCURRENT_CHANGED: 家居产品可提数量变化，请重试')
         }
+      }
+
+      // 6b. 欠款归零（#182）。折抵 = 该行整体退出，原单该行不该再挂欠款。
+      // 这**不是可选的善后**，而是注销权益的前置条件：D3 不变量
+      // (session_count - remaining_sessions) <= paid_sessions 由 recalc 末尾按整单执法，
+      // 只扣 remaining_sessions 而不下调应付，部分支付行立刻违反 D3 → 源订单从此无法回款、
+      // 无法退款、payNotify 回调直接抛 CONFLICT。应付下调到实收后 paid_sessions 恒满付。
+      // 与 staff createConversion 同源。
+      const waiveByOrder = new Map<string, number>()
+      for (const out of outItems) {
+        const waive = out.waiveAmount
+        if (!(waive > 0)) continue
+        const updItem = await tx
+          .update(saleItems)
+          .set({
+            saleAmount: sql`${saleItems.saleAmount} - ${waive}`,
+            waivedAmount: sql`${saleItems.waivedAmount} + ${waive}`,
+            // 把「逐行实付草稿」钉到该行**毛已付**（净实收 + 该行已退款额）。这是 D3 的承重墙：
+            // STEP 1 Branch B 见 waived_amount > 0 就按本列**固定预留**该行的 received（不再丢进
+            // 比例池），预留额同时从 untargeted 扣除 → 该行 received 恒等于毛已付、同单其它行
+            // 分到的钱不变；再由 STEP 1.5 扣掉该行退款额得到净额，恰好等于下调后的 sale_amount。
+            // ⚠ 不能钉成净实收：STEP 1.5 会再扣一次退款，付清后退过款的行终值会低于新应付，
+            // 而本行 remaining_sessions 已注销为 0 → 永久违反 D3。
+            pendingReceived: out.pinnedPendingReceived.toFixed(2),
+            updatedAt: sql`NOW()`,
+          })
+          .where(and(
+            eq(saleItems.saleItemId, out.refSaleItemId),
+            sql`${saleItems.saleAmount} = ${out.refSaleAmount}`,
+          ))
+        if (rowsAffected(updItem) === 0) {
+          throw new ApiError('CONFLICT', 'ORDER_AMOUNT_CHANGED: 原订单金额已变更，请刷新后重试')
+        }
+        // 订单级只累加**真实欠款**部分（行级那一截含已退款额，不能进 total_amount）
+        waiveByOrder.set(
+          out.refSaleOrderId,
+          Math.round(((waiveByOrder.get(out.refSaleOrderId) ?? 0) + out.orderWaiveAmount) * 100) / 100,
+        )
+      }
+
+      // 原单按 sale_order_id 排序处理，保持稳定锁序（多张卡可能分属不同原单）
+      // 订单级下调额为 0（差额全部来自已退款、并无真实欠款）时跳过——行级 sale_amount 与
+      // paid_sessions 仍已处理、D3 已成立，订单 total 本就不该动。
+      for (const refOrderId of [...waiveByOrder.keys()].sort()) {
+        const waiveTotal = waiveByOrder.get(refOrderId) as number
+        if (!(waiveTotal > 0)) continue
+        const lockedOrderRows = (await tx.execute(sql`
+          SELECT total_amount, received, prepaid_card_amount, pending_prepaid_card_amount,
+                 status, sale_order_type
+            FROM sale_orders WHERE sale_order_id = ${refOrderId} FOR UPDATE
+        `)) as unknown as Array<Record<string, unknown>>
+        const o = lockedOrderRows[0]
+        if (!o) throw new ApiError('CONFLICT', 'ORDER_GONE: 原订单已不存在，请刷新后重试')
+        const newTotal = Math.round((Number(o.total_amount ?? 0) - waiveTotal) * 100) / 100
+        const orderReceived = Math.round(Number(o.received ?? 0) * 100) / 100
+        // payable 口径与 paid-sessions 的 ORDER_PREPAID_CARD_RECALC_SQL 一致（只对这三类单维护）
+        const keepsPayable = ['销售单', '内部单', '转换单'].includes(o.sale_order_type as string)
+        const newPayable = keepsPayable
+          ? Math.max(0, Math.round((newTotal
+              - Number(o.prepaid_card_amount ?? 0)
+              - Number(o.pending_prepaid_card_amount ?? 0)) * 100) / 100)
+          : null
+        // 结清判定基准 = total_amount（与 recordPayment 同锚）。只从'部分支付'向前推进。
+        // ⚠ 刻意**不写 paid_at**：豁免不是收款。既有 reconcileOrderStatusAfterRefund 推进状态时
+        // 会 COALESCE(paid_at, NOW())，但那条路径没有回滚；这里若照做，关单回滚无法区分
+        // 「本次补的」与「首付时原有的」paid_at，清空会误删真实收款时间、不清则部分支付单
+        // 带着豁免那天的日期。不写即天然对称。业绩归属读 performance_attribution_date，不受影响。
+        const targetStatus = o.status === '部分支付' && orderReceived + 0.001 >= newTotal
+          ? '已支付'
+          : (o.status as string)
+        const updOrderRes = await tx.execute(sql`
+          UPDATE sale_orders
+             SET total_amount = ${newTotal.toFixed(2)},
+                 payable_amount = ${newPayable === null ? sql`payable_amount` : sql`${newPayable.toFixed(2)}`},
+                 status = ${targetStatus}::order_status,
+                 updated_at = NOW()
+           WHERE sale_order_id = ${refOrderId}
+             AND status = ${o.status as string}::order_status
+             AND lakala_out_order_no IS NULL
+        `)
+        if (rowsAffected(updOrderRes) === 0) {
+          throw new ApiError('CONFLICT', 'ORDER_STATUS_CHANGED: 原订单状态已变更或有在途支付，请刷新后重试')
+        }
+
+      }
+
+      // 行级重算被折抵行的 paid_sessions。**必须独立于「订单级是否有真实欠款可扣」**：
+      // 付清后部分退款的行 orderWaive 为 0，但行级 sale_amount 仍被压到净实收，
+      // paid_sessions 必须跟着重算到满付，否则 remaining_sessions 已注销为 0 而
+      // (session_count − 0) > paid_sessions → 提交坏状态，此后整单 recalc 必抛
+      // PAID_SESSIONS_UNDERFLOW。**刻意不跑整单 recalcPaidSessionsForOrder**：
+      // ① prod 实测 338 行 / 28 单本就违反 D3，整单守护会让这些单的折抵直接失败；
+      // ② 整单重算的 Branch B 会按新 sale_cap 重分行级 received，触发 0040 视图 residual。
+      // 公式与 lib/paid-sessions.ts 的 PAID_SESSIONS_RECALC_SQL 同源，作用域收到 sale_item_id。
+      const recalcTargets = new Map<string, string[]>()
+      for (const out of outItems) {
+        if (!(out.waiveAmount > 0)) continue
+        if (!recalcTargets.has(out.refSaleOrderId)) recalcTargets.set(out.refSaleOrderId, [])
+        recalcTargets.get(out.refSaleOrderId)!.push(out.refSaleItemId)
+      }
+      for (const refOrderId of [...recalcTargets.keys()].sort()) {
+        const itemIds = recalcTargets.get(refOrderId) as string[]
+        await tx.execute(sql`
+          UPDATE sale_items
+             SET paid_sessions = CASE
+                   WHEN sale_items.session_count IS NULL THEN NULL
+                   WHEN op.total_amount <= 0 THEN sale_items.session_count
+                   WHEN sale_items.sale_amount <= 0 THEN sale_items.session_count
+                   ELSE LEAST(sale_items.session_count, FLOOR(sale_items.received::numeric * sale_items.session_count / sale_items.sale_amount::numeric)::integer)
+                 END,
+                 updated_at = NOW()
+            FROM (SELECT total_amount FROM sale_orders WHERE sale_order_id = ${refOrderId}) op
+           WHERE sale_items.sale_item_id IN (${sql.join(itemIds.map((id) => sql`${id}`), sql`, `)})
+        `)
       }
 
       // 7. 转入行：疗程卡逐张落库，group_id 仅用于展示合并与操作展开。
@@ -4438,6 +6827,7 @@ export const createConversionOrder = withPermission(
             skuId: inRow.item.skuId,
             productName: inRow.item.productName,
             productType: inRow.item.productType,
+            inventoryCompositionSnapshot: compositionSnapshots.get(inRow.item.skuId) ?? null,
             sessionCount,
             remainingSessions: sessionCount,
             unitPrice: inRow.unitPrice,
@@ -4539,10 +6929,17 @@ export const createConversionOrder = withPermission(
     if (m?.includes('CARD_NOT_FOUND')) return { success: false, message: '部分卡不存在或已失效' }
     if (m?.includes('CARD_STORE_MISMATCH')) return { success: false, message: '所选卡不属于当前门店' }
     if (m?.includes('CARD_OWNER_MISMATCH')) return { success: false, message: '所选卡不属于该顾客' }
-    if (m?.includes('CARD_DIRECTION_INVALID')) return { success: false, message: '所选行不是有效疗程权益，不可折抵' }
+    if (m?.includes('CARD_DIRECTION_INVALID')) return { success: false, message: '所选行不是有效权益，不可折抵' }
     if (m?.includes('CARD_ORDER_STATUS_INVALID')) return { success: false, message: '原订单状态不允许转换' }
     if (m?.includes('CARD_EXHAUSTED')) return { success: false, message: '所选卡已耗尽，无法折抵' }
-    if (m?.includes('CARD_RESERVED')) return { success: false, message: '所选卡可用次数不足（存在服务中预留）' }
+    // #182：折抵 = 整行退出，与在途服务预扣互斥，文案改为要求先处理服务单
+    if (m?.includes('CARD_RESERVED')) return { success: false, message: '所选项目有服务进行中，请先完成或取消服务单后再折抵' }
+    // #182：既无剩余权益又无剩余已付金额（取代旧的「没有已付清的整件可折抵」，
+    // 不足一整件的余数现在可折）
+    if (m?.includes('DEDUCTIBLE_EMPTY')) return { success: false, message: '所选折抵项没有可折抵的已付金额' }
+    if (m?.includes('ORDER_AMOUNT_CHANGED')) return { success: false, message: '原订单金额已变更，请刷新后重试' }
+    if (m?.includes('ORDER_STATUS_CHANGED')) return { success: false, message: '原订单状态已变更或有在途支付，请刷新后重试' }
+    if (m?.includes('ORDER_GONE')) return { success: false, message: '原订单已不存在，请刷新后重试' }
     if (m?.includes('CARD_TYPE_INVALID')) return { success: false, message: '所选行类型不支持折抵' }
     if (m?.includes('CARD_CONCURRENT_CHANGED')) return { success: false, message: '卡状态变化，请重试' }
     if (m?.includes('ORDER_ID_GEN_FAILED')) return { success: false, message: '订单号生成失败，请稍后重试' }
@@ -4559,8 +6956,9 @@ export const createConversionOrder = withPermission(
       return { success: false, message: stripped || '顾客储值卡余额不足' }
     }
     if (err instanceof ApiError) {
-      const parsed = parseErrorPrefix(err.message)
-      return { success: false, message: parsed?.displayMessage ?? err.message }
+      // 走 businessErrorMessage 而非 parsed.displayMessage：后者只剥一级前缀，
+      // 会把 HOME_PRODUCT_NO_PENDING: 这类二级子标签送进 toast（issue #133 评审 round 3）
+      return { success: false, message: businessErrorMessage(err, '创建订单失败，请稍后重试') }
     }
     if (m?.includes('SKU_NOT_FOUND:')) return { success: false, message: '转入商品不存在' }
     if (pgErrorCode(err) === '23503') {
@@ -4663,6 +7061,13 @@ export const createDepositOrder = withPermission(
   ): Promise<{ success: boolean; message: string; saleOrderId?: string; itemCount?: number }> => {
     if (!isInScope(session, data.storeId)) {
       return { success: false, message: '无权在该门店创建订单' }
+    }
+    if (data.preferredEmployeeId && await getInvalidEmployeeAssignmentId(
+      [data.preferredEmployeeId],
+      data.storeId,
+      { requireServiceSkills: true },
+    )) {
+      return { success: false, message: '所选美容师不属于本门店' }
     }
     if (!data.clientUserId) {
       return { success: false, message: '寄存单必须指定顾客' }
@@ -4775,6 +7180,7 @@ export const createDepositOrder = withPermission(
     let saleOrderId: string
     try {
       saleOrderId = await db.transaction(async (tx) => {
+        const compositionSnapshots = await loadInventoryCompositionSnapshots(tx, skuRows)
         const idRows = await tx.execute(sql`
           WITH lock AS (
             SELECT pg_advisory_xact_lock(hashtext('sale_order_id_gen')::bigint)
@@ -4792,13 +7198,14 @@ export const createDepositOrder = withPermission(
         `)
         const id = (idRows as any[])[0]?.id as string
         if (!id) throw new ApiError('INVALID_STATE', '订单号生成失败')
+        const documentType = await classifySaleOrderDocumentType(tx, data.clientUserId, id)
 
         const now = new Date()
         await tx.insert(saleOrders).values({
           saleOrderId: id,
           status: '待审批',
           saleOrderType: '寄存单',
-          documentType: '售后',
+          documentType,
           marketName: data.marketName,
           storeId: data.storeId,
           storeName: sql<string>`(SELECT store_name FROM stores WHERE store_id = ${data.storeId})`,
@@ -4857,6 +7264,7 @@ export const createDepositOrder = withPermission(
             skuId: sku.skuId,
             productName: sku.specName,
             productType: sku.productType,
+            inventoryCompositionSnapshot: compositionSnapshots.get(sku.skuId) ?? null,
             sessionCount: item.sessionCount,
             remainingSessions: item.sessionCount,
             unitPrice: item.unitPrice,
@@ -4893,10 +7301,8 @@ export const createDepositOrder = withPermission(
         return id
       })
     } catch (err: any) {
-      if (err instanceof ApiError) {
-        return { success: false, message: err.message }
-      }
-      return { success: false, message: err?.message || '寄存单创建失败' }
+      // fail-closed：ApiError 剥前缀透出业务文案，非白名单错误（原始 PG 报错等）走兜底（issue #133）
+      return { success: false, message: businessErrorMessage(err, '寄存单创建失败') }
     }
 
     await logOperation(
@@ -4934,7 +7340,7 @@ export const approveDepositOrder = withPermission(
     let approvedReceived = '0'
     await db.transaction(async (tx) => {
       const lockedRows = await tx.execute(sql`
-        SELECT sale_order_id, status, sale_order_type, store_id
+        SELECT sale_order_id, status, sale_order_type, store_id, client_user_id
         FROM sale_orders
         WHERE sale_order_id = ${saleOrderId}
         FOR UPDATE
@@ -4944,6 +7350,7 @@ export const approveDepositOrder = withPermission(
         status: string
         sale_order_type: string
         store_id: string
+        client_user_id: string | null
       }>)[0]
       if (!order) {
         throw new ApiError('NOT_FOUND', '寄存单不存在')
@@ -4959,6 +7366,7 @@ export const approveDepositOrder = withPermission(
       }
 
       const approvedAt = nowTs()
+      const documentType = await classifySaleOrderDocumentType(tx, order.client_user_id, saleOrderId)
       await tx.execute(sql`
         UPDATE sale_order_payments
         SET status = '已支付',
@@ -4974,6 +7382,7 @@ export const approveDepositOrder = withPermission(
       const updatedRows = await tx.execute(sql`
         UPDATE sale_orders
         SET status = '已支付',
+            document_type = ${documentType}::document_type,
             paid_at = ${approvedAt},
             audited_at = ${approvedAt},
             audited_by = ${session.employeeId},
@@ -5128,20 +7537,17 @@ export const createPrepaidInflow = withPermission(
     if (amt > 99999999.99) return { success: false, message: '转入金额超出上限' } // NUMERIC(10,2) 上界保护
     if (!isInScope(session, data.storeId)) return { success: false, message: '无权在该门店转入' }
 
-    // 顾客 + documentType 快照
+    // 顾客快照；documentType 在创建事务内按历史达标次数计算。
     const [client] = await db
       .select({
         userId: clientWechatUsers.userId,
         name: clientWechatUsers.name,
         phone: clientWechatUsers.phone,
-        customerType: clientWechatUsers.customerType,
       })
       .from(clientWechatUsers)
       .where(eq(clientWechatUsers.userId, data.clientUserId))
       .limit(1)
     if (!client) return { success: false, message: '顾客不存在' }
-    const documentType: '售前' | '售后' = client.customerType === '会员客' ? '售后' : '售前'
-
     // 门店 + marketName 快照（跨两级 org_nodes 取上级 market，同 createRechargeOrder）
     const storeRows = (await db.execute(sql`
       SELECT s.store_id, pm.name AS market_name
@@ -5186,6 +7592,7 @@ export const createPrepaidInflow = withPermission(
         `)
         const id = (idRows as unknown as Array<{ id: string }>)[0]?.id
         if (!id) throw new ApiError('INVALID_STATE', '订单号生成失败')
+        const documentType = await classifySaleOrderDocumentType(tx, data.clientUserId, id)
 
         // 转入单：直接 '已支付'，total=payable=received=amt（1:1），prepaid=0，线下，paid_at=now
         // 不加待支付并发守卫（uq_sale_orders_client_pending 现仅约束 opened_by IS NULL 自助单，迁移不应被无关待支付单卡住）
@@ -5237,8 +7644,8 @@ export const createPrepaidInflow = withPermission(
         return id
       })
     } catch (err: any) {
-      const msg = err?.message || '转入失败'
-      return { success: false, message: msg.replace(/^[A-Z_]+:\s*/, '') }
+      // fail-closed：非白名单前缀的原始 PG 报错（SQL 片段 / 约束名）绝不回传给前端 toast（issue #133）
+      return { success: false, message: businessErrorMessage(err, '转入失败') }
     }
 
     await logOperation(session, 'sale_order.prepaid_inflow', 'sale_order', saleOrderId, {
@@ -5689,7 +8096,16 @@ export const recordPayment = withPermission(
         await tx.execute(sql`
           WITH repay (sale_item_id, delta) AS (VALUES ${repayValues})
           UPDATE sale_items si
-          SET pending_received = COALESCE(rp.delta, 0),
+          SET pending_received = CASE
+             -- #182：折抵退出的行 pending_received 已被钉成「毛已付」，是 paid-sessions
+                -- STEP 1 Branch B 固定预留该行 received 的唯一依据。本语句是**覆盖式**的
+                -- （未选中的行会被写 0），一旦把折抵行也覆盖掉，预留归零 → 该行 received 掉到
+                -- targeted（通常 0），而它的 remaining_sessions 已注销为 0 →
+                -- (session_count − 0) > paid_sessions 永久违反 D3，原单从此回款/退款/回调全失败。
+                -- 触发条件很普通：同一原单里另一行发起定向回款即可。
+                WHEN si.waived_amount::numeric > 0 THEN si.pending_received
+                ELSE COALESCE(rp.delta, 0)
+              END,
               updated_at = NOW()
           FROM (SELECT sale_item_id FROM sale_items WHERE sale_order_id = ${saleOrderId} AND item_direction = '购买') ai
           LEFT JOIN repay rp ON rp.sale_item_id = ai.sale_item_id
@@ -5726,6 +8142,10 @@ export const recordPayment = withPermission(
       // 充值单不进回款路径（一次性付清），total 锚无副作用。
       const settleTarget = Math.round(origTotal * 100) / 100
       const targetStatus: OrderStatus = settled + 0.001 >= settleTarget ? '已支付' : '部分支付'
+      const documentType = ['部分支付', '已支付', '已完成'].includes(locked.status)
+        ? null
+        : await classifySaleOrderDocumentType(tx, locked.client_user_id, saleOrderId)
+      const documentTypeExpr = documentType ? sql`${documentType}::document_type` : sql`document_type`
       // paid_at 写北京墙钟字面（见 lib/db-time）：结清→NOW()；未结清→保留原值（paid_at = paid_at 无害）。
       // 原 ISO 字符串内插会让 postgres.js 走 UTC 字面落库（早 8h）；改 SQL 片段根治。
       const paidAtExpr = targetStatus === '已支付' ? nowTs() : sql`paid_at`
@@ -5733,6 +8153,7 @@ export const recordPayment = withPermission(
       const updRes = await tx.execute(sql`
         UPDATE sale_orders
         SET status = ${targetStatus},
+            document_type = ${documentTypeExpr},
             received = ${newReceived.toFixed(2)}::numeric,
             refunded_amount = ${newRefunded.toFixed(2)}::numeric,
             prepaid_card_amount = ${newPrepaid.toFixed(2)}::numeric,
@@ -5749,13 +8170,6 @@ export const recordPayment = withPermission(
       `)
       if (rowsAffected(updRes) === 0) {
         throw new ApiError('CONFLICT', 'CONCURRENT_CHANGED: 订单状态已变更，请刷新后重试')
-      }
-
-      // 9) customer_type 跃迁（仅在本次回款使订单结清，即翻为'已支付'时触发）
-      // 与 staff confirmOffline / payNotify 三端对齐，保证 admin 财务补录回款
-      // 也能驱动客户分类升级（修复 audit-15 P0-15-01 admin 三资金触发点跃迁缺失）。
-      if (targetStatus === '已支付' && locked.client_user_id) {
-        await recalcCustomerType(tx, locked.client_user_id)
       }
 
       // 10) 积分发放（修复 audit-15 P0-15-01：admin recordPayment 触发点缺失）
@@ -5784,6 +8198,16 @@ export const recordPayment = withPermission(
       //     必须在 capture 之后：新 STEP1 从 receipt 聚合 received
       await recalcPaidSessionsForOrder(tx, saleOrderId)
 
+      // 12) customer_type 跃迁（仅在本次回款使订单结清，即翻为'已支付'时触发）
+      //     与 staff confirmOffline / payNotify 对齐，保证 admin 财务补录回款
+      //     也能驱动客户分类升级（修复 audit-15 P0-15-01 admin 三资金触发点跃迁缺失）。
+      //     ⚠️ #187 起必须排在 recalcPaidSessionsForOrder **之后**：跃迁判定已改读
+      //     sale_items.received（由上面 STEP1 从 receipt 聚合写出），排在前面会读到本次回款
+      //     之前的旧值、少算本笔回款额。旧口径读 o.total_amount（建单即定）不受顺序影响。
+      if (targetStatus === '已支付' && locked.client_user_id) {
+        await recalcCustomerType(tx, locked.client_user_id)
+      }
+
       return {
         repaymentOrderId,
         refStatus: targetStatus,
@@ -5801,7 +8225,9 @@ export const recordPayment = withPermission(
         success: false,
         error: {
           code: 'CONFLICT',
-          message: 'PAYMENT_INTENT_ACTIVE: 订单存在进行中的在线支付，请等待支付结果或先取消在线支付',
+          // 子标签只进日志不给用户看（根 CLAUDE.md），机器可读部分已在 code 字段；
+          // 与上面 REF_ORDER_NOT_FOUND 分支的口径对齐（issue #133）
+          message: '订单存在进行中的在线支付，请等待支付结果或先取消在线支付',
         },
       }
     }
@@ -5871,13 +8297,14 @@ export const recordPayment = withPermission(
         },
       }
     }
-    console.error('[recordPayment] unexpected error:', err)
-    // 兜底收口：任意 DB 错误（23xxx 等）只给通用提示，不回显原始 SQL（避免 Failed query 泄露前端）；
-    // 非 DB 错误才保留 err.message 便于排查。
+    // 兜底收口：任意 DB 错误（23xxx 等）只给通用提示，不回显原始 SQL（避免 Failed query 泄露前端）。
+    // DB 错误这一支不经 businessErrorMessage，故自己记日志；非 DB 那一支由它统一记，避免双记。
     if (pgErrorCode(err)) {
+      console.error('[recordPayment] db error:', err)
       return { success: false, error: { code: 'UNKNOWN', message: '录入回款失败：数据冲突或约束校验未通过，请刷新后重试' } }
     }
-    return { success: false, error: { code: 'UNKNOWN', message: `录入回款失败：${err?.message || String(err)}` } }
+    // fail-closed：非白名单前缀的异常（含 TypeError 的内部信息）不回传给前端（issue #133）
+    return { success: false, error: { code: 'UNKNOWN', message: businessErrorMessage(err, '录入回款失败，请稍后重试') } }
   }
 
   // 幂等命中：首次回款已处理（余额已扣、操作日志已记），本次为重复提交 → 直接返回当前状态，
@@ -5972,7 +8399,13 @@ export const freezeConversionRepaymentAmount = withPermission(
           ) * 100,
         )
         if (amountCents > remainingCents) {
-          throw new ApiError('CONFLICT', `OVERPAY:${(remainingCents / 100).toFixed(2)}: 本次回款金额超过订单欠款`)
+          // 余额写进中文正文而非子标签位：本条的 catch 走 businessErrorMessage，
+          // 留在子标签位会显示成「100.00: 本次回款金额超过订单欠款」（评审 round 5）。
+          // recordPayment 的 OVERPAY 解析器（见下方 /OVERPAY:([\d.]+)/）读的是另一处抛点，不受影响。
+          throw new ApiError(
+            'CONFLICT',
+            `本次回款金额超过订单欠款（剩余 ¥${(remainingCents / 100).toFixed(2)}）`,
+          )
         }
 
         const activeAmount = locked.first_payment_amount == null
@@ -6017,7 +8450,12 @@ export const freezeConversionRepaymentAmount = withPermission(
       const message = err instanceof Error ? err.message : String(err)
       const parsed = parseErrorPrefix(message)
       if (parsed) {
-        return { success: false, error: { code: parsed.prefix, message: parsed.displayMessage } }
+        // code 承载机器可读部分；message 走 businessErrorMessage 顺带剥掉二级子标签，
+        // 与 recordPayment 的同类分支口径一致（issue #133）
+        return {
+          success: false,
+          error: { code: parsed.prefix, message: businessErrorMessage(err, '冻结在线回款金额失败，请刷新后重试') },
+        }
       }
       console.error('[freezeConversionRepaymentAmount] unexpected error:', err)
       return { success: false, error: { code: 'UNKNOWN', message: '冻结在线回款金额失败，请刷新后重试' } }
@@ -6085,7 +8523,8 @@ export const generateOrderWxacode = withPermission(
     const base64 = Buffer.from(buffer).toString('base64')
     return { success: true, dataUrl: `data:image/png;base64,${base64}` }
   } catch (err: any) {
-    return { success: false, message: err.message || '生成小程序码失败' }
+    // fail-closed：微信接口/网络层的英文错误不回传给前端（issue #133）
+    return { success: false, message: businessErrorMessage(err, '生成小程序码失败') }
   }
   },
 )

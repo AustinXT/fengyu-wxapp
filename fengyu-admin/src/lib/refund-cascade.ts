@@ -23,6 +23,7 @@
 import { sql } from 'drizzle-orm'
 import type { db } from '@/db'
 import { rowsAffected } from '@/lib/pg-rows'
+import { consumePointBatches } from '@/lib/points-batches'
 
 export type TransactionLike = Parameters<Parameters<typeof db.transaction>[0]>[0]
 
@@ -191,13 +192,120 @@ function allocateCentsByWeight(totalCents: number, rows: Array<{ saleItemId: str
   return parts.filter((p) => p.cents > 0).map((p) => ({ saleItemId: p.saleItemId, cents: p.cents }))
 }
 
+export interface RefundAllocationSourceRow {
+  employee_id: string
+  role_type: string
+  dept: string | null
+  sum_total: string
+  prior_negative_total: string
+  rate: string | null
+  sum_comm: string
+  prior_negative_comm: string
+  positive_receipt_total: string
+  prior_refund_receipt_total: string
+}
+
+export interface RefundAllocationTarget {
+  source: RefundAllocationSourceRow
+  allocatedCents: number
+  commissionCents: number
+  allocationRatio: string
+}
+
+/**
+ * 退款营业额必须按 role_type 独立成池：跨角色池各自最多冲销一份退款额，
+ * 池内再按员工尚未冲销的正向分配权重拆分。这样美容师/品项老师各 100%
+ * 的场景在全退后会分别归零，而不是两个池共同平分一份退款。
+ */
+export function planRolePoolRefundAllocations(
+  rows: RefundAllocationSourceRow[],
+  refundAmount: number,
+): RefundAllocationTarget[] {
+  const refundCents = Math.max(0, Math.round(Number(refundAmount || 0) * 100))
+  if (refundCents <= 0 || rows.length === 0) return []
+
+  const positiveReceiptCents = Math.round(Number(rows[0].positive_receipt_total || 0) * 100)
+  const priorRefundReceiptCents = Math.round(Number(rows[0].prior_refund_receipt_total || 0) * 100)
+  const availableReceiptCents = Math.max(0, positiveReceiptCents - priorRefundReceiptCents)
+
+  const pools = new Map<string, Array<{
+    source: RefundAllocationSourceRow
+    remainingCents: number
+    remainingCommissionCents: number
+  }>>()
+  for (const source of rows) {
+    const positiveCents = Math.max(0, Math.round(Number(source.sum_total || 0) * 100))
+    const priorNegativeCents = Math.max(0, Math.round(Number(source.prior_negative_total || 0) * 100))
+    const remainingCents = Math.max(0, positiveCents - priorNegativeCents)
+    if (remainingCents <= 0) continue
+    const positiveCommissionCents = Math.max(0, Math.round(Number(source.sum_comm || 0) * 100))
+    const priorNegativeCommissionCents = Math.max(0, Math.round(Number(source.prior_negative_comm || 0) * 100))
+    const entry = {
+      source,
+      remainingCents,
+      remainingCommissionCents: Math.max(0, positiveCommissionCents - priorNegativeCommissionCents),
+    }
+    const pool = pools.get(source.role_type)
+    if (pool) pool.push(entry)
+    else pools.set(source.role_type, [entry])
+  }
+
+  if (pools.size > 0 && availableReceiptCents <= 0) {
+    throw new Error('INVALID_STATE: 退款营业额分配缺少可冲销的商品行实收')
+  }
+
+  const targets: RefundAllocationTarget[] = []
+  for (const roleType of Array.from(pools.keys()).sort()) {
+    const pool = pools.get(roleType) ?? []
+    const poolRemainingCents = pool.reduce((sum, row) => sum + row.remainingCents, 0)
+    if (poolRemainingCents <= 0) continue
+
+    // 每个角色池独立按其剩余覆盖率冲销；完整 100% 池的目标恒等于本次退款额。
+    const proportionalTarget = Math.round((refundCents * poolRemainingCents) / availableReceiptCents)
+    const targetCents = Math.min(refundCents, poolRemainingCents, Math.max(0, proportionalTarget))
+    if (targetCents <= 0) continue
+
+    const parts = pool.map((row) => {
+      const exact = (targetCents * row.remainingCents) / poolRemainingCents
+      const cents = Math.floor(exact)
+      return { ...row, cents, frac: exact - cents }
+    })
+    let remainder = targetCents - parts.reduce((sum, part) => sum + part.cents, 0)
+    parts.sort((a, b) => b.frac - a.frac || a.source.employee_id.localeCompare(b.source.employee_id))
+    for (let i = 0; remainder > 0 && parts.length > 0; i = (i + 1) % parts.length) {
+      if (parts[i].cents < parts[i].remainingCents) {
+        parts[i].cents += 1
+        remainder -= 1
+      }
+    }
+
+    for (const part of parts) {
+      if (part.cents <= 0) continue
+      const commissionCents = part.cents >= part.remainingCents
+        ? part.remainingCommissionCents
+        : Math.min(
+            part.remainingCommissionCents,
+            Math.round((part.remainingCommissionCents * part.cents) / part.remainingCents),
+          )
+      const ratio = Math.min(1, Math.max(0.001, part.cents / refundCents))
+      targets.push({
+        source: part.source,
+        allocatedCents: part.cents,
+        commissionCents,
+        allocationRatio: ratio.toFixed(3),
+      })
+    }
+  }
+  return targets
+}
+
 async function buildReceiptRefundItems(
   tx: TransactionLike,
   saleOrderId: string,
   refundPaymentId: number,
   effItems: CascadeRefundItem[],
 ): Promise<Array<{ saleItemId: string; refundAmount: number }>> {
-  const refundCentsByItem = new Map<string, number>()
+  const requestedCentsByItem = new Map<string, number>()
   let overpayCents = 0
   for (const it of effItems) {
     const cents = Math.round(Number(it.refundAmount || 0) * 100)
@@ -205,16 +313,15 @@ async function buildReceiptRefundItems(
     if (isLegacyOverpaySentinel(it)) {
       overpayCents += cents
     } else {
-      addRefundCents(refundCentsByItem, it.saleItemId, cents)
+      addRefundCents(requestedCentsByItem, it.saleItemId, cents)
     }
   }
 
-  if (overpayCents > 0) {
-    const selectedItemIds = Array.from(refundCentsByItem.keys())
-    const selectedFilter = selectedItemIds.length > 0
-      ? sql`AND si.sale_item_id IN (${sql.join(selectedItemIds.map((id) => sql`${id}`), sql`, `)})`
-      : sql``
-    const residualRows = (await tx.execute(sql`
+  const requestedTotalCents = overpayCents
+    + Array.from(requestedCentsByItem.values()).reduce((sum, cents) => sum + cents, 0)
+  if (requestedTotalCents <= 0) return []
+
+  const residualRows = (await tx.execute(sql`
       SELECT si.sale_item_id,
              COALESCE(SUM(CASE
                WHEN sop.status = '已支付'
@@ -232,52 +339,39 @@ async function buildReceiptRefundItems(
         LEFT JOIN sale_order_payments sop ON sop.id = spir.sale_payment_id
        WHERE si.sale_order_id = ${saleOrderId}
          AND si.item_direction = '购买'
-         ${selectedFilter}
        GROUP BY si.sale_item_id
        ORDER BY si.sale_item_id
-    `)) as unknown as Array<{ sale_item_id: string; positive_amount: string; prior_refund_amount: string }>
-    const capacityRows = (await tx.execute(sql`
-      SELECT si.sale_item_id,
-             CASE WHEN si.product_type = '疗程卡'
-               THEN GREATEST(0, COALESCE(si.session_count, 0) - COALESCE(si.remaining_sessions, 0)) * COALESCE(si.unit_real_price::numeric, 0)
-               ELSE GREATEST(0, COALESCE(si.picked_up_quantity, 0)) * COALESCE(si.unit_real_price::numeric, 0)
-             END AS consumed_value,
-             CASE WHEN si.product_type = '疗程卡'
-               THEN GREATEST(0, LEAST(
-                 COALESCE(si.remaining_sessions, 0),
-                 CASE WHEN si.paid_sessions IS NULL
-                   THEN COALESCE(si.remaining_sessions, 0)
-                   ELSE COALESCE(si.paid_sessions, 0) - GREATEST(0, COALESCE(si.session_count, 0) - COALESCE(si.remaining_sessions, 0))
-                 END
-               )) * COALESCE(si.unit_real_price::numeric, 0)
-               ELSE GREATEST(0, COALESCE(si.quantity, 0) - COALESCE(si.picked_up_quantity, 0)) * COALESCE(si.unit_real_price::numeric, 0)
-             END AS refundable_value
-        FROM sale_items si
-       WHERE si.sale_order_id = ${saleOrderId}
-         AND si.item_direction = '购买'
-         ${selectedFilter}
-       ORDER BY si.sale_item_id
-    `)) as unknown as Array<{ sale_item_id: string; consumed_value: string; refundable_value: string }>
-    const capacityByItem = new Map(
-      capacityRows.map((r) => [r.sale_item_id, {
-        consumedCents: Math.round(Number(r.consumed_value || 0) * 100),
-        refundableCents: Math.round(Number(r.refundable_value || 0) * 100),
-      }]),
-    )
-    const candidates = residualRows
-      .map((r) => {
-        const positiveCents = Math.round(Number(r.positive_amount || 0) * 100)
-        const priorRefundCents = Math.round(Number(r.prior_refund_amount || 0) * 100)
-        const capacity = capacityByItem.get(r.sale_item_id) ?? { consumedCents: 0, refundableCents: 0 }
-        return {
-          saleItemId: r.sale_item_id,
-          weightCents: Math.max(0, positiveCents - priorRefundCents - capacity.consumedCents - capacity.refundableCents),
-        }
-      })
-      .filter((r) => r.weightCents > 0)
-    for (const part of allocateCentsByWeight(overpayCents, candidates)) {
-      addRefundCents(refundCentsByItem, part.saleItemId, part.cents)
-    }
+  `)) as unknown as Array<{ sale_item_id: string; positive_amount: string; prior_refund_amount: string }>
+  const availableCentsByItem = new Map(residualRows.map((r) => [
+    r.sale_item_id,
+    Math.max(
+      0,
+      Math.round(Number(r.positive_amount || 0) * 100)
+        - Math.round(Number(r.prior_refund_amount || 0) * 100),
+    ),
+  ]))
+  const refundCentsByItem = new Map<string, number>()
+  let overflowCents = overpayCents
+  for (const [saleItemId, requestedCents] of requestedCentsByItem) {
+    const mappedCents = Math.min(requestedCents, availableCentsByItem.get(saleItemId) ?? 0)
+    addRefundCents(refundCentsByItem, saleItemId, mappedCents)
+    overflowCents += requestedCents - mappedCents
+  }
+  const candidates = residualRows
+    .map((r) => ({
+      saleItemId: r.sale_item_id,
+      weightCents: Math.max(
+        0,
+        (availableCentsByItem.get(r.sale_item_id) ?? 0) - (refundCentsByItem.get(r.sale_item_id) ?? 0),
+      ),
+    }))
+    .filter((r) => r.weightCents > 0)
+  for (const part of allocateCentsByWeight(overflowCents, candidates)) {
+    addRefundCents(refundCentsByItem, part.saleItemId, part.cents)
+  }
+  const mappedTotalCents = Array.from(refundCentsByItem.values()).reduce((sum, cents) => sum + cents, 0)
+  if (mappedTotalCents !== requestedTotalCents) {
+    throw new Error('INVALID_STATE: 退款金额无法完整映射到商品行实收')
   }
 
   return Array.from(refundCentsByItem.entries()).map(([saleItemId, cents]) => ({
@@ -342,9 +436,8 @@ export async function cascadeRefund(
     if (!refundReceiptId) continue
 
     const allocRows = (await tx.execute(sql`
-      WITH grouped AS (
+      WITH positive_grouped AS (
         SELECT spia.employee_id, spia.role_type,
-               MAX(spia.allocation_ratio) AS ratio,
                MAX(spia.department_name) AS dept,
                SUM(spia.allocated_amount::numeric) AS sum_total,
                MAX(spia.commission_rate) AS rate,
@@ -356,63 +449,73 @@ export async function cascadeRefund(
            AND spir.sale_item_id = ${it.saleItemId}
            AND spia.is_void = false
            AND spia.allocated_amount > 0
+           AND spir.amount > 0
            AND sop.status = '已支付'
            AND sop.change_type IN ('首次支付','回款','储值卡抵扣')
          GROUP BY spia.employee_id, spia.role_type
       ),
-      totals AS (
-        SELECT COALESCE(SUM(spia.allocated_amount::numeric) FILTER (WHERE spia.allocated_amount > 0), 0) AS positive_total,
-               COALESCE(ABS(SUM(spia.allocated_amount::numeric) FILTER (
-                 WHERE spia.allocated_amount < 0 AND spir.sale_payment_id IS DISTINCT FROM ${refundPaymentId}
-               )), 0) AS other_negative_total
+      prior_negative AS (
+        SELECT spia.employee_id, spia.role_type,
+               COALESCE(ABS(SUM(spia.allocated_amount::numeric)), 0) AS prior_negative_total,
+               COALESCE(ABS(SUM(spia.commission_amount::numeric)), 0) AS prior_negative_comm
           FROM sale_payment_item_allocations spia
           JOIN sale_payment_item_receipts spir ON spir.id = spia.sale_payment_item_receipt_id
+          JOIN sale_order_payments sop ON sop.id = spir.sale_payment_id
          WHERE spir.sale_order_id = ${saleOrderId}
            AND spir.sale_item_id = ${it.saleItemId}
            AND spia.is_void = false
+           AND spia.allocated_amount < 0
+           AND spir.amount < 0
+           AND spir.sale_payment_id IS DISTINCT FROM ${refundPaymentId}
+           AND sop.status = '已支付'
+           AND sop.change_type = '退款'
+         GROUP BY spia.employee_id, spia.role_type
+      ),
+      receipt_totals AS (
+        SELECT COALESCE(SUM(CASE
+                 WHEN sop.status = '已支付'
+                  AND sop.change_type IN ('首次支付','回款','储值卡抵扣')
+                  AND spir.amount > 0
+                 THEN spir.amount::numeric ELSE 0 END), 0) AS positive_receipt_total,
+               COALESCE(ABS(SUM(CASE
+                 WHEN sop.status = '已支付'
+                  AND sop.change_type = '退款'
+                  AND spir.amount < 0
+                  AND spir.sale_payment_id IS DISTINCT FROM ${refundPaymentId}
+                 THEN spir.amount::numeric ELSE 0 END)), 0) AS prior_refund_receipt_total
+          FROM sale_payment_item_receipts spir
+          JOIN sale_order_payments sop ON sop.id = spir.sale_payment_id
+         WHERE spir.sale_order_id = ${saleOrderId}
+           AND spir.sale_item_id = ${it.saleItemId}
       )
-      SELECT grouped.*, totals.positive_total, totals.other_negative_total
-      FROM grouped CROSS JOIN totals
-    `)) as unknown as Array<{
-      employee_id: string; role_type: string; ratio: string
-      dept: string | null; sum_total: string; rate: string | null; sum_comm: string
-      positive_total: string; other_negative_total: string
-    }>
+      SELECT pg.*, COALESCE(pn.prior_negative_total, 0) AS prior_negative_total,
+             COALESCE(pn.prior_negative_comm, 0) AS prior_negative_comm,
+             rt.positive_receipt_total, rt.prior_refund_receipt_total
+        FROM positive_grouped pg
+        LEFT JOIN prior_negative pn
+          ON pn.employee_id = pg.employee_id AND pn.role_type = pg.role_type
+        CROSS JOIN receipt_totals rt
+    `)) as unknown as RefundAllocationSourceRow[]
     if (allocRows.length === 0) continue
-    const baseCents = allocRows.reduce((s, r) => s + Math.round(Number(r.sum_total) * 100), 0)
-    if (baseCents <= 0) continue
-    const positiveCents = Math.round(Number(allocRows[0].positive_total || 0) * 100)
-    const otherNegativeCents = Math.round(Number(allocRows[0].other_negative_total || 0) * 100)
-    const remainingCents = Math.max(0, positiveCents - otherNegativeCents)
-    const targetCents = Math.min(Math.round(refundAmt * 100), remainingCents)
-    // 最大余数法：按各组 total_amount 权重分摊 targetCents，余数逐分补给小数部分最大者（精确到分）
-    if (targetCents > 0) {
-      const parts = allocRows.map((r) => {
-        const wCents = Math.round(Number(r.sum_total) * 100)
-        const exact = (targetCents * wCents) / baseCents
-        const floorC = Math.floor(exact)
-        return { r, cents: floorC, frac: exact - floorC }
-      })
-      const rem = targetCents - parts.reduce((s, p) => s + p.cents, 0)
-      parts.sort((a, b) => b.frac - a.frac)
-      for (let i = 0; i < rem; i++) parts[i].cents += 1
-      for (const p of parts) {
-        if (p.cents <= 0) continue
-        const voidTotal = p.cents / 100
-        const sumTotal = Number(p.r.sum_total)
-        const sumComm = Number(p.r.sum_comm || 0)
-        // 提成按该组 total→comm 比例同步冲销（保持原提成率），精确到分
-        const voidComm = sumTotal > 0 ? Math.round((sumComm * voidTotal) / sumTotal * 100) / 100 : 0
-        const insertRes = await tx.execute(sql`
+    const targets = planRolePoolRefundAllocations(allocRows, refundAmt)
+    for (const target of targets) {
+      const voidTotal = target.allocatedCents / 100
+      const voidComm = target.commissionCents / 100
+      const insertRes = await tx.execute(sql`
           INSERT INTO sale_payment_item_allocations
             (sale_payment_item_receipt_id, employee_id, role_type, department_name, allocation_ratio,
              allocated_amount, commission_rate, commission_amount, is_void, created_at, updated_at)
-          VALUES (${refundReceiptId}, ${p.r.employee_id}, ${p.r.role_type}, ${p.r.dept ?? null}, ${p.r.ratio},
-                  ${(-voidTotal).toFixed(2)}, ${p.r.rate ?? null}, ${(-voidComm).toFixed(2)}, false, NOW(), NOW())
-          ON CONFLICT (sale_payment_item_receipt_id, employee_id, role_type) WHERE is_void = false DO NOTHING
-        `)
-        voidedAllocations += rowsAffected(insertRes)
-      }
+          VALUES (${refundReceiptId}, ${target.source.employee_id}, ${target.source.role_type}, ${target.source.dept ?? null}, ${target.allocationRatio},
+                  ${(-voidTotal).toFixed(2)}, ${target.source.rate ?? null}, ${(-voidComm).toFixed(2)}, false, NOW(), NOW())
+          ON CONFLICT (sale_payment_item_receipt_id, employee_id, role_type) WHERE is_void = false
+          DO UPDATE SET department_name = EXCLUDED.department_name,
+                        allocation_ratio = EXCLUDED.allocation_ratio,
+                        allocated_amount = EXCLUDED.allocated_amount,
+                        commission_rate = EXCLUDED.commission_rate,
+                        commission_amount = EXCLUDED.commission_amount,
+                        updated_at = NOW()
+      `)
+      voidedAllocations += rowsAffected(insertRes)
     }
     const currentRefundAlloc = (await tx.execute(sql`
       SELECT COALESCE(ABS(SUM(spia.allocated_amount::numeric)), 0) AS refund_allocated
@@ -440,17 +543,15 @@ export async function cascadeRefund(
   let voidedCommissions = 0
   if (fullItemIds.length > 0) {
     const res = await tx.execute(sql`
-      UPDATE service_commissions
+      UPDATE service_commissions sc
          SET voided_at = NOW(),
              voided_reason = ${reason},
              is_void = true,
              updated_at = NOW()
-       WHERE service_item_id IN (
-               SELECT si.service_item_id
-               FROM service_items si
-               WHERE si.sale_item_id IN (${sql.join(fullItemIds.map((id) => sql`${id}`), sql`, `)})
-             )
-         AND voided_at IS NULL
+        FROM service_items sit
+       WHERE sc.service_item_id = sit.service_item_id
+         AND sit.sale_item_id IN (${sql.join(fullItemIds.map((id) => sql`${id}`), sql`, `)})
+         AND sc.is_void = false
     `)
     voidedCommissions = rowsAffected(res)
   }
@@ -506,6 +607,15 @@ export async function cascadeRefund(
       const received = Number(orderRow?.received ?? 0)
       const refunded = Number(orderRow?.refunded ?? 0)
       const target = received > 0 ? Math.round((grantedTotal * refunded) / received) : grantedTotal
+      const reversedRes = await tx.execute(sql`
+        SELECT COALESCE(-SUM(amount), 0) AS reversed
+        FROM point_transactions
+        WHERE user_id = ${pointUserId}
+          AND ref_order_id = ${saleOrderId}
+          AND type = '消费冲销'
+      `)
+      const reversedRow = (reversedRes as unknown as Array<{ reversed: unknown }>)[0]
+      const reverseDelta = Math.max(0, target - Number(reversedRow?.reversed ?? 0))
       await tx.execute(sql`
         INSERT INTO point_transactions (
           user_id, ref_order_id, type, amount, created_at
@@ -516,10 +626,20 @@ export async function cascadeRefund(
         DO UPDATE SET amount = EXCLUDED.amount
       `)
       reversedPoints = target
+      if (reverseDelta > 0) {
+        await consumePointBatches(tx, {
+          userId: pointUserId,
+          amount: -reverseDelta,
+          refOrderId: saleOrderId,
+        })
+      }
       await tx.execute(sql`
         UPDATE client_wechat_users c
            SET points_balance = COALESCE((
-                 SELECT SUM(pt.amount) FROM point_transactions pt WHERE pt.user_id = c.user_id
+                 SELECT SUM(pb.remaining_amount)
+                 FROM point_batches pb
+                 WHERE pb.user_id = c.user_id
+                   AND pb.expire_at > NOW()
                ), 0),
                points_updated_at = NOW(),
                updated_at = NOW()
@@ -528,25 +648,74 @@ export async function cascadeRefund(
     }
   }
 
-  // ── 5) 家居退款计入已结算（逐被退家居 item，按退款数量） ──
-  // 修复（家居提货账 schema-free 止血 2026-06-08）：退家居退的是「未提货」数量，
-  // 原 GREATEST(0, picked_up - qty) 错把退款数从已提货里减 → 损坏提货账 + refundable
-  // (=quantity-picked_up) 回升致可重复退（资损）。改为把已退数计入 picked_up（语义升级为
-  // 「已结算」= 已提货 + 已退），LEAST(quantity) 封顶，使 refundable 正确归零、不可超退。
-  // 代价：picked_up 不再纯指已物理提货（pickup_records 仍是真实提货源）；彻底分离待 refunded_quantity 列。
-  // 字段名 rolledBackPickups 保留（跨端 snapshot 守护），语义现为「计入已结算的家居退款行数」。
+  // ── 5) 家居退款计入 refunded_quantity（逐被退家居 item，按退款数量） ──
+  // 沿革：2026-06-08 止血把已退数并进 picked_up_quantity（原 GREATEST(0, picked_up - qty)
+  // 错把退款数从已提货里减 → 损坏提货账 + refundable 回升致可重复退，资损）；2026-09-14 #125
+  // 又把转换折抵也并进同一列。三语义共用一列的代价已在 #154 兑现，现拆为独立列：
+  //   picked_up_quantity  = 物理提货（与 pickup_records 守恒）
+  //   refunded_quantity   = 本通道写入
+  //   converted_quantity  = 转换折抵写入
+  // 派生「已结算」= 三者之和，`refundable = quantity − 已结算` 仍正确归零、不可超退。
+  //
+  // 同时把 LEAST(quantity, ...) 静默封顶换成守卫式加法：封顶会把「可退量已被提货/折抵吃掉」
+  // 这一冲突吞掉（影响行数原本只用于计数、不用于校验）。现改为 WHERE 带守卫，rowCount=0 抛 CONFLICT，
+  // 与 #125 折抵侧口径一致。
+  //
+  // ⚠ 预筛只用来判定「0 行意味着什么」，**不用来决定是否执行 UPDATE**：
+  // effItems 不带 product_type，疗程卡的 sessionCount 同样 > 0，若直接拿 rowCount=0 判冲突，
+  // 每一笔疗程卡退款都会被误判。但反过来用预筛决定「跳过」是 fail-open 的 ——
+  // 预筛结果一旦为空（driver 形状变化、mock 漂移），整条通道会静默 no-op，
+  // refunded_quantity 永不累加且不报错 → 可重复退（正是 2026-06-08 止血要堵的资损路径）。
+  // 现在 UPDATE 始终执行、由 SQL 里的 product_type 谓词做真正的过滤；预筛失灵最多退化成
+  // 「该抛的 CONFLICT 没抛」，即拆列前的旧行为，不会丢账。
+  //
+  // 两条 SQL 都带 sale_order_id：effItems 源自 note.items 的 refSaleItemId，历史脏数据可能
+  // 指向别单的家居行，而 approveRefund 的行锁只覆盖本单购买行 —— 不限定就会写坏别单的账。
+  //
+  // 字段名 rolledBackPickups 保留（跨端 snapshot 守护），语义现为「计入已退款的家居行数」。
   let rolledBackPickups = 0
+  const homeItemIds = new Set<string>()
+  if (effItems.length > 0) {
+    // 用 IN + sql.join 展开而不是 ANY(array)：drizzle 的 ANY 绑定数组在本文件踩过坑
+    // （退款级联 ANY→inArray 修复），raw sql 里展开成 IN 列表是确定可用的写法。
+    const idList = sql.join(effItems.map((it) => sql`${it.saleItemId}`), sql`, `)
+    const homeRes = await tx.execute(sql`
+      SELECT sale_item_id FROM sale_items
+       WHERE sale_item_id IN (${idList})
+         AND sale_order_id = ${saleOrderId}
+         AND product_type = '家居产品'
+    `)
+    for (const r of homeRes as unknown as Array<{ sale_item_id: string }>) {
+      homeItemIds.add(r.sale_item_id)
+    }
+  }
   for (const it of effItems) {
     const qty = it.sessionCount && Number(it.sessionCount) > 0 ? Number(it.sessionCount) : null
     if (!qty) continue
     const res = await tx.execute(sql`
       UPDATE sale_items
-         SET picked_up_quantity = LEAST(quantity, COALESCE(picked_up_quantity, 0) + ${qty}),
+         SET refunded_quantity = COALESCE(refunded_quantity, 0) + ${qty},
              updated_at = NOW()
        WHERE sale_item_id = ${it.saleItemId}
+         AND sale_order_id = ${saleOrderId}
          AND product_type = '家居产品'
+         AND (COALESCE(picked_up_quantity, 0) + COALESCE(refunded_quantity, 0)
+              + COALESCE(converted_quantity, 0) + ${qty}) <= quantity
     `)
-    rolledBackPickups += rowsAffected(res)
+    const affected = rowsAffected(res)
+    if (affected === 0) {
+      // 只有「确属本单家居行」才是守卫没过；非家居行本就该 0 行，正常跳过
+      if (homeItemIds.has(it.saleItemId)) {
+        throw new Error('CONFLICT: HOME_REFUND_SETTLED_EXCEEDED: 家居可退数量已被提货或转换占用，请刷新后重新发起退款')
+      }
+      // 0 行且不在本单家居集合里：要么不是家居行（正常），要么 note.items 的 refSaleItemId
+      // 指向了别单（脏数据）。后者款照退、账未记且此前无任何痕迹，留一条日志供排查。
+      console.warn('[cascadeRefund] 通道5 跳过：未命中本单家居行', {
+        saleOrderId, saleItemId: it.saleItemId, qty,
+      })
+      continue
+    }
+    rolledBackPickups += affected
   }
 
   return {

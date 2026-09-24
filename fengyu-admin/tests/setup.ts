@@ -15,6 +15,13 @@ if (!process.env.RSA_PRIVATE_KEY || !process.env.NEXT_PUBLIC_RSA_PUBLIC_KEY) {
   process.env.NEXT_PUBLIC_RSA_PUBLIC_KEY = Buffer.from(publicKey).toString('base64')
 }
 
+// 进销存开关现由 env 驱动且默认关闭（见 src/lib/inventory-feature-flags.ts）。
+// menu.test.ts / orders.test.ts 断言的是联动开启下的行为（库存菜单可见、冻结库存组成），
+// 故在此显式开启，与 dev 环境一致。关闭态（未设 env）的 fail-closed 守护由
+// src/lib/inventory-feature-flags.test.ts 用 vi.stubEnv 单独覆盖。
+process.env.NEXT_PUBLIC_INVENTORY_LINKAGE_ENABLED =
+  process.env.NEXT_PUBLIC_INVENTORY_LINKAGE_ENABLED || 'true'
+
 afterEach(() => {
   cleanup()
 })

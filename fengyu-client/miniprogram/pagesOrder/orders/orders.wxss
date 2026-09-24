@@ -107,6 +107,7 @@
   font-size: 26rpx;
   color: var(--color-text-secondary);
   flex: 1;
+  display: block;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -174,6 +175,7 @@
 .recharge-sub {
   font-size: 24rpx;
   color: var(--color-text-secondary);
+  display: block;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

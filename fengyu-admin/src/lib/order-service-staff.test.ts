@@ -11,6 +11,7 @@ const base = {
   storeId: 'store-a',
   skills: ['美容师'],
   isOnBusinessTrip: false,
+  marketName: '市场A',
 }
 
 describe('isOrderServiceStaffCandidate', () => {
@@ -18,11 +19,16 @@ describe('isOrderServiceStaffCandidate', () => {
     expect(isOrderServiceStaffCandidate({ ...base, skills: [skill] }, 'store-a')).toBe(true)
   })
 
-  it('其他门店养生师仅在出差时可选', () => {
+  it('其他门店养生师即使出差也不可选', () => {
     const wellnessStaff = { ...base, storeId: 'store-b', skills: ['养生师'] }
 
-    expect(isOrderServiceStaffCandidate(wellnessStaff, 'store-a')).toBe(false)
-    expect(isOrderServiceStaffCandidate({ ...wellnessStaff, isOnBusinessTrip: true }, 'store-a')).toBe(true)
+    expect(isOrderServiceStaffCandidate(wellnessStaff, 'store-a', '市场A')).toBe(false)
+    expect(isOrderServiceStaffCandidate({ ...wellnessStaff, isOnBusinessTrip: true }, 'store-a', '市场A')).toBe(false)
+    expect(isOrderServiceStaffCandidate({
+      ...wellnessStaff,
+      isOnBusinessTrip: true,
+      marketName: '市场B',
+    }, 'store-a', '市场A')).toBe(false)
   })
 
   it('排除无绑定门店、已离职或无服务技能的人员', () => {
@@ -46,19 +52,17 @@ describe('getOrderServiceStaffCandidates', () => {
     isOnBusinessTrip,
   } as Employee)
 
-  it('本门店员工优先于外店出差员工，同组按姓名排序', () => {
+  it('只保留本门店员工并按姓名排序', () => {
     const result = getOrderServiceStaffCandidates([
       employee('trip-a', 'Alpha Trip', 'store-b', true),
       employee('local-z', 'Zulu Local', 'store-a'),
       employee('trip-z', 'Zulu Trip', 'store-c', true),
       employee('local-a', 'Alpha Local', 'store-a'),
-    ], 'store-a')
+    ], 'store-a', '市场A')
 
     expect(result.map((item) => item.employeeId)).toEqual([
       'local-a',
       'local-z',
-      'trip-a',
-      'trip-z',
     ])
   })
 
@@ -73,7 +77,7 @@ describe('getOrderServiceStaffCandidates', () => {
 })
 
 describe('formatOrderServiceStaffOption', () => {
-  it('外店出差员工追加（外援），本店员工不追加', () => {
+  it('不再展示外援标记', () => {
     const staff = {
       name: '美容师甲',
       positionName: '高级美容师',
@@ -81,7 +85,6 @@ describe('formatOrderServiceStaffOption', () => {
       isOnBusinessTrip: true,
     }
 
-    expect(formatOrderServiceStaffOption(staff, 'store-a')).toBe('美容师甲 (高级美容师)（外援）')
-    expect(formatOrderServiceStaffOption({ ...staff, storeId: 'store-a' }, 'store-a')).toBe('美容师甲 (高级美容师)')
+    expect(formatOrderServiceStaffOption(staff, 'store-a')).toBe('美容师甲 (高级美容师)')
   })
 })

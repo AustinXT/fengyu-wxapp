@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+vi.mock('@/lib/employee-assignment-server', () => ({ getInvalidEmployeeAssignmentId: vi.fn().mockResolvedValue(null) }))
 
 // 退款前置检查（allocations.ts 调 hasPendingRefund / hasSettledRefund / hasSettledRefundForPayment）：
 // 默认 false 走正常分支（预防 flaky）。订单级 hasSettledRefund 给 batchSaveAllocations，回款级 ForPayment 给 savePaymentAllocations。
@@ -41,6 +42,7 @@ vi.mock('@db/order', () => ({
     saleOrderDatetime: 'sale_order_datetime',
     received: 'received',
     refundedAmount: 'refunded_amount',
+      performanceAttributionDate: 'so.performance_attribution_date',
   },
   saleItems: {
     saleOrderId: 'sale_order_id',
@@ -56,6 +58,9 @@ vi.mock('@db/order', () => ({
     changeType: 'change_type',
     amount: 'amount',
     paymentMethod: 'payment_method',
+    // 与 saleOrders 刻意用**不同**的 mock 串：两者同名的话，
+    // "读款项级列"与"读订单级列"在断言里就分不开，而这正是 issue #137 的全部行为变更。
+    performanceAttributionDate: 'sop.performance_attribution_date',
   },
   clientWechatUsers: {
     userId: 'user_id',
@@ -73,7 +78,7 @@ vi.mock('drizzle-orm', () => ({
   lt: vi.fn((a, b) => ({ type: 'lt', a, b })),
   desc: vi.fn((a) => ({ type: 'desc', a })),
   ilike: vi.fn((a, b) => ({ type: 'ilike', a, b })),
-  sql: Object.assign(vi.fn(() => ({})), { raw: vi.fn() }),
+  sql: Object.assign(vi.fn((_strings: any, ...values: any[]) => ({ __sqlValues: values })), { raw: vi.fn() }),
 }))
 
 vi.mock('@/lib/auth', () => ({
@@ -97,6 +102,7 @@ vi.mock('next/cache', () => ({
 vi.mock('@/lib/db-time', () => ({
   nowTs: vi.fn(),
   beijingBoundaryTs: vi.fn((d: string, t: string) => ({ type: 'boundary', d, t })),
+  beijingNextDayBoundaryTs: vi.fn((d: string) => ({ type: 'next-day-boundary', d })),
 }))
 
 import {
@@ -107,7 +113,22 @@ import {
 } from './allocations'
 import { db } from '@/db'
 import { saleOrderPayments, saleOrders } from '@db/order'
-import { eq, gte, lt } from 'drizzle-orm'
+
+/**
+ * 归属日期口径断言助手（迁移 0041 收敛后）：查询侧直读
+ * sale_order_payments.performance_attribution_date，不再拼 CASE/COALESCE。
+ */
+const usedAttributionColumn = () =>
+  (sql as any).mock.calls.some(([, ...values]: any[]) =>
+    values.includes('sop.performance_attribution_date'),
+  )
+
+/** 反向守卫：口径被改回订单级时，只有这条会红。 */
+const usedOrderLevelColumn = () =>
+  (sql as any).mock.calls.some(([, ...values]: any[]) =>
+    values.includes('so.performance_attribution_date'),
+  )
+import { eq, gte, lt, sql } from 'drizzle-orm'
 import { getSession } from '@/lib/auth'
 import { isAdminScope, isInScope } from '@/lib/permissions'
 import { hasSettledRefund, hasSettledRefundForPayment } from '@/lib/refund-cascade'
@@ -344,8 +365,8 @@ describe('getPendingPayments — 全部状态/日期筛选', () => {
     expect(hit).toHaveLength(1)
   })
 
-  it('dateFrom/dateTo → 触发 gte/lt on sale_order_datetime（修复日期筛选失效）', async () => {
-    await getPendingPayments({ dateFrom: '2026-07-01', dateTo: '2026-07-31' })
+  it('下单日期口径 → 触发 sale_order_datetime 的上海自然日半开区间', async () => {
+    await getPendingPayments({ dateBasis: 'order', dateFrom: '2026-07-01', dateTo: '2026-07-31' })
 
     expect((gte as any).mock.calls.some(([col]: any[]) => col === saleOrders.saleOrderDatetime)).toBe(true)
     expect((lt as any).mock.calls.some(([col]: any[]) => col === saleOrders.saleOrderDatetime)).toBe(true)
@@ -354,7 +375,38 @@ describe('getPendingPayments — 全部状态/日期筛选', () => {
     const gteCall = (gte as any).mock.calls.find(([col]: any[]) => col === saleOrders.saleOrderDatetime)
     expect(gteCall?.[1]).toEqual({ type: 'boundary', d: '2026-07-01', t: '00:00:00' })
     const ltCall = (lt as any).mock.calls.find(([col]: any[]) => col === saleOrders.saleOrderDatetime)
-    expect(ltCall?.[1]).toEqual({ type: 'boundary', d: '2026-07-31', t: '23:59:59' })
+    expect(ltCall?.[1]).toEqual({ type: 'next-day-boundary', d: '2026-07-31' })
+  })
+
+  it('款项发生日期口径 → 仅筛当前回款行 paid_at', async () => {
+    await getPendingPayments({
+      dateBasis: 'payment',
+      dateFrom: '2026-07-01',
+      dateTo: '2026-07-31',
+    })
+
+    expect((gte as any).mock.calls.some(([col]: any[]) => col === saleOrderPayments.paidAt)).toBe(true)
+    expect((lt as any).mock.calls.some(([col]: any[]) => col === saleOrderPayments.paidAt)).toBe(true)
+    expect((gte as any).mock.calls.some(([col]: any[]) => col === saleOrders.saleOrderDatetime)).toBe(false)
+    expect((lt as any).mock.calls.some(([col]: any[]) => col === saleOrders.saleOrderDatetime)).toBe(false)
+  })
+
+  it('缺省口径 → 按款项业绩归属日期闭区间筛，不落到 sale_order_datetime/paid_at', async () => {
+    await getPendingPayments({ dateFrom: '2026-07-01', dateTo: '2026-07-31' })
+
+    expect((gte as any).mock.calls.some(([col]: any[]) => col === saleOrders.saleOrderDatetime)).toBe(false)
+    expect((lt as any).mock.calls.some(([col]: any[]) => col === saleOrders.saleOrderDatetime)).toBe(false)
+    expect((gte as any).mock.calls.some(([col]: any[]) => col === saleOrderPayments.paidAt)).toBe(false)
+    expect((lt as any).mock.calls.some(([col]: any[]) => col === saleOrderPayments.paidAt)).toBe(false)
+    // 直读款项级归属日期列（迁移 0041 收敛：不再有首次支付→订单级的 CASE 分支，
+    // 该行的列值由 trigger 写成订单级的镜像）
+    expect(usedAttributionColumn()).toBe(true)
+    expect(usedOrderLevelColumn()).toBe(false)
+    const rendered = (sql as any).mock.calls
+      .map(([strings]: any[]) => (Array.isArray(strings?.raw) ? strings.raw.join(' ') : ''))
+      .join('\n')
+    expect(rendered).not.toContain("= '首次支付' THEN")
+    expect(rendered).toContain('::date')
   })
 
   it('无日期 → 不触发 gte/lt on sale_order_datetime', async () => {

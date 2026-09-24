@@ -43,7 +43,10 @@ export const clientWechatUsers = pgTable(
     /** 上一级别快照；null 表示首次成为会员（即"新会员"判定条件） */
     oldMemberLevel: memberLevelEnum('old_member_level'),
     customerSource: customerSourceEnum('customer_source'),
-    /** 推荐人姓名（写入时快照，不关联员工表） */
+    /** 推荐员工可靠关联；删除员工时保留姓名快照并清空关联 */
+    promoterEmployeeId: varchar('promoter_employee_id', { length: 30 })
+      .references((): any => staffWechatUsers.employeeId, { onDelete: 'set null' }),
+    /** 推荐人姓名快照；旧 client 仍只写此列，关联失效时用于展示回退 */
     promoterEmployeeName: varchar('promoter_employee_name', { length: 50 }),
     /** 邀请人（客户 user_id）；首次 bindStore 时写入，写入后不变 */
     inviterUserId: text('inviter_user_id').references((): any => clientWechatUsers.userId),
@@ -69,6 +72,8 @@ export const clientWechatUsers = pgTable(
     improvementFocus: varchar('improvement_focus', { length: 200 }),
     skinIssue: varchar('skin_issue', { length: 200 }),
     wellnessPreference: varchar('wellness_preference', { length: 200 }),
+    /** 人工维护后不再接受 WorkFine 覆盖的档案字段名；显式清空同样计入覆盖 */
+    workfineOverrideFields: text('workfine_override_fields').array().notNull().default(sql`ARRAY[]::text[]`),
     notes: text('notes'),
     /** 积分余额缓存（权威源为 point_transactions，由 cronTask 每日重算写入） */
     pointsBalance: bigint('points_balance', { mode: 'number' }).notNull().default(0),
@@ -83,6 +88,7 @@ export const clientWechatUsers = pgTable(
     uniqueIndex('uq_client_users_phone').on(table.phone).where(sql`phone IS NOT NULL`),
     uniqueIndex('uq_client_users_customer_id').on(table.customerId).where(sql`customer_id IS NOT NULL`),
     index('idx_client_users_bound_store_id').on(table.boundStoreId),
+    index('idx_client_users_promoter_employee_id').on(table.promoterEmployeeId).where(sql`promoter_employee_id IS NOT NULL`),
     index('idx_client_users_inviter').on(table.inviterUserId).where(sql`inviter_user_id IS NOT NULL`),
     check('chk_inviter_not_self', sql`${table.inviterUserId} IS NULL OR ${table.inviterUserId} <> ${table.userId}`),
     check('chk_cwu_phone_format', sql`${table.phone} IS NULL OR ${table.phone} ~ '^1[3-9][0-9]{9}$'`),
@@ -126,7 +132,9 @@ export const staffWechatUsers = pgTable(
     leaveStart: timestamp('leave_start', { mode: 'string', withTimezone: true }),
     /** 请假结束时间（同 leaveStart，mode:'string' + withTimezone） */
     leaveEnd: timestamp('leave_end', { mode: 'string', withTimezone: true }),
-    /** 是否出差支援：true 时该员工可被本门店外的开单/营业额分配选中（跨门店共享）；长期保留直至 admin 手动改回 false（2026-07-13 起不再每日重置） */
+    /** 是否出差支援：true 时该员工可在营业额/服务提成分配中跨店选中（不限市场）；
+     *  服务单创建可跨店但**限本门店所属市场**（issue #210 / docs/changes/arch/013）；
+     *  开单指定美容师仍仅限本店。长期保留直至 admin 手动改回 false */
     isOnBusinessTrip: boolean('is_on_business_trip').notNull().default(false),
     /** 技能标签数组（由 admin 后台维护；staff/client 端只读，用于员工选择器过滤、skills[0] 推断角色等）*/
     skills: text('skills').array(),

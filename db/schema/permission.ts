@@ -16,6 +16,11 @@ export const permissionRoleDefinitions = pgTable(
     name: varchar('name', { length: 30 }).notNull(),
     description: varchar('description', { length: 200 }),
     actions: text('actions').array().notNull().default(sql`ARRAY[]::text[]`),
+    /** 角色允许绑定的组织层级；分配角色时由应用层和数据库触发器共同校验。 */
+    allowedScopeTypes: text('allowed_scope_types')
+      .array()
+      .notNull()
+      .default(sql`ARRAY['总部','市场','门店']::text[]`),
     canAccessAdmin: boolean('can_access_admin').notNull().default(true),
     isSuperAdmin: boolean('is_super_admin').notNull().default(false),
     isStoreManager: boolean('is_store_manager').notNull().default(false),

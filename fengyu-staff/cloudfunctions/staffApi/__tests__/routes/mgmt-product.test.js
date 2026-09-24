@@ -4,7 +4,7 @@
  * 覆盖：
  *   - 入参/权限校验（INVALID_PARAMS / PERMISSION_DENIED）
  *   - cardHolders SQL 形态（持卡过滤、JOIN、scope 三档、memberCount 派生 rate）
- *   - cycleStats SQL 形态（CTE 链断言：daily_agg → qualifying_days → first_entry → period_agg → xinzeng/fugou/tiyan）
+ *   - cycleStats SQL 形态（进入基线与可复购达标分流的 CTE 链）
  *   - 出数与防除零（avgTicket=null when count=0）
  *   - threshold 注入（getMemberThreshold mock）
  */
@@ -147,7 +147,7 @@ describe('mgmtProduct.cardHolders 参数与权限校验', () => {
 // ===================================================================
 
 describe('mgmtProduct.cardHolders SQL 形态', () => {
-  test('SQL 含 product_type = "疗程卡" + remaining_sessions > 0 + 双 JOIN', async () => {
+  test('SQL 含 paid_sessions > 0，不含 product_type/remaining_sessions 持卡过滤 + 双 JOIN', async () => {
     setupCardMocks({ cardRows: [], memberCount: 0 })
     const ctx = makeHqCtx({ scopeType: 'all' })
     await cardHolders(ctx)
@@ -157,8 +157,9 @@ describe('mgmtProduct.cardHolders SQL 形态', () => {
       (s) => /JOIN\s+product_categories\s+pc/.test(s) && /pc\.product_kind/.test(s),
     )
     expect(cardSql).toBeTruthy()
-    expect(cardSql).toMatch(/si\.product_type\s*=\s*'疗程卡'/)
-    expect(cardSql).toMatch(/si\.remaining_sessions\s*>\s*0/)
+    expect(cardSql).toMatch(/si\.paid_sessions\s*>\s*0/)
+    expect(cardSql).not.toMatch(/si\.product_type\s*=\s*'疗程卡'/)
+    expect(cardSql).not.toMatch(/si\.remaining_sessions\s*>\s*0/)
     expect(cardSql).toMatch(/JOIN\s+product_skus\s+sk/)
     expect(cardSql).toMatch(/JOIN\s+product_categories\s+pc/)
     expect(cardSql).toMatch(/COUNT\(DISTINCT\s+so\.client_user_id\)/)
@@ -346,7 +347,7 @@ describe('mgmtProduct.cycleStats SQL 形态', () => {
     return pg.query.mock.calls.map((c) => c[0]).find((s) => /WITH\s+daily_agg\s+AS/.test(s))
   }
 
-  test('daily_agg GROUP BY 含 client_user_id, store_id, product_kind, performance_date', async () => {
+  test('daily_agg GROUP BY 含 client_user_id、store_id、product_kind 与业绩归属日期', async () => {
     setupCycleMocks({})
     const ctx = makeHqCtx({ period: 'month', scopeType: 'all' })
     await cycleStats(ctx)
@@ -359,16 +360,17 @@ describe('mgmtProduct.cycleStats SQL 形态', () => {
     )
   })
 
-  test('daily_agg WHERE 含 sale_order_type IN ("销售单","转换单") + status="已支付" + performance_date <= $2', async () => {
+  test('daily_agg 纳入寄存单进入基线，并以业绩归属日期截止 $2', async () => {
     setupCycleMocks({})
     const ctx = makeHqCtx({ period: 'month', scopeType: 'all' })
     await cycleStats(ctx)
 
     const sql = getCycleSql()
-    expect(sql).toMatch(/so\.sale_order_type\s+IN\s*\(\s*'销售单'\s*,\s*'转换单'\s*\)/)
-    expect(sql).toMatch(/so\.status\s*=\s*'已支付'/)
-    expect(sql).toMatch(/sipe\.performance_date\s*<=\s*\$2/)
+    expect(sql).toMatch(/so\.sale_order_type\s+IN\s*\(\s*'销售单'\s*,\s*'转换单'\s*,\s*'寄存单'\s*\)/)
+    expect(sql).toMatch(/FILTER\s*\(\s*WHERE\s+so\.sale_order_type\s+IN\s*\(\s*'销售单'\s*,\s*'转换单'\s*\)\s*\)/)
+    expect(sql).toMatch(/so\.status\s+NOT\s+IN\s*\(\s*'已关闭'\s*,\s*'已作废'\s*,\s*'未审核'\s*,\s*'待审批'\s*,\s*'支付失败'\s*\)/)
     expect(sql).toMatch(/FROM\s+sale_item_performance_events\s+sipe/)
+    expect(sql).toMatch(/sipe\.performance_date\s*<=\s*\$2/)
   })
 
   test('qualifying_days WHERE 用 day_received >= $3 不等式（threshold 参数化）', async () => {
@@ -381,6 +383,17 @@ describe('mgmtProduct.cycleStats SQL 形态', () => {
     // 不能用 = 等式
     expect(sql).toMatch(/day_received\s*>=\s*\$3/)
     expect(sql).not.toMatch(/day_received\s*=\s*\$3/)
+  })
+
+  test('复购达标与区间业绩只使用销售单/转换单金额', async () => {
+    setupCycleMocks({})
+    const ctx = makeHqCtx({ period: 'month', scopeType: 'all' })
+    await cycleStats(ctx)
+
+    const sql = getCycleSql()
+    expect(sql).toMatch(/repurchase_qualifying_days\s+AS\s*\([\s\S]*?purchase_received\s*>=\s*\$3/)
+    expect(sql).toMatch(/period_agg\s+AS\s*\([\s\S]*?purchase_received\s+AS\s+day_received[\s\S]*?purchase_received\s*>\s*0/)
+    expect(sql).toMatch(/fugou\s+AS\s*\([\s\S]*?FROM\s+repurchase_qualifying_days\s+q/)
   })
 
   test('first_entry SELECT 用 MIN(purchase_date)，GROUP BY 不含 store_id（跨店合并）', async () => {
@@ -399,18 +412,16 @@ describe('mgmtProduct.cycleStats SQL 形态', () => {
     expect(groupCols).not.toMatch(/store_id/)
   })
 
-  test('fugou WHERE 不含 q.purchase_date <> f.entry_date（2026-04-25 口径修订：取消"非首日"约束，新增 ⊆ 复购）', async () => {
+  test('fugou 仅统计本期进入 cohort 在进入日后的再次达标', async () => {
     setupCycleMocks({})
     const ctx = makeHqCtx({ period: 'month', scopeType: 'all' })
     await cycleStats(ctx)
 
     const sql = getCycleSql()
     expect(sql).toMatch(/fugou\s+AS\s*\(/)
-    // fugou 仍要求"在 period 内有达标日"——通过 JOIN first_entry 仅保留已 entry 的顾客
-    expect(sql).toMatch(/fugou\s+AS\s*\(\s*SELECT\s+DISTINCT[\s\S]*?JOIN\s+first_entry\s+f/)
+    expect(sql).toMatch(/fugou\s+AS\s*\(\s*SELECT\s+DISTINCT[\s\S]*?JOIN\s+xinzeng\s+x/)
     expect(sql).toMatch(/fugou\s+AS\s*\([\s\S]*?WHERE\s+q\.purchase_date\s+BETWEEN\s+\$1\s+AND\s+\$2/)
-    // 不应再含"非首日"约束
-    expect(sql).not.toMatch(/q\.purchase_date\s*<>\s*f\.entry_date/)
+    expect(sql).toMatch(/q\.purchase_date\s*>\s*x\.entry_date/)
   })
 
   test('tiyan WHERE 用 NOT EXISTS (SELECT 1 FROM first_entry f ...)', async () => {
@@ -421,16 +432,6 @@ describe('mgmtProduct.cycleStats SQL 形态', () => {
     const sql = getCycleSql()
     expect(sql).toMatch(/tiyan\s+AS\s*\(/)
     expect(sql).toMatch(/NOT EXISTS\s*\(\s*SELECT\s+1\s+FROM\s+first_entry\s+f/)
-  })
-
-  test('tiyan 只认正向购买事件，纯退款不计入体验客群', async () => {
-    setupCycleMocks({})
-    const ctx = makeHqCtx({ period: 'month', scopeType: 'all' })
-    await cycleStats(ctx)
-
-    const sql = getCycleSql()
-    expect(sql).toMatch(/BOOL_OR\(sipe\.amount::numeric\s*>\s*0\)\s+AS\s+has_purchase/)
-    expect(sql).toMatch(/tiyan\s+AS\s*\([\s\S]*?WHERE\s+pa\.has_purchase\s+AND\s+NOT EXISTS/)
   })
 
   test('period_agg WHERE 含 purchase_date BETWEEN $1 AND $2', async () => {
@@ -549,7 +550,7 @@ describe('mgmtProduct.cycleStats 出数与防除零', () => {
       { productKind: '家居产品', count: 10, revenue: 30000, avgTicket: 3000 },
     ])
     expect(ctx.result.repurchase).toEqual([
-      { productKind: '护理项目', count: 9, revenue: 18000, avgTicket: 2000 },
+      { productKind: '护理项目', count: 9, revenue: 18000, avgTicket: 2000, entryCount: 9, repurchaseRate: 1 },
     ])
   })
 

@@ -13,6 +13,13 @@ const pg = require('../db/pg')
 const { requireStaffBound, invalidateAuthCache, isCurrentStoreManager } = require('../middleware/auth')
 const { assertEmployeeInScope, isStoreInScope, buildStoreScopeCondition } = require('../utils/scope')
 const { shanghaiDateStr } = require('../utils/datetime')
+const { SALES_CATEGORIES, UNCATEGORIZED } = require('../utils/sales-categories')
+const {
+  SERVICE_ORDER_ASSIGNABLE_SKILLS,
+  EMPLOYEE_ANCHOR_MARKET_JOIN,
+  targetMarketJoin,
+  marketSupportCondition,
+} = require('../utils/employee-assignment')
 
 // 跨 env 转上传相关 env vars：
 // - CLIENT_API_HTTP_URL：clientApi 的 HTTP 触发器 URL（部署 clientApi 后 tcb fn detail 拿）
@@ -71,7 +78,7 @@ function performanceEventWindow(eventAlias, startIdx, endIdx) {
 async function list(ctx) {
   await requireStaffBound()(ctx, async () => {})
 
-  const { storeId: payloadStoreId } = ctx.event.payload || {}
+  const { storeId: payloadStoreId, scene } = ctx.event.payload || {}
   const targetStoreId = payloadStoreId || ctx.auth.effectiveStoreId
 
   if (!targetStoreId) {
@@ -84,38 +91,77 @@ async function list(ctx) {
     throw new Error('PERMISSION_DENIED: 不在权限范围内的门店')
   }
 
-  // 美容师选择列表按 skills 数组含 '美容师' 或 '养生师' 判定，不按 position_name ——
-  // 养生师也可被指定接单（业务诉求）；与 clientApi/routes/staff.js + admin
-  // orders/services/customers picker 单源对齐，写法与 mgmt-dashboard.js 的
-  // `s.skills && ARRAY['美容师','养生师']::text[]` 同源。
-  // 经理/督导/财智部等岗位即使 store_id 匹配也不应进入美容师选择列表。
-  const staffRows = await pg.query(`
-    SELECT
-      u.employee_id,
-      u.name,
-      u.position_name AS position,
-      u.skills,
-      u.avatar_url,
-      u.store_id,
-      u.is_on_business_trip,
-      d.name AS department,
-      s.store_name,
-      m.name AS market_name
-    FROM staff_wechat_users u
-    LEFT JOIN stores s ON u.store_id = s.store_id
-    LEFT JOIN org_nodes so ON s.org_node_id = so.id
-    LEFT JOIN org_nodes m ON so.parent_id = m.id
-    LEFT JOIN org_nodes d ON u.org_node_id = d.id
-    WHERE u.is_resigned = false
-      AND u.store_id IS NOT NULL
-      AND (u.store_id = $1 OR u.is_on_business_trip = true)
-      AND u.employee_id IS NOT NULL
-      AND u.skills && ARRAY['美容师','养生师']::text[]
-    ORDER BY
-      (u.store_id = $1) DESC,
-      d.name,
-      u.name
-  `, [targetStoreId])
+  // 服务单场景（issue #210）：候选放宽为「本店员工 ∪ 本门店所属市场内开启出差支援的员工」，
+  // 技能扩至四项。其余调用方（开单、顾客列表、顾客详情、员工绩效）不传 scene，走下方原口径。
+  //
+  // 仅店长放宽：service.create 里非店长只能把服务单指派给自己
+  // （`!isCurrentStoreManager(ctx.auth) && resolvedStaffWfId !== ctx.auth.staffWfId` 直接拒），
+  // 候选列表对普通员工没有用途，没必要让任意在职员工借此枚举同市场跨店人员。
+  // 非店长传了 scene 也不报错，静默退回本店口径（与放宽前一致）。
+  const isServiceScene = scene === 'service' && isCurrentStoreManager(ctx.auth)
+
+  let staffRows
+  if (isServiceScene) {
+    // 排序：本店整体置顶 → 块内按技能白名单数组顺序（店经理→美容师→养生师→品项老师）→ 姓名。
+    // 多技能员工取白名单内最靠前的技能作为排序角色；调序改
+    // utils/employee-assignment.js 的 SERVICE_ORDER_ASSIGNABLE_SKILLS 即可，此处无硬编码。
+    // market_name 在本分支返回员工的【锚定市场】（而非门店所属市场），供前端标注外援来源。
+    staffRows = await pg.query(`
+      SELECT
+        u.employee_id,
+        u.name,
+        u.position_name AS position,
+        u.skills,
+        u.avatar_url,
+        u.store_id,
+        u.is_on_business_trip,
+        d.name AS department,
+        s.store_name,
+        employee_market.name AS market_name,
+        CASE WHEN u.store_id = $1 THEN 'local' ELSE 'same_market_trip' END AS assignment_scope
+      FROM staff_wechat_users u${EMPLOYEE_ANCHOR_MARKET_JOIN}${targetMarketJoin('$1')}
+      WHERE u.is_resigned = false
+        AND u.employee_id IS NOT NULL
+        AND u.skills && $2::text[]
+        AND ${marketSupportCondition('$1')}
+      ORDER BY
+        CASE WHEN u.store_id = $1 THEN 0 ELSE 1 END,
+        (SELECT MIN(array_position($2::text[], sk))
+           FROM unnest(u.skills) sk
+          WHERE sk = ANY($2::text[])) NULLS LAST,
+        u.name NULLS LAST,
+        u.employee_id
+    `, [targetStoreId, SERVICE_ORDER_ASSIGNABLE_SKILLS])
+  } else {
+    // 美容师选择列表按 skills 数组含 '美容师' 或 '养生师' 判定，不按 position_name ——
+    // 养生师也可被指定接单（业务诉求）；与 clientApi/routes/staff.js + admin
+    // orders/services/customers picker 单源对齐，写法与 mgmt-dashboard.js 的
+    // `s.skills && ARRAY['美容师','养生师']::text[]` 同源。
+    // 经理/督导/财智部等岗位即使 store_id 匹配也不应进入美容师选择列表。
+    staffRows = await pg.query(`
+      SELECT
+        u.employee_id,
+        u.name,
+        u.position_name AS position,
+        u.skills,
+        u.avatar_url,
+        u.store_id,
+        u.is_on_business_trip,
+        d.name AS department,
+        s.store_name,
+        m.name AS market_name
+      FROM staff_wechat_users u
+      LEFT JOIN stores s ON u.store_id = s.store_id
+      LEFT JOIN org_nodes so ON s.org_node_id = so.id
+      LEFT JOIN org_nodes m ON so.parent_id = m.id
+      LEFT JOIN org_nodes d ON u.org_node_id = d.id
+      WHERE u.is_resigned = false
+        AND u.store_id = $1
+        AND u.employee_id IS NOT NULL
+        AND u.skills && ARRAY['美容师','养生师']::text[]
+      ORDER BY d.name, u.name
+    `, [targetStoreId])
+  }
 
   ctx.result = {
     staffList: staffRows.map(r => ({
@@ -129,6 +175,11 @@ async function list(ctx) {
       storeName: r.store_name || '',
       marketName: r.market_name || '',
       isOnBusinessTrip: r.is_on_business_trip === true,
+      // 非服务单场景恒为 'local'（查询本就只含本店员工），前端无需分支判断
+      assignmentScope: r.assignment_scope || 'local',
+      // ⚠️ isManager 走 position_name 口径，与服务单场景的 skills 口径**不同源**：
+      // 技能含「店经理」但岗位名不是「门店经理」的人会排在首位却 isManager=false。
+      // 服务单场景一律以 skills 为准（排序与角色标签都取它），isManager 仅供旧场景，勿混用。
       isManager: r.position === '门店经理'
     }))
   }
@@ -350,7 +401,8 @@ async function todayCommission(ctx) {
     lastMonthServiceCount: Number(lastMonthSvcRows[0].service_count),
   }
 
-  // 店长：门店今日总业绩（首次收款按订单归属日，后续回款/退款按真实发生日）
+  // 店长：门店今日总业绩（一律按款项业绩归属日期 spe.performance_date；#137 收敛后
+  // 首次支付/回款/退款同口径，原「后续按真实发生日」表述已失效）
   // 门店过滤用 effectiveStoreId（当前选中门店），多店店长切店后才正确
   const eff = ctx.auth.effectiveStoreId
   if (isManager && eff) {
@@ -375,7 +427,8 @@ async function todayCommission(ctx) {
  * 月度业绩日历（整店口径）
  *
  * 口径约定（勿误改）：日历每日格子 + 头部合计 = 整店汇总业绩
- *   = SUM(sale_order_performance_events.amount)，首次收款按订单归属日，后续流水按真实发生日，
+ *   = SUM(sale_order_performance_events.amount)，**一律按款项业绩归属日期**
+ *   （#137 收敛 / 迁移 0041，首次支付/回款/退款同口径），
  *   按 effectiveStoreId（当前选中门店）过滤，与首卡「门店今日营收」/ mgmt-dashboard.queryStoreRevenue 同口径。
  *   ⚠️ 这是【整店营业额】维度，不是登录员工的个人分成份额（个人本月累计走 todayCommission.thisMonth*）。
  */
@@ -475,11 +528,13 @@ async function todoList(ctx) {
   }
 
   // 待推进服务单
+  // 店长口径必须与 service.counts 店长分支逐字一致（#224）：店经理在服务单技能白名单内，
+  // 本人也可能作为外援被别店指派，两处若不同口径，工作台待办数与服务 Tab 角标会对不上。
   let serviceCount
   if (isManager) {
     serviceCount = await pg.query(
-      `SELECT COUNT(*) AS cnt FROM service_orders WHERE store_id = $1 AND status IN ('待服务', '服务中')`,
-      [effectiveStoreId]
+      `SELECT COUNT(*) AS cnt FROM service_orders WHERE (store_id = $1 OR assigned_employee_id = $2) AND status IN ('待服务', '服务中')`,
+      [effectiveStoreId, staffWfId]
     )
   } else {
     serviceCount = await pg.query(
@@ -589,17 +644,44 @@ async function bindStore(ctx) {
  *   totalSalesAlloc       = SUM(sale_payment_item_allocations.commission_amount) — 真实【销售提成】（= 营业额份额 × 提成率快照）
  *   totalServiceCommission = SUM(service_commissions.commission_amount) — 真实【服务提成】
  *   totalCommission（合计）= 两者相加 —— 销售/服务两侧均为真实提成收入。
- *   item.amount = 该行销售提成（commission_amount）；item.allocAmount = 营业额份额（total_amount）；
- *   item.businessAmount = 整行实收（si.received，按产品决策保持不变）。
+ *   item.amount = 该行销售提成（commission_amount）；item.allocAmount = 该员工营业额分配份额（spia.allocated_amount）。
+ *   item.businessAmount = 整行实收（si.received）— **已弃用**，仅保留兼容线上老版本小程序；
+ *     新版前端「业绩」展示 allocAmount（issue #123：员工看到的应是自己的分配额，不是订单行总额）。
  *   提成率快照在 allocation.save / admin / payNotify 写入时固化（commission_rate），历史不随改率变化。
  *   与 mgmt staffRankingIncome / querySalesCommissionIncome 同口径（销售部分均 = commission_amount），三处自洽。
  *   ⚠️ 销售提成是【提成收入】维度，与首卡「今日分成（营业额）」（= staffRankingRevenue，营业额份额维度）本就不等，勿强行对齐。
+ *
+ * 筛选与汇总解耦（issue #123，勿回退）：
+ *   salesCategory / filterType 入参**只过滤 items 明细**，不影响任何汇总字段。
+ *   categorySummary（4 归属分类 × {sales, service} = 绩效页 8 维度总览）与 totalSalesAlloc /
+ *   totalServiceCommission / totalCommission 恒按本期全量计算，否则前端切二级 chip 后其余维度会归零，
+ *   且「4 子类之和 = 顶部销售提成」的勾稽关系断裂。
+ *   categorySummary 固定 4 类零填充 + 逐类 round2，categories 下发有序分类清单（前端不再自持硬编码）。
+ *
+ * ⚠️ 退款在销售侧与服务侧的口径不对称（既有，非本次引入，勿误以为 bug）：
+ *   销售侧 = **冲销式**：refund-cascade INSERT 负数镜像子分配，`is_void` 仍为 false →
+ *     负数行进入 allocRows，明细会出现负提成/负分配额。退款标识由本函数按款项
+ *     `spe.change_type === '退款'` 下发 `isRefund`，前端只读该字段 —— **不可用金额符号推断**：
+ *     转换单转出行的分配额同样为负，而提成率 0 的退款行提成额是 0，两头都会判错。
+ *   服务侧 = **删除式**：退款把 service_commissions.is_void 置 true → 本查询直接排除 →
+ *     已过去月份的服务提成会**回溯变小**，员工事后查看历史月份与当时所见不一致。
+ *   两侧统一为冲销式需要改 refund-cascade + 历史数据回填，超出绩效页范围。
  */
 async function performanceDetail(ctx) {
   await requireStaffBound()(ctx, async () => {})
 
   const { startDate, endDate, employeeId: queryEmployeeId, salesCategory, filterType, page = 1, pageSize = 20 } = ctx.event.payload || {}
   const isManager = isCurrentStoreManager(ctx.auth)
+
+  // 分页入参加固：非法值会让 slice 走进负索引（page=-1 静默返回列表尾部的错误数据）
+  // 或字符串拼接（pageSize='20' 时 offset + pageSize → '2020'，一次吐 2000 条）；
+  // Infinity / NaN 能穿透 Math.floor+Math.max，必须先过 isFinite
+  const toPositiveInt = (v, fallback) => {
+    const n = Math.floor(Number(v))
+    return Number.isFinite(n) && n >= 1 ? n : fallback
+  }
+  const safePage = toPositiveInt(page, 1)
+  const safePageSize = Math.min(100, toPositiveInt(pageSize, 20))
 
   // 美容师只能查自己
   const targetEmployeeId = (isManager && queryEmployeeId) ? queryEmployeeId : ctx.auth.staffWfId
@@ -617,12 +699,9 @@ async function performanceDetail(ctx) {
   end.setDate(end.getDate() + 1)
 
   // 销售提成明细（基于 sale_payment_item_allocations）
+  // ⚠️ 不在 SQL 里按 salesCategory 过滤：汇总必须覆盖全量 4 分类（见函数头注释「筛选与汇总解耦」），
+  //    明细筛选在下方内存阶段完成（本就全量取回内存分页，无额外 DB 往返）。
   const allocParams = [targetEmployeeId, start, end]
-  let allocWhere = ''
-  if (salesCategory) {
-    allocParams.push(salesCategory)
-    allocWhere = ` AND si.sales_category = $${allocParams.length}`
-  }
 
   const allocRows = await pg.query(`
     SELECT
@@ -640,6 +719,9 @@ async function performanceDetail(ctx) {
       o.customer_name,
       o.client_phone,
       spe.performance_date AS paid_at,
+      -- 退款标识取款项类型，不靠金额符号推断：转换单转出行的分配额同样为负，
+      -- 而提成率为 0 的退款行 commission_amount 是 0，两头都会判错
+      spe.change_type,
       o.store_id
     FROM sale_payment_item_allocations spia
     JOIN sale_payment_item_receipts spir ON spir.id = spia.sale_payment_item_receipt_id
@@ -650,7 +732,6 @@ async function performanceDetail(ctx) {
     WHERE spia.employee_id = $1
       AND spia.is_void = false
       AND ${performanceEventWindow('spe', 2, 3)}
-      ${allocWhere}
     ORDER BY spe.performance_date DESC, spia.id DESC
   `, allocParams)
 
@@ -660,13 +741,16 @@ async function performanceDetail(ctx) {
   //       consume_amount = unit_real_price × session_used × commission_rate （消耗提成）
   // 旧实现曾用 unit_real_price × session_used 作为"服务提成"，这是消耗业绩金额口径，
   // 导致员工看到的数字虚高 3-5 倍，已修复。
+  // 同上：salesCategory 不进 SQL，汇总恒全量
   const svcParams = [targetEmployeeId, startDate, endDate.replace(/-/g, '/')]
-  let svcWhere = ''
-  if (salesCategory) {
-    svcParams.push(salesCategory)
-    svcWhere = ` AND si.sales_category = $${svcParams.length}`
-  }
 
+  // ⚠️ ORDER BY 末尾的 `sc.id DESC` 是唯一稳定的 tie-break 键，不可删（#239）：
+  // 本函数把 allocRows + svcRows 拼成 allItems 后在 **JS 里 sort + slice 做内存分页**，
+  // 而 page/pageSize 是入参 —— 每翻一页都是一次独立云函数调用 = 一次新的 SQL 执行。
+  // V8 的 Array.sort 稳定，同一个 date 的多行其相对顺序完全继承自 SQL 返回顺序；
+  // 只按 service_date 排序时 PG 不保证同日多行每次同序（并发写 / autovacuum / plan 变化
+  // 都会改变物理扫描顺序）→ 两次翻页切出的页可能重复或漏掉某条明细。
+  // 与上方销售侧 allocRows 的 `, spia.id DESC` 同思路；#181 的 customer.listByTag 是同一缺陷类。
   const svcRows = await pg.query(`
     SELECT
       sc.commission_amount,
@@ -697,42 +781,52 @@ async function performanceDetail(ctx) {
       AND so.status = '已完成'
       AND so.service_date >= $2
       AND so.service_date <= $3
-      ${svcWhere}
-    ORDER BY so.service_date DESC
+    ORDER BY so.service_date DESC, sc.id DESC
   `, svcParams)
 
-  // 汇总
+  // 固定 4 分类零填充打底：即使本期某分类无数据，前端也要能渲染 ¥0.00 的格子；
+  // 运行时出现的额外分类（sales_category 为 NULL → UNCATEGORIZED）追加在固定 4 类之后。
+  const categorySummary = {}
+  for (const cat of SALES_CATEGORIES) categorySummary[cat] = { sales: 0, service: 0 }
+  const bucketOf = (rawCategory) => {
+    const key = rawCategory || UNCATEGORIZED
+    if (!categorySummary[key]) categorySummary[key] = { sales: 0, service: 0 }
+    return categorySummary[key]
+  }
+
+  // 销售侧汇总用真实提成 commission_amount（§3.15），不再用营业额份额
+  for (const r of allocRows) bucketOf(r.sales_category).sales += Number(r.commission_amount)
+  for (const r of svcRows) bucketOf(r.sales_category).service += Number(r.commission_amount)
+
+  // 顶部三联卡**由归一后的分桶派生**，而不是独立累加原始行：
+  // 两条独立路径下 round(Σraw) 与 Σround(raw_cat) 在亚分精度上会不等，
+  // 「各分类之和 = 顶部提成」的勾稽就不再是构造性恒等（本接口对前端的承诺，见函数头注释）。
+  const round2 = (v) => Math.round(v * 100) / 100
   let totalSalesAlloc = 0
   let totalServiceCommission = 0
-  const categorySummary = {}
-
-  for (const r of allocRows) {
-    // 销售侧汇总用真实提成 commission_amount（§3.15），不再用营业额份额 total_amount
-    totalSalesAlloc += Number(r.commission_amount)
-    const cat = r.sales_category || '未分类'
-    if (!categorySummary[cat]) categorySummary[cat] = { sales: 0, service: 0 }
-    categorySummary[cat].sales += Number(r.commission_amount)
+  for (const key of Object.keys(categorySummary)) {
+    const bucket = categorySummary[key]
+    bucket.sales = round2(bucket.sales)
+    bucket.service = round2(bucket.service)
+    totalSalesAlloc += bucket.sales
+    totalServiceCommission += bucket.service
   }
-
-  for (const r of svcRows) {
-    const amount = Number(r.commission_amount)
-    totalServiceCommission += amount
-    const cat = r.sales_category || '未分类'
-    if (!categorySummary[cat]) categorySummary[cat] = { sales: 0, service: 0 }
-    categorySummary[cat].service += amount
-  }
+  totalSalesAlloc = round2(totalSalesAlloc)
+  totalServiceCommission = round2(totalServiceCommission)
 
   // 合并为时间线，按 filterType 过滤，分页
   const saleItems = allocRows.map(r => ({
     type: 'sale',
     productName: r.product_name,
     specName: null,
-    salesCategory: r.sales_category,
+    // 与 categorySummary 同口径归一：否则点「未分类」筛出的卡片底部不显示分类标签
+    salesCategory: r.sales_category || UNCATEGORIZED,
     amount: Number(r.commission_amount), // 该行真实销售提成（§3.15）
-    allocAmount: Number(r.alloc_amount), // 营业额份额（total_amount）
+    allocAmount: Number(r.alloc_amount), // 该员工营业额分配份额（spia.allocated_amount）
     commissionRate: Number(r.commission_rate || 0), // 提成率快照
     ratio: Number(r.allocation_ratio),
-    businessAmount: Number(r.received), // 整行实收（产品决策：保持不变）
+    businessAmount: Number(r.received), // 整行实收 — 已弃用，仅兼容线上老版本前端（见函数头注释）
+    isRefund: r.change_type === '退款', // 退款冲销行（负数镜像分配），前端据此打标识
     customerName: r.customer_name,
     clientPhone: r.client_phone,
     orderId: r.sale_order_id,
@@ -745,8 +839,10 @@ async function performanceDetail(ctx) {
     type: 'service',
     productName: r.product_name,
     specName: null,
-    salesCategory: r.sales_category,
+    salesCategory: r.sales_category || UNCATEGORIZED,
     roleType: r.role_type,
+    // 服务侧退款是删除式（is_void 置真后直接排除，见函数头注释），故明细中不会出现退款行
+    isRefund: false,
     amount: Number(r.commission_amount),
     fixedFee: Number(r.fixed_fee || 0),
     consumeAmount: Number(r.consume_amount || 0),
@@ -760,29 +856,39 @@ async function performanceDetail(ctx) {
     date: r.service_created_at || r.service_date,
   }))
 
+  // 明细筛选：一级 filterType（sale/service）+ 二级 salesCategory，两级任意组合
+  // 汇总已在上方按全量算完，此处过滤不会回写汇总（issue #123）
   let allItems
   if (filterType === 'sale') allItems = saleItems
   else if (filterType === 'service') allItems = serviceItems
   else allItems = [...saleItems, ...serviceItems]
 
+  if (salesCategory) {
+    // items 的 salesCategory 在装配时已归一为 UNCATEGORIZED，可直接比较
+    // （旧实现的 SQL `si.sales_category = $4` 筛不出 NULL 行，这是本次的净修复）
+    allItems = allItems.filter(i => i.salesCategory === salesCategory)
+  }
+
   allItems.sort((a, b) => new Date(b.date) - new Date(a.date))
 
-  const offset = (page - 1) * pageSize
-  const paged = allItems.slice(offset, offset + pageSize)
+  const offset = (safePage - 1) * safePageSize
+  const paged = allItems.slice(offset, offset + safePageSize)
 
-  const roundedServiceCommission = Math.round(totalServiceCommission * 100) / 100
-
+  // totalSalesAlloc / totalServiceCommission 已在分桶派生阶段 round2，此处不再二次舍入
   ctx.result = {
-    totalSalesAlloc: Math.round(totalSalesAlloc * 100) / 100,
-    totalServiceCommission: roundedServiceCommission,
+    totalSalesAlloc,
+    totalServiceCommission,
     // 向后兼容：保留 totalServiceFee 字段名供老版本前端使用（1-2 发布周期后下线）
-    totalServiceFee: roundedServiceCommission,
-    totalCommission: Math.round((totalSalesAlloc + totalServiceCommission) * 100) / 100,
+    totalServiceFee: totalServiceCommission,
+    totalCommission: round2(totalSalesAlloc + totalServiceCommission),
     categorySummary,
+    // 有序分类清单（固定 4 类在前 + 运行时出现的额外分类）——前端据此渲染格子与 chip，
+    // 不再自持硬编码副本，枚举改名/新增时不会出现「幽灵格子 + 真实分类并存」
+    categories: Object.keys(categorySummary),
     items: paged,
     total: allItems.length,
-    page,
-    pageSize,
+    page: safePage,
+    pageSize: safePageSize,
   }
 }
 

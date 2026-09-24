@@ -137,6 +137,57 @@ function splitSignedCentsByEventNet(
   return parts
 }
 
+/** 金额（元）→ 整数分；null / 空串 / 非数值返回 null。 */
+export function amountToCents(value: unknown): number | null {
+  return cents(value)
+}
+
+export interface PaymentChannelSplit {
+  /** 事件净额（分）＝ Σ receipt.amount */
+  eventTotalCents: number
+  /** 本事件被折叠进主流水的储值卡总额（分） */
+  prepaidTotalCents: number
+  /** 与入参 amountCents 等长；各 receipt 行分摊到的储值卡额（分） */
+  prepaidCents: number[]
+}
+
+/**
+ * 从「一笔款项的 receipt 集合 + 该款项自身金额」还原储值卡 / 现付两条通道。
+ *
+ * 混合收款（现金 + 储值卡）在库里写两行 sale_order_payments，但 receipt 只挂在现金主流水上、
+ * 金额是 cash + card 合计（见 actions/orders.ts confirmOfflinePayment 的 allocEventAmount /
+ * allocPrimaryId）。因此超出主流水 amount 的部分即同事件的储值卡额。
+ *
+ * 营业额分配导出（aggregateAllocationExportRows）与回款明细导出（exportOrderPayments）共用
+ * 本函数，避免两处口径漂移。
+ */
+export function derivePaymentChannelSplit(
+  amountCents: number[],
+  context: {
+    changeType?: string | null
+    paymentMethod?: string | null
+    /** sale_order_payments.amount 折成分；缺失时退回事件净额 */
+    paymentAmountCents?: number | null
+  },
+): PaymentChannelSplit {
+  const eventTotalCents = amountCents.reduce((sum, value) => sum + value, 0)
+  const changeType = String(context.changeType ?? '')
+  const paymentMethod = String(context.paymentMethod ?? '')
+  const paymentAmountCents = context.paymentAmountCents ?? eventTotalCents
+  let prepaidTotalCents = 0
+  if (changeType === '储值卡抵扣' || paymentMethod === '储值卡') {
+    prepaidTotalCents = eventTotalCents
+  } else if (eventTotalCents > 0 && paymentAmountCents >= 0) {
+    // 混合收款只把 receipt 挂在现金主流水上；超出主流水金额的部分即同事件储值卡抵扣。
+    prepaidTotalCents = Math.max(0, Math.min(eventTotalCents, eventTotalCents - paymentAmountCents))
+  }
+  return {
+    eventTotalCents,
+    prepaidTotalCents,
+    prepaidCents: splitSignedCentsByEventNet(prepaidTotalCents, amountCents, eventTotalCents),
+  }
+}
+
 function perUnitKey(value: unknown, quantity: number, monetary = false): string | null {
   const parsed = monetary ? cents(value) : finiteNumber(value)
   if (parsed == null) return null
@@ -326,22 +377,15 @@ export function aggregateAllocationExportRows<T extends ExportRow>(sourceRows: T
     })
   })
   const receipts = Array.from(receiptMap.values())
-  const eventTotal = receipts.reduce((sum, receipt) => sum + receipt.amountCents, 0)
   const first = receipts[0].base
   const changeType = String(first.__paymentChangeType ?? '')
-  const paymentMethod = String(first.__paymentMethod ?? '')
-  const paymentAmount = cents(first.__paymentAmount) ?? eventTotal
-  let prepaidTotal = 0
-  if (changeType === '储值卡抵扣' || paymentMethod === '储值卡') {
-    prepaidTotal = eventTotal
-  } else if (eventTotal > 0 && paymentAmount >= 0) {
-    // 混合收款只把 receipt 挂在现金主流水上；超出主流水金额的部分即同事件储值卡抵扣。
-    prepaidTotal = Math.max(0, Math.min(eventTotal, eventTotal - paymentAmount))
-  }
-  const prepaidParts = splitSignedCentsByEventNet(
-    prepaidTotal,
+  const { prepaidCents: prepaidParts } = derivePaymentChannelSplit(
     receipts.map((receipt) => receipt.amountCents),
-    eventTotal,
+    {
+      changeType,
+      paymentMethod: first.__paymentMethod as string | null | undefined,
+      paymentAmountCents: cents(first.__paymentAmount),
+    },
   )
   receipts.forEach((receipt, index) => {
     receipt.prepaidCents = prepaidParts[index] ?? 0

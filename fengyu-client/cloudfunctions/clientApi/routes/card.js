@@ -10,6 +10,7 @@
 const pg = require('../db/pg')
 const { requirePhone } = require('../middleware/auth')
 const { shanghaiYYMMDD } = require('../utils/datetime')
+const { classifySaleOrderDocumentType } = require('../utils/document-type')
 
 // =============================================================
 // 内部：从 system_configs 加载档位 + 匹配
@@ -153,7 +154,7 @@ async function history(ctx) {
     SELECT ct.id, ct.type, ct.amount, ct.ref_order_id, ct.created_at
     FROM card_transactions ct
     WHERE ct.card_id = $1 AND ct.created_at >= NOW() - INTERVAL '6 months'
-    ORDER BY ct.created_at DESC
+    ORDER BY ct.created_at DESC, ct.id DESC
     LIMIT $2 OFFSET $3
   `, [cardId, pageSize, offset])
 
@@ -188,25 +189,50 @@ async function rechargeConfig(ctx) {
 
 /**
  * 关闭过期的待支付订单（10 分钟）以释放唯一约束 uq_sale_orders_client_pending
+ *
+ * ⚠ 只处理顾客自助下单（opened_by IS NULL）—— 与 uq_sale_orders_client_pending 这个
+ * partial index 的定义域一致，也与 order.closeExpiredOrder 的守卫一致。
+ * 员工开的待支付单（尤其是转换单）绝不能在这里被静默关闭：转换单建单时已即时扣减源卡资产
+ * （疗程卡 remaining_sessions / 家居 picked_up_quantity），而本函数不执行
+ * rollbackPendingConversionOnClose；一旦置为「已关闭」，staff close（只受理待支付/支付失败）
+ * 与 admin deleteOrder（事务内闸门读到「已关闭」即跳过回滚）都不会再补回，资产永久蒸发。
  */
 async function _closeExpiredPendingByUser(client, userId) {
+  // ⚠️ 候选集**刻意是超集**，别往这里加 `lakala_out_order_no IS NULL`
+  //（与 order.closeExpiredOrdersByUser 同一条原则，issue #215）：
+  // 该列双向可变，SELECT 之后、CAS 之前它可能被 payNotify/对账清成 NULL ——
+  // 那一刻这单已经该关了，而收窄过的候选集根本没把它选进来，这一趟就漏过去了。
+  // 漏关的后果是它继续占着 uq_sale_orders_client_pending，紧随的充值单 INSERT 撞唯一约束。
+  // 真正决定关不关的是下面 UPDATE 的 CAS 守卫，选多了只是白跑一个空事务。
   const expired = await client.query(
     `SELECT sale_order_id FROM sale_orders
      WHERE client_user_id = $1 AND status = '待支付'
+     AND opened_by IS NULL
+     AND sale_order_type <> '转换单'
      AND sale_order_datetime < NOW() - INTERVAL '10 minutes'`,
     [userId]
   )
   for (const row of expired.rows) {
-    await client.query(
+    const closed = await client.query(
       `UPDATE sale_orders SET status = '已关闭', updated_at = NOW()
-       WHERE sale_order_id = $1 AND status = '待支付'`,
+       WHERE sale_order_id = $1 AND status = '待支付' AND opened_by IS NULL
+         AND sale_order_type <> '转换单'
+         -- 与 order.closeExpiredOrder 对齐：有活跃在线支付意图的单不可强关，
+         -- 否则第 9 分钟发起支付、第 11 分钟进充值会把单关掉，payNotify 落到已关闭单
+         AND lakala_out_order_no IS NULL`,
       [row.sale_order_id]
     )
-    await client.query(
-      `UPDATE user_coupons SET status = '未使用', used_sale_order_id = NULL, used_at = NULL
-       WHERE used_sale_order_id = $1`,
-      [row.sale_order_id]
-    )
+    // ⚠️ 必须先看 CAS 是否命中再释放券（与 order.closeExpiredOrder 的
+    // `if (result.rowCount > 0)` 同一道门）。上面的 SELECT 没加行锁，选出来之后、
+    // CAS 之前这张单完全可能被并发支付掉；那时 UPDATE 影响 0 行，而无条件释放会把
+    // **已经用于支付**的券退回「未使用」—— 券可再次抵扣，是直接的资金损失。
+    if (closed.rowCount > 0) {
+      await client.query(
+        `UPDATE user_coupons SET status = '未使用', used_sale_order_id = NULL, used_at = NULL
+         WHERE used_sale_order_id = $1`,
+        [row.sale_order_id]
+      )
+    }
   }
 }
 
@@ -254,17 +280,16 @@ async function recharge(ctx) {
   }
   const marketName = storeRows[0].market_name || boundMarketName || ''
 
-  // 查询顾客姓名 + document_type
+  // 查询顾客姓名；document_type 在创建事务内按历史达标次数计算。
   let customerName = null
-  let documentType = '售前'
+  let documentType
   {
     const userRows = await pg.query(
-      'SELECT name, customer_type FROM client_wechat_users WHERE user_id = $1',
+      'SELECT name FROM client_wechat_users WHERE user_id = $1',
       [userId]
     )
     if (userRows.length > 0) {
       if (userRows[0].name) customerName = userRows[0].name
-      if (userRows[0].customer_type === '会员客') documentType = '售后'
     }
   }
 
@@ -272,9 +297,11 @@ async function recharge(ctx) {
   await pg.transaction(async (client) => {
     await _closeExpiredPendingByUser(client, userId)
 
+    // 与 _closeExpiredPendingByUser 同口径：唯一约束只覆盖自助单，员工开的待支付单
+    // （转换单等）不该阻断顾客充值——否则上面不再关闭员工单后，这里会把顾客永久挡住。
     const existing = await client.query(
       `SELECT sale_order_id FROM sale_orders
-       WHERE client_user_id = $1 AND status = '待支付'`,
+       WHERE client_user_id = $1 AND status = '待支付' AND opened_by IS NULL`,
       [userId]
     )
     if (existing.rows.length > 0) {
@@ -298,6 +325,7 @@ async function recharge(ctx) {
       orderSeq = parseInt(orderSeqResult.rows[0].sale_order_id.slice(-4)) + 1
     }
     saleOrderId = `FY-XSD-WX-${dateStrOrder}${String(orderSeq).padStart(4, '0')}`
+    documentType = await classifySaleOrderDocumentType(client, userId, saleOrderId)
 
     // 充值单：sale_order_type='充值单'、total_amount=面值、payable_amount=实付、不写 sale_items
     // payment_method='微信' 只是占位，前端后续调 order.pay/alipayPay/offlinePay 会按所选方式覆盖
@@ -321,4 +349,9 @@ async function recharge(ctx) {
   }
 }
 
-module.exports = { list, balance, history, rechargeConfig, recharge, matchTier, _loadRechargeConfig }
+module.exports = {
+  list, balance, history, rechargeConfig, recharge, matchTier, _loadRechargeConfig,
+  // 导出仅供单测直接驱动「CAS 落空时不得释放优惠券」这条门（issue #215 round-4 的 P0）。
+  // index.js 的 action 映射是显式白名单，多导出一个函数不会多出可调用 action。
+  _closeExpiredPendingByUser,
+}

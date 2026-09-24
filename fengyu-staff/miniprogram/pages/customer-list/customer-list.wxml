@@ -115,12 +115,22 @@
     <view slot="action" bindtap="onSearch">搜索</view>
   </van-search>
 
-  <view wx:if="{{loading && results.length === 0}}" class="loading-wrap">
+  <!-- 错误态优先于空态：请求失败与「确实没有顾客」必须分得清，否则切筛选失败会被当成该分类无人 -->
+  <view wx:if="{{listError}}" class="empty-wrap">
+    <van-empty description="加载失败，请重试">
+      <van-button slot="bottom" type="primary" size="small" round bind:click="onListRetry">重新加载</van-button>
+    </van-empty>
+  </view>
+
+  <view wx:elif="{{loading && results.length === 0}}" class="loading-wrap">
     <van-loading type="spinner" color="#C0322A" />
   </view>
 
-  <view wx:elif="{{(searched || activeTag || hasAdvancedFilter) && results.length === 0}}" class="empty-wrap">
-    <van-empty description="{{activeTag ? '该分类暂无顾客' : (hasAdvancedFilter && !searched ? '该筛选条件下暂无顾客' : '未找到该顾客')}}" />
+  <!-- 空态覆盖全部「加载完成但没有数据」的情形：原先只在有搜索/标签/筛选时才显示，
+       默认列表真的没有顾客（新门店、清空关键词后为空、重试成功但为空）会落到最后的
+       空 view，整页白屏无任何说明 -->
+  <view wx:elif="{{results.length === 0}}" class="empty-wrap">
+    <van-empty description="{{activeTag ? '该分类暂无顾客' : (searched ? '未找到该顾客' : (hasAdvancedFilter ? '该筛选条件下暂无顾客' : '暂无顾客'))}}" />
   </view>
 
   <view wx:elif="{{results.length > 0}}" class="customer-list">
@@ -151,9 +161,11 @@
     <view wx:if="{{loading}}" class="loading-more">
       <van-loading size="24rpx" />
     </view>
+    <view wx:if="{{!loading && !hasMore}}" class="loading-more">
+      <text class="no-more-text">没有更多了</text>
+    </view>
   </view>
 
-  <view wx:else />
 
   <view class="safe-area-bottom" />
 

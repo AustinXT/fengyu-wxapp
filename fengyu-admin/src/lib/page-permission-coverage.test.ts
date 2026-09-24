@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { DEFAULT_PERMISSION_MATRIX } from './permissions'
-import { MENU_CONFIG } from './menu'
+import { flattenMenuItems } from './menu'
 import type { RoleType } from './types'
 
 /**
@@ -44,10 +44,29 @@ const LIST_PAGE_GATES: Record<string, Clause[]> = {
   '/refunds': [['sale_order:refund_create', 'sale_order:refund_approve']],
   '/pickup-records': ['pickup_record:list', 'store:list'],
   '/store-unbind': ['store_unbind:list'],
-  '/inventory': [], // hub 页：仅 Link 跳转，无 SSR 数据查询
+  '/inventory': ['inventory:list', 'inventory:stock_list'],
+  '/inventory/stocks': ['inventory:stock_list'],
+  '/inventory/operations': ['inventory:list', 'inventory:stock_list'],
+  '/inventory/operations/[level]': ['inventory:list', 'inventory:stock_list'],
+  '/inventory/operations/supply-chain': ['inventory:list', 'inventory:stock_list'],
+  '/inventory/operations/market': ['inventory:list', 'inventory:stock_list'],
+  '/inventory/operations/store': ['inventory:list', 'inventory:stock_list'],
+  '/inventory/docs': ['inventory:list', 'inventory:stock_list'],
+  // 货款结算：SSR 闸门为 inventory:list；页面对无价格档（none）按 404 收口，
+  // menu 以价格查看权限 OR 组约束可见角色，这里同步建模防止入口/页面漂移。
+  '/inventory/settlements': ['inventory:list', ['inventory:supply_chain_price_view', 'inventory:market_price_view']],
+  '/inventory/skus': ['inventory:stock_list'],
+  '/inventory/promotions': ['inventory:stock_list'],
   '/legacy-orders': ['legacy_order:list', 'store:list'],
   // —— 数据管理 ——
-  '/data-center': ['data_center:dashboard'], // SSR 仅 getDataCenterScopeOptions 闸门；板块数据客户端取数
+  // 数据中心：4 个板块各占一条 menu href；SSR 仅 getDataCenterScopeOptions 闸门，板块数据客户端取数。
+  // 裸 '/data-center' 已不在 menu 中（纯 redirect 页，不查库），`seenBy()` 对它返回 []，
+  // 故它只参与「admin 能进所有页」那条断言，不再有 menu 可见性守护力——留作深链锚点。
+  '/data-center': ['data_center:dashboard'],
+  '/data-center/sales': ['data_center:dashboard'],
+  '/data-center/customer': ['data_center:dashboard'],
+  '/data-center/efficiency': ['data_center:dashboard'],
+  '/data-center/product': ['data_center:dashboard'],
   '/org': ['org:list'],
   '/stores': ['store:list'],
   '/merchants': ['merchant:list'], // 商户管理（admin + finance）；getMerchantsPaginated
@@ -64,6 +83,7 @@ const LIST_PAGE_GATES: Record<string, Clause[]> = {
   // —— 系统管理 ——
   '/permissions': ['permission:list', 'employee:list', 'org:list'],
   '/settings/permission-matrix': ['system:config'],
+  '/settings/diagnostics': ['system:diagnostics'],
   '/messages': ['message:list'],
   '/logs': ['operation_log:list'],
   '/settings': ['system:config'],
@@ -113,20 +133,22 @@ const SUBPAGES: Array<{ href: string; parent: string; entryGate?: string; clause
   { href: '/merchants/[id]', parent: '/merchants', clauses: ['merchant:list'] },
   { href: '/merchants/[id]/edit', parent: '/merchants', entryGate: 'merchant:update', clauses: ['merchant:list'] },
   { href: '/merchants/create', parent: '/merchants', entryGate: 'merchant:create', clauses: ['merchant:create', 'merchant:list'] },
-  // 库存四单据（从 /inventory hub 的 Link 直达）+ 单据详情
+  { href: '/inventory/skus', parent: '/inventory', clauses: ['inventory:stock_list'] },
   { href: '/inventory/stocks', parent: '/inventory', clauses: ['inventory:stock_list'] },
-  { href: '/inventory/procurement', parent: '/inventory', clauses: ['inventory:list', 'store:list'] },
-  { href: '/inventory/sale', parent: '/inventory', clauses: ['inventory:list', 'store:list'] },
-  { href: '/inventory/transfer', parent: '/inventory', clauses: ['inventory:list', 'store:list'] },
-  { href: '/inventory/scrap', parent: '/inventory', clauses: ['inventory:list', 'store:list'] },
-  { href: '/inventory/procurement/[id]', parent: '/inventory', clauses: ['inventory:list'] },
-  { href: '/inventory/sale/[id]', parent: '/inventory', clauses: ['inventory:list'] },
-  { href: '/inventory/transfer/[id]', parent: '/inventory', clauses: ['inventory:list'] },
-  { href: '/inventory/scrap/[id]', parent: '/inventory', clauses: ['inventory:list'] },
+  { href: '/inventory/docs', parent: '/inventory', clauses: ['inventory:list', 'inventory:stock_list'] },
+  { href: '/inventory/docs/[id]', parent: '/inventory', clauses: ['inventory:list'] },
+  { href: '/inventory/operations', parent: '/inventory', clauses: ['inventory:list', 'inventory:stock_list'] },
+  { href: '/inventory/operations/[level]', parent: '/inventory', clauses: ['inventory:list', 'inventory:stock_list'] },
+  { href: '/inventory/suppliers', parent: '/inventory', clauses: ['inventory:stock_list'] },
+  { href: '/inventory/sku-mappings', parent: '/inventory', clauses: ['inventory:stock_list'] },
+  { href: '/inventory/promotions', parent: '/inventory/skus', clauses: ['inventory:stock_list'] },
 ]
 
-const ALL_ROLES: RoleType[] = ['admin', 'manager', 'finance', 'hr', 'product', 'customer_mgr']
-const NON_ADMIN_ROLES: RoleType[] = ['manager', 'finance', 'hr', 'product', 'customer_mgr']
+const ALL_ROLES: RoleType[] = [
+  'admin', 'manager', 'finance', 'hr', 'product', 'customer_mgr',
+  'inventory_supply_chain_operator', 'inventory_market_finance', 'inventory_store_operator',
+]
+const NON_ADMIN_ROLES: RoleType[] = ALL_ROLES.filter((role) => role !== 'admin')
 
 const holds = (role: RoleType, action: string) => DEFAULT_PERMISSION_MATRIX[role].includes(action)
 
@@ -142,11 +164,10 @@ function missingClauses(role: RoleType, clauses: Clause[]): Clause[] {
 
 /** menu 中某 href 的可见角色（持有该项 requiredActions 任一的角色；门槛 action 反推）。 */
 function seenBy(href: string): RoleType[] {
-  for (const group of MENU_CONFIG) {
-    for (const item of group.items) {
-      if (item.href === href) {
-        return ALL_ROLES.filter((role) => item.requiredActions.some((a) => holds(role, a)))
-      }
+  for (const item of flattenMenuItems()) {
+    if (item.href === href) {
+      return ALL_ROLES.filter((role) => item.requiredActions.some((a) => holds(role, a))
+        && (item.requiredAllActions?.every((a) => holds(role, a)) ?? true))
     }
   }
   return []
@@ -212,10 +233,8 @@ describe('页面权限覆盖守护（全 SSR 闸门 + 子页 + 防 403/500 漂�
   it('所有 menu href 都已建模 SSR 闸门（防止新增页漏进守护）', () => {
     const modeled = new Set(Object.keys(LIST_PAGE_GATES))
     const unmodeled: string[] = []
-    for (const group of MENU_CONFIG) {
-      for (const item of group.items) {
-        if (!modeled.has(item.href)) unmodeled.push(item.href)
-      }
+    for (const item of flattenMenuItems()) {
+      if (!modeled.has(item.href)) unmodeled.push(item.href)
     }
     expect(unmodeled, `menu 新增页未登记 SSR 闸门（请补 LIST_PAGE_GATES）：${JSON.stringify(unmodeled)}`).toEqual([])
   })

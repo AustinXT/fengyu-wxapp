@@ -9,7 +9,41 @@ on:
       - 'fengyu-staff/cloudfunctions/**/*.js'
       - 'fengyu-client/cloudfunctions/**/*.js'
       - 'scripts/lint-cas-guards.mjs'
+      - '.claude/skills/remote-deploy/**'
+      - 'docker/docker-compose*.yml'
       - '.github/workflows/lint.yml'
+      # schema 改动也要触发：cross-end inventory 守护把 db/schema/inventory.ts 当权威锚
+      - 'db/schema/**'
+      # migration 也要触发：新加的 trigger 可能让盘点开始产流水/改在手量。
+      # ⚠️ 单测看不到数据库 trigger，触发只是让**其余**守护跑一遍；
+      #    trigger 行为面必须靠 INV-06 在真库上人工跑（见 tests/e2e-inventory-ui/README.md）。
+      - 'db/migrations/**'
+      # 依赖清单也要触发：action-error 的漂移守护盯的正是 Next 的 digest 形态，
+      # 而「只升 Next」的 PR 恰恰只动这几个文件 —— 不加进来的话，最该跑守护的那次跑不到。
+      - 'fengyu-admin/package.json'
+      - 'fengyu-admin/package-lock.json'
+      - 'fengyu-admin/bun.lock'
+      # 测试目录也要触发：只删守护断言（不动 src）的 PR 同样该让 CI 跑一遍。
+      # ⚠️ E2E（tests/e2e-inventory-ui）需要活的 dev 实例 + PG，CI 里跑不了，
+      #    触发它只是为了让**单测**守护有机会拦下「只改测试」的回归。
+      - 'fengyu-admin/tests/**'
+      - 'fengyu-staff/cloudfunctions/**/__tests__/**'
+      # image-staff-bundle.test.js 读这个组件的 wxml，断言 lazy-load 与 binderror 还在
+      # （它们是页面级解码量与"URL 有效但出不来图"的唯一兜底）。
+      # 不加这条路径的话，「只删 lazy-load」的 PR 根本不触发 workflow，守护等于不存在。
+      - 'fengyu-staff/miniprogram/components/bundle-picker/**'
+      # bucket 白名单与档位上界有**三份**副本：两端云函数的 utils/image.js
+      # 加上前端净化器 miniprogram/utils/cart.ts。第三份的守护（cart.test.ts 的
+      # 闭环断言，它 require 真实云函数模块比对）此前不在任何 workflow 的触发面里 ——
+      # 只改 cart.ts 的 PR 不触发 CI，三份副本的漂移防线断在第三份上。
+      - 'fengyu-client/miniprogram/**'
+      # 影子函数守卫盯的正是这几个文件 —— 不加进来，「只改 cloudbaserc 模板把影子函数
+      # 库指向改错」这个最该被拦的 PR 反而不会触发 CI。守卫不触发等于没有守卫。
+      - 'fengyu-client/cloudbaserc.example.json'
+      - 'fengyu-staff/cloudbaserc.example.json'
+      - 'scripts/render-cloudbaserc.mjs'
+      - 'scripts/deploy-cloudfunctions.sh'
+      - 'scripts/__tests__/**'
 
 jobs:
   cas-guards:
@@ -24,6 +58,31 @@ jobs:
       - name: Run CAS guard lint
         run: node scripts/lint-cas-guards.mjs
 
+  remote-deploy-config:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Run remote deploy config tests
+        run: node --test .claude/skills/remote-deploy/runtime-config.test.mjs
+
+  cloudbase-shadow-functions:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      # 守住「影子函数(*Dev)必须连 dev 库」这条不变量——破了就是开发版/体验版直接写生产库
+      - name: Run cloudbase shadow function guards
+        run: node --test scripts/__tests__/cloudbaserc-shadow-functions.test.mjs
+
   cross-end-snapshots-staff:
     runs-on: ubuntu-latest
     steps:
@@ -36,12 +95,51 @@ jobs:
       - name: Install staffApi deps
         working-directory: fengyu-staff/cloudfunctions/staffApi
         run: npm ci || npm install
-      - name: Run cross-end snapshot tests (error-codes + SQL)
+
+      # 跨端 snapshot 会真的 `require()` 另一端的模块来做行为等价断言
+      # （如 cross-end-recharge 拿 clientApi 的 routes/card.js 比 matchTier），
+      # 而那条链最终会 `require('pg')` —— 只装 staffApi 依赖时它报
+      # `Cannot find module 'pg'`，整个测试文件加载失败。
+      # ⚠️ 改成跑全量之后才暴露：点名跑 4 个文件时这条根本不在清单里。
+      - name: Install clientApi deps (跨端 require 的目标)
+        working-directory: fengyu-client/cloudfunctions/clientApi
+        run: npm ci || npm install
+      # ⚠️ 跑**全量**，不要退回手工文件清单（#232）。
+      #
+      # 这里原本只点名 4 个文件，于是 staffApi 的 64 个测试文件里只有 4 个进 CI，
+      # 11 个 cross-end 守护只跑 3 个 —— 新加的守护默认不进网，
+      # 而「漏加的那一次」恰好就是守护失效的那一次。
+      # `clientApi/__tests__/utils/lakala-cross-copy.test.js` 就是这么掉进洞里的：
+      # 字节一致守护写得好好的，从未跑过。
+      #
+      # 全量是负担得起的：staffApi 的测试全部 mock 了 pg（vitest.config.js 的
+      # setupFiles），不碰数据库，64 文件 / 2300 用例本地约 1.8 秒。
+      #
+      # 这条「不准写手工清单」由 __tests__/utils/image-cross-copy.test.js 的
+      # meta-guard 反向锁住。
+      - name: Run staffApi full test suite (含全部 cross-end / cross-copy 守护)
         working-directory: fengyu-staff/cloudfunctions/staffApi
-        run: |
-          npx vitest run \
-            __tests__/routes/cross-end-error-codes-snapshot.test.js \
-            __tests__/routes/cross-end-sql-snapshot.test.js
+        run: npx vitest run
+
+  # 三份副本里的第三份（前端净化器）。cart.test.ts 的闭环守护 require 真实云函数
+  # 模块比对 bucket 白名单与档位上界 —— 不进 CI 的话，两端云函数改了而 cart.ts 漏改
+  # （或反过来）全都测不出来，封面会在购物车里静默变占位。
+  # 同样跑全量而不是点名文件，理由见上面 staffApi job 的注释。
+  client-miniprogram-guards:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install client miniprogram deps
+        working-directory: fengyu-client/miniprogram
+        run: npm ci || npm install
+      - name: Run client miniprogram tests
+        working-directory: fengyu-client/miniprogram
+        run: npx vitest run
 
   cross-end-snapshots-admin:
     runs-on: ubuntu-latest
@@ -55,6 +153,50 @@ jobs:
       - name: Install admin deps
         working-directory: fengyu-admin
         run: npm ci || npm install
+
+      # admin 的 `@db/*`（tsconfig paths → `../db/schema/*`）里的文件自己 import
+      # `drizzle-orm/pg-core`。裸包名按 node 规则从 **importer 目录**（= `db/`）向上找
+      # node_modules，`fengyu-admin/node_modules` 不在这条链上。本地一直是绿的，靠的是
+      # `db/` 有自己的 node_modules（它是独立的 Drizzle 工程）；CI 只装 admin 的话，
+      # 任何 import 到 `@db/*` 的测试会整文件加载失败（Failed to resolve import）。
+      # ⚠️ 别改成 resolve.dedupe 或把 db/node_modules/drizzle-orm 软链到 admin 那份 ——
+      #    vite 默认 realpath 软链，两条路径会塌成同一个 module id。而 src/actions 下
+      #    6 个测试（stores / orders / refunds / employees{,.delete} /
+      #    products-getProductsByKind）用 `vi.mock('drizzle-orm/pg-core')` 只导出 alias，
+      #    一旦合成一份，真实 schema（如 db/schema/lookup.ts）就会拿到残缺 mock，
+      #    报 `pgTable is not a function`。实测：dedupe 会让这 6 个文件 360 条转红。
+      - name: Install db schema deps
+        working-directory: db
+        run: npm ci --omit=dev || npm install --omit=dev
+
       - name: Run admin cross-end error-codes test
         working-directory: fengyu-admin
         run: npx vitest run src/lib/__tests__/error-codes-cross-end.test.ts
+
+      # action-error.test.ts 里有三条漂移守护（Next digest 形态 / 裸 token digest 生产者 /
+      # 二级子标签长度前提）。它们守的东西会随依赖升级和他人改代码而漂，不进 CI 就等于
+      # 只在本地手工跑时才生效，拦不住回归合入。
+      - name: Run admin action-error drift guards
+        working-directory: fengyu-admin
+        run: npx vitest run src/lib/__tests__/action-error.test.ts
+
+      # SKU 供货商关联档案（#132）：`supplierId` 三态（undefined=不动 / null=清空 / id=写两列）
+      # 与「供货商必须是 select 而不是自由文本」的守护。不进 CI 的话，把下拉改回 <Input>、
+      # 或让 engine 重新收自由文本，GitHub 检查照样全绿 —— 而 issue 的根因正是自由文本。
+      - name: Run inventory SKU supplier guards (#132)
+        working-directory: fengyu-admin
+        run: |
+          npx vitest run \
+            src/lib/inventory/engine.test.ts \
+            'src/app/(main)/(inventory)/inventory/_components/inventory-skus-page.test.tsx'
+
+      # 盘点账面数（#131）：engine 的口径快照（编译后的 SQL 与参数）、纯计算单测、
+      # 以及详情页三列的真实渲染测试。不进 CI 的话，把 stockSnapshot 改回 null
+      # 或删掉详情页三列，GitHub 检查照样全绿 —— 守护等于只在本地手工跑时才存在。
+      - name: Run inventory stocktake guards (#131)
+        working-directory: fengyu-admin
+        run: |
+          npx vitest run \
+            src/lib/inventory/engine.test.ts \
+            src/lib/inventory/stocktake.test.ts \
+            'src/app/(main)/(inventory)/inventory/docs/[id]/page.test.tsx'

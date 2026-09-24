@@ -1,7 +1,7 @@
 // pages/order-create/order-create.ts — 开单
 import { callStaffApi } from '../../utils/cloud';
 import { isManager, getCurrentStoreId } from '../../utils/role';
-import { calcHalfPriceTotal, allocateCouponPerLine, calcTierLineAmount } from '../../utils/cart-calc';
+import { calcHalfPriceTotal, allocateDiscountPerLine, calcTierLineAmount } from '../../utils/cart-calc';
 import { evaluateCouponAfterCartChange } from '../../utils/coupon-evaluator';
 import { computePrepaidDeduction } from '../../utils/prepaid-card-calc';
 import { buildCouponDisplay, formatDate } from '../../utils/formatters';
@@ -56,6 +56,12 @@ interface CartItem {
   couponBaseAmount?: string;
   /** 预计算：行应付金额 = priceLine - couponShare（销售单 / 寄存单口径） */
   saleAmount: string;
+  /** 预计算：本行分摊的积分抵扣 */
+  pointsShare?: string;
+  /** 预计算：优惠券、积分抵扣后的最终应付 */
+  finalSaleAmount?: string;
+  /** 预计算：不超过最终应付的本次实付 */
+  finalReceived?: string;
   /** 预计算：内部单半价后行应付（price × 0.5 × quantity，再扣摊到的券） */
   halfPriceSaleAmount: string;
   /** 行实付金额（店长可向下编辑；0 ≤ received ≤ 当前订单类型下的应付） */
@@ -220,6 +226,7 @@ interface OrderCreateResponse {
   status?: string;
   /** 储值卡抵扣金额；用于区分"卡全额抵扣"与"券全额抵扣"的结清 Toast 文案 */
   prepaidCardAmount?: number;
+  pointsDiscount?: number;
 }
 
 interface CouponAvailableResponse {
@@ -230,6 +237,9 @@ interface CouponAvailableResponse {
 interface CustomerBalanceResponse {
   balance: number;
   cardId: string | null;
+  pointsBalance?: number;
+  pointsToYuanRate?: number;
+  pointsDeductionMaxRate?: number;
 }
 
 /** 顾客是否会员：会员客 或 有钻石等级（与后端 member-pricing 同口径） */
@@ -290,6 +300,48 @@ function findCartPurchaseLimitViolation(cart: CartItem[]): CartItem | null {
 
 function roundMoney(value: number): number {
   return Math.round((Number(value) || 0) * 100) / 100;
+}
+
+function moneyToCents(value: number | string | null | undefined): number {
+  return Math.max(0, Math.round((Number(value) || 0) * 100));
+}
+
+function pointsToDiscountCents(points: number, rate: number): number {
+  return Math.floor(points * rate * 100 + 1e-6);
+}
+
+/** 保留 0：它是后台配置的合法值，表示禁用积分抵扣。 */
+function normalizePointsDeductionMaxRate(value: unknown): number {
+  if (value === null || value === undefined || value === '') return 0.03;
+  const rate = Number(value);
+  return Number.isFinite(rate) && rate >= 0 && rate <= 1 ? rate : 0.03;
+}
+
+function computePointsDeduction(input: {
+  enabled: boolean;
+  pointsBalance: number;
+  rawTotal: number;
+  currentAmount: number;
+  pointsToYuanRate: number;
+  pointsDeductionMaxRate: number;
+}) {
+  const balance = Math.max(0, Math.floor(input.pointsBalance));
+  const rate = Number(input.pointsToYuanRate) || 0.01;
+  const maxRate = Number(input.pointsDeductionMaxRate) || 0;
+  const capCents = Math.min(
+    moneyToCents(input.currentAmount),
+    Math.floor(Math.max(0, Number(input.rawTotal) || 0) * maxRate * 100 + 1e-6),
+  );
+  const maxPointsUsable = rate > 0
+    ? Math.max(0, Math.min(balance, Math.floor(capCents / (rate * 100))))
+    : 0;
+  if (!input.enabled || balance <= 0 || capCents <= 0 || maxPointsUsable <= 0) {
+    return { pointsUsed: 0, pointsDiscount: 0, maxPointsUsable };
+  }
+  const discountCents = Math.min(capCents, pointsToDiscountCents(maxPointsUsable, rate));
+  return discountCents > 0
+    ? { pointsUsed: maxPointsUsable, pointsDiscount: roundMoney(discountCents / 100), maxPointsUsable }
+    : { pointsUsed: 0, pointsDiscount: 0, maxPointsUsable };
 }
 
 function resolveSkuUnitPrice(sku: { price: number; specialPrice?: number | null }, isMember: boolean): number {
@@ -440,8 +492,12 @@ Page({
     halfPriceTotal: '0.00',
     /** 应付合计：销售单/转换单/寄存单 = 券前金额 - couponDiscount；内部单 = halfPriceTotal */
     payableTotal: '0.00',
+    /** 积分抵扣后的行应付合计 */
+    payableAfterPoints: '0.00',
     /** 实付合计：Σ(cart[i].received)；店长可改行实付 → 此处即时更新 */
     receivedTotal: '0.00',
+    /** 按行最终应付裁剪后的实付合计 */
+    receivedAfterPoints: '0.00',
     // Step 2: 确认 + 备注
     remark: '',
     submitting: false,
@@ -464,6 +520,13 @@ Page({
     useCard: false as boolean,
     prepaidCardAmountInput: '0.00' as string,
     prepaidCardMax: '0.00' as string,
+    customerPointsBalance: 0 as number,
+    usePoints: false as boolean,
+    pointsUsed: 0 as number,
+    pointsDiscount: 0 as number,
+    maxPointsUsable: 0 as number,
+    pointsToYuanRate: 0.01 as number,
+    pointsDeductionMaxRate: 0.03 as number,
     prepaidCardAmount: 0 as number,
     paidAmount: '0.00' as string,
     showPayMethodGroup: true as boolean,
@@ -738,6 +801,9 @@ Page({
         params.push(`clientUserId=${encodeURIComponent(customer.clientUserId)}`);
         if (customer.name) params.push(`customerName=${encodeURIComponent(customer.name)}`);
         if (customer.phone) params.push(`customerPhone=${encodeURIComponent(customer.phone)}`);
+        if (customer.boundStoreId) params.push(`boundStoreId=${encodeURIComponent(customer.boundStoreId)}`);
+        if (customer.storeName) params.push(`storeName=${encodeURIComponent(customer.storeName)}`);
+        if (customer.isCrossStoreTemp) params.push('isCrossStoreTemp=1');
       }
       const qs = params.length > 0 ? `?${params.join('&')}` : '';
       wx.navigateTo({ url: `/packageOrder/card-recharge/card-recharge${qs}` });
@@ -1064,7 +1130,7 @@ Page({
 
   /**
    * 行级「实付金额」编辑（店长可向下调；区间 0 ≤ received ≤ 行应付金额）。
-   * - 销售单/寄存单：上限 = saleAmount（priceLine - couponShare）
+   * - 销售单：上限 = 优惠券、积分抵扣后的 finalSaleAmount
    * - 内部单：上限 = halfPriceSaleAmount
    * - 空字符串等同于默认（=应付金额）
    */
@@ -1076,7 +1142,9 @@ Page({
     if (idx < 0) return;
     const row = cart[idx];
     const cap = parseFloat(
-      this.data.saleOrderType === '内部单' ? row.halfPriceSaleAmount : row.saleAmount
+      this.data.saleOrderType === '内部单'
+        ? row.halfPriceSaleAmount
+        : (row.finalSaleAmount || row.saleAmount)
     ) || 0;
     const parsed = parseFloat(raw);
     if (!raw || Number.isNaN(parsed) || parsed < 0) {
@@ -1207,7 +1275,7 @@ Page({
       && conversionCouponCap <= 0.005;
 
     // 3) 按行应付比例摊订单级优惠券折扣。
-    const shares = allocateCouponPerLine(baseLines, effectiveCouponDiscount);
+    const shares = allocateDiscountPerLine(baseLines, effectiveCouponDiscount);
     for (let i = 0; i < cart.length; i++) {
       const c = cart[i];
       const share = shares[i] || 0;
@@ -1216,6 +1284,8 @@ Page({
       // 销售单/寄存单的应付金额（不走半价；店长特价行用 effBase 基线）
       const saleAmountNum = Math.max(0, Math.round((effBase[i] - share) * 100) / 100);
       c.saleAmount = saleAmountNum.toFixed(2);
+      c.pointsShare = '0.00';
+      c.finalSaleAmount = saleAmountNum.toFixed(2);
       // 内部单专用的应付金额（标价 listPrice ×0.5，与后端一致；不取会员价；先半价、再扣摊到的券）
       const halfUnit = Math.round((c.listPrice ?? c.price) * 50) / 100;
       const halfSaleNum = Math.max(0, Math.round((halfUnit * c.quantity - (isInternal ? share : 0)) * 100) / 100);
@@ -1228,6 +1298,7 @@ Page({
       } else {
         c.received = cap.toFixed(2);
       }
+      c.finalReceived = c.received;
     }
     const count = cart.reduce((sum, c) => sum + c.quantity, 0);
     const total = cart.reduce((sum, c) => sum + (parseFloat(c.priceLine) || 0), 0).toFixed(2);
@@ -1241,7 +1312,9 @@ Page({
     const update: Record<string, any> = {
       cart, cartCount: count, cartTotal: total, halfPriceTotal,
       payableTotal: payableSum.toFixed(2),
+      payableAfterPoints: payableSum.toFixed(2),
       receivedTotal: receivedSum.toFixed(2),
+      receivedAfterPoints: receivedSum.toFixed(2),
       couponDiscount: effectiveCouponDiscount,
       couponTotal: effectiveCouponDiscount > 0 ? payableSum.toFixed(2) : '',
       conversionCouponBaseTotal: isConversion ? couponBaseTotal : 0,
@@ -1291,6 +1364,11 @@ Page({
       useCard: false,
       prepaidCardAmountInput: '0.00',
       prepaidCardMax: '0.00',
+      customerPointsBalance: 0,
+      usePoints: false,
+      pointsUsed: 0,
+      pointsDiscount: 0,
+      maxPointsUsable: 0,
       prepaidCardAmount: 0,
       paidAmount: '0.00',
       showPayMethodGroup: true,
@@ -1331,6 +1409,13 @@ Page({
       useCard: false,
       prepaidCardAmountInput: '0.00',
       prepaidCardMax: '0.00',
+      customerPointsBalance: 0,
+      usePoints: false,
+      pointsUsed: 0,
+      pointsDiscount: 0,
+      maxPointsUsable: 0,
+      pointsToYuanRate: 0.01,
+      pointsDeductionMaxRate: 0.03,
       prepaidCardAmount: 0,
       paidAmount: '0.00',
       showPayMethodGroup: true,
@@ -1575,9 +1660,14 @@ Page({
         customerUserId: customer.clientUserId,
       });
       const balance = Math.max(0, Number(data?.balance) || 0);
+      const pointsBalance = Math.max(0, Math.floor(Number(data?.pointsBalance) || 0));
       this.setData({
         customerCardBalance: balance,
+        customerPointsBalance: pointsBalance,
+        pointsToYuanRate: Number(data?.pointsToYuanRate) || 0.01,
+        pointsDeductionMaxRate: normalizePointsDeductionMaxRate(data?.pointsDeductionMaxRate),
         useCard: false,
+        usePoints: false,
         prepaidCardAmountInput: '0.00',
         prepaidCardLoaded: true,
       });
@@ -1585,7 +1675,9 @@ Page({
       // 静默兜底：拉取失败则视为 0 余额、useCard=off，不阻塞开单
       this.setData({
         customerCardBalance: 0,
+        customerPointsBalance: 0,
         useCard: false,
+        usePoints: false,
         prepaidCardAmountInput: '0.00',
         prepaidCardLoaded: true,
       });
@@ -1603,13 +1695,55 @@ Page({
    */
   recomputePrepaidAmounts() {
     if (this.data.saleOrderType !== '销售单' && this.data.saleOrderType !== '内部单') {
-      this.setData({ prepaidCardAmount: 0, prepaidCardMax: '0.00', paidAmount: '0.00', showPayMethodGroup: true });
+      this.setData({
+        prepaidCardAmount: 0,
+        prepaidCardMax: '0.00',
+        pointsUsed: 0,
+        pointsDiscount: 0,
+        maxPointsUsable: 0,
+        paidAmount: '0.00',
+        showPayMethodGroup: true,
+      });
       return;
     }
-    // 充值卡从「当下实付」（receivedTotal = Σ行实付 = 客户当下要付的钱，欠款时已逐行下调）里抵，
-    // 而非应付合计。无欠款时 receivedTotal === payableTotal，口径等价；与后端 create maxPrepayable
-    // = min(total, Σpending_received) 对齐，避免卡抵超过当下实付。
-    const baseForPrepaid = parseFloat(this.data.receivedTotal) || 0;
+    const payableTotal = parseFloat(this.data.payableTotal) || 0;
+    const pointsResult = computePointsDeduction({
+      enabled: this.data.saleOrderType === '销售单' && !!this.data.usePoints,
+      pointsBalance: this.data.customerPointsBalance || 0,
+      rawTotal: payableTotal + (Number(this.data.couponDiscount) || 0),
+      currentAmount: payableTotal,
+      pointsToYuanRate: this.data.pointsToYuanRate,
+      pointsDeductionMaxRate: this.data.pointsDeductionMaxRate,
+    });
+    const pointShares = this.data.saleOrderType === '销售单'
+      ? allocateDiscountPerLine(
+        this.data.cart.map(item => parseFloat(item.saleAmount) || 0),
+        pointsResult.pointsDiscount,
+      )
+      : this.data.cart.map(() => 0);
+    let payableAfterPoints = 0;
+    let receivedAfterPoints = 0;
+    const cart = this.data.cart.map((item, index) => {
+      const basePayable = this.data.saleOrderType === '内部单'
+        ? parseFloat(item.halfPriceSaleAmount) || 0
+        : parseFloat(item.saleAmount) || 0;
+      const pointsShare = pointShares[index] || 0;
+      const finalSaleAmount = Math.max(0, roundMoney(basePayable - pointsShare));
+      const finalReceived = Math.min(parseFloat(item.received) || 0, finalSaleAmount);
+      payableAfterPoints += finalSaleAmount;
+      receivedAfterPoints += finalReceived;
+      return {
+        ...item,
+        pointsShare: pointsShare.toFixed(2),
+        finalSaleAmount: finalSaleAmount.toFixed(2),
+        finalReceived: finalReceived.toFixed(2),
+      };
+    });
+    payableAfterPoints = roundMoney(payableAfterPoints);
+    receivedAfterPoints = roundMoney(receivedAfterPoints);
+    // 充值卡从逐行裁剪后的「当下实付」里抵，积分只冲减行应付，
+    // 不会按订单总额机械减掉部分支付行未承担的积分。
+    const baseForPrepaid = receivedAfterPoints;
     const result = computePrepaidDeduction({
       payableAmount: baseForPrepaid,
       customerCardBalance: this.data.customerCardBalance || 0,
@@ -1617,7 +1751,13 @@ Page({
       prepaidCardAmount: this.data.prepaidCardAmountInput,
     });
     this.setData({
+      cart,
       prepaidCardMax: result.maxPrepaidCardAmount.toFixed(2),
+      payableAfterPoints: payableAfterPoints.toFixed(2),
+      receivedAfterPoints: receivedAfterPoints.toFixed(2),
+      pointsUsed: pointsResult.pointsUsed,
+      pointsDiscount: pointsResult.pointsDiscount,
+      maxPointsUsable: pointsResult.maxPointsUsable,
       prepaidCardAmount: result.prepaidCardAmount,
       paidAmount: result.paidAmount.toFixed(2),
       showPayMethodGroup: result.showPayMethodGroup,
@@ -1648,13 +1788,24 @@ Page({
   onPrepaidCardAmountChange(e: WechatMiniprogram.CustomEvent) {
     const raw = String((e.detail as unknown as { value?: string })?.value ?? e.detail ?? '').trim();
     const requested = Number(raw);
-    const baseForPrepaid = parseFloat(this.data.receivedTotal) || 0;
+    const baseForPrepaid = parseFloat(this.data.receivedAfterPoints) || 0;
     const maxAmount = Math.min(
       Math.max(0, Number(this.data.customerCardBalance) || 0),
       Math.max(0, baseForPrepaid),
     );
     const amount = Number.isFinite(requested) ? Math.max(0, Math.min(requested, maxAmount)) : 0;
     this.setData({ prepaidCardAmountInput: amount.toFixed(2) });
+    this.recomputePrepaidAmounts();
+  },
+
+  /** 切换积分抵扣开关 */
+  onTogglePoints(e: WechatMiniprogram.CustomEvent) {
+    const next = !!e.detail;
+    if (next === this.data.usePoints) return;
+    if (next && (this.data.customerPointsBalance <= 0 || this.data.maxPointsUsable <= 0 || this.data.saleOrderType !== '销售单')) {
+      return;
+    }
+    this.setData({ usePoints: next });
     this.recomputePrepaidAmounts();
   },
 
@@ -1687,6 +1838,12 @@ Page({
       update.selectedCoupon = null;
       update.couponDiscount = 0;
       update.couponTotal = '';
+    }
+    if (next !== '销售单') {
+      update.usePoints = false;
+      update.pointsUsed = 0;
+      update.pointsDiscount = 0;
+      update.maxPointsUsable = 0;
     }
     if (next !== '转换单') {
       update.conversionSelectedSaleItemIds = [];
@@ -1989,6 +2146,7 @@ Page({
       // 决策 #6：店长开单 = 预选；balance 不动，extraField useCard + prepaidCardAmount 透传给云函数
       const useCard = this.data.useCard && this.data.prepaidCardAmount > 0;
       const prepaidCardAmount = useCard ? this.data.prepaidCardAmount : 0;
+      const usePoints = saleOrderType === '销售单' && this.data.usePoints && this.data.pointsUsed > 0;
       const res = await callStaffApi<OrderCreateResponse>('order.create', {
         clientUserId: customerInfo.clientUserId,
         clientPhone: customerInfo.phone,
@@ -2023,8 +2181,8 @@ Page({
             unitRealPrice: effUnit.toFixed(2),
             saleAmount: effSale.toFixed(2),
             manualSaleAmountOverride: hasOv,
-            // 行实付金额（店长可向下调整；默认=当前订单类型下的应付金额）
-            received: parseFloat(c.received) || 0,
+            // 行实付金额（店长可向下调整；上限为券、积分分摊后的最终应付）
+            received: parseFloat(c.finalReceived || c.received) || 0,
           };
         }),
         remark,
@@ -2034,6 +2192,8 @@ Page({
           : undefined,
         preferredStaffWfId: this.data.preferredStaffWfId || undefined,
         // Wave 3G — 储值卡预选（决策 #6：店长不扣卡，云函数仅写订单字段）
+        usePoints,
+        pointsUsed: usePoints ? this.data.pointsUsed : undefined,
         useCard,
         prepaidCardAmount,
         // 活动单标记（纯标识）
@@ -2051,11 +2211,17 @@ Page({
         couponDiscount: 0,
         paymentMethod: '微信',
         isActivity: false,
+        usePoints: false,
+        pointsUsed: 0,
+        pointsDiscount: 0,
+        maxPointsUsable: 0,
       });
       // 应付实金=0（券/卡全额抵扣，payable=0）→ 云端已结清为 '已支付'，无现金可收，不进 QR/收款页
       if (res.status === '已支付') {
         const title = Number(res.prepaidCardAmount || 0) > 0
           ? '储值卡已全额抵扣，订单已结清'
+          : Number(res.pointsDiscount || 0) > 0
+            ? '积分已全额抵扣，订单已结清'
           : '优惠券已全额抵扣，订单已结清';
         wx.showToast({ title, icon: 'none', duration: 2500 });
       } else {

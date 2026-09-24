@@ -3,27 +3,7 @@
 .loading-wrap { display: flex; justify-content: center; padding: 80rpx 0; }
 .loading-more { display: flex; justify-content: center; padding: 32rpx 0; }
 
-.status-switch {
-  display: flex;
-  gap: 16rpx;
-  padding: 20rpx 32rpx 4rpx;
-}
-.status-btn {
-  flex: 1;
-  text-align: center;
-  font-size: 26rpx;
-  color: #666;
-  background: #FFFFFF;
-  border: 1rpx solid #E5E5E5;
-  border-radius: 999rpx;
-  padding: 12rpx 0;
-}
-.status-btn.active {
-  color: var(--color-primary);
-  border-color: var(--color-primary);
-  background: rgba(192, 50, 42, 0.06);
-  font-weight: 600;
-}
+.no-more { text-align: center; padding: 28rpx 0; color: #999; font-size: 24rpx; }
 
 .order-card {
   background: #FFFFFF;
@@ -61,3 +41,12 @@
   padding-top: 16rpx;
 }
 .action-hint { font-size: 24rpx; color: #D4820A; }
+
+/* 归属日期口径下的空态补充说明（仅销售提成 Tab + 有日期筛选时出现） */
+.empty-hint {
+  padding: 0 64rpx 24rpx;
+  color: #999999;
+  font-size: 24rpx;
+  line-height: 34rpx;
+  text-align: center;
+}

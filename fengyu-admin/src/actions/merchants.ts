@@ -12,6 +12,7 @@ import { isAdminScope, expandVisibleMarketIds, requireAdmin } from '@/lib/permis
 import { logOperation, logUpdate } from '@/lib/operation-log'
 import { pgErrorCode } from '@/lib/pg-error'
 import type { AuthSession } from '@/lib/types'
+import { resolvePaging } from '@/lib/paging'
 
 /**
  * 商户管理（拉卡拉收款商户档案，独立模块 /merchants）server actions。
@@ -60,6 +61,8 @@ export interface AdminMerchant {
   marketName: string | null
   /** 关联门店数（stores.lakala_merchant_id 反查） */
   storeCount: number
+  /** 关联门店简称，多个门店以「、」分隔（stores.store_name 聚合） */
+  storeNames: string | null
   createdAt: string
   updatedAt: string
 }
@@ -106,9 +109,12 @@ function canAssignMerchantMarket(scope: MerchantMarketScope, marketOrgNodeId: st
 export const getMerchantsPaginated = withPermission(
   'merchant:list',
   async (session, filters: MerchantFilters = {}): Promise<PaginatedMerchants> => {
-    const page = Math.max(1, filters.page || 1)
-    const pageSize = [10, 20, 50].includes(filters.pageSize ?? 0) ? filters.pageSize! : 20
-    const offset = (page - 1) * pageSize
+    const { page, pageSize, offset } = resolvePaging({
+      page: filters.page,
+      pageSize: filters.pageSize,
+      defaultPageSize: 20,
+      allowedPageSizes: [10, 20, 50],
+    })
 
     const conditions: (SQL | undefined)[] = []
     // 商户名 / 商户号 ILIKE 搜索
@@ -153,7 +159,7 @@ export const getMerchantsPaginated = withPermission(
       .from(lakalaMerchants)
       .where(whereClause)
 
-    // DATA：LEFT JOIN stores 统计关联门店数
+    // DATA：LEFT JOIN stores 统计关联门店数，同时聚合门店简称供列表直接展示（避免 N+1 查询）
     const dataQuery = db
       .select({
         id: lakalaMerchants.id,
@@ -166,13 +172,14 @@ export const getMerchantsPaginated = withPermission(
         createdAt: lakalaMerchants.createdAt,
         updatedAt: lakalaMerchants.updatedAt,
         storeCount: sql<number>`cast(count(${stores.storeId}) as int)`,
+        storeNames: sql<string | null>`string_agg(${stores.storeName}, '、' ORDER BY ${stores.storeName})`,
       })
       .from(lakalaMerchants)
       .leftJoin(stores, eq(stores.lakalaMerchantId, lakalaMerchants.id))
       .where(whereClause)
       .groupBy(lakalaMerchants.id)
       // 配置型「编辑即浮顶」
-      .orderBy(desc(lakalaMerchants.updatedAt))
+      .orderBy(desc(lakalaMerchants.updatedAt), desc(lakalaMerchants.id))
       .limit(pageSize)
       .offset(offset)
 
@@ -187,6 +194,7 @@ export const getMerchantsPaginated = withPermission(
         enabled: r.enabled,
         marketName: r.marketName ?? null,
         storeCount: r.storeCount ?? 0,
+        storeNames: r.storeNames ?? null,
         createdAt: r.createdAt.toISOString(),
         updatedAt: r.updatedAt.toISOString(),
       })),

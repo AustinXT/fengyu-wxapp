@@ -34,8 +34,48 @@ const MSSQL_CONFIG = {
   options: { encrypt: false, trustServerCertificate: true, enableArithAbort: true },
 }
 
+// DATABASE_URL 必填且必须精确指向业务库（db/CLAUDE.md 硬规则：显式传值 + 断言 host/port/dbname）。
+// 实现见 _lib/assert-db-target.js —— 它同时挡住 `?host=` 与 `?%68ost=`（百分号编码）两层 query 覆盖绕过。
+// 仅在直接执行时校验——本目录部分脚本的导出函数被 __tests__ require，顶层 exit 会打断测试进程。
+const { assertDbTargetOrExit, isProdDbTarget } = require('./_lib/assert-db-target')
+if (require.main === module) assertDbTargetOrExit(process.env.DATABASE_URL)
+
+/**
+ * 对**生产库**硬拒绝（issue #318）。
+ *
+ * 业务方 2026-04-16 已决定「上线后不再执行 WorkFine 同步」（见
+ * `notes/tickets/2026-04-16-client-rebind-phone.md`），本脚本自那以后只用于历史迁移与
+ * 上线前刷新。但这只是**流程约定**，代码层面谁都能对着生产库跑 —— 而它的
+ * `staff_wechat_users` UPSERT 直接写 `is_resigned`、既不取 `admin:active_count` 也不复核
+ * 「至少留一名在职超级管理员」。#318 收紧认证之后，一旦把最后一名超管标成离职，
+ * 后果是**没人能登录管理后台**。
+ *
+ * 所以这里挡在门口，而且是**无条件**的 —— 不留环境变量开关。
+ *
+ * 第一版留了 `ALLOW_PROD_WORKFINE_SYNC=1` 作为放行阀门，codex 谱系第 6 轮指出那等于没关：
+ * 「生产只剩一名超管时设置该变量运行同步」这条反例照样能把后台锁死，而 cron 巡检只能事后告警。
+ * 它说得对 —— 一个环境变量不构成决策成本。既然业务上「上线后不再执行」，就让它在代码层面
+ * 也不可执行：真有必要（比如某次一次性数据补录）只能改这里的代码并走一次 code review，
+ * 那才是与后果相称的门槛。
+ *
+ * cron 侧的 `activeAdminCount` 巡检（0 人 → critical）仍保留 —— 它兜的是裸 SQL 等本函数
+ * 管不到的路径。
+ */
+function assertProdSyncAllowedOrExit() {
+  if (!isProdDbTarget(process.env.DATABASE_URL)) return
+  console.error([
+    '✗ 拒绝对生产库运行 WorkFine 同步（无条件，没有环境变量可以放行）。',
+    '  业务方 2026-04-16 已决定上线后不再执行该同步；本脚本仅用于历史迁移 / 上线前刷新。',
+    '  它的 staff_wechat_users UPSERT 会直接写 is_resigned，且不校验「至少留一名在职超级管理员」——',
+    '  把最后一名超管标成离职就会让所有人无法登录管理后台（#318）。',
+    '  确需对生产库执行：改掉本函数并走 code review —— 门槛就是要与后果相称。',
+  ].join('\n'))
+  process.exit(1)
+}
+if (require.main === module) assertProdSyncAllowedOrExit()
+
 const PG_CONFIG = {
-  connectionString: process.env.DATABASE_URL || 'postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp',
+  connectionString: process.env.DATABASE_URL?.trim(),
   max: 5,
 }
 
@@ -84,6 +124,18 @@ function trim(val) {
   if (val === null || val === undefined) return null
   const s = String(val).trim()
   return s === '' ? null : s
+}
+
+const CUSTOMER_SOURCE_ALIASES = {
+  推带新: '推广部',
+  地推卡: '全员地推',
+  拓客卡: '外请团队拓客',
+  内部员工或家属: '员工或家属',
+}
+
+function normalizeCustomerSource(val) {
+  const source = trim(val)
+  return source ? (CUSTOMER_SOURCE_ALIASES[source] || source) : null
 }
 
 /** 中国手机号校验：11位数字、1开头，不符合则返回 null */
@@ -562,7 +614,7 @@ async function syncCustomers(mssqlPool, pgPool, dryRun) {
         trim(row.name),
         storeName ? (storeMap[storeName] || null) : null,
         trim(row.bound_employee_id), trim(row.member_level),
-        trim(row.customer_source), trim(row.category),
+        normalizeCustomerSource(row.customer_source), trim(row.category),
         toDateStr(row.birthday), trim(row.occupation),
         toBool(row.is_married_raw), trim(row.wechat_name),
         trim(row.skin_type),
@@ -611,11 +663,15 @@ async function syncCustomers(mssqlPool, pgPool, dryRun) {
           ELSE c.phone
         END,
         name = s.name, bound_store_id = s.bound_store_id, bound_employee_id = s.bound_employee_id,
-        customer_source = s.customer_source,
-        category = s.category, birthday = s.birthday, occupation = s.occupation,
-        is_married = s.is_married, wechat_name = s.wechat_name,
+        customer_source = CASE WHEN 'customer_source' = ANY(c.workfine_override_fields) THEN c.customer_source ELSE s.customer_source END,
+        category = s.category,
+        birthday = CASE WHEN 'birthday' = ANY(c.workfine_override_fields) THEN c.birthday ELSE s.birthday END,
+        occupation = CASE WHEN 'occupation' = ANY(c.workfine_override_fields) THEN c.occupation ELSE s.occupation END,
+        is_married = CASE WHEN 'is_married' = ANY(c.workfine_override_fields) THEN c.is_married ELSE s.is_married END,
+        wechat_name = s.wechat_name,
         skin_type = s.skin_type, improvement_focus = s.improvement_focus,
-        skin_issue = s.skin_issue, wellness_preference = s.wellness_preference,
+        skin_issue = CASE WHEN 'skin_issue' = ANY(c.workfine_override_fields) THEN c.skin_issue ELSE s.skin_issue END,
+        wellness_preference = CASE WHEN 'wellness_preference' = ANY(c.workfine_override_fields) THEN c.wellness_preference ELSE s.wellness_preference END,
         updated_at = now()
       FROM (
         SELECT DISTINCT ON (customer_id) *
@@ -636,7 +692,7 @@ async function syncCustomers(mssqlPool, pgPool, dryRun) {
 
     // 3a. 有手机号：UPSERT by phone（去重，不覆盖微信身份字段）
     const upsertByPhone = await client.query(`
-      INSERT INTO client_wechat_users (
+      INSERT INTO client_wechat_users AS c (
         user_id, phone, customer_id, name, bound_store_id, bound_employee_id,
         member_level, customer_source, category, birthday, occupation, is_married,
         wechat_name, skin_type, improvement_focus, skin_issue, wellness_preference
@@ -656,16 +712,16 @@ async function syncCustomers(mssqlPool, pgPool, dryRun) {
         name = EXCLUDED.name,
         bound_store_id = EXCLUDED.bound_store_id,
         bound_employee_id = EXCLUDED.bound_employee_id,
-        customer_source = EXCLUDED.customer_source,
+        customer_source = CASE WHEN 'customer_source' = ANY(c.workfine_override_fields) THEN c.customer_source ELSE EXCLUDED.customer_source END,
         category = EXCLUDED.category,
-        birthday = EXCLUDED.birthday,
-        occupation = EXCLUDED.occupation,
-        is_married = EXCLUDED.is_married,
+        birthday = CASE WHEN 'birthday' = ANY(c.workfine_override_fields) THEN c.birthday ELSE EXCLUDED.birthday END,
+        occupation = CASE WHEN 'occupation' = ANY(c.workfine_override_fields) THEN c.occupation ELSE EXCLUDED.occupation END,
+        is_married = CASE WHEN 'is_married' = ANY(c.workfine_override_fields) THEN c.is_married ELSE EXCLUDED.is_married END,
         wechat_name = EXCLUDED.wechat_name,
         skin_type = EXCLUDED.skin_type,
         improvement_focus = EXCLUDED.improvement_focus,
-        skin_issue = EXCLUDED.skin_issue,
-        wellness_preference = EXCLUDED.wellness_preference,
+        skin_issue = CASE WHEN 'skin_issue' = ANY(c.workfine_override_fields) THEN c.skin_issue ELSE EXCLUDED.skin_issue END,
+        wellness_preference = CASE WHEN 'wellness_preference' = ANY(c.workfine_override_fields) THEN c.wellness_preference ELSE EXCLUDED.wellness_preference END,
         updated_at = now()
     `)
     log('CUSTOMERS', `UPSERT by phone: ${upsertByPhone.rowCount} 条`)
@@ -674,11 +730,15 @@ async function syncCustomers(mssqlPool, pgPool, dryRun) {
     const updateByCustId = await client.query(`
       UPDATE client_wechat_users c SET
         name = s.name, bound_store_id = s.bound_store_id, bound_employee_id = s.bound_employee_id,
-        customer_source = s.customer_source,
-        category = s.category, birthday = s.birthday, occupation = s.occupation,
-        is_married = s.is_married, wechat_name = s.wechat_name,
+        customer_source = CASE WHEN 'customer_source' = ANY(c.workfine_override_fields) THEN c.customer_source ELSE s.customer_source END,
+        category = s.category,
+        birthday = CASE WHEN 'birthday' = ANY(c.workfine_override_fields) THEN c.birthday ELSE s.birthday END,
+        occupation = CASE WHEN 'occupation' = ANY(c.workfine_override_fields) THEN c.occupation ELSE s.occupation END,
+        is_married = CASE WHEN 'is_married' = ANY(c.workfine_override_fields) THEN c.is_married ELSE s.is_married END,
+        wechat_name = s.wechat_name,
         skin_type = s.skin_type, improvement_focus = s.improvement_focus,
-        skin_issue = s.skin_issue, wellness_preference = s.wellness_preference,
+        skin_issue = CASE WHEN 'skin_issue' = ANY(c.workfine_override_fields) THEN c.skin_issue ELSE s.skin_issue END,
+        wellness_preference = CASE WHEN 'wellness_preference' = ANY(c.workfine_override_fields) THEN c.wellness_preference ELSE s.wellness_preference END,
         updated_at = now()
       FROM (
         SELECT DISTINCT ON (customer_id) *
@@ -1192,4 +1252,5 @@ async function main() {
   }
 }
 
-main()
+// 仅在直接执行时运行：被 require 时不得有副作用（顶层校验同理，见文件头部）
+if (require.main === module) main()

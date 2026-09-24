@@ -17,6 +17,7 @@ const { extractAppVersion } = require('./utils/app-version')
 
 // 路由映射表 —— 懒加载：只在匹配到 action 时才 require 对应模块
 const routes = {
+  'system.health':         () => require('./routes/system').health,
   // 认证
   'auth.login':           () => require('./routes/auth').login,
   'auth.bindPhone':       () => require('./routes/auth').bindPhone,
@@ -49,6 +50,8 @@ const routes = {
   'customer.stats':       () => require('./routes/customer').stats,
   'customer.listByTag':   () => require('./routes/customer').listByTag,
   'customer.refundHistory': () => require('./routes/customer').refundHistory,
+  'customer.searchPromoterEmployees': () => require('./routes/customer').searchPromoterEmployees,
+  'customer.updateProfile': () => require('./routes/customer').updateProfile,
   'customer.updateName':  () => require('./routes/customer').updateName,
   'customer.updateNotes': () => require('./routes/customer').updateNotes,
   'customer.assign':      () => require('./routes/customer').assign,
@@ -73,6 +76,7 @@ const routes = {
   'order.resetFailed':    () => require('./routes/order').resetFailed,
   'order.list':           () => require('./routes/order').list,
   'order.detail':         () => require('./routes/order').detail,
+  'order.updatePerformanceAttribution': () => require('./routes/order').updatePerformanceAttribution,
   'order.createRefund':   () => require('./routes/order').createRefund,
   'order.approveRefund':  () => require('./routes/order').approveRefund,
   'order.rejectRefund':   () => require('./routes/order').rejectRefund,
@@ -84,14 +88,21 @@ const routes = {
   'order.createPickup':   () => require('./routes/order').createPickup,
   'order.createDeposit':  () => require('./routes/order').createDeposit,
   'order.availablePickupItems': () => require('./routes/order').availablePickupItems,
+  'order.pickupInventorySkuOptions': () => require('./routes/order').pickupInventorySkuOptions,
   'order.pickupRecordsList':    () => require('./routes/order').pickupRecordsList,
 
-  // 库存（只读）
-  'inventory.list':       () => require('./routes/inventory').list,
-  'inventory.detail':     () => require('./routes/inventory').detail,
+  // 库存（门店办理）
   'inventory.stockList':  () => require('./routes/inventory').stockList,
+  'inventory.reportableSkuOptions': () => require('./routes/inventory').reportableSkuOptions,
+  'inventory.storeOptions': () => require('./routes/inventory').storeOptions,
+  'inventory.docOrgOptions': () => require('./routes/inventory').docOrgOptions,
   'inventory.docList':    () => require('./routes/inventory').docList,
   'inventory.docDetail':  () => require('./routes/inventory').docDetail,
+  'inventory.createDoc':  () => require('./routes/inventory').createDoc,
+  'inventory.confirmReceive': () => require('./routes/inventory').confirmReceive,
+  'inventory.approveDoc': () => require('./routes/inventory').approveDoc,
+  'inventory.rejectDoc':  () => require('./routes/inventory').rejectDoc,
+  'inventory.uploadReceipt': () => require('./routes/inventory').uploadReceipt,
 
   // 营业额分配（按回款逐笔分配，当前口径）
   'allocation.pendingPayments':         () => require('./routes/allocation').pendingPayments,
@@ -155,6 +166,7 @@ const routes = {
   'mgmtCustomer.serviceHistory': () => require('./routes/mgmt-customer').serviceHistory,
   'mgmtCustomer.giftHistory':   () => require('./routes/mgmt-customer').giftHistory,
   'mgmtCustomer.refundHistory': () => require('./routes/mgmt-customer').refundHistory,
+  'mgmtCustomer.homeProducts': () => require('./routes/mgmt-customer').homeProducts,
 }
 
 /**
@@ -163,8 +175,9 @@ const routes = {
  */
 const STORE_MUTATION_ACTIONS = new Set([
   'store.approveUnbind', 'store.rejectUnbind',
-  'customer.updateName', 'customer.updateNotes', 'customer.assign',
+  'customer.updateProfile', 'customer.updateName', 'customer.updateNotes', 'customer.assign',
   'order.create', 'order.qrcode', 'order.confirmOffline', 'order.close', 'order.resetFailed',
+  'order.updatePerformanceAttribution',
   'order.createRefund', 'order.approveRefund', 'order.rejectRefund',
   'order.createRepayment', 'order.createConversion', 'order.createPickup', 'order.createDeposit',
   'allocation.savePayment', 'allocation.deletePaymentAllocation',
@@ -172,11 +185,38 @@ const STORE_MUTATION_ACTIONS = new Set([
   'appointment.confirm', 'appointment.checkin',
   'card.recharge', 'card.inflow', 'card.createRefund', 'card.approveRefund', 'card.rejectRefund',
   'service.create', 'service.start', 'service.complete', 'service.confirm', 'service.cancel',
+  'inventory.createDoc', 'inventory.confirmReceive', 'inventory.approveDoc',
+  'inventory.rejectDoc', 'inventory.uploadReceipt',
 ])
 
 /**
  * 云函数入口函数
  */
+/**
+ * 部署通道与调用方版本一致性检查。
+ *
+ * 单 CloudBase 环境下，staffApi(prod 库) 与 staffApiDev(dev 库) 同住一个 env，
+ * 也就是说【从开发版也能直接调到生产函数】——改造前两者在不同 env，是平台物理隔离，
+ * 现在退化成了客户端自觉。误路由 100% 静默，正是最难查的那类故障。
+ *
+ * 这【不是安全边界】：_envVersion 由客户端自报，可伪造。它的作用是把「意外误路由」
+ * 从静默变成响亮失败。真正的数据隔离仍由函数自身的 PG_CONNECTION_STRING 保证。
+ *
+ * 缺失该字段一律放行——老版本前端不带它，不能把存量用户挡在门外。
+ */
+function assertChannelMatchesCaller(payload) {
+  const envVersion = payload && payload._envVersion
+  if (!envVersion) return
+  const channel = process.env.DEPLOY_CHANNEL || 'primary'
+  const callerOnProd = envVersion === 'release' || envVersion === 'trial'
+  if (channel === 'shadow' && callerOnProd) {
+    throw new Error('INVALID_STATE: CHANNEL_MISMATCH: 正式版/体验版不应调用连 dev 库的影子函数')
+  }
+  if (channel === 'primary' && !callerOnProd) {
+    throw new Error('INVALID_STATE: CHANNEL_MISMATCH: 开发版不应调用连生产库的正式函数')
+  }
+}
+
 exports.main = async (event, context) => {
   const { action, payload } = event
 
@@ -202,13 +242,22 @@ exports.main = async (event, context) => {
   }
 
   try {
-    // 执行中间件链 + 业务处理
-    await auth(ctx, async () => {
-      if (ctx.auth.loginLevel === 'management' && STORE_MUTATION_ACTIONS.has(action)) {
-        throw new Error('PERMISSION_DENIED: 管理层模式仅支持只读操作')
-      }
+    // 必须在 try 内：抛出的 CHANNEL_MISMATCH 要走 buildErrorResponse 变成标准错误响应，
+    // 逃到 try 外就是裸 500。（system.health 由 admin 经 HMAC 调用、不带 _envVersion，自动放行）
+    assertChannelMatchesCaller(payload)
+
+    if (action === 'system.health') {
+      // 系统自检使用独立 HMAC 鉴权，不依赖员工 OPENID。
       await handler(ctx)
-    })
+    } else {
+      // 执行中间件链 + 业务处理
+      await auth(ctx, async () => {
+        if (ctx.auth.loginLevel === 'management' && STORE_MUTATION_ACTIONS.has(action)) {
+          throw new Error('PERMISSION_DENIED: 管理层模式仅支持只读操作')
+        }
+        await handler(ctx)
+      })
+    }
 
     return {
       code: 0,
@@ -217,8 +266,33 @@ exports.main = async (event, context) => {
     }
   } catch (error) {
     console.error(`[${action}] Error:`, error)
-    return buildErrorResponse(error)
+    return buildErrorResponse(normalizeRetryableDbError(error))
   }
+}
+
+/**
+ * 把 PG 的可重试错误翻成白名单内的 `CONFLICT:`，避免掉进 `buildErrorResponse` 的
+ * 「-1 服务器内部错误」兜底 —— 那个文案既没告诉用户能重试，也不利于排查。
+ *
+ * 放在全局漏斗而不是各 route 自己 catch（issue #148 评审结论）：死锁是**两个事务共同**造成的，
+ * PG 选谁当 victim 是任意的。只在「营业额分配」一侧翻译，意味着被选中的若是改期 / 收款 / 退款那一侧，
+ * 用户照样看到 -1 —— 兜底覆盖一半等于没有确定性。这里一处即覆盖全部 action。
+ *
+ * 沿 `cause` 链取码：当前 staffApi 直连原生 `pg`、错误是扁平的，但一旦中间引入包装层
+ * （像 admin 侧 drizzle 把错误包进 DrizzleQueryError 那样），只看 `error.code` 会静默失效。
+ *
+ * 只收 40P01：`40001`(serialization_failure) 在默认 READ COMMITTED 下不可达，本仓运行时也没有
+ * 任何 `SET TRANSACTION ISOLATION LEVEL`，加了是死代码。
+ */
+function normalizeRetryableDbError(error) {
+  let cur = error
+  for (let depth = 0; depth < 10 && cur && typeof cur === 'object'; depth++) {
+    if (cur.code === '40P01') {
+      return new Error('CONFLICT: DEADLOCK_DETECTED: 数据正被其他操作修改，请稍后重试')
+    }
+    cur = cur.cause
+  }
+  return error
 }
 
 exports._STORE_MUTATION_ACTIONS = STORE_MUTATION_ACTIONS

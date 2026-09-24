@@ -8,9 +8,18 @@ import type { PgColumn } from 'drizzle-orm/pg-core'
 import type { AuthSession, RoleType } from './types'
 import { collectDescendantNodeIds, findAncestorNodeIdByType } from './org-scope'
 import {
-  UNDELIVERED_ADMIN_ACTIONS,
+  KNOWN_PERMISSION_ACTIONS as CATALOG_ACTIONS,
   sanitizeRoleDefinitionActions,
 } from './permission-contract'
+// isAdminScope 实现在 session-role-guards.ts（client 组件经 menu.ts 引用，不得拖入 @/db）。
+// 对外再导出必须用 export-from：vitest SSR 对 import X + export { X } 间接再导出会得到
+// undefined 绑定（2026-09-01 business.test.ts 18 用例失败根因）；import 仅供本文件内部使用。
+import { isAdminScope } from './session-role-guards'
+export { isAdminScope } from './session-role-guards'
+
+/** 权限目录是唯一真相源；管理员默认持有目录中的全部权限。 */
+export const ALL_ACTIONS: string[] = [...CATALOG_ACTIONS]
+export const KNOWN_PERMISSION_ACTIONS: string[] = [...CATALOG_ACTIONS]
 
 /**
  * DEFAULT_PERMISSION_MATRIX: role → actions[]
@@ -31,49 +40,8 @@ export const DEFAULT_PERMISSION_MATRIX: Record<RoleType, string[]> = {
   // 2026-05-21 改：原先 admin 不带业务数据权限（订单/分配/服务/预约/顾客），
   // 导致 admin 单角色访问业务页 requirePermission 抛 PERMISSION_DENIED，
   // 生产构建脱敏 error.message 后误显示为 500。现 admin 全开，与 DB 覆盖矩阵对齐。
-  // 维护：本数组必须是所有其它角色的并集（ALL_ACTIONS）；
-  // permissions.test.ts 的 "admin == ALL_ACTIONS" 守护，新增 action 时勿漏。
-  admin: [
-    'dashboard:view',
-    // 基础数据 CRUD（组织/门店/员工/商品/提成/优惠券）
-    'org:list', 'org:create', 'org:update', 'org:delete',
-    'store:list', 'store:create', 'store:update',
-    'employee:list', 'employee:create', 'employee:update', 'employee:delete',
-    'product:list', 'product:create', 'product:update',
-    'commission:list', 'commission:create', 'commission:update', 'commission:delete',
-    'coupon:list', 'coupon:create', 'coupon:update',
-    // 业务数据（订单/明细/分配/服务/预约/顾客/疗程卡/提货/数据中心）
-    'sale_order:list', 'sale_order:create', 'sale_order:update', 'sale_order:performance_attribution_update', 'sale_order:record_payment', 'sale_order:deposit_approve', 'sale_order:delete',
-    'sale_item:list',
-    'allocation:list', 'allocation:save',
-    'service:list', 'service:create', 'service:update', 'service:delete',
-    'appointment:list', 'appointment:confirm', 'appointment:checkin', 'appointment:delete',
-    'customer:list', 'customer:create', 'customer:update', 'customer:delete',
-    'pickup_record:list', 'pickup_record:create', 'pickup_record:delete',
-    'data_center:dashboard',
-    'store_unbind:list', 'store_unbind:approve', 'store_unbind:reject', 'store_unbind:delete',
-    // 系统管理（权限/日志/消息/配置）
-    'permission:list', 'permission:assign', 'permission:revoke', 'permission:assign_admin',
-    'operation_log:list', 'operation_log:delete',
-    'point_transaction:list',
-    'card_transaction:list',
-    'message:list', 'message:delete', 'message:send',
-    'system:config',
-    // 重置员工密码（admin 专属，取代原 isAdmin 旁路）
-    'admin:reset_password',
-    // 退款管理（2026-05-17 PR-Z 职责拆分；2026-05-17 PR-Z2 admin 拿回 approve 权）
-    'sale_order:refund_create', 'sale_order:refund_approve',
-    // 历史订单核对（WorkFine 导入的 status='未审核' 订单）
-    'legacy_order:list', 'legacy_order:approve', 'legacy_order:reject',
-    'legacy_order:update_phone', 'legacy_order:update_amount', 'legacy_order:pull',
-    // 门店库存（4 类单据 v1；update 及 v2 写/审批/价格能力尚未交付 Admin UI）
-    'inventory:list', 'inventory:create', 'inventory:delete',
-    'inventory:stock_list', 'inventory:export',
-    // 门店拉卡拉收款配置（门店关联收款商户；admin 专属，涉及收款，hr 不开）
-    'store:lakala_config',
-    // 商户管理（拉卡拉收款商户档案 CRUD；独立模块 /merchants，admin + finance）
-    'merchant:list', 'merchant:create', 'merchant:update', 'merchant:delete',
-  ],
+  // 新增权限只登记目录，admin 自动同步拥有，无需手工维护第二份列表。
+  admin: [...ALL_ACTIONS],
   // 店长：门店业务的非物理删除操作。物理删除和收款配置仅系统管理员可授予。
   manager: [
     'allocation:list', 'allocation:save',
@@ -84,7 +52,6 @@ export const DEFAULT_PERMISSION_MATRIX: Record<RoleType, string[]> = {
     'dashboard:view',
     'data_center:dashboard',
     'employee:create', 'employee:list', 'employee:update',
-    'inventory:create', 'inventory:list', 'inventory:stock_list',
     'legacy_order:approve', 'legacy_order:list', 'legacy_order:pull', 'legacy_order:reject', 'legacy_order:update_amount', 'legacy_order:update_phone',
     'merchant:list',
     'message:list', 'message:send',
@@ -112,7 +79,6 @@ export const DEFAULT_PERMISSION_MATRIX: Record<RoleType, string[]> = {
     'dashboard:view',
     'data_center:dashboard',
     'employee:list',
-    'inventory:export', 'inventory:list', 'inventory:stock_list',
     'legacy_order:approve', 'legacy_order:list', 'legacy_order:pull', 'legacy_order:reject', 'legacy_order:update_amount', 'legacy_order:update_phone',
     'merchant:create', 'merchant:list', 'merchant:update',
     'operation_log:list',
@@ -144,7 +110,6 @@ export const DEFAULT_PERMISSION_MATRIX: Record<RoleType, string[]> = {
   product: [
     'coupon:create', 'coupon:list', 'coupon:update',
     'dashboard:view',
-    'inventory:create', 'inventory:export', 'inventory:list', 'inventory:stock_list',
     'operation_log:list',
     'org:list',
     'product:create', 'product:list', 'product:update',
@@ -158,7 +123,6 @@ export const DEFAULT_PERMISSION_MATRIX: Record<RoleType, string[]> = {
     'customer:create', 'customer:list', 'customer:update',
     'dashboard:view',
     'employee:list',
-    'inventory:list', 'inventory:stock_list',
     'legacy_order:approve', 'legacy_order:list', 'legacy_order:pull', 'legacy_order:reject', 'legacy_order:update_amount', 'legacy_order:update_phone',
     'operation_log:list',
     'org:list',
@@ -170,28 +134,22 @@ export const DEFAULT_PERMISSION_MATRIX: Record<RoleType, string[]> = {
   ],
   // staff（普通员工）专供小程序端，禁止登录 admin（canAccessAdmin 拦截）；矩阵留空。
   staff: [],
+  inventory_supply_chain_operator: [
+    'inventory:export', 'inventory:list', 'inventory:shipment_cancel_approve',
+    'inventory:stock_list', 'inventory:supply_chain_approve',
+    'inventory:supply_chain_master_data_manage', 'inventory:supply_chain_operate',
+    'inventory:supply_chain_price_view',
+  ],
+  inventory_market_finance: [
+    'inventory:export', 'inventory:list', 'inventory:market_approve',
+    'inventory:market_operate', 'inventory:market_price_view',
+    'inventory:market_sku_manage', 'inventory:self_purchase_receive',
+    'inventory:shipment_cancel_request', 'inventory:stock_list',
+  ],
+  inventory_store_operator: [
+    'inventory:list', 'inventory:stock_list', 'inventory:store_operate',
+  ],
 }
-
-/**
- * ALL_ACTIONS：全仓所有 distinct 权限 action（各角色数组并集）。
- *
- * - admin 即持有 ALL_ACTIONS（系统管理员全开）。
- * - 供权限矩阵编辑器列全量、page-permission-coverage 测试、admin 完整性守护使用。
- * - 由于 admin 已是并集，这里 = sorted(unique(admin ∪ 其它角色))。
- */
-export const ALL_ACTIONS: string[] = [
-  ...new Set(Object.values(DEFAULT_PERMISSION_MATRIX).flat()),
-].sort()
-
-/**
- * 已知权限点 = 当前可授予项 + 未交付但仍存在后端实现的库存项。
- *
- * `ALL_ACTIONS` 是矩阵编辑器可见且可授予的全集；`KNOWN_PERMISSION_ACTIONS` 仅用于
- * 读取遗留矩阵和保存报错，使未交付 action 被精确识别为不可授予而非 unknown。
- */
-export const KNOWN_PERMISSION_ACTIONS: string[] = [
-  ...new Set([...ALL_ACTIONS, ...UNDELIVERED_ADMIN_ACTIONS]),
-].sort()
 
 /**
  * 进程级权限矩阵缓存
@@ -393,11 +351,10 @@ export function buildScopeWhere(session: AuthSession, storeIdColumn = 'store_id'
 }
 
 /**
- * 判断 session 是否拥有 admin 角色（不受 scope 限制）
+ * 判断 session 是否拥有 admin 角色（不受 scope 限制）。
+ * 实现移至 session-role-guards.ts（client 组件经 menu.ts 引用，不得拖入 @/db）；
+ * re-export 见文件顶部 import 区，server 调用方与 vi.mock('@/lib/permissions') 关系不变。
  */
-export function isAdminScope(session: AuthSession): boolean {
-  return session.roles.some(r => r.isSuperAdmin ?? r.role === 'admin')
-}
 
 /**
  * 是否允许登录管理后台：持有任一非 staff 角色即可。
@@ -493,6 +450,56 @@ export function isInScope(session: AuthSession, storeId: string): boolean {
 }
 
 /**
+ * 检查指定组织节点是否在用户 scope 内（`isInScope` 的 org_node_id 对偶）
+ *
+ * admin → 始终 true。
+ *
+ * **口径必须与 `employeeScopeCondition` 的 orgNodeIds 完全一致**（含 `scopeDeptNodeIds`
+ * 旧会话回退）—— 二者一个负责「入参新值是否可写」、一个负责「目标行是否可见」，
+ * 口径一旦分叉就会出现「校验放行但 UPDATE 的 WHERE 匹配不到」或反之的静默错位。
+ *
+ * ⚠️ 不要与库存侧的 `inventoryScopedOrgNodeIds` / `assertOrgNodeVisible` 混用：那一套对
+ * 「总部」scope **刻意不展开后代**（市场退货必须由总部逐个授权审批），而这里的
+ * `scopeOrgNodeIds` 是含全部后代的展开集合。两套语义不同，各自服务不同的业务约束。
+ *
+ * ⚠️ 另有 `lib/node-scope.ts` 的 `isNodeInScope`（org.ts 建/改节点、stores.ts 建门店在用）
+ * 与本函数前两级回退完全相同，**只有第三级不同**：它在两个集合都缺失时回退到
+ * `session.roles.map(r => r.scopeId)`（角色根节点自身），本函数回退到空集。
+ * 这不是疏忽，**恰恰是不能复用它的原因** —— 本函数与 `employeeScopeCondition` 服务于
+ * 同一次 `updateEmployee` 调用（一个判新值可否写入、一个拼进 UPDATE 的 WHERE），
+ * 而 `employeeScopeCondition` 的回退就是空集。改用 `isNodeInScope` 会在缺元数据的会话里
+ * 造出「校验放行 → UPDATE 命中 0 行 → 用户看到『员工不存在或无权修改』」的静默错位。
+ * 两者该不该统一（以及统一到哪一档）是独立议题，已另开 issue。
+ */
+export function isOrgNodeInScope(session: AuthSession, orgNodeId: string): boolean {
+  if (isAdminScope(session)) return true
+  const orgNodeIds = session.permissions.scopeOrgNodeIds
+    ?? session.permissions.scopeDeptNodeIds
+    ?? []
+  return orgNodeIds.includes(orgNodeId)
+}
+
+/**
+ * 某一行员工记录对当前账号是否可见 —— `employeeScopeCondition` 的**内存版**。
+ *
+ * 两者必须永远给出同一个答案：`employeeScopeCondition` 拼进 UPDATE 的 WHERE、
+ * 这个在进 SQL 之前拦截。口径一旦分叉就会出现「这里放行 → UPDATE 命中 0 行 →
+ * 用户看到『数据已被其他人修改』」的静默错位（GLM 谱系指出原先是手工复刻、无同源保障）。
+ *
+ * 放在这里与 `employeeScopeCondition` 紧邻，改一个必须看另一个；
+ * `permissions.test.ts` 有一条交叉验证用例把两者对同一 session 的判定钉在一起。
+ */
+export function isEmployeeRowVisible(
+  session: AuthSession,
+  storeId: string | null,
+  orgNodeId: string | null,
+): boolean {
+  if (isAdminScope(session)) return true
+  return (!!storeId && isInScope(session, storeId))
+    || (!!orgNodeId && isOrgNodeInScope(session, orgNodeId))
+}
+
+/**
  * Check if user has a specific permission action
  */
 export function hasPermission(session: AuthSession, action: string): boolean {
@@ -539,19 +546,33 @@ export function requirePermission(session: AuthSession | null, action: string): 
 }
 
 /**
- * 物理删除专属硬闸：仅系统管理员（admin 角色）可通过，不受权限矩阵 UI 支配。
+ * 仅超级管理员硬闸（生产判据是角色行的 `isSuperAdmin=true`，不是 `role === 'admin'`）。
  *
- * 用于所有物理删除（db.delete 真删）Server Action 的函数体首行——前置的
- * withPermission('xxx:delete', ...) 仍保留（满足 ESLint HOF 强制 + 纵深过滤），
- * 但真正的「仅系统管理员」判定由本函数以角色为准：即便运营在权限矩阵 UI 给其它
- * 角色勾上 :delete 点，物理删除也无法实际执行。isAdminScope 即 role==='admin'。
+ * 用于两类 Server Action 的函数体首行：
+ * ① 所有物理删除（db.delete 真删）；
+ * ② 不可授权给其它角色的敏感写操作——角色能力位变更（role-definitions）、
+ *    提成口径类字典（skill-tags 技能标签，见 #211）等。
+ *
+ * 前置的 withPermission('xxx:delete' / 'xxx:update', ...) 仍保留（满足 ESLint HOF
+ * 强制 + 纵深过滤），但真正的判定由本函数以角色为准：即便运营在权限矩阵 UI 给其它
+ * 角色勾上对应权限点，这些操作也无法实际执行。
+ *
+ * ⚠️ 两点容易误解，写方案前先看清：
+ * ① `isAdminScope` 判的是 `isSuperAdmin ?? role === 'admin'`。`permission_roles.is_super_admin`
+ *    是 notNull 列，生产会话恒为 boolean，故 `role === 'admin'` 只是旧会话/测试的兼容回退；
+ *    显式 `isSuperAdmin=false` 的 admin 角色行会被拦下。
+ * ② 本函数收到的 session 通常已被 `withPermission` 经 `scopeSessionToActions` 按外层 action
+ *    收紧（只留自身 actions 含该动作的角色行）。所以实际语义是「**授予该 action 的角色里
+ *    至少一个是超管**」，而非「会话里任意位置有超管角色」。当外层 action 属
+ *    ADMIN_ONLY_ACTIONS 时两者等价；用共享 action（如 employee:update）时不等价 ——
+ *    UI 侧复刻判定必须一并跑 scopeSessionToActions，见 `skill-tag-access.ts`。
  */
 export function requireAdmin(session: AuthSession | null): asserts session is AuthSession {
   if (!session) {
     redirect('/login?expired=1')
   }
   if (!isAdminScope(session)) {
-    throw new PermissionError('PERMISSION_DENIED: 仅系统管理员可执行物理删除')
+    throw new PermissionError('PERMISSION_DENIED: 仅系统管理员可执行该操作')
   }
 }
 

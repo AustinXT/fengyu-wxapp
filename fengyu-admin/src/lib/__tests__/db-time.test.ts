@@ -11,7 +11,9 @@
  */
 import { describe, it, expect } from 'vitest'
 import path from 'node:path'
-import { nowTs, beijingTs } from '../db-time'
+import postgres from 'postgres'
+import { drizzle } from 'drizzle-orm/postgres-js'
+import { nowTs, beijingTs, instantTs } from '../db-time'
 import { runBunProbeInTz } from './tz-probe-helper'
 
 /** 从 drizzle sql 片段的 queryChunks 里拼出可读 SQL 串（参数内联），便于断言。 */
@@ -52,4 +54,73 @@ describe('beijingTs', () => {
       expect(runBunProbeInTz(PROBE, INSTANT, tz)).toBe(EXPECT)
     })
   }
+
+  // fail-fast：Invalid Date 经 fmtDateTime 会变成 ''，拼进 SQL 是 `''::timestamp` → 运行时 22007，
+  // 报错离现场很远。提前抛型错，把问题钉在调用点。
+  it('Invalid Date 直接抛错，不生成空字面量 SQL', () => {
+    expect(() => beijingTs(new Date('not-a-date'))).toThrow(TypeError)
+  })
+
+  it('epoch 0 是合法输入（refunds.ts 的兜底阈值用它）', () => {
+    expect(render(beijingTs(new Date(0)))).toBe("1970-01-01 08:00:00::timestamp AT TIME ZONE 'Asia/Shanghai'")
+  })
+})
+
+/**
+ * `instantTs` 是给**阈值比较**用的：`beijingTs` 截断到秒，会把 `>=` 窗口向前放宽最多 999ms。
+ * 落在 `actions/refunds.ts` 的会员跌档超额扣除上，就是把升级前不到 1 秒用掉的券/积分
+ * 算进"升级后已用"，多扣退款金额；落在 `points_updated_at` 这种水位列上，
+ * 就是同一秒内的写入变成往回退，按水位做增量同步的下游漏行。
+ */
+describe('instantTs', () => {
+  it('保留毫秒，落成带 Z 的 ISO 字面 + ::timestamptz', () => {
+    expect(render(instantTs(new Date('2026-04-24T10:00:00.123Z'))))
+      .toBe('2026-04-24T10:00:00.123Z::timestamptz')
+  })
+
+  it('毫秒不被抹平（与 beijingTs 的秒级截断对照）', () => {
+    const d = new Date('2026-04-24T10:00:00.900Z')
+    expect(render(instantTs(d))).toContain('.900Z')
+    // 同一时刻经 beijingTs 会丢掉 .900 —— 这正是不能拿它当阈值的原因
+    expect(render(beijingTs(d))).toBe("2026-04-24 18:00:00::timestamp AT TIME ZONE 'Asia/Shanghai'")
+  })
+
+  it('与进程 TZ 无关（toISOString 恒为 UTC）', () => {
+    const iso = render(instantTs(new Date(0)))
+    expect(iso).toBe('1970-01-01T00:00:00.000Z::timestamptz')
+  })
+
+  it('Invalid Date 直接抛错', () => {
+    expect(() => instantTs(new Date('not-a-date'))).toThrow(TypeError)
+  })
+})
+
+/**
+ * #253 的**根因层**守护：为什么 admin 写 timestamp 列必须经 db-time，不能裸传 Date。
+ *
+ * 常见误解是「postgres.js 不接受 Date」——不成立，它原生带 `date.serialize`（→ ISO 串，OID 1184）。
+ * 真凶是 drizzle 的 `construct()`：它为了自己接管时间类型，把 client 上时间 OID 的 **serializer**
+ * 一并覆盖成恒等函数，于是 Date 未经序列化直达 Bind writer → ERR_INVALID_ARG_TYPE。
+ * 到店积分（lib/visit-points.ts）2026-08-14 → 2026-09-22 的 100% 失败就是这条链。
+ *
+ * 这一层是 `visit-points.test.ts` 里 `PgDialect().sqlToQuery()` 断言够不到的下游，两处合起来才闭环。
+ * 本用例不连库（postgres.js 建 client 是惰性的，不发 TCP）。
+ */
+describe('drizzle 覆盖 postgres.js 时间 serializer（#253 根因）', () => {
+  it('construct() 把 1184 的 serializer 从 toISOString 换成恒等函数', () => {
+    const client = postgres('postgresql://probe:probe@127.0.0.1:1/probe')
+    try {
+      const instant = new Date('2026-08-13T10:00:00.000Z')
+
+      // 覆盖前：postgres.js 原生会把 Date 序列化成 ISO 串（所以裸用 postgres.js 不受影响）
+      expect(client.options.serializers[1184](instant)).toBe('2026-08-13T10:00:00.000Z')
+
+      drizzle(client)
+
+      // 覆盖后：恒等函数，Date 原样流向 Bind —— 这就是必须走 beijingTs()/nowTs() 的原因
+      expect(client.options.serializers[1184](instant)).toBe(instant)
+    } finally {
+      void client.end({ timeout: 0 })
+    }
+  })
 })

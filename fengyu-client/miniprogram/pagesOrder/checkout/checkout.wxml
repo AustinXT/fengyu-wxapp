@@ -31,6 +31,7 @@ module.exports.date = function(s) {
           src="{{item.coverImage}}"
           class="checkout-item__cover"
           mode="aspectFill"
+          lazy-load
         />
         <view wx:elif="{{!bundleProductId}}" class="checkout-item__cover checkout-item__cover--empty" />
         <view class="checkout-item__info">
@@ -86,23 +87,50 @@ module.exports.date = function(s) {
     />
     <van-cell wx:else title="优惠券" value="{{couponDiscount > 0 ? '-¥' + price.fmt(couponDiscount) : '- ¥0.00'}}" value-class="{{couponDiscount > 0 ? 'coupon-selected-value' : ''}}" />
 
+    <!-- 积分 -->
+    <view class="card-deduction-row">
+      <view class="card-deduction-row__head">
+        <view class="card-deduction-row__title">
+          <text>积分</text>
+          <text wx:if="{{!existingOrderNo && pointsBalance > 0}}" class="card-deduction-row__balance">可用 {{pointsBalance}} 分</text>
+          <text wx:elif="{{existingOrderNo && pointsUsed > 0}}" class="card-deduction-row__balance">已用 {{pointsUsed}} 分</text>
+          <text wx:else class="card-deduction-row__empty">暂无可抵扣积分</text>
+        </view>
+        <van-switch
+          checked="{{usePoints && maxPointsUsable > 0 && (existingOrderNo || pointsBalance > 0)}}"
+          disabled="{{existingOrderNo || pointsBalance <= 0 || maxPointsUsable <= 0}}"
+          size="40rpx"
+          active-color="#C0322A"
+          bind:change="onToggleUsePoints"
+        />
+      </view>
+      <view wx:if="{{pointsDiscount > 0}}" class="card-deduction-row__detail">
+        <text class="card-deduction-row__amount">抵扣 -¥{{price.fmt(pointsDiscount)}}</text>
+        <text class="card-deduction-row__hint">（{{pointsUsed}}积分）</text>
+      </view>
+    </view>
+
     <!-- 储值卡 -->
     <view class="card-deduction-row">
       <view class="card-deduction-row__head">
         <view class="card-deduction-row__title">
           <text>储值卡</text>
           <text wx:if="{{cardBalance > 0}}" class="card-deduction-row__balance">余额 ¥{{price.fmt(cardBalance)}}</text>
+          <!-- #214（round-16）：冻结期余额查询失败不能让「已锁定的抵扣」表现成「没有余额」 -->
+          <text wx:elif="{{hasActivePaymentIntent && prepaidCardAmount > 0}}" class="card-deduction-row__hint">本次支付已锁定抵扣</text>
           <text wx:else class="card-deduction-row__empty">暂无储值卡余额</text>
         </view>
+        <!-- 冻结期的选中态与明细行只认冻结值，不由实时余额控制：余额查询失败会把
+             cardBalance 打到 0，那会让开关显示关闭、抵扣行消失，而实付里明明已经扣掉了它 -->
         <van-switch
-          checked="{{useCard && cardBalance > 0}}"
-          disabled="{{cardBalance <= 0}}"
+          checked="{{useCard && (hasActivePaymentIntent || cardBalance > 0)}}"
+          disabled="{{cardBalance <= 0 || hasActivePaymentIntent}}"
           size="40rpx"
           active-color="#C0322A"
           bind:change="onToggleUseCard"
         />
       </view>
-      <view wx:if="{{useCard && cardBalance > 0 && prepaidCardAmount > 0}}" class="card-deduction-row__detail">
+      <view wx:if="{{useCard && (hasActivePaymentIntent || cardBalance > 0) && prepaidCardAmount > 0}}" class="card-deduction-row__detail">
         <text class="card-deduction-row__amount">抵扣 -¥{{price.fmt(prepaidCardAmount)}}</text>
         <text class="card-deduction-row__hint">（不计入实付）</text>
       </view>
@@ -119,7 +147,7 @@ module.exports.date = function(s) {
     </van-cell>
     <!-- 仅实付 > 0 时显示支付方式按钮组 -->
     <block wx:if="{{showPayMethodGroup}}">
-      <van-radio-group value="{{paymentMethod}}" bind:change="onPayMethodChange">
+      <van-radio-group value="{{paymentMethod}}" disabled="{{hasActivePaymentIntent}}" bind:change="onPayMethodChange">
         <van-cell title="微信支付" clickable bindtap="onPayMethodTap" data-method="微信">
           <van-icon slot="icon" name="wechat-pay" size="40rpx" color="#07C160" style="margin-right:16rpx" />
           <van-radio slot="right-icon" name="微信" />
@@ -174,6 +202,8 @@ module.exports.date = function(s) {
       class="phone-bind-btn"
       open-type="getPhoneNumber"
       bindgetphonenumber="onGetPhoneNumber"
+      disabled="{{phoneBinding}}"
+      loading="{{phoneBinding}}"
     >绑定手机号并下单</button>
   </view>
 

@@ -15,7 +15,12 @@ interface ServiceItem {
   serviceTime: string;
   startTime: string | null;
   completedTime: string | null;
+  // #224 跨店支援单。inCurrentStore 由云函数下发，与 cancel/confirm 的门店门同源——
+  // 前端据它决定是否渲染「取消 / 代客户确认」，自行推导会与后端判据错位造出点了必报错的按钮。
+  storeName: string;
+  inCurrentStore: boolean;
   items: Array<{
+    serviceItemId: string;   // wxml 的 wx:key，后端 list 下发
     itemName: string;
     spec: string;
     remainingSessions: number;
@@ -25,21 +30,33 @@ interface ServiceItem {
   }>;
 }
 
+const createStatusOptions = (pending = 0, processing = 0) => [
+  { text: '全部状态', value: '' },
+  { text: `待服务${pending > 0 ? ` (${pending})` : ''}`, value: '待服务' },
+  { text: `服务中${processing > 0 ? ` (${processing})` : ''}`, value: '服务中' },
+  { text: '待客户确认', value: '待客户确认' },
+  { text: '已完成', value: '已完成' },
+  { text: '已取消', value: '已取消' },
+];
+
 Page({
   data: {
     loading: false,
-    tabActive: 'pending',
-    tabs: [
-      { name: 'pending', label: '待服务', badge: 0 },
-      { name: 'processing', label: '服务中', badge: 0 },
-      { name: 'awaiting', label: '待确认', badge: 0 },
-      { name: 'completed', label: '已完成', badge: 0 },
-    ],
+    status: '待服务',
+    statusOptions: createStatusOptions(),
+    searchInput: '',
+    keyword: '',
+    startDate: '',
+    endDate: '',
     list: [] as ServiceItem[],
+    page: 1,
+    hasMore: true,
     isManager: false,
     isReadOnly: false,
     actioningId: '',
   },
+
+  _loadToken: 0,
 
   onLoad() {
     if (isManagementMode()) {
@@ -58,32 +75,80 @@ Page({
       return;
     }
     this.setData({ isManager: isManager(), isReadOnly: false });
-    this.loadList();
+    this.resetAndLoad();
     this.loadTabCounts();
   },
 
   onPullDownRefresh() {
-    this.loadList().finally(() => wx.stopPullDownRefresh());
+    this.resetAndLoad().finally(() => wx.stopPullDownRefresh());
   },
 
-  onTabChange(e: WechatMiniprogram.CustomEvent) {
-    const name = e.detail.name as string;
-    this.setData({ tabActive: name });
+  onStatusChange(e: WechatMiniprogram.CustomEvent) {
+    this.setData({ status: e.detail as unknown as string });
+    this.resetAndLoad();
+  },
+
+  onSearchChange(e: WechatMiniprogram.CustomEvent) {
+    this.setData({ searchInput: e.detail as unknown as string });
+  },
+
+  onSearch() {
+    this.setData({ keyword: this.data.searchInput.trim() });
+    this.resetAndLoad();
+  },
+
+  onSearchClear() {
+    this.setData({ searchInput: '', keyword: '' });
+    this.resetAndLoad();
+  },
+
+  onStartDateChange(e: WechatMiniprogram.PickerChange) {
+    const startDate = e.detail.value as string;
+    if (this.data.endDate && startDate > this.data.endDate) {
+      wx.showToast({ title: '开始日期不能晚于结束日期', icon: 'none' });
+      return;
+    }
+    this.setData({ startDate });
+    this.resetAndLoad();
+  },
+
+  onEndDateChange(e: WechatMiniprogram.PickerChange) {
+    const endDate = e.detail.value as string;
+    if (this.data.startDate && endDate < this.data.startDate) {
+      wx.showToast({ title: '结束日期不能早于开始日期', icon: 'none' });
+      return;
+    }
+    this.setData({ endDate });
+    this.resetAndLoad();
+  },
+
+  clearDates() {
+    this.setData({ startDate: '', endDate: '' });
+    this.resetAndLoad();
+  },
+
+  onReachBottom() {
     this.loadList();
   },
 
+  resetAndLoad() {
+    this._loadToken += 1;
+    this.setData({ list: [], page: 1, hasMore: true, loading: false });
+    return this.loadList();
+  },
+
   async loadList() {
+    if (this.data.loading || !this.data.hasMore) return;
+    const loadToken = this._loadToken;
     this.setData({ loading: true });
     try {
-      const statusMap: Record<string, string> = {
-        pending: '待服务',
-        processing: '服务中',
-        awaiting: '待客户确认',
-        completed: '已完成',
-      };
-      const status = statusMap[this.data.tabActive] || this.data.tabActive;
       const list = await callStaffApi<ServiceItem[]>('service.list', {
-        status,
+        status: this.data.status || undefined,
+        keyword: this.data.keyword || undefined,
+        startDate: this.data.startDate || undefined,
+        endDate: this.data.endDate || undefined,
+        page: this.data.page,
+        pageSize: 20,
       });
       // 后端返回 started_at/completed_at 为原始 timestamp，统一格式化为 YYYY-MM-DD HH:mm:ss
       const formatted = (list || []).map((it) => ({
@@ -91,12 +156,18 @@ Page({
         startTime: it.startTime ? formatDateTime(it.startTime) : it.startTime,
         completedTime: it.completedTime ? formatDateTime(it.completedTime) : it.completedTime,
       }));
-      this.setData({ list: formatted });
+      if (loadToken !== this._loadToken) return;
+      this.setData({
+        list: [...this.data.list, ...formatted],
+        hasMore: formatted.length === 20,
+        page: this.data.page + 1,
+      });
     } catch (err: unknown) {
+      if (loadToken !== this._loadToken) return;
       const msg = err instanceof Error ? err.message : '加载失败';
       wx.showToast({ title: msg, icon: 'none' });
     } finally {
-      this.setData({ loading: false });
+      if (loadToken === this._loadToken) this.setData({ loading: false });
     }
   },
 
@@ -117,7 +188,8 @@ Page({
     try {
       await callStaffApi('service.start', { serviceOrderId: id });
       wx.showToast({ title: '服务已开始', icon: 'success' });
-      this.loadList();
+      this.resetAndLoad();
+      this.loadTabCounts(); // 待服务 → 服务中，两枚角标都要跟着动（与 onCompleteService 一致）
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : '操作失败';
       wx.showToast({ title: msg, icon: 'none' });
@@ -140,7 +212,7 @@ Page({
         try {
           await callStaffApi('service.complete', { serviceOrderId: id });
           wx.showToast({ title: '已完成，待顾客确认', icon: 'none' });
-          this.loadList();
+          this.resetAndLoad();
           this.loadTabCounts();
         } catch (err: unknown) {
           const msg = err instanceof Error ? err.message : '操作失败';
@@ -167,7 +239,7 @@ Page({
         try {
           await callStaffApi('service.confirm', { serviceOrderId: id });
           wx.showToast({ title: '服务已确认完成', icon: 'success' });
-          this.loadList();
+          this.resetAndLoad();
         } catch (err: unknown) {
           const msg = err instanceof Error ? err.message : '操作失败';
           wx.showToast({ title: msg, icon: 'none' });
@@ -182,8 +254,7 @@ Page({
     try {
       const data = await callStaffApi<{ pending: number; processing: number }>('service.counts');
       this.setData({
-        'tabs[0].badge': data.pending || 0,
-        'tabs[1].badge': data.processing || 0,
+        statusOptions: createStatusOptions(data.pending || 0, data.processing || 0),
       });
     } catch (_) {}
   },

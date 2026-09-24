@@ -20,7 +20,26 @@ function Pagination({ total: rawTotal, page: rawPage, pageSize: rawPageSize, onP
   const total = Math.max(0, Math.floor(rawTotal) || 0)
   const pageSize = Math.max(1, Math.floor(rawPageSize) || 20)
   const totalPages = Math.max(1, Math.ceil(total / pageSize))
-  const page = Math.min(Math.max(1, Math.floor(rawPage) || 1), totalPages)
+  // 非有限值一律回退到第 1 页，与服务端 normalizePage() 的口径保持一致。
+  // 原来写 `Math.floor(rawPage) || 1`：`Math.floor(Infinity)` 还是 Infinity（truthy），
+  // 会被下面的 Math.min 夹成**最后一页**并高亮，而服务端查的是第 1 页 ——
+  // 页面于是显示「第 1 页的数据 + 最后一页的页码」，且第 28 行的自纠 effect
+  // 因为 `Number.isFinite(rawPage)` 为假而不触发，URL 也不会被修正。
+  const safePage = Number.isFinite(rawPage) ? Math.floor(rawPage) : 1
+  const page = Math.min(Math.max(1, safePage || 1), totalPages)
+  const correctedPageRef = React.useRef<string | null>(null)
+
+  React.useEffect(() => {
+    const correctionKey = `${rawPage}:${totalPages}`
+    if (Number.isFinite(rawPage) && rawPage > totalPages) {
+      if (correctedPageRef.current !== correctionKey) {
+        correctedPageRef.current = correctionKey
+        onPageChange(totalPages)
+      }
+      return
+    }
+    correctedPageRef.current = null
+  }, [onPageChange, rawPage, totalPages])
 
   if (totalPages <= 1 && total <= pageSize) {
     return (

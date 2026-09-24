@@ -79,6 +79,10 @@ vi.mock('@/lib/operation-log', () => ({
   logOperation: vi.fn(),
 }))
 
+vi.mock('@/lib/document-type', () => ({
+  classifySaleOrderDocumentType: vi.fn().mockResolvedValue('售前一次'),
+}))
+
 vi.mock('@/lib/recompute-customer-tags', () => ({
   recomputeCustomerTagsInTx: vi.fn(),
   recomputeMemberLevelOnly: vi.fn(),
@@ -263,7 +267,10 @@ describe('approveLegacyOrder — 历史单口径：审核不补登 payments 流�
   })
 
   it('审核通过 → UPDATE received/status，不写 sale_order_payments', async () => {
-    const executeSpy = vi.fn().mockResolvedValueOnce([{ client_user_id: 'U-1' }])
+    const executeSpy = vi
+      .fn()
+      .mockResolvedValueOnce([{ client_user_id: 'U-1' }]) // 锁定当前订单
+      .mockResolvedValueOnce([{ client_user_id: 'U-1' }]) // UPDATE RETURNING
     ;(db.transaction as any).mockImplementation(async (fn: any) => {
       return await fn({ execute: executeSpy })
     })
@@ -285,7 +292,10 @@ describe('approveLegacyOrder — 历史单口径：审核不补登 payments 流�
   })
 
   it('UPDATE 命中 0 行（已被审核/状态变更）→ CONFLICT，不调重算', async () => {
-    const executeSpy = vi.fn().mockResolvedValueOnce([]) // RETURNING 空
+    const executeSpy = vi
+      .fn()
+      .mockResolvedValueOnce([{ client_user_id: 'U-1' }]) // 锁定当前订单
+      .mockResolvedValueOnce([]) // UPDATE RETURNING 空
     ;(db.transaction as any).mockImplementation(async (fn: any) => {
       return await fn({ execute: executeSpy })
     })
@@ -308,8 +318,10 @@ describe('batchApproveLegacyOrders — 历史单口径：审核不补登 payment
   it('批量审核 → 每条 UPDATE，不写 payments；affectedUserIds 去重', async () => {
     const executeSpy = vi
       .fn()
-      .mockResolvedValueOnce([{ client_user_id: 'U-1' }])
-      .mockResolvedValueOnce([{ client_user_id: 'U-2' }])
+      .mockResolvedValueOnce([{ client_user_id: 'U-1' }]) // FY-1 锁定
+      .mockResolvedValueOnce([{ client_user_id: 'U-1' }]) // FY-1 UPDATE
+      .mockResolvedValueOnce([{ client_user_id: 'U-2' }]) // FY-2 锁定
+      .mockResolvedValueOnce([{ client_user_id: 'U-2' }]) // FY-2 UPDATE
     ;(db.transaction as any).mockImplementation(async (fn: any) => {
       return await fn({ execute: executeSpy })
     })
@@ -331,8 +343,10 @@ describe('batchApproveLegacyOrders — 历史单口径：审核不补登 payment
   it('任一条 UPDATE 命中 0 行 → 整批 CONFLICT 回滚', async () => {
     const executeSpy = vi
       .fn()
-      .mockResolvedValueOnce([{ client_user_id: 'U-1' }])
-      .mockResolvedValueOnce([]) // 第二条 RETURNING 空
+      .mockResolvedValueOnce([{ client_user_id: 'U-1' }]) // FY-1 锁定
+      .mockResolvedValueOnce([{ client_user_id: 'U-1' }]) // FY-1 UPDATE
+      .mockResolvedValueOnce([{ client_user_id: 'U-2' }]) // FY-2 锁定
+      .mockResolvedValueOnce([]) // FY-2 UPDATE RETURNING 空
     ;(db.transaction as any).mockImplementation(async (fn: any) => {
       return await fn({ execute: executeSpy })
     })

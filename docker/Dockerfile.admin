@@ -59,6 +59,17 @@ ENV JWT_SECRET=build-time-placeholder-not-used-at-runtime
 ARG NEXT_PUBLIC_RSA_PUBLIC_KEY=
 ENV NEXT_PUBLIC_RSA_PUBLIC_KEY=$NEXT_PUBLIC_RSA_PUBLIC_KEY
 
+# Analyst 入口地址同样由部署环境在构建期注入。生产不提供时顶栏会隐藏入口，
+# 防止 dev/prod 地址串用；本地 docker compose 会提供 localhost:3001 默认值。
+ARG NEXT_PUBLIC_ANALYST_ORIGIN=
+ENV NEXT_PUBLIC_ANALYST_ORIGIN=$NEXT_PUBLIC_ANALYST_ORIGIN
+
+# 进销存发布开关：lib/menu.ts 被 sidebar / breadcrumb-nav 两个 'use client' 组件引用，
+# 浏览器端要读得到，故用 NEXT_PUBLIC_ 在构建期 inline。不传即空串 → !== 'true' → 关闭
+# （fail-closed：期初库存未核验的环境绝不能露出库存入口 / 走库存联动）。
+ARG NEXT_PUBLIC_INVENTORY_LINKAGE_ENABLED=
+ENV NEXT_PUBLIC_INVENTORY_LINKAGE_ENABLED=$NEXT_PUBLIC_INVENTORY_LINKAGE_ENABLED
+
 RUN bun run build
 
 # 代码保护(L1)：兜底删除构建产物里的任何 source map。next build 生产模式默认不发
@@ -68,29 +79,36 @@ RUN bun run build
 RUN find .next/standalone .next/static -name '*.map' -type f -delete 2>/dev/null || true
 
 # 构建 cron-worker bundle 单文件（Next.js standalone 不含 src/cron/）
-# postgres-js 默认尝试 require pg-native（alpine 无该原生模块），用 --external 跳过
+# postgres-js 默认尝试 require pg-native（alpine 无该原生模块），用 --external 跳过。
+# cron 会复用带 server-only 标记的上传模块；保留 server-only 为外部依赖，
+# 由 Node 的 react-server 条件加载空模块，避免把默认抛错分支内联进 bundle。
 # 用 .mjs 后缀让 node 18 按 ESM 解析（drizzle / postgres-js 都是 ESM-only）
 RUN bun build src/cron/index.ts \
       --target=node \
       --format=esm \
       --outfile=dist/cron-worker.mjs \
-      --external pg-native
+      --external pg-native \
+      --external server-only
+# 实际加载 cron bundle，提前拦截 server-only / 路径 alias 等启动期错误；--check 不连库、不跑任务。
+RUN node --conditions=react-server dist/cron-worker.mjs --check
 
 # 构建异步导出 worker。与 web / cron 独立进程运行，单任务流式写 XLSX 后再上传 CloudBase。
 # with-permission 在 export session 缺失时才加载 Web auth；独立 worker 不允许该回退，
-# 通过 define 在构建时裁掉整条依赖链，避免 server-only 标记进入启动 bundle。
+# 通过 define 在构建时裁掉整条依赖链。保留 server-only 为外部依赖，并让 Node
+# 以 react-server 条件解析它，避免破坏 Web 端的 Client Component 隔离保护。
 RUN bun build src/export-worker/index.ts \
       --target=node \
       --format=esm \
       --outfile=dist/export-worker.mjs \
       --external pg-native \
       --external @opentelemetry/api \
+      --external server-only \
       --define process.env.FENGYU_EXPORT_WORKER='"1"'
 # 实际加载 standalone bundle，提前拦截 server-only / 路径 alias 等启动期错误；--check 不连库、不领取任务。
-RUN node dist/export-worker.mjs --check
+RUN node --conditions=react-server dist/export-worker.mjs --check
 
 # ---- 生产运行 ----
-FROM docker.m.daocloud.io/library/node:18-alpine AS runner
+FROM docker.m.daocloud.io/library/node:22-alpine AS runner
 WORKDIR /app
 
 ENV NEXT_TELEMETRY_DISABLED=1
@@ -102,7 +120,7 @@ ENV HOSTNAME="0.0.0.0"
 # 影响 admin (server.js) 与 cron-worker（复用同一镜像）：postgres.js 解析无时区
 # timestamp（库里存的是北京墙钟时间）、Date 本地方法、日志时间戳全部按 Asia/Shanghai。
 # 缺此设置时 UTC 容器会把 11:24 误当 UTC 解析，前端再 +8 渲染成 19:24（晚 8 小时）。
-RUN apk add --no-cache tzdata
+RUN apk add --no-cache tzdata postgresql-client
 ENV TZ=Asia/Shanghai
 
 RUN addgroup --system --gid 1001 nodejs
@@ -112,6 +130,9 @@ RUN adduser --system --uid 1001 nextjs
 COPY --from=builder /app/public ./public
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
+# export-worker 将 server-only 保留为外部依赖；该包无传递依赖，Node 以 react-server
+# 条件加载其空模块，Web 的 server-only 标记仍由 Next.js 正常处理。
+COPY --from=builder --chown=nextjs:nodejs /app/node_modules/server-only ./node_modules/server-only
 # cron-worker bundle（含所有依赖；compose 启动时通过 command 覆盖入口）
 COPY --from=builder --chown=nextjs:nodejs /app/dist/cron-worker.mjs ./cron-worker.mjs
 # export-worker bundle（同镜像独立进程，compose 启动时通过 command 覆盖入口）

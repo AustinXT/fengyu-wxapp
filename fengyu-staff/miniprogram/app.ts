@@ -1,6 +1,6 @@
 // app.ts — 凤御员工端小程序
 import { MOCK_ENABLED } from './utils/dev-config'
-import { getCloudEnv } from './utils/cloud-env'
+import { getCloudEnv, getApiFnName } from './utils/cloud-env'
 
 App<IAppOption>({
   globalData: {
@@ -19,6 +19,7 @@ App<IAppOption>({
     scopedStores: [] as ScopedStore[],
     managerStores: [] as ScopedStore[],
     managerStoreIds: [] as string[],
+    inventoryStoreIds: [] as string[],
     loginLevel: null as LoginLevel | null,
     currentStoreId: '' as string,
   },
@@ -73,6 +74,7 @@ App<IAppOption>({
     const scopedStores = wx.getStorageSync('scopedStores');
     const managerStores = wx.getStorageSync('managerStores');
     const managerStoreIds = wx.getStorageSync('managerStoreIds');
+    const inventoryStoreIds = wx.getStorageSync('inventoryStoreIds');
     const loginLevel = wx.getStorageSync('loginLevel');
     const currentStoreId = wx.getStorageSync('currentStoreId');
     if (staffWfId) this.globalData.staffWfId = staffWfId;
@@ -90,6 +92,7 @@ App<IAppOption>({
     if (scopedStores) this.globalData.scopedStores = scopedStores;
     if (managerStores) this.globalData.managerStores = managerStores;
     if (managerStoreIds) this.globalData.managerStoreIds = managerStoreIds;
+    if (inventoryStoreIds) this.globalData.inventoryStoreIds = inventoryStoreIds;
     if (loginLevel) this.globalData.loginLevel = loginLevel;
     if (currentStoreId) this.globalData.currentStoreId = currentStoreId;
   },
@@ -100,19 +103,19 @@ App<IAppOption>({
       const devOpenid = wx.getStorageSync('__devTestOpenid');
       if (devOpenid) payload._testOpenid = devOpenid;
       const res = await wx.cloud.callFunction({
-        name: 'staffApi',
+        name: getApiFnName(),
         data: { action: 'auth.login', payload }
       }) as any;
       if (res.result?.code === 0 && res.result.data) {
         const {
           staffWfId, staffName, position, roles, skills, avatarUrl, phone,
           boundStoreName, boundStoreId,
-          staffLevel, roleBindings, availableLoginLevels, scopedStores, managerStores, managerStoreIds,
+          staffLevel, roleBindings, availableLoginLevels, scopedStores, managerStores, managerStoreIds, inventoryStoreIds,
         } = res.result.data;
         this.setStaffInfo({
           staffWfId, staffName, position, roles, skills, avatarUrl, phone,
           boundStoreName, boundStoreId,
-          staffLevel, roleBindings, availableLoginLevels, scopedStores, managerStores, managerStoreIds,
+          staffLevel, roleBindings, availableLoginLevels, scopedStores, managerStores, managerStoreIds, inventoryStoreIds,
         });
         // loginLevel 若本地已有且在 available 内则保留，否则 fallback available[0]
         const existingLogin = this.globalData.loginLevel;
@@ -198,6 +201,10 @@ App<IAppOption>({
       this.globalData.managerStoreIds = info.managerStoreIds || [];
       wx.setStorageSync('managerStoreIds', info.managerStoreIds || []);
     }
+    if ('inventoryStoreIds' in info) {
+      this.globalData.inventoryStoreIds = info.inventoryStoreIds || [];
+      wx.setStorageSync('inventoryStoreIds', info.inventoryStoreIds || []);
+    }
   },
 
   setLoginLevel(level) {
@@ -234,6 +241,7 @@ App<IAppOption>({
     this.globalData.scopedStores = [];
     this.globalData.managerStores = [];
     this.globalData.managerStoreIds = [];
+    this.globalData.inventoryStoreIds = [];
     this.globalData.loginLevel = null;
     this.globalData.currentStoreId = '';
     // 清除临时页面状态
@@ -276,7 +284,7 @@ App<IAppOption>({
     if (phone) {
       const openid = `dev-${phone}`;
       const res: any = await wx.cloud.callFunction({
-        name: 'staffApi',
+        name: getApiFnName(),
         data: {
           action: 'auth.bindPhone',
           payload: { _testOpenid: openid, phoneNumber: phone },

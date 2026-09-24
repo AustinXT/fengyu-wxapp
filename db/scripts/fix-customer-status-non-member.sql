@@ -1,6 +1,13 @@
 -- ============================================================================
 -- fix-customer-status-non-member.sql
 --
+-- ⚠️ 本脚本已执行完毕，勿重跑，也勿当模板抄。
+--   它的段 3 守卫仍是写作当时的 `customer_status IS NULL`，#254 之后该守卫已放宽为
+--   `IS DISTINCT FROM '休眠'`（否则「会员客 ∧ 无已完成服务单 ∧ 已有旧值」永不自愈）。
+--   现行权威口径以 fengyu-admin/src/cron/steps/refresh-customer-status.ts 为准；
+--   这里不改是因为本脚本的修复对象是「非会员客带 status」（段 1 的活），
+--   段 3 不是它的缺陷来源，且 cron 已全量覆盖，重跑价值为 0。
+--
 -- 用途：
 --   一次性修复 client_wechat_users.customer_status 的脏数据。
 --   旧版 cronTask STEP 1 / update-customer-status.js 不限 customer_type 就打标签，
@@ -13,10 +20,10 @@
 --      —— 否则今晚 03:00 cronTask 重跑后还会把脏数据再写回来。
 --   2. db/scripts/update-customer-status.js 已同步更新（保持手工跑入口一致）。
 --
--- 执行方式（5433 + 5434 两个库各跑一次）：
---   psql 'postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp' \
+-- 执行方式（dev + prod 两个库各跑一次；两库均 5433/fengyu_wxapp，仅 IP 区分）：
+--   psql 'postgresql://fengyu:fengyu123@101.34.242.103:5433/fengyu_wxapp' \
 --        -f db/scripts/fix-customer-status-non-member.sql
---   psql 'postgresql://fengyu:fengyu123@47.113.202.7:5434/fengyu' \
+--   psql 'postgresql://fengyu:fengyu123@118.178.196.26:5433/fengyu_wxapp' \
 --        -f db/scripts/fix-customer-status-non-member.sql
 --
 -- 特性：

@@ -16,11 +16,11 @@
 --   （另 4 单 overpay>0 但 has_refund=false，从没退过款、属「待退」，不在本脚本范围）
 --
 -- 执行方式（先开发库验证，再生产库）：
---   psql 'postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp' \
+--   psql 'postgresql://fengyu:fengyu123@101.34.242.103:5433/fengyu_wxapp' \
 --        -f db/scripts/fix-overpay-refund-remainder.sql
 --   psql 'postgresql://fengyu:fengyu123@118.178.196.26:5433/fengyu_wxapp' \
 --        -f db/scripts/fix-overpay-refund-remainder.sql
---   执行前务必核对下方 inet_server_addr() 输出的 IP 与目标库一致（dev=47.113.202.7 / prod=118.178.196.26）。
+--   执行前务必核对下方 inet_server_addr() 输出的 IP 与目标库一致（dev=101.34.242.103 / prod=118.178.196.26）。
 --
 -- 特性：
 --   - 单事务：BEGIN/COMMIT 包裹，TEMP 表 ON COMMIT DROP；任一步出错整体回滚

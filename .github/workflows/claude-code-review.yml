@@ -27,7 +27,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 1
 
@@ -35,25 +35,24 @@ jobs:
         id: claude-review
         uses: anthropics/claude-code-action@v1
         env:
-          # 底层改用 MiniMax 国内站 API（platform.minimaxi.com/docs/token-plan/claude-code）。
-          # claude-code-action 透传 env 给 Claude Code CLI：走 MiniMax Anthropic 兼容端点 + Bearer 认证。
-          ANTHROPIC_BASE_URL: https://api.minimaxi.com/anthropic
-          ANTHROPIC_AUTH_TOKEN: ${{ secrets.MINIMAX_API_KEY }}
-          ANTHROPIC_MODEL: MiniMax-M2.7
-          # Claude Code 内部按场景调 sonnet/opus/haiku，全部映射到 MiniMax-M2.7，避免打到不存在的 model
-          ANTHROPIC_DEFAULT_SONNET_MODEL: MiniMax-M2.7
-          ANTHROPIC_DEFAULT_OPUS_MODEL: MiniMax-M2.7
-          ANTHROPIC_DEFAULT_HAIKU_MODEL: MiniMax-M2.7
+          # 底层改用智谱 GLM 国内站 API（open.bigmodel.cn，GLM Coding Plan）。
+          # claude-code-action 透传 env 给 Claude Code CLI：走 GLM Anthropic 兼容端点 + Bearer 认证。
+          ANTHROPIC_BASE_URL: https://open.bigmodel.cn/api/anthropic
+          ANTHROPIC_AUTH_TOKEN: ${{ secrets.GLM_API_KEY }}
+          ANTHROPIC_MODEL: glm-5.3
+          # Claude Code 内部按场景调 sonnet/opus/haiku，全部映射到 glm-5.3，避免打到不存在的 model
+          ANTHROPIC_DEFAULT_SONNET_MODEL: glm-5.3
+          ANTHROPIC_DEFAULT_OPUS_MODEL: glm-5.3
+          ANTHROPIC_DEFAULT_HAIKU_MODEL: glm-5.3
           API_TIMEOUT_MS: "3000000"
           CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"
         with:
           # claude-code-action 入口强制校验 with 提供认证参数（不认纯 env.ANTHROPIC_AUTH_TOKEN）。
           # 这里给 anthropic_api_key 过校验；实际认证仍走 env.ANTHROPIC_AUTH_TOKEN（Bearer，
-          # Anthropic SDK 在 AUTH_TOKEN 存在时优先用 Authorization: Bearer），打到 MiniMax 国内端点。
-          anthropic_api_key: ${{ secrets.MINIMAX_API_KEY }}
+          # Anthropic SDK 在 AUTH_TOKEN 存在时优先用 Authorization: Bearer），打到 GLM 国内端点。
+          anthropic_api_key: ${{ secrets.GLM_API_KEY }}
           plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'
           plugins: 'code-review@claude-code-plugins'
           prompt: '/code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number }}'
           # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
           # or https://code.claude.com/docs/en/cli-reference for available options
-

@@ -21,6 +21,7 @@ const { loadRechargeConfig, matchTier } = require('../utils/recharge')
 const { notifyRefundCreated, notifyRefundResult } = require('../utils/refund')
 const { logOperation, logTransition } = require('../utils/operation-log')
 const { shanghaiYYMMDD } = require('../utils/datetime')
+const { classifySaleOrderDocumentType } = require('../utils/document-type')
 
 // 旧系统(WorkFine)充值金转入专用备注标记（与 admin orders.ts LEGACY_INFLOW_NOTE 字面一致）
 const LEGACY_INFLOW_NOTE = '旧系统充值金转入'
@@ -82,20 +83,22 @@ async function recharge(ctx) {
   const marketName = ctx.auth.marketName || ''
   if (!storeId) throw new Error('INVALID_PARAMS: 缺少门店信息')
 
-  // 查顾客 + document_type
+  // 查顾客；document_type 在创建事务内按历史达标次数计算。
   const userRows = await pg.query(
-    `SELECT user_id, phone, name, customer_type, bound_store_id FROM client_wechat_users WHERE user_id = $1`,
+    `SELECT user_id, phone, name, bound_store_id, is_cross_store_temp
+     FROM client_wechat_users WHERE user_id = $1`,
     [clientUserId]
   )
   if (userRows.length === 0) throw new Error('INVALID_PARAMS: 顾客不存在')
   const user = userRows[0]
-  // 非本店顾客禁止充值（同 order.create 口径：账户余额可跨店查看，但充值按门店结算）
-  if (!isStoreInScope(ctx.auth, user.bound_store_id)) {
+  // 临时跨店顾客允许在外店充值；订单仍按当前操作门店结算。
+  // 标记以数据库实时值为权威，前端跳转参数只用于 UI 提示。
+  if (!isStoreInScope(ctx.auth, user.bound_store_id) && !user.is_cross_store_temp) {
     throw new Error('PERMISSION_DENIED: 该顾客不属于当前门店，无法充值')
   }
   const clientPhone = user.phone || null
   const customerName = user.name || null
-  const documentType = user.customer_type === '会员客' ? '售后' : '售前'
+  let documentType
 
   // 事务内：advisory lock + 生成订单号 + INSERT sale_orders（不写 sale_items）
   let saleOrderId
@@ -130,6 +133,7 @@ async function recharge(ctx) {
       orderSeq = parseInt(orderSeqResult.rows[0].sale_order_id.slice(-4)) + 1
     }
     saleOrderId = `FY-XSD-WX-${dateStrOrder}${String(orderSeq).padStart(4, '0')}`
+    documentType = await classifySaleOrderDocumentType(client, clientUserId, saleOrderId)
 
     // 线下/微信 → 统一 '待支付'；线下走 confirmOffline 入账，微信走 payNotify 回调入账
     const initialStatus = '待支付'
@@ -208,18 +212,20 @@ async function inflow(ctx) {
   if (!storeId) throw new Error('INVALID_PARAMS: 缺少门店信息')
 
   const userRows = await pg.query(
-    `SELECT user_id, phone, name, customer_type, bound_store_id FROM client_wechat_users WHERE user_id = $1`,
+    `SELECT user_id, phone, name, bound_store_id, is_cross_store_temp
+     FROM client_wechat_users WHERE user_id = $1`,
     [clientUserId]
   )
   if (userRows.length === 0) throw new Error('INVALID_PARAMS: 顾客不存在')
   const user = userRows[0]
-  // 非本店顾客禁止转入（同 card.recharge 口径：账户余额跨店可见，但转入按门店结算）
-  if (!isStoreInScope(ctx.auth, user.bound_store_id)) {
+  // 临时跨店顾客允许在外店转入；转入单仍按当前操作门店结算。
+  // 标记以数据库实时值为权威，前端跳转参数只用于 UI 提示。
+  if (!isStoreInScope(ctx.auth, user.bound_store_id) && !user.is_cross_store_temp) {
     throw new Error('PERMISSION_DENIED: 该顾客不属于当前门店，无法转入')
   }
   const clientPhone = user.phone || null
   const customerName = user.name || null
-  const documentType = user.customer_type === '会员客' ? '售后' : '售前'
+  let documentType
   const note = remark ? `${LEGACY_INFLOW_NOTE}｜${remark}` : LEGACY_INFLOW_NOTE
 
   // 幂等 token：前端每次提交生成、CloudBase SDK 自动重试携带同一值，后端据此去重，杜绝网络重试重复入账
@@ -261,6 +267,7 @@ async function inflow(ctx) {
       orderSeq = parseInt(orderSeqResult.rows[0].sale_order_id.slice(-4)) + 1
     }
     saleOrderId = `FY-XSD-WX-${dateStrOrder}${String(orderSeq).padStart(4, '0')}`
+    documentType = await classifySaleOrderDocumentType(client, clientUserId, saleOrderId)
 
     // 转入单：直接 '已支付'，total=payable=received=amt（1:1），prepaid_card_amount=0，线下，paid_at=now
     // 不加待支付并发守卫（uq_sale_orders_client_pending 仅约束 '待支付'，迁移不应被无关待支付单卡住）

@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 // ── Mocks ─────────────────────────────────────────────────────────────────────
@@ -71,6 +73,8 @@ vi.mock('@db/user', () => ({
     employeeId: 'employee_id',
     name: 'name',
     phone: 'phone',
+    // #318 的离职过滤用它；漏了这个键时 eq() 的左操作数是 undefined，断言会静默失效
+    isResigned: 'is_resigned',
   },
 }))
 
@@ -239,6 +243,80 @@ describe('login — 认证 + 锁定（PG 持久化）', () => {
     expect(onConflictDoUpdate).toHaveBeenCalled()
   })
 
+  /**
+   * 离职员工不得登录（issue #318）。
+   *
+   * 原先 `login` 只按 phone 查、不判 `is_resigned` —— 只要 `admin_passwords` 还有记录，
+   * 离职员工就能继续登录后台；配上「离职 ⇒ 角色已清空」这个会破的不变量
+   * （`sync-workfine.js` 改 `is_resigned` 不碰角色），账号会带着原有权限继续可用。
+   *
+   * 这里用「查不到」来模拟过滤生效后的效果，并断言**文案与密码错误逐字相同** ——
+   * 不能让「此人已离职」成为可探测信号（登录是无鉴权入口）。
+   */
+  it('离职员工登录 → 与密码错误同一句文案，不泄露「已离职」', async () => {
+    // ① 未锁定 ② staff 查不到（is_resigned = false 的过滤把离职者排除了）
+    mockSelectSequence([[], []])
+
+    const result = await login('13900000009', enc('correct-password'))
+
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('手机号或密码错误')
+    expect(result.message).not.toContain('离职')
+  })
+
+  /**
+   * 上面那条用「查不到」模拟过滤生效，**锁不住过滤本身** —— mock 的 `where` 不解释条件，
+   * 把过滤删掉它照样返回空。真正的行为锁是这条：查条件里必须真的出现
+   * `eq(is_resigned, false)`。（`.where()` 收到的是 mock 过的 `and`/`eq` 结构，可直接比对。）
+   */
+  it('login 的员工查询把 is_resigned = false 真的传进 where', async () => {
+    const whereConds: unknown[] = []
+    ;(db.select as any).mockImplementation(() => {
+      const limit = vi.fn().mockResolvedValue([])
+      const where = vi.fn((cond: unknown) => {
+        whereConds.push(cond)
+        return { limit, then: (r: (v: unknown[]) => unknown) => r([]) }
+      })
+      return { from: vi.fn().mockReturnValue({ where, limit, innerJoin: vi.fn().mockReturnValue({ where }) }) }
+    })
+
+    await login('13900000009', enc('correct-password'))
+
+    expect(JSON.stringify(whereConds)).toContain('{"type":"eq","a":"is_resigned","b":false}')
+  })
+
+  /**
+   * ## 失败路径的**时序**也要拉平（#318，GLM 第 2 轮 P3）
+   *
+   * 文案统一只挡住内容信道。「查不到人」直接返回、不跑 bcrypt，而「密码错」要跑一次
+   * cost-12 compare（几十到上百毫秒）—— 差一个数量级，登录接口就成了按手机号枚举
+   * 「在职且有后台凭证」账号的 oracle。本次加的 `is_resigned` 过滤**放大**了它：
+   * 离职者从慢路径掉到快路径，等于把「此人已离职」重新做成可探测信息。
+   */
+  it.each([
+    ['员工查不到（含离职被过滤掉）', [[], []]],
+    ['员工存在但无密码记录', [[], [staffRow], []]],
+  ])('%s → 仍烧掉一次 bcrypt compare（拉平耗时）', async (_name, sequence) => {
+    mockSelectSequence(sequence as any[][])
+
+    await login('13900000009', enc('whatever'))
+
+    expect(compare, '早退路径必须跑一次等量 compare').toHaveBeenCalledTimes(1)
+  })
+
+  /**
+   * 源码守护：**三处**认证查询都必须带 `is_resigned` 过滤 ——
+   * `login`（按 phone）、`getSessionFromCookie`（按 employeeId）、`checkMustChange`（改密闸门）。
+   * 只加一处不够：JWT 有 24h 有效期，漏掉任一处都等于给离职者留一条「token 仍被承认」的路。
+   */
+  it('login / getSessionFromCookie / checkMustChange 都按 is_resigned 过滤', () => {
+    const src = readFileSync(resolve(process.cwd(), 'src/actions/auth.ts'), 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/(^|[^:'"`])\/\/[^\n]*/g, '$1')
+    const hits = src.match(/eq\(staffWechatUsers\.isResigned,\s*false\)/g) ?? []
+    expect(hits.length, '三处认证查询都要过滤离职').toBe(3)
+  })
+
   it('无 admin_passwords 记录 → 失败', async () => {
     // ① 未锁定 ② staff 存在 ③ 无密码记录
     mockSelectSequence([[], [staffRow], []])
@@ -320,10 +398,14 @@ describe('login — 认证 + 锁定（PG 持久化）', () => {
 // ── logout ────────────────────────────────────────────────────────────────────
 
 describe('logout', () => {
-  it('删除 cookie', async () => {
+  it('以与登录一致的 cookie 选项清除 cookie', async () => {
     await logout()
 
-    expect(mockCookieStore.delete).toHaveBeenCalledWith('fy-admin-token')
+    expect(mockCookieStore.set).toHaveBeenCalledWith(
+      'fy-admin-token',
+      '',
+      expect.objectContaining({ httpOnly: true, sameSite: 'lax', path: '/', maxAge: 0 }),
+    )
   })
 })
 
@@ -391,6 +473,30 @@ describe('getSessionFromCookie — JWT → AuthSession', () => {
     const result = await getSessionFromCookie()
 
     expect(result).toBeNull()
+  })
+
+  /**
+   * 离职后既有会话必须立即失效（#318）—— 只挡 `login` 不够，JWT 有效期 24h。
+   * 与 login 那侧同理：断言过滤**真的进了 where**，而不是靠 mock 返回空来假装。
+   */
+  it('员工查询把 is_resigned = false 真的传进 where（离职后旧 JWT 立即失效）', async () => {
+    mockCookieStore.get.mockReturnValue({ value: 'valid-token' })
+    ;(jwtVerify as any).mockResolvedValue({ payload: { employeeId: 'EMP-001' } })
+
+    const whereConds: unknown[] = []
+    ;(db.select as any).mockImplementation(() => {
+      const limit = vi.fn().mockResolvedValue([])
+      const where = vi.fn((cond: unknown) => {
+        whereConds.push(cond)
+        return { limit }
+      })
+      return { from: vi.fn().mockReturnValue({ where }) }
+    })
+
+    const result = await getSessionFromCookie()
+
+    expect(result).toBeNull()
+    expect(JSON.stringify(whereConds)).toContain('{"type":"eq","a":"is_resigned","b":false}')
   })
 
   it('JWT 验证失败 → null', async () => {
@@ -765,7 +871,8 @@ describe('checkMustChange — middleware 预检', () => {
     ;(db.select as any).mockImplementation(() => {
       const limit = vi.fn().mockResolvedValue([{ mustChange: true }])
       const where = vi.fn().mockReturnValue({ limit })
-      const from = vi.fn().mockReturnValue({ where })
+      // 查询 join 了 staff_wechat_users 以过滤离职（#318）
+      const from = vi.fn().mockReturnValue({ where, innerJoin: vi.fn().mockReturnValue({ where }) })
       return { from }
     })
 
@@ -778,7 +885,7 @@ describe('checkMustChange — middleware 预检', () => {
     ;(db.select as any).mockImplementation(() => {
       const limit = vi.fn().mockResolvedValue([{ mustChange: false }])
       const where = vi.fn().mockReturnValue({ limit })
-      const from = vi.fn().mockReturnValue({ where })
+      const from = vi.fn().mockReturnValue({ where, innerJoin: vi.fn().mockReturnValue({ where }) })
       return { from }
     })
 

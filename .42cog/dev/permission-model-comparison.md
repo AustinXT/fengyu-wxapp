@@ -56,15 +56,26 @@ scope: fengyu-staff/cloudfunctions/staffApi · fengyu-admin
 
 以下为已核对的跨端一致性点：
 
-### 3.1 库存调拨单双向可见 —— 已核一致
+### 3.1 库存单据双端点可见 —— 已核一致（进销存 v3 口径，2026-09 更新）
 
-调拨单（transfer）对**发出店**和**接收店**双方都应可见。两端均实现 `store_id OR counterpart_store_id` 双列过滤：
+> 旧版本此节描述的 `storeFilterMode === 'transfer'` / `store_id OR counterpart_store_id`
+> 双列过滤属库存 v1，相关表与代码已随 v3 删除（见 `docs/changes/arch/011_inventory-domain-v3.md`）。
 
-- **staff**：`routes/inventory.js:72-77`，`storeFilterMode === 'transfer'` 分支生成
-  `(m.store_id = ANY($n) OR m.counterpart_store_id = ANY($n))`；列表与 detail 一致。
-- **admin**：`actions/inventory/transfer.ts:83-93`，Drizzle `or(storeId IN ..., counterpartStoreId IN ...)` 双向。
+v3 所有库存单据（含调货）统一按 `inventory_docs.source_org_node_id` /
+`target_org_node_id` **双端点 OR** 过滤，来源/目标任一命中当前账号库存 scope 即可见：
 
-**结论：双向可见口径一致。** 修改/删除权限的差异（admin 侧由**接收店确认收货**、**发出店删除**）属业务设计，非权限模型缺陷。
+- **staff**：`routes/inventory.js` 的 `buildInventoryLocationScope(auth, alias, idx)` ——
+  把 `auth.inventoryStoreIds` 经 `inventory_locations.location_id → org_node_id` 映射后生成
+  `(alias.source_org_node_id IN (...) OR alias.target_org_node_id IN (...))`；列表查询另有
+  `descendantOrgNodeIdsSql`（带 path 环守卫的递归 CTE）做组织树展开，list 与 detail 口径一致。
+- **admin**：`lib/inventory/access.ts` 的 `inventoryScopedOrgNodeIds(session)`（scope 唯一
+  真相源：库存总部不展开后代、市场含门店、门店仅自身）+ `engine.ts` 统一
+  `or(inArray(sourceOrgNodeId, scoped), inArray(targetOrgNodeId, scoped))`。
+
+**结论：双端点可见口径一致**，由
+`fengyu-staff/cloudfunctions/staffApi/__tests__/routes/cross-end-inventory-snapshot.test.js`
+§1 逐字面守护（残留 `source_location_id`/`target_location_id` 即失败）。跨市场调货出库单
+归来源市场、入库单归目标市场，双方互不见对方其他单据（说明.md §9.4）。
 
 ### 3.2 退款级联多主体 —— 已对齐
 
@@ -85,17 +96,21 @@ scope: fengyu-staff/cloudfunctions/staffApi · fengyu-admin
 
 **staff 端（staffApi）**：
 
-1. 在该单据的 `CATEGORY_CONFIG`（或等价路由配置）上加 `storeFilterMode` 标记（参考 `inventory.js:39-52` transfer 的写法）。
-2. `buildStoreFilter` / `buildStoreScopeCondition` 调用处生成 **OR 双列**条件：
-   `(m.store_id = ANY($n) OR m.<对方列> = ANY($n))`（参考 `inventory.js:72-77`）。
+1. 库存域单据：复用 `buildInventoryLocationScope(auth, alias, idx)`（`routes/inventory.js`）
+   生成 `(alias.source_org_node_id IN (...) OR alias.target_org_node_id IN (...))`；
+   非库存域单据按业务列自建 OR 双列条件（旧 `CATEGORY_CONFIG`/`storeFilterMode` 机制已随库存 v1 删除）。
+2. 双端点条件必须同时覆盖来源列与目标列（缺一侧即单向可见），scope 值一律参数化
+   （`ANY($n::text[])`），空集合回退 `FALSE`。
 3. 门店模式（单值 `effectiveStoreId`）与管理层模式（`ANY(array)`）两条路径都要覆盖 OR。
 4. detail 接口与 list 接口口径保持一致（避免列表能看、详情 403）。
 
 **admin 端**：
 
-5. 在对应 action 里**自建 `or()` 条件**（Drizzle `or(storeId IN ..., counterpartStoreId IN ...)`，参考 `transfer.ts:83-93`），不能直接复用 `scopeCondition`（它只过滤单列 `storeId`）。
-6. 保留 `isAdminScope → 免过滤` 分支（参考 `transfer.ts` 的 `isAdminLike` 短路）。
-7. `scopeStoreIds` 为空时回退 `sql\`FALSE\``，与 staff 的空集合 `FALSE` 行为对齐。
+5. 库存域单据：复用 `inventoryScopedOrgNodeIds(session)`（`lib/inventory/access.ts`）+
+   `or(inArray(source), inArray(target))`（参考 `engine.ts` 的 `listInventoryCoreDocs`）；
+   非库存域单据在对应 action 里自建 `or()` 条件，不能直接复用 `scopeCondition`（它只过滤单列 `storeId`）。
+6. 保留 `isAdminScope → 免过滤` 分支（scoped 为 `null` 即不加条件）。
+7. scope 集合为空时回退 `sql\`FALSE\``，与 staff 的空集合 `FALSE` 行为对齐。
 
 **通用**：两端实现独立、规则需等价；建议补一条 cross-end snapshot 或 e2e 断言双向可见，防止单端漂移。
 

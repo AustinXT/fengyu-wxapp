@@ -17,17 +17,46 @@
     <view class="perf-range-btns">
       <view class="range-btn {{rangeType === 'today' ? 'range-btn--active' : ''}}" bindtap="onRangeTap" data-type="today">今日</view>
       <view class="range-btn {{rangeType === 'month' ? 'range-btn--active' : ''}}" bindtap="onRangeTap" data-type="month">本月</view>
-      <view class="range-btn {{rangeType === 'lastMonth' ? 'range-btn--active' : ''}}" bindtap="onRangeTap" data-type="lastMonth">上月</view>
+      <view class="range-btn {{rangeType === 'custom' ? 'range-btn--active' : ''}}" bindtap="onRangeTap" data-type="custom">自定义</view>
+    </view>
+
+    <!-- 自定义区间：选中才展开。常驻会再吃掉一行，而本页纵向已被汇总卡 + 两级筛选占满 -->
+    <!-- 两个 picker 刻意不**互相**约束（起可选到止之后），否则 ts 里的区间校验永远不可达； -->
+    <!-- 但绝对上下界必须给：未来日期查不出绩效，过早的起点会让后端全量扫描（见 RANGE_MAX_DAYS） -->
+    <view wx:if="{{rangeType === 'custom'}}" class="perf-custom-range">
+      <van-icon name="calendar-o" size="28rpx" color="#C0322A" />
+      <picker
+        class="perf-date-picker"
+        mode="date"
+        value="{{startDate}}"
+        start="{{customMinDate}}"
+        end="{{customMaxDate}}"
+        bindchange="onCustomStartChange"
+      >
+        <view class="perf-date-cell">{{startDate || '开始日期'}}</view>
+      </picker>
+      <view class="perf-date-sep">—</view>
+      <picker
+        class="perf-date-picker"
+        mode="date"
+        value="{{endDate}}"
+        start="{{customMinDate}}"
+        end="{{customMaxDate}}"
+        bindchange="onCustomEndChange"
+      >
+        <view class="perf-date-cell">{{endDate || '结束日期'}}</view>
+      </picker>
     </view>
   </view>
 
   <!-- 提成汇总卡片 -->
   <view class="perf-summary-card">
     <view class="summary-row">
+      <!-- '--' = 未加载/加载失败，此时连 ¥ 一起隐藏，不伪装成合法零金额 -->
       <view class="summary-item">
         <text class="summary-label">销售提成</text>
         <view class="price-group">
-          <text class="price-symbol">¥</text>
+          <text wx:if="{{totalSalesAlloc !== '--'}}" class="price-symbol">¥</text>
           <text class="price-integer">{{totalSalesAlloc}}</text>
         </view>
       </view>
@@ -35,7 +64,7 @@
       <view class="summary-item">
         <text class="summary-label">服务提成</text>
         <view class="price-group">
-          <text class="price-symbol">¥</text>
+          <text wx:if="{{totalServiceCommission !== '--'}}" class="price-symbol">¥</text>
           <text class="price-integer">{{totalServiceCommission}}</text>
         </view>
       </view>
@@ -43,29 +72,116 @@
       <view class="summary-item summary-item--total">
         <text class="summary-label">合计</text>
         <view class="price-group">
-          <text class="price-symbol">¥</text>
+          <text wx:if="{{totalCommission !== '--'}}" class="price-symbol">¥</text>
           <text class="price-integer">{{totalCommission}}</text>
         </view>
       </view>
     </view>
   </view>
 
-  <!-- 分类 Tab -->
-  <van-tabs active="{{activeCategoryTab}}" bind:change="onCategoryTabChange" color="#C0322A" line-width="40rpx">
-    <van-tab wx:for="{{categoryOptions}}" wx:key="*this" title="{{item}}" />
+  <!-- 一级 Tab：业务类型（合计 / 销售 / 服务） -->
+  <van-tabs active="{{activeMainTab}}" bind:change="onMainTabChange" color="#C0322A" line-width="40rpx">
+    <van-tab wx:for="{{mainTabs}}" wx:key="*this" title="{{item}}" />
   </van-tabs>
+
+  <!-- 二级：归属分类筛选 + 当前口径下的分类金额（chip 与格子联动，点哪个都等价） -->
+  <!-- 旧版云函数不返回 categorySummary 时整块隐藏，避免 4 个假 ¥0.00 与顶部真实金额并列 -->
+  <view wx:if="{{hasCategoryPanel}}" class="perf-category-panel">
+    <view class="perf-chip-row">
+      <view
+        class="perf-chip {{activeSubCategory === '' ? 'perf-chip--active' : ''}}"
+        bindtap="onSubCategoryTap"
+        data-name=""
+      >全部</view>
+      <view
+        wx:for="{{categoryCells}}"
+        wx:key="name"
+        class="perf-chip {{activeSubCategory === item.name ? 'perf-chip--active' : ''}}"
+        bindtap="onSubCategoryTap"
+        data-name="{{item.name}}"
+      >{{item.name}}</view>
+    </view>
+
+    <!-- 口径标题不可省：admin 数据中心员工效率表有同名 4 列但口径是营业额分配额 -->
+    <text class="perf-cells-caption">{{cellsCaption}}</text>
+
+    <view class="perf-cell-grid">
+      <view
+        wx:for="{{categoryCells}}"
+        wx:key="name"
+        class="perf-cell {{activeSubCategory === item.name ? 'perf-cell--active' : ''}}"
+        bindtap="onSubCategoryTap"
+        data-name="{{item.name}}"
+      >
+        <text class="perf-cell-name">{{item.name}}</text>
+        <text class="perf-cell-amount">¥{{item.amount}}</text>
+      </view>
+    </view>
+  </view>
+
+  <!-- 顾客检索：只过滤已加载的明细，不查服务器、不额外翻页（见 ts buildSearchView 的口径说明） -->
+  <!-- 常驻，和订单管理的 business-list-filter 一致：条件渲染会让「本期 0 条」时
+       连输入框都看不到（想换个时段再搜都没有入口），搜到 0 条时也必须还能清空关键词 -->
+  <view class="perf-search-bar">
+    <van-search
+      value="{{keyword}}"
+      placeholder="搜索顾客姓名或手机号"
+      shape="round"
+      background="transparent"
+      bind:change="onKeywordChange"
+      bind:clear="onKeywordClear"
+    />
+  </view>
 
   <!-- 明细列表 -->
   <view wx:if="{{loading && items.length === 0}}" class="loading-wrap">
     <van-loading type="spinner" color="#C0322A" />
   </view>
 
-  <van-empty wx:elif="{{!loading && items.length === 0}}" description="暂无提成记录" />
+  <!-- 三种零明细必须分开，不能混成一句「暂无记录」：
+       ① 加载失败（顶部同时显示 '--'，说「暂无」会被当成零业绩）
+       ② 关键词还在、但新时段/新员工一条都没有 —— 这也是「搜索无结果」，同样要给
+          「已加载 N/共 M 条」，否则切个时段就退回到本功能要防的那种无信息空态
+       ③ 本期确实没有提成记录 -->
+  <van-empty
+    wx:elif="{{!loading && items.length === 0}}"
+    description="{{loadFailed ? '加载失败，请稍后重试' : (filterActive ? searchHint : '暂无提成记录')}}"
+  />
 
-  <view wx:else class="perf-list">
-    <view class="perf-item" wx:for="{{items}}" wx:key="index">
+  <!-- 切筛选在途时淡化旧列表：否则新 chip 已高亮、下面还挂着上一条件的明细 -->
+  <view wx:else class="perf-list {{loading ? 'perf-list--switching' : ''}}">
+    <!-- 命中时也要标口径：顶部三项汇总恒全量、不随前端过滤缩水 -->
+    <view wx:if="{{filterActive && displayItems.length > 0}}" class="perf-search-hint">{{searchHint}}</view>
+
+    <!-- 搜不到 ≠ 没分配给你：把「已加载 N/共 M 条」摆出来，让员工知道还有没翻到的 -->
+    <view wx:if="{{filterActive && displayItems.length === 0}}" class="perf-search-empty">
+      <van-empty description="{{searchHint}}" />
+    </view>
+
+    <!-- 命中太多时窗口化展示。窗口撑到硬顶后改为整段前后滑动——钉死在前 N 条的话，
+         后面的命中（含翻页新取回的）就永远没有可达路径。
+         放在列表**之前**：翻批次会把页面滚回顶部，导航若挂在最多 500 条明细的末尾，
+         用户每翻一批都得重新滚到底（sticky bottom 也救不了——元素还没进视口时不吸附） -->
+    <view wx:if="{{hasPrevMatches || hasMoreMatches}}" class="perf-match-nav">
+      <van-button
+        wx:if="{{hasPrevMatches}}"
+        size="mini" plain
+        bindtap="onPrevMatches"
+      >上一批</van-button>
+      <text class="perf-match-label">{{matchWindowLabel}}</text>
+      <van-button
+        wx:if="{{hasMoreMatches}}"
+        size="mini" plain
+        bindtap="onShowMoreMatches"
+      >{{moreMatchesLabel}}</van-button>
+    </view>
+
+    <!-- 未搜索时直接渲染 items，不另传一份同样的数组（否则 setData payload 翻倍） -->
+    <view class="perf-item" wx:for="{{filterActive ? displayItems : items}}" wx:key="rowKey">
       <view class="perf-item-header">
         <text class="perf-item-name">{{item.productName}}</text>
+        <!-- 退款冲销行的提成/业绩是负数，不打标识会被当成数据错误上报 -->
+        <text wx:if="{{item.isRefund}}" class="perf-item-type-tag type-tag--refund">退款</text>
         <text class="perf-item-type-tag {{item.type === 'sale' ? 'type-tag--sale' : 'type-tag--service'}}">
           {{item.type === 'sale' ? '销售' : '服务'}}
         </text>
@@ -74,9 +190,10 @@
         <text class="perf-item-label">提成</text>
         <text class="perf-item-amount">¥{{item.amount}}</text>
       </view>
+      <!-- 业绩 = 该员工的营业额分配份额，不是订单行总额 -->
       <view wx:if="{{item.type === 'sale'}}" class="perf-item-row">
-        <text class="perf-item-label">业绩</text>
-        <text class="perf-item-value">¥{{item.businessAmount}}</text>
+        <text class="perf-item-label">业绩(我的分配)</text>
+        <text class="perf-item-value">¥{{item.allocAmount}}</text>
       </view>
       <!-- 服务提成双字段拆分：固定手工费 + 消耗提成 -->
       <view wx:if="{{item.type === 'service'}}" class="perf-item-row">
@@ -95,9 +212,10 @@
         <text class="perf-item-label">角色</text>
         <text class="perf-item-value">{{item.roleType}}</text>
       </view>
+      <!-- 手机号（脱敏）必须同行展示：否则按手机号搜出来的结果无从核对是不是同一个人 -->
       <view class="perf-item-row">
         <text class="perf-item-label">顾客</text>
-        <text class="perf-item-value">{{item.customerName || '—'}}</text>
+        <text class="perf-item-value">{{item.customerName || '—'}}{{item.customerPhoneMasked ? ' · ' + item.customerPhoneMasked : ''}}</text>
       </view>
       <view class="perf-item-footer">
         <text class="perf-item-date">{{item.date}}</text>
@@ -105,10 +223,19 @@
       </view>
     </view>
 
-    <view wx:if="{{loading}}" class="loading-more">
+    <!-- 搜索态常驻的翻页入口（不限命中 0 条）：过滤后往往只剩几行、够不到触底，
+         onReachBottom 不会触发，没有这个按钮员工就没法确认「是不是还有没加载到的」 -->
+    <view wx:if="{{filterActive && hasMore}}" class="perf-search-more">
+      <van-button size="small" plain loading="{{loading}}" bindtap="onLoadMoreTap">继续加载下一页</van-button>
+    </view>
+
+    <!-- 搜索态的加载指示已由按钮自己的 loading 表达，不再叠一个 spinner -->
+    <view wx:if="{{loading && !filterActive}}" class="loading-more">
       <van-loading size="24rpx" />
     </view>
-    <view wx:elif="{{!hasMore && items.length > 0}}" class="no-more">
+    <!-- 搜索态下不说「已加载全部」：它紧跟在「…中未找到 X」后面读着自相矛盾，
+         该场景的完整信息已经在 searchHint 的「已加载 M/共 M 条」里了 -->
+    <view wx:elif="{{!hasMore && items.length > 0 && !filterActive}}" class="no-more">
       <text class="no-more-text">已加载全部</text>
     </view>
   </view>

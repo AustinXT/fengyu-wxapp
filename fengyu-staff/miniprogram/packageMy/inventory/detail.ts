@@ -1,63 +1,73 @@
 // packageMy/inventory/detail.ts — 库存单据详情（只读）
 import { callStaffApi } from '../../utils/cloud'
 import { formatDateTime } from '../../utils/formatters'
-
-type DocCategory = 'procurement' | 'sale' | 'transfer' | 'scrap'
+import { canOperateStoreInventory } from '../../utils/role'
 
 const STATUS_KEY_MAP: Record<string, string> = {
   '已完成': 'done',
   '草稿': 'draft',
   '已取消': 'cancelled',
+  '待审批': 'pending',
+  '待收货': 'pending',
+  '已驳回': 'rejected',
 }
 
 interface ItemRow {
   id: number
-  productCode: string
-  productName: string
+  skuId: string
+  skuName: string
   specName: string | null
   batchNo: string | null
   quantity: number
-  scrapReason?: string | null
-  saleFlowNo?: string | null
-  customerRemaining?: number | null
+  reason?: string | null
+}
+
+interface LineageRow {
+  direction: string
+  relationType: string
+  docId: string
+  docType: string
+  status: string
+  docDate: string
+  totalQuantity: number
+  linkedQuantity: number
 }
 
 interface InventoryDetail {
   id: string
-  docSubtype: string | null
+  docType: string
   status: string
   statusKey?: string
-  storeId: string
-  storeName: string | null
+  sourceOrgNodeId: string | null
+  sourceOrgNodeName: string | null
+  targetOrgNodeId: string | null
+  targetOrgNodeName: string | null
   docDate: string
-  totalQuantity: number | null
+  totalQuantity: number
   remark: string | null
-  createdByName: string | null
-  confirmedByName: string | null
   confirmedAt: string | null
   customerName: string | null
-  counterpartStoreName: string | null
-  isDispatcher: boolean | null
-  receiveQuantity: number | null
-  relatedDocNo: string | null
-  isCompleted: boolean | null
-  sourceDate: string | null
-  sourceQuantity: number | null
+  employeeName: string | null
+  supplierName: string | null
+  trackingNo: string | null
+  relatedSaleOrderId: string | null
+  auditRemark: string | null
+  lineage: LineageRow[]
   items: ItemRow[]
 }
 
 Page({
   data: {
-    docCategory: 'procurement' as DocCategory,
     id: '',
     detail: null as InventoryDetail | null,
     loading: true,
+    canReceive: false,
+    submitting: false,
   },
 
-  onLoad(query: { docCategory?: DocCategory; id?: string }) {
-    const docCategory = (query.docCategory || 'procurement') as DocCategory
+  onLoad(query: { id?: string }) {
     const id = query.id || ''
-    this.setData({ docCategory, id })
+    this.setData({ id })
     this.load()
   },
 
@@ -65,8 +75,7 @@ Page({
     if (!this.data.id) return
     this.setData({ loading: true })
     try {
-      const detail = await callStaffApi<InventoryDetail>('inventory.detail', {
-        docCategory: this.data.docCategory,
+      const detail = await callStaffApi<InventoryDetail>('inventory.docDetail', {
         id: this.data.id,
       })
       const formatted = detail
@@ -74,12 +83,48 @@ Page({
             ...detail,
             confirmedAt: detail.confirmedAt ? formatDateTime(detail.confirmedAt) : detail.confirmedAt,
             statusKey: STATUS_KEY_MAP[detail.status] || 'unknown',
+            lineage: detail.lineage || [],
           }
         : detail
-      this.setData({ detail: formatted, loading: false })
+      const canReceive = Boolean(
+        // 收货确认是门店写操作，云端 confirmReceive 仅认 inventory:store_operate，
+        // 不能随入口（canAccessInventory 三动作并集）放宽。
+        canOperateStoreInventory()
+        &&
+        detail
+        && detail.status === '待收货'
+        && ['分院配货', '分院调货出库'].includes(detail.docType),
+      )
+      this.setData({ detail: formatted, loading: false, canReceive })
     } catch (err: any) {
       this.setData({ loading: false })
       wx.showToast({ title: err?.message || '加载失败', icon: 'none' })
+    }
+  },
+
+  onConfirmReceiveTap() {
+    if (!this.data.canReceive || this.data.submitting) return
+    wx.showModal({
+      title: '确认收货',
+      content: '确认后将登记入库，且不能撤销。',
+      confirmColor: '#C0322A',
+      success: (result) => {
+        if (result.confirm) this.confirmReceive()
+      },
+    })
+  },
+
+  async confirmReceive() {
+    if (this.data.submitting || !this.data.id) return
+    this.setData({ submitting: true })
+    try {
+      await callStaffApi<{ inboundDocId: string }>('inventory.confirmReceive', { id: this.data.id })
+      wx.showToast({ title: '收货成功', icon: 'success' })
+      await this.load()
+    } catch (err: any) {
+      wx.showToast({ title: err?.message || '收货失败', icon: 'none' })
+    } finally {
+      this.setData({ submitting: false })
     }
   },
 })

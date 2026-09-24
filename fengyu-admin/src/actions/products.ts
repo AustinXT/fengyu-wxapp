@@ -9,7 +9,7 @@ import { alias } from 'drizzle-orm/pg-core'
 import { eq, and, asc, sql, inArray, isNotNull, isNull, ilike } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import crypto from 'crypto'
-import type { ProductCategory, Product, ProductSku, ProjectSeries, MallCategory, MallBundleGroup } from '@/lib/types'
+import type { ProductCategory, Product, ProductSku, ProjectSeries, MallCategory, MallBundleGroup, SalesCategory } from '@/lib/types'
 import { withPermission } from '@/lib/with-permission'
 import { expandVisibleMarketIds, requireAdmin } from '@/lib/permissions'
 import { logOperation, logUpdate } from '@/lib/operation-log'
@@ -22,6 +22,7 @@ import {
   type ExportBatchResult,
 } from '@/lib/export-pagination'
 import { orderMarketScopeCondition, resolveCustomerOrderMarketScope } from '@/lib/order-market-scope'
+import { businessErrorMessage } from '@/lib/action-error'
 
 /**
  * 获取所有市场节点（type='市场'），用于商品可见范围选择。
@@ -495,7 +496,10 @@ export const getAllSkus = withPermission(
       .leftJoin(projectSeriesLookup, eq(productSkus.projectSeriesId, projectSeriesLookup.id))
       .where(isNull(productSkus.deletedAt))
       // 例外：sortOrder 手工排序权重
-      .orderBy(asc(productSkus.sortOrder))
+      // #282：`sort_order` 默认 0（db/schema/product.ts:71），**未手工排序的 SKU 全部并列** ——
+    // 这是本次 28 处里并列面最大的一处。products 页 force-dynamic + router.replace 翻页，
+    // 每翻一页都是一次独立查询，非全序会直接造成重复/漏行。
+    .orderBy(asc(productSkus.sortOrder), asc(productSkus.skuId))
 
     return rows.map((r) => ({
       skuId: r.sku.skuId,
@@ -1040,7 +1044,8 @@ export const addSkuToProduct = withPermission(
       if (pgErrorCode(err) === '23505') return { success: false, message: '该规格已关联到此商品' }
       if (pgErrorCode(err) === '23503') return { success: false, message: '商品或规格不存在' }
       console.error('[addSkuToProduct] insert failed:', err)
-      return { success: false, message: `添加失败: ${err?.message ?? '未知错误'}` }
+      // fail-closed：23505/23503 之外的 PG 码不再把原始报错回传给前端（issue #133）
+      return { success: false, message: businessErrorMessage(err, '添加失败，请稍后重试') }
     }
 
     await logOperation(session, 'mall_product_sku.create', 'mall_product_sku', productId, { skuId })
@@ -1514,7 +1519,11 @@ export const getProducts = withPermission(
       .leftJoin(skuCountSq, eq(products.productId, skuCountSq.productId))
       .where(isNull(products.deletedAt))
       // 例外：sortOrder 手工排序权重
-      .orderBy(asc(products.sortOrder))
+      // #282：同上 —— `sort_order` 默认 0（db/schema/product.ts:167），未手工排序的商品全部并列。
+      // mall 页 force-dynamic，翻页走 router.replace 重新执行本查询，非全序会重复/漏行。
+      // （同文件 getProductsByKind 的同款 orderBy **刻意不改**：那是开单 picker 的
+      //   一次性全量加载，不翻页，不存在跨次执行的问题。）
+      .orderBy(asc(products.sortOrder), asc(products.productId))
 
     return rows.map((r) => ({
       productId: r.product.productId,
@@ -1935,7 +1944,7 @@ export interface OrderPickerSku {
 export interface OrderPickerCategory {
   categoryId: string
   categoryName: string
-  salesCategory: '自销自耗' | '他销自耗' | '他销他耗' | '生态合作' | null
+  salesCategory: SalesCategory | null
   sortOrder: number
   skus: OrderPickerSku[]
 }

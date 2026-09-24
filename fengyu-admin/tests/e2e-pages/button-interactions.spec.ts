@@ -503,6 +503,14 @@ test.describe('侧边栏菜单导航', () => {
   for (const { text, url } of menuItems) {
     test(`菜单 "${text}" 可导航`, async ({ page }) => {
       await page.goto('/dashboard')
+      const parentByLeaf: Record<string, string> = {
+        '订单管理': '经营业务', '营业额分配': '经营业务', '服务单': '经营业务', '预约管理': '经营业务',
+        '商品管理': '商品商城', '顾客管理': '客户运营', '员工管理': '组织管理', '门店管理': '组织管理',
+        '提成矩阵': '组织管理', '组织架构': '组织管理', '优惠券': '客户运营', '权限管理': '系统管理',
+        '操作日志': '系统管理', '系统配置': '系统管理',
+      }
+      const parent = parentByLeaf[text]
+      if (parent) await page.getByRole('button', { name: parent }).click()
       const link = page.locator('aside').getByText(text, { exact: true })
       if (await link.isVisible()) {
         await link.click()

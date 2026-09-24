@@ -23,12 +23,12 @@
  *
  * ⚠️ 必须先部署修复后的 staffApi，否则新 confirmOffline 仍会写错，订正后又被破坏。
  *
- * 用法（务必显式传 DATABASE_URL；生产库 5433/fengyu_wxapp、开发库 5434/fengyu，勿混）：
+ * 用法（务必显式传 DATABASE_URL；dev=101.34.242.103 / prod=118.178.196.26，两库均 5433/fengyu_wxapp，勿混）：
  *   # dry-run（默认，事务末 ROLLBACK，只打印将订正的订单 + 金额/次数/积分变化）
- *   DATABASE_URL="postgresql://fengyu:***@47.113.202.7:5433/fengyu_wxapp" \
+ *   DATABASE_URL="postgresql://fengyu:***@101.34.242.103:5433/fengyu_wxapp" \
  *     node db/scripts/fix-confirmoffline-received-prepaid.js
  *   # 显式提交
- *   DATABASE_URL="postgresql://fengyu:***@47.113.202.7:5433/fengyu_wxapp" \
+ *   DATABASE_URL="postgresql://fengyu:***@101.34.242.103:5433/fengyu_wxapp" \
  *     node db/scripts/fix-confirmoffline-received-prepaid.js --apply
  */
 
@@ -91,7 +91,7 @@ async function snapshotItems(client, saleOrderId) {
 async function main() {
   const url = process.env.DATABASE_URL || process.env.PG_CONNECTION_STRING
   if (!url) {
-    console.error('缺 DATABASE_URL（务必显式传：生产 5433/fengyu_wxapp、开发 5434/fengyu）')
+    console.error('缺 DATABASE_URL（务必显式传：dev=101.34.242.103:5433/fengyu_wxapp / prod=118.178.196.26:5433/fengyu_wxapp）')
     process.exit(1)
   }
   const client = new Client({ connectionString: url })

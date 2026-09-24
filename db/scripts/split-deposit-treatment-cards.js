@@ -38,8 +38,7 @@ const EXPECTED_DIRECT_REFS = new Set([
   'sale_payment_allocatable_items.sale_item_id',
   'sale_payment_item_receipts.sale_item_id',
   'service_items.sale_item_id',
-  'store_inventory_doc_items.sale_item_id',
-  'store_inventory_movements.sale_item_id',
+  'inventory_doc_items.sale_item_id',
 ])
 
 function log(message) {
@@ -327,14 +326,26 @@ async function inspect(client, saleItemId) {
     return { skip: '家居产品存在疗程次数字段' }
   }
 
+  // #154：本脚本只搬运 picked_up_quantity，拆出的子行两个新列会落默认 0。
+  // 家居行的 refunded_quantity / converted_quantity 一旦非零被拆走，那部分已结算额度就凭空消失
+  // → 整行重新变成可提可退（资损）。下方 unsafe 守卫只挡 pickup_records，挡不住这两类。
+  // 与其在这里补一套没法充分验证的分摊算法，不如照本脚本既有的 fail-closed 风格直接拒绝拆分。
+  // 缺列必须当异常而不是当 0：上游是 `SELECT si.*`，真缺了说明取数被改过，
+  // 而 `?? 0` 会让守卫静默失效、照常拆分并释放已结算额度（fail-open）。
+  if (source.refunded_quantity === undefined || source.converted_quantity === undefined) {
+    return { skip: '取数缺少 refunded_quantity / converted_quantity，无法判定是否可安全拆分' }
+  }
+  if (Number(source.refunded_quantity) !== 0 || Number(source.converted_quantity) !== 0) {
+    return { skip: '存在已退款/已转换数量，拆分会丢失已结算额度' }
+  }
+
   const { rows: refCounts } = await client.query(
     `SELECT
        (SELECT count(*)::int FROM pickup_records WHERE sale_item_id = $1) AS pickups,
        (SELECT count(*)::int FROM sale_allocations WHERE sale_item_id = $1) AS allocations,
        (SELECT count(*)::int FROM sale_payment_allocatable_items WHERE sale_item_id = $1) AS allocatables,
        (SELECT count(*)::int FROM sale_payment_item_receipts WHERE sale_item_id = $1) AS receipts,
-       (SELECT count(*)::int FROM store_inventory_doc_items WHERE sale_item_id = $1) AS inventory_doc_items,
-       (SELECT count(*)::int FROM store_inventory_movements WHERE sale_item_id = $1) AS inventory_movements,
+       (SELECT count(*)::int FROM inventory_doc_items WHERE sale_item_id = $1) AS inventory_doc_items,
        (SELECT count(*)::int FROM sale_items WHERE ref_sale_item_id IN (SELECT sale_item_id FROM sale_items WHERE ref_sale_item_id = $1)) AS nested_children`,
     [saleItemId],
   )

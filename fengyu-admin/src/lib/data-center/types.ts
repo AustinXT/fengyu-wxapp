@@ -7,6 +7,9 @@
  *
  * 口径权威：notes/references/metrics.md。
  */
+import type { DeltaDisplay } from '@/lib/delta-display'
+
+export type { DeltaDisplay }
 
 // ─────────────────────────────────────────────
 // scope（集团/授权汇总/市场/门店）
@@ -35,7 +38,9 @@ export interface ResolvedRange {
 /** resolveTimeRange 的输出：本期 + 上期(环比) + 去年同期(同比) */
 export interface ResolvedTimeRange {
   current: ResolvedRange
-  previous: ResolvedRange | null // 环比：上一个等长周期
+  // 环比：上一周期的**日历同期**（不是完整的上一周/上一月）。长度关系与两条日历例外
+  // （month clamp / year 跨闰年）见 time-range.ts 头注释与 metrics.md §数据中心板块专属指标
+  previous: ResolvedRange | null
   lastYear: ResolvedRange | null // 同比：去年同期
   presetLabel: string // '今日' / '本周' / '本月' / '今年' / 'YYYY-MM-DD ~ YYYY-MM-DD'
 }
@@ -61,11 +66,17 @@ export interface ProductBoardParams extends BoardParams {
 // ─────────────────────────────────────────────
 export type MetricUnit = 'amount' | 'count' | 'percent'
 
-/** KPI 卡片单元（带同比/环比）。value=null 或 delta=null → 前端显示 '--' */
+/**
+ * KPI 卡片单元（带同比/环比）。`value=null` → 前端显示 '--'。
+ *
+ * `mom`/`yoy` 自 #310/#315 起是**判别联合**而非裸数值：决策 1 要把「算不出」的三种成因
+ * （负基期已转正 / 负基期未转正 / 零基期）分别展示，裸 `number | null` 表达不了。
+ * 构造一律走 `resolveDeltaDisplay`，别手写字面量。
+ */
 export interface KpiCell {
   value: number | null
-  mom?: number | null // 环比 delta%（小数，0.12 = +12%）
-  yoy?: number | null // 同比 delta%
+  mom?: DeltaDisplay // 环比
+  yoy?: DeltaDisplay // 同比
   unit: MetricUnit
 }
 
@@ -90,7 +101,24 @@ export interface RankingRow {
 /** 各板块返回的公共信封 */
 export interface BoardMeta {
   scope: { type: DataCenterScope['type']; id: string | null; name: string }
-  timeRange: { start: string; end: string; presetLabel: string }
+  /**
+   * `previous`/`lastYear` 自 #310 起随当期一并下发——此前它们从不出仓，
+   * 前端**物理上拿不到基期区间**，于是「本月」与「自定义同起止日」给出两个不同的环比值
+   * （实测 +30.76% vs +46.39%，差 15.63pp）时，用户得不到任何解释线索。
+   *
+   * 这是**正确的语义差异**（「本月」比上月同期、「自定义」比紧邻前一等长区间），
+   * 不是 bug，但必须让用户能看见分母才说得清。`month` 分支在上月天数不足时还会 clamp
+   * （3/31 看本月 → 基期 2/1~2/28，短 3 天），同样只有露出区间才能自行判断。
+   *
+   * `null` = 该基期不存在（如 `withComparison: false` 的明细表），前端不渲染 hover。
+   */
+  timeRange: {
+    start: string
+    end: string
+    presetLabel: string
+    previous: { start: string; end: string } | null
+    lastYear: { start: string; end: string } | null
+  }
 }
 
 // ─────────────────────────────────────────────

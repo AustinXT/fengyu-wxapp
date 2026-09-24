@@ -74,7 +74,7 @@ async function main() {
   )
   const salePaymentId = payRows[0].id
   await pgQuery(
-    `INSERT INTO sale_payment_allocatable_items
+    `INSERT INTO sale_payment_item_receipts
        (sale_payment_id, sale_order_id, sale_item_id, amount, sales_category, created_at)
      VALUES ($1, $2, $3, 1000, '他销自耗'::sales_category, NOW())`,
     [salePaymentId, saleOrderId, saleItemId]

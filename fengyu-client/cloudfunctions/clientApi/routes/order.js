@@ -6,8 +6,8 @@
 const cloud = require('wx-server-sdk')
 const pg = require('../db/pg')
 const { requirePhone } = require('../middleware/auth')
-const { getMemberThreshold } = require('../utils/config')
-const { settlePointsSafe } = require('../utils/points')
+const { getMemberThreshold, getPointsToYuanRate, getPointsDeductionMaxRate } = require('../utils/config')
+const { settlePointsSafe, grantPointBatch, consumePointBatches } = require('../utils/points')
 const { recalcMemberLevel } = require('../utils/member-level')
 const { isMember, resolveUnitPrice } = require('../utils/member-pricing')
 const { recalcPaidSessionsForOrder } = require('../utils/paid-sessions')
@@ -15,7 +15,236 @@ const { capturePaymentAllocatables, refreshOrderAllocationRollup } = require('..
 const { getPerItemRefundedMap, getPerItemRefundedMapBatch, computeRefundAwareDirectedItems, itemRepayableAmount } = require('../utils/per-item-refund')
 const lakalaClient = require('../utils/lakala-client')
 const lakalaConfig = require('../utils/lakala-config')
-const { shanghaiYMD, shanghaiYYMMDD } = require('../utils/datetime')
+const { shanghaiYMD, shanghaiYYMMDD, shanghaiClockHM } = require('../utils/datetime')
+const { INVENTORY_LINKAGE_ENABLED } = require('../utils/feature-flags')
+const { classifySaleOrderDocumentType } = require('../utils/document-type')
+const { safeThumbUrl, PRODUCT_THUMB_BOX_SMALL } = require('../utils/image')
+
+function roundMoney(value) {
+  return Math.round((Number(value) || 0) * 100) / 100
+}
+
+async function loadInventoryCompositionSnapshots(client, items) {
+  if (!INVENTORY_LINKAGE_ENABLED) return new Map()
+  const homeItems = [...new Map(
+    items.filter((item) => item.productType === '家居产品').map((item) => [item.skuId, item]),
+  ).values()]
+  if (homeItems.length === 0) return new Map()
+  const result = await client.query(
+    `SELECT mapping.product_sku_id, mapping.inventory_sku_id,
+            inventory.product_code, inventory.product_name, inventory.spec_name, inventory.is_active,
+            mapping.quantity_per_sale_unit
+       FROM inventory_sku_product_sku_mappings mapping
+       JOIN inventory_skus inventory ON inventory.sku_id = mapping.inventory_sku_id
+      WHERE mapping.is_active = TRUE
+        AND mapping.product_sku_id = ANY($1::text[])
+   ORDER BY inventory.product_name, inventory.product_code`,
+    [homeItems.map((item) => item.skuId)],
+  )
+  const snapshots = new Map()
+  const invalidProductSkuIds = new Set()
+  for (const row of result.rows) {
+    if (row.is_active === false) {
+      invalidProductSkuIds.add(row.product_sku_id)
+      continue
+    }
+    const snapshot = snapshots.get(row.product_sku_id) || { version: 1, components: [] }
+    snapshot.components.push({
+      inventorySkuId: row.inventory_sku_id,
+      productCode: row.product_code,
+      productName: row.product_name,
+      specName: row.spec_name,
+      quantityPerSaleUnit: Number(row.quantity_per_sale_unit),
+    })
+    snapshots.set(row.product_sku_id, snapshot)
+  }
+  const invalid = homeItems.find((item) => invalidProductSkuIds.has(item.skuId))
+  if (invalid) {
+    throw new Error(`INVALID_STATE: INVENTORY_COMPOSITION_INVALID: 商品「${invalid.productName || invalid.skuId}」的库存组成含停用商品`)
+  }
+  const missing = homeItems.find((item) => !snapshots.has(item.skuId))
+  if (missing) {
+    throw new Error(`INVALID_STATE: INVENTORY_COMPOSITION_MISSING: 商品「${missing.productName || missing.skuId}」尚未配置库存组成`)
+  }
+  return snapshots
+}
+
+function moneyToCents(value) {
+  return Math.max(0, Math.round((Number(value) || 0) * 100))
+}
+
+function pointsToDiscountCents(points, rate) {
+  return Math.floor(points * rate * 100 + 1e-6)
+}
+
+function computePointsDeduction({
+  usePoints,
+  requestedPoints,
+  pointsBalance,
+  rawTotal,
+  currentAmount,
+  pointsToYuanRate,
+  pointsDeductionMaxRate,
+}) {
+  const explicit = requestedPoints !== undefined && requestedPoints !== null
+  const enabled = usePoints === true || (explicit && Number(requestedPoints) > 0)
+  if (!enabled) return { pointsUsed: 0, pointsDiscount: 0 }
+
+  const balance = Math.floor(Number(pointsBalance) || 0)
+  const rate = Number(pointsToYuanRate) || 0
+  const maxRate = Number(pointsDeductionMaxRate) || 0
+  const capCents = Math.min(
+    Math.floor(Math.max(0, Number(rawTotal) || 0) * maxRate * 100 + 1e-6),
+    moneyToCents(currentAmount),
+  )
+  if (balance <= 0 || rate <= 0 || maxRate <= 0 || capCents <= 0) {
+    if (explicit && Number(requestedPoints) > 0) {
+      throw new Error('INSUFFICIENT_BALANCE: 积分余额不足或当前订单不可抵扣')
+    }
+    return { pointsUsed: 0, pointsDiscount: 0 }
+  }
+
+  if (explicit) {
+    const points = Number(requestedPoints)
+    if (!Number.isInteger(points) || points < 0) {
+      throw new Error('INVALID_PARAMS: 积分抵扣数量必须为非负整数')
+    }
+    if (points === 0) return { pointsUsed: 0, pointsDiscount: 0 }
+    if (points > balance) {
+      throw new Error('INSUFFICIENT_BALANCE: 积分余额不足')
+    }
+    const discountCents = pointsToDiscountCents(points, rate)
+    if (discountCents <= 0) {
+      throw new Error('INVALID_PARAMS: 积分抵扣金额过小')
+    }
+    if (discountCents > capCents) {
+      throw new Error('INVALID_PARAMS: 积分抵扣金额超过本单上限')
+    }
+    return { pointsUsed: points, pointsDiscount: discountCents / 100 }
+  }
+
+  const centsPerPoint = rate * 100
+  const maxPointsByCap = Math.floor(capCents / centsPerPoint)
+  const pointsUsed = Math.max(0, Math.min(balance, maxPointsByCap))
+  const discountCents = Math.min(capCents, pointsToDiscountCents(pointsUsed, rate))
+  return discountCents > 0
+    ? { pointsUsed, pointsDiscount: discountCents / 100 }
+    : { pointsUsed: 0, pointsDiscount: 0 }
+}
+
+function applyOrderLevelDiscountToItems(items, discountAmount) {
+  const discountCents = moneyToCents(discountAmount)
+  if (!discountCents || !items.length) return
+
+  const totalCents = items.reduce((sum, item) => sum + moneyToCents(item.saleAmount), 0)
+  if (!totalCents) return
+
+  let distributedCents = 0
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i]
+    const baseCents = moneyToCents(item.saleAmount)
+    const shareCents = i === items.length - 1
+      ? discountCents - distributedCents
+      : Math.min(baseCents, Math.round(discountCents * (baseCents / totalCents)))
+    distributedCents += shareCents
+
+    const saleCents = Math.max(0, baseCents - shareCents)
+    item.saleAmount = saleCents / 100
+    item.received = Math.min(moneyToCents(item.received), saleCents) / 100
+
+    const denom = (item.sessionCount != null && item.sessionCount > 0) ? item.sessionCount : (item.quantity || 1)
+    const listTotalRow = roundMoney(Number(item.listUnit || 0) * (item.quantity || 1))
+    item.unitRealPrice = denom > 0 ? roundMoney(item.saleAmount / denom) : item.saleAmount
+    item.unitPrice = denom > 0 ? roundMoney(listTotalRow / denom) : listTotalRow
+  }
+}
+
+async function getAvailablePointsBalance(client, userId) {
+  const res = await client.query(
+    `SELECT COALESCE(SUM(remaining_amount), 0)::bigint AS balance
+       FROM (
+         SELECT remaining_amount
+           FROM point_batches
+          WHERE user_id = $1
+            AND remaining_amount > 0
+            AND expire_at > NOW()
+          FOR UPDATE
+       ) locked_batches`,
+    [userId],
+  )
+  return Number(res.rows?.[0]?.balance || 0)
+}
+
+async function recomputePointsBalance(client, userId) {
+  await client.query(
+    `UPDATE client_wechat_users c
+        SET points_balance = COALESCE((
+              SELECT SUM(pb.remaining_amount)
+                FROM point_batches pb
+               WHERE pb.user_id = c.user_id
+                 AND pb.expire_at > NOW()
+            ), 0),
+            points_updated_at = NOW()
+      WHERE c.user_id = $1`,
+    [userId],
+  )
+}
+
+async function deductPointsAtCreation(client, { saleOrderId, userId, pointsUsed }) {
+  if (!pointsUsed || pointsUsed <= 0) return
+  // 积分相关锁序固定为 point_batches -> client_wechat_users，与过期任务一致。
+  const available = await getAvailablePointsBalance(client, userId)
+  if (available < pointsUsed) {
+    throw new Error('INSUFFICIENT_BALANCE: 积分余额不足')
+  }
+  await client.query('SELECT user_id FROM client_wechat_users WHERE user_id = $1 FOR UPDATE', [userId])
+  const inserted = await client.query(
+    `INSERT INTO point_transactions (user_id, type, amount, ref_order_id, external_ref, created_at)
+     VALUES ($1, '消费抵扣', $2, $3, $4, NOW())
+     ON CONFLICT (external_ref) WHERE external_ref IS NOT NULL DO NOTHING
+     RETURNING id`,
+    [userId, -pointsUsed, saleOrderId, `points-deduct-${saleOrderId}`],
+  )
+  if (inserted.rows?.[0]?.id) {
+    await consumePointBatches(client, { userId, amount: -pointsUsed, refOrderId: saleOrderId })
+    await recomputePointsBalance(client, userId)
+  }
+}
+
+async function releasePointsDeduction(client, { saleOrderId, userId, pointsUsed = 0 }) {
+  if (!saleOrderId || !userId || Number(pointsUsed || 0) <= 0) return
+  await client.query('SELECT user_id FROM client_wechat_users WHERE user_id = $1 FOR UPDATE', [userId])
+  const rows = await client.query(
+    `SELECT
+       COALESCE(SUM(CASE WHEN type = '消费抵扣' THEN -amount ELSE 0 END), 0)::bigint AS deducted,
+       COALESCE(SUM(CASE WHEN type = '消费抵扣退回' THEN amount ELSE 0 END), 0)::bigint AS returned
+     FROM point_transactions
+     WHERE ref_order_id = $1 AND user_id = $2
+       AND type IN ('消费抵扣','消费抵扣退回')`,
+    [saleOrderId, userId],
+  )
+  const pointsToRelease = Number(rows.rows?.[0]?.deducted || 0) - Number(rows.rows?.[0]?.returned || 0)
+  if (pointsToRelease <= 0) return
+
+  const inserted = await client.query(
+    `INSERT INTO point_transactions (user_id, type, amount, ref_order_id, external_ref, created_at)
+     VALUES ($1, '消费抵扣退回', $2, $3, $4, NOW())
+     ON CONFLICT (external_ref) WHERE external_ref IS NOT NULL DO NOTHING
+     RETURNING id`,
+    [userId, pointsToRelease, saleOrderId, `points-deduct-rev-${saleOrderId}`],
+  )
+  const pointTransactionId = Number(inserted.rows?.[0]?.id || 0)
+  if (pointTransactionId) {
+    await grantPointBatch(client, {
+      userId,
+      pointTransactionId,
+      type: '消费抵扣退回',
+      amount: pointsToRelease,
+      refOrderId: saleOrderId,
+    })
+    await recomputePointsBalance(client, userId)
+  }
+}
 
 /**
  * 重算顾客消费档位（spending_tier，净额口径）—— clientApi 独立副本，镜像 staffApi
@@ -52,13 +281,67 @@ async function refreshSpendingTier(client, clientUserId) {
 }
 
 /**
+ * 顾客分类跃迁的订单级金额 CTE（#187，2026-09-18）。$1 = client_user_id。
+ * 产出每张已结清销售单的 non_trial / trial = 非体验 / 体验行的**毛实收**合计
+ * （sale_items.received 净额 + 该行逐项退款额 → 还原"曾经收到的钱"，退款不扣减）。
+ * refund_by_item 的 note→jsonb 三重防线逐字对齐 staffApi utils/paid-sessions.js
+ * RECEIVED_REFUNDED_DEDUCT_SQL，根除 22P02。八处副本逐字一致，由 staffApi
+ * __tests__/routes/recalc-customer-type-sql.test.js 守护。
+ */
+const RECALC_CUSTOMER_TYPE_CTE = `WITH refund_by_item AS (
+       SELECT sop.sale_order_id,
+              elem ->> 'refSaleItemId' AS sale_item_id,
+              SUM(COALESCE(public.try_numeric(elem ->> 'refundAmount'), 0)) AS refunded
+       FROM sale_order_payments sop
+       JOIN sale_orders ro ON ro.sale_order_id = sop.sale_order_id
+       CROSS JOIN LATERAL jsonb_array_elements(
+         CASE WHEN jsonb_typeof(public.try_jsonb(sop.note) -> 'items') = 'array'
+              THEN public.try_jsonb(sop.note) -> 'items'
+              ELSE '[]'::jsonb END
+       ) AS elem
+       WHERE ro.client_user_id = $1
+         AND ro.status IN ('已支付', '已完成')
+         AND ro.sale_order_type = '销售单'
+         AND sop.change_type = '退款'
+         AND sop.status = '已支付'
+         AND elem ->> 'refSaleItemId' <> 'OVERPAY'
+       -- 序号绑定 SELECT 的前 2 列（sale_order_id, refSaleItemId）；重排 SELECT 列须同步改这里
+       GROUP BY 1, 2
+     ),
+     order_amounts AS (
+       SELECT o.sale_order_id,
+              CASE WHEN NOT EXISTS (SELECT 1 FROM sale_items si2 WHERE si2.sale_order_id = o.sale_order_id)
+                   THEN GREATEST(o.received::numeric, 0)
+                   ELSE COALESCE(SUM(LEAST(si.received::numeric + COALESCE(rbi.refunded, 0),
+                                           si.sale_amount::numeric))
+                                 FILTER (WHERE si.is_experience = false), 0)
+              END AS non_trial,
+              CASE WHEN NOT EXISTS (SELECT 1 FROM sale_items si2 WHERE si2.sale_order_id = o.sale_order_id)
+                   THEN 0
+                   ELSE COALESCE(SUM(LEAST(si.received::numeric + COALESCE(rbi.refunded, 0),
+                                           si.sale_amount::numeric))
+                                 FILTER (WHERE si.is_experience = true), 0)
+              END AS trial
+       FROM sale_orders o
+       LEFT JOIN sale_items si ON si.sale_order_id = o.sale_order_id
+                              AND si.item_direction = '购买'
+       LEFT JOIN refund_by_item rbi ON rbi.sale_order_id = o.sale_order_id
+                                   AND rbi.sale_item_id = si.sale_item_id
+       WHERE o.client_user_id = $1
+         AND o.status IN ('已支付', '已完成')
+         AND o.sale_order_type = '销售单'
+       GROUP BY o.sale_order_id, o.received
+     )`
+
+/**
  * 重算顾客类型（customer_type，只升不降）。clientApi 独立副本，镜像 staffApi routes/order.js:109-202。
  * 阈值从 system_configs.new_member_threshold 读取。跃迁为"会员客"时同步写 became_member_at = COALESCE(首笔达标单 paid_at, created_at)（非检测时刻 NOW()），
  * 并给 paid_at 最早的达标销售单打 is_membership_upgrade=true（会员升级单归因）。
  *
- * 四端 SQL 独立副本（staffApi + clientApi + payNotify + admin orders.ts / recompute-customer-tags.ts），
- * 修改必须同步另外三端；一致性由 staffApi __tests__/routes/recalc-customer-type-sql.test.js 守护。
- * clientApi 用单笔口径（不含 payNotify 的回款单累计分支——该分支为 sale-order-domain-refactor 后死代码）。
+ * 八处 SQL 独立副本（staffApi + clientApi + payNotify + admin orders.ts / recompute-customer-tags.ts
+ * + db/scripts/recalc-all-customer-types.js + recalc-became-member-at.js + backfill-membership-upgrade-doc-type.js），
+ * 修改必须同步其余七处；一致性由 staffApi __tests__/routes/recalc-customer-type-sql.test.js 守护。
+ * 单笔订单口径（#187 后判定金额换成该单非体验部分毛实收，仍不跨订单累计）。
  * @param {object} client - pg 事务客户端
  * @param {string} clientUserId - client_wechat_users.user_id
  */
@@ -75,32 +358,11 @@ async function recalcCustomerType(client, clientUserId) {
   const threshold = await getMemberThreshold()
 
   const typeResult = await client.query(
-    `SELECT CASE
-       WHEN EXISTS (
-         SELECT 1 FROM sale_orders o
-         WHERE o.client_user_id = $1
-           AND o.status IN ('已支付', '已完成')
-           AND o.sale_order_type = '销售单'
-           AND o.total_amount >= $2
-       ) THEN '会员客'
-       WHEN EXISTS (
-         SELECT 1
-         FROM sale_orders o
-         JOIN sale_items si ON si.sale_order_id = o.sale_order_id
-         WHERE o.client_user_id = $1
-           AND o.status IN ('已支付', '已完成')
-           AND o.sale_order_type = '销售单'
-           AND si.is_experience = false
-       ) THEN '小美客'
-       WHEN EXISTS (
-         SELECT 1
-         FROM sale_orders o
-         JOIN sale_items si ON si.sale_order_id = o.sale_order_id
-         WHERE o.client_user_id = $1
-           AND o.status IN ('已支付', '已完成')
-           AND o.sale_order_type = '销售单'
-           AND si.is_experience = true
-       ) THEN '体验客'
+    `${RECALC_CUSTOMER_TYPE_CTE}
+     SELECT CASE
+       WHEN EXISTS (SELECT 1 FROM order_amounts WHERE non_trial >= $2) THEN '会员客'
+       WHEN EXISTS (SELECT 1 FROM order_amounts WHERE non_trial > 0)   THEN '小美客'
+       WHEN EXISTS (SELECT 1 FROM order_amounts WHERE trial > 0)       THEN '体验客'
        ELSE '流量客'
      END AS computed_type`,
     [clientUserId, threshold]
@@ -130,26 +392,24 @@ async function recalcCustomerType(client, clientUserId) {
   // 函数开头“已是会员客即 return”保证只在首次跃迁时执行一次。
   if (updateResult.rowCount > 0 && updateResult.rows[0].customer_type === '会员客') {
     await client.query(
-      `UPDATE client_wechat_users SET became_member_at = (
+      `UPDATE client_wechat_users SET became_member_at = COALESCE((
+         ${RECALC_CUSTOMER_TYPE_CTE}
          SELECT COALESCE(o.paid_at, o.created_at) FROM sale_orders o
-         WHERE o.client_user_id = $1
-           AND o.status IN ('已支付', '已完成')
-           AND o.sale_order_type = '销售单'
-           AND o.total_amount >= $2
-         ORDER BY o.paid_at ASC NULLS LAST, o.created_at ASC
+         JOIN order_amounts oa ON oa.sale_order_id = o.sale_order_id
+         WHERE oa.non_trial >= $2
+         ORDER BY o.paid_at ASC NULLS LAST, o.created_at ASC, o.sale_order_id ASC
          LIMIT 1
-       ) WHERE user_id = $1`,
+       ), became_member_at) WHERE user_id = $1`,
       [clientUserId, threshold]
     )
     await client.query(
       `UPDATE sale_orders SET is_membership_upgrade = true
        WHERE sale_order_id = (
+         ${RECALC_CUSTOMER_TYPE_CTE}
          SELECT o.sale_order_id FROM sale_orders o
-         WHERE o.client_user_id = $1
-           AND o.status IN ('已支付', '已完成')
-           AND o.sale_order_type = '销售单'
-           AND o.total_amount >= $2
-         ORDER BY o.paid_at ASC NULLS LAST, o.created_at ASC
+         JOIN order_amounts oa ON oa.sale_order_id = o.sale_order_id
+         WHERE oa.non_trial >= $2
+         ORDER BY o.paid_at ASC NULLS LAST, o.created_at ASC, o.sale_order_id ASC
          LIMIT 1
        )`,
       [clientUserId, threshold]
@@ -269,6 +529,10 @@ async function createLakalaPreorder({
   payAmountYuan, accountType, transType,
   openid, subAppid, requestIp,
   subject, attach,
+  // 仅用于预下单失败时的安全释放（需要按门店解析商户去查单/关单）
+  storeId: storeIdForRelease,
+  // 单次预下单的超时预算；不传则用微信口径。支付宝要给吱口令那一跳让出预算
+  timeoutMs: preorderTimeoutMs,
 }) {
   const totalAmountFen = Math.round(payAmountYuan * 100)
   if (!outTradeNo) {
@@ -285,35 +549,75 @@ async function createLakalaPreorder({
       subject: subject || `凤御美容订单 ${orderNo}`,
       attach: attach || orderNo,
       subAppid, openid,
-      timeoutExpressMin: 10,
+      timeoutExpressMin: LAKALA_PREORDER_TIMEOUT_MIN,
+      timeoutMs: preorderTimeoutMs || LAKALA_PREORDER_TIMEOUT_MS,
     })
   } catch (err) {
+    // 渠道明确回了业务失败码 → 确定没建单，直接本地释放，不必再跑一遍查单/关单。
+    //
+    // 状态集合是 ('待支付','部分支付')，**刻意不含 '支付失败'**：能走到预下单说明
+    // reserve 已经放行，而 reserve 只接受这两个状态（见其状态闸门）。与
+    // `releaseLakalaPaymentIntent`（含 '支付失败'，服务 staff/admin 的关单路径）用途不同。
     const definitelyNotCreated = err
       && /LAKALA_PREORDER_FAILED/.test(String(err.message || ''))
     if (definitelyNotCreated) {
-      await pg.query(
-        `UPDATE sale_orders
-         SET lakala_out_order_no = NULL, updated_at = NOW()
-         WHERE sale_order_id = $1
-           AND status IN ('待支付', '部分支付')
-           AND lakala_out_order_no = $2`,
-        [orderNo, outTradeNo]
-      )
+      // 释放失败不能盖掉真正的业务错误——那会让前端拿到一个无前缀的 DB 错误，
+      // 错误映射全乱（双谱系评审 round-7）
+      try {
+        await pg.query(
+          `UPDATE sale_orders
+           SET lakala_out_order_no = NULL, updated_at = NOW()
+           WHERE sale_order_id = $1
+             AND status IN ('待支付', '部分支付')
+             AND lakala_out_order_no = $2`,
+          [orderNo, outTradeNo]
+        )
+      } catch (releaseErr) {
+        console.warn('[order/preorder] 明确失败后的本地释放未完成，交由定时补偿兜底:',
+          orderNo, outTradeNo, releaseErr && releaseErr.message)
+      }
+    } else {
+      // 超时/网络异常：**不确定**渠道是否已建单。以前这里直接放着不管，留下「意图活跃
+      // 但没有快照」的状态——顾客重试只会撞 PAYMENT_INTENT_ACTIVE，得等渠道超时 + 定时
+      // 补偿才自愈，正是本 issue 要消灭的卡死（双谱系评审 round-6）。
+      // 改为走 fail-closed 的安全释放：查得到且未付款就关单后释放，查不到/查不准就保留，
+      // 既不会误释放一笔可能已被支付的单，也不会平白把订单锁死。
+      await releaseIntentAfterPreorderFailure(orderNo, outTradeNo, storeIdForRelease)
     }
     throw err
   }
 
   // 微信通道：校验拉卡拉返回的 app_id 与我方 subAppid 一致（防止拉卡拉商户绑定错误导致用户支付到别人账户）
+  //
+  // 这条抛错发生在预下单**成功之后**：渠道单已经建好、本地意图已占，但快照还没落。
+  // 不释放就又是「意图活跃但无快照」，顾客重试只会撞 PAYMENT_INTENT_ACTIVE
+  // （双谱系评审 round-7）。这笔单本来就不该被支付，安全释放正合适。
   if (accountType === 'WECHAT' && transType === '71') {
     if (subAppid && resp.lakalaAppId && resp.lakalaAppId !== subAppid) {
+      await releaseIntentAfterPreorderFailure(orderNo, outTradeNo, storeIdForRelease)
       throw new Error(`INVALID_STATE: LAKALA_APPID_MISMATCH: 拉卡拉返回 app_id=${resp.lakalaAppId} 与 sub_appid=${subAppid} 不一致`)
     }
   }
 
+  // 渠道回了成功码，但支付参数残缺（缺 package / paySign / 二维码 URL）——
+  // 此时渠道单很可能已经建好，本地意图已占。不拦的话会落盘一份**不可用的快照**，
+  // 顾客每次重试都复用它、每次都失败，直到场次过期（双谱系评审 round-7）。
+  // 按「渠道可能已建单」处理：走安全释放后抛，让顾客可以立刻重新发起。
   if (accountType === 'WECHAT' && transType === '71') {
-    return { outTradeNo, tradeNo: resp.tradeNo, paymentParams: resp.paymentParams }
+    // wx.requestPayment 的五个必需字段缺一不可（appId 由小程序 context 提供，不在此列）
+    const wxParams = resp.paymentParams
+    if (!wxParams || !wxParams.package || !wxParams.paySign
+        || !wxParams.timeStamp || !wxParams.nonceStr || !wxParams.signType) {
+      await releaseIntentAfterPreorderFailure(orderNo, outTradeNo, storeIdForRelease)
+      throw new Error('INVALID_STATE: LAKALA_PREORDER_INCOMPLETE: 渠道未返回完整的微信支付参数')
+    }
+    return { outTradeNo, tradeNo: resp.tradeNo, paymentParams: wxParams }
   }
   if (accountType === 'ALIPAY' && transType === '41') {
+    if (!resp.alipayQrUrl) {
+      await releaseIntentAfterPreorderFailure(orderNo, outTradeNo, storeIdForRelease)
+      throw new Error('INVALID_STATE: LAKALA_PREORDER_INCOMPLETE: 渠道未返回支付宝二维码地址')
+    }
     return { outTradeNo, tradeNo: resp.tradeNo, alipayQrUrl: resp.alipayQrUrl }
   }
   return { outTradeNo, tradeNo: resp.tradeNo }
@@ -330,16 +634,483 @@ function buildLakalaOutTradeNo(orderNo, excludedOutTradeNo) {
   return `${orderNo}_${suffix}`
 }
 
+/**
+ * 拉卡拉 trade_state 的三分类（官方取值：INIT / CREATE / SUCCESS / FAIL / DEAL /
+ * UNKNOWN / CLOSE / PART_REFUND / REFUND / REVOKED）。
+ *
+ * 历史上代码只认 ['FAIL','CLOSE'] 为可释放终态，漏掉 REVOKED（当日交易撤销）——
+ * 撤销过的单会永久卡住支付意图，谁也发不了新支付、谁也关不掉订单（issue #214）。
+ */
+const LAKALA_RELEASABLE_TRADE_STATES = ['FAIL', 'CLOSE', 'REVOKED']
+const LAKALA_PAID_TRADE_STATES = ['SUCCESS', 'PART_REFUND', 'REFUND']
+
+/**
+ * 允许关闭的订单状态（跨 env 作废接口的前置复核用）。
+ * 必须与 staffApi routes/order.js 的 CLOSEABLE_ORDER_STATUSES 同集合——
+ * 两端漂移会让「staff 放行但 clientApi 拒绝」这类状态变成误报，由 snapshot 守护。
+ */
+const CLOSEABLE_ORDER_STATUSES = ['待支付', '支付失败']
+
+/**
+ * 「渠道侧已收到钱」的统一错误。带结构化标记 `isPaymentAlreadySucceeded`，
+ * 调用方据此判断，不要去正则匹配错误文案——文案一重构，判断就会静默失效
+ * （双谱系评审 round-12）。
+ */
+function paymentAlreadySucceededError() {
+  const err = new Error('CONFLICT: PAYMENT_ALREADY_SUCCEEDED: 支付已成功，正在更新订单，请稍后刷新')
+  err.isPaymentAlreadySucceeded = true
+  return err
+}
+
+/** 与 payNotify 解析回调时的 `.toUpperCase()` 对齐，避免两端对同一笔单判定不一致。 */
+function normalizeTradeState(state) {
+  return String(state || '').trim().toUpperCase()
+}
+
+/**
+ * 作废意图路径上每次渠道调用的超时预算（双谱系评审 round-1）。
+ *
+ * 该路径最坏串行三次往返（queryTrade → closeTrade → 复核 queryTrade）。按 lakala-client
+ * 默认的 30s/次算最坏 90s，而 clientApi 的云函数超时只有 60s —— 会在复核完成前被平台
+ * 干掉，留下「渠道已关单、本地意图没释放」的不一致。7s × 3 ≈ 21s，留足余量。
+ * ⚠️ 改这个值或改 cloudbaserc 的函数超时，要回头核对 staffApi 桥的 DEFAULT_TIMEOUT_MS。
+ */
+const LAKALA_VOID_CALL_TIMEOUT_MS = 7000
+
+/**
+ * 作废 + 重建这条路径的总预算（双谱系评审 round-12）。
+ *
+ * ⚠️ 我最初的核算漏了一环：新场次**自己失败时还要再清理一次**。完整的最坏路径是
+ *   作废旧场次 21s + 预下单(支付宝还有吱口令) 28s + 新场次失败清理 21s ≈ 70s
+ * ——超过 clientApi 的 60s 函数超时，会在清理完成前被平台杀掉，留下「活动意图但无快照」，
+ * 也就是本 issue 要消灭的那个状态又回来了。
+ *
+ * 所以不能闷头重建：作废完成后先看还剩多少预算，不够跑完「重建 + 失败清理」就直接返回
+ * 一个可重试的错误（旧场次此时**已经作废干净**，顾客点一次重试就是全新的 60s 预算，
+ * 不会卡住）。正常情况下拉卡拉单次往返 1~2s，这条降级分支根本走不到。
+ */
+// 算式（改这个数之前先重算一遍）：
+//   函数超时 60s − 重建最坏耗时 = 允许的「已耗时」上限
+//   微信：  preorder 20s + 失败清理 21s = 41s → 上限 19s
+//   支付宝：preorder 15s + 吱口令 13s + 失败清理 21s = 49s → 上限 11s
+// 取两者更小的一侧（11s）再留余量 → 8s。
+//
+// 留这 3s 是因为 startedAt 从本 wrapper 入口起算，不含 action 的前置开销（鉴权、
+// advisory lock 等待、订单读取）——那部分也吃同一个 60s 函数预算（双谱系评审 round-14）。
+// 作废本身最坏 21s，走满就必然不重建（保守，正确）；正常 3 次往返 3~6s，照常重建。
+const LAKALA_REBUILD_MAX_ELAPSED_MS = 8000
+
+/**
+ * 预下单 / 吱口令的单次超时预算（双谱系评审 round-6）。
+ *
+ * 整条支付请求必须在 clientApi 的 60s 函数超时内跑完，**且要给失败后的安全释放留出余量**：
+ *   微信：preorder 20s + 释放 7s×3 = 41s
+ *   支付宝：preorder 20s + 吱口令(8s + 1s 退避 + 8s 重试) + 释放 21s ≈ 58s
+ * 用 lakala-client 的默认 30s 会让释放根本跑不完，留下「意图活跃但无快照」——
+ * 正是安全释放本身要消灭的状态。
+ */
+const LAKALA_PREORDER_TIMEOUT_MS = 20000
+
+/**
+ * 支付宝通道要多走一跳吱口令（且失败会自动重试一次），必须比微信更紧（双谱系评审 round-7）：
+ *   15s + (6s + 1s 退避 + 6s) + 释放 7s×3 = 49s，对 60s 函数超时留 11s。
+ * 用微信那套 20s/8s 会算到 58s——余量只剩 2s，扛不住冷启动 + PG 建连 + 十来次查询的开销，
+ * 而且最坏路径的几跳在网络劣化时高度相关（拉卡拉慢的时候，释放查询也慢），
+ * 不是可以相乘的独立小概率。释放跑不完就又留下「意图活跃但无快照」——它本该消灭的状态。
+ */
+const LAKALA_PREORDER_TIMEOUT_ALIPAY_MS = 15000
+const LAKALA_SHARE_CODE_TIMEOUT_MS = 6000
+
+/**
+ * 复用旧支付场次的最小剩余有效期。低于这个值不复用——顾客还没输完密码渠道单就过期了，
+ * 重新开一场比让他付一半失败更好。
+ */
+const PAYMENT_INTENT_REUSE_MIN_REMAINING_MS = 60 * 1000
+
+/**
+ * 预下单传给拉卡拉的 timeout_express（分钟）。渠道单在此之后自动转 CLOSE。
+ * 支付场次快照的 expiresAt 必须由同一个常量推出，否则「渠道已过期但本地判还能复用」
+ * 会让顾客点了支付才失败。
+ */
+const LAKALA_PREORDER_TIMEOUT_MIN = 10
+
+function lakalaIntentExpiresAt(nowMs = Date.now()) {
+  return new Date(nowMs + LAKALA_PREORDER_TIMEOUT_MIN * 60 * 1000).toISOString()
+}
+
+/**
+ * 构造微信场次快照（pay / repay 两处调用点共用，避免字段各自漂移——漏一个字段不会报错，
+ * 只会让复用判据静默落空，退化成「还是发不了新支付」）。
+ */
+function buildWechatIntentSnapshot(outTradeNo, payAmount, paymentParams) {
+  return {
+    outTradeNo,
+    expiresAt: lakalaIntentExpiresAt(),
+    paymentMethod: '微信',
+    payAmount,
+    paymentParams,
+  }
+}
+
+/** 构造支付宝吱口令场次快照（alipayPay / repay 两处调用点共用）。 */
+function buildAlipayIntentSnapshot(outTradeNo, payAmount, shareToken, expireDate) {
+  return {
+    outTradeNo,
+    // 吱口令自带有效期，可能短于 preorder 的 timeout_express，取更早者
+    expiresAt: earlierIntentExpiry(expireDate, lakalaIntentExpiresAt()),
+    paymentMethod: '支付宝',
+    payAmount,
+    paymentParams: { alipayShareToken: shareToken, alipayExpireDate: expireDate },
+  }
+}
+
+/**
+ * 支付宝吱口令自带 expire_date，可能早于 preorder 的 timeout_express。
+ * 复用截止取两者更早者；渠道值无法解析时退回 preorder 口径（宁可少复用一会儿）。
+ *
+ * ⚠️ 渠道返回的是不带时区的 `yyyy-MM-dd HH:mm:ss`（拉卡拉口径固定 GMT+8）。
+ * 不能用 `new Date(s.replace(/-/g,'/'))` —— 那按**运行时本地时区**解析，生产靠
+ * index.js 设 TZ=Asia/Shanghai 才恰好正确，而单测直接 require routes/ 不加载 index.js，
+ * 在 UTC 机器上会算晚 8 小时，`Math.min` 恒选 fallback、函数形同虚设且测不出来。
+ * 这里按 utils/datetime.js 的既有约定走纯 UTC 算术，不依赖 process.env.TZ。
+ */
+function earlierIntentExpiry(channelExpireDate, fallbackIso) {
+  if (!channelExpireDate) return fallbackIso
+  const m = String(channelExpireDate).trim()
+    .match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2}):(\d{2})/)
+  if (!m) return fallbackIso
+  // GMT+8 → UTC 毫秒
+  const channelMs = Date.UTC(
+    Number(m[1]), Number(m[2]) - 1, Number(m[3]),
+    Number(m[4]), Number(m[5]), Number(m[6]),
+  ) - 8 * 3600 * 1000
+  if (!Number.isFinite(channelMs)) return fallbackIso
+  return new Date(Math.min(channelMs, new Date(fallbackIso).getTime())).toISOString()
+}
+
+/**
+ * 按当前单号 CAS 释放支付意图。
+ *
+ * 状态集合含 '支付失败'（#214）：staffApi / admin 的关单入口都允许关闭 '支付失败' 单，
+ * 若这里不放行，那类单会走完 queryTrade + closeTrade（**渠道场次已被真的销毁**）却释放
+ * 不掉本地意图 → 订单永远关不掉，且每次重试都再关一次渠道单。
+ */
 async function releaseLakalaPaymentIntent(orderNo, outTradeNo) {
   return pg.query(
     `UPDATE sale_orders
      SET lakala_out_order_no = NULL, updated_at = NOW()
      WHERE sale_order_id = $1
-       AND status IN ('待支付', '部分支付')
+       AND status IN ('待支付', '部分支付', '支付失败')
        AND lakala_out_order_no = $2
      RETURNING sale_order_id`,
     [orderNo, outTradeNo]
   )
+}
+
+/**
+ * 释放 CAS 返回 0 行有三种语义，必须区分（#214）：
+ *   a) 别人（前端轮询 confirmPayment / reconcile）已经把同一笔意图释放了 → 目标已达成，放行
+ *   b) 意图被换成了新单号 → 必须拦
+ *   c) 订单状态已变 → 必须拦
+ * 一律当失败会造成可重现的误报：scan-pay 的轮询先释放，顾客随即点取消，就会吃一记
+ * 「支付状态已变化，请刷新订单后重试」，要点第二次才成功——正好抵消本 issue 的修复效果。
+ *
+ * @returns {Promise<boolean>} true = 可继续（已释放或本就无意图）
+ */
+async function confirmIntentReleased(orderNo, outTradeNo) {
+  const released = await releaseLakalaPaymentIntent(orderNo, outTradeNo)
+  if (released.length > 0) return true
+  const rows = await pg.query(
+    'SELECT lakala_out_order_no FROM sale_orders WHERE sale_order_id = $1',
+    [orderNo]
+  )
+  if (rows.length === 0) return false
+  // 当前已无意图，或已不是我们刚作废的那一笔 → 目标状态已达成
+  return !String(rows[0].lakala_out_order_no || '').trim()
+}
+
+/**
+ * 预下单成功后把本次支付场次快照落盘，供顾客中途退出后「继续支付」复用（issue #214）。
+ *
+ * CAS 锚 `lakala_out_order_no = $2`：并发场景下意图若已被换掉，快照就不该落到新场次上。
+ *
+ * 落盘失败**不抛**：此时支付参数已经拿到手，让顾客先把这笔付掉比什么都重要。代价是
+ * 这一场次失去复用能力（顾客中途退出后要等渠道超时），即退回改动前的行为——
+ * 与「预下单/吱口令失败」那条路径的安全释放不同，那里顾客根本没拿到可用的支付参数。
+ */
+async function persistLakalaPaymentIntentSnapshot(orderNo, outTradeNo, snapshot) {
+  try {
+    await pg.query(
+      `UPDATE sale_orders
+       SET lakala_payment_intent = $1
+       WHERE sale_order_id = $2
+         AND lakala_out_order_no = $3`,
+      [JSON.stringify(snapshot), orderNo, outTradeNo]
+    )
+  } catch (err) {
+    console.warn('[order/persistLakalaPaymentIntentSnapshot] 落盘失败（不影响本次支付）:',
+      orderNo, err && err.message)
+  }
+}
+
+/**
+ * 判断能否复用订单上已有的支付场次，能则返回可直接回发前端的 paymentParams。
+ *
+ * 六项判据全中才复用，任一不中返回 null（调用方退回「查渠道状态 → 释放 → 重建」的老路）：
+ *   1. 快照的 outTradeNo 与订单当前意图一致 —— 这是自校验锚点，也是本设计不依赖
+ *      「所有清空点同步清空快照列」的原因：单号对不上即自动失效，残留 jsonb 无害
+ *   2. **归属本人** —— paymentParams 里的 prepay_id 绑定的是建单那位顾客的 openid，
+ *      回发给第二个人不但泄漏他的 paySign，对方 wx.requestPayment 还必然失败，
+ *      且有效期内每次重试都命中同一快照 → 这张单对他永久不可支付。
+ *      员工开单在首次支付前 client_user_id 为空，此时任何快照都不该被复用。
+ *   3. 剩余有效期足够（见 PAYMENT_INTENT_REUSE_MIN_REMAINING_MS）
+ *   4. 金额一致 —— 防御性冗余，意图活跃期改抵扣/改储值卡/改线下三条路径都有既存守卫
+ *   5. 支付方式一致（微信场次不能拿去走支付宝）
+ *   6. 存在可用的 paymentParams
+ *
+ * @returns {{ paymentParams: object }|null}
+ */
+function tryReuseLakalaPaymentIntent(order, { payAmount, paymentMethod, userId }) {
+  // 没有活动意图就谈不上复用；不先判这一条，下面 outTradeNo 的比较会在「两边都空」时
+  // 误判为相等。
+  if (!order.lakala_out_order_no) return null
+
+  const raw = order.lakala_payment_intent
+  if (!raw) return null
+  const intent = typeof raw === 'string' ? safeParseJson(raw) : raw
+  if (!intent || typeof intent !== 'object' || Array.isArray(intent)) return null
+
+  if (String(intent.outTradeNo || '') !== String(order.lakala_out_order_no || '')) return null
+
+  if (!order.client_user_id || !userId || order.client_user_id !== userId) return null
+
+  const expiresAt = intent.expiresAt ? new Date(intent.expiresAt).getTime() : 0
+  if (!Number.isFinite(expiresAt)
+      || expiresAt - Date.now() < PAYMENT_INTENT_REUSE_MIN_REMAINING_MS) {
+    return null
+  }
+
+  const snapshotAmount = Math.round(Number(intent.payAmount || 0) * 100)
+  if (snapshotAmount !== Math.round(Number(payAmount || 0) * 100)) return null
+
+  if (String(intent.paymentMethod || '') !== String(paymentMethod || '')) return null
+
+  const paymentParams = intent.paymentParams
+  if (!paymentParams || typeof paymentParams !== 'object') return null
+
+  // 按通道校验必需字段：历史上可能落过畸形快照（渠道回成功却少字段），
+  // 复用它只会让顾客反复失败到场次过期。不复用即退回「查渠道 → 释放 → 重建」老路。
+  if (paymentMethod === '微信'
+      && (!paymentParams.package || !paymentParams.paySign
+          || !paymentParams.timeStamp || !paymentParams.nonceStr || !paymentParams.signType)) {
+    return null
+  }
+  if (paymentMethod === '支付宝' && !paymentParams.alipayShareToken) return null
+
+  return { paymentParams }
+}
+
+function safeParseJson(text) {
+  try {
+    return JSON.parse(text)
+  } catch {
+    return null
+  }
+}
+
+/**
+ * 复用旧支付场次前，确认它在渠道侧仍然可支付（双谱系评审 round-1 引入，round-2 补全）。
+ *
+ * 两类必须拦下的状态：
+ *   - **已支付**（SUCCESS / PART_REFUND / REFUND）：顾客付了款但回调还没入账就重新扫码，
+ *     不查渠道就回发旧 paymentParams，前端会去唤起一笔已成功的场次，只能得到误导性失败。
+ *   - **已终态但本地没释放**（FAIL / CLOSE / REVOKED）：例如关单成功但复核那一跳超时，
+ *     fail-closed 保留了意图与快照。此时复用会回发一个**已死亡**的场次，顾客每次重试都
+ *     命中同一快照、反复失败，直到快照过期才自愈——正是本 issue 要消灭的卡死的短时复刻。
+ *     这种情况直接释放本地意图并返回 false，调用方重新预占一笔新场次，顾客无感。
+ *
+ * 必须在事务**之外**调用：这是一次 HTTPS 往返，放进事务会把订单行锁持有到网络返回。
+ *
+ * 查单失败时选择**放行复用**而不是拒绝：复用的是同一笔渠道单，渠道对已支付/已关闭的
+ * 场次本身会拒绝付款，不存在重复扣款；而拒绝会让顾客重新卡在「发不了新支付」上。
+ *
+ * @returns {Promise<boolean>} true = 可继续复用；false = 已释放意图，调用方应重新预占
+ */
+async function ensureReusedIntentStillPayable(orderNo, outTradeNo, merchant) {
+  // 商户配置缺失（数据异常）时放行复用而不是拒绝：拒绝会让顾客直接卡在「发不了支付」，
+  // 而放行最坏也只是回发一个可能已失效的场次、由前端唤起失败——两害相权取轻。
+  // 能走到这里说明预下单当时是成功的，商户配置凭空消失属于需要人工介入的异常。
+  if (!merchant) return true
+  let trade
+  try {
+    trade = await lakalaClient.queryTrade({
+      merchantNo: merchant.merchantNo,
+      termNo: merchant.termNo,
+      outTradeNo,
+      timeoutMs: LAKALA_VOID_CALL_TIMEOUT_MS,
+    })
+  } catch (err) {
+    console.warn('[order/reuseIntent] 复用前查单失败，降级放行:', orderNo, err && err.message)
+    return true
+  }
+  if (!trade || trade.ok !== true) {
+    console.warn('[order/reuseIntent] 复用前查单未成功返回，降级放行:',
+      orderNo, trade && trade.code, trade && trade.msg)
+    return true
+  }
+
+  const state = normalizeTradeState(trade.tradeState)
+  if (LAKALA_PAID_TRADE_STATES.includes(state)) {
+    throw paymentAlreadySucceededError()
+  }
+  if (LAKALA_RELEASABLE_TRADE_STATES.includes(state)) {
+    // 渠道已终态：这笔场次再也付不了，留着它只会让顾客反复撞墙。释放后让调用方重建。
+    console.warn('[order/reuseIntent] 快照对应的渠道场次已终态，释放后重建:', orderNo, state)
+    // 返回值不能忽略（双谱系评审 round-12）：并发请求可能已经清掉这笔、预占了新的一笔，
+    // 此时 CAS 扑空。若还按「已释放」继续往下走，会进一步作废那笔尚未落快照的新意图。
+    if (!await confirmIntentReleased(orderNo, outTradeNo)) {
+      throw new Error('CONFLICT: PAYMENT_INTENT_CHANGED: 支付场次已变化，请刷新后重试')
+    }
+    return false
+  }
+  return true
+}
+
+/**
+ * 预下单已成功、但后续步骤（如支付宝吱口令）失败时的安全释放（双谱系评审 round-5）。
+ *
+ * 不释放的话会留下「意图活跃但没有可复用快照」的状态：顾客立刻重试只会撞
+ * PAYMENT_INTENT_ACTIVE，得等渠道超时 + 定时补偿才能自愈——正是本 issue 要消灭的卡死。
+ *
+ * 释放本身仍走 fail-closed 的 voidActiveLakalaPaymentIntent（查单确认非 SUCCESS → 关单
+ * → 复核）。释放失败不能盖掉真正的业务错误，所以这里只记日志。
+ */
+async function releaseIntentAfterPreorderFailure(orderNo, outTradeNo, storeId) {
+  // 契约：**本函数永不抛**。调用点都是 `await release(...)` 后紧跟 `throw err`（原始业务错误），
+  // 一旦这里漏出异常就会把真正的错误换掉，前端的错误映射全乱——正是下面那层 catch 的意义。
+  try {
+    await voidActiveLakalaPaymentIntent(orderNo, { outTradeNo, storeId })
+  } catch (err) {
+    console.warn('[order/preorderFailure] 安全释放未完成，交由定时补偿兜底:',
+      orderNo, outTradeNo, err && err.message)
+  }
+}
+
+/**
+ * 主动作废订单上的在线支付意图，成功后该订单可被取消/关闭（issue #214）。
+ *
+ * 全程 **fail-closed**：只有确认渠道侧已是「不可再支付」的终态才清本地意图。
+ * 关单失败、复核非终态、查单异常一律抛 CONFLICT 保留意图——宁可让用户重试，
+ * 也不制造「本地已关、渠道可付」的窗口（那会让 payNotify 因「非当前意图」拒绝入账，
+ * 变成钱收了订单不动的最坏事故）。
+ *
+ * @param {string} orderNo
+ * @param {{ outTradeNo: string, storeId: string }} ctx
+ * 调用方负责先判空 outTradeNo（`cancel` 与 `voidPaymentIntent` 都判了）；真漏判也是
+ * fail-closed —— lakala-client 的参数校验会先抛 INVALID_PARAMS，不会误释放意图。
+ *
+ * @returns {Promise<'released'>}
+ */
+async function voidActiveLakalaPaymentIntent(orderNo, { outTradeNo, storeId, merchant: knownMerchant }) {
+  // 调用方若已在事务里解析过商户就直接传进来，省一次 DB 往返
+  let merchant = knownMerchant || null
+  try {
+    if (!merchant) merchant = await resolveLakalaMerchant(storeId)
+  } catch (err) {
+    console.warn('[order/voidIntent] 商户配置读取失败:', orderNo, err && err.message)
+    merchant = null
+  }
+  if (!merchant) {
+    throw new Error('CONFLICT: PAYMENT_STATUS_UNCERTAIN: 暂时无法确认支付结果，请稍后重试')
+  }
+
+  let trade
+  try {
+    trade = await lakalaClient.queryTrade({
+      merchantNo: merchant.merchantNo,
+      termNo: merchant.termNo,
+      outTradeNo,
+      timeoutMs: LAKALA_VOID_CALL_TIMEOUT_MS,
+    })
+  } catch (err) {
+    console.warn('[order/voidIntent] 查单失败，保留意图:', orderNo, err && err.message)
+    throw new Error('CONFLICT: PAYMENT_STATUS_UNCERTAIN: 暂时无法确认支付结果，请稍后重试')
+  }
+
+  // 大小写归一：payNotify 解析回调时做了 toUpperCase，查单侧不做就会出现两端对同一笔单
+  // 判定不一致（渠道返回 `Success` 之类的变体时，这里会把已付款单当成非终态去关单）。
+  const state = normalizeTradeState(trade && trade.tradeState)
+
+  // 只有查单**成功**返回的 trade_state 才是权威的（双谱系评审 round-1）：
+  // `request()` 对非成功码不抛错，只把 ok 置 false，而错误响应里可能仍带一个
+  // 非权威的 resp_data.trade_state。若不看 ok 就按它释放意图、关闭订单，而渠道单
+  // 其实仍可支付，就会形成「本地已关、渠道可付」——正是本次改动最该避免的窟窿。
+  // 同理 tradeState 为空串也不能当「未付款」去关单：真实状态未知。
+  if (!trade || trade.ok !== true || !state) {
+    console.warn('[order/voidIntent] 查单未返回权威 trade_state，保留意图待人工核查:',
+      orderNo, outTradeNo, trade && trade.ok, trade && trade.code, trade && trade.msg)
+    throw new Error('CONFLICT: PAYMENT_STATUS_UNCERTAIN: 暂时无法确认支付结果，请稍后重试')
+  }
+
+  if (LAKALA_PAID_TRADE_STATES.includes(state)) {
+    throw paymentAlreadySucceededError()
+  }
+
+  // 已是终态：渠道侧不可能再被支付，直接释放。
+  if (LAKALA_RELEASABLE_TRADE_STATES.includes(state)) {
+    if (!await confirmIntentReleased(orderNo, outTradeNo)) {
+      throw new Error('CONFLICT: PAYMENT_INTENT_CHANGED: 支付状态已变化，请刷新订单后重试')
+    }
+    return 'released'
+  }
+
+  // 非终态（INIT / CREATE / DEAL / UNKNOWN）：顾客可能还握着可付款的支付面板，
+  // 必须先让渠道关单，否则本地关闭后仍可能收到钱。
+  try {
+    await lakalaClient.closeTrade({
+      merchantNo: merchant.merchantNo,
+      termNo: merchant.termNo,
+      outTradeNo,
+      timeoutMs: LAKALA_VOID_CALL_TIMEOUT_MS,
+    })
+  } catch (err) {
+    console.warn('[order/voidIntent] 关单请求失败，保留意图:', orderNo, err && err.message)
+    throw new Error('CONFLICT: PAYMENT_INTENT_ACTIVE: 暂时无法终止本次支付，请稍后重试')
+  }
+
+  // 关单返回成功不等于渠道已终态，必须复核——这是本流程唯一可信的放行依据。
+  let recheck
+  try {
+    recheck = await lakalaClient.queryTrade({
+      merchantNo: merchant.merchantNo,
+      termNo: merchant.termNo,
+      outTradeNo,
+      timeoutMs: LAKALA_VOID_CALL_TIMEOUT_MS,
+    })
+  } catch (err) {
+    console.warn('[order/voidIntent] 关单后复核失败，保留意图:', orderNo, err && err.message)
+    throw new Error('CONFLICT: PAYMENT_STATUS_UNCERTAIN: 暂时无法确认支付结果，请稍后重试')
+  }
+
+  const recheckState = normalizeTradeState(recheck && recheck.tradeState)
+  // 复核同样只认查单成功的响应——它是整个关单流程唯一的放行依据
+  if (!recheck || recheck.ok !== true) {
+    console.warn('[order/voidIntent] 关单后复核未成功返回，保留意图:',
+      orderNo, recheck && recheck.code, recheck && recheck.msg)
+    throw new Error('CONFLICT: PAYMENT_STATUS_UNCERTAIN: 暂时无法确认支付结果，请稍后重试')
+  }
+  if (LAKALA_PAID_TRADE_STATES.includes(recheckState)) {
+    throw paymentAlreadySucceededError()
+  }
+  if (!LAKALA_RELEASABLE_TRADE_STATES.includes(recheckState)) {
+    console.warn('[order/voidIntent] 关单后仍非终态，保留意图:', orderNo, recheckState)
+    throw new Error('CONFLICT: PAYMENT_INTENT_ACTIVE: 支付结果仍在确认中，请稍后再试')
+  }
+
+  if (!await confirmIntentReleased(orderNo, outTradeNo)) {
+    throw new Error('CONFLICT: PAYMENT_INTENT_CHANGED: 支付状态已变化，请刷新订单后重试')
+  }
+  return 'released'
 }
 
 function activePaymentIntentError(order) {
@@ -347,8 +1118,32 @@ function activePaymentIntentError(order) {
   err.activeOutTradeNo = order.lakala_out_order_no
   err.activeStoreId = order.store_id
   err.activeMerchant = order._lakalaMerchant
+  // 意图行的最后更新时刻，供「另一请求可能正在建单」的宽限期判断用
+  err.activeUpdatedAt = order.updated_at
+  // ⚠️ 必须判「快照是否属于**当前这笔**意图」，不能只判非空（双谱系评审 round-13）：
+  // 快照按设计是不清空的（靠单号匹配自失效），所以旧场次的残留 JSON 会让这里误判成
+  // 「已有快照、不在创建窗口」→ 跳过宽限期 → 关掉另一个请求正在建的新场次。
+  err.activeHasSnapshot = (() => {
+    const raw = order.lakala_payment_intent
+    if (!raw) return false
+    const intent = typeof raw === 'string' ? safeParseJson(raw) : raw
+    if (!intent || typeof intent !== 'object' || Array.isArray(intent)) return false
+    return String(intent.outTradeNo || '') === String(order.lakala_out_order_no || '')
+  })()
   return err
 }
+
+/**
+ * 「另一个请求刚预占、预下单还没跑完」的宽限期（双谱系评审 round-12）。
+ *
+ * 预占意图与落快照之间隔着一次渠道预下单往返。这段窗口里意图**有单号但没快照**，
+ * 看起来和「快照残缺、该作废」一模一样。若此时另一请求直接关单，会把前一个请求
+ * 正在建的渠道单关掉——它随后返回给前端的支付参数已经死了，顾客必然支付失败。
+ *
+ * 所以：意图很新 + 还没落快照时，不主动关单，只 fail-fast 让调用方稍后重试。
+ * 取 30s 是因为预下单最坏 20s（支付宝 15s + 吱口令 13s ≈ 28s），留一点余量。
+ */
+const INTENT_CREATION_GRACE_MS = 30000
 
 function normalizeRequestedPayAmount(payAmountInput) {
   if (payAmountInput === undefined || payAmountInput === null) return null
@@ -380,7 +1175,7 @@ async function reserveDirectOnlinePaymentIntent({
       `SELECT sale_order_id, status, sale_order_type, store_id, client_user_id, opened_by,
               sale_order_datetime, total_amount, payable_amount, prepaid_card_amount,
               pending_prepaid_card_amount, received, refunded_amount, first_payment_amount,
-              lakala_out_order_no
+              lakala_out_order_no, lakala_payment_intent, updated_at
        FROM sale_orders
        WHERE sale_order_id = $1
        FOR UPDATE`,
@@ -475,6 +1270,26 @@ async function reserveDirectOnlinePaymentIntent({
     }
 
     if (order.lakala_out_order_no) {
+      // issue #214：顾客唤起支付后没付就退出，渠道单仍在有效期内（trade_state=CREATE/INIT），
+      // 旧逻辑一律拒绝 → 再进来就「无法支付」。这里改为优先**复用**同一笔场次，把原
+      // paymentParams 回发给前端重新唤起。复用比「关旧单建新单」安全：全程只有一笔渠道单，
+      // 不会出现旧单被付款而 payNotify 判为「非当前意图」拒绝入账的资金窟窿。
+      const reusable = tryReuseLakalaPaymentIntent(order, { payAmount, paymentMethod, userId })
+      if (reusable) {
+        return {
+          prepaidFull: false,
+          reused: true,
+          orderNo,
+          outTradeNo: order.lakala_out_order_no,
+          storeId: order.store_id,
+          status: order.status,
+          totalAmount: order.total_amount,
+          payAmount,
+          pendingPrepaidAmount,
+          merchant,
+          paymentParams: reusable.paymentParams,
+        }
+      }
       order._lakalaMerchant = merchant
       throw activePaymentIntentError(order)
     }
@@ -525,6 +1340,7 @@ async function reserveDirectOnlinePaymentIntent({
 }
 
 async function reserveDirectOnlinePaymentIntentWithTerminalRetry(options) {
+  const startedAt = Date.now()
   let excludedOutTradeNo = null
   for (let attempt = 0; attempt < 2; attempt++) {
     const outTradeNo = buildLakalaOutTradeNo(options.orderNo, excludedOutTradeNo)
@@ -534,19 +1350,56 @@ async function reserveDirectOnlinePaymentIntentWithTerminalRetry(options) {
       if (!err || !err.activeOutTradeNo || attempt > 0) throw err
       const merchant = err.activeMerchant || await resolveLakalaMerchant(err.activeStoreId)
       if (!merchant) throw err
+      // 「有单号但还没落快照」且这笔意图很新 → 很可能是另一个请求正在建单的中间态，
+      // 不能当成「快照残缺该作废」去关它（双谱系评审 round-12）。让调用方稍后重试。
+      if (!err.activeHasSnapshot && err.activeUpdatedAt) {
+        const age = Date.now() - new Date(err.activeUpdatedAt).getTime()
+        // 负值也当「刚创建」：DB 时钟比函数实例略超前（NTP 毫秒级偏差）时 age 会是负数，
+        // 按原写法会跳过宽限期直接作废——恰好复现宽限期要防的那件事
+        if (Number.isFinite(age) && age < INTENT_CREATION_GRACE_MS) {
+          console.warn('[order/reserveDirectOnlinePaymentIntent] 意图可能正在创建中，不作废:',
+            options.orderNo, age)
+          throw err
+        }
+      }
+
+      // 走到这里说明旧意图**不可复用**（快照过期 / 残缺 / 方案不符 / 归属不符）。
+      //
+      // 此前只在渠道已是终态时才释放，非终态一律抛 PAYMENT_INTENT_ACTIVE —— 于是
+      // 「支付宝吱口令先于 10 分钟预下单过期」这种情况（快照不可复用、渠道仍 CREATE）
+      // 顾客还是只能干等渠道超时，本 issue 的症状原样复现（双谱系评审 round-11）。
+      //
+      // 现在改走与取消/关单同一套 fail-closed 作废：查单 → 已付款则拒绝 → 终态直接释放 →
+      // 非终态则关单 + 复核后释放。关不掉就仍然保留原错误，不会凭空造出第二笔可支付的单。
       try {
-        const oldTrade = await lakalaClient.queryTrade({
-          merchantNo: merchant.merchantNo,
-          termNo: merchant.termNo,
+        await voidActiveLakalaPaymentIntent(options.orderNo, {
           outTradeNo: err.activeOutTradeNo,
+          storeId: err.activeStoreId,
+          merchant,   // 事务内已解析过，不必再查一次
         })
-        if (!oldTrade || !['FAIL', 'CLOSE'].includes(oldTrade.tradeState)) throw err
-        await releaseLakalaPaymentIntent(options.orderNo, err.activeOutTradeNo)
         excludedOutTradeNo = err.activeOutTradeNo
-      } catch (queryErr) {
-        if (queryErr === err) throw err
-        console.warn('[order/reserveDirectOnlinePaymentIntent] 旧意图状态不确定，保留:', options.orderNo, queryErr && queryErr.message)
+      } catch (voidErr) {
+        // 「已支付」要如实告诉顾客（比含糊的「请勿重复发起」准确得多）；
+        // 其余情况（关不掉 / 查不准）保留原错误，语义不变。
+        if (voidErr && voidErr.isPaymentAlreadySucceeded) {
+          throw voidErr
+        }
+        console.warn('[order/reserveDirectOnlinePaymentIntent] 旧意图作废未完成，保留:',
+          options.orderNo, voidErr && voidErr.message)
         throw err
+      }
+
+      // ⚠️ 这段必须在 try/catch **之外**（双谱系评审 round-13）：写在 try 里的话，
+      // 它抛出的 PAYMENT_INTENT_CHANGED 会被下面自己的 catch 接住、降级成原始的
+      // PAYMENT_INTENT_ACTIVE —— 新设计的可重试错误成了不可达代码，日志还会打出
+      // 「作废未完成」这种与事实相反的话（此时作废其实已经成功）。
+      //
+      // 旧场次此时已作废干净。重建前确认剩余预算够跑完「预下单 + 万一失败的清理」，
+      // 不够就让顾客重试——重试是全新的函数预算，硬建可能在清理前被平台杀掉。
+      if (Date.now() - startedAt > LAKALA_REBUILD_MAX_ELAPSED_MS) {
+        console.warn('[order/reserveDirectOnlinePaymentIntent] 累计耗时超预算，本次不重建:',
+          options.orderNo, Date.now() - startedAt)
+        throw new Error('CONFLICT: PAYMENT_INTENT_CHANGED: 上一笔支付场次已关闭，请重新发起支付')
       }
     }
   }
@@ -576,8 +1429,56 @@ async function createLakalaAlipayShareCode({
     requestIp: requestIp || '0.0.0.0',
     source: cfg.alipayShareSource,
     bizLink,
+    timeoutMs: LAKALA_SHARE_CODE_TIMEOUT_MS,
   })
+  if (!resp.shareToken) {
+    // 同上：渠道回了成功但没给吱口令，落盘也是一份不可用的快照
+    throw new Error('INVALID_STATE: LAKALA_SHARE_CODE_INCOMPLETE: 渠道未返回吱口令')
+  }
   return { shareToken: resp.shareToken, expireDate: resp.expireDate, tradeNo: resp.tradeNo }
+}
+
+/**
+ * 「这一刻的懒清理真会关掉这张待支付单」的判据（issue #215），与下面 closeExpiredOrder
+ * 的 UPDATE 守卫逐条同源。顾客端的支付倒计时只能按它下发。
+ *
+ * 原本 order.detail 只看 status 就按「下单时间 + 10 分钟」发 expire_at，而员工开单的订单
+ * 永远不会被懒清理关掉 —— 倒计时归零后订单照样可付，顾客看到的时限纯属误导。更要命的是
+ * order-detail 的「归零重载」靠「后端把 status 改成已关闭」才能终止，恒关不掉的订单
+ * 会让它按网络 RTT 持续打 order.detail。
+ *
+ * **写成 SQL 让库来判，不在 JS 里镜像一份**：镜像就得逐个处理 `IS NULL` vs `== null`、
+ * 空串（SQL 里不是 NULL）、列没被 SELECT 出来是 undefined —— 全是跨语言复制凭空带来的
+ * 自伤，而判据本身一行 SQL 就说清楚了。
+ *
+ * ⚠️ 改 closeExpiredOrder 的 UPDATE 守卫必须同步改这里，
+ * 由 `__tests__/routes/order.test.js` 的「expire_at 下发口径与 closeExpiredOrder 守卫同源」钉住。
+ */
+const PENDING_AUTO_CLOSE_GUARD_SQL =
+  `o.status = '待支付' AND o.opened_by IS NULL AND o.lakala_out_order_no IS NULL`
+
+/**
+ * 重读订单行 + 当下的自动关闭判据（issue #215）。取整行，见 detail 里的说明。
+ *
+ * ⚠️ **必须和主查询一样带 `client_user_id` 归属条件**：这行结果会被
+ * `Object.assign` 整行合进要下发的 order。只按订单号重读的话，
+ * 「管理员物理删掉这张单 + 当天最高序号被新单复用」（订单号是 `MAX(...) + 1` 生成的）
+ * 就会把**另一个顾客**的整行订单装进本次响应 —— 姓名、手机号、金额、门店全泄露。
+ * 窗口只有毫秒级、极难触发，但这是一行就能封死的越权读。
+ */
+function queryOrderGuardSnapshot(orderNo, userId) {
+  // ⚠️ `store_name` 要和主查询同口径。主查询是 `SELECT o.*, s.store_name`（同名列
+  // 后者胜出 → 当前门店名），而这里的 `o.*` 会带出 `sale_orders` 里的**下单时快照**；
+  // 不对齐的话，`Object.assign` 会把待支付单的门店名换成快照值，而已支付单
+  // 不走重读仍是当前值 —— 同一张单在支付前后门店名会跳变（评审 round-16）。
+  return pg.query(
+    `SELECT o.*, s.store_name,
+            (${PENDING_AUTO_CLOSE_GUARD_SQL}) AS auto_close_eligible
+       FROM sale_orders o
+       LEFT JOIN stores s ON o.store_id = s.store_id
+      WHERE o.sale_order_id = $1 AND o.client_user_id = $2`,
+    [orderNo, userId]
+  )
 }
 
 /**
@@ -587,11 +1488,30 @@ async function createLakalaAlipayShareCode({
  * (opened_by IS NOT NULL) 由 admin/staff 生成二维码交顾客扫码支付，扫码时刻
  * 往往已超过 10 分钟，不应被自助下单的懒清理误关（issue #27）。
  *
+ * ⚠️ **本函数体内不得有任何时间谓词**（issue #215）：「过没过 10 分钟」一律由调用方判。
+ * `order.detail` 的下发契约就架在这条前提上 —— 它只在**补关到关不动为止**之后才下发
+ * `expire_in_ms`（且恒为严格正数），关不动就干脆不下发、让前端退到非权威口径。
+ * 一旦这里加上 `sale_order_datetime < NOW() - INTERVAL '10 minutes'` 之类的「加固」，
+ * 补关是否成功就开始取决于 PG 与云函数宿主的时钟差：PG 慢一点就关不掉，
+ * 而复读仍判 eligible，detail 于是反复降级、页面停在「待支付 / 请完成支付 / 去支付」——
+ * 本 issue 要消灭的矛盾态从后门回来。由 `order.test.js` 的同源锁一并钉住。
+ *
  * @param {string} orderNo - 订单号
  * @returns {Promise<boolean>} true=确实关闭并释放了券；false=未命中（非待支付/员工单/不存在）
  */
 async function closeExpiredOrder(orderNo) {
   return await pg.transaction(async (client) => {
+    const orderRows = await client.query(
+      `SELECT client_user_id, points_used
+         FROM sale_orders
+        WHERE sale_order_id = $1
+          AND status = '待支付'
+          AND opened_by IS NULL
+        FOR UPDATE`,
+      [orderNo],
+    )
+    if (orderRows.rows.length === 0) return false
+
     const result = await client.query(
       `UPDATE sale_orders
        SET status = '已关闭',
@@ -614,6 +1534,11 @@ async function closeExpiredOrder(orderNo) {
          WHERE used_sale_order_id = $1`,
         [orderNo]
       )
+      await releasePointsDeduction(client, {
+        saleOrderId: orderNo,
+        userId: orderRows.rows[0].client_user_id,
+        pointsUsed: orderRows.rows[0].points_used,
+      })
       return true
     }
     return false
@@ -625,6 +1550,13 @@ async function closeExpiredOrder(orderNo) {
  * @param {string} userId - 用户ID
  */
 async function closeExpiredOrdersByUser(userId) {
+  // ⚠️ 候选集**刻意是超集**，不要往这里加 `lakala_out_order_no IS NULL`（issue #215）。
+  // 看起来那样能省掉几个空事务（有意图的单反正会被 UPDATE 的 CAS 挡下），但
+  // `lakala_out_order_no` 是双向可变的：SELECT 之后、CAS 之前它完全可能被
+  // payNotify / 对账 / 支付失败清理清成 NULL —— 那一刻这单已经该关了，
+  // 而收窄过的候选集根本没把它选进来，这一趟就漏过去了。
+  // 后果是过期单继续占着 `uq_sale_orders_client_pending`，顾客再下自助单会被拒。
+  // 选多了只是白跑一个空事务（fail-safe），选漏了是功能错误。
   const expired = await pg.query(
     `SELECT sale_order_id FROM sale_orders
      WHERE client_user_id = $1 AND status = '待支付' AND opened_by IS NULL
@@ -782,6 +1714,7 @@ async function _loadAndValidateBundle(bundleProductId, items) {
 async function scanDetail(ctx) {
   await requirePhone()(ctx, async () => {})
 
+  const { userId } = ctx.auth
   const { orderNo, saleOrderId } = ctx.event.payload || {}
   const targetOrderId = saleOrderId || orderNo
   if (!targetOrderId) {
@@ -861,6 +1794,41 @@ async function scanDetail(ctx) {
     ? Number(order.first_payment_amount)
     : null
 
+  // #214：本人是否持有一笔**活动中**的支付意图。
+  //
+  // ⚠️ 这与「快照是否还能直接复用」是两件事，必须分开下发（双谱系评审 round-10）：
+  // 合成一个布尔的话，「意图还在、但快照只剩不到一分钟或刚过期」会被判成「没有可续付场次」，
+  // 前端于是转回 order.repay —— 而 repay 对活动意图是 fail-fast 的，顾客又被卡死。
+  // 正确的分工：**有没有意图**决定走 pay 还是 repay（pay 能查单释放后重建，repay 不能）；
+  // **快照能不能复用**只决定 pay 内部是复用还是重开一场。
+  const hasActiveIntentForUser = Boolean(
+    String(order.lakala_out_order_no || '').trim()
+    && order.client_user_id
+    && order.client_user_id === userId
+  )
+
+  // 可续付场次的元数据（只取金额/方式，绝不外发 paymentParams）
+  const resumableIntentMeta = (() => {
+    if (!hasActiveIntentForUser) return null
+    const activeOutTradeNo = String(order.lakala_out_order_no || '').trim()
+    const raw = order.lakala_payment_intent
+    const intent = typeof raw === 'string' ? safeParseJson(raw) : raw
+    if (!intent || typeof intent !== 'object' || Array.isArray(intent)) return null
+    if (String(intent.outTradeNo || '') !== activeOutTradeNo) return null
+    const expiresAt = intent.expiresAt ? new Date(intent.expiresAt).getTime() : 0
+    if (!Number.isFinite(expiresAt)
+        || expiresAt - Date.now() < PAYMENT_INTENT_REUSE_MIN_REMAINING_MS) {
+      return null
+    }
+    return {
+      payAmount: Number(intent.payAmount || 0),
+      paymentMethod: intent.paymentMethod || null,
+      // 预下单当时订单上的待扣卡额；快照没存就回落订单当前值（同一场次内它不会变——
+      // 意图活跃期改抵扣方案有服务端守卫）
+      prepaidCardAmount: pendingPrepaidCardAmount,
+    }
+  })()
+
   ctx.result = {
     order: {
       orderNo: order.sale_order_id,
@@ -878,7 +1846,34 @@ async function scanDetail(ctx) {
       firstPaymentAmount,
       isExperienceConversion: order.is_experience_conversion === true,
       paymentMethod: order.payment_method || '微信',
-      couponDiscount: Number(order.coupon_discount || 0)
+      couponDiscount: Number(order.coupon_discount || 0),
+      pointsUsed: Number(order.points_used || 0),
+      pointsDiscount: Number(order.points_discount || 0),
+      // #214：本人是否有一笔可续付的支付场次（双谱系评审 round-7）。
+      //
+      // 只下发布尔值，**绝不下发快照本身**（里面有 paySign/prepay_id）。前端据此决定
+      // 重入时走 order.pay（能复用场次）还是 order.repay（fail-fast，会撞
+      // PAYMENT_INTENT_ACTIVE）—— 普通回款此前固定走 repay，导致「退出后重新扫码
+      // 还是付不了」在回款场景下原样复现，正是本 issue 要消灭的症状。
+      //
+      // 判据含 client_user_id 匹配，对员工开单同样成立：归属是在**预占支付意图那一刻**
+      // 由 reserve 的 planRes 写入的（`client_user_id = CASE WHEN ... IS NULL AND
+      // opened_by IS NOT NULL THEN $1`），不是等支付成功才写。所以「顾客扫码建了场次
+      // 又退出」时归属已经落定，重入能正确识别（round-8 复核过这个时序）。
+      // 前端据此**路由**：有活动意图就必须走 pay/alipayPay（它们能查单释放后重建），
+      // 绝不能回落到 repay 的 fail-fast
+      hasActivePaymentIntent: hasActiveIntentForUser,
+      // 前端据此**复用与展示**：只有快照仍可直接复用时才有值
+      hasResumablePaymentIntent: Boolean(resumableIntentMeta),
+      // 可续付场次的**权威**金额与支付方式（不含 paySign/prepay_id 等任何凭据）。
+      //
+      // 下发它是因为前端自己推算这三个值会和快照对不上：前端的 remaining 是退款感知的
+      // 行级口径、还要再减待扣卡额，而快照里存的是预下单当时定死的线上金额。
+      // round-8/9 连着两轮因为这个口径分歧出问题（金额对不上导致复用失败、
+      // 抵扣展示与实际收款不符）——权威数据在快照里，就该由后端给出，不让前端二次推算。
+      resumablePayAmount: resumableIntentMeta ? resumableIntentMeta.payAmount : null,
+      resumablePaymentMethod: resumableIntentMeta ? resumableIntentMeta.paymentMethod : null,
+      resumablePrepaidCardAmount: resumableIntentMeta ? resumableIntentMeta.prepaidCardAmount : null,
     },
     items: items.map(i => ({
       saleItemId: i.sale_item_id,
@@ -893,7 +1888,9 @@ async function scanDetail(ctx) {
       prepaidCardReceived: i.prepaid_card_received,
       cashReceived: i.cash_received,
       refundedAmount: Number(itemRefundMap.get(i.sale_item_id) || 0),
-      coverImage: i.cover_image || ''
+      // issue #230：扫码付订单行封面 96rpx，走小档。
+      // safeThumbUrl 返回 null 时沿用既有的空串兜底，前端 wx:if 仍走占位分支
+      coverImage: safeThumbUrl(i.cover_image, PRODUCT_THUMB_BOX_SMALL) || ''
     }))
   }
 }
@@ -923,7 +1920,9 @@ async function create(ctx) {
     orderType: orderTypeParam, // 可选, 'promo' | undefined
     couponId: inputCouponId, // 可选, 优惠券ID
     useCard, // 可选, 是否使用储值卡抵扣
-    prepaidCardAmount: inputPrepaidCardAmount // 可选, 前端传的抵扣金额
+    prepaidCardAmount: inputPrepaidCardAmount, // 可选, 前端传的抵扣金额
+    usePoints, // 可选, 是否使用积分抵扣
+    pointsUsed: inputPointsUsed // 可选, 前端传的积分抵扣数量
   } = payload
 
   // J3 (B9 ticket follow-up): 拒绝数组形式 couponId — 一张订单仅支持 1 张优惠券
@@ -997,10 +1996,9 @@ async function create(ctx) {
     }
   }
 
-  // 查询顾客姓名 + 会员身份（customer_type + member_level）
-  // —— 会员价分流（会员价 vs 标价）与 document_type 判断共用，须在定价前完成。
+  // 查询顾客姓名 + 会员身份（customer_type + member_level），供会员价分流（会员价 vs 标价）。
   let customerName = null
-  let documentType = '售前'
+  let documentType
   let buyerIsMember = false
   {
     const userRows = await pg.query(
@@ -1009,7 +2007,6 @@ async function create(ctx) {
     )
     if (userRows.length > 0) {
       if (userRows[0].name) customerName = userRows[0].name
-      if (userRows[0].customer_type === '会员客') documentType = '售后'
       buyerIsMember = isMember(userRows[0].customer_type, userRows[0].member_level)
     }
   }
@@ -1064,7 +2061,6 @@ async function create(ctx) {
       isExperience: !!sku.is_experience
     }
   })
-
   // B2：疗程卡 quantity>1 必须按"每张卡"拆成 N 行 sale_items。
   // 前端购物车继续按 SKU 合并 quantity；后端落库保持每张卡独立，避免 5 次卡 ×2 变成 1 张 10 次卡。
   const itemsData = []
@@ -1105,6 +2101,7 @@ async function create(ctx) {
     }
   }
   totalAmount = Math.round(itemsData.reduce((s, d) => s + d.saleAmount, 0) * 100) / 100
+  const rawTotalBeforeDeductions = totalAmount
 
   // 充值卡剥离 SKU 化（2026-05-20）后，order.create 不会有充值卡 SKU 入参，
   // D4 混单守卫已无意义（migration 0043 同步拆触发器）。
@@ -1248,8 +2245,32 @@ async function create(ctx) {
     totalAmount = Math.round(totalAmount * 100) / 100
   }
 
-  // document_type 仅按下单时会员身份判（售前=非会员客，售后=会员客），已在定价前查 customer_type 时定值；
-  // 「成为会员那一单」下单时仍非会员客 → 售前，不再按金额阈值兜底升级为售后。
+  let pointsUsed = 0
+  let pointsDiscount = 0
+  if (usePoints || inputPointsUsed != null) {
+    const [pointsToYuanRate, pointsDeductionMaxRate, pointsRows] = await Promise.all([
+      getPointsToYuanRate(),
+      getPointsDeductionMaxRate(),
+      pg.query('SELECT points_balance FROM client_wechat_users WHERE user_id = $1', [userId]),
+    ])
+    const deduction = computePointsDeduction({
+      usePoints,
+      requestedPoints: inputPointsUsed,
+      pointsBalance: pointsRows[0]?.points_balance,
+      rawTotal: rawTotalBeforeDeductions,
+      currentAmount: totalAmount,
+      pointsToYuanRate,
+      pointsDeductionMaxRate,
+    })
+    pointsUsed = deduction.pointsUsed
+    pointsDiscount = deduction.pointsDiscount
+    if (pointsDiscount > 0) {
+      applyOrderLevelDiscountToItems(itemsData, pointsDiscount)
+      totalAmount = roundMoney(itemsData.reduce((sum, d) => sum + d.saleAmount, 0))
+    }
+  }
+
+  // document_type 在创建事务内写预测值；首次成功入账路径会按达标次数再次冻结权威快照。
 
   // 使用事务创建订单（订单号+流水号在事务内原子生成）
   let orderNo
@@ -1337,6 +2358,7 @@ async function create(ctx) {
       orderSeq = parseInt(orderSeqResult.rows[0].sale_order_id.slice(-4)) + 1
     }
     orderNo = `FY-XSD-WX-${dateStrOrder}${String(orderSeq).padStart(4, '0')}`
+    documentType = await classifySaleOrderDocumentType(client, userId, orderNo)
 
     // 在事务内查询今日最大序号
     const today = new Date()
@@ -1368,14 +2390,14 @@ async function create(ctx) {
         sale_order_id, status, sale_order_type, document_type, market_name, store_id, store_name,
         sale_order_datetime, client_user_id, client_phone, customer_name,
         total_amount, prepaid_card_amount, pending_prepaid_card_amount, received, payable_amount, payment_method,
-        preferred_employee_id, coupon_id, coupon_discount,
+        preferred_employee_id, coupon_id, coupon_discount, points_used, points_discount,
         paid_at, created_at, updated_at
-      ) VALUES ($1, $2, '销售单', $3, $4, $5, (SELECT store_name FROM stores WHERE store_id = $5), $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $6, $6)`,
+      ) VALUES ($1, $2, '销售单', $3, $4, $5, (SELECT store_name FROM stores WHERE store_id = $5), $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $6, $6)`,
       [
         orderNo, initialStatus, documentType, marketName, storeId, now, userId,
         ctx.auth.phone || null, customerName,
         totalAmount, initialSettledPrepaid, initialPendingPrepaid, initialReceived, paidAmount, effectivePaymentMethod,
-        preferredStaffWfId || null, inputCouponId || null, couponDiscount,
+        preferredStaffWfId || null, inputCouponId || null, couponDiscount, pointsUsed, pointsDiscount,
         zeroPayable ? now : null
       ]
     )
@@ -1395,7 +2417,12 @@ async function create(ctx) {
       }
     }
 
-    // 创建订单明细（流水号递增）
+    if (pointsUsed > 0) {
+      await deductPointsAtCreation(client, { saleOrderId: orderNo, userId, pointsUsed })
+    }
+
+    // 创建订单明细（流水号递增）。联动开启时冻结家居产品库存组成；临时关闭时写 null，不阻断建单。
+    const compositionSnapshots = await loadInventoryCompositionSnapshots(client, itemsData)
     for (let i = 0; i < itemsData.length; i++) {
       const saleItemId = `XSLSH-WX-${dateStr}${String(seq + i).padStart(4, '0')}`
       const d = itemsData[i]
@@ -1408,14 +2435,16 @@ async function create(ctx) {
           product_name, product_type,
           session_count, remaining_sessions,
           unit_price, quantity, unit_real_price,
-          sale_amount, received, pending_received, sales_category, is_experience
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, '0', $13, $14, $15)`,
+          sale_amount, received, pending_received, sales_category, is_experience,
+          inventory_composition_snapshot
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, '0', $13, $14, $15, $16::jsonb)`,
         [
           saleItemId, orderNo, storeId, d.skuId,
           d.productName, d.productType,
           d.sessionCount, d.remainingSessions,
           d.unitPrice, d.quantity, d.unitRealPrice,
-          d.saleAmount, d.received, d.salesCategory || null, d.isExperience
+          d.saleAmount, d.received, d.salesCategory || null, d.isExperience,
+          compositionSnapshots.has(d.skuId) ? JSON.stringify(compositionSnapshots.get(d.skuId)) : null,
         ]
       )
     }
@@ -1487,6 +2516,8 @@ async function create(ctx) {
       orderNo,
       saleOrderId: orderNo,
       totalAmount,
+      pointsUsed,
+      pointsDiscount,
       prepaidCardAmount: finalPrepaidCardAmount,
       pendingPrepaidCardAmount: 0,
       paidAmount: finalPaidAmount,
@@ -1494,7 +2525,7 @@ async function create(ctx) {
       status: '已支付',
       // 卡全额抵扣保留 'prepaid_card_full'（前端老逻辑判定）；券全额抵扣用 'coupon_full'。
       // 两者前端处理一致（跳详情、不唤起支付），reason 仅供文案/埋点区分。
-      reason: finalPrepaidCardAmount > 0 ? 'prepaid_card_full' : 'coupon_full',
+      reason: finalPrepaidCardAmount > 0 ? 'prepaid_card_full' : (pointsDiscount > 0 ? 'points_full' : 'coupon_full'),
       paymentParams: null,
     }
     return
@@ -1504,6 +2535,8 @@ async function create(ctx) {
     orderNo,
     saleOrderId: orderNo,
     totalAmount,
+    pointsUsed,
+    pointsDiscount,
     prepaidCardAmount: 0,
     pendingPrepaidCardAmount: finalPrepaidCardAmount,
     paidAmount: finalPaidAmount,
@@ -1562,7 +2595,7 @@ async function pay(ctx) {
     }
   }
 
-  const reservation = await reserveDirectOnlinePaymentIntentWithTerminalRetry({
+  let reservation = await reserveDirectOnlinePaymentIntentWithTerminalRetry({
     orderNo,
     userId,
     payAmountInput,
@@ -1572,31 +2605,57 @@ async function pay(ctx) {
     ctx.result = {
       orderNo,
       status: '已支付',
-      reason: 'prepaid_card_full',
+      reason: Number(preflightOrder.prepaid_card_amount || 0) > 0
+        || Number(preflightOrder.pending_prepaid_card_amount || 0) > 0
+        ? 'prepaid_card_full'
+        : (Number(preflightOrder.points_used || 0) > 0 ? 'points_full' : 'coupon_full'),
       paymentParams: null,
     }
     return
   }
 
-  const cfg = lakalaConfig.readConfig()
-  const { paymentParams } = await createLakalaPreorder({
-    orderNo,
-    outTradeNo: reservation.outTradeNo,
-    merchantNo: reservation.merchant.merchantNo,
-    termNo: reservation.merchant.termNo,
-    payAmountYuan: reservation.payAmount,
-    accountType: 'WECHAT',
-    transType: '71',
-    openid: ctx.auth.openid,
-    subAppid: cfg.subAppid,
-    requestIp: getRequestIp(),
-  })
+  // issue #214：命中复用则不再向渠道下单，直接回发原场次参数让顾客继续付同一笔。
+  // 回发前先确认渠道侧这笔场次仍可支付（事务已提交，这里做 HTTPS 往返是安全的）；
+  // 若渠道已终态，helper 会释放意图并返回 false，这里重新预占一笔新场次，顾客无感。
+  if (reservation.reused
+      && !await ensureReusedIntentStillPayable(orderNo, reservation.outTradeNo, reservation.merchant)) {
+    reservation = await reserveDirectOnlinePaymentIntentWithTerminalRetry({
+      orderNo,
+      userId,
+      payAmountInput,
+      paymentMethod: '微信',
+    })
+  }
+  let paymentParams = reservation.paymentParams
+  if (!reservation.reused) {
+    const cfg = lakalaConfig.readConfig()
+    const preorderResp = await createLakalaPreorder({
+      orderNo,
+      outTradeNo: reservation.outTradeNo,
+      storeId: reservation.storeId,
+      merchantNo: reservation.merchant.merchantNo,
+      termNo: reservation.merchant.termNo,
+      payAmountYuan: reservation.payAmount,
+      accountType: 'WECHAT',
+      transType: '71',
+      openid: ctx.auth.openid,
+      subAppid: cfg.subAppid,
+      requestIp: getRequestIp(),
+    })
+    paymentParams = preorderResp.paymentParams
+    await persistLakalaPaymentIntentSnapshot(orderNo, reservation.outTradeNo,
+      buildWechatIntentSnapshot(reservation.outTradeNo, reservation.payAmount, paymentParams))
+  }
   // first_payment_amount 必须保留到真实支付回调入账；仅发起预下单不代表付款成功。
   // payNotify 成功写入首笔款项时再清空，避免顾客放弃付款后重新扫码被放大到全额。
   ctx.result = {
     orderNo,
     totalAmount: reservation.totalAmount,
     paidAmount: reservation.payAmount,
+    // 这笔渠道单实际预占的待扣卡额。前端据此冻结展示口径——
+    // 不下发的话它只能读自己的页面状态，而那份状态可能已被异步的余额刷新改过
+    // （双谱系评审 round-16：展示卡抵 ¥100、渠道单其实是 ¥0 全额线上付）
+    prepaidCardAmount: reservation.pendingPrepaidAmount,
     paymentMethod: '微信',
     paymentParams,  // wx.requestPayment 5 字段：timeStamp/nonceStr/package/signType/paySign
   }
@@ -1663,7 +2722,7 @@ async function offlinePay(ctx) {
     ctx.result = {
       orderNo,
       status: '已支付',
-      reason: 'prepaid_card_full',
+      reason: prepaidCardAmountOff > 0 ? 'prepaid_card_full' : (Number(order.points_used || 0) > 0 ? 'points_full' : 'coupon_full'),
     }
     return
   }
@@ -1745,7 +2804,7 @@ async function list(ctx) {
     FROM sale_orders o
     LEFT JOIN stores s ON o.store_id = s.store_id
     ${whereClause}
-    ORDER BY o.created_at DESC
+    ORDER BY o.created_at DESC, o.sale_order_id DESC
     LIMIT $${params.length - 1} OFFSET $${params.length}
   `, params)
 
@@ -1790,6 +2849,12 @@ async function list(ctx) {
     // 行级退款额（已退行不可继续支付/回款）：批量聚合避免 N+1
     const refundMapBatch = await getPerItemRefundedMapBatch(pg, orderIds)
 
+    // issue #230：订单列表行封面 96rpx，走小档。这里的 row 直接挂到 order.items 下发，
+    // 前端读的就是 cover_image（下划线），故就地改写
+    for (const it of items) {
+      it.cover_image = safeThumbUrl(it.cover_image, PRODUCT_THUMB_BOX_SMALL)
+    }
+
     for (const order of orders) {
       const orderItems = itemsMap.get(order.sale_order_id) || []
       const orderRefundMap = refundMapBatch.get(order.sale_order_id)
@@ -1809,6 +2874,10 @@ async function list(ctx) {
  * 订单详情
  */
 async function detail(ctx) {
+  // 服务端处理耗时（issue #215）。`expire_in_ms` 是**处理完之后**才算出来的，
+  // 而前端只能量到整个往返；不把这段还给它，它就会把「服务端处理 + 上行」重复扣一遍，
+  // 倒计时提前结束、支付入口提前被关。补关那条路径动辄几百毫秒，值得精确。
+  const handlerStartedAt = Date.now()
   const { userId } = ctx.auth
   const payloadDtl = ctx.event.payload || {}
   const orderNo = payloadDtl.saleOrderId || payloadDtl.orderNo
@@ -1818,7 +2887,8 @@ async function detail(ctx) {
   }
 
   const orders = await pg.query(
-    `SELECT o.*, s.store_name
+    `SELECT o.*, s.store_name,
+            (${PENDING_AUTO_CLOSE_GUARD_SQL}) AS auto_close_eligible
      FROM sale_orders o
      LEFT JOIN stores s ON o.store_id = s.store_id
      WHERE o.sale_order_id = $1 AND o.client_user_id = $2`,
@@ -1833,13 +2903,22 @@ async function detail(ctx) {
 
   // 懒清理过期的待支付订单（防止前端倒计时到 0 后无限重载，同时释放优惠券）
   // 员工单 closeExpiredOrder 内部跳过，不置已关闭（issue #27）
-  if (order.status === '待支付') {
+  // 判据列一起看：员工单、有在途意图的单在这里是白开一个事务
+  //（`closeExpiredOrder` 的 SELECT ... FOR UPDATE 只有 status + opened_by 两条守卫，
+  // 对有意图的单会命中并短暂锁住该行，跟并发的 order.pay / payNotify 抢毫秒）。
+  // 下面的补关循环本来就用刷新后的行兜着，这里对不可关的单没有必要试。
+  if (order.status === '待支付' && order.auto_close_eligible) {
     const orderTime = new Date(order.sale_order_datetime)
     if (Date.now() - orderTime.getTime() > 10 * 60 * 1000) {
-      const closed = await closeExpiredOrder(orderNo)
-      if (closed) order.status = '已关闭'
+      await closeExpiredOrder(orderNo)
     }
   }
+  // 可支付态的订单要重读判据列（issue #215）。不能只在「跑过懒清理」时重读：
+  // 主查询与组装响应之间，另一台设备或并发的 order.pay 都可能写入 lakala_out_order_no，
+  // 那会让这份响应既发着倒计时、又把 has_active_payment_intent 算成 false ——
+  // 正是本 issue 要消灭的那种「展示口径与关单规则分叉」。
+  // 挂在下面的 Promise.all 批次里，不额外增加往返。
+  const needsGuardRefresh = order.status === '待支付' || order.status === '部分支付'
 
   // 查询订单明细（使用快照字段 + 商品封面）
   const items = await pg.query(`
@@ -1881,17 +2960,13 @@ async function detail(ctx) {
   const itemRefundMap = await getPerItemRefundedMap(pg, orderNo)
   for (const it of items) {
     it.refunded_amount = Number(itemRefundMap.get(it.sale_item_id) || 0)
+    // issue #230：订单详情行封面 120rpx，走小档（同 order.list，前端读 cover_image）
+    it.cover_image = safeThumbUrl(it.cover_image, PRODUCT_THUMB_BOX_SMALL)
   }
 
-  // 待支付订单返回过期时间
-  let expireAt = null
-  if (order.status === '待支付') {
-    expireAt = new Date(new Date(order.sale_order_datetime).getTime() + 10 * 60 * 1000).toISOString()
-  }
-
-  // 并行查询美容师姓名、券名称和款项流水
+  // 并行查询美容师姓名、券名称、款项流水，以及懒清理后的订单快照
   // 退款流水通过同表 change_type='退款' 聚合（不再依赖独立 sale_order_type='退款单' 行）
-  const [preferredStaffName, couponName, paymentRows] = await Promise.all([
+  const [preferredStaffName, couponName, paymentRows, refreshedRows] = await Promise.all([
     order.preferred_employee_id
       ? pg.query('SELECT name FROM staff_wechat_users WHERE employee_id = $1', [order.preferred_employee_id])
           .then(rows => rows.length > 0 ? rows[0].name : null)
@@ -1912,8 +2987,19 @@ async function detail(ctx) {
        WHERE sale_order_id = $1
        ORDER BY created_at ASC, id ASC`,
       [orderNo]
-    )
+    ),
+    // 见上面 needsGuardRefresh 的说明。`order.pay` 的 preflight 注释早已写明
+    // 「状态必须 FOR UPDATE 后重读」，detail 这条展示链路此前是唯一的例外。
+    needsGuardRefresh ? queryOrderGuardSnapshot(orderNo, userId) : Promise.resolve(null),
   ])
+
+  // 整行覆盖：只挑三列回填会把 status 与 received / paid_at / payable_amount 拆开——
+  // payNotify 在两次查询之间提交时，同一份响应就会出现「已支付但没有任何收款记录」。
+  // 主查询与重读各取整行，至少保证订单行内部自洽（与 items / payments 之间的
+  // 跨查询一致性是本函数早就有的性质，本 PR 不动）。
+  if (refreshedRows && refreshedRows.length > 0) {
+    Object.assign(order, refreshedRows[0])
+  }
 
   // 精简 payments 字段（只给前端需要的）
   const payments = paymentRows.map(p => ({
@@ -1929,10 +3015,86 @@ async function detail(ctx) {
     audit_remark: p.audit_remark || null,
   }))
 
+  // ⚠️ 补关复检与剩余量计算放在**响应组装的最后一步**（评审 round-16）：
+  // 放在前面的话，payments 映射等尾部组装期间跨过截止点，服务端就会下发一个
+  // 严格为正的 expire_in_ms 却没有补关 —— 倒计时还在走、去支付却已经会被拒。
+  // 分别取 `Date.now()` 的话，复检判「还没过期」、几微秒后算剩余量时已经过线，
+  // 就会下发「剩余 0 但没试过关单」—— 而前端对「剩余 0」的处理正是
+  //「只清倒计时、不重载」（它有理由相信服务端已经试过了）。共用一个读数，
+  //「我告诉你过期了」就严格蕴含「我已经试过关它了」，中间没有缝。
+  const nowMs = Date.now()
+  const deadlineMs = new Date(order.sale_order_datetime).getTime() + 10 * 60 * 1000
+
+  // 开头那次懒清理检查发生在请求**开头**，而查明细、查退款、查流水都要时间；
+  // 正好在这中间跨过 10 分钟的话，就得在这里补关，否则页面会长期停在
+  //「请完成支付 + 去支付」而订单压根没被关。
+  //
+  // 为什么要**循环**而不是关一次就走：第一次的 CAS 可能输给并发写入的支付意图，
+  // 而那笔意图又在复读之前被清掉（预下单失败等），复读于是仍然「可关且已过期」——
+  // 下面那步只在「剩余量严格为正」时才下发权威值，所以这里关不动的话就会自动降级；
+  // 重试两次是为了让**常态**下别走到降级分支上去。
+  for (let attempt = 0; attempt < 2 && order.auto_close_eligible && deadlineMs <= nowMs; attempt++) {
+    await closeExpiredOrder(orderNo)
+    const recheckedRows = await queryOrderGuardSnapshot(orderNo, userId)
+    if (recheckedRows.length === 0) break
+    Object.assign(order, recheckedRows[0])
+  }
+
+  // 待支付订单返回过期时间。判据由数据库给出（PENDING_AUTO_CLOSE_GUARD_SQL），
+  // 只有「这一刻懒清理真会关掉它」的订单才发：员工开单单、以及有在途支付意图的自助单
+  // 都关不掉，给它们发倒计时等于骗顾客，还会把前端的「归零重载」变成打不停的 order.detail。
+  const eligible = Boolean(order.auto_close_eligible)
+  const expireAt = eligible ? new Date(deadlineMs).toISOString() : null
+  // issue #215：同时下发**服务端算好的剩余毫秒**与**东八区的截止时刻**。
+  // 只给绝对时间的话，前端要拿设备的 `Date.now()` / `getHours()` 去推 —— 手机时钟快几分钟
+  // 就会把刚下发的时限判成「已过期」，出境改了时区则会显示成「请在 03:15 前完成支付
+  //（剩余 09:30）」这种自相矛盾的句子。判过期、报时刻都是服务端的事。
+  //
+  // ⚠️ **只在剩余量严格为正时才下发**。走到这里还满足「可关且已过期」，说明上面两次
+  // 补关都被并发写入的支付意图挤掉了（`order.repay` 可以对待支付单写 `lakala_out_order_no`
+  // 且没有十分钟守卫）。这时下发一个「权威的 0」就是在骗前端 —— 它对权威值的处理是
+  // 不再重载，而这单确实还开着。宁可不下发：前端会退到绝对时间口径（非权威），
+  // 按它自己的一次性闸门重载一次，自愈且有界。
+  // 两个字段同条件下发：降级响应里只剩一个「已经过去的 HH:mm」对读日志的人是徒增困惑
+  const vouchable = eligible && deadlineMs > nowMs
+  const expireInMs = vouchable ? deadlineMs - nowMs : null
+  const expireClock = vouchable ? shanghaiClockHM(new Date(deadlineMs)) : null
+  // ⚠️ 别用「字段缺席」同时表达两件不同的事（双谱系评审 round-11）。
+  // `expire_in_ms` 为空有两种来源，前端要做的事**正好相反**：
+  //   - 旧版本云函数根本不发这个字段 → 那边的订单可能真的还能付，不该封支付入口；
+  //   - 新版本补关两次都被并发意图挤掉 → 这单确实过期了、只是关不掉，必须封。
+  // 所以把后者显式说出来。
+  const expireUnresolved = eligible && !vouchable
+
+  // #214：这里是 `SELECT o.*` 原样展开，新增的 lakala_payment_intent 里含 paySign 等支付凭据，
+  // 必须在下发前剥掉（schema 注释也写明「不随 order.detail 下发」）。scanDetail / list 是显式
+  // 字段映射，天然不受影响；只有本处的整行展开会把新列带出去。
+  // issue #215：`auto_close_eligible` 也剥掉。它是服务端算 expire_at 的中间量，
+  // 下发出去只会诱使前端拿它自己推导展示口径 —— 前端要用的就是 expire_at 本身。
+  const {
+    lakala_payment_intent: _omitPaymentIntent,
+    auto_close_eligible: _omitAutoCloseEligible,
+    ...orderForClient
+  } = order
+
   ctx.result = {
     order: {
-      ...order,
+      ...orderForClient,
+      // #214：本人是否持有活动中的支付意图（布尔，不含凭据）。
+      // checkout 页的「去支付」据此跳过 scanAdjust —— 意图活跃期改抵扣有服务端守卫，
+      // 不跳过的话这一步就被拒了，后面的 order.pay 根本执行不到（双谱系评审 round-13）。
+      has_active_payment_intent: Boolean(
+        String(order.lakala_out_order_no || '').trim()
+        && order.client_user_id
+        && order.client_user_id === userId
+      ),
       expire_at: expireAt,
+      expire_in_ms: expireInMs,
+      expire_clock: expireClock,
+      // true = 已过截止点、服务端试过关但没关掉（与「旧云函数不发这些字段」区分开）
+      expire_unresolved: expireUnresolved,
+      // 本次请求的服务端处理耗时，供前端从实测 RTT 里扣掉，避免重复计算
+      server_elapsed_ms: Date.now() - handlerStartedAt,
       preferred_staff_name: preferredStaffName,
       coupon_name: couponName,
     },
@@ -1954,6 +3116,18 @@ async function cancel(ctx) {
     throw new Error('INVALID_PARAMS: 缺少 saleOrderId 参数')
   }
 
+  // issue #214 的归属边界（双谱系评审 round-1 收紧）：
+  //
+  // 甲方诉求是「顾客扫码后未付款能立刻取消」。中途一度放宽到「未认领的员工开单也可取消」，
+  // 但订单号是可枚举的日序号（FY-XSD-WX-{YYMMDD}{4位序号}），那等于把**破坏性操作**的
+  // 授权凭据降级成一个可猜的字符串：攻击者枚举当日序号就能关掉别人的待支付单，还会顺带
+  // 把归属认领走。`order.pay` 允许未认领单是因为「替别人付钱」无害，取消不同源。
+  //
+  // 因此这里要求 client_user_id 必须已是本人。真实链路上这不影响核心诉求：顾客只要
+  // 调整过抵扣方案或发起过支付，client_user_id 就已写入——而「卡在支付意图上取消不掉」
+  // 恰恰只发生在发起过支付之后。扫码后零操作的单仍由店员关闭。
+  // 若将来要覆盖「扫码即可取消」，正解是给二维码带不可预测的一次性 capability token，
+  // 而不是继续放宽订单号本身的权限。
   const orders = await pg.query(
     'SELECT * FROM sale_orders WHERE sale_order_id = $1 AND client_user_id = $2',
     [orderNo, userId]
@@ -1965,20 +3139,26 @@ async function cancel(ctx) {
 
   const order = orders[0]
 
-  if (order.lakala_out_order_no) {
-    throw new Error('CONFLICT: PAYMENT_INTENT_ACTIVE: 在线支付仍在处理中，暂不能取消订单')
+  // #182：转换单不能由顾客自行取消。关闭待支付转换单必须走 staff/admin 的
+  // rollbackPendingConversionOnClose——它要还原源卡次数、家居已结算数量，以及折抵时
+  // 下调的原单应付（waived_amount）。从这里直接置「已关闭」会绕过全部回滚，
+  // 源卡权益永久蒸发、原单欠款被永久抹掉。与 card.js 的 _closeExpiredPendingByUser
+  // 同一道闸门（它已显式排除转换单）。
+  if (order.sale_order_type === '转换单') {
+    throw new Error('INVALID_PARAMS: 转换单不支持自行取消，请联系门店处理')
   }
 
   // 允许取消状态：待支付（常规）、已支付（仅全额抵扣单，需回冲储值卡）
   // 2026-04-26 sale-order-domain-refactor:
   //   - paid_amount 已删除 → 全额抵扣判定改为 payable_amount=0（即 total = prepaid_card_amount）
   const prepaidCardAmount = Number(order.prepaid_card_amount || 0)
+  const pointsUsedCnl = Number(order.points_used || 0)
   const pendingPrepaidCardAmount = Number(order.pending_prepaid_card_amount || 0)
   const totalAmountCnl = Number(order.total_amount || 0)
   const payableAmountCnl = Number(order.payable_amount || 0) > 0
     ? Number(order.payable_amount)
     : Math.round((totalAmountCnl - prepaidCardAmount - pendingPrepaidCardAmount) * 100) / 100
-  const isPrepaidFull = prepaidCardAmount > 0 && payableAmountCnl === 0
+  const isPrepaidFull = (prepaidCardAmount > 0 || pointsUsedCnl > 0) && payableAmountCnl === 0
   const cancelableStatuses = ['待支付']
   if (isPrepaidFull && order.status === '已支付') {
     // 全额抵扣单顾客确认立刻取消：允许回冲
@@ -1986,6 +3166,23 @@ async function cancel(ctx) {
   }
   if (!cancelableStatuses.includes(order.status)) {
     throw new Error('INVALID_PARAMS: 当前订单状态不允许取消')
+  }
+
+  // 作废渠道意图必须排在状态闸门**之后**（双谱系评审 round-1）：
+  // 否则对一张「部分支付」单点取消，会先把顾客正在用的补款场次销毁掉，
+  // 然后才返回「当前订单状态不允许取消」——订单没关成，合法支付却被打断。
+  //
+  // wx.requestPayment 失败/取消只发生在小程序侧，云函数不会自动获知，预下单写入的
+  // lakala_out_order_no 因此可能残留。#214 之前这里只在渠道已是终态时才放行，未付款的
+  // 场次（CREATE/INIT）一律拒绝「请稍后再取消」——顾客得等拉卡拉 10 分钟超时 +
+  // payNotify 定时补偿扫到，实测约 20 分钟。现在改为主动向渠道关单后再取消；
+  // 关不掉就仍然不放行（fail-closed，见 helper 注释）。
+  if (order.lakala_out_order_no) {
+    await voidActiveLakalaPaymentIntent(orderNo, {
+      outTradeNo: order.lakala_out_order_no,
+      storeId: order.store_id,
+    })
+    order.lakala_out_order_no = null
   }
 
   const now = new Date()
@@ -2003,6 +3200,7 @@ async function cancel(ctx) {
 
     // audit-02 P0：cancel CAS 守卫——只在 status ∈ 允许列表 且 client_user_id 匹配时更新一行
     // 防并发：他端先 confirmOffline / payNotify 把单子置 '已支付' 时本端不可越权关闭
+    //
     const allowedStatusList = cancelableStatuses // 已根据 isPrepaidFull 计算
     const updRes = await client.query(
       `UPDATE sale_orders SET status = '已关闭',
@@ -2016,7 +3214,10 @@ async function cancel(ctx) {
        WHERE sale_order_id = $2
          AND client_user_id = $3
          AND status = ANY($4::order_status[])
-         AND lakala_out_order_no IS NULL`,
+         AND lakala_out_order_no IS NULL
+         -- #182 第二道闸门（函数入口已早退）：即便将来有人绕过入口校验，也不能从这里
+         -- 关掉转换单——那会跳过 rollbackPendingConversionOnClose 的次数/数量/欠款还原。
+         AND sale_order_type <> '转换单'`,
       [now, orderNo, userId, allowedStatusList]
     )
     if (updRes.rowCount !== 1) {
@@ -2029,6 +3230,7 @@ async function cancel(ctx) {
        WHERE used_sale_order_id = $1`,
       [orderNo]
     )
+    await releasePointsDeduction(client, { saleOrderId: orderNo, userId, pointsUsed: pointsUsedCnl })
 
     // 若已扣过卡：反向 INSERT 充值流水 + UPDATE prepaid_cards balance 回冲
     if (hasDeducted) {
@@ -2122,6 +3324,7 @@ async function appointableItems(ctx) {
       o.sale_order_type,
       o.document_type,
       o.legacy_source,
+      o.remark AS order_remark,
       o.store_id AS order_store_id,
       s.store_name,
       o.market_name,
@@ -2147,6 +3350,23 @@ async function appointableItems(ctx) {
       si.remark,
       si.sales_category,
       si.picked_up_quantity,
+      -- 行级欠款：仅「订单确实未付清」且「该卡未买满次数」时才算。
+      -- 订单已付清但行 received 不足的是行级分摊缺口（已知数据问题），不是顾客欠款；
+      -- 寄存单 total_amount<=0 → paid_sessions=session_count，天然不进此分支（其 sale_amount 只是原价快照）。
+      CASE
+        WHEN o.status = '部分支付'
+         AND si.paid_sessions IS NOT NULL
+         AND si.paid_sessions < si.session_count
+         AND NOT EXISTS (
+           SELECT 1 FROM sale_order_payments sop
+           WHERE sop.sale_order_id = o.sale_order_id
+             AND sop.change_type = '退款' AND sop.status = '已支付'
+         )
+         -- 1 元阈值：瀑布分摊的 ROUND 尾差会造出 ¥0.01 的假欠款，不值得推给顾客
+         AND (si.sale_amount::numeric - si.received::numeric) >= 1
+        THEN GREATEST(0, si.sale_amount::numeric - si.received::numeric)::numeric(12, 2)
+        ELSE NULL
+      END AS unpaid_amount,
       ps.category_id,
       pc.category_name,
       pc.product_kind
@@ -2196,6 +3416,7 @@ async function appointableItems(ctx) {
         saleOrderType: item.sale_order_type,
         documentType: item.document_type,
         legacySource: item.legacy_source,
+        orderRemark: item.order_remark,
         storeId: item.order_store_id,
         storeName: item.store_name,
         marketName: item.market_name,
@@ -2223,6 +3444,8 @@ async function appointableItems(ctx) {
       saleAmount: item.sale_amount,
       received: item.received,
       pendingReceived: item.pending_received,
+      // 仅订单未付清且该卡未买满次数时有值；已付清/寄存单/NULL 卡一律 null
+      unpaidAmount: item.unpaid_amount != null ? Number(item.unpaid_amount) : null,
       expireDate: item.expire_date,
       remark: item.remark,
       salesCategory: item.sales_category,
@@ -2242,13 +3465,25 @@ async function appointableItems(ctx) {
 function mapHomeProductRow(row) {
   const pickedQuantity = Number(row.picked_quantity || 0)
   const refundedQuantity = Number(row.refunded_quantity || 0)
+  const convertedQuantity = Number(row.converted_quantity || 0)
   const remainingQuantity = Number(row.remaining_quantity || 0)
   const paidQuantity = Number(row.paid_quantity || 0)
   const pendingPickupQuantity = Number(row.pending_pickup_quantity || 0)
+  // 待付清行的欠款金额：received 是行级净实收（已扣该行退款），故对退过款的行
+  // sale_amount - received 会把"退掉的钱"误算成欠款；寄存单行 SQL 已置 NULL。
+  const unpaidAmount =
+    refundedQuantity > 0 || row.unpaid_amount == null ? null : Number(row.unpaid_amount)
   let status
   if (row.refund_pending) status = '退款处理中'
   else if (pendingPickupQuantity > 0) status = pickedQuantity > 0 ? '部分提货' : '待提货'
-  else status = refundedQuantity > 0 ? '已完成' : '已提货'
+  // 「待付清」必须与欠款金额绑定：只有真的算得出欠款才这么标。
+  // 否则寄存单（金额列留空）和退款后仍有剩余的行会被误标成待付清/已完成。
+  else if (unpaidAmount > 0) status = '待付清'
+  // 还有未交付份额但算不出欠款（寄存单、退款后剩余）——是待提，不是已完成。
+  else if (remainingQuantity > 0) status = '待提货'
+  // #125：整行折抵后 settled=purchased，于是 pending=0、remaining=0、refunded=0，
+  // 不看 convertedQuantity 会把「已转走」误判成「已提货」。
+  else status = (refundedQuantity > 0 || convertedQuantity > 0) ? '已完成' : '已提货'
 
   return {
     saleItemId: row.sale_item_id,
@@ -2260,8 +3495,10 @@ function mapHomeProductRow(row) {
     paidQuantity,
     pickedQuantity,
     refundedQuantity,
+    convertedQuantity,
     remainingQuantity,
     pendingPickupQuantity,
+    unpaidAmount,
     status,
     storeId: row.store_id,
     storeName: row.store_name || null,
@@ -2273,10 +3510,20 @@ function mapHomeProductRow(row) {
 async function homeProducts(ctx) {
   const { userId } = ctx.auth
   const rows = await pg.query(
-    `WITH pickup_totals AS (
-       SELECT sale_item_id, SUM(pickup_quantity)::int AS picked_quantity
-         FROM pickup_records
-        GROUP BY sale_item_id
+    `WITH conversion_totals AS (
+       -- #154 拆列后件数直读 sale_items.converted_quantity，这里只剩**金额**：折抵额度按金额结算，
+       -- 不能由「已转换件数 × 单价」推算（折 4 件可能带走 ¥450 而非 ¥400）。
+       -- 只有「已关闭」完成过 rollback（数量已退回），故只排除它；
+       -- 其余状态（含"支付失败"）扣减仍然生效，必须计入已转换。删除订单的转出行已随主单消失。
+       SELECT out_item.ref_sale_item_id AS sale_item_id,
+              SUM(GREATEST(0, -out_item.received::numeric)) AS converted_amount
+         FROM sale_items out_item
+         JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id
+        WHERE out_item.item_direction = '转出'
+          AND out_item.product_type = '家居产品'
+          AND out_item.ref_sale_item_id IS NOT NULL
+          AND conv_order.status <> '已关闭'
+        GROUP BY out_item.ref_sale_item_id
      ), home_product_rows AS (
        SELECT COALESCE(si.sale_item_group_id, si.sale_item_id) AS sale_item_group_id,
               si.sale_item_id,
@@ -2284,18 +3531,39 @@ async function homeProducts(ctx) {
               COALESCE(si.product_name, '家居产品') AS product_name,
               COALESCE(ps.unit, '盒') AS unit,
               si.quantity::int AS purchased_quantity,
-              LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0)))::int AS settled_quantity,
-              LEAST(
-                LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0))),
-                GREATEST(0, COALESCE(pt.picked_quantity, 0))
-              )::int AS picked_quantity,
+              -- #154：三语义各有独立列，「已结算」回归派生量 = 已提货 + 已退款 + 已转换。
+              LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0) + COALESCE(si.refunded_quantity, 0) + COALESCE(si.converted_quantity, 0)))::int AS settled_quantity,
+              LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0)))::int AS picked_quantity,
+              LEAST(si.quantity, GREATEST(0, COALESCE(si.refunded_quantity, 0)))::int AS refunded_quantity,
+              LEAST(si.quantity, GREATEST(0, COALESCE(si.converted_quantity, 0)))::int AS converted_quantity,
+              -- #145/#153：行级可提件数 = min(物理未结算, floor(剩余已付 / 单价))，与折抵额度同一口径。
+              -- 剩余已付 = 行实收 − 已提货金额 − 已转走金额；退款不在此处扣（received 已扣过）。
+              -- 必须按金额算而非「已付件数 − 已提 − 已折抵件数」：折抵金额含余数时两者不等，
+              -- 折 4 件带走 ¥450 后再回款 ¥50，按件数会多放出 1 件（累计兑现超实收）。
               CASE
+                WHEN o.sale_order_type = '寄存单' OR si.sale_amount <= 0
+                  THEN GREATEST(0, si.quantity - LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0) + COALESCE(si.refunded_quantity, 0) + COALESCE(si.converted_quantity, 0))))
+                ELSE LEAST(
+                  GREATEST(0, si.quantity - LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0) + COALESCE(si.refunded_quantity, 0) + COALESCE(si.converted_quantity, 0)))),
+                  GREATEST(0, FLOOR((GREATEST(0, si.received::numeric)
+                    - GREATEST(0, COALESCE(si.picked_up_quantity, 0)) * si.unit_real_price::numeric
+                    - COALESCE(ct.converted_amount, 0)) / NULLIF(si.unit_real_price::numeric, 0)))::int
+                )
+              END AS row_pending_pickup,
+              CASE
+                -- 寄存单：货本就属于顾客，全额可提（sale_amount 只是原价快照，received 不代表欠款）。
+                -- 判据与 #120 展示侧 is_deposit 同源；刻意不用疗程卡那条 total_amount<=0——后者会连带覆盖
+                -- 转换单/零总额单，且 total_amount 无 CHECK 约束，负值会静默放行。
+                WHEN o.sale_order_type = '寄存单' THEN si.quantity
                 WHEN si.sale_amount <= 0 THEN si.quantity
                 ELSE LEAST(
                   si.quantity,
                   FLOOR(GREATEST(0, si.received::numeric) * si.quantity / NULLIF(si.sale_amount::numeric, 0))::int
                 )
               END AS paid_quantity,
+              si.sale_amount::numeric AS row_sale_amount,
+              GREATEST(0, si.received::numeric) AS row_received,
+              (o.sale_order_type = '寄存单') AS is_deposit,
               o.store_id,
               s.store_name,
               COALESCE(o.paid_at, o.sale_order_datetime, o.created_at) AS purchased_at,
@@ -2309,10 +3577,18 @@ async function homeProducts(ctx) {
          JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
          LEFT JOIN stores s ON s.store_id = o.store_id
          LEFT JOIN product_skus ps ON ps.sku_id = si.sku_id
-         LEFT JOIN pickup_totals pt ON pt.sale_item_id = si.sale_item_id
+         LEFT JOIN conversion_totals ct ON ct.sale_item_id = si.sale_item_id
         WHERE o.client_user_id = $1
           AND o.status IN ('已支付', '部分支付', '已完成')
-          AND si.item_direction = '购买'
+          -- #145/#153：转换单换入的家居与购买行同权（与疗程卡侧放行写法同源）。
+          -- sale_amount>0 的转入行，received 已由 paid-sessions STEP 1.6 重建为「转出旧卡
+          -- 价值 + 本单净到账」，FLOOR(received × qty / sale_amount) 天然成立；sale_amount<=0
+          -- 的转入行走上方赠品分支全额可提（STEP 1.6 带 sale_amount>0 过滤，刻意不碰 0 元行，
+          -- 与购买侧 0 元赠品行同口径）。两类都不需要为「转入」另加满付分支。
+          AND (
+            si.item_direction = '购买'
+            OR (o.sale_order_type = '转换单' AND si.item_direction = '转入')
+          )
           AND si.product_type = '家居产品'
      ), home_products AS (
        SELECT sale_item_group_id,
@@ -2323,7 +3599,13 @@ async function homeProducts(ctx) {
               SUM(si.purchased_quantity)::int AS purchased_quantity,
               SUM(si.settled_quantity)::int AS settled_quantity,
               SUM(si.picked_quantity)::int AS picked_quantity,
+              SUM(si.refunded_quantity)::int AS refunded_quantity,
+              SUM(si.converted_quantity)::int AS converted_quantity,
+              SUM(si.row_pending_pickup)::int AS pending_pickup_quantity,
               SUM(si.paid_quantity)::int AS paid_quantity,
+              SUM(si.row_sale_amount) AS sale_amount_total,
+              SUM(si.row_received) AS received_total,
+              BOOL_OR(si.is_deposit) AS is_deposit,
               MIN(si.store_id) AS store_id,
               MIN(si.store_name) AS store_name,
               MAX(si.purchased_at) AS purchased_at,
@@ -2332,17 +3614,18 @@ async function homeProducts(ctx) {
       GROUP BY sale_item_group_id
      ), home_product_balances AS (
        SELECT *,
-              (settled_quantity - picked_quantity)::int AS refunded_quantity,
+              -- #154 前「已退款」只能由 settled − 已提货 − 已转换 倒推；拆列后直读独立列。
               (purchased_quantity - settled_quantity)::int AS remaining_quantity,
-              LEAST(
-                purchased_quantity - settled_quantity,
-                GREATEST(paid_quantity - picked_quantity, 0)
-              )::int AS pending_pickup_quantity
+              -- 寄存单的 sale_amount 只是原价快照、received 恒为历史值，两者相减不是欠款
+              -- （寄存的货本就属于顾客）。金额列一律留空，与导出口径一致。
+              CASE WHEN is_deposit THEN NULL
+                   ELSE GREATEST(0, sale_amount_total - received_total)::numeric(12, 2)
+              END AS unpaid_amount
          FROM home_products
      )
      SELECT *
        FROM home_product_balances
-      WHERE picked_quantity > 0 OR pending_pickup_quantity > 0
+      WHERE picked_quantity > 0 OR remaining_quantity > 0 OR converted_quantity > 0
    ORDER BY (pending_pickup_quantity > 0) DESC,
             purchased_at DESC,
             sale_item_id`,
@@ -2398,7 +3681,7 @@ async function alipayPay(ctx) {
     }
   }
 
-  const reservation = await reserveDirectOnlinePaymentIntentWithTerminalRetry({
+  let reservation = await reserveDirectOnlinePaymentIntentWithTerminalRetry({
     orderNo,
     userId,
     payAmountInput,
@@ -2415,37 +3698,70 @@ async function alipayPay(ctx) {
     return
   }
 
-  const cfgAli = lakalaConfig.readConfig()
-  const requestIpAli = getRequestIp()
-  // 步骤 1: preorder(ALIPAY, NATIVE=41) 拿二维码 URL
-  const preorderRespAli = await createLakalaPreorder({
-    orderNo,
-    outTradeNo: reservation.outTradeNo,
-    merchantNo: reservation.merchant.merchantNo,
-    termNo: reservation.merchant.termNo,
-    payAmountYuan: reservation.payAmount,
-    accountType: 'ALIPAY',
-    transType: '41',
-    requestIp: requestIpAli,
-  })
-  // 步骤 2: share_code 用 alipayQrUrl 作为 biz_link 换取吱口令
-  const shareCodeResp = await createLakalaAlipayShareCode({
-    orderNo,
-    merchantNo: reservation.merchant.merchantNo,
-    termNo: reservation.merchant.termNo,
-    outTradeNo: preorderRespAli.outTradeNo,
-    payAmountYuan: reservation.payAmount,
-    requestIp: requestIpAli,
-    bizLink: preorderRespAli.alipayQrUrl,
-  })
+  // issue #214：命中复用则直接回发原吱口令，顾客继续付同一笔，不再开新场次。
+  // 渠道已终态时 helper 释放意图并返回 false，这里重新预占，顾客无感（同 pay）。
+  if (reservation.reused
+      && !await ensureReusedIntentStillPayable(orderNo, reservation.outTradeNo, reservation.merchant)) {
+    reservation = await reserveDirectOnlinePaymentIntentWithTerminalRetry({
+      orderNo,
+      userId,
+      payAmountInput,
+      paymentMethod: '支付宝',
+      requireAlipayShareSource: true,
+    })
+  }
+  let alipayShareToken = reservation.paymentParams && reservation.paymentParams.alipayShareToken
+  let alipayExpireDate = reservation.paymentParams && reservation.paymentParams.alipayExpireDate
+  if (!reservation.reused) {
+    const cfgAli = lakalaConfig.readConfig()
+    const requestIpAli = getRequestIp()
+    // 步骤 1: preorder(ALIPAY, NATIVE=41) 拿二维码 URL
+    const preorderRespAli = await createLakalaPreorder({
+      orderNo,
+      outTradeNo: reservation.outTradeNo,
+      storeId: reservation.storeId,
+      timeoutMs: LAKALA_PREORDER_TIMEOUT_ALIPAY_MS,
+      merchantNo: reservation.merchant.merchantNo,
+      termNo: reservation.merchant.termNo,
+      payAmountYuan: reservation.payAmount,
+      accountType: 'ALIPAY',
+      transType: '41',
+      requestIp: requestIpAli,
+    })
+    // 步骤 2: share_code 用 alipayQrUrl 作为 biz_link 换取吱口令
+    let shareCodeResp
+    try {
+      shareCodeResp = await createLakalaAlipayShareCode({
+        orderNo,
+        merchantNo: reservation.merchant.merchantNo,
+        termNo: reservation.merchant.termNo,
+        outTradeNo: preorderRespAli.outTradeNo,
+        payAmountYuan: reservation.payAmount,
+        requestIp: requestIpAli,
+        bizLink: preorderRespAli.alipayQrUrl,
+      })
+    } catch (err) {
+      // preorder 已在渠道侧建单（CREATE），但吱口令没拿到 → 意图活跃却无快照可复用。
+      // 不释放的话顾客重试只会撞 PAYMENT_INTENT_ACTIVE，得等渠道超时才自愈。
+      await releaseIntentAfterPreorderFailure(orderNo, reservation.outTradeNo, reservation.storeId)
+      throw err
+    }
+    alipayShareToken = shareCodeResp.shareToken
+    alipayExpireDate = shareCodeResp.expireDate
+    await persistLakalaPaymentIntentSnapshot(orderNo, reservation.outTradeNo,
+      buildAlipayIntentSnapshot(reservation.outTradeNo, reservation.payAmount,
+        shareCodeResp.shareToken, shareCodeResp.expireDate))
+  }
   // 与微信一致：首付上限在 payNotify 确认真实到账时清空，预下单阶段继续保留。
   ctx.result = {
     orderNo,
     totalAmount: reservation.totalAmount,
     paidAmount: reservation.payAmount,
+    // 与微信通道同一口径，供前端冻结展示（双谱系评审 round-16）
+    prepaidCardAmount: reservation.pendingPrepaidAmount,
     paymentMethod: '支付宝',
-    alipayShareToken: shareCodeResp.shareToken,
-    alipayExpireDate: shareCodeResp.expireDate,
+    alipayShareToken,
+    alipayExpireDate,
     status: reservation.status,
   }
 }
@@ -2825,6 +4141,7 @@ async function repay(ctx) {
     ? buildLakalaOutTradeNo(saleOrderId)
     : null
   let repayMerchant = null
+  let repayStoreId = null   // 事务内读到的门店，供预下单失败时的安全释放使用
 
   await pg.transaction(async (client) => {
     // 1. 锁原单 + 校验归属 + 状态
@@ -2947,6 +4264,7 @@ async function repay(ctx) {
       if (paymentMethod === '支付宝' && !lakalaConfig.readConfig().alipayShareSource) {
         throw new Error('INVALID_STATE: ALIPAY_NOT_AVAILABLE: 暂不支持支付宝，请使用微信支付')
       }
+      repayStoreId = origOrder.store_id
       repayMerchant = await resolveLakalaMerchantInTransaction(client, origOrder.store_id)
       if (!repayMerchant) {
         throw new Error('INVALID_STATE: LAKALA_NOT_CONFIGURED: 该门店未启用拉卡拉聚合支付，请联系管理员')
@@ -3078,6 +4396,14 @@ async function repay(ctx) {
       const newNet = Math.round((newReceived - newRefunded) * 100) / 100
       const fullyPaid = newNet + 0.001 >= Number(origOrder.total_amount || 0)
       finalStatus = fullyPaid ? '已支付' : '部分支付'
+      if (!['部分支付', '已支付', '已完成'].includes(origOrder.status)) {
+        const documentType = await classifySaleOrderDocumentType(client, userId, saleOrderId)
+        await client.query(
+          `UPDATE sale_orders SET document_type = $1::document_type
+           WHERE sale_order_id = $2 AND status = $3`,
+          [documentType, saleOrderId, origOrder.status]
+        )
+      }
       // actual 储值卡金额与 payable_amount 由下方 recalcPaidSessionsForOrder 从流水统一重聚合。
       const repayUpd = await client.query(
         `UPDATE sale_orders
@@ -3152,6 +4478,7 @@ async function repay(ctx) {
     const { paymentParams: repayPaymentParams } = await createLakalaPreorder({
       orderNo: saleOrderId,
       outTradeNo: reservedOutTradeNo,
+      storeId: repayStoreId,
       merchantNo: repayMerchant.merchantNo,
       termNo: repayMerchant.termNo,
       payAmountYuan: repayAmountInput,
@@ -3161,6 +4488,11 @@ async function repay(ctx) {
       subAppid: repayCfg.subAppid,
       requestIp: repayRequestIp,
     })
+    // issue #214：repay 自身保持「有活动意图即 fail-fast」（见上方事务注释——它的
+    // pending 作废与 payable 回写在预下单前已提交，无法与渠道意图 CAS 原子化）。
+    // 但仍落盘快照：顾客中断后从 order.pay 入口回来时可复用这一场次继续付。
+    await persistLakalaPaymentIntentSnapshot(saleOrderId, reservedOutTradeNo,
+      buildWechatIntentSnapshot(reservedOutTradeNo, repayAmountInput, repayPaymentParams))
     ctx.result = {
       saleOrderId,
       status: '待支付',
@@ -3177,6 +4509,8 @@ async function repay(ctx) {
     const repayPreorderResp = await createLakalaPreorder({
       orderNo: saleOrderId,
       outTradeNo: reservedOutTradeNo,
+      storeId: repayStoreId,
+      timeoutMs: LAKALA_PREORDER_TIMEOUT_ALIPAY_MS,
       merchantNo: repayMerchant.merchantNo,
       termNo: repayMerchant.termNo,
       payAmountYuan: repayAmountInput,
@@ -3184,15 +4518,25 @@ async function repay(ctx) {
       transType: '41',
       requestIp: repayRequestIp,
     })
-    const repayShareCodeResp = await createLakalaAlipayShareCode({
-      orderNo: saleOrderId,
-      merchantNo: repayMerchant.merchantNo,
-      termNo: repayMerchant.termNo,
-      outTradeNo: repayPreorderResp.outTradeNo,
-      payAmountYuan: repayAmountInput,
-      requestIp: repayRequestIp,
-      bizLink: repayPreorderResp.alipayQrUrl,
-    })
+    let repayShareCodeResp
+    try {
+      repayShareCodeResp = await createLakalaAlipayShareCode({
+        orderNo: saleOrderId,
+        merchantNo: repayMerchant.merchantNo,
+        termNo: repayMerchant.termNo,
+        outTradeNo: repayPreorderResp.outTradeNo,
+        payAmountYuan: repayAmountInput,
+        requestIp: repayRequestIp,
+        bizLink: repayPreorderResp.alipayQrUrl,
+      })
+    } catch (err) {
+      // 同 alipayPay：preorder 已建单但吱口令失败，安全释放后再抛，别把订单锁死
+      await releaseIntentAfterPreorderFailure(saleOrderId, reservedOutTradeNo, repayStoreId)
+      throw err
+    }
+    await persistLakalaPaymentIntentSnapshot(saleOrderId, reservedOutTradeNo,
+      buildAlipayIntentSnapshot(reservedOutTradeNo, repayAmountInput,
+        repayShareCodeResp.shareToken, repayShareCodeResp.expireDate))
     ctx.result = {
       saleOrderId,
       status: '待支付',
@@ -3251,8 +4595,10 @@ async function queryLakalaStatus(ctx) {
     termNo: merchant.termNo,
     outTradeNo: order.lakala_out_order_no,
   })
+  // 同样要求 ok===true 才解释状态：否则业务失败码携带的非权威 CLOSE 会释放意图
+  const queriedTradeState = (resp && resp.ok === true) ? normalizeTradeState(resp.tradeState) : ''
   let lakalaIntentReleased = false
-  if (resp && ['FAIL', 'CLOSE'].includes(resp.tradeState)) {
+  if (queriedTradeState && LAKALA_RELEASABLE_TRADE_STATES.includes(queriedTradeState)) {
     const released = await pg.query(
       `UPDATE sale_orders
        SET lakala_out_order_no = NULL, updated_at = NOW()
@@ -3387,8 +4733,11 @@ async function confirmPayment(ctx) {
     return
   }
 
-  const tradeState = resp.tradeState || ''
-  if (['FAIL', 'CLOSE'].includes(tradeState)) {
+  // ⚠️ 这条路径的 SUCCESS 会直接触发本地入账，非权威状态绝不能采信：
+  // 拉卡拉业务失败码的响应里也可能带 resp_data.trade_state，据此入账等于无真实到账却记账
+  // （双谱系评审 round-2）。ok 不为 true 时按「查不到状态」处理，交给下游降级分支。
+  const tradeState = resp.ok === true ? normalizeTradeState(resp.tradeState) : ''
+  if (tradeState && LAKALA_RELEASABLE_TRADE_STATES.includes(tradeState)) {
     const released = await pg.query(
       `UPDATE sale_orders
        SET lakala_out_order_no = NULL, updated_at = NOW()
@@ -3422,10 +4771,18 @@ async function confirmPayment(ctx) {
     return
   }
   const paymentMethod = order.payment_method === '支付宝' ? '支付宝' : '微信'
+  // fail-closed：入账目标函数名必须显式配置，不回退到 'payNotify'。
+  // 同一 env 内并存 payNotify(prod 库) 与 payNotifyDev(dev 库)，回退等于让 clientApiDev
+  // 拿 dev 库的订单号去调生产函数在 prod 库入账。宁可这次对账降级，也不能把钱写错库。
+  if (!process.env.PAYNOTIFY_FN_NAME) {
+    console.error('[order.confirmPayment] PAYNOTIFY_FN_NAME 未配置，拒绝猜测目标函数（避免跨库入账）')
+    ctx.result = { saleOrderId: orderNo, status: localStatus, reconciled: false, reason: 'paynotify_not_configured', ...localPaymentSnapshot }
+    return
+  }
   let payNotifyResult
   try {
     const r = await cloud.callFunction({
-      name: 'payNotify',
+      name: process.env.PAYNOTIFY_FN_NAME,
       data: {
         orderNo: order.lakala_out_order_no,
         transactionId: resp.tradeNo,
@@ -3462,6 +4819,71 @@ async function confirmPayment(ctx) {
   }
 }
 
+/**
+ * 作废订单上进行中的在线支付意图（跨 env 内部接口，issue #214）。
+ *
+ * 仅供 staffApi 经 HTTP 触发器 + HMAC 调用：员工端/管理端关闭订单前，需要先让渠道关单，
+ * 否则顾客手机上残留的支付面板仍可付款。staffApi 所在的 CloudBase 账号没有拉卡拉凭据，
+ * 也不该有——把凭据面限制在 clientApi 一处，是这条跨 env 调用存在的理由。
+ *
+ * 鉴权完全依赖 index.js 的 HMAC 链路（签名 + 时间戳窗口 + action 白名单），
+ * 这里做与 auth.uploadStaffAvatar 同款的二次断言，防止 cloud.callFunction 直调绕过。
+ */
+async function voidPaymentIntent(ctx) {
+  if (!ctx.event._fromHttp || ctx.event._hmacVerified !== true) {
+    throw new Error('PERMISSION_DENIED: 该接口仅供内部服务调用')
+  }
+  const payload = ctx.event.payload || {}
+  const saleOrderId = payload.saleOrderId || payload.orderNo
+  if (!saleOrderId) {
+    throw new Error('INVALID_PARAMS: 缺少 saleOrderId 参数')
+  }
+  // 调用方预读到的意图单号，**必填**。本接口绝不能「读当前是哪笔就关哪笔」——见下方
+  // TOCTOU 说明。
+  //
+  // 这里刻意不做向后兼容的软校验（双谱系评审 round-4）：滚动部署期间必然存在「旧版
+  // staffApi 只发 saleOrderId」的窗口，软校验会在那段时间静默跳过比对、关掉顾客新发起的
+  // 合法支付。宁可让旧版调用直接失败（关单功能短暂不可用、店员重试即可），也不要静默
+  // 破坏一笔正在进行的支付。
+  const expectedOutTradeNo = String(payload.expectedOutTradeNo || '').trim()
+
+  const rows = await pg.query(
+    'SELECT sale_order_id, status, store_id, lakala_out_order_no FROM sale_orders WHERE sale_order_id = $1',
+    [saleOrderId]
+  )
+  if (rows.length === 0) {
+    throw new Error('NOT_FOUND: 订单不存在')
+  }
+  const order = rows[0]
+  if (!order.lakala_out_order_no) {
+    ctx.result = { saleOrderId, result: 'noop' }
+    return
+  }
+
+  // TOCTOU 防线：staffApi 预检时看到的是意图 A，但在跨 env 请求到达这里之前，A 可能已经
+  // 到账并清锁、顾客又发起了补款意图 B。若本接口只按订单号「关当前那笔」，就会把合法的 B
+  // 关掉——而 staff 侧事务随后会因订单已变「部分支付」拒绝关闭，最终订单没关成、顾客的
+  // 补款却被破坏。所以单号不匹配一律拒绝，绝不自动改为操作新意图。
+  if (!expectedOutTradeNo) {
+    // 必须排在任何渠道调用之前：缺参时一笔查单/关单都不能发出去
+    throw new Error('INVALID_PARAMS: 缺少 expectedOutTradeNo 参数')
+  }
+  if (expectedOutTradeNo !== String(order.lakala_out_order_no)) {
+    throw new Error('CONFLICT: PAYMENT_INTENT_CHANGED: 支付场次已变化，请刷新后重试')
+  }
+  // 状态同样要在任何渠道调用之前复核（调用方的预检与这里之间可能已经变化）。
+  // 集合与 staffApi 的 CLOSEABLE_ORDER_STATUSES 必须一致，由 cross-copy snapshot 守护。
+  if (!CLOSEABLE_ORDER_STATUSES.includes(order.status)) {
+    throw new Error('CONFLICT: PAYMENT_INTENT_CHANGED: 订单状态已变化，请刷新后重试')
+  }
+
+  const result = await voidActiveLakalaPaymentIntent(saleOrderId, {
+    outTradeNo: order.lakala_out_order_no,
+    storeId: order.store_id,
+  })
+  ctx.result = { saleOrderId, result }
+}
+
 module.exports = {
   create,
   pay,
@@ -3479,4 +4901,5 @@ module.exports = {
   queryLakalaStatus,
   confirmPayment,
   decideReconcile,
+  voidPaymentIntent,
 }

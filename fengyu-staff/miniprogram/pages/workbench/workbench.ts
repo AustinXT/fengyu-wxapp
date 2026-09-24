@@ -1,7 +1,8 @@
 // pages/workbench/workbench.ts — 工作台
 import { callStaffApi } from '../../utils/cloud';
-import { isManagementMode, isManager, requireManager } from '../../utils/role';
+import { canAccessInventory, isManagementMode, isManager, requireManager } from '../../utils/role';
 import { emit, on, EVENT_STORE_CHANGED } from '../../utils/event-bus';
+import { INVENTORY_ENTRY_ENABLED } from '../../utils/feature-flags';
 
 const app = getApp<IAppOption>();
 
@@ -12,6 +13,8 @@ Page({
     staffName: '',
     position: '',
     isManager: false,
+    inventoryEntryEnabled: INVENTORY_ENTRY_ENABLED,
+    canAccessInventory: false,
     currentStoreId: '',
     scopedStores: [] as ScopedStore[],
     hasMultiStore: false,
@@ -115,6 +118,7 @@ Page({
       staffName: staffName || '',
       position: position || '',
       isManager: isManager(),
+      canAccessInventory: canAccessInventory(),
       currentStoreId: currentStoreId || '',
       scopedStores: scopedStores || [],
       hasMultiStore: (scopedStores || []).length > 1,
@@ -255,7 +259,11 @@ Page({
   },
 
   goInventory() {
-    if (!requireManager()) return;
+    // 入口三动作并集（对齐云端白名单）；页面内的写操作入口各自再校验 store_operate。
+    if (!canAccessInventory()) {
+      wx.showToast({ title: '当前账号无库存访问权限', icon: 'none' });
+      return;
+    }
     wx.navigateTo({ url: '/packageMy/inventory/inventory' });
   },
 

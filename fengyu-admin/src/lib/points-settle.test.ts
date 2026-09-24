@@ -28,7 +28,8 @@ interface MockTx {
 /**
  * 构造 mock tx：按调用顺序返回不同结果
  *
- * 调用顺序：① 取原单 → ② 链净额 → ③ 已发积分 → ④ INSERT point_transactions → ⑤ UPDATE balance
+ * 调用顺序：① 取原单 → ② 链净额 → ③ 已发积分 → ④ INSERT point_transactions
+ * → ⑤ INSERT/UPDATE point_batches → ⑥ UPDATE balance
  * 若 settle 在 ①/②/③ 提前 return，后续 mock 不会被消费
  */
 function buildMockTx({
@@ -54,6 +55,7 @@ function buildMockTx({
   }
   execute.mockResolvedValueOnce([{ net_settled: netSettled }])
   execute.mockResolvedValueOnce([{ granted }])
+  execute.mockResolvedValueOnce([{ id: 1001 }])
   execute.mockResolvedValue({ rowCount: 1 })
   return { execute }
 }
@@ -83,8 +85,8 @@ describe('settlePointsForOrder — 正向发放', () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const r = await settlePointsForOrder({ execute } as any, 'FY-XSD-WX-2604240001')
     expect(r).toEqual({ delta: 2, expected: 2, granted: 0 })
-    // 3 次 SELECT + 1 次 INSERT + 1 次 UPDATE = 5 次
-    expect(execute).toHaveBeenCalledTimes(5)
+    // 3 次 SELECT + 1 次 INSERT 流水 + 1 次 INSERT 批次 + 1 次 UPDATE 余额 = 6 次
+    expect(execute).toHaveBeenCalledTimes(6)
   })
 
   test('消费 100 元整 → delta=+1', async () => {
@@ -110,7 +112,7 @@ describe('settlePointsForOrder — 退款冲销', () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const r = await settlePointsForOrder({ execute } as any, 'o1')
     expect(r).toEqual({ delta: -1, expected: 1, granted: 2 })
-    expect(execute).toHaveBeenCalledTimes(5)
+    expect(execute).toHaveBeenCalledTimes(6)
   })
 
   test('二次退款尾差归零：netSettled=140, granted=1 → delta=0 无写入', async () => {

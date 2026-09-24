@@ -1,7 +1,18 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+vi.mock('@/lib/employee-assignment-server', () => ({ getInvalidEmployeeAssignmentId: vi.fn().mockResolvedValue(null) }))
+vi.mock('@/lib/document-type', () => ({
+  classifySaleOrderDocumentType: vi.fn().mockResolvedValue('售前一次'),
+}))
 
 // 退款前置检查（orders.ts recordPayment 等调 hasPendingRefund）：
 // 默认 false（无退款审批中），让现有用例走正常分支；不 mock 会跑真实实现拿 mock 的 db 误判。
+// #214 关闭订单前向渠道关单：默认 isReady=false（等价改动前行为），
+// 需要覆盖真实关单分支的用例自行把它改成 true。
+vi.mock('@/lib/lakala-client', () => ({
+  isReady: vi.fn(() => false),
+  queryTrade: vi.fn(async () => ({ ok: true, tradeState: 'CREATE' })),
+  closeTrade: vi.fn(async () => ({ ok: true, tradeState: 'CLOSE' })),
+}))
 vi.mock('@/lib/refund-cascade', () => ({
   hasPendingRefund: vi.fn().mockResolvedValue(false),
   hasPendingRefundByServiceOrder: vi.fn().mockResolvedValue(false),
@@ -57,6 +68,9 @@ vi.mock('@db/order', () => ({
     legacySource: 'legacy_source',
     lakalaOutOrderNo: 'lakala_out_order_no',
     firstPaymentAmount: 'first_payment_amount',
+    performanceAttributionDate: 'performance_attribution_date',
+    performanceAttributionAdjustedAt: 'performance_attribution_adjusted_at',
+    performanceAttributionAdjustedBy: 'performance_attribution_adjusted_by',
     $inferInsert: {} as any,
   },
   saleItems: {
@@ -97,6 +111,13 @@ vi.mock('@db/order', () => ({
     createdAt: 'created_at',
     paidAt: 'paid_at',
     allocationStatus: 'allocation_status',
+    // 与 saleOrders.performanceAttributionDate 刻意用**不同**的 mock 串：
+    // 两者同名的话，"读款项级列"与"读订单级列"在断言里无法区分，
+    // 而这正是本 PR 的全部行为变更所在。
+    performanceAttributionDate: 'sop.performance_attribution_date',
+    performanceAttributionAdjustedAt: 'performance_attribution_adjusted_at',
+    performanceAttributionAdjustedBy: 'performance_attribution_adjusted_by',
+    refundReason: 'refund_reason',
     $inferInsert: {} as any,
   },
   salePaymentItemReceipts: {
@@ -182,13 +203,21 @@ vi.mock('@db/prepaid-card', () => ({
   // 2026-04-24 prepaid_cards.store_id 已 DROP；2026-04-26 sale-order-domain-refactor 修复
   // P0-14-01：移除 mock 的 storeId 字段，避免反向锁死老代码引用
   prepaidCards: { cardId: 'card_id', userId: 'user_id', balance: 'balance' },
-  cardTransactions: { id: 'id', cardId: 'card_id', type: 'type', amount: 'amount', refOrderId: 'ref_order_id' },
+  cardTransactions: {
+    id: 'id',
+    cardId: 'card_id',
+    type: 'type',
+    amount: 'amount',
+    refOrderId: 'ref_order_id',
+    externalRef: 'external_ref',
+  },
 }))
 
 vi.mock('drizzle-orm', () => ({
   eq: vi.fn((a, b) => ({ type: 'eq', a, b })),
   and: vi.fn((...args) => ({ type: 'and', args })),
   or: vi.fn((...args) => ({ type: 'or', args })),
+  asc: vi.fn((col) => ({ type: 'asc', col })),
   desc: vi.fn((col) => ({ type: 'desc', col })),
   gte: vi.fn((a, b) => ({ type: 'gte', a, b })),
   lt: vi.fn((a, b) => ({ type: 'lt', a, b })),
@@ -266,17 +295,34 @@ vi.mock('@/lib/points-settle', () => ({
   })),
 }))
 
-import { createOrder, confirmOfflinePayment, closeOrder, resetOrderFailed, getOrdersPaginated, createConversionOrder, recordPayment, freezeConversionRepaymentAmount, deleteOrder, exportOrders, exportAllocationOrders, createDepositOrder, updatePerformanceAttributionDate } from './orders'
+import { createOrder, confirmOfflinePayment, closeOrder, resetOrderFailed, getOrdersPaginated, createConversionOrder, recordPayment, freezeConversionRepaymentAmount, deleteOrder, exportOrders, exportOrderPayments, exportAllocationOrders, createDepositOrder, updatePerformanceAttributionDate, updatePaymentPerformanceAttributionDate } from './orders'
 import { settlePointsSafe } from '@/lib/points-settle'
 import { db } from '@/db'
 import { getSession } from '@/lib/auth'
 import { isInScope, scopeCondition } from '@/lib/permissions'
 import { calcCouponDiscount } from '@/lib/utils'
-import { eq, ilike, gte, lt, gt, inArray, isNull } from 'drizzle-orm'
+import { eq, ilike, gte, lt, gt, inArray, isNull, sql } from 'drizzle-orm'
 import { requirePermission } from '@/lib/permissions'
 import { ApiError } from '@/lib/api-error'
 import { logUpdate } from '@/lib/operation-log'
+
+/**
+ * 归属日期口径断言助手（迁移 0041 收敛后）：查询侧直读
+ * sale_order_payments.performance_attribution_date，不再拼 CASE/COALESCE。
+ * 无别名时该列作为插值进 sql`` 的 values；带别名时走 sql.raw，见各调用点的单独断言。
+ */
+const usedAttributionColumn = () =>
+  (sql as any).mock.calls.some(([, ...values]: any[]) =>
+    values.includes('sop.performance_attribution_date'),
+  )
+
+/** 反向守卫：口径一旦被改回订单级，上面的 usedAttributionColumn 仍为真，只有这条能红。 */
+const usedOrderLevelColumn = () =>
+  (sql as any).mock.calls.some(([, ...values]: any[]) =>
+    values.includes('performance_attribution_date'),
+  )
 import { hasPendingRefund } from '@/lib/refund-cascade'
+import { isReady as lakalaIsReady, queryTrade, closeTrade } from '@/lib/lakala-client'
 
 const mockSession = {
   employeeId: 'EMP-001',
@@ -965,6 +1011,8 @@ describe('createOrder — 全额储值卡抵扣即时扣卡（2026-05-21）', ()
 
     expect(result.success).toBe(false)
     expect(result.message).toContain('储值卡余额不足')
+    // 余额不得落回子标签位：`50: 顾客储值卡余额不足…` 这种开头会直接漏进 toast（issue #133 评审 round 3/4）
+    expect(result.message).toMatch(/^顾客储值卡余额不足/)
   })
 })
 
@@ -1043,6 +1091,19 @@ function mockTransactionCaptureInserts(orderId = 'FY-XSD-WX-260518001') {
       // 待支付订单 partial unique index 检查（line 1194-1207）；空结果绕过 conflict
       select: vi.fn().mockReturnValue({
         from: vi.fn().mockReturnValue({
+          innerJoin: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockResolvedValue([{
+                productSkuId: 'sku-home',
+                inventorySkuId: 'inventory-sku-001',
+                productCode: 'I001',
+                productName: '库存商品',
+                specName: null,
+                inventorySkuActive: true,
+                quantityPerSaleUnit: 1,
+              }]),
+            }),
+          }),
           where: vi.fn().mockReturnValue({
             limit: vi.fn().mockResolvedValue([]),
           }),
@@ -1154,7 +1215,7 @@ describe('createOrder — B2 拆行（疗程卡 quantity>1 → N 行）', () => 
     expect(saleItemInserts.map((c) => Number(c.values.pendingReceived))).toEqual([500, 500, 350])
   })
 
-  it('家居产品 ×10（productType=家居产品）→ 写入 1 行 sale_items（quantity=10，合行不拆）', async () => {
+  it('家居产品 ×10 → 合行写入并冻结库存组成', async () => {
     const inserts = mockTransactionCaptureInserts('FY-XSD-WX-260518103')
     const result = await createOrder({
       ...baseOrderData,
@@ -1177,6 +1238,16 @@ describe('createOrder — B2 拆行（疗程卡 quantity>1 → N 行）', () => 
     expect(saleItemInserts).toHaveLength(1)
     expect(saleItemInserts[0].values.quantity).toBe(10)
     expect(saleItemInserts[0].values.productType).toBe('家居产品')
+    expect(saleItemInserts[0].values.inventoryCompositionSnapshot).toEqual({
+      version: 1,
+      components: [{
+        inventorySkuId: 'inventory-sku-001',
+        productCode: 'I001',
+        productName: '库存商品',
+        specName: null,
+        quantityPerSaleUnit: 1,
+      }],
+    })
   })
 })
 
@@ -1254,7 +1325,7 @@ describe('createDepositOrder — 疗程卡逐张落库', () => {
     expect(paymentInserts.map((c) => Number(c.values.amount))).toEqual([500, 425, 425])
   })
 
-  it('家居产品 ×3 逐件落库，并共用同一显示行组', async () => {
+  it('家居产品 ×3 逐件落库，共用显示行组和库存组成快照', async () => {
     mockDepositOrderReads([{
       skuId: 'sku-home',
       productType: '家居产品',
@@ -1286,6 +1357,11 @@ describe('createDepositOrder — 疗程卡逐张落库', () => {
     expect(saleItemInserts.map((c) => c.values.sessionCount)).toEqual([null, null, null])
     expect(saleItemInserts.map((c) => c.values.remainingSessions)).toEqual([null, null, null])
     expect(new Set(saleItemInserts.map((c) => c.values.saleItemGroupId)).size).toBe(1)
+    expect(saleItemInserts.map((c) => c.values.inventoryCompositionSnapshot)).toEqual([
+      expect.objectContaining({ version: 1 }),
+      expect.objectContaining({ version: 1 }),
+      expect.objectContaining({ version: 1 }),
+    ])
   })
 
   it('受限普通 SKU 不匹配顾客绑定门店市场时拒绝提交', async () => {
@@ -1602,7 +1678,8 @@ describe('confirmOfflinePayment — 事务原子性（AC-13）', () => {
     const result = await confirmOfflinePayment('order-active-intent')
 
     expect(result.success).toBe(false)
-    expect(result.message).toContain('PAYMENT_INTENT_ACTIVE')
+    // 子标签（PAYMENT_INTENT_ACTIVE）只进日志不展示给用户；机器可读部分在 code 字段（issue #133）
+    expect(result.message).toBe('在线支付处理中，暂不能确认线下收款')
     expect(statements).toHaveLength(1)
   })
 
@@ -1819,7 +1896,7 @@ describe('confirmOfflinePayment — 储值卡抵扣扣款（ticket 2026-05-19）
     return captured
   }
 
-  it('prepaidAmount=100, balance=200 → 进入扣卡分支：UPDATE prepaid_cards + INSERT card_transactions + INSERT sale_order_payments', async () => {
+  it('prepaidAmount=100, balance=200 → 混合支付先写现付、再写储值卡抵扣', async () => {
     const captured = mockDeductTx({ prepaidAmount: 100, cardBalance: 200 })
     const result = await confirmOfflinePayment('order-deduct-1')
     expect(result.success).toBe(true)
@@ -1827,6 +1904,11 @@ describe('confirmOfflinePayment — 储值卡抵扣扣款（ticket 2026-05-19）
     expect(captured.executes.some((e) => /UPDATE\s+prepaid_cards/i.test(e.text))).toBe(true)
     expect(captured.executes.some((e) => /INSERT\s+INTO\s+card_transactions/i.test(e.text))).toBe(true)
     expect(captured.executes.some((e) => /INSERT\s+INTO\s+sale_order_payments/i.test(e.text))).toBe(true)
+    const paymentWrites = captured.executes.filter((e) => /INSERT\s+INTO\s+sale_order_payments/i.test(e.text))
+    expect(paymentWrites).toHaveLength(2)
+    expect(paymentWrites[0].text).not.toContain("'储值卡抵扣'")
+    expect(paymentWrites[0].raw?.__sqlValues).toContain('首次支付')
+    expect(paymentWrites[1].text).toContain("'储值卡抵扣'")
   })
 
   it('prepaidAmount=100, balance=50 → 抛 INSUFFICIENT_BALANCE，订单状态不变', async () => {
@@ -2004,7 +2086,7 @@ describe('closeOrder — 事务原子性（关闭 + 作废分配）', () => {
     expect(result.message).toContain('状态已变更')
   })
 
-  it('活动在线支付意图存在时原子拒绝关闭', async () => {
+  it('活动在线支付意图存在时原子拒绝关闭（拉卡拉未配置 → 退回改动前行为）', async () => {
     mockSelectBefore([{
       status: '待支付',
       customerName: '顾客甲',
@@ -2017,6 +2099,133 @@ describe('closeOrder — 事务原子性（关闭 + 作废分配）', () => {
 
     expect(result).toEqual({ success: false, message: '在线支付处理中，暂不能关闭订单' })
     expect(isNull).toHaveBeenCalledWith('lakala_out_order_no')
+  })
+
+  // ===== #214 关闭前主动向渠道关单 =====
+  // 顾客唤起支付后没付款，渠道单仍在有效期内，旧实现只能拒绝关闭（实测要等约 20 分钟）。
+  describe('#214 关闭前作废在线支付意图', () => {
+    beforeEach(() => {
+      ;(lakalaIsReady as any).mockReturnValue(true)
+    })
+
+    it('渠道未付款 → 关单 + 复核 CLOSE 后放行关闭', async () => {
+      mockSelectBefore([{
+        status: '待支付', customerName: '顾客甲', totalAmount: '200.00',
+        storeId: 'store-001', lakalaOutOrderNo: 'order-1_123',
+      }])
+      ;(queryTrade as any)
+        .mockResolvedValueOnce({ ok: true, tradeState: 'CREATE' })   // 首查：未付款
+        .mockResolvedValueOnce({ ok: true, tradeState: 'CLOSE' })    // 关单后复核
+      ;(db.execute as any)
+        .mockResolvedValueOnce([{ merchant_no: 'M1', term_no: 'T1', enabled: true }])  // 商户
+        .mockResolvedValueOnce([{ sale_order_id: 'order-1' }])                          // 释放意图
+      mockCloseTx(1)
+
+      const result = await closeOrder('order-1')
+
+      expect(result.success).toBe(true)
+      expect(closeTrade).toHaveBeenCalledWith(expect.objectContaining({
+        merchantNo: 'M1', termNo: 'T1', outTradeNo: 'order-1_123',
+      }))
+    })
+
+    it('渠道已 SUCCESS → 拒绝关闭，一条关单请求都不发', async () => {
+      mockSelectBefore([{
+        status: '待支付', customerName: '顾客甲', totalAmount: '200.00',
+        storeId: 'store-001', lakalaOutOrderNo: 'order-1_123',
+      }])
+      ;(queryTrade as any).mockResolvedValueOnce({ ok: true, tradeState: 'SUCCESS' })
+      ;(db.execute as any).mockResolvedValueOnce([{ merchant_no: 'M1', term_no: 'T1', enabled: true }])
+
+      const result = await closeOrder('order-1')
+
+      expect(result.success).toBe(false)
+      expect(result.message).toContain('支付已成功')
+      expect(closeTrade).not.toHaveBeenCalled()
+      expect(db.transaction).not.toHaveBeenCalled()
+    })
+
+    // fail-closed 主防线：关单发了但渠道仍可支付 → 绝不本地关闭，否则顾客残留的
+    // 支付面板付进来的钱会因 payNotify 的「非当前意图」校验无法入账。
+    it('关单后复核仍非终态 → 拒绝关闭', async () => {
+      mockSelectBefore([{
+        status: '待支付', customerName: '顾客甲', totalAmount: '200.00',
+        storeId: 'store-001', lakalaOutOrderNo: 'order-1_123',
+      }])
+      ;(queryTrade as any)
+        .mockResolvedValueOnce({ ok: true, tradeState: 'CREATE' })
+        .mockResolvedValueOnce({ ok: true, tradeState: 'CREATE' })
+      ;(db.execute as any).mockResolvedValueOnce([{ merchant_no: 'M1', term_no: 'T1', enabled: true }])
+
+      const result = await closeOrder('order-1')
+
+      expect(result.success).toBe(false)
+      expect(db.transaction).not.toHaveBeenCalled()
+    })
+
+    it('渠道 REVOKED（撤销）视为终态，无需关单即可放行', async () => {
+      mockSelectBefore([{
+        status: '待支付', customerName: '顾客甲', totalAmount: '200.00',
+        storeId: 'store-001', lakalaOutOrderNo: 'order-1_123',
+      }])
+      ;(queryTrade as any).mockResolvedValueOnce({ ok: true, tradeState: 'REVOKED' })
+      ;(db.execute as any)
+        .mockResolvedValueOnce([{ merchant_no: 'M1', term_no: 'T1', enabled: true }])
+        .mockResolvedValueOnce([{ sale_order_id: 'order-1' }])
+      mockCloseTx(1)
+
+      const result = await closeOrder('order-1')
+
+      expect(result.success).toBe(true)
+      expect(closeTrade).not.toHaveBeenCalled()
+    })
+
+    // 释放 CAS 的状态集合必须与 closeOrder 的 CAS（待支付 OR 支付失败）同源。
+    // 照抄 clientApi 的 ('待支付','部分支付') 会让「支付失败」单在渠道已被关掉之后
+    // 永远释放不了本地意图 → 这张单再也关不掉，提示还把店员引向无效重试。
+    it('支付失败状态的残留意图同样可释放并关闭', async () => {
+      mockSelectBefore([{
+        status: '支付失败', customerName: '顾客甲', totalAmount: '200.00',
+        storeId: 'store-001', lakalaOutOrderNo: 'order-1_123',
+      }])
+      ;(queryTrade as any).mockResolvedValueOnce({ ok: true, tradeState: 'CLOSE' })
+      ;(db.execute as any)
+        .mockResolvedValueOnce([{ merchant_no: 'M1', term_no: 'T1', enabled: true }])
+        .mockResolvedValueOnce([{ sale_order_id: 'order-1' }])
+      mockCloseTx(1)
+
+      const result = await closeOrder('order-1')
+
+      expect(result.success).toBe(true)
+    })
+
+    // 状态闸门排在关单之前：对一张已支付单点关闭，不该先去渠道查单甚至发关单请求
+    it('已支付订单不触发任何渠道调用', async () => {
+      mockSelectBefore([{
+        status: '已支付', customerName: '顾客甲', totalAmount: '200.00',
+        storeId: 'store-001', lakalaOutOrderNo: 'order-1_123',
+      }])
+      mockCloseTx(0)
+
+      await closeOrder('order-1')
+
+      expect(queryTrade).not.toHaveBeenCalled()
+      expect(closeTrade).not.toHaveBeenCalled()
+    })
+
+    it('查单异常 → 保留意图、拒绝关闭', async () => {
+      mockSelectBefore([{
+        status: '待支付', customerName: '顾客甲', totalAmount: '200.00',
+        storeId: 'store-001', lakalaOutOrderNo: 'order-1_123',
+      }])
+      ;(queryTrade as any).mockRejectedValueOnce(new Error('INVALID_STATE: LAKALA_TIMEOUT_30000ms'))
+      ;(db.execute as any).mockResolvedValueOnce([{ merchant_no: 'M1', term_no: 'T1', enabled: true }])
+
+      const result = await closeOrder('order-1')
+
+      expect(result.success).toBe(false)
+      expect(db.transaction).not.toHaveBeenCalled()
+    })
   })
 
   it('正常关闭（rowCount=1）→ 事务内两步均执行', async () => {
@@ -2077,6 +2286,241 @@ describe('closeOrder — 事务原子性（关闭 + 作废分配）', () => {
 
     const result = await closeOrder('order-1')
     expect(result.success).toBe(true)
+  })
+
+  it('关闭待支付转换单 → 家居转出数量等量退回 picked_up_quantity（#125）', async () => {
+    mockSelectBefore([{
+      status: '待支付',
+      customerName: '顾客甲',
+      totalAmount: '200.00',
+      saleOrderType: '转换单',
+      storeId: 'store-1',
+    }])
+
+    ;(db.transaction as any).mockImplementation(async (fn: any) => {
+      const tx = {
+        update: vi.fn().mockReturnValue({
+          set: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue({ count: 1 }),
+          }),
+        }),
+        execute: vi.fn().mockResolvedValue({}),
+      }
+      const result = await fn(tx)
+      const sqlTexts = tx.execute.mock.calls.map((call: any[]) => call[0]?.__sqlText || '')
+      // 家居回滚段：不退回则关单后这批货既提不出（pending 恒 0）也退不掉（refundable 恒 0）
+      expect(sqlTexts.some((text: string) =>
+        text.includes('restore_quantity') &&
+        text.includes("product_type = '家居产品'") &&
+        text.includes('converted_quantity = GREATEST'),
+      )).toBe(true)
+      // 疗程卡回滚段必须仍在
+      expect(sqlTexts.some((text: string) => text.includes('restore_sessions'))).toBe(true)
+      return result
+    })
+
+    const result = await closeOrder('order-1')
+    expect(result.success).toBe(true)
+  })
+
+  // #182 第 4 轮 P1-3：paid_sessions 重算曾被写在「订单级还原量 > 0」的循环内。
+  // 「付清后部分退款」的行订单级还原量为 0（那笔钱已退给顾客、不是欠款），但源行
+  // sale_amount 已被 CTE **无条件**还原 —— 不重算 paid_sessions 就会停在满付，
+  // 把已退款的权益重新放出来。与 staff 端同一条对称纪律。
+  it('欠款归零回滚：订单级还原量 = 0 时仍必须重算 paid_sessions（#182）', async () => {
+    mockSelectBefore([{
+      status: '待支付',
+      customerName: '顾客甲',
+      totalAmount: '200.00',
+      saleOrderType: '转换单',
+      storeId: 'store-1',
+    }])
+
+    ;(db.transaction as any).mockImplementation(async (fn: any) => {
+      const tx = {
+        update: vi.fn().mockReturnValue({
+          set: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue({ count: 1 }),
+          }),
+        }),
+        execute: vi.fn().mockImplementation(async (q: any) => {
+          const text: string = q?.__sqlText ?? ''
+          // 豁免还原 CTE（唯一带 orig_pending 的语句）
+          if (text.includes('orig_pending')) {
+            return [{
+              sale_order_id: 'src-1',
+              sale_item_id: 'item-1',
+              waived: '400.00',
+              source_found: true,
+              restored_ok: true,
+            }]
+          }
+          // 行级已退款额：400 全部已退 → 订单级还原量 = 0
+          if (text.includes('refund_items') && text.includes('GROUP BY sale_item_id')) {
+            return [{ sale_item_id: 'item-1', refunded: '400' }]
+          }
+          // paid_sessions 重算现在断言影响行数 >= 1（为 0 ⟺ 原单孤儿）
+          if (text.includes('SET paid_sessions = CASE') && text.includes('out_item.waived_amount')) {
+            return { count: 1 }
+          }
+          return {}
+        }),
+      }
+      const result = await fn(tx)
+      const sqlTexts = tx.execute.mock.calls.map((call: any[]) => call[0]?.__sqlText || '')
+      // 订单 total 不该动
+      expect(sqlTexts.some((t: string) =>
+        t.includes('UPDATE sale_orders') && t.includes('total_amount ='))).toBe(false)
+      // 还原那条 UPDATE 写 status，CAS 必须与 staff / 正向折抵对称（lint-cas-guards 也守这条）。
+      // 本用例走不到它，故只断言「一旦出现就必须带 CAS」——见下一条订单级 > 0 的用例。
+      // 但行级 paid_sessions 必须重算
+      expect(sqlTexts.some((t: string) =>
+        t.includes('SET paid_sessions = CASE')
+        && t.includes('out_item.waived_amount::numeric > 0'))).toBe(true)
+      return result
+    })
+
+    const result = await closeOrder('order-1')
+    expect(result.success).toBe(true)
+  })
+
+  // #182 第 4 轮 P2：自校验 CAS 失败时 restored 只会静默少行，而权益已被前两段无条件加回 →
+  // 「货已还给顾客、欠款仍被豁免」，必须整笔关单事务回滚。
+  it('欠款归零回滚：还原 CAS 失败（restored_ok=false）必须整笔失败（#182）', async () => {
+    mockSelectBefore([{
+      status: '待支付',
+      customerName: '顾客甲',
+      totalAmount: '200.00',
+      saleOrderType: '转换单',
+      storeId: 'store-1',
+    }])
+
+    ;(db.transaction as any).mockImplementation(async (fn: any) => {
+      const tx = {
+        update: vi.fn().mockReturnValue({
+          set: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue({ count: 1 }),
+          }),
+        }),
+        execute: vi.fn().mockImplementation(async (q: any) => {
+          const text: string = q?.__sqlText ?? ''
+          if (text.includes('orig_pending')) {
+            return [{
+              sale_order_id: 'src-1',
+              sale_item_id: 'item-1',
+              waived: '400.00',
+              source_found: true,
+              restored_ok: false,
+            }]
+          }
+          return {}
+        }),
+      }
+      return fn(tx)
+    })
+
+    const result = await closeOrder('order-1')
+    expect(result.success).toBe(false)
+    expect(result.message).toBe('关闭订单失败，请稍后重试')
+  })
+
+  // CI 的 lint-cas-guards 抓到过这条：回滚的订单 UPDATE 写 status 却没带 CAS。
+  it('欠款归零回滚：订单还原 UPDATE 必须带 status CAS + 在途支付闸门（#182）', async () => {
+    mockSelectBefore([{
+      status: '待支付',
+      customerName: '顾客甲',
+      totalAmount: '200.00',
+      saleOrderType: '转换单',
+      storeId: 'store-1',
+    }])
+
+    ;(db.transaction as any).mockImplementation(async (fn: any) => {
+      const tx = {
+        update: vi.fn().mockReturnValue({
+          set: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue({ count: 1 }),
+          }),
+        }),
+        execute: vi.fn().mockImplementation(async (q: any) => {
+          const text: string = q?.__sqlText ?? ''
+          if (text.includes('orig_pending')) {
+            return [{
+              sale_order_id: 'src-1',
+              sale_item_id: 'item-1',
+              waived: '400.00',
+              source_found: true,
+              restored_ok: true,
+            }]
+          }
+          // 无行级退款 → 订单级还原量 = 400 > 0，会走订单 UPDATE
+          if (text.includes('refund_items') && text.includes('GROUP BY sale_item_id')) {
+            return []
+          }
+          if (text.includes('SELECT total_amount, received, prepaid_card_amount')) {
+            return [{
+              total_amount: '1000.00',
+              received: '600.00',
+              prepaid_card_amount: '0.00',
+              pending_prepaid_card_amount: '0.00',
+              status: '已支付',
+              sale_order_type: '销售单',
+            }]
+          }
+          return { count: 1 }
+        }),
+      }
+      const result = await fn(tx)
+      const sqlTexts = tx.execute.mock.calls.map((call: any[]) => call[0]?.__sqlText || '')
+      const restoreUpdate = sqlTexts.find((t: string) =>
+        t.includes('UPDATE sale_orders') && t.includes('total_amount ='))
+      expect(restoreUpdate).toBeTruthy()
+      expect(restoreUpdate).toContain('AND status =')
+      expect(restoreUpdate).toContain('AND lakala_out_order_no IS NULL')
+      return result
+    })
+
+    const result = await closeOrder('order-1')
+    expect(result.success).toBe(true)
+  })
+
+  // #182 第 5 轮 P1-3：自校验若从 locked_source（内连接）出发，源行已被删时这条归因会
+  // **整条消失**，restored_ok 根本看不见它 —— 权益已被前两段无条件加回、欠款却没还原。
+  it('欠款归零回滚：源行已不存在（source_found=false）必须整笔失败（#182）', async () => {
+    mockSelectBefore([{
+      status: '待支付',
+      customerName: '顾客甲',
+      totalAmount: '200.00',
+      saleOrderType: '转换单',
+      storeId: 'store-1',
+    }])
+
+    ;(db.transaction as any).mockImplementation(async (fn: any) => {
+      const tx = {
+        update: vi.fn().mockReturnValue({
+          set: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue({ count: 1 }),
+          }),
+        }),
+        execute: vi.fn().mockImplementation(async (q: any) => {
+          const text: string = q?.__sqlText ?? ''
+          if (text.includes('orig_pending')) {
+            return [{
+              sale_order_id: null,
+              sale_item_id: 'item-1',
+              waived: '400.00',
+              source_found: false,
+              restored_ok: false,
+            }]
+          }
+          return {}
+        }),
+      }
+      return fn(tx)
+    })
+
+    const result = await closeOrder('order-1')
+    expect(result.success).toBe(false)
+    expect(result.message).toBe('关闭订单失败，请稍后重试')
   })
 
   it('事务异常 → 返回友好错误', async () => {
@@ -2330,20 +2774,71 @@ describe('getOrdersPaginated — 服务端分页', () => {
     expect(ilike).toHaveBeenCalledWith('client_phone', '%李女士%')
   })
 
-  it('dateFrom 筛选 → gte 被调用', async () => {
+  it('下单日期口径 dateFrom 筛选 → gte 被调用', async () => {
     mockPaginatedChain(0, [])
 
-    await getOrdersPaginated({ dateFrom: '2026-03-01' })
+    await getOrdersPaginated({ dateBasis: 'order', dateFrom: '2026-03-01' })
 
     expect(gte).toHaveBeenCalled()
   })
 
-  it('dateTo 筛选 → lt 被调用', async () => {
+  it('下单日期口径 dateTo 筛选 → lt 被调用', async () => {
     mockPaginatedChain(0, [])
 
-    await getOrdersPaginated({ dateTo: '2026-03-31' })
+    await getOrdersPaginated({ dateBasis: 'order', dateTo: '2026-03-31' })
 
     expect(lt).toHaveBeenCalled()
+    expect((sql as any).mock.calls.some(([strings]: any[]) =>
+      Array.isArray(strings?.raw) && strings.raw.join('').includes('::date + 1'),
+    )).toBe(true)
+  })
+
+  it('款项日期口径使用已支付流水 EXISTS，且不再按下单时间过滤', async () => {
+    mockPaginatedChain(0, [])
+    ;(gte as any).mockClear()
+    ;(lt as any).mockClear()
+
+    await getOrdersPaginated({
+      dateBasis: 'payment',
+      dateFrom: '2026-08-04',
+      dateTo: '2026-08-04',
+    })
+
+    expect(gte).not.toHaveBeenCalled()
+    expect(lt).not.toHaveBeenCalled()
+    expect((sql as any).mock.calls.some(([strings]: any[]) =>
+      Array.isArray(strings?.raw) && strings.raw.join('').includes('payment_date_filter'),
+    )).toBe(true)
+  })
+
+  it('缺省口径（款项归属日期）走 EXISTS 半连接，且带上首次支付跟随订单级那一支', async () => {
+    mockPaginatedChain(0, [])
+    ;(gte as any).mockClear()
+    ;(lt as any).mockClear()
+
+    await getOrdersPaginated({ dateFrom: '2026-08-01', dateTo: '2026-08-31' })
+
+    // 订单级下单时间不再参与过滤
+    expect(gte).not.toHaveBeenCalled()
+    expect(lt).not.toHaveBeenCalled()
+    const rendered = (sql as any).mock.calls
+      .map(([strings]: any[]) => (Array.isArray(strings?.raw) ? strings.raw.join(' ') : ''))
+      .join('\n')
+    expect(rendered).toContain('payment_attribution_filter')
+    // 迁移 0041 收敛：直读款项级归属日期列，不再有首次支付→订单级的 CASE 分支
+    expect(rendered).not.toContain("= '首次支付' THEN")
+    // 带别名时走 sql.raw，不进 strings.raw，要单独查
+    expect((sql as any).raw.mock.calls.some(
+      ([text]: any[]) => text === 'payment_attribution_filter.performance_attribution_date',
+    )).toBe(true)
+    // 别名必须指向款项表（EXISTS 子查询里的 sale_order_payments），不能是外层 sale_orders
+    expect((sql as any).raw.mock.calls.some(
+      ([text]: any[]) => text === 'sale_orders.performance_attribution_date',
+    )).toBe(false)
+    // 也不能以非 raw 的方式把订单级列混进日期条件
+    expect(usedOrderLevelColumn()).toBe(false)
+    // 不能同时落到款项发生日期口径
+    expect(rendered).not.toContain('payment_date_filter')
   })
 
   it('paidAt 为 null → 序列化为 null', async () => {
@@ -2461,12 +2956,25 @@ describe('getOrdersPaginated — 服务端分页', () => {
     expect(typeWhitelistCalls).toHaveLength(0)
   })
 
-  it('paymentMethod=无 筛选 → eq(payment_method, 无) 被调用', async () => {
+  it('paymentMethod=无 筛选 → 仅匹配非 WorkFine 的全额抵扣订单', async () => {
     mockPaginatedChain(0, [])
 
     await getOrdersPaginated({ paymentMethod: '无' })
 
     expect(eq).toHaveBeenCalledWith('payment_method', '无')
+    expect((sql as any).mock.calls.some(([strings]: any[]) =>
+      Array.isArray(strings?.raw) && strings.raw.join('').includes("IS DISTINCT FROM 'workfine'"),
+    )).toBe(true)
+  })
+
+  it('paymentMethod=未知 筛选 → 仅匹配 WorkFine 历史订单', async () => {
+    mockPaginatedChain(0, [])
+
+    await getOrdersPaginated({ paymentMethod: '未知' })
+
+    expect((sql as any).mock.calls.some(([strings]: any[]) =>
+      Array.isArray(strings?.raw) && strings.raw.join('').includes("= 'workfine'"),
+    )).toBe(true)
   })
 
   it('paymentMethod=微信 筛选 → eq(payment_method, 微信)', async () => {
@@ -2521,7 +3029,7 @@ describe('getOrderById — prepaidCardAmount + received', () => {
       saleOrderId: 'FY-XSD-WX-260423-0001',
       status: '已支付',
       saleOrderType: '销售单',
-      documentType: '售前',
+      documentType: '售前一次',
       refSaleOrderId: null,
       marketName: '南昌市场',
       storeId: 'store-1',
@@ -2949,6 +3457,9 @@ describe('createConversionOrder — 事务路径：differ=0 / >0 / <0', () => {
    */
   function mockConvTx(opts: {
     heldRows: any[]
+    homeConsumedRows?: any[]
+    /** #182 欠款归零时锁原单读到的金额快照 */
+    waiveOrderRows?: any[]
     skuRows: any[]
     reservedRows?: any[]
     orderId?: string
@@ -2962,8 +3473,48 @@ describe('createConversionOrder — 事务路径：differ=0 / >0 / <0', () => {
       let execCall = 0
       const tx = {
         execute: vi.fn().mockImplementation(async (sqlArg: any) => {
+          const text = sqlArg?.__sqlText ?? ''
+          // #145/#153：家居折抵**金额**在锁取得后用独立语句复算（新快照），仅家居行触发。
+          // 按 SQL 特征识别而非序号，避免它挤掉后面按序号 mock 的返回值。
+          // #154：件数三列已随持锁查询直读（EvalPlanQual 会刷新），这条语句只剩金额，
+          // 识别键相应从 home_picked_quantity 换成 home_converted_amount。
+          if (text.includes('home_converted_amount')) {
+            executeSql.push(text)
+            return opts.homeConsumedRows ?? [{
+              sale_item_id: 'home-1', home_converted_amount: '0',
+            }]
+          }
+          // #182 锁序：先查涉及原单（不加锁）→ 再按 sale_order_id 升序锁原单。
+          // 同样按特征识别，不占按序号的返回值。
+          if (text.includes('SELECT DISTINCT sale_order_id FROM sale_items')) {
+            executeSql.push(text)
+            return [{ sale_order_id: 'old-order' }]
+          }
+          if (text.includes('FROM sale_orders') && text.includes('ORDER BY sale_order_id') && text.includes('FOR UPDATE')) {
+            executeSql.push(text)
+            return [{ sale_order_id: 'old-order' }]
+          }
+          // #182 欠款归零的三条语句同样按特征识别，不占按序号的返回值。
+          // ⚠ UPDATE 必须返回带 count 的对象：rowsAffected 读 postgres.js RowList 的 .count，
+          // 返回裸数组会让实现里的 rowsAffected(...) === 0 守卫误报冲突。
+          if (text.includes('FROM sale_orders WHERE sale_order_id =') && text.includes('FOR UPDATE')) {
+            executeSql.push(text)
+            return opts.waiveOrderRows ?? [{
+              total_amount: '1000.00', received: '1000.00',
+              prepaid_card_amount: '0', pending_prepaid_card_amount: '0',
+              status: '部分支付', sale_order_type: '销售单',
+            }]
+          }
+          if (text.includes('UPDATE sale_orders') && text.includes('total_amount =')) {
+            executeSql.push(text)
+            return { count: 1 } as any
+          }
+          if (text.includes('SET paid_sessions =')) {
+            executeSql.push(text)
+            return { count: 1 } as any
+          }
           execCall++
-          executeSql.push(sqlArg?.__sqlText ?? '')
+          executeSql.push(text)
           if (execCall === 1) return opts.heldRows
           if (execCall === 2) return opts.reservedRows ?? []
           if (execCall === 3) return [{ id: opts.orderId || 'FY-XSD-WX-260416-0001' }]
@@ -3022,6 +3573,116 @@ describe('createConversionOrder — 事务路径：differ=0 / >0 / <0', () => {
       quantity: 1,
     }],
   }
+
+  // ── #125 家居折抵（与 staff order.test.js 的三个用例对称）────────────────────
+  const homeHeldRow = (over: Record<string, unknown> = {}) => ({
+    sale_item_id: 'home-1', sale_order_id: 'old-order', store_id: 'store-1', item_direction: '购买',
+    sku_id: 'sku-home', product_name: '家居精华', product_type: '家居产品',
+    session_count: null, remaining_sessions: null,
+    // #154：三列各记各的语义（已提 3 / 未退 / 未折抵）
+    quantity: 10, picked_up_quantity: 3, refunded_quantity: 0, converted_quantity: 0,
+    unit_price: '120', unit_real_price: '100',
+    // #145/#153：折抵额度按「剩余已付 = 1000 − 3 件已提 × 100 − 0 已转走 = 700」→ 7 件
+    sale_amount: '1000', received: '1000', sale_order_type: '销售单',
+    sales_category: '自销自耗', service_fee: '0', is_experience: false, is_shengmei: false,
+    client_user_id: 'user-1', order_status: '已支付', product_kind: '家居',
+    ...over,
+  })
+  const homeConvData = { ...baseConvData, convertOutSaleItemIds: ['home-1'] }
+  const homeSkuRows = [{
+    skuId: 'sku-new-1', specName: '新项目', price: '300.00', specialPrice: null,
+    serviceFee: '0', sessionCount: 1, productType: '疗程卡', salesCategory: '自销自耗',
+    isExperience: false, isManagerSpecial: false, isShengmei: false, categoryId: 'cat-new',
+    purchaseLimit: null, marketScope: null,
+  }]
+
+  it('家居按「剩余已付」折抵：1000 − 已提 3 × 100 = 700 → 7 盒 / ¥700', async () => {
+    const inserted: any[] = []
+    mockConvTx({
+      heldRows: [homeHeldRow()],
+      skuRows: homeSkuRows,
+      onInsertItem: (v) => inserted.push(v),
+    })
+
+    const result = await createConversionOrder(homeConvData)
+
+    expect(result.success).toBe(true)
+    const outRow = inserted.find((v) => v.itemDirection === '转出')
+    expect(outRow).toBeDefined()
+    // 剩余已付 700 / 单价 100 = 7 盒；转出行金额 = −700
+    expect(outRow.quantity).toBe(7)
+    expect(outRow.saleAmount).toBe('-700.00')
+    expect(outRow.received).toBe('-700.00')
+  })
+
+  it('#125/#154 家居转出数量落 converted_quantity 且带不可超转守卫，不走 remaining_sessions', async () => {
+    const { executeSql } = mockConvTx({
+      heldRows: [homeHeldRow()],
+      skuRows: homeSkuRows,
+    })
+
+    await createConversionOrder(homeConvData)
+
+    // 扣减走 drizzle update（不在 executeSql 里），这里断言没有误用疗程卡的 remaining_sessions 路径
+    expect(executeSql.some((t) => t.includes('remaining_sessions ='))).toBe(false)
+  })
+
+  it('#125 部分支付订单的家居行可折抵（订单级状态已放开）', async () => {
+    const inserted: any[] = []
+    mockConvTx({
+      heldRows: [homeHeldRow({ order_status: '部分支付' })],
+      skuRows: homeSkuRows,
+      onInsertItem: (v) => inserted.push(v),
+    })
+
+    const result = await createConversionOrder(homeConvData)
+
+    expect(result.success).toBe(true)
+    const outRow = inserted.find((v) => v.itemDirection === '转出')
+    expect(outRow?.quantity).toBe(7)
+  })
+
+  it('#125 已关闭订单仍不可折抵（只放开部分支付）', async () => {
+    mockConvTx({
+      heldRows: [homeHeldRow({ order_status: '已关闭' })],
+      skuRows: homeSkuRows,
+    })
+
+    const result = await createConversionOrder(homeConvData)
+
+    expect(result.success).toBe(false)
+    expect(JSON.stringify(result)).toContain('原订单状态不允许转换')
+  })
+
+  it('#182 已全部结算且无剩余已付的家居行仍拒绝折抵', async () => {
+    mockConvTx({
+      // 4 件全部结算、实收已全额对应已提货 → 既无权益也无剩余已付
+      heldRows: [homeHeldRow({ quantity: 4, picked_up_quantity: 4, sale_amount: '400.00', received: '400.00' })],
+      homeConsumedRows: [{ sale_item_id: 'home-1', home_converted_amount: '0' }],
+      skuRows: homeSkuRows,
+    })
+
+    const result = await createConversionOrder(homeConvData)
+
+    expect(result.success).toBe(false)
+    // 子标签 DEDUCTIBLE_EMPTY 只进日志，用户看到的是中文正文（issue #133）。
+    // #182 起「不足一整件」不再是拒绝理由（余数可折），只有「既无权益又无剩余已付」才拒。
+    expect(result.message).toBe('所选折抵项没有可折抵的已付金额')
+  })
+
+  it('#125 家居扣减 rowsAffected=0（并发被抢先）→ 冲突', async () => {
+    mockConvTx({
+      heldRows: [homeHeldRow()],
+      skuRows: homeSkuRows,
+      updateCount: 0,
+    })
+
+    const result = await createConversionOrder(homeConvData)
+
+    expect(result.success).toBe(false)
+    // 子标签 HOME_PRODUCT_CONCURRENT_CHANGED 只进日志，用户看到的是中文正文（issue #133）
+    expect(result.message).toBe('家居产品可提数量变化，请重试')
+  })
 
   it('受限普通转入 SKU 不匹配顾客绑定门店市场时拒绝提交', async () => {
     ;(db.select as any)
@@ -3296,7 +3957,7 @@ describe('createConversionOrder — 事务路径：differ=0 / >0 / <0', () => {
       convertOutSaleItemIds: ['invalid-in-row'],
     })
 
-    expect(result).toEqual({ success: false, message: '所选行不是有效疗程权益，不可折抵' })
+    expect(result).toEqual({ success: false, message: '所选行不是有效权益，不可折抵' })
   })
 
   it('先锁转出卡再汇总预扣，并按预扣次数折抵', async () => {
@@ -3320,18 +3981,58 @@ describe('createConversionOrder — 事务路径：differ=0 / >0 / <0', () => {
 
     const result = await createConversionOrder(baseConvData)
 
-    expect(result.success).toBe(true)
-    expect(result.totalOut).toBe(600)
-    expect(insertedItems.find((item) => item.itemDirection === '转出')?.quantity).toBe(3)
+    // #182：折抵改为「整行退出」后与在途服务预扣互斥——钱已全额折走却留下 2 次给服务，
+    // 那 2 次就是白送；而把预扣一起注销会让 service.confirm 的扣次守卫失败、
+    // 服务单永久卡在「待客户确认」且预扣不释放。故整行拒绝，要求先处理服务单。
+    expect(result.success).toBe(false)
+    expect(result.message).toBe('所选项目有服务进行中，请先完成或取消服务单后再折抵')
+    expect(insertedItems.some((item) => item.itemDirection === '转出')).toBe(false)
     const lockIndex = captured.executeSql.findIndex((text) => /FOR\s+UPDATE\s+OF\s+si/i.test(text))
     const reservedIndex = captured.executeSql.findIndex((text) => /FROM\s+service_items\s+sit/i.test(text))
     expect(lockIndex).toBeGreaterThanOrEqual(0)
-    expect(reservedIndex).toBe(lockIndex + 1)
-    expect(captured.executeSql[lockIndex]).not.toMatch(/service_items|SUM\s*\(/i)
+    // 锁行 → 折抵额度复算（#182 起疗程卡也走）→ 预扣汇总，三条各自独立的语句
+    const deductibleIndex = captured.executeSql.findIndex((text) => /home_converted_amount/i.test(text))
+    expect(deductibleIndex).toBe(lockIndex + 1)
+    expect(reservedIndex).toBe(lockIndex + 2)
+    // 锁行查询不得混入服务预扣（那必须是独立的下一条查询），也不得在**顶层**聚合。
+    // #145/#153 的家居折抵额度是标量子查询里的 SUM——每行一个值，不改变返回行数与锁定范围。
+    expect(captured.executeSql[lockIndex]).not.toMatch(/service_items/i)
+    expect(captured.executeSql[lockIndex]).not.toMatch(/\n\s*GROUP BY/i)
     expect(captured.executeSql[lockIndex]).toMatch(/ORDER\s+BY\s+si\.sale_item_id\s+FOR\s+UPDATE/i)
     expect(captured.executeSql[reservedIndex]).toMatch(/reserved_at\s+IS\s+NOT\s+NULL/i)
     expect(captured.executeSql[reservedIndex]).toMatch(/INNER\s+JOIN\s+service_orders\s+reserved_order/i)
     expect(captured.executeSql[reservedIndex]).toMatch(/reserved_order\.status\s+IN\s*\('服务中',\s*'待客户确认'\)/i)
+  })
+
+  // #182 F1：锁序必须与入账路径同向（sale_orders → sale_items）。欠款归零要在末尾锁原单，
+  // 若留到那时才锁，本事务足迹就是 sale_items → sale_orders，与 confirmOffline /
+  // recordPayment / payNotify（先锁 sale_orders）互为反向 → 40P01。
+  it('#182 锁序：先锁原单（sale_orders）再锁源行（sale_items）', async () => {
+    const captured = mockConvTx({
+      heldRows: [{
+        sale_item_id: 'card-1', sale_order_id: 'old-order', store_id: 'store-1', item_direction: '购买',
+        sku_id: 'sku-old-1', product_name: '老疗程',
+        product_type: '疗程卡', session_count: 1, remaining_sessions: 1,
+        quantity: 1, picked_up_quantity: 0, unit_price: '100.00',
+        unit_real_price: '100.00', sales_category: '自销自耗', service_fee: '0',
+        client_user_id: 'user-1', order_status: '已支付', product_kind: '护理项目',
+      }],
+      skuRows: [{
+        skuId: 'sku-new-1', price: '100.00', serviceFee: '0', sessionCount: 10,
+        productType: '疗程卡', salesCategory: '自销自耗',
+      }],
+    })
+
+    await createConversionOrder(baseConvData)
+
+    const refLookup = captured.executeSql.findIndex((t) => t.includes('SELECT DISTINCT sale_order_id FROM sale_items'))
+    const orderLock = captured.executeSql.findIndex((t) =>
+      t.includes('FROM sale_orders') && t.includes('ORDER BY sale_order_id') && t.includes('FOR UPDATE'))
+    const itemLock = captured.executeSql.findIndex((t) => /FOR\s+UPDATE\s+OF\s+si/i.test(t))
+    expect(refLookup).toBeGreaterThanOrEqual(0)
+    expect(orderLock).toBeGreaterThan(refLookup)
+    expect(itemLock).toBeGreaterThan(orderLock)
+    expect(captured.executeSql[orderLock]).toMatch(/ORDER BY sale_order_id\s+FOR UPDATE/)
   })
 
   it('全部次数被服务预留 → CARD_RESERVED 透出中文业务提示', async () => {
@@ -3352,7 +4053,7 @@ describe('createConversionOrder — 事务路径：differ=0 / >0 / <0', () => {
 
     expect(result).toEqual({
       success: false,
-      message: '所选卡可用次数不足（存在服务中预留）',
+      message: '所选项目有服务进行中，请先完成或取消服务单后再折抵',
     })
   })
 
@@ -3572,6 +4273,18 @@ describe('createConversionOrder — 事务路径：differ=0 / >0 / <0', () => {
           const text: string = sqlArg?.__sqlText ?? ''
           captured.execTexts.push(text)
           if (/FOR\s+UPDATE\s+OF\s+si/i.test(text)) return Promise.resolve(opts.heldRows)
+          // #182：折抵额度复算（锁后另起语句）对疗程卡也执行，必须返回数组
+          if (/home_converted_amount/i.test(text)) return Promise.resolve([])
+          // #182 欠款归零三条语句（本组用例的 heldRows 无欠款，实际不会触发，留作防御）
+          if (/FROM sale_orders WHERE sale_order_id =/.test(text) && /FOR UPDATE/.test(text)) {
+            return Promise.resolve([{
+              total_amount: '1000.00', received: '1000.00',
+              prepaid_card_amount: '0', pending_prepaid_card_amount: '0',
+              status: '部分支付', sale_order_type: '销售单',
+            }])
+          }
+          if (/UPDATE sale_orders/.test(text) && /total_amount =/.test(text)) return Promise.resolve({ count: 1 })
+          if (/SET paid_sessions =/.test(text)) return Promise.resolve({ count: 1 })
           if (/FROM\s+service_items\s+sit/i.test(text)) return Promise.resolve([])
           if (/pg_advisory_xact_lock/i.test(text)) return Promise.resolve([{ id: 'FY-XSD-WX-260521-0001' }])
           if (/SELECT\s+1\s+FROM\s+card_transactions/i.test(text) && /'扣款'/.test(text)) return Promise.resolve([])
@@ -3767,7 +4480,9 @@ describe('createConversionOrder — 异常路径', () => {
     expect(result.message).toContain('不属于当前门店')
   })
 
-  it('卡已耗尽（remaining_sessions=0）→ CARD_EXHAUSTED', async () => {
+  // #182：remaining_sessions=0 本身不再是拒绝理由（overpay 余数仍可折），
+  // 只有「既无剩余权益、又无剩余已付金额」才拒。此处 mock 未给 received → 余数 0。
+  it('卡既无剩余次数又无剩余已付 → DEDUCTIBLE_EMPTY', async () => {
     ;(db.transaction as any).mockImplementation(async (fn: any) => {
       const tx = {
         execute: vi.fn().mockResolvedValue([{
@@ -3783,7 +4498,7 @@ describe('createConversionOrder — 异常路径', () => {
     })
     const result = await createConversionOrder(baseConvData)
     expect(result.success).toBe(false)
-    expect(result.message).toContain('已耗尽')
+    expect(result.message).toBe('所选折抵项没有可折抵的已付金额')
   })
 
   it('部分卡不存在（held.length 不等于 input）→ CARD_NOT_FOUND', async () => {
@@ -3805,15 +4520,18 @@ describe('createConversionOrder — 异常路径', () => {
       const tx = {
         execute: vi.fn().mockImplementation(async () => {
           execCall++
-          if (execCall === 1) return [{
-            sale_item_id: 'card-1', store_id: 'store-1', item_direction: '购买',
+          // #182 锁序：1=查涉及原单（不加锁）、2=按 sale_order_id 升序锁原单
+          if (execCall === 1 || execCall === 2) return [{ sale_order_id: 'old-order' }]
+          if (execCall === 3) return [{
+            sale_item_id: 'card-1', sale_order_id: 'old-order', store_id: 'store-1', item_direction: '购买',
             product_type: '疗程卡', remaining_sessions: 5, unit_real_price: '100',
             client_user_id: 'user-1', order_status: '已支付', quantity: 1,
             picked_up_quantity: 0, unit_price: '100', service_fee: '0',
             session_count: 5, product_kind: '护理项目', sku_id: 'sku-old',
             product_name: 'xx', sales_category: '自销自耗',
           }]
-          if (execCall === 2) return []
+          // 4=折抵额度复算、5=预扣汇总
+          if (execCall === 4 || execCall === 5) return []
           return [{ id: 'FY-XSD-WX-260416-0001' }]
         }),
         select: vi.fn().mockReturnValue({
@@ -4108,10 +4826,16 @@ describe('updatePerformanceAttributionDate — 一次性业绩归属日期调整
       performance_attribution_adjusted_by: 'EMP-001',
       updated_at: new Date('2026-08-17T03:00:00.000Z'),
     }],
+    // bigint id 经 tx.execute 由 postgres.js 原样返回 string，审计日志须归一成 number
+    // 顺序按真实 SQL 的 ORDER BY id 升序
+    syncedRows = [{ id: '41' }, { id: '43' }],
+    staleRows = [{ stale: 0 }],
   }: {
     adjustedAt?: Date | null
     currentDate?: string
     updatedRows?: any[]
+    syncedRows?: any[]
+    staleRows?: any[]
   } = {}) {
     const execute = vi.fn()
       .mockResolvedValueOnce([{
@@ -4124,6 +4848,8 @@ describe('updatePerformanceAttributionDate — 一次性业绩归属日期调整
         max_performance_date: '2026-08-24',
       }])
       .mockResolvedValueOnce(updatedRows)
+      .mockResolvedValueOnce(syncedRows)
+      .mockResolvedValueOnce(staleRows) // 部署顺序闸门的回读：stale=0 表示 trigger 已同步
     const tx = { execute, select: vi.fn(), insert: vi.fn() }
     ;(db.transaction as any).mockImplementation(async (fn: any) => fn(tx))
     return { tx, execute }
@@ -4143,18 +4869,36 @@ describe('updatePerformanceAttributionDate — 一次性业绩归属日期调整
     expect(execute.mock.calls[0][0].__sqlText).toMatch(/FOR UPDATE/)
     expect(execute.mock.calls[1][0].__sqlText).toMatch(/performance_attribution_adjusted_at IS NULL/)
     expect(execute.mock.calls[1][0].__sqlText).toMatch(/date_trunc\('milliseconds', updated_at\)/)
+    // 款项行同步已下沉为 sale_orders 的 AFTER UPDATE trigger（迁移 0041），
+    // 应用层只回读受影响的行用于审计日志，不再自己发 UPDATE
+    expect(execute.mock.calls[2][0].__sqlText).toMatch(/SELECT id/)
+    // 回读集合 = trigger 覆盖的行（首次支付 + 同次已支付卡行），不按日期比
+    expect(execute.mock.calls[2][0].__sqlText).toMatch(/p\.change_type = '首次支付'/)
+    expect(execute.mock.calls[2][0].__sqlText).toMatch(/p\.change_type = '储值卡抵扣'/)
+    expect(execute.mock.calls[2][0].__sqlText).toMatch(/first_payment\.paid_at IS NOT DISTINCT FROM p\.paid_at/)
+    expect(
+      execute.mock.calls.some(([q]: any[]) => /UPDATE sale_order_payments/.test(q?.__sqlText ?? '')),
+    ).toBe(false)
     expect(logUpdate).toHaveBeenCalledWith(
       expect.anything(),
       'order.performanceAttribution.update',
       'sale_order',
       input.saleOrderId,
-      { performanceAttributionDate: '2026-08-17' },
+      { performanceAttributionDate: '2026-08-17', syncedPaymentIds: [] },
       expect.objectContaining({
         performanceAttributionDate: '2026-08-24',
         performanceAttributionAdjustedBy: 'EMP-001',
+        syncedPaymentIds: [41, 43],
       }),
       tx,
     )
+  })
+
+  it('迁移 0041 未落地（trigger 缺席）→ 响亮失败而不是静默出错数', async () => {
+    // 款项行没被同步 → 回读发现首次支付行日期仍是旧值
+    mockAttributionTransaction({ staleRows: [{ stale: 1 }] })
+
+    await expect(updatePerformanceAttributionDate(input)).rejects.toThrow(/迁移 0041/)
   })
 
   it('同日提交不消耗修改机会', async () => {
@@ -4188,6 +4932,170 @@ describe('updatePerformanceAttributionDate — 一次性业绩归属日期调整
     mockAttributionTransaction({ updatedRows: [] })
 
     await expect(updatePerformanceAttributionDate(input)).rejects.toThrow(/CONFLICT.*刷新后重试/)
+    expect(logUpdate).not.toHaveBeenCalled()
+  })
+})
+
+describe('updatePaymentPerformanceAttributionDate — 一次性款项归属日期调整', () => {
+  const input = {
+    paymentId: 42,
+    performanceAttributionDate: '2026-08-24',
+    expectedAttributionDate: '2026-08-17',
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue({
+      ...mockSession,
+      name: '店长甲',
+      permissions: {
+        ...mockSession.permissions,
+        actions: ['sale_order:performance_attribution_update'],
+      },
+    })
+    ;(isInScope as any).mockReturnValue(true)
+  })
+
+  function mockPaymentAttributionTransaction({
+    changeType = '回款',
+    status = '已支付',
+    paidAt = new Date('2026-08-17T02:03:04.567Z'),
+    currentDate = '2026-08-17',
+    adjustedAt = null,
+    // ⚠ id / paired_card_payment_ids 必须是字符串：tx.execute 走原生 SQL 不经 drizzle 列映射，
+    // postgres.js 对 bigint(int8) 与 bigint[](_int8) 无 parser，原样返回 string / string[]。
+    // 改回 number 会让 mock 与真实驱动漂移，重新掩盖「Number(row.id) === paymentId」这个修复点。
+    updatedRows = [{
+      id: '42',
+      sale_order_id: 'FY-XSD-WX-2608170001',
+      performance_attribution_date: '2026-08-24',
+      performance_attribution_adjusted_at: new Date('2026-08-17T03:00:00.000Z'),
+      performance_attribution_adjusted_by: 'EMP-001',
+    }],
+    hasMixedPaymentPrimary = false,
+    pairedCardPaymentIds = ['43'],
+  }: {
+    changeType?: string
+    status?: string
+    paidAt?: Date | null
+    currentDate?: string | null
+    adjustedAt?: Date | null
+    updatedRows?: any[]
+    hasMixedPaymentPrimary?: boolean
+    pairedCardPaymentIds?: Array<number | string>
+  } = {}) {
+    const execute = vi.fn()
+      // ① 先锁订单行（把锁序钉成 sale_orders → sale_order_payments），不返回业务数据
+      .mockResolvedValueOnce([{ '?column?': 1 }])
+      .mockResolvedValueOnce([{
+        id: String(input.paymentId),
+        sale_order_id: 'FY-XSD-WX-2608170001',
+        change_type: changeType,
+        status,
+        paid_at: paidAt,
+        performance_attribution_date: currentDate,
+        performance_attribution_adjusted_at: adjustedAt,
+        has_mixed_payment_primary: hasMixedPaymentPrimary,
+        paired_card_payment_ids: pairedCardPaymentIds,
+        store_id: 'store-1',
+        original_paid_date: paidAt ? '2026-08-17' : null,
+        min_performance_date: paidAt ? '2026-08-10' : null,
+        max_performance_date: paidAt ? '2026-08-24' : null,
+      }])
+      .mockResolvedValueOnce(updatedRows)
+    const tx = { execute }
+    ;(db.transaction as any).mockImplementation(async (fn: any) => fn(tx))
+    return { tx, execute }
+  }
+
+  it('以 paid_at 上海自然日为基点，允许 +7 天边界并记录审计（RETURNING 的 bigint id 是 string 也须匹配）', async () => {
+    const { tx, execute } = mockPaymentAttributionTransaction()
+
+    const result = await updatePaymentPerformanceAttributionDate(input)
+
+    expect(result.data).toMatchObject({
+      paymentId: 42,
+      saleOrderId: 'FY-XSD-WX-2608170001',
+      performanceAttributionDate: '2026-08-24',
+      performanceAttributionAdjustedBy: 'EMP-001',
+      performanceAttributionAdjustedByName: '店长甲',
+    })
+    // 第 0 条必须是「先锁订单行」：物理锁序 sale_orders → sale_order_payments，
+    // 否则与订单级改期（先锁订单、AFTER trigger 再回写款项行）撞成 40P01
+    expect(execute.mock.calls[0][0].__sqlText).toMatch(/FROM sale_orders/)
+    expect(execute.mock.calls[0][0].__sqlText).toMatch(/FOR UPDATE/)
+    expect(execute.mock.calls[0][0].__sqlText).not.toMatch(/FOR UPDATE OF sop/)
+    expect(execute.mock.calls[1][0].__sqlText).toMatch(/FOR UPDATE OF sop/)
+    expect(execute.mock.calls[1][0].__sqlText).toMatch(/paired_card_payment_ids/)
+    expect(execute.mock.calls[2][0].__sqlText).toMatch(/performance_attribution_adjusted_at IS NULL/)
+    expect(execute.mock.calls[2][0].__sqlText).toMatch(/WHERE payment\.id/)
+    expect(execute.mock.calls[2][0].__sqlText).not.toMatch(/payment\.change_type = '储值卡抵扣'/)
+    expect(logUpdate).toHaveBeenCalledWith(
+      expect.anything(),
+      'payment.performanceAttribution.update',
+      'sale_order_payment',
+      '42',
+      { performanceAttributionDate: '2026-08-17', affectedPaymentIds: [42] },
+      expect.objectContaining({ performanceAttributionDate: '2026-08-24', affectedPaymentIds: [42, 43] }),
+      tx,
+    )
+  })
+
+  it('首次支付继续跟随订单，不能单独调整', async () => {
+    const { execute } = mockPaymentAttributionTransaction({ changeType: '首次支付' })
+
+    await expect(updatePaymentPerformanceAttributionDate(input))
+      .rejects.toThrow(/INVALID_STATE.*首次支付跟随订单/)
+    // 2 = 先锁订单行 + 锁款项行；校验失败发生在锁之后，不会再发第三条
+    expect(execute).toHaveBeenCalledTimes(2)
+  })
+
+  it('混合支付中被合并的储值卡流水不能绕过主流水单独调整', async () => {
+    const { execute } = mockPaymentAttributionTransaction({
+      changeType: '储值卡抵扣',
+      hasMixedPaymentPrimary: true,
+    })
+
+    await expect(updatePaymentPerformanceAttributionDate(input))
+      .rejects.toThrow(/INVALID_STATE.*跟随同次现付/)
+    // 2 = 先锁订单行 + 锁款项行；校验失败发生在锁之后，不会再发第三条
+    expect(execute).toHaveBeenCalledTimes(2)
+  })
+
+  it('未入账款项没有 paid_at 时拒绝调整', async () => {
+    const { execute } = mockPaymentAttributionTransaction({ status: '待支付', paidAt: null, currentDate: null })
+
+    await expect(updatePaymentPerformanceAttributionDate(input))
+      .rejects.toThrow(/INVALID_STATE.*仅已入账/)
+    // 2 = 先锁订单行 + 锁款项行；校验失败发生在锁之后，不会再发第三条
+    expect(execute).toHaveBeenCalledTimes(2)
+  })
+
+  it('超出 paid_at 前后 7 天时拒绝且不消耗机会', async () => {
+    const { execute } = mockPaymentAttributionTransaction()
+
+    await expect(updatePaymentPerformanceAttributionDate({
+      ...input,
+      performanceAttributionDate: '2026-08-25',
+    })).rejects.toThrow(/INVALID_PARAMS.*前后 7 天/)
+    // 2 = 先锁订单行 + 锁款项行；校验失败发生在锁之后，不会再发第三条
+    expect(execute).toHaveBeenCalledTimes(2)
+    expect(logUpdate).not.toHaveBeenCalled()
+  })
+
+  it('已调整或并发 CAS 失败时拒绝再次修改', async () => {
+    mockPaymentAttributionTransaction({ adjustedAt: new Date('2026-08-17T02:30:00.000Z') })
+    await expect(updatePaymentPerformanceAttributionDate(input)).rejects.toThrow(/CONFLICT.*已经调整过/)
+
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue({
+      ...mockSession,
+      name: '店长甲',
+      permissions: { ...mockSession.permissions, actions: ['sale_order:performance_attribution_update'] },
+    })
+    ;(isInScope as any).mockReturnValue(true)
+    mockPaymentAttributionTransaction({ updatedRows: [] })
+    await expect(updatePaymentPerformanceAttributionDate(input)).rejects.toThrow(/CONFLICT.*其他人修改/)
     expect(logUpdate).not.toHaveBeenCalled()
   })
 })
@@ -4312,7 +5220,7 @@ describe('recordPayment — 管理后台录入回款', () => {
     customer_name: '顾客甲',
     store_id: 'store-1',
     market_name: '南昌市场',
-    document_type: '售前',
+    document_type: '售前一次',
     paid_at: null,
   }
 
@@ -4363,7 +5271,8 @@ describe('recordPayment — 管理后台录入回款', () => {
       success: false,
       error: {
         code: 'CONFLICT',
-        message: 'PAYMENT_INTENT_ACTIVE: 订单存在进行中的在线支付，请等待支付结果或先取消在线支付',
+        // 子标签只进日志不给用户看，机器可读部分在 code 字段（issue #133）
+        message: '订单存在进行中的在线支付，请等待支付结果或先取消在线支付',
       },
     })
     expect(captured.insertValues).toHaveLength(0)
@@ -4767,6 +5676,25 @@ describe('freezeConversionRepaymentAmount — admin 在线转换回款金额冻�
     expect(statements[1]).toContain('refunded_amount =')
   })
 
+  it('超额冻结：余额在中文正文里，不落子标签位（issue #133 评审 round 5）', async () => {
+    mockFreezeTx(lockedConversion)
+
+    const result = await freezeConversionRepaymentAmount({
+      saleOrderId: lockedConversion.sale_order_id,
+      amount: 999,
+    })
+
+    expect(result.success).toBe(false)
+    if (!result.success) {
+      expect(result.error.code).toBe('CONFLICT')
+      // 旧形态是 `OVERPAY:100.00: 本次回款金额超过订单欠款`，剥掉 OVERPAY: 后会以
+      // 「100.00: 」开头直接漏进 toast；现在余额写在中文正文括号里
+      expect(result.error.message).toMatch(/^本次回款金额超过订单欠款（剩余 ¥[\d.]+）$/)
+      expect(result.error.message).not.toMatch(/^[\d.]+:/)
+      expect(result.error.message).not.toContain('OVERPAY')
+    }
+  })
+
   it('退款后的欠款按 total - received + refunded_amount 冻结', async () => {
     mockFreezeTx({
       ...lockedConversion,
@@ -4824,7 +5752,8 @@ describe('freezeConversionRepaymentAmount — admin 在线转换回款金额冻�
     expect(result.success).toBe(false)
     if (!result.success) {
       expect(result.error.code).toBe('CONFLICT')
-      expect(result.error.message).toContain('PAYMENT_INTENT_ACTIVE')
+      // 子标签只进日志不给用户看，机器可读部分在 code 字段（issue #133）
+      expect(result.error.message).toBe('订单已有进行中的在线支付，请等待支付结果后重试')
     }
     expect(statements).toHaveLength(1)
   })
@@ -5078,7 +6007,9 @@ describe('deleteOrder — 守卫 + 级联删除', () => {
     ;(db.transaction as any).mockImplementation(async (fn: any) => {
       const tx = {
         update: vi.fn().mockReturnValue({ set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({ count: 1 }) }) }),
-        execute: vi.fn().mockResolvedValue(undefined),
+        // 返回 [] 而不是 undefined：postgres.js 的 execute() 恒返回 RowList（数组），
+        // mock 成 undefined 会让「读了行再看 .length」的代码在单测里炸、在生产里正常 —— 是反向的漂移。
+        execute: vi.fn().mockResolvedValue([]),
         delete: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({ count: deleteCount }) }),
       }
       return fn(tx)
@@ -5142,6 +6073,95 @@ describe('deleteOrder — 守卫 + 级联删除', () => {
     expect(result.success).toBe(false)
     expect(result.message).toContain('单据')
     expect(db.transaction).not.toHaveBeenCalled()
+  })
+
+  // #125：转换单删除前必须在事务内锁单读新鲜状态，否则 closeOrder‖deleteOrder 交错时
+  // 会拿事务外的陈旧 '待支付' 二次回滚，把家居 picked_up_quantity 多减一遍。
+  function setupConversionTx(freshStatus: string | undefined) {
+    const executed: string[] = []
+    ;(db.transaction as any).mockImplementation(async (fn: any) => {
+      const tx = {
+        update: vi.fn().mockReturnValue({ set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({ count: 1 }) }) }),
+        execute: vi.fn().mockImplementation(async (q: any) => {
+          const text = q?.__sqlText || ''
+          executed.push(text)
+          if (text.includes('SELECT status FROM sale_orders') && text.includes('FOR UPDATE')) {
+            return freshStatus === undefined ? [] : [{ status: freshStatus }]
+          }
+          // 其余读（如 #148 的退款流水复检）返回空结果集：postgres.js 的 execute() 恒返回数组，
+          // 返回 undefined 会让读完看 .length 的代码在单测里炸、生产里正常——反向的 mock 漂移。
+          return []
+        }),
+        delete: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({ count: 1 }) }),
+      }
+      await fn(tx)
+      return { deleted: true }
+    })
+    return executed
+  }
+
+  it('删除待支付转换单 → 事务内锁单读到待支付，执行回滚（#125）', async () => {
+    enqueueSelect([[{ ...okOrder, saleOrderType: '转换单' }], [], []])
+    enqueueExecute([[], [], []])
+    const executed = setupConversionTx('待支付')
+
+    await deleteOrder('FY-CONV-DEL-1')
+
+    expect(executed.some((t) => t.includes('SELECT status FROM sale_orders') && t.includes('FOR UPDATE'))).toBe(true)
+    expect(executed.some((t) => t.includes('restore_sessions'))).toBe(true)
+    expect(executed.some((t) => t.includes('restore_quantity') && t.includes("product_type = '家居产品'"))).toBe(true)
+  })
+
+  it('删除已关闭转换单 → 锁单读到已关闭，跳过回滚（closeOrder 已回滚过，二次会多退家居数量）', async () => {
+    enqueueSelect([[{ ...okOrder, status: '已关闭', saleOrderType: '转换单' }], [], []])
+    enqueueExecute([[], [], []])
+    const executed = setupConversionTx('已关闭')
+
+    await deleteOrder('FY-CONV-DEL-2')
+
+    expect(executed.some((t) => t.includes('SELECT status FROM sale_orders') && t.includes('FOR UPDATE'))).toBe(true)
+    expect(executed.some((t) => t.includes('restore_sessions'))).toBe(false)
+    expect(executed.some((t) => t.includes('restore_quantity'))).toBe(false)
+  })
+
+  // #148：事务内锁到订单后必须复检退款流水。这既是修 TOCTOU（上面那批守卫都在事务外读、
+  // 且只挡 status='已支付' 的款项行，待审批退款漏网），也是新增订单锁**不与退款审批成环**的前提——
+  // 退款审批是「先拿退款行 → 再 UPDATE sale_orders」，与本事务「先锁订单 → 再删全单款项行」反向。
+  // 把这条复检删掉或移到锁之前，两者就变成真实的死锁对。
+  it('事务内复检到退款流水（含待审批）→ 拒绝删除，不执行任何 DELETE', async () => {
+    enqueueSelect([[okOrder], [], []]) // 事务外三道守卫都放行：order / paidPayment（无已支付流水）/ childOrder
+    enqueueExecute([[], [], []])
+    const executed: string[] = []
+    const txDelete = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({ count: 1 }) })
+    ;(db.transaction as any).mockImplementation(async (fn: any) => {
+      const tx = {
+        update: vi.fn().mockReturnValue({ set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({ count: 1 }) }) }),
+        execute: vi.fn().mockImplementation(async (q: any) => {
+          const text = q?.__sqlText || ''
+          executed.push(text)
+          if (text.includes('SELECT status FROM sale_orders') && text.includes('FOR UPDATE')) {
+            return [{ status: '待支付' }]
+          }
+          // 退款流水复检命中一行 —— 该单有一笔待审批退款
+          if (text.includes("change_type = '退款'")) return [{ '?column?': 1 }]
+          return []
+        }),
+        delete: txDelete,
+      }
+      return fn(tx)
+    })
+
+    const result = await deleteOrder('FY-REFUND')
+
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('退款流水')
+    // 顺序不变量：锁 → 复检，且复检不通过时一条 DELETE 都不该发出
+    const lockAt = executed.findIndex((t) => t.includes('SELECT status FROM sale_orders') && t.includes('FOR UPDATE'))
+    const checkAt = executed.findIndex((t) => t.includes("change_type = '退款'"))
+    expect(lockAt).toBeGreaterThanOrEqual(0)
+    expect(checkAt).toBeGreaterThan(lockAt)
+    expect(executed.some((t) => /DELETE\s+FROM/i.test(t))).toBe(false)
+    expect(txDelete).not.toHaveBeenCalled()
   })
 
   it('干净测试单 → 级联删除成功 + 审计', async () => {
@@ -5313,7 +6333,7 @@ describe('exportAllocationOrders — 销售提成三态导出（已分配明细 
     return chain
   }
 
-  /** worker 分页链：limit(...).offset(...) 后仍可直接 await。 */
+  /** worker keyset 分页链：limit(...) 后仍可直接 await。 */
   function makePagedChain(rows: any[]) {
     const chain: any = Object.assign(Promise.resolve(rows), {
       from: vi.fn(() => chain),
@@ -5348,6 +6368,7 @@ describe('exportAllocationOrders — 销售提成三态导出（已分配明细 
     isActivity: false, isMembershipUpgrade: false,
     salesCategory: '自销自耗', customerType: '会员客', openedByName: '张凯',
     payPaidAt: new Date('2026-06-08T16:59:49.000Z'), orderPaidAt: null, remark: null,
+    paymentChangeType: '回款', payAttributionDate: '2026-06-10', orderAttributionDate: '2026-06-08',
     sortDatetime: new Date('2026-06-08T16:59:49.000Z'),
   }
 
@@ -5364,6 +6385,7 @@ describe('exportAllocationOrders — 销售提成三态导出（已分配明细 
     isActivity: false, isMembershipUpgrade: false,
     salesCategory: '自销自耗', customerType: '流量客', openedByName: '某某',
     payPaidAt: new Date('2026-07-10T21:30:57.000Z'), orderPaidAt: null, remark: null,
+    paymentChangeType: '首次支付', payAttributionDate: null, orderAttributionDate: '2026-07-10',
     sortDatetime: new Date('2026-07-10T21:30:57.000Z'),
   }
 
@@ -5405,6 +6427,29 @@ describe('exportAllocationOrders — 销售提成三态导出（已分配明细 
     expect(r.promoterEmployeeName).toBe('王推荐')
   })
 
+  it('回款归属日期：回款取款项级、首次支付随订单、旧订单维度分配回退订单级', async () => {
+    // 旧的订单维度分配没有 sale_payment_id，leftJoin 后 paymentChangeType / payAttributionDate 均为 NULL
+    const legacyAllocation = {
+      ...allocatedRaw,
+      saleOrderId: 'ALLOC-LEGACY',
+      paymentChangeType: null,
+      payAttributionDate: null,
+      payPaidAt: null,
+    }
+    let call = 0
+    ;(db.select as any).mockImplementation(() => {
+      call++
+      return makeChain(call === 1 ? [allocatedRaw, legacyAllocation] : [pendingRaw])
+    })
+
+    const { rows } = await exportAllocationOrders({})
+
+    const byOrder = Object.fromEntries(rows.map((row) => [row.saleOrderId, row.performanceAttributionDate]))
+    expect(byOrder['FY-XSD-WX-2606080027']).toBe('2026-06-10') // 回款 → 款项级
+    expect(byOrder['ALLOC-LEGACY']).toBe('2026-06-08')          // 无款项 → 订单级
+    expect(byOrder['FY-XSD-WX-2607100038']).toBe('2026-07-10')  // 首次支付 → 订单级
+  })
+
   it('「全部」(缺省) → 两段都查，按下单时间 desc 合并（待分配 07-10 在前，已分配 06-08 在后）', async () => {
     let call = 0
     ;(db.select as any).mockImplementation(() => {
@@ -5421,6 +6466,52 @@ describe('exportAllocationOrders — 销售提成三态导出（已分配明细 
     expect(rows[0].employeeName).toBeNull()
     expect(rows[1].productName).toBe('【王牌】疼痛管理') // 已分配
     expect(rows[1].employeeName).toBe('熊岚欢')
+  })
+
+  it('款项发生日期按当前回款行 paid_at 筛选，不退化为订单级任意流水命中', async () => {
+    let call = 0
+    ;(db.select as any).mockImplementation(() => {
+      call++
+      return makeChain(call === 1 ? [allocatedRaw] : [pendingRaw])
+    })
+
+    await exportAllocationOrders({
+      dateBasis: 'payment',
+      from: '2026-07-01',
+      to: '2026-07-31',
+    })
+
+    expect((gte as any).mock.calls.some(([col]: any[]) => col === 'paid_at')).toBe(true)
+    expect((lt as any).mock.calls.some(([col]: any[]) => col === 'paid_at')).toBe(true)
+    expect((gte as any).mock.calls.some(([col]: any[]) => col === 'sale_order_datetime')).toBe(false)
+    expect((lt as any).mock.calls.some(([col]: any[]) => col === 'sale_order_datetime')).toBe(false)
+    expect((sql as any).mock.calls.some(([strings]: any[]) =>
+      Array.isArray(strings?.raw) && strings.raw.join('').includes('payment_date_filter'),
+    )).toBe(false)
+  })
+
+  it('缺省口径按当前回款行的业绩归属日期筛，并同步锁定已支付', async () => {
+    let call = 0
+    ;(db.select as any).mockImplementation(() => {
+      call++
+      return makeChain(call === 1 ? [allocatedRaw] : [pendingRaw])
+    })
+    ;(gte as any).mockClear()
+    ;(lt as any).mockClear()
+
+    await exportAllocationOrders({ from: '2026-07-01', to: '2026-07-31' })
+
+    expect((gte as any).mock.calls.some(([col]: any[]) => col === 'paid_at')).toBe(false)
+    expect((gte as any).mock.calls.some(([col]: any[]) => col === 'sale_order_datetime')).toBe(false)
+    expect((eq as any).mock.calls.some(([col, val]: any[]) => col === 'status' && val === '已支付')).toBe(true)
+    const rendered = (sql as any).mock.calls
+      .map(([strings]: any[]) => (Array.isArray(strings?.raw) ? strings.raw.join(' ') : ''))
+      .join('\n')
+    // 迁移 0041 收敛：直读**款项级**列；订单级列不得再出现在日期条件里
+    expect(usedAttributionColumn()).toBe(true)
+    expect(usedOrderLevelColumn()).toBe(false)
+    expect(rendered).not.toContain("= '首次支付' THEN")
+    expect(rendered).not.toContain('payment_attribution_filter')
   })
 
   it('worker 分页跨两段来源推进独立游标，不重复也不遗漏', async () => {
@@ -5517,6 +6608,565 @@ describe('exportAllocationOrders — 销售提成三态导出（已分配明细 
 
     expect(truncated).toBe(false)
     expect(rows).toHaveLength(10001)
+  })
+})
+
+describe('exportOrderPayments — 回款明细导出（款项 × 商品子项）', () => {
+  function makeChain(rows: any[]) {
+    const chain: any = Object.assign(Promise.resolve(rows), {
+      from: vi.fn(() => chain),
+      innerJoin: vi.fn(() => chain),
+      leftJoin: vi.fn(() => chain),
+      where: vi.fn(() => chain),
+      orderBy: vi.fn(() => chain),
+      limit: vi.fn().mockResolvedValue(rows),
+    })
+    return chain
+  }
+
+  /**
+   * 一阶段按款项分页，二阶段按订单号捞 receipt，三阶段为无 receipt 的款项补捞 sale_items。
+   * 第三阶段只在存在「无 receipt 且非寄存单」的款项时才发起，因此第 3 次起才返回 item 链。
+   */
+  function mockStages(payments: any[], receipts: any[] = [], items: any[] = []) {
+    const paymentChain = makeChain(payments)
+    const receiptChain = makeChain(receipts)
+    const itemChain = makeChain(items)
+    ;(db.select as any).mockReset()
+    ;(db.select as any)
+      .mockReturnValueOnce(paymentChain)
+      .mockReturnValueOnce(receiptChain)
+      .mockReturnValue(itemChain)
+    return { paymentChain, receiptChain, itemChain }
+  }
+
+  function itemRow(overrides: Record<string, any> = {}) {
+    return {
+      saleOrderId: 'FY-XSD-WX-2608170001',
+      saleItemId: 'ITEM-1',
+      productType: '疗程卡',
+      productName: '肩颈护理10次',
+      categoryL1: '护理',
+      categoryL2: '肩颈',
+      sessionCount: 10,
+      skuUnit: '次',
+      paidUnusedSessions: 8,
+      saleAmount: '3000.00',
+      unitRealPrice: '300.00',
+      itemSalesCategory: '自销',
+      ...overrides,
+    }
+  }
+
+  function paymentRow(overrides: Record<string, any> = {}) {
+    return {
+      marketName: '南昌市场',
+      storeName: '红谷滩店',
+      saleOrderType: '销售单',
+      documentType: '售后',
+      orderStatus: '部分支付',
+      orderCustomerName: '订单顾客',
+      orderClientPhone: '13800000000',
+      customerName: '档案顾客',
+      clientPhone: '13900000000',
+      customerSource: '转介绍',
+      promoterEmployeeName: '推荐人甲',
+      customerType: '会员',
+      isMembershipUpgrade: false,
+      isActivity: true,
+      isExperienceConversion: false,
+      legacySource: null,
+      saleOrderDatetime: new Date('2026-08-16T01:00:00.000Z'),
+      remark: '订单备注',
+      openedByName: '开单人丁',
+      orderPerformanceAttributionDate: '2026-08-16',
+      orderPerformanceAttributionAdjustedAt: null,
+      orderPerformanceAttributionAdjustedByName: null,
+      paymentPerformanceAttributionAdjustedByName: '店长甲',
+      operatorName: '收银员乙',
+      ...overrides,
+      payment: {
+        id: 42,
+        saleOrderId: 'FY-XSD-WX-2608170001',
+        changeType: '回款',
+        amount: '500.00',
+        paymentMethod: '微信',
+        externalTxnId: 'WX-42',
+        status: '已支付',
+        sourceEnd: 'client',
+        operatorEmployeeId: 'EMP-002',
+        refundReason: null,
+        note: '第二笔回款',
+        createdAt: new Date('2026-08-17T02:00:00.000Z'),
+        paidAt: new Date('2026-08-17T02:03:04.567Z'),
+        performanceAttributionDate: '2026-08-18',
+        performanceAttributionAdjustedAt: new Date('2026-08-17T03:00:00.000Z'),
+        performanceAttributionAdjustedBy: 'EMP-001',
+        ...overrides.payment,
+      },
+    }
+  }
+
+  function receiptRow(overrides: Record<string, any> = {}) {
+    return {
+      salePaymentId: 42,
+      saleOrderId: 'FY-XSD-WX-2608170001',
+      saleItemId: 'ITEM-1',
+      amount: '500.00',
+      receiptSalesCategory: '自销',
+      productType: '疗程卡',
+      productName: '肩颈护理10次',
+      categoryL1: '护理',
+      categoryL2: '肩颈',
+      sessionCount: 10,
+      skuUnit: '次',
+      paidUnusedSessions: 8,
+      saleAmount: '3000.00',
+      unitRealPrice: '300.00',
+      itemSalesCategory: '自销',
+      ...overrides,
+    }
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockSession)
+    ;(scopeCondition as any).mockReturnValue(undefined)
+  })
+
+  it('一笔款项展开成多行商品子项，商品列与订单明细同源，实付按 receipt 逐行落', async () => {
+    mockStages(
+      [paymentRow()],
+      [
+        receiptRow({ saleItemId: 'ITEM-1', amount: '300.00', productName: '肩颈护理10次' }),
+        receiptRow({ saleItemId: 'ITEM-2', amount: '200.00', productName: '面部补水5次', categoryL2: '面部', sessionCount: 5, saleAmount: '800.00', unitRealPrice: '160.00' }),
+      ],
+    )
+
+    const { rows } = await exportOrderPayments({ status: '部分支付' })
+
+    expect(rows).toHaveLength(2)
+    expect(rows.every((row) => row.paymentId === 42)).toBe(true)
+    expect(rows[0]).toMatchObject({
+      saleOrderId: 'FY-XSD-WX-2608170001',
+      productName: '肩颈护理10次',
+      productType: '疗程卡',
+      categoryL1: '护理',
+      categoryL2: '肩颈',
+      sessionCount: 10,
+      unit: '次',
+      paidUnusedSessions: 8,
+      totalAmount: '3000.00',
+      received: '300.00',
+      unitRealPrice: 300,
+      salesCategory: '自销',
+      // 订单级字段在每行重复，与订单明细骨架一致
+      customerSource: '转介绍',
+      promoterEmployeeName: '推荐人甲',
+      openedByName: '开单人丁',
+      remark: '订单备注',
+      isActivity: true,
+      status: '部分支付',
+      // 款项专属列
+      paymentAmount: '500.00',
+      changeType: '回款',
+      note: '第二笔回款',
+    })
+    expect(rows[1]).toMatchObject({ productName: '面部补水5次', received: '200.00', unitRealPrice: 160 })
+    // 纯现金回款：整笔落现付，储值卡列为 0
+    expect(rows.map((row) => row.cashAmount)).toEqual(['300.00', '200.00'])
+    expect(rows.map((row) => row.prepaidCardAmount)).toEqual(['0.00', '0.00'])
+  })
+
+  it('无 receipt 且无商品明细的款项仍各输出一行占位（防 INNER JOIN 回归）', async () => {
+    const internal = paymentRow({
+      saleOrderType: '内部单',
+      payment: { id: 50, saleOrderId: 'FY-NB-1', amount: '80.00' },
+    })
+    const recharge = paymentRow({
+      saleOrderType: '充值单',
+      payment: { id: 49, saleOrderId: 'FY-CZ-1', amount: '1000.00', changeType: '首次支付' },
+    })
+    const unsettled = paymentRow({
+      payment: { id: 47, saleOrderId: 'FY-WD-1', amount: '200.00', status: '待支付', paidAt: null, performanceAttributionDate: null, performanceAttributionAdjustedAt: null },
+    })
+    mockStages([internal, recharge, unsettled], [])
+
+    const { rows } = await exportOrderPayments({})
+
+    expect(rows).toHaveLength(3)
+    expect(rows.map((row) => row.productName)).toEqual([
+      '款项未拆分到商品',
+      '储值卡充值',
+      '款项未拆分到商品',
+    ])
+    // 已支付的占位行金额回填到实付，仍可求和；未入账的留空
+    expect(rows.map((row) => row.received)).toEqual(['80.00', '1000.00', ''])
+    expect(rows.map((row) => row.cashAmount)).toEqual(['80.00', '1000.00', ''])
+    expect(rows.every((row) => row.totalAmount === '')).toBe(true)
+  })
+
+  it('混合支付：储值卡额只算一次，不因从行兜底而重复计数', async () => {
+    const cashPrimary = paymentRow({
+      payment: { id: 60, saleOrderId: 'FY-HH-1', changeType: '回款', amount: '100.00', paymentMethod: '线下' },
+    })
+    const cardSecondary = paymentRow({
+      payment: { id: 59, saleOrderId: 'FY-HH-1', changeType: '储值卡抵扣', amount: '50.00', paymentMethod: '无', externalTxnId: null },
+    })
+    mockStages(
+      [cashPrimary, cardSecondary],
+      [
+        receiptRow({ salePaymentId: 60, saleOrderId: 'FY-HH-1', saleItemId: 'ITEM-1', amount: '100.00' }),
+        receiptRow({ salePaymentId: 60, saleOrderId: 'FY-HH-1', saleItemId: 'ITEM-2', amount: '50.00' }),
+      ],
+    )
+
+    const { rows } = await exportOrderPayments({})
+
+    expect(rows).toHaveLength(3)
+    const sum = (key: 'received' | 'prepaidCardAmount' | 'cashAmount') =>
+      rows.reduce((total, row) => total + Number(row[key] || 0), 0)
+    // receipt 挂在现金主流水上、合计 150；储值卡从行必须留空，否则总额会变成 200
+    expect(sum('received')).toBeCloseTo(150, 2)
+    expect(sum('prepaidCardAmount')).toBeCloseTo(50, 2)
+    expect(sum('cashAmount')).toBeCloseTo(100, 2)
+    expect(rows[2]).toMatchObject({ paymentId: 59, changeType: '储值卡抵扣', received: '', prepaidCardAmount: '', cashAmount: '' })
+    // 每行仍满足 实付 = 储值卡抵扣 + 现付
+    for (const row of rows.slice(0, 2)) {
+      expect(Number(row.received)).toBeCloseTo(Number(row.prepaidCardAmount) + Number(row.cashAmount), 2)
+    }
+  })
+
+  it('混合支付被折叠的储值卡从行：商品列照常填满，只有金额列留空', async () => {
+    const cashPrimary = paymentRow({
+      payment: { id: 90, saleOrderId: 'FY-HH-9', changeType: '回款', amount: '100.00', paymentMethod: '线下' },
+    })
+    const cardSecondary = paymentRow({
+      payment: { id: 89, saleOrderId: 'FY-HH-9', changeType: '储值卡抵扣', amount: '50.00', paymentMethod: '无', externalTxnId: null },
+    })
+    mockStages(
+      [cashPrimary, cardSecondary],
+      [receiptRow({ salePaymentId: 90, saleOrderId: 'FY-HH-9', saleItemId: 'ITEM-1', amount: '150.00' })],
+      [itemRow({ saleOrderId: 'FY-HH-9', saleItemId: 'ITEM-1' })],
+    )
+
+    const { rows } = await exportOrderPayments({})
+
+    expect(rows).toHaveLength(2)
+    // 从行现在也有商品明细了，但金额已计在主流水的 receipt 上 → 必须留空，否则总额变 200
+    expect(rows[1]).toMatchObject({
+      paymentId: 89,
+      changeType: '储值卡抵扣',
+      productName: '肩颈护理10次',
+      totalAmount: '3000.00',
+      received: '',
+      prepaidCardAmount: '',
+      cashAmount: '',
+    })
+    expect(rows.reduce((total, row) => total + Number(row.received || 0), 0)).toBeCloseTo(150, 2)
+  })
+
+  it('receipt 机制上线前的历史款项没有任何 receipt，储值卡抵扣照常回填金额', async () => {
+    const legacyCard = paymentRow({
+      payment: { id: 61, saleOrderId: 'FY-OLD-1', changeType: '储值卡抵扣', amount: '300.00', paymentMethod: '无', externalTxnId: null },
+    })
+    mockStages([legacyCard], [])
+
+    const { rows } = await exportOrderPayments({})
+
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toMatchObject({ received: '300.00', prepaidCardAmount: '300.00', cashAmount: '0.00' })
+  })
+
+  it('已作废但有 receipt 的款项：金额列留空，没到账的钱不进求和', async () => {
+    const voided = paymentRow({
+      payment: { id: 71, saleOrderId: 'FY-VOID-1', status: '已作废', changeType: '首次支付', amount: '300.00' },
+    })
+    mockStages(
+      [voided],
+      [receiptRow({ salePaymentId: 71, saleOrderId: 'FY-VOID-1', saleItemId: 'ITEM-1', amount: '300.00' })],
+    )
+
+    const { rows } = await exportOrderPayments({})
+
+    // 留空规则 1（未入账）三条路径都适用；此前只有两条无 receipt 路径实现了它，
+    // 有 receipt 的这条把作废金额原样输出（prod 实测 1 笔 3 行）。
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toMatchObject({
+      paymentId: 71,
+      productName: '肩颈护理10次', // 商品列照常填满，只有金额列留空
+      received: '',
+      prepaidCardAmount: '',
+      cashAmount: '',
+      refundedAmount: '',
+    })
+  })
+
+  it('已支付的储值卡抵扣自带 receipt：金额照常输出，不被「折叠从行」规则误清空', async () => {
+    const cardWithOwnReceipt = paymentRow({
+      payment: { id: 77, saleOrderId: 'FY-CARD-7', changeType: '储值卡抵扣', amount: '500.00', paymentMethod: '无', externalTxnId: null },
+    })
+    mockStages(
+      [cardWithOwnReceipt],
+      [receiptRow({ salePaymentId: 77, saleOrderId: 'FY-CARD-7', saleItemId: 'ITEM-1', amount: '500.00' })],
+    )
+
+    const { rows } = await exportOrderPayments({})
+
+    // 留空规则 2 判的是「订单有 receipt」，对自带 receipt 的储值卡行恒为真——若把整个
+    // suppressAmount 套到有 receipt 路径上，这类行会被全部清空（prod 实测 21 笔）。
+    expect(rows).toHaveLength(1)
+    expect(rows[0].received).not.toBe('')
+    expect(rows[0].prepaidCardAmount).not.toBe('')
+  })
+
+  it('退款款项落负数实付并把绝对值写进已退', async () => {
+    const refund = paymentRow({
+      payment: { id: 41, changeType: '退款', amount: '-120.00', refundReason: '顾客申请' },
+    })
+    mockStages([refund], [receiptRow({ salePaymentId: 41, amount: '-120.00' })])
+
+    const { rows } = await exportOrderPayments({})
+
+    expect(rows[0]).toMatchObject({
+      changeType: '退款',
+      received: '-120.00',
+      refundedAmount: '120.00',
+      refundReason: '顾客申请',
+    })
+  })
+
+  it('转换单一笔款项展开出转出负行与转入正行，合计等于款项金额', async () => {
+    const conversion = paymentRow({
+      saleOrderType: '转换单',
+      payment: { id: 70, saleOrderId: 'FY-ZH-1', amount: '300.00' },
+    })
+    mockStages([conversion], [
+      receiptRow({ salePaymentId: 70, saleOrderId: 'FY-ZH-1', saleItemId: 'OUT-1', amount: '-500.00', productName: '旧卡转出' }),
+      receiptRow({ salePaymentId: 70, saleOrderId: 'FY-ZH-1', saleItemId: 'IN-1', amount: '800.00', productName: '新卡转入' }),
+    ])
+
+    const { rows } = await exportOrderPayments({})
+
+    expect(rows.map((row) => row.received)).toEqual(['-500.00', '800.00'])
+    expect(rows.reduce((total, row) => total + Number(row.received), 0)).toBeCloseTo(300, 2)
+  })
+
+  // 寄存单的款项是历史寄存初始化的记账痕迹（prod 8.4 万笔，金额列本就全空），
+  // 历史单则根本没有支付流水 —— 两者都不是真实回款，必须在 SQL 层整类排除。
+  it('寄存单与 WorkFine 历史单在 WHERE 层整类排除，不进回款明细', async () => {
+    mockStages([paymentRow()], [receiptRow()])
+
+    await exportOrderPayments({})
+
+    const sqlTexts = (sql as any).mock.results.map((result: any) => result.value?.__sqlText ?? '')
+    expect(sqlTexts.some((text: string) => text.includes("<> '寄存单'"))).toBe(true)
+    expect(sqlTexts.some((text: string) => text.includes("IS DISTINCT FROM 'workfine'"))).toBe(true)
+  })
+
+  it('无 receipt 但订单有商品行：按 sale_items 展开，商品列取值与订单明细同源', async () => {
+    const internal = paymentRow({
+      saleOrderType: '内部单',
+      payment: { id: 80, saleOrderId: 'FY-NB-9', amount: '600.00', paymentMethod: '线下' },
+    })
+    mockStages([internal], [], [
+      itemRow({ saleOrderId: 'FY-NB-9', saleItemId: 'ITEM-1', saleAmount: '100.00' }),
+      itemRow({
+        saleOrderId: 'FY-NB-9', saleItemId: 'ITEM-2', saleAmount: '200.00',
+        productName: '家居面膜', productType: '家居产品', skuUnit: null,
+        categoryL2: '面部', sessionCount: null, paidUnusedSessions: null, unitRealPrice: '99.00',
+        itemSalesCategory: '他销',
+      }),
+      itemRow({ saleOrderId: 'FY-NB-9', saleItemId: 'ITEM-3', saleAmount: '300.00' }),
+    ])
+
+    const { rows } = await exportOrderPayments({})
+
+    expect(rows).toHaveLength(3)
+    expect(rows.every((row) => row.paymentId === 80)).toBe(true)
+    expect(rows[0]).toMatchObject({
+      productName: '肩颈护理10次',
+      productType: '疗程卡',
+      categoryL1: '护理',
+      categoryL2: '肩颈',
+      sessionCount: 10,
+      unit: '次',
+      paidUnusedSessions: 8,
+      totalAmount: '100.00',
+      unitRealPrice: 300,
+      salesCategory: '自销',
+      // 订单级字段照常重复
+      promoterEmployeeName: '推荐人甲',
+    })
+    // 单位回退与订单明细一致：SKU 缺 unit 时家居产品落「盒」
+    expect(rows[1]).toMatchObject({ productName: '家居面膜', unit: '盒', sessionCount: null, paidUnusedSessions: null, salesCategory: '他销' })
+  })
+
+  it('无 receipt 展开时款项金额按行应付权重分摊，实付跨行求和守恒', async () => {
+    const payment = paymentRow({
+      payment: { id: 81, saleOrderId: 'FY-OLD-9', amount: '600.00', paymentMethod: '线下' },
+    })
+    mockStages([payment], [], [
+      itemRow({ saleOrderId: 'FY-OLD-9', saleItemId: 'ITEM-1', saleAmount: '100.00' }),
+      itemRow({ saleOrderId: 'FY-OLD-9', saleItemId: 'ITEM-2', saleAmount: '200.00' }),
+      itemRow({ saleOrderId: 'FY-OLD-9', saleItemId: 'ITEM-3', saleAmount: '300.00' }),
+    ])
+
+    const { rows } = await exportOrderPayments({})
+
+    expect(rows.map((row) => row.received)).toEqual(['100.00', '200.00', '300.00'])
+    expect(rows.reduce((total, row) => total + Number(row.received), 0)).toBeCloseTo(600, 2)
+    // 每行仍满足 实付 = 储值卡抵扣 + 现付
+    for (const row of rows) {
+      expect(Number(row.received)).toBeCloseTo(Number(row.prepaidCardAmount) + Number(row.cashAmount), 2)
+    }
+  })
+
+  it('无 receipt 展开时未入账/被折叠的储值卡从行仍填商品列但金额留空', async () => {
+    const unsettled = paymentRow({
+      payment: { id: 82, saleOrderId: 'FY-WD-9', amount: '500.00', status: '待支付', paidAt: null },
+    })
+    mockStages([unsettled], [], [itemRow({ saleOrderId: 'FY-WD-9', saleItemId: 'ITEM-1' })])
+
+    const { rows } = await exportOrderPayments({})
+
+    expect(rows).toHaveLength(1)
+    // 商品列填满（这正是本次改动的目的），但钱还没到账 → 4 个金额列留空
+    expect(rows[0]).toMatchObject({
+      productName: '肩颈护理10次',
+      sessionCount: 10,
+      totalAmount: '3000.00',
+      received: '',
+      prepaidCardAmount: '',
+      cashAmount: '',
+      refundedAmount: '',
+    })
+  })
+
+  // 迁移 0041 收敛：款项粒度导出直读款项级归属日期列，不再按 changeType 分支。
+  // fixture 刻意让首次支付行的**款项级列 ≠ 订单级列**（库里由 I6 巡检守护不会出现，
+  // 但单测必须造得出来）—— 否则两值相等，断言无法区分读的是哪一列。
+  // 列真为空时保持空：**不**补订单级兜底，否则约束上线前的残留会伪装成有归属日期。
+  it('归属日期直读款项级列：款项级与订单级不一致时取款项级、列为空则留空', async () => {
+    const repayment = paymentRow()
+    const first = paymentRow({
+      payment: { id: 40, changeType: '首次支付', performanceAttributionDate: '2026-08-19', performanceAttributionAdjustedAt: null },
+      orderPerformanceAttributionDate: '2026-08-16',
+      orderPerformanceAttributionAdjustedAt: new Date('2026-08-16T04:00:00.000Z'),
+      orderPerformanceAttributionAdjustedByName: '店长丙',
+    })
+    const unsettled = paymentRow({
+      payment: { id: 39, status: '待支付', paidAt: null, performanceAttributionDate: null, performanceAttributionAdjustedAt: null },
+      paymentPerformanceAttributionAdjustedByName: null,
+    })
+    mockStages([repayment, first, unsettled], [])
+
+    const { rows } = await exportOrderPayments({})
+
+    expect(rows[0]).toMatchObject({
+      performanceAttributionDate: '2026-08-18',
+      performanceAttributionStatus: '已人工调整',
+      performanceAttributionAdjustedByName: '店长甲',
+    })
+    expect(rows[1]).toMatchObject({
+      // 取款项级 08-19 而**不是**订单级 08-16：读错列这里就红
+      performanceAttributionDate: '2026-08-19',
+      performanceAttributionStatus: '随订单',
+      performanceAttributionAdjustedByName: '店长丙',
+    })
+    expect(rows[2]).toMatchObject({
+      performanceAttributionDate: null,
+      performanceAttributionStatus: '未入账',
+    })
+  })
+
+  it('款项日期口径直接筛当前流水 paid_at，keyset 分页不把同一笔款项劈成两页', async () => {
+    const { paymentChain } = mockStages(
+      [paymentRow(), paymentRow({ payment: { id: 40 } })],
+      [
+        receiptRow({ saleItemId: 'ITEM-1', amount: '300.00' }),
+        receiptRow({ saleItemId: 'ITEM-2', amount: '200.00' }),
+      ],
+    )
+
+    const result = await exportOrderPayments(
+      { dateBasis: 'payment', from: '2026-08-01', to: '2026-08-31', q: '顾客' },
+      { limit: 1, cursor: 50 },
+    )
+
+    expect(gte).toHaveBeenCalledWith('paid_at', expect.anything())
+    expect(lt).toHaveBeenCalledWith('paid_at', expect.anything())
+    expect(lt).toHaveBeenCalledWith('id', 50)
+    expect(paymentChain.limit).toHaveBeenCalledWith(2)
+    expect(result).toMatchObject({ hasMore: true, nextCursor: 42 })
+    // limit 限制的是款项数（1 笔），扇出后的行数可以大于 limit
+    expect(result.rows).toHaveLength(2)
+    expect(result.rows.every((row) => row.paymentId === 42)).toBe(true)
+  })
+
+  it('缺省口径按当前流水的业绩归属日期闭区间筛，不退化成订单级 EXISTS', async () => {
+    mockStages([paymentRow()], [receiptRow()])
+    ;(gte as any).mockClear()
+    ;(lt as any).mockClear()
+
+    await exportOrderPayments({ from: '2026-08-01', to: '2026-08-31' })
+
+    // 归属日期是 date 列，走 sql 闭区间；不得落到 paid_at / sale_order_datetime 的半开区间
+    expect(gte).not.toHaveBeenCalled()
+    expect(lt).not.toHaveBeenCalled()
+    const rendered = (sql as any).mock.calls
+      .map(([strings]: any[]) => (Array.isArray(strings?.raw) ? strings.raw.join(' ') : ''))
+      .join('\n')
+    // 迁移 0041 收敛：直读**款项级**列；订单级列不得再出现在日期条件里
+    expect(usedAttributionColumn()).toBe(true)
+    expect(usedOrderLevelColumn()).toBe(false)
+    expect(rendered).not.toContain("= '首次支付' THEN")
+    expect(rendered).toContain('::date')
+    // 款项粒度导出必须约束当前这一行，命中订单再全量带出款项就重复计数了
+    expect(rendered).not.toContain('payment_attribution_filter')
+    expect(rendered).not.toContain('payment_date_filter')
+  })
+
+  /** 归属日期区间**挡不住**未入账流水，必须另有 paid_at 闸门——见下方两例的成对断言。 */
+  const hasPaidAtNotNullGate = () =>
+    (sql as any).mock.calls.some(([strings, ...vals]: any[]) =>
+      Array.isArray(strings?.raw)
+      && strings.raw.join('').includes('IS NOT NULL')
+      && vals.includes('paid_at'),
+    )
+
+  it('缺省口径同时锁定 paid_at IS NOT NULL，未入账流水不因占位归属日期而命中', async () => {
+    mockStages([paymentRow()], [receiptRow()])
+
+    await exportOrderPayments({ from: '2026-08-01', to: '2026-08-31' })
+
+    // 规范：无 paid_at 的未入账流水在两种款项口径下都不命中（admin.pr.spec.md §回款明细导出）。
+    // 迁移 0040 起未入账行的 performance_attribution_date 由 created_at 占位（不再是 NULL），
+    // 首次支付那一支又恒取订单级归属日期（与本行是否入账无关），只靠区间比较两者都会漏进来。
+    expect(hasPaidAtNotNullGate()).toBe(true)
+  })
+
+  it('款项发生日期口径不额外加 paid_at 闸门：已作废但有 paid_at 的流水照常入选（金额留空由展开层负责）', async () => {
+    mockStages([paymentRow()], [receiptRow()])
+
+    await exportOrderPayments({ dateBasis: 'payment', from: '2026-08-01', to: '2026-08-31' })
+
+    // payment 口径靠 paid_at 的区间比较天然排除 NULL（NULL 比较恒为 NULL），无需也不应再加闸门：
+    // 多加会把「已作废但有 paid_at」的流水一并剔掉，而它们应当出现、仅金额列留空。
+    expect(hasPaidAtNotNullGate()).toBe(false)
+  })
+
+  it('limit==null 全量导出时 receipt 与 sale_items 两阶段都按 500 个订单号分块', async () => {
+    const payments = Array.from({ length: 1200 }, (_, index) =>
+      paymentRow({ payment: { id: 10_000 - index, saleOrderId: `FY-BULK-${index}` } }))
+    mockStages(payments, [])
+
+    await exportOrderPayments({ status: '已支付' })
+
+    const chunkCalls = (inArray as any).mock.calls.filter(([column]: any[]) => column === 'sale_order_id')
+    // 二阶段 receipt 3 块 + 三阶段 sale_items 3 块（1200 笔款项全部无 receipt 且非寄存单）
+    expect(chunkCalls).toHaveLength(6)
+    expect(chunkCalls.map(([, ids]: any[]) => ids.length)).toEqual([500, 500, 200, 500, 500, 200])
   })
 })
 
@@ -5805,7 +7455,7 @@ describe('exportOrders — 订单明细导出（migration 0077 后）', () => {
     expect(rows).toHaveLength(100001)
   })
 
-  it('worker 分页跨商品行和充值单推进独立游标，不重复也不遗漏', async () => {
+  it('worker 全局 keyset 分页跨来源推进，不重复也不遗漏', async () => {
     const makeItem = (saleOrderId: string, sourceId: string, date: string) => ({
       sourceId,
       saleOrderId,
@@ -5841,12 +7491,12 @@ describe('exportOrders — 订单明细导出（migration 0077 后）', () => {
     const itemOldest = makeItem('ITEM-OLD', 'item-old', '2026-07-02T00:00:00.000Z')
     const rechargeNewest = makeRecharge('RECHARGE-NEW', '2026-07-03T00:00:00.000Z')
     const rechargeOldest = makeRecharge('RECHARGE-OLD', '2026-07-01T00:00:00.000Z')
-    // 每页依次为：商品行查询、充值单查询、转换差额储值金查询。
+    // 有商品行的页面依次为：四类来源查询 + 当前批次退款聚合；最后一页无商品行则没有聚合查询。
     const results = [
-      [itemNewest, itemOldest], [rechargeNewest, rechargeOldest], [],
-      [itemOldest], [rechargeNewest, rechargeOldest], [],
-      [itemOldest], [rechargeOldest], [],
-      [], [rechargeOldest], [],
+      [itemNewest, itemOldest], [rechargeNewest, rechargeOldest], [], [], [],
+      [itemOldest], [rechargeNewest, rechargeOldest], [], [], [],
+      [itemOldest], [rechargeOldest], [], [], [],
+      [], [rechargeOldest], [], [],
     ]
     let call = 0
     ;(db.select as any).mockImplementation(() => makePagedChain(results[call++] ?? []))
@@ -5856,9 +7506,24 @@ describe('exportOrders — 订单明细导出（migration 0077 后）', () => {
     const third = await exportOrders({}, { limit: 1, cursor: second.nextCursor })
     const fourth = await exportOrders({}, { limit: 1, cursor: third.nextCursor })
 
-    expect(first.nextCursor).toEqual({ itemOffset: 1, rechargeOffset: 0, cardCreditOffset: 0 })
-    expect(second.nextCursor).toEqual({ itemOffset: 1, rechargeOffset: 1, cardCreditOffset: 0 })
-    expect(third.nextCursor).toEqual({ itemOffset: 2, rechargeOffset: 1, cardCreditOffset: 0 })
+    expect(first.nextCursor).toEqual({
+      sortDatetime: '2026-07-04T00:00:00.000Z',
+      saleOrderId: 'ITEM-NEW',
+      source: 'item',
+      sourceId: 'item-new',
+    })
+    expect(second.nextCursor).toEqual({
+      sortDatetime: '2026-07-03T00:00:00.000Z',
+      saleOrderId: 'RECHARGE-NEW',
+      source: 'recharge',
+      sourceId: 'RECHARGE-NEW',
+    })
+    expect(third.nextCursor).toEqual({
+      sortDatetime: '2026-07-02T00:00:00.000Z',
+      saleOrderId: 'ITEM-OLD',
+      source: 'item',
+      sourceId: 'item-old',
+    })
     expect(fourth.hasMore).toBe(false)
     expect([
       ...first.rows,
@@ -5871,6 +7536,81 @@ describe('exportOrders — 订单明细导出（migration 0077 后）', () => {
       'ITEM-OLD',
       'RECHARGE-OLD',
     ])
+  })
+
+  it('同订单同时间按来源优先级和数值型 card id 形成稳定全局游标', async () => {
+    const at = new Date('2026-07-05T08:00:00.000Z')
+    const base = {
+      saleOrderId: 'SAME-ORDER',
+      totalAmount: '100.00',
+      prepaidCardAmount: '0.00',
+      orderReceived: '100.00',
+      received: '100.00',
+      refundedAmount: '0.00',
+      saleOrderDatetime: at,
+      sortDatetime: '2026-07-05 16:00:00.000123+08',
+      createdAt: at,
+      isMembershipUpgrade: false,
+      isActivity: false,
+    }
+    const item = { ...base, sourceId: 'item-1', saleOrderType: '销售单' }
+    const recharge = { ...base, sourceId: 'SAME-ORDER', saleOrderType: '充值单' }
+    const card2 = { ...base, sourceId: 2, saleOrderType: '转换单', amount: '20.00' }
+    const card10 = { ...base, sourceId: 10, saleOrderType: '转换单', amount: '10.00' }
+
+    ;(db.select as any)
+      .mockReturnValueOnce(makePagedChain([item]))
+      .mockReturnValueOnce(makePagedChain([recharge]))
+      .mockReturnValueOnce(makePagedChain([card10, card2]))
+      .mockReturnValueOnce(makePagedChain([]))
+      .mockReturnValueOnce(makePagedChain([]))
+
+    const result = await exportOrders({}, { limit: 3 })
+
+    expect(result.rows.map((row) => row.__sourceKind)).toEqual(['item', 'recharge', 'cardCredit'])
+    expect(result.nextCursor).toEqual({
+      sortDatetime: base.sortDatetime,
+      saleOrderId: 'SAME-ORDER',
+      source: 'cardCredit',
+      sourceId: '2',
+    })
+  })
+
+  it('拒绝缺少全局排序字段或非法 card id 的分页游标', async () => {
+    await expect(exportOrders({}, {
+      limit: 10,
+      cursor: { source: 'item', sourceId: 'item-1' } as never,
+    })).rejects.toThrow('导出分页游标无效')
+    await expect(exportOrders({}, {
+      limit: 10,
+      cursor: {
+        sortDatetime: '2026-07-05 16:00:00+08',
+        saleOrderId: 'SAME-ORDER',
+        source: 'cardCredit',
+        sourceId: 'not-a-number',
+      },
+    })).rejects.toThrow('导出分页游标无效')
+    expect(db.select).not.toHaveBeenCalled()
+  })
+
+  it('商品退款按当前批次一次聚合并映射到对应 item', async () => {
+    const raw = {
+      sourceId: 'item-refunded', saleOrderId: 'ORDER-REFUNDED', saleOrderType: '销售单',
+      totalAmount: '100.00', prepaidCardAmount: '0.00', received: '80.00', refundedAmount: '20.00',
+      saleOrderDatetime: new Date('2026-07-06T00:00:00.000Z'),
+      createdAt: new Date('2026-07-06T00:00:00.000Z'),
+    }
+    ;(db.select as any)
+      .mockReturnValueOnce(makePagedChain([raw]))
+      .mockReturnValueOnce(makePagedChain([]))
+      .mockReturnValueOnce(makePagedChain([]))
+      .mockReturnValueOnce(makePagedChain([]))
+      .mockReturnValueOnce(makePagedChain([{ saleItemId: 'item-refunded', amount: '20.00' }]))
+
+    const result = await exportOrders({}, { limit: 500 })
+
+    expect(result.rows[0].__itemRefundedAmount).toBe('20.00')
+    expect(db.select).toHaveBeenCalledTimes(5)
   })
 
   it('费用列（totalAmount/received/refundedAmount）：prepaidCardAmount 等缺失 fallback 0', async () => {
@@ -6028,6 +7768,112 @@ describe('exportOrders — 订单明细导出（migration 0077 后）', () => {
     expect(rows[0].salesCategory).toBeNull()
   })
 
+  it('充值单退款后实付与现付同步转为净额，保持通道金额可勾稽', async () => {
+    const rechargeRow = {
+      sourceId: 'FY-RECHARGE-REFUND',
+      saleOrderId: 'FY-RECHARGE-REFUND',
+      saleOrderType: '充值单',
+      totalAmount: '120.00',
+      prepaidCardAmount: '0.00',
+      orderReceived: '100.00',
+      refundedAmount: '20.00',
+      saleOrderDatetime: new Date('2026-08-02T00:00:00.000Z'),
+      createdAt: new Date('2026-08-02T00:00:00.000Z'),
+    }
+    ;(db.select as any)
+      .mockReturnValueOnce(makeChain([]))
+      .mockReturnValueOnce(makeChain([rechargeRow]))
+      .mockReturnValueOnce(makeChain([]))
+      .mockReturnValueOnce(makeChain([]))
+
+    const { rows } = await exportOrders({ q: rechargeRow.saleOrderId })
+
+    expect(rows[0]).toMatchObject({
+      received: '80.00',
+      prepaidCardAmount: '0.00',
+      cashAmount: '80.00',
+      refundedAmount: '20.00',
+    })
+    expect(Number(rows[0].received)).toBe(
+      Number(rows[0].prepaidCardAmount) + Number(rows[0].cashAmount),
+    )
+  })
+
+  it('WorkFine 历史订单无 sale_items 时生成订单级兜底行，不再整单漏导', async () => {
+    const fallback = {
+      sourceId: 'FY-XSD2607260012',
+      marketName: '南昌', storeName: '南昌店', saleOrderId: 'FY-XSD2607260012',
+      saleOrderType: '销售单', documentType: '售前一次', status: '已支付',
+      custName: null, custPhone: null, customerSource: null, promoterEmployeeName: null,
+      fallbackName: '陈凤婷', fallbackPhone: '13800000000',
+      totalAmount: '2682.00', prepaidCardAmount: '0.00', orderReceived: '2682.00',
+      received: '2682.00', refundedAmount: '0.00', paymentMethod: '无',
+      isMembershipUpgrade: false, isActivity: false, isExperienceConversion: false,
+      customerType: null, openedByName: null,
+      saleOrderDatetime: new Date('2026-08-01T00:00:00.000Z'),
+      performanceAttributionDate: '2026-08-01',
+      createdAt: new Date('2026-08-01T00:00:00.000Z'),
+      remark: null, legacySource: 'workfine',
+    }
+    ;(db.select as any)
+      .mockReturnValueOnce(makeChain([]))
+      .mockReturnValueOnce(makeChain([]))
+      .mockReturnValueOnce(makeChain([]))
+      .mockReturnValueOnce(makeChain([fallback]))
+
+    const { rows } = await exportOrders({ q: fallback.saleOrderId })
+
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toMatchObject({
+      saleOrderId: fallback.saleOrderId,
+      customerName: '陈凤婷',
+      totalAmount: '2682.00',
+      received: '2682.00',
+      cashAmount: '0.00',
+      paymentMethod: '未知',
+      productName: '历史订单（无商品明细）',
+      productType: null,
+      sessionCount: null,
+      __sourceKind: 'orderFallback',
+    })
+  })
+
+  it.each([
+    { paymentCase: '现金支付', prepaidCardAmount: '0.00', expectedCashAmount: '80.00' },
+    { paymentCase: '全储值卡支付', prepaidCardAmount: '100.00', expectedCashAmount: '-20.00' },
+  ])('无明细兜底行在$paymentCase退款后统一使用净额口径', async ({ prepaidCardAmount, expectedCashAmount }) => {
+    const fallback = {
+      sourceId: 'FY-FALLBACK-REFUND',
+      saleOrderId: 'FY-FALLBACK-REFUND',
+      saleOrderType: '销售单',
+      totalAmount: '100.00',
+      prepaidCardAmount,
+      orderReceived: '100.00',
+      refundedAmount: '20.00',
+      saleOrderDatetime: new Date('2026-08-03T00:00:00.000Z'),
+      createdAt: new Date('2026-08-03T00:00:00.000Z'),
+      legacySource: null,
+    }
+    ;(db.select as any)
+      .mockReturnValueOnce(makeChain([]))
+      .mockReturnValueOnce(makeChain([]))
+      .mockReturnValueOnce(makeChain([]))
+      .mockReturnValueOnce(makeChain([fallback]))
+
+    const { rows } = await exportOrders({ q: fallback.saleOrderId })
+
+    expect(rows[0]).toMatchObject({
+      received: '80.00',
+      prepaidCardAmount,
+      cashAmount: expectedCashAmount,
+      refundedAmount: '20.00',
+      __sourceKind: 'orderFallback',
+    })
+    expect(Number(rows[0].received)).toBe(
+      Number(rows[0].prepaidCardAmount) + Number(rows[0].cashAmount),
+    )
+  })
+
   it('混合：item 行（销售/转换）+ 充值单造行，合并后按订单时间 desc 排序', async () => {
     const sale = {
       marketName: 'M', storeName: 'S', saleOrderId: 'FY-SALE', saleOrderType: '销售单',
@@ -6072,7 +7918,7 @@ describe('exportOrders — 订单明细导出（migration 0077 后）', () => {
     expect(rows[2].productName).toBe('储值卡充值')
   })
 
-  it('普通转换负差额：储值金入账行归入储值卡通道，金额列逐行勾稽', async () => {
+  it('普通转换负差额：储值金入账行记入正数现付，各金额列均可勾稽', async () => {
     const orderBase = {
       marketName: '九江', storeName: '南昌店', saleOrderId: 'FY-CONV-CREDIT', saleOrderType: '转换单',
       documentType: '售后', status: '已支付', custName: '李女士', custPhone: '13800000000',
@@ -6109,17 +7955,46 @@ describe('exportOrders — 订单明细导出（migration 0077 后）', () => {
     expect(rows[2]).toMatchObject({
       totalAmount: '2.00',
       received: '2.00',
-      prepaidCardAmount: '2.00',
-      cashAmount: '0.00',
+      prepaidCardAmount: '0.00',
+      cashAmount: '2.00',
       productType: null,
     })
     expect(rows.reduce((sum, row) => sum + Number(row.totalAmount), 0)).toBe(0)
     expect(rows.reduce((sum, row) => sum + Number(row.received), 0)).toBe(0)
+    expect(rows.reduce((sum, row) => sum + Number(row.cashAmount), 0)).toBe(0)
+    expect(rows.reduce((sum, row) => sum + Number(row.prepaidCardAmount), 0)).toBe(0)
+    // 商品行和储值金入账合成行均满足通道恒等式。
     for (const row of rows) {
       const channelAmount = Number(row.prepaidCardAmount) + Number(row.cashAmount)
       expect(Number(row.totalAmount)).toBe(channelAmount)
       expect(Number(row.received)).toBe(channelAmount)
     }
+  })
+
+  it('转换差额查询仅保留历史空来源或匹配订单号的 card-conv 流水，排除退款回冲', async () => {
+    await exportOrders({ q: 'FY-XSD-WX-2608130108' })
+
+    const cardCreditChain = (db.select as any).mock.results[2]?.value
+    const predicate = cardCreditChain.where.mock.calls[0]?.[0]
+    const sourceFilter = predicate.args.find((condition: any) =>
+      condition?.type === 'or'
+      && condition.args.some((part: any) => part?.type === 'isNull' && part.a === 'external_ref'),
+    )
+
+    expect(sourceFilter).toMatchObject({
+      type: 'or',
+      args: [
+        { type: 'isNull', a: 'external_ref' },
+        {
+          type: 'eq',
+          a: 'external_ref',
+          b: {
+            __sqlText: "'card-conv-' ||  ? ",
+            __sqlValues: ['sale_order_id'],
+          },
+        },
+      ],
+    })
   })
 
   it('待支付订单只有预选储值卡抵扣且无已入账流水时，储值卡抵扣和现付均为 0', async () => {

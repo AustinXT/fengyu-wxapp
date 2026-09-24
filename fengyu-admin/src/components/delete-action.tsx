@@ -13,6 +13,7 @@ import {
 } from '@/components/ui/alert-dialog'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from '@/components/ui/dropdown-menu'
 import { actionErrorMessage } from '@/lib/action-error'
+import { useReturnContext } from '@/components/return-context'
 
 /** 删除结果约定，与各 server action 返回值一致 */
 export type DeleteResult = { success: boolean; message: string }
@@ -33,6 +34,7 @@ function useDeleteConfirm(
   redirectTo?: string,
 ): ConfirmState {
   const router = useRouter()
+  const { goToReturn } = useReturnContext(redirectTo ?? '/')
   const [open, setOpen] = React.useState(false)
   const [deleting, setDeleting] = React.useState(false)
 
@@ -48,7 +50,7 @@ function useDeleteConfirm(
       toast.success(result.message)
       setOpen(false)
       if (redirectTo) {
-        router.push(redirectTo)
+        goToReturn(true)
       } else {
         router.refresh()
       }

@@ -195,11 +195,26 @@ describe('mgmtDashboard.summary scopeType=all', () => {
     // + 截面：member(1)/retained(1)/employeeDay(1)/employeeMonth(1) = 4
     // = 24
     expect(metricSqls.length).toBe(24)
-    for (const s of metricSqls) {
+    /**
+     * #320：技师分母改走 technician_base CTE，`WHERE` 变成「门店分支 OR 市场锚分支」，
+     * 不再是「`WHERE (TRUE) AND …`」那种单段形态，所以从通用循环里摘出来单独判。
+     * 摘出来而不是放宽通用断言 —— 放宽会让另外 22 条也失去 scope 形态守护。
+     */
+    const technicianSqls = metricSqls.filter((s) => /technician_base/.test(s))
+    expect(technicianSqls.length).toBe(2)
+    for (const s of metricSqls.filter((x) => !/technician_base/.test(x))) {
       expect(s).toMatch(/WHERE\s+\(TRUE\)\s+AND/)
       expect(s).toMatch(/active_node\.is_active\s*=\s*TRUE/)
       expect(s).not.toMatch(/store_id\s*=\s*\$/)
       expect(s).not.toMatch(/bound_store_id\s*=\s*\$/)
+    }
+    for (const s of technicianSqls) {
+      // 门店分支：(TRUE) AND tb.store_id IN (启用门店)
+      expect(s).toMatch(/tb\.store_id\s+IS\s+NOT\s+NULL\s+AND\s+\(TRUE\)/)
+      expect(s).toMatch(/active_node\.is_active\s*=\s*TRUE/)
+      // 市场锚分支：all scope 下恒真（validateManagementScope 已要求总部 scope）
+      expect(s).toMatch(/tb\.store_id\s+IS\s+NULL\s+AND\s+TRUE/)
+      expect(s).not.toMatch(/store_id\s*=\s*\$/)
     }
 
     // T4 历史化：storeCount SQL 走 FROM stores ... JOIN org_nodes，加 opening_date/closed_at 守卫
@@ -259,7 +274,8 @@ describe('mgmtDashboard.summary scopeType=market', () => {
     const staffSqls = sqlList.filter((s) => /staff_wechat_users/.test(s))
     expect(staffSqls.length).toBe(2)
     for (const s of staffSqls) {
-      expect(s).toMatch(/s\.store_id\s+IN\s*\(/)
+      // #320：分母改走 technician_base CTE，门店分支的列变成 tb.store_id
+      expect(s).toMatch(/tb\.store_id\s+IN\s*\(/)
       expectRecursiveDescendantScope(s, 2)
     }
 
@@ -309,8 +325,11 @@ describe('mgmtDashboard.summary scopeType=store', () => {
     const staffSqls = sqlList.filter((s) => /staff_wechat_users/.test(s))
     expect(staffSqls.length).toBe(2)
     for (const s of staffSqls) {
-      expect(s).toContain('s.store_id = $2')
+      // #320：列从 s.store_id 变成 CTE 的 tb.store_id
+      expect(s).toContain('tb.store_id = $2')
       expect(s).toMatch(/active_node\.is_active\s*=\s*TRUE/)
+      // 单店 scope 下无门店技师不计入
+      expect(s).toMatch(/tb\.store_id\s+IS\s+NULL\s+AND\s+FALSE/)
     }
 
     // 单店同样真实查询两次（日 / 月末），不能把停用门店固定算作 1 家。
@@ -868,10 +887,10 @@ describe('mgmtDashboard.summary 门店状况 + 人效（截面字段）', () => 
       .find((s) => /FROM staff_wechat_users/.test(s))
     expect(empSql).toBeDefined()
     // T3 新口径：用 hired_at + resigned_at 时间戳，不再依赖 is_resigned 实时快照
-    expect(empSql).toMatch(/s\.hired_at\s+IS\s+NOT\s+NULL/)
-    expect(empSql).toMatch(/s\.hired_at::date\s*<=\s*\$1::date/)
-    expect(empSql).toMatch(/s\.resigned_at\s+IS\s+NULL\s+OR\s+s\.resigned_at::date\s*>\s*\$1::date/)
-    expect(empSql).toMatch(/s\.skills\s*&&\s*ARRAY\['美容师','养生师'\]::text\[\]/)
+    expect(empSql).toMatch(/sw\.hired_at\s+IS\s+NOT\s+NULL/)
+    expect(empSql).toMatch(/sw\.hired_at::date\s*<=\s*\$1::date/)
+    expect(empSql).toMatch(/sw\.resigned_at\s+IS\s+NULL\s+OR\s+sw\.resigned_at::date\s*>\s*\$1::date/)
+    expect(empSql).toMatch(/sw\.skills\s*&&\s*ARRAY\['美容师','养生师'\]::text\[\]/)
     // 旧口径：is_resigned = FALSE 不应再出现
     expect(empSql).not.toMatch(/is_resigned\s*=\s*FALSE/)
     // T6：employeeCount 双口径（mock 不区分 date，day=month=8）
@@ -886,8 +905,8 @@ describe('mgmtDashboard.summary 门店状况 + 人效（截面字段）', () => 
     // T6：employeeCount 调用 2 次（day + month），.find 取第一条 = day 调用，params=[date]
     const empCall = pg.query.mock.calls.find((c) => /FROM staff_wechat_users/.test(c[0]))
     expect(empCall).toBeDefined()
-    expect(empCall[0]).toMatch(/s\.hired_at::date\s*<=\s*\$1::date/)
-    expect(empCall[0]).toMatch(/s\.resigned_at\s+IS\s+NULL\s+OR\s+s\.resigned_at::date\s*>\s*\$1::date/)
+    expect(empCall[0]).toMatch(/sw\.hired_at::date\s*<=\s*\$1::date/)
+    expect(empCall[0]).toMatch(/sw\.resigned_at\s+IS\s+NULL\s+OR\s+sw\.resigned_at::date\s*>\s*\$1::date/)
     expect(empCall[1]).toEqual(['2025-01-15'])
     // T6：双口径
     expect(ctx.result.employeeCount).toEqual({ day: 6, month: 6 })
@@ -973,8 +992,10 @@ describe('mgmtDashboard.summary 门店状况 + 人效（截面字段）', () => 
 
     // T3 起 employeeCount 用 $1=date + $2=scopeId（参数顺序：[date, ...scopeParams]）
     const empSql = sqlList.find((s) => /FROM staff_wechat_users/.test(s))
-    expect(empSql).toMatch(/s\.store_id\s+IN\s*\(/)
+    expect(empSql).toMatch(/tb\.store_id\s+IN\s*\(/)
     expectRecursiveDescendantScope(empSql, 2)
+    // #320：市场 scope 下无门店技师按锚定市场判可见，$3 是同一个 scopeId
+    expect(empSql).toMatch(/tb\.anchor_market_id\s*=\s*\$3/)
   })
 
   test('scopeType=store：staff/client 截面 SQL 走单值过滤', async () => {
@@ -992,7 +1013,9 @@ describe('mgmtDashboard.summary 门店状况 + 人效（截面字段）', () => 
 
     // T3 起 employeeCount 用 $1=date + $2=scopeId
     const empSql = sqlList.find((s) => /FROM staff_wechat_users/.test(s))
-    expect(empSql).toContain('s.store_id = $2')
+    expect(empSql).toContain('tb.store_id = $2')
+    // #320：单店 scope 下无门店技师一律不计入（与员工榜同语义）
+    expect(empSql).toMatch(/tb\.store_id\s+IS\s+NULL\s+AND\s+FALSE/)
     expect(empSql).toMatch(/active_node\.is_active\s*=\s*TRUE/)
   })
 
@@ -1025,11 +1048,21 @@ describe('mgmtDashboard.summary 门店状况 + 人效（截面字段）', () => 
     const censusSqls = sqlList.filter((s) => isMemberCountSql(s) || /FROM staff_wechat_users/.test(s))
     expect(censusSqls.length).toBe(3)
     for (const s of censusSqls) {
-      expect(s).toMatch(/WHERE\s+\(TRUE\)\s+AND/)
       expect(s).toMatch(/active_node\.is_active\s*=\s*TRUE/)
-      expect(s).not.toMatch(/parent_id/)
       expect(s).not.toMatch(/bound_store_id\s*=\s*\$/)
       expect(s).not.toMatch(/store_id\s*=\s*\$/)
+      if (/technician_base/.test(s)) {
+        /**
+         * #320：技师分母的 CTE 自带 `op.id = o.parent_id`（锚定市场用），
+         * 所以不能再用「不含 parent_id」当「没走递归组织树」的判据 ——
+         * 改判「没有 `WITH RECURSIVE`」，那才是递归 scope 的真实特征。
+         */
+        expect(s).not.toMatch(/WITH\s+RECURSIVE/i)
+        expect(s).toMatch(/tb\.store_id\s+IS\s+NOT\s+NULL\s+AND\s+\(TRUE\)/)
+      } else {
+        expect(s).toMatch(/WHERE\s+\(TRUE\)\s+AND/)
+        expect(s).not.toMatch(/parent_id/)
+      }
     }
   })
 
@@ -1686,12 +1719,14 @@ describe('mgmtDashboard.staffRanking', () => {
       await staffRanking(ctx)
 
       const sql = pg.query.mock.calls[0][0]
-      // 产能员工 CTE 保留启用门店条件。
+      // 产能员工 CTE 保留启用门店条件（门店员工分支，2026-09-03 起别名 pb）。
       // 2026-05-20 P0-4 修复：去掉 sw.skills 过滤（漏算 33% 业绩），由 metric SQL 自然过滤
-      expect(sql).toMatch(/resigned_at::date\s*>\s*NOW\(\)::date\)?[\s\S]*?AND\s+\(TRUE\)\s+AND\s+sw\.store_id\s+IN/)
+      expect(sql).toMatch(/pb\.store_id IS NOT NULL AND \(TRUE\) AND pb\.store_id\s+IN/)
       expect(sql).toMatch(/active_node\.is_active\s*=\s*TRUE/)
       expect(sql).not.toMatch(/sw\.skills\s*&&\s*ARRAY/)
-      expect(sql).not.toMatch(/sw\.store_id\s*=\s*ANY/)
+      expect(sql).not.toMatch(/pb\.store_id\s*=\s*ANY/)
+      // 2026-09-03：总部对无门店员工（直挂组织节点）不过滤
+      expect(sql).toMatch(/pb\.store_id IS NULL AND TRUE/)
       expect(pg.query.mock.calls[0][1]).toEqual([])
     })
 
@@ -1704,8 +1739,12 @@ describe('mgmtDashboard.staffRanking', () => {
 
       const sql = pg.query.mock.calls[0][0]
       const params = pg.query.mock.calls[0][1]
-      expect(sql).toMatch(/sw\.store_id\s*=\s*ANY\(\$1::text\[\]\)/)
+      expect(sql).toMatch(/pb\.store_id\s*=\s*ANY\(\$1::text\[\]\)/)
       expect(sql).toMatch(/active_node\.is_active\s*=\s*TRUE/)
+      // 2026-09-03：无门店员工按锚定市场下的可见门店判定，复用同一个 $1（不新增参数）
+      expect(sql).toMatch(/pb\.store_id IS NULL AND\s+EXISTS \(/)
+      expect(sql).toMatch(/vn\.parent_id = pb\.anchor_market_id/)
+      expect(sql).toMatch(/vs\.store_id = ANY\(\$1::text\[\]\)/)
       expect(params).toEqual([['store-001']])
     })
 
@@ -1732,7 +1771,7 @@ describe('mgmtDashboard.staffRanking', () => {
 
       const sql = pg.query.mock.calls[0][0]
       const params = pg.query.mock.calls[0][1]
-      expect(sql).toMatch(/sw\.store_id\s*=\s*ANY\(\$1::text\[\]\)/)
+      expect(sql).toMatch(/pb\.store_id\s*=\s*ANY\(\$1::text\[\]\)/)
       expect(sql).toMatch(/active_node\.is_active\s*=\s*TRUE/)
       expect(params).toEqual([['store-001', 'store-002']])
     })
@@ -1770,9 +1809,17 @@ describe('mgmtDashboard.staffRanking', () => {
         await staffRanking(ctx)
 
         const sql = pg.query.mock.calls[0][0]
-        expect(sql).toMatch(/WITH producer_employees AS/)
+        // 2026-09-03：候选池拆成 producer_base（含直挂组织节点员工）+ producer_employees（scope 过滤）
+        expect(sql).toMatch(/WITH producer_base AS/)
+        expect(sql).toMatch(/producer_employees AS \(/)
         expect(sql).toMatch(/FROM staff_wechat_users sw/)
-        expect(sql).toMatch(/LEFT JOIN stores s ON s\.store_id = sw\.store_id/)
+        expect(sql).toMatch(/LEFT JOIN stores s\s+ON s\.store_id\s+= sw\.store_id/)
+        // store_id / store_name 兜底：直挂门店节点反查门店；展示名兜底到直挂节点名
+        expect(sql).toMatch(/COALESCE\(sw\.store_id, ds\.store_id\)/)
+        expect(sql).toMatch(/COALESCE\(s\.store_name, ds\.store_name, o\.name\)/)
+        // 可见性锚：直挂节点自身是市场则取自身，否则取父节点
+        expect(sql).toMatch(/CASE WHEN o\.type = '市场' THEN o\.id/)
+        expect(sql).toMatch(/WHEN op\.type = '市场' THEN op\.id/)
         expect(sql).toMatch(/sw\.hired_at\s+IS\s+NOT\s+NULL/)
         expect(sql).toMatch(/sw\.hired_at::date\s*<=\s*NOW\(\)::date/)
         expect(sql).toMatch(/sw\.resigned_at\s+IS\s+NULL\s+OR\s+sw\.resigned_at::date\s*>\s*NOW\(\)::date/)
@@ -1839,19 +1886,27 @@ describe('mgmtDashboard.staffRanking', () => {
   })
 
   describe('SQL 形态断言：consume（实耗）', () => {
-    test('FROM service_items sit JOIN service_orders so2 + sale_items si；status=已完成 + service_date period', async () => {
+    // 2026-09-03 口径变更：员工归属从 service_items.employee_id 改 service_commissions.employee_id
+    // （开单时选定的负责美容师事后不可改，门店改「营业额分配-服务提成」纠正归属时改不动它）。
+    // 金额按 allocation_ratio 拆分，与 admin 服务提成导出 / staff.js 个人绩效页三处同源。
+    test('FROM service_commissions sc JOIN service_items sit + service_orders so2 + sale_items si；按 allocation_ratio 归 sc.employee_id', async () => {
       setupDefaultStaffMocks()
       const ctx = makeHqCtx({ period: 'month', metric: 'consume' })
       await staffRanking(ctx)
 
       const sql = pg.query.mock.calls[0][0]
-      expect(sql).toMatch(/FROM service_items sit/)
+      expect(sql).toMatch(/FROM service_commissions sc/)
+      expect(sql).toMatch(/JOIN service_items sit ON sit\.service_item_id = sc\.service_item_id/)
       expect(sql).toMatch(/JOIN service_orders so2/)
       expect(sql).toMatch(/JOIN sale_items si/)
+      expect(sql).toMatch(/sc\.is_void = FALSE/)
       expect(sql).toContain("so2.status = '已完成'")
-      // consume 公式（2026-06 简化）：unit_real_price（已是单次价）× session_used
-      expect(sql).toMatch(/SUM\(sit\.unit_real_price::numeric \* sit\.session_used\)/)
+      // consume 公式：unit_real_price（已是单次价）× session_used × 分配占比
+      expect(sql).toMatch(/SUM\(sit\.unit_real_price::numeric \* sit\.session_used \* sc\.allocation_ratio\)/)
+      expect(sql).toMatch(/GROUP BY sc\.employee_id/)
       expect(sql).toMatch(/so2\.service_date/)
+      // 所有 role_type 各算一份（用户 2026-09-03 拍板），不得按角色白名单截断
+      expect(sql).not.toMatch(/sc\.role_type/)
     })
   })
 
@@ -1879,13 +1934,16 @@ describe('mgmtDashboard.staffRanking', () => {
       await staffRanking(ctx)
 
       const sql = pg.query.mock.calls[0][0]
-      expect(sql).toMatch(/FROM service_items sit/)
+      expect(sql).toMatch(/FROM service_commissions sc/)
+      expect(sql).toMatch(/JOIN service_items sit ON sit\.service_item_id = sc\.service_item_id/)
       expect(sql).toMatch(/JOIN service_orders so2/)
       expect(sql).toMatch(/COUNT\(DISTINCT so2\.client_user_id\)/)
+      expect(sql).toMatch(/sc\.is_void = FALSE/)
       expect(sql).toContain("so2.status = '已完成'")
       expect(sql).toMatch(/so2\.client_user_id\s+IS\s+NOT\s+NULL/)
-      // 按员工分组（service_items.employee_id）
-      expect(sql).toMatch(/GROUP BY sit\.employee_id/)
+      // 2026-09-03：按提成分配对象分组（service_commissions.employee_id），见 consume 段说明。
+      // COUNT(DISTINCT) 天然对同一顾客去重，多角色不重复计人。
+      expect(sql).toMatch(/GROUP BY sc\.employee_id/)
     })
   })
 
@@ -1896,14 +1954,20 @@ describe('mgmtDashboard.staffRanking', () => {
       await staffRanking(ctx)
 
       const sql = pg.query.mock.calls[0][0]
-      expect(sql).toMatch(/FROM service_items sit/)
+      expect(sql).toMatch(/FROM service_commissions sc/)
+      expect(sql).toMatch(/JOIN service_items sit ON sit\.service_item_id = sc\.service_item_id/)
       expect(sql).toMatch(/JOIN service_orders so2/)
-      expect(sql).toMatch(/SUM\(sit\.session_used\)/)
+      expect(sql).toMatch(/sc\.is_void = FALSE/)
+      expect(sql).toMatch(/SUM\(session_used\)/)
       expect(sql).toMatch(/sit\.sales_category\s+IN/)
       expect(sql).toContain('自销自耗')
       expect(sql).toContain('他销自耗')
       expect(sql).toContain("so2.status = '已完成'")
-      expect(sql).toMatch(/GROUP BY sit\.employee_id/)
+      // 2026-09-03：归属改 service_commissions.employee_id（见 consume 段说明）。
+      // 次数是计数指标不乘 allocation_ratio；内层 DISTINCT 防同员工同项目多 role_type 重复累加。
+      expect(sql).toMatch(/SELECT DISTINCT sc\.employee_id, sit\.service_item_id, sit\.session_used/)
+      expect(sql).toMatch(/GROUP BY employee_id/)
+      expect(sql).not.toMatch(/SUM\(sit\.session_used \* sc\.allocation_ratio\)/)
     })
   })
 

@@ -2,7 +2,7 @@
 
 import { useState, useRef, useEffect } from "react"
 import { useRouter } from "next/navigation"
-import { Menu, PanelLeftClose, Bell, LogOut, KeyRound } from "lucide-react"
+import { Menu, PanelLeftClose, Bell, LogOut, KeyRound, ChartNoAxesCombined } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { getRoleLabel } from "@/lib/auth"
 import { logout } from "@/actions/auth"
@@ -21,6 +21,7 @@ export function Topbar({ collapsed, onToggle, session }: TopbarProps) {
   const dropdownRef = useRef<HTMLDivElement>(null)
 
   const primaryRole = session.roles[0]
+  const analystOrigin = getAnalystOrigin()
 
   // Close dropdown on outside click
   useEffect(() => {
@@ -66,7 +67,18 @@ export function Topbar({ collapsed, onToggle, session }: TopbarProps) {
 
       {/* Right: notification + avatar */}
       <div className="flex items-center gap-2">
-        <ExportTasksMenu />
+        <ExportTasksMenu employeeId={session.employeeId} />
+        {analystOrigin && (
+          <a
+            href={analystOrigin}
+            className="flex h-9 items-center gap-1.5 rounded-[var(--radius)] px-2 text-sm text-[#666666] transition-colors hover:bg-[var(--muted)] hover:text-[var(--foreground)]"
+            aria-label="经营分析"
+            title="经营分析"
+          >
+            <ChartNoAxesCombined className="size-4" />
+            <span className="hidden md:inline">经营分析</span>
+          </a>
+        )}
         {/* Notification bell */}
         <button
           className="relative flex size-9 items-center justify-center rounded-[var(--radius)] text-[#666666] transition-colors hover:bg-[var(--muted)] hover:text-[var(--foreground)]"
@@ -128,4 +140,25 @@ export function Topbar({ collapsed, onToggle, session }: TopbarProps) {
       </div>
     </header>
   )
+}
+
+/**
+ * NEXT_PUBLIC_ANALYST_ORIGIN is inlined at build time for production images.
+ * Development keeps the documented standalone analyst port as a convenience;
+ * production without an explicit origin hides the link instead of guessing.
+ */
+function getAnalystOrigin(): string | null {
+  const configured = process.env.NEXT_PUBLIC_ANALYST_ORIGIN?.trim()
+  if (!configured && process.env.NODE_ENV !== "production") return "http://localhost:3100"
+  if (!configured) return null
+
+  try {
+    const url = new URL(configured)
+    if (!(["http:", "https:"] as string[]).includes(url.protocol) || url.username || url.password) {
+      return null
+    }
+    return url.origin
+  } catch {
+    return null
+  }
 }

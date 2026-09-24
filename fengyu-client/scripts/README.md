@@ -23,7 +23,7 @@ bash scripts/configure-env.sh
 
 | 变量名 | 说明 |
 |--------|------|
-| `PG_CONNECTION_STRING` | PostgreSQL 连接串（生产 fengyu-prod / 测试·开发 ali-demo） |
+| `PG_CONNECTION_STRING` | PostgreSQL 连接串（生产 lx-prod / 开发 lx-test） |
 | `MSSQL_CONNECTION_STRING` | SQL Server 连接串（WorkFine 只读） |
 
 实际值存储在 `fengyu-client/.env`（已加入 .gitignore，不提交）。

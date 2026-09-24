@@ -21,9 +21,12 @@ const {
 } = require("../utils/scope");
 const { maskPhone } = require("../utils/pii");
 const { maskPhoneForAuth } = require("../utils/phone-visibility");
-const { logOperation } = require("../utils/operation-log");
+const { logOperation, logUpdate } = require("../utils/operation-log");
 const { shanghaiDateStr } = require("../utils/datetime");
 const { excludeDepositRefundSql } = require("../utils/consume-filter");
+const { assertPaymentAttributionReady } = require("../utils/attribution-guard");
+const { getPointsToYuanRate, getPointsDeductionMaxRate } = require("../utils/config");
+const { safePaging } = require("../utils/paging");
 
 /**
  * 顾客档案子 Tab 可见性闸门（calendar/refundHistory 等）。
@@ -48,6 +51,110 @@ const CUSTOMER_TYPE_VALUES = ['流量客', '体验客', '小美客', '会员客'
 const SPENDING_TIER_VALUES = ['10W+', '6-10W', '3-6W', '1-3W', '1990-1W', '<1990'];
 const MONTHLY_ACTIVITY_VALUES = ['二次客活', '一次客活', '0次客活'];
 const CUSTOMER_STATUS_VALUES = ['保有会员-稳定', '保有会员-有效', '沉睡', '冰冻', '休眠'];
+const CUSTOMER_SOURCE_VALUES = [
+  '美团', '抖音', '小程序', '推广部', '全员地推',
+  '外请团队拓客', '老带新', '转让店', '自进店', '员工或家属',
+];
+const WORKFINE_PROFILE_FIELD_MAP = {
+  customerSource: 'customer_source',
+  birthday: 'birthday',
+  occupation: 'occupation',
+  isMarried: 'is_married',
+  skinIssue: 'skin_issue',
+  wellnessPreference: 'wellness_preference',
+};
+const EDITABLE_PROFILE_FIELDS = new Set([
+  'promoterEmployeeId',
+  ...Object.keys(WORKFINE_PROFILE_FIELD_MAP),
+  'isCrossStoreTemp',
+]);
+const PROFILE_DB_FIELD_MAP = {
+  promoterEmployeeId: 'promoter_employee_id',
+  customerSource: 'customer_source',
+  birthday: 'birthday',
+  occupation: 'occupation',
+  isMarried: 'is_married',
+  skinIssue: 'skin_issue',
+  wellnessPreference: 'wellness_preference',
+  isCrossStoreTemp: 'is_cross_store_temp',
+};
+
+function nullableText(value, fieldLabel, maxLength) {
+  if (value === null || value === '') return null;
+  if (typeof value !== 'string') {
+    throw new Error(`INVALID_PARAMS: ${fieldLabel}必须为字符串或 null`);
+  }
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  if (trimmed.length > maxLength) {
+    throw new Error(`INVALID_PARAMS: ${fieldLabel}不能超过${maxLength}个字符`);
+  }
+  return trimmed;
+}
+
+function normalizeBirthday(value) {
+  if (value === null || value === '') return null;
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    throw new Error('INVALID_PARAMS: 生日格式必须为 YYYY-MM-DD');
+  }
+  const [year, month, day] = value.split('-').map(Number);
+  const parsed = new Date(Date.UTC(year, month - 1, day));
+  if (parsed.getUTCFullYear() !== year
+    || parsed.getUTCMonth() !== month - 1
+    || parsed.getUTCDate() !== day) {
+    throw new Error('INVALID_PARAMS: 生日日期无效');
+  }
+  return value;
+}
+
+function normalizeProfileChanges(changes) {
+  if (!changes || typeof changes !== 'object' || Array.isArray(changes)) {
+    throw new Error('INVALID_PARAMS: changes 必须为对象');
+  }
+  const keys = Object.keys(changes);
+  if (keys.length === 0) throw new Error('INVALID_PARAMS: 没有需要保存的档案字段');
+  const unexpected = keys.filter((key) => !EDITABLE_PROFILE_FIELDS.has(key));
+  if (unexpected.length > 0) {
+    throw new Error(`INVALID_PARAMS: 包含不允许修改的字段：${unexpected.join('、')}`);
+  }
+
+  const normalized = {};
+  for (const key of keys) {
+    const value = changes[key];
+    if (key === 'promoterEmployeeId') {
+      normalized[key] = nullableText(value, '推荐员工', 30);
+    } else if (key === 'customerSource') {
+      const source = nullableText(value, '顾客来源', 30);
+      if (source !== null && !CUSTOMER_SOURCE_VALUES.includes(source)) {
+        throw new Error('INVALID_PARAMS: 顾客来源不在允许范围内');
+      }
+      normalized[key] = source;
+    } else if (key === 'birthday') {
+      normalized[key] = normalizeBirthday(value);
+    } else if (key === 'occupation') {
+      normalized[key] = nullableText(value, '职业', 50);
+    } else if (key === 'isMarried') {
+      if (value !== null && typeof value !== 'boolean') {
+        throw new Error('INVALID_PARAMS: 婚姻状况必须为布尔值或 null');
+      }
+      normalized[key] = value;
+    } else if (key === 'skinIssue') {
+      normalized[key] = nullableText(value, '肌肤问题', 200);
+    } else if (key === 'wellnessPreference') {
+      normalized[key] = nullableText(value, '养生偏好', 200);
+    } else if (key === 'isCrossStoreTemp') {
+      if (typeof value !== 'boolean') {
+        throw new Error('INVALID_PARAMS: 临时跨门店必须为布尔值');
+      }
+      normalized[key] = value;
+    }
+  }
+  return normalized;
+}
+
+function normalizeDbProfileValue(value) {
+  return value === undefined || value === null ? null : value;
+}
 
 /**
  * 顾客档案拓展筛选条件构造（顾客 Tab 拓展筛选区用）。
@@ -87,11 +194,23 @@ function renderProfileFilters(filters, startIdx) {
 /**
  * 搜索顾客（PG 单源）
  * 数据来源 = PG client_wechat_users（含 WorkFine 同步数据）
+ *
+ * 分页（#181）：口径对齐 mgmt-customer.js 的 D-search-pagination —— keyword / 默认分支
+ * 按 `c.user_id ASC` 稳定排序后 LIMIT/OFFSET，hasMore 由 `rows.length === pageSize` 推断；
+ * phone 分支最多命中 0~1 条，不分页。排序键取 user_id 而非「最近到店」：后者不在主查询里
+ * （分页后按 id 批量补），按它排序要把 service_orders 聚合 JOIN 进主查询，代价与 scope 语义
+ * 都会变；分页只需一个稳定唯一键，不需要业务序。
+ *
+ * ⚠️ 返回形态是多态的，勿改成统一返回对象：
+ *   - payload 带 `page` → `{ customers, page, pageSize, hasMore }`（顾客档案 Tab 下滑加载用）
+ *   - 不带 `page`   → 裸数组（开单 / 充值卡 / 充值金转入 / 服务单 / 提货 五处选顾客沿用，
+ *                     改形态会同时打挂这 5 条业务流程）
+ * 两种形态均由 __tests__/routes/customer.test.js 锁定。
  */
 async function search(ctx) {
   await requireStaffBound()(ctx, async () => {});
 
-  const { keyword, phone, crossStore, profileScope } = ctx.event.payload || {};
+  const { keyword, phone, crossStore, profileScope, page, pageSize } = ctx.event.payload || {};
 
   // 拓展筛选：customer_type / spending_tier / monthly_activity / customer_status 等值过滤
   const filters = buildProfileFilters(ctx.event.payload);
@@ -100,7 +219,11 @@ async function search(ctx) {
   // 业务流程选顾客（开单/充值卡/服务单/提货）不传 profileScope，不受此限制。
   const restrictEmp = profileScope && restrictToBoundEmployee(ctx.auth);
 
-  const limit = 20;
+  // 不传 page 时 safePage=1 / safePageSize=20 / offset=0，等价于改造前的 `LIMIT 20`。
+  // `page: null` 视同未传（走裸数组分支）。
+  const wantsPaged = page !== undefined && page !== null;
+  // 取整 + 安全整数两道防线见 utils/paging.js 函数头（#240 抽成单源，staffApi 内共用）
+  const { safePage, safePageSize, offset } = safePaging(page, pageSize, 20);
   let rows = [];
 
   if (phone) {
@@ -131,8 +254,9 @@ async function search(ctx) {
          FROM client_wechat_users c
          LEFT JOIN stores s ON s.store_id = c.bound_store_id
          WHERE (c.phone LIKE $1 OR c.name LIKE $1)${fSql}
-         LIMIT $${limitIdx}`,
-        [kw, ...filters.values, limit],
+         ORDER BY c.user_id ASC
+         LIMIT $${limitIdx} OFFSET $${limitIdx + 1}`,
+        [kw, ...filters.values, safePageSize, offset],
       );
     } else {
       // 门店内模糊检索：顾客 Tab / 服务单选顾客用
@@ -155,8 +279,9 @@ async function search(ctx) {
          FROM client_wechat_users c
          LEFT JOIN stores s ON s.store_id = c.bound_store_id
          WHERE (c.phone LIKE $1 OR c.name LIKE $1) AND ${scope.sql}${empClause}${fSql}
-         LIMIT $${limitIdx}`,
-        [...params, ...filters.values, limit],
+         ORDER BY c.user_id ASC
+         LIMIT $${limitIdx} OFFSET $${limitIdx + 1}`,
+        [...params, ...filters.values, safePageSize, offset],
       );
     }
   } else {
@@ -179,8 +304,9 @@ async function search(ctx) {
        FROM client_wechat_users c
        LEFT JOIN stores s ON s.store_id = c.bound_store_id
        WHERE ${scope.sql}${empClause}${fSql}
-       LIMIT $${limitIdx}`,
-      [...params, ...filters.values, limit],
+       ORDER BY c.user_id ASC
+       LIMIT $${limitIdx} OFFSET $${limitIdx + 1}`,
+      [...params, ...filters.values, safePageSize, offset],
     );
   }
 
@@ -243,7 +369,18 @@ async function search(ctx) {
     }
   }
 
-  ctx.result = results;
+  // 形态多态见函数头注释：带 page 才返回分页信封，否则保持裸数组（5 处业务流程依赖）。
+  // hasMore 由「本页取满」推断（与 mgmt-customer 同口径）：恰好取满而实际已到底时，
+  // 前端会多发一次拉到空页的请求，随后 hasMore 转 false —— 不会漏数据。
+  // phone 分支未分页（最多命中 0~1 条），恒为 false。
+  ctx.result = wantsPaged
+    ? {
+        customers: results,
+        page: safePage,
+        pageSize: safePageSize,
+        hasMore: phone ? false : results.length === safePageSize,
+      }
+    : results;
 }
 
 /**
@@ -358,11 +495,20 @@ async function detail(ctx) {
   }
 
   const selectCols = `c.user_id, c.phone, c.name, c.customer_id, c.member_level,
-    c.bound_employee_id, c.skin_type, c.improvement_focus, c.gender, c.notes,
-    c.bound_store_id, s.store_name`;
+    c.bound_employee_id, c.skin_type, c.improvement_focus,
+    c.skin_issue, c.wellness_preference, c.gender, c.notes, c.customer_source,
+    c.promoter_employee_id, c.is_cross_store_temp, c.updated_at,
+    COALESCE(promoter.name, c.promoter_employee_name) AS promoter_employee_name,
+    c.inviter_user_id, c.invited_at, c.customer_type,
+    c.spending_tier, c.monthly_activity, c.customer_status, c.birthday,
+    c.occupation, c.is_married, c.wechat_name, c.points_balance,
+    c.bound_store_id, s.store_name, inviter.name AS inviter_name,
+    inviter.phone AS inviter_phone`;
 
   const fromClause = `FROM client_wechat_users c
-    LEFT JOIN stores s ON s.store_id = c.bound_store_id`;
+    LEFT JOIN stores s ON s.store_id = c.bound_store_id
+    LEFT JOIN staff_wechat_users promoter ON promoter.employee_id = c.promoter_employee_id
+    LEFT JOIN client_wechat_users inviter ON inviter.user_id = c.inviter_user_id`;
 
   // 按优先级依次查找：customer_id → user_id → phone
   let pgUser = null;
@@ -460,9 +606,30 @@ async function detail(ctx) {
     memberLevel: pgUser.member_level || null,
     storeName: pgUser.store_name ? pgUser.store_name.trim() : "",
     preferredStaffName,
+    customerSource: pgUser.customer_source || null,
+    promoterEmployeeId: pgUser.promoter_employee_id || null,
+    promoterEmployeeName: pgUser.promoter_employee_name || null,
+    inviterName: pgUser.inviter_name || null,
+    inviterPhone: maskPhoneForAuth(pgUser.inviter_phone || '', ctx.auth),
+    invitedAt: pgUser.invited_at || null,
+    customerType: pgUser.customer_type || null,
+    spendingTier: pgUser.spending_tier || null,
+    monthlyActivity: pgUser.monthly_activity || null,
+    customerStatus: pgUser.customer_status || null,
+    birthday: normalizeDbProfileValue(pgUser.birthday),
+    occupation: pgUser.occupation || null,
+    isMarried: pgUser.is_married,
+    wechatName: pgUser.wechat_name || null,
     skinType: pgUser.skin_type || null,
     focusAreas: pgUser.improvement_focus || null,
+    skinIssue: pgUser.skin_issue || null,
+    wellnessPreference: pgUser.wellness_preference || null,
+    isCrossStoreTemp: pgUser.is_cross_store_temp === true,
+    updatedAt: pgUser.updated_at instanceof Date
+      ? pgUser.updated_at.toISOString()
+      : String(pgUser.updated_at || ''),
     notes: pgUser.notes || null,
+    pointsBalance: Number(pgUser.points_balance) || 0,
     lastServiceDate: visitInfo.lastServiceDate,
     visitFrequency: visitInfo.visitFrequency,
     topProductName: purchaseInfo,
@@ -544,6 +711,11 @@ async function getConsumptionStats(clientUserId) {
     };
   }
 
+  // 与 mgmt-customer.getConsumptionStatsScoped 同一口径副本，守卫同步（#141）：
+  // 未迁库时首次支付行 100% NULL，年度消费会静默变负数。
+  // ⚠ 放在空值短路之后：无 clientUserId 时本就零查询，不该为此打探针。
+  await assertPaymentAttributionReady(pg);
+
   const yearStart = `${shanghaiDateStr().slice(0, 4)}-01-01`;
   const rows = await pg.query(
     `WITH order_stats AS (
@@ -570,8 +742,8 @@ async function getConsumptionStats(clientUserId) {
          AND o.sale_order_type IN ('销售单', '转换单')
          AND o.client_user_id = $1
          AND o.legacy_source IS DISTINCT FROM 'workfine'
-         AND sop.paid_at >= ($2::date::timestamp AT TIME ZONE 'Asia/Shanghai')
-         AND sop.paid_at < (($2::date + INTERVAL '1 year') AT TIME ZONE 'Asia/Shanghai')
+         AND sop.performance_attribution_date >= $2::date
+         AND sop.performance_attribution_date < ($2::date + INTERVAL '1 year')
      ), legacy_year_stats AS (
        SELECT
        COALESCE(SUM(
@@ -586,8 +758,8 @@ async function getConsumptionStats(clientUserId) {
          AND o.sale_order_type IN ('销售单', '转换单')
          AND o.client_user_id = $1
          AND o.legacy_source = 'workfine'
-         AND o.paid_at >= ($2::date::timestamp AT TIME ZONE 'Asia/Shanghai')
-         AND o.paid_at < (($2::date + INTERVAL '1 year') AT TIME ZONE 'Asia/Shanghai')
+         AND o.performance_attribution_date >= $2::date
+         AND o.performance_attribution_date < ($2::date + INTERVAL '1 year')
      ), actual_stats AS (
        SELECT
          COALESCE(SUM(sit.unit_real_price::numeric * sit.session_used), 0) AS total_actual_consumption,
@@ -709,6 +881,24 @@ async function paidOrders(ctx) {
       si.remark,
       si.sales_category,
       si.picked_up_quantity,
+      -- 行级欠款：仅「订单确实未付清」且「该卡未买满次数」时才算。
+      -- 订单已付清但行 received 不足的是行级分摊缺口（已知数据问题），不是顾客欠款；
+      -- 寄存单 total_amount<=0 → paid_sessions=session_count，天然不进此分支（其 sale_amount 只是原价快照）。
+      CASE
+        WHEN o.status = '部分支付'
+         AND si.paid_sessions IS NOT NULL
+         AND si.paid_sessions < si.session_count
+         AND NOT EXISTS (
+           SELECT 1 FROM sale_order_payments sop
+           WHERE sop.sale_order_id = si.sale_order_id
+             AND sop.change_type = '退款' AND sop.status = '已支付'
+         )
+         -- 1 元阈值：瀑布分摊的 ROUND 尾差会造出 ¥0.01 的假欠款，不值得推给顾客
+         AND (si.sale_amount::numeric - si.received::numeric) >= 1
+        THEN GREATEST(0, si.sale_amount::numeric - si.received::numeric)::numeric(12, 2)
+        ELSE NULL
+      END AS unpaid_amount,
+      o.remark AS order_remark,
       COALESCE(ps.unit, CASE WHEN si.product_type = '家居产品' THEN '盒' ELSE '次' END) AS unit,
       ps.category_id,
       pc.category_name,
@@ -733,9 +923,24 @@ async function paidOrders(ctx) {
         WHERE sop.sale_order_id = si.sale_order_id
           AND sop.change_type = '退款' AND sop.status = '待审批'
       )
-      -- 只下发还有已付未用次数的卡；历史 NULL 行保留为 disabled 灰显（legacy workfine NULL 已在上方排除）。
+      -- issue #122：改按物理剩余次数下发。部分支付导致 paid_sessions=0 的卡以前被整行剔除，
+      -- 顾客档案看不到这张卡；现在照常展示（可用次数 0 + 待付清标注），核销限额仍走 paid_sessions
+      -- （service.create/start/finalize 三处独立校验，不受本过滤影响）。
+      -- 历史 NULL 行保留为 disabled 灰显（legacy workfine NULL 已在上方排除）。
       AND (
         si.paid_sessions IS NULL
+        OR si.remaining_sessions > 0
+      )
+      -- ⚠ 退款不减 remaining_sessions（Model X，见 utils/refund.js）：paid_sessions 是"已退卡从卡包
+      -- 消失"的唯一机制。放宽展示门槛时必须把这条守卫补回来，否则已退款的卡会重新出现在卡包里。
+      -- 与 clientApi/routes/order.js 的 appointableItems 同款守卫。
+      AND (
+        NOT EXISTS (
+          SELECT 1 FROM sale_order_payments sop
+          WHERE sop.sale_order_id = si.sale_order_id
+            AND sop.change_type = '退款' AND sop.status = '已支付'
+        )
+        OR si.paid_sessions IS NULL
         OR si.paid_sessions > (si.session_count - si.remaining_sessions)
       )
     ORDER BY si.sale_item_id`,
@@ -766,10 +971,15 @@ async function paidOrders(ctx) {
       saleAmount: item.sale_amount != null ? Number(item.sale_amount).toFixed(2) : "",
       received: item.received != null ? Number(item.received).toFixed(2) : "",
       pendingReceived: item.pending_received != null ? Number(item.pending_received).toFixed(2) : "",
+      // 仅订单未付清且该卡未买满次数时有值；已付清/寄存单/NULL 卡一律 null
+      unpaidAmount: item.unpaid_amount != null ? Number(item.unpaid_amount) : null,
       expireDate: item.expire_date || null,
       remark: item.remark || null,
       salesCategory: item.sales_category || null,
       pickedUpQuantity: item.picked_up_quantity != null ? Number(item.picked_up_quantity) : null,
+      orderRemark: typeof item.order_remark === "string" && item.order_remark.trim()
+        ? item.order_remark.trim()
+        : null,
       categoryId: item.category_id || "",
       categoryName: item.category_name || "",
       category: item.category_name || "",
@@ -797,13 +1007,25 @@ async function paidOrders(ctx) {
 function mapHomeProductRow(row) {
   const pickedQuantity = Number(row.picked_quantity || 0)
   const refundedQuantity = Number(row.refunded_quantity || 0)
+  const convertedQuantity = Number(row.converted_quantity || 0)
   const remainingQuantity = Number(row.remaining_quantity || 0)
   const paidQuantity = Number(row.paid_quantity || 0)
   const pendingPickupQuantity = Number(row.pending_pickup_quantity || 0)
+  // 待付清行的欠款金额：received 是行级净实收（已扣该行退款），故对退过款的行
+  // sale_amount - received 会把"退掉的钱"误算成欠款；寄存单行 SQL 已置 NULL。
+  const unpaidAmount =
+    refundedQuantity > 0 || row.unpaid_amount == null ? null : Number(row.unpaid_amount)
   let status
   if (row.refund_pending) status = '退款处理中'
   else if (pendingPickupQuantity > 0) status = pickedQuantity > 0 ? '部分提货' : '待提货'
-  else status = refundedQuantity > 0 ? '已完成' : '已提货'
+  // 「待付清」必须与欠款金额绑定：只有真的算得出欠款才这么标。
+  // 否则寄存单（金额列留空）和退款后仍有剩余的行会被误标成待付清/已完成。
+  else if (unpaidAmount > 0) status = '待付清'
+  // 还有未交付份额但算不出欠款（寄存单、退款后剩余）——是待提，不是已完成。
+  else if (remainingQuantity > 0) status = '待提货'
+  // #125：整行折抵后 settled=purchased，于是 pending=0、remaining=0、refunded=0，
+  // 不看 convertedQuantity 会把「已转走」误判成「已提货」。
+  else status = (refundedQuantity > 0 || convertedQuantity > 0) ? '已完成' : '已提货'
 
   return {
     saleItemId: row.sale_item_id,
@@ -815,8 +1037,10 @@ function mapHomeProductRow(row) {
     paidQuantity,
     pickedQuantity,
     refundedQuantity,
+    convertedQuantity,
     remainingQuantity,
     pendingPickupQuantity,
+    unpaidAmount,
     status,
     storeId: row.store_id,
     storeName: row.store_name || null,
@@ -852,10 +1076,20 @@ async function homeProducts(ctx) {
   await assertCustomerProfileVisible(pg, ctx.auth, clientUserId)
 
   const rows = await pg.query(
-    `WITH pickup_totals AS (
-       SELECT sale_item_id, SUM(pickup_quantity)::int AS picked_quantity
-         FROM pickup_records
-        GROUP BY sale_item_id
+    `WITH conversion_totals AS (
+       -- #154 拆列后件数直读 sale_items.converted_quantity，这里只剩**金额**：折抵额度按金额结算，
+       -- 不能由「已转换件数 × 单价」推算（折 4 件可能带走 ¥450 而非 ¥400）。
+       -- 只有「已关闭」完成过 rollback（数量已退回），故只排除它；
+       -- 其余状态（含"支付失败"）扣减仍然生效，必须计入已转换。删除订单的转出行已随主单消失。
+       SELECT out_item.ref_sale_item_id AS sale_item_id,
+              SUM(GREATEST(0, -out_item.received::numeric)) AS converted_amount
+         FROM sale_items out_item
+         JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id
+        WHERE out_item.item_direction = '转出'
+          AND out_item.product_type = '家居产品'
+          AND out_item.ref_sale_item_id IS NOT NULL
+          AND conv_order.status <> '已关闭'
+        GROUP BY out_item.ref_sale_item_id
      ), home_product_rows AS (
        SELECT COALESCE(si.sale_item_group_id, si.sale_item_id) AS sale_item_group_id,
               si.sale_item_id,
@@ -863,18 +1097,39 @@ async function homeProducts(ctx) {
               COALESCE(si.product_name, '家居产品') AS product_name,
               COALESCE(ps.unit, '盒') AS unit,
               si.quantity::int AS purchased_quantity,
-              LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0)))::int AS settled_quantity,
-              LEAST(
-                LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0))),
-                GREATEST(0, COALESCE(pt.picked_quantity, 0))
-              )::int AS picked_quantity,
+              -- #154：三语义各有独立列，「已结算」回归派生量 = 已提货 + 已退款 + 已转换。
+              LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0) + COALESCE(si.refunded_quantity, 0) + COALESCE(si.converted_quantity, 0)))::int AS settled_quantity,
+              LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0)))::int AS picked_quantity,
+              LEAST(si.quantity, GREATEST(0, COALESCE(si.refunded_quantity, 0)))::int AS refunded_quantity,
+              LEAST(si.quantity, GREATEST(0, COALESCE(si.converted_quantity, 0)))::int AS converted_quantity,
+              -- #145/#153：行级可提件数 = min(物理未结算, floor(剩余已付 / 单价))，与折抵额度同一口径。
+              -- 剩余已付 = 行实收 − 已提货金额 − 已转走金额；退款不在此处扣（received 已扣过）。
+              -- 必须按金额算而非「已付件数 − 已提 − 已折抵件数」：折抵金额含余数时两者不等，
+              -- 折 4 件带走 ¥450 后再回款 ¥50，按件数会多放出 1 件（累计兑现超实收）。
               CASE
+                WHEN o.sale_order_type = '寄存单' OR si.sale_amount <= 0
+                  THEN GREATEST(0, si.quantity - LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0) + COALESCE(si.refunded_quantity, 0) + COALESCE(si.converted_quantity, 0))))
+                ELSE LEAST(
+                  GREATEST(0, si.quantity - LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0) + COALESCE(si.refunded_quantity, 0) + COALESCE(si.converted_quantity, 0)))),
+                  GREATEST(0, FLOOR((GREATEST(0, si.received::numeric)
+                    - GREATEST(0, COALESCE(si.picked_up_quantity, 0)) * si.unit_real_price::numeric
+                    - COALESCE(ct.converted_amount, 0)) / NULLIF(si.unit_real_price::numeric, 0)))::int
+                )
+              END AS row_pending_pickup,
+              CASE
+                -- 寄存单：货本就属于顾客，全额可提（sale_amount 只是原价快照，received 不代表欠款）。
+                -- 判据与 #120 展示侧 is_deposit 同源；刻意不用疗程卡那条 total_amount<=0——后者会连带覆盖
+                -- 转换单/零总额单，且 total_amount 无 CHECK 约束，负值会静默放行。
+                WHEN o.sale_order_type = '寄存单' THEN si.quantity
                 WHEN si.sale_amount <= 0 THEN si.quantity
                 ELSE LEAST(
                   si.quantity,
                   FLOOR(GREATEST(0, si.received::numeric) * si.quantity / NULLIF(si.sale_amount::numeric, 0))::int
                 )
               END AS paid_quantity,
+              si.sale_amount::numeric AS row_sale_amount,
+              GREATEST(0, si.received::numeric) AS row_received,
+              (o.sale_order_type = '寄存单') AS is_deposit,
               o.store_id,
               s.store_name,
               COALESCE(o.paid_at, o.sale_order_datetime, o.created_at) AS purchased_at,
@@ -888,10 +1143,18 @@ async function homeProducts(ctx) {
          JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
          LEFT JOIN stores s ON s.store_id = o.store_id
          LEFT JOIN product_skus ps ON ps.sku_id = si.sku_id
-         LEFT JOIN pickup_totals pt ON pt.sale_item_id = si.sale_item_id
+         LEFT JOIN conversion_totals ct ON ct.sale_item_id = si.sale_item_id
         WHERE o.client_user_id = $1
           AND o.status IN ('已支付', '部分支付', '已完成')
-          AND si.item_direction = '购买'
+          -- #145/#153：转换单换入的家居与购买行同权（与疗程卡侧放行写法同源）。
+          -- sale_amount>0 的转入行，received 已由 paid-sessions STEP 1.6 重建为「转出旧卡
+          -- 价值 + 本单净到账」，FLOOR(received × qty / sale_amount) 天然成立；sale_amount<=0
+          -- 的转入行走上方赠品分支全额可提（STEP 1.6 带 sale_amount>0 过滤，刻意不碰 0 元行，
+          -- 与购买侧 0 元赠品行同口径）。两类都不需要为「转入」另加满付分支。
+          AND (
+            si.item_direction = '购买'
+            OR (o.sale_order_type = '转换单' AND si.item_direction = '转入')
+          )
           AND si.product_type = '家居产品'
      ), home_products AS (
        SELECT sale_item_group_id,
@@ -902,7 +1165,13 @@ async function homeProducts(ctx) {
               SUM(si.purchased_quantity)::int AS purchased_quantity,
               SUM(si.settled_quantity)::int AS settled_quantity,
               SUM(si.picked_quantity)::int AS picked_quantity,
+              SUM(si.refunded_quantity)::int AS refunded_quantity,
+              SUM(si.converted_quantity)::int AS converted_quantity,
+              SUM(si.row_pending_pickup)::int AS pending_pickup_quantity,
               SUM(si.paid_quantity)::int AS paid_quantity,
+              SUM(si.row_sale_amount) AS sale_amount_total,
+              SUM(si.row_received) AS received_total,
+              BOOL_OR(si.is_deposit) AS is_deposit,
               MIN(si.store_id) AS store_id,
               MIN(si.store_name) AS store_name,
               MAX(si.purchased_at) AS purchased_at,
@@ -911,17 +1180,18 @@ async function homeProducts(ctx) {
       GROUP BY sale_item_group_id
      ), home_product_balances AS (
        SELECT *,
-              (settled_quantity - picked_quantity)::int AS refunded_quantity,
+              -- #154 前「已退款」只能由 settled − 已提货 − 已转换 倒推；拆列后直读独立列。
               (purchased_quantity - settled_quantity)::int AS remaining_quantity,
-              LEAST(
-                purchased_quantity - settled_quantity,
-                GREATEST(paid_quantity - picked_quantity, 0)
-              )::int AS pending_pickup_quantity
+              -- 寄存单的 sale_amount 只是原价快照、received 恒为历史值，两者相减不是欠款
+              -- （寄存的货本就属于顾客）。金额列一律留空，与导出口径一致。
+              CASE WHEN is_deposit THEN NULL
+                   ELSE GREATEST(0, sale_amount_total - received_total)::numeric(12, 2)
+              END AS unpaid_amount
          FROM home_products
      )
      SELECT *
        FROM home_product_balances
-      WHERE picked_quantity > 0 OR pending_pickup_quantity > 0
+      WHERE picked_quantity > 0 OR remaining_quantity > 0 OR converted_quantity > 0
    ORDER BY (pending_pickup_quantity > 0) DESC,
             purchased_at DESC,
             sale_item_id`,
@@ -1125,6 +1395,31 @@ async function serviceHistory(ctx) {
 }
 
 /**
+ * 返回顾客档案顶部状态卡片对应的 tag。
+ * 会员客按每日重算的 customer_status 分类；非会员客按最近服务日期实时分类。
+ * stats 和 listByTag 必须共用此函数，否则会出现卡片数量与点击后列表不一致。
+ */
+function customerActivityTag(row, today) {
+  if (row.customer_type === '会员客' && row.customer_status) {
+    switch (row.customer_status) {
+      case '保有会员-稳定':
+      case '保有会员-有效': return 'active';
+      case '沉睡': return 'atRisk';
+      case '冰冻': return 'lost';
+      case '休眠':
+      default: return 'sleeping';
+    }
+  }
+
+  if (!row.last_service_date) return 'sleeping';
+  const diffDays = Math.floor((new Date(today) - new Date(row.last_service_date)) / 86400000);
+  if (diffDays <= 30) return 'active';
+  if (diffDays <= 60) return 'atRisk';
+  if (diffDays <= 90) return 'lost';
+  return 'sleeping';
+}
+
+/**
  * 顾客分类统计（基于最近服务日期 + 生日）
  * 返回各状态的顾客数量
  */
@@ -1166,28 +1461,11 @@ async function stats(ctx) {
   let active = 0, atRisk = 0, lost = 0, sleeping = 0, birthday = 0, birthdayNext = 0
 
   for (const r of rows) {
-    // 活跃度分类
-    // 会员客：按 admin cron 预算的 customer_status 映射（与后台数据中心对齐）：
-    //   保有会员-稳定/有效→活跃, 沉睡→即将流失, 冰冻→流失, 休眠→沉睡
-    //   customer_status 为空（cron 未跑 / 刚升级会员）时兜底走时间衰减，避免漏桶
-    // 流量客及其它：按 last_service_date 30/60/90 天实时分桶
-    if (r.customer_type === '会员客' && r.customer_status) {
-      switch (r.customer_status) {
-        case '保有会员-稳定':
-        case '保有会员-有效': active++; break
-        case '沉睡': atRisk++; break
-        case '冰冻': lost++; break
-        case '休眠': sleeping++; break
-        default: sleeping++
-      }
-    } else if (r.last_service_date) {
-      const diffDays = Math.floor((new Date(today) - new Date(r.last_service_date)) / 86400000)
-      if (diffDays <= 30) active++
-      else if (diffDays <= 60) atRisk++
-      else if (diffDays <= 90) lost++
-      else sleeping++
-    } else {
-      sleeping++
+    switch (customerActivityTag(r, today)) {
+      case 'active': active++; break
+      case 'atRisk': atRisk++; break
+      case 'lost': lost++; break
+      case 'sleeping': sleeping++; break
     }
     // 生日
     if (r.birthday) {
@@ -1250,6 +1528,7 @@ async function listByTag(ctx) {
   const allRows = await pg.query(`
     SELECT
       c.user_id, c.name, c.phone, c.birthday, c.member_level,
+      c.customer_type, c.customer_status,
       MAX(so.service_date) AS last_service_date
     FROM client_wechat_users c
     LEFT JOIN service_orders so
@@ -1257,7 +1536,12 @@ async function listByTag(ctx) {
       AND so.status = '已完成'
       AND ${soScope.sql}
     WHERE ${cWhere}
-    GROUP BY c.user_id, c.name, c.phone, c.birthday, c.member_level
+    GROUP BY c.user_id, c.name, c.phone, c.birthday, c.member_level,
+             c.customer_type, c.customer_status
+    -- #181：下方 filtered.slice() 是内存分页，依赖本查询的行序稳定。
+    -- PG 不保证 GROUP BY 的输出顺序，缺排序键时翻页会重复/漏行。
+    -- 排序键与 search() 一致（user_id ASC），两条列表路径翻页口径同源。
+    ORDER BY c.user_id ASC
   `, [...cParams, ...soScope.params])
 
   // 按 tag 过滤
@@ -1268,19 +1552,16 @@ async function listByTag(ctx) {
     if (tag === 'birthdayNext') {
       return r.birthday && (new Date(r.birthday).getMonth() + 1) === nextMonth
     }
-    const diffDays = r.last_service_date
-      ? Math.floor((new Date(today) - new Date(r.last_service_date)) / 86400000)
-      : Infinity
-    if (tag === 'active') return diffDays <= 30
-    if (tag === 'atRisk') return diffDays > 30 && diffDays <= 60
-    if (tag === 'lost') return diffDays > 60 && diffDays <= 90
-    if (tag === 'sleeping') return diffDays > 90
+    if (['active', 'atRisk', 'lost', 'sleeping'].includes(tag)) {
+      return customerActivityTag(r, today) === tag
+    }
     return true
   })
 
-  // 分页
-  const offset = (page - 1) * pageSize
-  const paged = filtered.slice(offset, offset + pageSize)
+  // 分页归一见 utils/paging.js 函数头（#240：此处原先零校验，
+  // `page='abc'` → slice(NaN,NaN) 列表恒空、`page=-1` → 静默返回尾部错误数据）
+  const { safePageSize, offset } = safePaging(page, pageSize, 20)
+  const paged = filtered.slice(offset, offset + safePageSize)
 
   // 最近购买商品名（仅查分页后的用户，减少查询量）
   const pagedUserIds = paged.map(r => r.user_id).filter(Boolean)
@@ -1313,7 +1594,7 @@ async function listByTag(ctx) {
         memberLevel: r.member_level,
         lastServiceDate: r.last_service_date,
         lastPurchaseName: lastPurchaseMap[r.user_id] || null,
-        birthday: r.birthday,
+        birthday: normalizeDbProfileValue(r.birthday),
         source: 'miniprogram',
       }
     })
@@ -1348,7 +1629,9 @@ async function refundHistory(ctx) {
   }
   // 交易数据跟顾客走：退款流水不再按门店过滤（顾客可见性已由 assertProfileVisibleByIdentifier 守护）
   const refundWhere = refundClientWhere
-  refundParams.push(pageSize, (page - 1) * pageSize)
+  // 分页归一见 utils/paging.js 函数头（#240：此处原先零校验，pageSize 直接进 LIMIT）
+  const { safePageSize, offset } = safePaging(page, pageSize, 50)
+  refundParams.push(safePageSize, offset)
   const refundRows = await pg.query(`
     SELECT
       sop.id AS payment_id,
@@ -1368,7 +1651,7 @@ async function refundHistory(ctx) {
     JOIN sale_orders so ON so.sale_order_id = sop.sale_order_id
     WHERE sop.change_type = '退款'
       AND ${refundWhere}
-    ORDER BY sop.created_at DESC
+    ORDER BY sop.created_at DESC, sop.id DESC
     LIMIT $${refundParams.length - 1} OFFSET $${refundParams.length}
   `, refundParams)
 
@@ -1458,6 +1741,166 @@ async function refundHistory(ctx) {
 }
 
 /**
+ * 搜索顾客的推荐员工候选（仅当前门店有效店长）。
+ * 可检索全部在职员工（跨店），本店员工优先展示。
+ */
+async function searchPromoterEmployees(ctx) {
+  await requireManager()(ctx, async () => {})
+
+  const { clientUserId, keyword } = ctx.event.payload || {}
+  if (!clientUserId) throw new Error('INVALID_PARAMS: 缺少 clientUserId')
+  if (typeof keyword !== 'string' || keyword.trim().length < 2) {
+    throw new Error('INVALID_PARAMS: 请输入至少2个字符搜索员工')
+  }
+
+  const { boundStoreId } = await assertCustomerInScope(pg, ctx.auth, clientUserId)
+  const pattern = `%${keyword.trim()}%`
+  const rows = await pg.query(`
+    SELECT u.employee_id, u.name, u.phone, u.store_id, s.store_name
+    FROM staff_wechat_users u
+    LEFT JOIN stores s ON s.store_id = u.store_id
+    WHERE u.is_resigned = false
+      AND (u.name ILIKE $2 OR u.phone ILIKE $2)
+    ORDER BY (u.store_id = $1) DESC, u.name
+    LIMIT 20
+  `, [boundStoreId, pattern])
+
+  ctx.result = rows.map((row) => ({
+    employeeId: row.employee_id,
+    name: row.name || '',
+    phoneMasked: maskPhone(row.phone || ''),
+    storeName: row.store_name || '',
+  }))
+}
+
+/**
+ * 更新顾客基本档案（仅当前门店有效店长）。
+ */
+async function updateProfile(ctx) {
+  await requireManager()(ctx, async () => {})
+
+  const { clientUserId, expectedUpdatedAt, changes } = ctx.event.payload || {}
+  if (!clientUserId) throw new Error('INVALID_PARAMS: 缺少 clientUserId')
+  if (typeof expectedUpdatedAt !== 'string' || !expectedUpdatedAt.trim()) {
+    throw new Error('INVALID_PARAMS: 缺少 expectedUpdatedAt')
+  }
+  const normalized = normalizeProfileChanges(changes)
+
+  ctx.result = await pg.transaction(async (client) => {
+    const beforeResult = await client.query(`
+      SELECT user_id, bound_store_id, promoter_employee_id, promoter_employee_name,
+             customer_source, birthday, occupation, is_married, skin_issue,
+             wellness_preference, is_cross_store_temp, workfine_override_fields, updated_at
+      FROM client_wechat_users
+      WHERE user_id = $1
+      FOR UPDATE
+    `, [clientUserId])
+    const before = beforeResult.rows[0]
+    if (!before) throw new Error('PERMISSION_DENIED: 顾客不存在')
+    if (!isStoreInScope(ctx.auth, before.bound_store_id)) {
+      throw new Error('PERMISSION_DENIED: 顾客不在当前门店范围内')
+    }
+
+    let promoterName = before.promoter_employee_name || null
+    if (Object.prototype.hasOwnProperty.call(normalized, 'promoterEmployeeId')) {
+      const promoterId = normalized.promoterEmployeeId
+      if (promoterId) {
+        const promoterResult = await client.query(`
+          SELECT employee_id, name
+          FROM staff_wechat_users
+          WHERE employee_id = $1 AND is_resigned = false
+          LIMIT 1
+        `, [promoterId])
+        const promoter = promoterResult.rows[0]
+        if (!promoter) {
+          throw new Error('PERMISSION_DENIED: 推荐员工不存在或已离职')
+        }
+        promoterName = promoter.name || null
+      } else {
+        promoterName = null
+      }
+    }
+
+    const actualChanges = {}
+    for (const [field, value] of Object.entries(normalized)) {
+      const oldValue = normalizeDbProfileValue(before[PROFILE_DB_FIELD_MAP[field]])
+      if (JSON.stringify(oldValue) !== JSON.stringify(value)) actualChanges[field] = value
+    }
+
+    if (Object.keys(actualChanges).length === 0) {
+      return {
+        updatedAt: before.updated_at instanceof Date
+          ? before.updated_at.toISOString()
+          : String(before.updated_at || ''),
+        changes: {},
+      }
+    }
+
+    const setClauses = []
+    const params = []
+    const param = (value) => {
+      params.push(value)
+      return `$${params.length}`
+    }
+    for (const [field, value] of Object.entries(actualChanges)) {
+      setClauses.push(`${PROFILE_DB_FIELD_MAP[field]} = ${param(value)}`)
+      if (field === 'promoterEmployeeId') {
+        setClauses.push(`promoter_employee_name = ${param(promoterName)}`)
+      }
+    }
+
+    const overrideFields = Object.keys(actualChanges)
+      .filter((field) => Object.prototype.hasOwnProperty.call(WORKFINE_PROFILE_FIELD_MAP, field))
+      .map((field) => WORKFINE_PROFILE_FIELD_MAP[field])
+    if (overrideFields.length > 0) {
+      const overrideParam = param(overrideFields)
+      setClauses.push(`workfine_override_fields = ARRAY(
+        SELECT DISTINCT unnest(workfine_override_fields || ${overrideParam}::text[])
+      )`)
+    }
+    setClauses.push('updated_at = NOW()')
+    params.push(clientUserId, expectedUpdatedAt)
+    const userIdParam = `$${params.length - 1}`
+    const updatedAtParam = `$${params.length}`
+
+    const updateResult = await client.query(`
+      UPDATE client_wechat_users
+      SET ${setClauses.join(', ')}
+      WHERE user_id = ${userIdParam}
+        AND date_trunc('milliseconds', updated_at) = date_trunc('milliseconds', ${updatedAtParam}::timestamptz)
+      RETURNING updated_at
+    `, params)
+    if (updateResult.rows.length === 0) {
+      throw new Error('CONFLICT: 顾客档案已被其他人修改，请刷新后重试')
+    }
+
+    const auditBefore = {}
+    const auditAfter = {}
+    for (const [field, value] of Object.entries(actualChanges)) {
+      auditBefore[field] = normalizeDbProfileValue(before[PROFILE_DB_FIELD_MAP[field]])
+      auditAfter[field] = value
+    }
+    if (Object.prototype.hasOwnProperty.call(actualChanges, 'promoterEmployeeId')) {
+      auditBefore.promoterEmployeeName = before.promoter_employee_name || null
+      auditAfter.promoterEmployeeName = promoterName
+    }
+    await logUpdate(client, ctx, 'customer.update', 'customer', clientUserId, auditBefore, auditAfter)
+
+    return {
+      updatedAt: updateResult.rows[0].updated_at instanceof Date
+        ? updateResult.rows[0].updated_at.toISOString()
+        : String(updateResult.rows[0].updated_at || ''),
+      changes: {
+        ...actualChanges,
+        ...(Object.prototype.hasOwnProperty.call(actualChanges, 'promoterEmployeeId')
+          ? { promoterEmployeeName: promoterName }
+          : {}),
+      },
+    }
+  })
+}
+
+/**
  * 更新顾客备注
  */
 async function updateNotes(ctx) {
@@ -1529,9 +1972,9 @@ async function updateName(ctx) {
 }
 
 /**
- * 查询顾客储值卡余额（店长专用，跨店共享）
+ * 查询顾客储值卡余额与积分抵扣配置（店长专用，跨店共享）
  * payload: { customerUserId: string }
- * 返回: { cardId: string|null, balance: number }
+ * 返回: { cardId: string|null, balance: number, pointsBalance: number, pointsToYuanRate: number, pointsDeductionMaxRate: number }
  */
 async function customerBalance(ctx) {
   await requireManager()(ctx, async () => {})
@@ -1542,33 +1985,42 @@ async function customerBalance(ctx) {
   }
 
   // scope 守卫：储值卡余额是账户级资产（prepaid_cards 跨店共享，无 store_id 列），
-  // 不跟门店绑定。放行「scope 内 OR 已解绑（bound_store_id IS NULL）」——
-  // 解绑顾客的余额仍可查；仅「仍绑定他店」的活跃顾客继续 PERMISSION_DENIED。
+  // 不跟门店绑定。放行「scope 内 OR 已解绑（bound_store_id IS NULL）OR 临时跨店
+  // （is_cross_store_temp）」——解绑/临时跨店顾客的余额仍可查（同 card.recharge/card.inflow
+  // 放行口径：外店可给临时跨店顾客充值，开单结算层必须能看到余额）；
+  // 仅「仍绑定他店」的普通顾客继续 PERMISSION_DENIED。
   const scopeRows = await pg.query(
-    'SELECT bound_store_id FROM client_wechat_users WHERE user_id = $1',
+    'SELECT bound_store_id, is_cross_store_temp FROM client_wechat_users WHERE user_id = $1',
     [customerUserId]
   )
   if (scopeRows.length === 0) {
     throw new Error('PERMISSION_DENIED: 顾客不存在')
   }
   const boundStoreId = scopeRows[0].bound_store_id
-  if (boundStoreId !== null && !isStoreInScope(ctx.auth, boundStoreId)) {
+  if (boundStoreId !== null && !isStoreInScope(ctx.auth, boundStoreId) && !scopeRows[0].is_cross_store_temp) {
     throw new Error('PERMISSION_DENIED: 顾客不在当前门店范围内')
   }
 
-  const rows = await pg.query(
-    'SELECT card_id, balance FROM prepaid_cards WHERE user_id = $1',
-    [customerUserId]
-  )
+  const [rows, pointsRows, pointsToYuanRate, pointsDeductionMaxRate] = await Promise.all([
+    pg.query('SELECT card_id, balance FROM prepaid_cards WHERE user_id = $1', [customerUserId]),
+    pg.query('SELECT points_balance FROM client_wechat_users WHERE user_id = $1', [customerUserId]),
+    getPointsToYuanRate(),
+    getPointsDeductionMaxRate(),
+  ])
+
+  const pointsBalance = Number(pointsRows[0]?.points_balance) || 0
 
   if (rows.length === 0) {
-    ctx.result = { cardId: null, balance: 0 }
+    ctx.result = { cardId: null, balance: 0, pointsBalance, pointsToYuanRate, pointsDeductionMaxRate }
     return
   }
 
   ctx.result = {
     cardId: rows[0].card_id,
     balance: Number(rows[0].balance),
+    pointsBalance,
+    pointsToYuanRate,
+    pointsDeductionMaxRate,
   }
 }
 
@@ -1680,9 +2132,8 @@ async function phoneChangeLogs(ctx) {
   if (!clientUserId && !clientPhone) {
     throw new Error('INVALID_PARAMS: 缺少 clientUserId 或 clientPhone')
   }
-  const safePage = Math.max(1, Number(page) || 1)
-  const safePageSize = Math.min(100, Math.max(1, Number(pageSize) || 50))
-  const offset = (safePage - 1) * safePageSize
+  // 取整 + 安全整数两道防线见 utils/paging.js 函数头（#240）
+  const { safePageSize, offset } = safePaging(page, pageSize, 50)
 
   // 手机号变更日志按 client_user_id 关联，先解析 user_id
   let cuid = clientUserId
@@ -1706,7 +2157,7 @@ async function phoneChangeLogs(ctx) {
       OR (action = 'customer.update' AND target_type = 'customer' AND target_id = $1
           AND (detail -> 'changes' ? 'phone'))
     )
-    ORDER BY created_at DESC
+    ORDER BY created_at DESC, id DESC
     LIMIT $2 OFFSET $3
   `, [cuid, safePageSize, offset])
 
@@ -1854,4 +2305,4 @@ async function coupons(ctx) {
   };
 }
 
-module.exports = { search, calendar, detail, paidOrders, homeProducts, orderHistory, serviceHistory, stats, listByTag, refundHistory, updateName, updateNotes, assign, customerBalance, appointments, phoneChangeLogs, coupons };
+module.exports = { search, calendar, detail, paidOrders, homeProducts, orderHistory, serviceHistory, stats, listByTag, refundHistory, searchPromoterEmployees, updateProfile, updateName, updateNotes, assign, customerBalance, appointments, phoneChangeLogs, coupons };

@@ -41,16 +41,33 @@
     </view>
 
     <!-- 手机号 -->
-    <!-- 首绑场景：直接触发 open-type=getPhoneNumber -->
+    <!-- 退出态优先通过 OPENID 恢复已有账户，不消耗手机号快速验证额度 -->
     <button
-      wx:if="{{isLoggedOut || !maskedPhone}}"
+      wx:if="{{isLoggedOut}}"
       class="phone-bind-btn"
-      open-type="getPhoneNumber"
-      bindgetphonenumber="onGetPhoneNumber"
+      bindtap="onRestoreLogin"
+      disabled="{{restoringLogin}}"
+      loading="{{restoringLogin}}"
     >
       <van-cell
         title="手机号"
-        value="{{isLoggedOut ? '授权登录' : '立即绑定'}}"
+        value="微信登录"
+        is-link
+      />
+    </button>
+
+    <!-- 首次绑定或服务端手机号缺失时，才触发付费手机号验证组件 -->
+    <button
+      wx:elif="{{!maskedPhone}}"
+      class="phone-bind-btn"
+      open-type="getPhoneNumber"
+      bindgetphonenumber="onGetPhoneNumber"
+      disabled="{{phoneBinding}}"
+      loading="{{phoneBinding}}"
+    >
+      <van-cell
+        title="手机号"
+        value="立即绑定"
         is-link
       />
     </button>

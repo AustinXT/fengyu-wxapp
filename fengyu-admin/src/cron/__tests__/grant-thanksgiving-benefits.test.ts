@@ -60,7 +60,10 @@ function expectFullSequence({
   mockExecute.mockResolvedValueOnce([])
   // 6) tx 内：INSERT point_transactions RETURNING
   mockExecute.mockResolvedValueOnce(pointsInsertConflict ? [] : [{ id: 1 }])
-  if (!pointsInsertConflict) mockExecute.mockResolvedValueOnce([])
+  if (!pointsInsertConflict) {
+    mockExecute.mockResolvedValueOnce([])
+    mockExecute.mockResolvedValueOnce([])
+  }
   // 7) tx 内：SELECT coupon_templates is_active
   mockExecute.mockResolvedValueOnce([{ is_active: templateActive }])
   if (templateActive) mockExecute.mockResolvedValueOnce([])
@@ -109,7 +112,41 @@ describe('cron-worker STEP 4 — grantThanksgivingBenefits', () => {
       const allParams = mockExecute.mock.calls.flatMap((c) => paramsOf(c[0]))
       expect(allParams).toContain('thx-msg-2026-04-u-A')
       expect(allParams).toContain('thx-pts-2026-04-u-A')
+      // 默认 qty=1，第 1 张沿用历史无序号 key，保证补跑幂等
       expect(allParams).toContain('thx-2026-04-u-A-tpl-1')
+    })
+
+    it('couponQuantities → 按数量发 N 张，第 1 张沿用历史 key，第 2..N 张带序号', async () => {
+      const config = {
+        黑钻: {
+          messageTitle: '感恩黑钻',
+          messageBody: '感恩您',
+          points: 200,
+          couponTemplateIds: ['tpl-1'],
+          couponQuantities: { 'tpl-1': 3 },
+        },
+      }
+      mockExecute.mockResolvedValueOnce([{ d: 20 }])
+      mockExecute.mockResolvedValueOnce([{ value: JSON.stringify(config) }])
+      mockExecute.mockResolvedValueOnce([{ ym: '2026-04' }])
+      mockExecute.mockResolvedValueOnce([{ user_id: 'u-Q', member_level: '黑钻' }])
+      mockExecute.mockResolvedValueOnce([]) // INSERT messages
+      mockExecute.mockResolvedValueOnce([{ id: 1 }]) // INSERT points
+      mockExecute.mockResolvedValueOnce([]) // INSERT point_batches
+      mockExecute.mockResolvedValueOnce([]) // UPDATE balance
+      mockExecute.mockResolvedValueOnce([{ is_active: true }]) // template
+      mockExecute.mockResolvedValueOnce([]) // INSERT user_coupons #1
+      mockExecute.mockResolvedValueOnce([]) // INSERT user_coupons #2
+      mockExecute.mockResolvedValueOnce([]) // INSERT user_coupons #3
+      mockExecute.mockResolvedValueOnce([]) // INSERT operation_logs
+
+      const result = await grantThanksgivingBenefits(mockDb as never)
+      expect(result.sentCount).toBe(1)
+
+      const allParams = mockExecute.mock.calls.flatMap((c) => paramsOf(c[0]))
+      expect(allParams).toContain('thx-2026-04-u-Q-tpl-1')
+      expect(allParams).toContain('thx-2026-04-u-Q-tpl-1-2')
+      expect(allParams).toContain('thx-2026-04-u-Q-tpl-1-3')
     })
   })
 
@@ -148,7 +185,7 @@ describe('cron-worker STEP 4 — grantThanksgivingBenefits', () => {
       await grantThanksgivingBenefits(mockDb as never)
 
       const after = Date.now()
-      // INSERT user_coupons 是包含 'thx-2026-04-u-E-tpl-1' 字符串参数的那次调用
+      // INSERT user_coupons 是包含历史无序号 couponId 字符串参数的那次调用
       const couponInsertCall = mockExecute.mock.calls.find((c) =>
         paramsOf(c[0]).includes('thx-2026-04-u-E-tpl-1'),
       )
@@ -210,6 +247,7 @@ describe('cron-worker STEP 4 — grantThanksgivingBenefits', () => {
       // 第二个用户正常事务的 tx.execute 序列
       mockExecute.mockResolvedValueOnce([]) // INSERT messages
       mockExecute.mockResolvedValueOnce([{ id: 2 }]) // INSERT points
+      mockExecute.mockResolvedValueOnce([]) // INSERT point_batches
       mockExecute.mockResolvedValueOnce([]) // UPDATE balance
       mockExecute.mockResolvedValueOnce([{ is_active: true }]) // template
       mockExecute.mockResolvedValueOnce([]) // INSERT coupon

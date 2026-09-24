@@ -14,6 +14,7 @@ import { withPermission } from '@/lib/with-permission'
 import { logOperation } from '@/lib/operation-log'
 import { hasPendingRefundByServiceOrder } from '@/lib/refund-cascade'
 import { DEPOSIT_REFUND_REMARK } from '@/lib/service-remark'
+import { getInvalidEmployeeAssignmentId } from '@/lib/employee-assignment-server'
 
 /** 校验服务单是否在用户 scope 内 */
 async function verifyServiceOrderScope(serviceOrderId: string, session: AuthSession): Promise<boolean> {
@@ -98,12 +99,19 @@ export const batchSaveServiceCommissions = withPermission(
   // 寄存单退款专用服务单不参与提成分配（顾客退寄存卡次数，员工未实际提供服务）。
   // 正常寄存消费核销单照常参与服务提成（寄存单仍不计营业额分成，由 ALLOCATABLE_ORDER_TYPES 守卫）。
   const [svcRemark] = await db
-    .select({ remark: serviceOrders.remark })
+    .select({ remark: serviceOrders.remark, storeId: serviceOrders.storeId })
     .from(serviceOrders)
     .where(eq(serviceOrders.serviceOrderId, serviceOrderId))
     .limit(1)
   if (svcRemark?.remark === DEPOSIT_REFUND_REMARK) {
     return { success: false, message: '寄存单退款专用服务单不参与提成分配' }
+  }
+  if (!svcRemark || await getInvalidEmployeeAssignmentId(
+    commissions.map((commission) => commission.employeeId),
+    svcRemark.storeId,
+    { assignmentScope: 'allocationSupport' },
+  )) {
+    return { success: false, message: '所选员工不属于本门店且未开启出差支援' }
   }
 
   // 校验所有 serviceItemId 属于该服务单
@@ -196,7 +204,7 @@ export const batchSaveServiceCommissions = withPermission(
   try {
     await db.transaction(async (tx) => {
       await tx.execute(sql`
-        UPDATE service_commissions SET is_void = true
+        UPDATE service_commissions SET is_void = true, voided_at = NOW()
         WHERE service_item_id IN (
           SELECT service_item_id FROM service_items WHERE service_order_id = ${serviceOrderId}
         ) AND is_void = false

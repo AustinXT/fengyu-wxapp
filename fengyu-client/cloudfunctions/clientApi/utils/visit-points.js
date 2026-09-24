@@ -77,7 +77,16 @@ async function grantVisitPoints(client, so, items, now, rewardAmount) {
          (user_id, type, amount, ref_order_id, external_ref, created_at)
        VALUES ($1, '到店赠送', $2, NULL, $3, $4)
        ON CONFLICT DO NOTHING
-       RETURNING amount
+       RETURNING id, amount, created_at
+     ),
+     granted_batch AS (
+       INSERT INTO point_batches
+         (user_id, source_transaction_id, source_type, ref_order_id,
+          original_amount, remaining_amount, earned_at, expire_at, created_at, updated_at)
+       SELECT $1, i.id, '到店赠送', NULL,
+              i.amount, i.amount, i.created_at,
+              i.created_at + INTERVAL '365 days', NOW(), NOW()
+         FROM inserted i
      )
      UPDATE client_wechat_users
         SET points_balance = COALESCE(points_balance, 0) + (SELECT amount FROM inserted),

@@ -154,9 +154,14 @@ export function RefundForm({
     // 1. 疗程卡：寄存单、优惠券全额抵扣的疗程卡（未消费可退）
     // 2. 非疗程卡：优惠券全额抵扣的商品（unit_real_price = 0）
     return itemRefunds.length > 0 && itemRefunds.every(({ it, qty }) => {
+      // #154：这里要的是「已结算」（已提货 + 已退款 + 已转换）而非「已消耗」——保持拆列前语义。
+      // 该闸门放行的是「0 元且完全未动过」的行；把已退款件数排除出去会让退过一次的行重新
+      // 满足 consumed <= 0，属本次拆列范围外的行为变更。
       const consumed = it.productType === '疗程卡'
         ? Number(it.sessionCount || 0) - Number(it.remainingSessions || 0)
         : Number(it.pickedUpQuantity || 0)
+          + Number(it.refundedQuantity || 0)
+          + Number(it.convertedQuantity || 0)
 
       // 通用条件：单次价为 0（优惠券全额抵扣）且未消费
       const isUnconsumedZeroPrice = Math.abs(it.unitRealPrice) < 0.001 && consumed <= 0 && qty >= it.unusedQuantity

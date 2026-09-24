@@ -8,12 +8,14 @@
  *     UPDATE + operation_logs + grantUpgradeBenefits 三件套同事务
  *   - 单用户失败 → ROLLBACK 该用户、errorCount++、继续下个用户
  *
- * 不写 became_member_at（仅在 customer_type 跃迁到 '会员客' 时由 staffApi/payNotify 写入）。
+ * 不写 became_member_at（仅在 customer_type 跃迁到 '会员客' 时由支付链路/历史回填写入）；
+ * 但读取它作为"首次成为会员权益"是否补发的时间边界。
  *
  * 幂等键：
  *   消息 idempotency_key  = `member-upgrade-${userId}-${toLevel}`
  *   积分 external_ref     = `member-upgrade-${userId}-${toLevel}`
- *   优惠券 coupon_id      = `cpn-up-${userId}-${toLevel}-${templateId}`
+ *   优惠券 coupon_id      = 第 1 张沿用 `cpn-up-${userId}-${toLevel}-${templateId}`；
+ *                            第 2..N 张为 `cpn-up-${userId}-${toLevel}-${templateId}-${i}`
  */
 
 import { sql } from 'drizzle-orm'
@@ -23,12 +25,16 @@ import { loadJsonConfig } from '../lib/benefits-loader'
 import { getMemberThreshold } from '../config'
 import { type CronContext, nowSqlOf, nowOf } from '../lib/cron-context'
 import { beijingTs } from '@/lib/db-time'
+import { clampCouponQuantity } from '@/lib/coupon-quantity'
+import { grantPointBatch } from '@/lib/points-batches'
 
 export interface BenefitItem {
   messageTitle?: string
   messageBody?: string
   points?: number
   couponTemplateIds?: string[]
+  /** 每个模板的发放数量（缺省=1）；由 admin 配置 normalizeBenefits 保证 [1,99] */
+  couponQuantities?: Record<string, number>
 }
 export type BenefitsConfig = Record<string, BenefitItem>
 
@@ -46,13 +52,52 @@ type Tx = Parameters<Parameters<Db['transaction']>[0]>[0]
 /** 支付链路即时升级后，cron 幂等补发礼包的回看窗口（覆盖上次 cron 至今，留余量）。 */
 const RECENT_UPGRADE_WINDOW_MS = 36 * 60 * 60 * 1000
 
-/** 该用户的 member_level 是否在近 RECENT_UPGRADE_WINDOW_MS 内被升级过（含支付链路即时升级）。 */
-function wasRecentlyUpgraded(
-  upgradedAt: Date | string | null,
+function wasRecently(
+  value: Date | string | null,
   ctx?: CronContext,
 ): boolean {
-  if (!upgradedAt) return false
-  return nowOf(ctx).getTime() - new Date(upgradedAt).getTime() <= RECENT_UPGRADE_WINDOW_MS
+  if (!value) return false
+  const at = new Date(value).getTime()
+  if (!Number.isFinite(at)) return false
+  const delta = nowOf(ctx).getTime() - at
+  return delta >= 0 && delta <= RECENT_UPGRADE_WINDOW_MS
+}
+
+/** 该用户的 member_level 是否在近 RECENT_UPGRADE_WINDOW_MS 内被升级过（含支付链路即时升级）。 */
+function wasRecentlyUpgraded(upgradedAt: Date | string | null, ctx?: CronContext): boolean {
+  return wasRecently(upgradedAt, ctx)
+}
+
+/** 首次成为会员权益只对最近成为会员的顾客补发；历史会员补齐等级不发新会员礼包。 */
+function wasRecentlyBecameMember(
+  becameMemberAt: Date | string | null,
+  ctx?: CronContext,
+): boolean {
+  return wasRecently(becameMemberAt, ctx)
+}
+
+export function shouldGrantMemberUpgradeBenefits(
+  oldLevel: string | null,
+  becameMemberAt: Date | string | null,
+  ctx?: CronContext,
+): boolean {
+  if (oldLevel) return true
+  return wasRecentlyBecameMember(becameMemberAt, ctx)
+}
+
+function shouldRetryUnchangedUpgradeBenefits(
+  oldMemberLevel: string | null,
+  becameMemberAt: Date | string | null,
+  ctx?: CronContext,
+): boolean {
+  if (oldMemberLevel) return true
+  return wasRecentlyBecameMember(becameMemberAt, ctx)
+}
+
+function toIsoOrNull(value: Date | string | null | undefined): string | null {
+  if (!value) return null
+  const date = new Date(value)
+  return Number.isFinite(date.getTime()) ? date.toISOString() : null
 }
 
 export async function refreshMemberLevels(
@@ -76,8 +121,10 @@ export async function refreshMemberLevels(
     SELECT
       cwu.user_id,
       cwu.member_level,
+      cwu.old_member_level,
       cwu.member_level_locked_until,
       cwu.member_level_upgraded_at,
+      cwu.became_member_at,
       COALESCE(SUM(GREATEST((so.received::numeric) - (so.refunded_amount::numeric), 0)) FILTER (
         WHERE so.sale_order_type IN ('销售单','转换单')
           AND so.paid_at >= (${nowSql} - INTERVAL '12 months')
@@ -85,12 +132,14 @@ export async function refreshMemberLevels(
     FROM client_wechat_users cwu
     LEFT JOIN sale_orders so ON so.client_user_id = cwu.user_id
     WHERE cwu.customer_type = '会员客'
-    GROUP BY cwu.user_id, cwu.member_level, cwu.member_level_locked_until, cwu.member_level_upgraded_at
+    GROUP BY cwu.user_id, cwu.member_level, cwu.old_member_level, cwu.member_level_locked_until, cwu.member_level_upgraded_at, cwu.became_member_at
   `)) as Array<{
     user_id: string
     member_level: string | null
+    old_member_level: string | null
     member_level_locked_until: Date | string | null
     member_level_upgraded_at: Date | string | null
+    became_member_at: Date | string | null
     spend: string | number
   }>
 
@@ -115,7 +164,8 @@ export async function refreshMemberLevels(
         if (
           newLevel &&
           benefitsConfig?.[newLevel] &&
-          wasRecentlyUpgraded(row.member_level_upgraded_at, ctx)
+          wasRecentlyUpgraded(row.member_level_upgraded_at, ctx) &&
+          shouldRetryUnchangedUpgradeBenefits(row.old_member_level, row.became_member_at, ctx)
         ) {
           await db.transaction(async (tx) => {
             await grantUpgradeBenefits(tx, row.user_id, newLevel, benefitsConfig[newLevel], ctx)
@@ -126,7 +176,10 @@ export async function refreshMemberLevels(
       }
 
       if (isUpgrade(oldLevel as never, newLevel)) {
-        await processUpgrade(db, row.user_id, oldLevel, newLevel, spend, benefitsConfig, ctx)
+        await processUpgrade(db, row.user_id, oldLevel, newLevel, spend, benefitsConfig, ctx, {
+          becameMemberAt: row.became_member_at,
+          grantBenefits: shouldGrantMemberUpgradeBenefits(oldLevel, row.became_member_at, ctx),
+        })
         upgradeCount++
       } else if (isDowngrade(oldLevel as never, newLevel)) {
         const held = await processDowngrade(
@@ -176,8 +229,13 @@ export async function processUpgrade(
   spend: number,
   benefitsConfig: BenefitsConfig | null,
   ctx?: CronContext,
+  options: {
+    becameMemberAt?: Date | string | null
+    grantBenefits?: boolean
+  } = {},
 ): Promise<void> {
   const nowSql = nowSqlOf(ctx)
+  const grantBenefits = options.grantBenefits ?? true
   await db.transaction(async (tx) => {
     await tx.execute(sql`
       UPDATE client_wechat_users
@@ -200,6 +258,12 @@ export async function processUpgrade(
         trigger: 'cronTask',
         direction: 'upgrade',
         lockedUntil: '+150d',
+        ...(toIsoOrNull(options.becameMemberAt)
+          ? { becameMemberAt: toIsoOrNull(options.becameMemberAt) }
+          : {}),
+        ...(grantBenefits
+          ? {}
+          : { benefitSkipped: 'historical_member_first_upgrade' }),
       },
     })
     await tx.execute(sql`
@@ -207,7 +271,7 @@ export async function processUpgrade(
       VALUES ('customer.memberLevelChange', 'customer', ${userId}, ${detail}::jsonb, 'cronTask', NOW())
     `)
 
-    if (newLevel && benefitsConfig?.[newLevel]) {
+    if (grantBenefits && newLevel && benefitsConfig?.[newLevel]) {
       await grantUpgradeBenefits(tx, userId, newLevel, benefitsConfig[newLevel], ctx)
     }
   })
@@ -272,8 +336,8 @@ export async function processDowngrade(
 /**
  * 升级三件套：消息 / 积分 / 优惠券。
  *
- * 积分规则（与原 cronTask 一致）：流水插入成功（未发生幂等冲突）时才累加 points_balance，
- * 避免幂等冲突情况下重复增加余额。
+ * 积分规则：流水插入成功（未发生幂等冲突）时才生成积分批次，并按未过期批次重算余额，
+ * 避免幂等冲突情况下重复增加可用积分。
  */
 async function grantUpgradeBenefits(
   tx: Tx,
@@ -305,11 +369,23 @@ async function grantUpgradeBenefits(
       RETURNING id
     `)) as Array<{ id: number }>
     if (inserted.length > 0) {
+      await grantPointBatch(tx, {
+        userId,
+        pointTransactionId: Number(inserted[0].id),
+        type: '等级升级奖励',
+        amount: config.points,
+        refOrderId: null,
+      })
       await tx.execute(sql`
-        UPDATE client_wechat_users
-           SET points_balance = COALESCE(points_balance, 0) + ${config.points},
+        UPDATE client_wechat_users c
+           SET points_balance = COALESCE((
+                 SELECT SUM(pb.remaining_amount)
+                 FROM point_batches pb
+                 WHERE pb.user_id = c.user_id
+                   AND pb.expire_at > NOW()
+               ), 0),
                points_updated_at = NOW()
-         WHERE user_id = ${userId}
+         WHERE c.user_id = ${userId}
       `)
     }
   }
@@ -344,15 +420,21 @@ async function grantUpgradeBenefits(
       } else {
         expireAt = new Date(baseMs + 365 * 86400000)
       }
+      const expireTs = beijingTs(expireAt)
 
-      const couponId = `cpn-up-${userId}-${toLevel}-${templateId}`
-      const externalRef = couponId  // 双写 external_ref：DB 层 uq_user_coupons_external_ref 兜底
-      await tx.execute(sql`
-        INSERT INTO user_coupons
-          (coupon_id, template_id, user_id, status, expire_at, external_ref, created_at)
-        VALUES (${couponId}, ${templateId}, ${userId}, '未使用', ${beijingTs(expireAt)}, ${externalRef}, NOW())
-        ON CONFLICT (coupon_id) DO NOTHING
-      `)
+      // 第 1 张沿用历史 key，保证补跑命中旧幂等记录；第 2..N 张追加序号。
+      const qty = clampCouponQuantity(config.couponQuantities?.[templateId])
+      const baseCouponId = `cpn-up-${userId}-${toLevel}-${templateId}`
+      for (let i = 1; i <= qty; i++) {
+        const couponId = i === 1 ? baseCouponId : `${baseCouponId}-${i}`
+        const externalRef = couponId // 双写 external_ref：DB 层 uq_user_coupons_external_ref 兜底
+        await tx.execute(sql`
+          INSERT INTO user_coupons
+            (coupon_id, template_id, user_id, status, expire_at, external_ref, created_at)
+          VALUES (${couponId}, ${templateId}, ${userId}, '未使用', ${expireTs}, ${externalRef}, NOW())
+          ON CONFLICT (coupon_id) DO NOTHING
+        `)
+      }
     }
   }
 }

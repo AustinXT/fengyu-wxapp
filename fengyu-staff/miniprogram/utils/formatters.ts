@@ -79,6 +79,30 @@ export function formatTime(timeStr: string | null): string {
 }
 
 /**
+ * 手机号脱敏：138****5678
+ *
+ * ⚠️ **字面镜像 `fengyu-staff/cloudfunctions/staffApi/utils/pii.js` 的 maskPhone**——那份是三端
+ * （staffApi / clientApi / admin）由 `cross-end-pii-snapshot.test.js` 守护的权威实现，不要照抄
+ * `fengyu-client/miniprogram/utils/format.ts` 的那份：它只有 `length < 7` 一道守卫，
+ * `'12345'` 原样全显完全不脱敏，`'8812345'` 被拼成 `'881****2345'`（尾 4 位既声称被遮又完整露出）。
+ *
+ * 说清楚这份实现**没有**做到的事：8~10 位输入它同样会补齐到 11 位（`'12345678'` → `'123****5678'`），
+ * 遮蔽率偏低。这是权威实现的既有行为，四端一致，**不要单端"顺手修好"**——那会让
+ * snapshot 守护红灯，要改得四端 + fixture 一起改。一致性由
+ * `__tests__/utils/pii-cross-end.test.ts` 守护（fixture 已覆盖 8~10 位）。
+ *
+ * 只作用于展示。按手机号检索必须拿**原始号**匹配，否则用户输入被遮掉的中间几位永远搜不到。
+ */
+export function maskPhone(phone: string): string {
+  if (!phone || typeof phone !== 'string') return ''
+  const s = phone.trim()
+  if (s.length === 0) return ''
+  if (s.length <= 4) return '*'.repeat(s.length)
+  if (s.length <= 7) return s[0] + '*'.repeat(s.length - 2) + s[s.length - 1]
+  return s.slice(0, 3) + '*'.repeat(Math.max(4, s.length - 7)) + s.slice(-4)
+}
+
+/**
  * 计算服务进行中的耗时描述
  * @param startTime 开始时间字符串
  * @param now 可选，覆盖"当前时间"（测试用）

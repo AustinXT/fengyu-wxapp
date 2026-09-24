@@ -3,7 +3,12 @@
  * 用一次性事务 ROLLBACK，不留任何数据。
  */
 import { Client } from 'pg';
-const c = new Client({ connectionString: 'postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp' });
+
+// DATABASE_URL 必填且必须精确指向业务库（实现见 _lib/assert-db-target.js，含 query 覆盖防护）。
+import { assertDbTargetOrExit } from './_lib/assert-db-target.js';
+assertDbTargetOrExit(process.env.DATABASE_URL);
+
+const c = new Client({ connectionString: process.env.DATABASE_URL.trim() });
 await c.connect();
 
 // 找一个真实存在的 sale_order_id 用于测试（避免 FK 失败）

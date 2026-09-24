@@ -27,6 +27,7 @@ playwright-report/
 test-results/
 .auth/
 .last-test-context.json
+.last-inventory-context.json
 # Playwright e2e-pages globalSetup 详情夹具 id 临时文件（运行期生成，globalTeardown 删除）
 .e2e-detail-fixtures.json
 
@@ -35,6 +36,7 @@ db/.env
 docker/.env
 *.sql.backup
 postgres_data/
+docker/data/private-uploads/
 .env
 .env.local
 *.key
@@ -50,6 +52,7 @@ cloudbaserc.*.json
 envs/dev.env
 envs/prod.env
 envs/.active
+envs/*.env
 envs/*.pem
 envs/*.cer
 
@@ -57,6 +60,9 @@ envs/*.cer
 delivery/
 .tree/
 .claude/worktrees/*
+
+# 本地临时文件存放地（所有临时文件统一放 _tmp/）
+_tmp/
 
 # 42plugin externally-installed skills (machine-local symlinks; break CI/other machines)
 .claude/skills/agent-team-architect
@@ -72,3 +78,7 @@ delivery/
 reports/
 .claude/last-report.json
 .claude/scheduled_tasks.lock
+
+# 双谱系评审 harness 配置（因机器而异，本机专属）
+.claude/dev-launch.review.md
+.claude/notes/pr-ready/

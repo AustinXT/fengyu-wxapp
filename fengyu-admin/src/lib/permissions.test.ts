@@ -24,7 +24,7 @@ vi.mock('@db/org', () => ({
   stores: { storeId: 'store_id', orgNodeId: 'org_node_id' },
 }))
 
-import { computeActions, requirePermission, requireAnyPermission, buildScopeWhere, DEFAULT_PERMISSION_MATRIX, ALL_ACTIONS, PermissionError, expandRoleScope, expandScopeStoreIds, expandScopeOrgNodeIds, isAdminScope, accessiblePermissionScopeIds, scopeCondition, employeeScopeCondition, isInScope, hasPermission, getPermissionMatrix, invalidatePermissionMatrixCache, canAccessAdmin, isDepositOrderApprover } from './permissions'
+import { computeActions, requirePermission, requireAnyPermission, buildScopeWhere, DEFAULT_PERMISSION_MATRIX, ALL_ACTIONS, PermissionError, expandRoleScope, expandScopeStoreIds, expandScopeOrgNodeIds, isAdminScope, accessiblePermissionScopeIds, scopeCondition, employeeScopeCondition, isInScope, isOrgNodeInScope, isEmployeeRowVisible, hasPermission, getPermissionMatrix, invalidatePermissionMatrixCache, canAccessAdmin, isDepositOrderApprover } from './permissions'
 import { scopeSessionToActions } from './action-scope'
 import type { AuthSession, RoleType } from './types'
 import { db } from '@/db'
@@ -253,14 +253,14 @@ describe('getPermissionMatrix / cache', () => {
     expect(matrix.role_custom).toEqual(['dashboard:view'])
   })
 
-  it('历史管理员专属和未交付权限不会进入非超级管理员运行时矩阵', async () => {
+  it('历史管理员专属权限不会进入非超级管理员运行时矩阵，已交付库存权限保留', async () => {
     mockRoleRows([{
       roleKey: 'manager',
       isSuperAdmin: false,
-      actions: ['dashboard:view', 'appointment:delete', 'inventory:update'],
+      actions: ['dashboard:view', 'appointment:delete', 'inventory:stock_list'],
     }])
     const matrix = await getPermissionMatrix()
-    expect(matrix.manager).toEqual(['dashboard:view'])
+    expect(matrix.manager).toEqual(['dashboard:view', 'inventory:stock_list'])
   })
 
   it('DB throw 时回退 DEFAULT + console.error', async () => {
@@ -703,6 +703,204 @@ describe('isInScope', () => {
       permissions: { actions: [], scopeStoreIds: [] },
     })
     expect(isInScope(session, 'S001')).toBe(false)
+  })
+})
+
+describe('isOrgNodeInScope — #228 员工调组织节点的判据', () => {
+  it('admin 任何组织节点都返回 true（即便 scopeOrgNodeIds 为空）', () => {
+    const session = mockSession({
+      roles: [{ role: 'admin', scopeId: 'hq-1', scopeType: '总部' }],
+      permissions: { actions: [], scopeStoreIds: [], scopeOrgNodeIds: [] },
+    })
+    expect(isOrgNodeInScope(session, 'ANY-NODE')).toBe(true)
+  })
+
+  it('非 admin 节点在 scopeOrgNodeIds 内返回 true', () => {
+    const session = mockSession({
+      roles: [{ role: 'manager', scopeId: 'm1', scopeType: '市场' }],
+      permissions: { actions: [], scopeStoreIds: [], scopeOrgNodeIds: ['m1', 'org-s1', 'org-s2'] },
+    })
+    expect(isOrgNodeInScope(session, 'org-s2')).toBe(true)
+  })
+
+  it('非 admin 节点不在 scopeOrgNodeIds 内返回 false', () => {
+    const session = mockSession({
+      roles: [{ role: 'manager', scopeId: 'm1', scopeType: '市场' }],
+      permissions: { actions: [], scopeStoreIds: [], scopeOrgNodeIds: ['m1', 'org-s1'] },
+    })
+    expect(isOrgNodeInScope(session, 'm2')).toBe(false)
+  })
+
+  it('非 admin 且 scopeOrgNodeIds 缺失 → 回退 scopeDeptNodeIds（旧会话）', () => {
+    const session = mockSession({
+      roles: [{ role: 'manager', scopeId: 's1', scopeType: '门店' }],
+      permissions: { actions: [], scopeStoreIds: [], scopeDeptNodeIds: ['D1'] },
+    })
+    expect(isOrgNodeInScope(session, 'D1')).toBe(true)
+    expect(isOrgNodeInScope(session, 'D2')).toBe(false)
+  })
+
+  it('非 admin 且两个集合都缺失 → 一律 false（fail-closed）', () => {
+    const session = mockSession({
+      roles: [{ role: 'manager', scopeId: 's1', scopeType: '门店' }],
+      permissions: { actions: [], scopeStoreIds: ['S001'] },
+    })
+    expect(isOrgNodeInScope(session, 'D1')).toBe(false)
+  })
+
+  /**
+   * 与 `employeeScopeCondition` 的 orgNodeIds 同源：一个判「入参新值可否写入」、
+   * 一个拼进 UPDATE 的 WHERE 判「目标行是否可见」，口径分叉会造成静默错位
+   * （校验放行但 UPDATE 命中 0 行，或反之）。
+   *
+   * ⚠️ 不能用 `expect(employeeScopeCondition(...)).toBeDefined()` 来表达这件事 ——
+   * 该函数对**任何**非 admin session 都返回非 undefined（有 ids 就 inArray，双空就 `sql\`FALSE\``），
+   * 那个断言恒真：把 `?? scopeDeptNodeIds` 回退删掉（口径真的分叉了）它照样绿。
+   * 这里改为直接比对**两者实际采用的 id 集合**。
+   */
+  it('与 employeeScopeCondition 取同一个 orgNodeIds 集合（含 scopeDeptNodeIds 回退）', () => {
+    const STORE_COL = { name: 'store_id' } as any
+    const ORG_COL = { name: 'org_node_id' } as any
+    const manager = (perms: Record<string, unknown>) => mockSession({
+      roles: [{ role: 'manager', scopeId: 's1', scopeType: '门店' }],
+      permissions: { actions: [], scopeStoreIds: [], ...perms } as any,
+    })
+
+    // 同一批 org 节点，一个走 scopeOrgNodeIds、一个走 scopeDeptNodeIds 回退
+    const viaOrgNodeIds = manager({ scopeOrgNodeIds: ['D1', 'D2'] })
+    const viaDeptNodeIds = manager({ scopeDeptNodeIds: ['D1', 'D2'] })
+
+    // ① isOrgNodeInScope 对两者判定一致
+    for (const s of [viaOrgNodeIds, viaDeptNodeIds]) {
+      expect(isOrgNodeInScope(s, 'D1')).toBe(true)
+      expect(isOrgNodeInScope(s, 'D2')).toBe(true)
+      expect(isOrgNodeInScope(s, 'D9')).toBe(false)
+    }
+
+    // ② employeeScopeCondition 也必须对两者产出**结构完全相同**的条件。
+    //    删掉任一侧的 `?? scopeDeptNodeIds` 回退 → 其中一个退化为空集 → 结构不同 → 本断言变红。
+    const condViaOrg = JSON.stringify(employeeScopeCondition(viaOrgNodeIds, STORE_COL, ORG_COL))
+    const condViaDept = JSON.stringify(employeeScopeCondition(viaDeptNodeIds, STORE_COL, ORG_COL))
+    expect(condViaDept).toBe(condViaOrg)
+
+    // ③ 且该条件确实携带了 isOrgNodeInScope 认可的那批 id（防两侧一起退化成空集也"相同"）
+    expect(condViaOrg).toContain(JSON.stringify(['D1', 'D2']))
+
+    // ④ scopeOrgNodeIds 存在即生效、不再回退 —— 空数组也是"存在"
+    const emptyOrgWins = manager({ scopeOrgNodeIds: [], scopeDeptNodeIds: ['D9'] })
+    expect(isOrgNodeInScope(emptyOrgWins, 'D9')).toBe(false)
+    expect(JSON.stringify(employeeScopeCondition(emptyOrgWins, STORE_COL, ORG_COL)))
+      .not.toContain('D9')
+
+    // ⑤ 两个集合都缺失 → fail-closed
+    const noMeta = manager({})
+    expect(isOrgNodeInScope(noMeta, 'D1')).toBe(false)
+  })
+})
+
+/**
+ * `isEmployeeRowVisible` 与 `employeeScopeCondition` 必须给出同一个答案 ——
+ * 前者在进 SQL 之前拦截、后者拼进 UPDATE 的 WHERE。口径分叉会造出
+ * 「内存里放行 → UPDATE 命中 0 行 → 用户看到『数据已被其他人修改』」的静默错位。
+ *
+ * 这条把两者对同一批行的判定钉在一起（GLM 谱系指出原先是手工复刻、无同源保障）。
+ */
+describe('isEmployeeRowVisible 与 employeeScopeCondition 同源', () => {
+  const STORE_COL = { name: 'store_id' } as any
+  const ORG_COL = { name: 'org_node_id' } as any
+
+  it('对同一批行，内存判定与 SQL 条件承载的集合一致', () => {
+    const session = mockSession({
+      roles: [{ role: 'manager', scopeId: 'm1', scopeType: '市场' }],
+      permissions: { actions: [], scopeStoreIds: ['S1'], scopeOrgNodeIds: ['D1'] },
+    })
+
+    // 命中 store 维 / 命中 org 维 / 两维都不命中 / 双空
+    expect(isEmployeeRowVisible(session, 'S1', null)).toBe(true)
+    expect(isEmployeeRowVisible(session, null, 'D1')).toBe(true)
+    expect(isEmployeeRowVisible(session, 'S9', 'D9')).toBe(false)
+    expect(isEmployeeRowVisible(session, null, null)).toBe(false)
+    // 任一维命中即可见（OR 语义，与 employeeScopeCondition 一致）
+    expect(isEmployeeRowVisible(session, 'S9', 'D1')).toBe(true)
+
+    // SQL 侧承载的正是同一组 id，**且两维必须以 OR 组合**
+    const cond = JSON.stringify(employeeScopeCondition(session, STORE_COL, ORG_COL))
+    expect(cond).toContain(JSON.stringify(['S1']))
+    expect(cond).toContain(JSON.stringify(['D1']))
+    // ⚠️ 只断言「同时含 S1 与 D1」是不够的（codex 指出）：把 `or(...parts)` 误改成
+    // `and(...parts)` 照样含这两组 id，而语义从「任一维命中即可见」翻转成「两维都要命中」，
+    // 与 isEmployeeRowVisible 的 OR 判定直接冲突。
+    expect(cond, 'employeeScopeCondition 的两个维度必须以 OR 组合').toContain('" or "')
+    expect(cond, 'employeeScopeCondition 不得用 AND 组合两个维度').not.toContain('" and "')
+  })
+
+  it('admin 恒可见，且 SQL 侧不过滤（undefined）', () => {
+    const admin = mockSession({
+      roles: [{ role: 'admin', scopeId: 'hq', scopeType: '总部' }],
+      permissions: { actions: [], scopeStoreIds: [], scopeOrgNodeIds: [] },
+    })
+    expect(isEmployeeRowVisible(admin, null, null)).toBe(true)
+    expect(isEmployeeRowVisible(admin, 'ANY', 'ANY')).toBe(true)
+    expect(employeeScopeCondition(admin, STORE_COL, ORG_COL)).toBeUndefined()
+  })
+
+  it('空集会话：内存恒 false，SQL 侧给 FALSE 条件（而非不过滤）', () => {
+    const empty = mockSession({
+      roles: [{ role: 'manager', scopeId: 's1', scopeType: '门店' }],
+      permissions: { actions: [], scopeStoreIds: [], scopeOrgNodeIds: [] },
+    })
+    expect(isEmployeeRowVisible(empty, 'S1', 'D1')).toBe(false)
+    const cond = employeeScopeCondition(empty, STORE_COL, ORG_COL)
+    expect(cond).toBeDefined()
+    expect(JSON.stringify(cond)).toContain('false')
+  })
+})
+
+/**
+ * #228 AC5：市场级 manager 可在本市场辖下门店之间调动，跨市场被拒。
+ *
+ * 这条跨了两层 —— `expandRoleScope`（市场节点 → 辖下全部门店）与 `isInScope`（集合判断）。
+ * 两层各自都有测试，但**接缝**此前无人看守：`isInScope` 的既有用例全是手喂 scopeStoreIds。
+ */
+describe('expandRoleScope → isInScope 接缝（#228 AC5：市场级跨店调动）', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('市场级角色展开后含辖下全部门店，跨市场门店不在其中', async () => {
+    mockOrgTree(
+      [
+        { id: 'hq', parentId: null, type: '总部' },
+        { id: 'm1', parentId: 'hq', type: '市场' },
+        { id: 'm2', parentId: 'hq', type: '市场' },
+        { id: 'org-s5', parentId: 'm1', type: '门店' },
+        { id: 'org-s6', parentId: 'm1', type: '门店' },
+        { id: 'org-s7', parentId: 'm2', type: '门店' },
+      ],
+      [
+        { storeId: 'S005', orgNodeId: 'org-s5' },
+        { storeId: 'S006', orgNodeId: 'org-s6' },
+        { storeId: 'S007', orgNodeId: 'org-s7' },
+      ],
+    )
+
+    const roles = [{ role: 'manager', scopeId: 'm1', scopeType: '市场' }] as AuthSession['roles']
+    const { storeIds, orgNodeIds } = await expandRoleScope(roles)
+
+    const session = mockSession({
+      roles,
+      permissions: { actions: [], scopeStoreIds: storeIds, scopeOrgNodeIds: orgNodeIds },
+    })
+
+    // 本市场两家门店都能调
+    expect(isInScope(session, 'S005')).toBe(true)
+    expect(isInScope(session, 'S006')).toBe(true)
+    // 另一市场的门店不能
+    expect(isInScope(session, 'S007')).toBe(false)
+    // 组织节点维度同理
+    expect(isOrgNodeInScope(session, 'org-s6')).toBe(true)
+    expect(isOrgNodeInScope(session, 'org-s7')).toBe(false)
+    expect(isOrgNodeInScope(session, 'm2')).toBe(false)
   })
 })
 

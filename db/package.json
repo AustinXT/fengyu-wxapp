@@ -6,9 +6,12 @@
   "scripts": {
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
+    "db:verify:inventory": "node scripts/verify-inventory-v3-schema.js",
     "db:baseline:reset": "node scripts/reset-drizzle-journal.js",
     "db:studio": "drizzle-kit studio",
-    "db:push": "drizzle-kit push"
+    "db:push": "drizzle-kit push",
+    "db:check:attribution": "node scripts/check-attribution-drift.js",
+    "db:test": "node --test scripts/__tests__/*.test.js"
   },
   "dependencies": {
     "bcryptjs": "^3.0.3",

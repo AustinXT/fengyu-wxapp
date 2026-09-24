@@ -33,12 +33,40 @@
       <van-cell wx:if="{{order.preferredStaffName}}" title="指定美容师" value="{{order.preferredStaffName}}" />
       <van-cell title="支付方式" value="{{order.payTypeLabel}}" />
       <van-cell wx:if="{{order.couponName || order.couponDiscount}}" title="优惠券" value="{{order.couponName}}{{order.couponDiscount ? ' -¥' + order.couponDiscount : ''}}" />
+      <van-cell wx:if="{{order.pointsDiscount}}" title="积分抵扣" value="{{order.pointsUsed}}积分 -¥{{order.pointsDiscount}}" />
       <van-cell wx:if="{{order.confirmedBy}}" title="确认人" value="{{order.confirmedBy}}" />
       <van-cell wx:if="{{order.confirmedAt}}" title="确认时间" value="{{order.confirmedAt}}" />
       <van-cell wx:if="{{order.allocationStatus}}" title="分配状态" value="{{order.allocationStatus}}" />
       <van-cell title="创建时间" value="{{order.createdAt}}" />
       <van-cell wx:if="{{order.paidAt}}" title="支付时间" value="{{order.paidAt}}" />
-      <van-cell wx:if="{{order.performanceAttributionDate}}" title="业绩归属日期" value="{{order.performanceAttributionDate}}{{order.performanceAttributionAdjusted ? '（已调整）' : ''}}" />
+      <picker
+        wx:if="{{order.performanceAttributionDate && !isReadOnly && isManager && !order.performanceAttributionAdjusted}}"
+        mode="date"
+        value="{{order.performanceAttributionDate}}"
+        start="{{attributionMinDate}}"
+        end="{{attributionMaxDate}}"
+        disabled="{{attributionSubmitting}}"
+        bindchange="onPerformanceAttributionChange"
+      >
+        <van-cell
+          title="业绩归属日期"
+          value="{{order.performanceAttributionDate}}（系统默认）"
+          label="可修改一次；可选 {{attributionMinDate}} 至 {{attributionMaxDate}}"
+          is-link
+          clickable
+        />
+      </picker>
+      <van-cell
+        wx:elif="{{order.performanceAttributionDate}}"
+        title="业绩归属日期"
+        value="{{order.performanceAttributionDate}}{{order.performanceAttributionAdjusted ? '（已调整）' : ''}}"
+      />
+      <van-cell
+        wx:if="{{order.performanceAttributionAdjusted}}"
+        title="归属调整记录"
+        value="{{order.performanceAttributionAdjustedByName || '—'}}"
+        label="{{order.performanceAttributionAdjustedAt}}"
+      />
       <van-cell wx:if="{{order.isLegacy}}" title="数据来源" value="历史导入订单" />
       <van-cell wx:if="{{order.remark}}" title="备注" value="{{order.remark}}" />
     </van-cell-group>
@@ -65,11 +93,15 @@
           <view class="session-bar__seg session-bar__seg--unpaid" style="width:{{item.unpaidPct}}%"></view>
         </view>
         <!-- 明细扩展：原价划线 / 销售分类 / 过期日期 / 已提货数量 -->
-        <view wx:if="{{item.hasDiscount || item.salesCategory || item.expireDate || item.pickedUpQuantity > 0}}" class="item-extra">
+        <view wx:if="{{item.hasDiscount || item.salesCategory || item.expireDate || item.pickedUpQuantity > 0 || item.refundedQuantity > 0 || item.convertedQuantity > 0}}" class="item-extra">
           <text wx:if="{{item.hasDiscount}}" class="item-extra-tag">单价 <text class="item-origin-price">¥{{item.unitPrice}}</text> ¥{{item.unitRealPrice}}</text>
           <text wx:if="{{item.salesCategory}}" class="item-extra-tag">{{item.salesCategory}}</text>
           <text wx:if="{{item.expireDate}}" class="item-extra-tag">有效期至 {{item.expireDate}}</text>
-          <text wx:if="{{item.pickedUpQuantity > 0}}" class="item-extra-tag">已提 {{item.pickedUpQuantity}}</text>
+          <!-- #154 拆列后三类数量各有独立列：picked_up_quantity 就是物理提货量
+               （与 pickup_records 守恒），已退款与已转换单独展示，不再合并成「已结算」 -->
+          <text wx:if="{{item.pickedUpQuantity > 0}}" class="item-extra-tag">已提货 {{item.pickedUpQuantity}}</text>
+          <text wx:if="{{item.refundedQuantity > 0}}" class="item-extra-tag">已退款 {{item.refundedQuantity}}</text>
+          <text wx:if="{{item.convertedQuantity > 0}}" class="item-extra-tag">已转换 {{item.convertedQuantity}}</text>
         </view>
         <text class="item-flow-no">{{item.saleItemId}}</text>
       </view>

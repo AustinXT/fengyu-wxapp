@@ -1,0 +1,1 @@
+ALTER TABLE "sale_orders" ADD COLUMN "lakala_payment_intent" jsonb;

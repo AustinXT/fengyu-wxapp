@@ -190,6 +190,7 @@ async function loadAuthBase(effectiveOpenid) {
   let staffLevel = null
   let scopeStoreIds = []
   let managerStoreIds = []
+  let inventoryStoreIds = []
   let scopeOrgNodeIds = []
 
   if (users.length === 0) {
@@ -206,6 +207,7 @@ async function loadAuthBase(effectiveOpenid) {
       scopeStoreIds: [],
       scopeOrgNodeIds: [],
       managerStoreIds: [],
+      inventoryStoreIds: [],
       position: null,
       storeName: null,
       marketName: null,
@@ -220,7 +222,7 @@ async function loadAuthBase(effectiveOpenid) {
       // 查角色定义 + scopeType。能力标记来自数据库，角色键仅作兼容标识。
       const rows = await pg.query(`
         SELECT pr.role, pr.scope_id, o.type AS scope_type, o.name AS scope_name,
-               rd.name AS role_name, rd.is_store_manager
+               rd.name AS role_name, rd.is_store_manager, rd.is_super_admin, rd.actions
         FROM permission_roles pr
         JOIN permission_role_definitions rd ON rd.role_key = pr.role
         LEFT JOIN org_nodes o ON o.id = pr.scope_id
@@ -230,6 +232,8 @@ async function loadAuthBase(effectiveOpenid) {
         role: r.role,
         roleName: r.role_name || r.role,
         isStoreManager: r.is_store_manager ?? r.role === 'manager',
+        isSuperAdmin: Boolean(r.is_super_admin),
+        actions: Array.isArray(r.actions) ? r.actions : [],
         scopeId: r.scope_id,
         scopeType: r.scope_type,
         scopeName: r.scope_name,
@@ -241,6 +245,17 @@ async function loadAuthBase(effectiveOpenid) {
       ])
       scopeStoreIds = allScopeStores
       scopeOrgNodeIds = allScopeNodes
+      const inventoryBindings = roleBindings.filter((binding) => (
+        binding.isSuperAdmin
+        || binding.actions.some((action) => [
+          'inventory:store_operate', 'inventory:market_operate', 'inventory:market_approve',
+        ].includes(action))
+      ))
+      inventoryStoreIds = inventoryBindings.length === 0
+        ? []
+        : inventoryBindings.length === roleBindings.length
+          ? allScopeStores
+          : await expandScopeStoreIds(inventoryBindings, pg)
       // 仅展开具有店长能力的角色绑定 → 店长写操作可达的门店集。
       const managerBindings = roleBindings.filter((r) => r.isStoreManager)
       // 只有 manager 角色时，全角色范围就是 manager 范围；避免重复查询且保持口径一致。
@@ -265,6 +280,7 @@ async function loadAuthBase(effectiveOpenid) {
       scopeStoreIds,
       scopeOrgNodeIds,
       managerStoreIds,
+      inventoryStoreIds,
       position: isActive ? user.position_name : null,
       storeName: isActive ? user.store_name : null,
       marketName: isActive ? user.market_name : null,

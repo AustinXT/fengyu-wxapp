@@ -52,7 +52,7 @@ function mockOrderAndItems(order, items) {
     .mockResolvedValueOnce(items)
 }
 
-const COMPLETED_ORDER = { service_order_id: 'SO-1', status: '已完成', commission_status: '待分配', remark: null }
+const COMPLETED_ORDER = { service_order_id: 'SO-1', status: '已完成', commission_status: '待分配', remark: null, store_id: 'store-001' }
 
 describe('serviceCommission.pendingList', () => {
   beforeEach(() => { vi.clearAllMocks() })
@@ -77,6 +77,17 @@ describe('serviceCommission.pendingList', () => {
     const params = pg.query.mock.calls[0][1]
     expect(params).toContain('已分配')
     expect(params).toContain('store-001')
+  })
+
+  // 回归守护（2026-09-04）：NULL ≡「待分配」，否则历史 NULL 单在两个状态筛选下都查不到，
+  // 只能从「全部」露出且标签渲染成 "null"。
+  test('筛选与返回按 COALESCE(commission_status, 待分配) 归一', async () => {
+    const ctx = createManagerCtx({ commissionStatus: '待分配' })
+    pg.query.mockResolvedValueOnce([{ service_order_id: 'SO-N', commission_status: '待分配' }])
+    await routes.pendingList(ctx)
+    const sql = pg.query.mock.calls[0][0]
+    expect(sql).toContain("COALESCE(so.commission_status::text, '待分配') = $2")
+    expect(sql).toContain("COALESCE(so.commission_status::text, '待分配') AS commission_status")
   })
 
   test('非法 commissionStatus 拒绝', async () => {
@@ -109,6 +120,34 @@ describe('serviceCommission.detail', () => {
     expect(ctx.result.rates).toHaveLength(1)
     expect(ctx.result.rates[0].department).toBe('美容师')
     expect(ctx.result.rates[0].serviceRates['护理项目']).toBe(0.3)
+  })
+
+  test('候选支持所有技能跨市场出差并按三级范围排序', async () => {
+    const ctx = createManagerCtx({ serviceOrderId: 'SO-1' })
+    pg.query
+      .mockResolvedValueOnce([{ service_order_id: 'SO-1', status: '已完成', market_name: '市场A', commission_status: '待分配', store_id: 'store-001' }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        { employee_id: 'local', name: '本店', store_id: 'store-001', skills: ['推广部拓'], assignment_scope: 'local' },
+        { employee_id: 'same', name: '本市场出差', store_id: 'store-002', skills: ['养生师'], is_on_business_trip: true, assignment_scope: 'same_market_trip' },
+        { employee_id: 'cross', name: '跨市场出差', store_id: null, skills: ['品项老师'], is_on_business_trip: true, assignment_scope: 'cross_market_trip' },
+      ])
+
+    await routes.detail(ctx)
+
+    const candidateCall = pg.query.mock.calls.find(([sql]) => sql.includes('FROM staff_wechat_users u'))
+    const candidateSql = candidateCall[0]
+    expect(candidateSql).toMatch(/u\.store_id = \$1 OR u\.is_on_business_trip = true/)
+    expect(candidateSql).toMatch(/WHEN u\.store_id = \$1 THEN 0[\s\S]*WHEN employee_market\.id = target_market\.id THEN 1[\s\S]*ELSE 2/)
+    expect(candidateSql).not.toMatch(/ARRAY\['美容师','养生师'\]/)
+    expect(ctx.result.candidateEmployees.map((employee) => employee.assignmentScope)).toEqual([
+      'local',
+      'same_market_trip',
+      'cross_market_trip',
+    ])
   })
 
   test('同名服务项目按 service_item_id 分开返回，不按商品名称合并', async () => {
@@ -152,7 +191,15 @@ describe('serviceCommission.detail', () => {
 })
 
 describe('serviceCommission.save', () => {
-  beforeEach(() => { vi.clearAllMocks() })
+  beforeEach(() => {
+    vi.clearAllMocks()
+    pg.query.mockImplementation(async (sql, params) => {
+      if (sql.includes('WHERE u.employee_id = ANY($1::text[])')) {
+        return (params?.[0] || []).map(employee_id => ({ employee_id }))
+      }
+      return []
+    })
+  })
 
   test('保存成功 — recompute consumeBase=unit_real_price×session_used', async () => {
     const ctx = createManagerCtx({
@@ -248,6 +295,51 @@ describe('serviceCommission.save', () => {
       .mockResolvedValueOnce([{ ...COMPLETED_ORDER, remark: DEPOSIT_REFUND_REMARK }])
       .mockResolvedValueOnce([]) // assertNoPendingRefund
     await expect(routes.save(ctx)).rejects.toThrow(/寄存单退款专用服务单不参与提成分配/)
+  })
+
+  // 回归守护（2026-09-04）：commission_status 无 DB default，建单初值为 NULL；admin 代确认的
+  // CAS 曾漏 IS NULL 导致已完成单状态留 NULL，店长端保存直接报「服务单提成状态异常」。
+  test('commission_status=null 的已完成单允许分配（NULL ≡ 待分配）', async () => {
+    const ctx = createManagerCtx({
+      serviceOrderId: 'SO-1',
+      commissions: [{ serviceItemId: 'si-1', employeeId: 'emp-1', roleType: '美容师', allocationRatio: 1.0 }],
+    })
+    mockOrderAndItems({ ...COMPLETED_ORDER, commission_status: null }, [
+      { service_item_id: 'si-1', session_used: 1, unit_real_price: '700', sales_category: '护理项目', service_fee: '0', session_count: 5, quantity: 1 },
+    ])
+    const captured = mockTxnCapture('0.3000')
+
+    await routes.save(ctx)
+
+    expect(ctx.result.commissionCount).toBe(1)
+    expect(captured).toHaveLength(1)
+  })
+
+  test("commission_status→已分配 的 CAS 放行 NULL 初值", async () => {
+    const ctx = createManagerCtx({
+      serviceOrderId: 'SO-1',
+      commissions: [{ serviceItemId: 'si-1', employeeId: 'emp-1', roleType: '美容师', allocationRatio: 1.0 }],
+    })
+    mockOrderAndItems({ ...COMPLETED_ORDER, commission_status: null }, [
+      { service_item_id: 'si-1', session_used: 1, unit_real_price: '700', sales_category: '护理项目', service_fee: '0', session_count: 5, quantity: 1 },
+    ])
+    const sqls = []
+    pg.transaction.mockImplementation(async (cb) => {
+      const client = {
+        query: vi.fn(async (sql) => {
+          sqls.push(sql)
+          if (sql.includes('commission_rate_matrix')) return { rows: [{ commission_rate: '0.3000' }], rowCount: 1 }
+          return { rows: [], rowCount: 1 }
+        }),
+      }
+      return await cb(client)
+    })
+
+    await routes.save(ctx)
+
+    const cas = sqls.find(s => s.includes("commission_status = '已分配'"))
+    expect(cas).toContain('commission_status IS NULL')
+    expect(cas).toContain("commission_status IN ('待分配', '已分配')")
   })
 
   test('非已完成服务单拒绝', async () => {

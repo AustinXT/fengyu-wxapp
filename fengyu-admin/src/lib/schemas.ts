@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { SALES_CATEGORIES } from './sales-categories'
 
 // ─── 登录表单 ───
 export const loginSchema = z.object({
@@ -113,7 +114,7 @@ export const createOrderSchema = z.object({
     unitPrice: z.string(),
     unitRealPrice: z.string(),
     quantity: z.number().int().min(1, '数量至少为 1'),
-    salesCategory: z.enum(['自销自耗', '他销自耗', '他销他耗', '生态合作']).nullable().optional(),
+    salesCategory: z.enum(SALES_CATEGORIES).nullable().optional(),
   })).min(1, '请至少选择一件商品'),
 })
 export type CreateOrderInput = z.infer<typeof createOrderSchema>

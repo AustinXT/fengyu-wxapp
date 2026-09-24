@@ -120,18 +120,18 @@ export const customerSourceEnum = pgEnum("customer_source", [
   "美团",
   "抖音",
   "小程序",
-  "推带新",
-  "地推卡",
-  "拓客卡",
+  "推广部",
+  "全员地推",
+  "外请团队拓客",
   "老带新",
   "转让店",
   "自进店",
-  "内部员工或家属",
+  "员工或家属",
 ]);
 
 export const customerTypeEnum = pgEnum("customer_type", ["流量客", "体验客", "小美客", "会员客"]);
 
-export const documentTypeEnum = pgEnum("document_type", ["售前", "售后"]);
+export const documentTypeEnum = pgEnum("document_type", ["售前一次", "售前二次", "售后"]);
 
 export const spendingTierEnum = pgEnum("spending_tier", ["10W+", "6-10W", "3-6W", "1-3W", "1990-1W", "<1990"]);
 
@@ -144,80 +144,3 @@ export const customerStatusEnum = pgEnum("customer_status", [
   "冰冻",
   "休眠",
 ]);
-
-/**
- * 库存单据通用状态（4 张主表共用）
- */
-export const inventoryDocStatusEnum = pgEnum("inventory_doc_status", [
-  "草稿",
-  "已完成",
-  "已取消",
-]);
-
-/**
- * 采购入库类子类型（inventory_procurement_orders.doc_subtype）
- *
- * 院报货：店内向供应链/市场提需求
- * 院入库：实际收货入库（可能引用对应的院报货 / 市场出库单 SCCKD）
- * 退货出库：店内退货回供应商（库存减少；归在采购域因为是与供应商互动）
- */
-export const inventoryProcurementSubtypeEnum = pgEnum(
-  "inventory_procurement_subtype",
-  ["院报货", "院入库", "退货出库"],
-);
-
-/**
- * 销售出库类子类型（inventory_sale_orders.doc_subtype）
- *
- * 销售出库：顾客领取家居产品（库存减少）
- * 顾客退货：顾客退回家居产品（库存增加；负向出库）
- */
-export const inventorySaleSubtypeEnum = pgEnum("inventory_sale_subtype", [
-  "销售出库",
-  "顾客退货",
-]);
-
-/**
- * 调拨类子类型（inventory_transfer_orders.doc_subtype）
- *
- * 调拨出库：本门店发出货物给对方门店
- * 调拨入库：本门店从对方门店接收货物
- *
- * 物理上同一条调拨单两端视图通过 is_dispatcher 区分；不同视图可生成两条业务记录或共享同一条。
- */
-export const inventoryTransferSubtypeEnum = pgEnum(
-  "inventory_transfer_subtype",
-  ["调拨出库", "调拨入库"],
-);
-
-/**
- * 门店库存 v2 统一单据类型。
- *
- * 会议确认的 8 个业务流程在 UI 上保留，但底层不再拆 4 组主从表；
- * 所有库存填报都围绕 store_inventory_stocks（门店库存表）生成统一单据和库存流水。
- */
-export const storeInventoryDocTypeEnum = pgEnum("store_inventory_doc_type", [
-  "院报货",
-  "院入库",
-  "院顾客退货",
-  "院顾客产品出库",
-  "院退货",
-  "院产品报损",
-  "分院调货出库",
-  "分院调货入库",
-  "期初库存",
-]);
-
-export const storeInventoryDocStatusEnum = pgEnum("store_inventory_doc_status", [
-  "草稿",
-  "待审批",
-  "待收货",
-  "已完成",
-  "已驳回",
-  "已取消",
-]);
-
-export const storeInventoryMovementDirectionEnum = pgEnum(
-  "store_inventory_movement_direction",
-  ["入库", "出库", "调整"],
-);

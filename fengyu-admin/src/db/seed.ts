@@ -19,8 +19,29 @@ import { commissionRateMatrix } from '@db/commission'
 import { couponTemplates } from '@db/coupon'
 import { operationLogs } from '@db/operation-log'
 
-const connectionString =
-  process.env.DATABASE_URL ?? 'postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp'
+// 手动 seed 脚本：必须显式指定目标库，绝不回落。
+// （与 src/db/index.ts 不同——那里在 next build 期会被求值，不能直接退出。）
+// 跨子项目无法 require db/scripts 的实现，故此处内联同义逻辑（权威实现见
+// db/scripts/_lib/assert-db-target.js，一致性由 db/scripts/__tests__/db-target-guard.test.js 守护）。
+// 正则只负责 authority；query 交给 searchParams —— 它会把 %68ost 这类编码键还原成 host，正则挡不住。
+const DB_TARGET_RE = /^postgres(?:ql)?:\/\/[^@/]*@(101\.34\.242\.103|118\.178\.196\.26):5433\/fengyu_wxapp(?:\?[^#]*)?$/
+const DB_OVERRIDE_KEYS: string[] = ['host', 'hostaddr', 'port', 'dbname', 'database', 'options', 'service', 'passfile']
+function isAllowedDbTarget(raw: unknown): boolean {
+  const s = String(raw ?? '').trim()
+  if (!DB_TARGET_RE.test(s)) return false
+  try {
+    const url = new URL(s)
+    return !DB_OVERRIDE_KEYS.some((key) => url.searchParams.has(key))
+  } catch {
+    return false
+  }
+}
+
+const connectionString = process.env.DATABASE_URL?.trim() ?? ''
+if (!isAllowedDbTarget(connectionString)) {
+  console.error('✗ DATABASE_URL 必须显式指向 dev=101.34.242.103:5433/fengyu_wxapp 或 prod=118.178.196.26:5433/fengyu_wxapp')
+  process.exit(1)
+}
 
 const client = postgres(connectionString, { max: 1 })
 const db = drizzle(client)
@@ -123,7 +144,7 @@ const CLIENTS = [
   { userId: 'FYGK-20250415-0004', openid: 'o_client_xuming', phone: '13900139004', customerId: 'WF-C-0004', name: '徐敏', boundStoreId: 'store-jj01', boundEmployeeId: 'FY-260201-0007', memberLevel: '金钻' as const, customerSource: '老带新' as const, birthday: '1988-09-14', occupation: '自由职业', isMarried: true, wechatName: '小敏', skinType: '敏感性', improvementFocus: '修复、舒敏', skinIssue: '泛红敏感', wellnessPreference: '艾灸' },
   { userId: 'FYGK-20250620-0005', openid: 'o_client_songqian', phone: '13900139005', customerId: 'WF-C-0005', name: '宋茜', boundStoreId: 'store-gqc01', boundEmployeeId: 'FY-260601-0008', memberLevel: '星钻' as const, customerSource: '抖音' as const, birthday: '1995-11-30', occupation: '设计师', isMarried: false, wechatName: '茜茜', skinType: '中性', improvementFocus: '日常保养', skinIssue: null, wellnessPreference: null },
   { userId: 'FYGK-20260101-0006', openid: 'o_client_zhanghua', phone: '13900139006', customerId: null, name: '张华', boundStoreId: 'store-nc01', boundEmployeeId: 'FY-260101-0002', memberLevel: '初钻' as const, customerSource: '自进店' as const, birthday: '1998-07-08', occupation: '学生', isMarried: false, wechatName: '华华', skinType: '油性', improvementFocus: '祛痘', skinIssue: '痘痘肌', wellnessPreference: null },
-  { userId: 'FYGK-20260215-0007', openid: null, phone: '13900139007', customerId: 'WF-C-0007', name: '吕秀', boundStoreId: 'store-jj01', boundEmployeeId: 'FY-260201-0006', memberLevel: '黑钻' as const, customerSource: '推带新' as const, birthday: '1982-04-01', occupation: '企业主', isMarried: true, wechatName: null, skinType: '干性', improvementFocus: '抗衰老、紧致', skinIssue: '松弛下垂', wellnessPreference: '养生SPA' },
+  { userId: 'FYGK-20260215-0007', openid: null, phone: '13900139007', customerId: 'WF-C-0007', name: '吕秀', boundStoreId: 'store-jj01', boundEmployeeId: 'FY-260201-0006', memberLevel: '黑钻' as const, customerSource: '推广部' as const, birthday: '1982-04-01', occupation: '企业主', isMarried: true, wechatName: null, skinType: '干性', improvementFocus: '抗衰老、紧致', skinIssue: '松弛下垂', wellnessPreference: '养生SPA' },
   { userId: 'FYGK-20260310-0008', openid: 'o_client_pengyu', phone: '13900139008', customerId: null, name: '彭玉', boundStoreId: 'store-nc02', boundEmployeeId: 'FY-260301-0005', memberLevel: '初钻' as const, customerSource: '小程序' as const, birthday: '1997-10-22', occupation: '护士', isMarried: false, wechatName: '小彭', skinType: '混合性', improvementFocus: '补水保湿', skinIssue: '季节性干燥', wellnessPreference: null },
 ]
 

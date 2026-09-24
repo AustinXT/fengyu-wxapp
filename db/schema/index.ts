@@ -31,6 +31,9 @@ export * from './store-unbind'
 // 操作日志
 export * from './operation-log'
 
+// 分析助手聊天记录
+export * from './analyst-chat'
+
 // 优惠券（券模板 + 用户券实例）
 export * from './coupon'
 
@@ -64,7 +67,7 @@ export * from './system-config'
 // 查找表（职位 + 技能标签）
 export * from './lookup'
 
-// 拉卡拉商户入网（主表 + 附件 + 调用日志）
+// 拉卡拉收款商户配置
 export * from './lakala'
 
 // 拉卡拉门店入网申请（草稿、附件、调用日志）

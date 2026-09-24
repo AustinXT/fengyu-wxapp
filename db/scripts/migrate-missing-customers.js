@@ -34,8 +34,14 @@ const MSSQL_CONFIG = {
   requestTimeout: 300000,
 }
 
+// DATABASE_URL 必填且必须精确指向业务库（db/CLAUDE.md 硬规则：显式传值 + 断言 host/port/dbname）。
+// 实现见 _lib/assert-db-target.js —— 它同时挡住 `?host=` 与 `?%68ost=`（百分号编码）两层 query 覆盖绕过。
+// 仅在直接执行时校验——本目录部分脚本的导出函数被 __tests__ require，顶层 exit 会打断测试进程。
+const { assertDbTargetOrExit } = require('./_lib/assert-db-target')
+if (require.main === module) assertDbTargetOrExit(process.env.DATABASE_URL)
+
 const PG_CONFIG = {
-  connectionString: process.env.DATABASE_URL || 'postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp',
+  connectionString: process.env.DATABASE_URL?.trim(),
   max: 5,
 }
 
@@ -43,6 +49,18 @@ function trim(val) {
   if (val === null || val === undefined) return null
   const s = String(val).trim()
   return s === '' ? null : s
+}
+
+const CUSTOMER_SOURCE_ALIASES = {
+  推带新: '推广部',
+  地推卡: '全员地推',
+  拓客卡: '外请团队拓客',
+  内部员工或家属: '员工或家属',
+}
+
+function normalizeCustomerSource(val) {
+  const source = trim(val)
+  return source ? (CUSTOMER_SOURCE_ALIASES[source] || source) : null
 }
 
 function toBool(val) {
@@ -258,7 +276,7 @@ async function main() {
         `, [
           idGen.next(), customerId, trim(c.name) || customerId,
           storeId, trim(c.bound_employee_id), trim(c.member_level),
-          trim(c.customer_source), trim(c.category), toDateStr(c.birthday),
+          normalizeCustomerSource(c.customer_source), trim(c.category), toDateStr(c.birthday),
           trim(c.occupation), toBool(c.is_married_raw), trim(c.wechat_name),
           trim(c.skin_type), trim(c.improvement_focus),
           trim(c.skin_issue), trim(c.wellness_preference),
@@ -323,4 +341,5 @@ async function main() {
   }
 }
 
-main()
+// 仅在直接执行时运行：被 require 时不得有副作用（顶层校验同理，见文件头部）
+if (require.main === module) main()

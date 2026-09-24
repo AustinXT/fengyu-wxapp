@@ -34,8 +34,14 @@
 
 const { Pool } = require('pg')
 
+// DATABASE_URL 必填且必须精确指向业务库（db/CLAUDE.md 硬规则：显式传值 + 断言 host/port/dbname）。
+// 实现见 _lib/assert-db-target.js —— 它同时挡住 `?host=` 与 `?%68ost=`（百分号编码）两层 query 覆盖绕过。
+// 仅在直接执行时校验——本目录部分脚本的导出函数被 __tests__ require，顶层 exit 会打断测试进程。
+const { assertDbTargetOrExit } = require('./_lib/assert-db-target')
+if (require.main === module) assertDbTargetOrExit(process.env.DATABASE_URL)
+
 const PG_CONFIG = {
-  connectionString: process.env.DATABASE_URL || 'postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp',
+  connectionString: process.env.DATABASE_URL?.trim(),
   max: 5,
 }
 
@@ -189,11 +195,14 @@ UPDATE client_wechat_users u
    AND u.customer_type = '会员客'
 `
 
+// ⚠️ 守卫必须是 IS DISTINCT FROM '休眠' 而非 IS NULL（#254）：NOT EXISTS 已完整表达
+// 「段 2 没分到」，再叠 IS NULL 会漏掉「已有旧值」的行，跑多少次都不自愈。
+// 与 fengyu-admin/src/cron/steps/refresh-customer-status.ts 段 3 保持字面一致。
 const RESET_MEMBER_NO_VISITS_SQL = `
 UPDATE client_wechat_users u
    SET customer_status = '休眠'::customer_status, updated_at = NOW()
  WHERE u.customer_type = '会员客'
-   AND u.customer_status IS NULL
+   AND u.customer_status IS DISTINCT FROM '休眠'::customer_status
    AND NOT EXISTS (
      SELECT 1 FROM service_orders so
       WHERE so.client_user_id = u.user_id AND so.status = '已完成'
@@ -266,4 +275,5 @@ async function calcCustomerStatus(client, dryRun) {
   console.log('\n✓ 到店状态已更新')
 }
 
-main()
+// 仅在直接执行时运行：被 require 时不得有副作用（顶层校验同理，见文件头部）
+if (require.main === module) main()

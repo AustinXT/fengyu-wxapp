@@ -51,6 +51,9 @@ Page({
     timeSlots: TIME_SLOTS,
     submitting: false,
     showPhoneBind: false,
+    phoneBinding: false,
+    // 绑定成功后延迟自动重提期间锁定提交入口，防止手点+定时器双触发重复提交
+    autoResubmitPending: false,
   },
 
   onLoad(options) {
@@ -473,7 +476,7 @@ Page({
         return;
       }
     }
-    if (this.data.submitting) return;
+    if (this.data.submitting || this.data.autoResubmitPending) return;
     this.setData({ submitting: true });
     try {
       await callClientApi('appointment.create', {
@@ -489,6 +492,16 @@ Page({
       }, 1500);
     } catch (err: any) {
       if (err?.errorType === 'PHONE_REQUIRED') {
+        // 登出态先免费 OPENID 恢复会话（同号老账号免消耗付费手机号验证），失败才弹付费授权
+        if (app.isLoggedOut()) {
+          const status = await app.syncLoginState(true);
+          if (status === 'authenticated') {
+            Toast.success('已恢复登录');
+            // setTimeout 等 finally 释放 submitting 后再重试，避免撞提交守卫
+            setTimeout(() => this.onSubmit(), 0);
+            return;
+          }
+        }
         this.setData({ showPhoneBind: true });
         return;
       }
@@ -503,6 +516,7 @@ Page({
   },
 
   async onGetPhoneNumber(e: WechatMiniprogram.TouchEvent) {
+    if (this.data.phoneBinding) return;
     const { cloudID, errMsg } = e.detail;
     if (!cloudID) {
       if (errMsg?.includes('auth deny')) {
@@ -510,14 +524,21 @@ Page({
       }
       return;
     }
+    this.setData({ phoneBinding: true });
     try {
       await bindPhoneWithCloudID(cloudID as string);
       this.setData({ showPhoneBind: false });
       Toast.success('绑定成功');
-      // 绑定成功后自动重新提交预约
-      setTimeout(() => this.onSubmit(), 800);
+      // 绑定成功后自动重新提交预约；延迟窗口内锁住提交入口防手点+定时器双触发
+      this.setData({ autoResubmitPending: true });
+      setTimeout(() => {
+        this.setData({ autoResubmitPending: false });
+        this.onSubmit();
+      }, 800);
     } catch (err: any) {
       Toast.fail(err.message || '绑定失败，请重试');
+    } finally {
+      this.setData({ phoneBinding: false });
     }
   },
 

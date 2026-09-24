@@ -48,29 +48,30 @@ export function calcTierLineAmount(tierAmount: number, tierSessions: number, lin
 }
 
 /**
- * 按行应付比例分摊订单级优惠券折扣。
+ * 按行应付比例分摊订单级抵扣（优惠券 / 积分）。
  * - 入参 priceLines = 各行 价格×数量（已含内部单半价处理）
- * - 出参 shares[i] = 摊到 i 行的券折扣（元，2 位精度）
- * - 尾差消化到最后一行，保证 Σ shares = couponAmount（在合法范围内）
- * - couponAmount > Σ priceLines 时按 Σ priceLines 截断
+ * - 出参 shares[i] = 摊到 i 行的抵扣（元，2 位精度）
+ * - 尾差消化到最后一行，保证 Σ shares = discountAmount（在合法范围内）
+ * - discountAmount > Σ priceLines 时按 Σ priceLines 截断
  */
-export function allocateCouponPerLine(priceLines: number[], couponAmount: number): number[] {
+export function allocateDiscountPerLine(priceLines: number[], discountAmount: number): number[] {
   const total = priceLines.reduce((s, x) => s + x, 0)
-  const coupon = Math.max(0, Math.min(couponAmount, total))
-  if (coupon <= 0 || total <= 0) {
+  const discount = Math.max(0, Math.min(discountAmount, total))
+  if (discount <= 0 || total <= 0) {
     return priceLines.map(() => 0)
   }
   const n = priceLines.length
   const shares: number[] = []
-  let acc = 0
+  const discountCents = Math.round(discount * 100)
+  let allocatedCents = 0
   for (let i = 0; i < n - 1; i++) {
-    const raw = (coupon * priceLines[i]) / total
-    const cent = Math.round(raw * 100) / 100
-    shares.push(cent)
-    acc += cent
+    const raw = (discount * priceLines[i]) / total
+    const remainingCents = discountCents - allocatedCents
+    const shareCents = Math.min(Math.round(raw * 100), remainingCents)
+    shares.push(shareCents / 100)
+    allocatedCents += shareCents
   }
   // 末行吸收尾差
-  const last = Math.round((coupon - acc) * 100) / 100
-  shares.push(Math.max(0, last))
+  shares.push((discountCents - allocatedCents) / 100)
   return shares
 }

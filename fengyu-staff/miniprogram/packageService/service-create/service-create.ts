@@ -1,8 +1,8 @@
 // pages/service-create/service-create.ts — 创建服务单
 import { callStaffApi } from '../../utils/cloud';
 import { formatDateTime, ORDER_TYPE_LABEL } from '../../utils/formatters';
-import { getCurrentStoreId, isManager } from '../../utils/role';
-import { expandGroupServiceSessions, getTreatmentCardBusinessIdentity, groupTreatmentCards, sumGroupValue } from '../../utils/treatment-card-group';
+import { isManager } from '../../utils/role';
+import { collectSourceOrderRemarks, expandGroupServiceSessions, getTreatmentCardBusinessIdentity, groupTreatmentCards, SourceOrderRemark, sumGroupValue } from '../../utils/treatment-card-group';
 
 // 寄存单退款专用标准化备注（数据契约）。寄存单是上线时导入老系统历史剩余次数的初始化单据，未走收款流程、
 // 无法开正常退款单；退寄存疗程卡次数时走正常服务单扣减次数并在备注选此预设打标，供后续从消耗业绩统计过滤。
@@ -67,9 +67,11 @@ interface PaidOrderItem {
   remark?: string | null;
   salesCategory?: string | null;
   pickedUpQuantity?: number | null;
+  orderRemark?: string | null;
   groupKey?: string;
   cardCount?: number;
   sourceItems?: PaidOrderItem[];
+  sourceOrderRemarks?: SourceOrderRemark[];
 }
 
 interface SelectedPaidItem {
@@ -82,6 +84,7 @@ interface SelectedPaidItem {
   consumableSessions: number;
   cardCount: number;
   sourceItems: PaidOrderItem[];
+  sourceOrderRemarks: SourceOrderRemark[];
 }
 
 interface CardFilterOption {
@@ -178,7 +181,7 @@ Page({
   },
 
   _allPaidItems: [] as PaidOrderItem[],
-  _pendingPreloadedItems: [] as Array<{ saleItemId: string; sessionCount: number }>,
+  _pendingPreloadedItems: [] as Array<{ saleItemId: string; sessionCount: number; orderRemark: string | null }>,
 
   onLoad(options) {
     const { staffName, staffWfId } = app.globalData;
@@ -195,6 +198,7 @@ Page({
         this._pendingPreloadedItems = preload.items.map((item) => ({
           saleItemId: item.saleItemId,
           sessionCount: item.sessionCount,
+          orderRemark: item.orderRemark?.trim() || null,
         }));
         this.setData({
           selectedCustomer: preload.customer,
@@ -346,6 +350,7 @@ Page({
       const items: PaidOrderItem[] = [];
       for (const o of orders || []) {
         for (const i of o.items) {
+          const preloadedItem = this._pendingPreloadedItems.find((item) => item.saleItemId === i.saleItemId);
           const total = Number(i.totalSessions || i.sessionCount || 0);
           const remain = Number(i.remainingSessions || 0);
           const isNullCard = i.paidSessions == null;
@@ -357,6 +362,7 @@ Page({
           if (consumable <= 0 && !isNullCard) continue;
           items.push({
             ...i,
+            orderRemark: i.orderRemark?.trim() || preloadedItem?.orderRemark || null,
             saleOrderId: o.saleOrderId,
             saleOrderDatetime: o.saleOrderDatetime,
             orderStatus: o.status,
@@ -404,6 +410,7 @@ Page({
           groupKey: group.groupKey,
           sourceItems: group.sourceItems,
           cardCount: group.cardCount,
+          sourceOrderRemarks: collectSourceOrderRemarks(group.sourceItems),
           quantity: sumGroupValue(group, (item) => item.quantity ?? 1),
           totalSessions,
           sessionCount: totalSessions,
@@ -435,6 +442,7 @@ Page({
             consumableSessions: group.consumableSessions,
             cardCount: group.cardCount || 1,
             sourceItems: group.sourceItems || [group],
+            sourceOrderRemarks: group.sourceOrderRemarks || [],
           });
         }
         const flowNos: Record<string, boolean> = {};
@@ -543,6 +551,7 @@ Page({
         consumableSessions: paidItem.consumableSessions,
         cardCount: paidItem.cardCount || 1,
         sourceItems: paidItem.sourceItems || [paidItem],
+        sourceOrderRemarks: paidItem.sourceOrderRemarks || [],
       });
     }
     const flowNos: Record<string, boolean> = {};
@@ -661,20 +670,30 @@ Page({
         skills?: string[];
         storeId?: string;
         isOnBusinessTrip?: boolean;
-      }> }>('staff.list');
+        assignmentScope?: 'local' | 'same_market_trip' | 'cross_market_trip';
+      }> }>('staff.list', { scene: 'service' });
       const list = data?.staffList || [];
-      const roleTag = (skills?: string[]) => (skills || []).filter(s => s === '美容师' || s === '养生师').join('/');
-      const currentStoreId = getCurrentStoreId();
+      // 顺序与 staffApi utils/employee-assignment.js 的 SERVICE_ORDER_ASSIGNABLE_SKILLS 一致，
+      // 云函数已按同序排好候选，此处只负责展示角色标签。
+      const SERVICE_ROLES = ['店经理', '美容师', '养生师', '品项老师'];
+      // 按白名单顺序（而非员工 skills 的存储顺序）拼接，否则 skills=['养生师','店经理'] 的人
+      // 在员工端显示「养生师/店经理」、admin 显示「店经理/养生师」，两端标签对不上。
+      const roleTag = (skills?: string[]) => SERVICE_ROLES.filter(role => (skills || []).includes(role)).join('/');
+      // 外援判定读云函数下发的 assignmentScope，不再靠 storeId 比对 ——
+      // 直挂市场/部门节点的员工 storeId 为空，旧写法会把他们漏标（issue #210）。
+      // 字段缺失（老版本云函数）时按「不是外援」处理，与 admin 侧同义。
       const supportTag = (staff: typeof list[number]) => (
-        staff.isOnBusinessTrip && staff.storeId && staff.storeId !== currentStoreId
-          ? '（外援）'
-          : ''
+        staff.assignmentScope && staff.assignmentScope !== 'local' ? '（外援）' : ''
       );
       this.setData({
         staffList: list,
         staffColumns: list.map(s => `${s.name}（${[roleTag(s.skills), s.department].filter(Boolean).join('·') || '未分组'}）${supportTag(s)}`),
       });
-    } catch (_) {}
+    } catch (err: unknown) {
+      // 不再静默吞错：候选拉不到时 picker 会是空列表，店长必须知道是「加载失败」而非「没有人」
+      this.setData({ staffList: [], staffColumns: [] });
+      wx.showToast({ title: err instanceof Error ? err.message : '加载服务人员失败', icon: 'none' });
+    }
   },
 
   onShowStaffPicker() {
@@ -686,8 +705,10 @@ Page({
   },
 
   onStaffConfirm(e: WechatMiniprogram.CustomEvent) {
-    const pickedLabel = e.detail.value as string;
-    const idx = this.data.staffColumns.indexOf(pickedLabel);
+    // 用 van-picker 下发的 index 定位，不用 columns.indexOf(label) 反查 ——
+    // 候选放开到全市场后（issue #210），跨店同名同角色同部门的 label 会完全一样，
+    // indexOf 只会取到第一个，导致选错人。
+    const idx = e.detail.index as number;
     const staff = this.data.staffList[idx];
     if (staff) {
       this.setData({

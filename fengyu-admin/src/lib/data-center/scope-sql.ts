@@ -72,6 +72,49 @@ export function scopeFilterSql(
 }
 
 /**
+ * 无门店员工（直挂组织节点）的可见性片段，与 `scopeFilterSql` 配对用于产能员工池。
+ *
+ * 背景：品项公司的品项老师、各市场养生部/推广部的员工 `staff_wechat_users.store_id` 为空
+ * （直挂市场/部门节点），按 store_id 过滤会被整体挡在员工榜外。2026-09-03 实耗归属改按
+ * 服务提成分配后他们能拿到分配额，必须能进榜（见 metrics.md §员工排行榜归属）。
+ *
+ * 可见性锚 = 员工直挂节点所属市场（`producer_base.anchor_market_id`，调用方负责产出该列）：
+ *   - UI 选了具体门店 → 无门店员工不属于任何单店，一律不出现
+ *   - UI 选了市场     → 锚定市场等于该市场才出现
+ *   - all / authorized → admin 全可见；其他角色按「锚定市场下是否有本账号可见门店」判定
+ * 品项公司是总部直属市场节点、其下无门店，因此只有 admin/总部能看到；
+ * 养生部锚到南昌凤御，该市场范围的账号可见。
+ *
+ * @param anchorCol 锚定市场列引用（默认 `pb.anchor_market_id`）
+ */
+export function orgAnchorScopeSql(
+  session: AuthSession,
+  scope: DataCenterScope,
+  anchorCol = 'pb.anchor_market_id',
+): SQL {
+  const col = sql.raw(anchorCol)
+
+  // 单店视角：无门店员工不归属任何门店，直接排除
+  if (scope.type === 'store') return sql`FALSE`
+  // 市场视角：锚定市场须等于所选市场
+  if (scope.type === 'market') return sql`${col} = ${scope.id}`
+
+  // all / authorized：admin 全开；其他角色按锚定市场下的可见门店判定
+  if (isAdminScope(session)) return sql`TRUE`
+  const ids = session.permissions.scopeStoreIds
+  if (ids.length === 0) return sql`FALSE`
+  return sql`EXISTS (
+    SELECT 1
+    FROM stores vs
+    JOIN org_nodes vn ON vs.org_node_id = vn.id
+    WHERE vn.type = '门店'
+      AND vn.is_active = TRUE
+      AND vn.parent_id = ${col}
+      AND vs.store_id IN (${sql.join(ids.map((i) => sql`${i}`), sql`, `)})
+  )`
+}
+
+/**
  * 按市场/按门店明细表的「关系骨架 + scope」基底。
  * 返回的片段用于 `FROM (...) base`：列出 scope 内所有门店及其所属市场，
  * 即使该门店当期零业绩也出行（明细表/排名榜 LEFT JOIN 用）。

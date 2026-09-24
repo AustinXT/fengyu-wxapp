@@ -306,12 +306,13 @@ describe('getMerchantsPaginated', () => {
   it('返回分页数据 + total + marketName', async () => {
     mockSelectSequence(
       [{ count: 1 }], // countQuery
-      [{ id: 'lm_1', merchantName: '凤仪韵', merchantNo: '8222900', termNo: 'T', enabled: true, marketName: '南昌', createdAt: new Date(), updatedAt: new Date(), storeCount: 2 }], // dataQuery
+      [{ id: 'lm_1', merchantName: '凤仪韵', merchantNo: '8222900', termNo: 'T', enabled: true, marketName: '南昌', createdAt: new Date(), updatedAt: new Date(), storeCount: 2, storeNames: '南昌青云店、九江梦想店' }], // dataQuery
     )
     const r = await getMerchantsPaginated({})
     expect(r.total).toBe(1)
     expect(r.data).toHaveLength(1)
     expect(r.data[0].storeCount).toBe(2)
+    expect(r.data[0].storeNames).toBe('南昌青云店、九江梦想店')
     expect(r.data[0].marketName).toBe('南昌')
   })
 

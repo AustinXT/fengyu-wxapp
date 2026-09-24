@@ -1,9 +1,10 @@
 // packageCustomer/customer-detail/customer-detail.ts — 7-Tab 顾客详情
-import { callStaffApi } from '../../utils/cloud';
+import { callStaffApi, StaffApiError } from '../../utils/cloud';
 import { getCurrentStoreId, isManager } from '../../utils/role';
 import { formatDateTime, formatDate, ORDER_TYPE_LABEL, formatDiscount } from '../../utils/formatters';
+import { formatAmount } from '../../utils/number';
 import { MemberLevelBadgeData, withMemberLevelBadgeClass } from '../../utils/member-level-badge';
-import { expandGroupServiceSessions, getTreatmentCardBusinessIdentity, groupTreatmentCards, sumGroupValue } from '../../utils/treatment-card-group';
+import { collectSourceOrderRemarks, expandGroupServiceSessions, getTreatmentCardBusinessIdentity, groupTreatmentCards, SourceOrderRemark, sumGroupValue } from '../../utils/treatment-card-group';
 
 const app = getApp<IAppOption>();
 
@@ -19,6 +20,20 @@ interface CustomerDetail extends MemberLevelBadgeData {
   memberLevel: string | null;
   source: string;
   preferredStaffName: string | null;
+  customerSource: string | null;
+  promoterEmployeeId: string | null;
+  promoterEmployeeName: string | null;
+  inviterName: string | null;
+  inviterPhone: string;
+  invitedAt: string | null;
+  customerType: string | null;
+  spendingTier: string | null;
+  monthlyActivity: string | null;
+  customerStatus: string | null;
+  birthday: string | null;
+  occupation: string | null;
+  isMarried: boolean | null;
+  wechatName: string | null;
   totalConsumption: number;
   yearConsumption: number;
   totalActualConsumption: number;
@@ -26,7 +41,12 @@ interface CustomerDetail extends MemberLevelBadgeData {
   storeName: string;
   skinType: string | null;
   focusAreas: string | null;
+  skinIssue: string | null;
+  wellnessPreference: string | null;
+  isCrossStoreTemp: boolean;
+  updatedAt: string;
   notes: string | null;
+  pointsBalance: number;
   lastServiceDate: string | null;
   visitFrequency: string | null;
   topProductName: string | null;
@@ -53,6 +73,42 @@ interface StaffListResponse {
     department?: string;
     storeId?: string;
   }>;
+}
+
+interface PromoterEmployeeCandidate {
+  employeeId: string;
+  name: string;
+  phoneMasked: string;
+  storeName: string;
+}
+
+interface ProfileFormState {
+  promoterEmployeeId: string;
+  promoterEmployeeName: string;
+  customerSource: string;
+  birthday: string;
+  occupation: string;
+  isMarried: '' | 'true' | 'false';
+  skinIssue: string;
+  wellnessPreference: string;
+  isCrossStoreTemp: boolean;
+}
+
+interface ProfileChanges {
+  promoterEmployeeId?: string | null;
+  customerSource?: string | null;
+  birthday?: string | null;
+  occupation?: string | null;
+  isMarried?: boolean | null;
+  skinIssue?: string | null;
+  wellnessPreference?: string | null;
+  isCrossStoreTemp?: boolean;
+  promoterEmployeeName?: string | null;
+}
+
+interface UpdateProfileResponse {
+  updatedAt: string;
+  changes: ProfileChanges;
 }
 
 interface CustomerQuery {
@@ -128,10 +184,13 @@ interface PaidOrderItem {
   saleAmount?: string;
   received?: string;
   pendingReceived?: string;
+  /** 行级欠款；仅订单未付清且该卡未买满次数时有值，否则 null */
+  unpaidAmount?: number | null;
   expireDate?: string | null;
   remark?: string | null;
   salesCategory?: string | null;
   pickedUpQuantity?: number | null;
+  orderRemark?: string | null;
 }
 
 interface PaidOrder {
@@ -168,6 +227,40 @@ const ORDER_STATUS_CLASS: Record<string, string> = {
   已退款: 'error',
   部分支付: 'progress',
 };
+
+const CUSTOMER_SOURCE_OPTIONS = [
+  { value: '', label: '未设置' },
+  { value: '美团', label: '美团' },
+  { value: '抖音', label: '抖音' },
+  { value: '小程序', label: '小程序' },
+  { value: '推广部', label: '推广部' },
+  { value: '全员地推', label: '全员地推' },
+  { value: '外请团队拓客', label: '外请团队拓客' },
+  { value: '老带新', label: '老带新' },
+  { value: '转让店', label: '转让店' },
+  { value: '自进店', label: '自进店' },
+  { value: '员工或家属', label: '员工或家属' },
+];
+
+const MARRIAGE_OPTIONS = [
+  { value: '', label: '未设置' },
+  { value: 'false', label: '未婚' },
+  { value: 'true', label: '已婚' },
+];
+
+function emptyProfileForm(): ProfileFormState {
+  return {
+    promoterEmployeeId: '',
+    promoterEmployeeName: '',
+    customerSource: '',
+    birthday: '',
+    occupation: '',
+    isMarried: '',
+    skinIssue: '',
+    wellnessPreference: '',
+    isCrossStoreTemp: false,
+  };
+}
 
 // Tab 3: 持卡汇总
 interface TreatmentCard {
@@ -221,13 +314,19 @@ interface TreatmentCard {
   saleAmount?: string;
   received?: string;
   pendingReceived?: string;
+  /** 行级欠款；仅订单未付清且该卡未买满次数时有值，否则 null */
+  unpaidAmount?: number | null;
+  /** 预格式化的欠款文案（千分位）；空串表示不展示 */
+  unpaidAmountFmt?: string;
   expireDate?: string | null;
   remark?: string | null;
   salesCategory?: string | null;
   pickedUpQuantity?: number | null;
+  orderRemark?: string | null;
   groupKey?: string;
   cardCount?: number;
   sourceItems?: TreatmentCard[];
+  sourceOrderRemarks?: SourceOrderRemark[];
 }
 
 interface CardFilterOption {
@@ -244,14 +343,19 @@ interface HomeProduct {
   paidQuantity: number;
   pickedQuantity: number;
   refundedQuantity: number;
+  /** 已通过转换单折抵转走的数量（#125，与已退款分列） */
+  convertedQuantity: number;
   remainingQuantity: number;
   pendingPickupQuantity: number;
+  /** 行级欠款；仅 refundedQuantity=0 时有值，退过款的行为 null（received 是净实收，相减会虚增欠款） */
+  unpaidAmount: number | null;
   status: string;
   storeId: string;
   storeName: string | null;
   purchasedAt: string;
   purchasedAtFmt?: string;
   statusClass?: string;
+  unpaidAmountFmt?: string;
 }
 
 // Tab 4: 服务记录
@@ -320,6 +424,7 @@ Page({
     customer: null as CustomerDetail | null,
     isManager: false,
     activeTab: 0,
+    tabTitles: ['基本档案', '消费记录', '疗程卡', '家居产品', '预约记录', '服务记录', '顾客优惠券', '手机号变更', '日历'],
     // Tab 0: 详情（客户信息）
     notesValue: '',
     notesDirty: false,
@@ -327,6 +432,15 @@ Page({
     profileSaving: false,
     showAssignSheet: false,
     staffActions: [] as StaffAction[],
+    showProfileEditor: false,
+    profileForm: emptyProfileForm(),
+    customerSourceOptions: CUSTOMER_SOURCE_OPTIONS,
+    customerSourceLabel: '未设置',
+    marriageOptions: MARRIAGE_OPTIONS,
+    marriageLabel: '未设置',
+    promoterSearchKeyword: '',
+    promoterSearchLoading: false,
+    promoterCandidates: [] as PromoterEmployeeCandidate[],
     // Tab 1: 日历
     calendarYear: 0,
     calendarMonth: 0,
@@ -380,6 +494,7 @@ Page({
   _query: null as CustomerQuery | null,
   _loaded: false,
   _allTreatmentCards: [] as TreatmentCard[],
+  _profileOriginal: null as ProfileChanges | null,
 
   onLoad(options: Record<string, string>) {
     this.setData({ isManager: isManager() });
@@ -425,6 +540,8 @@ Page({
       const customer = await callStaffApi<CustomerDetail>('customer.detail', this._query);
       // lastServiceDate 为原始 pg date（序列化成 UTC 串会偏移日期），格式化为 YYYY-MM-DD
       if (customer.lastServiceDate) customer.lastServiceDate = formatDate(customer.lastServiceDate);
+      if (customer.birthday) customer.birthday = customer.birthday.slice(0, 10);
+      if (customer.invitedAt) customer.invitedAt = formatDateTime(customer.invitedAt);
       const canManage = isManager();
       this.setData({
         customer: withMemberLevelBadgeClass(customer),
@@ -474,6 +591,10 @@ Page({
 
   onTabChange(e: WechatMiniprogram.CustomEvent) {
     const index = e.detail.index as number;
+    this.selectTab(index);
+  },
+
+  selectTab(index: number) {
     this.setData({ activeTab: index });
     // 9-Tab：0 基本档案 / 1 消费记录 / 2 疗程卡 / 3 家居产品 / 4 预约记录 /
     //         5 服务记录 / 6 顾客优惠券 / 7 手机号变更 / 8 日历
@@ -494,6 +615,12 @@ Page({
     } else if (index === 8 && !this.data.calendarLoaded) {
       this.loadCalendar();
     }
+  },
+
+  onTabTap(e: WechatMiniprogram.TouchEvent) {
+    const index = Number(e.currentTarget.dataset.index);
+    if (!Number.isInteger(index) || index < 0 || index >= this.data.tabTitles.length) return;
+    this.selectTab(index);
   },
 
   /** 构建客户标识参数（clientUserId 优先，否则 clientPhone） */
@@ -612,9 +739,10 @@ Page({
           const paidUnused = Math.max(paid - used, 0);
           const unpaid = Math.max(total - paid, 0);
           const consumable = Math.max(0, Math.min(remain, paid - used));
-          // D6=A：paid_sessions=0 或 已用满已付 → 整张卡锁死，不显示
-          // NULL 卡（0040 前未回填的历史卡）：保留但 disabled 灰显不可核销
-          if (!isNullCard && consumable <= 0) continue;
+          // issue #122：可用次数 0 的卡不再整张隐藏——顾客买了卡却在档案里看不到。
+          // 改为照常展示（可用 0 + 待付清标注），靠 disabled 拦住核销入口；
+          // NULL 卡（0040 前未回填的历史卡）同样保留为 disabled 灰显。
+          const notConsumable = !isNullCard && consumable <= 0;
           const pct = (n: number) => (total > 0 ? Math.round((n / total) * 1000) / 10 : 0);
           cards.push({
             saleItemId: item.saleItemId,
@@ -662,8 +790,14 @@ Page({
             saleOrderTypeLabel: ORDER_TYPE_LABEL[order.saleOrderType || ''] || order.saleOrderType || '',
             selected: false,
             sessionCount: 1,
-            disabled: isNullCard,
-            disabledReason: isNullCard ? '历史卡未回填,不可核销' : '',
+            unpaidAmount: item.unpaidAmount ?? null,
+            // 可用次数 0 的卡可见但不可核销，避免勾选后 expandGroupServiceSessions 返回空、点击无反应
+            disabled: isNullCard || notConsumable,
+            disabledReason: isNullCard
+              ? '历史卡未回填,不可核销'
+              : notConsumable
+                ? '可用次数为 0,付清后可核销'
+                : '',
           });
         }
       }
@@ -699,6 +833,7 @@ Page({
           groupKey: group.groupKey,
           sourceItems: group.sourceItems,
           cardCount: group.cardCount,
+          sourceOrderRemarks: collectSourceOrderRemarks(group.sourceItems),
           quantity: sumGroupValue(group, (card) => card.quantity ?? 1),
           totalSessions,
           remainingSessions,
@@ -709,10 +844,20 @@ Page({
           usedPct: pct(usedSessions),
           paidUnusedPct: pct(paidUnusedSessions),
           unpaidPct: pct(unpaidSessions),
+          // 组内欠款累加；整组都算不出欠款（已付清/寄存单/NULL 卡）时保持 null 不展示
+          unpaidAmount: group.sourceItems.some((card: TreatmentCard) => card.unpaidAmount != null)
+            ? sumGroupValue(group, (card) => card.unpaidAmount ?? 0)
+            : null,
+          unpaidAmountFmt: '',
           selected: false,
           sessionCount: 1,
         };
-      });
+      }).map((card) => ({
+        ...card,
+        // 小程序 toLocaleString 不可靠（ICU 精简），金额走 formatAmount（toFixed + 千分位）
+        unpaidAmountFmt:
+          card.unpaidAmount != null && card.unpaidAmount > 0 ? formatAmount(card.unpaidAmount) : '',
+      }));
       this.applyTreatmentCardFilters(groupedCards, {
         productKind: '',
         categoryId: '',
@@ -799,12 +944,16 @@ Page({
         部分提货: 'progress',
         已提货: 'success',
         已完成: 'done',
+        待付清: 'pending',
       };
       this.setData({
         homeProducts: rows.map((item) => ({
           ...item,
           purchasedAtFmt: item.purchasedAt ? formatDate(item.purchasedAt) : '',
           statusClass: statusClassMap[item.status] || 'done',
+          // 仅未付清的行展示欠款；已付清/退过款的行留空，wxml 按空串判显隐
+          unpaidAmountFmt:
+            item.unpaidAmount != null && item.unpaidAmount > 0 ? formatAmount(item.unpaidAmount) : '',
         })),
         homeProductsLoaded: true,
       });
@@ -857,6 +1006,7 @@ Page({
       sessionCount: number;
       remainingSessions: number;
       unit?: string;
+      orderRemark?: string | null;
     }> = [];
     for (const card of selected) {
       const sourceItems = card.sourceItems?.length ? card.sourceItems : [card];
@@ -881,6 +1031,7 @@ Page({
           sessionCount: selection.sessionUsed,
           remainingSessions: source.remainingSessions,
           unit: source.unit,
+          orderRemark: source.orderRemark || null,
         });
       }
     }
@@ -1029,6 +1180,225 @@ Page({
   },
 
   // ===== 基本档案编辑（仅当前门店有效店长） =====
+  _profileValuesFromCustomer(customer: CustomerDetail): ProfileChanges {
+    return {
+      promoterEmployeeId: customer.promoterEmployeeId || null,
+      customerSource: customer.customerSource || null,
+      birthday: customer.birthday || null,
+      occupation: customer.occupation || null,
+      isMarried: customer.isMarried,
+      skinIssue: customer.skinIssue || null,
+      wellnessPreference: customer.wellnessPreference || null,
+      isCrossStoreTemp: customer.isCrossStoreTemp === true,
+    };
+  },
+
+  onOpenProfileEditor() {
+    if (!isManager() || this.data.profileSaving) return;
+    const { customer } = this.data;
+    if (!customer?.clientUserId || !customer.updatedAt) return;
+
+    this._profileOriginal = this._profileValuesFromCustomer(customer);
+    const sourceIndex = CUSTOMER_SOURCE_OPTIONS.findIndex((item) => item.value === (customer.customerSource || ''));
+    const marriageValue = customer.isMarried === true ? 'true' : customer.isMarried === false ? 'false' : '';
+    const marriageIndex = MARRIAGE_OPTIONS.findIndex((item) => item.value === marriageValue);
+    this.setData({
+      showProfileEditor: true,
+      profileForm: {
+        promoterEmployeeId: customer.promoterEmployeeId || '',
+        promoterEmployeeName: customer.promoterEmployeeName || '',
+        customerSource: customer.customerSource || '',
+        birthday: customer.birthday || '',
+        occupation: customer.occupation || '',
+        isMarried: marriageValue,
+        skinIssue: customer.skinIssue || '',
+        wellnessPreference: customer.wellnessPreference || '',
+        isCrossStoreTemp: customer.isCrossStoreTemp === true,
+      },
+      customerSourceLabel: CUSTOMER_SOURCE_OPTIONS[sourceIndex >= 0 ? sourceIndex : 0].label,
+      marriageLabel: MARRIAGE_OPTIONS[marriageIndex >= 0 ? marriageIndex : 0].label,
+      promoterSearchKeyword: '',
+      promoterCandidates: [],
+      promoterSearchLoading: false,
+    });
+  },
+
+  onCloseProfileEditor() {
+    if (this.data.profileSaving) return;
+    this._profileOriginal = null;
+    this.setData({
+      showProfileEditor: false,
+      promoterSearchKeyword: '',
+      promoterCandidates: [],
+      promoterSearchLoading: false,
+    });
+  },
+
+  onProfileTextChange(e: WechatMiniprogram.CustomEvent) {
+    const field = String(e.currentTarget.dataset.field || '') as 'occupation' | 'skinIssue' | 'wellnessPreference';
+    if (!['occupation', 'skinIssue', 'wellnessPreference'].includes(field)) return;
+    this.setData({
+      profileForm: { ...this.data.profileForm, [field]: String(e.detail || '') },
+    });
+  },
+
+  onCustomerSourceChange(e: WechatMiniprogram.CustomEvent) {
+    const index = Number(e.detail.value) || 0;
+    const selected = CUSTOMER_SOURCE_OPTIONS[index] || CUSTOMER_SOURCE_OPTIONS[0];
+    this.setData({
+      profileForm: { ...this.data.profileForm, customerSource: selected.value },
+      customerSourceLabel: selected.label,
+    });
+  },
+
+  onBirthdayChange(e: WechatMiniprogram.CustomEvent) {
+    this.setData({
+      profileForm: { ...this.data.profileForm, birthday: String(e.detail.value || '') },
+    });
+  },
+
+  onClearBirthday() {
+    this.setData({
+      profileForm: { ...this.data.profileForm, birthday: '' },
+    });
+  },
+
+  onMarriageChange(e: WechatMiniprogram.CustomEvent) {
+    const index = Number(e.detail.value) || 0;
+    const selected = MARRIAGE_OPTIONS[index] || MARRIAGE_OPTIONS[0];
+    this.setData({
+      profileForm: { ...this.data.profileForm, isMarried: selected.value as '' | 'true' | 'false' },
+      marriageLabel: selected.label,
+    });
+  },
+
+  onCrossStoreTempChange(e: WechatMiniprogram.CustomEvent) {
+    this.setData({
+      profileForm: { ...this.data.profileForm, isCrossStoreTemp: e.detail as unknown as boolean },
+    });
+  },
+
+  onPromoterKeywordChange(e: WechatMiniprogram.CustomEvent) {
+    this.setData({ promoterSearchKeyword: String(e.detail || '') });
+  },
+
+  async onSearchPromoterEmployees() {
+    if (!isManager() || this.data.promoterSearchLoading) return;
+    const { customer, promoterSearchKeyword } = this.data;
+    if (!customer?.clientUserId) return;
+    const keyword = promoterSearchKeyword.trim();
+    if (keyword.length < 2) {
+      wx.showToast({ title: '请输入至少2个字符', icon: 'none' });
+      return;
+    }
+
+    this.setData({ promoterSearchLoading: true });
+    try {
+      const candidates = await callStaffApi<PromoterEmployeeCandidate[]>('customer.searchPromoterEmployees', {
+        clientUserId: customer.clientUserId,
+        keyword,
+      });
+      this.setData({ promoterCandidates: candidates || [] });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : '搜索失败';
+      wx.showToast({ title: msg, icon: 'none' });
+    } finally {
+      this.setData({ promoterSearchLoading: false });
+    }
+  },
+
+  onSelectPromoterEmployee(e: WechatMiniprogram.BaseEvent) {
+    const employeeId = String(e.currentTarget.dataset.id || '');
+    const selected = this.data.promoterCandidates.find((item) => item.employeeId === employeeId);
+    if (!selected) return;
+    this.setData({
+      profileForm: {
+        ...this.data.profileForm,
+        promoterEmployeeId: selected.employeeId,
+        promoterEmployeeName: selected.name,
+      },
+      promoterSearchKeyword: '',
+      promoterCandidates: [],
+    });
+  },
+
+  onClearPromoterEmployee() {
+    this.setData({
+      profileForm: {
+        ...this.data.profileForm,
+        promoterEmployeeId: '',
+        promoterEmployeeName: '',
+      },
+      promoterSearchKeyword: '',
+      promoterCandidates: [],
+    });
+  },
+
+  async onSaveProfile() {
+    if (!isManager() || this.data.profileSaving) return;
+    const { customer, profileForm } = this.data;
+    if (!customer?.clientUserId || !customer.updatedAt || !this._profileOriginal) return;
+
+    const marriageValue = profileForm.isMarried === 'true'
+      ? true
+      : profileForm.isMarried === 'false'
+        ? false
+        : null;
+    const current: ProfileChanges = {
+      promoterEmployeeId: profileForm.promoterEmployeeId || null,
+      customerSource: profileForm.customerSource || null,
+      birthday: profileForm.birthday || null,
+      occupation: profileForm.occupation.trim() || null,
+      isMarried: marriageValue,
+      skinIssue: profileForm.skinIssue.trim() || null,
+      wellnessPreference: profileForm.wellnessPreference.trim() || null,
+      isCrossStoreTemp: profileForm.isCrossStoreTemp,
+    };
+    const changes: ProfileChanges = {};
+    for (const key of Object.keys(current) as Array<keyof ProfileChanges>) {
+      if (JSON.stringify(current[key]) !== JSON.stringify(this._profileOriginal[key])) {
+        (changes as Record<string, unknown>)[key] = current[key];
+      }
+    }
+    if (Object.keys(changes).length === 0) {
+      this.onCloseProfileEditor();
+      return;
+    }
+
+    this.setData({ profileSaving: true });
+    try {
+      const result = await callStaffApi<UpdateProfileResponse>('customer.updateProfile', {
+        clientUserId: customer.clientUserId,
+        expectedUpdatedAt: customer.updatedAt,
+        changes,
+      });
+      const mergedCustomer = {
+        ...customer,
+        ...result.changes,
+        updatedAt: result.updatedAt,
+      } as CustomerDetail;
+      this._profileOriginal = null;
+      this.setData({
+        customer: mergedCustomer,
+        showProfileEditor: false,
+        promoterCandidates: [],
+        promoterSearchKeyword: '',
+      });
+      wx.showToast({ title: '基本档案已更新', icon: 'success' });
+    } catch (err: unknown) {
+      const apiError = err as StaffApiError;
+      const msg = err instanceof Error ? err.message : '保存失败';
+      wx.showToast({ title: msg, icon: 'none' });
+      if (apiError.errorType === 'CONFLICT') {
+        this._profileOriginal = null;
+        this.setData({ showProfileEditor: false });
+        await this.loadCustomer();
+      }
+    } finally {
+      this.setData({ profileSaving: false });
+    }
+  },
+
   onEditCustomerName() {
     if (!isManager() || this.data.profileSaving) return;
     const { customer } = this.data;

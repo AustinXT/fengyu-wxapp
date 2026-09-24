@@ -11,6 +11,10 @@ const { Pool } = pg
 // 一旦业务量级逼近 2^53 需切回 bigint mode + BigInt 处理（届时撤销 OID=20 的设置）。
 pg.types.setTypeParser(20, (val) => (val === null ? null : parseInt(val, 10)))    // int8 / bigint
 pg.types.setTypeParser(1700, (val) => (val === null ? null : parseFloat(val)))    // numeric
+// date 是无时区自然日；保持 PG 的 YYYY-MM-DD 文本，避免转成进程本地零点 Date 后序列化偏移。
+// （疗程卡有效期 expire_date、服务单 service_date 等直接下发小程序端，UTC 化会偏移一天；
+//   三端副本 staffApi/db/pg.js、payNotify/index.js 由 cross-end snapshot 测试守护一致。）
+pg.types.setTypeParser(1082, (val) => val)                                        // date
 // timestamp 列自 migration 0076 起统一为 timestamptz（1184）：PG 发带 +08 偏移字面，pg 内置 parser
 // `new Date(value)` 按字面偏移正确解析为 Date，无需自定义 1114 parser（库已无 1114 列）。
 

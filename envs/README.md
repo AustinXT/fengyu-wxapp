@@ -1,16 +1,28 @@
 # envs/ — 双环境配置中央目录
 
-凤御项目有 **两个 CloudBase env**（dev / prod），分别承载完整的云函数 + PG 链路。
+凤御项目有 **dev / prod 两个部署环境**，CloudBase 同样只有 dev / prod 两个 env。
+2026-09-01 起 dev 永久迁入 `lx-test` 服务器（原 test 的服务器与库），独立 test 环境已退役。
+
+⚠️ **分支与环境不同名**：`dev` 分支发布到 **dev 环境**（lx-test / 101.34.242.103）；
+`test` 与 `main` 两条分支都发布到 **prod 环境**（lx-prod / 118.178.196.26）。
+分支名 `test` 不对应任何环境。
 此目录是所有环境差异变量的 **单一权威源**。
 
 ## 拓扑
 
-| 端 | dev/测试 envId | dev/测试 PG | prod envId | prod PG |
-|----|-----------|-------------|------------|---------|
-| client | `cloud1-3gpht4b01ff88838` | 47.113.202.7:5433/fengyu_wxapp | `fengyu-client-prod-d1cga6909c0ba` | 118.178.196.26:5433/fengyu_wxapp |
-| staff | `cloud1-9g3ydpg512eecc99` | 47.113.202.7:5433/fengyu_wxapp | `fengyu-staff-prod-d4dtv6052992e9` | 118.178.196.26:5433/fengyu_wxapp |
+| 环境 | SSH host | 迁移 PG | 容器 PG | CloudBase |
+|------|----------|---------|---------|-----------|
+| dev | `lx-test` | `101.34.242.103:5433/fengyu_wxapp` | `172.18.0.1:5433/fengyu_wxapp` | dev client/staff env（cloud1-*） |
+| prod | `lx-prod` | `118.178.196.26:5433/fengyu_wxapp` | 生产公网地址或已验证同机网桥 | prod client/staff env |
 
-dev 与 prod 由 **两个不同的腾讯云子账号** 管理（账号凭证在 `fengyu-{client,staff}/.env`）。
+旧的 `ali-demo`（`47.113.202.7`）已于 2026-09-01 全面弃用，不再是任何环境的目标；
+它上面的 `5433/fengyu_wxapp` 仍可连通但数据陈旧（停在 2026-08-24），误连不会报错，务必不要再指向它。
+
+CloudBase envId：dev client=`cloud1-3gpht4b01ff88838`、staff=`cloud1-9g3ydpg512eecc99`；prod client=`fengyu-client-prod-d1cga6909c0ba`、staff=`fengyu-staff-prod-d4dtv6052992e9`。
+
+client 与 staff CloudBase 由 **两个不同的腾讯云子账号** 管理；两套账号凭据必须独立
+（历史兼容来源为 `fengyu-{client,staff}/.env`，集中配置使用 `TENCENTCLOUD_*` 与
+`STAFF_TENCENTCLOUD_*` 区分）。
 
 ## 文件
 
@@ -43,20 +55,51 @@ cat envs/.active
 
 之后 `scripts/deploy-cloudfunctions.sh` 会按 active env 选 envId + 自动切 tcb 双账号部署。
 
-admin 远程部署用 `docker/docker-compose.remote.yml` override。`deploy-admin.sh` 会从
-`envs/<env>.env` 生成仅含 CloudBase envId/CDN 的远程运行时覆盖文件，禁止手工把另一环境的
-存储值写死到 compose。
+Admin/Analyst 远程部署用 `docker/docker-compose.remote.yml` override。部署脚本以
+`envs/<env>.env` 为唯一权威源，分别生成 Admin、cron、export、Analyst 的 `0600` 白名单
+运行环境，并和不可变镜像 tag 一起保存在版本化 release 目录。远端历史 `.env` 不再参与
+新版 compose 解析，也不会整包注入容器。
 
-拉卡拉门店入网分支 `feat/lakala-payment-migration` 的测试部署会自动切换到
-`101.34.242.103`（SSH 别名 `sqlserver101`）：
+首次从旧版部署脚本升级时，Admin/Analyst 入口会先幂等执行本地配置迁移，再进入严格门禁。
+也可提前手动执行：
+
+```bash
+node .claude/skills/remote-deploy/runtime-config.mjs reconcile
+```
+
+迁移会保留两份真实 env 的已有值，从旧 `fengyu-staff/.env` 补齐 staff 独立账号凭据，
+只从 example 补齐白名单内的非秘密运行时默认值，并将文件统一为 `0600`。
+全部配置通过与发布相同的严格校验后才会写回；不会读取远端配置，也不会打印任何秘密。
+
+拉卡拉门店入网测试部署到 dev（`101.34.242.103`，SSH 别名 `lx-test`）——
+原先挂在独立 test 环境上，test 退役后改挂 dev。
+⚠ 走哪条拉卡拉通道由 `envs/dev.env` 的 `LAKALA_*` 取值决定，**不由环境名决定**：
+dev 模板自 2026-09-01 起默认就是 release 生产通道（`LAKALA_ENV=release` /
+`LAKALA_CLIENT_MODE=real`），与 prod 同商户体系 —— 也就是说 **dev 上的入网与支付会落到真实商户**。
+要退回 SIT 沙箱自测，只改 gitignore 的 `dev.env`（`test` / `mock` / `https://test.wsmsd.cn/sit` 等），
+不要把沙箱值提交进 example 模板：
 
 ```bash
 .claude/skills/remote-deploy/deploy-admin.sh dev
 ```
 
-该命令不上传或覆盖远程 `.env`、证书、私钥、SM4Key、OCR 密钥和门店附件；它只从目标服务器
-的现有 `.env` 读取构建所需的公钥及非敏感存储标识，并在部署前检查
-`LAKALA_ONBOARDING_*` 配置。其他分支执行相同的 `dev` 命令仍指向 `ali-demo`，`prod` 仍需显式使用 `prod`。
+dev 的公网服务器和 SSH 目标是 `101.34.242.103`；Admin/Analyst 容器通过
+`172.18.0.1:5433` 回连同机 PostgreSQL，本地迁移则连接 `101.34.242.103:5433`。部署前会同时
+断言宿主公网 IP、5433 监听和容器 DB host。`dev` 始终指向 `lx-test`，`prod` 始终指向
+`lx-prod`，不允许参数、环境变量或分支名改写目标。
+
+部署脚本不执行迁移：只读比对 Drizzle 最新 migration 的 `created_at + hash`，发现 pending、
+hash 漂移或数据库领先本地代码即停止。先通过 `release-all` 或数据库专项流程完成迁移，再重跑部署。
+
+拉卡拉支付与门店入网统一复用 `LAKALA_*` 的模式、环境、APPID、证书、SM4、机构号、用户号、
+活动 ID、MCC、结算类型和来源。dev 与 prod 均使用 release 生产通道（`LAKALA_ENV=release`、
+入网 API `https://s2.lakala.com`、APPID 禁用 SIT 凭据 `OP00000003`）。
+`LAKALA_ONBOARDING_*` 只保留入网 API 地址及业务参数，电子合同
+回调地址和合同类型继续使用 `LAKALA_ECONTRACT_*`；电子合同机构号统一读取 `LAKALA_ORG_CODE`。
+
+> ⚠ 这三项目前**只有模板约定、没有代码门禁**。原先 `runtime-config.mjs` 里
+> `if (env === 'test')` 那段校验随独立 test 环境一起被删掉了（它在 test 退役后已是死代码），
+> 至今没有按 `dev` 重新接线。要恢复强制，需在 `validateConfig` 里补一条 `env === 'dev'` 分支。
 
 ## 小程序自适应（不需要渲染）
 
@@ -64,7 +107,7 @@ admin 远程部署用 `docker/docker-compose.remote.yml` override。`deploy-admi
 静态文件，通过 `wx.getAccountInfoSync().miniProgram.envVersion` 运行时区分：
 
 - `'release'` / `'trial'` → prod envId（118.178.196.26:5433）
-- `'develop'` → dev envId（47.113.202.7:5433）
+- `'develop'` → dev envId（101.34.242.103:5433）
 - 异常兜底（取不到 envVersion）→ dev envId，避免误判进 prod
 
 所以**切换 envs/.active 不会影响小程序代码**。仅开发者工具开发版留在 dev，体验版/正式版都走 prod。
@@ -74,12 +117,19 @@ admin 远程部署用 `docker/docker-compose.remote.yml` override。`deploy-admi
 1. 同步加入 `dev.env.example` + `prod.env.example`（含说明注释）
 2. 同步加入 `dev.env` + `prod.env`（真实值）
 3. 如果云函数需要：在 `fengyu-{client,staff}/cloudbaserc.example.json` 的 envVariables 加 `"NEW_VAR": "${NEW_VAR}"`
-4. 如果 admin 需要：在 `docker/docker-compose.remote.yml` 的 environment 加 `NEW_VAR`，并决定它应由远程 `.env` 还是部署脚本生成的运行时覆盖文件注入
-5. 远程 `docker/.env` 同步追加（生产 `ssh fengyu-prod` / 测试 `ssh ali-demo` 后手工改）
+4. 如果 Admin/Analyst/worker 需要：把 `NEW_VAR` 加入 `runtime-config.mjs` 对应服务的白名单；不要恢复远端 `.env` 整包注入
+
+修改后运行 `node scripts/check-env-shape.mjs`，确保 `prod.env.example`、`dev.env.example` 以及本地
+`prod.env` / `dev.env` 的键集合与顺序完全一致。`prod.env.example` 是唯一结构基准，
+Admin/Analyst 的真实生产值只以本地 `prod.env` 为准；远端容器运行态只用于发布后的只读一致性核验，
+不得反向补齐或覆盖本地配置。CloudBase 函数变量仍由云函数部署流程单独只读核验。
 
 ## 安全
 
 - `envs/{dev,prod}.env` 已 `.gitignore`
+- 两份真值文件必须为 `0600`；部署生成的所有服务 env 同样为 `0600`
+- build args 只允许版本号及 `NEXT_PUBLIC_*` 公共值，秘密只进入运行期服务 env
 - 切到 prod 时 `use-env.sh` 打印 ⚠️ 横幅，避免误部署
 - `deploy-cloudfunctions.sh` 强制 confirm
-- e2e 入口不得连生产 IP `118.178.196.26`（防污染生产；2026-07-17 起 dev/测试与 prod 均用 5433 端口，环境仅靠 IP 区分）
+- e2e 入口只允许连接 dev IP `101.34.242.103`，不得连接 prod `118.178.196.26`；两个环境均用 5433 端口，仅靠 IP 区分
+- admin e2e 走同机的独立库 `101.34.242.103:5433/fengyu_e2e`（靠库名与业务库隔离），权威表述见 `db/CLAUDE.md` 的「e2e 独立库」小节

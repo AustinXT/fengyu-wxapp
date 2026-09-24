@@ -7,6 +7,7 @@
 
 import { sql } from 'drizzle-orm'
 import { db } from '@/db'
+import { instantTs } from '@/lib/db-time'
 import { DEPOSIT_REFUND_REMARK } from '@/lib/service-remark'
 
 type AdminTx = Parameters<Parameters<typeof db.transaction>[0]>[0]
@@ -86,29 +87,65 @@ export async function loadVisitPointsReward(executor: SqlExecutor): Promise<numb
   return parseVisitPointsReward(rows[0]?.value)
 }
 
+/**
+ * @param occurredAt  流水/批次的**业务时刻**锚点 —— 正常发放是"现在"，cron 补发是原服务日零点。
+ *                    决定 `point_transactions.created_at`，并经它派生 `point_batches.earned_at`
+ *                    与 `expire_at`。
+ * @param balanceUpdatedAt 余额**最后变更时间**，写 `client_wechat_users.points_updated_at`。
+ *                    默认等于 `occurredAt`（正常发放两者同义）；**补发必须显式传真实当下**，
+ *                    否则会把该字段改回历史时刻 —— 顾客若在 8/13 失败之后、9/22 补发之前
+ *                    还有过积分变动，补发会让 points_updated_at 从 9/20 倒退回 8/13，
+ *                    按更新时间做增量同步/对账的下游会直接漏掉这次真实变更。
+ */
 export async function grantVisitPointsEntry(
   executor: SqlExecutor,
   userId: string,
   serviceDate: string,
   amount: number,
-  now: Date,
+  occurredAt: Date,
+  balanceUpdatedAt: Date = occurredAt,
 ): Promise<VisitPointsResult> {
   if (process.env.POINTS_ACCRUAL_ENABLED === 'false' || amount <= 0) {
     return { granted: false, skipped: 'disabled' }
   }
 
   const externalRef = buildVisitPointsExternalRef(userId, serviceDate)
+  // ⚠ 这两个 Date **不能**直接插值（#253：admin 侧到店积分曾因此 100% 失败）。
+  // 根因不是 postgres.js 本身——它原生支持 Date（types.js 的 `date.serialize` → toISOString，OID 1184）；
+  // 是 drizzle 的 `construct()`（drizzle-orm/postgres-js/driver.js）把时间 OID 的 **serializer**
+  // 一并覆盖成恒等函数，Date 未经序列化直达 Bind → ERR_INVALID_ARG_TYPE。
+  // 所以 staff/client 两端裸用原生 pg 能吃 Date，**唯独经 drizzle 的本副本不行**。
+  //
+  // 用 `instantTs`（绑 ISO+Z，**毫秒不丢**）而非 db-time 文档里「现在语义用 nowTs()」的默认建议：
+  // 这两个都是形参且**并不总是"现在"**（cron 补发传原服务日锚点，单测传固定时刻，
+  // staff/client 两端同样用调用方传入的值），改成 `NOW()` 会让形参对 SQL 失效并与另两端分叉。
+  //
+  // 不用 `beijingTs` 是因为它会截断到秒，而 `points_updated_at` 是**水位列**：别的积分路径写的是
+  // PG `NOW()`（微秒），补发若在同一秒内把它截成整秒就是**往回退**，按水位做增量同步的下游会漏行。
+  // `created_at` 虽无单调契约，也一并用 instantTs —— 同一条语句里两个时间源用同一种精度，
+  // 省得以后有人只改一处。
+  const grantedAtTs = instantTs(occurredAt)
+  const balanceUpdatedTs = instantTs(balanceUpdatedAt)
   const result = (await executor.execute(sql`
     WITH inserted AS (
       INSERT INTO point_transactions
         (user_id, type, amount, ref_order_id, external_ref, created_at)
-      VALUES (${userId}, '到店赠送', ${amount}, NULL, ${externalRef}, ${now})
+      VALUES (${userId}, '到店赠送', ${amount}, NULL, ${externalRef}, ${grantedAtTs})
       ON CONFLICT DO NOTHING
-      RETURNING amount
+      RETURNING id, amount, created_at
+    ),
+    granted_batch AS (
+      INSERT INTO point_batches
+        (user_id, source_transaction_id, source_type, ref_order_id,
+         original_amount, remaining_amount, earned_at, expire_at, created_at, updated_at)
+      SELECT ${userId}, i.id, '到店赠送', NULL,
+             i.amount, i.amount, i.created_at,
+             i.created_at + INTERVAL '365 days', NOW(), NOW()
+        FROM inserted i
     )
     UPDATE client_wechat_users
        SET points_balance = COALESCE(points_balance, 0) + (SELECT amount FROM inserted),
-           points_updated_at = ${now}
+           points_updated_at = ${balanceUpdatedTs}
      WHERE user_id = ${userId}
        AND EXISTS (SELECT 1 FROM inserted)
     RETURNING points_balance
@@ -146,6 +183,7 @@ export async function grantVisitPointsSafe(
   tx: AdminTx,
   snapshot: VisitPointsServiceSnapshot,
   source: string,
+  // 正常发放路径：业务时刻与余额变更时刻同义，都是"现在"。
   now: Date = new Date(),
 ): Promise<VisitPointsResult> {
   if (process.env.POINTS_ACCRUAL_ENABLED === 'false' || !isVisitPointsEligible(snapshot)) {

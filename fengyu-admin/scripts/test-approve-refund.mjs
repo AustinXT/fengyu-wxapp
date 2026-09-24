@@ -2,7 +2,7 @@ import postgres from 'postgres'
 import { drizzle } from 'drizzle-orm/postgres-js'
 import { sql } from 'drizzle-orm'
 
-const connectionString = 'postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp'
+const connectionString = 'postgresql://fengyu:fengyu123@101.34.242.103:5433/fengyu_wxapp'
 const client = postgres(connectionString, { max: 2 })
 const db = drizzle(client)
 

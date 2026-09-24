@@ -18,7 +18,9 @@ interface Store {
   market_name: string;
   store_region: string;
   street_address?: string;
-  cover_image?: string;
+  // 云函数无法保证缩略时会下发 null（见 clientApi/utils/image.js 的 safeThumbUrl），
+  // 前端 wx:if 走占位图分支
+  cover_image?: string | null;
   latitude?: string | number | null;
   longitude?: string | number | null;
   open_date?: string;

@@ -57,6 +57,12 @@ async function main() {
     status: '已支付', salesCategory: '他销自耗',
   })
   await pgQuery(`UPDATE sale_orders SET received = total_amount WHERE sale_order_id = $1`, [orderId])
+  const orderRemark = `${NS}_跨店来源订单备注\n特殊字符<&>`
+  await pgQuery(`UPDATE sale_orders SET remark = $1 WHERE sale_order_id = $2`, [orderRemark, orderId])
+  await pgQuery(
+    `UPDATE sale_items SET paid_sessions = session_count WHERE sale_order_id = $1`,
+    [orderId],
+  )
   const items = await pgQuery(`SELECT sale_item_id, store_id FROM sale_items WHERE sale_order_id = $1`, [orderId])
   const saleItemId = items[0].sale_item_id
   rec(`  fixture: order=${orderId} item=${saleItemId} 卡售出门店=${items[0].store_id} 绑定门店=B(${TEST_STORE_ID})`)
@@ -71,9 +77,11 @@ async function main() {
   if (po.code !== 0) {
     errors.push(`paidOrders code=${po.code} ${po.message}`)
   } else if (!JSON.stringify(po.data).includes(saleItemId)) {
-    errors.push('paidOrders 应跨门店列出旧店 A 的疗程卡')
+    errors.push(`paidOrders 应跨门店列出旧店 A 的疗程卡，实际=${JSON.stringify(po.data)}`)
+  } else if (po.data.find((order) => order.saleOrderId === orderId)?.items?.[0]?.orderRemark !== orderRemark) {
+    errors.push('paidOrders 应返回疗程卡来源订单备注')
   } else {
-    rec('  ✓ paidOrders 跨门店列出旧店 A 疗程卡（展示跟顾客走）')
+    rec('  ✓ paidOrders 跨门店列出旧店 A 疗程卡并返回来源订单备注')
   }
 
   // ── 2) 使用限绑定门店：在 B（=绑定门店）消费旧店 A 卡 成功 ──

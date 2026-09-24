@@ -1,6 +1,6 @@
 // pages/order-detail/order-detail.ts
 import { callStaffApi } from '../../utils/cloud';
-import { isManager, getStaffWfId, isManagementMode } from '../../utils/role';
+import { isManager, getCurrentStoreId, getStaffWfId, isManagementMode } from '../../utils/role';
 import { STATUS_CLASS, ORDER_TYPE_LABEL, formatDateTime, formatDate } from '../../utils/formatters';
 import { getTreatmentCardBusinessIdentity, groupTreatmentCards, sumGroupValue } from '../../utils/treatment-card-group';
 
@@ -8,6 +8,16 @@ const PAY_TYPE_LABEL: Record<string, string> = {
   wechat: '微信支付',
   offline: '线下收款',
 };
+
+function addCalendarDays(value: string, amount: number): string {
+  const [year, month, day] = value.split('-').map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day + amount));
+  return [
+    date.getUTCFullYear(),
+    String(date.getUTCMonth() + 1).padStart(2, '0'),
+    String(date.getUTCDate()).padStart(2, '0'),
+  ].join('-');
+}
 
 
 // ===== API 原始类型（snake_case） =====
@@ -29,6 +39,12 @@ interface RawOrder {
   paid_at?: string;
   performance_attribution_date?: string;
   performance_attribution_adjusted_at?: string | null;
+  performance_attribution_adjusted_by?: string | null;
+  performance_attribution_adjusted_by_name?: string | null;
+  original_order_date?: string;
+  min_performance_date?: string;
+  max_performance_date?: string;
+  updated_at?: string;
   total_amount?: string;
   // 2026-04-26 sale-order-domain-refactor: paid_amount 列已 DROP，改用 received / refunded_amount
   received?: string;
@@ -46,6 +62,8 @@ interface RawOrder {
   market_name?: string;
   coupon_discount?: string;
   coupon_name?: string;
+  points_used?: number | string;
+  points_discount?: string;
   allocation_status?: string;
   legacy_source?: string;
   offline_confirmed_by_name?: string;
@@ -82,6 +100,8 @@ interface RawOrderItem {
   remark?: string | null;
   sales_category?: string;
   picked_up_quantity?: number;
+  refunded_quantity?: number;
+  converted_quantity?: number;
 }
 
 interface RawPayment {
@@ -152,10 +172,15 @@ interface DisplayOrderItem {
   remainPct: number;
   paidUnusedPct: number;
   unpaidPct: number;
-  /** 详情扩展：销售分类 / 过期日期（formatDate 后，空串=无）/ 已提货数量（家居，0=不展示） */
+  /** 详情扩展：销售分类 / 过期日期（formatDate 后，空串=无）（家居数量列 0=不展示） */
   salesCategory: string;
   expireDate: string;
+  /** 已物理提货件数（#154 拆列后 picked_up_quantity 只记提货，不再含已退款/已转换） */
   pickedUpQuantity: number;
+  /** 已退款结算件数（#154 新列） */
+  refundedQuantity: number;
+  /** 已转换折抵件数（#154 新列） */
+  convertedQuantity: number;
   /** 单次现价 / 原价 + 是否有折扣（原价划线展示） */
   unitRealPrice: string;
   unitPrice: string;
@@ -171,6 +196,7 @@ interface DisplayOrderItem {
 interface DisplayOrder {
   saleOrderId: string;
   status: string;
+  storeId: string;
   storeName: string;
   orderType: string;
   orderTypeLabel: string;
@@ -187,8 +213,12 @@ interface DisplayOrder {
   confirmedAt: string;
   createdAt: string;
   paidAt: string;
+  originalOrderDate: string;
   performanceAttributionDate: string;
   performanceAttributionAdjusted: boolean;
+  performanceAttributionAdjustedAt: string;
+  performanceAttributionAdjustedByName: string;
+  updatedAt: string;
   totalAmount: string;
   paidAmount: string;
   prepaidCardAmount: string;
@@ -206,6 +236,8 @@ interface DisplayOrder {
   marketName: string;
   couponName: string;
   couponDiscount: string;
+  pointsUsed: string;
+  pointsDiscount: string;
   allocationStatus: string;
   isLegacy: boolean;
   isActivity: boolean;
@@ -261,6 +293,9 @@ Page({
     repayNeedPay: '0.00',
     // 当前订单欠款（弹层内引用）
     currentRemainingPayable: 0,
+    attributionMinDate: '',
+    attributionMaxDate: '',
+    attributionSubmitting: false,
   },
 
   onLoad(options: Record<string, string>) {
@@ -272,11 +307,16 @@ Page({
   },
 
   onShow() {
-    this.setData({ isManager: isManager(), isReadOnly: isManagementMode() });
+    this.setData({
+      isManager: isManager(),
+      isReadOnly: this._isReadOnly(),
+    });
   },
 
   _isReadOnly() {
-    return isManagementMode();
+    if (isManagementMode()) return true;
+    const orderStoreId = this.data.order?.storeId || '';
+    return !!orderStoreId && orderStoreId !== getCurrentStoreId();
   },
 
   async loadDetail(saleOrderId: string) {
@@ -330,6 +370,8 @@ Page({
           // expire_date 是 pg date 列，必须 formatDate 避免 UTC 串偏移日期
           expireDate: it.expire_date ? formatDate(it.expire_date) : '',
           pickedUpQuantity: Number(it.picked_up_quantity || 0),
+          refundedQuantity: Number(it.refunded_quantity || 0),
+          convertedQuantity: Number(it.converted_quantity || 0),
           unitRealPrice: Number(it.unit_real_price || 0).toFixed(2),
           unitPrice: Number(it.unit_price || 0).toFixed(2),
           hasDiscount: Number(it.unit_price || 0) > Number(it.unit_real_price || 0),
@@ -363,6 +405,8 @@ Page({
           repayable: sumGroupValue(group, (item) => item.repayable).toFixed(2),
           overpayRefundable: sumGroupValue(group, (item) => item.overpayRefundable),
           pickedUpQuantity: sumGroupValue(group, (item) => item.pickedUpQuantity),
+          refundedQuantity: sumGroupValue(group, (item) => item.refundedQuantity),
+          convertedQuantity: sumGroupValue(group, (item) => item.convertedQuantity),
           pendingReceived: sumGroupValue(group, (item) => item.pendingReceived).toFixed(2),
         };
         if (!primary.isTreatmentCard) return aggregate;
@@ -393,6 +437,8 @@ Page({
           paidUnusedPct: pct(paidUnusedSessions),
           unpaidPct: pct(unpaidSessions),
           pickedUpQuantity: sumGroupValue(group, (item) => item.pickedUpQuantity),
+          refundedQuantity: sumGroupValue(group, (item) => item.refundedQuantity),
+          convertedQuantity: sumGroupValue(group, (item) => item.convertedQuantity),
           pendingReceived: sumGroupValue(group, (item) => item.pendingReceived).toFixed(2),
         };
       });
@@ -454,11 +500,21 @@ Page({
       const activePaymentAmount = hasActivePaymentCap
         ? Math.min(remainingPayable, frozenPaymentAmount > 0 ? frozenPaymentAmount : remainingPayable)
         : 0;
+      const originalOrderDate = o.original_order_date
+        || formatDate(o.sale_order_datetime)
+        || formatDate(o.created_at);
+      const attributionMinDate = o.min_performance_date
+        || (originalOrderDate ? addCalendarDays(originalOrderDate, -7) : '');
+      const attributionMaxDate = o.max_performance_date
+        || (originalOrderDate ? addCalendarDays(originalOrderDate, 7) : '');
+      const isReadOnly = isManagementMode()
+        || (!!o.store_id && o.store_id !== getCurrentStoreId());
 
       this.setData({
         order: {
           saleOrderId: o.sale_order_id,
           status: o.status,
+          storeId: o.store_id || '',
           storeName: o.store_name || '',
           orderType,
           orderTypeLabel: ORDER_TYPE_LABEL[orderType] || orderType,
@@ -475,8 +531,14 @@ Page({
           confirmedAt: formatDateTime(o.offline_confirmed_at),
           createdAt: formatDateTime(o.created_at),
           paidAt: formatDateTime(o.paid_at),
+          originalOrderDate,
           performanceAttributionDate: formatDate(o.performance_attribution_date),
           performanceAttributionAdjusted: !!o.performance_attribution_adjusted_at,
+          performanceAttributionAdjustedAt: formatDateTime(o.performance_attribution_adjusted_at),
+          performanceAttributionAdjustedByName: o.performance_attribution_adjusted_by_name
+            || o.performance_attribution_adjusted_by
+            || '',
+          updatedAt: o.updated_at || '',
           totalAmount: totalAmount.toFixed(2),
           paidAmount: netReceived.toFixed(2),
           prepaidCardAmount: prepaidCardAmount.toFixed(2),
@@ -493,6 +555,8 @@ Page({
           marketName: o.market_name || '',
           couponName: o.coupon_name || '',
           couponDiscount: Number(o.coupon_discount || 0) > 0 ? Number(o.coupon_discount).toFixed(2) : '',
+          pointsUsed: Number(o.points_used || 0) > 0 ? String(Number(o.points_used || 0)) : '',
+          pointsDiscount: Number(o.points_discount || 0) > 0 ? Number(o.points_discount).toFixed(2) : '',
           allocationStatus: o.allocation_status || '',
           isLegacy: o.legacy_source === 'workfine',
           isActivity: !!o.is_activity,
@@ -512,12 +576,55 @@ Page({
           ? (refundedAmount >= received - 0.01 ? '已退款' : '部分退款')
           : '',
         hasPendingRefund,
+        attributionMinDate,
+        attributionMaxDate,
+        isReadOnly,
       });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : '加载失败';
       wx.showToast({ title: msg, icon: 'none' });
     } finally {
       this.setData({ loading: false });
+    }
+  },
+
+  onPerformanceAttributionChange(e: WechatMiniprogram.PickerChange) {
+    const targetDate = String(e.detail.value || '');
+    const order = this.data.order;
+    if (!order || this.data.attributionSubmitting || !this.data.isManager || this._isReadOnly()) return;
+    if (!targetDate || targetDate === order.performanceAttributionDate) {
+      wx.showToast({ title: '请选择不同于当前值的日期', icon: 'none' });
+      return;
+    }
+
+    wx.showModal({
+      title: '确认修改业绩归属日期',
+      content: `原始订单日期不会改变。确认将归属日期改为 ${targetDate}？成功后不能再次修改。`,
+      confirmText: '确认修改',
+      confirmColor: '#C0322A',
+      success: (result) => {
+        if (result.confirm) this._submitPerformanceAttributionDate(targetDate);
+      },
+    });
+  },
+
+  async _submitPerformanceAttributionDate(targetDate: string) {
+    const order = this.data.order;
+    if (!order || this.data.attributionSubmitting) return;
+    this.setData({ attributionSubmitting: true });
+    try {
+      const result = await callStaffApi<{ message?: string }>('order.updatePerformanceAttribution', {
+        saleOrderId: order.saleOrderId,
+        performanceAttributionDate: targetDate,
+        expectedUpdatedAt: order.updatedAt,
+      });
+      wx.showToast({ title: result.message || '归属日期已修改', icon: 'success' });
+      await this.loadDetail(order.saleOrderId);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : '修改失败';
+      wx.showToast({ title: msg, icon: 'none' });
+    } finally {
+      this.setData({ attributionSubmitting: false });
     }
   },
 

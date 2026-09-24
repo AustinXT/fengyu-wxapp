@@ -4,10 +4,12 @@ import { exportMallProducts, exportProductSkus } from '@/actions/products'
 import { exportCouponTemplates, getMarkets } from '@/actions/coupons'
 import {
   exportOrders,
+  exportOrderPayments,
   exportAllocationOrders,
   type ExportAllocationOrdersCursor,
   type ExportOrdersCursor,
 } from '@/actions/orders'
+import { exportRefunds } from '@/actions/refunds'
 import {
   exportServiceOrders,
   exportAllocationServiceOrders,
@@ -17,7 +19,7 @@ import { exportCustomers } from '@/actions/customers'
 import { exportEmployees } from '@/actions/employees'
 import { exportPointTransactions } from '@/actions/points'
 import { exportCards } from '@/actions/cards'
-import { exportInventoryStocks } from '@/actions/inventory-v2'
+import { exportInventoryLots } from '@/actions/inventory/stocks'
 import { getSalesBoard } from '@/actions/data-center/sales'
 import { getCustomerBoard } from '@/actions/data-center/customer'
 import { getProductBoard } from '@/actions/data-center/product'
@@ -174,6 +176,100 @@ const orderColumns = mapColumns([
   { header: '备注', width: 24, key: 'remark' },
 ])
 
+/**
+ * 回款明细导出列（一行 = 一笔款项 × 一个商品子项）。
+ *
+ * 前 34 列的表头与顺序**逐字等于** orderColumns，使回款块可直接粘贴到订单明细导出下方
+ * 合成一张表按品项/顾客求和（2026-09-05 需求沟通会决议）。因此：
+ * - 款项专属列一律追加在尾部，**禁止往对齐段中间插列**；
+ * - 对齐段的 5 个金额列必须与 orderColumns 一样走默认 text()（文本单元格），
+ *   改成 numberOrEmpty 会让上下两段单元格类型不同，Excel 求和漏掉一段。
+ * registry-aggregation.test.ts 有列顺序守卫用例，改动 orderColumns 时会一并失败。
+ */
+const paymentColumns = mapColumns([
+  // ── 对齐段：与 orderColumns 逐列同名同序 ──
+  { header: '市场', width: 12, key: 'marketName' },
+  { header: '门店', width: 16, key: 'storeName' },
+  { header: '订单号', width: 22, key: 'saleOrderId' },
+  { header: '类型', width: 10, key: 'saleOrderType' },
+  { header: '单据类型', width: 10, key: 'documentType' },
+  { header: '顾客', width: 12, key: 'customerName' },
+  { header: '顾客手机', width: 14, key: 'clientPhone' },
+  { header: '顾客来源', width: 12, key: 'customerSource' },
+  { header: '推荐人', width: 12, key: 'promoterEmployeeName' },
+  { header: '商品类型', width: 10, key: 'productType' },
+  { header: '品质(一级)', width: 14, key: 'categoryL1' },
+  { header: '品质(二级)', width: 14, key: 'categoryL2' },
+  { header: '商品明细', width: 28, key: 'productName' },
+  { header: '总数量', width: 8, key: 'sessionCount', map: (row) => cellOr(value(row, 'sessionCount'), '—') },
+  { header: '单位', width: 8, key: 'unit' },
+  { header: '可用数量', width: 10, key: 'paidUnusedSessions', map: (row) => cellOr(value(row, 'paidUnusedSessions'), '—') },
+  { header: '订单金额', width: 10, key: 'totalAmount' },
+  { header: '储值卡抵扣', width: 10, key: 'prepaidCardAmount' },
+  { header: '现付', width: 10, key: 'cashAmount' },
+  { header: '实付', width: 10, key: 'received' },
+  { header: '已退', width: 10, key: 'refundedAmount' },
+  { header: '单价', width: 10, key: 'unitRealPrice', map: (row) => numberOrEmpty(row, 'unitRealPrice') },
+  { header: '状态', width: 10, key: 'status' },
+  { header: '支付方式', width: 12, key: 'paymentMethod', map: (row) => paymentMethodMap[String(value(row, 'paymentMethod') ?? '')] ?? text(row, 'paymentMethod') },
+  { header: '是否纳客', width: 8, key: 'isMembershipUpgrade', map: (row) => boolLabel(row, 'isMembershipUpgrade') },
+  { header: '是否活动', width: 8, key: 'isActivity', map: (row) => boolLabel(row, 'isActivity') },
+  { header: '是否体验转换', width: 12, key: 'isExperienceConversion', map: (row) => boolLabel(row, 'isExperienceConversion') },
+  { header: '经营类型', width: 10, key: 'salesCategory' },
+  { header: '顾客类型', width: 10, key: 'customerType', map: (row) => cellOr(value(row, 'customerType'), '未注册') },
+  { header: '开单人', width: 10, key: 'openedByName' },
+  { header: '下单时间', width: 20, key: 'saleOrderDatetime', map: (row) => fmtDateTime(value(row, 'saleOrderDatetime') as string | Date | null) },
+  // 回款行取「款项归属日期」，订单行取订单归属日期：两段粘一起后按这一列 group 即为正确的业绩月份
+  { header: '业绩归属日期', width: 14, key: 'performanceAttributionDate', map: (row) => fmtDate(value(row, 'performanceAttributionDate') as string | Date | null) },
+  // ⚠ 同样是双语义列，但与上一列不同：这一列**不适合**跨两段分组。回款行取
+  // sale_order_payments.created_at（款项建单时间），订单明细行取 sale_orders.created_at
+  // （订单建单时间）；按它统计「当天新建单据」会把回款行错归到款项发生那天。
+  // 表头不能改名——规范要求前 34 列与订单明细导出逐字一致（admin.pr.spec.md §回款明细导出）。
+  { header: '创建时间', width: 20, key: 'createdAt', map: (row) => fmtDateTime(value(row, 'createdAt') as string | Date | null) },
+  { header: '备注', width: 24, key: 'remark' },
+  // ── 款项专属段：只能追加，不能插进上面 ──
+  { header: '款项流水号', width: 14, key: 'paymentId', map: (row) => `#${text(row, 'paymentId')}` },
+  { header: '款项类型', width: 12, key: 'changeType' },
+  { header: '款项状态', width: 10, key: 'paymentStatus' },
+  { header: '款项金额', width: 12, key: 'paymentAmount', map: (row) => numberOrEmpty(row, 'paymentAmount') },
+  { header: '来源端', width: 10, key: 'sourceEnd' },
+  { header: '操作人', width: 12, key: 'operatorName' },
+  { header: '交易号', width: 24, key: 'externalTxnId' },
+  { header: '款项发生时间', width: 20, key: 'paidAt', map: (row) => fmtDateTime(value(row, 'paidAt') as string | Date | null) },
+  { header: '归属状态', width: 12, key: 'performanceAttributionStatus' },
+  { header: '归属调整人', width: 12, key: 'performanceAttributionAdjustedByName' },
+  { header: '归属调整时间', width: 20, key: 'performanceAttributionAdjustedAt', map: (row) => fmtDateTime(value(row, 'performanceAttributionAdjustedAt') as string | Date | null) },
+  { header: '退款原因', width: 28, key: 'refundReason' },
+  { header: '款项备注', width: 32, key: 'note' },
+])
+
+const refundColumns = mapColumns([
+  { header: '退款单号', width: 14, key: 'refundPaymentId', map: (row) => `#${text(row, 'refundPaymentId')}` },
+  { header: '关联原单', width: 22, key: 'refSaleOrderId' },
+  { header: '市场', width: 12, key: 'marketName' },
+  { header: '门店', width: 16, key: 'storeName' },
+  { header: '顾客', width: 12, key: 'customerName' },
+  { header: '顾客手机', width: 14, key: 'clientPhone' },
+  { header: '退款金额', width: 12, key: 'amount', map: (row) => {
+    const amount = Number(value(row, 'amount'))
+    return Number.isFinite(amount) ? -Math.abs(amount) : ''
+  } },
+  { header: '状态', width: 10, key: 'status', map: (row) => {
+    const status = text(row, 'status')
+    return status === '已支付' ? '已通过' : status === '已作废' ? '已驳回' : status
+  } },
+  { header: '原因', width: 32, key: 'refundReason' },
+  { header: '退款方式', width: 12, key: 'paymentMethod', map: (row) => {
+    const method = String(value(row, 'paymentMethod') ?? '')
+    return paymentMethodMap[method] ?? method
+  } },
+  { header: '发起人', width: 12, key: 'operatorName' },
+  { header: '创建时间', width: 20, key: 'createdAt', map: (row) => fmtDateTime(value(row, 'createdAt') as string | Date | null) },
+  { header: '审批人', width: 12, key: 'auditorName' },
+  { header: '审批时间', width: 20, key: 'auditAt', map: (row) => fmtDateTime(value(row, 'auditAt') as string | Date | null) },
+  { header: '审批备注', width: 28, key: 'auditRemark' },
+])
+
 const allocationSalesColumns = mapColumns([
   { header: '市场', width: 12, key: 'market' },
   { header: '门店', width: 18, key: 'storeName' },
@@ -210,6 +306,7 @@ const allocationSalesColumns = mapColumns([
   { header: '顾客类型', width: 12, key: 'customerType' },
   { header: '开单人', key: 'openedByName' },
   { header: '支付时间', width: 20, key: 'paidAt', map: (row) => fmtDateTime(value(row, 'paidAt') as string | Date | null) },
+  { header: '回款归属日期', width: 14, key: 'performanceAttributionDate', map: (row) => fmtDate(value(row, 'performanceAttributionDate') as string | Date | null) },
   { header: '备注', width: 20, key: 'remark' },
 ])
 
@@ -275,6 +372,14 @@ const serviceCommissionColumns = mapColumns([
   { header: '备注', width: 20, key: 'remark' },
 ])
 
+/**
+ * 日期列一律在此处挂 `map: fmtDate`，即使 action 侧已经格式化过。
+ * fmtDate 对 `YYYY-MM-DD` 幂等（无 `T` 直接 slice），重复调用无副作用；
+ * 而列侧不挂 map 时回落的 `text()` 是裸 `String(item)` —— 一旦上游换成 Date 或
+ * 去掉 action 侧格式化，就会把 `Wed Jan 14 2026 ... GMT+0000` 整串写进单元格，
+ * 且 tsc 和单测都不会红（列签名是 `Record<string, unknown>`，类型护栏到此为止）。
+ * ⚠️ 别改用 fmtDateTime 做这种双保险 —— 它不幂等，两侧都做会偏 8 小时。
+ */
 const customerColumns = mapColumns([
   { header: '姓名', width: 14, key: 'name' },
   { header: '手机号', width: 14, key: 'phone' },
@@ -287,9 +392,19 @@ const customerColumns = mapColumns([
   { header: '累计消费', width: 14, key: 'totalSpend' },
   { header: '推荐人', width: 14, key: 'promoterName' },
   { header: '顾客来源', width: 14, key: 'customerSource' },
-  { header: '生日', width: 14, key: 'birthday' },
+  { header: '生日', width: 14, key: 'birthday', map: (row) => fmtDate(value(row, 'birthday') as string | Date | null) },
+  // 「建档日期」而非「注册日期」：created_at 是本系统建档时刻，data-center 的「注册」指的是
+  // became_member_at（会员注册），两个「注册」不是一件事，同名会让甲方拿两张表对不上数。
+  // 老顾客普遍 2026 年才录入本系统，所以「建档日期」晚于「成为会员日期」是正常的（非倒挂 bug）。
+  { header: '建档日期', width: 14, key: 'createdAt', map: (row) => fmtDate(value(row, 'createdAt') as string | Date | null) },
+  { header: '成为会员日期', width: 16, key: 'becameMemberAt', map: (row) => fmtDate(value(row, 'becameMemberAt') as string | Date | null) },
 ])
 
+/**
+ * 「入职日期」插在「职位」之后（雇佣信息聚在一起），因此「生日」及其后 5 列相对
+ * #183 之前的导出文件整体右移一列 —— 按列位置引用旧文件的 Excel 公式会错位。
+ * 后续再加列请一律追加到末尾，不要再中插。
+ */
 const employeeColumns = mapColumns([
   { header: '员工编号', width: 16, key: 'employeeId' },
   { header: '姓名', key: 'name' },
@@ -299,6 +414,7 @@ const employeeColumns = mapColumns([
   { header: '所属组织', width: 18, key: 'orgPath' },
   { header: '所属门店', width: 18, key: 'storeName' },
   { header: '职位', key: 'positionName' },
+  { header: '入职日期', width: 14, key: 'hiredAt', map: (row) => fmtDate(value(row, 'hiredAt') as string | Date | null) },
   { header: '生日', width: 14, key: 'birthday', map: (row) => fmtDate(value(row, 'birthday') as string | Date | null) },
   { header: '技能', width: 24, key: 'skills' },
   { header: '社保', width: 8, key: 'socialInsurance', map: (row) => boolLabel(row, 'socialInsurance') },
@@ -340,20 +456,26 @@ const cardColumns = mapColumns([
 ])
 
 const inventoryColumns = (canViewPrice: boolean) => mapColumns([
-  { header: '门店', width: 20, key: 'storeName', map: (row) => String(value(row, 'storeName') ?? value(row, 'storeId') ?? '') },
+  { header: '库存主体类型', width: 12, key: 'locationType' },
+  { header: '库存主体', width: 20, key: 'locationName', map: (row) => String(value(row, 'locationName') ?? value(row, 'locationId') ?? '') },
   { header: 'SKU', width: 24, key: 'skuId' },
   { header: '产品', width: 36, key: 'skuName' },
-  { header: '产品类型', width: 12, key: 'productType' },
+  { header: '规格', width: 16, key: 'specName' },
+  { header: '供应商', width: 20, key: 'supplier' },
+  { header: '产品系列', width: 16, key: 'productSeries' },
   { header: '批号', width: 16, key: 'batchNo' },
-  { header: '效期', width: 14, key: 'expiryDate' },
-  { header: '库存数量', width: 12, key: 'quantityOnHand' },
+  { header: '有效期', width: 14, key: 'expiryDate' },
+  { header: '赠品', width: 10, key: 'isGift', map: (row) => boolLabel(row, 'isGift') },
+  { header: '库存数量', width: 12, key: 'quantityOnHand', map: (row) => numberOrEmpty(row, 'quantityOnHand') },
   ...(canViewPrice
     ? [
-        { header: '最近单价', width: 12, key: 'lastUnitPrice' },
-        { header: '最近金额', width: 12, key: 'lastAmount' },
+        { header: '供应链单位成本', width: 14, key: 'supplyChainUnitCost', map: (row: Row) => numberOrEmpty(row, 'supplyChainUnitCost') },
+        { header: '市场实际单价', width: 14, key: 'marketActualUnitPrice', map: (row: Row) => numberOrEmpty(row, 'marketActualUnitPrice') },
+        { header: '门店实际单价', width: 14, key: 'storeActualUnitPrice', map: (row: Row) => numberOrEmpty(row, 'storeActualUnitPrice') },
       ]
     : []),
   { header: '备注', width: 24, key: 'remark' },
+  { header: '更新时间', width: 20, key: 'updatedAt', map: (row) => fmtDateTime(value(row, 'updatedAt') as string | Date | null) },
 ])
 
 function breakdownContent(
@@ -526,6 +648,18 @@ export async function createExportContent(
           aggregateOrderExportRows,
         ),
       }
+    case 'payments':
+      return {
+        sheetName: '回款明细',
+        columns: paymentColumns,
+        rows: pagedRows((options: ExportBatchOptions<number>) => exportOrderPayments(params, options)),
+      }
+    case 'refunds':
+      return {
+        sheetName: '退款明细',
+        columns: refundColumns,
+        rows: pagedRows((options: ExportBatchOptions<number>) => exportRefunds(params, options)),
+      }
     case 'allocation-sales':
       return {
         sheetName: '销售提成',
@@ -552,13 +686,13 @@ export async function createExportContent(
       return {
         sheetName: '顾客',
         columns: customerColumns,
-        rows: pagedRows((options: ExportBatchOptions<number>) => exportCustomers(params, options)),
+        rows: pagedRows((options: ExportBatchOptions<string>) => exportCustomers(params, options)),
       }
     case 'employees': {
       const nodes = await db.select().from(orgNodes)
       const nodeMap = new Map(nodes.map((node) => [node.id, node]))
       const rows = (async function* (): AsyncIterable<Row> {
-        for await (const source of pagedRows((options: ExportBatchOptions<number>) => exportEmployees(params, options))) {
+        for await (const source of pagedRows((options: ExportBatchOptions<string>) => exportEmployees(params, options))) {
           const path: string[] = []
           let current = source.orgNodeId as string | null | undefined
           const seen = new Set<string>()
@@ -585,13 +719,13 @@ export async function createExportContent(
         sheetName: '疗程卡',
         columns: cardColumns,
         rows: pagedRows((options: ExportBatchOptions<number>) => exportCards(params, options)),
-      }
+    }
     case 'inventory-stocks': {
-      const firstPage = await exportInventoryStocks(params, { limit: EXPORT_WORKER_BATCH_SIZE })
+      const firstPage = await exportInventoryLots(params, { limit: EXPORT_WORKER_BATCH_SIZE })
       return {
-        sheetName: '门店库存',
+        sheetName: '库存批次',
         columns: inventoryColumns(firstPage.canViewPrice),
-        rows: pagedRows((options: ExportBatchOptions<number>) => exportInventoryStocks(params, options), firstPage),
+        rows: pagedRows((options: ExportBatchOptions<number>) => exportInventoryLots(params, options), firstPage),
       }
     }
     case 'products':

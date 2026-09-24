@@ -120,12 +120,12 @@ const config = [
   {
     /**
      * Enforce that every Server Action export in src/actions/ goes through
-     * the withPermission / withAnyPermission HOF (see @/lib/with-permission).
+     * the withPermission / withAnyPermission / withAllPermissions HOF (see @/lib/with-permission).
      *
      * Three rules together close the gap:
      *  1. (reverse) ban bare `export async function` — forces HOF rewrite
      *  2. (positive) require const init to be a CallExpression
-     *  3. (positive) require the callee to be withPermission / withAnyPermission
+     *  3. (positive) require the callee to be withPermission / withAnyPermission / withAllPermissions
      *
      * S5 flipped to `error` after ticket-10d completed full actions/ migration.
      * `src/actions/auth.ts` is ignored — it owns no-session public entries
@@ -139,19 +139,19 @@ const config = [
         {
           selector: 'ExportNamedDeclaration > FunctionDeclaration[async=true]',
           message:
-            'Server Actions must be wrapped with withPermission(...) or withAnyPermission(...). Use: export const myAction = withPermission("action:key", async (session, ...args) => { ... })',
+            'Server Actions must be wrapped with withPermission(...), withAnyPermission(...) or withAllPermissions(...). Use: export const myAction = withPermission("action:key", async (session, ...args) => { ... })',
         },
         {
           selector:
             'ExportNamedDeclaration > VariableDeclaration > VariableDeclarator[init.type!="CallExpression"]',
           message:
-            'Exported Server Action must be initialized by calling withPermission(...) or withAnyPermission(...).',
+            'Exported Server Action must be initialized by calling withPermission(...), withAnyPermission(...) or withAllPermissions(...).',
         },
         {
           selector:
-            'ExportNamedDeclaration > VariableDeclaration > VariableDeclarator[init.type="CallExpression"][init.callee.type="Identifier"][init.callee.name!=/^(withPermission|withAnyPermission)$/]',
+            'ExportNamedDeclaration > VariableDeclaration > VariableDeclarator[init.type="CallExpression"][init.callee.type="Identifier"][init.callee.name!=/^(withPermission|withAnyPermission|withAllPermissions)$/]',
           message:
-            'Exported Server Action initializer must be withPermission or withAnyPermission (got a different callee).',
+            'Exported Server Action initializer must be withPermission, withAnyPermission or withAllPermissions (got a different callee).',
         },
         /**
          * 禁止裸 `.code === '23xxx'` / `err?.code === '23xxx'` 判断 pg 错误码。

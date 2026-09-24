@@ -33,6 +33,19 @@ import { stores } from "./org";
 import { productSkus } from "./product";
 import { clientWechatUsers, staffWechatUsers } from "./user";
 
+export interface SaleItemInventoryCompositionComponentSnapshot {
+  inventorySkuId: string;
+  productCode: string;
+  productName: string;
+  specName: string | null;
+  quantityPerSaleUnit: number;
+}
+
+export interface SaleItemInventoryCompositionSnapshotV1 {
+  version: 1;
+  components: SaleItemInventoryCompositionComponentSnapshot[];
+}
+
 /**
  * 订单主表（四种单据统一模型）
  *
@@ -45,7 +58,7 @@ export const saleOrders = pgTable(
     saleOrderId: varchar("sale_order_id", { length: 30 }).primaryKey(),
     status: orderStatusEnum("status").notNull().default("待支付"),
     saleOrderType: saleOrderTypeEnum("sale_order_type").notNull().default("销售单"),
-    /** 销售单据类型：售前（非会员客）/ 售后（会员客 or 金额达标） */
+    /** 单据阶段快照：按顾客达标消费次数冻结为售前一次 / 售前二次 / 售后 */
     documentType: documentTypeEnum("document_type"),
     /** 回款/退款引用的原销售单，销售单为 null */
     refSaleOrderId: varchar("ref_sale_order_id", { length: 30 }).references((): any => saleOrders.saleOrderId),
@@ -58,7 +71,10 @@ export const saleOrders = pgTable(
     storeName: varchar("store_name", { length: 100 }),
     saleOrderDatetime: timestamp("sale_order_datetime", { withTimezone: true }).notNull(),
     /**
-     * 业绩归属日期（上海自然日）。仅首次业绩事件按本字段归集；后续回款/退款仍按各自 paid_at。
+     * 业绩归属日期（上海自然日）。首次支付事件按本字段归集；后续回款/退款按各自款项行的
+     * `sale_order_payments.performance_attribution_date`（迁移 0041 起查询侧一律直读该列）。
+     * 本字段变更时由 `sync_order_performance_attribution_to_payments()` trigger 同步到
+     * 首次支付行与同次储值卡行。
      * 原始订单时间 sale_order_datetime 始终保留真实业务事实，不因经营周期调整而改写。
      */
     performanceAttributionDate: date("performance_attribution_date")
@@ -72,7 +88,7 @@ export const saleOrders = pgTable(
     clientUserId: text("client_user_id").references(() => clientWechatUsers.userId),
     clientPhone: varchar("client_phone", { length: 30 }),
     customerName: varchar("customer_name", { length: 50 }),
-    /** 订单总金额；商品价格之和，扣除优惠券 */
+    /** 订单总金额；商品价格之和，扣除优惠券和积分抵扣 */
     totalAmount: numeric("total_amount", { precision: 10, scale: 2 }).notNull(),
     /**
      * 已结算储值卡实付净额。
@@ -127,11 +143,30 @@ export const saleOrders = pgTable(
      * 仅线上微信/支付宝走拉卡拉时写入；线下/储值卡为 NULL。
      */
     lakalaOutOrderNo: text("lakala_out_order_no"),
+    /**
+     * 最近一次预下单的支付场次快照，供顾客中途退出后「继续支付」复用（issue #214）。
+     *
+     * `{ outTradeNo, expiresAt, paymentMethod, payAmount, paymentParams }`
+     *
+     * 复用靠**匹配**而非清空：`lakala_out_order_no = NULL` 的清空点分散在 clientApi helper、
+     * payNotify 三处与各端 SQL，要求它们全部同步清空这一列必然漏。改为复用前校验
+     * `intent.outTradeNo === lakala_out_order_no`——单号对不上即自动失效，残留 jsonb 无害。
+     *
+     * `paymentParams` 含 paySign（支付凭据）：只回发给鉴权通过且 client_user_id 匹配的本人，
+     * 不写日志，不随 order.detail 下发。
+     */
+    lakalaPaymentIntent: jsonb("lakala_payment_intent"),
     allocationStatus: allocationStatusEnum("allocation_status"),
     /** 使用的券实例ID（关系由 user_coupons.used_sale_order_id 维护，不设反向 FK 避免循环引用） */
     couponId: text("coupon_id"),
     /** 券抵扣总金额 */
     couponDiscount: numeric("coupon_discount", { precision: 10, scale: 2 }).default("0"),
+    /** 积分抵扣使用积分数 */
+    pointsUsed: bigint("points_used", { mode: "number" }).notNull().default(0),
+    /** 积分抵扣金额 */
+    pointsDiscount: numeric("points_discount", { precision: 10, scale: 2 }).notNull().default("0"),
+    // comment-only: non-negative invariants for points_used/points_discount are enforced by
+    // chk_sale_order_points_used / chk_sale_order_points_discount below (extra() block).
     /** 订单备注（员工端开单时填写） */
     remark: text("remark"),
     /** 活动单标记（纯标识，不影响金额/提成/营收口径；admin/staff 开单时勾选） */
@@ -188,6 +223,10 @@ export const saleOrders = pgTable(
       "chk_first_payment_amount",
       sql`${table.firstPaymentAmount} IS NULL OR (${table.firstPaymentAmount} > 0 AND ${table.firstPaymentAmount} <= ${table.payableAmount})`,
     ),
+    /** 积分消耗量非负（>= 0） */
+    check("chk_sale_order_points_used", sql`${table.pointsUsed} >= 0`),
+    /** 积分抵扣金额非负（>= 0） */
+    check("chk_sale_order_points_discount", sql`${table.pointsDiscount} >= 0`),
   ],
 );
 
@@ -228,6 +267,12 @@ export const saleItems = pgTable(
     productName: text("product_name"),
     /** 商品类型快照（疗程卡/家居产品） */
     productType: productTypeEnum("product_type"),
+    /**
+     * 家居产品下单时冻结的库存组成。历史数据及非家居产品为 NULL；
+     * 历史空快照家居产品提货时读取当时最新组成，但不反向补写。
+     */
+    inventoryCompositionSnapshot: jsonb("inventory_composition_snapshot")
+      .$type<SaleItemInventoryCompositionSnapshotV1>(),
     /** 该行总次数（疗程卡：sku.session_count × quantity；非次数卡为 NULL）。是"行总次数"口径，已含 quantity。 */
     sessionCount: integer("session_count"),
     remainingSessions: integer("remaining_sessions"),
@@ -257,6 +302,19 @@ export const saleItems = pgTable(
     /**
      * 该行应付金额（摊券后的权威行总额）。恒等式：疗程卡 sale_amount = unit_real_price × session_count；
      * 非卡 sale_amount = unit_real_price × quantity。unit_price/unit_real_price 均由 sale_amount 派生。
+     *
+     * ⚠️ **所有「转出」行一律豁免该恒等式**（家居 #145/#153，疗程卡 #182）：折抵金额是
+     * 「剩余已付」，含不足一整件/一整次的已付余额——家居付 ¥450 折 4 件时转出行
+     * `sale_amount = received = -450`，而 `quantity(4) × unit_real_price(100) = 400`；
+     * 疗程卡 1 次 ¥19800 只付 ¥14000 时转出行 `-14000` 而 `quantity(1) × 19800 = 19800`。
+     * sale_amount 必须等于实际折走的金额，否则转换单差额会少算。
+     * **不要按该恒等式校验转出行**（写对账脚本时尤其注意）。
+     *
+     * ⚠️ 另有一条运行时写入路径会**下调购买行的 sale_amount**：转换单折抵的「欠款归零」
+     * （#182，见 waived_amount 列）。下调量记在 waived_amount，原值 = sale_amount + waived_amount。
+     * 该路径**只改 sale_amount**，`unit_real_price` / `quantity` / `session_count` 保持原值，
+     * 因此这类行上「sale_amount = unit_real_price × 次数/件数」同样不再成立——按 unit × qty
+     * 反推行金额的对账或导出脚本必须改用 sale_amount + waived_amount，或按 waived_amount > 0 排除。
      */
     saleAmount: numeric("sale_amount", { precision: 10, scale: 2 }).notNull(),
     /**
@@ -287,8 +345,52 @@ export const saleItems = pgTable(
      */
     pendingReceived: numeric("pending_received", { precision: 10, scale: 2 }).notNull().default("0"),
     expireDate: date("expire_date"),
-    /** 已提货数量（家居产品用，原子累加，可提 = quantity - picked_up_quantity） */
+    /**
+     * 已**物理提货**数量（家居产品用，原子累加）。2026-09-18 #154 拆列后回归本义。
+     *
+     * 不变量：`picked_up_quantity == SUM(pickup_records.pickup_quantity)`，由 cron STEP 12 的
+     * C5 `pickup_quantity_mismatch` 守恒。删除提货记录时直接等量回退本列即正确——拆列前本列
+     * 同时承载已退款/已转换，减法会释放掉那两类占用的额度（#154 缺陷 1）。
+     *
+     * 「已结算」是派生量，不再有对应列：
+     *   settled   = picked_up_quantity + refunded_quantity + converted_quantity（LEAST(quantity) 封顶）
+     *   可提/可退 = quantity − settled
+     */
     pickedUpQuantity: integer("picked_up_quantity").default(0),
+    /**
+     * 转换单折抵时**豁免掉的该行欠款**（#182）。只由 `createConversion` / `createConversionOrder` 写入，
+     * 关闭待支付转换单的回滚路径必须 `sale_amount += waived_amount` 并把本列清零 —— 否则
+     * 「开转换单 → 关闭」会永久抹掉原单欠款。
+     *
+     * 语义：折抵 = 该行整体退出（剩余已付全额折走 + 剩余权益全部注销），因此原单该行不该继续挂欠款。
+     * 写入条件缺一不可：`sale_order_type <> '寄存单'`（寄存单 received=0，下调会把原价快照抹成 0）、
+     * `sale_amount > 0`、`received > 0`（否则新 sale_amount 落到 0，踩 `sale_amount <= 0` 的赠品全放分支）、
+     * `received < sale_amount`（overpay 行 received > sale_amount，不能反向上调应付）。
+     * 同一行可多次折抵累加。**不是退款**：退款一律走 sale_orders.refunded_amount 记账。
+     */
+    waivedAmount: numeric("waived_amount", { precision: 10, scale: 2 }).notNull().default("0"),
+    /**
+     * 已**退款**结算数量（家居产品用，原子累加；2026-09-18 #154 从 picked_up_quantity 拆出）。
+     * NOT NULL：这是全新列、无历史 NULL，没有理由跟着 picked_up_quantity（历史 nullable）一起可空——
+     * 可空会让读取侧每处都得背一个 COALESCE。PG 11+ 起 `ADD COLUMN NOT NULL DEFAULT <常量>`
+     * 是纯 catalog 操作，不重写表、不延长锁窗口。
+     *
+     * 三个数量语义里**只有它没有独立数据源**——已提货可由 pickup_records 反推、已转换可由转出行
+     * 反推，唯独已退款不能，这正是必须拆列的根本理由。
+     * 由 refund-cascade 通道 5 守卫式累加：`picked_up + refunded + converted + 本次 <= quantity`
+     * 不成立时 rowCount=0 → 抛 CONFLICT，不再用 LEAST 静默封顶（#154 缺陷 3）。
+     */
+    refundedQuantity: integer("refunded_quantity").notNull().default(0),
+    /**
+     * 已**转换折抵**数量（家居产品用，原子累加；2026-09-18 #154 从 picked_up_quantity 拆出，
+     * 折抵能力本身见 2026-09-14 #125）。
+     *
+     * 交叉源：`SUM(转出行 quantity WHERE item_direction='转出' AND 转换单 status <> '已关闭')`。
+     * 转换单关闭时由 rollbackPendingConversionOnClose 等量退回本列。
+     * 注意折抵**金额**仍须从转出行 received 聚合，不能由件数 × 单价推算（#145/#153：
+     * 折 4 件可能带走 ¥450 而非 ¥400）。
+     */
+    convertedQuantity: integer("converted_quantity").notNull().default(0),
     remark: text("remark"),
     salesCategory: salesCategoryEnum("sales_category"),
     /** 固定手工费快照（开单时从 product_skus.service_fee × quantity 持久化，用于服务完成时计算固定手工费部分的服务提成） */
@@ -297,8 +399,11 @@ export const saleItems = pgTable(
     isShengmei: boolean("is_shengmei"),
     /**
      * 体验卡快照（开单时从 product_skus.is_experience 拷贝）。
-     * 客户分类跃迁判定：order_non_trial_amount = SUM(received WHERE is_experience=false)，
-     * order_trial_amount = SUM(received WHERE is_experience=true)。混合订单按非体验部分判跃迁。
+     * 客户分类跃迁判定（#187 已落地，2026-09-18）：按**单笔订单**聚合
+     * non_trial = SUM(毛实收 WHERE is_experience=false)、trial = SUM(毛实收 WHERE is_experience=true)；
+     * 毛实收 = received（净额）+ 该行逐项退款额（退款不扣减）。混合订单按非体验部分判跃迁：
+     * non_trial ≥ 阈值 → 会员客 / non_trial > 0 → 小美客 / trial > 0 → 体验客 / 否则流量客。
+     * 实现见 staffApi routes/order.js RECALC_CUSTOMER_TYPE_CTE（八处副本，snapshot 守护）。
      * 与 unit_price/unit_real_price 同属价格快照族，admin 后续修改 product_skus.is_experience 不影响历史订单。
      */
     isExperience: boolean("is_experience").notNull().default(false),
@@ -327,7 +432,39 @@ export const saleItems = pgTable(
       "chk_item_paid_sessions",
       sql`${table.paidSessions} IS NULL OR (${table.paidSessions} >= 0 AND ${table.paidSessions} <= ${table.sessionCount})`,
     ),
-    check("chk_item_quantity", sql`${table.quantity} > 0`),
+    /**
+     * 数量恒 > 0，**唯一例外是转出行**（#182）：疗程卡次数已用完 / 家居物理件已结算完、
+     * 只剩「不足一整次/一整件的已付余数」时，折抵仍要让顾客把这笔钱换走，此时转出行
+     * `quantity = 0` 而 `sale_amount = received = -余数`。购买 / 转入行仍必须 > 0。
+     */
+    check(
+      "chk_item_quantity",
+      sql`${table.quantity} > 0 OR (${table.itemDirection} = '转出' AND ${table.quantity} = 0)`,
+    ),
+    check("chk_item_waived_amount", sql`${table.waivedAmount} >= 0`),
+    /**
+     * #154：「已结算」不得超过购买件数。三列各自的写入点都带了同判据的 WHERE 守卫，
+     * 但那是 8 份手抄；约束是同一条不变量的**唯一权威表达**，且不可能被绕过。
+     *
+     * ⚠ 必须用 COALESCE 而不是 `picked_up_quantity IS NULL OR (...)`：后者对 NULL 行直接放行，
+     * 「不可能被绕过」就不成立（双谱系评审命中）。
+     *
+     * 曾以「ADD CONSTRAINT 取 ACCESS EXCLUSIVE 太贵」为由不加——该理由不成立：
+     * 这把锁在同一迁移的 ADD COLUMN 就已取到，drizzle 又把整批迁移包进单事务持有到提交，
+     * 追加约束的边际锁成本是 0；全表扫描的代价也已被迁移的事后断言付过一遍。
+     */
+    check(
+      "chk_sale_item_settled_le_quantity",
+      sql`(COALESCE(${table.pickedUpQuantity}, 0) + ${table.refundedQuantity} + ${table.convertedQuantity}) <= ${table.quantity}`,
+    ),
+    /**
+     * 三列非负。展示侧那些 `GREATEST(0, ...)` 本来就是在防负值；有了约束，负值成为不可能，
+     * 而不是「出现了再夹回去」。picked_up_quantity 历史可空，故走 COALESCE。
+     */
+    check(
+      "chk_sale_item_quantities_non_negative",
+      sql`COALESCE(${table.pickedUpQuantity}, 0) >= 0 AND ${table.refundedQuantity} >= 0 AND ${table.convertedQuantity} >= 0`,
+    ),
     check("chk_item_service_fee", sql`${table.serviceFee} >= 0`),
   ],
 );
@@ -445,6 +582,25 @@ export const saleOrderPayments = pgTable(
     /** status 翻 '已支付' 的时间；线下/储值卡与 created_at 一致 */
     paidAt: timestamp("paid_at", { withTimezone: true }),
     /**
+     * 款项业绩归属日期（上海自然日）—— 查询侧的**唯一**口径：
+     * 各端直读本列，不再有任何 CASE/COALESCE 回退分支（迁移 0041）。
+     *
+     * 取值全部由写入侧两个 trigger 保证，迁移 0041 起由 `chk_sop_attribution_date_present`
+     * 约束兜底（等价 NOT NULL，见表末约束处的说明）：
+     * - `initialize_payment_performance_attribution_date()`（BEFORE INSERT/UPDATE，迁移 0040）：
+     *   首次支付镜像 sale_orders 的归属日期（不可单独修改，调整机会仍记在订单上）；
+     *   同次混合支付的储值卡抵扣跟随首次支付/回款主流水；其余款项入账时按 paid_at 初始化
+     *   并允许一次人工调整，未入账期间先按 created_at 占位、入账那一刻按 paid_at 重算。
+     * - `sync_order_performance_attribution_to_payments()`（sale_orders 的 AFTER UPDATE，迁移 0041）：
+     *   订单级归属日期被调整时同步首次支付行与同次卡行。
+     */
+    performanceAttributionDate: date("performance_attribution_date"),
+    /** 首次人工调整时间；非 NULL 即表示该款项的一次修改机会已使用。 */
+    performanceAttributionAdjustedAt: timestamp("performance_attribution_adjusted_at", { withTimezone: true }),
+    /** 首次人工调整人；员工删除后置空，完整审计仍由 operation_logs 保留。 */
+    performanceAttributionAdjustedBy: varchar("performance_attribution_adjusted_by", { length: 30 })
+      .references(() => staffWechatUsers.employeeId, { onDelete: "set null" }),
+    /**
      * 营业额分配状态（仅"回款事件主流水行"有值；储值卡抵扣从行 / 退款 / 待支付行为 NULL）。
      * 待分配＝该笔回款待店长/后台逐笔分配；已分配＝已分配或线上自动分配完成。
      * 按回款逐笔分配的状态下沉位；sale_orders.allocation_status 为其汇总位。
@@ -458,6 +614,9 @@ export const saleOrderPayments = pgTable(
       .on(table.allocationStatus)
       .where(sql`allocation_status IS NOT NULL`),
     index("idx_sop_status_created").on(table.status, table.createdAt),
+    index("idx_sop_paid_at_id")
+      .on(table.paidAt, table.id)
+      .where(sql`paid_at IS NOT NULL`),
     /** 同订单同通道同三方流水号唯一：支付回调幂等键 */
     uniqueIndex("uq_sop_txn")
       .on(table.saleOrderId, table.paymentMethod, table.externalTxnId)
@@ -489,6 +648,21 @@ export const saleOrderPayments = pgTable(
     check(
       "chk_sop_method_txn",
       sql`${table.paymentMethod} NOT IN ('微信','支付宝') OR ${table.externalTxnId} IS NOT NULL`,
+    ),
+    /**
+     * 业绩归属日期必须有值（迁移 0041）。查询侧已改为直读该列，NULL 会让这笔款项的业绩事件
+     * 整行从报表里消失 —— 比报错更难发现，所以在库层面挡住。
+     *
+     * 用 CHECK 而不是 `.notNull()`：该列的值由 BEFORE INSERT trigger 填，应用层 INSERT 不带它。
+     * `.notNull()` 会让 drizzle 的 `$inferInsert` 把它变成必填，三端 7 处 INSERT 都得自己算一遍
+     * 归属日期 —— 正好与本次「口径收敛到单一来源」相反。
+     * 也不能改用 `.notNull().default(...)` 绕开：DEFAULT 在 BEFORE trigger 之前生效，
+     * trigger 里 `IF NEW.performance_attribution_date IS NULL` 就永不成立，
+     * 回款/退款会被静默落到 DEFAULT 那一天而不是 paid_at 当天。
+     */
+    check(
+      "chk_sop_attribution_date_present",
+      sql`${table.performanceAttributionDate} IS NOT NULL`,
     ),
   ],
 );
@@ -604,67 +778,55 @@ export const salePaymentItemAllocations = pgTable(
 );
 
 const saleOrderPerformanceEventsQuery = sql`
-  WITH classified AS (
-    SELECT
-      sop.id AS sale_payment_id,
-      sop.sale_order_id,
-      so.store_id,
-      so.sale_order_type,
-      so.legacy_source,
-      sop.change_type,
-      sop.payment_method,
-      sop.status,
-      sop.amount,
-      sop.paid_at,
-      so.performance_attribution_date,
-      (
-        sop.status = '已支付'
-        AND sop.amount::numeric > 0
-        AND sop.change_type IN ('首次支付', '回款', '储值卡抵扣')
-        AND NOT EXISTS (
-          SELECT 1
-          FROM sale_order_payments prior
-          WHERE prior.sale_order_id = sop.sale_order_id
-            AND prior.status = '已支付'
-            AND prior.amount::numeric > 0
-            AND prior.change_type IN ('首次支付', '回款', '储值卡抵扣')
-            AND (
-              COALESCE(prior.paid_at, prior.created_at),
-              prior.id
-            ) < (
-              COALESCE(sop.paid_at, sop.created_at),
-              sop.id
-            )
-        )
-      ) AS is_initial_event
-    FROM sale_order_payments sop
-    JOIN sale_orders so ON so.sale_order_id = sop.sale_order_id
-  )
   SELECT
-    sale_payment_id,
-    sale_order_id,
-    store_id,
-    sale_order_type,
-    legacy_source,
-    change_type,
-    payment_method,
-    status,
-    amount,
-    paid_at,
-    CASE
-      WHEN is_initial_event THEN performance_attribution_date
-      ELSE (COALESCE(paid_at, CURRENT_TIMESTAMP) AT TIME ZONE 'Asia/Shanghai')::date
-    END AS performance_date,
-    is_initial_event
-  FROM classified
+    sop.id AS sale_payment_id,
+    sop.sale_order_id,
+    so.store_id,
+    so.sale_order_type,
+    so.legacy_source,
+    sop.change_type,
+    sop.payment_method,
+    sop.status,
+    sop.amount,
+    sop.paid_at,
+    sop.performance_attribution_date AS performance_date,
+    (
+      sop.status = '已支付'
+      AND sop.amount::numeric > 0
+      AND sop.change_type IN ('首次支付', '回款', '储值卡抵扣')
+      AND NOT EXISTS (
+        SELECT 1
+        FROM sale_order_payments prior
+        WHERE prior.sale_order_id = sop.sale_order_id
+          AND prior.status = '已支付'
+          AND prior.amount::numeric > 0
+          AND prior.change_type IN ('首次支付', '回款', '储值卡抵扣')
+          AND (
+            COALESCE(prior.paid_at, prior.created_at),
+            prior.id
+          ) < (
+            COALESCE(sop.paid_at, sop.created_at),
+            sop.id
+          )
+      )
+    ) AS is_initial_event
+  FROM sale_order_payments sop
+  JOIN sale_orders so ON so.sale_order_id = sop.sale_order_id
 `;
 
 /**
  * 订单款项业绩事件视图。
  *
- * - 每单按支付时间、创建时间、ID 排序的首笔成功正向款项使用订单业绩归属日期；
- * - 后续回款、后续储值卡抵扣和退款使用各自真实 paid_at 的上海自然日；
- * - 视图保留全部状态，报表必须继续限定 status='已支付'。
+ * `performance_date` **直读** `sale_order_payments.performance_attribution_date`，
+ * 视图侧不再有任何回退分支（迁移 0041，2026-09-14 需求：查询侧不存在回退）。
+ * 该列的取值规则全部下沉到写入侧的两个 trigger：
+ * - `initialize_payment_performance_attribution_date()`（BEFORE INSERT/UPDATE on sale_order_payments）
+ *   —— 首次支付镜像订单级、同次混合支付卡行跟随主流水、其余 paid_at → created_at 兜底；
+ * - `sync_order_performance_attribution_to_payments()`（AFTER UPDATE on sale_orders）
+ *   —— 订单级归属日期被调整时同步首次支付行与同次卡行。
+ * 迁移 0041 起该列为 NOT NULL，因此本视图的 performance_date 恒有值。
+ *
+ * 视图保留全部状态，报表必须继续限定 status='已支付'。
  */
 export const saleOrderPerformanceEvents = pgView(
   "sale_order_performance_events",

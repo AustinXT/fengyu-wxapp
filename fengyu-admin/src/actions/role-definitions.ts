@@ -2,23 +2,26 @@
 
 import { randomUUID } from 'crypto'
 import { revalidatePath } from 'next/cache'
-import { and, asc, eq, ne, sql } from 'drizzle-orm'
+import { and, asc, eq, sql } from 'drizzle-orm'
 import { db } from '@/db'
 import { permissionRoleDefinitions, permissionRoles } from '@db/permission'
-import { staffWechatUsers } from '@db/user'
 import { withAnyPermission, withPermission } from '@/lib/with-permission'
 import { requireAdmin, invalidatePermissionMatrixCache, KNOWN_PERMISSION_ACTIONS } from '@/lib/permissions'
 import {
-  getActionGrantability,
   getMissingUiDependencies,
+  isActionGrantableForRoleDefinition,
   sanitizeRoleDefinitionActions,
 } from '@/lib/permission-contract'
 import { logOperation, logUpdate } from '@/lib/operation-log'
 import { pgErrorCode } from '@/lib/pg-error'
+// 取锁顺序（组织树 → admin 计数 → 行锁）见该模块顶部（#318）
+import { lockOrgTree, lockActiveAdminCount, lockPermissionMatrixMirror } from '@/lib/invariant-locks'
+import { countActiveAdmins } from '@/lib/admin-guard'
 import type { RoleDefinition } from '@/lib/types'
 
 const SUPER_ADMIN_REQUIRED_ACTIONS = [
   'system:config',
+  'system:diagnostics',
   'permission:assign_admin',
   'admin:reset_password',
 ] as const
@@ -46,11 +49,45 @@ export interface RoleDefinitionInput {
   name: string
   description?: string | null
   actions?: string[]
+  allowedScopeTypes?: Array<'总部' | '市场' | '门店'>
   copyFromRoleKey?: string | null
   canAccessAdmin?: boolean
   isSuperAdmin?: boolean
   isStoreManager?: boolean
   expectedUpdatedAt?: string
+}
+
+const INVENTORY_TIER_ACTIONS = {
+  总部: [
+    'inventory:supply_chain_operate', 'inventory:supply_chain_approve',
+    'inventory:supply_chain_price_view', 'inventory:supply_chain_master_data_manage',
+    'inventory:shipment_cancel_approve',
+  ],
+  市场: [
+    'inventory:market_operate', 'inventory:market_approve', 'inventory:market_price_view',
+    'inventory:market_sku_manage', 'inventory:self_purchase_receive',
+    'inventory:shipment_cancel_request',
+  ],
+  门店: ['inventory:store_operate'],
+} as const
+
+function normalizeAllowedScopeTypes(
+  value: readonly string[] | undefined,
+  actions: readonly string[],
+  isSuperAdmin: boolean,
+): Array<'总部' | '市场' | '门店'> {
+  if (isSuperAdmin) return ['总部']
+  const valid = new Set(['总部', '市场', '门店'])
+  const normalized = [...new Set(value ?? ['总部', '市场', '门店'])]
+  if (normalized.length === 0 || normalized.some((item) => !valid.has(item))) {
+    throw new Error('INVALID_PARAMS: 角色至少需要一个有效的可绑定层级')
+  }
+  const tiers = (Object.entries(INVENTORY_TIER_ACTIONS) as Array<[
+    '总部' | '市场' | '门店', readonly string[],
+  ]>).filter(([, tierActions]) => tierActions.some((action) => actions.includes(action)))
+  if (tiers.length > 1) throw new Error('INVALID_PARAMS: 普通角色不能混合多个进销存层级动作')
+  if (tiers.length === 1) return [tiers[0][0]]
+  return normalized as Array<'总部' | '市场' | '门店'>
 }
 
 function normalizeName(value: string): string {
@@ -69,17 +106,12 @@ function normalizeDescription(value?: string | null): string | null {
 function normalizeActions(actions: readonly string[], isSuperAdmin: boolean): string[] {
   const known = new Set(KNOWN_PERMISSION_ACTIONS)
   const normalized = [...new Set(actions.map((action) => String(action).trim()).filter(Boolean))].sort()
-  for (const action of normalized) {
-    const grantability = getActionGrantability(isSuperAdmin ? 'admin' : 'staff', action, known)
-    if (grantability === 'unknown') {
-      throw new Error(`INVALID_PARAMS: 未知权限项 ${action}`)
-    }
-    if (grantability === 'admin_only') {
-      throw new Error(`INVALID_PARAMS: ${action} 仅超级管理员角色可持有`)
-    }
-    if (grantability === 'undelivered') {
-      throw new Error(`INVALID_PARAMS: ${action} 暂未交付管理后台，不能授予`)
-    }
+  const unknown = normalized.find((action) => !known.has(action))
+  if (unknown) throw new Error(`INVALID_PARAMS: 未知权限项 ${unknown}`)
+
+  const notGrantable = normalized.find((action) => !isActionGrantableForRoleDefinition(action, isSuperAdmin))
+  if (notGrantable) {
+    throw new Error(`INVALID_PARAMS: ${notGrantable} 仅超级管理员角色可持有`)
   }
 
   for (const action of normalized) {
@@ -100,22 +132,37 @@ function normalizeActions(actions: readonly string[], isSuperAdmin: boolean): st
 }
 
 /**
- * 超级管理员会绕过数据 scope，因此已在市场、门店等非总部节点分配的角色
- * 不得直接升级。调用方必须先撤销这些分配，再创建或升级总部范围的角色。
+ * 复核存量分配与层级白名单的冲突：permission_roles 的 DB 触发器只在分配行自身
+ * INSERT/UPDATE 时校验 scope 节点类型，编辑角色定义（收窄 allowedScopeTypes 或
+ * 加入进销存层级动作触发 normalize 收敛）不会触发复核；staffApi 鉴权也不读
+ * allowed_scope_types，矛盾分配会在小程序端持续生效。因此创建/升级/编辑前按
+ * 目标层级集合检查存量分配，有冲突先拒绝（口径同 0039 迁移期 DO 守卫）。
+ * 超级管理员绕过数据 scope，只允许绑定总部节点，等价于白名单 ['总部']。
  */
-async function hasNonHeadquartersAssignment(roleKey: string): Promise<boolean> {
-  const rows = await db.execute(sql`
+async function hasConflictingScopeAssignment(
+  roleKey: string,
+  allowedScopeTypes: readonly ('总部' | '市场' | '门店')[],
+  /** 传事务句柄即可在锁内复核 —— 与 `assignRole` 互斥后这条守卫才真的闭合（#318 第 3 轮） */
+  executor: Pick<typeof db, 'execute'> = db,
+): Promise<boolean> {
+  const rows = await executor.execute(sql`
     SELECT 1
       FROM permission_roles pr
-      JOIN org_nodes node ON node.id = pr.scope_id
+      LEFT JOIN org_nodes node ON node.id = pr.scope_id
      WHERE pr.role = ${roleKey}
-       AND node.type <> '总部'
+       AND (node.id IS NULL OR NOT (node.type = ANY(${sql.param([...allowedScopeTypes])}::text[])))
      LIMIT 1
   `)
   return (rows as unknown as unknown[]).length > 0
 }
 
 async function writeCompatibilityMirror(tx: any): Promise<void> {
+  /**
+   * 读全表 → 序列化 → UPSERT 是 read-modify-write，三个写角色定义的事务必须互斥
+   * （#318 第 7 轮 GLM P1；丢更新的后果是小程序侧按旧矩阵继续放行，无界期）。
+   * 锁序 ④ —— 取锁点刻意放在本函数内部而不是调用方，见 `lib/invariant-locks.ts` 的说明。
+   */
+  await lockPermissionMatrixMirror(tx)
   const rows = await tx
     .select({
       roleKey: permissionRoleDefinitions.roleKey,
@@ -144,6 +191,7 @@ function serialize(row: {
   name: string
   description: string | null
   actions: string[]
+  allowedScopeTypes: string[]
   canAccessAdmin: boolean
   isSuperAdmin: boolean
   isStoreManager: boolean
@@ -154,6 +202,7 @@ function serialize(row: {
   return {
     ...row,
     actions: sanitizeRoleDefinitionActions(row.actions, row.isSuperAdmin, KNOWN_PERMISSION_ACTIONS),
+    allowedScopeTypes: row.allowedScopeTypes as Array<'总部' | '市场' | '门店'>,
     assignmentCount: Number(row.assignmentCount),
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
@@ -169,6 +218,7 @@ export const getRoleDefinitions = withAnyPermission(
         name: permissionRoleDefinitions.name,
         description: permissionRoleDefinitions.description,
         actions: permissionRoleDefinitions.actions,
+        allowedScopeTypes: permissionRoleDefinitions.allowedScopeTypes,
         canAccessAdmin: permissionRoleDefinitions.canAccessAdmin,
         isSuperAdmin: permissionRoleDefinitions.isSuperAdmin,
         isStoreManager: permissionRoleDefinitions.isStoreManager,
@@ -203,15 +253,12 @@ export const createRoleDefinition = withPermission(
         .where(eq(permissionRoleDefinitions.roleKey, input.copyFromRoleKey))
         .limit(1)
       if (!source) throw new Error('NOT_FOUND: 复制来源角色不存在')
-      sourceActions = sanitizeRoleDefinitionActions(
-        source.actions,
-        isSuperAdmin,
-        KNOWN_PERMISSION_ACTIONS,
-      )
+      sourceActions = sanitizeRoleDefinitionActions(source.actions, isSuperAdmin, KNOWN_PERMISSION_ACTIONS)
     }
 
     const roleKey = `role_${randomUUID()}`
     const actions = normalizeActions(sourceActions, isSuperAdmin)
+    const allowedScopeTypes = normalizeAllowedScopeTypes(input.allowedScopeTypes, actions, isSuperAdmin)
     try {
       await db.transaction(async (tx) => {
         await tx.insert(permissionRoleDefinitions).values({
@@ -219,6 +266,7 @@ export const createRoleDefinition = withPermission(
           name: normalizeName(input.name),
           description: normalizeDescription(input.description),
           actions,
+          allowedScopeTypes,
           canAccessAdmin: isSuperAdmin ? true : input.canAccessAdmin !== false,
           isSuperAdmin,
           isStoreManager,
@@ -233,7 +281,7 @@ export const createRoleDefinition = withPermission(
     }
 
     await logOperation(session, 'role_definition.create', 'permission_role_definition', roleKey, {
-      name: normalizeName(input.name), actions, canAccessAdmin: input.canAccessAdmin !== false,
+      name: normalizeName(input.name), actions, allowedScopeTypes, canAccessAdmin: input.canAccessAdmin !== false,
       isSuperAdmin, isStoreManager,
     })
     invalidatePermissionMatrixCache()
@@ -265,23 +313,17 @@ export const updateRoleDefinition = withPermission(
       || nextAdminAccess !== before.canAccessAdmin
     if (capabilityChanged) requireAdmin(session)
 
-    if (!before.isSuperAdmin && nextSuper && await hasNonHeadquartersAssignment(roleKey)) {
+    // 早拒（省掉开事务的成本）；**权威那次在锁内**，见下面事务里的同名检查
+    if (!before.isSuperAdmin && nextSuper && await hasConflictingScopeAssignment(roleKey, ['总部'])) {
       throw new Error('INVALID_STATE: 已在非总部范围分配的角色不能直接升级为超级管理员，请先撤销相关授权')
     }
 
-    if (before.isSuperAdmin && !nextSuper) {
-      const [{ count }] = await db
-        .select({ count: sql<number>`count(DISTINCT ${permissionRoles.employeeId})::int` })
-        .from(permissionRoles)
-        .innerJoin(permissionRoleDefinitions, eq(permissionRoles.role, permissionRoleDefinitions.roleKey))
-        .innerJoin(staffWechatUsers, eq(permissionRoles.employeeId, staffWechatUsers.employeeId))
-        .where(and(
-          eq(permissionRoleDefinitions.isSuperAdmin, true),
-          ne(permissionRoleDefinitions.roleKey, roleKey),
-          eq(staffWechatUsers.isResigned, false),
-        ))
-      if (count < 1) throw new Error('INVALID_STATE: 系统至少需保留 1 名在职超级管理员')
-    }
+    /**
+     * 「降级超管角色」也会减少活跃超管 —— 守卫见下面的事务内（#318）。
+     * 这里**不**做事务外预查：那份查询与 UPDATE 之间可被并发插队，
+     * 而这条不变量的另外三个入口（`updateEmployee` 标离职 / `deleteEmployee` /
+     * `revokeRole` 撤超管）都已经收进 `admin:active_count` 那把锁，只差这一处。
+     */
 
     const actions = normalizeActions(
       input.actions ?? sanitizeRoleDefinitionActions(
@@ -291,17 +333,59 @@ export const updateRoleDefinition = withPermission(
       ),
       nextSuper,
     )
+    const allowedScopeTypes = normalizeAllowedScopeTypes(
+      input.allowedScopeTypes ?? before.allowedScopeTypes,
+      actions,
+      nextSuper,
+    )
+    // 编辑可能收窄层级（含 normalize 对进销存层级动作的强制收敛）；按目标层级复核
+    // 存量分配，矛盾时拒绝，防止小程序端继续按旧绑定放行。
+    // 同样只是早拒 —— 权威那次在锁内（并发 assignRole 能在这次检查之后插进一条绑定）。
+    if (await hasConflictingScopeAssignment(roleKey, allowedScopeTypes)) {
+      throw new Error('INVALID_STATE: 存在与新可绑定层级冲突的角色分配，请先撤销相关授权后再保存')
+    }
     // PostgreSQL 的 timestamptz 可保留微秒，而 JavaScript Date 只能保留毫秒。
     // 页面拿到的是 ISO 毫秒值，直接等值比较会让刚创建的角色也误判为并发冲突。
     const expectedUpdatedAt = input.expectedUpdatedAt ?? before.updatedAt.toISOString()
+    /**
+     * 取锁的条件不止 capability 变更 —— `allowedScopeTypes` 收窄同样在改判据
+     * （`assignRole` 按它判「这个角色能不能绑到这层」），所以白名单变了也要与分配方互斥。
+     */
+    const scopeTypesChanged = JSON.stringify([...allowedScopeTypes].sort())
+      !== JSON.stringify([...(before.allowedScopeTypes ?? [])].sort())
+    const locksNeeded = capabilityChanged || scopeTypesChanged
     try {
       const changed = await db.transaction(async (tx) => {
+        /**
+         * ## 与另外三个入口共用**同一把** `admin:active_count` 锁（#318）
+         *
+         * 光把计数塞进事务不够串行：READ COMMITTED 下「降级角色 R1」与「撤销某人的 R2 绑定」
+         * 各自都读到「还有别的在职超管」、改的又是不同行，双双提交 → 零超管，系统锁死。
+         * 锁序见 `lib/invariant-locks.ts`：本路径只需 ②。
+         *
+         * ⚠️ **capability 变更的两个方向都取锁**，不只降级（#318 第 2 轮）：
+         * 「谁是活跃超管」这个集合由**绑定**和**角色定义的超管位**共同决定，而
+         * `assignRole` / `revokeRole` 是按锁内重读的 `is_super_admin` 决策的 ——
+         * 升级方向不取锁，它们就会读到一个正在变的判据（GLM 报的那条击穿路径的上游）。
+         */
+        /**
+         * 锁序 ① 组织树 → ② admin 计数（见 `lib/invariant-locks.ts`，反了就是 40P01）。
+         *
+         * 白名单变了要取 ①：锁内那条 `hasConflictingScopeAssignment` 判的是
+         * 「存量绑定所在**节点的类型** ∈ 新白名单」，而节点类型会被 `updateOrgNode`
+         * 改类型那条路径改掉（它取 ①）。只取 ② 的话，「白名单收窄」与「节点改类型」
+         * 并发各自按旧状态通过 → 留下违反新白名单的存量授权（codex 第 4 轮 P1）。
+         */
+        if (scopeTypesChanged) await lockOrgTree(tx)
+        if (locksNeeded) await lockActiveAdminCount(tx)
+
         const rows = await tx
           .update(permissionRoleDefinitions)
           .set({
             name: normalizeName(input.name ?? before.name),
             description: normalizeDescription(input.description ?? before.description),
             actions,
+            allowedScopeTypes,
             canAccessAdmin: nextAdminAccess,
             isSuperAdmin: nextSuper,
             isStoreManager: nextStoreManager,
@@ -313,8 +397,35 @@ export const updateRoleDefinition = withPermission(
             sql`date_trunc('milliseconds', ${permissionRoleDefinitions.updatedAt}) = ${expectedUpdatedAt}`,
           ))
           .returning({ roleKey: permissionRoleDefinitions.roleKey })
-        if (rows.length > 0) await writeCompatibilityMirror(tx)
-        return rows.length > 0
+        if (rows.length === 0) return false
+
+        /**
+         * ## 「先改再数」——守卫必须排在 CAS UPDATE **之后**（#318 第 2 轮，codex P2）
+         *
+         * 排在前面时，一次注定失败的乐观锁提交会先撞上「至少保留 1 名超管」，
+         * 把用户带到完全错误的方向（他该看到的是「角色已被其他人修改，请刷新重试」）。
+         * 放在后面还顺带简化了判据：UPDATE 已经把本角色的超管位写成 false，
+         * 所以直接数**全局**活跃超管即可（`countActiveAdmins` 与另外三个入口同一个 helper），
+         * 不必再写 `ne(roleKey)` 去手工排除自己。归零就抛出去回滚。
+         */
+        if (before.isSuperAdmin && !nextSuper && await countActiveAdmins(tx) === 0) {
+          throw new Error('INVALID_STATE: 系统至少需保留 1 名在职超级管理员')
+        }
+
+        /**
+         * 存量分配与新白名单的矛盾也在锁内复核（#318 第 3 轮，GLM P2）。
+         * 事务外那次只是早拒：并发 `assignRole` 能在它之后、本 UPDATE 之前提交一条
+         * 门店/市场 scope 的绑定 —— DB trigger 只在绑定 INSERT 时按**当时**的定义校验，
+         * 改定义不回溯，于是留下一条违反新白名单的存量授权，而 staffApi 不读
+         * `allowed_scope_types`，它会一直按那条绑定放行。
+         * 同样是「先改再数」：UPDATE 已落盘，这里查的是新白名单下的真实矛盾。
+         */
+        if (await hasConflictingScopeAssignment(roleKey, allowedScopeTypes, tx)) {
+          throw new Error('INVALID_STATE: 存在与新可绑定层级冲突的角色分配，请先撤销相关授权后再保存')
+        }
+
+        await writeCompatibilityMirror(tx)
+        return true
       })
       if (!changed) return { success: false, message: '角色已被其他人修改，请刷新重试' }
     } catch (error) {
@@ -323,8 +434,8 @@ export const updateRoleDefinition = withPermission(
     }
 
     await logUpdate(session, 'role_definition.update', 'permission_role_definition', roleKey,
-      { name: before.name, description: before.description, actions: before.actions, canAccessAdmin: before.canAccessAdmin, isSuperAdmin: before.isSuperAdmin, isStoreManager: before.isStoreManager },
-      { name: input.name ?? before.name, description: input.description ?? before.description, actions, canAccessAdmin: nextAdminAccess, isSuperAdmin: nextSuper, isStoreManager: nextStoreManager },
+      { name: before.name, description: before.description, actions: before.actions, allowedScopeTypes: before.allowedScopeTypes, canAccessAdmin: before.canAccessAdmin, isSuperAdmin: before.isSuperAdmin, isStoreManager: before.isStoreManager },
+      { name: input.name ?? before.name, description: input.description ?? before.description, actions, allowedScopeTypes, canAccessAdmin: nextAdminAccess, isSuperAdmin: nextSuper, isStoreManager: nextStoreManager },
     )
     invalidatePermissionMatrixCache()
     revalidatePath('/settings/permission-matrix')
@@ -344,16 +455,31 @@ export const deleteRoleDefinition = withPermission(
       .limit(1)
     if (!target) return { success: false, message: '角色不存在' }
 
-    const [{ count }] = await db
-      .select({ count: sql<number>`count(DISTINCT ${permissionRoles.employeeId})::int` })
-      .from(permissionRoles)
-      .where(eq(permissionRoles.role, roleKey))
-    if (count > 0) return { success: false, message: `该角色仍分配给 ${count} 名员工，请先撤销授权` }
+    /**
+     * 「还有人在用就不许删」这条守卫也必须与 `assignRole` 互斥（#318 第 3 轮，GLM P3）：
+     * 计数留在事务外时，分配能在 count 之后、DELETE 之前提交 —— 于是撞 FK（23503，这里
+     * 没有 catch → 500）或留下指向已删角色的孤儿绑定。取同一把 `admin:active_count`
+     * （分配侧也取它）后重数，整类竞态消失。
+     */
+    const deleteOutcome = await db.transaction(async (tx): Promise<true | { failure: string }> => {
+      await lockActiveAdminCount(tx)
+      const [{ count }] = await tx
+        .select({ count: sql<number>`count(DISTINCT ${permissionRoles.employeeId})::int` })
+        .from(permissionRoles)
+        .where(eq(permissionRoles.role, roleKey))
+      if (count > 0) return { failure: `该角色仍分配给 ${count} 名员工，请先撤销授权` }
 
-    await db.transaction(async (tx) => {
-      await tx.delete(permissionRoleDefinitions).where(eq(permissionRoleDefinitions.roleKey, roleKey))
+      const deleted = await tx
+        .delete(permissionRoleDefinitions)
+        .where(eq(permissionRoleDefinitions.roleKey, roleKey))
+        .returning({ roleKey: permissionRoleDefinitions.roleKey })
+      // 并发双删：第二笔删到 0 行，不能照样报「已删除」还写一条审计（GLM 第 7 轮 P3）
+      if (deleted.length === 0) return { failure: '角色不存在' }
+
       await writeCompatibilityMirror(tx)
+      return true
     })
+    if (deleteOutcome !== true) return { success: false, message: deleteOutcome.failure }
     await logOperation(session, 'role_definition.delete', 'permission_role_definition', roleKey, { name: target.name })
     invalidatePermissionMatrixCache()
     revalidatePath('/settings/permission-matrix')

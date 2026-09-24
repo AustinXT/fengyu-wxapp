@@ -66,6 +66,51 @@
   line-height: 1.4;
 }
 
+/* 顾客详情固定两排导航：9 个入口按 5 列排列，第二排保留 4 项 */
+.customer-tabs {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  background: #FFFFFF;
+  border-bottom: 1rpx solid #E8E8E8;
+}
+
+.customer-tab {
+  position: relative;
+  min-width: 0;
+  padding: 20rpx 4rpx;
+  color: var(--color-text-secondary);
+  font-size: 24rpx;
+  line-height: 32rpx;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.customer-tab--active {
+  color: var(--color-primary);
+  font-weight: 600;
+}
+
+.customer-tab--active::after {
+  position: absolute;
+  right: 24rpx;
+  bottom: 0;
+  left: 24rpx;
+  height: 4rpx;
+  border-radius: 2rpx;
+  background: var(--color-primary);
+  content: '';
+}
+
+.customer-tab--pressed {
+  background: #FFF0EE;
+}
+
+/* van-tabs 仅承载内容和切换状态，连同默认导航占位一起隐藏。 */
+.customer-tabs__native-wrap,
+.customer-tabs__native-nav {
+  display: none !important;
+}
+
 /* Tab 内容区 */
 .tab-content {
   padding: 16rpx 0;
@@ -307,6 +352,24 @@
   color: var(--color-text-hint) !important;
 }
 
+/* 待付清金额（issue #122）：能显示它的卡必然 consumable=0 → 带 --disabled 的 45% 透明度，
+   而催款金额恰恰是最该被看见的信息，故在此把不透明度压回来。 */
+.tc-unpaid {
+  display: inline-block;
+  margin-top: 10rpx;
+  padding: 4rpx 12rpx;
+  border-radius: 8rpx;
+  background: #fff8e6;
+  color: #d4820a;
+  font-size: 24rpx;
+  font-weight: 600;
+}
+
+.treatment-card--disabled .tc-unpaid {
+  opacity: 1;
+  color: #d4820a !important;
+}
+
 .tc-row {
   display: flex;
   align-items: flex-start;
@@ -338,6 +401,26 @@
   font-size: 20rpx;
   color: var(--color-text-hint);
   font-family: monospace;
+}
+.order-remark-list { margin: 8rpx 0; }
+.order-remark {
+  padding: 10rpx 12rpx;
+  margin-top: 8rpx;
+  border-radius: 8rpx;
+  background: #F8F5F1;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.order-remark__order { display: block; margin-bottom: 4rpx; color: var(--color-text-hint); font: 20rpx monospace; }
+.order-remark__content {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--color-text-secondary);
+  font-size: 22rpx;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
 }
 .tc-sessions {
   font-size: 22rpx;
@@ -734,6 +817,7 @@
 .home-product-name {
   min-width: 0;
   flex: 1;
+  display: block;
   overflow: hidden;
   color: #333;
   font-size: 28rpx;
@@ -755,6 +839,13 @@
   font-weight: 600;
 }
 
+.home-product-unpaid {
+  margin-top: 10rpx;
+  color: #d4820a;
+  font-size: 24rpx;
+  font-weight: 600;
+}
+
 .home-product-meta {
   justify-content: space-between;
   margin-top: 14rpx;
@@ -767,4 +858,91 @@
   margin-top: 8rpx;
   color: #aaa;
   font-size: 20rpx;
+}
+
+.profile-edit-bar {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 16rpx;
+}
+
+.profile-editor {
+  display: flex;
+  height: 100%;
+  flex-direction: column;
+  background: #f7f8fa;
+}
+
+.profile-editor__title {
+  flex: none;
+  padding: 32rpx 96rpx 24rpx;
+  color: #323233;
+  font-size: 32rpx;
+  font-weight: 600;
+  text-align: center;
+}
+
+.profile-editor__body {
+  min-height: 0;
+  flex: 1;
+}
+
+.profile-editor__footer {
+  flex: none;
+  padding: 20rpx 32rpx calc(20rpx + env(safe-area-inset-bottom));
+  background: #fff;
+}
+
+.profile-editor__search {
+  padding: 0 24rpx 20rpx;
+  background: #fff;
+}
+
+.profile-editor__search-action {
+  padding: 0 8rpx;
+  color: var(--color-primary);
+  font-size: 28rpx;
+}
+
+.promoter-candidate {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 20rpx 8rpx;
+  border-bottom: 1rpx solid #ebedf0;
+}
+
+.promoter-candidate__main {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 6rpx;
+}
+
+.promoter-candidate__name {
+  color: #323233;
+  font-size: 28rpx;
+}
+
+.promoter-candidate__meta {
+  color: #969799;
+  font-size: 24rpx;
+}
+
+.profile-editor__clear-row {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 16rpx;
+}
+
+.profile-editor__date-row {
+  display: flex;
+  align-items: center;
+  padding-right: 24rpx;
+  background: #fff;
+}
+
+.profile-editor__date-picker {
+  min-width: 0;
+  flex: 1;
 }

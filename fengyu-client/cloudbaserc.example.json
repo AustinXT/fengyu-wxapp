@@ -28,7 +28,10 @@
         "LAKALA_SUB_APPID": "${LAKALA_SUB_APPID}",
         "LAKALA_ALIPAY_SHARE_SOURCE": "${LAKALA_ALIPAY_SHARE_SOURCE}",
         "CLIENT_APPSECRET": "${CLIENT_APPSECRET}",
-        "SEC_CHECK_ENABLED": "${SEC_CHECK_ENABLED}"
+        "SEC_CHECK_ENABLED": "${SEC_CHECK_ENABLED}",
+        "INVENTORY_LINKAGE_ENABLED": "${INVENTORY_LINKAGE_ENABLED}",
+        "PAYNOTIFY_FN_NAME": "payNotify",
+        "DEPLOY_CHANNEL": "primary"
       },
       "triggers": [
         {
@@ -47,6 +50,7 @@
       "path": "/cloudfunctions/payNotify",
       "envVariables": {
         "PG_CONNECTION_STRING": "${PG_CONNECTION_STRING}",
+        "CLIENT_SECRET": "${CLIENT_SECRET}",
         "TZ": "Asia/Shanghai",
         "LAKALA_API_BASE": "${LAKALA_API_BASE}",
         "LAKALA_APPID": "${LAKALA_APPID}",
@@ -60,7 +64,9 @@
         "LAKALA_PRIVATE_KEY_PEM": "${LAKALA_PRIVATE_KEY_PEM}",
         "LAKALA_PLATFORM_CERT_PEM": "${LAKALA_PLATFORM_CERT_PEM}",
         "LAKALA_SUB_APPID": "${LAKALA_SUB_APPID}",
-        "LAKALA_ALIPAY_SHARE_SOURCE": "${LAKALA_ALIPAY_SHARE_SOURCE}"
+        "LAKALA_ALIPAY_SHARE_SOURCE": "${LAKALA_ALIPAY_SHARE_SOURCE}",
+        "PAYNOTIFY_FN_NAME": "payNotify",
+        "DEPLOY_CHANNEL": "primary"
       },
       "triggers": [
         {
@@ -69,6 +75,78 @@
           "config": "0 */1 * * * * *"
         }
       ],
+      "runtime": "Nodejs18.15",
+      "handler": "index.main",
+      "installDependency": false
+    },
+    {
+      "_comment": "影子函数：与 clientApi 同一份代码（dir 指向它），但连 dev 库。仅开发者工具开发版(develop)调这个；体验版与正式版都调 clientApi 连生产库——dev/prod 共用同一套拉卡拉生产商户凭据，体验版下单扣的是真钱，账必须记在 prod 库。",
+      "name": "clientApiDev",
+      "dir": "cloudfunctions/clientApi",
+      "timeout": 60,
+      "path": "/cloudfunctions/clientApiDev",
+      "envVariables": {
+        "PG_CONNECTION_STRING": "${DEV_PG_CONNECTION_STRING}",
+        "MSSQL_CONNECTION_STRING": "${DEV_MSSQL_CONNECTION_STRING}",
+        "TMAP_KEY": "${TMAP_KEY}",
+        "TMAP_SECRET": "${TMAP_SECRET}",
+        "CLIENT_SECRET": "${DEV_CLIENT_SECRET}",
+        "ALLOW_TEST_OPENID": "${DEV_ALLOW_TEST_OPENID}",
+        "ALLOW_DIRECT_PHONE": "${DEV_ALLOW_DIRECT_PHONE}",
+        "TZ": "Asia/Shanghai",
+        "LAKALA_API_BASE": "${DEV_LAKALA_API_BASE}",
+        "LAKALA_APPID": "${DEV_LAKALA_APPID}",
+        "LAKALA_SERIAL_NO": "${DEV_LAKALA_SERIAL_NO}",
+        "LAKALA_CALLBACK_IP_WHITELIST": "${DEV_LAKALA_CALLBACK_IP_WHITELIST}",
+        "LAKALA_ENV": "${DEV_LAKALA_ENV}",
+        "LAKALA_NOTIFY_URL": "${CLIENT_SERVICE_URL}/lakala/notify-dev",
+        "LAKALA_PRIVATE_KEY_PEM": "${DEV_LAKALA_PRIVATE_KEY_PEM}",
+        "LAKALA_PLATFORM_CERT_PEM": "${DEV_LAKALA_PLATFORM_CERT_PEM}",
+        "LAKALA_SUB_APPID": "${DEV_LAKALA_SUB_APPID}",
+        "LAKALA_ALIPAY_SHARE_SOURCE": "${DEV_LAKALA_ALIPAY_SHARE_SOURCE}",
+        "CLIENT_APPSECRET": "${CLIENT_APPSECRET}",
+        "SEC_CHECK_ENABLED": "${DEV_SEC_CHECK_ENABLED}",
+        "INVENTORY_LINKAGE_ENABLED": "${DEV_INVENTORY_LINKAGE_ENABLED}",
+        "PAYNOTIFY_FN_NAME": "payNotifyDev",
+        "DEPLOY_CHANNEL": "shadow"
+      },
+      "triggers": [
+        {
+          "name": "clientApiDevHttp",
+          "type": "http",
+          "config": "{\"enableAuth\":false}"
+        }
+      ],
+      "runtime": "Nodejs18.15",
+      "handler": "index.main",
+      "installDependency": false
+    },
+    {
+      "_comment": "影子函数：与 payNotify 同一份代码（dir 指向它），但连 dev 库。刻意不挂 wxShippingBackfill timer——不是怕跟正式 payNotify 抢行（两者连不同的库，压根不会碰到同一行），而是因为 dev 与 prod 共用同一套拉卡拉生产商户凭据：让 dev 实例每分钟拿真实商户去 queryTrade / 发货回传没有意义，还会放大配额与误入账风险。",
+      "name": "payNotifyDev",
+      "dir": "cloudfunctions/payNotify",
+      "timeout": 30,
+      "path": "/cloudfunctions/payNotifyDev",
+      "envVariables": {
+        "PG_CONNECTION_STRING": "${DEV_PG_CONNECTION_STRING}",
+        "CLIENT_SECRET": "${DEV_CLIENT_SECRET}",
+        "TZ": "Asia/Shanghai",
+        "LAKALA_API_BASE": "${DEV_LAKALA_API_BASE}",
+        "LAKALA_APPID": "${DEV_LAKALA_APPID}",
+        "LAKALA_SERIAL_NO": "${DEV_LAKALA_SERIAL_NO}",
+        "LAKALA_CALLBACK_IP_WHITELIST": "${DEV_LAKALA_CALLBACK_IP_WHITELIST}",
+        "LAKALA_ENV": "${DEV_LAKALA_ENV}",
+        "PAYNOTIFY_ENABLED": "${DEV_PAYNOTIFY_ENABLED}",
+        "WX_SHIPPING_ENABLED": "${DEV_WX_SHIPPING_ENABLED}",
+        "CLIENT_APPSECRET": "${CLIENT_APPSECRET}",
+        "LAKALA_NOTIFY_URL": "${CLIENT_SERVICE_URL}/lakala/notify-dev",
+        "LAKALA_PRIVATE_KEY_PEM": "${DEV_LAKALA_PRIVATE_KEY_PEM}",
+        "LAKALA_PLATFORM_CERT_PEM": "${DEV_LAKALA_PLATFORM_CERT_PEM}",
+        "LAKALA_SUB_APPID": "${DEV_LAKALA_SUB_APPID}",
+        "LAKALA_ALIPAY_SHARE_SOURCE": "${DEV_LAKALA_ALIPAY_SHARE_SOURCE}",
+        "PAYNOTIFY_FN_NAME": "payNotifyDev",
+        "DEPLOY_CHANNEL": "shadow"
+      },
       "runtime": "Nodejs18.15",
       "handler": "index.main",
       "installDependency": false

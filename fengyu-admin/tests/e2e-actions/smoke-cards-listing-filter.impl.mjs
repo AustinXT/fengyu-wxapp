@@ -9,6 +9,7 @@
  *   [C] 疗程卡 + 转出 + remaining=10  → 不出现（itemDirection 过滤）
  *   [D] 疗程卡 + 购买 + remaining=NULL → 不出现（isNotNull 过滤）
  *   [E] 疗程卡 + 购买 + remaining=0   → 出现（基础过滤含已耗尽；状态筛选才区分）
+ *   [F] 疗程卡 + 购买 + paid=0       → 出现（issue #122：部分支付的欠款卡不再整行隐藏）
  *
  * scope 过滤本测试不覆盖（admin preload 把 scopeCondition mock 成 undefined）；
  * scope 行为由 src/lib/permissions.ts 的 vitest 单测覆盖。
@@ -23,7 +24,7 @@ const ADMIN_DIR = path.join(REPO_ROOT, 'fengyu-admin')
 process.env.ALLOW_TEST_OPENID = 'true'
 process.env.PG_CONNECTION_STRING =
   process.env.PG_CONNECTION_STRING ||
-  'postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp'
+  'postgresql://fengyu:fengyu123@101.34.242.103:5433/fengyu_wxapp'
 process.env.DATABASE_URL = process.env.PG_CONNECTION_STRING
 
 const setupUrl = 'file://' + path.join(TESTS_DIR, 'setup.mjs')
@@ -39,7 +40,8 @@ process.env.TEST_STORE_ID = TEST_STORE_ID
 process.env.TEST_ADMIN_EMP_ID = TEST_MANAGER_EMP_ID
 
 const ORDER_ID = `${NS}_CARDS` // 短前缀；sale_order_id 最多 30 字符
-// 业务口径（cards.ts:buildCardConditions）：基础过滤 paid_sessions > 0 排欠款卡。
+// 业务口径（cards.ts:buildCardConditions）：基础过滤不按次数过滤——
+// issue #122 移除了 paid_sessions > 0（欠款卡要可见），「是否已用完」交由 status 筛选分支区分。
 // fixture 必须显式设 paid_sessions：A/B/C/E=10（已付满），D=0（未付款 + remaining NULL 双重过滤）。
 const CASES = [
   { suffix: 'A', productType: '疗程卡', itemDirection: '购买', remaining: 10, paidSessions: 10, expectVisible: true },
@@ -47,6 +49,8 @@ const CASES = [
   { suffix: 'C', productType: '疗程卡', itemDirection: '转出', remaining: 10, paidSessions: 10, expectVisible: false },
   { suffix: 'D', productType: '疗程卡', itemDirection: '购买', remaining: null, paidSessions: 0, expectVisible: false },
   { suffix: 'E', productType: '疗程卡', itemDirection: '购买', remaining: 0,  paidSessions: 10, expectVisible: true },
+  // issue #122：部分支付导致 paid_sessions=0 的欠款卡必须可见（旧口径下被整行隐藏）
+  { suffix: 'F', productType: '疗程卡', itemDirection: '购买', remaining: 10, paidSessions: 0,  expectVisible: true },
 ]
 
 let pass = false

@@ -40,21 +40,24 @@ interface OrderInfo {
   status: string;
   service_date: string;
   market_name: string;
-  commission_status: string;
+  // 历史数据可能为 null（建单初值无 DB default）；云函数已 COALESCE 成「待分配」
+  commission_status: string | null;
   customer_name: string | null;
   employee_name: string | null;
   frozen?: boolean; // 完成超 3 天冻结
 }
 
-/** 候选员工（服务单门店 ∪ 出差员工，供 admin 式按技能筛选） */
+/** 候选员工（本店 ∪ 任意市场出差员工，供按技能筛选） */
 interface CandidateEmployee {
   staffWfId: string;
   name: string;
   storeId: string;
   storeName: string;
+  marketName: string;
   skills: string[];
   department: string;
-  /** 是否出差支援（跨门店共享）；true 时可跨门店被选中 */
+  assignmentScope: 'local' | 'same_market_trip' | 'cross_market_trip';
+  /** 是否出差支援；仅在营业额/服务提成分配中允许跨店 */
   isOnBusinessTrip?: boolean;
 }
 
@@ -223,13 +226,12 @@ Page({
     return { ...line, allocAmount, commissionAmount };
   },
 
-  /** 按技能筛选候选员工（跨门店共享 2026-06-24）：统一「服务单门店 ∪ 出差员工」+ 技能匹配（取消市场级与品项老师特例） */
+  /** 按技能过滤后保持「本店 → 本市场出差 → 跨市场出差」顺序。 */
   getFilteredEmployees(skillTag: string): CandidateEmployee[] {
-    const { candidateEmployees, orderStoreId } = this.data;
-    return candidateEmployees.filter(e => {
-      if (!e.skills || !e.skills.includes(skillTag)) return false;
-      return e.storeId === orderStoreId || !!e.isOnBusinessTrip;
-    });
+    const rank = { local: 0, same_market_trip: 1, cross_market_trip: 2 };
+    return this.data.candidateEmployees
+      .filter(e => e.skills?.includes(skillTag))
+      .sort((a, b) => rank[a.assignmentScope] - rank[b.assignmentScope]);
   },
 
   /** 添加一条空分配行 */

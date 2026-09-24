@@ -16,6 +16,7 @@ import {
   lakalaOnboardingAttachments,
   lakalaOnboardingRequestLogs,
 } from "@db/lakala-onboarding";
+import { businessErrorMessage } from "@/lib/action-error";
 import {
   AGREEMENT_ATTACHMENT,
   ATTACHMENT_REQUIREMENTS,
@@ -42,7 +43,6 @@ import {
   lakalaApplyElectronicContract,
   lakalaQueryOcrResult,
   lakalaQueryBanks,
-  lakalaQueryRegisterStatus,
   lakalaQuerySubMerchant,
   lakalaQueryChannelSubMerchants,
   lakalaQueryMerchantAuthState,
@@ -56,7 +56,6 @@ import {
   resolveLocalLakalaMerchantRegionByCode,
   savePrivateOnboardingFile,
   type ChannelSubMerchantResult,
-  type ChannelCertificationResult,
   type MerchantAuthStateResult,
   verifyOnboardingSm4Key,
 } from "@/lib/lakala-onboarding";
@@ -281,19 +280,23 @@ function statusLabel(status: string) {
   return labels[status] || status;
 }
 
-type ChannelItem = { subMerchantNo?: string };
-type CertificationSnapshot = Partial<ChannelCertificationResult> & {
-  checkedAt?: string;
-  raw?: Record<string, unknown>;
-};
+type ChannelItem = ChannelSubMerchantResult["wechat"][number];
 
 function getChannelItems(channelData: Record<string, unknown>, key: "wechat" | "alipay"): ChannelItem[] {
   const value = channelData[key];
   if (!Array.isArray(value)) return [];
   return value.flatMap((item) => {
     if (!item || typeof item !== "object") return [];
-    const subMerchantNo = (item as Record<string, unknown>).subMerchantNo;
-    return typeof subMerchantNo === "string" && subMerchantNo ? [{ subMerchantNo }] : [];
+    const row = item as Record<string, unknown>;
+    const subMerchantNo = row.subMerchantNo;
+    return typeof subMerchantNo === "string" && subMerchantNo
+      ? [{
+          subMerchantNo,
+          registerType: typeof row.registerType === "string" ? row.registerType : "",
+          channelId: typeof row.channelId === "string" ? row.channelId : "",
+          registerChannelName: typeof row.registerChannelName === "string" ? row.registerChannelName : "",
+        }]
+      : [];
   });
 }
 
@@ -305,56 +308,6 @@ function hasAlipaySubMerchant(channelData: Record<string, unknown>) {
   return getChannelItems(channelData, "alipay").length > 0;
 }
 
-function certificationPassed(cert?: CertificationSnapshot | null) {
-  if (!cert) return false;
-  if (certificationFailed(cert)) return false;
-  const registerState = cert.registerState?.toUpperCase();
-  const authorizeState = cert.authorizeState?.toUpperCase();
-  const applymentState = cert.applymentState?.toUpperCase();
-  const registerOk = registerState === "SUCCESS" || cert.registerCode === "000000" || cert.registerMsg === "成功";
-  const authorizeOk = !authorizeState || ["SUCCESS", "AUTHORIZED", "AUTHORIZE_STATE_AUTHORIZED", "AUTHORIZE_STATE_SUCCESS"].includes(authorizeState);
-  const applymentOk = !applymentState || ["SUCCESS", "APPLYMENT_STATE_SUCCESS", "APPLYMENT_STATE_FINISHED", "APPLYMENT_STATE_PASSED"].includes(applymentState);
-  return registerOk && authorizeOk && applymentOk;
-}
-
-function certificationFailed(cert?: CertificationSnapshot | null) {
-  if (!cert) return false;
-  if (cert.rejectReason || cert.errorMessage) return true;
-  const values = [cert.registerState, cert.authorizeState, cert.applymentState, cert.registerCode]
-    .filter((value): value is string => typeof value === "string")
-    .map((value) => value.toUpperCase());
-  return values.some((value) =>
-    value.includes("FAIL") ||
-    value.includes("REJECT") ||
-    value.includes("UNAUTHORIZED") ||
-    value.includes("INVALID") ||
-    value.includes("ERROR")
-  );
-}
-
-function serializeCertification(result: ChannelCertificationResult): CertificationSnapshot {
-  return {
-    success: result.success,
-    registerType: result.registerType,
-    subMchId: result.subMchId,
-    merchantNo: result.merchantNo,
-    innerCustomerNo: result.innerCustomerNo,
-    customerName: result.customerName,
-    registerState: result.registerState,
-    authorizeState: result.authorizeState,
-    applymentState: result.applymentState,
-    registerCode: result.registerCode,
-    registerMsg: result.registerMsg,
-    rejectReason: result.rejectReason,
-    applymentId: result.applymentId,
-    channelId: result.channelId,
-    errorCode: result.errorCode,
-    errorMessage: result.errorMessage,
-    checkedAt: new Date().toISOString(),
-    raw: result.raw,
-  };
-}
-
 function getStoredTerminalNo(terminalData: unknown) {
   if (!terminalData || typeof terminalData !== "object") return "";
   const data = terminalData as Record<string, unknown>;
@@ -364,64 +317,105 @@ function getStoredTerminalNo(terminalData: unknown) {
   return "";
 }
 
-async function enableMerchantAfterWechatCertification(app: NonNullable<Awaited<ReturnType<typeof getOnboardingApplicationForService>>>) {
-  const data = mergeInput({
-    merchantData: app.merchantData as JsonRecord,
-    legalPersonData: app.legalPersonData as JsonRecord,
-    contactData: app.contactData as JsonRecord,
-    settlementData: app.settlementData as JsonRecord,
-    shopData: app.shopData as JsonRecord,
-    terminalData: app.terminalData as JsonRecord,
-  });
-  const merchantName = data.merchantData.merRegName || data.merchantData.merBlisName || data.merchantData.merBizName || app.orderNo;
-  const terminalNo = getStoredTerminalNo(app.terminalData);
-  if (!terminalNo) {
-    throw new Error("微信认证已通过，但拉卡拉尚未返回终端号，请先点击查询状态获取终端号");
-  }
-  const [marketRow] = await db
-    .select({ marketId: orgNodes.parentId })
+type OnboardingTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+/**
+ * 申请单 → 收款商户 upsert 的唯一实现（enable / associate 两条路径共用）。
+ * 守卫逻辑（跨市场、防抹 NULL、fallback 商户核验）只在此处维护一份。
+ */
+async function upsertMerchantForApplication(
+  tx: OnboardingTx,
+  app: Pick<
+    NonNullable<Awaited<ReturnType<typeof getOnboardingApplicationForService>>>,
+    "storeId" | "merCupNo" | "lakalaMerchantId"
+  >,
+  params: { enabled: boolean; merchantName: string; merchantNo: string | null; terminalNo: string },
+): Promise<{ merchantId: string } | { error: string }> {
+  const [storeRow] = await tx
+    .select({ storeId: stores.storeId, orgNodeId: stores.orgNodeId })
     .from(stores)
-    .innerJoin(orgNodes, eq(stores.orgNodeId, orgNodes.id))
     .where(eq(stores.storeId, app.storeId))
     .limit(1);
 
-  let merchantId = app.lakalaMerchantId;
-  if (!merchantId) {
-    const existing = app.merCupNo
-      ? await db.select({ id: lakalaMerchants.id }).from(lakalaMerchants).where(eq(lakalaMerchants.merchantNo, app.merCupNo)).limit(1)
-      : [];
-    merchantId = existing[0]?.id ?? ksuid("lm_");
-    if (existing[0]) {
-      await db.update(lakalaMerchants).set({
-        merchantName,
-        termNo: terminalNo,
-        enabled: true,
-        marketOrgNodeId: marketRow?.marketId ?? null,
-      }).where(eq(lakalaMerchants.id, merchantId));
-    } else {
-      await db.insert(lakalaMerchants).values({
-        id: merchantId,
-        merchantName,
-        merchantNo: app.merCupNo || app.merInnerNo || null,
-        termNo: terminalNo,
-        enabled: true,
-        marketOrgNodeId: marketRow?.marketId ?? null,
-      });
+  const [marketRow] = storeRow?.orgNodeId
+    ? await tx
+        .select({ marketOrgNodeId: orgNodes.parentId })
+        .from(orgNodes)
+        .where(eq(orgNodes.id, storeRow.orgNodeId))
+        .limit(1)
+    : [];
+  const marketOrgNodeId = marketRow?.marketOrgNodeId ?? null;
+
+  const existingByMerchantNo = app.merCupNo
+    ? await tx
+        .select({ id: lakalaMerchants.id, marketOrgNodeId: lakalaMerchants.marketOrgNodeId })
+        .from(lakalaMerchants)
+        .where(eq(lakalaMerchants.merchantNo, app.merCupNo))
+        .limit(1)
+    : [];
+  const existing = existingByMerchantNo[0];
+
+  if (existing) {
+    if (existing.marketOrgNodeId && marketOrgNodeId && existing.marketOrgNodeId !== marketOrgNodeId) {
+      return { error: "拉卡拉商户已属于其他市场，不能跨市场绑定" };
     }
-  } else {
-    await db.update(lakalaMerchants).set({
-      merchantName,
-      merchantNo: app.merCupNo || app.merInnerNo || null,
-      termNo: terminalNo,
-      enabled: true,
-      marketOrgNodeId: marketRow?.marketId ?? null,
-    }).where(eq(lakalaMerchants.id, merchantId));
+    // 门店侧市场解析为 NULL（门店未挂市场等脏数据）时不允许覆写，防止把已归属市场的商户抹成 NULL
+    if (existing.marketOrgNodeId && !marketOrgNodeId) {
+      return { error: "门店未归属市场，无法变更已归属市场的收款商户" };
+    }
+    // existing 市场为 NULL（含市场节点被删后的残留）：允许本次写入收编归属
   }
-  await db.update(stores).set({ lakalaMerchantId: merchantId }).where(eq(stores.storeId, app.storeId));
-  return merchantId;
+
+  // 商户号是拉卡拉侧的权威键：existing 按 merCupNo 命中时以它为准（跨市场检查也是对它做的），避免"检查 existing、写入 app.lakalaMerchantId"的错位
+  const merchantId = existing?.id ?? app.lakalaMerchantId ?? ksuid("lm_");
+
+  if (!existing && app.lakalaMerchantId) {
+    // 兜底复用申请单旧关联商户前核验其归属（防商户管理页手工改号/改市场造成的带外错配）
+    const [fallbackRow] = await tx
+      .select({ merchantNo: lakalaMerchants.merchantNo, marketOrgNodeId: lakalaMerchants.marketOrgNodeId })
+      .from(lakalaMerchants)
+      .where(eq(lakalaMerchants.id, app.lakalaMerchantId))
+      .limit(1);
+    if (!fallbackRow) {
+      return { error: "申请单关联的收款商户记录不存在，请在收款商户页核实后重试" };
+    }
+    if (app.merCupNo && fallbackRow.merchantNo && fallbackRow.merchantNo !== app.merCupNo) {
+      return { error: "申请单商户号与关联收款商户不一致，不能复用旧关联商户" };
+    }
+    if (fallbackRow.marketOrgNodeId && marketOrgNodeId && fallbackRow.marketOrgNodeId !== marketOrgNodeId) {
+      return { error: "拉卡拉商户已属于其他市场，不能跨市场绑定" };
+    }
+    if (fallbackRow.marketOrgNodeId && !marketOrgNodeId) {
+      return { error: "门店未归属市场，无法变更已归属市场的收款商户" };
+    }
+  }
+
+  if (existing || app.lakalaMerchantId) {
+    await tx.update(lakalaMerchants).set({
+      merchantName: params.merchantName,
+      merchantNo: params.merchantNo,
+      termNo: params.terminalNo,
+      enabled: params.enabled,
+      marketOrgNodeId,
+    }).where(eq(lakalaMerchants.id, merchantId));
+  } else {
+    await tx.insert(lakalaMerchants).values({
+      id: merchantId,
+      merchantName: params.merchantName,
+      merchantNo: params.merchantNo,
+      termNo: params.terminalNo,
+      enabled: params.enabled,
+      marketOrgNodeId,
+    });
+  }
+  await tx.update(stores).set({ lakalaMerchantId: merchantId }).where(eq(stores.storeId, app.storeId));
+  return { merchantId };
 }
 
-async function associateDisabledMerchantForApplication(app: NonNullable<Awaited<ReturnType<typeof getOnboardingApplicationForService>>>) {
+async function associateDisabledMerchantForApplication(
+  tx: OnboardingTx,
+  app: NonNullable<Awaited<ReturnType<typeof getOnboardingApplicationForService>>>,
+): Promise<{ merchantId: string } | { error: string }> {
   const data = mergeInput({
     merchantData: app.merchantData as JsonRecord,
     legalPersonData: app.legalPersonData as JsonRecord,
@@ -432,64 +426,17 @@ async function associateDisabledMerchantForApplication(app: NonNullable<Awaited<
   });
   const merchantName = data.merchantData.merRegName || data.merchantData.merBlisName || data.merchantData.subjectName || data.merchantData.merBizName || app.orderNo;
   const terminalNo = getStoredTerminalNo(app.terminalData);
-  if (!app.merCupNo?.startsWith("82")) throw new Error("缺少银联商户号，不能关联收款商户");
-  if (!terminalNo) throw new Error("缺少终端号，不能关联收款商户");
+  if (!app.merCupNo?.startsWith("82")) throw new Error("INVALID_STATE: 缺少银联商户号，不能关联收款商户");
+  if (!terminalNo) throw new Error("INVALID_STATE: 缺少终端号，不能关联收款商户");
   const channelData = (app.channelData as Record<string, unknown>) ?? {};
-  if (!hasWechatSubMerchant(channelData)) throw new Error("缺少微信子商户号，不能关联收款商户");
-  if (!hasAlipaySubMerchant(channelData)) throw new Error("缺少支付宝子商户号，不能关联收款商户");
-
-  const [marketRow] = await db
-    .select({ marketId: orgNodes.parentId })
-    .from(stores)
-    .innerJoin(orgNodes, eq(stores.orgNodeId, orgNodes.id))
-    .where(eq(stores.storeId, app.storeId))
-    .limit(1);
-
-  let merchantId = app.lakalaMerchantId;
-  if (!merchantId) {
-    const [existing] = await db
-      .select({ id: lakalaMerchants.id })
-      .from(lakalaMerchants)
-      .where(eq(lakalaMerchants.merchantNo, app.merCupNo))
-      .limit(1);
-    merchantId = existing?.id ?? ksuid("lm_");
-    if (existing) {
-      await db.update(lakalaMerchants).set({
-        merchantName,
-        merchantNo: app.merCupNo,
-        termNo: terminalNo,
-        enabled: false,
-        marketOrgNodeId: marketRow?.marketId ?? null,
-      }).where(eq(lakalaMerchants.id, merchantId));
-    } else {
-      await db.insert(lakalaMerchants).values({
-        id: merchantId,
-        merchantName,
-        merchantNo: app.merCupNo,
-        termNo: terminalNo,
-        enabled: false,
-        marketOrgNodeId: marketRow?.marketId ?? null,
-      });
-    }
-  } else {
-    await db.update(lakalaMerchants).set({
-      merchantName,
-      merchantNo: app.merCupNo,
-      termNo: terminalNo,
-      enabled: false,
-      marketOrgNodeId: marketRow?.marketId ?? null,
-    }).where(eq(lakalaMerchants.id, merchantId));
-  }
-  await db.update(stores).set({ lakalaMerchantId: merchantId }).where(eq(stores.storeId, app.storeId));
-  return merchantId;
-}
-
-async function revokeMerchantEnablementForApplication(app: Pick<NonNullable<Awaited<ReturnType<typeof getOnboardingApplicationForService>>>, "storeId" | "lakalaMerchantId">) {
-  if (!app.lakalaMerchantId) return;
-  await db.update(lakalaMerchants).set({ enabled: false }).where(eq(lakalaMerchants.id, app.lakalaMerchantId));
-  await db.update(stores)
-    .set({ lakalaMerchantId: null })
-    .where(and(eq(stores.storeId, app.storeId), eq(stores.lakalaMerchantId, app.lakalaMerchantId)));
+  if (!hasWechatSubMerchant(channelData)) throw new Error("INVALID_STATE: 缺少微信子商户号，不能关联收款商户");
+  if (!hasAlipaySubMerchant(channelData)) throw new Error("INVALID_STATE: 缺少支付宝子商户号，不能关联收款商户");
+  return upsertMerchantForApplication(tx, app, {
+    enabled: false,
+    merchantName,
+    merchantNo: app.merCupNo,
+    terminalNo,
+  });
 }
 
 async function refreshChannelSubMerchantsForApplication(applicationId: string, merchantNo: string): Promise<ChannelSubMerchantResult> {
@@ -503,28 +450,42 @@ async function refreshChannelSubMerchantsForApplication(applicationId: string, m
     errorCode: result.errorCode,
     errorMessage: result.errorMessage,
   });
-  if (!result.success) return result;
+  if (!result.success) {
+    await db.update(lakalaOnboardingApplications).set({
+      subMerchantCheckedAt: new Date(),
+      lastErrorCode: result.errorCode ?? null,
+      lastErrorMessage: result.errorMessage ?? "子商户号查询失败，请稍后手动重试",
+    }).where(eq(lakalaOnboardingApplications.id, applicationId));
+    return result;
+  }
   const [currentApp] = await db
     .select({ channelData: lakalaOnboardingApplications.channelData })
     .from(lakalaOnboardingApplications)
     .where(eq(lakalaOnboardingApplications.id, applicationId))
     .limit(1);
   const current = (currentApp?.channelData as Record<string, unknown>) ?? {};
+  const currentWechat = getChannelItems(current, "wechat");
+  const currentAlipay = getChannelItems(current, "alipay");
+  const wechatReturnedEmpty = result.wechat.length === 0;
+  const alipayReturnedEmpty = result.alipay.length === 0;
+  const wechat = wechatReturnedEmpty ? currentWechat : result.wechat;
+  const alipay = alipayReturnedEmpty ? currentAlipay : result.alipay;
+  const bothReady = wechat.length > 0 && alipay.length > 0;
+  // 拉卡拉查询成功但某渠道空返回、旧号只是被沿用兜底：可能已被撤销，须提示核实而非静默保留
+  const possiblyRevoked = (wechatReturnedEmpty && currentWechat.length > 0) || (alipayReturnedEmpty && currentAlipay.length > 0);
   await db.update(lakalaOnboardingApplications).set({
     channelData: {
       ...current,
-      wechat: result.wechat,
-      alipay: result.alipay,
-      subMerchantPolling: {
-        status: result.wechat.length && result.alipay.length ? "DONE" : "WAITING",
-        lastCheckedAt: new Date().toISOString(),
-        reason: result.wechat.length && result.alipay.length ? "已获取微信/支付宝子商户号" : "微信/支付宝子商户号暂未全部返回，等待下次自动查询",
-      },
+      wechat,
+      alipay,
     },
     subMerchantCheckedAt: new Date(),
-    lastErrorMessage: result.wechat.length && result.alipay.length ? null : "尚未返回微信/支付宝子商户号，系统将每小时自动查询",
+    lastErrorCode: null,
+    lastErrorMessage: possiblyRevoked
+      ? "拉卡拉本次查询未返回部分子商户号，原有子商户号可能已被撤销，请与拉卡拉核实"
+      : bothReady ? null : "尚有渠道未返回子商户号，请稍后手动查询",
   }).where(eq(lakalaOnboardingApplications.id, applicationId));
-  return result;
+  return { ...result, wechat, alipay };
 }
 
 function emptyInput(): OnboardingApplicationInput {
@@ -552,11 +513,14 @@ function mergeInput(input?: Partial<OnboardingApplicationInput>): OnboardingAppl
 }
 
 function normalizeApplicationInput(input: OnboardingApplicationInput): OnboardingApplicationInput {
-  const subjectName = input.merchantData.subjectName || input.merchantData.merBlisName || input.merchantData.merRegName;
+  // 历史草稿仅保存了 subjectName，须兼容回填；新草稿中的主体名称和营业执照名称可独立维护。
+  const subjectName = input.merchantData.merRegName || input.merchantData.subjectName || input.merchantData.merBlisName;
+  const businessLicenseName = input.merchantData.merBlisName || subjectName;
   const businessName = input.merchantData.merBizName || input.shopData.shopName;
   const merchantData: JsonRecord = {
     ...input.merchantData,
-    ...(subjectName ? { subjectName, merRegName: subjectName, merBlisName: subjectName } : {}),
+    ...(subjectName ? { subjectName, merRegName: subjectName } : {}),
+    ...(businessLicenseName ? { merBlisName: businessLicenseName } : {}),
     ...(businessName ? { merBizName: businessName } : {}),
   };
   const shopData = {
@@ -615,11 +579,43 @@ function requiredData(app: NonNullable<Awaited<ReturnType<typeof getOnboardingAp
     terminalData: app.terminalData as JsonRecord,
   });
   const missing = missingFromData(data);
-  if (missing.length) throw new Error(`提交前请先补齐：${missing.join("、")}`);
+  if (missing.length) throw new Error(`INVALID_PARAMS: 提交前请先补齐：${missing.join("、")}`);
   return data;
 }
 
-async function getOnboardingApplicationForService(id: string) {
+async function getOnboardingApplicationForService(id: string): Promise<any> {
+  await ensureOnboardingSchema();
+  const [row] = await db
+    .select({
+      app: lakalaOnboardingApplications,
+      storeName: stores.storeName,
+      marketName: sql<string | null>`(
+        SELECT parent.name
+        FROM org_nodes node
+        LEFT JOIN org_nodes parent ON parent.id = node.parent_id
+        WHERE node.id = ${stores.orgNodeId}
+      )`,
+      lakalaMerchantEnabled: sql<boolean | null>`(
+        SELECT lm.enabled
+        FROM lakala_merchants lm
+        WHERE lm.id = ${lakalaOnboardingApplications.lakalaMerchantId}
+        LIMIT 1
+      )`,
+    })
+    .from(lakalaOnboardingApplications)
+    .innerJoin(stores, eq(stores.storeId, lakalaOnboardingApplications.storeId))
+    .where(eq(lakalaOnboardingApplications.id, id))
+    .limit(1);
+  if (!row) return null;
+  return {
+    ...row.app,
+    storeName: row.storeName,
+    marketName: row.marketName,
+    lakalaMerchantEnabled: row.lakalaMerchantEnabled ?? false,
+  };
+}
+
+async function getOnboardingApplicationFromDb(id: string) {
   await ensureOnboardingSchema();
   const [app] = await db
     .select()
@@ -1023,9 +1019,9 @@ export const uploadOnboardingAttachment = withPermission(
   async (_session, applicationId: string, file: UploadFileLike, attType: string, displayName: string) => {
   await ensureOnboardingSchema();
   const app = await getOnboardingApplicationForService(applicationId);
-  if (!app) throw new Error("申请不存在");
+  if (!app) throw new Error("NOT_FOUND: 申请不存在");
   if (typeof file.size === "number" && file.size > MAX_ONBOARDING_ATTACHMENT_BYTES) {
-    throw new Error(onboardingAttachmentTooLargeMessage(displayName, file.size));
+    throw new Error(`INVALID_PARAMS: ${onboardingAttachmentTooLargeMessage(displayName, file.size)}`);
   }
   if (!app.merInnerNo && !app.merCupNo) {
     await db.update(lakalaOnboardingApplications).set({ status: "FILES_UPLOADING", lastErrorCode: null, lastErrorMessage: null }).where(eq(lakalaOnboardingApplications.id, applicationId));
@@ -1103,7 +1099,7 @@ async function uploadAttachmentToLakala(app: NonNullable<Awaited<ReturnType<type
       .update(lakalaOnboardingAttachments)
       .set({ status: "FAILED", lastErrorMessage: message })
       .where(eq(lakalaOnboardingAttachments.id, attachment.id));
-    throw new Error(message);
+    throw new Error(`INVALID_PARAMS: ${message}`);
   }
   const buffer = await readFile(attachment.localPath);
   await db
@@ -1132,7 +1128,7 @@ async function uploadAttachmentToLakala(app: NonNullable<Awaited<ReturnType<type
       .update(lakalaOnboardingAttachments)
       .set({ status: "FAILED", lastErrorMessage: message })
       .where(eq(lakalaOnboardingAttachments.id, attachment.id));
-    throw new Error(`${attachment.displayName}：${message}`);
+    throw new Error(`INVALID_STATE: ${attachment.displayName}：${message}`);
   }
   const uploadedAt = new Date();
   const expiresAt = new Date(uploadedAt.getTime() + 24 * 60 * 60 * 1000);
@@ -1194,7 +1190,7 @@ async function validateAndUploadAttachments(app: NonNullable<Awaited<ReturnType<
     }
     missing.delete(displayName);
   }
-  if (missing.size > 0) throw new Error(`缺少必传附件：${Array.from(missing).join("、")}`);
+  if (missing.size > 0) throw new Error(`INVALID_PARAMS: 缺少必传附件：${Array.from(missing).join("、")}`);
   for (const displayName of ATTACHMENT_REQUIREMENTS.map((item) => item.displayName)) {
     const attachment = latestByName.get(displayName);
     if (!attachment) continue;
@@ -1208,7 +1204,7 @@ function normalizeDateForLakala(value?: string) {
 }
 
 function requireOnboardingConfig(name: string, value: string) {
-  if (!value) throw new Error(`缺少后台入网配置：${name}`);
+  if (!value) throw new Error(`INVALID_STATE: 缺少后台入网配置：${name}`);
   return value;
 }
 
@@ -1370,9 +1366,9 @@ function lakalaMerchantAddressForSubmit(data: OnboardingApplicationInput) {
 
 function validateTkbsMerchantAddress(data: OnboardingApplicationInput) {
   const merAddr = lakalaMerchantAddressForSubmit(data);
-  if (!merAddr) throw new Error("请填写详细地址（不含省市区）");
+  if (!merAddr) throw new Error("INVALID_PARAMS: 请填写详细地址（不含省市区）");
   if (merAddr.length > 29) {
-    throw new Error(`商户详细地址需控制在 29 字以内，请去掉省市区并缩短门牌描述；当前提交值为：${merAddr}`);
+    throw new Error(`INVALID_PARAMS: 商户详细地址需控制在 29 字以内，请去掉省市区并缩短门牌描述；当前提交值为：${merAddr}`);
   }
   return merAddr;
 }
@@ -1396,7 +1392,7 @@ function resolveTkbsRegionCodes(data: OnboardingApplicationInput) {
   const cityCode = envOrData("LAKALA_ONBOARDING_CITY_CODE", merchantRegion?.cityCode);
   const countyCode = envOrData("LAKALA_ONBOARDING_COUNTY_CODE", merchantRegion?.countyCode);
   if (!provinceCode || !cityCode || !countyCode) {
-    throw new Error("注册地址地区未匹配到拉卡拉地区码，请重新选择注册地址省市区后再提交");
+    throw new Error("INVALID_PARAMS: 注册地址地区未匹配到拉卡拉地区码，请重新选择注册地址省市区后再提交");
   }
   return {
     provinceCode,
@@ -1494,18 +1490,18 @@ function buildEContractContent(data: OnboardingApplicationInput) {
 
 function buildEContractReqData(app: NonNullable<Awaited<ReturnType<typeof getOnboardingApplicationForService>>>, data: OnboardingApplicationInput) {
   const callbackUrl = getEContractCallbackUrl();
-  if (!callbackUrl) throw new Error("缺少电子合同回调地址：LAKALA_ECONTRACT_CALLBACK_URL");
+  if (!callbackUrl) throw new Error("INVALID_STATE: 缺少电子合同回调地址：LAKALA_ECONTRACT_CALLBACK_URL");
   const orderNo = app.eContractOrderNo || eContractOrderNo(app.id);
   return {
     order_no: orderNo,
-    org_id: Number(requireOnboardingConfig("LAKALA_ECONTRACT_ORG_ID", getEContractOrgId())),
+    org_id: Number(requireOnboardingConfig("LAKALA_ORG_CODE", getEContractOrgId())),
     ec_type_code: getEContractType(),
     cert_type: "RESIDENT_ID",
     cert_name: data.legalPersonData.larName,
     cert_no: data.legalPersonData.larIdcard,
     mobile: data.contactData.merContactMobile,
     business_license_no: data.merchantData.merBlis,
-    business_license_name: data.merchantData.merRegName,
+    business_license_name: data.merchantData.merBlisName || data.merchantData.merRegName,
     openning_bank_code: data.settlementData.openningBankCode,
     openning_bank_name: resolveOpeningBankName(data.settlementData),
     acct_type_code: DEFAULT_LAKALA_VALUES.acctTypeCode,
@@ -1526,8 +1522,8 @@ function buildAddMerReqData(app: NonNullable<Awaited<ReturnType<typeof getOnboar
   const accountIdEnd = data.settlementData.accountIdDtEnd || idCardExpiryForSubmit(data.legalPersonData);
   const merAddr = validateTkbsMerchantAddress(data);
   return {
-    org_code: requireOnboardingConfig("LAKALA_ONBOARDING_ORG_CODE", getOrgCode()),
-    user_no: requireOnboardingConfig("LAKALA_ONBOARDING_USER_NO", getOnboardingUserNo()),
+    org_code: requireOnboardingConfig("LAKALA_ORG_CODE", getOrgCode()),
+    user_no: requireOnboardingConfig("LAKALA_USER_NO", getOnboardingUserNo()),
     email: data.contactData.email || getOnboardingEmail(),
     busi_code: getOnboardingBusiCode(),
     mer_reg_name: data.merchantData.merRegName,
@@ -1572,7 +1568,7 @@ function buildAddMerReqData(app: NonNullable<Awaited<ReturnType<typeof getOnboar
       term_num: process.env.LAKALA_ONBOARDING_TERM_NUM || "1",
       fees: DEFAULT_FEE_DATA,
       mcc: getOnboardingMcc(),
-      activity_id: requireOnboardingConfig("LAKALA_ONBOARDING_ACTIVITY_ID", getOnboardingActivityId()),
+      activity_id: requireOnboardingConfig("LAKALA_ACTIVITY_ID", getOnboardingActivityId()),
     },
     attchments: fileData,
     settle_type: process.env.LAKALA_ONBOARDING_SETTLE_TYPE || DEFAULT_LAKALA_VALUES.settleType,
@@ -1592,7 +1588,7 @@ export const initiateElectronicContract = withPermission(
       const reqData = buildEContractReqData(app, data);
       const result = await lakalaApplyElectronicContract(reqData);
       await writeLog({ applicationId, apiName: "mms.ec.apply", requestPayload: reqData, responsePayload: result.raw, success: result.success, errorCode: result.errorCode, errorMessage: result.errorMessage });
-      if (!result.success || !result.resultUrl) throw new Error(result.errorMessage || "电子合同申请失败");
+      if (!result.success || !result.resultUrl) throw new Error(`INVALID_STATE: ${result.errorMessage || "电子合同申请失败"}`);
       await db.update(lakalaOnboardingApplications).set({
         eContractOrderNo: result.orderNo || reqData.order_no,
         eContractApplyId: result.applyId || null,
@@ -1605,9 +1601,13 @@ export const initiateElectronicContract = withPermission(
       revalidatePath(`/merchants/onboarding-prototype/${applicationId}`);
       return { success: true, message: "电子合同已发起，请完成签约", resultUrl: result.resultUrl };
     } catch (error) {
-      const message = error instanceof Error ? error.message : "电子合同申请失败";
-      await db.update(lakalaOnboardingApplications).set({ lastErrorMessage: message }).where(eq(lakalaOnboardingApplications.id, applicationId));
-      return { success: false, message };
+      // diagnosticText 只落 DB 的 lastErrorMessage 供运维排查（刻意不叫 *message，
+      // 与 action-error-usage 护栏「进返回值的 message 必须 fail-closed」口径区分开）。
+      // 供应商拒绝原因本身就是用白名单前缀抛的（上面 `INVALID_STATE: ${result.errorMessage}`），
+      // 所以照常透传；被挡掉的只有 PG / TypeError 这类内部异常（issue #133 评审 round 3）。
+      const diagnosticText = error instanceof Error ? error.message : "电子合同申请失败";
+      await db.update(lakalaOnboardingApplications).set({ lastErrorMessage: diagnosticText }).where(eq(lakalaOnboardingApplications.id, applicationId));
+      return { success: false, message: businessErrorMessage(error, "电子合同申请失败") };
     }
   },
 );
@@ -1639,7 +1639,7 @@ export const submitOnboardingApplication = withPermission(
       const reqData = buildAddMerReqData(app, data, fileData);
       const result = await lakalaAddMerchant(reqData);
       await writeLog({ applicationId, apiName: isRealTkbs ? "tkbs.merchant_encry" : "addMer", requestPayload: reqData, responsePayload: result.raw, success: result.success, errorCode: result.errorCode, errorMessage: result.errorMessage });
-      if (!result.success) throw new Error(result.errorMessage || "拉卡拉进件失败");
+      if (!result.success) throw new Error(`INVALID_STATE: ${result.errorMessage || "拉卡拉进件失败"}`);
       if (isRealTkbs) {
         await db.update(lakalaOnboardingApplications).set({
           status: "REGISTERING",
@@ -1680,10 +1680,11 @@ export const submitOnboardingApplication = withPermission(
       revalidatePath(`/merchants/onboarding-prototype/${applicationId}`);
       return { success: true, message: "已提交拉卡拉，收款商户已生成并绑定门店" };
     } catch (error) {
-      const message = error instanceof Error ? error.message : "提交失败";
+      // 同上：DB 留原始文本供运维，前端只拿 fail-closed 后的文案
+      const diagnosticText = error instanceof Error ? error.message : "提交失败";
       const nextStatus = app.merInnerNo || app.merCupNo ? "FAILED" : "FILES_READY";
-      await db.update(lakalaOnboardingApplications).set({ status: nextStatus, lastErrorMessage: message }).where(eq(lakalaOnboardingApplications.id, applicationId));
-      return { success: false, message };
+      await db.update(lakalaOnboardingApplications).set({ status: nextStatus, lastErrorMessage: diagnosticText }).where(eq(lakalaOnboardingApplications.id, applicationId));
+      return { success: false, message: businessErrorMessage(error, "提交失败") };
     }
   },
 );
@@ -1808,7 +1809,6 @@ export const queryOnboardingApplication = withPermission(
     const externalMerchantNo = result.merchantNo || (customer && typeof customer.merchant_no === "string" ? customer.merchant_no : undefined);
     const terminalNo = result.terminalNo;
     const nextStatus = result.status === "SUCCESS" ? "SUCCESS" : result.status === "FAILED" ? "FAILED" : "REGISTERING";
-    const nextMerCupNo = externalMerchantNo || app.merCupNo;
     const nextTerminalData = terminalNo
       ? { ...((app.terminalData as Record<string, unknown>) ?? {}), termNo: terminalNo }
       : app.terminalData;
@@ -1819,24 +1819,9 @@ export const queryOnboardingApplication = withPermission(
       lastErrorCode: result.errorCode,
       lastErrorMessage: result.errorMessage,
     }).where(eq(lakalaOnboardingApplications.id, applicationId));
-    let channelMessage = "";
-    if (nextStatus === "SUCCESS" && nextMerCupNo?.startsWith("82")) {
-      const channelResult = await refreshChannelSubMerchantsForApplication(applicationId, nextMerCupNo);
-      if (channelResult.success) {
-        const wechatText = channelResult.wechat.length
-          ? `微信子商户号：${channelResult.wechat.map((item) => item.subMerchantNo).join("、")}`
-          : "微信子商户号暂未返回";
-        const alipayText = channelResult.alipay.length
-          ? `支付宝子商户号：${channelResult.alipay.map((item) => item.subMerchantNo).join("、")}`
-          : "支付宝子商户号暂未返回";
-        channelMessage = `；已同步查询渠道报备，${wechatText}，${alipayText}`;
-      } else {
-        channelMessage = `；渠道报备查询暂未成功：${channelResult.errorMessage || "等待下次自动查询"}`;
-      }
-    }
     revalidatePath(`/merchants/onboarding-prototype/${applicationId}`);
     revalidatePath("/merchants");
-    return { success: true, message: `状态已更新：${statusLabel(result.status)}${channelMessage}` };
+    return { success: true, message: `状态已更新：${statusLabel(result.status)}` };
   },
 );
 
@@ -1848,7 +1833,11 @@ export const refreshOnboardingSubMerchants = withPermission(
     if (!app) return { success: false, message: "申请不存在" };
     if (app.status !== "SUCCESS" || !app.merCupNo?.startsWith("82")) return { success: false, message: "请先等待拉卡拉审核通过并取得银联商户号" };
     const result = await refreshChannelSubMerchantsForApplication(applicationId, app.merCupNo);
-    if (!result.success) return { success: false, message: result.errorMessage || "子商户号查询失败" };
+    if (!result.success) {
+      // 失败也已写库 subMerchantCheckedAt/lastError，须刷新页面让"上次查询"与错误提示可见
+      revalidatePath(`/merchants/onboarding-prototype/${applicationId}`);
+      return { success: false, message: result.errorMessage || "子商户号查询失败" };
+    }
     revalidatePath(`/merchants/onboarding-prototype/${applicationId}`);
     const messages = [
       result.wechat.length ? `微信子商户号：${result.wechat.map((item) => item.subMerchantNo).join("、")}` : "微信子商户号暂未返回",
@@ -1858,7 +1847,7 @@ export const refreshOnboardingSubMerchants = withPermission(
       success: true,
       message: result.wechat.length && result.alipay.length
         ? `${messages.join("；")}。请法人按指南完成微信/支付宝认证，完成后点击“我已完成认证，关联收款商户”`
-        : `${messages.join("；")}。未返回的渠道系统将每小时自动查询`,
+        : `${messages.join("；")}。请稍后点击“查询子商户号”手动重试`,
     };
   },
 );
@@ -1882,17 +1871,27 @@ export const confirmOnboardingExternalCertification = withPermission(
     if (missing.length) return { success: false, message: `请先取得：${missing.join("、")}` };
 
     const now = new Date().toISOString();
-    const merchantId = await associateDisabledMerchantForApplication(app);
-    await db.update(lakalaOnboardingApplications).set({
-      lakalaMerchantId: merchantId,
-      channelData: {
-        ...channelData,
-        externalCertificationConfirmedAt: now,
-        externalCertificationConfirmedBy: session.name || session.phone || session.employeeId,
-      },
-      lastErrorCode: null,
-      lastErrorMessage: null,
-    }).where(eq(lakalaOnboardingApplications.id, applicationId));
+    const outcome = await db.transaction(async (tx) => {
+      const result = await associateDisabledMerchantForApplication(tx, app);
+      if ("error" in result) return result;
+      await tx.update(lakalaOnboardingApplications).set({
+        lakalaMerchantId: result.merchantId,
+        channelData: {
+          ...channelData,
+          externalCertificationConfirmedAt: now,
+          externalCertificationConfirmedBy: session.name || session.phone || session.employeeId,
+        },
+        lastErrorCode: null,
+        lastErrorMessage: null,
+      }).where(eq(lakalaOnboardingApplications.id, applicationId));
+      return result;
+    });
+    if ("error" in outcome) {
+      revalidatePath(`/merchants/onboarding-prototype/${applicationId}`);
+      revalidatePath("/merchants");
+      return { success: false, message: outcome.error };
+    }
+    const merchantId = outcome.merchantId;
     await logOperation(session, "merchant.onboarding.external_certification.confirm", "lakala_onboarding_application", applicationId, {
       merchantId,
       merCupNo: app.merCupNo,
@@ -1904,107 +1903,6 @@ export const confirmOnboardingExternalCertification = withPermission(
   },
 );
 
-export const refreshOnboardingCertificationStatus = withPermission(
-  "merchant:list",
-  async (session, applicationId: string): Promise<{ success: boolean; message: string }> => {
-    await ensureOnboardingSchema();
-    const app = await getOnboardingApplicationForService(applicationId);
-    if (!app) return { success: false, message: "申请不存在" };
-    const current = (app.channelData as Record<string, unknown>) ?? {};
-    if (app.status !== "SUCCESS" || !app.merCupNo?.startsWith("82")) {
-      return { success: false, message: "请先等待拉卡拉审核通过并取得银联商户号" };
-    }
-    if (!hasWechatSubMerchant(current)) {
-      return { success: false, message: "请先等待微信子商户号返回" };
-    }
-    const wechatResult = await lakalaQueryRegisterStatus({ merchantNo: app.merCupNo, registerType: "WXZF" });
-    await writeLog({
-      applicationId,
-      apiName: "tkbs.open_merchant_register_status_query.WXZF",
-      requestPayload: { org_code: getOrgCode(), merchant_no: app.merCupNo, register_type: "WXZF" },
-      responsePayload: wechatResult.raw,
-      success: wechatResult.success,
-      errorCode: wechatResult.errorCode,
-      errorMessage: wechatResult.errorMessage,
-    });
-    const alipayResult = await lakalaQueryRegisterStatus({ merchantNo: app.merCupNo, registerType: "ZFBZF" });
-    await writeLog({
-      applicationId,
-      apiName: "tkbs.open_merchant_register_status_query.ZFBZF",
-      requestPayload: { org_code: getOrgCode(), merchant_no: app.merCupNo, register_type: "ZFBZF" },
-      responsePayload: alipayResult.raw,
-      success: alipayResult.success,
-      errorCode: alipayResult.errorCode,
-      errorMessage: alipayResult.errorMessage,
-    });
-
-    const wechatCertification = serializeCertification(wechatResult);
-    const alipayCertification = serializeCertification(alipayResult);
-    const now = new Date().toISOString();
-    const existingPolling = current.certificationPolling && typeof current.certificationPolling === "object"
-      ? current.certificationPolling as Record<string, unknown>
-      : {};
-    const wechatPassed = certificationPassed(wechatCertification);
-    const wechatFailed = !wechatResult.success || certificationFailed(wechatCertification);
-    const terminalNo = getStoredTerminalNo(app.terminalData);
-    const nextPolling = {
-      ...existingPolling,
-      status: wechatPassed ? (terminalNo ? "DONE" : "WAIT_TERMINAL") : wechatFailed ? "FAILED" : "ACTIVE",
-      startedAt: typeof existingPolling.startedAt === "string" ? existingPolling.startedAt : now,
-      lastCheckedAt: now,
-      stoppedAt: wechatPassed || wechatFailed ? now : undefined,
-      reason: wechatPassed
-        ? (terminalNo ? "微信认证已通过，办理完成" : "微信认证已通过，等待拉卡拉返回终端号")
-        : wechatFailed
-          ? (wechatCertification.rejectReason || wechatCertification.errorMessage || "微信认证未通过")
-          : "微信认证暂未通过，等待下次自动查询",
-    };
-    const nextChannelData = {
-      ...current,
-      wechatCertification,
-      alipayCertification,
-      certificationPolling: nextPolling,
-    };
-
-    if (wechatPassed) {
-      if (!terminalNo) {
-        await db.update(lakalaOnboardingApplications).set({
-          channelData: nextChannelData,
-          lastErrorCode: null,
-          lastErrorMessage: "微信认证已通过，但尚未获取终端号，请点击查询状态",
-        }).where(eq(lakalaOnboardingApplications.id, applicationId));
-        revalidatePath(`/merchants/onboarding-prototype/${applicationId}`);
-        revalidatePath("/merchants");
-        return { success: true, message: "微信认证已通过，但尚未获取终端号，请点击查询状态；获取后系统会启用收款商户" };
-      }
-      const merchantId = await enableMerchantAfterWechatCertification(app);
-      await db.update(lakalaOnboardingApplications).set({
-        lakalaMerchantId: merchantId,
-        channelData: nextChannelData,
-        lastErrorCode: null,
-        lastErrorMessage: null,
-      }).where(eq(lakalaOnboardingApplications.id, applicationId));
-      await logOperation(session, "merchant.onboarding.certification.complete", "lakala_onboarding_application", applicationId, { merchantId, merCupNo: app.merCupNo });
-      revalidatePath(`/merchants/onboarding-prototype/${applicationId}`);
-      revalidatePath("/merchants");
-      return { success: true, message: "微信认证已通过，办理完成，收款商户已启用" };
-    }
-
-    if (wechatFailed) {
-      await revokeMerchantEnablementForApplication(app);
-    }
-
-    await db.update(lakalaOnboardingApplications).set({
-      ...(wechatFailed ? { lakalaMerchantId: null } : {}),
-      channelData: nextChannelData,
-      lastErrorMessage: wechatFailed ? (wechatCertification.rejectReason || wechatCertification.errorMessage || "微信认证未通过") : null,
-    }).where(eq(lakalaOnboardingApplications.id, applicationId));
-    revalidatePath(`/merchants/onboarding-prototype/${applicationId}`);
-    revalidatePath("/merchants");
-    if (wechatFailed) return { success: true, message: `微信认证未通过：${nextPolling.reason}` };
-    return { success: true, message: "微信认证暂未通过，系统已开始每小时自动查询" };
-  },
-);
 
 export const testOnboardingWechatAuthState = withPermission(
   "merchant:list",

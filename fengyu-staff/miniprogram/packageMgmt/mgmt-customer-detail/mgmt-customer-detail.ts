@@ -23,6 +23,19 @@ interface CustomerDetail extends MemberLevelBadgeData {
   memberLevel: string | null;
   source: string;
   preferredStaffName: string | null;
+  customerSource: string | null;
+  promoterEmployeeName: string | null;
+  inviterName: string | null;
+  inviterPhone: string;
+  invitedAt: string | null;
+  customerType: string | null;
+  spendingTier: string | null;
+  monthlyActivity: string | null;
+  customerStatus: string | null;
+  birthday: string | null;
+  occupation: string | null;
+  isMarried: boolean | null;
+  wechatName: string | null;
   totalConsumption: number;
   yearConsumption: number;
   totalActualConsumption: number;
@@ -30,7 +43,10 @@ interface CustomerDetail extends MemberLevelBadgeData {
   storeName: string;
   skinType: string | null;
   focusAreas: string | null;
+  skinIssue: string | null;
+  wellnessPreference: string | null;
   notes: string | null;
+  pointsBalance: number;
   lastServiceDate: string | null;
   visitFrequency: string | null;
   topProductName: string | null;
@@ -92,6 +108,8 @@ interface PaidOrderItem {
   categoryId?: string;
   /** 二级品项名称（保留 category 兼容字段） */
   categoryName?: string;
+  /** 行级欠款；仅订单未付清且该卡未买满次数时有值，否则 null */
+  unpaidAmount?: number | null;
 }
 
 interface PaidOrder {
@@ -136,6 +154,10 @@ interface TreatmentCard {
   usedPct: number;
   paidUnusedPct: number;
   unpaidPct: number;
+  /** 预格式化欠款文案（千分位）；空串表示不展示 */
+  unpaidAmountFmt?: string;
+  /** 可用次数为 0（部分支付未买满次数）；仅用于展示说明，管理层视图本就只读 */
+  notConsumable?: boolean;
   saleOrderId: string;
   paidAt: string;
   storeId?: string;
@@ -213,6 +235,31 @@ interface ServiceRecord {
   items: Array<{ itemName: string; spec: string }>;
 }
 
+interface HomeProduct {
+  saleItemId: string;
+  saleItemGroupId?: string | null;
+  saleOrderId: string;
+  productName: string;
+  unit: string;
+  purchasedQuantity: number;
+  paidQuantity: number;
+  pickedQuantity: number;
+  refundedQuantity: number;
+  /** 已转换折抵件数；路由早已下发，本副本此前漏接（#154 补齐，与 packageCustomer 同款展示） */
+  convertedQuantity: number;
+  remainingQuantity: number;
+  pendingPickupQuantity: number;
+  /** 行级欠款；仅 refundedQuantity=0 时有值，退过款的行为 null（received 是净实收，相减会虚增欠款） */
+  unpaidAmount: number | null;
+  status: string;
+  storeId: string;
+  storeName: string | null;
+  purchasedAt: string;
+  purchasedAtFmt?: string;
+  statusClass?: string;
+  unpaidAmountFmt?: string;
+}
+
 // ===== 页面逻辑 =====
 
 Page({
@@ -253,6 +300,9 @@ Page({
     // Tab 5: 服务记录
     serviceRecords: [] as ServiceRecord[],
     serviceLoaded: false,
+    // Tab 6: 家居产品
+    homeProducts: [] as HomeProduct[],
+    homeProductsLoaded: false,
   },
 
   _clientUserId: '' as string,
@@ -323,6 +373,8 @@ Page({
       // 金额字段就地格式化为「千分位 + 2 位小数」展示串。
       const customer = {
         ...raw,
+        invitedAt: raw.invitedAt ? formatDateTime(raw.invitedAt) : null,
+        birthday: raw.birthday ? raw.birthday.slice(0, 10) : null,
         totalConsumption: formatAmount(raw.totalConsumption),
         yearConsumption: formatAmount(raw.yearConsumption),
         totalActualConsumption: formatAmount(raw.totalActualConsumption),
@@ -369,6 +421,9 @@ Page({
     } else if (tab === 5) {
       this.setData({ serviceLoaded: false });
       task = Promise.all([task, this.loadServiceHistory()]);
+    } else if (tab === 6) {
+      this.setData({ homeProductsLoaded: false });
+      task = Promise.all([task, this.loadHomeProducts()]);
     }
     task.finally(finish);
   },
@@ -386,6 +441,8 @@ Page({
       this.loadGiftHistory();
     } else if (index === 5 && !this.data.serviceLoaded) {
       this.loadServiceHistory();
+    } else if (index === 6 && !this.data.homeProductsLoaded) {
+      this.loadHomeProducts();
     }
   },
 
@@ -527,6 +584,13 @@ Page({
               categoryId: item.categoryId || '',
               categoryName: item.categoryName || item.category || '',
               saleOrderTypeLabel: ORDER_TYPE_LABEL[order.saleOrderType || ''] || order.saleOrderType || '',
+              // issue #122：可用次数 0 的卡现在也展示，必须同时给出原因，
+              // 否则管理层只看到「剩余 0」像是一张坏卡。与门店视图口径一致。
+              unpaidAmountFmt:
+                item.unpaidAmount != null && item.unpaidAmount > 0
+                  ? formatAmount(item.unpaidAmount)
+                  : '',
+              notConsumable: item.paidSessions != null && Math.min(remain, paid - used) <= 0,
             });
           }
         }
@@ -695,5 +759,41 @@ Page({
   onServiceOrderTap(e: WechatMiniprogram.TouchEvent) {
     const id = e.currentTarget.dataset.id as string;
     wx.navigateTo({ url: `/packageService/service-detail/service-detail?id=${id}` });
+  },
+
+  // 与门店视图 customer.homeProducts 同口径：跨店全量展示，未付清的行也要显示（issue #120）
+  async loadHomeProducts() {
+    // 没有顾客 id 时也要落 loaded，否则 Tab 永远停在 loading 转圈
+    if (!this._clientUserId) {
+      this.setData({ homeProducts: [], homeProductsLoaded: true });
+      return;
+    }
+    try {
+      const data = await callStaffApi<{ homeProducts: HomeProduct[] }>('mgmtCustomer.homeProducts', {
+        clientUserId: this._clientUserId,
+        ...this._scopePayload(),
+      });
+      const statusClassMap: Record<string, string> = {
+        退款处理中: 'pending',
+        待提货: 'pending',
+        部分提货: 'progress',
+        已提货: 'success',
+        已完成: 'done',
+        待付清: 'pending',
+      };
+      this.setData({
+        homeProducts: (data?.homeProducts || []).map((item) => ({
+          ...item,
+          purchasedAtFmt: item.purchasedAt ? formatDate(item.purchasedAt) : '',
+          statusClass: statusClassMap[item.status] || 'done',
+          // 仅未付清的行展示欠款；已付清/退过款的行留空，wxml 按空串判显隐
+          unpaidAmountFmt:
+            item.unpaidAmount != null && item.unpaidAmount > 0 ? formatAmount(item.unpaidAmount) : '',
+        })),
+        homeProductsLoaded: true,
+      });
+    } catch (_) {
+      this.setData({ homeProducts: [], homeProductsLoaded: true });
+    }
   },
 });

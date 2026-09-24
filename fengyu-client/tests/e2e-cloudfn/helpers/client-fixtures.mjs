@@ -550,7 +550,25 @@ export async function cleanupClientExtras(prefix = NS) {
        )`,
       [like],
     ],
-    // payments + 分配子表（FK：必须先于 sale_order_payments/sale_items/sale_orders 删，否则 FK 卡住被 skip → 残留「待支付」单撞 uq_sale_orders_client_pending）
+    // payments + 分配子表（FK：必须先于 sale_order_payments/sale_items/sale_orders 删，否则 FK 卡住）
+    [
+      `DELETE FROM sale_payment_item_allocations WHERE sale_payment_item_receipt_id IN (
+         SELECT id FROM sale_payment_item_receipts WHERE sale_order_id IN (
+           SELECT sale_order_id FROM sale_orders WHERE client_user_id IN (
+             SELECT user_id FROM client_wechat_users WHERE user_id LIKE $1 OR openid LIKE $1
+           )
+         )
+       )`,
+      [like],
+    ],
+    [
+      `DELETE FROM sale_payment_item_receipts WHERE sale_order_id IN (
+         SELECT sale_order_id FROM sale_orders WHERE client_user_id IN (
+           SELECT user_id FROM client_wechat_users WHERE user_id LIKE $1 OR openid LIKE $1
+         )
+       )`,
+      [like],
+    ],
     [
       `DELETE FROM sale_payment_allocatable_items WHERE sale_order_id IN (
          SELECT sale_order_id FROM sale_orders WHERE client_user_id IN (
@@ -608,6 +626,12 @@ export async function cleanupClientExtras(prefix = NS) {
 
     // 7) 自动生成 FYGK-* user_id 但 openid 是测试命名空间的（auth.login 等场景）
     //    先清依赖该 user_id 的子表（与根 cleanupTestData 已清的重叠但幂等）
+    [
+      `DELETE FROM point_batches WHERE user_id IN (
+         SELECT user_id FROM client_wechat_users WHERE openid LIKE $1
+       )`,
+      [like],
+    ],
     [
       `DELETE FROM point_transactions WHERE user_id IN (
          SELECT user_id FROM client_wechat_users WHERE openid LIKE $1

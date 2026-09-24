@@ -318,7 +318,7 @@ function envValue(...names: string[]) {
 }
 
 export function getLakalaOnboardingApiFamily() {
-  return envValue("LAKALA_ONBOARDING_API_FAMILY") === "mms" ? "mms" : "tkbs";
+  return envValue("LAKALA_API_FAMILY") === "mms" ? "mms" : "tkbs";
 }
 
 function normalizeLakalaEnv(value: string | undefined) {
@@ -326,11 +326,11 @@ function normalizeLakalaEnv(value: string | undefined) {
 }
 
 export function getLakalaOnboardingEnv() {
-  return normalizeLakalaEnv(process.env.LAKALA_ONBOARDING_ENV);
+  return normalizeLakalaEnv(process.env.LAKALA_ENV);
 }
 
 export function getLakalaOnboardingClientMode() {
-  return envValue("LAKALA_ONBOARDING_CLIENT_MODE") === "real" ? "real" : "mock";
+  return envValue("LAKALA_CLIENT_MODE") === "real" ? "real" : "mock";
 }
 
 export function getLakalaBaseUrl() {
@@ -347,31 +347,31 @@ export function getLakalaBaseUrl() {
 }
 
 export function getOrgCode() {
-  return envValue("LAKALA_ONBOARDING_ORG_CODE");
+  return envValue("LAKALA_ORG_CODE");
 }
 
 export function getOnboardingAppId() {
-  return envValue("LAKALA_ONBOARDING_APP_ID", "LAKALA_ONBOARDING_APPID");
+  return envValue("LAKALA_APPID");
 }
 
 export function getOnboardingSerialNo() {
-  return envValue("LAKALA_ONBOARDING_MERCHANT_CERT_SERIAL_NO", "LAKALA_ONBOARDING_SERIAL_NO");
+  return envValue("LAKALA_SERIAL_NO");
 }
 
 export function getOnboardingUserNo() {
-  return envValue("LAKALA_ONBOARDING_USER_NO");
+  return envValue("LAKALA_USER_NO");
 }
 
 export function getOnboardingSm4Key() {
-  return envValue("LAKALA_ONBOARDING_SM4_KEY", "LAKALA_ONBOARDING_APP_SECRET");
+  return envValue("LAKALA_SM4_KEY");
 }
 
 export function getOnboardingActivityId() {
-  return envValue("LAKALA_ONBOARDING_ACTIVITY_ID");
+  return envValue("LAKALA_ACTIVITY_ID");
 }
 
 export function getOnboardingMcc() {
-  return envValue("LAKALA_ONBOARDING_MCC") || DEFAULT_LAKALA_VALUES.mccCode;
+  return envValue("LAKALA_MCC") || DEFAULT_LAKALA_VALUES.mccCode;
 }
 
 export function getOnboardingBusiCode() {
@@ -379,11 +379,11 @@ export function getOnboardingBusiCode() {
 }
 
 export function getOnboardingSettlementType() {
-  return envValue("LAKALA_ONBOARDING_SETTLEMENT_TYPE") || DEFAULT_LAKALA_VALUES.settlementType;
+  return envValue("LAKALA_SETTLEMENT_TYPE") || DEFAULT_LAKALA_VALUES.settlementType;
 }
 
 export function getOnboardingSource() {
-  return envValue("LAKALA_ONBOARDING_SOURCE") || DEFAULT_LAKALA_VALUES.source;
+  return envValue("LAKALA_SOURCE") || DEFAULT_LAKALA_VALUES.source;
 }
 
 export function getOnboardingEmail() {
@@ -407,7 +407,7 @@ export function getEContractCallbackUrl() {
 }
 
 export function getEContractOrgId() {
-  return envValue("LAKALA_ECONTRACT_ORG_ID") || getOrgCode();
+  return getOrgCode();
 }
 
 export function getEContractType() {
@@ -419,19 +419,18 @@ function requireEnv(...names: string[]) {
     const value = process.env[name];
     if (value) return value;
   }
-  throw new Error(`${names.join(" or ")} is required when LAKALA_ONBOARDING_CLIENT_MODE=real`);
+  // 与 decodeSm4Key 同类：给运维看的可操作配置错误，必须带白名单前缀 + 中文才能穿过
+  // businessErrorMessage 的两道闸门，否则线上只会显示「提交失败」（issue #133 评审 round 5 自查）
+  throw new Error(`INVALID_STATE: 缺少入网配置 ${names.join(" 或 ")}（LAKALA_CLIENT_MODE=real 时必填）`);
 }
 
 async function resolvePrivateKey() {
-  const pem = envValue("LAKALA_ONBOARDING_PRIVATE_KEY_PEM");
-  if (pem) return pem.replace(/\\n/g, "\n");
-  const privateKeyPath = requireEnv("LAKALA_ONBOARDING_MERCHANT_PRIVATE_KEY_PATH");
-  return readFile(privateKeyPath, "utf8");
+  return requireEnv("LAKALA_PRIVATE_KEY_PEM").replace(/\\n/g, "\n");
 }
 
 async function signBody(body: string) {
-  const appId = requireEnv("LAKALA_ONBOARDING_APP_ID", "LAKALA_ONBOARDING_APPID");
-  const serialNo = requireEnv("LAKALA_ONBOARDING_MERCHANT_CERT_SERIAL_NO", "LAKALA_ONBOARDING_SERIAL_NO");
+  const appId = requireEnv("LAKALA_APPID");
+  const serialNo = requireEnv("LAKALA_SERIAL_NO");
   const privateKey = await resolvePrivateKey();
   const timestamp = String(Math.floor(Date.now() / 1000));
   const nonceStr = randomBytes(16).toString("hex");
@@ -474,7 +473,14 @@ async function postBody(pathname: string, body: string) {
     return {
       ...json,
       httpStatus: response.status,
-      httpError: `Lakala ${getLakalaBaseUrl()}${pathname} failed with ${response.status}${response.status === 504 ? "，通常是附件过大或拉卡拉网关超时，请压缩后重试" : ""}`,
+      // 诊断信息（含网关 URL）只进日志/DB；面向用户的那句必须单独给，否则整串因含 https://
+      // 被内容闸门判死，连「附件过大…请压缩后重试」这种可操作提示都透不出去（评审 round 4）
+      httpDiagnostic: `Lakala ${getLakalaBaseUrl()}${pathname} failed with ${response.status}`,
+      // 不带前缀：调用方抛出时会补 `INVALID_STATE: `（见 initiateElectronicContract）
+      httpError:
+        response.status === 504
+          ? "拉卡拉网关超时，通常是附件过大，请压缩后重试"
+          : `拉卡拉接口返回 ${response.status}，请稍后重试或联系运维`,
     };
   }
   return json;
@@ -484,16 +490,22 @@ function isSuccess(raw: Record<string, unknown>) {
   return raw.code === "000000" || raw.code === "0000" || raw.retCode === "000000" || raw.retCode === "0000" || raw.respCode === "0000";
 }
 
-function errorMessage(raw: Record<string, unknown>) {
-  const message = typeof raw.message === "string"
-    ? raw.message
-    : typeof raw.msg === "string"
-      ? raw.msg
-      : typeof raw.retMsg === "string"
-        ? raw.retMsg
-        : typeof raw.httpError === "string"
-          ? raw.httpError
-          : undefined;
+/**
+ * 从拉卡拉响应里挑一条最有用的错误文案。
+ *
+ * 顺序刻意不是「响应体优先」：504 时响应体常是 `{"message":"Gateway Timeout"}`，
+ * 英文候选会顶掉我方的 `httpError`（「拉卡拉网关超时，通常是附件过大，请压缩后重试」），
+ * 而前者过不了 `businessErrorMessage` 的中文闸门 → 用户只剩「提交失败」，
+ * 可操作建议丢失（issue #133 评审 round 5）。故按「含中文的候选 → httpError → 任意候选」取。
+ *
+ * 导出仅供单测覆盖 `fetch → postBody → errorMessage` 这一段。
+ */
+export function errorMessage(raw: Record<string, unknown>) {
+  const candidates = [raw.message, raw.msg, raw.retMsg].filter(
+    (v): v is string => typeof v === "string" && v.trim() !== "",
+  );
+  const httpError = typeof raw.httpError === "string" && raw.httpError.trim() !== "" ? raw.httpError : undefined;
+  const message = candidates.find((v) => /[一-鿿]/.test(v)) ?? httpError ?? candidates[0];
   if (message) return message;
   const code = raw.code || raw.retCode || raw.respCode || raw.httpStatus;
   return code ? `拉卡拉返回错误码：${String(code)}` : undefined;
@@ -526,18 +538,13 @@ function decodeSm4Key(value: string) {
   if (hex.length === 16) return hex;
   const utf8 = Buffer.from(trimmed, "utf8");
   if (utf8.length === 16) return utf8;
-  throw new Error("LAKALA_ONBOARDING_SM4_KEY 必须是 16 字节，或对应的 base64/hex 编码");
+  // 带白名单前缀才能穿过 businessErrorMessage 的来源闸门：这是**给运维看的可操作配置错误**，
+  // 与「密码加密未配置（缺少 RSA_PRIVATE_KEY）」同类，不该被兜底文案吞掉（issue #133 评审 round 4）
+  throw new Error("INVALID_STATE: LAKALA_SM4_KEY 必须是 16 字节，或对应的 base64/hex 编码");
 }
 
 function resolveSm4KeyBuffer() {
-  const directKey = envValue("LAKALA_ONBOARDING_SM4_KEY");
-  if (directKey) return decodeSm4Key(directKey);
-
-  const appSecret = requireEnv("LAKALA_ONBOARDING_APP_SECRET");
-  const derivedHex = Buffer.from(appSecret, "utf8").toString("hex").slice(0, 32);
-  const derived = Buffer.from(derivedHex, "hex");
-  if (derived.length === 16) return derived;
-  throw new Error("LAKALA_ONBOARDING_APP_SECRET 转换后的 SM4 密钥长度不足 16 字节");
+  return decodeSm4Key(requireEnv("LAKALA_SM4_KEY"));
 }
 
 export function verifyOnboardingSm4Key() {
@@ -578,6 +585,11 @@ async function postTkbsEncrypted(pathname: string, payload: Record<string, unkno
   const raw = await postBody(pathname, encryptedBody);
   const parsed: Record<string, unknown> = parseEncryptedResponse(raw);
   return {
+    // 传输层元数据（httpStatus / httpError / httpDiagnostic）挂在 raw 上，解密后必须带上，
+    // 否则 504 的可操作提示与诊断信息在这条链路上会整个丢掉（评审 round 5）
+    httpStatus: raw.httpStatus,
+    httpError: raw.httpError,
+    httpDiagnostic: raw.httpDiagnostic,
     ...parsed,
     request_req_id: envelope.req_id,
   };

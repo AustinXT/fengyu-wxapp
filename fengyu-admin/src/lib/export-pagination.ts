@@ -60,6 +60,53 @@ export function offsetPageResult<Row>(
   }
 }
 
+export interface ExportKeysetPage<Row, Cursor> {
+  /** 切掉探测行后的本页数据 */
+  pageRows: Row[]
+  hasMore: boolean
+  nextCursor?: Cursor
+}
+
+/**
+ * Keyset（seek）分页切片。与 resolveExportOffsetPage + offsetPageResult 的区别：
+ * 游标是「上一页最后一行的排序键」而不是行序号。
+ *
+ * **它保证的**：扫描开始时已存在、且排序键未被改写的行，不会因为别的行在导出期间被
+ * INSERT / UPDATE 而在页间移位，从而重复输出或整行漏掉。offset 翻页没有这个保证 ——
+ * 排序键是 updated_at / name 这类可变列时，任何一次改动都会让行移位
+ * （详见 exportEmployees 上方的注释）。
+ *
+ * **它不保证的**：导出中途新插入、且排序键落在当前游标之前的行不会出现在本次导出里。
+ * 这不是缺陷 —— 导出本就是「开始那一刻的集合」的近似，而不是某个事务快照。
+ * 前提是排序键不可变；键本身被改写的那一行仍可能重复或漏掉，所以排序键要选主键。
+ *
+ * 用法：查询多取一行（`limit + 1`）作探测行，把原始行喂进来，游标从**源行**取，
+ * 这样导出行类型不必为了翻页而多带主键字段。
+ * 调用方负责保证排序键唯一（末位加主键即可），否则同键行会在页边界被吞掉。
+ */
+export function resolveExportKeysetPage<Row, Cursor>(
+  fetchedRows: Row[],
+  limit: number | null,
+  toCursor: (lastRow: Row) => Cursor,
+): ExportKeysetPage<Row, Cursor> {
+  if (limit == null) return { pageRows: fetchedRows, hasMore: false }
+  // 自守卫而不是信任 resolveExportBatchLimit 的下界：limit<1 时下面取末行会拿到
+  // undefined，toCursor 里读属性就是一句语义不明的 TypeError，比这里抛难排查得多。
+  // 这里刻意抛裸 Error 而不是 ApiError：本文件是 worker/action 共用的纯工具层，
+  // 不往上依赖 @/lib/api-error；worker 对两者一样按 job 失败处理。
+  if (limit < 1) throw new Error('INVALID_STATE: 导出分页 limit 必须 ≥ 1')
+
+  const hasMore = fetchedRows.length > limit
+  const pageRows = hasMore ? fetchedRows.slice(0, limit) : fetchedRows
+  // limit >= 1（resolveExportBatchLimit 保证）且 hasMore ⇒ pageRows 非空，游标必定给得出来。
+  // iterateExportPages 在 hasMore 而 nextCursor 缺失时会抛 INVALID_STATE，不会静默截断。
+  return {
+    pageRows,
+    hasMore,
+    ...(hasMore ? { nextCursor: toCursor(pageRows[pageRows.length - 1]) } : {}),
+  }
+}
+
 /**
  * Repeatedly fetches a bounded export page. A malformed page is treated as a
  * job failure instead of allowing the worker to loop forever.

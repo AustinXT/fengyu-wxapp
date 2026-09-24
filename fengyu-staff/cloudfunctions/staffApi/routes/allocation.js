@@ -14,9 +14,16 @@
 const pg = require('../db/pg')
 const { requireManager } = require('../middleware/auth')
 const { logOperation } = require('../utils/operation-log')
+const { normalizeListFilters, addDateRange } = require('../utils/list-filters')
+const { assertPaymentAttributionReady } = require('../utils/attribution-guard')
 const { assertNoPendingRefund, assertNoSettledRefundForPayment } = require('../utils/refund')
 const { resolveMarketNameByStore } = require('../utils/market')
+const { createSalesCategoryRates } = require('../utils/sales-categories')
 const { refreshOrderAllocationRollup } = require('../utils/payment-allocatable')
+const {
+  isEmployeeAssignableToStore,
+  assertEmployeesAssignableToStore,
+} = require('../utils/employee-assignment')
 
 // P2-14 Q5: skillTags 驱动的业绩分配校验
 // 每池 = (saleItemId, roleType) 二元组，池间互不约束
@@ -69,7 +76,7 @@ async function buildSalesRateLookup(marketName) {
         department: dept,
         amountMin: r.amount_tier_min != null ? Number(r.amount_tier_min) : -9999.9,
         amountMax: r.amount_tier_max != null ? Number(r.amount_tier_max) : 10000000,
-        orderRates: { '自销自耗': 0, '他销自耗': 0, '他销他耗': 0, '生态合作': 0 },
+        orderRates: createSalesCategoryRates(),
       }
       byKey.set(key, entry)
       grouped.push(entry)
@@ -125,8 +132,8 @@ async function getCommissionRates(ctx) {
         department: dept,
         amountMin: r.amount_tier_min != null ? Number(r.amount_tier_min) : -9999.9,
         amountMax: r.amount_tier_max != null ? Number(r.amount_tier_max) : 10000000,
-        orderRates: { '自销自耗': 0, '他销自耗': 0, '他销他耗': 0, '生态合作': 0 },
-        serviceRates: { '自销自耗': 0, '他销自耗': 0, '他销他耗': 0, '生态合作': 0 },
+        orderRates: createSalesCategoryRates(),
+        serviceRates: createSalesCategoryRates(),
       })
     }
     const entry = grouped.get(key)
@@ -182,22 +189,64 @@ async function checkNewCustomer(clientPhone, currentSaleOrderId) {
 async function pendingPayments(ctx) {
   await requireManager()(ctx, async () => {})
 
-  const { page = 1, pageSize = 20, allocationStatus = '待分配' } = ctx.event.payload || {}
-  if (!['待分配', '已分配'].includes(allocationStatus)) {
-    throw new Error('INVALID_PARAMS: allocationStatus 必须为 待分配 或 已分配')
+  const payload = ctx.event.payload || {}
+  const { allocationStatus = '待分配' } = payload
+  if (!['全部', '待分配', '已分配'].includes(allocationStatus)) {
+    throw new Error('INVALID_PARAMS: allocationStatus 必须为 全部、待分配 或 已分配')
   }
-  const offset = (page - 1) * pageSize
+  const { page, pageSize, offset, keyword, keywordPattern, phoneKeyword, startDate, endDate } = normalizeListFilters(payload)
+  const params = [ctx.auth.effectiveStoreId]
+  const conditions = [
+    'o.store_id = $1',
+    'p.allocation_status IS NOT NULL',
+    "o.sale_order_type IN ('销售单', '转换单')",
+    "o.legacy_source IS DISTINCT FROM 'workfine'",
+  ]
+
+  if (allocationStatus !== '全部') {
+    params.push(allocationStatus)
+    conditions.push(`p.allocation_status = $${params.length}`)
+  }
+
+  if (keyword) {
+    params.push(keywordPattern)
+    const searchParts = [`COALESCE(c.name, o.customer_name, '') ILIKE $${params.length} ESCAPE '\\'`]
+    if (phoneKeyword) {
+      params.push(`%${phoneKeyword}%`)
+      searchParts.push(`regexp_replace(COALESCE(c.phone, o.client_phone, ''), '[^0-9]', '', 'g') LIKE $${params.length}`)
+    }
+    conditions.push(`(${searchParts.join(' OR ')})`)
+  }
+
+  // 日期筛选口径固定为「款项业绩归属日期」（#139），与 admin 营业额分配默认口径 attribution 同构。
+  // 款项粒度：直接约束当前这一行款项的归属日期，**不得**退化成订单级 EXISTS 半连接
+  // （那样会把同订单里落在区间外的其他回款一并带出）。归属日期是 date，走 addDateRange 闭区间。
+  //
+  // 这里**不加** `status='已支付'` 闸门，与 admin allocations.ts 的 getPendingPayments 保持一致
+  // （加了反而制造副本漂移）。注意别把理由记成「allocation_status IS NOT NULL 只命中已支付行」——
+  // 那是错的：退款行会被 helpers/refund-cascade.js 置 '已分配'，全额储值卡抵扣行也会被
+  // utils/payment-allocatable.js 置 '待分配'，DB 层只有枚举没有 CHECK 兜底。
+  // 真正的依据是**写入侧时序**：这些写入点都发生在该行 status 已置 '已支付' 之后。
+  if (startDate || endDate) await assertPaymentAttributionReady(pg)
+  addDateRange(conditions, params, 'p.performance_attribution_date', startDate, endDate)
+
+  params.push(pageSize)
+  const limitParam = params.length
+  params.push(offset)
+  const offsetParam = params.length
 
   const payments = await pg.query(
     `SELECT p.id AS sale_payment_id, p.sale_order_id, p.change_type, p.amount, p.payment_method,
             p.paid_at, p.created_at, p.allocation_status,
-            o.customer_name, o.client_phone, o.sale_order_type, o.preferred_employee_id, o.total_amount
+            COALESCE(c.name, o.customer_name) AS customer_name,
+            COALESCE(c.phone, o.client_phone) AS client_phone,
+            o.sale_order_type, o.preferred_employee_id, o.total_amount
       FROM sale_order_payments p
       JOIN sale_orders o ON o.sale_order_id = p.sale_order_id
-     WHERE o.store_id = $1
-        AND p.allocation_status = $2
+      LEFT JOIN client_wechat_users c ON c.user_id = o.client_user_id
+     WHERE ${conditions.join('\n       AND ')}
         AND (
-          $2 <> '待分配'
+          p.allocation_status <> '待分配'
           OR EXISTS (
             SELECT 1
               FROM sale_payment_item_receipts spir
@@ -217,11 +266,9 @@ async function pendingPayments(ctx) {
             AND GREATEST(COALESCE(o.received::numeric, 0) - COALESCE(o.refunded_amount::numeric, 0), 0) > 0
           )
         )
-        AND o.sale_order_type IN ('销售单', '转换单')  -- 转换单现已按回款逐笔产 receipt，与销售单同流程
-        AND o.legacy_source IS DISTINCT FROM 'workfine'
       ORDER BY p.paid_at DESC NULLS LAST, p.id DESC
-      LIMIT $3 OFFSET $4`,
-    [ctx.auth.effectiveStoreId, allocationStatus, pageSize, offset]
+      LIMIT $${limitParam} OFFSET $${offsetParam}`,
+    params
   )
   ctx.result = { payments, page, pageSize }
 }
@@ -259,6 +306,9 @@ async function suggestPayment(ctx) {
   let deptAnomalous = false
   if (pay.preferred_employee_id) {
     beauticianInfo = await resolveStaffRoles(pay.preferred_employee_id)
+    if (beauticianInfo && !(await isEmployeeAssignableToStore(pg, pay.preferred_employee_id, pay.store_id))) {
+      beauticianInfo = null
+    }
     if (beauticianInfo && beauticianInfo.skills.length === 0) deptAnomalous = true
   }
   const isNewCustomer = await checkNewCustomer(pay.client_phone, pay.sale_order_id)
@@ -305,7 +355,7 @@ async function suggestPayment(ctx) {
           department: dept,
           amountMin: r.amount_tier_min != null ? Number(r.amount_tier_min) : -9999.9,
           amountMax: r.amount_tier_max != null ? Number(r.amount_tier_max) : 10000000,
-          orderRates: { '自销自耗': 0, '他销自耗': 0, '他销他耗': 0, '生态合作': 0 },
+          orderRates: createSalesCategoryRates(),
         })
       }
       grouped.get(key).orderRates[r.sales_category] = Number(r.commission_rate) || 0
@@ -350,22 +400,54 @@ async function suggestPayment(ctx) {
   if (pay.store_id) {
     const empRows = await pg.query(`
       SELECT u.employee_id, u.name, u.store_id, u.skills, u.is_on_business_trip,
-             d.name AS department, s.store_name
+             d.name AS department, s.store_name, employee_market.name AS market_name,
+             CASE
+               WHEN u.store_id = $1 THEN 'local'
+               WHEN employee_market.id = target_market.id THEN 'same_market_trip'
+               ELSE 'cross_market_trip'
+             END AS assignment_scope
       FROM staff_wechat_users u
       LEFT JOIN stores s ON u.store_id = s.store_id
+      LEFT JOIN org_nodes so ON s.org_node_id = so.id
       LEFT JOIN org_nodes d ON u.org_node_id = d.id
+      LEFT JOIN org_nodes employee_org_parent ON employee_org_parent.id = d.parent_id
+      LEFT JOIN org_nodes employee_market ON employee_market.id = COALESCE(
+        so.parent_id,
+        CASE
+          WHEN d.type = '市场' THEN d.id
+          WHEN d.type = '门店' THEN d.parent_id
+          WHEN d.type = '部门' AND employee_org_parent.type = '市场' THEN employee_org_parent.id
+          WHEN d.type = '部门' AND employee_org_parent.type = '门店' THEN employee_org_parent.parent_id
+          ELSE NULL
+        END
+      ) AND employee_market.type = '市场'
+      JOIN stores target_store ON target_store.store_id = $1
+      JOIN org_nodes target_store_node ON target_store_node.id = target_store.org_node_id
+      LEFT JOIN org_nodes target_market ON target_market.id = target_store_node.parent_id
       WHERE u.is_resigned = false
         AND (u.store_id = $1 OR u.is_on_business_trip = true)
         AND u.employee_id IS NOT NULL
-      ORDER BY u.name`, [pay.store_id])
+      ORDER BY
+        CASE
+          WHEN u.store_id = $1 THEN 0
+          WHEN employee_market.id = target_market.id THEN 1
+          ELSE 2
+        END,
+        employee_market.name NULLS LAST,
+        s.store_name NULLS LAST,
+        d.name NULLS LAST,
+        u.name NULLS LAST,
+        u.employee_id`, [pay.store_id])
     candidateEmployees = empRows.map(r => ({
       staffWfId: r.employee_id,
       name: r.name || '',
       storeId: r.store_id || '',
       storeName: r.store_name || '',
+      marketName: r.market_name || '',
       skills: Array.isArray(r.skills) ? r.skills : [],
       department: r.department || '',
       isOnBusinessTrip: r.is_on_business_trip === true,
+      assignmentScope: r.assignment_scope,
     }))
   }
 
@@ -391,6 +473,45 @@ async function suggestPayment(ctx) {
     customerName: pay.customer_name,
     paidAt: pay.paid_at,
     frozen: isFrozen(pay.paid_at),
+  }
+}
+
+/**
+ * 取订单行锁，把本模块的写事务钉在项目约定的锁序上：`sale_orders` → `sale_order_payments`
+ * （硬约束见 db/CLAUDE.md「写 sale_order_payments 的硬约束」）。
+ *
+ * 分配链路天然是「先改款项行、再刷订单汇总」，与「订单级改期」（先锁订单、
+ * 再由迁移 0040 的 AFTER trigger 回写款项行）方向相反，并发同一订单必 40P01（issue #148，
+ * 已在临时 PG 实测复现）。事务一进来就先取订单行锁即可消环。
+ *
+ * ⚠ 必须是**独立一条**只查 sale_orders 的语句：写成
+ * `SELECT ... FROM sop JOIN so ... WHERE sop.id = $1 FOR UPDATE OF sop, so` 会按 sop 主键扫描，
+ * 物理上先锁款项行，恰好把锁序倒回来（该坑已在 #137 评审中实测踩过）。
+ *
+ * ⚠ 锁强度是 `FOR NO KEY UPDATE`，**不要"顺手"改成 `FOR UPDATE`**。三者实测对照
+ * （PG 16，2026-09-18，issue #148 评审）：
+ *
+ * | 本事务持有 | FK 子表 INSERT（取父行 FOR KEY SHARE） | 改期的 FOR UPDATE | 0040 trigger 的 FOR SHARE |
+ * |---|---|---|---|
+ * | `FOR UPDATE`        | **被挡** | 被挡 | 被挡 |
+ * | `FOR NO KEY UPDATE` | 放行     | 被挡 | 被挡 |
+ *
+ * 消环只需要挡住后两者，`FOR NO KEY UPDATE` 已经够。而 `FOR UPDATE` 会在整个分配事务期间
+ * 把该订单的所有子表 INSERT 一并挡住 —— `order.js` 的 createRefund 事务第一条就是
+ * `INSERT INTO sale_order_payments`，本来是毫秒级，会被拖到分配事务提交。
+ * 它也正是 rollup 的 `UPDATE sale_orders` 最终要取的锁级别，顺带省掉一次锁升级。
+ *
+ * 订单行在事务外已查得存在；`sale_order_payments.sale_order_id` 是 NOT NULL + ON DELETE RESTRICT，
+ * 有款项行时订单删不掉，所以这里恒锁到 1 行。返回 0 行只可能是传了空 saleOrderId 之类的编程错误，
+ * 那意味着**本次调用完全没拿到订单锁、锁序修复对它失效**，必须响亮失败而不是静默退化。
+ */
+async function lockSaleOrderForAllocation(client, saleOrderId) {
+  const res = await client.query(
+    'SELECT 1 FROM sale_orders WHERE sale_order_id = $1 FOR NO KEY UPDATE',
+    [saleOrderId],
+  )
+  if (res.rowCount !== 1) {
+    throw new Error(`CONFLICT: ORDER_GONE: 订单不存在或已被删除（${saleOrderId}）`)
   }
 }
 
@@ -435,6 +556,12 @@ async function savePayment(ctx) {
   // 退款后重分配守卫（2026-06-24）：本回款的可分配 item 中存在「已支付退款」冲销时禁止重分配——退款已记负数冲销行（挂退款流水 id），
   // 重保存会作废原回款正数行 + 写新正数行，与退款负数行脱节 → 净额错乱。回款级守卫：同单其它无关 item 的回款不受影响。两端镜像 admin savePaymentAllocations。
   await assertNoSettledRefundForPayment(pg, salePaymentId)
+  await assertEmployeesAssignableToStore(
+    pg,
+    allocations.map((allocation) => allocation.employeeId),
+    pay.store_id,
+    { assignmentScope: 'allocationSupport' },
+  )
 
   const allocItems = await pg.query(
     'SELECT id AS receipt_id, sale_item_id, amount::numeric AS amount, sales_category FROM sale_payment_item_receipts WHERE sale_payment_id = $1',
@@ -450,6 +577,8 @@ async function savePayment(ctx) {
   // 空分配 = 标记该回款无需分配
   if (allocations.length === 0) {
     await pg.transaction(async (client) => {
+      // 锁序 sale_orders → sale_order_payments，必须是事务第一条语句（见 lockSaleOrderForAllocation）
+      await lockSaleOrderForAllocation(client, pay.sale_order_id)
       await client.query(
         `UPDATE sale_payment_item_allocations
             SET is_void = true, voided_at = NOW(), updated_at = NOW()
@@ -529,6 +658,8 @@ async function savePayment(ctx) {
   }
 
   await pg.transaction(async (client) => {
+    // 锁序 sale_orders → sale_order_payments，必须是事务第一条语句（见 lockSaleOrderForAllocation）
+    await lockSaleOrderForAllocation(client, pay.sale_order_id)
     await client.query(
       `UPDATE sale_payment_item_allocations
           SET is_void = true, voided_at = NOW(), updated_at = NOW()
@@ -590,6 +721,8 @@ async function deletePaymentAllocation(ctx) {
   await assertNoSettledRefundForPayment(pg, salePaymentId)
 
   await pg.transaction(async (client) => {
+    // 锁序 sale_orders → sale_order_payments，必须是事务第一条语句（见 lockSaleOrderForAllocation）
+    await lockSaleOrderForAllocation(client, pay.sale_order_id)
     await client.query(
       `UPDATE sale_payment_item_allocations
           SET is_void = true, voided_at = NOW(), updated_at = NOW()

@@ -55,8 +55,11 @@ function expectHitSequence({
   mockExecute.mockResolvedValueOnce([])
   // 5) tx 内：INSERT point_transactions RETURNING
   mockExecute.mockResolvedValueOnce(pointsInsertConflict ? [] : [{ id: 1 }])
-  // 6) tx 内：UPDATE points_balance（仅当流水插入成功）
-  if (!pointsInsertConflict) mockExecute.mockResolvedValueOnce([])
+  // 6) tx 内：INSERT point_batches + UPDATE points_balance（仅当流水插入成功）
+  if (!pointsInsertConflict) {
+    mockExecute.mockResolvedValueOnce([])
+    mockExecute.mockResolvedValueOnce([])
+  }
   // 7) tx 内：SELECT coupon_templates
   mockExecute.mockResolvedValueOnce([
     {
@@ -100,7 +103,42 @@ describe('cron-worker STEP 3 — grantBirthdayBenefits', () => {
       const allParams = mockExecute.mock.calls.flatMap((c) => paramsOf(c[0]))
       expect(allParams).toContain('birthday-msg-2027-u-A')
       expect(allParams).toContain('birthday-pts-2027-u-A')
+      // 默认 qty=1，第 1 张沿用历史无序号 key，保证补跑幂等
       expect(allParams).toContain('bday-2027-u-A-tpl-1')
+    })
+
+    it('couponQuantities → 按数量发 N 张，第 1 张沿用历史 key，第 2..N 张带序号', async () => {
+      const config = {
+        黑钻: {
+          messageTitle: '生日快乐',
+          messageBody: '祝您生日快乐！',
+          points: 500,
+          couponTemplateIds: ['tpl-1'],
+          couponQuantities: { 'tpl-1': 3 },
+        },
+      }
+      mockExecute.mockResolvedValueOnce([{ value: JSON.stringify(config) }])
+      mockExecute.mockResolvedValueOnce([{ year: 2026 }])
+      mockExecute.mockResolvedValueOnce([{ user_id: 'u-Q', member_level: '黑钻' }])
+      mockExecute.mockResolvedValueOnce([]) // INSERT messages
+      mockExecute.mockResolvedValueOnce([{ id: 1 }]) // INSERT points
+      mockExecute.mockResolvedValueOnce([]) // INSERT point_batches
+      mockExecute.mockResolvedValueOnce([]) // UPDATE points_balance
+      mockExecute.mockResolvedValueOnce([
+        { validity_mode: 'days', valid_days: 30, valid_to: null, is_active: true },
+      ])
+      mockExecute.mockResolvedValueOnce([]) // INSERT user_coupons #1
+      mockExecute.mockResolvedValueOnce([]) // INSERT user_coupons #2
+      mockExecute.mockResolvedValueOnce([]) // INSERT user_coupons #3
+      mockExecute.mockResolvedValueOnce([]) // INSERT operation_logs
+
+      const result = await grantBirthdayBenefits(mockDb as never)
+      expect(result.sentCount).toBe(1)
+
+      const allParams = mockExecute.mock.calls.flatMap((c) => paramsOf(c[0]))
+      expect(allParams).toContain('bday-2026-u-Q-tpl-1')
+      expect(allParams).toContain('bday-2026-u-Q-tpl-1-2')
+      expect(allParams).toContain('bday-2026-u-Q-tpl-1-3')
     })
   })
 
@@ -180,6 +218,7 @@ describe('cron-worker STEP 3 — grantBirthdayBenefits', () => {
       // 第二次 transaction 内的 tx.execute 序列（按 grantOneBirthday 顺序）
       mockExecute.mockResolvedValueOnce([]) // INSERT messages
       mockExecute.mockResolvedValueOnce([{ id: 2 }]) // INSERT points
+      mockExecute.mockResolvedValueOnce([]) // INSERT point_batches
       mockExecute.mockResolvedValueOnce([]) // UPDATE points_balance
       mockExecute.mockResolvedValueOnce([
         { validity_mode: 'days', valid_days: 30, valid_to: null, is_active: true },

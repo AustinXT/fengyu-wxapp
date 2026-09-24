@@ -16,9 +16,64 @@ const { getMemberThreshold } = require('./config')
 const { settlePointsSafe } = require('./points')
 const { recalcMemberLevel } = require('./member-level')
 const { parseErrorPrefix } = require('./error-codes')
+const { verifyHealthPayload } = require('./utils/system-health')
 const { recalcPaidSessionsForOrder } = require('./paid-sessions')
 const { capturePaymentAllocatables, refreshOrderAllocationRollup } = require('./payment-allocatable')
 const { getPerItemRefundedMap, computeRefundAwareDirectedItems } = require('./per-item-refund')
+const { classifySaleOrderDocumentType } = require('./document-type')
+
+/**
+ * 顾客分类跃迁的订单级金额 CTE（#187，2026-09-18）。$1 = client_user_id。
+ * 产出每张已结清销售单的 non_trial / trial = 非体验 / 体验行的**毛实收**合计
+ * （sale_items.received 净额 + 该行逐项退款额 → 还原"曾经收到的钱"，退款不扣减）。
+ * refund_by_item 的 note→jsonb 三重防线逐字对齐 paid-sessions.js
+ * RECEIVED_REFUNDED_DEDUCT_SQL，根除 22P02。八处副本逐字一致，由 staffApi
+ * __tests__/routes/recalc-customer-type-sql.test.js 守护。
+ */
+const RECALC_CUSTOMER_TYPE_CTE = `WITH refund_by_item AS (
+       SELECT sop.sale_order_id,
+              elem ->> 'refSaleItemId' AS sale_item_id,
+              SUM(COALESCE(public.try_numeric(elem ->> 'refundAmount'), 0)) AS refunded
+       FROM sale_order_payments sop
+       JOIN sale_orders ro ON ro.sale_order_id = sop.sale_order_id
+       CROSS JOIN LATERAL jsonb_array_elements(
+         CASE WHEN jsonb_typeof(public.try_jsonb(sop.note) -> 'items') = 'array'
+              THEN public.try_jsonb(sop.note) -> 'items'
+              ELSE '[]'::jsonb END
+       ) AS elem
+       WHERE ro.client_user_id = $1
+         AND ro.status IN ('已支付', '已完成')
+         AND ro.sale_order_type = '销售单'
+         AND sop.change_type = '退款'
+         AND sop.status = '已支付'
+         AND elem ->> 'refSaleItemId' <> 'OVERPAY'
+       -- 序号绑定 SELECT 的前 2 列（sale_order_id, refSaleItemId）；重排 SELECT 列须同步改这里
+       GROUP BY 1, 2
+     ),
+     order_amounts AS (
+       SELECT o.sale_order_id,
+              CASE WHEN NOT EXISTS (SELECT 1 FROM sale_items si2 WHERE si2.sale_order_id = o.sale_order_id)
+                   THEN GREATEST(o.received::numeric, 0)
+                   ELSE COALESCE(SUM(LEAST(si.received::numeric + COALESCE(rbi.refunded, 0),
+                                           si.sale_amount::numeric))
+                                 FILTER (WHERE si.is_experience = false), 0)
+              END AS non_trial,
+              CASE WHEN NOT EXISTS (SELECT 1 FROM sale_items si2 WHERE si2.sale_order_id = o.sale_order_id)
+                   THEN 0
+                   ELSE COALESCE(SUM(LEAST(si.received::numeric + COALESCE(rbi.refunded, 0),
+                                           si.sale_amount::numeric))
+                                 FILTER (WHERE si.is_experience = true), 0)
+              END AS trial
+       FROM sale_orders o
+       LEFT JOIN sale_items si ON si.sale_order_id = o.sale_order_id
+                              AND si.item_direction = '购买'
+       LEFT JOIN refund_by_item rbi ON rbi.sale_order_id = o.sale_order_id
+                                   AND rbi.sale_item_id = si.sale_item_id
+       WHERE o.client_user_id = $1
+         AND o.status IN ('已支付', '已完成')
+         AND o.sale_order_type = '销售单'
+       GROUP BY o.sale_order_id, o.received
+     )`
 
 /**
  * 线上支付自动逐笔分配：把本次回款（perItem 逐项可分配额）100% 记到开单指定销售员名下，
@@ -137,6 +192,8 @@ function getPg() {
     // 全局 OID 解析：numeric/bigint → JS Number（详见 db/pg.js 注释）
     pg.types.setTypeParser(20, (val) => (val === null ? null : parseInt(val, 10)))
     pg.types.setTypeParser(1700, (val) => (val === null ? null : parseFloat(val)))
+    // date 保持 YYYY-MM-DD 文本（与 staffApi/clientApi 的 db/pg.js 三端一致，snapshot 守护）
+    pg.types.setTypeParser(1082, (val) => val)
     // timestamp 列自 migration 0076 起统一为 timestamptz（1184）：pg 内置 parser 按字面偏移正确解析，无需自定义 1114 parser。
     pgPool = new pg.Pool({
       connectionString: process.env.PG_CONNECTION_STRING,
@@ -244,9 +301,10 @@ function parseHttpTriggerEvent(event) {
   if (tradeState === 'REFUND' || tradeState === 'PART_REFUND') {
     return { _lakalaCallbackAcked: true, ackBody: { code: 'SUCCESS', message: '退款回调已确认' } }
   }
-  // 明确失败/关闭：交给 main 按当前 out_trade_no CAS 释放活动意图后再 ack。
+  // 明确失败/关闭/撤销：交给 main 按当前 out_trade_no CAS 释放活动意图后再 ack。
   // 不能在 parse 阶段直接 ack，否则受限回款会永久卡在 PAYMENT_INTENT_ACTIVE。
-  if (tradeState === 'FAIL' || tradeState === 'CLOSE') {
+  // REVOKED（当日交易撤销）同属不可再支付的终态，#214 之前被漏判 → 撤销单永久卡死。
+  if (tradeState === 'FAIL' || tradeState === 'CLOSE' || tradeState === 'REVOKED') {
     return {
       orderNo: outTradeNo,
       tradeState,
@@ -451,29 +509,61 @@ async function resolveLakalaMerchantForReconcile(storeId) {
  * 扫描「拉卡拉下单成功 + received=0 + 待支付/部分支付 + 90s~30min」的订单，主动 queryTrade 查真实状态，
  * SUCCESS 则 cloud.callFunction 自调 payNotify main（event 入口）触发与回调同款的幂等入账。
  *
- * 窗口：90s 下界给正常回调留时间（避免与前端轮询/正常回调抢）；30min 上界超窗已非时序问题，停止避免无限扫。
+ * 窗口：90s 下界给正常回调留时间（避免与前端轮询/正常回调抢）；2h 上界只为防无限扫。
+ * 上界原本是 30min，但渠道单要等 timeout_express(10min) 超时转 CLOSE 后才可能被这里释放，
+ * 中间任何一次 queryTrade 失败就可能错过窗口 → 支付意图永久残留，谁也发不了新支付、
+ * 关不掉订单（issue #214 的「永久卡死」路径）。扫描目标集本就很小（仅有活动意图的待支付单
+ * + LIMIT 20），放宽上界的代价可忽略。
  * 与前端 confirmPayment 轮询互补：前端覆盖用户在线场景，本任务覆盖用户付款后长时间不回订单页的兜底。
  * 两者最终都走 payNotify 幂等入账，重复安全（uq_sop_txn / uq_sop_first_payment / CAS 守卫）。
  *
  * @returns {Promise<{code:string, message:string}>}
  */
+/**
+ * 补偿扫描里每次查单的超时预算（双谱系评审 round-2）。
+ *
+ * lakala-client 默认 30s，而 payNotify 云函数自身的超时**也是 30s**：扫描的第一条一旦
+ * 卡满，整个函数就被平台终止，后面 19 条一条都处理不到，且下一分钟很可能又卡在同一条。
+ * 8s × 最坏 20 条仍会超，但配合逐单 try/catch 与 DESC 排序，实际只会牺牲尾部若干条，
+ * 不会让整批停摆。
+ */
+const RECONCILE_QUERY_TIMEOUT_MS = 8000
+
 async function runPaymentReconcile() {
   if (!isPayNotifyEnabled()) {
     console.log('[payNotify/reconcile] skip: 未启用')
     return { code: 'SUCCESS', message: 'reconcile disabled' }
   }
+  // fail-closed：自调入账的目标函数名必须显式配置，不回退到 'payNotify'。
+  // 同一个 env 里并存 payNotify(prod 库) 与 payNotifyDev(dev 库)，回退等于让 Dev 实例
+  // 拿 dev 库查出的订单号去调生产函数在 prod 库入账——这是整个架构唯一能把钱写错库的路径，
+  // 所以兜底方向必须是「本次不做」而不是「打给生产」。
+  if (!process.env.PAYNOTIFY_FN_NAME) {
+    console.error('[payNotify/reconcile] skip: PAYNOTIFY_FN_NAME 未配置，拒绝猜测目标函数（避免跨库入账）')
+    return { code: 'SUCCESS', message: 'reconcile skipped: PAYNOTIFY_FN_NAME missing' }
+  }
   const pg = getPg()
   // 窗口锚 updated_at（createLakalaPreorder 写 updated_at 反映最近一次拉卡拉下单）：覆盖老订单回款回调
   // 丢失（回款覆写 lakala_out_order_no 但不动 sale_order_datetime，故 sale_order_datetime 锚不到回款）。
   // LIMIT 20 + 串行循环（每单 PG+HTTPS+callFunction）避免超 CloudBase Timer 超时；美容院单量小窗口内通常 0~2 单。
+  //
+  // 排序取 DESC（#214）：窗口放宽后，渠道侧查不到、永远判不出终态的「幽灵意图」会在扫描集里
+  // 长期滞留；ASC 会让它们凭 updated_at 最老霸占每分钟仅 20 条的预算，把真正需要补入账的新
+  // 订单饿死——而本任务恰恰是「回调丢失」的资金安全网。新单优先。
+  //
+  // ⚠️ 上界 24h 仍是硬边界，**不是最终进度保证**（双谱系评审 round-3 指出）：查单服务或
+  // 定时器连续异常超过 24 小时时，期间已 SUCCESS 但回调丢失的订单会彻底掉出候选集，
+  // 钱到账却不入账。彻底解法是持久化游标/租约（给 sale_orders 加 last_reconcile_at 按它
+  // 轮转退避），需要新迁移与独立的批量调度逻辑，属独立可交付物。本次先把窗口从 30min
+  // 放宽到 24h（覆盖绝大多数短期异常），缺口已记入 PR 残余风险。
   const { rows } = await pg.query(
     `SELECT sale_order_id, store_id, lakala_out_order_no, payment_method
        FROM sale_orders
       WHERE lakala_out_order_no IS NOT NULL
         AND status IN ('待支付', '部分支付')
-        AND updated_at > now() - interval '30 minutes'
+        AND updated_at > now() - interval '24 hours'
         AND updated_at < now() - interval '90 seconds'
-      ORDER BY updated_at ASC
+      ORDER BY updated_at DESC
       LIMIT 20`)
   let ok = 0
   let skip = 0
@@ -486,8 +576,17 @@ async function runPaymentReconcile() {
         merchantNo: merchant.merchantNo,
         termNo: merchant.termNo,
         outTradeNo: o.lakala_out_order_no,
+        timeoutMs: RECONCILE_QUERY_TIMEOUT_MS,
       })
-      if (resp && ['FAIL', 'CLOSE'].includes(resp.tradeState)) {
+      // ⚠️ 必须先验 ok（双谱系评审 round-2）：拉卡拉业务失败码的响应里也可能带
+      // resp_data.trade_state。据此释放意图会凭空造出第二笔可支付单；更糟的是据此
+      // 认 SUCCESS 会走下面的自调入账 —— 无真实到账却记账。
+      const tradeState = resp && resp.ok === true
+        ? String(resp.tradeState || '').trim().toUpperCase()
+        : ''
+      if (!tradeState) { skip++; continue }
+      // REVOKED（当日交易撤销）同属可释放终态，#214 之前漏判导致撤销单永久占着支付意图
+      if (['FAIL', 'CLOSE', 'REVOKED'].includes(tradeState)) {
         await pg.query(
           `UPDATE sale_orders
            SET lakala_out_order_no = NULL, updated_at = NOW()
@@ -499,7 +598,7 @@ async function runPaymentReconcile() {
         skip++
         continue
       }
-      if (!resp || resp.tradeState !== 'SUCCESS') { skip++; continue }
+      if (tradeState !== 'SUCCESS') { skip++; continue }
       // 已入账（external_txn_id = 拉卡拉 tradeNo 已存在）→ 幂等跳过，避免每分钟重复 callFunction
       const paid = await pg.query(
         'SELECT 1 FROM sale_order_payments WHERE external_txn_id = $1 LIMIT 1',
@@ -510,8 +609,9 @@ async function runPaymentReconcile() {
       if (!(payAmount > 0)) { skip++; continue }
       const paymentMethod = o.payment_method === '支付宝' ? '支付宝' : '微信'
       // 自调 payNotify main（event 入口）触发同款幂等入账；event.Type 非 Timer 不会再次进入本任务，无递归
+      // 函数名走 env（入口处已 fail-closed 校验存在性，见 runPaymentReconcile 开头）
       const r = await cloud.callFunction({
-        name: 'payNotify',
+        name: process.env.PAYNOTIFY_FN_NAME,
         data: {
           orderNo: o.lakala_out_order_no,
           transactionId: resp.tradeNo,
@@ -599,8 +699,8 @@ async function settlePendingPrepaidForPayment(client, {
           external_txn_id, status, source_end, operator_employee_id,
           note, created_at, paid_at
         ) VALUES ($1, '储值卡抵扣', $2, '储值卡', NULL, '已支付', 'notify', NULL,
-          $3, NOW(), NOW())`,
-        [targetOrderNo, initialPendingCardAmount, `储值卡抵扣 订单 ${targetOrderNo}`]
+          $3, $4, $4)`,
+        [targetOrderNo, initialPendingCardAmount, `储值卡抵扣 订单 ${targetOrderNo}`, now]
       )
       await client.query(
         `UPDATE sale_orders
@@ -669,6 +769,23 @@ async function settlePendingPrepaidForPayment(client, {
  * 注意：member_level（钻石等级）由 cronTask 每日凌晨3点统一重算，本函数不直接更新。
  */
 exports.main = async (event) => {
+  // Admin 系统自检：先于支付开关分流，仅做 HMAC + PG SELECT 1。
+  if (event && event.action === 'system.health') {
+    try {
+      verifyHealthPayload(event.payload, 'payNotify')
+      await getPg().query('SELECT 1 AS ok')
+      return { code: 0, message: 'success', data: { ok: true, checkedAt: new Date().toISOString() } }
+    } catch (error) {
+      const parsed = parseErrorPrefix(error && error.message)
+      return {
+        code: parsed && parsed.prefix === 'UNAUTHORIZED' ? -401 : -1,
+        message: parsed ? parsed.displayMessage : '服务器内部错误',
+        errorType: parsed ? parsed.prefix : null,
+        data: null,
+      }
+    }
+  }
+
   // ========== CloudBase 定时触发器：微信发货补偿上报 ==========
   // 独立于支付回调，仅需 WX_SHIPPING_ENABLED + CLIENT_APPSECRET + PG（不依赖拉卡拉配置），
   // 故先于 isPayNotifyEnabled 分流；定时事件由 CloudBase 注入 event.Type==='Timer'。
@@ -1034,6 +1151,19 @@ exports.main = async (event) => {
       const newStatus = fullyPaid ? '已支付' : '部分支付'
       const newReceived = Math.round(Number(paidAggregateRes.rows[0]?.received_sum || 0) * 100) / 100
 
+      if (!['部分支付', '已支付', '已完成'].includes(targetOrder.status)) {
+        const documentType = await classifySaleOrderDocumentType(
+          client,
+          targetOrder.client_user_id,
+          targetOrderNo,
+        )
+        await client.query(
+          `UPDATE sale_orders SET document_type = $1::document_type
+           WHERE sale_order_id = $2 AND status = $3`,
+          [documentType, targetOrderNo, targetOrder.status],
+        )
+      }
+
       // 1. 更新目标订单：received 累加、status 置新值、paid_at（全额时）
       // CAS 守卫（state-machine-cas-guard ticket）：只允许从 待支付/部分支付 翻转
       // 注：wechat_transaction_id 列已 DROP，三方流水号由上面 INSERT sale_order_payments.external_txn_id 承担
@@ -1219,36 +1349,18 @@ exports.main = async (event) => {
         if (curType.rows[0]?.customer_type !== '会员客') {
           const threshold = await getMemberThreshold()
 
-          // 三端 SQL 独立副本（admin actions/orders.ts + staffApi routes/order.js + payNotify index.js）
-          // 修改时必须同步另外两端；一致性由 staffApi __tests__/routes/recalc-customer-type-sql.test.js
-          // 守护。
+          // 八处 SQL 独立副本（staffApi routes/order.js + clientApi routes/order.js + payNotify index.js
+          // + admin actions/orders.ts + admin lib/recompute-customer-tags.ts
+          // + db/scripts/recalc-all-customer-types.js + recalc-became-member-at.js
+          // + backfill-membership-upgrade-doc-type.js）。
+          // 修改时必须同步其余七处；一致性由 staffApi __tests__/routes/recalc-customer-type-sql.test.js 守护。
+          // #187（2026-09-18）：按单笔订单的非体验部分毛实收判定，落地 Q5.2 决策。
           const typeResult = await client.query(
-            `SELECT CASE
-               WHEN EXISTS (
-                 SELECT 1 FROM sale_orders o
-                 WHERE o.client_user_id = $1
-                   AND o.status IN ('已支付', '已完成')
-                   AND o.sale_order_type = '销售单'
-                   AND o.total_amount >= $2
-               ) THEN '会员客'
-               WHEN EXISTS (
-                 SELECT 1
-                 FROM sale_orders o
-                 JOIN sale_items si ON si.sale_order_id = o.sale_order_id
-                 WHERE o.client_user_id = $1
-                   AND o.status IN ('已支付', '已完成')
-                   AND o.sale_order_type = '销售单'
-                   AND si.is_experience = false
-               ) THEN '小美客'
-               WHEN EXISTS (
-                 SELECT 1
-                 FROM sale_orders o
-                 JOIN sale_items si ON si.sale_order_id = o.sale_order_id
-                 WHERE o.client_user_id = $1
-                   AND o.status IN ('已支付', '已完成')
-                   AND o.sale_order_type = '销售单'
-                   AND si.is_experience = true
-               ) THEN '体验客'
+            `${RECALC_CUSTOMER_TYPE_CTE}
+             SELECT CASE
+               WHEN EXISTS (SELECT 1 FROM order_amounts WHERE non_trial >= $2) THEN '会员客'
+               WHEN EXISTS (SELECT 1 FROM order_amounts WHERE non_trial > 0)   THEN '小美客'
+               WHEN EXISTS (SELECT 1 FROM order_amounts WHERE trial > 0)       THEN '体验客'
                ELSE '流量客'
              END AS computed_type`,
             [targetOrder.client_user_id, threshold]
@@ -1276,15 +1388,14 @@ exports.main = async (event) => {
             // became_member_at 记为确立会员资格的首笔达标单时间（COALESCE(paid_at, created_at)）；
             // 选单子查询与本端下方 is_membership_upgrade 归因同源、选同一单。
             await client.query(
-              `UPDATE client_wechat_users SET became_member_at = (
+              `UPDATE client_wechat_users SET became_member_at = COALESCE((
+                 ${RECALC_CUSTOMER_TYPE_CTE}
                  SELECT COALESCE(o.paid_at, o.created_at) FROM sale_orders o
-                 WHERE o.client_user_id = $1
-                   AND o.status IN ('已支付', '已完成')
-                   AND o.sale_order_type = '销售单'
-                   AND o.total_amount >= $2
-                 ORDER BY o.paid_at ASC NULLS LAST, o.created_at ASC
+                 JOIN order_amounts oa ON oa.sale_order_id = o.sale_order_id
+                 WHERE oa.non_trial >= $2
+                 ORDER BY o.paid_at ASC NULLS LAST, o.created_at ASC, o.sale_order_id ASC
                  LIMIT 1
-               ) WHERE user_id = $1`,
+               ), became_member_at) WHERE user_id = $1`,
               [targetOrder.client_user_id, threshold]
             )
             // 给触发本次首次跃迁的达标销售单打会员升级标记。WHERE 与本端会员客判定 CASE 同源
@@ -1292,12 +1403,11 @@ exports.main = async (event) => {
             await client.query(
               `UPDATE sale_orders SET is_membership_upgrade = true
                WHERE sale_order_id = (
+                 ${RECALC_CUSTOMER_TYPE_CTE}
                  SELECT o.sale_order_id FROM sale_orders o
-                 WHERE o.client_user_id = $1
-                   AND o.status IN ('已支付', '已完成')
-                   AND o.sale_order_type = '销售单'
-                   AND o.total_amount >= $2
-                 ORDER BY o.paid_at ASC NULLS LAST, o.created_at ASC
+                 JOIN order_amounts oa ON oa.sale_order_id = o.sale_order_id
+                 WHERE oa.non_trial >= $2
+                 ORDER BY o.paid_at ASC NULLS LAST, o.created_at ASC, o.sale_order_id ASC
                  LIMIT 1
                )`,
               [targetOrder.client_user_id, threshold]

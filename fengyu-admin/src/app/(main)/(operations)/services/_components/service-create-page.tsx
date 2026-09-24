@@ -1,0 +1,656 @@
+"use client"
+
+import { useState, useEffect, useMemo } from "react"
+import Link from "next/link"
+import { toast } from "sonner"
+import { Card, CardContent } from "@/components/ui/card"
+import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
+import { DatePicker } from "@/components/ui/date-picker"
+import { Select } from "@/components/ui/select"
+import { Separator } from "@/components/ui/separator"
+import { MemberLevelBadge } from "@/components/ui/member-level-badge"
+import { searchCustomers } from "@/actions/customers"
+import { getAvailableSaleItems, createServiceOrder } from "@/actions/services"
+import { getServiceStaffCandidates } from "@/actions/employees"
+import type { AvailableSaleItem } from "@/actions/services"
+import type { Store, AllocationEmployeeCandidate, Customer } from "@/lib/types"
+import { formatPhoneSafe } from "@/lib/format"
+import { shanghaiToday } from "@/lib/datetime"
+import { DEPOSIT_REFUND_REMARK } from "@/lib/service-remark"
+import { actionErrorMessage } from "@/lib/action-error"
+import { expandGroupServiceSessions, getTreatmentCardBusinessIdentity, groupTreatmentCards, sumGroupValue } from "@/lib/treatment-card-group"
+import { formatServiceStaffOption } from "@/lib/service-staff-candidate"
+
+const steps = ["选择顾客", "选择项目", "确认提交"]
+
+function StepIndicator({ current }: { current: number }) {
+  return (
+    <div className="flex items-center justify-center gap-2 mb-8">
+      {steps.map((label, idx) => (
+        <div key={label} className="flex items-center gap-2">
+          <div className={`flex items-center justify-center h-8 w-8 rounded-full text-sm font-medium ${
+            idx < current ? "bg-[#3D8A5A] text-white" :
+            idx === current ? "bg-[var(--primary)] text-white" :
+            "bg-gray-200 text-[#999999]"
+          }`}>
+            {idx < current ? (
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><polyline points="20 6 9 17 4 12" /></svg>
+            ) : (
+              idx + 1
+            )}
+          </div>
+          <span className={`text-sm hidden sm:inline ${idx === current ? "text-[var(--foreground)] font-medium" : "text-[#999999]"}`}>
+            {label}
+          </span>
+          {idx < steps.length - 1 && <div className="w-8 h-px bg-gray-300" />}
+        </div>
+      ))}
+    </div>
+  )
+}
+
+interface SelectedItem {
+  groupKey: string
+  sessionUsed: number
+}
+
+interface GroupedAvailableSaleItem extends AvailableSaleItem {
+  groupKey: string
+  cardCount: number
+  sourceItems: AvailableSaleItem[]
+}
+
+function groupAvailableSaleItems(items: AvailableSaleItem[]): GroupedAvailableSaleItem[] {
+  return groupTreatmentCards(items, {
+    getId: (item) => item.saleItemId,
+    getQuantity: (item) => item.quantity,
+    getIdentity: (item) => getTreatmentCardBusinessIdentity(item),
+  }).map((group) => {
+    const primary = group.primary
+    return {
+      ...primary,
+      groupKey: group.groupKey,
+      sourceItems: group.sourceItems,
+      cardCount: group.cardCount,
+      quantity: sumGroupValue(group, (item) => item.quantity),
+      sessionCount: sumGroupValue(group, (item) => item.sessionCount),
+      remainingSessions: sumGroupValue(group, (item) => item.remainingSessions),
+      paidSessions: primary.paidSessions === null
+        ? null
+        : sumGroupValue(group, (item) => item.paidSessions),
+      paidUnusedSessions: sumGroupValue(group, (item) => item.paidUnusedSessions),
+      saleAmount: sumGroupValue(group, (item) => item.saleAmount).toFixed(2),
+      received: sumGroupValue(group, (item) => item.received).toFixed(2),
+      pendingReceived: sumGroupValue(group, (item) => item.pendingReceived).toFixed(2),
+    }
+  })
+}
+
+export default function ServiceCreatePageClient({
+  stores,
+}: {
+  stores: Store[]
+}) {
+  const [step, setStep] = useState(0)
+
+  // Step 1: Customer
+  const [phone, setPhone] = useState("")
+  const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null)
+  const [searching, setSearching] = useState(false)
+  const [searchDone, setSearchDone] = useState(false)
+
+  // Step 2: Items + Config
+  const [availableItems, setAvailableItems] = useState<GroupedAvailableSaleItem[]>([])
+  const [loadingItems, setLoadingItems] = useState(false)
+  const [selectedItems, setSelectedItems] = useState<SelectedItem[]>([])
+  const [itemProductKind, setItemProductKind] = useState("")
+  const [itemCategoryId, setItemCategoryId] = useState("")
+  const [itemNameQuery, setItemNameQuery] = useState("")
+  const [selectedStoreId, setSelectedStoreId] = useState<string>(stores[0]?.storeId || "")
+  const [selectedEmployeeId, setSelectedEmployeeId] = useState<string>("")
+  // 候选连同它所属的 storeId 一起存：清理 effect 只认「本轮门店的候选」，
+  // 否则切店时会拿上一家店的候选去判定刚预选的人员（见下方 effect 注释）
+  const [candidates, setCandidates] = useState<{ storeId: string; rows: AllocationEmployeeCandidate[] }>({ storeId: "", rows: [] })
+  const [loadingCandidates, setLoadingCandidates] = useState(false)
+  const [serviceDate, setServiceDate] = useState(() => shanghaiToday())
+  const [remark, setRemark] = useState("")
+  // 备注模式：custom=自由输入；deposit-refund=寄存单退款专用标准化备注（提交时落 DEPOSIT_REFUND_REMARK）
+  const [remarkMode, setRemarkMode] = useState<"custom" | "deposit-refund">("custom")
+
+  // Step 3: Submit
+  const [submitting, setSubmitting] = useState(false)
+  const [createdServiceOrderId, setCreatedServiceOrderId] = useState("")
+
+  // 候选随门店异步加载：本店员工 ∪ 本门店所属市场内出差支援的员工（issue #210）。
+  // 切店竞态用 cancelled 标记兜住——后发请求先返回时不会被先发请求的结果覆盖。
+  useEffect(() => {
+    if (!selectedStoreId) {
+      setCandidates({ storeId: "", rows: [] })
+      return
+    }
+    let cancelled = false
+    setLoadingCandidates(true)
+    getServiceStaffCandidates(selectedStoreId)
+      .then((rows) => { if (!cancelled) setCandidates({ storeId: selectedStoreId, rows }) })
+      .catch((err) => {
+        if (cancelled) return
+        setCandidates({ storeId: selectedStoreId, rows: [] })
+        toast.error(actionErrorMessage(err, "加载服务人员失败"))
+      })
+      .finally(() => { if (!cancelled) setLoadingCandidates(false) })
+    return () => { cancelled = true }
+  }, [selectedStoreId])
+
+  // 候选变化（切店 / 重新加载）后，已选人员不在候选内就清空，避免提交时被服务端拒绝。
+  // 判据是 `candidates.storeId === selectedStoreId` 而不是 loadingCandidates ——
+  // searchCustomer 里 setSelectedStoreId 与 setSelectedEmployeeId 同批更新，
+  // 加载 effect 的 setLoadingCandidates(true) 对同一轮的本 effect 不可见，
+  // 只看 loading 标记会拿上一家店的候选把刚预选的顾客绑定美容师误清掉。
+  useEffect(() => {
+    if (candidates.storeId !== selectedStoreId) return
+    if (selectedEmployeeId && !candidates.rows.some(c => c.employeeId === selectedEmployeeId)) {
+      setSelectedEmployeeId("")
+    }
+  }, [candidates, selectedStoreId, selectedEmployeeId])
+
+  // 只渲染与当前门店匹配的候选，避免切店瞬间闪出上一家店的人员
+  const visibleCandidates = candidates.storeId === selectedStoreId ? candidates.rows : []
+  // 所选人员必须属于「当前门店这一批」候选：新门店请求已返回、清理 effect 尚未执行的那一帧，
+  // 只看 loadingCandidates 会短暂放行上一家店的陈旧选择
+  const isSelectedCandidateValid = Boolean(
+    selectedEmployeeId && visibleCandidates.some(c => c.employeeId === selectedEmployeeId),
+  )
+
+  const searchCustomer = async () => {
+    if (!phone.trim() || !/^1\d{10}$/.test(phone.trim())) {
+      toast.error("请输入正确的手机号")
+      return
+    }
+    setSearching(true)
+    setSearchDone(false)
+    try {
+      // 与 /orders/create 行为对齐：fuzzy ILIKE 搜索，避开精确匹配的边界问题（trailing space / 历史脏数据 / openid 误过滤）
+      // 顾客可开单身份仅靠 bound_store_id IS NOT NULL（searchCustomers 内已含），不要求 openid
+      const results = await searchCustomers(phone.trim())
+      const result = results.find(c => c.phone === phone.trim()) ?? results[0] ?? null
+      setSelectedCustomer(result)
+      setSearchDone(true)
+      if (result) {
+        const targetStoreId = result.boundStoreId && stores.some(s => s.storeId === result.boundStoreId)
+          ? result.boundStoreId
+          : selectedStoreId
+        if (targetStoreId !== selectedStoreId) setSelectedStoreId(targetStoreId)
+        // 先乐观预选顾客的绑定美容师；若其不在该门店候选内，候选加载完成后的 effect 会清掉
+        setSelectedEmployeeId(result.boundEmployeeId || "")
+      }
+    } catch (err) {
+      toast.error(actionErrorMessage(err, "搜索失败，请稍后重试"))
+    } finally {
+      setSearching(false)
+    }
+  }
+
+  const goToStep2 = async () => {
+    if (!selectedCustomer) return
+    setLoadingItems(true)
+    try {
+      const items = await getAvailableSaleItems(selectedCustomer.userId)
+      setAvailableItems(groupAvailableSaleItems(items))
+      setSelectedItems([])
+      setItemProductKind("")
+      setItemCategoryId("")
+      setItemNameQuery("")
+      setStep(1)
+    } catch (err) {
+      toast.error(actionErrorMessage(err, "加载可用项目失败"))
+    } finally {
+      setLoadingItems(false)
+    }
+  }
+
+  const toggleItem = (groupKey: string) => {
+    setSelectedItems(prev => {
+      const exists = prev.find(i => i.groupKey === groupKey)
+      if (exists) return prev.filter(i => i.groupKey !== groupKey)
+      return [...prev, { groupKey, sessionUsed: 1 }]
+    })
+  }
+
+  const updateSessionUsed = (groupKey: string, value: number) => {
+    const item = availableItems.find(i => i.groupKey === groupKey)
+    const max = item?.paidUnusedSessions ?? 1
+    const clamped = Math.max(1, Math.min(value, max))
+    setSelectedItems(prev =>
+      prev.map(i => i.groupKey === groupKey ? { ...i, sessionUsed: clamped } : i)
+    )
+  }
+
+  const isItemSelected = (groupKey: string) =>
+    selectedItems.some(i => i.groupKey === groupKey)
+
+  const getSessionUsed = (groupKey: string) =>
+    selectedItems.find(i => i.groupKey === groupKey)?.sessionUsed ?? 1
+
+  const itemProductKinds = useMemo(
+    () => Array.from(new Set(availableItems.map((item) => item.productKind).filter((value): value is string => Boolean(value)))),
+    [availableItems],
+  )
+  const itemCategories = useMemo(
+    () => Array.from(
+      new Map(
+        availableItems
+          .filter((item) => item.categoryId && item.categoryName && (!itemProductKind || item.productKind === itemProductKind))
+          .map((item) => [item.categoryId!, { id: item.categoryId!, name: item.categoryName! }]),
+      ).values(),
+    ),
+    [availableItems, itemProductKind],
+  )
+  const filteredAvailableItems = useMemo(() => {
+    const query = itemNameQuery.trim().toLocaleLowerCase()
+    return availableItems.filter((item) => {
+      if (itemProductKind && item.productKind !== itemProductKind) return false
+      if (itemCategoryId && item.categoryId !== itemCategoryId) return false
+      return !query || (item.productName ?? "").toLocaleLowerCase().includes(query)
+    })
+  }, [availableItems, itemCategoryId, itemNameQuery, itemProductKind])
+  const hasItemFilters = Boolean(itemProductKind || itemCategoryId || itemNameQuery.trim())
+
+  // 所选人员必须仍在当前门店的候选批次里才放行（加载中、或切店后残留的陈旧选择一律拦下），
+  // 否则会把上一家店的人带到提交，被服务端 INVALID_PARAMS 拒
+  const canSubmit = selectedItems.length > 0 && selectedStoreId && !loadingCandidates && isSelectedCandidateValid
+
+  const handleSubmit = async () => {
+    if (!selectedCustomer || !canSubmit) return
+    setSubmitting(true)
+    try {
+      const store = stores.find(s => s.storeId === selectedStoreId)
+      const submittedItems = selectedItems.flatMap((selected) => {
+        const group = availableItems.find((item) => item.groupKey === selected.groupKey)
+        if (!group) return []
+        return expandGroupServiceSessions(
+          {
+            groupKey: group.groupKey,
+            primary: group,
+            sourceItems: group.sourceItems,
+            cardCount: group.cardCount,
+          },
+          selected.sessionUsed,
+          (source) => source.saleItemId,
+          (source) => source.paidUnusedSessions,
+        )
+      })
+      if (submittedItems.length === 0) {
+        toast.error("请选择至少一个可核销项目")
+        return
+      }
+      const res = await createServiceOrder({
+        storeId: selectedStoreId,
+        marketName: store?.marketName || "未知市场",
+        clientUserId: selectedCustomer.userId,
+        assignedEmployeeId: selectedEmployeeId,
+        serviceDate,
+        remark: remarkMode === "deposit-refund" ? DEPOSIT_REFUND_REMARK : (remark.trim() || null),
+        items: submittedItems,
+      })
+      if (res.success) {
+        toast.success(res.message)
+        setCreatedServiceOrderId(res.serviceOrderId || "")
+        setStep(2)
+      } else {
+        toast.error(res.message)
+      }
+    } catch (err) {
+      toast.error(actionErrorMessage(err, "创建服务单失败，请稍后重试"))
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  const resetForm = () => {
+    setStep(0)
+    setPhone("")
+    setSelectedCustomer(null)
+    setSearchDone(false)
+    setAvailableItems([])
+    setSelectedItems([])
+    setRemark("")
+    setCreatedServiceOrderId("")
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center gap-3">
+        <Link href="/services" className="text-[#999999] hover:text-[var(--foreground)]">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="15 18 9 12 15 6" /></svg>
+        </Link>
+        <h1 className="text-2xl font-bold text-[var(--foreground)]">新建服务单</h1>
+      </div>
+
+      <StepIndicator current={step} />
+
+      {/* Step 1: 选择顾客 */}
+      {step === 0 && (
+        <Card>
+          <CardContent className="p-6 space-y-4">
+            <h2 className="text-base font-semibold">搜索顾客</h2>
+            <div className="flex gap-2">
+              <Input
+                placeholder="输入手机号搜索"
+                value={phone}
+                onChange={(e) => setPhone(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && searchCustomer()}
+                className="w-64"
+              />
+              <Button onClick={searchCustomer} loading={searching}>搜索</Button>
+            </div>
+            {selectedCustomer && (
+              <Card className="bg-[#FAFAFA]">
+                <CardContent className="p-4">
+                  <div className="grid grid-cols-2 md:grid-cols-5 gap-4 text-sm">
+                    <div>
+                      <span className="text-[#999999]">姓名</span>
+                      <p className="font-medium">{selectedCustomer.name || "—"}</p>
+                    </div>
+                    <div>
+                      <span className="text-[#999999]">手机</span>
+                      <p className="font-medium">{formatPhoneSafe(selectedCustomer.phone)}</p>
+                    </div>
+                    <div>
+                      <span className="text-[#999999]">会员等级</span>
+                      <div className="mt-1">
+                        <MemberLevelBadge level={selectedCustomer.memberLevel} fallback="—" />
+                      </div>
+                    </div>
+                    <div>
+                      <span className="text-[#999999]">绑定门店</span>
+                      <p className="font-medium">{selectedCustomer.storeName || "—"}</p>
+                    </div>
+                    <div>
+                      <span className="text-[#999999]">绑定美容师</span>
+                      <p className="font-medium">{selectedCustomer.employeeName || "—"}</p>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+            )}
+            {searchDone && !selectedCustomer && (
+              <Card className="bg-[#FFF8E6] border-[#D4820A]">
+                <CardContent className="p-4 text-sm">
+                  <p className="text-[#D4820A] font-medium">未找到已注册顾客</p>
+                  <p className="text-[#999999] mt-1">服务单需要关联已注册顾客，请确认手机号是否正确</p>
+                </CardContent>
+              </Card>
+            )}
+            <div className="flex justify-end">
+              <Button onClick={goToStep2} disabled={!selectedCustomer} loading={loadingItems}>下一步</Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Step 2: 选择项目 + 配置 */}
+      {step === 1 && (
+        <div className="space-y-4">
+          <Card>
+            <CardContent className="p-6 space-y-4">
+              <h2 className="text-base font-semibold">选择服务项目</h2>
+              {availableItems.length === 0 ? (
+                <div className="text-center py-8 text-[#999999]">
+                  <p>该顾客暂无可用服务项目</p>
+                  <p className="text-xs mt-1">需先有已支付订单的疗程卡项目</p>
+                </div>
+              ) : (
+                <>
+                  <div className="grid gap-2 sm:grid-cols-[10rem_10rem_minmax(14rem,1fr)]">
+                    <Select
+                      value={itemProductKind}
+                      onChange={(e) => {
+                        setItemProductKind(e.target.value)
+                        setItemCategoryId("")
+                      }}
+                    >
+                      <option value="">全部一级品项</option>
+                      {itemProductKinds.map((productKind) => (
+                        <option key={productKind} value={productKind}>{productKind}</option>
+                      ))}
+                    </Select>
+                    <Select
+                      value={itemCategoryId}
+                      onChange={(e) => setItemCategoryId(e.target.value)}
+                      disabled={!itemProductKind}
+                    >
+                      <option value="">{itemProductKind ? "全部二级品项" : "请先选择一级品项"}</option>
+                      {itemCategories.map((category) => (
+                        <option key={category.id} value={category.id}>{category.name}</option>
+                      ))}
+                    </Select>
+                    <Input
+                      value={itemNameQuery}
+                      onChange={(e) => setItemNameQuery(e.target.value)}
+                      placeholder="搜索疗程卡名称"
+                    />
+                  </div>
+                  {filteredAvailableItems.length === 0 ? (
+                    <div className="py-8 text-center text-sm text-[#999999]">
+                      {hasItemFilters ? "未找到匹配的疗程卡" : "该顾客暂无可用服务项目"}
+                    </div>
+                  ) : (
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-sm">
+                    <thead className="bg-gray-50">
+                      <tr>
+                        <th className="px-4 py-3 text-left font-medium text-gray-500 w-10"></th>
+                        <th className="px-4 py-3 text-left font-medium text-gray-500">商品名称</th>
+                        <th className="px-4 py-3 text-left font-medium text-gray-500">类型</th>
+                        <th className="px-4 py-3 text-right font-medium text-gray-500">已用/已付/共</th>
+                        <th className="px-4 py-3 text-right font-medium text-gray-500">单价</th>
+                        <th className="px-4 py-3 text-left font-medium text-gray-500">到期日</th>
+                        <th className="px-4 py-3 text-center font-medium text-gray-500">划卡数量</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-200">
+                      {filteredAvailableItems.map((item) => {
+                        const selected = isItemSelected(item.groupKey)
+                        return (
+                          <tr
+                            key={item.groupKey}
+                            className={`transition-colors cursor-pointer ${selected ? "bg-[#FFF0EE]" : "hover:bg-gray-50"}`}
+                            onClick={() => toggleItem(item.groupKey)}
+                          >
+                            <td className="px-4 py-3">
+                              <input
+                                type="checkbox"
+                                checked={selected}
+                                onChange={() => toggleItem(item.groupKey)}
+                                onClick={(e) => e.stopPropagation()}
+                                className="rounded"
+                              />
+                            </td>
+                            <td className="px-4 py-3">
+                              <div className="flex items-center gap-2">
+                                <span>{item.productName || "—"}</span>
+                                {item.cardCount > 1 && <span className="text-xs text-[#999999]">共 {item.cardCount} 张</span>}
+                              </div>
+                            </td>
+                            <td className="px-4 py-3">
+                              <span className={`inline-block px-2 py-0.5 rounded text-xs ${
+                                item.productType === "疗程卡"
+                                  ? "bg-[#F0F5FA] text-[#5E8BB3]"
+                                  : "bg-[#F0F9F2] text-[#3D8A5A]"
+                              }`}>
+                                {item.productType}
+                              </span>
+                            </td>
+                            <td className="px-4 py-3 text-right">
+                              {/* ticket 2026-05-19 D10=A：三段简写 已用/已付/共 */}
+                              {item.sessionCount !== null
+                                ? `${item.sessionCount - (item.remainingSessions ?? 0)}/${item.paidSessions ?? 0}/${item.sessionCount} ${item.unit}`
+                                : "—"}
+                            </td>
+                            <td className="px-4 py-3 text-right">
+                              ¥{Number(item.unitRealPrice).toFixed(2)}
+                            </td>
+                            <td className="px-4 py-3">{item.expireDate || "永久"}</td>
+                            <td className="px-4 py-3 text-center" onClick={e => e.stopPropagation()}>
+                              {selected && (
+                                <Input
+                                  type="number"
+                                  min={1}
+                                  max={item.paidUnusedSessions ?? 1}
+                                  value={getSessionUsed(item.groupKey)}
+                                  onChange={(e) => updateSessionUsed(item.groupKey, Number(e.target.value))}
+                                  className="w-20 text-center mx-auto"
+                                />
+                              )}
+                            </td>
+                          </tr>
+                        )
+                      })}
+                    </tbody>
+                      </table>
+                    </div>
+                  )}
+                </>
+              )}
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardContent className="p-6 space-y-4">
+              <h2 className="text-base font-semibold">服务配置</h2>
+              <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+                <div>
+                  <label className="text-sm text-[#999999]">门店</label>
+                  <Select className="mt-1" value={selectedStoreId} onChange={(e) => setSelectedStoreId(e.target.value)}>
+                    {stores.map((s) => (
+                      <option key={s.storeId} value={s.storeId}>{s.storeName}</option>
+                    ))}
+                  </Select>
+                </div>
+                <div>
+                  <label className="text-sm text-[#999999]">服务人员</label>
+                  <Select
+                    className="mt-1"
+                    value={selectedEmployeeId}
+                    onChange={(e) => setSelectedEmployeeId(e.target.value)}
+                    disabled={loadingCandidates}
+                  >
+                    <option value="">{loadingCandidates ? "加载中…" : "请选择"}</option>
+                    {visibleCandidates.map((e) => (
+                      <option key={e.employeeId} value={e.employeeId}>{formatServiceStaffOption(e)}</option>
+                    ))}
+                  </Select>
+                  {!loadingCandidates && selectedStoreId && visibleCandidates.length === 0 && (
+                    <p className="mt-1 text-xs text-[#D4820A]">该门店暂无可选服务人员（需具备店经理/美容师/养生师/品项老师技能标签）</p>
+                  )}
+                </div>
+                <div>
+                  <label className="text-sm text-[#999999]">服务日期</label>
+                  <DatePicker className="mt-1" value={serviceDate} onValueChange={(value) => setServiceDate(value)} />
+                </div>
+                <div className="col-span-2">
+                  <label className="text-sm text-[#999999]">备注（可选）</label>
+                  <Select className="mt-1" value={remarkMode} onChange={(e) => setRemarkMode(e.target.value as "custom" | "deposit-refund")}>
+                    <option value="custom">自定义输入</option>
+                    <option value="deposit-refund">{DEPOSIT_REFUND_REMARK}</option>
+                  </Select>
+                  {remarkMode === "custom" && (
+                    <Input className="mt-2" placeholder="服务备注" value={remark} onChange={(e) => setRemark(e.target.value)} />
+                  )}
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+
+          <div className="flex justify-between">
+            <Button variant="outline" onClick={() => setStep(0)}>上一步</Button>
+            <Button onClick={() => {
+              if (!selectedEmployeeId) { toast.error("请选择服务人员"); return }
+              if (selectedItems.length === 0) { toast.error("请选择至少一个服务项目"); return }
+              setStep(2)
+            }} disabled={!canSubmit}>下一步</Button>
+          </div>
+        </div>
+      )}
+
+      {/* Step 3: 确认提交 / 成功 */}
+      {step === 2 && !createdServiceOrderId && (
+        <Card>
+          <CardContent className="p-6 space-y-6">
+            <h2 className="text-base font-semibold">确认服务单</h2>
+
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+              <div>
+                <span className="text-[#999999]">顾客</span>
+                <p className="font-medium">{selectedCustomer?.name || "—"}</p>
+              </div>
+              <div>
+                <span className="text-[#999999]">门店</span>
+                <p className="font-medium">{stores.find(s => s.storeId === selectedStoreId)?.storeName || "—"}</p>
+              </div>
+              <div>
+                <span className="text-[#999999]">服务人员</span>
+                <p className="font-medium">{visibleCandidates.find(e => e.employeeId === selectedEmployeeId)?.name || "—"}</p>
+              </div>
+              <div>
+                <span className="text-[#999999]">服务日期</span>
+                <p className="font-medium">{serviceDate}</p>
+              </div>
+              {(remarkMode === "deposit-refund" || remark.trim()) && (
+                <div className="col-span-2">
+                  <span className="text-[#999999]">备注</span>
+                  <p className="font-medium">{remarkMode === "deposit-refund" ? DEPOSIT_REFUND_REMARK : remark}</p>
+                </div>
+              )}
+            </div>
+
+            <Separator />
+
+            <div>
+              <h3 className="text-sm font-semibold mb-3">服务项目</h3>
+              <div className="space-y-2">
+                {selectedItems.map(si => {
+                  const item = availableItems.find(a => a.groupKey === si.groupKey)
+                  if (!item) return null
+                  return (
+                    <div key={si.groupKey} className="flex justify-between text-sm bg-[#FAFAFA] rounded px-3 py-2">
+                      <span>{item.productName} - {item.productType}{item.cardCount > 1 ? `（共 ${item.cardCount} 张）` : ''}</span>
+                      <span className="font-medium">划卡 {si.sessionUsed} {item.unit}</span>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+
+            <div className="flex justify-between">
+              <Button variant="outline" onClick={() => setStep(1)}>上一步</Button>
+              <Button loading={submitting} disabled={!canSubmit} onClick={handleSubmit}>提交服务单</Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* 成功页 */}
+      {step === 2 && createdServiceOrderId && (
+        <Card>
+          <CardContent className="p-6 text-center space-y-4">
+            <div className="flex justify-center">
+              <div className="h-16 w-16 rounded-full flex items-center justify-center bg-[#F0F9F2]">
+                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#3D8A5A" strokeWidth="2"><polyline points="20 6 9 17 4 12" /></svg>
+              </div>
+            </div>
+            <h2 className="text-xl font-bold text-[var(--foreground)]">服务单创建成功</h2>
+            <p className="text-sm font-mono text-[var(--primary)]">{createdServiceOrderId}</p>
+            <div className="flex justify-center gap-3 pt-4">
+              <Link href={`/services/${createdServiceOrderId}`}>
+                <Button variant="outline">查看服务单</Button>
+              </Link>
+              <Button onClick={resetForm}>继续新建</Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+    </div>
+  )
+}

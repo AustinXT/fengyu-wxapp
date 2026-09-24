@@ -7,11 +7,12 @@
  *
  * 两端 ORM 不同 + admin 额外支持二级品项(category_name)下钻 + byMarket/byStore 明细 →
  * 完整 SQL snapshot 不可行。守护策略 = "关键不变量字面量匹配"：
- *   1. 持卡 = product_type = '疗程卡'（enum 已 3→2 值，无 '单品'）∩ remaining_sessions > 0
+ *   1. 持卡 = paid_sessions > 0，不按 product_type 过滤
  *   2. 持卡 sale_order_type IN ('销售单','转换单','寄存单')
- *   3. cycle CTE 链：daily_agg / qualifying_days / first_entry / period_agg / xinzeng / fugou / tiyan
- *   4. 达标日阈值（day_received >= threshold；getMemberThreshold）
- *   5. cycle 基础过滤 sale_order_type IN ('销售单','转换单') ∩ status='已支付'
+ *   3. cycle CTE 链：daily_agg / qualifying_days / repurchase_qualifying_days /
+ *      first_entry / period_agg / xinzeng / fugou / tiyan
+ *   4. 进入/复购达标日分别使用 day_received / purchase_received，并共用 threshold
+ *   5. cycle 进入基线纳入寄存单；复购达标与区间业绩只统计销售单/转换单
  *   6. 业绩 = SUM(sale_item_performance_events.amount)（禁 paid_amount）
  *   7. 一级分组键 product_kind（admin 额外 category_name 二级，为 admin 独有扩展）
  *
@@ -26,7 +27,6 @@ const STAFF_MGMT_PRODUCT = path.resolve(
   __dirname,
   '../../../../../fengyu-staff/cloudfunctions/staffApi/routes/mgmt-product.js',
 )
-const DB_ORDER_SCHEMA = path.resolve(__dirname, '../../../../../db/schema/order.ts')
 
 function normalize(src: string): string {
   return src.replace(/\s+/g, ' ').trim()
@@ -44,26 +44,26 @@ describe('品项板块两端口径一致性守护', () => {
   let staffSrc: string
   let adminCode: string // 剥注释后
   let staffCode: string
-  let dbOrderCode: string
 
   beforeAll(() => {
     adminSrc = fs.readFileSync(ADMIN_PRODUCT, 'utf-8')
     staffSrc = fs.readFileSync(STAFF_MGMT_PRODUCT, 'utf-8')
     adminCode = normalize(stripComments(adminSrc))
     staffCode = normalize(stripComments(staffSrc))
-    dbOrderCode = normalize(stripComments(fs.readFileSync(DB_ORDER_SCHEMA, 'utf-8')))
   })
 
-  describe('持卡 = product_type = 疗程卡 ∩ remaining_sessions > 0（DISTINCT client）', () => {
-    it('admin 含 product_type = 疗程卡', () => {
-      expect(adminCode).toMatch(/product_type\s*=\s*'疗程卡'/)
+  describe('持卡 = paid_sessions > 0，不按 product_type 过滤（DISTINCT client）', () => {
+    it('两端含 paid_sessions > 0', () => {
+      expect(adminCode).toMatch(/paid_sessions\s*>\s*0/)
+      expect(staffCode).toMatch(/paid_sessions\s*>\s*0/)
     })
-    it('staff 含 product_type = 疗程卡', () => {
-      expect(staffCode).toMatch(/product_type\s*=\s*'疗程卡'/)
+    it('两端持卡查询不再按 product_type = 疗程卡过滤', () => {
+      expect(adminCode).not.toMatch(/product_type\s*=\s*'疗程卡'/)
+      expect(staffCode).not.toMatch(/product_type\s*=\s*'疗程卡'/)
     })
-    it('两端含 remaining_sessions > 0', () => {
-      expect(adminCode).toMatch(/remaining_sessions\s*>\s*0/)
-      expect(staffCode).toMatch(/remaining_sessions\s*>\s*0/)
+    it('两端持卡查询不再按 remaining_sessions > 0 过滤', () => {
+      expect(adminCode).not.toMatch(/remaining_sessions\s*>\s*0/)
+      expect(staffCode).not.toMatch(/remaining_sessions\s*>\s*0/)
     })
     it('两端禁用已废弃的 单品 字面量（product_type enum 已 3→2 值）', () => {
       expect(adminCode).not.toMatch(/'单品'/)
@@ -88,47 +88,37 @@ describe('品项板块两端口径一致性守护', () => {
     })
   })
 
-  describe('cycle CTE 链一致（daily_agg / qualifying_days / first_entry / period_agg / xinzeng / fugou / tiyan）', () => {
-    const ctes = ['daily_agg', 'qualifying_days', 'first_entry', 'period_agg', 'xinzeng', 'fugou', 'tiyan']
-    it('admin 含全部 7 个 CTE', () => {
+  describe('cycle CTE 链一致（进入基线与复购达标分流）', () => {
+    const ctes = [
+      'daily_agg',
+      'qualifying_days',
+      'repurchase_qualifying_days',
+      'first_entry',
+      'period_agg',
+      'xinzeng',
+      'fugou',
+      'tiyan',
+    ]
+    it('admin 含全部 8 个 CTE', () => {
       for (const c of ctes) expect(adminCode).toContain(c)
     })
-    it('staff 含全部 7 个 CTE', () => {
+    it('staff 含全部 8 个 CTE', () => {
       for (const c of ctes) expect(staffCode).toContain(c)
     })
   })
 
   describe('达标日 = day_received >= threshold（getMemberThreshold）', () => {
-    it('admin daily_agg 用 SUM(sipe.amount) + day_received >= threshold', () => {
+    it('admin daily_agg 用支付事件金额 + day_received >= threshold', () => {
       expect(adminCode).toMatch(/SUM\(sipe\.amount::numeric\)\s+AS\s+day_received/i)
       expect(adminCode).toMatch(/day_received\s*>=\s*\$\{threshold\}/)
     })
-    it('staff daily_agg 用 SUM(sipe.amount) + day_received >= $3(threshold)', () => {
+    it('staff daily_agg 用支付事件金额 + day_received >= $3(threshold)', () => {
       expect(staffCode).toMatch(/SUM\(sipe\.amount::numeric\)\s+AS\s+day_received/i)
       expect(staffCode).toMatch(/day_received\s*>=\s*\$3/)
     })
     it('两端经 getMemberThreshold 注入阈值', () => {
       expect(adminCode).toMatch(/getMemberThreshold/)
       expect(staffCode).toMatch(/getMemberThreshold/)
-    })
-  })
-
-  describe('体验客群要求期内至少一笔正向购买', () => {
-    it('两端 daily_agg 记录正向购买，period_agg 透传到 tiyan', () => {
-      for (const code of [adminCode, staffCode]) {
-        expect(code).toMatch(/BOOL_OR\(sipe\.amount::numeric\s*>\s*0\)\s+AS\s+has_purchase/i)
-        expect(code).toMatch(/period_agg\s+AS\s*\([\s\S]*?day_received,\s*has_purchase[\s\S]*?FROM\s+daily_agg/i)
-        expect(code).toMatch(/tiyan\s+AS\s*\([\s\S]*?WHERE\s+pa\.has_purchase\s+AND\s+NOT EXISTS/i)
-      }
-    })
-
-    it('admin 明细体验人数要求正向购买发生在目标分组内', () => {
-      expect(adminCode).toMatch(
-        /tiyan\s+AS\s*\(\s*SELECT DISTINCT pa\.client_user_id, pa\.group_id, pa\.entry_group_id, pa\.grp[\s\S]*?WHERE pa\.has_purchase/i,
-      )
-      expect(adminCode).toMatch(
-        /trial_group\s+AS\s*\(\s*SELECT t\.group_id, COUNT\(DISTINCT t\.client_user_id\) AS cnt FROM tiyan t GROUP BY t\.group_id/i,
-      )
     })
   })
 
@@ -140,51 +130,759 @@ describe('品项板块两端口径一致性守护', () => {
       expect(staffCode).toMatch(/MIN\(purchase_date\)\s+AS\s+entry_date/i)
     })
     it('两端 daily_agg 全历史下界（performance_date <= 区间末）', () => {
+      expect(adminCode).toMatch(/FROM\s+sale_item_performance_events\s+sipe/)
       expect(adminCode).toMatch(/sipe\.performance_date\s*<=\s*\$\{range\.end\}/)
+      expect(staffCode).toMatch(/FROM\s+sale_item_performance_events\s+sipe/)
       expect(staffCode).toMatch(/sipe\.performance_date\s*<=\s*\$2/)
     })
   })
 
-  describe('市场明细人数在市场内去重', () => {
-    it('市场持卡直接按 market_id + 顾客聚合，不能由门店持卡相加', () => {
-      expect(adminCode).toMatch(/queryCardHoldersByGroup[\s\S]*?sk\.market_id[\s\S]*?COUNT\(DISTINCT\s+so\.client_user_id\)[\s\S]*?GROUP BY \$\{groupId\}/i)
-    })
-
-    it('市场 first_entry 以 market_id 为分组键，跨市场仍分别归属', () => {
-      expect(adminCode).toMatch(/entryGroupId\s*=\s*group\s*===\s*'market'\s*\?\s*sql\.raw\('sk\.market_id::text'\)/i)
-      expect(adminCode).toMatch(/first_entry\s+AS\s*\([\s\S]*?GROUP BY\s+client_user_id,\s*entry_group_id,\s*grp/i)
-      expect(adminCode).toMatch(/new_group\s+AS\s*\([\s\S]*?COUNT\(DISTINCT\s+pa\.client_user_id\)/i)
-      expect(adminCode).toMatch(/repurchase_group\s+AS\s*\([\s\S]*?COUNT\(DISTINCT\s+pa\.client_user_id\)/i)
-    })
-  })
-
-  describe('cycle 基础过滤 sale_order_type IN (销售单, 转换单) ∩ status=已支付', () => {
+  describe('cycle 进入基线纳入寄存单，复购事件仅限销售单/转换单', () => {
     it('admin', () => {
-      expect(adminSrc).toMatch(/sale_order_type\s+IN\s*\(\s*'销售单'\s*,\s*'转换单'\s*\)/)
-      expect(adminCode).toMatch(/so\.status\s*=\s*'已支付'/)
+      expect(adminCode).toMatch(
+        /daily_agg[\s\S]*?sale_order_type\s+IN\s*\(\s*'销售单'\s*,\s*'转换单'\s*,\s*'寄存单'\s*\)/,
+      )
+      expect(adminCode).toMatch(
+        /FILTER\s*\(\s*WHERE\s+so\.sale_order_type\s+IN\s*\(\s*'销售单'\s*,\s*'转换单'\s*\)\s*\)[\s\S]*?AS\s+purchase_received/,
+      )
+      expect(adminCode).toMatch(
+        /so\.status\s+NOT\s+IN\s*\(\s*'已关闭'\s*,\s*'已作废'\s*,\s*'未审核'\s*,\s*'待审批'\s*,\s*'支付失败'\s*\)/,
+      )
     })
     it('staff', () => {
-      expect(staffSrc).toMatch(/sale_order_type\s+IN\s*\(\s*'销售单'\s*,\s*'转换单'\s*\)/)
-      expect(staffCode).toMatch(/so\.status\s*=\s*'已支付'/)
+      expect(staffCode).toMatch(
+        /daily_agg[\s\S]*?sale_order_type\s+IN\s*\(\s*'销售单'\s*,\s*'转换单'\s*,\s*'寄存单'\s*\)/,
+      )
+      expect(staffCode).toMatch(
+        /FILTER\s*\(\s*WHERE\s+so\.sale_order_type\s+IN\s*\(\s*'销售单'\s*,\s*'转换单'\s*\)\s*\)[\s\S]*?AS\s+purchase_received/,
+      )
+      expect(staffCode).toMatch(
+        /so\.status\s+NOT\s+IN\s*\(\s*'已关闭'\s*,\s*'已作废'\s*,\s*'未审核'\s*,\s*'待审批'\s*,\s*'支付失败'\s*\)/,
+      )
+    })
+    it('两端 fugou 只读取 repurchase_qualifying_days，且区间业绩排除寄存金额', () => {
+      for (const code of [adminCode, staffCode]) {
+        expect(code).toMatch(/repurchase_qualifying_days\s+AS\s*\([\s\S]*?WHERE\s+purchase_received\s*>=/)
+        expect(code).toMatch(
+          /period_agg\s+AS\s*\([\s\S]*?purchase_received\s+AS\s+day_received[\s\S]*?purchase_received\s*>\s*0/,
+        )
+        expect(code).toMatch(/fugou\s+AS\s*\([\s\S]*?FROM\s+repurchase_qualifying_days\s+q/)
+      }
     })
   })
 
-  describe('业绩 = SUM(sale_item_performance_events.amount)（禁 paid_amount）', () => {
-    it('两端使用行级业绩事件视图', () => {
-      expect(adminCode).toMatch(/FROM\s+sale_item_performance_events\s+sipe/i)
-      expect(staffCode).toMatch(/FROM\s+sale_item_performance_events\s+sipe/i)
+  describe('复购 = 本期进入 cohort 在 entry_date 后区间内再次达标', () => {
+    it('admin', () => {
+      expect(adminCode).toMatch(/JOIN\s+xinzeng\s+x\s+ON\s+x\.client_user_id\s*=\s*q\.client_user_id\s+AND\s+x\.grp\s*=\s*q\.grp/)
+      expect(adminCode).toMatch(/q\.purchase_date\s*>\s*x\.entry_date/)
     })
+    it('staff', () => {
+      expect(staffCode).toMatch(/JOIN\s+xinzeng\s+x\s+ON\s+x\.client_user_id\s*=\s*q\.client_user_id\s+AND\s+x\.product_kind\s*=\s*q\.product_kind/)
+      expect(staffCode).toMatch(/q\.purchase_date\s*>\s*x\.entry_date/)
+    })
+  })
+
+  /**
+   * #286：明细「新增人数」的归店必须以 `xinzeng` 为主表 LEFT JOIN `period_agg`。
+   *
+   * 缺陷原理：`period_agg` 要求 `purchase_received > 0`（只统计销售单/转换单，**不含寄存单**），
+   * 而进入达标（`first_entry` → `entry_store` → `xinzeng`）走 `day_received`（**含寄存单**）。
+   * 以 `period_agg` 作主表再内连接回来，会把「进入达标日金额全部来自寄存单」的顾客整体丢弃 ——
+   * 生产实测明细合计只有 KPI 的三分之一（**漏 65.5%**），派生的新增客单价与复购率双双虚高 **2.90 倍**。
+   *
+   * ⚠️ 这些断言只对**明细侧**（`queryCycleByStore`）的 SQL 模板生效：KPI 侧 `queryCycle`
+   * 有一份同名 CTE 链，对整份源码 `toMatch` 时它的字面量会把明细侧的漏改顶掉。
+   *
+   * ⚠️ **所有断言都必须收进 `cteBlock()` 切出的 CTE 体内**。round-1 的三个 reviewer 各自
+   * 实测出：只要正向断言的 `[\s\S]*?` 没有右边界，那个字面量出现在该 CTE 之后的任意位置
+   * （别的 CTE 里、注释里、字符串里）都算数，于是多种改法能让 65.5% 的漏损 100% 复活而断言全绿。
+   */
+  describe('明细新增人数以 xinzeng 为主表归店（#286）', () => {
+    /**
+     * 单遍扫描剥掉 SQL 里的「噪音」，供结构断言使用。剥三类：
+     *   1. **单引号字符串字面量**（含 `''` 转义）—— 堵「在块内塞一个
+     *      `'FROM xinzeng x LEFT JOIN period_agg pa'` 字符串」的注入（round-1 GLM）
+     *   2. **块注释 `/* *\/`，且按深度计数** —— PostgreSQL 的块注释**可嵌套**
+     *   3. **行注释 `--`** —— 堵「删真实代码 + 用 `--` 把字面量补回去」
+     *
+     * ⚠️ **为什么不能用三条 `replace` 正则**（round-4 codex 实测打穿）：
+     * `/\/\*[\s\S]*?\*\//` 只吃到**第一个** `*\/`，而 PG 允许嵌套。于是
+     * `(/* outer /* inner *\/ still outer *\/SELECT 0)` 剥完剩下
+     * `( still outer *\/SELECT 0)`，`\(\s*SELECT` 看不见这个子查询 ——
+     * 把它乘进 `cnt` 就能让新增人数恒为 0，而块内全部断言仍绿。
+     *
+     * 单遍交替扫描同时保证了三者的嵌套顺序正确：先遇到 `'` 就整段吃字符串
+     * （连同其中的 `--` / `/*`），先遇到注释就整段吃注释（连同其中的引号）。
+     * 未闭合的 `/*` 会把剩余全部吞掉 → 切片失败 → 断言误红（fail-closed）。
+     */
+    const stripSqlNoise = (tpl: string): string => {
+      let out = ''
+      let i = 0
+      let depth = 0
+      while (i < tpl.length) {
+        if (depth > 0) {
+          if (tpl.startsWith('/*', i)) { depth++; i += 2; continue }
+          if (tpl.startsWith('*/', i)) { depth--; i += 2; if (depth === 0) out += ' '; continue }
+          i++
+          continue
+        }
+        if (tpl.startsWith('/*', i)) { depth = 1; i += 2; continue }
+        if (tpl.startsWith('--', i)) {
+          while (i < tpl.length && tpl[i] !== '\n') i++
+          out += ' '
+          continue
+        }
+        if (tpl[i] === "'") {
+          i++
+          while (i < tpl.length) {
+            if (tpl[i] === "'" && tpl[i + 1] === "'") { i += 2; continue }
+            if (tpl[i] === "'") { i++; break }
+            i++
+          }
+          out += ' '
+          continue
+        }
+        out += tpl[i]
+        i++
+      }
+      return out
+    }
+
+    /**
+     * ★ 轻量 TS 词法扫描：切出 `queryCycleByStore` 的**真实函数体**，
+     * 沿途剥掉 TS 注释，**字符串与模板字面量原样保留**。
+     *
+     * ⚠️ 为什么不能继续用正则 `/async function queryCycleByStore\([\s\S]*?\n}/`
+     * （round-6 与 round-7 的 codex 连着打穿两次）：它把**第一个顶格 `}`** 当函数结尾，
+     * 而顶格 `}` 可以来自函数内部的任何嵌套块 ——
+     *
+     *   async function queryCycleByStore(…) {
+     *     if (false) {
+     *       await db.execute(sql`<复制一份当前的安全模板>`)   ← 诱饵
+     *   }                                                      ← 顶格，切片在此收尾
+     *     const rows = await db.execute(sql`<已回退成内连接的真 SQL>`)
+     *     …
+     *   }
+     *
+     * 此时：诱饵被当成"真模板"、`db.execute` 计数仍是 1、全部快照都在检查诱饵，
+     * 而 `if (false)` 运行时不执行，真正跑的是后面那条 —— 65.5% 漏数原样回归。
+     * round-6 只堵住了"注释里的顶格 `}`"（先 `stripComments`），堵不住 `if` 块的。
+     *
+     * 不引 TypeScript AST（会把 `typescript` 拉进测试依赖），改用按花括号深度扫描：
+     *   ① 括号深度跳过参数列表（参数可能有解构的 `{}`）
+     *   ② 尖括号深度跳过返回类型注解（`Promise<Map<string, { … }>>` 里有 `{}`），
+     *      函数体的 `{` 是尖括号深度为 0 时遇到的第一个
+     *   ③ 花括号深度扫到函数体结尾，沿途跳过 `//` / `/* *\/` / `'…'` / `"…"` / `` `…` ``
+     *      （模板字面量按 `${…}` 深度处理，不会被里面的 `}` 提前结束）
+     *
+     * 模板字面量原样保留是**故意的**：下面「禁 SQL 块注释」那条断言要检查真模板里有没有
+     * `/*`。round-7 codex 指出上一版把它跑在 `stripComments` 之后的文本上，
+     * 配对好的块注释在检查前就已经消失 —— **那条断言证明不了它声称的事**（空断言）。
+     */
+    const queryCycleByStoreBody = (src: string): string => {
+      const decl = /async function queryCycleByStore\s*\(/.exec(src)
+      if (!decl) return ''
+      let i = decl.index + decl[0].length
+      for (let paren = 1; i < src.length && paren > 0; i++) {
+        if (src[i] === '(') paren++
+        else if (src[i] === ')') paren--
+      }
+      let angle = 0
+      while (i < src.length) {
+        const c = src[i]
+        if (c === '<') angle++
+        else if (c === '>') angle = Math.max(0, angle - 1)
+        else if (c === '{' && angle === 0) break
+        i++
+      }
+      let out = ''
+      let depth = 0
+      while (i < src.length) {
+        const c = src[i]
+        if (c === '/' && src[i + 1] === '/') {
+          while (i < src.length && src[i] !== '\n') i++
+          out += ' '
+          continue
+        }
+        if (c === '/' && src[i + 1] === '*') {
+          i += 2
+          while (i < src.length && !(src[i] === '*' && src[i + 1] === '/')) i++
+          i += 2
+          out += ' '
+          continue
+        }
+        if (c === "'" || c === '"') {
+          const quote = c
+          out += c
+          i++
+          while (i < src.length) {
+            if (src[i] === '\\') {
+              out += src.slice(i, i + 2)
+              i += 2
+              continue
+            }
+            out += src[i]
+            i++
+            if (src[i - 1] === quote) break
+          }
+          continue
+        }
+        if (c === '`') {
+          out += c
+          i++
+          let tplDepth = 0
+          while (i < src.length) {
+            if (src[i] === '\\') {
+              out += src.slice(i, i + 2)
+              i += 2
+              continue
+            }
+            if (src[i] === '$' && src[i + 1] === '{') {
+              tplDepth++
+              out += '${'
+              i += 2
+              continue
+            }
+            if (src[i] === '}' && tplDepth > 0) {
+              tplDepth--
+              out += '}'
+              i++
+              continue
+            }
+            if (src[i] === '`' && tplDepth === 0) {
+              out += '`'
+              i++
+              break
+            }
+            out += src[i]
+            i++
+          }
+          continue
+        }
+        if (c === '{') depth++
+        else if (c === '}') {
+          depth--
+          out += c
+          i++
+          if (depth === 0) break
+          continue
+        }
+        out += c
+        i++
+      }
+      return out
+    }
+
+    /** 未经 SQL 清洗的模板原文 —— 「扫描器语法是超集」那组断言要用它。 */
+    const detailTemplateRaw = (src: string): string =>
+      /db\.execute\(sql`([\s\S]*?)`\)/.exec(queryCycleByStoreBody(src))?.[1] ?? ''
+
+    /** 切出 queryCycleByStore 的 SQL 模板，避免 KPI 侧同名 CTE 链顶替。 */
+    const detailSql = (src: string): string => normalize(stripSqlNoise(detailTemplateRaw(src)))
+    /**
+     * 切出单个 CTE 块（以下一个 CTE 名为右边界），避免跨块的惰性匹配假红/假绿。
+     * 两侧都容忍 `AS MATERIALIZED (` 这种带物化提示的写法。
+     */
+    const cteBlock = (sqlText: string, name: string, nextName: string): string =>
+      new RegExp(
+        `${name}\\s+AS\\s+(?:MATERIALIZED\\s+)?\\(([\\s\\S]*?)\\),\\s*${nextName}\\s+AS\\s`,
+      ).exec(sqlText)?.[1] ?? ''
+    /** 末尾 CTE（store_ids）没有「下一个 CTE」，以最终 SELECT 为右边界 */
+    const lastCteBlock = (sqlText: string, name: string): string =>
+      new RegExp(`${name}\\s+AS\\s+(?:MATERIALIZED\\s+)?\\(([\\s\\S]*?)\\)\\s*SELECT\\s`).exec(sqlText)?.[1] ?? ''
+
+    /**
+     * 块内**禁止嵌套 CTE / LATERAL**（round-2 GLM）。
+     *
+     * `cteBlock` 以「`),` + 下一个 CTE 名 + ` AS `」为右边界。若块内自己嵌一个
+     * `WITH decoy AS (...), repurchase_store AS (SELECT 1) SELECT ...` —— 撞名会让右边界
+     * **提前闭合**，真正的坏代码落在切片之外，所有正向/反向断言都只检查到诱饵前缀。
+     * 这四个聚合 CTE 本就不该嵌 CTE，一刀切禁掉（当前块内零 WITH，不误红）。
+     */
+    const assertNoNestedCte = (block: string, name: string): void => {
+      expect(block, `${name} 块内出现嵌套 WITH —— 可用撞名 CTE 让切片右边界提前闭合`).not.toMatch(/\bWITH\b/i)
+      expect(block, `${name} 块内出现 LATERAL —— 可借它注入零行子查询破坏结果`).not.toMatch(/\bLATERAL\b/i)
+    }
+
+    let adminDetail: string
+    beforeAll(() => {
+      adminDetail = detailSql(adminSrc)
+    })
+
+    /**
+     * ★ 守护**守护自己**：`stripSqlNoise` 只认「普通单引号字符串（`''` 转义）」这一种字符串写法。
+     * PostgreSQL 还有两种它不认识的，一旦被写进模板，扫描器与数据库对「哪段是字符串」
+     * 的判断会**错位**（round-5 codex 提出 E-string 方向，美元引用是同类且更危险）：
+     *
+     *   1. `E'a\'b'` —— PG 认 `\'` 是转义引号、整体一个字符串；扫描器在那个引号处提前收尾，
+     *      此后**相位翻转**：PG 在串内它在串外，或反过来。
+     *   2. `$$ ... ' ... $$` / `$tag$ ... $tag$` —— PG 认整段是字符串；扫描器不懂美元引用，
+     *      会把里面的 `'` 当成字符串开始，于是**把真实代码当字符串剥掉**。
+     *      被剥掉的若正好是追加的过滤谓词，尾锚断言反而会通过 —— **假绿**。
+     *
+     * `new_store` 与最终 SELECT 钉的是字面快照（多一字少一字都红），相位错位对它们是 fail-closed；
+     * 但 `entry_store` / `xinzeng` / `store_ids` 用的是带 `$` 尾锚的正则，**有被剥出假绿的可能**。
+     *
+     * 与其把扫描器写成完整的 PG 词法分析器，不如**把允许的写法收窄到扫描器的语法之内** ——
+     * 让「扫描器认识的」成为「允许写的」的超集。当前模板这三样都是 0 处，不误红。
+     */
+    it('模板未使用扫描器不认识的字符串写法（否则剥离相位会与 PG 错位）', () => {
+      const raw = detailTemplateRaw(adminSrc)
+      expect(raw, '原始模板未切出').toBeTruthy()
+      expect(raw, "模板出现 E'...' 转义字符串 —— stripSqlNoise 不认 \\' 转义，剥离相位会与 PG 错位").not.toMatch(
+        /\bE'/i,
+      )
+      expect(raw, '模板出现美元引用字符串（$$ 或 $tag$）—— 扫描器会把其中的引号当字符串起点，可能把真实代码剥掉').not.toMatch(
+        /\$\$|\$[A-Za-z_]\w*\$/,
+      )
+      expect(raw, '模板出现反斜杠 —— 只要没有 E 前缀 PG 就按字面处理，但这是 E-string 的前置条件，一并禁掉').not.toMatch(
+        /\\/,
+      )
+      expect(
+        (raw.match(/'/g) ?? []).length % 2,
+        '模板里的单引号总数是奇数 —— 必有一处未闭合，扫描器之后的剥离全部失准',
+      ).toBe(0)
+      /**
+       * round-6 codex：上面那条「禁美元引用」写成 `/\$[A-Za-z_]\w*\$/` 不够 ——
+       * PG 的 dollar tag **允许非 ASCII 字母**（`$探针$ … $探针$` 合法），正则不命中；
+       * 双引号标识符更可以容纳任意非零字符，而 `stripSqlNoise` 压根不认识它。
+       * 两者都能把一整段**诱饵 CTE 链**伪装成常量列 / 长别名，让 `cteBlock()` 先切到诱饵，
+       * 真正的 `new_store` 则可以恢复成内连接。继续沿「收窄语法」这条路一并禁掉。
+       */
+      expect(raw, '模板出现裸 $（非 ${...} 插值）—— PG 的 dollar tag 允许非 ASCII 标签，可藏整段诱饵 CTE 链').not.toMatch(
+        /\$(?!\{)/,
+      )
+      expect(raw, '模板出现双引号 —— PG 的双引号标识符可容纳任意字符，扫描器不认识它，可藏整段诱饵 CTE 链').not.toMatch(
+        /"/,
+      )
+      expect(raw, '模板出现 SQL 块注释 —— 会把「先剥 TS 注释」那一步带偏，两层剥离必须解耦').not.toMatch(
+        /\/\*|\*\//,
+      )
+      expect(
+        (adminSrc.match(/async function queryCycleByStore/g) ?? []).length,
+        'queryCycleByStore 不止一处声明 —— 切片只取第一处，另一处可能才是真正执行的',
+      ).toBe(1)
+    })
+
+    it('切片锚点有效（能切出明细侧 SQL 且含关键 CTE）', () => {
+      expect(adminDetail, 'queryCycleByStore 的 SQL 模板未切出').toBeTruthy()
+      for (const cte of ['entry_store', 'xinzeng', 'new_store', 'store_ids', 'period_agg']) {
+        expect(adminDetail, `明细侧缺 ${cte} CTE`).toMatch(new RegExp(`${cte}\\s+AS\\s`))
+      }
+      // ⚠️ 必须用词法扫描出的真实函数体来数，不能再用正则切片 ——
+      // 正则会在第一个顶格 `}` 处收尾，于是「诱饵 + 真 SQL」两条 db.execute 只数到 1。
+      const body = queryCycleByStoreBody(adminSrc)
+      expect(body, 'queryCycleByStore 函数体未切出').toBeTruthy()
+      /**
+       * ★ **通用截断探测** —— 不去追每一种能骗过词法扫描器的写法，直接检查
+       * 切出来的函数体是不是**一路切到了真正的结尾**。
+       *
+       * round-6 / round-7 / round-8 的攻击本质完全相同：让切片提前收尾，
+       * 使后面真正执行的 SQL 落在守护视野之外。载体换了三次 ——
+       * 注释里的顶格 `}` → `if (false) {…}` 的顶格 `}` → 正则字面量 `/}/`
+       * （最后这条是 round-8 DeepSeek 实测打穿的：扫描器不认正则字面量，
+       * 把 `/}/` 里的 `}` 当成花括号，深度归零就 break）。
+       *
+       * 与其给扫描器补第四、第五个词法分支（正则 vs 除法要靠前一个 token 判别，
+       * 本身就容易再错），不如锁住**结尾**：只要提前收尾，这条必红。
+       * 它对所有「早收尾」类攻击同时生效，包括还没被想到的那些。
+       */
+      expect(
+        body.trimEnd().endsWith('return m\n}'),
+        'queryCycleByStore 函数体没切到真正的结尾 —— 切片被提前截断了，' +
+          '后面可能藏着真正执行、却不受本组守护检查的 SQL',
+      ).toBe(true)
+      expect(body, '函数体缺少结果装配段 —— 同上，切片可能被截断').toMatch(/m\.set\(id,\s*\{/)
+      expect(
+        (body.match(/db\.execute\(/g) ?? []).length,
+        '明细侧出现多个 db.execute —— 可能有一条是诱饵，也可能 detailSql 的切片口径需同步更新',
+      ).toBe(1)
+      /**
+       * ★ 全局兜底：把**整份文件**的 `db.execute(` 条数钉死。
+       *
+       * 上面那条只在「切片正确」的前提下成立 —— 而前三轮的攻击恰恰都是**劫持切片**
+       * （注释里的顶格 `}`、`if (false)` 块的顶格 `}`）。切片一旦被截短到只剩诱饵，
+       * 块内计数就还是 1，照样绿。
+       *
+       * 这条不依赖切片：**在文件任何位置新增一条 `db.execute(` 都会红**，
+       * 包括所有「加一条诱饵、让守护去检查它」的变形。
+       *
+       * ⚠️ 正常新增查询也会红 —— 那时请确认新查询不是明细侧归店链路，再把数字调上去。
+       */
+      expect(
+        (adminSrc.match(/db\.execute\(/g) ?? []).length,
+        'product.ts 的 db.execute 条数变了 —— 若是正常新增查询请确认它不在明细侧归店链路上，再同步本数字',
+      ).toBe(8)
+    })
+
+    /**
+     * ★★ **函数壳字面快照** —— 整组守护的最后一道，也是最硬的一道。
+     *
+     * 前面每一条守护都在回答「函数体内某处写法对不对」，于是评审一轮换一个姿势，
+     * 让**守护检查的那段**与**数据库真正执行的那段**解耦。八轮下来的攻击谱系：
+     *
+     *   r6  注释里藏诱饵 `db.execute` + 独占行 `}`      → 切片提前收尾
+     *   r7  `if (false) { … }` 的顶格 `}`                → 切片提前收尾
+     *   r8  正则字面量 `/}/`（扫描器把 `}` 当花括号）     → 切片提前收尾
+     *   r9  **不截断**：安全 SQL 放进一个从不调用的箭头函数（于是 `return m\n}` 结尾正常、
+     *       正则先匹配到它），真正的调用改成 `db['execute'](…)` 计算属性 ——
+     *       字面量 `db.execute(` 全文仍是 8，**上面两条与载体无关的守护同时失效**
+     *
+     * r9 说明「逐条补词法分支」这条路走不到头。换成钉死**整个函数壳**：
+     * 取 `async function queryCycleByStore(` 到相邻唯一声明 `function buildMetrics(` 之间的全文，
+     * 把 SQL 模板整段替换成占位符（模板本身由上面的 CTE 快照逐块守护），剥注释、压平空白，
+     * 然后 `toBe` 全等。
+     *
+     * 于是**函数里多一行、少一行、换一种调用写法、插一个箭头函数，全部会红**，
+     * 不再依赖「扫描器是否认得某种词法」。
+     *
+     * ⚠️ 这是字面快照：改动这个函数（哪怕只是重命名局部变量）都会红。
+     * 看到红时请先确认**归店语义没变**，再把新快照同步进来 ——
+     * 别反过来把断言改宽，那正是 `23405ddf` 让 #285 的缺陷活两个月的原因。
+     */
+    /**
+     * ★ **生产调用点守护**（round-10 codex）。
+     *
+     * 上面那条把函数**定义**钉死了，却没锁住「这个函数是不是真的被用」。绕过路径：
+     *   ① 安全版 `queryCycleByStore` 原封不动（函数壳快照、CTE 快照全绿）
+     *   ② 在 `buildMetrics` 之后新增一个 `legacyCycleByStore`，恢复旧的内连接 SQL
+     *      （用 `db['execute']` 或干脆放到别的文件，绕开 `db.execute(` 计数）
+     *   ③ 把 `Promise.all` 里那一行改成调用 `legacyCycleByStore(…)`
+     * 于是全部守护检查的都是一个**没人调用**的函数，明细重新漏 65.5%。
+     *
+     * 两条一起堵：调用点钉字面快照 + `queryCycleByStore(` 在剥注释后的源码里恰好两处
+     * （一处声明、一处调用）。
+     */
+    it('queryCycleByStore 的生产调用点未被换掉', () => {
+      const code = stripComments(adminSrc)
+      expect(
+        (code.match(/queryCycleByStore\(/g) ?? []).length,
+        'queryCycleByStore 的出现次数不是「一处声明 + 一处调用」—— ' +
+          '可能新增了旁路实现，也可能调用点被换成了别的函数',
+      ).toBe(2)
+      expect(
+        normalize(code),
+        '明细侧的生产调用点变了 —— 确认 Promise.all 第三项仍直接调 queryCycleByStore 且实参未变',
+      ).toContain('queryCycleByStore(session, scope, cur, threshold, groupCol, filter),')
+    })
+
+    it('queryCycleByStore 的函数壳未变（除 SQL 模板外全等）', () => {
+      expect(
+        // ⚠️ 必须在**剥注释后**计数：注释里写一行 `// function buildMetrics(`
+        // 就能把「声明唯一」这条伪造掉，从而挪动函数壳的右边界（round-10 codex）
+        (stripComments(adminSrc).match(/function buildMetrics\(/g) ?? []).length,
+        '右边界锚点 buildMetrics 不唯一 —— 函数壳切片口径需同步更新',
+      ).toBe(1)
+      const from = adminSrc.indexOf('async function queryCycleByStore(')
+      const to = adminSrc.indexOf('function buildMetrics(')
+      expect(from >= 0 && to > from, '函数壳切片锚点失效').toBe(true)
+      // 先挖掉 SQL 模板再剥注释：模板内已禁块注释，两层剥离互不干扰
+      const shell = normalize(
+        stripComments(adminSrc.slice(from, to).replace(/sql`[\s\S]*?`/, 'sql`<TEMPLATE>`')),
+      )
+      expect(
+        shell,
+        'queryCycleByStore 的函数壳变了 —— 先确认归店语义没变（特别是 db.execute 的调用写法、' +
+          '有没有多出未被调用的函数、结果装配有没有改），再同步本快照',
+      ).toBe(
+          "async function queryCycleByStore( session: AuthSession, scope: DataCenterScope, range: R" +
+          "esolvedRange, threshold: number, groupCol: SQL, filter: SQL, ): Promise< Map< string, { " +
+          "trialCount: number newCount: number newRevenue: number repurchaseCount: number repurchas" +
+          "eRevenue: number } > > { const sc = scopeFilterSql(session, scope, 'so.store_id') const " +
+          "rows = await db.execute(sql`<TEMPLATE>`) const m = new Map< string, { trialCount: number" +
+          " newCount: number newRevenue: number repurchaseCount: number repurchaseRevenue: number }" +
+          " >() for (const raw of rows as unknown[]) { const r = raw as Record<string, unknown> con" +
+          "st id = String(r.store_id ?? '') if (!id) continue m.set(id, { trialCount: num(r.trial_c" +
+          "ount), newCount: num(r.new_count), newRevenue: round2(r.new_revenue), repurchaseCount: n" +
+          "um(r.repurchase_count), repurchaseRevenue: round2(r.repurchase_revenue), }) } return m }",
+      )
+    })
+
+    /**
+     * `entry_date` 与 `entry_store_id` 必须出自**同一行**（`DISTINCT ON`），而不是
+     * 「先算 entry_date、再用等值条件回查门店」。两个理由都由 round-1 实测背书：
+     *   1. **NULL 安全**：回查要用 `qd.grp = fe.grp`，而 `product_kind` 在 schema 里可空，
+     *      grp 为 NULL 时等值不匹配 → `entry_store_id` 为 NULL → 那批人静默丢三次。
+     *   2. **性能**：回查是相关子查询，O(|xinzeng| × |qualifying_days|)，
+     *      生产实测把这条明细查询拖慢 **+177%**；DISTINCT ON 版与基线持平，结果双向 EXCEPT 为 0 行。
+     */
+    it('entry_store：entry_date 与 entry_store_id 出自同一行（DISTINCT ON，非等值回查）', () => {
+      const block = cteBlock(adminDetail, 'entry_store', 'xinzeng')
+      expect(block, 'entry_store CTE 未切出').toBeTruthy()
+      assertNoNestedCte(block, 'entry_store')
+      expect(block, '未用 DISTINCT ON (client_user_id, grp)').toMatch(
+        /SELECT\s+DISTINCT\s+ON\s*\(\s*client_user_id,\s*grp\s*\)/,
+      )
+      expect(block, 'entry_date 与 entry_store_id 未出自同一行').toMatch(
+        /purchase_date\s+AS\s+entry_date[\s\S]*?store_id\s+AS\s+entry_store_id/,
+      )
+      // 连续锚：`FROM qualifying_days` 与 `ORDER BY` 之间不许插任何东西 ——
+      // 追加一条 `JOIN foo ON ...` 或 `WHERE grp IS NOT NULL` 就能把达标日来源筛掉一部分人，
+      // 而上面的投影/DISTINCT ON/ORDER BY 断言全都照样绿（round-3 GLM 探针 P-c 实测）。
+      expect(block, 'entry_store 的 FROM 与 ORDER BY 之间被插入了 JOIN / WHERE 等过滤').toMatch(
+        /FROM\s+qualifying_days\s+ORDER\s+BY\s+client_user_id,\s*grp,\s*purchase_date,\s*store_id\s*$/,
+      )
+      expect(
+        (block.match(/\bJOIN\b/gi) ?? []).length,
+        'entry_store 出现 JOIN —— 它必须是 qualifying_days 的纯去重投影',
+      ).toBe(0)
+      expect(adminDetail, 'entry_store 丢了 MATERIALIZED —— 执行计划会退化').toMatch(
+        /entry_store\s+AS\s+MATERIALIZED\s*\(/,
+      )
+    })
+
+    /**
+     * `xinzeng` 必须**直接从 `entry_store` 派生**（round-1 codex + GLM 同时指出）。
+     *
+     * 此前这条断言写成 `/xinzeng\s+AS\s*\([\s\S]*?entry_store_id/` —— 没有右边界，
+     * 而 `entry_store_id` 在其后的 `new_store`、`store_ids` 里必然出现，所以**恒绿**。
+     * 绕过路径：把 `xinzeng` 改回 `FROM first_entry` + 用 `ORDER BY ... LIMIT 1` 形态的
+     * 相关子查询取门店（换个拼法即可避开只堵 `MIN(qd.store_id)` 的反向断言），
+     * NULL 洞与 O(n²) 双双复活而测试全绿。
+     */
+    it('xinzeng 直接从 entry_store 派生（四列投影，不回退到 first_entry + 回查）', () => {
+      const block = cteBlock(adminDetail, 'xinzeng', 'fugou')
+      expect(block, 'xinzeng CTE 未切出').toBeTruthy()
+      assertNoNestedCte(block, 'xinzeng')
+      expect(block, 'xinzeng 不是从 entry_store 派生').toMatch(/FROM\s+entry_store\b/)
+      expect(block, 'xinzeng 的四列投影不完整').toMatch(
+        /SELECT\s+client_user_id,\s*grp,\s*entry_date,\s*entry_store_id/,
+      )
+      expect(block, 'xinzeng 退回 first_entry —— 门店又要靠等值回查（NULL 不安全 + O(n²)）').not.toMatch(
+        /FROM\s+first_entry/,
+      )
+      expect(block, 'xinzeng 体内出现子查询 —— 回查写法复活').not.toMatch(/\(\s*SELECT\s/i)
+      // xinzeng 合法地有 WHERE entry_date BETWEEN ...，但不得追加别的谓词
+      // ——「过滤掉 grp 为 NULL 的人」正是本 PR 文档化的失败模式。
+      // ⚠️ 连续锚：只钉 WHERE 的尾巴挡不住在 FROM 与 WHERE **之间**插一条
+      // `JOIN foo ON ... AND grp IS NOT NULL`（round-3 GLM 探针 P-a 实测可绕）。
+      expect(block, 'xinzeng 的 FROM 与 WHERE 之间被插入了 JOIN，或 WHERE 追加了区间之外的谓词').toMatch(
+        /FROM\s+entry_store\s+WHERE\s+entry_date\s+BETWEEN\s+\$\{range\.start\}\s+AND\s+\$\{range\.end\}\s*$/,
+      )
+      expect(
+        (block.match(/\bJOIN\b/gi) ?? []).length,
+        'xinzeng 出现 JOIN —— 它必须是 entry_store 的纯区间切片，任何连接都可能筛掉人',
+      ).toBe(0)
+    })
+
+    /**
+     * ★ `new_store` 的全部结构约束，一律在 CTE 体内断言。
+     *
+     * round-1 实测出的绕过路径（当时全部全绿）：
+     *   E) 计数主体改回 `pa.client_user_id` —— 兜底分组里 `pa.*` 全 NULL，`COUNT(DISTINCT NULL) = 0`
+     *   F) 体内加 `WHERE pa.store_id IS NOT NULL` —— 把 LEFT JOIN 打回内连接
+     *   A) 换别名写成内连接 + 注释补字面量
+     *   H) 加 `HAVING SUM(pa.day_received) > 0` —— entry-only 兜底组 revenue=0 被整体滤掉
+     *   J) 追加一条裸 `JOIN period_agg gate ...` —— 不含 INNER/RIGHT/FULL/CROSS 关键字
+     */
+    it('new_store：以 xinzeng 为主表、恰一条 LEFT JOIN、无 WHERE/HAVING、计数主体是 x', () => {
+      const block = cteBlock(adminDetail, 'new_store', 'repurchase_store')
+      expect(block, 'new_store 块未切出（CTE 顺序变了？）').toBeTruthy()
+      assertNoNestedCte(block, 'new_store')
+      // 堵「, LATERAL (SELECT 1 LIMIT 0)」这类零行破坏，以及任何回查子查询
+      expect(block, 'new_store 体内出现子查询').not.toMatch(/\(\s*SELECT\s/i)
+
+      // ON 子句整条钉死：JOIN 计数 = 1 只管「有几条连接」，管不住在这一条的 ON 里
+      // 追加谓词（如 `AND pa.store_id IS DISTINCT FROM 'store-x'` 把某店业绩挪走，
+      // 或 `AND pa.day_received > 0` 把兜底人群的消费行打掉）—— round-3 GLM 探针 P-b 实测可绕。
+      expect(block, 'new_store 的主表不是 xinzeng，或 ON 子句被追加了连接键以外的谓词').toMatch(
+        /FROM\s+xinzeng\s+x\s+LEFT\s+JOIN\s+period_agg\s+pa\s+ON\s+pa\.client_user_id\s*=\s*x\.client_user_id\s+AND\s+pa\.grp\s*=\s*x\.grp\s+GROUP\s+BY\b/,
+      )
+      // 恰好一条 JOIN，且必是 LEFT —— 堵「追加一条裸 JOIN 当过滤闸」
+      expect(
+        (block.match(/\bJOIN\b/gi) ?? []).length,
+        'new_store 里的 JOIN 不止一条 —— 多出来的那条会重新过滤掉无 period 行的顾客',
+      ).toBe(1)
+      expect(block, 'new_store 出现了非 LEFT 的 JOIN').not.toMatch(
+        /\b(INNER|RIGHT|FULL|CROSS)\s+JOIN\b/i,
+      )
+      expect(block, 'new_store 用逗号连接了两个表 —— 等价于内连接').not.toMatch(
+        /FROM\s+\w+\s+\w+\s*,/,
+      )
+      // WHERE 对右表加过滤会把 LEFT JOIN 打回内连接；HAVING 会把 revenue=0 的兜底组整体滤掉
+      expect(block, 'new_store 体内出现 WHERE —— 对右表过滤会退化成内连接').not.toMatch(/\bWHERE\b/i)
+      expect(
+        block,
+        'new_store 体内出现 HAVING —— 「只有寄存单进入」的门店 revenue=0，会被整组滤掉（#286 换个写法回归）',
+      ).not.toMatch(/\bHAVING\b/i)
+      // 计数主体必须是 xinzeng 的顾客：兜底分组里 pa.* 全是 NULL
+      expect(block, 'new_store 回退成按 pa 计数').not.toMatch(/COUNT\(DISTINCT\s+pa\.client_user_id\)/)
+
+      /**
+       * ★ 整块钉成**字面快照**（round-4 codex 打穿了上一版的"关键子表达式出现过即可"）。
+       *
+       * 只断言「`COUNT(DISTINCT x.client_user_id)` 出现过」时，下面这两条全绿：
+       *
+       *   COUNT(DISTINCT x.client_user_id)
+       *   - COUNT(DISTINCT CASE WHEN pa.client_user_id IS NULL THEN x.client_user_id END) AS cnt
+       *     ↑ 恰好减掉没有 period 行的兜底顾客 —— #286 的主缺陷原地复活
+       *
+       *   GROUP BY COALESCE(pa.store_id, x.entry_store_id), (pa.client_user_id IS NULL)
+       *     ↑ 同一门店裂成两行，product.ts 的 `m.set(store_id, ...)` 后一行覆盖前一行，
+       *       **不确定性漏数**（漏哪家取决于行序）
+       *
+       * 所以这里锁整条投影 + 整条 FROM/JOIN/ON + GROUP BY 锚到块尾，中间不留缝。
+       *
+       * ⚠️ **这是有意为之的字面快照，不是结构断言**：交换等值条件左右、加括号、
+       * 改别名、补显式 ASC 都会误红。这是三轮评审反复打穿"部分结构断言"后的取舍 ——
+       * 宁可拦住合理重构（fail-closed，看到红就来读这段注释、确认语义没变再同步更新），
+       * 也不能再放过一个让 65.5% 漏损复活的等价变形。
+       */
+      expect(
+        block.trim(),
+        'new_store 块与字面快照不符 —— 先确认语义没变（尤其是计数主体与 GROUP BY 维度），再同步更新本断言',
+      ).toBe(
+        'SELECT COALESCE(pa.store_id, x.entry_store_id) AS store_id, ' +
+          'COUNT(DISTINCT x.client_user_id) AS cnt, ' +
+          'COALESCE(SUM(pa.day_received), 0) AS revenue ' +
+          'FROM xinzeng x ' +
+          'LEFT JOIN period_agg pa ' +
+          'ON pa.client_user_id = x.client_user_id AND pa.grp = x.grp ' +
+          'GROUP BY COALESCE(pa.store_id, x.entry_store_id)',
+      )
+    })
+
+    it('store_ids 骨架并上 entry 门店（否则只有寄存单进入的门店会漏行）', () => {
+      const block = lastCteBlock(adminDetail, 'store_ids')
+      expect(block, 'store_ids 块未切出').toBeTruthy()
+      assertNoNestedCte(block, 'store_ids')
+      // ⚠️ 必须锚到**块尾**：只匹配前缀的话，追加 `AND FALSE` 之类谓词仍然全绿，
+      // 而 entry-only 门店就不进骨架、new_store 算出的人数在最终 JOIN 再次丢失（round-2 codex）
+      expect(block, 'store_ids 未并上 xinzeng 的 entry 门店，或 UNION 分支被追加了额外谓词').toMatch(
+        /FROM\s+period_agg\s+UNION\s+SELECT\s+DISTINCT\s+entry_store_id\s+FROM\s+xinzeng\s+WHERE\s+entry_store_id\s+IS\s+NOT\s+NULL\s*$/,
+      )
+    })
+
+    /**
+     * ★ 最终 SELECT 也必须守护（round-4 codex）。
+     *
+     * 前面所有断言都切到 `store_ids` 就结束了 —— CTE 全部算对，结果仍可在**消费端**被丢掉：
+     *
+     *   LEFT JOIN new_store n ON n.store_id = s.store_id AND n.revenue > 0
+     *
+     * 这一条就把「只有寄存单进入、零销售单消费」的门店（revenue = 0）重新滤掉，
+     * 正好抵消 `store_ids` 第二个 UNION 分支要保护的场景，而上面的断言无一触发。
+     *
+     * 同理，把 `COALESCE(n.cnt, 0) AS new_count` 改成 `COALESCE(n.cnt, 0) * 0` 之类也无人拦。
+     * 与 `new_store` 同样处理：**字面快照**，见上面那段关于 fail-closed 取舍的说明。
+     */
+    it('最终 SELECT 未被追加过滤（CTE 算对了也能在消费端丢行）', () => {
+      const finalSelect = /\)\s*(SELECT\s[\s\S]*)$/.exec(adminDetail)?.[1] ?? ''
+      expect(finalSelect, '最终 SELECT 未切出 —— 切片口径需同步更新').toBeTruthy()
+      expect(
+        finalSelect.trim(),
+        '最终 SELECT 与字面快照不符 —— 尤其检查三条 LEFT JOIN 的 ON 有没有被追加谓词（会再次丢行）',
+      ).toBe(
+        'SELECT s.store_id AS store_id, ' +
+          'COALESCE(t.cnt, 0) AS trial_count, ' +
+          'COALESCE(n.cnt, 0) AS new_count, ' +
+          'COALESCE(n.revenue, 0) AS new_revenue, ' +
+          'COALESCE(r.cnt, 0) AS repurchase_count, ' +
+          'COALESCE(r.revenue, 0) AS repurchase_revenue ' +
+          'FROM store_ids s ' +
+          'LEFT JOIN trial_store t ON t.store_id = s.store_id ' +
+          'LEFT JOIN new_store n ON n.store_id = s.store_id ' +
+          'LEFT JOIN repurchase_store r ON r.store_id = s.store_id',
+      )
+    })
+
+    /**
+     * 体验/复购不需要兜底：`tiyan` 本就从 `period_agg` 派生，
+     * `fugou` 要求 `purchase_received >= threshold > 0`，两者必然在 `period_agg` 里有行。
+     * 锁住这一点，免得日后有人"顺手"把它们也改成 LEFT JOIN 兜底，反而引入无处归店的行。
+     */
+    it('体验/复购仍以 period_agg 为主表（它们必然有 period 行，无需兜底）', () => {
+      const trial = cteBlock(adminDetail, 'trial_store', 'new_store')
+      const repurchase = cteBlock(adminDetail, 'repurchase_store', 'store_ids')
+      expect(trial, 'trial_store 块未切出').toBeTruthy()
+      expect(repurchase, 'repurchase_store 块未切出').toBeTruthy()
+      expect(trial).toMatch(/FROM\s+period_agg\s+pa\s+JOIN\s+tiyan\s+t/)
+      expect(repurchase).toMatch(/FROM\s+period_agg\s+pa\s+JOIN\s+fugou\s+fg/)
+      // 与 new_store 同理：正向断言只认前缀，追加第二条 JOIN 当过滤闸仍然全绿
+      expect((trial.match(/\bJOIN\b/gi) ?? []).length, 'trial_store 的 JOIN 不止一条').toBe(1)
+      expect(
+        (repurchase.match(/\bJOIN\b/gi) ?? []).length,
+        'repurchase_store 的 JOIN 不止一条',
+      ).toBe(1)
+    })
+
+    /**
+     * staff 端哨兵：`mgmt-product.js` 目前**没有按门店的归店聚合** —— 三段 UNION ALL 都按
+     * `product_kind` 分组。它确实有一条含 `store_id` 的 `GROUP BY`
+     * （`daily_agg` 的 `(client_user_id, store_id, product_kind, performance_date)` 四键基础聚合），
+     * 那是**逐日逐店的原始聚合**、不是归店输出，必须放行。
+     *
+     * ⚠️ 这条哨兵前两版都被评审打穿过，所以改用**全量 snapshot**：
+     *   v1 `/GROUP BY\s+[\w.]*store_id/` —— 要求 store_id 紧跟 GROUP BY，
+     *      `GROUP BY product_kind, store_id` 被逗号挡住而假绿；且当时注释声称
+     *      「staff 全文零 GROUP BY store_id」**与事实不符**（`mgmt-product.js:259` 就有）。
+     *   v2 「凡含 store_id 的 GROUP BY 必须同时含 performance_date」—— 判据方向对，但实现
+     *      退化成字面单空格 + 大小写敏感 + 用 `)` 当终止符（`COALESCE(a, b)` 会截断），
+     *      且 `GROUP BY 1, 2` 这种序号分组根本不含 store_id 字面量，全部漏检（fail-open）。
+     *
+     * 现在锁**整份清单**：staff 任何 GROUP BY 的新增/改写都会红，强制人工确认它是不是
+     * 归店聚合。若确认是归店明细，必须同步 #286 的「xinzeng 主表 + entry_store_id 兜底」口径。
+     */
+    it('staff 的 GROUP BY 清单未变（新增归店聚合时必须同步 #286 的归店口径）', () => {
+      // 先剥 SQL 行注释，避免 `GROUP BY store_id -- performance_date` 这类注入；大小写不敏感。
+      const staffSqlOnly = stripComments(staffSrc).replace(/--[^\n]*/g, ' ')
+      /**
+       * ⚠️ **不能用「`group\s+by\s+` 后跟 `[^\n` + 反引号 `]*`」这种匹配**
+       * （round-3 codex 实测打穿）：它在换行处停，于是**续行追加的分组键看不见** ——
+       *
+       *   GROUP BY x.product_kind
+       *          , x.store_id        ← 提取结果仍是 'GROUP BY x.product_kind'
+       *
+       * 清单不变、`withStoreId` 仍只有 1 条，哨兵**静默假绿**，而 staff 已经长出归店聚合。
+       *
+       * ⚠️ **也不能简单拿 `)` / `),` 当终止符**（round-2 GLM 指出的 v2 缺陷）：
+       * `GROUP BY COALESCE(a, b)` 会在函数的闭括号处被截断。
+       *
+       * 所以先把空白压平（跨行 GROUP BY 变成一条），再**按括号深度扫描**找真正的右边界：
+       * 深度 0 时遇到多余的 `)`（CTE 收尾）、反引号、分号，或 `HAVING` / `UNION` /
+       * `ORDER BY` / `LIMIT` / `WINDOW` 关键字才停；函数调用里的括号不会误判。
+       */
+      const flat = staffSqlOnly.replace(/\s+/g, ' ')
+      const readGroupBy = (from: number): string => {
+        let i = from
+        let depth = 0
+        while (i < flat.length) {
+          const ch = flat[i]
+          if (ch === '(') depth++
+          else if (ch === ')') {
+            if (depth === 0) break
+            depth--
+          } else if (ch === '`' || ch === ';') break
+          else if (depth === 0 && i > from && /^(?:having|union|order\s+by|limit|window)\b/i.test(flat.slice(i))) break
+          i++
+        }
+        return flat.slice(from, i).replace(/\s+/g, ' ').trim()
+      }
+      const groupBys: string[] = []
+      const gbRe = /group\s+by\s+/gi
+      let gbMatch: RegExpExecArray | null
+      while ((gbMatch = gbRe.exec(flat)) !== null) groupBys.push(readGroupBy(gbMatch.index))
+      expect(groupBys, 'staff 的 GROUP BY 清单发生变化 —— 新增按门店的归店聚合时请同步 #286').toEqual([
+        'GROUP BY pc.product_kind',
+        'GROUP BY so.client_user_id, so.store_id, pc.product_kind, sipe.performance_date',
+        'GROUP BY client_user_id, product_kind',
+        'GROUP BY t.product_kind',
+        'GROUP BY x.product_kind',
+        'GROUP BY f.product_kind',
+      ])
+      // 双保险：清单里唯一允许含 store_id 的那条，必须是带日期维度的逐日基础聚合
+      const withStoreId = groupBys.filter((g) => /store_id/i.test(g))
+      expect(withStoreId, '含 store_id 的 GROUP BY 不止一条').toHaveLength(1)
+      expect(withStoreId[0], '唯一含 store_id 的 GROUP BY 不是逐日基础聚合 —— 这是归店聚合').toMatch(
+        /performance_date/,
+      )
+    })
+  })
+
+  describe('业绩 = SUM(支付事件 amount)（禁 paid_amount）', () => {
     it('两端禁用 paid_amount（已 DROP，防回归）', () => {
       expect(adminCode).not.toMatch(/paid_amount/)
       expect(staffCode).not.toMatch(/paid_amount/)
-    })
-    it('历史残差按全部有符号 receipt 计算，退款不得被二次补成残差', () => {
-      const receiptTotals = dbOrderCode.match(
-        /receipt_totals\s+AS\s*\(([\s\S]*?)\),\s*residuals\s+AS\s*\(/i,
-      )?.[1]
-      expect(receiptTotals).toBeDefined()
-      expect(receiptTotals).toMatch(/SUM\(amount\)::numeric\(10, 2\) AS amount/i)
-      expect(receiptTotals).not.toMatch(/FILTER/i)
     })
   })
 
