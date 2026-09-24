@@ -18,6 +18,8 @@ import { pgErrorCode, pgErrorConstraint, pgErrorDetail } from '@/lib/pg-error'
 import { countActiveAdmins, isAdminEmployee } from '@/lib/admin-guard'
 import { findNearestStoreAncestor, findRolesBoundWithinSubtree } from '@/lib/org-ancestry'
 import { findAllRoleBindings } from '@/lib/employee-roles'
+// 跨 action 的不变量锁 —— 取锁顺序（组织树 → admin 计数 → 行锁）见该模块顶部（#318）
+import { lockOrgTree, lockActiveAdminCount } from '@/lib/invariant-locks'
 import { shanghaiToday } from '@/lib/datetime'
 import {
   resolveExportBatchLimit,
@@ -614,26 +616,6 @@ const EMPLOYEE_OWNERSHIP_FK_CONSTRAINTS = new Set([
   'staff_wechat_users_org_node_id_org_nodes_id_fk',
 ])
 
-/** 「系统至少留一名在职超级管理员」这把锁的 key —— 两条减少活跃 admin 的路径共用 */
-const ACTIVE_ADMIN_LOCK_KEY = 'admin:active_count'
-
-/**
- * 取上面那把锁。
- *
- * 光把计数查询传进 `tx` **不够**（codex / GLM 第 10 轮各自独立指出）：
- * READ COMMITTED 下每条语句只看已提交快照，两笔并发离职/删除分别针对 admin A、B 时
- * 各自都读到 `count = 2`、改的又是不同行，双双提交 → 零管理员，系统锁死。
- * 更要紧的是事务化**放大**了窗口（从「守卫→UPDATE」延长到「守卫→整个事务提交」），
- * 所以必须配一把锁，不是可选优化。
- *
- * ⚠️ 凡是会减少活跃 admin 的路径都得用**同一把**锁。目前 `updateEmployee`（标记离职）与
- * `deleteEmployee`（物理删除）已共用；`actions/permissions.ts` 的撤销超级管理员角色**尚未**，
- * 要完全闭合该不变量需让它也取这把锁 —— 跨 action 的锁协议，待独立处理。
- */
-async function lockActiveAdminCount(tx: EmployeeUpdateTx) {
-  await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${ACTIVE_ADMIN_LOCK_KEY})::bigint)`)
-}
-
 /** `db.transaction` 回调收到的句柄；事务内各处只用到这几个方法 */
 type EmployeeUpdateTx = Parameters<Parameters<typeof db.transaction>[0]>[0]
 
@@ -797,23 +779,20 @@ async function assertOwnershipConsistent(
     const ancestor = await findNearestStoreAncestor(orgNodeId, executor)
     if (!ancestor.exists) return '所选组织节点不存在，请刷新后重新选择'
     /**
-     * ⚠️ **已知口径缺口，刻意未改**（codex 谱系第 9 轮）：
-     * `{ storeId: null, orgNodeId: <某门店或其子树的节点> }` 这个组合会放行。
-     * 后果是该员工出现在那个门店的名册里（`employeeScopeCondition` 是 store ∪ org 的 OR）
-     * 而 `store_id` 是空 —— 一种「半填」状态。
+     * ⚠️ `{ storeId: null, orgNodeId: <某门店或其子树的节点> }` **刻意放行** ——
+     * 甲方 2026-09-23 拍板选 A（保持现状），不收紧。
      *
-     * 为什么不在本 PR 收紧：
-     *   - #259 拍板的口径是「只禁 orgNodeId 指向**另一个**门店」，`storeId` 为空时没有
-     *     「另一个」可言。收紧成「有门店祖先就必须填 storeId」**是在改业务口径**，该由甲方拍板
-     *   - 危害与 #259 要治的那个不同：这不是「同时出现在两个门店名册」（只出现在一个，
-     *     且那个门店确实是他组织上的归属），而只是 `store_id` 没填
-     *   - 生产实测（2026-09-22）这个形态共 **1 人**：王志军 FY-260731005，
-     *     `store_id = NULL` + `org_node_id` 直接指向「南昌云暖店」门店节点。
-     *     另外 95 个「仅有组织节点」的在职员工都挂总部/部门（无门店祖先），不受影响
+     * 判断依据（当时给的 A/B 两个选项见 issue #259 评论）：
+     *   - #259 的口径是「只禁 orgNodeId 指向**另一个**门店」，`storeId` 为空时没有
+     *     「另一个」可言 —— 收紧成「有门店祖先就必须填 storeId」是在**改业务口径**
+     *   - 危害与 #259 要治的那个不同：不是「同时出现在两个门店名册」，而只是 `store_id` 没填
+     *     （他确实只关联那一个门店，那个门店看见他是合理的）
+     *   - 生产实测（2026-09-22）这个形态共 **1 人**：王志军 FY-260731005；
+     *     另外 95 个「仅有组织节点」的在职员工挂总部/部门（无门店祖先），不受影响
      *   - 前端已经产生不了它：`applyStoreSelection` 清空门店时会连带清空组织
      *
-     * 已在 issue #259 评论里列出等甲方拍板。若拍板要收紧，改法是：这里也解析门店祖先，
-     * 祖先非空就要求 `storeId` 存在且指向同一节点。
+     * 所以「半填」状态是**允许的形态**，不要再把它当缺口来修。
+     * 若将来要反悔，改法是：这里也解析门店祖先，祖先非空就要求 `storeId` 指向同一节点。
      */
   }
   return null
@@ -900,17 +879,39 @@ export const createEmployee = withPermission(
   if (!isAdminScope(session) && !data.storeId && !data.orgNodeId) {
     return { success: false, message: '员工必须归属门店或组织节点之一' }
   }
-  // #259：归属自洽 —— orgNodeId 指向「另一个门店」时拒绝（挂部门/市场放行）
+  /**
+   * #259：归属自洽 —— orgNodeId 指向「另一个门店」时拒绝（挂部门/市场放行）。
+   * 这里只是**早拒**，权威那次在下面的事务内、组织树锁之后。
+   */
   {
     const conflict = await assertOwnershipConsistent(data.storeId ?? null, data.orgNodeId ?? null)
     if (conflict) return { success: false, message: conflict }
   }
 
   // 手机号唯一性交给 DB 约束 + 下面的 23505 转译，不做事务外预查重（它本身就是零写入探测信道）
-  // 事务：ID 生成（advisory lock）+ 插入，原子提交防并发重复
-  let employeeId: string
+  // 事务：归属自洽复核（组织树锁内）+ ID 生成（advisory lock）+ 插入，原子提交防并发重复
+  type CreateOutcome = { ok: true; id: string } | { ok: false; message: string }
+  let created: CreateOutcome
   try {
-    employeeId = await db.transaction(async (tx) => {
+    created = await db.transaction(async (tx): Promise<CreateOutcome> => {
+      /**
+       * ## 归属自洽必须在锁内复核（issue #318，codex 第 1 轮 P1）
+       *
+       * 事务外那次校验与 INSERT 之间有并发窗口：`updateOrgNode` 同时把目标部门改挂进
+       * 另一个门店的子树 —— 改挂事务复核「子树内员工都自洽」时这条员工还没 INSERT，
+       * 本事务校验时树还没改，两边都放行 → 提交后合成出跨门店双重可见的员工。
+       * `updateEmployee` 侧已经在锁内复核了，创建这一侧当时漏了。
+       *
+       * 锁序（见 `lib/invariant-locks.ts`）：① 组织树 → 本事务后面那把 `employee_id_gen`
+       * → ③ 行锁。组织树锁必须排在最前。
+       */
+      if (data.storeId || data.orgNodeId) {
+        await lockOrgTree(tx)
+        const conflict = await assertOwnershipConsistent(
+          data.storeId ?? null, data.orgNodeId ?? null, tx,
+        )
+        if (conflict) return { ok: false, message: conflict }
+      }
       const idRows = await tx.execute(sql`
         WITH lock AS (
           SELECT pg_advisory_xact_lock(hashtext('employee_id_gen')::bigint)
@@ -959,7 +960,7 @@ export const createEmployee = withPermission(
        * 报「该手机号已被其他员工使用」，把操作者带到完全错误的方向。
        */
       await logOperation(session, 'employee.create', 'employee', id, { name: data.name }, tx)
-      return id
+      return { ok: true, id }
     })
   } catch (err: any) {
     // PG 唯一约束冲突（手机号或员工编号并发重复）
@@ -981,8 +982,10 @@ export const createEmployee = withPermission(
     throw err
   }
 
+  if (!created.ok) return { success: false, message: created.message }
+
   revalidatePath('/employees')
-  return { success: true, message: '员工创建成功', employeeId }
+  return { success: true, message: '员工创建成功', employeeId: created.id }
   },
 )
 
@@ -1357,13 +1360,26 @@ export const updateEmployee = withPermission(
     try {
       return await db.transaction(async (tx) => {
         /**
-         * ## 锁序：advisory lock **先于**员工行锁
+         * ## 取锁：严格按 `lib/invariant-locks.ts` 的顺序（组织树 → admin 计数 → 行锁）
          *
-         * 两个 action 必须同序（codex / GLM 第 11 轮各自独立指出）：`deleteEmployee` 是
-         * 「advisory → 行锁（DELETE 时）」，若这里写成「行锁 → advisory」就是教科书式
-         * lock ordering inversion —— T1 标记 A 离职拿到 A 的行锁后等 advisory，
-         * T2 删除 A 拿到 advisory 后等 A 的行锁 → PG 抛 `40P01`，而两处 catch 都不翻译它 → 500。
+         * 反序就是 lock ordering inversion —— PG 抛 `40P01` 而 catch 不翻译它 → 500。
+         * #249/#259 那轮踩过一次（本 action 曾是「行锁 → advisory」而 `deleteEmployee`
+         * 是「advisory → 行锁」，两谱系各自独立报出）。
+         *
+         * ① 组织树锁：只要本次**可能动归属**就取 —— 归属自洽是按组织树形态判的，
+         *    而 `updateOrgNode` 改挂父节点会同时改变那个形态。不互斥的话：改挂事务判完
+         *    「子树内员工都自洽」、本事务判完「我的新组织自洽」，两边提交后合成出
+         *    「员工仍属 A 店、组织落进 B 店子树」，正是 #259 要禁的跨门店双重可见（#318）。
+         *    判据用 `!== undefined` 而不是「确实变了」：后者要等锁内读到旧值才知道，
+         *    那时再取锁就晚了（顺序会反）。多取一次纯 advisory 锁的成本可忽略。
+         * ② admin 计数锁：只在标离职时需要。
          */
+        if (
+          data.storeId !== undefined
+          || data.orgNodeId !== undefined
+          // 复职也要按组织树判一次（见下面 `needsOwnershipRecheck`）
+          || data.isResigned === false
+        ) await lockOrgTree(tx)
         if (data.isResigned === true) await lockActiveAdminCount(tx)
 
         /**
@@ -1441,8 +1457,24 @@ export const updateEmployee = withPermission(
         }
         const ownershipMoved = transition.afterStoreId !== transition.beforeStoreId
           || transition.afterOrgNodeId !== transition.beforeOrgNodeId
+        /**
+         * ## 复职必须重判归属自洽（issue #318，codex 第 1 轮 P1）
+         *
+         * 子树复核只看**在职**员工（离职的不在任何门店名册里，构不成「同时出现在两个门店」）。
+         * 代价是：员工离职**期间**他挂的部门被改挂进另一个门店的子树，那条脏状态没人拦；
+         * 等他复职、且本次请求**不动归属字段**时，`ownershipMoved` 为 false → 一次校验都不跑
+         * → 复职成功的那一刻直接形成跨门店双重可见。
+         *
+         * 所以判据是「归属变了 **或** 正在复职」。复职时 post-image 等于旧值，判的就是
+         * 「他原来的归属在**今天的**组织树上还成不成立」。不成立就拒，让操作者在同一次提交里
+         * 把归属改对（编辑表单里门店/组织两个字段本来就在）。
+         *
+         * `ownershipTransitionError` 在 before == after 时恒返回 null（它自己有
+         * `if (!moved) return null`），所以复职不会被 scope 判据误拦。
+         */
+        const needsOwnershipRecheck = ownershipMoved || transition.isReinstating
 
-        if (ownershipMoved) {
+        if (needsOwnershipRecheck) {
           /**
            * scope 与最终可见性也要**按锁内 post-image 重判**（codex 第 13 轮 P1-1）：
            * 事务外那次只是早拒优化。举例：非 admin 事务外看到 `{store=A, org=A}` 并提交

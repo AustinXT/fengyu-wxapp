@@ -5,17 +5,19 @@
  * 放宽 exactKey 条件、或调换校验顺序，纯解析器测试全都照样通过。
  * 这里从路由入口验证闸门本身，并断言被拒时**不会**真的上传。
  */
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { NextRequest } from 'next/server'
 
 const mocks = vi.hoisted(() => ({
-  jwtVerify: vi.fn(),
+  getSession: vi.fn(),
   uploadFile: vi.fn(),
 }))
 
-vi.mock('jose', () => ({ jwtVerify: mocks.jwtVerify }))
+// 认证走 getSession（回库按 is_resigned 过滤），不再只验 JWT 签名（#318）
+vi.mock('@/lib/auth', () => ({ getSession: mocks.getSession }))
 vi.mock('@/lib/cloudbase', () => ({ uploadFile: mocks.uploadFile }))
-vi.mock('@/lib/jwt-secret', () => ({ JWT_SECRET: new Uint8Array(32) }))
 
 import { POST } from './route'
 
@@ -80,7 +82,7 @@ function post(
 
 beforeEach(() => {
   vi.clearAllMocks()
-  mocks.jwtVerify.mockResolvedValue({ payload: {} })
+  mocks.getSession.mockResolvedValue({ employeeId: 'ADMIN-001' })
   mocks.uploadFile.mockResolvedValue('https://cdn.example.com/a.png')
 })
 
@@ -224,7 +226,13 @@ describe('POST /api/upload 分辨率闸门', () => {
     })
   })
 
-  it('未携带 token 时直接 401，不触碰文件', async () => {
+  /**
+   * 无会话 → 401。`getSession()` 返回 null 覆盖三种情形：没带 cookie、JWT 失效、
+   * **以及员工已离职**（#318：它回库按 `is_resigned = false` 查人）。
+   * 原先这里只 `jwtVerify` 签名，离职的人凭手里那张 24h 内的旧 token 还能继续往对象存储写。
+   */
+  it('无会话（未登录 / JWT 失效 / 已离职）→ 401，不触碰文件', async () => {
+    mocks.getSession.mockResolvedValue(null)
     const fd = new FormData()
     fd.append('file', new File([new Uint8Array(makePng(100, 100))], 'a.png'))
     fd.append('path', 'store-covers')
@@ -236,5 +244,18 @@ describe('POST /api/upload 分辨率闸门', () => {
     )
     expect(res.status).toBe(401)
     expect(mocks.uploadFile).not.toHaveBeenCalled()
+  })
+
+  /**
+   * 源码守护：这个写接口**不得**绕开 `getSession()` 自己验 JWT。
+   * middleware 在 edge 运行时连不了库，「离职即失效」只能落在 DB 回查这一层；
+   * 谁把它改回 `jwtVerify` 就等于把 #318 的 AC4 重新打开一个 24h 的口子。
+   */
+  it('源码守护：认证走 getSession，不自己 jwtVerify', () => {
+    const src = readFileSync(resolve(process.cwd(), 'src/app/api/upload/route.ts'), 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/(^|[^:'"`])\/\/[^\n]*/g, '$1')
+    expect(src).toContain('getSession()')
+    expect(src).not.toContain('jwtVerify')
   })
 })

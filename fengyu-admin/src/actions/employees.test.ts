@@ -245,11 +245,17 @@ function mockSelectExistingEmployee(row: Record<string, unknown> = { storeId: 's
  *   断言「校验放行」是不够的：空串日期能过校验却撞 PG `22007`，而 mock 看不见 22007 ——
  *   测试全绿 + 生产 500（GLM 谱系第 7 轮）。所以要断言**写库值**已归一为 null。
  */
+/**
+ * createEmployee 的事务桩。
+ * ⚠️ 必须带 `select` —— 归属自洽复核已收进事务（#318：组织树锁内），它走 `tx.select()`。
+ * 少了它会在 `executor.select is not a function` 上炸，而不是报出真正的业务断言失败。
+ */
 function mockTransactionSuccess(employeeId = 'FY-260315001') {
   const inserted: Record<string, unknown>[] = []
   ;(db.transaction as any).mockImplementation(async (fn: any) => {
     const tx = {
       execute: vi.fn().mockResolvedValue([{ id: employeeId }]),
+      select: (...a: any[]) => (db as any).select(...a),
       insert: vi.fn().mockReturnValue({
         values: vi.fn().mockImplementation((v: Record<string, unknown>) => {
           inserted.push(v)
@@ -491,6 +497,8 @@ describe('createEmployee — 服务端输入校验', () => {
     ;(db.transaction as any).mockImplementation(async (fn: any) => {
       handedTx = {
         execute: vi.fn().mockResolvedValue([{ id: 'FY-260315001' }]),
+        // 归属自洽复核在锁内走 tx.select（#318）
+        select: (...a: any[]) => (db as any).select(...a),
         insert: vi.fn().mockReturnValue({ values: vi.fn().mockResolvedValue({}) }),
       }
       return fn(handedTx)
@@ -502,6 +510,95 @@ describe('createEmployee — 服务端输入校验', () => {
 
     expect(result.success).toBe(true)
     expect((logOperation as any).mock.calls[0][5]).toBe(handedTx)
+  })
+
+  /**
+   * ## 创建这一侧的归属自洽也必须在组织树锁内复核（#318，codex 第 1 轮 P1）
+   *
+   * 事务外那次校验与 INSERT 之间有并发窗口：`updateOrgNode` 同时把目标部门改挂进另一个门店的
+   * 子树 —— 改挂事务复核「子树内员工都自洽」时这条员工还没 INSERT，本事务校验时树还没改，
+   * 两边都放行 → 提交后合成出跨门店双重可见的员工。`updateEmployee` 侧当时已经修了，创建漏了。
+   */
+  it('创建时取组织树锁，且自洽复核走事务句柄', async () => {
+    ;(db.select as any).mockImplementation(mockSelectEmpty())
+    let handedTx: any
+    const txExecute = vi.fn().mockResolvedValue([{ id: 'FY-260315001' }])
+    ;(db.transaction as any).mockImplementation(async (fn: any) => {
+      handedTx = {
+        execute: txExecute,
+        select: (...a: any[]) => (db as any).select(...a),
+        insert: vi.fn().mockReturnValue({ values: vi.fn().mockResolvedValue({}) }),
+      }
+      return fn(handedTx)
+    })
+
+    const result = await createEmployee({
+      name: '张三', phone: '13812345678', idCard: '110101199003078888',
+      storeId: 'store-A', orgNodeId: 'org-dept-1',
+    })
+
+    expect(result.success).toBe(true)
+    // 组织树锁必须排在 employee_id_gen 那把之前（锁序见 lib/invariant-locks.ts）
+    const lockCalls = txExecute.mock.calls.map((c) => JSON.stringify(c[0]))
+    const orgAt = lockCalls.findIndex((c) => c.includes('org_nodes:reparent'))
+    const idGenAt = lockCalls.findIndex((c) => c.includes('employee_id_gen'))
+    expect(orgAt, '创建路径必须取组织树锁').toBeGreaterThan(-1)
+    expect(idGenAt).toBeGreaterThan(-1)
+    expect(orgAt, '锁序：① 组织树 → employee_id_gen').toBeLessThan(idGenAt)
+    /**
+     * 自洽校验跑**两次**：事务外早拒（executor 是全局 `db`）+ 锁内权威（executor 是 `tx`）。
+     * 所以断言取**最后一次**。同一性断言而非形状匹配 —— 形状匹配对全局 `db` 也成立
+     * （#249/#259 那轮的教训）。
+     */
+    const ancestorCalls = (findNearestStoreAncestor as any).mock.calls
+    expect(ancestorCalls.length, '事务外早拒 + 锁内复核，两次').toBe(2)
+    expect(ancestorCalls[0][1], '第一次是事务外早拒').toBe(db)
+    expect(ancestorCalls[1][1], '第二次必须走事务句柄').toBe(handedTx)
+  })
+
+  /** 锁内复核不通过 → 拒绝，且不 INSERT（事务回滚等价于「没建过这个人」） */
+  it('锁内复核发现归属不自洽 → 拒绝且不 INSERT', async () => {
+    ;(db.select as any).mockImplementation(mockSelectEmpty())
+    // stores 那行的 org_node 是 A 店，而组织节点的最近门店祖先是 B 店
+    ;(findNearestStoreAncestor as any).mockResolvedValue({ exists: true, storeAncestorId: 'org-store-B' })
+    const values = vi.fn().mockResolvedValue({})
+    ;(db.transaction as any).mockImplementation(async (fn: any) => fn({
+      execute: vi.fn().mockResolvedValue([{ id: 'FY-260315001' }]),
+      select: (...a: any[]) => (db as any).select(...a),
+      insert: vi.fn().mockReturnValue({ values }),
+    }))
+
+    const result = await createEmployee({
+      name: '张三', phone: '13812345678', idCard: '110101199003078888',
+      storeId: 'store-A', orgNodeId: 'org-dept-1',
+    })
+
+    expect(result.success).toBe(false)
+    expect(values, '复核没过就不该 INSERT').not.toHaveBeenCalled()
+  })
+
+  /** 两端都不填 → 没有可判的归属，别白取一把锁 */
+  it('storeId 与 orgNodeId 都不填 → 不取组织树锁', async () => {
+    ;(db.select as any).mockImplementation(mockSelectEmpty())
+    ;(isAdminScope as any).mockReturnValue(true)
+    let txExecute: any
+    ;(db.transaction as any).mockImplementation(async (fn: any) => {
+      txExecute = vi.fn().mockResolvedValue([{ id: 'FY-260315001' }])
+      return fn({
+        execute: txExecute,
+        select: (...a: any[]) => (db as any).select(...a),
+        insert: vi.fn().mockReturnValue({ values: vi.fn().mockResolvedValue({}) }),
+      })
+    })
+
+    const result = await createEmployee({
+      name: '张三', phone: '13812345678', idCard: '110101199003078888',
+      storeId: null, orgNodeId: null,
+    })
+
+    expect(result.success).toBe(true)
+    const locks = txExecute.mock.calls.map((c: any) => JSON.stringify(c[0])).join('|')
+    expect(locks).not.toContain('org_nodes:reparent')
   })
 
   /** 与 update 侧同构（#228：只修一侧等于没修）—— GLM 第 12 轮 P2-2 */
@@ -1149,10 +1246,15 @@ describe('updateEmployee — 服务端输入校验 + 错误处理', () => {
       .toMatch(/\.for\(\s*['"]update['"]\s*\)/)
     expect(deleteBody, 'deleteEmployee 的锁内重读必须 FOR UPDATE')
       .toMatch(/\.for\(\s*['"]update['"]\s*\)/)
-    expect(src, 'advisory lock 的 key 必须收口成常量，两条路径共用')
-      .toMatch(/ACTIVE_ADMIN_LOCK_KEY = 'admin:active_count'/)
-    expect(src, '锁必须真的用 pg_advisory_xact_lock 取')
-      .toMatch(/pg_advisory_xact_lock\(hashtext\(\$\{ACTIVE_ADMIN_LOCK_KEY\}\)/)
+    /**
+     * 锁的定义已收口到 `lib/invariant-locks.ts`（#318）—— 那里同时是取锁**顺序**的
+     * 单一来源（组织树 → admin 计数 → 行锁）。本文件只断言 employees 侧确实从那里取，
+     * key 与 `pg_advisory_xact_lock` 的写法由该模块自己的用例守护。
+     */
+    expect(src, 'admin 计数锁必须从共用模块取')
+      .toMatch(/lockActiveAdminCount\(tx\)/)
+    expect(src, '归属路径必须取组织树锁 —— 否则 updateOrgNode 改挂能绕过自洽校验')
+      .toMatch(/lockOrgTree\(tx\)/)
     /**
      * 会减少活跃 admin 的**两条**路径（标记离职 / 物理删除）都必须取这把锁。
      * 只修一侧等于没修（#228 的教训，GLM 谱系第 10 轮在 `deleteEmployee` 上又抓到一次）。
@@ -1367,6 +1469,87 @@ describe('updateEmployee — 服务端输入校验 + 错误处理', () => {
 
     expect(result.success).toBe(true)
     expect(result.message, '锁内旧值是已离职 → 这是复职，必须给提示').toContain('仍保留以下角色绑定')
+  })
+
+  /**
+   * ## 复职必须重判归属自洽（#318，codex 第 1 轮 P1）
+   *
+   * 子树复核只看在职员工。所以员工**离职期间**他挂的部门被改挂进另一个门店的子树时，
+   * 那条脏状态没人拦；等他复职、且本次请求不动归属字段 → `ownershipMoved` 为 false →
+   * 旧代码一次校验都不跑 → 复职成功的那一刻直接形成跨门店双重可见。
+   */
+  it('复职（不动归属字段）→ 仍按今天的组织树重判自洽，不自洽则拒', async () => {
+    ;(db.select as any).mockImplementation(() => ({
+      from: vi.fn().mockImplementation((table: unknown) => {
+        if (table === stores) return selectChain([{ orgNodeId: 'org-store-B' }])
+        if (table !== staffWechatUsers) return selectChain([])
+        return selectChain([{
+          storeId: 'store-A', orgNodeId: 'org-dept-1', isResigned: true, resignedAt: '2025-06-30',
+        }])
+      }),
+    }))
+    // 离职期间部门被改挂进 B 店子树 → 最近门店祖先成了 B 店节点，而 store_id 仍指 A 店
+    ;(findNearestStoreAncestor as any).mockResolvedValue({ exists: true, storeAncestorId: 'org-store-A' })
+    ;(db.update as any).mockReturnValue({
+      set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({ count: 1 }) }),
+    })
+
+    const result = await updateEmployee('FY-001', { isResigned: false })
+
+    expect(result.success, '归属已不自洽，复职必须拒').toBe(false)
+    expect(result.message).toContain('门店')
+  })
+
+  /** 归属仍自洽时复职照常成功 —— 上一条不能把所有复职都拦死 */
+  it('复职且归属仍自洽 → 正常放行', async () => {
+    ;(db.select as any).mockImplementation(() => ({
+      from: vi.fn().mockImplementation((table: unknown) => {
+        if (table === stores) return selectChain([{ orgNodeId: 'org-store-A' }])
+        if (table !== staffWechatUsers) return selectChain([])
+        return selectChain([{
+          storeId: 'store-A', orgNodeId: 'org-dept-1', isResigned: true, resignedAt: '2025-06-30',
+        }])
+      }),
+    }))
+    ;(findNearestStoreAncestor as any).mockResolvedValue({ exists: true, storeAncestorId: 'org-store-A' })
+    ;(findAllRoleBindings as any).mockResolvedValue([])
+    ;(db.update as any).mockReturnValue({
+      set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({ count: 1 }) }),
+    })
+
+    const result = await updateEmployee('FY-001', { isResigned: false })
+
+    expect(result.success).toBe(true)
+  })
+
+  /** 复职这条路径也要取组织树锁 —— 它要按组织树形态判自洽，不互斥等于判了个旧形态 */
+  it('复职路径取组织树锁', async () => {
+    ;(db.select as any).mockImplementation(() => ({
+      from: vi.fn().mockImplementation((table: unknown) => {
+        if (table === stores) return selectChain([{ orgNodeId: 'org-store-A' }])
+        if (table !== staffWechatUsers) return selectChain([])
+        return selectChain([{
+          storeId: 'store-A', orgNodeId: 'org-dept-1', isResigned: true, resignedAt: '2025-06-30',
+        }])
+      }),
+    }))
+    ;(findNearestStoreAncestor as any).mockResolvedValue({ exists: true, storeAncestorId: 'org-store-A' })
+    ;(findAllRoleBindings as any).mockResolvedValue([])
+    const txExecute = vi.fn().mockResolvedValue([])
+    ;(db.transaction as any).mockImplementation(async (fn: any) => fn({
+      execute: txExecute,
+      select: (...a: any[]) => (db as any).select(...a),
+      update: vi.fn().mockReturnValue({
+        set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({ count: 1 }) }),
+      }),
+      delete: (db as any).delete,
+      insert: (db as any).insert,
+    }))
+
+    await updateEmployee('FY-001', { isResigned: false })
+
+    const locks = txExecute.mock.calls.map((c) => JSON.stringify(c[0])).join('|')
+    expect(locks).toContain('org_nodes:reparent')
   })
 
   /** 三个 notNull boolean 列：直调传 null 会撞 23502 未翻译 → 500（GLM 第 12 轮 P3-1） */

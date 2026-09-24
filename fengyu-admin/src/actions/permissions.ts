@@ -12,15 +12,23 @@ import { hasRole } from '@/lib/auth'
 import { hasPermission, isAdminScope, isEmployeeRowVisible } from '@/lib/permissions'
 import { withPermission, withAnyPermission } from '@/lib/with-permission'
 import { logOperation } from '@/lib/operation-log'
+import { ApiError } from '@/lib/api-error'
 import { countActiveAdmins } from '@/lib/admin-guard'
+import { isNodeWithinScopeRoots, isEmployeeWithinScopeRoots } from '@/lib/org-ancestry'
+// 与 employees 侧共用同一把「活跃 admin 计数」锁；取锁顺序见该模块顶部（#318）
+import { lockOrgTree, lockActiveAdminCount } from '@/lib/invariant-locks'
 
-async function loadRoleDefinition(roleKey: string): Promise<{
+async function loadRoleDefinition(
+  roleKey: string,
+  /** 传事务句柄即可在锁内重读 —— `is_super_admin` 是授权与守卫的判据，不能用事务外快照 */
+  executor: Pick<typeof db, 'execute'> = db,
+): Promise<{
   roleKey: string
   name: string
   isSuperAdmin: boolean
   allowedScopeTypes: Array<'总部' | '市场' | '门店'>
 } | null> {
-  const rows = await db.execute(sql`
+  const rows = await executor.execute(sql`
     SELECT role_key, name, is_super_admin, allowed_scope_types
       FROM permission_role_definitions
      WHERE role_key = ${roleKey}
@@ -196,7 +204,32 @@ export const getRoleCountsByScope = withPermission(
  */
 export const getEmployeeRoles = withPermission(
   'employee:list',
-  async (_session, employeeId: string): Promise<PermissionRole[]> => {
+  async (session, employeeId: string): Promise<PermissionRole[]> => {
+  /**
+   * ## 被查员工必须过可见性（#318 第 9 轮 GLM P2）
+   *
+   * 原先零校验，只在注释里声称「页面级 `scopeCondition` 已保证」—— 而本仓的既有判断是
+   * 「Server Action 是可直接调用的端点、入参原样到达」（`updateStore` / `updateOrgNode`
+   * 的字段白名单就是据此收口的），页面级保证对直调无效：市场 M 的 hr 直调本 action 传一个
+   * 市场 N 员工的 id，就能拿到那人全部角色绑定（角色名 / scope 名 / 授权人 / 时间戳），
+   * 换个不存在的 id 返回 `[]` 还顺带成了「该员工是否存在」的 oracle。
+   * 同文件的 `getRoles` / `getRolesByScope` 都按 scope 过滤，唯独这条裸奔。
+   *
+   * 判据与 `assignRole` 同款（`store ∪ org` 两维、按**当前树**上溯）—— 不新造口径：
+   * 「我能不能碰这个员工」这件事已经由那边定义过了。
+   * 不可见返回 `[]` 而不是报错，与 `assignRole` 合并文案同理，不额外泄露存在性。
+   */
+  if (!isAdminScope(session)) {
+    const [target] = await db
+      .select({ storeId: staffWechatUsers.storeId, orgNodeId: staffWechatUsers.orgNodeId })
+      .from(staffWechatUsers)
+      .where(eq(staffWechatUsers.employeeId, employeeId))
+      .limit(1)
+    if (!target) return []
+    const scopeRoots = session.roles.map((role) => role.scopeId)
+    if (!(await isEmployeeWithinScopeRoots(target, scopeRoots))) return []
+  }
+
   const rows = await db
     .select({
       id: permissionRoles.id,
@@ -248,9 +281,15 @@ export const assignRole = withAnyPermission(
       scopeId: string
     },
   ): Promise<{ success: boolean; message: string }> => {
-  // admin 角色只有持 'permission:assign_admin' 才能分配
-  const definition = await loadRoleDefinition(data.role)
-  if (!definition) throw new Error('INVALID_PARAMS: 角色不存在')
+  /**
+   * admin 角色只有持 'permission:assign_admin' 才能分配。
+   *
+   * ⚠️ 这里读到的 `isSuperAdmin` 只作**早拒**：它会被 `updateRoleDefinition` 改，
+   * 权威那次在下面的事务里、锁内重读（#318 第 2 轮，GLM 报的 revokeRole 的对称面）。
+   */
+  const preTxDefinition = await loadRoleDefinition(data.role)
+  if (!preTxDefinition) throw new Error('INVALID_PARAMS: 角色不存在')
+  const definition = preTxDefinition
 
   if (definition.isSuperAdmin && !hasPermission(session, 'permission:assign_admin')) {
     throw new Error('PERMISSION_DENIED: 无权执行 permission:assign_admin')
@@ -340,12 +379,120 @@ export const assignRole = withAnyPermission(
     return { success: false, message: '该员工已拥有相同的角色和权限范围' }
   }
 
+  /**
+   * ## 授权闸门按**锁内**重读的 `is_super_admin` 复判（#318 第 2 轮）
+   *
+   * 与 `revokeRole` 同一个根因、对称的一面：只持 `permission:assign`（无 `assign_admin`）
+   * 的人，趁「读定义」与「INSERT」之间角色被 `updateRoleDefinition` 升级成超管，
+   * 就能把一个现已属超管的角色绑给别人，绕过上面那道闸。
+   *
+   * 取的是与另外三个入口**同一把** `admin:active_count` —— 它守的就是「谁是活跃超管」
+   * 这个集合，而这个集合由**绑定**和**角色定义的超管位**共同决定，所以两类写入必须互斥。
+   * `updateRoleDefinition` 在 capability 变更时也取它（升级/降级两个方向都取）。
+   * 顺带把审计收进同一事务 —— 留在外面时它失败会留下「角色已授但前端显示失败」。
+   */
+  let assignOutcome: true | { failure: string }
   try {
-    await db.insert(permissionRoles).values({
-      employeeId: data.employeeId,
-      role: data.role,
-      scopeId: data.scopeId,
-      createdBy: session.employeeId,
+    assignOutcome = await db.transaction(async (tx): Promise<true | { failure: string }> => {
+      /**
+       * 锁序 ① 组织树 → ② admin 计数（见 `lib/invariant-locks.ts`，反了就是 40P01）。
+       *
+       * 为什么这里也要 ①：本 action 判的是「节点类型 ∈ 角色白名单」，而**节点类型**会被
+       * `updateOrgNode` 改类型那条路径改掉（它取的是 ①）。只取 ② 的话，
+       * 「把绑定挂到门店节点」与「把那个节点改成市场」并发各自按旧状态通过 →
+       * 提交后留下一条 DB trigger 在 INSERT 时点本该拒掉的绑定（codex 第 4 轮 P1）。
+       */
+      await lockOrgTree(tx)
+      await lockActiveAdminCount(tx)
+
+      const lockedDefinition = await loadRoleDefinition(data.role, tx)
+      if (!lockedDefinition) return { failure: '角色不存在' }
+      if (lockedDefinition.isSuperAdmin && !hasPermission(session, 'permission:assign_admin')) {
+        return { failure: '无权分配系统管理员角色' }
+      }
+
+      // 节点类型也要锁内重读 —— 事务外那次只是早拒
+      const [lockedNode] = await tx
+        .select({ type: orgNodes.type })
+        .from(orgNodes)
+        .where(eq(orgNodes.id, data.scopeId))
+        .limit(1)
+      if (!lockedNode) return { failure: '组织节点不存在' }
+      /**
+       * 目标节点是否**还**在操作者管辖范围内 —— 按当前树判（#318 第 5 轮，两谱系共识）。
+       *
+       * 事务外那次 `userScopeIds.includes(data.scopeId)` 判的是 session 构造时展开好的
+       * 内存集合，窗口不是毫秒级竞态而是**整个 JWT 寿命（24h）**：节点 X 在 hr 登录后
+       * 被挪出他的市场，他仍能把角色绑到 X 上 —— 向管辖范围外授出权限。
+       * 与 `org.ts` 两处同款判据。
+       */
+      if (!isAdminScope(session)) {
+        const scopeRoots = session.roles.map((role) => role.scopeId)
+        if (!(await isNodeWithinScopeRoots(data.scopeId, scopeRoots, tx))) {
+          return { failure: '不能分配超出自身权限范围的角色' }
+        }
+      }
+      if (!lockedDefinition.allowedScopeTypes.includes(lockedNode.type as '总部' | '市场' | '门店')) {
+        return {
+          failure: `角色“${lockedDefinition.name}”只能绑定到${lockedDefinition.allowedScopeTypes.join('、')}节点，不能绑定到${lockedNode.type}节点`,
+        }
+      }
+
+      /**
+       * ## 被授权人也要锁内重读 + 行锁（#318 第 8 轮 codex P1）
+       *
+       * 事务外读到的 `isResigned` / 归属只是早拒。反例：
+       *   T1 授权读到员工 E 在职 → T2 `updateEmployee` 取 ② 把 E 标离职并**删光角色**后提交
+       *   → T1 随后取到 ①② 并 INSERT → 离职员工重新挂上角色。
+       * 而「离职 ⇒ 角色清空」正是 #249 那轮事务化要保住的不变量，这条把它又打开了；
+       * 复职时那条残留绑定还会让权限自动恢复。
+       *
+       * `FOR UPDATE` 让 T2 的行 UPDATE 与本事务排队（锁序 ③，在 ①② 之后，合规）。
+       * 失败文案与事务外那两条**逐字相同** —— 不让竞态窗口变成另一个探测信道。
+       */
+      const [lockedEmployee] = await tx
+        .select({
+          storeId: staffWechatUsers.storeId,
+          orgNodeId: staffWechatUsers.orgNodeId,
+          isResigned: staffWechatUsers.isResigned,
+        })
+        .from(staffWechatUsers)
+        .where(eq(staffWechatUsers.employeeId, data.employeeId))
+        .for('update')
+        .limit(1)
+      /**
+       * 可见性也按**当前树**判（codex 第 9 轮 P1）—— `isEmployeeRowVisible` 是纯内存的，
+       * 判的是 session 构造时展开好的 `scopeStoreIds / scopeOrgNodeIds`。反例：
+       * 部门 D 在 hr 登录后被改挂到另一个市场（子树复核对 `store_id IS NULL` 的员工按
+       * #259 选项 A 放行、正常提交），挂着 D 的员工已经不属他管，而旧集合里 D 还在 ——
+       * 他仍能给那个员工授权。`isEmployeeWithinScopeRoots` 两维都上溯当前树，OR 语义一致。
+       */
+      const visible = !lockedEmployee ? false : (
+        isAdminScope(session)
+          ? true
+          : await isEmployeeWithinScopeRoots(
+            lockedEmployee,
+            session.roles.map((role) => role.scopeId),
+            tx,
+          )
+      )
+      if (!visible) {
+        return { failure: '员工不存在或不在您的权限范围内' }
+      }
+      if (lockedEmployee.isResigned) {
+        return { failure: '该员工已离职，无法分配角色' }
+      }
+
+      await tx.insert(permissionRoles).values({
+        employeeId: data.employeeId,
+        role: data.role,
+        scopeId: data.scopeId,
+        createdBy: session.employeeId,
+      })
+      await logOperation(session, 'permission.assign', 'permission_role', data.employeeId, {
+        role: data.role, scopeId: data.scopeId,
+      }, tx)
+      return true
     })
   } catch (err: any) {
     if (pgErrorCode(err) === '23505') {
@@ -371,15 +518,22 @@ export const assignRole = withAnyPermission(
     throw err
   }
 
-  await logOperation(session, 'permission.assign', 'permission_role', data.employeeId, {
-    role: data.role, scopeId: data.scopeId,
-  })
+  if (assignOutcome !== true) {
+    return { success: false, message: assignOutcome.failure }
+  }
 
   revalidatePath('/permissions')
   revalidatePath('/employees')
   return { success: true, message: '角色分配成功' }
   },
 )
+
+/**
+ * 事务内回滚哨兵：删完发现系统零活跃超管。
+ * 外层 `.catch` 按 message 匹配后转成友好文案（已登记进
+ * `cross-end-error-codes-snapshot.test.js` 的 `TX_SENTINELS` 白名单）。
+ */
+const LAST_ACTIVE_ADMIN = 'LAST_ACTIVE_ADMIN'
 
 export const revokeRole = withPermission(
   'permission:revoke',
@@ -402,26 +556,25 @@ export const revokeRole = withPermission(
     return { success: false, message: '角色记录不存在' }
   }
 
-  const definition = await loadRoleDefinition(target.role)
-  if (!definition) return { success: false, message: '角色定义不存在' }
+  /**
+   * ⚠️ 事务外这次读定义**只作早拒**。`is_super_admin` 同时是三件事的判据
+   * （能不能撤 / 要不要取锁 / 要不要复核计数），而它会被 `updateRoleDefinition` 改 ——
+   * 权威那次在锁内重读（见下面的事务）。两个评审谱系第 2 轮各自独立报出这条。
+   */
+  const preTxDefinition = await loadRoleDefinition(target.role)
+  if (!preTxDefinition) return { success: false, message: '角色定义不存在' }
 
-  // 只有超级管理员才能撤销超级管理员角色
-  if (definition.isSuperAdmin && !isAdminScope(session)) {
+  // 只有超级管理员才能撤销超级管理员角色（早拒；锁内按新值重判）
+  if (preTxDefinition.isSuperAdmin && !isAdminScope(session)) {
     return { success: false, message: '只有系统管理员才能撤销系统管理员角色' }
   }
 
-  // admin 自删保护 + 最后 admin 保护（D-Q12-2026-04-26 / audit-22 P0-22-03）
-  if (definition.isSuperAdmin) {
-    if (target.employeeId === session.employeeId) {
-      throw new Error('INVALID_STATE: 不能撤销自己的 admin 角色')
-    }
-    const adminCount = await countActiveAdmins()
-    if (adminCount <= 1) {
-      throw new Error('INVALID_STATE: 系统至少需保留 1 个活跃 admin')
-    }
+  // admin 自删保护（纯 session 比对，不打库；锁内按新值重判）
+  if (preTxDefinition.isSuperAdmin && target.employeeId === session.employeeId) {
+    throw new ApiError('INVALID_STATE', '不能撤销自己的 admin 角色')
   }
 
-  // 非 admin 用户不能撤销超出自身 scope 的角色
+  // 非 admin 用户不能撤销超出自身 scope 的角色（同样纯内存判定）
   if (!isAdminScope(session)) {
     const userScopeIds = permissionScopeIds(session)
     if (!userScopeIds.includes(target.scopeId)) {
@@ -429,19 +582,92 @@ export const revokeRole = withPermission(
     }
   }
 
-  const result = await db
-    .delete(permissionRoles)
-    .where(eq(permissionRoles.id, id))
+  /**
+   * ## 撤销超管必须与 employees 侧**共用同一把锁**（issue #318）
+   *
+   * 「系统至少留一名在职超级管理员」这个不变量的守卫散落在四个 action 里：
+   * `updateEmployee`（标离职）、`deleteEmployee`（物理删除）、
+   * `role-definitions.updateRoleDefinition`（把角色降级成非超管）、以及这里（撤超管绑定）。
+   * #249/#259 那轮把前两个收进了 `admin:active_count`，这里**没跟上** —— 于是
+   * 「撤销 A 的 admin 角色」与「标记 B 离职」并发时，两边各自读到 `count = 2`
+   * （READ COMMITTED 下看不见对方未提交的改动）、改的又是不同行，双双提交 → **零管理员**。
+   * 光把前两个收进锁反而给人「已经闭合」的错觉，这条是真正的缺口。
+   *
+   * 取锁 + DELETE + 复核 + 审计整体进事务。锁序见 `lib/invariant-locks.ts`：
+   * 本路径只需 ②，不涉及组织树与员工行锁。
+   *
+   * ## 「先删再数」而不是「先数再删」
+   *
+   * 前一版是「`count <= 1` 就拒」，那个判据**过紧**（codex 第 1 轮 P2）：
+   *   - 目标员工**已离职** → 他本来就不在 `countActiveAdmins` 里（那个查询 join 了
+   *     `is_resigned = false`），`count = 1` 指的是**别人**，删他这条绑定一个活跃超管都不减，
+   *     却被拒 → 离职残留绑定永远清理不掉
+   *   - 目标员工**还持有另一个**超管角色 → 删这条他仍然是超管，同样不减，同样被拒
+   * 删完再数就不用枚举这些情形：`count === 0` 才是真的「系统零超管」，其余一律放行。
+   * 代价是拒绝时要回滚，所以走**抛哨兵**（已登记进跨端 `TX_SENTINELS` 白名单）而不是返回值 ——
+   * 返回值会把删除一起提交掉。
+   */
+  const txResult = await db.transaction(async (tx): Promise<true | { failure: string }> => {
+    /**
+     * ## 锁**无条件**先取，再按锁内重读的 `is_super_admin` 决策（两谱系第 2 轮共识）
+     *
+     * 不能「按事务外读到的 isSuperAdmin 决定要不要取锁」—— 那是个自指的死结：
+     * 判据本身就可能被并发改掉。具体的击穿路径：
+     *   T0 本请求读到角色 R 非超管 → T1 `updateRoleDefinition` 把 R 升级为超管并提交
+     *   → T2 另一笔把唯一的另一名超管标离职（它在锁内看到「A 还持 R」所以放行）
+     *   → T3 本事务**既不取锁也不数数**地删掉 A 的 R 绑定 → 系统零活跃超管，锁死。
+     * 另外「只有超管能撤超管」与自删保护也不能只在旧快照上判 —— 同一个窗口里
+     * 非 admin 能撤掉一个刚升级成超管的绑定。
+     *
+     * 纯 advisory 锁的成本可忽略（撤销角色是低频管理操作），无条件取它换掉整类竞态。
+     */
+    /**
+     * 锁序 ① 组织树 → ② admin 计数。这里要 ① 的理由与 `assignRole` 对称：
+     * 「这条绑定的 scope 节点是否还在我的管辖范围内」要按**当前树**判，而树由取 ① 的
+     * 那些路径改（GLM 第 5 轮 P2）。未授权的权限**回收**与未授权的授予同等严重。
+     */
+    await lockOrgTree(tx)
+    await lockActiveAdminCount(tx)
 
-  if ((result as any).count === 0) {
-    return { success: false, message: '角色记录不存在' }
-  }
+    if (!isAdminScope(session)) {
+      const scopeRoots = session.roles.map((role) => role.scopeId)
+      if (!(await isNodeWithinScopeRoots(target.scopeId, scopeRoots, tx))) {
+        return { failure: '不能撤销超出自身权限范围的角色' }
+      }
+    }
 
-  await logOperation(session, 'permission.revoke', 'permission_role', String(id), {
-    role: target.role,
-    scopeId: target.scopeId,
-    employeeId: target.employeeId,
+    const definition = await loadRoleDefinition(target.role, tx)
+    if (!definition) return { failure: '角色定义不存在' }
+    if (definition.isSuperAdmin && !isAdminScope(session)) {
+      return { failure: '只有系统管理员才能撤销系统管理员角色' }
+    }
+    if (definition.isSuperAdmin && target.employeeId === session.employeeId) {
+      return { failure: '不能撤销自己的 admin 角色' }
+    }
+
+    const result = await tx.delete(permissionRoles).where(eq(permissionRoles.id, id))
+    if ((result as any).count === 0) return { failure: '角色记录不存在' }
+
+    if (definition.isSuperAdmin && await countActiveAdmins(tx) === 0) {
+      throw new Error(LAST_ACTIVE_ADMIN)
+    }
+
+    // 审计与删除同生共死 —— 留在事务外时它失败会留下「角色已撤销但前端显示失败」
+    await logOperation(session, 'permission.revoke', 'permission_role', String(id), {
+      role: target.role,
+      scopeId: target.scopeId,
+      employeeId: target.employeeId,
+    }, tx)
+    return true
+  }).catch((err: unknown) => {
+    if (err instanceof Error && err.message === LAST_ACTIVE_ADMIN) {
+      return { failure: '系统至少需保留 1 个活跃 admin' }
+    }
+    throw err
   })
+  if (txResult !== true) {
+    return { success: false, message: txResult.failure }
+  }
 
   revalidatePath('/permissions')
   revalidatePath('/employees')

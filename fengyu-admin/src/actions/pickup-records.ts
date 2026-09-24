@@ -264,7 +264,7 @@ async function createPickupInventoryDoc(
           SELECT lot_id,
                  COALESCE(SUM(quantity - fulfilled_quantity - released_quantity), 0) AS quantity
             FROM inventory_stock_reservations
-           WHERE lot_id = ANY(${lotIds}::bigint[])
+           WHERE lot_id = ANY(${sql.param(lotIds)}::bigint[])
              AND status = '已预留'
         GROUP BY lot_id
         `)) as unknown as Array<{ lot_id: number | string; quantity: string | number }>
@@ -748,7 +748,7 @@ export const getPickupInventorySkuOptions = withPermission(
            WHERE status = '已预留'
         GROUP BY lot_id
    ) reserved ON reserved.lot_id = lot.id
-       WHERE inventory.sku_id = ANY(${inventorySkuIds}::text[])
+       WHERE inventory.sku_id = ANY(${sql.param(inventorySkuIds)}::text[])
     GROUP BY inventory.sku_id
     `)) as unknown as Array<{ sku_id: string; available_quantity: string | number }>
     const availableBySku = new Map(availabilityRows.map((row) => [row.sku_id, Number(row.available_quantity)]))

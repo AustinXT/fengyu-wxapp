@@ -1,11 +1,18 @@
 /**
- * `src/lib/org-ancestry.ts` 两条递归 CTE 的真库语义冒烟（实现体，由 wrapper 引导）。
+ * `src/lib/org-ancestry.ts` 四条递归 CTE 的真库语义冒烟（实现体，由 wrapper 引导）。
  *
- * 断言的是**生产代码里那一份 SQL**（直接 import 那两个函数），不抄副本 ——
+ * 断言的是**生产代码里那一份 SQL**（直接 import 那几个函数），不抄副本 ——
  * 抄本会各自漂移，那就退化成「守护一个假的」。
  */
 import postgres from 'postgres'
-import { findNearestStoreAncestor, findRolesBoundWithinSubtree } from '@/lib/org-ancestry'
+import {
+  findNearestStoreAncestor,
+  findRolesBoundWithinSubtree,
+  findSubtreeOwnershipConflicts,
+  isNodeWithinScopeRoots,
+  findSiblingStoreIds,
+  isEmployeeWithinScopeRoots,
+} from '@/lib/org-ancestry'
 
 const CONN = process.env.E2E_DATABASE_URL
 if (!CONN) throw new Error('缺 E2E_DATABASE_URL')
@@ -85,6 +92,41 @@ async function seed() {
       (${id('EMP')},   'finance', ${id('MKT')}),
       (${id('EMP')},   'hr',      ${id('STORE_B')}),
       (${id('OTHER')}, 'product', ${id('STORE_A')})
+  `
+
+  await seedOwnership()
+}
+
+/**
+ * `findSubtreeOwnershipConflicts` 的夹具（#318）—— 复用上面那棵树，补 `stores` 映射与带
+ * `store_id` 的员工。命名一律 `OWN_*`，与上面两个函数的员工（EMP / OTHER，无 store_id）隔开。
+ *
+ * 门店节点 ↔ stores 一一映射：STORE_A ↔ SA、STORE_B ↔ SB。冲突 = 「员工 org 节点的最近门店
+ * 祖先」≠「员工 store_id 对应门店的 org 节点」。
+ */
+async function seedOwnership() {
+  await sql`
+    INSERT INTO stores (store_id, store_name, org_node_id, opening_date, is_closed) VALUES
+      (${id('SA')}, '冒烟A店门店', ${id('STORE_A')}, CURRENT_DATE, false),
+      (${id('SB')}, '冒烟B店门店', ${id('STORE_B')}, CURRENT_DATE, false)
+  `
+  /**
+   * ⚠️ 试过造「`stores.org_node_id IS NULL`」来验 `IS DISTINCT FROM`（换成 `!=` 会 fail-open），
+   * 但那个状态**库里造不出来**：trigger `inventory_sync_location_from_store()`
+   * （`db/migrations/0009` 第 556 行）对 NULL 直接 `RAISE`，要求必须指向市场下的门店型节点。
+   * 生产 43/43 也确实全有映射。所以这里不为它写夹具 —— 守护一个 DB 造不出的状态是虚假保障。
+   * `IS DISTINCT FROM` 仍然保留（防御性，见 `src/lib/org-ancestry.ts` 里的说明）。
+   */
+  await sql`
+    INSERT INTO staff_wechat_users (employee_id, name, store_id, org_node_id, is_resigned) VALUES
+      (${id('OWN_OK_A')},     '冒烟自洽A',   ${id('SA')}, ${id('DEPT_A')},   false),
+      (${id('OWN_BAD_A')},    '冒烟错挂A',   ${id('SB')}, ${id('DEPT_A')},   false),
+      (${id('OWN_DEEP')},     '冒烟深层错挂', ${id('SB')}, ${id('SUB_A')},    false),
+      (${id('OWN_NOSTORE')},  '冒烟无主店',   NULL,        ${id('DEPT_A')},   false),
+      (${id('OWN_RESIGNED')}, '冒烟已离职',   ${id('SB')}, ${id('DEPT_A')},   true),
+      (${id('OWN_MKT')},      '冒烟市场部人', ${id('SA')}, ${id('MKT_DEPT')}, false),
+      (${id('OWN_OK_B')},     '冒烟自洽B',   ${id('SB')}, ${id('DEPT_B')},   false),
+      (${id('OWN_LOOP')},     '冒烟环里人',   ${id('SA')}, ${id('LOOP_Y')},   false)
   `
 }
 
@@ -180,6 +222,216 @@ async function main() {
   check('同一角色绑在子树内多个节点 → 去重后只出现一次',
     (await findRolesBoundWithinSubtree(id('EMP'), id('MKT'))).sort(),
     ['finance', 'hr', 'manager'])
+
+  // ── findSubtreeOwnershipConflicts（#318）─────────────────────────────────
+  /** 只取 employee_id 的短名，读断言时一眼看出是谁；全字段形状由下面第一条单独锁 */
+  const who = (res) => res.conflicts.map((r) => r.employeeId.replace(`${NS}_OWN_`, ''))
+
+  /**
+   * 全字段形状锁这一条就够：`name` 是 `updateOrgNode` 拼给用户的那串姓名，
+   * 列名映射（`employee_id` → `employeeId`）写错时这里当场露出来。
+   */
+  check('门店节点为根 → 报出子树内所有归属不自洽的员工（含全字段形状）',
+    await findSubtreeOwnershipConflicts(id('STORE_A')),
+    {
+      conflicts: [
+        { employeeId: id('OWN_BAD_A'), name: '冒烟错挂A', storeId: id('SB') },
+        { employeeId: id('OWN_DEEP'), name: '冒烟深层错挂', storeId: id('SB') },
+      ],
+      total: 2,
+    })
+
+  /**
+   * 三处语义同时锁在这一条的「没出现」里：
+   * - `OWN_OK_A`（DEPT_A + SA，自洽）—— 删掉 `nearest` 的 `type = '门店'` 过滤，
+   *   store_ancestor 就成了员工自己那个部门节点（DEPT_A ≠ STORE_A）→ 它会被误报 → 变红
+   * - `OWN_DEEP` 出现在结果里 —— 锁「任意深度」：只查一层就漏掉 SUB_A 上的人
+   * - `OWN_RESIGNED`（DEPT_A + SB，已离职）—— 删掉 `is_resigned = false` 会把它算进来 → 变红
+   */
+  check('自洽的人与已离职的人都不在结果里',
+    who(await findSubtreeOwnershipConflicts(id('STORE_A'))),
+    ['BAD_A', 'DEEP'])
+
+  /**
+   * 下探方向（与 `findNearestStoreAncestor` 的上溯相反）。把
+   * `JOIN subtree s ON o.parent_id = s.id` 写反成 `o.id = s.parent_id` 就变成上溯：
+   * 从 STORE_A 出发只会拿到 MKT / HQ，那两个节点上没有员工 → 结果空 → 上面两条同时变红。
+   * 这里从市场出发再验一次「跨两个门店子树一起复核」。
+   */
+  check('市场为根 → 覆盖其下两个门店子树（自洽的 B 店员工不算冲突）',
+    who(await findSubtreeOwnershipConflicts(id('MKT'))),
+    ['BAD_A', 'DEEP'])
+
+  check('另一个门店为根 → 空（该子树内只有自洽的人，也不串到 A 店那条链）',
+    await findSubtreeOwnershipConflicts(id('STORE_B')),
+    { conflicts: [], total: 0 })
+
+  /**
+   * 无门店祖先 = 合法的矩阵式归属（生产 74 人挂在部门型节点上）。
+   * `nearest` 拿不到 `type='门店'` 的行 → 该员工整条不参与比对，必须放行。
+   */
+  check('市场直属部门为根 → 空（挂在那儿的人没有门店祖先，不构成冲突）',
+    await findSubtreeOwnershipConflicts(id('MKT_DEPT')),
+    { conflicts: [], total: 0 })
+
+  /**
+   * ## 「改挂**出**门店子树」这个方向刻意放行（GLM 第 4 轮 P1 的正面回答）
+   *
+   * 上一条是「根是市场直属部门」，这一条把它做成真正的**改挂后形态**：
+   * 把 A 店下的部门 DEPT_A 改挂到市场下 → 挂 DEPT_A 的员工（store_id 仍指 SA）
+   * 最近门店祖先从 A 店变成 NULL。判据必须与员工侧一致 ——
+   * `assertOwnershipConsistent` 对 `storeAncestorId === null` 是直接放行的。
+   * 改完把树复原，后面的断言仍按原拓扑。
+   */
+  check('改挂前：A 店子树里这两人是冲突（对照组）',
+    who(await findSubtreeOwnershipConflicts(id('MKT'))),
+    ['BAD_A', 'DEEP'])
+  await sql`UPDATE org_nodes SET parent_id = ${id('MKT')} WHERE id = ${id('DEPT_A')}`
+  /**
+   * 改挂后 DEPT_A 及其子节点 SUB_A 都脱离了门店子树 → 挂在它们上面的三个人
+   * （OWN_OK_A / OWN_BAD_A / OWN_DEEP）最近门店祖先全变成 NULL → 一个都不报。
+   * 连原本**是**冲突的 BAD_A 也不再是 —— 这正是「放行 null 分支」的完整后果，
+   * 与员工侧 `assertOwnershipConsistent` 对 `storeAncestorId === null` 直接放行一致。
+   */
+  check('改挂出门店子树（最近门店祖先变 NULL）→ 一个都不报（与员工侧同口径）',
+    who(await findSubtreeOwnershipConflicts(id('MKT'))),
+    [])
+  await sql`UPDATE org_nodes SET parent_id = ${id('STORE_A')} WHERE id = ${id('DEPT_A')}`
+  check('复原后对照组回来（确认上一条不是夹具被永久改坏）',
+    who(await findSubtreeOwnershipConflicts(id('MKT'))),
+    ['BAD_A', 'DEEP'])
+
+  /**
+   * `store_id IS NULL`（半填状态）—— 甲方 2026-09-23 拍板 **#259 选项 A：保持放行**。
+   * ⚠️ 这一条**不是红检守护**：`JOIN stores ON st.store_id = n.store_id` 是内连接，
+   * store_id 为空的行本来就连不上、会被丢掉，所以把 `AND e.store_id IS NOT NULL` 删掉
+   * 结果**照样**是空 —— 两种写法在这个前提下恒等。留它是把「A 口径」这个决定钉在真库上：
+   * 哪天有人把内连接改成 `LEFT JOIN`（想报出「门店没映射」那类），这条会立刻变红，
+   * 提醒他先回去看 #259 的拍板。
+   */
+  check('半填（store_id 为空、org 在门店子树里）→ 不报（#259 选项 A）',
+    who(await findSubtreeOwnershipConflicts(id('DEPT_A'))).includes('NOSTORE'),
+    false)
+
+  check('根节点不存在 → 空（而不是报全库）',
+    await findSubtreeOwnershipConflicts(id('NOT_THERE')),
+    { conflicts: [], total: 0 })
+
+  /**
+   * LIMIT 透传：提示只列前几个人，穿参写死成常量或漏掉 `LIMIT` 时这里变红。
+   * `total` 必须是**截断前**的总数（窗口函数在 LIMIT 之前求值）—— 否则提示里的
+   * 「共 N 人」会退化成「共 1 人」，管理员以为改完一个就完事了。
+   */
+  {
+    const truncated = await findSubtreeOwnershipConflicts(id('HQ'), undefined, 1)
+    check('limit 生效 → 只取前 N 个（按 employee_id 排序，结果稳定）',
+      who(truncated), ['BAD_A'])
+    check('total 是截断前的总数（count(*) OVER () 在 LIMIT 之前求值）',
+      truncated.total, 2)
+    check('total 是 number 而不是 int8 原样返回的 string',
+      typeof truncated.total, 'number')
+  }
+
+  /** 防环：subtree 与 chain 两条递归各有一份 path 防环，删任一条这里挂起而不是返回 */
+  const loopConflicts = await Promise.race([
+    findSubtreeOwnershipConflicts(id('LOOP_X')),
+    new Promise((_, rej) => setTimeout(() => rej(new Error('环检测超时 —— path 防环没生效')), 8000)),
+  ])
+  check('自成环的子树 → 正常返回而不是打满连接', loopConflicts, { conflicts: [], total: 0 })
+
+  // ── isNodeWithinScopeRoots（#318 第 3 轮）────────────────────────────────
+  /**
+   * 「这个节点现在还在我的管辖范围内吗」—— 按**当前树**判，而不是按 session 里那份
+   * 构造时展开好的集合（后者与现在的树无关，锁内再判一次是 no-op）。
+   */
+  check('根就是自己 → 在范围内（depth=0 也算）',
+    await isNodeWithinScopeRoots(id('STORE_A'), [id('STORE_A')]), true)
+
+  check('根是祖先（任意深度）→ 在范围内',
+    await isNodeWithinScopeRoots(id('SUB_A'), [id('MKT')]), true)
+
+  /**
+   * 这条锁**上溯方向**：把 `JOIN org_nodes p ON p.id = c.parent_id` 写反成
+   * `p.parent_id = c.id` 就变成下探，从 SUB_A 出发永远遇不到 MKT → 上一条变红；
+   * 而从 MKT 出发能下探到 SUB_A → 这一条会**误判为 true** → 也变红。两条一起把方向钉死。
+   */
+  check('根是后代 → 不在范围内（方向不能反）',
+    await isNodeWithinScopeRoots(id('MKT'), [id('SUB_A')]), false)
+
+  check('另一条链上的根 → 不在范围内（不串链）',
+    await isNodeWithinScopeRoots(id('DEPT_A'), [id('STORE_B')]), false)
+
+  check('多个根命中任意一个即可',
+    await isNodeWithinScopeRoots(id('DEPT_B'), [id('STORE_A'), id('STORE_B')]), true)
+
+  check('根清单为空 → false（没有管辖根的非 admin 不该改任何节点）',
+    await isNodeWithinScopeRoots(id('DEPT_A'), []), false)
+
+  check('节点不存在 → false',
+    await isNodeWithinScopeRoots(id('NOT_THERE'), [id('HQ')]), false)
+
+  /** 防环：环里的节点上溯时不能打满连接 */
+  const loopScope = await Promise.race([
+    isNodeWithinScopeRoots(id('LOOP_Y'), [id('MKT')]),
+    new Promise((_, rej) => setTimeout(() => rej(new Error('环检测超时 —— path 防环没生效')), 8000)),
+  ])
+  check('自成环的节点上溯 → 正常返回而不是打满连接', loopScope, false)
+
+  // ── findSiblingStoreIds（#318 第 8 轮）──────────────────────────────────
+  /**
+   * 这条 SQL 原先内联在 `getMarketStoreIds` 里，而那个 action 的单测把 `db.execute` 换成替身
+   * —— SQL 从不被执行。第 8 轮一个评审谱系据此把它误报成「列写错了、100% 必挂」，
+   * 而当时**没有任何测试能反驳**。现在它真的被跑一遍。
+   * 夹具里 MKT 下挂着 STORE_A / STORE_B 两个门店节点，分别映射 SA / SB。
+   */
+  check('同市场兄弟门店（含自身）',
+    (await findSiblingStoreIds(id('SA'))).sort(), [id('SA'), id('SB')].sort())
+
+  check('从另一个兄弟出发得到同一个集合',
+    (await findSiblingStoreIds(id('SB'))).sort(), [id('SA'), id('SB')].sort())
+
+  check('门店不存在 → 空集合（由调用方兜底成 [自身]）',
+    await findSiblingStoreIds(`${NS}_NOT_A_STORE`), [])
+
+  // ── isEmployeeWithinScopeRoots（#318 第 9 轮）───────────────────────────
+  /**
+   * 「这个员工现在还在我的管辖范围内吗」—— `store ∪ org` 两维都按当前树上溯。
+   * 夹具里 OWN_OK_A 是 {store: SA, org: DEPT_A}（都在 A 店子树内），
+   * OWN_BAD_A 是 {store: SB, org: DEPT_A} —— 两维分别落在 B 店与 A 店，正好验 OR 语义。
+   */
+  const EMP_OK_A = { storeId: id('SA'), orgNodeId: id('DEPT_A') }
+  const EMP_BAD_A = { storeId: id('SB'), orgNodeId: id('DEPT_A') }
+
+  check('两维都在根的子树内 → 可见',
+    await isEmployeeWithinScopeRoots(EMP_OK_A, [id('MKT')]), true)
+
+  check('org 维命中（store 维在另一条链）→ 可见（OR 语义）',
+    await isEmployeeWithinScopeRoots(EMP_BAD_A, [id('STORE_A')]), true)
+
+  check('store 维命中（org 维在另一条链）→ 可见（OR 语义）',
+    await isEmployeeWithinScopeRoots(EMP_BAD_A, [id('STORE_B')]), true)
+
+  check('两维都不在根的子树内 → 不可见',
+    await isEmployeeWithinScopeRoots(EMP_OK_A, [id('STORE_B')]), false)
+
+  check('只挂组织、无主门店 → 只看 org 维',
+    await isEmployeeWithinScopeRoots({ storeId: null, orgNodeId: id('MKT_DEPT') }, [id('MKT')]), true)
+
+  check('只有主门店、不挂组织 → 只看 store 维',
+    await isEmployeeWithinScopeRoots({ storeId: id('SA'), orgNodeId: null }, [id('STORE_A')]), true)
+
+  check('两端都空 → false（非 admin 不该碰这种员工）',
+    await isEmployeeWithinScopeRoots({ storeId: null, orgNodeId: null }, [id('HQ')]), false)
+
+  check('根清单为空 → false',
+    await isEmployeeWithinScopeRoots(EMP_OK_A, []), false)
+
+  /** 防环：员工挂在环里的节点上，上溯不能打满连接 */
+  const loopEmp = await Promise.race([
+    isEmployeeWithinScopeRoots({ storeId: null, orgNodeId: id('LOOP_Y') }, [id('MKT')]),
+    new Promise((_, rej) => setTimeout(() => rej(new Error('环检测超时 —— path 防环没生效')), 8000)),
+  ])
+  check('员工挂在自成环的节点上 → 正常返回', loopEmp, false)
 
   // 不清理：一次性库下一跑就整库重建（见顶部对环夹具与 trigger 的说明）
   await sql.end()

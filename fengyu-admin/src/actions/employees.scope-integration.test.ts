@@ -193,6 +193,8 @@ function mockTransactionOk(employeeId = 'FY-260315001') {
   ;(db.transaction as any).mockImplementation(async (fn: any) =>
     fn({
       execute: vi.fn().mockResolvedValue([{ id: employeeId }]),
+      // 归属自洽复核已收进事务（#318：组织树锁内），走 tx.select
+      select: (...a: any[]) => (db as any).select(...a),
       insert: vi.fn().mockReturnValue({ values: vi.fn().mockResolvedValue({}) }),
     }),
   )

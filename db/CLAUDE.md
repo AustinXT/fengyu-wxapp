@@ -365,7 +365,11 @@ docker rm -f pg-from-zero
 
 `scripts/` 目录下的同步脚本将 WorkFine（SQL Server）数据单向同步到 PostgreSQL：
 
-- `sync-workfine.js` — 综合同步（组织架构、员工、顾客）
+- `sync-workfine.js` — 综合同步（组织架构、员工、顾客）。⚠️ **对生产库硬拒绝**（#318）：
+  业务方 2026-04-16 已决定上线后不再执行该同步，该脚本仅用于历史迁移 / 上线前刷新；
+  而它的 `staff_wechat_users` UPSERT 直接写 `is_resigned`、不校验「至少留一名在职超级管理员」，
+  把最后一名超管标成离职就会让所有人无法登录管理后台。指向生产库时必须显式
+  `ALLOW_PROD_WORKFINE_SYNC=1` 才放行；cron 侧另有 `activeAdminCount` 巡检（0 人 → critical）兜底。
 - `sync-products-from-workfine.js` — 商品数据同步（一次性导入后手动维护）
 
 同步以 phone 为匹配键 UPSERT，运行时需 `MSSQL_CONNECTION_STRING` 和 `DATABASE_URL` 环境变量。
