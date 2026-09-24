@@ -373,6 +373,12 @@ describe('产能技师分母跨端字面量守护（#320）', () => {
    * **它不一致这件事**一起写进断言 —— 任一侧改动都会红，迫使回来读 #334 而不是顺手抹平。
    *
    * #334 落地（两端统一）时，本条应删除，并把要件 6 的 all 分支改成真正的等价断言。
+   *
+   * ⚠️ **本条守不住的一跳（有意，已登记）**：`isAdminScope` 的**函数体**不在本文件读取的
+   * 任何文件里（它在 `fengyu-admin/src/lib/permissions.ts`）。把它改成恒真，
+   * admin 的 all 分支与权限交集会一起对那 14 个非超管总部账号漂移 —— 恰好把 #334 的分叉
+   * 「抹平」，从而绕过本条哨兵，而本文件全绿。它是认证原语（类比 `pg` 本身），
+   * 归 #334 落地时在 admin 侧守护里钉。
    */
   it('要件 6b：已登记分叉 —— staff 的 all 无条件恒真、admin 的 all 只对超管恒真（#334）', () => {
     // staff：`all` 不看任何账号上下文（helper 连 auth 都不收）
@@ -590,6 +596,16 @@ describe('产能技师分母跨端字面量守护（#320）', () => {
      *
      * staff 侧不存在这个形态：它只有一张 `technician_base`，过滤条件直接写在计数的
      * WHERE 上，由要件 5 的**整段等值比较**守住。
+     *
+     * ⚠️ **本文件只钉 `technicianCountSql` 这一个消费函数** —— 它才是「人均派生分母」，
+     * 也就是本守护的对象。admin 另外两个消费函数（`technicianByStoreSql` /
+     * `technicianDirectByMarketSql`，分门店 / 分市场分解）由 admin 侧守护：
+     * `fengyu-admin/src/actions/data-center/__tests__/consistency.efficiency.test.ts`
+     * 的「⭐ 三个消费函数都必须复用 technicianCteSql 且只读过滤后的 technician_scoped」，
+     * 那条同样断言了 `WITH ${technicianCteSql(...)}` 与 `FROM technician_scoped`、
+     * 并反向禁 `FROM technician_base`。
+     * 别据此以为本文件漏钉了两个 —— 是分工，不是缺口（第 8 轮 GLM 在这里读出过落差，
+     * 根因是我在上一轮的总结里把三个都算进了本文件）。
      */
     const adminCount = squeeze(
       extractSection(
@@ -732,9 +748,13 @@ describe('产能技师分母跨端字面量守护（#320）', () => {
        * 后者是数组成员判定的自然写法，第 7 轮 GLM 指出只探左侧等于留了一道现成的绕行门。
        */
       const PROBES = [
+        // skills 在操作符左侧
         /skills\s*(?:&&\s*ARRAY\s*\[|@>|<@|=\s*ANY)/g,
+        // skills 在操作符右侧（数组成员判定的自然写法）
         /ANY\s*\(\s*[\w.]*skills/g,
         /unnest\s*\(\s*[\w.]*skills/g,
+        /(?:&&|@>|<@)\s*[\w]+\.skills\b/g,
+        /array_position\s*\(\s*[\w.]*skills/g,
       ]
       const hits = PROBES.flatMap((re) => code.match(re) ?? [])
       expect(
