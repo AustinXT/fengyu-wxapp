@@ -160,3 +160,29 @@ export function assertInventoryLocationInScope(session: AuthSession, locationId:
     throw new ApiError('PERMISSION_DENIED', '无权操作该库存主体')
   }
 }
+
+/** 报货福利方案的维护权限（#354）。 */
+export const INVENTORY_PROMOTION_MAINTAIN_ACTION = 'inventory:supply_chain_master_data_manage'
+
+/**
+ * 报货福利方案只由总部供应链维护（#354，9/18 会议 §2.2「单价优惠不可手填，由报货福利自动提取」）：
+ * 维护权限必须来自**总部 scope** 的角色绑定，超级管理员除外。市场账号即便被误授了这项动作，
+ * 也不能给本市场建优惠来压低对供应链的应付。
+ *
+ * 判的是角色绑定自带的 actions（withPermission 收紧后的 session 仍保留每条绑定的完整 actions），
+ * 所以在 `inventory:stock_list` 包装下调用（列表可见性）同样成立；缺角色级元数据的旧会话退回会话级权限。
+ */
+export function isInventoryPromotionMaintainer(session: AuthSession): boolean {
+  if (isAdminScope(session)) return true
+  return session.roles.some((role) => role.scopeType === '总部' && (
+    Array.isArray(role.actions)
+      ? role.actions.includes(INVENTORY_PROMOTION_MAINTAIN_ACTION)
+      : hasPermission(session, INVENTORY_PROMOTION_MAINTAIN_ACTION)
+  ))
+}
+
+export function assertInventoryPromotionMaintainer(session: AuthSession): void {
+  if (!isInventoryPromotionMaintainer(session)) {
+    throw new ApiError('PERMISSION_DENIED', '报货福利方案只能由总部供应链维护')
+  }
+}

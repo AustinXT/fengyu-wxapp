@@ -2364,7 +2364,7 @@ describe('库存单据详情履约进度', () => {
   })
 })
 
-describe('全局福利方案引擎权限', () => {
+describe('全局福利方案引擎权限（#354 起市场用户一律拒绝维护）', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     vi.mocked(isAdminScope).mockReturnValue(false)
@@ -2402,7 +2402,7 @@ describe('全局福利方案引擎权限', () => {
     }))
 
     await expect(disableInventoryPromotionPlan('INV-PROMO-GLOBAL'))
-      .rejects.toThrow('市场用户不能修改或停用全局福利方案')
+      .rejects.toThrow('PERMISSION_DENIED: 报货福利方案只能由总部供应链维护')
   })
 
   it('市场用户直调引擎时不能修改全局福利方案', async () => {
@@ -2436,7 +2436,7 @@ describe('全局福利方案引擎权限', () => {
       endsAt: '2026-12-31',
       scopeMarketId: 'MARKET-1',
       items: [{ skuId: 'SKU-1', marketUnitDiscount: 0 }],
-    })).rejects.toThrow('市场用户不能修改或停用全局福利方案')
+    })).rejects.toThrow('PERMISSION_DENIED: 报货福利方案只能由总部供应链维护')
   })
 })
 
@@ -4561,5 +4561,110 @@ describe('SKU 候选检索过滤（#339）', () => {
     expect(mockDb.execute).not.toHaveBeenCalled()
     const tooMany = Array.from({ length: 101 }, (_, index) => `SKU-${index}`)
     await expect(listInventorySkus({ skuIds: tooMany })).rejects.toThrow(/最多 100 个/)
+  })
+})
+
+describe('报货福利方案只由总部供应链维护（#354，引擎层）', () => {
+  const MANAGE = 'inventory:supply_chain_master_data_manage'
+  const role = (scopeType: '总部' | '市场', scopeId: string, actions: string[]) => ({
+    role: 'inventory_role', scopeId, scopeType, actions, scopeStoreIds: [], scopeOrgNodeIds: [scopeId],
+  })
+  const MARKET_FINANCE = {
+    employeeId: 'E-M1', name: '市场财务', phone: '13800000001',
+    roles: [role('市场', 'M1', ['inventory:stock_list', 'inventory:market_operate', 'inventory:market_price_view'])],
+    permissions: { actions: ['inventory:stock_list', 'inventory:market_operate', 'inventory:market_price_view'], scopeStoreIds: [], scopeOrgNodeIds: ['M1'] },
+  } as never
+  const SUPPLY_CHAIN = {
+    employeeId: 'E-HQ', name: '供应链', phone: '13800000002',
+    roles: [role('总部', 'HQ', ['inventory:stock_list', MANAGE, 'inventory:supply_chain_price_view'])],
+    permissions: { actions: ['inventory:stock_list', MANAGE, 'inventory:supply_chain_price_view'], scopeStoreIds: [], scopeOrgNodeIds: ['HQ'] },
+  } as never
+  const INPUT = {
+    name: '福利方案',
+    startsAt: '2026-08-01',
+    endsAt: '2026-08-31',
+    items: [{ skuId: 'SKU-1', marketUnitDiscount: 10 }],
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.mocked(isAdminScope).mockReturnValue(false)
+    vi.mocked(hasPermission).mockReturnValue(true)
+    mockDb.execute.mockResolvedValue([{ drifted: false }])
+  })
+
+  it('市场库存财务调用新建、修改、停用均 PERMISSION_DENIED，且不读库', async () => {
+    mockGetSession.mockResolvedValue(MARKET_FINANCE)
+    await expect(createInventoryPromotionPlan(INPUT)).rejects.toThrow(/^PERMISSION_DENIED: 报货福利方案只能由总部供应链维护/)
+    await expect(updateInventoryPromotionPlan('P1', INPUT)).rejects.toThrow(/^PERMISSION_DENIED: 报货福利方案只能由总部供应链维护/)
+    await expect(disableInventoryPromotionPlan('P1')).rejects.toThrow(/^PERMISSION_DENIED: 报货福利方案只能由总部供应链维护/)
+    expect(mockDb.select).not.toHaveBeenCalled()
+    expect(mockDb.transaction).not.toHaveBeenCalled()
+  })
+
+  function mockCreateTransaction() {
+    const values = vi.fn().mockResolvedValue(undefined)
+    mockDb.transaction.mockImplementationOnce(async (callback: (tx: unknown) => unknown) => callback({
+      execute: vi.fn().mockResolvedValue([]),
+      insert: vi.fn(() => ({ values })),
+    }))
+    return values
+  }
+
+  it('总部供应链（非超管）能建全局方案', async () => {
+    mockGetSession.mockResolvedValue(SUPPLY_CHAIN)
+    mockDb.select.mockReturnValueOnce(selectWithoutLimit([{ skuId: 'SKU-1', productName: '测试商品', marketPurchasePrice: '100' }]))
+    const values = mockCreateTransaction()
+    await expect(createInventoryPromotionPlan(INPUT)).resolves.toEqual({ id: expect.any(String) })
+    expect(values.mock.calls[0]?.[0]).toEqual(expect.objectContaining({ scopeMarketId: null }))
+  })
+
+  it('总部供应链（非超管）能指定某个市场建专属方案：只校验主体类型，不走库存可见范围', async () => {
+    mockGetSession.mockResolvedValue(SUPPLY_CHAIN)
+    mockDb.select
+      .mockReturnValueOnce(selectWithLimit([{ locationType: '市场' }]))
+      .mockReturnValueOnce(selectWithoutLimit([{ skuId: 'SKU-1', productName: '测试商品', marketPurchasePrice: '100' }]))
+    const values = mockCreateTransaction()
+    await expect(createInventoryPromotionPlan({ ...INPUT, scopeMarketId: 'M1' })).resolves.toEqual({ id: expect.any(String) })
+    expect(values.mock.calls[0]?.[0]).toEqual(expect.objectContaining({ scopeMarketId: 'M1' }))
+  })
+
+  it('指定的主体不是市场时返回 INVALID_PARAMS', async () => {
+    mockGetSession.mockResolvedValue(SUPPLY_CHAIN)
+    mockDb.select.mockReturnValueOnce(selectWithLimit([{ locationType: '门店' }]))
+    await expect(createInventoryPromotionPlan({ ...INPUT, scopeMarketId: 'S1' })).rejects.toThrow(/^INVALID_PARAMS: 福利方案所属主体必须是市场/)
+    expect(mockDb.transaction).not.toHaveBeenCalled()
+  })
+
+  function captureListWhere() {
+    const captured: { where?: unknown } = {}
+    mockDb.select.mockReturnValueOnce({
+      from: () => ({
+        leftJoin: () => ({
+          where: (where: unknown) => {
+            captured.where = where
+            return { orderBy: async () => [] }
+          },
+        }),
+      }),
+    })
+    return captured
+  }
+
+  it('列表可见性：总部供应链看到全部市场方案（不按总部 scope 过滤），市场只见全局 + 本市场', async () => {
+    const { listInventoryPromotionPlans } = await import('./engine')
+    const dialect = new PgDialect()
+
+    mockGetSession.mockResolvedValue(SUPPLY_CHAIN)
+    const supplyChainWhere = captureListWhere()
+    await listInventoryPromotionPlans()
+    expect(supplyChainWhere.where).toBeUndefined()
+
+    mockGetSession.mockResolvedValue(MARKET_FINANCE)
+    const marketWhere = captureListWhere()
+    await listInventoryPromotionPlans()
+    const query = dialect.sqlToQuery(marketWhere.where as never)
+    expect(query.sql).toContain('"scope_market_id" is null')
+    expect(query.params).toEqual(['M1'])
   })
 })
