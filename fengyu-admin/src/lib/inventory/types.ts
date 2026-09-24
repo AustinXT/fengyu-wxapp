@@ -56,12 +56,17 @@ export type InventoryDocType = (typeof INVENTORY_DOC_TYPES)[number]
  * 无需上游业务血缘的库存动作。
  * 报货、采购、发货、收货、配货、退货、员工购、自采和转换必须进入专用服务，
  * 不能从通用建单窗口绕过数量、价格和批次校验。
+ *
+ * #350：`院顾客产品出库` 已移出 —— 顾客出库必须绑定销售单，只能由提货服务产生
+ * （admin `createPickupRecord` / staffApi `order.createPickup`）。通用入口建出的 GCK
+ * 不回写 `sale_items.picked_up_quantity`、不写 `pickup_records`，顾客权益仍显示「待提」，
+ * 联动开启后还会与提货服务重复扣库存。staffApi `STAFF_CREATE_DOC_TYPES` 同步移除，
+ * 两端取舍由 `cross-end-inventory-snapshot.test.js` 钉住。
  */
 export const INVENTORY_GENERIC_DOC_TYPES = [
   '分院调货出库',
   '市场间调货出库',
   '内部领用',
-  '院顾客产品出库',
   '院顾客退货',
   '市场产品报损',
   '院产品报损',
@@ -118,6 +123,30 @@ export interface InventorySkuInput {
   isReportable?: boolean
   isActive?: boolean
   remark?: string | null
+}
+
+/**
+ * SKU 候选检索的业务过滤（#339）。三个口径分别对齐建单时的服务端校验，
+ * 候选与提交判据同源，才不会出现「下拉里选得到、提交被拒」或反过来「合法却选不到」：
+ *   - `reportable`          ↔ business.ts `loadSku(tx, id, true)`（门店报货 / 品项公司需求 / 市场报货）
+ *   - `availableToMarketId` ↔ business.ts `assertSkuAvailableToMarket`（供应链放行，其余须归属该市场）
+ *   - `ownedByMarketId`     ↔ 自采入库只收本市场的非供应链商品
+ * 与 session 的 scope 过滤叠加生效，不能拿它越权看别的市场。
+ */
+export interface InventorySkuOptionFilters {
+  keyword?: string
+  sourceType?: InventorySkuSourceType
+  reportable?: boolean
+  availableToMarketId?: string
+  ownedByMarketId?: string
+}
+
+export interface InventorySkuListFilters extends InventorySkuOptionFilters {
+  onlyActive?: boolean
+  /** 按 sku_id 精确取（回显已选商品、按明细取价），最多 100 个；传空数组直接返回空。 */
+  skuIds?: string[]
+  page?: number
+  pageSize?: number
 }
 
 export interface InventorySkuRow extends Required<Pick<InventorySkuInput, 'productName'>> {

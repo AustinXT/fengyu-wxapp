@@ -399,7 +399,7 @@ writeCtx('inv07', {
 | INV-04 | `inv-04-returns.spec.ts` | 19 | ✅ 全绿 | — |
 | INV-05 | `inv-05-transfers.spec.ts` | 4 + 6 条受阻清单 | ⛔ 首轮被 #129 阻断，改为缺陷复现 | #129 已修，阻断解除；兼作 #129 回归守护 |
 | INV-06 | `inv-06-stocktake-and-loss.spec.ts` | 17 | ✅ 盘点不变量全绿；报损受阻 | 阻断解除；#131 判定写上下文 |
-| INV-07 | `inv-07-staff-purchase-and-self-purchase.spec.ts` | 21 | ✅ 自采全绿；员工购受阻 | #130 已修，阻断解除；兼作 #130 回归守护 |
+| INV-07 | `inv-07-staff-purchase-and-self-purchase.spec.ts` | 21 | ✅ 自采全绿；员工购受阻 | #130 已修，阻断解除；兼作 #130 回归守护；#350 D-2 改为院顾客产品出库不可通用建单的负向守护（断言点数待部署后实跑复核） |
 | INV-08 | `inv-08-permission-price-boundary.spec.ts` | 20 | ✅ 安全红线全守住 | — |
 | INV-09 | `inv-09-docs-center-and-ledger.spec.ts` | 18 | ✅ 全绿 | — |
 | INV-10 | `inv-10-ux-audit.spec.ts` | 扫描 25 条 finding | ✅ 报告已生成 | 硬编码条目全部改为转述上下文的实测判定 |

@@ -162013,9 +162013,19 @@ async function closeTrade(opts) {
 // src/actions/orders.ts
 init_permissions();
 init_with_permission();
+var import_cache5 = __toESM(require_cache3(), 1);
+
+// src/lib/order-detail-access.ts
+init_permission_contract();
+var ORDER_DETAIL_PAGE_CAPABILITIES = [
+  "sale_order:list",
+  "sale_order:refund_create",
+  "sale_order:refund_approve"
+];
+
+// src/actions/orders.ts
 init_operation_log2();
 init_api_error();
-var import_cache5 = __toESM(require_cache3(), 1);
 
 // src/lib/refund-cascade.ts
 var import_drizzle_orm21 = __toESM(require_drizzle_orm(), 1);
@@ -166046,7 +166056,7 @@ var exportAllocationOrders = withPermission("sale_order:list", async (session4, 
     } : {}
   };
 });
-var getOrderById = withAnyPermission(["sale_order:list", "sale_order:refund_create", "sale_order:refund_approve"], async (session4, saleOrderId) => {
+var getOrderById = withAnyPermission([...ORDER_DETAIL_PAGE_CAPABILITIES], async (session4, saleOrderId) => {
   const rows = await db2.select({
     order: saleOrders,
     storeName: stores.storeName,
@@ -166403,7 +166413,7 @@ var updatePaymentPerformanceAttributionDate = withPermission("sale_order:perform
     }
   };
 });
-var getOrderPayments = withAnyPermission(["sale_order:list", "sale_order:refund_create", "sale_order:refund_approve"], async (session4, saleOrderId) => {
+var getOrderPayments = withAnyPermission([...ORDER_DETAIL_PAGE_CAPABILITIES], async (session4, saleOrderId) => {
   const [order] = await db2.select({ storeId: saleOrders.storeId }).from(saleOrders).where(import_drizzle_orm33.and(import_drizzle_orm33.eq(saleOrders.saleOrderId, saleOrderId), scopeCondition(session4, saleOrders.storeId))).limit(1);
   if (!order)
     return [];
@@ -175481,7 +175491,6 @@ var INVENTORY_GENERIC_DOC_TYPES = [
   "分院调货出库",
   "市场间调货出库",
   "内部领用",
-  "院顾客产品出库",
   "院顾客退货",
   "市场产品报损",
   "院产品报损",
@@ -175532,7 +175541,6 @@ var GENERIC_DOC_BUSINESS_LEVEL = {
   市场产品盘溢: "market",
   市场库存盘点: "market",
   分院调货出库: "store",
-  院顾客产品出库: "store",
   院顾客退货: "store",
   院产品报损: "store",
   分院库存盘点: "store"
@@ -175787,7 +175795,8 @@ var SPECIALIZED_DOC_TYPES = new Set([
   "供应链退货入库",
   "院退货",
   "库存转换出库",
-  "库存转换入库"
+  "库存转换入库",
+  "院顾客产品出库"
 ]);
 var SYSTEM_DERIVED_DOC_TYPES = new Set([
   "分院调货入库",
@@ -176130,7 +176139,6 @@ async function assertGenericDocLocationRules(input, sourceOrgNodeId, targetOrgNo
         throw new ApiError("INVALID_PARAMS", "内部领用缺少出库主体");
       await assertLocationType(sourceOrgNodeId, "总部", "内部领用出库主体");
       return;
-    case "院顾客产品出库":
     case "院产品报损":
       if (!sourceOrgNodeId)
         throw new ApiError("INVALID_PARAMS", `${input.docType}缺少出库主体`);
@@ -176674,7 +176682,56 @@ async function resolveSkuSupplier(tx, supplierIdInput, currentSupplierId) {
   }
   return { supplierId: id, supplier: supplier.name, onlyIfCurrent: !supplier.isActive };
 }
-var listInventorySkus = withPermission("inventory:stock_list", async (session4, filters = {}) => {
+var SKU_ID_FILTER_MAX = 100;
+function normalizeSkuIdFilter(value) {
+  if (value === undefined || value === null)
+    return;
+  if (!Array.isArray(value) || value.some((id) => typeof id !== "string")) {
+    throw new ApiError("INVALID_PARAMS", "skuIds 必须是字符串数组");
+  }
+  const ids = Array.from(new Set(value.map((id) => id.trim()).filter(Boolean)));
+  if (ids.length > SKU_ID_FILTER_MAX) {
+    throw new ApiError("INVALID_PARAMS", `skuIds 一次最多 ${SKU_ID_FILTER_MAX} 个`);
+  }
+  return ids;
+}
+function optionalFilterId(value, label) {
+  if (value === undefined || value === null || value === "")
+    return;
+  if (typeof value !== "string" || !value.trim())
+    throw new ApiError("INVALID_PARAMS", `${label}无效`);
+  return value.trim();
+}
+function inventorySkuOptionConditions(filters) {
+  const conditions3 = [];
+  if (filters.sourceType) {
+    if (!INVENTORY_SKU_SOURCE_TYPES.includes(filters.sourceType)) {
+      throw new ApiError("INVALID_PARAMS", "无效库存商品来源");
+    }
+    conditions3.push(import_drizzle_orm57.eq(inventorySkus.sourceType, filters.sourceType));
+  }
+  if (filters.reportable)
+    conditions3.push(import_drizzle_orm57.eq(inventorySkus.isReportable, true));
+  const availableToMarketId = optionalFilterId(filters.availableToMarketId, "可用市场");
+  if (availableToMarketId) {
+    conditions3.push(import_drizzle_orm57.or(import_drizzle_orm57.eq(inventorySkus.sourceType, "供应链"), import_drizzle_orm57.eq(inventorySkus.ownerMarketId, availableToMarketId)));
+  }
+  const ownedByMarketId = optionalFilterId(filters.ownedByMarketId, "归属市场");
+  if (ownedByMarketId) {
+    conditions3.push(import_drizzle_orm57.and(import_drizzle_orm57.ne(inventorySkus.sourceType, "供应链"), import_drizzle_orm57.eq(inventorySkus.ownerMarketId, ownedByMarketId)));
+  }
+  const keyword = typeof filters.keyword === "string" ? filters.keyword.trim() : "";
+  if (keyword) {
+    const pattern = `%${keyword.replace(/[%_\\]/g, "\\$&")}%`;
+    conditions3.push(import_drizzle_orm57.or(import_drizzle_orm57.ilike(inventorySkus.skuId, pattern), import_drizzle_orm57.ilike(inventorySkus.productCode, pattern), import_drizzle_orm57.ilike(inventorySkus.productName, pattern), import_drizzle_orm57.ilike(inventorySkus.specName, pattern), import_drizzle_orm57.ilike(inventorySkus.productSeries, pattern)));
+  }
+  return conditions3;
+}
+var listInventorySkus = withPermission("inventory:stock_list", async (session4, rawFilters = {}) => {
+  const filters = rawFilters ?? {};
+  const skuIds = normalizeSkuIdFilter(filters.skuIds);
+  if (skuIds !== undefined && skuIds.length === 0)
+    return { data: [], total: 0 };
   await syncInventoryLocations();
   const { page, pageSize, offset } = resolvePaging({
     page: filters.page,
@@ -176695,12 +176752,9 @@ var listInventorySkus = withPermission("inventory:stock_list", async (session4, 
   }
   if (filters.onlyActive ?? true)
     conditions3.push(import_drizzle_orm57.eq(inventorySkus.isActive, true));
-  if (filters.sourceType)
-    conditions3.push(import_drizzle_orm57.eq(inventorySkus.sourceType, filters.sourceType));
-  if (filters.keyword) {
-    const pattern = `%${filters.keyword.replace(/[%_]/g, "\\$&")}%`;
-    conditions3.push(import_drizzle_orm57.or(import_drizzle_orm57.ilike(inventorySkus.skuId, pattern), import_drizzle_orm57.ilike(inventorySkus.productCode, pattern), import_drizzle_orm57.ilike(inventorySkus.productName, pattern), import_drizzle_orm57.ilike(inventorySkus.specName, pattern), import_drizzle_orm57.ilike(inventorySkus.productSeries, pattern)));
-  }
+  if (skuIds !== undefined)
+    conditions3.push(import_drizzle_orm57.inArray(inventorySkus.skuId, skuIds));
+  conditions3.push(...inventorySkuOptionConditions(filters));
   const whereClause = conditions3.length > 0 ? import_drizzle_orm57.and(...conditions3) : undefined;
   const [countRow] = await db2.select({ count: import_drizzle_orm57.sql`cast(count(*) as int)` }).from(inventorySkus).where(whereClause);
   const rows = await db2.select({ sku: inventorySkus, ownerMarketName: orgNodes.name, supplierName: inventorySuppliers.name }).from(inventorySkus).leftJoin(orgNodes, import_drizzle_orm57.eq(inventorySkus.ownerMarketId, orgNodes.id)).leftJoin(inventorySuppliers, import_drizzle_orm57.eq(inventorySkus.supplierId, inventorySuppliers.supplierId)).where(whereClause).orderBy(import_drizzle_orm57.asc(inventorySkus.productCode)).limit(pageSize).offset(offset);

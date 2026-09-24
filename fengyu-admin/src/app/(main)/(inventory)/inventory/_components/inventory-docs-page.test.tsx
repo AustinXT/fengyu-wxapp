@@ -8,7 +8,6 @@ import type {
   InventoryLocationFilterOptions,
   InventoryLocationRow,
   InventoryLotRow,
-  InventorySkuRow,
 } from '@/lib/inventory/types'
 
 // refresh 必须是共享引用：原先每次调用 useRouter 都新建一个 vi.fn()，测试拿不到它，
@@ -37,6 +36,7 @@ vi.mock('@/actions/inventory/docs', () => ({
 vi.mock('@/actions/inventory/stocks', () => ({ listInventoryLotOptions: vi.fn() }))
 
 vi.mock('sonner', () => ({ toast: { error: vi.fn(), success: vi.fn() } }))
+vi.mock('./inventory-sku-search-select', () => import('./__stubs__/inventory-sku-search-select.stub'))
 
 import { toast } from 'sonner'
 import { listInventoryLotOptions } from '@/actions/inventory/stocks'
@@ -104,7 +104,6 @@ const baseProps = {
   rows: [row],
   total: 1,
   locations: [],
-  skuOptions: [],
   canCreate: true,
   canApprove: true,
   canReceive: true,
@@ -170,43 +169,6 @@ const locations: InventoryLocationRow[] = [
   { locationId: 'LOC-M2', locationType: '市场', name: '自贡市场', orgNodeId: 'M2', storeId: null, parentLocationId: null, isActive: true },
 ]
 
-function sku(skuId: string, productCode: string, productName: string): InventorySkuRow {
-  return {
-    skuId,
-    productCode,
-    productName,
-    specName: null,
-    supplier: null,
-    supplierId: null,
-    supplierName: null,
-    manufacturer: null,
-    brand: null,
-    productSeries: null,
-    purchaseCategory: null,
-    sourceType: '供应链',
-    ownerMarketId: null,
-    ownerMarketName: null,
-    retailPrice: null,
-    accountingPrice: null,
-    supplyChainPurchasePrice: null,
-    marketPurchasePrice: null,
-    marketPurchasePriceMode: null,
-    marketPurchasePriceOverrideReason: null,
-    storePurchasePrice: null,
-    marketStaffPurchasePrice: null,
-    marketPurchaseDiscount: null,
-    storePurchaseDiscount: null,
-    staffPurchaseDiscount: null,
-    itemCompanyPurchasePrice: null,
-    isReportable: true,
-    isActive: true,
-    remark: null,
-    createdAt: '2026-08-13T00:00:00.000Z',
-    updatedAt: '2026-08-13T00:00:00.000Z',
-  }
-}
-
-const skuOptions = [sku('SKU-1', 'P001', '精华液'), sku('SKU-2', 'P002', '面膜')]
 
 function lot(
   id: number,
@@ -272,7 +234,6 @@ function openDialogAndPickSource() {
     <InventoryDocsPage
       {...baseProps}
       locations={locations}
-      skuOptions={skuOptions}
       allowedCreateDocTypes={['市场产品报损']}
     />,
   )
@@ -486,7 +447,6 @@ describe('#200 切换单据类型时复位主体字段', () => {
       <InventoryDocsPage
         {...baseProps}
         locations={locations}
-        skuOptions={skuOptions}
         allowedCreateDocTypes={types}
       />,
     )
@@ -494,16 +454,16 @@ describe('#200 切换单据类型时复位主体字段', () => {
   }
 
   it('换类型后出库/入库主体都回到未选状态，不把上一张单的残留带进新单', () => {
-    openWithTypes(['分院调货出库', '院顾客产品出库'])
+    openWithTypes(['分院调货出库', '院顾客退货'])
 
     fireEvent.change(sourceSelect(), { target: { value: 'M1' } })
     fireEvent.change(targetSelect(), { target: { value: 'M2' } })
     expect(sourceSelect().value).toBe('M1')
     expect(targetSelect().value).toBe('M2')
 
-    fireEvent.change(dialogSelect(/^分院调货出库$/), { target: { value: '院顾客产品出库' } })
+    fireEvent.change(dialogSelect(/^分院调货出库$/), { target: { value: '院顾客退货' } })
 
-    // 院顾客产品出库是单边（只走 source）单据，残留的 target 会被服务端直接拒
+    // 院顾客退货是单边（只走 target）单据，残留的 source 会被服务端直接拒
     expect(sourceSelect().value).toBe('')
     expect(targetSelect().value).toBe('')
   })
@@ -518,7 +478,8 @@ describe('#200 切换单据类型时复位主体字段', () => {
   it('换类型后只选入库主体就提交，payload 不得带上一张单的 lotId', async () => {
     vi.mocked(listInventoryLotOptions).mockResolvedValue([lot(11, 'SKU-1', 'B-001', 30)])
     vi.mocked(createInventoryCoreDoc).mockResolvedValue(undefined as never)
-    openWithTypes(['院顾客产品出库', '院产品报损'])
+    // #350 前第一张用「院顾客产品出库」；它移出通用白名单后换成同样要选来源批次的分院调货出库
+    openWithTypes(['分院调货出库', '院产品报损'])
 
     // 第一张单：选好出库主体 + SKU + 批次
     fireEvent.change(sourceSelect(), { target: { value: 'M1' } })
@@ -528,7 +489,7 @@ describe('#200 切换单据类型时复位主体字段', () => {
     expect(lotSelect().value).toBe('11')
 
     // 切到同主体单据，然后**只动入库主体**（它的 onChange 不清 lotId）
-    fireEvent.change(dialogSelect(/^院顾客产品出库$/), { target: { value: '院产品报损' } })
+    fireEvent.change(dialogSelect(/^分院调货出库$/), { target: { value: '院产品报损' } })
     expect(sourceSelect().value).toBe('')
     expect(targetSelect().value).toBe('')
     fireEvent.change(targetSelect(), { target: { value: 'M1' } })
@@ -557,7 +518,6 @@ describe('6 种需选来源批次的通用单据都能走完提交（#129 验收
       <InventoryDocsPage
         {...baseProps}
         locations={locations}
-        skuOptions={skuOptions}
         allowedCreateDocTypes={[docType]}
       />,
     )
@@ -584,13 +544,12 @@ describe('6 种需选来源批次的通用单据都能走完提交（#129 验收
 // 而弹窗不渲染批次框 → 提交必撞「出库类明细必须选择库存批次」且用户无法补救。
 // 所以这里还要直接读 engine.ts 的字面量做单向包含检查。
 describe('通用建单入口里需要来源批次的单据类型', () => {
-  it('恰好是 SOURCE_LOT × 通用类型的这 6 项', () => {
+  it('恰好是 SOURCE_LOT × 通用类型的这 5 项（#350 院顾客产品出库只走提货）', () => {
     const intersection = INVENTORY_GENERIC_DOC_TYPES.filter((t) => SOURCE_LOT_DOC_TYPES.has(t))
     expect(intersection).toEqual([
       '分院调货出库',
       '市场间调货出库',
       '内部领用',
-      '院顾客产品出库',
       '市场产品报损',
       '院产品报损',
     ])
@@ -666,7 +625,6 @@ function openCreateDialog(allowed: InventoryDocType[]) {
     <InventoryDocsPage
       {...baseProps}
       locations={locations}
-      skuOptions={skuOptions}
       allowedCreateDocTypes={allowed}
     />,
   )
@@ -717,20 +675,22 @@ describe('建单表单按单据类型收窄库存主体端点（#200 S6）', () 
     expect(targetSelect()).toBeEnabled()
   })
 
-  it('只出不进的「院顾客产品出库」禁用入库主体，出库主体照常可选', () => {
-    openCreateDialog(['院顾客产品出库'])
-    expect(targetSelect()).toBeDisabled()
-    expect(sourceSelect()).toBeEnabled()
+  it('#350 后通用类型里没有「只出不进」的单边类型：院顾客产品出库已移出白名单', () => {
+    // 它曾是唯一的 source-only 通用类型；顾客出库改由提货服务产生后，端点口径表里不应再有 source-only
+    expect(INVENTORY_GENERIC_DOC_TYPES).not.toContain('院顾客产品出库')
+    for (const docType of INVENTORY_GENERIC_DOC_TYPES) {
+      expect(genericDocEndpointMode(docType), docType).not.toBe('source-only')
+    }
   })
 
   it('换单据类型会清空两端主体', () => {
-    // 不清的话：先在「院顾客产品出库」填了出库主体，再切「院顾客退货」，
+    // 不清的话：先在「院产品报损」填了出库主体，再切「院顾客退货」，
     // 用户看着一个禁用且空的出库主体，却收到服务端的「只能指定入库主体」。
-    openCreateDialog(['院顾客产品出库', '院顾客退货'])
+    openCreateDialog(['院产品报损', '院顾客退货'])
     fireEvent.change(sourceSelect(), { target: { value: 'M1' } })
     expect(sourceSelect().value).toBe('M1')
 
-    fireEvent.change(docTypeSelect('院顾客产品出库'), { target: { value: '院顾客退货' } })
+    fireEvent.change(docTypeSelect('院产品报损'), { target: { value: '院顾客退货' } })
     expect(sourceSelect().value).toBe('')
     expect(targetSelect().value).toBe('')
   })
@@ -783,21 +743,9 @@ describe('建单表单按单据类型收窄库存主体端点（#200 S6）', () 
     expect(lastCreatePayload().targetOrgNodeId).toBe('M2')
   })
 
-  it('payload：source-only 类型把入库主体送 null', async () => {
-    vi.mocked(listInventoryLotOptions).mockResolvedValue([lot(77, 'SKU-1', 'B-777', 30)])
-    vi.mocked(createInventoryCoreDoc).mockResolvedValue(createdDoc as never)
-    openCreateDialog(['院顾客产品出库'])
-
-    fireEvent.change(sourceSelect(), { target: { value: 'M1' } })
-    fireEvent.change(skuSelect(), { target: { value: 'SKU-1' } })
-    await waitFor(() => expect(lotSelect()).not.toBeDisabled())
-    fireEvent.change(lotSelect(), { target: { value: '77' } })
-    fillLineAndSubmit('3')
-
-    await waitFor(() => expect(createInventoryCoreDoc).toHaveBeenCalledTimes(1))
-    expect(lastCreatePayload().sourceOrgNodeId).toBe('M1')
-    expect(lastCreatePayload().targetOrgNodeId).toBeNull()
-  })
+  // #350：原「payload：source-only 类型把入库主体送 null」已删 —— 唯一的 source-only 通用类型
+  // （院顾客产品出库）移出白名单，通用入口已无此类型可测；submit() 里的 source-only 三元保留，
+  // 与服务端按 locationRole 推导的单边规则同构，将来新增 source-only 类型时仍生效。
 
   it('payload：同主体类型两端送同一个主体，不再让服务端靠 source ?? target 猜', async () => {
     vi.mocked(createInventoryCoreDoc).mockResolvedValue(createdDoc as never)
@@ -1591,4 +1539,32 @@ describe('「收货」按钮按行判定：只给能收这张单 target 的账�
       expect(screen.queryByRole('button', { name: '收货' })).toBeNull()
     },
   )
+})
+
+describe('单据列表「关联销售单」列（#350）', () => {
+  const gckRow: InventoryDocRow = {
+    ...row,
+    id: 'GCK-20260924-0001',
+    docType: '院顾客产品出库',
+    status: '已完成',
+    relatedSaleOrderId: 'FY-XSD-WX-2609240001',
+  }
+
+  it('有订单查看权限：显示为指向订单详情的链接', () => {
+    render(<InventoryDocsPage {...baseProps} rows={[gckRow]} canOpenOrderDetail />)
+    const link = screen.getByRole('link', { name: 'FY-XSD-WX-2609240001' })
+    expect(link.getAttribute('href')).toBe('/orders/FY-XSD-WX-2609240001')
+  })
+
+  it('缺省（未传 / 无权限）只显示单号文本，fail-closed', () => {
+    render(<InventoryDocsPage {...baseProps} rows={[gckRow]} />)
+    expect(screen.getByText('FY-XSD-WX-2609240001')).toBeTruthy()
+    expect(screen.queryByRole('link', { name: 'FY-XSD-WX-2609240001' })).toBeNull()
+  })
+
+  it('没有关联销售单的单据显示占位符', () => {
+    render(<InventoryDocsPage {...baseProps} rows={[{ ...row, relatedSaleOrderId: null }]} canOpenOrderDetail />)
+    expect(screen.getByRole('columnheader', { name: '关联销售单' })).toBeTruthy()
+    expect(screen.queryByRole('link', { name: /FY-XSD/ })).toBeNull()
+  })
 })

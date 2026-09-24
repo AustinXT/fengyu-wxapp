@@ -24,6 +24,7 @@ import type { AuthSession, SaleOrder, SaleItem, DateBasis, OrderStatus, SaleOrde
 import { revalidatePath } from 'next/cache'
 import { scopeCondition, isInScope, requireAdmin, isDepositOrderApprover } from '@/lib/permissions'
 import { withPermission, withAnyPermission } from '@/lib/with-permission'
+import { ORDER_DETAIL_PAGE_CAPABILITIES } from '@/lib/order-detail-access'
 import { logOperation, logTransition, logUpdate } from '@/lib/operation-log'
 import { ApiError, parseErrorPrefix } from '@/lib/api-error'
 import { businessErrorMessage } from '@/lib/action-error'
@@ -3070,7 +3071,8 @@ export const exportAllocationOrders = withPermission(
 // 订单详情页可由订单查看者（sale_order:list）或退款相关角色
 // （sale_order:refund_create 提单人 / sale_order:refund_approve 审批人）访问
 export const getOrderById = withAnyPermission(
-  ['sale_order:list', 'sale_order:refund_create', 'sale_order:refund_approve'],
+  // 与 /orders/[id] 页面守卫、各处「跳转订单详情」链接同一单源（#350）
+  [...ORDER_DETAIL_PAGE_CAPABILITIES],
   async (session, saleOrderId: string): Promise<SaleOrder | null> => {
   // 2026-07-08 修复 T1：与 getOrders 对齐，left join clientWechatUsers 做 name/phone 兜底。
   const rows = await db
@@ -3630,7 +3632,8 @@ export const updatePaymentPerformanceAttributionDate = withPermission(
  */
 // 详情页支付流水：订单查看者或退款相关角色（提单人 / 审批人）均可读
 export const getOrderPayments = withAnyPermission(
-  ['sale_order:list', 'sale_order:refund_create', 'sale_order:refund_approve'],
+  // 与 /orders/[id] 页面守卫、各处「跳转订单详情」链接同一单源（#350）
+  [...ORDER_DETAIL_PAGE_CAPABILITIES],
   async (session, saleOrderId: string): Promise<import('@/lib/types').SaleOrderPayment[]> => {
   // scope 校验：只有订单所在门店在 scope 内才允许查看流水
   const [order] = await db

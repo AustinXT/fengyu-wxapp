@@ -30,7 +30,7 @@ import {
 } from '@db/inventory'
 import { orgNodes, stores } from '@db/org'
 import { productSkus } from '@db/product'
-import { and, asc, desc, eq, gte, ilike, inArray, isNotNull, isNull, lte, or, sql } from 'drizzle-orm'
+import { and, asc, desc, eq, gte, ilike, inArray, isNotNull, isNull, lte, ne, or, sql } from 'drizzle-orm'
 import { alias } from 'drizzle-orm/pg-core'
 import type { SQL } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
@@ -68,6 +68,8 @@ import {
   type InventoryPromotionPlanRow,
   type InventoryPromotionRuleType,
   type InventorySkuInput,
+  type InventorySkuListFilters,
+  type InventorySkuOptionFilters,
   type InventoryCompositionInput,
   type InventoryCompositionOptions,
   type InventoryCompositionRow,
@@ -227,7 +229,7 @@ const RECEIVE_INBOUND_TYPE: Partial<Record<InventoryDocType, InventoryDocType>> 
 
 /**
  * 这些单据必须由专用业务服务创建，才能保留需求、优惠、批次与履约关系。
- * 通用建单只负责盘点、领用、报损、转换等没有上游业务血缘的库存动作。
+ * 通用建单只负责盘点、领用、报损等没有上游业务血缘的库存动作（库存转换走专用的 createInventoryConversion）。
  */
 const SPECIALIZED_DOC_TYPES = new Set<InventoryDocType>([
   '门店报货',
@@ -250,6 +252,8 @@ const SPECIALIZED_DOC_TYPES = new Set<InventoryDocType>([
   '院退货',
   '库存转换出库',
   '库存转换入库',
+  // #350：顾客出库只能由提货服务（createPickupRecord / staffApi order.createPickup）产生
+  '院顾客产品出库',
 ])
 
 /**
@@ -690,7 +694,7 @@ async function assertGenericDocLocationRules(
   actingOrgNodeId: string,
 ): Promise<void> {
   /**
-   * 这里的 case 集合必须与 `INVENTORY_GENERIC_DOC_TYPES`（types.ts，10 个）一一对应 ——
+   * 这里的 case 集合必须与 `INVENTORY_GENERIC_DOC_TYPES`（types.ts，#350 起 9 个）一一对应 ——
    * 本函数只有一个调用点（`createInventoryCoreDoc`），而那里在更靠前的位置就把
    * `SPECIALIZED_DOC_TYPES` 整体拒了（「该库存单据必须从对应的专用业务流程创建」），
    * 所以任何专用类型的 case 写在这里都是**不可达**的。
@@ -715,7 +719,6 @@ async function assertGenericDocLocationRules(
       if (!sourceOrgNodeId) throw new ApiError('INVALID_PARAMS', '内部领用缺少出库主体')
       await assertLocationType(sourceOrgNodeId, '总部', '内部领用出库主体')
       return
-    case '院顾客产品出库':
     case '院产品报损':
       if (!sourceOrgNodeId) throw new ApiError('INVALID_PARAMS', `${input.docType}缺少出库主体`)
       await assertLocationType(sourceOrgNodeId, '门店', `${input.docType}出库主体`)
@@ -1555,12 +1558,78 @@ async function resolveSkuSupplier(
   return { supplierId: id, supplier: supplier.name, onlyIfCurrent: !supplier.isActive }
 }
 
+const SKU_ID_FILTER_MAX = 100
+
+function normalizeSkuIdFilter(value: unknown): string[] | undefined {
+  if (value === undefined || value === null) return undefined
+  if (!Array.isArray(value) || value.some((id) => typeof id !== 'string')) {
+    throw new ApiError('INVALID_PARAMS', 'skuIds 必须是字符串数组')
+  }
+  const ids = Array.from(new Set(value.map((id) => id.trim()).filter(Boolean)))
+  if (ids.length > SKU_ID_FILTER_MAX) {
+    throw new ApiError('INVALID_PARAMS', `skuIds 一次最多 ${SKU_ID_FILTER_MAX} 个`)
+  }
+  return ids
+}
+
+function optionalFilterId(value: unknown, label: string): string | undefined {
+  if (value === undefined || value === null || value === '') return undefined
+  if (typeof value !== 'string' || !value.trim()) throw new ApiError('INVALID_PARAMS', `${label}无效`)
+  return value.trim()
+}
+
+/**
+ * SKU 候选的业务过滤条件（#339），口径见 `InventorySkuOptionFilters` 的注释。
+ * 独立成纯函数是为了能在单测里把 SQL 渲染出来逐条断言 —— 组件测试都 mock 掉了 action，
+ * 这里的 OR / AND 写反（比如自采入库漏了「非供应链」）只有在这一层才测得出来。
+ */
+export function inventorySkuOptionConditions(filters: InventorySkuOptionFilters): SQL[] {
+  const conditions: SQL[] = []
+  if (filters.sourceType) {
+    if (!INVENTORY_SKU_SOURCE_TYPES.includes(filters.sourceType)) {
+      throw new ApiError('INVALID_PARAMS', '无效库存商品来源')
+    }
+    conditions.push(eq(inventorySkus.sourceType, filters.sourceType))
+  }
+  if (filters.reportable) conditions.push(eq(inventorySkus.isReportable, true))
+  const availableToMarketId = optionalFilterId(filters.availableToMarketId, '可用市场')
+  if (availableToMarketId) {
+    conditions.push(or(
+      eq(inventorySkus.sourceType, '供应链'),
+      eq(inventorySkus.ownerMarketId, availableToMarketId),
+    )!)
+  }
+  const ownedByMarketId = optionalFilterId(filters.ownedByMarketId, '归属市场')
+  if (ownedByMarketId) {
+    conditions.push(and(
+      ne(inventorySkus.sourceType, '供应链'),
+      eq(inventorySkus.ownerMarketId, ownedByMarketId),
+    )!)
+  }
+  const keyword = typeof filters.keyword === 'string' ? filters.keyword.trim() : ''
+  if (keyword) {
+    const pattern = `%${keyword.replace(/[%_\\]/g, '\\$&')}%`
+    conditions.push(or(
+      ilike(inventorySkus.skuId, pattern),
+      ilike(inventorySkus.productCode, pattern),
+      ilike(inventorySkus.productName, pattern),
+      ilike(inventorySkus.specName, pattern),
+      ilike(inventorySkus.productSeries, pattern),
+    )!)
+  }
+  return conditions
+}
+
 export const listInventorySkus = withPermission(
   'inventory:stock_list',
   async (
     session,
-    filters: { keyword?: string; sourceType?: InventorySkuSourceType; onlyActive?: boolean; page?: number; pageSize?: number } = {},
+    rawFilters: InventorySkuListFilters | null = {},
   ): Promise<{ data: InventorySkuRow[]; total: number }> => {
+    // Server Action 可被直调：显式传 null 时默认参数不生效
+    const filters = rawFilters ?? {}
+    const skuIds = normalizeSkuIdFilter(filters.skuIds)
+    if (skuIds !== undefined && skuIds.length === 0) return { data: [], total: 0 }
     await syncInventoryLocations()
     const { page, pageSize, offset } = resolvePaging({
       page: filters.page,
@@ -1588,19 +1657,8 @@ export const listInventorySkus = withPermission(
       )
     }
     if (filters.onlyActive ?? true) conditions.push(eq(inventorySkus.isActive, true))
-    if (filters.sourceType) conditions.push(eq(inventorySkus.sourceType, filters.sourceType))
-    if (filters.keyword) {
-      const pattern = `%${filters.keyword.replace(/[%_]/g, '\\$&')}%`
-      conditions.push(
-        or(
-          ilike(inventorySkus.skuId, pattern),
-          ilike(inventorySkus.productCode, pattern),
-          ilike(inventorySkus.productName, pattern),
-          ilike(inventorySkus.specName, pattern),
-          ilike(inventorySkus.productSeries, pattern),
-        ),
-      )
-    }
+    if (skuIds !== undefined) conditions.push(inArray(inventorySkus.skuId, skuIds))
+    conditions.push(...inventorySkuOptionConditions(filters))
     const whereClause = conditions.length > 0 ? and(...conditions) : undefined
     const [countRow] = await db
       .select({ count: sql<number>`cast(count(*) as int)` })

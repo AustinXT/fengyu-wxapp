@@ -274,8 +274,9 @@ export const createExternalMarketOutbound = withPermission(
     createExternalMarketOutboundImpl(session, input),
 )
 
-export const createInventoryConversion = withAnyPermission(
-  ['inventory:supply_chain_operate', 'inventory:market_operate', 'inventory:store_operate'],
+// 库存转换仅供应链可做（#343，9/18 会议 §2.15），市场/门店权限不再放行。
+export const createInventoryConversion = withPermission(
+  'inventory:supply_chain_operate',
   async (session, input: CreateInventoryConversionInput) =>
     createInventoryConversionImpl(session, input),
 )

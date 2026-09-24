@@ -11,7 +11,6 @@ import type {
   InventoryLocationRow,
   InventoryLotRow,
   InventoryMarketTransferTarget,
-  InventorySkuRow,
 } from '@/lib/inventory/types'
 import { INVENTORY_GENERIC_DOC_TYPES } from '@/lib/inventory/types'
 import { docActionErrorMessage, isStaleStateError } from '@/lib/inventory/doc-action-error'
@@ -21,6 +20,7 @@ import { DatePicker } from '@/components/ui/date-picker'
 import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
 import InventorySubjectSelect from '@/components/inventory-subject-select'
+import { InventorySkuSearchSelect } from './inventory-sku-search-select'
 import { Textarea } from '@/components/ui/textarea'
 
 /**
@@ -77,7 +77,6 @@ const GENERIC_DOC_ENDPOINT_MODE = {
   分院调货出库: 'both',
   市场间调货出库: 'both',
   内部领用: 'same-node',
-  院顾客产品出库: 'source-only',
   院顾客退货: 'target-only',
   市场产品报损: 'same-node',
   院产品报损: 'same-node',
@@ -175,7 +174,6 @@ export function InventoryDocCreateForm({
   visible,
   locations,
   marketTransferTargets = NO_MARKET_TRANSFER_TARGETS,
-  skuOptions,
   initialDocType,
   allowedDocTypes,
   onSuccess,
@@ -200,7 +198,6 @@ export function InventoryDocCreateForm({
    * 权限时不必取，传空（缺省）即可 —— 那样选到这个类型也只是接收主体为空、无法提交。
    */
   marketTransferTargets?: readonly InventoryMarketTransferTarget[]
-  skuOptions: InventorySkuRow[]
   initialDocType?: InventoryDocType
   allowedDocTypes?: readonly InventoryDocType[]
   /** 建单成功。`docId` 是刚建出来的单号，调用方拿去做可核对的反馈。 */
@@ -356,7 +353,7 @@ export function InventoryDocCreateForm({
        * 办理台的工作区提交完还开着（只 toast + router.refresh()，后者不重挂客户端组件），
        * 表单原样留在屏幕上、按钮解禁 —— 用户没看见 toast 再点一次，就建出第二张一模一样的单。
        * 而 `createInventoryCoreDoc` 没有幂等键，10 种通用类型里有 6 种**建单当刻就落库存流水**
-       * （内部领用 / 顾客产品出库 / 顾客退货 / 盘溢 / 两种调货出库），重复提交 = 重复扣减或重复入库，
+       * （内部领用 / 顾客退货 / 盘溢 / 两种调货出库；#350 前还有顾客产品出库），重复提交 = 重复扣减或重复入库，
        * 事后只能红冲。同页的内置表单成功后都会 `setLines([初始行])`，这里对齐它们。
        *
        * **主体与日期也要清**，别为了「连续建单少选一次」把它们留着：明细已经清空、
@@ -430,7 +427,7 @@ export function InventoryDocCreateForm({
               setDocType(e.target.value as InventoryDocType)
               /*
                * 换类型必须清两端主体与各行批次（#200 S6-b）：新类型的合法端点可能不同。
-               * 不清的话，先选「院顾客产品出库」填了出库主体、再切「院顾客退货」，
+               * 不清的话，先选「院产品报损」填了出库主体、再切「院顾客退货」，
                * 用户对着一个看起来空的表单收到「只能指定入库主体」。
                * 批次同理：批次是按出库主体的库位取的，主体一清旧 lotId 就不属于这张单了。
                *
@@ -483,7 +480,8 @@ export function InventoryDocCreateForm({
              * 同时填成它（自己调给自己，服务端必拒）。等发起端落定、候选按它收窄后再自动带出。
              */
             autoSelect={!isMarketTransfer || Boolean(sourceOrgNodeId)}
-            // 只禁非法端点：纯出库类（院顾客产品出库）没有入库主体这一说（#200 S6-d）
+            // 只禁非法端点：纯出库类没有入库主体这一说（#200 S6-d）。#350 起通用类型里已无此类
+            // （院顾客产品出库改由提货服务产生），保留分支与服务端按 locationRole 推导的单边规则同构
             disabled={endpointMode === 'source-only'}
             onChange={(value) => {
               // 与发起端的清空逻辑对称：市场间调货不接受「接收市场 = 发起市场」
@@ -518,17 +516,12 @@ export function InventoryDocCreateForm({
                 label={`明细 ${index + 1} 来源批次`}
               />
             )}
-            <Select
+            <InventorySkuSearchSelect
               value={item.skuId}
-              onChange={(e) => updateItem(index, { skuId: e.target.value, lotId: '' })}
-            >
-              <option value="">库存 SKU</option>
-              {skuOptions.map((sku) => (
-                <option key={sku.skuId} value={sku.skuId}>
-                  {sku.productCode} · {sku.productName}
-                </option>
-              ))}
-            </Select>
+              onChange={(skuId) => updateItem(index, { skuId, lotId: '' })}
+              placeholder="库存 SKU"
+              ariaLabel={`明细 ${index + 1} 库存 SKU`}
+            />
             <Input placeholder="批号" value={item.batchNo} onChange={(e) => updateItem(index, { batchNo: e.target.value })} />
             <DatePicker value={item.expiryDate} onValueChange={(value) => updateItem(index, { expiryDate: value })} aria-label={`明细 ${index + 1} 效期`} />
             <Input type="number" min="0" step="0.01" max="9999999999.99" placeholder="数量" value={item.quantity} onChange={(e) => updateItem(index, { quantity: e.target.value })} />
