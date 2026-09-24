@@ -231,6 +231,7 @@ export interface CustomerFilters {
 // 与 `parseOrderFilters` / `parseServiceOrderFilters` / `parseCardFilters` 同处一处，
 // 避免 page.tsx 与 action 间出现筛选映射漂移。
 import { parseCustomerFilters } from '@/lib/list-filters'
+import { resolvePaging } from '@/lib/paging'
 
 /** 构建顾客列表/导出共用 WHERE 条件（scope + 8 筛选维度 + 姓名/手机号搜索） */
 function buildCustomerConditions(
@@ -293,9 +294,12 @@ export interface PaginatedCustomers {
 export const getCustomersPaginated = withPermission(
   'customer:list',
   async (session, filters: CustomerFilters = {}): Promise<PaginatedCustomers> => {
-  const page = Math.max(1, filters.page || 1)
-  const pageSize = [10, 20, 50].includes(filters.pageSize ?? 0) ? filters.pageSize! : 20
-  const offset = (page - 1) * pageSize
+  const { page, pageSize, offset } = resolvePaging({
+    page: filters.page,
+    pageSize: filters.pageSize,
+    defaultPageSize: 20,
+    allowedPageSizes: [10, 20, 50],
+  })
 
   const whereClause = and(...buildCustomerConditions(session, filters))
 
@@ -307,7 +311,7 @@ export const getCustomersPaginated = withPermission(
       .from(clientWechatUsers)
       .where(whereClause)
       // 例外：picker 字母序
-      .orderBy(asc(clientWechatUsers.name))
+      .orderBy(asc(clientWechatUsers.name), asc(clientWechatUsers.userId))
       .limit(pageSize)
       .offset(offset),
   ])

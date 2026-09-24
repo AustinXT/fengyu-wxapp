@@ -14,11 +14,22 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 /** KPI 卡片矩阵定义（key 对应后端 SalesBoardResult.kpis） */
 const KPI_ITEMS: KpiGridItem[] = [
   { key: "storeRevenue", label: "总业绩" },
-  { key: "shengmeiRevenue", label: "生美业绩" },
+  // 生美业绩与生美实耗的标记分别来自 sale_items / service_items 两张表（#294 AC5：
+  // 存量有 23 行 is_shengmei 为 NULL、父子标记 4 行不一致，口径来源在 hint 里标明而非改数）。
+  // ⚠ 表名与列名**必须拆开写**，不能连成 `sale_items.is_shengmei`：hint 容器
+  // （kpi-card.tsx:45）没有 break-words，而 columns=4 在 <lg 视口是 grid-cols-2
+  // （不降到 1 列），单卡内容宽仅约 130px —— 26 字符的不可断词会溢出卡片（评审 P2）。
+  { key: "shengmeiRevenue", label: "生美业绩", hint: "取自 sale_items 的 is_shengmei 标记" },
   { key: "storeConsume", label: "总实耗" },
-  { key: "shengmeiConsume", label: "生美实耗" },
+  {
+    key: "shengmeiConsume",
+    label: "生美实耗",
+    hint: "取自 service_items 的 is_shengmei 标记，与业绩侧非同一张表",
+  },
   { key: "newCustomerRevenue", label: "新增客业绩", hint: "新增会员业绩" },
-  { key: "trafficCustomerRevenue", label: "流量客业绩", hint: "流量/体验/小美客" },
+  // #294：SQL 是 customer_type = '流量客'（2026-05-26 拍板，metrics.md:675），
+  // 原 hint「流量/体验/小美客」暗示三类合计，与卡面只含纯流量客一类不符
+  { key: "trafficCustomerRevenue", label: "流量客业绩", hint: "仅纯流量客，不含体验客/小美客" },
   { key: "revenuePerStore", label: "总业绩店均" },
   { key: "shengmeiRevenuePerStore", label: "生美业绩店均" },
   { key: "consumePerStore", label: "实耗店均" },
@@ -71,7 +82,7 @@ export function SalesBoard() {
 
   return (
     <div className="flex flex-col gap-6">
-      <KpiGrid items={KPI_ITEMS} kpis={kpis} columns={4} />
+      <KpiGrid items={KPI_ITEMS} kpis={kpis} columns={4} baseRanges={loading ? undefined : data?.timeRange} />
       {/* 明细表分 Tab：按市场 / 按门店 */}
       <Tabs defaultValue="market">
         <TabsList>

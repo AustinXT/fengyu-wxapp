@@ -42,6 +42,7 @@ import { auditRoleTypeNulls } from './steps/audit-role-type-nulls'
 import { auditPaymentInvariants } from './steps/audit-payment-invariants'
 import { auditRefundCascadeCoverage } from './steps/audit-refund-cascade-coverage'
 import { auditStoreUnbindOrphans } from './steps/audit-store-unbind-orphans'
+import { auditActiveAdminCount } from './steps/audit-active-admin-count'
 import { closeExpiredAppointments } from './steps/close-expired-appointments'
 import { resetCrossStoreFlags } from './steps/reset-cross-store-flags'
 import { retryVisitPoints } from './steps/retry-visit-points'
@@ -86,6 +87,7 @@ const STEPS: ReadonlyArray<readonly [string, StepFn]> = [
   ['paymentInvariants', auditPaymentInvariants as StepFn],
   ['refundCascadeCoverage', auditRefundCascadeCoverage as StepFn],
   ['storeUnbindOrphans', auditStoreUnbindOrphans as StepFn],
+  ['activeAdminCount', auditActiveAdminCount as StepFn],
 ] as const
 
 export interface RunOptions {

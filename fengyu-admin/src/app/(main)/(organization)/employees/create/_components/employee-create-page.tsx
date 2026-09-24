@@ -9,7 +9,7 @@ import { Input } from "@/components/ui/input"
 import { DatePicker } from "@/components/ui/date-picker"
 import { Select } from "@/components/ui/select"
 import { SkillSelect } from "@/components/ui/skill-select"
-import { OrgTreeSelect } from "@/components/ui/org-tree-select"
+import { EmployeeOwnershipFields } from "@/components/employee-ownership-fields"
 import { ImageUpload } from "@/components/ui/image-upload"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { createEmployee } from "@/actions/employees"
@@ -189,39 +189,17 @@ export default function EmployeeCreatePage({ stores, orgNodes, skillTags }: Prop
                 <option value="true">是</option>
               </Select>
             </div>
-            <div className="space-y-2">
-              <label className="text-sm font-medium">所属组织</label>
-              <OrgTreeSelect
-                orgNodes={orgNodes}
-                value={form.orgNodeId}
-                onChange={(id) => {
-                  handleChange("orgNodeId", id)
-                  const newMarketId = findAncestorMarketId(id, orgNodes)
-                  const storeMarketId = findAncestorMarketId(
-                    stores.find((s) => s.storeId === form.storeId)?.orgNodeId ?? null,
-                    orgNodes,
-                  )
-                  if (newMarketId !== storeMarketId) {
-                    handleChange("storeId", "")
-                  }
-                }}
-                placeholder="请选择所属组织"
-              />
-            </div>
-            <div className="space-y-2">
-              <label className="text-sm font-medium">所属门店</label>
-              <Select
-                value={form.storeId}
-                onChange={(e) => handleChange("storeId", e.target.value)}
-              >
-                <option value="">请选择门店</option>
-                {filteredStores.map((s) => (
-                  <option key={s.storeId} value={s.storeId}>
-                    {s.storeName}
-                  </option>
-                ))}
-              </Select>
-            </div>
+            {/* #259 归属双向联动整体在该组件内（含交互测试），页面只合并回传的补丁 */}
+            <EmployeeOwnershipFields
+              value={{ storeId: form.storeId, orgNodeId: form.orgNodeId }}
+              onChange={(patch) => {
+                setFormDirty(true)
+                setForm((prev) => ({ ...prev, ...patch }))
+              }}
+              orgNodes={orgNodes}
+              stores={stores}
+              storeOptions={filteredStores}
+            />
             <div className="space-y-2">
               <label className="text-sm font-medium">职位</label>
               <Input

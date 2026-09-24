@@ -18,6 +18,7 @@ import { refreshOrderAllocationRollup } from '@/lib/payment-allocatable'
 import { nowTs, beijingBoundaryTs, beijingNextDayBoundaryTs } from '@/lib/db-time'
 import { storeInMarketCondition } from '@/lib/market-store-sql'
 import { getInvalidEmployeeAssignmentId } from '@/lib/employee-assignment-server'
+import { resolvePaging } from '@/lib/paging'
 
 /**
  * 销售提成率查找（销售提成固化快照用）。
@@ -298,9 +299,15 @@ export const getPendingPayments = withPermission(
   }> => {
     // allocationStatus 缺省（「全部状态」）时不按状态过滤，只限定 allocation_status IS NOT NULL
     // 命中主流水行（走 partial index idx_sop_alloc_status，排除退款/储值卡抵扣从行/待支付等 NULL 行）。
-    const page = Math.max(1, Number(params.page) || 1)
-    const pageSize = Math.min(100, Math.max(1, Number(params.pageSize) || 20))
-    const offset = (page - 1) * pageSize
+    // clamp 型（非白名单）：这一支的 pageSize 允许 1~100 任意整数，不走列表白名单。
+    // 归一必须走 resolvePaging —— 原先的 `Math.min(100, Math.max(1, …))` 对 `?pageSize=2.5`
+    // 两个夹子双双失效（2.5 > 1 且 2.5 < 100），2.5 原样进 `.limit()` → PG int8in 报错。
+    const { page, pageSize, offset } = resolvePaging({
+      page: params.page,
+      pageSize: params.pageSize,
+      defaultPageSize: 20,
+      maxPageSize: 100,
+    })
 
     const scopeIds = session.permissions.scopeStoreIds
     // 缺省口径与 URL 解析（parseDateBasis）保持一致，避免「页面默认归属、直调默认下单」的双口径

@@ -68,6 +68,7 @@ import { INVENTORY_LINKAGE_ENABLED } from '@/lib/inventory-feature-flags'
 import { getInvalidEmployeeAssignmentId } from '@/lib/employee-assignment-server'
 import { classifySaleOrderDocumentType } from '@/lib/document-type'
 import { cashAmountDisplay, isWorkfineLegacy, paymentMethodDisplay } from '@/lib/workfine-legacy'
+import { resolvePaging } from '@/lib/paging'
 
 // drizzle 0.45 alias() 返回 PgTableWithColumns<Required<Update<any,...>>>，与 .leftJoin() 期望签名不兼容；cast 回原表类型解锁 build
 const opener = alias(staffWechatUsers, 'opener') as unknown as typeof staffWechatUsers
@@ -1267,9 +1268,12 @@ export interface PaginatedOrders {
 export const getOrdersPaginated = withPermission(
   'sale_order:list',
   async (session, filters: OrderFilters = {}): Promise<PaginatedOrders> => {
-  const page = Math.max(1, filters.page || 1)
-  const pageSize = [10, 20, 50].includes(filters.pageSize ?? 0) ? filters.pageSize! : 20
-  const offset = (page - 1) * pageSize
+  const { page, pageSize, offset } = resolvePaging({
+    page: filters.page,
+    pageSize: filters.pageSize,
+    defaultPageSize: 20,
+    allowedPageSizes: [10, 20, 50],
+  })
 
   // 构建 WHERE 条件（DB 级过滤，与导出共用同一构建器）
   const whereClause = and(...buildOrderConditions(session, filters))
@@ -1298,7 +1302,7 @@ export const getOrdersPaginated = withPermission(
     .leftJoin(clientWechatUsers, eq(saleOrders.clientUserId, clientWechatUsers.userId))
     .where(whereClause)
     // 例外：业务时间优先（订单日期比"最近编辑"更符合管理员直觉）
-    .orderBy(desc(saleOrders.saleOrderDatetime))
+    .orderBy(desc(saleOrders.saleOrderDatetime), desc(saleOrders.saleOrderId))
     .limit(pageSize)
     .offset(offset)
 

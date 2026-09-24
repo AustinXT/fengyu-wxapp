@@ -19,7 +19,8 @@
  *     不复用 spending_tier 列（lifetime 快照）；
  *     spend = SUM(sale_order_performance_events.amount) @ performance_date（#138 起，与业绩 KPI 同源；
  *     不按父订单 status 过滤、排除储值卡抵扣；与 mgmt-traffic.js 逐条一致，由 consistency.customer.test.ts 守护）
- *   - 成交率分母 = 区间内到店的「体验客 + 小美客」（D-conv-denom=B）
+ *   - 成交率分母 = 期初未达会员的到店活跃池 ∪ 本期全部新增会员（D-conv-denom=1c，#284 推翻原 D-2=B；
+ *     ② 分支与分子 newmem/queryNewMemberCount 同源，保证分子 ⊆ 分母、成交率恒 ≤ 100%）
  *   - 项目数 = SUM(session_used) WHERE sales_category IN ('自销自耗','他销自耗')（D-5）
  *   - customer_status 枚举 '沉睡'/'冰冻'/'休眠'（非 '预警沉睡'）
  *   - 客户维度 scope 用 bound_store_id，服务/订单维度用 store_id
@@ -37,6 +38,7 @@ import { prepareBoardContext } from '@/lib/data-center/context'
 import { scopeFilterSql, scopeStoreSkeletonSql } from '@/lib/data-center/scope-sql'
 import { excludeDepositRefundSql } from '@/lib/data-center/consume-filter'
 import { withComparison } from '@/lib/data-center/comparison'
+import { resolveDeltaDisplay } from '@/lib/delta-display'
 import type { AuthSession } from '@/lib/types'
 import type {
   BoardParams,
@@ -391,21 +393,52 @@ async function queryNewMemberSpend(
   return num(first(rows).v)
 }
 
-/** 当月流量客人数（成交率分母）= 区间内到店的「体验客 + 小美客」DISTINCT（D-conv-denom=B） */
+/**
+ * 当月流量客人数（成交率分母）= 期初未达会员的到店活跃池 ∪ 本期全部新增会员
+ * （D-conv-denom=1c，#284 于 2026-09-22 拍板；推翻原 D-2=B）
+ *
+ * 为什么不能只用 `customer_type IN ('体验客','小美客')`：该字段是**只升不降的当前快照**
+ * （升级链 流量客 → 体验客 → 小美客 → 会员客），本期成功转化的人当期已是「会员客」，
+ * 被从分母整体剔除 —— **而他们正是分子**。实测集团 2026-09 有 141 人被抹掉，
+ * 35 家有新会员的门店全部虚高，单店可出 800%，分母归零时前端显示 '--'。
+ *
+ * 分支 ② 不是锦上添花：151 名本期新增会员中有 10 人本期没有任何已完成服务单，
+ * 只有把他们 UNION 进分母，才能让**分子成为分母的真子集**，成交率上限 ≤ 100% 恒成立
+ * （纯活跃池方案 1a 做不到，故被否决）。
+ *
+ * 两分支 scope 列不同是有意的：① 按服务发生门店（`so.store_id`）、② 按顾客绑定门店
+ * （`c.bound_store_id`，与分子 `queryNewMemberCount` 逐字同源，子集关系靠这个对齐）。
+ */
 async function queryTrialFootfall(
   session: AuthSession,
   scope: DataCenterScope,
   range: ResolvedRange,
 ): Promise<number> {
-  const sc = scopeFilterSql(session, scope, 'so.store_id')
+  const scVisit = scopeFilterSql(session, scope, 'so.store_id')
+  const scMember = scopeFilterSql(session, scope, 'c.bound_store_id')
   const rows = await db.execute(sql`
-    SELECT COUNT(DISTINCT so.client_user_id) AS v
-    FROM service_orders so
-    JOIN client_wechat_users c ON c.user_id = so.client_user_id
-    WHERE ${sc}
-      AND so.status = '已完成'
-      AND so.service_date BETWEEN ${range.start} AND ${range.end}
-      AND c.customer_type IN ('体验客', '小美客')
+    SELECT COUNT(DISTINCT t.uid) AS v
+    FROM (
+      -- ① 本期到店 且 期初未达会员（当前仍未达会员 OR 本期内才转化）
+      SELECT so.client_user_id AS uid
+      FROM service_orders so
+      JOIN client_wechat_users c ON c.user_id = so.client_user_id
+      WHERE ${scVisit}
+        AND so.status = '已完成'
+        AND so.client_user_id IS NOT NULL
+        AND so.service_date BETWEEN ${range.start} AND ${range.end}
+        AND (
+          c.customer_type IN ('体验客', '小美客')
+          OR c.became_member_at::date BETWEEN ${range.start} AND ${range.end}
+        )
+      UNION
+      -- ② 本期全部新增会员（兜住本期无已完成服务单者，保证分子 ⊆ 分母）
+      SELECT c.user_id AS uid
+      FROM client_wechat_users c
+      WHERE ${scMember}
+        AND c.became_member_at IS NOT NULL
+        AND c.became_member_at::date BETWEEN ${range.start} AND ${range.end}
+    ) t
   `)
   return num(first(rows).v)
 }
@@ -727,16 +760,33 @@ async function queryOpsBreakdown(
         AND spe.performance_date BETWEEN ${start} AND ${end}
       GROUP BY ${groupId}
     ),
-    -- 流量客人数（成交率分母，体验客+小美客，市场内 DISTINCT 客户）
+    -- 流量客人数（成交率分母，D-conv-denom=1c）：期初未达会员的到店活跃池 ∪ 本期全部新增会员。
+    -- 与 KPI 的 queryTrialFootfall 同口径；② 分支的 JOIN 与 newmem（分子）逐字一致，
+    -- 组内分子 ⊆ 分母由此成立 —— 明细行的成交率不会再 > 100%，也不会因分母 0 显示 '--'。
+    -- 市场内按 uid DISTINCT：同一顾客跨同市场门店到店只计一次。
     traffic_cust AS (
-      SELECT ${groupId} AS group_id, COUNT(DISTINCT so.client_user_id) AS traffic_customers
-      FROM service_orders so
-      JOIN skel sk ON sk.store_id = so.store_id
-      JOIN client_wechat_users c ON c.user_id = so.client_user_id
-      WHERE so.status = '已完成'
-        AND so.service_date BETWEEN ${start} AND ${end}
-        AND c.customer_type IN ('体验客', '小美客')
-      GROUP BY ${groupId}
+      SELECT group_id, COUNT(DISTINCT uid) AS traffic_customers
+      FROM (
+        SELECT ${groupId} AS group_id, so.client_user_id AS uid
+        FROM service_orders so
+        JOIN skel sk ON sk.store_id = so.store_id
+        JOIN client_wechat_users c ON c.user_id = so.client_user_id
+        WHERE so.status = '已完成'
+          AND so.client_user_id IS NOT NULL
+          AND so.service_date BETWEEN ${start} AND ${end}
+          AND (
+            c.customer_type IN ('体验客', '小美客')
+            OR c.became_member_at::date BETWEEN ${start} AND ${end}
+          )
+        UNION
+        SELECT ${groupId} AS group_id, c.user_id AS uid
+        FROM client_wechat_users c
+        JOIN skel sk ON sk.store_id = c.bound_store_id
+        WHERE c.bound_store_id IS NOT NULL
+          AND c.became_member_at IS NOT NULL
+          AND c.became_member_at::date BETWEEN ${start} AND ${end}
+      ) tc
+      GROUP BY group_id
     ),
     -- 流量人次 / 会员人次（service_orders 行数，按实际发生门店汇总）
     visits_agg AS (
@@ -975,8 +1025,9 @@ export const getCustomerBoard = withPermission(
       withComparison((r) => queryOperatedMembers(session, scope, r), comparison, 'count', enabled),
       // 会员新增
       withComparison((r) => queryNewMemberCount(session, scope, r), comparison, 'count', enabled),
-      // 当月流量客人数（成交率分母）
-      withComparison((r) => queryTrialFootfall(session, scope, r), comparison, 'count', enabled),
+      // 成交率分母（#284 起为「期初未达会员活跃池 ∪ 本期全部新增会员」）
+      // ⚠ 第 4 参传 false = **不算同比/环比**，见下方 trafficCustomersCell 处的理由
+      withComparison((r) => queryTrialFootfall(session, scope, r), comparison, 'count', false),
       // 会员客单价
       withComparison((r) => queryMemberAvgTicket(session, scope, r), comparison, 'amount', enabled),
       // 新客客单价
@@ -1011,11 +1062,41 @@ export const getCustomerBoard = withPermission(
       ),
     ])
 
-    // 成交率 = 会员新增 ÷ 当月流量客（派生自上面已算的两个 KPI 的 value）
+    /**
+     * 成交率分母禁用同比/环比（#284）。
+     *
+     * 分母的两个分支数据深度差 50 个月：① 取自 `service_orders`（最早 2026-07-08）、
+     * ② 取自 `became_member_at`（回溯 2022-08）。基期一旦落在 2026-07-08 之前，
+     * ① 恒空而 ② 仍有数百人 —— 算出来的 delta **100% 由 ② 构成**，是个看着合理的假数。
+     *
+     * 旧口径分母只读 `service_orders`，这类基期恒 0，`deltaPct` 会抑制成 null → UI '--'，
+     * 是诚实的「算不出」。不把这条禁掉，本次修复就会把一个诚实的空值换成静默的错数。
+     *
+     * 与同页 `convRate` 同样处理：显式给「算不出」占位（前端渲染 '--'），而不是省略字段——
+     * 省略会让前端的 `!== undefined` 判定整行不渲染徽章。
+     * 割点背景见 memory `project-data-timeline-cutoff-20260703`。
+     *
+     * ⚠️ 这里原本写的是 `{ mom: null, yoy: null }`（#284 落地时 `KpiCell.mom` 还是
+     * `DeltaPct | null`）。#310/#315 把类型收紧为 `DeltaDisplay`、用 `{ kind: 'na' }`
+     * 表达「算不出」后，`null` 不再合法——两个 PR 各自绿灯、合并进 dev 才撞上。
+     * 构造一律走 `resolveDeltaDisplay`（`types.ts` 的要求），别手写 `{ kind: 'na' }` 字面量。
+     */
+    const trafficCustomersCell: KpiCell = {
+      ...trafficCustomers,
+      ...(enabled
+        ? { mom: resolveDeltaDisplay(null, null), yoy: resolveDeltaDisplay(null, null) }
+        : {}),
+    }
+    // 成交率 = 会员新增 ÷ 成交率分母（派生自上面已算的两个 KPI 的 value）
     const convRate: KpiCell = {
       value: safeDiv(newMembers.value ?? 0, trafficCustomers.value ?? 0),
       unit: 'percent',
-      ...(enabled ? { mom: null, yoy: null } : {}),
+      // 派生指标不算同比环比，但 enabled 时仍要占位，否则前端 `!== undefined` 判定会整行不渲染徽章。
+      // 走构造函数而不是手写 `{ kind: 'na' }` 字面量——types.ts 要求「构造一律走 resolveDeltaDisplay」，
+      // 手写字面量会给后人开效仿的口子，而手写 `pct` 会绕过「value*100 恒有限」的构造保证。
+      ...(enabled
+        ? { mom: resolveDeltaDisplay(null, null), yoy: resolveDeltaDisplay(null, null) }
+        : {}),
     }
     // 当月一次/二次人数（与客活同值，单列展示）—— 复用 visitOnce/visitTwice 的 value
     const visitOnceCell: KpiCell = { value: visitOnce.value, unit: 'count' }
@@ -1034,7 +1115,7 @@ export const getCustomerBoard = withPermission(
       reactivatedDeep,
       operatedMembers,
       newMembers,
-      trafficCustomers,
+      trafficCustomers: trafficCustomersCell,
       convRate,
       memberAvgTicket,
       newCustomerAvgTicket,

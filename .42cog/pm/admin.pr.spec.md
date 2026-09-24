@@ -102,6 +102,15 @@
 **登录约束**:
 - staff 不可登录；customer_mgr 可登录
 - 仅 `admin_passwords` 有记录的员工可登录
+- **离职员工（`is_resigned = true`）不可登录，且既有会话立即失效**（#318）：
+  `login`、`getSessionFromCookie`、`checkMustChange` **三处**都过滤 —— 只挡 `login` 不够，
+  JWT 有效期 24h，已登录的人在被标离职后还能继续用一整天。
+  写接口 `/api/upload` 也必须走 `getSession()` 而不是自己 `jwtVerify`
+  （middleware 在 edge 运行时连不了库，「离职即失效」只能落在 DB 回查这一层）。
+- **登录失败不可探测**：文案必须与密码错误**逐字相同**，且**耗时也要拉平** ——
+  「查不到人」直接返回不跑 bcrypt，「密码错」要跑一次 cost-12 compare（实测约 250ms），
+  差一个数量级就成了按手机号枚举在职账号的时序 oracle；加了离职过滤后这条信道被放大
+  （离职者从慢路径掉到快路径）。两条早退路径各对一个 dummy hash 烧掉一次等量 compare。
 - `must_change = true` 时强制改密
 - JWT 24h，支持刷新；连续 5 次错误锁定 15 分钟
 - 登录返回与员工端相同的 `permissions` 结构（`roles[]` + `actions[]`）
@@ -136,6 +145,37 @@ admin 管理权限分配/撤销、WorkFine → PG 数据同步、操作日志查
 
 **层级约束**: 引用 `backend.pr.spec.md` §2.1（headquarters→market→store→department，department 不可嵌套）
 
+**结构性变更的守卫**（#318）：改 `parent_id` **或** `type` 都算结构性变更（改类型同样会改变
+「员工 org 节点的最近门店祖先」：市场下的部门改成门店后，挂它的员工的最近门店祖先变成该节点自己）。
+判据只看字段是否传入，**不与事务外旧值比较** —— 并发下「看起来没变」也可能实际完成了改挂。
+这类变更走事务 + `org_nodes:reparent` advisory lock，锁内做三件事 ——
+① 锁内重读本行并**重跑**整套层级校验（事务外那次只是早拒：目标父节点的存在性/类型、
+本节点自己的 parent/type 都能在校验与写入之间被并发改掉）；
+② 复核环（无锁的环检查有 TOCTOU 窗口：两个并发交叉移动 A→B / B→A 各自都能通过，先后提交即成环）；
+③ **复核子树内员工的归属自洽** —— AFF-03 那条不变量只守了员工侧，改挂是它的另一侧：
+把部门 D 从市场改挂到 B 店节点下，挂着 D 的员工就成了「仍属 A 店、组织却在 B 店子树」，
+通过 store / org 两维同时进两个门店的 scope。**先 UPDATE 再复核**（查的是改挂后的真实树形态），
+不自洽则回滚并列出前 5 个人的姓名（超出 5 人时附总人数，姓名为空时兜底成工号），
+要求先调整他们的归属。判定口径与员工侧**同一个**
+（自身及祖先中最近的门店型节点），也共用**同一把锁**，否则两侧并发交叉会合成出不自洽状态。
+取锁顺序见 `src/lib/invariant-locks.ts`：① 组织树 → ② admin 计数 → ③ 行锁，反序即死锁（`40P01`）。
+
+**改 `type` 的三项连带校验**（锁内）：存量**直接子节点**与新类型不兼容则拒（`部门` 下不能挂门店）；
+节点上有**该层级不允许的角色绑定**则拒（DB trigger 只在绑定 INSERT 时按当时白名单校验、改节点
+类型不回溯）；`stores.org_node_id` **指向本节点**时不许改成非门店（否则门店失去组织挂载点）。
+改 `type` 还要额外取 ② —— 它读写的「节点类型 × 角色白名单 × 存量绑定」三元关系同时被
+`assignRole` / `updateRoleDefinition` 改写，那两条取的是 ②。
+
+**创建与删除同样改变树形态，也必须取 ①**：`createOrgNode` 锁内重读父节点类型；
+`deleteOrgNode` 把四项引用检查（子节点/员工/门店/角色）全部收进锁内重跑。
+删除不取锁的后果不只是守卫失效，而是让改挂/授权那两侧撞出**未翻译的 `23503` → 500**。
+
+**scope 判定一律按「当前树」而不是 session 快照**：`session.permissions.scopeOrgNodeIds` 是
+构造 session 时按**当时**的树展开好的，窗口是整个 JWT 寿命（24h）。所以锁内用
+`isNodeWithinScopeRoots(nodeId, 角色绑定的根节点, tx)` 重判 —— 对被编辑节点、目标父节点、
+创建时的父节点、删除的节点都要判。⚠️ 「锁内重跑 `isNodeInScope`」是 **no-op**（纯内存、
+同一入参必然同一答案），别那么改。
+
 #### AFF-02 门店信息管理
 
 **操作对象**: `stores` | 权限：admin, hr | 操作：新增（同时创建 org_nodes）、编辑、关闭（`is_closed = true`）
@@ -147,6 +187,16 @@ admin 管理权限分配/撤销、WorkFine → PG 数据同步、操作日志查
 
 **约束**: store_name 唯一；新增须选所属市场；经纬度格式校验
 
+**写库字段一律显式白名单**（#318）：`updateStore` 原先把 `{ ...data }` 裸 spread 进 `.set()` ——
+客户端多塞一个 `orgNodeId`（`stores` 的合法列）就能改掉门店↔节点映射、绕过建店那三层守卫；
+多塞 `storeId` 能改主键、多塞 `updatedAt` 能伪造乐观锁基线。`Partial<{…}>` 只是编译期类型，
+Server Action 是可直接调用的端点。`updateOrgNode` 同理（见 AFF-01）。
+
+**`createStore` 必须取 ① 组织树锁**（#318）：`stores.org_node_id` 是「门店 ↔ 组织节点」映射的
+写入方，而 AFF-01 改 `type` 的守卫要查「本节点上有没有门店映射」。两边不共锁就能交叉穿透 ——
+改类型事务查到「还没被门店引用」→ 建店事务把映射写上去并按旧类型过 trigger → 改类型提交
+→ 留下「门店指向非门店节点」。锁内重读节点类型，不是门店就拒。`updateStore` 不改该列，无需取锁。
+
 #### AFF-03 员工档案管理
 
 **操作对象**: `staff_wechat_users` | 权限：admin, hr | 操作：新增、编辑、标记离职（`is_resigned=true`，同步作废 permission_roles）
@@ -156,7 +206,102 @@ admin 管理权限分配/撤销、WorkFine → PG 数据同步、操作日志查
 - 组织：store_id, org_node_id, position_name（先选门店再选部门）
 - 档案：birthday, skills[]
 
-**约束**: phone 唯一；编辑门店/部门时需同步更新 permission_roles scope
+**约束**: phone 唯一
+
+**归属与角色的两条口径**（#249 / #259，2026-09-22 拍板；决策依据见对应 issue 的评论）:
+- **调店不自动搬迁角色绑定** —— 变更 store_id **不**改 `permission_roles.scope_id`。
+  数据模型没有「该绑定随主门店移动」的语义标记（无 primary / followsStore / 授权来源字段），
+  仅凭「旧店有该角色 && 新店没有」无法区分主岗 / 兼任 / 人工授予 / 同步脚本推导，自动搬迁等于猜；
+  且搬迁实质是「旧店 revoke + 新店 grant」，而该 action 只闸 `employee:update`。
+  旧店残留绑定随成功响应回传 —— **但分三种**：旧店在操作者 scope 内且查到绑定则附角色清单；
+  旧店超出 scope 时刻意**不查、不披露角色名**，只给「可能仍有绑定，请联系有权限的管理员复核」
+  的降级提示；确实没有绑定则只回普通成功文案。文案**中性**：「旧店仍有绑定」≠「新店缺授权」——
+  允许多绑定下员工在 A、B 两店都持 manager 是常态，主门店 A→B 时 B 店本来就有授权，
+  照「按新门店重新授权」去补会撞 `uq_permission_roles`；旧店那条也可能是该保留的兼任。
+  由持 `permission:assign` 的人当场判断（本 action 刻意不查新店绑定做差集）。
+  另：**复职**必须给权限提示，判据与调不调店无关（挂在调店分支里会漏掉「复职不调店」），
+  且必须**实查** `permission_roles` 而不是从 `is_resigned` 推断 ——
+  「离职 ⇒ 角色已清空」这个不变量会破：写 `is_resigned=true` 的 UPDATE 与删角色的事务是两次
+  独立提交 —— **那是历史实现，已由本次事务化修掉**；但它产生的存量残留行仍可能在库里。
+  另一条来源 `db/scripts/sync-workfine.js:381` 的 UPSERT 直接改 `is_resigned` 而完全不碰角色，
+  **至今有效**，所以判据仍然不能押注这个不变量。
+  实查为空 → 提示「已全部撤销，需重新授权」；非空 → 提示「离职期间仍保留…，复职后即恢复生效」。
+  同理 §AFF-03 的离职分支判据是 `rolesRevokedByRequest`（= `data.isResigned === true`，
+  「角色是本请求刚删的」，同一 action 内可信）—— 注意**不是**状态迁移 `isResigning`
+  （后者多带 `!旧值已离职`，已离职员工再传一次 `isResigned: true` 时角色确实被删光了却会被
+  判成「旧店本来没绑定」）。旧值已离职且本次没重传 `isResigned: true` 的请求落到查询分支查事实，
+  否则残留绑定会被静默吞掉。
+  归属的授权判定（逐字段 scope + 变更后仍可见）由 `ownershipTransitionError(session, before, after)`
+  一份实现承担，事务外传 `preTx*` 早拒、锁内传 `transition` 做权威判定 ——
+  只判「最终可见性」不判「逐字段」会留并发越权口子：员工 `{store: 越界B, org: scope内M}` 时，
+  回传旧值 B 的请求在并发把 store 合法改成 A 之后落地，实际是 A→B 的越界迁移而 M 仍可见。
+  `updateEmployee` 的**整个写入段在一个事务内**：最后一个超级管理员守卫（事务内重读，
+  否则两个 admin 并发离职会双双通过、留下零管理员）→ 员工行 UPDATE（乐观锁 CAS）→ 复职角色快照
+  → 离职时清角色 + revoke 审计 → §AFF-03 审计 → 复职审计 → `employee.update` 审计。
+  `logOperation` / `logUpdate` / `countActiveAdmins` / `isAdminEmployee` /
+  `findAllRoleBindings` / `findRolesBoundWithinSubtree` 都接可选 executor，一律传 `tx`。
+  事务外只剩 `revalidatePath` 与文案组装。
+  理由：审计留在事务外时，它失败会留下「状态已改、前端显示失败」；复职那条更糟 ——
+  重试不再进入复职分支，权限提示永久丢失。
+  事务开头依次是：advisory lock → `FOR UPDATE` 锁住员工行重读**完整行** → 由它构造一个
+  `transition` 对象（`before/after` 归属 + `isResigning` / `isReinstating`），
+  下游消费者分两类，**共同点是全都来自锁内**：归属自洽复查、scope 与最终可见性复查、
+  §AFF-03 审计、复职审计接 `transition`；`logUpdate` 接 `lockedRow`（审计 before）与真正写库的
+  `updateData`。关键不是「全都叫 transition」，而是「没有一个来自事务外」——
+  事务外那组值一律带 `preTx` 前缀、只用于早拒优化。
+  这条结构规则是本 PR 十三轮评审的共同诊断 —— 此前的缺陷几乎全出自
+  「同一份状态两套真相（事务外快照 vs 锁内重读），靠注释纪律而非结构来同步」：
+  并发合成出跨门店双重可见、锁内只重算自洽却没重算 scope（员工被永久挤出可见范围）、
+  §AFF-03 闭包捕获事务外旧店（审错店、漏披露「调回」与「调离」）。
+  离职守卫之前要取
+  `pg_advisory_xact_lock(hashtext('admin:active_count'))`：仅把计数查询传进 `tx` **不够串行**，
+  READ COMMITTED 下两笔并发离职分别针对不同 admin 时各自都读到 `count = 2`。
+  **写库字段必须显式白名单拣选**——`{ ...data }` 全量展开会让直调方写进任意同名表列，
+  而 `staff_wechat_users.openid` 是真实列、`staffApi` 用 `WHERE u.openid = $1` 认证员工 →
+  持 `employee:update` 者可接管 scope 内任一员工的小程序账号（账号接管级越权）。
+  锁序统一为「advisory lock → 员工行锁」，两个 action 同序（反序会 `40P01` 死锁）；
+  守卫要判「目标当前在职」（`countActiveAdmins` 只数在职，对离职残留 admin 会误拒且文案说反）。
+  `deleteEmployee`（物理删除）共用同一把锁，守卫与 `employee.delete` 审计同样在事务内；
+  `createEmployee` 的 `employee.create` 审计也在事务内 —— 三个写入口同构（「只修一侧等于没修」）。
+  ⚠️ `actions/permissions.ts` 撤销超级管理员角色也会减少活跃 admin，要完全闭合该不变量
+  得让它取**同一把**锁 —— 跨 action 的锁协议，待独立处理。
+  `23503` 只在**精确白名单**（`staff_wechat_users_store_id_stores_store_id_fk` /
+  `staff_wechat_users_org_node_id_org_nodes_id_fk`）上翻译成「门店/组织节点已被删除」；
+  ⚠️ 不能写 `includes('staff_wechat_users')` —— 审计表那条 FK 的真名
+  `operation_logs_operator_employee_id_staff_wechat_users_employee_id_fk` 也含该子串。
+  ⚠️ 生产实测（2026-09-22）当前 `is_resigned=true` 且仍有绑定的行是 0 条（27 个离职员工全干净）。
+  **另一个相关缺口在本 PR 范围外，待独立处理**：
+  `actions/auth.ts` 的 `login` 与 `lib/auth.ts` 取 session 都不校验 `is_resigned`，
+  一旦出现残留绑定（`sync-workfine.js` 随时能造出来），离职员工能直接登录后台行使那些权限。
+  离职状态与离职日期是**双写不变量**：以本次操作后的 `isResigned` 为权威统一推导 `resigned_at`，
+  不让显式传入的 `resignedAt` 绕过（否则会写出「已离职无日期」或「在职却有离职日期」）。
+  ⚠️ 生产上多店兼任是常态（31 个「员工 × 角色」对持多条 scope 绑定，最多一人绑 5-6 个门店）。
+  ⚠️ 「旧店有哪些绑定」查的是旧店组织节点**及其子树**，但这只是便宜的向前兼容：
+  DB trigger `permission_validate_role_assignment_scope()` 按
+  `permission_role_definitions.allowed_scope_types` 限制 scope_id 只能是 总部/市场/门店 型节点
+  （现有 10 个角色无一含「部门」），且生产上门店型节点零子节点 —— 子树在此恒等于精确匹配。
+  **别据此推断 scope_id 能挂部门。**
+- **org_node_id 归属自洽** —— 若 org_node_id 归属于某门店（自身是门店节点，或挂在门店节点下），
+  那个门店必须正是 store_id 所指。挂**市场**下的部门放行 —— 生产上 13 人是这种矩阵式归属
+  （养生师挂养生部、数据主管挂财智部，门店是工作地点、部门是专业归属）。
+  只在归属字段发生变更时校验，存量不一致记录不影响其它字段编辑。
+  两端的**存在性**在比对之前各自单独校验（门店不存在 / 组织节点不存在都直接拒），
+  写库阶段的并发删除窗口由 `23503` 转译兜底 —— 否则用户看到的是 500。
+  ⚠️ `store_id` 为空 + `org_node_id` 指向某门店（或其子树）这个「半填」组合**刻意放行** ——
+  甲方 2026-09-23 拍板选 A（保持现状）：口径是「只禁指向**另一个**门店」，`store_id` 为空时
+  没有「另一个」可言；危害也与 #259 要治的不同（只出现在一个门店名册里，且那确实是他组织上的
+  归属）。生产仅 1 人（王志军 FY-260731005），且前端已产生不了它。**别再当缺口修。**
+  归属自洽的校验在**三条**写入路径上都必须落在 `org_nodes:reparent` 锁内（#318）：
+  `createEmployee`（创建）、`updateEmployee` 改归属、以及 **`updateEmployee` 复职** ——
+  最后一条不显然：子树复核只看在职员工，所以员工离职**期间**他挂的部门被改挂进另一个门店
+  子树时没人拦；复职且不动归属字段时若不重判，复职成功那一刻就形成跨门店双重可见。
+  所以判据是「归属变了 **或** 正在复职」，不自洽则拒，让操作者在同一次提交里把归属改对。
+  前端两个方向都联动：改门店时跟改组织、改组织时跟改门店，否则合法操作会被这条校验拒掉
+  （生产两条脏数据正是「同市场内改门店、没动所属组织」造出来的）。
+  联动收口在共用组件 `components/employee-ownership-fields.tsx`，两个页面都委托给它 ——
+  口径由纯函数单测钉住、接线由该组件的交互测试钉住、采用由页面结构守护钉住，三层各管一段。
+  日期列（birthday / hiredAt / resignedAt / leaveStart / leaveEnd）在打库前校验格式与
+  **日期存在性**，空串归一为 null —— 否则 `2026-02-30` / `''` 会撞 PG `22007/22008` 变 500。
 
 #### AFF-04 商品目录管理
 
@@ -202,6 +347,38 @@ admin 管理权限分配/撤销、WorkFine → PG 数据同步、操作日志查
 
 **动态角色规则**: 非超级管理员角色可绑定总部/市场/门店；超级管理员角色只允许总部。
 角色删除前必须撤销全部员工授权；角色名称全局唯一，内部 role_key 不随改名变化。
+
+**「至少保留 1 个活跃超管」的守卫散落在四个入口**（#318）：`updateEmployee` 标离职、
+`deleteEmployee` 物理删除、`revokeRole` 撤超管绑定、`updateRoleDefinition` 把角色降级成非超管。
+四者必须取**同一把** `admin:active_count` advisory lock —— 只把计数查询塞进事务不够串行
+（READ COMMITTED 下两笔并发操作分别针对 admin A、B 时各自都读到 `count = 2`、改的又是不同行，
+双双提交 → 零管理员，系统锁死），事务化反而**放大**窗口。
+
+这把锁守的是「**谁是活跃超管**」这个集合，而该集合由**角色绑定**与**角色定义的超管位**共同决定，
+所以两类写入都要取它：`assignRole` / `revokeRole` 取锁后**在锁内重读** `is_super_admin` 再决策
+（事务外那次只作早拒），`updateRoleDefinition` 在 capability 变更的**两个方向**都取锁
+（只在降级方向取，前两者就会读到一个正在变的判据）。
+
+判据一律「**先写再数**」：`revokeRole` 先 DELETE 再数，`count === 0` 才拒（「删之前 `<= 1` 就拒」
+过紧 —— 目标已离职或还持另一个超管角色时删这条一个活跃超管都不减，却会被拒，
+导致离职残留绑定永远清不掉）；`updateRoleDefinition` 先 CAS UPDATE 再数（守卫排在前面时，
+一次注定失败的乐观锁提交会先撞上「至少保留 1 名超管」，把用户带到错误方向）。
+拒绝时靠抛哨兵回滚。撤自己的超管角色照旧直接拒。
+
+**`assignRole` / `revokeRole` 取 ①→② 两把**：它们判的「节点类型 ∈ 角色白名单」与
+「该 scope 节点是否还在操作者管辖范围内」都依赖**当前树**，而树由取 ① 的那些路径改。
+两条判据都在锁内重判（事务外那次只是早拒）：节点类型锁内重读；scope 用
+`isNodeWithinScopeRoots` 按当前树判 —— 否则节点在操作者登录后被挪出其市场，他仍能
+对它授予/回收权限（未授权的权限回收与未授权的授予同等严重）。
+`deleteRoleDefinition` 的「还有人在用就不许删」同样与 `assignRole` 互斥（取 ②）。
+`assignRole` 还要锁内 `SELECT ... FOR UPDATE` 重读**被授权人**（锁序 ③）并重判在职/可见性 ——
+否则「授权读到在职」与「标离职并删光角色」并发交错后，离职员工会重新挂上角色，
+把 AFF-03「离职同步作废角色」这条不变量重新打开；失败文案与事务外那两条逐字相同。
+
+**权限矩阵兼容镜像**（`system_configs['permission_matrix']`，供 staffApi 30s 缓存读取）
+是「读全表 → UPSERT 一行」的 read-modify-write，三个写角色定义的事务必须共用 ④
+`permission_matrix:mirror`，否则丢更新 → 表里权限已收、镜像里还留着，
+小程序按旧矩阵继续放行直到下一次任意角色写。取锁点在 `writeCompatibilityMirror` 内部。
 
 #### AFF-08 业务操作（adminApi）
 

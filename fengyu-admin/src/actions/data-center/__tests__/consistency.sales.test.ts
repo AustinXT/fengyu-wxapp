@@ -22,6 +22,7 @@ import path from 'node:path'
 import { describe, it, expect, beforeAll } from 'vitest'
 
 const ADMIN_SALES = path.resolve(__dirname, '../sales.ts')
+const TECHNICIAN_SQL = path.resolve(__dirname, '../../../lib/data-center/technician-sql.ts')
 const STAFF_MGMT_DASHBOARD = path.resolve(
   __dirname,
   '../../../../../fengyu-staff/cloudfunctions/staffApi/routes/mgmt-dashboard.js',
@@ -151,15 +152,32 @@ describe('数据中心销售板块两端口径一致性守护', () => {
   })
 
   describe('员工数 — skills && ARRAY[美容师,养生师] + hired_at/resigned_at 历史化', () => {
-    it('admin sales.ts 含 skills && ARRAY[美容师,养生师]', () => {
-      expect(adminSrc).toMatch(/skills\s*&&\s*ARRAY\[\s*'美容师'\s*,\s*'养生师'\s*\]/)
+    it('admin 侧 skills 白名单在单源 technician-sql 里（sales.ts 自身只该剩注释）', () => {
+      // ⚠️ 原断言是 `expect(adminSrc).toMatch(skills白名单)`，而 adminSrc 是**含注释**的原文。
+      // #285 把口径抽走后，sales.ts 里只剩文件头注释提到这个词 —— 断言于是**空转**
+      //（闸门 2 GLM round-3 抓到）。现在改为：真实 SQL 必须在单源模块里，
+      // 而 sales.ts 剥注释后不得再有这个字面量。
+      const tech = fs.readFileSync(TECHNICIAN_SQL, 'utf-8')
+      expect(tech).toMatch(/skills\s*&&\s*ARRAY\[\s*'美容师'\s*,\s*'养生师'\s*\]/)
+      expect(adminBody).not.toMatch(/skills\s*&&\s*ARRAY\[\s*'美容师'\s*,\s*'养生师'\s*\]/)
     })
     it('staff mgmt-dashboard.js 含 skills && ARRAY[美容师,养生师]', () => {
       expect(staffSrc).toMatch(/skills\s*&&\s*ARRAY\[\s*'美容师'\s*,\s*'养生师'\s*\]/)
     })
-    it('admin sales.ts 员工数用 hired_at <= 区间末 + resigned_at 守卫', () => {
-      expect(adminBody).toMatch(/hired_at::date\s*<=/i)
-      expect(adminBody).toMatch(/resigned_at\s+IS\s+NULL\s+OR\s+s\.resigned_at::date\s*>/i)
+    it('admin 员工数口径已抽为单源 technician-sql，且 sales.ts 不再自己扫 staff_wechat_users', () => {
+      // #285：员工数口径从 sales.ts / efficiency.ts 两份内联查询抽成 technician-sql 单源。
+      // 只修其中一处会让同一个数据中心的两个板块技师数差 14 人（闸门 2 codex 判 P0）。
+      const tech = fs.readFileSync(TECHNICIAN_SQL, 'utf-8')
+      expect(tech).toMatch(/hired_at::date\s*<=/i)
+      expect(tech).toMatch(/resigned_at\s+IS\s+NULL\s+OR\s+sw\.resigned_at::date\s*>/i)
+      expect(tech).toMatch(/skills && ARRAY\['美容师','养生师'\]/)
+      // 双轨组织归属：直挂门店节点的人回收 + 直挂市场/部门的人走锚定市场
+      expect(tech).toMatch(/COALESCE\(\s*sw\.store_id\s*,\s*ds\.store_id\s*\)/i)
+      expect(tech).toMatch(/orgAnchorScopeSql\(session, scope, 'tb\.anchor_market_id'\)/)
+      // sales.ts 必须引用单源，且不得再内联一份技师查询
+      expect(adminSrc).toMatch(/technicianCountSql\(session, scope, range\.end\)/)
+      expect(adminSrc).toMatch(/technicianByStoreSql\(session, scope, cur\.end\)/)
+      expect(adminSrc).not.toMatch(/FROM staff_wechat_users/i)
     })
     it('staff mgmt-dashboard.js 员工数同口径（hired_at / resigned_at 历史化）', () => {
       expect(staffBody).toMatch(/hired_at::date\s*<=/i)

@@ -36,6 +36,18 @@ const OVERRIDE_KEYS = Object.freeze([
 const HINT =
   'dev=101.34.242.103:5433/fengyu_wxapp / prod=118.178.196.26:5433/fengyu_wxapp'
 
+/** 生产库的 host —— 供「上线后不得运行」这类脚本做硬拒绝用（issue #318） */
+const PROD_DB_HOST = '118.178.196.26'
+
+/** 连接串是否指向生产库（不抛错；解析失败一律当作「不是生产」由上面的白名单断言去拒） */
+function isProdDbTarget(raw) {
+  try {
+    return new URL(String(raw ?? '').trim()).hostname === PROD_DB_HOST
+  } catch {
+    return false
+  }
+}
+
 /** 目标是否在白名单内（不抛错，供测试与调用方复用）。 */
 function isAllowedDbTarget(raw) {
   const s = String(raw ?? '').trim()
@@ -73,4 +85,11 @@ function assertDbTargetOrExit(raw, varName = 'DATABASE_URL') {
   process.exit(1)
 }
 
-module.exports = { DB_TARGET_RE, OVERRIDE_KEYS, isAllowedDbTarget, assertDbTargetOrExit }
+module.exports = {
+  DB_TARGET_RE,
+  OVERRIDE_KEYS,
+  isAllowedDbTarget,
+  assertDbTargetOrExit,
+  isProdDbTarget,
+  PROD_DB_HOST,
+}

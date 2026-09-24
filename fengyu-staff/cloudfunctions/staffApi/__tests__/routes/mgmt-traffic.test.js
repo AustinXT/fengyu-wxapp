@@ -443,22 +443,83 @@ describe('mgmtTraffic.summary 新会员经营 + trialFootfall', () => {
     expect(spendSql).not.toMatch(/o\.paid_at::date\s+BETWEEN/)
   })
 
-  test('trialFootfall SQL 含 customer_type IN (体验客, 小美客)', async () => {
+  /**
+   * #284（2026-09-22 拍板 D-conv-denom=1c，推翻原 D-2=B）：
+   * 分母 = ① 期初未达会员的到店活跃池 ∪ ② 本期全部新增会员。
+   *
+   * ⚠ 只断言「含 `customer_type IN ('体验客','小美客')`」是**无效守护** —— 回退到旧口径
+   * （删掉 OR 分支和整个 ② 分支）后该字面量依然在 ① 里，断言照样绿。因此这里逐条锁住
+   * 两个分支各自的结构性特征。
+   */
+  function findTrialSql() {
+    return pg.query.mock.calls.find((c) => /COUNT\(DISTINCT t\.uid\)/.test(c[0]))
+  }
+
+  test('trialFootfall ① 到店活跃池：期初未达会员 = 当前仍未达会员 OR 本期内才转化', async () => {
     setupDefaultMocks()
     const ctx = makeHqCtx({ period: 'month', scopeType: 'all' })
     await summary(ctx)
 
-    const sqlList = pg.query.mock.calls.map((c) => c[0])
-    const trialSql = sqlList.find(
-      (s) =>
-        /COUNT\(DISTINCT so\.client_user_id\)/.test(s) &&
-        /JOIN client_wechat_users c/.test(s) &&
-        /c\.customer_type\s+IN\s*\('体验客',\s*'小美客'\)/.test(s),
-    )
-    expect(trialSql).toBeDefined()
+    const call = findTrialSql()
+    expect(call, 'trialFootfall 查询未找到（分母外层不是 COUNT(DISTINCT t.uid)）').toBeDefined()
+    const trialSql = call[0]
+    expect(trialSql).toMatch(/FROM service_orders so/)
+    expect(trialSql).toMatch(/JOIN client_wechat_users c/)
     expect(trialSql).toMatch(/so\.status\s*=\s*'已完成'/)
     expect(trialSql).toMatch(/so\.service_date\s+BETWEEN/)
+    // OR 缺失 = 回到「只升不降的当前快照」，本期已转化者被整体抹掉（#284 的原始缺陷）
+    expect(
+      trialSql,
+      '① 分支缺 became_member_at OR 分支 —— 本期已转化的人会被重新抹出分母',
+    ).toMatch(
+      /c\.customer_type\s+IN\s*\('体验客',\s*'小美客'\)\s*OR\s+c\.became_member_at::date\s+BETWEEN/,
+    )
   })
+
+  test('trialFootfall ② 本期全部新增会员 UNION 进分母（保证分子 ⊆ 分母，成交率 ≤ 100%）', async () => {
+    setupDefaultMocks()
+    const ctx = makeHqCtx({ period: 'month', scopeType: 'all' })
+    await summary(ctx)
+
+    const trialSql = findTrialSql()[0]
+    // ② 分支缺失 = 退回方案 1a：本期无已完成服务单的新增会员进分子不进分母 → 单店仍可能 > 100%
+    expect(trialSql, '② 分支（本期全部新增会员）缺失，成交率上限不再成立').toMatch(
+      /UNION[\s\S]*?SELECT c\.user_id AS uid[\s\S]*?FROM client_wechat_users c/,
+    )
+
+    // ⚠ 必须切出 UNION 之后的 ② 分支再断言日期条件：`became_member_at::date BETWEEN`
+    // 在 ① 的 OR 右半边也有，对整条 SQL toMatch 时，把 ② 的日期限定删掉
+    // （分母纳入全部历史会员、回溯到 2022-08）守护照样全绿。
+    const branch2 = trialSql.split(/\bUNION\b/)[1] || ''
+    expect(branch2, 'UNION ② 分支切不出来').toBeTruthy()
+    expect(branch2, '② 缺 became_member_at IS NOT NULL 守卫').toMatch(/c\.became_member_at\s+IS\s+NOT\s+NULL/)
+    expect(branch2, '② 缺本期限定 —— 分母会纳入全部历史会员').toMatch(/c\.became_member_at::date\s+BETWEEN/)
+    // ⚠ 不在这里断言 ② 的 scope 列：本用例是 scopeType='all'，
+    // buildManagementStoreScope 此档返回字面量 'TRUE'，SQL 里根本不出现 bound_store_id。
+    // 「② 按 bound_store_id 取 scope」由下面 market/store 两档的 test.each 覆盖。
+  })
+
+  test.each([
+    ['market', 'mkt-A', /so\.store_id\s+IN\s*\(/, /c\.bound_store_id\s+IN\s*\(/],
+    ['store', 'store-001', /so\.store_id\s*=\s*\$1\b/, /c\.bound_store_id\s*=\s*\$2\b/],
+  ])(
+    'trialFootfall 两段 scope 参数连号（scopeType=%s）',
+    async (scopeType, scopeId, visitRe, memberRe) => {
+      setupDefaultMocks()
+      const ctx = makeHqCtx({ period: 'month', scopeType, scopeId })
+      await summary(ctx)
+
+      const [trialSql, params] = findTrialSql()
+      // ① so.store_id 用 $1、② c.bound_store_id 用 $2；两段各绑一个根节点参数
+      expect(params, '两段 scope 的参数未按序拼接').toEqual([scopeId, scopeId])
+      expect(trialSql).toMatch(visitRe)
+      expect(trialSql).toMatch(memberRe)
+      // 第二段起始下标写死成 1 时 $2 不会出现 → PG 运行期报 "bind message supplies 2 parameters"
+      expect(trialSql, '② 分支未使用 $2 —— 第二段 scope 起始下标没有按 ① 的 params 长度接续').toMatch(
+        /\$2\b/,
+      )
+    },
+  )
 
   test('返回 newMembers { count, spend, trialFootfall }', async () => {
     setupDefaultMocks()

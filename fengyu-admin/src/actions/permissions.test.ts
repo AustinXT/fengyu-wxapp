@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 // Mock DB and schema modules before importing the action
@@ -7,6 +9,8 @@ vi.mock('@/db', () => ({
     execute: vi.fn().mockResolvedValue([{}]),
     insert: vi.fn(),
     delete: vi.fn(),
+    // revokeRole 的守卫 + DELETE + 审计走事务（#318）
+    transaction: vi.fn(),
   },
 }))
 
@@ -73,6 +77,13 @@ vi.mock('@/lib/operation-log', () => ({
   logOperation: vi.fn(),
 }))
 
+// 「节点是否还在管辖范围内」按当前树判（#318 第 5 轮）；SQL 语义由真库冒烟负责
+vi.mock('@/lib/org-ancestry', () => ({
+  isNodeWithinScopeRoots: vi.fn().mockResolvedValue(true),
+  // 员工可见性也按当前树判（#318 第 9 轮）；SQL 语义由真库冒烟负责
+  isEmployeeWithinScopeRoots: vi.fn().mockResolvedValue(true),
+}))
+
 vi.mock('@/lib/admin-guard', () => ({
   countActiveAdmins: vi.fn().mockResolvedValue(5),
   isAdminEmployee: vi.fn().mockResolvedValue(false),
@@ -91,11 +102,13 @@ vi.mock('drizzle-orm', () => ({
   sql: Object.assign(vi.fn((...args: unknown[]) => ({ type: 'sql', args })), { raw: vi.fn((s: string) => s) }),
 }))
 
-import { getRoles, assignRole, revokeRole } from './permissions'
+import { getRoles, getEmployeeRoles, assignRole, revokeRole } from './permissions'
 import { db } from '@/db'
 import { getSession, hasRole } from '@/lib/auth'
 import { inArray, eq } from 'drizzle-orm'
 import { countActiveAdmins } from '@/lib/admin-guard'
+import { isNodeWithinScopeRoots, isEmployeeWithinScopeRoots } from '@/lib/org-ancestry'
+import { hasPermission } from '@/lib/permissions'
 import { logOperation } from '@/lib/operation-log'
 
 function makeRow(scopeId: string) {
@@ -122,6 +135,65 @@ function setupDbSelect(returnValue: any[]) {
   ;(db.select as any).mockReturnValue({ from })
   return { where }
 }
+
+/**
+ * `getEmployeeRoles` 原先对 `employeeId` **零可见性校验**，只在注释里声称「页面级
+ * scopeCondition 已保证」—— 而 Server Action 是可直接调用的端点，页面级保证对直调无效：
+ * 市场 M 的 hr 直调它传市场 N 员工的 id，就能拿到那人全部角色绑定（#318 第 9 轮 GLM P2）。
+ */
+describe('getEmployeeRoles — 被查员工的可见性', () => {
+  const hrSession = {
+    employeeId: 'HR-001',
+    roles: [{ role: 'hr', scopeId: 'market-1' }],
+    permissions: { actions: ['employee:list'], scopeStoreIds: [], scopeOrgNodeIds: ['market-1'] },
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(isEmployeeWithinScopeRoots as any).mockReset().mockResolvedValue(true)
+  })
+
+  it('非 admin：员工不在管辖范围 → 返回空，且不查角色', async () => {
+    ;(getSession as any).mockResolvedValue(hrSession)
+    ;(hasRole as any).mockReturnValue(true)
+    ;(db.select as any).mockImplementation(() => mockSelectOnce({ storeId: 's', orgNodeId: 'o' })())
+    ;(isEmployeeWithinScopeRoots as any).mockResolvedValue(false)
+
+    const result = await getEmployeeRoles('EMP-OTHER-MARKET')
+
+    expect(result).toEqual([])
+    // 只发了「查这个员工的归属」那一次，没去查角色
+    expect((db.select as any).mock.calls.length).toBe(1)
+  })
+
+  it('非 admin：员工不存在 → 同样返回空（不泄露存在性）', async () => {
+    ;(getSession as any).mockResolvedValue(hrSession)
+    ;(hasRole as any).mockReturnValue(true)
+    ;(db.select as any).mockImplementation(() => mockSelectOnce(null)())
+
+    expect(await getEmployeeRoles('NOPE')).toEqual([])
+    expect(isEmployeeWithinScopeRoots).not.toHaveBeenCalled()
+  })
+
+  it('admin：不做可见性判定', async () => {
+    ;(getSession as any).mockResolvedValue({
+      employeeId: 'ADMIN-001',
+      roles: [{ role: 'admin', scopeId: 'hq-1' }],
+      permissions: { actions: ['employee:list'], scopeStoreIds: [] },
+    })
+    ;(hasRole as any).mockReturnValue(true)
+    const chain: any = {}
+    chain.from = vi.fn().mockReturnValue(chain)
+    chain.innerJoin = vi.fn().mockReturnValue(chain)
+    chain.leftJoin = vi.fn().mockReturnValue(chain)
+    chain.where = vi.fn().mockReturnValue(chain)
+    chain.orderBy = vi.fn().mockResolvedValue([])
+    ;(db.select as any).mockReturnValue(chain)
+
+    expect(await getEmployeeRoles('EMP-1')).toEqual([])
+    expect(isEmployeeWithinScopeRoots).not.toHaveBeenCalled()
+  })
+})
 
 describe('getRoles — scope filtering (AC-05)', () => {
   beforeEach(() => {
@@ -220,7 +292,9 @@ describe('getRoles — scope filtering (AC-05)', () => {
 /** 为 select().from().where().limit() 链构建 mock，返回指定数据 */
 function mockSelectLimit(returnValue: any[]) {
   const limit = vi.fn().mockResolvedValue(returnValue)
-  const where = vi.fn().mockReturnValue({ limit })
+  // `.for('update')` 后再 `.limit(1)` —— assignRole 锁内重读员工行用它（#318 第 8 轮）
+  const forUpdate = vi.fn().mockReturnValue({ limit })
+  const where = vi.fn().mockReturnValue({ limit, for: forUpdate })
   const from = vi.fn().mockReturnValue({ where })
   return vi.fn().mockReturnValue({ from })
 }
@@ -247,14 +321,30 @@ const VISIBLE_EMPLOYEE = { storeId: null, orgNodeId: 'market-1', isResigned: fal
  * 既有用例原先写死「第 1 次是节点、其余都是重复检查」，插入第 ② 段后全部错位
  * （12 条一起变红）。统一收到这个 helper 里，下次再插入查询只改一处。
  */
-function mockAssignRoleSelects(opts: { node?: any; employee?: any; existing?: any } = {}) {
+/**
+ * `assignRole` 的 select 序列：① 事务外读节点类型 ② 读被授权人 ③ 查重复绑定
+ * ④ **锁内重读节点类型**（#318 第 4 轮：节点类型会被 updateOrgNode 改类型那条路径改掉）。
+ *
+ * `lockedNode` 默认与 `node` 同值；给不同值就能造出「事务外合法、锁内已被改成别的类型」。
+ */
+function mockAssignRoleSelects(
+  opts: {
+    node?: any; employee?: any; existing?: any
+    lockedNode?: any; lockedEmployee?: any
+  } = {},
+) {
   const { node = { type: '市场' }, employee = VISIBLE_EMPLOYEE, existing = null } = opts
+  const lockedNode = opts.lockedNode === undefined ? node : opts.lockedNode
+  // 锁内重读的员工默认与事务外同值；给不同值就能造「事务外在职、锁内已离职」
+  const lockedEmployee = opts.lockedEmployee === undefined ? employee : opts.lockedEmployee
   let call = 0
   ;(db.select as any).mockImplementation(() => {
     call++
     if (call === 1) return mockSelectOnce(node)()
     if (call === 2) return mockSelectOnce(employee)()
-    return mockSelectOnce(existing)()
+    if (call === 3) return mockSelectOnce(existing)()
+    if (call === 4) return mockSelectOnce(lockedNode)()
+    return mockSelectOnce(lockedEmployee)()
   })
 }
 
@@ -277,8 +367,34 @@ describe('assignRole — AC-09 & scope constraint', () => {
     },
   }
 
+  /**
+   * INSERT + 审计 + 锁内重读角色定义都在事务里了（#318 第 2 轮）。
+   * tx 一律委托给全局 `db` 的桩，这样既有用例照旧 mock `db.insert` / `db.execute` 即可。
+   * @returns 记录调用的 `txExecute`（断言取锁用）
+   */
+  function mockAssignTx() {
+    const txExecute = vi.fn((...a: unknown[]) => (db as any).execute(...a))
+    let handedTx: any
+    ;(db.transaction as any).mockImplementation(async (fn: any) => {
+      handedTx = {
+        execute: txExecute,
+        select: (...a: unknown[]) => (db as any).select(...a),
+        insert: (...a: unknown[]) => (db as any).insert(...a),
+      }
+      return fn(handedTx)
+    })
+    return { txExecute, tx: () => handedTx }
+  }
+
   beforeEach(() => {
     vi.clearAllMocks()
+    // ⚠️ clearAllMocks 不清 mockImplementation —— 上一条用例给 execute / hasPermission
+    // 设的分派会泄漏到后面所有用例
+    ;(db.execute as any).mockReset().mockResolvedValue([{}])
+    ;(hasPermission as any).mockReset().mockReturnValue(true)
+    ;(isNodeWithinScopeRoots as any).mockReset().mockResolvedValue(true)
+    ;(isEmployeeWithinScopeRoots as any).mockReset().mockResolvedValue(true)
+    mockAssignTx()
   })
 
   it('admin 分配 admin 角色到 headquarters 节点 → 成功', async () => {
@@ -293,6 +409,215 @@ describe('assignRole — AC-09 & scope constraint', () => {
 
     expect(result.success).toBe(true)
     expect(values).toHaveBeenCalledOnce()
+  })
+
+  /**
+   * ## 分配侧的授权闸门也按**锁内**重读的定义判（#318 第 2 轮，与 revokeRole 对称）
+   *
+   * 只持 `permission:assign`（无 `assign_admin`）的人，趁「读定义」与 INSERT 之间角色被
+   * `updateRoleDefinition` 升级成超管，就能把一个现已属超管的角色绑给别人。
+   */
+  it('事务外读到非超管、锁内读到超管 → 无 assign_admin 者被拒，不 INSERT', async () => {
+    ;(getSession as any).mockResolvedValue(hrSession)
+    ;(hasRole as any).mockReturnValue(true)
+    // 本文件把 hasPermission 整体桩成恒 true；这条用例要的正是「没有 assign_admin」
+    ;(hasPermission as any).mockImplementation((_s: unknown, a: string) => a !== 'permission:assign_admin')
+    mockAssignRoleSelects({ node: { type: '市场' }, existing: null })
+    const values = vi.fn().mockResolvedValue({})
+    ;(db.insert as any).mockReturnValue({ values })
+    // 按 SQL 内容分派：取锁那条也走 execute，用 Once 排队会被它吃掉一个
+    let defReads = 0
+    ;(db.execute as any).mockImplementation((arg: unknown) => {
+      if (!JSON.stringify(arg).includes('permission_role_definitions')) return Promise.resolve([{}])
+      defReads += 1
+      return Promise.resolve([
+        { role_key: 'role-x', name: 'X', is_super_admin: defReads > 1, allowed_scope_types: ['总部', '市场', '门店'] },
+      ])
+    })
+
+    const result = await assignRole({ employeeId: 'EMP-X', role: 'role-x', scopeId: 'market-1' })
+
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('无权分配系统管理员角色')
+    expect(values, '闸门没过就不该 INSERT').not.toHaveBeenCalled()
+  })
+
+  /** 分配也取那把锁 —— 它守的是「谁是活跃超管」，绑定与角色定义的超管位共同决定这个集合 */
+  it('分配路径取 admin:active_count 锁（与另外三个入口同一把）', async () => {
+    ;(getSession as any).mockResolvedValue(adminSession)
+    ;(hasRole as any).mockReturnValue(true)
+    mockAssignRoleSelects({ node: { type: '总部' }, existing: null })
+    ;(db.insert as any).mockReturnValue({ values: vi.fn().mockResolvedValue({}) })
+    const t = mockAssignTx()
+
+    await assignRole({ employeeId: 'EMP-X', role: 'admin', scopeId: 'hq-1' })
+
+    const locks = t.txExecute.mock.calls.map((c) => JSON.stringify(c[0]))
+    // 锁序 ① 组织树 → ② admin 计数（判的是「节点类型 ∈ 角色白名单」，两把都要）
+    expect(locks[0]).toContain('org_nodes:reparent')
+    expect(locks[1]).toContain('admin:active_count')
+  })
+
+  /**
+   * 节点类型按**锁内**那次判（#318 第 4 轮 codex P1）：事务外读到「市场」（合法），
+   * 锁内重读已被 `updateOrgNode` 改成「部门」—— 必须拒，否则留下一条 DB trigger 在
+   * INSERT 时点本该拒掉的绑定。
+   */
+  it('事务外节点是市场、锁内已被改成部门 → 拒绝且不 INSERT', async () => {
+    ;(getSession as any).mockResolvedValue(adminSession)
+    ;(hasRole as any).mockReturnValue(true)
+    mockAssignRoleSelects({ node: { type: '市场' }, lockedNode: { type: '部门' }, existing: null })
+    const values = vi.fn().mockResolvedValue({})
+    ;(db.insert as any).mockReturnValue({ values })
+
+    const result = await assignRole({ employeeId: 'EMP-X', role: 'manager', scopeId: 'node-1' })
+
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('不能绑定到部门节点')
+    expect(values).not.toHaveBeenCalled()
+  })
+
+  it('锁内重读发现节点已被删除 → 拒绝且不 INSERT', async () => {
+    ;(getSession as any).mockResolvedValue(adminSession)
+    ;(hasRole as any).mockReturnValue(true)
+    mockAssignRoleSelects({ node: { type: '市场' }, lockedNode: null, existing: null })
+    const values = vi.fn().mockResolvedValue({})
+    ;(db.insert as any).mockReturnValue({ values })
+
+    const result = await assignRole({ employeeId: 'EMP-X', role: 'manager', scopeId: 'node-1' })
+
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('组织节点不存在')
+    expect(values).not.toHaveBeenCalled()
+  })
+
+  /**
+   * ## 目标节点是否**还**在管辖范围内：按当前树、锁内判（#318 第 5 轮，两谱系共识）
+   *
+   * 事务外那次 `userScopeIds.includes(data.scopeId)` 判的是 session 构造时展开好的内存集合，
+   * 窗口是**整个 JWT 寿命（24h）**：节点在 hr 登录后被挪出他的市场，他仍能把角色绑上去。
+   */
+  it('非 admin：目标节点已被挪出管辖子树 → 拒绝且不 INSERT', async () => {
+    ;(getSession as any).mockResolvedValue(hrSession)
+    ;(hasRole as any).mockReturnValue(true)
+    mockAssignRoleSelects({ node: { type: '门店' }, existing: null })
+    const values = vi.fn().mockResolvedValue({})
+    ;(db.insert as any).mockReturnValue({ values })
+    const t = mockAssignTx()
+    ;(isNodeWithinScopeRoots as any).mockResolvedValue(false)
+
+    const result = await assignRole({ employeeId: 'EMP-X', role: 'manager', scopeId: 'store-fengyu' })
+
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('不能分配超出自身权限范围的角色')
+    expect(values, 'scope 复判没过就不该 INSERT').not.toHaveBeenCalled()
+    // 判据必须是「目标节点 + 角色绑定的根节点 + 事务句柄」
+    const [nodeId, roots, executor] = (isNodeWithinScopeRoots as any).mock.calls[0]
+    expect(nodeId).toBe('store-fengyu')
+    expect(roots).toEqual(['market-1'])
+    expect(executor).toBe(t.tx())
+  })
+
+  /**
+   * ## 被授权人按**锁内**那份判（#318 第 8 轮 codex P1）
+   *
+   * 反例：T1 授权读到员工在职 → T2 `updateEmployee` 取 ② 把他标离职并**删光角色**后提交
+   * → T1 随后取到 ①② 并 INSERT → 离职员工重新挂上角色，而「离职 ⇒ 角色清空」正是 #249
+   * 那轮事务化要保住的不变量；复职时那条残留绑定还会让权限自动恢复。
+   */
+  it('事务外在职、锁内已离职 → 拒绝且不 INSERT', async () => {
+    ;(getSession as any).mockResolvedValue(adminSession)
+    ;(hasRole as any).mockReturnValue(true)
+    mockAssignRoleSelects({
+      node: { type: '市场' },
+      existing: null,
+      lockedEmployee: { ...VISIBLE_EMPLOYEE, isResigned: true },
+    })
+    const values = vi.fn().mockResolvedValue({})
+    ;(db.insert as any).mockReturnValue({ values })
+
+    const result = await assignRole({ employeeId: 'EMP-X', role: 'manager', scopeId: 'market-1' })
+
+    expect(result.success).toBe(false)
+    expect(result.message).toBe('该员工已离职，无法分配角色')
+    expect(values, '锁内判出已离职就不该 INSERT').not.toHaveBeenCalled()
+  })
+
+  /**
+   * 可见性也按**当前树**判（#318 第 9 轮 codex P1）：`isEmployeeRowVisible` 是纯内存的，
+   * 判 session 构造时展开好的集合。反例 —— 部门 D 在 hr 登录后被改挂到另一个市场
+   * （子树复核对 `store_id IS NULL` 的员工按 #259 选项 A 放行、正常提交），
+   * 挂着 D 的员工已经不属他管，而旧集合里 D 还在 → 他仍能给那人授权。
+   */
+  it('非 admin：员工按当前树已不在管辖范围 → 拒绝且不 INSERT', async () => {
+    ;(getSession as any).mockResolvedValue(hrSession)
+    ;(hasRole as any).mockReturnValue(true)
+    mockAssignRoleSelects({ node: { type: '门店' }, existing: null })
+    const values = vi.fn().mockResolvedValue({})
+    ;(db.insert as any).mockReturnValue({ values })
+    const t = mockAssignTx()
+    // 事务外的内存判据放行（旧快照里还有），锁内按当前树判出「已不属他管」
+    ;(isEmployeeWithinScopeRoots as any).mockResolvedValue(false)
+
+    const result = await assignRole({ employeeId: 'EMP-X', role: 'manager', scopeId: 'store-fengyu' })
+
+    expect(result.success).toBe(false)
+    expect(result.message).toBe('员工不存在或不在您的权限范围内')
+    expect(values).not.toHaveBeenCalled()
+    // 判据必须吃「锁内重读到的员工行 + 角色根节点 + 事务句柄」
+    const [emp, roots, executor] = (isEmployeeWithinScopeRoots as any).mock.calls[0]
+    expect(emp).toEqual(expect.objectContaining({ storeId: VISIBLE_EMPLOYEE.storeId }))
+    expect(roots).toEqual(['market-1'])
+    expect(executor).toBe(t.tx())
+  })
+
+  it('admin → 不按树判员工可见性', async () => {
+    ;(getSession as any).mockResolvedValue(adminSession)
+    ;(hasRole as any).mockReturnValue(true)
+    mockAssignRoleSelects({ node: { type: '总部' }, existing: null })
+    ;(db.insert as any).mockReturnValue({ values: vi.fn().mockResolvedValue({}) })
+
+    await assignRole({ employeeId: 'EMP-X', role: 'admin', scopeId: 'hq-1' })
+
+    expect(isEmployeeWithinScopeRoots).not.toHaveBeenCalled()
+  })
+
+  it('锁内重读发现员工已被删除 → 与「不在权限范围内」同一句文案', async () => {
+    ;(getSession as any).mockResolvedValue(adminSession)
+    ;(hasRole as any).mockReturnValue(true)
+    mockAssignRoleSelects({ node: { type: '市场' }, existing: null, lockedEmployee: null })
+    const values = vi.fn().mockResolvedValue({})
+    ;(db.insert as any).mockReturnValue({ values })
+
+    const result = await assignRole({ employeeId: 'EMP-X', role: 'manager', scopeId: 'market-1' })
+
+    expect(result.success).toBe(false)
+    // 与事务外那条逐字相同 —— 竞态窗口不能变成「这个 employeeId 是否存在」的探测信道
+    expect(result.message).toBe('员工不存在或不在您的权限范围内')
+    expect(values).not.toHaveBeenCalled()
+  })
+
+  /** 员工行锁必须排在两把 advisory 之后（锁序 ①→②→③） */
+  it('员工行锁排在 ①② 之后', () => {
+    const src = readFileSync(resolve(process.cwd(), 'src/actions/permissions.ts'), 'utf8')
+    const body = src.slice(src.indexOf('export const assignRole'), src.indexOf('export const revokeRole'))
+    const orgAt = body.indexOf('lockOrgTree(')
+    const adminAt = body.indexOf('lockActiveAdminCount(')
+    const rowAt = body.search(/\.for\(\s*['"]update['"]\s*\)/)
+    expect(orgAt).toBeGreaterThan(-1)
+    expect(orgAt).toBeLessThan(adminAt)
+    expect(adminAt).toBeLessThan(rowAt)
+  })
+
+  it('admin → 不按树复判（不受 scope 限制）', async () => {
+    ;(getSession as any).mockResolvedValue(adminSession)
+    ;(hasRole as any).mockReturnValue(true)
+    mockAssignRoleSelects({ node: { type: '总部' }, existing: null })
+    ;(db.insert as any).mockReturnValue({ values: vi.fn().mockResolvedValue({}) })
+
+    await assignRole({ employeeId: 'EMP-X', role: 'admin', scopeId: 'hq-1' })
+
+    expect(isNodeWithinScopeRoots).not.toHaveBeenCalled()
   })
 
   it('admin 分配 admin 角色到非 headquarters 节点 → 拒绝', async () => {
@@ -735,12 +1060,42 @@ describe('revokeRole — scope + admin-only for admin roles', () => {
 
   beforeEach(() => {
     vi.clearAllMocks()
+    // ⚠️ clearAllMocks 不清 mockImplementation —— 双快照那条用例设的分派会泄漏
+    ;(db.execute as any).mockReset().mockResolvedValue([{}])
+    ;(isNodeWithinScopeRoots as any).mockReset().mockResolvedValue(true)
+    ;(isEmployeeWithinScopeRoots as any).mockReset().mockResolvedValue(true)
   })
 
+  /**
+   * 撤销走事务了（#318）：守卫 + DELETE + 审计整体在一个事务内，并与 employees 侧共用
+   * 那把 `admin:active_count` advisory lock。所以 tx 上要有 `execute`（取锁）、
+   * `select`（`countActiveAdmins` 传 tx）、`delete`、`insert`（审计）。
+   *
+   * @returns `tx()` 交出句柄 —— 审计的 executor 断言要用**同一性**，
+   *   形状匹配对全局 `db` 也成立（#249/#259 那轮的教训）。
+   */
   function setupRevokeDbCalls(target: any, deleteRowCount = 1) {
     ;(db.select as any).mockImplementation(() => mockSelectOnce(target)())
     const where = vi.fn().mockResolvedValue({ count: deleteRowCount })
     ;(db.delete as any).mockReturnValue({ where })
+    let handedTx: any
+    /**
+     * ⚠️ 委托给全局 `db.execute`（工厂里默认 `[{}]`）而不是自己 resolve `[]` ——
+     * 锁内要用 `tx.execute` **重读角色定义**（#318 第 2 轮），返回空数组会被当成
+     * 「角色定义不存在」，于是每条用例都在一个假原因上失败。
+     * 外面套一层 `vi.fn` 只为记录调用，便于断言取锁。
+     */
+    const txExecute = vi.fn((...a: unknown[]) => (db as any).execute(...a))
+    ;(db.transaction as any).mockImplementation(async (fn: any) => {
+      handedTx = {
+        execute: txExecute,
+        select: (db as any).select,
+        delete: (db as any).delete,
+        insert: (db as any).insert,
+      }
+      return fn(handedTx)
+    })
+    return { tx: () => handedTx, txExecute, deleteWhere: where }
   }
 
   it('admin 撤销任意角色 → 成功', async () => {
@@ -842,21 +1197,140 @@ describe('revokeRole — scope + admin-only for admin roles', () => {
     expect(countActiveAdmins).not.toHaveBeenCalled()
   })
 
-  it('撤销最后一个活跃 admin → 抛 INVALID_STATE', async () => {
+  /**
+   * ## 「先删再数」（#318）
+   *
+   * 判据是**删完之后** `countActiveAdmins === 0`，而不是删之前 `<= 1`。
+   * 前一版那个判据过紧：目标已离职（本就不在计数里）或还持另一个超管角色时，
+   * 删这条绑定一个活跃超管都不减，却会被拒 —— 离职残留绑定永远清不掉。
+   *
+   * 拒绝要回滚删除，所以走抛哨兵 + 外层 `.catch` 转文案（哨兵已登记进跨端 `TX_SENTINELS`）。
+   * 断言因此是「返回 failure + 事务整体被回滚（对调用方而言就是没提交）+ 取过那把锁」。
+   */
+  it('删完发现零活跃 admin → 拒绝（回滚），且取过 advisory lock', async () => {
     ;(getSession as any).mockResolvedValue(adminSession)
     ;(hasRole as any).mockReturnValue(true)
-    ;(countActiveAdmins as any).mockResolvedValueOnce(1)
-    setupRevokeDbCalls({ role: 'admin', scopeId: 'hq-1', employeeId: 'ADMIN-002' })
+    ;(countActiveAdmins as any).mockResolvedValue(0)
+    const t = setupRevokeDbCalls({ role: 'admin', scopeId: 'hq-1', employeeId: 'ADMIN-002' })
 
-    await expect(revokeRole(21)).rejects.toThrow(/INVALID_STATE: 系统至少需保留 1 个活跃 admin/)
-    expect(db.delete).not.toHaveBeenCalled()
+    const result = await revokeRole(21)
+
+    expect(result.success).toBe(false)
+    expect(result.message).toBe('系统至少需保留 1 个活跃 admin')
+    expect(JSON.stringify(t.txExecute.mock.calls[0][0]), 'DELETE 前必须先取锁')
+      .toContain('pg_advisory_xact_lock')
+    expect((countActiveAdmins as any).mock.calls[0][0], '计数必须走 tx').toBe(t.tx())
+    expect(logOperation, '被回滚的撤销不该留审计').not.toHaveBeenCalled()
+  })
+
+  /**
+   * 目标已离职 / 还持另一个超管角色 → 删这条**不减少**活跃超管数，必须放行。
+   * 这两种情形合起来就是「删完还 ≥ 1」，用「先删再数」天然覆盖，不必枚举。
+   */
+  it('删完仍有活跃 admin（目标已离职或另持超管角色）→ 放行', async () => {
+    ;(getSession as any).mockResolvedValue(adminSession)
+    ;(hasRole as any).mockReturnValue(true)
+    ;(countActiveAdmins as any).mockResolvedValue(1)
+    const t = setupRevokeDbCalls({ role: 'admin', scopeId: 'hq-1', employeeId: 'ADMIN-002' })
+
+    const result = await revokeRole(21)
+
+    expect(result.success).toBe(true)
+    expect(t.deleteWhere).toHaveBeenCalled()
+  })
+
+  /**
+   * 与 employees 侧**同一把锁**（#318）—— 这条不变量的守卫散落在三个 action：
+   * `updateEmployee` 标离职、`deleteEmployee` 物理删除、这里撤超管角色。
+   * 前两个在 #249/#259 已收进锁，这里当时没跟上：并发「撤 A 的 admin」+「标 B 离职」
+   * 会双双读到 count=2 → 零管理员。
+   */
+  it('撤超管角色取的是 admin:active_count 那把锁（与 employees 侧同一把）', async () => {
+    ;(getSession as any).mockResolvedValue(adminSession)
+    ;(hasRole as any).mockReturnValue(true)
+    ;(countActiveAdmins as any).mockResolvedValue(5)
+    const t = setupRevokeDbCalls({ role: 'admin', scopeId: 'hq-1', employeeId: 'ADMIN-002' })
+
+    await revokeRole(23)
+
+    // 锁序 ① 组织树 → ② admin 计数（撤销也要按当前树复判 scope，所以两把都取）
+    const locks = t.txExecute.mock.calls.map((c) => JSON.stringify(c[0]))
+    expect(locks[0]).toContain('org_nodes:reparent')
+    expect(locks[1]).toContain('admin:active_count')
+  })
+
+  /**
+   * 锁**无条件**取（#318 第 2 轮）—— 「按事务外读到的 isSuperAdmin 决定要不要取锁」是个
+   * 自指的死结：判据本身会被 `updateRoleDefinition` 并发改掉。所以撤普通角色也取锁，
+   * 但**不查计数**（撤它确实不影响活跃 admin 数，白查一次没意义）。
+   */
+  it('撤销普通角色 → 仍取锁，但按锁内重读的定义判定后不查 admin 计数', async () => {
+    ;(getSession as any).mockResolvedValue(adminSession)
+    ;(hasRole as any).mockReturnValue(true)
+    const t = setupRevokeDbCalls({ role: 'manager', scopeId: 'market-1', employeeId: 'EMP-1' })
+
+    const result = await revokeRole(24)
+
+    expect(result.success).toBe(true)
+    const takenLocks = t.txExecute.mock.calls.map((c) => JSON.stringify(c[0])).join('|')
+    expect(takenLocks, '两把锁都无条件先取').toContain('admin:active_count')
+    expect(takenLocks).toContain('org_nodes:reparent')
+    expect(countActiveAdmins, '非超管角色不必查计数').not.toHaveBeenCalled()
+  })
+
+  /**
+   * ## 授权判据取的是**锁内**重读的 `is_super_admin`（两谱系第 2 轮共识的 P1）
+   *
+   * 击穿路径：T0 本请求读到角色 R 非超管 → T1 `updateRoleDefinition` 把 R 升级为超管
+   * → T2 另一笔把唯一的另一名超管标离职（锁内看到「A 还持 R」所以放行）
+   * → T3 本事务既不取锁也不数数地删掉 A 的 R 绑定 → 零活跃超管。
+   * 这里用「事务外读到非超管、锁内读到超管」的双快照直接验判据用的是哪一份。
+   */
+  it('事务外读到非超管、锁内读到超管 → 按锁内那份判（非 admin 撤不动）', async () => {
+    ;(getSession as any).mockResolvedValue(hrSession)
+    ;(hasRole as any).mockReturnValue(true)
+    const t = setupRevokeDbCalls({ role: 'role-x', scopeId: 'market-1', employeeId: 'EMP-1' })
+    /**
+     * 按 SQL 内容分派，而不是 `mockResolvedValueOnce` 排队 —— 取锁那条也走 `execute`，
+     * 会把队列里的值吃掉一个（第一版就是这么假绿的）。
+     * 第 1 次读定义（事务外早拒）给非超管，第 2 次（锁内）给已升级成超管。
+     */
+    let defReads = 0
+    ;(db.execute as any).mockImplementation((arg: unknown) => {
+      if (!JSON.stringify(arg).includes('permission_role_definitions')) return Promise.resolve([{}])
+      defReads += 1
+      return Promise.resolve([
+        { role_key: 'role-x', name: 'X', is_super_admin: defReads > 1 },
+      ])
+    })
+
+    const result = await revokeRole(25)
+
+    expect(result.success, '锁内已是超管 → hr 撤不动').toBe(false)
+    expect(result.message).toContain('只有系统管理员')
+    expect(t.deleteWhere, '判据没过就不该删').not.toHaveBeenCalled()
+  })
+
+  /** 撤销侧同款：未授权的权限**回收**与未授权的授予同等严重（GLM 第 5 轮 P2） */
+  it('非 admin：绑定的 scope 节点已被挪出管辖子树 → 拒绝且不 DELETE', async () => {
+    ;(getSession as any).mockResolvedValue(hrSession)
+    ;(hasRole as any).mockReturnValue(true)
+    const t = setupRevokeDbCalls({ role: 'manager', scopeId: 'market-1', employeeId: 'EMP-1' })
+    ;(isNodeWithinScopeRoots as any).mockResolvedValue(false)
+
+    const result = await revokeRole(26)
+
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('不能撤销超出自身权限范围的角色')
+    expect(t.deleteWhere, 'scope 复判没过就不该删').not.toHaveBeenCalled()
+    expect((isNodeWithinScopeRoots as any).mock.calls[0][0]).toBe('market-1')
   })
 
   it('倒数第二 admin (count=2) 跨员工撤销 → 成功 + logOperation detail 含 employeeId/scopeId', async () => {
     ;(getSession as any).mockResolvedValue(adminSession)
     ;(hasRole as any).mockReturnValue(true)
-    ;(countActiveAdmins as any).mockResolvedValueOnce(2)
-    setupRevokeDbCalls({ role: 'admin', scopeId: 'hq-1', employeeId: 'ADMIN-002' })
+    ;(countActiveAdmins as any).mockResolvedValue(2)
+    const revokeTx = setupRevokeDbCalls({ role: 'admin', scopeId: 'hq-1', employeeId: 'ADMIN-002' })
 
     const result = await revokeRole(22)
 
@@ -872,6 +1346,8 @@ describe('revokeRole — scope + admin-only for admin roles', () => {
         scopeId: 'hq-1',
         employeeId: 'ADMIN-002',
       }),
+      // 第 6 参是 executor —— 审计与 DELETE 必须同生共死，用**同一性**断言（形状匹配对 db 也成立）
+      revokeTx.tx(),
     )
   })
 })

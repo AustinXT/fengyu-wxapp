@@ -24,6 +24,7 @@ import { INVENTORY_LINKAGE_ENABLED } from '@/lib/inventory-feature-flags'
 import { computeAvailableByLot } from '@/lib/inventory/lot-availability'
 import { isConvertibleEntitlementRow } from '@/lib/home-product'
 import { businessErrorMessage } from '@/lib/action-error'
+import { resolvePaging } from '@/lib/paging'
 
 export interface AdminPickupRecord {
   id: number
@@ -263,7 +264,7 @@ async function createPickupInventoryDoc(
           SELECT lot_id,
                  COALESCE(SUM(quantity - fulfilled_quantity - released_quantity), 0) AS quantity
             FROM inventory_stock_reservations
-           WHERE lot_id = ANY(${lotIds}::bigint[])
+           WHERE lot_id = ANY(${sql.param(lotIds)}::bigint[])
              AND status = '已预留'
         GROUP BY lot_id
         `)) as unknown as Array<{ lot_id: number | string; quantity: string | number }>
@@ -348,9 +349,12 @@ export const getPickupRecordsPaginated = withPermission(
     session,
     filters: PickupRecordFilters = {},
   ): Promise<PaginatedPickupRecords> => {
-  const page = Math.max(1, filters.page || 1)
-  const pageSize = [10, 20, 50].includes(filters.pageSize ?? 0) ? filters.pageSize! : 20
-  const offset = (page - 1) * pageSize
+  const { page, pageSize, offset } = resolvePaging({
+    page: filters.page,
+    pageSize: filters.pageSize,
+    defaultPageSize: 20,
+    allowedPageSizes: [10, 20, 50],
+  })
 
   const conditions: (SQL | undefined)[] = [
     scopeCondition(session, pickupRecords.storeId),
@@ -413,7 +417,7 @@ export const getPickupRecordsPaginated = withPermission(
     .leftJoin(inventorySkus, eq(pickupRecords.inventorySkuId, inventorySkus.skuId))
     .where(whereClause)
     // 例外：提货流水型表无 updatedAt 列
-    .orderBy(desc(pickupRecords.createdAt))
+    .orderBy(desc(pickupRecords.createdAt), desc(pickupRecords.id))
     .limit(pageSize)
     .offset(offset)
 
@@ -744,7 +748,7 @@ export const getPickupInventorySkuOptions = withPermission(
            WHERE status = '已预留'
         GROUP BY lot_id
    ) reserved ON reserved.lot_id = lot.id
-       WHERE inventory.sku_id = ANY(${inventorySkuIds}::text[])
+       WHERE inventory.sku_id = ANY(${sql.param(inventorySkuIds)}::text[])
     GROUP BY inventory.sku_id
     `)) as unknown as Array<{ sku_id: string; available_quantity: string | number }>
     const availableBySku = new Map(availabilityRows.map((row) => [row.sku_id, Number(row.available_quantity)]))

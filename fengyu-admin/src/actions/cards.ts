@@ -25,6 +25,7 @@ import { computeItemOverpayRemainders, type RefundSourceItem } from '@/lib/refun
 import { storeInMarketCondition } from '@/lib/market-store-sql'
 import { getPointsToYuanRate, getPointsDeductionMaxRate } from '@/lib/system-config'
 import { classifySaleOrderDocumentType } from '@/lib/document-type'
+import { resolvePaging } from '@/lib/paging'
 
 // ============================================================================
 // 管理端卡包列表（/cards 页面）
@@ -303,9 +304,12 @@ function buildCardConditions(
 export const getCardsPaginated = withPermission(
   'sale_item:list',
   async (session, filters: CardFilters = {}): Promise<PaginatedCards> => {
-  const page = Math.max(1, filters.page || 1)
-  const pageSize = [10, 20, 50].includes(filters.pageSize ?? 0) ? filters.pageSize! : 20
-  const offset = (page - 1) * pageSize
+  const { page, pageSize, offset } = resolvePaging({
+    page: filters.page,
+    pageSize: filters.pageSize,
+    defaultPageSize: 20,
+    allowedPageSizes: [10, 20, 50],
+  })
 
   const whereClause = and(...buildCardConditions(session, filters))
 
@@ -362,7 +366,11 @@ export const getCardsPaginated = withPermission(
     .leftJoin(productCategories, eq(productSkus.categoryId, productCategories.categoryId))
     .where(whereClause)
     // 例外：业务时间优先（支付时间优于"最近编辑"）
-    .orderBy(desc(saleOrders.paidAt), desc(saleItems.createdAt))
+    // ⚠️ 末位 tie-break 用 **asc** 而非 desc —— 必须与导出侧（本文件 `exportCards`）
+    // 的 `asc(saleItems.saleItemId)` 同向，否则 paid_at + created_at 都并列的那几行，
+    // 页面上的顺序与导出 CSV 相反，对账逐行比对会在每个并列组上错位。
+    // 这也是本仓既有约定（employees.ts / coupons.ts 的 `desc, desc, asc(pk)`）。
+    .orderBy(desc(saleOrders.paidAt), desc(saleItems.createdAt), asc(saleItems.saleItemId))
     .limit(pageSize)
     .offset(offset)
 

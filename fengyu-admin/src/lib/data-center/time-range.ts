@@ -5,12 +5,69 @@
  * 锚点：Asia/Shanghai 的"今天"。所有区间为闭区间 YYYY-MM-DD，
  * SQL 侧统一 `col::date BETWEEN $start AND $end`（对齐 staff salesData）。
  *
- * preset 映射（复用 metrics.md §时间窗口补充的 month/year 口径，新增 today/week/custom）：
+ * preset 映射：
  *   today  current=[今天,今天]      previous=[昨天,昨天]            lastYear=[去年今天,去年今天]
- *   week   current=[本周一,今天]     previous=[上周一,上周日]        lastYear=[去年同区间]
- *   month  current=[月初,今天]       previous=[上月初,上月末]        lastYear=[去年同区间]
+ *   week   current=[本周一,今天]     previous=[上周一,上周同一天]     lastYear=[去年同区间]
+ *   month  current=[月初,今天]       previous=[上月初,上月同一日]     lastYear=[去年同区间]
  *   year   current=[年初,今天]       previous=[去年初,去年同日]       lastYear=同 previous
  *   custom current=[start,end]       previous=[紧邻前一等长区间]      lastYear=[start/end 各减一年]
+ *
+ * ⚠️ previous(环比基期) 与 lastYear(同比基期) 都是**比值的分母**，**不得长于 current** ——
+ * 基期长于当期就会把「当期尚未走完」误读成「下滑」。两者都喂同一个 deltaPct，
+ * 所以这条约束对二者同等适用。实际长度关系（已由 time-range.test.ts 逐日断言锁定）：
+ *
+ *   preset   previous                              lastYear
+ *   today    恒等长                                 恒等长
+ *   week     恒等长                                 ⚠️ 跨闰年 ±1 天（见例外 2）
+ *   month    等长，上月天数不足时 clamp 到上月末       恒等长
+ *            （3/31 → 基期 2/1~2/28），只会更短
+ *   year     ⚠️ 跨闰年 ±1 天（见例外 3）              同 previous
+ *   custom   恒等长                                 ⚠️ 跨闰年 ±1 天（见例外 2）
+ *
+ * **三条已登记的偏差，都不在 #283 的修复目标内**（#283 只修 week/month 的 previous）：
+ * 例外 1 是本次修法自带的日历副作用（有意接受），例外 2、3 是既有缺陷（尚未修复）。
+ *
+ *   例外 1 · month 的 previous（#283 引入、有意接受）：上月天数不足时 clamp 到上月末。
+ *           每年只有 3/29~3/31、5/31、7/31、10/31、12/31 共约 6~7 天命中；
+ *           **日均营收持平**时最坏 3/31 平年虚增约 +10.7pp（31 天当期比 28 天基期）。
+ *
+ *   例外 2 · week / custom 的 lastYear（既有，**尚未修复**）：区间跨 2 月底时，
+ *           去年同区间可能多/少含一个 2/29。测试扫描的 5 个年份（见 DAILY_SCAN_YEARS）
+ *           共 1826 天里命中 **9 天**（+1 天 6 次、−1 天 3 次）。窗口极窄，但因为「本周」
+ *           的当期在月初只有 2~5 天，1 天的差就是巨幅偏差：
+ *             2024-03-01 当期 5 天 vs 基期 4 天 → 基期偏短，同比**虚高 +25%**（扫描集内最坏）
+ *             2029-03-01 当期 4 天 vs 基期 5 天 → 基期偏长，同比**假下滑 −20%**
+ *           扫描集**外**的近期锚点更坏：2028-03-01 当期 3 天 vs 基期 2 天 → **虚高 +50%**
+ *           （2028 不在 DAILY_SCAN_YEARS 里，是从 2026 往后的下一次触发年）。
+ *           而 +50% 也不是理论上界 —— 全历法最坏正偏差是 2044/2072-03-01 型的
+ *           「当期 2 天 vs 基期 1 天 = **+100%**」（1900–2200 全扫，负向最坏 −33%）。
+ *           且此时 lastYear 的起止星期也漂了，「去年同周」并非同一周。
+ *           `custom` 的输入是任意区间，**不能沿用上面的命中频率** —— 任何跨 2 月底的
+ *           自定义区间都可能命中，短区间的量级同样可以很大。
+ *
+ *   例外 3 · year 的 previous/lastYear（既有，**尚未修复**）：当年平年而上一年闰年时
+ *           基期含 2/29 而当期没有，基期**长 1 天**（2025 / 2029 型，首例 2025-03-01：
+ *           当期 60 天 vs 基期 61 天）；当年闰年则反向**短 1 天**（2024 / 2028 型，
+ *           首例 2024-03-01：61 天 vs 60 天）。每次命中 306/365 天（3 月起到年末）。
+ *           最大绝对量级约 **1.7%**。
+ *           ⚠️ 从 2026 往后：**2028 先触发**（基期偏短、同比虚高），
+ *           **2029 才是基期偏长**（假下滑方向，即违反上面那条底线的方向）。
+ *
+ * 例外 2、3 同源于 `addYears()` 的 2/29 归一化（JS 把 2023-02-29 归一成 2023-03-01）。
+ * ⚠️ 该归一化还会让**端点语义**漂移，且不限于长度会变的分支——2024-02-29 当天：
+ *   today  [02-29,02-29]        → lastYear [2023-03-01, 2023-03-01]（比的是去年 3/1，非 2/28）
+ *   month  [02-01,02-29]        → lastYear [2023-02-01, 2023-03-01]（长度仍 29 对 29，但已
+ *                                 不是"去年同月截至同日"）
+ *   year   [01-01,02-29]        → lastYear [2023-01-01, 2023-03-01]
+ * 所以 month 的「恒等长」断言不会红，但别把"等长"误读成"端点语义也对齐"。
+ *
+ * ⚠️ 别只盯 previous —— 例外 2 就是 #283 修复过程中连续四轮评审都漏掉的：
+ * 所有逐日断言最初只扫 previous，而 lastYear 走的是同一条 deltaPct。
+ *
+ * 别把 previous 跟 staff 端 mgmt-dashboard 的 `VALID_PERIODS=['month','lastMonth','year']` 搞混：
+ * metrics.md §时间窗口补充（sales-data 页专用口径）那张表里的「上月=上月初~上月末」是**三选一的并列时间维度**
+ * （用户主动选「上月」看整月），不是分母。本文件曾据该表把 week/month 的 previous 写成整段上周期，
+ * 于是拿 N 天的当期比 7 天/整月的基期，月初/周初徽章恒显巨幅下滑、服务人次实测正负号翻转（#283）。
  */
 import type { ResolvedRange, ResolvedTimeRange, TimeRangeInput } from './types'
 
@@ -61,6 +118,19 @@ function startOfWeekMonday(dateStr: string): string {
 function daysInclusive(start: string, end: string): number {
   return Math.round((parse(end).getTime() - parse(start).getTime()) / 86400000) + 1
 }
+/**
+ * 取较早的一天。YYYY-MM-DD 是定长零填充格式，字典序即时间序，无需转 Date。
+ *
+ * ⚠️ 前提是**年份恰为 4 位**：`fmt()` 对年份不做 padStart，年份 <1000 或 >9999 时
+ * 输出不再定长（`"10000-01-01" < "9999-12-31"` 会被判成真），字典序就崩了。
+ * 本函数当前唯一调用点在 month 分支，两个实参都锚定 `shanghaiToday()` 的真实当前年份，安全。
+ * 但**别把它复用到 custom 分支**：`params.ts` 的 `DATE_RE` 接受 `0000`–`0999`，
+ * `?preset=custom&start=0001-01-01` 实测会让 `addDays` 产出 `"0-12-31"` / `"NaN-NaN-NaN"`
+ * ——即"年份不足 4 位"在 custom 路径上**是可达的**，只是不经过本函数。要复用先改成基于 Date.parse 比较。
+ */
+function minDate(a: string, b: string): string {
+  return a < b ? a : b
+}
 
 /** 取 Asia/Shanghai 当前日期 YYYY-MM-DD（en-CA 输出即 ISO 格式） */
 export function shanghaiToday(now: Date = new Date()): string {
@@ -106,13 +176,24 @@ export function resolveTimeRange(input: TimeRangeInput, now: Date = new Date()):
   } else if (input.preset === 'week') {
     const monday = startOfWeekMonday(today)
     current = { start: monday, end: today }
-    previous = { start: addDays(monday, -7), end: addDays(monday, -1) }
+    // 上周**同期**：上周一 → 上周的同一个星期几。整段上周（end=上周日）会拿 N 天比 7 天。
+    // 上周恒 7 天 ≥ current 的 ≤7 天，故无需 clamp，天数恒等长。
+    previous = { start: addDays(monday, -7), end: addDays(today, -7) }
     lastYear = { start: addYears(monday, -1), end: addYears(today, -1) }
   } else if (input.preset === 'month') {
     const first = startOfMonth(today)
     const lastMonthAnyDay = addDays(first, -1) // 上月某日
+    const prevStart = startOfMonth(lastMonthAnyDay)
+    // 上月**同期**：上月 1 号 → 上月的第 N 天（N = 今天是本月第几天）。整个上月会拿 N 天比整月。
+    // 上月天数不足时 clamp 到上月末——3/31 看本月要的是"上月第 31 天"，2 月没有，落到 2/28。
+    // 此时 previous 比 current 短，是日历固有的（月同期对比皆如此），不是 #283 那种口径错。
+    // 量级已核算：每年只有 3/29~3/31、5/31、7/31、10/31、12/31 共约 6~7 天命中，
+    // 最坏 3/31 平年（31 天 vs 28 天）在营收持平时会虚增约 +10.7pp。对比原缺陷每月错
+    // 28~30 天、长度比可达 2:31，是同类问题的大幅收窄。别改成"按日均折算"——
+    // 那是拿估算值冒充实际值，与 metrics.md「数据缺失一律 '--'、不做估算填补」相悖。
+    const n = daysInclusive(first, today)
     current = { start: first, end: today }
-    previous = { start: startOfMonth(lastMonthAnyDay), end: endOfMonth(lastMonthAnyDay) }
+    previous = { start: prevStart, end: minDate(addDays(prevStart, n - 1), endOfMonth(lastMonthAnyDay)) }
     lastYear = { start: addYears(first, -1), end: addYears(today, -1) }
   } else {
     // year
