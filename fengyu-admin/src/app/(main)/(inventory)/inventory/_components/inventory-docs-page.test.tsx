@@ -1540,3 +1540,31 @@ describe('「收货」按钮按行判定：只给能收这张单 target 的账�
     },
   )
 })
+
+describe('单据列表「关联销售单」列（#350）', () => {
+  const gckRow: InventoryDocRow = {
+    ...row,
+    id: 'GCK-20260924-0001',
+    docType: '院顾客产品出库',
+    status: '已完成',
+    relatedSaleOrderId: 'FY-XSD-WX-2609240001',
+  }
+
+  it('有订单查看权限：显示为指向订单详情的链接', () => {
+    render(<InventoryDocsPage {...baseProps} rows={[gckRow]} canOpenOrderDetail />)
+    const link = screen.getByRole('link', { name: 'FY-XSD-WX-2609240001' })
+    expect(link.getAttribute('href')).toBe('/orders/FY-XSD-WX-2609240001')
+  })
+
+  it('缺省（未传 / 无权限）只显示单号文本，fail-closed', () => {
+    render(<InventoryDocsPage {...baseProps} rows={[gckRow]} />)
+    expect(screen.getByText('FY-XSD-WX-2609240001')).toBeTruthy()
+    expect(screen.queryByRole('link', { name: 'FY-XSD-WX-2609240001' })).toBeNull()
+  })
+
+  it('没有关联销售单的单据显示占位符', () => {
+    render(<InventoryDocsPage {...baseProps} rows={[{ ...row, relatedSaleOrderId: null }]} canOpenOrderDetail />)
+    expect(screen.getByRole('columnheader', { name: '关联销售单' })).toBeTruthy()
+    expect(screen.queryByRole('link', { name: /FY-XSD/ })).toBeNull()
+  })
+})

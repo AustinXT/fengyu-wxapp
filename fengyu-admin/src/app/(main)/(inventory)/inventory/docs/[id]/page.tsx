@@ -8,6 +8,7 @@ import { Card, CardContent } from '@/components/ui/card'
 import { fmtDateTime } from '@/lib/datetime'
 import { getSession } from '@/lib/auth'
 import { requireAllUiPageCapabilities } from '@/lib/page-capability'
+import { canOpenOrderDetail } from '@/lib/order-detail-access'
 import { isStocktakeDocType, stocktakeDiff, stocktakeSummary } from '@/lib/inventory/stocktake'
 import { resolveInventoryDocReturn } from '@/lib/inventory/operation-return'
 import { inventoryDocStatusLabel } from '@/lib/inventory/doc-status-label'
@@ -48,7 +49,10 @@ export default async function Page({
    * 页面回落到既有的「返回单据中心」，不会拿着来路不明的字符串去拼跳转路径。
    */
   const back = resolveInventoryDocReturn(query)
-  requireAllUiPageCapabilities(await getSession(), ['inventory:list'])
+  const session = await getSession()
+  requireAllUiPageCapabilities(session, ['inventory:list'])
+  // 「关联销售单」能否点进订单详情：与 /orders/[id] 的页面守卫同源（#350）
+  const canLinkOrder = canOpenOrderDetail(session.permissions.actions)
   const doc = await getInventoryCoreDocById(id)
   if (!doc) notFound()
 
@@ -122,6 +126,8 @@ export default async function Page({
     ...(isStocktake ? ([['盘点结论', stocktakeSummary(doc.items)]] as const) : []),
     ...(showPrice ? ([['金额', doc.totalAmount]] as const) : []),
     ['顾客', doc.customerName],
+    // #350：顾客出库（GCK）由提货服务产生，related_sale_order_id 记着是哪张销售单的货
+    ['关联销售单', doc.relatedSaleOrderId],
     ['员工', doc.employeeName],
     ['供应商', doc.supplierName],
     ['外部对象', doc.externalPartyName],
@@ -181,6 +187,13 @@ export default async function Page({
                   >
                     查看附件
                   </a>
+                ) : label === '关联销售单' && typeof value === 'string' && value && canLinkOrder ? (
+                  <Link
+                    href={`/orders/${encodeURIComponent(value)}`}
+                    className="font-mono text-sm text-[var(--primary)] hover:underline"
+                  >
+                    {value}
+                  </Link>
                 ) : <span className="text-sm">{fmt(value)}</span>}
               </div>
             ))}

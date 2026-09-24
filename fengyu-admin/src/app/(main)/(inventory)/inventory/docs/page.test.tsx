@@ -61,6 +61,7 @@ import Page from './page'
 interface DocsPageProps {
   receivableTargetOrgNodeIds: readonly string[] | null
   marketTransferTargets: readonly { orgNodeId: string; name: string }[]
+  canOpenOrderDetail: boolean
   canCreate: boolean
   canApprove: boolean
   canReceive: boolean
@@ -239,4 +240,20 @@ describe('单据中心 · 可收货的 target 集合', () => {
     const props = await renderWith(SUPPLY)
     expect(props.receivableTargetOrgNodeIds).toEqual([])
   })
+})
+
+/** 「关联销售单」链接（#350）：与 /orders/[id] 的页面守卫同源（sale_order:list / refund_create / refund_approve 任一）。 */
+describe('单据中心 · 关联销售单链接权限', () => {
+  it('没有任何订单相关权限 → 不给链接', async () => {
+    expect((await renderWith(STORE)).canOpenOrderDetail).toBe(false)
+  })
+
+  it.each(['sale_order:list', 'sale_order:refund_create', 'sale_order:refund_approve'])(
+    '持有 %s（含其 UI 依赖）→ 给链接',
+    async (action) => {
+      const { PERMISSION_ACTION_CATALOG } = await import('@/lib/permission-presentation')
+      const deps = (PERMISSION_ACTION_CATALOG as Record<string, { dependencies?: readonly string[] }>)[action]?.dependencies ?? []
+      expect((await renderWith(STORE, action, ...deps)).canOpenOrderDetail).toBe(true)
+    },
+  )
 })

@@ -12,6 +12,7 @@ import { INVENTORY_CORE_RECEIVE_ACTIONS, inventoryCreatableGenericDocTypes } fro
 import { resolveInventoryFilterLocationId } from '@/lib/inventory/location-filter'
 import { type InventoryDocType } from '@/lib/inventory/types'
 import { hasUiCapability } from '@/lib/permission-contract'
+import { canOpenOrderDetail } from '@/lib/order-detail-access'
 import { requireAllUiPageCapabilities } from '@/lib/page-capability'
 import InventoryDocsPage from '../_components/inventory-docs-page'
 
@@ -98,6 +99,8 @@ export default async function Page({
           canApprove={hasUiCapability(actions, 'inventory:supply_chain_approve') || hasUiCapability(actions, 'inventory:market_approve')}
           canReceive={canReceive}
           receivableTargetOrgNodeIds={receivableTargetOrgNodeIds}
+          // 「关联销售单」链接：与 /orders/[id] 页面守卫同源（#350）
+          canOpenOrderDetail={canOpenOrderDetail(actions)}
           canViewPrice={docs.canViewPrice}
           initialDocType={initialDocType}
           allowedCreateDocTypes={allowedCreateDocTypes}
