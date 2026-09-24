@@ -120,28 +120,51 @@ async function queryFilterOptions(): Promise<Array<{ kind: string; categories: s
 // =====================================================================
 
 /**
- * 持卡人数（DISTINCT client）：si.paid_sessions > 0，不按 product_type 过滤
- *   ∩ sale_order_type IN ('销售单','转换单','寄存单') ∩ status='已支付' ∩ scope（so.store_id）
- *   ∩ 品项过滤（一级/二级）。截面快照，无时间区间。
+ * 持卡人数（占比分子）：**会员** ∩ 买过带次数商品 ∩ scope（`c.bound_store_id`）∩ 品项过滤。
+ * 截面快照，无时间区间。
+ *
+ * ★ **口径红线：分子必须与分母 `queryMemberCount` 同源**（#287）。
+ *
+ * 写法上用「分母的壳 + `EXISTS`」而不是「JOIN 顾客表再加条件」，是为了让
+ * **分子 ⊆ 分母** 成为结构性事实而非巧合 —— 两者共用同一个
+ * `FROM client_wechat_users c WHERE <scope on bound_store_id> AND became_member_at IS NOT NULL`
+ * 前缀，`EXISTS` 只做收窄。**改这里时务必保持这个形状**，`consistency.product.test.ts` 有断言锁它。
+ *
+ * ⚠️ **两处曾经不同源，2026-09-22 审计时占比恒 253%、单店最高 2600%**：
+ *   1. **人群**：分子统计全部顾客（不限客型）、分母只统计会员 —— 分子里有 60.8% 的人
+ *      永不可能进分母
+ *   2. **归店**：分子按 `so.store_id`（**订单所属门店**）、分母按 `c.bound_store_id`
+ *      （**顾客绑定门店**）—— 绑在 B 店的会员在 A 店买卡，会进 A 的分子、B 的分母
+ *
+ * 只修 ①（issue #287 原推荐）实测仍有 **7 家门店 > 100%、最高 104.55%**；
+ * ① ② 都修后 **0 家 > 100%、最高正好 100.00%**（集团 1915 / 1930 = 99.22%）。
+ *
+ * ⚠️ **该列已失去区分度，勿用于门店排名**：修正后各店在 **95.83% ~ 100%** 之间。
+ * 此前的全部店间方差都来自「非会员数量」，按旧列排名会得到与事实相反的结论。
  */
 async function queryCardHolders(
   session: AuthSession,
   scope: DataCenterScope,
   filter: SQL,
 ): Promise<number> {
-  const sc = scopeFilterSql(session, scope, 'so.store_id')
+  const sc = scopeFilterSql(session, scope, 'c.bound_store_id')
   const rows = await db.execute(sql`
-    SELECT COUNT(DISTINCT so.client_user_id) AS v
-    FROM sale_items si
-    JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
-    JOIN product_skus sk ON sk.sku_id = si.sku_id
-    JOIN product_categories pc ON pc.category_id = sk.category_id
+    SELECT COUNT(*) AS v
+    FROM client_wechat_users c
     WHERE ${sc}
-      AND si.paid_sessions > 0
-      AND so.sale_order_type IN ('销售单', '转换单', '寄存单')
-      AND so.status = '已支付'
-      AND so.client_user_id IS NOT NULL
-      AND ${filter}
+      AND c.became_member_at IS NOT NULL
+      AND EXISTS (
+        SELECT 1
+        FROM sale_items si
+        JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
+        JOIN product_skus sk ON sk.sku_id = si.sku_id
+        JOIN product_categories pc ON pc.category_id = sk.category_id
+        WHERE so.client_user_id = c.user_id
+          AND si.paid_sessions > 0
+          AND so.sale_order_type IN ('销售单', '转换单', '寄存单')
+          AND so.status = '已支付'
+          AND ${filter}
+      )
   `)
   return num(first(rows).v)
 }
@@ -283,27 +306,40 @@ interface ProductStoreAgg {
 }
 
 /**
- * 持卡人数（截面）按 store_id 归组（DISTINCT client per store；同一顾客跨店各算一次）。
+ * 持卡人数（截面）按门店归组 —— **归店键必须是 `c.bound_store_id`，与分母
+ * `queryMemberCountByStore` 完全一致**（#287）。
+ *
+ * 归店键一致 + 人群是分母的子集 ⇒ **每个门店的占比数学上恒 ≤ 100%**，不靠数据侥幸。
+ * 此前按 `so.store_id` 归店，同一顾客跨店各算一次，单店占比可以超过 100%（实测最高 2600%）。
+ *
+ * 代价：语义从「在本店买过卡的人」变成「本店绑定会员里持卡的人」。
+ * 实测两者仅差 **11 人**（跨店购买者，占分子 0.57%），2026-09-24 拍板取后者。
  */
 async function queryCardHoldersByStore(
   session: AuthSession,
   scope: DataCenterScope,
   filter: SQL,
 ): Promise<Map<string, number>> {
-  const sc = scopeFilterSql(session, scope, 'so.store_id')
+  const sc = scopeFilterSql(session, scope, 'c.bound_store_id')
   const rows = await db.execute(sql`
-    SELECT so.store_id, COUNT(DISTINCT so.client_user_id) AS v
-    FROM sale_items si
-    JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
-    JOIN product_skus sk ON sk.sku_id = si.sku_id
-    JOIN product_categories pc ON pc.category_id = sk.category_id
+    SELECT c.bound_store_id AS store_id, COUNT(*) AS v
+    FROM client_wechat_users c
     WHERE ${sc}
-      AND si.paid_sessions > 0
-      AND so.sale_order_type IN ('销售单', '转换单', '寄存单')
-      AND so.status = '已支付'
-      AND so.client_user_id IS NOT NULL
-      AND ${filter}
-    GROUP BY so.store_id
+      AND c.bound_store_id IS NOT NULL
+      AND c.became_member_at IS NOT NULL
+      AND EXISTS (
+        SELECT 1
+        FROM sale_items si
+        JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
+        JOIN product_skus sk ON sk.sku_id = si.sku_id
+        JOIN product_categories pc ON pc.category_id = sk.category_id
+        WHERE so.client_user_id = c.user_id
+          AND si.paid_sessions > 0
+          AND so.sale_order_type IN ('销售单', '转换单', '寄存单')
+          AND so.status = '已支付'
+          AND ${filter}
+      )
+    GROUP BY c.bound_store_id
   `)
   const m = new Map<string, number>()
   for (const raw of rows as unknown[]) {

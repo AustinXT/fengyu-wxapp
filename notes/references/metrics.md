@@ -791,6 +791,7 @@ SELECT COUNT(*) FROM org_nodes WHERE type='store' [AND parent_id=$market]
 | 2026-05-26 | admin 数据中心（`/data-center`）上线：新增 §「数据中心（admin）板块专属指标」+ 品项二级（category_name）粒度节。3 项用户拍板口径——流量客业绩=仅 `customer_type='流量客'`；单次客耗=`生美实耗÷服务人次`；店长人数=`在营门店数`（每店一店长，不依赖 position_name）。排名榜/区间指标统一走顶部 TimeRange（today/week/month/year/custom），同比环比仅作用 KPI 标量 |
 | 2026-08-08 | 数据中心经营统计统一仅纳入 `org_nodes.is_active=TRUE` 的门店：门店数、全部区间指标、门店/员工排行榜及范围下拉同步过滤；单店范围不再固定计 1，停用门店返回零数据 |
 | 2026-09-22 | **D-conv-denom 改判 B → 1c（#284）**：成交率分母由「区间内到店的体验客 + 小美客」改为「期初未达会员的到店活跃池 ∪ 本期全部新增会员」。`customer_type` 只升不降，本期已转化者当期已是会员客、被从分母整体剔除，而他们正是分子 —— 35 家有新会员的门店全部虚高、单店最高 800%、分母归零反显 '--'。分支 ② 保证分子 ⊆ 分母，上限 ≤ 100% 恒成立（纯活跃池方案 1a 做不到，本期有 10 名新增会员无已完成服务单）。集团 2026-09 由 28.01%（151/539）改为 **21.88%（151/690）**。两端同步：`customer.ts::queryTrialFootfall` + 明细 `traffic_cust` CTE、`mgmt-traffic.js::queryTrialFootfall` |
+| 2026-09-24 | **D-card-same-source 确立（#287）**：持卡占比分子分母此前**两个维度都不同源** —— ① 分子统计全部顾客、分母只统计会员（分子里 60.8% 的人永不可能进分母）；② 分子按 `so.store_id`（订单所属门店）归店、分母按 `c.bound_store_id`（顾客绑定门店）归店。集团占比恒 **253%**、单店最高 **2600%**、40 家在营门店 36 家 > 100%。**只修 ① 不够**（实测仍 7 家 > 100%、最高 104.55%）；两条都修后 **0 家 > 100%、最高正好 100.00%**，集团 **1915 / 1930 = 99.22%**。写法上 admin 用「分母壳 + `EXISTS`」、staff 因需 `GROUP BY pc.product_kind` 用「会员表驱动 + `COUNT(DISTINCT c.user_id)`」，两端 scope 均走 `bound_store_id`。⚠️ 该列修正后各店在 95.83%~100% 之间、**已失去区分度，勿用于门店排名**（旧列的店间方差全部来自非会员数量）。两端同步：`product.ts::queryCardHolders/queryCardHoldersByStore` + `mgmt-product.js::cardSql` |
 | 2026-09-25 | **一次/二次客活改按到店天数（#298）**：由服务单行数 `COUNT(*)` 改为 `COUNT(DISTINCT service_date)`，去重键 `(client_user_id, service_date)`，日期轴拍板为 `service_date`；admin 数据中心（KPI + 明细）与 staff mgmt-traffic 同步。补登 `monthly_activity` 口径（此前在本文档完全缺席，是两套定义分叉的根因）。prod 2026-09-01~09-24 集团一次/二次 527/982 → 590/919，63 人由「二次」回到「一次」 |
 | 2026-09-25 | **客量板会员门槛读配置（#292）**：会员被经营 6 档的最低档下界与「会员经营人数」门槛由写死的 `1990` 改读 `system_configs.new_member_threshold`（与品项板同源），1w/3w/6w/10w 收敛到 `SPEND_BUCKET_FLOORS`；admin 与 staffApi 同步。prod/dev 当前配置均为 1990，上线后数字不变。标签保持写死；门槛须 < 1w（不加校验，仅文档化） |
 | **2026-09-14** | **款项业绩归属日期收口（#137，迁移 0039 + 0040）**。视图 `sale_order_performance_events.performance_date` 改为**直读** `sale_order_payments.performance_attribution_date`，**查询侧不再有任何回退分支**；取值规则全部下沉到写入侧两个 trigger。0040 给该列加了 **CHECK 约束** `chk_sop_attribution_date_present`（列本身**不是** `NOT NULL`，Drizzle schema 里仍是 nullable）。<br>**影响面**：原文「首次支付取订单归属日、回款/退款取自身 `paid_at`」的表述在全文档失效——每一笔款项都有自己的归属日期。金额类指标按类型分流：**业绩/现金流类**（总业绩、分客型业绩、员工业绩、销售提成）走 `[spe.performance_date]`；**子项类**（生美业绩、产品出库、品项周期业绩）走 `[sipe.performance_date]`；**实耗 / 生美实耗 / 服务提成**仍走 `[service_date]`，不受本次收口影响。<br>⚠ **部署前置**：先 apply 0039 + 0040 再部署各端，否则未迁库时首次支付行归属日为 NULL，会被三值逻辑吞掉正数主体。 |
@@ -919,10 +920,32 @@ SELECT COUNT(*) FROM org_nodes WHERE type='store' [AND parent_id=$market]
 > **持卡 = 已解锁次数大于 0**（`paid_sessions > 0`），不按 `product_type` 过滤。
 > 分母「总会员人数」同 `memberCount`（`client_wechat_users.became_member_at IS NOT NULL` ∩ scope by `bound_store_id`，T2 历史化口径；持卡为截面，本子页不带 `$date` 守卫）。
 
+> ★ **D-card-same-source（2026-09-24 拍板）：分子必须与分母同源，两个维度都要同。**
+>
+> | 维度 | 分子与分母必须一致的地方 |
+> |---|---|
+> | **人群** | 都只算会员（`became_member_at IS NOT NULL`）—— 分子不得统计全部顾客 |
+> | **归店** | 都按 `c.bound_store_id`（**顾客绑定门店**）—— 分子不得按 `so.store_id`（订单所属门店） |
+>
+> 两条合起来 ⇒ 分子人群 ⊆ 分母人群、归店键相同 ⇒ **占比数学上恒 ≤ 100%**，不靠数据侥幸。
+>
+> ⚠️ **2026-09-22 审计前两条都不满足**：集团占比恒 **253%**、单店最高 **2600%**、40 家在营门店 36 家 > 100%。
+> 分子里 **60.8%** 的人永不可能进分母。
+> **只修「人群」不够** —— 实测仍有 7 家门店 > 100%、最高 104.55%；两条都修后 0 家 > 100%、最高正好 100.00%。
+>
+> 语义代价：per-store 从「在本店买过卡的人」变为「本店绑定会员里持卡的人」，实测仅差 **11 人**（跨店购买者，占分子 0.57%）。
+>
+> ⚠️ **该列已失去区分度，勿用于门店排名**：修正后各店在 **95.83% ~ 100%** 之间（集团 1915 / 1930 = 99.22%）。
+> 此前的全部店间方差都来自「非会员数量」，按旧列排名会得到与事实相反的结论。
+
 | 指标 | 公式 | 数据源 | 筛选条件 |
 |------|------|--------|----------|
-| 持卡人数（cardHolderCount）per product_kind | `COUNT(DISTINCT so.client_user_id)` | `sale_items si` JOIN `sale_orders so` JOIN `product_skus sk` JOIN `product_categories pc` | `si.paid_sessions > 0` ∩ `so.sale_order_type IN ('销售单','转换单','寄存单')` ∩ `so.status='已支付'` ∩ scope（`so.store_id`）；按 `pc.product_kind` 分组 |
+| 持卡人数（cardHolderCount）per product_kind | admin：`COUNT(*)`；staff：`COUNT(DISTINCT c.user_id)` | **驱动表 `client_wechat_users c`**；admin 用 `EXISTS (…)` 收窄，staff 因需 `GROUP BY pc.product_kind` 改用 JOIN `sale_orders so` → `sale_items si` → `product_skus sk` → `product_categories pc` | `c.became_member_at IS NOT NULL` ∩ scope（**`c.bound_store_id`**）∩ `si.paid_sessions > 0` ∩ `so.sale_order_type IN ('销售单','转换单','寄存单')` ∩ `so.status='已支付'`；staff 按 `pc.product_kind` 分组 |
 | 占比（cardHolderRate）per product_kind | `cardHolderCount / memberCount × 100%` | 派生；`memberCount=0` → `--` | — |
+
+> **两端形状不同但同源性等价**：admin 用「分母的壳 + `EXISTS`」（让 分子 ⊆ 分母 成为结构性事实），
+> staff 因为分组键 `pc.product_kind` 在连接表上、无法写进 `EXISTS`，改用「以会员表为驱动表 + `COUNT(DISTINCT c.user_id)`」。
+> 两者的 scope 都必须走 `bound_store_id`（staff 侧即 `buildClientScope`，**不是** `buildSaleScope`）。
 
 ### 2. 体验 / 品项进入 / 复购（区间维度，时间轴 `purchase_date`）
 
@@ -1060,7 +1083,7 @@ tiyan AS (                                    -- 体验：期内有购买但全�
 > **均不变**，唯一差异是把分组键 `pc.product_kind` 整体替换为 `pc.category_name`（达标日聚合的 GROUP BY 维度
 > 与 `first_entry` 跨店合并键同步替换）。即：
 >
-> - 持卡人数 / 占比：`COUNT(DISTINCT so.client_user_id)` GROUP BY 分组键，`si.paid_sessions > 0`；占比分母仍为 `memberCount`（不随分组键变化）。
+> - 持卡人数 / 占比：驱动表为 `client_wechat_users c`（**不是** `sale_orders`），GROUP BY 分组键，`si.paid_sessions > 0` ∩ `c.became_member_at IS NOT NULL` ∩ scope 走 `c.bound_store_id`；占比分母仍为 `memberCount`（不随分组键变化）。详见 **D-card-same-source**（#287）。
 > - 体验 / 新增 / 复购：`daily_agg` 与 `first_entry` 的 `(client_user_id [, store_id], 分组键, purchase_date)` 中的 `product_kind` 替换为 `category_name`。
 >
 > **达标日的分组维度语义**：一级筛选时「同一顾客 + 同门店 + 同一**一级品项** + 同日」≥ threshold 算达标；
