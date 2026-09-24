@@ -106,14 +106,23 @@ export function InventoryDocCandidatePicker({
   const [bulkLoading, setBulkLoading] = useState(false)
   // 只有最后一次发出的请求能落地：检索、翻页、重取交错时过时结果必须丢掉
   const requestSeqRef = useRef(0)
-  // 一键带出同理：在途时改了检索条件、或已选被别处清空 / 组件卸载，旧结果不能再替换已选
+  // 一键带出：卸载 / 重复点击时作废在途请求（条件与已选的变化由下面的整包快照比对负责）
   const bulkSeqRef = useRef(0)
-  // 渲染期同步的最新关键字与已选集合，供在途的一键带出比对快照（见 bringOut）
-  const latestRef = useRef({ keyword: '', values: '' })
-  latestRef.current = {
-    keyword: keyword.trim(),
-    values: selection.mode === 'multi' ? selection.values.join('\u0000') : '',
-  }
+  /*
+   * 一键带出**实际发送的全部参数** + 已选集合，渲染期同步。在途请求落地前与发起时的快照整包比对，
+   * 不依赖任何被动 effect（effect 不保证先于异步回调执行），也不借用列表的防抖 filterKey ——
+   * 带出用的是非防抖关键字，防抖追平那一下不该把正确的结果作废。
+   */
+  const bulkKey = JSON.stringify([
+    purpose,
+    keyword.trim(),
+    startDate,
+    endDate,
+    targetOrgNodeId ?? '',
+    selection.mode === 'multi' ? selection.values : [],
+  ])
+  const latestBulkKeyRef = useRef(bulkKey)
+  latestBulkKeyRef.current = bulkKey
   useEffect(() => () => { bulkSeqRef.current++ }, [])
 
   useEffect(() => {
@@ -130,8 +139,6 @@ export function InventoryDocCandidatePicker({
   const [pageState, setPageState] = useState({ key: filterKey, page: 1 })
   const page = pageState.key === filterKey ? pageState.page : 1
   const setPage = useCallback((next: number) => setPageState({ key: filterKey, page: next }), [filterKey])
-  // 条件变了，在途的一键带出作废
-  useEffect(() => { bulkSeqRef.current++ }, [filterKey])
 
   useEffect(() => {
     const seq = ++requestSeqRef.current
@@ -190,31 +197,24 @@ export function InventoryDocCandidatePicker({
   const bringOut = async () => {
     if (selection.mode !== 'multi' || bulkLoading || selection.bulkDisabledReason) return
     const seq = ++bulkSeqRef.current
-    /*
-     * 请求快照：输入框的**当前**关键字（不用防抖值 —— 输入后 300ms 内点击会按旧关键字带出），
-     * 以及发起时的已选集合。响应落地前与最新值比对，任一变了就作废：在途时用户清除 / 改勾选 /
-     * 改了关键字，旧结果不能再把选择覆盖回去。
-     */
-    const snapshot = { keyword: keyword.trim(), values: selection.values.join('\u0000') }
+    // 请求快照（见 bulkKey）：用输入框的**当前**关键字，不用防抖值
+    const snapshot = bulkKey
+    const hadSelection = selection.values.length > 0
     setBulkLoading(true)
     try {
       const result = await listInventoryDocCandidateIds({
         purpose,
-        keyword: snapshot.keyword || undefined,
+        keyword: keyword.trim() || undefined,
         startDate: startDate || undefined,
         endDate: endDate || undefined,
         targetOrgNodeId: targetOrgNodeId || undefined,
       })
-      const latest = latestRef.current
-      if (
-        seq !== bulkSeqRef.current
-        || latest.keyword !== snapshot.keyword
-        || latest.values !== snapshot.values
-      ) return
+      // 在途时改了日期 / 关键字 / 主体，或已选被清除 / 改勾选：旧结果不能再覆盖当前选择
+      if (seq !== bulkSeqRef.current || latestBulkKeyRef.current !== snapshot) return
       // 「替换已选」对空结果同样成立：带出 0 张就清空，别让上一个区间的单留着被提交
       selection.onChange(result.ids)
       if (result.ids.length === 0) {
-        toast.info('当前条件下没有仍有剩余量的单据，已清空已选')
+        toast.info(hadSelection ? '当前条件下没有仍有剩余量的单据，已清空已选' : '当前条件下没有仍有剩余量的单据')
         return
       }
       toast.success(`已带出 ${result.ids.length} 张单据`)

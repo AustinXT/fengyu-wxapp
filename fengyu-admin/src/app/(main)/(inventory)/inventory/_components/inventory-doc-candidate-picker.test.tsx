@@ -115,6 +115,35 @@ describe('InventoryDocCandidatePicker（#338）', () => {
     expect(onChange).not.toHaveBeenCalled()
   })
 
+  it('带出在途时改了日期（非防抖条件），旧结果作废 —— 不依赖 effect 时序', async () => {
+    vi.mocked(listInventoryDocCandidates).mockResolvedValue({ data: [], total: 0, pageSize: 20 })
+    let resolveIds: (value: { ids: string[] }) => void = () => {}
+    vi.mocked(listInventoryDocCandidateIds).mockImplementationOnce(() => new Promise((resolve) => { resolveIds = resolve }))
+    const onChange = vi.fn()
+    const view = (target: string) => (
+      <InventoryDocCandidatePicker label="来源报货单" purpose="purchase-order-source" targetOrgNodeId={target} selection={{ mode: 'multi', values: [], onChange, bulkLabel: '带出' }} />
+    )
+    const { rerender } = render(view('HQ1'))
+    fireEvent.click(await screen.findByRole('button', { name: '带出' }))
+    rerender(view('HQ2'))
+    await act(async () => { resolveIds({ ids: ['MHZ-HQ1'] }) })
+    expect(onChange).not.toHaveBeenCalled()
+  })
+
+  it('先改关键字再在防抖期内点带出：防抖追平不作废正确结果', async () => {
+    vi.mocked(listInventoryDocCandidates).mockResolvedValue({ data: [], total: 0, pageSize: 20 })
+    let resolveIds: (value: { ids: string[] }) => void = () => {}
+    vi.mocked(listInventoryDocCandidateIds).mockImplementationOnce(() => new Promise((resolve) => { resolveIds = resolve }))
+    const onChange = vi.fn()
+    render(<InventoryDocCandidatePicker label="来源报货单" purpose="purchase-order-source" selection={{ mode: 'multi', values: [], onChange, bulkLabel: '带出' }} />)
+    fireEvent.change(screen.getByLabelText('来源报货单 检索'), { target: { value: 'MHZ-7' } })
+    fireEvent.click(screen.getByRole('button', { name: '带出' }))
+    // 等防抖追平、列表按新关键字重查之后再让带出结果落地
+    await waitFor(() => expect(listInventoryDocCandidates).toHaveBeenLastCalledWith(expect.objectContaining({ keyword: 'MHZ-7' })), { timeout: 2000 })
+    await act(async () => { resolveIds({ ids: ['MHZ-7'] }) })
+    expect(onChange).toHaveBeenCalledWith(['MHZ-7'])
+  })
+
   it('带出禁用原因：按钮禁用并显示原因，不发请求', async () => {
     vi.mocked(listInventoryDocCandidates).mockResolvedValue({ data: [], total: 0, pageSize: 20 })
     render(
