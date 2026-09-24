@@ -3325,16 +3325,30 @@ describe('order.homeProducts', () => {
     const sql = pg.query.mock.calls[0][0]
 
     // #154 起提货件数直读 sale_items.picked_up_quantity，pickup_totals CTE 已删除。
-    // 这不是"图省事少个 JOIN"，而是并发正确性要求：件数在 si 自身列上，本行被
-    // FOR UPDATE 锁住时 EvalPlanQual 会重新读到最新值；JOIN 出去的聚合子查询不会，
-    // 并发提货下会拿着快照算可提量。回退成 JOIN pickup_records 是真实缺陷，必须挡。
-    // （pickup_records 降级为明细表，只用于 cron 的 C5 守恒审计
-    //  `picked_up_quantity == SUM(pickup_records.pickup_quantity)`。）
+    //
+    // 理由是「只依赖权威列，不引入第二个会漂移的口径」：#154 后 si.picked_up_quantity
+    // 是权威列，pickup_records 降级为明细表，只供 cron 的 C5 审计对账。两者的守恒
+    // （picked_up_quantity == SUM(pickup_records.pickup_quantity)）是**外部审计保证的
+    // 不变量**，不是同一条查询内能保证的东西——读明细表等于给自己造一个可能与权威列分叉
+    // 的第二来源。
+    //
+    // ⚠️ 别把 FOR UPDATE / EvalPlanQual 那套论证安到本函数头上：homeProducts 是**纯只读
+    // 查询，全函数零加锁**。那套论证属于写路径——staffApi/routes/order.js 的 createPickup
+    // （`FOR UPDATE OF si`）和 fengyu-admin/src/actions/orders.ts 的折抵复算才是它的适用
+    // 位置：那里先锁 si 行再读，EvalPlanQual 只刷新被锁的 si 自身，JOIN 出去的聚合子查询
+    // 仍是旧快照。读路径跟着统一到同一份权威列，是为了不让两条路径各有一套口径，
+    // 而不是因为本函数需要锁语义。（更不要为了"对齐"给这条只读查询加 FOR UPDATE。）
     //
     // ⚠️ 旧断言曾是 toContain('FROM pickup_records')——#154 改了 8 个源文件却没动
     // 任何测试，这条断言就此过时并让整条用例长期红着，连带**后面 7 条断言从未执行过**，
     // 最终挡住 clientApi 接入 CI（#276）。
-    expect(sql).not.toContain('pickup_records')
+    //
+    // 先剥掉 SQL 行注释再断言：SQL 模板里的 `--` 注释会进入这个字符串，直接对全文
+    // toContain 会误伤将来"解释 pickup_records 与本列的守恒关系"这类纯注释
+    // （剥注释后仍用全词断言，比只挡 /(FROM|JOIN)\s+pickup_records/ 更强——
+    //  后者放过 `FROM a, pickup_records b` 这类隐式 cross join 写法）。
+    const sqlCode = sql.split('\n').map((line) => line.replace(/--.*$/, '')).join('\n')
+    expect(sqlCode).not.toContain('pickup_records')
 
     // 三语义各自直读独立列，互不倒推
     expect(sql).toContain('COALESCE(si.picked_up_quantity, 0)))::int AS picked_quantity')
