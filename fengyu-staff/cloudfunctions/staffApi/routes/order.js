@@ -6744,7 +6744,8 @@ async function availablePickupItems(ctx) {
               -- #350：提货页按销售单分组，组头显示下单日期（sale_orders.sale_order_datetime，按上海日历日）。
               -- 服务端格式化成 YYYY-MM-DD 再下发：小程序端的日期本地化不可靠。
               to_char(o.sale_order_datetime AT TIME ZONE 'Asia/Shanghai', 'YYYY-MM-DD') AS order_date,
-              s.store_name
+              -- #350：组头「开单门店」用订单快照（门店改名后仍显示下单时名称），缺快照的历史单回退实时名
+              COALESCE(NULLIF(o.store_name, ''), s.store_name) AS store_name
          FROM sale_items si
          JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
          LEFT JOIN stores s ON s.store_id = o.store_id

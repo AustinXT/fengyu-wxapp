@@ -71,7 +71,8 @@ function formatProductName(productName?: string | null, specName?: string | null
 }
 
 function normalizePickupItem(item: PickupItem): PickupItem {
-  // null / '' 时 Number() 得 0，会被显示成 ¥0.00 冒充赠品；缺值一律显示 --
+  // 防御性兜底：sale_items.unit_real_price 是 NOT NULL，服务端还会 `?? '0'`，真实链路到不了这支；
+  // 但 null / '' 经 Number() 会变成 0、显示成 ¥0.00 冒充赠品，所以缺值仍显示 --
   const raw = item.unitRealPrice
   const price = raw === null || raw === undefined || raw === '' ? NaN : Number(raw)
   return {
