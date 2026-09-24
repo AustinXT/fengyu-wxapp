@@ -12,7 +12,7 @@
  * 两端人均业绩的分母差 14 人（staff 152 / admin 166，2026-09-24 生产实测），
  * staff 侧所有人均指标虚高 +9.2%。这正是「改一端忘另一端」的典型，所以补本守护。
  *
- * 守的是**归属规则的三个要件**，不是 SQL 全文（两端写法必然有差异：
+ * 守的是**归属规则的各项要件**（下列 1~9），不是 SQL 全文（两端写法必然有差异：
  * Drizzle `sql` 模板 vs 原生 `pg.query` 字符串、`$n` vs `${}`）：
  *   1. `COALESCE(store_id, ds.store_id)` —— 直挂门店组织节点的人回收进该门店
  *   2. `anchor_market_id` 的 `CASE WHEN type='市场'` 两级兜底（自身 / 父节点）
@@ -748,13 +748,16 @@ describe('产能技师分母跨端字面量守护（#320）', () => {
        * 后者是数组成员判定的自然写法，第 7 轮 GLM 指出只探左侧等于留了一道现成的绕行门。
        */
       const PROBES = [
-        // skills 在操作符左侧
-        /skills\s*(?:&&\s*ARRAY\s*\[|@>|<@|=\s*ANY)/g,
-        // skills 在操作符右侧（数组成员判定的自然写法）
-        /ANY\s*\(\s*[\w.]*skills/g,
-        /unnest\s*\(\s*[\w.]*skills/g,
-        /(?:&&|@>|<@)\s*[\w]+\.skills\b/g,
-        /array_position\s*\(\s*[\w.]*skills/g,
+        // skills 在操作符左侧。`&&` 那一支必须限定右操作数形态 ——
+        // 裸 `skills &&` 会被 JS 的逻辑与误报（TS 源码里 `x.skills && …` 是合法真值判断）。
+        // 右操作数的四种自然形态：ARRAY 构造器 / 字符串字面量 / drizzle 插值 / `$n` 占位符。
+        /skills\s*&&\s*(?:ARRAY\s*\[|'|"|\$\{|\$\d)/g,
+        /skills\s*(?:@>|<@|=\s*ANY)/g,
+        // skills 在操作符右侧（数组成员判定同样自然的写法）
+        /ANY\s*\(\s*[\w.]*skills\b/g,
+        /unnest\s*\(\s*[\w.]*skills\b/g,
+        /(?:&&|@>|<@)\s*[\w.]*skills\b/g,
+        /array_position\s*\(\s*[\w.]*skills\b/g,
       ]
       const hits = PROBES.flatMap((re) => code.match(re) ?? [])
       expect(
