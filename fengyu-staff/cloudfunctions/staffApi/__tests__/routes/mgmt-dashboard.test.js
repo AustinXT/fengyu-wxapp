@@ -1795,10 +1795,17 @@ describe('mgmtDashboard.staffRanking', () => {
         // 「品项老师/养生部应当入榜」的放宽改造矛盾。has_skills（非空判定）不在此列。
         expect(sql).not.toMatch(/sw\.skills\s*&&\s*ARRAY/)
         // 候选池带 has_skills 标记（skills 非空），供末尾入榜口径使用
-        expect(sql).toMatch(/\(sw\.skills IS NOT NULL AND cardinality\(sw\.skills\) > 0\)\s+AS has_skills/)
+        expect(sql).toMatch(/\(COALESCE\(cardinality\(array_remove\(sw\.skills, ''\)\), 0\) > 0\)\s+AS has_skills/)
         expect(sql).toMatch(/pb\.has_skills/)
         // ★ 入榜口径（#290）：有技能标签者无条件入榜（含零值/负值），无标签者仅在有非零产能时入榜
-        expect(sql).toMatch(/WHERE\s+\(pe\.has_skills\s+OR\s+COALESCE\([\s\S]*?<>\s*0\)/)
+        //
+        // ⚠️ 必须锚到 ORDER BY：不锚尾部的话，追加 `AND pe.store_id IS NOT NULL` 之类照样绿。
+        // 这条尤其重要，因为 staffApi 有**独立的 vitest**——只改本目录的云函数 + 只跑本目录测试
+        // 是完全可能的工作流，此时 admin 仓那条逐字钉死形状的 assertStaffRankAdmissionShape
+        // 根本不会被执行。staff 侧必须自己守得住，不能指望跨仓兜底。
+        expect(sql).toMatch(
+          /WHERE\s+\(\s*pe\.has_skills\s+OR\s+COALESCE\(\s*\w+\.v\s*,\s*0\s*\)(?:\s*\+\s*COALESCE\(\s*\w+\.v\s*,\s*0\s*\))?\s*<>\s*0\s*\)\s*ORDER BY/,
+        )
         // ★ 反向守护：禁止任何形式的 `value > 0` 剔行 —— 它会吞掉退款净额为负的员工，
         //   与「退款负数冲销不删行」硬口径冲突（门店榜 storeRanking 从不按 value 剔行）。
         //   注：`cardinality(sw.skills) > 0` 不在此列（匹配的是 COALESCE(别名.v, 0)）。

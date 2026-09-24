@@ -68,7 +68,7 @@ const PROBES: Probe[] = [
   {
     label: '人效板 · 产能员工候选池 has_skills 标记（#290）',
     file: 'src/actions/data-center/efficiency.ts',
-    pattern: /^\(sw\.skills IS NOT NULL AND cardinality\(sw\.skills\) > 0\) AS has_skills$/,
+    pattern: /^\(COALESCE\(cardinality\(array_remove\(sw\.skills, ''\)\), 0\) > 0\) AS has_skills$/,
     minLines: 1,
   },
 ]

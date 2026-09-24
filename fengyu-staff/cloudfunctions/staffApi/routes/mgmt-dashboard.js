@@ -999,7 +999,7 @@ function producerEmployeesCte(storeFilter, orgScope) {
     CASE WHEN o.type = '市场' THEN o.id
          WHEN op.type = '市场' THEN op.id
          ELSE NULL END                                   AS anchor_market_id,
-    (sw.skills IS NOT NULL AND cardinality(sw.skills) > 0) AS has_skills
+    (COALESCE(cardinality(array_remove(sw.skills, '')), 0) > 0) AS has_skills
   FROM staff_wechat_users sw
   LEFT JOIN stores s     ON s.store_id     = sw.store_id
   LEFT JOIN org_nodes o  ON o.id           = sw.org_node_id

@@ -316,8 +316,60 @@ function assertPlainSumAggregate(segment: string, label: string): void {
  * 外层 `ORDER BY` 是唯一可靠的尾锚（两端排行榜都以它收尾，CTE 内不出现排序）；
  * staff 端排序是插值常量 `${STAFF_ORDER_BY}`，一并识别。取尾锚之前的**最后一个** WHERE。
  */
+const ORDER_BY_ANCHOR = /ORDER BY|\$\{STAFF_ORDER_BY\}/g
+
+/**
+ * ★ `whereClauseOf` 的 fail-closed 前置条件（闸门 1 · boundary-critic P1-2 / P2-1，
+ *   concurrency P2-2 / P2-3 —— 两个 reviewer 独立复现了同一族绕过）。
+ *
+ * 「取尾锚之前最后一个 WHERE」这套定位法**只在切片恰好是一个完整查询时**才等价于
+ * 「最外层 WHERE」。实测有两条路径能让它静默放行：
+ *
+ *   1. **外层再包一层**：`SELECT * FROM (<原查询>) z WHERE z.value > 0`
+ *      —— 新 WHERE 落在尾锚**之后**，被 `slice(0, anchor)` 整段丢弃 → GREEN
+ *   2. **切片里混进两个查询**：切片锚点是「下一个查询的变量名」，在两个榜之间插入
+ *      一个新榜，切片会同时含两个查询，取到的是**第一个**的 WHERE，新榜一字未检 → GREEN
+ *      （新增 metric 是完全可预期的常规演进，不是刻意构造）
+ *
+ * 所以在抽 WHERE 之前先证明「这个切片只有一个查询、且尾锚之后没有过滤」。
+ */
+function assertSingleOuterQuery(segment: string, label: string): void {
+  const anchors = segment.match(ORDER_BY_ANCHOR) ?? []
+  expect(
+    anchors.length,
+    `${label} 的切片里出现了 ${anchors.length} 个 ORDER BY，期望恰好 1 个。两种成因：\n` +
+      `  · 切片跨了多个查询（多半是在两个榜之间新增了 metric）—— 请同步给新榜补一条切片断言；\n` +
+      '  · CTE 内引入了合法排序（窗口函数 / array_agg(... ORDER BY ...)）—— 请改用不含\n' +
+      '    ORDER BY 字面量的写法，或重构本 helper 的尾锚策略。\n' +
+      '无论哪种，都不能让入榜口径检查落到错误的 WHERE 上。',
+  ).toBe(1)
+
+  const anchorAt = segment.search(ORDER_BY_ANCHOR)
+  expect(
+    /\bWHERE\b/i.test(segment.slice(anchorAt)),
+    `${label} 在 ORDER BY **之后**仍出现 WHERE —— 典型形态是把整个查询包一层\n` +
+      '`SELECT * FROM (<原查询>) z WHERE z.value > 0`，它能在不动内层 WHERE 的前提下\n' +
+      '重新按 value 剔行，等于静默回退 #290。',
+  ).toBe(false)
+}
+
+/**
+ * 抽出一个排行榜查询**最外层**的 `WHERE` 子句正文。
+ *
+ * ⚠️ 不能取第一个 `WHERE`：这些查询普遍带 CTE（`revenue_by_emp AS (... WHERE ...)`）与
+ * 相关子查询（门店榜保有会员的 `EXISTS (... WHERE ...)`），第一个 WHERE 必落在内层，
+ * 拿它去比对外层口径会得到「口径没守住」的假红 —— 更危险的是反过来：若内层恰好长得像
+ * 期望形状，就成了假绿。
+ *
+ * 也不能用 `GROUP BY` 当尾锚：员工榜的 CTE 内有 `GROUP BY spia.employee_id`，它在外层
+ * WHERE **之前**，会把外层 WHERE 整个切掉。
+ *
+ * 以**唯一的** `ORDER BY` 为尾锚（唯一性由 `assertSingleOuterQuery` 先行保证），
+ * 取其之前的最后一个 WHERE。staff 端排序是插值常量 `${STAFF_ORDER_BY}`，一并识别。
+ */
 function whereClauseOf(segment: string, label: string): string {
-  const tailAnchor = segment.search(/ORDER BY|\$\{STAFF_ORDER_BY\}/)
+  assertSingleOuterQuery(segment, label)
+  const tailAnchor = segment.search(ORDER_BY_ANCHOR)
   expect(tailAnchor, `${label} 找不到外层 ORDER BY，无法定位最外层 WHERE`).toBeGreaterThan(-1)
   const outer = segment.slice(0, tailAnchor)
   const from = outer.lastIndexOf('WHERE ')
@@ -327,6 +379,76 @@ function whereClauseOf(segment: string, label: string): string {
   // 员工榜外层无 GROUP BY（CTE 内那个在本切片起点之前），此处对它是 no-op。
   const groupBy = raw.search(/GROUP BY/)
   return (groupBy === -1 ? raw : raw.slice(0, groupBy)).trim()
+}
+
+/**
+ * ★ 金额/次数列**不得设正值下界**（闸门 1 · boundary-critic P2-2）。
+ *
+ * 前面所有守护都盯着**外层** WHERE，对 metric CTE 内部完全失明。在
+ * `revenue_by_emp` / `consume_by_emp` / `sales_comm` / `service_comm` 任一 CTE 里追加
+ * `AND spia.allocated_amount > 0`，退款负行会在**聚合前**被剔除 —— 员工净额由负转正，
+ * 而外层 WHERE 一字未动、全部形状断言照绿。这与 #290 是同一个缺陷，只是下沉了一层。
+ *
+ * Part A/B/C 侧由 `assertEverySpeRefClassified` 堵这一层（fail-closed 要求每个 `spe.*`
+ * 引用都能被归类），但 Part D 走的是 `spia` / `sc` / `sit`，没有对应分类器。
+ *
+ * 注：`${producerCte}` 在切片里是**插值引用**而非展开文本，故候选池里那句
+ * `cardinality(sw.skills) > 0` 不在扫描范围内，不会误伤。
+ */
+const AMOUNT_FLOOR_RE =
+  /\b\w+\.(?:allocated_amount|commission_amount|session_used|unit_real_price|amount|received)(?:::\w+)?\s*>=?\s*0/i
+
+function assertNoAmountFloorInCte(segment: string, label: string): void {
+  const hit = segment.match(AMOUNT_FLOOR_RE)
+  expect(
+    hit?.[0] ?? null,
+    `${label} 对金额/次数列设了正值下界（命中：${hit?.[0]}）。这会在聚合前剔掉退款负行，` +
+      '让员工净额由负转正 —— 与 #290 同型，只是下沉到 CTE 层，外层 WHERE 形状断言看不见它。',
+  ).toBeNull()
+}
+
+/**
+ * ★ 员工榜的 metric JOIN 形状（闸门 1 · concurrency P2-2 判定为**最危险**的一条）。
+ *
+ * 两条绕过路径，都能在**完全不动外层 WHERE** 的前提下回滚本次修复：
+ *
+ *   1. **把过滤挪进 ON**：`LEFT JOIN revenue_by_emp r ON r.employee_id = pe.employee_id AND r.v > 0`
+ *      —— ON 不满足时 LEFT JOIN 产出 NULL → `COALESCE(r.v, 0)` 兜成 0：
+ *      无标签者被外层 WHERE 剔除，**有标签者的 `value` 被静默篡改成 0.00**，
+ *      负值员工的金额直接消失。这是最像"性能优化"的一种写法。
+ *   2. **`LEFT JOIN` 退化成 `JOIN`** —— 比原缺陷更糟：连"有标签零值"者也全部掉榜，
+ *      而 WHERE 形状逐字未变，形状断言照绿。
+ *
+ * 故此处钉死：`FROM producer_employees pe` 之后的每个 JOIN 都必须是 `LEFT JOIN`，
+ * 且每个 `ON` 子句**有且仅有** `<别名>.employee_id = pe.employee_id` 一项。
+ */
+function assertMetricJoinShape(segment: string, label: string): void {
+  const fromAt = segment.indexOf('FROM producer_employees pe')
+  expect(fromAt, `${label} 找不到 FROM producer_employees pe`).toBeGreaterThan(-1)
+  const anchorAt = segment.search(ORDER_BY_ANCHOR)
+  const joinArea = segment.slice(fromAt, anchorAt === -1 ? undefined : anchorAt)
+
+  expect(
+    /(?<!LEFT\s)\bJOIN\b/i.test(joinArea),
+    `${label} 的 metric 关联出现了非 LEFT 的 JOIN —— 内连接会把「有技能标签但本期零产能」` +
+      '的员工整体剔除，比 #290 原缺陷更狠，且外层 WHERE 形状逐字未变、形状断言发现不了。',
+  ).toBe(false)
+
+  // 用 [\s\S] 而非 `.` + `s` 标志：dotAll 需要 target es2018+，本仓 tsconfig 低于该版本
+  // （vitest/esbuild 不校验、`tsc --noEmit` 会报 TS1501，两道关卡口径不同）
+  const onClauses = [...joinArea.matchAll(/\bON\s+([\s\S]+?)(?=\s*(?:LEFT JOIN|JOIN|WHERE)\b|$)/gi)]
+  expect(
+    onClauses.length,
+    `${label} 没抽到任何 JOIN ... ON —— 切片结构变了，本断言可能已失效（fail-closed）`,
+  ).toBeGreaterThan(0)
+  for (const m of onClauses) {
+    expect(
+      m[1].trim(),
+      `${label} 的 JOIN ON 里混入了关联之外的条件。把 value 过滤挪进 ON（如 ` +
+        '`AND r.v > 0`）会让 LEFT JOIN 落空、COALESCE 兜成 0，从而**静默篡改榜单数值**' +
+        '而不改变行数 —— 外层 WHERE 形状断言对此完全失明。',
+    ).toMatch(/^\w+\.employee_id\s*=\s*pe\.employee_id$/)
+  }
 }
 
 /**
@@ -352,13 +474,18 @@ function assertStaffRankAdmissionShape(segment: string, label: string): void {
     `${label} 出现 LIMIT/OFFSET/FETCH/HAVING —— 员工榜按 value DESC 排序，负值恒在末尾，` +
       '任何截断或聚合级剔行都会优先吃掉它们，等于回退 #290',
   ).toBe(false)
+  // 同族防线：外层 WHERE 形状对 CTE 内部与 JOIN ON 都完全失明，各堵一道
+  assertNoAmountFloorInCte(segment, label)
+  assertMetricJoinShape(segment, label)
   expect(
     whereClauseOf(segment, label),
     `${label} 的入榜口径变了。必须是「有技能标签者无条件入榜（含零值/负值），` +
       '无标签者仅在有非零产能时入榜」；任何按 value 设下界的写法都会重新吞掉退款净额为负的员工' +
       '（#290：2026-09-01~22 实测 2 人、−10,902.00），与同板块门店榜规则分裂',
   ).toMatch(
-    /^\(pe\.has_skills OR COALESCE\(\w+\.v, 0\)(?: \+ COALESCE\(\w+\.v, 0\))? <> 0\)$/,
+    // 空白放宽为 \s+/\s*：income 那行已 68 字符，手动折行不该判红（fail-closed 方向不变，
+    // 因为形状仍被 ^...$ 逐项锚定，只是不再对空格数量斤斤计较）
+    /^\(\s*pe\.has_skills\s+OR\s+COALESCE\(\s*\w+\.v\s*,\s*0\s*\)(?:\s*\+\s*COALESCE\(\s*\w+\.v\s*,\s*0\s*\))?\s*<>\s*0\s*\)$/,
   )
 }
 
@@ -371,9 +498,13 @@ function assertStaffRankAdmissionShape(segment: string, label: string): void {
  * 门店榜守「压根不按 value 过滤」，两条合起来才叫规则一致。
  */
 function assertStoreRankNoValueCutoff(segment: string, label: string): void {
+  // ⚠️ `:492` 的同族禁令在门店榜侧也只喂了 `qStoreRankRevenue` 一个切片，
+  // 另外四个（consume / retainedMember / newMember / projectCount）此前无守护。
+  // 本 helper 本就遍历全部 5 个切片，顺手覆盖成本为零 ——「站在缺口正上方不补」是闸门 1 的原话。
   expect(
-    /\bHAVING\b/i.test(segment),
-    `${label} 出现 HAVING —— 门店榜不得按聚合值剔行（会吞掉净额为负的门店）`,
+    /\b(?:LIMIT|OFFSET|FETCH|HAVING)\b/i.test(segment),
+    `${label} 出现 LIMIT/OFFSET/FETCH/HAVING —— 门店榜不得截断或按聚合值剔行` +
+      '（会吞掉净额为负的门店，并让门店榜合计 ≠ KPI 分子）',
   ).toBe(false)
   expect(
     whereClauseOf(segment, label),
@@ -809,7 +940,7 @@ describe('数据中心人效板块两端口径一致性守护', () => {
         [staffBody, 'staff mgmt-dashboard.js'],
       ] as const) {
         expect(body, `${label} 的 producer_base 缺 has_skills 列`).toMatch(
-          /\(sw\.skills IS NOT NULL AND cardinality\(sw\.skills\) > 0\) AS has_skills/i,
+          /\(COALESCE\(cardinality\(array_remove\(sw\.skills, ''\)\), 0\) > 0\) AS has_skills/i,
         )
         expect(body, `${label} 的 producer_employees 没透传 has_skills`).toMatch(/pb\.has_skills/i)
       }
@@ -862,6 +993,31 @@ describe('数据中心人效板块两端口径一致性守护', () => {
       for (const [label, start, end] of slices) {
         assertStoreRankNoValueCutoff(sliceOrFail(adminSrc, start, end), `admin 门店榜-${label}`)
       }
+    })
+
+    /**
+     * ★ 切片数与查询数对账（闸门 1 · boundary-critic P2-1 的第二道防线）。
+     *
+     * 上面三条 it 的切片清单是**硬编码**的（admin 5 / staff 6）。新增一个员工榜 metric 时，
+     * 只要没人回来往清单里加一行，那个新榜就永远不会被检查 —— 而
+     * `assertSingleOuterQuery` 只能发现「切片内混进了第二个查询」这一种形态，
+     * 发现不了「新榜被加在清单覆盖范围之外」（比如加在最后一个榜之后）。
+     *
+     * 这里直接钉死消费 `producer_employees` 的查询总数：多一个就红，改动者必须回来
+     * 同步切片清单并说明新榜为何安全。
+     */
+    it('消费 producer_employees 的查询总数与切片清单对账（新增 metric 必须同步补断言）', () => {
+      expect(
+        (adminBody.match(/FROM producer_employees pe/g) ?? []).length,
+        'admin 侧消费 producer_employees 的查询数变了。期望 6 = Part D 五个员工榜 + Part E 技师明细。\n' +
+          '  · 新增员工榜 metric → 请往上面「admin Part D 五个员工榜」的 slices 里补一行；\n' +
+          '  · 新增 Part E 同类明细 → 请确认它不按 value 剔行后再改本断言。',
+      ).toBe(6)
+      expect(
+        (staffBody.match(/FROM producer_employees pe/g) ?? []).length,
+        'staff 侧消费 producer_employees 的查询数变了。期望 6 个员工榜（比 admin 多 footfall、无 Part E）。\n' +
+          '新增 metric 请同步补「staff 六个员工榜」的 slices。',
+      ).toBe(6)
     })
   })
 

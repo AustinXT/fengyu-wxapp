@@ -56,8 +56,11 @@
  *   ⚠️ 所有 role_type 各算一份（用户拍板，不做角色去重）：同一项目同时挂美容师 + 品项老师时
  *   两人各全额计入，故**员工榜/明细表合计会大于门店实耗**（2026-09 实测高约 25%）。
  *   门店榜 / 全局大卡实耗（Part A/B）仍走 service_items 原口径，不受影响。
- *   - 产能员工 producer_employees：hired_at/resigned_at 历史化（2026-05-20 起不再用 skills 过滤，
- *     以已归属业绩自然过滤 + 末尾 value>0 排除零值；与 mgmt-dashboard.js producerEmployeesCte 一致）
+ *   - 产能员工 producer_employees：hired_at/resigned_at 历史化；与 mgmt-dashboard.js
+ *     producerEmployeesCte 一致。**入榜口径见 Part D 段头**（2026-09-24 #290 起为
+ *     `pe.has_skills OR COALESCE(v,0) <> 0`，取代 2026-05-20 的 `value > 0`）。
+ *     ⚠️ 候选池仍**不用** skills 白名单截断（`skills && ARRAY['美容师','养生师']` 会漏 27.8%）；
+ *     `has_skills` 是「有任意技能标签」的非空判定，与白名单是两回事，别混为一谈。
  *
  * ⚠️ 偏离 metrics.md 说明：
  *   - 「店长人数 managerCount」「技师人数 technicianCount」是本 admin 人效板块新增的 byMarket 头数指标，
@@ -553,7 +556,7 @@ export const getEfficiencyBoard = withPermission(
                CASE WHEN o.type = '市场' THEN o.id
                     WHEN op.type = '市场' THEN op.id
                     ELSE NULL END AS anchor_market_id,
-               (sw.skills IS NOT NULL AND cardinality(sw.skills) > 0) AS has_skills
+               (COALESCE(cardinality(array_remove(sw.skills, '')), 0) > 0) AS has_skills
         FROM staff_wechat_users sw
         LEFT JOIN stores s ON s.store_id = sw.store_id
         LEFT JOIN org_nodes o_store ON s.org_node_id = o_store.id AND o_store.type = '门店'
