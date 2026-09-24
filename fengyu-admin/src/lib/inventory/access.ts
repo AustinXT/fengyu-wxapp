@@ -1,5 +1,6 @@
 import { ApiError } from '@/lib/api-error'
 import type { AuthSession } from '@/lib/types'
+import { scopeSessionToActions } from '@/lib/action-scope'
 import { hasPermission, isAdminScope } from '@/lib/permissions'
 import type { InventoryPriceVisibility } from './types'
 
@@ -178,6 +179,16 @@ export function isInventoryPromotionMaintainer(session: AuthSession): boolean {
   return session.roles.some((role) => role.scopeType === '总部'
     && Array.isArray(role.actions)
     && role.actions.includes(INVENTORY_PROMOTION_MAINTAIN_ACTION))
+}
+
+/**
+ * 页面入口判据：与 action / 引擎完全同构 —— `withPermission(MANAGE)` 先要求会话级持有 MANAGE，
+ * 再把角色收紧到授予 MANAGE 的绑定，最后过维护方判定。直接拿未收紧的会话判会把
+ * 「超管绑定（无 MANAGE）+ 别处绑定授的 MANAGE」拼成可维护，页面显示入口而后端拒绝。
+ */
+export function canMaintainInventoryPromotions(session: AuthSession): boolean {
+  if (!hasPermission(session, INVENTORY_PROMOTION_MAINTAIN_ACTION)) return false
+  return isInventoryPromotionMaintainer(scopeSessionToActions(session, [INVENTORY_PROMOTION_MAINTAIN_ACTION]))
 }
 
 export function assertInventoryPromotionMaintainer(session: AuthSession): void {

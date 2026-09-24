@@ -48,7 +48,7 @@ import {
   updateInventorySupplier,
   updateInventoryPromotionPlan,
 } from './engine'
-import { hasPermission, isAdminScope } from '@/lib/permissions'
+import { hasPermission, isAdminScope, requirePermission } from '@/lib/permissions'
 import { INVENTORY_GENERIC_DOC_TYPES } from './types'
 
 /*
@@ -4637,6 +4637,14 @@ describe('报货福利方案只由总部供应链维护（#354，引擎层）', 
     const market = captureWhere()
     await listInventoryPromotionMarketOptions()
     expect(dialect.sqlToQuery(market.where as never).params).toEqual([true, '市场', 'M1'])
+  })
+
+  it('三个引擎导出都由 withPermission(supply_chain_master_data_manage) 包装（I7）', async () => {
+    mockGetSession.mockResolvedValue(MARKET_FINANCE)
+    await createInventoryPromotionPlan(INPUT).catch(() => undefined)
+    await updateInventoryPromotionPlan('P1', INPUT).catch(() => undefined)
+    await disableInventoryPromotionPlan('P1').catch(() => undefined)
+    expect(vi.mocked(requirePermission).mock.calls.map((call) => call[1])).toEqual([MANAGE, MANAGE, MANAGE])
   })
 
   it('市场库存财务调用新建、修改、停用均 PERMISSION_DENIED，且不读库', async () => {

@@ -97,6 +97,35 @@ describe('报货福利方案页维护入口（#354）', () => {
     expect(screen.queryByRole('button', { name: /编辑/ })).not.toBeInTheDocument()
   })
 
+  it('超管绑定未持有维护动作：不给入口（与 withPermission(MANAGE) 同构）', async () => {
+    const superAdmin = sessionWith('总部', 'HQ', ['inventory:supply_chain_price_view'])
+    superAdmin.roles[0] = { ...superAdmin.roles[0], role: 'admin', isSuperAdmin: true } as never
+    mockGetSession.mockResolvedValue(superAdmin)
+    render(await Page())
+    expect(screen.queryByRole('button', { name: /新建方案/ })).not.toBeInTheDocument()
+  })
+
+  it('超管绑定（无维护动作）+ 市场绑定误授维护动作：拼接不成立，不给入口', async () => {
+    const superAdmin = sessionWith('总部', 'HQ', ['inventory:supply_chain_price_view'])
+    const market = sessionWith('市场', 'M1', [MANAGE])
+    mockGetSession.mockResolvedValue({
+      ...superAdmin,
+      roles: [{ ...superAdmin.roles[0], role: 'admin', isSuperAdmin: true }, market.roles[0]],
+      permissions: { ...superAdmin.permissions, actions: [...superAdmin.permissions.actions, MANAGE] },
+    })
+    render(await Page())
+    expect(screen.queryByRole('button', { name: /新建方案/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /编辑/ })).not.toBeInTheDocument()
+  })
+
+  it('超管绑定持有维护动作：给入口', async () => {
+    const superAdmin = sessionWith('总部', 'HQ', [MANAGE, 'inventory:supply_chain_price_view'])
+    superAdmin.roles[0] = { ...superAdmin.roles[0], role: 'admin', isSuperAdmin: true } as never
+    mockGetSession.mockResolvedValue(superAdmin)
+    render(await Page())
+    expect(screen.getByRole('button', { name: /新建方案/ })).toBeInTheDocument()
+  })
+
   it('总部供应链：全局与市场方案都有编辑、停用入口，可新建', async () => {
     mockGetSession.mockResolvedValue(sessionWith('总部', 'HQ', [MANAGE, 'inventory:supply_chain_price_view']))
     render(await Page())

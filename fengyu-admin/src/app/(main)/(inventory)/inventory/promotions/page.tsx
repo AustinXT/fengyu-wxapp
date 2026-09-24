@@ -1,7 +1,7 @@
 import { Suspense } from 'react'
 import { listInventoryPromotionMarketOptions, listInventoryPromotionPlans } from '@/actions/inventory/promotions'
 import { getSession } from '@/lib/auth'
-import { isInventoryPromotionMaintainer } from '@/lib/inventory/access'
+import { canMaintainInventoryPromotions } from '@/lib/inventory/access'
 import { hasUiCapability } from '@/lib/permission-contract'
 import { requireAllUiPageCapabilities } from '@/lib/page-capability'
 import InventoryPromotionsPage from '../_components/inventory-promotions-page'
@@ -29,7 +29,7 @@ export default async function Page() {
   const actions = session.permissions.actions
   const canViewPrice = hasUiCapability(actions, 'inventory:supply_chain_price_view') || hasUiCapability(actions, 'inventory:market_price_view')
   // 报货福利只由总部供应链维护（#354）：与 action / 引擎层同一判据，市场账号只读
-  const canCreate = isInventoryPromotionMaintainer(session) && canViewPrice
+  const canCreate = canMaintainInventoryPromotions(session) && canViewPrice
   const canUpdate = canCreate
 
   // 未获价格权限的使用者只接收非金额的方案信息，避免客户端 props 暴露优惠金额。
