@@ -14,7 +14,6 @@ import { useUrlFilters } from '@/lib/hooks/use-url-filters'
 import type {
   InventoryPromotionPlanInput,
   InventoryPromotionPlanRow,
-  InventorySkuRow,
 } from '@/lib/inventory/types'
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogDescription, AlertDialogFooter, AlertDialogTitle } from '@/components/ui/alert-dialog'
 import { Badge } from '@/components/ui/badge'
@@ -25,6 +24,7 @@ import { DatePicker } from '@/components/ui/date-picker'
 import { Input } from '@/components/ui/input'
 import { Pagination } from '@/components/ui/pagination'
 import { Select } from '@/components/ui/select'
+import { InventorySkuSearchSelect } from './inventory-sku-search-select'
 import { Textarea } from '@/components/ui/textarea'
 import { normalizePage } from '@/lib/paging'
 
@@ -40,6 +40,8 @@ interface MarketOption {
 interface PromotionDraftItem {
   key: string
   skuId: string
+  /** 编辑已有方案时带回的商品名，给选择器回显兜底（该商品可能已停用、搜不出来）。换商品时清掉。 */
+  skuLabel?: string
   marketUnitDiscount: string
   reportMinQuantity: string
   reportMaxQuantity: string
@@ -103,6 +105,7 @@ function toForm(row: InventoryPromotionPlanRow): PromotionForm {
     items: row.items.map((item) => ({
       key: String(item.id),
       skuId: item.skuId,
+      skuLabel: item.skuName,
       marketUnitDiscount: String(item.marketUnitDiscount),
       reportMinQuantity: item.reportMinQuantity == null ? '' : String(item.reportMinQuantity),
       reportMaxQuantity: item.reportMaxQuantity == null ? '' : String(item.reportMaxQuantity),
@@ -137,7 +140,6 @@ function formatQuantityRange(min: number | null | undefined, max: number | null 
 export default function InventoryPromotionsPage({
   rows,
   marketOptions,
-  skuOptions,
   canCreate,
   canUpdate,
   canViewPrice,
@@ -145,7 +147,6 @@ export default function InventoryPromotionsPage({
 }: {
   rows: InventoryPromotionPlanRow[]
   marketOptions: MarketOption[]
-  skuOptions: Pick<InventorySkuRow, 'skuId' | 'productCode' | 'productName' | 'specName'>[]
   canCreate: boolean
   canUpdate: boolean
   canViewPrice: boolean
@@ -577,17 +578,18 @@ export default function InventoryPromotionsPage({
                     )}
                   </div>
                   <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
-                    <label className="block space-y-2 sm:col-span-2">
-                      <span className="block text-sm font-medium">库存商品 *</span>
-                      <Select value={item.skuId} disabled={readOnly || saving} onChange={(event) => updateItem(index, { skuId: event.target.value })}>
-                        <option value="">请选择库存商品</option>
-                        {skuOptions.map((sku) => (
-                          <option key={sku.skuId} value={sku.skuId}>
-                            {sku.productCode} · {sku.productName}{sku.specName ? `（${sku.specName}）` : ''}
-                          </option>
-                        ))}
-                      </Select>
-                    </label>
+                    {/* 复合控件不放进 <label>（只能含一个关联控件），见 inventory-operations-page 的 FormField group */}
+                    <div role="group" aria-labelledby={`promotion-item-${item.key}-sku`} className="block space-y-2 sm:col-span-2">
+                      <span id={`promotion-item-${item.key}-sku`} className="block text-sm font-medium">库存商品 *</span>
+                      <InventorySkuSearchSelect
+                        value={item.skuId}
+                        disabled={readOnly || saving}
+                        onChange={(skuId) => updateItem(index, { skuId, skuLabel: undefined })}
+                        placeholder="请选择库存商品"
+                        ariaLabel={`明细 ${index + 1} 库存商品`}
+                        selectedLabel={item.skuLabel}
+                      />
+                    </div>
                     <label className="block space-y-2">
                       <span className="block text-sm font-medium">{form.ruleType === '组合' ? '组合数量下限 *' : '数量下限'}</span>
                       <Input type="number" min="0" step="1" max="9999999999.99" placeholder={form.ruleType === '组合' ? '必填' : '留空不限'} value={item.reportMinQuantity} readOnly={readOnly} disabled={saving} onChange={(event) => updateItem(index, { reportMinQuantity: event.target.value })} />

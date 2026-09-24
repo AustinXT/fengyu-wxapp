@@ -553,9 +553,10 @@ export const inventoryDocItems = pgTable(
      */
     supplierId: text('supplier_id').references(() => inventorySuppliers.supplierId),
     /**
-     * 行级市场归属。NULL = 品项公司自用行（走供应链采购入库），非 NULL = 市场行（走品项公司发货）。
+     * 行级市场归属。NULL = 品项公司自用行，非 NULL = 来自市场报货汇总的市场行。
      *
-     * 采购订单收敛成单一 doc_type 后，下游链路分流不再看单据类型而是看本列（#194）。
+     * 采购订单的所有行都走供应链采购入库、按供应链采购价计金额（#335），本列只是来源追溯标记，
+     * 不再决定下游链路（#194 时曾按它分流）。
      */
     marketId: text('market_id').references(() => orgNodes.id),
     productSeries: text('product_series'),

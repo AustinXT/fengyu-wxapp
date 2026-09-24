@@ -66,7 +66,7 @@ INVALID_STATE: 库存期初尚未导入并核验完成，暂不可办理库存�
 
 ### 3.2 测试账号
 
-dev 库没有 `FY-TEST-*` 账号，`e2e-chains` 的 `TEST_PHONES` + `fengyu2026` 对本库无效。本套件自建 4 个账号，**各只绑一个角色 + 一个 scope** —— 多绑定会触发 `inventoryPriceScopeByTier()` 的跨绑定 fail-closed 路径（`src/lib/inventory/access.ts:87-117`），把价格档打成空集。
+dev 库没有 `FY-TEST-*` 账号，`e2e-chains` 的 `TEST_PHONES` + `fengyu2026` 对本库无效。本套件自建 5 个账号（INVT-MK-02 为 #340 新增的自贡市场财务，INV-12 的调入方），**各只绑一个角色 + 一个 scope** —— 多绑定会触发 `inventoryPriceScopeByTier()` 的跨绑定 fail-closed 路径（`src/lib/inventory/access.ts:87-117`），把价格档打成空集。
 
 | employee_id | 手机号 | 角色 | scope | 用途 |
 |---|---|---|---|---|
@@ -74,6 +74,7 @@ dev 库没有 `FY-TEST-*` 账号，`e2e-chains` 的 `TEST_PHONES` + `fengyu2026`
 | `INVT-SC-01` | 19900001002 | `inventory_supply_chain_operator` | `ORG-HQ` | 供应链侧 + 边界断言 |
 | `INVT-MK-01` | 19900001003 | `inventory_market_finance` | `org-市场-1779327286268` | 市场侧 + 边界断言 |
 | `INVT-ST-01` | 19900001004 | `inventory_store_operator` | `org-门店-1780295730424` | **仅断言其无法登录 admin** |
+| `INVT-MK-02` | 19900001005 | `inventory_market_finance` | `org-市场-1779767525664` | INV-12 市场间调货调入方（自贡凤御），办理台待办收货（#340） |
 
 `admin_passwords.must_change` 必须置 `false`，否则登录后被重定向到 `/change-password`。
 登录连错 5 次会被 `login_attempts` 锁 15 分钟（`src/actions/auth.ts:50-52`）。
@@ -112,6 +113,7 @@ dev 库没有 `FY-TEST-*` 账号，`e2e-chains` 的 `TEST_PHONES` + `fengyu2026`
 | INV-09 | 单据中心与台账 | P1 | 7 | 两种组织树筛选语义相反，最易混淆 |
 | INV-10 | 交互合理性审计 | P0 | — | 用户明确提出的第二条主线 |
 | INV-11 | 候选唯一的主体自动选中（#189） | P1 | 6 个 test | 不变量：主体字段不会「只有一个候选还要你手动选」；只读不写库 |
+| INV-12 | 单市场账号发起市场间调货（#340） | P1 | 1 个 test | 接收端候选不按 scope、不含调出市场；破坏性（库存永久搬入自贡凤御） |
 
 ---
 
@@ -171,7 +173,7 @@ dev 库没有 `FY-TEST-*` 账号，`e2e-chains` 的 `TEST_PHONES` + `fengyu2026`
 
 **用户故事**：门店报货 → 市场汇总采购 → 供应链发货 → 市场入库 → 分院配货 → 门店收货，一条完整的货物与货款链路。
 
-**前置**：INV-01、INV-02 完成，总部有货。
+**前置**：INV-01、INV-02 完成（#335 起不再需要总部预备批次）。
 
 | Step | 操作 | UI 断言 | PG 断言 |
 |---|---|---|---|
@@ -181,7 +183,8 @@ dev 库没有 `FY-TEST-*` 账号，`e2e-chains` 的 `TEST_PHONES` + `fengyu2026`
 | 4 | 同上：提取福利方案 | 出现「单价优惠」，**实际单价 = 市场进货价 − 优惠**（§2.2/§3.3） | `doc_items` 的 promotion 快照四件套非空；金额由 DB 触发器算 |
 | 5 | 同上：核对本期应付货款（§3.4） | 页面金额 = 明细汇总 | `inventory_docs.total_amount` = Σ`doc_items.amount`（**读 DB 为准**，§10.2） |
 | 6 | 供应链层 → 创建采购订单 | 数量不得超过市场报货未下单数量 | 超额时报 `CONFLICT`（`business.ts:2258`） |
-| 7 | → 品项公司发货（含赠送，发货量 > 采购量，§5.2） | **页面不展示单价与货款**（§5.3/§10.4） | 赠品行 `amount = 0`；`is_gift=true`；`doc_type='品项公司发货'`、状态「待收货」 |
+| 6b | → 供应链采购入库（#335：市场行也入总部库存） | 采购订单从「待收货」转「已完成」 | 生成总部批次；入库血缘可追溯到采购行及其 `market_id` |
+| 7 | → 品项公司发货（含赠送，发货量 > 报货量，§5.2；从 6b 的批次发出） | **页面不展示单价与货款**（§5.3/§10.4） | 赠品行 `amount = 0`；`is_gift=true`；`doc_type='品项公司发货'`、状态「待收货」 |
 | 8 | 市场层 → 市场采购入库 | 只能对已有发货单入库（§6.1） | 总部 lot 减、市场 lot 增；发货单收完转「已完成」 |
 | 9 | 市场层 → 分院配货（金额四件套：门店进货价/数量/单价优惠/应付货款，§7.3） | 四个字段齐全 | `doc_type='分院配货'`、状态「待收货」；门店真实单价落 `store_actual` |
 | 10 | 门店层 → 分院收货入库 | 配货单转「已完成」 | 门店 lot `quantity_on_hand` 增；`doc_type='院入库'`、前缀 `YRK` |
@@ -190,8 +193,8 @@ dev 库没有 `FY-TEST-*` 账号，`e2e-chains` 的 `TEST_PHONES` + `fengyu2026`
 
 > **#193/#194 后 Step 5→6 之间多了一环**：采购订单不再直接引用市场报货单，中间插入
 > 供应链办理台的「市场报货汇总」（跨市场汇总，`doc_type='市场报货汇总'`），采购订单改从
-> 汇总单来源多选。两张采购卡片也已合并为一张「采购订单」，市场行与供应链行靠明细的
-> `market_id` 分流。spec 已按此实现，本表未重排编号。
+> 汇总单来源多选。两张采购卡片也已合并为一张「采购订单」。#335 起所有行都经供应链采购入库，
+> `market_id` 只作来源追溯（Step 6b）。spec 已按此实现，本表未重排编号。
 >
 > **行内输入的定位口径**（#135 + #194）：报货/汇总/收货三张表的行内控件在 `<td>` 里，
 > 没有 `<label>` 可包裹，可访问名由 `aria-label` 给出，文案是 `<字段名> <行标识>`
@@ -385,7 +388,7 @@ writeCtx('inv07', {
 ## 6. 实施摘要（2026-09-13 首轮实跑回填，2026-09-21 复核修订）
 
 首轮 11 条 spec 全部跑通，耗时约 5 分钟（`bun run test:e2e:inventory-ui`）。
-现为 12 个 spec 文件 / 17 个 test（新增 INV-11，`inv-90` 探针默认 skip）。
+现为 13 个 spec 文件 / 18 个 test（新增 INV-11、INV-12，`inv-90` 探针默认 skip）。
 
 | 场景 | Spec 文件 | 断言点 | 首轮结果 | 现状 |
 |---|---|---|---|---|
@@ -396,11 +399,12 @@ writeCtx('inv07', {
 | INV-04 | `inv-04-returns.spec.ts` | 19 | ✅ 全绿 | — |
 | INV-05 | `inv-05-transfers.spec.ts` | 4 + 6 条受阻清单 | ⛔ 首轮被 #129 阻断，改为缺陷复现 | #129 已修，阻断解除；兼作 #129 回归守护 |
 | INV-06 | `inv-06-stocktake-and-loss.spec.ts` | 17 | ✅ 盘点不变量全绿；报损受阻 | 阻断解除；#131 判定写上下文 |
-| INV-07 | `inv-07-staff-purchase-and-self-purchase.spec.ts` | 21 | ✅ 自采全绿；员工购受阻 | #130 已修，阻断解除；兼作 #130 回归守护 |
+| INV-07 | `inv-07-staff-purchase-and-self-purchase.spec.ts` | 21 | ✅ 自采全绿；员工购受阻 | #130 已修，阻断解除；兼作 #130 回归守护；#350 D-2 改为院顾客产品出库不可通用建单的负向守护（断言点数待部署后实跑复核） |
 | INV-08 | `inv-08-permission-price-boundary.spec.ts` | 20 | ✅ 安全红线全守住 | — |
 | INV-09 | `inv-09-docs-center-and-ledger.spec.ts` | 18 | ✅ 全绿 | — |
 | INV-10 | `inv-10-ux-audit.spec.ts` | 扫描 25 条 finding | ✅ 报告已生成 | 硬编码条目全部改为转述上下文的实测判定 |
 | INV-11 | `inv-11-single-subject-autoselect.spec.ts` | 6 个 test | （首轮尚无此 spec） | #189 部署 dev 后 6/6 通过，`test.skip` 开关已删，进常规套件 |
+| INV-12 | `inv-12-market-transfer-single-market.spec.ts` | 1 个 test | （首轮尚无此 spec） | #340 新增；待部署 dev 后实跑 |
 
 ### 与原设计的偏差及原因
 

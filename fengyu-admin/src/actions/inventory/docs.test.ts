@@ -141,9 +141,9 @@ describe('listInventoryOperationDocs 入参闸门', () => {
     })
 
     vi.clearAllMocks()
-    await listInventoryOperationDocs({ operationId: 'market-conversion', page: 1 })
+    await listInventoryOperationDocs({ operationId: 'supply-chain-conversion', page: 1 })
     expect(mockEngine.listInventoryCoreDocs).toHaveBeenLastCalledWith({
-      docTypes: ['库存转换出库', '库存转换入库'], statuses: undefined, locationType: '市场', scopeRole: undefined,
+      docTypes: ['库存转换出库', '库存转换入库'], statuses: undefined, locationType: '总部', scopeRole: undefined,
       cancellationRequested: undefined, pendingItemScope: undefined, page: 1, pageSize: undefined,
     })
 
@@ -162,7 +162,7 @@ describe('listInventoryOperationDocs 入参闸门', () => {
 
     vi.clearAllMocks()
     await listInventoryOperationDocs({ operationId: 'supply-chain-receipt', page: 1 })
-    // pendingItemScope 必须真的转发到 engine：漏转的话混合采购订单会全涌进待办区
+    // pendingItemScope 必须真的转发到 engine：漏转的话已收满（存量口径异常）的采购订单也会进待办区
     expect(mockEngine.listInventoryCoreDocs).toHaveBeenNthCalledWith(2, {
       docTypes: ['采购订单'], statuses: ['待收货'], locationType: undefined, scopeRole: 'target',
       cancellationRequested: undefined, pendingItemScope: 'supply-chain', page: undefined, pageSize: undefined,

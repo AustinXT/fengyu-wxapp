@@ -9,6 +9,8 @@
  * 页面是 async Server Component：直接 `await Page({searchParams})`，把下游的
  * InventoryDocsPage 换成记录 props 的替身，断言传下去的口径。
  */
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render } from '@testing-library/react'
 import type { InventoryDocType } from '@/lib/inventory/types'
@@ -21,13 +23,14 @@ const STORE = 'inventory:store_operate'
 const BASE_ACTIONS = ['inventory:list', 'inventory:stock_list']
 
 const {
-  captured, mockListDocs, mockFilterOptions, mockListLocations, mockListSkus,
+  captured, mockListDocs, mockFilterOptions, mockListLocations, mockListMarketTargets, mockListSkus,
   mockGetSession, mockRequireCaps,
 } = vi.hoisted(() => ({
   captured: { props: null as Record<string, unknown> | null },
   mockListDocs: vi.fn(),
   mockFilterOptions: vi.fn(),
   mockListLocations: vi.fn(),
+  mockListMarketTargets: vi.fn(),
   mockListSkus: vi.fn(),
   mockGetSession: vi.fn(),
   mockRequireCaps: vi.fn(),
@@ -37,6 +40,7 @@ vi.mock('@/actions/inventory/docs', () => ({ listInventoryCoreDocs: mockListDocs
 vi.mock('@/actions/inventory/locations', () => ({
   listInventoryDocLocationFilterOptions: mockFilterOptions,
   listInventoryLocations: mockListLocations,
+  listInventoryMarketTransferTargets: mockListMarketTargets,
 }))
 vi.mock('@/actions/inventory/skus', () => ({ listInventorySkus: mockListSkus }))
 vi.mock('@/lib/auth', () => ({ getSession: mockGetSession }))
@@ -55,6 +59,9 @@ vi.mock('../_components/inventory-docs-page', () => ({
 import Page from './page'
 
 interface DocsPageProps {
+  receivableTargetOrgNodeIds: readonly string[] | null
+  marketTransferTargets: readonly { orgNodeId: string; name: string }[]
+  canOpenOrderDetail: boolean
   canCreate: boolean
   canApprove: boolean
   canReceive: boolean
@@ -79,6 +86,7 @@ beforeEach(() => {
   // defaultLocationId=null ⇒ selectedOrgNodeId=null ⇒ 页面走空列表分支，不查单据。
   mockFilterOptions.mockResolvedValue({ headquarters: [], markets: [], defaultLocationId: null })
   mockListLocations.mockResolvedValue([])
+  mockListMarketTargets.mockResolvedValue([{ orgNodeId: 'M2', name: '九江市场' }])
   mockListSkus.mockResolvedValue({ data: [], total: 0 })
   mockListDocs.mockResolvedValue({ data: [], total: 0, canViewPrice: false })
 })
@@ -127,15 +135,16 @@ describe('单据中心 · 建单下拉候选', () => {
     expect((await renderWith(SUPPLY)).allowedCreateDocTypes).toEqual(['内部领用'])
   })
 
-  it('只有市场 operate → 市场 4 种 + 门店 5 种（市场替门店建单），不含内部领用', async () => {
+  it('只有市场 operate → 市场 4 种 + 门店 4 种（市场替门店建单），不含内部领用', async () => {
     const types = (await renderWith(MARKET)).allowedCreateDocTypes
-    expect(types).toHaveLength(9)
+    expect(types).toHaveLength(8)
     expect(types).not.toContain('内部领用')
   })
 
-  it('只有门店 operate → 只有门店 5 种', async () => {
+  it('只有门店 operate → 只有门店 4 种（#350 院顾客产品出库只走提货）', async () => {
     const types = (await renderWith(STORE)).allowedCreateDocTypes
-    expect(types).toHaveLength(5)
+    expect(types).toHaveLength(4)
+    expect(types).not.toContain('院顾客产品出库')
     expect(types).not.toContain('市场产品报损')
   })
 
@@ -150,4 +159,101 @@ describe('单据中心 · 建单下拉候选', () => {
     expect(props.allowedCreateDocTypes).toEqual([])
     expect(props.canCreate).toBe(false)
   })
+})
+
+/**
+ * #339：三个库存页面不再在服务端预加载 SKU 前 100 条（排在后面的商品会永远选不到），
+ * 改由选择器按关键词走服务端分页。这里用源码守护把三处都钉住，外加单据中心的运行时断言。
+ */
+describe('SKU 候选不再预加载（#339）', () => {
+  it('建单账号打开单据中心时不调 listInventorySkus', async () => {
+    await renderWith(MARKET)
+    expect(mockListSkus).not.toHaveBeenCalled()
+  })
+
+  it('办理台 / 单据中心 / 报货福利三个页面都不再写死 pageSize: 100 的 SKU 预加载', () => {
+    for (const page of ['operations/[level]/page.tsx', 'docs/page.tsx', 'promotions/page.tsx']) {
+      const source = readFileSync(resolve(__dirname, '..', page), 'utf8')
+      expect(source, page).not.toMatch(/listInventorySkus\(/)
+    }
+  })
+})
+
+/**
+ * 市场间调货接收主体候选（#340）：越过 scope 的全部市场名单，只在「建得了市场间调货出库」时取。
+ * 只有门店 / 供应链 operate 的账号建不了这种单，没理由多拿一份不在自己 scope 内的市场名单。
+ */
+describe('单据中心 · 市场间调货接收主体候选（#340）', () => {
+  it('能建市场间调货出库 → 取候选并传给页面', async () => {
+    const props = await renderWith(MARKET)
+    expect(props.allowedCreateDocTypes).toContain('市场间调货出库')
+    expect(mockListMarketTargets).toHaveBeenCalledTimes(1)
+    expect(props.marketTransferTargets).toEqual([{ orgNodeId: 'M2', name: '九江市场' }])
+  })
+
+  it('建不了市场间调货出库（只有门店 / 只有供应链 operate）→ 不取候选', async () => {
+    for (const action of [STORE, SUPPLY]) {
+      vi.clearAllMocks()
+      const props = await renderWith(action)
+      expect(props.allowedCreateDocTypes).not.toContain('市场间调货出库')
+      expect(mockListMarketTargets, action).not.toHaveBeenCalled()
+      expect(props.marketTransferTargets, action).toEqual([])
+    }
+  })
+})
+
+/**
+ * 「收货」按钮的行级判据（#340 评审 P1）：与 confirmInventoryCoreReceive 同一套收窄 ——
+ * 只按持有收货权限（market/store operate）的角色绑定展开 scope。只有审批权限的绑定不算。
+ */
+describe('单据中心 · 可收货的 target 集合', () => {
+  async function renderRoles(roles: unknown[]) {
+    mockGetSession.mockResolvedValue({
+      employeeId: 'E-1',
+      permissions: {
+        actions: [...BASE_ACTIONS, MARKET, 'inventory:market_approve'],
+        scopeStoreIds: [],
+        scopeOrgNodeIds: ['M1', 'N-S1', 'M2'],
+      },
+      roles,
+    })
+    render(await Page({ searchParams: Promise.resolve({}) }))
+    return captured.props as unknown as DocsPageProps
+  }
+
+  it('只按持有收货权限的绑定展开：市场 A 可办理 + 市场 B 只能审批 → 只能收 A 的', async () => {
+    const props = await renderRoles([
+      { role: 'r1', scopeId: 'M1', scopeType: '市场', actions: [...BASE_ACTIONS, MARKET], scopeStoreIds: ['S1'], scopeOrgNodeIds: ['M1', 'N-S1'] },
+      { role: 'r2', scopeId: 'M2', scopeType: '市场', actions: [...BASE_ACTIONS, 'inventory:market_approve'], scopeStoreIds: [], scopeOrgNodeIds: ['M2'] },
+    ])
+    expect([...(props.receivableTargetOrgNodeIds ?? [])].sort()).toEqual(['M1', 'N-S1'])
+  })
+
+  it('超管 → null（不受限）', async () => {
+    const props = await renderRoles([
+      { role: 'admin', isSuperAdmin: true, scopeId: 'HQ', scopeType: '总部', actions: [...BASE_ACTIONS, MARKET], scopeStoreIds: [], scopeOrgNodeIds: ['HQ'] },
+    ])
+    expect(props.receivableTargetOrgNodeIds).toBeNull()
+  })
+
+  it('没有收货权限 → 空集', async () => {
+    const props = await renderWith(SUPPLY)
+    expect(props.receivableTargetOrgNodeIds).toEqual([])
+  })
+})
+
+/** 「关联销售单」链接（#350）：与 /orders/[id] 的页面守卫同源（sale_order:list / refund_create / refund_approve 任一）。 */
+describe('单据中心 · 关联销售单链接权限', () => {
+  it('没有任何订单相关权限 → 不给链接', async () => {
+    expect((await renderWith(STORE)).canOpenOrderDetail).toBe(false)
+  })
+
+  it.each(['sale_order:list', 'sale_order:refund_create', 'sale_order:refund_approve'])(
+    '持有 %s（含其 UI 依赖）→ 给链接',
+    async (action) => {
+      const { PERMISSION_ACTION_CATALOG } = await import('@/lib/permission-presentation')
+      const deps = (PERMISSION_ACTION_CATALOG as Record<string, { dependencies?: readonly string[] }>)[action]?.dependencies ?? []
+      expect((await renderWith(STORE, action, ...deps)).canOpenOrderDetail).toBe(true)
+    },
+  )
 })

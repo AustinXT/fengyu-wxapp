@@ -80,20 +80,17 @@ describe('业务 → 产出单据类型映射（#190）', () => {
     }
   })
 
-  it('三个层级的库存转换各自带 locationType，否则会串看别层的转换单', () => {
-    // `库存转换出库` / `库存转换入库` 是三层共用的 docType（business.ts 的
-    // createInventoryConversion 不按层级分类型），只按 docType 查，
-    // 市场办理台会看到门店的转换单。locationType 是唯一的分层依据。
-    const conversions: Array<[InventoryOperationId, string]> = [
-      ['supply-chain-conversion', '总部'],
-      ['market-conversion', '市场'],
-      ['store-conversion', '门店'],
-    ]
-    for (const [operation, locationType] of conversions) {
-      const query = INVENTORY_OPERATION_DOC_QUERY[operation]
-      expect(query.produced.docTypes).toEqual(['库存转换出库', '库存转换入库'])
-      expect(query.produced.locationType, operation).toBe(locationType)
-    }
+  it('库存转换只剩供应链一张卡，且带 locationType=总部（#343）', () => {
+    // `库存转换出库` / `库存转换入库` 的存量单据仍可能挂在市场 / 门店主体上（#343 只禁新建），
+    // 只按 docType 查，供应链办理台会看到这些存量单。locationType 是唯一的分层依据。
+    const query = INVENTORY_OPERATION_DOC_QUERY['supply-chain-conversion']
+    expect(query.produced.docTypes).toEqual(['库存转换出库', '库存转换入库'])
+    expect(query.produced.locationType).toBe('总部')
+    const ids: readonly string[] = INVENTORY_OPERATION_IDS
+    expect(ids).not.toContain('market-conversion')
+    expect(ids).not.toContain('store-conversion')
+    expect(resolveOperationDocQuery('market-conversion')).toBeNull()
+    expect(resolveOperationDocQuery('store-conversion')).toBeNull()
   })
 
   it('只有共用 docType 的转换业务需要 locationType，其余业务不画蛇添足', () => {
@@ -104,7 +101,7 @@ describe('业务 → 产出单据类型映射（#190）', () => {
       .filter(([, query]) => query.produced.locationType !== undefined || query.inbox?.locationType !== undefined)
       .map(([operation]) => operation)
       .sort()
-    expect(withLocationType).toEqual(['market-conversion', 'store-conversion', 'supply-chain-conversion'])
+    expect(withLocationType).toEqual(['supply-chain-conversion'])
   })
 
   it('不产出新单的三个业务靠 statuses / cancellationRequested 收窄，不会把全部同类单据倒出来', () => {
@@ -202,12 +199,12 @@ describe('业务 → 产出单据类型映射（#190）', () => {
     expect(INVENTORY_OPERATION_DOC_QUERY['market-return-approval'].produced.docTypes).toEqual(['供应链退货入库'])
   })
 
-  it('12 个自建单业务 + 3 个转换业务逐条钉「哪个函数写哪个 docType」，互换任意两条都会转红', () => {
+  it('12 个自建单业务 + 供应链转换业务逐条钉「哪个函数写哪个 docType」，互换任意两条都会转红', () => {
     /*
      * 存在性断言（下面那条用例）挡不住互换：把两个业务的 docType 对调，两个字面量
      * 都还在 business.ts 里，测试照样全绿，而用户在 Tab 里看到的是另一个业务的单。
      * 这里对**每个自己调 insertDocHeader 的业务**钉死「函数 → 类型」：
-     * 12 条各有专属函数 + 3 个转换业务共用 createInventoryConversion（一次写两张单）。
+     * 12 条各有专属函数 + 供应链转换业务的 createInventoryConversion（一次写两张单；#343 后只剩这一层）。
      * 剩下 9 条各有专门断言：收货 ×2（receivePhysicalShipment 实参）、
      * 退货 ×2（按 source.locationType 分叉）、退货审批 ×2（三元）、撤回/关闭 ×3（不建单）。
      */
@@ -230,7 +227,7 @@ describe('业务 → 产出单据类型映射（#190）', () => {
       expect(exportedFnBody(fnName), `${fnName} 应写入 ${docType}`).toContain(`docType: '${docType}'`)
     }
 
-    // 三个转换业务共用同一个函数，一次产出出库 + 入库两张。
+    // 转换业务（#343 起只剩供应链一层）一次产出出库 + 入库两张。
     const conversion = exportedFnBody('createInventoryConversion')
     expect(conversion).toContain(`docType: '库存转换出库'`)
     expect(conversion).toContain(`docType: '库存转换入库'`)
@@ -343,7 +340,7 @@ describe('待我处理段（#192）', () => {
       // 同一个 docType、方向与上一条相反：收货断 target，撤回审批断 source
       'market-receipt': { docTypes: ['品项公司发货'], statuses: ['待收货'], scopeRole: 'target' },
       'store-receipt': { docTypes: ['分院配货'], statuses: ['待收货'], scopeRole: 'target' },
-      // pendingItemScope 排掉「供应链行已收满、只差市场行发货」的混合单（点了必报错）
+      // pendingItemScope 只留还有未入库明细的采购订单（#335 起不按 market_id 分流）
       'supply-chain-receipt': {
         docTypes: ['采购订单'],
         statuses: ['待收货'],
@@ -432,10 +429,11 @@ describe('待我处理段（#192）', () => {
     const approveCancel = exportedFnBody('approveItemCompanyShipmentCancellation')
     expect(approveCancel).toContain(`shipment.docType !== '品项公司发货' || shipment.status !== '待审批'`)
     expect(approveCancel).toContain(`required(shipment.cancellationRequestReason`)
-    // 供应链采购入库：整单状态 + 逐行「有市场归属的不能入供应链库」
+    // 供应链采购入库：整单状态；#335 起不再按行拒市场行（所有行都能入库），
+    // 所以 inbox 不能再按 market_id 收窄 —— 服务端一旦恢复这道拦截，这里立刻红
     const receivePurchase = exportedFnBody('receiveSupplyChainPurchaseOrder')
     expect(receivePurchase).toContain(`order.docType !== '采购订单' || order.status !== '待收货'`)
-    expect(receivePurchase).toContain('if (orderItem.marketId)')
+    expect(receivePurchase).not.toContain('orderItem.marketId')
     // 关闭采购：同样的 docType/status 判定（所以两条 inbox 的 statuses 一致）
     expect(exportedFnBody('cancelSupplyChainPurchaseOrder'))
       .toContain(`order.docType !== '采购订单' || order.status !== '待收货'`)
@@ -448,25 +446,23 @@ describe('待我处理段（#192）', () => {
     expect(businessSource).toContain(`receivePhysicalShipment(session, input, '分院配货', '院入库')`)
   })
 
-  it('pendingItemScope 在 engine 里落成「未履约明细」的 EXISTS，两个方向都在', () => {
+  it('pendingItemScope 在 engine 里落成「未入库明细」的 EXISTS，且不按 market_id 分流（#335）', () => {
     /*
-     * 这条是跨文件对账：映射表写 'supply-chain' 而 engine 把它翻成
-     * `market_id IS NOT NULL`（写反），映射表的断言照样全绿，而供应链收货待办
-     * 会精确地只剩点了必报错的那批单。
+     * 这条是跨文件对账：#335 起采购订单所有行都经供应链采购入库，engine 若仍按
+     * `market_id IS NULL` 收窄，映射表的断言照样全绿，而市场行待入库的单会从
+     * 供应链收货待办里消失。
      *
      * 分工：编译后 SQL 的断言在 `engine.test.ts` 的
-     * `describe('#190 单据列表的多类型 / 多状态 / 撤回标记过滤')` 里（四条：两个方向各一条、
-     * 「不传则不加」一条、「EXISTS 按 doc_id 关联外层 + COALESCE 未履约条件」一条）；
-     * 这里守的是**映射表这一侧**看到的 engine 源码里两个方向都还在、未履约条件没被简化掉。
+     * `describe('#190 单据列表的多类型 / 多状态 / 撤回标记过滤')` 里；
+     * 这里守的是**映射表这一侧**看到的 engine 源码：未入库条件在、market_id 分流不在。
      */
     const branch = engineSource.slice(
       engineSource.indexOf('if (filters.pendingItemScope) {'),
       engineSource.indexOf('if (filters.startDate)'),
     )
     expect(branch, 'engine.ts 里找不到 pendingItemScope 分支').not.toEqual('')
-    expect(branch).toContain(`filters.pendingItemScope === 'supply-chain'`)
-    expect(branch).toContain('pending_item.market_id IS NULL')
-    expect(branch).toContain('pending_item.market_id IS NOT NULL')
+    expect(branch).not.toContain('pending_item.market_id')
+    expect(branch).toContain('pending_item.doc_id = ${inventoryDocs.id}')
     expect(branch).toContain('COALESCE(pending_item.fulfilled_quantity, 0) < pending_item.quantity')
   })
 
@@ -595,11 +591,11 @@ describe('通用建单业务 id（#191）', () => {
   })
 
   it('内置业务仍走映射表，与通用分支互不串台', () => {
-    expect(resolveOperationDocQuery('market-conversion')).toEqual({
-      produced: { docTypes: ['库存转换出库', '库存转换入库'], locationType: '市场' },
+    expect(resolveOperationDocQuery('supply-chain-conversion')).toEqual({
+      produced: { docTypes: ['库存转换出库', '库存转换入库'], locationType: '总部' },
     })
     // 内置 id 加上 generic: 前缀不应该被当成通用业务
-    expect(resolveOperationDocQuery('generic:market-conversion')).toBeNull()
+    expect(resolveOperationDocQuery('generic:supply-chain-conversion')).toBeNull()
   })
 
   it('门店调拨（分院调货出库）带 inbox —— 门店层最大的一批待办不在 store-receipt 上', () => {
@@ -676,13 +672,29 @@ describe('通用建单业务 id（#191）', () => {
     }
   })
 
-  it('其余 9 种通用类型只有 produced，没有 inbox', () => {
-    // 市场间调货出库（待收货）、两个报损（待审批）同样有待办语义，但本期刻意未登记
-    // （甲方 2026-09-21 只点名了门店调货）。补的时候连 INVENTORY_GENERIC_OPERATION_INBOX_ACTIONS
-    // 一起补，上面那条键集合断言会盯着。
+  it('市场间调货（市场间调货出库）带 inbox，按 target 收窄、行内动作是通用收货（#340）', () => {
+    /*
+     * 用户 2026-09-24 拍板：调入市场在办理台待办里直接确认收货（#340 待确认项选 A）。
+     * 与门店调拨同构 —— 收货走 confirmInventoryCoreReceive，只断 target（上面那条把依据
+     * 钉在了 engine 源码上）。方向写成 source 的话，调出市场的待办里会出现自己发出去的单，
+     * 而调入市场反倒看不到。
+     */
+    expect(resolveOperationDocQuery(genericOperationId('市场间调货出库'))).toEqual({
+      produced: { docTypes: ['市场间调货出库'] },
+      inbox: { docTypes: ['市场间调货出库'], statuses: ['待收货'], scopeRole: 'target' },
+    })
+    expect(resolveOperationInboxActions(genericOperationId('市场间调货出库'))).toEqual(['generic-receive'])
+  })
+
+  it('其余 8 种通用类型只有 produced，没有 inbox', () => {
+    // 两个报损（待审批）同样有待办语义，但仍未登记（是否铺开待拍板）。
+    // 补的时候连 INVENTORY_GENERIC_OPERATION_INBOX_ACTIONS 一起补，上面那条键集合断言会盯着；
+    // 审批类方向是 source，别照抄调货的 target。
+    const withInbox = new Set<string>(['分院调货出库', '市场间调货出库'])
     for (const docType of INVENTORY_GENERIC_DOC_TYPES) {
-      if (docType === '分院调货出库') continue
+      if (withInbox.has(docType)) continue
       expect(resolveOperationDocQuery(genericOperationId(docType))?.inbox, docType).toBeUndefined()
     }
+    expect(Object.keys(INVENTORY_GENERIC_OPERATION_INBOX).sort()).toEqual([...withInbox].sort())
   })
 })

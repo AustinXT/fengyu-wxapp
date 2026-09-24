@@ -38,7 +38,10 @@ import {
   listInventoryCoreDocs,
   listInventoryLocationFilterOptions,
   listInventoryLots,
+  listInventorySkus,
+  listInventoryMarketTransferTargets,
   listInventorySuppliers,
+  inventorySkuOptionConditions,
   rejectInventoryCoreDoc,
   syncInventoryLocations,
   updateInventorySku,
@@ -381,7 +384,6 @@ describe('库存通用建单边界', () => {
 
   it.each([
     ['内部领用', 'sourceOrgNodeId', '市场', '内部领用出库主体必须是总部'],
-    ['院顾客产品出库', 'sourceOrgNodeId', '市场', '院顾客产品出库出库主体必须是门店'],
     ['院顾客退货', 'targetOrgNodeId', '市场', '院顾客退货入库主体必须是门店'],
     ['市场产品报损', 'sourceOrgNodeId', '门店', '市场产品报损出库主体必须是市场'],
     ['院产品报损', 'sourceOrgNodeId', '市场', '院产品报损出库主体必须是门店'],
@@ -397,6 +399,17 @@ describe('库存通用建单边界', () => {
     }
 
     await expect(createInventoryCoreDoc(input as never)).rejects.toThrow(expectedMessage)
+  })
+
+  it('院顾客产品出库不能走通用建单：只能由提货服务产生（#350）', async () => {
+    mockDb.select.mockImplementation(() => selectWithLimit([{ locationType: '门店' }]))
+    await expect(createInventoryCoreDoc({
+      docType: '院顾客产品出库',
+      sourceOrgNodeId: 'LOCATION-1',
+      items: [{ skuId: 'SKU-1', quantity: 1 }],
+    } as never)).rejects.toThrow('INVALID_STATE: 该库存单据必须从对应的专用业务流程创建')
+    // 拒绝发生在任何库存写入之前
+    expect(mockDb.transaction).not.toHaveBeenCalled()
   })
 
   it('分院库存盘点按组织节点 id 校验主体，不误用门店行的 location_id', async () => {
@@ -546,21 +559,17 @@ describe('#200 建单 scope 按真正被改动的主体校验', () => {
   })
 
   it('出库类：source 无权限时必须拒', async () => {
+    // #350 前用「院顾客产品出库」；它移出通用白名单后改用同为出库、按 source 鉴权的门店报损
     await expect(createInventoryCoreDoc({
-      docType: '院顾客产品出库',
+      docType: '院产品报损',
       sourceOrgNodeId: 'ORG-S2',
       items: [{ skuId: 'SKU-1', quantity: 1 }],
     } as never)).rejects.toThrow('无权操作该组织节点单据')
   })
 
   it('单边单据传另一边的主体时拒绝，而不是静默忽略', async () => {
-    await expect(createInventoryCoreDoc({
-      docType: '院顾客产品出库',
-      sourceOrgNodeId: 'ORG-S1',
-      targetOrgNodeId: 'ORG-S1',
-      items: [{ skuId: 'SKU-1', quantity: 1 }],
-    } as never)).rejects.toThrow('院顾客产品出库不接受入库主体')
-
+    // #350 后通用类型里已没有「只出不进」的单边类型（院顾客产品出库移出白名单），
+    // 「…不接受入库主体」那一支由 locationRole 推导保留、当前不可达，只剩入库单边这一半可测。
     await expect(createInventoryCoreDoc({
       docType: '院顾客退货',
       sourceOrgNodeId: 'ORG-S1',
@@ -1796,6 +1805,116 @@ describe('库存主体筛选 scope', () => {
   })
 })
 
+describe('市场间调货接收主体候选（#340）', () => {
+  /** 只绑一个市场的「市场库存财务」：scope 里只有 M1 与其下属门店 */
+  const SINGLE_MARKET_SESSION = {
+    employeeId: 'E-MK',
+    name: '市场库存财务',
+    phone: '13800000001',
+    roles: [{
+      role: 'inventory_market_finance',
+      scopeId: 'M1',
+      scopeType: '市场',
+      actions: ['inventory:market_operate', 'inventory:stock_list'],
+      scopeStoreIds: ['S1'],
+      scopeOrgNodeIds: ['M1', 'N-S1'],
+    }],
+    permissions: {
+      actions: ['inventory:market_operate', 'inventory:stock_list'],
+      scopeStoreIds: ['S1'],
+      scopeOrgNodeIds: ['M1', 'N-S1'],
+    },
+  }
+
+  function captureSelect(rows: unknown[]) {
+    const sink: { fields?: Record<string, unknown>; where?: unknown } = {}
+    mockDb.select.mockImplementation((fields: Record<string, unknown>) => {
+      sink.fields = fields
+      return {
+        from: () => ({
+          where: (cond: unknown) => {
+            sink.where = cond
+            return { orderBy: async () => rows }
+          },
+        }),
+      }
+    })
+    return sink
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockDb.select.mockReset()
+    mockDb.execute.mockReset()
+    mockDb.execute.mockResolvedValue([])
+    vi.mocked(isAdminScope).mockReturnValue(false)
+    mockGetSession.mockResolvedValue(SINGLE_MARKET_SESSION)
+  })
+
+  it('单市场账号也能拿到其他市场：条件里没有任何 scope 收窄', async () => {
+    const sink = captureSelect([
+      { orgNodeId: 'M1', name: '南昌市场' },
+      { orgNodeId: 'M2', name: '九江市场' },
+    ])
+
+    await expect(listInventoryMarketTransferTargets()).resolves.toEqual([
+      { orgNodeId: 'M1', name: '南昌市场' },
+      { orgNodeId: 'M2', name: '九江市场' },
+    ])
+    const { text, params } = compile(sink.where)
+    // scope 收窄在 listInventoryLocations 里是 `location_id IN (...)`；这里一个都不能有，
+    // 也不能把本账号的 scope 节点当参数带进去 —— 否则 M2 会被滤掉，#340 原样复现。
+    expect(text).not.toContain('"location_id" in')
+    expect(params).not.toContain('N-S1')
+    expect(params).not.toContain('S1')
+  })
+
+  it('只要启用的市场：is_active = true 且 location_type = 市场（停用市场、门店、总部都不出现）', async () => {
+    const sink = captureSelect([])
+    await listInventoryMarketTransferTargets()
+    const { text, params } = compile(sink.where)
+    /*
+     * 整段等值，不用 toContain：「只按本账号根节点收窄」（`org_node_id = 'M1'`）这类变异
+     * 不带 location_id、也不带门店节点参数，逐项 contain/not.contain 会全绿放过（#340 评审 P2-2）。
+     * 条件恰好三项、参数恰好两个，多一项任何收窄都会红。
+     */
+    expect(text).toBe(
+      '("inventory_locations"."is_active" = $1 and "inventory_locations"."location_type" = $2'
+      + ' and "inventory_locations"."org_node_id" is not null)',
+    )
+    expect(params).toEqual(['true', '市场'])
+  })
+
+  it('越过 scope 的查询只取名称与 orgNodeId 两列', async () => {
+    const sink = captureSelect([{ orgNodeId: 'M2', name: '九江市场' }])
+    const rows = await listInventoryMarketTransferTargets()
+    expect(Object.keys(sink.fields ?? {}).sort()).toEqual(['name', 'orgNodeId'])
+    expect(Object.keys(rows[0]).sort()).toEqual(['name', 'orgNodeId'])
+  })
+
+  it('没有市场办理权限的账号被拒（含只有供应链 operate 的）', async () => {
+    mockGetSession.mockResolvedValue({
+      ...SINGLE_MARKET_SESSION,
+      roles: [{ ...SINGLE_MARKET_SESSION.roles[0], actions: ['inventory:stock_list'] }],
+      permissions: { ...SINGLE_MARKET_SESSION.permissions, actions: ['inventory:stock_list'] },
+    })
+    const { requireAnyPermission } = await import('@/lib/permissions')
+    vi.mocked(requireAnyPermission).mockImplementationOnce(() => {
+      throw new Error('PERMISSION_DENIED: 无权限')
+    })
+    await expect(listInventoryMarketTransferTargets()).rejects.toThrow('PERMISSION_DENIED')
+    // 权限门写的是 inventoryDelegatableOperateActions('market')，'market' 必须真是这张单的层级
+    const { genericDocBusinessLevel } = await import('./business-level')
+    expect(genericDocBusinessLevel('市场间调货出库')).toBe('market')
+    // 只认市场层 operate：供应链不能代建市场层单据，放它进来就是让建不了单的人拿全部市场名单
+    expect(vi.mocked(requireAnyPermission)).toHaveBeenCalledWith(
+      expect.anything(),
+      ['inventory:market_operate'],
+    )
+    expect(mockDb.select).not.toHaveBeenCalled()
+  })
+})
+
 describe('库存单据详情履约进度', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -1936,7 +2055,7 @@ describe('库存单据详情履约进度', () => {
     expect(fulfillmentSql).toContain("receipt_doc.status = '已完成'")
   })
 
-  it('采购订单的供应链行按关联入库单聚合已收与待收数量', async () => {
+  it('采购订单所有行按关联入库单聚合已收与待收数量，并带正常发货量（#335）', async () => {
     const now = new Date('2026-08-10T09:00:00.000Z')
     mockDb.select
       .mockReturnValueOnce(detailHeadSelect([{
@@ -2018,6 +2137,7 @@ describe('库存单据详情履约进度', () => {
         item_id: 201,
         purchased_quantity: '10',
         received_quantity: '4',
+        shipped_quantity: '2',
         purchase_status: '待收货',
       }])
 
@@ -2035,12 +2155,18 @@ describe('库存单据详情履约进度', () => {
         purchasedQuantity: 10,
         receivedQuantity: 4,
         outstandingQuantity: 6,
+        shippedQuantity: 2,
       }],
     })
 
     const [, fulfillmentQuery] = mockDb.execute.mock.calls.map(([query]) => query)
     expect(sqlContains(fulfillmentQuery, '采购订单供应链采购入库')).toBe(true)
     expect(sqlContains(fulfillmentQuery, "receipt_doc.status = '已完成'")).toBe(true)
+    // 市场行同样经供应链采购入库（#335），不能再按 market_id 只统计自用行
+    expect(sqlContains(fulfillmentQuery, 'market_id IS NULL')).toBe(false)
+    // 发货量与 linkedQuantity 同口径：只算正常发货、排除已取消发货单
+    expect(sqlContains(fulfillmentQuery, "doc_link.relation_type = '采购订单发货'")).toBe(true)
+    expect(sqlContains(fulfillmentQuery, "shipment_doc.status <> '已取消'")).toBe(true)
   })
 
   it('已取消的品项公司发货不再显示待收数量', async () => {
@@ -3566,36 +3692,23 @@ describe('#190 单据列表的多类型 / 多状态 / 撤回标记过滤', () =>
   })
 
   /*
-   * pendingItemScope（#192/#194）。
+   * pendingItemScope（#192/#194/#335）。
    *
-   * 这三条守的是「供应链收货待办」的正确性。#194 把供应链采购订单并进「采购订单」后，
-   * 一张单可同时含市场行与供应链行，而完结判定要求**所有**行履约满，于是
-   * 「供应链行已收完、只差市场行发货」的混合单会长期停在「待收货」；
-   * 不按明细的市场归属分流，这批单会全部涌进供应链收货待办，点一次吃一次
-   * INVALID_STATE（`receiveSupplyChainPurchaseOrder` 对 `orderItem.marketId` 非空的行直接抛）。
-   *
-   * 三处最容易写坏、且都不会报错的地方，逐个钉：
-   *   (a) 两个方向写反 —— 待办区会精确地只剩点了必报错的那批单；
+   * #335 起采购订单的所有行都经供应链采购入库，不再按 market_id 分流：
+   * 条件只剩「存在未入库明细」。仍然最容易写坏、且都不会报错的地方：
+   *   (a) 又按 market_id 分流 —— 市场行待入库的单会从供应链收货待办里消失；
    *   (b) EXISTS 忘了按 doc_id 关联外层 —— 只要**全库**存在一条未履约明细，条件恒真；
    *   (c) 未履约条件被简化掉 —— 已收满的行也算数，退化成「只要有明细就算待办」。
    */
-  it("pendingItemScope='supply-chain' 生成 market_id IS NULL 的未履约 EXISTS", async () => {
+  it("pendingItemScope='supply-chain' 生成不看 market_id 的未入库 EXISTS（#335）", async () => {
     const { text } = await whereOf({ docTypes: ['采购订单'], statuses: ['待收货'], pendingItemScope: 'supply-chain' })
     expect(text).toContain('EXISTS (')
-    expect(text).toContain('pending_item.market_id IS NULL')
-    // 写反成 IS NOT NULL 会让供应链待办只剩必报错的混合单
-    expect(text).not.toContain('pending_item.market_id IS NOT NULL')
-  })
-
-  it("pendingItemScope='market' 生成 market_id IS NOT NULL 的未履约 EXISTS", async () => {
-    const { text } = await whereOf({ docTypes: ['采购订单'], statuses: ['待收货'], pendingItemScope: 'market' })
-    expect(text).toContain('EXISTS (')
-    expect(text).toContain('pending_item.market_id IS NOT NULL')
+    // 市场行同样经供应链采购入库，按 market_id 过滤会把它们挡在待办外
+    expect(text).not.toContain('pending_item.market_id')
   })
 
   it('不传 pendingItemScope 时不加该 EXISTS —— 别误伤普通单据查询', async () => {
-    // 多加会把「明细已全部履约」的单静默筛掉（比如已收满但还没完结的单），
-    // 漏加会把点了必报错的混合单倒进待办区，两个方向都是静默错。
+    // 多加会把「明细已全部入库」的单静默筛掉，误伤普通单据查询。
     const { text } = await whereOf({ docTypes: ['采购订单'], statuses: ['待收货'] })
     expect(text).not.toContain('pending_item')
     expect(text).not.toContain('EXISTS')
@@ -3606,8 +3719,8 @@ describe('#190 单据列表的多类型 / 多状态 / 撤回标记过滤', () =>
      * 这条是上面两条的承重梁：
      * 丢了 `pending_item.doc_id = inventory_docs.id`，EXISTS 就与外层无关 ——
      * 全库只要有一条未履约明细，**每一张**采购订单都会命中，过滤完全失效而 SQL 合法；
-     * 丢了 `COALESCE(fulfilled_quantity,0) < quantity`，已收满的行照样算数，
-     * 混合单又会全部回到待办区。两种退化都不会报错，只会让待办区悄悄变回原样。
+     * 丢了 `COALESCE(fulfilled_quantity,0) < quantity`，已入库满的行照样算数。
+     * 两种退化都不会报错，只会让待办区悄悄变回原样。
      * `COALESCE` 不能简化成 `fulfilled_quantity < quantity`：该列可空，NULL 比较出 NULL，
      * 一条都没收过的明细反而不算「未履约」。
      */
@@ -3850,7 +3963,6 @@ describe('#191 通用建单按 docType 校验层级 operate 权限', () => {
   const DOWNWARD_CASES: Array<[string, string]> = [
     ['院产品报损', 'inventory:market_operate'],
     ['分院库存盘点', 'inventory:market_operate'],
-    ['院顾客产品出库', 'inventory:market_operate'],
   ]
 
   it.each(DOWNWARD_CASES)('向下代建放行：%s 可由持有 %s 的账号建', async (docType, heldAction) => {
@@ -4392,5 +4504,62 @@ describe('#200 建单鉴权端的前提不变量与代建 / 调货正向回归',
         + '一个自己有权的无关主体过鉴权、把库存改动落到无权的那一端',
       ).toBe(true)
     }
+  })
+})
+
+describe('SKU 候选检索过滤（#339）', () => {
+  const dialect = new PgDialect()
+  function render(filters: Parameters<typeof inventorySkuOptionConditions>[0]) {
+    const conditions = inventorySkuOptionConditions(filters)
+    return conditions.map((condition) => dialect.sqlToQuery(condition))
+  }
+
+  it('门店报货：reportable + 可用于门店所属市场（供应链放行，非供应链须归属该市场）', () => {
+    const [reportable, market] = render({ reportable: true, availableToMarketId: 'M1' })
+    expect(reportable.sql).toBe('"inventory_skus"."is_reportable" = $1')
+    expect(reportable.params).toEqual([true])
+    expect(market.sql).toBe('("inventory_skus"."source_type" = $1 or "inventory_skus"."owner_market_id" = $2)')
+    expect(market.params).toEqual(['供应链', 'M1'])
+  })
+
+  it('品项公司报货需求：只出供应链来源 + reportable', () => {
+    const rendered = render({ sourceType: '供应链', reportable: true })
+    expect(rendered.map((q) => q.sql)).toEqual([
+      '"inventory_skus"."source_type" = $1',
+      '"inventory_skus"."is_reportable" = $1',
+    ])
+    expect(rendered.map((q) => q.params)).toEqual([['供应链'], [true]])
+  })
+
+  it('自采入库：只出归属本市场的非供应链商品（AND，不是 OR）', () => {
+    const [owned] = render({ ownedByMarketId: 'M1' })
+    expect(owned.sql).toBe('("inventory_skus"."source_type" <> $1 and "inventory_skus"."owner_market_id" = $2)')
+    expect(owned.params).toEqual(['供应链', 'M1'])
+  })
+
+  it('关键词按编号/名称/规格/系列匹配，转义 LIKE 通配符与反斜杠，空白关键词不加条件', () => {
+    const [keyword] = render({ keyword: ' 5%_\\x ' })
+    expect(keyword.sql).toContain('"inventory_skus"."product_code" ilike')
+    expect(keyword.sql).toContain('"inventory_skus"."product_name" ilike')
+    expect(keyword.sql).toContain('"inventory_skus"."spec_name" ilike')
+    expect(keyword.params[0]).toBe('%5\\%\\_\\\\x%')
+    expect(render({ keyword: '   ' })).toEqual([])
+  })
+
+  it('非法参数拒绝：未知来源 / 非字符串市场 id', () => {
+    expect(() => render({ sourceType: '其他' as never })).toThrow(/无效库存商品来源/)
+    expect(() => render({ availableToMarketId: 123 as never })).toThrow(/可用市场无效/)
+    expect(() => render({ ownedByMarketId: '  ' })).toThrow(/归属市场无效/)
+  })
+
+  it('skuIds 为空数组时不查库直接返回空；超过 100 个拒绝', async () => {
+    mockGetSession.mockResolvedValue(SESSION)
+    mockDb.select.mockClear()
+    mockDb.execute.mockClear()
+    await expect(listInventorySkus({ skuIds: [] })).resolves.toEqual({ data: [], total: 0 })
+    expect(mockDb.select).not.toHaveBeenCalled()
+    expect(mockDb.execute).not.toHaveBeenCalled()
+    const tooMany = Array.from({ length: 101 }, (_, index) => `SKU-${index}`)
+    await expect(listInventorySkus({ skuIds: tooMany })).rejects.toThrow(/最多 100 个/)
   })
 })

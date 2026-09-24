@@ -83,7 +83,23 @@ export async function checkSourceDoc(page: Page, docId: string): Promise<void> {
 }
 
 export function skuSelect(page: Page, index = 0): Locator {
-  return page.locator('select').filter({ hasText: '选择库存商品' }).nth(index)
+  // #339 起是可检索的 combobox（role=combobox 的 button），不再是原生 select；aria-label 即占位文案
+  return page.getByRole('combobox', { name: '选择库存商品', exact: true }).nth(index)
+}
+
+/**
+ * 在 `InventorySkuSearchSelect`（#339）里按关键词检索并选中商品。
+ *
+ * 选择器展开后才向服务端检索（300ms 防抖 + 分页），不能再像原生 select 那样直接读全部
+ * option —— 必须先输入关键词，等候选里出现目标再点。`trigger` 是选择器的触发按钮。
+ */
+export async function pickSku(trigger: Locator, text: string): Promise<void> {
+  await expect(trigger).toBeEnabled({ timeout: 20_000 })
+  await trigger.click()
+  const panel = trigger.locator('xpath=..')
+  await panel.getByLabel('搜索库存商品').fill(text)
+  await panel.getByRole('option').filter({ hasText: text }).first().click({ timeout: 20_000 })
+  await expect(trigger).toContainText(text)
 }
 
 /**
@@ -190,8 +206,8 @@ export interface GenericDocInput {
 /**
  * 走 /inventory/docs 的通用建单弹窗建一张单，返回操作结果 `{ ok, toast }`。
  *
- * 只有 INVENTORY_GENERIC_DOC_TYPES 这 10 种能从这里建（分院调货出库/市场间调货出库/
- * 内部领用/院顾客产品出库/院顾客退货/市场产品报损/院产品报损/市场产品盘溢/
+ * 只有 INVENTORY_GENERIC_DOC_TYPES 这 9 种能从这里建（分院调货出库/市场间调货出库/
+ * 内部领用/院顾客退货/市场产品报损/院产品报损/市场产品盘溢/
  * 市场库存盘点/分院库存盘点）。其余类型必须走对应的专用办理台。
  *
  * ⚠️ 成败只能靠「弹窗关没关」来判 —— 两边的反馈是不对称的：
@@ -225,13 +241,10 @@ export async function createGenericDoc(
   if (input.targetLabel) await selectContaining(selects.nth(2), input.targetLabel)
   await dialog.locator('textarea').first().fill(input.remark)
 
-  // 明细行的下拉按**位置**定位，不能按占位文案 filter：
-  // 批次框的占位文案是「先选择库存 SKU」，**包含**「库存 SKU」，
-  // 用 filter({hasText:'库存 SKU'}).first() 会拿到批次框而不是 SKU 框。
-  // 弹窗内 select 的固定顺序：0=单据类型 1=出库主体 2=入库主体 [3=批次] 3或4=SKU
+  // SKU 是可检索 combobox（#339），按 aria-label「明细 1 库存 SKU」定位；
+  // 弹窗内剩下的原生 select 固定顺序：0=单据类型 1=出库主体 2=入库主体 [3=批次]
   await page.waitForTimeout(500)   // 等选完类型后明细行重新渲染
-  const skuSel = selects.nth(input.needLot ? 4 : 3)
-  await selectContaining(skuSel, input.skuName)
+  await pickSku(dialog.getByRole('combobox', { name: '明细 1 库存 SKU', exact: true }), input.skuName)
 
   if (input.needLot) {
     // 批次框依赖「已选出库主体 + 已选 SKU」才解除 disabled，故必须排在选 SKU 之后

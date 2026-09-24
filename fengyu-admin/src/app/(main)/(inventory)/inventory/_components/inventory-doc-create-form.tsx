@@ -10,7 +10,7 @@ import type {
   InventoryDocType,
   InventoryLocationRow,
   InventoryLotRow,
-  InventorySkuRow,
+  InventoryMarketTransferTarget,
 } from '@/lib/inventory/types'
 import { INVENTORY_GENERIC_DOC_TYPES } from '@/lib/inventory/types'
 import { docActionErrorMessage, isStaleStateError } from '@/lib/inventory/doc-action-error'
@@ -20,6 +20,7 @@ import { DatePicker } from '@/components/ui/date-picker'
 import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
 import InventorySubjectSelect from '@/components/inventory-subject-select'
+import { InventorySkuSearchSelect } from './inventory-sku-search-select'
 import { Textarea } from '@/components/ui/textarea'
 
 /**
@@ -76,7 +77,6 @@ const GENERIC_DOC_ENDPOINT_MODE = {
   分院调货出库: 'both',
   市场间调货出库: 'both',
   内部领用: 'same-node',
-  院顾客产品出库: 'source-only',
   院顾客退货: 'target-only',
   市场产品报损: 'same-node',
   院产品报损: 'same-node',
@@ -157,6 +157,9 @@ type LotCache = Map<string, { promise: Promise<InventoryLotRow[]>; settled: bool
 
 type LotLoadState = { key: string; lots: InventoryLotRow[]; failed?: boolean }
 
+/** 缺省值用模块常量：内联 `= []` 每次渲染都是新数组，会让 targetOptions 的 useMemo 形同虚设。 */
+const NO_MARKET_TRANSFER_TARGETS: readonly InventoryMarketTransferTarget[] = []
+
 /** 字段名 + 控件。用 `<label>` 包裹而不是并列，控件（含只读 `<output>`）才能被正确关联。 */
 function FieldLabel({ text, children }: { text: string; children: ReactNode }) {
   return (
@@ -170,7 +173,7 @@ function FieldLabel({ text, children }: { text: string; children: ReactNode }) {
 export function InventoryDocCreateForm({
   visible,
   locations,
-  skuOptions,
+  marketTransferTargets = NO_MARKET_TRANSFER_TARGETS,
   initialDocType,
   allowedDocTypes,
   onSuccess,
@@ -189,7 +192,12 @@ export function InventoryDocCreateForm({
    */
   visible: boolean
   locations: InventoryLocationRow[]
-  skuOptions: InventorySkuRow[]
+  /**
+   * 「市场间调货出库」的接收主体候选（#340）：全部启用市场，**不按 scope**。
+   * 只在这一种类型上替换 target 下拉，其余类型仍用 `locations`。调用方没有建这张单的
+   * 权限时不必取，传空（缺省）即可 —— 那样选到这个类型也只是接收主体为空、无法提交。
+   */
+  marketTransferTargets?: readonly InventoryMarketTransferTarget[]
   initialDocType?: InventoryDocType
   allowedDocTypes?: readonly InventoryDocType[]
   /** 建单成功。`docId` 是刚建出来的单号，调用方拿去做可核对的反馈。 */
@@ -278,6 +286,31 @@ export function InventoryDocCreateForm({
       })),
     [locations],
   )
+  /*
+   * 市场间调货出库（#340）的两端候选与其他类型分叉：
+   * - 发起端仍走 scope（`locations`），但只留市场 —— 服务端要求两端均为市场，给门店/总部
+   *   只会让用户选完再被拒；收窄后单市场账号的发起端也能按 #189 唯一候选自动带出。
+   * - 接收端改用 `marketTransferTargets`（不按 scope），并排除当前选中的发起市场 ——
+   *   自己调给自己服务端同样会拒。
+   * 其余类型两端都原样用 `subjectOptions`，与改前一致。
+   */
+  const isMarketTransfer = docType === '市场间调货出库'
+  const sourceOptions = useMemo(
+    () => (isMarketTransfer
+      ? locations
+        .filter((location) => location.orgNodeId && location.locationType === '市场')
+        .map((location) => ({ value: location.orgNodeId!, label: `市场 · ${location.name}` }))
+      : subjectOptions),
+    [isMarketTransfer, locations, subjectOptions],
+  )
+  const targetOptions = useMemo(
+    () => (isMarketTransfer
+      ? marketTransferTargets
+        .filter((market) => market.orgNodeId !== sourceOrgNodeId)
+        .map((market) => ({ value: market.orgNodeId, label: `市场 · ${market.name}` }))
+      : subjectOptions),
+    [isMarketTransfer, marketTransferTargets, sourceOrgNodeId, subjectOptions],
+  )
   const isDocTypeLocked = Boolean(initialDocType && availableDocTypes.includes(initialDocType))
   const sourceLocationId = locations.find((location) => location.orgNodeId === sourceOrgNodeId)?.locationId ?? ''
 
@@ -320,7 +353,7 @@ export function InventoryDocCreateForm({
        * 办理台的工作区提交完还开着（只 toast + router.refresh()，后者不重挂客户端组件），
        * 表单原样留在屏幕上、按钮解禁 —— 用户没看见 toast 再点一次，就建出第二张一模一样的单。
        * 而 `createInventoryCoreDoc` 没有幂等键，10 种通用类型里有 6 种**建单当刻就落库存流水**
-       * （内部领用 / 顾客产品出库 / 顾客退货 / 盘溢 / 两种调货出库），重复提交 = 重复扣减或重复入库，
+       * （内部领用 / 顾客退货 / 盘溢 / 两种调货出库；#350 前还有顾客产品出库），重复提交 = 重复扣减或重复入库，
        * 事后只能红冲。同页的内置表单成功后都会 `setLines([初始行])`，这里对齐它们。
        *
        * **主体与日期也要清**，别为了「连续建单少选一次」把它们留着：明细已经清空、
@@ -394,7 +427,7 @@ export function InventoryDocCreateForm({
               setDocType(e.target.value as InventoryDocType)
               /*
                * 换类型必须清两端主体与各行批次（#200 S6-b）：新类型的合法端点可能不同。
-               * 不清的话，先选「院顾客产品出库」填了出库主体、再切「院顾客退货」，
+               * 不清的话，先选「院产品报损」填了出库主体、再切「院顾客退货」，
                * 用户对着一个看起来空的表单收到「只能指定入库主体」。
                * 批次同理：批次是按出库主体的库位取的，主体一清旧 lotId 就不属于这张单了。
                *
@@ -416,7 +449,7 @@ export function InventoryDocCreateForm({
         </FieldLabel>
         <FieldLabel text="出库/发起主体">
           <InventorySubjectSelect
-            options={subjectOptions}
+            options={sourceOptions}
             value={sourceOrgNodeId}
             placeholder="出库/发起主体"
             // 只禁非法端点：入库类（院顾客退货）没有出库主体这一说（#200 S6-c）
@@ -426,6 +459,9 @@ export function InventoryDocCreateForm({
               // same-node：两端指同一个主体，服务端两端不一致直接拒单（#200 AC4）。
               // 镜像而不是把 target 禁掉 —— 既有 e2e（inv-02 / inv-06）会直接操作 target 下拉。
               if (endpointMode === 'same-node') setTargetOrgNodeId(value)
+              // 市场间调货：发起市场改成了当前的接收市场，接收端就不再合法（它已从候选里被排除），
+              // 清掉让用户重选，别留一个「当前主体（不在可选范围）」的自己调给自己。
+              if (isMarketTransfer && value && value === targetOrgNodeId) setTargetOrgNodeId('')
               // 换主体必须清批次：批次是按 (库位, SKU) 取的，换了库位旧的 lotId 就不属于这张单了。
               // 自动选中（唯一候选）同样走这条 onChange，联动不会被绕过。
               // 条件重建：mount 自动选中与清场后回填时 lotId 本就是空的，没必要多一次渲染。
@@ -435,12 +471,21 @@ export function InventoryDocCreateForm({
         </FieldLabel>
         <FieldLabel text="入库/接收主体">
           <InventorySubjectSelect
-            options={subjectOptions}
+            options={targetOptions}
             value={targetOrgNodeId}
             placeholder="入库/接收主体"
-            // 只禁非法端点：纯出库类（院顾客产品出库）没有入库主体这一说（#200 S6-d）
+            /*
+             * 市场间调货：发起端未落定前接收端不自动选中。两端的唯一候选自动选中在同一次提交里
+             * 各自回调，此刻 targetOptions 还没排除发起市场 —— 全局只有一个启用市场时两端会被
+             * 同时填成它（自己调给自己，服务端必拒）。等发起端落定、候选按它收窄后再自动带出。
+             */
+            autoSelect={!isMarketTransfer || Boolean(sourceOrgNodeId)}
+            // 只禁非法端点：纯出库类没有入库主体这一说（#200 S6-d）。#350 起通用类型里已无此类
+            // （院顾客产品出库改由提货服务产生），保留分支与服务端按 locationRole 推导的单边规则同构
             disabled={endpointMode === 'source-only'}
             onChange={(value) => {
+              // 与发起端的清空逻辑对称：市场间调货不接受「接收市场 = 发起市场」
+              if (isMarketTransfer && value && value === sourceOrgNodeId) return
               setTargetOrgNodeId(value)
               if (endpointMode === 'same-node') {
                 // 同主体类型下 target 也决定了 source，而批次是按 source 的库位取的，一并清
@@ -471,17 +516,12 @@ export function InventoryDocCreateForm({
                 label={`明细 ${index + 1} 来源批次`}
               />
             )}
-            <Select
+            <InventorySkuSearchSelect
               value={item.skuId}
-              onChange={(e) => updateItem(index, { skuId: e.target.value, lotId: '' })}
-            >
-              <option value="">库存 SKU</option>
-              {skuOptions.map((sku) => (
-                <option key={sku.skuId} value={sku.skuId}>
-                  {sku.productCode} · {sku.productName}
-                </option>
-              ))}
-            </Select>
+              onChange={(skuId) => updateItem(index, { skuId, lotId: '' })}
+              placeholder="库存 SKU"
+              ariaLabel={`明细 ${index + 1} 库存 SKU`}
+            />
             <Input placeholder="批号" value={item.batchNo} onChange={(e) => updateItem(index, { batchNo: e.target.value })} />
             <DatePicker value={item.expiryDate} onValueChange={(value) => updateItem(index, { expiryDate: value })} aria-label={`明细 ${index + 1} 效期`} />
             <Input type="number" min="0" step="0.01" max="9999999999.99" placeholder="数量" value={item.quantity} onChange={(e) => updateItem(index, { quantity: e.target.value })} />

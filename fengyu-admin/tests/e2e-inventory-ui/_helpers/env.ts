@@ -32,6 +32,8 @@ export const INVT_ACCOUNTS = {
   SC: { employeeId: 'INVT-SC-01', phone: '19900001002', name: 'INVT-供应链', role: 'inventory_supply_chain_operator', scopeId: 'ORG-HQ' },
   /** 市场库存财务：只能绑市场 */
   MK: { employeeId: 'INVT-MK-01', phone: '19900001003', name: 'INVT-市场财务', role: 'inventory_market_finance', scopeId: 'org-市场-1779327286268' },
+  /** 市场库存财务（自贡凤御）：INV-12 市场间调货的**调入方**，在市场办理台待办里收货（#340） */
+  MK2: { employeeId: 'INVT-MK-02', phone: '19900001005', name: 'INVT-市场财务-自贡', role: 'inventory_market_finance', scopeId: 'org-市场-1779767525664' },
   /** 门店库存员：can_access_admin=false，仅用于断言无法登录 admin */
   ST: { employeeId: 'INVT-ST-01', phone: '19900001004', name: 'INVT-门店员', role: 'inventory_store_operator', scopeId: 'org-门店-1780295730424' },
 } as const

@@ -195,11 +195,26 @@ describe('mgmtDashboard.summary scopeType=all', () => {
     // + 截面：member(1)/retained(1)/employeeDay(1)/employeeMonth(1) = 4
     // = 24
     expect(metricSqls.length).toBe(24)
-    for (const s of metricSqls) {
+    /**
+     * #320：技师分母改走 technician_base CTE，`WHERE` 变成「门店分支 OR 市场锚分支」，
+     * 不再是「`WHERE (TRUE) AND …`」那种单段形态，所以从通用循环里摘出来单独判。
+     * 摘出来而不是放宽通用断言 —— 放宽会让另外 22 条也失去 scope 形态守护。
+     */
+    const technicianSqls = metricSqls.filter((s) => /technician_base/.test(s))
+    expect(technicianSqls.length).toBe(2)
+    for (const s of metricSqls.filter((x) => !/technician_base/.test(x))) {
       expect(s).toMatch(/WHERE\s+\(TRUE\)\s+AND/)
       expect(s).toMatch(/active_node\.is_active\s*=\s*TRUE/)
       expect(s).not.toMatch(/store_id\s*=\s*\$/)
       expect(s).not.toMatch(/bound_store_id\s*=\s*\$/)
+    }
+    for (const s of technicianSqls) {
+      // 门店分支：(TRUE) AND tb.store_id IN (启用门店)
+      expect(s).toMatch(/tb\.store_id\s+IS\s+NOT\s+NULL\s+AND\s+\(TRUE\)/)
+      expect(s).toMatch(/active_node\.is_active\s*=\s*TRUE/)
+      // 市场锚分支：all scope 下恒真（validateManagementScope 已要求总部 scope）
+      expect(s).toMatch(/tb\.store_id\s+IS\s+NULL\s+AND\s+TRUE/)
+      expect(s).not.toMatch(/store_id\s*=\s*\$/)
     }
 
     // T4 历史化：storeCount SQL 走 FROM stores ... JOIN org_nodes，加 opening_date/closed_at 守卫
@@ -259,7 +274,8 @@ describe('mgmtDashboard.summary scopeType=market', () => {
     const staffSqls = sqlList.filter((s) => /staff_wechat_users/.test(s))
     expect(staffSqls.length).toBe(2)
     for (const s of staffSqls) {
-      expect(s).toMatch(/s\.store_id\s+IN\s*\(/)
+      // #320：分母改走 technician_base CTE，门店分支的列变成 tb.store_id
+      expect(s).toMatch(/tb\.store_id\s+IN\s*\(/)
       expectRecursiveDescendantScope(s, 2)
     }
 
@@ -309,8 +325,11 @@ describe('mgmtDashboard.summary scopeType=store', () => {
     const staffSqls = sqlList.filter((s) => /staff_wechat_users/.test(s))
     expect(staffSqls.length).toBe(2)
     for (const s of staffSqls) {
-      expect(s).toContain('s.store_id = $2')
+      // #320：列从 s.store_id 变成 CTE 的 tb.store_id
+      expect(s).toContain('tb.store_id = $2')
       expect(s).toMatch(/active_node\.is_active\s*=\s*TRUE/)
+      // 单店 scope 下无门店技师不计入
+      expect(s).toMatch(/tb\.store_id\s+IS\s+NULL\s+AND\s+FALSE/)
     }
 
     // 单店同样真实查询两次（日 / 月末），不能把停用门店固定算作 1 家。
@@ -868,10 +887,10 @@ describe('mgmtDashboard.summary 门店状况 + 人效（截面字段）', () => 
       .find((s) => /FROM staff_wechat_users/.test(s))
     expect(empSql).toBeDefined()
     // T3 新口径：用 hired_at + resigned_at 时间戳，不再依赖 is_resigned 实时快照
-    expect(empSql).toMatch(/s\.hired_at\s+IS\s+NOT\s+NULL/)
-    expect(empSql).toMatch(/s\.hired_at::date\s*<=\s*\$1::date/)
-    expect(empSql).toMatch(/s\.resigned_at\s+IS\s+NULL\s+OR\s+s\.resigned_at::date\s*>\s*\$1::date/)
-    expect(empSql).toMatch(/s\.skills\s*&&\s*ARRAY\['美容师','养生师'\]::text\[\]/)
+    expect(empSql).toMatch(/sw\.hired_at\s+IS\s+NOT\s+NULL/)
+    expect(empSql).toMatch(/sw\.hired_at::date\s*<=\s*\$1::date/)
+    expect(empSql).toMatch(/sw\.resigned_at\s+IS\s+NULL\s+OR\s+sw\.resigned_at::date\s*>\s*\$1::date/)
+    expect(empSql).toMatch(/sw\.skills\s*&&\s*ARRAY\['美容师','养生师'\]::text\[\]/)
     // 旧口径：is_resigned = FALSE 不应再出现
     expect(empSql).not.toMatch(/is_resigned\s*=\s*FALSE/)
     // T6：employeeCount 双口径（mock 不区分 date，day=month=8）
@@ -886,8 +905,8 @@ describe('mgmtDashboard.summary 门店状况 + 人效（截面字段）', () => 
     // T6：employeeCount 调用 2 次（day + month），.find 取第一条 = day 调用，params=[date]
     const empCall = pg.query.mock.calls.find((c) => /FROM staff_wechat_users/.test(c[0]))
     expect(empCall).toBeDefined()
-    expect(empCall[0]).toMatch(/s\.hired_at::date\s*<=\s*\$1::date/)
-    expect(empCall[0]).toMatch(/s\.resigned_at\s+IS\s+NULL\s+OR\s+s\.resigned_at::date\s*>\s*\$1::date/)
+    expect(empCall[0]).toMatch(/sw\.hired_at::date\s*<=\s*\$1::date/)
+    expect(empCall[0]).toMatch(/sw\.resigned_at\s+IS\s+NULL\s+OR\s+sw\.resigned_at::date\s*>\s*\$1::date/)
     expect(empCall[1]).toEqual(['2025-01-15'])
     // T6：双口径
     expect(ctx.result.employeeCount).toEqual({ day: 6, month: 6 })
@@ -973,8 +992,27 @@ describe('mgmtDashboard.summary 门店状况 + 人效（截面字段）', () => 
 
     // T3 起 employeeCount 用 $1=date + $2=scopeId（参数顺序：[date, ...scopeParams]）
     const empSql = sqlList.find((s) => /FROM staff_wechat_users/.test(s))
-    expect(empSql).toMatch(/s\.store_id\s+IN\s*\(/)
+    expect(empSql).toMatch(/tb\.store_id\s+IN\s*\(/)
     expectRecursiveDescendantScope(empSql, 2)
+    // #320：市场 scope 下无门店技师按锚定市场判可见，$3 是同一个 scopeId
+    expect(empSql).toMatch(/tb\.anchor_market_id\s*=\s*\$3/)
+    /**
+     * #320：光断言 SQL 里出现 `$2` / `$3` 不够 —— 两个占位符分属**不同 helper**
+     * （门店分支 `buildStaffScope` 与锚分支 `buildTechnicianOrgAnchorScope`），
+     * 实参是 `[date, ...sc.params, ...anchor.params]` 拼出来的。
+     * 若将来某个 helper 的 params 长度变了，SQL 形态测试全绿而实参错位，
+     * 会静默返回错误人数。所以必须把**实参数组**本身钉住。
+     *
+     * ⚠️ 诚实标注红检结果：把拼接顺序**对调**（`[date, ...anchor.params, ...sc.params]`）
+     * 本条**不会**变红 —— market 口径下两个 helper 收到的是同一个 `scopeId`，对调后数组逐元素
+     * 相同；store/all 口径下锚分支不带参数，对调是恒等变换。即「顺序」今天不可观测。
+     * 真正能被它抓住的是**params 长度漂移**（实测：锚分支返回 `[scopeId, scopeId]` → 本条红）。
+     */
+    const empCalls = pg.query.mock.calls.filter((c) => /technician_base/.test(c[0]))
+    expect(empCalls.length).toBe(2) // day + month 两次
+    for (const c of empCalls) {
+      expect(c[1]).toEqual([expect.any(String), 'mkt-A', 'mkt-A'])
+    }
   })
 
   test('scopeType=store：staff/client 截面 SQL 走单值过滤', async () => {
@@ -992,8 +1030,14 @@ describe('mgmtDashboard.summary 门店状况 + 人效（截面字段）', () => 
 
     // T3 起 employeeCount 用 $1=date + $2=scopeId
     const empSql = sqlList.find((s) => /FROM staff_wechat_users/.test(s))
-    expect(empSql).toContain('s.store_id = $2')
+    expect(empSql).toContain('tb.store_id = $2')
+    // #320：单店 scope 下无门店技师一律不计入（与员工榜同语义）
+    expect(empSql).toMatch(/tb\.store_id\s+IS\s+NULL\s+AND\s+FALSE/)
     expect(empSql).toMatch(/active_node\.is_active\s*=\s*TRUE/)
+    // #320：锚分支恒假不带参数，实参只有 [date, storeId]（见 market 段对参数错位的说明）
+    for (const c of pg.query.mock.calls.filter((x) => /technician_base/.test(x[0]))) {
+      expect(c[1]).toEqual([expect.any(String), 'store-001'])
+    }
   })
 
   test('T2/T3 后 memberCount 与 employeeCount 都依赖 date（$1::date 出现），且都不走 date_trunc 月份聚合', async () => {
@@ -1025,11 +1069,26 @@ describe('mgmtDashboard.summary 门店状况 + 人效（截面字段）', () => 
     const censusSqls = sqlList.filter((s) => isMemberCountSql(s) || /FROM staff_wechat_users/.test(s))
     expect(censusSqls.length).toBe(3)
     for (const s of censusSqls) {
-      expect(s).toMatch(/WHERE\s+\(TRUE\)\s+AND/)
       expect(s).toMatch(/active_node\.is_active\s*=\s*TRUE/)
-      expect(s).not.toMatch(/parent_id/)
       expect(s).not.toMatch(/bound_store_id\s*=\s*\$/)
       expect(s).not.toMatch(/store_id\s*=\s*\$/)
+      if (/technician_base/.test(s)) {
+        /**
+         * #320：技师分母的 CTE 自带 `op.id = o.parent_id`（锚定市场用），
+         * 所以不能再用「不含 parent_id」当「没走递归组织树」的判据 ——
+         * 改判「没有 `WITH RECURSIVE`」，那才是递归 scope 的真实特征。
+         */
+        expect(s).not.toMatch(/WITH\s+RECURSIVE/i)
+        expect(s).toMatch(/tb\.store_id\s+IS\s+NOT\s+NULL\s+AND\s+\(TRUE\)/)
+        // #320：all 口径两个分支都不带 scope 参数，实参只有 [date]
+        expect(s).toMatch(/tb\.store_id\s+IS\s+NULL\s+AND\s+TRUE/)
+      } else {
+        expect(s).toMatch(/WHERE\s+\(TRUE\)\s+AND/)
+        expect(s).not.toMatch(/parent_id/)
+      }
+    }
+    for (const c of pg.query.mock.calls.filter((x) => /technician_base/.test(x[0]))) {
+      expect(c[1]).toEqual([expect.any(String)])
     }
   })
 

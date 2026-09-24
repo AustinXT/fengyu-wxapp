@@ -1,4 +1,7 @@
 {
   "navigationBarTitleText": "库存办理",
-  "usingComponents": {}
+  "usingComponents": {
+    "van-popup": "@vant/weapp/popup/index",
+    "van-search": "@vant/weapp/search/index"
+  }
 }

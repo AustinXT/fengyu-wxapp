@@ -5,20 +5,14 @@ import {
   listInventorySkus as listInventorySkusImpl,
   updateInventorySku as updateInventorySkuImpl,
 } from '@/lib/inventory/engine'
-import type { InventorySkuInput, InventorySkuSourceType } from '@/lib/inventory/types'
+import type { InventorySkuInput, InventorySkuListFilters } from '@/lib/inventory/types'
 import { withAnyPermission, withPermission } from '@/lib/with-permission'
 
 export const listInventorySkus = withPermission(
   'inventory:stock_list',
   async (
     _session,
-    filters: {
-      keyword?: string
-      sourceType?: InventorySkuSourceType
-      onlyActive?: boolean
-      page?: number
-      pageSize?: number
-    } = {},
+    filters: InventorySkuListFilters = {},
   ) => listInventorySkusImpl(filters),
 )
 

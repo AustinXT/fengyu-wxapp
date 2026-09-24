@@ -181,7 +181,12 @@ describe('数据中心销售板块两端口径一致性守护', () => {
     })
     it('staff mgmt-dashboard.js 员工数同口径（hired_at / resigned_at 历史化）', () => {
       expect(staffBody).toMatch(/hired_at::date\s*<=/i)
-      expect(staffBody).toMatch(/resigned_at\s+IS\s+NULL\s+OR\s+s\.resigned_at::date\s*>/i)
+      /**
+       * #320 起 staff 的技师分母走 `technician_base` CTE，`staff_wechat_users` 的别名
+       * 从 `s` 改成 `sw`（与 admin `technicianCteSql` 一致）。别名必须跟着改，否则本条
+       * 会以「旧别名找不到」的形式变红 —— 那不是口径漂移，是本断言没跟上。
+       */
+      expect(staffBody).toMatch(/resigned_at\s+IS\s+NULL\s+OR\s+sw\.resigned_at::date\s*>/i)
     })
   })
 

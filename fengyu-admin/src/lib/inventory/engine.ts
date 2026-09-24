@@ -3,6 +3,7 @@ import 'server-only'
 import { ApiError } from '@/lib/api-error'
 import { pgErrorCode } from '@/lib/pg-error'
 import { rowsAffected } from '@/lib/pg-rows'
+import { cancelledMarketReportRetainedSql } from './retained-sql'
 import { fmtDate, shanghaiToday, shanghaiYmd } from '@/lib/datetime'
 import { logOperation } from '@/lib/operation-log'
 import { hasPermission, isAdminScope } from '@/lib/permissions'
@@ -29,13 +30,14 @@ import {
 } from '@db/inventory'
 import { orgNodes, stores } from '@db/org'
 import { productSkus } from '@db/product'
-import { and, asc, desc, eq, gte, ilike, inArray, isNotNull, isNull, lte, or, sql } from 'drizzle-orm'
+import { and, asc, desc, eq, gte, ilike, inArray, isNotNull, isNull, lte, ne, or, sql } from 'drizzle-orm'
 import { alias } from 'drizzle-orm/pg-core'
 import type { SQL } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import type { AuthSession } from '@/lib/types'
 import { assertInventoryBusinessWritable } from './cutover'
 import {
+  INVENTORY_CORE_RECEIVE_ACTIONS,
   genericDocBusinessLevel,
   inventoryDelegatableOperateActions,
   inventoryLevelOperateDeniedMessage,
@@ -57,6 +59,7 @@ import {
   type InventoryDocRow,
   type InventoryDocType,
   type InventoryLocationRow,
+  type InventoryMarketTransferTarget,
   type InventoryLocationFilterOptions,
   type InventoryLocationType,
   type InventoryLotRow,
@@ -65,6 +68,8 @@ import {
   type InventoryPromotionPlanRow,
   type InventoryPromotionRuleType,
   type InventorySkuInput,
+  type InventorySkuListFilters,
+  type InventorySkuOptionFilters,
   type InventoryCompositionInput,
   type InventoryCompositionOptions,
   type InventoryCompositionRow,
@@ -224,7 +229,7 @@ const RECEIVE_INBOUND_TYPE: Partial<Record<InventoryDocType, InventoryDocType>> 
 
 /**
  * 这些单据必须由专用业务服务创建，才能保留需求、优惠、批次与履约关系。
- * 通用建单只负责盘点、领用、报损、转换等没有上游业务血缘的库存动作。
+ * 通用建单只负责盘点、领用、报损等没有上游业务血缘的库存动作（库存转换走专用的 createInventoryConversion）。
  */
 const SPECIALIZED_DOC_TYPES = new Set<InventoryDocType>([
   '门店报货',
@@ -247,6 +252,8 @@ const SPECIALIZED_DOC_TYPES = new Set<InventoryDocType>([
   '院退货',
   '库存转换出库',
   '库存转换入库',
+  // #350：顾客出库只能由提货服务（createPickupRecord / staffApi order.createPickup）产生
+  '院顾客产品出库',
 ])
 
 /**
@@ -687,7 +694,7 @@ async function assertGenericDocLocationRules(
   actingOrgNodeId: string,
 ): Promise<void> {
   /**
-   * 这里的 case 集合必须与 `INVENTORY_GENERIC_DOC_TYPES`（types.ts，10 个）一一对应 ——
+   * 这里的 case 集合必须与 `INVENTORY_GENERIC_DOC_TYPES`（types.ts，#350 起 9 个）一一对应 ——
    * 本函数只有一个调用点（`createInventoryCoreDoc`），而那里在更靠前的位置就把
    * `SPECIALIZED_DOC_TYPES` 整体拒了（「该库存单据必须从对应的专用业务流程创建」），
    * 所以任何专用类型的 case 写在这里都是**不可达**的。
@@ -712,7 +719,6 @@ async function assertGenericDocLocationRules(
       if (!sourceOrgNodeId) throw new ApiError('INVALID_PARAMS', '内部领用缺少出库主体')
       await assertLocationType(sourceOrgNodeId, '总部', '内部领用出库主体')
       return
-    case '院顾客产品出库':
     case '院产品报损':
       if (!sourceOrgNodeId) throw new ApiError('INVALID_PARAMS', `${input.docType}缺少出库主体`)
       await assertLocationType(sourceOrgNodeId, '门店', `${input.docType}出库主体`)
@@ -1281,6 +1287,7 @@ function docRow(row: {
   sourceOrgNodeType: string | null
   targetOrgNodeName: string | null
   targetOrgNodeType: string | null
+  partiallyReceived?: boolean | null
   includePrice: boolean
 }): InventoryDocRow {
   const doc = row.doc
@@ -1321,8 +1328,24 @@ function docRow(row: {
     cancelledAt: doc.cancelledAt?.toISOString() ?? null,
     createdAt: doc.createdAt.toISOString(),
     updatedAt: doc.updatedAt.toISOString(),
+    partiallyReceived: row.partiallyReceived === true,
   }
 }
+
+/**
+ * 采购订单「部分入库」派生标签（#335）：只是「待收货」下的进度标签，不是单据状态，
+ * 不进 CHECK / lifecycle / staffApi。条件 = 采购订单 ∧ 待收货 ∧ 任一行已入库量 > 0
+ * （采购行 fulfilled_quantity 只记入库量）。EXISTS 走 idx_inventory_doc_items_doc(doc_id)。
+ */
+const partiallyReceivedSql = sql<boolean>`(
+  ${inventoryDocs.docType} = '采购订单'
+  AND ${inventoryDocs.status} = '待收货'
+  AND EXISTS (
+    SELECT 1 FROM ${inventoryDocItems} received_item
+     WHERE received_item.doc_id = ${inventoryDocs.id}
+       AND COALESCE(received_item.fulfilled_quantity, 0) > 0
+  )
+)`
 
 /**
  * 未完成预留（提货预约等）标量子查询：与 activeReservedQuantity / pickup-records
@@ -1372,6 +1395,40 @@ function lotRow(
     updatedAt: row.lot.updatedAt.toISOString(),
   }
 }
+
+/**
+ * 「市场间调货出库」的接收主体候选（#340）：全部启用的市场，**不按操作人 scope 过滤**。
+ *
+ * 调货的接收方是对方市场，只管一个市场的账号（如「市场库存财务」）按 scope 本就看不见它 ——
+ * 继续用 `listInventoryLocations` 当候选源，下拉里永远只有自己，流程第一步就走不下去。
+ * 服务端建单对 RECEIVE_REQUIRED 类型的 target 同样刻意不做 scope 鉴权（见
+ * `createInventoryCoreDoc` 端点校验段的注释），两边口径一致。
+ *
+ * 因为越过了 scope，返回字段收到最少：只有名称与 orgNodeId —— 不带 locationId / storeId /
+ * parentLocationId，也不带门店与总部。「排除调出市场自己」依赖用户在表单里选的发起主体，
+ * 由表单按当前 source 过滤，这里不做。
+ *
+ * 权限与「谁能建这张单」同源：`inventoryDelegatableOperateActions(市场间调货出库 所在层级)`。
+ * 市场层只有 `market_operate` —— 总部 scope 不向下展开，供应链**不能**代建市场层单据，
+ * `createInventoryCoreDoc` 的层级闸同样只认它。别放宽成 stock_list 或加上 supply_chain_operate，
+ * 否则建不了单的账号也能直调拿到本不在自己 scope 内的全部市场名单。
+ */
+export const listInventoryMarketTransferTargets = withAnyPermission(
+  [...inventoryDelegatableOperateActions('market')],
+  async (): Promise<InventoryMarketTransferTarget[]> => {
+    await syncInventoryLocations()
+    const rows = await db
+      .select({ orgNodeId: inventoryLocations.orgNodeId, name: inventoryLocations.name })
+      .from(inventoryLocations)
+      .where(and(
+        eq(inventoryLocations.isActive, true),
+        eq(inventoryLocations.locationType, '市场'),
+        isNotNull(inventoryLocations.orgNodeId),
+      ))
+      .orderBy(asc(inventoryLocations.name))
+    return rows.flatMap((row) => (row.orgNodeId ? [{ orgNodeId: row.orgNodeId, name: row.name }] : []))
+  },
+)
 
 export const listInventoryLocations = withPermission(
   'inventory:stock_list',
@@ -1501,12 +1558,78 @@ async function resolveSkuSupplier(
   return { supplierId: id, supplier: supplier.name, onlyIfCurrent: !supplier.isActive }
 }
 
+const SKU_ID_FILTER_MAX = 100
+
+function normalizeSkuIdFilter(value: unknown): string[] | undefined {
+  if (value === undefined || value === null) return undefined
+  if (!Array.isArray(value) || value.some((id) => typeof id !== 'string')) {
+    throw new ApiError('INVALID_PARAMS', 'skuIds 必须是字符串数组')
+  }
+  const ids = Array.from(new Set(value.map((id) => id.trim()).filter(Boolean)))
+  if (ids.length > SKU_ID_FILTER_MAX) {
+    throw new ApiError('INVALID_PARAMS', `skuIds 一次最多 ${SKU_ID_FILTER_MAX} 个`)
+  }
+  return ids
+}
+
+function optionalFilterId(value: unknown, label: string): string | undefined {
+  if (value === undefined || value === null || value === '') return undefined
+  if (typeof value !== 'string' || !value.trim()) throw new ApiError('INVALID_PARAMS', `${label}无效`)
+  return value.trim()
+}
+
+/**
+ * SKU 候选的业务过滤条件（#339），口径见 `InventorySkuOptionFilters` 的注释。
+ * 独立成纯函数是为了能在单测里把 SQL 渲染出来逐条断言 —— 组件测试都 mock 掉了 action，
+ * 这里的 OR / AND 写反（比如自采入库漏了「非供应链」）只有在这一层才测得出来。
+ */
+export function inventorySkuOptionConditions(filters: InventorySkuOptionFilters): SQL[] {
+  const conditions: SQL[] = []
+  if (filters.sourceType) {
+    if (!INVENTORY_SKU_SOURCE_TYPES.includes(filters.sourceType)) {
+      throw new ApiError('INVALID_PARAMS', '无效库存商品来源')
+    }
+    conditions.push(eq(inventorySkus.sourceType, filters.sourceType))
+  }
+  if (filters.reportable) conditions.push(eq(inventorySkus.isReportable, true))
+  const availableToMarketId = optionalFilterId(filters.availableToMarketId, '可用市场')
+  if (availableToMarketId) {
+    conditions.push(or(
+      eq(inventorySkus.sourceType, '供应链'),
+      eq(inventorySkus.ownerMarketId, availableToMarketId),
+    )!)
+  }
+  const ownedByMarketId = optionalFilterId(filters.ownedByMarketId, '归属市场')
+  if (ownedByMarketId) {
+    conditions.push(and(
+      ne(inventorySkus.sourceType, '供应链'),
+      eq(inventorySkus.ownerMarketId, ownedByMarketId),
+    )!)
+  }
+  const keyword = typeof filters.keyword === 'string' ? filters.keyword.trim() : ''
+  if (keyword) {
+    const pattern = `%${keyword.replace(/[%_\\]/g, '\\$&')}%`
+    conditions.push(or(
+      ilike(inventorySkus.skuId, pattern),
+      ilike(inventorySkus.productCode, pattern),
+      ilike(inventorySkus.productName, pattern),
+      ilike(inventorySkus.specName, pattern),
+      ilike(inventorySkus.productSeries, pattern),
+    )!)
+  }
+  return conditions
+}
+
 export const listInventorySkus = withPermission(
   'inventory:stock_list',
   async (
     session,
-    filters: { keyword?: string; sourceType?: InventorySkuSourceType; onlyActive?: boolean; page?: number; pageSize?: number } = {},
+    rawFilters: InventorySkuListFilters | null = {},
   ): Promise<{ data: InventorySkuRow[]; total: number }> => {
+    // Server Action 可被直调：显式传 null 时默认参数不生效
+    const filters = rawFilters ?? {}
+    const skuIds = normalizeSkuIdFilter(filters.skuIds)
+    if (skuIds !== undefined && skuIds.length === 0) return { data: [], total: 0 }
     await syncInventoryLocations()
     const { page, pageSize, offset } = resolvePaging({
       page: filters.page,
@@ -1534,19 +1657,8 @@ export const listInventorySkus = withPermission(
       )
     }
     if (filters.onlyActive ?? true) conditions.push(eq(inventorySkus.isActive, true))
-    if (filters.sourceType) conditions.push(eq(inventorySkus.sourceType, filters.sourceType))
-    if (filters.keyword) {
-      const pattern = `%${filters.keyword.replace(/[%_]/g, '\\$&')}%`
-      conditions.push(
-        or(
-          ilike(inventorySkus.skuId, pattern),
-          ilike(inventorySkus.productCode, pattern),
-          ilike(inventorySkus.productName, pattern),
-          ilike(inventorySkus.specName, pattern),
-          ilike(inventorySkus.productSeries, pattern),
-        ),
-      )
-    }
+    if (skuIds !== undefined) conditions.push(inArray(inventorySkus.skuId, skuIds))
+    conditions.push(...inventorySkuOptionConditions(filters))
     const whereClause = conditions.length > 0 ? and(...conditions) : undefined
     const [countRow] = await db
       .select({ count: sql<number>`cast(count(*) as int)` })
@@ -2159,19 +2271,16 @@ export const listInventoryCoreDocs = withPermission(
        */
       cancellationRequested?: true
       /**
-       * 只保留**还有未履约明细**的单据，并按明细的市场归属分流（#192）：
-       * `'supply-chain'` → 存在 `market_id IS NULL` 且未履约的明细；
-       * `'market'` → 存在 `market_id IS NOT NULL` 且未履约的明细。
+       * 只保留**还有未入库明细**的采购订单（#192）：存在 `fulfilled_quantity < quantity` 的明细。
        *
-       * 用途：#194 把供应链采购订单并进「采购订单」后，一张单可同时含两类行，
-       * 且只在**所有**行履约满时才转「已完成」。供应链收货待办若只按
-       * 「采购订单 + 待收货」取，就会长期挂着一批「供应链行已收完、只差市场行发货」的单，
-       * 点一次报一次 INVALID_STATE。
+       * #335 起采购订单的所有行都经供应链采购入库，完结只由入库推动，正常数据下
+       * 「待收货」必有未入库行，这条条件不再改变结果集；保留它作防御：
+       * #335 之前的存量混合单里，市场行的 fulfilled_quantity 记的是发货量。
        *
-       * 与 `cancellationRequested` 同样「只收窄不放宽」：类型是两个字面量而不是
+       * 与 `cancellationRequested` 同样「只收窄不放宽」：类型是字面量而不是
        * boolean / 开放字符串，省得传进来一个 falsy 值就静默退化成不过滤。
        */
-      pendingItemScope?: 'supply-chain' | 'market'
+      pendingItemScope?: 'supply-chain'
       startDate?: string
       endDate?: string
       keyword?: string
@@ -2273,13 +2382,11 @@ export const listInventoryCoreDocs = withPermission(
        * 待办区的分页器必须按能操作的单数算页数）。
        * EXISTS 走 idx_inventory_doc_items_doc(doc_id)。
        */
-      const marketCondition = filters.pendingItemScope === 'supply-chain'
-        ? sql`pending_item.market_id IS NULL`
-        : sql`pending_item.market_id IS NOT NULL`
+      // 采购订单的所有行都经供应链采购入库（#335），fulfilled_quantity 即已入库量，
+      // 不再按 market_id 分流。
       conditions.push(sql`EXISTS (
         SELECT 1 FROM ${inventoryDocItems} pending_item
          WHERE pending_item.doc_id = ${inventoryDocs.id}
-           AND ${marketCondition}
            AND COALESCE(pending_item.fulfilled_quantity, 0) < pending_item.quantity
       )`)
     }
@@ -2308,6 +2415,7 @@ export const listInventoryCoreDocs = withPermission(
         sourceOrgNodeType: sourceLocation.locationType,
         targetOrgNodeName: targetLocation.name,
         targetOrgNodeType: targetLocation.locationType,
+        partiallyReceived: partiallyReceivedSql,
       })
       .from(inventoryDocs)
       .leftJoin(sourceLocation, eq(sourceLocation.orgNodeId, inventoryDocs.sourceOrgNodeId))
@@ -2489,21 +2597,21 @@ async function loadMarketReportFulfillmentProgress(
       -- 收敛前采购单 source=该市场、天然可见，是本次改动引入的可见性回归。
       -- 本 CTE 只把数量聚合回**已经过可见性校验的** root_items，不外泄采购单本身的任何内容
       -- （单号、其它市场的明细都不出现在返回值里），所以放开这层过滤是安全的。
+      --
+      -- 已取消的采购单也要带上（#335）：市场行可以部分入库后再关单，已入库的那部分
+      -- 仍占着需求额度、也可能已经发了货，整张排除会让「已采购 / 已发 / 已收」一起归零。
+      -- 已下单量在下面 purchase_totals 里只计已入库的保留部分（cancelled_retained）。
       SELECT
         doc_link.from_item_id AS root_item_id,
         doc_link.to_item_id AS purchase_item_id,
-        COALESCE(doc_link.quantity, 0) AS quantity
+        COALESCE(doc_link.quantity, 0) AS quantity,
+        purchase_doc.status AS purchase_status
         FROM inventory_doc_links doc_link
         JOIN root_items root_item ON root_item.item_id = doc_link.from_item_id
         JOIN inventory_docs purchase_doc ON purchase_doc.id = doc_link.to_doc_id
        WHERE doc_link.from_doc_id = ${docId}
          AND doc_link.relation_type = '市场报货采购订单'
-         AND purchase_doc.status IN ('已完成', '待收货')
-    ),
-    purchase_totals AS (
-      SELECT root_item_id, SUM(quantity) AS ordered_quantity
-        FROM purchase_links
-       GROUP BY root_item_id
+         AND purchase_doc.status IN ('已完成', '待收货', '已取消')
     ),
     -- 一条采购明细可以由**多个**来源行合并而来（#194），所以下游的发货/收货量必须
     -- 按各来源在该采购行里的占比分摊，不能每个来源都记全量 ——
@@ -2519,6 +2627,7 @@ async function loadMarketReportFulfillmentProgress(
         purchase_link.root_item_id,
         purchase_link.purchase_item_id,
         purchase_link.quantity,
+        purchase_link.purchase_status,
         purchase_link.quantity / NULLIF(source_total.total_quantity, 0) AS share
         FROM purchase_links purchase_link
         JOIN LATERAL (
@@ -2527,6 +2636,31 @@ async function loadMarketReportFulfillmentProgress(
            WHERE all_link.to_item_id = purchase_link.purchase_item_id
              AND all_link.relation_type = '市场报货采购订单'
         ) source_total ON true
+    ),
+    -- 已取消的采购单只剩已入库那部分仍算已采购：按分做最大余数分配，与建单容量
+    -- （business.ts allocateSummaryToMarketReportItems）共用同一片段，保证同源。
+    cancelled_retained AS (${cancelledMarketReportRetainedSql(sql`SELECT item_id FROM root_items`)}),
+    -- 有效采购单按血缘量、已取消采购单按保留量，两部分各自聚合后相加：
+    -- 同一对 (原始行, 采购行) 可能有多条血缘，逐行连接 cancelled_retained 会重复累计。
+    -- 各自一次 GROUP BY 再左连接，避免按 root_items 逐行跑相关子查询。
+    active_purchase_totals AS (
+      SELECT active_link.root_item_id, SUM(active_link.quantity) AS quantity
+        FROM purchase_share active_link
+       WHERE active_link.purchase_status <> '已取消'
+       GROUP BY active_link.root_item_id
+    ),
+    cancelled_purchase_totals AS (
+      SELECT retained_row.report_item_id, SUM(retained_row.retained_quantity) AS quantity
+        FROM cancelled_retained retained_row
+       GROUP BY retained_row.report_item_id
+    ),
+    purchase_totals AS (
+      SELECT
+        root_item.item_id AS root_item_id,
+        COALESCE(active_total.quantity, 0) + COALESCE(cancelled_total.quantity, 0) AS ordered_quantity
+        FROM root_items root_item
+        LEFT JOIN active_purchase_totals active_total ON active_total.root_item_id = root_item.item_id
+        LEFT JOIN cancelled_purchase_totals cancelled_total ON cancelled_total.report_item_id = root_item.item_id
     ),
     shipment_links AS (
       SELECT
@@ -2782,7 +2916,6 @@ async function loadSupplyChainPurchaseReceiptProgress(
         JOIN inventory_docs purchase_doc ON purchase_doc.id = item.doc_id
         JOIN visible_docs visible_purchase ON visible_purchase.id = purchase_doc.id
        WHERE item.doc_id = ${docId}
-         AND item.market_id IS NULL
     ),
     receipt_totals AS (
       SELECT
@@ -2796,18 +2929,35 @@ async function loadSupplyChainPurchaseReceiptProgress(
          AND doc_link.relation_type = '采购订单供应链采购入库'
          AND receipt_doc.status = '已完成'
        GROUP BY doc_link.from_item_id
+    ),
+    -- 市场行的正常发货量（#335 过渡期：发货仍以采购行数量封顶，由 #336 改为引用市场报货单）。
+    -- 与 business.ts linkedQuantity 同口径：排除已取消的发货单，赠送发货不占采购数量。
+    -- 只聚合已过可见性校验的采购行，不外泄发货单本身的内容，所以发货单不再套 visible_docs。
+    purchase_shipment_totals AS (
+      SELECT
+        doc_link.from_item_id AS purchase_item_id,
+        SUM(COALESCE(doc_link.quantity, 0)) AS shipped_quantity
+        FROM inventory_doc_links doc_link
+        JOIN purchase_items purchase_item ON purchase_item.item_id = doc_link.from_item_id
+        JOIN inventory_docs shipment_doc ON shipment_doc.id = doc_link.to_doc_id
+       WHERE doc_link.from_doc_id = ${docId}
+         AND doc_link.relation_type = '采购订单发货'
+         AND shipment_doc.status <> '已取消'
+       GROUP BY doc_link.from_item_id
     )
     SELECT
       purchase_item.item_id,
       purchase_item.quantity AS purchased_quantity,
       COALESCE(receipt_total.received_quantity, 0) AS received_quantity,
+      COALESCE(purchase_shipment_total.shipped_quantity, 0) AS shipped_quantity,
       purchase_item.purchase_status
       FROM purchase_items purchase_item
       LEFT JOIN receipt_totals receipt_total ON receipt_total.purchase_item_id = purchase_item.item_id
+      LEFT JOIN purchase_shipment_totals purchase_shipment_total
+        ON purchase_shipment_total.purchase_item_id = purchase_item.item_id
      ORDER BY purchase_item.item_id
   `)
-  // 纯市场行的采购单在上面被 `market_id IS NULL` 过滤成空集，这里返回 null 而不是空进度，
-  // 避免详情页渲染出一张「已收货 0」的空表把市场行误导成待收货。
+  // 采购单不可见（scope 外）时 purchase_items 为空集，返回 null 而不是空进度。
   if (rows.length === 0) return null
   return {
     kind: '供应链采购收货',
@@ -2815,6 +2965,7 @@ async function loadSupplyChainPurchaseReceiptProgress(
       item_id: number | string
       purchased_quantity: string | number | null
       received_quantity: string | number | null
+      shipped_quantity: string | number | null
       purchase_status: InventoryCoreDocStatus
     }>).map((row) => {
       const purchasedQuantity = numberOrNull(row.purchased_quantity) ?? 0
@@ -2823,6 +2974,7 @@ async function loadSupplyChainPurchaseReceiptProgress(
         itemId: Number(row.item_id),
         purchasedQuantity,
         receivedQuantity,
+        shippedQuantity: numberOrNull(row.shipped_quantity) ?? 0,
         outstandingQuantity: row.purchase_status === '待收货'
           ? Math.max(0, purchasedQuantity - receivedQuantity)
           : 0,
@@ -2900,9 +3052,8 @@ async function loadInventoryDocFulfillmentProgress(
   if (docType === '品项公司报货需求') {
     return loadItemCompanyRequestFulfillmentProgress(docId, scoped)
   }
-  // 收敛后只剩 `采购订单` 一种类型，但收货进度只对**供应链行**（market_id IS NULL）有意义：
-  // 市场行走的是品项公司发货，不经供应链采购入库。纯市场单在下面的函数里会得到空 items 并返回 null，
-  // 与收敛前「市场链路采购单无履约进度」的行为一致。
+  // 采购订单的所有行（不论有无市场归属）都经供应链采购入库（#335），收货进度统计全部明细；
+  // 市场行另带正常发货量，供品项公司发货表单算剩余可发量。
   if (docType === '采购订单') {
     return loadSupplyChainPurchaseReceiptProgress(docId, scoped)
   }
@@ -2930,6 +3081,7 @@ export const getInventoryCoreDocById = withPermission(
         sourceOrgNodeType: sourceLocation.locationType,
         targetOrgNodeName: targetLocation.name,
         targetOrgNodeType: targetLocation.locationType,
+        partiallyReceived: partiallyReceivedSql,
       })
       .from(inventoryDocs)
       .leftJoin(sourceLocation, eq(sourceLocation.orgNodeId, inventoryDocs.sourceOrgNodeId))
@@ -3491,7 +3643,7 @@ export const rejectInventoryCoreDoc = withAnyPermission(
 )
 
 export const confirmInventoryCoreReceive = withAnyPermission(
-  ['inventory:market_operate', 'inventory:store_operate'],
+  [...INVENTORY_CORE_RECEIVE_ACTIONS],
   async (session, outboundDocId: string, remark?: string | null): Promise<{ success: true; inboundDocId: string }> => {
     const id = normalizeRequired(outboundDocId, '出库单号')
     let inboundDocId = ''

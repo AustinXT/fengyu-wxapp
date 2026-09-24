@@ -89,10 +89,8 @@ test.describe('INV-11 候选唯一即自动选中', () => {
       ['market', '市场退货申请', ['退货主体']],
       ['market', '市场员工购', ['市场']],
       ['market', '自采产品入库', ['入库市场']],
-      ['market', '市场库存转换', ['转换库存主体']],
       ['store', '门店报货', ['报货门店']],
       ['store', '门店退货申请', ['退货主体']],
-      ['store', '门店库存转换', ['转换库存主体']],
     ]
 
     for (const [level, title, labels] of cases) {
@@ -158,8 +156,21 @@ test.describe('INV-11 候选唯一即自动选中', () => {
     await expect(mkEmployees).toBeEnabled({ timeout: 30_000 })
     expect(await mkEmployees.locator('option').count()).toBeGreaterThanOrEqual(2)
 
-    await openOperation(page, 'market', '市场库存转换')
-    await expectFixedTo(page, '转换库存主体', INVT_ACCOUNTS.MK.scopeId)
+    // #343：库存转换收回供应链，市场办理台不再有转换卡。
+    // 正向断言指定真实业务卡片：MK 若进不了该页会落 404，「任意按钮」会被 404 页的按钮假满足。
+    await page.goto(`${BASE}/inventory/operations/market`)
+    await page.waitForLoadState('networkidle')
+    await expect(page.locator('main').getByRole('button', { name: '市场汇总报货' })).toBeVisible()
+    await expect(page.locator('main').getByRole('button', { name: '市场库存转换' })).toHaveCount(0)
+  })
+
+  test('#343 门店办理台不再有「门店库存转换」卡（ADM 才进得了门店层）', async ({ page }) => {
+    // MK 没有 inventory:store_operate，访问门店层是 404；门店账号又登不了 admin —— 只能用 ADM。
+    await login(page, INVT_ACCOUNTS.ADM.phone, INVT_PASS)
+    await page.goto(`${BASE}/inventory/operations/store`)
+    await page.waitForLoadState('networkidle')
+    await expect(page.locator('main').getByRole('button', { name: '门店报货' })).toBeVisible()
+    await expect(page.locator('main').getByRole('button', { name: '门店库存转换' })).toHaveCount(0)
   })
 
   test('库存查询：候选唯一的层级不渲染下拉，但保住无障碍名', async ({ page }) => {

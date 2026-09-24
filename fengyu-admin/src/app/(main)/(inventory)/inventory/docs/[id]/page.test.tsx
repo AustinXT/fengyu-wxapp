@@ -121,7 +121,7 @@ function cellByHeader(skuId: string, header: string): string {
 describe('库存单据详情页 · 盘点三列（#131）', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    mockGetSession.mockResolvedValue({ employeeId: 'E1' })
+    mockGetSession.mockResolvedValue({ employeeId: 'E1', permissions: { actions: [] } })
   })
 
   it('盘点单渲染「账面数量 / 实盘数量 / 差异」三列，且没有原来的「数量」列', async () => {
@@ -221,7 +221,7 @@ describe('库存单据详情页 · 盘点三列（#131）', () => {
 describe('库存单据详情页 · 返回入口（#190）', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    mockGetSession.mockResolvedValue({ employeeId: 'E1' })
+    mockGetSession.mockResolvedValue({ employeeId: 'E1', permissions: { actions: [] } })
   })
 
   function backLink(): HTMLAnchorElement {
@@ -260,5 +260,111 @@ describe('库存单据详情页 · 返回入口（#190）', () => {
     const link = backLink()
     expect(link.textContent).not.toContain('办理台')
     expect(link.getAttribute('href')).toBe('/inventory/docs')
+  })
+})
+
+describe('库存单据详情页 · 采购订单市场行（#335）', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockGetSession.mockResolvedValue({ employeeId: 'E1', permissions: { actions: [] } })
+  })
+
+  function purchaseOrder(overrides: Partial<InventoryDocDetail> = {}) {
+    return docFixture({
+      id: 'CGD-20260924-0001',
+      docType: '采购订单',
+      status: '待收货',
+      sourceOrgNodeId: null,
+      targetOrgNodeId: 'HQ',
+      totalAmount: 16000,
+      partiallyReceived: true,
+      items: [
+        itemFixture({ id: 1, skuId: 'SKU-SC', quantity: 10, fulfilledQuantity: 4, actualUnitPrice: 800, amount: 8000 }),
+        itemFixture({
+          id: 2, skuId: 'SKU-MKT', marketId: 'M1', marketName: '市场甲', quantity: 10, fulfilledQuantity: 3,
+          actualUnitPrice: 800, amount: 8000, marketActualUnitPrice: 950,
+        }),
+      ],
+      fulfillmentProgress: {
+        kind: '供应链采购收货',
+        items: [
+          { itemId: 1, purchasedQuantity: 10, receivedQuantity: 4, outstandingQuantity: 6, shippedQuantity: 0 },
+          { itemId: 2, purchasedQuantity: 10, receivedQuantity: 3, outstandingQuantity: 7, shippedQuantity: 2 },
+        ],
+      },
+      ...overrides,
+    } as Partial<InventoryDocDetail>)
+  }
+
+  it('状态显示派生的「部分入库」', async () => {
+    await renderPage(purchaseOrder())
+    expect(screen.getByText('部分入库')).toBeTruthy()
+  })
+
+  it('市场行同样列出已入库/待入库，并带已发货与市场结算价（参考）', async () => {
+    await renderPage(purchaseOrder())
+    expect(cellByHeader('SKU-MKT', '已入库')).toBe('3')
+    expect(cellByHeader('SKU-MKT', '待入库')).toBe('7')
+    expect(cellByHeader('SKU-MKT', '已发货')).toBe('2')
+    expect(cellByHeader('SKU-MKT', '实际单价')).toBe('800')
+    expect(cellByHeader('SKU-MKT', '市场结算价（参考）')).toBe('950')
+    // 自用行没有市场结算价与发货
+    expect(cellByHeader('SKU-SC', '市场结算价（参考）')).toBe('—')
+    expect(cellByHeader('SKU-SC', '已发货')).toBe('—')
+  })
+
+  it('只有自用行的采购订单不出现已发货 / 市场结算价两列', async () => {
+    await renderPage(purchaseOrder({
+      partiallyReceived: false,
+      items: [itemFixture({ id: 1, skuId: 'SKU-SC', quantity: 10, fulfilledQuantity: 0, actualUnitPrice: 800, amount: 8000 })],
+      fulfillmentProgress: {
+        kind: '供应链采购收货',
+        items: [{ itemId: 1, purchasedQuantity: 10, receivedQuantity: 0, outstandingQuantity: 10, shippedQuantity: 0 }],
+      },
+    } as Partial<InventoryDocDetail>))
+    expect(screen.queryByRole('columnheader', { name: '已发货' })).toBeNull()
+    expect(screen.queryByRole('columnheader', { name: '市场结算价（参考）' })).toBeNull()
+    expect(screen.getByText('待收货')).toBeTruthy()
+  })
+})
+
+/**
+ * 顾客出库（GCK）的「关联销售单」（#350）：提货服务生成 GCK 时写了 related_sale_order_id，
+ * 详情页要能看到是哪张销售单的货，有权看订单的人可以点进订单详情。
+ */
+describe('库存单据详情页 · 关联销售单（#350）', () => {
+  const gck = () => docFixture({
+    id: 'GCK-20260924-0001',
+    docType: '院顾客产品出库',
+    relatedSaleOrderId: 'FY-XSD-WX-2609240001',
+    customerName: '张三',
+  } as never)
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('有订单查看权限：显示关联销售单并链接到订单详情', async () => {
+    mockGetSession.mockResolvedValue({
+      employeeId: 'E1',
+      permissions: { actions: ['sale_order:list', 'sale_item:list'] },
+    })
+    await renderPage(gck())
+    const link = screen.getByRole('link', { name: 'FY-XSD-WX-2609240001' })
+    expect(link.getAttribute('href')).toBe('/orders/FY-XSD-WX-2609240001')
+  })
+
+  it('无订单查看权限：只显示单号文本，不给点了 404 的链接', async () => {
+    mockGetSession.mockResolvedValue({ employeeId: 'E1', permissions: { actions: ['inventory:list'] } })
+    await renderPage(gck())
+    expect(screen.getByText('FY-XSD-WX-2609240001')).toBeTruthy()
+    expect(screen.queryByRole('link', { name: 'FY-XSD-WX-2609240001' })).toBeNull()
+  })
+
+  it('非提货单据没有关联销售单时显示占位符', async () => {
+    mockGetSession.mockResolvedValue({ employeeId: 'E1', permissions: { actions: ['sale_order:list'] } })
+    await renderPage(docFixture({ relatedSaleOrderId: null } as never))
+    const label = screen.getByText('关联销售单')
+    expect(label.nextElementSibling?.textContent).toBe('—')
   })
 })

@@ -542,6 +542,24 @@ describe('inventory.createDoc 权限与状态', () => {
     )
   })
 
+  test('#350 院顾客产品出库不能走通用建单：顾客出库只能由提货服务产生', async () => {
+    const ctx = createCtx({
+      payload: {
+        docType: '院顾客产品出库',
+        sourceOrgNodeId: 'store-001',
+        relatedSaleOrderId: 'FY-XSD-WX-2609240001',
+        items: [{ lotId: 10, skuId: 'sku-1', quantity: 1 }],
+      },
+    })
+
+    await expect(inventoryRoutes.createDoc(ctx)).rejects.toThrow(
+      'INVALID_PARAMS: staff 端不支持创建该库存单据',
+    )
+    // 拒绝发生在任何查询 / 事务之前
+    expect(pg.query).not.toHaveBeenCalled()
+    expect(pg.transaction).not.toHaveBeenCalled()
+  })
+
   test('产品报损必须填写原因', async () => {
     const ctx = createCtx({
       payload: {
@@ -902,6 +920,36 @@ describe('inventory 办理选项无金额响应', () => {
     const skuCall = pg.query.mock.calls.find(([sql]) => String(sql).includes('FROM inventory_skus sku'))
     expect(skuCall[0]).not.toMatch(/price|amount|cost/i)
     expect(skuCall[1]).toEqual(['store-001', 'market-A', '%凝胶%'])
+  })
+
+  test('reportableSkuOptions 主查询与 count 同口径：启用 + 可报货 + 无归属或归属门店所属市场（#339）', async () => {
+    // admin 门店报货代建候选与这里同口径（#339 Q1=A），staff 端改候选口径必须回来同步
+    const ctx = createCtx({ payload: { locationId: 'store-001', keyword: '凝胶', page: 2, pageSize: 20 } })
+    pg.query.mockImplementation(async (query) => {
+      const sql = String(query)
+      if (sql.includes('WITH RECURSIVE descendants')) return [{ store_id: 'store-001' }]
+      if (sql.includes('SELECT location_id, location_type, parent_location_id')) {
+        return [{ location_id: 'store-001', location_type: '门店', parent_location_id: 'market-A' }]
+      }
+      if (sql.includes('SELECT COUNT(*)::int AS cnt')) return [{ cnt: 21 }]
+      return []
+    })
+
+    await inventoryRoutes.reportableSkuOptions(ctx)
+
+    const listCall = pg.query.mock.calls.find(([sql]) => String(sql).includes('FROM inventory_skus sku') && String(sql).includes('LIMIT'))
+    const countCall = pg.query.mock.calls.find(([sql]) => String(sql).includes('SELECT COUNT(*)::int AS cnt') && String(sql).includes('FROM inventory_skus sku'))
+    for (const [sql] of [listCall, countCall]) {
+      expect(sql).toMatch(/sku\.is_active = true/)
+      expect(sql).toMatch(/sku\.is_reportable = true/)
+      expect(sql).toMatch(/\(sku\.owner_market_id IS NULL OR sku\.owner_market_id = \$\d\)/)
+      expect(sql).toMatch(/sku\.product_name ILIKE/)
+    }
+    expect(listCall[1]).toEqual(['store-001', 'market-A', '%凝胶%'])
+    expect(countCall[1]).toEqual(['market-A', '%凝胶%'])
+    // 分页：第 2 页、每页 20
+    expect(listCall[0]).toMatch(/LIMIT 20 OFFSET 20/)
+    expect(ctx.result).toMatchObject({ total: 21, page: 2, pageSize: 20 })
   })
 
   test('storeOptions 只允许有发起门店写权限的员工查询同市场接收门店', async () => {
