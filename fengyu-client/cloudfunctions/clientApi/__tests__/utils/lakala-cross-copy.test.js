@@ -192,6 +192,14 @@ describe('lakala 跨副本一致性守护', () => {
       expect(paths, `paths 缺 ${p}，改了它却不触发 CI = 守护失效`).toContain(p)
     }
 
+    // ⚠️ paths **内部**也能写否定规则：GitHub 支持 `!` 前缀，末尾追加一条
+    // `- '!fengyu-client/cloudfunctions/**'` 就把前面的正向规则全抵消掉，
+    // 而上面那些 toContain 照样全绿、paths-ignore 也确实不存在（闸门 2 codex round-3 指出）。
+    expect(
+      paths.filter((p) => String(p).startsWith('!')),
+      'paths 里出现 ! 否定规则，会把正向触发面抵消掉',
+    ).toEqual([])
+
     // 本 job 靠 `npm ci` 装依赖才跑得起来，所以依赖清单也必须在触发面内。
     // ⚠️ 上面 `fengyu-client/cloudfunctions/**/*.js` 的 glob **不匹配 .json** ——
     // 少了这两条，「只升 vitest/pg 版本号」的 PR 命中不到任何条目，整个 workflow
@@ -252,10 +260,13 @@ describe('lakala 跨副本一致性守护', () => {
     // 它不跑测试、只 require 生产模块，所以不受 vite 7 不支持 node 18 的限制。
     const canary = wf.jobs['clientapi-node18-canary']
     expect(canary, '缺 node18 canary job，生产运行时兼容性零覆盖').toBeDefined()
-    expect(
-      JSON.stringify(canary.steps).includes('18.15'),
-      'canary 必须跑在 18.15（与 cloudbaserc 的 runtime 对齐）',
-    ).toBe(true)
+    // ⚠️ 必须读 setup-node 的 `with.node-version` 本身。不要用「steps 的 JSON 里
+    // 含字符串 18.15」这种糊涂写法 —— step 名字「Require ... under Nodejs18.15」
+    // 自己就含这串，把 node-version 改成 22 照样绿（闸门 2 codex round-3 实测）。
+    const canaryNode = (canary.steps || [])
+      .filter((s) => String(s.uses || '').startsWith('actions/setup-node'))
+      .map((s) => String((s.with || {})['node-version']))
+    expect(canaryNode, 'canary 必须跑在 18.15（与 cloudbaserc 的 runtime 对齐）').toEqual(['18.15'])
 
     const vitestConfig = read(path.resolve(__dirname, '../../vitest.config.js'))
     expect(vitestConfig, 'include 被改窄会让测试文件静默出网').toContain(
@@ -265,5 +276,10 @@ describe('lakala 跨副本一致性守护', () => {
     expect(vitestConfig, '加 exclude 同样能让文件出网').not.toContain('exclude:')
     // `projects` 会整个接管文件收集，留着上面的 include 也没用（闸门 2 的 GLM 指出）。
     expect(vitestConfig, 'projects 会接管收集，绕过 include').not.toMatch(/^\s*projects:/m)
+    // `testNamePattern` 是按**用例名**过滤，不改收集范围也能让 876 条静默跳过而 CI 全绿
+    // —— 「临时调试过滤器忘了删」是最自然的进入路径；`dir` 则直接换根目录
+    // （闸门 2 codex round-3 指出）。
+    expect(vitestConfig, 'testNamePattern 会让绝大多数用例静默跳过').not.toContain('testNamePattern')
+    expect(vitestConfig, 'dir 会换掉测试根目录').not.toMatch(/^\s*dir:/m)
   })
 })

@@ -3291,7 +3291,8 @@ describe('order.homeProducts', () => {
       {
         sale_item_id: 'SI-HOME-1', sale_order_id: 'SO-HOME-1', product_name: '精华液',
         unit: '盒', purchased_quantity: 5,
-        paid_quantity: 4, picked_quantity: 2, refunded_quantity: 1,
+        // 三个数量刻意两两不等，这样 mapper 取错任意一列都会被下面的断言抓到
+        paid_quantity: 4, picked_quantity: 2, refunded_quantity: 1, converted_quantity: 3,
         remaining_quantity: 2, pending_pickup_quantity: 2,
         store_id: 's2', store_name: '外店', purchased_at: '2026-08-01T10:00:00Z', refund_pending: false,
       },
@@ -3314,6 +3315,12 @@ describe('order.homeProducts', () => {
       }),
       expect.objectContaining({ saleItemId: 'SI-HOME-2', status: '退款处理中' }),
     ])
+    // 三个语义必须各取各列。SQL 侧断言只守到「SQL 文本长什么样」，守不住 mapper 取错列；
+    // 把 convertedQuantity 改读 row.refunded_quantity，上面那些 SQL 形状断言全都察觉不到
+    // （闸门 2 codex round-3 指出）。这条不需要真 PG，mock 数据的单测就能闭合。
+    expect(ctx.result.items[0]).toMatchObject({
+      pickedQuantity: 2, refundedQuantity: 1, convertedQuantity: 3, remainingQuantity: 2,
+    })
     expect(pg.query.mock.calls[0][1]).toEqual([ctx.auth.userId])
   })
 
