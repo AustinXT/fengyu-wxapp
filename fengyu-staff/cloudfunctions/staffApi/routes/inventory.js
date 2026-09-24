@@ -68,12 +68,17 @@ const STAFF_VISIBLE_DOC_TYPES = new Set([
   '分院库存盘点',
   '期初库存',
 ])
+/**
+ * #350：`院顾客产品出库` 已移出 —— 顾客出库必须绑定销售单，只能由提货服务产生
+ * （本端 `order.createPickup`、admin `createPickupRecord`，两者直写 GCK，不经本白名单）。
+ * 通用入口建出的 GCK 不回写 picked_up_quantity、不写 pickup_records，会与提货重复扣库存。
+ * admin `INVENTORY_GENERIC_DOC_TYPES` 同步移除，两端取舍由 cross-end-inventory-snapshot 钉住。
+ */
 const STAFF_CREATE_DOC_TYPES = new Set([
   '门店报货',
   '分院调货出库',
   '院顾客退货',
   '院退货',
-  '院顾客产品出库',
   '院产品报损',
   '分院库存盘点',
 ])
@@ -631,7 +636,6 @@ async function resolveStaffCreateLocations(ctx, payload) {
       targetEndpointId = targetEndpointId || fallbackStoreId
       break
     case '院退货':
-    case '院顾客产品出库':
     case '院产品报损':
       sourceEndpointId = sourceEndpointId || fallbackStoreId
       targetEndpointId = null
@@ -654,10 +658,10 @@ async function resolveStaffCreateLocations(ctx, payload) {
    * 一旦 `STAFF_CREATE_DOC_TYPES` 加进一个两端都非空、方向为入库的类型，
    * 就会拿 source 鉴权却往无权的 target 加库存 —— 正是 #200 在 admin 修掉的那个洞。
    *
-   * 7 个可建类型里只有「院顾客退货」是入库类（已逐一核对 INBOUND/OUTBOUND 归属）。
+   * 6 个可建类型（#350 起）里只有「院顾客退货」是入库类（已逐一核对 INBOUND/OUTBOUND 归属）。
    */
   /**
-   * ⚠️ 这里隐式依赖「非 INBOUND 即由出库方发起」。对 staff 的 7 个可建类型成立
+   * ⚠️ 这里隐式依赖「非 INBOUND 即由出库方发起」。对 staff 的 6 个可建类型成立
    * （只有「院顾客退货」是 INBOUND），但**不要**把它当成通用的方向判据推广出去：
    * `OUTBOUND_DOC_TYPES` 并非全量方向枚举（例如「分院调货出库/入库」两者都不在里面），
    * 它实际扮演的是「审批方向分类器」。新增可建类型时必须回来核对这条三元。

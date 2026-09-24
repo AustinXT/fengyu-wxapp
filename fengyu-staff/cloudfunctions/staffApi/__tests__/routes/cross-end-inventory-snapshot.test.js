@@ -17,6 +17,9 @@
  *      NO_MOVEMENT / RECEIVE_REQUIRED / APPROVAL / RECEIVE_INBOUND_TYPE
  *      必须逐项一致（含数量断言，防止两端同时丢项仍比对相等）。
  *
+ *   2b. 顾客出库只走提货（#350）— admin `INVENTORY_GENERIC_DOC_TYPES`（types.ts）与
+ *      staff `STAFF_CREATE_DOC_TYPES` 都不得含「院顾客产品出库」，取舍两端一致。
+ *
  *   3. staff 端安全护栏 —
  *      a. 所有 throw new Error 的一级前缀 ⊆ 9 项错误码白名单
  *      b. assertNoStaffMoneyFields 金额字段禁提交保护必须存在
@@ -33,6 +36,8 @@ const FILES = {
   // 建批次的第三份副本：upsertLot 与 engine 的 ensureLotFromSku 同功能不同名。
   adminBusinessTs: path.resolve(__dirname, '../../../../../fengyu-admin/src/lib/inventory/business.ts'),
   dbSchemaInventoryTs: path.resolve(__dirname, '../../../../../db/schema/inventory.ts'),
+  // #350：通用建单白名单是 `as const` 数组字面量，住在 types.ts
+  adminTypesTs: path.resolve(__dirname, '../../../../../fengyu-admin/src/lib/inventory/types.ts'),
 }
 
 function readFile(p) {
@@ -52,6 +57,14 @@ function extractSetItems(src, varName) {
   const re = new RegExp(`const ${varName}[^=]*=\\s*new Set[^\\[]*\\[([\\s\\S]*?)\\]`)
   const m = src.match(re)
   if (!m) throw new Error(`未找到 ${varName} 集合定义`)
+  return [...m[1].matchAll(/'([^']+)'/g)].map((x) => x[1]).sort()
+}
+
+/** 截取 `export const <name> = [ ... ] as const` 数组字面量成员（去引号、排序）。 */
+function extractConstArrayItems(src, varName) {
+  const re = new RegExp(`const ${varName}[^=]*=\\s*\\[([\\s\\S]*?)\\]\\s*as const`)
+  const m = src.match(re)
+  if (!m) throw new Error(`未找到 ${varName} 数组定义`)
   return [...m[1].matchAll(/'([^']+)'/g)].map((x) => x[1]).sort()
 }
 
@@ -162,6 +175,20 @@ describe('PR #113 进销存单据组织端点跨端守护（staff / admin / sche
       expect(staffItems.length, `staff ${name} 项数漂移`).toBe(size)
       expect(adminItems.length, `admin ${name} 项数漂移`).toBe(size)
       expect(staffItems).toEqual(adminItems)
+    })
+
+    test('#350 顾客出库只走提货：两端通用建单白名单都不含「院顾客产品出库」', () => {
+      const adminGeneric = extractConstArrayItems(readFile(FILES.adminTypesTs), 'INVENTORY_GENERIC_DOC_TYPES')
+      const staffCreate = extractSetItems(staffSrc, 'STAFF_CREATE_DOC_TYPES')
+      // 解析器本身没失效（空数组会让下面的 not.toContain 恒真）
+      expect(adminGeneric.length, 'admin INVENTORY_GENERIC_DOC_TYPES 项数漂移').toBe(9)
+      expect(staffCreate.length, 'staff STAFF_CREATE_DOC_TYPES 项数漂移').toBe(6)
+      expect(adminGeneric, 'admin 通用建单又放出了院顾客产品出库').not.toContain('院顾客产品出库')
+      expect(staffCreate, 'staff 建单又放出了院顾客产品出库').not.toContain('院顾客产品出库')
+      // 两端对门店层可直接建的通用类型取舍一致：staff 可建 ∩ admin 通用 应恰为这 4 种门店动作
+      expect(staffCreate.filter((t) => adminGeneric.includes(t))).toEqual(
+        ['分院调货出库', '院顾客退货', '院产品报损', '分院库存盘点'].sort(),
+      )
     })
 
     test('盘点账面数两端都写（staff 侧曾漏写导致 stock_snapshot 恒 NULL，#131）', () => {
