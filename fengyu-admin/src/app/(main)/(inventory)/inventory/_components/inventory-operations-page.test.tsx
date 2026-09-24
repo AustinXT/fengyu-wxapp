@@ -33,6 +33,9 @@ vi.mock('@/actions/inventory/docs', () => ({
   confirmInventoryCoreReceive: vi.fn(),
   createInventoryCoreDoc: vi.fn(),
   getInventoryCoreDocById: vi.fn(),
+  getInventoryCoreDocsByIds: vi.fn(),
+  listInventoryDocCandidateIds: vi.fn(),
+  listInventoryDocCandidates: vi.fn(),
   listInventoryOperationDocs: vi.fn(),
 }))
 
@@ -82,6 +85,9 @@ import { toast } from 'sonner'
 import {
   confirmInventoryCoreReceive,
   getInventoryCoreDocById,
+  getInventoryCoreDocsByIds,
+  listInventoryDocCandidateIds,
+  listInventoryDocCandidates,
   listInventoryOperationDocs,
 } from '@/actions/inventory/docs'
 import {
@@ -140,11 +146,12 @@ describe('办理台表单一致性（#135）', () => {
     expect(formField).not.toMatch(/aria-required/)
   })
 
-  it('DocPicker 把 required 透传给 FormField', () => {
-    // 漏传的话 9 个单据选择器全都不显示必填标记，而它们无一例外都是必填的。
-    const docPicker = block('function DocPicker(', 'function SkuPicker(')
-    expect(docPicker).toMatch(/required = false/)
-    expect(docPicker).toMatch(/<FormField label=\{label\} required=\{required\}>/)
+  it('候选单选择器（#338 取代 DocPicker）渲染必填标记', () => {
+    // 漏掉的话 9 个单据选择器全都不显示必填标记，而它们无一例外都是必填的。
+    const picker = readFileSync(resolve(__dirname, 'inventory-doc-candidate-picker.tsx'), 'utf8')
+    expect(picker).toMatch(/required = false/)
+    expect(picker).toMatch(/\{required && \(/)
+    expect(picker).toMatch(/<span className="sr-only">（必填）<\/span>/)
   })
 
   it('数值输入是 type=number 且带 min/step/max，不留 inputMode="decimal"', () => {
@@ -311,8 +318,11 @@ describe('办理台表单一致性（#135）', () => {
     // （标题上自带 *，不是 FormField），只剩「供应链库存主体」1 个；
     // #193 新增的市场报货汇总表单同样只有 1 个 —— 这两项合计 6 → 2。
     // 品项公司发货表单则多出 1 个「发往市场」（混合单一次只能发一个市场）。净减 3。
-    const marked = source.match(/<(?:FormField|DocPicker) label=(?:"[^"]*"|\{[^}]*\}) required/g) ?? []
-    expect(marked.length).toBe(55)
+    //
+    // 55 → 56：#338 的候选单选择器取代 DocPicker（8 处 → 9 处调用），采购来源的多选清单
+    // 也改用它、带上了 required，不再是标题里手写的 *。
+    const marked = source.match(/<(?:FormField|InventoryDocCandidatePicker)\s+label=(?:"[^"]*"|\{[^}]*\})\s+required/g) ?? []
+    expect(marked.length).toBe(56)
   })
 })
 
@@ -745,6 +755,20 @@ function segment(data: InventoryDocRow[], total = data.length, pageSize = 20): O
   return { data, total, pageSize, canViewPrice: true, priceVisibility: 'all' }
 }
 
+/** 候选单查询（#338）：按给定行作为服务端结果，进度默认 0 / totalQuantity。 */
+function mockCandidates(rows: InventoryDocRow[]) {
+  vi.mocked(listInventoryDocCandidates).mockResolvedValue({
+    data: rows.map((row) => ({ ...row, progress: { done: 0, total: row.totalQuantity } })),
+    total: rows.length,
+    pageSize: 20,
+  })
+}
+
+/** 在候选表格里选中某张单 */
+async function pickCandidate(id: string) {
+  fireEvent.click(await screen.findByRole('radio', { name: `选择 ${id}` }))
+}
+
 /** 一次性把两段数据挂上去。`inbox: null` = 这个业务没有待办语义。 */
 function mockDocs(result: { produced?: OperationDocsSegment; inbox?: OperationDocsSegment | null }) {
   vi.mocked(listInventoryOperationDocs).mockResolvedValue({
@@ -786,17 +810,17 @@ function renderTab(
 function renderPage(options: {
   level: InventoryBusinessLevel
   operation?: InventoryAnyOperationId
-  workflowDocs?: InventoryDocRow[]
+  candidates?: InventoryDocRow[]
   locations?: InventoryLocationRow[]
   canSelfPurchase?: boolean
   canCreatePickupRecord?: boolean
 }) {
+  mockCandidates(options.candidates ?? [])
   return render(
     <InventoryOperationsPage
       level={options.level}
       locations={options.locations ?? []}
       suppliers={[]}
-      workflowDocs={options.workflowDocs ?? []}
       canCreate
       canApprove
       canSelfPurchase={options.canSelfPurchase ?? false}
@@ -1321,82 +1345,57 @@ describe('待办行内动作的失败与防重（#192）', () => {
 })
 
 /**
- * DocPicker 的选中值兜底（#192 pr-ready 抓到的 P2-1）。
+ * 候选单选择（#338，取代 #192 的 DocPicker 兜底）。
  *
- * 待办区「去收货」预选的单据来自服务端按类型 + 状态**全量分页**的待办段，
- * 而 DocPicker 的候选只有 RSC 传下来的 `workflowDocs`（全类型混排的最近 100 张）——
- * 长期挂着的待收货单大概率不在里面。`<select>` 匹配不到 option 时落到
- * `selectedIndex = -1`：下拉空白、下方明细表却已加载好，没有任何报错。
+ * 候选原先是 RSC 传下来的「全类型混排最近 100 张」，老单选不到；现在按用途走服务端检索。
+ * 已选单据单独显示，不依赖它是否在当前候选页 —— 「去收货」预选的老单、办完一次后
+ * 掉出候选的单都照样有已选文案（#192 P2-1 的同一个坑）。
  */
-describe('DocPicker 的选中值兜底（#192 follow-up）', () => {
+describe('候选单选择改走服务端检索（#338）', () => {
   const source = readFileSync(resolve(__dirname, 'inventory-operations-page.tsx'), 'utf8')
 
-  it('「去收货」预选的单不在候选集里时，下拉仍选中它而不是空白', async () => {
+  it('「去收货」预选的单不在候选页里时，仍显示为已选', async () => {
     const row = docRow({ id: 'CGD-77', docType: '采购订单', status: '待收货' })
     vi.mocked(getInventoryCoreDocById).mockResolvedValue(docDetail(row))
     mockDocs({ inbox: segment([row]) })
-    // workflowDocs 为空 = 这张单掉出了「最近 100 张」，正是本条要修的场景
-    renderPage({ level: 'supply-chain', operation: 'supply-chain-receipt', workflowDocs: [] })
+    renderPage({ level: 'supply-chain', operation: 'supply-chain-receipt', candidates: [] })
 
     await openDocsTab()
     fireEvent.click(screen.getByRole('button', { name: '去收货 CGD-77' }))
 
-    // 跳回填报表单后：选项补出来了，且真的被选中（修复前这里 selectedIndex 是 -1）
-    const option = await screen.findByRole<HTMLOptionElement>('option', { name: /^CGD-77 · / })
-    const select = option.closest('select') as HTMLSelectElement
-    expect(option.selected).toBe(true)
-    expect(select.selectedIndex).toBeGreaterThan(-1)
-    expect(select).toHaveValue('CGD-77')
+    expect(await screen.findByText(/^已选 CGD-77 · /)).toBeInTheDocument()
+    // 候选按用途向服务端查，不再由前端对预加载单据过滤
+    expect(listInventoryDocCandidates).toHaveBeenCalledWith(expect.objectContaining({ purpose: 'supply-chain-receipt', page: 1 }))
   })
 
-  it('候选集里本来就有这张单时不补重复选项', async () => {
+  it('候选页里有这张单时单选框处于选中态', async () => {
     const row = docRow({ id: 'CGD-88', docType: '采购订单', status: '待收货' })
     vi.mocked(getInventoryCoreDocById).mockResolvedValue(docDetail(row))
     mockDocs({ inbox: segment([row]) })
-    renderPage({ level: 'supply-chain', operation: 'supply-chain-receipt', workflowDocs: [row] })
+    renderPage({ level: 'supply-chain', operation: 'supply-chain-receipt', candidates: [row] })
 
     await openDocsTab()
     fireEvent.click(screen.getByRole('button', { name: '去收货 CGD-88' }))
 
-    /*
-     * 先等单据明细装载完再数：兜底项在加载期只显示裸单号（文案对不上这个正则），
-     * 早数一步的话「无条件补一条」这种写法会蒙混过关。
-     */
-    await waitFor(() => {
-      const loaded = screen.getAllByRole<HTMLOptionElement>('option', { name: /^CGD-88 · / })
-      expect(loaded.some((option) => option.selected)).toBe(true)
-    })
-    // 补一条「无条件的」兜底选项会让同一张单在下拉里出现两次
-    expect(screen.getAllByRole('option', { name: /^CGD-88 · / })).toHaveLength(1)
+    await waitFor(() => expect(screen.getByRole<HTMLInputElement>('radio', { name: '选择 CGD-88' }).checked).toBe(true))
   })
 
-  it('每个 DocPicker 调用点都把当前单据交给 current', () => {
-    /*
-     * 漏传一处的后果只是「那个表单的下拉偶尔空白」—— 页面不报错、别的表单都正常，
-     * 靠肉眼 review 看不出来。这里把接线本身钉住：新加的选择器也必须带上。
-     *
-     * 不止预选那三个表单：候选集是按状态过滤的（docCandidates 的第三个参数），
-     * 行内动作 / 建单成功后的 router.refresh() 会让已选中的单据换状态、掉出候选，
-     * 正常路径也能走到同一个空白态。
-     */
-    const calls = source.match(/<DocPicker\b[\s\S]*?\/>/g) ?? []
-    expect(calls.length).toBeGreaterThanOrEqual(8)
+  it('页面不再预加载单据，表单里也没有前端过滤候选的写法（验收：grep 为 0）', () => {
+    expect(source).not.toMatch(/docCandidates\(workflowDocs/)
+    expect(source).not.toMatch(/workflowDocs\.filter/)
+    expect(source).not.toMatch(/\bworkflowDocs\b/)
+    const page = readFileSync(resolve(__dirname, '../operations/[level]/page.tsx'), 'utf8')
+    expect(page).not.toMatch(/listInventoryCoreDocs/)
+  })
+
+  it('每个单选候选调用点都把当前单据交给 current，且用途都在白名单里', () => {
+    const calls = source.match(/<InventoryDocCandidatePicker\b[\s\S]*?\/>/g) ?? []
+    // 采购来源（多选）+ 发货、配货、收货（市场/门店共用）、采购入库、关闭采购、撤回申请、撤回审批、退货审批（两级共用）
+    expect(calls.length).toBe(9)
     for (const call of calls) {
-      expect(call).toMatch(/current=\{doc\}/)
+      if (call.includes("mode: 'multi'")) continue
+      expect(call).toMatch(/current: doc/)
     }
-  })
-
-  it('兜底只在选中值缺席时出现，且不动候选集本身', () => {
-    const picker = source.slice(
-      source.indexOf('function DocPicker('),
-      source.indexOf('function SkuPicker('),
-    )
-    // 「缺席」判据：有值 且 候选里找不到。少了后半句就变成无条件补，会出重复选项。
-    expect(picker).toMatch(/const selectedMissing = value !== '' && !docs\.some\(\(doc\) => doc\.id === value\)/)
-    // 还在加载（current 尚为 null）时用单号占位，保证任何时刻 select 都有选中项
-    expect(picker).toMatch(/current && current\.id === value \? formatDoc\(current\) : value/)
-    // 反向：不能把兜底项塞进 docs 再渲染 —— 那会污染候选集本身
-    expect(picker).not.toMatch(/\[current, \.\.\.docs\]/)
   })
 })
 
@@ -1594,9 +1593,8 @@ describe('分院配货按 skuIds 精确取当前门店进货价（#339）', () =
 
   async function pickRequest(items: InventoryDocDetail['items']) {
     vi.mocked(getInventoryCoreDocById).mockResolvedValue({ ...docDetail(request), items })
-    renderPage({ level: 'market', operation: 'store-allocation', workflowDocs: [request] })
-    const option = await screen.findByRole<HTMLOptionElement>('option', { name: /^DBH-1/ })
-    fireEvent.change(option.closest('select') as HTMLSelectElement, { target: { value: 'DBH-1' } })
+    renderPage({ level: 'market', operation: 'store-allocation', candidates: [request] })
+    await pickCandidate('DBH-1')
   }
 
   it('取到档案价就覆盖快照价；只补价格列、按明细 skuIds 精确查（含已停用）', async () => {
@@ -1642,8 +1640,7 @@ describe('采购订单市场行走供应链采购入库（#335）', () => {
   }
 
   async function pickPurchaseOrder(row: InventoryDocRow) {
-    const option = await screen.findByRole<HTMLOptionElement>('option', { name: new RegExp(`^${row.id} · `) })
-    fireEvent.change(option.closest('select') as HTMLSelectElement, { target: { value: row.id } })
+    await pickCandidate(row.id)
   }
 
   it('供应链采购入库表单装载市场行与自用行，按未入库量预填', async () => {
@@ -1655,7 +1652,7 @@ describe('采购订单市场行走供应链采购入库（#335）', () => {
         purchaseItem({ id: 2, skuName: '市场行', marketId: 'M1', marketName: '市场甲', quantity: 20, fulfilledQuantity: 3 }),
       ],
     })
-    renderPage({ level: 'supply-chain', operation: 'supply-chain-receipt', workflowDocs: [row] })
+    renderPage({ level: 'supply-chain', operation: 'supply-chain-receipt', candidates: [row] })
     await pickPurchaseOrder(row)
 
     await screen.findByText('本次实收入库')
@@ -1675,7 +1672,7 @@ describe('采购订单市场行走供应链采购入库（#335）', () => {
         items: [{ itemId: 2, purchasedQuantity: 10, receivedQuantity: 4, outstandingQuantity: 6, shippedQuantity: 3 }],
       },
     })
-    renderPage({ level: 'supply-chain', operation: 'company-shipment', workflowDocs: [row] })
+    renderPage({ level: 'supply-chain', operation: 'company-shipment', candidates: [row] })
     await pickPurchaseOrder(row)
 
     // 10 − 已发 3 = 7；按旧口径读 fulfilledQuantity（已入库 4）会得到 6
@@ -1683,10 +1680,11 @@ describe('采购订单市场行走供应链采购入库（#335）', () => {
     expect(screen.queryByDisplayValue('6')).not.toBeInTheDocument()
   })
 
-  it('候选下拉把「待收货 + 已有入库」的采购订单标成「部分入库」', async () => {
+  it('候选表格把「待收货 + 已有入库」的采购订单标成「部分入库」', async () => {
     const row = docRow({ id: 'CGD-336', docType: '采购订单', status: '待收货', partiallyReceived: true })
-    renderPage({ level: 'supply-chain', operation: 'supply-chain-receipt', workflowDocs: [row] })
-    expect(await screen.findByRole('option', { name: /^CGD-336 · .* · 部分入库$/ })).toBeInTheDocument()
+    renderPage({ level: 'supply-chain', operation: 'supply-chain-receipt', candidates: [row] })
+    const radio = await screen.findByRole('radio', { name: '选择 CGD-336' })
+    expect(radio.closest('tr')).toHaveTextContent('部分入库')
   })
 })
 
@@ -1730,5 +1728,85 @@ describe('门店办理台「顾客产品出库」改为跳转提货录入（#350
   it('深链 ?create=院顾客产品出库 不再打开任何工作区', () => {
     expect(asGenericDocType('院顾客产品出库')).toBeNull()
     expect(parseGenericOperationId('generic:院顾客产品出库')).toBeNull()
+  })
+})
+
+/**
+ * 采购订单表单的多选来源（#338 pr-ready）。
+ */
+describe('采购订单来源多选与一键带出（#338）', () => {
+  const HQ1: InventoryLocationRow = { locationId: 'HQ1', locationType: '总部', name: '总部一', orgNodeId: 'HQ1', storeId: null, parentLocationId: null, isActive: true }
+  const HQ2: InventoryLocationRow = { locationId: 'HQ2', locationType: '总部', name: '总部二', orgNodeId: 'HQ2', storeId: null, parentLocationId: null, isActive: true }
+  function summary(id: string, target: string, quantity = 5): InventoryDocDetail {
+    return {
+      ...docDetail(docRow({ id, docType: '市场报货汇总', status: '已完成', targetOrgNodeId: target })),
+      items: [{
+        id: Number(id.replace(/\D/g, '')), docId: id, skuId: 'SKU-1', skuName: '面霜', specName: null,
+        marketId: 'M1', supplier: null, supplierId: 'SUP', quantity, fulfilledQuantity: 0, supplyChainUnitCost: 10,
+      } as unknown as InventoryDocDetail['items'][number]],
+    }
+  }
+  beforeEach(async () => {
+    mockDocs({})
+    vi.mocked(getInventoryCoreDocsByIds).mockReset()
+    vi.mocked(listInventoryDocCandidateIds).mockReset()
+    vi.mocked(toast.warning).mockReset()
+    const business = await import('@/actions/inventory/business')
+    vi.mocked(business.resolveInventorySkuSupplierStatus).mockResolvedValue([{ skuId: 'SKU-1', supplierId: 'SUP', supplierName: '供应商' }] as never)
+  })
+
+  it('多个总部且未选主体时，一键带出禁用并说明原因', async () => {
+    renderPage({ level: 'supply-chain', operation: 'purchase-order', locations: [HQ1, HQ2] })
+    const button = await screen.findByRole('button', { name: '带出区间内全部未下单' })
+    expect(button).toBeDisabled()
+    expect(screen.getByText('请先选择供应链库存主体')).toBeInTheDocument()
+  })
+
+  it('总部唯一时自动选中主体，一键带出可用，且候选按该总部收窄', async () => {
+    renderPage({ level: 'supply-chain', operation: 'purchase-order', locations: [HQ1] })
+    await waitFor(() => expect(screen.getByRole('button', { name: '带出区间内全部未下单' })).toBeEnabled())
+    await waitFor(() => expect(listInventoryDocCandidates).toHaveBeenLastCalledWith(
+      expect.objectContaining({ purpose: 'purchase-order-source', targetOrgNodeId: 'HQ1' }),
+    ))
+  })
+
+  it('明细一次批量取回；重拉在途时清空旧明细、提交按钮禁用（防把刚取消勾选的单下进去）', async () => {
+    const rowA = docRow({ id: 'MHZ-1', docType: '市场报货汇总', status: '已完成', targetOrgNodeId: 'HQ1' })
+    const rowB = docRow({ id: 'MHZ-2', docType: '市场报货汇总', status: '已完成', targetOrgNodeId: 'HQ1' })
+    const byId: Record<string, InventoryDocDetail> = { 'MHZ-1': summary('MHZ-1', 'HQ1'), 'MHZ-2': summary('MHZ-2', 'HQ1', 7) }
+    vi.mocked(getInventoryCoreDocsByIds).mockImplementation(async (ids: string[]) => ids.map((id) => byId[id]))
+    renderPage({ level: 'supply-chain', operation: 'purchase-order', locations: [HQ1], candidates: [rowA, rowB] })
+    fireEvent.click(await screen.findByRole('checkbox', { name: '选择 MHZ-1' }))
+    fireEvent.click(await screen.findByRole('checkbox', { name: '选择 MHZ-2' }))
+    await screen.findByDisplayValue('7')
+    expect(getInventoryCoreDocById).not.toHaveBeenCalled()
+    const submit = screen.getByRole('button', { name: '创建采购订单' })
+    expect(submit).toBeEnabled()
+
+    // 取消勾选 MHZ-2：重拉挂起期间旧明细必须已清空、提交禁用
+    let resolveReload: (value: InventoryDocDetail[]) => void = () => {}
+    vi.mocked(getInventoryCoreDocsByIds).mockImplementationOnce(() => new Promise((resolve) => { resolveReload = resolve }))
+    fireEvent.click(screen.getByRole('checkbox', { name: '选择 MHZ-2' }))
+    await waitFor(() => expect(screen.queryByDisplayValue('7')).not.toBeInTheDocument())
+    expect(submit).toBeDisabled()
+    await act(async () => { resolveReload([summary('MHZ-1', 'HQ1')]) })
+    await waitFor(() => expect(submit).toBeEnabled())
+    expect(screen.queryByDisplayValue('7')).not.toBeInTheDocument()
+    expect(getInventoryCoreDocsByIds).toHaveBeenLastCalledWith(['MHZ-1'])
+  })
+
+  it('不属于所选总部的来源单被剔出已选并提示，而不是隐身留到提交时整单被拒', async () => {
+    const rowA = docRow({ id: 'MHZ-1', docType: '市场报货汇总', status: '已完成', targetOrgNodeId: 'HQ1' })
+    vi.mocked(listInventoryDocCandidateIds).mockResolvedValue({ ids: ['MHZ-1', 'MHZ-9'] })
+    vi.mocked(getInventoryCoreDocsByIds)
+      .mockResolvedValueOnce([summary('MHZ-1', 'HQ1'), summary('MHZ-9', 'HQ2')])
+      .mockResolvedValue([summary('MHZ-1', 'HQ1')])
+    renderPage({ level: 'supply-chain', operation: 'purchase-order', locations: [HQ1], candidates: [rowA] })
+    const bulk = await screen.findByRole('button', { name: '带出区间内全部未下单' })
+    await waitFor(() => expect(bulk).toBeEnabled())
+    fireEvent.click(bulk)
+    await waitFor(() => expect(toast.warning).toHaveBeenCalledWith(expect.stringContaining('MHZ-9')))
+    await waitFor(() => expect(getInventoryCoreDocsByIds).toHaveBeenLastCalledWith(['MHZ-1']))
+    expect(await screen.findByText(/^已选 1 张：MHZ-1$/)).toBeInTheDocument()
   })
 })

@@ -21,7 +21,7 @@ import {
 import { isGateOpen, openCutoverGate } from './_helpers/cutover'
 import {
   clickAndExpectToast, docIdByRemark, docStatus, fillByLabel, lotQtyAll,
-  openOperation, reservationStates, pickSku, selectByLabel, selectContaining, selectLotWithQty,
+  openOperation, pickCandidateDoc, reservationStates, pickSku, selectByLabel, selectContaining, selectLotWithQty,
   skuSelect, submitForm,
 } from './_helpers/ui'
 
@@ -94,7 +94,7 @@ test('INV-04：退货双链 —— 预留机制 / 审批回库 / 驳回释放', 
     // ══ A-2. 市场审批通过 ═════════════════════════════════════════
     console.log('[INV-04] A-2 市场审批门店退货')
     await openOperation(page, 'market', '审批门店退货')
-    await selectByLabel(page, '待审批退货单', { contains: storeReturnId })
+    await pickCandidateDoc(page, '待审批退货单', storeReturnId)
     await page.waitForTimeout(1500)
     await fillByLabel(page, '备注', 'INVT-同意退货')
     await clickAndExpectToast(page, '审批并回库', /退货已审批回库/)
@@ -136,7 +136,7 @@ test('INV-04：退货双链 —— 预留机制 / 审批回库 / 驳回释放', 
 
     console.log('[INV-04] B-2 供应链驳回')
     await openOperation(page, 'supply-chain', '审批市场退货')
-    await selectByLabel(page, '待审批退货单', { contains: rejectId })
+    await pickCandidateDoc(page, '待审批退货单', rejectId)
     await page.waitForTimeout(1500)
     await fillByLabel(page, '备注', 'INVT-不同意退货')
     await clickAndExpectToast(page, '驳回退货', /退货申请已驳回/)
@@ -175,7 +175,7 @@ test('INV-04：退货双链 —— 预留机制 / 审批回库 / 驳回释放', 
 
     console.log('[INV-04] C-2 供应链审批通过')
     await openOperation(page, 'supply-chain', '审批市场退货')
-    await selectByLabel(page, '待审批退货单', { contains: approveId })
+    await pickCandidateDoc(page, '待审批退货单', approveId)
     await page.waitForTimeout(1500)
     await fillByLabel(page, '备注', 'INVT-同意')
     await clickAndExpectToast(page, '审批并回库', /退货已审批回库/)

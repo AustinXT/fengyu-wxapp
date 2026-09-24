@@ -1,9 +1,9 @@
 import { Suspense } from 'react'
 import { notFound, redirect } from 'next/navigation'
-import { listInventoryCoreDocs } from '@/actions/inventory/docs'
 import { listInventoryLocations, listInventoryMarketTransferTargets } from '@/actions/inventory/locations'
 import { listInventorySuppliers } from '@/actions/inventory/suppliers'
 import { getSession } from '@/lib/auth'
+import { inventoryPriceVisibility } from '@/lib/inventory/access'
 import {
   INVENTORY_BUSINESS_LEVELS,
   genericDocBusinessLevel,
@@ -49,7 +49,9 @@ export default async function Page({
   const canCreate = hasUiCapability(actions, operateAction)
   // SKU 候选不再预加载前 100 条（#339）：各明细行的商品选择按关键词走服务端分页检索，
   // 业务过滤（可报货 / 市场归属 / 供应链来源）也在服务端做，见 InventorySkuSearchSelect。
-  const [locations, marketTransferTargets, suppliers, workflowDocs] = await Promise.all([
+  // 来源单 / 待处理单候选同样不再预加载（#338）：原先这里拉「全类型混排最近 100 张」，
+  // 老单在各表单里选不到；现在各表单按用途走服务端检索 + 分页，见 InventoryDocCandidatePicker。
+  const [locations, marketTransferTargets, suppliers] = await Promise.all([
     listInventoryLocations(),
     /*
      * 市场间调货卡的接收主体候选（#340）：不按 scope 的全部启用市场。只在市场层、且能建单时取 ——
@@ -59,7 +61,6 @@ export default async function Page({
     // 刻意不传 pageSize：办理台的供应商下拉要的是整份名单，
     // 跟着列表页分页走会把靠后的供应商静默漏掉（#135）。
     listInventorySuppliers({ onlyActive: true }),
-    listInventoryCoreDocs({ page: 1, pageSize: 100 }),
   ])
   const approveAction = level === 'supply-chain'
     ? 'inventory:supply_chain_approve'
@@ -89,13 +90,13 @@ export default async function Page({
           locations={locations}
           marketTransferTargets={marketTransferTargets}
           suppliers={suppliers.data}
-          workflowDocs={workflowDocs.data}
           canCreate={canCreate}
           canApprove={canApprove}
           canSelfPurchase={hasUiCapability(actions, 'inventory:self_purchase_receive')}
           canRequestShipmentCancellation={hasUiCapability(actions, 'inventory:shipment_cancel_request')}
           canApproveShipmentCancellation={hasUiCapability(actions, 'inventory:shipment_cancel_approve')}
-          canViewPrice={workflowDocs.canViewPrice}
+          // 与单据列表查询回传的 canViewPrice 同一判据
+          canViewPrice={inventoryPriceVisibility(session) !== 'none'}
           // 「顾客产品出库」跳转卡（#350）：与提货录入页 requireUiPageCapability 同一判据
           canCreatePickupRecord={hasUiCapability(actions, 'pickup_record:create')}
           initialOperationId={initialOperationId}

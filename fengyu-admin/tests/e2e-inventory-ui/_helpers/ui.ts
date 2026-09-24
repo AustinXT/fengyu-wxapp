@@ -71,15 +71,25 @@ export async function selectByLabel(
 
 /** 明细行里的 SkuPicker（占位文案「选择库存商品」） */
 /**
- * 勾选合并后采购表单里的来源报货单（#194）。
+ * 在办理台的候选单选择器（#338 `InventoryDocCandidatePicker`）里选中某张单据。
  *
- * 来源从单选 Select 改成了多选 checkbox 清单，一次可以勾多张；勾完组件会重新拉明细，
- * 所以调用方勾完要等明细渲染出来再填数量。
+ * #338 起来源单 / 待处理单不再是原生 select（单选）或 label 包 checkbox（采购来源多选），
+ * 而是 `role=group` 包着的检索框 + 表格，行内 radio / checkbox 的 aria-label 是「选择 {单号}」。
+ * 候选按服务端检索分页，单号不一定在第一页 —— 先按单号检索再点。
+ * 单选（radio）选中即装载明细；多选（checkbox）勾完组件会重新拉明细，调用方要等明细渲染。
  */
+export async function pickCandidateDoc(page: Page, label: string, docId: string): Promise<void> {
+  const group = page.getByRole('group', { name: new RegExp(`^${escapeRe(label)}`) }).first()
+  await group.waitFor({ state: 'visible', timeout: 20_000 })
+  await group.getByLabel(`${label} 检索`).fill(docId)
+  const choice = group.getByLabel(`选择 ${docId}`, { exact: true })
+  await choice.waitFor({ state: 'visible', timeout: 20_000 })
+  await choice.check()
+}
+
+/** @deprecated #338 起改用 pickCandidateDoc(page, '来源报货单', docId) */
 export async function checkSourceDoc(page: Page, docId: string): Promise<void> {
-  const row = page.locator('label').filter({ hasText: docId }).first()
-  await row.waitFor({ state: 'visible', timeout: 15_000 })
-  await row.locator('input[type="checkbox"]').check()
+  await pickCandidateDoc(page, '来源报货单', docId)
 }
 
 export function skuSelect(page: Page, index = 0): Locator {

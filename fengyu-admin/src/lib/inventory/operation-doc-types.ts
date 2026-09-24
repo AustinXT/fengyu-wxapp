@@ -114,7 +114,7 @@ export interface InventoryOperationDocQuery {
    *    状态一旦有交集，同一张单会在两个区块同时出现。
    * 3. **只给「动作归属在本办理台、单据由上游产出」的业务写。** 建单类业务
    *    （purchase-order / company-shipment / store-allocation / market-report…）的
-   *    上游来源单**不进** inbox：它们在建单表单的 DocPicker 里已经可选，
+   *    上游来源单**不进** inbox：它们在建单表单的候选单选择器（#338 服务端检索）里已经可选，
    *    而待办区没有任何行内动作可对它们做，列出来只是重复。
    * 4. **必须带 `scopeRole`**，值 = 对应动作在服务端拿哪一端做 scope 断言。
    *    engine 的可见性是双端 OR，而动作校验是单边，两者不一致就会把**对端**的单
