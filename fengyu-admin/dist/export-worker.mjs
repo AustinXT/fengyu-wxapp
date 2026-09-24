@@ -182267,15 +182267,22 @@ async function writeStreamXlsx(options) {
 
 // src/export-worker/export-meta.ts
 init_datetime();
+function required(label, value2) {
+  const trimmed = value2.trim();
+  if (!trimmed)
+    throw new Error(`INVALID_STATE: 导出元信息缺少${label}`);
+  return trimmed;
+}
 function completeExportMeta(meta, audit) {
   if (!meta)
     return;
+  const basePeriod = meta.basePeriod?.trim();
   return [
-    { label: "时间区间", value: meta.period ?? "不限（仅按范围）" },
-    { label: "范围", value: meta.scope.trim() || "—" },
-    ...meta.basePeriod ? [{ label: "基期区间", value: meta.basePeriod }] : [],
+    { label: "时间区间", value: meta.period === null ? "不限（仅按范围）" : required("时间区间", meta.period) },
+    { label: "范围", value: required("范围", meta.scope) },
+    ...basePeriod ? [{ label: "基期区间", value: basePeriod }] : [],
     ...meta.extra ?? [],
-    { label: "导出时间（申请时刻）", value: fmtDateTime(audit.requestedAt) || "—" },
+    { label: "导出时间", value: fmtDateTime(audit.generatedAt) || "—" },
     { label: "导出人", value: audit.exporterName?.trim() || "—" }
   ];
 }
@@ -182511,7 +182518,7 @@ async function processJob(job) {
         frozenColumns: content.frozenColumns,
         totalsLabel: content.totalsLabel,
         isEmphasisRow: content.isEmphasisRow,
-        meta: completeExportMeta(content.meta, { requestedAt: job.createdAt, exporterName: session4.name }),
+        meta: completeExportMeta(content.meta, { generatedAt: new Date, exporterName: session4.name }),
         onProgress: async (rowCount) => {
           if (rowCount - lastProgress < 1000)
             return;

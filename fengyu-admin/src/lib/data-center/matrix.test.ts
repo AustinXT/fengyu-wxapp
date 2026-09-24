@@ -104,6 +104,12 @@ describe('computeMatrixTotals', () => {
     expect(page1.technicians).toBeNull()
   })
 
+  it('没有明细行（空数组 / 只有小计行）→ 可加列合计为 null 而不是 0', () => {
+    const onlySubtotal = ROWS.filter((r) => r.subtotal)
+    expect(computeMatrixTotals(COLUMNS, onlySubtotal, { paginated: false, isSubtotal: (r) => !!r.subtotal }).sales).toBeNull()
+    expect(computeMatrixTotals(COLUMNS, [], { paginated: false }).sales).toBeNull()
+  })
+
   it('全空列合计为 null（不伪造 0），none 列恒为 null；服务端非有限值归一为 null', () => {
     const rows: Row[] = [{ id: 'a', store: 'a', sales: null, paid: null, visits: null }]
     const totals = computeMatrixTotals(COLUMNS, rows, { paginated: false, serverTotals: { paid: Number.NaN } })

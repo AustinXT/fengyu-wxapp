@@ -222,8 +222,8 @@ function sumOf<T>(rows: readonly T[], accessor: (row: T) => number | null | unde
     total += value
     seen = true
   }
-  // 全空（而不是全 0）的列合计也是空，不伪造一个 0
-  return seen || rows.length === 0 ? total : null
+  // 没有任何有效值（全空列、没有明细行、只有小计行）时合计为空，不伪造一个 0
+  return seen ? total : null
 }
 
 export function computeMatrixTotals<T>(
@@ -282,6 +282,12 @@ export function nextMatrixSort(current: MatrixSort | null | undefined, key: stri
  * - 空值无论升降序都排最后，与 SQL `NULLS LAST` 一致；
  * - 排序值相同时按 rowKey 升序兜底（#282），同一数据集多次排序结果恒定。
  */
+function numericString(value: string | number): number | null {
+  if (typeof value !== 'string' || value.trim() === '') return null
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
 export function sortMatrixRows<T>(
   rows: readonly T[],
   sortValue: (row: T) => number | string | null | undefined,
@@ -296,9 +302,12 @@ export function sortMatrixRows<T>(
     const rightMissing = right == null || (typeof right === 'number' && Number.isNaN(right))
     if (leftMissing !== rightMissing) return leftMissing ? 1 : -1
     if (!leftMissing && !rightMissing && left !== right) {
-      const order = typeof left === 'number' && typeof right === 'number'
-        ? left - right
-        : String(left).localeCompare(String(right), 'zh-CN', { numeric: true })
+      // 数字字符串（如 PG numeric）直接按数值比：localeCompare 的 numeric 选项在精简 ICU 下不可靠
+      const leftNumber = typeof left === 'number' ? left : numericString(left)
+      const rightNumber = typeof right === 'number' ? right : numericString(right)
+      const order = leftNumber != null && rightNumber != null
+        ? leftNumber - rightNumber
+        : String(left).localeCompare(String(right), 'zh-CN')
       if (order !== 0) return order * sign
     }
     const leftKey = rowKey(a)

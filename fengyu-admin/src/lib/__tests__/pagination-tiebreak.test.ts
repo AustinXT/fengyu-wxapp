@@ -105,6 +105,30 @@ function looksUnique(arg: string): boolean {
   return /\.\s*(id|[a-zA-Z0-9]*Id)\s*\)?\s*$/.test(arg.trim())
 }
 
+/** `matrixOrderBySql(sort, SORTABLE, [a, b])` → 兜底键数组的末位 `b`（按顶层逗号切，括号/方括号/模板内的逗号不算） */
+function matrixTiebreakTail(call: string): string {
+  const open = call.lastIndexOf('[')
+  const close = call.lastIndexOf(']')
+  if (open < 0 || close < open) return ''
+  let depth = 0
+  let cur = ''
+  let tail = ''
+  for (const ch of call.slice(open + 1, close)) {
+    if ('([{`'.includes(ch)) depth++
+    else if (')]}'.includes(ch)) depth--
+    if (ch === ',' && depth === 0) { tail = cur; cur = ''; continue }
+    cur += ch
+  }
+  return (cur.trim() || tail).trim()
+}
+
+/** 原生 SQL 模板里的兜底键：sql`c.customer_id` / sql`${customers.userId}` */
+function looksUniqueSqlColumn(arg: string): boolean {
+  const body = arg.trim().match(/^sql`([\s\S]*)`$/)?.[1]?.trim()
+  if (!body) return false
+  return /(^|\.)(id|[a-z0-9_]*_id)$/.test(body) || /\.\s*(id|[a-zA-Z0-9]*Id)\s*\}$/.test(body)
+}
+
 /**
  * 从 `end` 位置起，吃掉**同一条链**上后续的 `.method(...)`，遇到非链式 token 即停。
  *
@@ -254,6 +278,25 @@ function pagedOrderBys(code: string, fileName = 'x.ts'): Array<{ index: number; 
   return out
 }
 
+describe('#368 · matrixOrderBySql 兜底键判据的灵敏度（解析坏了会 fail-open）', () => {
+  const verdict = (call: string) => {
+    const tail = matrixTiebreakTail(call)
+    return looksUnique(tail) || looksUniqueSqlColumn(tail)
+  }
+  it('末位是主键 → 认', () => {
+    expect(verdict('matrixOrderBySql(sort, SORTABLE, [sql`c.customer_id`])')).toBe(true)
+    expect(verdict('matrixOrderBySql(sort, SORTABLE, [sql`s.store_id`, sql`c.id`])')).toBe(true)
+    expect(verdict('matrixOrderBySql(sort, SORTABLE, [sql`${customers.userId}`])')).toBe(true)
+    expect(verdict('matrixOrderBySql(sort, { a: sql`x, y` }, [sql`e.employee_id`])')).toBe(true)
+  })
+  it('末位不是唯一键 / 没有兜底数组 → 不认', () => {
+    expect(verdict('matrixOrderBySql(sort, SORTABLE, [sql`c.name`])')).toBe(false)
+    expect(verdict('matrixOrderBySql(sort, SORTABLE, [sql`c.customer_id`, sql`c.name`])')).toBe(false)
+    expect(verdict('matrixOrderBySql(sort, SORTABLE, TIEBREAK)')).toBe(false)
+    expect(verdict('matrixOrderBySql(sort, SORTABLE, [sql`c.paid_id_text`])')).toBe(false)
+  })
+})
+
 describe('#282 · admin 分页查询的 orderBy 必须带唯一键 tie-break', () => {
   describe('第 1 层 · 通用规则（防将来新增的分页查询忘了加）', () => {
     it('每个带 .offset() 的 .orderBy() 末位参数都含唯一键', () => {
@@ -275,12 +318,12 @@ describe('#282 · admin 分页查询的 orderBy 必须带唯一键 tie-break', (
               cur += ch
             }
             last = cur || last
-            // 矩阵表（#368）的排序走 matrixOrderBySql：它把唯一键兜底做成必填参数、空数组直接抛错
-            // （matrix-order.test.ts 守着），调用形如 `.orderBy(matrixOrderBySql(sort, SORTABLE, [c.id]))`，
-            // 末位参数以 `])` 结尾，looksUnique 认不出来。兜底键本身是否唯一由调用方 review 负责。
-            const exempt = UNIQUE_BY_INDEX.some(([re]) => re.test(last.trim()))
-              || /^matrixOrderBySql\(/.test(last.trim())
-            if (!looksUnique(last) && !exempt) {
+            // 矩阵表（#368）的排序走 matrixOrderBySql(sort, SORTABLE, [兜底键...])：整体以 `])` 结尾，
+            // looksUnique 认不出来。改为检查它第三个参数（兜底键数组）的**末位**是否像唯一键 ——
+            // 不能整体豁免：传 [sql`c.name`] 这种非唯一兜底同样会让翻页重复 / 漏行。
+            const checked = /^matrixOrderBySql\(/.test(last.trim()) ? matrixTiebreakTail(last) : last
+            const exempt = UNIQUE_BY_INDEX.some(([re]) => re.test(checked.trim()))
+            if (!looksUnique(checked) && !looksUniqueSqlColumn(checked) && !exempt) {
               const line = code.slice(0, index).split('\n').length
               offenders.push(`${relative(SRC, file)}:${line} · 末位「${last.trim()}」不像唯一键\n    orderBy(${args})`)
             }

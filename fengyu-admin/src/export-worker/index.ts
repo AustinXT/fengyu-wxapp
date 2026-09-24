@@ -223,7 +223,7 @@ async function processJob(job: ExportJob): Promise<void> {
         frozenColumns: content.frozenColumns,
         totalsLabel: content.totalsLabel,
         isEmphasisRow: content.isEmphasisRow,
-        meta: completeExportMeta(content.meta, { requestedAt: job.createdAt, exporterName: session.name }),
+        meta: completeExportMeta(content.meta, { generatedAt: new Date(), exporterName: session.name }),
         onProgress: async (rowCount) => {
           if (rowCount - lastProgress < 1_000) return
           lastProgress = rowCount
