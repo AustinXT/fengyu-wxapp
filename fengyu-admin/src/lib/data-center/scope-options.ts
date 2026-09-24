@@ -47,14 +47,17 @@ export function scopeStores(scopeOptions: DataCenterScopeOptions, scope: DataCen
   return result
 }
 
-/** scope 的展示名（信息条用）。找不到对应市场 / 门店时回落通用名，不抛错。 */
+/**
+ * scope 的展示名（信息条用）。用语与板块 meta / 导出件的 `resolveScopeName`（context.ts，查库版）一致；
+ * 这里只在筛选器数据源里找，找不到（越权或已关店的 scopeId）回落同样的「未知」名，不抛错。
+ */
 export function scopeLabel(scopeOptions: DataCenterScopeOptions, scope: DataCenterScope): string {
-  if (scope.type === 'all') return '全部市场'
+  if (scope.type === 'all') return '全部'
   if (scope.type === 'authorized') return '全部授权门店'
-  if (scope.type === 'market') return scopeOptions.markets.find((m) => m.id === scope.id)?.name ?? '所选市场'
+  if (scope.type === 'market') return scopeOptions.markets.find((m) => m.id === scope.id)?.name ?? '未知市场'
   for (const market of scopeOptions.markets) {
     const store = market.stores.find((s) => s.storeId === scope.id)
     if (store) return store.storeName
   }
-  return '所选门店'
+  return '未知门店'
 }

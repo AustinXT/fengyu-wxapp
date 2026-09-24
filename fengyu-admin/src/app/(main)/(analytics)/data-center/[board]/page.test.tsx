@@ -219,6 +219,12 @@ describe('数据中心板块页 · 动态段收口', () => {
       }
     }
     walk(dir)
+    // 祖先段（(analytics) / (main)）的 loading 同样会在 data-center 段外包一层 Suspense 边界
+    for (const ancestor of [path.resolve(dir, '..'), path.resolve(dir, '..', '..')]) {
+      for (const name of ['loading.tsx', 'loading.ts', 'loading.jsx', 'loading.js']) {
+        if (existsSync(path.join(ancestor, name))) offenders.push(path.join(ancestor, name))
+      }
+    }
     expect(offenders, '这些 loading 文件会让同段 404 页客户端导航失效').toEqual([])
 
     for (const report of DATA_CENTER_REPORT_LIST) {

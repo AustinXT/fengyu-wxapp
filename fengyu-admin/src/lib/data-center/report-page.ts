@@ -5,7 +5,7 @@
  * 与板块页同源（`resolveDataCenterEntry`），期间按页面形态解析，返回页面渲染所需的上下文。
  */
 import { defaultScopeParams, resolveDataCenterEntry, type SearchQuery } from './entry'
-import { firstQueryValue, parseScope } from './params'
+import { collapseQuery, firstQueryValue, parseScope } from './params'
 import { parseReportMonth, parseReportRange, type ReportPeriod } from './report-period'
 import { shanghaiToday } from './time-range'
 import type { DataCenterScope, DataCenterScopeOptions, ResolvedRange } from './types'
@@ -40,6 +40,19 @@ export function resolveReportPage(input: {
 
   const today = input.today ?? shanghaiToday()
   const get = (key: string) => firstQueryValue(input.query[key])
+  const scope = parseScope({ scope: get('scope'), scopeId: get('scopeId') })
+  const defaultQuery = defaultScopeParams(input.scopeOptions) ?? {}
+
+  // URL 指向的市场 / 门店不在筛选器数据源里（调岗后的旧书签、已撤市场、手改 URL）：回到权限默认范围，
+  // 保留其余参数。不这么做，页面会显示「未知门店（0 家门店）」且下拉回显错位，取数时再被 validateScope 拒成 403。
+  // 默认范围一定在数据源内，下一跳必然进入 render，不会循环。
+  if (!entry.noViewableScope && !isScopeInOptions(scope, input.scopeOptions)) {
+    const next = collapseQuery(input.query, ['scope', 'scopeId'])
+    for (const [key, value] of Object.entries(defaultQuery)) next.set(key, value)
+    const qs = next.toString()
+    return { kind: 'redirect', url: `${input.path}${qs ? `?${qs}` : ''}` }
+  }
+
   const period: ReportPeriod | null =
     input.periodKind === 'range'
       ? parseReportRange({ period: get('period'), start: get('start'), end: get('end') }, today)
@@ -49,14 +62,16 @@ export function resolveReportPage(input: {
 
   return {
     kind: 'render',
-    context: {
-      scope: parseScope({ scope: get('scope'), scopeId: get('scopeId') }),
-      period,
-      noViewableScope: entry.noViewableScope,
-      defaultQuery: defaultScopeParams(input.scopeOptions) ?? {},
-      today,
-    },
+    context: { scope, period, noViewableScope: entry.noViewableScope, defaultQuery, today },
   }
+}
+
+function isScopeInOptions(scope: DataCenterScope, scopeOptions: DataCenterScopeOptions): boolean {
+  if (scope.type === 'market') return scopeOptions.markets.some((market) => market.id === scope.id)
+  if (scope.type === 'store') {
+    return scopeOptions.markets.some((market) => market.stores.some((store) => store.storeId === scope.id))
+  }
+  return true
 }
 
 /**

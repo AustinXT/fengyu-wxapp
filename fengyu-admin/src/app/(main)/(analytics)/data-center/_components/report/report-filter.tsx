@@ -1,7 +1,6 @@
 "use client"
 
 import type { ReactNode } from "react"
-import { usePathname, useRouter } from "next/navigation"
 import { RotateCcw } from "lucide-react"
 import { Card } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -9,6 +8,7 @@ import { DatePicker } from "@/components/ui/date-picker"
 import { Select, SelectOption } from "@/components/ui/select"
 import { useUrlFilters } from "@/lib/hooks/use-url-filters"
 import {
+  MAX_CUSTOM_RANGE_DAYS,
   REPORT_RANGE_PRESETS,
   REPORT_RANGE_PRESET_LABELS,
   reportMonthOptions,
@@ -49,13 +49,12 @@ export function ReportFilter({
   defaultQuery: Record<string, string>
   today: string
 }) {
-  const router = useRouter()
-  const pathname = usePathname()
+  // 整张卡片只用一个 useUrlFilters 实例（见 ScopeSelect 的 filters 参数说明）
+  const filters = useUrlFilters()
 
   // 重置 = 回到权限默认范围 + 默认期间，同时清掉页面自身的搜索 / 排序 / 分页等参数
   function reset() {
-    const qs = new URLSearchParams(defaultQuery).toString()
-    router.replace(`${pathname}${qs ? `?${qs}` : ""}`, { scroll: false })
+    filters.replaceAll(defaultQuery)
   }
 
   const resetButton = (
@@ -69,23 +68,30 @@ export function ReportFilter({
     <Card className="p-4 flex flex-col gap-4">
       <ScopeSelect
         scopeOptions={scopeOptions}
+        filters={filters}
         showStoreCount
         trailing={periodKind === "none" ? resetButton : undefined}
       />
-      {period?.kind === "range" && <RangeRow period={period} trailing={resetButton} />}
-      {period?.kind === "month" && <MonthRow month={period.month} today={today} trailing={resetButton} />}
+      {period?.kind === "range" && <RangeRow filters={filters} period={period} trailing={resetButton} />}
+      {period?.kind === "month" && (
+        <MonthRow filters={filters} month={period.month} today={today} trailing={resetButton} />
+      )}
     </Card>
   )
 }
 
+type UrlFilters = ReturnType<typeof useUrlFilters>
+
 function RangeRow({
+  filters,
   period,
   trailing,
 }: {
+  filters: UrlFilters
   period: Extract<ReportPeriod, { kind: "range" }>
   trailing: ReactNode
 }) {
-  const { get, setMany } = useUrlFilters()
+  const { get, setMany } = filters
   const requestedCustom = get("period") === "custom"
   // 自定义以 URL 原值回显（用户正在输入的中间态），其余预设以服务端生效值为准
   const activePreset: ReportRangePreset = requestedCustom ? "custom" : period.preset
@@ -136,7 +142,9 @@ function RangeRow({
             onValueChange={(value) => setMany({ period: "custom", end: value })}
           />
           {customInvalid && (
-            <span className="text-xs text-[#D94040]">区间不完整或无效，当前按{REPORT_RANGE_PRESET_LABELS[period.preset]}显示</span>
+            <span className="text-xs text-[#D94040]">
+              区间不完整、无效或超过 {MAX_CUSTOM_RANGE_DAYS} 天，当前按{REPORT_RANGE_PRESET_LABELS[period.preset]}显示
+            </span>
           )}
         </div>
       ) : (
@@ -149,8 +157,18 @@ function RangeRow({
   )
 }
 
-function MonthRow({ month, today, trailing }: { month: string; today: string; trailing: ReactNode }) {
-  const { setMany } = useUrlFilters()
+function MonthRow({
+  filters,
+  month,
+  today,
+  trailing,
+}: {
+  filters: UrlFilters
+  month: string
+  today: string
+  trailing: ReactNode
+}) {
+  const { setMany } = filters
   const options = reportMonthOptions(today, month)
 
   return (

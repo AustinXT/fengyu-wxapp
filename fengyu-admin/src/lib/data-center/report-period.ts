@@ -28,6 +28,12 @@ export const REPORT_RANGE_PRESET_LABELS: Record<ReportRangePreset, string> = {
 export const DEFAULT_REPORT_RANGE_PRESET: ReportRangePreset = 'lastMonth'
 
 /**
+ * 自定义区间最长天数（含首尾，一整年含闰年）。更长的区间回落默认并在筛选器旁提示——
+ * 报表按期间聚合且同时算较上期，放任百年区间会让全国范围首屏远超 3s。
+ */
+export const MAX_CUSTOM_RANGE_DAYS = 366
+
+/**
  * 单月选择器能选到的最早月份。款项最早 2026-07-03（寄存单录入日）、销售 / 服务单最早 2026-07-08，
  * 更早的月份没有业务数据。URL 手工传入更早月份时照常解析（页面显示空态 + 数据起点提示），不报错。
  */
@@ -137,7 +143,12 @@ export function parseReportRange(
     : DEFAULT_REPORT_RANGE_PRESET
 
   if (preset === 'custom') {
-    if (isValidCalendarDate(raw.start) && isValidCalendarDate(raw.end) && raw.start <= raw.end) {
+    if (
+      isValidCalendarDate(raw.start) &&
+      isValidCalendarDate(raw.end) &&
+      raw.start <= raw.end &&
+      daysInclusive(raw.start, raw.end) <= MAX_CUSTOM_RANGE_DAYS
+    ) {
       const len = daysInclusive(raw.start, raw.end)
       const prevEnd = addDays(raw.start, -1)
       return {

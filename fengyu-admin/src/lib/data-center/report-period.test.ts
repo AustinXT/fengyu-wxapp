@@ -59,10 +59,16 @@ describe('parseReportRange（区间型）', () => {
     ['年份不足 4 位语义（0001 年）', { start: '0001-01-01', end: '0001-01-02' }],
     ['起止颠倒', { start: '2026-08-20', end: '2026-08-10' }],
     ['缺结束日', { start: '2026-08-10', end: undefined }],
+    ['超过 366 天', { start: '2025-01-01', end: '2026-01-02' }],
   ])('自定义非法（%s）回落默认上月，不拿半截参数取数', (_label, range) => {
     const p = parseReportRange({ period: 'custom', ...range }, TODAY)
     expect(p.preset).toBe('lastMonth')
     expect(p.current).toEqual({ start: '2026-08-01', end: '2026-08-31' })
+  })
+
+  it('自定义恰好 366 天（含闰日的整年）可用', () => {
+    const p = parseReportRange({ period: 'custom', start: '2028-01-01', end: '2028-12-31' }, TODAY)
+    expect(p.preset).toBe('custom')
   })
 
   it('未知预设（含板块页的 month / year）回落默认上月，两套预设互不串用', () => {

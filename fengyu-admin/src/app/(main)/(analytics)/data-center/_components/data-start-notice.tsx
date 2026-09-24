@@ -28,8 +28,12 @@ function storeCount(result: DataStartRangeResult): number {
  * 受影响门店只会更多）只给一句概述，避免同一批门店刷两遍。
  */
 export function DataStartNotice({ results }: { results: readonly DataStartRangeResult[] }) {
-  if (results.length === 0) return null
-  const [first, ...rest] = results
+  // 调用方（如 #289）可能自行拼结果而不经 evaluateDataStart：空分组 / 空门店一律滤掉，不渲染半句提示
+  const shown = results
+    .map((result) => ({ ...result, groups: result.groups.filter((group) => group.stores.length > 0) }))
+    .filter((result) => result.groups.length > 0)
+  if (shown.length === 0) return null
+  const [first, ...rest] = shown
 
   return (
     <div

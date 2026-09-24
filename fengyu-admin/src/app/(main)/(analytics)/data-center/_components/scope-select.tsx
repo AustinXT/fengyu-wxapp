@@ -2,7 +2,7 @@
 
 import { useMemo, type ReactNode } from "react"
 import { Select, SelectOption } from "@/components/ui/select"
-import { useUrlFilters } from "@/lib/hooks/use-url-filters"
+import type { useUrlFilters } from "@/lib/hooks/use-url-filters"
 import { parseScope } from "@/lib/data-center/params"
 import type { DataCenterScopeOptions } from "@/lib/data-center/types"
 import { scopeStores, visibleScopeStores } from "@/lib/data-center/scope-options"
@@ -11,19 +11,24 @@ import { scopeStores, visibleScopeStores } from "@/lib/data-center/scope-options
  * 数据中心范围选择（授权汇总 + 市场/门店级联），板块页 ScopeTimeFilter 与经营明细报表 ReportFilter 共用。
  * 状态写 URL 的 `scope` / `scopeId`（与全站 useUrlFilters 一致）。
  *
+ * @param filters        父级筛选器的 useUrlFilters 实例。⚠️ 必须由父级传入、整张筛选卡片只用一个实例：
+ *                       每个实例各有一份 paramsRef，两个实例在一次服务端往返内先后写 URL，后写的会用
+ *                       旧参数把前一次改动覆盖掉（先点「本周」再立刻选市场，「本周」被悄悄撤销）。
  * @param showStoreCount 在下拉旁显示「共 N 家门店」（报表页用；原型的数据权限横幅本期只保留这一项）
  * @param trailing       同一行右侧的附加控件（如报表页「重置」）
  */
 export function ScopeSelect({
   scopeOptions,
+  filters,
   showStoreCount = false,
   trailing,
 }: {
   scopeOptions: DataCenterScopeOptions
+  filters: Pick<ReturnType<typeof useUrlFilters>, "get" | "setMany">
   showStoreCount?: boolean
   trailing?: ReactNode
 }) {
-  const { get, setMany } = useUrlFilters()
+  const { get, setMany } = filters
   const { topLevel, markets } = scopeOptions
 
   const scope = get("scope")

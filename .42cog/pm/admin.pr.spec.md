@@ -80,6 +80,7 @@
 | **system** | config | ✅ | - | - | - | - | - |
 | **system** | diagnostics / database backup | ✅ | - | - | - | - | - |
 | **data_center** | dashboard/reports | - | ✅ scope | ✅ scope | - | - | - |
+| **data_center**（#367） | customer_detail（顾客明细报表）/ staff_commission（员工提成报表），均依赖 dashboard 且须同一角色授权 | ✅ | ✅ scope | ✅ scope | 待定 | - | - |
 
 > **admin 不受 scope 限制**：`buildScopeWhere()` 返回空条件。**admin 不碰业务数据和顾客**。
 > **†标记**：manager/finance 对 employee/store 的 R 权限为 API 级别（嵌入业务流程中调用），无独立菜单入口。

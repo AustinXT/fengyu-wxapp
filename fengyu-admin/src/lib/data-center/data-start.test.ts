@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { evaluateDataStart, isRangeBeforeDataStart, scopeStores, type StoreDataStarts } from './data-start'
+import { evaluateDataStart, isRangeBeforeDataStart, type StoreDataStarts } from './data-start'
+import { scopeStores } from './scope-options'
 import type { DataCenterScopeOptions } from './types'
 
 /** 按 prod 2026-09-25 的真实形态缩写：南昌凤御 07-08 起、九江业绩 07-30 / 服务 07-28、易大师 08-23、昭通只有业绩。 */

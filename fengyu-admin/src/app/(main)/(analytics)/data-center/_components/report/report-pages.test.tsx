@@ -34,6 +34,9 @@ vi.mock('next/navigation', () => ({
   notFound: vi.fn(() => {
     throw new Error('NOT_FOUND')
   }),
+  unstable_rethrow: vi.fn((error: unknown) => {
+    if (error instanceof Error && error.message.startsWith('REDIRECT:')) throw error
+  }),
   useRouter: () => ({ replace: nav.replace, push: vi.fn() }),
   usePathname: () => nav.pathname,
   useSearchParams: () => new URLSearchParams(nav.search),
@@ -170,7 +173,7 @@ describe('报表页 · 骨架渲染', () => {
     // 旧板块的预设不出现
     expect(screen.queryByRole('button', { name: '今年' })).not.toBeInTheDocument()
     expect(screen.getByTestId('scope-store-count')).toHaveTextContent('共 3 家门店')
-    expect(screen.getByTestId('report-info-bar')).toHaveTextContent('范围全部市场（3 家门店）')
+    expect(screen.getByTestId('report-info-bar')).toHaveTextContent('范围全部（3 家门店）')
     expect(screen.getByTestId('report-info-bar')).toHaveTextContent('期间上月（2026年8月） 2026-08-01 ~ 2026-08-31')
 
     const notice = screen.getByRole('note', { name: '数据起点提示' })
@@ -217,6 +220,24 @@ describe('报表页 · 骨架渲染', () => {
     expect(screen.getByTestId('scope-store-count')).toHaveTextContent('共 1 家门店')
   })
 
+  it('数据起点取数失败只降级为不提示，页面照常渲染', async () => {
+    mockScope(hqOptions)
+    actions.getDataStartDates.mockRejectedValue(new Error('connection reset'))
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+    await renderPage('dailyOverview')
+
+    expect(screen.getByRole('heading', { level: 1, name: '日常数据一览表' })).toBeInTheDocument()
+    expect(screen.queryByRole('note', { name: '数据起点提示' })).not.toBeInTheDocument()
+    expect(consoleError).toHaveBeenCalled()
+    consoleError.mockRestore()
+  })
+
+  it('数据起点取数触发登录跳转（会话过期）时照常上抛，不被降级吞掉', async () => {
+    mockScope(hqOptions)
+    actions.getDataStartDates.mockRejectedValue(new Error('REDIRECT:/login?expired=1'))
+    await expect(call('dailyOverview')).rejects.toThrow('REDIRECT:/login?expired=1')
+  })
+
   it('非总部且无可查看门店：渲染空态，不出提示', async () => {
     mockScope(noStoreOptions)
     await renderPage('dailyOverview')
@@ -239,6 +260,33 @@ describe('报表页 · 骨架渲染', () => {
 
     await userEvent.setup().click(screen.getByRole('button', { name: '重置' }))
     expect(nav.replace).toHaveBeenCalledWith('/data-center/daily-overview', { scroll: false })
+  })
+
+  it('同一次服务端往返内先改月份、再改范围：两次改动都保留（整张卡片共用一个 URL 筛选实例）', async () => {
+    mockScope(hqOptions)
+    await renderPage('customerFrequency')
+    const user = userEvent.setup()
+
+    await user.selectOptions(screen.getByRole('combobox', { name: '月份' }), '2026-07')
+    // nav.search 未变 = 服务端还没回来；第二次写入必须基于第一次写入后的参数
+    await user.selectOptions(screen.getAllByRole('combobox')[0], 'M2')
+    expect(nav.replace).toHaveBeenLastCalledWith(
+      '/data-center/customer-frequency?month=2026-07&scope=market&scopeId=M2',
+      { scroll: false },
+    )
+  })
+
+  it('重置后紧接着改范围，不把重置前的参数带回来', async () => {
+    mockScope(hqOptions)
+    await renderPage('customerFrequency', { month: '2026-07', q: '张' })
+    const user = userEvent.setup()
+
+    await user.click(screen.getByRole('button', { name: '重置' }))
+    await user.selectOptions(screen.getAllByRole('combobox')[0], 'M1')
+    expect(nav.replace).toHaveBeenLastCalledWith(
+      '/data-center/customer-frequency?scope=market&scopeId=M1',
+      { scroll: false },
+    )
   })
 
   it('区间型：切到自定义时用当前生效区间预填，近 30 天存相对预设', async () => {

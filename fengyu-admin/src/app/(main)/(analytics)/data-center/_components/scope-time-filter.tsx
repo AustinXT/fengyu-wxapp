@@ -21,7 +21,8 @@ const PRESETS = [
  * 范围部分与经营明细报表的 ReportFilter 共用 ScopeSelect。
  */
 export function ScopeTimeFilter({ scopeOptions }: { scopeOptions: DataCenterScopeOptions }) {
-  const { get, setMany } = useUrlFilters()
+  const filters = useUrlFilters()
+  const { get, setMany } = filters
 
   const preset = get("preset") || "month"
   const cmpOn = get("cmp") !== "0"
@@ -34,7 +35,7 @@ export function ScopeTimeFilter({ scopeOptions }: { scopeOptions: DataCenterScop
   return (
     <Card className="p-4 flex flex-col gap-4">
       {/* scope 三级 */}
-      <ScopeSelect scopeOptions={scopeOptions} />
+      <ScopeSelect scopeOptions={scopeOptions} filters={filters} />
 
       {/* 时间维度 */}
       <div className="flex flex-wrap items-center gap-2">

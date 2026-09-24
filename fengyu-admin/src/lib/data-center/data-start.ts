@@ -15,8 +15,6 @@
 import type { ScopeStoreEntry } from './scope-options'
 import type { ResolvedRange } from './types'
 
-export { scopeStores } from './scope-options'
-
 export const DATA_START_AXES = ['performance', 'service'] as const
 export type DataStartAxis = (typeof DATA_START_AXES)[number]
 
@@ -27,8 +25,6 @@ export const DATA_START_AXIS_LABELS: Record<DataStartAxis, string> = {
 
 /** 门店 → 各轴数据起点（YYYY-MM-DD）。没有该轴数据的门店不带该键。 */
 export type StoreDataStarts = Record<string, Partial<Record<DataStartAxis, string>>>
-
-export type ScopeStore = ScopeStoreEntry
 
 export interface DataStartGroup {
   axis: DataStartAxis
@@ -48,7 +44,7 @@ export interface DataStartRangeResult {
 function groupsFor(
   range: ResolvedRange,
   axis: DataStartAxis,
-  stores: readonly ScopeStore[],
+  stores: readonly ScopeStoreEntry[],
   starts: StoreDataStarts,
 ): DataStartGroup[] {
   const byMarket = new Map<string, DataStartGroup>()
@@ -77,7 +73,7 @@ function groupsFor(
 export function isRangeBeforeDataStart(
   range: ResolvedRange,
   axis: DataStartAxis,
-  stores: readonly ScopeStore[],
+  stores: readonly ScopeStoreEntry[],
   starts: StoreDataStarts,
 ): boolean {
   return stores.some((store) => {
@@ -95,7 +91,7 @@ export function isRangeBeforeDataStart(
 export function evaluateDataStart(input: {
   ranges: ReadonlyArray<{ label: string; range: ResolvedRange }>
   axes: readonly DataStartAxis[]
-  stores: readonly ScopeStore[]
+  stores: readonly ScopeStoreEntry[]
   starts: StoreDataStarts
 }): DataStartRangeResult[] {
   const results: DataStartRangeResult[] = []
