@@ -259,91 +259,59 @@ describe('lakala 跨副本一致性守护', () => {
     const testRuns = inClientApi.map((s) => (s.run || '').trim()).filter((c) => c.includes('vitest'))
     expect(testRuns, 'CI 必须跑 clientApi 全量 vitest').toEqual(['npx vitest run'])
 
-    // 最后一环：`npx vitest run` 到底收集哪些文件，由 vitest.config.js 的 include/exclude
-    // 决定，不是 lint.yml。缩小 include（或加一条 exclude）后 CI 命令一字未动、本守护
-    // 自己（在 utils 下）照样执行，另外 35 个文件却全部出网 —— 这比改 lint.yml 更顺手，
-    // 也更像「配置调整」而非「写手工清单」。
+    // 最后一环：`npx vitest run` 到底收集哪些文件，由 vitest.config.js 决定，不是 lint.yml。
+    // 缩小收集范围后 CI 命令一字未动、本守护自己（在 utils 下）照样执行，
+    // 另外 35 个文件却全部出网 —— 这比改 lint.yml 更顺手，也更像「配置调整」。
     //
-    // ⚠️ 这里断言的是 `include`/`exclude` 而不是 `testMatch`：`testMatch` **不是 vitest
-    // 的选项**（jest 才是），写在 config 里会被静默忽略。本仓库原先就写着它，实测把它
-    // 缩到只剩 utils，36 个文件照跑不误 —— 守它等于守了个空字段（双谱系 round-2 发现，
-    // 已一并把 config 改成真正生效的 include）。
-    // node 18 canary：补上「主 job 跑 node 22，测不出生产运行时 Nodejs18.15」的缺口。
-    // 它不跑测试、只 require 生产模块，所以不受 vite 7 不支持 node 18 的限制。
-    const canary = assertJobActuallyRuns('clientapi-node18-canary')
-    // ⚠️ 必须读 setup-node 的 `with.node-version` 本身。不要用「steps 的 JSON 里
-    // 含字符串 18.15」这种糊涂写法 —— step 名字「Require ... under Nodejs18.15」
-    // 自己就含这串，把 node-version 改成 22 照样绿（闸门 2 codex round-3 实测）。
-    const canaryNode = (canary.steps || [])
-      .filter((s) => String(s.uses || '').startsWith('actions/setup-node'))
-      .map((s) => String((s.with || {})['node-version']))
-    expect(canaryNode, 'canary 必须跑在 18.15（与 cloudbaserc 的 runtime 对齐）').toEqual(['18.15'])
-    // 命令本身也要锁：缩成只 `require('./index.js')` 的话，路由模块顶层的 node 20+ API
-    // 就测不到了，canary 名存实亡（闸门 2 codex round-4 指出）。
-    // ⚠️ 声明极限：这是**文本**匹配，不是行为验证。在 run 里 echo 一句同样的字面量、
-    // 或把真调用塞进 `if (false)` 死代码，断言照样绿而模块并没被 require
-    // （闸门 2 的 GLM 指出）。与 SQL 侧「守形状不守取值」同族——挡自然疏忽，挡不住刻意构造。
-    // canary 的装依赖同样只能是干净的 npm ci（主 job 锁了、它没锁，lockfile 漂移
-    // 会在 canary 侧静默通过 —— 闸门 2 GLM 指出）。
-    const canaryInstalls = (canary.steps || [])
-      .map((s) => (s.run || '').trim())
-      .filter((c) => /npm (ci|install)/.test(c))
-    expect(canaryInstalls, 'canary 装依赖也必须恰好是干净的 npm ci').toEqual(['npm ci'])
-
-    const canaryRun = (canary.steps || []).map((s) => s.run || '').join('\n')
-    expect(canaryRun, 'canary 必须遍历 routes/ 逐个 require，不能只 require 入口')
-      .toMatch(/readdirSync\('routes'\)/)
-    expect(canaryRun, 'canary 必须 require 入口 index.js').toMatch(/require\('\.\/index\.js'\)/)
-
-    // ⚠️ 剥掉 JS 行注释再断言：否则「把旧 include 留在注释里、下一行写窄的」就能让
-    // 下面的 toContain 照样匹配到注释（闸门 2 codex round-4 实测）。与 SQL 侧同型的坑。
-    const vitestConfig = read(path.resolve(__dirname, '../../vitest.config.js'))
-      .split('\n')
-      .filter((line) => !/^\s*\/\//.test(line))
-      .join('\n')
-    expect(vitestConfig, 'include 被改窄会让测试文件静默出网').toContain(
-      "include: ['**/__tests__/**/*.{test,spec}.js']",
-    )
-    // ⚠️ 只断言「全量字面量出现过」不够：JS 对象里**重复的键后者生效**，
-    // 在下面再写一行 `include: ['**/__tests__/utils/**/*.test.js'],` 就能把收集缩到
-    // 16 文件 / 246 用例，而 vitest 只给一条 duplicate-key warning 不报错，
-    // 上面那条 toContain 照样匹配到第一行（闸门 2 codex round-5 实测）。
-    // test 块的 include 必须**有且只有一条**（coverage 块里那条缩进更深，不计入）。
-    const testIncludes = vitestConfig.match(/^ {4}include:/gm) || []
-    expect(testIncludes, 'test.include 出现多次时后者生效，会悄悄缩小收集范围').toHaveLength(1)
-    // `shard: '1/2'` 只跑一半文件，而本守护恰好落在前半所以自己照样执行
-    // —— 「想给 CI 分片却漏配第二个 shard」是自然疏忽（闸门 2 codex round-6 指出）。
-    // `shard: '1/2'` 只跑一半文件，而本守护恰好落在前半所以自己照样执行
-    // —— 「想给 CI 分片却漏配第二个 shard」是自然疏忽（闸门 2 codex round-6 指出）。
+    // ⚠️ 这里**把整份 config 钉成快照**，而不是逐个禁止危险字段。双谱系评审花了六轮
+    // 才逼出这个结论：能缩小收集范围的写法是个**开放集合** —— testMatch（其实是 jest 的、
+    // 一直被静默忽略）、exclude、projects、testNamePattern、dir、shard、重复键、
+    // 自动发现的 vitest.workspace.*/projects.*、`import` 外部配置再展开、
+    // 乃至 `defineConfig(async () => Object.assign(base, await import('./x.js')))`……
+    // 每禁一个就再冒一个，枚举永远追不上。
     //
-    // ⚠️ shard 有三条进入路径，三条都要堵：
-    //   ① CLI 传 `--shard` —— 被上面 `testRuns.toEqual(['npx vitest run'])` 挡住
-    //   ② config 里直接写 —— 被下面这条挡住
-    //   ③ 把配置抽到外部文件再展开（`import opts from './ci-options.js'` + `...opts`）
-    //      —— 被再下面那条「config 必须自包含」挡住（codex round-8 指出这条路径）
-    //
-    // ⚠️ 为什么不能靠下一条 meta（核对实际收集结果）兜底：`vitest list --filesOnly`
-    // **不经过 sequencer**，实测 `list --filesOnly --shard=1/2` 照样返回全部 36 个文件，
-    // 而 `run --shard=1/2` 只跑 18 个 / 266 条。分片是这条兜底断言唯一盖不住的缺口，
-    // 所以必须在这里按路径逐条堵死。
-    expect(vitestConfig, 'shard 会让每次只跑一部分文件').not.toContain('shard')
+    // 钉全文则是**闭集**：config 怎么改都会红。代价是改 config 必须同步改这里 ——
+    // 而这正是想要的：这个文件决定「CI 到底跑不跑得全」，本来就该改一次审一次。
+    const EXPECTED_VITEST_CONFIG = [
+      "import { defineConfig } from 'vitest/config'",
+      '',
+      'export default defineConfig({',
+      '  test: {',
+      "    environment: 'node',",
+      '    globals: true,',
+      "    include: ['**/__tests__/**/*.{test,spec}.js'],",
+      "    setupFiles: ['./__tests__/setup.js'],",
+      '    coverage: {',
+      "      include: ['routes/**/*.js', 'middleware/**/*.js', 'index.js'],",
+      '      thresholds: {',
+      '        branches: 60,',
+      '        functions: 70,',
+      '        lines: 70,',
+      '      },',
+      '    },',
+      '  },',
+      '})',
+    ].join('\n')
 
-    // config 必须自包含：只要允许从别的文件 import 配置再展开，任何缩小范围的字段
-    // （shard / exclude / projects …）都能藏在外部文件里，本 meta 的全部文本断言一起失效。
-    const configImports = vitestConfig.match(/^\s*(?:import\s.*?from|const\s.*?=\s*require\()\s*['"](.+?)['"]/gm) || []
-    expect(configImports, 'vitest.config.js 只应 import vitest/config，不得从外部文件引入配置')
-      .toHaveLength(1)
-    expect(vitestConfig, 'config 里出现对象展开，配置可能来自外部文件').not.toContain('...')
-
-    // ⚠️ 上面这些文本断言读的都是 `vitest.config.js` 这一份。vitest 的配置解析有优先级：
-    // 存在 `vitest.config.ts` 时它**抢占**掉 .js，而本守护对 .ts 完全不可见 ——
-    // 拷一份 .js 到 .ts 再塞 `shard: '1/2'`，实测 run 只跑 18 文件 / 266 条，
-    // 本守护落在另一半压根不执行，`vitest list` 也不走 sequencer 照样 36==36
-    // （闸门 2 GLM 实测穿网，这是 shard 的第 ④ 条路径）。
-    //
-    // 这里用**闭集**断言而不是继续禁语法变体：会被 vitest 解析的配置文件名是由它的
-    // 解析规则决定的有限集合，可以枚举完整。
     const root = path.resolve(__dirname, '../..')
+    const vitestConfig = read(path.join(root, 'vitest.config.js'))
+      .split('\n')
+      .filter((line) => !/^\s*\/\//.test(line))   // 允许加行注释
+      .join('\n')
+      .trim()
+
+    expect(
+      vitestConfig,
+      'vitest.config.js 变了。它决定 CI 到底跑不跑得全 —— 确认这次改动不会缩小收集范围'
+        + '（include/exclude/projects/testNamePattern/dir/shard/外部配置导入…），再更新本断言。',
+    ).toBe(EXPECTED_VITEST_CONFIG)
+
+    // ⚠️ 上面钉的只是 `vitest.config.js` 这一份。vitest 的配置解析有优先级：存在
+    // `vitest.config.ts` 时它**抢占**掉 .js，而本守护对 .ts 完全不可见 —— 拷一份 .js 到 .ts
+    // 再塞 `shard: '1/2'`，实测 run 只跑 18 文件 / 266 条，守护落在另一半压根不执行，
+    // `vitest list` 也不走 sequencer 照样 36==36（闸门 2 GLM 实测穿网）。
+    //
+    // 这里同样用**闭集**：会被 vitest 解析的配置文件名由它的解析规则决定，是有限集合。
     const CONFIG_EXTS = ['ts', 'mts', 'cts', 'mjs', 'cjs']
     const forbidden = [
       ...CONFIG_EXTS.map((e) => `vitest.config.${e}`),
@@ -356,18 +324,9 @@ describe('lakala 跨副本一致性守护', () => {
     for (const name of forbidden) {
       expect(
         fs.existsSync(path.join(root, name)),
-        `${name} 会抢占或接管 vitest 配置，而本守护只读 vitest.config.js`,
+        `${name} 会抢占或接管 vitest 配置，而本守护只钉 vitest.config.js`,
       ).toBe(false)
     }
-    expect(vitestConfig, 'testMatch 不是 vitest 选项，会被静默忽略，别用它').not.toContain('testMatch')
-    expect(vitestConfig, '加 exclude 同样能让文件出网').not.toContain('exclude:')
-    // `projects` 会整个接管文件收集，留着上面的 include 也没用（闸门 2 的 GLM 指出）。
-    expect(vitestConfig, 'projects 会接管收集，绕过 include').not.toMatch(/^\s*projects:/m)
-    // `testNamePattern` 是按**用例名**过滤，不改收集范围也能让 876 条静默跳过而 CI 全绿
-    // —— 「临时调试过滤器忘了删」是最自然的进入路径；`dir` 则直接换根目录
-    // （闸门 2 codex round-3 指出）。
-    expect(vitestConfig, 'testNamePattern 会让绝大多数用例静默跳过').not.toContain('testNamePattern')
-    expect(vitestConfig, 'dir 会换掉测试根目录').not.toMatch(/^\s*dir:/m)
   })
 
   /**
