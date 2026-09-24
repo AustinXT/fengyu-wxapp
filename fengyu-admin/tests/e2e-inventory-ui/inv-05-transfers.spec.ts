@@ -37,7 +37,7 @@ import {
 } from './_helpers/env'
 import { isGateOpen, openCutoverGate } from './_helpers/cutover'
 import {
-  createGenericDoc, docIdByRemark, docMovementCount, docStatus, lotQtyAll, rowAction, selectContaining,
+  createGenericDoc, docIdByRemark, docMovementCount, docStatus, lotQtyAll, pickSku, rowAction, selectContaining,
 } from './_helpers/ui'
 
 // 恢复真实链路后跑完五段要好几分钟（两次建单 + 两次收货 + 两次必失败的提交），
@@ -206,13 +206,14 @@ test('INV-05：调货链路 —— 分院调货收货闭环 / §10.3 归属 / �
     await expect(dialog.getByText('新建库存单据')).toBeVisible({ timeout: 15_000 })
 
     const selects = dialog.locator('select')
-    // 弹窗内 select 的固定顺序：0=单据类型 1=出库主体 2=入库主体 3=来源批次 4=SKU
-    // （分院调货出库属 SOURCE_LOT_DOC_TYPES，明细行多一个批次下拉）
+    const skuBox = dialog.getByRole('combobox', { name: '明细 1 库存 SKU', exact: true })
+    // 弹窗内原生 select 的固定顺序：0=单据类型 1=出库主体 2=入库主体 3=来源批次
+    // （分院调货出库属 SOURCE_LOT_DOC_TYPES，明细行多一个批次下拉）；SKU 是可检索 combobox（#339）
     await selects.nth(0).selectOption('分院调货出库')
     await selectContaining(selects.nth(1), `门店 · ${TOPO.STORE_A_NAME}`)
     await selectContaining(selects.nth(2), `门店 · ${TOPO.STORE_B_NAME}`)
     await page.waitForTimeout(500)
-    await selectContaining(selects.nth(4), inv01.supplySkuName)
+    await pickSku(skuBox, inv01.supplySkuName)
 
     const lotSel = selects.nth(3)
     const t0 = Date.now()
@@ -257,13 +258,13 @@ test('INV-05：调货链路 —— 分院调货收货闭环 / §10.3 归属 / �
       {
         label: '切 SKU → 自采品（门店 A 无此批次）',
         want: '只剩占位项',
-        act: async () => { await selectContaining(selects.nth(4), inv01.selfSkuName) },
+        act: async () => { await pickSku(skuBox, inv01.selfSkuName) },
         ok: (n: number) => n === 1,
       },
       {
         label: '切回 SKU → 供应链品',
         want: '重新出现批次',
-        act: async () => { await selectContaining(selects.nth(4), inv01.supplySkuName) },
+        act: async () => { await pickSku(skuBox, inv01.supplySkuName) },
         ok: (n: number) => n > 1,
       },
       {

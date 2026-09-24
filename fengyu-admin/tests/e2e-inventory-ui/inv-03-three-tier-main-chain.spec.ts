@@ -31,6 +31,7 @@ import {
   login, psql, readCtx, recordVerdict, sqlStr, summarize, writeCtx, type Verdict,
 } from './_helpers/env'
 import { isGateOpen, openCutoverGate } from './_helpers/cutover'
+import { pickSku } from './_helpers/ui'
 
 test.setTimeout(600_000)
 
@@ -83,7 +84,7 @@ test('INV-03：三级正向主链 —— 报货→采购→发货→入库→配
     await openOperation(page, 'store', '门店报货')
     await selectByLabel(page, '报货门店', { contains: TOPO.STORE_A_NAME })
     await selectByLabel(page, '所属市场', { contains: TOPO.MARKET_NAME })
-    await selectContaining(skuSelect(page), inv01.supplySkuName)
+    await pickSku(skuSelect(page), inv01.supplySkuName)
     await fillByLabel(page, '数量', String(QTY.storeRequest))
     await fillByLabel(page, '备注', R.storeReq)
 
@@ -606,7 +607,7 @@ async function checkSourceDoc(page: Page, docId: string) {
 
 /** 明细行里的 SkuPicker（占位文案「选择库存商品」） */
 function skuSelect(page: Page) {
-  return page.locator('select').filter({ hasText: '选择库存商品' }).first()
+  return page.getByRole('combobox', { name: '选择库存商品', exact: true }).first()
 }
 
 /**

@@ -28,7 +28,7 @@
 import { test, expect, type Page } from '@playwright/test'
 import { BASE, INVT_ACCOUNTS, INVT_PASS, NS, TOPO, login, psql, readCtx } from './_helpers/env'
 import { isGateOpen, openCutoverGate } from './_helpers/cutover'
-import { docIdByRemark, docStatus, lotQtyAll, openOperation, peekToast, selectContaining } from './_helpers/ui'
+import { docIdByRemark, docStatus, lotQtyAll, openOperation, peekToast, pickSku, selectContaining } from './_helpers/ui'
 
 test.setTimeout(300_000)
 
@@ -101,10 +101,10 @@ test('INV-12：市场库存财务（单市场）发起市场间调货，调入�
   await selectContaining(target, `市场 · ${TOPO.MARKET_OTHER_NAME}`)
   await dialog.locator('textarea').first().fill(REMARK)
   await page.waitForTimeout(500)
-  // 发起端是只读 output、不是 select，所以明细行下拉的位置与 createGenericDoc 的假设不同：
-  // 0=单据类型 1=入库主体 2=来源批次 3=SKU
+  // 发起端是只读 output、不是 select，所以明细行原生下拉的位置与 createGenericDoc 的假设不同：
+  // 0=单据类型 1=入库主体 2=来源批次；SKU 是可检索 combobox（#339），按 aria-label 定位
   const selects = dialog.locator('select')
-  await selectContaining(selects.nth(3), inv01.supplySkuName)
+  await pickSku(dialog.getByRole('combobox', { name: '明细 1 库存 SKU', exact: true }), inv01.supplySkuName)
   const lot = selects.nth(2)
   await expect(lot).toBeEnabled({ timeout: 20_000 })
   const lotTexts = await lot.locator('option').allTextContents()

@@ -5,7 +5,6 @@ import {
   listInventoryLocations,
   listInventoryMarketTransferTargets,
 } from '@/actions/inventory/locations'
-import { listInventorySkus } from '@/actions/inventory/skus'
 import { getSession } from '@/lib/auth'
 import { scopeSessionToActions } from '@/lib/action-scope'
 import { inventoryScopedOrgNodeIds } from '@/lib/inventory/access'
@@ -63,14 +62,12 @@ export default async function Page({
     ? requestedCreateType
     : undefined
 
-  const [filterOptions, locations, marketTransferTargets, skus] = await Promise.all([
+  // SKU 候选不再预加载（#339）：建单表单里的商品选择按关键词走服务端分页检索
+  const [filterOptions, locations, marketTransferTargets] = await Promise.all([
     listInventoryDocLocationFilterOptions(),
     allowedCreateDocTypes.length > 0 ? listInventoryLocations() : Promise.resolve([]),
     // 市场间调货出库的接收主体候选（#340）：不按 scope，只在能建这种单时取
     allowedCreateDocTypes.includes('市场间调货出库') ? listInventoryMarketTransferTargets() : Promise.resolve([]),
-    allowedCreateDocTypes.length > 0
-      ? listInventorySkus({ page: 1, pageSize: 100, onlyActive: true })
-      : Promise.resolve({ data: [], total: 0 }),
   ])
   const selectedOrgNodeId = resolveInventoryFilterLocationId(filterOptions, params.orgNodeId)
   const docs = selectedOrgNodeId
@@ -97,7 +94,6 @@ export default async function Page({
           total={docs.total}
           locations={locations}
           marketTransferTargets={marketTransferTargets}
-          skuOptions={skus.data}
           canCreate={allowedCreateDocTypes.length > 0}
           canApprove={hasUiCapability(actions, 'inventory:supply_chain_approve') || hasUiCapability(actions, 'inventory:market_approve')}
           canReceive={canReceive}

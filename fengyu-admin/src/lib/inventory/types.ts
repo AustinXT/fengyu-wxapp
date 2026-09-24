@@ -120,6 +120,30 @@ export interface InventorySkuInput {
   remark?: string | null
 }
 
+/**
+ * SKU 候选检索的业务过滤（#339）。三个口径分别对齐建单时的服务端校验，
+ * 候选与提交判据同源，才不会出现「下拉里选得到、提交被拒」或反过来「合法却选不到」：
+ *   - `reportable`          ↔ business.ts `loadSku(tx, id, true)`（门店报货 / 品项公司需求 / 市场报货）
+ *   - `availableToMarketId` ↔ business.ts `assertSkuAvailableToMarket`（供应链放行，其余须归属该市场）
+ *   - `ownedByMarketId`     ↔ 自采入库只收本市场的非供应链商品
+ * 与 session 的 scope 过滤叠加生效，不能拿它越权看别的市场。
+ */
+export interface InventorySkuOptionFilters {
+  keyword?: string
+  sourceType?: InventorySkuSourceType
+  reportable?: boolean
+  availableToMarketId?: string
+  ownedByMarketId?: string
+}
+
+export interface InventorySkuListFilters extends InventorySkuOptionFilters {
+  onlyActive?: boolean
+  /** 按 sku_id 精确取（回显已选商品、按明细取价），最多 100 个；传空数组直接返回空。 */
+  skuIds?: string[]
+  page?: number
+  pageSize?: number
+}
+
 export interface InventorySkuRow extends Required<Pick<InventorySkuInput, 'productName'>> {
   skuId: string
   productCode: string

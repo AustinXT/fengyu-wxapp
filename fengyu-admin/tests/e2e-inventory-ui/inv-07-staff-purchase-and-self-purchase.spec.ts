@@ -31,7 +31,7 @@ import { isGateOpen, openCutoverGate } from './_helpers/cutover'
 import {
   createGenericDoc, docIdByRemark, docMovementCount, docStatus, fillByLabel, labelled,
   lotQtyAll, openOperation, peekToast,
-  selectByLabel, selectContaining, selectLotWithQty, skuSelect, submitForm,
+  pickSku, selectByLabel, selectContaining, selectLotWithQty, skuSelect, submitForm,
 } from './_helpers/ui'
 
 /** 轮询等待下拉出现真实选项（首项是占位）；最长 20 秒 */
@@ -98,7 +98,7 @@ test('INV-07：员工购 / 自采入库 / 内部领用 / 院顾客产品出库',
     )
     if (staffOptions.length > 1) {
       await staffSel.selectOption({ index: 1 })
-      await selectContaining(skuSelect(page), inv01.supplySkuName)
+      await pickSku(skuSelect(page), inv01.supplySkuName)
       await selectLotWithQty(page, '市场批次', QTY.marketStaff)
       await fillByLabel(page, '数量', String(QTY.marketStaff))
       await fillByLabel(page, '备注', R.marketStaff)
@@ -175,7 +175,7 @@ test('INV-07：员工购 / 自采入库 / 内部领用 / 院顾客产品出库',
 
     if (scStaffOptions.length > 1) {
       await scStaffSel.selectOption({ index: 1 })
-      await selectContaining(skuSelect(page), inv01.supplySkuName)
+      await pickSku(skuSelect(page), inv01.supplySkuName)
       await selectLotWithQty(page, '供应链批次', QTY.supplyStaff)
       await fillByLabel(page, '数量', String(QTY.supplyStaff))
       await fillByLabel(page, '备注', R.supplyStaff)
@@ -210,7 +210,7 @@ test('INV-07：员工购 / 自采入库 / 内部领用 / 院顾客产品出库',
     await selectByLabel(page, '入库市场', { contains: TOPO.MARKET_NAME })
     await selectByLabel(page, '供应商', { contains: inv01.supplierName })
     await page.waitForTimeout(1500)
-    await selectContaining(skuSelect(page), inv01.selfSkuName)
+    await pickSku(skuSelect(page), inv01.selfSkuName)
     await fillByLabel(page, '数量', String(QTY.selfPurchase))
     const selfBatch = `${NS}-ZC${STAMP}`
     await fillByLabel(page, '批号', selfBatch)

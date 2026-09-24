@@ -1,7 +1,6 @@
 import { Suspense } from 'react'
 import { listInventoryLocations } from '@/actions/inventory/locations'
 import { listInventoryPromotionPlans } from '@/actions/inventory/promotions'
-import { listInventorySkus } from '@/actions/inventory/skus'
 import { getSession } from '@/lib/auth'
 import { hasUiCapability } from '@/lib/permission-contract'
 import { requireAllUiPageCapabilities } from '@/lib/page-capability'
@@ -13,11 +12,11 @@ export const dynamic = 'force-dynamic'
 export default async function Page() {
   const session = await getSession()
   requireAllUiPageCapabilities(session, ['inventory:stock_list'])
-  const [plans, locations, skus] = await Promise.all([
+  // SKU 候选不再预加载（#339）：明细的商品选择按关键词走服务端分页检索
+  const [plans, locations] = await Promise.all([
     // 全量取回：本页的筛选在客户端做，分页必须发生在筛选之后（见 engine 注释）
     listInventoryPromotionPlans(),
     listInventoryLocations(),
-    listInventorySkus({ page: 1, pageSize: 100, onlyActive: true }),
   ])
   const actions = session.permissions.actions
   const canViewPrice = hasUiCapability(actions, 'inventory:supply_chain_price_view') || hasUiCapability(actions, 'inventory:market_price_view')
@@ -45,7 +44,6 @@ export default async function Page() {
           marketOptions={locations
             .filter((location) => location.locationType === '市场')
             .map((location) => ({ locationId: location.locationId, name: location.name }))}
-          skuOptions={skus.data}
           canCreate={canCreate}
           canUpdate={canUpdate}
           canViewPrice={canViewPrice}

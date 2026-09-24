@@ -1,6 +1,7 @@
 // packageMy/inventory/form.ts — 门店库存业务办理
 import { callStaffApi } from '../../utils/cloud'
 import { getCurrentStoreId, requireInventoryStoreOperate } from '../../utils/role'
+import { ReportableSkuSearch, SKU_PAGE_SIZE } from '../../utils/reportable-sku-search'
 
 type OperateDocType = '门店报货' | '分院调货出库' | '院退货' | '院产品报损'
 type ItemMode = 'reportableSku' | 'stockLot'
@@ -105,7 +106,6 @@ Page({
     skuOptions: [] as ReportableSku[],
     stockOptions: [] as StockLot[],
     storeOptions: [] as StoreOption[],
-    selectedSkuIndex: -1,
     selectedLotIndex: -1,
     selectedStoreIndex: -1,
     selectedSku: null as ReportableSku | null,
@@ -117,7 +117,17 @@ Page({
     items: [] as DraftItem[],
     loadingOptions: false,
     submitting: false,
+    // 门店报货选品弹层（#339）：服务端检索 + 分页，替换原来只拉前 100 条的原生 picker
+    showSkuPicker: false,
+    skuKeyword: '',
+    skuPage: 0,
+    skuTotal: 0,
+    skuHasMore: true,
+    skuLoading: false,
+    skuError: '',
   },
+
+  _skuSearch: null as ReportableSkuSearch<ReportableSku> | null,
 
   onLoad(query: { docType?: string }) {
     if (!requireInventoryStoreOperate()) {
@@ -157,18 +167,8 @@ Page({
     if (!this.data.sourceStoreId) return
     this.setData({ loadingOptions: true })
     try {
-      if (this.data.itemMode === 'reportableSku') {
-        const res = await callStaffApi<{ items: Omit<ReportableSku, 'displayName'>[] }>(
-          'inventory.reportableSkuOptions',
-          { locationId: this.data.sourceStoreId, pageSize: 100 },
-        )
-        const skuOptions = (res.items || []).map((item) => ({
-          ...item,
-          stockReference: Number(item.stockReference || 0),
-          displayName: displaySku(item),
-        }))
-        this.setData({ skuOptions })
-      } else {
+      // 可报货产品不在这里预拉：打开选品弹层时按关键词分页检索（utils/reportable-sku-search）
+      if (this.data.itemMode === 'stockLot') {
         const res = await callStaffApi<{ items: Omit<StockLot, 'displayName'>[] }>(
           'inventory.stockList',
           { locationId: this.data.sourceStoreId, onlyPositive: true, pageSize: 100 },
@@ -193,10 +193,79 @@ Page({
     }
   },
 
-  onSkuChange(e: WechatMiniprogram.PickerChange) {
-    const index = Number(e.detail.value)
-    const selectedSku = this.data.skuOptions[index] || null
-    this.setData({ selectedSkuIndex: index, selectedSku })
+  onUnload() {
+    // 取消防抖并作废在途检索：页面卸载后回来的结果不再 setData
+    this._skuSearch?.dispose()
+  },
+
+  /** 门店报货选品检索状态机（懒创建：只有门店报货用得到） */
+  skuSearch(): ReportableSkuSearch<ReportableSku> {
+    if (!this._skuSearch) {
+      this._skuSearch = new ReportableSkuSearch<ReportableSku>({
+        fetchPage: async (keyword, page) => {
+          const res = await callStaffApi<{ items: Omit<ReportableSku, 'displayName'>[]; total: number }>(
+            'inventory.reportableSkuOptions',
+            { locationId: this.data.sourceStoreId, keyword: keyword || undefined, page, pageSize: SKU_PAGE_SIZE },
+          )
+          return {
+            total: res.total,
+            items: (res.items || []).map((item) => ({
+              ...item,
+              stockReference: Number(item.stockReference || 0),
+              displayName: displaySku(item),
+            })),
+          }
+        },
+        onState: (patch) => this.setData(patch),
+      })
+    }
+    return this._skuSearch
+  },
+
+  onOpenSkuPicker() {
+    if (!this.data.sourceStoreId) {
+      wx.showToast({ title: '请先在门店模式选择门店', icon: 'none' })
+      return
+    }
+    this.setData({ showSkuPicker: true })
+    // 关掉再开保留上次的关键词与结果
+    this.skuSearch().open()
+  },
+
+  onRetrySkuPage() {
+    this.skuSearch().retry()
+  },
+
+  onLoadMoreSku() {
+    this.skuSearch().loadMore()
+  },
+
+  onCloseSkuPicker() {
+    this.setData({ showSkuPicker: false })
+  },
+
+  onSkuKeywordChange(e: WechatMiniprogram.CustomEvent) {
+    // van-search 边缘事件形态下 detail 可能不是字符串
+    const value = typeof e.detail === 'string' ? e.detail : ''
+    this.setData({ skuKeyword: value })
+    this.skuSearch().onKeyword(value)
+  },
+
+  onSkuKeywordClear() {
+    this.setData({ skuKeyword: '' })
+    this.skuSearch().clearKeyword()
+  },
+
+  onSkuListReachBottom() {
+    this.skuSearch().loadMore()
+  },
+
+  onSelectSku(e: WechatMiniprogram.CustomEvent) {
+    const index = Number(e.currentTarget.dataset.index)
+    const sku = this.data.skuOptions[index]
+    if (!sku) return
+    // 已选产品独立保存一份：之后换关键词、列表里不再有它，展示名称也不受影响
+    this.setData({ selectedSku: { ...sku }, showSkuPicker: false })
   },
 
   onLotChange(e: WechatMiniprogram.PickerChange) {
@@ -292,7 +361,6 @@ Page({
       items,
       quantityInput: '',
       reasonInput: '',
-      selectedSkuIndex: -1,
       selectedLotIndex: -1,
       selectedSku: null,
       selectedLot: null,

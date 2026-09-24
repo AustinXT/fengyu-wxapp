@@ -11,7 +11,6 @@ import type {
   InventoryLocationRow,
   InventoryLotRow,
   InventoryMarketTransferTarget,
-  InventorySkuRow,
 } from '@/lib/inventory/types'
 import { INVENTORY_GENERIC_DOC_TYPES } from '@/lib/inventory/types'
 import { docActionErrorMessage, isStaleStateError } from '@/lib/inventory/doc-action-error'
@@ -21,6 +20,7 @@ import { DatePicker } from '@/components/ui/date-picker'
 import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
 import InventorySubjectSelect from '@/components/inventory-subject-select'
+import { InventorySkuSearchSelect } from './inventory-sku-search-select'
 import { Textarea } from '@/components/ui/textarea'
 
 /**
@@ -175,7 +175,6 @@ export function InventoryDocCreateForm({
   visible,
   locations,
   marketTransferTargets = NO_MARKET_TRANSFER_TARGETS,
-  skuOptions,
   initialDocType,
   allowedDocTypes,
   onSuccess,
@@ -200,7 +199,6 @@ export function InventoryDocCreateForm({
    * 权限时不必取，传空（缺省）即可 —— 那样选到这个类型也只是接收主体为空、无法提交。
    */
   marketTransferTargets?: readonly InventoryMarketTransferTarget[]
-  skuOptions: InventorySkuRow[]
   initialDocType?: InventoryDocType
   allowedDocTypes?: readonly InventoryDocType[]
   /** 建单成功。`docId` 是刚建出来的单号，调用方拿去做可核对的反馈。 */
@@ -518,17 +516,12 @@ export function InventoryDocCreateForm({
                 label={`明细 ${index + 1} 来源批次`}
               />
             )}
-            <Select
+            <InventorySkuSearchSelect
               value={item.skuId}
-              onChange={(e) => updateItem(index, { skuId: e.target.value, lotId: '' })}
-            >
-              <option value="">库存 SKU</option>
-              {skuOptions.map((sku) => (
-                <option key={sku.skuId} value={sku.skuId}>
-                  {sku.productCode} · {sku.productName}
-                </option>
-              ))}
-            </Select>
+              onChange={(skuId) => updateItem(index, { skuId, lotId: '' })}
+              placeholder="库存 SKU"
+              ariaLabel={`明细 ${index + 1} 库存 SKU`}
+            />
             <Input placeholder="批号" value={item.batchNo} onChange={(e) => updateItem(index, { batchNo: e.target.value })} />
             <DatePicker value={item.expiryDate} onValueChange={(value) => updateItem(index, { expiryDate: value })} aria-label={`明细 ${index + 1} 效期`} />
             <Input type="number" min="0" step="0.01" max="9999999999.99" placeholder="数量" value={item.quantity} onChange={(e) => updateItem(index, { quantity: e.target.value })} />

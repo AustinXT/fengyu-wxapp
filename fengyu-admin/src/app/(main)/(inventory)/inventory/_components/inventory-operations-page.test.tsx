@@ -3,7 +3,7 @@ import { resolve } from 'node:path'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { INVENTORY_GENERIC_DOC_TYPES } from '@/lib/inventory/types'
-import type { InventoryDocDetail, InventoryDocRow } from '@/lib/inventory/types'
+import type { InventoryDocDetail, InventoryDocRow, InventoryLocationRow } from '@/lib/inventory/types'
 import {
   INVENTORY_BUSINESS_LEVELS,
   genericDocBusinessLevel,
@@ -25,7 +25,9 @@ vi.mock('next/navigation', () => ({
   useSearchParams: () => new URLSearchParams(''),
 }))
 
-vi.mock('sonner', () => ({ toast: { error: vi.fn(), success: vi.fn(), info: vi.fn() } }))
+vi.mock('sonner', () => ({ toast: { error: vi.fn(), success: vi.fn(), info: vi.fn(), warning: vi.fn() } }))
+vi.mock('@/actions/inventory/skus', () => ({ listInventorySkus: vi.fn() }))
+vi.mock('./inventory-sku-search-select', () => import('./__stubs__/inventory-sku-search-select.stub'))
 
 vi.mock('@/actions/inventory/docs', () => ({
   confirmInventoryCoreReceive: vi.fn(),
@@ -74,6 +76,8 @@ vi.mock('@/actions/inventory/business', () =>
   ),
 )
 
+import { listInventoryLotOptions } from '@/actions/inventory/stocks'
+import { listInventorySkus } from '@/actions/inventory/skus'
 import { toast } from 'sonner'
 import {
   confirmInventoryCoreReceive,
@@ -776,17 +780,18 @@ function renderPage(options: {
   level: InventoryBusinessLevel
   operation: InventoryAnyOperationId
   workflowDocs?: InventoryDocRow[]
+  locations?: InventoryLocationRow[]
+  canSelfPurchase?: boolean
 }) {
   return render(
     <InventoryOperationsPage
       level={options.level}
-      locations={[]}
-      skuOptions={[]}
+      locations={options.locations ?? []}
       suppliers={[]}
       workflowDocs={options.workflowDocs ?? []}
       canCreate
       canApprove
-      canSelfPurchase={false}
+      canSelfPurchase={options.canSelfPurchase ?? false}
       canRequestShipmentCancellation={false}
       canApproveShipmentCancellation={false}
       canViewPrice
@@ -1479,6 +1484,130 @@ describe('行内动作的在途态上报（#192 follow-up）', () => {
     expect(tab).toMatch(/onBusyChange=\{handleActionBusyChange\}/)
     // 本地那份仍然在，点击闸读的是它
     expect(tab).toMatch(/if \(pendingInboxAction \|\| actionBusy\) return/)
+  })
+})
+
+/**
+ * SKU 候选的业务过滤（#339）。原先是前端对「预加载的前 100 条」再筛一遍，
+ * 排在后面的合法商品根本进不了候选；现在过滤条件随请求交给服务端。
+ * 这里钉住每个入口交给选择器的 `filters` —— 它必须与该业务建单时的服务端校验同口径
+ * （SQL 层的渲染断言见 engine.test.ts「SKU 候选检索过滤」）。
+ */
+describe('SKU 候选按业务口径交给服务端过滤（#339）', () => {
+  const LOCATIONS: InventoryLocationRow[] = [
+    { locationId: 'HQ', locationType: '总部', name: '品牌总部', orgNodeId: 'HQ', storeId: null, parentLocationId: null, isActive: true },
+    { locationId: 'M1', locationType: '市场', name: '市场一部', orgNodeId: 'M1', storeId: null, parentLocationId: 'HQ', isActive: true },
+    { locationId: 'M2', locationType: '市场', name: '市场二部', orgNodeId: 'M2', storeId: null, parentLocationId: 'HQ', isActive: true },
+    { locationId: 'S1', locationType: '门店', name: '一店', orgNodeId: 'N-S1', storeId: 'S1', parentLocationId: 'M1', isActive: true },
+    { locationId: 'S2', locationType: '门店', name: '二店', orgNodeId: 'N-S2', storeId: 'S2', parentLocationId: 'M2', isActive: true },
+  ]
+  beforeEach(() => mockDocs({}))
+  const pickers = () => Array.from(document.querySelectorAll<HTMLSelectElement>('[data-sku-picker]'))
+  const filtersOf = (picker: HTMLSelectElement) => JSON.parse(picker.dataset.filters ?? '{}')
+  function chooseSubject(placeholder: string, value: string) {
+    const select = screen.getByRole('option', { name: placeholder }).closest('select') as HTMLSelectElement
+    fireEvent.change(select, { target: { value } })
+  }
+
+  it('门店报货代建：未选门店时禁用；选定后只出可报货 + 门店所属市场可用的商品（Q1=A，与 staff 同口径）', () => {
+    renderPage({ level: 'store', operation: 'store-request', locations: LOCATIONS })
+    expect(pickers()[0]).toBeDisabled()
+    chooseSubject('请选择门店', 'S2')
+    expect(pickers()[0]).not.toBeDisabled()
+    expect(filtersOf(pickers()[0])).toEqual({ reportable: true, availableToMarketId: 'M2' })
+  })
+
+  it('门店报货代建：换到另一个市场的门店时清掉已选商品', () => {
+    renderPage({ level: 'store', operation: 'store-request', locations: LOCATIONS })
+    chooseSubject('请选择门店', 'S1')
+    fireEvent.change(pickers()[0], { target: { value: 'SKU-1' } })
+    expect(pickers()[0].value).toBe('SKU-1')
+    chooseSubject('请选择门店', 'S2')
+    expect(pickers()[0].value).toBe('')
+  })
+
+  it('商品选择器不放进 <label>：字段用 role=group + aria-labelledby 关联字段名', () => {
+    renderPage({ level: 'store', operation: 'store-request', locations: LOCATIONS })
+    const picker = pickers()[0]
+    expect(picker.closest('label')).toBeNull()
+    const group = picker.closest('[role="group"]') as HTMLElement
+    expect(document.getElementById(group.getAttribute('aria-labelledby') ?? '')?.textContent).toMatch(/^商品/)
+    // 源码守护：每个 SkuPicker 调用点的外层 FormField 都得带 group（新加入口时别漏）
+    const source = readFileSync(resolve(__dirname, 'inventory-operations-page.tsx'), 'utf8')
+    const calls = source.match(/<SkuPicker /g) ?? []
+    const grouped = source.match(/<FormField label="[^"]*"(?: required)? group>\s*<SkuPicker /g) ?? []
+    expect(calls.length).toBeGreaterThanOrEqual(9)
+    expect(grouped.length).toBe(calls.length)
+  })
+
+  it('品项公司报货需求：只出供应链来源 + 可报货', () => {
+    renderPage({ level: 'supply-chain', operation: 'item-company-request', locations: LOCATIONS })
+    expect(filtersOf(pickers()[0])).toEqual({ sourceType: '供应链', reportable: true })
+  })
+
+  it('自采产品入库：未选市场时禁用；选定后只出归属本市场的非供应链商品', () => {
+    renderPage({ level: 'market', operation: 'self-purchase', locations: LOCATIONS, canSelfPurchase: true })
+    expect(pickers()[0]).toBeDisabled()
+    chooseSubject('请选择市场', 'M1')
+    expect(filtersOf(pickers()[0])).toEqual({ ownedByMarketId: 'M1' })
+  })
+
+  it('库存转换目标：市场主体 → 本市场可用；总部主体 → 仅供应链；来源商品不加过滤（批次兜底）', () => {
+    const { unmount } = renderPage({ level: 'market', operation: 'market-conversion', locations: LOCATIONS })
+    chooseSubject('请选择市场', 'M1')
+    const [source, target] = pickers()
+    expect(filtersOf(source)).toEqual({})
+    expect(filtersOf(target)).toEqual({ availableToMarketId: 'M1' })
+    unmount()
+    renderPage({ level: 'supply-chain', operation: 'supply-chain-conversion', locations: LOCATIONS })
+    expect(filtersOf(pickers()[1])).toEqual({ sourceType: '供应链' })
+  })
+})
+
+/**
+ * 分院配货的门店标准单价（#339）：原先查办理台预加载的前 100 条 SKU，排在后面的商品静默退回
+ * 明细快照价；现在按本单明细的 skuIds 精确查，分块各自生效，失败时提示且不阻断。
+ */
+describe('分院配货按 skuIds 精确取当前门店进货价（#339）', () => {
+  const request = docRow({ id: 'DBH-1', docType: '门店报货', status: '已完成' })
+  function item(id: number, skuId: string, standardUnitPrice: number | null) {
+    return {
+      id, docId: 'DBH-1', lotId: null, skuId, skuName: `商品${skuId}`, specName: null, quantity: 2, fulfilledQuantity: 0,
+      standardUnitPrice, actualUnitPrice: null, unitDiscount: 0,
+    } as unknown as InventoryDocDetail['items'][number]
+  }
+  const prices = () => screen.queryAllByText('门店标准单价').map((label) => label.nextElementSibling?.textContent)
+
+  beforeEach(() => {
+    mockDocs({})
+    vi.mocked(listInventorySkus).mockReset()
+    vi.mocked(toast.warning).mockReset()
+    // 每行的市场批次下拉会取数，给个空结果即可
+    vi.mocked(listInventoryLotOptions).mockResolvedValue([])
+  })
+
+  async function pickRequest(items: InventoryDocDetail['items']) {
+    vi.mocked(getInventoryCoreDocById).mockResolvedValue({ ...docDetail(request), items })
+    renderPage({ level: 'market', operation: 'store-allocation', workflowDocs: [request] })
+    const option = await screen.findByRole<HTMLOptionElement>('option', { name: /^DBH-1/ })
+    fireEvent.change(option.closest('select') as HTMLSelectElement, { target: { value: 'DBH-1' } })
+  }
+
+  it('取到档案价就覆盖快照价；只补价格列、按明细 skuIds 精确查（含已停用）', async () => {
+    vi.mocked(listInventorySkus).mockResolvedValue({
+      data: [{ skuId: 'S-200', storePurchasePrice: 88.5 } as never], total: 1,
+    })
+    await pickRequest([item(1, 'S-200', 60), item(2, 'S-201', 70)])
+    await waitFor(() => expect(prices()).toEqual(['88.50', '70.00']))
+    expect(listInventorySkus).toHaveBeenCalledWith({ skuIds: ['S-200', 'S-201'], onlyActive: false, page: 1, pageSize: 100 })
+    expect(toast.warning).not.toHaveBeenCalled()
+  })
+
+  it('取价失败：退回快照价并提示，不阻断配货', async () => {
+    vi.mocked(listInventorySkus).mockRejectedValue(new Error('NETWORK'))
+    await pickRequest([item(1, 'S-200', 60)])
+    await waitFor(() => expect(toast.warning).toHaveBeenCalled())
+    expect(prices()).toEqual(['60.00'])
   })
 })
 
