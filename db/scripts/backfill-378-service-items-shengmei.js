@@ -14,11 +14,11 @@
  *       admin services.ts 已改）
  *     - 历史月份接受因回填变化 → 全时段回填
  *
- * 回填规则：
- *   UPDATE service_items SET is_shengmei = product_skus.is_shengmei
- *   WHERE product_skus.is_shengmei IS NOT NULL
- *     AND service_items.is_shengmei IS DISTINCT FROM product_skus.is_shengmei
- *   - SKU 为 NULL 的行不动（与写入链路回退语义一致）
+ * 回填规则（目标值与写入链路同源：COALESCE(product_skus.is_shengmei, sale_items.is_shengmei)）：
+ *   UPDATE service_items SET is_shengmei = COALESCE(ps.is_shengmei, si.is_shengmei)
+ *   WHERE COALESCE(ps.is_shengmei, si.is_shengmei) IS NOT NULL
+ *     AND service_items.is_shengmei IS DISTINCT FROM COALESCE(ps.is_shengmei, si.is_shengmei)
+ *   - SKU 为 NULL / 无 SKU 时按 sale_items 收敛；两者都为 NULL 的行不动
  *   - sale_items.is_shengmei 不动（开单快照继续服务生美业绩口径）
  *   - 软删除 SKU（deleted_at 非空）不过滤，按其 is_shengmei 计，与写入链路一致
  *   - 幂等：第二次运行命中 0 行
@@ -39,9 +39,14 @@
  *   ... --rollback=/path/rollback.json --confirm-target=<host>:<port>/<database> [--allow-drift]
  *
  * 回滚文件生命周期：COMMIT 前写 <out>.pending（status=pending）；COMMIT 成功后写 <out>
- *   （status=committed）并删除 .pending。两者都以 wx 创建，不覆盖已有文件。只认 committed 文件回滚；
- *   残留 .pending 且日志无「已回填」表示该次写入未提交，可直接删除；若日志提示「数据已提交，但写
- *   committed 回滚文件失败」，则 .pending 是唯一原值记录，须按提示改 status 后保留。
+ *   （status=committed）并删除 .pending。两者都以 wx 创建，不覆盖已有文件。
+ *   ⚠ 残留 .pending 表示「提交状态未知」（COMMIT 与改名之间进程可能被杀），**不要手工删除**：
+ *   直接拿它跑 --rollback —— 按 CAS 判定，库中全部行都不是回填值则判为未提交、不做任何改动；
+ *   否则按已提交处理并回滚。
+ *
+ * 目标库：一律经 _lib/assert-db-target 白名单（dev 101.34.242.103 / prod 118.178.196.26，
+ *   5433/fengyu_wxapp，拒绝 query 覆盖）；写入另需 --confirm-target 逐字确认。
+ *   仅本地临时容器验证时可设 BACKFILL_378_ALLOW_LOOPBACK=1 放行 127.0.0.1 / localhost。
  *
  * 上线顺序：先部署 staffApi（prod）与 admin 的新写入链路，再执行本脚本；部署前空窗期若有新写入，
  *   部署后再跑一次（幂等）即可收敛。
@@ -55,6 +60,7 @@ const fs = require('node:fs')
 const path = require('node:path')
 const { Pool } = require('pg')
 const { parse: parseConnectionString } = require('pg-connection-string')
+const { assertDbTargetOrExit } = require('./_lib/assert-db-target')
 
 // 与 fengyu-admin/src/lib/service-remark.ts DEPOSIT_REFUND_REMARK 同值
 const DEPOSIT_REFUND_REMARK = '寄存单退款专用 — 老系统寄存疗程卡退款核销，不计消耗业绩'
@@ -99,13 +105,17 @@ function monthRange(month) {
 }
 
 /**
- * 目标值表达式：SKU 当前值，叠加 --simulate-sku 覆盖。
+ * 目标值表达式：COALESCE(SKU 当前值（叠加 --simulate-sku 覆盖）, sale_items 开单快照)，
+ * 与 staff service.js / admin services.ts 的写入链路同源。
  * 覆盖以数组参数传入（$1 sku_id[] / $2 值[]），不拼接字面量；无覆盖时两数组为空。
+ * 调用方须 LEFT JOIN product_skus ps（无 SKU 时 ps.* 为 NULL → 回退 si）。
  */
 function targetExpr() {
-  return `CASE WHEN ps.sku_id = ANY($1::text[])
-               THEN (($2::text[])[array_position($1::text[], ps.sku_id)])::boolean
-               ELSE ps.is_shengmei END`
+  return `COALESCE(
+            CASE WHEN ps.sku_id = ANY($1::text[])
+                 THEN (($2::text[])[array_position($1::text[], ps.sku_id)])::boolean
+                 ELSE ps.is_shengmei END,
+            si.is_shengmei)`
 }
 
 function simulateParams(simulate) {
@@ -119,7 +129,7 @@ SELECT sit.service_item_id, sit.is_shengmei AS old_value, ${targetExpr()} AS new
        ps.sku_id, ps.spec_name, pc.category_name
 FROM service_items sit
 JOIN sale_items si ON si.sale_item_id = sit.sale_item_id
-JOIN product_skus ps ON ps.sku_id = si.sku_id
+LEFT JOIN product_skus ps ON ps.sku_id = si.sku_id
 LEFT JOIN product_categories pc ON pc.category_id = ps.category_id
 WHERE ${targetExpr()} IS NOT NULL
   AND sit.is_shengmei IS DISTINCT FROM ${targetExpr()}
@@ -129,7 +139,7 @@ ORDER BY sit.service_item_id
 /**
  * 生美实耗：按「当前快照」与「回填后」两列同时算，逐店。
  * 回填后值 = COALESCE(目标值, 当前快照)，与 CANDIDATES_SQL 的改写规则一一对应
- * （目标值为 NULL 的行不改；无 SKU 时 ps.* 为 NULL，目标值同为 NULL）。
+ * （目标值为 NULL 即 SKU 与 sale_items 都为 NULL 的行不改）。
  */
 const AFTER_EXPR = `COALESCE(${targetExpr()}, sit.is_shengmei)`
 const MONTH_COMPARE_SQL = `
@@ -161,7 +171,7 @@ function signed(n) {
 function summarizeCandidates(rows) {
   const groups = new Map()
   for (const r of rows) {
-    const key = `${r.category_name ?? '(无分类)'} | ${r.spec_name} | ${r.old_value}→${r.new_value}`
+    const key = `${r.category_name ?? '(无分类)'} | ${r.spec_name ?? '(无 SKU)'} | ${r.old_value}→${r.new_value}`
     groups.set(key, (groups.get(key) || 0) + 1)
   }
   return [...groups.entries()].sort((a, b) => b[1] - a[1])
@@ -206,14 +216,15 @@ function preview(list) {
 
 async function runRollback(pool, opts, target) {
   const file = JSON.parse(fs.readFileSync(opts.rollback, 'utf8'))
-  if (file.issue !== 378 || file.status !== 'committed') {
-    throw new Error(`回滚文件无效：issue=${file.issue} status=${file.status}（只接受 #378 已提交的文件）`)
+  if (file.issue !== 378 || !['committed', 'pending'].includes(file.status)) {
+    throw new Error(`回滚文件无效：issue=${file.issue} status=${file.status}（只接受 #378 的 committed / pending 文件）`)
   }
+  const pending = file.status === 'pending'
   if (!sameTarget(file.target, target)) {
     throw new Error(`回滚文件目标 ${targetLabel(file.target)} 与当前连接 ${targetLabel(target)} 不一致，已拒绝`)
   }
   const entries = file.rows
-  log(`回滚文件 ${opts.rollback}：${entries.length} 行（提交于 ${file.committedAt}）`)
+  log(`回滚文件 ${opts.rollback}：${entries.length} 行（${pending ? '提交状态未知，按 CAS 判定' : `提交于 ${file.committedAt}`}）`)
   const ids = entries.map((e) => e.service_item_id)
   const oldVals = entries.map((e) => (e.old_value === null ? null : String(e.old_value)))
   const newVals = entries.map((e) => (e.new_value === null ? null : String(e.new_value)))
@@ -235,6 +246,12 @@ async function runRollback(pool, opts, target) {
     const missing = ids.filter((id) => !presentIds.has(id))
     const drifted = present.filter((r) => r.drifted).map((r) => r.service_item_id)
     if (missing.length) log(`已不存在（跳过）${missing.length} 行：${preview(missing)}`)
+    if (pending && present.length > 0 && drifted.length === present.length) {
+      // 库中没有任何一行是回填写入值 → 该次写入未提交（或已被完整回滚），无需改动
+      await client.query('ROLLBACK')
+      log('pending 文件对应的写入未生效（库中无一行等于回填值），未做任何改动；该 .pending 文件可删除')
+      return
+    }
     if (drifted.length) {
       log(`值已漂移 ${drifted.length} 行：${preview(drifted)}`)
       if (!opts.allowDrift) throw new Error('存在值已漂移的行，未回滚；确认跳过这些行后加 --allow-drift 重跑')
@@ -302,18 +319,22 @@ async function runBackfill(pool, opts, target) {
       throw new Error(`回滚文件已存在，拒绝覆盖: ${rollbackOut}(.pending)`)
     }
 
-    // 再次以 SKU 当前值为准 + 仍不一致为条件，防止并发改动后覆盖；RETURNING 取实际写入值
+    // 再次按同一目标表达式（此时无模拟覆盖）+ 仍不一致为条件，防止并发改动后覆盖；RETURNING 取实际写入值
     const res = await client.query(
       `UPDATE service_items sit
-          SET is_shengmei = ps.is_shengmei, updated_at = NOW()
-         FROM sale_items si
-         JOIN product_skus ps ON ps.sku_id = si.sku_id
-        WHERE si.sale_item_id = sit.sale_item_id
-          AND sit.service_item_id = ANY($1::text[])
-          AND ps.is_shengmei IS NOT NULL
-          AND sit.is_shengmei IS DISTINCT FROM ps.is_shengmei
+          SET is_shengmei = t.target, updated_at = NOW()
+         FROM (
+           SELECT sit2.service_item_id, ${targetExpr()} AS target
+             FROM service_items sit2
+             JOIN sale_items si ON si.sale_item_id = sit2.sale_item_id
+             LEFT JOIN product_skus ps ON ps.sku_id = si.sku_id
+            WHERE sit2.service_item_id = ANY($3::text[])
+         ) t
+        WHERE sit.service_item_id = t.service_item_id
+          AND t.target IS NOT NULL
+          AND sit.is_shengmei IS DISTINCT FROM t.target
       RETURNING sit.service_item_id, sit.is_shengmei AS new_value`,
-      [candidates.map((r) => r.service_item_id)],
+      [[], [], candidates.map((r) => r.service_item_id)],
     )
     if (res.rowCount !== candidates.length) {
       throw new Error(`UPDATE 命中 ${res.rowCount} 行 ≠ 预览 ${candidates.length} 行（期间有并发改动？重跑即可），已回退事务`)
@@ -370,7 +391,10 @@ async function main() {
     process.exit(1)
   }
   const target = resolveTarget(connectionString)
-  log(`目标库: ${targetLabel(target)}`)
+  const loopbackAllowed = process.env.BACKFILL_378_ALLOW_LOOPBACK === '1'
+    && ['127.0.0.1', 'localhost'].includes(target.host)
+  if (!loopbackAllowed) assertDbTargetOrExit(connectionString)
+  log(`目标库: ${targetLabel(target)}${loopbackAllowed ? '（本地 loopback 验证模式）' : ''}`)
   log(`模式: ${opts.rollback ? `ROLLBACK（${opts.rollback}）` : opts.execute ? 'EXECUTE（实际写入）' : 'DRY-RUN（只读预览）'}`)
   if (opts.simulate.size > 0) {
     log(`模拟 SKU 配置: ${[...opts.simulate.entries()].map(([k, v]) => `${k}=${v}`).join(', ')}`)
