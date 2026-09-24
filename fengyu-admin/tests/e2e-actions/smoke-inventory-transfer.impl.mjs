@@ -347,6 +347,40 @@ try {
       && convMovements.some((m) => m.doc_id === conversion.outboundId && m.direction === '出库' && num(m.quantity_delta) === -2)
       && convMovements.some((m) => m.doc_id === conversion.inboundId && m.direction === '入库' && num(m.quantity_delta) === 2),
     JSON.stringify({ conversion, links: convLinks, movements: convMovements, target: convTargetLots.map((lot) => lot.quantity_on_hand) }))
+  check('转换手填目标批号原样保存(#345)', convTargetLots[0]?.batch_no === 'CONV-1', `${convTargetLots[0]?.batch_no}`)
+
+  // ════ #345 批号留空自动生成：库存转换 / 自采产品入库 ════
+  const autoConversion = await biz.createInventoryConversion({
+    locationId: HQ_ORG,
+    items: [{ sourceLotId: hqConvLotId, sourceQuantity: 1, targetSkuId: SKU_SUPPLY2, targetQuantity: 1 }],
+  })
+  const [autoConvInItem] = await docItems(autoConversion.inboundId)
+  const autoConvLot = (await locationLots(HQ_ORG, SKU_SUPPLY2)).find((lot) => lot.batch_no === `${autoConversion.inboundId}-01`)
+  check('转换目标批号留空：按「转换入库单号-行号」生成新批号，不沿用来源批号(#345)',
+    autoConvInItem?.batch_no === `${autoConversion.inboundId}-01`
+      && autoConvInItem.batch_no !== 'TSEED-HQ-CONV'
+      && num(autoConvLot?.quantity_on_hand) === 1,
+    JSON.stringify({ item: autoConvInItem?.batch_no, lot: autoConvLot?.batch_no }))
+
+  setSession(marketASession())
+  const autoSelfIds = []
+  for (const isGift of [false, true, false]) {
+    const { id } = await biz.createSelfPurchasedReceipt({
+      marketId: MKA_ORG,
+      supplierId: SUPPLIER_ID,
+      items: [{ skuId: SKU_SELF, quantity: 1, isGift, marketActualUnitPrice: 28, storeUnitDiscount: 0 }],
+    })
+    autoSelfIds.push(id)
+  }
+  const autoSelfItems = (await Promise.all(autoSelfIds.map((id) => docItems(id)))).flat()
+  const autoSelfLots = (await locationLots(MKA_ORG, SKU_SELF)).filter((lot) => autoSelfIds.some((id) => lot.batch_no === `${id}-01`))
+  check('自采入库批号留空：同日三次入库（含赠送）各按「入库单号-行号」生成且互不相同(#345)',
+    autoSelfItems.length === 3
+      && autoSelfItems.every((item, index) => item.batch_no === `${autoSelfIds[index]}-01`)
+      && new Set(autoSelfItems.map((item) => item.batch_no)).size === 3
+      && autoSelfLots.length === 3
+      && autoSelfLots.filter((lot) => lot.is_gift).length === 1,
+    JSON.stringify({ items: autoSelfItems.map((item) => item.batch_no), lots: autoSelfLots.map((lot) => [lot.batch_no, lot.is_gift]) }))
 } catch (e) {
   check('冒烟整体', false, '致命错误：' + (e?.stack || e?.message || String(e)))
 } finally {

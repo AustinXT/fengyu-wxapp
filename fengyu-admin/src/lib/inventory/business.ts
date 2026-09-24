@@ -722,6 +722,27 @@ function roundCents(value: number): number {
   return Math.sign(scaled) * Math.round(Math.abs(scaled) + 1e-9) / 100
 }
 
+/**
+ * 自动批号（#345，格式 A：单号-行号，如 `GRK-20260925-0001-01`）。全仓唯一的生成规则，
+ * 各入口批号留空时调用；手填批号原样保存。
+ * 单号由 generateDocId 在 advisory lock 下生成且是 inventory_docs 主键，行号在单内唯一，
+ * 所以拼出来的批号全局不重号，不需要序列或额外加锁（并发事务拿不到同一个单号）。
+ * 行号是明细在该单内的写入序号（1 起），与详情页明细顺序一致。
+ */
+export function autoBatchNo(docId: string, lineNo: number): string {
+  if (!Number.isInteger(lineNo) || lineNo <= 0) throw new Error(`批号行号必须是正整数：${lineNo}`)
+  return `${docId}-${String(lineNo).padStart(2, '0')}`
+}
+
+/**
+ * 出库明细行的批号。正常行沿用来源批号；赠送行从正常批次里拨出时生成独立批号（单号+行号），
+ * 收货方沿用明细批号落成赠送批次，于是批次下拉里赠送货与同源正常货批号不同（#345 §2.7）。
+ * 来源批次本身已是赠送批次（已有独立批号）时沿用，保留追溯。
+ */
+function lineBatchNo(sourceLot: Pick<LotSnapshot, 'batchNo' | 'isGift'>, isGift: boolean, docId: string, lineNo: number): string {
+  return isGift && !sourceLot.isGift ? autoBatchNo(docId, lineNo) : sourceLot.batchNo
+}
+
 function lotKey(input: {
   skuId: string
   batchNo: string
@@ -3261,6 +3282,8 @@ async function insertOutboundShipmentItem(
     sourceLot: LotSnapshot
     quantity: number
     isGift: boolean
+    /** 明细在本发货单内的行号（1 起），赠送行据此生成独立批号（#345） */
+    lineNo: number
     requestQuantity?: number | null
     remark?: string | null
   },
@@ -3276,7 +3299,7 @@ async function insertOutboundShipmentItem(
     // 否则多供应商的发货单在详情页看不出每行货来自谁。
     supplierId: input.sourceLot.supplierId,
     productSeries: input.sourceLot.productSeries,
-    batchNo: input.sourceLot.batchNo,
+    batchNo: lineBatchNo(input.sourceLot, input.isGift, input.docId, input.lineNo),
     expiryDate: input.sourceLot.expiryDate,
     isGift: input.isGift,
     quantity: input.quantity,
@@ -3388,6 +3411,7 @@ export async function createItemCompanyShipment(
       createdBy: session.employeeId,
       confirmed: true,
     })
+    let lineNo = 0
     for (const line of prepared) {
       if (line.quantity > EPSILON) {
         const shipmentItemId = await insertOutboundShipmentItem(tx, {
@@ -3395,6 +3419,7 @@ export async function createItemCompanyShipment(
           sourceLot: line.lot,
           quantity: line.quantity,
           isGift: false,
+          lineNo: ++lineNo,
           requestQuantity: line.orderItem.quantity,
           remark: line.remark,
         })
@@ -3436,6 +3461,7 @@ export async function createItemCompanyShipment(
           sourceLot: line.lot,
           quantity: line.giftQuantity,
           isGift: true,
+          lineNo: ++lineNo,
           requestQuantity: 0,
           remark: line.remark,
         })
@@ -3748,7 +3774,8 @@ export async function receiveSupplyChainPurchaseOrder(
       orderItem: DocItemSnapshot
       sku: SkuSnapshot
       quantity: number
-      batchNo: string
+      /** 手填批号；null = 留空，写入时按入库单号+行号生成（#345） */
+      batchNo: string | null
       expiryDate: string | null
       isGift: boolean
       cost: number
@@ -3779,7 +3806,7 @@ export async function receiveSupplyChainPurchaseOrder(
         orderItem,
         sku,
         quantity,
-        batchNo: text(line.batchNo) ?? '',
+        batchNo: text(line.batchNo),
         expiryDate,
         isGift: false,
         cost: requiredSupplyChainCost(sku, orderItem.supplyChainUnitCost),
@@ -3806,7 +3833,7 @@ export async function receiveSupplyChainPurchaseOrder(
       createdBy: session.employeeId,
       confirmed: true,
     })
-    for (const line of prepared) {
+    for (const [lineIndex, line] of prepared.entries()) {
       const targetLot = await upsertLot(tx, {
         locationId: supplyChain.locationId,
         skuId: line.sku.skuId,
@@ -3818,7 +3845,7 @@ export async function receiveSupplyChainPurchaseOrder(
         // 名称锚点，供应商一改名同一批实物就裂成两行（#132）
         supplierId: line.orderItem.supplierId ?? line.sku.supplierId,
         productSeries: line.sku.productSeries,
-        batchNo: line.batchNo,
+        batchNo: line.batchNo ?? autoBatchNo(docId, lineIndex + 1),
         expiryDate: line.expiryDate,
         isGift: line.isGift,
         supplyChainUnitCost: line.cost,
@@ -4138,8 +4165,10 @@ export async function createStoreAllocation(
       createdBy: session.employeeId,
       confirmed: true,
     })
+    let lineNo = 0
     for (const line of prepared) {
       if (line.quantity > EPSILON) {
+        lineNo += 1
         const itemId = await insertDocItem(tx, {
           docId,
           lotId: line.lot.id,
@@ -4198,6 +4227,7 @@ export async function createStoreAllocation(
         `)
       }
       if (line.giftQuantity > EPSILON) {
+        lineNo += 1
         const itemId = await insertDocItem(tx, {
           docId,
           lotId: line.lot.id,
@@ -4206,7 +4236,7 @@ export async function createStoreAllocation(
           specName: line.lot.specName,
           supplier: line.lot.supplier,
           productSeries: line.lot.productSeries,
-          batchNo: line.lot.batchNo,
+          batchNo: lineBatchNo(line.lot, true, docId, lineNo),
           expiryDate: line.lot.expiryDate,
           isGift: true,
           quantity: line.giftQuantity,
@@ -4996,7 +5026,8 @@ export async function createSelfPurchasedReceipt(
     const prepared: Array<{
       sku: SkuSnapshot
       quantity: number
-      batchNo: string
+      /** 手填批号；null = 留空，写入时按入库单号+行号生成（#345） */
+      batchNo: string | null
       expiryDate: string | null
       isGift: boolean
       marketActualUnitPrice: number
@@ -5028,7 +5059,7 @@ export async function createSelfPurchasedReceipt(
       prepared.push({
         sku,
         quantity,
-        batchNo: text(line.batchNo) ?? '',
+        batchNo: text(line.batchNo),
         expiryDate: text(line.expiryDate),
         isGift: Boolean(line.isGift),
         marketActualUnitPrice,
@@ -5059,7 +5090,7 @@ export async function createSelfPurchasedReceipt(
       createdBy: session.employeeId,
       confirmed: true,
     })
-    for (const item of prepared) {
+    for (const [lineIndex, item] of prepared.entries()) {
       const lot = await upsertLot(tx, {
         locationId: marketId,
         skuId: item.sku.skuId,
@@ -5068,7 +5099,8 @@ export async function createSelfPurchasedReceipt(
         supplier: supplierName,
         supplierId: supplier.id,
         productSeries: item.sku.productSeries,
-        batchNo: item.batchNo,
+        // 同一张自采单里赠送行与正常行行号不同，批号天然分开（#345 §2.7）
+        batchNo: item.batchNo ?? autoBatchNo(docId, lineIndex + 1),
         expiryDate: item.expiryDate,
         isGift: item.isGift,
         supplyChainUnitCost: null,
@@ -5236,7 +5268,8 @@ export async function createInventoryConversion(
       sourceQuantity: number
       targetSku: SkuSnapshot
       targetQuantity: number
-      targetBatchNo: string
+      /** 手填目标批号；null = 留空，按库存转换入库单号+行号生成新批号，不再沿用来源批号（#345 §2.15） */
+      targetBatchNo: string | null
       targetExpiryDate: string | null
       remark: string | null
     }> = []
@@ -5267,7 +5300,7 @@ export async function createInventoryConversion(
         sourceQuantity,
         targetSku,
         targetQuantity,
-        targetBatchNo: text(line.targetBatchNo) ?? sourceLot.batchNo,
+        targetBatchNo: text(line.targetBatchNo),
         targetExpiryDate: text(line.targetExpiryDate) ?? sourceLot.expiryDate,
         remark: text(line.remark),
       })
@@ -5301,7 +5334,7 @@ export async function createInventoryConversion(
       createdBy: session.employeeId,
       confirmed: true,
     })
-    for (const item of prepared) {
+    for (const [lineIndex, item] of prepared.entries()) {
       const outboundItemId = await insertDocItem(tx, {
         docId: outboundId,
         lotId: item.sourceLot.id,
@@ -5330,7 +5363,7 @@ export async function createInventoryConversion(
         supplier: item.targetSku.supplier,
         supplierId: item.sourceLot.supplierId,
         productSeries: item.targetSku.productSeries,
-        batchNo: item.targetBatchNo,
+        batchNo: item.targetBatchNo ?? autoBatchNo(inboundId, lineIndex + 1),
         expiryDate: item.targetExpiryDate,
         isGift: item.sourceLot.isGift,
         ...priceFromLot(item.sourceLot),
