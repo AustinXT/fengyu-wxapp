@@ -6,8 +6,10 @@ import {
 } from "@/lib/data-center/data-start"
 
 function startText(group: DataStartGroup): string {
-  const first = group.stores[0].start
-  const last = group.stores[group.stores.length - 1].start
+  // 不依赖调用方排序（#289 可能自行拼结果）：YYYY-MM-DD 定长，字典序即时间序
+  const starts = group.stores.map((store) => store.start).sort()
+  const first = starts[0]
+  const last = starts[starts.length - 1]
   return first === last ? `${first} 起` : `${first} ~ ${last} 起`
 }
 
@@ -52,8 +54,8 @@ export function DataStartNotice({ results }: { results: readonly DataStartRangeR
             </span>
           ))}
         </div>
-        {rest.map((result) => (
-          <div key={result.label}>
+        {rest.map((result, index) => (
+          <div key={`${result.label}-${index}`}>
             {result.label}（{result.range.start} ~ {result.range.end}）同样早于数据起点（涉及 {storeCount(result)} 家门店），相关数字不完整。
           </div>
         ))}
