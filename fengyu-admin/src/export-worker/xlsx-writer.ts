@@ -111,11 +111,16 @@ export async function writeStreamXlsx<T>(options: StreamXlsxOptions<T>): Promise
     layout.rows.forEach((cells, rowIndex) => {
       for (const cell of cells) {
         const target = headerRows[rowIndex].getCell(cell.firstLeafIndex + 1)
-        target.value = cell.groupKey
+        const text = cell.groupKey
           ? options.columns[cell.firstLeafIndex].group!.header
           : options.columns[cell.firstLeafIndex].header
+        target.value = text
+        // 含换行的表头（主表照抄模板的多行分组标题 / 两行列名）要开自动换行，否则 Excel 里挤成一行
+        const wrapText = text.includes('\n') || undefined
         if (layout.depth === 2) {
-          target.alignment = { vertical: 'middle', horizontal: cell.groupKey ? 'center' : undefined }
+          target.alignment = { vertical: 'middle', horizontal: cell.groupKey ? 'center' : undefined, wrapText }
+        } else if (wrapText) {
+          target.alignment = { wrapText }
         }
         if (cell.groupKey || groupStarts.has(cell.firstLeafIndex)) {
           target.border = { left: { style: 'thin' } }
@@ -129,6 +134,13 @@ export async function writeStreamXlsx<T>(options: StreamXlsxOptions<T>): Promise
         worksheet.mergeCells(1, column, cell.rowSpan, column + cell.colSpan - 1)
       }
     }
+    // 流式写出不会按内容自动撑高行：多行表头按最多行数显式给行高（纵向合并格只算在首行，偏高无害）
+    layout.rows.forEach((cells, rowIndex) => {
+      const lines = Math.max(1, ...cells.map((cell) => (cell.groupKey
+        ? options.columns[cell.firstLeafIndex].group!.header
+        : options.columns[cell.firstLeafIndex].header).split('\n').filter(Boolean).length))
+      if (lines > 1) headerRows[rowIndex].height = lines * 15 + 4
+    })
     for (const header of headerRows) {
       header.font = { bold: true }
       header.commit()
