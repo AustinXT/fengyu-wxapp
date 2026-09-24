@@ -185,5 +185,13 @@ describe('lakala 跨副本一致性守护', () => {
     expect(yml).toContain("- 'fengyu-admin/src/**/*.ts'")
     // - lint.yml 自身：改 workflow 必须让 meta-guard 有机会拦下「把全量改回清单」
     expect(yml).toContain("- '.github/workflows/lint.yml'")
+
+    // 本 job 靠 `npm ci` 装依赖才跑得起来，所以依赖清单也必须在触发面内。
+    // ⚠️ 上面那条 `fengyu-client/cloudfunctions/**/*.js` 的 glob **不匹配 .json** ——
+    // 少了这两条，「只升 vitest/pg 版本号」的 PR 命中不到任何 paths 条目，
+    // 整个 workflow 的 7 个 job 全不触发，而依赖升级（vitest 主版本可能改 mock 行为）
+    // 恰恰是最该让全量守护跑一遍的那一次。admin 侧早已为此加过同款三条（#232）。
+    expect(yml).toContain("- 'fengyu-client/cloudfunctions/clientApi/package.json'")
+    expect(yml).toContain("- 'fengyu-client/cloudfunctions/clientApi/package-lock.json'")
   })
 })
