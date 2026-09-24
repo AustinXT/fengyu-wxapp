@@ -223,3 +223,7 @@
 .sku-picker-error {
   color: #D94040;
 }
+
+.sku-picker-more {
+  color: #5E8BB3;
+}

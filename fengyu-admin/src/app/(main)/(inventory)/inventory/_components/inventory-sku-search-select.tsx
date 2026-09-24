@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from 'react'
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from 'react'
 import { listInventorySkus } from '@/actions/inventory/skus'
 import { actionErrorMessage } from '@/lib/action-error'
 import type { InventorySkuOptionFilters, InventorySkuRow } from '@/lib/inventory/types'
@@ -12,6 +12,39 @@ export const SKU_SEARCH_DEBOUNCE_MS = 300
 
 export function formatInventorySkuLabel(sku: Pick<InventorySkuRow, 'productName' | 'specName' | 'productCode'>): string {
   return `${sku.productName}${sku.specName ? ` · ${sku.specName}` : ''} · ${sku.productCode}`
+}
+
+/**
+ * 已选商品名称的模块级缓存（按 skuId 去重在途请求）。
+ *
+ * 明细行用 index 当 key，删掉中间一行会让后面每一行的 value 平移到别的组件实例上；
+ * 若名称只存在实例自己的 state 里，每一行都会各发一次回显查询。Server Action 在客户端是
+ * 全局串行队列，这一串查询会把批次取数、提交一起拖住（#129 同一种观感）。
+ * 失败的条目会被移除，下次还能重查。
+ */
+const skuLabelCache = new Map<string, Promise<string>>()
+
+export function rememberSkuLabel(sku: Pick<InventorySkuRow, 'skuId' | 'productName' | 'specName' | 'productCode'>) {
+  skuLabelCache.set(sku.skuId, Promise.resolve(formatInventorySkuLabel(sku)))
+}
+
+function resolveSkuLabel(skuId: string): Promise<string> {
+  const cached = skuLabelCache.get(skuId)
+  if (cached) return cached
+  const pending = listInventorySkus({ skuIds: [skuId], onlyActive: false, page: 1, pageSize: SKU_SEARCH_PAGE_SIZE })
+    .then((result) => {
+      const sku = result.data.find((row) => row.skuId === skuId)
+      // 查不到（被删 / 越出 scope）按 id 显示，也缓存下来：再查一遍结果不会变
+      return sku ? formatInventorySkuLabel(sku) : skuId
+    })
+  pending.catch(() => skuLabelCache.delete(skuId))
+  skuLabelCache.set(skuId, pending)
+  return pending
+}
+
+/** 测试用：清空模块级缓存 */
+export function resetSkuLabelCacheForTest() {
+  skuLabelCache.clear()
 }
 
 /**
@@ -56,11 +89,13 @@ export function InventorySkuSearchSelect({
   const [rows, setRows] = useState<InventorySkuRow[]>([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
+  const [lastPageSize, setLastPageSize] = useState(0)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [retryNonce, setRetryNonce] = useState(0)
   const [activeIndex, setActiveIndex] = useState(-1)
   const [labels, setLabels] = useState<Map<string, string>>(() => new Map())
-  // 只有最后一次发出的请求能落地：关键词连打、翻页与换过滤条件交错时，先发后到的旧结果必须丢掉。
+  // 只有最后一次发出的请求能落地：关键词连打、翻页与换过滤条件交错时，过时的结果必须丢掉。
   const requestSeqRef = useRef(0)
 
   // 调用方多半传内联对象字面量，按内容而不是引用判断过滤条件是否真的变了。
@@ -72,45 +107,27 @@ export function InventorySkuSearchSelect({
     return () => clearTimeout(timer)
   }, [keyword])
 
-  // 展开、关键词或过滤条件变化 → 重查第 1 页。收起时不取数。
-  useEffect(() => {
-    if (!open) return
+  const fetchPage = useCallback((targetPage: number) => {
     const seq = ++requestSeqRef.current
     setLoading(true)
     setError(null)
-    setRows([])
-    setTotal(0)
-    setPage(1)
-    setActiveIndex(-1)
-    listInventorySkus({ ...stableFilters, keyword: debouncedKeyword || undefined, onlyActive: true, page: 1, pageSize: SKU_SEARCH_PAGE_SIZE })
-      .then((result) => {
-        if (seq !== requestSeqRef.current) return
-        setRows(result.data)
-        setTotal(result.total)
-      })
-      .catch((err: unknown) => {
-        if (seq !== requestSeqRef.current) return
-        setError(actionErrorMessage(err, '加载库存商品失败'))
-      })
-      .finally(() => {
-        if (seq === requestSeqRef.current) setLoading(false)
-      })
-  }, [open, debouncedKeyword, stableFilters])
-
-  function loadMore() {
-    if (loading) return
-    const nextPage = page + 1
-    const seq = ++requestSeqRef.current
-    setLoading(true)
-    listInventorySkus({ ...stableFilters, keyword: debouncedKeyword || undefined, onlyActive: true, page: nextPage, pageSize: SKU_SEARCH_PAGE_SIZE })
+    listInventorySkus({
+      ...stableFilters,
+      keyword: debouncedKeyword || undefined,
+      onlyActive: true,
+      page: targetPage,
+      pageSize: SKU_SEARCH_PAGE_SIZE,
+    })
       .then((result) => {
         if (seq !== requestSeqRef.current) return
         setRows((previous) => {
+          if (targetPage === 1) return result.data
           const seen = new Set(previous.map((row) => row.skuId))
           return [...previous, ...result.data.filter((row) => !seen.has(row.skuId))]
         })
         setTotal(result.total)
-        setPage(nextPage)
+        setPage(targetPage)
+        setLastPageSize(result.data.length)
       })
       .catch((err: unknown) => {
         if (seq !== requestSeqRef.current) return
@@ -119,20 +136,35 @@ export function InventorySkuSearchSelect({
       .finally(() => {
         if (seq === requestSeqRef.current) setLoading(false)
       })
-  }
+  }, [stableFilters, debouncedKeyword])
+
+  // 展开、关键词或过滤条件变化 → 重查第 1 页。收起时清空候选：下次展开前过滤条件可能已变
+  // （换了市场），不能让旧口径的候选在重新取数前那一帧被点到。
+  useEffect(() => {
+    if (!open) {
+      requestSeqRef.current += 1
+      setRows([])
+      setTotal(0)
+      setLoading(false)
+      return
+    }
+    setRows([])
+    setTotal(0)
+    setActiveIndex(-1)
+    fetchPage(1)
+  }, [open, fetchPage, retryNonce])
 
   // 已选值名称兜底：既不在本地记录里、调用方也没给名称时，按 id 精确查（含已停用）。
   const knownLabel = value ? labels.get(value) ?? (selectedLabel || null) : null
   useEffect(() => {
     if (!value || knownLabel) return
     let cancelled = false
-    listInventorySkus({ skuIds: [value], onlyActive: false, page: 1, pageSize: SKU_SEARCH_PAGE_SIZE })
-      .then((result) => {
-        if (cancelled) return
-        const sku = result.data.find((row) => row.skuId === value)
-        setLabels((previous) => new Map(previous).set(value, sku ? formatInventorySkuLabel(sku) : value))
+    resolveSkuLabel(value)
+      .then((label) => {
+        if (!cancelled) setLabels((previous) => new Map(previous).set(value, label))
       })
       .catch(() => {
+        // 查不到名称时退回显示 id；不写进本地记录，value 下次变化回来时还会再查
         if (!cancelled) setLabels((previous) => new Map(previous).set(value, value))
       })
     return () => {
@@ -145,15 +177,20 @@ export function InventorySkuSearchSelect({
     function handleClickOutside(event: MouseEvent) {
       if (containerRef.current && !containerRef.current.contains(event.target as Node)) setOpen(false)
     }
-    // Esc 在面板任何位置都能收起（焦点可能停在「加载更多」按钮上，不只在搜索框里）
+    // Esc 在面板任何位置都能收起（焦点可能停在「加载更多」按钮上，不只在搜索框里）。
+    // 捕获阶段 + preventDefault：单据中心的建单表单在原生 <dialog> 里，Esc 的默认动作是关掉整个弹窗，
+    // 这一下只该收起下拉。
     function handleEscape(event: globalThis.KeyboardEvent) {
-      if (event.key === 'Escape') setOpen(false)
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      event.stopPropagation()
+      setOpen(false)
     }
     document.addEventListener('mousedown', handleClickOutside)
-    document.addEventListener('keydown', handleEscape)
+    document.addEventListener('keydown', handleEscape, true)
     return () => {
       document.removeEventListener('mousedown', handleClickOutside)
-      document.removeEventListener('keydown', handleEscape)
+      document.removeEventListener('keydown', handleEscape, true)
     }
   }, [open])
 
@@ -162,6 +199,7 @@ export function InventorySkuSearchSelect({
   }, [disabled])
 
   function select(sku: InventorySkuRow) {
+    rememberSkuLabel(sku)
     setLabels((previous) => new Map(previous).set(sku.skuId, formatInventorySkuLabel(sku)))
     onChange(sku.skuId, sku)
     setOpen(false)
@@ -183,7 +221,8 @@ export function InventorySkuSearchSelect({
     }
   }
 
-  const hasMore = rows.length < total
+  // 满页才可能还有下一页：翻页期间有人新建 SKU 会让后续页错位、被去重掉，只看 rows < total 会让按钮永远点不完
+  const hasMore = !error && rows.length < total && lastPageSize === SKU_SEARCH_PAGE_SIZE
   const displayText = value ? (knownLabel ?? '加载中…') : null
 
   return (
@@ -259,7 +298,18 @@ export function InventorySkuSearchSelect({
                 {debouncedKeyword ? '没有匹配的库存商品' : '暂无可选库存商品'}
               </div>
             )}
-            {error && <div role="alert" className="px-3 py-2 text-sm text-[var(--destructive)]">{error}</div>}
+            {error && (
+              <div role="alert" className="flex items-center justify-between gap-2 px-3 py-2 text-sm text-[var(--destructive)]">
+                <span>{error}</span>
+                <button
+                  type="button"
+                  className="shrink-0 text-xs text-[var(--primary)] hover:underline"
+                  onClick={() => (rows.length > 0 ? fetchPage(page + 1) : setRetryNonce((n) => n + 1))}
+                >
+                  重试
+                </button>
+              </div>
+            )}
             {loading && <div className="px-3 py-2 text-sm text-[var(--muted-foreground)]">加载中…</div>}
           </div>
           <div className="flex items-center justify-between border-t border-[var(--border)] px-3 py-1.5 text-xs text-[var(--muted-foreground)]">
@@ -271,7 +321,7 @@ export function InventorySkuSearchSelect({
                 </button>
               )}
               {hasMore && (
-                <button type="button" className="text-[var(--primary)] hover:underline disabled:opacity-50" disabled={loading} onClick={loadMore}>
+                <button type="button" className="text-[var(--primary)] hover:underline disabled:opacity-50" disabled={loading} onClick={() => fetchPage(page + 1)}>
                   加载更多
                 </button>
               )}

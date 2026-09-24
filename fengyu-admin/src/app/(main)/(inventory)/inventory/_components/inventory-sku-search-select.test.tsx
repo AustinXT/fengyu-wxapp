@@ -6,7 +6,7 @@ import type { InventorySkuRow } from '@/lib/inventory/types'
 const { mockListSkus } = vi.hoisted(() => ({ mockListSkus: vi.fn() }))
 vi.mock('@/actions/inventory/skus', () => ({ listInventorySkus: mockListSkus }))
 
-import { InventorySkuSearchSelect, SKU_SEARCH_DEBOUNCE_MS, SKU_SEARCH_PAGE_SIZE } from './inventory-sku-search-select'
+import { InventorySkuSearchSelect, resetSkuLabelCacheForTest, SKU_SEARCH_DEBOUNCE_MS, SKU_SEARCH_PAGE_SIZE } from './inventory-sku-search-select'
 
 function sku(skuId: string, productName: string, productCode = skuId): InventorySkuRow {
   return { skuId, productCode, productName, specName: null } as InventorySkuRow
@@ -46,6 +46,7 @@ beforeEach(() => {
   vi.useFakeTimers()
   mockListSkus.mockReset()
   submitSpy.mockReset()
+  resetSkuLabelCacheForTest()
 })
 afterEach(() => {
   vi.useRealTimers()
@@ -95,8 +96,9 @@ describe('InventorySkuSearchSelect（#339）', () => {
     expect(mockListSkus.mock.calls[1][0]).toMatchObject({ page: 2 })
     expect(screen.getAllByRole('option')).toHaveLength(SKU_SEARCH_PAGE_SIZE + 1)
     expect(screen.queryByRole('button', { name: '加载更多' })).not.toBeInTheDocument()
-    // 焦点不在搜索框（比如刚点过「加载更多」）时 Esc 也能收起
-    fireEvent.keyDown(document.body, { key: 'Escape' })
+    // 焦点不在搜索框（比如刚点过「加载更多」）时 Esc 也能收起；且取消默认动作 ——
+    // 单据中心的表单在原生 <dialog> 里，Esc 的默认动作是关掉整个建单弹窗
+    expect(fireEvent.keyDown(document.body, { key: 'Escape' })).toBe(false)
     expect(screen.getByRole('combobox')).toHaveAttribute('aria-expanded', 'false')
   })
 
@@ -182,5 +184,37 @@ describe('InventorySkuSearchSelect（#339）', () => {
     fireEvent.keyDown(input, { key: 'Enter' })
     expect(onChange).toHaveBeenCalledWith('A')
     expect(submitSpy).not.toHaveBeenCalled()
+  })
+
+  it('多个明细行回显同一个 SKU（删行后 value 平移也一样）只发一次查询', async () => {
+    const gate = deferred<{ data: InventorySkuRow[]; total: number }>()
+    mockListSkus.mockReturnValue(gate.promise)
+    render(<><Harness initial="Z9" /><Harness initial="Z9" /><Harness initial="Z9" /></>)
+    await act(async () => { gate.resolve({ data: [sku('Z9', '同一个商品', 'P009')], total: 1 }) })
+    await flush()
+    expect(mockListSkus).toHaveBeenCalledTimes(1)
+    for (const trigger of screen.getAllByRole('combobox')) expect(trigger).toHaveTextContent('同一个商品 · P009')
+  })
+
+  it('第一页加载失败：显示错误与重试，重试成功后错误消失、候选出现', async () => {
+    mockListSkus
+      .mockRejectedValueOnce(new Error('NETWORK: boom'))
+      .mockResolvedValueOnce({ data: [sku('A', '精华液')], total: 1 })
+    render(<Harness />)
+    fireEvent.click(screen.getByRole('combobox'))
+    await flush()
+    expect(screen.getByRole('alert')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '重试' }))
+    await flush()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expect(screen.getByRole('option', { name: /精华液/ })).toBeInTheDocument()
+  })
+
+  it('不满一页即视为到底：即便 total 更大（翻页期间数据错位被去重）也不再显示加载更多', async () => {
+    mockListSkus.mockResolvedValue({ data: [sku('A', '精华液')], total: 5 })
+    render(<Harness />)
+    fireEvent.click(screen.getByRole('combobox'))
+    await flush()
+    expect(screen.queryByRole('button', { name: '加载更多' })).not.toBeInTheDocument()
   })
 })

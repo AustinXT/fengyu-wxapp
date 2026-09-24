@@ -92,9 +92,10 @@
           <text class="sku-option-stock">本店库存 {{item.stockReference}}</text>
         </view>
         <view wx:if="{{skuLoading}}" class="sku-picker-tip">加载中…</view>
-        <view wx:elif="{{skuError}}" class="sku-picker-tip sku-picker-error" bindtap="onOpenSkuPicker">{{skuError}}，点击重试</view>
+        <view wx:elif="{{skuError}}" class="sku-picker-tip sku-picker-error" bindtap="onRetrySkuPage">{{skuError}}，点击重试</view>
         <view wx:elif="{{skuOptions.length === 0}}" class="sku-picker-tip">{{skuKeyword ? '没有匹配的可报货产品' : '暂无可报货产品'}}</view>
-        <view wx:elif="{{!skuHasMore}}" class="sku-picker-tip">已显示全部 {{skuTotal}} 个产品</view>
+        <view wx:elif="{{skuHasMore}}" class="sku-picker-tip sku-picker-more" bindtap="onLoadMoreSku">上拉或点击加载更多</view>
+        <view wx:else class="sku-picker-tip">已显示全部 {{skuOptions.length}} 个产品</view>
       </scroll-view>
     </view>
   </van-popup>

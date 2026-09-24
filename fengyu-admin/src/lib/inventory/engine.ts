@@ -1569,8 +1569,10 @@ export const listInventorySkus = withPermission(
   'inventory:stock_list',
   async (
     session,
-    filters: InventorySkuListFilters = {},
+    rawFilters: InventorySkuListFilters | null = {},
   ): Promise<{ data: InventorySkuRow[]; total: number }> => {
+    // Server Action 可被直调：显式传 null 时默认参数不生效
+    const filters = rawFilters ?? {}
     const skuIds = normalizeSkuIdFilter(filters.skuIds)
     if (skuIds !== undefined && skuIds.length === 0) return { data: [], total: 0 }
     await syncInventoryLocations()

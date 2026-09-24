@@ -202,6 +202,8 @@ Page({
   onUnload() {
     if (this._skuSearchTimer) clearTimeout(this._skuSearchTimer)
     this._skuSearchTimer = null
+    // 作废在途检索：页面卸载后回来的结果不再 setData
+    this._skuRequestSeq += 1
   },
 
   onOpenSkuPicker() {
@@ -210,8 +212,18 @@ Page({
       return
     }
     this.setData({ showSkuPicker: true })
-    // 首次打开或上次加载失败时拉第一页；关掉再开保留上次的关键词与结果
-    if (this.data.skuPage === 0 || this.data.skuError) this.loadSkuPage(true)
+    // 首次打开时拉第一页（首页请求仍在途就不重复发）；关掉再开保留上次的关键词与结果
+    if (this.data.skuPage === 0 && !this.data.skuLoading) this.loadSkuPage(true)
+  },
+
+  onRetrySkuPage() {
+    if (this.data.skuLoading) return
+    // 第 N 页失败只重试那一页，不清掉已加载的
+    this.loadSkuPage(this.data.skuPage === 0)
+  },
+
+  onLoadMoreSku() {
+    this.onSkuListReachBottom()
   },
 
   onCloseSkuPicker() {

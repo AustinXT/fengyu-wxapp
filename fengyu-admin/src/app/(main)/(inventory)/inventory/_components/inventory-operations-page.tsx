@@ -1680,7 +1680,11 @@ function StoreRequestForm({
           <InventorySubjectSelect
             options={markets.map((location) => ({ value: location.locationId, label: location.name }))}
             value={marketId}
-            onChange={setMarketId}
+            onChange={(nextMarketId) => {
+              // 与 selectStore 同理：候选按市场过滤，换市场后已选商品可能不再合法
+              if (nextMarketId !== marketId) setLines((previous) => previous.map((line) => ({ ...line, skuId: '' })))
+              setMarketId(nextMarketId)
+            }}
             placeholder="请选择市场"
             autoSelect={false}
           />
@@ -1700,7 +1704,7 @@ function StoreRequestForm({
         {lines.map((line, index) => (
           <div key={index} className="grid grid-cols-1 gap-2 rounded-[var(--radius)] border border-[var(--border)] p-3 md:grid-cols-[minmax(0,1fr)_10rem_minmax(0,1fr)_2.5rem]">
             <FormField label="商品" required>
-              <SkuPicker value={line.skuId} onChange={(skuId) => updateLine(index, { skuId })} filters={{ reportable: true, availableToMarketId: marketId }} disabled={!marketId} disabledHint="请先选择报货门店" />
+              <SkuPicker value={line.skuId} onChange={(skuId) => updateLine(index, { skuId })} filters={{ reportable: true, availableToMarketId: marketId }} disabled={!marketId} disabledHint={storeId ? '所选门店未关联市场' : '请先选择报货门店'} />
             </FormField>
             <FormField label="数量" required>
               <Input type="number" min="0.01" step="0.01" max="9999999999.99" value={line.quantity} onChange={(event) => updateLine(index, { quantity: event.target.value })} />
