@@ -1445,6 +1445,16 @@ export const listInventoryMarketTransferTargets = withAnyPermission(
  */
 const PROMOTION_READ_SCOPE = { scopeActions: ['inventory:stock_list', INVENTORY_PROMOTION_MAINTAIN_ACTION] } as const
 
+/**
+ * 福利方案读路径的库存主体范围：维护方（按并集收紧后的会话判定）不过滤；其余一律**重新按
+ * stock_list 收紧**再算 scope —— 并集里那条只授维护动作的绑定（如市场 B 误授）不能把
+ * 市场 B 的方案带进市场 A 账号的可见范围。
+ */
+async function promotionVisibleLocationIds(session: AuthSession): Promise<string[] | null> {
+  if (isInventoryPromotionMaintainer(session)) return null
+  return scopedLocationIds(scopeSessionToActions(session, ['inventory:stock_list']))
+}
+
 export const listInventoryPromotionMarketOptions = withPermission(
   'inventory:stock_list',
   async (session): Promise<Array<{ locationId: string; name: string }>> => {
@@ -1453,11 +1463,9 @@ export const listInventoryPromotionMarketOptions = withPermission(
       eq(inventoryLocations.isActive, true),
       eq(inventoryLocations.locationType, '市场'),
     ]
-    if (!isInventoryPromotionMaintainer(session)) {
-      const scoped = await scopedLocationIds(session)
-      if (scoped !== null) {
-        conditions.push(scoped.length > 0 ? inArray(inventoryLocations.locationId, scoped) : sql`FALSE`)
-      }
+    const scoped = await promotionVisibleLocationIds(session)
+    if (scoped !== null) {
+      conditions.push(scoped.length > 0 ? inArray(inventoryLocations.locationId, scoped) : sql`FALSE`)
     }
     return db
       .select({ locationId: inventoryLocations.locationId, name: inventoryLocations.name })
@@ -4266,7 +4274,7 @@ async function promotionPlanRows(
   const priceVisible = canViewPrice(session)
   // 维护方（总部供应链）要能看到并维护各市场的专属方案；总部库存 scope 不展开市场，
   // 按 scope 过滤会让它建完市场方案就看不到（#354）。市场仍只见全局 + 本市场方案。
-  const scoped = isInventoryPromotionMaintainer(session) ? null : await scopedLocationIds(session)
+  const scoped = await promotionVisibleLocationIds(session)
   const conditions: (SQL | undefined)[] = []
   if (onlyId) conditions.push(eq(inventoryPromotionPlans.id, onlyId))
   if (scoped !== null) {

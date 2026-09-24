@@ -4634,6 +4634,31 @@ describe('报货福利方案只由总部供应链维护（#354，引擎层）', 
     expect(dialect.sqlToQuery(optionsWhere.where as never).params).toEqual([true, '市场'])
   })
 
+  it('市场 A 的 stock_list 绑定 + 市场 B 误授的仅维护动作绑定：列表与候选只按市场 A，不越权读市场 B', async () => {
+    const { listInventoryPromotionMarketOptions, listInventoryPromotionPlans } = await import('./engine')
+    const dialect = new PgDialect()
+    mockGetSession.mockResolvedValue({
+      employeeId: 'E-MX', name: '跨市场拼接', phone: '13800000005',
+      roles: [role('市场', 'M1', ['inventory:stock_list', 'inventory:market_price_view']), role('市场', 'M2', [MANAGE])],
+      permissions: { actions: ['inventory:stock_list', 'inventory:market_price_view', MANAGE], scopeStoreIds: [], scopeOrgNodeIds: ['M1', 'M2'] },
+    })
+    const listWhere = captureListWhere()
+    await listInventoryPromotionPlans()
+    expect(dialect.sqlToQuery(listWhere.where as never).params).toEqual(['M1'])
+
+    const optionsWhere: { where?: unknown } = {}
+    mockDb.select.mockReturnValueOnce({
+      from: () => ({
+        where: (where: unknown) => {
+          optionsWhere.where = where
+          return { orderBy: async () => [] }
+        },
+      }),
+    })
+    await listInventoryPromotionMarketOptions()
+    expect(dialect.sqlToQuery(optionsWhere.where as never).params).toEqual([true, '市场', 'M1'])
+  })
+
   it('市场库存财务调用新建、修改、停用均 PERMISSION_DENIED，且不读库', async () => {
     mockGetSession.mockResolvedValue(MARKET_FINANCE)
     await expect(createInventoryPromotionPlan(INPUT)).rejects.toThrow(/^PERMISSION_DENIED: 报货福利方案只能由总部供应链维护/)
