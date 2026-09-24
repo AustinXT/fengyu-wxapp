@@ -340,10 +340,36 @@ async function queryMemberCountByStore(
 /**
  * 体验/新增/复购人数 + 新增业绩 + 复购业绩，按 store_id 归组（单查，全套 CTE）。
  *
- * store_id 归组采用 period_agg.store_id（消费发生的门店）。同一顾客在该品项的
- * entry_date 仍跨店合并（first_entry 不带 store_id），但人数落到「期内消费发生的门店」，
- * 与 KPI 总量（DISTINCT client 跨店去重）口径上的差异：明细各门店人数相加 ≥ KPI 总量
- * （同顾客跨门店购买会在多店各计一次），与 sales 板块明细的归组语义一致（业务接受）。
+ * **归店规则**（#286 修正后）：
+ *   - 体验 / 复购：`period_agg.store_id`（期内消费发生的门店）。这两类人必然在 `period_agg`
+ *     里有行 —— `tiyan` 本就从 `period_agg` 派生，`fugou` 要求 `purchase_received >= threshold > 0`。
+ *   - **新增**：`COALESCE(period_agg.store_id, xinzeng.entry_store_id)` —— 期内有销售单/转换单
+ *     消费的落消费门店，**没有的落「进入达标日所在门店」**。
+ *
+ * ⚠️ 为什么新增必须兜底（#286，实测漏 **65.5%**）：`period_agg` 要求
+ * `purchase_received > 0`，而 `purchase_received` 只统计销售单/转换单、**不含寄存单**；
+ * 而进入达标（`first_entry` → `entry_store` → `xinzeng`）走的是 `day_received`，**含寄存单**。
+ * 于是「进入达标日金额全部来自寄存单」的顾客在 `xinzeng` 里有、在 `period_agg` 里没有 ——
+ * 旧实现以 `period_agg` 作主表再内连接回来，把他们整体丢弃，
+ * 派生的新增客单价与复购率因此双双虚高 **2.90 倍**。
+ *
+ * **与 KPI 总量的关系**：明细是组内 DISTINCT、KPI 是全局 DISTINCT，
+ * 所以 **明细各门店人数相加 ≥ KPI 总量**，差额 = Σ(每位顾客落的门店数 − 1)。
+ * 这是归组语义决定的、与 sales 板块一致。**单店 scope 下二者严格相等**（跨店重复不存在）。
+ *
+ * **为什么不让集团也严格相等**：只要给每个 `(client, grp)` 强行保留一家门店即可做到，
+ * 但那样**人数与业绩会归到不同门店**（顾客在 A 店花的钱记在 A 店，人却可能计到 B 店），
+ * 该店的「新增客单价 = 新增业绩 ÷ 新增人数」随即失真，且与 sales 板的归组语义分叉。
+ * 权衡后保留「可多店」，由 UI/文档说明差额来源。
+ *
+ * 业绩不受影响：`SUM(pa.day_received)` 在 LEFT JOIN 后对无消费行取 NULL 被忽略，
+ * 三个口径（KPI / 修正前明细 / 修正后明细）业绩完全相等 —— 本缺陷**只丢人、不丢钱**。
+ *
+ * ⚠️ 新形态：「本期只有寄存单进入、零销售单消费」的门店会出现
+ * `新增人数 N > 0` 而 `新增业绩 = 0` ⇒ 客单价显示 `0.00` 而非 `--`（`safeDiv` 分母 > 0）。
+ * 数值是诚实的，不是 bug。
+ *
+ * 具体数字（会随数据漂移）一律见 `_tmp/issue-286/verify.md`，不写进本注释。
  */
 async function queryCycleByStore(
   session: AuthSession,
@@ -413,9 +439,39 @@ async function queryCycleByStore(
       WHERE purchase_date BETWEEN ${range.start} AND ${range.end}
         AND purchase_received > 0
     ),
+    -- 进入达标日 + 当日所在门店，一次取齐（#286）。
+    --
+    -- entry_store_id 是新增人数在「期内无销售单/转换单消费」时的归店兜底。
+    -- ⚠️ 这是主干不是边角：归店按 (顾客, 品项) 匹配，生产实测约 **四分之三** 的
+    -- (顾客, 品项) 组合在期内没有销售单/转换单消费，全靠这一列归店
+    -- （按人计：约六成顾客期内完全无此类消费）。一旦它为 NULL，那批人会静默丢三次（COALESCE 得 NULL 组
+    -- → store_ids 排除 NULL → 最终 LEFT JOIN 永不匹配），与 #286 本身是同一个失败模式。
+    --
+    -- 所以刻意用 DISTINCT ON 让 entry_date 与 entry_store_id **出自同一行**：二者同生共死，
+    -- 结构上不存在「有日期却没门店」的组合，也不依赖任何等值匹配 —— 从而绕开了
+    -- grp 可空（product_categories.product_kind 在 schema 里可空）带来的 NULL 不安全等值陷阱。
+    -- 先前写成「先算 entry_date、再用 qd.grp = fe.grp 回查门店」的版本除了这个 NULL 洞，
+    -- 还是 O(|xinzeng| × |qualifying_days|) 的相关子查询，生产实测把本查询拖慢 **+177%**，
+    -- 且两个因子都随历史数据线性增长（具体耗时见 _tmp/issue-286/verify.md）。
+    --
+    -- ORDER BY purchase_date 取最早达标日，与 first_entry 的 MIN(purchase_date) 等价；
+    -- 同日跨多店达标时按 store_id 兜底排序（store_id 形如 store-<建店毫秒时间戳>，
+    -- 字典序≈建店先后，**无业务含义，仅为结果确定不随执行计划漂**）。
+    --
+    -- ⚠️ MATERIALIZED 不是装饰：不加的话 planner 对 CTE 的行数估计失真上千倍，
+    -- 会选 nested loop 把大部分收益吃掉（consistency.product.test.ts 有断言锁住它）。
+    entry_store AS MATERIALIZED (
+      SELECT DISTINCT ON (client_user_id, grp)
+             client_user_id,
+             grp,
+             purchase_date AS entry_date,
+             store_id AS entry_store_id
+      FROM qualifying_days
+      ORDER BY client_user_id, grp, purchase_date, store_id
+    ),
     xinzeng AS (
-      SELECT client_user_id, grp, entry_date
-      FROM first_entry
+      SELECT client_user_id, grp, entry_date, entry_store_id
+      FROM entry_store
       WHERE entry_date BETWEEN ${range.start} AND ${range.end}
     ),
     fugou AS (
@@ -441,13 +497,18 @@ async function queryCycleByStore(
       JOIN tiyan t ON t.client_user_id = pa.client_user_id AND t.grp = pa.grp
       GROUP BY pa.store_id
     ),
+    -- ⚠️ 主表必须是 xinzeng（#286）：反过来 FROM period_agg JOIN xinzeng 是内连接，
+    -- 「进入达标日金额全部来自寄存单」的顾客不在 period_agg 里，会被整体丢弃（实测漏 65.5%）。
+    -- 期内无销售单/转换单消费的新增顾客落回 entry_store_id；业绩仍只统计真实消费
+    -- （LEFT JOIN 后 pa.day_received 为 NULL，被 SUM 忽略）。
     new_store AS (
-      SELECT pa.store_id,
-             COUNT(DISTINCT pa.client_user_id) AS cnt,
+      SELECT COALESCE(pa.store_id, x.entry_store_id) AS store_id,
+             COUNT(DISTINCT x.client_user_id) AS cnt,
              COALESCE(SUM(pa.day_received), 0) AS revenue
-      FROM period_agg pa
-      JOIN xinzeng x ON x.client_user_id = pa.client_user_id AND x.grp = pa.grp
-      GROUP BY pa.store_id
+      FROM xinzeng x
+      LEFT JOIN period_agg pa
+        ON pa.client_user_id = x.client_user_id AND pa.grp = x.grp
+      GROUP BY COALESCE(pa.store_id, x.entry_store_id)
     ),
     repurchase_store AS (
       SELECT pa.store_id,
@@ -457,9 +518,14 @@ async function queryCycleByStore(
       JOIN fugou fg ON fg.client_user_id = pa.client_user_id AND fg.grp = pa.grp
       GROUP BY pa.store_id
     ),
-    -- 期内有消费的所有门店（并集），LEFT JOIN 各客群聚合避免 FULL OUTER 链路漏行
+    -- 出行门店骨架（并集），LEFT JOIN 各客群聚合避免 FULL OUTER 链路漏行。
+    -- ⚠️ 必须并上 xinzeng 的 entry 门店（#286）：只取 period_agg 的话，
+    -- 「期内只有寄存单进入、无销售单/转换单消费」的门店不会出现在骨架里，
+    -- new_store 算出来的人数又会在最后一步 JOIN 时丢掉。
     store_ids AS (
       SELECT DISTINCT store_id FROM period_agg
+      UNION
+      SELECT DISTINCT entry_store_id FROM xinzeng WHERE entry_store_id IS NOT NULL
     )
     SELECT
       s.store_id AS store_id,
