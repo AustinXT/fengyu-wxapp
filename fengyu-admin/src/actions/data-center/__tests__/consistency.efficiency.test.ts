@@ -430,25 +430,81 @@ const CTE_AGG_SHAPES = [
 // 注：两种 COUNT 形态恒非负，本就不存在「聚合前剔掉退款负行」的风险；
 // 收紧它们只是为了让白名单闭合 —— 换成 SUM 类聚合时必须回来改这条断言。
 
+/** 聚合内部禁止出现的**条件构造** —— 它们能在不改变外层形态的前提下把负值转成 0 */
+const COND_IN_AGG_RE = /\b(?:CASE|WHEN|FILTER|NULLIF|GREATEST|LEAST|SIGN)\b/i
+
 function assertCteAggregateShape(segment: string, label: string): void {
   // ⚠️ 起点必须锚到 `SELECT ` 或 `, `：否则 `[A-Za-z_][\w.]*\(` 会从片段最前面的
   // `db.execute(` / `pg.query(` 开始匹配，一路吞到 `AS v`，把整段当成"聚合表达式"。
-  // 括号用「最多两层嵌套」的显式写法而非 `[\s\S]*?`，保证只吃掉这一个表达式。
   const outputs = [
     ...segment.matchAll(/(?:SELECT|,)\s+([A-Za-z_][\w.]*\((?:[^()]|\([^()]*\))*\))\s+AS v\b/g),
   ].map((m) => m[1].replace(/\s+/g, ' ').trim())
+
+  // ★ 计数对账（闸门 2 round-2 codex P1）：提取器只支持两层括号嵌套，
+  // `GREATEST(COALESCE(SUM(x), 0), 0) AS v` 这类三层包装会被**静默跳过** ——
+  // 而只要同切片内还有另一个合法 `AS v`（收入榜就有两个），`outputs.length > 0`
+  // 依然成立，整条守护假绿、销售负提成被钳成零。故必须证明「一个都没漏抽」。
+  const declared = (segment.match(/\bAS v\b/g) ?? []).length
   expect(
     outputs.length,
-    `${label} 抽不到任何 \`... AS v\` 聚合输出列 —— 切片结构变了，本断言可能已失效（fail-closed）`,
-  ).toBeGreaterThan(0)
+    `${label} 有 \`AS v\` 输出列没被提取到（声明 ${declared} 个，只抽到 ${outputs.length} 个）。` +
+      '多半是被外层函数包了一层（如 GREATEST(COALESCE(SUM(...), 0), 0)）导致嵌套超出提取器能力 —— ' +
+      '这正是需要被拦下的形态，不能因为"抽不到"就放行。',
+  ).toBe(declared)
+  expect(declared, `${label} 抽不到任何 \`AS v\` 聚合输出列 —— 切片结构变了（fail-closed）`).toBeGreaterThan(0)
+
   for (const out of outputs) {
     expect(
       CTE_AGG_SHAPES.some((re) => re.test(out)),
       `${label} 的 CTE 聚合输出列形态变了：\`${out}\`。\n` +
-        '只允许 `COALESCE(SUM(<表达式>), 0)` 或 `COUNT(*)`。任何外层包装（GREATEST/NULLIF）、' +
-        'FILTER 子句或条件聚合都可能在聚合前剔掉退款负行 —— 与 #290 同型，只是下沉到 CTE 层。',
+        '只允许 `COALESCE(SUM(<表达式>), 0)` / `COUNT(*)` / `COUNT(DISTINCT <列>)`。',
     ).toBe(true)
+    // ★ SUM 内部此前几乎不受约束（闸门 2 round-2 codex P1）：
+    // `COALESCE(SUM(CASE WHEN spia.allocated_amount < 0 THEN 0 ELSE ... END), 0)`
+    // 完全符合上面的白名单形态，却把退款负行就地转成 0 —— 与 #290 等效。
+    expect(
+      COND_IN_AGG_RE.test(out),
+      `${label} 的聚合内部出现条件构造：\`${out}\`。CASE/WHEN/FILTER/NULLIF/` +
+        'GREATEST/LEAST/SIGN 都能在不改变外层形态的前提下把负值转成 0，等同于 #290 原缺陷。',
+    ).toBe(false)
   }
+}
+
+/**
+ * ★ 排序表达式必须与该榜的 WHERE 表达式**逐字一致**（闸门 2 round-2 codex P1）。
+ *
+ * 此前只检查了「ORDER BY 首键长成 `(<某个展开表达式> <> 0) DESC`」与
+ * 「staffOrderBy 的模板形状 + 调用次数」，**从未比较它与 WHERE 用的是不是同一个表达式**。
+ * （更糟的是当时的注释还提到了一个根本不存在的 `assertOrderMatchesWhere`。）
+ *
+ * 复现：把 staff revenue 的调用改成 `staffOrderBy('COALESCE(r.v, 1)')` ——
+ * helper 模板断言、六次调用计数、排序正则全部通过，但无产能员工的排序值变成 1，
+ * 重新排到负值员工之前，`(value <> 0)` 首键形同虚设。
+ */
+function assertOrderMatchesWhere(segment: string, label: string): void {
+  const whereExpr = whereClauseOf(segment, label).match(
+    /^\(\s*pe\.has_skills\s+OR\s+([\s\S]+?)\s*<>\s*0\s*\)$/,
+  )?.[1]
+  expect(whereExpr, `${label} 的 WHERE 里抽不出 value 表达式（形状已被上游断言保证）`).toBeTruthy()
+  const norm = (x: string) => x.replace(/\s+/g, ' ').trim()
+
+  const staffCall = segment.match(/\$\{staffOrderBy\('([^']*)'\)\}/)
+  if (staffCall) {
+    expect(
+      norm(staffCall[1]),
+      `${label} 传给 staffOrderBy 的表达式与 WHERE 用的不是同一个 —— ` +
+        '排序会按另一个值算，「非零优先」首键失效',
+    ).toBe(norm(whereExpr!))
+    return
+  }
+  const orderExpr = segment
+    .slice(segment.search(ORDER_BY_ANCHOR))
+    .match(/^ORDER BY \(\s*([\s\S]+?)\s*<>\s*0\s*\)\s+DESC,\s*([\s\S]+?)\s+DESC,/)
+  expect(orderExpr, `${label} 的 ORDER BY 首键形状不可解析`).toBeTruthy()
+  expect(
+    [norm(orderExpr![1]), norm(orderExpr![2])],
+    `${label} 的 ORDER BY 表达式与 WHERE 用的不是同一个 —— 排序会按另一个值算`,
+  ).toEqual([norm(whereExpr!), norm(whereExpr!)])
 }
 
 /**
@@ -490,6 +546,24 @@ function assertZeroLastOrdering(segment: string, label: string): void {
 }
 
 /**
+ * 按**括号配对**取出 `<name> AS ( ... )` 的完整 CTE 体。
+ * 正则做不到：CTE 体内有嵌套括号（JOIN/函数调用），`[\s\S]*?\)` 会在第一个 `)` 就停。
+ */
+function cteBodyOf(segment: string, name: string): string | null {
+  const head = `${name} AS (`
+  const start = segment.indexOf(head)
+  if (start === -1) return null
+  let depth = 1
+  let i = start + head.length
+  while (i < segment.length && depth > 0) {
+    if (segment[i] === '(') depth++
+    else if (segment[i] === ')') depth--
+    i++
+  }
+  return depth === 0 ? segment.slice(start, i) : null
+}
+
+/**
  * ★ 员工榜的 metric JOIN 形状（闸门 1 · concurrency P2-2 判定为**最危险**的一条）。
  *
  * 两条绕过路径，都能在**完全不动外层 WHERE** 的前提下回滚本次修复：
@@ -527,6 +601,24 @@ function assertMetricJoinShape(segment: string, label: string): void {
     `${label} 的 metric 关联用了**内联子查询**做数据源。子查询里可以藏任意 value 过滤，` +
       '而 JOIN 类型与 ON 正文两条断言都看不见它 —— 数据源必须是裸 CTE 名。',
   ).toBe(false)
+
+  // ★ 关联的必须是本切片内定义的**聚合** CTE（闸门 2 round-2 codex P1）：
+  // 新增一个转发 CTE `positive_revenue_by_emp AS (SELECT * FROM revenue_by_emp WHERE v > 0)`
+  // 再 `LEFT JOIN positive_revenue_by_emp r` —— 它仍是裸 CTE 名、仍是 LEFT JOIN、
+  // ON 仍只有 employee_id，全部既有断言通过，负值却在转发层被剔掉、兜成 0。
+  // 判据：切片内每个 CTE 定义都必须是真聚合（含 GROUP BY），转发 CTE 没有 GROUP BY。
+  const joined = [...joinArea.matchAll(/LEFT JOIN\s+(\w+)\s+\w+\s+ON/gi)].map((m) => m[1])
+  expect(joined.length, `${label} 抽不到 LEFT JOIN 的 CTE 名（fail-closed）`).toBeGreaterThan(0)
+  for (const name of joined) {
+    const body = cteBodyOf(segment, name)
+    expect(body, `${label} 关联的 \`${name}\` 不是本切片内定义的 CTE —— 来源不可验`).toBeTruthy()
+    expect(
+      /\bGROUP BY\b/i.test(body!),
+      `${label} 关联的 CTE \`${name}\` 没有 GROUP BY —— 它是**转发 CTE**（如 ` +
+        '`SELECT * FROM revenue_by_emp WHERE v > 0`），可以在不动任何既有断言的前提下' +
+        '把负值行剔掉。metric 关联必须直接指向做聚合的那个 CTE。',
+    ).toBe(true)
+  }
 
   const onClauses = [...joinArea.matchAll(/\bON\s+([\s\S]+?)(?=\s*(?:LEFT JOIN|JOIN|WHERE)\b|$)/gi)]
   expect(
@@ -571,6 +663,7 @@ function assertStaffRankAdmissionShape(segment: string, label: string): void {
   assertCteAggregateShape(segment, label)
   assertMetricJoinShape(segment, label)
   assertZeroLastOrdering(segment, label)
+  assertOrderMatchesWhere(segment, label)
   expect(
     whereClauseOf(segment, label),
     `${label} 的入榜口径变了。必须是「有技能标签者无条件入榜（含零值/负值），` +
