@@ -96,6 +96,8 @@ export default async function Page({
           canRequestShipmentCancellation={hasUiCapability(actions, 'inventory:shipment_cancel_request')}
           canApproveShipmentCancellation={hasUiCapability(actions, 'inventory:shipment_cancel_approve')}
           canViewPrice={workflowDocs.canViewPrice}
+          // 「顾客产品出库」跳转卡（#350）：与提货录入页 requireUiPageCapability 同一判据
+          canCreatePickupRecord={hasUiCapability(actions, 'pickup_record:create')}
           initialOperationId={initialOperationId}
         />
       </Suspense>

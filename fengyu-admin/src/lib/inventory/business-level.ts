@@ -161,7 +161,6 @@ const GENERIC_DOC_BUSINESS_LEVEL: Partial<Record<InventoryDocType, InventoryBusi
   市场产品盘溢: 'market',
   市场库存盘点: 'market',
   分院调货出库: 'store',
-  院顾客产品出库: 'store',
   院顾客退货: 'store',
   院产品报损: 'store',
   分院库存盘点: 'store',

@@ -202,7 +202,6 @@ const GENERIC_OPERATIONS = {
   ],
   store: [
     { docType: '分院调货出库', level: 'store', title: '门店调拨', group: '发货、收货与退货', icon: ArrowLeftRight, tone: 'text-[#5E8BB3] bg-[#F0F5FA]' },
-    { docType: '院顾客产品出库', level: 'store', title: '顾客产品出库', group: '发货、收货与退货', icon: PackageX, tone: 'text-[#D94040] bg-[#FFF0F0]' },
     { docType: '院顾客退货', level: 'store', title: '顾客产品退货', group: '发货、收货与退货', icon: RotateCcw, tone: 'text-[#3D8A5A] bg-[#F0F9F2]' },
     { docType: '院产品报损', level: 'store', title: '门店产品报损', group: '市场特殊业务', icon: PackageX, tone: 'text-[#D94040] bg-[#FFF0F0]' },
     { docType: '分院库存盘点', level: 'store', title: '门店库存盘点', group: '市场特殊业务', icon: ClipboardCheck, tone: 'text-[#7B5E2B] bg-[#FFF8E6]' },
@@ -210,7 +209,41 @@ const GENERIC_OPERATIONS = {
 } as const satisfies Record<InventoryBusinessLevel, readonly GenericOperationDefinition[]>
 
 /*
- * 编译期覆盖性检查：10 张卡的 docType 并集必须**恰好**等于全部通用建单类型。
+ * 跳转卡（#350）：不在办理台内建单，点开直接去对应的业务页。
+ *
+ * 「顾客产品出库」原是通用建单卡，#350 起顾客出库必须绑定销售单、只能由提货服务产生
+ * （`院顾客产品出库` 已移出 INVENTORY_GENERIC_DOC_TYPES），入口改为提货录入页。
+ * 它**不进** `levelOperations`：没有工作区、没有单据 Tab，也不参与 `?op=` 的 URL 恢复。
+ *
+ * 可用判据是目标页的入口权限（`pickup_record:create`，用户 2026-09-25 拍板），不是库存 operate ——
+ * 代建门店业务的市场财务有 store operate 代建权却没有提货权限，按 operate 判会给它一张点进去就 403 的卡。
+ */
+interface LinkOperationDefinition extends Omit<OperationCardBase, 'approvalOnly' | 'shipmentCancellationAccess' | 'selfPurchaseOnly'> {
+  key: string
+  href: string
+  /** 无权限时卡片上的说明，告诉用户缺的是什么 */
+  deniedHint: string
+}
+
+const LINK_OPERATIONS: Record<InventoryBusinessLevel, readonly LinkOperationDefinition[]> = {
+  'supply-chain': [],
+  market: [],
+  store: [
+    {
+      key: 'pickup-record-create',
+      href: '/pickup-records/create',
+      level: 'store',
+      title: '顾客产品出库',
+      group: '发货、收货与退货',
+      icon: PackageX,
+      tone: 'text-[#D94040] bg-[#FFF0F0]',
+      deniedHint: '需提货录入权限',
+    },
+  ],
+}
+
+/*
+ * 编译期覆盖性检查：9 张卡的 docType 并集必须**恰好**等于全部通用建单类型。
  * 漏一种（比如新增了通用类型却忘了配卡片），下面这行的类型立刻变成 never 而报错 ——
  * 不必等测试跑起来，更不必等用户发现某个业务在办理台里根本没有入口。
  */
@@ -629,6 +662,7 @@ export default function InventoryOperationsPage({
   canRequestShipmentCancellation,
   canApproveShipmentCancellation,
   canViewPrice,
+  canCreatePickupRecord,
   initialOperationId,
 }: {
   level: InventoryBusinessLevel
@@ -643,6 +677,8 @@ export default function InventoryOperationsPage({
   canRequestShipmentCancellation: boolean
   canApproveShipmentCancellation: boolean
   canViewPrice: boolean
+  /** 跳转卡「顾客产品出库」的可用判据：目标页（提货录入）的入口权限（#350） */
+  canCreatePickupRecord: boolean
   /** 深链 `?create=<docType>` 解析出的初始业务（#191），服务端已校验权限与白名单。 */
   initialOperationId?: InventoryAnyOperationId
 }) {
@@ -713,7 +749,11 @@ export default function InventoryOperationsPage({
     setPendingDocsTabFor(null)
     setActiveOperation(id)
   }, [])
-  const groups = useMemo(() => Array.from(new Set(levelOperations.map((operation) => operation.group))), [levelOperations])
+  const levelLinkOperations = LINK_OPERATIONS[level]
+  const groups = useMemo(
+    () => Array.from(new Set([...levelOperations, ...levelLinkOperations].map((operation) => operation.group))),
+    [levelOperations, levelLinkOperations],
+  )
   const levelMeta = {
     'supply-chain': { title: '供应链库存业务', description: '处理品项公司需求、采购、发货、退货审批和总部库存。' },
     market: { title: '市场库存业务', description: '处理市场采购、门店配货、退货审批及市场特殊库存业务。' },
@@ -805,6 +845,34 @@ export default function InventoryOperationsPage({
                     onClick={() => selectOperation(operation.id)}
                     className="flex min-h-24 items-center gap-3 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--card)] p-4 text-left shadow-sm transition-colors hover:border-[var(--primary)] hover:bg-[#FFFDFC] disabled:cursor-not-allowed disabled:opacity-45"
                   >
+                    {content}
+                  </button>
+                )
+              })}
+              {levelLinkOperations.filter((operation) => operation.group === group).map((operation) => {
+                const Icon = operation.icon
+                const className = 'flex min-h-24 items-center gap-3 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--card)] p-4 text-left shadow-sm transition-colors'
+                const content = (
+                  <>
+                    <span className={`flex size-10 shrink-0 items-center justify-center rounded-[var(--radius)] ${operation.tone}`}>
+                      <Icon className="size-5" />
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block text-sm font-medium">{operation.title}</span>
+                      <span className="mt-1 block text-xs text-[#888888]">
+                        {canCreatePickupRecord ? '前往提货录入（按销售单出库）' : operation.deniedHint}
+                      </span>
+                    </span>
+                  </>
+                )
+                // 无权限时渲染成 disabled 的 button 而不是去掉 href 的 Link：与其余卡片同一套
+                // 可访问语义（读屏报「不可用」），也不会留下一个点了没反应的链接。
+                return canCreatePickupRecord && !workspaceBusy ? (
+                  <Link key={operation.key} href={operation.href} className={`${className} hover:border-[var(--primary)] hover:bg-[#FFFDFC]`}>
+                    {content}
+                  </Link>
+                ) : (
+                  <button key={operation.key} type="button" disabled className={`${className} cursor-not-allowed opacity-45`}>
                     {content}
                   </button>
                 )

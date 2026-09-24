@@ -77,7 +77,6 @@ const GENERIC_DOC_ENDPOINT_MODE = {
   分院调货出库: 'both',
   市场间调货出库: 'both',
   内部领用: 'same-node',
-  院顾客产品出库: 'source-only',
   院顾客退货: 'target-only',
   市场产品报损: 'same-node',
   院产品报损: 'same-node',

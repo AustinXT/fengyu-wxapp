@@ -778,10 +778,11 @@ function renderTab(
  */
 function renderPage(options: {
   level: InventoryBusinessLevel
-  operation: InventoryAnyOperationId
+  operation?: InventoryAnyOperationId
   workflowDocs?: InventoryDocRow[]
   locations?: InventoryLocationRow[]
   canSelfPurchase?: boolean
+  canCreatePickupRecord?: boolean
 }) {
   return render(
     <InventoryOperationsPage
@@ -795,6 +796,7 @@ function renderPage(options: {
       canRequestShipmentCancellation={false}
       canApproveShipmentCancellation={false}
       canViewPrice
+      canCreatePickupRecord={options.canCreatePickupRecord ?? true}
       // 深链入口：省掉「先点卡片」这一步，工作区直接展开在目标业务上
       initialOperationId={options.operation}
     />,
