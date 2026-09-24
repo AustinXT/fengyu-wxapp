@@ -20,6 +20,7 @@ import {
   type InventoryLotRow,
   type InventoryLocationFilterOptions,
   type InventoryLocationRow,
+  type InventoryMarketTransferTarget,
   type InventoryDocType,
 } from '@/lib/inventory/types'
 import { Button } from '@/components/ui/button'
@@ -41,6 +42,7 @@ import { InventoryDocCreateForm } from './inventory-doc-create-form'
 import { useUrlFilters } from '@/lib/hooks/use-url-filters'
 import { PreserveListContextLink } from '@/components/return-context'
 import { normalizePage } from '@/lib/paging'
+import { inventoryDocStatusLabel } from '@/lib/inventory/doc-status-label'
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50, 100]
 const GENERIC_DOC_TYPE_SET = new Set<InventoryDocType>(INVENTORY_GENERIC_DOC_TYPES)
@@ -64,9 +66,11 @@ export default function InventoryDocsPage({
   rows,
   total,
   locations,
+  marketTransferTargets,
   canCreate,
   canApprove,
   canReceive,
+  receivableTargetOrgNodeIds,
   canViewPrice,
   initialDocType,
   allowedCreateDocTypes,
@@ -76,9 +80,16 @@ export default function InventoryDocsPage({
   rows: InventoryDocRow[]
   total: number
   locations: InventoryLocationRow[]
+  /** 市场间调货出库的接收主体候选（#340），见共享表单同名 prop */
+  marketTransferTargets?: readonly InventoryMarketTransferTarget[]
   canCreate: boolean
   canApprove: boolean
   canReceive: boolean
+  /**
+   * 能收货的 target 组织节点（按收货权限收窄后的 scope，#340）；`null` = 不受限（超管）。
+   * 刻意必传、不给缺省：缺省成 null 就是 fail-open，漏传的调用方会把按钮放给所有行。
+   */
+  receivableTargetOrgNodeIds: readonly string[] | null
   canViewPrice: boolean
   initialDocType?: InventoryDocType
   allowedCreateDocTypes?: readonly InventoryDocType[]
@@ -168,7 +179,7 @@ export default function InventoryDocsPage({
       header: '状态',
       cell: (r) => (
         <span className={r.status === '已完成' ? 'text-[#3D8A5A]' : r.status === '已驳回' ? 'text-[#888888]' : 'text-[#D4820A]'}>
-          {r.status}
+          {inventoryDocStatusLabel(r)}
         </span>
       ),
     },
@@ -207,7 +218,10 @@ export default function InventoryDocsPage({
               </Button>
             </>
           )}
-          {GENERIC_DOC_TYPE_SET.has(r.docType) && canReceive && r.status === '待收货' && (
+          {GENERIC_DOC_TYPE_SET.has(r.docType) && canReceive && r.status === '待收货'
+            // target 为空的单服务端必拒（「出库单缺少收货主体」），超管也不给按钮
+            && r.targetOrgNodeId !== null
+            && (receivableTargetOrgNodeIds === null || receivableTargetOrgNodeIds.includes(r.targetOrgNodeId)) && (
             <Button
               variant="ghost"
               size="sm"
@@ -307,6 +321,7 @@ export default function InventoryDocsPage({
           open={open}
           onOpenChange={setOpen}
           locations={locations}
+          marketTransferTargets={marketTransferTargets}
           onSuccess={() => startTransition(() => router.refresh())}
           onStale={() => startTransition(() => router.refresh())}
           onBusyChange={setCreateDialogBusy}
@@ -408,6 +423,7 @@ function CreateDocDialog({
   open,
   onOpenChange,
   locations,
+  marketTransferTargets,
   onSuccess,
   onStale,
   onBusyChange,
@@ -417,6 +433,7 @@ function CreateDocDialog({
   open: boolean
   onOpenChange: (open: boolean) => void
   locations: InventoryLocationRow[]
+  marketTransferTargets?: readonly InventoryMarketTransferTarget[]
   onSuccess: () => void
   /** 状态/权限已变化时刷新列表（不关弹窗） */
   onStale: () => void
@@ -451,6 +468,7 @@ function CreateDocDialog({
           // 原生 <dialog> 关闭不卸载 children：关着时绝不能取批次数（见共享组件的 visible 注释）
           visible={open}
           locations={locations}
+          marketTransferTargets={marketTransferTargets}
           initialDocType={initialDocType}
           allowedDocTypes={allowedDocTypes}
           onSuccess={() => {

@@ -107,6 +107,7 @@ const baseProps = {
   canCreate: true,
   canApprove: true,
   canReceive: true,
+  receivableTargetOrgNodeIds: null,
   canViewPrice: true,
 }
 
@@ -936,7 +937,8 @@ describe('前端端点口径与服务端建单规则不漂移（#200 S6-a）', (
 // 原实现用 prompt('驳回原因') 收集备注：不可样式化、阻塞 JS、**且无法做必填校验**
 // （prompt 取消或留空都得到 ''，代码 `|| ''` 直接放过，空驳回原因就这么提交了）。
 
-const receivableRow: InventoryDocRow = { ...row, id: 'DTO-260813-0002', docType: '内部领用', status: '待收货' }
+// targetOrgNodeId 必须非空：收货按钮按行判定，target 为空的单不给按钮（#340）
+const receivableRow: InventoryDocRow = { ...row, id: 'DTO-260813-0002', docType: '内部领用', status: '待收货', targetOrgNodeId: 'M2' }
 
 function renderDocs(rows: InventoryDocRow[] = [row]) {
   render(<InventoryDocsPage {...baseProps} rows={rows} allowedCreateDocTypes={['市场产品报损']} />)
@@ -1491,4 +1493,60 @@ describe('建单失败的提示（#134）', () => {
     await waitFor(() => expect(mockRefresh).toHaveBeenCalled())
     expect(screen.getByRole('dialog')).toBeInTheDocument()
   })
+})
+
+describe('「收货」按钮按行判定：只给能收这张单 target 的账号（#340 评审 P1）', () => {
+  /** M1 → M2 的市场间调货，待收货 */
+  const mto: InventoryDocRow = {
+    ...row,
+    id: 'MTO-260924-0001',
+    docType: '市场间调货出库',
+    status: '待收货',
+    sourceOrgNodeId: 'M1',
+    targetOrgNodeId: 'M2',
+    targetOrgNodeName: '九江市场',
+    targetOrgNodeType: '市场',
+  }
+
+  function renderWithReceivable(ids: readonly string[] | null) {
+    render(
+      <InventoryDocsPage
+        {...baseProps}
+        rows={[mto]}
+        receivableTargetOrgNodeIds={ids}
+        allowedCreateDocTypes={['市场产品报损']}
+      />,
+    )
+  }
+
+  it('调出市场（scope 只有 M1）看得到这张单，但没有「收货」按钮', () => {
+    renderWithReceivable(['M1', 'N-S1'])
+    expect(screen.getByText('MTO-260924-0001')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: '收货' })).toBeNull()
+  })
+
+  it('调入市场（scope 含 M2）有「收货」按钮', () => {
+    renderWithReceivable(['M2'])
+    expect(screen.getByRole('button', { name: '收货' })).toBeTruthy()
+  })
+
+  it('不受限（超管，null）有「收货」按钮', () => {
+    renderWithReceivable(null)
+    expect(screen.getByRole('button', { name: '收货' })).toBeTruthy()
+  })
+
+  it.each([['受限', ['M2']], ['超管（null）', null]] as const)(
+    'target 为空的单不给按钮（服务端必拒「缺少收货主体」）：%s',
+    (_label, ids) => {
+      render(
+        <InventoryDocsPage
+          {...baseProps}
+          rows={[{ ...mto, targetOrgNodeId: null }]}
+          receivableTargetOrgNodeIds={ids}
+          allowedCreateDocTypes={['市场产品报损']}
+        />,
+      )
+      expect(screen.queryByRole('button', { name: '收货' })).toBeNull()
+    },
+  )
 })

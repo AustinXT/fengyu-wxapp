@@ -1,7 +1,7 @@
 /**
  * e2e-inventory-ui/_helpers/seed-accounts.ts
  *
- * 幂等创建 4 个库存测试账号（INVT-*）。dev 库没有 FY-TEST-* 那套 seed，
+ * 幂等创建 INVT_ACCOUNTS 里的全部库存测试账号（INVT-*，现为 5 个）。dev 库没有 FY-TEST-* 那套 seed，
  * e2e-chains 的 TEST_PHONES 对本库无效，故自建。
  *
  * 三张表缺一不可：
@@ -45,7 +45,7 @@ export interface SeedResult {
 }
 
 /**
- * 幂等 seed 全部 4 个账号。已存在则只补齐密码与角色绑定（密码每次重置，
+ * 幂等 seed 全部账号。已存在则只补齐密码与角色绑定（密码每次重置，
  * 避免历史残留的旧口令导致登录失败 → 触发 login_attempts 5 次锁定）。
  */
 export async function seedInventoryAccounts(): Promise<SeedResult[]> {

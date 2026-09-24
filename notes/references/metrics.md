@@ -158,7 +158,7 @@
 |------|------|--------|----------|
 | 会员数（memberCount） | `COUNT(*)` | `client_wechat_users` | `c.became_member_at IS NOT NULL` ∩ `c.became_member_at::date <= $date` ∩ scope（`bound_store_id`）<br>_2026-04-25 T2 完成：从 `customer_type='会员客'`（实时快照）切到 `became_member_at` 时间戳（历史化）_ |
 | 保有会员数（retainedMemberCount） | `COUNT(DISTINCT so.client_user_id)` | `service_orders` JOIN `client_wechat_users` | `so.status='已完成'` ∩ `so.client_user_id IS NOT NULL` ∩ `so.service_date BETWEEN ($date - 90 days) AND $date` ∩ `c.became_member_at IS NOT NULL` ∩ `c.became_member_at::date <= $date` ∩ scope（`c.bound_store_id`） |
-| 员工数（employeeCount） | `COUNT(*)` | `staff_wechat_users` | `s.hired_at IS NOT NULL` ∩ `s.hired_at::date <= $date` ∩ (`s.resigned_at IS NULL` OR `s.resigned_at::date > $date`) ∩ `skills && ARRAY['美容师','养生师']` ∩ scope（`store_id`）<br>_2026-04-25 T3 完成：从 `is_resigned=FALSE`（实时快照）切到 `hired_at`/`resigned_at` 时间戳（历史化）_ |
+| 产能技师数（employeeCount） | `COUNT(*)` | `staff_wechat_users` LEFT JOIN `org_nodes`×2 + `stores` | `sw.hired_at IS NOT NULL` ∩ `sw.hired_at::date <= $date` ∩ (`sw.resigned_at IS NULL` OR `sw.resigned_at::date > $date`) ∩ `skills && ARRAY['美容师','养生师']` ∩ **可见性二选一**（见下）<br>_2026-04-25 T3：从 `is_resigned=FALSE`（实时快照）切到 `hired_at`/`resigned_at` 时间戳（历史化）_<br>_2026-09-24 #320：分母从「只认 `store_id`」改为**双轨归属**，与 admin 人效板同源_ |
 | 门店数（storeCount） | `COUNT(*)` | `stores` JOIN `org_nodes` | `o.type='门店'` ∩ `o.is_active=TRUE` ∩ `s.opening_date IS NOT NULL` ∩ `s.opening_date::date <= $date` ∩ (`s.closed_at IS NULL` OR `s.closed_at::date > $date`) ∩ scope<br>_当前组织节点启用状态作用于全部历史区间；停用门店即使单店直达也计 0_ |
 
 > **会员数（2026-04-25 T2 起）已切「按 `selectedDate` 历史化」**：
@@ -170,6 +170,26 @@
 > - `WHERE s.hired_at IS NOT NULL AND s.hired_at::date <= $date AND (s.resigned_at IS NULL OR s.resigned_at::date > $date)`，任意 `$date` 都可还原"那一天在职的员工数"。
 > - 字段维护：admin 员工管理表单写入 `hired_at` / `resigned_at`（migration 0012 已部署 5433 + 5434 双库）；当前 `hired_at` 由 `created_at::date` 兜底（WorkFine 无入职日期源），`resigned_at` 由 `updated_at::date` 兜底。后续档案由管理后台维护。
 > - `is_resigned` 列保留作为冗余的当前态字段，不再参与查询过滤。
+>
+> **产能技师数（2026-09-24 #320 起）按「双轨归属」计**，与 admin 人效板
+> （`fengyu-admin/src/lib/data-center/technician-sql.ts`）同源。员工组织归属有两条轨：
+> `staff_wechat_users.store_id`（门店 FK）与 `org_node_id`（组织节点 FK，type 可为 部门/市场/门店）。
+> 只认 `store_id` 会整体漏掉直挂市场/部门的人 —— 2026-09-24 生产实测漏 14 人（152 而非 166），
+> 所有人均派生指标虚高 +9.2%。规则：
+> - **归属**：`COALESCE(sw.store_id, ds.store_id)`，其中 `LEFT JOIN stores ds ON ds.org_node_id = sw.org_node_id`
+>   —— 直挂**门店组织节点**的人回收进该门店；回收后仍为 NULL 的用
+>   `anchor_market_id = CASE WHEN o.type='市场' THEN o.id WHEN op.type='市场' THEN op.id END` 锚到市场
+> - **可见性二选一**：`(store_id IS NOT NULL AND <门店 scope>) OR (store_id IS NULL AND <市场锚 scope>)`
+>   - 门店分支**仅计启用门店**（与同页其它指标的 `active_node.is_active = TRUE` 一致）
+>   - 市场锚分支：单店 scope → **一律不计**（故「集团技师数 ≠ Σ门店技师数」，有意）；
+>     市场 scope → 锚定市场相等才计；全部 → 计
+>   - ⚠️ 市场锚分支**不带**启用门店过滤（直挂者不属于任何门店，无可判断启停的门店）；
+>     与 admin 一致，属已知取舍 —— 代价是「门店全停的市场 + 直挂技师」人均偏低
+> - ⚠️ 「全部」口径下 staff 与 admin **有一条已登记分叉**（#334）：admin 的 `all` 只对**超管**恒真，
+>   非超管总部账号走「锚定市场下存在可见启用门店」的 EXISTS，看不到无门店市场（如品项公司）的人
+> - 跨端一致性由 `fengyu-staff/cloudfunctions/staffApi/__tests__/routes/cross-end-technician-denominator.test.js`
+>   的字面量断言守护（抽取自检 + 要件 1~9 含 6b + 单源反向守护，共 12 个 `it`）；
+>   两端是独立副本，改一端必同步另一端
 >
 > **门店数（2026-04-25 T4 起）已切「按 `selectedDate` 历史化」**：
 > - `FROM stores s JOIN org_nodes o ON s.org_node_id = o.id WHERE o.type='门店' AND o.is_active=TRUE AND s.opening_date IS NOT NULL AND s.opening_date::date <= $date AND (s.closed_at IS NULL OR s.closed_at::date > $date)`，任意 `$date` 都可还原"那一天在营的门店数"。

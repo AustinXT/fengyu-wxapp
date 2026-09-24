@@ -117,6 +117,14 @@ export function inventoryDelegatableOperateActions(level: InventoryBusinessLevel
   return inventoryDelegatableLevels(level).map((l) => LEVEL_OPERATE_ACTION[l])
 }
 
+/**
+ * 通用待收货单（分院调货出库 / 市场间调货出库）确认收货的权限门，单源。
+ * `confirmInventoryCoreReceive` 与单据中心「收货」按钮的行级判据都从这里取 ——
+ * 两边一旦各写一份，按钮就会比服务端宽或窄一档（#340 评审 P1）。
+ * 收货不随代建放开，只认市场 / 门店自己的 operate（见单据中心 page.tsx 的 canReceive 注释）。
+ */
+export const INVENTORY_CORE_RECEIVE_ACTIONS = ['inventory:market_operate', 'inventory:store_operate'] as const
+
 const LEVEL_LABEL: Record<InventoryBusinessLevel, string> = {
   'supply-chain': '供应链',
   market: '市场',
