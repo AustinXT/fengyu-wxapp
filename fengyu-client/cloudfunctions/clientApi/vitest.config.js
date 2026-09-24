@@ -4,7 +4,7 @@ export default defineConfig({
   test: {
     environment: 'node',
     globals: true,
-    include: ['**/__tests__/**/*.test.js'],
+    include: ['**/__tests__/**/*.{test,spec}.js'],
     setupFiles: ['./__tests__/setup.js'],
     coverage: {
       include: ['routes/**/*.js', 'middleware/**/*.js', 'index.js'],

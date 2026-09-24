@@ -295,7 +295,7 @@ describe('lakala 跨副本一致性守护', () => {
       .filter((line) => !/^\s*\/\//.test(line))
       .join('\n')
     expect(vitestConfig, 'include 被改窄会让测试文件静默出网').toContain(
-      "include: ['**/__tests__/**/*.test.js']",
+      "include: ['**/__tests__/**/*.{test,spec}.js']",
     )
     // ⚠️ 只断言「全量字面量出现过」不够：JS 对象里**重复的键后者生效**，
     // 在下面再写一行 `include: ['**/__tests__/utils/**/*.test.js'],` 就能把收集缩到
@@ -335,6 +335,12 @@ describe('lakala 跨副本一致性守护', () => {
     const { execFileSync } = require('child_process')
     const root = path.resolve(__dirname, '../..')
 
+    // ⚠️ 后缀集合要与 vitest 默认支持的对齐（`.test.js` / `.spec.js`），且两侧用**同一个**
+    // 判据。只认 `.test.js` 的话，把某个用例改名成 `.spec.js` 会让它同时从「被收集」和
+    // 「磁盘盘点」两边消失 —— 数量仍然相等，兜底断言也抓不到，而那个测试再也不跑了
+    // （闸门 2 codex round-7 指出，属自然命名差异不是刻意注入）。
+    const isTestFile = (name) => /\.(test|spec)\.js$/.test(name)
+
     const listed = execFileSync('npx', ['vitest', 'list', '--filesOnly'], {
       cwd: root,
       encoding: 'utf8',
@@ -342,22 +348,26 @@ describe('lakala 跨副本一致性守护', () => {
     })
       .split('\n')
       .map((l) => l.trim())
-      .filter((l) => l.endsWith('.test.js'))
+      .filter(isTestFile)
+      .map((l) => path.relative(root, path.resolve(root, l)))
+      .sort()
 
     const onDisk = []
     const walk = (dir) => {
       for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
         const p = path.join(dir, e.name)
         if (e.isDirectory()) walk(p)
-        else if (e.name.endsWith('.test.js')) onDisk.push(p)
+        else if (isTestFile(e.name)) onDisk.push(path.relative(root, p))
       }
     }
     walk(path.join(root, '__tests__'))
+    onDisk.sort()
 
+    // ⚠️ 比对**路径集合**而不是数量：数量相等但收了别的文件同样是漏（codex round-7 建议）。
     expect(
-      listed.length,
-      `vitest 只收集到 ${listed.length} 个文件，磁盘上却有 ${onDisk.length} 个`
-        + ' —— 有东西在缩小收集范围（配置字段 / vitest.workspace.* / vitest.projects.* / shard）',
-    ).toBe(onDisk.length)
+      listed,
+      '被 vitest 收集的测试文件与磁盘上真实存在的不一致 —— '
+        + '有东西在改收集范围（配置字段 / vitest.workspace.* / vitest.projects.* / shard / 改后缀）',
+    ).toEqual(onDisk)
   })
 })
