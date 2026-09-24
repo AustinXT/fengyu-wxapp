@@ -725,7 +725,7 @@ function roundCents(value: number): number {
 /**
  * 自动批号（#345，格式 A：单号-行号，如 `GRK-20260925-0001-01`）。全仓唯一的生成规则，
  * 供应链采购入库 / 自采产品入库 / 库存转换入库批号留空时调用，发货 / 配货的赠送行经 lineBatchNo 调用；
- * 手填批号原样保存。通用建单（盘溢、顾客退货，engine.ts）与 staffApi 建单不在 #345 范围内，仍允许空批号。
+ * 手填批号去首尾空白后保存、不生成。通用建单（盘溢、顾客退货，engine.ts）与 staffApi 建单不在 #345 范围内，仍允许空批号。
  * 单号唯一有三道保证：业务写入先取 cutover 状态行 FOR UPDATE（assertInventoryBusinessWritable）、
  * generateDocId 取 advisory lock、inventory_docs 主键兜底；行号在单内唯一，
  * 所以拼出来的批号全局不重号，不需要序列或额外加锁（并发事务拿不到同一个单号）。

@@ -1611,6 +1611,19 @@ describe('分院配货按 skuIds 精确取当前门店进货价（#339）', () =
     expect(toast.warning).not.toHaveBeenCalled()
   })
 
+  it('批次下拉渲染正常与赠送两条批号不同的选项（#345）', async () => {
+    vi.mocked(listInventorySkus).mockResolvedValue({ data: [], total: 0 })
+    vi.mocked(listInventoryLotOptions).mockResolvedValue([
+      { id: 11, batchNo: 'B100', isGift: false, quantityOnHand: 6, expiryDate: null },
+      { id: 12, batchNo: 'GFH-20260925-0001-02', isGift: true, quantityOnHand: 2, expiryDate: null },
+    ] as never)
+    await pickRequest([item(1, 'S-200', 60)])
+    const normal = await screen.findByRole<HTMLOptionElement>('option', { name: /^批次 B100 · 可用 6$/ })
+    const gift = screen.getByRole<HTMLOptionElement>('option', { name: /^批次 GFH-20260925-0001-02 · 可用 2$/ })
+    expect(normal.closest('select')).toBe(gift.closest('select'))
+    expect(listInventoryLotOptions).toHaveBeenCalledWith(expect.any(String), 'S-200')
+  })
+
   it('取价失败：退回快照价并提示，不阻断配货', async () => {
     vi.mocked(listInventorySkus).mockRejectedValue(new Error('NETWORK'))
     await pickRequest([item(1, 'S-200', 60)])
