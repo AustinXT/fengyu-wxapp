@@ -12,7 +12,7 @@ import type { AuthSession } from '@/lib/types'
 let pathname = '/dashboard'
 
 vi.mock('next/navigation', () => ({ usePathname: () => pathname }))
-vi.mock('next/image', () => ({ default: ({ alt }: { alt: string }) => <img alt={alt} /> }))
+vi.mock('next/image', () => ({ default: ({ alt }: { alt: string }) => <span role="img" aria-label={alt} /> }))
 vi.mock('next/link', () => ({
   default: ({ href, children, ...props }: React.AnchorHTMLAttributes<HTMLAnchorElement>) => <a href={href} {...props}>{children}</a>,
 }))
