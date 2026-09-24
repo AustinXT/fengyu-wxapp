@@ -431,6 +431,13 @@ const CTE_AGG_SHAPES = [
 // 收紧它们只是为了让白名单闭合 —— 换成 SUM 类聚合时必须回来改这条断言。
 
 /** 聚合内部禁止出现的**条件构造** —— 它们能在不改变外层形态的前提下把负值转成 0 */
+/** 金额/次数列参与比较（任一侧）—— 它们只应出现在聚合表达式内 */
+const AMOUNT_IN_PREDICATE_RE = new RegExp(
+  '\\b\\w+\\.(?:allocated_amount|commission_amount|session_used|unit_real_price|amount|received)\\b\\s*(?:=|<>|<=|>=|<|>)' +
+    '|(?:=|<>|<=|>=|<|>)\\s*\\w*\\(?\\s*\\w+\\.(?:allocated_amount|commission_amount|session_used|unit_real_price|amount|received)\\b',
+  'i',
+)
+
 const COND_IN_AGG_RE = /\b(?:CASE|WHEN|FILTER|NULLIF|GREATEST|LEAST|SIGN|ABS|ROUND|FLOOR|CEIL|CEILING)\b/i
 
 function assertCteAggregateShape(segment: string, label: string): void {
@@ -581,6 +588,26 @@ function assertCteWhereNoNumericCompare(segment: string, label: string): void {
     const rawWhere = body.slice(w + 'WHERE '.length, g === -1 ? undefined : g)
     const where = rawWhere.replace(/\$\{[^}]*\}/g, ' ') // 插值 helper 内部不算
 
+    // ★ 金额/次数列**不得参与任何比较**（闸门 2 round-4 codex P1-2/P1-3）。
+    // 两条穿透了「禁 < >」这条：
+    //   · `AND spia.allocated_amount = ABS(spia.allocated_amount)` —— 等式，无 `<`/`>` 字符
+    //   · JOIN ON 里挂 `AND 0 < spia.allocated_amount` —— 在 WHERE **之前**，原扫描够不着
+    // 故扫描范围从「WHERE 段」扩到「FROM → GROUP BY」全段（含所有 JOIN ON），
+    // 判据改为「这些列只许出现在聚合表达式里，不许出现在任何比较的任一侧」。
+    const fromAt = body.indexOf('FROM ')
+    if (fromAt !== -1) {
+      const predicateArea = body
+        .slice(fromAt, g === -1 ? undefined : g)
+        .replace(/\$\{[^}]*\}/g, ' ')
+      const hit = predicateArea.match(AMOUNT_IN_PREDICATE_RE)
+      expect(
+        hit?.[0] ?? null,
+        `${label} 的 CTE \`${name}\` 让金额/次数列参与了比较（命中：${hit?.[0]}）。\n` +
+          '这些列只应出现在聚合表达式内。出现在 WHERE 或 JOIN ON 的任一侧，' +
+          '都会在聚合前剔掉退款负行 —— 等式（`= ABS(x)`）与反向不等式（`0 < x`）同样致命。',
+      ).toBeNull()
+    }
+
     expect(
       /[<>]/.test(where),
       `${label} 的 CTE \`${name}\` 的 WHERE 出现数值比较：\`${rawWhere.trim()}\`。\n` +
@@ -608,6 +635,20 @@ function assertCteWhereNoNumericCompare(segment: string, label: string): void {
  */
 function assertTimeWindowEndpoints(segment: string, label: string): void {
   const spans = [...segment.matchAll(/BETWEEN\s+\$\{([^}]*)\}\s+AND\s+\$\{([^}]*)\}/g)]
+  // ★ fail-closed（闸门 2 round-4 codex P1-4）：零命中不能算通过 ——
+  // 把 `service_date BETWEEN ${cur.start} AND ${cur.end}` 改成 `service_date = ${cur.end}`
+  // 时本函数一条都抽不到，for 循环空转即绿，而该榜区间已缩成一天。
+  // 业绩/收入榜的时间窗走 helper 插值（admin `performanceEventDateBetween`、
+  // staff `performanceEventPeriodWindow`），不是字面 BETWEEN —— 两种形式都算数。
+  // admin: performanceEventDateBetween / 字面 BETWEEN；
+  // staff: performanceEventPeriodWindow（业绩、收入）、timeWindowPeriod（实耗、项目数、客流、新会员）
+  const viaHelper =
+    /\$\{(?:performanceEvent(?:DateBetween|PeriodWindow)|timeWindowPeriod)\(/.test(segment)
+  expect(
+    spans.length > 0 || viaHelper,
+    `${label} 既无 \`BETWEEN \${...} AND \${...}\` 字面时间窗、也不走 performanceEvent* / timeWindowPeriod helper ` +
+      '—— 多半是被改成了单点等值（区间缩成一天，退款负行落到窗外）。',
+  ).toBe(true)
   for (const m of spans) {
     expect(
       [m[1].trim(), m[2].trim()],
@@ -1360,24 +1401,65 @@ describe('数据中心人效板块两端口径一致性守护', () => {
       }
     })
 
-    it('两端 JS 装配层不得按 value 剔行（SQL 守住了，别在 map 前 filter 掉）', () => {
-      const adminAssembly = sliceOrFail(adminSrc, 'const mapStoreRank', 'const storeRankings')
-      expect(
-        /\.filter\s*\(/.test(adminAssembly),
-        'admin 的 mapStoreRank / mapStaffRank 出现 .filter() —— 排行榜装配层一旦按 value 剔行，' +
-          'SQL 侧所有「不剔负」守护都会被静默抹平（#290 回退）',
-      ).toBe(false)
+    /**
+     * ★ 候选池**第二层** `producer_employees` 的 WHERE（闸门 2 round-4 codex P1-1）。
+     *
+     * round-3 补的是第一层 `producer_base`；第二层的 scope WHERE 同样没人看守 ——
+     * 在它外面包一层再追加 `AND pb.has_skills`，第一层三项断言、外层
+     * `has_skills OR v<>0`、查询计数全都不变，但**无标签且有非零产能**的员工
+     * 在进入榜单前已被删除（正是「OR 兜底」要救的那批人）。
+     */
+    it('候选池 producer_employees 的 WHERE 只有两个 scope 分支（两端镜像）', () => {
+      for (const [body, label, storeScope, orgScope] of [
+        [adminBody, 'admin efficiency.ts',
+         "\\$\\{scopeFilterSql\\(session, scope, 'pb\\.store_id'\\)\\}",
+         '\\$\\{orgAnchorScopeSql\\(session, scope\\)\\}'],
+        [staffBody, 'staff mgmt-dashboard.js',
+         '\\$\\{storeFilter\\.sql\\}', '\\$\\{orgScope\\.sql\\}'],
+      ] as const) {
+        const re = new RegExp(
+          'WHERE \\(pb\\.store_id IS NOT NULL AND ' + storeScope + '\\)' +
+            ' OR \\(pb\\.store_id IS NULL AND ' + orgScope + '\\)\\s*\\)',
+        )
+        expect(
+          re.test(body),
+          `${label} 的 producer_employees WHERE 形状变了。只允许「有门店走 store scope、` +
+            '无门店走 org anchor scope」两个分支；在此追加任何条件（尤其 has_skills）' +
+            '都会把「无标签但有产能」的员工在进榜前删掉 —— 外层的 OR 兜底救不回来。',
+        ).toBe(true)
+      }
+    })
 
-      // staff 两处装配（storeRanking 的 :921-926 与 staffRanking 的 :1336-1341）同理
-      for (const [start, end, which] of [
-        ['const rawRows = await METRIC_DISPATCH', 'if (elapsed > 800)', 'storeRanking'],
-        ['const rawRows = await STAFF_METRIC_DISPATCH', 'if (elapsed > 800)', 'staffRanking'],
+    it('两端 JS 装配层不得按 value 剔行（SQL 守住了，别在 map 前 filter 掉）', () => {
+      // ⚠️ 正向钉死而非禁 `.filter(`（闸门 2 round-4 codex P1-6）：黑名单列不完 ——
+      // `.flatMap((r) => r.value < 0 ? [] : [r])`、`.reduce(...)`、`.slice(0, 50)` 都能剔行。
+      // 判据改为「`assignRanks(` 之后必须**紧跟** `.map(`」，中间插入任何调用都会红。
+      const adminAssembly = sliceOrFail(adminSrc, 'const mapStoreRank', 'const storeRankings')
+      const adminChains = [
+        ...adminAssembly.matchAll(/assignRanks\(\s*\(rows as [^)]*\)\s*(\.\w+)\(/g),
+      ].map((m) => m[1])
+      expect(
+        adminChains.length,
+        'admin 抽不到 mapStoreRank/mapStaffRank 的装配链（fail-closed，结构变了）',
+      ).toBe(2)
+      expect(
+        adminChains,
+        'admin 排行榜装配层在 assignRanks 与 .map 之间插入了别的调用 —— ' +
+          '任何按 value 剔行/截断都会把 SQL 侧所有「不剔负」守护静默抹平（#290 回退）',
+      ).toEqual(['.map', '.map'])
+
+      // staff 两处装配（storeRanking 与 staffRanking）同理
+      for (const [start, end, which, src] of [
+        ['const rawRows = await METRIC_DISPATCH', 'if (elapsed > 800)', 'storeRanking', 'rawRows'],
+        ['const rawRows = await STAFF_METRIC_DISPATCH', 'if (elapsed > 800)', 'staffRanking', 'rawRows'],
       ] as const) {
         const seg = sliceOrFail(staffSrc, start, end)
+        const m = seg.match(new RegExp(`assignRanks\\(\\s*${src}\\s*(\\.\\w+)\\(`))
+        expect(m, `staff ${which} 抽不到装配链（fail-closed，结构变了）`).toBeTruthy()
         expect(
-          /\.filter\s*\(/.test(seg),
-          `staff ${which} 的装配层出现 .filter() —— 同上，会把 SQL 侧守护一次抹平`,
-        ).toBe(false)
+          m![1],
+          `staff ${which} 在 assignRanks 与 .map 之间插入了 ${m![1]}() —— 同上，会把 SQL 侧守护一次抹平`,
+        ).toBe('.map')
       }
     })
 
