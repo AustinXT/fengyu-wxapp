@@ -578,8 +578,9 @@ export default function InventoryPromotionsPage({
                     )}
                   </div>
                   <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
-                    <label className="block space-y-2 sm:col-span-2">
-                      <span className="block text-sm font-medium">库存商品 *</span>
+                    {/* 复合控件不放进 <label>（只能含一个关联控件），见 inventory-operations-page 的 FormField group */}
+                    <div role="group" aria-labelledby={`promotion-item-${item.key}-sku`} className="block space-y-2 sm:col-span-2">
+                      <span id={`promotion-item-${item.key}-sku`} className="block text-sm font-medium">库存商品 *</span>
                       <InventorySkuSearchSelect
                         value={item.skuId}
                         disabled={readOnly || saving}
@@ -588,7 +589,7 @@ export default function InventoryPromotionsPage({
                         ariaLabel={`明细 ${index + 1} 库存商品`}
                         selectedLabel={item.skuLabel}
                       />
-                    </label>
+                    </div>
                     <label className="block space-y-2">
                       <span className="block text-sm font-medium">{form.ruleType === '组合' ? '组合数量下限 *' : '数量下限'}</span>
                       <Input type="number" min="0" step="1" max="9999999999.99" placeholder={form.ruleType === '组合' ? '必填' : '留空不限'} value={item.reportMinQuantity} readOnly={readOnly} disabled={saving} onChange={(event) => updateItem(index, { reportMinQuantity: event.target.value })} />

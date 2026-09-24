@@ -1525,6 +1525,20 @@ describe('SKU 候选按业务口径交给服务端过滤（#339）', () => {
     expect(pickers()[0].value).toBe('')
   })
 
+  it('商品选择器不放进 <label>：字段用 role=group + aria-labelledby 关联字段名', () => {
+    renderPage({ level: 'store', operation: 'store-request', locations: LOCATIONS })
+    const picker = pickers()[0]
+    expect(picker.closest('label')).toBeNull()
+    const group = picker.closest('[role="group"]') as HTMLElement
+    expect(document.getElementById(group.getAttribute('aria-labelledby') ?? '')?.textContent).toMatch(/^商品/)
+    // 源码守护：每个 SkuPicker 调用点的外层 FormField 都得带 group（新加入口时别漏）
+    const source = readFileSync(resolve(__dirname, 'inventory-operations-page.tsx'), 'utf8')
+    const calls = source.match(/<SkuPicker /g) ?? []
+    const grouped = source.match(/<FormField label="[^"]*"(?: required)? group>\s*<SkuPicker /g) ?? []
+    expect(calls.length).toBeGreaterThanOrEqual(9)
+    expect(grouped.length).toBe(calls.length)
+  })
+
   it('品项公司报货需求：只出供应链来源 + 可报货', () => {
     renderPage({ level: 'supply-chain', operation: 'item-company-request', locations: LOCATIONS })
     expect(filtersOf(pickers()[0])).toEqual({ sourceType: '供应链', reportable: true })
