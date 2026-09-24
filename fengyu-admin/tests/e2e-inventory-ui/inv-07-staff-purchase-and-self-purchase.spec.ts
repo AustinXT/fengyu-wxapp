@@ -17,14 +17,15 @@
  * 分院调货出库 / 市场间调货出库由 INV-05 覆盖，两种报损由 INV-06 覆盖）：
  *   内部领用（NLY）—— 出库主体必须是**总部**（engine.ts:813-816），
  *                      同主体类型，source/target 传同一个（:266-281）。
- *   院顾客产品出库（GCK）—— 出库主体必须是**门店**（engine.ts:817-820）；
- *                      它是纯出库类，端点口径 `source-only`，**不能传入库主体**，
- *                      否则服务端按 #200 AC5 以「只能指定出库主体」拒单。
+ *   院顾客产品出库（GCK）—— **#350 起不再能从通用建单入口创建**：顾客出库必须绑定销售单，
+ *                      只能由提货服务（提货录入页 createPickupRecord / 小程序提货）产生。
+ *                      D-2 改为断言单据中心的新建类型下拉里已没有它（负向守护）；
+ *                      提货生成 GCK 的正向链路由 staff L2 smoke-order-pickup 覆盖。
  */
 
 import { test, expect } from '@playwright/test'
 import {
-  INVT_ACCOUNTS, INVT_PASS, NS, TOPO,
+  BASE, INVT_ACCOUNTS, INVT_PASS, NS, TOPO,
   login, psql, readCtx, recordVerdict, sqlStr, summarize, writeCtx, type Verdict,
 } from './_helpers/env'
 import { isGateOpen, openCutoverGate } from './_helpers/cutover'
@@ -52,11 +53,9 @@ const R = {
   supplyStaff: `${NS}-供应链员工购-${STAMP}`,
   selfPurchase: `${NS}-自采入库-${STAMP}`,
   internalUse: `${NS}-内部领用-${STAMP}`,
-  customerOut: `${NS}-院顾客出库-${STAMP}`,
 }
-// internalUse 走总部库存（充裕）；customerOut 走门店 A，一轮全套里它还要供
-// INV-04 退货与 INV-05 调货、INV-06 报损，只取 2 件（额度见 README）
-const QTY = { marketStaff: 2, supplyStaff: 2, selfPurchase: 40, internalUse: 2, customerOut: 2 }
+// internalUse 走总部库存（充裕）。#350 前 customerOut 走门店 A；顾客出库已改走提货，D-2 只做负向守护
+const QTY = { marketStaff: 2, supplyStaff: 2, selfPurchase: 40, internalUse: 2 }
 
 test('INV-07：员工购 / 自采入库 / 内部领用 / 院顾客产品出库', async ({ browser }) => {
   const verdicts: Verdict[] = []
@@ -297,50 +296,22 @@ test('INV-07：员工购 / 自采入库 / 内部领用 / 院顾客产品出库',
       )
     }
 
-    // ── D-2 院顾客产品出库（GCK）：出库主体必须是门店 ─────────────
-    console.log('[INV-07] D-2 院顾客产品出库')
-    const storeBeforeOut = lotQtyAll(TOPO.STORE_A_ORG, inv01.supplySkuId)
-    const gckCreated = await createGenericDoc(page, {
-      docType: '院顾客产品出库',
-      sourceLabel: `门店 · ${TOPO.STORE_A_NAME}`,
-      // ⚠️ 故意**不传** targetLabel：它是纯出库类（`source-only`），传了入库主体
-      // 服务端会以「院顾客产品出库只能指定出库主体」拒单（engine.ts:414-424，#200 AC5）。
-      // createGenericDoc 的 select 索引与传不传 target 无关（入库主体下拉恒渲染，
-      // 只是被 disabled），所以 needLot 的批次仍在 nth(3)、SKU 仍在 nth(4)。
-      skuName: inv01.supplySkuName,
-      quantity: QTY.customerOut,
-      remark: R.customerOut,
-      needLot: true,
-    })
-    const gckId = docIdByRemark('院顾客产品出库', R.customerOut)
+    // ── D-2 院顾客产品出库（GCK）不再能从通用入口建（#350）───────────
+    console.log('[INV-07] D-2 院顾客产品出库不在通用建单下拉里')
+    await page.goto(`${BASE}/inventory/docs`)
+    await page.waitForLoadState('networkidle')
+    await page.getByRole('button', { name: /新建/ }).first().click()
+    const createDialog = page.getByRole('dialog').filter({ hasText: '新建库存单据' })
+    await expect(createDialog.getByText('新建库存单据')).toBeVisible({ timeout: 15_000 })
+    const docTypeOptions = await createDialog.locator('select').first().locator('option').allTextContents()
     recordVerdict(
       verdicts,
-      'doc: 院顾客产品出库单落库',
-      Boolean(gckId),
-      gckId || `建单未成功，页面提示：${gckCreated.toast || '(无 toast)'}`,
+      '#350 单据中心新建类型下拉不含「院顾客产品出库」（顾客出库只走提货）',
+      !docTypeOptions.includes('院顾客产品出库'),
+      JSON.stringify(docTypeOptions),
     )
-    if (gckId) {
-      recordVerdict(verdicts, 'doc: 单号前缀 GCK', gckId.startsWith('GCK'), gckId)
-      recordVerdict(verdicts, 'doc: 院顾客产品出库建单即完成', docStatus(gckId) === '已完成', docStatus(gckId))
-      const storeAfterOut = lotQtyAll(TOPO.STORE_A_ORG, inv01.supplySkuId)
-      recordVerdict(
-        verdicts,
-        `stock: 院顾客产品出库扣减门店库存（减 ${QTY.customerOut}）`,
-        storeBeforeOut - storeAfterOut === QTY.customerOut,
-        `${storeBeforeOut} → ${storeAfterOut}`,
-      )
-      const gckMoves = docMovementCount(gckId)
-      const gckDir = psql(`SELECT direction FROM inventory_movements WHERE doc_id = ${sqlStr(gckId)} LIMIT 1`)
-      recordVerdict(
-        verdicts,
-        'movement: 院顾客产品出库产生 1 条出库流水',
-        gckMoves === 1 && gckDir === '出库',
-        `count=${gckMoves} / direction=${gckDir || '(无)'}`,
-      )
-      // 门店主体取 parent_location_id（0039），所以归母市场
-      const gckMarket = psql(`SELECT COALESCE(market_id,'') FROM inventory_docs WHERE id = ${sqlStr(gckId)}`)
-      recordVerdict(verdicts, '§10.3 院顾客产品出库归属母市场', gckMarket === TOPO.MARKET, gckMarket || '(空)')
-    }
+    await page.keyboard.press('Escape').catch(() => null)
+    const gckId = ''
 
     writeCtx('inv07', { ...employeeCtx, selfBatch, selfSkuId: inv01.selfSkuId, nlyId, gckId })
   } finally {

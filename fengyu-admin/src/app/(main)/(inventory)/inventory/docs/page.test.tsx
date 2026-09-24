@@ -134,15 +134,16 @@ describe('单据中心 · 建单下拉候选', () => {
     expect((await renderWith(SUPPLY)).allowedCreateDocTypes).toEqual(['内部领用'])
   })
 
-  it('只有市场 operate → 市场 4 种 + 门店 5 种（市场替门店建单），不含内部领用', async () => {
+  it('只有市场 operate → 市场 4 种 + 门店 4 种（市场替门店建单），不含内部领用', async () => {
     const types = (await renderWith(MARKET)).allowedCreateDocTypes
-    expect(types).toHaveLength(9)
+    expect(types).toHaveLength(8)
     expect(types).not.toContain('内部领用')
   })
 
-  it('只有门店 operate → 只有门店 5 种', async () => {
+  it('只有门店 operate → 只有门店 4 种（#350 院顾客产品出库只走提货）', async () => {
     const types = (await renderWith(STORE)).allowedCreateDocTypes
-    expect(types).toHaveLength(5)
+    expect(types).toHaveLength(4)
+    expect(types).not.toContain('院顾客产品出库')
     expect(types).not.toContain('市场产品报损')
   })
 
