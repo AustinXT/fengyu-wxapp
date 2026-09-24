@@ -3500,6 +3500,12 @@ describe('order.homeProducts', () => {
     expect(sqlCode).toContain('SUM(si.picked_quantity)::int AS picked_quantity')
     expect(sqlCode).toContain('SUM(si.refunded_quantity)::int AS refunded_quantity')
     expect(sqlCode).toContain('SUM(si.converted_quantity)::int AS converted_quantity')
+    // paid 与 pending 也是聚合出来的，同样会被互换。mapper 侧的行为断言证明不了这里 ——
+    // 那边喂的是 mock 结果行，根本不执行 SQL。把 pending 的来源改成 si.paid_quantity，
+    // 「已付 4 件但当前只可提 2 件」的商品会返回 pendingPickupQuantity: 4，
+    // 还会连带把状态判成「部分提货」（闸门 2 codex round-5 实测 877 全绿穿网）。
+    expect(sqlCode).toContain('SUM(si.row_pending_pickup)::int AS pending_pickup_quantity')
+    expect(sqlCode).toContain('SUM(si.paid_quantity)::int AS paid_quantity')
 
     expect(sqlCode).toContain("o.status IN ('已支付', '部分支付', '已完成')")
     expect(sqlCode).toContain("si.item_direction = '购买'")

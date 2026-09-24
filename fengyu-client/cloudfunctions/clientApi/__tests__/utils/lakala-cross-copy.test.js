@@ -294,6 +294,13 @@ describe('lakala 跨副本一致性守护', () => {
     expect(vitestConfig, 'include 被改窄会让测试文件静默出网').toContain(
       "include: ['**/__tests__/**/*.test.js']",
     )
+    // ⚠️ 只断言「全量字面量出现过」不够：JS 对象里**重复的键后者生效**，
+    // 在下面再写一行 `include: ['**/__tests__/utils/**/*.test.js'],` 就能把收集缩到
+    // 16 文件 / 246 用例，而 vitest 只给一条 duplicate-key warning 不报错，
+    // 上面那条 toContain 照样匹配到第一行（闸门 2 codex round-5 实测）。
+    // test 块的 include 必须**有且只有一条**（coverage 块里那条缩进更深，不计入）。
+    const testIncludes = vitestConfig.match(/^ {4}include:/gm) || []
+    expect(testIncludes, 'test.include 出现多次时后者生效，会悄悄缩小收集范围').toHaveLength(1)
     expect(vitestConfig, 'testMatch 不是 vitest 选项，会被静默忽略，别用它').not.toContain('testMatch')
     expect(vitestConfig, '加 exclude 同样能让文件出网').not.toContain('exclude:')
     // `projects` 会整个接管文件收集，留着上面的 include 也没用（闸门 2 的 GLM 指出）。
