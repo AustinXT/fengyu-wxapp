@@ -3,10 +3,13 @@ import { listInventoryCoreDocs } from '@/actions/inventory/docs'
 import {
   listInventoryDocLocationFilterOptions,
   listInventoryLocations,
+  listInventoryMarketTransferTargets,
 } from '@/actions/inventory/locations'
 import { listInventorySkus } from '@/actions/inventory/skus'
 import { getSession } from '@/lib/auth'
-import { inventoryCreatableGenericDocTypes } from '@/lib/inventory/business-level'
+import { scopeSessionToActions } from '@/lib/action-scope'
+import { inventoryScopedOrgNodeIds } from '@/lib/inventory/access'
+import { INVENTORY_CORE_RECEIVE_ACTIONS, inventoryCreatableGenericDocTypes } from '@/lib/inventory/business-level'
 import { resolveInventoryFilterLocationId } from '@/lib/inventory/location-filter'
 import { type InventoryDocType } from '@/lib/inventory/types'
 import { hasUiCapability } from '@/lib/permission-contract'
@@ -43,16 +46,28 @@ export default async function Page({
    * operate 权限。别顺手把它也统一成 inventoryCreatableGenericDocTypes 那套层级函数 ——
    * 两者原本共用同一个 operateByLevel 对象，拆开正是为了让口径分叉显式可见。
    */
-  const canReceive = hasUiCapability(actions, 'inventory:market_operate')
-    || hasUiCapability(actions, 'inventory:store_operate')
+  const canReceive = INVENTORY_CORE_RECEIVE_ACTIONS.some((action) => hasUiCapability(actions, action))
+  /*
+   * 「收货」按钮是**行级**判据（#340 评审 P1）：`confirmInventoryCoreReceive` 断的是
+   * `assertOrgNodeVisible(按收货权限收窄后的 session, target)`。单据列表按「source 或 target 在 scope」
+   * 可见，调出方（市场间调货的发起市场、门店调拨的发货门店）也看得到自己的待收货单 ——
+   * 只按会话级 canReceive 渲染，它们就会拿到一个点了必 PERMISSION_DENIED 的按钮。
+   * 这里用与服务端同一套收窄（scopeSessionToActions + inventoryScopedOrgNodeIds）算出
+   * 「能收哪些 target」；null = 不受限（超管）。
+   */
+  const receivableTargetOrgNodeIds = canReceive
+    ? inventoryScopedOrgNodeIds(scopeSessionToActions(session, INVENTORY_CORE_RECEIVE_ACTIONS))
+    : []
   const requestedCreateType = params.create as InventoryDocType | undefined
   const initialDocType = requestedCreateType && allowedCreateDocTypes.includes(requestedCreateType)
     ? requestedCreateType
     : undefined
 
-  const [filterOptions, locations, skus] = await Promise.all([
+  const [filterOptions, locations, marketTransferTargets, skus] = await Promise.all([
     listInventoryDocLocationFilterOptions(),
     allowedCreateDocTypes.length > 0 ? listInventoryLocations() : Promise.resolve([]),
+    // 市场间调货出库的接收主体候选（#340）：不按 scope，只在能建这种单时取
+    allowedCreateDocTypes.includes('市场间调货出库') ? listInventoryMarketTransferTargets() : Promise.resolve([]),
     allowedCreateDocTypes.length > 0
       ? listInventorySkus({ page: 1, pageSize: 100, onlyActive: true })
       : Promise.resolve({ data: [], total: 0 }),
@@ -81,10 +96,12 @@ export default async function Page({
           rows={docs.data}
           total={docs.total}
           locations={locations}
+          marketTransferTargets={marketTransferTargets}
           skuOptions={skus.data}
           canCreate={allowedCreateDocTypes.length > 0}
           canApprove={hasUiCapability(actions, 'inventory:supply_chain_approve') || hasUiCapability(actions, 'inventory:market_approve')}
           canReceive={canReceive}
+          receivableTargetOrgNodeIds={receivableTargetOrgNodeIds}
           canViewPrice={docs.canViewPrice}
           initialDocType={initialDocType}
           allowedCreateDocTypes={allowedCreateDocTypes}

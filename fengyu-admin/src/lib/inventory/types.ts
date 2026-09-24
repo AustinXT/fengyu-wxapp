@@ -204,6 +204,15 @@ export interface InventoryLocationRow {
   isActive: boolean
 }
 
+/**
+ * 「市场间调货出库」接收主体候选（#340）。越过了操作人 scope，所以字段刻意只有这两个 ——
+ * 别往里加 locationId / storeId / 上级关系，见 engine 的 `listInventoryMarketTransferTargets`。
+ */
+export interface InventoryMarketTransferTarget {
+  orgNodeId: string
+  name: string
+}
+
 export interface InventoryLocationFilterHeadquarters {
   locationId: string
   name: string

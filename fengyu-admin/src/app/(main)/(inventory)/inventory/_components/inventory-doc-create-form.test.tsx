@@ -396,3 +396,99 @@ describe('批次取数的 id 空间（#191）', () => {
     expect(mockCreateDoc.mock.calls[0][0].sourceOrgNodeId).toBe('NODE-S1')
   })
 })
+
+describe('市场间调货出库的接收主体候选（#340）', () => {
+  /** 单市场账号：scope 内只有自己的市场与下属门店 */
+  const SCOPED_LOCATIONS = [
+    { locationId: 'LOC-M1', orgNodeId: 'NODE-M1', name: '市场一部', locationType: '市场', isActive: true },
+    { locationId: 'S1', orgNodeId: 'NODE-S1', name: '一部门店', locationType: '门店', isActive: true },
+  ] as never
+  /** 不按 scope 的全部启用市场（含调出市场自己） */
+  const TARGETS = [
+    { orgNodeId: 'NODE-M1', name: '市场一部' },
+    { orgNodeId: 'NODE-M2', name: '市场二部' },
+    { orgNodeId: 'NODE-M3', name: '市场三部' },
+  ]
+
+  function optionValues(select: HTMLSelectElement) {
+    return [...select.options].map((option) => option.value).filter(Boolean)
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockListLots.mockResolvedValue([])
+    mockCreateDoc.mockResolvedValue({ success: true, id: 'MTO-260924-0001' })
+  })
+
+  it('单市场账号：发起端自动带出本市场，接收端列出其他市场、不含自己', () => {
+    renderForm({
+      locations: SCOPED_LOCATIONS,
+      marketTransferTargets: TARGETS,
+      initialDocType: '市场间调货出库',
+      allowedDocTypes: ['市场间调货出库'],
+    })
+    // 发起端只留市场 → 唯一候选 → 只读并已落定（门店不在市场间调货的发起候选里）
+    expect(document.querySelector('output[data-fixed-subject="NODE-M1"]')).not.toBeNull()
+    const target = selectByPlaceholder('入库/接收主体')
+    expect(optionValues(target)).toEqual(['NODE-M2', 'NODE-M3'])
+  })
+
+  it('能以 scope 外的市场为接收主体提交', async () => {
+    const { onSuccess } = renderForm({
+      locations: SCOPED_LOCATIONS,
+      marketTransferTargets: TARGETS,
+      initialDocType: '市场间调货出库',
+      allowedDocTypes: ['市场间调货出库'],
+    })
+    fireEvent.change(selectByPlaceholder('入库/接收主体'), { target: { value: 'NODE-M3' } })
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: '提交' }))
+    })
+    await waitFor(() => expect(onSuccess).toHaveBeenCalledWith('MTO-260924-0001'))
+    expect(mockCreateDoc).toHaveBeenCalledWith(expect.objectContaining({
+      docType: '市场间调货出库',
+      sourceOrgNodeId: 'NODE-M1',
+      targetOrgNodeId: 'NODE-M3',
+    }))
+  })
+
+  it('多市场账号把发起市场改成已选的接收市场时，接收端被清空', () => {
+    renderForm({
+      locations: LOCATIONS,
+      marketTransferTargets: TARGETS,
+      initialDocType: '市场间调货出库',
+      allowedDocTypes: ['市场间调货出库'],
+    })
+    fireEvent.change(selectByPlaceholder('出库/发起主体'), { target: { value: 'NODE-M1' } })
+    fireEvent.change(selectByPlaceholder('入库/接收主体'), { target: { value: 'NODE-M2' } })
+    expect(selectByPlaceholder('入库/接收主体').value).toBe('NODE-M2')
+    fireEvent.change(selectByPlaceholder('出库/发起主体'), { target: { value: 'NODE-M2' } })
+    const target = selectByPlaceholder('入库/接收主体')
+    expect(target.value).toBe('')
+    expect(optionValues(target)).toEqual(['NODE-M1', 'NODE-M3'])
+  })
+
+  it('全局只有一个启用市场：接收端不会被自动填成发起市场自己', () => {
+    renderForm({
+      locations: SCOPED_LOCATIONS,
+      marketTransferTargets: [{ orgNodeId: 'NODE-M1', name: '市场一部' }],
+      initialDocType: '市场间调货出库',
+      allowedDocTypes: ['市场间调货出库'],
+    })
+    expect(document.querySelector('output[data-fixed-subject="NODE-M1"]')).not.toBeNull()
+    const target = selectByPlaceholder('暂无可用主体')
+    expect(target.value).toBe('')
+    expect(target.disabled).toBe(true)
+  })
+
+  it('其他单据类型（分院调货出库）的接收主体候选与改前一致：仍取 scope 内 locations', () => {
+    renderForm({
+      locations: SCOPED_LOCATIONS,
+      marketTransferTargets: TARGETS,
+      initialDocType: '分院调货出库',
+      allowedDocTypes: ['分院调货出库'],
+    })
+    expect(optionValues(selectByPlaceholder('入库/接收主体'))).toEqual(['NODE-M1', 'NODE-S1'])
+    expect(optionValues(selectByPlaceholder('出库/发起主体'))).toEqual(['NODE-M1', 'NODE-S1'])
+  })
+})

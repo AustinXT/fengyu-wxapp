@@ -37,6 +37,7 @@ import { revalidatePath } from 'next/cache'
 import type { AuthSession } from '@/lib/types'
 import { assertInventoryBusinessWritable } from './cutover'
 import {
+  INVENTORY_CORE_RECEIVE_ACTIONS,
   genericDocBusinessLevel,
   inventoryDelegatableOperateActions,
   inventoryLevelOperateDeniedMessage,
@@ -58,6 +59,7 @@ import {
   type InventoryDocRow,
   type InventoryDocType,
   type InventoryLocationRow,
+  type InventoryMarketTransferTarget,
   type InventoryLocationFilterOptions,
   type InventoryLocationType,
   type InventoryLotRow,
@@ -1390,6 +1392,40 @@ function lotRow(
     updatedAt: row.lot.updatedAt.toISOString(),
   }
 }
+
+/**
+ * 「市场间调货出库」的接收主体候选（#340）：全部启用的市场，**不按操作人 scope 过滤**。
+ *
+ * 调货的接收方是对方市场，只管一个市场的账号（如「市场库存财务」）按 scope 本就看不见它 ——
+ * 继续用 `listInventoryLocations` 当候选源，下拉里永远只有自己，流程第一步就走不下去。
+ * 服务端建单对 RECEIVE_REQUIRED 类型的 target 同样刻意不做 scope 鉴权（见
+ * `createInventoryCoreDoc` 端点校验段的注释），两边口径一致。
+ *
+ * 因为越过了 scope，返回字段收到最少：只有名称与 orgNodeId —— 不带 locationId / storeId /
+ * parentLocationId，也不带门店与总部。「排除调出市场自己」依赖用户在表单里选的发起主体，
+ * 由表单按当前 source 过滤，这里不做。
+ *
+ * 权限与「谁能建这张单」同源：`inventoryDelegatableOperateActions(市场间调货出库 所在层级)`。
+ * 市场层只有 `market_operate` —— 总部 scope 不向下展开，供应链**不能**代建市场层单据，
+ * `createInventoryCoreDoc` 的层级闸同样只认它。别放宽成 stock_list 或加上 supply_chain_operate，
+ * 否则建不了单的账号也能直调拿到本不在自己 scope 内的全部市场名单。
+ */
+export const listInventoryMarketTransferTargets = withAnyPermission(
+  [...inventoryDelegatableOperateActions('market')],
+  async (): Promise<InventoryMarketTransferTarget[]> => {
+    await syncInventoryLocations()
+    const rows = await db
+      .select({ orgNodeId: inventoryLocations.orgNodeId, name: inventoryLocations.name })
+      .from(inventoryLocations)
+      .where(and(
+        eq(inventoryLocations.isActive, true),
+        eq(inventoryLocations.locationType, '市场'),
+        isNotNull(inventoryLocations.orgNodeId),
+      ))
+      .orderBy(asc(inventoryLocations.name))
+    return rows.flatMap((row) => (row.orgNodeId ? [{ orgNodeId: row.orgNodeId, name: row.name }] : []))
+  },
+)
 
 export const listInventoryLocations = withPermission(
   'inventory:stock_list',
@@ -3549,7 +3585,7 @@ export const rejectInventoryCoreDoc = withAnyPermission(
 )
 
 export const confirmInventoryCoreReceive = withAnyPermission(
-  ['inventory:market_operate', 'inventory:store_operate'],
+  [...INVENTORY_CORE_RECEIVE_ACTIONS],
   async (session, outboundDocId: string, remark?: string | null): Promise<{ success: true; inboundDocId: string }> => {
     const id = normalizeRequired(outboundDocId, '出库单号')
     let inboundDocId = ''

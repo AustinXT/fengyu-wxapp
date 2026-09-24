@@ -403,7 +403,8 @@ export type InventoryAnyOperationId = InventoryOperationId | InventoryGenericOpe
  * 它要回答的是「这个类型的单在哪个状态下轮到本层级动手」，那是业务语义不是类型语义。
  * 所以这里是一张显式的小表，键必须是 `INVENTORY_GENERIC_DOC_TYPES` 的成员。
  *
- * 当前只有一条：`分院调货出库` 在门店层有 6 条「待收货」（dev 库统计），是门店层最大的一批
+ * 当前两条：门店调拨（下）与市场间调货（#340，见下文）。
+ * `分院调货出库` 在门店层有 6 条「待收货」（dev 库统计），是门店层最大的一批
  * 待办，收货走通用的 `confirmInventoryCoreReceive`（`分院调货出库` 在
  * `INVENTORY_GENERIC_DOC_TYPES` 里，是少数能用 generic 三件套的场景）。
  *
@@ -423,13 +424,18 @@ export type InventoryAnyOperationId = InventoryOperationId | InventoryGenericOpe
  * 上级市场账号不受影响（两端都在它 scope 里，它本来就能替门店收货）。
  * produced 段不加 scopeRole，发货方仍在产出区看得见自己的单，这是对的。
  *
- * 其余三种同样带流转状态的通用类型（`市场间调货出库` 待收货、
- * `市场产品报损` / `院产品报损` 待审批）**本期刻意不登记**：甲方 2026-09-21 只点名了
- * 门店调货这一批，要不要一并铺开是待拍板项。补的时候连同
- * `INVENTORY_GENERIC_OPERATION_INBOX_ACTIONS` 一起补，两张表由单测钉住键集合一致。
+ * `市场间调货出库 · 待收货`（#340，用户 2026-09-24 拍板进待办）与门店调拨同构：
+ * 市场办理台「市场间调货」卡既建单又收货，收货同样走 `confirmInventoryCoreReceive`，
+ * 同样只断 target —— 所以 scopeRole 同为 `'target'`。缺了它，调出市场会在自己的待办里
+ * 看到发出去的单并拿到一个点了必 PERMISSION_DENIED 的「确认收货」。
+ *
+ * 其余两种带流转状态的通用类型（`市场产品报损` / `院产品报损` 待审批）**仍未登记**：
+ * 要不要一并铺开是待拍板项。补的时候连同 `INVENTORY_GENERIC_OPERATION_INBOX_ACTIONS`
+ * 一起补，两张表由单测钉住键集合一致；⚠️ 审批类的方向是 `'source'`，别照抄上面两条。
  */
 export const INVENTORY_GENERIC_OPERATION_INBOX = {
   分院调货出库: { docTypes: ['分院调货出库'], statuses: ['待收货'], scopeRole: 'target' },
+  市场间调货出库: { docTypes: ['市场间调货出库'], statuses: ['待收货'], scopeRole: 'target' },
 } as const satisfies Partial<Record<InventoryGenericDocType, InventoryOperationDocFilter>>
 
 /**
@@ -519,6 +525,7 @@ export const INVENTORY_OPERATION_INBOX_ACTIONS = {
 /** 通用业务 → 待办行内动作。键集合必须与 `INVENTORY_GENERIC_OPERATION_INBOX` 一致（单测钉住）。 */
 export const INVENTORY_GENERIC_OPERATION_INBOX_ACTIONS = {
   分院调货出库: ['generic-receive'],
+  市场间调货出库: ['generic-receive'],
 } as const satisfies Partial<Record<InventoryGenericDocType, readonly InventoryInboxActionKind[]>>
 
 /**

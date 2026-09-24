@@ -66,7 +66,7 @@ INVALID_STATE: 库存期初尚未导入并核验完成，暂不可办理库存�
 
 ### 3.2 测试账号
 
-dev 库没有 `FY-TEST-*` 账号，`e2e-chains` 的 `TEST_PHONES` + `fengyu2026` 对本库无效。本套件自建 4 个账号，**各只绑一个角色 + 一个 scope** —— 多绑定会触发 `inventoryPriceScopeByTier()` 的跨绑定 fail-closed 路径（`src/lib/inventory/access.ts:87-117`），把价格档打成空集。
+dev 库没有 `FY-TEST-*` 账号，`e2e-chains` 的 `TEST_PHONES` + `fengyu2026` 对本库无效。本套件自建 5 个账号（INVT-MK-02 为 #340 新增的自贡市场财务，INV-12 的调入方），**各只绑一个角色 + 一个 scope** —— 多绑定会触发 `inventoryPriceScopeByTier()` 的跨绑定 fail-closed 路径（`src/lib/inventory/access.ts:87-117`），把价格档打成空集。
 
 | employee_id | 手机号 | 角色 | scope | 用途 |
 |---|---|---|---|---|
@@ -74,6 +74,7 @@ dev 库没有 `FY-TEST-*` 账号，`e2e-chains` 的 `TEST_PHONES` + `fengyu2026`
 | `INVT-SC-01` | 19900001002 | `inventory_supply_chain_operator` | `ORG-HQ` | 供应链侧 + 边界断言 |
 | `INVT-MK-01` | 19900001003 | `inventory_market_finance` | `org-市场-1779327286268` | 市场侧 + 边界断言 |
 | `INVT-ST-01` | 19900001004 | `inventory_store_operator` | `org-门店-1780295730424` | **仅断言其无法登录 admin** |
+| `INVT-MK-02` | 19900001005 | `inventory_market_finance` | `org-市场-1779767525664` | INV-12 市场间调货调入方（自贡凤御），办理台待办收货（#340） |
 
 `admin_passwords.must_change` 必须置 `false`，否则登录后被重定向到 `/change-password`。
 登录连错 5 次会被 `login_attempts` 锁 15 分钟（`src/actions/auth.ts:50-52`）。
@@ -112,6 +113,7 @@ dev 库没有 `FY-TEST-*` 账号，`e2e-chains` 的 `TEST_PHONES` + `fengyu2026`
 | INV-09 | 单据中心与台账 | P1 | 7 | 两种组织树筛选语义相反，最易混淆 |
 | INV-10 | 交互合理性审计 | P0 | — | 用户明确提出的第二条主线 |
 | INV-11 | 候选唯一的主体自动选中（#189） | P1 | 6 个 test | 不变量：主体字段不会「只有一个候选还要你手动选」；只读不写库 |
+| INV-12 | 单市场账号发起市场间调货（#340） | P1 | 1 个 test | 接收端候选不按 scope、不含调出市场；破坏性（库存永久搬入自贡凤御） |
 
 ---
 
@@ -386,7 +388,7 @@ writeCtx('inv07', {
 ## 6. 实施摘要（2026-09-13 首轮实跑回填，2026-09-21 复核修订）
 
 首轮 11 条 spec 全部跑通，耗时约 5 分钟（`bun run test:e2e:inventory-ui`）。
-现为 12 个 spec 文件 / 17 个 test（新增 INV-11，`inv-90` 探针默认 skip）。
+现为 13 个 spec 文件 / 18 个 test（新增 INV-11、INV-12，`inv-90` 探针默认 skip）。
 
 | 场景 | Spec 文件 | 断言点 | 首轮结果 | 现状 |
 |---|---|---|---|---|
@@ -402,6 +404,7 @@ writeCtx('inv07', {
 | INV-09 | `inv-09-docs-center-and-ledger.spec.ts` | 18 | ✅ 全绿 | — |
 | INV-10 | `inv-10-ux-audit.spec.ts` | 扫描 25 条 finding | ✅ 报告已生成 | 硬编码条目全部改为转述上下文的实测判定 |
 | INV-11 | `inv-11-single-subject-autoselect.spec.ts` | 6 个 test | （首轮尚无此 spec） | #189 部署 dev 后 6/6 通过，`test.skip` 开关已删，进常规套件 |
+| INV-12 | `inv-12-market-transfer-single-market.spec.ts` | 1 个 test | （首轮尚无此 spec） | #340 新增；待部署 dev 后实跑 |
 
 ### 与原设计的偏差及原因
 

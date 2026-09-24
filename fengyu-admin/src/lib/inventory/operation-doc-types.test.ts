@@ -675,13 +675,29 @@ describe('通用建单业务 id（#191）', () => {
     }
   })
 
-  it('其余 9 种通用类型只有 produced，没有 inbox', () => {
-    // 市场间调货出库（待收货）、两个报损（待审批）同样有待办语义，但本期刻意未登记
-    // （甲方 2026-09-21 只点名了门店调货）。补的时候连 INVENTORY_GENERIC_OPERATION_INBOX_ACTIONS
-    // 一起补，上面那条键集合断言会盯着。
+  it('市场间调货（市场间调货出库）带 inbox，按 target 收窄、行内动作是通用收货（#340）', () => {
+    /*
+     * 用户 2026-09-24 拍板：调入市场在办理台待办里直接确认收货（#340 待确认项选 A）。
+     * 与门店调拨同构 —— 收货走 confirmInventoryCoreReceive，只断 target（上面那条把依据
+     * 钉在了 engine 源码上）。方向写成 source 的话，调出市场的待办里会出现自己发出去的单，
+     * 而调入市场反倒看不到。
+     */
+    expect(resolveOperationDocQuery(genericOperationId('市场间调货出库'))).toEqual({
+      produced: { docTypes: ['市场间调货出库'] },
+      inbox: { docTypes: ['市场间调货出库'], statuses: ['待收货'], scopeRole: 'target' },
+    })
+    expect(resolveOperationInboxActions(genericOperationId('市场间调货出库'))).toEqual(['generic-receive'])
+  })
+
+  it('其余 8 种通用类型只有 produced，没有 inbox', () => {
+    // 两个报损（待审批）同样有待办语义，但仍未登记（是否铺开待拍板）。
+    // 补的时候连 INVENTORY_GENERIC_OPERATION_INBOX_ACTIONS 一起补，上面那条键集合断言会盯着；
+    // 审批类方向是 source，别照抄调货的 target。
+    const withInbox = new Set<string>(['分院调货出库', '市场间调货出库'])
     for (const docType of INVENTORY_GENERIC_DOC_TYPES) {
-      if (docType === '分院调货出库') continue
+      if (withInbox.has(docType)) continue
       expect(resolveOperationDocQuery(genericOperationId(docType))?.inbox, docType).toBeUndefined()
     }
+    expect(Object.keys(INVENTORY_GENERIC_OPERATION_INBOX).sort()).toEqual([...withInbox].sort())
   })
 })
