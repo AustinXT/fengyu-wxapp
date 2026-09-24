@@ -7321,8 +7321,8 @@ describe('提货查询门店范围', () => {
     await orderRoutes.availablePickupItems(ctx)
 
     const sql = pg.query.mock.calls[0][0]
-    // 下单日期取 sale_orders.created_at，并在服务端按上海时区截成日历日
-    expect(sql).toContain("to_char(o.created_at AT TIME ZONE 'Asia/Shanghai', 'YYYY-MM-DD') AS order_date")
+    // 下单日期取 sale_orders.sale_order_datetime，并在服务端按上海时区截成日历日
+    expect(sql).toContain("to_char(o.sale_order_datetime AT TIME ZONE 'Asia/Shanghai', 'YYYY-MM-DD') AS order_date")
     expect(sql).toContain('MIN(order_date) AS order_date')
     expect(ctx.result[0]).toMatchObject({
       saleOrderId: 'FY-XSD-WX-2609240001',

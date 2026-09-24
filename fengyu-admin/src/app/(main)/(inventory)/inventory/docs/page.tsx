@@ -33,10 +33,10 @@ export default async function Page({
   /*
    * 建单下拉走「本层级 ∪ scope 能向下展开的上级层级」的代建口径（#191，甲方 2026-09-21 拍板）。
    * 层级表的单源在 business-level.ts —— 这里不再手搓一份三元映射，否则服务端放开了
-   * 代建，市场账号的下拉里还是看不到 5 种门店类型，等于什么都没发生。
+   * 代建，市场账号的下拉里还是看不到门店类型（#350 起 4 种），等于什么都没发生。
    * 反过来也一样：总部 scope 不展开后代（access.ts 的 inventoryScopedOrgNodeIds），
-   * 所以只有 supply_chain_operate 的账号这里只拿到「内部领用」一种，而不是 10 种里
-   * 有 9 种点进去必 403 的死路。
+   * 所以只有 supply_chain_operate 的账号这里只拿到「内部领用」一种，而不是 9 种里
+   * 有 8 种点进去必 403 的死路。
    */
   const allowedCreateDocTypes = inventoryCreatableGenericDocTypes(
     (action) => hasUiCapability(actions, action),

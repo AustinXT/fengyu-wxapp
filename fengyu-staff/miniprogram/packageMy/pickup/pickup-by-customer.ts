@@ -28,7 +28,7 @@ interface PickupItem {
   unitRealPrice: string | number | null
   storeId: string
   storeName: string | null
-  /** 下单日期（sale_orders.created_at 的上海日历日，服务端已格式化成 YYYY-MM-DD） */
+  /** 下单日期（sale_orders.sale_order_datetime 的上海日历日，服务端已格式化成 YYYY-MM-DD） */
   orderDate?: string | null
   /** 展示用：顾客实际单价（WXML 不能调方法，在 ts 里格式化好） */
   unitRealPriceText?: string
@@ -71,7 +71,9 @@ function formatProductName(productName?: string | null, specName?: string | null
 }
 
 function normalizePickupItem(item: PickupItem): PickupItem {
-  const price = Number(item.unitRealPrice)
+  // null / '' 时 Number() 得 0，会被显示成 ¥0.00 冒充赠品；缺值一律显示 --
+  const raw = item.unitRealPrice
+  const price = raw === null || raw === undefined || raw === '' ? NaN : Number(raw)
   return {
     ...item,
     specName: normalizeSpecName(item.productName, item.specName),
@@ -183,8 +185,12 @@ Page({
       const items = await callStaffApi<PickupItem[]>('order.availablePickupItems', {
         clientUserId: customer.clientUserId,
       })
+      // 请求在途时用户可能已改选另一位顾客：旧请求后返回会把 A 的清单挂到 B 的头下，
+      // 接着录入的提货就记在 A 的权益上（createPickup 只认 saleItemId）。
+      if (this.data.selectedCustomer?.clientUserId !== customer.clientUserId) return
       this.setData({ ...pickupListData(items), loadingItems: false })
     } catch (err: any) {
+      if (this.data.selectedCustomer?.clientUserId !== customer.clientUserId) return
       this.setData({ loadingItems: false })
       wx.showToast({ title: err?.message || '加载失败', icon: 'none' })
     }
@@ -293,19 +299,26 @@ Page({
       })
       wx.showToast({ title: '提货成功', icon: 'success' })
       this.setData({ 'pickupDialog.visible': false })
-      // 刷新清单
-      if (this.data.selectedCustomer) {
-        const customer = this.data.selectedCustomer
-        const items = await callStaffApi<PickupItem[]>('order.availablePickupItems', {
-          clientUserId: customer.clientUserId,
-        })
-        // 走与首次加载同一个归一化 + 分组：原先这里直接 setData 原始清单，规格名不去重、单价不格式化
-        this.setData(pickupListData(items))
-      }
     } catch (err: any) {
       wx.showToast({ title: err?.message || '提货失败', icon: 'none' })
+      return
     } finally {
       this.setData({ 'pickupDialog.submitting': false })
+    }
+    // 刷新清单单独 try：提货已成功时刷新失败只提示刷新失败，不能覆盖成「提货失败」——
+    // 用户会以为没提上再点一次，而 idempotencyKey 含 Date.now()，重复提交会真的再出库一次。
+    const customer = this.data.selectedCustomer
+    if (!customer) return
+    try {
+      const items = await callStaffApi<PickupItem[]>('order.availablePickupItems', {
+        clientUserId: customer.clientUserId,
+      })
+      // 刷新在途时已改选别的顾客：丢弃结果，别把 A 的清单挂到 B 的头下
+      if (this.data.selectedCustomer?.clientUserId !== customer.clientUserId) return
+      // 走与首次加载同一个归一化 + 分组：原先这里直接 setData 原始清单，规格名不去重、单价不格式化
+      this.setData(pickupListData(items))
+    } catch (err: any) {
+      wx.showToast({ title: '提货已成功，清单刷新失败，请重新选择顾客', icon: 'none' })
     }
   },
 

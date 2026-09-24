@@ -1,7 +1,7 @@
 /**
  * #350：可提货清单带下单日期，供提货录入按销售单分组。
  *
- * 下单日期取 sale_orders.created_at，在 SQL 里按上海日历日截成 YYYY-MM-DD 再下发 ——
+ * 下单日期取 sale_orders.sale_order_datetime，在 SQL 里按上海日历日截成 YYYY-MM-DD 再下发 ——
  * 与 staffApi availablePickupItems 同写法（小程序端日期本地化不可靠，两端统一服务端格式化）。
  */
 import { describe, expect, it, vi } from 'vitest'
@@ -21,7 +21,7 @@ vi.mock('next/cache', () => ({ revalidatePath: vi.fn() }))
 import { getAvailablePickupItems } from '../pickup-records'
 
 describe('getAvailablePickupItems 下单日期（#350）', () => {
-  it('SQL 取 sale_orders.created_at 的上海日历日，映射成 orderDate', async () => {
+  it('SQL 取 sale_orders.sale_order_datetime 的上海日历日，映射成 orderDate', async () => {
     mockExecute.mockResolvedValueOnce([{
       sale_item_id: 'SI-1', sale_item_group_id: 'SI-1', source_sale_item_ids: ['SI-1'],
       sale_order_id: 'ORDER-A', sku_id: 'sku-1', product_name: '面霜',
@@ -33,7 +33,7 @@ describe('getAvailablePickupItems 下单日期（#350）', () => {
 
     const query = mockExecute.mock.calls[0][0]
     const compiled = new PgDialect().sqlToQuery(query)
-    expect(compiled.sql).toContain("to_char(o.created_at AT TIME ZONE 'Asia/Shanghai', 'YYYY-MM-DD') AS order_date")
+    expect(compiled.sql).toContain("to_char(o.sale_order_datetime AT TIME ZONE 'Asia/Shanghai', 'YYYY-MM-DD') AS order_date")
     expect(compiled.sql).toContain('MIN(order_date) AS order_date')
     expect(rows[0]).toMatchObject({ saleOrderId: 'ORDER-A', orderDate: '2026-09-20', storeName: '红谷滩店', unitRealPrice: '199.00' })
   })

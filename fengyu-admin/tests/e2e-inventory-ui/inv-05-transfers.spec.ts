@@ -180,7 +180,7 @@ test('INV-05：调货链路 —— 分院调货收货闭环 / §10.3 归属 / �
     await login(page, INVT_ACCOUNTS.ADM.phone, INVT_PASS)
 
     // ══ 前置：三个主体的在手量 ═══════════════════════════════════════
-    // 一轮全套跑完门店 A 的供应链品会被消耗 3（本段调货）+ 2（inv-06 报损）+ 2（inv-07 顾客出库），
+    // 一轮全套跑完门店 A 的供应链品会被消耗 3（本段调货）+ 2（inv-06 报损）（#350 起 inv-07 不再建顾客出库），
     // inv-03 的配货量一旦调小，这三支就会一起撞「没有可用量 >= N 的批次」。先打出来。
     const storeADigest = onHandDigest(TOPO.STORE_A_ORG, inv01.supplySkuId)
     const marketDigest = onHandDigest(TOPO.MARKET, inv01.supplySkuId)

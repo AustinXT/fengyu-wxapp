@@ -51,6 +51,15 @@ describe('groupAvailablePickupItemsByOrder', () => {
     expect(groups[1].items.map((i) => i.saleItemId)).toEqual(['SI-A1'])
   })
 
+  it('分组键是销售单号：同门店、同下单日期的两张单仍是两组', () => {
+    // 上一条用例的单号 / 门店 / 日期一一对应，按 storeName 或 orderDate 分组也能过 —— 这条钉住分组键
+    const groups = groupAvailablePickupItemsByOrder([
+      item({ saleItemId: 'SI-A1', saleOrderId: 'ORDER-A' }),
+      item({ saleItemId: 'SI-C1', saleOrderId: 'ORDER-C' }),
+    ])
+    expect(groups.map((g) => g.saleOrderId)).toEqual(['ORDER-A', 'ORDER-C'])
+  })
+
   it('空清单 → 空分组', () => {
     expect(groupAvailablePickupItemsByOrder([])).toEqual([])
   })

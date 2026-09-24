@@ -62,7 +62,8 @@ function extractSetItems(src, varName) {
 
 /** 截取 `export const <name> = [ ... ] as const` 数组字面量成员（去引号、排序）。 */
 function extractConstArrayItems(src, varName) {
-  const re = new RegExp(`const ${varName}[^=]*=\\s*\\[([\\s\\S]*?)\\]\\s*as const`)
+  // 名字后加 \b：防止同名前缀常量（如 `${varName}_LEGACY`）被先匹配到
+  const re = new RegExp(`const ${varName}\\b[^=]*=\\s*\\[([\\s\\S]*?)\\]\\s*as const`)
   const m = src.match(re)
   if (!m) throw new Error(`未找到 ${varName} 数组定义`)
   return [...m[1].matchAll(/'([^']+)'/g)].map((x) => x[1]).sort()
