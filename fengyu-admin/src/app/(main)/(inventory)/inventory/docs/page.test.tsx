@@ -21,13 +21,14 @@ const STORE = 'inventory:store_operate'
 const BASE_ACTIONS = ['inventory:list', 'inventory:stock_list']
 
 const {
-  captured, mockListDocs, mockFilterOptions, mockListLocations, mockListSkus,
+  captured, mockListDocs, mockFilterOptions, mockListLocations, mockListMarketTargets, mockListSkus,
   mockGetSession, mockRequireCaps,
 } = vi.hoisted(() => ({
   captured: { props: null as Record<string, unknown> | null },
   mockListDocs: vi.fn(),
   mockFilterOptions: vi.fn(),
   mockListLocations: vi.fn(),
+  mockListMarketTargets: vi.fn(),
   mockListSkus: vi.fn(),
   mockGetSession: vi.fn(),
   mockRequireCaps: vi.fn(),
@@ -37,6 +38,7 @@ vi.mock('@/actions/inventory/docs', () => ({ listInventoryCoreDocs: mockListDocs
 vi.mock('@/actions/inventory/locations', () => ({
   listInventoryDocLocationFilterOptions: mockFilterOptions,
   listInventoryLocations: mockListLocations,
+  listInventoryMarketTransferTargets: mockListMarketTargets,
 }))
 vi.mock('@/actions/inventory/skus', () => ({ listInventorySkus: mockListSkus }))
 vi.mock('@/lib/auth', () => ({ getSession: mockGetSession }))
@@ -55,6 +57,7 @@ vi.mock('../_components/inventory-docs-page', () => ({
 import Page from './page'
 
 interface DocsPageProps {
+  marketTransferTargets: readonly { orgNodeId: string; name: string }[]
   canCreate: boolean
   canApprove: boolean
   canReceive: boolean
@@ -79,6 +82,7 @@ beforeEach(() => {
   // defaultLocationId=null ⇒ selectedOrgNodeId=null ⇒ 页面走空列表分支，不查单据。
   mockFilterOptions.mockResolvedValue({ headquarters: [], markets: [], defaultLocationId: null })
   mockListLocations.mockResolvedValue([])
+  mockListMarketTargets.mockResolvedValue([{ orgNodeId: 'M2', name: '九江市场' }])
   mockListSkus.mockResolvedValue({ data: [], total: 0 })
   mockListDocs.mockResolvedValue({ data: [], total: 0, canViewPrice: false })
 })
@@ -149,5 +153,28 @@ describe('单据中心 · 建单下拉候选', () => {
     const props = await renderWith()
     expect(props.allowedCreateDocTypes).toEqual([])
     expect(props.canCreate).toBe(false)
+  })
+})
+
+/**
+ * 市场间调货接收主体候选（#340）：越过 scope 的全部市场名单，只在「建得了市场间调货出库」时取。
+ * 只有门店 / 供应链 operate 的账号建不了这种单，没理由多拿一份不在自己 scope 内的市场名单。
+ */
+describe('单据中心 · 市场间调货接收主体候选（#340）', () => {
+  it('能建市场间调货出库 → 取候选并传给页面', async () => {
+    const props = await renderWith(MARKET)
+    expect(props.allowedCreateDocTypes).toContain('市场间调货出库')
+    expect(mockListMarketTargets).toHaveBeenCalledTimes(1)
+    expect(props.marketTransferTargets).toEqual([{ orgNodeId: 'M2', name: '九江市场' }])
+  })
+
+  it('建不了市场间调货出库（只有门店 / 只有供应链 operate）→ 不取候选', async () => {
+    for (const action of [STORE, SUPPLY]) {
+      vi.clearAllMocks()
+      const props = await renderWith(action)
+      expect(props.allowedCreateDocTypes).not.toContain('市场间调货出库')
+      expect(mockListMarketTargets, action).not.toHaveBeenCalled()
+      expect(props.marketTransferTargets, action).toEqual([])
+    }
   })
 })
