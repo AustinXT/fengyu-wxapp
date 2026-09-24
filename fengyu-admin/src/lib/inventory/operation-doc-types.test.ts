@@ -275,7 +275,7 @@ describe('待我处理段（#192）', () => {
      * 不变量 3：inbox 只给「动作归属在本办理台、但单据由上游产出」的业务写。
      * 建单类业务（purchase-order / company-shipment / store-allocation /
      * market-report-summary / market-report）的来源单**不该**进来 ——
-     * 它们在建单表单的 DocPicker 里已可选，待办区对它们没有任何行内动作可做。
+     * 它们在建单表单的候选单选择器（#338）里已可选，待办区对它们没有任何行内动作可做。
      */
     const withInbox = Object.entries(INVENTORY_OPERATION_DOC_QUERY)
       .filter(([, query]) => query.inbox !== undefined)

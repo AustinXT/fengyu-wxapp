@@ -60,9 +60,21 @@ export function singleValueQuery(
   query: Record<string, string | string[] | undefined>,
   drop: readonly string[] = [],
 ): URLSearchParams {
+  return collapseQuery(query, ['tab', ...drop])
+}
+
+/**
+ * `singleValueQuery` 去掉「剔除 tab」这条板块专属规则后的通用版：每个 key 取首值、丢空串、剔除 `drop`。
+ *
+ * 经营明细报表页（#367）的 `tab` 可能是页内视角参数，不能像板块页那样当遗留深链参数丢掉。
+ */
+export function collapseQuery(
+  query: Record<string, string | string[] | undefined>,
+  drop: readonly string[] = [],
+): URLSearchParams {
   const next = new URLSearchParams()
   for (const [key, raw] of Object.entries(query)) {
-    if (key === 'tab' || drop.includes(key)) continue
+    if (drop.includes(key)) continue
     const value = firstQueryValue(raw)
     if (!value) continue
     next.set(key, value)

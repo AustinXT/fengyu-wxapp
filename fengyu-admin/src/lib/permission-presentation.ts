@@ -26,7 +26,9 @@ export const PERMISSION_ACTION_CATALOG = {
     'customer:list': '查看顾客',
     'customer:update': '修改顾客',
     'dashboard:view': '查看工作台',
+    'data_center:customer_detail': '查看数据中心顾客明细报表',
     'data_center:dashboard': '查看数据中心',
+    'data_center:staff_commission': '查看数据中心员工提成报表',
     'employee:create': '新增员工',
     'employee:delete': '删除员工',
     'employee:list': '查看员工',
@@ -153,6 +155,9 @@ export const PERMISSION_ACTION_CATALOG = {
     'inventory:supply_chain_operate': ['inventory:list', 'inventory:stock_list'],
     'inventory:supply_chain_price_view': ['inventory:list', 'inventory:stock_list'],
     'merchant:create': ['merchant:list'], 'merchant:update': ['merchant:list'], 'merchant:delete': ['merchant:list'],
+    // 经营明细报表（#367）：页面 SSR 与取数都要求同一角色同时持有 dashboard，勾选时自动补齐。
+    'data_center:customer_detail': ['data_center:dashboard'],
+    'data_center:staff_commission': ['data_center:dashboard'],
   },
 } as const
 

@@ -13,6 +13,8 @@ vi.mock('next/cache', () => ({ revalidatePath: vi.fn() }))
 
 import {
   allocateMarketReportSourceLinks,
+  autoBatchNo,
+  lineBatchNo,
   approveItemCompanyShipmentCancellation,
   assertSkuAvailableToMarket,
   cancelSupplyChainPurchaseOrder,
@@ -1196,6 +1198,117 @@ describe('inventory business action input guards', () => {
  * 回归背景：曾误按市场 scope 校验（assertLocationWritable(session, market)），
  * 导致供应链库存员（总部 scope）被 PERMISSION_DENIED 卡死，三级主链路中断。
  */
+describe('批号自动生成（#345）', () => {
+  beforeEach(() => {
+    vi.resetAllMocks()
+  })
+
+  it('autoBatchNo：格式为「单号-两位行号」，行号超过两位不截断', () => {
+    expect(autoBatchNo('GRK-20260925-0001', 1)).toBe('GRK-20260925-0001-01')
+    expect(autoBatchNo('GRK-20260925-0001', 12)).toBe('GRK-20260925-0001-12')
+    expect(autoBatchNo('GRK-20260925-0001', 123)).toBe('GRK-20260925-0001-123')
+  })
+
+  it('autoBatchNo：同日不同单号、同单不同行号都不重号（单号全局唯一 ⇒ 批号全局唯一）', () => {
+    const generated = new Set<string>()
+    for (let sequence = 1; sequence <= 50; sequence += 1) {
+      const docId = `GRK-20260925-${String(sequence).padStart(4, '0')}`
+      for (let lineNo = 1; lineNo <= 120; lineNo += 1) generated.add(autoBatchNo(docId, lineNo))
+    }
+    expect(generated.size).toBe(50 * 120)
+    // 不同单据类型前缀不会撞号
+    expect(autoBatchNo('ZRK-20260925-0001', 1)).not.toBe(autoBatchNo('GRK-20260925-0001', 1))
+  })
+
+  it('lineBatchNo：赠送属性与来源批次一致时沿用来源批号，翻转（任一方向）时按单号-行号换批号', () => {
+    const normalLot = { batchNo: 'B-1', isGift: false }
+    const giftLot = { batchNo: 'GFH-20260925-0001-02', isGift: true }
+    expect(lineBatchNo(normalLot, false, 'FPH-20260925-0001', 1)).toBe('B-1')
+    expect(lineBatchNo(normalLot, true, 'FPH-20260925-0001', 2)).toBe('FPH-20260925-0001-02')
+    expect(lineBatchNo(giftLot, true, 'FPH-20260925-0001', 2)).toBe('GFH-20260925-0001-02')
+    expect(lineBatchNo(giftLot, false, 'FPH-20260925-0001', 1)).toBe('FPH-20260925-0001-01')
+    // 来源批次无批号（存量）拨赠送同样生成
+    expect(lineBatchNo({ batchNo: '', isGift: false }, true, 'GFH-20260925-0003', 1)).toBe('GFH-20260925-0003-01')
+  })
+
+  it('autoBatchNo：行号必须是正整数', () => {
+    expect(() => autoBatchNo('GRK-20260925-0001', 0)).toThrow()
+    expect(() => autoBatchNo('GRK-20260925-0001', 1.5)).toThrow()
+  })
+
+  function mockSupplyChainReceipt() {
+    const lotInserts: unknown[][] = []
+    const itemInserts: unknown[][] = []
+    let lastLotBatchNo = ''
+    const executor = vi.fn(async (query: unknown) => {
+      const rendered = renderSql(query)
+      if (rendered.includes('INSERT INTO inventory_stock_lots')) {
+        const params = sqlParams(query)
+        lotInserts.push(params)
+        // upsertLot 的 VALUES 顺序：location_id, sku_id, lot_key, sku_name, spec_name, supplier, supplier_id, product_series, batch_no
+        lastLotBatchNo = String(params[8])
+        return [{ id: '7' }]
+      }
+      if (rendered.includes('FROM inventory_stock_lots')) {
+        return [{ ...shipmentSourceLotRow(), id: '7', batch_no: lastLotBatchNo, source_doc_id: null }]
+      }
+      if (rendered.includes('INSERT INTO inventory_doc_items')) {
+        itemInserts.push(sqlParams(query))
+        return [{ id: '9' }]
+      }
+      if (rendered.includes('FROM inventory_doc_links')) return [{ quantity: '0' }]
+      if (rendered.includes('FROM inventory_doc_items')) {
+        return [{ ...storeRequestItemRow(), doc_id: 'CGD-1', market_id: null, supply_chain_unit_cost: '80' }]
+      }
+      if (rendered.includes('FROM inventory_skus')) return [supplierBoundSkuRow()]
+      if (rendered.includes('FROM inventory_locations')) {
+        return [{ location_id: 'HQ', org_node_id: 'HQ', location_type: '总部', name: '供应链', parent_location_id: null }]
+      }
+      if (rendered.includes('FROM inventory_docs') && rendered.includes('FOR UPDATE')) {
+        return [{
+          id: 'CGD-1', doc_type: '采购订单', status: '待收货',
+          source_org_node_id: null, target_org_node_id: 'HQ', market_id: null,
+          supplier_id: null, supplier_name: null,
+        }]
+      }
+      return []
+    })
+    mockSyncLocationsShortCircuit()
+    vi.mocked(db.execute).mockResolvedValue([] as never)
+    vi.mocked(db.transaction).mockImplementationOnce(async (callback) => callback({
+      execute: initializedCutoverExecutor(executor),
+    } as never))
+    return { lotInserts, itemInserts }
+  }
+
+  it('供应链采购入库批号留空：批次与入库明细写入「入库单号-01」，不再写空串', async () => {
+    const { lotInserts, itemInserts } = mockSupplyChainReceipt()
+    const result = await receiveSupplyChainPurchaseOrder(SESSION, {
+      purchaseOrderId: 'CGD-1', supplyChainLocationId: 'HQ',
+      items: [{ purchaseOrderItemId: 1, quantity: 1, batchNo: '   ' }],
+    })
+    expect(result.id).toMatch(/^GRK-\d{8}-0001$/)
+    const expected = `${result.id}-01`
+    expect(lotInserts).toHaveLength(1)
+    expect(lotInserts[0][8]).toBe(expected)
+    // lot_key 的批号段同步变化（同批实物的批次键按生成批号归一）
+    expect(String(lotInserts[0][2])).toContain(`|${expected}|`)
+    expect(itemInserts).toHaveLength(1)
+    expect(itemInserts[0]).toContain(expected)
+  })
+
+  it('供应链采购入库手填批号：原样保存，不生成', async () => {
+    const { lotInserts, itemInserts } = mockSupplyChainReceipt()
+    const result = await receiveSupplyChainPurchaseOrder(SESSION, {
+      purchaseOrderId: 'CGD-1', supplyChainLocationId: 'HQ',
+      items: [{ purchaseOrderItemId: 1, quantity: 1, batchNo: 'B-MANUAL' }],
+    })
+    expect(lotInserts[0][8]).toBe('B-MANUAL')
+    expect(lotInserts[0]).not.toContain(`${result.id}-01`)
+    expect(itemInserts[0]).toContain('B-MANUAL')
+  })
+})
+
 describe('createPurchaseOrder 供应链 scope 归属', () => {
   beforeEach(() => {
     vi.resetAllMocks()

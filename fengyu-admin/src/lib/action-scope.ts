@@ -39,7 +39,8 @@ export function scopeSessionToActions(
 
 /**
  * AND 权限必须落在同一条角色授权上，不能把市场 A 的基础动作与市场 B 的特殊动作拼接。
- * 当前 withAllPermissions 仅用于进销存敏感操作；同一专职角色会同时持有这组动作。
+ * withAllPermissions 用于进销存敏感操作，以及数据中心经营明细报表（dashboard + 顾客明细 / 员工提成，#367）；
+ * 同一角色会同时持有这组动作（角色编辑器按 UI 依赖自动补齐前置权限）。
  */
 export function scopeSessionToAllActions(
   session: AuthSession,

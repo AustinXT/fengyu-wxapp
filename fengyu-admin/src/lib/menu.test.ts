@@ -8,6 +8,7 @@ import {
   MENU_CONFIG,
 } from './menu'
 import { DATA_CENTER_TABS } from './data-center/params'
+import { DATA_CENTER_REPORT_LIST } from './data-center/reports'
 import { DEFAULT_PERMISSION_MATRIX } from './permissions'
 import type { AuthSession, RoleType } from './types'
 
@@ -37,7 +38,8 @@ function visibleLabels(session: AuthSession) {
 describe('业务域菜单（权限点驱动）', () => {
   it('admin 可见全部叶子菜单和全部业务域', () => {
     const nodes = getVisibleMenuItems(makeSession({ role: 'admin' }))
-    expect(visibleLeaves(makeSession({ role: 'admin' }))).toHaveLength(flattenMenuItems().length)
+    // hidden 入口（如骨架已就绪、内容未交付的经营明细报表）对谁都不显示
+    expect(visibleLeaves(makeSession({ role: 'admin' }))).toHaveLength(flattenMenuItems().filter((item) => !item.hidden).length)
     expect(nodes.filter(isMenuParent).map((node) => node.label)).toEqual([
       '经营业务', '客户运营', '商品商城', '库存管理', '组织管理', '数据中心', '系统管理',
     ])
@@ -136,6 +138,49 @@ describe('MENU_CONFIG 完整性', () => {
     for (const board of DATA_CENTER_TABS) {
       expect(hrefs.has(`/data-center/${board}`), `板块 ${board} 缺侧边栏入口`).toBe(true)
     }
+  })
+
+  // 经营明细报表（#367）：入口来自 reports.ts 登记表，下钻子页不进菜单。
+  it('每个经营明细报表（下钻子页除外）都有侧边栏入口，并挂在「数据中心」下的对应分段', () => {
+    const dataCenter = MENU_CONFIG.find((node) => isMenuParent(node) && node.label === '数据中心')
+    expect(dataCenter && isMenuParent(dataCenter)).toBe(true)
+    const children = isMenuParent(dataCenter!) ? dataCenter.children : []
+    for (const report of DATA_CENTER_REPORT_LIST) {
+      const item = children.find((child) => child.href === report.path)
+      if (report.parent) {
+        expect(item, `下钻页 ${report.path} 不应进菜单`).toBeUndefined()
+        continue
+      }
+      expect(item, `报表 ${report.path} 缺侧边栏入口`).toBeDefined()
+      expect(item!.section).toBe(report.menu?.section)
+      expect(item!.requiredAllActions).toEqual([...report.requiredActions])
+    }
+    // 同一分段的子项必须相邻，否则侧边栏会把同一个小标题渲染两次
+    const sections = children.map((child) => child.section)
+    const firstSeen = sections.filter((section, index) => section !== sections[index - 1])
+    expect(new Set(firstSeen).size).toBe(firstSeen.length)
+  })
+
+  it('只有 dashboard 的账号看不到顾客明细 / 员工提成入口；有专用权限点的可见（入口打开后）', () => {
+    const reportItems = flattenMenuItems().filter((item) => item.section && item.section !== '看板')
+    const byHref = (href: string) => ({ ...reportItems.find((item) => item.href === href)!, hidden: false })
+    const dashboardOnly = ['data_center:dashboard']
+    expect(hasMenuItemAccess(byHref('/data-center/daily-overview'), dashboardOnly)).toBe(true)
+    expect(hasMenuItemAccess(byHref('/data-center/operating-master'), dashboardOnly)).toBe(true)
+    for (const href of ['/data-center/customer-frequency', '/data-center/remaining-cards']) {
+      expect(hasMenuItemAccess(byHref(href), dashboardOnly), href).toBe(false)
+      expect(hasMenuItemAccess(byHref(href), [...dashboardOnly, 'data_center:customer_detail']), href).toBe(true)
+      // 缺 dashboard 只有专用权限点也不可见
+      expect(hasMenuItemAccess(byHref(href), ['data_center:customer_detail']), href).toBe(false)
+    }
+    expect(hasMenuItemAccess(byHref('/data-center/commission-daily'), dashboardOnly)).toBe(false)
+    expect(hasMenuItemAccess(byHref('/data-center/commission-daily'), [...dashboardOnly, 'data_center:staff_commission'])).toBe(true)
+  })
+
+  it('提成明细高亮员工提成日报（前缀匹配），不误伤其它数据中心子项', () => {
+    expect(getMenuItemForPath(MENU_CONFIG, '/data-center/commission-daily/detail')?.href).toBe('/data-center/commission-daily')
+    expect(getMenuItemForPath(MENU_CONFIG, '/data-center/customer-frequency')?.href).toBe('/data-center/customer-frequency')
+    expect(getMenuItemForPath(MENU_CONFIG, '/data-center/customer')?.href).toBe('/data-center/customer')
   })
 
   it('所有菜单权限均来自权限目录', () => {

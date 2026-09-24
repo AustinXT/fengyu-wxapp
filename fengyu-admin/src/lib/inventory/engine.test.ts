@@ -1109,7 +1109,7 @@ describe('库存 SKU 来源与价格保护', () => {
     expect(lotBlock).not.toMatch(/storeActualUnitPrice: supplyVisible \?/)
   })
 
-  it('五支列表查询的页码全部走 @/lib/paging 单源，没有内联写法', () => {
+  it('六支列表查询的页码全部走 @/lib/paging 单源，没有内联写法', () => {
     // `Math.max(1, page || 1)` 只兜得住 NaN/0。`?page=1.5` 会让 offset 变成
     // (1.5-1)*20 = 10 → 返回第 11–30 条，而客户端 Pagination 内部 floor 后高亮第 1 页，
     // 用户看到的既不是第 1 页也不是第 2 页；`?page=Infinity` 直接把 SQL 打挂。
@@ -1120,8 +1120,8 @@ describe('库存 SKU 来源与价格保护', () => {
     // 必须是 import 进来的，不能是本文件又写了一份
     expect(source).toMatch(/import \{ resolvePaging \} from '@\/lib\/paging'/)
     expect(source).not.toMatch(/function normalizePage/)
-    // 五支列表查询必须全部走它，不能有漏网的内联写法
-    expect(source.match(/resolvePaging\(\{/g)).toHaveLength(5)
+    // 五支列表查询 + #338 的候选单查询必须全部走它，不能有漏网的内联写法
+    expect(source.match(/resolvePaging\(\{/g)).toHaveLength(6)
     // 剥掉行注释再扫 —— 文件顶部的收编说明里就复述了这些旧写法当反例，
     // 不剥的话这条断言会被自己的注释绊倒（而不是被真实复发绊倒）。
     const code = source.replace(/^\s*\/\/.*$/gm, '')

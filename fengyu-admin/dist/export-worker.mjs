@@ -85271,7 +85271,9 @@ var init_permission_presentation = __esm(() => {
       "customer:list": "查看顾客",
       "customer:update": "修改顾客",
       "dashboard:view": "查看工作台",
+      "data_center:customer_detail": "查看数据中心顾客明细报表",
       "data_center:dashboard": "查看数据中心",
+      "data_center:staff_commission": "查看数据中心员工提成报表",
       "employee:create": "新增员工",
       "employee:delete": "删除员工",
       "employee:list": "查看员工",
@@ -85427,7 +85429,9 @@ var init_permission_presentation = __esm(() => {
       "inventory:supply_chain_price_view": ["inventory:list", "inventory:stock_list"],
       "merchant:create": ["merchant:list"],
       "merchant:update": ["merchant:list"],
-      "merchant:delete": ["merchant:list"]
+      "merchant:delete": ["merchant:list"],
+      "data_center:customer_detail": ["data_center:dashboard"],
+      "data_center:staff_commission": ["data_center:dashboard"]
     }
   };
 });
@@ -85621,7 +85625,9 @@ var init_permissions = __esm(() => {
       "customer:list",
       "customer:update",
       "dashboard:view",
+      "data_center:customer_detail",
       "data_center:dashboard",
+      "data_center:staff_commission",
       "employee:create",
       "employee:list",
       "employee:update",
@@ -85666,7 +85672,9 @@ var init_permissions = __esm(() => {
       "coupon:list",
       "customer:list",
       "dashboard:view",
+      "data_center:customer_detail",
       "data_center:dashboard",
+      "data_center:staff_commission",
       "employee:list",
       "legacy_order:approve",
       "legacy_order:list",
@@ -159443,6 +159451,64 @@ var coerce = {
   date: (arg) => ZodDate.create({ ...arg, coerce: true })
 };
 var NEVER = INVALID;
+// src/lib/data-center/reports.ts
+var DATA_CENTER_DASHBOARD_ACTION = "data_center:dashboard";
+var DATA_CENTER_CUSTOMER_DETAIL_ACTION = "data_center:customer_detail";
+var DATA_CENTER_STAFF_COMMISSION_ACTION = "data_center:staff_commission";
+var DATA_CENTER_CUSTOMER_DETAIL_ACTIONS = [
+  DATA_CENTER_DASHBOARD_ACTION,
+  DATA_CENTER_CUSTOMER_DETAIL_ACTION
+];
+var DATA_CENTER_STAFF_COMMISSION_ACTIONS = [
+  DATA_CENTER_DASHBOARD_ACTION,
+  DATA_CENTER_STAFF_COMMISSION_ACTION
+];
+var DATA_CENTER_REPORTS = {
+  dailyOverview: {
+    path: "/data-center/daily-overview",
+    title: "日常数据一览表",
+    periodKind: "range",
+    requiredActions: [DATA_CENTER_DASHBOARD_ACTION],
+    menu: { section: "经营明细", enabled: false }
+  },
+  customerFrequency: {
+    path: "/data-center/customer-frequency",
+    title: "顾客频率表",
+    periodKind: "month",
+    requiredActions: DATA_CENTER_CUSTOMER_DETAIL_ACTIONS,
+    menu: { section: "经营明细", enabled: false }
+  },
+  remainingCards: {
+    path: "/data-center/remaining-cards",
+    title: "顾客剩余卡项清单",
+    periodKind: "none",
+    requiredActions: DATA_CENTER_CUSTOMER_DETAIL_ACTIONS,
+    menu: { section: "经营明细", enabled: false }
+  },
+  operatingMaster: {
+    path: "/data-center/operating-master",
+    title: "经营数据主表",
+    periodKind: "month",
+    requiredActions: [DATA_CENTER_DASHBOARD_ACTION],
+    menu: { section: "经营明细", enabled: false }
+  },
+  commissionDaily: {
+    path: "/data-center/commission-daily",
+    title: "员工提成日报",
+    periodKind: "month",
+    requiredActions: DATA_CENTER_STAFF_COMMISSION_ACTIONS,
+    menu: { section: "员工收入", enabled: false }
+  },
+  commissionDetail: {
+    path: "/data-center/commission-daily/detail",
+    title: "提成明细",
+    periodKind: "month",
+    requiredActions: DATA_CENTER_STAFF_COMMISSION_ACTIONS,
+    parent: "commissionDaily"
+  }
+};
+var DATA_CENTER_REPORT_LIST = Object.keys(DATA_CENTER_REPORTS).map((key) => ({ key, ...DATA_CENTER_REPORTS[key] }));
+
 // src/lib/export-job-types.ts
 var EXPORT_JOB_TYPES = [
   "orders",
@@ -159461,7 +159527,7 @@ var EXPORT_JOB_TYPES = [
   "coupons",
   "data-center"
 ];
-var DATA_CENTER_EXPORT_VIEWS = [
+var DATA_CENTER_BOARD_EXPORT_VIEWS = [
   "sales-market",
   "sales-store",
   "customer-market-reg",
@@ -159474,6 +159540,11 @@ var DATA_CENTER_EXPORT_VIEWS = [
   "efficiency-staff",
   "efficiency-store-ranking",
   "efficiency-staff-ranking"
+];
+var DATA_CENTER_REPORT_EXPORT_VIEWS = [];
+var DATA_CENTER_EXPORT_VIEWS = [
+  ...DATA_CENTER_BOARD_EXPORT_VIEWS,
+  ...DATA_CENTER_REPORT_EXPORT_VIEWS
 ];
 var EXPORT_PERMISSIONS_BY_TYPE = {
   orders: ["sale_order:list"],
@@ -175578,6 +175649,100 @@ function buildInventoryLocationFilterOptions(activeLocations, scopedLocationIds)
   return { headquarters, markets, defaultLocationId };
 }
 
+// src/lib/inventory/doc-candidates.ts
+var INVENTORY_DOC_CANDIDATE_PURPOSES = [
+  "purchase-order-source",
+  "company-shipment-source",
+  "store-allocation-source",
+  "market-receipt",
+  "store-receipt",
+  "supply-chain-receipt",
+  "supply-chain-purchase-cancel",
+  "shipment-cancel-request",
+  "shipment-cancel-approval",
+  "store-return-approval",
+  "market-return-approval"
+];
+var INVENTORY_DOC_CANDIDATES = {
+  "purchase-order-source": {
+    rules: [{ docType: "市场报货汇总" }, { docType: "品项公司报货需求", statuses: ["已完成"] }],
+    scopeRole: "target",
+    progress: "ordered",
+    remainingToggle: true
+  },
+  "company-shipment-source": {
+    rules: [{ docType: "采购订单" }],
+    scopeRole: "target",
+    progress: "shipped",
+    remainingToggle: true
+  },
+  "store-allocation-source": {
+    rules: [{ docType: "门店报货" }],
+    scopeRole: "target",
+    progress: "allocated",
+    remainingToggle: true
+  },
+  "market-receipt": {
+    rules: [{ docType: "品项公司发货", statuses: ["待收货"] }],
+    scopeRole: "target",
+    progress: "received",
+    remainingToggle: false
+  },
+  "store-receipt": {
+    rules: [{ docType: "分院配货", statuses: ["待收货"] }],
+    scopeRole: "target",
+    progress: "received",
+    remainingToggle: false
+  },
+  "supply-chain-receipt": {
+    rules: [{ docType: "采购订单", statuses: ["待收货"] }],
+    scopeRole: "target",
+    progress: "received",
+    remainingToggle: false,
+    requireRemaining: true
+  },
+  "supply-chain-purchase-cancel": {
+    rules: [{ docType: "采购订单", statuses: ["待收货"] }],
+    scopeRole: "target",
+    progress: "received",
+    remainingToggle: false
+  },
+  "shipment-cancel-request": {
+    rules: [{ docType: "品项公司发货", statuses: ["待收货"] }],
+    scopeRole: "target",
+    progress: "received",
+    remainingToggle: false,
+    requireNoReceipt: true
+  },
+  "shipment-cancel-approval": {
+    rules: [{ docType: "品项公司发货", statuses: ["待审批"] }],
+    scopeRole: "source",
+    progress: "none",
+    remainingToggle: false,
+    cancellationRequested: true
+  },
+  "store-return-approval": {
+    rules: [{ docType: "院退货", statuses: ["待审批"] }],
+    scopeRole: "target",
+    progress: "none",
+    remainingToggle: false
+  },
+  "market-return-approval": {
+    rules: [{ docType: "市场退货", statuses: ["待审批"] }],
+    scopeRole: "target",
+    progress: "none",
+    remainingToggle: false
+  }
+};
+function resolveInventoryDocCandidate(purpose) {
+  if (typeof purpose !== "string")
+    return null;
+  if (!INVENTORY_DOC_CANDIDATE_PURPOSES.includes(purpose))
+    return null;
+  return INVENTORY_DOC_CANDIDATES[purpose];
+}
+var INVENTORY_DOC_CANDIDATE_BULK_LIMIT = 100;
+
 // src/lib/inventory/access.ts
 init_api_error();
 init_permissions();
@@ -177224,6 +177389,176 @@ var listInventoryCoreDocs = withPermission("inventory:list", async (session4, fi
     priceVisibility
   };
 });
+function candidateItemDoneSql(kind) {
+  if (kind === "shipped" || kind === "allocated") {
+    const relationType = kind === "shipped" ? "采购订单发货" : "门店报货配货";
+    return import_drizzle_orm57.sql`(
+      SELECT COALESCE(SUM(cand_link.quantity), 0)
+        FROM inventory_doc_links cand_link
+        JOIN inventory_docs cand_link_doc ON cand_link_doc.id = cand_link.to_doc_id
+       WHERE cand_link.from_item_id = cand_item.id
+         AND cand_link.relation_type = ${relationType}
+         AND cand_link_doc.status <> '已取消'
+    )`;
+  }
+  return import_drizzle_orm57.sql`COALESCE(cand_item.fulfilled_quantity, 0)`;
+}
+function candidateItemFilterSql(kind) {
+  return kind === "shipped" ? import_drizzle_orm57.sql`AND cand_item.market_id IS NOT NULL` : import_drizzle_orm57.sql``;
+}
+function candidateRemainingSql(kind) {
+  return import_drizzle_orm57.sql`EXISTS (
+    SELECT 1 FROM inventory_doc_items cand_item
+     WHERE cand_item.doc_id = ${inventoryDocs.id}
+       ${candidateItemFilterSql(kind)}
+       AND ${candidateItemDoneSql(kind)} < cand_item.quantity
+  )`;
+}
+function candidateProgressSql(kind) {
+  const total = import_drizzle_orm57.sql`(
+    SELECT COALESCE(SUM(cand_item.quantity), 0)
+      FROM inventory_doc_items cand_item
+     WHERE cand_item.doc_id = ${inventoryDocs.id}
+       ${candidateItemFilterSql(kind)}
+  )`;
+  const done = kind === "none" ? import_drizzle_orm57.sql`NULL` : import_drizzle_orm57.sql`(
+      SELECT COALESCE(SUM(LEAST(${candidateItemDoneSql(kind)}, cand_item.quantity)), 0)
+        FROM inventory_doc_items cand_item
+       WHERE cand_item.doc_id = ${inventoryDocs.id}
+         ${candidateItemFilterSql(kind)}
+    )`;
+  return { total, done };
+}
+var CANDIDATE_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+function candidateText(value, label) {
+  if (value === undefined || value === null)
+    return;
+  if (typeof value !== "string")
+    throw new ApiError("INVALID_PARAMS", `${label}格式不正确`);
+  return value.trim() || undefined;
+}
+function candidateDate(value, label) {
+  const text5 = candidateText(value, label);
+  if (!text5)
+    return;
+  const [year2, month, day2] = CANDIDATE_DATE_PATTERN.test(text5) ? text5.split("-").map(Number) : [NaN, NaN, NaN];
+  const parsed = new Date(Date.UTC(year2, month - 1, day2));
+  if (Number.isNaN(parsed.getTime()) || parsed.getUTCFullYear() !== year2 || parsed.getUTCMonth() !== month - 1 || parsed.getUTCDate() !== day2) {
+    throw new ApiError("INVALID_PARAMS", `${label}格式不正确`);
+  }
+  return text5;
+}
+function parseCandidateFilters(filters) {
+  const includeExhausted = filters.includeExhausted;
+  if (includeExhausted !== undefined && includeExhausted !== null && typeof includeExhausted !== "boolean") {
+    throw new ApiError("INVALID_PARAMS", "显示全部参数格式不正确");
+  }
+  const startDate = candidateDate(filters.startDate, "开始日期");
+  const endDate = candidateDate(filters.endDate, "结束日期");
+  if (startDate && endDate && startDate > endDate) {
+    throw new ApiError("INVALID_PARAMS", "开始日期不能晚于结束日期");
+  }
+  return {
+    keyword: candidateText(filters.keyword, "检索关键字")?.slice(0, 64),
+    startDate,
+    endDate,
+    targetOrgNodeId: candidateText(filters.targetOrgNodeId, "接收主体"),
+    includeExhausted: includeExhausted === true
+  };
+}
+function candidateConditions(session4, definition, filters, { onlyRemaining }) {
+  const scoped = inventoryScopedOrgNodeIds(session4);
+  const conditions3 = [];
+  if (scoped !== null) {
+    if (scoped.length === 0)
+      return import_drizzle_orm57.sql`FALSE`;
+    conditions3.push(import_drizzle_orm57.or(import_drizzle_orm57.inArray(inventoryDocs.sourceOrgNodeId, scoped), import_drizzle_orm57.inArray(inventoryDocs.targetOrgNodeId, scoped)));
+    const endpointColumn = definition.scopeRole === "source" ? inventoryDocs.sourceOrgNodeId : inventoryDocs.targetOrgNodeId;
+    conditions3.push(import_drizzle_orm57.inArray(endpointColumn, scoped));
+  }
+  conditions3.push(import_drizzle_orm57.or(...definition.rules.map((rule) => import_drizzle_orm57.and(import_drizzle_orm57.eq(inventoryDocs.docType, rule.docType), rule.statuses ? import_drizzle_orm57.inArray(inventoryDocs.status, [...rule.statuses]) : import_drizzle_orm57.ne(inventoryDocs.status, "已取消")))));
+  if (definition.cancellationRequested)
+    conditions3.push(import_drizzle_orm57.isNotNull(inventoryDocs.cancellationRequestReason));
+  if (definition.requireNoReceipt) {
+    conditions3.push(import_drizzle_orm57.sql`NOT EXISTS (
+      SELECT 1 FROM inventory_doc_items cand_received
+       WHERE cand_received.doc_id = ${inventoryDocs.id}
+         AND COALESCE(cand_received.fulfilled_quantity, 0) > 0
+    )`);
+  }
+  if (onlyRemaining || definition.requireRemaining) {
+    conditions3.push(candidateRemainingSql(definition.progress));
+  } else if (definition.progress === "shipped") {
+    conditions3.push(import_drizzle_orm57.sql`EXISTS (
+      SELECT 1 FROM inventory_doc_items cand_item
+       WHERE cand_item.doc_id = ${inventoryDocs.id}
+         AND cand_item.market_id IS NOT NULL
+    )`);
+  }
+  const { targetOrgNodeId, startDate, endDate, keyword } = filters;
+  if (targetOrgNodeId)
+    conditions3.push(import_drizzle_orm57.eq(inventoryDocs.targetOrgNodeId, targetOrgNodeId));
+  if (startDate)
+    conditions3.push(import_drizzle_orm57.gte(inventoryDocs.docDate, startDate));
+  if (endDate)
+    conditions3.push(import_drizzle_orm57.lte(inventoryDocs.docDate, endDate));
+  if (keyword) {
+    const pattern = `%${keyword.replace(/[\\%_]/g, "\\$&")}%`;
+    conditions3.push(import_drizzle_orm57.or(import_drizzle_orm57.ilike(inventoryDocs.id, pattern), import_drizzle_orm57.ilike(sourceLocation.name, pattern), import_drizzle_orm57.ilike(targetLocation.name, pattern)));
+  }
+  return import_drizzle_orm57.and(...conditions3) ?? import_drizzle_orm57.sql`TRUE`;
+}
+var listInventoryDocCandidates = withPermission("inventory:list", async (session4, filters) => {
+  const definition = resolveInventoryDocCandidate(filters?.purpose);
+  if (!definition)
+    throw new ApiError("INVALID_PARAMS", "未知的候选单据用途");
+  const parsed = parseCandidateFilters(filters);
+  await syncInventoryLocations();
+  const { pageSize, offset } = resolvePaging({
+    page: filters.page,
+    pageSize: filters.pageSize,
+    defaultPageSize: 20,
+    allowedPageSizes: PAGE_SIZE_WHITELIST
+  });
+  const onlyRemaining = definition.remainingToggle && !parsed.includeExhausted;
+  const whereClause = candidateConditions(session4, definition, parsed, { onlyRemaining });
+  const [countRow] = await db2.select({ count: import_drizzle_orm57.sql`cast(count(*) as int)` }).from(inventoryDocs).leftJoin(sourceLocation, import_drizzle_orm57.eq(sourceLocation.orgNodeId, inventoryDocs.sourceOrgNodeId)).leftJoin(targetLocation, import_drizzle_orm57.eq(targetLocation.orgNodeId, inventoryDocs.targetOrgNodeId)).where(whereClause);
+  const progress = candidateProgressSql(definition.progress);
+  const rows = await db2.select({
+    doc: inventoryDocs,
+    sourceOrgNodeName: sourceLocation.name,
+    sourceOrgNodeType: sourceLocation.locationType,
+    targetOrgNodeName: targetLocation.name,
+    targetOrgNodeType: targetLocation.locationType,
+    partiallyReceived: partiallyReceivedSql,
+    progressTotal: progress.total,
+    progressDone: progress.done
+  }).from(inventoryDocs).leftJoin(sourceLocation, import_drizzle_orm57.eq(sourceLocation.orgNodeId, inventoryDocs.sourceOrgNodeId)).leftJoin(targetLocation, import_drizzle_orm57.eq(targetLocation.orgNodeId, inventoryDocs.targetOrgNodeId)).where(whereClause).orderBy(import_drizzle_orm57.desc(inventoryDocs.docDate), import_drizzle_orm57.desc(inventoryDocs.createdAt), import_drizzle_orm57.desc(inventoryDocs.id)).limit(pageSize).offset(offset);
+  return {
+    data: rows.map((row) => ({
+      ...docRow({ ...row, includePrice: false }),
+      progress: {
+        done: row.progressDone === null ? null : Number(row.progressDone),
+        total: Number(row.progressTotal)
+      }
+    })),
+    total: countRow?.count ?? 0,
+    pageSize
+  };
+});
+var listInventoryDocCandidateIds = withPermission("inventory:list", async (session4, filters) => {
+  const definition = resolveInventoryDocCandidate(filters?.purpose);
+  if (!definition || !definition.remainingToggle)
+    throw new ApiError("INVALID_PARAMS", "未知的候选单据用途");
+  const parsed = parseCandidateFilters(filters);
+  await syncInventoryLocations();
+  const whereClause = candidateConditions(session4, definition, parsed, { onlyRemaining: true });
+  const rows = await db2.select({ id: inventoryDocs.id }).from(inventoryDocs).leftJoin(sourceLocation, import_drizzle_orm57.eq(sourceLocation.orgNodeId, inventoryDocs.sourceOrgNodeId)).leftJoin(targetLocation, import_drizzle_orm57.eq(targetLocation.orgNodeId, inventoryDocs.targetOrgNodeId)).where(whereClause).orderBy(import_drizzle_orm57.asc(inventoryDocs.docDate), import_drizzle_orm57.asc(inventoryDocs.createdAt), import_drizzle_orm57.asc(inventoryDocs.id)).limit(INVENTORY_DOC_CANDIDATE_BULK_LIMIT + 1);
+  if (rows.length > INVENTORY_DOC_CANDIDATE_BULK_LIMIT) {
+    throw new ApiError("INVALID_PARAMS", `符合条件的单据超过 ${INVENTORY_DOC_CANDIDATE_BULK_LIMIT} 张，请缩小日期区间后再带出`);
+  }
+  return { ids: rows.map((row) => row.id) };
+});
 function inventoryDocScopeSql(scoped, sourceColumn, targetColumn) {
   if (scoped === null)
     return import_drizzle_orm57.sql`TRUE`;
@@ -177740,6 +178075,22 @@ async function loadInventoryDocFulfillmentProgress(docType, docId, scoped) {
   }
   return null;
 }
+var getInventoryCoreDocsByIds = withPermission("inventory:list", async (_session, ids) => {
+  if (!Array.isArray(ids) || ids.some((id) => typeof id !== "string")) {
+    throw new ApiError("INVALID_PARAMS", "单据编号格式不正确");
+  }
+  const unique3 = Array.from(new Set(ids));
+  if (unique3.length > INVENTORY_DOC_CANDIDATE_BULK_LIMIT) {
+    throw new ApiError("INVALID_PARAMS", `一次最多加载 ${INVENTORY_DOC_CANDIDATE_BULK_LIMIT} 张单据`);
+  }
+  const details = [];
+  for (const id of unique3) {
+    const detail = await getInventoryCoreDocById(id);
+    if (detail)
+      details.push(detail);
+  }
+  return details;
+});
 var getInventoryCoreDocById = withPermission("inventory:list", async (session4, id) => {
   const priceTiers = inventoryPriceScopeByTier(session4);
   const scoped = inventoryScopedOrgNodeIds(session4);
@@ -180907,7 +181258,8 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
                ) AS market_name,
                CASE WHEN o.type = '市场' THEN o.id
                     WHEN op.type = '市场' THEN op.id
-                    ELSE NULL END AS anchor_market_id
+                    ELSE NULL END AS anchor_market_id,
+               (COALESCE(cardinality(array_remove(array_remove(sw.skills, ''), NULL)), 0) > 0) AS has_skills
         FROM staff_wechat_users sw
         LEFT JOIN stores s ON s.store_id = sw.store_id
         LEFT JOIN org_nodes o_store ON s.org_node_id = o_store.id AND o_store.type = '门店'
@@ -180921,7 +181273,7 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
       ),
       producer_employees AS (
         SELECT pb.employee_id, pb.employee_name, pb.store_id, pb.store_name,
-               pb.position_name, pb.market_name
+               pb.position_name, pb.market_name, pb.has_skills
         FROM producer_base pb
         WHERE (pb.store_id IS NOT NULL AND ${scopeFilterSql(session4, scope, "pb.store_id")})
            OR (pb.store_id IS NULL AND ${orgAnchorScopeSql(session4, scope)})
@@ -180945,8 +181297,8 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
         COALESCE(r.v, 0)::numeric AS value
       FROM producer_employees pe
       LEFT JOIN revenue_by_emp r ON r.employee_id = pe.employee_id
-      WHERE COALESCE(r.v, 0) > 0
-      ORDER BY value DESC, pe.employee_name ASC, pe.employee_id ASC
+      WHERE (pe.has_skills OR COALESCE(r.v, 0) <> 0)
+      ORDER BY (COALESCE(r.v, 0) <> 0) DESC, COALESCE(r.v, 0) DESC, pe.employee_name ASC, pe.employee_id ASC
     `);
   const qStaffRankConsume = db2.execute(import_drizzle_orm65.sql`
       ${producerCte},
@@ -180966,8 +181318,8 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
         COALESCE(c.v, 0)::numeric AS value
       FROM producer_employees pe
       LEFT JOIN consume_by_emp c ON c.employee_id = pe.employee_id
-      WHERE COALESCE(c.v, 0) > 0
-      ORDER BY value DESC, pe.employee_name ASC, pe.employee_id ASC
+      WHERE (pe.has_skills OR COALESCE(c.v, 0) <> 0)
+      ORDER BY (COALESCE(c.v, 0) <> 0) DESC, COALESCE(c.v, 0) DESC, pe.employee_name ASC, pe.employee_id ASC
     `);
   const qStaffRankNewMember = db2.execute(import_drizzle_orm65.sql`
       ${producerCte},
@@ -180983,8 +181335,8 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
         COALESCE(n.v, 0)::numeric AS value
       FROM producer_employees pe
       LEFT JOIN new_member_by_emp n ON n.employee_id = pe.employee_id
-      WHERE COALESCE(n.v, 0) > 0
-      ORDER BY value DESC, pe.employee_name ASC, pe.employee_id ASC
+      WHERE (pe.has_skills OR COALESCE(n.v, 0) <> 0)
+      ORDER BY (COALESCE(n.v, 0) <> 0) DESC, COALESCE(n.v, 0) DESC, pe.employee_name ASC, pe.employee_id ASC
     `);
   const qStaffRankProjectCount = db2.execute(import_drizzle_orm65.sql`
       ${producerCte},
@@ -181007,8 +181359,8 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
         COALESCE(p.v, 0)::numeric AS value
       FROM producer_employees pe
       LEFT JOIN project_by_emp p ON p.employee_id = pe.employee_id
-      WHERE COALESCE(p.v, 0) > 0
-      ORDER BY value DESC, pe.employee_name ASC, pe.employee_id ASC
+      WHERE (pe.has_skills OR COALESCE(p.v, 0) <> 0)
+      ORDER BY (COALESCE(p.v, 0) <> 0) DESC, COALESCE(p.v, 0) DESC, pe.employee_name ASC, pe.employee_id ASC
     `);
   const qStaffRankIncome = db2.execute(import_drizzle_orm65.sql`
       ${producerCte},
@@ -181039,8 +181391,8 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
       FROM producer_employees pe
       LEFT JOIN sales_comm sc1 ON sc1.employee_id = pe.employee_id
       LEFT JOIN service_comm sc2 ON sc2.employee_id = pe.employee_id
-      WHERE COALESCE(sc1.v, 0) + COALESCE(sc2.v, 0) > 0
-      ORDER BY value DESC, pe.employee_name ASC, pe.employee_id ASC
+      WHERE (pe.has_skills OR COALESCE(sc1.v, 0) + COALESCE(sc2.v, 0) <> 0)
+      ORDER BY (COALESCE(sc1.v, 0) + COALESCE(sc2.v, 0) <> 0) DESC, COALESCE(sc1.v, 0) + COALESCE(sc2.v, 0) DESC, pe.employee_name ASC, pe.employee_id ASC
     `);
   const qStaffDetail = db2.execute(import_drizzle_orm65.sql`
       ${producerCte},
@@ -182182,13 +182534,69 @@ function exportCloudPath(jobId, fileName) {
 
 // src/export-worker/xlsx-writer.ts
 var import_exceljs = __toESM(require_excel(), 1);
+
+// src/lib/data-center/matrix.ts
+function buildMatrixHeaderLayout(columns3) {
+  const groupStartKeys = new Set;
+  const grouped = columns3.some((column2) => column2.group);
+  if (!grouped) {
+    return {
+      depth: 1,
+      rows: [columns3.map((column2, index3) => ({
+        key: column2.key,
+        columnKey: column2.key,
+        colSpan: 1,
+        rowSpan: 1,
+        firstLeafIndex: index3
+      }))],
+      groupStartKeys
+    };
+  }
+  const top = [];
+  const bottom = [];
+  const closedGroups = new Set;
+  let current = null;
+  columns3.forEach((column2, index3) => {
+    const groupKey2 = column2.group?.key;
+    if (current && current.groupKey !== groupKey2) {
+      closedGroups.add(current.groupKey);
+      current = null;
+    }
+    if (!groupKey2) {
+      top.push({ key: column2.key, columnKey: column2.key, colSpan: 1, rowSpan: 2, firstLeafIndex: index3 });
+      return;
+    }
+    if (current) {
+      current.colSpan += 1;
+    } else {
+      if (closedGroups.has(groupKey2)) {
+        throw new Error(`INVALID_STATE: 矩阵表分组「${groupKey2}」的列不相邻`);
+      }
+      current = { key: `group:${groupKey2}`, groupKey: groupKey2, colSpan: 1, rowSpan: 1, firstLeafIndex: index3 };
+      top.push(current);
+      groupStartKeys.add(column2.key);
+    }
+    bottom.push({ key: column2.key, columnKey: column2.key, colSpan: 1, rowSpan: 1, firstLeafIndex: index3 });
+  });
+  return { depth: 2, rows: [top, bottom], groupStartKeys };
+}
+
+// src/export-worker/xlsx-writer.ts
+var EXPORT_META_SHEET_NAME = "导出说明";
 var XLSX_ROWS_PER_SHEET = 1e6;
 function safeSheetName(input, sequence3) {
   const suffix = sequence3 === 1 ? "" : `-${sequence3}`;
-  const base = input.replace(/[\\/?*\[\]:]/g, " ").trim() || "导出数据";
+  let base = input.replace(/[\\/?*\[\]:]/g, " ").trim() || "导出数据";
+  if (base.toLowerCase() === EXPORT_META_SHEET_NAME.toLowerCase())
+    base = `${base}数据`;
   return `${base.slice(0, Math.max(1, 31 - suffix.length))}${suffix}`;
 }
 async function writeStreamXlsx(options) {
+  const layout = buildMatrixHeaderLayout(options.columns.map((column2, index3) => ({ key: String(index3), group: column2.group })));
+  const rawFrozen = Math.floor(Number(options.frozenColumns ?? 0));
+  const frozenColumns = Number.isFinite(rawFrozen) ? Math.min(Math.max(0, rawFrozen), options.columns.length) : 0;
+  const groupStarts = new Set([...layout.groupStartKeys].map(Number));
+  const rowsPerSheet = Math.min(XLSX_ROWS_PER_SHEET, Math.max(1, Math.floor(options.rowsPerSheet ?? XLSX_ROWS_PER_SHEET)));
   const workbook = new import_exceljs.default.stream.xlsx.WorkbookWriter({
     filename: options.filePath,
     useStyles: true,
@@ -182197,35 +182605,115 @@ async function writeStreamXlsx(options) {
   let rowCount = 0;
   let sheetCount = 0;
   let rowsInSheet = 0;
-  const rowsPerSheet = Math.min(XLSX_ROWS_PER_SHEET, Math.max(1, Math.floor(options.rowsPerSheet ?? XLSX_ROWS_PER_SHEET)));
   const createSheet = () => {
     sheetCount += 1;
     rowsInSheet = 0;
-    const worksheet2 = workbook.addWorksheet(safeSheetName(options.sheetName, sheetCount), {
-      views: [{ state: "frozen", ySplit: 1 }]
+    const worksheet = workbook.addWorksheet(safeSheetName(options.sheetName, sheetCount), {
+      views: [{ state: "frozen", ySplit: layout.depth, ...frozenColumns > 0 ? { xSplit: frozenColumns } : {} }]
     });
-    worksheet2.columns = options.columns.map((column2) => ({ width: column2.width ?? 16 }));
-    const header = worksheet2.addRow(options.columns.map((column2) => column2.header));
-    header.font = { bold: true };
-    header.commit();
-    return worksheet2;
-  };
-  let worksheet = createSheet();
-  for await (const sourceRow of options.rows) {
-    if (rowsInSheet >= rowsPerSheet) {
-      worksheet.commit();
-      worksheet = createSheet();
+    worksheet.columns = options.columns.map((column2) => ({
+      width: column2.width ?? 16,
+      ...column2.numFmt ? { style: { numFmt: column2.numFmt } } : {}
+    }));
+    const headerRows = layout.rows.map(() => worksheet.addRow([]));
+    layout.rows.forEach((cells, rowIndex) => {
+      for (const cell of cells) {
+        const target = headerRows[rowIndex].getCell(cell.firstLeafIndex + 1);
+        target.value = cell.groupKey ? options.columns[cell.firstLeafIndex].group.header : options.columns[cell.firstLeafIndex].header;
+        if (layout.depth === 2) {
+          target.alignment = { vertical: "middle", horizontal: cell.groupKey ? "center" : undefined };
+        }
+        if (cell.groupKey || groupStarts.has(cell.firstLeafIndex)) {
+          target.border = { left: { style: "thin" } };
+        }
+      }
+    });
+    for (const cell of layout.rows[0]) {
+      if (cell.colSpan > 1 || cell.rowSpan > 1) {
+        const column2 = cell.firstLeafIndex + 1;
+        worksheet.mergeCells(1, column2, cell.rowSpan, column2 + cell.colSpan - 1);
+      }
     }
-    const values2 = options.columns.map((column2) => column2.value(sourceRow) ?? "");
-    worksheet.addRow(values2).commit();
-    rowsInSheet += 1;
-    rowCount += 1;
-    if (rowCount % 1000 === 0)
-      await options.onProgress?.(rowCount);
+    for (const header of headerRows) {
+      header.font = { bold: true };
+      header.commit();
+    }
+    return worksheet;
+  };
+  try {
+    let worksheet = createSheet();
+    for await (const sourceRow of options.rows) {
+      if (rowsInSheet >= rowsPerSheet) {
+        worksheet.commit();
+        worksheet = createSheet();
+      }
+      const values2 = options.columns.map((column2) => column2.value(sourceRow) ?? "");
+      const row = worksheet.addRow(values2);
+      if (options.isEmphasisRow?.(sourceRow))
+        row.font = { bold: true };
+      row.commit();
+      rowsInSheet += 1;
+      rowCount += 1;
+      if (rowCount % 1000 === 0)
+        await options.onProgress?.(rowCount);
+    }
+    if (options.totalsLabel !== undefined && rowCount > 0) {
+      const totals = worksheet.addRow(options.columns.map((column2, index3) => index3 === 0 ? options.totalsLabel : column2.total ?? ""));
+      totals.font = { bold: true };
+      totals.eachCell((cell) => {
+        cell.border = { top: { style: "thin" } };
+      });
+      totals.commit();
+    }
+    worksheet.commit();
+    if (options.meta && options.meta.length > 0) {
+      const metaSheet = workbook.addWorksheet(EXPORT_META_SHEET_NAME);
+      metaSheet.columns = [{ width: 18 }, { width: 48 }];
+      for (const entry of options.meta) {
+        const row = metaSheet.addRow([entry.label, entry.value]);
+        row.getCell(1).font = { bold: true };
+        row.commit();
+      }
+      metaSheet.commit();
+    }
+    await workbook.commit();
+  } catch (error) {
+    const internals = workbook;
+    internals.zip?.abort?.();
+    internals.stream?.destroy?.();
+    throw error;
   }
-  worksheet.commit();
-  await workbook.commit();
   return { rowCount, sheetCount };
+}
+
+// src/export-worker/export-meta.ts
+init_datetime();
+function required(label, value2) {
+  const trimmed = (value2 ?? "").trim();
+  if (!trimmed)
+    throw new Error(`INVALID_STATE: 导出元信息缺少${label}`);
+  return trimmed;
+}
+function completeExportMeta(meta, audit) {
+  if (!meta)
+    return;
+  const basePeriod = meta.basePeriod?.trim();
+  return [
+    { label: "时间区间", value: meta.period === null ? "不限（仅按范围）" : required("时间区间", meta.period) },
+    { label: "范围", value: required("范围", meta.scope) },
+    ...basePeriod ? [{ label: "基期区间", value: basePeriod }] : [],
+    ...meta.extra ?? [],
+    { label: "导出时间", value: fmtDateTime(audit.generatedAt) || "—" },
+    { label: "导出人", value: audit.exporterName?.trim() || "—" }
+  ];
+}
+
+// src/export-worker/retry-policy.ts
+var DETERMINISTIC_FAILURE_CODES = new Set(["INVALID_PARAMS", "INVALID_STATE"]);
+function shouldRetryExportFailure(code, attemptCount, maxAttempts) {
+  if (DETERMINISTIC_FAILURE_CODES.has(code))
+    return false;
+  return attemptCount < maxAttempts;
 }
 
 // src/lib/worker-heartbeat.ts
@@ -182386,7 +182874,7 @@ function safeFailure(err) {
 }
 async function failJob(job, err) {
   const failure = safeFailure(err);
-  const shouldRetry = job.attemptCount < MAX_ATTEMPTS;
+  const shouldRetry = shouldRetryExportFailure(failure.code, job.attemptCount, MAX_ATTEMPTS);
   await db2.update(adminExportJobs).set({
     status: shouldRetry ? "queued" : "failed",
     nextAttemptAt: shouldRetry ? new Date(Date.now() + job.attemptCount * 30000) : new Date,
@@ -182456,6 +182944,10 @@ async function processJob(job) {
         sheetName: content.sheetName,
         columns: content.columns,
         rows: content.rows,
+        frozenColumns: content.frozenColumns,
+        totalsLabel: content.totalsLabel,
+        isEmphasisRow: content.isEmphasisRow,
+        meta: completeExportMeta(content.meta, { generatedAt: new Date, exporterName: session4.name }),
         onProgress: async (rowCount) => {
           if (rowCount - lastProgress < 1000)
             return;

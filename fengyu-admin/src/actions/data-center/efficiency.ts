@@ -56,8 +56,11 @@
  *   ⚠️ 所有 role_type 各算一份（用户拍板，不做角色去重）：同一项目同时挂美容师 + 品项老师时
  *   两人各全额计入，故**员工榜/明细表合计会大于门店实耗**（2026-09 实测高约 25%）。
  *   门店榜 / 全局大卡实耗（Part A/B）仍走 service_items 原口径，不受影响。
- *   - 产能员工 producer_employees：hired_at/resigned_at 历史化（2026-05-20 起不再用 skills 过滤，
- *     以已归属业绩自然过滤 + 末尾 value>0 排除零值；与 mgmt-dashboard.js producerEmployeesCte 一致）
+ *   - 产能员工 producer_employees：hired_at/resigned_at 历史化；与 mgmt-dashboard.js
+ *     producerEmployeesCte 一致。**入榜口径见 Part D 段头**（2026-09-24 #290 起为
+ *     `pe.has_skills OR COALESCE(v,0) <> 0`，取代 2026-05-20 的 `value > 0`）。
+ *     ⚠️ 候选池仍**不用** skills 白名单截断（`skills && ARRAY['美容师','养生师']` 会漏 27.8%）；
+ *     `has_skills` 是「有任意技能标签」的非空判定，与白名单是两回事，别混为一谈。
  *
  * ⚠️ 偏离 metrics.md 说明：
  *   - 「店长人数 managerCount」「技师人数 technicianCount」是本 admin 人效板块新增的 byMarket 头数指标，
@@ -503,9 +506,29 @@ export const getEfficiencyBoard = withPermission(
     // ═══════════════════════════════════════════════════════════════════
     //  Part D — 员工排名榜（5 metric，producer_employees CTE + TimeRange 区间）
     // ═══════════════════════════════════════════════════════════════════
-    // 移植 staff staffRanking：producer_employees（hired_at/resigned_at 历史化，无 skills 过滤）
-    // LEFT JOIN 各 metric 子查询；末尾 WHERE value > 0 排除零值员工。
+    // 移植 staff staffRanking：producer_employees（hired_at/resigned_at 历史化）
+    // LEFT JOIN 各 metric 子查询；末尾 WHERE 见下方「入榜口径」。
     // 时间过滤改 BETWEEN cur.start/end（关键改造）。
+    //
+    // ★ 入榜口径（2026-09-24 用户拍板，#290）：`pe.has_skills OR COALESCE(v,0) <> 0`
+    //   ——「有技能标签的员工无条件入榜（含零值/负值），无标签者仅在有非零产能时入榜」。
+    //
+    //   2026-05-20 P0-4 曾用 `WHERE COALESCE(v,0) > 0` 替代被删的 skills 白名单，语义是
+    //   「无业绩不入榜」。但 `> 0` 比「无业绩」宽：它连**有**业绩而净额为负（退款冲销超过
+    //   新单）的员工一并吞掉，与「退款负数冲销不删行」硬口径冲突 —— 同板块门店榜（Part C）
+    //   从不按 value 剔行，且该「不剔负」纪律已被 consistency.efficiency.test.ts 的
+    //   fail-closed 断言钉死，Part D 是同一缺陷唯一未被守护的一侧。
+    //   2026-09-01~22 生产实测：2 人被吞（唐杰 −10,260.00 / 万淑婷 −642.00）。
+    //
+    //   候选池改用 has_skills 而非白名单 `skills && ARRAY['美容师','养生师']`：后者实测会把
+    //   品项老师 1,061,191.30 / 推广部 231,767.01 / 售前老师 97,728.00 共 139 万（27.8%）
+    //   排出榜单，且与 2026-09-03「品项老师/养生部应当入榜」的放宽改造直接矛盾。
+    //
+    //   ⚠️ `OR COALESCE(v,0) <> 0` 这半边是**防漏算兜底**，不是冗余：`skills` 是
+    //   optional/nullable（schemas.ts:50），漏填就会静默掉出榜单 —— 2026-05-20 正是栽在
+    //   这里（当时 skills 1174/2020 为空，漏算 33% 业绩）。全历史仍存反例：skills 空却有
+    //   allocation 的 1 人 42,624.00、有服务提成的 3 人 269.40。「skills 空 ⇒ 零产能」
+    //   是当期巧合，不是数据约束，故兜底必须保留。
     // 产能员工锚点：staff 用 NOW()，本板块用区间末 cur.end（与人均分母历史化口径一致）。
     // scope 命中 sw.store_id。
 
@@ -532,7 +555,8 @@ export const getEfficiencyBoard = withPermission(
                ) AS market_name,
                CASE WHEN o.type = '市场' THEN o.id
                     WHEN op.type = '市场' THEN op.id
-                    ELSE NULL END AS anchor_market_id
+                    ELSE NULL END AS anchor_market_id,
+               (COALESCE(cardinality(array_remove(array_remove(sw.skills, ''), NULL)), 0) > 0) AS has_skills
         FROM staff_wechat_users sw
         LEFT JOIN stores s ON s.store_id = sw.store_id
         LEFT JOIN org_nodes o_store ON s.org_node_id = o_store.id AND o_store.type = '门店'
@@ -546,7 +570,7 @@ export const getEfficiencyBoard = withPermission(
       ),
       producer_employees AS (
         SELECT pb.employee_id, pb.employee_name, pb.store_id, pb.store_name,
-               pb.position_name, pb.market_name
+               pb.position_name, pb.market_name, pb.has_skills
         FROM producer_base pb
         WHERE (pb.store_id IS NOT NULL AND ${scopeFilterSql(session, scope, 'pb.store_id')})
            OR (pb.store_id IS NULL AND ${orgAnchorScopeSql(session, scope)})
@@ -571,12 +595,19 @@ export const getEfficiencyBoard = withPermission(
         COALESCE(r.v, 0)::numeric AS value
       FROM producer_employees pe
       LEFT JOIN revenue_by_emp r ON r.employee_id = pe.employee_id
-      WHERE COALESCE(r.v, 0) > 0
-      ORDER BY value DESC, pe.employee_name ASC, pe.employee_id ASC
+      WHERE (pe.has_skills OR COALESCE(r.v, 0) <> 0)
+      ORDER BY (COALESCE(r.v, 0) <> 0) DESC, COALESCE(r.v, 0) DESC, pe.employee_name ASC, pe.employee_id ASC
     `)
 
-    // 实耗(员工)：2026-09-03 起归属改 service_commissions（见文件头「员工归属口径」说明），
-    // 与 staff mgmt-dashboard.js staffRankingConsume 镜像。
+    // 实耗(员工)：2026-09-03 起归属改 service_commissions（见文件头「员工归属口径」说明）。
+    //
+    // ⚠️ 与 staff `mgmt-dashboard.js staffRankingConsume` **并非逐字镜像**（原注释称「镜像」
+    //    不准确，2026-09-24 #290 闸门 2 订正）：staff 侧的 `consume_by_emp` 多挂一个
+    //    `JOIN sale_items si ON si.sale_item_id = sit.sale_item_id`，而 `si` 在其 SELECT/WHERE
+    //    中零引用 —— 是旧口径残留，现在唯一作用是 INNER 存在性过滤。
+    //    生产实测（当期 + 全历史）`service_items.sale_item_id` 无空值、无悬空引用，
+    //    故两端当前结果一致；但它是**潜在分裂点**（无数据库约束保证该列非空）。
+    //    删它属口径改动、超出 #290 范围，已转范围外报告，勿在本文件单边"对齐"。
     const qStaffRankConsume = db.execute(sql`
       ${producerCte},
       consume_by_emp AS (
@@ -595,8 +626,8 @@ export const getEfficiencyBoard = withPermission(
         COALESCE(c.v, 0)::numeric AS value
       FROM producer_employees pe
       LEFT JOIN consume_by_emp c ON c.employee_id = pe.employee_id
-      WHERE COALESCE(c.v, 0) > 0
-      ORDER BY value DESC, pe.employee_name ASC, pe.employee_id ASC
+      WHERE (pe.has_skills OR COALESCE(c.v, 0) <> 0)
+      ORDER BY (COALESCE(c.v, 0) <> 0) DESC, COALESCE(c.v, 0) DESC, pe.employee_name ASC, pe.employee_id ASC
     `)
 
     const qStaffRankNewMember = db.execute(sql`
@@ -613,8 +644,8 @@ export const getEfficiencyBoard = withPermission(
         COALESCE(n.v, 0)::numeric AS value
       FROM producer_employees pe
       LEFT JOIN new_member_by_emp n ON n.employee_id = pe.employee_id
-      WHERE COALESCE(n.v, 0) > 0
-      ORDER BY value DESC, pe.employee_name ASC, pe.employee_id ASC
+      WHERE (pe.has_skills OR COALESCE(n.v, 0) <> 0)
+      ORDER BY (COALESCE(n.v, 0) <> 0) DESC, COALESCE(n.v, 0) DESC, pe.employee_name ASC, pe.employee_id ASC
     `)
 
     // 项目数(员工)：归属同上改 service_commissions；次数为计数指标不乘 allocation_ratio，
@@ -640,8 +671,8 @@ export const getEfficiencyBoard = withPermission(
         COALESCE(p.v, 0)::numeric AS value
       FROM producer_employees pe
       LEFT JOIN project_by_emp p ON p.employee_id = pe.employee_id
-      WHERE COALESCE(p.v, 0) > 0
-      ORDER BY value DESC, pe.employee_name ASC, pe.employee_id ASC
+      WHERE (pe.has_skills OR COALESCE(p.v, 0) <> 0)
+      ORDER BY (COALESCE(p.v, 0) <> 0) DESC, COALESCE(p.v, 0) DESC, pe.employee_name ASC, pe.employee_id ASC
     `)
 
     const qStaffRankIncome = db.execute(sql`
@@ -673,8 +704,8 @@ export const getEfficiencyBoard = withPermission(
       FROM producer_employees pe
       LEFT JOIN sales_comm sc1 ON sc1.employee_id = pe.employee_id
       LEFT JOIN service_comm sc2 ON sc2.employee_id = pe.employee_id
-      WHERE COALESCE(sc1.v, 0) + COALESCE(sc2.v, 0) > 0
-      ORDER BY value DESC, pe.employee_name ASC, pe.employee_id ASC
+      WHERE (pe.has_skills OR COALESCE(sc1.v, 0) + COALESCE(sc2.v, 0) <> 0)
+      ORDER BY (COALESCE(sc1.v, 0) + COALESCE(sc2.v, 0) <> 0) DESC, COALESCE(sc1.v, 0) + COALESCE(sc2.v, 0) DESC, pe.employee_name ASC, pe.employee_id ASC
     `)
 
     // ═══════════════════════════════════════════════════════════════════

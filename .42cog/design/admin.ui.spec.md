@@ -150,6 +150,8 @@
 
 **数据中心二级菜单**：销售 `/data-center/sales`、客量 `/data-center/customer`、人效 `/data-center/efficiency`、品项 `/data-center/product`，四项共用 `data_center:dashboard` 权限（无该权限整组消失）。板块必须各占一条路径——侧边栏高亮只比 pathname 不看 query，挂 `?tab=` 会让四个子项同时高亮。裸 `/data-center` 只做跳转：读旧 `?tab=` 深链决定目标板块，无 tab 或非法 tab 落到销售，其余 query 原样带走。切换板块是整页导航，范围/时间/同比环比回落默认（不做 query 透传，侧边栏保持纯 Link）。
 
+**数据中心菜单分段（#367）**：子项按分段小标题组织——**看板**（销售 / 客量 / 人效 / 品项）、**经营明细**（日常数据一览表 `/data-center/daily-overview`、顾客频率表 `/data-center/customer-frequency`、顾客剩余卡项清单 `/data-center/remaining-cards`、经营数据主表 `/data-center/operating-master`）、**员工收入**（员工提成日报 `/data-center/commission-daily`）。原型的「经营数据」「员工收入」一级菜单不单独开，改为本组内的分段。可见子项跨两个及以上分段时才渲染小标题（折叠态浮层同）；同一分段的子项在配置里必须相邻。每页一条路径，高亮只比 pathname。提成明细 `/data-center/commission-daily/detail` 不进菜单，只能从日报下钻，靠前缀匹配高亮日报，面包屑为「数据中心 / 员工提成日报 / 提成明细」（中间一级可点，带 `returnTo` 时回到下钻前的筛选）。路由、标题、权限组合、分段统一登记在 `fengyu-admin/src/lib/data-center/reports.ts`；报表页内容未交付前入口 `menu.enabled=false`（路由可访问、菜单不显示），页面单合入时逐个打开。顾客频率表、顾客剩余卡项清单要求 `data_center:dashboard` + `data_center:customer_detail`，员工提成日报 / 提成明细要求 `data_center:dashboard` + `data_center:staff_commission`（均须由同一条角色授权同时提供），一览表与主表沿用 `data_center:dashboard`。
+
 **进销存二级菜单**：库存查询 `/inventory/stocks`、供应链业务 `/inventory/operations/supply-chain`、市场业务 `/inventory/operations/market`、门店业务 `/inventory/operations/store`、单据中心 `/inventory/docs`、资料配置 `/inventory/skus`。供应链、市场、门店业务页只保留业务办理，不再提供“单据记录”页签；所有单据记录、跨层检索、审计和详情查看统一进入单据中心，通用建单及其审批、收货也在单据中心办理，采购、配货、退货等专用流程仍保留在对应业务页。库存查询仍按库存主体精确筛选，总部、市场、门店各自持有独立库存，选择上级不得汇总下级库存；单据中心改按“总部（供应链）—市场—门店”组织树筛选，单据源端和目标端均记录真实组织节点，选择上级节点时包含其全部后代节点单据。资料配置以页签保留库存商品、供应商、销售商品组成和报货福利 `/inventory/promotions` 四条深链；销售商品组成继续使用兼容路由 `/inventory/sku-mappings`。总部可见三级业务，市场可见市场与门店业务，门店仅可见门店业务；旧业务页的 `view=docs` 与通用 `create` 深链兼容跳转到单据中心，旧库存总览与四类 V1 页面不再作为菜单入口。
 
 **销售商品组成页**：按销售家居商品一行展示最终组成结果，不展示底层映射记录。每个销售 SKU 必须配置至少一个库存商品，每项填写“每件销售商品包含数量”（正整数）；编辑器支持增删组成项，同一库存 SKU 不得重复。列表展示“库存商品 × 数量”和已配置/未配置/含停用商品状态。新订单冻结下单时组成，提货页只展示本次将自动出库的组成与合计数量，不提供库存 SKU 单选器。
@@ -823,6 +825,17 @@ JSON 详情使用 Accordion 展开，格式化显示。
 范围筛选：多店权限账号默认选中“全部授权门店”，可继续选择授权市场或该市场下的单家授权门店；单店账号锁定范围，总部账号保留“全部市场”。非总部账号进入时若 URL 无有效范围，入口解析出具体范围后重定向补齐（否则取数会因 `scope='all'` 被拒，生产脱敏后表现为“数据加载失败”）。范围切换同步到 URL，板块内的图表与导出共用同一范围；跨板块切换不保持筛选，回落默认。
 
 图表库选用：**Recharts**（React 原生，shadcn/ui charts 基于此）。
+
+**经营明细报表 `/data-center/{daily-overview|customer-frequency|remaining-cards|operating-master|commission-daily}`（#367 骨架）**：静态段优先于 `[board]`，不扩板块白名单，旧 4 板块路由、筛选 URL 与导出参数不变。页面结构与板块一致：h1 → 公共筛选卡片 → 数据起点提示 → 信息条 → 表格。入口控制流与板块共用（`lib/data-center/entry.ts`：非总部默认 scope 补齐并停在本页、重复 key 规范化、无可查看范围时空态），但报表页的 `tab` 视为页内参数、不当遗留参数剔除。新路由段不加 `loading.tsx`（会让同段 404 页软导航失效），守护递归覆盖整个 data-center 目录。
+
+- **筛选器三种形态**（范围部分与板块共用 ScopeSelect，范围旁显示「共 N 家门店」；交互即时生效，另加「重置」= 回到权限默认范围 + 默认期间并清空页内参数）：
+  - 区间型（一览表）：上月（默认）/ 本月 / 近 30 天 / 自定义，URL 键 `period`（`lastMonth|thisMonth|last30|custom`）+ `start`/`end`。上月的上期取前一个自然月；本月的上期为上月同期；近 30 天是相对预设（URL 只存 `period=last30`），上期为紧邻前 30 天；自定义做日历合法性校验（绕开 #308）、最长 366 天，非法或超长回落上月并在控件旁提示。
+  - 单月型（频率表、主表、提成日报 / 明细）：`month=YYYY-MM` 下拉，最早 2026-07、最晚本月，默认上月；URL 手传更早月份照常解析，显示空态与数据起点提示，不报错；晚于本月的月份回落默认。
+  - 仅范围型（剩余卡项）：不显示日期。
+  - 与板块页 `preset/start/end` 语义隔离（`parseReportPeriod` 系列，不改 `parseTimeRange` / `TimeRangePreset`），旧板块不出现新预设。「当月」一律按自然月。
+- **数据起点提示**（与 #289 共用 `DataStartNotice`）：所选期间或较上期基期早于 scope 内任一门店在该指标时间轴上的数据起点时，以浅橙警示条列出受影响市场、门店数与起点（悬停看门店明细）。时间轴分业绩（款项归属日期，剔除寄存单）与服务（服务单日期）；按门店取最早日期，没有该轴数据的门店不参与判定。
+- **信息条**：表格上方一行数据性标签（范围 · 期间，页面追加条数 / 合计），不加表下大段说明；原型的数据权限横幅本期不做。
+- 视觉用 admin 设计令牌（品牌色 #C0322A），不用原型蓝色。
 
 ---
 
