@@ -115,14 +115,14 @@ export function defaultReportMonth(today: string = shanghaiToday()): string {
 
 /**
  * 单月选择器的可选月份（新 → 旧）：本月 … REPORT_MIN_MONTH。
- * URL 里的月份不在此列（手工构造的更早 / 未来月份）时额外带上，让控件如实回显当前取数月份。
+ * URL 手工传入更早的月份时额外带上，让控件如实回显当前取数月份；未来月份已在解析时回落，不会出现在这里。
  */
 export function reportMonthOptions(today: string = shanghaiToday(), selected?: string): string[] {
   const options: string[] = []
   for (let month = today.slice(0, 7); month >= REPORT_MIN_MONTH; month = shiftMonth(month, -1)) {
     options.push(month)
   }
-  if (selected && isValidMonth(selected) && !options.includes(selected)) {
+  if (selected && isValidMonth(selected) && selected < REPORT_MIN_MONTH && !options.includes(selected)) {
     options.push(selected)
     options.sort((a, b) => (a < b ? 1 : -1))
   }
@@ -130,7 +130,8 @@ export function reportMonthOptions(today: string = shanghaiToday(), selected?: s
 }
 
 export function parseReportMonth(raw: { month?: string }, today: string = shanghaiToday()): ReportMonthPeriod {
-  const month = isValidMonth(raw.month) ? raw.month : defaultReportMonth(today)
+  // 晚于本月的月份还没发生，回落默认；早于 2026-07 的照常解析（页面显示空态 + 数据起点提示）
+  const month = isValidMonth(raw.month) && raw.month <= today.slice(0, 7) ? raw.month : defaultReportMonth(today)
   return { kind: 'month', month, current: monthRange(month), label: monthLabel(month) }
 }
 
@@ -157,7 +158,7 @@ export function parseReportRange(
         current: { start: raw.start, end: raw.end },
         // 紧邻前一等长区间（与板块页 custom 同口径）
         previous: { start: addDays(prevEnd, -(len - 1)), end: prevEnd },
-        label: `${raw.start} ~ ${raw.end}`,
+        label: REPORT_RANGE_PRESET_LABELS.custom,
       }
     }
     // 自定义区间不完整或非法：回落默认预设，而不是拿半截参数去取数

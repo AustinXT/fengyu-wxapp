@@ -65,4 +65,15 @@ describe('数据起点业绩轴与销售板门店业绩同口径（字面量守�
     expect(sets(startSource, 'p\\.change_type')).toEqual(sets(block, 'spe\\.change_type'))
     expect(sets(startSource, 'so\\.sale_order_type')).toEqual(sets(block, 'spe\\.sale_order_type'))
   })
+
+  it('已支付状态与 WorkFine 历史单排除两条谓词两边都在', () => {
+    const salesSource = read('../../actions/data-center/sales.ts')
+    const block = salesSource.slice(salesSource.indexOf('const runStoreRevenue'), salesSource.indexOf('const runShengmeiRevenue'))
+    const startSource = read('./data-start-query.ts')
+
+    expect(block).toContain("spe.status = '已支付'")
+    expect(startSource).toContain("p.status = '已支付'")
+    expect(block).toContain("spe.legacy_source IS DISTINCT FROM 'workfine'")
+    expect(startSource).toContain("so.legacy_source IS DISTINCT FROM 'workfine'")
+  })
 })

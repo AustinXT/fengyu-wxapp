@@ -26,7 +26,7 @@ async function queryStoreDataStarts(): Promise<StoreDataStarts> {
   const [performanceRows, serviceRows] = await Promise.all([
     // 业绩轴：与销售板门店业绩（sales.ts runStoreRevenue）同一组单据类型 / 款项类型，按款项归属日期。
     // 寄存单是存量录入（最早 2026-07-03），储值卡抵扣、内部单不计业绩，都不代表门店业绩起点。
-    // 两组集合由 data-start-query.test.ts 与 sales.ts 逐字比对守护。
+    // 状态 / 两组类型集合 / WorkFine 历史单排除由 data-start-query.test.ts 与 sales.ts 逐字比对守护。
     db.execute(sql`
       SELECT so.store_id, to_char(MIN(p.performance_attribution_date), 'YYYY-MM-DD') AS start
         FROM sale_order_payments p
@@ -34,6 +34,7 @@ async function queryStoreDataStarts(): Promise<StoreDataStarts> {
        WHERE p.status = '已支付'
          AND p.change_type IN ('首次支付', '回款', '退款')
          AND so.sale_order_type IN ('销售单', '转换单', '充值单')
+         AND so.legacy_source IS DISTINCT FROM 'workfine'
        GROUP BY so.store_id
     `),
     // 服务轴：已完成服务单的业务日期（与客量 / 人效板服务类指标、analyst 割点口径一致）

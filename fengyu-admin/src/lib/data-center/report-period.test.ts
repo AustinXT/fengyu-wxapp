@@ -50,7 +50,8 @@ describe('parseReportRange（区间型）', () => {
     const p = parseReportRange({ period: 'custom', start: '2026-08-10', end: '2026-08-19' }, TODAY)
     expect(p.current).toEqual({ start: '2026-08-10', end: '2026-08-19' })
     expect(p.previous).toEqual({ start: '2026-07-31', end: '2026-08-09' })
-    expect(p.label).toBe('2026-08-10 ~ 2026-08-19')
+    // 信息条另写日期，label 只写预设名，避免同一区间显示两遍
+    expect(p.label).toBe('自定义')
   })
 
   it.each([
@@ -89,6 +90,12 @@ describe('parseReportMonth（单月型）', () => {
     expect(parseReportMonth({ month: '2026-05' }, TODAY).current).toEqual({ start: '2026-05-01', end: '2026-05-31' })
   })
 
+  it('晚于本月的月份回落默认（还没发生），本月可选', () => {
+    expect(parseReportMonth({ month: '2026-10' }, TODAY).month).toBe('2026-08')
+    expect(parseReportMonth({ month: '2027-01' }, TODAY).month).toBe('2026-08')
+    expect(parseReportMonth({ month: '2026-09' }, TODAY).month).toBe('2026-09')
+  })
+
   it('非法月份回落默认', () => {
     for (const month of ['2026-13', '2026-9', '26-09', '2026-00', 'x']) {
       expect(parseReportMonth({ month }, TODAY).month).toBe('2026-08')
@@ -113,6 +120,8 @@ describe('reportMonthOptions', () => {
   it('URL 月份不在可选范围时额外带上，控件如实回显', () => {
     expect(reportMonthOptions(TODAY, '2026-05')).toEqual(['2026-09', '2026-08', '2026-07', '2026-05'])
     expect(reportMonthOptions(TODAY, '2026-08')).toEqual(['2026-09', '2026-08', '2026-07'])
+    // 未来月份不进选项（解析时已回落）
+    expect(reportMonthOptions(TODAY, '2027-01')).toEqual(['2026-09', '2026-08', '2026-07'])
   })
 })
 
