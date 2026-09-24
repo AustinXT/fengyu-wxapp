@@ -115,7 +115,39 @@ describe('InventoryDocCandidatePicker（#338）', () => {
     expect(onChange).not.toHaveBeenCalled()
   })
 
-  it('带出在途时改了日期（非防抖条件），旧结果作废 —— 不依赖 effect 时序', async () => {
+  it('带出在途时改了日期，旧结果作废', async () => {
+    vi.mocked(listInventoryDocCandidates).mockResolvedValue({ data: [], total: 0, pageSize: 20 })
+    let resolveIds: (value: { ids: string[] }) => void = () => {}
+    vi.mocked(listInventoryDocCandidateIds).mockImplementationOnce(() => new Promise((resolve) => { resolveIds = resolve }))
+    const onChange = vi.fn()
+    render(<InventoryDocCandidatePicker label="来源报货单" purpose="purchase-order-source" selection={{ mode: 'multi', values: [], onChange, bulkLabel: '带出' }} />)
+    fireEvent.click(await screen.findByRole('button', { name: '带出' }))
+    // 在途时选一个开始日期
+    fireEvent.click(screen.getByRole('button', { name: '来源报货单 开始日期' }))
+    const dialog = await screen.findByRole('dialog', { name: '选择日期' })
+    const day = Array.from(dialog.querySelectorAll('td:not([data-outside]) button')).find((button) => button.textContent === '15')
+    fireEvent.click(day!)
+    await waitFor(() => expect(listInventoryDocCandidates).toHaveBeenLastCalledWith(expect.objectContaining({ startDate: expect.stringMatching(/-15$/) })))
+    await act(async () => { resolveIds({ ids: ['MHZ-OLD-RANGE'] }) })
+    expect(onChange).not.toHaveBeenCalled()
+  })
+
+  it('带出在途时改了条件，旧请求失败也不弹「带出失败」', async () => {
+    vi.mocked(listInventoryDocCandidates).mockResolvedValue({ data: [], total: 0, pageSize: 20 })
+    let rejectIds: (error: Error) => void = () => {}
+    vi.mocked(listInventoryDocCandidateIds).mockImplementationOnce(() => new Promise((_, reject) => { rejectIds = reject }))
+    vi.mocked(toast.error).mockReset()
+    const view = (target: string) => (
+      <InventoryDocCandidatePicker label="来源报货单" purpose="purchase-order-source" targetOrgNodeId={target} selection={{ mode: 'multi', values: [], onChange: () => {}, bulkLabel: '带出' }} />
+    )
+    const { rerender } = render(view('HQ1'))
+    fireEvent.click(await screen.findByRole('button', { name: '带出' }))
+    rerender(view('HQ2'))
+    await act(async () => { rejectIds(new Error('INVALID_PARAMS: 旧请求失败')) })
+    expect(toast.error).not.toHaveBeenCalled()
+  })
+
+  it('带出在途时改了接收主体（非防抖条件），旧结果作废 —— 不依赖 effect 时序', async () => {
     vi.mocked(listInventoryDocCandidates).mockResolvedValue({ data: [], total: 0, pageSize: 20 })
     let resolveIds: (value: { ids: string[] }) => void = () => {}
     vi.mocked(listInventoryDocCandidateIds).mockImplementationOnce(() => new Promise((resolve) => { resolveIds = resolve }))

@@ -199,6 +199,8 @@ export function InventoryDocCandidatePicker({
     const seq = ++bulkSeqRef.current
     // 请求快照（见 bulkKey）：用输入框的**当前**关键字，不用防抖值
     const snapshot = bulkKey
+    // 成功与失败两条路径共用：过期请求既不能改选择，也不能弹「带出失败」误导当前操作
+    const isCurrent = () => seq === bulkSeqRef.current && latestBulkKeyRef.current === snapshot
     const hadSelection = selection.values.length > 0
     setBulkLoading(true)
     try {
@@ -210,7 +212,7 @@ export function InventoryDocCandidatePicker({
         targetOrgNodeId: targetOrgNodeId || undefined,
       })
       // 在途时改了日期 / 关键字 / 主体，或已选被清除 / 改勾选：旧结果不能再覆盖当前选择
-      if (seq !== bulkSeqRef.current || latestBulkKeyRef.current !== snapshot) return
+      if (!isCurrent()) return
       // 「替换已选」对空结果同样成立：带出 0 张就清空，别让上一个区间的单留着被提交
       selection.onChange(result.ids)
       if (result.ids.length === 0) {
@@ -219,9 +221,9 @@ export function InventoryDocCandidatePicker({
       }
       toast.success(`已带出 ${result.ids.length} 张单据`)
     } catch (err) {
-      if (seq === bulkSeqRef.current) toast.error(actionErrorMessage(err, '带出单据失败'))
+      if (isCurrent()) toast.error(actionErrorMessage(err, '带出单据失败'))
     } finally {
-      setBulkLoading(false)
+      if (seq === bulkSeqRef.current) setBulkLoading(false)
     }
   }
 
