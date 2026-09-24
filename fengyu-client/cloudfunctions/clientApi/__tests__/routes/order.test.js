@@ -3507,9 +3507,21 @@ describe('order.homeProducts', () => {
     expect(sqlCode).toContain('SUM(si.row_pending_pickup)::int AS pending_pickup_quantity')
     expect(sqlCode).toContain('SUM(si.paid_quantity)::int AS paid_quantity')
 
-    expect(sqlCode).toContain("o.status IN ('已支付', '部分支付', '已完成')")
-    expect(sqlCode).toContain("si.item_direction = '购买'")
-    expect(sqlCode).toContain("si.product_type = '家居产品'")
+    // ⚠️ 内层过滤同样要比对**完整子句**，不能用片段 toContain：
+    // 写成 `AND si.product_type = '家居产品' OR si.product_type = '疗程项目'`
+    // （扩展品类时最自然的括号疏忽）时，三个字符串原样都在、断言全绿，
+    // 而 PG 按「AND 优先于 OR」解析后整个 WHERE 塌成
+    // 「(本人的家居行) OR (任何人的疗程项目行)」—— 连 client_user_id = $1 都被旁路，
+    // 别人的订单会出现在这位顾客的资产列表里（闸门 2 codex 指出）。
+    const rowsCte = sqlCode.slice(0, sqlCode.indexOf('), home_products AS ('))
+    const innerWhere = rowsCte.slice(rowsCte.lastIndexOf('WHERE')).replace(/\s+/g, ' ').trim()
+    expect(innerWhere, 'home_product_rows 的过滤条件被改动').toBe(
+      "WHERE o.client_user_id = $1"
+      + " AND o.status IN ('已支付', '部分支付', '已完成')"
+      + " AND ( si.item_direction = '购买'"
+      + " OR (o.sale_order_type = '转换单' AND si.item_direction = '转入') )"
+      + " AND si.product_type = '家居产品'",
+    )
     expect(sqlCode).toMatch(/FLOOR\(GREATEST\(0, si\.received::numeric\) \* si\.quantity \/ NULLIF\(si\.sale_amount::numeric, 0\)\)/)
     // issue #120：放行口径改为按物理剩余份额，旧的 pending 过滤会吞掉未付清的行。
     // 注意不能只断言 'pending_pickup_quantity > 0'——那串在 ORDER BY 里也有，测不出过滤口径。

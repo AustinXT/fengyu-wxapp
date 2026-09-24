@@ -344,7 +344,8 @@ describe('lakala 跨副本一致性守护', () => {
     const forbidden = [
       ...CONFIG_EXTS.map((e) => `vitest.config.${e}`),
       ...['js', ...CONFIG_EXTS].map((e) => `vite.config.${e}`),
-      ...['js', 'ts', 'json', 'mjs', 'cjs'].flatMap((e) => [
+      // ⚠️ vitest 3.2.4 对 workspace/projects 认 ts/mts/cts/js/mjs/cjs/json 全套，一个都不能漏
+      ...['js', 'ts', 'json', 'mjs', 'cjs', 'mts', 'cts'].flatMap((e) => [
         `vitest.workspace.${e}`,
         `vitest.projects.${e}`,
       ]),
