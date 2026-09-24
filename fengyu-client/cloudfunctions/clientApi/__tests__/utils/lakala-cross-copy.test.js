@@ -210,8 +210,11 @@ describe('lakala 跨副本一致性守护', () => {
     for (const p of [
       'fengyu-client/cloudfunctions/clientApi/package.json',
       'fengyu-client/cloudfunctions/clientApi/package-lock.json',
+      // vitest 会自动发现 vitest.workspace.* / vitest.projects.*，它们能整个接管文件收集；
+      // 非 .js 后缀（如 .json）不在上面的 `cloudfunctions/**/*.js` 里，必须单列。
+      'fengyu-client/cloudfunctions/clientApi/vitest.*',
     ]) {
-      expect(paths, `paths 缺 ${p}，依赖升级 PR 不会触发任何 job`).toContain(p)
+      expect(paths, `paths 缺 ${p}，改了它却不触发任何 job`).toContain(p)
     }
 
     // job 级与 step 级的跳过/放水：`if:` 让它不跑，`continue-on-error:` 让它红了也算通过，
