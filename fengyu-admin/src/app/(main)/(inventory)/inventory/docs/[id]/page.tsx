@@ -10,6 +10,7 @@ import { getSession } from '@/lib/auth'
 import { requireAllUiPageCapabilities } from '@/lib/page-capability'
 import { isStocktakeDocType, stocktakeDiff, stocktakeSummary } from '@/lib/inventory/stocktake'
 import { resolveInventoryDocReturn } from '@/lib/inventory/operation-return'
+import { inventoryDocStatusLabel } from '@/lib/inventory/doc-status-label'
 import { InventoryDocReturnLink } from './inventory-doc-return-link'
 
 export const dynamic = 'force-dynamic'
@@ -82,7 +83,11 @@ export default async function Page({
     : 0
   const shipmentColumnCount = shipmentFulfillment ? 2 : 0
   const itemCompanyRequestColumnCount = itemCompanyRequestFulfillment ? 3 : 0
-  const supplyChainPurchaseColumnCount = supplyChainPurchaseFulfillment ? 2 : 0
+  // 采购订单的市场行（#335）：同样经供应链采购入库，另列正常发货量与市场结算价（参考）。
+  const hasPurchaseMarketLine = doc.docType === '采购订单' && doc.items.some((item) => item.marketId)
+  const supplyChainPurchaseColumnCount = supplyChainPurchaseFulfillment
+    ? (hasPurchaseMarketLine ? 3 : 2)
+    : 0
   // 盘点单：把「数量」当实盘数，额外并排展示账面数与差异。
   // 差异是纯派生值（实盘 − 账面），**前端算、不落库** —— 落库就多一个会漂的数（issue #131 Q2）。
   const isStocktake = isStocktakeDocType(doc.docType)
@@ -100,7 +105,8 @@ export default async function Page({
   // 单头、明细行为空，若一并按行渲染会把它们统统误标成「品项公司自用」。
   const lineMarketColumnCount = (doc.docType === '采购订单' || doc.docType === '市场报货汇总') ? 1 : 0
   const lineOwnershipColumnCount = lineSupplierColumnCount + lineMarketColumnCount
-  const priceColumnCount = showPrice ? (showStoreAllocationPrice ? 4 : 2) : 0
+  const marketReferencePriceColumnCount = showPrice && !showStoreAllocationPrice && hasPurchaseMarketLine ? 1 : 0
+  const priceColumnCount = showPrice ? (showStoreAllocationPrice ? 4 : 2 + marketReferencePriceColumnCount) : 0
   const promotionColumnCount = doc.items.some((item) => item.promotionPlanId || item.promotionPlanNoSnapshot) ? 1 : 0
   const itemColumnCount = 9 + lineOwnershipColumnCount + priceColumnCount + reportColumnCount + shipmentColumnCount +
     itemCompanyRequestColumnCount + supplyChainPurchaseColumnCount + promotionColumnCount +
@@ -108,7 +114,7 @@ export default async function Page({
   const fields = [
     ['单据号', doc.id],
     ['类型', doc.docType],
-    ['状态', doc.status],
+    ['状态', inventoryDocStatusLabel(doc)],
     ['出库/发起主体', doc.sourceOrgNodeName ?? doc.sourceOrgNodeId],
     ['入库/接收主体', doc.targetOrgNodeName ?? doc.targetOrgNodeId],
     ['单据日期', doc.docDate?.slice(0, 10)],
@@ -253,6 +259,7 @@ export default async function Page({
               </> : showPrice && <>
                 <th className="px-3 py-2 text-right">实际单价</th>
                 <th className="px-3 py-2 text-right">金额</th>
+                {marketReferencePriceColumnCount > 0 && <th className="px-3 py-2 text-right">市场结算价（参考）</th>}
               </>}
               {promotionColumnCount > 0 && <th className="px-3 py-2 text-left">报货福利</th>}
               {reportFulfillment && <>
@@ -275,6 +282,7 @@ export default async function Page({
               {supplyChainPurchaseFulfillment && <>
                 <th className="px-3 py-2 text-right">已入库</th>
                 <th className="px-3 py-2 text-right">待入库</th>
+                {hasPurchaseMarketLine && <th className="px-3 py-2 text-right">已发货</th>}
               </>}
               <th className="px-3 py-2 text-left">原因</th>
             </tr>
@@ -313,6 +321,9 @@ export default async function Page({
                   </> : showPrice && <>
                     <td className="px-3 py-2 text-right">{fmt(item.actualUnitPrice)}</td>
                     <td className="px-3 py-2 text-right">{fmt(item.amount)}</td>
+                    {marketReferencePriceColumnCount > 0 && (
+                      <td className="px-3 py-2 text-right">{item.marketId ? fmt(item.marketActualUnitPrice) : '—'}</td>
+                    )}
                   </>}
                   {promotionColumnCount > 0 && (
                     <td className="px-3 py-2">
@@ -346,6 +357,9 @@ export default async function Page({
                   {supplyChainPurchaseFulfillment && <>
                     <td className="px-3 py-2 text-right">{fmt(supplyChainPurchaseProgress?.receivedQuantity)}</td>
                     <td className="px-3 py-2 text-right">{fmt(supplyChainPurchaseProgress?.outstandingQuantity)}</td>
+                    {hasPurchaseMarketLine && (
+                      <td className="px-3 py-2 text-right">{item.marketId ? fmt(supplyChainPurchaseProgress?.shippedQuantity) : '—'}</td>
+                    )}
                   </>}
                   <td className="px-3 py-2">{fmt(item.reason)}</td>
                 </tr>

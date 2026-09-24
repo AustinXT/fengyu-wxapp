@@ -73,6 +73,7 @@ import type {
   InventorySupplierRow,
 } from '@/lib/inventory/types'
 import type { InventoryBusinessLevel } from '@/lib/inventory/business-level'
+import { inventoryDocStatusLabel } from '@/lib/inventory/doc-status-label'
 import {
   INVENTORY_INBOX_ACTION_STATUS,
   genericOperationId,
@@ -246,7 +247,7 @@ function nonnegativeNumber(value: string): number | null {
 }
 
 function formatDoc(doc: InventoryDocRow): string {
-  return `${doc.id} · ${doc.docDate.slice(0, 10)} · ${doc.status}`
+  return `${doc.id} · ${doc.docDate.slice(0, 10)} · ${inventoryDocStatusLabel(doc)}`
 }
 
 function docCandidates(docs: InventoryDocRow[], docType: InventoryDocRow['docType'], status?: string) {
@@ -1418,7 +1419,7 @@ export function OperationDocsTab({
       header: '状态',
       cell: (row) => (
         <span className={row.status === '已完成' ? 'text-[#3D8A5A]' : row.status === '已驳回' ? 'text-[#888888]' : 'text-[#D4820A]'}>
-          {row.status}
+          {inventoryDocStatusLabel(row)}
         </span>
       ),
     },
@@ -2418,7 +2419,8 @@ interface PurchaseSourceLine {
   /** 来源明细行上的供应商快照；仅采购订单与市场报货汇总会写，展示用。 */
   supplier: string | null
   supplierId: string | null
-  actualUnitPrice: number | null
+  /** 供应链采购价：采购订单行金额的价基（#335），与服务端 requiredSupplyChainCost 同源。 */
+  supplyChainUnitCost: number | null
   availableQuantity: number
   quantity: string
 }
@@ -2502,7 +2504,8 @@ function PurchaseOrderForm({
               marketId: item.marketId,
               supplier: item.supplier,
               supplierId: item.supplierId,
-              actualUnitPrice: item.actualUnitPrice ?? null,
+              // 汇总行的 actualUnitPrice 是市场结算价，采购订单按供应链采购价计（#335）
+              supplyChainUnitCost: item.supplyChainUnitCost ?? null,
               availableQuantity: available,
               quantity: String(available),
             })
@@ -2684,7 +2687,7 @@ function PurchaseOrderForm({
                   </div>
                   {canViewPrice && (
                     <div className="text-xs text-[#888888]">
-                      单价 {line.actualUnitPrice ?? '—'}
+                      供应链采购价 {line.supplyChainUnitCost ?? '—'}
                     </div>
                   )}
                   <FormField label="采购数量">
@@ -2772,8 +2775,18 @@ function CompanyShipmentForm({
       return
     }
     setSourceOrgNodeId(doc.targetOrgNodeId ?? '')
+    // 采购行的 fulfilledQuantity 记的是已入库量（#335），剩余可发量要看发货血缘：
+    // 过渡期发货仍以采购行数量封顶（由 #336 改为引用市场报货单），与服务端
+    // `createItemCompanyShipment` 的 `orderItem.quantity - shipped` 同口径。
+    // 拿不到发货进度时 fail-closed（剩余可发记 0），不退化成全量可发。
+    const shippedByItem = new Map(
+      doc.fulfillmentProgress?.kind === '供应链采购收货'
+        ? doc.fulfillmentProgress.items.map((progress) => [progress.itemId, progress.shippedQuantity])
+        : [],
+    )
     setLines(doc.items.filter((item) => item.marketId && item.marketId === shipMarketId).map((item) => {
-      const remaining = remainingQuantity(item)
+      const shipped = shippedByItem.get(item.id)
+      const remaining = shipped === undefined ? 0 : Math.max(0, item.quantity - shipped)
       return {
         purchaseOrderItemId: item.id,
         skuId: item.skuId,
@@ -3070,9 +3083,8 @@ function SupplyChainPurchaseReceiptForm({
       return
     }
     setSupplyChainLocationId(doc.targetOrgNodeId ?? '')
-    // 只有无市场归属的行才走供应链入库（#194）；市场行归品项公司发货，
-    // 一起装载会让提交必然撞上服务端的「该明细有市场归属」。
-    setLines(doc.items.filter((item) => !item.marketId).filter(hasAvailableQuantity).map((item) => ({
+    // 所有行（不论有无市场归属）都走供应链采购入库（#335），market_id 只是来源追溯标记。
+    setLines(doc.items.filter(hasAvailableQuantity).map((item) => ({
       purchaseOrderItemId: item.id,
       skuName: item.skuName,
       specName: item.specName,

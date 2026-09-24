@@ -1480,3 +1480,76 @@ describe('行内动作的在途态上报（#192 follow-up）', () => {
     expect(tab).toMatch(/if \(pendingInboxAction \|\| actionBusy\) return/)
   })
 })
+
+/**
+ * #335：采购订单的所有行都走供应链采购入库；采购行 fulfilledQuantity 只记入库量，
+ * 品项公司发货的剩余可发量改看发货进度（fulfillmentProgress.shippedQuantity）。
+ */
+describe('采购订单市场行走供应链采购入库（#335）', () => {
+  beforeEach(async () => {
+    mockDocs({})
+    const { listInventoryLotOptions } = await import('@/actions/inventory/stocks')
+    vi.mocked(listInventoryLotOptions).mockResolvedValue([] as never)
+  })
+
+  function purchaseItem(overrides: Partial<InventoryDocDetail['items'][number]>): InventoryDocDetail['items'][number] {
+    return {
+      id: 1, docId: 'CGD-335', lotId: null, skuId: 'SKU-1', saleItemId: null,
+      skuName: '供应链产品', specName: null, supplier: null, supplierId: null,
+      marketId: null, marketName: null, productSeries: null, batchNo: '', expiryDate: null,
+      isGift: false, quantity: 10, stockSnapshot: null, requestQuantity: 10, fulfilledQuantity: 0,
+      promotionPlanId: null, promotionPlanNoSnapshot: null, promotionPlanNameSnapshot: null,
+      promotionRuleTypeSnapshot: null, promotionSelectionMode: null,
+      reason: null, remark: null, createdAt: '2026-09-24T00:00:00.000Z',
+      ...overrides,
+    } as InventoryDocDetail['items'][number]
+  }
+
+  async function pickPurchaseOrder(row: InventoryDocRow) {
+    const option = await screen.findByRole<HTMLOptionElement>('option', { name: new RegExp(`^${row.id} · `) })
+    fireEvent.change(option.closest('select') as HTMLSelectElement, { target: { value: row.id } })
+  }
+
+  it('供应链采购入库表单装载市场行与自用行，按未入库量预填', async () => {
+    const row = docRow({ id: 'CGD-335', docType: '采购订单', status: '待收货' })
+    vi.mocked(getInventoryCoreDocById).mockResolvedValue({
+      ...docDetail(row),
+      items: [
+        purchaseItem({ id: 1, skuName: '自用行', quantity: 10, fulfilledQuantity: 4 }),
+        purchaseItem({ id: 2, skuName: '市场行', marketId: 'M1', marketName: '市场甲', quantity: 20, fulfilledQuantity: 3 }),
+      ],
+    })
+    renderPage({ level: 'supply-chain', operation: 'supply-chain-receipt', workflowDocs: [row] })
+    await pickPurchaseOrder(row)
+
+    await screen.findByText('本次实收入库')
+    // 市场行曾被过滤掉（#194），现在必须出现并按 20 − 3 预填
+    expect(screen.getAllByText('市场行').length).toBeGreaterThan(0)
+    expect(screen.getByDisplayValue('17')).toBeInTheDocument()
+    expect(screen.getByDisplayValue('6')).toBeInTheDocument()
+  })
+
+  it('品项公司发货的剩余可发量看发货进度，不看已入库量', async () => {
+    const row = docRow({ id: 'CGD-335', docType: '采购订单', status: '待收货' })
+    vi.mocked(getInventoryCoreDocById).mockResolvedValue({
+      ...docDetail(row),
+      items: [purchaseItem({ id: 2, marketId: 'M1', marketName: '市场甲', quantity: 10, fulfilledQuantity: 4 })],
+      fulfillmentProgress: {
+        kind: '供应链采购收货',
+        items: [{ itemId: 2, purchasedQuantity: 10, receivedQuantity: 4, outstandingQuantity: 6, shippedQuantity: 3 }],
+      },
+    })
+    renderPage({ level: 'supply-chain', operation: 'company-shipment', workflowDocs: [row] })
+    await pickPurchaseOrder(row)
+
+    // 10 − 已发 3 = 7；按旧口径读 fulfilledQuantity（已入库 4）会得到 6
+    expect(await screen.findByDisplayValue('7')).toBeInTheDocument()
+    expect(screen.queryByDisplayValue('6')).not.toBeInTheDocument()
+  })
+
+  it('候选下拉把「待收货 + 已有入库」的采购订单标成「部分入库」', async () => {
+    const row = docRow({ id: 'CGD-336', docType: '采购订单', status: '待收货', partiallyReceived: true })
+    renderPage({ level: 'supply-chain', operation: 'supply-chain-receipt', workflowDocs: [row] })
+    expect(await screen.findByRole('option', { name: /^CGD-336 · .* · 部分入库$/ })).toBeInTheDocument()
+  })
+})

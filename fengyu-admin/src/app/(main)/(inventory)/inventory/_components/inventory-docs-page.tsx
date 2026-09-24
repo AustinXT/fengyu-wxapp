@@ -42,6 +42,7 @@ import { InventoryDocCreateForm } from './inventory-doc-create-form'
 import { useUrlFilters } from '@/lib/hooks/use-url-filters'
 import { PreserveListContextLink } from '@/components/return-context'
 import { normalizePage } from '@/lib/paging'
+import { inventoryDocStatusLabel } from '@/lib/inventory/doc-status-label'
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50, 100]
 const GENERIC_DOC_TYPE_SET = new Set<InventoryDocType>(INVENTORY_GENERIC_DOC_TYPES)
@@ -171,7 +172,7 @@ export default function InventoryDocsPage({
       header: '状态',
       cell: (r) => (
         <span className={r.status === '已完成' ? 'text-[#3D8A5A]' : r.status === '已驳回' ? 'text-[#888888]' : 'text-[#D4820A]'}>
-          {r.status}
+          {inventoryDocStatusLabel(r)}
         </span>
       ),
     },

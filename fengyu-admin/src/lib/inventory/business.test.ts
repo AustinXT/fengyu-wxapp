@@ -403,7 +403,7 @@ describe('inventory business action input guards', () => {
     expect(queries).not.toContain('inventory_movements')
   })
 
-  it('拥有撤回审批权限的用户审批后恢复总部库存并回退采购订单履约数量', async () => {
+  it('拥有撤回审批权限的用户审批后恢复总部库存；采购行 fulfilled 只记入库，不随撤回回退（#335）', async () => {
     const txExecute = vi.fn()
       .mockResolvedValueOnce([itemCompanyShipmentRow({
         status: '待审批', cancellationRequestReason: '物流信息异常',
@@ -428,7 +428,8 @@ describe('inventory business action input guards', () => {
     const queries = txExecute.mock.calls.map(([query]) => renderSql(query)).join('\n')
     expect(queries).not.toContain('UPDATE inventory_stock_lots')
     expect(queries).toContain('INSERT INTO inventory_movements')
-    expect(queries).toContain('UPDATE inventory_doc_items purchase_item')
+    // 发货从不回写采购行（#335），撤回也就不能再去回退它 —— 回退会把已入库量减掉
+    expect(queries).not.toContain('UPDATE inventory_doc_items purchase_item')
     expect(queries).toContain("SET status = '已取消'")
   })
 
@@ -712,7 +713,7 @@ describe('inventory business action input guards', () => {
     await expect(createItemCompanyReplenishment(SESSION, {
       supplyChainLocationId: 'HQ',
       items: [{ skuId: 'SELF-SKU', quantity: 1 }],
-    })).rejects.toThrow('品项公司报货只能选择供应链 SKU')
+    })).rejects.toThrow('只能选择供应链 SKU')
   })
 
   it('品项公司报货需求要求已维护供应链采购价', async () => {
@@ -866,9 +867,9 @@ describe('inventory business action input guards', () => {
     })).rejects.toThrow('采购订单只能引用市场报货汇总或品项公司报货需求')
   })
 
-  it('两条链路按行级市场归属分流：无市场归属的行不能发货、有市场归属的行不能直接入库', async () => {
-    // #194 收敛掉 `供应链采购订单` 之后，分流不再看 doc_type，而是看明细行的 market_id。
-    // 这两条断言钉的就是这个新口径。
+  it('无市场归属的行不能发货；有市场归属的行可以走供应链采购入库（#335）', async () => {
+    // #194 起分流看明细行的 market_id；#335 起入库不再看它（所有行都能入库），
+    // 发货仍只认市场行。
     const shipmentExecutor = vi.fn()
       .mockResolvedValueOnce([{
         id: 'CGD-1', doc_type: '采购订单', status: '待收货',
@@ -886,6 +887,8 @@ describe('inventory business action input guards', () => {
       items: [{ purchaseOrderItemId: 1, lotId: 1, quantity: 1 }],
     })).rejects.toThrow('该采购明细没有市场归属')
 
+    // 市场行越过了原先的「有市场归属」拦截，走到了 SKU 来源校验：
+    // 用一个非供应链 SKU 当哨兵，报的是 SKU 来源错而不是市场归属错。
     const receiptExecutor = vi.fn()
       .mockResolvedValueOnce([{
         id: 'CGD-2', doc_type: '采购订单', status: '待收货',
@@ -894,13 +897,150 @@ describe('inventory business action input guards', () => {
       }])
       .mockResolvedValueOnce([{ location_id: 'HQ', org_node_id: 'HQ', location_type: '总部', name: '供应链', parent_location_id: null }])
       .mockResolvedValueOnce([{ ...storeRequestItemRow(), doc_id: 'CGD-2', market_id: 'M1' }])
+      .mockResolvedValueOnce([{ ...supplierBoundSkuRow(), source_type: '市场自采', owner_market_id: 'M1' }])
     vi.mocked(db.transaction).mockImplementationOnce(async (callback) => callback({
       execute: initializedCutoverExecutor(receiptExecutor),
     } as never))
-    await expect(receiveSupplyChainPurchaseOrder(SESSION, {
+    const receipt = receiveSupplyChainPurchaseOrder(SESSION, {
       purchaseOrderId: 'CGD-2', supplyChainLocationId: 'HQ',
       items: [{ purchaseOrderItemId: 1, quantity: 1 }],
-    })).rejects.toThrow('该采购明细有市场归属')
+    })
+    await expect(receipt).rejects.toThrow('只能选择供应链 SKU')
+    await expect(receipt).rejects.not.toThrow('有市场归属')
+  })
+
+  it('市场报货汇总行的 SKU 不是供应链商品时，建采购订单直接拒绝（#335 Q3）', async () => {
+    const txExecute = vi.fn()
+      .mockResolvedValueOnce([{ location_id: 'HQ', org_node_id: 'HQ', location_type: '总部', name: '供应链', parent_location_id: null }])
+      .mockResolvedValueOnce([{ ...storeRequestItemRow(), doc_id: 'MHZ-1', market_id: 'M1' }])
+      .mockResolvedValueOnce([{
+        id: 'MHZ-1', doc_type: '市场报货汇总', status: '已完成',
+        source_org_node_id: null, target_org_node_id: 'HQ', market_id: null,
+        supplier_id: null, supplier_name: null,
+      }])
+      .mockResolvedValueOnce([{ ...supplierBoundSkuRow(), source_type: '市场自采', owner_market_id: 'M1' }])
+    vi.mocked(db.execute).mockResolvedValue([] as never)
+    vi.mocked(db.transaction).mockImplementationOnce(async (callback) => callback({
+      execute: initializedCutoverExecutor(txExecute),
+    } as never))
+
+    await expect(createPurchaseOrder(SESSION, {
+      supplyChainLocationId: 'HQ',
+      items: [{ sourceItemId: 1, quantity: 1 }],
+    })).rejects.toThrow('采购订单只能采购供应链商品')
+  })
+
+  describe('采购 / 入库 / 发货数量多于两位小数时在入口拒绝（#335）', () => {
+    const hqRow = { location_id: 'HQ', org_node_id: 'HQ', location_type: '总部', name: '供应链', parent_location_id: null }
+    const orderRow = {
+      id: 'CGD-1', doc_type: '采购订单', status: '待收货',
+      source_org_node_id: null, target_org_node_id: 'HQ', market_id: null,
+      supplier_id: null, supplier_name: null,
+    }
+    function mockTx(...results: unknown[]) {
+      const txExecute = vi.fn()
+      for (const result of results) txExecute.mockResolvedValueOnce(result)
+      vi.mocked(db.execute).mockResolvedValue([] as never)
+      vi.mocked(db.transaction).mockImplementationOnce(async (callback) => callback({
+        execute: initializedCutoverExecutor(txExecute),
+      } as never))
+    }
+
+    it.each([1.234, 1e-9])('采购数量 %s 被拒', async (quantity) => {
+      mockTx([hqRow])
+      await expect(createPurchaseOrder(SESSION, {
+        supplyChainLocationId: 'HQ',
+        items: [{ sourceItemId: 1, quantity }],
+      })).rejects.toThrow('采购数量最多保留两位小数')
+    })
+
+    it('合法的大数量不被浮点残差误伤（越过精度校验走到来源校验）', async () => {
+      mockTx([hqRow], [{ ...storeRequestItemRow(), doc_id: 'ZBH-1' }], [{
+        id: 'ZBH-1', doc_type: '品项公司报货需求', status: '草稿',
+        source_org_node_id: null, target_org_node_id: 'HQ', market_id: null,
+        supplier_id: null, supplier_name: null,
+      }], [supplierBoundSkuRow()])
+      await expect(createPurchaseOrder(SESSION, {
+        supplyChainLocationId: 'HQ',
+        items: [{ sourceItemId: 1, quantity: 1234567890.12 }],
+      })).rejects.toThrow('采购订单必须引用有效的品项公司报货需求单')
+    })
+
+    it('实收数量 1.234 被拒', async () => {
+      mockTx([orderRow], [hqRow], [{ ...storeRequestItemRow(), doc_id: 'CGD-1' }], [supplierBoundSkuRow()])
+      await expect(receiveSupplyChainPurchaseOrder(SESSION, {
+        purchaseOrderId: 'CGD-1', supplyChainLocationId: 'HQ',
+        items: [{ purchaseOrderItemId: 1, quantity: 1.234 }],
+      })).rejects.toThrow('实收数量最多保留两位小数')
+    })
+
+    it('发货数量 1.234 被拒', async () => {
+      mockTx([orderRow], [hqRow])
+      await expect(createItemCompanyShipment(SESSION, {
+        purchaseOrderId: 'CGD-1', sourceOrgNodeId: 'HQ',
+        items: [{ purchaseOrderItemId: 1, lotId: 1, quantity: 1.234 }],
+      })).rejects.toThrow('发货数量最多保留两位小数')
+    })
+  })
+
+  it('关闭采购订单：市场行正常发货量超过已入库量时拒绝（#335）', async () => {
+    const txExecute = vi.fn()
+      .mockResolvedValueOnce([{
+        id: 'CGD-1', doc_type: '采购订单', status: '待收货',
+        source_org_node_id: null, target_org_node_id: 'HQ', market_id: null,
+        supplier_id: null, supplier_name: null,
+      }])
+      .mockResolvedValueOnce([{ location_id: 'HQ', location_type: '总部', name: '供应链', parent_location_id: null }])
+      .mockResolvedValueOnce([{ ...storeRequestItemRow('3'), doc_id: 'CGD-1', market_id: 'M1', quantity: '10' }])
+      .mockResolvedValueOnce([{ quantity: '5' }]) // 正常发货
+      .mockResolvedValueOnce([{ quantity: '3' }]) // 已入库
+    vi.mocked(db.execute).mockResolvedValue([] as never)
+    vi.mocked(db.transaction).mockImplementationOnce(async (callback) => callback({
+      execute: initializedCutoverExecutor(txExecute),
+    } as never))
+
+    await expect(cancelSupplyChainPurchaseOrder(SESSION, {
+      purchaseOrderId: 'CGD-1', cancellationReason: '供应商短供',
+    })).rejects.toThrow('发货量已超过已入库量')
+    const queries = txExecute.mock.calls.map(([query]) => renderSql(query)).join('\n')
+    expect(queries).not.toContain("SET status = '已取消'")
+  })
+
+  it('关闭部分入库的采购订单：市场行发货不超过已入库量时可关，并按已入库量释放汇总行（#335）', async () => {
+    const summaryItem = {
+      ...storeRequestItemRow(), id: 10, doc_id: 'MHZ-1', market_id: 'M1',
+      quantity: '10', fulfilled_quantity: '10',
+    }
+    const txExecute = vi.fn()
+      .mockResolvedValueOnce([{
+        id: 'CGD-1', doc_type: '采购订单', status: '待收货',
+        source_org_node_id: null, target_org_node_id: 'HQ', market_id: null,
+        supplier_id: null, supplier_name: null,
+      }])
+      .mockResolvedValueOnce([{ location_id: 'HQ', location_type: '总部', name: '供应链', parent_location_id: null }])
+      .mockResolvedValueOnce([{ ...storeRequestItemRow('3'), doc_id: 'CGD-1', market_id: 'M1', quantity: '10' }])
+      .mockResolvedValueOnce([{ quantity: '3' }]) // 正常发货
+      .mockResolvedValueOnce([{ quantity: '3' }]) // 已入库
+      .mockResolvedValueOnce([{ relation_type: '报货汇总采购订单', from_item_id: 10, to_item_id: 1, quantity: '10' }])
+      .mockResolvedValueOnce([{ quantity: '3' }]) // 已入库（释放计算）
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([summaryItem])
+    vi.mocked(db.execute).mockResolvedValue([] as never)
+    vi.mocked(db.transaction).mockImplementationOnce(async (callback) => callback({
+      execute: initializedCutoverExecutor(txExecute),
+    } as never))
+
+    await expect(cancelSupplyChainPurchaseOrder(SESSION, {
+      purchaseOrderId: 'CGD-1', cancellationReason: '供应商短供',
+    })).resolves.toEqual({ success: true })
+    // 汇总行 fulfilled 10 → 3：只退还未入库的 7，已入库的 3 继续占用（市场行不再整行作废）
+    const summaryRelease = txExecute.mock.calls
+      .map(([query]) => query as { queryChunks?: unknown[] })
+      .find((query) => renderSql(query).includes('SET fulfilled_quantity')
+        && (query.queryChunks ?? []).includes(10))
+    expect(summaryRelease?.queryChunks).toContain('3')
+    const queries = txExecute.mock.calls.map(([query]) => renderSql(query)).join('\n')
+    expect(queries).toContain("SET status = '已取消'")
   })
 
   it('福利报价始终以 SKU 市场进货价为基础，不接受方案中的基础价快照', async () => {
