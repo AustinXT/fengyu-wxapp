@@ -17,10 +17,14 @@ import { withPermission } from '@/lib/with-permission'
 import { logOperation } from '@/lib/operation-log'
 import { ApiError } from '@/lib/api-error'
 import { hasPendingRefund } from '@/lib/refund-cascade'
+import { rowsAffected } from '@/lib/pg-rows'
 import { revalidatePath } from 'next/cache'
 import { storeInMarketCondition } from '@/lib/market-store-sql'
 import { INVENTORY_LINKAGE_ENABLED } from '@/lib/inventory-feature-flags'
 import { computeAvailableByLot } from '@/lib/inventory/lot-availability'
+import { isConvertibleEntitlementRow } from '@/lib/home-product'
+import { businessErrorMessage } from '@/lib/action-error'
+import { resolvePaging } from '@/lib/paging'
 
 export interface AdminPickupRecord {
   id: number
@@ -260,7 +264,7 @@ async function createPickupInventoryDoc(
           SELECT lot_id,
                  COALESCE(SUM(quantity - fulfilled_quantity - released_quantity), 0) AS quantity
             FROM inventory_stock_reservations
-           WHERE lot_id = ANY(${lotIds}::bigint[])
+           WHERE lot_id = ANY(${sql.param(lotIds)}::bigint[])
              AND status = '已预留'
         GROUP BY lot_id
         `)) as unknown as Array<{ lot_id: number | string; quantity: string | number }>
@@ -345,9 +349,12 @@ export const getPickupRecordsPaginated = withPermission(
     session,
     filters: PickupRecordFilters = {},
   ): Promise<PaginatedPickupRecords> => {
-  const page = Math.max(1, filters.page || 1)
-  const pageSize = [10, 20, 50].includes(filters.pageSize ?? 0) ? filters.pageSize! : 20
-  const offset = (page - 1) * pageSize
+  const { page, pageSize, offset } = resolvePaging({
+    page: filters.page,
+    pageSize: filters.pageSize,
+    defaultPageSize: 20,
+    allowedPageSizes: [10, 20, 50],
+  })
 
   const conditions: (SQL | undefined)[] = [
     scopeCondition(session, pickupRecords.storeId),
@@ -410,7 +417,7 @@ export const getPickupRecordsPaginated = withPermission(
     .leftJoin(inventorySkus, eq(pickupRecords.inventorySkuId, inventorySkus.skuId))
     .where(whereClause)
     // 例外：提货流水型表无 updatedAt 列
-    .orderBy(desc(pickupRecords.createdAt))
+    .orderBy(desc(pickupRecords.createdAt), desc(pickupRecords.id))
     .limit(pageSize)
     .offset(offset)
 
@@ -507,9 +514,9 @@ export const getPickupRecordById = withPermission(
  *
  * 筛选条件：
  * - 订单已支付
- * - item_direction = '购买'
+ * - item_direction = '购买'，或转换单的 item_direction = '转入'（#145/#153）
  * - product_type = '家居产品'
- * - 可提数量 = quantity - COALESCE(picked_up_quantity, 0) > 0
+ * - 可提数量 = quantity − 已结算（picked_up + refunded + converted）> 0
  */
 export interface AvailablePickupItem {
   saleItemId: string
@@ -527,15 +534,36 @@ export interface AvailablePickupItem {
   storeName: string | null
 }
 
+/**
+ * 家居可提件数 = min(物理未结算, floor(剩余已付 / 单价))，与折抵额度同一口径。
+ *
+ * #145/#153：剩余已付 = 行实收 − 已提货金额 − **已转走金额**（转出行 received 聚合）。
+ * 退款不在此处扣（received 已扣过）；必须按**金额**算而非件数（折抵金额含余数时两者不等）；
+ * 全程按「分」整除与 PG numeric(10,2) 对齐。寄存单 / 0 元赠品行只受物理未结算封顶。
+ * 与 staffApi routes/order.js 同名函数跨端同义。
+ */
 function pendingHomeProductQuantity(row: {
   quantity: number
   settled_quantity: number
   picked_quantity: number
-  paid_quantity: number
+  converted_amount?: string | number | null
+  sale_amount?: string | number | null
+  unit_real_price?: string | number | null
+  received?: string | number | null
+  sale_order_type?: string | null
 }): number {
-  const physicalRemaining = Math.max(0, Number(row.quantity) - Number(row.settled_quantity || 0))
-  const paidRemaining = Math.max(0, Number(row.paid_quantity || 0) - Number(row.picked_quantity || 0))
-  return Math.min(physicalRemaining, paidRemaining)
+  const quantity = Number(row.quantity) || 0
+  const physicalRemaining = Math.max(0, quantity - Number(row.settled_quantity || 0))
+  const saleAmount = Number(row.sale_amount ?? 0)
+  if (row.sale_order_type === '寄存单' || saleAmount <= 0) return physicalRemaining
+  const toCents = (v: unknown) => Math.round(Number(v ?? 0) * 100)
+  const unitCents = toCents(row.unit_real_price)
+  if (unitCents <= 0) return 0
+  const remainingCents = Math.max(
+    0,
+    toCents(row.received) - Number(row.picked_quantity || 0) * unitCents - toCents(row.converted_amount),
+  )
+  return Math.min(physicalRemaining, Math.floor(remainingCents / unitCents))
 }
 
 export const getAvailablePickupItems = withPermission(
@@ -545,10 +573,20 @@ export const getAvailablePickupItems = withPermission(
     clientUserId: string,
   ): Promise<AvailablePickupItem[]> => {
   const rows = await db.execute(sql`
-    WITH pickup_totals AS (
-      SELECT sale_item_id, SUM(pickup_quantity)::int AS picked_quantity
-        FROM pickup_records
-       GROUP BY sale_item_id
+    WITH conversion_totals AS (
+      -- #154 拆列后件数直读 sale_items.converted_quantity，这里只剩**金额**：
+      -- 折抵额度按金额结算，折 4 件可能带走 ¥450 而非 ¥400，用件数推算会失真。
+      -- 写法与四端展示侧的 conversion_totals 字面同源
+      -- （只排除「已关闭」——它完成过 rollback，数量已退回）。
+      SELECT out_item.ref_sale_item_id AS sale_item_id,
+             SUM(GREATEST(0, -out_item.received::numeric)) AS converted_amount
+        FROM sale_items out_item
+        JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id
+       WHERE out_item.item_direction = '转出'
+         AND out_item.product_type = '家居产品'
+         AND out_item.ref_sale_item_id IS NOT NULL
+         AND conv_order.status <> '已关闭'
+       GROUP BY out_item.ref_sale_item_id
     ), home_product_rows AS (
       SELECT COALESCE(si.sale_item_group_id, si.sale_item_id) AS sale_item_group_id,
              si.sale_item_id,
@@ -556,9 +594,27 @@ export const getAvailablePickupItems = withPermission(
              si.sku_id,
              si.product_name,
              si.quantity::int AS quantity,
-             LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0)))::int AS settled_quantity,
-             GREATEST(0, COALESCE(pt.picked_quantity, 0))::int AS picked_quantity,
+             LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0) + COALESCE(si.refunded_quantity, 0) + COALESCE(si.converted_quantity, 0)))::int AS settled_quantity,
+             GREATEST(0, COALESCE(si.picked_up_quantity, 0))::int AS picked_quantity,
+             GREATEST(0, COALESCE(si.converted_quantity, 0))::int AS converted_quantity,
+             -- #145/#153：可提件数 = min(物理未结算, floor(剩余已付 / 单价))，与折抵额度同一口径。
+             -- 按金额算而非「已付件数 − 已提 − 已折抵件数」：折抵金额含余数时两者不等，
+             -- 折 4 件带走 ¥450 后再回款 ¥50，按件数会多放出 1 件（累计兑现超实收）。
              CASE
+               WHEN o.sale_order_type = '寄存单' OR si.sale_amount <= 0
+                 THEN GREATEST(0, si.quantity - LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0) + COALESCE(si.refunded_quantity, 0) + COALESCE(si.converted_quantity, 0))))
+               ELSE LEAST(
+                 GREATEST(0, si.quantity - LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0) + COALESCE(si.refunded_quantity, 0) + COALESCE(si.converted_quantity, 0)))),
+                 GREATEST(0, FLOOR((GREATEST(0, si.received::numeric)
+                   - GREATEST(0, COALESCE(si.picked_up_quantity, 0)) * si.unit_real_price::numeric
+                   - COALESCE(ct.converted_amount, 0)) / NULLIF(si.unit_real_price::numeric, 0)))::int
+               )
+             END AS row_pending_pickup,
+             CASE
+               -- 寄存单：货本就属于顾客，全额可提（sale_amount 只是原价快照，received 不代表欠款）。
+               -- 判据与 #120 展示侧 is_deposit 同源；刻意不用疗程卡那条 total_amount<=0——后者会连带覆盖
+               -- 转换单/零总额单，且 total_amount 无 CHECK 约束，负值会静默放行。
+               WHEN o.sale_order_type = '寄存单' THEN si.quantity
                WHEN si.sale_amount <= 0 THEN si.quantity
                ELSE LEAST(
                  si.quantity,
@@ -572,17 +628,22 @@ export const getAvailablePickupItems = withPermission(
         FROM sale_items si
         JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
         LEFT JOIN stores s ON s.store_id = o.store_id
-        LEFT JOIN pickup_totals pt ON pt.sale_item_id = si.sale_item_id
+        LEFT JOIN conversion_totals ct ON ct.sale_item_id = si.sale_item_id
        WHERE o.client_user_id = ${clientUserId}
          AND o.status IN ('已支付', '部分支付', '已完成')
-         AND si.item_direction = '购买'
+         -- #145/#153：转换单换入的家居与购买行同权（与疗程卡侧放行写法同源）。
+         -- sale_amount>0 的转入行，received 已由 paid-sessions STEP 1.6 重建为「转出旧卡
+         -- 价值 + 本单净到账」，FLOOR(received × qty / sale_amount) 天然成立；sale_amount<=0
+         -- 的转入行走上方赠品分支全额可提（STEP 1.6 带 sale_amount>0 过滤，刻意不碰 0 元行，
+         -- 与购买侧 0 元赠品行同口径）。两类都不需要为「转入」另加满付分支。
+         AND (
+           si.item_direction = '购买'
+           OR (o.sale_order_type = '转换单' AND si.item_direction = '转入')
+         )
          AND si.product_type = '家居产品'
     ), pickup_balances AS (
       SELECT *,
-             LEAST(
-               quantity - settled_quantity,
-               GREATEST(paid_quantity - picked_quantity, 0)
-             )::int AS pending_pickup_quantity
+             row_pending_pickup AS pending_pickup_quantity
         FROM home_product_rows
     )
     SELECT sale_item_group_id,
@@ -650,10 +711,20 @@ export const getPickupInventorySkuOptions = withPermission(
         FROM sale_items sale_item
         JOIN sale_orders sale_order ON sale_order.sale_order_id = sale_item.sale_order_id
        WHERE sale_item.sale_item_id = ${saleItemId}
-         AND sale_order.status = '已支付'
-         AND sale_item.item_direction = '购买'
+         -- 状态白名单必须与 getAvailablePickupItems / createPickupRecord 一致：本查询是提货
+         -- 出库清单预览，卡在 '已支付' 会让「列表可见 → 预览报 NOT_FOUND」——部分支付订单
+         -- （含差额未结清的转换单，正是按比例逐件释放的场景）首当其冲。
+         AND sale_order.status IN ('已支付', '部分支付', '已完成')
+         -- #145/#153：转换单换入的家居与购买行同权（与疗程卡侧放行写法同源）
+         AND (
+           sale_item.item_direction = '购买'
+           OR (sale_order.sale_order_type = '转换单' AND sale_item.item_direction = '转入')
+         )
          AND sale_item.product_type = '家居产品'
-         AND sale_item.quantity > COALESCE(sale_item.picked_up_quantity, 0)
+         -- #154：可提判据看「已结算」三列之和；只看 picked_up 会把已退款/已折抵占用的额度当成可提
+         AND sale_item.quantity > (COALESCE(sale_item.picked_up_quantity, 0)
+                                   + COALESCE(sale_item.refunded_quantity, 0)
+                                   + COALESCE(sale_item.converted_quantity, 0))
        LIMIT 1
     `)) as unknown as Array<{ sku_id: string | null; inventory_composition_snapshot: unknown }>
     const item = itemRows[0]
@@ -677,7 +748,7 @@ export const getPickupInventorySkuOptions = withPermission(
            WHERE status = '已预留'
         GROUP BY lot_id
    ) reserved ON reserved.lot_id = lot.id
-       WHERE inventory.sku_id = ANY(${inventorySkuIds}::text[])
+       WHERE inventory.sku_id = ANY(${sql.param(inventorySkuIds)}::text[])
     GROUP BY inventory.sku_id
     `)) as unknown as Array<{ sku_id: string; available_quantity: string | number }>
     const availableBySku = new Map(availabilityRows.map((row) => [row.sku_id, Number(row.available_quantity)]))
@@ -740,25 +811,38 @@ async function createGroupedPickupRecord(
       SELECT si.sale_item_id, si.sale_item_group_id, si.sale_order_id, si.sku_id,
              si.product_name, si.quantity, COALESCE(si.picked_up_quantity, 0) AS picked_up_quantity,
              si.inventory_composition_snapshot,
-             LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0)))::int AS settled_quantity,
-             COALESCE((
-               SELECT SUM(pr.pickup_quantity)::int FROM pickup_records pr
-                WHERE pr.sale_item_id = si.sale_item_id
-             ), 0)::int AS picked_quantity,
+             LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0) + COALESCE(si.refunded_quantity, 0) + COALESCE(si.converted_quantity, 0)))::int AS settled_quantity,
+               si.sale_amount, si.unit_real_price, si.received,
              CASE
+               -- 寄存单：货本就属于顾客，全额可提（sale_amount 只是原价快照，received 不代表欠款）。
+               -- 判据与 #120 展示侧 is_deposit 同源；刻意不用疗程卡那条 total_amount<=0——后者会连带覆盖
+               -- 转换单/零总额单，且 total_amount 无 CHECK 约束，负值会静默放行。
+               WHEN o.sale_order_type = '寄存单' THEN si.quantity
                WHEN si.sale_amount <= 0 THEN si.quantity
                ELSE LEAST(
                  si.quantity,
                  FLOOR(GREATEST(0, si.received::numeric) * si.quantity / NULLIF(si.sale_amount::numeric, 0))::int
                )
              END AS paid_quantity,
-             si.product_type, si.item_direction,
+             si.product_type, si.item_direction, o.sale_order_type,
              o.client_user_id, o.customer_name, o.status AS order_status
         FROM sale_items si
         JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
        WHERE si.sale_item_id IN (${sourceIdList})
          AND si.product_type = '家居产品'
-         AND si.item_direction = '购买'
+         -- #145/#153：转换单换入的家居与购买行同权（与疗程卡侧放行写法同源）。
+         -- sale_amount>0 的转入行，received 已由 paid-sessions STEP 1.6 重建为「转出旧卡
+         -- 价值 + 本单净到账」，FLOOR(received × qty / sale_amount) 天然成立；sale_amount<=0
+         -- 的转入行走上方赠品分支全额可提（STEP 1.6 带 sale_amount>0 过滤，刻意不碰 0 元行，
+         -- 与购买侧 0 元赠品行同口径）。两类都不需要为「转入」另加满付分支。
+         AND (
+           si.item_direction = '购买'
+           OR (o.sale_order_type = '转换单' AND si.item_direction = '转入')
+         )
+       -- 锁序必须与 createConversion 折抵、staff createGroupedPickup、退款 G2 复校一致
+       -- （全部按 sale_item_id 升序）。本次把「转入」行纳入锁集，而转入行正是折抵的主力源，
+       -- 不定序会让执行计划（bitmap/seq scan 非升序）与折抵事务形成反向锁序而死锁。
+       ORDER BY si.sale_item_id
        FOR UPDATE OF si
     `)) as unknown as Array<{
       sale_item_id: string
@@ -771,9 +855,14 @@ async function createGroupedPickupRecord(
       inventory_composition_snapshot: unknown
       settled_quantity: number
       picked_quantity: number
+      converted_amount: string
+      sale_amount: string
+      unit_real_price: string
+      received: string
       paid_quantity: number
       product_type: string
       item_direction: string
+      sale_order_type: string
       client_user_id: string | null
       customer_name: string | null
       order_status: string
@@ -781,6 +870,30 @@ async function createGroupedPickupRecord(
     if (locked.length !== sourceIds.length) {
       throw new ApiError('CONFLICT', '部分家居产品已更新，请刷新后重试')
     }
+    // #145/#153：已转走**金额**必须在**锁取得之后**用另一条语句查。
+    // `FOR UPDATE OF si` 只锁 sale_items：READ COMMITTED 下语句先取快照再等锁，唤醒后
+    // EvalPlanQual 只刷新 si 自身的行版本，转出行聚合仍是旧快照。
+    // #154：已提货件数不再在这里聚合——它就在被锁的 si 行上（picked_up_quantity），
+    // EvalPlanQual 会刷新；两个来源并存会在不变量破裂时让两道闸门无声分歧。
+    const consumedRows = (await tx.execute(sql`
+      SELECT si.sale_item_id,
+             COALESCE((SELECT SUM(GREATEST(0, -out_item.received::numeric))
+                         FROM sale_items out_item
+                         JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id
+                        WHERE out_item.ref_sale_item_id = si.sale_item_id
+                          AND out_item.item_direction = '转出'
+                          AND out_item.product_type = '家居产品'
+                          AND conv_order.status <> '已关闭'), 0) AS converted_amount
+        FROM sale_items si
+       WHERE si.sale_item_id IN (${sourceIdList})
+    `)) as unknown as Array<{ sale_item_id: string; converted_amount: string }>
+    const consumedById = new Map(consumedRows.map((r) => [r.sale_item_id, r]))
+    for (const row of locked) {
+      const c = consumedById.get(row.sale_item_id)
+      row.picked_quantity = Number(row.picked_up_quantity ?? 0)
+      row.converted_amount = c ? c.converted_amount : '0'
+    }
+
     const first = locked[0]
     if (!first || (INVENTORY_LINKAGE_ENABLED && !first.sku_id) || locked.some((row) =>
       row.sale_order_id !== first.sale_order_id
@@ -788,7 +901,7 @@ async function createGroupedPickupRecord(
       || (row.sale_item_group_id || row.sale_item_id) !== (first.sale_item_group_id || first.sale_item_id)
       || Number(row.quantity) !== 1
       || row.product_type !== '家居产品'
-      || row.item_direction !== '购买'
+      || !isConvertibleEntitlementRow(row)
       || !['已支付', '部分支付', '已完成'].includes(row.order_status),
     )) {
       throw new ApiError('CONFLICT', '家居产品状态已更新，请刷新后重试')
@@ -828,7 +941,9 @@ async function createGroupedPickupRecord(
         UPDATE sale_items
            SET picked_up_quantity = 1, updated_at = NOW()
          WHERE sale_item_id = ${item.sale_item_id}
-           AND COALESCE(picked_up_quantity, 0) = 0
+           -- #154：守卫看「已结算」三列之和而非单列——只看 picked_up 会把已退款/已折抵的行当成可提
+           AND (COALESCE(picked_up_quantity, 0) + COALESCE(refunded_quantity, 0)
+                + COALESCE(converted_quantity, 0)) = 0
         RETURNING sale_item_id
       `)) as unknown as Array<{ sale_item_id: string }>
       if (updated.length !== 1) throw new ApiError('CONFLICT', '家居产品状态已更新，请刷新后重试')
@@ -917,7 +1032,9 @@ export const createPickupRecord = withPermission(
         createdId: created.pickupRecordId,
       }
     } catch (err) {
-      return { success: false, message: err instanceof Error ? err.message : '创建失败' }
+      // fail-closed：本函数的 throw 全是白名单 ApiError，会照常透传；
+      // 未知异常（PG 约束名 / TypeError）走兜底，不回传给前端（issue #133）
+      return { success: false, message: businessErrorMessage(err, '创建失败') }
     }
   }
 
@@ -949,18 +1066,21 @@ export const createPickupRecord = withPermission(
       const locked = (await tx.execute(sql`
         SELECT si.sale_item_id, si.sale_order_id, si.sku_id, si.product_name,
                si.product_type, si.item_direction, si.quantity,
-               LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0)))::int AS settled_quantity,
-               COALESCE((
-                 SELECT SUM(pr.pickup_quantity)::int FROM pickup_records pr
-                  WHERE pr.sale_item_id = si.sale_item_id
-               ), 0)::int AS picked_quantity,
+               COALESCE(si.picked_up_quantity, 0)::int AS picked_up_quantity,
+               LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0) + COALESCE(si.refunded_quantity, 0) + COALESCE(si.converted_quantity, 0)))::int AS settled_quantity,
+               si.sale_amount, si.unit_real_price, si.received,
                CASE
+                 -- 寄存单：货本就属于顾客，全额可提（sale_amount 只是原价快照，received 不代表欠款）。
+                 -- 判据与 #120 展示侧 is_deposit 同源；刻意不用疗程卡那条 total_amount<=0——后者会连带覆盖
+                 -- 转换单/零总额单，且 total_amount 无 CHECK 约束，负值会静默放行。
+                 WHEN o.sale_order_type = '寄存单' THEN si.quantity
                  WHEN si.sale_amount <= 0 THEN si.quantity
                  ELSE LEAST(
                    si.quantity,
                    FLOOR(GREATEST(0, si.received::numeric) * si.quantity / NULLIF(si.sale_amount::numeric, 0))::int
                  )
                END AS paid_quantity,
+               o.sale_order_type,
                o.status AS order_status, o.client_user_id, o.customer_name
           FROM sale_items si
           JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
@@ -973,7 +1093,10 @@ export const createPickupRecord = withPermission(
         product_name: string | null
         product_type: string
         item_direction: string
+        sale_order_type: string
+        converted_amount: string
         quantity: number
+        picked_up_quantity: number
         settled_quantity: number
         picked_quantity: number
         paid_quantity: number
@@ -983,7 +1106,30 @@ export const createPickupRecord = withPermission(
       }>
       const lockedItem = locked[0]
       if (!lockedItem) throw new ApiError('NOT_FOUND', '销售明细不存在')
-      if (lockedItem.product_type !== '家居产品' || lockedItem.item_direction !== '购买') {
+      // #145/#153：已转走**金额**必须在**锁取得之后**用另一条语句查。
+      // `FOR UPDATE OF si` 只锁 sale_items：READ COMMITTED 下语句先取快照再等锁，唤醒后
+      // EvalPlanQual 只刷新 si 自身的行版本，转出行聚合仍是旧快照。
+      // #154：已提货件数不再在这里聚合——它就在被锁的 si 行上（picked_up_quantity），
+      // EvalPlanQual 会刷新；两个来源并存会在不变量破裂时让两道闸门无声分歧。
+      const consumedRows = (await tx.execute(sql`
+        SELECT si.sale_item_id,
+                   COALESCE((SELECT SUM(GREATEST(0, -out_item.received::numeric))
+                                     FROM sale_items out_item
+                                     JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id
+                                    WHERE out_item.ref_sale_item_id = si.sale_item_id
+                                      AND out_item.item_direction = '转出'
+                                      AND out_item.product_type = '家居产品'
+                                      AND conv_order.status <> '已关闭'), 0) AS converted_amount
+            FROM sale_items si
+         WHERE si.sale_item_id IN (${data.saleItemId})
+      `)) as unknown as Array<{ sale_item_id: string; converted_amount: string }>
+      const consumedById = new Map(consumedRows.map((r) => [r.sale_item_id, r]))
+      const consumed = consumedById.get(data.saleItemId)
+      lockedItem.picked_quantity = Number(lockedItem.picked_up_quantity ?? 0)
+      lockedItem.converted_amount = consumed ? consumed.converted_amount : '0'
+
+      // #145/#153：转换单换入的家居可提（与 staff createPickup 同一判据）
+      if (lockedItem.product_type !== '家居产品' || !isConvertibleEntitlementRow(lockedItem)) {
         throw new ApiError('INVALID_PARAMS', '销售明细不是可提货家居产品')
       }
       if (!['已支付', '部分支付', '已完成'].includes(lockedItem.order_status)) {
@@ -1004,8 +1150,22 @@ export const createPickupRecord = withPermission(
                updated_at = NOW()
          WHERE sale_item_id = ${data.saleItemId}
            AND product_type = '家居产品'
-           AND item_direction = '购买'
-           AND (COALESCE(picked_up_quantity, 0) + ${data.pickupQuantity}) <= quantity
+           -- #145/#153：转换单换入的家居与购买行同权。单表 UPDATE 无法 JOIN，
+           -- 用 EXISTS 保持与其它站点等价的严格性（不退化成 item_direction IN (...)）。
+           -- EXISTS 读 sale_orders 未与 si 行锁同步，不构成 TOCTOU：sale_order_type
+           -- 建单后不可变（全仓仅 INSERT 时写入，无任何 UPDATE ... SET sale_order_type）。
+           -- ⚠ 若将来出现订正订单类型的脚本，这里必须改为锁内取值。
+           AND (
+             item_direction = '购买'
+             OR (item_direction = '转入' AND EXISTS (
+               SELECT 1 FROM sale_orders o
+                WHERE o.sale_order_id = sale_items.sale_order_id
+                  AND o.sale_order_type = '转换单'
+             ))
+           )
+           -- #154：守卫看「已结算」三列之和而非单列——只看 picked_up 会把已退款/已折抵占用的额度重新放出来提货
+           AND (COALESCE(picked_up_quantity, 0) + COALESCE(refunded_quantity, 0)
+                + COALESCE(converted_quantity, 0) + ${data.pickupQuantity}) <= quantity
         RETURNING sale_item_id, sale_order_id, sku_id, product_name, quantity, picked_up_quantity,
                   inventory_composition_snapshot
       `)
@@ -1090,7 +1250,8 @@ export const createPickupRecord = withPermission(
     if (msg.startsWith('PERMISSION_DENIED:')) {
       throw err
     }
-    return { success: false, message: msg }
+    // fail-closed：同上（issue #133）
+    return { success: false, message: businessErrorMessage(err, '创建失败') }
   }
   },
 )
@@ -1101,6 +1262,12 @@ export const createPickupRecord = withPermission(
  * 关键：提货记录创建时原子累加了 sale_items.picked_up_quantity，
  * 删除必须在同事务内回退该计数（GREATEST 防越界为负），否则"可提数量"虚低。
  * pickup_records 无任何 inbound FK，无级联。
+ *
+ * #154：拆列前 picked_up_quantity 同时承载「已提货 / 已退款 / 已转换」，而这里的减法只对应
+ * 其中一种来源却作用在合计值上——删一条 3 盒的提货记录会把已被退款或折抵占用的 3 盒额度
+ * 重新放出来（quantity=10、提 3、折抵 7 → picked_up=10；删掉那条提货记录 → picked_up=7 →
+ * 顾客可以再提 3 盒，而这 3 盒的价值已折进另一张转换单）。拆列后本列只记物理提货，
+ * 等量回退即天然正确，无需任何额外条件。
  */
 export const deletePickupRecord = withPermission(
   'pickup_record:delete',
@@ -1127,7 +1294,11 @@ export const deletePickupRecord = withPermission(
         const result = await tx
           .delete(pickupRecords)
           .where(and(eq(pickupRecords.id, id), scopeCondition(session, pickupRecords.storeId)))
-        if ((result as any).count === 0) {
+        // 必须走 rowsAffected：postgres.js 的 RowList 只有 .count，裸 `.count === 0` 在
+        // driver 变更/mock 漂移时会 `undefined === 0` → 静默放行守卫，而下一句照样把
+        // picked_up_quantity 减掉 → 记录没删却减了计数，直接破坏 #154 立的
+        // 「picked_up_quantity == SUM(pickup_records)」不变量并放出可提额度。
+        if (rowsAffected(result) === 0) {
           throw new Error('PICKUP_ROW_GONE')
         }
         // 回退已提数量（不低于 0）

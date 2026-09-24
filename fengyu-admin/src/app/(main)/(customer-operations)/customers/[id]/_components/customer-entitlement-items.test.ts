@@ -83,7 +83,9 @@ describe("getCustomerVisibleSaleItems", () => {
     expect(result.map((item) => item.saleItemId)).toEqual(["SI-PAID"])
   })
 
-  it("只展示有已付未用次数的权益卡", () => {
+  // issue #122：可用次数 0 的卡（部分支付未买满次数）不再隐藏——顾客买了卡却在档案里看不到。
+  // 展示门槛改为物理剩余次数；可用次数 0 由 UI 呈现，核销限额走 service 侧独立校验。
+  it("按物理剩余次数展示权益卡，可用次数为 0 的卡不再隐藏", () => {
     const unpaidItem = makeItem({ saleItemId: "SI-UNPAID", paidSessions: 0 })
     const exhaustedItem = makeItem({ saleItemId: "SI-EXHAUSTED", remainingSessions: 0 })
     const paidUsedUpItem = makeItem({
@@ -103,7 +105,11 @@ describe("getCustomerVisibleSaleItems", () => {
       makeOrder({ items: [unpaidItem, exhaustedItem, paidUsedUpItem, paidUnusedItem] }),
     ])
 
-    expect(result.map((item) => item.saleItemId)).toEqual(["SI-PAID-UNUSED"])
+    // 仍有剩余次数的都展示；只有 remainingSessions=0（已用完）的卡被排除
+    expect(result.map((item) => item.saleItemId).sort()).toEqual(
+      ["SI-PAID-UNUSED", "SI-PAID-USED-UP", "SI-UNPAID"].sort(),
+    )
+    expect(result.map((item) => item.saleItemId)).not.toContain("SI-EXHAUSTED")
   })
 
   it("排除具有余次数据的家居产品", () => {

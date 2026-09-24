@@ -5,27 +5,109 @@ import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import type { DashboardStats } from "@/lib/types"
 import { hasUiCapability } from "@/lib/permission-contract"
+import {
+  FLAT_TEXT,
+  NA_TEXT,
+  NOT_TURNED_TEXT,
+  TURNED_POSITIVE_TEXT,
+  deltaScaled,
+  deltaTone,
+  isFlatAfterRounding,
+  resolveDeltaDisplay,
+} from "@/lib/delta-display"
+import { cn } from "@/lib/utils"
 
-function TrendArrow({ current, previous }: { current: number; previous: number }) {
-  const diff = current - previous
-  const pct = previous > 0 ? Math.round(Math.abs(diff) / previous * 100) : 0
-  if (diff > 0) {
+/** 首页看板的展示精度：整数百分比。数据中心用 2 位小数，**两处阈值不同，别互抄**。 */
+const TREND_DIGITS = 0
+
+const ARROW_UP = <path d="M12 19V5M5 12l7-7 7 7" />
+const ARROW_DOWN = <path d="M12 5v14M5 12l7 7 7-7" />
+
+/**
+ * 「vs 昨日」涨跌徽章（#315）。
+ *
+ * 旧实现 `previous > 0 ? Math.round(Math.abs(diff)/previous*100) : 0` 有两个缺陷：
+ * 基期 ≤ 0 时幅度被**吞成 0** 却仍走 `diff` 的绿/红分支，渲染出「↑ 0%」这种
+ * 「涨了、涨幅是 0」的自相矛盾展示；而昨日业绩**真的会 ≤ 0**——
+ * `yesterdayRevenue` 的 SQL 把退款以负数计入且无 `GREATEST` 夹底，
+ * 生产实测 1020 个门店日里 67 天非正（6.6%，最差 −22,800），
+ * 即每 15 个门店日就有 1 个门店负责人第二天看到「↑ 0%」。
+ *
+ * 现在与数据中心共用 `resolveDeltaDisplay`（决策 1 全站统一），基期为负时改出
+ * 「由负转正」/「未转正」，零基期出 '--'，并按决策 3 把舍入后为 0 的并入「持平」。
+ *
+ * 导出仅为可测——该组件此前零覆盖，直接原因就是它没被导出。
+ *
+ * ## `baseLabel`：把决策 1 吃掉的信息补回来
+ *
+ * 「今日客流」是 `COUNT(DISTINCT client_user_id)`（`actions/dashboard.ts`），**恒 ≥ 0，
+ * 只会零基期、不会负基期**。生产实测：1993 个门店日里 231 个客流为 0（**11.6%**）。
+ * 决策 1 要求 `base === 0` → `--` 灰，于是「昨日 0 人 → 今日 5 人」从绿色箭头变成一根灰杠——
+ * 这是拍板的既定结果不是回归，但信息损失面比 issue 里估计的大。
+ *
+ * 所以给徽章挂 hover 露出基期原值（「昨日 0 人」），把「为什么算不出」说清楚。
+ * 与 #310 给 DeltaBadge 挂基期区间是同一个思路，不与决策 1 冲突。
+ */
+export function TrendArrow({
+  current,
+  previous,
+  baseLabel,
+}: {
+  current: number
+  previous: number
+  /** 基期原值的展示文案（如「0 人」/「¥1,200」）。由调用点按卡片单位格式化后传入。 */
+  baseLabel?: string
+}) {
+  const display = resolveDeltaDisplay(current, previous)
+  const tone = deltaTone(display, TREND_DIGITS)
+  const title = baseLabel === undefined ? undefined : `昨日 ${baseLabel}`
+
+  if (display.kind === "pct" && !isFlatAfterRounding(display.value, TREND_DIGITS)) {
+    // 走 deltaScaled 而非自行 Math.round —— 那两者在 -0.5 处分叉
+    // （Math.round(-0.5) === -0），会让「不算持平」的值渲染成 0%，把缺陷造回来。
+    const pct = Math.abs(deltaScaled(display.value, TREND_DIGITS))
+    const up = tone === "positive"
     return (
-      <span className="text-xs text-[#3D8A5A] flex items-center gap-0.5">
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 19V5M5 12l7-7 7 7" /></svg>
+      <span
+        className={cn("text-xs flex items-center gap-0.5", up ? "text-[#3D8A5A]" : "text-[#D94040]")}
+        title={title}
+      >
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+          {up ? ARROW_UP : ARROW_DOWN}
+        </svg>
         {pct}%
       </span>
     )
   }
-  if (diff < 0) {
+
+  // pct 但舍入为 0（决策 3）、以及 na —— 都没有方向可言，走灰色无箭头。
+  if (display.kind === "pct" || display.kind === "na") {
     return (
-      <span className="text-xs text-[#D94040] flex items-center gap-0.5">
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 5v14M5 12l7 7 7-7" /></svg>
-        {pct}%
+      <span className="text-xs text-[#999999]" title={title}>
+        {display.kind === "na" ? NA_TEXT : FLAT_TEXT}
       </span>
     )
   }
-  return <span className="text-xs text-[#999999]">持平</span>
+
+  // 负基期两态：保留箭头传达方向，但文案说的是「转正与否」而不是一个假的百分比。
+  //
+  // ⚠️ 这里是 if 链收尾，不像 deltaTone/formatDelta 的 switch 那样有 TS 穷尽性检查兜底。
+  // 下面这行断言把漏网的 kind 变成**编译错误**：若将来给 DeltaDisplay 加第 5 个成员却忘了
+  // 在本组件处理，`display` 就不再是 never，TS2322 会当场报错——
+  // 否则新态会静默渲染成红色「未转正」，零告警。
+  const exhaustive: "turnedPositive" | "notTurned" = display.kind
+  const turned = exhaustive === "turnedPositive"
+  return (
+    <span
+      className={cn("text-xs flex items-center gap-0.5", turned ? "text-[#3D8A5A]" : "text-[#D94040]")}
+      title={title}
+    >
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+        {turned ? ARROW_UP : ARROW_DOWN}
+      </svg>
+      {turned ? TURNED_POSITIVE_TEXT : NOT_TURNED_TEXT}
+    </span>
+  )
 }
 
 interface Props {
@@ -36,10 +118,14 @@ interface Props {
 /**
  * 业务角色看板：manager / finance
  *
- * 2026-04-26 sale-order-domain-refactor 关键展示口径：
+ * 关键展示口径（以 actions/dashboard.ts 的 SQL 为准，本段是摘要）：
  *   - "今日客流" = service_orders[已完成] DISTINCT client_user_id（与 metrics §"客流"对齐）
- *   - "今日业绩" = SUM(received - refunded_amount)，已扣退款（audit-17 P0-17-01/02 修复）
- *   - "今日已退款"独立展示（refunded_amount > 0 时才点亮，避免噪音）
+ *   - "今日业绩" = SUM(sale_order_performance_events.amount)，含首次支付/回款/退款
+ *     （退款为负、天然冲销）；**不再**是 SUM(received - refunded_amount)
+ *     ——2026-08 现金流口径修订起该描述即失效，2026-09-14 随 #140 一并订正
+ *   - "今日已退款"独立展示（> 0 时才点亮，避免噪音）
+ *   - ⚠ 日期口径统一为业绩归属日期 performance_date（#140），
+ *     业绩与实付/退款同口径；「今日实付」不再与银行流水逐日对齐
  */
 function BusinessDashboard({ stats, actions }: Props) {
   const canAccess = (action: string | readonly string[]) =>
@@ -111,7 +197,7 @@ function BusinessDashboard({ stats, actions }: Props) {
                 <p className="mt-2 text-2xl font-bold text-[var(--foreground)]">{card.format(card.value)}</p>
                 {card.prev !== null && (
                   <div className="mt-1 flex items-center gap-1 text-xs text-[#999999]">
-                    vs 昨日 <TrendArrow current={card.value} previous={card.prev} />
+                    vs 昨日 <TrendArrow current={card.value} previous={card.prev} baseLabel={card.format(card.prev)} />
                   </div>
                 )}
                 {card.hint && (

@@ -13,6 +13,7 @@ import { scopeCondition, isInScope } from '@/lib/permissions'
 import { withPermission } from '@/lib/with-permission'
 import { parseCardFilters } from '@/lib/list-filters'
 import { nowTs } from '@/lib/db-time'
+import { homeDeductible } from '@/lib/home-product'
 import {
   offsetPageResult,
   resolveExportOffsetPage,
@@ -24,6 +25,7 @@ import { computeItemOverpayRemainders, type RefundSourceItem } from '@/lib/refun
 import { storeInMarketCondition } from '@/lib/market-store-sql'
 import { getPointsToYuanRate, getPointsDeductionMaxRate } from '@/lib/system-config'
 import { classifySaleOrderDocumentType } from '@/lib/document-type'
+import { resolvePaging } from '@/lib/paging'
 
 // ============================================================================
 // 管理端卡包列表（/cards 页面）
@@ -66,7 +68,7 @@ export interface AdminCard {
   remainingSessions: number | null
   /** 已付次数（按付款比例 floor） */
   paidSessions: number | null
-  /** 可用次数（已付未用）；paid_sessions 为 NULL 时退回物理剩余，否则 max(paid − used, 0)；列表仅含 paid_sessions>0 的卡 */
+  /** 可用次数（已付未用）；paid_sessions 为 NULL 时退回物理剩余，否则 max(paid − used, 0)；可用 0 的欠款卡也在列表内（issue #122） */
   paidUnusedSessions: number | null
   /** 可退的行级多收余数金额。 */
   remainingRemainder: number
@@ -99,12 +101,23 @@ function computeCardRemainingRemainder(item: {
   paidSessions: number | null
   unitRealPrice: string | number | null
   received: string | number | null
+  /**
+   * #182：已被转换单折走的金额。折抵会带走 overpay 余数且不动 remaining_sessions，
+   * 不传这一项，卡包/顾客持卡/导出的「剩余零头」列会继续展示已经被折走的钱。
+   * 调用方未提供时按 0（旧行为），但列表类查询都应带上转出行聚合。
+   */
+  convertedAmount?: string | number | null
+  /** #182：已折走的**次数**。必须先按次数扣减再加金额，否则与 (sc − rem) 双计。 */
+  convertedQuantity?: number | null
 }): number {
   const source: RefundSourceItem = {
     sale_item_id: item.saleItemId,
     sku_id: null,
     product_name: null,
     product_type: '疗程卡',
+    // 疗程卡不走家居数量链路，已退款件数恒 0（#154 起 RefundSourceItem 要求显式给出）；
+    // converted_quantity 不在这里给 0 —— 下方用转出行聚合值，疗程卡的已转走次数必须算进去。
+    refunded_quantity: 0,
     session_count: item.sessionCount,
     remaining_sessions: item.remainingSessions,
     paid_sessions: item.paidSessions,
@@ -113,6 +126,9 @@ function computeCardRemainingRemainder(item: {
     unit_real_price: item.unitRealPrice ?? 0,
     received: item.received,
     picked_up_quantity: 0,
+    picked_quantity: null,
+    converted_amount: item.convertedAmount ?? null,
+    converted_quantity: item.convertedQuantity ?? 0,
     sales_category: null,
     service_fee: null,
   }
@@ -209,9 +225,11 @@ function buildCardBaseConditions(
     inArray(saleOrders.status, [...CARD_ENTITLEMENT_ORDER_STATUSES]),
     eq(saleItems.productType, '疗程卡'),
     isNotNull(saleItems.remainingSessions),
-    // #4：过滤完全未付款的欠款卡（paid_sessions=0/NULL）——可用卡列表只展示有已付次数的卡，
-    // 避免欠款卡误显「剩余 0 / 已用完」红色进度条（历史 NULL 行同样视作未付款排除）
-    sql`${saleItems.paidSessions} > 0`,
+    // issue #122：移除原本的 `paid_sessions > 0` —— 它会把部分支付的欠款卡整行隐藏，
+    // 顾客买了卡却在卡包里查无此卡。基础集不再按次数过滤（"是否已用完"交给 status 分支，
+    // exhausted 要的正是 remaining_sessions = 0，基础集若先排掉它会让该筛选恒空、卡详情 404）。
+    // 可用次数仍由 paidUnusedSessionsExpr 算出并展示为 0，核销限额走 service 侧独立校验。
+    // 已退款的卡由 paid_sessions 口径在 service 侧挡住，不在本列表口径内。
     // scope 过滤（admin 返回 undefined；非 admin 按 scopeStoreIds）
     scopeCondition(session, saleItems.storeId),
   ]
@@ -219,7 +237,7 @@ function buildCardBaseConditions(
 
 /**
  * 构建卡包 WHERE 条件（列表分页与导出共用，单一真源防漂移）。
- * 基础过滤：权益方向 + 有效订单状态 + 疗程卡 + 余次不为空 + 已付次数>0 + scope。
+ * 基础过滤：权益方向 + 有效订单状态 + 疗程卡 + 余次不为空 + scope（不按次数过滤，见 issue #122）。
  * market 分支用子查询（不预查节点类型），故为同步函数。
  */
 function buildCardConditions(
@@ -286,9 +304,12 @@ function buildCardConditions(
 export const getCardsPaginated = withPermission(
   'sale_item:list',
   async (session, filters: CardFilters = {}): Promise<PaginatedCards> => {
-  const page = Math.max(1, filters.page || 1)
-  const pageSize = [10, 20, 50].includes(filters.pageSize ?? 0) ? filters.pageSize! : 20
-  const offset = (page - 1) * pageSize
+  const { page, pageSize, offset } = resolvePaging({
+    page: filters.page,
+    pageSize: filters.pageSize,
+    defaultPageSize: 20,
+    allowedPageSizes: [10, 20, 50],
+  })
 
   const whereClause = and(...buildCardConditions(session, filters))
 
@@ -323,6 +344,10 @@ export const getCardsPaginated = withPermission(
       paidUnusedSessions: paidUnusedSessionsExpr,
       unitRealPrice: saleItems.unitRealPrice,
       received: saleItems.received,
+      // #182：折抵会带走 overpay 余数，「剩余零头」列必须扣掉已转走金额与次数，
+      // 否则展示的是已被折走的钱（次数不先扣会与 (sc − rem) 双计）
+      convertedQuantity: sql<number>`COALESCE((SELECT SUM(out_item.quantity) FROM sale_items out_item JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id WHERE out_item.ref_sale_item_id = ${saleItems.saleItemId} AND out_item.item_direction = '转出' AND conv_order.status <> '已关闭'), 0)::int`,
+      convertedAmount: sql<string>`COALESCE((SELECT SUM(GREATEST(0, -out_item.received::numeric)) FROM sale_items out_item JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id WHERE out_item.ref_sale_item_id = ${saleItems.saleItemId} AND out_item.item_direction = '转出' AND conv_order.status <> '已关闭'), 0)`,
       quantity: saleItems.quantity,
       expireDate: saleItems.expireDate,
       paidAt: saleOrders.paidAt,
@@ -341,7 +366,11 @@ export const getCardsPaginated = withPermission(
     .leftJoin(productCategories, eq(productSkus.categoryId, productCategories.categoryId))
     .where(whereClause)
     // 例外：业务时间优先（支付时间优于"最近编辑"）
-    .orderBy(desc(saleOrders.paidAt), desc(saleItems.createdAt))
+    // ⚠️ 末位 tie-break 用 **asc** 而非 desc —— 必须与导出侧（本文件 `exportCards`）
+    // 的 `asc(saleItems.saleItemId)` 同向，否则 paid_at + created_at 都并列的那几行，
+    // 页面上的顺序与导出 CSV 相反，对账逐行比对会在每个并列组上错位。
+    // 这也是本仓既有约定（employees.ts / coupons.ts 的 `desc, desc, asc(pk)`）。
+    .orderBy(desc(saleOrders.paidAt), desc(saleItems.createdAt), asc(saleItems.saleItemId))
     .limit(pageSize)
     .offset(offset)
 
@@ -357,7 +386,7 @@ export const getCardsPaginated = withPermission(
       remainingSessions: r.remainingSessions ?? null,
       paidSessions: r.paidSessions ?? null,
       paidUnusedSessions: r.paidUnusedSessions ?? null,
-      remainingRemainder: computeCardRemainingRemainder(r),
+      remainingRemainder: computeCardRemainingRemainder({ ...r, convertedQuantity: Number(r.convertedQuantity ?? 0) }),
       quantity: r.quantity ?? 1,
       expireDate: r.expireDate ?? null,
       paidAt: r.paidAt?.toISOString() ?? null,
@@ -466,6 +495,10 @@ export const exportCards = withPermission(
         unitRealPrice: saleItems.unitRealPrice,
         saleAmount: saleItems.saleAmount,
         received: saleItems.received,
+        // #182：折抵会带走 overpay 余数，「剩余零头」列必须扣掉已转走金额，否则展示的是已被折走的钱
+        // #182：次数也要，先按次数扣减再加金额，否则与 (sc − rem) 双计
+        convertedQuantity: sql<number>`COALESCE((SELECT SUM(out_item.quantity) FROM sale_items out_item JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id WHERE out_item.ref_sale_item_id = ${saleItems.saleItemId} AND out_item.item_direction = '转出' AND conv_order.status <> '已关闭'), 0)::int`,
+        convertedAmount: sql<string>`COALESCE((SELECT SUM(GREATEST(0, -out_item.received::numeric)) FROM sale_items out_item JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id WHERE out_item.ref_sale_item_id = ${saleItems.saleItemId} AND out_item.item_direction = '转出' AND conv_order.status <> '已关闭'), 0)`,
         productKind: productCategories.productKind,
         categoryName: productCategories.categoryName,
         storeName: stores.storeName,
@@ -506,7 +539,7 @@ export const exportCards = withPermission(
         remaining: r.paidUnusedSessions ?? 0,
         paidSessions: r.paidSessions ?? 0,
         totalSessions: sessionCount,
-        remainingRemainder: computeCardRemainingRemainder(r),
+        remainingRemainder: computeCardRemainingRemainder({ ...r, convertedQuantity: Number(r.convertedQuantity ?? 0) }),
         unitPrice: numOrNull(r.unitPrice),
         unitRealPrice: numOrNull(r.unitRealPrice),
         saleAmount: numOrNull(r.saleAmount),
@@ -710,8 +743,12 @@ export const getCardTransactions = withPermission(
  * 折抵对象（2026-05-21 单品合并后放开）：
  *   疗程卡 (product_type='疗程卡') AND remaining_sessions > 0
  *   —— 原"体验卡单品"已并入疗程卡（session_count=1），不再要求 is_experience。
+ *   家居产品 (product_type='家居产品')：可折抵件数 > 0（#145/#153 收紧）
+ *   —— 以「剩余已付金额 = 行实收 − 已提货金额 − 已转走金额」为基准，件数 = floor(剩余已付 / 单价)、
+ *      受物理未结算件数封顶；金额 = 剩余已付（含不足一整件的余数）。
+ *      寄存单与 0 元赠品行无「实收」可言，维持 单价 × 未结算件数。口径见 lib/home-product.ts::homeDeductible。
  *
- * 不包含：充值卡（走 prepaid_cards 账户，不在 sale_items 行）、家居产品（不在业务口径内）
+ * 不包含：充值卡（走 prepaid_cards 账户，不在 sale_items 行）
  */
 export interface HeldCardCandidate {
   saleItemId: string
@@ -744,7 +781,7 @@ export interface HeldCardCandidate {
   saleAmount: string
   received: string
   pendingReceived: string
-  /** 折抵金额 = unitRealPrice × remainingSessions */
+  /** 折抵金额：疗程卡 = unitRealPrice × remainingSessions；家居产品 = unitRealPrice × remainingQty（未提货数量，#125） */
   deductibleAmount: string
   expireDate: string | null
   remark: string | null
@@ -793,6 +830,13 @@ export const getCustomerHeldCards = withPermission(
       paidSessions: saleItems.paidSessions,
       quantity: saleItems.quantity,
       pickedUpQuantity: saleItems.pickedUpQuantity,
+      refundedQuantity: saleItems.refundedQuantity,
+      convertedQuantity: saleItems.convertedQuantity,
+      // #145/#153 家居折抵额度的**金额**项（件数自 #154 起直读上面三列，不再聚合 pickup_records）。
+      // 金额仍须从转出行 received 聚合：折 4 件可能带走 ¥450 而非 ¥400（与 staff LATERAL 同源）。
+      // #182 **不限 out_item.product_type**：疗程卡的已转走金额同样要扣，
+      // 纯余数转出行（quantity=0）也必须计入，限类型会让同一笔已付被折两遍。
+      homeConvertedAmount: sql`COALESCE((SELECT SUM(GREATEST(0, -out_item.received::numeric)) FROM sale_items out_item JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id WHERE out_item.ref_sale_item_id = ${saleItems.saleItemId} AND out_item.item_direction = '转出' AND conv_order.status <> '已关闭'), 0)`,
       unitPrice: saleItems.unitPrice,
       unitRealPrice: saleItems.unitRealPrice,
       saleAmount: saleItems.saleAmount,
@@ -814,21 +858,81 @@ export const getCustomerHeldCards = withPermission(
         eq(saleItems.storeId, storeId),
         eq(saleOrders.clientUserId, clientUserId),
         cardEntitlementDirectionCondition(),
-        or(eq(saleOrders.status, '已支付'), eq(saleOrders.status, '已完成')),
-        // 2026-05-21 单品合并：折抵对象统一为 疗程卡 + 剩余次数>0（含原"体验卡单品"=1 次卡）
-        eq(saleItems.productType, '疗程卡'),
-        sql`COALESCE(${saleItems.remainingSessions}, 0) > 0`,
+        // 2026-09-14 #125 甲方拍板：订单级「部分支付」也可折抵；与卡包列表共用同一组状态，
+        // 疗程卡与家居同时放开，欠款按方案 A 留原单
+        inArray(saleOrders.status, [...CARD_ENTITLEMENT_ORDER_STATUSES]),
+        // 2026-05-21 单品合并：折抵对象统一为疗程卡（含原"体验卡单品"=1 次卡）；#125 引入家居折抵。
+        // #182 改**金额口径**：疗程卡与家居统一按「剩余已付」放行，只要还有已付的钱就能折，
+        // 不再要求凑满一整次/一整件——件数门槛曾把「1 件 ¥680 只付 ¥594」整行剔除
+        // （prod 3 行 ¥814），顾客的钱既折不掉也提不出。与 staff customerHeldCards 的 hp LATERAL 同源。
+        inArray(saleItems.productType, ['疗程卡', '家居产品']),
+        // 寄存单 / 0 元赠品行没有「实收」：它们的折抵额 = 单价 × 权益，而赠品单价为 0 → 恒 0，
+        // 用金额门会把整行**静默剔除**（旧闸门 remaining_sessions > 0 是放行的）。故这两类按
+        // **权益**放行、其余按**金额**放行；createConversionOrder 的锁内闸门必须逐字同口径。
+        // #154：家居的「未结算件数」必须减三列之和。只减 picked_up 会让整行退款/整行折抵过的
+        // 寄存单与 0 元赠品家居行重新通过本闸门、在候选列表里复活；「已提货金额」的件数因子
+        // 同理直读 picked_up_quantity 列（#154 保证它恒等于 SUM(pickup_records)）。
+        sql`(
+          CASE WHEN ${saleOrders.saleOrderType} = '寄存单' OR ${saleItems.saleAmount} <= 0
+               THEN (
+                 CASE WHEN ${saleItems.productType} = '疗程卡'
+                      THEN COALESCE(${saleItems.remainingSessions}, 0)
+                      ELSE GREATEST(0, ${saleItems.quantity} - (COALESCE(${saleItems.pickedUpQuantity}, 0) + COALESCE(${saleItems.refundedQuantity}, 0) + COALESCE(${saleItems.convertedQuantity}, 0)))
+                 END
+               )
+               ELSE GREATEST(0, ${saleItems.received}::numeric
+                 - CASE WHEN ${saleItems.productType} = '疗程卡'
+                        THEN GREATEST(0, COALESCE(${saleItems.sessionCount}, 0) - COALESCE(${saleItems.remainingSessions}, 0))::numeric * ${saleItems.unitRealPrice}::numeric
+                        ELSE COALESCE(${saleItems.pickedUpQuantity}, 0) * ${saleItems.unitRealPrice}::numeric
+                   END
+                 - COALESCE((SELECT SUM(GREATEST(0, -out_item.received::numeric)) FROM sale_items out_item JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id WHERE out_item.ref_sale_item_id = ${saleItems.saleItemId} AND out_item.item_direction = '转出' AND conv_order.status <> '已关闭'), 0)
+               )
+          END
+        ) > 0`,
         // 在途退款冻结：原订单存在 '待审批' 退款时排除整单的卡（与 staff customerHeldCards 对齐）
         sql`NOT EXISTS (SELECT 1 FROM sale_order_payments sop WHERE sop.sale_order_id = ${saleItems.saleOrderId} AND sop.change_type = '退款' AND sop.status = '待审批')`,
         // 审批后隐藏已退完的卡：仅当订单存在已审批退款时按 paid_sessions 有效余量判定（不影响无退款的分期卡）
-        sql`(NOT EXISTS (SELECT 1 FROM sale_order_payments sop WHERE sop.sale_order_id = ${saleItems.saleOrderId} AND sop.change_type = '退款' AND sop.status = '已支付') OR ${saleItems.paidSessions} IS NULL OR ${saleItems.paidSessions} > (${saleItems.sessionCount} - ${saleItems.remainingSessions}))`,
+        // 家居产品不适用：已退数量落 refunded_quantity（#154 拆列前并入 picked_up_quantity），
+        // 而未结算件数 = quantity − 已提货 − 已退款 − 已转换，天然已扣除
+        sql`(${saleItems.productType} <> '疗程卡' OR NOT EXISTS (SELECT 1 FROM sale_order_payments sop WHERE sop.sale_order_id = ${saleItems.saleOrderId} AND sop.change_type = '退款' AND sop.status = '已支付') OR ${saleItems.paidSessions} IS NULL OR ${saleItems.paidSessions} > (${saleItems.sessionCount} - ${saleItems.remainingSessions}))`,
       ),
     )
 
-  // 单品合并后 WHERE 仅返回疗程卡行，统一按 remaining_sessions 折抵
+  // #182：折抵 = 整行退出。数量带走该行全部剩余权益（疗程卡剩余次数 / 家居未结算件数），
+  // 金额只折「剩余已付」。注意**件数与提货口径就此分家**：提货仍要按 floor(剩余已付/单价)
+  // 一件件付满才放行，而折抵把物理件与已付金额一并清空，守恒仍成立
+  // （折后可提 = min(0, …) = 0）。homeDeductible 的 quantity 是提货口径，这里只取它的 amount。
   return rows.map((r) => {
-    const unit = Number(r.unitRealPrice)
+    const isHomeProduct = r.productType === '家居产品'
     const remSess = r.remainingSessions ?? 0
+    const home = homeDeductible({
+      saleOrderType: r.saleOrderType,
+      quantity: r.quantity ?? 0,
+      pickedUpQuantity: r.pickedUpQuantity ?? 0,
+      refundedQuantity: r.refundedQuantity ?? 0,
+      convertedQuantity: r.convertedQuantity ?? 0,
+      convertedAmount: r.homeConvertedAmount as string | number | null,
+      saleAmount: r.saleAmount,
+      received: r.received,
+      unitRealPrice: r.unitRealPrice,
+    })
+    // 全程按「分」整除，与 staff 侧 numeric 运算对齐（浮点直除会与 PG 分叉）
+    const toCents = (v: unknown) => Math.round((Number(v ?? 0) || 0) * 100)
+    const isDepositOrGift = r.saleOrderType === '寄存单' || Number(r.saleAmount ?? 0) <= 0
+    const cardDeliveredCents = Math.max(0, (r.sessionCount ?? 0) - remSess) * toCents(r.unitRealPrice)
+    const cardRemainingPaidCents = Math.max(
+      0,
+      toCents(r.received) - cardDeliveredCents - toCents(r.homeConvertedAmount),
+    )
+    const cardAmount = isDepositOrGift
+      ? (toCents(r.unitRealPrice) * remSess) / 100
+      : cardRemainingPaidCents / 100
+    // #154：家居「未结算件数」= quantity − (已提货 + 已退款 + 已转换)。只减 picked_up 会把
+    // 已退款/已转换过的件数当成还能折走，折抵会撞 chk_sale_item_settled_le_quantity 或超卖。
+    const remainingQty = isHomeProduct
+      ? Math.max(0, (r.quantity ?? 0)
+          - ((r.pickedUpQuantity ?? 0) + (r.refundedQuantity ?? 0) + (r.convertedQuantity ?? 0)))
+      : remSess
     return {
       saleItemId: r.saleItemId,
       saleItemGroupId: r.saleItemGroupId ?? null,
@@ -845,19 +949,20 @@ export const getCustomerHeldCards = withPermission(
       itemDirection: r.itemDirection,
       refSaleItemId: r.refSaleItemId ?? null,
       productName: r.productName,
-      productType: '疗程卡' as const,
-      unit: r.unit ?? '次',
+      productType: isHomeProduct ? ('家居产品' as const) : ('疗程卡' as const),
+      unit: r.unit ?? (isHomeProduct ? '盒' : '次'),
       quantity: r.quantity ?? 1,
       sessionCount: r.sessionCount ?? null,
-      remainingSessions: remSess,
+      remainingSessions: isHomeProduct ? null : remSess,
       paidSessions: r.paidSessions ?? null,
-      remainingQty: null,
+      // #182：疗程卡也给出「可折抵数量」（= 注销的次数），与 staff remaining_quantity 对齐
+      remainingQty,
       unitPrice: r.unitPrice,
       unitRealPrice: r.unitRealPrice,
       saleAmount: r.saleAmount,
       received: r.received,
       pendingReceived: r.pendingReceived,
-      deductibleAmount: (unit * remSess).toFixed(2),
+      deductibleAmount: (isHomeProduct ? home.amount : cardAmount).toFixed(2),
       expireDate: r.expireDate ?? null,
       remark: r.remark ?? null,
       salesCategory: r.salesCategory ?? null,
@@ -880,6 +985,7 @@ export const getCustomerHeldCards = withPermission(
 import { loadRechargeConfig, matchTier, type RechargeTier, type RechargeConfig } from '@/lib/recharge'
 import { logOperation } from '@/lib/operation-log'
 import { ApiError } from '@/lib/api-error'
+import { businessErrorMessage } from '@/lib/action-error'
 import { revalidatePath } from 'next/cache'
 
 /**
@@ -1040,7 +1146,7 @@ export const createRechargeOrder = withPermission(
       const matched = matchTier(data.faceValue, cfg)
       payAmount = matched.payAmount
     } catch (err: any) {
-      return { success: false, message: (err?.message || '档位匹配失败').replace(/^[A-Z_]+:\s*/, '') }
+      return { success: false, message: businessErrorMessage(err, '档位匹配失败') }
     }
 
     // 顾客 + market_name 快照；documentType 在创建事务内按历史达标次数计算。
@@ -1132,8 +1238,8 @@ export const createRechargeOrder = withPermission(
         return id
       })
     } catch (err: any) {
-      const msg = err?.message || '充值订单创建失败'
-      return { success: false, message: msg.replace(/^[A-Z_]+:\s*/, '') }
+      // fail-closed：非白名单前缀的原始 PG 报错（SQL 片段 / 约束名）绝不回传给前端 toast（issue #133）
+      return { success: false, message: businessErrorMessage(err, '充值订单创建失败') }
     }
 
     await logOperation(session, 'sale_order.create_recharge', 'sale_order', saleOrderId, {

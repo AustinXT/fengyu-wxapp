@@ -170,9 +170,13 @@ describe('audit-CC5 P0：admin actions/ 范围 0 处非白名单裸 throw（除�
       'EMPLOYEE_ROW_GONE', // employees.ts: 行已被删 → NOT_FOUND
       'PICKUP_ROW_GONE', // pickup-records.ts: 行已被删 → NOT_FOUND
       'PAYMENT_NOT_FOUND', // allocations.ts: savePayment 回款状态被并发改 → 外层 catch 转 {success:false}（f2002074 按回款逐笔分配引入）
+      'ORDER_ROW_GONE', // allocations.ts: 取订单行锁时 0 行（订单已不存在）→ 外层 catch 转 {success:false}「该订单已不存在，请刷新后重试」（#148 锁序修复引入）
+      'ORDER_HAS_REFUND_FLOW', // orders.ts: deleteOrder 锁内复检到退款流水 → 外层 catch 转 {success:false}「订单存在退款流水，不可删除」（#148：该复检是新增订单锁不与退款审批成环的前提）
       'SKILL_TAG_DUP_NAME', // skill-tags.ts: 改名撞唯一约束 23505 → 外层 catch 转 {success:false}「该标签名称已存在」
       'SKILL_TAG_OPTIMISTIC_MISS', // skill-tags.ts: 改名字典行乐观锁 rowCount=0 → 外层 catch 转 {success:false}「数据已被其他人修改，请刷新后重试」
       'SKILL_TAG_GONE', // skill-tags.ts: 删除时行已被并发删 → 外层 catch 转 {success:false}「标签不存在」
+      'ORG_OWNERSHIP_CONFLICT', // org.ts: 改挂后子树员工门店/组织归属不自洽 → 外层 catch 转 {success:false}「请先调整他们的归属：<姓名>」（#318：#259 的另一侧守卫）
+      'LAST_ACTIVE_ADMIN', // permissions.ts: revokeRole 删完复核发现系统零活跃超管 → 外层 .catch 转 {success:false}「系统至少需保留 1 个活跃 admin」（#318：判据是「先删再数」，拒绝必须回滚，所以只能抛）
     ]
     const violationCount = stdout
       .split('\n')

@@ -19,6 +19,7 @@ import { PreserveListContextLink } from "@/components/return-context";
 import { filterValidSkillValues } from "@/lib/list-filters";
 import { ExportButton } from "@/components/ui/export-button";
 import SkillTagManagementDialog from "./skill-tag-management-dialog";
+import { normalizePage } from "@/lib/paging";
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50];
 
@@ -34,15 +35,14 @@ export default function EmployeesPage({
   skillTags,
   canCreate,
   canManageSkillTags,
-  canDeleteSkillTags,
 }: {
   employees: Employee[];
   total: number;
   orgNodes: OrgNode[];
   skillTags: SkillTag[];
   canCreate: boolean;
+  /** 仅系统管理员：标签的新增/编辑/删除同一口径，见 page.tsx 与 skill-tags.ts（#211） */
   canManageSkillTags: boolean;
-  canDeleteSkillTags: boolean;
 }) {
   const [skillTagDialogOpen, setSkillTagDialogOpen] = useState(false);
   const { get, set, setMany } = useUrlFilters();
@@ -84,7 +84,7 @@ export default function EmployeesPage({
     const arr = raw ? raw.split(",").map((s) => s.trim()).filter(Boolean) : [];
     return filterValidSkillValues(arr, validSkillNames) ?? [];
   }, [get, validSkillNames]);
-  const currentPage = Math.max(1, Number(get("page", "1")) || 1);
+  const currentPage = normalizePage(get("page", "1"));
   const pageSize = PAGE_SIZE_OPTIONS.includes(Number(get("size"))) ? Number(get("size")) : 20;
 
   const columns: Column<Employee>[] = [
@@ -257,7 +257,6 @@ export default function EmployeesPage({
           onOpenChange={setSkillTagDialogOpen}
           skillTags={skillTags}
           canManage={canManageSkillTags}
-          canDelete={canDeleteSkillTags}
         />
       )}
     </div>

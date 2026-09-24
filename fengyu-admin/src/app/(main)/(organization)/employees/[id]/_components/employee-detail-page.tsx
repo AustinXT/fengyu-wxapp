@@ -12,6 +12,7 @@ import { Textarea } from "@/components/ui/textarea"
 import { Select } from "@/components/ui/select"
 import { SkillSelect } from "@/components/ui/skill-select"
 import { OrgTreeSelect } from "@/components/ui/org-tree-select"
+import { EmployeeOwnershipFields } from "@/components/employee-ownership-fields"
 import { ImageUpload, toHttpUrl } from "@/components/ui/image-upload"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -22,7 +23,7 @@ import { Separator } from "@/components/ui/separator"
 import { formatDate, buildOrgPath, findAncestorMarketId } from "@/lib/utils"
 import { shanghaiToday } from "@/lib/datetime"
 import { formatPhoneSafe } from "@/lib/format"
-import { actionErrorMessage } from "@/lib/action-error"
+import { actionErrorMessage, actionErrorType } from "@/lib/action-error"
 import { updateEmployee, deleteEmployee } from "@/actions/employees"
 import { DangerZoneDelete } from "@/components/delete-action"
 import { assignRole, revokeRole } from "@/actions/permissions"
@@ -200,7 +201,17 @@ export default function EmployeeDetailPage({
         if (result.message.includes('已被其他人修改')) router.refresh()
         return
       }
-      toast.success("保存成功")
+      /**
+       * 必须显示 `result.message` 而不是硬编码「保存成功」（#249）。
+       *
+       * 服务端在**发现且允许披露**旧店绑定时，会在 message 里附上角色清单
+       * （「仍绑定在原门店，请联系有权限的管理员复核是保留兼任还是改绑」）；
+       * 旧店无绑定时只回普通成功文案，旧店超出操作者 scope 时回不含角色名的降级提示 ——
+       * 三种都靠这一条 `result.message` 送达。硬编码文案会把它们整个吞掉，
+       * 而「操作者当场看到」正是「调店不自动搬迁角色」这个决定的配套前提
+       * （配套的权限页入口/一键迁移见 #304）。
+       */
+      toast.success(result.message)
       setIsEditing(false)
       router.refresh()
     } catch (err) {
@@ -261,9 +272,9 @@ export default function EmployeeDetailPage({
         toast.error(res.message)
       }
     } catch (err) {
-      // withPermission HOF 在权限不足时 throw PERMISSION_DENIED:<action>，把它友好化为中文消息
-      const msg = err instanceof Error ? err.message : ''
-      if (msg.startsWith('PERMISSION_DENIED:')) {
+      // withPermission HOF 在权限不足时 throw PERMISSION_DENIED:<action>，把它友好化为中文消息。
+      // 判类型必须走 actionErrorType：生产构建下 err.message 已被脱敏，判 message 前缀恒不成立（issue #133）。
+      if (actionErrorType(err) === 'PERMISSION_DENIED') {
         toast.error('仅系统管理员可重置密码')
       } else {
         toast.error(actionErrorMessage(err, '密码重置失败，请稍后重试'))
@@ -501,48 +512,18 @@ export default function EmployeeDetailPage({
                   <label className="text-sm font-medium">离职原因</label>
                   <Input value={employee.resignationReason ?? "—"} disabled />
                 </div>
-                <div className="space-y-2">
-                  <label className="text-sm font-medium">所属组织</label>
-                  {isEditing ? (
-                    <OrgTreeSelect
-                      orgNodes={orgNodes}
-                      value={form.orgNodeId}
-                      onChange={(id) => {
-                        handleFormChange("orgNodeId", id)
-                        // 组织变更时，若当前门店不在新市场下则清空
-                        const newMarketId = findAncestorMarketId(id, orgNodes)
-                        const storeMarketId = findAncestorMarketId(
-                          stores.find((s) => s.storeId === form.storeId)?.orgNodeId ?? null,
-                          orgNodes,
-                        )
-                        if (newMarketId !== storeMarketId) {
-                          handleFormChange("storeId", "")
-                        }
-                      }}
-                      placeholder="请选择所属组织"
-                    />
-                  ) : (
-                    <Input value={buildOrgPath(employee.orgNodeId, orgNodes)} disabled />
-                  )}
-                </div>
-                <div className="space-y-2">
-                  <label className="text-sm font-medium">所属门店</label>
-                  {isEditing ? (
-                    <Select
-                      value={form.storeId}
-                      onChange={(e) => handleFormChange("storeId", e.target.value)}
-                    >
-                      <option value="">请选择门店</option>
-                      {filteredStores.map((s) => (
-                        <option key={s.storeId} value={s.storeId}>
-                          {s.storeName}
-                        </option>
-                      ))}
-                    </Select>
-                  ) : (
-                    <Input value={employee.storeName ?? ""} disabled />
-                  )}
-                </div>
+                {/* #259 归属双向联动整体在该组件内（含交互测试），页面只合并回传的补丁 */}
+                <EmployeeOwnershipFields
+                  value={{ storeId: form.storeId, orgNodeId: form.orgNodeId }}
+                  onChange={(patch) => setForm((prev) => ({ ...prev, ...patch }))}
+                  orgNodes={orgNodes}
+                  stores={stores}
+                  storeOptions={filteredStores}
+                  readonlyView={isEditing ? undefined : {
+                    orgPath: buildOrgPath(employee.orgNodeId, orgNodes),
+                    storeName: employee.storeName ?? "",
+                  }}
+                />
                 <div className="space-y-2">
                   <label className="text-sm font-medium">职位</label>
                   {isEditing ? (

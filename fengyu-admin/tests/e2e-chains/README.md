@@ -70,7 +70,7 @@ fengyu-admin/tests/e2e-chains/
 | 项 | 命令 / 地址 |
 |----|------------|
 | Admin dev server | `cd fengyu-admin && bun run dev` → `http://localhost:3000` |
-| 数据库 | **测试与开发共库** `101.34.242.103:5433/fengyu_wxapp`（用户 `fengyu` 密码 `fengyu123`）。FY-FIX-* / FY-TEST-* 命名空间作为测试夹具与日常数据共存；冷备库 5433/fengyu_wxapp 不再用于跑测试 |
+| 数据库 | **dev 业务库** `101.34.242.103:5433/fengyu_wxapp`（用户 `fengyu` 密码 `fengyu123`）。FY-FIX-* / FY-TEST-* 命名空间作为测试夹具与日常数据共存；已弃用的旧库 `47.113.202.7:5433/fengyu_wxapp` 不再用于跑测试。另有 admin 独立 e2e 库 `101.34.242.103:5433/fengyu_e2e`（`package.json` 的 `test:e2e*` 默认注入，库名随 `E2E_DB_NAME`），拓扑权威表述见 `db/CLAUDE.md` |
 | 切换 admin 连接 | `fengyu-admin/.env.local` 的 `DATABASE_URL` 默认即 5433/fengyu_wxapp，无需手切 |
 | Cron worker（按需） | `cd fengyu-admin && bun run cron:once` 手动触发会员/积分日任务 |
 

@@ -1,3 +1,9 @@
+import type { SalesCategory } from './sales-categories'
+
+// 销售归属分类单源在 `./sales-categories`（同时导出运行时有序数组）。
+// 此处 re-export 仅为保持既有 `from '@/lib/types'` 的 import 路径不变。
+export type { SalesCategory }
+
 // Organization
 export interface OrgNode {
   id: string
@@ -242,7 +248,6 @@ export type PaymentMethod = '微信' | '支付宝' | '线下' | '无'
 export type ServiceOrderStatus = '待服务' | '服务中' | '待客户确认' | '已完成' | '已取消'
 export type ServiceOrderType = '售前' | '售后'
 export type AppointmentStatus = '待确认' | '已确认' | '已完成' | '已取消' | '已关闭'
-export type SalesCategory = '自销自耗' | '他销自耗' | '他销他耗' | '生态合作'
 export type AllocationStatus = '待分配' | '已分配'
 export type ItemDirection = '购买' | '转出' | '转入' | '退出'
 export type CouponType = '现金券' | '品项券' | '折扣券'
@@ -503,8 +508,12 @@ export interface SaleItem {
   /** 待确认实付草稿（开单约定实付，行级；不进 received/paid_sessions，仅展示 + 确认收款入账参考） */
   pendingReceived: string
   expireDate: string | null
-  /** 已提货数量（家居产品；picked_up_quantity；订单详情页填充，其它查询不取） */
+  /** 已提货数量（家居产品；#154 拆列后 picked_up_quantity 只记物理提货；订单详情页填充，其它查询不取） */
   pickedUpQuantity?: number | null
+  /** 已退款结算数量（家居产品；#154 新列；订单详情页填充，其它查询不取） */
+  refundedQuantity?: number | null
+  /** 已转换折抵数量（家居产品；#154 新列；订单详情页填充，其它查询不取） */
+  convertedQuantity?: number | null
   remark: string | null
   salesCategory: SalesCategory | null
   createdAt: string
@@ -767,23 +776,31 @@ export interface AuthSession {
 /**
  * 业务角色看板统计（manager/finance）。
  *
- * 2026-04-26 sale-order-domain-refactor 重写 SQL 口径：
+ * 口径以 `src/actions/dashboard.ts` 的实现为准，本段是它的摘要。
+ *
+ * 2026-08 现金流口径修订 + 2026-09-14 归属日期统一（#137 / #140）后的现状：
  *   - todayVisitors / yesterdayVisitors  ← service_orders[status='已完成'] DISTINCT client_user_id（与 metrics §"客流"对齐）
- *   - todayRevenue / yesterdayRevenue    ← SUM(received - refunded_amount)，已天然冲销退款
- *   - todayPaidAmount / yesterdayPaidAmount ← SUM(received) 毛实收（不扣退款）
- *   - todayRefundedAmount                ← SUM(refunded_amount)，今日已退款金额
+ *   - todayRevenue / yesterdayRevenue    ← `SUM(sale_order_performance_events.amount)`，
+ *     含首次支付/回款/退款（退款为负、天然冲销），**不再**取 `sale_orders.received - refunded_amount`
+ *   - todayPaidAmount / yesterdayPaidAmount ← 同一视图，仅首次支付/回款且 `amount > 0`（不扣退款）
+ *   - todayRefundedAmount                ← 同一视图，`change_type='退款'` 取 `ABS(amount)`
  *   - todayOpenedCustomers               ← sale_orders DISTINCT client_user_id（按 sale_order_datetime），辅助"今日开单顾客数"
- *   - 全部 SQL `WHERE sale_order_type IN ('销售单','转换单') AND status='已支付'`
+ *   - 订单类型含**充值单**：`sale_order_type IN ('销售单','转换单','充值单')`；排除储值卡抵扣与 workfine 历史单
+ *   - 不按父订单 status 过滤（部分支付订单的已到账款也计入）
+ *   - **日期口径统一为业绩归属日期 `spe.performance_date`**（#140）：
+ *     业绩与实付/退款同口径，不再是「业绩按归属日、资金按 paid_at」的两套。
+ *     ⚠ 因此实付类指标不再与银行流水逐日对齐——被人工调整过归属日期的款项会落到别的自然日。
+ *   - totalPaidAmount 不带日期条件，是全量累计
  *   - 时区固定 Asia/Shanghai（与 metrics.md / mgmt-dashboard 对齐）
  */
 export interface DashboardStats {
   /** 今日客流（service_orders[已完成] DISTINCT client_user_id） */
   todayVisitors: number
-  /** 今日业绩 = SUM(received - refunded_amount)，已扣退款 */
+  /** 今日业绩 = SUM(spe.amount)（首次支付+回款+退款，退款为负天然冲销）@ performance_date */
   todayRevenue: number
-  /** 今日毛实收 = SUM(received)，不扣退款 */
+  /** 今日实付 = SUM(spe.amount)（仅首次支付+回款、amount>0，不扣退款）@ performance_date */
   todayPaidAmount: number
-  /** 今日已退款金额 = SUM(refunded_amount) */
+  /** 今日退款 = SUM(ABS(spe.amount))（change_type='退款'）@ performance_date */
   todayRefundedAmount: number
   /** 今日开单顾客数（sale_orders DISTINCT client_user_id by sale_order_datetime） */
   todayOpenedCustomers: number
@@ -794,9 +811,9 @@ export interface DashboardStats {
   yesterdayVisitors: number
   /** 昨日业绩（同 todayRevenue 公式） */
   yesterdayRevenue: number
-  /** 昨日毛实收（同 todayPaidAmount 公式） */
+  /** 昨日实付（同 todayPaidAmount 公式，@ performance_date = 昨天） */
   yesterdayPaidAmount: number
-  /** 全量订单累计实付金额（SUM received，'销售单'+'转换单' + 已支付） */
+  /** 全量累计实付 = SUM(spe.amount)（首次支付+回款、amount>0，含充值单）；**不带日期条件** */
   totalPaidAmount: number
   /** 角色上下文：决定前端展示哪种看板 */
   roleContext: 'business' | 'admin' | 'hr' | 'product'
@@ -837,7 +854,10 @@ export interface SaleOrderPayment {
   note: string | null
   createdAt: string
   paidAt: string | null
-  /** 非首次支付款项的业绩归属日期；混合支付卡流水跟随主流水，首次支付继续读取订单归属日期。 */
+  /**
+   * 款项业绩归属日期 —— 全部款项都有值（迁移 0041 起查询侧直读该列，无回退分支）。
+   * 首次支付行由 trigger 写成订单级的镜像；混合支付卡流水跟随同次主流水；其余按各自 paid_at。
+   */
   performanceAttributionDate: string | null
   performanceAttributionAdjustedAt: string | null
   performanceAttributionAdjustedBy: string | null

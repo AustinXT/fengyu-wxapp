@@ -177,7 +177,8 @@ describe('parseHttpTriggerEvent 聚合主扫', () => {
     }
   )
 
-  test.each(['FAIL', 'CLOSE'])(
+  // #214：REVOKED（当日交易撤销）同属不可再支付的终态，此前被漏判 → 撤销单永久卡住支付意图
+  test.each(['FAIL', 'CLOSE', 'REVOKED'])(
     'trade_state=%s → 按当前 out_trade_no CAS 释放后 ack',
     async (state) => {
       const { main } = loadFreshIndex()

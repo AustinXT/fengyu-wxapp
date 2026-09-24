@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react"
 import { Card } from "@/components/ui/card"
+import { actionErrorMessage } from "@/lib/action-error"
 import { useUrlFilters } from "@/lib/hooks/use-url-filters"
 import { parseBoardParams } from "@/lib/data-center/params"
 import { getEfficiencyBoard } from "@/actions/data-center/efficiency"
@@ -42,7 +43,9 @@ export function EfficiencyBoard() {
         if (!cancelled) setData(res)
       })
       .catch((e: unknown) => {
-        if (!cancelled) setError(e instanceof Error ? e.message : "加载失败")
+        // 生产构建会脱敏 message，必须走 actionErrorMessage 取 digest（issue #133）；
+        // validateScope 的 4 条拒绝理由为何到不了这里，见 lib/data-center/context.ts 的说明。
+        if (!cancelled) setError(actionErrorMessage(e, "请稍后重试"))
       })
       .finally(() => {
         if (!cancelled) setLoading(false)
@@ -64,7 +67,7 @@ export function EfficiencyBoard() {
       {/* 人均派生 KPI */}
       <section className="flex flex-col gap-3">
         <h2 className="text-sm font-semibold text-[var(--foreground)]">人均效能</h2>
-        <KpiGrid items={KPI_ITEMS} kpis={kpis} columns={4} />
+        <KpiGrid items={KPI_ITEMS} kpis={kpis} columns={4} baseRanges={loading ? undefined : data?.timeRange} />
       </section>
 
       {/* 明细 + 排名榜分 Tab（排名榜跟随顶部时间维度，不算同比环比）*/}

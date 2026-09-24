@@ -34,6 +34,7 @@ module.exports.fmt = function(n) {
         class="hero-cover-img"
         src="{{sku.cover_image}}"
         mode="aspectFill"
+        lazy-load
       />
       <view class="hero-tag-row">
         <van-tag type="danger" round custom-class="hero-tag">体验卡</van-tag>

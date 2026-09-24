@@ -8,6 +8,9 @@ import { Card, CardContent } from '@/components/ui/card'
 import { fmtDateTime } from '@/lib/datetime'
 import { getSession } from '@/lib/auth'
 import { requireAllUiPageCapabilities } from '@/lib/page-capability'
+import { isStocktakeDocType, stocktakeDiff, stocktakeSummary } from '@/lib/inventory/stocktake'
+import { resolveInventoryDocReturn } from '@/lib/inventory/operation-return'
+import { InventoryDocReturnLink } from './inventory-doc-return-link'
 
 export const dynamic = 'force-dynamic'
 
@@ -17,12 +20,33 @@ function fmt(v: string | number | boolean | null | undefined) {
   return String(v)
 }
 
+/** 盘盈绿 / 盘亏红 / 相符灰，取 admin 状态色（成功 / 错误 / 完结）。 */
+function StocktakeDiffCell({ diff }: { diff: number | null }) {
+  if (diff === null) return <td className="px-3 py-2 text-right text-[#999999]">—</td>
+  const tone = diff > 0 ? 'text-[#3D8A5A]' : diff < 0 ? 'text-[#D94040]' : 'text-[#888888]'
+  return (
+    <td className={`px-3 py-2 text-right font-medium ${tone}`}>
+      {diff > 0 ? `+${diff}` : String(diff)}
+    </td>
+  )
+}
+
 export default async function Page({
   params,
+  searchParams,
 }: {
   params: Promise<{ id: string }>
+  /** Next 15 起是 Promise，与同目录 `docs/page.tsx` 的写法一致；页面已 force-dynamic。 */
+  searchParams?: Promise<Record<string, string | undefined>>
 }) {
   const { id } = await params
+  const query = await searchParams
+  /*
+   * #190 返回入口：办理台的单据号链接带 `?from=operations&level=<level>&op=<业务>`。
+   * 白名单解析在服务端做一次（不把脏值当 prop 往下传），解析不出来就是 null ——
+   * 页面回落到既有的「返回单据中心」，不会拿着来路不明的字符串去拼跳转路径。
+   */
+  const back = resolveInventoryDocReturn(query)
   requireAllUiPageCapabilities(await getSession(), ['inventory:list'])
   const doc = await getInventoryCoreDocById(id)
   if (!doc) notFound()
@@ -59,10 +83,28 @@ export default async function Page({
   const shipmentColumnCount = shipmentFulfillment ? 2 : 0
   const itemCompanyRequestColumnCount = itemCompanyRequestFulfillment ? 3 : 0
   const supplyChainPurchaseColumnCount = supplyChainPurchaseFulfillment ? 2 : 0
+  // 盘点单：把「数量」当实盘数，额外并排展示账面数与差异。
+  // 差异是纯派生值（实盘 − 账面），**前端算、不落库** —— 落库就多一个会漂的数（issue #131 Q2）。
+  const isStocktake = isStocktakeDocType(doc.docType)
+  const stocktakeColumnCount = isStocktake ? 2 : 0
+  // 供应商与市场两列的成立条件并不相同，分开判：
+  //
+  // 供应商：采购订单/汇总单把它挂在行上（#194 单头不再挂），其下游的发货、入库单
+  // 行上带的是批次供应商。按「行上是否真有」判断而不是按 docType，这样 0043 回填过的
+  // 存量单据也能显示；末一项兜住只有名称快照、没有档案关联的存量行 ——
+  // 但单头已经显示了供应商时就不重复列。
+  const lineSupplierColumnCount = doc.items.some(
+    (item) => item.supplierId || (item.supplier && !doc.supplierName),
+  ) ? 1 : 0
+  // 市场：**只有采购订单与市场报货汇总的行级归属是权威的**。下游发货/入库单的市场记在
+  // 单头、明细行为空，若一并按行渲染会把它们统统误标成「品项公司自用」。
+  const lineMarketColumnCount = (doc.docType === '采购订单' || doc.docType === '市场报货汇总') ? 1 : 0
+  const lineOwnershipColumnCount = lineSupplierColumnCount + lineMarketColumnCount
   const priceColumnCount = showPrice ? (showStoreAllocationPrice ? 4 : 2) : 0
   const promotionColumnCount = doc.items.some((item) => item.promotionPlanId || item.promotionPlanNoSnapshot) ? 1 : 0
-  const itemColumnCount = 9 + priceColumnCount + reportColumnCount + shipmentColumnCount +
-    itemCompanyRequestColumnCount + supplyChainPurchaseColumnCount + promotionColumnCount
+  const itemColumnCount = 9 + lineOwnershipColumnCount + priceColumnCount + reportColumnCount + shipmentColumnCount +
+    itemCompanyRequestColumnCount + supplyChainPurchaseColumnCount + promotionColumnCount +
+    stocktakeColumnCount
   const fields = [
     ['单据号', doc.id],
     ['类型', doc.docType],
@@ -71,6 +113,7 @@ export default async function Page({
     ['入库/接收主体', doc.targetOrgNodeName ?? doc.targetOrgNodeId],
     ['单据日期', doc.docDate?.slice(0, 10)],
     ['总数量', doc.totalQuantity],
+    ...(isStocktake ? ([['盘点结论', stocktakeSummary(doc.items)]] as const) : []),
     ...(showPrice ? ([['金额', doc.totalAmount]] as const) : []),
     ['顾客', doc.customerName],
     ['员工', doc.employeeName],
@@ -94,12 +137,26 @@ export default async function Page({
   return (
     <div className="p-6 space-y-6">
       <div className="flex items-center gap-3">
-        <ReturnContextLink
-          href="/inventory/docs"
-          className="inline-flex items-center gap-1 text-sm text-[#666666] hover:text-[var(--foreground)]"
-        >
-          <ArrowLeft className="size-4" /> 返回
-        </ReturnContextLink>
+        {/*
+          * 两条来源天然互斥，优先级明确：
+          *   单据中心列表 → PreserveListContextLink 注入 `?returnTo=` → 走 ReturnContextLink；
+          *   办理台单据 Tab → `?from/level/op` 枚举、**不带 returnTo** → 走 InventoryDocReturnLink，
+          *   它会先试 window.close() 真正回到原标签（办理台表单不丢），关不掉再导航过去。
+          */}
+        {back ? (
+          <InventoryDocReturnLink
+            href={back.href}
+            label={back.label}
+            className="inline-flex items-center gap-1 text-sm text-[#666666] hover:text-[var(--foreground)]"
+          />
+        ) : (
+          <ReturnContextLink
+            href="/inventory/docs"
+            className="inline-flex items-center gap-1 text-sm text-[#666666] hover:text-[var(--foreground)]"
+          >
+            <ArrowLeft className="size-4" /> 返回
+          </ReturnContextLink>
+        )}
         <h1 className="text-xl font-medium">库存单据详情</h1>
       </div>
 
@@ -171,7 +228,9 @@ export default async function Page({
       </Card>
 
       <div className="overflow-x-auto rounded-md border border-[var(--border)] bg-white">
-        <table className={`w-full ${showStoreAllocationPrice ? 'min-w-[1180px]' : 'min-w-[960px]'} text-sm`}>
+        <table className={`w-full ${
+          showStoreAllocationPrice ? 'min-w-[1180px]' : isStocktake ? 'min-w-[1080px]' : 'min-w-[960px]'
+        } text-sm`}>
           <thead className="bg-[#F8F8F8] text-xs text-[#666666]">
             <tr>
               <th className="px-3 py-2 text-left">批次ID</th>
@@ -180,8 +239,12 @@ export default async function Page({
               <th className="px-3 py-2 text-left">规格</th>
               <th className="px-3 py-2 text-left">批号</th>
               <th className="px-3 py-2 text-left">效期</th>
-              <th className="px-3 py-2 text-right">数量</th>
+              {isStocktake && <th className="px-3 py-2 text-right">账面数量</th>}
+              <th className="px-3 py-2 text-right">{isStocktake ? '实盘数量' : '数量'}</th>
+              {isStocktake && <th className="px-3 py-2 text-right">差异</th>}
               <th className="px-3 py-2 text-left">赠送</th>
+              {lineSupplierColumnCount > 0 && <th className="px-3 py-2 text-left">供应商</th>}
+              {lineMarketColumnCount > 0 && <th className="px-3 py-2 text-left">市场</th>}
               {showStoreAllocationPrice ? <>
                 <th className="px-3 py-2 text-right">门店标准单价</th>
                 <th className="px-3 py-2 text-right">单价优惠</th>
@@ -230,10 +293,18 @@ export default async function Page({
                   <td className="px-3 py-2">{fmt(item.specName)}</td>
                   <td className="px-3 py-2">{fmt(item.batchNo)}</td>
                   <td className="px-3 py-2">{fmt(item.expiryDate?.slice(0, 10))}</td>
+                  {isStocktake && (
+                    <td className="px-3 py-2 text-right">{fmt(item.stockSnapshot)}</td>
+                  )}
                   <td className="px-3 py-2 text-right font-medium">{item.quantity}</td>
+                  {isStocktake && <StocktakeDiffCell diff={stocktakeDiff(item)} />}
                   <td className="px-3 py-2">
                     {item.isGift ? <Badge variant="outline" className="text-[10px]">赠送</Badge> : '—'}
                   </td>
+                  {lineSupplierColumnCount > 0 && <td className="px-3 py-2">{fmt(item.supplier)}</td>}
+                  {lineMarketColumnCount > 0 && (
+                    <td className="px-3 py-2">{item.marketId ? fmt(item.marketName) : '品项公司自用'}</td>
+                  )}
                   {showStoreAllocationPrice ? <>
                     <td className="px-3 py-2 text-right">{fmt(item.standardUnitPrice)}</td>
                     <td className="px-3 py-2 text-right">{fmt(item.unitDiscount)}</td>

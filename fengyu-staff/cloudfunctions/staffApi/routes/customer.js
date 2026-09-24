@@ -24,7 +24,9 @@ const { maskPhoneForAuth } = require("../utils/phone-visibility");
 const { logOperation, logUpdate } = require("../utils/operation-log");
 const { shanghaiDateStr } = require("../utils/datetime");
 const { excludeDepositRefundSql } = require("../utils/consume-filter");
+const { assertPaymentAttributionReady } = require("../utils/attribution-guard");
 const { getPointsToYuanRate, getPointsDeductionMaxRate } = require("../utils/config");
+const { safePaging } = require("../utils/paging");
 
 /**
  * 顾客档案子 Tab 可见性闸门（calendar/refundHistory 等）。
@@ -192,11 +194,23 @@ function renderProfileFilters(filters, startIdx) {
 /**
  * 搜索顾客（PG 单源）
  * 数据来源 = PG client_wechat_users（含 WorkFine 同步数据）
+ *
+ * 分页（#181）：口径对齐 mgmt-customer.js 的 D-search-pagination —— keyword / 默认分支
+ * 按 `c.user_id ASC` 稳定排序后 LIMIT/OFFSET，hasMore 由 `rows.length === pageSize` 推断；
+ * phone 分支最多命中 0~1 条，不分页。排序键取 user_id 而非「最近到店」：后者不在主查询里
+ * （分页后按 id 批量补），按它排序要把 service_orders 聚合 JOIN 进主查询，代价与 scope 语义
+ * 都会变；分页只需一个稳定唯一键，不需要业务序。
+ *
+ * ⚠️ 返回形态是多态的，勿改成统一返回对象：
+ *   - payload 带 `page` → `{ customers, page, pageSize, hasMore }`（顾客档案 Tab 下滑加载用）
+ *   - 不带 `page`   → 裸数组（开单 / 充值卡 / 充值金转入 / 服务单 / 提货 五处选顾客沿用，
+ *                     改形态会同时打挂这 5 条业务流程）
+ * 两种形态均由 __tests__/routes/customer.test.js 锁定。
  */
 async function search(ctx) {
   await requireStaffBound()(ctx, async () => {});
 
-  const { keyword, phone, crossStore, profileScope } = ctx.event.payload || {};
+  const { keyword, phone, crossStore, profileScope, page, pageSize } = ctx.event.payload || {};
 
   // 拓展筛选：customer_type / spending_tier / monthly_activity / customer_status 等值过滤
   const filters = buildProfileFilters(ctx.event.payload);
@@ -205,7 +219,11 @@ async function search(ctx) {
   // 业务流程选顾客（开单/充值卡/服务单/提货）不传 profileScope，不受此限制。
   const restrictEmp = profileScope && restrictToBoundEmployee(ctx.auth);
 
-  const limit = 20;
+  // 不传 page 时 safePage=1 / safePageSize=20 / offset=0，等价于改造前的 `LIMIT 20`。
+  // `page: null` 视同未传（走裸数组分支）。
+  const wantsPaged = page !== undefined && page !== null;
+  // 取整 + 安全整数两道防线见 utils/paging.js 函数头（#240 抽成单源，staffApi 内共用）
+  const { safePage, safePageSize, offset } = safePaging(page, pageSize, 20);
   let rows = [];
 
   if (phone) {
@@ -236,8 +254,9 @@ async function search(ctx) {
          FROM client_wechat_users c
          LEFT JOIN stores s ON s.store_id = c.bound_store_id
          WHERE (c.phone LIKE $1 OR c.name LIKE $1)${fSql}
-         LIMIT $${limitIdx}`,
-        [kw, ...filters.values, limit],
+         ORDER BY c.user_id ASC
+         LIMIT $${limitIdx} OFFSET $${limitIdx + 1}`,
+        [kw, ...filters.values, safePageSize, offset],
       );
     } else {
       // 门店内模糊检索：顾客 Tab / 服务单选顾客用
@@ -260,8 +279,9 @@ async function search(ctx) {
          FROM client_wechat_users c
          LEFT JOIN stores s ON s.store_id = c.bound_store_id
          WHERE (c.phone LIKE $1 OR c.name LIKE $1) AND ${scope.sql}${empClause}${fSql}
-         LIMIT $${limitIdx}`,
-        [...params, ...filters.values, limit],
+         ORDER BY c.user_id ASC
+         LIMIT $${limitIdx} OFFSET $${limitIdx + 1}`,
+        [...params, ...filters.values, safePageSize, offset],
       );
     }
   } else {
@@ -284,8 +304,9 @@ async function search(ctx) {
        FROM client_wechat_users c
        LEFT JOIN stores s ON s.store_id = c.bound_store_id
        WHERE ${scope.sql}${empClause}${fSql}
-       LIMIT $${limitIdx}`,
-      [...params, ...filters.values, limit],
+       ORDER BY c.user_id ASC
+       LIMIT $${limitIdx} OFFSET $${limitIdx + 1}`,
+      [...params, ...filters.values, safePageSize, offset],
     );
   }
 
@@ -348,7 +369,18 @@ async function search(ctx) {
     }
   }
 
-  ctx.result = results;
+  // 形态多态见函数头注释：带 page 才返回分页信封，否则保持裸数组（5 处业务流程依赖）。
+  // hasMore 由「本页取满」推断（与 mgmt-customer 同口径）：恰好取满而实际已到底时，
+  // 前端会多发一次拉到空页的请求，随后 hasMore 转 false —— 不会漏数据。
+  // phone 分支未分页（最多命中 0~1 条），恒为 false。
+  ctx.result = wantsPaged
+    ? {
+        customers: results,
+        page: safePage,
+        pageSize: safePageSize,
+        hasMore: phone ? false : results.length === safePageSize,
+      }
+    : results;
 }
 
 /**
@@ -679,6 +711,11 @@ async function getConsumptionStats(clientUserId) {
     };
   }
 
+  // 与 mgmt-customer.getConsumptionStatsScoped 同一口径副本，守卫同步（#141）：
+  // 未迁库时首次支付行 100% NULL，年度消费会静默变负数。
+  // ⚠ 放在空值短路之后：无 clientUserId 时本就零查询，不该为此打探针。
+  await assertPaymentAttributionReady(pg);
+
   const yearStart = `${shanghaiDateStr().slice(0, 4)}-01-01`;
   const rows = await pg.query(
     `WITH order_stats AS (
@@ -705,8 +742,8 @@ async function getConsumptionStats(clientUserId) {
          AND o.sale_order_type IN ('销售单', '转换单')
          AND o.client_user_id = $1
          AND o.legacy_source IS DISTINCT FROM 'workfine'
-         AND sop.paid_at >= ($2::date::timestamp AT TIME ZONE 'Asia/Shanghai')
-         AND sop.paid_at < (($2::date + INTERVAL '1 year') AT TIME ZONE 'Asia/Shanghai')
+         AND sop.performance_attribution_date >= $2::date
+         AND sop.performance_attribution_date < ($2::date + INTERVAL '1 year')
      ), legacy_year_stats AS (
        SELECT
        COALESCE(SUM(
@@ -721,8 +758,8 @@ async function getConsumptionStats(clientUserId) {
          AND o.sale_order_type IN ('销售单', '转换单')
          AND o.client_user_id = $1
          AND o.legacy_source = 'workfine'
-         AND o.paid_at >= ($2::date::timestamp AT TIME ZONE 'Asia/Shanghai')
-         AND o.paid_at < (($2::date + INTERVAL '1 year') AT TIME ZONE 'Asia/Shanghai')
+         AND o.performance_attribution_date >= $2::date
+         AND o.performance_attribution_date < ($2::date + INTERVAL '1 year')
      ), actual_stats AS (
        SELECT
          COALESCE(SUM(sit.unit_real_price::numeric * sit.session_used), 0) AS total_actual_consumption,
@@ -844,6 +881,23 @@ async function paidOrders(ctx) {
       si.remark,
       si.sales_category,
       si.picked_up_quantity,
+      -- 行级欠款：仅「订单确实未付清」且「该卡未买满次数」时才算。
+      -- 订单已付清但行 received 不足的是行级分摊缺口（已知数据问题），不是顾客欠款；
+      -- 寄存单 total_amount<=0 → paid_sessions=session_count，天然不进此分支（其 sale_amount 只是原价快照）。
+      CASE
+        WHEN o.status = '部分支付'
+         AND si.paid_sessions IS NOT NULL
+         AND si.paid_sessions < si.session_count
+         AND NOT EXISTS (
+           SELECT 1 FROM sale_order_payments sop
+           WHERE sop.sale_order_id = si.sale_order_id
+             AND sop.change_type = '退款' AND sop.status = '已支付'
+         )
+         -- 1 元阈值：瀑布分摊的 ROUND 尾差会造出 ¥0.01 的假欠款，不值得推给顾客
+         AND (si.sale_amount::numeric - si.received::numeric) >= 1
+        THEN GREATEST(0, si.sale_amount::numeric - si.received::numeric)::numeric(12, 2)
+        ELSE NULL
+      END AS unpaid_amount,
       o.remark AS order_remark,
       COALESCE(ps.unit, CASE WHEN si.product_type = '家居产品' THEN '盒' ELSE '次' END) AS unit,
       ps.category_id,
@@ -869,9 +923,24 @@ async function paidOrders(ctx) {
         WHERE sop.sale_order_id = si.sale_order_id
           AND sop.change_type = '退款' AND sop.status = '待审批'
       )
-      -- 只下发还有已付未用次数的卡；历史 NULL 行保留为 disabled 灰显（legacy workfine NULL 已在上方排除）。
+      -- issue #122：改按物理剩余次数下发。部分支付导致 paid_sessions=0 的卡以前被整行剔除，
+      -- 顾客档案看不到这张卡；现在照常展示（可用次数 0 + 待付清标注），核销限额仍走 paid_sessions
+      -- （service.create/start/finalize 三处独立校验，不受本过滤影响）。
+      -- 历史 NULL 行保留为 disabled 灰显（legacy workfine NULL 已在上方排除）。
       AND (
         si.paid_sessions IS NULL
+        OR si.remaining_sessions > 0
+      )
+      -- ⚠ 退款不减 remaining_sessions（Model X，见 utils/refund.js）：paid_sessions 是"已退卡从卡包
+      -- 消失"的唯一机制。放宽展示门槛时必须把这条守卫补回来，否则已退款的卡会重新出现在卡包里。
+      -- 与 clientApi/routes/order.js 的 appointableItems 同款守卫。
+      AND (
+        NOT EXISTS (
+          SELECT 1 FROM sale_order_payments sop
+          WHERE sop.sale_order_id = si.sale_order_id
+            AND sop.change_type = '退款' AND sop.status = '已支付'
+        )
+        OR si.paid_sessions IS NULL
         OR si.paid_sessions > (si.session_count - si.remaining_sessions)
       )
     ORDER BY si.sale_item_id`,
@@ -902,6 +971,8 @@ async function paidOrders(ctx) {
       saleAmount: item.sale_amount != null ? Number(item.sale_amount).toFixed(2) : "",
       received: item.received != null ? Number(item.received).toFixed(2) : "",
       pendingReceived: item.pending_received != null ? Number(item.pending_received).toFixed(2) : "",
+      // 仅订单未付清且该卡未买满次数时有值；已付清/寄存单/NULL 卡一律 null
+      unpaidAmount: item.unpaid_amount != null ? Number(item.unpaid_amount) : null,
       expireDate: item.expire_date || null,
       remark: item.remark || null,
       salesCategory: item.sales_category || null,
@@ -936,13 +1007,25 @@ async function paidOrders(ctx) {
 function mapHomeProductRow(row) {
   const pickedQuantity = Number(row.picked_quantity || 0)
   const refundedQuantity = Number(row.refunded_quantity || 0)
+  const convertedQuantity = Number(row.converted_quantity || 0)
   const remainingQuantity = Number(row.remaining_quantity || 0)
   const paidQuantity = Number(row.paid_quantity || 0)
   const pendingPickupQuantity = Number(row.pending_pickup_quantity || 0)
+  // 待付清行的欠款金额：received 是行级净实收（已扣该行退款），故对退过款的行
+  // sale_amount - received 会把"退掉的钱"误算成欠款；寄存单行 SQL 已置 NULL。
+  const unpaidAmount =
+    refundedQuantity > 0 || row.unpaid_amount == null ? null : Number(row.unpaid_amount)
   let status
   if (row.refund_pending) status = '退款处理中'
   else if (pendingPickupQuantity > 0) status = pickedQuantity > 0 ? '部分提货' : '待提货'
-  else status = refundedQuantity > 0 ? '已完成' : '已提货'
+  // 「待付清」必须与欠款金额绑定：只有真的算得出欠款才这么标。
+  // 否则寄存单（金额列留空）和退款后仍有剩余的行会被误标成待付清/已完成。
+  else if (unpaidAmount > 0) status = '待付清'
+  // 还有未交付份额但算不出欠款（寄存单、退款后剩余）——是待提，不是已完成。
+  else if (remainingQuantity > 0) status = '待提货'
+  // #125：整行折抵后 settled=purchased，于是 pending=0、remaining=0、refunded=0，
+  // 不看 convertedQuantity 会把「已转走」误判成「已提货」。
+  else status = (refundedQuantity > 0 || convertedQuantity > 0) ? '已完成' : '已提货'
 
   return {
     saleItemId: row.sale_item_id,
@@ -954,8 +1037,10 @@ function mapHomeProductRow(row) {
     paidQuantity,
     pickedQuantity,
     refundedQuantity,
+    convertedQuantity,
     remainingQuantity,
     pendingPickupQuantity,
+    unpaidAmount,
     status,
     storeId: row.store_id,
     storeName: row.store_name || null,
@@ -991,10 +1076,20 @@ async function homeProducts(ctx) {
   await assertCustomerProfileVisible(pg, ctx.auth, clientUserId)
 
   const rows = await pg.query(
-    `WITH pickup_totals AS (
-       SELECT sale_item_id, SUM(pickup_quantity)::int AS picked_quantity
-         FROM pickup_records
-        GROUP BY sale_item_id
+    `WITH conversion_totals AS (
+       -- #154 拆列后件数直读 sale_items.converted_quantity，这里只剩**金额**：折抵额度按金额结算，
+       -- 不能由「已转换件数 × 单价」推算（折 4 件可能带走 ¥450 而非 ¥400）。
+       -- 只有「已关闭」完成过 rollback（数量已退回），故只排除它；
+       -- 其余状态（含"支付失败"）扣减仍然生效，必须计入已转换。删除订单的转出行已随主单消失。
+       SELECT out_item.ref_sale_item_id AS sale_item_id,
+              SUM(GREATEST(0, -out_item.received::numeric)) AS converted_amount
+         FROM sale_items out_item
+         JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id
+        WHERE out_item.item_direction = '转出'
+          AND out_item.product_type = '家居产品'
+          AND out_item.ref_sale_item_id IS NOT NULL
+          AND conv_order.status <> '已关闭'
+        GROUP BY out_item.ref_sale_item_id
      ), home_product_rows AS (
        SELECT COALESCE(si.sale_item_group_id, si.sale_item_id) AS sale_item_group_id,
               si.sale_item_id,
@@ -1002,18 +1097,39 @@ async function homeProducts(ctx) {
               COALESCE(si.product_name, '家居产品') AS product_name,
               COALESCE(ps.unit, '盒') AS unit,
               si.quantity::int AS purchased_quantity,
-              LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0)))::int AS settled_quantity,
-              LEAST(
-                LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0))),
-                GREATEST(0, COALESCE(pt.picked_quantity, 0))
-              )::int AS picked_quantity,
+              -- #154：三语义各有独立列，「已结算」回归派生量 = 已提货 + 已退款 + 已转换。
+              LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0) + COALESCE(si.refunded_quantity, 0) + COALESCE(si.converted_quantity, 0)))::int AS settled_quantity,
+              LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0)))::int AS picked_quantity,
+              LEAST(si.quantity, GREATEST(0, COALESCE(si.refunded_quantity, 0)))::int AS refunded_quantity,
+              LEAST(si.quantity, GREATEST(0, COALESCE(si.converted_quantity, 0)))::int AS converted_quantity,
+              -- #145/#153：行级可提件数 = min(物理未结算, floor(剩余已付 / 单价))，与折抵额度同一口径。
+              -- 剩余已付 = 行实收 − 已提货金额 − 已转走金额；退款不在此处扣（received 已扣过）。
+              -- 必须按金额算而非「已付件数 − 已提 − 已折抵件数」：折抵金额含余数时两者不等，
+              -- 折 4 件带走 ¥450 后再回款 ¥50，按件数会多放出 1 件（累计兑现超实收）。
               CASE
+                WHEN o.sale_order_type = '寄存单' OR si.sale_amount <= 0
+                  THEN GREATEST(0, si.quantity - LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0) + COALESCE(si.refunded_quantity, 0) + COALESCE(si.converted_quantity, 0))))
+                ELSE LEAST(
+                  GREATEST(0, si.quantity - LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0) + COALESCE(si.refunded_quantity, 0) + COALESCE(si.converted_quantity, 0)))),
+                  GREATEST(0, FLOOR((GREATEST(0, si.received::numeric)
+                    - GREATEST(0, COALESCE(si.picked_up_quantity, 0)) * si.unit_real_price::numeric
+                    - COALESCE(ct.converted_amount, 0)) / NULLIF(si.unit_real_price::numeric, 0)))::int
+                )
+              END AS row_pending_pickup,
+              CASE
+                -- 寄存单：货本就属于顾客，全额可提（sale_amount 只是原价快照，received 不代表欠款）。
+                -- 判据与 #120 展示侧 is_deposit 同源；刻意不用疗程卡那条 total_amount<=0——后者会连带覆盖
+                -- 转换单/零总额单，且 total_amount 无 CHECK 约束，负值会静默放行。
+                WHEN o.sale_order_type = '寄存单' THEN si.quantity
                 WHEN si.sale_amount <= 0 THEN si.quantity
                 ELSE LEAST(
                   si.quantity,
                   FLOOR(GREATEST(0, si.received::numeric) * si.quantity / NULLIF(si.sale_amount::numeric, 0))::int
                 )
               END AS paid_quantity,
+              si.sale_amount::numeric AS row_sale_amount,
+              GREATEST(0, si.received::numeric) AS row_received,
+              (o.sale_order_type = '寄存单') AS is_deposit,
               o.store_id,
               s.store_name,
               COALESCE(o.paid_at, o.sale_order_datetime, o.created_at) AS purchased_at,
@@ -1027,10 +1143,18 @@ async function homeProducts(ctx) {
          JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
          LEFT JOIN stores s ON s.store_id = o.store_id
          LEFT JOIN product_skus ps ON ps.sku_id = si.sku_id
-         LEFT JOIN pickup_totals pt ON pt.sale_item_id = si.sale_item_id
+         LEFT JOIN conversion_totals ct ON ct.sale_item_id = si.sale_item_id
         WHERE o.client_user_id = $1
           AND o.status IN ('已支付', '部分支付', '已完成')
-          AND si.item_direction = '购买'
+          -- #145/#153：转换单换入的家居与购买行同权（与疗程卡侧放行写法同源）。
+          -- sale_amount>0 的转入行，received 已由 paid-sessions STEP 1.6 重建为「转出旧卡
+          -- 价值 + 本单净到账」，FLOOR(received × qty / sale_amount) 天然成立；sale_amount<=0
+          -- 的转入行走上方赠品分支全额可提（STEP 1.6 带 sale_amount>0 过滤，刻意不碰 0 元行，
+          -- 与购买侧 0 元赠品行同口径）。两类都不需要为「转入」另加满付分支。
+          AND (
+            si.item_direction = '购买'
+            OR (o.sale_order_type = '转换单' AND si.item_direction = '转入')
+          )
           AND si.product_type = '家居产品'
      ), home_products AS (
        SELECT sale_item_group_id,
@@ -1041,7 +1165,13 @@ async function homeProducts(ctx) {
               SUM(si.purchased_quantity)::int AS purchased_quantity,
               SUM(si.settled_quantity)::int AS settled_quantity,
               SUM(si.picked_quantity)::int AS picked_quantity,
+              SUM(si.refunded_quantity)::int AS refunded_quantity,
+              SUM(si.converted_quantity)::int AS converted_quantity,
+              SUM(si.row_pending_pickup)::int AS pending_pickup_quantity,
               SUM(si.paid_quantity)::int AS paid_quantity,
+              SUM(si.row_sale_amount) AS sale_amount_total,
+              SUM(si.row_received) AS received_total,
+              BOOL_OR(si.is_deposit) AS is_deposit,
               MIN(si.store_id) AS store_id,
               MIN(si.store_name) AS store_name,
               MAX(si.purchased_at) AS purchased_at,
@@ -1050,17 +1180,18 @@ async function homeProducts(ctx) {
       GROUP BY sale_item_group_id
      ), home_product_balances AS (
        SELECT *,
-              (settled_quantity - picked_quantity)::int AS refunded_quantity,
+              -- #154 前「已退款」只能由 settled − 已提货 − 已转换 倒推；拆列后直读独立列。
               (purchased_quantity - settled_quantity)::int AS remaining_quantity,
-              LEAST(
-                purchased_quantity - settled_quantity,
-                GREATEST(paid_quantity - picked_quantity, 0)
-              )::int AS pending_pickup_quantity
+              -- 寄存单的 sale_amount 只是原价快照、received 恒为历史值，两者相减不是欠款
+              -- （寄存的货本就属于顾客）。金额列一律留空，与导出口径一致。
+              CASE WHEN is_deposit THEN NULL
+                   ELSE GREATEST(0, sale_amount_total - received_total)::numeric(12, 2)
+              END AS unpaid_amount
          FROM home_products
      )
      SELECT *
        FROM home_product_balances
-      WHERE picked_quantity > 0 OR pending_pickup_quantity > 0
+      WHERE picked_quantity > 0 OR remaining_quantity > 0 OR converted_quantity > 0
    ORDER BY (pending_pickup_quantity > 0) DESC,
             purchased_at DESC,
             sale_item_id`,
@@ -1407,6 +1538,10 @@ async function listByTag(ctx) {
     WHERE ${cWhere}
     GROUP BY c.user_id, c.name, c.phone, c.birthday, c.member_level,
              c.customer_type, c.customer_status
+    -- #181：下方 filtered.slice() 是内存分页，依赖本查询的行序稳定。
+    -- PG 不保证 GROUP BY 的输出顺序，缺排序键时翻页会重复/漏行。
+    -- 排序键与 search() 一致（user_id ASC），两条列表路径翻页口径同源。
+    ORDER BY c.user_id ASC
   `, [...cParams, ...soScope.params])
 
   // 按 tag 过滤
@@ -1423,9 +1558,10 @@ async function listByTag(ctx) {
     return true
   })
 
-  // 分页
-  const offset = (page - 1) * pageSize
-  const paged = filtered.slice(offset, offset + pageSize)
+  // 分页归一见 utils/paging.js 函数头（#240：此处原先零校验，
+  // `page='abc'` → slice(NaN,NaN) 列表恒空、`page=-1` → 静默返回尾部错误数据）
+  const { safePageSize, offset } = safePaging(page, pageSize, 20)
+  const paged = filtered.slice(offset, offset + safePageSize)
 
   // 最近购买商品名（仅查分页后的用户，减少查询量）
   const pagedUserIds = paged.map(r => r.user_id).filter(Boolean)
@@ -1493,7 +1629,9 @@ async function refundHistory(ctx) {
   }
   // 交易数据跟顾客走：退款流水不再按门店过滤（顾客可见性已由 assertProfileVisibleByIdentifier 守护）
   const refundWhere = refundClientWhere
-  refundParams.push(pageSize, (page - 1) * pageSize)
+  // 分页归一见 utils/paging.js 函数头（#240：此处原先零校验，pageSize 直接进 LIMIT）
+  const { safePageSize, offset } = safePaging(page, pageSize, 50)
+  refundParams.push(safePageSize, offset)
   const refundRows = await pg.query(`
     SELECT
       sop.id AS payment_id,
@@ -1513,7 +1651,7 @@ async function refundHistory(ctx) {
     JOIN sale_orders so ON so.sale_order_id = sop.sale_order_id
     WHERE sop.change_type = '退款'
       AND ${refundWhere}
-    ORDER BY sop.created_at DESC
+    ORDER BY sop.created_at DESC, sop.id DESC
     LIMIT $${refundParams.length - 1} OFFSET $${refundParams.length}
   `, refundParams)
 
@@ -1994,9 +2132,8 @@ async function phoneChangeLogs(ctx) {
   if (!clientUserId && !clientPhone) {
     throw new Error('INVALID_PARAMS: 缺少 clientUserId 或 clientPhone')
   }
-  const safePage = Math.max(1, Number(page) || 1)
-  const safePageSize = Math.min(100, Math.max(1, Number(pageSize) || 50))
-  const offset = (safePage - 1) * safePageSize
+  // 取整 + 安全整数两道防线见 utils/paging.js 函数头（#240）
+  const { safePageSize, offset } = safePaging(page, pageSize, 50)
 
   // 手机号变更日志按 client_user_id 关联，先解析 user_id
   let cuid = clientUserId
@@ -2020,7 +2157,7 @@ async function phoneChangeLogs(ctx) {
       OR (action = 'customer.update' AND target_type = 'customer' AND target_id = $1
           AND (detail -> 'changes' ? 'phone'))
     )
-    ORDER BY created_at DESC
+    ORDER BY created_at DESC, id DESC
     LIMIT $2 OFFSET $3
   `, [cuid, safePageSize, offset])
 

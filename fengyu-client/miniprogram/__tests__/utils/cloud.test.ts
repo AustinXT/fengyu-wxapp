@@ -4,6 +4,7 @@
  */
 
 import { sanitizeErrorMessage, callClientApi, bindPhoneWithCloudID } from '../../utils/cloud'
+import { getApiFnName } from '../../utils/cloud-env'
 
 describe('sanitizeErrorMessage', () => {
   test('空字符串 → 默认 fallback', () => {
@@ -196,7 +197,7 @@ describe('callClientApi 网络错误防护', () => {
     const data = await callClientApi<{ spuList: any[] }>('product.shopInit', {})
     expect(data.spuList).toEqual([])
     expect((globalThis as any).wx.cloud.callFunction).toHaveBeenCalledWith({
-      name: 'clientApi',
+      name: getApiFnName(),
       data: {
         action: 'product.shopInit',
         payload: expect.objectContaining({ _appVersion: expect.any(String) }),
@@ -218,7 +219,7 @@ describe('callClientApi 网络错误防护', () => {
 
     expect(data.phone).toBe('13800000000')
     expect((globalThis as any).wx.cloud.callFunction).toHaveBeenCalledWith({
-      name: 'clientApi',
+      name: getApiFnName(),
       data: {
         action: 'auth.login',
         payload: expect.objectContaining({ _appVersion: expect.any(String) }),
@@ -237,7 +238,7 @@ describe('callClientApi 网络错误防护', () => {
     // 服务端对访客返回 {request:null}，本地白名单放行后整页 Promise.all 不再被拦截
     expect(data.request).toBeNull()
     expect((globalThis as any).wx.cloud.callFunction).toHaveBeenCalledWith({
-      name: 'clientApi',
+      name: getApiFnName(),
       data: {
         action: 'store.getUnbindRequest',
         payload: expect.objectContaining({ storeId: 'store-1' }),

@@ -25,7 +25,7 @@ import {
 import { invokeStaffApi } from './helpers/invoke.mjs'
 import {
   ensureTestStore, createTestStaff, createTestClient,
-  createTestSaleOrder, cleanupTestData,
+  createTestSaleOrder, cleanupTestData, createPaidPayment,
 } from './helpers/fixtures.mjs'
 
 let pass = false
@@ -56,8 +56,13 @@ async function main() {
       status: '已支付',
       salesCategory: '他销自耗',
     })
-    // 补 received=800（fixture 默认置 0）
+    // 补 received=800（fixture 默认置 0）：订单级、行级、款项级三处都要补。
+    // 行级 received / paid_sessions 决定可退额度与卡包可见性；
+    // 款项级「首次支付 + 逐笔受领」是 refund-cascade 残值映射的唯一来源，
+    // 缺了它 approveRefund 会被拒成「退款金额无法完整映射到商品行实收」。
     await pgQuery(`UPDATE sale_orders SET received = total_amount WHERE sale_order_id = $1`, [oid])
+    await pgQuery(`UPDATE sale_items SET received = 800, paid_sessions = 1 WHERE sale_order_id = $1`, [oid])
+    await createPaidPayment(oid, { amount: 800, items: [{ saleItemId: `${oid}_ITEM_1`, amount: 800 }] })
   }
   const aItems = await pgQuery(`SELECT sale_item_id FROM sale_items WHERE sale_order_id = $1`, [orderA])
   const bItems = await pgQuery(`SELECT sale_item_id FROM sale_items WHERE sale_order_id = $1`, [orderB])

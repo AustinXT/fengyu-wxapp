@@ -26,8 +26,15 @@ const clientFn = client.functions.find((f) => f.name === 'clientApi').envVariabl
 const payNotifyFn = client.functions.find((f) => f.name === 'payNotify').envVariables
 const staffFn = staff.functions.find((f) => f.name === 'staffApi').envVariables
 
-// 从 LAKALA_NOTIFY_URL 反推 CLIENT_SERVICE_URL
+// 从 LAKALA_NOTIFY_URL 反推 CLIENT_SERVICE_URL。
+// 必须取【正式函数】的值：影子函数 payNotifyDev/clientApiDev 的回调路径是 /lakala/notify-dev，
+// 正则匹配不上会静默把整条 URL 当成服务域名用。上面的 .find 已按名精确取 clientApi，
+// 这里再兜一道显式失败，免得日后改动让它悄悄产出错值。
 const clientServiceUrl = clientFn.LAKALA_NOTIFY_URL.replace(/\/lakala\/notify$/, '')
+if (clientServiceUrl === clientFn.LAKALA_NOTIFY_URL) {
+  console.error(`ERROR: 无法从 LAKALA_NOTIFY_URL 反推 CLIENT_SERVICE_URL：${clientFn.LAKALA_NOTIFY_URL}`)
+  process.exit(1)
+}
 
 // 转义多行字符串为带引号的单行（保留 \n 字面）
 function q(v) {
@@ -47,7 +54,9 @@ const lines = [
   '',
   '# === PG ===',
   `PG_CONNECTION_STRING=${clientFn.PG_CONNECTION_STRING}`,
-  `ADMIN_DATABASE_URL=${clientFn.PG_CONNECTION_STRING}`,
+  // dev 的 admin/analyst 跑在 lx-test 容器里，必须经 Docker 网桥回连宿主 PG；
+  // 直接沿用公网串会被 remote-deploy 的 containerDbHost 断言拒绝（见 db/CLAUDE.md）。
+  `ADMIN_DATABASE_URL=${clientFn.PG_CONNECTION_STRING.replace(/@[^:]+:/, '@172.18.0.1:')}`,
   '',
   '# === CloudBase envId ===',
   `CLIENT_ENV_ID=${client.envId}`,

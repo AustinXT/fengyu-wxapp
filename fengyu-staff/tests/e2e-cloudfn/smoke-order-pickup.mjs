@@ -53,20 +53,66 @@ const SALE_ORDER_ID = `${NS}_PICKUP_SO_1`
 const SALE_ITEM_ID = `${SALE_ORDER_ID}_ITEM_1` // createTestSaleOrder 内部命名约定
 const IDEM_KEY = `${NS}_PICKUP_IDEM_1`
 
-/** pickup_records 不在 cleanupTestData 内，手动先删（FK → sale_items 必须先于其删除） */
+/**
+ * pickup_records 与 v3 库存单都不在 cleanupTestData 内，手动先删。
+ *
+ * 顺序由 FK 决定：doc_links / doc_items → docs → pickup_records。
+ * inventory_docs 是**开启库存联动后**提货才会产生的（出库单），它 FK 引用
+ * client_wechat_users / staff_wechat_users / org_nodes —— 不先删掉，
+ * cleanupTestData 删顾客和员工会被 FK 挡住并静默 skip，下一次跑就撞 sale_orders_pkey。
+ * （inventory_movements 是 append-only，删不掉也不必删，靠 movement_key 唯一后缀避让。）
+ */
 async function cleanupPickupRecords() {
+  const like = `${NS}%`
+  // v3 库存单不能删：inventory_movements 是 append-only（trigger 挡改删）且 FK 引用
+  // inventory_doc_items，于是 doc_items → docs 整条链都删不掉。它们又 FK 引用
+  // 顾客 / 员工 / 订单，不处理就会把 cleanupTestData 顶住，下次跑直接撞 sale_orders_pkey。
+  // 所以改为**解绑**而非删除：把指向测试数据的外键列置空，留下孤儿单据（只在一次性
+  // 库存库里才会产生，dev 上仅当有人显式开 INVENTORY_LINKAGE_ENABLED 才有）。
+  await pgQuery(
+    `UPDATE inventory_docs
+        SET related_sale_order_id = NULL,
+            client_user_id = NULL,
+            employee_id = NULL,
+            confirmed_by = NULL,
+            approved_by = NULL,
+            rejected_by = NULL,
+            cancelled_by = NULL,
+            cancellation_requested_by = NULL
+      WHERE related_sale_order_id LIKE $1 OR client_user_id LIKE $1 OR employee_id LIKE $1
+         OR confirmed_by LIKE $1 OR approved_by LIKE $1 OR rejected_by LIKE $1
+         OR cancelled_by LIKE $1 OR cancellation_requested_by LIKE $1`,
+    // 注意 created_by 是 NOT NULL，不能一起置空——把它写进同一条 UPDATE 会让整条失败，
+    // 于是所有解绑都白做。孤儿单据留着 created_by 指向测试员工是可接受的：
+    // 员工行用 ON CONFLICT DO UPDATE 重建，不阻塞后续运行。
+    [like],
+  ).catch((e) => console.log('[cleanup] inventory_docs 解绑失败（可忽略）:', e.message))
+  // doc_items 也有一条指向 sale_items 的外键，漏了它 sale_items 同样删不掉
+  await pgQuery(
+    `UPDATE inventory_doc_items SET sale_item_id = NULL WHERE sale_item_id LIKE $1`,
+    [like],
+  ).catch((e) => console.log('[cleanup] inventory_doc_items 解绑失败（可忽略）:', e.message))
   await pgQuery(
     `DELETE FROM pickup_records
        WHERE client_user_id LIKE $1
           OR store_id LIKE $1
           OR confirmed_by LIKE $1
           OR sale_item_id LIKE $1`,
-    [`${NS}%`]
+    [like]
   )
 }
 
 async function main() {
   rec(`[smoke-order-pickup] start | ${new Date().toISOString()}`)
+  // 库存联动断言（扣批次余额 + 生成 v3 出库单）**默认不跑**，只在显式开启时执行。
+  //
+  // 原因不是"懒得测"，而是开了就清不干净：提货会写 inventory_docs / doc_items，
+  // 而 inventory_movements 是 append-only（trigger 挡改删）且 FK 引用 doc_items，
+  // 于是 docs 删不掉 → 顾客与员工删不掉 → 下一次跑直接撞 sale_orders_pkey。
+  // 既有约定本就是「库存链路只跑一次性 docker 库」（见 e2e-actions/smoke-inventory-chain.mjs）。
+  //
+  // 要在一次性库上连库存一起验：INVENTORY_LINKAGE_ENABLED=true bun 本文件。
+  const inventoryLinkage = process.env.INVENTORY_LINKAGE_ENABLED === 'true'
 
   await cleanupPickupRecords()
   await cleanupTestData(NS)
@@ -99,34 +145,62 @@ async function main() {
     [TEST_STORE_ID],
   )
   await pgQuery(
+    // market_purchase_price_mode 必须显式给：0039 的 trigger
+    // trg_inventory_skus_validate_market_price_mode 对非「公式」模式要求同时有
+    // market_purchase_price 与 override_reason，而这三列的默认值都是 NULL ——
+    // 不写就会在建夹具阶段抛「手工覆盖市场进货价必须填写价格和原因」。
+    // 这里走「公式」：trigger 自己用 accounting_price × discount 算出进货价。
     `INSERT INTO inventory_skus (
-       sku_id, product_code, product_name, spec_name, retail_price, is_active
+       sku_id, product_code, product_name, spec_name, retail_price, is_active,
+       accounting_price, market_purchase_discount, market_purchase_price_mode
      )
-     VALUES ($1, $1, $2, $2, 200, true)
+     VALUES ($1, $1, $2, $2, 200, true, 100, 0.8, '公式')
      ON CONFLICT (sku_id) DO UPDATE
        SET product_code = EXCLUDED.product_code,
            product_name = EXCLUDED.product_name,
            spec_name = EXCLUDED.spec_name,
            retail_price = EXCLUDED.retail_price,
+           accounting_price = EXCLUDED.accounting_price,
+           market_purchase_discount = EXCLUDED.market_purchase_discount,
+           market_purchase_price_mode = EXCLUDED.market_purchase_price_mode,
            is_active = true,
            updated_at = NOW()`,
     [product.skuId, product.specName],
   )
-  await pgQuery(
+  if (inventoryLinkage) {
+  // 批次必须「零余额建仓 + 走 inventory_movements 入账」：0039 的 trigger
+  // trg_inventory_stock_lots_require_movement 禁止直接插带余额的批次，
+  // trg_inventory_movements_apply_lot 会按流水把余额加上去。
+  // 直接写 quantity_on_hand=3 会抛「新库存批次必须从零余额开始，并通过 inventory_movements 入账」。
+  const lotRows = await pgQuery(
     `INSERT INTO inventory_stock_lots (
        location_id, sku_id, lot_key, sku_name, spec_name, batch_no, expiry_date_key,
        is_gift, quantity_on_hand, store_standard_unit_price, store_actual_unit_price
      )
-     VALUES ($1, $2, $2 || '|PICKUP||||200', $3, $3, 'PICKUP', '', false, 3, 200, 200)
+     VALUES ($1, $2, $2 || '|PICKUP||||200', $3, $3, 'PICKUP', '', false, 0, 200, 200)
      ON CONFLICT (location_id, lot_key)
-     DO UPDATE SET quantity_on_hand = 3,
-                   sku_name = EXCLUDED.sku_name,
+     DO UPDATE SET sku_name = EXCLUDED.sku_name,
                    spec_name = EXCLUDED.spec_name,
                    store_standard_unit_price = EXCLUDED.store_standard_unit_price,
                    store_actual_unit_price = EXCLUDED.store_actual_unit_price,
-                   updated_at = NOW()`,
+                   updated_at = NOW()
+     RETURNING id, quantity_on_hand`,
     [TEST_STORE_ID, product.skuId, product.specName],
   )
+  const lotId = lotRows[0].id
+  const onHand = Number(lotRows[0].quantity_on_hand || 0)
+  if (onHand < 3) {
+    await pgQuery(
+      `INSERT INTO inventory_movements (
+         movement_key, lot_id, location_id, sku_id, direction,
+         quantity_delta, quantity_before, quantity_after, remark
+       )
+       VALUES ($1, $2, $3, $4, '入库', $5, $6, 3, 'e2e 期初入账')`,
+      // movement_key 必须每次唯一：inventory_movements 是 append-only（trigger 挡改删），
+      // cleanupTestData 也不清它，所以历史键会永久留在库里，固定键第二次跑就撞唯一约束。
+      [`${NS}_PICKUP_MV_${lotId}_${Date.now()}`, lotId, TEST_STORE_ID, product.skuId, 3 - onHand, onHand],
+    )
+  }
 
   // F9：INVENTORY_LINKAGE_ENABLED=true 下 createPickup 依赖期初切点已初始化 +
   // 销售 SKU→库存 SKU 组成映射（resolvePickupComposition 无快照时回退映射表）。
@@ -142,6 +216,7 @@ async function main() {
      DO UPDATE SET quantity_per_sale_unit = 1, is_active = true, updated_at = NOW()`,
     [product.skuId],
   )
+  }
 
   // 前置：一张"已支付"销售单 + 1 行家居产品（quantity=3，sessionCount=null）
   await createTestSaleOrder({
@@ -226,7 +301,7 @@ async function main() {
        FROM inventory_stock_lots WHERE location_id = $1 AND sku_id = $2`,
     [TEST_STORE_ID, product.skuId],
   )
-  if (Number(stock1[0]?.quantity_on_hand) !== 1) {
+  if (inventoryLinkage && Number(stock1[0]?.quantity_on_hand) !== 1) {
     errors.push(`提2后 v3 库存应=1，实际=${stock1[0]?.quantity_on_hand}`)
   }
 
@@ -290,7 +365,7 @@ async function main() {
        FROM inventory_stock_lots WHERE location_id = $1 AND sku_id = $2`,
     [TEST_STORE_ID, product.skuId],
   )
-  if (Number(stock2[0]?.quantity_on_hand) !== 0) {
+  if (inventoryLinkage && Number(stock2[0]?.quantity_on_hand) !== 0) {
     errors.push(`提满后 v3 库存应=0，实际=${stock2[0]?.quantity_on_hand}`)
   }
   const inventoryRows = await pgQuery(
@@ -300,7 +375,7 @@ async function main() {
         AND doc_type = '院顾客产品出库'`,
     [SALE_ORDER_ID],
   )
-  if (Number(inventoryRows[0]?.doc_count) !== 2) {
+  if (inventoryLinkage && Number(inventoryRows[0]?.doc_count) !== 2) {
     errors.push(`提货应生成 2 张 v3 出库单，实际=${inventoryRows[0]?.doc_count}`)
   }
   rec(`  ✓ createPickup(提满+幂等重放): picked_up_quantity=${si2[0]?.picked_up_quantity} / idem 记录=${prIdem[0]?.cnt}`)
@@ -314,8 +389,10 @@ async function main() {
   })
   if (pickOver.code === 0) {
     errors.push(`createPickup(超量) 应失败（已提满），实际 code=0`)
-  } else if (pickOver.errorType !== 'INVALID_PARAMS') {
-    errors.push(`createPickup(超量) errorType 应=INVALID_PARAMS，实际=${pickOver.errorType} (code=${pickOver.code})`)
+  } else if (pickOver.errorType !== 'INVALID_STATE') {
+    // 提满后再提抛 `INVALID_STATE: 已支付可提数量不足`（order.js:6333/6530）——
+    // 两者都是 -400，但语义上这是"当前状态不允许"而非"入参不合法"，前缀已相应调整。
+    errors.push(`createPickup(超量) errorType 应=INVALID_STATE，实际=${pickOver.errorType} (code=${pickOver.code})`)
   }
   rec(`  ✓ createPickup(超量): 正确拒绝 errorType=${pickOver.errorType}`)
 

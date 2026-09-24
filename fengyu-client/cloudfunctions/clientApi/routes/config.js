@@ -1,22 +1,36 @@
 /**
  * 系统配置模块路由（客户端）
- * config.banners — 获取首页轮播图数量 + 版本号（无需认证）
+ * config.banners — 获取首页轮播图（已缩略的完整 URL 列表 + 版本号，无需认证）
  * config.fengyuguan — 获取凤御馆宣传图（无需认证）
  * config.shareGift — 获取分享礼展示规则（脱敏，无需认证）
+ * config.consumeAgreement — 获取消费协议（标题 + 正文 + 版本号，无需认证）
  * config.serviceHotline — 获取客服热线电话号（无需认证）
  * config.invalidateConfig — 主动清空 utils/config 内存缓存（admin 保存配置时广播，副作用仅限清一次缓存）
  */
 
 const pg = require('../db/pg')
 const { invalidateCache } = require('../utils/config')
+const { safeBannerThumbUrl } = require('../utils/image-banner')
 
 /**
- * 获取首页轮播图数量 + 缓存版本号。
+ * 获取首页轮播图。
  *
- * 返回 { count, v } 而非 URL 列表：客户端用自己的 env-aware CDN_BASE 拼固定路径
- * `${CDN_BASE}/banner/banner{N}.jpg?v=${v}`（<image> 加载，不受 wx.request 域名白名单限制）。
- * count/v 取自 system_configs.banner_count（admin saveSettings 每次保存写入，updated_at=NOW()），
- * 用 updated_at 当缓存版本号；无 banner_count 时按 banner_images 数组长度兜底。
+ * 返回 `{ count, v, images }`，其中 `images` 是**已施加缩略规则的完整 URL 列表**（issue #231）。
+ *
+ * 为什么把 URL 构造收回服务端：原先只下发 count/v、由客户端拼
+ * `${CDN_BASE}/banner/banner{N}.jpg?v=${v}`，导致 banner 是全站唯一绕开
+ * `safeThumbUrl` 防护的图片链路 —— 生产那张 3002×1039 的 banner 原图直发，解码 11.9MB，
+ * 而首页是流量最高的页面、swiper 还会预渲染相邻帧。
+ * 收回服务端后，后续调整尺寸不需要小程序发版（审核周期长）。
+ *
+ * banner 链路有三点与其它图片不同（对象键三段 / 覆盖式上传必须带 `?v=` /
+ * host 写死不从 `banner_images` 取），三条的完整论证见 `utils/image-banner.js`。
+ *
+ * ⚠️ **`count`/`v` 必须保留，不要因为"新版前端不读了"就删**：
+ * 小程序是**存量客户端**——用户设备上跑的旧版 `home.ts` 仍在读这两个字段自行拼 URL。
+ * 删掉 = 所有还没更新的小程序首页轮播直接空白（比"图略大"严重得多的回归）。
+ * 等灰度覆盖后再议。
+ *
  * 无需认证，公开接口。
  */
 async function banners(ctx) {
@@ -27,18 +41,60 @@ async function banners(ctx) {
   let count = 0
   let v = 0
   const cntRow = rows.find((r) => r.key === 'banner_count')
+  const imgRow = rows.find((r) => r.key === 'banner_images')
   if (cntRow) {
     count = parseInt(cntRow.value, 10) || 0
     v = Math.floor(Number(cntRow.v)) || 0
-  } else {
-    // 兜底：无 banner_count 时按 banner_images 数组长度
-    const imgRow = rows.find((r) => r.key === 'banner_images')
-    if (imgRow) {
-      try { count = JSON.parse(imgRow.value).length } catch { /* empty */ }
-      v = Math.floor(Number(imgRow.v)) || 0
-    }
+  } else if (imgRow) {
+    // 兜底：无 banner_count 时按 banner_images 数组长度。
+    // ⚠️ 必须判 isArray：value 是 admin 可写且无校验的，合法 JSON 但非数组时
+    // `.length` 得 undefined → 后面 Math.max 出 NaN → 下发 `count: null`
+    try {
+      const arr = JSON.parse(imgRow.value)
+      count = Array.isArray(arr) ? arr.length : 0
+    } catch { /* empty */ }
+    v = Math.floor(Number(imgRow.v)) || 0
   }
-  ctx.result = { count, v }
+
+  // ⚠️ `count` 必须**同样 clamp 后**再下发。
+  // 只 clamp 循环上界是不够的：存量客户端读的正是这个 `count`，
+  // 拿到 999999 就会 `Array.from({length: 999999})` 构造 99 万个 banner 对象 ——
+  // 服务端把自己保护住了，却把旧版小程序打挂（评审指出的自相矛盾）。
+  const safeCount = Math.min(Math.max(count, 0), MAX_BANNER_COUNT)
+  ctx.result = { count: safeCount, v, images: buildBannerUrls(safeCount, v) }
+}
+
+/**
+ * banner 张数上限。
+ *
+ * `count` 驱动下面的循环，而它来自 `system_configs.banner_count`（裸 text，
+ * admin 侧 `saveSettings` 无长度校验、UI 的 `max={0}` 也不限张数）。
+ * 不 clamp 的话 `banner_count='999999'` 会让这个**公开未认证接口**
+ * 生成 99 万条 URL —— 实测响应体 150MB，云函数直接 OOM，首页轮播接口全站不可用。
+ *
+ * 改动前 `count` 只是原样回显（代价 O(1)），是本 PR 让它变成了循环上界。
+ * 与 `PRODUCT_DETAIL_IMAGE_MAX_COUNT` 同一思路：**下发侧必须自己截断，不能信上游**。
+ * 20 远超运营实际用量（生产现为 1）。
+ */
+const MAX_BANNER_COUNT = 20
+
+/**
+ * 生成前 `count` 张 banner 的缩略 URL（`count` 须已 clamp）。
+ * 路径与 host 的口径见 `utils/image-banner.js`。
+ */
+function buildBannerUrls(count, v) {
+  const urls = []
+  for (let i = 1; i <= count; i += 1) {
+    const url = safeBannerThumbUrl(i, v)
+    if (!url) {
+      // 整体放弃而非跳过：宁可轮播整块不显示，也不给残缺序列。
+      // 前端对空数组不进 catch，没这行日志两端都不留痕。
+      console.warn('[config.banners] fail-closed: 无法生成合法 banner URL', { count, v, i })
+      return []
+    }
+    urls.push(url)
+  }
+  return urls
 }
 
 /**

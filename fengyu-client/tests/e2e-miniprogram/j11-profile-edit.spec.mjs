@@ -46,7 +46,8 @@ const STEPS = [
     // INJECT 模式下 auth.updateProfile 走 cloud.getWXContext() 真实 OPENID，
     // 影响 IDE 真实用户行；先 probe 拿真实 userId 用于 PG 断言。
     const probe = await ctx.mp.evaluate(async () => {
-      const r = await wx.cloud.callFunction({ name: 'clientApi', data: { action: 'auth.login' } })
+      const r = await wx.cloud.callFunction({ // 单 env 内并存 clientApi(prod 库) 与 clientApiDev(dev 库)：写死会让断言库与被测页面写入库分裂
+ name: (() => { try { const v = wx.getAccountInfoSync().miniProgram.envVersion; return v === 'release' || v === 'trial' ? 'clientApi' : 'clientApiDev' } catch (e) { return 'clientApiDev' } })(), data: { action: 'auth.login' } })
       return r.result?.data?.userId
     })
     ctx.realUserId = probe

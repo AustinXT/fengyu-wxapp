@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react"
 import { Card } from "@/components/ui/card"
 import { Select, SelectOption } from "@/components/ui/select"
+import { actionErrorMessage } from "@/lib/action-error"
 import { useUrlFilters } from "@/lib/hooks/use-url-filters"
 import { parseBoardParams } from "@/lib/data-center/params"
 import { getProductBoard } from "@/actions/data-center/product"
@@ -12,9 +13,44 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 import type { ProductBoardParams, ProductBoardResult } from "@/lib/data-center/types"
 
 // ── KPI 卡片矩阵（key 对应后端 ProductBoardResult.kpis）────────────────
+// #294：原 hint 的「未用完」「疗程卡」两个词都与 product.ts queryCardHolders 不符。
+// 权威口径见 metrics.md:728「持卡 = 已解锁次数大于 0（paid_sessions > 0），不按 product_type 过滤」。
+//
+// ⚠ 用词取「已付次数」而非 metrics.md 的内部术语「已解锁次数」：admin UI 全仓
+// 对 paid_sessions 的既有称呼是「已付」（order-detail-page.tsx:678「已用/已付/共」，
+// ticket 2026-05-19 D10=A），本 issue 治的就是文案不一致，不该再造第三个词。
+//
+// ⚠ 四条措辞守则（均由闸门 1/2 评审提出，详见 _tmp/issue-294/review/）：
+// ① **一个字都不要提 product_type 的枚举值**。SQL 确无 product_type 过滤，但家居产品
+//    session_count 为空 ⇒ paid_sessions 恒 NULL（lib/paid-sessions.ts:43，并由 sale_items
+//    的 chk_item_paid_sessions CHECK 兜住）⇒ `> 0` 对它恒 false —— 所以「不分疗程卡/
+//    家居产品」字面对、语义反。但反过来写「只统计疗程卡」同样错：**本页是 product_kind
+//    维度**（护理项目/家居产品/充值卡/体验卡，metrics.md:712/733），「疗程卡」是
+//    product_type 的值（enums.ts:14 二元枚举），在本页筛选器里根本找不到；而体验卡
+//    （is_experience capability，见 db/schema/product.ts:81 —— 全路径，**不是**同族的
+//    actions/data-center/product.ts）的 product_type 正是疗程卡、必有次数，
+//    用户照「只统计疗程卡」推断「选体验卡时持卡≈0」会与实际相反。
+//    → 连「家居产品无次数故不参与统计」也不能写：那是**数据惯例不是 SQL 保证**
+//      （products.ts 只要求疗程卡必须有次数，**并未反向禁止家居产品携带次数**；
+//      memory `project_product_session_count_invariant` 记过真出现脏数据的先例），
+//      而且「家居产品」同时是 product_kind 的筛选项名，照样会被读成「选它必为 0」。
+//    → 最终只描述 SQL 实际做的事：「存在『已付次数 > 0』品项的顾客去重计 1 人」，
+//      一个品类名都不提。
+// ② 不说「不限商品类型」——紧邻的筛选器就叫「一级/二级品项」，用户会读成
+//    「不受本页筛选影响」，而事实相反（resolveGrouping 的 filter 真会收窄卡片数字）。
+// ③ 占比不写「两者均为截面快照」——那是**正向保证**不是中立描述：用户看到
+//    集团恒 253%（issue #287）时的第一怀疑是「有时差」，这句恰好堵死该路径却不给真因，
+//    等于替 bug 背书。只点出分母口径，让异常自己暴露。
+// ④ 守则 ③ 的执行范围**包括下方 section**：section 若写「持卡人数 / 占比为截面快照…
+//    不随时间区间变化」，等于把同一句时差保证放回卡片正上方 3px 处、架空守则 ③。
+//    section 只讲持卡人数，占比的口径交给 hint。
 const KPI_CARD: KpiGridItem[] = [
-  { key: "cardHolders", label: "持卡人数", hint: "以当前时刻未用完疗程卡为准，不随时间区间变化" },
-  { key: "cardHolderRate", label: "持卡占比", hint: "持卡人数 ÷ 会员数（以当前时刻未用完疗程卡为准）" },
+  {
+    key: "cardHolders",
+    label: "持卡人数",
+    hint: "已支付的销售/转换/寄存单中，已付次数 > 0 即计入；不扣已核销；随上方品项筛选变化",
+  },
+  { key: "cardHolderRate", label: "持卡占比", hint: "持卡人数 ÷ 会员数（分母 = 全部会员）" },
 ]
 const KPI_CYCLE: KpiGridItem[] = [
   { key: "trialCount", label: "体验人数", hint: "区间内有购买但全历史未达标" },
@@ -54,7 +90,9 @@ export function ProductBoard() {
         if (!cancelled) setData(res)
       })
       .catch((e: unknown) => {
-        if (!cancelled) setError(e instanceof Error ? e.message : "加载失败")
+        // 生产构建会脱敏 message，必须走 actionErrorMessage 取 digest（issue #133）；
+        // validateScope 的 4 条拒绝理由为何到不了这里，见 lib/data-center/context.ts 的说明。
+        if (!cancelled) setError(actionErrorMessage(e, "请稍后重试"))
       })
       .finally(() => {
         if (!cancelled) setLoading(false)
@@ -116,15 +154,16 @@ export function ProductBoard() {
       <section className="flex flex-col gap-3">
         <h2 className="text-sm font-semibold text-[var(--foreground)]">持卡情况</h2>
         <div className="text-xs text-[var(--muted-foreground)]">
-          持卡人数 / 占比为截面快照（以当前时刻未用完疗程卡为准），不随时间区间变化。
+          持卡人数为截面快照（已支付的销售单/转换单/寄存单中，存在「已付次数 &gt; 0」品项的顾客
+          去重计 1 人；不扣已核销），不随时间区间变化。
         </div>
-        <KpiGrid items={KPI_CARD} kpis={kpis} columns={2} />
+        <KpiGrid items={KPI_CARD} kpis={kpis} columns={2} baseRanges={loading ? undefined : data?.timeRange} />
       </section>
 
       {/* KPI：体验 / 进入 / 复购（区间）*/}
       <section className="flex flex-col gap-3">
         <h2 className="text-sm font-semibold text-[var(--foreground)]">体验 / 进入 / 复购</h2>
-        <KpiGrid items={KPI_CYCLE} kpis={kpis} columns={4} />
+        <KpiGrid items={KPI_CYCLE} kpis={kpis} columns={4} baseRanges={loading ? undefined : data?.timeRange} />
       </section>
 
       {/* 明细表分 Tab：按市场 / 按门店 */}

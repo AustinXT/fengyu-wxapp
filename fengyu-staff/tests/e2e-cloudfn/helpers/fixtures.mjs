@@ -247,6 +247,28 @@ export async function ensureTestCommissionMatrix({
  * 创建测试员工（默认店长 manager 角色）。
  * @returns {Promise<{employeeId, openid, phone}>}
  */
+/**
+ * 腾出手机号 / openid：把**其它** employee_id 上占着同一手机号或 openid 的行清空。
+ *
+ * 为什么需要：`ON CONFLICT (employee_id)` 只处理同工号重建，处理不了
+ * 「同一手机号被另一个测试工号占着」——那会撞 uq_staff_users_phone。
+ * 而这种占用是**可能清不掉**的：一旦某个测试员工被 inventory_movements.created_by 引用
+ * （库存联动开启时提货会写流水），流水是 append-only（禁 UPDATE/DELETE），
+ * 员工行就永久删不掉，cleanupTestData 只会静默 skip，下一次建同号员工必撞。
+ * 这里把旧行的 phone/openid 置空（列可空）让号段可复用，行本身留着不动。
+ */
+async function releaseStaffIdentity(employeeId, phone) {
+  if (!phone) return
+  // 只腾手机号，**不动 openid**：openid 与工号在夹具里是配对的，
+  // 但多个用例会共用同一个 TEST_*_OPENID 常量配不同工号，顺手清 openid 会把
+  // 别人正在用的登录态清掉（实测会让 auth 解析不出门店，报「回款不存在或不属于本门店」）。
+  await pgQuery(
+    `UPDATE staff_wechat_users SET phone = NULL
+      WHERE employee_id <> $1 AND phone = $2`,
+    [employeeId, phone],
+  )
+}
+
 export async function createTestStaff({
   employeeId = TEST_MANAGER_EMP_ID,
   openid = TEST_MANAGER_OPENID,
@@ -260,6 +282,7 @@ export async function createTestStaff({
 } = {}) {
   await ensureTestStore()
 
+  await releaseStaffIdentity(employeeId, phone)
   await pgQuery(
     `INSERT INTO staff_wechat_users (
        employee_id, openid, phone, name, gender, store_id, org_node_id,
@@ -341,6 +364,7 @@ export async function createTestStaffWithRoles({
   if (!phone) throw new Error('createTestStaffWithRoles: phone required')
   if (!name) throw new Error('createTestStaffWithRoles: name required')
 
+  await releaseStaffIdentity(employeeId, phone)
   await pgQuery(
     `INSERT INTO staff_wechat_users (
        employee_id, openid, phone, name, gender, store_id, org_node_id,
@@ -471,9 +495,30 @@ export async function createTestProduct({
   isRechargeCard = false,
   serviceFee = 0,
 } = {}) {
-  // 一级品项（'护理项目' / '家居产品' / '充值卡' / '体验卡'）在生产库已 seed。
-  // 不再 INSERT 测试级 level-1 行，避免与生产同名 category_name 触发 LEFT JOIN 重复
-  // （createConversion 的 held query 通过 si.is_experience capability 列识别"体验单品卡"）。
+  // 一级品项（level-1，product_kind IS NULL）**按需补建**。
+  //
+  // 这里原先的假设是"'护理项目' / '家居产品' 等在生产库已 seed，测试不必建"，
+  // 但 2026-09-21 实测 dev/prod 的一级品类只有 其他/加项/家居/拓客引流卡/招牌/明星/王牌
+  // —— 夹具用的那几个名字一个都不在。后果很隐蔽：product.skuList 里有
+  //   JOIN product_categories parent ON parent.product_kind IS NULL
+  //                                 AND parent.category_name = pc.product_kind
+  // 这条 JOIN 会把测试 SKU 整个过滤掉，表现为"skuList 查不到刚建的 SKU"。
+  //
+  // 仍然保留原注释担心的那个风险：只有**确实不存在同名一级品类**时才建，
+  // 避免与生产同名行一起把 JOIN 放大成两行。
+  const existingTopCat = await pgQuery(
+    `SELECT category_id FROM product_categories
+      WHERE product_kind IS NULL AND category_name = $1 LIMIT 1`,
+    [productKind],
+  )
+  if (existingTopCat.length === 0) {
+    await pgQuery(
+      `INSERT INTO product_categories (category_id, category_name, product_kind, sort_order, is_valid)
+       VALUES ($1, $2, NULL, 0, true)
+       ON CONFLICT (category_id) DO UPDATE SET is_valid = true`,
+      [`${NS}_TOPCAT_${productKind}`, productKind],
+    )
+  }
   // 二级分类（product_kind=该一级名，sales_category 决定提成）
   const subCatId = categoryId || `${NS}_CAT_${suffix}`
   await pgQuery(
@@ -490,14 +535,18 @@ export async function createTestProduct({
   const skuId = `${NS}_SKU_${suffix}`
   const specName = inputSpecName || `${NS}_商品_${suffix}`
   await pgQuery(
+    // ⚠ upsert 必须把**所有**可选标记写回默认值，不能只更新传进来的那几列：
+    // 多个 smoke 共用同一 sku_id（suffix 相同即同一行），上一个用例把
+    // is_manager_special / special_price 标上了，下一个用例不重置就会读到别人的状态
+    // —— 实测 smoke-order-create-sales 因此断言到 is_manager_special=true。
     `INSERT INTO product_skus (
        sku_id, category_id, product_type, spec_name, price,
        session_count, sort_order, service_fee, is_shengmei,
-       is_experience, is_enabled
+       is_experience, is_enabled, is_manager_special, special_price
      )
      VALUES ($1, $2, $3::product_type, $4, $5,
              $6, 0, $7, $8,
-             $9, true)
+             $9, true, false, NULL)
      ON CONFLICT (sku_id) DO UPDATE
        SET category_id = EXCLUDED.category_id,
            product_type = EXCLUDED.product_type,
@@ -507,6 +556,8 @@ export async function createTestProduct({
            service_fee = EXCLUDED.service_fee,
            is_shengmei = EXCLUDED.is_shengmei,
            is_experience = EXCLUDED.is_experience,
+           is_manager_special = EXCLUDED.is_manager_special,
+           special_price = EXCLUDED.special_price,
            is_enabled = true`,
     [
       skuId, subCatId, productType, specName, price,
@@ -516,6 +567,76 @@ export async function createTestProduct({
   )
 
   return { categoryId: subCatId, skuId, specName }
+}
+
+/**
+ * 创建一个套餐商品（`products.is_bundle = true`）+ 一个分组 + 关联 SKU。
+ *
+ * 为 issue #232 引入：`bundleGroups` 的封面缩略链路在 L2 上此前是**零覆盖**——
+ * 不是断言写错，而是夹具从不建 bundle 商品，断言永远跑在空集上。
+ *
+ * `coverImage` 默认给一个真实形态的 COS URL（不是相对路径），
+ * 否则 `safeThumbUrl` 走 null 分支，照样验证不到正向链路。
+ *
+ * `market_scope` 留 NULL = 全市场可见，避免与 `buildBundleMarketScopeFilter` 的
+ * 市场过滤纠缠（那是 scope 模块自己的 smoke 该覆盖的事）。
+ */
+export async function createTestBundleProduct({
+  suffix = 'B1',
+  coverImage = 'https://6665-fengyu-client-prod-d1cga6909c0ba-1406056527.tcb.qcloud.la/product-covers/1789097186265-apa9p0.png',
+  price = 1999,
+  specialPrice = null,
+  skuIds = [],
+} = {}) {
+  const productId = `${NS}_BUNDLE_${suffix}`
+
+  // ⚠️ `products.category_id` NOT NULL 且 FK → **mall_categories**（不是 product_categories，
+  // 那是 SKU 侧的品项分类，两套分类体系）。少建这一行会报
+  // 「null value in column "category_id" of relation "products"」。
+  const mallCatId = `${NS}_MALLCAT`
+  await pgQuery(
+    `INSERT INTO mall_categories (category_id, category_name, category_group, sort_order)
+     VALUES ($1, $2, NULL, 0)
+     ON CONFLICT (category_id) DO NOTHING`,
+    [mallCatId, `${NS}_商城分类`],
+  )
+
+  await pgQuery(
+    `INSERT INTO products (
+       product_id, category_id, name, cover_image, description, price, special_price,
+       is_bundle, is_visible, sort_order, market_scope
+     )
+     VALUES ($1, $2, $3, $4, $5, $6, $7, true, true, 0, NULL)
+     ON CONFLICT (product_id) DO UPDATE
+       SET name = EXCLUDED.name,
+           cover_image = EXCLUDED.cover_image,
+           price = EXCLUDED.price,
+           special_price = EXCLUDED.special_price,
+           is_bundle = true,
+           deleted_at = NULL`,
+    [productId, mallCatId, `${NS}_套餐_${suffix}`, coverImage, `${NS} 测试套餐`, price, specialPrice],
+  )
+
+  const groupRows = await pgQuery(
+    `INSERT INTO mall_bundle_groups (product_id, group_name, pick_count, sort_order)
+     VALUES ($1, $2, $3, 0)
+     RETURNING id`,
+    [productId, `${NS}_分组_${suffix}`, skuIds.length > 1 ? 1 : null],
+  )
+  const groupId = groupRows[0].id
+
+  for (const [i, skuId] of skuIds.entries()) {
+    await pgQuery(
+      `INSERT INTO mall_product_skus (
+         product_id, sku_id, bundle_group_id, bundle_price, bundle_list_price, sort_order
+       )
+       VALUES ($1, $2, $3, $4, $5, $6)
+       ON CONFLICT DO NOTHING`,
+      [productId, skuId, groupId, price, price, i],
+    )
+  }
+
+  return { productId, groupId, coverImage }
 }
 
 // ────────────────────────────────────────────────────────────────────────
@@ -545,6 +666,12 @@ export async function createTestSaleOrder({
   isRechargeCard = false,
   salesCategory = null,
   prepaidCardAmount = 0,
+  // 储值卡「预选待扣」额度。两段式语义见 fengyu-staff/CLAUDE.md：开单只写
+  // pending_prepaid_card_amount 且**不动 prepaid_cards.balance**，真正扣卡发生在
+  // clientApi / payNotify / confirmOffline，结算后才转入 prepaid_card_amount。
+  // 要构造"待结算、卡未扣"的订单必须用这个参数——写 prepaidCardAmount 造出来的是
+  // 「卡已扣但余额没少」的自相矛盾态，confirmOffline 会当成没预选卡而把欠款全算现金。
+  pendingPrepaidCardAmount = 0,
   preferredEmployeeId = null,
   refSaleOrderId = null,
 } = {}) {
@@ -556,24 +683,26 @@ export async function createTestSaleOrder({
   try {
     await client.query('BEGIN')
 
-    const payableAmount = Number(totalAmount) - Number(prepaidCardAmount)
+    // 应付 = 总额 − 已结算卡额 − 预选待扣卡额（两者都不该由顾客再掏现金）
+    const payableAmount =
+      Number(totalAmount) - Number(prepaidCardAmount) - Number(pendingPrepaidCardAmount)
     await client.query(
       `INSERT INTO sale_orders (
          sale_order_id, status, sale_order_type, market_name, store_id,
          sale_order_datetime, client_user_id, client_phone, customer_name,
-         total_amount, prepaid_card_amount, payable_amount, received,
+         total_amount, prepaid_card_amount, pending_prepaid_card_amount, payable_amount, received,
          payment_method, opened_by, preferred_employee_id, allocation_status,
          ref_sale_order_id
        )
        VALUES ($1, $2::order_status, $3::sale_order_type, $4, $5,
                NOW(), $6, $7, $8,
-               $9, $10, $11, 0,
-               $12::payment_method, $13, $14, '待分配'::allocation_status,
-               $15)`,
+               $9, $10, $11, $12, 0,
+               $13::payment_method, $14, $15, '待分配'::allocation_status,
+               $16)`,
       [
         saleOrderId, status, saleOrderType, `${NS}_市场`, storeId,
         clientUserId, TEST_CLIENT_PHONE, `${NS}_顾客`,
-        totalAmount, prepaidCardAmount, payableAmount,
+        totalAmount, prepaidCardAmount, pendingPrepaidCardAmount, payableAmount,
         paymentMethod, openedBy, preferredEmployeeId,
         refSaleOrderId,
       ]
@@ -951,6 +1080,64 @@ export async function createTestCoupon({
   return { templateId: tplId, couponId: ucId }
 }
 
+/**
+ * 给已存在的款项行补「逐笔受领」明细（sale_payment_item_receipts，即 spir/spai）。
+ *
+ * 为什么夹具必须显式建它：真实链路里这行由 `utils/payment-allocatable.js` 的
+ * `capturePaymentAllocatables` 在付款事务内写；夹具直接 INSERT `sale_order_payments`
+ * 绕过了那一步，于是款项在「按回款逐笔」模型里没有任何可分配/可退的基数。
+ *
+ * 缺了它会以两种完全不同的面目暴露出来，都不指向夹具：
+ *   - 分配：`allocation.savePayment` 报「saleItemId … 不属于该回款」
+ *   - 退款：`refund-cascade` 的残值映射全为 0 → 「退款金额无法完整映射到商品行实收」
+ *
+ * @param {number} salePaymentId 款项行 id
+ * @param {string} saleOrderId   订单号
+ * @param {Array<{saleItemId: string, amount: number, salesCategory?: string}>} items
+ */
+export async function createPaymentItemReceipts(salePaymentId, saleOrderId, items) {
+  for (const it of items) {
+    await pgQuery(
+      `INSERT INTO sale_payment_item_receipts
+         (sale_payment_id, sale_order_id, sale_item_id, amount, sales_category, created_at)
+       VALUES ($1, $2, $3, $4, $5::sales_category, NOW())
+       ON CONFLICT (sale_payment_id, sale_item_id)
+       DO UPDATE SET amount = EXCLUDED.amount`,
+      [salePaymentId, saleOrderId, it.saleItemId, it.amount, it.salesCategory || '他销自耗'],
+    )
+  }
+}
+
+/**
+ * 建一笔「已支付」款项 + 配套的逐笔受领明细（真实付款链路的最小等价物）。
+ *
+ * 直接 INSERT `sale_order_payments` 而不配 receipts 是夹具里最常见的陷阱：
+ * 订单看着已支付，但退款映射与营业额分配都读不到基数。详见 createPaymentItemReceipts。
+ *
+ * @param {string} saleOrderId
+ * @param {{changeType?: string, amount: number, paymentMethod?: string,
+ *          items: Array<{saleItemId: string, amount: number, salesCategory?: string}>}} opts
+ * @returns {Promise<number>} salePaymentId
+ */
+export async function createPaidPayment(saleOrderId, {
+  changeType = '首次支付',
+  amount,
+  paymentMethod = '线下',
+  items,
+}) {
+  const rows = await pgQuery(
+    `INSERT INTO sale_order_payments
+       (sale_order_id, change_type, amount, payment_method, status, source_end, created_at, paid_at)
+     VALUES ($1, $2::payment_change_type, $3, $4::payment_method,
+             '已支付'::payment_flow_status, 'staff'::payment_source_end, NOW(), NOW())
+     RETURNING id`,
+    [saleOrderId, changeType, amount, paymentMethod],
+  )
+  const salePaymentId = rows[0].id
+  await createPaymentItemReceipts(salePaymentId, saleOrderId, items)
+  return salePaymentId
+}
+
 // ────────────────────────────────────────────────────────────────────────
 // 清理
 // ────────────────────────────────────────────────────────────────────────
@@ -1266,7 +1453,14 @@ export async function cleanupTestData(prefix = NS) {
     [`DELETE FROM staff_wechat_users WHERE phone = ANY($1::text[])`, [testPhones]],
 
     // ─── 11) 商品域 ───
-    [`DELETE FROM mall_product_skus WHERE sku_id LIKE $1`, [like]],
+    // ⚠️ 顺序：mall_product_skus / mall_bundle_groups 都 FK → products，必须先删。
+    // 之前这里漏了 products 与 mall_bundle_groups（夹具从不建套餐，所以没暴露）——
+    // 一旦有 smoke 建 is_bundle 商品而不清理，它会永久留在 dev 库里，
+    // 之后**所有** shopInit 调用都会看见这个幽灵套餐（#232 补 bundle 夹具时发现）。
+    [`DELETE FROM mall_product_skus WHERE sku_id LIKE $1 OR product_id LIKE $1`, [like]],
+    [`DELETE FROM mall_bundle_groups WHERE product_id LIKE $1`, [like]],
+    [`DELETE FROM products WHERE product_id LIKE $1`, [like]],
+    [`DELETE FROM mall_categories WHERE category_id LIKE $1`, [like]],
     [`DELETE FROM product_skus WHERE sku_id LIKE $1`, [like]],
     [`DELETE FROM product_categories WHERE category_id LIKE $1`, [like]],
 

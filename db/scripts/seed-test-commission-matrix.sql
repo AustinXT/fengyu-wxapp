@@ -21,7 +21,7 @@
 --       已有规则保留原值；如需覆盖，改 DO UPDATE。
 --
 -- 运行：
---   PGPASSWORD=fengyu123 psql -h 47.113.202.7 -p 5434 -U fengyu -d fengyu \
+--   PGPASSWORD=fengyu123 psql -h 101.34.242.103 -p 5433 -U fengyu -d fengyu_wxapp \
 --     -f db/scripts/seed-test-commission-matrix.sql
 -- ============================================================================
 

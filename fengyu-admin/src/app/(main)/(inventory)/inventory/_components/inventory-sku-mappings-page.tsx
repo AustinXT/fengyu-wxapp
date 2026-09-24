@@ -19,7 +19,9 @@ import { Button } from '@/components/ui/button'
 import { DataTable, type Column } from '@/components/ui/data-table'
 import { Dialog, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
+import { Pagination } from '@/components/ui/pagination'
 import { Select } from '@/components/ui/select'
+import { normalizePage } from '@/lib/paging'
 
 interface ComponentFormRow {
   inventorySkuId: string
@@ -36,19 +38,27 @@ function configurationBadge(status: InventoryCompositionRow['configurationStatus
   return <Badge variant="outline" className="border-[#C0322A] bg-[#FFF1F0] text-[#C0322A]">未配置</Badge>
 }
 
+const PAGE_SIZE_OPTIONS = [10, 20, 50, 100]
+
 export default function InventorySkuMappingsPage({
   rows,
+  total,
   options,
   canCreate,
   canUpdate,
 }: {
   rows: InventoryCompositionRow[]
+  total: number
   options: InventoryCompositionOptions
   canCreate: boolean
   canUpdate: boolean
 }) {
   const router = useRouter()
   const { get, setMany } = useUrlFilters()
+  const page = normalizePage(get('page', '1'))
+  const pageSize = PAGE_SIZE_OPTIONS.includes(Number(get('size')))
+    ? Number(get('size'))
+    : 20
   const [searchInput, setSearchInput] = useState(get('q'))
   const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [editing, setEditing] = useState<InventoryCompositionRow | null>(null)
@@ -62,7 +72,7 @@ export default function InventorySkuMappingsPage({
   const handleSearchChange = useCallback((value: string) => {
     setSearchInput(value)
     if (searchTimerRef.current) clearTimeout(searchTimerRef.current)
-    searchTimerRef.current = setTimeout(() => setMany({ q: value }), 300)
+    searchTimerRef.current = setTimeout(() => setMany({ q: value, page: '' }), 300)
   }, [setMany])
 
   function openEditor(row: InventoryCompositionRow) {
@@ -185,7 +195,7 @@ export default function InventorySkuMappingsPage({
         <div className="flex flex-wrap items-center gap-2">
           <Select
             value={get('status')}
-            onChange={(event) => setMany({ status: event.target.value })}
+            onChange={(event) => setMany({ status: event.target.value, page: '' })}
             className="w-36"
             aria-label="配置状态筛选"
           >
@@ -202,7 +212,7 @@ export default function InventorySkuMappingsPage({
           />
           <Button variant="outline" onClick={() => {
             setSearchInput('')
-            setMany({ q: '', status: '' })
+            setMany({ q: '', status: '', page: '' })
           }}>
             <RotateCcw /> 重置
           </Button>
@@ -210,6 +220,14 @@ export default function InventorySkuMappingsPage({
       </div>
 
       <DataTable columns={columns} data={rows} emptyText="暂无家居产品销售商品" />
+      <Pagination
+        total={total}
+        page={page}
+        pageSize={pageSize}
+        pageSizeOptions={PAGE_SIZE_OPTIONS}
+        onPageChange={(next) => setMany({ page: String(next) })}
+        onPageSizeChange={(size) => setMany({ size: String(size), page: '' })}
+      />
 
       <Dialog open={editing !== null} onOpenChange={(open) => !open && setEditing(null)}>
         <DialogHeader>
@@ -252,6 +270,9 @@ export default function InventorySkuMappingsPage({
                         type="number"
                         min={1}
                         step={1}
+                        // quantity_per_sale_unit 是 integer 列，上界即 int4 上限；
+                        // 超出会让 PG 抛 22003，生产脱敏后只剩一个通用 500 页
+                        max={2147483647}
                         value={component.quantityPerSaleUnit}
                         onChange={(event) => updateComponent(index, {
                           quantityPerSaleUnit: Number(event.target.value),

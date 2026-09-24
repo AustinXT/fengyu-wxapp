@@ -4,7 +4,7 @@ import { db } from '@/db'
 import { clientWechatUsers, staffWechatUsers } from '@db/user'
 import { saleOrders } from '@db/order'
 import { stores, orgNodes } from '@db/org'
-import { eq, and, or, desc, asc, inArray, sql, ilike, isNotNull, getTableColumns } from 'drizzle-orm'
+import { eq, and, or, gt, desc, asc, inArray, sql, ilike, isNotNull, getTableColumns } from 'drizzle-orm'
 import type { SQL } from 'drizzle-orm'
 import type { Customer, SaleOrder, SaleItem, Appointment, AuthSession, CustomerCoupon, CouponType, CouponStatus } from '@/lib/types'
 import { scopeCondition, isAdminScope, isInScope, requireAdmin } from '@/lib/permissions'
@@ -14,13 +14,15 @@ import { logOperation, logUpdate } from '@/lib/operation-log'
 import { pgErrorCode } from '@/lib/pg-error'
 import { fmtDate } from '@/lib/datetime'
 import {
-  offsetPageResult,
-  resolveExportOffsetPage,
+  resolveExportBatchLimit,
+  resolveExportKeysetPage,
   type ExportBatchOptions,
   type ExportBatchResult,
 } from '@/lib/export-pagination'
+import { ApiError } from '@/lib/api-error'
 import { storeInMarketCondition } from '@/lib/market-store-sql'
 import { deriveHomeProductStatus, type CustomerHomeProduct } from '@/lib/home-product'
+import { businessErrorMessage } from '@/lib/action-error'
 
 const WORKFINE_OVERRIDE_FIELD_MAP = {
   customerSource: 'customer_source',
@@ -123,7 +125,7 @@ function serializeCustomer(row: CustomerRow): Customer {
 /** 推荐员工当前姓名优先，关联失效或旧 client 仅写快照时回退历史姓名。 */
 const promoterName = sql<string | null>`COALESCE(${promoterCurrentNameSql}, ${clientWechatUsers.promoterEmployeeName})`
 
-/** 顾客导出取数列（12 表头所需字段 + storeName + promoterName） */
+/** 顾客导出取数列（14 表头所需字段 + storeName + promoterName） */
 const exportCustomerColumns = {
   userId: clientWechatUsers.userId,
   name: clientWechatUsers.name,
@@ -135,6 +137,8 @@ const exportCustomerColumns = {
   customerSource: clientWechatUsers.customerSource,
   birthday: clientWechatUsers.birthday,
   boundEmployeeName: clientWechatUsers.boundEmployeeName,
+  createdAt: clientWechatUsers.createdAt,
+  becameMemberAt: clientWechatUsers.becameMemberAt,
   storeName,
   promoterName,
 }
@@ -227,6 +231,7 @@ export interface CustomerFilters {
 // 与 `parseOrderFilters` / `parseServiceOrderFilters` / `parseCardFilters` 同处一处，
 // 避免 page.tsx 与 action 间出现筛选映射漂移。
 import { parseCustomerFilters } from '@/lib/list-filters'
+import { resolvePaging } from '@/lib/paging'
 
 /** 构建顾客列表/导出共用 WHERE 条件（scope + 8 筛选维度 + 姓名/手机号搜索） */
 function buildCustomerConditions(
@@ -289,9 +294,12 @@ export interface PaginatedCustomers {
 export const getCustomersPaginated = withPermission(
   'customer:list',
   async (session, filters: CustomerFilters = {}): Promise<PaginatedCustomers> => {
-  const page = Math.max(1, filters.page || 1)
-  const pageSize = [10, 20, 50].includes(filters.pageSize ?? 0) ? filters.pageSize! : 20
-  const offset = (page - 1) * pageSize
+  const { page, pageSize, offset } = resolvePaging({
+    page: filters.page,
+    pageSize: filters.pageSize,
+    defaultPageSize: 20,
+    allowedPageSizes: [10, 20, 50],
+  })
 
   const whereClause = and(...buildCustomerConditions(session, filters))
 
@@ -303,7 +311,7 @@ export const getCustomersPaginated = withPermission(
       .from(clientWechatUsers)
       .where(whereClause)
       // 例外：picker 字母序
-      .orderBy(asc(clientWechatUsers.name))
+      .orderBy(asc(clientWechatUsers.name), asc(clientWechatUsers.userId))
       .limit(pageSize)
       .offset(offset),
   ])
@@ -315,7 +323,7 @@ export const getCustomersPaginated = withPermission(
   },
 )
 
-/** 顾客导出行（对应 12 列表头） */
+/** 顾客导出行（对应 14 列表头） */
 export interface ExportCustomerRow {
   name: string | null
   phone: string | null
@@ -330,6 +338,24 @@ export interface ExportCustomerRow {
   promoterName: string | null
   customerSource: string | null
   birthday: string | null
+  /**
+   * 「建档日期」列：client_wechat_users.created_at 的日期部分。
+   *
+   * 语义是本系统建档时刻——建行发生在 clientApi 的 `auth.bindPhone`（`auth.js` 绑手机号时
+   * INSERT），不是 `auth.login`（不落库行），也不是 `bindStore`（它要求行已存在且有 phone）。
+   * WorkFine 存量顾客则是首次同步日。刻意不叫「注册日期」：data-center 的「注册」指
+   * became_member_at（会员注册），两处同名会让甲方拿两张表对不上数。
+   */
+  createdAt: string | null
+  /**
+   * 「成为会员日期」列：became_member_at 的日期部分，非会员客为 null。
+   *
+   * ⚠️ 口径是「确立会员资格的首笔达标单」`COALESCE(paid_at, created_at)`，而历史订单的
+   * paid_at 写的是历史销售日 → 老顾客这一列会**早于**「建档日期」（prod 实测 1845 个会员客里
+   * 1476 个如此，最极端早 1457 天）。这是数据本来的样子，不是倒挂 bug：顾客 2022 年就在
+   * 线下成为会员，2026 年才被录入本系统。
+   */
+  becameMemberAt: string | null
 }
 
 /**
@@ -339,29 +365,50 @@ export interface ExportCustomerRow {
  *   SUM(GREATEST(received - refunded_amount, 0)) FILTER (WHERE sale_order_type IN ('销售单','转换单'))
  * 含 WorkFine 历史单、不限支付状态，故数值与「消费档位」列严格对应。
  * 推荐人 = 关联员工当前姓名；关联失效或旧 client 仅写姓名时回退快照。
+ *
+ * 分页是 keyset（#183 从 offset 改过来），排序键是**不可变主键 user_id**：
+ * offset 翻页下新顾客建档就会顶掉边界行；而若沿用列表页的 `asc(name)` 做游标首键，
+ * 一个尚未导出的顾客被改名后会移到游标之前、**永久漏掉且无痕迹**（name 可被
+ * updateCustomer 改写，userId 只能唯一化同名行，救不了整行的排序位置）。
+ * 代价是导出不再按姓名字母序 —— 拿到 xlsx 后按「姓名」列排一下即可，
+ * 而漏掉的行是找不回来的，故取正确性。
  */
 export const exportCustomers = withPermission(
   'customer:list',
   async (
     session,
     params: Record<string, string | undefined>,
-    options?: ExportBatchOptions,
-  ): Promise<ExportBatchResult<ExportCustomerRow>> => {
+    options?: ExportBatchOptions<string>,
+  ): Promise<ExportBatchResult<ExportCustomerRow, string>> => {
     const filters = parseCustomerFilters(params)
-    const whereClause = and(...buildCustomerConditions(session, filters))
-    const page = resolveExportOffsetPage(options)
+    const limit = resolveExportBatchLimit(options?.limit)
+    const cursor = options?.cursor
+    // 只有 undefined 代表「首批」；空串 / 非字符串一律视为畸形游标，不能静默从头重扫
+    if (cursor !== undefined && (typeof cursor !== 'string' || !cursor)) {
+      throw new ApiError('INVALID_STATE', '导出分页游标无效')
+    }
+    const whereClause = and(
+      ...buildCustomerConditions(session, filters),
+      ...(cursor ? [gt(clientWechatUsers.userId, cursor)] : []),
+    )
 
     const query = db
       .select(exportCustomerColumns)
       .from(clientWechatUsers)
       .where(whereClause)
-      // 例外：picker 字母序（与列表一致）；userId 让 worker 分页在同名顾客下保持稳定。
-      .orderBy(asc(clientWechatUsers.name), asc(clientWechatUsers.userId))
-    const dataRows = page
-      ? await query.limit(page.limit + 1).offset(page.offset)
-      : await query
+      // 例外：导出走 keyset 分页，排序键必须不可变（见上方注释），故不用列表页的姓名字母序。
+      .orderBy(asc(clientWechatUsers.userId))
+    const fetchedRows = limit == null
+      ? await query
+      : await query.limit(limit + 1)
+    const { pageRows, hasMore, nextCursor } = resolveExportKeysetPage(
+      fetchedRows,
+      limit,
+      (lastRow) => lastRow.userId,
+    )
 
-    const userIds = dataRows.map((r) => r.userId)
+    // 补查只针对本页（探测行已切掉），避免多算一个顾客的累计消费
+    const userIds = pageRows.map((r) => r.userId)
 
     // 批量补查累计消费（spending_tier 口径，1 次聚合避免 N+1）
     const spendMap = new Map<string, string>()
@@ -380,7 +427,7 @@ export const exportCustomers = withPermission(
       }
     }
 
-    const rows: ExportCustomerRow[] = dataRows.map((r) => ({
+    const rows: ExportCustomerRow[] = pageRows.map((r) => ({
       name: r.name,
       phone: r.phone,
       storeName: r.storeName,
@@ -393,9 +440,19 @@ export const exportCustomers = withPermission(
       promoterName: r.promoterName,
       customerSource: r.customerSource,
       birthday: r.birthday ? fmtDate(r.birthday) : null,
+      // timestamptz 必须走 fmtDate（Asia/Shanghai 还原），裸截 UTC 会在 00:00~08:00 建档的行上偏一天
+      createdAt: r.createdAt ? fmtDate(r.createdAt) : null,
+      becameMemberAt: r.becameMemberAt ? fmtDate(r.becameMemberAt) : null,
     }))
 
-    return offsetPageResult(rows, page)
+    return {
+      rows,
+      truncated: false,
+      hasMore,
+      // 用 !== undefined 而不是真值判断：游标契约里空串是「畸形」，真值判断会在
+      // hasMore 为真时悄悄不带游标，让 worker 抛 INVALID_STATE（fail-safe 但契约不对称）
+      ...(nextCursor !== undefined ? { nextCursor } : {}),
+    }
   },
 )
 
@@ -635,32 +692,62 @@ export const getCustomerHomeProducts = withPermission(
     if (!customer) return []
 
     const rows = await db.execute(sql`
-      WITH pickup_totals AS (
-        SELECT sale_item_id, SUM(pickup_quantity)::int AS picked_quantity
-          FROM pickup_records
-         GROUP BY sale_item_id
-      ), home_products AS (
+      WITH conversion_totals AS (
+        -- #154 拆列后件数直读 sale_items.converted_quantity，这里只剩**金额**：
+        -- 折抵额度按金额结算，不能由「已转换件数 × 单价」推算（#145/#153：折 4 件可能带走
+        -- ¥450 而非 ¥400，用件数推算会让多次折抵累计超过累计实收）。
+        -- 只有「已关闭」完成过 rollback（数量已退回），故只排除它；其余状态（含"支付失败"）
+        -- 扣减仍然生效，必须计入已转换。删除订单的转出行已随主单消失。
+        SELECT out_item.ref_sale_item_id AS sale_item_id,
+               SUM(GREATEST(0, -out_item.received::numeric)) AS converted_amount
+          FROM sale_items out_item
+          JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id
+         WHERE out_item.item_direction = '转出'
+           AND out_item.product_type = '家居产品'
+           AND out_item.ref_sale_item_id IS NOT NULL
+           AND conv_order.status <> '已关闭'
+         GROUP BY out_item.ref_sale_item_id
+      ), home_product_rows AS (
         SELECT
+          COALESCE(si.sale_item_group_id, si.sale_item_id) AS sale_item_group_id,
           si.sale_item_id,
           si.sale_order_id,
           COALESCE(si.product_name, '家居产品') AS product_name,
           COALESCE(ps.unit, '盒') AS unit,
           si.quantity::int AS purchased_quantity,
-          LEAST(
-            si.quantity,
-            GREATEST(0, COALESCE(si.picked_up_quantity, 0))
-          )::int AS settled_quantity,
-          LEAST(
-            LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0))),
-            GREATEST(0, COALESCE(pt.picked_quantity, 0))
-          )::int AS picked_quantity,
+          -- #154：三语义各有独立列，「已结算」回归派生量 = 已提货 + 已退款 + 已转换。
+          LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0) + COALESCE(si.refunded_quantity, 0) + COALESCE(si.converted_quantity, 0)))::int AS settled_quantity,
+          LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0)))::int AS picked_quantity,
+          LEAST(si.quantity, GREATEST(0, COALESCE(si.refunded_quantity, 0)))::int AS refunded_quantity,
+          LEAST(si.quantity, GREATEST(0, COALESCE(si.converted_quantity, 0)))::int AS converted_quantity,
+          -- #145/#153：行级可提件数 = min(物理未结算, floor(剩余已付 / 单价))，与折抵额度同一口径。
+          -- 剩余已付 = 行实收 − 已提货金额 − 已转走金额；退款不在此处扣（received 已扣过）。
+          -- 必须按金额算而非「已付件数 − 已提 − 已折抵件数」：折抵金额含余数时两者不等，
+          -- 折 4 件带走 ¥450 后再回款 ¥50，按件数会多放出 1 件（累计兑现超实收）。
           CASE
+            WHEN o.sale_order_type = '寄存单' OR si.sale_amount <= 0
+              THEN GREATEST(0, si.quantity - LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0) + COALESCE(si.refunded_quantity, 0) + COALESCE(si.converted_quantity, 0))))
+            ELSE LEAST(
+              GREATEST(0, si.quantity - LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0) + COALESCE(si.refunded_quantity, 0) + COALESCE(si.converted_quantity, 0)))),
+              GREATEST(0, FLOOR((GREATEST(0, si.received::numeric)
+                - GREATEST(0, COALESCE(si.picked_up_quantity, 0)) * si.unit_real_price::numeric
+                - COALESCE(ct.converted_amount, 0)) / NULLIF(si.unit_real_price::numeric, 0)))::int
+            )
+          END AS row_pending_pickup,
+          CASE
+            -- 寄存单：货本就属于顾客，全额可提（sale_amount 只是原价快照，received 不代表欠款）。
+            -- 判据与 #120 展示侧 is_deposit 同源；刻意不用疗程卡那条 total_amount<=0——后者会连带覆盖
+            -- 转换单/零总额单，且 total_amount 无 CHECK 约束，负值会静默放行。
+            WHEN o.sale_order_type = '寄存单' THEN si.quantity
             WHEN si.sale_amount <= 0 THEN si.quantity
             ELSE LEAST(
               si.quantity,
               FLOOR(GREATEST(0, si.received::numeric) * si.quantity / NULLIF(si.sale_amount::numeric, 0))::int
             )
           END AS paid_quantity,
+          si.sale_amount::numeric AS row_sale_amount,
+          GREATEST(0, si.received::numeric) AS row_received,
+          (o.sale_order_type = '寄存单') AS is_deposit,
           o.store_id,
           s.store_name,
           COALESCE(o.paid_at, o.sale_order_datetime, o.created_at) AS purchased_at,
@@ -674,24 +761,57 @@ export const getCustomerHomeProducts = withPermission(
         JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
         LEFT JOIN stores s ON s.store_id = o.store_id
         LEFT JOIN product_skus ps ON ps.sku_id = si.sku_id
-        LEFT JOIN pickup_totals pt ON pt.sale_item_id = si.sale_item_id
+        LEFT JOIN conversion_totals ct ON ct.sale_item_id = si.sale_item_id
         WHERE o.client_user_id = ${userId}
           AND o.status IN ('已支付', '部分支付', '已完成')
-          AND si.item_direction = '购买'
+          -- #145/#153：转换单换入的家居与购买行同权（与疗程卡侧放行写法同源）。
+          -- sale_amount>0 的转入行，received 已由 paid-sessions STEP 1.6 重建为「转出旧卡
+          -- 价值 + 本单净到账」，FLOOR(received × qty / sale_amount) 天然成立；sale_amount<=0
+          -- 的转入行走上方赠品分支全额可提（STEP 1.6 带 sale_amount>0 过滤，刻意不碰 0 元行，
+          -- 与购买侧 0 元赠品行同口径）。两类都不需要为「转入」另加满付分支。
+          AND (
+            si.item_direction = '购买'
+            OR (o.sale_order_type = '转换单' AND si.item_direction = '转入')
+          )
           AND si.product_type = '家居产品'
+      ), home_products AS (
+        -- 家居产品逐件落库（quantity 恒为 1），必须按 sale_item_group_id 合并，
+        -- 否则同一组合套餐在 admin 会摊成 N 行、金额也按行拆散，与三端口径分叉。
+        SELECT sale_item_group_id,
+               MIN(si.sale_item_id) AS sale_item_id,
+               MIN(si.sale_order_id) AS sale_order_id,
+               MIN(COALESCE(si.product_name, '家居产品')) AS product_name,
+               MIN(si.unit) AS unit,
+               SUM(si.purchased_quantity)::int AS purchased_quantity,
+               SUM(si.settled_quantity)::int AS settled_quantity,
+               SUM(si.picked_quantity)::int AS picked_quantity,
+               SUM(si.refunded_quantity)::int AS refunded_quantity,
+               SUM(si.converted_quantity)::int AS converted_quantity,
+               SUM(si.row_pending_pickup)::int AS pending_pickup_quantity,
+               SUM(si.paid_quantity)::int AS paid_quantity,
+               SUM(si.row_sale_amount) AS sale_amount_total,
+               SUM(si.row_received) AS received_total,
+               BOOL_OR(si.is_deposit) AS is_deposit,
+               MIN(si.store_id) AS store_id,
+               MIN(si.store_name) AS store_name,
+               MAX(si.purchased_at) AS purchased_at,
+               BOOL_OR(si.refund_pending) AS refund_pending
+          FROM home_product_rows si
+      GROUP BY sale_item_group_id
       ), home_product_balances AS (
         SELECT *,
-               (settled_quantity - picked_quantity)::int AS refunded_quantity,
+               -- #154 前「已退款」只能由 settled − 已提货 − 已转换 倒推；拆列后直读独立列。
                (purchased_quantity - settled_quantity)::int AS remaining_quantity,
-               LEAST(
-                 purchased_quantity - settled_quantity,
-                 GREATEST(paid_quantity - picked_quantity, 0)
-               )::int AS pending_pickup_quantity
+               -- 寄存单的 sale_amount 只是原价快照、received 恒为历史值，两者相减不是欠款
+               -- （寄存的货本就属于顾客）。金额列一律留空，与导出口径一致。
+               CASE WHEN is_deposit THEN NULL
+                    ELSE GREATEST(0, sale_amount_total - received_total)::numeric(12, 2)
+               END AS unpaid_amount
           FROM home_products
       )
       SELECT *
         FROM home_product_balances
-       WHERE picked_quantity > 0 OR pending_pickup_quantity > 0
+       WHERE picked_quantity > 0 OR remaining_quantity > 0 OR converted_quantity > 0
     ORDER BY (pending_pickup_quantity > 0) DESC,
              purchased_at DESC,
              sale_item_id
@@ -703,8 +823,14 @@ export const getCustomerHomeProducts = withPermission(
       const remainingQuantity = Number(row.remaining_quantity ?? 0)
       const paidQuantity = Number(row.paid_quantity ?? 0)
       const pendingPickupQuantity = Number(row.pending_pickup_quantity ?? 0)
+      const convertedQuantity = Number(row.converted_quantity ?? 0)
+      // 待付清行的欠款金额：received 是行级净实收（已扣该行退款），故对退过款的行
+      // sale_amount - received 会把"退掉的钱"误算成欠款；寄存单行 SQL 已置 NULL。
+      const unpaidAmount =
+        refundedQuantity > 0 || row.unpaid_amount == null ? null : Number(row.unpaid_amount)
       return {
         saleItemId: String(row.sale_item_id),
+        saleItemGroupId: row.sale_item_group_id == null ? null : String(row.sale_item_group_id),
         saleOrderId: String(row.sale_order_id),
         productName: String(row.product_name || '家居产品'),
         unit: String(row.unit || '盒'),
@@ -712,13 +838,18 @@ export const getCustomerHomeProducts = withPermission(
         paidQuantity,
         pickedQuantity,
         refundedQuantity,
+        convertedQuantity,
         remainingQuantity,
         pendingPickupQuantity,
+        unpaidAmount,
         status: deriveHomeProductStatus(
           Boolean(row.refund_pending),
           pickedQuantity,
           refundedQuantity,
           pendingPickupQuantity,
+          remainingQuantity,
+          unpaidAmount,
+          convertedQuantity,
         ),
         storeId: String(row.store_id),
         storeName: (row.store_name as string | null) ?? null,
@@ -987,6 +1118,71 @@ export const getCustomerServiceOrders = withPermission(
   },
 )
 
+/**
+ * 「绑定美容师」这个第二主体的解析 + 校验 —— `updateCustomer` 与 `assignCustomer` 的单源。
+ *
+ * 两者写的是**同一张表的同一列**（`bound_employee_id` + 冗余姓名）、吃**同一个权限**
+ * `customer:update`，校验必须走同一条路径。#250 之前 `assignCustomer` 有存在性 + scope 校验，
+ * `updateCustomer` 只查了个姓名 —— 门店 A 的 manager 可以
+ * `updateCustomer(userId, { boundEmployeeId: '<门店B的美容师>' })` 绕开 guard，
+ * 把本店顾客的业绩归属注入他人 scope；传不存在的 ID 则写下 `bound_employee_name = null` 悬挂引用。
+ *
+ * **「不存在」与「存在但不在 scope 内」合并成同一条文案，且两条路径都零写入**
+ * —— 对齐 #228 在 `updateEmployee` 上确立的口径（commit 2c27c34a）：分成两句话
+ * （原 `assignCustomer` 的「员工不存在」/「无权分配给该门店的员工」）就能拿任意 employeeId
+ * 探测它是否真实存在。合并后两者逐字相同。
+ *
+ * scope 判据用 `isInScope(storeId)`，**刻意不用** `isEmployeeRowVisible` 的
+ * store ∪ orgNode 双维度（那是 `assignRole` 侧的口径）：绑定美容师是门店业绩归属，
+ * 直挂市场 / 职能部门（`store_id IS NULL`）的员工本就不该成为顾客的绑定美容师，
+ * 放宽到双维度等于扩大可写集合。无门店的员工直接拒绝 —— 写成显式的 `!emp.storeId`
+ * 而不是 `isInScope(session, emp.storeId ?? '')`：后者能挡住只是因为碰巧没有
+ * `store_id = ''` 的门店行（PG text 主键允许空串，schema 无 CHECK），
+ * 那是数据前提不是代码约束，不该让安全判定借道它。
+ *
+ * 在职状态**不**校验 —— 与 `assignCustomer` 既有行为一致（存量绑定关系里就有离职美容师）。
+ * 这与同文件 `promoterEmployeeId` 的口径（校验在职、刻意不校验 scope）是两套，各有出处，勿互相对齐。
+ *
+ * ⚠️ 已知第四处写入未收敛：`mergeClientProfile` 从 orphan 行搬 `boundEmployeeId`
+ * 而 orphan 行本身无 scope 校验。那里是「孤儿档案合并」语义（仅在源字段为空时搬历史值），
+ * 「遇到 scope 外归属该拒绝合并 / 跳过该字段 / 照搬」属业务口径，待产品拍板后另行处理。
+ *
+ * ⚠️ **刻意不做「员工门店 == 顾客门店」的互查**（闸门 2 GLM 谱系提出）。
+ * 本函数只回答「这个员工对当前操作者可见吗」，顾客侧的可见性由调用方各自的 `scopeCond`
+ * / `isInScope(boundStoreId)` 负责 —— 两个主体各自对 session 过闸，但不互相校验。
+ * 于是多店权限者可以造出「B 店顾客挂 A 店美容师」的跨店组合。
+ * 这不是本 PR 引入的（三条路径一向如此），且「跨店绑定是否合法」是业务口径：
+ * 本系统本就有支援门店 / 出差 / 跨店服务的概念。要收紧需产品先拍板，已列 follow-up。
+ * 在此之前**不要**「顺手对齐」加上互查 —— 那会直接打断跨店支援的日常流程。
+ */
+async function resolveBoundEmployee(
+  session: AuthSession,
+  employeeId: string,
+): Promise<{ ok: true; employeeId: string; name: string | null } | { ok: false; message: string }> {
+  // 运行时类型守卫：Server Action 是带 cookie 即可直调的 RPC，TS 形参类型对实参没有约束力。
+  // 非字符串会在 `.trim()` 处炸成 TypeError → 500。放在 helper 里，三个入口一并覆盖。
+  if (employeeId !== null && employeeId !== undefined && typeof employeeId !== 'string') {
+    return { ok: false, message: '绑定美容师参数不合法' }
+  }
+  // 空值挡板下沉到 helper（原先只有 assignCustomer 的调用方有，updateCustomer 没有）。
+  // 判空与取值必须同源：只 trim 判空却写回原值，`'EMP-1 '` 会原样落库，
+  // 而该列靠应用层 JOIN（无 FK），带空白的变体会让所有 `ON bound_employee_id = 'EMP-1'` 断裂。
+  // 归一后的 ID 由返回值下发，三个调用方一律写 `resolved.employeeId`，不要再用自己的入参。
+  const normalized = employeeId?.trim()
+  if (!normalized) {
+    return { ok: false, message: '请选择美容师' }
+  }
+  const [emp] = await db
+    .select({ name: staffWechatUsers.name, storeId: staffWechatUsers.storeId })
+    .from(staffWechatUsers)
+    .where(eq(staffWechatUsers.employeeId, normalized))
+    .limit(1)
+  if (!emp || !emp.storeId || !isInScope(session, emp.storeId)) {
+    return { ok: false, message: '员工不存在或无权分配' }
+  }
+  return { ok: true, employeeId: normalized, name: emp.name ?? null }
+}
+
 export const updateCustomer = withPermission(
   'customer:update',
   async (
@@ -1070,20 +1266,93 @@ export const updateCustomer = withPermission(
     ]))
   }
 
-  // boundEmployeeId 变更时同步写入冗余姓名
-  if ('boundEmployeeId' in data) {
-    if (data.boundEmployeeId) {
-      const [emp] = await db.select({ name: staffWechatUsers.name }).from(staffWechatUsers)
-        .where(eq(staffWechatUsers.employeeId, data.boundEmployeeId)).limit(1)
-      updateData.boundEmployeeName = emp?.name ?? null
-    } else {
+  /*
+   * boundEmployeeId 的第二主体校验（#250，与 assignCustomer / createCustomer 共用 resolveBoundEmployee）。
+   * 两处刻意设计，改之前先读完：
+   *
+   * ① **空串归一为解绑**。原先 `''` 会落进「清空」分支只把姓名置 null，
+   *    而 `updateData` 来自 `filter(v !== undefined)`，`''` 照样写进 bound_employee_id
+   *    → 留下「ID 是空串、姓名是 NULL」的第三态。该列无 FK 拦不住，且下游两头漏统：
+   *    staff mgmt-dashboard 的归属榜按 `IS NOT NULL` 收进来再被 JOIN 丢掉，
+   *    而「无归属新会员」监控只数 `IS NULL`。
+   *
+   * ② **只在值真的变了时才因校验失败而拒绝**。前端 handleSave 对该字段是**无条件重发**
+   *    （`customer-detail-page.tsx:298`，与紧邻的 promoterEmployeeId 条件发送不同），
+   *    而存量值本就可能不合规 —— 该列无 FK、WorkFine 同步无条件覆盖且不在
+   *    WORKFINE_OVERRIDE_FIELD_MAP 保护名单里、员工调店后无回填路径、生产有 21 人 store_id IS NULL。
+   *    无条件拒绝会让这类顾客「改个备注都存不下去」（early return = 整条 UPDATE 原子失败），
+   *    而下拉候选里根本没有那个脏值、用户无从自救。
+   *    不变即无需重新授权；**改值仍必过闸**，越权路径没有被放宽。
+   */
+  // 用 `!== undefined` 而不是 `'boundEmployeeId' in data`：本 Action 的通用字段过滤
+  // （上面的 `filter(value !== undefined)`）已经确立了「显式 undefined = 不更新」的规则，
+  // 用 `in` 会让 `{ boundEmployeeId: undefined }` 落进归一化分支被当成解绑、意外清空绑定。
+  if (data.boundEmployeeId !== undefined) {
+    // Server Action 是带 cookie 即可直调的 RPC，TS 形参类型对运行时实参没有约束力。
+    // 非字符串会在下面 `?.trim()` 处炸成 TypeError → 500，这里提前转成业务拒绝。
+    if (data.boundEmployeeId !== null && typeof data.boundEmployeeId !== 'string') {
+      return { success: false, message: '绑定美容师参数不合法' }
+    }
+
+    /*
+     * 「值是否变了」必须拿**两边都归一过**的值比较。库里可能存着未归一值：该列无 FK、无 CHECK，
+     * 而本 PR 之前 admin 这三条写入路径（update / create / assign）都不做 trim。
+     * 只归一新值、拿它去比未归一的旧值，会把这类存量值判成「值已变」→ 又把整张表单锁死。
+     *
+     * （WorkFine 同步侧**不是**来源：`sync-workfine.js:582` 的 `trim(row.bound_employee_id)`
+     * 用的是 `:89` 那个 helper，实现为 `String(val).trim()` 双侧去空白 + 空串转 null
+     * —— 尽管它的函数注释误写成「RTRIM」，SQL 侧 `:509` 的 `RTRIM` 也只是第一道。）
+     */
+    const nextBoundEmployeeId = data.boundEmployeeId?.trim() || null
+    const beforeBoundEmployeeId = before.boundEmployeeId?.trim() || null
+
+    if (nextBoundEmployeeId === beforeBoundEmployeeId) {
+      /*
+       * 值没变 → **两列一律不碰**（不是「写回同值」）。这一支覆盖三种情形：
+       * 合法未变 / 存量脏值未变 / null-over-null。
+       *
+       * 闸门 2 两个谱系先后命中同一条竞态，第二轮才发现它**不止存在于失败分支**：
+       * `updateData` 由上面的 `Object.fromEntries` 预先带入了 `boundEmployeeId`，
+       * 只要把它留在 SET 里，配合可缺省的 `expectedUpdatedAt`
+       * （缺省时 whereConditions 退化为 `userId + scopeCond`、无任何并发守卫）就有：
+       *   ① 请求读到绑定值 V
+       *   ② 窗口内合法方（前台 assignCustomer / 总部修正 / 转店流程）把绑定改成 W
+       *   ③ 本请求的 UPDATE 落地，把 W **回滚**成 V，且返回 success
+       *   ④ logUpdate 拿请求开头读到的 before(=V) 与 updateData(=V) 比对，差异为零
+       *      → 这次回滚在审计里完全不可见
+       * 而前端 handleSave 对该字段是无条件重发，所以这**不需要刻意攻击**：
+       * 两名员工并发编辑同一顾客（一个改绑定、一个改备注）就会踩中。
+       *
+       * 代价是放弃两件「顺带」行为，均为有意取舍：
+       *   - 惰性归一：带空白的存量物理值不再被本路径顺手修正，会继续参与下游按原值做的
+       *     JOIN / `IS NOT NULL` 统计（如 staffApi mgmt-dashboard 的归属榜）。
+       *     该清洗应走一次性数据修复脚本，不该由「用户碰巧编辑了这个顾客」来驱动 ——
+       *     顺手写回正是上面那条竞态的成因。已列 follow-up。
+       *   - 姓名快照刷新：值未变时不再重查姓名。员工改名后展示会 stale，
+       *     正解是读取侧像 promoterEmployeeName 那样 COALESCE(当前名, 快照)，
+       *     而不是在写路径顺带刷新 —— 后者同样会把 name 卷进回滚竞态。已列 follow-up。
+       * boundEmployeeName 一并删是防御性的：它不在 allowedUpdateFields 白名单里、
+       * 客户端注入会被 unexpectedFields 挡回，但白名单若日后放开，这里不能跟着漏。
+       */
+      delete updateData.boundEmployeeId
+      delete updateData.boundEmployeeName
+    } else if (nextBoundEmployeeId === null) {
+      updateData.boundEmployeeId = null
       updateData.boundEmployeeName = null
+    } else {
+      const resolved = await resolveBoundEmployee(session, nextBoundEmployeeId)
+      if (!resolved.ok) return { success: false, message: resolved.message }
+      updateData.boundEmployeeId = resolved.employeeId
+      updateData.boundEmployeeName = resolved.name
     }
   }
 
   // admin 只提交 employeeId；服务端解析当前姓名并同步写 ID + 姓名快照。
   // 推荐人可跨店（与员工端小程序口径一致），仅校验在职，不受账号 scope 限制。
-  if ('promoterEmployeeId' in data) {
+  // 与上面 boundEmployeeId 同口径：`in` 会把显式 undefined 当成解绑、意外清空推荐人，
+  // 而本 Action 的通用字段过滤已确立「显式 undefined = 不更新」。
+  // 注意这只修 undefined 语义；promoter 的「校验在职、刻意不校验 scope」是另一套口径，不动。
+  if (data.promoterEmployeeId !== undefined) {
     if (data.promoterEmployeeId) {
       const [promoter] = await db
         .select({
@@ -1105,6 +1374,19 @@ export const updateCustomer = withPermission(
       updateData.promoterEmployeeId = null
       updateData.promoterEmployeeName = null
     }
+  }
+
+  // 没有任何字段要写 → 直接当无操作成功返回。Drizzle 对空集合是**抛异常**而非 no-op
+  // （`drizzle-orm/utils.js:91`，错误信息 `No values to set`），
+  // ⚠️ 这里不要把那句 throw 语句原样抄进注释 —— staffApi 的
+  // `cross-end-error-codes-snapshot.test.js` 用纯文本 grep 扫 `fengyu-admin/src/actions/`
+  // 下的裸 throw，不区分代码与注释，抄了会被算成一处野生前缀违规（CI 实测踩过）。
+  // 会冒成 500。两条新路径会走到这里：只提交一个未变的存量脏 ID（上面 delete 掉了唯一字段）、
+  // 或只提交 `{ boundEmployeeId: undefined }`（被「undefined = 不更新」过滤掉）。
+  // 顾客的可见性在上面的 `before` 查询里已经校验过，此处返回成功不泄露任何东西；
+  // 零写入所以不记审计、不 revalidate。
+  if (Object.keys(updateData).length === 0) {
+    return { success: true, message: '顾客信息已更新' }
   }
 
   const whereConditions = expectedUpdatedAt
@@ -1150,28 +1432,19 @@ export const assignCustomer = withPermission(
   'customer:update',
   async (session, userId: string, employeeId: string): Promise<{ success: boolean; message: string }> => {
   if (!userId) return { success: false, message: '缺少顾客 userId' }
-  if (!employeeId) return { success: false, message: '请选择美容师' }
 
-  // 校验员工存在并取冗余姓名 + 门店（与 updateCustomer 同范式）
-  const { staffWechatUsers } = await import('@db/user')
-  const [emp] = await db
-    .select({ name: staffWechatUsers.name, storeId: staffWechatUsers.storeId })
-    .from(staffWechatUsers)
-    .where(eq(staffWechatUsers.employeeId, employeeId))
-    .limit(1)
-  if (!emp) return { success: false, message: '员工不存在' }
-
-  // 员工 scope 校验（对齐 staff 端 assertEmployeeInScope）：
+  // 员工存在性 + scope 校验（对齐 staff 端 assertEmployeeInScope）：
+  // 空值挡板已下沉到 resolveBoundEmployee 内（同样在查库之前返回「请选择美容师」）。
   // 防止门店店长把本店顾客分配给其他门店的美容师。
-  // isInScope 对 admin 角色放行；员工无门店（storeId=null）时非 admin 拒绝。
-  if (!isInScope(session, emp.storeId ?? '')) {
-    return { success: false, message: '无权分配给该门店的员工' }
-  }
+  // 与 updateCustomer 共用 resolveBoundEmployee —— 同一列同一权限只能有一条校验路径（#250）。
+  const resolved = await resolveBoundEmployee(session, employeeId)
+  if (!resolved.ok) return { success: false, message: resolved.message }
 
   const scopeCond = scopeCondition(session, clientWechatUsers.boundStoreId)
   const result: any = await db
     .update(clientWechatUsers)
-    .set({ boundEmployeeId: employeeId, boundEmployeeName: emp.name ?? null } as any)
+    // 写归一后的 resolved.employeeId，不是原始入参 —— 入参可能带首尾空白
+    .set({ boundEmployeeId: resolved.employeeId, boundEmployeeName: resolved.name } as any)
     .where(and(eq(clientWechatUsers.userId, userId), scopeCond))
 
   if ((result as any).count === 0) {
@@ -1179,13 +1452,13 @@ export const assignCustomer = withPermission(
   }
 
   await logOperation(session, 'customer.assign', 'customer', userId, {
-    employeeId,
-    employeeName: emp.name ?? null,
+    employeeId: resolved.employeeId,
+    employeeName: resolved.name,
   })
 
   const { revalidatePath } = await import('next/cache')
   revalidatePath(`/customers/${userId}`)
-  return { success: true, message: `已分配给 ${emp.name ?? employeeId}` }
+  return { success: true, message: `已分配给 ${resolved.name ?? resolved.employeeId}` }
   },
 )
 
@@ -1232,8 +1505,16 @@ export const createCustomer = withPermission(
     return { success: false, message: '手机号格式不正确（需为 11 位手机号）' }
   }
 
-  // scope 隔离：非 admin 只能在自己 scope 内的门店创建顾客
-  if (data.boundStoreId && !isInScope(session, data.boundStoreId)) {
+  // scope 隔离：非 admin 只能在自己 scope 内的门店创建顾客。
+  // 空串同样归一为 null —— 否则 `''` 因 falsy 跳过 scope 校验后被 `?? null` 原样写入，
+  // 造出 `bound_store_id = ''` 的顾客：scopeCondition 的 IN 永不匹配，非 admin 从此看不见它。
+  // 与下面 boundEmployeeId 的归一是同一条口径，不能只做一半。
+  if (data.boundStoreId !== null && data.boundStoreId !== undefined
+    && typeof data.boundStoreId !== 'string') {
+    return { success: false, message: '绑定门店参数不合法' }
+  }
+  const nextBoundStoreId = data.boundStoreId?.trim() || null
+  if (nextBoundStoreId && !isInScope(session, nextBoundStoreId)) {
     return { success: false, message: '无权在该门店创建顾客' }
   }
 
@@ -1248,13 +1529,22 @@ export const createCustomer = withPermission(
     return { success: false, message: '该手机号已存在顾客记录' }
   }
 
-  // 解析绑定美容师姓名
+  // 绑定美容师：走与 updateCustomer / assignCustomer 同一条校验路径（#250）。
+  // 此前这里只 select 姓名、不校验存在性与 scope —— 与修复前的 updateCustomer 逐字同构，
+  // 而 customer:create 与 customer:update 同属 manager + customer_mgr（同一批调用方），
+  // 不堵这条等于「改」堵住了、「建」还开着。空串同样归一为 null，不留第三态。
+  // 与 updateCustomer 同款运行时守卫：外层这里就会 .trim()，不能等到 helper
+  if (data.boundEmployeeId !== null && data.boundEmployeeId !== undefined
+    && typeof data.boundEmployeeId !== 'string') {
+    return { success: false, message: '绑定美容师参数不合法' }
+  }
+  let nextBoundEmployeeId = data.boundEmployeeId?.trim() || null
   let boundEmployeeName: string | null = null
-  if (data.boundEmployeeId) {
-    const { staffWechatUsers } = await import('@db/user')
-    const [emp] = await db.select({ name: staffWechatUsers.name }).from(staffWechatUsers)
-      .where(eq(staffWechatUsers.employeeId, data.boundEmployeeId)).limit(1)
-    boundEmployeeName = emp?.name ?? null
+  if (nextBoundEmployeeId) {
+    const resolved = await resolveBoundEmployee(session, nextBoundEmployeeId)
+    if (!resolved.ok) return { success: false, message: resolved.message }
+    nextBoundEmployeeId = resolved.employeeId
+    boundEmployeeName = resolved.name
   }
 
   // 服务端生成 userId
@@ -1266,8 +1556,8 @@ export const createCustomer = withPermission(
       userId,
       phone: data.phone,
       name: data.name,
-      boundStoreId: data.boundStoreId ?? null,
-      boundEmployeeId: data.boundEmployeeId ?? null,
+      boundStoreId: nextBoundStoreId,
+      boundEmployeeId: nextBoundEmployeeId,
       boundEmployeeName,
     })
   } catch (err: any) {
@@ -1608,7 +1898,8 @@ export const mergeClientProfile = withPermission(
       await tx.delete(clientWechatUsers).where(eq(clientWechatUsers.userId, orphanUserId))
     })
   } catch (err: any) {
-    return { success: false, message: `合并失败：${err?.message ?? 'unknown'}` }
+    // fail-closed：原始 PG 报错（约束名 / SQL 片段）不回传给前端 toast（issue #133）
+    return { success: false, message: businessErrorMessage(err, '合并失败，请稍后重试') }
   }
 
   await logOperation(session, 'admin.mergeClientProfile', 'client_user', sourceUserId, {

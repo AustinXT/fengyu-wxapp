@@ -13,8 +13,9 @@
  *   staffApi/clientApi/payNotify/admin orders.ts/admin recompute-customer-tags 五端镜像）。
  *   本脚本对存量会员客做同样重算，使存量值 == 在线值。
  *
- * 选单口径（与在线 became_member_at 子查询逐字同源）：
- *   status IN ('已支付','已完成') AND sale_order_type='销售单' AND total_amount >= threshold
+ * 选单口径（与在线 became_member_at 子查询同源；#187 起按非体验部分毛实收达标）：
+ *   status IN ('已支付','已完成') AND sale_order_type='销售单' AND non_trial >= threshold
+ *   （non_trial = Σ 非体验行的 received 净额 + 该行逐项退款额）
  *   ORDER BY paid_at ASC NULLS LAST, created_at ASC，每会员客取最早一单，取其
  *   COALESCE(paid_at, created_at)。不用 MIN(COALESCE)：MIN 在「某达标单 paid_at=NULL
  *   且 created_at 早于另一张达标单 paid_at」时会选不同的单，导致存量 ≠ 新单。
@@ -33,14 +34,14 @@
  *
  * 用法：
  *   # dry-run（默认，仅打印统计 + 抽样）
- *   DATABASE_URL="postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp" \
+ *   DATABASE_URL="postgresql://fengyu:fengyu123@101.34.242.103:5433/fengyu_wxapp" \
  *     node db/scripts/recalc-became-member-at.js
  *
  *   # 实际提交
- *   DATABASE_URL="postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp" \
+ *   DATABASE_URL="postgresql://fengyu:fengyu123@101.34.242.103:5433/fengyu_wxapp" \
  *     node db/scripts/recalc-became-member-at.js --apply
  *
- * 顺序：先 dev（47.113.202.7:5433/fengyu_wxapp）--apply 验证；再 prod
+ * 顺序：先 dev（101.34.242.103:5433/fengyu_wxapp）--apply 验证；再 prod
  *   （118.178.196.26:5433/fengyu_wxapp）--apply。两库均 5433/fengyu_wxapp，仅 IP 区分。
  *   prod --apply 前先 `bash db/scripts/dump-prod.sh -t client_wechat_users` 备份（覆写不可逆）。
  *   e2e 绝不碰生产 IP 118.178.196.26。
@@ -69,20 +70,60 @@ SELECT value::numeric AS v
 
 // 每个会员客取首笔达标单时间。DISTINCT ON + ORDER BY 与在线 became_member_at 子查询
 // 同 WHERE/ORDER/投影 ⇒ 存量值 == 在线值。不带 paid_at<=became_member_at 守卫（纯重算覆写）。
-// 不含回款单累计 LATERAL：refactor 后死代码；与 4 端在线有效口径一致。
+// #187（2026-09-18）：达标口径从订单应付额 total_amount 换成**单笔订单的非体验部分毛实收**
+// （sale_items.received 净额 + 该行逐项退款额），与五端运行时 RECALC_CUSTOMER_TYPE_CTE 同判定语义；
+// 此处是全库批量版（无 client_user_id 参数过滤、多带输出列）。
 const BUILD_TARGET_SQL = `
 CREATE TEMP TABLE _target ON COMMIT DROP AS
-SELECT DISTINCT ON (o.client_user_id)
-       o.client_user_id AS user_id,
-       COALESCE(o.paid_at, o.created_at) AS new_became,
+WITH refund_by_item AS (
+  -- note→jsonb 三重防线逐字对齐 staffApi utils/paid-sessions.js RECEIVED_REFUNDED_DEDUCT_SQL，根除 22P02。
+  SELECT sop.sale_order_id,
+         elem ->> 'refSaleItemId' AS sale_item_id,
+         SUM(COALESCE(public.try_numeric(elem ->> 'refundAmount'), 0)) AS refunded
+    FROM sale_order_payments sop
+    JOIN sale_orders ro ON ro.sale_order_id = sop.sale_order_id
+    CROSS JOIN LATERAL jsonb_array_elements(
+      CASE WHEN jsonb_typeof(public.try_jsonb(sop.note) -> 'items') = 'array'
+           THEN public.try_jsonb(sop.note) -> 'items'
+           ELSE '[]'::jsonb END
+    ) AS elem
+   WHERE ro.status IN ('已支付', '已完成')
+     AND ro.sale_order_type = '销售单'
+     AND sop.change_type = '退款'
+     AND sop.status = '已支付'
+     AND elem ->> 'refSaleItemId' <> 'OVERPAY'
+   -- 序号绑定 SELECT 的前 2 列（sale_order_id, refSaleItemId）；重排 SELECT 列须同步改这里
+   GROUP BY 1, 2
+),
+order_amounts AS (
+  -- LEAST(…, sale_amount) 封顶 + 无明细行（WorkFine 历史单）回退订单级 received，
+  -- 与运行时 RECALC_CUSTOMER_TYPE_CTE 同语义。
+  SELECT o.sale_order_id, o.client_user_id, o.paid_at, o.created_at,
+         CASE WHEN NOT EXISTS (SELECT 1 FROM sale_items si2 WHERE si2.sale_order_id = o.sale_order_id)
+              THEN GREATEST(o.received::numeric, 0)
+              ELSE COALESCE(SUM(LEAST(si.received::numeric + COALESCE(rbi.refunded, 0),
+                                      si.sale_amount::numeric))
+                            FILTER (WHERE si.is_experience = false), 0)
+         END AS non_trial
+    FROM sale_orders o
+    LEFT JOIN sale_items si ON si.sale_order_id = o.sale_order_id
+                           AND si.item_direction = '购买'
+    LEFT JOIN refund_by_item rbi ON rbi.sale_order_id = o.sale_order_id
+                                AND rbi.sale_item_id = si.sale_item_id
+   WHERE o.status IN ('已支付', '已完成')
+     AND o.sale_order_type = '销售单'
+     AND o.client_user_id IS NOT NULL
+   GROUP BY o.sale_order_id, o.client_user_id, o.paid_at, o.created_at, o.received
+)
+SELECT DISTINCT ON (oa.client_user_id)
+       oa.client_user_id AS user_id,
+       COALESCE(oa.paid_at, oa.created_at) AS new_became,
        u.became_member_at AS old_became
-  FROM sale_orders o
-  JOIN client_wechat_users u ON u.user_id = o.client_user_id
+  FROM order_amounts oa
+  JOIN client_wechat_users u ON u.user_id = oa.client_user_id
  WHERE u.customer_type = '会员客'
-   AND o.status IN ('已支付', '已完成')
-   AND o.sale_order_type = '销售单'
-   AND o.total_amount >= $1::numeric
- ORDER BY o.client_user_id, o.paid_at ASC NULLS LAST, o.created_at ASC
+   AND oa.non_trial >= $1::numeric
+ ORDER BY oa.client_user_id, oa.paid_at ASC NULLS LAST, oa.created_at ASC, oa.sale_order_id ASC
 `
 
 const PREVIEW_SQL = `
@@ -113,13 +154,13 @@ UPDATE client_wechat_users u
 
 // 会员客但当前阈值无达标单（阈值历史上调过的存量会员）→ 保留原值不动。
 // 另报两个数据质量边角（非本脚本职责，仅诊断）。
+// #187：达标口径直接复用 _target（BUILD_TARGET_SQL 已按 non_trial >= 阈值筛过、
+// 且只收 customer_type='会员客'），避免这里再抄一遍判定 SQL 造成口径二次漂移。
 const ANOMALY_SQL = `
 SELECT
   (SELECT COUNT(*)::int FROM client_wechat_users u
     WHERE u.customer_type = '会员客'
-      AND NOT EXISTS (SELECT 1 FROM sale_orders o WHERE o.client_user_id = u.user_id
-         AND o.status IN ('已支付','已完成') AND o.sale_order_type='销售单'
-         AND o.total_amount >= $1::numeric)) AS member_no_qualifying,
+      AND NOT EXISTS (SELECT 1 FROM _target t WHERE t.user_id = u.user_id)) AS member_no_qualifying,
   (SELECT COUNT(*)::int FROM client_wechat_users
     WHERE customer_type='会员客' AND became_member_at IS NULL) AS member_became_null,
   (SELECT COUNT(*)::int FROM client_wechat_users
@@ -127,13 +168,12 @@ SELECT
 `
 
 // UPDATE 后「有达标单的会员客」不应再缺 became_member_at（>0 则 ROLLBACK + exit 1）。
+// 同样复用 _target：UPDATE_SQL 覆盖的正是 _target 全集，故此处 >0 即真异常。
 const SELFCHECK_SQL = `
 SELECT COUNT(*)::int AS member_qualifying_still_null
   FROM client_wechat_users u
  WHERE u.customer_type='会员客' AND u.became_member_at IS NULL
-   AND EXISTS (SELECT 1 FROM sale_orders o WHERE o.client_user_id=u.user_id
-     AND o.status IN ('已支付','已完成') AND o.sale_order_type='销售单'
-     AND o.total_amount >= $1::numeric)
+   AND EXISTS (SELECT 1 FROM _target t WHERE t.user_id = u.user_id)
 `
 
 async function main() {
@@ -171,7 +211,7 @@ async function main() {
       }
     }
 
-    const anom = await client.query(ANOMALY_SQL, [threshold])
+    const anom = await client.query(ANOMALY_SQL)
     const a = anom.rows[0]
     log(`ANOMALY：会员客但当前阈值无达标单（保留原值）${a.member_no_qualifying} 人；会员客 became_member_at IS NULL ${a.member_became_null} 人；非会员客却带 became_member_at ${a.nonmember_with_became} 人`)
 
@@ -179,7 +219,7 @@ async function main() {
       const upd = await client.query(UPDATE_SQL)
       log(`APPLY 完成：已更新 ${upd.rowCount} 行 became_member_at`)
 
-      const sc = await client.query(SELFCHECK_SQL, [threshold])
+      const sc = await client.query(SELFCHECK_SQL)
       if (sc.rows[0].member_qualifying_still_null > 0) {
         await client.query('ROLLBACK')
         console.error(`FATAL: SELFCHECK 失败：仍有 ${sc.rows[0].member_qualifying_still_null} 个「有达标单的会员客」became_member_at 为 NULL，已回滚`)

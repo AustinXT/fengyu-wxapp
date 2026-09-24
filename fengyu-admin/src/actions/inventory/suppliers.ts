@@ -1,7 +1,9 @@
 'use server'
 
 import {
+  countInventorySkusBySupplier as countInventorySkusBySupplierImpl,
   createInventorySupplier as createInventorySupplierImpl,
+  listInventorySupplierOptions as listInventorySupplierOptionsImpl,
   listInventorySuppliers as listInventorySuppliersImpl,
   updateInventorySupplier as updateInventorySupplierImpl,
 } from '@/lib/inventory/engine'
@@ -10,8 +12,20 @@ import { withPermission } from '@/lib/with-permission'
 
 export const listInventorySuppliers = withPermission(
   'inventory:stock_list',
-  async (_session, filters: { keyword?: string; onlyActive?: boolean } = {}) =>
-    listInventorySuppliersImpl(filters),
+  async (
+    _session,
+    filters: { keyword?: string; onlyActive?: boolean; page?: number; pageSize?: number } = {},
+  ) => listInventorySuppliersImpl(filters),
+)
+
+export const countInventorySkusBySupplier = withPermission(
+  'inventory:stock_list',
+  async (_session, supplierId: string) => countInventorySkusBySupplierImpl(supplierId),
+)
+
+export const listInventorySupplierOptions = withPermission(
+  'inventory:stock_list',
+  async () => listInventorySupplierOptionsImpl(),
 )
 
 export const createInventorySupplier = withPermission(

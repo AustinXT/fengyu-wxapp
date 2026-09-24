@@ -11,6 +11,17 @@ const { vi } = await import('vitest')
 process.env.ALLOW_DIRECT_PHONE = process.env.ALLOW_DIRECT_PHONE || 'true'
 process.env.ALLOW_TEST_OPENID = process.env.ALLOW_TEST_OPENID || 'true'
 
+// 对账自调的目标函数名。部署态一定有（deploy-cloudfunctions.sh 已纳入 --require 回读校验）；
+// 缺失时 order.confirmPayment 会 fail-closed 返回 paynotify_not_configured，
+// 因为同一 env 内并存 payNotify(prod 库) 与 payNotifyDev(dev 库)，猜错方向就是把钱写错库。
+process.env.PAYNOTIFY_FN_NAME = process.env.PAYNOTIFY_FN_NAME || 'payNotify'
+
+// 进销存开关现由 env 驱动且默认关闭（见 utils/feature-flags.js）。order.create 的
+// 「冻结库存组成」「未配置库存组成拒绝建单」等用例断言的是联动开启下的行为，故显式开启。
+// 必须在任何 require 之前设置：feature-flags 在模块加载期求值一次。
+// 关闭态的 fail-closed 守护在 fengyu-admin/src/lib/inventory-feature-flags.test.ts。
+process.env.INVENTORY_LINKAGE_ENABLED = process.env.INVENTORY_LINKAGE_ENABLED || 'true'
+
 // ====== Mock: db/pg ======
 const pgPath = require.resolve('../db/pg')
 const mockPg = {
@@ -89,6 +100,8 @@ const mockLakalaClient = {
       paySign: 'mock-pay-sign-001',
     },
     lakalaAppId: 'wx811eb4ded3dfba3f',
+    // 支付宝 NATIVE 通道的二维码地址；#214 起预下单会校验它非空
+    alipayQrUrl: 'https://qr.alipay.com/mock-native-url',
     raw: {},
   })),
   // 支付宝吱口令默认返回 share_token
@@ -100,6 +113,10 @@ const mockLakalaClient = {
     ok: true, code: 'BBS00000', msg: '操作成功',
     tradeState: 'SUCCESS', tradeNo: 'LAK-T-001', accTradeNo: 'wx-txn-001',
     payMode: 'WECHAT', totalAmountFen: 0, payerAmountFen: 0, raw: {},
+  })),
+  // 关单（#214）默认成功并返回 CLOSE；不 mock 会走真实实现打真网络
+  closeTrade: vi.fn(async () => ({
+    ok: true, code: 'BBS00000', msg: '操作成功', tradeState: 'CLOSE', raw: {},
   })),
 }
 require.cache[lakalaClientPath] = {
@@ -145,6 +162,8 @@ beforeEach(() => {
       paySign: 'mock-pay-sign-001',
     },
     lakalaAppId: 'wx811eb4ded3dfba3f',
+    // 支付宝 NATIVE 通道的二维码地址；#214 起预下单会校验它非空
+    alipayQrUrl: 'https://qr.alipay.com/mock-native-url',
     raw: {},
   })
   mockLakalaClient.requestAlipayShareCode.mockReset().mockResolvedValue({
@@ -154,5 +173,8 @@ beforeEach(() => {
     ok: true, code: 'BBS00000', msg: '操作成功',
     tradeState: 'SUCCESS', tradeNo: 'LAK-T-001', accTradeNo: 'wx-txn-001',
     payMode: 'WECHAT', totalAmountFen: 0, payerAmountFen: 0, raw: {},
+  })
+  mockLakalaClient.closeTrade.mockReset().mockResolvedValue({
+    ok: true, code: 'BBS00000', msg: '操作成功', tradeState: 'CLOSE', raw: {},
   })
 })

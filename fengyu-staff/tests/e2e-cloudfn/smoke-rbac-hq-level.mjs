@@ -10,7 +10,8 @@
  *   5. product × 总部
  *
  * 业务断言：
- *   - 所有 5 个员工 staffLevel='headquarters' + scopedStores ≥ 4 + availableLoginLevels=['store','management']
+ *   - 所有 5 个员工 staffLevel='headquarters' + scopedStores ≥ 4；availableLoginLevels 按
+ *     permission_matrix 分流：manager/finance/hr 两档，customer_mgr/product 只有 store
  *   - 以 management 模式调 mgmtDashboard.scopeOptions 应返回 staffLevel=headquarters + 2 markets
  *   - mgmtDashboard.summary(scopeType='all') 期望 code=0
  *   - finance/customer_mgr/hr/product 调 order.create 仍被 requireManager 拒
@@ -30,13 +31,19 @@ import { expectOk, expectFail, runSmoke } from './helpers/rbac-asserts.mjs'
 
 const STORE_A1 = TEST_STORES_MULTI.A1
 
+// mgmt = 该角色在 system_configs.permission_matrix 里是否有 data_center:dashboard，
+// 它决定 availableLoginLevels 是否含 'management'（routes/auth.js 的 deriveAvailableLoginLevels）。
+// 两库实测（2026-09-21，dev 与 prod 一致）：只有 hr / admin / finance / manager / 自定义角色有，
+// **customer_mgr 与 product 没有** —— 本用例原先对 5 个角色一视同仁地要求 management，
+// 那是矩阵收紧前的期望。现按矩阵分流：有权的必须进得去，无权的必须被挡住。
 const employees = [
-  { key: 'mgr',  empId: `${NS}_RBAC_H_MGR`,  oid: `${NS}_RBAC_H_MGR_OPENID`,  ph: testPhone(3),  role: 'manager' },
-  { key: 'fin',  empId: `${NS}_RBAC_H_FIN`,  oid: `${NS}_RBAC_H_FIN_OPENID`,  ph: testPhone(4),  role: 'finance' },
-  { key: 'cm',   empId: `${NS}_RBAC_H_CM`,   oid: `${NS}_RBAC_H_CM_OPENID`,   ph: testPhone(5),  role: 'customer_mgr' },
-  { key: 'hr',   empId: `${NS}_RBAC_H_HR`,   oid: `${NS}_RBAC_H_HR_OPENID`,   ph: testPhone(6),  role: 'hr' },
-  { key: 'prod', empId: `${NS}_RBAC_H_PROD`, oid: `${NS}_RBAC_H_PROD_OPENID`, ph: testPhone(7),  role: 'product' },
+  { key: 'mgr',  empId: `${NS}_RBAC_H_MGR`,  oid: `${NS}_RBAC_H_MGR_OPENID`,  ph: testPhone(3),  role: 'manager',      mgmt: true },
+  { key: 'fin',  empId: `${NS}_RBAC_H_FIN`,  oid: `${NS}_RBAC_H_FIN_OPENID`,  ph: testPhone(4),  role: 'finance',      mgmt: true },
+  { key: 'cm',   empId: `${NS}_RBAC_H_CM`,   oid: `${NS}_RBAC_H_CM_OPENID`,   ph: testPhone(5),  role: 'customer_mgr', mgmt: false },
+  { key: 'hr',   empId: `${NS}_RBAC_H_HR`,   oid: `${NS}_RBAC_H_HR_OPENID`,   ph: testPhone(6),  role: 'hr',           mgmt: true },
+  { key: 'prod', empId: `${NS}_RBAC_H_PROD`, oid: `${NS}_RBAC_H_PROD_OPENID`, ph: testPhone(7),  role: 'product',      mgmt: false },
 ]
+const mgmtEmployees = employees.filter((e) => e.mgmt)
 
 async function run() {
   await cleanupTestData(NS)
@@ -75,15 +82,18 @@ async function run() {
       results.push({ ok: false, label: `login.${e.key}.staffLevel`, reason: `expected headquarters, got ${lvl}` })
     } else if (!hasAll) {
       results.push({ ok: false, label: `login.${e.key}.scopedStores`, reason: `expected ⊇ 4 stores, got count=${scopedIds.length}` })
-    } else if (avail.join(',') !== 'management,store') {
-      results.push({ ok: false, label: `login.${e.key}.availableLoginLevels`, reason: `got ${JSON.stringify(avail)}` })
+    } else if (avail.join(',') !== (e.mgmt ? 'management,store' : 'store')) {
+      results.push({
+        ok: false, label: `login.${e.key}.availableLoginLevels`,
+        reason: `expected ${e.mgmt ? '[store,management]' : '[store]（该角色无 data_center:dashboard）'}, got ${JSON.stringify(avail)}`,
+      })
     } else {
       results.push({ ok: true, label: `login.${e.key}.hq×${scopedIds.length}stores` })
     }
   }
 
-  // 2) mgmtDashboard.scopeOptions 应返回 staffLevel=headquarters + 至少 2 markets
-  for (const e of employees) {
+  // 2) mgmtDashboard.scopeOptions 应返回 staffLevel=headquarters + 至少 2 markets（仅限有管理层入口的角色）
+  for (const e of mgmtEmployees) {
     const r = await invokeStaffApi('mgmtDashboard.scopeOptions',
       { _testOpenid: e.oid, _loginLevel: 'management' })
     if (r.code !== 0) {
@@ -99,10 +109,18 @@ async function run() {
 
   // 3) mgmtDashboard.summary(scopeType='all') 期望 code=0
   const today = new Date().toISOString().slice(0, 10)
-  for (const e of employees) {
+  for (const e of mgmtEmployees) {
     results.push(await expectOk('mgmtDashboard.summary',
       { _testOpenid: e.oid, _loginLevel: 'management', scopeType: 'all', date: today },
       `${e.key}.mgmtDashboard.summary(all)`))
+  }
+
+  // 2b) 无 data_center:dashboard 的角色以 management 模式访问 → 必须被挡
+  for (const e of employees.filter((x) => !x.mgmt)) {
+    results.push(await expectFail('mgmtDashboard.scopeOptions',
+      { _testOpenid: e.oid, _loginLevel: 'management' },
+      'PERMISSION_DENIED',
+      `${e.key}.scopeOptions.deny（无管理层入口）`))
   }
 
   // 4) 非 manager 角色调 order.create 应被拒

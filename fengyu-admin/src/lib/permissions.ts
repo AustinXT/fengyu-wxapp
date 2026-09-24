@@ -450,6 +450,56 @@ export function isInScope(session: AuthSession, storeId: string): boolean {
 }
 
 /**
+ * 检查指定组织节点是否在用户 scope 内（`isInScope` 的 org_node_id 对偶）
+ *
+ * admin → 始终 true。
+ *
+ * **口径必须与 `employeeScopeCondition` 的 orgNodeIds 完全一致**（含 `scopeDeptNodeIds`
+ * 旧会话回退）—— 二者一个负责「入参新值是否可写」、一个负责「目标行是否可见」，
+ * 口径一旦分叉就会出现「校验放行但 UPDATE 的 WHERE 匹配不到」或反之的静默错位。
+ *
+ * ⚠️ 不要与库存侧的 `inventoryScopedOrgNodeIds` / `assertOrgNodeVisible` 混用：那一套对
+ * 「总部」scope **刻意不展开后代**（市场退货必须由总部逐个授权审批），而这里的
+ * `scopeOrgNodeIds` 是含全部后代的展开集合。两套语义不同，各自服务不同的业务约束。
+ *
+ * ⚠️ 另有 `lib/node-scope.ts` 的 `isNodeInScope`（org.ts 建/改节点、stores.ts 建门店在用）
+ * 与本函数前两级回退完全相同，**只有第三级不同**：它在两个集合都缺失时回退到
+ * `session.roles.map(r => r.scopeId)`（角色根节点自身），本函数回退到空集。
+ * 这不是疏忽，**恰恰是不能复用它的原因** —— 本函数与 `employeeScopeCondition` 服务于
+ * 同一次 `updateEmployee` 调用（一个判新值可否写入、一个拼进 UPDATE 的 WHERE），
+ * 而 `employeeScopeCondition` 的回退就是空集。改用 `isNodeInScope` 会在缺元数据的会话里
+ * 造出「校验放行 → UPDATE 命中 0 行 → 用户看到『员工不存在或无权修改』」的静默错位。
+ * 两者该不该统一（以及统一到哪一档）是独立议题，已另开 issue。
+ */
+export function isOrgNodeInScope(session: AuthSession, orgNodeId: string): boolean {
+  if (isAdminScope(session)) return true
+  const orgNodeIds = session.permissions.scopeOrgNodeIds
+    ?? session.permissions.scopeDeptNodeIds
+    ?? []
+  return orgNodeIds.includes(orgNodeId)
+}
+
+/**
+ * 某一行员工记录对当前账号是否可见 —— `employeeScopeCondition` 的**内存版**。
+ *
+ * 两者必须永远给出同一个答案：`employeeScopeCondition` 拼进 UPDATE 的 WHERE、
+ * 这个在进 SQL 之前拦截。口径一旦分叉就会出现「这里放行 → UPDATE 命中 0 行 →
+ * 用户看到『数据已被其他人修改』」的静默错位（GLM 谱系指出原先是手工复刻、无同源保障）。
+ *
+ * 放在这里与 `employeeScopeCondition` 紧邻，改一个必须看另一个；
+ * `permissions.test.ts` 有一条交叉验证用例把两者对同一 session 的判定钉在一起。
+ */
+export function isEmployeeRowVisible(
+  session: AuthSession,
+  storeId: string | null,
+  orgNodeId: string | null,
+): boolean {
+  if (isAdminScope(session)) return true
+  return (!!storeId && isInScope(session, storeId))
+    || (!!orgNodeId && isOrgNodeInScope(session, orgNodeId))
+}
+
+/**
  * Check if user has a specific permission action
  */
 export function hasPermission(session: AuthSession, action: string): boolean {
@@ -496,19 +546,33 @@ export function requirePermission(session: AuthSession | null, action: string): 
 }
 
 /**
- * 物理删除专属硬闸：仅系统管理员（admin 角色）可通过，不受权限矩阵 UI 支配。
+ * 仅超级管理员硬闸（生产判据是角色行的 `isSuperAdmin=true`，不是 `role === 'admin'`）。
  *
- * 用于所有物理删除（db.delete 真删）Server Action 的函数体首行——前置的
- * withPermission('xxx:delete', ...) 仍保留（满足 ESLint HOF 强制 + 纵深过滤），
- * 但真正的「仅系统管理员」判定由本函数以角色为准：即便运营在权限矩阵 UI 给其它
- * 角色勾上 :delete 点，物理删除也无法实际执行。isAdminScope 即 role==='admin'。
+ * 用于两类 Server Action 的函数体首行：
+ * ① 所有物理删除（db.delete 真删）；
+ * ② 不可授权给其它角色的敏感写操作——角色能力位变更（role-definitions）、
+ *    提成口径类字典（skill-tags 技能标签，见 #211）等。
+ *
+ * 前置的 withPermission('xxx:delete' / 'xxx:update', ...) 仍保留（满足 ESLint HOF
+ * 强制 + 纵深过滤），但真正的判定由本函数以角色为准：即便运营在权限矩阵 UI 给其它
+ * 角色勾上对应权限点，这些操作也无法实际执行。
+ *
+ * ⚠️ 两点容易误解，写方案前先看清：
+ * ① `isAdminScope` 判的是 `isSuperAdmin ?? role === 'admin'`。`permission_roles.is_super_admin`
+ *    是 notNull 列，生产会话恒为 boolean，故 `role === 'admin'` 只是旧会话/测试的兼容回退；
+ *    显式 `isSuperAdmin=false` 的 admin 角色行会被拦下。
+ * ② 本函数收到的 session 通常已被 `withPermission` 经 `scopeSessionToActions` 按外层 action
+ *    收紧（只留自身 actions 含该动作的角色行）。所以实际语义是「**授予该 action 的角色里
+ *    至少一个是超管**」，而非「会话里任意位置有超管角色」。当外层 action 属
+ *    ADMIN_ONLY_ACTIONS 时两者等价；用共享 action（如 employee:update）时不等价 ——
+ *    UI 侧复刻判定必须一并跑 scopeSessionToActions，见 `skill-tag-access.ts`。
  */
 export function requireAdmin(session: AuthSession | null): asserts session is AuthSession {
   if (!session) {
     redirect('/login?expired=1')
   }
   if (!isAdminScope(session)) {
-    throw new PermissionError('PERMISSION_DENIED: 仅系统管理员可执行物理删除')
+    throw new PermissionError('PERMISSION_DENIED: 仅系统管理员可执行该操作')
   }
 }
 

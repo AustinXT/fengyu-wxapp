@@ -25,7 +25,7 @@ import { getTreatmentCardBusinessIdentity, groupTreatmentCards, selectGroupSourc
 export interface ConversionPanelProps {
   /** 加载中（父组件正在调用 getCustomerHeldCards） */
   loading: boolean
-  /** 候选折抵卡 */
+  /** 候选折抵项（疗程卡 + 家居；家居按「已付未结算」计，见 homeDeductible） */
   heldCards: HeldCardCandidate[]
   /** 当前已勾选的 saleItemId 集合 */
   selectedIds: string[]
@@ -200,9 +200,9 @@ export function ConversionPanel({
         <h3 className="text-sm font-semibold">转换单结算</h3>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {/* 左列：折抵卡列表 */}
+          {/* 左列：折抵项列表（疗程卡 + 家居「已付未结算」） */}
           <div className="space-y-2">
-            <p className="text-xs text-[#666666]">勾选折抵卡</p>
+            <p className="text-xs text-[#666666]">勾选折抵项</p>
             {!loading && groupedHeldCards.length > 0 && (
               <div className="grid gap-2 sm:grid-cols-[1fr_1fr]">
                 <Select
@@ -241,21 +241,24 @@ export function ConversionPanel({
               <p className="text-xs text-[#999999] py-4 text-center">正在加载候选卡…</p>
             )}
             {!loading && groupedHeldCards.length === 0 && (
-              <p className="text-xs text-[#999999] py-4 text-center">该顾客在当前门店无可折抵卡</p>
+              <p className="text-xs text-[#999999] py-4 text-center">该顾客在当前门店无可折抵项</p>
             )}
             {!loading && groupedHeldCards.length > 0 && filteredHeldCards.length === 0 && (
               <p className="text-xs text-[#999999] py-4 text-center">
-                {hasCardFilters ? "未找到匹配的疗程卡" : "该顾客在当前门店无可折抵卡"}
+                {hasCardFilters ? "未找到匹配的折抵项" : "该顾客在当前门店无可折抵项"}
               </p>
             )}
             <div className="space-y-1 max-h-72 overflow-y-auto">
               {filteredHeldCards.map((c) => {
                 const count = selectedCount(c)
                 const checked = count > 0
-                const remainLabel =
-                  c.productType === '疗程卡'
-                    ? `剩 ${c.remainingSessions ?? 0} ${c.unit}`
-                    : `剩 ${c.remainingQty ?? 0} ${c.unit}`
+                // #182：折抵 = 整行退出，展示「注销多少权益」而非「剩余多少」。
+                // 数量为 0 的纯余数行（次数已用完 / 件已全提，只剩不足一整次(件)的已付余额）
+                // 单独提示，否则操作员会以为这行是空的、不敢选。
+                const remainQty = c.remainingQty ?? 0
+                const remainLabel = remainQty > 0
+                  ? `注销 ${remainQty} ${c.unit}`
+                  : `仅余额（无剩余${c.productType === '疗程卡' ? '次数' : '件数'}）`
                 return (
                   <label
                     key={c.groupKey}
@@ -283,7 +286,8 @@ export function ConversionPanel({
                       <div className="text-[#999999] mt-0.5 flex items-center gap-2">
                         <span>{c.productType}</span>
                         <span>{remainLabel}</span>
-                        {c.cardCount > 1 && <span>共 {c.cardCount} 张</span>}
+                        {c.productType === '疗程卡' && c.cardCount > 1 && <span>共 {c.cardCount} 张</span>}
+                        {c.productType !== '疗程卡' && c.sourceItems.length > 1 && <span>可拆 {c.sourceItems.length} 行</span>}
                         <span>单{c.unit}价 ¥{c.unitRealPrice}</span>
                       </div>
                       {checked && (
@@ -299,7 +303,7 @@ export function ConversionPanel({
                                 onChange={(e) => setGroupSelection(c, Number(e.target.value))}
                                 className="h-7 w-16 px-1 text-center text-xs"
                               />
-                              <span>/ {c.sourceItems.length} 张</span>
+                              <span>/ {c.sourceItems.length} {c.productType === '疗程卡' ? '张' : '行'}</span>
                             </>
                           ) : (
                             <span>整行转换</span>

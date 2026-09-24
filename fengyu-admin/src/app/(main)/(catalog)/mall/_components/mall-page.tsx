@@ -12,6 +12,7 @@ import { ExportButton } from "@/components/ui/export-button"
 import { formatCurrency, formatDate } from "@/lib/utils"
 import { PreserveListContextLink } from "@/components/return-context"
 import { useUrlFilters } from "@/lib/hooks/use-url-filters"
+import { normalizePage } from "@/lib/paging"
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50]
 
@@ -31,7 +32,7 @@ export default function MallPageClient({
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const search = get("q")
   const catFilter = get("category")
-  const page = Math.max(1, Number(get("page", "1")) || 1)
+  const page = normalizePage(get("page", "1"))
   const pageSize = PAGE_SIZE_OPTIONS.includes(Number(get("size"))) ? Number(get("size")) : 20
 
   const filteredProducts = useMemo(() => {

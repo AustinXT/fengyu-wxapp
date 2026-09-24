@@ -168,6 +168,8 @@ function getDisplaySaleItems(order: SaleOrder, items: NonNullable<SaleOrder["ite
       received: sumGroupValue(group, (item) => item.received).toFixed(2),
       pendingReceived: sumGroupValue(group, (item) => item.pendingReceived).toFixed(2),
       pickedUpQuantity: sumGroupValue(group, (item) => item.pickedUpQuantity),
+      refundedQuantity: sumGroupValue(group, (item) => item.refundedQuantity),
+      convertedQuantity: sumGroupValue(group, (item) => item.convertedQuantity),
       cardCount: group.cardCount,
     };
     if (primary.sessionCount === null) return aggregate;
@@ -684,11 +686,16 @@ export default function OrderDetailPageClient({
                             <span className="text-xs text-[#999999]">共 {item.cardCount} 张</span>
                           )}
                         </div>
-                        {(item.salesCategory || item.expireDate || (item.pickedUpQuantity ?? 0) > 0) && (
+                        {(item.salesCategory || item.expireDate || (item.pickedUpQuantity ?? 0) > 0
+                          || (item.refundedQuantity ?? 0) > 0 || (item.convertedQuantity ?? 0) > 0) && (
                           <div className="mt-0.5 flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-[#999999]">
                             {item.salesCategory && <span>{item.salesCategory}</span>}
                             {item.expireDate && <span>有效期至 {formatDate(item.expireDate)}</span>}
-                            {(item.pickedUpQuantity ?? 0) > 0 && <span>已提 {item.pickedUpQuantity}</span>}
+                            {/* #154 拆列后三类数量各有独立列：picked_up_quantity 就是物理提货量
+                                （与 pickup_records 守恒），已退款与已转换单独展示 */}
+                            {(item.pickedUpQuantity ?? 0) > 0 && <span>已提货 {item.pickedUpQuantity}</span>}
+                            {(item.refundedQuantity ?? 0) > 0 && <span>已退款 {item.refundedQuantity}</span>}
+                            {(item.convertedQuantity ?? 0) > 0 && <span>已转换 {item.convertedQuantity}</span>}
                           </div>
                         )}
                       </td>
@@ -765,9 +772,10 @@ export default function OrderDetailPageClient({
                   const amt = Number(p.amount);
                   const isRefund = p.changeType === "退款" || amt < 0;
                   const isFirstPayment = p.changeType === "首次支付";
-                  const attributionDate = isFirstPayment
-                    ? order.performanceAttributionDate
-                    : p.performanceAttributionDate || (p.paidAt ? formatDate(p.paidAt) : null);
+                  // 直读款项级列：迁移 0041 起它由 trigger 赋值 + CHECK 兜底恒有值，
+                  // 首次支付那一行本身就是订单级的镜像。不按 changeType 分支、也不回退 paid_at
+                  // —— 回退会把"列为空"这种数据异常伪装成有归属日期，与导出侧的留空策略相反。
+                  const attributionDate = p.performanceAttributionDate;
                   const canEditPaymentAttribution = canEditPaymentPerformanceAttribution(
                     canAdjustPerformanceAttribution,
                     p,

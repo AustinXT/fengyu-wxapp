@@ -56,7 +56,7 @@
 | Skill | 一句话作用 | 典型触发 |
 |---|---|---|
 | `req-to-issues` | 需求（会议纪要/口头/聊天）→ 去重 → 确认后批量建 gh issues | "把需求建成 issues" |
-| `issue-dev` | 单条 issue：分流 → 实现 → 三层验证 → pr-ready + 双谱系评审 → PR base dev | "处理 issue #N" / "发车" |
+| `issue-dev` | 单条 issue：**开隔离 worktree** → 分流 → 实现 → 三层验证 → pr-ready + 双谱系评审 → PR base dev → 回收 | "处理 issue #N" / "发车" |
 | `issue-sweep` | 遍历 open issues 逐条走 issue-dev 全闸门，ledger 断点续跑，攒 PR 出汇总表 | "把 open issues 清一遍" |
 
 > 三步串联：会议后先 `req-to-issues` 落任务（spec 更新另走 `meeting-to-spec`）；单条在场处理用 `issue-dev`；批量清积压用 `issue-sweep`（可配 `/loop` 长跑）。merge 与关单始终由人执行。

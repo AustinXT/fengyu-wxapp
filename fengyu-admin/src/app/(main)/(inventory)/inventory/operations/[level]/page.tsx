@@ -7,9 +7,12 @@ import { listInventorySuppliers } from '@/actions/inventory/suppliers'
 import { getSession } from '@/lib/auth'
 import {
   INVENTORY_BUSINESS_LEVELS,
+  genericDocBusinessLevel,
+  inventoryLevelOperateAction,
   requireInventoryBusinessLevel,
   type InventoryBusinessLevel,
 } from '@/lib/inventory/business-level'
+import { asGenericDocType, genericOperationId } from '@/lib/inventory/operation-doc-types'
 import { hasUiCapability } from '@/lib/permission-contract'
 import { requireAllUiPageCapabilities } from '@/lib/page-capability'
 import InventoryOperationsPage from '../../_components/inventory-operations-page'
@@ -27,9 +30,14 @@ export default async function Page({
   const query = await searchParams
   if (!INVENTORY_BUSINESS_LEVELS.includes(rawLevel as InventoryBusinessLevel)) notFound()
   const level = rawLevel as InventoryBusinessLevel
-  if (query.view === 'docs' || query.create) {
+  /*
+   * `?view=docs` 仍跳单据中心（那是"我要看单据列表"的意图）。
+   * 而 `?create=<docType>` 从 #191 起**留在办理台**：通用业务已经能在工作区里内嵌建单，
+   * 再跳走就等于把刚做完的改造绕过去了。单据中心自己的 `?create=` 深链不受影响。
+   */
+  if (query.view === 'docs') {
     const target = new URLSearchParams()
-    for (const key of ['create', 'docType', 'status', 'q', 'orgNodeId']) {
+    for (const key of ['docType', 'status', 'q', 'orgNodeId']) {
       if (query[key]) target.set(key, query[key]!)
     }
     redirect(`/inventory/docs${target.size > 0 ? `?${target.toString()}` : ''}`)
@@ -40,15 +48,13 @@ export default async function Page({
   const [locations, skus, suppliers, workflowDocs] = await Promise.all([
     listInventoryLocations(),
     listInventorySkus({ page: 1, pageSize: 100, onlyActive: true }),
+    // 刻意不传 pageSize：办理台的供应商下拉要的是整份名单，
+    // 跟着列表页分页走会把靠后的供应商静默漏掉（#135）。
     listInventorySuppliers({ onlyActive: true }),
     listInventoryCoreDocs({ page: 1, pageSize: 100 }),
   ])
   const actions = session.permissions.actions
-  const operateAction = level === 'supply-chain'
-    ? 'inventory:supply_chain_operate'
-    : level === 'market'
-      ? 'inventory:market_operate'
-      : 'inventory:store_operate'
+  const operateAction = inventoryLevelOperateAction(level)
   const approveAction = level === 'supply-chain'
     ? 'inventory:supply_chain_approve'
     : level === 'market'
@@ -57,6 +63,19 @@ export default async function Page({
   const canCreate = hasUiCapability(actions, operateAction)
   const canApprove = approveAction ? hasUiCapability(actions, approveAction) : false
 
+  /*
+   * 深链 `?create=<docType>` → 直接打开对应的通用业务工作区。
+   * 三道闸都在服务端过：类型必须是通用建单类型（parseGenericOperationId 的白名单）、
+   * 必须属于当前层级（否则市场的深链能在门店台打开门店建不了的单）、
+   * 且当前账号得有本层级的 operate 权限。任一不过就当没带参数。
+   */
+  const requestedDocType = asGenericDocType(query.create)
+  const initialOperationId = requestedDocType
+    && genericDocBusinessLevel(requestedDocType) === level
+    && canCreate
+      ? genericOperationId(requestedDocType)
+      : undefined
+
   return (
     <div className="p-6">
       <Suspense>
@@ -64,7 +83,7 @@ export default async function Page({
           level={level}
           locations={locations}
           skuOptions={skus.data}
-          suppliers={suppliers}
+          suppliers={suppliers.data}
           workflowDocs={workflowDocs.data}
           canCreate={canCreate}
           canApprove={canApprove}
@@ -72,6 +91,7 @@ export default async function Page({
           canRequestShipmentCancellation={hasUiCapability(actions, 'inventory:shipment_cancel_request')}
           canApproveShipmentCancellation={hasUiCapability(actions, 'inventory:shipment_cancel_approve')}
           canViewPrice={workflowDocs.canViewPrice}
+          initialOperationId={initialOperationId}
         />
       </Suspense>
     </div>

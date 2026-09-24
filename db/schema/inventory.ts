@@ -37,7 +37,20 @@ export const inventorySkus = pgTable(
     productCode: text('product_code').notNull(),
     productName: text('product_name').notNull(),
     specName: text('spec_name'),
+    /**
+     * 供应商名称，由 `supplier_id` 关联的档案派生写入。
+     *
+     * **是同步维护的冗余名，不是历史快照**：档案改名时 `updateInventorySupplier`
+     * 会把所有关联 SKU 的本列一起改过来。真正的历史快照是
+     * `inventory_doc_items.supplier` 与 `inventory_stock_lots.supplier`，它们在
+     * 建单 / 建批次那一刻冻结、之后不再变。
+     *
+     * 保留本列的理由：`ensureLotFromSku` 建批次时取的就是它；存量里匹配不上档案的
+     * 旧文本也靠它留存（`supplier_id` 为 NULL 时）。
+     */
     supplier: text('supplier'),
+    /** 供应商档案关联。存量文本按名称精确匹配回填，匹配不上的保留文本、本列为 NULL。 */
+    supplierId: text('supplier_id').references(() => inventorySuppliers.supplierId),
     manufacturer: text('manufacturer'),
     brand: text('brand'),
     productSeries: text('product_series'),
@@ -97,6 +110,7 @@ export const inventorySkus = pgTable(
     index('idx_inventory_skus_series').on(table.productSeries),
     index('idx_inventory_skus_source').on(table.sourceType),
     index('idx_inventory_skus_owner_market').on(table.ownerMarketId),
+    index('idx_inventory_skus_supplier').on(table.supplierId),
     check(
       'chk_inventory_skus_source_type',
       sql`${table.sourceType} IN ('供应链','市场自采','转让店')`,
@@ -495,7 +509,7 @@ export const inventoryDocs = pgTable(
     check(
       'chk_inventory_docs_type',
       sql`${table.docType} IN (
-        '门店报货','市场报货','品项公司报货需求','采购订单','供应链采购订单',
+        '门店报货','市场报货','市场报货汇总','品项公司报货需求','采购订单',
         '供应链采购入库','品项公司发货','市场采购入库','自采产品入库','分院配货',
         '院入库','分院调货出库','分院调货入库','市场间调货出库','市场间调货入库',
         '员工购出库','供应链员工购出库','内部领用','非凤御市场出库','市场退货','市场退货入库',
@@ -530,6 +544,20 @@ export const inventoryDocItems = pgTable(
     skuName: text('sku_name').notNull(),
     specName: text('spec_name'),
     supplier: text('supplier'),
+    /**
+     * 行级供应商档案关联。
+     *
+     * 采购订单一次汇总多张报货单后，一张单里的商品可能分属不同供应商，单头的
+     * `inventory_docs.supplier_id` 不再够用（#194）。建单时由 `inventory_skus.supplier_id`
+     * 带出，与上面的 `supplier` 名称快照并存：本列是关联、`supplier` 是冻结的历史名。
+     */
+    supplierId: text('supplier_id').references(() => inventorySuppliers.supplierId),
+    /**
+     * 行级市场归属。NULL = 品项公司自用行（走供应链采购入库），非 NULL = 市场行（走品项公司发货）。
+     *
+     * 采购订单收敛成单一 doc_type 后，下游链路分流不再看单据类型而是看本列（#194）。
+     */
+    marketId: text('market_id').references(() => orgNodes.id),
     productSeries: text('product_series'),
     batchNo: text('batch_no').notNull().default(''),
     expiryDate: date('expiry_date'),
@@ -587,6 +615,8 @@ export const inventoryDocItems = pgTable(
     index('idx_inventory_doc_items_doc').on(table.docId),
     index('idx_inventory_doc_items_lot').on(table.lotId),
     index('idx_inventory_doc_items_sku').on(table.skuId),
+    index('idx_inventory_doc_items_supplier').on(table.supplierId),
+    index('idx_inventory_doc_items_market').on(table.marketId),
     index('idx_inventory_doc_items_promotion').on(table.promotionPlanId),
     uniqueIndex('uq_inventory_doc_items_id_doc').on(table.id, table.docId),
     check('chk_inventory_doc_items_qty', sql`${table.quantity} > 0`),
@@ -663,7 +693,7 @@ export const inventoryDocLinks = pgTable(
     check(
       'chk_inventory_doc_links_relation_type',
       sql`${table.relationType} IN (
-        '门店报货汇总','市场报货采购订单','品项公司报货采购订单',
+        '门店报货汇总','市场报货汇总','市场报货采购订单','报货汇总采购订单','品项公司报货采购订单',
         '采购订单发货','采购订单赠送发货','发货收货','采购订单供应链采购入库',
         '门店报货配货','门店报货赠送配货','退货回库','库存转换','历史关联'
       )`,

@@ -2,13 +2,16 @@
 /**
  * order.createDeposit 寄存单冒烟
  *
- * 验证（核心：寄存卡可消费 —— paid_sessions 全付兜底回归守护）：
- *   1. 寄存单 sale_orders：total_amount=0 / status='已支付' / payment_method='无'
+ * 验证（staff 侧＝提交审批，不含入账）：
+ *   1. 寄存单 sale_orders：total_amount=0 / status='待审批' / payment_method='无'
  *   2. sale_items：session_count/remaining_sessions 正常写、received=0
- *   3. **paid_sessions = session_count**（total<=0 订单级兜底；曾因 5df8192 公式漂移归零，
- *      导致寄存卡 service.create 时被 D6 限额挡住完全不可消费 —— 本测试守护回归）
- *   4. unit_real_price：本单未录入实付（received=0）→ 置 0（如实反映未收款，不再回落标价）。
- *      实付>0 时按 received/session_count 重算的口径由 smoke-order-deposit-received 守护。
+ *   3. 资金操作锁定：寄存单禁止退款 / 回款
+ *
+ * ⚠ 入账态的断言（paid_sessions 全付兜底、unit_real_price 按实付重算）**不在本用例**：
+ *   staff 端 createDeposit 只落「待审批」（order.js:7321 注释：金额全 0、status 待审批），
+ *   审批入账在 admin 的 approveDepositOrder（actions/orders.ts:7121，待审批 → 已支付）。
+ *   原用例断言的 paid_sessions=10 / unit_real_price / received=800 都是审批**之后**才成立的，
+ *   在 staff L2 这一层无论如何都跑不出来 —— 那部分归 admin 侧覆盖。
  */
 import './setup.mjs'
 import {
@@ -73,7 +76,8 @@ async function main() {
   else {
     const o = orders[0]
     if (Number(o.total_amount) !== 0) errors.push(`total_amount 应=0，实际=${o.total_amount}`)
-    if (o.status !== '已支付') errors.push(`status 应='已支付'，实际='${o.status}'`)
+    // staff 端只提交审批，入账由 admin approveDepositOrder 完成
+    if (o.status !== '待审批') errors.push(`status 应='待审批'（staff 端只提交审批），实际='${o.status}'`)
     if (o.payment_method !== '无') errors.push(`payment_method 应='无'，实际='${o.payment_method}'`)
   }
 
@@ -89,14 +93,8 @@ async function main() {
     if (Number(it.session_count) !== 10) errors.push(`session_count 应=10，实际=${it.session_count}`)
     if (Number(it.remaining_sessions) !== 10) errors.push(`remaining_sessions 应=10，实际=${it.remaining_sessions}`)
     if (Number(it.received) !== 0) errors.push(`received 应=0，实际=${it.received}`)
-    // 核心断言：寄存卡 paid_sessions 必须 = session_count（全付兜底），否则完全不可消费
-    if (Number(it.paid_sessions) !== 10) {
-      errors.push(`paid_sessions 应=10（total<=0 全付兜底；=0 则寄存卡不可消费），实际=${it.paid_sessions}`)
-    }
-    // 本单 received=0 → unit_real_price = 0（如实反映未收款，不再回落标价）
-    if (Number(it.unit_real_price) !== 0) {
-      errors.push(`unit_real_price 应=0（实付0 不再回落标价），实际=${it.unit_real_price}`)
-    }
+    // paid_sessions / unit_real_price 在「待审批」态尚未冻结快照（审批入账时才写），
+    // 故此处不断言；它们的口径由 admin 侧审批用例覆盖。
   }
 
   // ─── 5. received>0 路径：建单录历史实付 → unit_real_price = 实付/次数（主功能正向覆盖）───
@@ -114,27 +112,32 @@ async function main() {
       [result2.data?.saleOrderId]
     )
     const it2 = r2[0]
-    // recalc STEP1 把定向回款落回 received=800；unit_real_price = 实付800/次数10 = 80；unit_price 仍标价 1000/10=100
-    if (Number(it2?.received) !== 800) errors.push(`[received>0] sale_items.received 应=800，实际=${it2?.received}`)
-    if (Number(it2?.unit_real_price) !== 80) errors.push(`[received>0] unit_real_price 应=80（实付800/10），实际=${it2?.unit_real_price}`)
+    // 录入的历史实付要等审批入账才会落到 received / unit_real_price（recalc STEP1 在审批里跑）。
+    // 待审批态下只保证标价 unit_price 正确写入，金额侧断言归 admin 审批用例。
     if (Number(it2?.unit_price) !== 100) errors.push(`[received>0] unit_price 应=100（标价1000/10，不变），实际=${it2?.unit_price}`)
-    rec(`  ✓ received>0 asserted (received=${it2?.received}, unit_real_price=${it2?.unit_real_price})`)
+    rec(`  ✓ received>0 建单成功（待审批态，入账断言归 admin 侧）`)
   }
 
   // ─── 6. 资金操作锁定：寄存单 + 历史订单 禁止退款/回款（updateDepositReceived 已停用）───
   const depItem = (await pgQuery(
     `SELECT sale_item_id FROM sale_items WHERE sale_order_id = $1 LIMIT 1`, [saleOrderId]
   ))[0]
-  // 6a 寄存单退款 → 退款 Bug-L 正向白名单（order.js 78b268b8）：仅销售单支持退款，
-  // 寄存单落入「仅销售单支持退款」兜底（errorType 仍 INVALID_STATE，退款仍被拒）。
+  // 6a 寄存单退款必须被拒。两道闸门都可能先触发，二者都算通过：
+  //   - 订单状态闸门：staff 建出来的寄存单是「待审批」→ INVALID_PARAMS 原订单状态不允许退款
+  //   - 单据类型闸门：退款正向白名单只认销售单（order.js 78b268b8）→ INVALID_STATE 仅销售单支持退款
+  // 本用例只在 staff 侧覆盖，拿到的是前者；审批入账后的后者归 admin 侧用例。
+  // 这里断言"必须被拒且拒绝理由可读"，而不是钉死某一道闸门 —— 钉死会让流程一变就假红。
   const depRefund = await invokeStaffApi('order.createRefund', {
     _testOpenid: TEST_MANAGER_OPENID,
     refSaleOrderId: saleOrderId,
     items: [{ saleItemId: depItem?.sale_item_id, refundQuantity: 1 }],
     refundReason: 'e2e-lock',
   })
-  if (depRefund.errorType !== 'INVALID_STATE' || !/仅销售单支持退款/.test(depRefund.message || '')) {
-    errors.push(`[lock] 寄存单退款应=INVALID_STATE/仅销售单支持退款，实际 code=${depRefund.code} type=${depRefund.errorType} msg=${depRefund.message}`)
+  const depRefundBlocked = depRefund.code !== 0
+    && ['INVALID_STATE', 'INVALID_PARAMS'].includes(depRefund.errorType)
+    && /仅销售单支持退款|原订单状态不允许退款/.test(depRefund.message || '')
+  if (!depRefundBlocked) {
+    errors.push(`[lock] 寄存单退款应被拒（状态闸门或单据类型闸门），实际 code=${depRefund.code} type=${depRefund.errorType} msg=${depRefund.message}`)
   }
   // 6b 寄存单回款 → INVALID_STATE（guard 先于状态校验）
   const depRepay = await invokeStaffApi('order.createRepayment', {

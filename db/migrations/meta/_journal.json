@@ -288,6 +288,62 @@
       "when": 1789117632431,
       "tag": "0040_payment_attribution_date_always_set",
       "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1789357902234,
+      "tag": "0041_bizarre_wolfpack",
+      "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "7",
+      "when": 1789549103374,
+      "tag": "0042_inventory_sku_supplier_fk",
+      "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "7",
+      "when": 1789789950120,
+      "tag": "0043_strange_revanche",
+      "breakpoints": true
+    },
+    {
+      "idx": 44,
+      "version": "7",
+      "when": 1789790016262,
+      "tag": "0044_wooden_human_torch",
+      "breakpoints": true
+    },
+    {
+      "idx": 45,
+      "version": "7",
+      "when": 1789959356263,
+      "tag": "0045_try_cast_helpers",
+      "breakpoints": true
+    },
+    {
+      "idx": 46,
+      "version": "7",
+      "when": 1789965866652,
+      "tag": "0046_split_quantity_semantics",
+      "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "7",
+      "when": 1789965884662,
+      "tag": "0047_waived_amount_and_zero_qty_out",
+      "breakpoints": true
+    },
+    {
+      "idx": 48,
+      "version": "7",
+      "when": 1789999039383,
+      "tag": "0048_hesitant_scarlet_spider",
+      "breakpoints": true
     }
   ]
 }

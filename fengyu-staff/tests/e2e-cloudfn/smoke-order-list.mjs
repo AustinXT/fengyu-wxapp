@@ -63,9 +63,13 @@ async function main() {
   const idsOf = (res) => (res.data?.orders || []).map(o => o.sale_order_id)
 
   // ─── 1. 待支付 tab（核心回归点：枚举合并 待支付+部分支付）───
+  // ⚠ **不能传 startDate/endDate**：#139 起日期筛选固定按「款项业绩归属日期」，实现是对
+  //   sale_order_payments 的 EXISTS 半连接（order.js「日期筛选口径固定为款项业绩归属日期」那段）。
+  //   纯待支付单 0 笔已入账款项，带上日期区间就必然落空 —— 那是与 admin 一致的**设计后果**，
+  //   不是缺陷（前端也明示"未产生收款的订单不在结果内"）。本用例守护的是枚举合并，
+  //   所以这里不带日期；日期口径本身由下面第 1b 条单独固化。
   const pending = await invokeStaffApi('order.list', {
-    ...storeCtx, status: '待支付', keyword: NS,
-    startDate: '2000-01-01', endDate: '2100-12-31', page: 1, pageSize: 50,
+    ...storeCtx, status: '待支付', keyword: NS, page: 1, pageSize: 50,
   })
   if (pending.code !== 0) {
     errors.push(`order.list(待支付) 应 code 0，实际 code=${pending.code} msg=${pending.message}（回归：::text[] vs 枚举列）`)
@@ -75,6 +79,22 @@ async function main() {
     if (!ids.includes(ORDER_PART)) errors.push(`待支付 tab 应合并「部分支付」单 ${ORDER_PART}，实际=${JSON.stringify(ids)}`)
     if (ids.includes(ORDER_PAID)) errors.push(`待支付结果不该含已支付单 ${ORDER_PAID}`)
     if (!errors.length) rec(`  ✓ order.list(待支付) code 0，含待支付+部分支付、不含已支付`)
+  }
+
+  // ─── 1b. #139 日期口径：带日期区间时，0 笔已入账款项的订单不入选 ───
+  const pendingRanged = await invokeStaffApi('order.list', {
+    ...storeCtx, status: '待支付', keyword: NS,
+    startDate: '2000-01-01', endDate: '2100-12-31', page: 1, pageSize: 50,
+  })
+  if (pendingRanged.code !== 0) {
+    errors.push(`order.list(待支付+日期区间) 应 code 0，实际 code=${pendingRanged.code} msg=${pendingRanged.message}`)
+  } else {
+    const ids = idsOf(pendingRanged)
+    if (ids.includes(ORDER_PEND)) {
+      errors.push(`#139 口径：纯待支付单 ${ORDER_PEND} 不应出现在按归属日期筛选的结果里，实际=${JSON.stringify(ids)}`)
+    } else {
+      rec(`  ✓ #139 日期口径：纯待支付单按归属日期筛选时不入选（与 admin 一致）`)
+    }
   }
 
   // ─── 2. 已支付 tab（单值枚举过滤）───

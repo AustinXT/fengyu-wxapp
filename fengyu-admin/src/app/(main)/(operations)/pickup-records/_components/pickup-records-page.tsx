@@ -22,6 +22,7 @@ import {
 import { formatPhone, formatDateTime as fmtDateTime } from '@/lib/utils'
 import { RowDeleteMenu } from '@/components/delete-action'
 import { deletePickupRecord } from '@/actions/pickup-records'
+import { normalizePage } from '@/lib/paging'
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50]
 
@@ -58,7 +59,7 @@ export default function PickupRecordsPage({ records, filterOptions, total, canCr
   const marketFilter = get('market')
   const dateFrom = get('from')
   const dateTo = get('to')
-  const currentPage = Math.max(1, Number(get('page', '1')) || 1)
+  const currentPage = normalizePage(get('page', '1'))
   const pageSize = PAGE_SIZE_OPTIONS.includes(Number(get('size')))
     ? Number(get('size'))
     : 20
@@ -119,7 +120,9 @@ export default function PickupRecordsPage({ records, filterOptions, total, canCr
     },
     {
       key: 'progress',
-      header: '进度',
+      // #154 拆列后 itemPickedUpQuantity 就是物理提货量（picked_up_quantity 与
+      // pickup_records 守恒，由 cron STEP 12 C5 巡检），列头回归「已提货」本义。
+      header: '已提货/购买',
       cell: (row) =>
         row.itemQuantity != null ? (
           <span className="text-xs text-[#666666]">
@@ -291,7 +294,7 @@ export default function PickupRecordsPage({ records, filterOptions, total, canCr
             </div>
             {detail.itemQuantity != null && (
               <div className="flex justify-between gap-4">
-                <span className="text-[#999999]">累计进度</span>
+                <span className="text-[#999999]">已提货/购买</span>
                 <span>
                   {detail.itemPickedUpQuantity ?? 0} / {detail.itemQuantity}
                 </span>

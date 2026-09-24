@@ -4,7 +4,8 @@ import { parseEmployeeFilters, filterValidSkillValues } from '@/lib/list-filters
 import { getOrgNodes } from '@/actions/org'
 import { getSkillTags } from '@/actions/skill-tags'
 import { getSession } from '@/lib/auth'
-import { hasPermission, isAdminScope } from '@/lib/permissions'
+import { hasPermission } from '@/lib/permissions'
+import { canManageSkillTags } from '@/lib/skill-tag-access'
 import { hasUiCapability } from '@/lib/permission-contract'
 import { requireUiPageCapability } from '@/lib/page-capability'
 import EmployeesPage from './_components/employees-page'
@@ -39,7 +40,9 @@ export default async function Page({
   })
   const actions = session?.permissions.actions ?? []
   const canCreate = hasUiCapability(actions, 'employee:create')
-  const canManageSkillTags = hasUiCapability(actions, 'employee:update')
+  // 技能标签的增/改/删统一为「仅系统管理员」（#211）。判定口径集中在 canManageSkillTags，
+  // 与服务端 withPermission + requireAdmin 的组合同构，理由见该函数的文档注释。
+  const canManage = canManageSkillTags(session)
 
   return (
     <Suspense>
@@ -49,8 +52,7 @@ export default async function Page({
         orgNodes={orgNodes}
         skillTags={skillTags}
         canCreate={canCreate}
-        canManageSkillTags={canManageSkillTags}
-        canDeleteSkillTags={canManageSkillTags && !!session && isAdminScope(session)}
+        canManageSkillTags={canManage}
       />
     </Suspense>
   )

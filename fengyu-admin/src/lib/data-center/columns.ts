@@ -4,6 +4,7 @@
  * 本文件不依赖 Server Action 或 Node API，页面和异步导出 worker 都可以安全引用。
  */
 import type { DataCenterExportView } from '@/lib/export-job-types'
+import { SALES_CATEGORIES, SALES_CATEGORY_COLUMN_KEYS } from '@/lib/sales-categories'
 import type { MetricUnit } from './types'
 
 export interface DataCenterMetricColumn {
@@ -43,6 +44,20 @@ const staffTextColumns = [
   { key: 'position', label: '职级', source: 'labels' },
 ] as const satisfies readonly DataCenterBreakdownTextColumn[]
 
+/**
+ * 「按技师人效」的 sales_category 四分类销售额列，由单源生成 —— 枚举加值时
+ * `SALES_CATEGORY_COLUMN_KEYS` 会先在 tsc 报缺键，不会静默少一列。
+ *
+ * ⚠️ 本组列口径是 `spia.allocated_amount`（营业额份额），取数见
+ *    `actions/data-center/efficiency.ts` 的 `revenue_by_emp_cat` CTE；
+ *    与 staff 绩效页同名 4 格的 `commission_amount`（提成）差一个费率量级，勿对齐。
+ */
+const salesCategoryMetricColumns = SALES_CATEGORIES.map((label) => ({
+  key: SALES_CATEGORY_COLUMN_KEYS[label],
+  label,
+  unit: 'amount' as const,
+})) satisfies readonly DataCenterMetricColumn[]
+
 const customerRegistrationMetricColumns = [
   { key: 'registered', label: '会员注册', unit: 'count' },
   { key: 'retained', label: '保有会员', unit: 'count' },
@@ -50,11 +65,16 @@ const customerRegistrationMetricColumns = [
   { key: 'visitOnceRate', label: '1次达成率', unit: 'percent' },
   { key: 'visitTwice', label: '回店2次', unit: 'count' },
   { key: 'visitTwiceRate', label: '2次达成率', unit: 'percent' },
-  { key: 'dormant', label: '沉睡', unit: 'count' },
+  // #294：三档状态人数读 cron 每日重算的 customer_status 截面，**不随导出所选区间变化**；
+  // 紧邻的「激活 X」三列才是区间统计。导出件脱离页面上下文，表头不标会被当同时态对比。
+  // 沉睡额外带 `customer_type='会员客'`（customer.ts:181 标量侧 / :545 明细侧，
+  // 由 consistency.customer.test.ts 的三条断言钉死），冰冻/休眠没有 —— 导出件比页面
+  // 更需要标出这层差异，否则三列看起来口径对等。
+  { key: 'dormant', label: '沉睡(截面·仅会员客)', unit: 'count' },
   { key: 'reactivatedDormant', label: '激活沉睡', unit: 'count' },
-  { key: 'frozen', label: '冰冻', unit: 'count' },
+  { key: 'frozen', label: '冰冻(截面)', unit: 'count' },
   { key: 'reactivatedFrozen', label: '激活冰冻', unit: 'count' },
-  { key: 'deep', label: '休眠', unit: 'count' },
+  { key: 'deep', label: '休眠(截面)', unit: 'count' },
   { key: 'reactivatedDeep', label: '激活休眠', unit: 'count' },
 ] as const satisfies readonly DataCenterMetricColumn[]
 
@@ -67,7 +87,10 @@ const customerOperationMetricColumns = [
   { key: 'bucketVIC', label: '≥10万', unit: 'count' },
   { key: 'operatedTotal', label: '被经营总数', unit: 'count' },
   { key: 'newMembers', label: '会员新增', unit: 'count' },
-  { key: 'trafficCustomers', label: '流量客', unit: 'count' },
+  // #284：与 KPI 卡同步改名。⚠ 它与下方 trafficVisits「流量人次」**不同口径**，
+  // 新分母含「本期已转会员的人」（其人次记入 memberVisits）和「本期没到过店的新会员」（无人次），
+  // 因此同一行出现「成交率分母 > 流量人次」甚至「流量人次 = 0」是合法的，不是数据 bug
+  { key: 'trafficCustomers', label: '成交率分母', unit: 'count' },
   { key: 'convRate', label: '成交率', unit: 'percent' },
   { key: 'memberAvgTicket', label: '会员客单', unit: 'amount' },
   { key: 'newCustomerAvgTicket', label: '新客客单', unit: 'amount' },
@@ -181,10 +204,7 @@ export const DATA_CENTER_VIEW_CONFIG = {
     textColumns: staffTextColumns,
     metricColumns: [
       { key: 'revenue', label: '当月业绩', unit: 'amount' },
-      { key: 'saleZxzh', label: '自销自耗', unit: 'amount' },
-      { key: 'saleTxzh', label: '他销自耗', unit: 'amount' },
-      { key: 'saleTxth', label: '他销他耗', unit: 'amount' },
-      { key: 'saleEco', label: '生态合作', unit: 'amount' },
+      ...salesCategoryMetricColumns,
       { key: 'consumeTotal', label: '实耗合计', unit: 'amount' },
       { key: 'newMember', label: '纳客数', unit: 'count' },
       { key: 'projectCount', label: '项目数', unit: 'count' },

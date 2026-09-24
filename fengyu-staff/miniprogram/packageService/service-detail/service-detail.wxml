@@ -16,6 +16,8 @@
     </view>
 
     <van-cell-group title="基本信息" class="section-group">
+      <!-- 非本店单（#224）：显式标出开单门店，否则界面上看不出这单不归本店 -->
+      <van-cell wx:if="{{!detail.inCurrentStore}}" title="服务门店" value="{{detail.storeName || '其他门店'}}" />
       <van-cell title="顾客" value="{{detail.customerName}}" />
       <van-cell title="手机号" value="{{detail.customerPhone}}" />
       <van-cell title="服务人员" value="{{detail.staffName}}" />
@@ -45,14 +47,16 @@
     </view>
 
     <van-cell-group title="关联信息" class="section-group" wx:if="{{detail.appointmentId || detail.remark}}">
-      <van-cell wx:if="{{detail.appointmentId}}" title="关联预约" is-link bind:click="onViewAppointment">
+      <!-- 非本店单不给预约入口（#224）：appointment.detail 仍按本门店过滤，点进去必报「预约不存在」 -->
+      <van-cell wx:if="{{detail.appointmentId && detail.inCurrentStore}}" title="关联预约" is-link bind:click="onViewAppointment">
         <van-icon slot="icon" name="calendar-o" class="cell-icon" />
       </van-cell>
       <van-cell wx:if="{{detail.remark}}" title="备注" value="{{detail.remark}}" />
     </van-cell-group>
 
-    <!-- 顾客评价：仅店长可见，且仅已完成单 -->
-    <van-cell-group title="顾客评价" class="section-group" wx:if="{{isManager && detail.status === '已完成'}}">
+    <!-- 顾客评价：可见性由后端下发（店长对这张单有特权 = 我店的单 ∨ 我店的客户）。
+         前端不自行推导——它不知道顾客归属，按 inCurrentStore 判会误伤「顾客档案里看别店单」场景 -->
+    <van-cell-group title="顾客评价" class="section-group" wx:if="{{detail.canViewReview && detail.status === '已完成'}}">
       <view wx:if="{{detail.review}}" class="review-box">
         <view class="review-rate-row">
           <van-rate value="{{detail.review.rating}}" readonly size="28rpx" color="#C0322A" void-color="#E8E8E8" />
@@ -66,7 +70,7 @@
 
     <view class="action-bar">
       <van-button
-        wx:if="{{!isReadOnly && detail.status === '待服务'}}"
+        wx:if="{{!isReadOnly && detail.canOperate && detail.status === '待服务'}}"
         type="primary" block
         disabled="{{submitting}}"
         loading="{{submitting}}"
@@ -75,7 +79,7 @@
         bind:click="onStartService"
       >开始服务</van-button>
       <van-button
-        wx:elif="{{!isReadOnly && detail.status === '服务中'}}"
+        wx:elif="{{!isReadOnly && detail.canOperate && detail.status === '服务中'}}"
         type="primary" block
         disabled="{{submitting}}"
         loading="{{submitting}}"
@@ -83,8 +87,9 @@
         custom-style="border-radius: 48rpx;"
         bind:click="onCompleteService"
       >标记完成</van-button>
+      <!-- 代客户确认仍归开单门店店长（#224） -->
       <van-button
-        wx:elif="{{!isReadOnly && detail.status === '待客户确认' && isManager}}"
+        wx:elif="{{!isReadOnly && detail.status === '待客户确认' && isManager && detail.inCurrentStore}}"
         type="primary" block
         disabled="{{submitting}}"
         loading="{{submitting}}"
@@ -92,16 +97,20 @@
         custom-style="border-radius: 48rpx;"
         bind:click="onConfirmService"
       >代客户确认</van-button>
+      <!-- 非本店单不给取消入口（#224）：取消属开单门店的调度决策，云函数同样会拒绝。
+           判据用 inCurrentStore 而非「是否支援单」——顾客档案也能点进他店他人的单 -->
       <van-button
-        wx:if="{{!isReadOnly && (detail.status === '待服务' || detail.status === '服务中' || detail.status === '待客户确认')}}"
+        wx:if="{{!isReadOnly && detail.inCurrentStore && detail.canOperate && (detail.status === '待服务' || detail.status === '服务中' || detail.status === '待客户确认')}}"
         type="danger" block plain
         disabled="{{submitting}}"
         custom-style="border-radius: 48rpx; margin-top: 20rpx;"
         bind:click="onCancelService"
       >取消服务单</van-button>
-      <!-- 终态：返回工作台 -->
+      <!-- 无任何可用操作时给返回入口：外援标记完成后单转「待客户确认」，
+           开始/完成（状态不符）、代确认（非本店店长）、取消（非本店）全不满足，
+           不兜底的话底部一片空白、只能手势返回 -->
       <van-button
-        wx:if="{{detail.status === '已完成' || detail.status === '已取消'}}"
+        wx:if="{{!(detail.canOperate && (detail.status === '待服务' || detail.status === '服务中')) && !(isManager && detail.inCurrentStore && detail.status === '待客户确认')}}"
         type="primary" block plain
         custom-class="btn-outline-brand"
         custom-style="border-radius:48rpx;margin-top:20rpx;"

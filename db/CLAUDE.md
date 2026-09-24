@@ -36,7 +36,15 @@ PostgreSQL 数据库层，使用 Drizzle ORM 管理 schema 定义与迁移。
 npm run db:generate   # 生成迁移文件（schema 变更后）
 npm run db:migrate    # 执行迁移
 npm run db:studio     # Drizzle Studio 可视化管理
+npm run db:test       # node:test 套件（migration 字面量回归等，不连库）；用 shell glob，勿改回目录参数
+npm run db:check:attribution   # 款项归属日期迁移前体检（只读，须显式传 DATABASE_URL）
 ```
+
+⚠ `npm run db:test` **不在** admin / staffApi 的 vitest 基线里，"单测全绿"不覆盖它。
+它由独立 workflow `.github/workflows/db-script-tests.yml` 在 CI 跑，但**该 workflow 带 `paths` 过滤**
+（`db/scripts/**`、`db/migrations/**`、两个跨子项目内联副本等）——改动落在过滤器之外时 CI 不触发，
+发版前仍要本地跑一次。新增本套件会读取的仓库文件时，记得同步补 workflow 的 `paths`；
+其中「跨子项目内联副本」那几条由 `db-target-guard.test.js` 反向断言，漏了会直接红。
 
 迁移前需设置环境变量 `DATABASE_URL`（或在 `.env` 中配置）。Drizzle 配置见 `drizzle.config.ts`，启用了 strict 模式（破坏性变更需确认）。
 
@@ -55,13 +63,152 @@ npm run db:studio     # Drizzle Studio 可视化管理
    - prod：从 `envs/prod.env` 的 `ADMIN_DATABASE_URL` 显式迁 **118.178.196.26:5433/fengyu_wxapp**
    - 详见下文「dev / prod 两套业务库」小节；完整发版优先使用 `/release-all <env>` 的目标断言与迁移门禁
 
+### ⚠️ 迁移 0039–0041 的编号在 2026-09-16 的 main→dev 合并里重排过
+
+同一条迁移在两条分支上拿到过不同编号，合并时按 `when` 时序重排为：
+
+| idx | tag | when | 来历 |
+|---|---|---|---|
+| 39 | `0039_inventory_org_endpoints_and_permissions` | 1788231409458 | dev 线原样 |
+| 40 | `0040_payment_attribution_date_always_set` | 1789117632431 | dev 线原样；**test/main 线上它叫 0039** |
+| 41 | `0041_bizarre_wolfpack`（#137） | 1789357902234 | test/main 线的 0040 改号而来 |
+
+**为什么必须是这个顺序**：drizzle 的 migrator 拿 `__drizzle_migrations` 里最大的 `created_at`
+与 journal 各条的 `when` 比大小来决定跳过谁（不是按 hash 求集合差）。inventory 的 `when` 早于
+payment，一旦把它排到 payment 之后，**任何已 apply 过 payment 的库都会永久静默跳过它** ——
+2026-09-14 prod 需要手工 apply + 手工 INSERT 就是踩了这个。`when` 值一个都不许改。
+
+**三个 SQL 文件内容逐字节未动**（改名不改内容），所以已 apply 的库里记的 (hash, created_at)
+仍然对得上，不会被判成待迁。
+
+**⚠️ `0041_bizarre_wolfpack.sql` 内部的注释仍写「0039 的 BEFORE trigger」「0039 是已发布的
+迁移」** —— 那是它在 test 线被写下时的编号，指的是现在的 **0040**。这些注释**故意不改**：
+迁移文件的内容参与 hash，改一个字就会让已 apply 的库报 hash 漂移。读 SQL 注释时按本表换算。
+
+### 写 sale_order_payments 的硬约束（迁移 0040 / 0041）
+
+`sale_order_payments.performance_attribution_date` 由 BEFORE trigger
+`initialize_payment_performance_attribution_date()` 赋值，并由 CHECK 约束
+`chk_sop_attribution_date_present` 兜底非空。各端报表直读这一列，没有任何查询侧回退。
+
+因此：**任何绕过 trigger 写这张表的路径都必须显式提供 `performance_attribution_date`**。
+`pg_restore --disable-triggers`、`session_replication_role = replica`（逻辑复制订阅端）、
+`ALTER TABLE ... DISABLE TRIGGER` 下的批量导入都属于这类路径 —— CHECK 约束不随 trigger 一起被关掉，
+不带这一列会直接报 `violates check constraint`。
+
+同理，`sale_orders.performance_attribution_date` 变更由 AFTER UPDATE trigger
+`sync_order_performance_attribution_to_payments()` 同步到首次支付行与同次储值卡行；
+手工改这一列时不要顺手 DISABLE 它，否则镜像脱拍、业绩会静默落到错误的日子
+（cron STEP 11 的 I6 / I6b 巡检会在次日告警，但那是安全网不是修复）。
+
+**锁序约定：`sale_orders` → `sale_order_payments`，新代码不得反向。**
+
+迁移 0041 给 BEFORE trigger 的两处 `SELECT ... FROM sale_orders` 补了 `FOR SHARE`
+（**不能降回 `FOR KEY SHARE`**：归属日期不是键列，普通 `UPDATE sale_orders` 取 FOR NO KEY UPDATE，
+与 FOR KEY SHARE 不冲突 —— 实测挡不住）。
+
+该共享锁的**实际触发面只有两类写入**，不是"写这张表就会锁订单"：
+1. `change_type = '首次支付'` 行的 INSERT，或它的 `status` / `paid_at` / `performance_attribution_date` UPDATE；
+2. 归属日期列为空、且能配对到同 `status`、同精确 `paid_at` 主流水的 `储值卡抵扣` 行的 INSERT / 入账重算。
+
+回款与退款走 ELSE 分支，不读 `sale_orders`；`allocation_status` 之类的 UPDATE 不在
+`UPDATE OF status, paid_at, performance_attribution_date` 列表里，根本不触发 trigger。
+
+✅ **曾经的反向锁序已修复（issue #148，2026-09-18）**：手工营业额分配
+（`fengyu-admin/src/actions/allocations.ts` 的 `savePaymentAllocations`、
+staffApi `routes/allocation.js` 的保存/空分配/删除）原本是「先改款项行、再刷新订单汇总」，
+与「订单级改期」（先锁订单、再回写款项行）并发时会 40P01（临时 PG 实测复现过，
+且把 0041 的 AFTER trigger 禁用、改用改造前的应用层 UPDATE 同样复现 —— 环在 0041 之前就存在）。
+同一轮还给 admin `deleteOrder` 补了**无条件**的订单行锁（此前只有「转换单」分支取锁，
+非转换单路径是「先删子表、最后删主单」，在分配改成先锁订单后会与之成环）。
+
+⚠ **`deleteOrder` 的订单锁本身又与「退款审批」形成一对反向**（退款审批是「先拿退款行 → 再
+`UPDATE sale_orders`」，删除是「先锁订单 → 再删全单款项行」）。它不成环，靠的是两者**不可能并存**，
+而这需要两个条件同时成立：
+
+1. `deleteOrder` 的锁是 `FOR UPDATE`（**不能降成 `FOR NO KEY UPDATE`**）—— 它与外键 INSERT 取的
+   `FOR KEY SHARE` 冲突，持锁期间没人能给这张单新建退款流水；
+2. 事务内、锁之后有一条**退款流水复检**（`change_type='退款'` 命中即拒绝删除），把已存在的挡在 DELETE 之前。
+
+**删掉复检、把它移到锁之前、或把锁降级，任何一条都会让「删除 × 退款审批」变成稳定的死锁对。**
+
+⚠ 该论证隐含假设：**退款流水只由 INSERT 产生**。若将来出现「UPDATE 既有款项行、把 `change_type`
+改写成 `'退款'`」的路径，它不取父行的 `FOR KEY SHARE`，条件 1 就挡不住它（2026-09-18 已 grep 确认无此路径）。
+
+⚠ 并且这**不等于该路径零死锁**：退款**申请**侧仍有一个可检测的暂态环 —— `createRefund` 先插入
+payments tuple（持新行锁）、其 FK 检查卡在删除事务的 `FOR UPDATE` 上，而删除事务随后的
+`DELETE FROM sale_order_payments WHERE sale_order_id=...` 会撞上那条未提交 tuple 转而等它。
+窗口是毫秒级，两侧都有 40P01 → 可重试提示，且删除是低频运维操作，因此按**可接受**处理而非缺陷。
+彻底解法是让退款申请也先显式锁订单（与「退款审批」一并整改时再做）。
+
+守护：`cross-end-sql-snapshot.test.js` 钉「取订单锁 → 查退款流水 → 才允许删」的顺序
+（锚点是**退款查询本身**，不是那句 throw —— 只盯 throw 的话，把查询挪到锁前仍会全绿），
+`orders.test.ts` 有一条行为用例（复检命中时一条 DELETE 都不发）。
+
+**锁强度用 `FOR NO KEY UPDATE`，不是 `FOR UPDATE`。** 实测对照（PG 16，2026-09-18）：
+
+| 事务持有 | FK 子表 INSERT（取父行 FOR KEY SHARE） | 改期的 `FOR UPDATE` | 0040 trigger 的 `FOR SHARE` |
+|---|---|---|---|
+| `FOR UPDATE` | **被挡** | 被挡 | 被挡 |
+| `FOR NO KEY UPDATE` | 放行 | 被挡 | 被挡 |
+
+消环只需挡住后两者。用 `FOR UPDATE` 会在整个事务期间把该订单的所有子表 INSERT 一并挡住
+（`createRefund` 事务第一条就是 `INSERT INTO sale_order_payments`，本是毫秒级），是白付的并发度代价。
+删除链路（`deleteOrder`）例外，它要删主键行，仍用 `FOR UPDATE`。
+
+守护分两层：
+- 词法：`staffApi/__tests__/routes/cross-end-sql-snapshot.test.js` 的「事务锁序守护」块 —— 断言锁存在、
+  **排在第一条写语句之前**（写语句集合含 `UPDATE sale_order_payments`，不是只看分配表）、
+  两端事务计数闸门、禁 JOIN 取锁（含不带 `OF` 的等价写法）；
+- 真库：`db/scripts/__tests__/allocation-lock-order.pg.test.js` —— 「修复前序列必死锁」+
+  「改期先到」+「分配先到」+ 落库结果四条。**对照组不能删**：没有「修复前必死锁」，
+  「修复后不死锁」可能只是没构造出环的假绿。
+
+⚠ **形式上反向、但目前无环的路径（改动前必须重新评估）**：
+
+1. **退款审批**（admin `refunds.ts` 的 `approveRefund`、staffApi `order.js` 同语义副本）
+   事务第一条就是 `UPDATE sale_order_payments`（CAS 翻退款行 status/paid_at），之后才
+   `UPDATE sale_orders` 重算 `refunded_amount` —— 顺序是反的。
+
+   **无环靠的是语句顺序，不是行不相交**：该链路末尾的
+   `reconcileAllocationStatusAfterRefund`（`payment-allocatable` 四副本）写的是
+   `WHERE p.sale_order_id = $1` —— **全单款项行，含首次支付行，与 trigger 目标行确实相交**。
+   它之所以不成环，是因为 `UPDATE sale_orders SET refunded_amount`（staff `order.js` / admin `refunds.ts`）
+   **排在它之前**：退款事务在等 `sale_orders` 锁的那段窗口里，手上只有 `change_type='退款'` 那一行，
+   而 trigger 从不碰退款行。
+
+   → **把 `reconcile` / `cascade` 这类宽写挪到 `UPDATE sale_orders SET refunded_amount` 之前，
+   环立刻成立。** 这是个看起来很无害的语句重排，改退款链路顺序前务必回到这一条。
+
+2. **admin `orders.ts` 的 `deductPrepaidCardAtCreation`** 不先锁订单，但写的是配对不上主流水的卡行，
+   压根不触发上面的共享锁，且被 `prepaid_cards` 行锁串行化 —— 无环是因为**不触发**，不是因为顺序对。
+
+3. **staffApi `routes/card.js` 的充值卡退款审批**用
+   `FROM sale_order_payments sop JOIN sale_orders so ... WHERE sop.id=$1 FOR UPDATE OF sop` 取锁
+   （按 sop 主键扫描 → 物理上先锁款项行），之后才 `UPDATE sale_orders`。当前只碰退款行故无环，
+   但它同时踩了「JOIN 取锁」和「反向顺序」两条，是下一个该整改的点（#148 评审记录，未在该 PR 内改）。
+
+4. **`db/scripts/` 的批处理**（`backfill-payment-allocatables.js`、`backfill-conversion-allocation-status.js`、
+   若干 `repair-*.js`）会先改款项行再写 `sale_orders`，与改期并发就是 #148 的原型。
+   一律在业务低峰单跑，或在每单事务首条补 `SELECT 1 FROM sale_orders ... FOR NO KEY UPDATE`。
+
+（历史记录：`clientApi routes/order.js` 的 repay 曾被列为「不先锁订单」的豁免项，2026-09-18 复核
+已不成立 —— 它的事务第一条就是 `SELECT * FROM sale_orders ... FOR UPDATE`，纯卡与混合两个分支都在锁内。）
+
+跑 0041 之前先执行 `npm run db:check:attribution` 确认没有真阻塞项：该迁移的
+`ADD CONSTRAINT` 取 ACCESS EXCLUSIVE 并持有到事务提交，回填与自检的全表扫描都落在这个窗口里，
+应避开营业高峰。迁移首条已加 `SET LOCAL lock_timeout = '3s'`，拿不到锁会直接失败而不是把业务卡住。
+
+⚠ drizzle 把**所有**待应用迁移放进同一个事务（已核 drizzle-orm 0.45.1 的 `pg-core/dialect.cjs`），
+所以积压越多、锁窗口越长。别攒一堆迁移一起上。
+
 ### 严格禁止
 
 - **禁止** 用 `psql` 或任何客户端直连库执行 `CREATE TABLE / ALTER TABLE / DROP` 等 DDL
 - **禁止** 手写 `.sql` 文件塞进 `db/migrations/`（哪怕序号不冲突）
 - **禁止** 手动编辑 `db/migrations/meta/_journal.json`（baseline reset 收尾用 `db/scripts/reset-drizzle-journal.js` 除外）
 - **禁止** 在已 merge 的 migration 上原地修改，应该写一个新 migration 修复
-- **禁止** 用 `db:push` 对 prod/dev 任一业务库 push schema，会让 journal 脱节
+- **禁止** 用 `db:push` 对 prod/dev 任一业务库 push schema，会让 journal 脱节（e2e 独立库是唯一例外，见下文）
 - **唯一例外**：生成的 migration `.sql` 文件末尾可以追加手写 `UPDATE`/`INSERT` 做数据回填（参考归档里的
   `_archive_pre_baseline_2026_04/sql/0018_green_rogue.sql` 模式），但**只能追加**，不能修改 drizzle-kit 生成的部分
 
@@ -71,20 +218,54 @@ npm run db:studio     # Drizzle Studio 可视化管理
 - **已在远程 apply 过的 migration 要改**：**绝对不要**改它，写一个新的 migration 来修复
 - **发现 schema.ts 和实际库 drift**：不要再 psql 补漏，一律走 `db:generate` → review SQL → `db:migrate` 流程
 
-## dev / prod 两套业务库（2026-09-01 dev 迁入 sqlserver101）
+## dev / prod 两套业务库（2026-09-01 起）
 
-项目有两个独立 PG 业务库实例，分处两台服务器。2026-09-01 起 dev 从 ali-demo 永久迁入
-`sqlserver101`（接管原 test 环境的服务器与库），独立 test 环境退役；此前 2026-08-24 的
-三环境口径不再适用。**两套库都在使用，schema 必须同步维护——不是生产 + 冷备的关系。**
+项目有两个独立 PG 实例，分处两台服务器。**两套库都在使用，schema 必须同步维护——不是生产 + 冷备的关系。**
 
 | 角色 | 连接 | 使用方 |
 |------|------|--------|
-| **prod 业务库** | `postgresql://fengyu:***@118.178.196.26:5433/fengyu_wxapp`（fengyu-prod） | 线上 admin、prod CloudBase 的 staffApi / clientApi / payNotify、**trial + release 版小程序** |
-| **dev 业务库** | 本地迁移：`postgresql://fengyu:***@101.34.242.103:5433/fengyu_wxapp`；101 容器：`postgresql://fengyu:***@172.18.0.1:5433/fengyu_wxapp`（sqlserver101） | sqlserver101 上的 dev admin / analyst、dev CloudBase 云函数（cloud1-*）、**仅 develop 版小程序** |
+| **prod 业务库** | `postgresql://fengyu:***@118.178.196.26:5433/fengyu_wxapp`（SSH `lx-prod`） | 线上 admin、prod CloudBase 的 staffApi / clientApi / payNotify、**trial + release 版小程序**；**`test` 与 `main` 两条分支都发布到这里** |
+| **dev 业务库** | 本地迁移：`postgresql://fengyu:***@101.34.242.103:5433/fengyu_wxapp`（SSH `lx-test`）；同机容器：`postgresql://fengyu:***@172.18.0.1:5433/fengyu_wxapp` | dev admin / analyst、dev CloudBase 云函数（cloud1-*）、**仅 develop 版小程序**；**`dev` 分支发布到这里** |
 
 ⚠ 两套库**均用 5433 端口 + `fengyu_wxapp` 库名**，本地迁移仅靠 **IP** 区分：
-dev=`101.34.242.103`、prod=`118.178.196.26`。`172.18.0.1` 只允许
-sqlserver101 上的容器回连宿主，禁止作为本地 migration / backfill 目标。
+dev=`101.34.242.103`、prod=`118.178.196.26`。`172.18.0.1` 只允许 lx-test 上的容器回连宿主，
+禁止作为本地 migration / backfill 目标。
+
+**分支与环境的映射**（易混淆，以此为准）：`dev` 分支 → dev 环境（lx-test / 101）；
+`test` 与 `main` 分支 → **prod 环境**（lx-prod / 118）。分支名 `test` **不**对应任何独立的 test 环境——
+早期的独立 test 环境（`envs/test.env`）已于 2026-09-01 随 dev 迁入同一台机器而退役，不再单独定义。
+
+### 已弃用：ali-demo `47.113.202.7`
+
+2026-09-01 起**全面停用**，不再是任何环境的目标。该机上的两个库都不得再连：
+
+| 地址 | 历史角色 | 现状 |
+|---|---|---|
+| `47.113.202.7:5433/fengyu_wxapp` | 2026-07-17 之前是**生产库**（2026-05-21 实测线上 admin 真实数据全在它上面），之后降级为 dev+test 共用库 | **仍可连通但数据陈旧**（停在 2026-08-24）。连它不会报错，只会静默拿到旧数据——这是最危险的失败模式 |
+| `47.113.202.7:5434/fengyu` | 2026-07-17 之前的开发库 | 该实例上**已无任何 fengyu 库**（2026-09-14 实测仅剩 postgres/template0/template1）。写 `5434/*` 的引用一律失效 |
+
+源码与配置中**不应再出现** `47.113.202.7`；仍出现的地方只有两类：归档的历史记录
+（`notes/tickets/archives/**`、`docs/changes/**`、`db/migrations/_archive*`、测试执行报告），
+以及保留原文并加注了现状的一次性脚本注释。
+
+### e2e 独立库
+
+| 库 | 连接 | 说明 |
+|---|---|---|
+| **admin e2e 库** | `postgresql://fengyu:***@101.34.242.103:5433/fengyu_e2e` | 与 dev 业务库**同机不同库**，靠库名隔离，避免多会话/worktree 并行跑 e2e 互相清库 |
+
+- 引用点只有两处，改一处必须同步另一处：`db/scripts/bootstrap-e2e-db.sh`（建库）与
+  `fengyu-admin/package.json` 的 `test:e2e` / `test:e2e:ui`（跑测试）。两者都以 `E2E_DB_NAME` 为库名来源，
+  自定义隔离库（如 `fengyu_e2e_wt1`）时**两边都要设同一个 `E2E_DB_NAME`**，否则建了隔离库而测试仍连默认库。
+- ⚠️ **`test:e2e:manual`（e2e-chains 跨页链路）不走这个独立库**，它按设计跑在 **dev 业务库**上：
+  35 个 spec 的 psql helper（`_helpers/cron-runner.ts`、`_helpers/scope-helpers.ts`、各 `link-*.spec.ts`）
+  硬编码连 `fengyu_wxapp`，`playwright.manual.config.ts` 也注明「server 也须连 fengyu_wxapp」，
+  靠 `FY-FIX-*` / `FY-TEST-*` 命名空间与日常数据共存。给它注入 `E2E_DATABASE_URL` 会造成
+  dev server 连 e2e 库、而夹具 SQL 连业务库的**分裂**，所以该脚本刻意不注入。
+- ⚠️ **待办（需 DBA）**：`101.34.242.103` 上 `fengyu` 角色当前 `rolcreatedb=false`，
+  `bootstrap-e2e-db.sh` 建不了库。需先执行 `ALTER ROLE fengyu CREATEDB`，再跑 bootstrap 建库灌 schema。
+  在此之前 admin e2e 无库可连（旧 e2e 库随 `47.113.202.7` 一并弃用）。
+- **e2e 只允许使用 dev 侧，绝不碰 prod。**
 
 **schema 变更两个库都要迁**：
 
@@ -95,18 +276,25 @@ sqlserver101 上的容器回连宿主，禁止作为本地 migration / backfill 
 
 ```bash
 TARGET_DATABASE_URL="$(grep -m1 '^PG_CONNECTION_STRING=' ../envs/dev.env | cut -d= -f2- | tr -d '\r\"')"
-node -e 'const u=new URL(process.argv[1]); if(u.hostname!=="101.34.242.103"||u.port!=="5433"||u.pathname!=="/fengyu_wxapp") process.exit(1)' "$TARGET_DATABASE_URL"
+node -e 'const u=new URL(process.argv[1]); const BAD=["host","hostaddr","port","dbname","database","options","service","passfile"].filter(k=>u.searchParams.has(k)); if(BAD.length){console.error("拒绝：query 参数 "+BAD.join(",")+" 会覆盖连接目标");process.exit(1)}; if(u.hostname!=="101.34.242.103"||u.port!=="5433"||u.pathname!=="/fengyu_wxapp") process.exit(1)' "$TARGET_DATABASE_URL"
 DATABASE_URL="$TARGET_DATABASE_URL" npm run db:migrate
 
 TARGET_DATABASE_URL="$(grep -m1 '^ADMIN_DATABASE_URL=' ../envs/prod.env | cut -d= -f2- | tr -d '\r\"')"
-node -e 'const u=new URL(process.argv[1]); if(u.hostname!=="118.178.196.26"||u.port!=="5433"||u.pathname!=="/fengyu_wxapp") process.exit(1)' "$TARGET_DATABASE_URL"
+node -e 'const u=new URL(process.argv[1]); const BAD=["host","hostaddr","port","dbname","database","options","service","passfile"].filter(k=>u.searchParams.has(k)); if(BAD.length){console.error("拒绝：query 参数 "+BAD.join(",")+" 会覆盖连接目标");process.exit(1)}; if(u.hostname!=="118.178.196.26"||u.port!=="5433"||u.pathname!=="/fengyu_wxapp") process.exit(1)' "$TARGET_DATABASE_URL"
 DATABASE_URL="$TARGET_DATABASE_URL" npm run db:migrate
 unset TARGET_DATABASE_URL
 ```
 
-**数据修复 / backfill**：先分清目标环境——dev=`101.34.242.103:5433`、
-prod=`118.178.196.26:5433`，**永远显式传 `DATABASE_URL` 并断言 host/port/dbname**。仅修某环境的数据时只跑
-目标库；需要双环境一致的修复必须两库分别执行并记录结果。**e2e 只允许使用 dev，绝不碰 prod。**
+⚠ 上面断言里的 `BAD` 检查不能省：PG 连接串的 query 参数（`?host=` 乃至编码形式 `?%68ost=`）优先级高于 URL authority，只比 `hostname/port/pathname` 会被整个绕过——而 `db:migrate` 打错库无法回滚。
+
+**数据修复 / backfill**：先分清目标环境——dev=`101.34.242.103:5433`、prod=`118.178.196.26:5433`，
+**永远显式传 `DATABASE_URL` 并断言 host/port/dbname**。仅修某环境的数据时只跑
+目标库；需要双环境一致的修复必须两库分别执行并记录结果。
+
+`db/scripts/` 下的脚本**不提供指向远程业务库的 `DATABASE_URL` 默认值**：缺变量直接报错退出。
+历史上多个脚本以旧 dev 地址作 fallback，而该库至今仍可连通（数据陈旧），忘传变量会静默跑错库且不报错。
+（例外：`verify-member-level-cron.js`、`sync-products-from-workfine.js` 的 fallback 指向 `localhost`
+自管容器，不会连到任何远程库。）
 
 ## Baseline reset 历史
 
@@ -171,13 +359,17 @@ docker rm -f pg-from-zero
 - 幂等：再跑一次会全 SKIP
 - 与后续 `npm run db:migrate` 完全兼容
 
-**prod 118.178.196.26:5433 / dev 101.34.242.103:5433 都不要跑此脚本**（业务库应直接运行目标断言后的 `db:migrate`）。
+**任何业务库（prod 118.178.196.26 / dev 101.34.242.103，均 5433）都不要跑此脚本**（业务库应直接运行目标断言后的 `db:migrate`）。
 
 ## 同步脚本
 
 `scripts/` 目录下的同步脚本将 WorkFine（SQL Server）数据单向同步到 PostgreSQL：
 
-- `sync-workfine.js` — 综合同步（组织架构、员工、顾客）
+- `sync-workfine.js` — 综合同步（组织架构、员工、顾客）。⚠️ **对生产库硬拒绝**（#318）：
+  业务方 2026-04-16 已决定上线后不再执行该同步，该脚本仅用于历史迁移 / 上线前刷新；
+  而它的 `staff_wechat_users` UPSERT 直接写 `is_resigned`、不校验「至少留一名在职超级管理员」，
+  把最后一名超管标成离职就会让所有人无法登录管理后台。指向生产库时必须显式
+  `ALLOW_PROD_WORKFINE_SYNC=1` 才放行；cron 侧另有 `activeAdminCount` 巡检（0 人 → critical）兜底。
 - `sync-products-from-workfine.js` — 商品数据同步（一次性导入后手动维护）
 
 同步以 phone 为匹配键 UPSERT，运行时需 `MSSQL_CONNECTION_STRING` 和 `DATABASE_URL` 环境变量。

@@ -23,6 +23,7 @@ import { invokeStaffApi } from './helpers/invoke.mjs'
 import {
   ensureTestStore, createTestStaff, createTestClient,
   createTestSaleOrder, createTestServiceOrder, createTestPrepaidCard, cleanupTestData,
+  createPaymentItemReceipts,
 } from './helpers/fixtures.mjs'
 
 let pass = false
@@ -39,22 +40,27 @@ async function makePaidOrder(saleOrderId, { total, sessionCount, prepaidCard = 0
   })
   await pgQuery(`UPDATE sale_orders SET received = $2 WHERE sale_order_id = $1`, [saleOrderId, total])
   await pgQuery(`UPDATE sale_items SET received = $2, paid_sessions = $3 WHERE sale_order_id = $1`, [saleOrderId, total, sessionCount])
+  // 每笔款项都要配「逐笔受领」明细：refund-cascade 的残值映射只认
+  // sale_payment_item_receipts，缺了它退款审批会被拒成「退款金额无法完整映射到商品行实收」。
+  const saleItemId = `${saleOrderId}_ITEM_1`
   const cashPart = total - prepaidCard
   if (cashPart > 0) {
-    await pgQuery(
+    const rows = await pgQuery(
       `INSERT INTO sale_order_payments (sale_order_id, change_type, amount, payment_method, status, source_end, created_at)
-       VALUES ($1, '首次支付', $2, '线下', '已支付', 'staff', NOW())`,
+       VALUES ($1, '首次支付', $2, '线下', '已支付', 'staff', NOW()) RETURNING id`,
       [saleOrderId, cashPart]
     )
+    await createPaymentItemReceipts(rows[0].id, saleOrderId, [{ saleItemId, amount: cashPart }])
   }
   if (prepaidCard > 0) {
-    await pgQuery(
+    const rows = await pgQuery(
       `INSERT INTO sale_order_payments (sale_order_id, change_type, amount, payment_method, status, source_end, created_at)
-       VALUES ($1, '储值卡抵扣', $2, '储值卡', '已支付', 'staff', NOW())`,
+       VALUES ($1, '储值卡抵扣', $2, '储值卡', '已支付', 'staff', NOW()) RETURNING id`,
       [saleOrderId, prepaidCard]
     )
+    await createPaymentItemReceipts(rows[0].id, saleOrderId, [{ saleItemId, amount: prepaidCard }])
   }
-  return { saleItemId: `${saleOrderId}_ITEM_1` }
+  return { saleItemId }
 }
 
 async function main() {
@@ -68,11 +74,23 @@ async function main() {
   // ─── A: 重复退款防护 ───
   const orderA = `${NS}_RFCORE_A`
   const { saleItemId: itemA } = await makePaidOrder(orderA, { total: 1000, sessionCount: 10 })
-  // 手动建一条营业额分配，验证 approveRefund 的 cascade 通道 1 作废
+  // 手动建一条营业额分配，验证 approveRefund 的 cascade 通道 1 负数冲销。
+  // 必须挂在「逐笔受领行」上（sale_payment_item_allocations.sale_payment_item_receipt_id）：
+  // cascade 写冲销行用的是这张表，建到订单维度的旧表 sale_allocations 里，
+  // 断言会查到空集而"净额=0"恰好成立 —— 守护看着绿，其实什么都没验。
+  const receiptA = await pgQuery(
+    `SELECT r.id FROM sale_payment_item_receipts r
+       JOIN sale_order_payments p ON p.id = r.sale_payment_id
+      WHERE r.sale_item_id = $1 AND p.change_type = '首次支付'
+      LIMIT 1`,
+    [itemA]
+  )
   await pgQuery(
-    `INSERT INTO sale_allocations (sale_item_id, employee_id, role_type, allocation_ratio, total_amount, commission_rate, commission_amount, is_void)
+    `INSERT INTO sale_payment_item_allocations
+       (sale_payment_item_receipt_id, employee_id, role_type, allocation_ratio,
+        allocated_amount, commission_rate, commission_amount, is_void)
      VALUES ($1, $2, '美容师', 1.00, 1000, 0.06, 60, false)`,
-    [itemA, TEST_MANAGER_EMP_ID]
+    [receiptA[0].id, TEST_MANAGER_EMP_ID]
   )
 
   const a1 = await invokeStaffApi('order.createRefund', {
@@ -95,10 +113,14 @@ async function main() {
     if (Number(si[0]?.paid_sessions) !== 0) errors.push(`A paid_sessions 应=0（全退后），实际=${si[0]?.paid_sessions}`)
 
     // 通道1（2026-06-24 起记负数冲销，非 is_void 软删）：原 +1000 正数行保留 + 新增挂退款流水 payA 的 -1000 镜像行，净额=0
+    // 冲销行落在 sale_payment_item_allocations（经 receipt 关联回款与明细行），
+    // 金额列是 allocated_amount；sale_allocations 是订单维度的旧模型表，查它恒为空。
     const al = await pgQuery(
-      `SELECT COALESCE(SUM(total_amount::numeric),0)::numeric AS net,
-              COUNT(*) FILTER (WHERE total_amount < 0 AND sale_payment_id = $2) AS neg
-         FROM sale_allocations WHERE sale_item_id = $1`,
+      `SELECT COALESCE(SUM(a.allocated_amount::numeric),0)::numeric AS net,
+              COUNT(*) FILTER (WHERE a.allocated_amount < 0 AND r.sale_payment_id = $2) AS neg
+         FROM sale_payment_item_allocations a
+         JOIN sale_payment_item_receipts r ON r.id = a.sale_payment_item_receipt_id
+        WHERE r.sale_item_id = $1`,
       [itemA, payA]
     )
     if (Number(al[0]?.net) !== 0 || Number(al[0]?.neg) !== 1) errors.push(`A 营业额分配应被 cascade 负数冲销净额=0(1 条镜像行)，实际 net=${al[0]?.net} neg=${al[0]?.neg}`)

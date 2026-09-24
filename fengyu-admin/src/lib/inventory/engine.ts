@@ -1,9 +1,12 @@
 import { db } from '@/db'
 import 'server-only'
 import { ApiError } from '@/lib/api-error'
+import { pgErrorCode } from '@/lib/pg-error'
+import { rowsAffected } from '@/lib/pg-rows'
 import { fmtDate, shanghaiToday, shanghaiYmd } from '@/lib/datetime'
 import { logOperation } from '@/lib/operation-log'
 import { hasPermission, isAdminScope } from '@/lib/permissions'
+import { resolvePaging } from '@/lib/paging'
 import { withAnyPermission, withPermission } from '@/lib/with-permission'
 import {
   offsetPageResult,
@@ -26,12 +29,21 @@ import {
 } from '@db/inventory'
 import { orgNodes, stores } from '@db/org'
 import { productSkus } from '@db/product'
-import { and, asc, desc, eq, gte, ilike, inArray, isNull, lte, or, sql } from 'drizzle-orm'
+import { and, asc, desc, eq, gte, ilike, inArray, isNotNull, isNull, lte, or, sql } from 'drizzle-orm'
 import { alias } from 'drizzle-orm/pg-core'
 import type { SQL } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import type { AuthSession } from '@/lib/types'
 import { assertInventoryBusinessWritable } from './cutover'
+import {
+  genericDocBusinessLevel,
+  inventoryDelegatableOperateActions,
+  inventoryLevelOperateDeniedMessage,
+} from './business-level'
+import { scopeSessionToActions } from '@/lib/action-scope'
+// 账面数按**主体 + SKU 汇总**记录 —— 口径由甲方 2026-09-16 拍板（issue #131 Q1）：
+// 现场就是按商品数总盘、不区分批次，按批次记会造成假精确。类型清单与详情页共用单源。
+import { STOCKTAKE_DOC_TYPES } from './stocktake'
 import {
   INVENTORY_DOC_TYPES,
   INVENTORY_GENERIC_DOC_TYPES,
@@ -59,6 +71,7 @@ import {
   type InventorySkuRow,
   type InventorySkuSourceType,
   type InventorySupplierInput,
+  type InventorySupplierOption,
   type InventorySupplierRow,
 } from './types'
 import { buildInventoryLocationFilterOptions } from './location-filter'
@@ -101,9 +114,10 @@ interface LockedLot {
 const DOC_PREFIX: Record<InventoryDocType, string> = {
   门店报货: 'DBH',
   市场报货: 'MBH',
+  市场报货汇总: 'MHZ',
   品项公司报货需求: 'ZBH',
+  // `供应链采购订单`（旧前缀 PCG）已并入 `采购订单`；存量单号保留 PCG-*，新单一律 CGD-*。
   采购订单: 'CGD',
-  供应链采购订单: 'PCG',
   供应链采购入库: 'GRK',
   品项公司发货: 'GFH',
   市场采购入库: 'MRK',
@@ -134,12 +148,33 @@ const DOC_PREFIX: Record<InventoryDocType, string> = {
   期初库存: 'QC',
 }
 
+/**
+ * 分页页长白名单。必须与各列表组件的 `PAGE_SIZE_OPTIONS` 一致 ——
+ * 两侧不同源时，`?size=7` 会让服务端每页 7 条而 UI 按 20 条算页数，
+ * 尾部数据翻到哪一页都够不到，且不会有任何报错。
+ */
+const PAGE_SIZE_WHITELIST = [10, 20, 50, 100]
+
+// 分页归一已收编到 admin 单源 `@/lib/paging` 的 `resolvePaging`（#281）。
+// 原先本文件自带一份 `normalizePage`（判据 `Number.isFinite` + `MAX_PAGE` 上夹），
+// 而其余 37 处调用点各写各的 `Math.max(1, filters.page || 1)`（无上夹）——
+// **真正会打出 `2e+22` 那个 500 的是后者，不是本文件**；本文件的上夹早就挡住了。
+//
+// ⚠️ 收编带来**两处**行为变更（方向都是好的，但不是无差别等价，故显式记下）：
+//  ① 判据从 `Number.isFinite` 收紧成 `Number.isSafeInteger`：`?page=1e21` 在本文件
+//     5 支查询上由「夹到第 1e6 页 → 空列表」变成「回落第 1 页 → 返回首页数据」。
+//  ② 新实现走 `Number(raw)`，会**接受数字字符串**：旧 `Number.isFinite('3')` 为 false
+//     → 第 1 页；新 `Number('3')` → 第 3 页。URL 路径下无差别（`filters.page` 在
+//     `list-filters.ts` 已经 `Number()` 过），差别只在 **action 被直调且传字符串**时。
+//
+// 另：offset 不再在本文件手算，全部由 `resolvePaging` 给出。见 `src/lib/paging.ts` 顶部注释。
+
 const NO_MOVEMENT_DOC_TYPES = new Set<InventoryDocType>([
   '门店报货',
   '市场报货',
+  '市场报货汇总',
   '品项公司报货需求',
   '采购订单',
-  '供应链采购订单',
 ])
 const RECEIVE_REQUIRED_DOC_TYPES = new Set<InventoryDocType>([
   '品项公司发货',
@@ -194,9 +229,9 @@ const RECEIVE_INBOUND_TYPE: Partial<Record<InventoryDocType, InventoryDocType>> 
 const SPECIALIZED_DOC_TYPES = new Set<InventoryDocType>([
   '门店报货',
   '市场报货',
+  '市场报货汇总',
   '品项公司报货需求',
   '采购订单',
-  '供应链采购订单',
   '供应链采购入库',
   '品项公司发货',
   '市场采购入库',
@@ -651,11 +686,22 @@ async function assertGenericDocLocationRules(
   targetOrgNodeId: string | null,
   actingOrgNodeId: string,
 ): Promise<void> {
+  /**
+   * 这里的 case 集合必须与 `INVENTORY_GENERIC_DOC_TYPES`（types.ts，10 个）一一对应 ——
+   * 本函数只有一个调用点（`createInventoryCoreDoc`），而那里在更靠前的位置就把
+   * `SPECIALIZED_DOC_TYPES` 整体拒了（「该库存单据必须从对应的专用业务流程创建」），
+   * 所以任何专用类型的 case 写在这里都是**不可达**的。
+   *
+   * #237：原先多出一个 `供应链采购入库` 的 case（它属 SPECIALIZED），已删。它真正的
+   * 位置校验在 `business.ts` 的专用服务里（`assertType(supplyChain, '总部', '供应链采购入库主体')`），
+   * 那份是活代码。留着这个影子的代价是实打实的：#200 的评审里有谱系两次把它当活代码推理、
+   * 据此报了一条误报 P2。
+   *
+   * 删掉该 case 后 switch 已**穷尽全部 10 个通用类型**（由 business.test.ts 的守护钉死）。
+   * 仍未加 `default:` 穷尽性守卫：它的价值是在将来往白名单加类型却漏配 case 时于编译期/
+   * 运行期报错，但那属行为变更（要先决定漏配时是静默放行还是 throw），见 #237 正文。
+   */
   switch (input.docType) {
-    case '供应链采购入库':
-      if (!targetOrgNodeId) throw new ApiError('INVALID_PARAMS', '供应链采购入库缺少入库主体')
-      await assertLocationType(targetOrgNodeId, '总部', '供应链采购入库主体')
-      return
     case '分院调货出库':
       await assertSameMarketForStoreTransfer(sourceOrgNodeId, targetOrgNodeId)
       return
@@ -960,7 +1006,7 @@ async function ensureLotFromSku(
 ): Promise<LockedLot> {
   const skuId = normalizeRequired(item.skuId, '库存 SKU')
   const skuRows = await tx.execute(sql`
-    SELECT sku_id, product_name, spec_name, supplier, product_series,
+    SELECT sku_id, product_name, spec_name, supplier, supplier_id, product_series,
            source_type, owner_market_id, supply_chain_purchase_price,
            market_purchase_price, store_purchase_price
       FROM inventory_skus
@@ -973,6 +1019,7 @@ async function ensureLotFromSku(
     product_name: string
     spec_name: string | null
     supplier: string | null
+    supplier_id: string | null
     product_series: string | null
     source_type: InventorySkuSourceType
     owner_market_id: string | null
@@ -1008,7 +1055,10 @@ async function ensureLotFromSku(
     (storeStandardUnitPrice == null
       ? null
       : storeStandardUnitPrice - Number(storeUnitDiscount ?? 0))
-  const supplierId = normalizeText(trace.supplierId)
+  // 批次键锚在 supplier_id 而不是名称（#132）：makeLotKey 的 supplier 段取 supplierId ?? supplier，
+  // 单据头不带供应商的入库（内部领用 / 调货 / 报损…）若只落到文本，供应商一改名，
+  // 同批号同效期同价的下一次入库就会算出新的 lot_key，把同一批实物拆成两行库存。
+  const supplierId = normalizeText(trace.supplierId) ?? sku.supplier_id
   const supplier = normalizeText(trace.supplier) ?? sku.supplier
   const sourceDocId = normalizeRequired(trace.sourceDocId, '批次来源单据')
   const lotKey = makeLotKey(skuId, {
@@ -1051,6 +1101,49 @@ async function ensureLotFromSku(
   `)
   const id = Number((rows as unknown as Array<{ id: number }>)[0].id)
   return lockLotById(tx, id, locationId)
+}
+
+/**
+ * 某主体下一批 SKU 各自的**在手量**（所有批次求和），返回 `skuId → 数量`。
+ *
+ * 盘点账面数刻意**不扣预留**（issue #131 的 Q0）：盘点比的是「账面 vs 货架上数出来的实物」，
+ * 预留是对外承诺、货还在架上；扣了预留会让所有有在途预留的 SKU 天然显示为盘亏。
+ * `stock_snapshot` 这一列在不同单据上有三种含义，别互相套用：
+ *   - 绝大多数单据：**单个批次**的在手量（`lot.quantityOnHand`）
+ *   - 盘点单（本函数）：**主体 + SKU 汇总**的在手量 —— 与上面同为「在手量」，只是**粒度**不同
+ *   - 市场报货汇总（`business.ts` 里另算另写）：在手 − 已预留 = **可承诺量** —— 这个才是**口径**不同
+ * 真正会算错账的是把最后那种与前两种混用。
+ *
+ * **一次 GROUP BY 取齐，不逐行查**：建单事务全程持有 `inventory_cutover_states` 的行锁
+ * （`assertInventoryBusinessWritable` 的 `SELECT ... FOR UPDATE`），那是整个库存域的串行点；
+ * 逐行往返会把别人的库存写入一起堵在这把锁后面，且连接池 max=5。
+ * 一次查询还顺带让同一张单所有行的账面数取自**同一个语句快照**（READ COMMITTED 下
+ * 逐条 SELECT 各取各的快照，会让一张「账面 vs 实盘」单失去单一时点语义）。
+ *
+ * GROUP BY 不出行 = 该 SKU 在该主体一个批次都没有 → 调用方落 0（不是 NULL）。
+ */
+async function skuOnHandByLocation(
+  tx: Tx,
+  locationId: string,
+  skuIds: readonly string[],
+): Promise<Map<string, number>> {
+  const result = new Map<string, number>()
+  if (skuIds.length === 0) return result
+  // ⚠️ 不能写 `= ANY(${skuIds}::text[])`：drizzle 的 sql 模板把 JS 数组当**单个**参数绑，
+  // PG 收到的是裸字符串 → `22P02 malformed array literal`（2026-09-16 实机复现）。
+  // 仓内既有写法是 sql.join 逐个参数化展开成 IN（见 actions/dashboard.ts:135），不拼接不注入。
+  const rows = await tx.execute(sql`
+    SELECT sku_id, COALESCE(SUM(quantity_on_hand), 0) AS quantity
+      FROM inventory_stock_lots
+     WHERE location_id = ${locationId}
+       AND sku_id IN (${sql.join(skuIds.map((skuId) => sql`${skuId}`), sql`, `)})
+     GROUP BY sku_id
+  `)
+  // 原生 SQL 的 numeric 聚合经 postgres.js 回来是 string，必须显式 Number()
+  for (const row of rows as unknown as Array<{ sku_id: string; quantity: string | number | null }>) {
+    result.set(row.sku_id, Number(row.quantity ?? 0))
+  }
+  return result
 }
 
 async function skuSnapshot(
@@ -1133,6 +1226,7 @@ async function applyMovement(
 function skuRow(row: {
   sku: typeof inventorySkus.$inferSelect
   ownerMarketName: string | null
+  supplierName: string | null
   priceVisibility: import('./types').InventoryPriceVisibility
 }): InventorySkuRow {
   const sku = row.sku
@@ -1145,6 +1239,8 @@ function skuRow(row: {
     productName: sku.productName,
     specName: sku.specName,
     supplier: sku.supplier,
+    supplierId: sku.supplierId,
+    supplierName: row.supplierName,
     manufacturer: sku.manufacturer,
     brand: sku.brand,
     productSeries: sku.productSeries,
@@ -1362,6 +1458,49 @@ export const listInventoryDocLocationFilterOptions = withPermission(
   inventoryDocLocationFilterOptions,
 )
 
+/**
+ * 把表单提交的 `supplierId` 解析成 `supplier_id` + `supplier`（冗余名称）两列的写入值（#132）。
+ *
+ * 返回 `null` 表示**这两列都不要动** —— 对应 `input.supplierId === undefined`。
+ * 存量里有一批 `supplier` 文本没匹配上档案的旧 SKU（migration 0042 按名称精确匹配回填，
+ * 匹配不上的留 NULL），编辑这类 SKU 时前端不提交 `supplierId`，靠这条分支保住原文本。
+ *
+ * `currentSupplierId` 用来放行「已关联的档案后来被停用」：编辑这类 SKU 时下拉仍会带上它，
+ * 保存不应被拒；但**换成**另一个已停用的档案要拦（停用 = 不再采购）。
+ */
+async function resolveSkuSupplier(
+  tx: Tx,
+  supplierIdInput: string | null | undefined,
+  currentSupplierId: string | null,
+): Promise<{ supplierId: string | null; supplier: string | null; onlyIfCurrent: boolean } | null> {
+  if (supplierIdInput === undefined) return null
+  const id = normalizeText(supplierIdInput)
+  if (!id) return { supplierId: null, supplier: null, onlyIfCurrent: false }
+  // `FOR SHARE` 而不是默认快照读，也不是 `FOR KEY SHARE`：
+  // 改名改的是 name 这个**非键列**，走 FOR NO KEY UPDATE —— FOR KEY SHARE 挡不住它。
+  // 挡不住的话这条时序会留下永久不一致：
+  //   ① 本事务读到「旧名」→ ② updateInventorySupplier 改名并把所有关联 SKU 同步成新名并提交
+  //   → ③ 本事务用缓存的旧名写回 → supplier_id 指向的档案叫新名，而 SKU 快照是旧名，
+  //      之后建的批次 / 单据把旧名永久冻结进去。
+  // 锁序统一为 inventory_suppliers → inventory_skus（改名事务也是先改档案再同步 SKU），
+  // 两条路径在供应商行上互斥，进不到同时操作 SKU 的阶段，不构成死锁。
+  const [supplier] = await tx
+    .select({ name: inventorySuppliers.name, isActive: inventorySuppliers.isActive })
+    .from(inventorySuppliers)
+    .where(eq(inventorySuppliers.supplierId, id))
+    .limit(1)
+    .for('share')
+  if (!supplier) throw new ApiError('NOT_FOUND', '供应商不存在')
+  if (!supplier.isActive && id !== currentSupplierId) {
+    throw new ApiError('INVALID_STATE', `供应商「${supplier.name}」已停用，无法关联到库存商品`)
+  }
+  // 放行了一个**已停用**的档案，靠的是「它就是当前关联值」。但 currentSupplierId 是
+  // 事务外读到的快照：别人可能已经把这条 SKU 改挂到别的档案上，那样这次写入实际是
+  // 「换成另一个停用档案」—— 恰恰是上面那条要拦的。所以把这个前提下推到 UPDATE 的
+  // WHERE 里，用行的**当前值**再判一次（见 updateInventorySku 的 supplierGuard）。
+  return { supplierId: id, supplier: supplier.name, onlyIfCurrent: !supplier.isActive }
+}
+
 export const listInventorySkus = withPermission(
   'inventory:stock_list',
   async (
@@ -1369,9 +1508,12 @@ export const listInventorySkus = withPermission(
     filters: { keyword?: string; sourceType?: InventorySkuSourceType; onlyActive?: boolean; page?: number; pageSize?: number } = {},
   ): Promise<{ data: InventorySkuRow[]; total: number }> => {
     await syncInventoryLocations()
-    const page = Math.max(1, filters.page || 1)
-    const pageSize = [10, 20, 50, 100].includes(filters.pageSize ?? 0) ? filters.pageSize! : 20
-    const offset = (page - 1) * pageSize
+    const { page, pageSize, offset } = resolvePaging({
+      page: filters.page,
+      pageSize: filters.pageSize,
+      defaultPageSize: 20,
+      allowedPageSizes: PAGE_SIZE_WHITELIST,
+    })
     const conditions: (SQL | undefined)[] = []
     const scoped = await scopedLocationIds(session)
     if (scoped !== null) {
@@ -1411,10 +1553,18 @@ export const listInventorySkus = withPermission(
       .from(inventorySkus)
       .where(whereClause)
     const rows = await db
-      .select({ sku: inventorySkus, ownerMarketName: orgNodes.name })
+      .select({ sku: inventorySkus, ownerMarketName: orgNodes.name, supplierName: inventorySuppliers.name })
       .from(inventorySkus)
       .leftJoin(orgNodes, eq(inventorySkus.ownerMarketId, orgNodes.id))
+      // 关联档案名走实时 JOIN 而不是读 supplier 文本快照：供应商改名后列表立刻跟随，
+      // 而批次快照（inventory_stock_lots.supplier）保留下单时的旧名，两者语义不同。
+      .leftJoin(inventorySuppliers, eq(inventorySkus.supplierId, inventorySuppliers.supplierId))
       .where(whereClause)
+      // `product_code` 有**全表**唯一索引（db/schema/inventory.ts:108
+      // `uniqueIndex(uq_inventory_skus_product_code)`，迁移 0007_moaning_salo.sql:498
+      // 无 WHERE 条件），本身即全序 —— #282 不给它补 tie-break 是刻意的：
+      // 补了纯属多余，还会让这条**唯一有精确匹配索引**的查询从 Index Scan
+      // 退化成 Index Scan + Incremental Sort。
       .orderBy(asc(inventorySkus.productCode))
       .limit(pageSize)
       .offset(offset)
@@ -1435,13 +1585,16 @@ export const createInventorySku = withAnyPermission(
     const ownerMarketId = await normalizeSkuOwnerMarket(session, sourceType, input.ownerMarketId)
     const priceValues = skuPriceValues(input, inventoryPriceVisibility(session), sourceType)
     const skuId = await db.transaction(async (tx) => {
+      // 在事务内、且对档案行加 FOR SHARE —— 见 resolveSkuSupplier 的注释
+      const supplierValues = await resolveSkuSupplier(tx, input.supplierId, null)
       const generatedNo = await generateInventorySkuNo(tx)
       await tx.insert(inventorySkus).values({
         skuId: generatedNo,
         productCode: generatedNo,
         productName,
         specName: normalizeText(input.specName),
-        supplier: normalizeText(input.supplier),
+        supplier: supplierValues?.supplier ?? null,
+        supplierId: supplierValues?.supplierId ?? null,
         manufacturer: normalizeText(input.manufacturer),
         brand: normalizeText(input.brand),
         productSeries: normalizeText(input.productSeries),
@@ -1478,6 +1631,7 @@ export const updateInventorySku = withAnyPermission(
         marketPurchasePriceOverrideReason: inventorySkus.marketPurchasePriceOverrideReason,
         sourceType: inventorySkus.sourceType,
         ownerMarketId: inventorySkus.ownerMarketId,
+        supplierId: inventorySkus.supplierId,
       })
       .from(inventorySkus)
       .where(eq(inventorySkus.skuId, id))
@@ -1500,25 +1654,40 @@ export const updateInventorySku = withAnyPermission(
       requestedOwnerMarketId,
     )
     const priceValues = skuPriceValues(input, inventoryPriceVisibility(session), sourceType, current)
-    await db
-      .update(inventorySkus)
-      .set({
-        productName: normalizeText(input.productName) ?? undefined,
-        specName: input.specName === undefined ? undefined : normalizeText(input.specName),
-        supplier: input.supplier === undefined ? undefined : normalizeText(input.supplier),
-        manufacturer: input.manufacturer === undefined ? undefined : normalizeText(input.manufacturer),
-        brand: input.brand === undefined ? undefined : normalizeText(input.brand),
-        productSeries: input.productSeries === undefined ? undefined : normalizeText(input.productSeries),
-        purchaseCategory: input.purchaseCategory === undefined ? undefined : normalizeText(input.purchaseCategory),
-        sourceType,
-        ownerMarketId,
-        ...priceValues,
-        isReportable: input.isReportable,
-        isActive: input.isActive,
-        remark: input.remark === undefined ? undefined : normalizeText(input.remark),
-        updatedAt: new Date(),
-      })
-      .where(eq(inventorySkus.skuId, id))
+    // 供应商解析与 SKU 写入必须在同一事务：解析时对档案行加 FOR SHARE，
+    // 挡住「读到旧名 → 别人改名并同步 → 我写回旧名」的时序（见 resolveSkuSupplier）
+    await db.transaction(async (tx) => {
+      const supplierValues = await resolveSkuSupplier(tx, input.supplierId, current.supplierId)
+      // 只有「保持一个已停用的档案」这一种情况需要 CAS：行的 supplier_id 必须仍是它，
+      // 否则说明中途被改挂了，这次写入就成了「换到停用档案」。
+      const supplierGuard = supplierValues?.onlyIfCurrent && supplierValues.supplierId
+        ? eq(inventorySkus.supplierId, supplierValues.supplierId)
+        : undefined
+      const updateResult = await tx
+        .update(inventorySkus)
+        .set({
+          productName: normalizeText(input.productName) ?? undefined,
+          specName: input.specName === undefined ? undefined : normalizeText(input.specName),
+          supplier: supplierValues === null ? undefined : supplierValues.supplier,
+          supplierId: supplierValues === null ? undefined : supplierValues.supplierId,
+          manufacturer: input.manufacturer === undefined ? undefined : normalizeText(input.manufacturer),
+          brand: input.brand === undefined ? undefined : normalizeText(input.brand),
+          productSeries: input.productSeries === undefined ? undefined : normalizeText(input.productSeries),
+          purchaseCategory: input.purchaseCategory === undefined ? undefined : normalizeText(input.purchaseCategory),
+          sourceType,
+          ownerMarketId,
+          ...priceValues,
+          isReportable: input.isReportable,
+          isActive: input.isActive,
+          remark: input.remark === undefined ? undefined : normalizeText(input.remark),
+          updatedAt: new Date(),
+        })
+        .where(supplierGuard ? and(eq(inventorySkus.skuId, id), supplierGuard) : eq(inventorySkus.skuId, id))
+      // postgres.js 下受影响行数是 `.count`（没有 rowCount），统一走 rowsAffected
+      if (supplierGuard && rowsAffected(updateResult) === 0) {
+        throw new ApiError('CONFLICT', '该库存商品的供货商已被他人修改，请刷新后重试')
+      }
+    })
     await logOperation(session, 'update', 'inventory_skus', id, input)
     revalidatePath('/inventory/skus')
     return { success: true }
@@ -1529,8 +1698,13 @@ export const listInventorySkuCompositions = withPermission(
   'inventory:stock_list',
   async (
     _session,
-    filters: { keyword?: string; status?: 'configured' | 'unconfigured' | 'invalid' } = {},
-  ): Promise<InventoryCompositionRow[]> => {
+    filters: {
+      keyword?: string
+      status?: 'configured' | 'unconfigured' | 'invalid'
+      page?: number
+      pageSize?: number
+    } = {},
+  ): Promise<{ data: InventoryCompositionRow[]; total: number }> => {
     const [productRows, componentRows] = await Promise.all([
       db
         .select({
@@ -1575,7 +1749,7 @@ export const listInventorySkuCompositions = withPermission(
     }
 
     const keyword = filters.keyword?.trim().toLocaleLowerCase() ?? ''
-    return productRows
+    const filtered = productRows
       .map((product): InventoryCompositionRow => {
         const components = componentsByProduct.get(product.productSkuId) ?? []
         const configurationStatus = components.length === 0
@@ -1601,6 +1775,29 @@ export const listInventorySkuCompositions = withPermission(
           component.inventorySkuSpecName ?? '',
         ]),
       ].some((value) => value.toLocaleLowerCase().includes(keyword)))
+
+    // ⚠️ 这里是**内存切片**，不是 SQL 分页 —— 上面两个 filter 依赖的
+    // `configurationStatus` 是按 components 算出来的派生字段，keyword 还要搜到
+    // components 内部，都没法下推成 WHERE。所以 total 必须取过滤**之后**的长度，
+    // 而不是 productRows.length。
+    // 家居 SKU 是低基数主数据（dev 现有 101 行），全量取回可接受；
+    // 若将来量级上来，得先把 configurationStatus 物化到列上才谈得上真正的 SQL 分页。
+    // 同 listInventorySuppliers：`pageSize === undefined` 是**「不分页、返回全量」**的刻意语义
+    // （下拉选项等场景用），所以不能整段交给 resolvePaging —— 它保证 pageSize ≥ 1、表达不了
+    // 「不分页」。分页那一侧仍走单源，别在这里手算 offset。
+    // 这一支尤其不能漏 —— `filtered.slice(NaN, NaN)` 返回**空数组**（ToInteger(NaN)=0），
+    // 而客户端若不归一会认为自己在第 1 页、不触发越界自纠，
+    // 于是 `?page=abc` 会永久停在「空表 + 共 101 条」，用户只能手改 URL 才能出来。
+    const paged = filters.pageSize === undefined ? null : resolvePaging({
+      page: filters.page,
+      pageSize: filters.pageSize,
+      defaultPageSize: 20,
+      allowedPageSizes: PAGE_SIZE_WHITELIST,
+    })
+    return {
+      data: paged ? filtered.slice(paged.offset, paged.offset + paged.pageSize) : filtered,
+      total: filtered.length,
+    }
   },
 )
 
@@ -1759,9 +1956,12 @@ export const listInventoryLots = withPermission(
   ): Promise<{ data: InventoryLotRow[]; total: number; canViewPrice: boolean; priceVisibility: import('./types').InventoryPriceVisibility }> => {
     await syncInventoryLocations()
     const scoped = await scopedLocationIds(session)
-    const page = Math.max(1, filters.page || 1)
-    const pageSize = [10, 20, 50, 100].includes(filters.pageSize ?? 0) ? filters.pageSize! : 20
-    const offset = (page - 1) * pageSize
+    const { page, pageSize, offset } = resolvePaging({
+      page: filters.page,
+      pageSize: filters.pageSize,
+      defaultPageSize: 20,
+      allowedPageSizes: PAGE_SIZE_WHITELIST,
+    })
     const conditions: (SQL | undefined)[] = []
     if (scoped !== null) {
       conditions.push(scoped.length > 0 ? inArray(inventoryStockLots.locationId, scoped) : sql`FALSE`)
@@ -1799,7 +1999,7 @@ export const listInventoryLots = withPermission(
       .from(inventoryStockLots)
       .leftJoin(inventoryLocations, eq(inventoryStockLots.locationId, inventoryLocations.locationId))
       .where(whereClause)
-      .orderBy(asc(inventoryLocations.locationType), asc(inventoryLocations.name), asc(inventoryStockLots.skuName), asc(inventoryStockLots.batchNo))
+      .orderBy(asc(inventoryLocations.locationType), asc(inventoryLocations.name), asc(inventoryStockLots.skuName), asc(inventoryStockLots.batchNo), asc(inventoryStockLots.id))
       .limit(pageSize)
       .offset(offset)
     const priceVisibility = inventoryPriceVisibility(session)
@@ -1924,24 +2124,94 @@ export const listInventoryCoreDocs = withPermission(
       orgNodeId?: string
       locationType?: InventoryLocationType
       docType?: InventoryDocType
+      /**
+       * 多类型过滤（#190）。与单值 `docType` 是 AND 关系（两个都传时各自收窄），
+       * 办理台单据 Tab 只传本字段 —— 一个业务可能一次产出出库 + 入库两张单。
+       * 传了空数组表示「没有任何可展示的类型」，fail-closed 返回空，不退化成不过滤。
+       */
+      docTypes?: readonly InventoryDocType[]
       status?: InventoryCoreDocStatus
+      statuses?: readonly InventoryCoreDocStatus[]
+      /**
+       * 方向维（#192）：把可见范围从「source **或** target 在 scope」收窄成
+       * 「**指定那一端**在 scope」。
+       *
+       * 单据可见性本来就该是双端 OR —— 发货方和收货方都得看得见自己经手的单。
+       * 但**待办区**要回答的是另一个问题：这张单轮不轮得到我动手。服务端的写入动作
+       * 一律拿**单边**做校验（收货类 `assertLocationWritable(target)` /
+       * `assertOrgNodeVisible(target)`，撤回审批 `assertLocationWritable(source)`），
+       * 所以只按 docType + status 取待办，对端会在「待我处理」里看到一张带行内按钮的单，
+       * 点一次抛一次 PERMISSION_DENIED，刷新后那行还在 —— 点不掉、消不掉，
+       * 同时把待办计数一起污染。
+       *
+       * 与上面的 scope 分支同构：`scoped === null`（admin，本就不受 scope 限制）跳过，
+       * scope 为空集时 fail-closed。类型是两个字面量而不是开放字符串，
+       * 省得写进来一个拼错的值就静默退化成不收窄。
+       */
+      scopeRole?: 'source' | 'target'
+      /**
+       * 只保留发起过撤回申请的单据（`cancellation_request_reason` 非空）。
+       *
+       * 类型刻意写死 `true` 而不是 `boolean`：本条件只有「收窄」一个方向，
+       * 传 `false` 会走 falsy 分支退化成不过滤 —— 那是**放宽**结果集，
+       * 与调用方写 `false` 时期待的「只看没申请过撤回的」正好相反。
+       * 真需要反向过滤时应显式加一个 `cancellationNotRequested` 条件。
+       */
+      cancellationRequested?: true
+      /**
+       * 只保留**还有未履约明细**的单据，并按明细的市场归属分流（#192）：
+       * `'supply-chain'` → 存在 `market_id IS NULL` 且未履约的明细；
+       * `'market'` → 存在 `market_id IS NOT NULL` 且未履约的明细。
+       *
+       * 用途：#194 把供应链采购订单并进「采购订单」后，一张单可同时含两类行，
+       * 且只在**所有**行履约满时才转「已完成」。供应链收货待办若只按
+       * 「采购订单 + 待收货」取，就会长期挂着一批「供应链行已收完、只差市场行发货」的单，
+       * 点一次报一次 INVALID_STATE。
+       *
+       * 与 `cancellationRequested` 同样「只收窄不放宽」：类型是两个字面量而不是
+       * boolean / 开放字符串，省得传进来一个 falsy 值就静默退化成不过滤。
+       */
+      pendingItemScope?: 'supply-chain' | 'market'
       startDate?: string
       endDate?: string
       keyword?: string
       page?: number
       pageSize?: number
     } = {},
-  ): Promise<{ data: InventoryDocRow[]; total: number; canViewPrice: boolean; priceVisibility: import('./types').InventoryPriceVisibility }> => {
+  ): Promise<{ data: InventoryDocRow[]; total: number; pageSize: number; canViewPrice: boolean; priceVisibility: import('./types').InventoryPriceVisibility }> => {
     await syncInventoryLocations()
     const scoped = inventoryScopedOrgNodeIds(session)
-    const page = Math.max(1, filters.page || 1)
-    const pageSize = [10, 20, 50, 100].includes(filters.pageSize ?? 0) ? filters.pageSize! : 20
-    const offset = (page - 1) * pageSize
+    const { page, pageSize, offset } = resolvePaging({
+      page: filters.page,
+      pageSize: filters.pageSize,
+      defaultPageSize: 20,
+      allowedPageSizes: PAGE_SIZE_WHITELIST,
+    })
     const conditions: (SQL | undefined)[] = []
     if (scoped !== null) {
       conditions.push(scoped.length > 0
         ? or(inArray(inventoryDocs.sourceOrgNodeId, scoped), inArray(inventoryDocs.targetOrgNodeId, scoped))
         : sql`FALSE`)
+    }
+    if (filters.scopeRole && scoped !== null) {
+      /*
+       * 方向维（#192）：在上面的双端 OR 之外**追加**一条单端收窄，而不是改写那一条。
+       * 两条 AND 起来后单端条件完全覆盖 OR（`target IN s` 蕴含 `source IN s OR target IN s`），
+       * 所以 OR 这时是冗余的 —— 冗余是**有意留的**：scope 那条是全表所有查询共用的基础
+       * 可见性闸，让它保持「与 scopeRole 无关、永远压栈」，读代码的人就不必去论证
+       * 「设了方向维之后 scope 还在不在」。多出来的这一项 planner 自己会吸收掉。
+       *
+       * 与 scope 分支同构：`scoped === null`（admin）跳过；scope 空集 fail-closed。
+       * 条件挂在 count 与 rows 共用的 whereClause 上，total 跟着收窄 —— 这正是要的：
+       * 待办计数必须只数「我能动手的单」，否则角标数字对不上列表行数。
+       *
+       * 端点列可空（如「采购订单」的 source_org_node_id 恒为 NULL），
+       * SQL 的 `NULL IN (...)` 求值为 NULL 即不命中，方向是 fail-closed，正确。
+       */
+      const endpointColumn = filters.scopeRole === 'source'
+        ? inventoryDocs.sourceOrgNodeId
+        : inventoryDocs.targetOrgNodeId
+      conditions.push(scoped.length > 0 ? inArray(endpointColumn, scoped) : sql`FALSE`)
     }
     if (filters.orgNodeId) {
       const locations = await db
@@ -1980,7 +2250,39 @@ export const listInventoryCoreDocs = withPermission(
         : sql`FALSE`)
     }
     if (filters.docType) conditions.push(eq(inventoryDocs.docType, filters.docType))
+    if (filters.docTypes) {
+      conditions.push(filters.docTypes.length > 0
+        ? inArray(inventoryDocs.docType, [...filters.docTypes])
+        : sql`FALSE`)
+    }
     if (filters.status) conditions.push(eq(inventoryDocs.status, filters.status))
+    if (filters.statuses) {
+      conditions.push(filters.statuses.length > 0
+        ? inArray(inventoryDocs.status, [...filters.statuses])
+        : sql`FALSE`)
+    }
+    if (filters.cancellationRequested) {
+      conditions.push(isNotNull(inventoryDocs.cancellationRequestReason))
+    }
+    if (filters.pendingItemScope) {
+      /*
+       * 别名 pending_item 在本文件未被占用（现有别名是 visible_doc / visible_docs /
+       * root_doc / item / doc_link 等），新增别名前先 grep 全文件 —— 本仓有按文件聚合的
+       * CTE 别名守护，同名不同语句也会判撞。
+       * 条件挂在 count 与 rows 共用的 whereClause 上，total 跟着收窄（这是对的：
+       * 待办区的分页器必须按能操作的单数算页数）。
+       * EXISTS 走 idx_inventory_doc_items_doc(doc_id)。
+       */
+      const marketCondition = filters.pendingItemScope === 'supply-chain'
+        ? sql`pending_item.market_id IS NULL`
+        : sql`pending_item.market_id IS NOT NULL`
+      conditions.push(sql`EXISTS (
+        SELECT 1 FROM ${inventoryDocItems} pending_item
+         WHERE pending_item.doc_id = ${inventoryDocs.id}
+           AND ${marketCondition}
+           AND COALESCE(pending_item.fulfilled_quantity, 0) < pending_item.quantity
+      )`)
+    }
     if (filters.startDate) conditions.push(gte(inventoryDocs.docDate, filters.startDate))
     if (filters.endDate) conditions.push(lte(inventoryDocs.docDate, filters.endDate))
     if (filters.keyword) {
@@ -2011,7 +2313,14 @@ export const listInventoryCoreDocs = withPermission(
       .leftJoin(sourceLocation, eq(sourceLocation.orgNodeId, inventoryDocs.sourceOrgNodeId))
       .leftJoin(targetLocation, eq(targetLocation.orgNodeId, inventoryDocs.targetOrgNodeId))
       .where(whereClause)
-      .orderBy(desc(inventoryDocs.docDate), desc(inventoryDocs.createdAt))
+      /*
+       * 末位 `id` 是**分页正确性**所必需，不是锦上添花的排序偏好：
+       * `created_at` 取 `NOW()`（事务开始时刻），而 `createInventoryConversion` 在同一个
+       * 事务里写「库存转换出库 + 库存转换入库」两张单 —— 两行的 doc_date 与 created_at
+       * 逐微秒相同。排序键完全并列时，两次独立的 LIMIT/OFFSET 查询之间顺序不保证稳定，
+       * 骑在页边界上的那一对会出现「一张重复、另一张永远不出现」。id 唯一且不可变。
+       */
+      .orderBy(desc(inventoryDocs.docDate), desc(inventoryDocs.createdAt), desc(inventoryDocs.id))
       .limit(pageSize)
       .offset(offset)
     const priceVisibility = inventoryPriceVisibility(session)
@@ -2027,6 +2336,9 @@ export const listInventoryCoreDocs = withPermission(
         ) !== 'none',
       })),
       total: countRow?.count ?? 0,
+      // 回传**夹过白名单后**的实际页长：调用方若传了非白名单值（如 30），这里按 20 取数，
+      // 前端却会按 30 算总页数，页码条少算页数、最后几页永远翻不到。
+      pageSize,
       canViewPrice: priceVisibility !== 'none',
       priceVisibility,
     }
@@ -2171,6 +2483,12 @@ async function loadMarketReportFulfillmentProgress(
        WHERE item.doc_id = ${docId}
     ),
     purchase_links AS (
+      -- ⚠️ 这里**刻意不按 visible_docs 过滤采购单**（#194）。
+      -- 收敛后采购单可以汇总多个市场的行，单头因此没有 source/market 归属，
+      -- 市场 scope 看不见它；若在这里过滤，市场打开自己的报货单会看到「已采购 0」——
+      -- 收敛前采购单 source=该市场、天然可见，是本次改动引入的可见性回归。
+      -- 本 CTE 只把数量聚合回**已经过可见性校验的** root_items，不外泄采购单本身的任何内容
+      -- （单号、其它市场的明细都不出现在返回值里），所以放开这层过滤是安全的。
       SELECT
         doc_link.from_item_id AS root_item_id,
         doc_link.to_item_id AS purchase_item_id,
@@ -2178,23 +2496,48 @@ async function loadMarketReportFulfillmentProgress(
         FROM inventory_doc_links doc_link
         JOIN root_items root_item ON root_item.item_id = doc_link.from_item_id
         JOIN inventory_docs purchase_doc ON purchase_doc.id = doc_link.to_doc_id
-        JOIN visible_docs visible_purchase ON visible_purchase.id = purchase_doc.id
        WHERE doc_link.from_doc_id = ${docId}
          AND doc_link.relation_type = '市场报货采购订单'
-         AND purchase_doc.status = '已完成'
+         AND purchase_doc.status IN ('已完成', '待收货')
     ),
     purchase_totals AS (
       SELECT root_item_id, SUM(quantity) AS ordered_quantity
         FROM purchase_links
        GROUP BY root_item_id
     ),
+    -- 一条采购明细可以由**多个**来源行合并而来（#194），所以下游的发货/收货量必须
+    -- 按各来源在该采购行里的占比分摊，不能每个来源都记全量 ——
+    -- 来源 A 5 件、B 5 件合成采购行 10 件、实发 6 件时，不分摊会让 A 与 B 各显示 6，
+    -- 合计 12 件，凭空多出一倍。
+    --
+    -- ⚠️ 分母必须取该采购行的**全部**来源血缘，不能用 PARTITION BY 的窗口和：
+    -- purchase_links 已经被 from_doc_id 限定成「当前这张单」的血缘，
+    -- 窗口函数看不到同一采购行来自**其它来源单**的那部分，share 又会退回 1，
+    -- 跨单合并的场景照样重复计数。
+    purchase_share AS (
+      SELECT
+        purchase_link.root_item_id,
+        purchase_link.purchase_item_id,
+        purchase_link.quantity,
+        purchase_link.quantity / NULLIF(source_total.total_quantity, 0) AS share
+        FROM purchase_links purchase_link
+        JOIN LATERAL (
+          SELECT COALESCE(SUM(COALESCE(all_link.quantity, 0)), 0) AS total_quantity
+            FROM inventory_doc_links all_link
+           WHERE all_link.to_item_id = purchase_link.purchase_item_id
+             AND all_link.relation_type = '市场报货采购订单'
+        ) source_total ON true
+    ),
     shipment_links AS (
       SELECT
         purchase_link.root_item_id,
         doc_link.to_item_id AS shipment_item_id,
         doc_link.relation_type,
-        COALESCE(doc_link.quantity, 0) AS quantity
-        FROM purchase_links purchase_link
+        COALESCE(doc_link.quantity, 0) * COALESCE(purchase_link.share, 0) AS quantity,
+        -- 发货明细由采购行一对一产生，所以收货沿用采购层的占比即可。
+        -- 早先在这里按当前单据子集再归一化一次，等于把 share 重新拉回 1，白分摊了。
+        COALESCE(purchase_link.share, 0) AS share
+        FROM purchase_share purchase_link
         JOIN inventory_doc_links doc_link
           ON doc_link.from_item_id = purchase_link.purchase_item_id
         JOIN inventory_docs shipment_doc ON shipment_doc.id = doc_link.to_doc_id
@@ -2214,7 +2557,7 @@ async function loadMarketReportFulfillmentProgress(
       SELECT
         shipment_link.root_item_id,
         shipment_link.relation_type AS shipment_relation_type,
-        COALESCE(doc_link.quantity, 0) AS quantity
+        COALESCE(doc_link.quantity, 0) * COALESCE(shipment_link.share, 0) AS quantity
         FROM shipment_links shipment_link
         JOIN inventory_doc_links doc_link
           ON doc_link.from_item_id = shipment_link.shipment_item_id
@@ -2354,21 +2697,45 @@ async function loadItemCompanyRequestFulfillmentProgress(
          AND doc_link.relation_type = '品项公司报货采购订单'
          AND purchase_doc.status IN ('待收货', '已完成', '已取消')
     ),
+    -- 与市场报货那套同理：一条采购明细可由多张需求单的多行合并而来（#194），
+    -- 下游的入库量、以及已取消采购单残留的已下单量，都要按各来源在该采购行里的
+    -- 占比分摊，否则每个来源都会记到全量。
+    -- 分母要取该采购行的**全部**来源血缘 —— purchase_links 已被 from_doc_id
+    -- 限成当前这张需求单，窗口函数看不到别的来源单。
+    purchase_share AS (
+      SELECT
+        purchase_link.request_item_id,
+        purchase_link.purchase_item_id,
+        purchase_link.quantity,
+        purchase_link.purchase_status,
+        purchase_link.received_quantity,
+        purchase_link.quantity / NULLIF(source_total.total_quantity, 0) AS share
+        FROM purchase_links purchase_link
+        JOIN LATERAL (
+          SELECT COALESCE(SUM(COALESCE(all_link.quantity, 0)), 0) AS total_quantity
+            FROM inventory_doc_links all_link
+           WHERE all_link.to_item_id = purchase_link.purchase_item_id
+             AND all_link.relation_type = '品项公司报货采购订单'
+        ) source_total ON true
+    ),
     purchase_totals AS (
       SELECT
         request_item_id,
         SUM(CASE
-          WHEN purchase_status = '已取消' THEN LEAST(quantity, received_quantity)
+          -- 已取消的采购单只剩"实收那部分"仍占着需求额度，而这部分同样要按占比分给各来源：
+          -- A、B 各 5 件合成采购行 10 件、实收 6 件后关闭时，关闭逻辑给两边各留 3，
+          -- 这里若按 LEAST(5, 6) 逐条算就会各显示 5，与真实占用对不上。
+          WHEN purchase_status = '已取消' THEN LEAST(quantity, received_quantity * COALESCE(share, 0))
           ELSE quantity
         END) AS ordered_quantity
-        FROM purchase_links
+        FROM purchase_share
        GROUP BY request_item_id
     ),
     receipt_totals AS (
       SELECT
         purchase_link.request_item_id,
-        SUM(COALESCE(doc_link.quantity, 0)) AS received_quantity
-        FROM purchase_links purchase_link
+        SUM(COALESCE(doc_link.quantity, 0) * COALESCE(purchase_link.share, 0)) AS received_quantity
+        FROM purchase_share purchase_link
         JOIN inventory_doc_links doc_link
           ON doc_link.from_item_id = purchase_link.purchase_item_id
         JOIN inventory_docs receipt_doc ON receipt_doc.id = doc_link.to_doc_id
@@ -2406,7 +2773,7 @@ async function loadItemCompanyRequestFulfillmentProgress(
 async function loadSupplyChainPurchaseReceiptProgress(
   docId: string,
   scoped: string[] | null,
-): Promise<InventoryDocFulfillmentProgress> {
+): Promise<InventoryDocFulfillmentProgress | null> {
   const rows = await db.execute(sql`
     WITH visible_docs AS (${visibleInventoryDocsSql(scoped)}),
     purchase_items AS (
@@ -2415,6 +2782,7 @@ async function loadSupplyChainPurchaseReceiptProgress(
         JOIN inventory_docs purchase_doc ON purchase_doc.id = item.doc_id
         JOIN visible_docs visible_purchase ON visible_purchase.id = purchase_doc.id
        WHERE item.doc_id = ${docId}
+         AND item.market_id IS NULL
     ),
     receipt_totals AS (
       SELECT
@@ -2438,6 +2806,9 @@ async function loadSupplyChainPurchaseReceiptProgress(
       LEFT JOIN receipt_totals receipt_total ON receipt_total.purchase_item_id = purchase_item.item_id
      ORDER BY purchase_item.item_id
   `)
+  // 纯市场行的采购单在上面被 `market_id IS NULL` 过滤成空集，这里返回 null 而不是空进度，
+  // 避免详情页渲染出一张「已收货 0」的空表把市场行误导成待收货。
+  if (rows.length === 0) return null
   return {
     kind: '供应链采购收货',
     items: (rows as unknown as Array<{
@@ -2529,7 +2900,10 @@ async function loadInventoryDocFulfillmentProgress(
   if (docType === '品项公司报货需求') {
     return loadItemCompanyRequestFulfillmentProgress(docId, scoped)
   }
-  if (docType === '供应链采购订单') {
+  // 收敛后只剩 `采购订单` 一种类型，但收货进度只对**供应链行**（market_id IS NULL）有意义：
+  // 市场行走的是品项公司发货，不经供应链采购入库。纯市场单在下面的函数里会得到空 items 并返回 null，
+  // 与收敛前「市场链路采购单无履约进度」的行为一致。
+  if (docType === '采购订单') {
     return loadSupplyChainPurchaseReceiptProgress(docId, scoped)
   }
   if (docType === '品项公司发货' || docType === '分院配货') {
@@ -2584,6 +2958,18 @@ export const getInventoryCoreDocById = withPermission(
       loadInventoryDocLineage(id, scoped),
       loadInventoryDocFulfillmentProgress(head.docType, id, scoped),
     ])
+    // 采购订单与市场报货汇总把市场归属挂在明细行上（#193/#194），单头没有这个字段，
+    // 详情页要显示市场名就得按行解析一次。只在真有行级市场时才查。
+    const itemMarketIds = [...new Set(items.map((item) => item.marketId).filter((id): id is string => Boolean(id)))]
+    const itemMarketNameByOrgNodeId = new Map(
+      itemMarketIds.length > 0
+        ? (await db
+          .select({ orgNodeId: inventoryLocations.orgNodeId, name: inventoryLocations.name })
+          .from(inventoryLocations)
+          .where(inArray(inventoryLocations.orgNodeId, itemMarketIds))
+        ).map((row) => [row.orgNodeId, row.name])
+        : [],
+    )
     return {
       ...head,
       items: items.map((item) => ({
@@ -2595,6 +2981,11 @@ export const getInventoryCoreDocById = withPermission(
         skuName: item.skuName,
         specName: item.specName,
         supplier: item.supplier,
+        supplierId: item.supplierId,
+        marketId: item.marketId,
+        marketName: item.marketId
+          ? (itemMarketNameByOrgNodeId.get(item.marketId) ?? item.marketId)
+          : null,
         productSeries: item.productSeries,
         batchNo: item.batchNo,
         expiryDate: item.expiryDate,
@@ -2638,13 +3029,92 @@ export const createInventoryCoreDoc = withAnyPermission(
     if (!(INVENTORY_GENERIC_DOC_TYPES as readonly string[]).includes(input.docType)) {
       throw new ApiError('INVALID_STATE', '该库存单据不支持通用建单')
     }
+    /*
+     * 层级 action 闸（#191；甲方 2026-09-21 拍板改成「显式放开向下代建」）：
+     *
+     * 1) 入口的 withAnyPermission 是「三个 operate 任一」、**不按 docType 分层**，
+     *    所以只有 `inventory:store_operate` 的账号曾经也建得出「市场产品报损」这类上级单据。
+     *    这道闸把**向上**越级堵死。
+     * 2) **向下**是显式允许的：「市场人员替门店建单」是生产既有工作流，它不靠「权限并集
+     *    碰巧漏出来」，而由 inventoryDelegatableOperateActions 的层级序 ∩「scope 会向下
+     *    展开的层级」显式表达 —— 收回/放开代建都只需改 business-level.ts 那两张表。
+     *    ⚠️ 总部代建**不在候选集里**：access.ts 的 inventoryScopedOrgNodeIds 对
+     *    scopeType==='总部' 的绑定只计入自身 scopeId、不展开后代，总部账号看不见市场/门店
+     *    节点，放开了也只会在这里放行、到下面的 assertOrgNodeVisible 才被拒（错误更晚更含糊），
+     *    UI 下拉里还会多出 9 个必然 403 的死路选项。要真放开先改 inventoryScopedOrgNodeIds，
+     *    再把 LEVEL_SCOPE_EXPANDS_DOWNWARD 的 'supply-chain' 翻成 true。
+     * 3) 真正限制代建**范围**的是下面的 assertOrgNodeVisible（scope）与
+     *    assertGenericDocLocationRules（按 docType 强制主体 location_type，见 engine.ts 上方）；
+     *    这道闸只负责层级**方向**。
+     */
+    const docLevel = genericDocBusinessLevel(input.docType)
+    if (!docLevel) throw new ApiError('INVALID_STATE', '该库存单据没有归属业务层级')
+    const allowedActions = inventoryDelegatableOperateActions(docLevel)
+    if (!allowedActions.some((action) => hasPermission(session, action))) {
+      /*
+       * 文案由候选层级集生成（business-level.ts），别写回「X 或其上级层级」：
+       * 供应链是最顶层、市场的上级又不展开 scope，那句话会把用户指向一个不存在
+       * 或帮不上忙的权限。
+       */
+      throw new ApiError('PERMISSION_DENIED', inventoryLevelOperateDeniedMessage(docLevel))
+    }
+    /*
+     * ⚠️ 光校验 action 不够，**scope 必须跟着同一条角色绑定收窄**。
+     *
+     * 入口的 withAnyPermission 收的是「持有三个 operate 任一」的角色并集，于是多绑定账号
+     * （市场 A 绑 market_operate + 门店 B 绑 store_operate）会出现：单据层级要的 action 由
+     * 门店 B 的绑定提供、而目标节点的可见性由市场 A 的绑定提供，两者一拼接就放行 ——
+     * 而那条提供 action 的绑定对目标节点根本没有授权。action 并集配 scope 并集就是这么漏的。
+     *
+     * 【显式不变量，带前提】候选集 allowedActions 只依赖 docType、**与具体角色无关**。
+     * **当会话带角色级 scope 元数据时**（roles[] 上 actions / scopeStoreIds / scopeOrgNodeIds
+     * 三个数组齐全，正常登录会话都有），scopeSessionToActions 会先按候选 action 过滤角色，
+     * 于是「union(入选角色的 scope) 包含目标节点」与「∃ 某条角色绑定同时持有候选 action
+     * 且其 scope 覆盖目标节点」等价（inventoryScopedOrgNodeIds 是逐角色求并集，
+     * membership 即存在性）—— 所以候选从单值换成数组后，不会出现「action 来自这条绑定、
+     * scope 来自那条绑定」的拼接。
+     * ⚠️ 前提不成立时（导出快照 / 旧测试会话等缺元数据的形态）scopeSessionToActions
+     * 整条收窄被跳过、原样返回 session（见 lib/action-scope.ts 的 hasRoleScopeMetadata
+     * 提前返回），actingSession 退化成外层的 action 并集 + scope 并集，跨绑定拼接又成立。
+     * 这类会话本就只用于只读路径；真要在建单链路上遇到，修法是补元数据而不是放宽这里。
+     * ⚠️ 另外，谁要是改成「按角色分别算候选集」，即便元数据齐全等价性也破，拼接漏洞会悄悄回来。
+     *
+     * 往下所有可见性判定一律用这个收窄后的会话，不要再碰外层 session。
+     */
+    const actingSession = scopeSessionToActions(session, allowedActions)
     const status = defaultStatusForDoc(input.docType)
     if (!Array.isArray(input.items) || input.items.length === 0) {
       throw new ApiError('INVALID_PARAMS', '库存单据至少需要一条明细')
     }
+    /**
+     * 盘点单：一个 SKU 只能一行。账面数按「主体 + SKU 汇总」记（#131 Q1），同 SKU 两行会
+     * 各自拿到**同一个**完整账面数，差异列直接变成重复计算的废数。
+     * 放在开事务前拦——失败不占那把全局的 cutover 行锁。
+     * 只对盘点单生效；其余单据的重复行语义（同 SKU 不同批次）保持不变。
+     */
+    const stocktakeSkuIds: string[] = []
+    if (STOCKTAKE_DOC_TYPES.has(input.docType)) {
+      const seen = new Set<string>()
+      for (const item of input.items) {
+        const skuId = normalizeRequired(item.skuId, '库存 SKU')
+        if (seen.has(skuId)) {
+          throw new ApiError('INVALID_PARAMS', '同一 SKU 请合并为一条盘点明细')
+        }
+        seen.add(skuId)
+        stocktakeSkuIds.push(skuId)
+      }
+    }
     let sourceOrgNodeId = normalizeText(input.sourceOrgNodeId)
     let targetOrgNodeId = normalizeText(input.targetOrgNodeId)
     if (INTERNAL_SAME_NODE_DOC_TYPES.has(input.docType)) {
+      /**
+       * #200：两边都给且不一致时拒绝。原先无条件 `source ?? target` 会**静默吃掉**调用方
+       * 选的 target —— 共享建单表单同时渲染出库/入库两个下拉，用户选了两个不同主体却只有
+       * 一个生效，另一个连报错都没有。
+       */
+      if (sourceOrgNodeId && targetOrgNodeId && sourceOrgNodeId !== targetOrgNodeId) {
+        throw new ApiError('INVALID_PARAMS', '该单据的出库主体与入库主体必须是同一个')
+      }
       const orgNodeId = sourceOrgNodeId ?? targetOrgNodeId
       sourceOrgNodeId = orgNodeId
       targetOrgNodeId = orgNodeId
@@ -2652,15 +3122,6 @@ export const createInventoryCoreDoc = withAnyPermission(
     if (RECEIVE_REQUIRED_DOC_TYPES.has(input.docType) && !targetOrgNodeId) {
       throw new ApiError('INVALID_PARAMS', '待收货单据缺少接收主体')
     }
-    const actingOrgNodeId = sourceOrgNodeId ?? targetOrgNodeId
-    if (!actingOrgNodeId) throw new ApiError('INVALID_PARAMS', '缺少当前操作组织节点')
-    const sourceLocationRow = sourceOrgNodeId ? await ensureOrgNodeLocation(sourceOrgNodeId) : null
-    const targetLocationRow = targetOrgNodeId ? await ensureOrgNodeLocation(targetOrgNodeId) : null
-    const actingLocationId = sourceOrgNodeId === actingOrgNodeId
-      ? sourceLocationRow?.locationId
-      : targetLocationRow?.locationId
-    if (!actingLocationId) throw new ApiError('NOT_FOUND', '组织节点没有对应库存主体')
-    await assertOrgNodeVisible(session, actingOrgNodeId)
 
     const plan = movementPlan(input.docType, status)
     if (plan?.locationRole === 'source' && !sourceOrgNodeId) {
@@ -2669,6 +3130,73 @@ export const createInventoryCoreDoc = withAnyPermission(
     if (plan?.locationRole === 'target' && !targetOrgNodeId) {
       throw new ApiError('INVALID_PARAMS', '入库类单据缺少入库主体')
     }
+
+    /**
+     * #200 鉴权主体 = **本单真正被改动库存的那个主体**，不是「发起方」。
+     *
+     * 改前取 `sourceOrgNodeId ?? targetOrgNodeId`，只对它做 assertOrgNodeVisible：
+     * 入库类单据（movementPlan.locationRole='target'）的流水写在 target 上，却拿 source 去鉴权
+     * —— 同时传一个自己有权限的 source + 一个无权限的 target，就能往无权操作的主体里加库存。
+     * 共享建单表单本来就把两个下拉都渲染出来，普通表单操作即可构造，无需伪造请求。
+     *
+     * 无流水单据（报货类 NO_MOVEMENT、建单即待审批的报损/退货申请）plan 为 null，
+     * 保持原有的 `source ?? target` 口径：它们此刻不动任何库存，真正扣减发生在审批/收货那步，
+     * 那两处各自已对正确的主体做了校验（见 approve / confirmReceive 分支）。
+     */
+    // `locationRole === 'source'` 时上面已强制 source 非空，`source ?? target` 必等于 source，
+    // 故只需把 target 类单独摘出来，其余走同一支
+    const actingOrgNodeId = plan?.locationRole === 'target'
+      ? targetOrgNodeId
+      : (sourceOrgNodeId ?? targetOrgNodeId)
+    if (!actingOrgNodeId) throw new ApiError('INVALID_PARAMS', '缺少当前操作组织节点')
+    /**
+     * #200：鉴权必须**先于** `ensureOrgNodeLocation`。
+     *
+     * 那个函数会对不存在 / 已停用的节点分别抛 `NOT_FOUND` / `INVALID_STATE`，
+     * 放在鉴权前就成了一个探测器：拿无权限的 orgNodeId 试建单，靠返回的是
+     * 「没有对应库存主体」「主体已停用」还是「无权操作」就能反推该节点的存在与状态。
+     * 它还会顺带跑一次 `syncInventoryLocations()` —— 让无权者触发写操作也不合适。
+     */
+    await assertOrgNodeVisible(actingSession, actingOrgNodeId)
+
+    /**
+     * #200：单边单据拒绝另一边，必须在**任何 location 查询之前**。
+     *
+     * 它是纯输入校验（只看 docType 与两个 id 是否为空），零查询依赖。放在 ensureOrgNodeLocation
+     * 之后的话，无权的那一边照样会先进 ensure、照样按「不存在 / 已停用 / 正常」抛出三种不同的错
+     * —— 上面刚堵住的探测信道换个位置继续成立（两个谱系独立命中此点）。
+     *
+     * 写成按 `movementPlan.locationRole` 推导的通用规则、而不是逐 docType 手写 case：
+     * 新增单据类型时自动覆盖，不会因为漏改某个 case 又出现「传一个自己有权的无关主体去过鉴权」。
+     * 两类豁免：INTERNAL_SAME_NODE（两端已在上面统一）、RECEIVE_REQUIRED（调货/发货本就两边都要）。
+     *
+     * ⚠️ 调货类的 target 是对方主体，发起方本就无权可见，**不能**对它鉴权 —— 那会打挂正常调货。
+     * 它的存在性探测是业务必需（要选得到对方门店），不在本次要堵的范围内。
+     */
+    if (
+      plan
+      && !INTERNAL_SAME_NODE_DOC_TYPES.has(input.docType)
+      && !RECEIVE_REQUIRED_DOC_TYPES.has(input.docType)
+    ) {
+      if (plan.locationRole === 'target' && sourceOrgNodeId) {
+        throw new ApiError('INVALID_PARAMS', `${input.docType}不接受出库主体`)
+      }
+      if (plan.locationRole === 'source' && targetOrgNodeId) {
+        throw new ApiError('INVALID_PARAMS', `${input.docType}不接受入库主体`)
+      }
+    }
+
+    const sourceLocationRow = sourceOrgNodeId ? await ensureOrgNodeLocation(sourceOrgNodeId) : null
+    // 同主体单据两端已被统一成同一个 id，没必要再查一遍（ensureOrgNodeLocation 内部还会跑一次
+    // syncInventoryLocations）
+    const targetLocationRow = targetOrgNodeId
+      ? (targetOrgNodeId === sourceOrgNodeId ? sourceLocationRow : await ensureOrgNodeLocation(targetOrgNodeId))
+      : null
+    const actingLocationId = sourceOrgNodeId === actingOrgNodeId
+      ? sourceLocationRow?.locationId
+      : targetLocationRow?.locationId
+    if (!actingLocationId) throw new ApiError('NOT_FOUND', '组织节点没有对应库存主体')
+
     await assertGenericDocLocationRules(input, sourceOrgNodeId, targetOrgNodeId, actingOrgNodeId)
 
     const totalQuantity = input.items.reduce((sum, item) => sum + assertPositiveQuantity(item.quantity), 0)
@@ -2706,11 +3234,15 @@ export const createInventoryCoreDoc = withAnyPermission(
 
       let calculatedTotalAmount = 0
       let hasCalculatedAmount = false
+      // 盘点账面数：一次取齐（见 skuOnHandByLocation 的注释：串行点 + 单一时点语义）
+      const bookQuantityBySkuId = await skuOnHandByLocation(tx, actingLocationId, stocktakeSkuIds)
       for (const item of input.items) {
         const quantity = assertPositiveQuantity(item.quantity)
         // 通用入口只接收库存事实；所有价格与金额从 SKU/锁定批次快照派生。
         const serverItem = stripPriceInput(item)
         let lot: LockedLot | null = null
+        /** 盘点单的账面数（主体 + SKU 在手量汇总）；非盘点单保持 null，行为与改前一致 */
+        let bookQuantity: number | null = null
         let snapshot: Pick<LockedLot, 'skuId' | 'skuName' | 'specName' | 'supplier' | 'productSeries'> & Partial<LockedLot>
         const shouldCaptureSourceLot =
           plan?.locationRole === 'source' ||
@@ -2738,6 +3270,12 @@ export const createInventoryCoreDoc = withAnyPermission(
           const skuId = normalizeRequired(serverItem.skuId, '库存 SKU')
           await assertSkuIdAvailableAtLocation(tx, skuId, actingLocationId)
           snapshot = await skuSnapshot(tx, skuId)
+          if (STOCKTAKE_DOC_TYPES.has(input.docType)) {
+            // 盘点单没有批次选择器，`lot` 恒为 null —— 账面数只能来自上面一次取齐的汇总。
+            // 不写的话 `stock_snapshot` 恒 NULL，盘点单就退化成一张只有「实盘数」的白条。
+            // 取不到 = 该 SKU 在该主体一个批次都没有 → 账上就是 0（不是「没记」）。
+            bookQuantity = bookQuantityBySkuId.get(skuId) ?? 0
+          }
         }
 
         const standardUnitPrice =
@@ -2774,7 +3312,7 @@ export const createInventoryCoreDoc = withAnyPermission(
             expiryDate: lot?.expiryDate ?? normalizeText(serverItem.expiryDate),
             isGift: lot?.isGift ?? Boolean(serverItem.isGift),
             quantity: String(quantity),
-            stockSnapshot: lot ? String(lot.quantityOnHand) : null,
+            stockSnapshot: lot ? String(lot.quantityOnHand) : numString(bookQuantity),
             requestQuantity: numString(serverItem.requestQuantity),
             fulfilledQuantity: numString(serverItem.fulfilledQuantity),
             standardUnitPrice: numString(standardUnitPrice),
@@ -2918,7 +3456,18 @@ export const rejectInventoryCoreDoc = withAnyPermission(
       if (!doc) throw new ApiError('NOT_FOUND', '库存单据不存在')
       assertGenericDocTransition(doc.doc_type)
       if (doc.status !== '待审批') throw new ApiError('INVALID_STATE', '只有待审批单据可以驳回')
-      await assertOrgNodeVisible(session, doc.source_org_node_id ?? doc.target_org_node_id ?? '')
+      /**
+       * #200：与 approve 分支（对 `head.source_org_node_id` 显式鉴权）对称。
+       * 驳回只回滚预留、不搬库存，但鉴权对象必须和审批一致 —— 原先写成
+       * `source ?? target ?? ''`，是本 issue 要清理的那个「取一个代表值去做安全决策」
+       * 反模式。今天走不到 `?? target` 分支（能进「待审批」的都是 APPROVAL_DOC_TYPES，
+       * 它们的 source 恒非空），但那是巧合：新增一个 source 可空的待审批类型，
+       * 这里就会无声退化成按 target 鉴权。
+       */
+      if (!doc.source_org_node_id) {
+        throw new ApiError('INVALID_STATE', '待审批单据缺少出库主体，无法驳回')
+      }
+      await assertOrgNodeVisible(session, doc.source_org_node_id)
 
       const updated = await tx.execute(sql`
         UPDATE inventory_docs
@@ -3122,7 +3671,27 @@ export const confirmInventoryCoreReceive = withAnyPermission(
   },
 )
 
-function supplierRow(row: typeof inventorySuppliers.$inferSelect): InventorySupplierRow {
+/**
+ * 把 `uq_inventory_suppliers_name` 的唯一约束冲突翻成可读业务错误（#132）。
+ *
+ * 不翻的话用户看到的是 fallback「创建供应商失败」：PG 原文是英文，而
+ * `action-error.ts` 既把 `violates unique constraint` 列进 UNREADABLE_FRAGMENTS，
+ * 又有「一整串没有中日韩字符就判为不可读」的兜底 —— 两道都拦。
+ *
+ * 文案必须点出「可能已被停用」：停用的档案既不在 SKU 表单的下拉里
+ * （`listInventorySupplierOptions` 只查启用中的），默认也不在供应商列表里，
+ * 用户撞上它时**没有任何入口能自己查明原因**，只会反复重试同一个名字。
+ */
+function supplierNameConflict(error: unknown, name: string): unknown {
+  if (pgErrorCode(error) === '23505') {
+    return new ApiError('CONFLICT', `供应商名称「${name}」已存在（可能是已停用的档案），请到供应商档案页查找`)
+  }
+  return error
+}
+
+function supplierRow(
+  row: typeof inventorySuppliers.$inferSelect & { linkedSkuCount: number },
+): InventorySupplierRow {
   return {
     supplierId: row.supplierId,
     name: row.name,
@@ -3131,19 +3700,33 @@ function supplierRow(row: typeof inventorySuppliers.$inferSelect): InventorySupp
     address: row.address,
     isActive: row.isActive,
     remark: row.remark,
+    linkedSkuCount: row.linkedSkuCount,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   }
 }
 
+/**
+ * 供应商列表（#135 起返回 `{ data, total }`）。
+ *
+ * **`pageSize` 不给就不分页**，整份返回 —— 办理台的供应商下拉走的是同一个函数
+ * （operations/[level]/page.tsx），默认塞一个页长进去会把下拉静默截断，
+ * 用户在「自采产品入库」里就选不到排在后面的供应商了。
+ */
 export const listInventorySuppliers = withPermission(
   'inventory:stock_list',
   async (
     _session,
-    filters: { keyword?: string; onlyActive?: boolean } = {},
-  ): Promise<InventorySupplierRow[]> => {
+    filters: { keyword?: string; onlyActive?: boolean; page?: number; pageSize?: number } = {},
+  ): Promise<{ data: InventorySupplierRow[]; total: number }> => {
     const conditions: (SQL | undefined)[] = []
-    if (filters.onlyActive ?? true) conditions.push(eq(inventorySuppliers.isActive, true))
+    // 三态：undefined = 全部 / true = 仅启用 / false = 仅停用。
+    // 原写法用 `?? true` 兜底，把三态压成了二值 ——
+    // 「全部状态」(undefined) 变成只返回启用、「停用」(false) 变成返回全部，
+    // 页面上三个选项里有两个行为与标签不符，「停用」那档永远筛不出停用的供应商。
+    // 这是存量缺陷，但本次新增的「共 N 条」会把这个错误结果的数量白纸黑字印出来，顺手修。
+    if (filters.onlyActive === true) conditions.push(eq(inventorySuppliers.isActive, true))
+    else if (filters.onlyActive === false) conditions.push(eq(inventorySuppliers.isActive, false))
     if (filters.keyword) {
       const pattern = `%${filters.keyword.replace(/[%_]/g, '\\$&')}%`
       conditions.push(or(
@@ -3153,12 +3736,81 @@ export const listInventorySuppliers = withPermission(
       ))
     }
     const whereClause = conditions.length > 0 ? and(...conditions) : undefined
-    const rows = await db
-      .select()
+
+    // 总数**不能**在 leftJoin 之后 count：join 会把一个供应商放大成 N 行（N = 关联 SKU 数），
+    // 「共 N 条」会比实际行数大一截。筛选条件只涉及 inventory_suppliers 自身的列，
+    // 所以直接对主表单独 count 既准确又比 count(distinct) 便宜。
+    const [totalRow] = await db
+      .select({ total: sql<number>`cast(count(*) as int)` })
       .from(inventorySuppliers)
       .where(whereClause)
+
+    const query = db
+      .select({
+        supplier: inventorySuppliers,
+        // 停用前要提示「仍有 N 个 SKU 在用」（#132）。含已停用的 SKU：
+        // 停用供应商不该因为 SKU 也停了就把关联当不存在。
+        linkedSkuCount: sql<number>`cast(count(${inventorySkus.skuId}) as int)`,
+      })
+      .from(inventorySuppliers)
+      .leftJoin(inventorySkus, eq(inventorySkus.supplierId, inventorySuppliers.supplierId))
+      .where(whereClause)
+      .groupBy(inventorySuppliers.supplierId)
       .orderBy(asc(inventorySuppliers.name))
-    return rows.map(supplierRow)
+
+    // pageSize 缺省仍是「不分页」（办理台下拉共用本函数），但**一旦给了值就必须过白名单**：
+    // `?size=7` 会让服务端每页 7 条而 UI 按 20 条算页数，尾部数据永远够不到；
+    // `?size=-5` 更糟 —— drizzle 会静默丢弃负 limit 却照发负 offset，PG 直接
+    // `OFFSET must not be negative`，生产脱敏后只剩一个通用 500 页。
+    // 归一走 `@/lib/paging` 单源；`undefined`（不分页）这一态它表达不了，故留在外层判。
+    const paged = filters.pageSize === undefined ? null : resolvePaging({
+      page: filters.page,
+      pageSize: filters.pageSize,
+      defaultPageSize: 20,
+      allowedPageSizes: PAGE_SIZE_WHITELIST,
+    })
+    const rows = paged
+      ? await query.limit(paged.pageSize).offset(paged.offset)
+      : await query
+    return {
+      data: rows.map((row) => supplierRow({ ...row.supplier, linkedSkuCount: row.linkedSkuCount })),
+      total: totalRow?.total ?? 0,
+    }
+  },
+)
+
+/**
+ * SKU 表单的供应商下拉选项（#132）：只返回**启用中**的档案，且只带 id + 名称。
+ *
+ * 「当前 SKU 已关联但档案已停用」那一条不在这里补 —— 它由 `InventorySkuRow` 自带的
+ * `supplierId` / `supplierName` 在表单侧补进选项，这样与当前行绑定、不依赖列表分页。
+ */
+export const listInventorySupplierOptions = withPermission(
+  'inventory:stock_list',
+  async (): Promise<InventorySupplierOption[]> => {
+    return db
+      .select({ supplierId: inventorySuppliers.supplierId, name: inventorySuppliers.name })
+      .from(inventorySuppliers)
+      .where(eq(inventorySuppliers.isActive, true))
+      .orderBy(asc(inventorySuppliers.name))
+  },
+)
+
+/**
+ * 停用前实时核对关联 SKU 数（#132）。
+ *
+ * 列表行自带的 `linkedSkuCount` 是**页面加载那一刻**的值：别人在这期间把某个 SKU 关联过来，
+ * 用旧计数就会显示「0 个」而不给提示，验收标准要的「明确提示」就落空了。
+ */
+export const countInventorySkusBySupplier = withPermission(
+  'inventory:stock_list',
+  async (_session, supplierIdInput: string): Promise<number> => {
+    const supplierId = normalizeRequired(supplierIdInput, '供应商')
+    const [row] = await db
+      .select({ count: sql<number>`cast(count(*) as int)` })
+      .from(inventorySkus)
+      .where(eq(inventorySkus.supplierId, supplierId))
+    return row?.count ?? 0
   },
 )
 
@@ -3167,15 +3819,19 @@ export const createInventorySupplier = withPermission(
   async (session, input: InventorySupplierInput): Promise<{ supplierId: string }> => {
     const supplierId = `INV-SUP-${crypto.randomUUID()}`
     const name = normalizeRequired(input.name, '供应商名称')
-    await db.insert(inventorySuppliers).values({
-      supplierId,
-      name,
-      contactName: normalizeText(input.contactName),
-      phone: normalizeText(input.phone),
-      address: normalizeText(input.address),
-      isActive: input.isActive ?? true,
-      remark: normalizeText(input.remark),
-    })
+    try {
+      await db.insert(inventorySuppliers).values({
+        supplierId,
+        name,
+        contactName: normalizeText(input.contactName),
+        phone: normalizeText(input.phone),
+        address: normalizeText(input.address),
+        isActive: input.isActive ?? true,
+        remark: normalizeText(input.remark),
+      })
+    } catch (error) {
+      throw supplierNameConflict(error, name)
+    }
     await logOperation(session, 'inventory.supplier.create', 'inventory_suppliers', supplierId, { name })
     revalidatePath('/inventory/suppliers')
     return { supplierId }
@@ -3191,24 +3847,62 @@ export const updateInventorySupplier = withPermission(
   ): Promise<{ success: true }> => {
     const supplierId = normalizeRequired(supplierIdInput, '供应商')
     const [current] = await db
-      .select({ supplierId: inventorySuppliers.supplierId })
+      .select({ supplierId: inventorySuppliers.supplierId, name: inventorySuppliers.name })
       .from(inventorySuppliers)
       .where(eq(inventorySuppliers.supplierId, supplierId))
       .limit(1)
     if (!current) throw new ApiError('NOT_FOUND', '供应商不存在')
-    if (input.name !== undefined) normalizeRequired(input.name, '供应商名称')
-    await db
-      .update(inventorySuppliers)
-      .set({
-        name: input.name === undefined ? undefined : normalizeRequired(input.name, '供应商名称'),
-        contactName: input.contactName === undefined ? undefined : normalizeText(input.contactName),
-        phone: input.phone === undefined ? undefined : normalizeText(input.phone),
-        address: input.address === undefined ? undefined : normalizeText(input.address),
-        isActive: input.isActive,
-        remark: input.remark === undefined ? undefined : normalizeText(input.remark),
-        updatedAt: new Date(),
+    const nextName = input.name === undefined ? undefined : normalizeRequired(input.name, '供应商名称')
+    try {
+      await db.transaction(async (tx) => {
+        // 在事务内**锁行重读**名字，不能拿上面那次事务外的 current.name 来判断改没改名。
+        // 时序：甲乙同时打开编辑页（都读到名字 A）→ 甲改名 B 并同步了所有关联 SKU →
+        // 乙只改电话，但表单是全量提交、name 仍是 A → 乙把档案名写回 A，
+        // 而 `A === current.name(A)` 用旧快照判成「没改名」→ 跳过 SKU 回写 →
+        // 档案叫 A、SKU 文本留在 B，持久分叉（admin 列表走 JOIN 显示 A，staff 读文本显示 B）。
+        // FOR UPDATE 让乙等甲提交后再读，于是读到 B、判定「名字变了」、正确回写成 A。
+        const [locked] = await tx
+          .select({ name: inventorySuppliers.name })
+          .from(inventorySuppliers)
+          .where(eq(inventorySuppliers.supplierId, supplierId))
+          .limit(1)
+          .for('update')
+        if (!locked) throw new ApiError('NOT_FOUND', '供应商不存在')
+        await tx
+          .update(inventorySuppliers)
+          .set({
+            name: nextName,
+            contactName: input.contactName === undefined ? undefined : normalizeText(input.contactName),
+            phone: input.phone === undefined ? undefined : normalizeText(input.phone),
+            address: input.address === undefined ? undefined : normalizeText(input.address),
+            isActive: input.isActive,
+            remark: input.remark === undefined ? undefined : normalizeText(input.remark),
+            updatedAt: new Date(),
+          })
+          .where(eq(inventorySuppliers.supplierId, supplierId))
+        // 改名要同步 SKU 上的名称快照（#132）。`inventory_skus.supplier` 是**主数据字段**，
+        // 不是历史快照 —— 真正的历史快照是 inventory_doc_items / inventory_stock_lots 上那两列，
+        // 它们在建单 / 建批次时冻结，本处不动。
+        // 不同步的话：admin 列表读 JOIN 出来的实时名，而 staffApi 的 SKU 列表
+        //（routes/inventory.js 的 `SELECT sku.supplier`）与 ensureLotFromSku 之后建的新批次
+        // 读的都是这个文本列 —— 同一个供应商在两端会显示成两个名字。
+        // 比的是**新旧名是否真的不同**，不是「有没有传 name」：供应商表单是全量提交，
+        // 停用 / 只改联系方式时 name 照样在 payload 里，只判 undefined 等于每次都回写，
+        // 会无因刷掉整批关联 SKU 的 updated_at。旧名取事务内锁到的值（见上）。
+        if (nextName !== undefined && nextName !== locked.name) {
+          // 这会把 N 条关联 SKU 的 updated_at 一起刷新。**是刻意的**：这些行的数据确实变了，
+          // 不刷的话基于 updated_at 的增量同步/变更检测会漏掉这次改名。
+          // 代价是若将来把 SKU 列表改成 admin 的默认惯例 `desc(updatedAt)`「编辑即浮顶」，
+          // 一次改名会让整批 SKU 无因浮顶 —— 当前列表按 product_code 排序，不受影响。
+          await tx
+            .update(inventorySkus)
+            .set({ supplier: nextName, updatedAt: new Date() })
+            .where(eq(inventorySkus.supplierId, supplierId))
+        }
       })
-      .where(eq(inventorySuppliers.supplierId, supplierId))
+    } catch (error) {
+      throw supplierNameConflict(error, nextName ?? current.name)
+    }
     await logOperation(session, 'inventory.supplier.update', 'inventory_suppliers', supplierId, input)
     revalidatePath('/inventory/suppliers')
     return { success: true }
@@ -3465,6 +4159,14 @@ async function promotionPlanRows(
   }))
 }
 
+/**
+ * 福利方案列表 —— **刻意保持全量返回**，分页在组件侧做（#135）。
+ *
+ * 这一页的关键词 / 市场 / 状态三个筛选都在客户端 useMemo 里算
+ * （inventory-promotions-page.tsx 的 filteredRows）。要是在这里先按页切 20 条、
+ * 再让客户端去筛，用户筛到的就只是当前页那 20 条里的匹配项，翻页还会看到不同结果 ——
+ * 分页必须发生在筛选**之后**。方案是低基数配置数据，全量返回代价可忽略。
+ */
 export const listInventoryPromotionPlans = withPermission(
   'inventory:stock_list',
   async (session): Promise<InventoryPromotionPlanRow[]> => promotionPlanRows(session),

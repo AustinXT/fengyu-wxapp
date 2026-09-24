@@ -152,7 +152,8 @@ Page({
           product_id: spu.product_id,
           name: spu.name,
           category_name: spu.category_name || '',
-          cover_image: spu.cover_image,
+          // issue #230：spuDetail 无法保证缩略时返回 null，归一为空串走占位分支
+          cover_image: spu.cover_image || '',
           description: spu.description || '',
           detail_images: spu.detail_images || [],
           is_bundle: isBundle,

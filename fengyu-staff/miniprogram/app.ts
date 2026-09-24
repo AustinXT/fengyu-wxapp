@@ -1,6 +1,6 @@
 // app.ts — 凤御员工端小程序
 import { MOCK_ENABLED } from './utils/dev-config'
-import { getCloudEnv } from './utils/cloud-env'
+import { getCloudEnv, getApiFnName } from './utils/cloud-env'
 
 App<IAppOption>({
   globalData: {
@@ -103,7 +103,7 @@ App<IAppOption>({
       const devOpenid = wx.getStorageSync('__devTestOpenid');
       if (devOpenid) payload._testOpenid = devOpenid;
       const res = await wx.cloud.callFunction({
-        name: 'staffApi',
+        name: getApiFnName(),
         data: { action: 'auth.login', payload }
       }) as any;
       if (res.result?.code === 0 && res.result.data) {
@@ -284,7 +284,7 @@ App<IAppOption>({
     if (phone) {
       const openid = `dev-${phone}`;
       const res: any = await wx.cloud.callFunction({
-        name: 'staffApi',
+        name: getApiFnName(),
         data: {
           action: 'auth.bindPhone',
           payload: { _testOpenid: openid, phoneNumber: phone },

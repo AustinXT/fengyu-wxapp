@@ -1,7 +1,9 @@
 import { Suspense } from 'react'
 import { listInventorySkus } from '@/actions/inventory/skus'
 import { listInventoryLocations } from '@/actions/inventory/locations'
+import { listInventorySupplierOptions } from '@/actions/inventory/suppliers'
 import { getSession } from '@/lib/auth'
+import { inventoryPriceVisibility } from '@/lib/inventory/access'
 import { hasUiCapability } from '@/lib/permission-contract'
 import { requireAllUiPageCapabilities } from '@/lib/page-capability'
 import InventorySkusPage from '../_components/inventory-skus-page'
@@ -19,7 +21,7 @@ export default async function Page({
   const pageSize = params.size ? Number(params.size) : 20
   const session = await getSession()
   requireAllUiPageCapabilities(session, ['inventory:stock_list'])
-  const [{ data, total }, locations] = await Promise.all([
+  const [{ data, total }, locations, supplierOptions] = await Promise.all([
     listInventorySkus({
       keyword: params.q,
       sourceType: params.source as never,
@@ -28,13 +30,21 @@ export default async function Page({
       pageSize,
     }),
     listInventoryLocations(),
+    listInventorySupplierOptions(),
   ])
   const actions = session.permissions.actions
   const canCreate = hasUiCapability(actions, 'inventory:supply_chain_master_data_manage') || hasUiCapability(actions, 'inventory:market_sku_manage')
   const canUpdate = canCreate
-  const canViewPrice = hasUiCapability(actions, 'inventory:supply_chain_price_view') || hasUiCapability(actions, 'inventory:market_price_view')
+  // 直接用服务端遮蔽 SKU 行时的同一个函数，而不是自己再拼一遍 hasUiCapability：
+  // 列的显隐必须与 skuRow() 的 supplyVisible / marketVisible 判定同源，否则会出现
+  // 「渲染了列但整列都是 —」（#135 组 5 的原症状）或反过来「有数据却不显示列」。
+  const priceVisibility = inventoryPriceVisibility(session)
+  const canViewPrice = priceVisibility !== 'none'
   const canManageMarketSkus = hasUiCapability(actions, 'inventory:market_sku_manage')
   const canManageSupplySkus = hasUiCapability(actions, 'inventory:supply_chain_master_data_manage')
+  // 建供应商档案要 supply_chain_master_data_manage，而建 SKU 只要 market_sku_manage 也行 ——
+  // 市场角色能建 SKU 但不能建档案，快捷入口必须按这个权限单独判，不能跟着 canCreate 走。
+  const canCreateSupplier = canManageSupplySkus
 
   return (
     <div className="p-6">
@@ -43,10 +53,13 @@ export default async function Page({
         <InventorySkusPage
           rows={data}
           total={total}
-          markets={locations.filter((location) => location.locationType === '市场')}
+          markets={locations.filter((location) => location.locationType === '市场' && location.isActive)}
+          supplierOptions={supplierOptions}
           canCreate={canCreate}
           canUpdate={canUpdate}
+          canCreateSupplier={canCreateSupplier}
           canViewPrice={canViewPrice}
+          priceVisibility={priceVisibility}
           canManageMarketSkus={canManageMarketSkus}
           canManageSupplySkus={canManageSupplySkus}
         />

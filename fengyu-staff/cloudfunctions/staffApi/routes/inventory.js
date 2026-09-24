@@ -17,9 +17,14 @@ const WORKFINE_INVENTORY_INITIALIZED_STATUS = '已初始化'
 const DOC_PREFIX = {
   '门店报货': 'DBH',
   '市场报货': 'MBH',
+  // 供应链跨市场汇总单（#193）。**刻意不进 STAFF_VISIBLE / STAFF_CREATE_DOC_TYPES**：
+  // 它是供应链办理台发起的跨市场单据，分院侧既不该建也不该看见。
+  // 那两个集合不在 cross-end snapshot 的守护范围内，漏加不会红测试，所以把决策写在这儿。
+  '市场报货汇总': 'MHZ',
   '品项公司报货需求': 'ZBH',
+  // `供应链采购订单`（旧前缀 PCG）已并入 `采购订单`（#194，migration 0043/0044）；
+  // 存量单号保留 PCG-*，新单一律 CGD-*。
   '采购订单': 'CGD',
-  '供应链采购订单': 'PCG',
   '供应链采购入库': 'GRK',
   '品项公司发货': 'GFH',
   '市场采购入库': 'MRK',
@@ -75,9 +80,15 @@ const STAFF_CREATE_DOC_TYPES = new Set([
 const STAFF_RECEIVE_DOC_TYPES = new Set(['分院配货', '分院调货出库'])
 const STAFF_VISIBLE_DOC_TYPE_LIST = Array.from(STAFF_VISIBLE_DOC_TYPES)
 
-const NO_MOVEMENT_DOC_TYPES = new Set(['门店报货', '市场报货', '品项公司报货需求', '采购订单', '供应链采购订单'])
+const NO_MOVEMENT_DOC_TYPES = new Set(['门店报货', '市场报货', '市场报货汇总', '品项公司报货需求', '采购订单'])
 const RECEIVE_REQUIRED_DOC_TYPES = new Set(['品项公司发货', '分院配货', '分院调货出库', '市场间调货出库'])
 const APPROVAL_DOC_TYPES = new Set(['市场退货', '院退货', '市场产品报损', '院产品报损'])
+// 盘点单：只记录「账面 vs 实盘」，不产生任何 inventory_movements、不改 quantity_on_hand。
+// 账面数按**主体 + SKU 汇总**记录（issue #131，甲方 2026-09-16 拍板 Q1：现场按商品数总盘、不分批次）。
+// ⚠️ 与 admin 的 fengyu-admin/src/lib/inventory/stocktake.ts 是**独立副本**（四端禁共享目录），
+// 由 __tests__/routes/cross-end-inventory-snapshot.test.js 的 §2 字面量 snapshot 守护。
+// staff 侧只开放了「分院库存盘点」（见 STAFF_CREATE_DOC_TYPES），但集合保持两端逐字一致。
+const STOCKTAKE_DOC_TYPES = new Set(['市场库存盘点', '分院库存盘点'])
 const INBOUND_DOC_TYPES = new Set([
   '供应链采购入库',
   '市场采购入库',
@@ -205,8 +216,35 @@ function movementDirection(docType) {
   return null
 }
 
-function approvalMovementDirection(docType) {
-  return APPROVAL_DOC_TYPES.has(docType) ? '出库' : null
+/**
+ * 审批/驳回的鉴权主体判定（#235）。
+ *
+ * 原先两处都写 `source_org_node_id || target_org_node_id`，拿「第一个非空的主体」当代表值
+ * 去做 scope 判断，而不是按单据方向推导出**真正被扣减库存**的那一侧 —— 与 #200 修复前的
+ * `createInventoryCoreDoc` 是同一个反模式。
+ *
+ * 它今天不可利用，靠的是两个巧合：能走到这两个函数的类型 =
+ * `STAFF_VISIBLE_DOC_TYPES ∩ APPROVAL_DOC_TYPES` = {院退货, 院产品报损}，前者 source 恒非空、
+ * 后者是同主体单据；且 `ensureStoreLocation` 强制 location_type='门店'，市场级单据进不来。
+ * 一旦往任一集合里加入 source 可空或入库方向的类型，`||` 就会**无声**退化成按 target 鉴权。
+ *
+ * ⚠️ 方向必须用 `OUTBOUND_DOC_TYPES` 这个**独立分类器**判，不能从 `APPROVAL_DOC_TYPES` 自身派生。
+ * 第一版写的是 `APPROVAL_DOC_TYPES.has(t) ? '出库' : null` 再断言「不是出库就抛」——
+ * 那是个**恒真守卫**：方向由被守卫的集合自己算出来，第二个分支 provably dead。
+ * 真有人往 `APPROVAL_DOC_TYPES` 加一个入库类型时它会静默放行，
+ * 而那正是它声称要挡的场景。现在与 admin 侧 `engine.ts` 的
+ * `if (!OUTBOUND_DOC_TYPES.has(head.doc_type)) throw` 同型（当前 APPROVAL ⊆ OUTBOUND，
+ * 换判据对现网行为零影响，由 __tests__ 的不变量用例钉住）。
+ *
+ * 刻意**不写**「入库 → 取 target」的分支：那会是不可达代码（#237 同批刚清掉同类东西，
+ * dead 分支会诱导后来者把它当活代码推理）。将来放开入库方向的审批类型时这里直接 fail-closed，
+ * 逼改代码的人回来补主体推导。
+ */
+function assertApprovalOutboundDirection(docType) {
+  if (!APPROVAL_DOC_TYPES.has(docType)) throw new Error('INVALID_STATE: APPROVAL_NOT_REQUIRED: 该单据类型不需要审批')
+  if (!OUTBOUND_DOC_TYPES.has(docType)) {
+    throw new Error('INVALID_STATE: APPROVAL_DIRECTION_UNSUPPORTED: 该单据暂不支持审批，请联系管理员')
+  }
 }
 
 function roleBindingsForAction(auth, action) {
@@ -426,6 +464,61 @@ function queryRows(client, sql, params) {
   return client ? client.query(sql, params).then((res) => res.rows) : pg.query(sql, params)
 }
 
+/**
+ * 按 location_id 或 org_node_id 取库存主体（#251）。
+ *
+ * `OR` 是**有意的双 id 多态查找**，不能删：调用方两种 id 都会传进来 ——
+ * `payload.sourceOrgNodeId` / `head.source_org_node_id` 是 org_node_id，而
+ * `resolveStaffCreateLocations` 的 fallback 链（`ctx.auth.effectiveStoreId`、
+ * `auth.inventoryStoreIds`）给的是 **store_id**。
+ *
+ * ⚠️ 但 OR 两侧**可以落在不同的两行上**，这正是 #251：
+ *   - `location_id` 是主键、`org_node_id` 有 `uq_inventory_locations_org`，各自最多 1 行；
+ *   - `syncInventoryLocations` 写的门店行是 `location_id = store_id`、`org_node_id = org-门店-*`
+ *     （只有总部/市场行自指），于是**某个 store_id 恰好等于某个 `type='门店'` 的 org_nodes.id**
+ *     时，行 X（by location_id）与行 Y（by org_node_id）是两个**不同门店**的主体。
+ *
+ * 本函数能看到的撞值**只可能是「门店 × 门店」**，两支的挡法不同，别混为一谈：
+ *   - X 若是总部/市场自指行 → `X.org_node_id = X.location_id = $1`，与 `Y.org_node_id = $1`
+ *     同值，**违反 `uq_inventory_locations_org`**（`ON CONFLICT (location_id)` 管不到
+ *     org_node_id 的唯一冲突，所以这一支会在 UPSERT 期真的报错）；
+ *   - Y 若是总部/市场自指行 → 两行 `location_id` 同值，但**不会报主键冲突** ——
+ *     `syncInventoryLocations` 第二条 UPSERT 的 `ON CONFLICT (location_id) DO UPDATE`
+ *     把那个自指行**静默改写成门店行**，最终只剩一行。读取端因此凑不出两行。
+ *
+ * ⚠️ 上面第二支不是「安全」，是**本函数的盲区**：市场/总部主体被无声顶替，`> 1` 守卫看不见，
+ * 且下一轮同步试图恢复自指行时会因残留的 `store_id` 撞上 `inventory_validate_location_tree`
+ * 的 `NEW.store_id IS NOT NULL` 校验而 RAISE EXCEPTION —— 那会让**全部库存操作持续失败**。
+ * 它的成因与本 issue 同源（store_id 与 org_nodes.id 两个 id 空间无交叉唯一性），
+ * 但修复位置在 sync/DB 层而非这里，已登记为 **#270**，勿在本函数里找它的解。
+ *
+ * 无 `ORDER BY` 的 `LIMIT 1` 在这种两行上取哪行不保证稳定，两次独立调用可能拿到不同门店，
+ * 于是「按 A 鉴权、扣 B 的批次」。故：
+ *
+ *   1. **`throw` 是唯一的正确性保障**：命中两行即 `CONFLICT`，不猜。
+ *      ⚠️ 别把它改软成「告警 + 取第一行」—— 撞值时**根本不存在语义正确的那一行**：
+ *      一半调用点传的是 org_node_id（`head.source_org_node_id` 等），另一半传的是 store_id
+ *      （`resolveStaffCreateLocations` 的 `fallbackStoreId` 链共四项：`payload.storeId`、
+ *      `payload.locationId`、`ctx.auth.effectiveStoreId`、单元素时的 `scopedStoreIds[0]`，
+ *      全是 store_id）。固定任何一侧优先，都会对另一半调用点**确定性地**返回另一家门店
+ *      —— 稳定，但稳定地错，而且从此不再报错。
+ *   2. `ORDER BY location_id` 按主键定序（非空、全序），**不暗示任何 id 空间的优先级** ——
+ *      撞值时不存在语义正确的那一行，所以它只承诺「确定」，不承诺「对」。
+ *      ⚠️ 别因为「2 行必抛、0/1 行与顺序无关」就删掉它：admin 侧的同签名副本带 `FOR UPDATE`，
+ *      撞值时两行都会被锁，主键序保证并发事务的**加锁顺序一致**，那是实打实的防死锁作用
+ *      （本端无锁，保持字面一致是为了两端可对照）。
+ *   3. `LIMIT 2` —— 两侧各最多 1 行，2 是精确上界；回到 `LIMIT 1` 就永远看不见撞值。
+ *   4. **停用行照样参与歧义判定**，`is_active` 只在唯一命中项上判。
+ *      曾想「把闭店幽灵行过滤掉，免得它把撞值的在营门店锁死」，但那是错的：
+ *      设 X 既是在营门店 A 的 `location_id`(=store_id)、又是**停用**门店 Y 的 `org_node_id`，
+ *      调用方传 `head.source_org_node_id = X` 时意图明确是 Y（单据里存的就是 org_node_id），
+ *      过滤掉 Y 会**静默返回 A**，随后按 A 鉴权、生成 A 的单据 —— 正是本 issue 的危害本体。
+ *      停用状态并不能消除入参所属 id 空间的不确定性。
+ *
+ * 注：与 issue #251 正文的归因不同，这与 `stores.org_node_id` 是否 unique **无关**
+ * （`inventory_locations.org_node_id` 早已 UNIQUE，那条路径是 UPSERT 期 fail-loud）。
+ * 现网 dev/prod 双库实测撞值均为 0 行，本改动是加固。
+ */
 async function ensureInventoryLocation(locationId, requiredType = null, client = null) {
   await syncInventoryLocations(client)
   const rows = await queryRows(
@@ -433,15 +526,42 @@ async function ensureInventoryLocation(locationId, requiredType = null, client =
     `SELECT location_id, location_type, parent_location_id, is_active, org_node_id
        FROM inventory_locations
       WHERE location_id = $1 OR org_node_id = $1
-      LIMIT 1`,
+      ORDER BY location_id
+      LIMIT 2`,
     [locationId],
   )
   if (rows.length === 0) throw new Error('NOT_FOUND: 库存主体不存在')
+  if (rows.length > 1) {
+    throw new Error('CONFLICT: LOCATION_ID_AMBIGUOUS: 库存主体标识冲突，请联系管理员')
+  }
   const row = rows[0]
+  // 注：单行停用时本端报 INVALID_STATE，admin `business.ts:loadLocation` 同一数据状态报
+  // NOT_FOUND「库存主体不存在或已停用」。两端**决策一致（都拒绝）、错误码不同**，
+  // 是各自沿用改动前的对外文案，不是跨端漂移 —— 别当不一致去「修齐」。
   if (row.is_active === false) throw new Error('INVALID_STATE: 库存主体已停用')
   if (requiredType && row.location_type !== requiredType) {
     throw new Error(`INVALID_PARAMS: 库存主体必须是${requiredType}`)
   }
+  /**
+   * ⚠️ 已知缺陷，**本次刻意不改**（#251 评审提出，范围外）：
+   *
+   * `org_node_id` 可空（`db/schema/inventory.ts` 无 `.notNull()`，来源 `stores.org_node_id`
+   * 同样可空）。这类行只能靠 `location_id = $1` 入选，而下面的 `|| locationId` 会把
+   * **入参的 store_id 当组织节点 id 返回**；返回值被 `resolveStaffCreateLocations`
+   * 取作 `sourceOrgNodeId` / `targetOrgNodeId` 写进 `inventory_docs` —— 那两列对
+   * `inventory_locations.org_node_id` 有 FK（`0039` 迁移），落库会被 FK 挡下、
+   * 报一条指不到真正病根的约束错。正解是 fail-loud。
+   *
+   *（补了撞值守卫之后，「把错误主体钉进单据」那一支已**不可达**：FK 要放行就得存在另一行
+   * `org_node_id = $1`，而那恰好就是 `rows.length === 2` → CONFLICT 的条件。
+   * 所以本函数现在只会走出「FK 挡下」这一支。）
+   *
+   * 不在本 PR 改的原因：现网 dev/prod 实测 `org_node_id` 为空的主体行均为 **0**，
+   * 属理论缺陷；而改成抛错会打红 13 个既有用例（它们的 mock 行压根不带 `org_node_id`，
+   * 一直靠这个兜底跑过）。修它应当连同那批 mock 的保真度一起做，另开 issue。
+   *
+   * （`location_id` 那侧的兜底则是纯死代码：它是主键，不可能为空 —— 一并留待该 issue 清理。）
+   */
   return {
     ...row,
     location_id: row.location_id || locationId,
@@ -526,7 +646,25 @@ async function resolveStaffCreateLocations(ctx, payload) {
 
   const sourceLocation = sourceEndpointId ? await ensureStoreLocation(sourceEndpointId) : null
   let targetLocation = targetEndpointId ? await ensureStoreLocation(targetEndpointId) : null
-  const actingLocationId = sourceLocation?.location_id || targetLocation?.location_id
+  /**
+   * #235：鉴权主体按**单据方向**推导，不用 `source || target` 取代表值。
+   *
+   * 这是与审批路径同一个签名的第二处（审批那两处已改）。今天它也只是「碰巧对」：
+   * 上面的 switch 对每个类型硬性把另一端置 null，所以第一个非空的恰好就是对的那个。
+   * 一旦 `STAFF_CREATE_DOC_TYPES` 加进一个两端都非空、方向为入库的类型，
+   * 就会拿 source 鉴权却往无权的 target 加库存 —— 正是 #200 在 admin 修掉的那个洞。
+   *
+   * 7 个可建类型里只有「院顾客退货」是入库类（已逐一核对 INBOUND/OUTBOUND 归属）。
+   */
+  /**
+   * ⚠️ 这里隐式依赖「非 INBOUND 即由出库方发起」。对 staff 的 7 个可建类型成立
+   * （只有「院顾客退货」是 INBOUND），但**不要**把它当成通用的方向判据推广出去：
+   * `OUTBOUND_DOC_TYPES` 并非全量方向枚举（例如「分院调货出库/入库」两者都不在里面），
+   * 它实际扮演的是「审批方向分类器」。新增可建类型时必须回来核对这条三元。
+   */
+  const actingLocationId = INBOUND_DOC_TYPES.has(payload.docType)
+    ? targetLocation?.location_id
+    : sourceLocation?.location_id
   await assertInventoryWriteStoreScope(pg, ctx.auth, actingLocationId)
   if (payload.docType === '门店报货') {
     marketId = sourceLocation?.parent_location_id || null
@@ -556,17 +694,6 @@ async function resolveStaffCreateLocations(ctx, payload) {
     marketId,
     actingLocationId,
   }
-}
-
-function actingLocationId(payload) {
-  const docType = payload.docType
-  if (RECEIVE_REQUIRED_DOC_TYPES.has(docType) || OUTBOUND_DOC_TYPES.has(docType)) {
-    return payload.sourceOrgNodeId || payload.locationId || payload.storeId || null
-  }
-  if (INBOUND_DOC_TYPES.has(docType)) {
-    return payload.targetOrgNodeId || payload.locationId || payload.storeId || null
-  }
-  return payload.sourceOrgNodeId || payload.targetOrgNodeId || payload.locationId || payload.storeId || null
 }
 
 function movementPlan(docType, status) {
@@ -660,6 +787,18 @@ async function inventorySkuSnapshot(client, skuId) {
   }
 }
 
+/**
+ * ⚠️ 入参契约：`locationId` 必须是 `ensureInventoryLocation` 返回行的 `location_id`
+ * （已是主键值），**不能传 org_node_id**。
+ *
+ * 下面按 `location_id = $1` 单列查（主键，故确定、无 #251 的 OR 多态歧义），
+ * 但这依赖的是**上游契约**而非函数自身保证：门店行的 `location_id`(=store_id) 与
+ * `org_node_id`(=org-门店-*) 并不相等，一旦有人直传 `payload.sourceOrgNodeId`，
+ * 这里会静默命中 0 行、抛出误导性的「库存主体不存在」，而不是「SKU 不可在该主体使用」。
+ *
+ * 现有三处调用方都传的是 `<location>.location_id`（`ensureInventoryLotFromSku` 的第二参），
+ * 契约成立；新增调用点时务必沿用。
+ */
 async function assertSkuAvailableAtLocation(client, sku, locationId) {
   const sourceType = sku.source_type || '供应链'
   if (sourceType === '供应链') return
@@ -686,7 +825,7 @@ async function ensureInventoryLotFromSku(client, locationId, item, trace, priceS
   const skuId = String(item.skuId || '').trim()
   if (!skuId) throw new Error('INVALID_PARAMS: 缺少库存 SKU')
   const skuRes = await client.query(
-    `SELECT sku_id, product_name, spec_name, supplier, product_series,
+    `SELECT sku_id, product_name, spec_name, supplier, supplier_id, product_series,
             source_type, owner_market_id, supply_chain_purchase_price,
             market_purchase_price, store_purchase_price
        FROM inventory_skus
@@ -712,7 +851,10 @@ async function ensureInventoryLotFromSku(client, locationId, item, trace, priceS
   )
   const sourceDocId = String(trace?.sourceDocId || '').trim()
   if (!sourceDocId) throw new Error('INVALID_PARAMS: 缺少批次来源单据')
-  const supplierId = String(trace?.supplierId || '').trim() || null
+  // 批次键锚在 supplier_id 而不是名称（#132）：lotKey 的 supplier 段取 supplierId ?? supplier，
+  // 单据头不带供应商的入库（内部领用 / 调货 / 报损…）若只落到文本，供应商一改名，
+  // 同批号同效期同价的下一次入库就会算出新的 lot_key，把同一批实物拆成两行库存。
+  const supplierId = String(trace?.supplierId || '').trim() || sku.supplier_id || null
   const supplier = String(trace?.supplier || '').trim() || sku.supplier || null
   const key = lotKey(skuId, {
     ...item,
@@ -948,7 +1090,7 @@ async function stockList(ctx) {
        FROM inventory_stock_lots st
   LEFT JOIN inventory_locations loc ON loc.location_id = st.location_id
        ${whereSql}
-   ORDER BY loc.location_type, loc.name, st.sku_name, st.batch_no
+   ORDER BY loc.location_type, loc.name, st.sku_name, st.batch_no, st.id
       LIMIT ${limit} OFFSET ${offset}`,
     params,
   )
@@ -1241,7 +1383,7 @@ async function docList(ctx) {
   LEFT JOIN inventory_locations source_loc ON source_loc.org_node_id = d.source_org_node_id
   LEFT JOIN inventory_locations target_loc ON target_loc.org_node_id = d.target_org_node_id
        ${whereSql}
-   ORDER BY d.doc_date DESC, d.created_at DESC
+   ORDER BY d.doc_date DESC, d.created_at DESC, d.id DESC
       LIMIT ${limit} OFFSET ${offset}`,
     params,
   )
@@ -1388,7 +1530,21 @@ async function createDoc(ctx) {
     sourceLocationId,
     targetLocationId,
     marketId,
+    actingLocationId,
   } = await resolveStaffCreateLocations(ctx, payload)
+  // 盘点单：一个 SKU 只能一行。账面数按「主体 + SKU 汇总」记，同 SKU 两行会各自
+  // 拿到同一个完整账面数，差异直接变成重复计算的废数。放在开事务前拦，失败不占锁。
+  const stocktakeSkuIds = []
+  if (STOCKTAKE_DOC_TYPES.has(docType)) {
+    const seen = new Set()
+    for (const item of items) {
+      const skuId = String(item.skuId || '').trim()
+      if (!skuId) throw new Error('INVALID_PARAMS: 明细缺少库存 SKU')
+      if (seen.has(skuId)) throw new Error('INVALID_PARAMS: 同一 SKU 请合并为一条盘点明细')
+      seen.add(skuId)
+      stocktakeSkuIds.push(skuId)
+    }
+  }
   const status = defaultDocStatus(docType)
   // 同一批次的待审批退货需按稳定顺序锁库存，降低多明细并发提交的死锁概率。
   const orderedItems = docType === '院退货'
@@ -1439,6 +1595,27 @@ async function createDoc(ctx) {
         marketId,
       ],
     )
+    // 盘点单账面数：**一次 GROUP BY 取齐**，不逐行查。
+    // 两个理由：① 少 N 次事务内往返，事务持有时间短；② 同一张单所有行的账面数取自
+    // **同一个语句快照**（逐条 SELECT 在 READ COMMITTED 下各取各的快照，一张「账面 vs 实盘」
+    // 的单会失去单一时点语义）。
+    // ⚠️ 别照搬 admin 那边「持有全局串行锁」的说法：staff 的
+    // `assertWorkfineInventoryInitialized` 用的是 `FOR KEY SHARE`（共享锁，多个库存事务
+    // 可同时持有、也挡不住普通 `quantity_on_hand` 更新）；admin 的 `cutover.ts` 才是
+    // `FOR UPDATE`。两端锁强度不同，别互相套用结论。
+    const bookQuantityBySkuId = new Map()
+    if (stocktakeSkuIds.length > 0) {
+      const { rows: bookRows } = await client.query(
+        `SELECT sku_id, COALESCE(SUM(quantity_on_hand), 0) AS quantity
+           FROM inventory_stock_lots
+          WHERE location_id = $1 AND sku_id = ANY($2::text[])
+          GROUP BY sku_id`,
+        [actingLocationId, stocktakeSkuIds],
+      )
+      // 账面数刻意**不扣预留**（#131 Q0）：盘点比的是账面与货架上的实物，预留是承诺、货还在架上。
+      for (const row of bookRows) bookQuantityBySkuId.set(row.sku_id, Number(row.quantity))
+    }
+
     for (const item of orderedItems) {
       const qty = assertQty(item.quantity)
       let lot = null
@@ -1462,6 +1639,11 @@ async function createDoc(ctx) {
         if (!item.skuId) throw new Error('INVALID_PARAMS: 明细缺少库存 SKU')
         snapshot = await inventorySkuSnapshot(client, item.skuId)
       }
+      // 盘点单没有批次选择器，lot 恒为 null —— 账面数只能来自上面的汇总。
+      // 一个批次都没有时 GROUP BY 不出行，落 0（不是 NULL）：账上就是 0，实盘有货即盘盈。
+      const bookQuantity = STOCKTAKE_DOC_TYPES.has(docType)
+        ? bookQuantityBySkuId.get(String(item.skuId || '').trim()) ?? 0
+        : null
       const standardUnitPrice = lot?.storeStandardUnitPrice ?? null
       const unitDiscount = lot?.storeUnitDiscount ?? null
       const actualUnitPrice = lot?.storeActualUnitPrice ?? null
@@ -1490,7 +1672,7 @@ async function createDoc(ctx) {
           lot?.expiryDate || item.expiryDate || null,
           lot?.isGift ?? Boolean(item.isGift),
           qty,
-          lot ? lot.quantityOnHand : null,
+          lot ? lot.quantityOnHand : bookQuantity,
           item.requestQuantity || null,
           item.fulfilledQuantity || null,
           standardUnitPrice,
@@ -1546,7 +1728,7 @@ async function createDoc(ctx) {
   return ctx.result
 }
 
-async function approveStoreReturnForRestock(client, head, ctx, auditRemark) {
+async function approveStoreReturnForRestock(client, head, ctx, auditRemark, actingStore) {
   if (!head.source_org_node_id) throw new Error('INVALID_STATE: 院退货单缺少门店退货主体')
   const targetOrgNodeId = await resolveStoreReturnTargetMarket(
     client,
@@ -1563,7 +1745,17 @@ async function approveStoreReturnForRestock(client, head, ctx, auditRemark) {
       [head.id, targetOrgNodeId],
     )
   }
-  const sourceLocation = await ensureStoreLocation(head.source_org_node_id, client)
+  // #235：与 approveDoc 鉴权用的是同一个主体（出库方门店），由调用方传入复用。
+  // ensureStoreLocation 内部还会跑一次 syncInventoryLocations，重复调用纯属浪费；
+  // 更要紧的是两次独立调用曾可能返回**不同门店**的主体，那会变成「按 A 鉴权、扣 B 的批次」。
+  // 复用同一结果把这个窗口一并关掉。
+  //
+  // ⚠️ 归因订正（#251）：该不确定性**不是**「同一 org_node 挂两个 store」造成的
+  //（`inventory_locations.org_node_id` 早有 UNIQUE，那条路径在 UPSERT 期就 fail-loud），
+  // 而是 `location_id = $1 OR org_node_id = $1` 的两侧可落在两行上 —— 详见
+  // `ensureInventoryLocation` 的函数注释。函数本身已在 #251 补了 ORDER BY + 撞值抛 CONFLICT，
+  // 这里的复用仍然保留：它同时省掉一次 syncInventoryLocations，且语义上就该是同一个主体。
+  const sourceLocation = actingStore
   const targetLocation = await ensureInventoryLocation(targetOrgNodeId, '市场', client)
 
   const itemRes = await client.query(
@@ -1780,14 +1972,36 @@ async function approveDoc(ctx) {
     )
     const head = headRes.rows[0]
     if (!head) throw new Error('NOT_FOUND: 单据不存在')
-    const acting = head.source_org_node_id || head.target_org_node_id
-    const actingStore = await ensureStoreLocation(acting, client)
+    /**
+     * 次序：source 空检查 → ensure → 鉴权 → status → 方向守卫。
+     *
+     * 空检查必须在 `ensureStoreLocation` 之前（传 null 进去会抛误导性的「库存主体不存在」），
+     * 而 ensure 又必须在鉴权之前（`assertApproverStoreScope` 吃的是 location_id）——
+     * 这是 staff 与 admin 的结构性差异：admin 直接拿 org_node_id 鉴权，能把 ensure 排到鉴权之后。
+     *
+     * 方向守卫刻意放在鉴权**之后**：它一度被提到最前面，结果让无权调用者能区分
+     * 「该单不属可审批类型」（INVALID_STATE）与「无权审批该门店」（PERMISSION_DENIED），
+     * 凭空多泄漏 1 bit。现在恢复成与旧行为一致。
+     *
+     * ⚠️ 但**不能**说成「无权者一律先拿 PERMISSION_DENIED」：source 空检查仍在鉴权之前，
+     * 所以「source 为空」这一位对无权者仍可见（codex 谱系指出注释与实现不符）。
+     * 保持现状是权衡后的选择：
+     *   - 去掉空检查 → `ensureStoreLocation(null)` 抛 `NOT_FOUND: 库存主体不存在`，
+     *     同样可区分，只是换了个错误码，白白损失一条可读的诊断信息；
+     *   - 按「先用 target 做一次仅用于信息披露控制的 scope gate」来堵 → 要在这里写出
+     *     「拿 target 鉴权」的代码路径，而那正是本 issue 要消灭的东西，后来者极易误读误用。
+     * 而这一位在**当前所有可达类型上不可达**：`STAFF_VISIBLE ∩ APPROVAL` = {院退货, 院产品报损}，
+     * 前者 source 恒非空、后者同主体，source 为空只可能是数据异常。已补用例钉住
+     * 「source 为空且 target 也无权」时同样不产生任何副作用。
+     */
+    if (!head.source_org_node_id) throw new Error('INVALID_STATE: 待审批单据缺少出库主体')
+    const actingStore = await ensureStoreLocation(head.source_org_node_id, client)
     await assertApproverStoreScope(client, ctx.auth, actingStore.location_id)
     if (head.status !== '待审批') throw new Error('INVALID_STATE: 只有待审批单据可以审批')
-    const direction = approvalMovementDirection(head.doc_type)
-    if (!direction) throw new Error('INVALID_STATE: 该单据类型不需要审批')
+    assertApprovalOutboundDirection(head.doc_type)
+    const direction = '出库'
     if (head.doc_type === '院退货') {
-      await approveStoreReturnForRestock(client, head, ctx, auditRemark)
+      await approveStoreReturnForRestock(client, head, ctx, auditRemark, actingStore)
       return
     }
     const itemRes = await client.query(
@@ -1797,7 +2011,9 @@ async function approveDoc(ctx) {
      ORDER BY id`,
       [id],
     )
-    const sourceLocation = await ensureStoreLocation(head.source_org_node_id, client)
+    // 与上面鉴权用的是同一个主体（出库方），复用结果——ensureStoreLocation 内部还会跑一次
+    // syncInventoryLocations，重复调用纯属浪费。
+    const sourceLocation = actingStore
     for (const item of itemRes.rows) {
       if (!item.lot_id) throw new Error('INVALID_STATE: 审批出库明细缺少库存批次')
       const lot = await lockInventoryLotById(client, Number(item.lot_id), sourceLocation.location_id)
@@ -1845,11 +2061,12 @@ async function rejectDoc(ctx) {
     )
     const doc = headRes.rows[0]
     if (!doc) throw new Error('NOT_FOUND: 单据不存在')
-    const acting = doc.source_org_node_id || doc.target_org_node_id
-    const actingStore = await ensureStoreLocation(acting, client)
+    // 次序同 approveDoc：方向守卫在鉴权之后，避免多泄漏「是否可审批类型」这 1 bit
+    if (!doc.source_org_node_id) throw new Error('INVALID_STATE: 待审批单据缺少出库主体')
+    const actingStore = await ensureStoreLocation(doc.source_org_node_id, client)
     await assertApproverStoreScope(client, ctx.auth, actingStore.location_id)
     if (doc.status !== '待审批') throw new Error('INVALID_STATE: 只有待审批单据可以驳回')
-    if (!approvalMovementDirection(doc.doc_type)) throw new Error('INVALID_STATE: 该单据类型不需要审批')
+    assertApprovalOutboundDirection(doc.doc_type)
     if (doc.doc_type === '院退货') {
       await client.query(
         `UPDATE inventory_stock_reservations

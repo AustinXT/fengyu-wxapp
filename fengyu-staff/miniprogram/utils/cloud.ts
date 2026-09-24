@@ -1,6 +1,6 @@
 // utils/cloud.ts — staffApi 调用封装（含 Mock 拦截 + 自动附加登录层级参数）
 import { mockCallApi } from './mock-api'
-import { getCosBase } from './cloud-env'
+import { getCosBase, getApiFnName, getEnvVersion } from './cloud-env'
 import { APP_VERSION } from './version'
 
 /**
@@ -76,6 +76,13 @@ function withAuthContext(payload: Record<string, any>): Record<string, any> {
   if (next._appVersion === undefined) {
     next._appVersion = APP_VERSION
   }
+  // 小程序版本：order.qrcode 据此决定生成的客户端小程序码指向哪个版本。
+  // 开发版和体验版共用同一个 staffApiDev 实例，环境变量分不开这两者——
+  // develop 码只能开发版打开、trial 码只能体验版打开，必须由调用方自报。
+  if (next._envVersion === undefined) {
+    const envVersion = getEnvVersion()
+    if (envVersion) next._envVersion = envVersion
+  }
   try {
     const app = getApp<IAppOption>()
     const g = app?.globalData
@@ -118,7 +125,7 @@ export async function callStaffApi<T = any>(
   if (mockResult !== null) return mockResult as T
 
   const res = await wx.cloud.callFunction({
-    name: 'staffApi',
+    name: getApiFnName(),
     data: { action, payload: enriched }
   }) as any
   if (res.result?.code !== 0) {

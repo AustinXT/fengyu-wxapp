@@ -2,17 +2,23 @@
 set -e
 
 BRANCH=$1
+START=$2          # 可选 start-point；省略时基于当前 HEAD（与历史行为一致）
 DIR=".tree/$BRANCH"
 REPO_ROOT=$(git rev-parse --show-toplevel)
 
 if [ -z "$BRANCH" ]; then
-  echo "用法: $0 <分支名>"
+  echo "用法: $0 <分支名> [start-point]"
   echo "示例: $0 feat/order-refactor"
+  echo "      $0 fix/issue-70-xxx origin/dev   # 强制基于 origin/dev 建分支"
   exit 1
 fi
 
 # 1. 创建 worktree（新建分支或 checkout 现有分支）
-git worktree add "$DIR" -b "$BRANCH" 2>/dev/null || git worktree add "$DIR" "$BRANCH"
+if [ -n "$START" ]; then
+  git worktree add "$DIR" -b "$BRANCH" "$START" 2>/dev/null || git worktree add "$DIR" "$BRANCH"
+else
+  git worktree add "$DIR" -b "$BRANCH" 2>/dev/null || git worktree add "$DIR" "$BRANCH"
+fi
 
 WT_ABS="$REPO_ROOT/$DIR"
 
@@ -28,6 +34,12 @@ for f in fengyu-client/miniprogram/project.private.config.json \
     cp -n "$f" "$DIR/$f" 2>/dev/null || true
   fi
 done
+
+# 3.5 复制本机 AI 协作配置（已 gitignore，但 issue-dev 双谱系评审闸门依赖它）
+if [ -f ".claude/dev-launch.review.md" ]; then
+  mkdir -p "$DIR/.claude"
+  cp -n ".claude/dev-launch.review.md" "$DIR/.claude/dev-launch.review.md" 2>/dev/null || true
+fi
 
 # 4. 复制 miniprogram_npm（小程序 devtools 不识别 symlink，必须实体目录）
 for d in fengyu-client/miniprogram/miniprogram_npm \
@@ -76,6 +88,7 @@ echo "✓ Worktree 已创建: $DIR"
 echo ""
 echo "已复制/链接："
 echo "  .env × 4、project.private.config.json × 2、miniprogram_npm × 2"
+echo "  .claude/dev-launch.review.md（双谱系评审配置）"
 echo "  node_modules: fengyu-admin, db  (软链到主仓)"
 echo "  admin PORT=3010 已写入 .env.local"
 echo ""

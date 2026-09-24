@@ -15,7 +15,8 @@
  * ★ 口径红线（consistency.sales.test.ts 字面量守护，禁止偏离）：
  *   - 组织层级业绩 = SUM(sale_order_performance_events.amount) ∩ status='已支付'
  *     ∩ change_type IN ('首次支付','回款','退款') ∩ sale_order_type IN ('销售单','转换单','充值单')
- *     ∩ performance_date；首次按订单归属日，后续流水按真实发生日
+ *     ∩ performance_date（**一律直读款项归属日期，无回退分支**；#137 收敛 / 迁移 0041。
+ *     原「首次按订单归属日、后续流水按真实发生日」表述已失效）
  *   - 生美 = sale_item_performance_events 行级 SUM(amount) WHERE is_shengmei=TRUE
  *   - 实耗 = SUM(unit_real_price * session_used) ∩ service_orders.status='已完成' ∩ service_date；
  *     生美实耗加 is_shengmei=TRUE
@@ -37,6 +38,11 @@ import type { BoardParams, BreakdownRow, KpiCell, SalesBoardResult } from '@/lib
 import { prepareBoardContext } from '@/lib/data-center/context'
 import { scopeFilterSql, scopeStoreSkeletonSql } from '@/lib/data-center/scope-sql'
 import { excludeDepositRefundSql } from '@/lib/data-center/consume-filter'
+import {
+  technicianCountSql,
+  technicianByStoreSql,
+  technicianDirectByMarketSql,
+} from '@/lib/data-center/technician-sql'
 import { withComparison } from '@/lib/data-center/comparison'
 import type { ResolvedRange } from '@/lib/data-center/types'
 
@@ -63,7 +69,7 @@ export const getSalesBoard = withPermission(
 
     // ── 区间标量 runner（KPI 用，按区间复算以支持同比/环比）────────────────
 
-    /** 业绩：付款流水净现金流，首次按订单归属日，后续回款/退款按真实发生日。 */
+    /** 业绩：付款流水净现金流，一律按款项业绩归属日期（#137 收敛 / 迁移 0041）。 */
     const runStoreRevenue = async (range: ResolvedRange) =>
       scalar(
         await db.execute(sql`
@@ -189,21 +195,14 @@ export const getSalesBoard = withPermission(
     }
 
     /**
-     * 员工数（历史化，产能技师）：skills && ARRAY['美容师','养生师']
-     *   ∩ hired_at <= 区间末 ∩ (resigned_at IS NULL OR resigned_at > 区间末)。
+     * 员工数（历史化，产能技师）。
+     *
+     * ⚠️ 口径单源在 `@/lib/data-center/technician-sql`，**人效板 `efficiency.ts` 共用同一份**。
+     * 别在这里内联重写成「只按 `s.store_id` 过滤」：那会漏掉直挂市场/部门的产能技师
+     * （2026-09 实测 164 vs 150），且会让本板与人效板的同名指标差 14 人（#285 闸门 2 判 P0）。
      */
     const runEmployeeCount = async (range: ResolvedRange) =>
-      scalar(
-        await db.execute(sql`
-          SELECT COUNT(*)::int AS v
-          FROM staff_wechat_users s
-          WHERE ${scopeFilterSql(session, scope, 's.store_id')}
-            AND s.skills && ARRAY['美容师','养生师']::text[]
-            AND s.hired_at IS NOT NULL
-            AND s.hired_at::date <= ${range.end}
-            AND (s.resigned_at IS NULL OR s.resigned_at::date > ${range.end})
-        `),
-      )
+      scalar(await db.execute(technicianCountSql(session, scope, range.end)))
 
     // ── KPI 卡片（同比/环比走 withComparison）────────────────────────────────
     const [
@@ -278,6 +277,7 @@ export const getSalesBoard = withPermission(
     const [
       skelRows,
       techRows,
+      techDirectByMarketRows,
       revRows,
       shengmeiRevRows,
       newRevRows,
@@ -286,17 +286,10 @@ export const getSalesBoard = withPermission(
       shengmeiConsRows,
     ] = await Promise.all([
       db.execute(skeleton),
-      // 技师人数（产能技师，截至区间末历史化），按 store_id 分组
-      db.execute(sql`
-        SELECT s.store_id, COUNT(*)::int AS v
-        FROM staff_wechat_users s
-        WHERE ${scopeFilterSql(session, scope, 's.store_id')}
-          AND s.skills && ARRAY['美容师','养生师']::text[]
-          AND s.hired_at IS NOT NULL
-          AND s.hired_at::date <= ${cur.end}
-          AND (s.resigned_at IS NULL OR s.resigned_at::date > ${cur.end})
-        GROUP BY s.store_id
-      `),
+      // 技师人数 by store（有门店归属的部分）—— 与 KPI 同一份 technician-sql 单源
+      db.execute(technicianByStoreSql(session, scope, cur.end)),
+      // 技师人数 by market（直挂市场/部门、无门店归属的部分），详见 technician-sql 注释
+      db.execute(technicianDirectByMarketSql(session, scope, cur.end)),
       // 业绩（付款流水现金流）
       db.execute(sql`
         SELECT spe.store_id, COALESCE(SUM(spe.amount::numeric), 0) AS v
@@ -445,12 +438,12 @@ export const getSalesBoard = withPermission(
       shengmeiConsume: number
     }
     const marketMap = new Map<string, MarketAgg>()
-    for (const s of storeAggs) {
-      let m = marketMap.get(s.marketId)
+    const marketRowOf = (marketId: string, marketName: string): MarketAgg => {
+      let m = marketMap.get(marketId)
       if (!m) {
         m = {
-          marketId: s.marketId,
-          marketName: s.marketName,
+          marketId,
+          marketName,
           storeCount: 0,
           technicianCount: 0,
           storeRevenue: 0,
@@ -460,8 +453,13 @@ export const getSalesBoard = withPermission(
           storeConsume: 0,
           shengmeiConsume: 0,
         }
-        marketMap.set(s.marketId, m)
+        marketMap.set(marketId, m)
       }
+      return m
+    }
+
+    for (const s of storeAggs) {
+      const m = marketRowOf(s.marketId, s.marketName)
       m.storeCount += 1
       m.technicianCount += s.technicianCount ?? 0
       m.storeRevenue += s.storeRevenue ?? 0
@@ -470,6 +468,20 @@ export const getSalesBoard = withPermission(
       m.trafficCustomerRevenue += s.trafficCustomerRevenue ?? 0
       m.storeConsume += s.storeConsume ?? 0
       m.shengmeiConsume += s.shengmeiConsume ?? 0
+    }
+
+    /**
+     * 并入**直挂市场/部门**的产能技师（#285）。
+     *
+     * 上面的循环逐门店累加，`store_id IS NULL` 的技师没有任何门店可挂，只走那个循环会被
+     * 二次丢失。⚠️ 必须在循环**外**按市场加一次：放进循环会按该市场的门店数重复累加。
+     * ⚠️ 用 `marketRowOf` 建行：「品项公司」这类市场底下一个门店都没有，
+     * 压根不出现在门店骨架里，只能在这里补出行。
+     */
+    for (const r of techDirectByMarketRows as Array<Record<string, unknown>>) {
+      if (r.market_id == null) continue
+      const m = marketRowOf(String(r.market_id), String(r.market_name ?? ''))
+      m.technicianCount += Number(r.v ?? 0)
     }
 
     const byMarket: BreakdownRow[] = Array.from(marketMap.values()).map((m) => ({

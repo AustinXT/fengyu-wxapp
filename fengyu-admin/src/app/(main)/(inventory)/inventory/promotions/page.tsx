@@ -14,6 +14,7 @@ export default async function Page() {
   const session = await getSession()
   requireAllUiPageCapabilities(session, ['inventory:stock_list'])
   const [plans, locations, skus] = await Promise.all([
+    // 全量取回：本页的筛选在客户端做，分页必须发生在筛选之后（见 engine 注释）
     listInventoryPromotionPlans(),
     listInventoryLocations(),
     listInventorySkus({ page: 1, pageSize: 100, onlyActive: true }),

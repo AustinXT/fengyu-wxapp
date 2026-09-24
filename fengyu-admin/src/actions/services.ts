@@ -34,6 +34,8 @@ import {
 import { storeInMarketCondition } from '@/lib/market-store-sql'
 import { nowTs } from '@/lib/db-time'
 import { getInvalidEmployeeAssignmentId } from '@/lib/employee-assignment-server'
+import { SERVICE_ORDER_ASSIGNABLE_SKILLS } from '@/lib/employee-anchor-market-sql'
+import { resolvePaging } from '@/lib/paging'
 
 function serializeServiceOrder(r: {
   service_order: typeof serviceOrders.$inferSelect
@@ -160,9 +162,12 @@ export interface PaginatedServiceOrders {
 export const getServiceOrdersPaginated = withPermission(
   'service:list',
   async (session, filters: ServiceOrderFilters = {}): Promise<PaginatedServiceOrders> => {
-  const page = Math.max(1, filters.page || 1)
-  const pageSize = [10, 20, 50].includes(filters.pageSize ?? 0) ? filters.pageSize! : 20
-  const offset = (page - 1) * pageSize
+  const { page, pageSize, offset } = resolvePaging({
+    page: filters.page,
+    pageSize: filters.pageSize,
+    defaultPageSize: 20,
+    allowedPageSizes: [10, 20, 50],
+  })
 
   // 构建 WHERE 条件（DB 级过滤，与导出共用同一构建器）
   const whereClause = and(...buildServiceOrderConditions(session, filters))
@@ -189,7 +194,7 @@ export const getServiceOrdersPaginated = withPermission(
     .leftJoin(clientWechatUsers, eq(serviceOrders.clientUserId, clientWechatUsers.userId))
     .where(whereClause)
     // 默认排序：最近开始/完成/修改的服务单浮顶（admin.sys.spec.md §5）
-    .orderBy(desc(serviceOrders.updatedAt), desc(serviceOrders.createdAt))
+    .orderBy(desc(serviceOrders.updatedAt), desc(serviceOrders.createdAt), desc(serviceOrders.serviceOrderId))
     .limit(pageSize)
     .offset(offset)
 
@@ -1665,12 +1670,20 @@ export const createServiceOrder = withPermission(
   if (!isInScope(session, data.storeId)) {
     return { success: false, message: '无权在该门店创建服务单' }
   }
+  // 服务单可指派「本店员工 ∪ 本门店所属市场内开启出差支援的员工」，技能扩至四项（issue #210）；
+  // 与 getServiceStaffCandidates 的候选口径同源，否则前端选得到、提交被拦。
   if (await getInvalidEmployeeAssignmentId(
     [data.assignedEmployeeId],
     data.storeId,
-    { requireServiceSkills: true },
+    {
+      requireServiceSkills: true,
+      skills: SERVICE_ORDER_ASSIGNABLE_SKILLS,
+      assignmentScope: 'marketSupport',
+    },
   )) {
-    return { success: false, message: '所选美容师不属于本门店' }
+    // 两种拒因（归属不符 / 技能不在四项白名单）查询无法区分，文案同时覆盖，
+    // 与 staffApi utils/employee-assignment.js 的 SCOPE_ERROR_MESSAGE.marketSupport 同义
+    return { success: false, message: '所选服务人员不可指派：须是本店人员或本门店所属市场内的出差支援人员，且具备服务技能标签' }
   }
 
   // 根据顾客成为会员客的时间戳判定服务单类型：

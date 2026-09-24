@@ -3,13 +3,16 @@
  *
  * 入口：mgmt-dashboard 首页"顾客档案"卡片（entry === 'customers'）
  *
- * 6 个 action：
- *   mgmtCustomer.search        — 默认列表 / 关键字 / 手机号（scope=bound_store_id；50/页分页）
- *   mgmtCustomer.detail        — 顾客档案详情（含越权防护：bound_store_id ∈ scope）
- *   mgmtCustomer.calendar      — 月度消费日历（scope=sale_orders.store_id）
- *   mgmtCustomer.paidOrders    — 已支付订单含明细（scope=sale_orders.store_id）
- *   mgmtCustomer.giftHistory   — 赠送记录（scope=sale_orders.store_id）
- *   mgmtCustomer.refundHistory — 退换记录(scope=sale_orders.store_id)
+ * 9 个 action：
+ *   mgmtCustomer.search         — 默认列表 / 关键字 / 手机号（scope=bound_store_id；50/页分页）
+ *   mgmtCustomer.detail         — 顾客档案详情（含越权防护：bound_store_id ∈ scope）
+ *   mgmtCustomer.calendar       — 月度消费日历（scope=sale_orders.store_id）
+ *   mgmtCustomer.paidOrders     — 已支付订单含明细（scope=sale_orders.store_id）
+ *   mgmtCustomer.orderHistory   — 消费记录（全状态，仅展示不参与核销）
+ *   mgmtCustomer.serviceHistory — 服务记录
+ *   mgmtCustomer.giftHistory    — 赠送记录（scope=sale_orders.store_id）
+ *   mgmtCustomer.refundHistory  — 退换记录(scope=sale_orders.store_id)
+ *   mgmtCustomer.homeProducts   — 家居产品资产（跟顾客走，跨店全量；与 customer.homeProducts 同口径）
  *
  * 决策点：
  *   D-mgmt-phone-mask     — 拥有数据中心权限的管理层手机号不脱敏
@@ -25,6 +28,8 @@ const { validateManagementScope, buildManagementStoreScope } = require('../utils
 const { maskPhone } = require('../utils/pii')
 const { excludeDepositRefundSql } = require('../utils/consume-filter')
 const { shanghaiDateStr } = require('../utils/datetime')
+const { assertPaymentAttributionReady } = require('../utils/attribution-guard')
+const { safePaging } = require('../utils/paging')
 
 // ====================================================================
 // 共享 helper（buildSaleScope/buildClientScope 为与 mgmt-product.js 一致的本地副本；
@@ -144,6 +149,10 @@ async function getConsumptionStatsScoped(clientUserId, scopeType, scopeId) {
       yearActualConsumption: 0,
     }
   }
+  // 年度消费直读款项归属日期：未迁库时首次支付行 100% 为 NULL，三值逻辑会把正数主体
+  // 全部吞掉、只剩退款负数（dev 实测年度消费变 −425801.66）。宁可报错也不给运营看负数。
+  // ⚠ 放在空值短路**之后**：无 clientUserId 时本就零查询直接返回 0，不该为此打探针。
+  await assertPaymentAttributionReady(pg)
   const yearStart = `${shanghaiDateStr().slice(0, 4)}-01-01`
   // $1=clientUserId, $2=yearStart。交易数据跟顾客走：消费统计不按门店过滤
   const rows = await pg.query(
@@ -170,8 +179,8 @@ async function getConsumptionStatsScoped(clientUserId, scopeType, scopeId) {
          AND o.sale_order_type IN ('销售单', '转换单')
          AND o.client_user_id = $1
          AND o.legacy_source IS DISTINCT FROM 'workfine'
-         AND sop.paid_at >= ($2::date::timestamp AT TIME ZONE 'Asia/Shanghai')
-         AND sop.paid_at < (($2::date + INTERVAL '1 year') AT TIME ZONE 'Asia/Shanghai')
+         AND sop.performance_attribution_date >= $2::date
+         AND sop.performance_attribution_date < ($2::date + INTERVAL '1 year')
      ), legacy_year_stats AS (
        SELECT
        COALESCE(SUM(
@@ -186,8 +195,8 @@ async function getConsumptionStatsScoped(clientUserId, scopeType, scopeId) {
          AND o.sale_order_type IN ('销售单', '转换单')
          AND o.client_user_id = $1
          AND o.legacy_source = 'workfine'
-         AND o.paid_at >= ($2::date::timestamp AT TIME ZONE 'Asia/Shanghai')
-         AND o.paid_at < (($2::date + INTERVAL '1 year') AT TIME ZONE 'Asia/Shanghai')
+         AND o.performance_attribution_date >= $2::date
+         AND o.performance_attribution_date < ($2::date + INTERVAL '1 year')
      ), actual_stats AS (
        SELECT
          COALESCE(SUM(sit.unit_real_price::numeric * sit.session_used), 0) AS total_actual_consumption,
@@ -279,9 +288,8 @@ async function search(ctx) {
 
   const fullPhone = isMgmtFullPhone(ctx.auth)
 
-  const safePage = Math.max(1, Number(page) || 1)
-  const safePageSize = Math.min(100, Math.max(1, Number(pageSize) || 50))
-  const offset = (safePage - 1) * safePageSize
+  // invariant D-search-pagination：取整 + 安全整数两道防线见 utils/paging.js 函数头（#240）
+  const { safePage, safePageSize, offset } = safePaging(page, pageSize, 50)
 
   let rows = []
 
@@ -348,9 +356,22 @@ async function search(ctx) {
   const allClientUserIds = customers.map((c) => c.clientUserId).filter(Boolean)
 
   if (allClientUserIds.length > 0) {
-    const yearStart = `${new Date().getFullYear()}-01-01`
+    // ⚠ 与详情（getConsumptionStatsScoped）用同一算法取年份：
+    // `new Date().getFullYear()` 依赖进程时区，容器 TZ 丢失时上海 1/1 08:00 前会取到上一年，
+    // 与详情的 shanghaiDateStr() 分叉。
+    const yearStart = `${shanghaiDateStr().slice(0, 4)}-01-01`
 
-    // 年消费（scope 过滤）
+    // 年消费（scope 过滤）—— 只用于下面的 tier 徽章分档，列表不直接展示该金额
+    // 订单级归属日期由 0009 起全量回填、实测 NULL 率 0（legacy 16248 单亦然），
+    // 本不受未迁库影响；但与详情同页展示，口径未就绪时一起挡住更一致（#141）
+    await assertPaymentAttributionReady(pg)
+    // 日期口径：订单级业绩归属日期（#141），与详情的落年口径一致。
+    // ⚠ 必须是**半开区间** [yearStart, yearStart+1year)：
+    // 改前按 paid_at 时无上界是无害的（实付日不可能落到未来），但归属日期可被人工
+    // 调整到订单日 ±7 天（见 order.js 的 min/max_performance_date 校验），
+    // 跨年那 7 天的订单会被计进今年 —— 而详情用半开区间会把它排除，两处再次分叉。
+    // 金额公式与详情不同是**有意的**：详情 SUM(sop.amount) 是款项级实收，
+    // 这里 SUM(o.total_amount) 是订单级应付总额，只服务于徽章分档。
     const sc1 = buildSaleScope(scopeType, scopeId, 'o', 3)
     const spendRows = await pg.query(
       `SELECT o.client_user_id,
@@ -358,7 +379,8 @@ async function search(ctx) {
          FROM sale_orders o
         WHERE o.client_user_id = ANY($1)
           AND o.status = '已支付'
-          AND o.paid_at >= $2::date
+          AND o.performance_attribution_date >= $2::date
+          AND o.performance_attribution_date < ($2::date + INTERVAL '1 year')
           AND ${sc1.sql}
         GROUP BY o.client_user_id`,
       [allClientUserIds, yearStart, ...sc1.params],
@@ -694,6 +716,23 @@ async function paidOrders(ctx) {
        si.session_count, si.remaining_sessions, si.paid_sessions,
        si.sku_id, si.product_type, si.product_name,
        si.unit_real_price,
+       -- 行级欠款：仅「订单确实未付清」且「该卡未买满次数」时才算。
+       -- 订单已付清但行 received 不足的是行级分摊缺口（已知数据问题），不是顾客欠款；
+       -- 寄存单 total_amount<=0 → paid_sessions=session_count，天然不进此分支（其 sale_amount 只是原价快照）。
+       CASE
+         WHEN o.status = '部分支付'
+          AND si.paid_sessions IS NOT NULL
+          AND si.paid_sessions < si.session_count
+          AND NOT EXISTS (
+            SELECT 1 FROM sale_order_payments sop
+            WHERE sop.sale_order_id = si.sale_order_id
+              AND sop.change_type = '退款' AND sop.status = '已支付'
+          )
+          -- 1 元阈值：瀑布分摊的 ROUND 尾差会造出 ¥0.01 的假欠款，不值得推给顾客
+          AND (si.sale_amount::numeric - si.received::numeric) >= 1
+         THEN GREATEST(0, si.sale_amount::numeric - si.received::numeric)::numeric(12, 2)
+         ELSE NULL
+       END AS unpaid_amount,
        COALESCE(ps.unit, CASE WHEN si.product_type = '家居产品' THEN '盒' ELSE '次' END) AS unit,
        ps.category_id,
        pc.category_name, pc.product_kind,
@@ -709,8 +748,21 @@ async function paidOrders(ctx) {
          si.item_direction = '购买'
          OR (o.sale_order_type = '转换单' AND si.item_direction = '转入')
        )
+       -- issue #122：改按物理剩余次数下发，与门店视图 customer.paidOrders 同口径。
+       -- 部分支付导致 paid_sessions=0 的卡以前被整行剔除，管理层同样看不到这张卡。
        AND (
          si.paid_sessions IS NULL
+         OR si.remaining_sessions > 0
+       )
+       -- ⚠ 退款不减 remaining_sessions（Model X）：paid_sessions 是"已退卡从卡包消失"的唯一机制，
+       -- 放宽展示门槛必须补回这条守卫，否则已退款的卡会重新出现。
+       AND (
+         NOT EXISTS (
+           SELECT 1 FROM sale_order_payments sop
+           WHERE sop.sale_order_id = si.sale_order_id
+             AND sop.change_type = '退款' AND sop.status = '已支付'
+         )
+         OR si.paid_sessions IS NULL
          OR si.paid_sessions > (si.session_count - si.remaining_sessions)
        )
      ORDER BY si.sale_item_id`,
@@ -732,6 +784,8 @@ async function paidOrders(ctx) {
       productType: item.product_type || '',
       unit: item.unit || (item.product_type === '家居产品' ? '盒' : '次'),
       unitRealPrice: item.unit_real_price != null ? Number(item.unit_real_price).toFixed(2) : '',
+      // 仅订单未付清且该卡未买满次数时有值；已付清/寄存单/NULL 卡一律 null
+      unpaidAmount: item.unpaid_amount != null ? Number(item.unpaid_amount) : null,
       categoryId: item.category_id || '',
       categoryName: item.category_name || '',
       category: item.category_name || '',
@@ -1144,6 +1198,201 @@ async function refundHistory(ctx) {
   }
 }
 
+// ====================================================================
+// homeProducts — 顾客已购家居产品资产（管理层视图）
+//
+// 与 customer.homeProducts 的关系：SQL 主体字节同义（跨端 snapshot 守护），
+// 差异仅在入口鉴权 —— 门店版走 assertCustomerProfileVisible（顾客分配关系），
+// 本版走 requireManagementLevel + resolveCustomerInScope（bound_store_id ∈ scope）。
+// 交易数据跟顾客走：解析出顾客后不再按订单门店过滤，跨店家居资产全量展示。
+// ====================================================================
+
+function mapHomeProductRow(row) {
+  const pickedQuantity = Number(row.picked_quantity || 0)
+  const refundedQuantity = Number(row.refunded_quantity || 0)
+  const convertedQuantity = Number(row.converted_quantity || 0)
+  const remainingQuantity = Number(row.remaining_quantity || 0)
+  const paidQuantity = Number(row.paid_quantity || 0)
+  const pendingPickupQuantity = Number(row.pending_pickup_quantity || 0)
+  // 待付清行的欠款金额：received 是行级净实收（已扣该行退款），故对退过款的行
+  // sale_amount - received 会把"退掉的钱"误算成欠款；寄存单行 SQL 已置 NULL。
+  const unpaidAmount =
+    refundedQuantity > 0 || row.unpaid_amount == null ? null : Number(row.unpaid_amount)
+  let status
+  if (row.refund_pending) status = '退款处理中'
+  else if (pendingPickupQuantity > 0) status = pickedQuantity > 0 ? '部分提货' : '待提货'
+  // 「待付清」必须与欠款金额绑定：只有真的算得出欠款才这么标。
+  // 否则寄存单（金额列留空）和退款后仍有剩余的行会被误标成待付清/已完成。
+  else if (unpaidAmount > 0) status = '待付清'
+  // 还有未交付份额但算不出欠款（寄存单、退款后剩余）——是待提，不是已完成。
+  else if (remainingQuantity > 0) status = '待提货'
+  // #125：整行折抵后 settled=purchased，于是 pending=0、remaining=0、refunded=0，
+  // 不看 convertedQuantity 会把「已转走」误判成「已提货」。
+  else status = (refundedQuantity > 0 || convertedQuantity > 0) ? '已完成' : '已提货'
+
+  return {
+    saleItemId: row.sale_item_id,
+    saleItemGroupId: row.sale_item_group_id || null,
+    saleOrderId: row.sale_order_id,
+    productName: row.product_name || '家居产品',
+    unit: row.unit || '盒',
+    purchasedQuantity: Number(row.purchased_quantity || 0),
+    paidQuantity,
+    pickedQuantity,
+    refundedQuantity,
+    convertedQuantity,
+    remainingQuantity,
+    pendingPickupQuantity,
+    unpaidAmount,
+    status,
+    storeId: row.store_id,
+    storeName: row.store_name || null,
+    purchasedAt: row.purchased_at,
+  }
+}
+
+async function homeProducts(ctx) {
+  await requireManagementLevel()(ctx, async () => {})
+
+  const { clientUserId, clientPhone, scopeType, scopeId } = ctx.event.payload || {}
+  if (!clientUserId && !clientPhone) {
+    throw new Error('INVALID_PARAMS: 缺少 clientUserId 或 clientPhone')
+  }
+  validateScopeParams(scopeType, scopeId)
+  validateManagementScope(ctx.auth, scopeType, scopeId)
+
+  const resolvedUserId = await resolveCustomerInScope(clientUserId, clientPhone, scopeType, scopeId)
+
+  const rows = await pg.query(
+    `WITH conversion_totals AS (
+       -- #154 拆列后件数直读 sale_items.converted_quantity，这里只剩**金额**：折抵额度按金额结算，
+       -- 不能由「已转换件数 × 单价」推算（折 4 件可能带走 ¥450 而非 ¥400）。
+       -- 只有「已关闭」完成过 rollback（数量已退回），故只排除它；
+       -- 其余状态（含"支付失败"）扣减仍然生效，必须计入已转换。删除订单的转出行已随主单消失。
+       SELECT out_item.ref_sale_item_id AS sale_item_id,
+              SUM(GREATEST(0, -out_item.received::numeric)) AS converted_amount
+         FROM sale_items out_item
+         JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id
+        WHERE out_item.item_direction = '转出'
+          AND out_item.product_type = '家居产品'
+          AND out_item.ref_sale_item_id IS NOT NULL
+          AND conv_order.status <> '已关闭'
+        GROUP BY out_item.ref_sale_item_id
+     ), home_product_rows AS (
+       SELECT COALESCE(si.sale_item_group_id, si.sale_item_id) AS sale_item_group_id,
+              si.sale_item_id,
+              si.sale_order_id,
+              COALESCE(si.product_name, '家居产品') AS product_name,
+              COALESCE(ps.unit, '盒') AS unit,
+              si.quantity::int AS purchased_quantity,
+              -- #154：三语义各有独立列，「已结算」回归派生量 = 已提货 + 已退款 + 已转换。
+              LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0) + COALESCE(si.refunded_quantity, 0) + COALESCE(si.converted_quantity, 0)))::int AS settled_quantity,
+              LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0)))::int AS picked_quantity,
+              LEAST(si.quantity, GREATEST(0, COALESCE(si.refunded_quantity, 0)))::int AS refunded_quantity,
+              LEAST(si.quantity, GREATEST(0, COALESCE(si.converted_quantity, 0)))::int AS converted_quantity,
+              -- #145/#153：行级可提件数 = min(物理未结算, floor(剩余已付 / 单价))，与折抵额度同一口径。
+              -- 剩余已付 = 行实收 − 已提货金额 − 已转走金额；退款不在此处扣（received 已扣过）。
+              -- 必须按金额算而非「已付件数 − 已提 − 已折抵件数」：折抵金额含余数时两者不等，
+              -- 折 4 件带走 ¥450 后再回款 ¥50，按件数会多放出 1 件（累计兑现超实收）。
+              CASE
+                WHEN o.sale_order_type = '寄存单' OR si.sale_amount <= 0
+                  THEN GREATEST(0, si.quantity - LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0) + COALESCE(si.refunded_quantity, 0) + COALESCE(si.converted_quantity, 0))))
+                ELSE LEAST(
+                  GREATEST(0, si.quantity - LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0) + COALESCE(si.refunded_quantity, 0) + COALESCE(si.converted_quantity, 0)))),
+                  GREATEST(0, FLOOR((GREATEST(0, si.received::numeric)
+                    - GREATEST(0, COALESCE(si.picked_up_quantity, 0)) * si.unit_real_price::numeric
+                    - COALESCE(ct.converted_amount, 0)) / NULLIF(si.unit_real_price::numeric, 0)))::int
+                )
+              END AS row_pending_pickup,
+              CASE
+                -- 寄存单：货本就属于顾客，全额可提（sale_amount 只是原价快照，received 不代表欠款）。
+                -- 判据与 #120 展示侧 is_deposit 同源；刻意不用疗程卡那条 total_amount<=0——后者会连带覆盖
+                -- 转换单/零总额单，且 total_amount 无 CHECK 约束，负值会静默放行。
+                WHEN o.sale_order_type = '寄存单' THEN si.quantity
+                WHEN si.sale_amount <= 0 THEN si.quantity
+                ELSE LEAST(
+                  si.quantity,
+                  FLOOR(GREATEST(0, si.received::numeric) * si.quantity / NULLIF(si.sale_amount::numeric, 0))::int
+                )
+              END AS paid_quantity,
+              si.sale_amount::numeric AS row_sale_amount,
+              GREATEST(0, si.received::numeric) AS row_received,
+              (o.sale_order_type = '寄存单') AS is_deposit,
+              o.store_id,
+              s.store_name,
+              COALESCE(o.paid_at, o.sale_order_datetime, o.created_at) AS purchased_at,
+              EXISTS (
+                SELECT 1 FROM sale_order_payments sop
+                 WHERE sop.sale_order_id = o.sale_order_id
+                   AND sop.change_type = '退款'
+                   AND sop.status = '待审批'
+              ) AS refund_pending
+         FROM sale_items si
+         JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
+         LEFT JOIN stores s ON s.store_id = o.store_id
+         LEFT JOIN product_skus ps ON ps.sku_id = si.sku_id
+         LEFT JOIN conversion_totals ct ON ct.sale_item_id = si.sale_item_id
+        WHERE o.client_user_id = $1
+          AND o.status IN ('已支付', '部分支付', '已完成')
+          -- #145/#153：转换单换入的家居与购买行同权（与疗程卡侧放行写法同源）。
+          -- sale_amount>0 的转入行，received 已由 paid-sessions STEP 1.6 重建为「转出旧卡
+          -- 价值 + 本单净到账」，FLOOR(received × qty / sale_amount) 天然成立；sale_amount<=0
+          -- 的转入行走上方赠品分支全额可提（STEP 1.6 带 sale_amount>0 过滤，刻意不碰 0 元行，
+          -- 与购买侧 0 元赠品行同口径）。两类都不需要为「转入」另加满付分支。
+          AND (
+            si.item_direction = '购买'
+            OR (o.sale_order_type = '转换单' AND si.item_direction = '转入')
+          )
+          AND si.product_type = '家居产品'
+     ), home_products AS (
+       SELECT sale_item_group_id,
+              MIN(si.sale_item_id) AS sale_item_id,
+              MIN(si.sale_order_id) AS sale_order_id,
+              MIN(COALESCE(si.product_name, '家居产品')) AS product_name,
+              MIN(si.unit) AS unit,
+              SUM(si.purchased_quantity)::int AS purchased_quantity,
+              SUM(si.settled_quantity)::int AS settled_quantity,
+              SUM(si.picked_quantity)::int AS picked_quantity,
+              SUM(si.refunded_quantity)::int AS refunded_quantity,
+              SUM(si.converted_quantity)::int AS converted_quantity,
+              SUM(si.row_pending_pickup)::int AS pending_pickup_quantity,
+              SUM(si.paid_quantity)::int AS paid_quantity,
+              SUM(si.row_sale_amount) AS sale_amount_total,
+              SUM(si.row_received) AS received_total,
+              BOOL_OR(si.is_deposit) AS is_deposit,
+              MIN(si.store_id) AS store_id,
+              MIN(si.store_name) AS store_name,
+              MAX(si.purchased_at) AS purchased_at,
+              BOOL_OR(si.refund_pending) AS refund_pending
+         FROM home_product_rows si
+      GROUP BY sale_item_group_id
+     ), home_product_balances AS (
+       SELECT *,
+              -- #154 前「已退款」只能由 settled − 已提货 − 已转换 倒推；拆列后直读独立列。
+              (purchased_quantity - settled_quantity)::int AS remaining_quantity,
+              -- 寄存单的 sale_amount 只是原价快照、received 恒为历史值，两者相减不是欠款
+              -- （寄存的货本就属于顾客）。金额列一律留空，与导出口径一致。
+              CASE WHEN is_deposit THEN NULL
+                   ELSE GREATEST(0, sale_amount_total - received_total)::numeric(12, 2)
+              END AS unpaid_amount
+         FROM home_products
+     )
+     SELECT *
+       FROM home_product_balances
+      WHERE picked_quantity > 0 OR remaining_quantity > 0 OR converted_quantity > 0
+   ORDER BY (pending_pickup_quantity > 0) DESC,
+            purchased_at DESC,
+            sale_item_id`,
+    [resolvedUserId],
+  )
+
+  const scopeName = await resolveScopeName(scopeType, scopeId)
+  ctx.result = {
+    scope: { type: scopeType, id: scopeId || null, name: scopeName },
+    homeProducts: rows.map(mapHomeProductRow),
+  }
+}
+
 module.exports = {
   search,
   detail,
@@ -1153,4 +1402,5 @@ module.exports = {
   serviceHistory,
   giftHistory,
   refundHistory,
+  homeProducts,
 }

@@ -22,13 +22,11 @@ export async function getPerItemRefundedMap(saleOrderId: string): Promise<Map<st
   const res = await db.execute(sql`
     WITH refund_items AS (
       SELECT elem ->> 'refSaleItemId' AS sale_item_id,
-             COALESCE((elem ->> 'refundAmount')::numeric, 0) AS refund_amount
+             COALESCE(public.try_numeric(elem ->> 'refundAmount'), 0) AS refund_amount
       FROM sale_order_payments sop
       CROSS JOIN LATERAL jsonb_array_elements(
-        CASE WHEN sop.note LIKE '{%'
-             THEN CASE WHEN jsonb_typeof((sop.note)::jsonb -> 'items') = 'array'
-                       THEN (sop.note)::jsonb -> 'items'
-                       ELSE '[]'::jsonb END
+        CASE WHEN jsonb_typeof(public.try_jsonb(sop.note) -> 'items') = 'array'
+             THEN public.try_jsonb(sop.note) -> 'items'
              ELSE '[]'::jsonb END
       ) AS elem
       WHERE sop.sale_order_id = ${saleOrderId}

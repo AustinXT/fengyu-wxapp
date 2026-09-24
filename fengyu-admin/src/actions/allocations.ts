@@ -7,6 +7,7 @@ import { clientWechatUsers } from '@db/user'
 import { eq, sql, and, or, inArray, desc, ilike, gte, lt } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import type { SaleAllocation, AuthSession, DateBasis } from '@/lib/types'
+import { createSalesCategoryRates } from '@/lib/sales-categories'
 import { paymentAttributionRangeConditions } from '@/lib/performance-attribution'
 import { isAdminScope, isInScope } from '@/lib/permissions'
 import { withPermission } from '@/lib/with-permission'
@@ -17,6 +18,7 @@ import { refreshOrderAllocationRollup } from '@/lib/payment-allocatable'
 import { nowTs, beijingBoundaryTs, beijingNextDayBoundaryTs } from '@/lib/db-time'
 import { storeInMarketCondition } from '@/lib/market-store-sql'
 import { getInvalidEmployeeAssignmentId } from '@/lib/employee-assignment-server'
+import { resolvePaging } from '@/lib/paging'
 
 /**
  * 销售提成率查找（销售提成固化快照用）。
@@ -53,7 +55,7 @@ async function buildSalesRateLookup(
         department: dept,
         amountMin: r.amount_tier_min != null ? Number(r.amount_tier_min) : -9999.9,
         amountMax: r.amount_tier_max != null ? Number(r.amount_tier_max) : 10000000,
-        orderRates: { 自销自耗: 0, 他销自耗: 0, 他销他耗: 0, 生态合作: 0 },
+        orderRates: createSalesCategoryRates(),
       }
       byKey.set(key, entry)
       grouped.push(entry)
@@ -297,9 +299,15 @@ export const getPendingPayments = withPermission(
   }> => {
     // allocationStatus 缺省（「全部状态」）时不按状态过滤，只限定 allocation_status IS NOT NULL
     // 命中主流水行（走 partial index idx_sop_alloc_status，排除退款/储值卡抵扣从行/待支付等 NULL 行）。
-    const page = Math.max(1, Number(params.page) || 1)
-    const pageSize = Math.min(100, Math.max(1, Number(params.pageSize) || 20))
-    const offset = (page - 1) * pageSize
+    // clamp 型（非白名单）：这一支的 pageSize 允许 1~100 任意整数，不走列表白名单。
+    // 归一必须走 resolvePaging —— 原先的 `Math.min(100, Math.max(1, …))` 对 `?pageSize=2.5`
+    // 两个夹子双双失效（2.5 > 1 且 2.5 < 100），2.5 原样进 `.limit()` → PG int8in 报错。
+    const { page, pageSize, offset } = resolvePaging({
+      page: params.page,
+      pageSize: params.pageSize,
+      defaultPageSize: 20,
+      maxPageSize: 100,
+    })
 
     const scopeIds = session.permissions.scopeStoreIds
     // 缺省口径与 URL 解析（parseDateBasis）保持一致，避免「页面默认归属、直调默认下单」的双口径
@@ -671,6 +679,30 @@ export const savePaymentAllocations = withPermission(
 
     try {
       await db.transaction(async (tx) => {
+        // 锁序 `sale_orders` → `sale_order_payments`（硬约束见 db/CLAUDE.md），必须是事务第一条语句。
+        // 分配链路天然「先改款项行、再刷订单汇总」，与「订单级改期」（先锁订单、再由
+        // 迁移 0040 的 AFTER trigger 回写款项行）方向相反，并发同一订单必 40P01（issue #148，已实测复现）。
+        //
+        // ⚠ 必须是**独立一条**只查 sale_orders 的语句：写成 `FROM sop JOIN so ... FOR UPDATE OF sop, so`
+        // 会按 sop 主键扫描而物理上先锁款项行，恰好把锁序倒回来（该坑在 #137 评审中实测踩过）。
+        //
+        // ⚠ 锁强度是 `FOR NO KEY UPDATE`，**不要"顺手"改成 `FOR UPDATE`**。实测对照（PG 16，2026-09-18）：
+        //   FOR UPDATE        → 挡住 FK 子表 INSERT / 挡住改期 / 挡住 trigger 的 FOR SHARE
+        //   FOR NO KEY UPDATE → **放行** FK 子表 INSERT / 挡住改期 / 挡住 trigger 的 FOR SHARE
+        // 消环只需后两者；FOR UPDATE 会在整个事务期间把该订单所有子表 INSERT 一并挡住
+        // （refunds.ts 的退款创建首条就是 INSERT sale_order_payments），是白付的并发度代价。
+        //
+        // 订单行在事务外已查得存在；`sale_order_payments.sale_order_id` 是 NOT NULL + ON DELETE RESTRICT，
+        // 有款项行时订单删不掉，故恒锁到 1 行。0 行意味着本次调用没拿到订单锁、锁序修复对它失效，必须响亮失败。
+        // staffApi routes/allocation.js 的 lockSaleOrderForAllocation 是同语义副本。
+        // 用 RowList 的 .length 而不是 rowsAffected()：这是读不是写，postgres.js 的
+        // db.execute() 返回的是数组（RowList），行数取 .length 语义最直接。
+        const lockRows = (await tx.execute(sql`
+          SELECT 1 FROM sale_orders WHERE sale_order_id = ${pay.sale_order_id} FOR NO KEY UPDATE
+        `)) as unknown as unknown[]
+        if (lockRows.length !== 1) {
+          throw new Error('ORDER_ROW_GONE')
+        }
         await tx.execute(sql`
           UPDATE sale_payment_item_allocations
              SET is_void = true, voided_at = NOW(), updated_at = NOW()
@@ -708,8 +740,17 @@ export const savePaymentAllocations = withPermission(
       if (err?.message === 'PAYMENT_NOT_FOUND') {
         return { success: false, message: '回款状态已变更，请刷新后重试' }
       }
+      // 锁订单时 0 行：订单已不存在（正常情况下被 FK RESTRICT 挡住，能走到这里说明状态已变）
+      if (err?.message === 'ORDER_ROW_GONE') {
+        return { success: false, message: '该订单已不存在，请刷新后重试' }
+      }
       if (pgErrorCode(err) === '23503') {
         return { success: false, message: '员工信息不存在，请检查后重试' }
+      }
+      // 40P01 = deadlock_detected。上面的订单行锁已消掉「分配 × 改期」这个环，这里是兜底：
+      // 仍可能有未覆盖的交错路径，届时应提示可重试，而不是掉进通用 500（生产还会被脱敏成 digest）。
+      if (pgErrorCode(err) === '40P01') {
+        return { success: false, message: '该订单正被其他操作修改，请稍后重试' }
       }
       throw err
     }

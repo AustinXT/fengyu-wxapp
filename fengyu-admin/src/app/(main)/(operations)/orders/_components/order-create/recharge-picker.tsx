@@ -3,6 +3,7 @@
 import { useMemo } from "react"
 import { Card, CardContent } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
+import { actionErrorMessage } from "@/lib/action-error"
 import { matchTier, type RechargeConfig } from "@/lib/recharge-tier"
 
 /**
@@ -44,8 +45,8 @@ export function resolveRecharge(
       const { discount, payAmount } = matchTier(amount, config)
       return { faceValue: amount, payAmount, discount, error: null }
     } catch (e: unknown) {
-      const msg = (e instanceof Error ? e.message : "金额无效").replace(/^[A-Z_]+:\s*/, "")
-      return { faceValue: 0, payAmount: 0, discount: 1, error: msg }
+      // matchTier 抛的是带 INVALID_PARAMS 前缀的本地错误，剥前缀口径与其它入口统一（issue #133）
+      return { faceValue: 0, payAmount: 0, discount: 1, error: actionErrorMessage(e, "金额无效") }
     }
   }
   if (selectedFace > 0) {

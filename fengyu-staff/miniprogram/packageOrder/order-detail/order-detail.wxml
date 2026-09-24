@@ -93,11 +93,15 @@
           <view class="session-bar__seg session-bar__seg--unpaid" style="width:{{item.unpaidPct}}%"></view>
         </view>
         <!-- 明细扩展：原价划线 / 销售分类 / 过期日期 / 已提货数量 -->
-        <view wx:if="{{item.hasDiscount || item.salesCategory || item.expireDate || item.pickedUpQuantity > 0}}" class="item-extra">
+        <view wx:if="{{item.hasDiscount || item.salesCategory || item.expireDate || item.pickedUpQuantity > 0 || item.refundedQuantity > 0 || item.convertedQuantity > 0}}" class="item-extra">
           <text wx:if="{{item.hasDiscount}}" class="item-extra-tag">单价 <text class="item-origin-price">¥{{item.unitPrice}}</text> ¥{{item.unitRealPrice}}</text>
           <text wx:if="{{item.salesCategory}}" class="item-extra-tag">{{item.salesCategory}}</text>
           <text wx:if="{{item.expireDate}}" class="item-extra-tag">有效期至 {{item.expireDate}}</text>
-          <text wx:if="{{item.pickedUpQuantity > 0}}" class="item-extra-tag">已提 {{item.pickedUpQuantity}}</text>
+          <!-- #154 拆列后三类数量各有独立列：picked_up_quantity 就是物理提货量
+               （与 pickup_records 守恒），已退款与已转换单独展示，不再合并成「已结算」 -->
+          <text wx:if="{{item.pickedUpQuantity > 0}}" class="item-extra-tag">已提货 {{item.pickedUpQuantity}}</text>
+          <text wx:if="{{item.refundedQuantity > 0}}" class="item-extra-tag">已退款 {{item.refundedQuantity}}</text>
+          <text wx:if="{{item.convertedQuantity > 0}}" class="item-extra-tag">已转换 {{item.convertedQuantity}}</text>
         </view>
         <text class="item-flow-no">{{item.saleItemId}}</text>
       </view>

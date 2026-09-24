@@ -17,13 +17,11 @@ function isCardEntitlementItem(order: SaleOrder, item: SaleItem) {
   )
 }
 
-function hasPaidUnusedSessions(item: SaleItem) {
+// issue #122：可用次数为 0 的卡（部分支付未买满次数）不再隐藏——顾客买了卡却在档案里看不到。
+// 只按物理剩余次数判定是否展示；可用次数 0 由 UI 呈现，核销限额走 service 侧独立校验。
+function hasRemainingSessions(item: SaleItem) {
   if (item.sessionCount === null || item.remainingSessions === null) return false
-  if (item.remainingSessions <= 0) return false
-  if (item.paidSessions === null) return true
-
-  const usedSessions = Math.max(item.sessionCount - item.remainingSessions, 0)
-  return item.paidSessions > usedSessions
+  return item.remainingSessions > 0
 }
 
 export interface CustomerVisibleSaleItem extends SaleItem {
@@ -44,7 +42,7 @@ export function getCustomerVisibleSaleItems(orders: SaleOrder[]): CustomerVisibl
     for (const item of order.items ?? []) {
       if (
         isCardEntitlementItem(order, item) &&
-        hasPaidUnusedSessions(item)
+        hasRemainingSessions(item)
       ) {
         items.push({ order, item })
       }
@@ -79,6 +77,8 @@ export function getCustomerVisibleSaleItems(orders: SaleOrder[]): CustomerVisibl
       pendingReceived: item.pendingReceived,
       expireDate: item.expireDate,
       pickedUpQuantity: item.pickedUpQuantity,
+      refundedQuantity: item.refundedQuantity,
+      convertedQuantity: item.convertedQuantity,
       remark: item.remark,
       salesCategory: item.salesCategory,
       productName: item.productName,
@@ -105,6 +105,8 @@ export function getCustomerVisibleSaleItems(orders: SaleOrder[]): CustomerVisibl
       received: sumGroupValue(group, ({ item }) => item.received).toFixed(2),
       pendingReceived: sumGroupValue(group, ({ item }) => item.pendingReceived).toFixed(2),
       pickedUpQuantity: sumGroupValue(group, ({ item }) => item.pickedUpQuantity),
+      refundedQuantity: sumGroupValue(group, ({ item }) => item.refundedQuantity),
+      convertedQuantity: sumGroupValue(group, ({ item }) => item.convertedQuantity),
       cardCount: group.cardCount,
     }
   })

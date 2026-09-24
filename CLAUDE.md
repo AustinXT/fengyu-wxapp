@@ -107,7 +107,15 @@ bun fengyu-staff/tests/e2e-miniprogram/run-all.mjs                   # staff L3 
 
 ### 云函数部署
 
-- **prod 部署只走 `scripts/deploy-cloudfunctions.sh`**：它会按 `envs/.active` 强制重渲染 cloudbaserc + 校验 envId/PG 端口一致 + 占位符告警，确保上传的是目标环境的 env。
+- **部署只走 `scripts/deploy-cloudfunctions.sh`**：它会强制重渲染 cloudbaserc + 校验 envId/PG host（期望值是绝对常量，不从 env 文件推导）+ 占位符告警。
+- **只剩一个 CloudBase 环境（prod），dev/prod 靠函数名区分**：`clientApi`/`payNotify`/`staffApi` 连 prod 库，同名加 `Dev` 后缀的三个影子函数连 dev 库，两套跑同一份代码（cloudbaserc 的 `dir` 指向同一目录）。小程序端 `develop` 调影子、`trial`+`release` 调正式。
+  ```bash
+  scripts/deploy-cloudfunctions.sh dev          # 只发影子函数，不碰生产，无需 confirm
+  scripts/deploy-cloudfunctions.sh prod         # 只发正式函数，需 confirm
+  scripts/deploy-cloudfunctions.sh              # 默认 both（发版），需 confirm
+  scripts/deploy-cloudfunctions.sh dev --plan   # 只预览计划
+  ```
+  **默认会动生产**——改完代码想先验证必须显式写 `dev`。`envs/.active` 恒为 `prod`，脚本会拒绝 `.active=dev`。
 - **⚠️ `tcb fn code update` 会把 cloudbaserc.json 的 envVariables 一并推送覆盖（不只代码）**。因此**禁止手动 `tcb fn code update <fn> --env-id <X>` 跨环境部署**——若当前 cloudbaserc 是 dev 渲染态却推到 prod，会把 dev/SIT 配置刷进 prod（2026-05-26 踩过此坑）。改 env 前务必先 `scripts/use-env.sh <env>`。
 - **`tcb fn deploy --force`** 同样重置 env，仅首次创建函数用；已存在函数一律走脚本。
 
@@ -137,5 +145,5 @@ git worktree remove .tree/feat/xxx      # 完成后清理
 管理后台使用本地构建 Docker 镜像 + 远程部署（远程服务器不 build）：
 
 ```bash
-.claude/skills/remote-deploy/deploy-admin.sh <dev|prod>    # 本地 build → 传输 → compose up（dev→sqlserver101 / prod→fengyu-prod）
+.claude/skills/remote-deploy/deploy-admin.sh <dev|prod>    # 本地 build → 传输 → compose up（dev→lx-test / prod→lx-prod）
 ```

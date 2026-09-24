@@ -1,0 +1,89 @@
+name: DB script tests
+
+# db/scripts/__tests__ 的 node:test 套件（不连库）此前没有任何 CI 闸门——它不在 admin /
+# staffApi 的 vitest 基线里（db/CLAUDE.md 已注明），只靠人记得 `npm run db:test`。
+# 其中 db-target-guard.test.js 守的是「运维脚本不得连到已退役的旧库 47.113.202.7」，
+# 那台机器至今可连通、连上不报错、只是安静地返回停在 2026-08-24 的旧数据——
+# 这种守护靠自觉执行等于没有。
+#
+# 与 db-migrations-check.yml 分开成两个 workflow，是因为两者的触发面和代价差一个量级：
+# 那个要起 PG service + drizzle-kit generate + 从零 apply（分钟级），
+# 改一个 repair 脚本不该把它拖起来。
+
+on:
+  pull_request:
+    paths:
+      - 'db/scripts/**'
+      # payment-migrations-regression.test.js 对迁移 SQL 与 journal 做字面量断言
+      - 'db/migrations/**'
+      - 'db/package.json'
+      - 'db/package-lock.json'
+      # ↓ 两个跨子项目入口：它们无法 require db/scripts/_lib/assert-db-target.js，
+      #   只能内联同源逻辑，由 db-target-guard.test.js 做行为等价断言。
+      #   漏掉这两条路径 = 有人改坏内联守卫而 CI 全绿。
+      #   该覆盖关系由 db-target-guard.test.js 的「CI workflow 的 paths 覆盖所有内联副本」一项反向锁住，
+      #   新增内联副本却忘了加路径会直接红。
+      - 'fengyu-admin/src/db/seed.ts'
+      - 'fengyu-staff/scripts/manual-e2e/monitor-pk-conflicts.mjs'
+      - '.github/workflows/db-script-tests.yml'
+
+jobs:
+  script-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install db deps
+        working-directory: db
+        run: npm ci
+
+      # 不连库：需要真实 PG 的两个 .pg.test.js 在缺对应 env 时自行 skip
+      - name: Run db script tests
+        working-directory: db
+        run: npm run db:test
+
+  # 迁移 0043 的回填是「带 CTE + CASE 分支的 UPDATE + 三个 DO 断言块」，分支走没走对、
+  # residual<0 会不会被 ELSE 0 吞掉、断言会不会真的 RAISE —— 全是 SQL 语义，字面量快照测不出来。
+  # 这套回归是唯一验证它的地方，缺 env 时会整套 skip，等于 CI 零覆盖，所以单起一个带 PG 的 job。
+  backfill-semantics:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install db deps
+        working-directory: db
+        run: npm ci
+
+      # 从零 apply 全部 migration —— 顺带守住「新迁移能在空库上跑起来」
+      - name: Apply migrations
+        working-directory: db
+        env:
+          DATABASE_URL: postgresql://postgres:test@localhost:5432/test
+        run: npx drizzle-kit migrate
+
+      - name: Run #154 backfill semantics regression
+        env:
+          QUANTITY_SPLIT_PG_TEST_URL: postgresql://postgres:test@localhost:5432/test
+        run: node --test db/scripts/__tests__/quantity-split-backfill.pg.test.js

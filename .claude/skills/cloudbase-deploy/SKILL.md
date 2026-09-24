@@ -9,10 +9,15 @@ description: >
 
   Use when user says "部署云函数", "重新上传云函数", "部署 cloudfunctions", "部署到云服务",
 
-  "使用 MCP 部署", "tcb 部署", or requests deploying / redeploying any cloud function.
+  "使用 MCP 部署", "tcb 部署", "部署到 dev", "部署到 prod", "先发 dev 验证",
+
+  or requests deploying / redeploying any cloud function.
 
   Also use for updating cloud function environment variables or invoking a
   function action to verify.
+
+  本项目单 CloudBase 环境内并存两套函数（正式连 prod 库 / *Dev 影子连 dev 库），
+  部署前必须先判断发哪个通道：dev / prod / both。
 alwaysApply: false
 metadata:
   author: nvoyager
@@ -25,6 +30,57 @@ metadata:
 # CloudBase 云函数部署指南
 
 **优先**通过 `@cloudbase/cloudbase-mcp` MCP 服务器部署；MCP 不可用时回退到 `tcb` CLI。
+
+---
+
+## ⚠️ 本项目（fengyu-wxapp）：先读这一节
+
+本项目**不要直接用 MCP 或裸 tcb 命令部署**，一律走 `scripts/deploy-cloudfunctions.sh`。
+下面的通用章节仅供排障与理解底层命令时参考。
+
+### 只有一个 CloudBase 环境，dev/prod 靠「函数名」区分
+
+dev 侧的 CloudBase 环境已不可用，现在两套函数**同住 prod env**，只是连不同的库：
+
+| 通道 | 函数 | 连的库 | 谁在调 |
+|---|---|---|---|
+| 正式（primary） | `clientApi` / `payNotify` / `staffApi` | prod `118.178.196.26` | 小程序体验版 + 正式版 |
+| 影子（shadow） | `clientApiDev` / `payNotifyDev` / `staffApiDev` | dev `101.34.242.103` | 开发者工具开发版 |
+
+影子函数与正式函数**跑同一份代码**（cloudbaserc 的 `dir` 指向同一目录），只有 envVariables 不同。
+
+### 因此：部署前必须先判断该发哪个通道
+
+```bash
+scripts/deploy-cloudfunctions.sh dev      # 只发影子函数 → 只影响 dev 库，不碰生产，无需 confirm
+scripts/deploy-cloudfunctions.sh prod     # 只发正式函数 → 影响生产，需输 yes
+scripts/deploy-cloudfunctions.sh          # 六个全发（默认 both，发版场景），需输 yes
+
+# 可叠加端维度与预览：
+scripts/deploy-cloudfunctions.sh dev staff    # 只发 staffApiDev
+scripts/deploy-cloudfunctions.sh prod --plan  # 只打印计划，不做任何改动
+```
+
+**默认值是 `both`（会动生产）。改完代码想先验证，必须显式写 `dev`。**
+
+判断规则：
+
+| 用户的话 | 用哪个通道 |
+|---|---|
+| 「部署到 dev」「先发开发环境验证」「我在开发者工具里测」 | `dev` |
+| 「部署到 prod / 生产」「发正式版」「上线」 | `prod` |
+| 「发版」「全部部署」「release」 | 省略（默认 both） |
+| 说不清是哪个 | **先用 `--plan` 打印计划给用户确认**，不要猜 |
+
+⚠️ 这里的 dev/prod 指**函数连哪个库**，不是部到哪个 CloudBase 环境——后者已只剩一个。
+`envs/.active` 恒为 `prod`；脚本会主动拒绝 `.active=dev`。
+
+### 影子函数首次上线还需要控制台手工配一次
+
+`/cloudfunctions/clientApiDev`、`/lakala/notify-dev` 两条 HTTP 访问服务路径（`enableAuth:false`）
+必须在 CloudBase 控制台手建，仓库内无自动化。脚本跑完 ≠ 链路通。
+
+---
 
 ## When to Use / 何时使用
 
@@ -280,6 +336,8 @@ tcb fn log <functionName> --envId <envId>
 
 ### 必须保护的环境变量
 
+下表的每一项，**影子函数（`*Dev`）也有一份**，取值不同（连 dev 库、dev 开关）。
+
 | 云函数 | 变量名 | 用途 |
 |--------|--------|------|
 | clientApi | PG_CONNECTION_STRING | PostgreSQL 连接 |
@@ -287,7 +345,12 @@ tcb fn log <functionName> --envId <envId>
 | clientApi | TMAP_SECRET | 腾讯地图签名密钥 |
 | staffApi | PG_CONNECTION_STRING | PostgreSQL 连接 |
 | staffApi | CLIENT_SECRET | 内部接口密钥 |
-| staffApi | WXACODE_ENV_VERSION | 小程序码环境版本 |
+| staffApi | WXACODE_ENV_VERSION | 小程序码环境版本（影子函数为 `develop`） |
+| clientApi / payNotify（含 `*Dev`） | **PAYNOTIFY_FN_NAME** | 对账自调的目标函数名。**运行时 fail-closed**：缺失即跳过对账，绝不回退到字面量 `payNotify`——回退会让影子实例拿 dev 库的订单号让生产函数在 prod 库入账 |
+| 全部 6 个 | **DEPLOY_CHANNEL** | `primary` / `shadow`。云函数入口据此校验调用方版本与本函数通道是否匹配，把静默误路由变成响亮失败 |
+
+这两个新变量都已纳入 `deploy-cloudfunctions.sh` 的 `--sync` / `--require` 回读校验，
+正常走脚本部署不需要手工处理；手工改过 env 后务必回读确认。
 
 ### 部署后强制验证
 

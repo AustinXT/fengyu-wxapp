@@ -21,13 +21,11 @@
 // 但改为 SELECT 聚合并显式排除 OVERPAY 哨兵行（refSaleItemId='OVERPAY' 为多收余数哨兵，非真实行）。
 const PER_ITEM_REFUNDED_SQL = `WITH refund_items AS (
       SELECT elem ->> 'refSaleItemId' AS sale_item_id,
-             COALESCE((elem ->> 'refundAmount')::numeric, 0) AS refund_amount
+             COALESCE(public.try_numeric(elem ->> 'refundAmount'), 0) AS refund_amount
       FROM sale_order_payments sop
       CROSS JOIN LATERAL jsonb_array_elements(
-        CASE WHEN sop.note LIKE '{%'
-             THEN CASE WHEN jsonb_typeof((sop.note)::jsonb -> 'items') = 'array'
-                       THEN (sop.note)::jsonb -> 'items'
-                       ELSE '[]'::jsonb END
+        CASE WHEN jsonb_typeof(public.try_jsonb(sop.note) -> 'items') = 'array'
+             THEN public.try_jsonb(sop.note) -> 'items'
              ELSE '[]'::jsonb END
       ) AS elem
       WHERE sop.sale_order_id = $1
@@ -44,13 +42,11 @@ const PER_ITEM_REFUNDED_SQL = `WITH refund_items AS (
 const PER_ITEM_REFUNDED_BATCH_SQL = `WITH refund_items AS (
       SELECT sop.sale_order_id,
              elem ->> 'refSaleItemId' AS sale_item_id,
-             COALESCE((elem ->> 'refundAmount')::numeric, 0) AS refund_amount
+             COALESCE(public.try_numeric(elem ->> 'refundAmount'), 0) AS refund_amount
       FROM sale_order_payments sop
       CROSS JOIN LATERAL jsonb_array_elements(
-        CASE WHEN sop.note LIKE '{%'
-             THEN CASE WHEN jsonb_typeof((sop.note)::jsonb -> 'items') = 'array'
-                       THEN (sop.note)::jsonb -> 'items'
-                       ELSE '[]'::jsonb END
+        CASE WHEN jsonb_typeof(public.try_jsonb(sop.note) -> 'items') = 'array'
+             THEN public.try_jsonb(sop.note) -> 'items'
              ELSE '[]'::jsonb END
       ) AS elem
       WHERE sop.sale_order_id = ANY($1::text[])

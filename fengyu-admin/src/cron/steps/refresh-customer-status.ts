@@ -1,13 +1,23 @@
 /**
- * STEP 1 — customer_status 重算（迁自 cronTask/index.js:34-86）
+ * STEP customerStatus（run.ts STEPS 的第 2 项，不是第 1 项 —— 第 1 项是 closeExpiredAppointments）
+ * customer_status 重算（迁自 cronTask/index.js:34-86）
  *
  * 业务口径：customer_status 仅对 customer_type='会员客' 的顾客有值，
  * 非会员客（流量客 / 体验客 / 小美客）一律 NULL。
  *
+ * 必须守住的不变量（#254 就是破了它）：**在单一快照下，每一行要么被某一段命中，
+ * 要么现值已经等于应然值** —— 不允许存在「该改却三段都不碰」的行。
+ * 注意这不等于「三段命中域的并集 = 全表」：已处于应然值的行本就不该被重写
+ * （如非会员客 status 已是 NULL、无单会员客已是休眠），那是守卫在省 updated_at churn，不是漏行。
+ *
  * 三段 SQL 在同一事务中串行：
  *   段 1：非会员客一律置 NULL（清理脏数据）
  *   段 2：会员客有到店记录的，按 visits_90d / total_visits 打状态
- *   段 3：会员客但完全无到店记录的，置 '休眠'
+ *   段 3：会员客但完全无到店记录的，置 '休眠'（含已有旧值的 —— 见 RESET_NO_VISITS_SQL 注释）
+ *
+ * ⚠️ 「单一快照」这个前提不是摆设：事务是 READ COMMITTED，三条语句各取一次新快照，
+ * 段间若有并发写 service_orders 落地，会出现瞬时偏差（某行本轮没人认领，或被段 2/段 3 各写一次）。
+ * 这类偏差次日重跑即自愈，与 #254 那种「永久卡住」有本质区别，故不升级隔离级别。
  *
  * 与原 cronTask 的事务边界一致：整体一个 db.transaction，任一段失败 → 全段回滚。
  *
@@ -16,7 +26,7 @@
 
 import { sql } from 'drizzle-orm'
 import type { Db } from '../run'
-import { type CronContext, dateSqlOf } from '../lib/cron-context'
+import type { CronContext } from '../lib/cron-context'
 
 export const RESET_NON_MEMBER_STATUS_SQL = `
 UPDATE client_wechat_users
@@ -28,6 +38,12 @@ UPDATE client_wechat_users
 /**
  * 段 2 SQL：含 CURRENT_DATE 时间引用。
  * ctx=undefined 时与原 raw SQL 等价（生产路径 + Vitest 形态断言）。
+ *
+ * ⚠️ 本段一次锁住上千行 client_wechat_users，且加锁顺序由执行计划决定
+ * （hash join 走 ctid 物理序 / nested loop 走 HashAggregate 无序输出）。
+ * 两个 cron 实例并发跑同一 STEP 时，若各自选了不同计划就可能 40P01 死锁，
+ * 输的那个整个 STEP 回滚（三段一个事务）。手动 `--once` 必须与 03:00 定时跑错开 ——
+ * runDailyJobs 目前没有任何互斥，靠人守。
  */
 export const UPDATE_CUSTOMER_STATUS_SQL = `
 WITH visit_stats AS (
@@ -55,11 +71,42 @@ UPDATE client_wechat_users u
    AND u.customer_type = '会员客'
 `
 
+/**
+ * 段 3 SQL：会员客 ∧ 无已完成服务单 → '休眠'。
+ *
+ * ⚠️ 守卫必须是 `IS DISTINCT FROM '休眠'` 而非 `IS NULL`（#254）：
+ * `NOT EXISTS(已完成服务单)` 与段 2 的 `visit_stats` join 互为补集（visit_stats 正由
+ * `status='已完成'` 分组而来），「只补段 2 没分到的」这一意图已由它完整表达。再叠一个
+ * `IS NULL` 就把「段 2 没分到 **且** 已有旧值」误判成不需要处理 —— 这类行三段全不匹配，
+ * 旧状态永久卡住、cron 跑多少次都不自愈（prod 2026-09-22 实际命中 2 行）。
+ *
+ * 那 2 行的**成因至今未定位**，别把下面这句当已知结论：应用层写 service_orders.status 的
+ * 路径全部封死了「已完成 → 其它态」（admin services.ts:1523/1595、staffApi service.js:1325），
+ * 而实测那 2 人任何状态的服务单都是 0 条（撤销会留下 '已取消' 的行）。已知能绕过守卫的通道是
+ * db/scripts 一次性修复脚本（repair-cancel-conversion-order-2608130108.js:328 就在
+ * `UPDATE service_orders SET status='已取消' … WHERE status='已完成'`）与手工 SQL。
+ * 修复的正当性不依赖成因：无论哪条通道，三段覆盖域必须是全表，否则脏了就不可自愈。
+ *
+ * 改用 `IS DISTINCT FROM` 既消除缺口（NULL 行仍命中），又保留「已是休眠就不重写
+ * updated_at」的原意，与 refresh-spending-tier.ts 的范式一致。
+ *
+ * ⚠️ 本段的 `'休眠'` 出现 **2 处**（SET 与守卫），**两者必须永远相等** ——
+ * 只改 SET 漏改守卫不会报错，而是让守卫恒真、段 3 每天重写全部无单会员客（静默劣化，
+ * 比两处都漏改当场炸 22P02 更坏）。单测 `SET 与守卫的「休眠」字面量必须一致` 钉的就是这条。
+ *
+ * ⚠️⚠️ 枚举重命名（本仓做过一次：'预警沉睡' → '沉睡'）波及面**远不止本段** ——
+ * 本文件段 2 的 CASE ELSE、`db/scripts/update-customer-status.js`、
+ * `db/scripts/calc-monthly-activity.js`（含它的 dry-run 预览 CASE）、
+ * 以及读取侧的 `src/actions/data-center/customer.ts`、`staffApi/routes/{customer,mgmt-traffic}.js`、
+ * staff 小程序筛选项……**别照抄任何数字**（写死的计数必然过期，本注释已经错过两轮），
+ * 改之前现查：`grep -rn "'休眠'" --include='*.ts' --include='*.js' --include='*.sql'`。
+ * 本仓禁止跨端共享代码目录，这些副本一律靠人同步。
+ */
 export const RESET_NO_VISITS_SQL = `
 UPDATE client_wechat_users u
    SET customer_status = '休眠'::customer_status, updated_at = NOW()
  WHERE u.customer_type = '会员客'
-   AND u.customer_status IS NULL
+   AND u.customer_status IS DISTINCT FROM '休眠'::customer_status
    AND NOT EXISTS (
      SELECT 1 FROM service_orders so
       WHERE so.client_user_id = u.user_id AND so.status = '已完成'
@@ -73,7 +120,8 @@ UPDATE client_wechat_users u
 function buildUpdateCustomerStatusSql(ctx?: CronContext): string {
   if (!ctx?.referenceDate) return UPDATE_CUSTOMER_STATUS_SQL
   const dateStr = formatYmd(ctx.referenceDate)
-  // 用字面量替换（参数化此处复杂度高且 PG 不缓存查询计划差异）
+  // 用字面量替换而非参数化：这条 SQL 是 sql.raw 下发的整串，改成参数化要把三处占位一起编织进去，
+  // 收益（计划复用）在每天只跑一次的批处理上可以忽略。
   return UPDATE_CUSTOMER_STATUS_SQL.replace(/CURRENT_DATE/g, `('${dateStr}'::date)`)
 }
 
@@ -87,18 +135,29 @@ export interface CustomerStatusResult {
   clearedNonMember: number
   updatedMember: number
   resetNoVisit: number
+  /**
+   * 段 3 命中规模反常 —— 典型形态是 service_orders 处于异常态
+   * （restore 进行中 / client_user_id 被批量置空 / 表刚清过重灌）。
+   * 此时段 3 会把大批非休眠会员客一次刷成「休眠」，数据看板当天全归休眠档。
+   * 不抛错（可自愈，且抛错会在新环境首跑等场景误伤），只标记 + warn 供运维判读。
+   */
+  suspiciousBulkReset: boolean
   stats: Array<{ customer_status: string | null; cnt: number }>
 }
+
+/** 段 3 单跑命中多少行才值得怀疑数据源塌了。稳态下日增量是个位数（dev 实测 2）。 */
+const BULK_RESET_SUSPICION_THRESHOLD = 100
+/** 段 3 命中占「本轮被触及的会员客」的比例上限。稳态约 0.1%，超过 10% 说明不是自然增量。 */
+const BULK_RESET_SUSPICION_RATIO = 0.1
 
 export async function refreshCustomerStatus(
   db: Db,
   ctx?: CronContext,
 ): Promise<CustomerStatusResult> {
-  // dateSqlOf 仅用于 stats 聚合处（无需），段 1/3 无时间引用，段 2 用 buildUpdateCustomerStatusSql
-  void dateSqlOf
+  // 段 1/3 无时间引用，段 2 的 CURRENT_DATE 由 buildUpdateCustomerStatusSql 注入
   const updateSql = buildUpdateCustomerStatusSql(ctx)
 
-  return await db.transaction(async (tx) => {
+  const result = await db.transaction(async (tx) => {
     const cleared = (await tx.execute(sql.raw(RESET_NON_MEMBER_STATUS_SQL))) as unknown as {
       count?: number
     }
@@ -114,11 +173,52 @@ export async function refreshCustomerStatus(
       ORDER BY customer_status
     `)) as Array<{ customer_status: string | null; cnt: number }>
 
+    const updatedMember = updated.count ?? 0
+    const resetNoVisit = reset.count ?? 0
+    // 分母是「本轮被段 2 或段 3 触及的会员客」，三个更直觉的判据都被验证会漏报：
+    //   · `updatedMember === 0`：中等塌陷时段 2 仍命中上千行 → 整片漏报
+    //   · `resetNoVisit > updatedMember`：误删 40% 时 729 : 1091，仍不告警
+    //   · 占**会员客总数**的比例：存量无单休眠会员会稀释分母 —— 1 万会员里 9200 人本就休眠
+    //     （段 3 不碰），剩下 800 个有单会员的服务单全丢，800 < 10000×10% 照样不告警
+    // 用「本轮触及数」当分母就没有这个稀释面：上面三个场景现在都会告警。
+    //
+    // 已知的两条容忍带（刻意取舍，不是遗漏）：
+    //   · R < 100 一律不报 —— 不让小库 / 新环境 / 每天几十行的自然波动刷屏。
+    //     代价是「缓慢持续丢单」（每天塌几十行）永远不会触发。
+    //   · 整理成 `R > U/9`：R ≥ 100 但 R ≤ U/9 时不报。比如 U=9000、R=999，
+    //     近千会员被刷休眠仍然静默 —— 段 2 命中大头时本判据就不敏感了。
+    // ⚠️ 别指望「次日复跑」兜住这两条：漏报的行当天就被写成休眠了，次日段 3 的
+    // `IS DISTINCT FROM '休眠'` 把它们排除 → R 归零、更不会告警。真正的兜底只有数据看板
+    // 与人工复算；要自动收紧得引入历史基线对比，超出本 STEP 职责。
+    // 反向的误报也存在且可接受：合法地批量把 100 个「无单 ∧ 旧状态非休眠」顾客转成会员客，
+    // 会得到 U=0、R=100 而触发一次 warn。只是 warn、文案也写的「可能」，不阻断。
+    const touchedMembers = updatedMember + resetNoVisit
+    const suspiciousBulkReset =
+      resetNoVisit >= BULK_RESET_SUSPICION_THRESHOLD &&
+      resetNoVisit > touchedMembers * BULK_RESET_SUSPICION_RATIO
+
     return {
       clearedNonMember: cleared.count ?? 0,
-      updatedMember: updated.count ?? 0,
-      resetNoVisit: reset.count ?? 0,
+      updatedMember,
+      resetNoVisit,
+      suspiciousBulkReset,
       stats,
     }
   })
+
+  // 告警放在 COMMIT 之后：事务内打印会在「已把这些行刷成休眠」之后又回滚，日志撒谎更难排障。
+  if (result.suspiciousBulkReset) {
+    // 除零不可达：分母 = updatedMember + resetNoVisit ≥ resetNoVisit ≥ 100
+    const touched = result.updatedMember + result.resetNoVisit
+    const pct = ((result.resetNoVisit / touched) * 100).toFixed(1)
+    console.warn(
+      `[customerStatus] 段 3 命中 ${result.resetNoVisit} 行，占本轮触及会员客 ${touched} 的 ${pct}%` +
+        `（段 2 只命中 ${result.updatedMember} 行）—— service_orders 可能处于异常态` +
+        '（restore 中 / client_user_id 被批量置空 / 表刚重灌）。' +
+        '这些会员客已被刷成「休眠」，数据看板当天会偏向休眠档；' +
+        '确认数据源恢复后重跑本 STEP 即可还原。',
+    )
+  }
+
+  return result
 }

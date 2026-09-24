@@ -5,9 +5,12 @@ description: |
   runs pre-flight test/type gates, bumps miniprogram APP_VERSION from the latest
   git tag, runs pending Drizzle migrations against the selected target database,
   cross-compiles the Next.js admin and fengyu-analyst, then ships both to the target host
-  (prod→fengyu-prod / dev→sqlserver101). Both dev and prod deploy
-  staffApi, clientApi, and payNotify to their own CloudBase envs.
-  Use when the user says 发版 / 上线 / 发布生产 / 发 dev / release / ship to dev|prod.
+  (prod→lx-prod / dev→lx-test). Cloud functions now live in a SINGLE CloudBase env:
+  dev/prod are distinguished by function name, not by env — `deploy-cloudfunctions.sh dev`
+  ships the shadow functions (`*Dev`, wired to the dev DB) and `prod` ships the primary ones.
+  Note the `test` and `main` git branches both release to the prod environment;
+  the standalone test environment was retired on 2026-09-01.
+  Use when the user says 发版 / 上线 / 发布生产 / 发布测试 / 发 dev / release / ship to dev|prod.
   This is an UPDATE release — runs pending migrations only through db:migrate, never wipes the DB.
 argument-hint: '[dev|prod] [skip-tests|skip-version|skip-admin|skip-analyst|skip-cloudfn]'
 disable-model-invocation: true
@@ -27,11 +30,11 @@ metadata:
 
 ## 目标环境（ENV 形参）
 
-`/release-all <dev|prod> [skip-*]`：首个 token 锁定环境；无环境参数默认 `prod`。
+`/release-all <dev|prod> [skip-*]`：首个 token 锁定环境；无环境参数默认 `prod`。只有 dev / prod 两套环境。
 
 | 维度 | dev | prod |
 |------|-----|------|
-| SSH host | `sqlserver101` | `fengyu-prod` |
+| SSH host | `lx-test` | `lx-prod` |
 | 远程目录 | `/www/wwwroot/fengyu-admin/docker` | `/www/wwwroot/fengyu-admin/docker` |
 | 迁移 DB host | `101.34.242.103` | `118.178.196.26` |
 | 容器 DB host | `172.18.0.1`（Docker 网桥回连 101） | `118.178.196.26` 或经验证的同机网桥 |
@@ -39,11 +42,15 @@ metadata:
 | `ENV_PROFILE` | `dev` | `prod` |
 | admin | 发布 | 发布 |
 | analyst | 发布 | 发布 |
-| CloudBase 云函数 | dev env（cloud1-*） | prod env |
+| CloudBase 云函数 | prod env 内的**影子函数** `*Dev`（连 dev 库）<br>`deploy-cloudfunctions.sh dev` | prod env 内的**正式函数**（连 prod 库）<br>`deploy-cloudfunctions.sh prod` |
 | admin 命令 | `deploy-admin.sh dev` | `deploy-admin.sh prod` |
 | analyst 命令 | `deploy-analyst.sh dev` | `deploy-analyst.sh prod` |
 
 两个数据库均用 5433 端口 + `fengyu_wxapp` 库名，按 host 区分。dev 的 `ADMIN_DATABASE_URL` 是只在 101 宿主可用的 `172.18.0.1`；本地迁移必须改用 `dev.env` 的 `PG_CONNECTION_STRING`（公网 host 101.34.242.103）。
+
+⚠ **分支与环境不同名**：`dev` 分支发布到 dev 环境；`test` 与 `main` 两条分支都发布到 **prod 环境**。
+分支名 `test` 不对应任何环境——早期那个独立 test 环境（`envs/test.env`）已于 2026-09-01 随 dev 迁入同一台机器而退役。
+旧的 ali-demo `47.113.202.7` 已全面弃用，**不是任何环境的目标**（它仍可连通但数据停在 2026-08-24，误连不报错）。
 
 复用脚本（不要新写、不要改）：
 - `node scripts/gen-version.js` — 版本号写入两端 `miniprogram/utils/version.ts`（env 无关）
@@ -51,13 +58,13 @@ metadata:
 - `.claude/skills/remote-deploy/deploy-admin.sh <dev|prod>` — admin 交叉编译 + 远程部署
 - `.claude/skills/remote-deploy/deploy-analyst.sh <dev|prod>` — analyst 交叉编译 + 远程部署（读取同环境 `ANALYST_PUBLIC_ORIGIN`，并校验容器 DB / public origin）
 - `scripts/use-env.sh <dev|prod>` — 切 env + 渲染 cloudbaserc（含 ENV_PROFILE 守卫）
-- `scripts/deploy-cloudfunctions.sh` — 按 `.active` 串行双账号部署 staffApi/clientApi/payNotify
+- `scripts/deploy-cloudfunctions.sh [dev|prod|both]` — 串行双账号部署。**只剩一个 CloudBase 环境（prod）**，dev/prod 靠函数名区分：正式函数 staffApi/clientApi/payNotify 连 prod 库，影子函数 staffApiDev/clientApiDev/payNotifyDev 连 dev 库，两套同代码。发版走默认 `both`（6 个全发）
 
 参数（可组合）：`dev` / `prod`（二选一，默认 prod）+ `skip-tests` `skip-version` `skip-admin` `skip-analyst` `skip-cloudfn`。数据库迁移不可跳过。analyst 默认正常发布，除非显式传入 `skip-analyst`。
 
 ## Usage
 
-`/release-all [dev|prod] [skip-tests|skip-version|skip-admin|skip-analyst|skip-cloudfn]`。`dev` 是开发联调环境（sqlserver101），`prod` 是生产环境。
+`/release-all [dev|prod] [skip-tests|skip-version|skip-admin|skip-analyst|skip-cloudfn]`。`dev` 是开发联调环境（lx-test / 101.34.242.103），`prod` 是生产环境（lx-prod / 118.178.196.26）。注意 `test` 分支发布到 **prod** 环境，不要把分支名当环境名。
 
 ---
 
@@ -67,8 +74,7 @@ metadata:
 - **云函数部署必须串行**：tcb 鉴权是全局单例（`~/.cloudbase-cli/auth.json`），staff 与 client 是**两个不同腾讯子账号**。**绝不**为这步开并行 agent —— 会中途互相踢登录。`deploy-cloudfunctions.sh` 已内部串行处理。
 - **永不用 `--force`**：env 变量会被清空（2026-04-02 事故）。只用 `tcb fn code update`（脚本已遵守）。
 - 技能**完全不碰 git**（不 commit / 不 push）。允许携带未提交改动发版；Admin/Analyst 镜像必须用 `<commit>-dirty.<fingerprint>` 标记脏状态，CloudBase 则按当前工作树上传。不得把脏发布表述为已提交或仅由 commit 可复现。
-- **目标 DB 硬约束**：迁移目标必须为 dev=`101.34.242.103`、prod=`118.178.196.26` 的 `:5433/fengyu_wxapp`。dev 远程容器允许 `172.18.0.1`，但必须同时验证宿主公网 IP=101.34.242.103 且宿主 5433 正在监听。
-- **发 prod 后必须恢复 dev env（§8）**。
+- **目标 DB 硬约束**：迁移目标必须为 dev=`101.34.242.103`、prod=`118.178.196.26` 的 `:5433/fengyu_wxapp`。dev 远程容器允许 `172.18.0.1`，但必须同时验证宿主公网 IP=101.34.242.103 且宿主 5433 正在监听。**`47.113.202.7` 已弃用，任何迁移都不得指向它。**
 - `db:migrate` 出错、连接目标不符，或本地 migration journal 比目标库旧时，立即停止；不得继续 admin 或云函数发布。已成功应用的 migration 不做回滚，按 `db/CLAUDE.md` 新建向前修复 migration。
 
 ---
@@ -107,29 +113,29 @@ metadata:
    - `ENV_PROFILE=$ENV`
    - prod：`ALLOW_TEST_OPENID=false`、`WXACODE_ENV_VERSION=release`
    - dev：`ALLOW_TEST_OPENID=true`、`WXACODE_ENV_VERSION=develop`
-   - 【DB assert ①】prod 的 `PG_CONNECTION_STRING` 与 `ADMIN_DATABASE_URL` 都必须命中 `118.178.196.26`；dev 的 `PG_CONNECTION_STRING` 必须为 `101.34.242.103:5433/fengyu_wxapp`，`ADMIN_DATABASE_URL` 必须为 `172.18.0.1:5433/fengyu_wxapp`
+   - 【DB assert ①】`PG_CONNECTION_STRING` 必须命中目标公网 IP（dev=101.34.242.103 / prod=118.178.196.26）；dev 的 `ADMIN_DATABASE_URL` 是容器网桥 `172.18.0.1:5433/fengyu_wxapp`（只在 101 宿主可用），prod 的必须命中 118.178.196.26 或已验证同机网桥
    - 扫描 `PLACEHOLDER`（尤其 `CLIENT_SERVICE_URL`）→ 命中则告警并问用户是否继续。
      - 说明：更新发版用 `code update` 不会把 PLACEHOLDER 重烤进函数 env；但若这是首次 provisioning 就会，需先在控制台补真实 URL（见 §8）。
    ```bash
    grep -E '^(ENV_PROFILE|ALLOW_TEST_OPENID|WXACODE_ENV_VERSION)=' envs/$ENV.env
    grep -q "$EXPECT_IP" <(grep '^PG_CONNECTION_STRING=' envs/$ENV.env) || { echo 'cloudfn PG 目标错误 ✗ 停' >&2; exit 1; }
    echo "cloudfn PG→$ENV($EXPECT_IP) ✓"
-   MIGRATE_KEY=PG_CONNECTION_STRING
+   MIGRATE_KEY=$([[ "$ENV" == dev ]] && echo PG_CONNECTION_STRING || echo ADMIN_DATABASE_URL)  # dev 的 ADMIN_DATABASE_URL 是容器网桥，本地迁移连不上
    MIGRATE_DATABASE_URL="$(grep -m1 "^${MIGRATE_KEY}=" "envs/$ENV.env" | cut -d= -f2- | tr -d '\r\"')"
    test -n "$MIGRATE_DATABASE_URL" || { echo "$MIGRATE_KEY 缺失 ✗ 停"; exit 1; }
-   node -e 'const u=new URL(process.argv[1]), h=process.argv[2]; if (u.hostname!==h || u.port!=="5433" || u.pathname!=="/fengyu_wxapp") process.exit(1); console.log(`migration DB→${u.hostname}:${u.port}${u.pathname} ✓`)' "$MIGRATE_DATABASE_URL" "$EXPECT_IP" || { echo 'migration DB 目标错误 ✗ 停' >&2; exit 1; }
+   node -e 'const u=new URL(process.argv[1]), h=process.argv[2]; const BAD=["host","hostaddr","port","dbname","database","options","service","passfile"].filter(k=>u.searchParams.has(k)); if(BAD.length){console.error("拒绝：query 参数 "+BAD.join(",")+" 会覆盖连接目标");process.exit(1)} if (u.hostname!==h || u.port!=="5433" || u.pathname!=="/fengyu_wxapp") process.exit(1); console.log(`migration DB→${u.hostname}:${u.port}${u.pathname} ✓`)' "$MIGRATE_DATABASE_URL" "$EXPECT_IP" || { echo 'migration DB 目标错误 ✗ 停' >&2; exit 1; }
    unset MIGRATE_DATABASE_URL
    grep -n 'PLACEHOLDER' envs/$ENV.env || echo 'no placeholder ✓'
    ```
-   （`$ENV` / `$EXPECT_IP` 执行时按上方事实表代入实际值。dev 的 `ADMIN_DATABASE_URL` 是容器网桥地址，本地迁移一律用 `PG_CONNECTION_STRING`。）
+   （`$ENV` / `$EXPECT_IP` 执行时按上方事实表代入实际值。）
 
-6. **【DB assert ②】admin / analyst 容器库**：remote-deploy 以本地 `envs/$ENV.env` 为唯一权威生成服务白名单 env；远端历史 `.env` 不再参与发布。`ADMIN_DATABASE_URL` 的容器目标必须为 prod=`118.178.196.26:5433/fengyu_wxapp`，dev 必须为 `172.18.0.1:5433/fengyu_wxapp`，并额外验证 dev SSH 宿主公网 IP=`101.34.242.103` 且 5433 正在监听。
+6. **【DB assert ②】admin / analyst 容器库**：remote-deploy 以本地 `envs/$ENV.env` 为唯一权威生成服务白名单 env；远端历史 `.env` 不再参与发布。`ADMIN_DATABASE_URL` 的容器目标：prod 为对应公网 IP，dev 必须为 `172.18.0.1:5433/fengyu_wxapp`，并额外验证 dev SSH 宿主公网 IP=`101.34.242.103` 且 5433 正在监听。
 
 7. **环境就绪**：
    ```bash
    docker info >/dev/null 2>&1 && echo 'docker ✓' || echo 'docker 未运行 ✗'
    ssh $SSH_HOST true && echo "$SSH_HOST 可达 ✓"
-   cat envs/.active   # 记录当前 env；发 prod 时 Phase 7 须恢复回此值
+   cat envs/.active   # 应为 prod（恒定）；§8 的「发完复位 dev」已作废，不要复位
    ```
 8. **工作树状态**：`git status --short`。脏工作树不再阻断，但必须展示文件清单；后续 Admin/Analyst 发布清单必须显示 `dirty.<fingerprint>`，prod 确认文本也必须包含该指纹。
 
@@ -150,10 +156,10 @@ git --no-pager diff fengyu-client/miniprogram/utils/version.ts fengyu-staff/mini
 此阶段必须在任何会读取新 schema 的 admin 或云函数代码上线前完成。每次均显式传入目标库 URL，**绝不**使用 `db/.env` 的默认连接，也不输出 URL 中的凭据。
 
 ```bash
-MIGRATE_KEY=PG_CONNECTION_STRING
+MIGRATE_KEY=$([[ "$ENV" == dev ]] && echo PG_CONNECTION_STRING || echo ADMIN_DATABASE_URL)  # dev 的 ADMIN_DATABASE_URL 是容器网桥，本地迁移连不上
 MIGRATE_DATABASE_URL="$(grep -m1 "^${MIGRATE_KEY}=" "envs/$ENV.env" | cut -d= -f2- | tr -d '\r\"')"
 test -n "$MIGRATE_DATABASE_URL" || { echo "$MIGRATE_KEY 缺失"; exit 1; }
-node -e 'const u=new URL(process.argv[1]), h=process.argv[2]; if (u.hostname!==h || u.port!=="5433" || u.pathname!=="/fengyu_wxapp") { console.error("migration DB target mismatch"); process.exit(1); } console.log(`migration DB→${u.hostname}:${u.port}${u.pathname} ✓`)' "$MIGRATE_DATABASE_URL" "$EXPECT_IP" || { echo 'migration DB 目标错误，停止发版。' >&2; exit 1; }
+node -e 'const u=new URL(process.argv[1]), h=process.argv[2]; const BAD=["host","hostaddr","port","dbname","database","options","service","passfile"].filter(k=>u.searchParams.has(k)); if(BAD.length){console.error("拒绝：query 参数 "+BAD.join(",")+" 会覆盖连接目标");process.exit(1)} if (u.hostname!==h || u.port!=="5433" || u.pathname!=="/fengyu_wxapp") { console.error("migration DB target mismatch"); process.exit(1); } console.log(`migration DB→${u.hostname}:${u.port}${u.pathname} ✓`)' "$MIGRATE_DATABASE_URL" "$EXPECT_IP" || { echo 'migration DB 目标错误，停止发版。' >&2; exit 1; }
 if ! DATABASE_URL="$MIGRATE_DATABASE_URL" npm --prefix db run db:migrate; then
   unset MIGRATE_DATABASE_URL
   echo 'db:migrate 失败，停止发版。' >&2
@@ -162,7 +168,7 @@ fi
 unset MIGRATE_DATABASE_URL
 ```
 
-- prod 在迁移前必须单独取得 `yes`；dev 由用户显式触发对应环境即视为确认。dev 迁移目标必须回显为 `101.34.242.103:5433/fengyu_wxapp`，绝不能使用容器网桥地址。
+- prod 在迁移前必须单独取得 `yes`；dev 由用户显式触发即视为确认。dev 迁移目标必须回显为 `101.34.242.103:5433/fengyu_wxapp`，绝不能使用容器网桥地址。
 - 命令 0 退出（包括“无 pending migration”）才可进入下一阶段；失败、网络中断或目标库断言失败都立即停止，**不**部署 admin 或云函数。
 - 不自动执行 baseline reset、journal 修复、DDL 回滚或数据回填。遇到这类历史/数据问题，停止并按 `db/CLAUDE.md` 的专项流程处理。
 
@@ -194,12 +200,17 @@ unset MIGRATE_DATABASE_URL
 ## §6 Phase 5 — 云函数发布（除非 `skip-cloudfn`；**串行，禁止并行**）
 
 ```bash
-scripts/use-env.sh $ENV          # 渲染 $ENV cloudbaserc + 写 .active=$ENV（ENV_PROFILE 守卫兜底）
-scripts/deploy-cloudfunctions.sh  # prod confirm + 串行双账号 + tcb fn code update ×3
+scripts/use-env.sh prod                  # 渲染 cloudbaserc + 写 .active=prod（ENV_PROFILE 守卫兜底）
+scripts/deploy-cloudfunctions.sh $ENV    # ⚠️ 必须带 $ENV：dev→只发影子函数 / prod→只发正式函数
 ```
-- `$ENV=prod` 时脚本有 confirm（输入 `yes`）；`$ENV=dev` 无 confirm。
-- 脚本内置 envId + PG host(IP) 双校验：prod 期望 118.178.196.26 / dev 期望 101.34.242.103，不符即中止（防跨环境污染）。
-- 逐个确认 `✓ staffApi deployed` → `✓ clientApi deployed` → `✓ payNotify deployed`。
+- **`$ENV` 在这一步是【通道】参数，不能省。** 省掉就是默认 `both`，
+  于是 `/release-all dev` 会把 3 个**正式函数**一起发上生产——正是影子函数架构要堵的那个泄漏。
+- **`.active` 恒为 `prod`**（所有函数都住 prod env），脚本会主动拒绝 `.active=dev`。
+  这里的 dev/prod 指【函数连哪个库】，与 `.active` 是两回事，别混。
+- 会动正式函数时才 confirm（输入 `yes`）；纯 `dev` 通道跳过。不确定发哪个通道时先跑 `--plan` 看计划。
+- PG host 校验按函数名分组且**期望值是绝对常量**：正式函数必须 118.178.196.26、影子函数必须 101.34.242.103，任一方向不符即中止。
+- 逐个确认 6 行 `✓ ... deployed`（`both` 时）：staffApi → staffApiDev → clientApi → payNotify → clientApiDev → payNotifyDev。
+- ⚠️ 影子函数首次上线后，还需在 CloudBase 控制台手建 `/cloudfunctions/clientApiDev` 与 `/lakala/notify-dev` 两条 HTTP 访问服务路径（`enableAuth:false`）。
 - **再次强调**：这步绝不开并行 agent（全局 auth.json 单例，并行会互相踢登录）。
 
 ---
@@ -212,21 +223,25 @@ scripts/deploy-cloudfunctions.sh  # prod confirm + 串行双账号 + tcb fn code
    ```bash
    ssh $SSH_HOST "docker exec fengyu-admin sh -c 'echo \$DATABASE_URL'" | sed -E 's#://[^@]+@#://***@#'
    ```
-   prod 必须命中 `118.178.196.26`；dev 允许 `172.18.0.1`，但必须同时验证宿主公网 IP=`101.34.242.103` 且 5433 正在监听。不符则报错并提示回滚。
+   prod 必须命中对应公网 IP；dev 允许 `172.18.0.1`，但必须同时验证宿主公网 IP=`101.34.242.103` 且 5433 正在监听。不符则报错并提示回滚。
 
 2. **analyst 终检**【DB assert ④】（除非传入 `skip-analyst`）：
    ```bash
    ssh $SSH_HOST "docker exec fengyu-analyst sh -c 'printf \"%s|%s\" \"\$DATABASE_URL\" \"\$NEXT_PUBLIC_ANALYST_ORIGIN\"'" | sed -E 's#://[^@]+@#://***@#'
    ```
-   - prod 的 `DATABASE_URL` host 必须为 `118.178.196.26`；dev 允许 `172.18.0.1`，但须同时验证宿主公网 IP=`101.34.242.103` 且 5433 正在监听。`NEXT_PUBLIC_ANALYST_ORIGIN` 必须等于 Phase 0 的 `ANALYST_PUBLIC_ORIGIN`。
+   - prod 的 `DATABASE_URL` host 必须为 `$EXPECT_IP`；dev 允许 `172.18.0.1`，但须同时验证宿主公网 IP=`101.34.242.103` 且 5433 正在监听。`NEXT_PUBLIC_ANALYST_ORIGIN` 必须等于 Phase 0 的 `ANALYST_PUBLIC_ORIGIN`。
    - 容器状态须为 `running`，`curl http://localhost:3001/` 必须为 `200` 或 `307`。
 
-3. **云函数 env 终检**【DB assert ⑤】：逐个 `getFunctionConfig`（cloudbase-mcp 或 `tcb fn detail <fn>`）核对**线上**值：
-   - 三端 `PG_CONNECTION_STRING` 都 → `$EXPECT_IP:5433/fengyu_wxapp`
-   - staffApi：`ALLOW_TEST_OPENID`（prod=false / dev=true）、`WXACODE_ENV_VERSION`（prod=release / dev=develop）、`CLIENT_SECRET` 非空
+3. **云函数 env 终检**【DB assert ⑤】：逐个 `getFunctionConfig`（cloudbase-mcp 或 `tcb fn detail <fn>`）核对**线上**值。
+   **按函数名区分，不再按 env 区分**——六个函数同住 prod env：
+   - 正式函数（`staffApi` / `clientApi` / `payNotify`）：`PG_CONNECTION_STRING` → `118.178.196.26:5433/fengyu_wxapp`、`DEPLOY_CHANNEL=primary`
+   - 影子函数（`*Dev`）：`PG_CONNECTION_STRING` → `101.34.242.103:5433/fengyu_wxapp`、`DEPLOY_CHANNEL=shadow`
+   - staffApi：`ALLOW_TEST_OPENID=false`、`WXACODE_ENV_VERSION=release`、`CLIENT_SECRET` 非空
+     （staffApiDev 对应 `true` / `develop`）
    - clientApi：`TMAP_KEY` / `TMAP_SECRET` 非空
-   - payNotify：`PG_CONNECTION_STRING`（启用支付时还需 `LAKALA_*`）
-   - envId 前缀：prod=`fengyu-*-prod-*` / dev=`cloud1-*`
+   - clientApi / payNotify（含 `*Dev`）：`PAYNOTIFY_FN_NAME` 必须与自身归属一致
+     （正式=`payNotify` / 影子=`payNotifyDev`）——运行时 fail-closed，缺失会静默跳过对账
+   - envId：两端都只剩 prod 前缀 `fengyu-*-prod-*`；`cloud1-*` 是已退役的 dev env，**线上不该再出现**
    - 注意：`code update` 不改 env，这些值由首次 provisioning 决定 —— 必须查线上，不能只信 envs/$ENV.env。
 
 4. **冒烟**：`tcb fn invoke staffApi`（空 payload）期望返回 **-401 UNAUTHORIZED**（证明函数运行 + DB 鉴权中间件生效）；返回 **-1** 也算通过（云函数冒烟常见，非 halt 信号）。
@@ -237,14 +252,19 @@ scripts/deploy-cloudfunctions.sh  # prod confirm + 串行双账号 + tcb fn code
 
 ---
 
-## §8 Phase 7 — 恢复 dev env（防呆，仅发 prod 时）
+## §8 Phase 7 — ~~恢复 dev env~~（已取消，2026-09-21）
 
-```bash
-# 仅当本次 $ENV=prod：
-scripts/use-env.sh dev
-```
-- 发 prod 后把 `cloudbaserc.json` 重渲染回 dev、`.active` 复位 dev，避免后续误操作打到 prod。
-- 发 dev 时保持 dev。
+**这一步不要再做了。** 原先发完 prod 会 `scripts/use-env.sh dev` 把 `.active` 复位回 dev，
+防的是「cloudbaserc 停在 prod 态导致后续误操作打到生产」。
+
+CloudBase 收缩到单环境后这个防呆失效且有害：
+
+- 所有函数都住 prod env，`.active` 恒为 `prod`，没有「另一个环境」可退回
+- `deploy-cloudfunctions.sh` 现在会**主动拒绝** `.active=dev`，复位反而让下次部署直接失败
+- 原先「别误打到生产」的保护，现在由**通道参数**承担：
+  `deploy-cloudfunctions.sh dev` 只动影子函数，压根碰不到正式函数
+
+发完 prod 保持 `.active=prod` 即可，无需任何复位动作。
 
 ---
 

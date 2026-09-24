@@ -648,25 +648,74 @@ export async function cascadeRefund(
     }
   }
 
-  // ── 5) 家居退款计入已结算（逐被退家居 item，按退款数量） ──
-  // 修复（家居提货账 schema-free 止血 2026-06-08）：退家居退的是「未提货」数量，
-  // 原 GREATEST(0, picked_up - qty) 错把退款数从已提货里减 → 损坏提货账 + refundable
-  // (=quantity-picked_up) 回升致可重复退（资损）。改为把已退数计入 picked_up（语义升级为
-  // 「已结算」= 已提货 + 已退），LEAST(quantity) 封顶，使 refundable 正确归零、不可超退。
-  // 代价：picked_up 不再纯指已物理提货（pickup_records 仍是真实提货源）；彻底分离待 refunded_quantity 列。
-  // 字段名 rolledBackPickups 保留（跨端 snapshot 守护），语义现为「计入已结算的家居退款行数」。
+  // ── 5) 家居退款计入 refunded_quantity（逐被退家居 item，按退款数量） ──
+  // 沿革：2026-06-08 止血把已退数并进 picked_up_quantity（原 GREATEST(0, picked_up - qty)
+  // 错把退款数从已提货里减 → 损坏提货账 + refundable 回升致可重复退，资损）；2026-09-14 #125
+  // 又把转换折抵也并进同一列。三语义共用一列的代价已在 #154 兑现，现拆为独立列：
+  //   picked_up_quantity  = 物理提货（与 pickup_records 守恒）
+  //   refunded_quantity   = 本通道写入
+  //   converted_quantity  = 转换折抵写入
+  // 派生「已结算」= 三者之和，`refundable = quantity − 已结算` 仍正确归零、不可超退。
+  //
+  // 同时把 LEAST(quantity, ...) 静默封顶换成守卫式加法：封顶会把「可退量已被提货/折抵吃掉」
+  // 这一冲突吞掉（影响行数原本只用于计数、不用于校验）。现改为 WHERE 带守卫，rowCount=0 抛 CONFLICT，
+  // 与 #125 折抵侧口径一致。
+  //
+  // ⚠ 预筛只用来判定「0 行意味着什么」，**不用来决定是否执行 UPDATE**：
+  // effItems 不带 product_type，疗程卡的 sessionCount 同样 > 0，若直接拿 rowCount=0 判冲突，
+  // 每一笔疗程卡退款都会被误判。但反过来用预筛决定「跳过」是 fail-open 的 ——
+  // 预筛结果一旦为空（driver 形状变化、mock 漂移），整条通道会静默 no-op，
+  // refunded_quantity 永不累加且不报错 → 可重复退（正是 2026-06-08 止血要堵的资损路径）。
+  // 现在 UPDATE 始终执行、由 SQL 里的 product_type 谓词做真正的过滤；预筛失灵最多退化成
+  // 「该抛的 CONFLICT 没抛」，即拆列前的旧行为，不会丢账。
+  //
+  // 两条 SQL 都带 sale_order_id：effItems 源自 note.items 的 refSaleItemId，历史脏数据可能
+  // 指向别单的家居行，而 approveRefund 的行锁只覆盖本单购买行 —— 不限定就会写坏别单的账。
+  //
+  // 字段名 rolledBackPickups 保留（跨端 snapshot 守护），语义现为「计入已退款的家居行数」。
   let rolledBackPickups = 0
+  const homeItemIds = new Set<string>()
+  if (effItems.length > 0) {
+    // 用 IN + sql.join 展开而不是 ANY(array)：drizzle 的 ANY 绑定数组在本文件踩过坑
+    // （退款级联 ANY→inArray 修复），raw sql 里展开成 IN 列表是确定可用的写法。
+    const idList = sql.join(effItems.map((it) => sql`${it.saleItemId}`), sql`, `)
+    const homeRes = await tx.execute(sql`
+      SELECT sale_item_id FROM sale_items
+       WHERE sale_item_id IN (${idList})
+         AND sale_order_id = ${saleOrderId}
+         AND product_type = '家居产品'
+    `)
+    for (const r of homeRes as unknown as Array<{ sale_item_id: string }>) {
+      homeItemIds.add(r.sale_item_id)
+    }
+  }
   for (const it of effItems) {
     const qty = it.sessionCount && Number(it.sessionCount) > 0 ? Number(it.sessionCount) : null
     if (!qty) continue
     const res = await tx.execute(sql`
       UPDATE sale_items
-         SET picked_up_quantity = LEAST(quantity, COALESCE(picked_up_quantity, 0) + ${qty}),
+         SET refunded_quantity = COALESCE(refunded_quantity, 0) + ${qty},
              updated_at = NOW()
        WHERE sale_item_id = ${it.saleItemId}
+         AND sale_order_id = ${saleOrderId}
          AND product_type = '家居产品'
+         AND (COALESCE(picked_up_quantity, 0) + COALESCE(refunded_quantity, 0)
+              + COALESCE(converted_quantity, 0) + ${qty}) <= quantity
     `)
-    rolledBackPickups += rowsAffected(res)
+    const affected = rowsAffected(res)
+    if (affected === 0) {
+      // 只有「确属本单家居行」才是守卫没过；非家居行本就该 0 行，正常跳过
+      if (homeItemIds.has(it.saleItemId)) {
+        throw new Error('CONFLICT: HOME_REFUND_SETTLED_EXCEEDED: 家居可退数量已被提货或转换占用，请刷新后重新发起退款')
+      }
+      // 0 行且不在本单家居集合里：要么不是家居行（正常），要么 note.items 的 refSaleItemId
+      // 指向了别单（脏数据）。后者款照退、账未记且此前无任何痕迹，留一条日志供排查。
+      console.warn('[cascadeRefund] 通道5 跳过：未命中本单家居行', {
+        saleOrderId, saleItemId: it.saleItemId, qty,
+      })
+      continue
+    }
+    rolledBackPickups += affected
   }
 
   return {

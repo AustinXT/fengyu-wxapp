@@ -19,6 +19,7 @@ import { DataTable, type Column } from "@/components/ui/data-table"
 import { Pagination } from "@/components/ui/pagination"
 import { formatPhone, formatDateTime } from "@/lib/utils"
 import { ExportButton } from "@/components/ui/export-button"
+import { normalizePage } from "@/lib/paging"
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50, 100]
 
@@ -63,7 +64,7 @@ export default function PointsPage({
   const typeFilter = get("type")
   const startDate = get("start")
   const endDate = get("end")
-  const currentPage = Math.max(1, Number(get("page", "1")) || 1)
+  const currentPage = normalizePage(get("page", "1"))
   const pageSize = PAGE_SIZE_OPTIONS.includes(Number(get("size"))) ? Number(get("size")) : 20
 
   // 搜索防抖

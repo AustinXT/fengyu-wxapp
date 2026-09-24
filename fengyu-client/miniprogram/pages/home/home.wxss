@@ -92,6 +92,7 @@
   font-size: 26rpx;
   font-weight: 500;
   color: var(--color-primary);
+  display: block;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -313,6 +314,17 @@
   box-sizing: border-box;
 }
 
+/* issue #248：封面槽位。尺寸固定，内部 <image>/占位切换时卡片高度与滚动位置不变。
+   浏览列表与搜索结果各用一套 class —— 两个相交观察器按 class 区分各自的列表，
+   共用同一个 class 会让其中一个把另一个列表的下标写错位。 */
+.spu-cover-slot,
+.search-cover-slot {
+  width: 250rpx;
+  height: 160rpx;
+  flex-shrink: 0;
+  display: block;
+}
+
 .spu-cover {
   width: 250rpx;
   height: 160rpx;
@@ -415,11 +427,6 @@
 }
 
 /* ===== 加载提示 ===== */
-.load-more-hint {
-  display: flex;
-  justify-content: center;
-  padding: 24rpx 0;
-}
 
 /* ===== 右下角悬浮购物车按钮 ===== */
 .cart-fab {

@@ -2,6 +2,7 @@
 import { callStaffApi, StaffApiError } from '../../utils/cloud';
 import { getCurrentStoreId, isManager } from '../../utils/role';
 import { formatDateTime, formatDate, ORDER_TYPE_LABEL, formatDiscount } from '../../utils/formatters';
+import { formatAmount } from '../../utils/number';
 import { MemberLevelBadgeData, withMemberLevelBadgeClass } from '../../utils/member-level-badge';
 import { collectSourceOrderRemarks, expandGroupServiceSessions, getTreatmentCardBusinessIdentity, groupTreatmentCards, SourceOrderRemark, sumGroupValue } from '../../utils/treatment-card-group';
 
@@ -183,6 +184,8 @@ interface PaidOrderItem {
   saleAmount?: string;
   received?: string;
   pendingReceived?: string;
+  /** 行级欠款；仅订单未付清且该卡未买满次数时有值，否则 null */
+  unpaidAmount?: number | null;
   expireDate?: string | null;
   remark?: string | null;
   salesCategory?: string | null;
@@ -311,6 +314,10 @@ interface TreatmentCard {
   saleAmount?: string;
   received?: string;
   pendingReceived?: string;
+  /** 行级欠款；仅订单未付清且该卡未买满次数时有值，否则 null */
+  unpaidAmount?: number | null;
+  /** 预格式化的欠款文案（千分位）；空串表示不展示 */
+  unpaidAmountFmt?: string;
   expireDate?: string | null;
   remark?: string | null;
   salesCategory?: string | null;
@@ -336,14 +343,19 @@ interface HomeProduct {
   paidQuantity: number;
   pickedQuantity: number;
   refundedQuantity: number;
+  /** 已通过转换单折抵转走的数量（#125，与已退款分列） */
+  convertedQuantity: number;
   remainingQuantity: number;
   pendingPickupQuantity: number;
+  /** 行级欠款；仅 refundedQuantity=0 时有值，退过款的行为 null（received 是净实收，相减会虚增欠款） */
+  unpaidAmount: number | null;
   status: string;
   storeId: string;
   storeName: string | null;
   purchasedAt: string;
   purchasedAtFmt?: string;
   statusClass?: string;
+  unpaidAmountFmt?: string;
 }
 
 // Tab 4: 服务记录
@@ -727,9 +739,10 @@ Page({
           const paidUnused = Math.max(paid - used, 0);
           const unpaid = Math.max(total - paid, 0);
           const consumable = Math.max(0, Math.min(remain, paid - used));
-          // D6=A：paid_sessions=0 或 已用满已付 → 整张卡锁死，不显示
-          // NULL 卡（0040 前未回填的历史卡）：保留但 disabled 灰显不可核销
-          if (!isNullCard && consumable <= 0) continue;
+          // issue #122：可用次数 0 的卡不再整张隐藏——顾客买了卡却在档案里看不到。
+          // 改为照常展示（可用 0 + 待付清标注），靠 disabled 拦住核销入口；
+          // NULL 卡（0040 前未回填的历史卡）同样保留为 disabled 灰显。
+          const notConsumable = !isNullCard && consumable <= 0;
           const pct = (n: number) => (total > 0 ? Math.round((n / total) * 1000) / 10 : 0);
           cards.push({
             saleItemId: item.saleItemId,
@@ -777,8 +790,14 @@ Page({
             saleOrderTypeLabel: ORDER_TYPE_LABEL[order.saleOrderType || ''] || order.saleOrderType || '',
             selected: false,
             sessionCount: 1,
-            disabled: isNullCard,
-            disabledReason: isNullCard ? '历史卡未回填,不可核销' : '',
+            unpaidAmount: item.unpaidAmount ?? null,
+            // 可用次数 0 的卡可见但不可核销，避免勾选后 expandGroupServiceSessions 返回空、点击无反应
+            disabled: isNullCard || notConsumable,
+            disabledReason: isNullCard
+              ? '历史卡未回填,不可核销'
+              : notConsumable
+                ? '可用次数为 0,付清后可核销'
+                : '',
           });
         }
       }
@@ -825,10 +844,20 @@ Page({
           usedPct: pct(usedSessions),
           paidUnusedPct: pct(paidUnusedSessions),
           unpaidPct: pct(unpaidSessions),
+          // 组内欠款累加；整组都算不出欠款（已付清/寄存单/NULL 卡）时保持 null 不展示
+          unpaidAmount: group.sourceItems.some((card: TreatmentCard) => card.unpaidAmount != null)
+            ? sumGroupValue(group, (card) => card.unpaidAmount ?? 0)
+            : null,
+          unpaidAmountFmt: '',
           selected: false,
           sessionCount: 1,
         };
-      });
+      }).map((card) => ({
+        ...card,
+        // 小程序 toLocaleString 不可靠（ICU 精简），金额走 formatAmount（toFixed + 千分位）
+        unpaidAmountFmt:
+          card.unpaidAmount != null && card.unpaidAmount > 0 ? formatAmount(card.unpaidAmount) : '',
+      }));
       this.applyTreatmentCardFilters(groupedCards, {
         productKind: '',
         categoryId: '',
@@ -915,12 +944,16 @@ Page({
         部分提货: 'progress',
         已提货: 'success',
         已完成: 'done',
+        待付清: 'pending',
       };
       this.setData({
         homeProducts: rows.map((item) => ({
           ...item,
           purchasedAtFmt: item.purchasedAt ? formatDate(item.purchasedAt) : '',
           statusClass: statusClassMap[item.status] || 'done',
+          // 仅未付清的行展示欠款；已付清/退过款的行留空，wxml 按空串判显隐
+          unpaidAmountFmt:
+            item.unpaidAmount != null && item.unpaidAmount > 0 ? formatAmount(item.unpaidAmount) : '',
         })),
         homeProductsLoaded: true,
       });
