@@ -182167,13 +182167,69 @@ function exportCloudPath(jobId, fileName) {
 
 // src/export-worker/xlsx-writer.ts
 var import_exceljs = __toESM(require_excel(), 1);
+
+// src/lib/data-center/matrix.ts
+function buildMatrixHeaderLayout(columns3) {
+  const groupStartKeys = new Set;
+  const grouped = columns3.some((column2) => column2.group);
+  if (!grouped) {
+    return {
+      depth: 1,
+      rows: [columns3.map((column2, index3) => ({
+        key: column2.key,
+        columnKey: column2.key,
+        colSpan: 1,
+        rowSpan: 1,
+        firstLeafIndex: index3
+      }))],
+      groupStartKeys
+    };
+  }
+  const top = [];
+  const bottom = [];
+  const closedGroups = new Set;
+  let current = null;
+  columns3.forEach((column2, index3) => {
+    const groupKey2 = column2.group?.key;
+    if (current && current.groupKey !== groupKey2) {
+      closedGroups.add(current.groupKey);
+      current = null;
+    }
+    if (!groupKey2) {
+      top.push({ key: column2.key, columnKey: column2.key, colSpan: 1, rowSpan: 2, firstLeafIndex: index3 });
+      return;
+    }
+    if (current) {
+      current.colSpan += 1;
+    } else {
+      if (closedGroups.has(groupKey2)) {
+        throw new Error(`INVALID_STATE: 矩阵表分组「${groupKey2}」的列不相邻`);
+      }
+      current = { key: `group:${groupKey2}`, groupKey: groupKey2, colSpan: 1, rowSpan: 1, firstLeafIndex: index3 };
+      top.push(current);
+      groupStartKeys.add(column2.key);
+    }
+    bottom.push({ key: column2.key, columnKey: column2.key, colSpan: 1, rowSpan: 1, firstLeafIndex: index3 });
+  });
+  return { depth: 2, rows: [top, bottom], groupStartKeys };
+}
+
+// src/export-worker/xlsx-writer.ts
+var EXPORT_META_SHEET_NAME = "导出说明";
 var XLSX_ROWS_PER_SHEET = 1e6;
 function safeSheetName(input, sequence3) {
   const suffix = sequence3 === 1 ? "" : `-${sequence3}`;
-  const base = input.replace(/[\\/?*\[\]:]/g, " ").trim() || "导出数据";
+  let base = input.replace(/[\\/?*\[\]:]/g, " ").trim() || "导出数据";
+  if (base.toLowerCase() === EXPORT_META_SHEET_NAME.toLowerCase())
+    base = `${base}数据`;
   return `${base.slice(0, Math.max(1, 31 - suffix.length))}${suffix}`;
 }
 async function writeStreamXlsx(options) {
+  const layout = buildMatrixHeaderLayout(options.columns.map((column2, index3) => ({ key: String(index3), group: column2.group })));
+  const rawFrozen = Math.floor(Number(options.frozenColumns ?? 0));
+  const frozenColumns = Number.isFinite(rawFrozen) ? Math.min(Math.max(0, rawFrozen), options.columns.length) : 0;
+  const groupStarts = new Set([...layout.groupStartKeys].map(Number));
+  const rowsPerSheet = Math.min(XLSX_ROWS_PER_SHEET, Math.max(1, Math.floor(options.rowsPerSheet ?? XLSX_ROWS_PER_SHEET)));
   const workbook = new import_exceljs.default.stream.xlsx.WorkbookWriter({
     filename: options.filePath,
     useStyles: true,
@@ -182182,35 +182238,115 @@ async function writeStreamXlsx(options) {
   let rowCount = 0;
   let sheetCount = 0;
   let rowsInSheet = 0;
-  const rowsPerSheet = Math.min(XLSX_ROWS_PER_SHEET, Math.max(1, Math.floor(options.rowsPerSheet ?? XLSX_ROWS_PER_SHEET)));
   const createSheet = () => {
     sheetCount += 1;
     rowsInSheet = 0;
-    const worksheet2 = workbook.addWorksheet(safeSheetName(options.sheetName, sheetCount), {
-      views: [{ state: "frozen", ySplit: 1 }]
+    const worksheet = workbook.addWorksheet(safeSheetName(options.sheetName, sheetCount), {
+      views: [{ state: "frozen", ySplit: layout.depth, ...frozenColumns > 0 ? { xSplit: frozenColumns } : {} }]
     });
-    worksheet2.columns = options.columns.map((column2) => ({ width: column2.width ?? 16 }));
-    const header = worksheet2.addRow(options.columns.map((column2) => column2.header));
-    header.font = { bold: true };
-    header.commit();
-    return worksheet2;
-  };
-  let worksheet = createSheet();
-  for await (const sourceRow of options.rows) {
-    if (rowsInSheet >= rowsPerSheet) {
-      worksheet.commit();
-      worksheet = createSheet();
+    worksheet.columns = options.columns.map((column2) => ({
+      width: column2.width ?? 16,
+      ...column2.numFmt ? { style: { numFmt: column2.numFmt } } : {}
+    }));
+    const headerRows = layout.rows.map(() => worksheet.addRow([]));
+    layout.rows.forEach((cells, rowIndex) => {
+      for (const cell of cells) {
+        const target = headerRows[rowIndex].getCell(cell.firstLeafIndex + 1);
+        target.value = cell.groupKey ? options.columns[cell.firstLeafIndex].group.header : options.columns[cell.firstLeafIndex].header;
+        if (layout.depth === 2) {
+          target.alignment = { vertical: "middle", horizontal: cell.groupKey ? "center" : undefined };
+        }
+        if (cell.groupKey || groupStarts.has(cell.firstLeafIndex)) {
+          target.border = { left: { style: "thin" } };
+        }
+      }
+    });
+    for (const cell of layout.rows[0]) {
+      if (cell.colSpan > 1 || cell.rowSpan > 1) {
+        const column2 = cell.firstLeafIndex + 1;
+        worksheet.mergeCells(1, column2, cell.rowSpan, column2 + cell.colSpan - 1);
+      }
     }
-    const values2 = options.columns.map((column2) => column2.value(sourceRow) ?? "");
-    worksheet.addRow(values2).commit();
-    rowsInSheet += 1;
-    rowCount += 1;
-    if (rowCount % 1000 === 0)
-      await options.onProgress?.(rowCount);
+    for (const header of headerRows) {
+      header.font = { bold: true };
+      header.commit();
+    }
+    return worksheet;
+  };
+  try {
+    let worksheet = createSheet();
+    for await (const sourceRow of options.rows) {
+      if (rowsInSheet >= rowsPerSheet) {
+        worksheet.commit();
+        worksheet = createSheet();
+      }
+      const values2 = options.columns.map((column2) => column2.value(sourceRow) ?? "");
+      const row = worksheet.addRow(values2);
+      if (options.isEmphasisRow?.(sourceRow))
+        row.font = { bold: true };
+      row.commit();
+      rowsInSheet += 1;
+      rowCount += 1;
+      if (rowCount % 1000 === 0)
+        await options.onProgress?.(rowCount);
+    }
+    if (options.totalsLabel !== undefined && rowCount > 0) {
+      const totals = worksheet.addRow(options.columns.map((column2, index3) => index3 === 0 ? options.totalsLabel : column2.total ?? ""));
+      totals.font = { bold: true };
+      totals.eachCell((cell) => {
+        cell.border = { top: { style: "thin" } };
+      });
+      totals.commit();
+    }
+    worksheet.commit();
+    if (options.meta && options.meta.length > 0) {
+      const metaSheet = workbook.addWorksheet(EXPORT_META_SHEET_NAME);
+      metaSheet.columns = [{ width: 18 }, { width: 48 }];
+      for (const entry of options.meta) {
+        const row = metaSheet.addRow([entry.label, entry.value]);
+        row.getCell(1).font = { bold: true };
+        row.commit();
+      }
+      metaSheet.commit();
+    }
+    await workbook.commit();
+  } catch (error) {
+    const internals = workbook;
+    internals.zip?.abort?.();
+    internals.stream?.destroy?.();
+    throw error;
   }
-  worksheet.commit();
-  await workbook.commit();
   return { rowCount, sheetCount };
+}
+
+// src/export-worker/export-meta.ts
+init_datetime();
+function required(label, value2) {
+  const trimmed = (value2 ?? "").trim();
+  if (!trimmed)
+    throw new Error(`INVALID_STATE: 导出元信息缺少${label}`);
+  return trimmed;
+}
+function completeExportMeta(meta, audit) {
+  if (!meta)
+    return;
+  const basePeriod = meta.basePeriod?.trim();
+  return [
+    { label: "时间区间", value: meta.period === null ? "不限（仅按范围）" : required("时间区间", meta.period) },
+    { label: "范围", value: required("范围", meta.scope) },
+    ...basePeriod ? [{ label: "基期区间", value: basePeriod }] : [],
+    ...meta.extra ?? [],
+    { label: "导出时间", value: fmtDateTime(audit.generatedAt) || "—" },
+    { label: "导出人", value: audit.exporterName?.trim() || "—" }
+  ];
+}
+
+// src/export-worker/retry-policy.ts
+var DETERMINISTIC_FAILURE_CODES = new Set(["INVALID_PARAMS", "INVALID_STATE"]);
+function shouldRetryExportFailure(code, attemptCount, maxAttempts) {
+  if (DETERMINISTIC_FAILURE_CODES.has(code))
+    return false;
+  return attemptCount < maxAttempts;
 }
 
 // src/lib/worker-heartbeat.ts
@@ -182371,7 +182507,7 @@ function safeFailure(err) {
 }
 async function failJob(job, err) {
   const failure = safeFailure(err);
-  const shouldRetry = job.attemptCount < MAX_ATTEMPTS;
+  const shouldRetry = shouldRetryExportFailure(failure.code, job.attemptCount, MAX_ATTEMPTS);
   await db2.update(adminExportJobs).set({
     status: shouldRetry ? "queued" : "failed",
     nextAttemptAt: shouldRetry ? new Date(Date.now() + job.attemptCount * 30000) : new Date,
@@ -182441,6 +182577,10 @@ async function processJob(job) {
         sheetName: content.sheetName,
         columns: content.columns,
         rows: content.rows,
+        frozenColumns: content.frozenColumns,
+        totalsLabel: content.totalsLabel,
+        isEmphasisRow: content.isEmphasisRow,
+        meta: completeExportMeta(content.meta, { generatedAt: new Date, exporterName: session4.name }),
         onProgress: async (rowCount) => {
           if (rowCount - lastProgress < 1000)
             return;
