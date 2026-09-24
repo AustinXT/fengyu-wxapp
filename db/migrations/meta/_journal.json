@@ -351,6 +351,13 @@
       "when": 1790239563071,
       "tag": "0049_purchase_order_all_lines_inbound",
       "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "7",
+      "when": 1790292915260,
+      "tag": "0050_commission_price_threshold",
+      "breakpoints": true
     }
   ]
 }

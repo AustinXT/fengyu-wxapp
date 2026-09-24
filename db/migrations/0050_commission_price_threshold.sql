@@ -1,0 +1,4 @@
+ALTER TABLE "commission_rate_matrix" ADD COLUMN "price_threshold" numeric(10, 2);--> statement-breakpoint
+-- #379 默认阈值 100：仅服务单的自销自耗 / 他销自耗行（09-18 会议拍板；按区域差异由 admin 矩阵页逐行改）
+UPDATE "commission_rate_matrix" SET "price_threshold" = 100 WHERE "order_type" = '服务单' AND "sales_category" IN ('自销自耗', '他销自耗');--> statement-breakpoint
+ALTER TABLE "commission_rate_matrix" ADD CONSTRAINT "chk_commission_matrix_price_threshold" CHECK ("commission_rate_matrix"."price_threshold" IS NULL OR ("commission_rate_matrix"."price_threshold" >= 0 AND "commission_rate_matrix"."order_type" = '服务单' AND "commission_rate_matrix"."sales_category" IN ('自销自耗', '他销自耗')));
