@@ -98,7 +98,12 @@ function FloatingHint({ content, children, className }: {
 
   const show = () => {
     const rect = triggerRef.current?.getBoundingClientRect()
-    if (rect) setPosition({ left: rect.left + rect.width / 2, top: rect.top })
+    if (!rect) return
+    // 浮层最宽 320px、以触发点居中：把中心夹在视口内，贴边的列头说明不会被窗口边缘截断
+    const half = 160 + 8
+    const center = rect.left + rect.width / 2
+    const left = window.innerWidth > half * 2 ? Math.min(Math.max(center, half), window.innerWidth - half) : center
+    setPosition({ left, top: rect.top })
   }
   const hide = () => setPosition(null)
 
@@ -116,7 +121,7 @@ function FloatingHint({ content, children, className }: {
         <div
           role="tooltip"
           style={{ left: position.left, top: position.top }}
-          className="pointer-events-none fixed z-[100] max-w-[320px] -translate-x-1/2 -translate-y-[calc(100%+6px)] whitespace-normal rounded-[var(--radius)] bg-[var(--foreground)] px-3 py-1.5 text-xs leading-relaxed text-[var(--background)] shadow-md"
+          className="pointer-events-none fixed z-[100] w-max max-w-[320px] -translate-x-1/2 -translate-y-[calc(100%+6px)] whitespace-normal rounded-[var(--radius)] bg-[var(--foreground)] px-3 py-1.5 text-xs leading-relaxed text-[var(--background)] shadow-md"
         >
           {content}
         </div>,
@@ -314,6 +319,9 @@ function MatrixTable<T>({
                   const group = cell.groupKey ? columns[cell.firstLeafIndex].group : undefined
                   // 分组格跨多列：只要首列冻结就按首列吸附（分组不会跨越冻结边界，否则冻结列不是前缀）
                   const position = frozen.get(columns[cell.firstLeafIndex].key)
+                  const weekend = column
+                    ? column.weekend
+                    : columns.slice(cell.firstLeafIndex, cell.firstLeafIndex + cell.colSpan).every((leaf) => leaf.weekend)
                   return (
                     <th
                       key={cell.key}
@@ -325,7 +333,7 @@ function MatrixTable<T>({
                       className={cn(
                         "sticky border-b border-[var(--border)] px-3 align-middle text-xs font-medium whitespace-nowrap text-[var(--muted-foreground)]",
                         position ? "z-30" : "z-20",
-                        column?.weekend ? "bg-[#F0EFEA]" : "bg-[var(--muted)]",
+                        weekend ? "bg-[#F0EFEA]" : "bg-[var(--muted)]",
                         group ? "text-center" : alignClass(column?.align),
                         (group || (column && layout.groupStartKeys.has(column.key))) && "border-l border-l-[var(--border)]",
                         position && frozenEdgeClass(columns[cell.firstLeafIndex].key),
