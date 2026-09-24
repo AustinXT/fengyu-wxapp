@@ -30,7 +30,7 @@ import {
   type Verdict,
 } from './_helpers/env'
 import { closeCutoverGate, openCutoverGate, readCutoverStatus } from './_helpers/cutover'
-import { pickSku } from './_helpers/ui'
+import { pickCandidateDoc, pickSku } from './_helpers/ui'
 
 test.setTimeout(420_000)
 
@@ -163,9 +163,7 @@ test('INV-02：门禁 fail-closed → 开闸 → 供应链备货', async ({ brow
     await expect(page.getByRole('heading', { name: '采购订单' })).toBeVisible({ timeout: 15_000 })
 
     const PO_REMARK = `${NS}-供应链采购-${STAMP}`
-    const sourceRow = page.locator('label').filter({ hasText: reqId }).first()
-    await sourceRow.waitFor({ state: 'visible', timeout: 20_000 })
-    await sourceRow.locator('input[type="checkbox"]').check()
+    await pickCandidateDoc(page, '来源报货单', reqId)
     await page.waitForTimeout(1500)   // 勾选后要拉明细
     await selectByLabel(page, '供应链库存主体', { label: '品牌总部' })
     await fillByLabel(page, '采购数量', '100')
@@ -208,7 +206,7 @@ test('INV-02：门禁 fail-closed → 开闸 → 供应链备货', async ({ brow
 
     const GRK_REMARK = `${NS}-供应链入库-${STAMP}`
     const BATCH_NO = `${NS}-B${STAMP}`
-    await selectByLabel(page, '采购订单', { contains: poId })
+    await pickCandidateDoc(page, '采购订单', poId)
     await page.waitForTimeout(1500)
     // 「供应链库存主体」不可由操作人自由改：候选唯一时直接是只读展示（#189），
     // 候选多个时也会在选定采购订单后 disabled={Boolean(doc)} 随单锁定。

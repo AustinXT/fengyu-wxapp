@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useContext, useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 import {
@@ -59,6 +59,7 @@ import type { MarketPromotionQuoteResult, ReceiveShipmentInFullInput } from '@/l
 import {
   confirmInventoryCoreReceive,
   getInventoryCoreDocById,
+  getInventoryCoreDocsByIds,
   listInventoryOperationDocs,
 } from '@/actions/inventory/docs'
 import { listInventorySkus } from '@/actions/inventory/skus'
@@ -98,6 +99,7 @@ import {
   parseInventoryOperationsTab,
 } from '@/lib/inventory/operation-return'
 import { DocActionDialog, type DocActionPending, type DocActionSpec } from './doc-action-dialog'
+import { DocCandidateReloadContext, InventoryDocCandidatePicker } from './inventory-doc-candidate-picker'
 import { InventoryDocCreateForm } from './inventory-doc-create-form'
 import { InventorySkuSearchSelect } from './inventory-sku-search-select'
 import InventorySubjectSelect from '@/components/inventory-subject-select'
@@ -281,14 +283,6 @@ function nonnegativeNumber(value: string): number | null {
   return Number.isFinite(result) && result >= 0 ? result : null
 }
 
-function formatDoc(doc: InventoryDocRow): string {
-  return `${doc.id} · ${doc.docDate.slice(0, 10)} · ${inventoryDocStatusLabel(doc)}`
-}
-
-function docCandidates(docs: InventoryDocRow[], docType: InventoryDocRow['docType'], status?: string) {
-  return docs.filter((doc) => doc.docType === docType && doc.status !== '已取消' && (!status || doc.status === status))
-}
-
 function hasAvailableQuantity(item: InventoryDocDetail['items'][number]) {
   return remainingQuantity(item) > 0.000001
 }
@@ -414,63 +408,6 @@ function OperationHeader({
         关闭
       </Button>
     </div>
-  )
-}
-
-function DocPicker({
-  label,
-  docs,
-  value,
-  current = null,
-  onChange,
-  disabled = false,
-  required = false,
-}: {
-  label: string
-  docs: InventoryDocRow[]
-  value: string
-  /**
-   * 当前选中的那张单据本身（各表单 `useLoadedDocument()` 拿到的 `doc`）。
-   * 只用于「选中值不在 `docs` 里」时补一条选项，见下方 `selectedMissing`。
-   */
-  current?: InventoryDocRow | null
-  onChange: (value: string) => void
-  disabled?: boolean
-  required?: boolean
-}) {
-  /*
-   * 选中值不在候选集里的兜底（#192）。
-   *
-   * 两边口径本来就不一样：`docs` 来自 RSC 传下来的 `workflowDocs`，那是页面服务端
-   * 按 `page: 1, pageSize: 100` 拉的一页 —— **全类型混排的最近 100 张**；
-   * 而 `value` 可能来自待办区「去收货」的预选券，待办段是服务端按类型 + 状态**全量分页**查的。
-   * 长期挂着的待收货单大概率就落在那 100 张之外。
-   *
-   * `<select value={x}>` 匹配不到任何 `<option>` 时，浏览器落到 `selectedIndex = -1`：
-   * 表现是**下拉一片空白、下方明细表却已经加载好**，既没有报错也没有任何提示，
-   * 用户只会以为跳转失败。同一条路还能被正常路径踩到 —— 选好一张单之后
-   * 行内动作 / 建单成功触发 `router.refresh()`，这张单的状态变了就会掉出
-   * `docCandidates` 的状态过滤，下拉同样归空。
-   *
-   * 所以：选中值没有对应选项时就地补一条。有 `current` 就用它的完整文案；
-   * 还在加载（`current` 尚为 null）时先用单号占位，保证 select 任何时刻都有选中项。
-   *
-   * ⚠️ 这只治**显示**：候选集本身仍是最近 100 张混排，正常路径下更老的单在下拉里
-   * 依旧翻不出来、选不到。要根治得让服务端按 docType + status 出候选（PR follow-up）。
-   */
-  const selectedMissing = value !== '' && !docs.some((doc) => doc.id === value)
-  return (
-    <FormField label={label} required={required}>
-      <Select value={value} onChange={(event) => onChange(event.target.value)} disabled={disabled}>
-        <option value="">请选择</option>
-        {selectedMissing && (
-          <option value={value}>{current && current.id === value ? formatDoc(current) : value}</option>
-        )}
-        {docs.map((doc) => (
-          <option key={doc.id} value={doc.id}>{formatDoc(doc)}</option>
-        ))}
-      </Select>
-    </FormField>
   )
 }
 
@@ -655,7 +592,6 @@ export default function InventoryOperationsPage({
   locations,
   marketTransferTargets,
   suppliers,
-  workflowDocs,
   canCreate,
   canApprove,
   canSelfPurchase,
@@ -670,7 +606,6 @@ export default function InventoryOperationsPage({
   /** 市场间调货出库的接收主体候选（#340），只喂给通用建单表单，见其同名 prop */
   marketTransferTargets?: readonly InventoryMarketTransferTarget[]
   suppliers: InventorySupplierRow[]
-  workflowDocs: InventoryDocRow[]
   canCreate: boolean
   canApprove: boolean
   canSelfPurchase: boolean
@@ -908,7 +843,6 @@ export default function InventoryOperationsPage({
               locations={locations}
               marketTransferTargets={marketTransferTargets}
               suppliers={suppliers}
-              workflowDocs={workflowDocs}
               canViewPrice={canViewPrice}
               onClose={() => { setPendingDocsTabFor(null); setActiveOperation(null) }}
               onSuccess={afterSuccess}
@@ -930,7 +864,6 @@ function OperationWorkspace({
   locations,
   marketTransferTargets,
   suppliers,
-  workflowDocs,
   canViewPrice,
   onClose,
   onSuccess,
@@ -952,7 +885,6 @@ function OperationWorkspace({
   locations: InventoryLocationRow[]
   marketTransferTargets?: readonly InventoryMarketTransferTarget[]
   suppliers: InventorySupplierRow[]
-  workflowDocs: InventoryDocRow[]
   canViewPrice: boolean
   onClose: () => void
   onSuccess: (message: string) => void
@@ -990,7 +922,22 @@ function OperationWorkspace({
     setPrefill((previous) => ({ docId, token: (previous?.token ?? 0) + 1 }))
     setTab('form')
   }, [])
+  /*
+   * 候选单列表的重取信号（#338）：候选改成客户端服务端检索后，`router.refresh()` 刷不到它，
+   * 建单成功（表单侧）与待办行内动作成功（单据 Tab 侧）都要 bump，否则刚办完的单
+   * 仍挂在候选里、剩余量也是旧的。
+   */
+  const [candidateVersion, setCandidateVersion] = useState(0)
+  const candidateReload = useMemo(
+    () => ({ version: candidateVersion, bump: () => setCandidateVersion((version) => version + 1) }),
+    [candidateVersion],
+  )
+  const handleSuccess = useCallback((message: string) => {
+    setCandidateVersion((version) => version + 1)
+    onSuccess(message)
+  }, [onSuccess])
   return (
+    <DocCandidateReloadContext.Provider value={candidateReload}>
     <div className="space-y-5">
       <OperationHeader title={card.title} onClose={onClose} closeDisabled={busy} />
       {/*
@@ -1038,7 +985,7 @@ function OperationWorkspace({
               marketTransferTargets={marketTransferTargets}
               initialDocType={card.docType}
               allowedDocTypes={[card.docType]}
-              onSuccess={(docId) => onSuccess(`${card.title}单据已创建：${docId}`)}
+              onSuccess={(docId) => handleSuccess(`${card.title}单据已创建：${docId}`)}
               /*
                * 只刷新，**不能**接 onSuccess —— 那会在提交失败时弹一条绿色「成功」，
                * 跟共享组件自己弹的红色错误 toast 同屏打架。
@@ -1053,28 +1000,28 @@ function OperationWorkspace({
               )}
             />
           )}
-          {operation === 'store-request' && <StoreRequestForm locations={locations} onSuccess={onSuccess} />}
-          {operation === 'market-report' && <MarketReportForm locations={locations} canViewPrice={canViewPrice} onSuccess={onSuccess} />}
-          {operation === 'item-company-request' && <ItemCompanyReplenishmentForm locations={locations} onSuccess={onSuccess} />}
-          {operation === 'purchase-order' && <PurchaseOrderForm locations={locations} workflowDocs={workflowDocs} canViewPrice={canViewPrice} onSuccess={onSuccess} />}
-          {operation === 'market-report-summary' && <MarketReportSummaryForm locations={locations} onSuccess={onSuccess} />}
-          {operation === 'company-shipment' && <CompanyShipmentForm locations={locations} workflowDocs={workflowDocs} onSuccess={onSuccess} />}
-          {operation === 'market-receipt' && <ShipmentReceiptForm workflowDocs={workflowDocs} kind="market" prefill={prefill} onSuccess={onSuccess} />}
-          {operation === 'supply-chain-receipt' && <SupplyChainPurchaseReceiptForm locations={locations} workflowDocs={workflowDocs} canViewPrice={canViewPrice} prefill={prefill} onSuccess={onSuccess} />}
-          {operation === 'supply-chain-purchase-cancel' && <SupplyChainPurchaseCancelForm workflowDocs={workflowDocs} prefill={prefill} onSuccess={onSuccess} />}
-          {operation === 'store-allocation' && <StoreAllocationForm locations={locations} workflowDocs={workflowDocs} canViewPrice={canViewPrice} onSuccess={onSuccess} />}
-          {operation === 'store-receipt' && <ShipmentReceiptForm workflowDocs={workflowDocs} kind="store" prefill={prefill} onSuccess={onSuccess} />}
-          {operation === 'store-return' && <ReturnForm locations={locations} sourceType="门店" onSuccess={onSuccess} />}
-          {operation === 'market-return' && <ReturnForm locations={locations} sourceType="市场" onSuccess={onSuccess} />}
-          {operation === 'store-return-approval' && <ReturnApprovalForm workflowDocs={workflowDocs} docType="院退货" onSuccess={onSuccess} />}
-          {operation === 'market-return-approval' && <ReturnApprovalForm workflowDocs={workflowDocs} docType="市场退货" onSuccess={onSuccess} />}
-          {operation === 'shipment-cancel' && <ShipmentCancellationRequestForm workflowDocs={workflowDocs} onSuccess={onSuccess} />}
-          {operation === 'shipment-cancel-approval' && <ShipmentCancellationApprovalForm workflowDocs={workflowDocs} onSuccess={onSuccess} />}
-          {operation === 'staff-purchase' && <MarketStaffPurchaseForm locations={locations} onSuccess={onSuccess} />}
-          {operation === 'supply-chain-staff-purchase' && <SupplyChainStaffPurchaseForm locations={locations} onSuccess={onSuccess} />}
-          {operation === 'self-purchase' && <SelfPurchaseForm locations={locations} suppliers={suppliers} canViewPrice={canViewPrice} onSuccess={onSuccess} />}
-          {operation === 'external-outbound' && <ExternalOutboundForm locations={locations} onSuccess={onSuccess} />}
-          {operation === 'supply-chain-conversion' && <ConversionForm locations={locations} locationType="总部" onSuccess={onSuccess} />}
+          {operation === 'store-request' && <StoreRequestForm locations={locations} onSuccess={handleSuccess} />}
+          {operation === 'market-report' && <MarketReportForm locations={locations} canViewPrice={canViewPrice} onSuccess={handleSuccess} />}
+          {operation === 'item-company-request' && <ItemCompanyReplenishmentForm locations={locations} onSuccess={handleSuccess} />}
+          {operation === 'purchase-order' && <PurchaseOrderForm locations={locations} canViewPrice={canViewPrice} onSuccess={handleSuccess} />}
+          {operation === 'market-report-summary' && <MarketReportSummaryForm locations={locations} onSuccess={handleSuccess} />}
+          {operation === 'company-shipment' && <CompanyShipmentForm locations={locations} onSuccess={handleSuccess} />}
+          {operation === 'market-receipt' && <ShipmentReceiptForm kind="market" prefill={prefill} onSuccess={handleSuccess} />}
+          {operation === 'supply-chain-receipt' && <SupplyChainPurchaseReceiptForm locations={locations} canViewPrice={canViewPrice} prefill={prefill} onSuccess={handleSuccess} />}
+          {operation === 'supply-chain-purchase-cancel' && <SupplyChainPurchaseCancelForm prefill={prefill} onSuccess={handleSuccess} />}
+          {operation === 'store-allocation' && <StoreAllocationForm locations={locations} canViewPrice={canViewPrice} onSuccess={handleSuccess} />}
+          {operation === 'store-receipt' && <ShipmentReceiptForm kind="store" prefill={prefill} onSuccess={handleSuccess} />}
+          {operation === 'store-return' && <ReturnForm locations={locations} sourceType="门店" onSuccess={handleSuccess} />}
+          {operation === 'market-return' && <ReturnForm locations={locations} sourceType="市场" onSuccess={handleSuccess} />}
+          {operation === 'store-return-approval' && <ReturnApprovalForm docType="院退货" onSuccess={handleSuccess} />}
+          {operation === 'market-return-approval' && <ReturnApprovalForm docType="市场退货" onSuccess={handleSuccess} />}
+          {operation === 'shipment-cancel' && <ShipmentCancellationRequestForm onSuccess={handleSuccess} />}
+          {operation === 'shipment-cancel-approval' && <ShipmentCancellationApprovalForm onSuccess={handleSuccess} />}
+          {operation === 'staff-purchase' && <MarketStaffPurchaseForm locations={locations} onSuccess={handleSuccess} />}
+          {operation === 'supply-chain-staff-purchase' && <SupplyChainStaffPurchaseForm locations={locations} onSuccess={handleSuccess} />}
+          {operation === 'self-purchase' && <SelfPurchaseForm locations={locations} suppliers={suppliers} canViewPrice={canViewPrice} onSuccess={handleSuccess} />}
+          {operation === 'external-outbound' && <ExternalOutboundForm locations={locations} onSuccess={handleSuccess} />}
+          {operation === 'supply-chain-conversion' && <ConversionForm locations={locations} locationType="总部" onSuccess={handleSuccess} />}
         </TabsContent>
         {/*
           * keepMounted：单据面板切走时也不卸载。两个理由，缺一不可 ——
@@ -1100,6 +1047,7 @@ function OperationWorkspace({
         </TabsContent>
       </Tabs>
     </div>
+    </DocCandidateReloadContext.Provider>
   )
 }
 
@@ -1352,6 +1300,7 @@ export function OperationDocsTab({
    */
   onActionBusyChange: (busy: boolean) => void
 }) {
+  const { bump: bumpCandidates } = useContext(DocCandidateReloadContext)
   const router = useRouter()
   const [rows, setRows] = useState<InventoryDocRow[]>([])
   const [total, setTotal] = useState(0)
@@ -1675,10 +1624,11 @@ export function OperationDocsTab({
               ? null
               : current,
           )
-          // 两件事都得做，只做后一件等于没刷新（见 reloadToken 的注释）：
-          // reloadToken 重取本 Tab 的两段，router.refresh() 让表单 Tab 的
-          // DocPicker 候选（RSC 的 workflowDocs）跟着变。
+          // 三件事都得做（见 reloadToken 的注释）：reloadToken 重取本 Tab 的两段，
+          // bumpCandidates 让表单 Tab 的候选单列表重取（#338 起它是客户端查询，
+          // router.refresh() 管不到），router.refresh() 刷新其余 RSC 数据。
           setReloadToken((n) => n + 1)
+          bumpCandidates()
           router.refresh()
         }}
       />
@@ -2529,12 +2479,10 @@ interface PurchaseSourceLine {
  */
 function PurchaseOrderForm({
   locations,
-  workflowDocs,
   canViewPrice,
   onSuccess,
 }: {
   locations: InventoryLocationRow[]
-  workflowDocs: InventoryDocRow[]
   canViewPrice: boolean
   onSuccess: (message: string) => void
 }) {
@@ -2563,29 +2511,44 @@ function PurchaseOrderForm({
     Map<string, { supplierId: string | null; supplierName: string | null }>
   >(new Map())
 
-  const candidates = useMemo(
-    () => [
-      ...docCandidates(workflowDocs, '市场报货汇总'),
-      ...docCandidates(workflowDocs, '品项公司报货需求'),
-    ],
-    [workflowDocs],
-  )
+  // 选了供应链主体后，候选收窄到发往该总部的报货单（服务端 `header.targetOrgNodeId !== supplyChain.orgNodeId` 会拒其余的）
+  const supplyChainOrgNodeId = headquarters.find((location) => location.locationId === supplyChainLocationId)?.orgNodeId ?? undefined
 
-  // 勾选集合一变就整体重拉：增量维护行状态会漏掉期间被别人下单或取消掉的明细。
+  // 勾选集合或供应链主体一变就整体重拉：增量维护行状态会漏掉期间被别人下单或取消掉的明细。
   useEffect(() => {
     let cancelled = false
+    /*
+     * 先清空旧明细（#338 pr-ready P1）：重拉在途时若还留着上一版 lines，提交按钮可点，
+     * 刚取消勾选的报货单会被照旧下进采购单（服务端守卫对它全部放行 —— 它本身完全合法）。
+     */
+    setLines([])
     if (selectedDocIds.length === 0) {
-      setLines([])
+      setLoading(false)
       return
     }
     setLoading(true)
     void (async () => {
       try {
-        const details = await Promise.all(selectedDocIds.map((id) => getInventoryCoreDocById(id)))
+        // 批量接口一次取回（Server Action 客户端串行，逐张调 = 一键带出后 N 次串行往返）
+        const loaded = await getInventoryCoreDocsByIds(selectedDocIds)
         if (cancelled) return
+        /*
+         * 一张采购单只能对一个供应链主体（服务端 `header.targetOrgNodeId !== supplyChain.orgNodeId` 拒）。
+         * 主体未选时取第一张的 target；与主体不符的单从已选里剔除并提示，而不是留在集合里隐身、提交时整单被拒。
+         */
+        const hqOrgNodeId = supplyChainOrgNodeId
+          ?? loaded.find((detail) => detail.targetOrgNodeId)?.targetOrgNodeId
+          ?? null
+        const mismatched = hqOrgNodeId ? loaded.filter((detail) => detail.targetOrgNodeId !== hqOrgNodeId) : []
+        if (mismatched.length > 0) {
+          toast.warning(`以下报货单不属于所选供应链主体，已取消勾选：${mismatched.map((detail) => detail.id).join('、')}`)
+          const excluded = new Set(mismatched.map((detail) => detail.id))
+          setSelectedDocIds((previous) => previous.filter((id) => !excluded.has(id)))
+          return
+        }
+        const details = loaded
         const next: PurchaseSourceLine[] = []
         for (const detail of details) {
-          if (!detail) continue
           for (const item of detail.items) {
             if (!hasAvailableQuantity(item)) continue
             const available = remainingQuantity(item)
@@ -2615,7 +2578,7 @@ function PurchaseOrderForm({
         setLines(next)
         // 来源单的 target 就是供应链主体，默认带出来省一次选择（候选唯一时尤其明显）。
         setSupplyChainLocationId((current) => current
-          || (details.find((detail) => detail?.targetOrgNodeId)?.targetOrgNodeId ?? ''))
+          || (details.find((detail) => detail.targetOrgNodeId)?.targetOrgNodeId ?? ''))
       } catch (error) {
         if (!cancelled) toast.error(actionErrorMessage(error, '加载报货单明细失败'))
       } finally {
@@ -2623,7 +2586,7 @@ function PurchaseOrderForm({
       }
     })()
     return () => { cancelled = true }
-  }, [selectedDocIds])
+  }, [selectedDocIds, supplyChainOrgNodeId])
 
   const groups = useMemo(() => {
     const map = new Map<string, {
@@ -2664,12 +2627,6 @@ function PurchaseOrderForm({
     setLines((previous) => previous.map((line) => (
       line.sourceItemId === sourceItemId ? { ...line, quantity } : line
     )))
-  }
-
-  function toggleDoc(id: string, checked: boolean) {
-    setSelectedDocIds((previous) => (
-      checked ? [...previous, id] : previous.filter((docId) => docId !== id)
-    ))
   }
 
   async function submit() {
@@ -2731,25 +2688,24 @@ function PurchaseOrderForm({
       </div>
 
       <div className="space-y-2">
-        <h3 className="text-sm font-medium">来源报货单<span className="ml-1 text-[#D94040]">*</span></h3>
-        <p className="text-xs text-[#666666]">可同时勾选多张市场报货汇总单与品项公司报货需求单，商品会按「商品 × 市场」合并成采购明细。</p>
-        {candidates.length === 0
-          ? <div className="rounded-[var(--radius)] border border-dashed border-[var(--border)] p-4 text-sm text-[#888888]">暂无可采购的报货单</div>
-          : (
-            <div className="max-h-56 space-y-1 overflow-y-auto rounded-[var(--radius)] border border-[var(--border)] p-2">
-              {candidates.map((doc) => (
-                <label key={doc.id} className="flex items-center gap-2 rounded px-2 py-1 text-sm hover:bg-[var(--muted)]">
-                  <input
-                    type="checkbox"
-                    checked={selectedDocIds.includes(doc.id)}
-                    onChange={(event) => toggleDoc(doc.id, event.target.checked)}
-                  />
-                  <span className="text-xs text-[#888888]">{doc.docType}</span>
-                  <span>{formatDoc(doc)}</span>
-                </label>
-              ))}
-            </div>
-          )}
+        <InventoryDocCandidatePicker
+          label="来源报货单"
+          required
+          purpose="purchase-order-source"
+          targetOrgNodeId={supplyChainOrgNodeId}
+          selection={{
+            mode: 'multi',
+            values: selectedDocIds,
+            onChange: setSelectedDocIds,
+            bulkLabel: '带出区间内全部未下单',
+            // 多总部时不先定主体，带出的单会跨主体（服务端整单拒）；总部唯一时 autoSelect 已选好
+            bulkDisabledReason: supplyChainOrgNodeId ? undefined : '请先选择供应链库存主体',
+          }}
+        />
+        <p className="text-xs text-[#666666]">
+          可同时勾选多张市场报货汇总单与品项公司报货需求单，商品会按「商品 × 市场」合并成采购明细。
+          按报货日期区间筛选后点「带出区间内全部未下单」，会一次选中该区间内所有仍有未下单量的报货单。
+        </p>
       </div>
 
       {loading && <div className="text-sm text-[#666666]">正在加载报货明细</div>}
@@ -2804,7 +2760,8 @@ function PurchaseOrderForm({
 
       <RemarkField value={remark} onChange={setRemark} />
       <div className="flex justify-end">
-        <Button type="submit" loading={saving} disabled={lines.length === 0 || missingSupplierNames.length > 0}>
+        {/* loading 时禁提交：明细还是上一版勾选集合的（见装载 effect 的注释） */}
+        <Button type="submit" loading={saving} disabled={loading || lines.length === 0 || missingSupplierNames.length > 0}>
           创建采购订单
         </Button>
       </div>
@@ -2827,11 +2784,9 @@ interface ShipmentDraftLine {
 
 function CompanyShipmentForm({
   locations,
-  workflowDocs,
   onSuccess,
 }: {
   locations: InventoryLocationRow[]
-  workflowDocs: InventoryDocRow[]
   onSuccess: (message: string) => void
 }) {
   const headquarters = locations.filter((location) => location.locationType === '总部' && location.isActive)
@@ -2937,11 +2892,10 @@ function CompanyShipmentForm({
     }
   }
 
-  const candidates = docCandidates(workflowDocs, '采购订单')
   return (
     <form className="space-y-5" onSubmit={(event) => { event.preventDefault(); void submit() }}>
+      <InventoryDocCandidatePicker label="采购订单" required purpose="company-shipment-source" selection={{ mode: 'single', value: docId, current: doc, onChange: (id) => void selectDocument(id) }} />
       <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-        <DocPicker label="采购订单" required docs={candidates} value={docId} current={doc} onChange={(id) => void selectDocument(id)} />
         <FormField label="发货总部" required>
           <InventorySubjectSelect
             options={headquarters.filter((location) => location.orgNodeId).map((location) => ({ value: location.orgNodeId!, label: location.name }))}
@@ -3013,12 +2967,10 @@ interface ReceiptProgressLine {
 }
 
 function ShipmentReceiptForm({
-  workflowDocs,
   kind,
   prefill,
   onSuccess,
 }: {
-  workflowDocs: InventoryDocRow[]
   kind: 'market' | 'store'
   /** 待办区「去收货」带来的预选券（#192）。 */
   prefill?: OperationFormPrefill | null
@@ -3103,11 +3055,10 @@ function ShipmentReceiptForm({
     }
   }
 
-  const candidates = docCandidates(workflowDocs, docType, '待收货')
   return (
     <form className="space-y-5" onSubmit={(event) => { event.preventDefault(); void submit() }}>
+      <InventoryDocCandidatePicker label={kind === 'market' ? '品项公司发货单' : '分院配货单'} required purpose={kind === 'market' ? 'market-receipt' : 'store-receipt'} selection={{ mode: 'single', value: docId, current: doc, onChange: (id) => void selectDocument(id) }} />
       <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-        <DocPicker label={kind === 'market' ? '品项公司发货单' : '分院配货单'} docs={candidates} value={docId} current={doc} onChange={(id) => void selectDocument(id)} required />
         <FormField label="收货日期"><DatePicker value={docDate} onValueChange={setDocDate} /></FormField>
       </div>
       {(loading || loadingProgress) && <div className="text-sm text-[#666666]">正在加载待收货明细</div>}
@@ -3151,13 +3102,11 @@ interface SupplyChainPurchaseReceiptDraftLine {
 
 function SupplyChainPurchaseReceiptForm({
   locations,
-  workflowDocs,
   canViewPrice,
   prefill,
   onSuccess,
 }: {
   locations: InventoryLocationRow[]
-  workflowDocs: InventoryDocRow[]
   canViewPrice: boolean
   /** 待办区「去收货」带来的预选券（#192）。 */
   prefill?: OperationFormPrefill | null
@@ -3229,11 +3178,10 @@ function SupplyChainPurchaseReceiptForm({
     }
   }
 
-  const candidates = docCandidates(workflowDocs, '采购订单', '待收货')
   return (
     <form className="space-y-5" onSubmit={(event) => { event.preventDefault(); void submit() }}>
+      <InventoryDocCandidatePicker label="采购订单" required purpose="supply-chain-receipt" selection={{ mode: 'single', value: docId, current: doc, onChange: (id) => void selectDocument(id) }} />
       <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-        <DocPicker label="采购订单" required docs={candidates} value={docId} current={doc} onChange={(id) => void selectDocument(id)} />
         <FormField label="供应链库存主体" required>
           <InventorySubjectSelect
             options={headquarters.map((location) => ({ value: location.locationId, label: location.name }))}
@@ -3269,11 +3217,9 @@ function SupplyChainPurchaseReceiptForm({
 }
 
 function SupplyChainPurchaseCancelForm({
-  workflowDocs,
   prefill,
   onSuccess,
 }: {
-  workflowDocs: InventoryDocRow[]
   /** 待办区跳转带来的预选券（#192）。本业务的行内动作是弹窗关闭，跳转只在表单侧兜底。 */
   prefill?: OperationFormPrefill | null
   onSuccess: (message: string) => void
@@ -3282,7 +3228,6 @@ function SupplyChainPurchaseCancelForm({
   useDocumentPrefill(prefill, selectDocument)
   const [reason, setReason] = useState('')
   const [saving, setSaving] = useState(false)
-  const candidates = docCandidates(workflowDocs, '采购订单', '待收货')
 
   async function submit() {
     if (saving) return
@@ -3306,9 +3251,7 @@ function SupplyChainPurchaseCancelForm({
 
   return (
     <div className="space-y-5">
-      <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-        <DocPicker label="待收货采购订单" required docs={candidates} value={docId} current={doc} onChange={(id) => void selectDocument(id)} />
-      </div>
+      <InventoryDocCandidatePicker label="待收货采购订单" required purpose="supply-chain-purchase-cancel" selection={{ mode: 'single', value: docId, current: doc, onChange: (id) => void selectDocument(id) }} />
       {loading && <div className="text-sm text-[#666666]">正在加载采购订单明细</div>}
       <SourceDocumentItems doc={doc} canViewPrice={false} />
       <FormField label="关闭原因" required><Textarea value={reason} onChange={(event) => setReason(event.target.value)} /></FormField>
@@ -3352,12 +3295,10 @@ function storeAllocationPricePreview(line: StoreAllocationDraftLine) {
 
 function StoreAllocationForm({
   locations,
-  workflowDocs,
   canViewPrice,
   onSuccess,
 }: {
   locations: InventoryLocationRow[]
-  workflowDocs: InventoryDocRow[]
   canViewPrice: boolean
   onSuccess: (message: string) => void
 }) {
@@ -3472,11 +3413,10 @@ function StoreAllocationForm({
     }
   }
 
-  const candidates = docCandidates(workflowDocs, '门店报货')
   return (
     <form className="space-y-5" onSubmit={(event) => { event.preventDefault(); void submit() }}>
+      <InventoryDocCandidatePicker label="门店报货单" required purpose="store-allocation-source" selection={{ mode: 'single', value: docId, current: doc, onChange: (id) => void selectDocument(id) }} />
       <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-        <DocPicker label="门店报货单" required docs={candidates} value={docId} current={doc} onChange={(id) => void selectDocument(id)} />
         <FormField label="配货市场" required>
           <InventorySubjectSelect
             options={markets.map((location) => ({ value: location.locationId, label: location.name }))}
@@ -3655,18 +3595,15 @@ function ReturnForm({
 }
 
 function ReturnApprovalForm({
-  workflowDocs,
   docType,
   onSuccess,
 }: {
-  workflowDocs: InventoryDocRow[]
   docType: '院退货' | '市场退货'
   onSuccess: (message: string) => void
 }) {
   const { docId, doc, loading, selectDocument } = useLoadedDocument()
   const [auditRemark, setAuditRemark] = useState('')
   const [saving, setSaving] = useState(false)
-  const candidates = workflowDocs.filter((row) => row.docType === docType && row.status === '待审批')
 
   async function approve() {
     if (saving) return
@@ -3704,7 +3641,7 @@ function ReturnApprovalForm({
 
   return (
     <div className="space-y-5">
-      <div className="grid grid-cols-1 gap-3 md:grid-cols-2"><DocPicker label="待审批退货单" required docs={candidates} value={docId} current={doc} onChange={(id) => void selectDocument(id)} /></div>
+      <InventoryDocCandidatePicker label="待审批退货单" required purpose={docType === '院退货' ? 'store-return-approval' : 'market-return-approval'} selection={{ mode: 'single', value: docId, current: doc, onChange: (id) => void selectDocument(id) }} />
       {loading && <div className="text-sm text-[#666666]">正在加载退货明细</div>}
       <SourceDocumentItems doc={doc} canViewPrice={false} />
       <RemarkField value={auditRemark} onChange={setAuditRemark} />
@@ -3714,16 +3651,13 @@ function ReturnApprovalForm({
 }
 
 function ShipmentCancellationRequestForm({
-  workflowDocs,
   onSuccess,
 }: {
-  workflowDocs: InventoryDocRow[]
   onSuccess: (message: string) => void
 }) {
   const { docId, doc, loading, selectDocument } = useLoadedDocument()
   const [reason, setReason] = useState('')
   const [saving, setSaving] = useState(false)
-  const candidates = docCandidates(workflowDocs, '品项公司发货', '待收货')
 
   async function submit() {
     if (saving) return
@@ -3744,7 +3678,7 @@ function ShipmentCancellationRequestForm({
 
   return (
     <div className="space-y-5">
-      <div className="grid grid-cols-1 gap-3 md:grid-cols-2"><DocPicker label="待收货品项公司发货单" required docs={candidates} value={docId} current={doc} onChange={(id) => void selectDocument(id)} /></div>
+      <InventoryDocCandidatePicker label="待收货品项公司发货单" required purpose="shipment-cancel-request" selection={{ mode: 'single', value: docId, current: doc, onChange: (id) => void selectDocument(id) }} />
       {loading && <div className="text-sm text-[#666666]">正在加载发货明细</div>}
       <SourceDocumentItems doc={doc} canViewPrice={false} />
       <FormField label="撤回原因" required><Textarea value={reason} onChange={(event) => setReason(event.target.value)} /></FormField>
@@ -3754,16 +3688,13 @@ function ShipmentCancellationRequestForm({
 }
 
 function ShipmentCancellationApprovalForm({
-  workflowDocs,
   onSuccess,
 }: {
-  workflowDocs: InventoryDocRow[]
   onSuccess: (message: string) => void
 }) {
   const { docId, doc, loading, selectDocument } = useLoadedDocument()
   const [auditRemark, setAuditRemark] = useState('')
   const [saving, setSaving] = useState(false)
-  const candidates = workflowDocs.filter((row) => row.docType === '品项公司发货' && row.status === '待审批')
 
   async function approve() {
     if (saving || !doc) {
@@ -3803,9 +3734,7 @@ function ShipmentCancellationApprovalForm({
 
   return (
     <div className="space-y-5">
-      <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-        <DocPicker label="待审批品项公司发货单" required docs={candidates} value={docId} current={doc} onChange={(id) => void selectDocument(id)} />
-      </div>
+      <InventoryDocCandidatePicker label="待审批品项公司发货单" required purpose="shipment-cancel-approval" selection={{ mode: 'single', value: docId, current: doc, onChange: (id) => void selectDocument(id) }} />
       {loading && <div className="text-sm text-[#666666]">正在加载撤回申请明细</div>}
       <SourceDocumentItems doc={doc} canViewPrice={false} />
       {doc?.cancellationRequestReason && (

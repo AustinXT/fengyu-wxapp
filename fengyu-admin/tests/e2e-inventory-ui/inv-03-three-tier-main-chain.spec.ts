@@ -31,7 +31,7 @@ import {
   login, psql, readCtx, recordVerdict, sqlStr, summarize, writeCtx, type Verdict,
 } from './_helpers/env'
 import { isGateOpen, openCutoverGate } from './_helpers/cutover'
-import { pickSku } from './_helpers/ui'
+import { pickCandidateDoc, pickSku } from './_helpers/ui'
 
 test.setTimeout(600_000)
 
@@ -202,7 +202,7 @@ test('INV-03：三级正向主链 —— 报货→采购→发货→入库→配
     recordVerdict(verdicts, 'doc: 市场报货汇总单落库', Boolean(summaryId), summaryId)
 
     await openOperation(page, 'supply-chain', '采购订单')
-    await checkSourceDoc(page, summaryId)
+    await pickCandidateDoc(page, '来源报货单', summaryId)
     await page.waitForTimeout(2000)
     await selectByLabel(page, '供应链库存主体', { label: '品牌总部' })
     await fillByLabel(page, '采购数量', String(QTY.marketPurchase))
@@ -242,7 +242,7 @@ test('INV-03：三级正向主链 —— 报货→采购→发货→入库→配
     console.log('[INV-03] 3b/8 供应链采购入库（市场行）')
     const hqBatch = `${NS}-MKT${STAMP}`
     await openOperation(page, 'supply-chain', '供应链采购入库')
-    await selectByLabel(page, '采购订单', { contains: poId })
+    await pickCandidateDoc(page, '采购订单', poId)
     await page.waitForTimeout(2000)
     await fillByLabel(page, '实收数量', String(QTY.marketPurchase))
     await fillByLabel(page, '批号', hqBatch)
@@ -275,7 +275,7 @@ test('INV-03：三级正向主链 —— 报货→采购→发货→入库→配
     console.log('[INV-03] 4/8 品项公司发货')
     const hqBefore = lotQty(TOPO.HQ, inv01.supplySkuId, hqBatch)
     await openOperation(page, 'supply-chain', '品项公司发货')
-    await selectByLabel(page, '采购订单', { contains: poId })
+    await pickCandidateDoc(page, '采购订单', poId)
     await page.waitForTimeout(2000)
     await selectByLabel(page, '发货总部', { label: '品牌总部' })
 
@@ -330,7 +330,7 @@ test('INV-03：三级正向主链 —— 报货→采购→发货→入库→配
     // ══ 5. 市场采购入库（§6.1 须先有发货单）═══════════════════════
     console.log('[INV-03] 5/8 市场采购入库')
     await openOperation(page, 'market', '市场采购入库')
-    await selectByLabel(page, '品项公司发货单', { contains: shipId })
+    await pickCandidateDoc(page, '品项公司发货单', shipId)
     await page.waitForTimeout(2000)
     const marketReceiveRows = await fillReceiptRows(page)
     recordVerdict(
@@ -361,7 +361,7 @@ test('INV-03：三级正向主链 —— 报货→采购→发货→入库→配
     // ══ 6. 分院配货（§7.3 金额四件套）═════════════════════════════
     console.log('[INV-03] 6/8 分院配货')
     await openOperation(page, 'market', '分院配货')
-    await selectByLabel(page, '门店报货单', { contains: storeReqId })
+    await pickCandidateDoc(page, '门店报货单', storeReqId)
     await page.waitForTimeout(2000)
     await selectByLabel(page, '配货市场', { contains: TOPO.MARKET_NAME })
     await page.waitForTimeout(1500)
@@ -417,7 +417,7 @@ test('INV-03：三级正向主链 —— 报货→采购→发货→入库→配
     console.log('[INV-03] 7/8 分院收货入库')
     const storeBefore = lotQtyAll(TOPO.STORE_A_ORG, inv01.supplySkuId)
     await openOperation(page, 'store', '分院收货入库')
-    await selectByLabel(page, '分院配货单', { contains: allocId })
+    await pickCandidateDoc(page, '分院配货单', allocId)
     await page.waitForTimeout(2000)
     const storeReceiveRows = await fillReceiptRows(page)
     recordVerdict(
@@ -593,16 +593,6 @@ async function selectByLabel(page: Page, labelText: string, option: { label: str
   const sel = field.locator('select').first()
   if ('contains' in option) await selectContaining(sel, option.contains)
   else await sel.selectOption({ label: option.label })
-}
-
-/**
- * 勾选合并后采购表单里的来源报货单（#194）。
- * 来源从单选 Select 改成了多选 checkbox 清单，勾完组件会重新拉明细。
- */
-async function checkSourceDoc(page: Page, docId: string) {
-  const row = page.locator('label').filter({ hasText: docId }).first()
-  await row.waitFor({ state: 'visible', timeout: 20_000 })
-  await row.locator('input[type="checkbox"]').check()
 }
 
 /** 明细行里的 SkuPicker（占位文案「选择库存商品」） */

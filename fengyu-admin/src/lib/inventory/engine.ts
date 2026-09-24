@@ -81,6 +81,14 @@ import {
 } from './types'
 import { buildInventoryLocationFilterOptions } from './location-filter'
 import {
+  INVENTORY_DOC_CANDIDATE_BULK_LIMIT,
+  resolveInventoryDocCandidate,
+  type InventoryDocCandidateDefinition,
+  type InventoryDocCandidateFilters,
+  type InventoryDocCandidateProgressKind,
+  type InventoryDocCandidateRow,
+} from './doc-candidates'
+import {
   inventoryPriceScopeByTier,
   inventoryPriceVisibility,
   inventoryPriceVisibilityForOrgNodes,
@@ -2453,6 +2461,277 @@ export const listInventoryCoreDocs = withPermission(
   },
 )
 
+/*
+ * ────────── 办理台来源单 / 待处理单候选（#338） ──────────
+ *
+ * 用途白名单与口径在 `./doc-candidates`；这里只负责把口径翻成 SQL。
+ * 子查询别名统一 `cand_*` 前缀（本文件已有 pending_item / received_item / visible_doc 等，新增前先 grep）。
+ */
+
+/** 单行「已完成量」：与各建单守卫逐字同口径，见 InventoryDocCandidateProgressKind 注释 */
+function candidateItemDoneSql(kind: InventoryDocCandidateProgressKind): SQL {
+  if (kind === 'shipped' || kind === 'allocated') {
+    const relationType = kind === 'shipped' ? '采购订单发货' : '门店报货配货'
+    // 同 business.ts linkedQuantity：目标单已取消的血缘不算
+    return sql`(
+      SELECT COALESCE(SUM(cand_link.quantity), 0)
+        FROM inventory_doc_links cand_link
+        JOIN inventory_docs cand_link_doc ON cand_link_doc.id = cand_link.to_doc_id
+       WHERE cand_link.from_item_id = cand_item.id
+         AND cand_link.relation_type = ${relationType}
+         AND cand_link_doc.status <> '已取消'
+    )`
+  }
+  return sql`COALESCE(cand_item.fulfilled_quantity, 0)`
+}
+
+/** 参与进度的明细行：发货只看有市场归属的行（自用行不走发货，守卫直接拒） */
+function candidateItemFilterSql(kind: InventoryDocCandidateProgressKind): SQL {
+  return kind === 'shipped' ? sql`AND cand_item.market_id IS NOT NULL` : sql``
+}
+
+function candidateRemainingSql(kind: InventoryDocCandidateProgressKind): SQL {
+  return sql`EXISTS (
+    SELECT 1 FROM inventory_doc_items cand_item
+     WHERE cand_item.doc_id = ${inventoryDocs.id}
+       ${candidateItemFilterSql(kind)}
+       AND ${candidateItemDoneSql(kind)} < cand_item.quantity
+  )`
+}
+
+function candidateProgressSql(kind: InventoryDocCandidateProgressKind) {
+  const total = sql<string | number>`(
+    SELECT COALESCE(SUM(cand_item.quantity), 0)
+      FROM inventory_doc_items cand_item
+     WHERE cand_item.doc_id = ${inventoryDocs.id}
+       ${candidateItemFilterSql(kind)}
+  )`
+  // LEAST：超量（历史数据 / 赠送并行）不让进度超过 100%
+  const done = kind === 'none'
+    ? sql<string | number | null>`NULL`
+    : sql<string | number | null>`(
+      SELECT COALESCE(SUM(LEAST(${candidateItemDoneSql(kind)}, cand_item.quantity)), 0)
+        FROM inventory_doc_items cand_item
+       WHERE cand_item.doc_id = ${inventoryDocs.id}
+         ${candidateItemFilterSql(kind)}
+    )`
+  return { total, done }
+}
+
+const CANDIDATE_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/
+
+/** Server Action 入参原样到达：非字符串一律按参数错误处理，别让 `.trim` 抛 TypeError 变成 500 */
+function candidateText(value: unknown, label: string): string | undefined {
+  if (value === undefined || value === null) return undefined
+  if (typeof value !== 'string') throw new ApiError('INVALID_PARAMS', `${label}格式不正确`)
+  return value.trim() || undefined
+}
+
+function candidateDate(value: unknown, label: string): string | undefined {
+  const text = candidateText(value, label)
+  if (!text) return undefined
+  // 往返比对而不是只看 Date.parse：JS 会把 2026-02-30 顺延成 03-02 且不报错，
+  // 放过去的话 PG 转 date 时抛 22008，用户看到的是 500 而不是参数错误。
+  const [year, month, day] = CANDIDATE_DATE_PATTERN.test(text) ? text.split('-').map(Number) : [NaN, NaN, NaN]
+  const parsed = new Date(Date.UTC(year, month - 1, day))
+  if (
+    Number.isNaN(parsed.getTime())
+    || parsed.getUTCFullYear() !== year
+    || parsed.getUTCMonth() !== month - 1
+    || parsed.getUTCDate() !== day
+  ) {
+    throw new ApiError('INVALID_PARAMS', `${label}格式不正确`)
+  }
+  return text
+}
+
+interface ParsedCandidateFilters {
+  keyword?: string
+  startDate?: string
+  endDate?: string
+  targetOrgNodeId?: string
+  includeExhausted: boolean
+}
+
+/**
+ * 候选检索条件的运行时校验与归一。必须在 scope 判定、syncInventoryLocations **之前**跑完 ——
+ * 否则空 scope 会话传非法入参拿到的是空结果而不是 INVALID_PARAMS，同一入参的对错取决于谁在调。
+ */
+function parseCandidateFilters(filters: Record<string, unknown>): ParsedCandidateFilters {
+  const includeExhausted = filters.includeExhausted
+  if (includeExhausted !== undefined && includeExhausted !== null && typeof includeExhausted !== 'boolean') {
+    // 'true' 之类的字符串若静默当 false，调用方以为放宽了、其实没有
+    throw new ApiError('INVALID_PARAMS', '显示全部参数格式不正确')
+  }
+  const startDate = candidateDate(filters.startDate, '开始日期')
+  const endDate = candidateDate(filters.endDate, '结束日期')
+  if (startDate && endDate && startDate > endDate) {
+    throw new ApiError('INVALID_PARAMS', '开始日期不能晚于结束日期')
+  }
+  return {
+    keyword: candidateText(filters.keyword, '检索关键字')?.slice(0, 64),
+    startDate,
+    endDate,
+    targetOrgNodeId: candidateText(filters.targetOrgNodeId, '接收主体'),
+    includeExhausted: includeExhausted === true,
+  }
+}
+
+/**
+ * 候选查询的 WHERE：scope 双端 OR（与 listInventoryCoreDocs 同一基础可见性闸）
+ * + 动作端单端收窄 + 用途的类型/状态规则 + 剩余量 + 检索条件。
+ */
+function candidateConditions(
+  session: AuthSession,
+  definition: InventoryDocCandidateDefinition,
+  filters: ParsedCandidateFilters,
+  { onlyRemaining }: { onlyRemaining: boolean },
+): SQL {
+  const scoped = inventoryScopedOrgNodeIds(session)
+  const conditions: (SQL | undefined)[] = []
+  if (scoped !== null) {
+    if (scoped.length === 0) return sql`FALSE`
+    conditions.push(or(inArray(inventoryDocs.sourceOrgNodeId, scoped), inArray(inventoryDocs.targetOrgNodeId, scoped)))
+    const endpointColumn = definition.scopeRole === 'source'
+      ? inventoryDocs.sourceOrgNodeId
+      : inventoryDocs.targetOrgNodeId
+    conditions.push(inArray(endpointColumn, scoped))
+  }
+  conditions.push(or(...definition.rules.map((rule) => and(
+    eq(inventoryDocs.docType, rule.docType),
+    rule.statuses
+      ? inArray(inventoryDocs.status, [...rule.statuses])
+      : ne(inventoryDocs.status, '已取消'),
+  ))))
+  if (definition.cancellationRequested) conditions.push(isNotNull(inventoryDocs.cancellationRequestReason))
+  if (definition.requireNoReceipt) {
+    conditions.push(sql`NOT EXISTS (
+      SELECT 1 FROM inventory_doc_items cand_received
+       WHERE cand_received.doc_id = ${inventoryDocs.id}
+         AND COALESCE(cand_received.fulfilled_quantity, 0) > 0
+    )`)
+  }
+  if (onlyRemaining || definition.requireRemaining) {
+    conditions.push(candidateRemainingSql(definition.progress))
+  } else if (definition.progress === 'shipped') {
+    // 「显示全部」也不列纯自用采购单：它没有任何市场行，选中后发货表单无行可发
+    conditions.push(sql`EXISTS (
+      SELECT 1 FROM inventory_doc_items cand_item
+       WHERE cand_item.doc_id = ${inventoryDocs.id}
+         AND cand_item.market_id IS NOT NULL
+    )`)
+  }
+  const { targetOrgNodeId, startDate, endDate, keyword } = filters
+  if (targetOrgNodeId) conditions.push(eq(inventoryDocs.targetOrgNodeId, targetOrgNodeId))
+  if (startDate) conditions.push(gte(inventoryDocs.docDate, startDate))
+  if (endDate) conditions.push(lte(inventoryDocs.docDate, endDate))
+  if (keyword) {
+    // 反斜杠也要转义：ILIKE 默认转义符就是 `\`，漏了它 `a\` 这类输入会让模式非法或错配
+    const pattern = `%${keyword.replace(/[\\%_]/g, '\\$&')}%`
+    conditions.push(or(
+      ilike(inventoryDocs.id, pattern),
+      ilike(sourceLocation.name, pattern),
+      ilike(targetLocation.name, pattern),
+    ))
+  }
+  return and(...conditions) ?? sql`TRUE`
+}
+
+export const listInventoryDocCandidates = withPermission(
+  'inventory:list',
+  async (
+    session,
+    filters: InventoryDocCandidateFilters,
+  ): Promise<{ data: InventoryDocCandidateRow[]; total: number; pageSize: number }> => {
+    const definition = resolveInventoryDocCandidate(filters?.purpose)
+    if (!definition) throw new ApiError('INVALID_PARAMS', '未知的候选单据用途')
+    const parsed = parseCandidateFilters(filters as unknown as Record<string, unknown>)
+    await syncInventoryLocations()
+    const { pageSize, offset } = resolvePaging({
+      page: filters.page,
+      pageSize: filters.pageSize,
+      defaultPageSize: 20,
+      allowedPageSizes: PAGE_SIZE_WHITELIST,
+    })
+    // includeExhausted 只对建单类来源生效；状态类候选没有「显示全部」这回事
+    const onlyRemaining = definition.remainingToggle && !parsed.includeExhausted
+    const whereClause = candidateConditions(session, definition, parsed, { onlyRemaining })
+    // 检索条件里用到了两端主体名，COUNT 也必须带同样的 join，否则 total 与列表对不上
+    const [countRow] = await db
+      .select({ count: sql<number>`cast(count(*) as int)` })
+      .from(inventoryDocs)
+      .leftJoin(sourceLocation, eq(sourceLocation.orgNodeId, inventoryDocs.sourceOrgNodeId))
+      .leftJoin(targetLocation, eq(targetLocation.orgNodeId, inventoryDocs.targetOrgNodeId))
+      .where(whereClause)
+    const progress = candidateProgressSql(definition.progress)
+    const rows = await db
+      .select({
+        doc: inventoryDocs,
+        sourceOrgNodeName: sourceLocation.name,
+        sourceOrgNodeType: sourceLocation.locationType,
+        targetOrgNodeName: targetLocation.name,
+        targetOrgNodeType: targetLocation.locationType,
+        partiallyReceived: partiallyReceivedSql,
+        progressTotal: progress.total,
+        progressDone: progress.done,
+      })
+      .from(inventoryDocs)
+      .leftJoin(sourceLocation, eq(sourceLocation.orgNodeId, inventoryDocs.sourceOrgNodeId))
+      .leftJoin(targetLocation, eq(targetLocation.orgNodeId, inventoryDocs.targetOrgNodeId))
+      .where(whereClause)
+      // 末位 id 保证翻页不重不漏（同 listInventoryCoreDocs 的排序注释）
+      .orderBy(desc(inventoryDocs.docDate), desc(inventoryDocs.createdAt), desc(inventoryDocs.id))
+      .limit(pageSize)
+      .offset(offset)
+    return {
+      data: rows.map((row) => ({
+        // 候选只用于选单，不回金额
+        ...docRow({ ...row, includePrice: false }),
+        progress: {
+          done: row.progressDone === null ? null : Number(row.progressDone),
+          total: Number(row.progressTotal),
+        },
+      })),
+      total: countRow?.count ?? 0,
+      pageSize,
+    }
+  },
+)
+
+/**
+ * 一键带出（#338 / §2.5）：按检索条件取**全部仍有剩余量**的候选单号，不分页。
+ * 超过上限直接报错让人缩小日期区间，不静默截断 —— 截断等于少采购。
+ */
+export const listInventoryDocCandidateIds = withPermission(
+  'inventory:list',
+  async (
+    session,
+    filters: Omit<InventoryDocCandidateFilters, 'includeExhausted' | 'page' | 'pageSize'>,
+  ): Promise<{ ids: string[] }> => {
+    const definition = resolveInventoryDocCandidate(filters?.purpose)
+    // 「有剩余量」只对建单类来源有意义；审批 / 收货类没有一键带出
+    if (!definition || !definition.remainingToggle) throw new ApiError('INVALID_PARAMS', '未知的候选单据用途')
+    const parsed = parseCandidateFilters(filters as unknown as Record<string, unknown>)
+    await syncInventoryLocations()
+    const whereClause = candidateConditions(session, definition, parsed, { onlyRemaining: true })
+    const rows = await db
+      .select({ id: inventoryDocs.id })
+      .from(inventoryDocs)
+      .leftJoin(sourceLocation, eq(sourceLocation.orgNodeId, inventoryDocs.sourceOrgNodeId))
+      .leftJoin(targetLocation, eq(targetLocation.orgNodeId, inventoryDocs.targetOrgNodeId))
+      .where(whereClause)
+      .orderBy(asc(inventoryDocs.docDate), asc(inventoryDocs.createdAt), asc(inventoryDocs.id))
+      .limit(INVENTORY_DOC_CANDIDATE_BULK_LIMIT + 1)
+    if (rows.length > INVENTORY_DOC_CANDIDATE_BULK_LIMIT) {
+      throw new ApiError(
+        'INVALID_PARAMS',
+        `符合条件的单据超过 ${INVENTORY_DOC_CANDIDATE_BULK_LIMIT} 张，请缩小日期区间后再带出`,
+      )
+    }
+    return { ids: rows.map((row) => row.id) }
+  },
+)
+
 /**
  * 详情页的关联单据必须再次经过库存主体范围过滤：当前单据可见不代表所有上下游都可见。
  * 列名由内部固定调用点提供，scope 值始终由 Drizzle 参数化。
@@ -3062,6 +3341,32 @@ async function loadInventoryDocFulfillmentProgress(
   }
   return null
 }
+
+/**
+ * 批量取单据详情（#338 一键带出后采购表单装载明细用）。
+ *
+ * Server Action 在客户端是全局串行队列，逐张调 getInventoryCoreDocById 带出 100 张就是 100 次串行往返，
+ * 期间检索 / 提交全被堵住。这里一次请求、服务端逐张复用 getInventoryCoreDocById（scope 与价格裁剪同一口径）。
+ * 查不到 / 越出 scope 的单直接略过，与单张接口返回 null 同义。
+ */
+export const getInventoryCoreDocsByIds = withPermission(
+  'inventory:list',
+  async (_session, ids: string[]): Promise<InventoryDocDetail[]> => {
+    if (!Array.isArray(ids) || ids.some((id) => typeof id !== 'string')) {
+      throw new ApiError('INVALID_PARAMS', '单据编号格式不正确')
+    }
+    const unique = Array.from(new Set(ids))
+    if (unique.length > INVENTORY_DOC_CANDIDATE_BULK_LIMIT) {
+      throw new ApiError('INVALID_PARAMS', `一次最多加载 ${INVENTORY_DOC_CANDIDATE_BULK_LIMIT} 张单据`)
+    }
+    const details: InventoryDocDetail[] = []
+    for (const id of unique) {
+      const detail = await getInventoryCoreDocById(id)
+      if (detail) details.push(detail)
+    }
+    return details
+  },
+)
 
 export const getInventoryCoreDocById = withPermission(
   'inventory:list',
