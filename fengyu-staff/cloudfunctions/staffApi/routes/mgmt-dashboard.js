@@ -505,6 +505,12 @@ function buildTechnicianOrgAnchorScope(scopeType, scopeId, startIdx) {
  *   所以 `LEFT JOIN stores ds` 至多匹配一行，`COUNT(*)` 不需要 DISTINCT
  *   （2026-09-24 生产实测该 CTE 166 行 / 166 个不同 `employee_id`）。
  *   admin `technicianCountSql` 同样是 `COUNT(*)`，两端一致。
+ * - **锚定只向上找一级父节点**：`CASE` 只看 `o`（自身）与 `op`（父）。若将来出现
+ *   「部门挂在部门下、再挂到市场」，那人的 `anchor_market_id` 会是 NULL ——
+ *   `all` 口径仍计入（`store_id IS NULL AND TRUE`），market 口径不计入（`NULL = $n` 为假）
+ *   → Σ市场 ≠ 集团。生产实测该前提**当前不成立**：`type='部门'` 挂在 `type='部门'` 下的节点
+ *   0 个，无门店技师中 `anchor_market_id IS NULL` 的 0 人（2026-09-24）。
+ *   与 admin 逐字一致，所以**不单边改**；组织侧若引入部门嵌套，两端须同步改成递归找最近市场祖先。
  * - **门店分支叠了启用门店过滤、市场锚分支没有**：这与 admin 一致（admin 的
  *   `scopeFilterSql` 内含 `activeStoreCondition`，`orgAnchorScopeSql` 的 market 分支只比锚定市场）。
  *   代价是「门店全停的市场 + 直挂技师」会分母含人、分子近零 → 人均偏低。属已知取舍：
