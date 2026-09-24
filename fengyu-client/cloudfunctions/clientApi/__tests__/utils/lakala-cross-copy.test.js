@@ -135,4 +135,48 @@ describe('lakala 跨副本一致性守护', () => {
       }
     })
   })
+
+  /**
+   * meta-guard：本守护必须跑在 CI 里，否则它只在本地存在，拦不住回归合入。
+   *
+   * 这个文件正是「守护写好了却从未执行」的原始反面教材 —— 它守着拉卡拉签名与
+   * PEM 归一化的字节一致性（漂了就是加签/验签全挂），却因为 clientApi 没有任何
+   * CI job 而一次没跑过。#232 想加 job，被 `__tests__/routes/order.test.js` 里
+   * 一条 #154 漏改的过时断言挡住；断言在 #276 修好后，job 才补上。
+   *
+   * 仿 `fengyu-staff/.../__tests__/utils/image-cross-copy.test.js` 的同型 meta-guard。
+   *
+   * ⚠️ 断言的是**性质**（跑全量、不准写手工清单），不是「本文件名出现在 lint.yml 里」。
+   * 守文件名等于把「手工维护清单」这个错误形状写进守护：以后每加一个守护都要改两处，
+   * 而漏改的那一次正好就是守护失效的那一次。守住「跑全量」，谁都不会被漏掉。
+   */
+  test('meta：CI 跑的是 clientApi 全量 vitest，不是手工文件清单', () => {
+    const lintYml = path.resolve(__dirname, '../../../../../.github/workflows/lint.yml')
+    const yml = read(lintYml)
+
+    // ⚠️ 断言命令**恰好**是不带任何参数的 `npx vitest run`，而不是用负向正则去猜
+    // "手工清单长什么样"——负向匹配挡不住 `--dir __tests__/utils`、`-t <pattern>`、
+    // `--project` 这些同样会缩小范围的写法。
+    //
+    // 注意同一个 working-directory 在 lint.yml 里出现多次（staff job 也要装
+    // clientApi 依赖供跨端 require），所以先按 vitest 过滤再比对。
+    const clientApiVitestRuns = [...yml.matchAll(
+      /working-directory: fengyu-client\/cloudfunctions\/clientApi\n\s*run: (.+)$/gm,
+    )]
+      .map((m) => m[1].trim())
+      .filter((cmd) => cmd.includes('vitest'))
+
+    expect(clientApiVitestRuns).toEqual(['npx vitest run'])
+
+    // paths 必须覆盖本守护实际读到的**全部**文件，否则「改了但不触发」等于没有守护。
+    // 本文件跨四个目录读源码做字面比对：
+    // - clientApi / payNotify 的 lakala-*.js 与 routes/order.js、index.js
+    expect(yml).toContain("- 'fengyu-client/cloudfunctions/**/*.js'")
+    // - staffApi 的 routes/order.js（可关闭订单状态集合三端一致）
+    expect(yml).toContain("- 'fengyu-staff/cloudfunctions/**/*.js'")
+    // - admin 的 lib/lakala-client.ts 与 actions/orders.ts（v3 路径、终态集合、CAS 锚单号）
+    expect(yml).toContain("- 'fengyu-admin/src/**/*.ts'")
+    // - lint.yml 自身：改 workflow 必须让 meta-guard 有机会拦下「把全量改回清单」
+    expect(yml).toContain("- '.github/workflows/lint.yml'")
+  })
 })

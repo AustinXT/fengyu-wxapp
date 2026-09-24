@@ -141,6 +141,38 @@ jobs:
         working-directory: fengyu-client/miniprogram
         run: npx vitest run
 
+  # clientApi 的 36 个测试文件 / 885 用例此前**不在任何 CI job 里**。
+  # 其中 `__tests__/utils/lakala-cross-copy.test.js` 是拉卡拉签名/配置的字节一致守护
+  # （clientApi ↔ payNotify 全文比对 + 三端 normalizePem 检查）—— 写得好好的，一次没跑过。
+  #
+  # #232 就想加这个 job，但 `__tests__/routes/order.test.js` 有一条过时断言长期红着
+  # （#154 删了 pickup_totals CTE 却没改测试），加进来 CI 直接红，只能先不加。
+  # 那条断言已在 #276 修正，这个 job 才补得上。
+  #
+  # ⚠️ 跑**全量**，不要退回手工文件清单，理由同上面 staffApi job 的注释：
+  # 新加的守护默认不进网，而漏加的那一次正好就是守护失效的那一次 ——
+  # lakala-cross-copy 就是这么掉进洞里的。这条由该文件自己的 meta-guard 反向锁住。
+  #
+  # 只装 clientApi 自己的依赖即可：测试零跨端 `require()`，跨端一致性守护全部走
+  # `fs.readFileSync` 纯文本比对（不加载对端模块，因而不需要对端 node_modules）；
+  # `db/pg` 由 `__tests__/setup.js` 注入 require.cache mock 掉，不碰数据库。
+  # 本地 36 文件 / 885 用例约 2.7 秒。
+  clientapi-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install clientApi deps
+        working-directory: fengyu-client/cloudfunctions/clientApi
+        run: npm ci || npm install
+      - name: Run clientApi full test suite (含 lakala 跨副本字节一致守护)
+        working-directory: fengyu-client/cloudfunctions/clientApi
+        run: npx vitest run
+
   cross-end-snapshots-admin:
     runs-on: ubuntu-latest
     steps:
