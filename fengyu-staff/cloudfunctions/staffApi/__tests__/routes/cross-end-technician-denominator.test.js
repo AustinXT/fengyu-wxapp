@@ -113,8 +113,30 @@ function countingWhere(normalizedSection) {
     .replace(/(?:\s\))+$/, '')
 }
 
+/**
+ * 抽出 `technician_base` CTE 的 `FROM … WHERE …` 全段，用于**整段等值比较**。
+ *
+ * 为什么这一段也必须等值而不是「包含若干子串」：第 5 轮 GLM 变异实测 —— 在这段 WHERE
+ * 末尾追加一条 `AND sw.store_id IS NOT NULL`，人池里的直挂技师被整池剔掉、**#320 直接复发**
+ * （166→152、人均虚高约 9%），而当时要件 1~4 全是「包含」式断言，一条都不红。
+ * 任何**单端**新增过滤（`AND sw.status = '在职'` 之类）同理会造成两端静默分叉。
+ *
+ * 截断点取「空白 + 右括号」这第一处 —— 那是 CTE 的收尾。WHERE 内部
+ * `(sw.resigned_at IS NULL OR …)` 的右括号前面没有空白，不会误伤（同 `countingWhere`）。
+ */
+function baseFromWhere(normalizedSection) {
+  const i = normalizedSection.indexOf('FROM staff_wechat_users sw')
+  if (i < 0) throw new Error('未找到 technician_base 的 FROM（形态已变，先读要件 4 的注释）')
+  const rest = normalizedSection.slice(i)
+  const j = rest.indexOf(' )')
+  if (j < 0) throw new Error('未找到 technician_base CTE 的收尾右括号')
+  return rest.slice(0, j).trim()
+}
+
 describe('产能技师分母跨端字面量守护（#320）', () => {
   let staffSection
+  /** 同一段的**未归一化**原文（槽位顺序只有它能钉住，见要件 8） */
+  let staffRaw
   let adminSection
   /** 两端「无门店技师可见性」helper 的源文本（保留 `${}`） */
   let staffAnchorFn
@@ -131,6 +153,13 @@ describe('产能技师分母跨端字面量守护（#320）', () => {
     const staffSrc = readFile(FILES.staffDashboard)
     const adminScopeSrc = readFile(FILES.adminScopeSql)
 
+    staffRaw = squeeze(
+      extractSection(
+        staffSrc,
+        'async function queryEmployeeCount(',
+        '\n/**\n * 门店数（截面快照',
+      ),
+    )
     staffSection = normalizeSql(
       extractSection(
         staffSrc,
@@ -211,15 +240,28 @@ describe('产能技师分母跨端字面量守护（#320）', () => {
     }
   })
 
-  it('要件 4：两端人池过滤一致（技能标签 + hired_at/resigned_at 历史化）', () => {
+  /**
+   * 要件 4 —— 人池那段 `FROM … WHERE …` 必须**逐字**是这些，不能多一条过滤。
+   *
+   * 两端唯一的合法差异是参数的 cast：staff 传 text 参数自己 `::date`，
+   * admin 由 drizzle 绑字符串、不需要再 cast。所以按端各写一份期望值，
+   * 而不是拿两端互相比（互相比会因为这个 `::date` 恒红）。
+   */
+  it('要件 4：两端人池的 FROM/JOIN/WHERE 逐字固定（不得追加任何过滤）', () => {
+    const JOINS =
+      'FROM staff_wechat_users sw' +
+      ' LEFT JOIN org_nodes o ON o.id = sw.org_node_id' +
+      ' LEFT JOIN org_nodes op ON op.id = o.parent_id' +
+      ' LEFT JOIN stores ds ON ds.org_node_id = sw.org_node_id' +
+      " WHERE sw.skills && ARRAY['美容师','养生师']::text[]" +
+      ' AND sw.hired_at IS NOT NULL'
+    const EXPECTED = {
+      staff: `${JOINS} AND sw.hired_at::date <= ?::date AND (sw.resigned_at IS NULL OR sw.resigned_at::date > ?::date)`,
+      admin: `${JOINS} AND sw.hired_at::date <= ? AND (sw.resigned_at IS NULL OR sw.resigned_at::date > ?)`,
+    }
     for (const [end, src] of [['staff', staffSection], ['admin', adminSection]]) {
-      expect(src, `${end} 侧技能过滤漂移`).toMatch(
-        /sw\.skills && ARRAY\['美容师','养生师'\]::text\[\]/,
-      )
-      expect(src).toMatch(/sw\.hired_at IS NOT NULL/)
-      expect(src).toMatch(/sw\.hired_at::date <= \?/)
-      expect(src).toMatch(/sw\.resigned_at IS NULL OR sw\.resigned_at::date > \?/)
-      // 旧口径 is_resigned 实时快照不得回归
+      expect(baseFromWhere(src), `${end} 侧人池形态漂移`).toBe(EXPECTED[end])
+      // 旧口径 is_resigned 实时快照不得回归（它会让历史月份数字随时间漂移）
       expect(src, `${end} 侧不该再用 is_resigned 快照`).not.toMatch(/is_resigned/)
     }
   })
@@ -239,6 +281,26 @@ describe('产能技师分母跨端字面量守护（#320）', () => {
     for (const [end, src] of [['staff', staffSection], ['admin', adminSection]]) {
       expect(countingWhere(src), `${end} 侧计数 WHERE 形态漂移`).toBe(EXPECTED)
     }
+    /**
+     * WHERE 之外的 `SELECT`/`FROM` 也要钉：第 5 轮 GLM 变异实测，只钉 WHERE 时
+     * 把 staff 的 `COUNT(*)` 改成 `COUNT(DISTINCT tb.store_id)`（数门店当人数）全绿。
+     */
+    expect(
+      staffSection.slice(staffSection.indexOf('SELECT COUNT(*) AS v')).split('`')[0].trim(),
+      'staff 计数语句形态漂移（SELECT / FROM 也在守护范围内）',
+    ).toBe(`SELECT COUNT(*) AS v FROM technician_base tb ${EXPECTED}`)
+    /**
+     * admin 侧对应的是 `technician_scoped` 这段 CTE，整段等值 ——
+     * 它的 SELECT 列表与 staff 不同（多带 `anchor_market_name`，给 byMarket 用），
+     * 所以只能按端写期望值。
+     */
+    expect(
+      adminSection.slice(adminSection.indexOf('technician_scoped AS (')).split('`')[0].trim(),
+      'admin technician_scoped 形态漂移',
+    ).toBe(
+      'technician_scoped AS ( SELECT tb.employee_id, tb.store_id, tb.anchor_market_id,' +
+        ` tb.anchor_market_name FROM technician_base tb ${EXPECTED} )`,
+    )
   })
 
   /**
@@ -254,8 +316,12 @@ describe('产能技师分母跨端字面量守护（#320）', () => {
     expect(staffAnchorFn, 'staff 侧 all 分支必须按名字显式命中').toMatch(
       /if \(scopeType === 'all'\) return \{ sql: 'TRUE', params: \[\] \}/,
     )
-    expect(staffAnchorFn, 'staff 侧 market 分支必须比锚定市场').toMatch(
-      /if \(scopeType === 'market'\)[\s\S]*tb\.anchor_market_id = \$\$\{startIdx\}/,
+    /**
+     * 整行钉，不是 presence 钉：第 5 轮 GLM 变异实测，presence 写法挡不住
+     * `(tb.anchor_market_id = $${startIdx}) OR TRUE` —— market 口径分母膨胀成全部直挂技师。
+     */
+    expect(staffAnchorFn, 'staff 侧 market 分支形态漂移').toContain(
+      'return { sql: `tb.anchor_market_id = $${startIdx}`, params: [scopeId] }',
     )
     /**
      * fail-closed：整个函数里 `'TRUE'` 只允许出现一次，且必须在 `'all'` 那一行。
@@ -358,7 +424,17 @@ describe('产能技师分母跨端字面量守护（#320）', () => {
     expect(adminScopeFilterFn, 'admin 丢了账号权限交集（非超管应按 scopeStoreIds 收窄）').toMatch(
       /if \(!isAdminScope\(session\)\)[\s\S]*session\.permissions\.scopeStoreIds[\s\S]*if \(ids\.length === 0\) return sql`FALSE`/,
     )
-    // staff 镜像：market 展开必须落到那条递归 CTE 上
+    /**
+     * staff 镜像：`buildManagementStoreScope` 的**三个分支都要整行钉**。
+     * 第 5 轮 GLM 变异实测：只钉 market 那行时，把 `all` 分支改成 `{ sql: 'FALSE' }`
+     * 会让首页「全部」口径分母静默归零（所有人均显示 `--`），本文件全绿。
+     */
+    expect(staffMgmtScopeFn, 'staff 的 all 分支形态漂移').toContain(
+      "if (scopeType === 'all') return { sql: 'TRUE', params: [] }",
+    )
+    expect(staffMgmtScopeFn, 'staff 的 store 分支形态漂移').toContain(
+      'return { sql: `${column} = $${startIndex}`, params: [scopeId] }',
+    )
     expect(staffMgmtScopeFn, 'staff 的 market 分支未走 descendantStoresSqlForRoot').toContain(
       'descendantStoresSqlForRoot(column, startIndex)',
     )
@@ -384,6 +460,17 @@ describe('产能技师分母跨端字面量守护（#320）', () => {
     // 起始下标必须由前一段的 params 长度推导，不能写死
     expect(staffSection).not.toMatch(/buildTechnicianOrgAnchorScope\(scopeType, scopeId, \d+\)/)
     expect(staffSection).toContain('[date, ...sc.params, ...anchor.params]')
+    /**
+     * ⚠️ **槽位顺序**必须读未归一化原文才钉得住。
+     * 第 5 轮 GLM 变异实测：把两个插值互换（门店分支塞 `${anchor.sql}`、锚分支塞 `${sc.sql}`），
+     * 归一化后逐字不变 → 要件 5 的等值比较通过，要件 8 的 `toContain` 是无序的、也通过。
+     * 运行期后果不报错：`all` 口径下无门店分支变成 `store_id IS NULL AND (store_id IN …)` 恒假，
+     * 直挂技师整体丢失（166→152）；单店口径恒 0，被上游 safeDiv 吞成全零人均。
+     */
+    expect(staffRaw, 'staff 两个 scope 片段的槽位被对调了').toContain(
+      'WHERE (tb.store_id IS NOT NULL AND ${sc.sql})' +
+        ' OR (tb.store_id IS NULL AND ${anchor.sql})',
+    )
   })
 
   /**
@@ -408,6 +495,11 @@ describe('产能技师分母跨端字面量守护（#320）', () => {
     )
     expect(adminRaw, 'admin 锚分支未走 orgAnchorScopeSql').toContain(
       "${orgAnchorScopeSql(session, scope, 'tb.anchor_market_id')}",
+    )
+    // 槽位顺序（同 staff 侧要件 8 的说明：归一化后互换不可见）
+    expect(adminRaw, 'admin 两个 scope helper 的槽位被对调了').toContain(
+      "WHERE (tb.store_id IS NOT NULL AND ${scopeFilterSql(session, scope, 'tb.store_id')})" +
+        " OR (tb.store_id IS NULL AND ${orgAnchorScopeSql(session, scope, 'tb.anchor_market_id')})",
     )
     // 历史化的两个时间锚也必须真的绑 endDate，而不是写死日期或漏掉
     expect(adminRaw).toContain('sw.hired_at::date <= ${endDate}')
@@ -508,6 +600,13 @@ describe('产能技师分母跨端字面量守护（#320）', () => {
    * ⚠️ 局限（有意接受）：① 注释剥离是启发式的，字符串字面量里出现 `/*` 会造成漏报；
    * ② 只盯 `efficiency.ts` / `sales.ts` 两个文件 —— 它们是历史上出过分叉的那两处。
    * 新板块若自己抄一份技师人池，本条抓不到，靠代码评审。
+   *
+   * ⚠️ 本条只是**跨端侧的一道副本**，admin 那边有更完整的同名守护：
+   * `consistency.efficiency.test.ts` 的「⭐ 单源纪律」同时要求两个文件 import
+   * `@/lib/data-center/technician-sql`。那条测试还写明了**为什么不能笼统禁
+   * `FROM staff_wechat_users`** —— `efficiency.ts` 的 Part D `producer_base` 合法地扫该表取
+   * 员工榜人池（且刻意**不**按 skills 过滤）。所以「只按 store_id 过滤的技师查询」这种形态，
+   * 判据只能是 skills 白名单是否在单源之外出现，不能是表名。别照着「表名也禁掉」改。
    */
   it('admin 侧的技师查询只有 technician-sql.ts 这一份单源', () => {
     const efficiency = readFile(

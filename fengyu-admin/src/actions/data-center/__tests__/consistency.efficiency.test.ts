@@ -503,6 +503,35 @@ describe('数据中心人效板块两端口径一致性守护', () => {
       expect(byMarket).toMatch(/anchor_market_name/i)
     })
 
+    /**
+     * 消费端必须读**过滤后**的那张 CTE。
+     *
+     * `technician_base` 是未过滤人池、`technician_scoped` 才叠了 scope / 权限 / 启用门店。
+     * #320 的双谱系评审第 4 轮先在 `technicianCountSql` 上抓到这个形态（改读 base → 任何角色
+     * 任何 scope 都拿到全集团分母），第 5 轮 GLM 指出同胞的 byStore / byMarket 同样没人钉：
+     * 改掉它们会让**分门店/分市场**技师分母变成全集团分布，分门店人均全错，
+     * 而当时两端所有断言都不红。三个消费函数一起钉住。
+     */
+    it('⭐ 三个消费函数都必须复用 technicianCteSql 且只读过滤后的 technician_scoped', () => {
+      const CONSUMERS = [
+        ['technicianCountSql', 'export function technicianCountSql', 'export function technicianByStoreSql'],
+        ['technicianByStoreSql', 'export function technicianByStoreSql', 'export function technicianDirectByMarketSql'],
+      ] as const
+      for (const [name, from, to] of CONSUMERS) {
+        const body = sliceOrFail(techSrc, from, to)
+        expect(body, `${name} 没复用 technicianCteSql 单源`).toContain(
+          'WITH ${technicianCteSql(session, scope, endDate)}',
+        )
+        expect(body, `${name} 读的是未过滤的 technician_base`).toMatch(/FROM technician_scoped/)
+        expect(body, `${name} 读的是未过滤的 technician_base`).not.toMatch(/FROM technician_base/)
+      }
+      // byMarket 是文件最后一个函数，没有下一个 marker 可切
+      const byMarket = techSrc.slice(techSrc.indexOf('export function technicianDirectByMarketSql'))
+      expect(byMarket).toContain('WITH ${technicianCteSql(session, scope, endDate)}')
+      expect(byMarket).toMatch(/FROM technician_scoped/)
+      expect(byMarket).not.toMatch(/FROM technician_base/)
+    })
+
     it('⭐ 单源纪律：人效板与销售板都引用 technician-sql，且都不再自己扫 staff_wechat_users', () => {
       // 这条是 #285 闸门 2 codex P0 的回归守护：分母只修人效板会让同一个数据中心
       // 两个板块技师数差 14 人（人效 164 / 销售 150），而此前没有任何测试能发现。
