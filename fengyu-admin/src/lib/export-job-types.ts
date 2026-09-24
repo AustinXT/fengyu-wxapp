@@ -108,6 +108,30 @@ export const EXPORT_PERMISSIONS_BY_TYPE: Record<ExportJobType, readonly [string,
   'data-center': ['data_center:dashboard'],
 }
 
+/**
+ * data-center 各视图的导出权限：**全部满足**（#367）。
+ *
+ * `EXPORT_PERMISSIONS_BY_TYPE` 是「任一即可」语义，往 `'data-center'` 数组里加新 key 只会放宽、
+ * 收紧不了——只有 `data_center:dashboard` 的账号照样能发起顾客明细 / 员工提成视图的导出。
+ * 经营明细报表的视图按这里登记「dashboard + 专用权限点」，`createExportJob` / `retryMyExportJob`
+ * 逐项校验且要求由同一角色授权提供（与页面 / 取数 Server Action 的 `withAllPermissions` 同一口径）。
+ * `Record` 让新增视图时漏登记在 tsc 就报错。
+ */
+export const DATA_CENTER_VIEW_REQUIRED_ACTIONS: Record<DataCenterExportView, readonly [string, ...string[]]> = {
+  'sales-market': ['data_center:dashboard'],
+  'sales-store': ['data_center:dashboard'],
+  'customer-market-reg': ['data_center:dashboard'],
+  'customer-market-ops': ['data_center:dashboard'],
+  'customer-store-reg': ['data_center:dashboard'],
+  'customer-store-ops': ['data_center:dashboard'],
+  'product-market': ['data_center:dashboard'],
+  'product-store': ['data_center:dashboard'],
+  'efficiency-market': ['data_center:dashboard'],
+  'efficiency-staff': ['data_center:dashboard'],
+  'efficiency-store-ranking': ['data_center:dashboard'],
+  'efficiency-staff-ranking': ['data_center:dashboard'],
+}
+
 export const EXPORT_PERMISSION_ACTIONS = Array.from(
   new Set(Object.values(EXPORT_PERMISSIONS_BY_TYPE).flat()),
 )

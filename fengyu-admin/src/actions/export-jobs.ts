@@ -8,19 +8,26 @@ import { ApiError } from '@/lib/api-error'
 import { deleteByCloudPaths } from '@/lib/cloudbase'
 import { logOperation } from '@/lib/operation-log'
 import { requirePermission } from '@/lib/permissions'
+import { scopeSessionToAllActions } from '@/lib/action-scope'
 import { withAnyPermission } from '@/lib/with-permission'
+import type { AuthSession } from '@/lib/types'
 import {
+  DATA_CENTER_VIEW_REQUIRED_ACTIONS,
   EXPORT_LABEL_BY_TYPE,
   EXPORT_PERMISSION_ACTIONS,
   EXPORT_PERMISSIONS_BY_TYPE,
   exportJobLabel,
   findExportPermissionAction,
   type CreateExportJobInput,
+  type DataCenterExportPayload,
   type ExportJobListItem,
+  type ExportJobPayload,
   type ExportJobStatus,
+  type ExportJobType,
 } from '@/lib/export-job-types'
 import {
   parseCreateExportJobInput,
+  parseExportPayload,
   parseExportStatus,
   parseExportType,
   snapshotExportSession,
@@ -56,6 +63,35 @@ function normalizePayload(input: CreateExportJobInput): CreateExportJobInput {
   }
 }
 
+/**
+ * 导出任务的权限闸门：先按 exportType 的「任一即可」取记账用的 permissionAction，
+ * data-center 再按视图要求「全部满足」（#367，见 `DATA_CENTER_VIEW_REQUIRED_ACTIONS`）。
+ * 发起与重试共用，保证两条入口口径一致。
+ */
+function requireExportPermission(
+  session: AuthSession,
+  exportType: ExportJobType,
+  payload: ExportJobPayload,
+): string {
+  const permissionAction = findExportPermissionAction(
+    exportType,
+    session.permissions.actions,
+  ) ?? EXPORT_PERMISSIONS_BY_TYPE[exportType][0]
+  requirePermission(session, permissionAction)
+
+  if (exportType === 'data-center') {
+    // 两条入口都已过 zod 校验（view ∈ DATA_CENTER_EXPORT_VIEWS）；查不到仍按拒绝处理，不放行。
+    const required = DATA_CENTER_VIEW_REQUIRED_ACTIONS[(payload as DataCenterExportPayload).view]
+    if (!required) throw new Error('INVALID_PARAMS: 导出视图无效')
+    for (const action of required) requirePermission(session, action)
+    // 与 withAllPermissions 同口径：多项权限必须落在同一条角色授权上，不能拼接两个角色的范围。
+    if (required.length > 1 && scopeSessionToAllActions(session, required).roles.length === 0) {
+      throw new Error('PERMISSION_DENIED: 多项权限必须由同一角色授权范围同时提供')
+    }
+  }
+  return permissionAction
+}
+
 function requestHash(input: CreateExportJobInput): string {
   return createHash('sha256').update(JSON.stringify(input)).digest('hex')
 }
@@ -87,11 +123,7 @@ export const createExportJob = withAnyPermission(
   EXPORT_PERMISSION_ACTIONS,
   async (session, rawInput: CreateExportJobInput) => {
     const input = normalizePayload(parseCreateExportJobInput(rawInput))
-    const permissionAction = findExportPermissionAction(
-      input.exportType,
-      session.permissions.actions,
-    ) ?? EXPORT_PERMISSIONS_BY_TYPE[input.exportType][0]
-    requirePermission(session, permissionAction)
+    const permissionAction = requireExportPermission(session, input.exportType, input.payload)
 
     const hash = requestHash(input)
     const inserted = await db
@@ -171,11 +203,13 @@ export const retryMyExportJob = withAnyPermission(
 
     const exportType = parseExportType(job.exportType)
     if (!exportType) throw new Error('INVALID_STATE: 导出任务类型异常')
-    const permissionAction = findExportPermissionAction(
-      exportType,
-      session.permissions.actions,
-    ) ?? EXPORT_PERMISSIONS_BY_TYPE[exportType][0]
-    requirePermission(session, permissionAction)
+    let payload: ExportJobPayload
+    try {
+      payload = parseExportPayload(exportType, job.requestPayload)
+    } catch {
+      throw new Error('INVALID_STATE: 导出任务参数异常')
+    }
+    const permissionAction = requireExportPermission(session, exportType, payload)
     if (!RETRYABLE_STATUSES.includes(job.status as (typeof RETRYABLE_STATUSES)[number])) {
       throw new Error('INVALID_STATE: 当前任务不能重新导出')
     }
