@@ -23,6 +23,20 @@ on:
       - 'fengyu-admin/package.json'
       - 'fengyu-admin/package-lock.json'
       - 'fengyu-admin/bun.lock'
+      # 云函数两端的依赖清单同理（#276）。上面那条 `fengyu-*/cloudfunctions/**/*.js`
+      # 的 glob **不匹配 .json**，所以「只升 vitest/pg 版本号」的 PR 一个 paths 条目都
+      # 命中不到 → 整个 workflow 的全部 job 都不触发 → 877 + 2343 个用例一条不跑，
+      # 而依赖升级（尤其 vitest 主版本改 mock 行为）恰恰是最该让守护跑一遍的那次。
+      - 'fengyu-client/cloudfunctions/clientApi/package.json'
+      - 'fengyu-client/cloudfunctions/clientApi/package-lock.json'
+      # vitest 会自动发现 vitest.workspace.* / vitest.projects.*，它们能整个接管
+      # 文件收集。非 .js 后缀（如 .json）不在上面的 glob 里，得单列。
+      - 'fengyu-client/cloudfunctions/clientApi/vitest.*'
+      # .npmrc 也左右 npm ci 的行为（engine-strict 等），改它必须让 CI 跑一遍 ——
+      # 尤其 node18 canary：engine-strict=true 会让它因 vite 的 engines 直接装不上。
+      - 'fengyu-client/cloudfunctions/clientApi/.npmrc'
+      - 'fengyu-staff/cloudfunctions/staffApi/package.json'
+      - 'fengyu-staff/cloudfunctions/staffApi/package-lock.json'
       # 测试目录也要触发：只删守护断言（不动 src）的 PR 同样该让 CI 跑一遍。
       # ⚠️ E2E（tests/e2e-inventory-ui）需要活的 dev 实例 + PG，CI 里跑不了，
       #    触发它只是为了让**单测**守护有机会拦下「只改测试」的回归。
@@ -140,6 +154,81 @@ jobs:
       - name: Run client miniprogram tests
         working-directory: fengyu-client/miniprogram
         run: npx vitest run
+
+  # clientApi 的 36 个测试文件 / 885 用例此前**不在任何 CI job 里**。
+  # 其中 `__tests__/utils/lakala-cross-copy.test.js` 是拉卡拉签名/配置的字节一致守护
+  # （clientApi ↔ payNotify 全文比对 + 三端 normalizePem 检查）—— 写得好好的，一次没跑过。
+  #
+  # #232 就想加这个 job，但 `__tests__/routes/order.test.js` 有一条过时断言长期红着
+  # （#154 删了 pickup_totals CTE 却没改测试），加进来 CI 直接红，只能先不加。
+  # 那条断言已在 #276 修正，这个 job 才补得上。
+  #
+  # ⚠️ 跑**全量**，不要退回手工文件清单，理由同上面 staffApi job 的注释：
+  # 新加的守护默认不进网，而漏加的那一次正好就是守护失效的那一次 ——
+  # lakala-cross-copy 就是这么掉进洞里的。这条由该文件自己的 meta-guard 反向锁住。
+  #
+  # 只装 clientApi 自己的依赖即可：测试零跨端 `require()`，跨端一致性守护全部走
+  # `fs.readFileSync` 纯文本比对（不加载对端模块，因而不需要对端 node_modules）；
+  # `db/pg` 由 `__tests__/setup.js` 注入 require.cache mock 掉，不碰数据库。
+  # 本地 36 文件 / 887 用例约 2.7 秒。
+  clientapi-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      # ⚠️ 已知局限：云函数生产运行时是 Nodejs18.15（见 cloudbaserc.example.json），
+      # 这里却跑 node 22 —— 只在 18.15 上炸的写法（如 Array.prototype.toSorted）
+      # 本 job 测不出来，会给出运行时兼容性的假绿。
+      # **不是没想到，是当前工具链跑不了**：vite 7.3.1 的 engines 是
+      # `^20.19.0 || >=22.12.0`，实测在 node 18.15 下 vitest 直接
+      # ERR_REQUIRE_ESM 起不来（连一条用例都跑不到）。要真正覆盖 18.15
+      # 得先降 vitest/vite 大版本，那是仓库级决策，不在本 PR 范围。
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      # ⚠️ 只用 `npm ci`，**不要**加 `|| npm install` 兜底：npm ci 在 package.json 与
+      # package-lock.json 不一致时正确失败，而 npm install 会就地重写 lockfile 继续跑，
+      # 让 job 变绿 —— 合入的仍是过不了干净 npm ci 的依赖状态。那恰好抵消了上面
+      # 把两个依赖清单加进 paths 的目的。已实测纯净环境 npm ci 可通过。
+      - name: Install clientApi deps
+        working-directory: fengyu-client/cloudfunctions/clientApi
+        run: npm ci
+      - name: Run clientApi full test suite (含 lakala 跨副本字节一致守护)
+        working-directory: fengyu-client/cloudfunctions/clientApi
+        run: npx vitest run
+
+  # 上面那个 job 跑在 node 22（vite 7 不支持 18），测不出只在生产运行时 Nodejs18.15
+  # 炸的写法。这个 canary 把那个缺口补上一半：**生产代码是纯 CJS、不依赖 vite**，
+  # 所以哪怕 vitest 跑不起来，也能用 node 18.15 逐个 require 生产模块 ——
+  # 顶层语法错误、以及 require 链上用到的 20+ API（如 Array.prototype.toSorted）
+  # 会在这里当场炸。
+  #
+  # 诚实的局限：只覆盖**模块加载期**，handler 函数体深处才走到的 20+ API 仍测不出来。
+  # 要完整覆盖得把 vite 降到 6（vitest 3.2.4 允许 ^5 || ^6 || ^7），那是独立的依赖
+  # 变更，应单独 PR 以便回滚。
+  clientapi-node18-canary:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '18.15'
+      - name: Install clientApi deps
+        working-directory: fengyu-client/cloudfunctions/clientApi
+        run: npm ci
+      - name: Require all production modules under Nodejs18.15
+        working-directory: fengyu-client/cloudfunctions/clientApi
+        run: |
+          node -e "
+          const fs = require('fs')
+          const mods = fs.readdirSync('routes').filter((f) => f.endsWith('.js'))
+          for (const m of mods) require('./routes/' + m)
+          require('./index.js')
+          console.log('OK: required ' + mods.length + ' route modules + index.js on ' + process.version)
+          "
 
   cross-end-snapshots-admin:
     runs-on: ubuntu-latest
