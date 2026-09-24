@@ -958,7 +958,17 @@ async function storeRanking(ctx) {
 // 不再用 skills 字段门控 — staff_wechat_users.skills 在历史员工档案中 1174/2020 为 NULL/空（如刘恋
 // FY-240804002 hired_at=2026-03-13、skills 空但有 888 元 allocation），导致 ranking 漏算 33% 业绩。
 // 各 metric 子查询按真实归属事实聚合，不再按 role_type 白名单截断；
-// 末尾再用 WHERE COALESCE(value,0) > 0 把零值员工排除（无业绩不入榜）。
+// 末尾入榜口径见下（2026-09-24 用户拍板，#290）。
+//
+// ★ 入榜口径：WHERE (pe.has_skills OR COALESCE(value,0) <> 0)
+//   ——「有技能标签的员工无条件入榜（含零值/负值），无标签者仅在有非零产能时入榜」。
+//   原写法 `> 0` 语义是「无业绩不入榜」，但它比该意图宽：连**有**业绩而净额为负
+//   （退款冲销超过新单）的员工也一并吞掉，与「退款负数冲销不删行」硬口径冲突，
+//   且同板块门店榜（storeRanking）从不按 value 剔行 —— 两榜规则本不该分裂。
+//   2026-09-01~22 生产实测：admin 侧 2 人被吞（合计 −10,902.00）。
+//   候选池用 has_skills 而非白名单 ARRAY['美容师','养生师']：后者会把品项老师/
+//   推广部/售前老师共 139 万（27.8%）排出榜单。OR 右半边是防漏算兜底 ——
+//   skills 非必填，漏填即静默掉榜（2026-05-20 正栽于此，当时漏算 33%）。
 // metrics.md employeeCount 指标仍保留 skills 过滤（语义是"产能技师在职数"，与 ranking 候选池语义不同）。
 
 /**
@@ -988,7 +998,8 @@ function producerEmployeesCte(storeFilter, orgScope) {
     COALESCE(s.store_name, ds.store_name, o.name)        AS store_name,
     CASE WHEN o.type = '市场' THEN o.id
          WHEN op.type = '市场' THEN op.id
-         ELSE NULL END                                   AS anchor_market_id
+         ELSE NULL END                                   AS anchor_market_id,
+    (sw.skills IS NOT NULL AND cardinality(sw.skills) > 0) AS has_skills
   FROM staff_wechat_users sw
   LEFT JOIN stores s     ON s.store_id     = sw.store_id
   LEFT JOIN org_nodes o  ON o.id           = sw.org_node_id
@@ -999,7 +1010,7 @@ function producerEmployeesCte(storeFilter, orgScope) {
     AND (sw.resigned_at IS NULL OR sw.resigned_at::date > NOW()::date)
 ),
 producer_employees AS (
-  SELECT pb.employee_id, pb.employee_name, pb.store_id, pb.store_name
+  SELECT pb.employee_id, pb.employee_name, pb.store_id, pb.store_name, pb.has_skills
   FROM producer_base pb
   WHERE (pb.store_id IS NOT NULL AND ${storeFilter.sql})
      OR (pb.store_id IS NULL AND ${orgScope.sql})
@@ -1057,7 +1068,7 @@ SELECT
   COALESCE(r.v, 0)::numeric AS value
 FROM producer_employees pe
 LEFT JOIN revenue_by_emp r ON r.employee_id = pe.employee_id
-WHERE COALESCE(r.v, 0) > 0
+WHERE (pe.has_skills OR COALESCE(r.v, 0) <> 0)
 ${STAFF_ORDER_BY}`,
     storeFilter.params,
   )
@@ -1105,7 +1116,7 @@ SELECT
   COALESCE(c.v, 0)::numeric AS value
 FROM producer_employees pe
 LEFT JOIN consume_by_emp c ON c.employee_id = pe.employee_id
-WHERE COALESCE(c.v, 0) > 0
+WHERE (pe.has_skills OR COALESCE(c.v, 0) <> 0)
 ${STAFF_ORDER_BY}`,
     storeFilter.params,
   )
@@ -1139,7 +1150,7 @@ SELECT
   COALESCE(n.v, 0)::numeric AS value
 FROM producer_employees pe
 LEFT JOIN new_member_by_emp n ON n.employee_id = pe.employee_id
-WHERE COALESCE(n.v, 0) > 0
+WHERE (pe.has_skills OR COALESCE(n.v, 0) <> 0)
 ${STAFF_ORDER_BY}`,
     storeFilter.params,
   )
@@ -1173,7 +1184,7 @@ SELECT
   COALESCE(f.v, 0)::numeric AS value
 FROM producer_employees pe
 LEFT JOIN footfall_by_emp f ON f.employee_id = pe.employee_id
-WHERE COALESCE(f.v, 0) > 0
+WHERE (pe.has_skills OR COALESCE(f.v, 0) <> 0)
 ${STAFF_ORDER_BY}`,
     storeFilter.params,
   )
@@ -1214,7 +1225,7 @@ SELECT
   COALESCE(p.v, 0)::numeric AS value
 FROM producer_employees pe
 LEFT JOIN project_by_emp p ON p.employee_id = pe.employee_id
-WHERE COALESCE(p.v, 0) > 0
+WHERE (pe.has_skills OR COALESCE(p.v, 0) <> 0)
 ${STAFF_ORDER_BY}`,
     storeFilter.params,
   )
@@ -1265,7 +1276,7 @@ SELECT
 FROM producer_employees pe
 LEFT JOIN sales_comm   sc1 ON sc1.employee_id = pe.employee_id
 LEFT JOIN service_comm sc2 ON sc2.employee_id = pe.employee_id
-WHERE COALESCE(sc1.v, 0) + COALESCE(sc2.v, 0) > 0
+WHERE (pe.has_skills OR COALESCE(sc1.v, 0) + COALESCE(sc2.v, 0) <> 0)
 ${STAFF_ORDER_BY}`,
     storeFilter.params,
   )

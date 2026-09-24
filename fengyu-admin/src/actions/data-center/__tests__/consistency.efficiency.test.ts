@@ -302,6 +302,79 @@ function assertPlainSumAggregate(segment: string, label: string): void {
   ).toContain('COALESCE(SUM(spe.amount::numeric), 0) AS ')
 }
 
+/**
+ * 抽出一个排行榜查询**最外层**的 `WHERE` 子句正文。
+ *
+ * ⚠️ 不能取第一个 `WHERE`：这些查询普遍带 CTE（`revenue_by_emp AS (... WHERE ...)`）与
+ * 相关子查询（门店榜保有会员的 `EXISTS (... WHERE ...)`），第一个 WHERE 必落在内层，
+ * 拿它去比对外层口径会得到「口径没守住」的假红 —— 更危险的是反过来：若内层恰好长得像
+ * 期望形状，就成了假绿。
+ *
+ * 也不能用 `GROUP BY` 当尾锚：员工榜的 CTE 内有 `GROUP BY spia.employee_id`，它在外层
+ * WHERE **之前**，会把外层 WHERE 整个切掉。
+ *
+ * 外层 `ORDER BY` 是唯一可靠的尾锚（两端排行榜都以它收尾，CTE 内不出现排序）；
+ * staff 端排序是插值常量 `${STAFF_ORDER_BY}`，一并识别。取尾锚之前的**最后一个** WHERE。
+ */
+function whereClauseOf(segment: string, label: string): string {
+  const tailAnchor = segment.search(/ORDER BY|\$\{STAFF_ORDER_BY\}/)
+  expect(tailAnchor, `${label} 找不到外层 ORDER BY，无法定位最外层 WHERE`).toBeGreaterThan(-1)
+  const outer = segment.slice(0, tailAnchor)
+  const from = outer.lastIndexOf('WHERE ')
+  expect(from, `${label} 找不到外层 WHERE`).toBeGreaterThan(-1)
+  const raw = outer.slice(from + 'WHERE '.length)
+  // 门店榜是 `WHERE <scope> GROUP BY ... ORDER BY ...`，需再截掉 GROUP BY 尾巴；
+  // 员工榜外层无 GROUP BY（CTE 内那个在本切片起点之前），此处对它是 no-op。
+  const groupBy = raw.search(/GROUP BY/)
+  return (groupBy === -1 ? raw : raw.slice(0, groupBy)).trim()
+}
+
+/**
+ * ★ #290 —— 员工榜（Part D）的入榜口径，**正向钉死整个 WHERE 形状**。
+ *
+ * 规则：`WHERE (pe.has_skills OR COALESCE(<别名>.v, 0) <> 0)`，收入榜是两项相加。
+ * 有且仅有这一项 —— 追加任何 `AND ...` 都会红。
+ *
+ * ⚠️ 为什么钉形状而不是反向禁 `> 0`：反向列举挡不完（`>= 1`、`> 0.0`、`FILTER`、
+ * `HAVING`、`GREATEST(...,0)`、把值包进函数……本文件 Part C 侧为此积累了六层守护，
+ * 每一层都是被闸门 2 打穿后补的）。正向钉死「WHERE 必须逐字长这样」是 fail-closed 的：
+ * 任何改动都必须回来改这条断言并说明为什么安全。
+ */
+function assertStaffRankAdmissionShape(segment: string, label: string): void {
+  expect(
+    /\bHAVING\b/i.test(segment),
+    `${label} 出现 HAVING —— 按聚合值剔行同样会吞掉退款净额为负的员工`,
+  ).toBe(false)
+  expect(
+    whereClauseOf(segment, label),
+    `${label} 的入榜口径变了。必须是「有技能标签者无条件入榜（含零值/负值），` +
+      '无标签者仅在有非零产能时入榜」；任何按 value 设下界的写法都会重新吞掉退款净额为负的员工' +
+      '（#290：2026-09-01~22 实测 2 人、−10,902.00），与同板块门店榜规则分裂',
+  ).toMatch(
+    /^\(pe\.has_skills OR COALESCE\(\w+\.v, 0\)(?: \+ COALESCE\(\w+\.v, 0\))? <> 0\)$/,
+  )
+}
+
+/**
+ * ★ #290 —— 门店榜（Part C）对照面：**不得按 value 剔任何行**。
+ *
+ * 门店榜的 WHERE 有且仅有 scope 一项（业务过滤在 JOIN ON 里），零值/负值门店照常出行。
+ * 2026-09-01~22 实测：43 家门店全部出行（35 正 / 7 零 / 1 负）。
+ * 这是 AC4「两榜零值/负值处理规则一致」的另一半 —— 员工榜守 has_skills OR ≠0，
+ * 门店榜守「压根不按 value 过滤」，两条合起来才叫规则一致。
+ */
+function assertStoreRankNoValueCutoff(segment: string, label: string): void {
+  expect(
+    /\bHAVING\b/i.test(segment),
+    `${label} 出现 HAVING —— 门店榜不得按聚合值剔行（会吞掉净额为负的门店）`,
+  ).toBe(false)
+  expect(
+    whereClauseOf(segment, label),
+    `${label} 的 WHERE 只允许 scopeFilterSql 一项；任何 value 过滤都会让门店榜` +
+      '与员工榜的零值/负值规则重新分裂（#290 AC4）',
+  ).toBe("${scopeFilterSql(session, scope, 's.store_id')}")
+}
+
 describe('数据中心人效板块两端口径一致性守护', () => {
   let adminSrc: string
   let staffSrc: string
@@ -708,13 +781,80 @@ describe('数据中心人效板块两端口径一致性守护', () => {
       expect(staffBody).toMatch(/vn\.is_active\s*=\s*TRUE/i)
       expect(adminBody).toMatch(/orgAnchorScopeSql\(session,\s*scope\)/i)
     })
-    it('产能员工不再用 skills 过滤（2026-05-20 起，两端一致）', () => {
-      // producer_employees CTE 内不应出现 skills 过滤（员工榜候选池口径）。
+    it('产能员工候选池不用 skills **白名单**截断（2026-05-20 起，两端一致）', () => {
+      // 禁的是 `skills && ARRAY[...]` 这种**白名单截断**：2026-09-01~22 实测它会把
+      // 品项老师 1,061,191.30 / 推广部 231,767.01 / 售前老师 97,728.00 共 139 万（27.8%）
+      // 排出榜单，且与 2026-09-03「品项老师/养生部应当入榜」的放宽改造矛盾。
+      //
+      // ⚠️ 不禁 has_skills（skills 非空判定）：#290 起它是**入榜口径的左半边**，语义是
+      // 「有技能标签 ⇒ 纳入产能考核、无条件入榜」，与白名单截断是两回事 —— 它不排除任何
+      // 有产能事实的人（无标签但有非零产能者由 OR 右半边兜底）。`&&` 是数组重叠运算符，
+      // 只会命中白名单写法，命不中 `IS NOT NULL AND cardinality(...)`。
       // 注：efficiency.ts 在「店长/技师头数」处仍合法使用 skills，故只校验 producer CTE 段落。
       const adminProducer = adminBody.match(/producer_employees\s+AS\s*\([^)]*?\)/i)?.[0] ?? ''
       const staffProducer = staffBody.match(/producer_employees\s+AS\s*\([^)]*?\)/i)?.[0] ?? ''
       expect(adminProducer).not.toMatch(/skills\s*&&/i)
       expect(staffProducer).not.toMatch(/skills\s*&&/i)
+    })
+    it('候选池带 has_skills 标记并透传给入榜口径，两端镜像（#290）', () => {
+      for (const [body, label] of [
+        [adminBody, 'admin efficiency.ts'],
+        [staffBody, 'staff mgmt-dashboard.js'],
+      ] as const) {
+        expect(body, `${label} 的 producer_base 缺 has_skills 列`).toMatch(
+          /\(sw\.skills IS NOT NULL AND cardinality\(sw\.skills\) > 0\) AS has_skills/i,
+        )
+        expect(body, `${label} 的 producer_employees 没透传 has_skills`).toMatch(/pb\.has_skills/i)
+      }
+    })
+  })
+
+  /**
+   * ★ #290 AC4：员工榜（Part D）与门店榜（Part C）的零值/负值处理规则必须一致。
+   *
+   * 两榜此前分裂：门店榜从不按 value 剔行（43 家全出行，含 7 零 1 负），员工榜却用
+   * `WHERE COALESCE(v,0) > 0` 把净额为负的员工整行吞掉（实测 2 人、−10,902.00），
+   * 与「退款负数冲销不删行」硬口径冲突。本组断言把两侧规则同时钉死。
+   */
+  describe('★ #290 入榜口径：员工榜与门店榜的零值/负值规则一致（两端镜像）', () => {
+    it('admin Part D 五个员工榜：WHERE 逐字是 has_skills OR 非零', () => {
+      const slices: Array<[string, string, string]> = [
+        ['业绩', 'const qStaffRankRevenue', 'const qStaffRankConsume'],
+        ['实耗', 'const qStaffRankConsume', 'const qStaffRankNewMember'],
+        ['新会员', 'const qStaffRankNewMember', 'const qStaffRankProjectCount'],
+        ['项目数', 'const qStaffRankProjectCount', 'const qStaffRankIncome'],
+        ['收入', 'const qStaffRankIncome', 'Part E'],
+      ]
+      for (const [label, start, end] of slices) {
+        assertStaffRankAdmissionShape(sliceOrFail(adminSrc, start, end), `admin 员工榜-${label}`)
+      }
+    })
+
+    it('staff 六个员工榜：WHERE 逐字是 has_skills OR 非零（含 admin 无的 footfall）', () => {
+      const slices: Array<[string, string, string]> = [
+        ['业绩', 'async function staffRankingRevenue', 'async function staffRankingConsume'],
+        ['实耗', 'async function staffRankingConsume', 'async function staffRankingNewMember'],
+        ['新会员', 'async function staffRankingNewMember', 'async function staffRankingFootfall'],
+        ['客流', 'async function staffRankingFootfall', 'async function staffRankingProjectCount'],
+        ['项目数', 'async function staffRankingProjectCount', 'async function staffRankingIncome'],
+        ['收入', 'async function staffRankingIncome', 'async function staffRanking(ctx)'],
+      ]
+      for (const [label, start, end] of slices) {
+        assertStaffRankAdmissionShape(sliceOrFail(staffSrc, start, end), `staff 员工榜-${label}`)
+      }
+    })
+
+    it('admin Part C 五个门店榜：WHERE 只有 scope，不按 value 剔任何行', () => {
+      const slices: Array<[string, string, string]> = [
+        ['业绩', 'const qStoreRankRevenue', 'const qStoreRankConsume'],
+        ['实耗', 'const qStoreRankConsume', 'const qStoreRankRetainedMember'],
+        ['保有会员', 'const qStoreRankRetainedMember', 'const qStoreRankNewMember'],
+        ['新会员', 'const qStoreRankNewMember', 'const qStoreRankProjectCount'],
+        ['项目数', 'const qStoreRankProjectCount', 'Part D'],
+      ]
+      for (const [label, start, end] of slices) {
+        assertStoreRankNoValueCutoff(sliceOrFail(adminSrc, start, end), `admin 门店榜-${label}`)
+      }
     })
   })
 
