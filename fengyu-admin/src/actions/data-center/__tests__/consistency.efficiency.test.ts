@@ -431,7 +431,7 @@ const CTE_AGG_SHAPES = [
 // 收紧它们只是为了让白名单闭合 —— 换成 SUM 类聚合时必须回来改这条断言。
 
 /** 聚合内部禁止出现的**条件构造** —— 它们能在不改变外层形态的前提下把负值转成 0 */
-const COND_IN_AGG_RE = /\b(?:CASE|WHEN|FILTER|NULLIF|GREATEST|LEAST|SIGN)\b/i
+const COND_IN_AGG_RE = /\b(?:CASE|WHEN|FILTER|NULLIF|GREATEST|LEAST|SIGN|ABS|ROUND|FLOOR|CEIL|CEILING)\b/i
 
 function assertCteAggregateShape(segment: string, label: string): void {
   // ⚠️ 起点必须锚到 `SELECT ` 或 `, `：否则 `[A-Za-z_][\w.]*\(` 会从片段最前面的
@@ -482,19 +482,68 @@ function assertCteAggregateShape(segment: string, label: string): void {
  * 重新排到负值员工之前，`(value <> 0)` 首键形同虚设。
  */
 function assertOrderMatchesWhere(segment: string, label: string): void {
+  const norm = (x: string) => x.replace(/\s+/g, ' ').trim()
+  /** 去掉 ::cast 与最外层冗余括号，让 SELECT / WHERE / ORDER BY 三处可比 */
+  const canon = (x: string) => {
+    let v = norm(x).replace(/::\w+\s*$/, '').trim()
+    while (/^\(([\s\S]*)\)$/.test(v)) {
+      const inner = v.slice(1, -1)
+      let d = 0
+      let balanced = true
+      for (const ch of inner) {
+        if (ch === '(') d++
+        else if (ch === ')') d--
+        if (d < 0) { balanced = false; break }
+      }
+      if (!balanced || d !== 0) break
+      v = inner.trim()
+    }
+    return v
+  }
+
   const whereExpr = whereClauseOf(segment, label).match(
     /^\(\s*pe\.has_skills\s+OR\s+([\s\S]+?)\s*<>\s*0\s*\)$/,
   )?.[1]
   expect(whereExpr, `${label} 的 WHERE 里抽不出 value 表达式（形状已被上游断言保证）`).toBeTruthy()
-  const norm = (x: string) => x.replace(/\s+/g, ' ').trim()
+  const base = canon(whereExpr!)
+
+  // ★ 外层 SELECT 的 `AS value` 也必须是同一个表达式（闸门 2 round-3 GLM P1-1）：
+  // 把它改成 `GREATEST(COALESCE(r.v, 0), 0)::numeric AS value` 时，行数、名次、排序全对，
+  // 唯独**显示值被钳成 0.00** —— 负值员工照常在榜，修复却在 UI 层静默归零。
+  // 本文件 Part C 侧早为同型风险加过 `assertPlainSumAggregate` 的 GREATEST 防线，员工榜外层此前完全空白。
+  // ⚠️ 必须从 `AS value` **反向**找最近的逗号：正向 `/,\s*([\s\S]+?)\s+AS value/` 会从
+  // 片段最前面的逗号开始匹配，把整段 CTE 当成"输出表达式"。
+  const asValueAt = segment.indexOf(' AS value')
+  expect(asValueAt, `${label} 找不到外层 SELECT 的 \`AS value\`（fail-closed）`).toBeGreaterThan(-1)
+  const beforeAsValue = segment.slice(0, asValueAt)
+  // 再反向扫出**括号深度为 0** 的那个逗号：`COALESCE(r.v, 0)` 内部也有逗号，
+  // 裸 lastIndexOf(',') 会切在它上面，只抽到 `0)`。
+  let depth = 0
+  let commaAt = -1
+  for (let i = beforeAsValue.length - 1; i >= 0; i--) {
+    const ch = beforeAsValue[i]
+    if (ch === ')') depth++
+    else if (ch === '(') depth--
+    else if (ch === ',' && depth === 0) {
+      commaAt = i
+      break
+    }
+  }
+  expect(commaAt, `${label} 定位不到 \`AS value\` 所属的输出列（fail-closed）`).toBeGreaterThan(-1)
+  const selectExpr = beforeAsValue.slice(commaAt + 1)
+  expect(selectExpr, `${label} 抽不到外层 SELECT 的 \`AS value\` 输出列（fail-closed）`).toBeTruthy()
+  expect(
+    canon(selectExpr!),
+    `${label} 外层 SELECT 的 value 表达式与 WHERE 用的不是同一个。` +
+      '任何包装（GREATEST/ABS/ROUND…）都会让负值在**显示层**归零 —— 行还在、数字没了。',
+  ).toBe(base)
 
   const staffCall = segment.match(/\$\{staffOrderBy\('([^']*)'\)\}/)
   if (staffCall) {
     expect(
-      norm(staffCall[1]),
-      `${label} 传给 staffOrderBy 的表达式与 WHERE 用的不是同一个 —— ` +
-        '排序会按另一个值算，「非零优先」首键失效',
-    ).toBe(norm(whereExpr!))
+      canon(staffCall[1]),
+      `${label} 传给 staffOrderBy 的表达式与 WHERE 用的不是同一个 —— 排序会按另一个值算`,
+    ).toBe(base)
     return
   }
   const orderExpr = segment
@@ -502,9 +551,70 @@ function assertOrderMatchesWhere(segment: string, label: string): void {
     .match(/^ORDER BY \(\s*([\s\S]+?)\s*<>\s*0\s*\)\s+DESC,\s*([\s\S]+?)\s+DESC,/)
   expect(orderExpr, `${label} 的 ORDER BY 首键形状不可解析`).toBeTruthy()
   expect(
-    [norm(orderExpr![1]), norm(orderExpr![2])],
+    [canon(orderExpr![1]), canon(orderExpr![2])],
     `${label} 的 ORDER BY 表达式与 WHERE 用的不是同一个 —— 排序会按另一个值算`,
-  ).toEqual([norm(whereExpr!), norm(whereExpr!)])
+  ).toEqual([base, base])
+}
+
+/**
+ * ★ metric CTE 与候选池 CTE 的 **WHERE 不得出现任何数值比较**（闸门 2 round-3 GLM P1-2/P1-3）。
+ *
+ * 反向枚举列名（`AMOUNT_FLOOR_RE`）永远列不完，GLM 实测两条穿透：
+ *   · `AND 0 < spia.allocated_amount` —— 比较符在列名**左侧**
+ *   · `AND spia.allocated_amount BETWEEN 0.01 AND 1e9` —— 根本没有 `>` 字符
+ * 还有 P1-3：在 `producer_base` 的 WHERE 追加 skills 判定，能把无标签员工**整池**吞掉，
+ * 连「OR 非零」兜底要救的人一起拔除 —— 外层 `has_skills OR v<>0` 救不了已不在池里的人。
+ *
+ * 改为一刀切：这些 CTE 的合法谓词只有 `=` / `IN` / `IS [NOT] NULL` / `IS DISTINCT FROM` /
+ * 时间列 `BETWEEN ${插值} AND ${插值}`。**任何**数值比较都判红，改动者必须回来说明理由。
+ * 插值 `${...}` 先剔除再判（helper 内部的比较不算）。
+ */
+function assertCteWhereNoNumericCompare(segment: string, label: string): void {
+  const names = [...new Set([...segment.matchAll(/(\w+) AS \(/g)].map((m) => m[1]))]
+  expect(names.length, `${label} 抽不到任何 CTE 定义（fail-closed）`).toBeGreaterThan(0)
+  for (const name of names) {
+    const body = cteBodyOf(segment, name)
+    if (!body) continue
+    const w = body.indexOf('WHERE ')
+    if (w === -1) continue
+    const g = body.indexOf('GROUP BY', w)
+    const rawWhere = body.slice(w + 'WHERE '.length, g === -1 ? undefined : g)
+    const where = rawWhere.replace(/\$\{[^}]*\}/g, ' ') // 插值 helper 内部不算
+
+    expect(
+      /[<>]/.test(where),
+      `${label} 的 CTE \`${name}\` 的 WHERE 出现数值比较：\`${rawWhere.trim()}\`。\n` +
+        '这些 CTE 只允许 = / IN / IS [NOT] NULL / IS DISTINCT FROM / 时间 BETWEEN ${插值}。\n' +
+        '任何数值比较都可能在聚合前剔掉退款负行（或把无标签员工整池吞掉），与 #290 同型。',
+    ).toBe(false)
+
+    // BETWEEN 必须在**原始** WHERE 上判（插值已被替换成空格，替换后判会抓到 `AND`）：
+    // 左端点必须是 ${} 插值，杜绝 `allocated_amount BETWEEN 0.01 AND 1e9` 这类数值下界。
+    for (const m of rawWhere.matchAll(/BETWEEN\s+(\S+)/g)) {
+      expect(
+        m[1].startsWith('${'),
+        `${label} 的 CTE \`${name}\` 出现字面量 BETWEEN（\`${m[0]}\`）—— ` +
+          '时间窗必须走 ${} 插值；对金额列做 BETWEEN 等同于设下界',
+      ).toBe(true)
+    }
+  }
+}
+
+/**
+ * ★ 时间窗端点必须是 `${cur.start}` → `${cur.end}`（闸门 2 round-3 GLM P2-6）。
+ *
+ * 把 `BETWEEN ${cur.start} AND ${cur.end}` 写成 `AND ${cur.start}` 会让区间塌成一天，
+ * 退款负行落到窗外 → 员工净额由负转正。Part C 侧早有同型端点断言，Part D 此前零守护。
+ */
+function assertTimeWindowEndpoints(segment: string, label: string): void {
+  const spans = [...segment.matchAll(/BETWEEN\s+\$\{([^}]*)\}\s+AND\s+\$\{([^}]*)\}/g)]
+  for (const m of spans) {
+    expect(
+      [m[1].trim(), m[2].trim()],
+      `${label} 的时间窗端点不是 cur.start → cur.end（实得 ${m[1]} → ${m[2]}）—— ` +
+        '区间被截窄会让退款负行落在窗外，净额由负转正',
+    ).toEqual(['cur.start', 'cur.end'])
+  }
 }
 
 /**
@@ -548,6 +658,10 @@ function assertZeroLastOrdering(segment: string, label: string): void {
 /**
  * 按**括号配对**取出 `<name> AS ( ... )` 的完整 CTE 体。
  * 正则做不到：CTE 体内有嵌套括号（JOIN/函数调用），`[\s\S]*?\)` 会在第一个 `)` 就停。
+ *
+ * ⚠️ 已知限制：**不感知字符串字面量**。生产 SQL 里的字面量（'销售单' 等）都不含括号，
+ * 故现状正确；将来若 CTE 内出现含 `(` / `)` 的字面量，本函数会返回 null 或截断片段 ——
+ * 两个失效方向都是 fail-closed（断言判红），但报错会是费解的「不是本切片内定义的 CTE」。
  */
 function cteBodyOf(segment: string, name: string): string | null {
   const head = `${name} AS (`
@@ -607,7 +721,13 @@ function assertMetricJoinShape(segment: string, label: string): void {
   // 再 `LEFT JOIN positive_revenue_by_emp r` —— 它仍是裸 CTE 名、仍是 LEFT JOIN、
   // ON 仍只有 employee_id，全部既有断言通过，负值却在转发层被剔掉、兜成 0。
   // 判据：切片内每个 CTE 定义都必须是真聚合（含 GROUP BY），转发 CTE 没有 GROUP BY。
-  const joined = [...joinArea.matchAll(/LEFT JOIN\s+(\w+)\s+\w+\s+ON/gi)].map((m) => m[1])
+  // `AS <别名>` 是合法写法，正则必须认（闸门 2 round-3 GLM P2-5：不认则多 JOIN 榜只抽到一个就放行）
+  const joined = [...joinArea.matchAll(/LEFT JOIN\s+(\w+)\s+(?:AS\s+)?\w+\s+ON/gi)].map((m) => m[1])
+  const joinCount = (joinArea.match(/\bLEFT JOIN\b/gi) ?? []).length
+  expect(
+    joined.length,
+    `${label} 有 LEFT JOIN 没被提取到（共 ${joinCount} 个，只抽到 ${joined.length} 个）—— 漏掉的那个不受来源校验`,
+  ).toBe(joinCount)
   expect(joined.length, `${label} 抽不到 LEFT JOIN 的 CTE 名（fail-closed）`).toBeGreaterThan(0)
   for (const name of joined) {
     const body = cteBodyOf(segment, name)
@@ -660,6 +780,8 @@ function assertStaffRankAdmissionShape(segment: string, label: string): void {
   ).toBe(false)
   // 同族防线：外层 WHERE 形状对 CTE 内部与 JOIN ON 都完全失明，各堵一道
   assertNoAmountFloorInCte(segment, label)
+  assertCteWhereNoNumericCompare(segment, label)
+  assertTimeWindowEndpoints(segment, label)
   assertCteAggregateShape(segment, label)
   assertMetricJoinShape(segment, label)
   assertZeroLastOrdering(segment, label)
@@ -1193,6 +1315,72 @@ describe('数据中心人效板块两端口径一致性守护', () => {
      * 这里直接钉死消费 `producer_employees` 的查询总数：多一个就红，改动者必须回来
      * 同步切片清单并说明新榜为何安全。
      */
+    /**
+     * ★ JS 装配层不得按 value 剔行（闸门 2 round-3 GLM P1-4）。
+     *
+     * 本组此前**全部**是 SQL 文本断言，JS 后处理完全在视野外。GLM 实测：
+     * 在 staff `rawRows.map(...)` 前插一个 `.filter((r) => Number(r.value || 0) > 0)`
+     * → SQL 层十几道守护全部正确，却在最后一层被一行 filter 抹平，66 条断言全绿。
+     *
+     * 「0.00 行太多，过滤一下」与「榜单太长，加个 LIMIT」是同族的常规演进动机 ——
+     * 后者已有禁令，前者此前没有。
+     */
+    /**
+     * ★ 候选池 `producer_base` 的 WHERE **正向钉死**（闸门 2 round-3 GLM P1-3）。
+     *
+     * 它定义在 `${producerCte}` / `producerEmployeesCte()` 里，各榜切片内只有插值引用、
+     * 没有展开文本 —— 所以 `assertCteWhereNoNumericCompare` 等逐榜断言**扫不到它**（实测漏网）。
+     *
+     * 在这里追加一句 `AND cardinality(array_remove(sw.skills,'')) > 0`，就能把无标签员工
+     * **整池**吞掉，连「OR 非零」兜底要救的那批人一起拔除 —— 外层 `has_skills OR v<>0`
+     * 救不了已经不在候选池里的人。这正是 2026-05-20 漏算 33% 业绩的同型事故。
+     *
+     * 该 WHERE 的合法内容只有「入职非空 + 入职早于锚点 + 未离职或离职晚于锚点」三项，
+     * 且本就含合法的时间比较（`<=` / `>`），无法用「禁数值比较」一刀切，故逐字钉死。
+     */
+    it('候选池 producer_base 的 WHERE 只有 hired_at / resigned_at 三项（两端镜像）', () => {
+      for (const [body, label, anchor] of [
+        [adminBody, 'admin efficiency.ts', '\\$\\{cur\\.end\\}'],
+        [staffBody, 'staff mgmt-dashboard.js', 'NOW\\(\\)::date'],
+      ] as const) {
+        const m = body.match(
+          new RegExp(
+            'WHERE sw\\.hired_at IS NOT NULL' +
+              ' AND sw\\.hired_at::date <= ' + anchor +
+              ' AND \\(sw\\.resigned_at IS NULL OR sw\\.resigned_at::date > ' + anchor + '\\)' +
+              '\\s*\\)',
+          ),
+        )
+        expect(
+          m,
+          `${label} 的 producer_base WHERE 形状变了。只允许「入职非空 + 入职 <= 锚点 + ` +
+            '未离职或离职 > 锚点」三项；在此追加任何条件（尤其 skills 判定）都会把整批员工' +
+            '挡在候选池外，外层的 has_skills OR 兜底救不回来（#290 / 2026-05-20 同型事故）。',
+        ).toBeTruthy()
+      }
+    })
+
+    it('两端 JS 装配层不得按 value 剔行（SQL 守住了，别在 map 前 filter 掉）', () => {
+      const adminAssembly = sliceOrFail(adminSrc, 'const mapStoreRank', 'const storeRankings')
+      expect(
+        /\.filter\s*\(/.test(adminAssembly),
+        'admin 的 mapStoreRank / mapStaffRank 出现 .filter() —— 排行榜装配层一旦按 value 剔行，' +
+          'SQL 侧所有「不剔负」守护都会被静默抹平（#290 回退）',
+      ).toBe(false)
+
+      // staff 两处装配（storeRanking 的 :921-926 与 staffRanking 的 :1336-1341）同理
+      for (const [start, end, which] of [
+        ['const rawRows = await METRIC_DISPATCH', 'if (elapsed > 800)', 'storeRanking'],
+        ['const rawRows = await STAFF_METRIC_DISPATCH', 'if (elapsed > 800)', 'staffRanking'],
+      ] as const) {
+        const seg = sliceOrFail(staffSrc, start, end)
+        expect(
+          /\.filter\s*\(/.test(seg),
+          `staff ${which} 的装配层出现 .filter() —— 同上，会把 SQL 侧守护一次抹平`,
+        ).toBe(false)
+      }
+    })
+
     it('staff 的 staffOrderBy 单源同样「非零优先」，且六个榜都经由它（两端排序镜像）', () => {
       // staff 六个榜共用一个排序拼接函数，切片里只看得到 ${staffOrderBy(...)} 插值，
       // 故在此校验函数定义本身 + 全部调用点。两端排序必须一致，
