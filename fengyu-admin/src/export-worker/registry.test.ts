@@ -380,7 +380,7 @@ describe('经营明细报表视图分发', () => {
     expect(content.frozenColumns).toBe(3)
     expect(content.totalsLabel).toBe('合计')
     expect(content.meta).toMatchObject({ period: null, scope: '全部' })
-    const rows = []
+    const rows: Record<string, unknown>[] = []
     for await (const row of content.rows) rows.push(row)
     expect(content.columns.map((column) => column.value(rows[0]))).toEqual(['蓝莱店', '张三 138****2222', '会员客', 3, 3])
   })
