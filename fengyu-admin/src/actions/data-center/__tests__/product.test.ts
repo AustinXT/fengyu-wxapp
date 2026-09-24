@@ -16,10 +16,10 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
  * mock @/db.execute —— 按 SQL 文本内容路由：
  *   - filterOptions（含 'DISTINCT pc.product_kind' 特征）→ filterRows
  *   - 骨架（含 o_store + market_id，无 group/CTE）→ skeletonRows
- *   - 持卡按店（含 paid_sessions > 0 + GROUP BY so.store_id）→ cardByStoreRows
+ *   - 持卡按店（含 paid_sessions > 0 + GROUP BY c.bound_store_id）→ cardByStoreRows
  *   - 会员按店（含 bound_store_id + GROUP BY）→ memberByStoreRows
  *   - cycle 按店（含 store_ids 并集 + trial_store/new_store/repurchase_store）→ cycleByStoreRows
- *   - 持卡总量（含 paid_sessions > 0，无 GROUP BY store）→ scalarCard
+ *   - 持卡总量（含 paid_sessions > 0，无 GROUP BY）→ scalarCard
  *   - 会员总量（含 became_member_at，无 GROUP BY）→ scalarMember
  *   - cycle 标量（含 WITH daily_agg + cohort）→ scalarCycle
  */

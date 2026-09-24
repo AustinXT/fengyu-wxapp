@@ -107,6 +107,65 @@ describe('品项板块两端口径一致性守护', () => {
       const adminFnBody = (fn: string): string =>
         normalize(new RegExp(`async function ${fn}\\([\\s\\S]*?\\n}`).exec(adminSrc)?.[0] ?? '')
 
+      /**
+       * ★★★ **分子逐字等于「分母 + EXISTS 收窄」** —— 整组守护里最硬的一条。
+       *
+       * 前几版都是**字样守护**（检查 `FROM client_wechat_users` / `became_member_at` /
+       * `EXISTS` 等片段是否出现），闸门 2 round-1 的 codex 连着打穿两种：
+       *
+       *   a) `WHERE ${sc}` 改成 `WHERE TRUE` —— `scopeFilterSql(...,'c.bound_store_id')`
+       *      那行**仍在**（只是算出来没人用），四列集合仍为 1，全部断言照绿，
+       *      而单店/市场分子已不受 scope 约束、可再次超过分母。
+       *   b) 末尾追加 ` OR TRUE` —— 按 SQL 优先级整个 WHERE 恒真，
+       *      分子不再受会员/scope/购买条件约束，但被匹配的字样一个不少。
+       *
+       * 与其逐条去堵（`OR` 禁令、`${sc}` 出现次数…），不如把「同源」这件事
+       * **从字样升级成派生关系**：分子必须 === 分母**原文** + 一段 `EXISTS` 收窄。
+       *
+       * 于是：
+       *   · 分母怎么改，分子必须一模一样地跟着改，否则红 —— 这正是 #287 要防的
+       *     「一侧改了另一侧没改」
+       *   · `WHERE TRUE` / `OR TRUE` / 任何外层 WHERE 的改动都会让等式不成立
+       *   · 分子 ⊆ 分母 不再靠阅读理解，而是**逐字节可判定**
+       */
+      it('分子 === 分母 + EXISTS 收窄（逐字派生，不是两份独立快照）', () => {
+        const EXISTS_CLAUSE =
+          'AND EXISTS ( SELECT 1 FROM sale_items si ' +
+          'JOIN sale_orders so ON so.sale_order_id = si.sale_order_id ' +
+          'JOIN product_skus sk ON sk.sku_id = si.sku_id ' +
+          'JOIN product_categories pc ON pc.category_id = sk.category_id ' +
+          'WHERE so.client_user_id = c.user_id ' +
+          'AND si.paid_sessions > 0 ' +
+          "AND so.sale_order_type IN ('销售单', '转换单', '寄存单') " +
+          "AND so.status = '已支付' " +
+          'AND ${filter} )'
+
+        // ① 全局：分子 = 分母 + EXISTS
+        expect(
+          adminCardSql('queryCardHolders'),
+          '全局分子不再是「分母原文 + EXISTS 收窄」—— 分子分母已不同源（#287）',
+        ).toBe(`${adminCardSql('queryMemberCount')} ${EXISTS_CLAUSE}`)
+
+        // ② byStore：EXISTS 插在 GROUP BY 之前，其余逐字相同
+        const denByStore = adminCardSql('queryMemberCountByStore')
+        const cut = denByStore.lastIndexOf(' GROUP BY ')
+        expect(cut, 'byStore 分母未按 GROUP BY 收尾 —— 切片口径需同步更新').toBeGreaterThan(0)
+        expect(
+          adminCardSql('queryCardHoldersByStore'),
+          'byStore 分子不再是「分母原文 + EXISTS 收窄」—— 分子分母已不同源（#287）',
+        ).toBe(
+          `${denByStore.slice(0, cut)} ${EXISTS_CLAUSE}${denByStore.slice(cut)}`,
+        )
+
+        // ③ 分母自身不得退化：必须真的消费 ${sc}，不能只是「算了但没用」
+        for (const fn of ['queryMemberCount', 'queryMemberCountByStore']) {
+          expect(
+            (adminCardSql(fn).match(/\$\{sc\}/g) ?? []).length,
+            `${fn} 未恰好消费一次 \${sc} —— scopeFilterSql 算了却没用进 WHERE，scope 形同虚设`,
+          ).toBe(1)
+        }
+      })
+
       it('admin 两个持卡查询都以「分母的壳 + EXISTS」为形状', () => {
         for (const fn of ['queryCardHolders', 'queryCardHoldersByStore']) {
           const s = adminCardSql(fn)
@@ -269,7 +328,16 @@ describe('品项板块两端口径一致性守护', () => {
           staffSrc,
           '持卡查询仍在用 sc.params —— scope 参数与分母不同源',
         ).not.toMatch(/pg\.query\(cardSql,\s*sc\.params\)/)
-        expect(staffSrc, '两条查询未共用 cs.params').toMatch(/pg\.query\(cardSql,\s*cs\.params\)/)
+        /**
+         * ⚠️ 第一版只断言了 `pg.query(cardSql, cs.params)` —— 名字声称守**两条**查询，
+         * 代码只守了一条（round-1 codex 找出的"第三条空断言"）。
+         * 把 `pg.query(memberSql, [])` 写进去，断言照绿，而 market/store 档的
+         * memberSql 含 `$1` 却没有绑定参数，运行时直接报错。
+         */
+        expect(staffSrc, '持卡查询未共用 cs.params').toMatch(/pg\.query\(cardSql,\s*cs\.params\)/)
+        expect(staffSrc, '会员查询未共用 cs.params —— 与分子的 scope 参数脱钩').toMatch(
+          /pg\.query\(memberSql,\s*cs\.params\)/,
+        )
       })
     })
   })
