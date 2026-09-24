@@ -2403,6 +2403,7 @@ describe('全局福利方案引擎权限（#354 起市场用户一律拒绝维�
 
     await expect(disableInventoryPromotionPlan('INV-PROMO-GLOBAL'))
       .rejects.toThrow('PERMISSION_DENIED: 报货福利方案只能由总部供应链维护')
+    expect(mockDb.transaction).not.toHaveBeenCalled()
   })
 
   it('市场用户直调引擎时不能修改全局福利方案', async () => {
@@ -2437,6 +2438,7 @@ describe('全局福利方案引擎权限（#354 起市场用户一律拒绝维�
       scopeMarketId: 'MARKET-1',
       items: [{ skuId: 'SKU-1', marketUnitDiscount: 0 }],
     })).rejects.toThrow('PERMISSION_DENIED: 报货福利方案只能由总部供应链维护')
+    expect(mockDb.transaction).not.toHaveBeenCalled()
   })
 })
 
@@ -4591,6 +4593,50 @@ describe('报货福利方案只由总部供应链维护（#354，引擎层）', 
     vi.mocked(isAdminScope).mockReturnValue(false)
     vi.mocked(hasPermission).mockReturnValue(true)
     mockDb.execute.mockResolvedValue([{ drifted: false }])
+  })
+
+  // 市场绑定被误授了维护动作：动作级收紧后绑定仍在，只能靠「须来自总部 scope」拦下
+  const MARKET_WITH_MANAGE = {
+    employeeId: 'E-M2', name: '市场误授', phone: '13800000003',
+    roles: [role('市场', 'M1', ['inventory:stock_list', MANAGE, 'inventory:market_price_view'])],
+    permissions: { actions: ['inventory:stock_list', MANAGE, 'inventory:market_price_view'], scopeStoreIds: [], scopeOrgNodeIds: ['M1'] },
+  } as never
+
+  it('市场绑定误授供应链维护动作：新建、修改、停用仍 PERMISSION_DENIED，且不读库', async () => {
+    mockGetSession.mockResolvedValue(MARKET_WITH_MANAGE)
+    await expect(createInventoryPromotionPlan({ ...INPUT, scopeMarketId: 'M1' })).rejects.toThrow(/^PERMISSION_DENIED: 报货福利方案只能由总部供应链维护/)
+    await expect(updateInventoryPromotionPlan('P1', INPUT)).rejects.toThrow(/^PERMISSION_DENIED: 报货福利方案只能由总部供应链维护/)
+    await expect(disableInventoryPromotionPlan('P1')).rejects.toThrow(/^PERMISSION_DENIED: 报货福利方案只能由总部供应链维护/)
+    expect(mockDb.select).not.toHaveBeenCalled()
+    expect(mockDb.transaction).not.toHaveBeenCalled()
+  })
+
+  it('适用市场候选：维护方取全部启用市场，市场账号按库存 scope', async () => {
+    const { listInventoryPromotionMarketOptions } = await import('./engine')
+    const dialect = new PgDialect()
+    const captureWhere = () => {
+      const captured: { where?: unknown } = {}
+      mockDb.select.mockReturnValueOnce({
+        from: () => ({
+          where: (where: unknown) => {
+            captured.where = where
+            return { orderBy: async () => [] }
+          },
+        }),
+      })
+      return captured
+    }
+
+    mockGetSession.mockResolvedValue(SUPPLY_CHAIN)
+    const supplyChain = captureWhere()
+    await listInventoryPromotionMarketOptions()
+    const supplyChainQuery = dialect.sqlToQuery(supplyChain.where as never)
+    expect(supplyChainQuery.params).toEqual([true, '市场'])
+
+    mockGetSession.mockResolvedValue(MARKET_FINANCE)
+    const market = captureWhere()
+    await listInventoryPromotionMarketOptions()
+    expect(dialect.sqlToQuery(market.where as never).params).toEqual([true, '市场', 'M1'])
   })
 
   it('市场库存财务调用新建、修改、停用均 PERMISSION_DENIED，且不读库', async () => {

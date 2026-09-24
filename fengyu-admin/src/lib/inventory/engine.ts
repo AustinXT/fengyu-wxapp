@@ -1433,6 +1433,33 @@ export const listInventoryMarketTransferTargets = withAnyPermission(
   },
 )
 
+/**
+ * 福利方案「适用市场」候选（#354）。维护方是总部供应链，而总部库存 scope 不展开市场，
+ * 沿用 listInventoryLocations 会让它的下拉只剩「全部市场」、建不了市场专属方案；
+ * 所以维护方取全部启用市场，其余（市场只读账号的列表筛选）仍按库存 scope。
+ */
+export const listInventoryPromotionMarketOptions = withPermission(
+  'inventory:stock_list',
+  async (session): Promise<Array<{ locationId: string; name: string }>> => {
+    await syncInventoryLocations()
+    const conditions: (SQL | undefined)[] = [
+      eq(inventoryLocations.isActive, true),
+      eq(inventoryLocations.locationType, '市场'),
+    ]
+    if (!isInventoryPromotionMaintainer(session)) {
+      const scoped = await scopedLocationIds(session)
+      if (scoped !== null) {
+        conditions.push(scoped.length > 0 ? inArray(inventoryLocations.locationId, scoped) : sql`FALSE`)
+      }
+    }
+    return db
+      .select({ locationId: inventoryLocations.locationId, name: inventoryLocations.name })
+      .from(inventoryLocations)
+      .where(and(...conditions))
+      .orderBy(asc(inventoryLocations.name))
+  },
+)
+
 export const listInventoryLocations = withPermission(
   'inventory:stock_list',
   async (session): Promise<InventoryLocationRow[]> => {

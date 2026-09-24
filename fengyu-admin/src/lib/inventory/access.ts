@@ -170,15 +170,14 @@ export const INVENTORY_PROMOTION_MAINTAIN_ACTION = 'inventory:supply_chain_maste
  * 也不能给本市场建优惠来压低对供应链的应付。
  *
  * 判的是角色绑定自带的 actions（withPermission 收紧后的 session 仍保留每条绑定的完整 actions），
- * 所以在 `inventory:stock_list` 包装下调用（列表可见性）同样成立；缺角色级元数据的旧会话退回会话级权限。
+ * 所以在 `inventory:stock_list` 包装下调用（列表可见性）同样成立。缺角色级 actions 的绑定一律不算：
+ * 退回会话级权限会把「总部绑定 + 别处绑定授的维护动作」拼接放行（登录会话每条绑定都带 actions）。
  */
 export function isInventoryPromotionMaintainer(session: AuthSession): boolean {
   if (isAdminScope(session)) return true
-  return session.roles.some((role) => role.scopeType === '总部' && (
-    Array.isArray(role.actions)
-      ? role.actions.includes(INVENTORY_PROMOTION_MAINTAIN_ACTION)
-      : hasPermission(session, INVENTORY_PROMOTION_MAINTAIN_ACTION)
-  ))
+  return session.roles.some((role) => role.scopeType === '总部'
+    && Array.isArray(role.actions)
+    && role.actions.includes(INVENTORY_PROMOTION_MAINTAIN_ACTION))
 }
 
 export function assertInventoryPromotionMaintainer(session: AuthSession): void {

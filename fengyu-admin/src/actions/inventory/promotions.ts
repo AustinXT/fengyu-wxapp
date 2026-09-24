@@ -4,6 +4,7 @@ import {
   createInventoryPromotionPlan as createInventoryPromotionPlanImpl,
   disableInventoryPromotionPlan as disableInventoryPromotionPlanImpl,
   getInventoryPromotionPlanById as getInventoryPromotionPlanByIdImpl,
+  listInventoryPromotionMarketOptions as listInventoryPromotionMarketOptionsImpl,
   listInventoryPromotionPlans as listInventoryPromotionPlansImpl,
   updateInventoryPromotionPlan as updateInventoryPromotionPlanImpl,
 } from '@/lib/inventory/engine'
@@ -17,6 +18,11 @@ import { withPermission } from '@/lib/with-permission'
 export const listInventoryPromotionPlans = withPermission(
   'inventory:stock_list',
   async () => listInventoryPromotionPlansImpl(),
+)
+
+export const listInventoryPromotionMarketOptions = withPermission(
+  'inventory:stock_list',
+  async () => listInventoryPromotionMarketOptionsImpl(),
 )
 
 export const getInventoryPromotionPlanById = withPermission(
