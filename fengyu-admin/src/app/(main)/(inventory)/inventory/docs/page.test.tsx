@@ -9,6 +9,8 @@
  * 页面是 async Server Component：直接 `await Page({searchParams})`，把下游的
  * InventoryDocsPage 换成记录 props 的替身，断言传下去的口径。
  */
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render } from '@testing-library/react'
 import type { InventoryDocType } from '@/lib/inventory/types'
@@ -149,5 +151,23 @@ describe('单据中心 · 建单下拉候选', () => {
     const props = await renderWith()
     expect(props.allowedCreateDocTypes).toEqual([])
     expect(props.canCreate).toBe(false)
+  })
+})
+
+/**
+ * #339：三个库存页面不再在服务端预加载 SKU 前 100 条（排在后面的商品会永远选不到），
+ * 改由选择器按关键词走服务端分页。这里用源码守护把三处都钉住，外加单据中心的运行时断言。
+ */
+describe('SKU 候选不再预加载（#339）', () => {
+  it('建单账号打开单据中心时不调 listInventorySkus', async () => {
+    await renderWith(MARKET)
+    expect(mockListSkus).not.toHaveBeenCalled()
+  })
+
+  it('办理台 / 单据中心 / 报货福利三个页面都不再写死 pageSize: 100 的 SKU 预加载', () => {
+    for (const page of ['operations/[level]/page.tsx', 'docs/page.tsx', 'promotions/page.tsx']) {
+      const source = readFileSync(resolve(__dirname, '..', page), 'utf8')
+      expect(source, page).not.toMatch(/listInventorySkus\(/)
+    }
   })
 })

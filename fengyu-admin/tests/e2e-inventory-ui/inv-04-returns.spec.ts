@@ -21,7 +21,7 @@ import {
 import { isGateOpen, openCutoverGate } from './_helpers/cutover'
 import {
   clickAndExpectToast, docIdByRemark, docStatus, fillByLabel, lotQtyAll,
-  openOperation, reservationStates, selectByLabel, selectContaining, selectLotWithQty,
+  openOperation, reservationStates, pickSku, selectByLabel, selectContaining, selectLotWithQty,
   skuSelect, submitForm,
 } from './_helpers/ui'
 
@@ -57,7 +57,7 @@ test('INV-04：退货双链 —— 预留机制 / 审批回库 / 驳回释放', 
     await openOperation(page, 'store', '门店退货申请')
     await selectByLabel(page, '退货主体', { contains: TOPO.STORE_A_NAME })
     await selectByLabel(page, '回库主体', { contains: TOPO.MARKET_NAME })
-    await selectContaining(skuSelect(page), inv01.supplySkuName)
+    await pickSku(skuSelect(page), inv01.supplySkuName)
     await selectLotWithQty(page, '来源批次', QTY.storeReturn)
     await fillByLabel(page, '数量', String(QTY.storeReturn))
     await fillByLabel(page, '退货原因', 'INVT-质量问题')
@@ -123,7 +123,7 @@ test('INV-04：退货双链 —— 预留机制 / 审批回库 / 驳回释放', 
     await openOperation(page, 'market', '市场退货申请')
     await selectByLabel(page, '退货主体', { contains: TOPO.MARKET_NAME })
     await selectByLabel(page, '回库主体', { contains: '品牌总部' })
-    await selectContaining(skuSelect(page), inv01.supplySkuName)
+    await pickSku(skuSelect(page), inv01.supplySkuName)
     await selectLotWithQty(page, '来源批次', QTY.marketReturnRejected)
     await fillByLabel(page, '数量', String(QTY.marketReturnRejected))
     await fillByLabel(page, '退货原因', 'INVT-多发')
@@ -165,7 +165,7 @@ test('INV-04：退货双链 —— 预留机制 / 审批回库 / 驳回释放', 
     await openOperation(page, 'market', '市场退货申请')
     await selectByLabel(page, '退货主体', { contains: TOPO.MARKET_NAME })
     await selectByLabel(page, '回库主体', { contains: '品牌总部' })
-    await selectContaining(skuSelect(page), inv01.supplySkuName)
+    await pickSku(skuSelect(page), inv01.supplySkuName)
     await selectLotWithQty(page, '来源批次', QTY.marketReturnApproved)
     await fillByLabel(page, '数量', String(QTY.marketReturnApproved))
     await fillByLabel(page, '退货原因', 'INVT-滞销')

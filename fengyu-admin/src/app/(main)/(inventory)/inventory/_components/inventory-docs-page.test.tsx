@@ -8,7 +8,6 @@ import type {
   InventoryLocationFilterOptions,
   InventoryLocationRow,
   InventoryLotRow,
-  InventorySkuRow,
 } from '@/lib/inventory/types'
 
 // refresh 必须是共享引用：原先每次调用 useRouter 都新建一个 vi.fn()，测试拿不到它，
@@ -37,6 +36,7 @@ vi.mock('@/actions/inventory/docs', () => ({
 vi.mock('@/actions/inventory/stocks', () => ({ listInventoryLotOptions: vi.fn() }))
 
 vi.mock('sonner', () => ({ toast: { error: vi.fn(), success: vi.fn() } }))
+vi.mock('./inventory-sku-search-select', () => import('./__stubs__/inventory-sku-search-select.stub'))
 
 import { toast } from 'sonner'
 import { listInventoryLotOptions } from '@/actions/inventory/stocks'
@@ -104,7 +104,6 @@ const baseProps = {
   rows: [row],
   total: 1,
   locations: [],
-  skuOptions: [],
   canCreate: true,
   canApprove: true,
   canReceive: true,
@@ -169,43 +168,6 @@ const locations: InventoryLocationRow[] = [
   { locationId: 'LOC-M2', locationType: '市场', name: '自贡市场', orgNodeId: 'M2', storeId: null, parentLocationId: null, isActive: true },
 ]
 
-function sku(skuId: string, productCode: string, productName: string): InventorySkuRow {
-  return {
-    skuId,
-    productCode,
-    productName,
-    specName: null,
-    supplier: null,
-    supplierId: null,
-    supplierName: null,
-    manufacturer: null,
-    brand: null,
-    productSeries: null,
-    purchaseCategory: null,
-    sourceType: '供应链',
-    ownerMarketId: null,
-    ownerMarketName: null,
-    retailPrice: null,
-    accountingPrice: null,
-    supplyChainPurchasePrice: null,
-    marketPurchasePrice: null,
-    marketPurchasePriceMode: null,
-    marketPurchasePriceOverrideReason: null,
-    storePurchasePrice: null,
-    marketStaffPurchasePrice: null,
-    marketPurchaseDiscount: null,
-    storePurchaseDiscount: null,
-    staffPurchaseDiscount: null,
-    itemCompanyPurchasePrice: null,
-    isReportable: true,
-    isActive: true,
-    remark: null,
-    createdAt: '2026-08-13T00:00:00.000Z',
-    updatedAt: '2026-08-13T00:00:00.000Z',
-  }
-}
-
-const skuOptions = [sku('SKU-1', 'P001', '精华液'), sku('SKU-2', 'P002', '面膜')]
 
 function lot(
   id: number,
@@ -271,7 +233,6 @@ function openDialogAndPickSource() {
     <InventoryDocsPage
       {...baseProps}
       locations={locations}
-      skuOptions={skuOptions}
       allowedCreateDocTypes={['市场产品报损']}
     />,
   )
@@ -485,7 +446,6 @@ describe('#200 切换单据类型时复位主体字段', () => {
       <InventoryDocsPage
         {...baseProps}
         locations={locations}
-        skuOptions={skuOptions}
         allowedCreateDocTypes={types}
       />,
     )
@@ -556,7 +516,6 @@ describe('6 种需选来源批次的通用单据都能走完提交（#129 验收
       <InventoryDocsPage
         {...baseProps}
         locations={locations}
-        skuOptions={skuOptions}
         allowedCreateDocTypes={[docType]}
       />,
     )
@@ -665,7 +624,6 @@ function openCreateDialog(allowed: InventoryDocType[]) {
     <InventoryDocsPage
       {...baseProps}
       locations={locations}
-      skuOptions={skuOptions}
       allowedCreateDocTypes={allowed}
     />,
   )

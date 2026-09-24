@@ -4,7 +4,6 @@ import {
   listInventoryDocLocationFilterOptions,
   listInventoryLocations,
 } from '@/actions/inventory/locations'
-import { listInventorySkus } from '@/actions/inventory/skus'
 import { getSession } from '@/lib/auth'
 import { inventoryCreatableGenericDocTypes } from '@/lib/inventory/business-level'
 import { resolveInventoryFilterLocationId } from '@/lib/inventory/location-filter'
@@ -50,12 +49,10 @@ export default async function Page({
     ? requestedCreateType
     : undefined
 
-  const [filterOptions, locations, skus] = await Promise.all([
+  // SKU 候选不再预加载（#339）：建单表单里的商品选择按关键词走服务端分页检索
+  const [filterOptions, locations] = await Promise.all([
     listInventoryDocLocationFilterOptions(),
     allowedCreateDocTypes.length > 0 ? listInventoryLocations() : Promise.resolve([]),
-    allowedCreateDocTypes.length > 0
-      ? listInventorySkus({ page: 1, pageSize: 100, onlyActive: true })
-      : Promise.resolve({ data: [], total: 0 }),
   ])
   const selectedOrgNodeId = resolveInventoryFilterLocationId(filterOptions, params.orgNodeId)
   const docs = selectedOrgNodeId
@@ -81,7 +78,6 @@ export default async function Page({
           rows={docs.data}
           total={docs.total}
           locations={locations}
-          skuOptions={skus.data}
           canCreate={allowedCreateDocTypes.length > 0}
           canApprove={hasUiCapability(actions, 'inventory:supply_chain_approve') || hasUiCapability(actions, 'inventory:market_approve')}
           canReceive={canReceive}

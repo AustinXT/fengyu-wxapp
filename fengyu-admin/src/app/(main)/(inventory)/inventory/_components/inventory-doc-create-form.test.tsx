@@ -20,16 +20,13 @@ const { mockCreateDoc, mockListLots } = vi.hoisted(() => ({
 vi.mock('@/actions/inventory/docs', () => ({ createInventoryCoreDoc: mockCreateDoc }))
 vi.mock('@/actions/inventory/stocks', () => ({ listInventoryLotOptions: mockListLots }))
 vi.mock('sonner', () => ({ toast: { error: vi.fn(), success: vi.fn() } }))
+vi.mock('./inventory-sku-search-select', () => import('./__stubs__/inventory-sku-search-select.stub'))
 
 import { InventoryDocCreateForm } from './inventory-doc-create-form'
 
 const LOCATIONS = [
   { locationId: 'LOC-M1', orgNodeId: 'NODE-M1', name: '市场一部', locationType: '市场', isActive: true },
   { locationId: 'LOC-M2', orgNodeId: 'NODE-M2', name: '市场二部', locationType: '市场', isActive: true },
-] as never
-
-const SKUS = [
-  { skuId: 'SKU-1', productCode: 'P001', productName: '测试商品' },
 ] as never
 
 function renderForm(overrides: Record<string, unknown> = {}) {
@@ -39,7 +36,6 @@ function renderForm(overrides: Record<string, unknown> = {}) {
     <InventoryDocCreateForm
       visible
       locations={LOCATIONS}
-      skuOptions={SKUS}
       initialDocType={'市场产品盘溢' as never}
       allowedDocTypes={['市场产品盘溢'] as never}
       onSuccess={onSuccess}
@@ -222,7 +218,6 @@ describe('提交失败后批次重新取数（#191）', () => {
       <InventoryDocCreateForm
         visible
         locations={LOCATIONS}
-        skuOptions={SKUS}
         initialDocType={'市场产品报损' as never}
         allowedDocTypes={['市场产品报损'] as never}
         onSuccess={vi.fn()}
@@ -278,7 +273,6 @@ describe('共享建单表单的主体字段（#189 × #191）', () => {
       <InventoryDocCreateForm
         visible
         locations={soleLocation}
-        skuOptions={SKUS}
         initialDocType={'市场产品盘溢' as never}
         allowedDocTypes={['市场产品盘溢'] as never}
         onSuccess={vi.fn()}
@@ -366,7 +360,6 @@ describe('批次取数的 id 空间（#191）', () => {
       <InventoryDocCreateForm
         visible
         locations={storeLocation}
-        skuOptions={SKUS}
         initialDocType={'院产品报损' as never}
         allowedDocTypes={['院产品报损'] as never}
         onSuccess={vi.fn()}

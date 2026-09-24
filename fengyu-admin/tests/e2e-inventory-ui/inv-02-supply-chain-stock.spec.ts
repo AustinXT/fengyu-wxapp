@@ -30,6 +30,7 @@ import {
   type Verdict,
 } from './_helpers/env'
 import { closeCutoverGate, openCutoverGate, readCutoverStatus } from './_helpers/cutover'
+import { pickSku } from './_helpers/ui'
 
 test.setTimeout(420_000)
 
@@ -134,8 +135,8 @@ test('INV-02：门禁 fail-closed → 开闸 → 供应链备货', async ({ brow
 
     const REQ_REMARK = `${NS}-品项报货-${STAMP}`
     await selectByLabel(page, '供应链库存主体', { label: '品牌总部' })
-    await selectContaining(
-      page.locator('select').filter({ hasText: '选择库存商品' }).first(),
+    await pickSku(
+      page.getByRole('button', { name: '选择库存商品', exact: true }).first(),
       inv01.supplySkuName,
     )
     await fillByLabel(page, '数量', '100')
@@ -358,8 +359,8 @@ async function createOverflowDoc(
   await selects.nth(2).selectOption({ label: `市场 · ${TOPO.MARKET_NAME}` })  // 入库/接收主体
   await dialog.locator('textarea').first().fill(remark)
 
-  // 明细行：SKU（唯一的 select，因盘溢不需批次选择器）+ 数量
-  await selectContaining(dialog.locator('select').last(), skuName)
+  // 明细行：SKU（可检索 combobox，#339；盘溢不需批次选择器）+ 数量
+  await pickSku(dialog.getByRole('button', { name: '明细 1 库存 SKU', exact: true }), skuName)
   await dialog.getByPlaceholder('数量').fill('10')
 
   await dialog.getByRole('button', { name: '提交' }).click()

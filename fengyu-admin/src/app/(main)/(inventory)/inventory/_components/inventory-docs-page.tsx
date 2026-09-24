@@ -20,7 +20,6 @@ import {
   type InventoryLotRow,
   type InventoryLocationFilterOptions,
   type InventoryLocationRow,
-  type InventorySkuRow,
   type InventoryDocType,
 } from '@/lib/inventory/types'
 import { Button } from '@/components/ui/button'
@@ -65,7 +64,6 @@ export default function InventoryDocsPage({
   rows,
   total,
   locations,
-  skuOptions,
   canCreate,
   canApprove,
   canReceive,
@@ -78,7 +76,6 @@ export default function InventoryDocsPage({
   rows: InventoryDocRow[]
   total: number
   locations: InventoryLocationRow[]
-  skuOptions: InventorySkuRow[]
   canCreate: boolean
   canApprove: boolean
   canReceive: boolean
@@ -310,7 +307,6 @@ export default function InventoryDocsPage({
           open={open}
           onOpenChange={setOpen}
           locations={locations}
-          skuOptions={skuOptions}
           onSuccess={() => startTransition(() => router.refresh())}
           onStale={() => startTransition(() => router.refresh())}
           onBusyChange={setCreateDialogBusy}
@@ -412,7 +408,6 @@ function CreateDocDialog({
   open,
   onOpenChange,
   locations,
-  skuOptions,
   onSuccess,
   onStale,
   onBusyChange,
@@ -422,7 +417,6 @@ function CreateDocDialog({
   open: boolean
   onOpenChange: (open: boolean) => void
   locations: InventoryLocationRow[]
-  skuOptions: InventorySkuRow[]
   onSuccess: () => void
   /** 状态/权限已变化时刷新列表（不关弹窗） */
   onStale: () => void
@@ -457,7 +451,6 @@ function CreateDocDialog({
           // 原生 <dialog> 关闭不卸载 children：关着时绝不能取批次数（见共享组件的 visible 注释）
           visible={open}
           locations={locations}
-          skuOptions={skuOptions}
           initialDocType={initialDocType}
           allowedDocTypes={allowedDocTypes}
           onSuccess={() => {

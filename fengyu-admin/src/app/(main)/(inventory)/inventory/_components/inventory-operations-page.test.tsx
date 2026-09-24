@@ -3,7 +3,7 @@ import { resolve } from 'node:path'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { INVENTORY_GENERIC_DOC_TYPES } from '@/lib/inventory/types'
-import type { InventoryDocDetail, InventoryDocRow } from '@/lib/inventory/types'
+import type { InventoryDocDetail, InventoryDocRow, InventoryLocationRow } from '@/lib/inventory/types'
 import {
   INVENTORY_BUSINESS_LEVELS,
   genericDocBusinessLevel,
@@ -26,6 +26,7 @@ vi.mock('next/navigation', () => ({
 }))
 
 vi.mock('sonner', () => ({ toast: { error: vi.fn(), success: vi.fn(), info: vi.fn() } }))
+vi.mock('./inventory-sku-search-select', () => import('./__stubs__/inventory-sku-search-select.stub'))
 
 vi.mock('@/actions/inventory/docs', () => ({
   confirmInventoryCoreReceive: vi.fn(),
@@ -776,17 +777,18 @@ function renderPage(options: {
   level: InventoryBusinessLevel
   operation: InventoryAnyOperationId
   workflowDocs?: InventoryDocRow[]
+  locations?: InventoryLocationRow[]
+  canSelfPurchase?: boolean
 }) {
   return render(
     <InventoryOperationsPage
       level={options.level}
-      locations={[]}
-      skuOptions={[]}
+      locations={options.locations ?? []}
       suppliers={[]}
       workflowDocs={options.workflowDocs ?? []}
       canCreate
       canApprove
-      canSelfPurchase={false}
+      canSelfPurchase={options.canSelfPurchase ?? false}
       canRequestShipmentCancellation={false}
       canApproveShipmentCancellation={false}
       canViewPrice
@@ -1478,5 +1480,68 @@ describe('行内动作的在途态上报（#192 follow-up）', () => {
     expect(tab).toMatch(/onBusyChange=\{handleActionBusyChange\}/)
     // 本地那份仍然在，点击闸读的是它
     expect(tab).toMatch(/if \(pendingInboxAction \|\| actionBusy\) return/)
+  })
+})
+
+/**
+ * SKU 候选的业务过滤（#339）。原先是前端对「预加载的前 100 条」再筛一遍，
+ * 排在后面的合法商品根本进不了候选；现在过滤条件随请求交给服务端。
+ * 这里钉住每个入口交给选择器的 `filters` —— 它必须与该业务建单时的服务端校验同口径
+ * （SQL 层的渲染断言见 engine.test.ts「SKU 候选检索过滤」）。
+ */
+describe('SKU 候选按业务口径交给服务端过滤（#339）', () => {
+  const LOCATIONS: InventoryLocationRow[] = [
+    { locationId: 'HQ', locationType: '总部', name: '品牌总部', orgNodeId: 'HQ', storeId: null, parentLocationId: null, isActive: true },
+    { locationId: 'M1', locationType: '市场', name: '市场一部', orgNodeId: 'M1', storeId: null, parentLocationId: 'HQ', isActive: true },
+    { locationId: 'M2', locationType: '市场', name: '市场二部', orgNodeId: 'M2', storeId: null, parentLocationId: 'HQ', isActive: true },
+    { locationId: 'S1', locationType: '门店', name: '一店', orgNodeId: 'N-S1', storeId: 'S1', parentLocationId: 'M1', isActive: true },
+    { locationId: 'S2', locationType: '门店', name: '二店', orgNodeId: 'N-S2', storeId: 'S2', parentLocationId: 'M2', isActive: true },
+  ]
+  beforeEach(() => mockDocs({}))
+  const pickers = () => Array.from(document.querySelectorAll<HTMLSelectElement>('[data-sku-picker]'))
+  const filtersOf = (picker: HTMLSelectElement) => JSON.parse(picker.dataset.filters ?? '{}')
+  function chooseSubject(placeholder: string, value: string) {
+    const select = screen.getByRole('option', { name: placeholder }).closest('select') as HTMLSelectElement
+    fireEvent.change(select, { target: { value } })
+  }
+
+  it('门店报货代建：未选门店时禁用；选定后只出可报货 + 门店所属市场可用的商品（Q1=A，与 staff 同口径）', () => {
+    renderPage({ level: 'store', operation: 'store-request', locations: LOCATIONS })
+    expect(pickers()[0]).toBeDisabled()
+    chooseSubject('请选择门店', 'S2')
+    expect(pickers()[0]).not.toBeDisabled()
+    expect(filtersOf(pickers()[0])).toEqual({ reportable: true, availableToMarketId: 'M2' })
+  })
+
+  it('门店报货代建：换到另一个市场的门店时清掉已选商品', () => {
+    renderPage({ level: 'store', operation: 'store-request', locations: LOCATIONS })
+    chooseSubject('请选择门店', 'S1')
+    fireEvent.change(pickers()[0], { target: { value: 'SKU-1' } })
+    expect(pickers()[0].value).toBe('SKU-1')
+    chooseSubject('请选择门店', 'S2')
+    expect(pickers()[0].value).toBe('')
+  })
+
+  it('品项公司报货需求：只出供应链来源 + 可报货', () => {
+    renderPage({ level: 'supply-chain', operation: 'item-company-request', locations: LOCATIONS })
+    expect(filtersOf(pickers()[0])).toEqual({ sourceType: '供应链', reportable: true })
+  })
+
+  it('自采产品入库：未选市场时禁用；选定后只出归属本市场的非供应链商品', () => {
+    renderPage({ level: 'market', operation: 'self-purchase', locations: LOCATIONS, canSelfPurchase: true })
+    expect(pickers()[0]).toBeDisabled()
+    chooseSubject('请选择市场', 'M1')
+    expect(filtersOf(pickers()[0])).toEqual({ ownedByMarketId: 'M1' })
+  })
+
+  it('库存转换目标：市场主体 → 本市场可用；总部主体 → 仅供应链；来源商品不加过滤（批次兜底）', () => {
+    const { unmount } = renderPage({ level: 'market', operation: 'market-conversion', locations: LOCATIONS })
+    chooseSubject('请选择市场', 'M1')
+    const [source, target] = pickers()
+    expect(filtersOf(source)).toEqual({})
+    expect(filtersOf(target)).toEqual({ availableToMarketId: 'M1' })
+    unmount()
+    renderPage({ level: 'supply-chain', operation: 'supply-chain-conversion', locations: LOCATIONS })
+    expect(filtersOf(pickers()[1])).toEqual({ sourceType: '供应链' })
   })
 })

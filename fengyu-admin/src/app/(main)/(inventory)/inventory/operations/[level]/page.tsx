@@ -2,7 +2,6 @@ import { Suspense } from 'react'
 import { notFound, redirect } from 'next/navigation'
 import { listInventoryCoreDocs } from '@/actions/inventory/docs'
 import { listInventoryLocations } from '@/actions/inventory/locations'
-import { listInventorySkus } from '@/actions/inventory/skus'
 import { listInventorySuppliers } from '@/actions/inventory/suppliers'
 import { getSession } from '@/lib/auth'
 import {
@@ -45,9 +44,10 @@ export default async function Page({
   const session = await getSession()
   requireAllUiPageCapabilities(session, ['inventory:list', 'inventory:stock_list'])
   requireInventoryBusinessLevel(session, level)
-  const [locations, skus, suppliers, workflowDocs] = await Promise.all([
+  // SKU 候选不再预加载前 100 条（#339）：各明细行的商品选择按关键词走服务端分页检索，
+  // 业务过滤（可报货 / 市场归属 / 供应链来源）也在服务端做，见 InventorySkuSearchSelect。
+  const [locations, suppliers, workflowDocs] = await Promise.all([
     listInventoryLocations(),
-    listInventorySkus({ page: 1, pageSize: 100, onlyActive: true }),
     // 刻意不传 pageSize：办理台的供应商下拉要的是整份名单，
     // 跟着列表页分页走会把靠后的供应商静默漏掉（#135）。
     listInventorySuppliers({ onlyActive: true }),
@@ -82,7 +82,6 @@ export default async function Page({
         <InventoryOperationsPage
           level={level}
           locations={locations}
-          skuOptions={skus.data}
           suppliers={suppliers.data}
           workflowDocs={workflowDocs.data}
           canCreate={canCreate}
