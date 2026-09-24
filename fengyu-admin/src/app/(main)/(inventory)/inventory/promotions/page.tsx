@@ -24,7 +24,6 @@ export default async function Page() {
   // 报货福利只由总部供应链维护（#354）：与 action / 引擎层同一判据，市场账号只读
   const canCreate = isInventoryPromotionMaintainer(session) && canViewPrice
   const canUpdate = canCreate
-  const canManageGlobal = canCreate
 
   // 未获价格权限的使用者只接收非金额的方案信息，避免客户端 props 暴露优惠金额。
   const visiblePlans = canViewPrice
@@ -49,7 +48,6 @@ export default async function Page() {
           canCreate={canCreate}
           canUpdate={canUpdate}
           canViewPrice={canViewPrice}
-          canManageGlobal={canManageGlobal}
         />
       </Suspense>
     </div>
