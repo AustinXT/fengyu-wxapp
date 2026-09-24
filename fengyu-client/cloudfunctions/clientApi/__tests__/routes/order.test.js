@@ -3317,13 +3317,38 @@ describe('order.homeProducts', () => {
     expect(pg.query.mock.calls[0][1]).toEqual([ctx.auth.userId])
   })
 
-  test('SQL 仅查有效购买行，并用 pickup_records 拆分真实提货', async () => {
+  test('SQL 仅查有效购买行，提货/退款/转换三语义各自直读独立列（#154）', async () => {
     pg.query.mockResolvedValueOnce([])
     const ctx = createBoundCtx({})
     await routes.homeProducts(ctx)
 
     const sql = pg.query.mock.calls[0][0]
-    expect(sql).toContain('FROM pickup_records')
+
+    // #154 起提货件数直读 sale_items.picked_up_quantity，pickup_totals CTE 已删除。
+    // 这不是"图省事少个 JOIN"，而是并发正确性要求：件数在 si 自身列上，本行被
+    // FOR UPDATE 锁住时 EvalPlanQual 会重新读到最新值；JOIN 出去的聚合子查询不会，
+    // 并发提货下会拿着快照算可提量。回退成 JOIN pickup_records 是真实缺陷，必须挡。
+    // （pickup_records 降级为明细表，只用于 cron 的 C5 守恒审计
+    //  `picked_up_quantity == SUM(pickup_records.pickup_quantity)`。）
+    //
+    // ⚠️ 旧断言曾是 toContain('FROM pickup_records')——#154 改了 8 个源文件却没动
+    // 任何测试，这条断言就此过时并让整条用例长期红着，连带**后面 7 条断言从未执行过**，
+    // 最终挡住 clientApi 接入 CI（#276）。
+    expect(sql).not.toContain('pickup_records')
+
+    // 三语义各自直读独立列，互不倒推
+    expect(sql).toContain('COALESCE(si.picked_up_quantity, 0)))::int AS picked_quantity')
+    expect(sql).toContain('COALESCE(si.refunded_quantity, 0)))::int AS refunded_quantity')
+    expect(sql).toContain('COALESCE(si.converted_quantity, 0)))::int AS converted_quantity')
+
+    // 「已结算」才是派生量 = 已提货 + 已退款 + 已转换
+    expect(sql).toContain(
+      'COALESCE(si.picked_up_quantity, 0) + COALESCE(si.refunded_quantity, 0) + COALESCE(si.converted_quantity, 0)',
+    )
+
+    // 反向：「已退款」不得再由 settled − 已提货 − 已转换 倒推（#154 前的写法）
+    expect(sql).not.toMatch(/settled_quantity\s*-\s*picked_quantity/)
+
     expect(sql).toContain("o.status IN ('已支付', '部分支付', '已完成')")
     expect(sql).toContain("si.item_direction = '购买'")
     expect(sql).toContain("si.product_type = '家居产品'")
