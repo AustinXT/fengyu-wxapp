@@ -446,10 +446,16 @@ async function queryRetainedMemberCount(scopeType, scopeId, date) {
  * 无门店产能技师（直挂市场/部门组织节点）的可见性片段 —— 与 admin
  * `lib/data-center/scope-sql.ts` 的 `orgAnchorScopeSql` **逐条对齐**（#320）。
  *
- *   - `all`    → 恒真。`validateManagementScope` 已要求 `all` 必须持总部 scope，
- *                等价于 admin 侧的 `isAdminScope(session) → TRUE` 分支
+ *   - `all`    → 恒真（`validateManagementScope` 已要求 `all` 必须持总部 scope，
+ *                见 `__tests__/utils/scope.test.js` 里「非总部选 all 必抛 PERMISSION_DENIED」）
  *   - `market` → 锚定市场等于所选市场才出现
  *   - `store` 及**任何未知取值** → FALSE
+ *
+ * ⚠️ **`all` 这一支与 admin 并不等价，是一条已登记的跨端分叉（#334）**：admin 的
+ * `orgAnchorScopeSql` 只对**超管**恒真（`isAdminScope` 判的是超管位，不是「持总部 scope」），
+ * 非超管走 `EXISTS(锚定市场下存在本账号可见的启用门店)` —— 对「没有门店的市场」永远判不出可见。
+ * 生产实测：品项公司（type=市场、直属门店 0）下有 1 名在职产能技师，而落在总部节点上的
+ * 非超管绑定有 14 个 → 这 14 个账号 admin 看 165、staff 看 166。别在本文件单边抹平，见 #334。
  *
  * ⚠️ `all` 必须**按名字显式命中**、未知取值一律 fail-closed，不能写成
  * 「先排掉 store/market，兜底 return TRUE」——那样未知 scopeType 会让门店分支近乎空集
@@ -494,8 +500,11 @@ function buildTechnicianOrgAnchorScope(scopeType, scopeId, startIdx) {
  * ## 两个容易被当成缺陷的点（已核实，别再"修"）
  *
  * - **回收 join 不会扇出重复计数**：`stores.org_node_id` 上有唯一索引
- *   `stores_org_node_id_unique`（生产已核，2026-09-24 实测该 CTE 166 行 / 166 个不同
- *   `employee_id`），所以 `LEFT JOIN stores ds` 至多匹配一行，`COUNT(*)` 不需要 DISTINCT。
+ *   `stores_org_node_id_unique`，`staff_wechat_users.employee_id` 是主键
+ *   （`staff_wechat_users_pkey`，生产实测 0 重复行），两头都不可能一对多 ——
+ *   所以 `LEFT JOIN stores ds` 至多匹配一行，`COUNT(*)` 不需要 DISTINCT
+ *   （2026-09-24 生产实测该 CTE 166 行 / 166 个不同 `employee_id`）。
+ *   admin `technicianCountSql` 同样是 `COUNT(*)`，两端一致。
  * - **门店分支叠了启用门店过滤、市场锚分支没有**：这与 admin 一致（admin 的
  *   `scopeFilterSql` 内含 `activeStoreCondition`，`orgAnchorScopeSql` 的 market 分支只比锚定市场）。
  *   代价是「门店全停的市场 + 直挂技师」会分母含人、分子近零 → 人均偏低。属已知取舍：

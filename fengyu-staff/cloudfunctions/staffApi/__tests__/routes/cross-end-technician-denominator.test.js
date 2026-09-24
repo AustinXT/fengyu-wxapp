@@ -225,15 +225,42 @@ describe('产能技师分母跨端字面量守护（#320）', () => {
     expect(adminAnchorFn, 'admin 侧 all 分支对超管恒真').toMatch(
       /if \(isAdminScope\(session\)\) return sql`TRUE`/,
     )
-    /**
-     * admin 多一个 staff 没有的分支：非超管选 all/authorized 时按「锚定市场下是否有本账号
-     * 可见的启用门店」判定。staff 侧的 `all` 已由 `validateManagementScope` 要求持总部 scope，
-     * 等价于 admin 的 `isAdminScope → TRUE`，所以这个分支**不构成口径分叉**。
-     * 但它必须继续带启用门店条件，否则 admin 侧会把停用门店当可见凭据。
-     */
     expect(adminAnchorFn, 'admin 侧非超管 all 分支必须走可见启用门店 EXISTS').toMatch(
       /EXISTS \([\s\S]*vn\.type = '门店'[\s\S]*vn\.is_active = TRUE[\s\S]*vn\.parent_id = \$\{col\}/,
     )
+  })
+
+  /**
+   * 要件 6b —— **已登记的跨端分叉**（#334）。本条绿 ≠ 两端一致，别这么读。
+   *
+   * staff 的 `all` 恒 TRUE；admin 的 `all` 只对**超管**恒 TRUE，非超管走
+   * `EXISTS(锚定市场下存在本账号可见的启用门店)`。差异只在「锚定市场下一家启用门店都没有」时显形：
+   *
+   *   2026-09-24 生产只读实测 —— 「品项公司」`org-部门-1780556585278`（`type=市场`、
+   *   直属门店 0 家）下有 **1 名**在职产能技师；落在「总部」类型节点上的**非超管**绑定共
+   *   **14 个**（finance×1 / hr×1 / manager×10 / product×2）。这 14 个账号在 admin 看「集团」
+   *   分母 165、在 staff 看「全部」分母 166；超管两边都是 166。
+   *
+   * 第 1 轮我在这里写过「等价、不构成分叉」，第 2 轮 codex 把它推翻了 —— 前提错在
+   * `isAdminScope` 判的是**超管位**（`roles.some(r => r.isSuperAdmin)`），不是「持总部 scope」。
+   * 之所以把分叉**钉下来**而不是悄悄放过：#283 那批审计的教训是
+   * 「consistency 快照只防漂移不保口径，错误写法会反被钉死」。所以这里把两侧写法连同
+   * **它不一致这件事**一起写进断言 —— 任一侧改动都会红，迫使回来读 #334 而不是顺手抹平。
+   *
+   * #334 落地（两端统一）时，本条应删除，并把要件 6 的 all 分支改成真正的等价断言。
+   */
+  it('要件 6b：已登记分叉 —— staff 的 all 无条件恒真、admin 的 all 只对超管恒真（#334）', () => {
+    // staff：`all` 不看任何账号上下文（helper 连 auth 都不收）
+    expect(staffAnchorFn).not.toMatch(/auth|session|isAdminScope|scopeStoreIds/)
+    expect(staffAnchorFn).toMatch(/if \(scopeType === 'all'\) return \{ sql: 'TRUE', params: \[\] \}/)
+    // admin：`all` 的恒真挂在超管位上，非超管另有一条按门店判定的分支
+    expect(adminAnchorFn).toMatch(/isAdminScope\(session\)/)
+    expect(adminAnchorFn).toMatch(/session\.permissions\.scopeStoreIds/)
+    /**
+     * 承重事实：admin 那条分支只认**门店**，对「没有门店的市场」永远判不出可见 ——
+     * 这就是分叉的机制本身。若将来它改成按组织节点判定（#334 的修法方向），本断言会红。
+     */
+    expect(adminAnchorFn).toMatch(/FROM stores vs[\s\S]*vs\.store_id IN/)
   })
 
   /**
@@ -252,6 +279,75 @@ describe('产能技师分母跨端字面量守护（#320）', () => {
     )
     expect(adminScopeFilterFn, 'admin 的 scopeFilterSql 未叠加启用门店过滤').toMatch(
       /parts: SQL\[\] = \[activeStoreCondition\(col\)\]/,
+    )
+  })
+
+  /**
+   * 要件 8 —— 钉「承重接线」。
+   *
+   * 要件 1~5 钉 `queryEmployeeCount` 的 SQL 文本、要件 6~7 钉两个 helper 的**源码**，
+   * 但「这条 SQL 真的用了那两个 helper」此前没有任何断言：把 `buildStaffScope(...)` 换成
+   * `buildManagementStoreScope(...)`、把 anchor 换成内联 `{sql:'TRUE',params:[]}`、
+   * 或把 `2 + sc.params.length` 写死 —— 七条要件可以全绿。
+   * （前两种今天会被 `mgmt-dashboard.test.js` 的 SQL 形态断言抓到，第三种在现有三个
+   * scopeType 下是恒等变换、不可观测；但守护不该指望「另一个文件恰好也测了」。）
+   */
+  it('要件 8：queryEmployeeCount 必须真的调用那两个 helper，且参数按 sc → anchor 顺序拼接', () => {
+    expect(staffSection, '门店分支未走 buildStaffScope（会丢启用门店过滤）').toContain(
+      "buildStaffScope(scopeType, scopeId, 'tb', 2)",
+    )
+    expect(staffSection, '锚分支未走 buildTechnicianOrgAnchorScope').toContain(
+      'buildTechnicianOrgAnchorScope(scopeType, scopeId, 2 + sc.params.length)',
+    )
+    // 起始下标必须由前一段的 params 长度推导，不能写死
+    expect(staffSection).not.toMatch(/buildTechnicianOrgAnchorScope\(scopeType, scopeId, \d+\)/)
+    expect(staffSection).toContain('[date, ...sc.params, ...anchor.params]')
+  })
+
+  /**
+   * 要件 9 —— market scope 下「市场 → 门店集合」的展开必须两端同构。
+   *
+   * 门店分支覆盖九成以上人头，而它在 market 口径下的取值完全由这段展开决定：
+   * staff `descendantStoresSqlForRoot`（`utils/scope.js`）vs admin `descendantOrgNodeIdsSubquery`
+   * + `orgNodeStoreIdsSubquery`（`lib/market-store-sql.ts`）。两端都是「递归后代 + path 防环
+   * + 按 `stores.org_node_id` 落店」，逐字核对同构。若一端改成只取直接子节点、或去掉防环，
+   * 市场口径分母会静默分叉，而要件 1~8 无一变红。
+   */
+  it('要件 9：两端市场展开都是「递归后代 + path 防环 + 按 org_node_id 落店」', () => {
+    const staffExpand = squeeze(
+      extractSection(
+        readFile(path.resolve(__dirname, '../../utils/scope.js')),
+        'function descendantStoresSqlForRoot(',
+        '\n/**',
+      ),
+    )
+    const adminExpand = squeeze(
+      extractSection(
+        readFile(path.resolve(__dirname, '../../../../../fengyu-admin/src/lib/market-store-sql.ts')),
+        'export function descendantOrgNodeIdsSubquery(',
+        '/** 返回某组织节点子树内所有关联门店的子查询。 */',
+      ),
+    )
+    for (const [end, src] of [['staff', staffExpand], ['admin', adminExpand]]) {
+      expect(src, `${end} 侧展开不是递归 CTE`).toMatch(/WITH RECURSIVE descendants\(id, path\) AS/)
+      expect(src, `${end} 侧展开缺 parent_id 递推`).toMatch(
+        /JOIN descendants ON child\.parent_id = descendants\.id/,
+      )
+      expect(src, `${end} 侧展开缺 path 防环`).toMatch(
+        /WHERE NOT child\.id = ANY\(descendants\.path\)/,
+      )
+    }
+    // 落店那一跳：staff 在同一段内 JOIN stores，admin 在外层 orgNodeStoreIdsSubquery 里
+    expect(staffExpand).toMatch(/FROM stores s JOIN descendants ON s\.org_node_id = descendants\.id/)
+    const adminOuter = squeeze(
+      extractSection(
+        readFile(path.resolve(__dirname, '../../../../../fengyu-admin/src/lib/market-store-sql.ts')),
+        'export function orgNodeStoreIdsSubquery(',
+        '/** 任意组织节点列是否落在指定组织节点子树内。 */',
+      ),
+    )
+    expect(adminOuter).toMatch(
+      /FROM stores s WHERE s\.org_node_id IN \$\{descendantOrgNodeIdsSubquery\(rootNodeId\)\}/,
     )
   })
 
