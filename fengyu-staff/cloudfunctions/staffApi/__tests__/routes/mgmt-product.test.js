@@ -81,7 +81,9 @@ function setupCardMocks({
     if (/FROM\s+client_wechat_users\s+c/.test(sql) && /became_member_at\s+IS\s+NOT\s+NULL/.test(sql)) {
       return [{ cnt: memberCount }]
     }
-    return []
+    // ⚠️ 兜底抛错而非返回空数组：把「没命中任何分支」伪装成合法零值，
+    //    会让路由混淆（本轮实测踩过）退化成「数字变了」而不是「测试红」。
+    throw new Error('mock 未路由到任何分支，SQL 片段：' + String(sql).slice(0, 200))
   })
 }
 
@@ -105,7 +107,9 @@ function setupCycleMocks({
     if (/WITH\s+daily_agg\s+AS/.test(sql)) {
       return unionRows
     }
-    return []
+    // ⚠️ 兜底抛错而非返回空数组：把「没命中任何分支」伪装成合法零值，
+    //    会让路由混淆（本轮实测踩过）退化成「数字变了」而不是「测试红」。
+    throw new Error('mock 未路由到任何分支，SQL 片段：' + String(sql).slice(0, 200))
   })
 }
 

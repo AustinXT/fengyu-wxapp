@@ -98,7 +98,13 @@ vi.mock('@/db', () => ({
           ? responder.memberByStoreRows
           : [responder.scalarMember]
       }
-      return [{ v: 0 }]
+      /**
+       * ⚠️ **兜底必须抛错，不能返回零值** —— 本轮实测教训：
+       * 同源改造后持卡 SQL 与会员 SQL 高度相似，路由一旦混淆就会静默取到错误的行；
+       * 若兜底再把「没命中任何分支」伪装成合法的 `[{ v: 0 }]`，
+       * 两类失效都变成「数字看起来只是变了」而不是「测试红」。
+       */
+      throw new Error('mock 未路由到任何分支，SQL 片段：' + t.slice(0, 200))
     }),
   },
 }))
@@ -312,8 +318,9 @@ describe('getProductBoard 装配', () => {
    *
    *   1. **两条查询不得被路由混淆** —— 同源改造后持卡与会员查询共用同一个前缀、
    *      连 `GROUP BY c.bound_store_id` 都一样，极易被按文本路由的 mock 混为一谈。
-   *      一旦混淆，两者返回同一批行、占比恒等于 **1** —— 而旧夹具下这看起来只是"数变了"。
-   *      分子分母取**互质且都非零**的值，混淆时占比会精确等于 1，立刻可辨。
+   *      一旦混淆，两者返回同一批行、占比恒等于 **1** —— 而旧夹具（6/24）下这看起来只是"数变了"。
+   *      分子分母取**互质且都非零**的值（30/24），混淆时占比会变成 1 ≠ 1.25，
+   *      下面 `toBeCloseTo(1.25)` 那一条就是探测器（再写一条 `not.toBe(1)` 是装饰，被它蕴含）。
    *   2. **装配层不得偷偷夹紧到 100%** —— 若 SQL 层将来回归出 >100%，看板必须**如实显示**，
    *      让读数人看见异常；夹紧会把 SQL 缺陷伪装成正常数字（#287 能被审计发现正是因为它没夹紧）。
    */
@@ -345,10 +352,6 @@ describe('getProductBoard 装配', () => {
       s.metrics.cardHolderRate,
       '持卡占比被夹紧到 100% —— SQL 层若回归出 >100%，看板必须如实显示，否则缺陷会被伪装成正常数字',
     ).toBeCloseTo(1.25, 6)
-    expect(
-      s.metrics.cardHolderRate,
-      '占比精确等于 1 —— 分子分母大概率取到了同一批行（路由混淆）',
-    ).not.toBe(1)
     // KPI 大卡同理
     expect(res.kpis.cardHolders.value).toBe(30)
     expect(res.kpis.cardHolderRate.value).toBeCloseTo(1.25, 6)

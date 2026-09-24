@@ -6,6 +6,8 @@
  * mgmtProduct.cardHolders — 持卡人数（截面快照，不随 period 变化）
  *   持卡 = 已解锁次数大于 0（paid_sessions > 0），不按 product_type 过滤
  *   按 product_kind 分组 + memberCount（分母）
+ *   ★★ 分子必须与分母同源（#287）：人群都只算会员、scope 都走 c.bound_store_id。
+ *      此前分子不限客型且按 so.store_id 归店 → 集团占比恒 253%、单店最高 2600%。
  *
  * mgmtProduct.cycleStats — 体验/进入/复购（区间维度）
  *   达标日：SUM(sipe.amount) 在 (client_user_id, store_id, product_kind, purchase_date) 分组下 ≥ threshold
@@ -107,9 +109,11 @@ async function resolveScopeName(scopeType, scopeId) {
  *   rate = count / memberCount * 100，保留 2 位小数（数值类型）；memberCount=0 → null
  *
  * SQL：
- *   - 持卡：sale_items JOIN sale_orders JOIN product_skus JOIN product_categories
- *     WHERE paid_sessions > 0
- *     ∩ sale_order_type IN ('销售单','转换单','寄存单') ∩ status='已支付' ∩ scope（so.store_id）
+ *   - 持卡（占比分子）：**client_wechat_users c** JOIN sale_orders JOIN sale_items
+ *     JOIN product_skus JOIN product_categories
+ *     WHERE became_member_at IS NOT NULL ∩ paid_sessions > 0
+ *     ∩ sale_order_type IN ('销售单','转换单','寄存单') ∩ status='已支付'
+ *     ∩ scope（**c.bound_store_id**，与分母同源 —— #287，此处曾是 so.store_id）
  *     （寄存单为 WorkFine 剩余次数初始化，按次数维度纳入持卡人数）
  *   - 会员数：client_wechat_users WHERE became_member_at IS NOT NULL ∩ scope（c.bound_store_id）
  *     （与 metrics.md memberCount T2 历史化口径一致；持卡人数为截面，本接口不带 $date 守卫）

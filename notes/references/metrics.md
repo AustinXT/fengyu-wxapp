@@ -791,6 +791,7 @@ SELECT COUNT(*) FROM org_nodes WHERE type='store' [AND parent_id=$market]
 | 2026-05-26 | admin 数据中心（`/data-center`）上线：新增 §「数据中心（admin）板块专属指标」+ 品项二级（category_name）粒度节。3 项用户拍板口径——流量客业绩=仅 `customer_type='流量客'`；单次客耗=`生美实耗÷服务人次`；店长人数=`在营门店数`（每店一店长，不依赖 position_name）。排名榜/区间指标统一走顶部 TimeRange（today/week/month/year/custom），同比环比仅作用 KPI 标量 |
 | 2026-08-08 | 数据中心经营统计统一仅纳入 `org_nodes.is_active=TRUE` 的门店：门店数、全部区间指标、门店/员工排行榜及范围下拉同步过滤；单店范围不再固定计 1，停用门店返回零数据 |
 | 2026-09-22 | **D-conv-denom 改判 B → 1c（#284）**：成交率分母由「区间内到店的体验客 + 小美客」改为「期初未达会员的到店活跃池 ∪ 本期全部新增会员」。`customer_type` 只升不降，本期已转化者当期已是会员客、被从分母整体剔除，而他们正是分子 —— 35 家有新会员的门店全部虚高、单店最高 800%、分母归零反显 '--'。分支 ② 保证分子 ⊆ 分母，上限 ≤ 100% 恒成立（纯活跃池方案 1a 做不到，本期有 10 名新增会员无已完成服务单）。集团 2026-09 由 28.01%（151/539）改为 **21.88%（151/690）**。两端同步：`customer.ts::queryTrialFootfall` + 明细 `traffic_cust` CTE、`mgmt-traffic.js::queryTrialFootfall` |
+| 2026-09-24 | **D-card-same-source 确立（#287）**：持卡占比分子分母此前**两个维度都不同源** —— ① 分子统计全部顾客、分母只统计会员（分子里 60.8% 的人永不可能进分母）；② 分子按 `so.store_id`（订单所属门店）归店、分母按 `c.bound_store_id`（顾客绑定门店）归店。集团占比恒 **253%**、单店最高 **2600%**、40 家在营门店 36 家 > 100%。**只修 ① 不够**（实测仍 7 家 > 100%、最高 104.55%）；两条都修后 **0 家 > 100%、最高正好 100.00%**，admin 侧集团 **1917 / 1931 = 99.27%**（2026-09-24 实测，含 `activeStoreCondition`；数字每日漂移，**验收看不变量不看绝对值**）。写法上 admin 用「分母壳 + `EXISTS`」、staff 因需 `GROUP BY pc.product_kind` 用「会员表驱动 + `COUNT(DISTINCT c.user_id)`」，两端 scope 均走 `bound_store_id`。⚠️ 该列修正后各店在 95.83%~100% 之间、**已失去区分度，勿用于门店排名**（旧列的店间方差全部来自非会员数量）。两端同步：`product.ts::queryCardHolders/queryCardHoldersByStore` + `mgmt-product.js::cardSql` |
 | 2026-09-24 | **D-card-same-source 确立（#287）**：持卡占比分子分母此前**两个维度都不同源** —— ① 分子统计全部顾客、分母只统计会员（分子里 60.8% 的人永不可能进分母）；② 分子按 `so.store_id`（订单所属门店）归店、分母按 `c.bound_store_id`（顾客绑定门店）归店。集团占比恒 **253%**、单店最高 **2600%**、40 家在营门店 36 家 > 100%。**只修 ① 不够**（实测仍 7 家 > 100%、最高 104.55%）；两条都修后 **0 家 > 100%、最高正好 100.00%**，集团 **1915 / 1930 = 99.22%**。写法上 admin 用「分母壳 + `EXISTS`」、staff 因需 `GROUP BY pc.product_kind` 用「会员表驱动 + `COUNT(DISTINCT c.user_id)`」，两端 scope 均走 `bound_store_id`。⚠️ 该列修正后各店在 95.83%~100% 之间、**已失去区分度，勿用于门店排名**（旧列的店间方差全部来自非会员数量）。两端同步：`product.ts::queryCardHolders/queryCardHoldersByStore` + `mgmt-product.js::cardSql` |
 | 2026-09-25 | **一次/二次客活改按到店天数（#298）**：由服务单行数 `COUNT(*)` 改为 `COUNT(DISTINCT service_date)`，去重键 `(client_user_id, service_date)`，日期轴拍板为 `service_date`；admin 数据中心（KPI + 明细）与 staff mgmt-traffic 同步。补登 `monthly_activity` 口径（此前在本文档完全缺席，是两套定义分叉的根因）。prod 2026-09-01~09-24 集团一次/二次 527/982 → 590/919，63 人由「二次」回到「一次」 |
 | 2026-09-25 | **客量板会员门槛读配置（#292）**：会员被经营 6 档的最低档下界与「会员经营人数」门槛由写死的 `1990` 改读 `system_configs.new_member_threshold`（与品项板同源），1w/3w/6w/10w 收敛到 `SPEND_BUCKET_FLOORS`；admin 与 staffApi 同步。prod/dev 当前配置均为 1990，上线后数字不变。标签保持写死；门槛须 < 1w（不加校验，仅文档化） |
@@ -912,7 +913,7 @@ SELECT COUNT(*) FROM org_nodes WHERE type='store' [AND parent_id=$market]
 
 > 入口：mgmt-dashboard 首页"品项数据"卡片（`entry === 'products'`）；
 > 时间筛选本月/上月/本年/自定义日期区间，口径与 sales-data 页相同（见下方"时间窗口补充"）。
-> scope 过滤通过 `so.store_id` 命中；持卡人数例外（截面快照）。
+> scope 过滤通过 `so.store_id` 命中；**持卡人数与占比分母例外 —— 走 `c.bound_store_id`**（#287，见 D-card-same-source）；持卡另为截面快照。
 
 ### 1. 持卡人数（截面快照，不随 period 变化）
 
@@ -933,10 +934,21 @@ SELECT COUNT(*) FROM org_nodes WHERE type='store' [AND parent_id=$market]
 > 分子里 **60.8%** 的人永不可能进分母。
 > **只修「人群」不够** —— 实测仍有 7 家门店 > 100%、最高 104.55%；两条都修后 0 家 > 100%、最高正好 100.00%。
 >
-> 语义代价：per-store 从「在本店买过卡的人」变为「本店绑定会员里持卡的人」，实测仅差 **11 人**（跨店购买者，占分子 0.57%）。
+> 语义代价：per-store 从「在本店买过卡的人」变为「本店绑定会员里持卡的人」。
+> 受影响的是**买卡门店 ≠ 绑定门店**的那批人，2026-09-24 实测 **11 人**（占分子约 0.57%）——
+> 他们从「买卡那家店」挪到了「绑定那家店」，**不是被丢弃**。
 >
-> ⚠️ **该列已失去区分度，勿用于门店排名**：修正后各店在 **95.83% ~ 100%** 之间（集团 1915 / 1930 = 99.22%）。
+> ⚠️ **该列已失去区分度，勿用于门店排名**：修正后各店在 **95.83% ~ 100%** 之间
+> （admin 侧集团 **1917 / 1931 = 99.27%**，2026-09-24 实测；**数字每日漂移，验收看不变量不看绝对值**）。
 > 此前的全部店间方差都来自「非会员数量」，按旧列排名会得到与事实相反的结论。
+>
+> ⚠️ **两端集团口径的绝对值本就不同，别拿来对数**：admin 的 `scopeFilterSql` **恒** AND 上
+> `activeStoreCondition`（只算在营门店），staff 的 `buildManagementStoreScope(scopeType='all')`
+> 直接返回 `TRUE`（不排除停用门店）。占比两端都 ≤ 100%（分子分母同受影响），但绝对值对不上。
+>
+> ✅ **集团 == Σ门店**：`activeStoreCondition` 已把 `bound_store_id` 为空的会员排除在外
+> （实测这样的会员 1 人、绑定到非在营门店的 0 人），所以 byStore 里那句
+> `AND c.bound_store_id IS NOT NULL` 是**冗余但显式**的，不构成口径差。
 
 | 指标 | 公式 | 数据源 | 筛选条件 |
 |------|------|--------|----------|

@@ -139,6 +139,38 @@ describe('品项板块两端口径一致性守护', () => {
         }
       })
 
+      /**
+       * ★★ **守护必须是双边的** —— 上面那组只钉了**分子**。
+       *
+       * 只钉分子时，把**分母** `queryMemberCount` 的 scope 列改成 `'so.store_id'`，
+       * 就能原样造回「分子按绑定门店、分母按订单门店」的 253% 同型缺陷，
+       * 而 #287 的每一条断言**全绿** —— 正是本 PR 痛斥的那个失败模式，
+       * 差点在同一个 PR 里重演一次。
+       *
+       * 所以这里不再各自硬编码字面量，而是断言**两侧的 scope 列相等**：
+       * 一侧改了另一侧没改，必红。
+       */
+      it('分子与分母的 scope 列必须是同一个（两侧都不得单独改）', () => {
+        const scopeColOf = (fn: string): string | undefined =>
+          /scopeFilterSql\(session,\s*scope,\s*'([^']+)'\)/.exec(adminFnBody(fn))?.[1]
+
+        const cols = {
+          分子全局: scopeColOf('queryCardHolders'),
+          分子按店: scopeColOf('queryCardHoldersByStore'),
+          分母全局: scopeColOf('queryMemberCount'),
+          分母按店: scopeColOf('queryMemberCountByStore'),
+        }
+        for (const [k, v] of Object.entries(cols)) {
+          expect(v, `${k} 的 scopeFilterSql 调用未切出 —— 切片口径需同步更新`).toBeTruthy()
+        }
+        expect(
+          new Set(Object.values(cols)).size,
+          `持卡占比的四个查询用了不止一种 scope 列：${JSON.stringify(cols)} —— ` +
+            '分子分母归店键不同正是 #287 的第二处根因（集团恒 253%、单店最高 2600%）',
+        ).toBe(1)
+        expect(cols.分母全局, 'scope 列不是 c.bound_store_id').toBe('c.bound_store_id')
+      })
+
       it('admin byStore 的分组键与分母一致（都是 c.bound_store_id）', () => {
         expect(adminCardSql('queryCardHoldersByStore'), '持卡 byStore 未按 c.bound_store_id 分组').toMatch(
           /GROUP\s+BY\s+c\.bound_store_id\s*$/,
@@ -175,11 +207,54 @@ describe('品项板块两端口径一致性守护', () => {
         )
       })
 
+      /**
+       * ★ **注释也要守** —— 本文件其余断言都跑在 `stripComments()` 之后，
+       * 也就是说「注释里写着旧口径」这类漂移**结构性地测不到**。
+       *
+       * 本 PR 差点就留下这个：SQL 改对了，紧邻的函数 JSDoc / 文件头★红线却还写着
+       * 「scope 用 `so.store_id`」，同一个文件里两套互相矛盾的口径自述。
+       * 下一个人照 JSDoc 把代码改回去时，只有 SQL 断言拦得住，注释一路绿灯 ——
+       * 而 memory `project-cross-end-copy-count-grows` 正记着「注释自述的口径不可信」。
+       *
+       * 所以这条**刻意跑在未剥注释的原文上**，禁掉已被推翻的旧口径字样。
+       */
+      it('两端的口径自述（含注释）不得残留旧的 so.store_id 归店说法', () => {
+        for (const [name, src] of [
+          ['admin product.ts', adminSrc],
+          ['staff mgmt-product.js', staffSrc],
+        ] as const) {
+          const stale = src
+            .split('\n')
+            .filter((l) => /^\s*(\*|\/\/)/.test(l)) // 只看注释行
+            .filter((l) => /so\.store_id/.test(l)) // 提到了订单店归店
+            .filter((l) => /持卡|占比|分子|cardHolder/i.test(l)) // 且在持卡语境里
+            // 放行两类**不是祈使句**的写法：
+            //   a) 同一行也提到 bound_store_id —— 那是在对比两者（「分子按 A、分母按 B」）
+            //   b) 带追述/否定词 —— 那是在讲历史或明确排除（「此前按…」「不是…」）
+            .filter((l) => !/bound_store_id/.test(l))
+            .filter((l) => !/此前|曾经|曾|原先|旧|不是|不得|禁|复活|回退/.test(l))
+          expect(
+            stale,
+            `${name} 的注释里仍把持卡/占比的归店**祈使为** so.store_id —— ` +
+              '与 #287 修正后的实现矛盾；照它改回去不会被其它断言拦住（其余断言都跑在 stripComments 之后）',
+          ).toEqual([])
+        }
+      })
+
       it('staff 分子分母复用同一个 scope 构造（cs 只声明一次，两条查询都用它）', () => {
-        const fnBody = /async function .*?mgmtProductCycle[\s\S]*?\n}/.exec(staffSrc)?.[0] ?? staffSrc
+        /**
+         * ⚠️ 第一版锚的是 `mgmtProductCycle` —— staffApi 里**没有这个函数**
+         * （只有 `cardHolders` / `cycleStats`），正则永不匹配、每次都回落到
+         * `?? staffSrc` 兜底全文件扫描。当前恰好全文件只有 1 处所以绿灯，
+         * 但它守的不是「`cardHolders` 函数内只声明一次」：
+         * `cycleStats` 将来也改走 `bound_store_id` 就会**误报红**，且报错信息指向错误的原因。
+         * 「切不出就兜底到全文」本身就是空断言的温床（同 `82e3f1e7` 修掉的那条）。
+         */
+        const fnBody = /async function cardHolders\([\s\S]*?\n}/.exec(staffSrc)?.[0] ?? ''
+        expect(fnBody, 'cardHolders 函数体未切出 —— 切片锚点需同步更新').toBeTruthy()
         expect(
           (fnBody.match(/const\s+cs\s*=\s*buildClientScope/g) ?? []).length,
-          'cs 被声明了多次 —— 分子分母各建一个 scope，「归店键一致」会退化成靠自觉维护',
+          'cardHolders 里 cs 被声明了多次 —— 分子分母各建一个 scope，「归店键一致」会退化成靠自觉维护',
         ).toBe(1)
         expect(
           staffSrc,
