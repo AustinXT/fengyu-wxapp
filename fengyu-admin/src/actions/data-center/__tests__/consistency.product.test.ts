@@ -252,10 +252,19 @@ describe('品项板块两端口径一致性守护', () => {
          */
         const fnBody = /async function cardHolders\([\s\S]*?\n}/.exec(staffSrc)?.[0] ?? ''
         expect(fnBody, 'cardHolders 函数体未切出 —— 切片锚点需同步更新').toBeTruthy()
+        /**
+         * ⚠️ 数的是 **`buildClientScope(` 的调用次数**，不是 `const cs = …` 这个字面量 ——
+         * 红检 R13 实测：写成 `const csDup = buildClientScope(...)` 换个变量名就能绕过
+         * 按变量名计数的版本，而「两个 scope 对象同时存在」正是要防的东西。
+         */
         expect(
-          (fnBody.match(/const\s+cs\s*=\s*buildClientScope/g) ?? []).length,
-          'cardHolders 里 cs 被声明了多次 —— 分子分母各建一个 scope，「归店键一致」会退化成靠自觉维护',
+          (fnBody.match(/buildClientScope\s*\(/g) ?? []).length,
+          'cardHolders 里构造了不止一个 scope —— 分子分母各建一个，「归店键一致」会退化成靠自觉维护',
         ).toBe(1)
+        expect(
+          (fnBody.match(/buildSaleScope\s*\(/g) ?? []).length,
+          'cardHolders 里出现 buildSaleScope —— 那是按 so.store_id 归店，正是 #287 的第二处根因',
+        ).toBe(0)
         expect(
           staffSrc,
           '持卡查询仍在用 sc.params —— scope 参数与分母不同源',
