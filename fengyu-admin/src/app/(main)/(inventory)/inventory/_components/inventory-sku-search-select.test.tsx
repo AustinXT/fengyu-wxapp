@@ -24,16 +24,19 @@ async function flush() {
   await act(async () => { await Promise.resolve() })
 }
 
-function Harness(props: { initial?: string; selectedLabel?: string; filters?: Record<string, unknown>; onChange?: (id: string) => void }) {
+function Harness(props: { inLabel?: boolean; initial?: string; selectedLabel?: string; filters?: Record<string, unknown>; onChange?: (id: string) => void }) {
   const [value, setValue] = useState(props.initial ?? '')
+  const select = (
+    <InventorySkuSearchSelect
+      value={value}
+      onChange={(id) => { setValue(id); props.onChange?.(id) }}
+      filters={props.filters}
+      selectedLabel={props.selectedLabel}
+    />
+  )
   return (
     <form onSubmit={(event) => { event.preventDefault(); submitSpy() }}>
-      <InventorySkuSearchSelect
-        value={value}
-        onChange={(id) => { setValue(id); props.onChange?.(id) }}
-        filters={props.filters}
-        selectedLabel={props.selectedLabel}
-      />
+      {props.inLabel ? <label><span>商品</span>{select}</label> : select}
     </form>
   )
 }
@@ -92,6 +95,9 @@ describe('InventorySkuSearchSelect（#339）', () => {
     expect(mockListSkus.mock.calls[1][0]).toMatchObject({ page: 2 })
     expect(screen.getAllByRole('option')).toHaveLength(SKU_SEARCH_PAGE_SIZE + 1)
     expect(screen.queryByRole('button', { name: '加载更多' })).not.toBeInTheDocument()
+    // 焦点不在搜索框（比如刚点过「加载更多」）时 Esc 也能收起
+    fireEvent.keyDown(document.body, { key: 'Escape' })
+    expect(screen.getByRole('combobox')).toHaveAttribute('aria-expanded', 'false')
   })
 
   it('先发后到的旧关键词结果被丢弃', async () => {
@@ -119,12 +125,32 @@ describe('InventorySkuSearchSelect（#339）', () => {
     fireEvent.click(screen.getByRole('option', { name: /精华液/ }))
     expect(onChange).toHaveBeenCalledWith('A')
     expect(screen.getByRole('combobox')).toHaveTextContent('精华液 · P001')
+    expect(screen.getByRole('combobox')).toHaveAttribute('aria-expanded', 'false')
     mockListSkus.mockResolvedValue({ data: [], total: 0 })
     fireEvent.click(screen.getByRole('combobox'))
     fireEvent.change(screen.getByLabelText('搜索库存商品'), { target: { value: '不相干' } })
     await act(async () => { vi.advanceTimersByTime(SKU_SEARCH_DEBOUNCE_MS) })
     await flush()
     expect(screen.getByRole('combobox')).toHaveTextContent('精华液 · P001')
+  })
+
+  it('放在 FormField 的 <label> 里：触发按钮与面板内的点击都取消默认动作，挡住 label 激活转发', async () => {
+    // 办理台的 FormField 是 <label>。真浏览器里，label 内的点击若未被取消，默认动作会被转发成
+    // 「点 label 的第一个可标注控件」= 触发按钮：选中收起 → 转发 → 面板又被打开（2026-09-24 真机复现）。
+    // happy-dom 只在直接对 label dispatchEvent 时转发、不模拟冒泡上来的激活，所以这里锁的是
+    // 规范里挡住激活的那个机制本身：点击事件被 preventDefault（fireEvent 返回 false）。
+    mockListSkus.mockResolvedValue({ data: [sku('A', '精华液', 'P001')], total: 1 })
+    const onChange = vi.fn()
+    render(<Harness inLabel onChange={onChange} />)
+    const trigger = document.querySelector('[role=combobox]') as HTMLElement
+    expect(fireEvent.click(trigger)).toBe(false)
+    await flush()
+    expect(trigger).toHaveAttribute('aria-expanded', 'true')
+    // 不在这里点搜索框：happy-dom 的 input 会自己再往 label 派发一次新 click（非规范行为），
+    // 真 Chrome 下点搜索框面板保持展开，已在 3012 实机走查验证（_tmp/issue-339/verify/）。
+    expect(fireEvent.click(screen.getByText('精华液 · P001'))).toBe(false)
+    expect(onChange).toHaveBeenCalledWith('A')
+    expect(trigger).toHaveAttribute('aria-expanded', 'false')
   })
 
   it('外部带入的值：按 skuIds 精确查名称（含已停用），不会显示成空白', async () => {

@@ -145,8 +145,16 @@ export function InventorySkuSearchSelect({
     function handleClickOutside(event: MouseEvent) {
       if (containerRef.current && !containerRef.current.contains(event.target as Node)) setOpen(false)
     }
+    // Esc 在面板任何位置都能收起（焦点可能停在「加载更多」按钮上，不只在搜索框里）
+    function handleEscape(event: globalThis.KeyboardEvent) {
+      if (event.key === 'Escape') setOpen(false)
+    }
     document.addEventListener('mousedown', handleClickOutside)
-    return () => document.removeEventListener('mousedown', handleClickOutside)
+    document.addEventListener('keydown', handleEscape)
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside)
+      document.removeEventListener('keydown', handleEscape)
+    }
   }, [open])
 
   useEffect(() => {
@@ -161,10 +169,7 @@ export function InventorySkuSearchSelect({
   }
 
   function handleKeyDown(event: KeyboardEvent<HTMLInputElement>) {
-    if (event.key === 'Escape') {
-      event.preventDefault()
-      setOpen(false)
-    } else if (event.key === 'ArrowDown') {
+    if (event.key === 'ArrowDown') {
       event.preventDefault()
       setActiveIndex((index) => Math.min(rows.length - 1, index + 1))
     } else if (event.key === 'ArrowUp') {
@@ -191,7 +196,11 @@ export function InventorySkuSearchSelect({
         aria-controls={listboxId}
         aria-haspopup="listbox"
         disabled={disabled}
-        onClick={() => setOpen((previous) => !previous)}
+        onClick={(event) => {
+          // 同下方面板：挡掉外层 <label> 的激活转发，否则一次点击会 toggle 两次
+          event.preventDefault()
+          setOpen((previous) => !previous)
+        }}
         title={displayText ?? undefined}
         className={cn(
           'flex h-10 w-full items-center justify-between rounded-[var(--radius)] border border-[var(--input)] bg-transparent px-3 text-left text-sm',
@@ -206,7 +215,14 @@ export function InventorySkuSearchSelect({
       </button>
 
       {open && (
-        <div className="absolute z-50 mt-1 w-full min-w-[18rem] rounded-[var(--radius)] border border-[var(--border)] bg-[var(--card)] shadow-md">
+        // 办理台的 FormField 是 <label>：面板里任何点击（选项 / 加载更多 / 搜索框）的**默认动作**
+        // 都会被 label 转发成一次「点它的第一个可标注控件」——也就是上面的触发按钮，
+        // 于是刚选完收起的面板又被 toggle 打开（真浏览器与 jsdom 都复现）。
+        // 在面板上统一取消点击的默认动作即可截住 label 激活；各按钮的 onClick 照常执行。
+        <div
+          className="absolute z-50 mt-1 w-full min-w-[18rem] rounded-[var(--radius)] border border-[var(--border)] bg-[var(--card)] shadow-md"
+          onClick={(event) => event.preventDefault()}
+        >
           <div className="border-b border-[var(--border)] p-2">
             <Input
               autoFocus

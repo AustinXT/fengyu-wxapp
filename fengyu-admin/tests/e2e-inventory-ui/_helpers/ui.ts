@@ -83,8 +83,8 @@ export async function checkSourceDoc(page: Page, docId: string): Promise<void> {
 }
 
 export function skuSelect(page: Page, index = 0): Locator {
-  // #339 起是可检索的 combobox（button），不再是原生 select；aria-label 即占位文案
-  return page.getByRole('button', { name: '选择库存商品', exact: true }).nth(index)
+  // #339 起是可检索的 combobox（role=combobox 的 button），不再是原生 select；aria-label 即占位文案
+  return page.getByRole('combobox', { name: '选择库存商品', exact: true }).nth(index)
 }
 
 /**
@@ -244,7 +244,7 @@ export async function createGenericDoc(
   // SKU 是可检索 combobox（#339），按 aria-label「明细 1 库存 SKU」定位；
   // 弹窗内剩下的原生 select 固定顺序：0=单据类型 1=出库主体 2=入库主体 [3=批次]
   await page.waitForTimeout(500)   // 等选完类型后明细行重新渲染
-  await pickSku(dialog.getByRole('button', { name: '明细 1 库存 SKU', exact: true }), input.skuName)
+  await pickSku(dialog.getByRole('combobox', { name: '明细 1 库存 SKU', exact: true }), input.skuName)
 
   if (input.needLot) {
     // 批次框依赖「已选出库主体 + 已选 SKU」才解除 disabled，故必须排在选 SKU 之后

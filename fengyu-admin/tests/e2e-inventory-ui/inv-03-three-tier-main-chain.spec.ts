@@ -572,7 +572,7 @@ async function checkSourceDoc(page: Page, docId: string) {
 
 /** 明细行里的 SkuPicker（占位文案「选择库存商品」） */
 function skuSelect(page: Page) {
-  return page.getByRole('button', { name: '选择库存商品', exact: true }).first()
+  return page.getByRole('combobox', { name: '选择库存商品', exact: true }).first()
 }
 
 /**
