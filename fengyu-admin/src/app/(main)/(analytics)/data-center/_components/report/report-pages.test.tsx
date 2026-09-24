@@ -5,6 +5,7 @@ import type { ReactElement } from 'react'
 import { PermissionError } from '@/lib/permissions'
 import { DATA_CENTER_REPORT_LIST, DATA_CENTER_REPORTS, type DataCenterReportKey } from '@/lib/data-center/reports'
 import type { DataCenterScopeOptions } from '@/lib/data-center/types'
+import { buildOperatingMasterTable, type OperatingMasterStore } from '@/lib/data-center/operating-master'
 
 /**
  * 经营明细报表空壳路由（#367）的入口控制流与骨架渲染。
@@ -42,6 +43,9 @@ vi.mock('next/navigation', () => ({
   useSearchParams: () => new URLSearchParams(nav.search),
 }))
 vi.mock('@/actions/data-center/shared', () => actions)
+const operatingMaster = vi.hoisted(() => ({ getOperatingMaster: vi.fn() }))
+vi.mock('@/actions/data-center/operating-master', () => operatingMaster)
+vi.mock('@/actions/export-jobs', () => ({ createExportJob: vi.fn() }))
 
 import DailyOverviewPage from '../../daily-overview/page'
 import CustomerFrequencyPage from '../../customer-frequency/page'
@@ -127,7 +131,18 @@ beforeEach(() => {
   vi.useFakeTimers({ toFake: ['Date'] })
   vi.setSystemTime(new Date('2026-09-25T10:00:00+08:00'))
   actions.getDataStartDates.mockResolvedValue(starts)
+  mockOperatingMaster([{ storeId: 'S1', storeName: '蓝莱店', marketId: 'M1', marketName: '南昌凤御' }])
 })
+
+function mockOperatingMaster(stores: OperatingMasterStore[]) {
+  operatingMaster.getOperatingMaster.mockImplementation(async ({ month }: { month: string }) => ({
+    month,
+    range: { start: `${month}-01`, end: `${month}-31` },
+    ytd: { start: `${month.slice(0, 4)}-01-01`, end: `${month}-31` },
+    scopeName: '测试范围',
+    ...buildOperatingMasterTable(stores, new Map()),
+  }))
+}
 
 afterEach(() => {
   vi.useRealTimers()
@@ -229,7 +244,7 @@ describe('报表页 · 骨架渲染', () => {
 
   it('单店账号的完整区间不出提示（只看本店起点）', async () => {
     mockScope(singleStoreOptions)
-    await renderPage('operatingMaster', { scope: 'store', scopeId: 'S1' })
+    await renderPage('commissionDaily', { scope: 'store', scopeId: 'S1' })
 
     expect(screen.queryByRole('note', { name: '数据起点提示' })).not.toBeInTheDocument()
     expect(screen.getByTestId('scope-store-count')).toHaveTextContent('共 1 家门店')
@@ -330,5 +345,50 @@ describe('报表页 · 骨架渲染', () => {
     )
     await user.click(screen.getByRole('button', { name: '近 30 天' }))
     expect(nav.replace).toHaveBeenLastCalledWith('/data-center/daily-overview?period=last30', { scroll: false })
+  })
+})
+
+describe('经营数据主表（#372）', () => {
+  it('所选月份完整时仍按业绩轴提示 R 列年度累计的数据起点（2026 年内必早于上线日）', async () => {
+    mockScope(singleStoreOptions)
+    await renderPage('operatingMaster', { scope: 'store', scopeId: 'S1' })
+
+    const notice = screen.getByRole('note', { name: '数据起点提示' })
+    expect(notice).toHaveTextContent('年度累计（R 列）（2026-01-01 ~ 2026-08-31）早于部分门店的数据起点')
+    expect(notice).toHaveTextContent('业绩 · 南昌凤御 1 家（2026-07-08 起）')
+    // 所选月份本身完整：不出「所选月份」那条，服务轴也不出现在年度累计里
+    expect(notice).not.toHaveTextContent('所选月份')
+    expect(notice).not.toHaveTextContent('服务 ·')
+  })
+
+  it('按页面生效的范围与月份取数；信息条写「统计月份」与展示行数；表头两行照抄模板', async () => {
+    mockScope(hqOptions)
+    await renderPage('operatingMaster', { month: '2026-13' })
+
+    expect(operatingMaster.getOperatingMaster).toHaveBeenCalledWith({ scope: { type: 'all' }, month: '2026-08' })
+    const info = screen.getByTestId('report-info-bar')
+    expect(info).toHaveTextContent('统计月份2026年8月 2026-08-01 ~ 2026-08-31')
+    expect(info).toHaveTextContent('展示1 行')
+    expect(screen.getByRole('columnheader', { name: /^保有会员（售前不算）/ })).toHaveAttribute('colspan', '5')
+    expect(screen.getByRole('columnheader', { name: /^客流及客耗/ })).toHaveAttribute('colspan', '7')
+    expect(screen.getByRole('button', { name: '导出' })).toBeInTheDocument()
+  })
+
+  it('范围内没有在营门店：整表空态，不渲染一屏 0（#293 合入前的最小实现）', async () => {
+    mockScope(hqOptions)
+    mockOperatingMaster([])
+    await renderPage('operatingMaster', { scope: 'store', scopeId: 'S2' })
+
+    expect(screen.getByText(/所选范围内没有在营门店/)).toBeInTheDocument()
+    expect(screen.queryByRole('table')).not.toBeInTheDocument()
+    expect(screen.getByTestId('report-info-bar')).toHaveTextContent('展示0 行')
+  })
+
+  it('无可查看范围时不取数', async () => {
+    mockScope(noStoreOptions)
+    await renderPage('operatingMaster')
+
+    expect(screen.getByText('当前账号暂无可查看的数据范围')).toBeInTheDocument()
+    expect(operatingMaster.getOperatingMaster).not.toHaveBeenCalled()
   })
 })

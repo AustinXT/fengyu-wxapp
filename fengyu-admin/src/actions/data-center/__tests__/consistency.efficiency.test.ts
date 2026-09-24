@@ -1080,8 +1080,9 @@ describe('数据中心人效板块两端口径一致性守护', () => {
       ] as const
       for (const [name, from, to] of CONSUMERS) {
         const body = sliceOrFail(techSrc, from, to)
-        expect(body, `${name} 没复用 technicianCteSql 单源`).toContain(
-          'WITH ${technicianCteSql(session, scope, endDate)}',
+        // technicianByStoreSql 透传人池参数（#372 美容师人数 pool='beautician'），缺省仍是产能技师
+        expect(body, `${name} 没复用 technicianCteSql 单源`).toMatch(
+          /WITH \$\{technicianCteSql\(session, scope, endDate(, pool)?\)\}/,
         )
         expect(body, `${name} 读的是未过滤的 technician_base`).toMatch(/FROM technician_scoped/)
         expect(body, `${name} 读的是未过滤的 technician_base`).not.toMatch(/FROM technician_base/)
