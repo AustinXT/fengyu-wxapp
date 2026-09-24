@@ -1039,7 +1039,14 @@ function buildOrgAnchorScope(visibleStoreIds, startIdx) {
   }
 }
 
-const STAFF_ORDER_BY = `ORDER BY value DESC, pe.employee_name ASC, pe.employee_id ASC`
+// ★ 2026-09-24 #290 用户拍板：非零优先、零值垫底。
+// 入榜口径放开后「有标签零产能」的员工大量进榜（生产实测：本月业绩榜 94 行、
+// 今日视图 247 行为 0.00），纯 `value DESC` 会把本次要救的负值员工压到 0.00 行**之下**
+// （实测第 252/253 名），修复反而更难被看见。加 `(value <> 0) DESC` 首键后，
+// 负值紧跟正值（第 158/159 名），零值整体垫底。
+// ⚠️ assignRanks 只比较相邻值是否相等、不要求单调，故名次仍正确：
+//    正值 1~157 → 负值 158/159 → 零值并列 160。
+const STAFF_ORDER_BY = `ORDER BY (value <> 0) DESC, value DESC, pe.employee_name ASC, pe.employee_id ASC`
 
 /* ----- 6 个员工排行榜 metric 子查询 ----- */
 

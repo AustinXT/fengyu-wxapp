@@ -180706,7 +180706,7 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
       FROM producer_employees pe
       LEFT JOIN revenue_by_emp r ON r.employee_id = pe.employee_id
       WHERE (pe.has_skills OR COALESCE(r.v, 0) <> 0)
-      ORDER BY value DESC, pe.employee_name ASC, pe.employee_id ASC
+      ORDER BY (value <> 0) DESC, value DESC, pe.employee_name ASC, pe.employee_id ASC
     `);
   const qStaffRankConsume = db2.execute(import_drizzle_orm64.sql`
       ${producerCte},
@@ -180727,7 +180727,7 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
       FROM producer_employees pe
       LEFT JOIN consume_by_emp c ON c.employee_id = pe.employee_id
       WHERE (pe.has_skills OR COALESCE(c.v, 0) <> 0)
-      ORDER BY value DESC, pe.employee_name ASC, pe.employee_id ASC
+      ORDER BY (value <> 0) DESC, value DESC, pe.employee_name ASC, pe.employee_id ASC
     `);
   const qStaffRankNewMember = db2.execute(import_drizzle_orm64.sql`
       ${producerCte},
@@ -180744,7 +180744,7 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
       FROM producer_employees pe
       LEFT JOIN new_member_by_emp n ON n.employee_id = pe.employee_id
       WHERE (pe.has_skills OR COALESCE(n.v, 0) <> 0)
-      ORDER BY value DESC, pe.employee_name ASC, pe.employee_id ASC
+      ORDER BY (value <> 0) DESC, value DESC, pe.employee_name ASC, pe.employee_id ASC
     `);
   const qStaffRankProjectCount = db2.execute(import_drizzle_orm64.sql`
       ${producerCte},
@@ -180768,7 +180768,7 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
       FROM producer_employees pe
       LEFT JOIN project_by_emp p ON p.employee_id = pe.employee_id
       WHERE (pe.has_skills OR COALESCE(p.v, 0) <> 0)
-      ORDER BY value DESC, pe.employee_name ASC, pe.employee_id ASC
+      ORDER BY (value <> 0) DESC, value DESC, pe.employee_name ASC, pe.employee_id ASC
     `);
   const qStaffRankIncome = db2.execute(import_drizzle_orm64.sql`
       ${producerCte},
@@ -180800,7 +180800,7 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
       LEFT JOIN sales_comm sc1 ON sc1.employee_id = pe.employee_id
       LEFT JOIN service_comm sc2 ON sc2.employee_id = pe.employee_id
       WHERE (pe.has_skills OR COALESCE(sc1.v, 0) + COALESCE(sc2.v, 0) <> 0)
-      ORDER BY value DESC, pe.employee_name ASC, pe.employee_id ASC
+      ORDER BY (value <> 0) DESC, value DESC, pe.employee_name ASC, pe.employee_id ASC
     `);
   const qStaffDetail = db2.execute(import_drizzle_orm64.sql`
       ${producerCte},

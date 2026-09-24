@@ -1983,7 +1983,7 @@ describe('mgmtDashboard.staffRanking', () => {
 
   describe('排序', () => {
     test.each(['revenue', 'consume', 'newMember', 'footfall', 'projectCount', 'income'])(
-      'metric=%s SQL 含 ORDER BY value DESC, pe.employee_name ASC, pe.employee_id ASC',
+      'metric=%s SQL 含 ORDER BY (value <> 0) DESC, value DESC, pe.employee_name ASC, pe.employee_id ASC（#290 非零优先、零值垫底）',
       async (metric) => {
         setupDefaultStaffMocks()
         const ctx = makeHqCtx({ period: 'month', metric })
@@ -1991,7 +1991,7 @@ describe('mgmtDashboard.staffRanking', () => {
 
         const sql = pg.query.mock.calls[0][0]
         expect(sql).toMatch(
-          /ORDER BY\s+value\s+DESC,\s*pe\.employee_name\s+ASC,\s*pe\.employee_id\s+ASC/,
+          /ORDER BY\s+\(\s*value\s*<>\s*0\s*\)\s+DESC,\s*value\s+DESC,\s*pe\.employee_name\s+ASC,\s*pe\.employee_id\s+ASC/,
         )
       },
     )

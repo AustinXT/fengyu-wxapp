@@ -408,6 +408,31 @@ function assertNoAmountFloorInCte(segment: string, label: string): void {
 }
 
 /**
+ * ★ 排序首键必须是「非零优先」（2026-09-24 用户拍板，#290）。
+ *
+ * 入榜口径放开后，「有标签但本期零产能」的员工大量进榜 —— 生产实测本月业绩榜 94 行、
+ * **今日视图 247 行**为 0.00。此时纯 `ORDER BY value DESC` 会把本次要救的负值员工
+ * 压到那些 0.00 行**之下**（实测第 252/253 名），修复反而比修复前更难被看见。
+ *
+ * 加 `(value <> 0) DESC` 首键后：正值 1~157 → 负值 158/159 → 零值并列垫底。
+ * 去掉它不会让任何行消失、不会让任何断言红，却会让本次修复的可见性归零 ——
+ * 属于「静默削弱」类回归，故必须正面钉死。
+ *
+ * staff 侧排序是插值常量 `${STAFF_ORDER_BY}`，切片里看不到字面量，
+ * 由下方单独一条 it 校验常量定义本身。
+ */
+function assertZeroLastOrdering(segment: string, label: string): void {
+  if (!segment.includes('ORDER BY')) return // staff 切片走 ${STAFF_ORDER_BY} 插值，另行校验
+  const at = segment.indexOf('ORDER BY')
+  const clause = segment.slice(at + 'ORDER BY'.length).replace(/`\)[\s\S]*$/, '').trim()
+  expect(
+    clause,
+    `${label} 的排序首键不再是「非零优先」。缺了 (value <> 0) DESC，零产能员工会排在` +
+      '负值员工**之前**（实测把负值压到第 252/253 名），本次修复在 UI 上等于白做。',
+  ).toMatch(/^\(\s*value\s*<>\s*0\s*\)\s+DESC\s*,\s*value\s+DESC\b/)
+}
+
+/**
  * ★ 员工榜的 metric JOIN 形状（闸门 1 · concurrency P2-2 判定为**最危险**的一条）。
  *
  * 两条绕过路径，都能在**完全不动外层 WHERE** 的前提下回滚本次修复：
@@ -477,6 +502,7 @@ function assertStaffRankAdmissionShape(segment: string, label: string): void {
   // 同族防线：外层 WHERE 形状对 CTE 内部与 JOIN ON 都完全失明，各堵一道
   assertNoAmountFloorInCte(segment, label)
   assertMetricJoinShape(segment, label)
+  assertZeroLastOrdering(segment, label)
   expect(
     whereClauseOf(segment, label),
     `${label} 的入榜口径变了。必须是「有技能标签者无条件入榜（含零值/负值），` +
@@ -1006,6 +1032,18 @@ describe('数据中心人效板块两端口径一致性守护', () => {
      * 这里直接钉死消费 `producer_employees` 的查询总数：多一个就红，改动者必须回来
      * 同步切片清单并说明新榜为何安全。
      */
+    it('staff 的 STAFF_ORDER_BY 常量同样「非零优先」（两端排序镜像）', () => {
+      // staff 六个榜共用插值常量，切片里只看得到 ${STAFF_ORDER_BY}，故在此校验常量定义本身。
+      // 两端排序必须一致，否则同一名员工在 admin 榜和 staff 小程序榜上的名次会对不上。
+      const decl = staffBody.match(/const STAFF_ORDER_BY = `([^`]*)`/)?.[1]
+      expect(decl, 'staff 找不到 STAFF_ORDER_BY 常量定义（重命名了？）').toBeTruthy()
+      expect(
+        decl,
+        'staff 排序首键不再是「非零优先」，会与 admin 员工榜名次分叉，' +
+          '且负值员工在小程序端会被零值行压到榜底',
+      ).toMatch(/^ORDER BY \(\s*value\s*<>\s*0\s*\)\s+DESC\s*,\s*value\s+DESC\b/)
+    })
+
     it('消费 producer_employees 的查询总数与切片清单对账（新增 metric 必须同步补断言）', () => {
       expect(
         (adminBody.match(/FROM producer_employees pe/g) ?? []).length,
