@@ -468,6 +468,19 @@ describe('市场间调货出库的接收主体候选（#340）', () => {
     expect(optionValues(target)).toEqual(['NODE-M1', 'NODE-M3'])
   })
 
+  it('全局只有一个启用市场：接收端不会被自动填成发起市场自己', () => {
+    renderForm({
+      locations: SCOPED_LOCATIONS,
+      marketTransferTargets: [{ orgNodeId: 'NODE-M1', name: '市场一部' }],
+      initialDocType: '市场间调货出库',
+      allowedDocTypes: ['市场间调货出库'],
+    })
+    expect(document.querySelector('output[data-fixed-subject="NODE-M1"]')).not.toBeNull()
+    const target = selectByPlaceholder('暂无可用主体')
+    expect(target.value).toBe('')
+    expect(target.disabled).toBe(true)
+  })
+
   it('其他单据类型（分院调货出库）的接收主体候选与改前一致：仍取 scope 内 locations', () => {
     renderForm({
       locations: SCOPED_LOCATIONS,

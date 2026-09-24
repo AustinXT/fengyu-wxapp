@@ -24,7 +24,7 @@
  */
 
 import { test, expect, type Page } from '@playwright/test'
-import { BASE, INVT_ACCOUNTS, INVT_PASS, NS, TOPO, login, readCtx } from './_helpers/env'
+import { BASE, INVT_ACCOUNTS, INVT_PASS, NS, TOPO, login, psql, readCtx } from './_helpers/env'
 import { isGateOpen, openCutoverGate } from './_helpers/cutover'
 import { docIdByRemark, docStatus, lotQtyAll, rowAction, selectContaining } from './_helpers/ui'
 
@@ -54,6 +54,13 @@ test('INV-12：市场库存财务（单市场）发起市场间调货，调入�
     lotQtyAll(TOPO.MARKET, inv01.supplySkuId),
     `前置：${TOPO.MARKET_NAME} 供应链品在手量需 >= ${QTY}`,
   ).toBeGreaterThanOrEqual(QTY)
+
+  // 启用市场 <= 2 时，排除调出市场后接收端只剩唯一候选、会降级成只读 output，
+  // 下面按 select 定位的步骤会找不到控件 —— 那是数据形态变了，不是 #340 回归。
+  const activeMarkets = Number(psql(
+    `SELECT count(*) FROM inventory_locations WHERE location_type = '市场' AND is_active AND org_node_id IS NOT NULL`,
+  ))
+  expect(activeMarkets, '前置：启用市场需 >= 3，接收端才是可选下拉').toBeGreaterThanOrEqual(3)
 
   const srcBefore = lotQtyAll(TOPO.MARKET, inv01.supplySkuId)
   const dstBefore = lotQtyAll(TOPO.MARKET_OTHER, inv01.supplySkuId)

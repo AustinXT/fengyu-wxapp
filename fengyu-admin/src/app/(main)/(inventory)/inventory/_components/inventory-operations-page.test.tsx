@@ -841,7 +841,7 @@ beforeEach(() => {
 
 describe('待办区的按钮可见性矩阵（#192）', () => {
   /**
-   * 七个内置业务 + 一个通用业务的「状态 → 按钮」矩阵。
+   * 七个内置业务 + 两个通用业务的「状态 → 按钮」矩阵。
    *
    * 期望值不是抄实现的：每条都对齐服务端 inbox 查询条件里的 docType/statuses
    * （`INVENTORY_OPERATION_DOC_QUERY` / `INVENTORY_GENERIC_OPERATION_INBOX`），
@@ -863,6 +863,7 @@ describe('待办区的按钮可见性矩阵（#192）', () => {
     { operation: 'supply-chain-receipt', docType: '采购订单', status: '待收货', actions: ['去收货'] },
     { operation: 'supply-chain-purchase-cancel', docType: '采购订单', status: '待收货', actions: ['关闭采购'] },
     { operation: 'generic:分院调货出库', docType: '分院调货出库', status: '待收货', actions: ['确认收货'] },
+    { operation: 'generic:市场间调货出库', docType: '市场间调货出库', status: '待收货', actions: ['确认收货'] },
   ]
 
   for (const entry of matrix) {

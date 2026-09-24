@@ -1205,7 +1205,7 @@ function buildInboxActionConfig(
       },
       errorFallback: '收货确认失败',
       /*
-       * 唯一走 generic 三件套的动作：`分院调货出库` 在 `INVENTORY_GENERIC_DOC_TYPES` 里，
+       * 唯一走 generic 三件套的动作：`分院调货出库` / `市场间调货出库`（#340）在 `INVENTORY_GENERIC_DOC_TYPES` 里，
        * 过得了服务端的 `assertGenericDocTransition`。上面 6 条绑的都是专用业务 action ——
        * 院退货 / 品项公司发货 / 分院配货 / 采购订单都不在那张白名单里，
        * 走 generic 会被 100% 拒掉（INVALID_STATE「必须通过对应的专用业务流程处理」）。

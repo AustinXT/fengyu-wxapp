@@ -1386,11 +1386,13 @@ function lotRow(
  * parentLocationId，也不带门店与总部。「排除调出市场自己」依赖用户在表单里选的发起主体，
  * 由表单按当前 source 过滤，这里不做。
  *
- * 权限只放给能建这张单的两层 operate（市场本层 + 供应链代建），别放宽成 stock_list ——
- * 否则只读账号也能拿到本不在自己 scope 内的市场名单。
+ * 权限与「谁能建这张单」同源：`inventoryDelegatableOperateActions(市场间调货出库 所在层级)`。
+ * 市场层只有 `market_operate` —— 总部 scope 不向下展开，供应链**不能**代建市场层单据，
+ * `createInventoryCoreDoc` 的层级闸同样只认它。别放宽成 stock_list 或加上 supply_chain_operate，
+ * 否则建不了单的账号也能直调拿到本不在自己 scope 内的全部市场名单。
  */
 export const listInventoryMarketTransferTargets = withAnyPermission(
-  ['inventory:supply_chain_operate', 'inventory:market_operate'],
+  [...inventoryDelegatableOperateActions('market')],
   async (): Promise<InventoryMarketTransferTarget[]> => {
     await syncInventoryLocations()
     const rows = await db

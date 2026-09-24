@@ -1865,13 +1865,16 @@ describe('市场间调货接收主体候选（#340）', () => {
     const sink = captureSelect([])
     await listInventoryMarketTransferTargets()
     const { text, params } = compile(sink.where)
-    expect(text).toContain('"inventory_locations"."is_active" = $')
-    expect(text).toContain('"inventory_locations"."location_type" = $')
-    expect(text).toContain('"inventory_locations"."org_node_id" is not null')
-    expect(params).toContain('true')
-    expect(params).toContain('市场')
-    expect(params).not.toContain('门店')
-    expect(params).not.toContain('总部')
+    /*
+     * 整段等值，不用 toContain：「只按本账号根节点收窄」（`org_node_id = 'M1'`）这类变异
+     * 不带 location_id、也不带门店节点参数，逐项 contain/not.contain 会全绿放过（#340 评审 P2-2）。
+     * 条件恰好三项、参数恰好两个，多一项任何收窄都会红。
+     */
+    expect(text).toBe(
+      '("inventory_locations"."is_active" = $1 and "inventory_locations"."location_type" = $2'
+      + ' and "inventory_locations"."org_node_id" is not null)',
+    )
+    expect(params).toEqual(['true', '市场'])
   })
 
   it('越过 scope 的查询只取名称与 orgNodeId 两列', async () => {
@@ -1881,7 +1884,7 @@ describe('市场间调货接收主体候选（#340）', () => {
     expect(Object.keys(rows[0]).sort()).toEqual(['name', 'orgNodeId'])
   })
 
-  it('没有市场/供应链办理权限的只读账号被拒', async () => {
+  it('没有市场办理权限的账号被拒（含只有供应链 operate 的）', async () => {
     mockGetSession.mockResolvedValue({
       ...SINGLE_MARKET_SESSION,
       roles: [{ ...SINGLE_MARKET_SESSION.roles[0], actions: ['inventory:stock_list'] }],
@@ -1892,9 +1895,13 @@ describe('市场间调货接收主体候选（#340）', () => {
       throw new Error('PERMISSION_DENIED: 无权限')
     })
     await expect(listInventoryMarketTransferTargets()).rejects.toThrow('PERMISSION_DENIED')
+    // 权限门写的是 inventoryDelegatableOperateActions('market')，'market' 必须真是这张单的层级
+    const { genericDocBusinessLevel } = await import('./business-level')
+    expect(genericDocBusinessLevel('市场间调货出库')).toBe('market')
+    // 只认市场层 operate：供应链不能代建市场层单据，放它进来就是让建不了单的人拿全部市场名单
     expect(vi.mocked(requireAnyPermission)).toHaveBeenCalledWith(
       expect.anything(),
-      ['inventory:supply_chain_operate', 'inventory:market_operate'],
+      ['inventory:market_operate'],
     )
     expect(mockDb.select).not.toHaveBeenCalled()
   })

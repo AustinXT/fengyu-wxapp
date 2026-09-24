@@ -409,7 +409,8 @@ export type InventoryAnyOperationId = InventoryOperationId | InventoryGenericOpe
  * 它要回答的是「这个类型的单在哪个状态下轮到本层级动手」，那是业务语义不是类型语义。
  * 所以这里是一张显式的小表，键必须是 `INVENTORY_GENERIC_DOC_TYPES` 的成员。
  *
- * 当前只有一条：`分院调货出库` 在门店层有 6 条「待收货」（dev 库统计），是门店层最大的一批
+ * 当前两条：门店调拨（下）与市场间调货（#340，见下文）。
+ * `分院调货出库` 在门店层有 6 条「待收货」（dev 库统计），是门店层最大的一批
  * 待办，收货走通用的 `confirmInventoryCoreReceive`（`分院调货出库` 在
  * `INVENTORY_GENERIC_DOC_TYPES` 里，是少数能用 generic 三件套的场景）。
  *

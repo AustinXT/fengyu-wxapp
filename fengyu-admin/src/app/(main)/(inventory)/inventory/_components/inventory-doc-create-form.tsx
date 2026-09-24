@@ -158,6 +158,9 @@ type LotCache = Map<string, { promise: Promise<InventoryLotRow[]>; settled: bool
 
 type LotLoadState = { key: string; lots: InventoryLotRow[]; failed?: boolean }
 
+/** 缺省值用模块常量：内联 `= []` 每次渲染都是新数组，会让 targetOptions 的 useMemo 形同虚设。 */
+const NO_MARKET_TRANSFER_TARGETS: readonly InventoryMarketTransferTarget[] = []
+
 /** 字段名 + 控件。用 `<label>` 包裹而不是并列，控件（含只读 `<output>`）才能被正确关联。 */
 function FieldLabel({ text, children }: { text: string; children: ReactNode }) {
   return (
@@ -171,7 +174,7 @@ function FieldLabel({ text, children }: { text: string; children: ReactNode }) {
 export function InventoryDocCreateForm({
   visible,
   locations,
-  marketTransferTargets = [],
+  marketTransferTargets = NO_MARKET_TRANSFER_TARGETS,
   skuOptions,
   initialDocType,
   allowedDocTypes,
@@ -474,9 +477,17 @@ export function InventoryDocCreateForm({
             options={targetOptions}
             value={targetOrgNodeId}
             placeholder="入库/接收主体"
+            /*
+             * 市场间调货：发起端未落定前接收端不自动选中。两端的唯一候选自动选中在同一次提交里
+             * 各自回调，此刻 targetOptions 还没排除发起市场 —— 全局只有一个启用市场时两端会被
+             * 同时填成它（自己调给自己，服务端必拒）。等发起端落定、候选按它收窄后再自动带出。
+             */
+            autoSelect={!isMarketTransfer || Boolean(sourceOrgNodeId)}
             // 只禁非法端点：纯出库类（院顾客产品出库）没有入库主体这一说（#200 S6-d）
             disabled={endpointMode === 'source-only'}
             onChange={(value) => {
+              // 与发起端的清空逻辑对称：市场间调货不接受「接收市场 = 发起市场」
+              if (isMarketTransfer && value && value === sourceOrgNodeId) return
               setTargetOrgNodeId(value)
               if (endpointMode === 'same-node') {
                 // 同主体类型下 target 也决定了 source，而批次是按 source 的库位取的，一并清

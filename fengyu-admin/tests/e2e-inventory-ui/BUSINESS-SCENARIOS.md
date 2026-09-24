@@ -112,6 +112,7 @@ dev 库没有 `FY-TEST-*` 账号，`e2e-chains` 的 `TEST_PHONES` + `fengyu2026`
 | INV-09 | 单据中心与台账 | P1 | 7 | 两种组织树筛选语义相反，最易混淆 |
 | INV-10 | 交互合理性审计 | P0 | — | 用户明确提出的第二条主线 |
 | INV-11 | 候选唯一的主体自动选中（#189） | P1 | 6 个 test | 不变量：主体字段不会「只有一个候选还要你手动选」；只读不写库 |
+| INV-12 | 单市场账号发起市场间调货（#340） | P1 | 1 个 test | 接收端候选不按 scope、不含调出市场；破坏性（库存永久搬入自贡凤御） |
 
 ---
 
@@ -385,7 +386,7 @@ writeCtx('inv07', {
 ## 6. 实施摘要（2026-09-13 首轮实跑回填，2026-09-21 复核修订）
 
 首轮 11 条 spec 全部跑通，耗时约 5 分钟（`bun run test:e2e:inventory-ui`）。
-现为 12 个 spec 文件 / 17 个 test（新增 INV-11，`inv-90` 探针默认 skip）。
+现为 13 个 spec 文件 / 18 个 test（新增 INV-11、INV-12，`inv-90` 探针默认 skip）。
 
 | 场景 | Spec 文件 | 断言点 | 首轮结果 | 现状 |
 |---|---|---|---|---|
@@ -401,6 +402,7 @@ writeCtx('inv07', {
 | INV-09 | `inv-09-docs-center-and-ledger.spec.ts` | 18 | ✅ 全绿 | — |
 | INV-10 | `inv-10-ux-audit.spec.ts` | 扫描 25 条 finding | ✅ 报告已生成 | 硬编码条目全部改为转述上下文的实测判定 |
 | INV-11 | `inv-11-single-subject-autoselect.spec.ts` | 6 个 test | （首轮尚无此 spec） | #189 部署 dev 后 6/6 通过，`test.skip` 开关已删，进常规套件 |
+| INV-12 | `inv-12-market-transfer-single-market.spec.ts` | 1 个 test | （首轮尚无此 spec） | #340 新增；待部署 dev 后实跑 |
 
 ### 与原设计的偏差及原因
 
