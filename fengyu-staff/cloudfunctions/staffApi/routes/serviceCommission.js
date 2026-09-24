@@ -6,7 +6,8 @@
  *
  * 提成公式（与员工端 service.complete + admin batchSave 修正后一致，按 ratio 拆分）：
  *   consumeBase   = round(unit_real_price × session_used, 2)           // unit_real_price 已是 per-session 单次价
- *   consumeAmount = round(consumeBase × allocation_ratio × rate, 2)
+ *   effConsumeBase = round(max(unit_real_price, price_threshold) × session_used, 2)  // #379 阈值保底，NULL=不启用
+ *   consumeAmount = round(effConsumeBase × allocation_ratio × rate, 2)
  *   fixedFee      = round(service_fee × session_used × allocation_ratio, 2)
  *   commissionAmount = round(fixedFee + consumeAmount, 2)
  * rate 命中 tier 用整池 consumeBase（不乘 ratio）；commission_rate_matrix 按服务单所属市场过滤
@@ -402,7 +403,7 @@ async function save(ctx) {
 
       // rate 命中 tier 用整池 consumeBase（不乘 ratio），按服务单所属市场过滤（与 service.complete 一致）
       const rateRows = await client.query(
-        `SELECT commission_rate FROM commission_rate_matrix
+        `SELECT commission_rate, price_threshold FROM commission_rate_matrix
          WHERE order_type = '服务单'
            AND role_type = $1
            AND sales_category = $2
@@ -422,9 +423,11 @@ async function save(ctx) {
       // 容错口径（对齐 finalize：routes/service.js:519）：查无匹配行 / 命中行 rate=0
       // 统一按 rate=0 落库，不阻塞保存（与 admin 镜像）。
       const rate = Number(rateRows.rows[0]?.commission_rate || 0)
+      // #379 划卡单价阈值：单次实价低于命中行 price_threshold 时按阈值计消耗提成（NULL=不启用；选档仍用原始 consumeBase）
+      const effConsumeBase = round2(Math.max(Number(p.unit_real_price || 0), Number(rateRows.rows[0]?.price_threshold || 0)) * sessionUsed)
 
       // 按 ratio 拆分
-      const consumeAmount = round2(consumeBase * ratio * rate)
+      const consumeAmount = round2(effConsumeBase * ratio * rate)
       const fixedFee = round2(Number(p.service_fee || 0) * sessionUsed * ratio)
       const commissionAmount = round2(fixedFee + consumeAmount)
 

@@ -19,13 +19,13 @@ const { DEPOSIT_REFUND_REMARK } = require('../../utils/consume-filter')
 // INSERT service_commissions 参数顺序：
 // [0]=serviceItemId [1]=employeeId [2]=roleType [3]=ratio
 // [4]=rate [5]=fixedFee [6]=consumeAmount [7]=commissionAmount [8]=now
-function mockTxnCapture(rate = '0.3000') {
+function mockTxnCapture(rate = '0.3000', priceThreshold = null) {
   const captured = []
   pg.transaction.mockImplementation(async (cb) => {
     const client = {
       query: vi.fn(async (sql) => {
         if (sql.includes('commission_rate_matrix')) {
-          return { rows: rate === null ? [] : [{ commission_rate: rate }], rowCount: rate === null ? 0 : 1 }
+          return { rows: rate === null ? [] : [{ commission_rate: rate, price_threshold: priceThreshold }], rowCount: rate === null ? 0 : 1 }
         }
         if (sql.includes('INSERT INTO service_commissions')) {
           // 捕获 params（第二个实参）
@@ -237,6 +237,49 @@ describe('serviceCommission.save', () => {
     expect(captured[0][3]).toBe(0.3)
     expect(Number(captured[0][6])).toBeCloseTo(31.97, 2) // 888 × 0.30 × 0.12
     expect(Number(captured[0][7])).toBeCloseTo(31.97, 2)
+  })
+
+  // #379 划卡单价阈值：阈值作用于单价（整池），再按 ratio 拆分；多人拆分合计 = 单人保底额，不因拆分放大
+  describe('#379 消耗提成阈值保底', () => {
+    async function saveWith(unitRealPrice, ratios, { threshold = '100.00', rate = '0.1500', sessionUsed = 1, serviceFee = '0' } = {}) {
+      const ctx = createManagerCtx({
+        serviceOrderId: 'SO-1',
+        commissions: ratios.map((r, i) => ({ serviceItemId: 'si-1', employeeId: `emp-${i + 1}`, roleType: '美容师', allocationRatio: r })),
+      })
+      mockOrderAndItems(COMPLETED_ORDER, [
+        { service_item_id: 'si-1', session_used: sessionUsed, unit_real_price: unitRealPrice, sales_category: '自销自耗', service_fee: serviceFee, session_count: 1, quantity: 1 },
+      ])
+      const captured = mockTxnCapture(rate, threshold)
+      await routes.save(ctx)
+      return captured.map((c) => ({ fixedFee: Number(c[5]), consumeAmount: Number(c[6]), commissionAmount: Number(c[7]) }))
+    }
+
+    test('单价 80、单人 100% → 100 × 15% = 15', async () => {
+      const [r] = await saveWith('80', [1])
+      expect(r.consumeAmount).toBe(15)
+    })
+    test('单价 80、两人各 50% → 各 7.5（阈值比单价不比 单价×ratio）', async () => {
+      const rs = await saveWith('80', [0.5, 0.5])
+      expect(rs.map((r) => r.consumeAmount)).toEqual([7.5, 7.5])
+    })
+    test('赠送单价 NULL → 按阈值', async () => {
+      const [r] = await saveWith(null, [1], { sessionUsed: 2 })
+      expect(r.consumeAmount).toBe(30)
+    })
+    test('单价 ≥ 阈值 → 与改动前一致（888 × 30% × 12%）', async () => {
+      const [r] = await saveWith('888', [0.3], { rate: '0.1200' })
+      expect(r.consumeAmount).toBe(31.97)
+    })
+    test('阈值 NULL（非自销行）→ 不保底', async () => {
+      const [r] = await saveWith('80', [1], { threshold: null, rate: '0.0200' })
+      expect(r.consumeAmount).toBe(1.6)
+    })
+    test('手工费叠加：fixed_fee 按 ratio 拆分、不受阈值影响', async () => {
+      const [r] = await saveWith('80', [0.5], { serviceFee: '20' })
+      expect(r.fixedFee).toBe(10)
+      expect(r.consumeAmount).toBe(7.5)
+      expect(r.commissionAmount).toBe(17.5)
+    })
   })
 
   test('fixed_fee 也按 ratio 拆分', async () => {

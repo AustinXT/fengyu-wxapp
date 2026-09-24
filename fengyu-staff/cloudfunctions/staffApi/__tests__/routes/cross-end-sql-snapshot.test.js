@@ -112,6 +112,9 @@ const FILES = {
   // M1（2026-07-14）：admin confirmServiceOrder 经 lib/service-commission-settle.ts 镜像同口径
   adminServiceCommissionSettleTs: path.resolve(__dirname, '../../../../../fengyu-admin/src/lib/service-commission-settle.ts'),
   adminServicesTs: path.resolve(__dirname, '../../../../../fengyu-admin/src/actions/services.ts'),
+  // #379 服务提成手动保存两端（staff save / admin batchSave）：与 finalize 同算阈值保底
+  staffServiceCommissionJs: path.resolve(__dirname, '../../routes/serviceCommission.js'),
+  adminServiceCommissionsTs: path.resolve(__dirname, '../../../../../fengyu-admin/src/actions/service-commissions.ts'),
   staffVisitPointsJs: path.resolve(__dirname, '../../utils/visit-points.js'),
   clientVisitPointsJs: path.resolve(__dirname, '../../../../../fengyu-client/cloudfunctions/clientApi/utils/visit-points.js'),
   adminVisitPointsTs: path.resolve(__dirname, '../../../../../fengyu-admin/src/lib/visit-points.ts'),
@@ -1683,7 +1686,7 @@ describe("STEP 1.5 逐项退款净额 SQL 四端字节同义守护", () => {
 // operation_logs 缺率告警 INSERT 因 operator/source 字面不同（staffApi vs clientApi），不纳入比对。
 describe('服务单 finalize 跨端 SQL 一致性守护（staff / client / admin 三端）', () => {
   const MARKER_SVC_DEDUCT = 'remaining_sessions = remaining_sessions - $1'
-  const MARKER_SVC_RATE = 'commission_rate FROM commission_rate_matrix'
+  const MARKER_SVC_RATE = 'commission_rate, price_threshold FROM commission_rate_matrix'
   const MARKER_SVC_COMM_INSERT = 'INSERT INTO service_commissions'
 
   let deduct, rate, commInsert
@@ -1728,6 +1731,10 @@ describe('服务单 finalize 跨端 SQL 一致性守护（staff / client / admin
       expect(rate.staff).toContain("order_type = '服务单'")
       expect(rate.admin).toContain("order_type = '服务单'")
     })
+    test('#379 staff serviceCommission.save 查率 SELECT 与 finalize 归一化后一致（阈值取自同一命中行）', () => {
+      const saveRate = normalizeSql(extractBacktickStringContaining(readFile(FILES.staffServiceCommissionJs), MARKER_SVC_RATE))
+      expect(saveRate).toBe(rate.staff)
+    })
     test('按服务单所属市场过滤（org_id = store→org 树解析市场节点，防跨市场费率行碰撞）', () => {
       expect(rate.staff).toContain('org_id =')
       expect(rate.staff).toContain('JOIN org_nodes m ON son.parent_id = m.id')
@@ -1735,6 +1742,31 @@ describe('服务单 finalize 跨端 SQL 一致性守护（staff / client / admin
       expect(rate.admin).toContain('org_id =')
       expect(rate.admin).toContain('JOIN org_nodes m ON son.parent_id = m.id')
     })
+  })
+
+  // #379 划卡单价阈值：五个写入副本（finalize ×3 + 手动保存 ×2）消耗提成必须基于
+  // effConsumeBase = round(max(单价, 命中行 price_threshold) × 次数)，选档仍用原始 consumeBase。
+  // 先剥注释再断言，防「把新行注释掉、留着旧算式」骗过守护。
+  describe('#379 消耗提成阈值保底五端一致', () => {
+    const COPIES = {
+      'staff finalize': () => FILES.staffServiceJs,
+      'client finalize': () => FILES.clientServiceFinalizeJs,
+      'admin settle': () => FILES.adminServiceCommissionSettleTs,
+      'staff save': () => FILES.staffServiceCommissionJs,
+      'admin batchSave': () => FILES.adminServiceCommissionsTs,
+    }
+    for (const [name, file] of Object.entries(COPIES)) {
+      test(`${name}：effConsumeBase 取 max(单价, 阈值)，consumeAmount 只用 effConsumeBase`, () => {
+        const src = stripJsComments(readFile(file()))
+        const eff = src.match(/const effConsumeBase = [^\n]*/g) || []
+        expect(eff).toHaveLength(1)
+        expect(eff[0]).toMatch(/Math\.max\([^\n]*(price_threshold|priceThreshold) \|\| 0\)\)/)
+        const consume = src.match(/const consumeAmount = [^\n]*/g) || []
+        expect(consume).toHaveLength(1)
+        expect(consume[0]).toMatch(/\beffConsumeBase\b/)
+        expect(consume[0]).not.toMatch(/\bconsumeBase\b/)
+      })
+    }
   })
 
   describe('service_commissions 写入 INSERT 镜像比对', () => {

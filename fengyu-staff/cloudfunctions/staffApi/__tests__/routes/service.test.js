@@ -1365,6 +1365,62 @@ describe('service.confirm（待客户确认 → 已完成，finalize 副作用�
     // per_session = 49.80 × 1 / 1 = 49.80; consumeBase = 49.80; consumeAmt = 4.98
     expect(consumeAmt).toBeCloseTo(4.98, 2)
   })
+
+  // #379 划卡单价阈值：单次实价 < 命中行 price_threshold → 按阈值 × 比例；选档仍用原始 consumeBase；手工费叠加
+  describe('#379 消耗提成阈值保底', () => {
+    async function confirmWith({ unitRealPrice, sessionUsed = 1, serviceFee = '0.00', rateRow }) {
+      const ctx = createManagerCtx({ serviceOrderId: 'HLD-379' })
+      pg.query
+        .mockResolvedValueOnce([{
+          service_order_id: 'HLD-379', status: '待客户确认', assigned_employee_id: 'emp-001',
+          store_id: 'store-001', appointment_id: null,
+        }])
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([{
+          service_item_id: 'si-1', sale_item_id: 'item-001', session_used: sessionUsed, employee_id: 'emp-001',
+          unit_real_price: unitRealPrice, service_fee: serviceFee, sales_category: '自销自耗', skills: ['美容师'],
+        }])
+      let rateParams = null
+      let insertParams = null
+      const clientQueryMock = vi.fn(async (sql, params) => {
+        if (typeof sql !== 'string') return { rows: [], rowCount: 0 }
+        if (sql.includes('commission_rate_matrix')) {
+          rateParams = params
+          return { rows: rateRow ? [rateRow] : [], rowCount: rateRow ? 1 : 0 }
+        }
+        if (sql.includes('INSERT INTO service_commissions')) { insertParams = params; return { rows: [], rowCount: 1 } }
+        if (sql.includes('remaining_sessions')) {
+          if (sql.includes('UPDATE')) return { rows: [], rowCount: 1 }
+          return { rows: [{ remaining_sessions: 5 }], rowCount: 1 }
+        }
+        return { rows: [], rowCount: 1 }
+      })
+      pg.transaction.mockImplementation(async (cb) => cb({ query: clientQueryMock }))
+      await serviceRoutes.confirm(ctx)
+      const [, , , , commissionAmount, fixedFee, consumeAmount] = insertParams
+      return { tierBase: rateParams[2], commissionAmount, fixedFee, consumeAmount }
+    }
+    const SELF = { commission_rate: '0.1500', price_threshold: '100.00' }
+
+    test.each([
+      ['单价 80 < 阈值 → 100 × 2 次 × 15%', { unitRealPrice: '80.00', sessionUsed: 2, rateRow: SELF }, 160, 30],
+      ['赠送单价 NULL → 按阈值', { unitRealPrice: null, rateRow: SELF }, 0, 15],
+      ['单价 = 阈值 → 正常相乘', { unitRealPrice: '100.00', rateRow: SELF }, 100, 15],
+      ['单价 > 阈值 → 与改动前一致', { unitRealPrice: '500.00', sessionUsed: 2, rateRow: SELF }, 1000, 150],
+      ['阈值 NULL（非自销行）→ 不保底', { unitRealPrice: '80.00', rateRow: { commission_rate: '0.0200', price_threshold: null } }, 80, 1.6],
+    ])('%s', async (_n, input, tierBase, consumeAmount) => {
+      const r = await confirmWith(input)
+      expect(r.tierBase).toBe(tierBase)
+      expect(r.consumeAmount).toBe(consumeAmount)
+    })
+
+    test('手工费叠加：fixed_fee 不受阈值影响', async () => {
+      const r = await confirmWith({ unitRealPrice: '80.00', serviceFee: '10.00', rateRow: SELF })
+      expect(r.fixedFee).toBe(10)
+      expect(r.consumeAmount).toBe(15)
+      expect(r.commissionAmount).toBe(25)
+    })
+  })
 })
 
 describe('service.cancel', () => {

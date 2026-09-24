@@ -647,7 +647,7 @@ async function finalizeServiceOrder(client, so, items, ctx, now) {
 
   // ========== 计算并写入服务提成（service_commissions）==========
   // 双字段模型：fixed_fee = service_fee × session_used
-  //            consume_amount = unit_real_price × session_used × commission_rate
+  //            consume_amount = max(unit_real_price, price_threshold) × session_used × commission_rate（#379 阈值保底）
   //            commission_amount = fixed_fee + consume_amount
   // 说明：sale_items/service_items.unit_real_price 已是 per-session 单次价（如 5次卡 3500/5=700），
   //       直接作为每次消耗基准，无需再 ÷session_count。
@@ -665,7 +665,7 @@ async function finalizeServiceOrder(client, so, items, ctx, now) {
     const consumeBase = Math.round(perSession * row.session_used * 100) / 100
 
     const rateRows = await client.query(
-      `SELECT commission_rate FROM commission_rate_matrix
+      `SELECT commission_rate, price_threshold FROM commission_rate_matrix
        WHERE order_type = '服务单'
          AND role_type = $1
          AND sales_category = $2
@@ -683,7 +683,9 @@ async function finalizeServiceOrder(client, so, items, ctx, now) {
       [roleType, row.sales_category, consumeBase, serviceOrderId]
     )
     const rate = Number(rateRows.rows[0]?.commission_rate || 0)
-    const consumeAmount = Math.round(consumeBase * rate * 100) / 100
+    // #379 划卡单价阈值：单次实价低于命中行 price_threshold 时按阈值计消耗提成（NULL=不启用；选档仍用原始 consumeBase）
+    const effConsumeBase = Math.round(Math.max(perSession, Number(rateRows.rows[0]?.price_threshold || 0)) * row.session_used * 100) / 100
+    const consumeAmount = Math.round(effConsumeBase * rate * 100) / 100
     const commissionAmount = Math.round((fixedFee + consumeAmount) * 100) / 100
 
     // rate=0 且有消耗金额时，提示运维补齐矩阵规则
