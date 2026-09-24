@@ -843,7 +843,6 @@ export default function InventoryOperationsPage({
               locations={locations}
               marketTransferTargets={marketTransferTargets}
               suppliers={suppliers}
-             
               canViewPrice={canViewPrice}
               onClose={() => { setPendingDocsTabFor(null); setActiveOperation(null) }}
               onSuccess={afterSuccess}

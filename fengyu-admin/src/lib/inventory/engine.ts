@@ -2545,6 +2545,38 @@ function candidateDate(value: unknown, label: string): string | undefined {
   return text
 }
 
+interface ParsedCandidateFilters {
+  keyword?: string
+  startDate?: string
+  endDate?: string
+  targetOrgNodeId?: string
+  includeExhausted: boolean
+}
+
+/**
+ * 候选检索条件的运行时校验与归一。必须在 scope 判定、syncInventoryLocations **之前**跑完 ——
+ * 否则空 scope 会话传非法入参拿到的是空结果而不是 INVALID_PARAMS，同一入参的对错取决于谁在调。
+ */
+function parseCandidateFilters(filters: Record<string, unknown>): ParsedCandidateFilters {
+  const includeExhausted = filters.includeExhausted
+  if (includeExhausted !== undefined && includeExhausted !== null && typeof includeExhausted !== 'boolean') {
+    // 'true' 之类的字符串若静默当 false，调用方以为放宽了、其实没有
+    throw new ApiError('INVALID_PARAMS', '显示全部参数格式不正确')
+  }
+  const startDate = candidateDate(filters.startDate, '开始日期')
+  const endDate = candidateDate(filters.endDate, '结束日期')
+  if (startDate && endDate && startDate > endDate) {
+    throw new ApiError('INVALID_PARAMS', '开始日期不能晚于结束日期')
+  }
+  return {
+    keyword: candidateText(filters.keyword, '检索关键字')?.slice(0, 64),
+    startDate,
+    endDate,
+    targetOrgNodeId: candidateText(filters.targetOrgNodeId, '接收主体'),
+    includeExhausted: includeExhausted === true,
+  }
+}
+
 /**
  * 候选查询的 WHERE：scope 双端 OR（与 listInventoryCoreDocs 同一基础可见性闸）
  * + 动作端单端收窄 + 用途的类型/状态规则 + 剩余量 + 检索条件。
@@ -2552,7 +2584,7 @@ function candidateDate(value: unknown, label: string): string | undefined {
 function candidateConditions(
   session: AuthSession,
   definition: InventoryDocCandidateDefinition,
-  filters: Omit<InventoryDocCandidateFilters, 'purpose' | 'page' | 'pageSize'>,
+  filters: ParsedCandidateFilters,
   { onlyRemaining }: { onlyRemaining: boolean },
 ): SQL {
   const scoped = inventoryScopedOrgNodeIds(session)
@@ -2589,16 +2621,10 @@ function candidateConditions(
          AND cand_item.market_id IS NOT NULL
     )`)
   }
-  const targetOrgNodeId = candidateText(filters.targetOrgNodeId, '接收主体')
+  const { targetOrgNodeId, startDate, endDate, keyword } = filters
   if (targetOrgNodeId) conditions.push(eq(inventoryDocs.targetOrgNodeId, targetOrgNodeId))
-  const startDate = candidateDate(filters.startDate, '开始日期')
-  const endDate = candidateDate(filters.endDate, '结束日期')
-  if (startDate && endDate && startDate > endDate) {
-    throw new ApiError('INVALID_PARAMS', '开始日期不能晚于结束日期')
-  }
   if (startDate) conditions.push(gte(inventoryDocs.docDate, startDate))
   if (endDate) conditions.push(lte(inventoryDocs.docDate, endDate))
-  const keyword = candidateText(filters.keyword, '检索关键字')?.slice(0, 64)
   if (keyword) {
     // 反斜杠也要转义：ILIKE 默认转义符就是 `\`，漏了它 `a\` 这类输入会让模式非法或错配
     const pattern = `%${keyword.replace(/[\\%_]/g, '\\$&')}%`
@@ -2619,6 +2645,7 @@ export const listInventoryDocCandidates = withPermission(
   ): Promise<{ data: InventoryDocCandidateRow[]; total: number; pageSize: number }> => {
     const definition = resolveInventoryDocCandidate(filters?.purpose)
     if (!definition) throw new ApiError('INVALID_PARAMS', '未知的候选单据用途')
+    const parsed = parseCandidateFilters(filters as unknown as Record<string, unknown>)
     await syncInventoryLocations()
     const { pageSize, offset } = resolvePaging({
       page: filters.page,
@@ -2627,8 +2654,8 @@ export const listInventoryDocCandidates = withPermission(
       allowedPageSizes: PAGE_SIZE_WHITELIST,
     })
     // includeExhausted 只对建单类来源生效；状态类候选没有「显示全部」这回事
-    const onlyRemaining = definition.remainingToggle && filters.includeExhausted !== true
-    const whereClause = candidateConditions(session, definition, filters, { onlyRemaining })
+    const onlyRemaining = definition.remainingToggle && !parsed.includeExhausted
+    const whereClause = candidateConditions(session, definition, parsed, { onlyRemaining })
     // 检索条件里用到了两端主体名，COUNT 也必须带同样的 join，否则 total 与列表对不上
     const [countRow] = await db
       .select({ count: sql<number>`cast(count(*) as int)` })
@@ -2684,8 +2711,9 @@ export const listInventoryDocCandidateIds = withPermission(
     const definition = resolveInventoryDocCandidate(filters?.purpose)
     // 「有剩余量」只对建单类来源有意义；审批 / 收货类没有一键带出
     if (!definition || !definition.remainingToggle) throw new ApiError('INVALID_PARAMS', '未知的候选单据用途')
+    const parsed = parseCandidateFilters(filters as unknown as Record<string, unknown>)
     await syncInventoryLocations()
-    const whereClause = candidateConditions(session, definition, filters, { onlyRemaining: true })
+    const whereClause = candidateConditions(session, definition, parsed, { onlyRemaining: true })
     const rows = await db
       .select({ id: inventoryDocs.id })
       .from(inventoryDocs)

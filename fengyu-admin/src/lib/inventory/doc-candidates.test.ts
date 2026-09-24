@@ -274,10 +274,22 @@ describe('候选查询的检索与分页', () => {
       { purpose: 'market-receipt', startDate: ['2026-09-01'] },
       { purpose: 'market-receipt', targetOrgNodeId: { a: 1 } },
       { purpose: 'market-receipt', startDate: '2026-09-10', endDate: '2026-09-01' },
+      { purpose: 'store-allocation-source', includeExhausted: 'true' },
     ]) {
       await expect(listInventoryDocCandidates(filters as never)).rejects.toThrow(/^INVALID_PARAMS/)
     }
     expect(mockDb.select).not.toHaveBeenCalled()
+  })
+
+  it('入参校验先于 scope 判定：空 scope 会话传非法入参同样 INVALID_PARAMS，不是空结果', async () => {
+    mockGetSession.mockResolvedValue({
+      employeeId: 'E-NONE', name: '无绑定', phone: '13800000000', roles: [],
+      permissions: { actions: ['inventory:list'], scopeStoreIds: [], scopeOrgNodeIds: [] },
+    } as never)
+    await expect(listInventoryDocCandidates({ purpose: 'market-receipt', keyword: 123 } as never)).rejects.toThrow(/^INVALID_PARAMS/)
+    await expect(listInventoryDocCandidateIds({ purpose: 'purchase-order-source', startDate: '2026-02-30' })).rejects.toThrow(/^INVALID_PARAMS/)
+    // 入参校验先于 syncInventoryLocations：不碰库
+    expect(mockDb.execute).not.toHaveBeenCalled()
   })
 
   it('接收端收窄参数生效', async () => {

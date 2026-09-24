@@ -81,6 +81,40 @@ describe('InventoryDocCandidatePicker（#338）', () => {
     expect(toast.success).not.toHaveBeenCalled()
   })
 
+  it('带出 0 张时同样替换已选（清空），不留上一个区间的单', async () => {
+    vi.mocked(listInventoryDocCandidates).mockResolvedValue({ data: [], total: 0, pageSize: 20 })
+    vi.mocked(listInventoryDocCandidateIds).mockResolvedValue({ ids: [] })
+    const onChange = vi.fn()
+    render(<InventoryDocCandidatePicker label="来源报货单" purpose="purchase-order-source" selection={{ mode: 'multi', values: ['MHZ-A', 'MHZ-B'], onChange, bulkLabel: '带出' }} />)
+    fireEvent.click(await screen.findByRole('button', { name: '带出' }))
+    await waitFor(() => expect(onChange).toHaveBeenCalledWith([]))
+  })
+
+  it('带出用输入框的当前关键字（不等防抖）', async () => {
+    vi.mocked(listInventoryDocCandidates).mockResolvedValue({ data: [], total: 0, pageSize: 20 })
+    vi.mocked(listInventoryDocCandidateIds).mockResolvedValue({ ids: ['MHZ-7'] })
+    const onChange = vi.fn()
+    render(<InventoryDocCandidatePicker label="来源报货单" purpose="purchase-order-source" selection={{ mode: 'multi', values: [], onChange, bulkLabel: '带出' }} />)
+    fireEvent.change(screen.getByLabelText('来源报货单 检索'), { target: { value: ' MHZ-7 ' } })
+    fireEvent.click(screen.getByRole('button', { name: '带出' }))
+    await waitFor(() => expect(listInventoryDocCandidateIds).toHaveBeenCalledWith(expect.objectContaining({ keyword: 'MHZ-7' })))
+    await waitFor(() => expect(onChange).toHaveBeenCalledWith(['MHZ-7']))
+  })
+
+  it('带出在途时已选被改（清除 / 改勾选），旧结果作废', async () => {
+    vi.mocked(listInventoryDocCandidates).mockResolvedValue({ data: [], total: 0, pageSize: 20 })
+    let resolveIds: (value: { ids: string[] }) => void = () => {}
+    vi.mocked(listInventoryDocCandidateIds).mockImplementationOnce(() => new Promise((resolve) => { resolveIds = resolve }))
+    const onChange = vi.fn()
+    const { rerender } = render(
+      <InventoryDocCandidatePicker label="来源报货单" purpose="purchase-order-source" selection={{ mode: 'multi', values: ['MHZ-A'], onChange, bulkLabel: '带出' }} />,
+    )
+    fireEvent.click(await screen.findByRole('button', { name: '带出' }))
+    rerender(<InventoryDocCandidatePicker label="来源报货单" purpose="purchase-order-source" selection={{ mode: 'multi', values: [], onChange, bulkLabel: '带出' }} />)
+    await act(async () => { resolveIds({ ids: ['MHZ-OLD'] }) })
+    expect(onChange).not.toHaveBeenCalled()
+  })
+
   it('带出禁用原因：按钮禁用并显示原因，不发请求', async () => {
     vi.mocked(listInventoryDocCandidates).mockResolvedValue({ data: [], total: 0, pageSize: 20 })
     render(
