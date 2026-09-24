@@ -341,9 +341,16 @@ function whereClauseOf(segment: string, label: string): string {
  * 任何改动都必须回来改这条断言并说明为什么安全。
  */
 function assertStaffRankAdmissionShape(segment: string, label: string): void {
+  // ⚠️ 结果集完整性：`:492` 的同族禁令只喂了 Part A/B/C 三个切片，**不覆盖员工榜**。
+  // 本改动把负值员工放进榜单，而排序是 `ORDER BY value DESC` —— 负值必然排在**最末**。
+  // 此时给员工榜加 `LIMIT 20`（"253 行太长了截断一下" 是本改动后最可能的后续优化，
+  // 且看起来完全无害）会**第一个砍掉负值行**，把本次修复静默抹掉，而其余守护一条都不会红。
+  // `:493-495` 早已预言过这个形态（"给排行榜加 LIMIT 10 是极常见的首屏优化"），
+  // 只是当时没把 Part D 纳进去。
   expect(
-    /\bHAVING\b/i.test(segment),
-    `${label} 出现 HAVING —— 按聚合值剔行同样会吞掉退款净额为负的员工`,
+    /\b(?:LIMIT|OFFSET|FETCH|HAVING)\b/i.test(segment),
+    `${label} 出现 LIMIT/OFFSET/FETCH/HAVING —— 员工榜按 value DESC 排序，负值恒在末尾，` +
+      '任何截断或聚合级剔行都会优先吃掉它们，等于回退 #290',
   ).toBe(false)
   expect(
     whereClauseOf(segment, label),
