@@ -1340,7 +1340,7 @@ describe('客量板块两端口径一致性守护', () => {
    * 8. 一次/二次客活 = 到店天数（#298）—— **跨定义**一致性守护
    *
    * 同名概念「一次客活 / 二次客活」在仓里有三处运行时定义，2026-09 审计发现前两处按服务单行数、
-   * 后一处按到店天数，同一个 admin 里差 62 人：
+   * 后一处按到店天数，同一个 admin 里差 62 人（审计区间 09-01~09-22；到 09-24 为 63 人）：
    *   ① admin 数据中心 KPI（queryActive）与明细（queryRegActiveBreakdown）→ 共用 visitDaysSql
    *   ② staffApi mgmt-traffic（queryActiveOnce / queryActiveTwice）→ 独立副本
    *   ③ cron refresh-monthly-activity（顾客列表「月度客活」筛选的数据源）
