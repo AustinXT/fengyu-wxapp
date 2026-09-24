@@ -487,7 +487,9 @@ describe('InventorySkusPage', () => {
       renderPage({ canManageSupplySkus: false, markets: [market('MKT-1', '南昌市场')] })
       fireEvent.click(screen.getByRole('button', { name: /新建/ }))
 
-      // 显示值与表单 state 必须一致：下拉只剩「市场自采 / 转让店」，选中的是第一项
+      // 显示值与表单 state 必须一致：下拉只剩「市场自采 / 转让店」，选中的是第一项。
+      // ⚠️ 这两条在改前代码下也是绿的（value 不在 option 里时原生 select 显示首项），
+      // 真正锁住 #355 的是下面的「归属市场已落定」与提交参数断言，别删。
       const select = sourceSelect()
       expect(Array.from(select.options, (option) => option.value)).toEqual(['市场自采', '转让店'])
       expect(select.value).toBe('市场自采')

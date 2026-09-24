@@ -396,6 +396,12 @@ function SkuFormDialog({
   useEffect(() => {
     if (!open) return
     setForm(row ? formFromRow(row) : emptyForm(defaultSourceType))
+    // ⚠️ #355：只有市场权限时「归属市场」随初值一起渲染，唯一市场由 InventorySubjectSelect
+    // 经 onChange 补进来。这里整值重置会把它清成 ''，能补回来靠的是**弹窗子树常驻**：
+    // 原生 <dialog> 关着也挂载、新建的 key 恒为 'create'，所以候选在页面加载时就已落定，
+    // 打开时 value 从市场 id 变成 ''，SubjectSelect 的 effect 依赖变化才会再补一次。
+    // 若改成 `{open && <SkuFormDialog />}` 或让 key 在打开时变化，子 effect 的补值与这次重置
+    // 会落在同一次提交里被盖掉（value 始终 ''，effect 不再重跑）→ 显示只读市场名、提交却报缺归属市场。
     // 把弹窗内的其余状态一并重置。
     // ⚠️ 诚实标注：当前**不靠**这几行也能重置 —— 关闭时 editing 变 undefined，
     // `key` 从 skuId 变成 'create'，React 会卸载旧实例、state 自然清空

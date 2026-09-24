@@ -372,7 +372,8 @@ test('INV-01b：市场财务不切来源直接新建，默认市场自采 + 本�
     await expect(dialog.getByText('新建库存商品')).toBeVisible({ timeout: 10_000 })
     const field = (labelRe: RegExp) => dialog.locator('label').filter({ hasText: labelRe }).first()
 
-    // 显示值必须与表单 state 一致：只读下拉当前值，不去 selectOption
+    // 显示值必须与表单 state 一致：只读下拉当前值，不去 selectOption。
+    // ⚠️ 这两条改前也会通过（原生 select 显示首项），锁住 #355 的是后面的归属市场落定与落库断言。
     const sourceValue = await field(/^来源/).locator('select').inputValue()
     recordVerdict(verdicts, '#355: 来源初值 = 市场自采（不含供应链选项）', sourceValue === '市场自采', sourceValue)
     const hasSupplyOption = await field(/^来源/).locator('option[value="供应链"]').count()
@@ -393,7 +394,7 @@ test('INV-01b：市场财务不切来源直接新建，默认市场自采 + 本�
     )
     const [source, ownerMarket] = created.split('|')
     recordVerdict(verdicts, '#355: 落库 source_type = 市场自采', source === '市场自采', created)
-    recordVerdict(verdicts, `#355: 落库归属市场 = ${TOPO.MARKET_NAME}`, ownerMarket === INVT_ACCOUNTS.MK.scopeId, ownerMarket)
+    recordVerdict(verdicts, `#355: 落库归属市场 = ${TOPO.MARKET_NAME}`, ownerMarket === TOPO.MARKET, ownerMarket)
   } finally {
     await ctx.close()
     summarize(1, verdicts)
