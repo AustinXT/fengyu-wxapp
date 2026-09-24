@@ -3511,8 +3511,13 @@ function mapHomeProductRow(row) {
  *
  * #154 起提货/退款/转换件数各自直读 sale_items 的独立列（picked_up_quantity /
  * refunded_quantity / converted_quantity），「已结算」是三者之和的派生量。
- * `pickup_records` 已降级为审计明细表（只供 cron 的 C5 守恒对账），**不再是查询口径**
- * —— 本函数刻意不读它，避免引入会与权威列分叉的第二来源。
+ * 本查询以这些汇总列为口径，刻意不读 `pickup_records` —— 守恒
+ * （picked_up_quantity == SUM(pickup_records.pickup_quantity)）由写事务维护、
+ * cron 的 C5 检测漂移，查询里再读一遍明细表只会多出一个可能分叉的来源。
+ *
+ * ⚠️ 这不代表 `pickup_records` 废弃了：退款可退数量仍按它算（admin actions/refunds.ts、
+ * staffApi routes/order.js），提货记录管理与幂等重放也查它，
+ * `.42cog/pm/backend.pr.spec.md` 写明「家居已交付价值 = pickup_records 物理提货件数 × 单价」。
  */
 async function homeProducts(ctx) {
   const { userId } = ctx.auth

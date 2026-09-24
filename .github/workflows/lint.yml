@@ -171,12 +171,23 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 1
+      # ⚠️ 已知局限：云函数生产运行时是 Nodejs18.15（见 cloudbaserc.example.json），
+      # 这里却跑 node 22 —— 只在 18.15 上炸的写法（如 Array.prototype.toSorted）
+      # 本 job 测不出来，会给出运行时兼容性的假绿。
+      # **不是没想到，是当前工具链跑不了**：vite 7.3.1 的 engines 是
+      # `^20.19.0 || >=22.12.0`，实测在 node 18.15 下 vitest 直接
+      # ERR_REQUIRE_ESM 起不来（连一条用例都跑不到）。要真正覆盖 18.15
+      # 得先降 vitest/vite 大版本，那是仓库级决策，不在本 PR 范围。
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+      # ⚠️ 只用 `npm ci`，**不要**加 `|| npm install` 兜底：npm ci 在 package.json 与
+      # package-lock.json 不一致时正确失败，而 npm install 会就地重写 lockfile 继续跑，
+      # 让 job 变绿 —— 合入的仍是过不了干净 npm ci 的依赖状态。那恰好抵消了上面
+      # 把两个依赖清单加进 paths 的目的。已实测纯净环境 npm ci 可通过。
       - name: Install clientApi deps
         working-directory: fengyu-client/cloudfunctions/clientApi
-        run: npm ci || npm install
+        run: npm ci
       - name: Run clientApi full test suite (含 lakala 跨副本字节一致守护)
         working-directory: fengyu-client/cloudfunctions/clientApi
         run: npx vitest run

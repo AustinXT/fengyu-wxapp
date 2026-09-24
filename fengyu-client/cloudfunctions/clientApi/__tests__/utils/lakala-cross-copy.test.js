@@ -152,7 +152,12 @@ describe('lakala 跨副本一致性守护', () => {
    */
   test('meta：CI 跑的是 clientApi 全量 vitest，不是手工文件清单', () => {
     const lintYml = path.resolve(__dirname, '../../../../../.github/workflows/lint.yml')
-    const yml = read(lintYml)
+    const rawYml = read(lintYml)
+
+    // ⚠️ 先剥掉整行 YAML 注释再做全部文本断言。否则把一条 paths 改成
+    // `# - 'fengyu-client/.../package.json'` 时，下面的 toContain 照样匹配到注释里的
+    // 那一串 —— 触发面实际已经没了，守护却全绿（闸门 2 的 codex 指出）。
+    const yml = rawYml.split('\n').filter((line) => !/^\s*#/.test(line)).join('\n')
 
     // ⚠️ 断言命令**恰好**是不带任何参数的 `npx vitest run`，而不是用负向正则去猜
     // "手工清单长什么样"——负向匹配挡不住 `--dir __tests__/utils`、`-t <pattern>`、
@@ -193,5 +198,33 @@ describe('lakala 跨副本一致性守护', () => {
     // 恰恰是最该让全量守护跑一遍的那一次。admin 侧早已为此加过同款三条（#232）。
     expect(yml).toContain("- 'fengyu-client/cloudfunctions/clientApi/package.json'")
     expect(yml).toContain("- 'fengyu-client/cloudfunctions/clientApi/package-lock.json'")
+
+    // `paths-ignore` 是触发面的否定开关：加一条
+    // `paths-ignore: ['fengyu-client/cloudfunctions/clientApi/**']` 就能让只改 clientApi
+    // 的 PR 一个 job 都不触发，而上面 8 条 paths 断言照样全绿（文本都还在）。
+    // 仓库现在一处都没用，全面禁掉零成本（闸门 2 的 GLM 指出）。
+    expect(yml).not.toMatch(/paths-ignore/)
+
+    // 命令对了、触发面也对了，job 仍可能被「跳过」或「失败不计」：
+    // `if: ${{ false }}` 让整个 job 不跑，`continue-on-error: true` 让它红了也算通过。
+    // 两者都不改 run 命令文本，纯文本断言看不见（闸门 2 的 codex + GLM 各自指出）。
+    // 这里把 clientapi-tests 的 job 块切出来单独检查。
+    const jobBlock = yml.match(/\n {2}clientapi-tests:\n([\s\S]*?)(?=\n {2}\w[\w-]*:\n|$)/)
+    expect(jobBlock, 'lint.yml 里找不到 clientapi-tests job').not.toBeNull()
+    expect(jobBlock[1], 'clientapi-tests 被 if: 条件化，可能整个 job 被跳过').not.toMatch(/^\s*if:/m)
+    expect(jobBlock[1], 'clientapi-tests 带 continue-on-error，失败也会算通过').not.toMatch(/continue-on-error/)
+
+    // 装依赖只能是干净的 `npm ci`。加回 `|| npm install` 兜底会让「package.json 与
+    // lockfile 不一致」这个本该失败的情形就地重写 lockfile 后变绿，
+    // 正好抵消把依赖清单加进 paths 的目的。
+    expect(jobBlock[1], 'npm ci 不得带 || npm install 兜底').not.toMatch(/npm ci\s*\|\|/)
+
+    // 最后一环：`npx vitest run` 到底跑哪些文件，由 vitest.config.js 的 testMatch 决定。
+    // 把它改成 `['**/__tests__/utils/**/*.test.js']`，CI 命令一字未动、本守护自己
+    // （在 utils 下）照样执行，但另外 35 个测试文件全部出网 —— 这比改 lint.yml 更顺手，
+    // 也更像「配置调整」而非「写手工清单」，是本守护威胁模型里最可能的无意回退形态
+    // （闸门 2 的 GLM 指出）。
+    const vitestConfig = read(path.resolve(__dirname, '../../vitest.config.js'))
+    expect(vitestConfig).toContain("testMatch: ['**/__tests__/**/*.test.js']")
   })
 })

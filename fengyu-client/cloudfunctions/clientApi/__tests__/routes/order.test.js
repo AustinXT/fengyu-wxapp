@@ -3326,11 +3326,17 @@ describe('order.homeProducts', () => {
 
     // #154 起提货件数直读 sale_items.picked_up_quantity，pickup_totals CTE 已删除。
     //
-    // 理由是「只依赖权威列，不引入第二个会漂移的口径」：#154 后 si.picked_up_quantity
-    // 是权威列，pickup_records 降级为明细表，只供 cron 的 C5 审计对账。两者的守恒
-    // （picked_up_quantity == SUM(pickup_records.pickup_quantity)）是**外部审计保证的
-    // 不变量**，不是同一条查询内能保证的东西——读明细表等于给自己造一个可能与权威列分叉
-    // 的第二来源。
+    // 理由是「本展示查询只依赖权威汇总列，不引入第二个会漂移的口径」：#154 后
+    // si.picked_up_quantity 是**本查询的**口径，守恒
+    // （picked_up_quantity == SUM(pickup_records.pickup_quantity)）由写事务维护、
+    // cron 的 C5 负责检测漂移——审计只能事后发现，保证不了查询当下没漂。
+    // 读明细表等于给自己造一个可能与权威列分叉的第二来源。
+    //
+    // ⚠️ 别把这句话读成「pickup_records 已废弃/只供审计」——它**不是**。退款可退数量
+    // 仍按它算（admin/src/actions/refunds.ts:385,802、staffApi/routes/order.js:3294,3639），
+    // 提货记录管理与幂等重放也查它，`.42cog/pm/backend.pr.spec.md:261` 写明
+    // 「家居已交付价值 = pickup_records 物理提货件数 × 单价」。这里说的只是
+    // **本条资产汇总查询**不读它。
     //
     // ⚠️ 别把 FOR UPDATE / EvalPlanQual 那套论证安到本函数头上：homeProducts 是**纯只读
     // 查询，全函数零加锁**。那套论证属于写路径——staffApi/routes/order.js 的 createPickup
@@ -3339,8 +3345,12 @@ describe('order.homeProducts', () => {
     // 仍是旧快照。读路径跟着统一到同一份权威列，是为了不让两条路径各有一套口径，
     // 而不是因为本函数需要锁语义。（更不要为了"对齐"给这条只读查询加 FOR UPDATE。）
     //
-    // ⚠️ 旧断言曾是 toContain('FROM pickup_records')——#154 改了 8 个源文件却没动
-    // 任何测试，这条断言就此过时并让整条用例长期红着，连带**后面 7 条断言从未执行过**，
+    // ⚠️ 旧断言曾是 toContain('FROM pickup_records')。#154 分两个 commit：`3c59b2a6`
+    // 改了 8 个源文件、零测试；跟进的 `cb16d7dc` 专门对齐测试，改了 admin 3 个 +
+    // staff 3 个测试文件，**唯独漏了 clientApi** —— 它的 message 自报
+    // 「staffApi 1874 / admin 2571 / snapshot 312 / db 81 全绿」，**没有 clientApi 的数字**，
+    // 当时根本没跑它。这就是「没有 CI 就不在验证清单里」的直接恶果。
+    // 于是这条断言过时、整条用例长期红着，连带**后面 8 条断言从此没再执行过**，
     // 最终挡住 clientApi 接入 CI（#276）。
     //
     // 先剥掉 SQL 行注释再断言：SQL 模板里的 `--` 注释会进入这个字符串，直接对全文
@@ -3381,8 +3391,10 @@ describe('order.homeProducts', () => {
     )
 
     // 反向：「已退款」不得再由 settled − 已提货 − 已转换 倒推（#154 前的写法）。
-    // 三项减法的顺序可以随意交换（数学等价），所以负向正则不能只挡一种排列。
-    expect(sql).not.toMatch(/settled_quantity\s*-\s*(picked|converted)_quantity/)
+    // 三项减法的顺序可以随意交换（数学等价），所以负向正则不能只挡一种排列；
+    // 列名还可能带 `si.` 限定前缀（`SUM(si.settled_quantity - si.picked_quantity ...)`），
+    // 不认前缀就会被穿透（闸门 2 的 GLM 变异实测全绿穿网）。大小写同理。
+    expect(sql).not.toMatch(/(si\.)?settled_quantity\s*-\s*(si\.)?(picked|converted)_quantity/i)
 
     // ⚠️ 上面那条负向正则**不足以**防住倒推复活：PG 允许结果集出现重复列名，
     // 下游 CTE 只要在 `SELECT *,` 后插一条同名的 refunded_quantity 影子列，
@@ -3393,10 +3405,22 @@ describe('order.homeProducts', () => {
     // 字符串断言天然验证不了「这一列最终取的是哪个值」，所以这里改守**别名的唯一性**：
     // 四个派生列各自只应在两处出现（home_product_rows 定义 + home_products 聚合），
     // 多出任何一处就意味着有人在下游重定义了它。
+    // ⚠️ 必须小写化再数：PG 把未加引号的标识符折叠成小写，插一条 `AS REFUNDED_QUANTITY`
+    // 的影子列照样生效，而大小写敏感的计数会漏看它（闸门 2 的 GLM 变异实测穿网）。
+    const sqlLower = sqlCode.toLowerCase()
     for (const alias of ['settled_quantity', 'picked_quantity', 'refunded_quantity', 'converted_quantity']) {
-      const hits = sqlCode.match(new RegExp(`AS ${alias}\\b`, 'g')) || []
+      const hits = sqlLower.match(new RegExp(`as ${alias}\\b`, 'g')) || []
       expect(hits, `AS ${alias} 出现 ${hits.length} 次，预期 2 次（定义 + 聚合）`).toHaveLength(2)
     }
+
+    // 聚合层的四条映射必须各取各列。只守上游定义是不够的：把聚合改成
+    // `SUM(si.refunded_quantity)::int AS picked_quantity`，上游三个直读表达式原文仍在、
+    // 别名仍各 2 次、负向正则也不命中，但顾客拿到的 pickedQuantity 会变成已退款件数
+    // （闸门 2 的 codex 指出）。
+    expect(sql).toContain('SUM(si.settled_quantity)::int AS settled_quantity')
+    expect(sql).toContain('SUM(si.picked_quantity)::int AS picked_quantity')
+    expect(sql).toContain('SUM(si.refunded_quantity)::int AS refunded_quantity')
+    expect(sql).toContain('SUM(si.converted_quantity)::int AS converted_quantity')
 
     expect(sql).toContain("o.status IN ('已支付', '部分支付', '已完成')")
     expect(sql).toContain("si.item_direction = '购买'")
@@ -3404,7 +3428,14 @@ describe('order.homeProducts', () => {
     expect(sql).toMatch(/FLOOR\(GREATEST\(0, si\.received::numeric\) \* si\.quantity \/ NULLIF\(si\.sale_amount::numeric, 0\)\)/)
     // issue #120：放行口径改为按物理剩余份额，旧的 pending 过滤会吞掉未付清的行。
     // 注意不能只断言 'pending_pickup_quantity > 0'——那串在 ORDER BY 里也有，测不出过滤口径。
-    expect(sql).toContain('WHERE picked_quantity > 0 OR remaining_quantity > 0')
+    //
+    // ⚠️ 必须锚**完整的三条件**：只锚前两个子串时，删掉 ` OR converted_quantity > 0`
+    // 测不出来，而那会让「全部折抵转走」的行（converted=quantity、picked=0、remaining=0）
+    // 从顾客端整行消失（闸门 2 的 GLM 变异实测全绿穿网）。本用例声称守三语义，
+    // 放行口径就不能只锁 2/3。
+    expect(sql).toContain(
+      'WHERE picked_quantity > 0 OR remaining_quantity > 0 OR converted_quantity > 0',
+    )
     expect(sql).not.toContain('WHERE picked_quantity > 0 OR pending_pickup_quantity > 0')
     expect(sql).toContain("(o.sale_order_type = '寄存单') AS is_deposit")
     expect(sql).toContain('CASE WHEN is_deposit THEN NULL')
