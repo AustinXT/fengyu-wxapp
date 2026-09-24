@@ -1936,7 +1936,7 @@ describe('库存单据详情履约进度', () => {
     expect(fulfillmentSql).toContain("receipt_doc.status = '已完成'")
   })
 
-  it('采购订单的供应链行按关联入库单聚合已收与待收数量', async () => {
+  it('采购订单所有行按关联入库单聚合已收与待收数量，并带正常发货量（#335）', async () => {
     const now = new Date('2026-08-10T09:00:00.000Z')
     mockDb.select
       .mockReturnValueOnce(detailHeadSelect([{
@@ -2018,6 +2018,7 @@ describe('库存单据详情履约进度', () => {
         item_id: 201,
         purchased_quantity: '10',
         received_quantity: '4',
+        shipped_quantity: '2',
         purchase_status: '待收货',
       }])
 
@@ -2035,12 +2036,18 @@ describe('库存单据详情履约进度', () => {
         purchasedQuantity: 10,
         receivedQuantity: 4,
         outstandingQuantity: 6,
+        shippedQuantity: 2,
       }],
     })
 
     const [, fulfillmentQuery] = mockDb.execute.mock.calls.map(([query]) => query)
     expect(sqlContains(fulfillmentQuery, '采购订单供应链采购入库')).toBe(true)
     expect(sqlContains(fulfillmentQuery, "receipt_doc.status = '已完成'")).toBe(true)
+    // 市场行同样经供应链采购入库（#335），不能再按 market_id 只统计自用行
+    expect(sqlContains(fulfillmentQuery, 'market_id IS NULL')).toBe(false)
+    // 发货量与 linkedQuantity 同口径：只算正常发货、排除已取消发货单
+    expect(sqlContains(fulfillmentQuery, "doc_link.relation_type = '采购订单发货'")).toBe(true)
+    expect(sqlContains(fulfillmentQuery, "shipment_doc.status <> '已取消'")).toBe(true)
   })
 
   it('已取消的品项公司发货不再显示待收数量', async () => {
@@ -3566,36 +3573,23 @@ describe('#190 单据列表的多类型 / 多状态 / 撤回标记过滤', () =>
   })
 
   /*
-   * pendingItemScope（#192/#194）。
+   * pendingItemScope（#192/#194/#335）。
    *
-   * 这三条守的是「供应链收货待办」的正确性。#194 把供应链采购订单并进「采购订单」后，
-   * 一张单可同时含市场行与供应链行，而完结判定要求**所有**行履约满，于是
-   * 「供应链行已收完、只差市场行发货」的混合单会长期停在「待收货」；
-   * 不按明细的市场归属分流，这批单会全部涌进供应链收货待办，点一次吃一次
-   * INVALID_STATE（`receiveSupplyChainPurchaseOrder` 对 `orderItem.marketId` 非空的行直接抛）。
-   *
-   * 三处最容易写坏、且都不会报错的地方，逐个钉：
-   *   (a) 两个方向写反 —— 待办区会精确地只剩点了必报错的那批单；
+   * #335 起采购订单的所有行都经供应链采购入库，不再按 market_id 分流：
+   * 条件只剩「存在未入库明细」。仍然最容易写坏、且都不会报错的地方：
+   *   (a) 又按 market_id 分流 —— 市场行待入库的单会从供应链收货待办里消失；
    *   (b) EXISTS 忘了按 doc_id 关联外层 —— 只要**全库**存在一条未履约明细，条件恒真；
    *   (c) 未履约条件被简化掉 —— 已收满的行也算数，退化成「只要有明细就算待办」。
    */
-  it("pendingItemScope='supply-chain' 生成 market_id IS NULL 的未履约 EXISTS", async () => {
+  it("pendingItemScope='supply-chain' 生成不看 market_id 的未入库 EXISTS（#335）", async () => {
     const { text } = await whereOf({ docTypes: ['采购订单'], statuses: ['待收货'], pendingItemScope: 'supply-chain' })
     expect(text).toContain('EXISTS (')
-    expect(text).toContain('pending_item.market_id IS NULL')
-    // 写反成 IS NOT NULL 会让供应链待办只剩必报错的混合单
-    expect(text).not.toContain('pending_item.market_id IS NOT NULL')
-  })
-
-  it("pendingItemScope='market' 生成 market_id IS NOT NULL 的未履约 EXISTS", async () => {
-    const { text } = await whereOf({ docTypes: ['采购订单'], statuses: ['待收货'], pendingItemScope: 'market' })
-    expect(text).toContain('EXISTS (')
-    expect(text).toContain('pending_item.market_id IS NOT NULL')
+    // 市场行同样经供应链采购入库，按 market_id 过滤会把它们挡在待办外
+    expect(text).not.toContain('pending_item.market_id')
   })
 
   it('不传 pendingItemScope 时不加该 EXISTS —— 别误伤普通单据查询', async () => {
-    // 多加会把「明细已全部履约」的单静默筛掉（比如已收满但还没完结的单），
-    // 漏加会把点了必报错的混合单倒进待办区，两个方向都是静默错。
+    // 多加会把「明细已全部入库」的单静默筛掉，误伤普通单据查询。
     const { text } = await whereOf({ docTypes: ['采购订单'], statuses: ['待收货'] })
     expect(text).not.toContain('pending_item')
     expect(text).not.toContain('EXISTS')
@@ -3606,8 +3600,8 @@ describe('#190 单据列表的多类型 / 多状态 / 撤回标记过滤', () =>
      * 这条是上面两条的承重梁：
      * 丢了 `pending_item.doc_id = inventory_docs.id`，EXISTS 就与外层无关 ——
      * 全库只要有一条未履约明细，**每一张**采购订单都会命中，过滤完全失效而 SQL 合法；
-     * 丢了 `COALESCE(fulfilled_quantity,0) < quantity`，已收满的行照样算数，
-     * 混合单又会全部回到待办区。两种退化都不会报错，只会让待办区悄悄变回原样。
+     * 丢了 `COALESCE(fulfilled_quantity,0) < quantity`，已入库满的行照样算数。
+     * 两种退化都不会报错，只会让待办区悄悄变回原样。
      * `COALESCE` 不能简化成 `fulfilled_quantity < quantity`：该列可空，NULL 比较出 NULL，
      * 一条都没收过的明细反而不算「未履约」。
      */

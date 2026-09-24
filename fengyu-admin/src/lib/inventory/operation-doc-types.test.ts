@@ -343,7 +343,7 @@ describe('待我处理段（#192）', () => {
       // 同一个 docType、方向与上一条相反：收货断 target，撤回审批断 source
       'market-receipt': { docTypes: ['品项公司发货'], statuses: ['待收货'], scopeRole: 'target' },
       'store-receipt': { docTypes: ['分院配货'], statuses: ['待收货'], scopeRole: 'target' },
-      // pendingItemScope 排掉「供应链行已收满、只差市场行发货」的混合单（点了必报错）
+      // pendingItemScope 只留还有未入库明细的采购订单（#335 起不按 market_id 分流）
       'supply-chain-receipt': {
         docTypes: ['采购订单'],
         statuses: ['待收货'],
@@ -432,10 +432,11 @@ describe('待我处理段（#192）', () => {
     const approveCancel = exportedFnBody('approveItemCompanyShipmentCancellation')
     expect(approveCancel).toContain(`shipment.docType !== '品项公司发货' || shipment.status !== '待审批'`)
     expect(approveCancel).toContain(`required(shipment.cancellationRequestReason`)
-    // 供应链采购入库：整单状态 + 逐行「有市场归属的不能入供应链库」
+    // 供应链采购入库：整单状态；#335 起不再按行拒市场行（所有行都能入库），
+    // 所以 inbox 不能再按 market_id 收窄 —— 服务端一旦恢复这道拦截，这里立刻红
     const receivePurchase = exportedFnBody('receiveSupplyChainPurchaseOrder')
     expect(receivePurchase).toContain(`order.docType !== '采购订单' || order.status !== '待收货'`)
-    expect(receivePurchase).toContain('if (orderItem.marketId)')
+    expect(receivePurchase).not.toContain('orderItem.marketId')
     // 关闭采购：同样的 docType/status 判定（所以两条 inbox 的 statuses 一致）
     expect(exportedFnBody('cancelSupplyChainPurchaseOrder'))
       .toContain(`order.docType !== '采购订单' || order.status !== '待收货'`)
@@ -448,25 +449,23 @@ describe('待我处理段（#192）', () => {
     expect(businessSource).toContain(`receivePhysicalShipment(session, input, '分院配货', '院入库')`)
   })
 
-  it('pendingItemScope 在 engine 里落成「未履约明细」的 EXISTS，两个方向都在', () => {
+  it('pendingItemScope 在 engine 里落成「未入库明细」的 EXISTS，且不按 market_id 分流（#335）', () => {
     /*
-     * 这条是跨文件对账：映射表写 'supply-chain' 而 engine 把它翻成
-     * `market_id IS NOT NULL`（写反），映射表的断言照样全绿，而供应链收货待办
-     * 会精确地只剩点了必报错的那批单。
+     * 这条是跨文件对账：#335 起采购订单所有行都经供应链采购入库，engine 若仍按
+     * `market_id IS NULL` 收窄，映射表的断言照样全绿，而市场行待入库的单会从
+     * 供应链收货待办里消失。
      *
      * 分工：编译后 SQL 的断言在 `engine.test.ts` 的
-     * `describe('#190 单据列表的多类型 / 多状态 / 撤回标记过滤')` 里（四条：两个方向各一条、
-     * 「不传则不加」一条、「EXISTS 按 doc_id 关联外层 + COALESCE 未履约条件」一条）；
-     * 这里守的是**映射表这一侧**看到的 engine 源码里两个方向都还在、未履约条件没被简化掉。
+     * `describe('#190 单据列表的多类型 / 多状态 / 撤回标记过滤')` 里；
+     * 这里守的是**映射表这一侧**看到的 engine 源码：未入库条件在、market_id 分流不在。
      */
     const branch = engineSource.slice(
       engineSource.indexOf('if (filters.pendingItemScope) {'),
       engineSource.indexOf('if (filters.startDate)'),
     )
     expect(branch, 'engine.ts 里找不到 pendingItemScope 分支').not.toEqual('')
-    expect(branch).toContain(`filters.pendingItemScope === 'supply-chain'`)
-    expect(branch).toContain('pending_item.market_id IS NULL')
-    expect(branch).toContain('pending_item.market_id IS NOT NULL')
+    expect(branch).not.toContain('pending_item.market_id')
+    expect(branch).toContain('pending_item.doc_id = ${inventoryDocs.id}')
     expect(branch).toContain('COALESCE(pending_item.fulfilled_quantity, 0) < pending_item.quantity')
   })
 

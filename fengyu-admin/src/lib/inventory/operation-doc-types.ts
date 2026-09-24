@@ -80,21 +80,16 @@ export interface InventoryOperationDocFilter {
    */
   cancellationRequested?: true
   /**
-   * 仅保留**还有未履约明细**的单据，并按明细的市场归属分流：
-   * `'supply-chain'` = 存在一条 `market_id IS NULL` 且 `COALESCE(fulfilled_quantity,0) < quantity`
-   * 的明细；`'market'` = 同样的未履约条件但 `market_id IS NOT NULL`。
+   * 仅保留**还有未入库明细**的采购订单：存在 `COALESCE(fulfilled_quantity,0) < quantity` 的明细。
    *
-   * 为什么必须有：#194 把「供应链采购订单」并进「采购订单」之后，一张单可以同时含
-   * 市场行与供应链行，而完结判定要求**所有**行都履约满
-   * （`business.ts` 的 `completePurchaseOrderIfFullyFulfilled`）。所以「供应链行已收完、
-   * 市场行还没发」的混合单会长期停在「待收货」，把它列进供应链收货待办，
-   * 操作员点一次就吃一次 `INVALID_STATE`（`receiveSupplyChainPurchaseOrder` 对
-   * `orderItem.marketId` 非空的行直接抛）。
+   * #194 时它按 market_id 分流，因为那时市场行不经供应链入库、混合单会长期停在「待收货」。
+   * #335 起所有行都经供应链采购入库、完结只由入库推动，正常数据下这条不再收窄结果集，
+   * 保留作防御（见 engine 同名字段注释）。
    *
-   * 类型是两个字面量而不是 `boolean` / 开放字符串：与 `cancellationRequested` 同理，
+   * 类型是字面量而不是 `boolean` / 开放字符串：与 `cancellationRequested` 同理，
    * 这个条件只有收窄一个方向，别留出能写进去却退化成不过滤的值。
    */
-  pendingItemScope?: 'supply-chain' | 'market'
+  pendingItemScope?: 'supply-chain'
 }
 
 /**
@@ -147,9 +142,9 @@ export const INVENTORY_OPERATION_DOC_QUERY: Record<InventoryOperationId, Invento
   // 供应链跨市场汇总各市场报货需求（#193），是采购订单的来源之一。
   'market-report-summary': { produced: { docTypes: ['市场报货汇总'] } },
   /*
-   * `供应链采购订单` 已于 #194 并入 `采购订单`（migration 0043 收敛存量 / 0044 收紧约束）：
-   * 两条链路的分流改看明细行的 `market_id`（非空走品项公司发货、NULL 走供应链采购入库），
-   * 不再由单据类型区分。所以原先的 supply-chain-purchase-order 业务卡片也一并去掉了。
+   * `供应链采购订单` 已于 #194 并入 `采购订单`（migration 0043 收敛存量 / 0044 收紧约束），
+   * 原先的 supply-chain-purchase-order 业务卡片也一并去掉了。
+   * #335 起所有行都走供应链采购入库，`market_id` 只是来源追溯标记。
    */
   'purchase-order': { produced: { docTypes: ['采购订单'] } },
   'company-shipment': { produced: { docTypes: ['品项公司发货'] } },
@@ -157,10 +152,9 @@ export const INVENTORY_OPERATION_DOC_QUERY: Record<InventoryOperationId, Invento
     produced: { docTypes: ['供应链采购入库'] },
     /*
      * 待我收的采购订单。对齐 `receiveSupplyChainPurchaseOrder`：
-     * `order.docType !== '采购订单' || order.status !== '待收货'` → INVALID_STATE，
-     * 且逐行 `if (orderItem.marketId) throw`。
-     * pendingItemScope 不是可选优化：混合单在供应链行收满后仍停留「待收货」
-     * （完结要求所有行满），不收窄就会长期挂一批「点了必报错」的待办。
+     * `order.docType !== '采购订单' || order.status !== '待收货'` → INVALID_STATE。
+     * 「部分入库」是「待收货」的派生标签（#335），同样在此列。
+     * pendingItemScope 只收窄到还有未入库行的单（#335 后正常数据下不改变结果集，保留作防御）。
      *
      * scopeRole=target：`assertLocationWritable(session, supplyChain)`，
      * 而 supplyChain 就是 `order.targetOrgNodeId`（同函数上方 `order.targetOrgNodeId
@@ -185,8 +179,8 @@ export const INVENTORY_OPERATION_DOC_QUERY: Record<InventoryOperationId, Invento
      * `order.docType !== '采购订单' || order.status !== '待收货'` → INVALID_STATE。
      *
      * ⚠️ 与上一条不同，这里**刻意不加 pendingItemScope**：关闭作用于整单，
-     * 真正的拒绝条件是「市场行已发货」（要算 `inventory_doc_links` 的
-     * 采购订单发货 / 采购订单赠送发货 血缘），SQL 表达不划算。而且排掉之后
+     * 真正的拒绝条件是「市场行正常发货量超过已入库量」（要算 `inventory_doc_links` 的
+     * 采购订单发货 / 采购订单供应链采购入库 血缘），SQL 表达不划算。而且排掉之后
      * 操作员会找不到那张关不掉的单、也不知道为什么，比点一次拿到明确报错更难排障。
      *
      * scopeRole=target：`cancelSupplyChainPurchaseOrder` 里

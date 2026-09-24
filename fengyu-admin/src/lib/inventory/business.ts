@@ -10,6 +10,7 @@ import type { AuthSession } from '@/lib/types'
 import { revalidatePath } from 'next/cache'
 import { sql } from 'drizzle-orm'
 import { assertInventoryBusinessWritable } from './cutover'
+import { cancelledMarketReportRetainedSql } from './retained-sql'
 // 仅用于给 INTERNAL_SAME_NODE_DOC_TYPES 标类型 —— 没有它，集合里写错别字不会编译报错，
 // 只会静默变成「该类型不属同主体」，与 engine.ts 那份的行为悄悄分叉。
 import type { InventoryDocType } from './types'
@@ -671,6 +672,19 @@ function positive(value: number, label: string): number {
   return parsed
 }
 
+/**
+ * 数量列是 numeric(12,2)：多于两位小数会被 PG 静默舍入（1.234 → 1.23），
+ * 甚至舍成 0 撞 CHECK（0.004）。采购 / 入库 / 发货在入口显式拒绝（#335 评审 codex P2）。
+ */
+function twoDecimals(value: number, label: string): number {
+  // 按「取到两位后是否仍等于原值」判断，不用固定容差：1e-9 这类极小值要拒，
+  // 1234567890.12 这类合法大值乘 100 后的浮点残差不能误伤（#335 评审 codex round-2 P2）。
+  if (Number(value.toFixed(2)) !== value) {
+    throw new ApiError('INVALID_PARAMS', `${label}最多保留两位小数`)
+  }
+  return value
+}
+
 function nonnegative(value: number | null | undefined, label: string): number {
   if (value === null || value === undefined) return 0
   const parsed = Number(value)
@@ -700,6 +714,12 @@ function nearlyGreater(left: number, right: number): boolean {
 
 function fixed(value: number): number {
   return Number(value.toFixed(4))
+}
+
+/** 取到分，四舍五入远离 0（与 PG numeric ROUND 一致）；先 fixed 到 4 位吸收浮点误差（1.005 → 1.01）。 */
+function roundCents(value: number): number {
+  const scaled = fixed(value) * 100
+  return Math.sign(scaled) * Math.round(Math.abs(scaled) + 1e-9) / 100
 }
 
 function lotKey(input: {
@@ -1578,7 +1598,7 @@ export function assertSkuAvailableToMarket(
 
 function assertSupplyChainSku(sku: Pick<SkuSnapshot, 'sourceType' | 'productName'>): void {
   if (sku.sourceType !== '供应链') {
-    throw new ApiError('INVALID_STATE', `品项公司报货只能选择供应链 SKU：${sku.productName}`)
+    throw new ApiError('INVALID_STATE', `只能选择供应链 SKU（市场自采 / 转让店商品不走供应链）：${sku.productName}`)
   }
 }
 
@@ -2774,9 +2794,12 @@ async function allocateSummaryToMarketReportItems(
            l.from_item_id,
            COALESCE(l.quantity, 0) AS link_quantity,
            report_item.quantity AS report_quantity,
-           COALESCE(purchased.quantity, 0) AS purchased_quantity
+           COALESCE(purchased.quantity, 0) + COALESCE(cancelled_purchased.quantity, 0) AS purchased_quantity
       FROM inventory_doc_links l
       JOIN inventory_doc_items report_item ON report_item.id = l.from_item_id
+      -- 已取消采购单里已入库的部分仍占用原始行（#335：市场行可部分入库后关单），
+      -- 保留量按分做最大余数分配，与 engine 市场报货进度共用 cancelledMarketReportRetainedSql；
+      -- 整张排除会让再次下单把已入库的量重复分摊到原始行上。
       JOIN LATERAL (
         SELECT COALESCE(SUM(p.quantity), 0) AS quantity
           FROM inventory_doc_links p
@@ -2785,6 +2808,11 @@ async function allocateSummaryToMarketReportItems(
            AND p.relation_type = '市场报货采购订单'
            AND purchase_doc.status <> '已取消'
       ) purchased ON true
+      LEFT JOIN LATERAL (
+        SELECT COALESCE(SUM(retained_row.retained_quantity), 0) AS quantity
+          FROM (${cancelledMarketReportRetainedSql(sql`SELECT l.from_item_id`)}) retained_row
+         WHERE retained_row.report_item_id = l.from_item_id
+      ) cancelled_purchased ON true
      WHERE l.to_item_id = ${summaryItemId}
        AND l.relation_type = '市场报货汇总'
      ORDER BY l.from_item_id
@@ -2879,16 +2907,20 @@ export function allocateRetainedQuantity(
 }
 
 interface PreparedPurchaseSource {
-  /** `市场` = 走品项公司发货的行；`供应链` = 走供应链采购入库的行。 */
+  /**
+   * `市场` = 来自市场报货汇总（行带市场归属）；`供应链` = 来自品项公司报货需求。
+   * 两类行都走供应链采购入库、按供应链采购价计金额（#335），kind 只决定来源血缘与参考价列。
+   */
   kind: '市场' | '供应链'
   source: DocItemSnapshot
   sku: SkuSnapshot
   quantity: number
   marketId: string | null
-  standardUnitPrice: number | null
-  unitDiscount: number | null
-  actualUnitPrice: number | null
-  supplyChainUnitCost: number | null
+  /** 供应链采购价，即行金额的价基（#335）。 */
+  supplyChainUnitCost: number
+  /** 市场行的市场结算价快照，只作参考列展示；供应链行为 null。 */
+  marketStandardUnitPrice: number | null
+  marketActualUnitPrice: number | null
 }
 
 /**
@@ -2935,7 +2967,7 @@ export async function createPurchaseOrder(
         throw new ApiError('INVALID_PARAMS', '来源明细不能重复引用')
       }
       seen.add(sourceItemId)
-      const quantity = positive(line.quantity, '采购数量')
+      const quantity = twoDecimals(positive(line.quantity, '采购数量'), '采购数量')
       const source = await docItemForUpdate(tx, sourceItemId)
       const header = await docForUpdate(tx, source.docId)
       if (header.status === '已取消') {
@@ -2963,16 +2995,20 @@ export async function createPurchaseOrder(
         }
         const marketId = required(source.marketId, '汇总明细的市场归属')
         assertSkuAvailableToMarket(sku, marketId)
+        // 市场行同样经供应链采购入库进总部库存（#335），只有供应链商品能对外采购；
+        // 市场自采 / 转让店商品不该出现在采购订单里，建单当下就拒，别等到入库才报。
+        if (sku.sourceType !== '供应链') {
+          throw new ApiError('INVALID_STATE', `采购订单只能采购供应链商品：${sku.productName}`)
+        }
         prepared.push({
           kind: '市场',
           source,
           sku,
           quantity,
           marketId,
-          standardUnitPrice: source.marketStandardUnitPrice,
-          unitDiscount: source.marketUnitDiscount,
-          actualUnitPrice: source.marketActualUnitPrice,
-          supplyChainUnitCost: sku.supplyChainPurchasePrice,
+          supplyChainUnitCost: requiredSupplyChainCost(sku, source.supplyChainUnitCost),
+          marketStandardUnitPrice: source.marketStandardUnitPrice,
+          marketActualUnitPrice: source.marketActualUnitPrice,
         })
       } else if (header.docType === '品项公司报货需求') {
         if (header.status !== '已完成') {
@@ -2999,10 +3035,9 @@ export async function createPurchaseOrder(
           sku,
           quantity,
           marketId: null,
-          standardUnitPrice: cost,
-          unitDiscount: null,
-          actualUnitPrice: cost,
           supplyChainUnitCost: cost,
+          marketStandardUnitPrice: null,
+          marketActualUnitPrice: null,
         })
       } else {
         throw new ApiError('INVALID_STATE', '采购订单只能引用市场报货汇总或品项公司报货需求')
@@ -3049,10 +3084,10 @@ export async function createPurchaseOrder(
       marketId: string | null
       quantity: number
       amount: number
-      standardAmount: number
-      pricedQuantity: number
-      supplyChainCostAmount: number
-      supplyChainCostQuantity: number
+      marketStandardAmount: number
+      marketStandardQuantity: number
+      marketActualAmount: number
+      marketActualQuantity: number
       sources: PreparedPurchaseSource[]
     }>()
     for (const line of prepared) {
@@ -3063,42 +3098,43 @@ export async function createPurchaseOrder(
         marketId: line.marketId,
         quantity: 0,
         amount: 0,
-        standardAmount: 0,
-        pricedQuantity: 0,
-        supplyChainCostAmount: 0,
-        supplyChainCostQuantity: 0,
+        marketStandardAmount: 0,
+        marketStandardQuantity: 0,
+        marketActualAmount: 0,
+        marketActualQuantity: 0,
         sources: [],
       }
       group.quantity = fixed(group.quantity + line.quantity)
-      if (line.actualUnitPrice !== null) {
-        group.amount = fixed(group.amount + line.quantity * line.actualUnitPrice)
-        group.standardAmount = fixed(
-          group.standardAmount + line.quantity * (line.standardUnitPrice ?? line.actualUnitPrice),
-        )
-        group.pricedQuantity = fixed(group.pricedQuantity + line.quantity)
+      // 金额与收货建批次用的成本同一价基（供应链采购价），且按量加权：
+      // 同 SKU 两张需求 1×80 与 9×100 合并后采购金额 980、均价 98，批次成本也按 98 入账。
+      group.amount = fixed(group.amount + line.quantity * line.supplyChainUnitCost)
+      // 市场结算价只作参考列，同样按量加权；来源缺价的不参与加权。
+      if (line.marketStandardUnitPrice !== null) {
+        group.marketStandardAmount = fixed(group.marketStandardAmount + line.quantity * line.marketStandardUnitPrice)
+        group.marketStandardQuantity = fixed(group.marketStandardQuantity + line.quantity)
       }
-      // 供应链成本同样要按量加权。早先固定取分组里第一条来源的成本，
-      // 而收货建批次用的就是这一列：同 SKU 两张需求 1×80 与 9×100 合并后
-      // 采购金额 980、均价 98，批次成本却按 80 入账，采购与入库口径当场分叉。
-      if (line.supplyChainUnitCost !== null) {
-        group.supplyChainCostAmount = fixed(
-          group.supplyChainCostAmount + line.quantity * line.supplyChainUnitCost,
-        )
-        group.supplyChainCostQuantity = fixed(group.supplyChainCostQuantity + line.quantity)
+      if (line.marketActualUnitPrice !== null) {
+        group.marketActualAmount = fixed(group.marketActualAmount + line.quantity * line.marketActualUnitPrice)
+        group.marketActualQuantity = fixed(group.marketActualQuantity + line.quantity)
       }
       group.sources.push(line)
       groups.set(key, group)
     }
-    const lines = Array.from(groups.values())
-    // 含供应链行就得等收货；纯市场行的单沿用收敛前「建单即已完成」的口径（市场行不经供应链入库）。
-    const hasSupplyChainLine = lines.some((line) => line.kind === '供应链')
+    // 行上存的是加权后的单价，金额由触发器按「数量 × 该单价」重算；这里先按同一口径算好。
+    const lines = Array.from(groups.values()).map((group) => {
+      // 单价列是 numeric(12,2)：先按分位取整再乘，与触发器 ROUND(数量 × 单价, 2) 同口径
+      // （单头最终由 AFTER 触发器按明细重算，这里只是让写入值与之一致）。
+      const supplyChainUnitCost = roundCents(group.amount / group.quantity)
+      return { ...group, supplyChainUnitCost, amount: roundCents(group.quantity * supplyChainUnitCost) }
+    })
     const docId = await generateDocId(tx, '采购订单')
     const totalQuantity = fixed(lines.reduce((sum, line) => sum + line.quantity, 0))
     const totalAmount = fixed(lines.reduce((sum, line) => sum + line.amount, 0))
     await insertDocHeader(tx, {
       id: docId,
       docType: '采购订单',
-      status: hasSupplyChainLine ? '待收货' : '已完成',
+      // 所有行都要经供应链采购入库（#335），建单一律「待收货」，入库收满才「已完成」。
+      status: '待收货',
       // 一张单可含多市场多供应商，单头两列已无法表达，归属全部下沉到明细行。
       sourceOrgNodeId: null,
       targetOrgNodeId: supplyChainLocationId,
@@ -3113,14 +3149,13 @@ export async function createPurchaseOrder(
       confirmed: true,
     })
     for (const line of lines) {
-      const actualUnitPrice = line.pricedQuantity > EPSILON
-        ? fixed(line.amount / line.pricedQuantity)
+      const { supplyChainUnitCost } = line
+      // 先取到分再相减，折扣才与落库后的两列之差一致
+      const marketStandardUnitPrice = line.marketStandardQuantity > EPSILON
+        ? roundCents(line.marketStandardAmount / line.marketStandardQuantity)
         : null
-      const standardUnitPrice = line.pricedQuantity > EPSILON
-        ? fixed(line.standardAmount / line.pricedQuantity)
-        : null
-      const unitDiscount = standardUnitPrice !== null && actualUnitPrice !== null
-        ? fixed(standardUnitPrice - actualUnitPrice)
+      const marketActualUnitPrice = line.marketActualQuantity > EPSILON
+        ? roundCents(line.marketActualAmount / line.marketActualQuantity)
         : null
       const isMarketLine = line.kind === '市场'
       const itemId = await insertDocItem(tx, {
@@ -3135,16 +3170,18 @@ export async function createPurchaseOrder(
         quantity: line.quantity,
         requestQuantity: fixed(line.sources.reduce((sum, item) => sum + item.source.quantity, 0)),
         fulfilledQuantity: 0,
-        standardUnitPrice,
-        unitDiscount,
-        actualUnitPrice,
+        // 行金额的价基是供应链采购价（#335）。0049 的金额触发器优先取 actual_unit_price，
+        // 所以这里必须写供应链采购价，写市场结算价会让金额又按市场价算回去。
+        standardUnitPrice: supplyChainUnitCost,
+        unitDiscount: null,
+        actualUnitPrice: supplyChainUnitCost,
         amount: line.amount,
-        supplyChainUnitCost: line.supplyChainCostQuantity > EPSILON
-          ? fixed(line.supplyChainCostAmount / line.supplyChainCostQuantity)
+        supplyChainUnitCost,
+        marketStandardUnitPrice: isMarketLine ? marketStandardUnitPrice : null,
+        marketUnitDiscount: isMarketLine && marketStandardUnitPrice !== null && marketActualUnitPrice !== null
+          ? fixed(marketStandardUnitPrice - marketActualUnitPrice)
           : null,
-        marketStandardUnitPrice: isMarketLine ? standardUnitPrice : null,
-        marketUnitDiscount: isMarketLine ? unitDiscount : null,
-        marketActualUnitPrice: isMarketLine ? actualUnitPrice : null,
+        marketActualUnitPrice: isMarketLine ? marketActualUnitPrice : null,
         storeStandardUnitPrice: isMarketLine ? line.sku.storePurchasePrice : null,
         storeUnitDiscount: isMarketLine ? 0 : null,
         storeActualUnitPrice: isMarketLine ? line.sku.storePurchasePrice : null,
@@ -3297,8 +3334,8 @@ export async function createItemCompanyShipment(
         throw new ApiError('INVALID_PARAMS', '采购订单明细不能重复发货')
       }
       seen.add(purchaseOrderItemId)
-      const quantity = nonnegative(line.quantity, '发货数量')
-      const giftQuantity = nonnegative(line.giftQuantity, '赠送数量')
+      const quantity = twoDecimals(nonnegative(line.quantity, '发货数量'), '发货数量')
+      const giftQuantity = twoDecimals(nonnegative(line.giftQuantity, '赠送数量'), '赠送数量')
       if (quantity + giftQuantity <= EPSILON) {
         throw new ApiError('INVALID_PARAMS', '发货数量和赠送数量不能同时为 0')
       }
@@ -3390,11 +3427,8 @@ export async function createItemCompanyShipment(
           status: '已完成',
           createdBy: session.employeeId,
         })
-        await tx.execute(sql`
-          UPDATE inventory_doc_items
-             SET fulfilled_quantity = COALESCE(fulfilled_quantity, 0) + ${numeric(line.quantity)}
-           WHERE id = ${line.orderItem.id}
-        `)
+        // 采购行的 fulfilled_quantity 只记「已入库」（#335），发货进度只看
+        // `采购订单发货` 血缘（上面的 linkedQuantity），这里不再回写采购行。
       }
       if (line.giftQuantity > EPSILON) {
         const giftItemId = await insertOutboundShipmentItem(tx, {
@@ -3436,9 +3470,7 @@ export async function createItemCompanyShipment(
         })
       }
     }
-    // 市场行发完也可能是整单的最后一步（混合单里供应链行已先收完货），
-    // 所以这里同样要收口。纯市场单建单即「已完成」，此时是 no-op。
-    await completePurchaseOrderIfFullyFulfilled(tx, purchaseOrderId)
+    // 采购单的完结只由供应链采购入库推动（#335），发货不改采购单状态。
     return docId
   })
   await logOperation(session, 'inventory.item_company_shipment.create', 'inventory_docs', id, { purchaseOrderId })
@@ -3660,12 +3692,10 @@ export async function receiveItemCompanyShipment(
 }
 
 /**
- * 采购订单的完结判定：**全部**明细行都履约满了才转「已完成」。
+ * 采购订单的完结判定：**全部**明细行都入库满了才转「已完成」。
  *
- * 收敛后一张单可以同时含市场行与供应链行，两类行的履约来自不同动作 ——
- * 市场行由品项公司发货回写、供应链行由供应链采购入库回写 —— 所以**两个动作末尾都要调它**，
- * 谁最后完成谁负责收口。早先只有收货路径调用，导致「先收完供应链货、再发完市场货」的
- * 顺序下单据永久卡在待收货，而关闭流程又拒绝含市场行的单，操作员没有任何补救手段。
+ * #335 起所有行（不论有无市场归属）都经供应链采购入库，fulfilled_quantity 只记已入库量，
+ * 所以只有入库路径调用它；发货不改采购单状态。
  */
 async function completePurchaseOrderIfFullyFulfilled(tx: Tx, purchaseOrderId: string): Promise<void> {
   const [row] = rows<{ completed: boolean }>(await tx.execute(sql`
@@ -3708,7 +3738,8 @@ export async function receiveSupplyChainPurchaseOrder(
     }
     // 收敛后不再按单据类型分流，也不再回溯唯一的品项公司报货需求单
     // （一张采购单可以同时汇总多张需求单，「来源单唯一」这个前提已不成立）。
-    // 能走供应链入库的只有**没有市场归属**的明细行，逐行校验见下面的循环。
+    // 所有明细行（不论有无市场归属）都走供应链入库生成总部批次（#335），
+    // market_id 只是来源追溯标记。
     const supplyChain = await locationForUpdate(tx, supplyChainLocationId)
     assertType(supplyChain, '总部', '供应链采购入库主体')
     assertLocationWritable(session, supplyChain)
@@ -3730,18 +3761,12 @@ export async function receiveSupplyChainPurchaseOrder(
       }
       seen.add(itemId)
       const orderItem = await docItemForUpdate(tx, itemId, purchaseOrderId)
-      if (orderItem.marketId) {
-        throw new ApiError(
-          'INVALID_STATE',
-          '该采购明细有市场归属，应由品项公司发货送达市场，不能直接入供应链库存',
-        )
-      }
       const sku = await loadSku(tx, orderItem.skuId, false, false)
       assertSupplyChainSku(sku)
       if (line.isGift) {
         throw new ApiError('INVALID_PARAMS', '供应链采购入库不能将采购订单数量标记为赠送')
       }
-      const quantity = positive(line.quantity, '实收数量')
+      const quantity = twoDecimals(positive(line.quantity, '实收数量'), '实收数量')
       const received = await linkedQuantity(tx, orderItem.id, '采购订单供应链采购入库')
       if (nearlyGreater(quantity, orderItem.quantity - received)) {
         throw new ApiError('CONFLICT', '实收数量不能超过采购订单待收数量')
@@ -3886,23 +3911,22 @@ export async function cancelSupplyChainPurchaseOrder(
     if (orderItems.length === 0) {
       throw new ApiError('INVALID_STATE', '采购订单没有可关闭的明细')
     }
-    // 市场行只要发过货就不能在这里关单：已发出的货要经市场财务申请 + 供应链审批
-    // （`requestItemCompanyShipmentCancellation`）才能撤回，在这儿顺手取消等于绕过那道审批。
+    // 关单后每行的有效采购量收缩为「已入库量」（#335：所有行都经供应链采购入库）。
+    // 市场行的**正常发货量**若已超过已入库量，超出部分就失去了采购依据 —— 关单会把这部分
+    // 额度退回汇总单，允许再下一次采购，同一批需求被发两次货。这种情况必须先经市场财务申请 +
+    // 供应链审批（`requestItemCompanyShipmentCancellation`）撤回多发的发货，再关单。
+    // 赠送发货不占采购数量，不参与比较。
     //
-    // 反之，**未发货的市场行不构成关单障碍**：市场侧的需求占用是按血缘算的
-    // （`linkedQuantity` 会排除已取消单），整单转「已取消」后占用自动释放，无需回写。
-    // 早先这里对「含市场行」一刀切拒绝，结果混合单一旦供应链侧短供就既关不掉、
-    // 又释放不了来源占用，操作员只能改库。
+    // 发货量不超过已入库量的市场行不构成关单障碍：汇总行的未入库额度在下面按占比退还，
+    // 原始市场报货行的占用按血缘算，整单转「已取消」后只保留已入库部分（见上面的说明）。
     for (const item of orderItems) {
       if (!item.marketId) continue
-      const shipped = fixed(
-        await linkedQuantity(tx, item.id, '采购订单发货')
-        + await linkedQuantity(tx, item.id, '采购订单赠送发货'),
-      )
-      if (shipped > EPSILON) {
+      const shipped = await linkedQuantity(tx, item.id, '采购订单发货')
+      const received = await linkedQuantity(tx, item.id, '采购订单供应链采购入库')
+      if (nearlyGreater(shipped, received)) {
         throw new ApiError(
           'INVALID_STATE',
-          '该采购订单的市场明细已发货，请先走品项公司发货撤回流程，再关闭采购订单',
+          '该采购订单的市场明细发货量已超过已入库量，请先走品项公司发货撤回流程，再关闭采购订单',
         )
       }
     }
@@ -3945,10 +3969,8 @@ export async function cancelSupplyChainPurchaseOrder(
       if (Math.abs(sourceLinkedQuantity - orderItem.quantity) > EPSILON) {
         throw new ApiError('INVALID_STATE', '采购订单明细与品项公司报货数量不一致')
       }
-      // 市场行不经供应链入库，没有"已收"概念，整单取消即全额作废。
-      const receivedQuantity = orderItem.marketId
-        ? 0
-        : await linkedQuantity(tx, orderItem.id, '采购订单供应链采购入库')
+      // 两类行都经供应链采购入库（#335），已收量一律按入库血缘算。
+      const receivedQuantity = await linkedQuantity(tx, orderItem.id, '采购订单供应链采购入库')
       if (nearlyGreater(receivedQuantity, orderItem.quantity)) {
         throw new ApiError('CONFLICT', '采购订单实收数量异常，不能关闭')
       }
@@ -3975,7 +3997,8 @@ export async function cancelSupplyChainPurchaseOrder(
     // 按 id 升序回退，取锁顺序确定（与建单侧一致，避免 ABBA）。
     // 这里同时覆盖两类来源行：品项公司报货需求行、市场报货汇总行 —— 两者的占用都记在
     // 各自的 fulfilled_quantity 上，不回退的话来源行会永远显示"已全部下单"，再也用不了。
-    // （原始市场报货行不在此列：它的占用只记血缘，单据转已取消后 linkedQuantity 自动排除。）
+    // （原始市场报货行不在此列：它的占用只记血缘。单据转已取消后，已入库部分按「已入库 × 占比」
+    //   继续占用、未入库部分自动释放 —— 见 allocateSummaryToMarketReportItems 与 engine 市场报货进度。）
     for (const requestItemId of [...remainingByRequestItem.keys()].sort((a, b) => a - b)) {
       const remainingQuantity = remainingByRequestItem.get(requestItemId)!
       const requestItem = await docItemForUpdate(tx, requestItemId)
@@ -4666,7 +4689,7 @@ export async function requestItemCompanyShipmentCancellation(
   return { success: true }
 }
 
-/** 具备撤回审批权限的用户审批后才真正回滚总部库存与采购订单履约数量。 */
+/** 具备撤回审批权限的用户审批后才真正回滚总部库存；采购行可发量随发货单取消自动恢复（#335）。 */
 export async function approveItemCompanyShipmentCancellation(
   session: AuthSession,
   input: ResolveItemCompanyShipmentCancellationInput,
@@ -4702,18 +4725,8 @@ export async function approveItemCompanyShipmentCancellation(
         remark: cancellationReason,
       })
     }
-    await tx.execute(sql`
-      UPDATE inventory_doc_items purchase_item
-         SET fulfilled_quantity = GREATEST(0, COALESCE(purchase_item.fulfilled_quantity, 0) - cancelled.quantity)
-        FROM (
-          SELECT from_item_id, COALESCE(SUM(quantity), 0) AS quantity
-            FROM inventory_doc_links
-           WHERE to_doc_id = ${shipmentId}
-             AND relation_type = '采购订单发货'
-           GROUP BY from_item_id
-        ) cancelled
-       WHERE purchase_item.id = cancelled.from_item_id
-    `)
+    // 采购行的 fulfilled_quantity 只记「已入库」（#335），发货从未回写它；
+    // 撤回后发货单转「已取消」，linkedQuantity 自动把这笔发货量排除，可发量随之恢复。
     await tx.execute(sql`
       UPDATE inventory_docs
          SET status = '已取消', cancellation_reason = ${cancellationReason},

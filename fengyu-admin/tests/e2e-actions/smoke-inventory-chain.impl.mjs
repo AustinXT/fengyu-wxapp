@@ -194,10 +194,17 @@ try {
   })
   const cgdHead = await docHeader(cgdId)
   const [cgdItem] = await docItems(cgdId)
-  check('采购订单继承市场报货福利价并核算金额',
-    num(cgdHead?.total_amount) === 5700 && num(cgdItem?.actual_unit_price) === 950,
-    `total=${cgdHead?.total_amount}`)
-  check('市场行带市场归属（据此分流到品项公司发货）', cgdItem?.market_id === MKA_ORG, `${cgdItem?.market_id}`)
+  // #335：市场行也走供应链采购入库，金额按供应链采购价（6×800），市场结算价 950 只作参考列
+  check('采购订单(市场行)金额=采购数量×供应链采购价，市场价只作参考(#335)',
+    num(cgdHead?.total_amount) === 4800 && num(cgdItem?.actual_unit_price) === 800
+      && num(cgdItem?.amount) === 4800 && num(cgdItem?.market_actual_unit_price) === 950,
+    `total=${cgdHead?.total_amount} actual=${cgdItem?.actual_unit_price} mkt=${cgdItem?.market_actual_unit_price}`)
+  check('纯市场行的采购订单建单为待收货(#335)', cgdHead?.status === '待收货', `${cgdHead?.status}`)
+  check('市场行带市场归属（来源追溯）', cgdItem?.market_id === MKA_ORG, `${cgdItem?.market_id}`)
+  const receiptInbox = await docs.listInventoryOperationDocs({ operationId: 'supply-chain-receipt' })
+  check('纯市场行的采购订单进入供应链采购入库待办(#335)',
+    (receiptInbox.inbox?.data ?? []).some((row) => row.id === cgdId),
+    JSON.stringify((receiptInbox.inbox?.data ?? []).map((row) => row.id)))
   // #194 的关键设计：采购单同时写两类血缘 —— 对汇总行写 `报货汇总采购订单`，
   // 并跨过汇总单对**原始市场报货行**写 `市场报货采购订单`，
   // 好让 engine 统计「已采购」时不必穿透两跳。
@@ -220,7 +227,59 @@ try {
       items: [{ sourceItemId: mbhItem.id, quantity: 1 }],
     }))
 
+  // ════ 阶段 4b：市场行供应链采购入库（#335，分批 2 + 4，超量被拒）════
+  await biz.receiveSupplyChainPurchaseOrder({
+    purchaseOrderId: cgdId,
+    supplyChainLocationId: HQ_ORG,
+    items: [{ purchaseOrderItemId: cgdItem.id, quantity: 2, batchNo: 'MKT-A', expiryDate: '2027-12-31' }],
+  })
+  const cgdPartialRow = (await docs.getInventoryCoreDocById(cgdId))
+  const cgdPartialProgress = cgdPartialRow?.fulfillmentProgress
+  check('市场行入库 2/6：待收货 + 派生「部分入库」，剩余 4(#335)',
+    cgdPartialRow?.status === '待收货' && cgdPartialRow?.partiallyReceived === true
+      && cgdPartialProgress?.kind === '供应链采购收货'
+      && cgdPartialProgress.items[0]?.receivedQuantity === 2
+      && cgdPartialProgress.items[0]?.outstandingQuantity === 4,
+    JSON.stringify({ status: cgdPartialRow?.status, partial: cgdPartialRow?.partiallyReceived, progress: cgdPartialProgress }))
+  await expectThrow('市场行超过剩余量入库被拒(CONFLICT)', /CONFLICT/, () =>
+    biz.receiveSupplyChainPurchaseOrder({
+      purchaseOrderId: cgdId,
+      supplyChainLocationId: HQ_ORG,
+      items: [{ purchaseOrderItemId: cgdItem.id, quantity: 5, batchNo: 'MKT-A', expiryDate: '2027-12-31' }],
+    }))
+  const { id: cgdInboundId } = await biz.receiveSupplyChainPurchaseOrder({
+    purchaseOrderId: cgdId,
+    supplyChainLocationId: HQ_ORG,
+    items: [{ purchaseOrderItemId: cgdItem.id, quantity: 4, batchNo: 'MKT-A', expiryDate: '2027-12-31' }],
+  })
+  check('市场行全部入库后采购订单完结(#335)', (await docHeader(cgdId))?.status === '已完成', '')
+  // 两次入库各落一个批次（批次键含来源入库单），合计 6 件
+  const mktHqLots = (await locationLots(HQ_ORG, SKU_SUPPLY)).filter((lot) => lot.batch_no === 'MKT-A')
+  check('市场行入库生成总部批次合计 6 件、成本 800(#335)',
+    mktHqLots.reduce((sum, lot) => sum + num(lot.quantity_on_hand), 0) === 6
+      && mktHqLots.every((lot) => num(lot.supply_chain_unit_cost) === 800),
+    JSON.stringify(mktHqLots.map((lot) => [lot.quantity_on_hand, lot.supply_chain_unit_cost])))
+  const inboundTrace = await pgQuery(
+    `SELECT l.from_item_id, po_item.market_id
+       FROM inventory_doc_links l
+       JOIN inventory_doc_items po_item ON po_item.id = l.from_item_id
+      WHERE l.to_doc_id = $1 AND l.relation_type = '采购订单供应链采购入库'`, [cgdInboundId])
+  check('入库明细可追溯到采购行及其市场来源(#335)',
+    inboundTrace.length === 1 && Number(inboundTrace[0].from_item_id) === Number(cgdItem.id)
+      && inboundTrace[0].market_id === MKA_ORG,
+    JSON.stringify(inboundTrace))
+  await expectThrow('已完成的采购订单不能再入库(INVALID_STATE)', /INVALID_STATE/, () =>
+    biz.receiveSupplyChainPurchaseOrder({
+      purchaseOrderId: cgdId,
+      supplyChainLocationId: HQ_ORG,
+      items: [{ purchaseOrderItemId: cgdItem.id, quantity: 1 }],
+    }))
+  await expectThrow('已完成的采购订单不能关闭(INVALID_STATE)', /INVALID_STATE/, () =>
+    biz.cancelSupplyChainPurchaseOrder({ purchaseOrderId: cgdId, cancellationReason: '测试' }))
+
   // ════ 阶段 5：品项公司发货（§5.2 赠送 / §5.3 无金额）════
+  // #335 过渡期：发货仍以采购行数量封顶（由 #336 改为引用市场报货单），发货批次也不必是
+  // 本采购行入库的那一批 —— 这里沿用总部备货批次，下游库存断言保持不变。
   await expectThrow('正常发货数量超过采购订单被拒(CONFLICT)', /CONFLICT/, () =>
     biz.createItemCompanyShipment({
       purchaseOrderId: cgdId,
@@ -232,6 +291,8 @@ try {
     sourceOrgNodeId: HQ_ORG,
     items: [{ purchaseOrderItemId: cgdItem.id, lotId: hqLot.id, quantity: 6, giftQuantity: 2 }],
   })
+  check('发货不回写采购行 fulfilled（只记入库量）(#335)',
+    num((await docItems(cgdId))[0]?.fulfilled_quantity) === 6, `${(await docItems(cgdId))[0]?.fulfilled_quantity}`)
   const gfhHead = await docHeader(gfhId)
   const gfhItems = await docItems(gfhId)
   const gfhNormal = gfhItems.find((item) => !item.is_gift)
@@ -491,14 +552,27 @@ try {
   check('撤回申请后发货单转待审批', (await docHeader(gfh2Id))?.status === '待审批', '')
 
   setSession(supplyChainSession())
+  // 发货 3 > 已入库 0：关单会让这 3 件失去采购依据，必须先撤回发货（#335）
+  await expectThrow('市场行发货量超过已入库量时不能关闭采购订单(#335)', /INVALID_STATE/, () =>
+    biz.cancelSupplyChainPurchaseOrder({ purchaseOrderId: cgd2Id, cancellationReason: '测试' }))
   await biz.approveItemCompanyShipmentCancellation({ shipmentId: gfh2Id, auditRemark: '同意撤回' })
   const gfh2Head = await docHeader(gfh2Id)
   const [cgd2ItemAfter] = await docItems(cgd2Id)
-  check('供应链审批撤回：单据取消 + 总部库存回滚 + 采购订单履约回退(§6.2)',
+  const cgd2Progress = (await docs.getInventoryCoreDocById(cgd2Id))?.fulfillmentProgress
+  check('供应链审批撤回：单据取消 + 总部库存回滚 + 采购行可发量恢复、入库量不动(§6.2/#335)',
     gfh2Head?.status === '已取消'
       && num((await locationLots(HQ_ORG, SKU_SUPPLY))[0]?.quantity_on_hand) === 92
-      && num(cgd2ItemAfter?.fulfilled_quantity) === 0,
-    `status=${gfh2Head?.status} fulfilled=${cgd2ItemAfter?.fulfilled_quantity}`)
+      && num(cgd2ItemAfter?.fulfilled_quantity) === 0
+      && cgd2Progress?.kind === '供应链采购收货' && cgd2Progress.items[0]?.shippedQuantity === 0,
+    `status=${gfh2Head?.status} fulfilled=${cgd2ItemAfter?.fulfilled_quantity} progress=${JSON.stringify(cgd2Progress)}`)
+  await biz.cancelSupplyChainPurchaseOrder({ purchaseOrderId: cgd2Id, cancellationReason: '撤回后关闭' })
+  check('撤回发货后市场行采购订单可关闭(#335)', (await docHeader(cgd2Id))?.status === '已取消', '')
+  await expectThrow('已关闭的采购订单不能入库(INVALID_STATE)', /INVALID_STATE/, () =>
+    biz.receiveSupplyChainPurchaseOrder({
+      purchaseOrderId: cgd2Id,
+      supplyChainLocationId: HQ_ORG,
+      items: [{ purchaseOrderItemId: cgd2Item.id, quantity: 1 }],
+    }))
   setSession(marketASession())
   const gfh2FirstItem = (await docItems(gfh2Id))[0]
   await expectThrow('已取消发货单不可再收货(§6.1)', /INVALID_STATE/, () =>
@@ -565,6 +639,180 @@ try {
     num((await docItems(mixReqId))[0]?.fulfilled_quantity) === 0
       && num((await docItems(mixMhzId))[0]?.fulfilled_quantity) === 0,
     `req=${(await docItems(mixReqId))[0]?.fulfilled_quantity} mhz=${(await docItems(mixMhzId))[0]?.fulfilled_quantity}`)
+  // ════ 阶段 9b：市场行部分入库后关单（#335）════
+  // 关单只退还未入库的部分：汇总行保留已入库量；原始市场报货的「已采购」按已入库保留，
+  // 再次下单剩余量时不得把已入库的部分重复分摊到原始行上。
+  setSession(storeA1Session())
+  const { id: pcStoreReqId } = await biz.createStoreReplenishmentRequest({
+    storeId: STA1_ID, marketId: MKA_ORG,
+    items: [{ skuId: SKU_SUPPLY, quantity: 4 }],
+  })
+  const [pcStoreItem] = await docItems(pcStoreReqId)
+  setSession(marketASession())
+  const { id: pcMbhId } = await biz.createMarketReplenishment({
+    marketId: MKA_ORG, supplyChainLocationId: HQ_ORG,
+    items: [{ skuId: SKU_SUPPLY, sourceRequestItemIds: [pcStoreItem.id], purchaseQuantity: 4 }],
+  })
+  const [pcMbhItem] = await docItems(pcMbhId)
+  setSession(supplyChainSession())
+  const { id: pcMhzId } = await biz.createMarketReportSummary({
+    supplyChainLocationId: HQ_ORG,
+    items: [{ skuId: SKU_SUPPLY, marketId: MKA_ORG, quantity: 4, sourceReportItemIds: [pcMbhItem.id] }],
+  })
+  const [pcMhzItem] = await docItems(pcMhzId)
+  const { id: pcPoId } = await biz.createPurchaseOrder({
+    supplyChainLocationId: HQ_ORG,
+    items: [{ sourceItemId: pcMhzItem.id, quantity: 4 }],
+  })
+  const [pcPoItem] = await docItems(pcPoId)
+  await biz.receiveSupplyChainPurchaseOrder({
+    purchaseOrderId: pcPoId,
+    supplyChainLocationId: HQ_ORG,
+    items: [{ purchaseOrderItemId: pcPoItem.id, quantity: 1, batchNo: 'PC-1' }],
+  })
+  await biz.cancelSupplyChainPurchaseOrder({ purchaseOrderId: pcPoId, cancellationReason: '供应商短供' })
+  const pcMbhAfterClose = (await docs.getInventoryCoreDocById(pcMbhId))?.fulfillmentProgress?.items?.[0]
+  check('部分入库后关单：汇总行保留已入库 1，原始报货「已采购」保留 1(#335)',
+    (await docHeader(pcPoId))?.status === '已取消'
+      && num((await docItems(pcMhzId))[0]?.fulfilled_quantity) === 1
+      && pcMbhAfterClose?.orderedQuantity === 1,
+    `mhz=${(await docItems(pcMhzId))[0]?.fulfilled_quantity} mbh=${JSON.stringify(pcMbhAfterClose)}`)
+  await expectThrow('关单后汇总行只能再下未入库的 3 件(CONFLICT)', /CONFLICT/, () =>
+    biz.createPurchaseOrder({ supplyChainLocationId: HQ_ORG, items: [{ sourceItemId: pcMhzItem.id, quantity: 4 }] }))
+  const { id: pcPo2Id } = await biz.createPurchaseOrder({
+    supplyChainLocationId: HQ_ORG,
+    items: [{ sourceItemId: pcMhzItem.id, quantity: 3 }],
+  })
+  const pcReportLinks = await pgQuery(
+    `SELECT quantity FROM inventory_doc_links
+      WHERE to_doc_id = $1 AND relation_type = '市场报货采购订单'`, [pcPo2Id])
+  const pcMbhAfterReorder = (await docs.getInventoryCoreDocById(pcMbhId))?.fulfillmentProgress?.items?.[0]
+  check('再次下单剩余 3 件：原始报货分摊 3，「已采购」合计 4 不超过报货量(#335)',
+    pcReportLinks.length === 1 && num(pcReportLinks[0].quantity) === 3
+      && pcMbhAfterReorder?.orderedQuantity === 4,
+    `links=${JSON.stringify(pcReportLinks)} mbh=${JSON.stringify(pcMbhAfterReorder)}`)
+  await biz.cancelSupplyChainPurchaseOrder({ purchaseOrderId: pcPo2Id, cancellationReason: '清理' })
+
+  // ════ 阶段 9c：三来源合并的市场行部分入库后关单，保留量按分分配（#335 评审 P2）════
+  // 三张市场报货各 1 件 → 汇总 3 → 采购 3 → 入库 1 → 关单 → 重下 2：
+  // 原始报货的保留量必须是 0.34/0.33/0.33 这样的整分，重下 2 件的血缘合计严格 2.00，
+  // 且每张报货累计「已采购」不超过 1。
+  const trioReportItems = []
+  for (let index = 0; index < 3; index += 1) {
+    setSession(storeA1Session())
+    const { id: trioStoreId } = await biz.createStoreReplenishmentRequest({
+      storeId: STA1_ID, marketId: MKA_ORG,
+      items: [{ skuId: SKU_SUPPLY, quantity: 1 }],
+    })
+    const [trioStoreItem] = await docItems(trioStoreId)
+    setSession(marketASession())
+    const { id: trioMbhId } = await biz.createMarketReplenishment({
+      marketId: MKA_ORG, supplyChainLocationId: HQ_ORG,
+      items: [{ skuId: SKU_SUPPLY, sourceRequestItemIds: [trioStoreItem.id], purchaseQuantity: 1 }],
+    })
+    const [trioMbhItem] = await docItems(trioMbhId)
+    trioReportItems.push({ docId: trioMbhId, itemId: trioMbhItem.id })
+  }
+  setSession(supplyChainSession())
+  const { id: trioMhzId } = await biz.createMarketReportSummary({
+    supplyChainLocationId: HQ_ORG,
+    items: [{
+      skuId: SKU_SUPPLY, marketId: MKA_ORG, quantity: 3,
+      sourceReportItemIds: trioReportItems.map((item) => item.itemId),
+    }],
+  })
+  const [trioMhzItem] = await docItems(trioMhzId)
+  const { id: trioPoId } = await biz.createPurchaseOrder({
+    supplyChainLocationId: HQ_ORG,
+    items: [{ sourceItemId: trioMhzItem.id, quantity: 3 }],
+  })
+  const [trioPoItem] = await docItems(trioPoId)
+  await biz.receiveSupplyChainPurchaseOrder({
+    purchaseOrderId: trioPoId,
+    supplyChainLocationId: HQ_ORG,
+    items: [{ purchaseOrderItemId: trioPoItem.id, quantity: 1, batchNo: 'TRIO-1' }],
+  })
+  await biz.cancelSupplyChainPurchaseOrder({ purchaseOrderId: trioPoId, cancellationReason: '供应商短供' })
+  await expectThrow('已关闭的采购订单不能再发货(Q4, INVALID_STATE)', /INVALID_STATE/, () =>
+    biz.createItemCompanyShipment({
+      purchaseOrderId: trioPoId,
+      sourceOrgNodeId: HQ_ORG,
+      items: [{ purchaseOrderItemId: trioPoItem.id, lotId: hqLot.id, quantity: 1 }],
+    }))
+  const trioRetained = []
+  for (const item of trioReportItems) {
+    trioRetained.push((await docs.getInventoryCoreDocById(item.docId))?.fulfillmentProgress?.items?.[0]?.orderedQuantity)
+  }
+  check('三来源部分入库关单：原始报货保留量按分分配、合计=已入库 1(#335)',
+    trioRetained.every((value) => Math.round(value * 100) === value * 100)
+      && Math.abs(trioRetained.reduce((sum, value) => sum + value, 0) - 1) < 0.001,
+    JSON.stringify(trioRetained))
+  const { id: trioPo2Id } = await biz.createPurchaseOrder({
+    supplyChainLocationId: HQ_ORG,
+    items: [{ sourceItemId: trioMhzItem.id, quantity: 2 }],
+  })
+  const trioLinks = await pgQuery(
+    `SELECT from_item_id, quantity FROM inventory_doc_links
+      WHERE to_doc_id = $1 AND relation_type = '市场报货采购订单' ORDER BY from_item_id`, [trioPo2Id])
+  const trioOrdered = []
+  for (const item of trioReportItems) {
+    trioOrdered.push((await docs.getInventoryCoreDocById(item.docId))?.fulfillmentProgress?.items?.[0]?.orderedQuantity)
+  }
+  check('三来源重下 2 件：血缘合计严格 2.00，每张报货累计已采购 = 1(#335)',
+    Math.round(trioLinks.reduce((sum, link) => sum + num(link.quantity), 0) * 100) === 200
+      && trioOrdered.every((value) => Math.abs(value - 1) < 0.001),
+    JSON.stringify({ links: trioLinks, ordered: trioOrdered }))
+  await biz.cancelSupplyChainPurchaseOrder({ purchaseOrderId: trioPo2Id, cancellationReason: '清理' })
+
+  // ════ 阶段 9d：同一原始报货行分两张汇总单、再并进同一采购行（#335 评审 codex round-2 P2）════
+  // 同一对 (原始行, 采购行) 有两条血缘；部分入库关单后保留量只能算一次。
+  setSession(storeA1Session())
+  const { id: dupPairStoreId } = await biz.createStoreReplenishmentRequest({
+    storeId: STA1_ID, marketId: MKA_ORG,
+    items: [{ skuId: SKU_SUPPLY, quantity: 2 }],
+  })
+  const [dupPairStoreItem] = await docItems(dupPairStoreId)
+  setSession(marketASession())
+  const { id: dupPairMbhId } = await biz.createMarketReplenishment({
+    marketId: MKA_ORG, supplyChainLocationId: HQ_ORG,
+    items: [{ skuId: SKU_SUPPLY, sourceRequestItemIds: [dupPairStoreItem.id], purchaseQuantity: 2 }],
+  })
+  const [dupPairMbhItem] = await docItems(dupPairMbhId)
+  setSession(supplyChainSession())
+  const dupPairSummaryItems = []
+  for (let index = 0; index < 2; index += 1) {
+    const { id: dupPairMhzId } = await biz.createMarketReportSummary({
+      supplyChainLocationId: HQ_ORG,
+      items: [{ skuId: SKU_SUPPLY, marketId: MKA_ORG, quantity: 1, sourceReportItemIds: [dupPairMbhItem.id] }],
+    })
+    dupPairSummaryItems.push((await docItems(dupPairMhzId))[0])
+  }
+  const { id: dupPairPoId } = await biz.createPurchaseOrder({
+    supplyChainLocationId: HQ_ORG,
+    items: dupPairSummaryItems.map((item) => ({ sourceItemId: item.id, quantity: 1 })),
+  })
+  const dupPairPoItems = await docItems(dupPairPoId)
+  const dupPairLinks = await pgQuery(
+    `SELECT COUNT(*)::int AS n FROM inventory_doc_links
+      WHERE to_doc_id = $1 AND relation_type = '市场报货采购订单' AND from_item_id = $2`, [dupPairPoId, dupPairMbhItem.id])
+  await biz.receiveSupplyChainPurchaseOrder({
+    purchaseOrderId: dupPairPoId,
+    supplyChainLocationId: HQ_ORG,
+    items: [{ purchaseOrderItemId: dupPairPoItems[0].id, quantity: 1, batchNo: 'DUPPAIR-1' }],
+  })
+  await biz.cancelSupplyChainPurchaseOrder({ purchaseOrderId: dupPairPoId, cancellationReason: '供应商短供' })
+  const dupPairOrdered = (await docs.getInventoryCoreDocById(dupPairMbhId))?.fulfillmentProgress?.items?.[0]?.orderedQuantity
+  check('同一对(原始行,采购行)两条血缘：部分入库关单后「已采购」只算一次 = 1(#335)',
+    dupPairPoItems.length === 1 && dupPairLinks[0]?.n === 2 && dupPairOrdered === 1,
+    JSON.stringify({ lines: dupPairPoItems.length, links: dupPairLinks[0]?.n, ordered: dupPairOrdered }))
+  const { id: dupPairPo2Id } = await biz.createPurchaseOrder({
+    supplyChainLocationId: HQ_ORG,
+    items: dupPairSummaryItems.map((item) => ({ sourceItemId: item.id, quantity: 0.5 })),
+  })
+  const dupPairOrderedAfter = (await docs.getInventoryCoreDocById(dupPairMbhId))?.fulfillmentProgress?.items?.[0]?.orderedQuantity
+  check('重下剩余 1 件后原始报货「已采购」= 2，不超过报货量(#335)', dupPairOrderedAfter === 2, `${dupPairOrderedAfter}`)
+  await biz.cancelSupplyChainPurchaseOrder({ purchaseOrderId: dupPairPo2Id, cancellationReason: '清理' })
+
   // ════ 阶段 10：跨来源单合并到同一采购行，履约进度不得重复计数 ════
   // 两张品项公司报货需求的同一 SKU 会被合并成**一条**采购明细。
   // 下游入库量必须按各来源的血缘占比分摊回去；若按采购行全量归属，
