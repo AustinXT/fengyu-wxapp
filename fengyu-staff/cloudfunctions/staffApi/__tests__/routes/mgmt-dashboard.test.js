@@ -1446,8 +1446,10 @@ describe('mgmtDashboard.scopeOptions', () => {
     pg.query.mockReset()
       .mockResolvedValueOnce(THREE_MARKETS_ROWS)
       .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
       .mockResolvedValueOnce(THREE_MARKETS_ROWS.filter((row) => row.store_id !== 'store-A2'))
       .mockResolvedValueOnce([{ store_id: 'store-A2', store_name: '上海B店' }])
+      .mockResolvedValueOnce([])
 
     const ctx1 = createCtx({
       auth: {
@@ -1467,8 +1469,8 @@ describe('mgmtDashboard.scopeOptions', () => {
     await scopeOptions(ctx1)
     await scopeOptions(ctx2)
 
-    // 每次 = 市场/在营门店 + 停用门店 两条查询
-    expect(pg.query).toHaveBeenCalledTimes(4)
+    // 每次 = 市场/在营门店 + 停用门店 + 已关店标记（#422）三条查询
+    expect(pg.query).toHaveBeenCalledTimes(6)
     expect(ctx1.result.inactiveStores).toEqual([])
     expect(ctx2.result.inactiveStores).toEqual([{ storeId: 'store-A2', storeName: '上海B店' }])
     expect(ctx1.result.markets).toHaveLength(3)
@@ -2815,5 +2817,84 @@ describe('mgmtDashboard.salesData · 停用门店标记（#400）', () => {
     const ctx = makeHqCtx({ period: 'month', scope: { type: 'all' } })
     await salesData(ctx)
     expect(ctx.result.scope).toEqual({ type: 'all', id: null, name: '全部市场', inactive: false })
+  })
+})
+
+// =============================================================================
+// scopeOptions —— 只关店、节点仍启用的门店打 closed 标（#422，纯展示）
+// =============================================================================
+
+describe('mgmtDashboard.scopeOptions · 已关店标记', () => {
+  const ROWS = [
+    { market_id: 'mkt-A', market_name: '华东市场', store_id: 'store-A1', store_name: '上海A店' },
+    { market_id: 'mkt-A', market_name: '华东市场', store_id: 'store-A2', store_name: '上海B店' },
+    { market_id: 'mkt-B', market_name: '华南市场', store_id: 'store-B1', store_name: '广州A店' },
+  ]
+  const CLOSED_SQL = /SELECT store_id FROM stores WHERE is_closed = TRUE AND store_id = ANY\(\$1::text\[\]\)/
+
+  const marketCtx = () => createCtx({
+    auth: {
+      staffLevel: 'market',
+      loginLevel: 'management',
+      roleBindings: [{ role: 'manager', scopeId: 'mkt-A', scopeType: '市场' }],
+      scopeOrgNodeIds: ['mkt-A'],
+      scopeStoreIds: ['store-A1', 'store-A2'],
+    },
+  })
+
+  /** 按 SQL 分派：下拉 → ROWS，停用门店 → []，关店 → closedRows */
+  function routeQueries(closedRows) {
+    pg.query.mockReset().mockImplementation(async (text) => {
+      if (CLOSED_SQL.test(text)) return typeof closedRows === 'function' ? closedRows() : closedRows
+      if (/market_descendants/.test(text)) return ROWS
+      return []
+    })
+  }
+
+  test('已关店门店带 closed: true，其余门店不带该字段；只查权限内可见门店', async () => {
+    routeQueries([{ store_id: 'store-A2' }])
+    const ctx = marketCtx()
+    await scopeOptions(ctx)
+
+    expect(ctx.result.markets).toEqual([
+      {
+        id: 'mkt-A',
+        name: '华东市场',
+        stores: [
+          { storeId: 'store-A1', storeName: '上海A店' },
+          { storeId: 'store-A2', storeName: '上海B店', closed: true },
+        ],
+      },
+    ])
+    const closedCall = pg.query.mock.calls.find(([text]) => CLOSED_SQL.test(text))
+    expect(closedCall[1]).toEqual([['store-A1', 'store-A2']])
+  })
+
+  test('关店查询失败 → 不打标、下拉照常返回', async () => {
+    routeQueries(() => { throw new Error('boom') })
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const ctx = marketCtx()
+    await scopeOptions(ctx)
+    spy.mockRestore()
+
+    expect(ctx.result.markets[0].stores).toEqual([
+      { storeId: 'store-A1', storeName: '上海A店' },
+      { storeId: 'store-A2', storeName: '上海B店' },
+    ])
+  })
+
+  test('没有可见门店 → 不发关店查询', async () => {
+    pg.query.mockReset().mockImplementation(async () => [])
+    const ctx = createCtx({
+      auth: {
+        staffLevel: 'market',
+        loginLevel: 'management',
+        roleBindings: [{ role: 'manager', scopeId: 'mkt-X', scopeType: '市场' }],
+        scopeOrgNodeIds: ['mkt-X'],
+        scopeStoreIds: [],
+      },
+    })
+    await scopeOptions(ctx)
+    expect(pg.query.mock.calls.some(([text]) => CLOSED_SQL.test(text))).toBe(false)
   })
 })

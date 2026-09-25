@@ -19,6 +19,7 @@ import { withAllPermissions, withPermission } from '@/lib/with-permission'
 import { isAdminScope, expandMarketVisibility } from '@/lib/permissions'
 import { getScopeTopLevel } from '@/lib/data-center/context'
 import { isDataCenterActiveStore } from '@/lib/store-status'
+import { loadClosedStoreIds } from '@/lib/store-closed-label'
 import { loadStoreDataStarts } from '@/lib/data-center/data-start-query'
 import {
   DATA_CENTER_CUSTOMER_DETAIL_ACTIONS,
@@ -125,13 +126,21 @@ async function loadScopeOptions(session: AuthSession): Promise<DataCenterScopeOp
     .filter((s) => !isDataCenterActiveStore(s))
     .map((s) => ({ storeId: s.storeId, storeName: s.storeName, marketId: s.marketId }))
 
+  // 只关店、节点仍启用的门店打 closed 标，下拉显示「（已关店）」（#422）。纯展示：查失败就不打标，不拖垮筛选器
+  const closedIds = await loadClosedStoreIds(storeRows.map((s) => s.storeId)).catch((err: unknown) => {
+    console.error('[data-center] loadClosedStoreIds failed:', err)
+    return new Set<string>()
+  })
+
   const markets = marketRows.map((m) => ({
     id: m.id,
     name: m.name,
     granted: seeAll || grantedMarketIds.has(m.id),
     stores: storeRows
       .filter((s) => s.marketId === m.id)
-      .map((s) => ({ storeId: s.storeId, storeName: s.storeName })),
+      .map((s) => (closedIds.has(s.storeId)
+        ? { storeId: s.storeId, storeName: s.storeName, closed: true }
+        : { storeId: s.storeId, storeName: s.storeName })),
   }))
 
   return { topLevel, markets, inactiveStores }

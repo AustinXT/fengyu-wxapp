@@ -24,6 +24,7 @@
  */
 
 const pg = require('../db/pg')
+const { loadClosedStoreIds } = require('../utils/store-closed-label')
 const { requireManagementLevel } = require('../middleware/auth')
 const {
   validateManagementScope,
@@ -117,7 +118,7 @@ async function loadAllMarkets() {
  *     staffLevel,
  *     allowAll: boolean,
  *     allowedMarketIds: string[],
- *     markets: [{ id, name, stores: [{ storeId, storeName }] }, ...],
+ *     markets: [{ id, name, stores: [{ storeId, storeName, closed? }] }, ...],   // closed: 只关店、节点仍启用（#422）
  *     inactiveStores: [{ storeId, storeName }, ...] | null   // null = 查询失败、未知
  *   }
  *
@@ -154,11 +155,25 @@ async function scopeOptions(ctx) {
     return null
   })
 
+  // 只关店、节点仍启用的门店留在下拉里（有关店前的历史数据），打 closed 标给前端显示「（已关店）」、
+  // 选市场时默认门店跳过它（#422）。纯展示：查失败就不打标，不拖垮范围下拉
+  const closedIds = await loadClosedStoreIds(pg, visible.flatMap((market) => market.stores.map((store) => store.storeId)))
+    .catch((err) => {
+      console.error('[mgmtDashboard.scopeOptions] loadClosedStoreIds failed:', err)
+      return new Set()
+    })
+  const markets = closedIds.size === 0
+    ? visible
+    : visible.map((market) => ({
+      ...market,
+      stores: market.stores.map((store) => (closedIds.has(store.storeId) ? { ...store, closed: true } : store)),
+    }))
+
   ctx.result = {
     staffLevel,
     allowAll,
     allowedMarketIds,
-    markets: visible,
+    markets,
     inactiveStores,
   }
 }

@@ -281,3 +281,64 @@ describe('#401 数据中心在营口径 · 接线', () => {
     expect(src.split('buildManagementStoreScope(').length - 1).toBe(3)
   })
 })
+
+describe('#422 范围下拉「（已关店）」展示标记 · 两端 helper', () => {
+  /**
+   * 展示标记是数据中心链路里 is_closed 唯一合法的用途：判定只许出现在两端 store-closed-label helper 里，
+   * 消费方（范围下拉数据源）只拿到 Set，上面的闭集守护照旧禁止消费方出现 is_closed token。
+   * 这里整段钉死两个 helper 的查询本体——改成别的谓词（如 closed_at <= 今天、并入节点启停）必须同步两端并改这里。
+   */
+  const squeeze = (t) => t.replace(/\s+/g, ' ').trim()
+  const extract = (src, start, end) => {
+    const i = src.indexOf(start)
+    expect(i, `未找到 ${start}`).toBeGreaterThan(-1)
+    const j = src.indexOf(end, i)
+    expect(j, `未找到 ${start} 的结尾`).toBeGreaterThan(i)
+    return squeeze(src.slice(i, j + end.length))
+  }
+
+  it('staff helper 本体整段等值', () => {
+    const src = readFile(path.join(STAFF_ROOT, 'utils/store-closed-label.js'))
+    expect(extract(src, 'async function loadClosedStoreIds(', '\n}\n')).toBe(
+      'async function loadClosedStoreIds(pg, storeIds) {' +
+        ' if (storeIds.length === 0) return new Set()' +
+        ' const rows = await pg.query(' +
+        " 'SELECT store_id FROM stores WHERE is_closed = TRUE AND store_id = ANY($1::text[])'," +
+        ' [storeIds], )' +
+        ' return new Set((rows || []).map((row) => row.store_id)) }',
+    )
+    expect(src).toContain('module.exports = { loadClosedStoreIds }')
+  })
+
+  it('admin helper 本体整段等值（与 staff 同一谓词：is_closed = TRUE ∩ 给定门店）', () => {
+    const src = readFile(path.join(ADMIN_SRC, 'lib/store-closed-label.ts'))
+    expect(extract(src, 'export async function loadClosedStoreIds(', '\n}\n')).toBe(
+      'export async function loadClosedStoreIds(storeIds: string[]): Promise<Set<string>> {' +
+        ' if (storeIds.length === 0) return new Set()' +
+        ' const rows = await db .select({ storeId: stores.storeId }) .from(stores)' +
+        ' .where(and(eq(stores.isClosed, true), inArray(stores.storeId, storeIds)))' +
+        ' return new Set(rows.map((row) => row.storeId)) }',
+    )
+  })
+
+  it('两端下拉数据源从 helper 取标记，并以 closed 字段下发', () => {
+    const staff = readFile(path.join(STAFF_ROOT, 'routes/mgmt-dashboard.js'))
+    expect(staff).toContain("const { loadClosedStoreIds } = require('../utils/store-closed-label')")
+    expect(staff).toContain('closedIds.has(store.storeId) ? { ...store, closed: true } : store')
+
+    const admin = readFile(path.join(ADMIN_SRC, 'actions/data-center/shared.ts'))
+    expect(admin).toContain("import { loadClosedStoreIds } from '@/lib/store-closed-label'")
+    expect(admin).toContain('{ storeId: s.storeId, storeName: s.storeName, closed: true }')
+  })
+
+  it('helper 不被任何统计取数代码引用（只供范围下拉数据源）', () => {
+    const users = CONSUMER_FILES
+      .filter((file) => /loadClosedStoreIds\(|from '@\/lib\/store-closed-label'|require\('\.\.\/utils\/store-closed-label'\)/.test(readFile(file)))
+      .map(rel)
+      .sort()
+    expect(users).toEqual([
+      'fengyu-admin/src/actions/data-center/shared.ts',
+      'fengyu-staff/cloudfunctions/staffApi/routes/mgmt-dashboard.js',
+    ])
+  })
+})

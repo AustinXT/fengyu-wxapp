@@ -48,7 +48,7 @@
             class="scope-row {{ current.scopeType === 'store' && current.scopeId === item.storeId ? 'scope-row--active' : '' }}"
             data-store-id="{{ item.storeId }}"
             bindtap="onPickStore"
-          >{{ item.storeName }}</view>
+          >{{ item.storeName }}{{ item.closed ? '（已关店）' : '' }}</view>
         </scroll-view>
       </view>
 
