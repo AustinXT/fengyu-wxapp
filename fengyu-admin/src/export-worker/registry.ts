@@ -74,7 +74,7 @@ import {
   type ExportJobType,
 } from '@/lib/export-job-types'
 import type { WorkerExportColumn, ExportCell } from './xlsx-writer'
-import { remainingCardsContent } from './report-views'
+import { customerFrequencyContent, remainingCardsContent } from './report-views'
 import { commissionDailyExport, commissionDetailExport } from './report-commission'
 import type { ExportContextMeta } from './export-meta'
 
@@ -628,6 +628,8 @@ async function queryReport(view: DataCenterReportExportView, raw: Record<string,
       return remainingCardsContent(raw)
     case 'report-daily-overview':
       return queryDailyOverview(raw)
+    case 'report-customer-frequency':
+      return customerFrequencyContent(raw)
     case 'report-commission-daily':
       return commissionDailyExport(raw)
     case 'report-commission-detail':

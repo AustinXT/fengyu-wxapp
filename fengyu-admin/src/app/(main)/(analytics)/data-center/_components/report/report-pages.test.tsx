@@ -72,6 +72,29 @@ const emptyRemainingCardsReport = {
   asOf: '2026-09-25',
 }
 
+/** 顾客频率表的取数 action（#370） */
+const frequencyActions = vi.hoisted(() => ({
+  getCustomerFrequencyReport: vi.fn(),
+}))
+vi.mock('@/actions/data-center/customer-frequency', () => frequencyActions)
+
+const emptyCustomerFrequencyReport = {
+  month: '2026-08',
+  rows: [],
+  total: 0,
+  filtered: false,
+  beforeDataStart: false,
+  page: 1,
+  pageSize: 50,
+  sort: { key: 'visitDays', direction: 'desc' },
+  totals: { visitDays: 0, amount: 0 },
+  summary: {
+    customerCount: 0, visitedCount: 0, visitRate: null,
+    tiers: { low: { count: 0, share: null }, mid: { count: 0, share: null }, high: { count: 0, share: null } },
+    visitTotal: 0, visitsPerVisitor: null, amountTotal: 0, consumeTotal: 0, consumeRatio: null,
+  },
+}
+
 /** 员工提成日报 / 明细的取数 action（#375）：本文件只测入口控制流与骨架，取数给空结果 */
 const commission = vi.hoisted(() => ({
   getCommissionDaily: vi.fn(),
@@ -239,6 +262,11 @@ beforeEach(() => {
   reportActions.getRemainingCardsReport.mockResolvedValue(emptyRemainingCardsReport)
   mockOperatingMaster([{ storeId: 'S1', storeName: '蓝莱店', marketId: 'M1', marketName: '南昌凤御' }])
   dailyOverview.getDailyOverview.mockResolvedValue(dailyOverviewResult())
+  frequencyActions.getCustomerFrequencyReport.mockImplementation(async (raw: Record<string, string | undefined>) => ({
+    ...emptyCustomerFrequencyReport,
+    month: raw.month ?? '2026-08',
+    beforeDataStart: (raw.month ?? '2026-08') < '2026-07',
+  }))
 })
 
 function mockOperatingMaster(stores: OperatingMasterStore[]) {
@@ -338,6 +366,46 @@ describe('报表页 · 骨架渲染', () => {
     // 手传的早月照常取数（action 自己按同一月份解析），表格显示空态而不是报错
     expect(commission.getCommissionDaily).toHaveBeenCalledWith(expect.objectContaining({ month: '2026-05' }))
     expect(screen.getByText('本月暂无提成数据')).toBeInTheDocument()
+  })
+
+  it('频率表：URL 参数原样交给取数 action；信息条写天数与顾客数；数据起点只看服务轴', async () => {
+    mockScope(hqOptions)
+    frequencyActions.getCustomerFrequencyReport.mockResolvedValue({
+      ...emptyCustomerFrequencyReport,
+      filtered: true,
+      total: 3,
+      summary: { ...emptyCustomerFrequencyReport.summary, customerCount: 120 },
+    })
+    await renderPage('customerFrequency', { q: '张', show: 'visited' })
+
+    expect(frequencyActions.getCustomerFrequencyReport).toHaveBeenCalledWith({ q: '张', show: 'visited' })
+    const bar = screen.getByTestId('report-info-bar')
+    expect(bar).toHaveTextContent('期间2026年8月 2026-08-01 ~ 2026-08-31')
+    expect(bar).toHaveTextContent('天数31 天')
+    expect(bar).toHaveTextContent('顾客筛出 3 位（共 120 位）')
+    // 绿湖店服务 08-01 起（业绩 08-08 起）不算月中上线；易大师一店服务 08-23 起要标出
+    const notice = screen.getByRole('note', { name: '数据起点提示' })
+    expect(notice).toHaveTextContent('服务 · 南昌易大师 1 家（2026-08-23 起）')
+    expect(notice).not.toHaveTextContent('业绩')
+    expect(notice).not.toHaveTextContent('南昌凤御')
+    expect(screen.getByRole('table')).toBeInTheDocument()
+  })
+
+  it('频率表：URL 手传早于 2026-07 的月份显示空表 + 数据起点提示，不报错', async () => {
+    mockScope(hqOptions)
+    await renderPage('customerFrequency', { month: '2026-05' })
+
+    expect(screen.getByRole('combobox', { name: '月份' })).toHaveValue('2026-05')
+    expect(screen.getByRole('note', { name: '数据起点提示' })).toHaveTextContent('所选月份（2026-05-01 ~ 2026-05-31）')
+    expect(screen.getByText('所选月份早于系统数据起点（2026-07），暂无数据')).toBeInTheDocument()
+  })
+
+  it('频率表：非总部无可查看范围时不取数', async () => {
+    mockScope(noStoreOptions)
+    await renderPage('customerFrequency')
+
+    expect(screen.getByText('当前账号暂无可查看的数据范围')).toBeInTheDocument()
+    expect(frequencyActions.getCustomerFrequencyReport).not.toHaveBeenCalled()
   })
 
   it('仅范围型（剩余卡项）：不显示日期、不查数据起点，重置按钮在范围行', async () => {

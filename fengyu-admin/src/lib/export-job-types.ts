@@ -71,6 +71,7 @@ export const DATA_CENTER_REPORT_EXPORT_VIEWS = [
   'report-operating-master',
   'report-remaining-cards',
   'report-daily-overview',
+  'report-customer-frequency',
   'report-commission-daily',
   'report-commission-detail',
 ] as const satisfies readonly `${typeof DATA_CENTER_REPORT_VIEW_PREFIX}${string}`[]
@@ -172,6 +173,7 @@ export const DATA_CENTER_VIEW_REQUIRED_ACTIONS: Record<DataCenterExportView, rea
   'report-operating-master': DATA_CENTER_REPORTS.operatingMaster.requiredActions,
   'report-remaining-cards': DATA_CENTER_REPORTS.remainingCards.requiredActions,
   'report-daily-overview': DATA_CENTER_REPORTS.dailyOverview.requiredActions,
+  'report-customer-frequency': DATA_CENTER_REPORTS.customerFrequency.requiredActions,
   'report-commission-daily': DATA_CENTER_REPORTS.commissionDaily.requiredActions,
   'report-commission-detail': DATA_CENTER_REPORTS.commissionDetail.requiredActions,
 }
@@ -230,6 +232,7 @@ export function exportJobLabel(
     'report-operating-master': '经营数据主表',
     'report-remaining-cards': '顾客剩余卡项清单',
     'report-daily-overview': '日常数据一览表',
+    'report-customer-frequency': '顾客频率表',
     'report-commission-daily': '员工提成日报',
     'report-commission-detail': '提成明细',
   }

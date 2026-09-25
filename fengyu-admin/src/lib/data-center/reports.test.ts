@@ -50,5 +50,6 @@ describe('经营明细报表登记表（#367）', () => {
 
   it('报表导出视图的权限组合与所属报表页一致（页面 / action / 导出三处同一组常量）', () => {
     expect(DATA_CENTER_VIEW_REQUIRED_ACTIONS['report-remaining-cards']).toEqual(DATA_CENTER_REPORTS.remainingCards.requiredActions)
+    expect(DATA_CENTER_VIEW_REQUIRED_ACTIONS['report-customer-frequency']).toEqual(DATA_CENTER_REPORTS.customerFrequency.requiredActions)
   })
 })

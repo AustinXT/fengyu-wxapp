@@ -179,6 +179,25 @@ const PROBES: Probe[] = [
     minLines: 5,
   },
   {
+    label: '频率表 · 到店日并入支付日，按 paid_at 上海日界（#370，visitDaysSql service_or_payment）',
+    file: 'src/lib/data-center/visit-days.ts',
+    pattern: /^AND \$\{PAYMENT_VISIT_DAY\} BETWEEN \$\{range\.start\} AND \$\{range\.end\}$/,
+    minLines: 1,
+  },
+  {
+    // 消耗那一行含 excludeDepositRefundSql('so')，bun 会把单引号改写成双引号，逐字比对必失配；取同一 CTE 的相邻行
+    label: '频率表 · 当日消耗 / 服务项目按 (顾客, service_date) 聚合（#370）',
+    file: 'src/lib/data-center/customer-frequency-query.ts',
+    pattern: /^array_agg\(DISTINCT si\.product_name\) AS items$/,
+    minLines: 1,
+  },
+  {
+    label: '频率表 · 交易跟着顾客走：款项 / 服务按顾客归属过滤（#370）',
+    file: 'src/lib/data-center/customer-frequency-query.ts',
+    pattern: /^AND so\.client_user_id IN \(SELECT user_id FROM cust\)$/,
+    minLines: 2,
+  },
+  {
     label: '员工提成日报 / 明细 · 取数条件与分配金额算法（#375）',
     file: 'src/lib/data-center/commission-sql.ts',
     // 按「列名」抓整行、不限取值：取值被改的行照样被提取出来，再去产物里逐字比对（只按取值抓会让改过的行
