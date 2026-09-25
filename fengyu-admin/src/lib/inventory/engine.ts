@@ -335,12 +335,33 @@ function calculateAmount(unitPrice: number | null, quantity: number): number | n
   return unitPrice === null ? null : Number((unitPrice * quantity).toFixed(2))
 }
 
-function assertPositiveQuantity(quantity: number): number {
+/**
+ * 明细数量规则（#351）：盘点单的数量是**实盘数**，0 = 账上有货、货架上一件没有，
+ * 正是最该记下的盘亏，必须能录；其余类型仍要求 > 0。
+ *
+ * 留空（null / undefined / 空串）一律不合法：`Number(null)`、`Number('')` 都是 0，
+ * 不先拦就会把「没填」当成「实盘 0」入库，凭空多出一笔盘亏。同理只收 number / string
+ * （`false`、`[0]` 经 Number() 也是 0），且最多两位小数、不超过 numeric(12,2) 上限：
+ * 列是 numeric(12,2)，0.004 落库会被舍成 0.00 —— 盘点单上就是一笔凭空的「实盘 0」。
+ *
+ * ⚠️ 函数体与 staffApi `routes/inventory.js` 的同名函数**逐字一致**，由
+ * `cross-end-inventory-snapshot.test.js` §7 整段比对；DB 侧兜底是 trigger
+ * `inventory_assert_doc_item_quantity`（非盘点类型 quantity <= 0 拒绝）。
+ */
+function isValidDocItemQuantity(docType: InventoryDocType, quantity: unknown): boolean {
+  if (typeof quantity !== 'number' && typeof quantity !== 'string') return false
+  if (typeof quantity === 'string' && quantity.trim() === '') return false
   const n = Number(quantity)
-  if (!Number.isFinite(n) || n <= 0) {
-    throw new ApiError('INVALID_PARAMS', '明细数量必须大于 0')
+  if (!Number.isFinite(n) || n > 9999999999.99 || Number(n.toFixed(2)) !== n) return false
+  return n > 0 || (n === 0 && STOCKTAKE_DOC_TYPES.has(docType))
+}
+
+function assertDocItemQuantity(docType: InventoryDocType, quantity: unknown): number {
+  if (isValidDocItemQuantity(docType, quantity)) return Number(quantity)
+  if (STOCKTAKE_DOC_TYPES.has(docType)) {
+    throw new ApiError('INVALID_PARAMS', '请填写实盘数（0 或正数，最多两位小数；货架上没有就填 0）')
   }
-  return n
+  throw new ApiError('INVALID_PARAMS', '明细数量必须大于 0')
 }
 
 function defaultStatusForDoc(docType: InventoryDocType): InventoryCoreDocStatus {
@@ -3753,7 +3774,7 @@ export const createInventoryCoreDoc = withAnyPermission(
 
     await assertGenericDocLocationRules(input, sourceOrgNodeId, targetOrgNodeId, actingOrgNodeId)
 
-    const totalQuantity = input.items.reduce((sum, item) => sum + assertPositiveQuantity(item.quantity), 0)
+    const totalQuantity = input.items.reduce((sum, item) => sum + assertDocItemQuantity(input.docType, item.quantity), 0)
 
     const id = await db.transaction(async (tx) => {
       await assertInventoryBusinessWritable(tx)
@@ -3791,7 +3812,7 @@ export const createInventoryCoreDoc = withAnyPermission(
       // 盘点账面数：一次取齐（见 skuOnHandByLocation 的注释：串行点 + 单一时点语义）
       const bookQuantityBySkuId = await skuOnHandByLocation(tx, actingLocationId, stocktakeSkuIds)
       for (const item of input.items) {
-        const quantity = assertPositiveQuantity(item.quantity)
+        const quantity = assertDocItemQuantity(input.docType, item.quantity)
         // 通用入口只接收库存事实；所有价格与金额从 SKU/锁定批次快照派生。
         const serverItem = stripPriceInput(item)
         let lot: LockedLot | null = null

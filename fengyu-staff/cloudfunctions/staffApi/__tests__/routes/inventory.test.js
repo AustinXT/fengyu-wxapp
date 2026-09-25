@@ -786,6 +786,83 @@ describe('inventory.createDoc 权限与状态', () => {
     expect(itemCalls.map(([, params]) => params[12])).toEqual([12, 4])
   })
 
+  // ── 实盘数允许 0（issue #351）──────────────────────────────────────────
+  // 账上有货、货架上一件没有（实盘 0）是最严重的盘亏，原先被 assertQty 拒掉。
+  // 规则与 admin engine 的 isValidDocItemQuantity 逐字一致（cross-end-inventory-snapshot §7）。
+  test('分院库存盘点实盘 0 可以建单：明细 quantity=0、账面照常记', async () => {
+    const { ctx, getClient } = mockStoreStocktake({
+      bookRows: [{ sku_id: 'sku-1', quantity: '5' }],
+      items: [{ skuId: 'sku-1', quantity: 0 }],
+    })
+
+    await inventoryRoutes.createDoc(ctx)
+
+    const client = getClient()
+    const headerCall = client.query.mock.calls.find(([sql]) => String(sql).includes('INSERT INTO inventory_docs'))
+    expect(headerCall[1][6]).toBe(0)           // total_quantity
+    const itemCall = client.query.mock.calls.find(([sql]) => String(sql).includes('INSERT INTO inventory_doc_items'))
+    expect(itemCall[1][11]).toBe(0)            // quantity：实盘 0
+    expect(itemCall[1][12]).toBe(5)            // stock_snapshot：账面 5 → 差异 −5
+  })
+
+  test.each([
+    ['null', null],
+    ['undefined', undefined],
+    ['空串', ''],
+    ['纯空白', '  '],
+    ['负数', -1],
+    ['非数字', 'abc'],
+    ['false（Number(false)=0）', false],
+    ['[0]', [0]],
+    ['三位小数 0.004（numeric(12,2) 会舍成 0）', 0.004],
+    ['超 numeric(12,2) 上限', 10000000000],
+  ])('分院库存盘点实盘数为 %s 时拒绝（留空不能当成实盘 0），且拦在开事务前', async (_label, quantity) => {
+    const { ctx } = mockStoreStocktake({
+      bookRows: [{ sku_id: 'sku-1', quantity: '5' }],
+      items: [{ skuId: 'sku-1', quantity }],
+    })
+
+    await expect(inventoryRoutes.createDoc(ctx)).rejects.toThrow(
+      'INVALID_PARAMS: 请填写实盘数（0 或正数，最多两位小数；货架上没有就填 0）',
+    )
+    expect(pg.transaction).not.toHaveBeenCalled()
+  })
+
+  test.each([
+    ['门店报货', { sourceOrgNodeId: 'store-A' }, {}],
+    ['院产品报损', { sourceOrgNodeId: 'store-A' }, { lotId: 10, reason: '破损' }],
+    ['院退货', { sourceOrgNodeId: 'store-A' }, { lotId: 10 }],
+    ['院顾客退货', { targetOrgNodeId: 'store-A' }, {}],
+  ])('非盘点可建类型（%s）数量 0 仍被拒：INVALID_PARAMS 明细数量必须大于0', async (docType, endpoints, extra) => {
+    const ctx = createCtx({
+      payload: { docType, ...endpoints, items: [{ skuId: 'sku-1', quantity: 0, ...extra }] },
+      auth: {
+        storeId: 'store-A',
+        effectiveStoreId: 'store-A',
+        scopeStoreIds: ['store-A'],
+        roleBindings: [{ role: 'manager', scopeId: 'node-store-A', scopeType: '门店' }],
+      },
+    })
+    pg.query.mockImplementation(async (query, params) => {
+      const sql = String(query)
+      if (sql.includes('WITH RECURSIVE descendants')) return [{ store_id: 'store-A' }]
+      if (sql.includes('FROM inventory_locations') && sql.includes('WHERE location_id = $1')) {
+        const isMarket = String(params[0]).startsWith('market')
+        return [{
+          location_id: params[0],
+          org_node_id: params[0],
+          location_type: isMarket ? '市场' : '门店',
+          parent_location_id: isMarket ? null : 'market-A',
+          is_active: true,
+        }]
+      }
+      return []
+    })
+
+    await expect(inventoryRoutes.createDoc(ctx)).rejects.toThrow('INVALID_PARAMS: 明细数量必须大于0')
+    expect(pg.transaction).not.toHaveBeenCalled()
+  })
+
   test('同一 SKU 在一张盘点单里只能出现一次，且拦在开事务前', async () => {
     const { ctx } = mockStoreStocktake({
       bookRows: [{ sku_id: 'sku-1', quantity: '12' }],

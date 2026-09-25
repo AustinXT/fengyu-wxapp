@@ -3,7 +3,7 @@
  *
  * 同目录另外两个测试文件走「读源码正则」的守护风格（那两个组件一个 2800 行、一个 600 行，
  * 渲染 mock 成本远高于收益）。但清场这件事不一样：它防的是「用户再点一次就多建一张
- * 实扣库存的单」，而正则只能证明 `setItems([defaultItem()])` 这行字还在源码里 ——
+ * 实扣库存的单」，而正则只能证明 `setItems([defaultItem(docType)])` 这行字还在源码里 ——
  * 证明不了它真的在提交成功后跑到了、更证明不了跑的顺序对。
  * 这个组件依赖少（两个 action + 几个 UI 组件），值得用真渲染钉住。
  */
@@ -483,5 +483,131 @@ describe('市场间调货出库的接收主体候选（#340）', () => {
     })
     expect(optionValues(selectByPlaceholder('入库/接收主体'))).toEqual(['NODE-M1', 'NODE-S1'])
     expect(optionValues(selectByPlaceholder('出库/发起主体'))).toEqual(['NODE-M1', 'NODE-S1'])
+  })
+})
+
+describe('盘点单实盘数：0 可提交、留空拦下（#351）', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockListLots.mockResolvedValue([])
+    mockCreateDoc.mockResolvedValue({ success: true, id: 'FY-MPD-260925-0001' })
+  })
+
+  function renderStocktake() {
+    return renderForm({ initialDocType: '市场库存盘点', allowedDocTypes: ['市场库存盘点'] })
+  }
+
+  function fillStocktakeLine(quantity: string) {
+    fireEvent.change(selectByPlaceholder('出库/发起主体'), { target: { value: 'NODE-M1' } })
+    fireEvent.change(selectByPlaceholder('库存 SKU'), { target: { value: 'SKU-1' } })
+    fireEvent.change(screen.getByPlaceholderText('数量'), { target: { value: quantity } })
+  }
+
+  it('实盘填 0 照常提交，payload 里的数量就是 0', async () => {
+    const { onSuccess } = renderStocktake()
+    fillStocktakeLine('0')
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: '提交' }))
+    })
+
+    await waitFor(() => expect(onSuccess).toHaveBeenCalledWith('FY-MPD-260925-0001'))
+    expect(mockCreateDoc).toHaveBeenCalledWith(expect.objectContaining({
+      docType: '市场库存盘点',
+      items: [expect.objectContaining({ skuId: 'SKU-1', quantity: 0 })],
+    }))
+  })
+
+  it.each([
+    ['空串', ''],
+    ['纯空白', '   '],
+  ])('实盘数留空（%s）不提交，提示第几行要填', async (_label, value) => {
+    const { toast } = await import('sonner')
+    renderStocktake()
+    fillStocktakeLine(value)
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: '提交' }))
+    })
+
+    // 不拦的话 `Number('' || 0)` 会把这行当成「实盘 0」送出去，凭空多一笔盘亏
+    expect(mockCreateDoc).not.toHaveBeenCalled()
+    expect(toast.error).toHaveBeenCalledWith('明细 1 请填写实盘数（货架上没有就填 0）')
+  })
+
+  it('盘点新行数量默认留空：不填直接提交被拦（默认 1 会被当成「实盘 1」）', async () => {
+    const { toast } = await import('sonner')
+    renderStocktake()
+    expect((screen.getByPlaceholderText('数量') as HTMLInputElement).value).toBe('')
+    fireEvent.change(selectByPlaceholder('出库/发起主体'), { target: { value: 'NODE-M1' } })
+    fireEvent.change(selectByPlaceholder('库存 SKU'), { target: { value: 'SKU-1' } })
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: '提交' }))
+    })
+
+    expect(mockCreateDoc).not.toHaveBeenCalled()
+    expect(toast.error).toHaveBeenCalledWith('明细 1 请填写实盘数（货架上没有就填 0）')
+    // 「添加明细」加出来的行同样留空
+    fireEvent.click(screen.getByRole('button', { name: '添加明细' }))
+    expect(screen.getAllByPlaceholderText('数量').map((el) => (el as HTMLInputElement).value)).toEqual(['', ''])
+  })
+
+  it('在盘点与非盘点之间切类型时，数量回到新类型的默认值', () => {
+    renderForm({ initialDocType: undefined, allowedDocTypes: ['市场产品盘溢', '市场库存盘点'] })
+    const docTypeSelect = screen.getByRole('option', { name: '市场库存盘点' }).closest('select') as HTMLSelectElement
+    const quantity = () => (screen.getByPlaceholderText('数量') as HTMLInputElement).value
+    // 不传 initialDocType：类型下拉可切（传了会被 isDocTypeLocked 锁死，本用例就测不到真实交互）
+    expect(docTypeSelect.disabled).toBe(false)
+    expect(docTypeSelect.value).toBe('市场产品盘溢')
+    expect(quantity()).toBe('1')
+
+    fireEvent.change(docTypeSelect, { target: { value: '市场库存盘点' } })
+    expect(quantity(), '盘溢的「1」不能带进盘点当实盘 1').toBe('')
+
+    fireEvent.change(screen.getByPlaceholderText('数量'), { target: { value: '0' } })
+    fireEvent.change(docTypeSelect, { target: { value: '市场产品盘溢' } })
+    expect(quantity(), '盘点的 0 带回盘溢必被拒').toBe('1')
+  })
+
+  it('提交在途时单据类型锁住：否则成功清场会按旧类型把盘点行重置成「1」', async () => {
+    let resolveCreate: (value: unknown) => void = () => {}
+    mockCreateDoc.mockImplementationOnce(() => new Promise((resolve) => { resolveCreate = resolve }))
+    const { onSuccess } = renderForm({ initialDocType: undefined, allowedDocTypes: ['市场产品盘溢', '市场库存盘点'] })
+    const docTypeSelect = screen.getByRole('option', { name: '市场库存盘点' }).closest('select') as HTMLSelectElement
+    expect(docTypeSelect.disabled, '前提：空闲时类型可切').toBe(false)
+    fireEvent.change(selectByPlaceholder('出库/发起主体'), { target: { value: 'NODE-M1' } })
+    fireEvent.change(selectByPlaceholder('库存 SKU'), { target: { value: 'SKU-1' } })
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: '提交' }))
+    })
+    expect(docTypeSelect.disabled, '在途时类型下拉必须禁用').toBe(true)
+    // 即便绕过 disabled 直接派发 change，也不能换类型
+    fireEvent.change(docTypeSelect, { target: { value: '市场库存盘点' } })
+
+    await act(async () => {
+      resolveCreate({ success: true, id: 'FY-PY-260925-0001' })
+    })
+    await waitFor(() => expect(onSuccess).toHaveBeenCalledWith('FY-PY-260925-0001'))
+    expect(docTypeSelect.value).toBe('市场产品盘溢')
+    expect((screen.getByPlaceholderText('数量') as HTMLInputElement).value).toBe('1')
+    await waitFor(() => expect(docTypeSelect.disabled).toBe(false))
+  })
+
+  it('非盘点单不受留空拦截影响：仍交给服务端按「必须大于 0」判', async () => {
+    renderForm()
+    fireEvent.change(selectByPlaceholder('出库/发起主体'), { target: { value: 'NODE-M1' } })
+    fireEvent.change(selectByPlaceholder('库存 SKU'), { target: { value: 'SKU-1' } })
+    fireEvent.change(screen.getByPlaceholderText('数量'), { target: { value: '' } })
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: '提交' }))
+    })
+
+    expect(mockCreateDoc).toHaveBeenCalledWith(expect.objectContaining({
+      docType: '市场产品盘溢',
+      items: [expect.objectContaining({ quantity: 0 })],
+    }))
   })
 })

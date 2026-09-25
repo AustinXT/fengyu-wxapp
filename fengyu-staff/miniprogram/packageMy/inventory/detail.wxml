@@ -16,7 +16,7 @@
     <view class="field" wx:if="{{detail.sourceOrgNodeName || detail.sourceOrgNodeId}}"><text class="label">出库/发起主体</text><text class="value">{{detail.sourceOrgNodeName || detail.sourceOrgNodeId}}</text></view>
     <view class="field" wx:if="{{detail.targetOrgNodeName || detail.targetOrgNodeId}}"><text class="label">入库/接收主体</text><text class="value">{{detail.targetOrgNodeName || detail.targetOrgNodeId}}</text></view>
     <view class="field" wx:if="{{detail.customerName}}"><text class="label">顾客</text><text class="value">{{detail.customerName}}</text></view>
-    <view class="field"><text class="label">总数量</text><text class="value">{{detail.totalQuantity || '—'}}</text></view>
+    <view class="field"><text class="label">总数量</text><text class="value">{{detail.totalQuantity === undefined ? '—' : detail.totalQuantity}}</text></view>
     <view class="field" wx:if="{{detail.relatedSaleOrderId}}"><text class="label">销售单号</text><text class="value">{{detail.relatedSaleOrderId}}</text></view>
     <view class="field" wx:if="{{detail.employeeName}}"><text class="label">相关员工</text><text class="value">{{detail.employeeName}}</text></view>
     <view class="field" wx:if="{{detail.supplierName}}"><text class="label">供货方</text><text class="value">{{detail.supplierName}}</text></view>
