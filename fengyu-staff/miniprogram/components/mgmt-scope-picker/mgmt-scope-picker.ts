@@ -192,7 +192,7 @@ Component({
       }
       // 默认门店落在已停用门店（#400）：取数会滤掉它的全部数据（满屏 0）。
       // 有在营门店可选就纠正到第一家在营门店；没有就保留，标「已停用」由页面出空态。
-      // 只纠正停用门店 —— 只关店、节点仍在营的门店不在下拉里但照样有历史数据，不动它。
+      // 只纠正停用门店 —— 只关店、节点仍在营的门店照常在下拉里（标「（已关店）」，#422）、照样有历史数据，不动它。
       const knownInactive = this.data.inactiveStoreIds as string[] | null
       if (knownInactive) {
         const inactiveIds = new Set(knownInactive)
