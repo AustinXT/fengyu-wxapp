@@ -62,16 +62,20 @@ function whereClause(body: string, end: string | null = ' GROUP BY '): string {
   return body.slice(from, to).trim()
 }
 
-/** 多段 sql 模板的切片：取第一段（E 的 CTE 里嵌了 visitDaysSql 插值，模板本身只有一段） */
-function firstTemplate(section: string): string {
-  const match = section.match(/sql`([\s\S]*?)`/)
-  if (!match) throw new Error('切片里没有 sql 模板')
-  return match[1].replace(/\s+/g, ' ').trim()
+/**
+ * E 的切片：CTE 里的 visitDaysSql 插值带一段嵌套的 sql`TRUE`（scope 参数），先把它换成占位符，
+ * 剩下必须恰有 1 段模板（fail-closed：切片里再插进别的模板就报错，不静默只比第一段）。
+ */
+function retainedTemplate(section: string): string {
+  const flat = section.replace(/scope: sql`TRUE`/g, 'scope: TRUE')
+  const matches = [...flat.matchAll(/sql`([\s\S]*?)`/g)]
+  if (matches.length !== 1) throw new Error(`E 切片里应恰有 1 段 sql 模板，实际 ${matches.length} 段`)
+  return matches[0][1].replace(/\s+/g, ' ').trim()
 }
 
 const retained = {
   customerBoard: template(slice(CUSTOMER, 'async function queryRetainedMembers', '// ====')),
-  master: firstTemplate(slice(MASTER, '// E 保有会员', '// K 被经营年度')),
+  master: retainedTemplate(slice(MASTER, '// E 保有会员', '// K 被经营年度')),
 }
 const managed = template(slice(MASTER, 'function managedByStoreSql', 'export const getOperatingMaster'))
 
@@ -106,7 +110,7 @@ describe('经营数据主表 × 销售板门店明细 口径同源（#372）', (
       expect(body).toContain("${scopeFilterSql(session, scope, 'so.store_id')}")
       expect(body).toContain("${excludeDepositRefundSql('so')}")
     }
-    expect(slice(MASTER, '// W 实耗', '      ])')).not.toMatch(/ytd\./)
+    expect(slice(MASTER, '// W 实耗', '// E 保有会员')).not.toMatch(/ytd\./)
   })
 
   it('E 保有会员 = 客量板「有效保有会员」WHERE 整段（按绑定门店 scope、90 天窗口、became_member_at 守卫）', () => {
@@ -120,6 +124,11 @@ describe('经营数据主表 × 销售板门店明细 口径同源（#372）', (
       .replace(/\$\{asOf\}/g, '${T}')
     expect(master).toBe(board)
     expect(board).toContain("INTERVAL '90 days'")
+    // FROM / JOIN 也整段等值；人头按 (绑定门店, 顾客) 去重——去掉 DISTINCT 会让同一顾客多单按单数虚高
+    const fromJoin = (body: string) => body.slice(body.indexOf(' FROM '), body.indexOf(' WHERE ')).trim()
+    expect(fromJoin(retained.master)).toBe(fromJoin(retained.customerBoard))
+    expect(fromJoin(retained.customerBoard)).toBe('FROM service_orders so JOIN client_wechat_users c ON c.user_id = so.client_user_id')
+    expect(retained.master).toMatch(/^WITH retained AS \( SELECT DISTINCT c\.bound_store_id AS store_id, so\.client_user_id FROM /)
   })
 
   it('K / L 款项 WHERE = P 的 WHERE，只把类型收窄为销售单 + 转换单、再要求挂了顾客', () => {
