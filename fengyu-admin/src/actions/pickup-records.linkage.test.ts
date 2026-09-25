@@ -153,7 +153,18 @@ function assertGck(executed: Array<{ text: string; values: unknown[] }>, expecte
   expect(item.text).not.toMatch(/(^|[\s,(])actual_unit_price[\s,)]/)
   // 末 7 位是批次价格快照（成本），与售价口径的 88.50 无关
   expect(item.values.slice(-7)).toEqual(SNAPSHOT_VALUES)
-  expect(item.values).toContain(expectedQuantity)
+  // 列名与参数逐列对齐：quantity / stock_snapshot 对调会让触发器按库存 10 件算成本（#341 评审 round-4）
+  const columns = item.text.slice(item.text.indexOf('(') + 1, item.text.indexOf(')')).split(',').map((column) => column.trim())
+  expect(columns).toHaveLength(item.values.length)
+  const row = Object.fromEntries(columns.map((column, index) => [column, item.values[index]]))
+  expect(row).toMatchObject({
+    quantity: expectedQuantity,
+    stock_snapshot: 10,
+    lot_id: 7,
+    store_actual_unit_price: '30.00',
+    market_actual_unit_price: '19.00',
+    supply_chain_unit_cost: '12.00',
+  })
   const movements = executed.filter((q) => /INSERT INTO inventory_movements/.test(q.text))
   expect(movements).toHaveLength(1)
   expect(movements[0].values).toContain(-expectedQuantity)

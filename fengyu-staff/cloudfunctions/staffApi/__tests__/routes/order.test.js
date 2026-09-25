@@ -7222,8 +7222,21 @@ describe('order.createPickup', () => {
     // #341：GCK 明细带锁定批次的价格快照（成本），actual_unit_price 不写——交给触发器按门店成本算 amount
     const docItemInserts = transactionClient.query.mock.calls.filter(([sql]) => /INSERT INTO inventory_doc_items/.test(sql))
     expect(docItemInserts).toHaveLength(2)
+    // 列名与参数逐列对齐后断言：quantity / stock_snapshot 对调会让触发器按 10 件算成本（#341 评审 round-4）
+    const byColumn = ([sql, params]) => {
+      const columns = sql.slice(sql.indexOf('(') + 1, sql.indexOf(')')).split(',').map((column) => column.trim())
+      expect(columns).toHaveLength(params.length)
+      return Object.fromEntries(columns.map((column, index) => [column, params[index]]))
+    }
+    expect(docItemInserts.map(byColumn).map((row) => ({
+      sku_id: row.sku_id, quantity: row.quantity, stock_snapshot: row.stock_snapshot,
+      supply_chain_unit_cost: row.supply_chain_unit_cost, market_actual_unit_price: row.market_actual_unit_price,
+      store_actual_unit_price: row.store_actual_unit_price, actual_unit_price: row.actual_unit_price,
+    }))).toEqual([
+      { sku_id: 'inventory-sku-001', quantity: 2, stock_snapshot: 10, supply_chain_unit_cost: 12, market_actual_unit_price: 19, store_actual_unit_price: 30, actual_unit_price: undefined },
+      { sku_id: 'inventory-sku-002', quantity: 4, stock_snapshot: 10, supply_chain_unit_cost: 12, market_actual_unit_price: 19, store_actual_unit_price: 30, actual_unit_price: undefined },
+    ])
     for (const [sql, params] of docItemInserts) {
-      expect(sql).toMatch(/store_actual_unit_price/)
       expect(sql).not.toMatch(/\bactual_unit_price\b/)
       expect(params.slice(-7)).toEqual([12, 20, 1, 19, 32, 2, 30])
     }

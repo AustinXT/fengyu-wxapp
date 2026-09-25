@@ -135,6 +135,47 @@ describe('#341 createPickupRecord 冻结出库金额（联动开关关闭 / reco
   })
 })
 
+describe('#341 createPickupRecord 合并提货（联动关闭 / record-only）', () => {
+  it('两条 quantity=1 来源各冻结 19.99，且不生成任何库存单据', async () => {
+    const lockedRow = (id: string) => ({
+      sale_item_id: id, sale_item_group_id: 'G-1', sale_order_id: 'SO-1', sku_id: 'SKU-1', product_name: '家居A',
+      quantity: 1, picked_up_quantity: 0, inventory_composition_snapshot: null, settled_quantity: 0,
+      sale_amount: '19.99', unit_real_price: '19.99', received: '19.99', paid_quantity: 1,
+      product_type: '家居产品', item_direction: '购买', sale_order_type: '销售单',
+      client_user_id: 'CU-1', customer_name: '顾客A', order_status: '已支付',
+    })
+    const inserted: any[] = []
+    const executed: string[] = []
+    const tx = {
+      execute: vi.fn(async (q: { __sqlText: string; values: unknown[] }) => {
+        executed.push(q.__sqlText)
+        if (/FOR UPDATE OF si/.test(q.__sqlText)) return [lockedRow('SI-A'), lockedRow('SI-B')]
+        if (/AS converted_amount/.test(q.__sqlText)) return [{ sale_item_id: 'SI-A', converted_amount: '0' }, { sale_item_id: 'SI-B', converted_amount: '0' }]
+        if (/UPDATE sale_items/.test(q.__sqlText)) return [{ sale_item_id: q.values[q.values.length - 1] }]
+        return []
+      }),
+      insert: vi.fn(() => ({
+        values: vi.fn((values: unknown) => {
+          inserted.push(values)
+          return { returning: vi.fn(async () => [{ id: inserted.length }]) }
+        }),
+      })),
+    }
+    ;(db.transaction as any).mockImplementation(async (cb: any) => cb(tx))
+
+    const result = await createPickupRecord({
+      saleItemId: 'SI-A', saleItemIds: ['SI-B', 'SI-A'], pickupQuantity: 2, storeId: 'store-1', clientUserId: 'CU-1',
+    })
+
+    expect(result.success).toBe(true)
+    expect(inserted).toEqual([
+      expect.objectContaining({ saleItemId: 'SI-A', pickupQuantity: 1, pickupUnitPrice: '19.99', pickupAmount: '19.99' }),
+      expect.objectContaining({ saleItemId: 'SI-B', pickupQuantity: 1, pickupUnitPrice: '19.99', pickupAmount: '19.99' }),
+    ])
+    expect(executed.some((text) => /inventory_(docs|doc_items|stock_lots|movements)/.test(text))).toBe(false)
+  })
+})
+
 describe('#341 exportPickupRecords keyset 分页', () => {
   function mockExportRows(rows: any[]) {
     const chain: any = Object.assign(Promise.resolve(rows), {})
