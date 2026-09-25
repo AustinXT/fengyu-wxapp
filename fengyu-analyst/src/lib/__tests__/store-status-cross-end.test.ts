@@ -236,6 +236,12 @@ describe("在营门店口径跨端守护（#421）", () => {
       "ARRAY_AGG(q.store_id ORDER BY ${firstStoreOrder})",
     ])
     expect(repurchase).not.toMatch(/ARRAY_AGG\(q\.(store|market|store_id) ORDER BY q\./)
+    // 渗透：条件构造器必须真的接进两条查询的 WHERE（GLM round-1 P2：只钉构造器时 `OR TRUE` 全绿）
+    const penetration = squeeze(stripComments(read(path.join(ANALYST_SRC, "lib/penetration.ts")), "x.ts"))
+    // 两个注入点：WHERE 后紧跟的就是收尾反引号 / 下一条 AND，中间不能夹 OR 之类的放宽
+    expect(penetration.match(/WHERE \$\{\w+\}\s*\S+/g)).toEqual(["WHERE ${whereSql} `)", "WHERE ${memberWhereSql} AND"])
+    expect(penetration).toContain("const whereSql = memberConditions(session, scope)")
+    expect(penetration).toContain("const memberWhereSql = memberConditions(session, scope)")
     // 渗透：会员按当前绑定门店截面，无首次基线
     expect(calls("lib/penetration.ts")).toEqual({
       filter: ['scopeFilterSql(session, scope, "c.bound_store_id")'],
@@ -251,8 +257,12 @@ describe("在营门店口径跨端守护（#421）", () => {
         'scopeFilterSql(session, scope, "yo.store_id")',
       ],
       range: ['scopeRangeSql(session, scope, "so.store_id")'],
-      active: ['activeStoreCondition(sql.raw("fo.store_id"))'],
+      active: ['activeStoreCondition(sql.raw("fo.store_id"))', 'activeStoreCondition(sql.raw("so.store_id"))'],
     })
+    const funnel = squeeze(stripComments(read(path.join(ANALYST_SRC, "lib/new-customer-funnel.ts")), "x.ts"))
+    expect(funnel).toContain(
+      "ORDER BY so.client_user_id, (COALESCE(so.sale_order_datetime, so.paid_at, so.created_at) AT TIME ZONE 'Asia/Shanghai')::date ASC, ${firstOrderSameDayActiveFirst}, order_at ASC,",
+    )
     // 新客漏斗的首单门店在营条件确实接进了非转介绍分支
     expect(squeeze(stripComments(read(path.join(ANALYST_SRC, "lib/new-customer-funnel.ts")), "x.ts"))).toContain(
       "OR (c.customer_source::text IS DISTINCT FROM ${TRANSFER_SOURCE} AND fo.client_user_id IS NOT NULL AND ${firstOrderStoreActive})",

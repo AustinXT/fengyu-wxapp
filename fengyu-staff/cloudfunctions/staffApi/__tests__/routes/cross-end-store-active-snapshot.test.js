@@ -53,7 +53,9 @@ const ANALYST_SECTION_SHA = {
   'lib/analyst-scope.ts export function scopeFilterSql(': '9cff62ec3735905d',
   'lib/analyst-scope.ts export function scopeRangeSql(': 'ce8d289ee987611d',
   'lib/analyst-scope.ts function scopeRangeParts(': 'c69dcbd784e1d01a',
-  'lib/new-customer-funnel.ts async function queryFunnelEntries(': 'a30bcd7f9fe7b0c3',
+  'lib/new-customer-funnel.ts async function queryFunnelEntries(': '8c5989a1413da0bb',
+  'lib/penetration.ts async function queryHolderRows(': '44a7db61f27f9e9e',
+  'lib/penetration.ts async function queryMemberRows(': '23be93e832cf21ff',
   'lib/penetration.ts function memberConditions(': '90ebe52a8d3e52a8',
   'lib/repurchase.ts async function queryRepurchaseCatalog(': '2c71fd5b2de1aae7',
   'lib/repurchase.ts async function queryRepurchaseEntries(': '03440f42a856f67a',
@@ -140,6 +142,9 @@ describe('门店在营判定跨端字面量守护（#400）', () => {
       ['lib/repurchase.ts', 'async function queryRepurchaseCatalog('],
       ['lib/new-customer-funnel.ts', 'async function queryFunnelEntries('],
       ['lib/penetration.ts', 'function memberConditions('],
+      // 构造器之外还要钉消费方：只钉 memberConditions 时把 WHERE 改成 OR TRUE 全绿（GLM round-1 P2）
+      ['lib/penetration.ts', 'async function queryMemberRows('],
+      ['lib/penetration.ts', 'async function queryHolderRows('],
     ]
     const actual = Object.fromEntries(
       SECTIONS.map(([file, start]) => [`${file} ${start}`, sha(extractSection(read(path.join(ANALYST, file)), start, '\n}\n'))]),
