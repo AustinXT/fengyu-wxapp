@@ -4181,8 +4181,9 @@ interface ConversionTargetDraft {
 
 const EMPTY_CONVERSION_SOURCE: ConversionSourceDraft = { skuId: '', lotId: '', lot: null, quantity: '1', remark: '' }
 const EMPTY_CONVERSION_TARGET: ConversionTargetDraft = { skuId: '', quantity: '1', unitPrice: null, batchNo: '', expiryDate: '', remark: '' }
-/** 与服务端 CONVERSION_LINES_MAX 一致：来源、目标各不超过 100 行。 */
+/** 与服务端 CONVERSION_LINES_MAX / CONVERSION_LINKS_MAX 一致。 */
 const CONVERSION_LINES_MAX = 100
+const CONVERSION_LINKS_MAX = 500
 /** 与服务端 twoDecimals 同判据：最多两位小数。 */
 const hasAtMostTwoDecimals = (value: number) => Number(value.toFixed(2)) === value
 
@@ -4293,6 +4294,10 @@ function ConversionForm({
     const shares = allocateConversionLinks(sourceItems.map((item) => item.quantity!), targetItems.map((item) => item.quantity!))
     if (uncoveredConversionTargets(shares, targetItems.length).length > 0) {
       toast.error('来源数量太少，无法分摊到每个目标行（每个目标至少对应 0.01 来源数量）')
+      return
+    }
+    if (shares.length > CONVERSION_LINKS_MAX) {
+      toast.error(`来源与目标组合过多（关联 ${shares.length} 条，上限 ${CONVERSION_LINKS_MAX}），请拆成多张转换单`)
       return
     }
     if (mixedGift) {

@@ -76,6 +76,10 @@ describe('库存转换成本守恒（#344）', () => {
     expect(summarizeConversion([{ quantity: 0.3, unitCost: 10 }], []).sourceAmount).toBe(3)
   })
 
+  it('负数与 PG ROUND 一致（远离 0）：-0.005 取 -0.01，不是 0.00', () => {
+    expect(summarizeConversion([{ quantity: 0.01, unitCost: -0.5 }], []).sourceAmount).toBe(-0.01)
+  })
+
   it('赠送来源（成本 0）→ 目标单价 0 守恒', () => {
     expect(suggestConversionUnitPrice(0, 3)).toBe(0)
     expect(summarizeConversion([{ quantity: 3, unitCost: 0 }], [{ quantity: 3, unitPrice: 0 }]).balanced).toBe(true)
@@ -137,6 +141,39 @@ describe('库存转换血缘分摊（#344）', () => {
     expect(shares).toEqual([{ sourceIndex: 0, targetIndex: 0, quantity: 0.01 }])
     expect(uncoveredConversionTargets(shares, 3)).toEqual([1, 2])
     expect(uncoveredConversionTargets(allocateConversionLinks([1], [1, 1, 1]), 3)).toEqual([])
+  })
+
+  it('跨来源协调：来源 [0.01, 0.01] → 目标 [1, 1] 各分到一条（不会都挤到靠前目标）', () => {
+    const shares = allocateConversionLinks([0.01, 0.01], [1, 1])
+    expect(shares).toEqual([
+      { sourceIndex: 0, targetIndex: 0, quantity: 0.01 },
+      { sourceIndex: 1, targetIndex: 1, quantity: 0.01 },
+    ])
+  })
+
+  it('补位：来源 [0.03] → 目标 [100, 1, 1]，大目标让出 0.01，三个目标都有关联', () => {
+    const shares = allocateConversionLinks([0.03], [100, 1, 1])
+    expect(uncoveredConversionTargets(shares, 3)).toEqual([])
+    expect(shares.map((share) => share.quantity)).toEqual([0.01, 0.01, 0.01])
+  })
+
+  it('性质（随机 2000 例）：Σ来源分数 ≥ 目标行数 ⇒ 全覆盖；每条来源合计恒等于来源数量且每条 > 0', () => {
+    let seed = 344
+    const random = () => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed / 2147483648 }
+    const quantity = () => Math.max(1, Math.floor(random() ** 3 * 5000)) / 100
+    for (let round = 0; round < 2000; round += 1) {
+      const sources = Array.from({ length: 1 + Math.floor(random() * 4) }, quantity)
+      const targets = Array.from({ length: 1 + Math.floor(random() * 5) }, quantity)
+      const shares = allocateConversionLinks(sources, targets)
+      const context = `${sources.join('+')} → ${targets.join('+')}`
+      expect(shares.every((share) => share.quantity > 0), context).toBe(true)
+      sources.forEach((value, index) => {
+        const total = shares.filter((share) => share.sourceIndex === index).reduce((sum, share) => sum + Math.round(share.quantity * 100), 0)
+        expect(total, context).toBe(Math.round(value * 100))
+      })
+      const sourceCents = sources.reduce((sum, value) => sum + Math.round(value * 100), 0)
+      if (sourceCents >= targets.length) expect(uncoveredConversionTargets(shares, targets.length), context).toEqual([])
+    }
   })
 
   it('大数量分摊不失真：9999999999.99 分给 3 个目标，合计恰好等于来源', () => {

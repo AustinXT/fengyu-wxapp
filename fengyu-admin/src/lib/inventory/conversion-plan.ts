@@ -56,9 +56,14 @@ function toCents(value: number): bigint {
   return BigInt(Math.round(Number(value.toFixed(4)) * 100))
 }
 
-/** 一行金额（分）= ROUND(数量 × 单价, 2)。数量、单价均非负，+50 再整除即 .5 远离 0，与 PG ROUND 一致。 */
+/**
+ * 一行金额（分）= ROUND(数量 × 单价, 2)，.5 远离 0 —— 与 PG numeric ROUND 一致。
+ * 按符号处理：BigInt 除法向 0 截断，负数若也「+50 再整除」会把 -0.005 算成 0.00（PG 是 -0.01）。
+ * 调用方本就拒绝负价，这里仍保持对称，免得公式与触发器在异常数据上悄悄分叉。
+ */
 function lineAmountCents(quantity: number, unitPrice: number): bigint {
-  return (toCents(quantity) * toCents(unitPrice) + FIFTY) / HUNDRED
+  const product = toCents(quantity) * toCents(unitPrice)
+  return product < ZERO ? -((-product + FIFTY) / HUNDRED) : (product + FIFTY) / HUNDRED
 }
 
 const centsToYuan = (cents: bigint) => Number(cents) / 100
@@ -119,12 +124,15 @@ export function suggestConversionUnitPrice(sourceAmount: number, targetQuantityT
 /**
  * 来源行 × 目标行的多对多血缘（relation_type = 库存转换）。
  *
- * 每条关联的 quantity = 该来源行数量按目标数量占比分摊到该目标的部分，按分做最大余数法
- * （余数相同时靠前的目标先得），保证同一来源行的关联合计**恰好**等于来源数量 ——
- * 0043 `inventory_validate_doc_link` 要求同一来源明细的关联合计不超过来源明细数量，
- * 不需要为此改触发器或加迁移（用户 2026-09-25 确认）。分摊为 0 的配对不建关联
- * （doc_links 的 CHECK 要求 quantity > 0）；调用方须用 {@link uncoveredConversionTargets}
- * 拒绝「某个目标一条来源关联都分不到」的单据，否则该目标明细没有血缘。
+ * 每条关联的 quantity = 该来源行数量按目标数量占比分摊到该目标的部分，按分做最大余数法，
+ * 保证同一来源行的关联合计**恰好**等于来源数量 —— 0043 `inventory_validate_doc_link` 要求
+ * 同一来源明细的关联合计不超过来源明细数量，不需要为此改触发器或加迁移（用户 2026-09-25 确认）。
+ * 分摊为 0 的配对不建关联（doc_links 的 CHECK 要求 quantity > 0）。
+ *
+ * 覆盖：各来源行不是各算各的 —— 余数优先分给「到目前为止还没分到任何来源」的目标，
+ * 最后再做一遍补位：仍没分到的目标，从「合计 ≥ 0.02 的目标」那里挪 0.01（同一来源行内挪，
+ * 来源合计不变）。所以只要 Σ来源数量 ≥ 0.01 × 目标行数，每个目标都至少有一条关联；
+ * 调用方用 {@link uncoveredConversionTargets} 拒绝余下那种来源实在太少的单据。
  */
 export function allocateConversionLinks(
   sourceQuantities: number[],
@@ -133,30 +141,53 @@ export function allocateConversionLinks(
   const targetCents = targetQuantities.map(toCents)
   const targetTotal = targetCents.reduce((sum, value) => sum + value, ZERO)
   if (targetTotal <= ZERO) return []
-  const shares: ConversionLinkShare[] = []
-  for (const [sourceIndex, sourceQuantity] of sourceQuantities.entries()) {
+  const matrix: bigint[][] = []
+  const receivedByTarget = targetCents.map(() => ZERO)
+  for (const sourceQuantity of sourceQuantities) {
     const sourceCents = toCents(sourceQuantity)
     const products = targetCents.map((target) => sourceCents * target)
     const allotted = products.map((product) => product / targetTotal)
     let remainder = sourceCents - allotted.reduce((sum, value) => sum + value, ZERO)
     const order = products
-      .map((product, targetIndex) => ({ targetIndex, fraction: product % targetTotal }))
-      .sort((left, right) => (left.fraction === right.fraction
-        ? left.targetIndex - right.targetIndex
-        : left.fraction > right.fraction ? -1 : 1))
+      .map((product, targetIndex) => ({
+        targetIndex,
+        fraction: product % targetTotal,
+        uncovered: receivedByTarget[targetIndex] === ZERO && allotted[targetIndex] === ZERO,
+      }))
+      .sort((left, right) => {
+        if (left.uncovered !== right.uncovered) return left.uncovered ? -1 : 1
+        if (left.fraction !== right.fraction) return left.fraction > right.fraction ? -1 : 1
+        return left.targetIndex - right.targetIndex
+      })
     for (const { targetIndex } of order) {
       if (remainder <= ZERO) break
       allotted[targetIndex] += ONE
       remainder -= ONE
     }
-    for (const [targetIndex, cents] of allotted.entries()) {
-      if (cents > ZERO) shares.push({ sourceIndex, targetIndex, quantity: centsToYuan(cents) })
+    allotted.forEach((cents, targetIndex) => { receivedByTarget[targetIndex] += cents })
+    matrix.push(allotted)
+  }
+  // 补位：没分到的目标从合计 ≥ 0.02 的目标那里挪 0.01（挪的是同一来源行内的份额，来源合计不变）
+  for (const [target, received] of receivedByTarget.entries()) {
+    if (received > ZERO) continue
+    for (const row of matrix) {
+      const donor = row.findIndex((cents, index) => cents > ZERO && receivedByTarget[index] > ONE)
+      if (donor < 0) continue
+      row[donor] -= ONE
+      row[target] += ONE
+      receivedByTarget[donor] -= ONE
+      receivedByTarget[target] += ONE
+      break
     }
   }
+  const shares: ConversionLinkShare[] = []
+  matrix.forEach((row, sourceIndex) => row.forEach((cents, targetIndex) => {
+    if (cents > ZERO) shares.push({ sourceIndex, targetIndex, quantity: centsToYuan(cents) })
+  }))
   return shares
 }
 
-/** 一条来源关联都分不到的目标行下标（来源数量太少、分到每个目标不足 0.01）。 */
+/** 一条来源关联都分不到的目标行下标（Σ来源数量不足 0.01 × 目标行数）。 */
 export function uncoveredConversionTargets(shares: ConversionLinkShare[], targetCount: number): number[] {
   const covered = new Set(shares.map((share) => share.targetIndex))
   return Array.from({ length: targetCount }, (_, index) => index).filter((index) => !covered.has(index))

@@ -1687,6 +1687,15 @@ describe('库存转换多对多与成本守恒（#344）', () => {
     })).rejects.toThrow('赠送批次转换的目标单价必须为 0')
   })
 
+  it('来源批次成本为负：拒绝（负数舍入方向与 PG 不同，守恒失去意义）', async () => {
+    fakeDb([{ id: 101, sku_id: 'SKU-A', supply_chain_unit_cost: '-0.5' }])
+    await expect(createInventoryConversion(SESSION, {
+      locationId: 'HQ',
+      sources: [{ sourceLotId: 101, quantity: 1 }],
+      targets: [{ targetSkuId: 'SKU-X', quantity: 1, unitPrice: 0 }],
+    })).rejects.toThrow('供应链成本为负数')
+  })
+
   it('来源批次缺少供应链成本：拒绝（无从守恒）', async () => {
     fakeDb([{ id: 101, sku_id: 'SKU-A', supply_chain_unit_cost: null }])
     await expect(createInventoryConversion(SESSION, {
@@ -1722,6 +1731,7 @@ describe('库存转换多对多与成本守恒（#344）', () => {
     ['来源数量太少分不到每个目标', { sources: [{ sourceLotId: 101, quantity: 0.01 }], targets: [{ targetSkuId: 'SKU-X', quantity: 1, unitPrice: 0 }, { targetSkuId: 'SKU-Y', quantity: 1, unitPrice: 0 }] }, '无法分摊到每个目标行'],
     ['目标数量合计超上界', { sources: [{ sourceLotId: 101, quantity: 1 }], targets: [{ targetSkuId: 'SKU-X', quantity: 9999999999, unitPrice: 0 }, { targetSkuId: 'SKU-Y', quantity: 9999999999, unitPrice: 0 }] }, '目标数量合计不能超过'],
     ['单头备注非字符串', { remark: 123, sources: [{ sourceLotId: 101, quantity: 1 }], targets: [{ targetSkuId: 'SKU-X', quantity: 1, unitPrice: 0 }] }, '备注格式不正确'],
+    ['关联条数超过 500（30 × 30）', { sources: Array.from({ length: 30 }, (_, index) => ({ sourceLotId: 101 + index, quantity: 1 })), targets: Array.from({ length: 30 }, () => ({ targetSkuId: 'SKU-X', quantity: 1, unitPrice: 0 })) }, '上限 500'],
     ['目标行超过 100', { sources: [{ sourceLotId: 101, quantity: 1 }], targets: Array.from({ length: 101 }, () => ({ targetSkuId: 'SKU-X', quantity: 1, unitPrice: 0 })) }, '各不能超过 100 行'],
   ])('入参校验：%s（开事务前就拒）', async (_label, body, message) => {
     await expect(createInventoryConversion(SESSION, { locationId: 'HQ', ...body } as never)).rejects.toThrow(message)

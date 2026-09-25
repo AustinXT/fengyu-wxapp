@@ -5257,8 +5257,10 @@ function assertConvertibleSku(sku: Pick<SkuSnapshot, 'sourceType' | 'productName
 
 /** numeric(12,2) 的上界；再大 PG 抛 22003，且整数分乘法会越过 2^53。 */
 const CONVERSION_NUMBER_MAX = 9999999999.99
-/** 单张转换单的来源 / 目标行数上限：关联按 N×M 写入，每条都过 0043 触发器，且全程持有库存全局锁。 */
+/** 单张转换单的来源 / 目标行数上限。 */
 const CONVERSION_LINES_MAX = 100
+/** 关联条数上限：关联按来源 × 目标写入、逐条过 0043 触发器，且全程持有库存全局锁（100×100 会是 1 万条）。 */
+const CONVERSION_LINKS_MAX = 500
 
 /**
  * 库存转换的数量 / 单价（#344）：只收 number 或数字字符串，两位小数，不超过 numeric(12,2) 上界。
@@ -5359,6 +5361,9 @@ export async function createInventoryConversion(
   if (uncoveredConversionTargets(linkShares, targetLines.length).length > 0) {
     throw new ApiError('INVALID_PARAMS', '来源数量太少，无法分摊到每个目标行（每个目标至少对应 0.01 来源数量）')
   }
+  if (linkShares.length > CONVERSION_LINKS_MAX) {
+    throw new ApiError('INVALID_PARAMS', `来源与目标组合过多（关联 ${linkShares.length} 条，上限 ${CONVERSION_LINKS_MAX}），请拆成多张转换单`)
+  }
   await syncLocations()
   const ids = await db.transaction(async (tx) => {
     await assertInventoryBusinessWritable(tx)
@@ -5395,6 +5400,10 @@ export async function createInventoryConversion(
       // 成本口径 = 总部批次的供应链成本；赠送批次按 0（#336 拍板：赠送批次价格全部记 0）。
       if (!lot.isGift && lot.supplyChainUnitCost === null) {
         throw new ApiError('INVALID_STATE', `来源批次缺少供应链成本，无法核算转换成本：${lot.skuName} 批次 ${lot.batchNo || '未填写'}`)
+      }
+      // 批次价格列没有非负约束；负成本会让守恒失去意义（且舍入方向与正数不同），直接拒
+      if (!lot.isGift && lot.supplyChainUnitCost! < 0) {
+        throw new ApiError('INVALID_STATE', `来源批次的供应链成本为负数，无法转换：${lot.skuName} 批次 ${lot.batchNo || '未填写'}`)
       }
       return { ...line, lot, unitCost: lot.isGift ? 0 : lot.supplyChainUnitCost! }
     })
