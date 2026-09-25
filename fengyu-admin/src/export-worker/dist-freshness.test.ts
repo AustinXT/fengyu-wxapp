@@ -512,22 +512,25 @@ describe('dist/export-worker.mjs 客活分子守卫的**位置**（#414）', () 
  * 逐行指出缺口，就是这个形态。这里换**闭集**：把 `queryRegActiveBreakdown` 的整段模板
  * 拿去产物里找，任何一个字符的增删改都红，不需要预先知道哪行重要。
  *
- * ## 唯一的归一化：把 `${…}` 插值整段遮成 `${}`
+ * ## 归一化：只抵消 bun 对**插值内部**做的两种改写，插值内容照比
  *
- * `bun build` 原样保留模板**正文**，但会重写**插值表达式内部**：JS 字符串 `'x'` → `"x"`、
- * 标识符 `sql.raw(…)` → `import_drizzle_orm65.sql.raw(…)`。这些改写与口径无关，
- * 所以两侧都把 `${…}` 遮成 `${}` 再比。
+ * `bun build` 原样保留模板**正文**，只重写插值表达式内部：
+ * ① JS 字符串 `'x'` → `"x"`　② 模块标识符前缀 `sql.raw(…)` → `import_drizzle_orm65.sql.raw(…)`。
+ * 两侧只抵消这两种，**插值的其余内容逐字参与比对**。
+ *
+ * ⚠ 早先版本是把 `${…}` 整段遮成 `${}` —— 那样「用嵌套 `sql\`${customerScope} AND c.created_at::date <= ${start}\``
+ * 替掉 `${customerScope}`」构建出来的过期产物会被整体遮掉而全绿（codex round-16 P2）。
+ * 遮罩比抵消省事，但把要守的东西一起遮没了。
  *
  * ⚠ **SQL 正文里的引号一个都不碰** —— `'保有会员-稳定'` 的 `'` 与 `"` 在 PG 是
  * 字面量 vs 标识符，一起归一会放过真实的语义变化。
- *
- * 插值**内部**的口径（`${visitDaysSql({ axis: 'service_date', … })}` 的日期轴、
- * `${customerScope}` 用哪个 scope 生产者…）由源码侧 `consistency.customer.test.ts`
- * 的整段快照逐字钉死，两边各管一段，不重复也不留缝。
  */
 describe('dist/export-worker.mjs 客量明细 SQL 整段逐字进入产物（#414）', () => {
-  /** 把 `${…}` 插值整段遮成 `${}`（bun 会重写插值内部的引号与标识符，与口径无关） */
-  const maskInterpolations = (text: string): string => {
+  /**
+   * 只在 `${…}` 插值区间内抵消 bun 的两种改写（JS 引号、`import_xxx.` 模块前缀），
+   * 插值的其余内容原样保留参与比对。
+   */
+  const normalizeInterpolations = (text: string): string => {
     let out = ''
     for (let i = 0; i < text.length; ) {
       if (text.startsWith('${', i)) {
@@ -540,7 +543,10 @@ describe('dist/export-worker.mjs 客量明细 SQL 整段逐字进入产物（#41
             break
           }
         }
-        out += '${}'
+        out += text
+          .slice(i, j)
+          .replace(/'/g, '"')
+          .replace(/\bimport_[A-Za-z0-9_$]+\./g, '')
         i = j
       } else {
         out += text[i++]
@@ -555,14 +561,14 @@ describe('dist/export-worker.mjs 客量明细 SQL 整段逐字进入产物（#41
     const to = src.indexOf('GROUP BY ${groupId}', from)
     expect(from, '源码里找不到明细 SQL 模板起点').toBeGreaterThan(0)
     expect(to, '源码里找不到明细 SQL 模板终点').toBeGreaterThan(from)
-    const template = maskInterpolations(
+    const template = normalizeInterpolations(
       src.slice(from, to + 'GROUP BY ${groupId}'.length).replace(/\s+/g, ' ').trim(),
     )
     // fail-closed：模板短得离谱说明锚点漂了，不能让这条守护静默通过
     expect(template.length).toBeGreaterThan(2500)
 
     const dist = fs.readFileSync(DIST, 'utf-8')
-    const segment = maskInterpolations(
+    const segment = normalizeInterpolations(
       moduleSegments(dist, 'src/actions/data-center/customer.ts').join('\n').replace(/\s+/g, ' '),
     )
     expect(
