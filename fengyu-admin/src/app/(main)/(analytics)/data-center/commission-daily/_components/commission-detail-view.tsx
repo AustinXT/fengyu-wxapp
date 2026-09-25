@@ -91,7 +91,7 @@ export function CommissionDetailView({
         <KpiCard label="提成合计" cell={{ value: summary.commission, unit: "amount" }} />
         <KpiCard label="业绩提成" cell={{ value: summary.sale, unit: "amount" }} />
         <KpiCard label="消耗提成" cell={{ value: summary.service, unit: "amount" }} />
-        <KpiCard label="平均提成点" cell={{ value: summary.averageRate, unit: "percent" }} hint="Σ提成 ÷ Σ分配金额（含负数行、0 费率行）" />
+        <KpiCard label="平均提成点" cell={{ value: summary.averageRate, unit: "percent" }} hint="Σ提成 ÷ Σ分配金额（含负数行、0 费率行；单价缺失的服务行分配金额为空，不进分母）" />
       </div>
 
       <Card className="flex flex-col gap-3 p-4">

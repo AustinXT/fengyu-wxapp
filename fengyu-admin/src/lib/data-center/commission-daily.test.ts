@@ -193,4 +193,8 @@ describe('下钻链接与导出参数', () => {
       ['month', '2026-08'], ['after', 'abc'], ['before', 'x'], ['size', '100'], ['returnTo', '/x'.repeat(200)], ['type', 'sale'], ['q', ''],
     ])).toEqual({ month: '2026-08', type: 'sale' })
   })
+
+  it('导出的搜索词与页面同一截断（50 字）', () => {
+    expect(commissionExportParams([['q', `  ${'张'.repeat(80)}  `]]).q).toHaveLength(50)
+  })
 })

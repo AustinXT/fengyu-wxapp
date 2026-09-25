@@ -348,5 +348,10 @@ export const COMMISSION_NON_FILTER_PARAMS = ['after', 'before', 'size', 'returnT
 
 export function commissionExportParams(entries: Iterable<[string, string]>): Record<string, string> {
   const dropped = new Set<string>(COMMISSION_NON_FILTER_PARAMS)
-  return Object.fromEntries([...entries].filter(([key, value]) => !dropped.has(key) && value !== ''))
+  return Object.fromEntries(
+    [...entries]
+      .filter(([key, value]) => !dropped.has(key) && value !== '')
+      // 搜索词与页面取数同一截断（手改 URL 的超长 q 不能让导出按另一个关键词取数，也不能撑爆导出参数上限）
+      .map(([key, value]) => [key, key === 'q' ? value.trim().slice(0, MAX_SEARCH_LENGTH) : value]),
+  )
 }
