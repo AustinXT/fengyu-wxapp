@@ -97,6 +97,7 @@ import {
   approveItemCompanyShipmentCancellation,
   approveReturnForRestock,
   cancelSupplyChainPurchaseOrder,
+  createItemCompanyShipment,
   createStoreAllocation,
   receiveItemCompanyShipmentInFull,
   receiveStoreAllocationInFull,
@@ -907,7 +908,7 @@ beforeEach(() => {
 
 describe('待办区的按钮可见性矩阵（#192）', () => {
   /**
-   * 七个内置业务 + 两个通用业务的「状态 → 按钮」矩阵。
+   * 八个内置业务 + 两个通用业务的「状态 → 按钮」矩阵。
    *
    * 期望值不是抄实现的：每条都对齐服务端 inbox 查询条件里的 docType/statuses
    * （`INVENTORY_OPERATION_DOC_QUERY` / `INVENTORY_GENERIC_OPERATION_INBOX`），
@@ -928,6 +929,8 @@ describe('待办区的按钮可见性矩阵（#192）', () => {
     // 供应链采购入库要逐行核对效期（批号可自动生成，#345），刻意没有一键版
     { operation: 'supply-chain-receipt', docType: '采购订单', status: '待收货', actions: ['去收货'] },
     { operation: 'supply-chain-purchase-cancel', docType: '采购订单', status: '待收货', actions: ['关闭采购'] },
+    // 待发货（#336）：市场报货单「已完成」即可发货，发货要逐行选批次，只给跳转
+    { operation: 'company-shipment', docType: '市场报货', status: '已完成', actions: ['去发货'] },
     { operation: 'generic:分院调货出库', docType: '分院调货出库', status: '待收货', actions: ['确认收货'] },
     { operation: 'generic:市场间调货出库', docType: '市场间调货出库', status: '待收货', actions: ['确认收货'] },
   ]
@@ -1979,5 +1982,167 @@ describe('采购订单来源多选与一键带出（#338）', () => {
     await waitFor(() => expect(toast.warning).toHaveBeenCalledWith(expect.stringContaining('MHZ-9')))
     await waitFor(() => expect(getInventoryCoreDocsByIds).toHaveBeenLastCalledWith(['MHZ-1']))
     expect(await screen.findByText(/^已选 1 张：MHZ-1$/)).toBeInTheDocument()
+  })
+})
+
+/**
+ * 品项公司发货直接引用市场报货单（#336b）。
+ * 先定收货市场与发货总部 → 多选报货单 → 每条报货明细默认一行正常发货（数量 = 未发量），
+ * 逐行选总部批次；可拆批次、可删行、可加赠送行；顶部显示「还有 N 件未发」。
+ */
+describe('品项公司发货引用市场报货单（#336b）', () => {
+  const HQ: InventoryLocationRow = { locationId: 'HQ', locationType: '总部', name: '品牌总部', orgNodeId: 'HQ', storeId: null, parentLocationId: null, isActive: true }
+  const M1: InventoryLocationRow = { locationId: 'M1', locationType: '市场', name: '市场一部', orgNodeId: 'M1', storeId: null, parentLocationId: 'HQ', isActive: true }
+  const M2: InventoryLocationRow = { locationId: 'M2', locationType: '市场', name: '市场二部', orgNodeId: 'M2', storeId: null, parentLocationId: 'HQ', isActive: true }
+
+  function report(id: string, marketId = 'M1') {
+    return docRow({ id, docType: '市场报货', status: '已完成', sourceOrgNodeId: marketId, targetOrgNodeId: 'HQ', marketId })
+  }
+  /** 报货 30、已直连发出 10 → 未发 20 */
+  function reportDetail(row: InventoryDocRow, itemId = 11, quantity = 30, shipped = 10): InventoryDocDetail {
+    return {
+      ...docDetail(row),
+      items: [{ id: itemId, docId: row.id, skuId: 'SKU-1', skuName: '精华液', specName: '50ml', quantity, fulfilledQuantity: 0 } as unknown as InventoryDocDetail['items'][number]],
+      fulfillmentProgress: {
+        kind: '报货履约',
+        items: [{ itemId, normalDemandQuantity: quantity, orderedQuantity: 0, normalFulfilledQuantity: shipped, giftFulfilledQuantity: 0, normalReceivedQuantity: 0, giftReceivedQuantity: 0 }],
+      },
+    }
+  }
+  function submitShipment() {
+    // 同分院配货那组：happy-dom 的 step 校验有浮点误差，直接派 submit
+    fireEvent.submit(screen.getByRole('button', { name: '创建品项公司发货单' }).closest('form')!)
+  }
+  async function chooseLot(index: number, value: string) {
+    await waitFor(() => expect(screen.getAllByRole('option', { name: /^批次 / }).length).toBeGreaterThan(0))
+    const selects = screen.getAllByRole('option', { name: '选择库存批次' }).map((option) => option.closest('select') as HTMLSelectElement)
+    fireEvent.change(selects[index], { target: { value } })
+  }
+
+  beforeEach(() => {
+    mockDocs({})
+    vi.mocked(createItemCompanyShipment).mockResolvedValue({ id: 'FH-20260925-0001' })
+    vi.mocked(listInventoryLotOptions).mockResolvedValue([
+      { id: 41, batchNo: 'A', isGift: false, quantityOnHand: 10, expiryDate: null },
+      { id: 42, batchNo: 'B', isGift: false, quantityOnHand: 50, expiryDate: null },
+    ] as never)
+  })
+
+  it('单市场只读；候选按收货市场 + 发货总部收窄；带出未发量并按行提交正常 / 赠送两组', async () => {
+    const row = report('SBH-1')
+    vi.mocked(getInventoryCoreDocById).mockResolvedValue(reportDetail(row))
+    renderPage({ level: 'supply-chain', operation: 'company-shipment', locations: [HQ, M1], candidates: [row] })
+
+    // 唯一市场 / 唯一总部都降级成只读文本
+    await waitFor(() => expect(document.querySelector('[data-fixed-subject="M1"]')).not.toBeNull())
+    expect(document.querySelector('[data-fixed-subject="HQ"]')).not.toBeNull()
+    await waitFor(() => expect(listInventoryDocCandidates).toHaveBeenLastCalledWith(
+      expect.objectContaining({ purpose: 'company-shipment-source', sourceOrgNodeId: 'M1', targetOrgNodeId: 'HQ' }),
+    ))
+
+    fireEvent.click(await screen.findByRole('checkbox', { name: '选择 SBH-1' }))
+    expect(await screen.findByText(/报货 30 · 已发 10 · 未发 20/)).toBeInTheDocument()
+    expect(screen.getByRole('status', { name: '未发进度' })).toHaveTextContent('所选报货单还有 20 件未发')
+
+    // 正常行默认 = 未发量 20，改成 10 从批号 A 发；再拆一行从批号 B 发 10；加一行赠送 2 件
+    const normal = screen.getByLabelText(/^正常发货/) as HTMLInputElement
+    expect(normal.value).toBe('20')
+    fireEvent.change(normal, { target: { value: '10' } })
+    fireEvent.click(screen.getByRole('button', { name: '加批次' }))
+    fireEvent.click(screen.getByRole('button', { name: '加赠送' }))
+    const quantities = screen.getAllByRole('spinbutton')
+    fireEvent.change(quantities[1], { target: { value: '10' } })
+    fireEvent.change(quantities[2], { target: { value: '2' } })
+    await chooseLot(0, '41')
+    await chooseLot(1, '42')
+    await chooseLot(2, '42')
+    expect(screen.getByRole('status', { name: '未发进度' })).toHaveTextContent('本次正常发货 20 件，发后还剩 0 件')
+
+    submitShipment()
+    await waitFor(() => expect(createItemCompanyShipment).toHaveBeenCalledWith({
+      marketId: 'M1',
+      sourceOrgNodeId: 'HQ',
+      docDate: expect.any(String),
+      logisticsCompany: null,
+      trackingNo: null,
+      remark: null,
+      items: [
+        { reportItemId: 11, lotId: 41, quantity: 10, remark: null },
+        { reportItemId: 11, lotId: 42, quantity: 10, remark: null },
+      ],
+      giftItems: [{ reportItemId: 11, lotId: 42, quantity: 2, remark: null }],
+    }))
+  })
+
+  it('正常发货超过未发量先在前端拦下并给出可发上限；删掉的行不提交', async () => {
+    const row = report('SBH-1')
+    vi.mocked(getInventoryCoreDocById).mockResolvedValue(reportDetail(row))
+    renderPage({ level: 'supply-chain', operation: 'company-shipment', locations: [HQ, M1], candidates: [row] })
+    fireEvent.click(await screen.findByRole('checkbox', { name: '选择 SBH-1' }))
+    const normal = await screen.findByLabelText(/^正常发货/)
+    fireEvent.change(normal, { target: { value: '21' } })
+    await chooseLot(0, '42')
+    submitShipment()
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('精华液 正常发货数量超过报货未发量，本次最多可发 20'))
+    expect(createItemCompanyShipment).not.toHaveBeenCalled()
+
+    // 库存不足时删行：没有明细就不能提交
+    fireEvent.click(screen.getByRole('button', { name: '删除发货行' }))
+    expect(screen.getByRole('button', { name: '创建品项公司发货单' })).toBeDisabled()
+  })
+
+  it('多个市场时必须先选市场，候选禁用且不查询；换市场清空已选报货单，迟到的明细不回填', async () => {
+    const row = report('SBH-1')
+    let resolveDoc: (value: InventoryDocDetail) => void = () => {}
+    vi.mocked(getInventoryCoreDocById).mockImplementationOnce(() => new Promise((resolve) => { resolveDoc = resolve }))
+    renderPage({ level: 'supply-chain', operation: 'company-shipment', locations: [HQ, M1, M2], candidates: [row] })
+    expect(await screen.findByText('请先选择收货市场和发货总部')).toBeInTheDocument()
+    expect(listInventoryDocCandidates).not.toHaveBeenCalled()
+
+    const marketSelect = screen.getByRole('option', { name: '请选择市场' }).closest('select') as HTMLSelectElement
+    fireEvent.change(marketSelect, { target: { value: 'M1' } })
+    fireEvent.click(await screen.findByRole('checkbox', { name: '选择 SBH-1' }))
+    expect(screen.getByRole('button', { name: '创建品项公司发货单' })).toBeDisabled()
+
+    fireEvent.change(marketSelect, { target: { value: 'M2' } })
+    await act(async () => { resolveDoc(reportDetail(row)) })
+    expect(screen.queryByText(/报货 30 · 已发 10/)).toBeNull()
+    expect(screen.queryByText(/^已选 /)).toBeNull()
+  })
+
+  it('同一张单取消勾选再勾上：先发的请求迟到也只带出一遍明细', async () => {
+    const row = report('SBH-1')
+    let resolveFirst: (value: InventoryDocDetail) => void = () => {}
+    vi.mocked(getInventoryCoreDocById)
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveFirst = resolve }))
+      .mockResolvedValueOnce(reportDetail(row))
+    renderPage({ level: 'supply-chain', operation: 'company-shipment', locations: [HQ, M1], candidates: [row] })
+    const checkbox = await screen.findByRole('checkbox', { name: '选择 SBH-1' })
+    fireEvent.click(checkbox)
+    fireEvent.click(checkbox)
+    fireEvent.click(checkbox)
+    expect(await screen.findByText(/报货 30 · 已发 10 · 未发 20/)).toBeInTheDocument()
+    await act(async () => { resolveFirst(reportDetail(row)) })
+    expect(screen.getAllByLabelText(/^正常发货/)).toHaveLength(1)
+    expect(screen.getByRole('button', { name: '创建品项公司发货单' })).toBeEnabled()
+  })
+
+  it('待办「去发货」：带出收货市场、发货总部并勾上这张报货单', async () => {
+    const row = report('SBH-9', 'M2')
+    vi.mocked(getInventoryCoreDocById).mockResolvedValue(reportDetail(row, 91, 5, 0))
+    mockDocs({ inbox: segment([row]) })
+    renderPage({ level: 'supply-chain', operation: 'company-shipment', locations: [HQ, M1, M2], candidates: [row] })
+
+    await openDocsTab()
+    expect(screen.getByText('待发货：仍有未发量的市场报货单')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '去发货 SBH-9' }))
+
+    expect(await screen.findByText(/报货 5 · 已发 0 · 未发 5/)).toBeInTheDocument()
+    const marketSelect = screen.getByRole('option', { name: '市场二部' }).closest('select') as HTMLSelectElement
+    expect(marketSelect.value).toBe('M2')
+    expect(await screen.findByText(/^已选 1 张：SBH-9/)).toBeInTheDocument()
+    await waitFor(() => expect(listInventoryDocCandidates).toHaveBeenLastCalledWith(
+      expect.objectContaining({ purpose: 'company-shipment-source', sourceOrgNodeId: 'M2', targetOrgNodeId: 'HQ' }),
+    ))
   })
 })

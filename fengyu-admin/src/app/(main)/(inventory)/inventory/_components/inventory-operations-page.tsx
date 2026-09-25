@@ -1569,7 +1569,10 @@ export function OperationDocsTab({
           <div className="flex flex-wrap items-center gap-2">
             <h3 className="text-sm font-medium">待我处理</h3>
             <Badge variant="outline">{inboxTotal}</Badge>
-            <span className="text-xs text-[#888888]">上游已提交、等你审批或收货的单据</span>
+            <span className="text-xs text-[#888888]">
+              {/* 品项公司发货的待办是「待发货」的市场报货单（#336），不是审批 / 收货 */}
+              {operation === 'company-shipment' ? '待发货：仍有未发量的市场报货单' : '上游已提交、等你审批或收货的单据'}
+            </span>
           </div>
           {inboxEmpty ? (
             <p className="px-1 py-2 text-sm text-[#888888]">{inboxEmptyText}</p>
@@ -3110,7 +3113,7 @@ function CompanyShipmentForm({
       />
       {loadingIds.length > 0 && <div className="text-sm text-[#666666]">正在加载市场报货明细</div>}
       {reportItems.length > 0 && (
-        <div role="status" className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--muted)] p-3 text-sm">
+        <div role="status" aria-label="未发进度" className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--muted)] p-3 text-sm">
           所选报货单还有 <span className="font-medium">{outstandingTotal}</span> 件未发
           {normalThisTime > 0 && <>，本次正常发货 {normalThisTime} 件，发后还剩 {Math.max(0, Number((outstandingTotal - normalThisTime).toFixed(2)))} 件</>}
         </div>
