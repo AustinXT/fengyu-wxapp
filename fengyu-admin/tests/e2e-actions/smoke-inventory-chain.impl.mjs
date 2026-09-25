@@ -1026,12 +1026,16 @@ try {
 
   setSession(supplyChainSession())
   const engine = await import(A('src', 'lib', 'inventory', 'engine.ts'))
+  // 按单号检索：结果集只剩目标单，「看不到 / 已退出」的断言不会因为翻页截断而恒真
   const pendingIds = async () => (await engine.listInventoryCoreDocs({
-    docTypes: ['市场报货'], pendingItemScope: 'company-shipment', pageSize: 100,
+    docTypes: ['市场报货'], pendingItemScope: 'company-shipment', keyword: directMbhId,
   })).data.map((row) => row.id)
   const candidateFor = async (marketId) => (await docs.listInventoryDocCandidates({
-    purpose: 'company-shipment-source', sourceOrgNodeId: marketId, pageSize: 100,
+    purpose: 'company-shipment-source', sourceOrgNodeId: marketId, keyword: directMbhId,
   })).data.find((row) => row.id === directMbhId)
+  check('按单号检索的候选能命中目标单（后面「看不到」断言的前提）',
+    (await docs.listInventoryDocCandidates({ purpose: 'company-shipment-source', keyword: directMbhId }))
+      .data.some((row) => row.id === directMbhId), '')
   check('报货单未进任何采购单即出现在待发货与发货候选(#336)',
     (await pendingIds()).includes(directMbhId) && (await candidateFor(MKA_ORG))?.progress?.done === 0,
     JSON.stringify((await candidateFor(MKA_ORG))?.progress ?? null))

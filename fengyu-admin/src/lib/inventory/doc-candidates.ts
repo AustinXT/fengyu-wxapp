@@ -78,12 +78,12 @@ export const INVENTORY_DOC_CANDIDATES: Record<InventoryDocCandidatePurpose, Inve
     remainingToggle: true,
   },
   /*
-   * createItemCompanyShipment（#336 起直接引用市场报货单）：`report.status === '已取消'` 拒；
+   * createItemCompanyShipment（#336 起直接引用市场报货单）：`report.status !== '已完成'` 拒；
    * 发货主体 = report.target（供应链总部）且可写；收货市场 = report.source，
    * 表单先选市场再按 `sourceOrgNodeId` 收窄候选。
    */
   'company-shipment-source': {
-    rules: [{ docType: '市场报货' }],
+    rules: [{ docType: '市场报货', statuses: ['已完成'] }],
     scopeRole: 'target',
     progress: 'shipped',
     remainingToggle: true,

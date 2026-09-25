@@ -175671,7 +175671,7 @@ var INVENTORY_DOC_CANDIDATES = {
     remainingToggle: true
   },
   "company-shipment-source": {
-    rules: [{ docType: "市场报货" }],
+    rules: [{ docType: "市场报货", statuses: ["已完成"] }],
     scopeRole: "target",
     progress: "shipped",
     remainingToggle: true
@@ -177662,7 +177662,7 @@ async function loadMarketReportFulfillmentProgress(docId, scoped) {
       -- （单号、其它市场的明细都不出现在返回值里），所以放开这层过滤是安全的。
       --
       -- 已取消的采购单也要带上（#335）：市场行可以部分入库后再关单，已入库的那部分
-      -- 仍占着需求额度、也可能已经发了货，整张排除会让「已采购 / 已发 / 已收」一起归零。
+      -- 仍占着需求额度，整张排除会让「已采购」归零（发货 / 收货自 #336 起按直连血缘另算，与采购单无关）。
       -- 已下单量在下面 purchase_totals 里只计已入库的保留部分（cancelled_retained）。
       SELECT
         doc_link.from_item_id AS root_item_id,

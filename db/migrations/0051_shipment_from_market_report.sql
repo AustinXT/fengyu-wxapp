@@ -117,3 +117,23 @@ BEGIN
   RETURN NEW;
 END;
 $$;
+--> statement-breakpoint
+
+-- 部署前置断言（#336，拍板 C：存量只读、不做兼容）：市场收货的价格快照改为经「市场报货发货」取，
+-- 旧口径（采购订单发货）的在途发货单上线后收不了货。有这种单就让迁移失败 ——
+-- 先按旧流程收完或撤回，再重跑迁移；别等到市场点「收货」才报错。
+DO $$
+DECLARE
+  pending_ids text;
+BEGIN
+  SELECT string_agg(DISTINCT d.id, ', ' ORDER BY d.id) INTO pending_ids
+    FROM inventory_docs d
+    JOIN inventory_doc_links l ON l.to_doc_id = d.id
+   WHERE d.doc_type = '品项公司发货'
+     AND d.status IN ('待收货', '待审批')
+     AND l.relation_type IN ('采购订单发货', '采购订单赠送发货');
+  IF pending_ids IS NOT NULL THEN
+    RAISE EXCEPTION '存在旧口径（采购订单发货）的在途品项公司发货单，请先收货或撤回：%', pending_ids;
+  END IF;
+END
+$$;

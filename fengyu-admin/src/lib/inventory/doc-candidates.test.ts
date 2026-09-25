@@ -207,6 +207,9 @@ describe('候选查询的类型 / 状态 / 剩余量口径', () => {
   it('发货来源（#336）：市场报货单，未发量看「市场报货发货」直连血缘（排已取消目标单）', async () => {
     const { text, params } = await whereOf({ purpose: 'company-shipment-source' })
     expect(params).toContain('市场报货')
+    // 与 createItemCompanyShipment 同口径只认「已完成」（草稿 / 待审批的异常报货单不进发货候选）
+    expect(text).toMatch(/"inventory_docs"\."status" in \(\$\d+\)/)
+    expect(params).toContain('已完成')
     expect(params).not.toContain('采购订单')
     expect(text).toContain('shipped_link.from_item_id = cand_item.id')
     expect(text).toContain("shipped_link.relation_type = '市场报货发货'")

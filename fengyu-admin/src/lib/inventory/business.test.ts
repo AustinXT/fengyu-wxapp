@@ -1302,13 +1302,60 @@ describe('品项公司发货直接引用市场报货单（#336）', () => {
     expect(docItems[1]).not.toContain('B-001')
   })
 
-  it('同一批次被正常行与赠送行共用时按合计校验可用量', async () => {
-    mockShipment({ items: [reportItem(1, '10')], lotQuantity: '5' })
+  it('同一批次被正常行与赠送行共用时按合计校验可用量（在写入前拦下，不靠 applyLotDelta 兜底）', async () => {
+    const { docItems } = mockShipment({ items: [reportItem(1, '10')], lotQuantity: '5' })
     await expect(createItemCompanyShipment(SESSION, {
       marketId: 'M1', sourceOrgNodeId: 'HQ',
       items: [{ reportItemId: 1, lotId: 101, quantity: 4 }],
       giftItems: [{ reportItemId: 1, lotId: 101, quantity: 2 }],
-    })).rejects.toThrow('库存不足')
+    })).rejects.toThrow('可用 5')
+    expect(docItems).toHaveLength(0)
+  })
+
+  it('非「已完成」的市场报货单（草稿 / 待审批异常单）不能发货，与汇总守卫同口径', async () => {
+    mockShipment({ items: [reportItem(1, '30')], header: { status: '草稿' } })
+    await expect(createItemCompanyShipment(SESSION, {
+      marketId: 'M1', sourceOrgNodeId: 'HQ',
+      items: [{ reportItemId: 1, lotId: 101, quantity: 1 }],
+    })).rejects.toThrow('必须引用有效的市场报货单')
+  })
+
+  it('发货批次的商品与报货行不一致时拒绝', async () => {
+    mockShipment({ items: [{ ...reportItem(1, '30'), sku_id: 'SKU-OTHER' }] })
+    await expect(createItemCompanyShipment(SESSION, {
+      marketId: 'M1', sourceOrgNodeId: 'HQ',
+      items: [{ reportItemId: 1, lotId: 101, quantity: 1 }],
+    })).rejects.toThrow('发货批次与市场报货商品不一致')
+  })
+
+  it('入参形状：非数组明细、非法 id、同报货行同批次重复都在事务前拒绝（不静默丢行、不让 NaN 进 SQL）', async () => {
+    const cases: Array<[Record<string, unknown>, RegExp]> = [
+      [{ items: { reportItemId: 1 } }, /发货明细格式不正确/],
+      [{ items: [], giftItems: 'x' }, /赠送明细格式不正确/],
+      [{ items: [{ reportItemId: true, lotId: 101, quantity: 1 }] }, /市场报货明细不正确/],
+      [{ items: [{ reportItemId: '1.5', lotId: 101, quantity: 1 }] }, /市场报货明细不正确/],
+      [{ items: [{ reportItemId: 1, lotId: Number.NaN, quantity: 1 }] }, /请为每行选择发货批次/],
+      [{ items: [null] }, /市场报货明细不正确/],
+      [{
+        items: [{ reportItemId: 1, lotId: 101, quantity: 1 }, { reportItemId: '1', lotId: 101, quantity: 2 }],
+      }, /不能重复填写/],
+    ]
+    for (const [input, pattern] of cases) {
+      await expect(createItemCompanyShipment(SESSION, {
+        marketId: 'M1', sourceOrgNodeId: 'HQ', ...input,
+      } as never)).rejects.toThrow(pattern)
+    }
+    expect(vi.mocked(db.transaction)).not.toHaveBeenCalled()
+  })
+
+  it('同一报货行正常与赠送各一行、同批次不算重复', async () => {
+    const { links } = mockShipment({ items: [reportItem(1, '5')] })
+    await createItemCompanyShipment(SESSION, {
+      marketId: 'M1', sourceOrgNodeId: 'HQ',
+      items: [{ reportItemId: 1, lotId: 101, quantity: 1 }],
+      giftItems: [{ reportItemId: 1, lotId: 101, quantity: 1 }],
+    })
+    expect(links).toHaveLength(2)
   })
 
   it('触发器兜底 RAISE「关联数量超出来源明细」改写为可读的 CONFLICT 文案', async () => {

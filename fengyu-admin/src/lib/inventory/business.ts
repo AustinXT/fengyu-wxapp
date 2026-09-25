@@ -3329,6 +3329,29 @@ async function insertOutboundShipmentItem(
 }
 
 /**
+ * Server Action 入参原样到达：明细必须是数组（缺省 = 空），每行的报货明细 id 与批次 id 必须是正整数。
+ * 非数组若静默当空，传错字段形状的请求会悄悄丢掉整组正常行；NaN / 小数 id 进 SQL 是 22P02 → 500。
+ */
+function shipmentLines(value: unknown, label: string): Array<ShipmentLineInput & { reportItemId: number; lotId: number }> {
+  if (value === undefined || value === null) return []
+  if (!Array.isArray(value)) throw new ApiError('INVALID_PARAMS', `${label}格式不正确`)
+  // bigint id 经原生 SQL 回来是十进制字符串（见 CLAUDE.md），这里同时接受 number 与纯数字串；
+  // true / '1.5' / '' 之类一律拒，别让 Number() 把它们静默转成合法 id。
+  const positiveId = (raw: unknown): number | null => {
+    const parsed = typeof raw === 'number' ? raw : typeof raw === 'string' && /^\d+$/.test(raw) ? Number(raw) : NaN
+    return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null
+  }
+  return value.map((line) => {
+    const row = (line ?? {}) as Partial<ShipmentLineInput>
+    const reportItemId = positiveId(row.reportItemId)
+    const lotId = positiveId(row.lotId)
+    if (reportItemId === null) throw new ApiError('INVALID_PARAMS', '市场报货明细不正确')
+    if (lotId === null) throw new ApiError('INVALID_PARAMS', '请为每行选择发货批次')
+    return { ...row, reportItemId, lotId, quantity: row.quantity as number }
+  })
+}
+
+/**
  * 品项公司发货直接引用市场原始报货单（#336）：总部有现货就能发，不经采购订单。
  * 正常行受报货行未发量封顶；赠送行只能挂本次引用的报货行，不封顶、价格为 0，
  * 出库时生成独立批号（#345 lineBatchNo），市场收货后落成独立的赠送批次。
@@ -3339,10 +3362,20 @@ export async function createItemCompanyShipment(
 ): Promise<{ id: string }> {
   const marketId = required(input.marketId, '收货市场')
   const sourceOrgNodeId = required(input.sourceOrgNodeId, '发货总部')
-  const normalLines = Array.isArray(input.items) ? input.items : []
-  const giftLines = Array.isArray(input.giftItems) ? input.giftItems : []
+  const normalLines = shipmentLines(input.items, '发货明细')
+  const giftLines = shipmentLines(input.giftItems, '赠送明细')
   if (normalLines.length + giftLines.length === 0) {
     throw new ApiError('INVALID_PARAMS', '品项公司发货至少需要一条明细')
+  }
+  // 同一报货行可以拆成多行分别从不同批号出库，但「同报货行 + 同批次 + 同属性」重复两行没有意义，
+  // 只会让发货单出现两条同批号明细（旧实现按采购行拒重，这里按三元组拒）。
+  const lineKeys = new Set<string>()
+  for (const [isGift, lines] of [[false, normalLines], [true, giftLines]] as const) {
+    for (const line of lines) {
+      const key = `${line.reportItemId}|${line.lotId}|${isGift}`
+      if (lineKeys.has(key)) throw new ApiError('INVALID_PARAMS', '同一报货明细的同一批次不能重复填写，请合并数量')
+      lineKeys.add(key)
+    }
   }
   await syncLocations()
   const { docId: id, reportIds } = await db.transaction(async (tx) => {
@@ -3355,22 +3388,20 @@ export async function createItemCompanyShipment(
     const reports = new Map<string, DocHeader>()
     const reportItems = new Map<number, DocItemSnapshot>()
     // 报货行按 id 升序加锁：两张发货单交叉引用同一批报货行时锁序一致，避免 40P01。
-    const reportItemIds = [...new Set([...normalLines, ...giftLines].map((line) => Number(line.reportItemId)))]
-    if (reportItemIds.some((itemId) => !Number.isInteger(itemId) || itemId <= 0)) {
-      throw new ApiError('INVALID_PARAMS', '市场报货明细不正确')
-    }
+    const reportItemIds = [...new Set([...normalLines, ...giftLines].map((line) => line.reportItemId))]
     for (const reportItemId of reportItemIds.sort((a, b) => a - b)) {
       const item = await docItemForUpdate(tx, reportItemId)
       let report = reports.get(item.docId)
       if (!report) {
         report = await docForUpdate(tx, item.docId)
-        if (report.docType !== '市场报货' || report.status === '已取消') {
+        // 与 createMarketReportSummary 同口径只认「已完成」：草稿 / 待审批的异常单不进履约链路。
+        if (report.docType !== '市场报货' || report.status !== '已完成') {
           throw new ApiError('INVALID_STATE', '品项公司发货必须引用有效的市场报货单')
         }
-        if (report.sourceOrgNodeId !== marketId || report.marketId !== marketId) {
+        if (report.sourceOrgNodeId !== market.orgNodeId || report.marketId !== market.orgNodeId) {
           throw new ApiError('INVALID_STATE', '所选市场报货单不是该收货市场报的，请按市场分开发货')
         }
-        if (report.targetOrgNodeId !== sourceOrgNodeId) {
+        if (report.targetOrgNodeId !== source.orgNodeId) {
           throw new ApiError('INVALID_STATE', '品项公司发货必须从市场报货单指定的供应链主体发出')
         }
         reports.set(item.docId, report)
@@ -3384,9 +3415,9 @@ export async function createItemCompanyShipment(
     const prepare = async (line: ShipmentLineInput, isGift: boolean) => {
       const label = isGift ? '赠送数量' : '发货数量'
       const quantity = twoDecimals(positive(line.quantity, label), label)
-      const reportItem = reportItems.get(Number(line.reportItemId))
+      const reportItem = reportItems.get(line.reportItemId)
       if (!reportItem) throw new ApiError('INVALID_PARAMS', '市场报货明细不正确')
-      const lot = lotDemand.get(Number(line.lotId))?.lot ?? await lotForUpdate(tx, Number(line.lotId), source.locationId)
+      const lot = lotDemand.get(line.lotId)?.lot ?? await lotForUpdate(tx, line.lotId, source.locationId)
       if (lot.skuId !== reportItem.skuId) throw new ApiError('INVALID_PARAMS', '发货批次与市场报货商品不一致')
       await loadLotSkuForMarket(tx, lot, marketIdForLocation(source))
       const demand = lotDemand.get(lot.id)
@@ -3474,7 +3505,10 @@ export async function createItemCompanyShipment(
     return { docId, reportIds: [...reports.keys()] }
   }).catch((error: unknown) => {
     // 应用层已按报货行加锁封顶；触发器是兜底，漏过来的 RAISE 也要给可读文案而不是通用失败。
-    if (pgRaiseMessage(error)?.includes('关联数量超出来源明细')) {
+    const raised = pgRaiseMessage(error)
+    if (raised?.includes('关联数量超出来源明细')) {
+      // 走到这里说明应用层封顶漏了，原文（来源 / 现有关联 / 本次）留在日志里供排查
+      console.error('[inventory] createItemCompanyShipment 被链接守卫拦截：', raised)
       throw new ApiError('CONFLICT', '正常发货数量超过报货未发量，请刷新后按最新未发量重新填写')
     }
     throw error
