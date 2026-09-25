@@ -93,6 +93,10 @@ describe('门店在营判定跨端字面量守护（#400）', () => {
     expect(inner(staffBody)).toBe(expected)
     expect(inner(adminBody)).toBe(expected)
     expect(inner(analystBody)).toBe(expected)
+    // analyst 副本整段等值（含左操作数 ${storeCol}）：只比 IN (...) 的话，helper 写死列名也全绿（codex round-1 P1）
+    expect(squeeze(analystBody) + ' }').toBe(
+      "export function activeStoreCondition(storeCol: SQL): SQL { return sql` ${storeCol} " + expected + " ` }",
+    )
   })
 
   test('3. staff 四个使用点 SQL 整段等值（经常量拼出，不内联别的判定）', () => {

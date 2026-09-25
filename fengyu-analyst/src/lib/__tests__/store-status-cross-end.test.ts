@@ -133,8 +133,13 @@ describe("在营门店口径跨端守护（#421）", () => {
   })
 
   it("1. activeStoreCondition 三端整段等值（analyst 取实际渲染结果）", () => {
-    const rendered = new PgDialect().sqlToQuery(activeStoreCondition(sql.raw("so.store_id"))).sql
-    expect(squeeze(rendered)).toBe(`so.store_id ${EXPECTED_ACTIVE}`)
+    const render = (col: ReturnType<typeof sql.raw>) => squeeze(new PgDialect().sqlToQuery(activeStoreCondition(col)).sql)
+    const rendered = render(sql.raw("so.store_id"))
+    expect(rendered).toBe(`so.store_id ${EXPECTED_ACTIVE}`)
+    // 左操作数必须原样保留调用方传入的表达式（三个板块传的列 + 复购的聚合表达式），防 helper 写死列名
+    for (const col of ["c.bound_store_id", "fo.store_id", "q.store_id", "store_id", "(ARRAY_AGG(q.store_id ORDER BY q.sale_date))[1]"]) {
+      expect(render(sql.raw(col))).toBe(`${col} ${EXPECTED_ACTIVE}`)
+    }
 
     const adminBody = extractSection(read(ADMIN_STORE_STATUS), "export function activeStoreCondition(storeCol: SQL): SQL {", "\n}\n")
     const staffBody = extractSection(read(STAFF_STORE_STATUS), "function activeStoreCondition(column) {", "\n}\n")
