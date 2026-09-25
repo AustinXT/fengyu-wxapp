@@ -115,7 +115,7 @@ function emptyCommissionDaily(month: string) {
     totals: { days: {}, total: cell, employeeCount: 0, rowCount: 0 },
     kpis: {
       total: 0, sale: 0, service: 0, saleShare: null, serviceShare: null, earningEmployees: 0, employees: 0,
-      technicianCount: 0, perTechnician: null, orders: 0, perOrder: null,
+      technicianCount: 0, noStoreScope: false, perTechnician: null, orders: 0, perOrder: null,
     },
     pending: { count: 0, amount: 0 },
     canLinkAllocations: false,

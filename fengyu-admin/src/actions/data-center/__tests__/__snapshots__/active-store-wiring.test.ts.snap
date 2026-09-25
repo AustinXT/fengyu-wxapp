@@ -24,12 +24,14 @@ exports[`#401 数据中心取数在营接线 · 运行时闭集 > 每个 action 
     "076a431016c037c5",
     "af11fdedaeb571ce",
     "118a90afc81a5cc6",
+    "7f70a3a0f643042a",
     "ff8db044f47de5ea",
   ],
   "commission:getCommissionDaily authorized": [
     "0d510c88ec3a9e1d",
     "1f4ba8bde395a56e",
     "1c71031760702793",
+    "03ec147774262f45",
     "8d8d0a88fea52901",
   ],
   "commission:getCommissionDaily market": [
@@ -37,6 +39,7 @@ exports[`#401 数据中心取数在营接线 · 运行时闭集 > 每个 action 
     "00b67352e05e6a13",
     "d2c21c3885524854",
     "1724c55eb5003cdf",
+    "deb3aedc63d289f9",
     "79554cf537391c05",
   ],
   "commission:getCommissionDaily store": [
@@ -44,6 +47,7 @@ exports[`#401 数据中心取数在营接线 · 运行时闭集 > 每个 action 
     "5d204f7b4f0fbaad",
     "5c3fb39d1ed52412",
     "6f403d97376c72d2",
+    "674db2a625220bf7",
     "4ae6dbbc368d0cba",
   ],
   "commission:getCommissionDetail all": [
