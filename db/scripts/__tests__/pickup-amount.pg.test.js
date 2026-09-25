@@ -2,8 +2,10 @@
  * 提货冻结出库金额的 DB 兜底回归（issue #341）
  *
  * 在真 PG 上证明两件事：
- *   1. `chk_pickup_amount_frozen`：冻结单价与出库金额两列同生同灭（历史行 / 旧式 INSERT 双 NULL 照常可写），
- *      金额必须 = ROUND(冻结单价 × 提货数量, 2)，写入端算错、只写一列都会被拒；
+ *   1. `chk_pickup_amount_frozen`：冻结单价与出库金额两列同生同灭，金额必须 = ROUND(冻结单价 × 提货数量, 2)，
+ *      写入端算错、只写一列都会被拒；
+ *      `trg_pickup_records_fill_frozen_amount`：写入端两列都没带（发版空档的旧版本 / 新写入口）时按
+ *      sale_items.unit_real_price 自动补齐，不会再写出与历史行无法区分的双 NULL；
  *   2. 提货生成的 GCK（院顾客产品出库）明细只写批次价格快照、不写 actual_unit_price 时，
  *      `inventory_set_doc_item_amount` 按 门店成本 → 市场结算价 → 供应链成本 算 amount，赠送批次记 0
  *      ——出库成本与售价口径的出库金额分两列存。
@@ -32,6 +34,19 @@ const URL = process.env.PICKUP_PG_TEST_URL
 const FORBIDDEN_DB_NAMES = ['fengyu_wxapp', 'fengyu_e2e', 'fengyu']
 
 const P = 'T341PG_'
+
+// 元守护（不连库，db:test 常跑）：本套件缺 env 会整套 skip，CI 必须真的带着 PICKUP_PG_TEST_URL 跑它，
+// 否则 DB 层语义在 CI 零覆盖（#341 评审 round-1）。
+test('CI workflow 带 PICKUP_PG_TEST_URL 执行本套件', () => {
+  const fs = require('node:fs')
+  const path = require('node:path')
+  const workflow = fs.readFileSync(path.resolve(__dirname, '../../../.github/workflows/db-script-tests.yml'), 'utf8')
+    .split('\n').filter((line) => !/^\s*#/.test(line)).join('\n')
+  assert.match(
+    workflow,
+    /PICKUP_PG_TEST_URL: postgresql:\/\/[^\n]+\n\s+run: node --test db\/scripts\/__tests__\/pickup-amount\.pg\.test\.js/,
+  )
+})
 
 if (!URL) {
   test('提货冻结出库金额的 DB 兜底（未设 PICKUP_PG_TEST_URL，跳过）', { skip: true }, () => {})
@@ -95,14 +110,15 @@ function runSuite() {
     }
   }
 
-  test('冻结金额 = ROUND(单价 × 数量, 2) 可写；双 NULL（历史行 / 旧式 INSERT）可写', async () => {
+  test('冻结金额 = ROUND(单价 × 数量, 2) 可写；写入端没带两列（旧式 INSERT / 显式双 NULL）由 trigger 按锁内单价补齐', async () => {
     await withFixtures(async () => {
       assert.equal(await insertPickup(2, '88.50', '177.00'), null)
       assert.equal(await insertPickup(4, '0.00', '0.00'), null, '0 元行冻结为 0 必须可写')
-      assert.equal(await insertPickup(1, null, null), null)
+      assert.equal(await insertPickup(2, null, null), null)
+      // 发版空档里旧版本的 INSERT：根本不带这两列
       await client.query(
         `INSERT INTO pickup_records (sale_item_id, pickup_quantity, store_id, confirmed_by)
-         VALUES ('${P}SI', 1, '${P}ST', '${P}EMP')`,
+         VALUES ('${P}SI', 3, '${P}ST', '${P}EMP')`,
       )
       const { rows } = await client.query(
         `SELECT pickup_quantity, pickup_unit_price::text, pickup_amount::text
@@ -111,9 +127,20 @@ function runSuite() {
       assert.deepEqual(rows.map((row) => [row.pickup_quantity, row.pickup_unit_price, row.pickup_amount]), [
         [2, '88.50', '177.00'],
         [4, '0.00', '0.00'],
-        [1, null, null],
-        [1, null, null],
+        [2, '88.50', '177.00'],
+        [3, '88.50', '265.50'],
       ])
+    })
+  })
+
+  test('trigger 只补不改：写入端显式给了冻结值时原样保留（不被当前单价覆盖）', async () => {
+    await withFixtures(async () => {
+      // 模拟「提货时单价 80，之后订单改价到 88.50」——冻结值以写入端为准
+      assert.equal(await insertPickup(1, '80.00', '80.00'), null)
+      const { rows } = await client.query(
+        `SELECT pickup_unit_price::text, pickup_amount::text FROM pickup_records WHERE sale_item_id = '${P}SI'`,
+      )
+      assert.deepEqual(rows, [{ pickup_unit_price: '80.00', pickup_amount: '80.00' }])
     })
   })
 

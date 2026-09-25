@@ -60,6 +60,8 @@ export const pickupRecords = pgTable(
     check('chk_pickup_quantity', sql`${table.pickupQuantity} > 0`),
     // 两列同生同灭（历史行双 NULL），且金额必须等于 数量 × 冻结单价：写入端算错会直接被拒。
     // ⚠ 第二支必须显式写 amount IS NOT NULL：否则 amount 为 NULL 时 `=` 得 UNKNOWN，CHECK 对 UNKNOWN 放行。
+    // 另有 BEFORE INSERT trigger trg_pickup_records_fill_frozen_amount（迁移 0054 手写，drizzle 不建模 trigger）：
+    // 写入端两列都没带时按 sale_items.unit_real_price 补齐，兜住发版空档与新写入口。
     check(
       'chk_pickup_amount_frozen',
       sql`(${table.pickupUnitPrice} IS NULL AND ${table.pickupAmount} IS NULL) OR (${table.pickupUnitPrice} IS NOT NULL AND ${table.pickupAmount} IS NOT NULL AND ${table.pickupAmount} = ROUND(${table.pickupUnitPrice} * ${table.pickupQuantity}, 2))`,
