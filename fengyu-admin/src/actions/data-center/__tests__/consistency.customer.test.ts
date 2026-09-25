@@ -1471,7 +1471,8 @@ describe('客量板块两端口径一致性守护', () => {
       `AND ${VISIT_DAY_COL} BETWEEN \${startDateExpr(period)} AND \${endDateExpr(period)} ` +
       'GROUP BY so.client_user_id ) SELECT COUNT(*) AS v FROM visit_count vc ' +
       'JOIN client_wechat_users c ON c.user_id = vc.client_user_id ' +
-      `WHERE \${csc.sql} AND ${RETAINED} AND ${daysClause}\`, ` +
+      'WHERE ${csc.sql} AND ' + RETAINED + ' AND ' + memberGuard('endDateExpr(period)') +
+      ` AND ${daysClause}\`, ` +
       '[...ssc.params, ...csc.params], ) return Number(rows[0]?.v || 0) }'
 
     const adminKpiExpected =
@@ -1692,8 +1693,15 @@ describe('客量板块两端口径一致性守护', () => {
       'FROM client_wechat_users c WHERE ${customerScope} AND c.bound_store_id IS NOT NULL ' +
       'AND ' + memberGuard('end') + ' GROUP BY c.bound_store_id ), '
 
-    /** 从**分母**现读会员守卫（派生源）；抓不到即红 */
-    const GUARD_RE = /c\.became_member_at IS NOT NULL AND c\.became_member_at::date <= \$\{[A-Za-z.]+\}/
+    /**
+     * 从**分母**现读会员守卫（派生源）；抓不到即红。
+     *
+     * 插值名的字符类刻意窄：`[A-Za-z.()]` 只够写 `end` / `range.end` / `endDateExpr(period)` 三种真实写法。
+     * `${ end }`（带空格）/ `${end_date}`（下划线）/ `${range?.end}` 一律不匹配 ⇒ `not.toBeNull()` 红，
+     * 是 fail-closed 不是漏网（pr-ready boundary 实测逐一确认过）。
+     * 语义取反（`>=`）同样不匹配，且整段快照会红。
+     */
+    const GUARD_RE = /c\.became_member_at IS NOT NULL AND c\.became_member_at::date <= \$\{[A-Za-z.()]+\}/
 
     it('分母 reg 整段快照（COUNT(*) AS registered + bound_store_id 归组 + 会员守卫）', () => {
       expect(regBlock(adminSrc)).toBe(regExpected)
@@ -1779,20 +1787,26 @@ describe('客量板块两端口径一致性守护', () => {
     })
 
     /**
-     * **已登记的跨端分叉**：staff `mgmt-traffic.js` 的同名指标「一次/二次客活」**不带**会员守卫。
-     * 理由：它不产出达成率，加上去等于改它自己的口径（实测 staff 选「上月」一次 511→486 / 二次 894→847，
-     * 合计 −72 人 −5.1%）。要不要合并须另行拍板，见 metrics.md「D-visit-rate-denom」实现位置表下的说明。
+     * **跨端同源**：staff `mgmt-traffic.js` 的同名指标「一次/二次客活」带**同一条**会员守卫
+     * （用户 2026-09-25 拍板同步，实测 staff 选「上月」一次 511→486 / 二次 894→847，合计 −72 人）。
+     * staff 本身没有达成率，补它是为了不把 #298 刚统一过的同名指标重新劈成两个口径。
      *
-     * 这里写成**显式正向断言**而不是靠"静默缺席"：缺席是看不出"有意"还是"漏改"的，
-     * 将来有人顺手给 staff 加上，第 8 组的整函数快照会红但失败原因指向"快照漂移"；
-     * 这一条会直接说清是跨端口径分叉被动了（pr-ready sibling/concurrency P1）。
+     * 这里同样走**派生式**：守卫从 admin 的分母 `reg` 现读，只允许区间终点的写法不同
+     * （admin 明细 `${end}` / admin KPI `${range.end}` / staff `${endDateExpr(period)}`）。
+     * ⚠ cron `refresh-monthly-activity` 与 `db/scripts/calc-monthly-activity.js` **不带**这条
+     * —— 它们给当月到店的所有顾客打标（含非会员），加了会改自己的口径。下面第二条断言钉住这一点。
      */
-    it('已登记分叉：staff 两个客活函数不得带会员守卫（动了要先拍板）', () => {
+    it('staff 两个客活函数带与 admin 分母同源的会员守卫（仅区间终点写法不同）', () => {
+      const denom = regBlock(adminSrc).match(GUARD_RE)![0]
       for (const fn of ['queryActiveOnce', 'queryActiveTwice']) {
-        expect(sqlInFunction(staffSrc, STAFF_MGMT_TRAFFIC, fn)).not.toMatch(/became_member_at/)
+        const staffGuard = sqlInFunction(staffSrc, STAFF_MGMT_TRAFFIC, fn).match(GUARD_RE)
+        expect(staffGuard).not.toBeNull()
+        expect(staffGuard![0].replace('${endDateExpr(period)}', '${end}')).toBe(denom)
       }
-      // 同文件的 regMember 是带的 —— 证明上面不是"staff 整个文件都没有这个词"的恒真断言
-      expect(staffSrc).toMatch(/became_member_at/)
+    })
+
+    it('cron monthly_activity 不得带会员守卫（它含非会员，加了会改自己的口径）', () => {
+      expect(normalize(stripSqlComments(UPDATE_MONTHLY_ACTIVITY_SQL))).not.toMatch(/became_member_at/)
     })
 
     it('反向验证：删守卫 / 改分母 / 改表头 都会红', () => {

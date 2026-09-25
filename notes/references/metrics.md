@@ -275,7 +275,7 @@
 | 沉睡人数（dormantWarn） | 同上 | 同上 | `customer_status='沉睡'` ∩ `customer_type='会员客'`<br>_2026-04-25 决策 D-6=B：schema 枚举已重命名 `'预警沉睡'`→`'沉睡'`（migration 0013），详见 ticket [`customer-status-rename-warn`](../tickets/2026-04-25-customer-status-rename-warn.md)_ |
 | 冰冻人数（dormantFrozen） | 同上 | 同上 | `customer_status='冰冻'` |
 | 休眠人数（dormantDeep） | 同上 | 同上 | `customer_status='休眠'` |
-| 一次客活（activeOnce） | `COUNT(*)` | `client_wechat_users` | `customer_status IN ('保有会员-稳定','保有会员-有效')` ∩ **`became_member_at IS NOT NULL` ∩ `became_member_at::date <= endDate`（⚠ 仅 admin 带，#414；staff `mgmt-traffic.js` 不带，见下方实现位置表的分叉说明）** ∩ 区间内**到店天数** = 1 ∩ scope |
+| 一次客活（activeOnce） | `COUNT(*)` | `client_wechat_users` | `customer_status IN ('保有会员-稳定','保有会员-有效')` ∩ **`became_member_at IS NOT NULL` ∩ `became_member_at::date <= endDate`（#414，admin + staff 两端同步；cron `monthly_activity` 不带，见下方实现位置表）** ∩ 区间内**到店天数** = 1 ∩ scope |
 | 二次客活（activeTwice） | 同上 | 同上 | 同上但区间内**到店天数** ≥ 2 |
 | 1次达成率（visitOnceRate） | `一次客活 ÷ 会员注册数` | 派生（明细表专有，KPI 卡无此格） | 分母 = §1「会员注册」同一列（截面，`became_member_at::date <= endDate`），**不是**「保有会员」——见下方 D-visit-rate-denom |
 | 2次达成率（visitTwiceRate） | `二次客活 ÷ 会员注册数` | 同上 | 同上 |
@@ -318,13 +318,20 @@ WHERE c.customer_status IN ('保有会员-稳定','保有会员-有效')
 | 顾客列表「月度客活」筛选 | cron `refresh-monthly-activity.ts`（见下节 `monthly_activity`） |
 | 手动补数脚本（已退役，仅追史用） | `db/scripts/calc-monthly-activity.js`（**第 4 份副本**，本表此前遗漏） |
 
-> ⚠ **只有 admin 数据中心那一份带 #414 的会员守卫**（它是达成率分子）。staff `mgmt-traffic.js` 与
-> cron / 补数脚本都**不带**，因为它们不产出比率、加了反而改自己的口径。
-> 代价：**同名指标「一次/二次客活」在 admin 与 staff 之间对历史区间会分叉**——
-> staff 选「上月」实测 一次 511 / 二次 894，若补同一条守卫则变成 486 / 847（合计 −72 人，−5.1%）。
-> 这是 #414 主动接受并登记的分叉，不是漏改；要不要合并需另行拍板。
-> `consistency.customer.test.ts` 已对 staff 两个函数钉了**整函数逐字快照**（不含守卫），
-> 谁顺手加上去都会红，不会静默漂移。
+> **#414 的会员守卫：admin 与 staff 两份都带，cron / 补数脚本两份都不带。**
+> - **带**（admin `customer.ts` KPI + 明细、staff `mgmt-traffic.js` 两个函数）：
+>   同名指标「一次/二次客活」两端不分叉（用户 2026-09-25 拍板同步，延续 #298 的统一）。
+>   staff 侧只影响 `period='lastMonth'`（终点是上月末）：prod 实测 **一次 511→486 / 二次 894→847，合计 −72 人（−5.1%）**；
+>   `'month'`/`'year'` 的终点是 `NOW()::date`，守卫对全部会员恒真，数字不变。
+> - **不带**（cron `refresh-monthly-activity` + `db/scripts/calc-monthly-activity.js`）：
+>   它们给当月到店的**所有**顾客打标（含非会员），加了会改自己的口径。
+>
+> 四份都由 `consistency.customer.test.ts` 钉死：admin/staff 三处走**派生式**（守卫从 admin 分母 `reg` 现读，
+> 只允许区间终点写法不同 `${end}` / `${range.end}` / `${endDateExpr(period)}`）+ 整函数逐字快照；
+> cron 侧配一条**正向断言「不得带 `became_member_at`」**，两个方向的漂移都会红。
+>
+> ⚠ **staffApi 是独立云函数通道**，本 PR merge 后必须同批跑 `scripts/deploy-cloudfunctions.sh`，
+> 否则 admin 已是新口径而员工端仍是旧的。
 
 > ⚠ **与顾客频率表（#370）的「到店」不是同一个口径**：客活只认服务日；频率表的到店日 = 服务日 ∪ **消费（支付）日**，
 > 同一个 `visitDaysSql` 换 `service_or_payment` 轴。2026-08 全国：客活口径（只认服务单）有到店 3,023 人 / 6,199 人次，
@@ -347,6 +354,7 @@ WHERE c.customer_status IN ('保有会员-稳定','保有会员-有效')
 | 归店 | scope 按 `so.store_id` | scope 只按 `c.bound_store_id`（不限服务门店，含关店） | 跨店服务仅 27 人，影响 3 家门店各 1 人在 1次/2次 档间移动；关店服务 0 人 |
 
 **改后**：分母 = `registered`（§1「会员注册」同一列，会员截面 `became_member_at::date <= endDate`）。
+同轮把会员守卫补进 admin 的两处分子**与 staff `mgmt-traffic.js` 的两个同名函数**（用户拍板同步，见实现位置表）。
 
 **只换分母不够** —— 分子必须同时补上与分母**逐字相同**的会员守卫
 `became_member_at IS NOT NULL AND became_member_at::date <= endDate`：
@@ -874,7 +882,7 @@ SELECT COUNT(*) FROM org_nodes WHERE type='store' [AND parent_id=$market]
 | 2026-09-22 | **D-conv-denom 改判 B → 1c（#284）**：成交率分母由「区间内到店的体验客 + 小美客」改为「期初未达会员的到店活跃池 ∪ 本期全部新增会员」。`customer_type` 只升不降，本期已转化者当期已是会员客、被从分母整体剔除，而他们正是分子 —— 35 家有新会员的门店全部虚高、单店最高 800%、分母归零反显 '--'。分支 ② 保证分子 ⊆ 分母，上限 ≤ 100% 恒成立（纯活跃池方案 1a 做不到，本期有 10 名新增会员无已完成服务单）。集团 2026-09 由 28.01%（151/539）改为 **21.88%（151/690）**。两端同步：`customer.ts::queryTrialFootfall` + 明细 `traffic_cust` CTE、`mgmt-traffic.js::queryTrialFootfall` |
 | 2026-09-24 | **D-card-same-source 确立（#287）**：持卡占比分子分母此前**两个维度都不同源** —— ① 分子统计全部顾客、分母只统计会员（分子里 60.8% 的人永不可能进分母）；② 分子按 `so.store_id`（订单所属门店）归店、分母按 `c.bound_store_id`（顾客绑定门店）归店。集团占比恒 **253%**、单店最高 **2600%**、40 家在营门店 36 家 > 100%。**只修 ① 不够**（实测仍 7 家 > 100%、最高 104.55%）；两条都修后 **0 家 > 100%、最高正好 100.00%**，admin 侧集团 **1917 / 1931 = 99.27%**（2026-09-24 实测，含 `activeStoreCondition`；数字每日漂移，**验收看不变量不看绝对值**）。写法上 admin 用「分母壳 + `EXISTS`」、staff 因需 `GROUP BY pc.product_kind` 用「会员表驱动 + `COUNT(DISTINCT c.user_id)`」，两端 scope 均走 `bound_store_id`。⚠️ 该列修正后各店在 95.83%~100% 之间、**已失去区分度，勿用于门店排名**（旧列的店间方差全部来自非会员数量）。两端同步：`product.ts::queryCardHolders/queryCardHoldersByStore` + `mgmt-product.js::cardSql` |
 | 2026-09-25 | **一次/二次客活改按到店天数（#298）**：由服务单行数 `COUNT(*)` 改为 `COUNT(DISTINCT service_date)`，去重键 `(client_user_id, service_date)`，日期轴拍板为 `service_date`；admin 数据中心（KPI + 明细）与 staff mgmt-traffic 同步。补登 `monthly_activity` 口径（此前在本文档完全缺席，是两套定义分叉的根因）。prod 2026-09-01~09-24 集团一次/二次 527/982 → 590/919，63 人由「二次」回到「一次」 |
-| 2026-09-25 | **1次/2次达成率分母改为会员注册数（#414，用户拍板）**：原分母 `retained`（保有会员，末 90 天窗口）与分子是同一批人 —— 生产实测两池各 1889、双向差集 0，36 家有数据门店 `1次达成率+2次达成率` **精确恒等 100.0%**，两列不携带「达成」信息。改用 `registered`（会员注册截面）。同轮给分子（KPI `queryActive` + 明细 `visit_count`）补上与分母逐字相同的会员守卫 `became_member_at IS NOT NULL AND ::date <= endDate` —— `customer_status` 是 cron 的**当前**截面、不随 `endDate` 回溯，缺守卫时「入会晚于区间终点」的人进分子不进分母（2026-07-08~07-31 实测 36 人，九江丽都店 7/7 = 100.0%；补后单店最高 62.7%、集团 24.3%）。**`endDate = 今天` 时当期数字一人不变**，只修历史区间。明细/导出表头改为「1次达成率(÷会员注册)」。另登记两处**当时未显形**的同源缺陷：窗口错配（服务单最早 2026-07-08，**2026-10-06 起**选跨度 > 90 天的区间会 >100%；模拟 78 天:30 天几何实测 29/36 家 >100%、最高 135.3%、集团 117.5%）与归店维度（跨店服务 27 人，影响 3 家各 1 人在 1次/2次 档间移动）。口径详见本文 D-visit-rate-denom |
+| 2026-09-25 | **1次/2次达成率分母改为会员注册数（#414，用户拍板）**：原分母 `retained`（保有会员，末 90 天窗口）与分子是同一批人 —— 生产实测两池各 1889、双向差集 0，36 家有数据门店 `1次达成率+2次达成率` **精确恒等 100.0%**，两列不携带「达成」信息。改用 `registered`（会员注册截面）。同轮给分子（KPI `queryActive` + 明细 `visit_count`）补上与分母逐字相同的会员守卫 `became_member_at IS NOT NULL AND ::date <= endDate` —— `customer_status` 是 cron 的**当前**截面、不随 `endDate` 回溯，缺守卫时「入会晚于区间终点」的人进分子不进分母（2026-07-08~07-31 实测 36 人，九江丽都店 7/7 = 100.0%；补后单店最高 62.7%、集团 24.3%）。**`endDate = 今天` 时 admin 当期数字一人不变**，只修历史区间；staff 同步补同一条守卫（仅 `lastMonth` 受影响：一次 511→486 / 二次 894→847，合计 −72 人），**merge 后须同批 deploy staffApi**。明细/导出表头改为「1次达成率(÷会员注册)」。另登记两处**当时未显形**的同源缺陷：窗口错配（服务单最早 2026-07-08，**2026-10-06 起**选跨度 > 90 天的区间会 >100%；模拟 78 天:30 天几何实测 29/36 家 >100%、最高 135.3%、集团 117.5%）与归店维度（跨店服务 27 人，影响 3 家各 1 人在 1次/2次 档间移动）。口径详见本文 D-visit-rate-denom |
 | 2026-09-25 | **客量板会员门槛读配置（#292）**：会员被经营 6 档的最低档下界与「会员经营人数」门槛由写死的 `1990` 改读 `system_configs.new_member_threshold`（与品项板同源），1w/3w/6w/10w 收敛到 `SPEND_BUCKET_FLOORS`；admin 与 staffApi 同步。prod/dev 当前配置均为 1990，上线后数字不变。标签保持写死；门槛须 < 1w（不加校验，仅文档化） |
 | **2026-09-14** | **款项业绩归属日期收口（#137，迁移 0039 + 0040）**。视图 `sale_order_performance_events.performance_date` 改为**直读** `sale_order_payments.performance_attribution_date`，**查询侧不再有任何回退分支**；取值规则全部下沉到写入侧两个 trigger。0040 给该列加了 **CHECK 约束** `chk_sop_attribution_date_present`（列本身**不是** `NOT NULL`，Drizzle schema 里仍是 nullable）。<br>**影响面**：原文「首次支付取订单归属日、回款/退款取自身 `paid_at`」的表述在全文档失效——每一笔款项都有自己的归属日期。金额类指标按类型分流：**业绩/现金流类**（总业绩、分客型业绩、员工业绩、销售提成）走 `[spe.performance_date]`；**子项类**（生美业绩、产品出库、品项周期业绩）走 `[sipe.performance_date]`；**实耗 / 生美实耗 / 服务提成**仍走 `[service_date]`，不受本次收口影响。<br>⚠ **部署前置**：先 apply 0039 + 0040 再部署各端，否则未迁库时首次支付行归属日为 NULL，会被三值逻辑吞掉正数主体。 |
 | **2026-09-16** | **口径变更登记（#138 / #139 / #140 / #141）**，四条均为「从 `paid_at` 切到归属日期」：<br>· **#138** 客量数据子页 §4/§5：会员被经营 6 档分桶、会员客单价、新会员对应消费改按款项流水归属（`SUM(spe.amount) @ performance_date`；旧实现为 `SUM(o.received - COALESCE(o.refunded_amount,0)) @ o.paid_at::date` ∩ `o.status='已支付'`，旧文档曾误记为 `paid_amount`，该列已 DROP）。dev 实测 2026-08 经营人数 321→324、会员总数 470→413、消费合计 +7.78 万；含退款负行故 `spend` 可为负（本期净消费，不 clamp）。<br>· **#139** staff 订单列表 / 营业额分配列表的日期筛选固定按 `performance_attribution_date`。<br>· **#140** admin 工作台「今日实付 / 今日退款 / 昨日实付」改按 `spe.performance_date`（`total_paid_amount` 无日期条件不受影响）。⚠ 财务注意：这三项不再与银行流水逐日对齐。<br>· **#141** staff 顾客档案「年度消费」/ 列表「年消费」改按 `performance_attribution_date`（半开年区间）；**月度消费日历仍按 `paid_at`**，两个口径并存且有意。<br>同轮订正三处存量滞后表述：销售数据页总述、分客型业绩 `[sop.paid_at_period]`、分客型产品出库与品项维度汇总的 `SUM(si.received) @ paid_at`（实现早已是 `SUM(sipe.amount) @ sipe.performance_date`）；员工排行榜「复用 `[paid_at_period]`」。<br>另补登记一条历史遗漏：实耗 / 生美实耗 / 项目数等**消耗类**指标两端都套了 `excludeDepositRefundSql()` 剔除寄存单退款专用服务单（admin 19 处 / staff 12 处，由 `consistency.deposit-refund-filter.test.ts` 守护 31 处中的 29 处，且只校验文件级调用次数）——**客流 / 到店 / 服务人次 / 保有会员 / 提成不剔除**（寄存退款是真到店、假消耗）。本文档此前从未登记，照公式抄会多算。 |

@@ -283,6 +283,15 @@ async function queryStatusBreakdown(scopeType, scopeId) {
  * 到店天数按 (client_user_id, service_date) 去重，同日多张服务单只算 1 天；
  * 与 cron monthly_activity 同轴。admin 侧同口径在 lib/data-center/visit-days.ts（visitDaysSql），
  * 两端独立副本，由 fengyu-admin consistency.customer.test.ts 守护。
+ *
+ * ★ 会员守卫 `became_member_at IS NOT NULL AND ::date <= endDateExpr(period)`（#414，用户 2026-09-25 拍板同步）：
+ * `customer_status` 是 cron 重算的**当前**截面、不随 period 回溯，缺守卫时「区间内到店过、现在是保有会员、
+ * 但入会晚于区间终点」的人也会被计入。admin 侧该守卫是达成率「分子 ⊆ 分母」的承重条件；
+ * staff 无达成率，补它是为了**同名指标两端不分叉**（#298 刚统一过口径）。
+ * 只影响 period='lastMonth'（终点是上月末）：prod 实测 一次 511→486 / 二次 894→847，合计 −72 人。
+ * 'month' / 'year' 的终点是 NOW()::date，守卫对全部会员恒真，数字不变。
+ * ⚠ cron `refresh-monthly-activity` 与 `db/scripts/calc-monthly-activity.js` **不带**这条
+ * （它们给当月到店的所有顾客打标、含非会员，加了会改自己的口径）。
  */
 async function queryActiveOnce(scopeType, scopeId, period) {
   const ssc = buildSaleScope(scopeType, scopeId, 'so', 1)
@@ -302,6 +311,8 @@ async function queryActiveOnce(scopeType, scopeId, period) {
        JOIN client_wechat_users c ON c.user_id = vc.client_user_id
       WHERE ${csc.sql}
         AND c.customer_status IN ('保有会员-稳定', '保有会员-有效')
+        AND c.became_member_at IS NOT NULL
+        AND c.became_member_at::date <= ${endDateExpr(period)}
         AND vc.days = 1`,
     [...ssc.params, ...csc.params],
   )
@@ -326,6 +337,8 @@ async function queryActiveTwice(scopeType, scopeId, period) {
        JOIN client_wechat_users c ON c.user_id = vc.client_user_id
       WHERE ${csc.sql}
         AND c.customer_status IN ('保有会员-稳定', '保有会员-有效')
+        AND c.became_member_at IS NOT NULL
+        AND c.became_member_at::date <= ${endDateExpr(period)}
         AND vc.days >= 2`,
     [...ssc.params, ...csc.params],
   )
