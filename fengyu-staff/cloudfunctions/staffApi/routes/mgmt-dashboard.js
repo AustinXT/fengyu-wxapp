@@ -111,7 +111,7 @@ async function loadAllMarkets() {
  *     allowAll: boolean,
  *     allowedMarketIds: string[],
  *     markets: [{ id, name, stores: [{ storeId, storeName }] }, ...],
- *     inactiveStores: [{ storeId, storeName }, ...]
+ *     inactiveStores: [{ storeId, storeName }, ...] | null   // null = 查询失败、未知
  *   }
  *
  * inactiveStores：权限内门店组织节点已停用的门店（#400）。不进下拉，供 scope-picker 识别
@@ -137,10 +137,11 @@ async function scopeOptions(ctx) {
       }))
       .filter((market) => market.stores.length > 0)
 
-  // 停用门店只用于纠正默认范围，查失败不能拖垮整个范围下拉（空态仍由 summary.scope.inactive 兜住）
+  // 停用门店只用于纠正默认范围，查失败不能拖垮整个范围下拉（空态仍由 summary.scope.inactive 兜住）。
+  // 失败回 null（未知）而不是 []：[] 会被前端读成「确认没有停用门店」而撤掉已知的停用标记。
   const inactiveStores = await loadInactiveStores(allowAll, scopeStoreIds || []).catch((err) => {
     console.error('[mgmtDashboard.scopeOptions] loadInactiveStores failed:', err)
-    return []
+    return null
   })
 
   ctx.result = {

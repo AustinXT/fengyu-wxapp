@@ -27,8 +27,8 @@ interface ScopeOptionsResp {
   allowAll: boolean
   allowedMarketIds: string[]
   markets: Array<{ id: string; name: string; stores: StoreMini[] }>
-  /** 权限内门店组织节点已停用的门店（不进下拉） */
-  inactiveStores?: StoreMini[]
+  /** 权限内门店组织节点已停用的门店（不进下拉）；null = 服务端查询失败、未知 */
+  inactiveStores?: StoreMini[] | null
 }
 
 const DEFAULT_ALL: Scope = { scopeType: 'all', scopeId: null, scopeName: '全部市场' }
@@ -39,6 +39,8 @@ Component({
       type: Object,
       value: { scopeType: 'all', scopeId: null, scopeName: '全部市场' } as Scope,
     },
+    // 页面以 summary 回包确认的停用状态（#400）：门店在会话中被启停时同步触发器上的「（已停用）」
+    appliedInactive: { type: Boolean, value: false },
   },
 
   data: {
@@ -50,7 +52,8 @@ Component({
     storeListByMarket: {} as Record<string, StoreMini[]>,
     current: { ...DEFAULT_ALL } as Scope,
     applied: { ...DEFAULT_ALL } as Scope,
-    inactiveStoreIds: [] as string[],
+    // null = 未知（旧云函数不下发 / 查询失败）：不做停用纠正，也不撤已知的停用标记
+    inactiveStoreIds: null as string[] | null,
     optionsLoaded: false,
     userPicked: false,
   },
@@ -74,6 +77,11 @@ Component({
       this.setData({ applied: def, current: def })
       if (this.data.optionsLoaded) this._normalizeApplied()
     },
+    appliedInactive(inactive: boolean) {
+      const applied = this.data.applied as Scope
+      if (applied.scopeType !== 'store' || !!applied.inactive === !!inactive) return
+      this.setData({ 'applied.inactive': !!inactive, 'current.inactive': !!inactive })
+    },
   },
 
   methods: {
@@ -92,7 +100,9 @@ Component({
           allowedMarketIds,
           marketList,
           storeListByMarket,
-          inactiveStoreIds: (res.inactiveStores || []).map((store) => store.storeId),
+          inactiveStoreIds: Array.isArray(res.inactiveStores)
+            ? res.inactiveStores.map((store) => store.storeId)
+            : null,
           optionsLoaded: true,
         })
         this._normalizeApplied()
@@ -131,21 +141,26 @@ Component({
       // 默认门店落在已停用门店（#400）：取数会滤掉它的全部数据（满屏 0）。
       // 有在营门店可选就纠正到第一家在营门店；没有就保留，标「已停用」由页面出空态。
       // 只纠正停用门店 —— 只关店、节点仍在营的门店不在下拉里但照样有历史数据，不动它。
-      const inactiveIds = new Set(this.data.inactiveStoreIds as string[])
-      if (nextApplied.scopeType === 'store' && nextApplied.scopeId && inactiveIds.has(nextApplied.scopeId)) {
-        const market = marketList.find((m) => (storeListByMarket[m.id] || []).length > 0)
-        const firstActive = market ? storeListByMarket[market.id][0] : undefined
-        nextApplied = market && firstActive
-          ? {
-            scopeType: 'store',
-            marketId: market.id,
-            scopeId: firstActive.storeId,
-            scopeName: `${market.name} · ${firstActive.storeName}`,
-          }
-          : nextApplied.inactive ? nextApplied : { ...nextApplied, inactive: true }
-      } else if (nextApplied.inactive) {
-        // 页面初判停用（旧缓存 / 期间已启用），服务端说在营 → 撤掉标记
-        nextApplied = { ...nextApplied, inactive: false }
+      const knownInactive = this.data.inactiveStoreIds as string[] | null
+      if (knownInactive) {
+        const inactiveIds = new Set(knownInactive)
+        if (nextApplied.scopeType === 'store' && nextApplied.scopeId && inactiveIds.has(nextApplied.scopeId)) {
+          // 两份列表出自两条查询（非同一快照），同一家店可能两边都有 → 停用优先，替代门店须不在停用集合里
+          const firstActiveOf = (m: MarketMini) => (storeListByMarket[m.id] || []).find((store) => !inactiveIds.has(store.storeId))
+          const market = marketList.find((m) => !!firstActiveOf(m))
+          const firstActive = market ? firstActiveOf(market) : undefined
+          nextApplied = market && firstActive
+            ? {
+              scopeType: 'store',
+              marketId: market.id,
+              scopeId: firstActive.storeId,
+              scopeName: `${market.name} · ${firstActive.storeName}`,
+            }
+            : nextApplied.inactive ? nextApplied : { ...nextApplied, inactive: true }
+        } else if (nextApplied.inactive) {
+          // 页面初判停用（旧缓存 / 期间已启用），服务端说在营 → 撤掉标记
+          nextApplied = { ...nextApplied, inactive: false }
+        }
       }
 
       this.setData({

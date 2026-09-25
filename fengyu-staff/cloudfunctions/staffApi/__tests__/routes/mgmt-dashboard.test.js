@@ -1278,7 +1278,7 @@ describe('mgmtDashboard.scopeOptions', () => {
     expect(params).toEqual([true, ['store-A1']])
   })
 
-  test('停用门店查询失败 → inactiveStores 退回 []，范围下拉照常可用', async () => {
+  test('停用门店查询失败 → inactiveStores=null（未知，不是「没有」），范围下拉照常可用', async () => {
     pg.query.mockReset()
       .mockResolvedValueOnce(THREE_MARKETS_ROWS)
       .mockRejectedValueOnce(new Error('Connection terminated unexpectedly'))
@@ -1292,7 +1292,7 @@ describe('mgmtDashboard.scopeOptions', () => {
     })
     await scopeOptions(ctx)
     expect(ctx.result.markets).toHaveLength(3)
-    expect(ctx.result.inactiveStores).toEqual([])
+    expect(ctx.result.inactiveStores).toBeNull()
     spy.mockRestore()
   })
 
