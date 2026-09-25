@@ -303,7 +303,7 @@ WHERE c.customer_status IN ('保有会员-稳定','保有会员-有效')
   AND <scope on c.bound_store_id>
 ```
 
-实现位置（四处同口径，由 `fengyu-admin/src/actions/data-center/__tests__/consistency.customer.test.ts`「#298 跨定义」一组整段快照守护，任一侧漂移即红）：
+实现位置（三处实现、四个入口函数同口径，由 `fengyu-admin/src/actions/data-center/__tests__/consistency.customer.test.ts`「#298 跨定义」一组整段快照守护，任一侧漂移即红）：
 
 | 实现 | 位置 |
 |---|---|
