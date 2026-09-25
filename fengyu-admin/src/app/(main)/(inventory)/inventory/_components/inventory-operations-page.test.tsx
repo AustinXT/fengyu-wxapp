@@ -255,8 +255,8 @@ describe('办理台表单一致性（#135）', () => {
     // 数量为 0 的行根本不检查 lotId —— 部分发货时"这次不发"的行留空批次完全合法。
     // 标上 * 会逼用户去给不发货的行挑批次，而该 SKU 在该库位可能压根没有批次可挑。
     // 这与「采购数量不该逐行标」是同一类判据，只是发生在批次上。
-    // 分院配货只截到自选区之前：#337 的自选行是用户主动添加的，不做 filter、逐行校验，
-    // 它的「市场批次」是无条件必填（下面单独反向断言）。
+    // 分院配货只截到自选区之前：#337 的自选行是用户主动添加的，不做 filter、逐行校验；
+    // #359 起它的「市场批次」同样只在正常数量 > 0 时必填（条件必填，下面单独断言不标 *）。
     for (const [from, to, label] of [
       ['function StoreAllocationForm(', '自选配货（不引用报货', '市场批次'],
     ] as const) {
@@ -269,8 +269,10 @@ describe('办理台表单一致性（#135）', () => {
     // 是无条件必填，必须仍标着 —— 否则这条测试就退化成"把所有批次都去掉标记"也能过。
     const staffPurchase = block('function MarketStaffPurchaseForm(', 'function SelfPurchaseForm(')
     expect(staffPurchase).toMatch(/<FormField label="市场批次" required/)
+    // #359 起自选行的「市场批次」也是条件必填（只配赠送时不需要正常批次），不再标 *
     const allocationSelf = block('自选配货（不引用报货', 'function ReturnForm(')
-    expect(allocationSelf).toMatch(/<FormField label="市场批次" required/)
+    expect(allocationSelf).toMatch(/<FormField label="市场批次">/)
+    expect(allocationSelf).not.toMatch(/<FormField label="市场批次" required/)
     // #336b 品项公司发货：每行都是显式保留的（默认按未发量带出，不发就删行），submit() 不 filter、
     // 逐行校验批次与正数数量 —— 批次与数量都是无条件必填。
     const shipment = block('function CompanyShipmentForm(', 'interface ReceiptProgressLine')
@@ -361,7 +363,8 @@ describe('办理台表单一致性（#135）', () => {
     // 58 → 55（#336a：品项公司发货表单暂为占位，去掉发货总部 / 采购订单 / 发往市场 3 个）
     // 55 → 56（#344：见上）
     // 56 → 61（#336b：收货市场 / 发货总部 / 市场报货单 / 发货批次 / 发货数量 5 个）
-    expect(marked.length).toBe(61)
+    // 61 → 60（#359：分院配货自选行的「市场批次」改为条件必填，只配赠送时不需要正常批次）
+    expect(marked.length).toBe(60)
   })
 })
 
@@ -1669,7 +1672,8 @@ describe('分院配货按 skuIds 精确取当前门店进货价（#339）', () =
     ] as never)
     await pickRequest([item(1, 'S-200', 60)])
     const normal = await screen.findByRole<HTMLOptionElement>('option', { name: /^批次 B100 · 可用 6$/ })
-    const gift = screen.getByRole<HTMLOptionElement>('option', { name: /^批次 GFH-20260925-0001-02 · 可用 2$/ })
+    // #359：赠送批次在批号后带「（赠送）」标记
+    const gift = screen.getByRole<HTMLOptionElement>('option', { name: /^批次 GFH-20260925-0001-02（赠送） · 可用 2$/ })
     expect(normal.closest('select')).not.toBeNull()
     expect(normal.closest('select')).toBe(gift.closest('select'))
     expect(listInventoryLotOptions).toHaveBeenCalledWith(expect.any(String), 'S-200')
@@ -1751,7 +1755,7 @@ describe('分院配货不引用门店报货（#337）', () => {
       sourceMarketId: 'M1',
       docDate: expect.any(String),
       remark: null,
-      items: [{ requestItemId: null, skuId: 'SKU-1', lotId: 31, quantity: 1, giftQuantity: 0, storeUnitDiscount: 0, remark: null }],
+      items: [{ requestItemId: null, skuId: 'SKU-1', lotId: 31, quantity: 1, giftQuantity: 0, giftLotId: null, storeUnitDiscount: 0, remark: null }],
     }))
   })
 
@@ -2315,7 +2319,9 @@ describe('品项公司发货引用市场报货单（#336b）', () => {
   it('LotPicker 自动清空已选批次时两路一起清：lotId 与批次快照（转换表单的 onLotChange）', () => {
     // 转换表单同时保存 lotId 与整条批次快照（成本 / 赠送 / 可用量），只清 id 会让守恒预览按旧批次算
     const source = readFileSync(resolve(__dirname, 'inventory-operations-page.tsx'), 'utf8')
-    const picker = source.slice(source.indexOf('function LotPicker('), source.indexOf('function useLoadedDocument('))
+    // 截到紧随其后的 LotReferencePrice（#359）为止，别把后面的辅助函数一起截进来
+    const picker = source.slice(source.indexOf('function LotPicker('), source.indexOf('function LotReferencePrice('))
+    expect(picker.length).toBeGreaterThan(0)
     const drop = picker.slice(picker.indexOf('const dropStaleSelection = () => {'), picker.indexOf('useEffect('))
     expect(drop).toContain("onChangeRef.current('')")
     expect(drop).toContain('onLotChangeRef.current?.(null)')
@@ -2560,6 +2566,173 @@ describe('库存转换两段式表单与成本守恒（#344）', () => {
     fireEvent.click(screen.getByRole('button', { name: '添加目标' }))
     expect(screen.getAllByText('来源批次')).toHaveLength(2)
     expect(screen.getAllByText('目标商品')).toHaveLength(3)
+  })
+})
+
+/**
+ * 配货选批次显示赠送标记与黄色参考进价（#359）。
+ * 参考进价只读：不参与金额、不进 payload；无价格档（lotRow 不下发 marketActualUnitPrice）不渲染。
+ * 赠送数量单独选批次，默认只列赠送批次；勾「从普通批次赠送」后列全部。
+ */
+describe('分院配货批次的赠送标记与参考进价（#359）', () => {
+  const request = docRow({ id: 'DBH-1', docType: '门店报货', status: '已完成' })
+  const LOCATIONS: InventoryLocationRow[] = [
+    { locationId: 'M1', locationType: '市场', name: '南昌市场', orgNodeId: 'M1', storeId: null, parentLocationId: 'HQ', isActive: true },
+    { locationId: 'S1', locationType: '门店', name: '一分院', orgNodeId: 'S1', storeId: 'S1', parentLocationId: 'M1', isActive: true },
+  ]
+  const NORMAL = { id: 11, batchNo: 'B100', isGift: false, quantityOnHand: 6, availableQuantity: 5, expiryDate: null, marketActualUnitPrice: 27 }
+  const NORMAL2 = { id: 13, batchNo: 'B200', isGift: false, quantityOnHand: 9, availableQuantity: 9, expiryDate: null, marketActualUnitPrice: 30 }
+  const GIFT = { id: 12, batchNo: 'GFH-1-02', isGift: true, quantityOnHand: 2, availableQuantity: 2, expiryDate: null, marketActualUnitPrice: 0 }
+  const reference = (name: RegExp) => screen.queryByRole('note', { name })
+
+  async function openAllocation(lots: unknown[]) {
+    vi.mocked(listInventoryLotOptions).mockResolvedValue(lots as never)
+    vi.mocked(getInventoryCoreDocById).mockResolvedValue({
+      ...docDetail(request),
+      items: [{
+        id: 1, docId: 'DBH-1', lotId: null, skuId: 'S-1', skuName: '精华液', specName: '50ml', quantity: 4, fulfilledQuantity: 0,
+        standardUnitPrice: 40, actualUnitPrice: null, unitDiscount: 0,
+      } as unknown as InventoryDocDetail['items'][number]],
+    })
+    renderPage({ level: 'market', operation: 'store-allocation', candidates: [request], locations: LOCATIONS })
+    await pickCandidate('DBH-1')
+    await screen.findByText('报货配货批次与数量')
+  }
+  function normalLotSelect() {
+    return screen.getAllByRole('option', { name: /^批次 B100/ })[0].closest('select') as HTMLSelectElement
+  }
+
+  beforeEach(() => {
+    mockDocs({})
+    vi.mocked(listInventorySkus).mockReset()
+    vi.mocked(listInventorySkus).mockResolvedValue({ data: [], total: 0 })
+    vi.mocked(createStoreAllocation).mockReset()
+    vi.mocked(createStoreAllocation).mockResolvedValue({ id: 'FPH-20260925-0001' })
+    vi.mocked(toast.error).mockReset()
+  })
+
+  it('批次选项带赠送标记、可用取 availableQuantity；选中批次显示黄色参考进价并随切换更新，改优惠 / 数量不变，payload 不含参考价', async () => {
+    await openAllocation([NORMAL, NORMAL2, GIFT])
+    expect(await screen.findByRole('option', { name: /^批次 B100 · 可用 5$/ })).toBeInTheDocument()
+    expect(screen.getByRole('option', { name: /^批次 GFH-1-02（赠送） · 可用 2$/ })).toBeInTheDocument()
+    expect(reference(/正常批次参考进价/)).toBeNull()
+
+    fireEvent.change(normalLotSelect(), { target: { value: '11' } })
+    expect(reference(/正常批次参考进价/)).toHaveTextContent('参考进价 27.00')
+    fireEvent.change(normalLotSelect(), { target: { value: '13' } })
+    expect(reference(/正常批次参考进价/)).toHaveTextContent('参考进价 30.00')
+
+    // 改优惠与数量：参考值不跟着变（它不是计价输入）
+    const spinbuttons = screen.getAllByRole('spinbutton')
+    fireEvent.change(spinbuttons[0], { target: { value: '3' } })
+    fireEvent.change(spinbuttons[2], { target: { value: '5' } })
+    expect(reference(/正常批次参考进价/)).toHaveTextContent('参考进价 30.00')
+
+    fireEvent.submit(screen.getByRole('button', { name: '创建分院配货单' }).closest('form')!)
+    await waitFor(() => expect(createStoreAllocation).toHaveBeenCalledTimes(1))
+    const payload = vi.mocked(createStoreAllocation).mock.calls[0][0]
+    expect(payload.items).toEqual([{
+      requestItemId: 1, skuId: null, lotId: 13, quantity: 3, giftQuantity: 0, giftLotId: null, storeUnitDiscount: 5, remark: null,
+    }])
+    expect(JSON.stringify(payload)).not.toMatch(/marketActualUnitPrice|参考/)
+  })
+
+  it('无价格档（接口不下发 marketActualUnitPrice）：不渲染参考进价', async () => {
+    const strip = ({ marketActualUnitPrice: _price, ...lot }: typeof NORMAL) => lot
+    await openAllocation([strip(NORMAL), strip(GIFT)])
+    await screen.findByRole('option', { name: /^批次 B100/ })
+    // 选普通批次：无参考价、无提示、无赠送 → 附加区整块不渲染（不留空分隔线）
+    fireEvent.change(normalLotSelect(), { target: { value: '11' } })
+    expect(normalLotSelect().value).toBe('11')
+    expect(document.querySelector('[data-allocation-lot-extras]')).toBeNull()
+    fireEvent.change(normalLotSelect(), { target: { value: '12' } })
+    expect(screen.queryAllByRole('note')).toHaveLength(0)
+    // 赠送提示仍在，但不带价格
+    expect(screen.getByText('该批次为赠送货')).toBeInTheDocument()
+  })
+
+  it('正常数量选到赠送批次：提示但不拦；赠送数量的批次只列赠送批次，勾「从普通批次赠送」后列全部，提交带 giftLotId', async () => {
+    await openAllocation([NORMAL, GIFT])
+    await screen.findByRole('option', { name: /^批次 B100/ })
+    fireEvent.change(normalLotSelect(), { target: { value: '12' } })
+    expect(screen.getByText('该批次为赠送货，参考进价 0.00')).toBeInTheDocument()
+
+    // 填赠送数量 → 出现「赠送批次」，只列 isGift 批次
+    fireEvent.change(screen.getAllByRole('spinbutton')[1], { target: { value: '1' } })
+    const giftField = (await screen.findByText('赠送批次')).closest('label, div')!.parentElement!
+    await waitFor(() => expect(giftField.querySelectorAll('option[value]:not([value=""])')).toHaveLength(1))
+    const giftSelect = giftField.querySelector('select') as HTMLSelectElement
+    expect([...giftSelect.options].map((option) => option.textContent)).toEqual(['选择库存批次', '批次 GFH-1-02（赠送） · 可用 2'])
+    fireEvent.change(giftSelect, { target: { value: '12' } })
+    expect(reference(/赠送批次参考进价/)).toHaveTextContent('参考进价 0.00（赠送批次）')
+
+    // 勾「从普通批次赠送」→ 列全部批次；已选的赠送批次仍在列表里，不被清掉
+    fireEvent.click(screen.getByRole('checkbox', { name: /^从普通批次赠送/ }))
+    await waitFor(() => expect(giftSelect.querySelectorAll('option[value]:not([value=""])')).toHaveLength(2))
+    expect(giftSelect.value).toBe('12')
+
+    fireEvent.submit(screen.getByRole('button', { name: '创建分院配货单' }).closest('form')!)
+    await waitFor(() => expect(createStoreAllocation).toHaveBeenCalledWith(expect.objectContaining({
+      items: [expect.objectContaining({ requestItemId: 1, lotId: 12, quantity: 4, giftQuantity: 1, giftLotId: 12 })],
+    })))
+  })
+
+  it('取消「从普通批次赠送」：已选的普通批次同步清空（不等重取），立即提交也不会把普通批次当赠送发出', async () => {
+    vi.mocked(toast.warning).mockReset()
+    await openAllocation([NORMAL, GIFT])
+    await screen.findByRole('option', { name: /^批次 B100/ })
+    fireEvent.change(normalLotSelect(), { target: { value: '11' } })
+    fireEvent.change(screen.getAllByRole('spinbutton')[1], { target: { value: '1' } })
+    const checkbox = await screen.findByRole('checkbox', { name: /^从普通批次赠送/ })
+    fireEvent.click(checkbox)
+    const giftSelect = (await screen.findByText('赠送批次')).closest('label, div')!.parentElement!.querySelector('select') as HTMLSelectElement
+    await waitFor(() => expect(giftSelect.querySelectorAll('option[value="11"]')).toHaveLength(1))
+    fireEvent.change(giftSelect, { target: { value: '11' } })
+    // 重取挂起：窗口期内立即提交
+    vi.mocked(listInventoryLotOptions).mockImplementation(() => new Promise(() => {}))
+    fireEvent.click(checkbox)
+    expect(toast.warning).toHaveBeenCalledWith('已改为只从赠送批次赠送，请重新选择赠送批次')
+    expect(reference(/赠送批次参考进价/)).toBeNull()
+    fireEvent.submit(screen.getByRole('button', { name: '创建分院配货单' }).closest('form')!)
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('请为赠送数量选择赠送批次（没有赠送批次时可勾选「从普通批次赠送」）'))
+    expect(createStoreAllocation).not.toHaveBeenCalled()
+  })
+
+  it('市场没有赠送批次：占位指出「从普通批次赠送」出路；赠送数量改回 0 后残留的赠送批次不提交', async () => {
+    await openAllocation([NORMAL])
+    await screen.findByRole('option', { name: /^批次 B100/ })
+    fireEvent.change(normalLotSelect(), { target: { value: '11' } })
+    const giftQuantity = screen.getAllByRole('spinbutton')[1]
+    fireEvent.change(giftQuantity, { target: { value: '1' } })
+    expect(await screen.findByRole('option', { name: '暂无赠送批次，可勾选「从普通批次赠送」' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('checkbox', { name: /^从普通批次赠送/ }))
+    const giftSelect = screen.getByText('赠送批次').closest('label, div')!.parentElement!.querySelector('select') as HTMLSelectElement
+    await waitFor(() => expect(giftSelect.querySelectorAll('option[value="11"]')).toHaveLength(1))
+    fireEvent.change(giftSelect, { target: { value: '11' } })
+    fireEvent.change(giftQuantity, { target: { value: '0' } })
+    fireEvent.submit(screen.getByRole('button', { name: '创建分院配货单' }).closest('form')!)
+    await waitFor(() => expect(createStoreAllocation).toHaveBeenCalledWith(expect.objectContaining({
+      items: [expect.objectContaining({ lotId: 11, quantity: 4, giftQuantity: 0, giftLotId: null })],
+    })))
+  })
+
+  it('赠送数量未选赠送批次不提交；只配赠送时不要求选正常批次', async () => {
+    await openAllocation([NORMAL, GIFT])
+    await screen.findByRole('option', { name: /^批次 B100/ })
+    const [normalQuantity, giftQuantity] = screen.getAllByRole('spinbutton')
+    fireEvent.change(normalQuantity, { target: { value: '0' } })
+    fireEvent.change(giftQuantity, { target: { value: '1' } })
+    fireEvent.submit(screen.getByRole('button', { name: '创建分院配货单' }).closest('form')!)
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('请为赠送数量选择赠送批次（没有赠送批次时可勾选「从普通批次赠送」）'))
+    expect(createStoreAllocation).not.toHaveBeenCalled()
+
+    const giftSelect = (await screen.findByText('赠送批次')).closest('label, div')!.parentElement!.querySelector('select') as HTMLSelectElement
+    await waitFor(() => expect(giftSelect.querySelectorAll('option[value="12"]')).toHaveLength(1))
+    fireEvent.change(giftSelect, { target: { value: '12' } })
+    fireEvent.submit(screen.getByRole('button', { name: '创建分院配货单' }).closest('form')!)
+    await waitFor(() => expect(createStoreAllocation).toHaveBeenCalledWith(expect.objectContaining({
+      items: [expect.objectContaining({ lotId: null, quantity: 0, giftQuantity: 1, giftLotId: 12 })],
+    })))
   })
 })
 

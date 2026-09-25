@@ -459,9 +459,12 @@ export interface StoreAllocationLineInput {
   requestItemId?: number | null
   /** 自选行必填：服务端校验与批次 SKU 一致（防前端换批次后 SKU 串位）；引用行忽略 */
   skuId?: string | null
-  lotId: number
+  /** 正常数量的出库批次；正常数量为 0（只配赠送）时可不传 */
+  lotId?: number | null
   quantity: number
   giftQuantity?: number | null
+  /** 赠送数量的出库批次（#359 赠送单独选批次）；不传沿用 lotId */
+  giftLotId?: number | null
   storeUnitDiscount?: number | null
   remark?: string | null
 }
@@ -4353,10 +4356,22 @@ export async function createStoreAllocation(
     if (!storeRequestId) throw new ApiError('INVALID_PARAMS', '未引用门店报货单时不能按报货明细配货')
     return requestItemId
   })
-  const lineLotIds = input.items.map((line) => {
+  // 正常与赠送各自出库批次（#359）：赠送货跟着批号走，赠送数量可以单独选赠送批次；不传赠送批次沿用正常批次。
+  // 只校验有数量的那一侧 —— 只配赠送的行不必再选一个用不上的正常批次。
+  const lineLots = input.items.map((line) => {
+    const quantity = nonnegative(line.quantity, '配货数量')
+    const giftQuantity = nonnegative(line.giftQuantity, '赠送数量')
+    if (quantity + giftQuantity <= EPSILON) throw new ApiError('INVALID_PARAMS', '配货数量和赠送数量不能同时为 0')
     const lotId = positiveIdentifier(line.lotId)
-    if (lotId === null) throw new ApiError('INVALID_PARAMS', '请为每条配货明细选择库存批次')
-    return lotId
+    const giftLotId = line.giftLotId === undefined || line.giftLotId === null ? lotId : positiveIdentifier(line.giftLotId)
+    if (quantity > EPSILON && lotId === null) throw new ApiError('INVALID_PARAMS', '请为每条配货明细选择库存批次')
+    if (giftQuantity > EPSILON && giftLotId === null) throw new ApiError('INVALID_PARAMS', '请为赠送数量选择库存批次')
+    return {
+      quantity,
+      giftQuantity,
+      lotId: quantity > EPSILON ? lotId : null,
+      giftLotId: giftQuantity > EPSILON ? giftLotId : null,
+    }
   })
   // 自选行必须带上所选商品：服务端据此核对批次 SKU，与前端「商品」必填同源
   const lineSkuIds = input.items.map((line, lineIndex) => {
@@ -4411,19 +4426,20 @@ export async function createStoreAllocation(
     // 放宽那把锁前必须先统一锁序。
     const lotsById = new Map<number, LotSnapshot>()
     const lotDemand = new Map<number, number>()
+    type AllocationOutbound = { lot: LotSnapshot; price: PriceSnapshot }
     const prepared: Array<{
       requestItem: DocItemSnapshot | null
-      lot: LotSnapshot
+      /** 正常数量为 0 时为 null */
+      normal: AllocationOutbound | null
       quantity: number
+      /** 赠送数量为 0 时为 null；与 normal 可以是同一批次 */
+      gift: AllocationOutbound | null
       giftQuantity: number
-      price: PriceSnapshot
       remark: string | null
     }> = []
     for (const [lineIndex, line] of input.items.entries()) {
       const requestItemId = lineRequestItemIds[lineIndex]
-      const quantity = nonnegative(line.quantity, '配货数量')
-      const giftQuantity = nonnegative(line.giftQuantity, '赠送数量')
-      if (quantity + giftQuantity <= EPSILON) throw new ApiError('INVALID_PARAMS', '配货数量和赠送数量不能同时为 0')
+      const { quantity, giftQuantity } = lineLots[lineIndex]
       let requestItem: DocItemSnapshot | null = null
       if (requestItemId !== null) {
         if (seen.has(requestItemId)) throw new ApiError('INVALID_PARAMS', '门店报货明细不能重复配货')
@@ -4434,51 +4450,64 @@ export async function createStoreAllocation(
           throw new ApiError('CONFLICT', '正常配货数量不能超过门店报货未配数量')
         }
       }
-      const lotId = lineLotIds[lineIndex]
-      let lot = lotsById.get(lotId)
-      if (!lot) {
-        lot = await lotForUpdate(tx, lotId, sourceMarketId)
-        lotsById.set(lotId, lot)
-      }
-      if (requestItem && lot.skuId !== requestItem.skuId) {
-        throw new ApiError('INVALID_PARAMS', '配货批次与门店报货 SKU 不一致')
-      }
-      if (!requestItem) {
-        if (lineSkuIds[lineIndex] !== lot.skuId) throw new ApiError('INVALID_PARAMS', '配货批次与所选商品不一致')
-        if (requestSkuIds.has(lot.skuId)) {
-          throw new ApiError('INVALID_PARAMS', `${lot.skuName} 已在引用的门店报货单中，请在报货明细上配货`)
+      const discount = storeUnitDiscounts[lineIndex]
+      // 正常 / 赠送两侧各自锁批次、核 SKU、累计可用量；门店价按 SKU 定，两侧相同（两侧已核同一 SKU，档案只查一次）。
+      // 锁序：批次按「行序、行内先正常后赠送」加锁，不按 id 排序 —— 与品项公司发货同为输入序，
+      // 今天靠 assertInventoryBusinessWritable 全局串行不成环；放宽那把锁前须改为按 lotId 升序预锁。
+      let lineSku: SkuSnapshot | null = null
+      const outbound = async (lotId: number, lineQuantity: number): Promise<AllocationOutbound> => {
+        let lot = lotsById.get(lotId)
+        if (!lot) {
+          lot = await lotForUpdate(tx, lotId, sourceMarketId)
+          lotsById.set(lotId, lot)
+        }
+        if (requestItem && lot.skuId !== requestItem.skuId) {
+          throw new ApiError('INVALID_PARAMS', '配货批次与门店报货 SKU 不一致')
+        }
+        if (!requestItem) {
+          if (lineSkuIds[lineIndex] !== lot.skuId) throw new ApiError('INVALID_PARAMS', '配货批次与所选商品不一致')
+          if (requestSkuIds.has(lot.skuId)) {
+            throw new ApiError('INVALID_PARAMS', `${lot.skuName} 已在引用的门店报货单中，请在报货明细上配货`)
+          }
+        }
+        const demand = fixed((lotDemand.get(lot.id) ?? 0) + lineQuantity)
+        lotDemand.set(lot.id, demand)
+        await assertLotAvailable(tx, lot, demand)
+        const sku = lineSku ?? await loadLotSkuForMarket(tx, lot, sourceMarketId)
+        lineSku = sku
+        if (sku.storePurchasePrice === null) {
+          throw new ApiError('INVALID_STATE', `SKU ${sku.productName} 未设置门店进货价`)
+        }
+        const actual = fixed(sku.storePurchasePrice - discount)
+        if (actual < -EPSILON) throw new ApiError('INVALID_PARAMS', '门店单价优惠不能高于门店进货价')
+        return {
+          lot,
+          price: {
+            supplyChainUnitCost: lot.supplyChainUnitCost,
+            marketStandardUnitPrice: lot.marketStandardUnitPrice,
+            marketUnitDiscount: lot.marketUnitDiscount,
+            marketActualUnitPrice: lot.marketActualUnitPrice,
+            storeStandardUnitPrice: sku.storePurchasePrice,
+            storeUnitDiscount: discount,
+            storeActualUnitPrice: Math.max(actual, 0),
+          },
         }
       }
-      const demand = fixed((lotDemand.get(lot.id) ?? 0) + quantity + giftQuantity)
-      lotDemand.set(lot.id, demand)
-      await assertLotAvailable(tx, lot, demand)
-      const sku = await loadLotSkuForMarket(tx, lot, sourceMarketId)
-      if (sku.storePurchasePrice === null) {
-        throw new ApiError('INVALID_STATE', `SKU ${sku.productName} 未设置门店进货价`)
-      }
-      const discount = storeUnitDiscounts[lineIndex]
-      const actual = fixed(sku.storePurchasePrice - discount)
-      if (actual < -EPSILON) throw new ApiError('INVALID_PARAMS', '门店单价优惠不能高于门店进货价')
+      const { lotId, giftLotId } = lineLots[lineIndex]
+      const normal = lotId !== null ? await outbound(lotId, quantity) : null
+      const gift = giftLotId !== null ? await outbound(giftLotId, giftQuantity) : null
       prepared.push({
         requestItem,
-        lot,
+        normal,
         quantity,
+        gift,
         giftQuantity,
-        price: {
-          supplyChainUnitCost: lot.supplyChainUnitCost,
-          marketStandardUnitPrice: lot.marketStandardUnitPrice,
-          marketUnitDiscount: lot.marketUnitDiscount,
-          marketActualUnitPrice: lot.marketActualUnitPrice,
-          storeStandardUnitPrice: sku.storePurchasePrice,
-          storeUnitDiscount: discount,
-          storeActualUnitPrice: Math.max(actual, 0),
-        },
         remark: text(line.remark),
       })
     }
     const docId = await generateDocId(tx, '分院配货')
     const totalQuantity = fixed(prepared.reduce((sum, line) => sum + line.quantity + line.giftQuantity, 0))
-    const totalAmount = fixed(prepared.reduce((sum, line) => sum + line.quantity * Number(line.price.storeActualUnitPrice ?? 0), 0))
+    const totalAmount = fixed(prepared.reduce((sum, line) => sum + line.quantity * Number(line.normal?.price.storeActualUnitPrice ?? 0), 0))
     await insertDocHeader(tx, {
       id: docId,
       docType: '分院配货',
@@ -4496,32 +4525,33 @@ export async function createStoreAllocation(
     let lineNo = 0
     for (const line of prepared) {
       const requestItem = line.requestItem
-      if (line.quantity > EPSILON) {
+      if (line.normal) {
+        const { lot, price } = line.normal
         lineNo += 1
         const itemId = await insertDocItem(tx, {
           docId,
-          lotId: line.lot.id,
-          skuId: line.lot.skuId,
-          skuName: line.lot.skuName,
-          specName: line.lot.specName,
-          supplier: line.lot.supplier,
-          productSeries: line.lot.productSeries,
-          batchNo: lineBatchNo(line.lot, false, docId, lineNo),
-          expiryDate: line.lot.expiryDate,
+          lotId: lot.id,
+          skuId: lot.skuId,
+          skuName: lot.skuName,
+          specName: lot.specName,
+          supplier: lot.supplier,
+          productSeries: lot.productSeries,
+          batchNo: lineBatchNo(lot, false, docId, lineNo),
+          expiryDate: lot.expiryDate,
           isGift: false,
           quantity: line.quantity,
-          stockSnapshot: line.lot.quantityOnHand,
+          stockSnapshot: lot.quantityOnHand,
           requestQuantity: requestItem ? requestItem.quantity : null,
           fulfilledQuantity: 0,
-          standardUnitPrice: line.price.storeStandardUnitPrice,
-          unitDiscount: line.price.storeUnitDiscount,
-          actualUnitPrice: line.price.storeActualUnitPrice,
-          amount: fixed(line.quantity * Number(line.price.storeActualUnitPrice ?? 0)),
-          ...line.price,
+          standardUnitPrice: price.storeStandardUnitPrice,
+          unitDiscount: price.storeUnitDiscount,
+          actualUnitPrice: price.storeActualUnitPrice,
+          amount: fixed(line.quantity * Number(price.storeActualUnitPrice ?? 0)),
+          ...price,
           remark: line.remark,
         })
         await applyLotDelta(tx, {
-          lot: line.lot,
+          lot: lot,
           docId,
           docItemId: itemId,
           direction: '出库',
@@ -4542,9 +4572,9 @@ export async function createStoreAllocation(
           await insertReservation(tx, {
             requestDocId: storeRequestId!,
             requestItemId: requestItem.id,
-            lotId: line.lot.id,
+            lotId: lot.id,
             locationId: sourceMarketId,
-            skuId: line.lot.skuId,
+            skuId: lot.skuId,
             quantity: line.quantity,
             fulfilledQuantity: line.quantity,
             status: '已完成',
@@ -4557,32 +4587,33 @@ export async function createStoreAllocation(
           `)
         }
       }
-      if (line.giftQuantity > EPSILON) {
+      if (line.gift) {
+        const { lot, price } = line.gift
         lineNo += 1
         const itemId = await insertDocItem(tx, {
           docId,
-          lotId: line.lot.id,
-          skuId: line.lot.skuId,
-          skuName: line.lot.skuName,
-          specName: line.lot.specName,
-          supplier: line.lot.supplier,
-          productSeries: line.lot.productSeries,
-          batchNo: lineBatchNo(line.lot, true, docId, lineNo),
-          expiryDate: line.lot.expiryDate,
+          lotId: lot.id,
+          skuId: lot.skuId,
+          skuName: lot.skuName,
+          specName: lot.specName,
+          supplier: lot.supplier,
+          productSeries: lot.productSeries,
+          batchNo: lineBatchNo(lot, true, docId, lineNo),
+          expiryDate: lot.expiryDate,
           isGift: true,
           quantity: line.giftQuantity,
-          stockSnapshot: line.lot.quantityOnHand,
+          stockSnapshot: lot.quantityOnHand,
           requestQuantity: requestItem ? 0 : null,
           fulfilledQuantity: 0,
-          standardUnitPrice: line.price.storeStandardUnitPrice,
-          unitDiscount: line.price.storeUnitDiscount,
-          actualUnitPrice: line.price.storeActualUnitPrice,
+          standardUnitPrice: price.storeStandardUnitPrice,
+          unitDiscount: price.storeUnitDiscount,
+          actualUnitPrice: price.storeActualUnitPrice,
           amount: 0,
-          ...line.price,
+          ...price,
           remark: line.remark,
         })
         await applyLotDelta(tx, {
-          lot: line.lot,
+          lot: lot,
           docId,
           docItemId: itemId,
           direction: '出库',
@@ -4603,9 +4634,9 @@ export async function createStoreAllocation(
           await insertReservation(tx, {
             requestDocId: storeRequestId!,
             requestItemId: requestItem.id,
-            lotId: line.lot.id,
+            lotId: lot.id,
             locationId: sourceMarketId,
-            skuId: line.lot.skuId,
+            skuId: lot.skuId,
             quantity: line.giftQuantity,
             fulfilledQuantity: line.giftQuantity,
             status: '已完成',
