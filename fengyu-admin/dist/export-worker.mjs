@@ -182786,8 +182786,6 @@ function commissionDetailSummarySql(session4, scope, filters) {
               FROM (SELECT DISTINCT receipt_id, received FROM summary_rows WHERE receipt_id IS NOT NULL) r) AS received,
            COALESCE(SUM(allocated), 0) AS allocated,
            COALESCE(SUM(commission), 0) AS commission,
-           -- 平均提成点的分子只取分配金额可算的行（分配比例缺失的服务行分母为 NULL，分子也不能计入）
-           COALESCE(SUM(commission) FILTER (WHERE allocated IS NOT NULL), 0) AS rate_commission,
            COALESCE(SUM(commission) FILTER (WHERE source = 'sale'), 0) AS sale,
            COALESCE(SUM(commission) FILTER (WHERE source = 'service'), 0) AS service
     FROM summary_rows
@@ -182912,6 +182910,7 @@ function toDetailRow(row, maskCustomer) {
 function toSummary(raw) {
   const allocated = toNumber(raw.allocated);
   const commission = toNumber(raw.commission);
+  const averageRate = allocated !== 0 ? commission / allocated : null;
   return {
     count: toNumber(raw.count),
     orders: toNumber(raw.orders),
@@ -182920,7 +182919,7 @@ function toSummary(raw) {
     commission,
     sale: toNumber(raw.sale),
     service: toNumber(raw.service),
-    averageRate: allocated !== 0 ? toNumber(raw.rate_commission) / allocated : null
+    averageRate
   };
 }
 function keyOf(row) {
@@ -182951,9 +182950,11 @@ var getCommissionDetail = withAllPermissions(DATA_CENTER_STAFF_COMMISSION_ACTION
   ]);
   let pageRows = firstFetch;
   let backward = !!before;
-  if (backward && rowsOf(pageRows).length === 0) {
+  let forward = !!after;
+  if ((backward || forward) && rowsOf(pageRows).length === 0) {
     pageRows = await db2.execute(commissionDetailPageSql(session4, scope, lineFilters, { limit: pageSize }));
     backward = false;
+    forward = false;
   }
   const fetched = rowsOf(pageRows).map((row) => toDetailRow(row, maskCustomer));
   const hasMore = fetched.length > pageSize;
@@ -182961,7 +182962,7 @@ var getCommissionDetail = withAllPermissions(DATA_CENTER_STAFF_COMMISSION_ACTION
   const rows = backward ? visible.reverse() : visible;
   const first3 = rows[0];
   const last = rows[rows.length - 1];
-  const hasPrev = backward ? hasMore : !!after;
+  const hasPrev = backward ? hasMore : forward;
   const hasNext = backward ? true : hasMore;
   return {
     month: period.month,
