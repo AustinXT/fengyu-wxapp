@@ -2931,7 +2931,7 @@ describe('分院配货报货单可选：引用 / 自选 / 混合（#337）', () 
   }
 
   function mockAllocation(options: { storePrices?: Record<string, string | null>; requestSource?: string } = {}) {
-    const storePrices = { 'SKU-1': '50', 'SKU-2': '60', 'SKU-3': '70', ...options.storePrices }
+    const storePrices: Record<string, string | null> = { 'SKU-1': '50', 'SKU-2': '60', 'SKU-3': '70', ...options.storePrices }
     const writes = {
       links: [] as unknown[][],
       reservations: [] as unknown[][],
