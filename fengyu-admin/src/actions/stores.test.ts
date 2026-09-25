@@ -89,7 +89,7 @@ import { isNodeWithinScopeRoots, findSiblingStoreIds } from '@/lib/org-ancestry'
 import { getSession } from '@/lib/auth'
 import { scopeCondition } from '@/lib/permissions'
 import { isNodeInScope } from '@/lib/node-scope'
-import { logUpdate } from '@/lib/operation-log'
+import { logOperation, logUpdate } from '@/lib/operation-log'
 import { shanghaiToday } from '@/lib/datetime'
 
 /**
@@ -371,13 +371,16 @@ describe('createStore — 挂载到门店节点', () => {
    * is_closed ↔ closed_at 双写一致（#422）：UI 不传 isClosed，但 Server Action 可直调，
    * 建档即关店时原先只写 is_closed=true、closed_at 留空。
    */
-  it('isClosed=true → 同时写 closedAt=今天（上海）', async () => {
+  it('isClosed=true → 同时写 closedAt=今天（上海），审计记下关店状态', async () => {
     mockNodeLookup(storeNode)
     const values = vi.fn().mockResolvedValue({})
     mockInsertTx(values)
     const result = await createStore({ ...baseStoreData, isClosed: true })
     expect(result.success).toBe(true)
     expect(values).toHaveBeenCalledWith(expect.objectContaining({ isClosed: true, closedAt: shanghaiToday() }))
+    expect((logOperation as any).mock.calls[0][4]).toEqual({
+      storeName: '南昌蓝茉店', orgNodeId: 'node-门店-1', isClosed: true, closedAt: shanghaiToday(),
+    })
   })
 
   it.each([

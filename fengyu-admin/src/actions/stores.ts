@@ -252,6 +252,9 @@ export const createStore = withPermission(
         }
       }
 
+      // is_closed ↔ closed_at 双写一致（#422）：建档即关店也要记闭店日期，与 updateStore / sync-workfine 同口径
+      const isClosed = data.isClosed === true
+      const closedAt = isClosed ? shanghaiToday() : null
       await tx.insert(stores).values({
         storeId: data.storeId,
         // 门店名以组织节点为权威 → 用**锁内**复读到的名字，事务外那个可能已被并发改掉
@@ -259,9 +262,8 @@ export const createStore = withPermission(
         orgNodeId: data.orgNodeId,
         openingDate: data.openingDate ?? null,
         bedCount: data.bedCount ?? null,
-        isClosed: data.isClosed === true,
-        // is_closed ↔ closed_at 双写一致（#422）：建档即关店也要记闭店日期，与 updateStore / sync-workfine 同口径
-        closedAt: data.isClosed === true ? shanghaiToday() : null,
+        isClosed,
+        closedAt,
         coverImage: data.coverImage ?? null,
         images: data.images ?? null,
         district: data.district ?? null,
@@ -278,7 +280,8 @@ export const createStore = withPermission(
       })
       await logOperation(
         session, 'store.create', 'store', data.storeId,
-        { storeName: lockedNode.name, orgNodeId: data.orgNodeId }, tx,
+        // 建档即关店要能从审计里看出来（#422 闸门 2 GLM P3）
+        { storeName: lockedNode.name, orgNodeId: data.orgNodeId, isClosed, closedAt }, tx,
       )
       return { ok: true }
     })
