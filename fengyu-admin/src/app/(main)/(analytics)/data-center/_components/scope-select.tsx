@@ -106,7 +106,8 @@ export function ScopeSelect({
       <Select
         className="w-40"
         value={selectedStoreId}
-        disabled={scopeLocked || !selectedMarketId}
+        // 所选市场下没有在营门店（如品项公司，#399）时只剩「全部门店」一项，选了等于没选，直接禁用
+        disabled={scopeLocked || !selectedMarketId || (storesOfMarket.length === 0 && !showInactiveOption)}
         onChange={(e) => onStoreChange(e.target.value)}
       >
         <SelectOption value="">全部门店</SelectOption>

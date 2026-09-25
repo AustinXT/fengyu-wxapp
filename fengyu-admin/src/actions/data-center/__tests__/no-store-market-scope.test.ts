@@ -67,7 +67,7 @@ const CALLS: Array<[file: string, name: string, args: unknown[]]> = [
   ['remaining-cards', 'exportRemainingCardsReport', [raw]],
 ]
 
-const outcome = new Map<string, { error: string | null; sqls: Array<{ sql: string; params: unknown[] }> }>()
+const outcome = new Map<string, { error: string | null; sqls: Array<{ sql: string; params: unknown[] }>; filters: unknown[] }>()
 
 beforeAll(async () => {
   vi.useFakeTimers({ toFake: ['Date'] })
@@ -76,13 +76,14 @@ beforeAll(async () => {
   for (const [file, name, args] of CALLS) {
     const mod = (await import(`../${file}`)) as Record<string, (...a: unknown[]) => Promise<unknown>>
     captured.length = 0
+    scopeFilterResults.length = 0
     let error: string | null = null
     try {
       await mod[name](...args)
     } catch (e) {
       error = (e as Error).message
     }
-    outcome.set(`${file}:${name}`, { error, sqls: [...captured] })
+    outcome.set(`${file}:${name}`, { error, sqls: [...captured], filters: [...scopeFilterResults] })
   }
 }, 60_000)
 
@@ -104,11 +105,12 @@ describe('#399 无门店市场账号 · 市场范围取数', () => {
     expect(anchored.length).toBeGreaterThan(0)
   })
 
-  it('全部 action 的门店维度过滤（scopeFilterSql）对空授权门店集合每一次都是字面 FALSE', () => {
-    // 覆盖 4 板块 + 5 报表 + 导出里所有 scopeFilterSql 调用；锚定员工另走 orgAnchorScopeSql（上一条）
-    expect(scopeFilterResults.length).toBeGreaterThan(20)
+  // 逐 action 记录（闸门 2 codex round-1 P2：按全局集合聚合时，删掉某一个 action 的过滤仍会因别的 action 凑够数而全绿）
+  it.each(CALLS.map(([file, name]) => `${file}:${name}`))('%s：门店维度过滤（scopeFilterSql）至少调用一次，且每一次都是字面 FALSE', (key) => {
+    const { filters } = outcome.get(key)!
+    expect(filters.length, '该 action 没有经过 scopeFilterSql').toBeGreaterThan(0)
     const dialect = new PgDialect()
-    const rendered = new Set(scopeFilterResults.map((f) => dialect.sqlToQuery(f as never).sql.trim().toUpperCase()))
+    const rendered = new Set(filters.map((f) => dialect.sqlToQuery(f as never).sql.trim().toUpperCase()))
     expect([...rendered]).toEqual(['FALSE'])
   })
 })

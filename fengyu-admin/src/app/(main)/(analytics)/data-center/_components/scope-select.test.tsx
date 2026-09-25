@@ -44,4 +44,14 @@ describe('ScopeSelect · 无门店市场（#399）', () => {
     const { marketSelect } = renderWith({ topLevel: 'store', inactiveStores: [], markets: [ancestor] }, {})
     expect(marketSelect.disabled).toBe(true)
   })
+
+  it('解锁账号切到无门店市场：门店下拉禁用（只剩「全部门店」无意义）；切回有店市场则可选', () => {
+    const { storeSelect } = renderWith({ topLevel: 'market', inactiveStores: [], markets: [nc, px] }, { scope: 'market', scopeId: 'PX' })
+    expect(storeSelect.disabled).toBe(true)
+  })
+
+  it('解锁账号选有店市场：门店下拉可选', () => {
+    const { storeSelect } = renderWith({ topLevel: 'market', inactiveStores: [], markets: [nc, px] }, { scope: 'market', scopeId: 'M1' })
+    expect(storeSelect.disabled).toBe(false)
+  })
 })

@@ -205,4 +205,15 @@ describe('orgAnchorScopeSql — 市场分支按「直接授权」收窄（#399�
     const session = withNodes(makeSession([{ role: 'admin', scopeType: '总部' }], []), undefined)
     expect(render(orgAnchorScopeSql(session, MKT)).raw.replace(/\s+/g, ' ').trim()).toBe('pb.anchor_market_id = $1')
   })
+
+  it('祖先市场 = 锚定相等 AND「全部授权门店」同一条可见性（选市场看到的直挂员工 ⊆ 汇总范围，不会更多）', () => {
+    const session = withNodes(makeSession([{ role: 'manager', scopeType: '门店' }], ['S1', 'S2']), ['node-S1', 'node-S2'])
+    const market = render(orgAnchorScopeSql(session, MKT))
+    const authorized = render(orgAnchorScopeSql(session, { type: 'authorized' }))
+    const norm = (t: string) => t.replace(/\s+/g, ' ').trim()
+    // 市场分支 = `锚定 = $1 AND <authorized 分支原样>`，参数 = [市场 id, ...authorized 参数]（占位符顺延一位）
+    const shifted = norm(authorized.raw).replace(/\$(\d+)/g, (_m, n) => `$${Number(n) + 1}`)
+    expect(norm(market.raw)).toBe(`pb.anchor_market_id = $1 AND ${shifted}`)
+    expect(market.params).toEqual(['mkt-A', ...authorized.params])
+  })
 })
