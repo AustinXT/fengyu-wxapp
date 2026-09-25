@@ -386,13 +386,15 @@ describe('经营数据主表（#372）', () => {
     expect(screen.getByText('导出')).toBeInTheDocument()
   })
 
-  it('范围合法但没有在营门店：表格显示空行文案，信息条「展示0 行」', async () => {
-    mockScope(hqOptions)
+  it('选中门店全部停用的市场（真实可达：市场下拉不依赖在营门店）：表格空行文案、不给导出', async () => {
+    mockScope({ ...hqOptions, markets: [...hqOptions.markets, { id: 'M3', name: '昭通凤御', stores: [] }] })
     mockOperatingMaster([])
-    await renderPage('operatingMaster', { scope: 'store', scopeId: 'S2' })
+    await renderPage('operatingMaster', { scope: 'market', scopeId: 'M3' })
 
+    expect(operatingMaster.getOperatingMaster).toHaveBeenCalledWith({ scope: { type: 'market', id: 'M3' }, month: '2026-08' })
     expect(screen.getByText('所选范围内没有在营门店，暂无数据')).toBeInTheDocument()
     expect(screen.getByTestId('report-info-bar')).toHaveTextContent('展示0 行')
+    expect(screen.queryByText('导出')).not.toBeInTheDocument()
   })
 
   it('选中已停用门店：走 #293 的「已停用」空态，不调取数 action', async () => {

@@ -146,7 +146,8 @@ describe('buildOperatingMasterTable', () => {
     const table = buildOperatingMasterTable([], metrics)
     expect(table.rows).toEqual([])
     expect(table.storeCount).toBe(0)
-    expect(table.totals.monthRevenue).toBeNull()
+    expect(Object.values(table.totals).every((value) => value === null)).toBe(true)
+    expect(Object.keys(table.totals)).toHaveLength(6)
   })
 })
 

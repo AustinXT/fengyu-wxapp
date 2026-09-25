@@ -47,14 +47,17 @@ export function OperatingMasterTable({
 }) {
   return (
     <div className="flex flex-col gap-2">
-      <div className="flex justify-end">
-        <ExportButton
-          exportRequest={{
-            exportType: "data-center",
-            payload: { view: "report-operating-master", params: exportParams },
-          }}
-        />
-      </div>
+      {/* 范围内没有在营门店时没有可导出的行，不给导出入口 */}
+      {rows.length > 0 && (
+        <div className="flex justify-end">
+          <ExportButton
+            exportRequest={{
+              exportType: "data-center",
+              payload: { view: "report-operating-master", params: exportParams },
+            }}
+          />
+        </div>
+      )}
       <MatrixTable
         columns={COLUMNS}
         rows={rows}
