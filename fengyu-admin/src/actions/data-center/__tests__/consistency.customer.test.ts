@@ -34,6 +34,7 @@ import { determineMemberLevel } from '@/cron/lib/member-level'
 
 const ADMIN_CUSTOMER = path.resolve(__dirname, '../customer.ts')
 const ADMIN_COLUMNS = path.resolve(__dirname, '../../../lib/data-center/columns.ts')
+const ADMIN_CRON_ACTIVITY = path.resolve(__dirname, '../../../cron/steps/refresh-monthly-activity.ts')
 const ADMIN_BOARD = path.resolve(
   __dirname,
   '../../../app/(main)/(analytics)/data-center/_components/customer/customer-board.tsx',
@@ -1902,6 +1903,24 @@ describe('客量板块两端口径一致性守护', () => {
 
     it('cron monthly_activity 不得带会员守卫（它含非会员，加了会改自己的口径）', () => {
       expect(normalize(stripSqlComments(UPDATE_MONTHLY_ACTIVITY_SQL))).not.toMatch(/became_member_at/)
+    })
+
+    /**
+     * 上面那条只读**常量**，而线上执行的是 `buildUpdateMonthlyActivitySql(ctx)` 的产物
+     * （`refresh-monthly-activity.ts:89` → `tx.execute(sql.raw(updateSql))`）。
+     * 在那个构造器里追加一次 `.replace()` 给 SQL 尾部挂上 `AND u.became_member_at IS NOT NULL`，
+     * 常量不变 ⇒ 上面那条、第 8 组 cron 快照、cron 专项测试**全绿**，
+     * 而当月新到店的体验客会被整批漏掉（codex round-10 P2）。
+     * 所以把「常量 → 运行时 SQL」这一跳也钉死：构造器只允许做 CURRENT_DATE 的日期注入。
+     */
+    it('cron 的运行时 SQL 构造器整段快照（常量 → 执行 SQL 这一跳）', () => {
+      const cronSrc = fs.readFileSync(ADMIN_CRON_ACTIVITY, 'utf-8')
+      expect(fnSource(cronSrc, ADMIN_CRON_ACTIVITY, 'buildUpdateMonthlyActivitySql')).toBe(
+        'function buildUpdateMonthlyActivitySql(ctx?: CronContext): string { ' +
+          'if (!ctx?.referenceDate) return UPDATE_MONTHLY_ACTIVITY_SQL ' +
+          'const dateStr = formatYmd(ctx.referenceDate) ' +
+          "return UPDATE_MONTHLY_ACTIVITY_SQL.replace(/CURRENT_DATE/g, `('${dateStr}'::date)`) }",
+      )
     })
 
     /**
