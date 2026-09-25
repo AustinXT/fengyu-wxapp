@@ -268,8 +268,10 @@ describe('办理台表单一致性（#135）', () => {
     // 是无条件必填，必须仍标着 —— 否则这条测试就退化成"把所有批次都去掉标记"也能过。
     const staffPurchase = block('function MarketStaffPurchaseForm(', 'function SelfPurchaseForm(')
     expect(staffPurchase).toMatch(/<FormField label="市场批次" required/)
+    // #359 起自选行的「市场批次」也是条件必填（只配赠送时不需要正常批次），不再标 *
     const allocationSelf = block('自选配货（不引用报货', 'function ReturnForm(')
-    expect(allocationSelf).toMatch(/<FormField label="市场批次" required/)
+    expect(allocationSelf).toMatch(/<FormField label="市场批次">/)
+    expect(allocationSelf).not.toMatch(/<FormField label="市场批次" required/)
     // #336b 品项公司发货：每行都是显式保留的（默认按未发量带出，不发就删行），submit() 不 filter、
     // 逐行校验批次与正数数量 —— 批次与数量都是无条件必填。
     const shipment = block('function CompanyShipmentForm(', 'interface ReceiptProgressLine')
@@ -360,7 +362,8 @@ describe('办理台表单一致性（#135）', () => {
     // 58 → 55（#336a：品项公司发货表单暂为占位，去掉发货总部 / 采购订单 / 发往市场 3 个）
     // 55 → 56（#344：见上）
     // 56 → 61（#336b：收货市场 / 发货总部 / 市场报货单 / 发货批次 / 发货数量 5 个）
-    expect(marked.length).toBe(61)
+    // 61 → 60（#359：分院配货自选行的「市场批次」改为条件必填，只配赠送时不需要正常批次）
+    expect(marked.length).toBe(60)
   })
 })
 
@@ -2669,20 +2672,25 @@ describe('分院配货批次的赠送标记与参考进价（#359）', () => {
     })))
   })
 
-  it('取消「从普通批次赠送」：已选的普通批次被清空并说明原因（不是「已无可用库存」）', async () => {
+  it('取消「从普通批次赠送」：已选的普通批次同步清空（不等重取），立即提交也不会把普通批次当赠送发出', async () => {
     vi.mocked(toast.warning).mockReset()
     await openAllocation([NORMAL, GIFT])
     await screen.findByRole('option', { name: /^批次 B100/ })
+    fireEvent.change(normalLotSelect(), { target: { value: '11' } })
     fireEvent.change(screen.getAllByRole('spinbutton')[1], { target: { value: '1' } })
     const checkbox = await screen.findByRole('checkbox', { name: /^从普通批次赠送/ })
     fireEvent.click(checkbox)
     const giftSelect = (await screen.findByText('赠送批次')).closest('label, div')!.parentElement!.querySelector('select') as HTMLSelectElement
     await waitFor(() => expect(giftSelect.querySelectorAll('option[value="11"]')).toHaveLength(1))
     fireEvent.change(giftSelect, { target: { value: '11' } })
+    // 重取挂起：窗口期内立即提交
+    vi.mocked(listInventoryLotOptions).mockImplementation(() => new Promise(() => {}))
     fireEvent.click(checkbox)
-    await waitFor(() => expect(toast.warning).toHaveBeenCalledWith('所选批次不是赠送批次，请重新选择'))
-    expect(giftSelect.value).toBe('')
+    expect(toast.warning).toHaveBeenCalledWith('已改为只从赠送批次赠送，请重新选择赠送批次')
     expect(reference(/赠送批次参考进价/)).toBeNull()
+    fireEvent.submit(screen.getByRole('button', { name: '创建分院配货单' }).closest('form')!)
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('请为赠送数量选择赠送批次（没有赠送批次时可勾选「从普通批次赠送」）'))
+    expect(createStoreAllocation).not.toHaveBeenCalled()
   })
 
   it('市场没有赠送批次：占位指出「从普通批次赠送」出路；赠送数量改回 0 后残留的赠送批次不提交', async () => {

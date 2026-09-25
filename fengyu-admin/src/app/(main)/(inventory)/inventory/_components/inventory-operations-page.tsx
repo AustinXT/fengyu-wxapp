@@ -3855,7 +3855,16 @@ function StoreAllocationLotExtras({
               type="checkbox"
               aria-label={`从普通批次赠送 ${rowName}`}
               checked={line.giftFromNormalLot}
-              onChange={(event) => onChange({ giftFromNormalLot: event.target.checked })}
+              onChange={(event) => {
+                const giftFromNormalLot = event.target.checked
+                // 取消勾选时同步清掉已选的普通批次：等 LotPicker 异步重取再清，中间窗口提交会把普通批次当赠送批次发出去
+                if (!giftFromNormalLot && line.giftLotId && !line.giftLot?.isGift) {
+                  onChange({ giftFromNormalLot, giftLotId: '', giftLot: null })
+                  toast.warning('已改为只从赠送批次赠送，请重新选择赠送批次')
+                  return
+                }
+                onChange({ giftFromNormalLot })
+              }}
             />
             从普通批次赠送
           </label>
@@ -4169,7 +4178,8 @@ function StoreAllocationForm({
             <div key={line.key} className="rounded-[var(--radius)] border border-[var(--border)] p-3">
               <div className={`grid grid-cols-1 gap-3 ${canViewPrice ? 'xl:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_7rem_7rem_7rem_minmax(0,1fr)_2.5rem]' : 'md:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_7rem_7rem_minmax(0,1fr)_2.5rem]'}`}>
                 <FormField label="商品" required group><SkuPicker value={line.skuId} onChange={(skuId) => selectSelfSku(line.key, skuId)} filters={{ availableToMarketId: sourceMarketId }} disabled={!sourceMarketId} disabledHint="请先选择配货市场" /></FormField>
-                <FormField label="市场批次" required><LotPicker locationId={sourceMarketId} skuId={line.skuId} value={line.lotId} onChange={(lotId) => updateSelfLine(line.key, { lotId })} onLotChange={(lot) => updateSelfLine(line.key, { lot })} /></FormField>
+                {/* 条件必填（#359）：只配赠送时不需要正常批次，提交按正常数量 > 0 才校验 */}
+                <FormField label="市场批次"><LotPicker locationId={sourceMarketId} skuId={line.skuId} value={line.lotId} onChange={(lotId) => updateSelfLine(line.key, { lotId })} onLotChange={(lot) => updateSelfLine(line.key, { lot })} /></FormField>
                 <FormField label="正常配货"><Input type="number" min="0" step="0.01" max="9999999999.99" value={line.quantity} onChange={(event) => updateSelfLine(line.key, { quantity: event.target.value })} /></FormField>
                 <FormField label="赠送数量"><Input type="number" min="0" step="0.01" max="9999999999.99" value={line.giftQuantity} onChange={(event) => updateSelfLine(line.key, { giftQuantity: event.target.value })} /></FormField>
                 {canViewPrice && <FormField label="门店单价优惠"><Input type="number" min="0" step="0.01" max="9999999999.99" value={line.storeUnitDiscount} onChange={(event) => updateSelfLine(line.key, { storeUnitDiscount: event.target.value })} /></FormField>}
