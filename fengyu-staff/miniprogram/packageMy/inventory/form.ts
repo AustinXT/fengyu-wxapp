@@ -305,6 +305,10 @@ Page({
     this.setData({ selectedSku: { ...sku }, showSkuPicker: false })
   },
 
+  onClearSelectedSku() {
+    this.setData({ selectedSku: null, quantityInput: '' })
+  },
+
   onLotChange(e: WechatMiniprogram.PickerChange) {
     const index = Number(e.detail.value)
     const selectedLot = this.data.stockOptions[index] || null
@@ -466,6 +470,12 @@ Page({
       wx.showToast({ title: '请选择接收门店', icon: 'none' })
       return
     }
+    // 盘点：选了产品、填了实盘却没点「添加明细」，提交会把这一行静默丢掉——
+    // 漏掉的 SKU 既不算盘亏也不算相符，结论就偏了（#352）
+    if (this.data.isStocktake && this.data.selectedSku) {
+      wx.showToast({ title: '还有未加入的盘点产品，请先点「添加明细」或清除', icon: 'none' })
+      return
+    }
     this.setData({ submitting: true })
     try {
       const result = await callStaffApi<{ id: string }>('inventory.createDoc', {
@@ -481,15 +491,16 @@ Page({
         })),
       })
       wx.showToast({ title: '提交成功', icon: 'success' })
+      // 成功后保持 submitting=true 直到跳走：跳转前的 700ms 里按钮若恢复可点，
+      // 再点一次就会建出第二张单（盘点单会有两个不同时点的账面快照）
       setTimeout(() => {
         wx.redirectTo({
           url: `/packageMy/inventory/detail?id=${encodeURIComponent(result.id)}`,
         })
       }, 700)
     } catch (err: any) {
-      wx.showToast({ title: err?.message || '提交失败', icon: 'none' })
-    } finally {
       this.setData({ submitting: false })
+      wx.showToast({ title: err?.message || '提交失败', icon: 'none' })
     }
   },
 })

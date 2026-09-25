@@ -181,6 +181,46 @@ describe('门店盘点表单', () => {
     expect(JSON.stringify(payload)).not.toMatch(/stockSnapshot|stock_snapshot|price|amount/i)
   })
 
+  test('提交成功后保持 submitting，跳转前不能再提交第二张；失败才复位', async () => {
+    const page = stocktakeForm()
+    page.setData({ selectedSku: sku('A'), quantityInput: '1' })
+    page.onAddItem()
+    mockedCall.mockResolvedValueOnce({ id: 'YPD-1' })
+    vi.useFakeTimers({ toFake: ['setTimeout'] })
+    try {
+      await page.onSubmit()
+      expect(page.data.submitting).toBe(true)
+      await page.onSubmit()
+      expect(mockedCall.mock.calls.filter(([action]) => action === 'inventory.createDoc')).toHaveLength(1)
+      vi.runAllTimers()
+    } finally {
+      vi.useRealTimers()
+    }
+
+    const failed = stocktakeForm()
+    failed.setData({ selectedSku: sku('A'), quantityInput: '1' })
+    failed.onAddItem()
+    mockedCall.mockRejectedValueOnce(new Error('INVALID_PARAMS: x'))
+    await failed.onSubmit()
+    expect(failed.data.submitting).toBe(false)
+  })
+
+  test('选了产品却没加入明细就提交：拦下提示，清除所选后可提交', async () => {
+    const page = stocktakeForm()
+    page.setData({ selectedSku: sku('A'), quantityInput: '1' })
+    page.onAddItem()
+    page.setData({ selectedSku: sku('B'), quantityInput: '0' })
+    await page.onSubmit()
+    expect(mockedCall).not.toHaveBeenCalledWith('inventory.createDoc', expect.anything())
+    expect(toastTitle()).toMatch(/未加入/)
+
+    page.onClearSelectedSku()
+    expect(page.data).toMatchObject({ selectedSku: null, quantityInput: '' })
+    mockedCall.mockRejectedValueOnce(new Error('stop'))
+    await page.onSubmit()
+    expect(mockedCall).toHaveBeenCalledWith('inventory.createDoc', expect.objectContaining({ docType: '分院库存盘点' }))
+  })
+
   test('门店报货不受影响：仍走可报货候选、数量必须 > 0', async () => {
     const page = instance('form')
     page.onLoad({ docType: encodeURIComponent('门店报货') })
@@ -211,6 +251,18 @@ describe('库存首页与列表', () => {
     const [, payload] = mockedCall.mock.calls.find(([action]) => action === 'inventory.docList') as [string, any]
     expect(payload.docTypes).toEqual(['分院库存盘点'])
     expect(page.data).toMatchObject({ title: '库存盘点', createDocType: '分院库存盘点' })
+  })
+
+  test('列表行预算 isStocktake（WXML 据此显示「实盘合计」，不硬编码类型名）', async () => {
+    const page = instance('list')
+    mockedCall.mockImplementation(async (action: string) => (
+      action === 'inventory.docOrgOptions'
+        ? { items: [] }
+        : { items: [{ id: 'YPD-1', docType: '分院库存盘点', status: '已完成' }, { id: 'BS-1', docType: '院产品报损', status: '已完成' }], total: 2 }
+    ))
+    page.onLoad({ docCategory: 'stocktake' })
+    await vi.waitFor(() => expect(page.data.items).toHaveLength(2))
+    expect(page.data.items.map((row: any) => row.isStocktake)).toEqual([true, false])
   })
 })
 

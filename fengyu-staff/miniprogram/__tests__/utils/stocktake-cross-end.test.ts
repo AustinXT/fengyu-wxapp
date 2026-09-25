@@ -51,6 +51,38 @@ describe('staff 盘点差异与 admin 字面一致', () => {
   })
 })
 
+describe('盘点类型集合与可建类型（#352）', () => {
+  const STAFF_API_PATH = path.resolve(__dirname, '../../../cloudfunctions/staffApi/routes/inventory.js')
+  const FORM_PATH = path.resolve(__dirname, '../../packageMy/inventory/form.ts')
+
+  function setItems(src: string, name: string): string[] {
+    const m = src.match(new RegExp(`const ${name} = new Set(?:<[^>]+>)?\\(\\[([\\s\\S]*?)\\]\\)`))
+    if (!m) throw new Error(`没找到 ${name}`)
+    return [...m[1].matchAll(/'([^']+)'/g)].map((x) => x[1]).sort()
+  }
+
+  test('小程序 STOCKTAKE_DOC_TYPES 与 staffApi、admin 逐项一致', () => {
+    const staffSrc = fs.readFileSync(STAFF_PATH, 'utf8')
+    const m = staffSrc.match(/const STOCKTAKE_DOC_TYPES = \[([^\]]*)\]/)
+    if (!m) throw new Error('没找到小程序 STOCKTAKE_DOC_TYPES')
+    const mini = [...m[1].matchAll(/'([^']+)'/g)].map((x) => x[1]).sort()
+    expect(mini).toEqual(setItems(fs.readFileSync(STAFF_API_PATH, 'utf8'), 'STOCKTAKE_DOC_TYPES'))
+    expect(mini).toEqual(setItems(fs.readFileSync(ADMIN_PATH, 'utf8'), 'STOCKTAKE_DOC_TYPES'))
+    expect(mini).toHaveLength(2)
+  })
+
+  test('表单 FORM_CONFIG 的类型都是 staffApi 允许 staff 新建的类型', () => {
+    const form = fs.readFileSync(FORM_PATH, 'utf8')
+    const block = form.match(/const FORM_CONFIG[^=]*= \{([\s\S]*?)\n\}/)
+    if (!block) throw new Error('没找到 FORM_CONFIG')
+    const keys = [...block[1].matchAll(/^  '([^']+)': \{/gm)].map((x) => x[1])
+    expect(keys).toContain('分院库存盘点')
+    expect(keys.length).toBe(5)
+    const creatable = setItems(fs.readFileSync(STAFF_API_PATH, 'utf8'), 'STAFF_CREATE_DOC_TYPES')
+    for (const key of keys) expect(creatable).toContain(key)
+  })
+})
+
 describe('盘点差异派生', () => {
   test('差异 = 实盘 − 账面，浮点毛刺按两位小数收口', () => {
     expect(stocktakeDiff({ quantity: 0.3, stockSnapshot: 0.1 })).toBe(0.2)

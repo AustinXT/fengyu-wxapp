@@ -615,7 +615,7 @@ describe('inventory.createDoc 权限与状态', () => {
   // 与 admin 端分叉（同一种单据，admin 建的有账面数、staff 建的没有）。
 
   /** 建一张 staff 侧分院盘点单，返回事务 client 以便断言发出的 SQL。 */
-  function mockStoreStocktake({ bookRows, items }) {
+  function mockStoreStocktake({ bookRows, items, skuRow = {} }) {
     const ctx = createCtx({
       payload: {
         docType: '分院库存盘点',
@@ -654,7 +654,15 @@ describe('inventory.createDoc 权限与状态', () => {
               rows: [{
                 sku_id: params[0], product_name: '测试商品',
                 spec_name: null, supplier: null, product_series: null,
+                source_type: '供应链', owner_market_id: null,
+                ...skuRow,
               }],
+              rowCount: 1,
+            }
+          }
+          if (text.includes('FROM inventory_locations') && text.includes('WHERE location_id = $1')) {
+            return {
+              rows: [{ location_id: params[0], location_type: '门店', parent_location_id: 'market-A' }],
               rowCount: 1,
             }
           }
@@ -668,6 +676,38 @@ describe('inventory.createDoc 权限与状态', () => {
     })
     return { ctx, getClient: () => client }
   }
+
+  test('分院库存盘点拒绝别的市场的自采 SKU（与 admin assertSkuIdAvailableAtLocation 同闸，#352）', async () => {
+    const { ctx, getClient } = mockStoreStocktake({
+      bookRows: [],
+      items: [{ skuId: 'sku-other', quantity: 3 }],
+      skuRow: { product_name: '外市场自采', source_type: '市场自采', owner_market_id: 'market-B' },
+    })
+
+    await expect(inventoryRoutes.createDoc(ctx)).rejects.toThrow(
+      'INVALID_STATE: 市场自采 SKU 外市场自采 仅可在归属市场使用',
+    )
+    const client = getClient()
+    // 归属按本店主体（location_id）查市场，且没写入任何明细
+    const locationCall = client.query.mock.calls.find(([sql]) => (
+      String(sql).includes('FROM inventory_locations') && String(sql).includes('WHERE location_id = $1')
+    ))
+    expect(locationCall[1]).toEqual(['store-A'])
+    expect(client.query.mock.calls.some(([sql]) => String(sql).includes('INSERT INTO inventory_doc_items'))).toBe(false)
+  })
+
+  test('分院库存盘点接受本市场的自采 SKU', async () => {
+    const { ctx, getClient } = mockStoreStocktake({
+      bookRows: [],
+      items: [{ skuId: 'sku-own', quantity: 2 }],
+      skuRow: { source_type: '市场自采', owner_market_id: 'market-A' },
+    })
+
+    await inventoryRoutes.createDoc(ctx)
+
+    const itemCall = getClient().query.mock.calls.find(([sql]) => String(sql).includes('INSERT INTO inventory_doc_items'))
+    expect(itemCall[1][2]).toBe('sku-own')
+  })
 
   test('分院库存盘点把主体 + SKU 的在手量写进 stock_snapshot（与 admin 同口径）', async () => {
     const { ctx, getClient } = mockStoreStocktake({
@@ -1079,7 +1119,8 @@ describe('inventory 办理选项无金额响应', () => {
     for (const [sql] of [listCall, countCall]) {
       expect(sql).toMatch(/sku\.is_active = true/)
       expect(sql).not.toMatch(/is_reportable/)
-      expect(sql).toMatch(/\(sku\.owner_market_id IS NULL OR sku\.owner_market_id = \$1\)/)
+      // 与建单闸门 assertSkuAvailableAtLocation / admin availableToMarketId 同义
+      expect(sql).toMatch(/\(sku\.source_type = '供应链' OR sku\.owner_market_id = \$1\)/)
       expect(sql).toMatch(/sku\.product_name ILIKE \$2/)
     }
     expect(listCall[0]).not.toMatch(/price|amount|cost/i)
@@ -1089,6 +1130,24 @@ describe('inventory 办理选项无金额响应', () => {
     expect(listCall[0]).toMatch(/LIMIT 20 OFFSET 20/)
     expect(listCall[1]).toEqual(['market-A', '%凝胶%', 'store-001'])
     expect(countCall[1]).toEqual(['market-A', '%凝胶%'])
+  })
+
+  test('stocktakeSkuOptions 关键词里的 \\ % _ 都按字面匹配', async () => {
+    const ctx = createCtx({ payload: { locationId: 'store-001', keyword: 'a\\b%_' } })
+    pg.query.mockImplementation(async (query) => {
+      const sql = String(query)
+      if (sql.includes('WITH RECURSIVE descendants')) return [{ store_id: 'store-001' }]
+      if (sql.includes('SELECT location_id, location_type, parent_location_id')) {
+        return [{ location_id: 'store-001', location_type: '门店', parent_location_id: 'market-A' }]
+      }
+      if (sql.includes('SELECT COUNT(*)::int AS cnt')) return [{ cnt: 0 }]
+      return []
+    })
+
+    await inventoryRoutes.stocktakeSkuOptions(ctx)
+
+    const countCall = pg.query.mock.calls.find(([sql]) => String(sql).includes('SELECT COUNT(*)::int AS cnt') && String(sql).includes('FROM inventory_skus sku'))
+    expect(countCall[1][1]).toBe('%a\\\\b\\%\\_%')
   })
 
   test('stocktakeSkuOptions 无关键词时本店主体落在 $2', async () => {

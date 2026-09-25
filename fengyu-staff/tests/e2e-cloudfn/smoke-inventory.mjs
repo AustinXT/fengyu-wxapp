@@ -10,11 +10,17 @@
  * → SQL 断言 stock_snapshot = 该店该 SKU 在手量汇总、不产流水、在手量不变 → 列表 / 详情可见；
  * 同 SKU 两行、实盘留空被拒。
  * ⚠️ 实盘 0 依赖迁移 0053（#351 放宽 quantity CHECK）；目标库没迁 0053 时这一步会被 CHECK 拒绝。
+ * 盘点身份是**只绑门店库存员、不是店长**的测试员工（默认门店库存员 can_access_admin=false，
+ * 只能在小程序盘点）。
+ * 账面非零：共享 dev 库上批次余额只能经 append-only 的 inventory_movements 入账、删不掉，
+ * 所以默认夹具账面恒 0（只能验证「无批次落 0」）。在**私有 docker 库**上设
+ * SMOKE_INVENTORY_SEED_STOCK=1，会绕过余额守护给两个 SKU 灌非零余额（SKU1 两个批次 5+3，
+ * SKU2 一个批次 4），验证账面 = 多批次汇总、实盘 0 记盘亏；非 localhost 库拒绝灌数。
  */
 import './setup.mjs'
 import {
   NS, TEST_STORE_ID, TEST_STORE_ORG_ID, TEST_MANAGER_OPENID, TEST_MANAGER_EMP_ID,
-  pgQuery, closePool,
+  pgQuery, closePool, getPool, testPhone,
 } from './setup.mjs'
 import { invokeStaffApi } from './helpers/invoke.mjs'
 import {
@@ -25,6 +31,9 @@ const INV_DOC_ID = `${NS}_INV_PROC_1`
 const INV_SKU_ID = `${NS}_INV_SKU_1`
 // 盘点第二个 SKU：非可报货、本店没有任何批次（账面 0）
 const INV_SKU_ID_2 = `${NS}_INV_SKU_2`
+// 只绑门店库存员（不是店长）的盘点员工
+const INV_OPERATOR_EMP_ID = `${NS}_INVOP`
+const INV_OPERATOR_OPENID = `${NS}_INVOP_OPENID`
 
 let pass = false
 let exitCode = 1
@@ -209,9 +218,63 @@ async function main() {
   rec('  ✅ PASS')
 }
 
+/**
+ * 仅私有库：绕过余额守护灌非零余额（见文件头）。共享 dev 库上 movements 删不掉，不能走正规入账。
+ * 返回是否已灌数。
+ */
+async function seedStocktakeBook() {
+  if (process.env.SMOKE_INVENTORY_SEED_STOCK !== '1') return false
+  const host = new URL(process.env.PG_CONNECTION_STRING).hostname
+  if (!['localhost', '127.0.0.1'].includes(host)) {
+    throw new Error(`SMOKE_INVENTORY_SEED_STOCK 只允许私有库，当前 host=${host}`)
+  }
+  const client = await getPool().connect()
+  try {
+    await client.query('BEGIN')
+    await client.query("SET LOCAL session_replication_role = 'replica'")
+    const lots = [
+      [INV_SKU_ID, 'INV', 5],
+      [INV_SKU_ID, 'INV2', 3],
+      [INV_SKU_ID_2, 'INV3', 4],
+    ]
+    for (const [skuId, batchNo, qty] of lots) {
+      await client.query(
+        `INSERT INTO inventory_stock_lots (
+           location_id, sku_id, lot_key, sku_name, spec_name, batch_no, expiry_date_key, is_gift, quantity_on_hand
+         )
+         VALUES ($1, $2, $2 || '|' || $3 || '||||100', $2, '默认规格', $3, '', false, $4)
+         ON CONFLICT (location_id, lot_key) DO UPDATE SET quantity_on_hand = EXCLUDED.quantity_on_hand`,
+        [TEST_STORE_ID, skuId, batchNo, qty],
+      )
+    }
+    await client.query('COMMIT')
+    return true
+  } catch (error) {
+    await client.query('ROLLBACK')
+    throw error
+  } finally {
+    client.release()
+  }
+}
+
 /** #352：门店库存员在小程序做门店盘点的整条后端链路 */
 async function stocktakeFlow(errors) {
   const before = errors.length
+  await createTestStaff({
+    employeeId: INV_OPERATOR_EMP_ID,
+    openid: INV_OPERATOR_OPENID,
+    phone: testPhone(13),
+    name: `${NS}_库存员`,
+    isManager: false,
+    positionName: '门店库存员',
+    skills: [],
+  })
+  await createTestPermissionRole({
+    employeeId: INV_OPERATOR_EMP_ID,
+    role: 'inventory_store_operator',
+    scopeId: TEST_STORE_ORG_ID,
+  })
+  const seeded = await seedStocktakeBook()
   const bookOf = async (skuId) => {
     const rows = await pgQuery(
       `SELECT COALESCE(SUM(quantity_on_hand), 0)::numeric AS q
@@ -222,9 +285,11 @@ async function stocktakeFlow(errors) {
   }
   const book1 = await bookOf(INV_SKU_ID)
   const book2 = await bookOf(INV_SKU_ID_2)
+  if (seeded && (book1 !== 8 || book2 !== 4)) errors.push(`灌数后账面应为 8 / 4，实际 ${book1} / ${book2}`)
+  if (!seeded) rec('  · 未设 SMOKE_INVENTORY_SEED_STOCK：夹具账面恒 0，只验证「无批次落 0」，多批次汇总由私有库跑法覆盖')
 
   const rOpts = await invokeStaffApi('inventory.stocktakeSkuOptions', {
-    _testOpenid: TEST_MANAGER_OPENID,
+    _testOpenid: INV_OPERATOR_OPENID,
     locationId: TEST_STORE_ID,
     keyword: NS,
     pageSize: 20,
@@ -240,7 +305,7 @@ async function stocktakeFlow(errors) {
   }
 
   const create = (items) => invokeStaffApi('inventory.createDoc', {
-    _testOpenid: TEST_MANAGER_OPENID,
+    _testOpenid: INV_OPERATOR_OPENID,
     _loginLevel: 'store',
     _currentStoreId: TEST_STORE_ID,
     docType: '分院库存盘点',
@@ -279,7 +344,7 @@ async function stocktakeFlow(errors) {
   }
 
   const rList = await invokeStaffApi('inventory.docList', {
-    _testOpenid: TEST_MANAGER_OPENID,
+    _testOpenid: INV_OPERATOR_OPENID,
     docTypes: ['分院库存盘点'],
     page: 1,
     pageSize: 20,
@@ -287,14 +352,14 @@ async function stocktakeFlow(errors) {
   if (!(rList.data?.items || []).some((item) => item.id === docId)) {
     errors.push(`盘点分类列表应含 ${docId}（code=${rList.code} msg=${rList.message}）`)
   }
-  const rDetail = await invokeStaffApi('inventory.docDetail', { _testOpenid: TEST_MANAGER_OPENID, id: docId })
+  const rDetail = await invokeStaffApi('inventory.docDetail', { _testOpenid: INV_OPERATOR_OPENID, id: docId })
   const detailItems = rDetail.data?.items || []
   const zeroRow = detailItems.find((item) => item.skuId === INV_SKU_ID_2)
   if (rDetail.data?.docType !== '分院库存盘点' || !zeroRow || zeroRow.quantity !== 0 || zeroRow.stockSnapshot !== book2) {
     errors.push(`盘点详情应返回实盘 0 / 账面 ${book2}：${JSON.stringify(zeroRow)}`)
   }
   if (errors.length === before) {
-    rec(`  ✓ 门店盘点 ${docId}：候选含非可报货 SKU、账面=在手汇总、无流水、列表/详情可见；重复 SKU / 留空被拒`)
+    rec(`  ✓ 门店盘点 ${docId}（库存员身份，账面 ${book1}/${book2}${seeded ? '，多批次汇总' : ''}）：候选含非可报货 SKU、账面=在手汇总、无流水、列表/详情可见；重复 SKU / 留空被拒`)
   }
 }
 

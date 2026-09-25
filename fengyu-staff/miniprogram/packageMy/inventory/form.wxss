@@ -213,6 +213,14 @@
   font-size: 24rpx;
 }
 
+/* 盘点：放弃当前所选产品（未加入明细时提交会被拦下，#352） */
+.clear-selected {
+  display: inline-block;
+  margin-top: 12rpx;
+  color: #888;
+  font-size: 24rpx;
+}
+
 /* 盘点：已在明细里的产品（#352），再点会被拒绝 */
 .sku-option-added {
   color: #B8B8B8;

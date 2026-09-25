@@ -802,9 +802,17 @@ async function lockInventoryLotById(client, lotId, locationId) {
   }
 }
 
-async function inventorySkuSnapshot(client, skuId) {
+/**
+ * 不带批次的明细（门店报货 / 门店盘点）取 SKU 快照。
+ *
+ * #352：同时校验 SKU 归属——非供应链 SKU 只能在归属市场（及其门店）使用，与 admin
+ * `createDoc` 的 `assertSkuIdAvailableAtLocation` 同一道闸。候选接口虽已按归属过滤，
+ * 但抓包直传别的市场自采 SKU 时，盘点单会按账面 0 记一笔凭空的盘盈。
+ * `locationId` 契约同 `assertSkuAvailableAtLocation`：必须是 inventory_locations.location_id。
+ */
+async function inventorySkuSnapshot(client, skuId, locationId) {
   const res = await client.query(
-    `SELECT sku_id, product_name, spec_name, supplier, product_series
+    `SELECT sku_id, product_name, spec_name, supplier, product_series, source_type, owner_market_id
        FROM inventory_skus
       WHERE sku_id = $1 AND is_active = true
       LIMIT 1`,
@@ -812,6 +820,7 @@ async function inventorySkuSnapshot(client, skuId) {
   )
   const r = res.rows[0]
   if (!r) throw new Error('NOT_FOUND: 库存 SKU 不存在或已停用')
+  await assertSkuAvailableAtLocation(client, r, locationId)
   return {
     skuId: r.sku_id,
     skuName: r.product_name,
@@ -1252,9 +1261,10 @@ async function reportableSkuOptions(ctx) {
 /**
  * 门店盘点可选 SKU（#352）。
  *
- * 与 reportableSkuOptions 的差别只在口径：盘点要能盘到本店手上的任何货，不限 is_reportable
- * （createDoc 对盘点明细也只要求 SKU 启用，见 inventorySkuSnapshot；admin 盘点同样用全量 SKU 检索）。
- * 归属限制照旧：无归属或归属本店所属市场。
+ * 与 reportableSkuOptions 的差别在口径：盘点要能盘到本店手上的任何货，不限 is_reportable
+ * （admin 盘点同样用全量 SKU 检索）。归属谓词与建单闸门 `assertSkuAvailableAtLocation`、
+ * admin `listInventorySkus({ availableToMarketId })` 逐字同义：供应链 SKU 或归属本店所属市场——
+ * 候选能选到的，createDoc 一定收；候选选不到的，createDoc 一定拒。
  *
  * 刻意**不下发账面数**：盘点是盲盘，录入时看到账面数就会照抄；账面数由 createDoc 在提交时记入
  * stock_snapshot。本店有货的 SKU 排在前面，免得在全量目录里翻找。
@@ -1282,11 +1292,12 @@ async function stocktakeSkuOptions(ctx) {
   // 本店主体只在排序里用，放在最后一个参数。
   const conditions = [
     'sku.is_active = true',
-    '(sku.owner_market_id IS NULL OR sku.owner_market_id = $1)',
+    "(sku.source_type = '供应链' OR sku.owner_market_id = $1)",
   ]
   const params = [source.parent_location_id]
   if (keyword) {
-    const escaped = String(keyword).replace(/[%_]/g, '\\$&')
+    // 反斜杠也要转义：ILIKE 默认转义符就是 \，结尾单个 \ 会让 PG 直接报错
+    const escaped = String(keyword).replace(/[\\%_]/g, '\\$&')
     conditions.push('(sku.sku_id ILIKE $2 OR sku.product_code ILIKE $2 OR sku.product_name ILIKE $2 OR sku.spec_name ILIKE $2)')
     params.push(`%${escaped}%`)
   }
@@ -1753,7 +1764,7 @@ async function createDoc(ctx) {
         snapshot = lot
       } else {
         if (!item.skuId) throw new Error('INVALID_PARAMS: 明细缺少库存 SKU')
-        snapshot = await inventorySkuSnapshot(client, item.skuId)
+        snapshot = await inventorySkuSnapshot(client, item.skuId, actingLocationId)
       }
       // 盘点单没有批次选择器，lot 恒为 null —— 账面数只能来自上面的汇总。
       // 一个批次都没有时 GROUP BY 不出行，落 0（不是 NULL）：账上就是 0，实盘有货即盘盈。

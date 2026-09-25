@@ -18,6 +18,7 @@
     <view wx:if="{{isStocktake}}" class="field">
       <text class="field-label">盘点产品</text>
       <view class="selector {{selectedSku ? '' : 'placeholder'}}" bindtap="onOpenSkuPicker">{{selectedSku ? selectedSku.displayName : '请选择盘点产品'}}</view>
+      <text wx:if="{{selectedSku}}" class="clear-selected" bindtap="onClearSelectedSku">清除所选</text>
     </view>
 
     <view wx:if="{{itemMode === 'stockLot'}}" class="field">

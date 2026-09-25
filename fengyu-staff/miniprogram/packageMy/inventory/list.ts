@@ -1,5 +1,6 @@
 // packageMy/inventory/list.ts — 库存单据列表（只读）
 import { callStaffApi } from '../../utils/cloud'
+import { isStocktakeDocType } from '../../utils/stocktake'
 
 type DocCategory = 'procurement' | 'sale' | 'transfer' | 'scrap' | 'stocktake'
 type CreateDocType = '门店报货' | '分院调货出库' | '院退货' | '院产品报损' | '分院库存盘点'
@@ -42,6 +43,7 @@ interface InventoryRow {
   totalQuantity: number
   customerName?: string | null
   employeeName?: string | null
+  isStocktake?: boolean
 }
 
 interface OrgNodeOption {
@@ -63,7 +65,11 @@ const STATUS_KEY_MAP: Record<string, string> = {
 }
 
 function withStatusKey(row: InventoryRow): InventoryRow {
-  return { ...row, statusKey: STATUS_KEY_MAP[row.status] || 'unknown' }
+  return {
+    ...row,
+    statusKey: STATUS_KEY_MAP[row.status] || 'unknown',
+    isStocktake: isStocktakeDocType(row.docType),
+  }
 }
 
 Page({
