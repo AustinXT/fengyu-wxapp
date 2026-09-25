@@ -1762,12 +1762,37 @@ describe('客量板块两端口径一致性守护', () => {
      * `map.set(id, …)` 相互覆盖。构造：scope = 市场 M，店 A 注册 10 人且 10 人各到店 1 次、
      * 店 B 注册 90 人且无人到店 —— 正确市场行是 10/100 = 10%，改后会变成 10/10 = 100% 或 0/90 = 0%。
      */
-    it('外层骨架 JOIN + GROUP BY 整段快照（归组键错位 / 多归一行 = 分子分母对不上号）', () => {
+    /**
+     * **整段外层查询**（投影 + JOIN + GROUP BY）逐字快照。
+     *
+     * 不能只钉 JOIN 与 `GROUP BY`，也不能只钉分母那一行投影：在 `SELECT` 里**追加一列同名**
+     * `COUNT(DISTINCT sk.store_id) AS registered,`，正确的 `SUM(reg.registered)` 行仍在、
+     * `reg.registered` 仍只出现一次、JOIN/GROUP BY 快照不覆盖投影区、行为测试直接注入
+     * `regActiveRows` 不跑 SQL、dist 探针只筛已知整行 ⇒ **全绿**；
+     * 而 postgres.js 按列顺序写对象，后一个 `registered` 覆盖前一个
+     * ⇒ 门店 A 注册 10 人、2 人到店时，20% 变成 2/1 = 200%（codex round-9 P2）。
+     *
+     * 逐列钉死是这里的**闭集**：任何增列 / 删列 / 改名 / 换顺序都不等。
+     */
+    it('外层查询整段快照（投影 + JOIN + GROUP BY，逐列钉死）', () => {
       const sqlText = breakdownSql(adminSrc)
-      const from = sqlText.indexOf('FROM skel sk ')
+      const from = sqlText.indexOf('SELECT ${groupId} AS group_id,')
       expect(from).toBeGreaterThan(0)
       expect(sqlText.slice(from).trim()).toBe(
-        'FROM skel sk ' +
+        'SELECT ${groupId} AS group_id, ' +
+          "${group === 'market' ? sql.raw('MAX(sk.market_name)') : sql.raw('MAX(sk.store_name)')} AS group_name, " +
+          'MAX(sk.market_name) AS market_name, ' +
+          'COALESCE(SUM(reg.registered), 0) AS registered, ' +
+          'COALESCE(SUM(ret.retained), 0) AS retained, ' +
+          'COALESCE(SUM(active.visit_once), 0) AS visit_once, ' +
+          'COALESCE(SUM(active.visit_twice), 0) AS visit_twice, ' +
+          'COALESCE(SUM(status_agg.dormant), 0) AS dormant, ' +
+          'COALESCE(SUM(react.react_dormant), 0) AS react_dormant, ' +
+          'COALESCE(SUM(status_agg.frozen), 0) AS frozen, ' +
+          'COALESCE(SUM(react.react_frozen), 0) AS react_frozen, ' +
+          'COALESCE(SUM(status_agg.deep), 0) AS deep, ' +
+          'COALESCE(SUM(react.react_deep), 0) AS react_deep ' +
+          'FROM skel sk ' +
           'LEFT JOIN reg ON reg.store_id = sk.store_id ' +
           'LEFT JOIN ret ON ret.store_id = sk.store_id ' +
           'LEFT JOIN active ON active.store_id = sk.store_id ' +
