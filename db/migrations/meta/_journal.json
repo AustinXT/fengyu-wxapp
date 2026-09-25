@@ -372,6 +372,13 @@
       "when": 1790302157503,
       "tag": "0052_shipment_from_market_report",
       "breakpoints": true
+    },
+    {
+      "idx": 53,
+      "version": "7",
+      "when": 1790307069052,
+      "tag": "0053_stocktake_zero_quantity",
+      "breakpoints": true
     }
   ]
 }

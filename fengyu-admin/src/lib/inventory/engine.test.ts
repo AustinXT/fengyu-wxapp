@@ -3390,6 +3390,74 @@ describe('盘点单账面数量（#131）', () => {
     expect(itemValues).toHaveBeenCalledWith(expect.objectContaining({ stockSnapshot: '0' }))
   })
 
+  // ── 实盘数允许 0（#351）──────────────────────────────────────────────
+  // 账上有货、货架上一件没有（实盘 0）是最严重的盘亏，原先被 `assertPositiveQuantity` 拒掉，
+  // 这笔盘亏就从盘点单里消失。放宽只对两种盘点类型生效，其余类型仍要求 > 0。
+  it.each(['市场库存盘点', '分院库存盘点'] as const)('%s：实盘 0 可以建单，账面照常记（差异 = −账面）', async (docType) => {
+    if (docType === '分院库存盘点') {
+      mockDb.select.mockImplementation(() =>
+        recordingSelect([{ locationId: 'LOC-STORE-1', locationType: '门店' }]))
+    }
+    const { itemValues, headerValues } = setupStocktake({ 'SKU-1': '5' })
+
+    await createInventoryCoreDoc({
+      docType,
+      sourceOrgNodeId: docType === '市场库存盘点' ? 'MARKET-1' : 'STORE-1',
+      items: [{ skuId: 'SKU-1', quantity: 0 }],
+    } as never)
+
+    expect(itemValues).toHaveBeenCalledWith(expect.objectContaining({ quantity: '0', stockSnapshot: '5' }))
+    expect(headerValues).toHaveBeenCalledWith(expect.objectContaining({ totalQuantity: '0' }))
+  })
+
+  it.each([
+    ['null', null],
+    ['undefined', undefined],
+    ['空串', ''],
+    ['纯空白', '  '],
+    ['负数', -1],
+    ['NaN', Number.NaN],
+    ['false（Number(false)=0）', false],
+    ['[0]', [0]],
+    ['三位小数 0.004（numeric(12,2) 会舍成 0）', 0.004],
+    ['超 numeric(12,2) 上限', 1e10],
+  ])('盘点单实盘数为 %s 时拒绝（留空不能当成实盘 0），且拦在事务之前', async (_label, quantity) => {
+    const { txInsert } = setupStocktake({ 'SKU-1': '5' })
+
+    await expect(createInventoryCoreDoc({
+      docType: '市场库存盘点',
+      sourceOrgNodeId: 'MARKET-1',
+      items: [{ skuId: 'SKU-1', quantity }],
+    } as never)).rejects.toMatchObject({
+      prefix: 'INVALID_PARAMS',
+      message: expect.stringContaining('请填写实盘数'),
+    })
+    expect(mockDb.transaction).not.toHaveBeenCalled()
+    expect(txInsert).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['市场产品报损', { sourceOrgNodeId: 'MARKET-1' }],
+    ['市场产品盘溢', { targetOrgNodeId: 'MARKET-1' }],
+    ['内部领用', { sourceOrgNodeId: 'MARKET-1' }],
+  ] as const)('非盘点类型（%s）数量 0 仍被拒：INVALID_PARAMS 明细数量必须大于 0', async (docType, endpoints) => {
+    if (docType === '内部领用') {
+      mockDb.select.mockImplementation(() =>
+        recordingSelect([{ locationId: 'LOC-HQ', locationType: '总部' }]))
+    }
+    setupStocktake({})
+
+    await expect(createInventoryCoreDoc({
+      docType,
+      ...endpoints,
+      items: [{ skuId: 'SKU-1', lotId: 1, quantity: 0 }],
+    } as never)).rejects.toMatchObject({
+      prefix: 'INVALID_PARAMS',
+      message: 'INVALID_PARAMS: 明细数量必须大于 0',
+    })
+    expect(mockDb.transaction).not.toHaveBeenCalled()
+  })
+
   it('numeric 的小数与末尾零归一后落库', async () => {
     // pg 的 numeric 经 postgres.js 回来是 string（'7.50'）。经 Number → numString
     // 归一成 '7.5' 再落 numeric(12,2)。这条钉的是**小数不被截断、末尾零被归一**，
