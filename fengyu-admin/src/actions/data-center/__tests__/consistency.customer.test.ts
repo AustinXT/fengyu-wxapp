@@ -1940,10 +1940,30 @@ describe('客量板块两端口径一致性守护', () => {
       expect(cronSrc.match(/tx\.execute\(sql\.raw\(updateSql\)\)/g)).toHaveLength(1)
 
       // `getCustomerBoard` 是 `withPermission(...)` 赋值的 const，不是函数声明，
-      // `fnSource` 切不出（它对此 fail-closed 地 throw）—— 所以在剥注释后的全文上按调用形态断言。
-      expect(adminCode).toContain("queryRegActiveBreakdown(session, scope, cur, 'market'),")
-      expect(adminCode).toContain("queryRegActiveBreakdown(session, scope, cur, 'store'),")
-      // 只数「带实参的调用」，函数声明自身是 `async function queryRegActiveBreakdown(` 不计入
+      // `fnSource` 切不出（它对此 fail-closed 地 throw）—— 所以在剥注释后的全文上断言。
+      //
+      // ⚠ 只断言「两行都在 + 条数 2」**不够**（codex round-18 P2）：把 Promise.all 数组里
+      // 'market' 与 'store' 两次调用的**顺序**对调，两行仍都在、条数仍是 2 ⇒ 全绿，
+      // 而解构出来的 regActiveByMarket / regActiveByStore 拿到的是对方的 map，
+      // 两个 buildBreakdownRows 全 miss ⇒ 明细整表注册/到店归 0、达成率 null。
+      // 产物逐字节比对也拦不住 —— 它会忠实构建这份错误源码。
+      // 所以把**解构 + Promise.all + 装配**整段钉死：位置、顺序、消费槽位一并锁住。
+      const assembly = sliceBlock(
+        adminCode,
+        'const [ regActiveByMarket,',
+        "const byStore = buildBreakdownRows('store',",
+      )
+      expect(assembly).toBe(
+        'const [ regActiveByMarket, opsByMarket, regActiveByStore, opsByStore, ] = await Promise.all([ ' +
+          "queryRegActiveBreakdown(session, scope, cur, 'market'), " +
+          "queryOpsBreakdown(session, scope, cur, 'market', threshold), " +
+          "queryRegActiveBreakdown(session, scope, cur, 'store'), " +
+          "queryOpsBreakdown(session, scope, cur, 'store', threshold), ]) " +
+          "const byMarket = buildBreakdownRows('market', skeleton, regActiveByMarket, opsByMarket) ",
+      )
+      expect(adminCode).toContain(
+        "const byStore = buildBreakdownRows('store', skeleton, regActiveByStore, opsByStore)",
+      )
       expect(adminCode.match(/queryRegActiveBreakdown\(session,/g)).toHaveLength(2)
     })
 
