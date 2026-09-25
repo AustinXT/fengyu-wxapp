@@ -130,7 +130,8 @@ export default async function Page({
     stocktakeColumnCount
   // 市场报货单的整单履约（#336）：已发 / 已收都按「市场报货发货」直连血缘累计，只算正常量（赠送不占报货量），
   // 用来判断「是否已全部发出 / 全部入库」。
-  const marketReportSummary = doc.docType === '市场报货' && reportFulfillment && reportFulfillment.items.length > 0
+  // 草稿 / 删除的草稿（#348）没有发货语义，不给「已发 / 入库」整单进度
+  const marketReportSummary = doc.docType === '市场报货' && doc.status === '已完成' && reportFulfillment && reportFulfillment.items.length > 0
     ? ((items) => {
       const sum = (pick: (item: (typeof items)[number]) => number) =>
         Number(items.reduce((total, item) => total + pick(item), 0).toFixed(2))
@@ -175,7 +176,8 @@ export default async function Page({
     ['撤回申请原因', doc.cancellationRequestReason],
     ['撤回申请人', doc.cancellationRequestedBy],
     ['撤回申请时间', doc.cancellationRequestedAt ? fmtDateTime(doc.cancellationRequestedAt) : null],
-    ['撤回原因', doc.cancellationReason],
+    // 市场报货只有「删除草稿」一条路径会转已取消（#348，提交即终态）
+    [doc.docType === '市场报货' ? '删除原因' : '撤回原因', doc.cancellationReason],
     ['备注', doc.remark],
   ] as const
 

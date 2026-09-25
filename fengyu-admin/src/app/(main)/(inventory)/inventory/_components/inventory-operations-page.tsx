@@ -68,7 +68,7 @@ import {
 } from '@/actions/inventory/docs'
 import { listInventorySkus } from '@/actions/inventory/skus'
 import { listInventoryLotOptions } from '@/actions/inventory/stocks'
-import { actionErrorMessage } from '@/lib/action-error'
+import { actionErrorMessage, actionErrorType } from '@/lib/action-error'
 import type {
   InventoryDocDetail,
   InventoryDocRow,
@@ -692,6 +692,7 @@ export default function InventoryOperationsPage({
   canRequestShipmentCancellation,
   canApproveShipmentCancellation,
   canViewPrice,
+  canViewMarketPrice,
   receiptDiscountOrgNodeIds,
   canCreatePickupRecord,
   initialOperationId,
@@ -709,6 +710,12 @@ export default function InventoryOperationsPage({
   canRequestShipmentCancellation: boolean
   canApproveShipmentCancellation: boolean
   canViewPrice: boolean
+  /**
+   * 市场报货取福利报价的判据（#348）：与 `quoteMarketReplenishmentPrices` / 服务端改选福利同一权限
+   * `inventory:market_price_view`。`canViewPrice` 是价格**可见性**（任一价格档），比它宽 ——
+   * 只有供应链价格权的账号拿它去取市场报价会被拒，表单就永远卡在「报价未完成」。
+   */
+  canViewMarketPrice: boolean
   /**
    * 可填入库单价优惠的总部节点（#346，服务端按「办理权与供应链价格权同一绑定」算）；
    * null = 不受节点限制（admin）。必传：漏传就会退回「前端放行、服务端拒」。
@@ -947,6 +954,7 @@ export default function InventoryOperationsPage({
               shipmentMarketTargets={shipmentMarketTargets}
               suppliers={suppliers}
               canViewPrice={canViewPrice}
+              canViewMarketPrice={canViewMarketPrice}
               receiptDiscountOrgNodeIds={receiptDiscountOrgNodeIds}
               onClose={() => { setPendingDocsTabFor(null); setActiveOperation(null) }}
               onSuccess={afterSuccess}
@@ -970,6 +978,7 @@ function OperationWorkspace({
   shipmentMarketTargets,
   suppliers,
   canViewPrice,
+  canViewMarketPrice,
   receiptDiscountOrgNodeIds,
   onClose,
   onSuccess,
@@ -993,6 +1002,7 @@ function OperationWorkspace({
   shipmentMarketTargets?: readonly InventoryMarketTransferTarget[]
   suppliers: InventorySupplierRow[]
   canViewPrice: boolean
+  canViewMarketPrice: boolean
   receiptDiscountOrgNodeIds: string[] | null
   onClose: () => void
   onSuccess: (message: string) => void
@@ -1109,7 +1119,7 @@ function OperationWorkspace({
             />
           )}
           {operation === 'store-request' && <StoreRequestForm locations={locations} onSuccess={handleSuccess} />}
-          {operation === 'market-report' && <MarketReportForm locations={locations} canViewPrice={canViewPrice} prefill={prefill} onSuccess={handleSuccess} />}
+          {operation === 'market-report' && <MarketReportForm locations={locations} canViewPrice={canViewMarketPrice} prefill={prefill} onSuccess={handleSuccess} onBusyChange={setFormBusy} />}
           {operation === 'item-company-request' && <ItemCompanyReplenishmentForm locations={locations} onSuccess={handleSuccess} />}
           {operation === 'purchase-order' && <PurchaseOrderForm locations={locations} canViewPrice={canViewPrice} onSuccess={handleSuccess} />}
           {operation === 'market-report-summary' && <MarketReportSummaryForm locations={locations} onSuccess={handleSuccess} />}
@@ -1374,7 +1384,8 @@ function buildInboxActionConfig(
 /**
  * 业务工作区的「单据」Tab（#190 一段 → #192 两段）。
  *
- * 上段「待我处理」= 本业务要经手、但由上游产出的单（待审批 / 待收货；品项公司发货是仍有未发量的已完成市场报货单，#336b），带行内动作；
+ * 上段「待我处理」= 本业务要经手、但由上游产出的单（待审批 / 待收货；品项公司发货是仍有未发量的已完成市场报货单，#336b；
+ * 市场报货是本业务自己未提交的草稿，#348），带行内动作；
  * 下段「本业务产出」= #190 的原语义，只读。
  *
  * 单据类型 / 状态 / 层级的收窄规则在服务端按 operationId 查映射表解析
@@ -2056,12 +2067,15 @@ function MarketReportForm({
   canViewPrice,
   prefill,
   onSuccess,
+  onBusyChange,
 }: {
   locations: InventoryLocationRow[]
   canViewPrice: boolean
   /** 待办区「继续编辑」（#348）：把一张市场报货草稿回填进表单。 */
   prefill?: OperationFormPrefill | null
   onSuccess: (message: string) => void
+  /** 存草稿 / 提交 / 回填在途时上报工作区，锁住卡片、「关闭」与待办动作（同 CompanyShipmentForm）。 */
+  onBusyChange?: (busy: boolean) => void
 }) {
   const markets = locations.filter((location) => location.locationType === '市场' && location.isActive)
   const headquarters = locations.filter((location) => location.locationType === '总部' && location.isActive)
@@ -2078,7 +2092,17 @@ function MarketReportForm({
   const [saving, setSaving] = useState(false)
   /** 正在编辑的草稿单号（#348）。非空时报货市场锁定，「提交」在该草稿上转已完成。 */
   const [draftId, setDraftId] = useState<string | null>(null)
+  const [quoteFailed, setQuoteFailed] = useState(false)
   const quoteRequestRef = useRef(0)
+  /*
+   * 表单「世代」（#348）：回填草稿、退出编辑、换市场、重新汇总都会进入新世代。
+   * 在途的存草稿 / 回填 / 汇总响应回来时世代已变，就丢弃结果 —— 否则慢的那次响应会把
+   * 另一张草稿的单号或明细写回当前表单，下一次「提交」就把 B 的内容转进了 A。
+   */
+  const epochRef = useRef(0)
+  useEffect(() => {
+    onBusyChange?.(saving || loadingSummary)
+  }, [saving, loadingSummary, onBusyChange])
   /*
    * 草稿里人工改选过的福利方案（#348）：只给回填后的**第一次**自动取价用，用完即清。
    * 方案已失效（停用 / 数量不再命中）时服务端报 CONFLICT，退回系统推荐并提示 —— 草稿价格本来就只是预览。
@@ -2098,6 +2122,7 @@ function MarketReportForm({
   useEffect(() => {
     const requestId = ++quoteRequestRef.current
     setQuoteResult(null)
+    setQuoteFailed(false)
     if (!canViewPrice || !marketId || quoteItems.length === 0) {
       setQuoting(false)
       return
@@ -2109,7 +2134,9 @@ function MarketReportForm({
       const quote = (selections?: MarketPromotionSelectionInput[]) =>
         quoteMarketReplenishmentPrices({ marketId, docDate: optionalText(docDate), items: quoteItems, selections })
       const request = restored && restored.length > 0
-        ? quote(restored).catch(() => {
+        ? quote(restored).catch((error) => {
+            // 只有「方案已变化」（CONFLICT）才回落系统推荐；权限 / 网络 / 商品停用等照常报错，别伪装成方案失效
+            if (actionErrorType(error) !== 'CONFLICT') throw error
             if (quoteRequestRef.current === requestId) {
               toast.warning('草稿里改选的福利方案已失效，已按系统推荐重新取价')
             }
@@ -2122,6 +2149,7 @@ function MarketReportForm({
         })
         .catch((error) => {
           if (quoteRequestRef.current === requestId) {
+            setQuoteFailed(true)
             toast.error(actionErrorMessage(error, '获取福利报价失败'))
           }
         })
@@ -2133,10 +2161,12 @@ function MarketReportForm({
   }, [canViewPrice, docDate, marketId, quoteBasketKey, quoteItems])
 
   function resetForm() {
+    epochRef.current += 1
     setDraftId(null)
     setLines([])
     setQuoteResult(null)
     setRemark('')
+    setDocDate(today)
     restoredSelectionsRef.current = null
   }
 
@@ -2145,6 +2175,7 @@ function MarketReportForm({
       toast.error('请选择市场')
       return
     }
+    const epoch = ++epochRef.current
     setLoadingSummary(true)
     try {
       const summary = await summarizeStoreReplenishmentRequests({
@@ -2152,7 +2183,14 @@ function MarketReportForm({
         startDate: optionalText(startDate),
         endDate: optionalText(endDate),
       })
-      setLines(summaryToMarketReportLines(summary))
+      if (epoch !== epochRef.current) return
+      const summaryLines = summaryToMarketReportLines(summary)
+      // 编辑草稿时重新汇总：保留当前已勾选的明细与数量，别把草稿整片冲掉
+      setLines(draftId
+        ? mergeMarketReportDraftLines(summaryLines, lines
+            .filter((line) => line.selected && positiveNumber(line.purchaseQuantity) !== null)
+            .map((line) => ({ ...line, quantity: positiveNumber(line.purchaseQuantity)! })))
+        : summaryLines)
       if (summary.items.length === 0) toast.info('当前没有待汇总的门店报货明细')
     } catch (error) {
       toast.error(actionErrorMessage(error, '汇总门店报货失败'))
@@ -2167,9 +2205,11 @@ function MarketReportForm({
    */
   const loadDraftRef = useRef<(id: string) => Promise<void>>(async () => {})
   loadDraftRef.current = async (id: string) => {
+    const epoch = ++epochRef.current
     setLoadingSummary(true)
     try {
       const detail = await getInventoryCoreDocById(id)
+      if (epoch !== epochRef.current) return
       if (!detail || detail.docType !== '市场报货' || detail.status !== '草稿' || !detail.marketId) {
         toast.error(`单据 ${id} 不是可编辑的市场报货草稿`)
         return
@@ -2179,10 +2219,16 @@ function MarketReportForm({
         location.locationId === detail.targetOrgNodeId || location.orgNodeId === detail.targetOrgNodeId
       ))
       const summary = await summarizeStoreReplenishmentRequests({ marketId: draftMarketId })
+      if (epoch !== epochRef.current) return
+      if (!supplyChain) toast.warning('草稿原来的供应链库存主体已停用，请重新选择')
+      // 跨天续编：报货日期回到今天（福利有效期、货款归属都按报货日期算），不沿用存草稿那天
+      const draftDate = detail.docDate.slice(0, 10)
+      const currentDate = today()
+      if (draftDate < currentDate) toast.info(`报货日期已从草稿的 ${draftDate} 更新为今天`)
       setDraftId(detail.id)
       setMarketId(draftMarketId)
       setSupplyChainLocationId(supplyChain?.locationId ?? '')
-      setDocDate(detail.docDate.slice(0, 10))
+      setDocDate(draftDate < currentDate ? currentDate : draftDate)
       setStartDate('')
       setEndDate('')
       setRemark(detail.remark ?? '')
@@ -2192,9 +2238,9 @@ function MarketReportForm({
       setLines(mergeMarketReportDraftLines(summaryToMarketReportLines(summary), detail.items))
       toast.info(`正在编辑草稿 ${detail.id}`)
     } catch (error) {
-      toast.error(actionErrorMessage(error, '加载市场报货草稿失败'))
+      if (epoch === epochRef.current) toast.error(actionErrorMessage(error, '加载市场报货草稿失败'))
     } finally {
-      setLoadingSummary(false)
+      if (epoch === epochRef.current) setLoadingSummary(false)
     }
   }
   const prefillToken = prefill?.token
@@ -2285,9 +2331,10 @@ function MarketReportForm({
       return
     }
     if (canViewPrice && (!quoteResult || quoting)) {
-      toast.error('福利报价尚未完成，请稍候')
+      toast.error(quoteFailed ? '福利报价失败，请按提示调整明细后再保存' : '福利报价尚未完成，请稍候')
       return
     }
+    const epoch = epochRef.current
     setSaving(true)
     try {
       const result = await saveMarketReplenishmentDraft({
@@ -2299,8 +2346,9 @@ function MarketReportForm({
         items: items.map((item) => ({ ...item, purchaseQuantity: item.purchaseQuantity! })),
         promotionSelections: currentPromotionSelections(),
       })
-      // 存完留在编辑态：同一张草稿可以接着改、再存或直接提交
-      setDraftId(result.id)
+      // 存完留在编辑态：同一张草稿可以接着改、再存或直接提交。
+      // 世代已变（期间回填了别的草稿 / 退出编辑）就不能再把这个单号写回表单
+      if (epoch === epochRef.current) setDraftId(result.id)
       onSuccess(`市场报货草稿已保存：${result.id}（未提交，不进入下游）`)
     } catch (error) {
       toast.error(actionErrorMessage(error, '保存市场报货草稿失败'))
@@ -2331,9 +2379,10 @@ function MarketReportForm({
       return
     }
     if (canViewPrice && (!quoteResult || quoting)) {
-      toast.error('福利报价尚未完成，请稍候')
+      toast.error(quoteFailed ? '福利报价失败，请按提示调整明细后再提交' : '福利报价尚未完成，请稍候')
       return
     }
+    const epoch = epochRef.current
     setSaving(true)
     try {
       const result = await createMarketReplenishment({
@@ -2346,7 +2395,7 @@ function MarketReportForm({
         draftId,
       })
       onSuccess(draftId ? `市场报货草稿已提交：${result.id}` : `市场报货单已创建：${result.id}`)
-      resetForm()
+      if (epoch === epochRef.current) resetForm()
     } catch (error) {
       toast.error(actionErrorMessage(error, draftId ? '提交市场报货草稿失败' : '创建市场报货失败'))
     } finally {
@@ -2370,7 +2419,7 @@ function MarketReportForm({
           <InventorySubjectSelect
             options={markets.map((location) => ({ value: location.locationId, label: location.name }))}
             value={marketId}
-            onChange={(nextMarketId) => { setMarketId(nextMarketId); setLines([]); setQuoteResult(null) }}
+            onChange={(nextMarketId) => { epochRef.current += 1; setMarketId(nextMarketId); setLines([]); setQuoteResult(null) }}
             placeholder="请选择市场"
             // 草稿的报货市场不可改（服务端 lockMarketReplenishmentDraft 同口径）
             disabled={draftId !== null}

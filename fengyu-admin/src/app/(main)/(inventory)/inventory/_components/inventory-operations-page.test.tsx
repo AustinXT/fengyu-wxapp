@@ -865,6 +865,7 @@ function renderPage(options: {
   canSelfPurchase?: boolean
   canCreatePickupRecord?: boolean
   receiptDiscountOrgNodeIds?: string[] | null
+  canViewMarketPrice?: boolean
 }) {
   mockCandidates(options.candidates ?? [])
   return render(
@@ -879,6 +880,7 @@ function renderPage(options: {
       canRequestShipmentCancellation={false}
       canApproveShipmentCancellation={false}
       canViewPrice
+      canViewMarketPrice={options.canViewMarketPrice ?? true}
       receiptDiscountOrgNodeIds={options.receiptDiscountOrgNodeIds === undefined ? null : options.receiptDiscountOrgNodeIds}
       canCreatePickupRecord={options.canCreatePickupRecord ?? true}
       // 深链入口：省掉「先点卡片」这一步，工作区直接展开在目标业务上
@@ -2922,6 +2924,50 @@ describe('市场报货草稿（#348）', () => {
     fireEvent.click(screen.getByRole('button', { name: '确认删除' }))
     await waitFor(() => expect(deleteMarketReplenishmentDraft).toHaveBeenCalledWith({ draftId: 'MBH-D1', reason: null }))
     await waitFor(() => expect(listInventoryOperationDocs).toHaveBeenCalledTimes(2))
+  })
+
+  it('存草稿响应迟到、期间已切到另一张草稿：不把旧单号写回表单（防止 B 的内容提交进 A）', async () => {
+    mockDocs({ inbox: segment([draftRow()]) })
+    vi.mocked(summarizeStoreReplenishmentRequests).mockResolvedValue({ marketId: 'M1', items: [summaryLine('SKU-1', [11], 4)] })
+    const slowSave = deferred<{ id: string }>()
+    vi.mocked(saveMarketReplenishmentDraft).mockReturnValue(slowSave.promise)
+    vi.mocked(getInventoryCoreDocById).mockResolvedValue(draftDetail([{ skuId: 'SKU-1', quantity: 3 }]))
+    renderPage({ level: 'market', operation: 'market-report', locations: [HQ, M1] })
+
+    fireEvent.click(await screen.findByRole('button', { name: '汇总门店报货' }))
+    await screen.findByRole('checkbox', { name: '选择 商品SKU-1 SKU-1' })
+    await waitFor(() => expect(screen.getByText('100 - 0 = 100')).toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { name: '存草稿' }))
+    await waitFor(() => expect(saveMarketReplenishmentDraft).toHaveBeenCalledTimes(1))
+    // 存草稿在途时，工作区被锁：待办的「继续编辑」仍可见，但我们直接走预选通道模拟另一张草稿的回填已开始
+    await openDocsTab()
+    fireEvent.click(screen.getByRole('button', { name: '继续编辑 MBH-D1' }))
+    expect(await screen.findByText('MBH-D1', { selector: 'span.font-mono' })).toBeInTheDocument()
+    await act(async () => { slowSave.resolve({ id: 'MBH-OLD' }) })
+    expect(screen.queryByText('MBH-OLD', { selector: 'span.font-mono' })).not.toBeInTheDocument()
+    expect(screen.getByText('MBH-D1', { selector: 'span.font-mono' })).toBeInTheDocument()
+  })
+
+  it('无市场价格权限（canViewMarketPrice=false）：不取福利报价，存草稿不带福利选择', async () => {
+    mockDocs({})
+    vi.mocked(summarizeStoreReplenishmentRequests).mockResolvedValue({ marketId: 'M1', items: [summaryLine('SKU-1', [11], 4)] })
+    vi.mocked(saveMarketReplenishmentDraft).mockResolvedValue({ id: 'MBH-D9' })
+    renderPage({ level: 'market', operation: 'market-report', locations: [HQ, M1], canViewMarketPrice: false })
+    fireEvent.click(await screen.findByRole('button', { name: '汇总门店报货' }))
+    await screen.findByRole('checkbox', { name: '选择 商品SKU-1 SKU-1' })
+    fireEvent.click(screen.getByRole('button', { name: '存草稿' }))
+    await waitFor(() => expect(saveMarketReplenishmentDraft).toHaveBeenCalledWith(expect.objectContaining({ promotionSelections: undefined })))
+    expect(quoteMarketReplenishmentPrices).not.toHaveBeenCalled()
+  })
+
+  it('跨天续编：报货日期更新为今天并提示', async () => {
+    mockDocs({ inbox: segment([draftRow()]) })
+    vi.mocked(getInventoryCoreDocById).mockResolvedValue({ ...draftDetail([{ skuId: 'SKU-1', quantity: 3 }]), docDate: '2020-01-01' })
+    vi.mocked(summarizeStoreReplenishmentRequests).mockResolvedValue({ marketId: 'M1', items: [summaryLine('SKU-1', [11], 4)] })
+    renderPage({ level: 'market', operation: 'market-report', locations: [HQ, M1] })
+    await openDocsTab()
+    fireEvent.click(screen.getByRole('button', { name: '继续编辑 MBH-D1' }))
+    await waitFor(() => expect(vi.mocked(toast.info)).toHaveBeenCalledWith(expect.stringMatching(/^报货日期已从草稿的 2020-01-01 更新为今天/)))
   })
 
   it('不是草稿的单点「继续编辑」（已被别人提交）：提示且不回填', async () => {

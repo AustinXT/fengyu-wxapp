@@ -484,7 +484,8 @@ describe('待我处理段（#192）', () => {
     expect(exportedFnBody('createItemCompanyShipment'))
       .toContain(`report.docType !== '市场报货' || report.status !== '已完成'`)
     // 市场报货草稿（#348）：编辑 / 提交 / 删除都只认草稿
-    expect(businessSource).toContain(`draft.docType !== '市场报货' || draft.status !== '草稿'`)
+    expect(businessSource).toContain(`if (draft.docType !== '市场报货') throw new ApiError('NOT_FOUND'`)
+    expect(businessSource).toContain(`if (draft.status !== '草稿') {`)
   })
 
   it('pendingItemScope 在 engine 里落成「未入库明细」的 EXISTS，且不按 market_id 分流（#335）', () => {

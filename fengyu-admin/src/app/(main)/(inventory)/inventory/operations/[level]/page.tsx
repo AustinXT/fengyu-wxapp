@@ -108,6 +108,8 @@ export default async function Page({
           canApproveShipmentCancellation={hasUiCapability(actions, 'inventory:shipment_cancel_approve')}
           // 与单据列表查询回传的 canViewPrice 同一判据
           canViewPrice={inventoryPriceVisibility(session) !== 'none'}
+          // 市场报货福利报价（#348）：与 quoteMarketReplenishmentPrices 的 withPermission 同一判据
+          canViewMarketPrice={hasUiCapability(actions, 'inventory:market_price_view')}
           // 入库单价优惠（#346）与服务端 receiveSupplyChainPurchaseOrder 同判据：办理权与供应链价格权
           // 落在同一条角色绑定上，按总部节点判；null = 不受节点限制（admin）
           receiptDiscountOrgNodeIds={receiptDiscountOrgNodeIds(session)}

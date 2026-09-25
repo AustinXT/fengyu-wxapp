@@ -2506,15 +2506,30 @@ function marketReportItemPriceFields(
 /**
  * 锁住并校验一张市场报货草稿（#348）。调用方须已按「市场 → 供应链」取过主体锁：
  * 草稿单排在主体之后，与新建市场报货的锁序一致（先主体、后单据）。
+ * ⚠️ 与 createStoreAllocation「报货单 → 市场」的既有反序之所以不成环，靠的是事务开头
+ * `assertInventoryBusinessWritable` 那把 cutover 全局锁；放宽那把锁之前先统一锁序。
  * 草稿的报货市场不可改 —— 换市场等于换一张单，前端也锁定了市场选择。
  */
 async function lockMarketReplenishmentDraft(tx: Tx, draftId: string, market: Location): Promise<DocHeader> {
   const draft = await docForUpdate(tx, draftId)
-  if (draft.docType !== '市场报货' || draft.status !== '草稿') {
-    throw new ApiError('INVALID_STATE', '只能修改草稿状态的市场报货，已提交的单据不能再改')
+  if (draft.docType !== '市场报货') throw new ApiError('NOT_FOUND', '市场报货草稿不存在')
+  if (draft.status !== '草稿') {
+    throw new ApiError(
+      'INVALID_STATE',
+      draft.status === '已取消' ? '该市场报货草稿已删除' : '市场报货已提交，不能再修改或删除',
+    )
   }
   if (draft.marketId !== market.orgNodeId) {
     throw new ApiError('INVALID_PARAMS', '草稿的报货市场不能修改')
+  }
+  // 本功能产出的草稿不写血缘；带血缘的只可能是存量 / 人工修复的异常单，覆盖明细会撞外键、删除会释放占用，一律交人工处理
+  const [linked] = rows<{ linked: boolean }>(await tx.execute(sql`
+    SELECT EXISTS (
+      SELECT 1 FROM inventory_doc_links WHERE from_doc_id = ${draftId} OR to_doc_id = ${draftId}
+    ) AS linked
+  `))
+  if (linked?.linked) {
+    throw new ApiError('INVALID_STATE', '该草稿已有上下游关联，不能按草稿修改或删除，请联系管理员处理')
   }
   return draft
 }
@@ -2813,14 +2828,32 @@ export async function deleteMarketReplenishmentDraft(
   const draftId = required(input.draftId, '草稿单号')
   const reason = text(input.reason) ?? '删除草稿'
   await syncLocations()
-  await db.transaction(async (tx) => {
+  const marketId = await db.transaction(async (tx) => {
     await assertInventoryBusinessWritable(tx)
     // 先无锁读出市场，按「市场 → 单据」取锁（与新建 / 提交同序），锁住单据后再复核一次市场
     const [peek] = rows<{ market_id: string | null }>(await tx.execute(sql`
       SELECT market_id FROM inventory_docs WHERE id = ${draftId} AND doc_type = '市场报货'
     `))
     if (!peek?.market_id) throw new ApiError('NOT_FOUND', '市场报货草稿不存在')
-    const market = await locationForUpdate(tx, peek.market_id)
+    // 删除不校验市场是否启用：市场停用后草稿仍挂在待办里，必须还能清掉（scope 照断）
+    const [marketRow] = rows<{ location_id: string; org_node_id: string; location_type: LocationType; name: string; parent_location_id: string | null }>(
+      await tx.execute(sql`
+        SELECT location_id, org_node_id, location_type, name, parent_location_id
+          FROM inventory_locations
+         WHERE org_node_id = ${peek.market_id}
+         ORDER BY location_id
+         LIMIT 1
+         FOR UPDATE
+      `),
+    )
+    if (!marketRow) throw new ApiError('NOT_FOUND', '库存主体不存在')
+    const market: Location = {
+      locationId: marketRow.location_id,
+      orgNodeId: marketRow.org_node_id,
+      locationType: marketRow.location_type,
+      name: marketRow.name,
+      parentLocationId: marketRow.parent_location_id,
+    }
     assertLocationWritable(session, market)
     await lockMarketReplenishmentDraft(tx, draftId, market)
     await tx.execute(sql`
@@ -2828,11 +2861,16 @@ export async function deleteMarketReplenishmentDraft(
          SET status = '已取消',
              cancellation_reason = ${reason},
              cancelled_by = ${session.employeeId},
-             cancelled_at = NOW()
+             cancelled_at = NOW(),
+             updated_at = NOW()
        WHERE id = ${draftId}
     `)
+    return market.orgNodeId
   })
-  await logOperation(session, 'inventory.market_request.delete_draft', 'inventory_docs', draftId)
+  await logOperation(session, 'inventory.market_request.delete_draft', 'inventory_docs', draftId, {
+    marketId,
+    reason,
+  })
   refreshInventoryPaths()
   return { id: draftId }
 }

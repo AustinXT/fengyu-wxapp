@@ -4180,7 +4180,7 @@ describe('市场报货草稿（#348）', () => {
     cancellation_request_reason: null, cancellation_requested_by: null, cancellation_requested_at: null,
   }
 
-  function mockDraftTx(draft: Record<string, unknown> | null) {
+  function mockDraftTx(draft: Record<string, unknown> | null, { linked = false }: { linked?: boolean } = {}) {
     const calls: unknown[] = []
     const execute = initializedCutoverExecutor(async (query) => {
       calls.push(query)
@@ -4193,6 +4193,7 @@ describe('市场报货草稿（#348）', () => {
           : [{ location_id: id, org_node_id: id, location_type: '市场', name: `市场 ${id}`, parent_location_id: 'HQ', is_active: true }]
       }
       if (rendered.includes('SELECT market_id FROM inventory_docs')) return draft ? [{ market_id: draft.market_id }] : []
+      if (rendered.includes('FROM inventory_doc_links WHERE from_doc_id')) return [{ linked }]
       if (rendered.includes('FROM inventory_docs') && rendered.includes('FOR UPDATE')) return draft ? [draft] : []
       if (rendered.includes('FROM inventory_skus')) return [marketSkuRow(String(params[0]))]
       if (rendered.includes('INSERT INTO inventory_doc_items')) return [{ id: '11' }]
@@ -4220,7 +4221,7 @@ describe('市场报货草稿（#348）', () => {
     const item = calls.find((query) => renderSql(query).includes('INSERT INTO inventory_doc_items'))
     // 市场进货价 100、无福利：实际单价 100、金额 300
     expect(sqlParams(item)).toEqual(expect.arrayContaining(['SKU-1', '3', '100', '300']))
-    expect(rendered().some((text) => text.includes('inventory_doc_links'))).toBe(false)
+    expect(rendered().some((text) => text.includes('INSERT INTO inventory_doc_links'))).toBe(false)
     // 门店报货明细一行都不碰（不引用、不锁）
     expect(rendered().some((text) => text.includes('FROM inventory_doc_items') && text.includes('FOR UPDATE'))).toBe(false)
   })
@@ -4236,7 +4237,7 @@ describe('市场报货草稿（#348）', () => {
     const update = texts.find((text) => text.includes('UPDATE inventory_docs'))!
     expect(update).not.toContain('status')
     expect(texts.some((text) => text.includes('INSERT INTO inventory_docs'))).toBe(false)
-    expect(texts.some((text) => text.includes('inventory_doc_links'))).toBe(false)
+    expect(texts.some((text) => text.includes('INSERT INTO inventory_doc_links'))).toBe(false)
   })
 
   it('已提交的市场报货不能再改：存草稿 / 提交 / 删除都 INVALID_STATE，且不动明细', async () => {
@@ -4261,12 +4262,12 @@ describe('市场报货草稿（#348）', () => {
     expect(remove.rendered().some((text) => text.includes('UPDATE inventory_docs'))).toBe(false)
   })
 
-  it('非市场报货单不能当草稿改', async () => {
+  it('非市场报货单不能当草稿改（NOT_FOUND，不泄露别的单据类型）', async () => {
     mockDraftTx({ ...DRAFT, doc_type: '门店报货' })
     await expect(saveMarketReplenishmentDraft(SESSION, {
       draftId: 'MBH-D1', marketId: 'M1', supplyChainLocationId: 'HQ',
       items: [{ skuId: 'SKU-1', purchaseQuantity: 2 }],
-    })).rejects.toThrow(/^INVALID_STATE: /)
+    })).rejects.toThrow('NOT_FOUND: 市场报货草稿不存在')
   })
 
   it('草稿的报货市场不能改（按别的市场提交 / 覆盖都拒）', async () => {
@@ -4290,6 +4291,37 @@ describe('市场报货草稿（#348）', () => {
     const update = calls.find((query) => renderSql(query).includes('UPDATE inventory_docs'))!
     expect(renderSql(update)).toContain("status = '已取消'")
     expect(sqlParams(update)).toEqual(expect.arrayContaining(['报错了', 'E001', 'MBH-D1']))
+  })
+
+  it('带上下游血缘的存量「草稿」不能按草稿改 / 提交 / 删除（覆盖明细会撞外键、删除会释放占用）', async () => {
+    const save = mockDraftTx(DRAFT, { linked: true })
+    await expect(saveMarketReplenishmentDraft(SESSION, {
+      draftId: 'MBH-D1', marketId: 'M1', supplyChainLocationId: 'HQ',
+      items: [{ skuId: 'SKU-1', purchaseQuantity: 2 }],
+    })).rejects.toThrow('INVALID_STATE: 该草稿已有上下游关联')
+    expect(save.rendered().some((text) => text.includes('DELETE FROM inventory_doc_items'))).toBe(false)
+    const remove = mockDraftTx(DRAFT, { linked: true })
+    await expect(deleteMarketReplenishmentDraft(SESSION, { draftId: 'MBH-D1' })).rejects.toThrow('INVALID_STATE: 该草稿已有上下游关联')
+    expect(remove.rendered().some((text) => text.includes('UPDATE inventory_docs'))).toBe(false)
+  })
+
+  it('已删除的草稿再改：提示「已删除」而不是「已提交」', async () => {
+    mockDraftTx({ ...DRAFT, status: '已取消' })
+    await expect(saveMarketReplenishmentDraft(SESSION, {
+      draftId: 'MBH-D1', marketId: 'M1', supplyChainLocationId: 'HQ',
+      items: [{ skuId: 'SKU-1', purchaseQuantity: 2 }],
+    })).rejects.toThrow('INVALID_STATE: 该市场报货草稿已删除')
+  })
+
+  it('删除草稿不校验市场是否启用（停用市场的草稿也要清得掉），但照断 scope 并写 updated_at', async () => {
+    const { calls } = mockDraftTx(DRAFT)
+    await deleteMarketReplenishmentDraft(SESSION, { draftId: 'MBH-D1' })
+    const marketQuery = calls.map(renderSql).find((text) => text.includes('FROM inventory_locations'))!
+    expect(marketQuery).not.toContain('is_active')
+    const update = calls.map(renderSql).find((text) => text.includes('UPDATE inventory_docs'))!
+    expect(update).toContain('updated_at = NOW()')
+    mockDraftTx(DRAFT)
+    await expect(deleteMarketReplenishmentDraft(NO_PRICE_SESSION, { draftId: 'MBH-D1' })).rejects.toThrow(/^PERMISSION_DENIED: /)
   })
 
   it('删除不存在的草稿 NOT_FOUND；原因留空时记「删除草稿」', async () => {
