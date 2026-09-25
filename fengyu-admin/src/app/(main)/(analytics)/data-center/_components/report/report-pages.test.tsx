@@ -361,6 +361,15 @@ describe('经营数据主表（#372）', () => {
     expect(notice).not.toHaveTextContent('服务 ·')
   })
 
+  it('1 月：年度累计区间即所选月份，不重复出年度累计那条提示', async () => {
+    mockScope(singleStoreOptions)
+    await renderPage('operatingMaster', { scope: 'store', scopeId: 'S1', month: '2026-01' })
+
+    const notice = screen.getByRole('note', { name: '数据起点提示' })
+    expect(notice).toHaveTextContent('所选月份（2026-01-01 ~ 2026-01-31）')
+    expect(notice).not.toHaveTextContent('年度累计')
+  })
+
   it('按页面生效的范围与月份取数；信息条写「统计月份」与展示行数；表头两行照抄模板', async () => {
     mockScope(hqOptions)
     await renderPage('operatingMaster', { month: '2026-13' })

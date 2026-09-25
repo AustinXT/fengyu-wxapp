@@ -7,7 +7,12 @@
  *
  * 首版只有 D / P / R / V / W / X 六列取数，其余 16 列按口径来源分两类占位，一律显示「—」、
  * 不参与合计和其它列的计算：
- *   - #373（口径待拍板）：E–I、K–M、S–U、Y —— 拍板后给列补 `value`（比率列再补 `aggregate: ratio`）即可增量上线
+ *   - #373（口径待拍板）：E–I、K–M、S–U、Y —— 拍板后增量上线：
+ *       1. 服务端给门店行 `values` 补该列（OPERATING_MASTER_METRIC_KEYS 加键 + action 取数）；
+ *       2. 列定义补 `value: metric(key)` 与 `aggregate`。可加列用 sum；比率列用
+ *          `{ kind: 'ratio', numerator, denominator }`（分子分母读 `row.values` 里对应列），
+ *          按模板公式 G=F/E、I=H/F、M=K/E、Y=X/U（Q=P/O 属 #374）。
+ *       小计与合计按「有 value 的列」挑取（见 metricColumnKeys），比率列在小计 / 合计行用合计后的分子分母重算。
  *   - #374（目标列，2026-09-25 拍板本期固定「—」、合计行也「—」）：J、N、O、Q
  *
  * 口径登记：notes/references/metrics.md §经营数据主表。
@@ -99,6 +104,16 @@ function headerWidth(header: string, min: number): number {
   return Math.max(min, longest * 12 + 48)
 }
 
+/**
+ * 导出列宽（Excel 字符宽度）：按列名最长一行估，中文按 2、其余按 1，再加 2 的余量——
+ * 流式写出的行高只按换行数给，列宽不够导致 Excel 再自动折行时文字会被裁掉。
+ */
+function headerExportWidth(header: string, min: number): number {
+  const longest = Math.max(...header.split('\n').map((line) =>
+    [...line].reduce((sum, char) => sum + (/[\u0000-\u00ff]/.test(char) ? 1 : 2), 0)))
+  return Math.max(min, longest + 2)
+}
+
 function metric(key: OperatingMasterMetricKey) {
   return (row: OperatingMasterRow) => row.values[key] ?? null
 }
@@ -122,7 +137,7 @@ function pendingColumn(
     width: headerWidth(header, 96),
     hint: pending === '#374' ? '目标列：本期不取数（#374）' : '口径待确认，本期不取数（#373）',
     exportValue: () => '—',
-    exportWidth: 12,
+    exportWidth: headerExportWidth(header, 12),
   }
 }
 
@@ -145,7 +160,7 @@ function metricColumn(
     hint,
     value: metric(key),
     aggregate: { kind: 'sum' },
-    exportWidth: unit === 'amount' ? 16 : 12,
+    exportWidth: headerExportWidth(header, unit === 'amount' ? 16 : 12),
   }
 }
 
@@ -234,7 +249,9 @@ export interface OperatingMasterTable {
   multiMarket: boolean
 }
 
+/** 有 value 的列 = 参与小计 / 合计的列（#373 增量补齐的列按这个自动纳入，不必再改装配） */
 const METRIC_COLUMNS = OPERATING_MASTER_COLUMNS.filter((column) => column.value)
+const metricColumnKeys = METRIC_COLUMNS.map((column) => column.key)
 
 /**
  * 门店骨架 + 各指标 → 表格行。门店按传入顺序（调用方已按市场、门店排好）；
@@ -288,7 +305,7 @@ export function buildOperatingMasterTable(
 }
 
 function pickMetricTotals(totals: MatrixTotals): Record<OperatingMasterMetricKey, number | null> {
-  return Object.fromEntries(OPERATING_MASTER_METRIC_KEYS.map((key) => [key, totals[key] ?? null])) as Record<
+  return Object.fromEntries(metricColumnKeys.map((key) => [key, totals[key] ?? null])) as Record<
     OperatingMasterMetricKey,
     number | null
   >

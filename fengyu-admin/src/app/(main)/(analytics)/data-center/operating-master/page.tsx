@@ -32,8 +32,9 @@ export default async function Page({
     query: await searchParams,
     loadScopeOptions: getDataCenterScopeOptions,
     axes: ["performance", "service"],
+    // 1 月的年度累计区间就是所选月份，已由上面的「所选月份」提示覆盖，不重复出一条
     extraNotices: (period) =>
-      period?.kind === "month"
+      period?.kind === "month" && !period.month.endsWith("-01")
         ? [{ label: "年度累计（R 列）", range: ytdRange(period.month), axes: ["performance"] }]
         : [],
   })
@@ -53,7 +54,7 @@ export default async function Page({
       context={context}
       notice={notice}
       periodLabel="统计月份"
-      infoItems={data ? [{ label: "展示", value: `${data.storeCount} 行` }] : []}
+      infoItems={data ? [{ label: "展示", value: `${data.rows.length} 行` }] : []}
     >
       {data && scope && (
         emptyText ? (

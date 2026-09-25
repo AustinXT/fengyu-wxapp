@@ -52,6 +52,15 @@ describe('经营数据主表列结构（对照《经营数据主表.xlsx》凤�
     expect(colors.every(Boolean)).toBe(true)
   })
 
+  it('导出列宽容得下列名最长一行（中文按 2 宽），Excel 不会再折行裁字', () => {
+    const e = OPERATING_MASTER_COLUMNS.find((column) => column.letter === 'E')!
+    expect(e.exportWidth).toBeGreaterThanOrEqual('前三月有回店1次人头数'.length * 2)
+    for (const column of OPERATING_MASTER_COLUMNS.filter((c) => c.letter >= 'D')) {
+      const longest = Math.max(...column.header.split('\n').map((line) => [...line].length))
+      expect(column.exportWidth, column.letter).toBeGreaterThanOrEqual(longest * 2 - 2)
+    }
+  })
+
   it('冻结市场、门店两列（其余横向滚动）', () => {
     const frozen = computeFrozenPositions(OPERATING_MASTER_COLUMNS)
     expect([...frozen.keys()]).toEqual(['marketName', 'storeName'])

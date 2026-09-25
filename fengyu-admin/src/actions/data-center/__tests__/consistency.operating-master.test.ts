@@ -24,11 +24,17 @@ function slice(src: string, start: string, end: string): string {
   return src.slice(from, to)
 }
 
-/** 切片内唯一一段 sql`...` 模板，插值归一、空白压缩 */
+/**
+ * 切片内唯一一段 sql`...` 模板，空白压缩。插值**只归一区间变量**（两边变量名不同：`cur` / `range`），
+ * 其余插值原文保留——scope 过滤的列、寄存退款过滤的别名一旦不同必须变红。
+ */
 function template(section: string): string {
   const matches = [...section.matchAll(/sql`([\s\S]*?)`/g)]
   if (matches.length !== 1) throw new Error(`切片里应恰有 1 段 sql 模板，实际 ${matches.length} 段`)
-  return matches[0][1].replace(/\$\{[^}]*\}/g, '${}').replace(/\s+/g, ' ').trim()
+  return matches[0][1]
+    .replace(/\$\{(?:cur|range)\.(start|end)\}/g, '${$1}')
+    .replace(/\s+/g, ' ')
+    .trim()
 }
 
 const sales = {
@@ -66,6 +72,15 @@ describe('经营数据主表 × 销售板门店明细 口径同源（#372）', (
       master.shengmeiConsume.replace('SUM(sit.unit_real_price::numeric * sit.session_used)', 'SUM(sit.session_used)'),
     )
     expect(master.project).not.toBe(master.shengmeiConsume)
+  })
+
+  it('W / X / V 只取当月区间（不是年度累计区间）', () => {
+    for (const body of [master.consume, master.shengmeiConsume, master.project]) {
+      expect(body).toContain('so.service_date BETWEEN ${start} AND ${end}')
+      expect(body).toContain("${scopeFilterSql(session, scope, 'so.store_id')}")
+      expect(body).toContain("${excludeDepositRefundSql('so')}")
+    }
+    expect(slice(MASTER, '// W 实耗', '      ])')).not.toMatch(/ytd\./)
   })
 
   it('守护自检：切到的模板确实是承重谓词（防切片漂移后两边一起变成空串也相等）', () => {
