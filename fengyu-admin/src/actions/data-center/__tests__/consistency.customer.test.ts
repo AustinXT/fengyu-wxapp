@@ -9,13 +9,15 @@
  * 守护策略 = "关键不变量字面量匹配"（仿 dashboard.consistency.test.ts）：
  *   1. became_member_at（会员/新会员历史化口径）
  *   2. customer_status 枚举值 '沉睡'/'冰冻'/'休眠'（D-6 重命名后，禁 '预警沉睡'）
- *   3. 消费分桶阈值 1990 / 10000 / 30000 / 60000 / 100000（左闭右开）
+ *   3. 消费分桶：最低档下界 = 会员门槛 getMemberThreshold()（#292），其余 SPEND_BUCKET_FLOORS 1w/3w/6w/10w（左闭右开）
  *   4. sales_category IN ('自销自耗','他销自耗')（项目数口径）
  *   5. 成交率分母 = 期初未达会员的到店活跃池 ∪ 本期全部新增会员（D-conv-denom=1c，#284；
  *      两端 KPI 侧走 `sqlInFunction` 切函数体断言，明细侧走 `adminSql` 块）
  *   6. spend = SUM(sale_order_performance_events.amount) @ performance_date（#138 起，与业绩 KPI 同源；
  *      不再按父订单 status 过滤、排除储值卡抵扣；非 metrics.md 的 paid_amount）
  *   7. anchor 反推关键字面量（visits_90d_prev / 6 months / 12 months / 90 days）
+ *   8. 一次/二次客活 = 到店天数，(顾客, service_date) 去重（#298）—— 跨定义：admin visitDaysSql /
+ *      staff mgmt-traffic / cron refresh-monthly-activity 三方由同一组口径常量拼出整段快照
  *
  * 任一端口径变更必须双端同步，否则数据中心客量板块与员工端 mgmtTraffic 数字对不上。
  */
@@ -23,6 +25,12 @@ import fs from 'node:fs'
 import path from 'node:path'
 import ts from 'typescript'
 import { describe, it, expect, beforeAll } from 'vitest'
+import { sql } from 'drizzle-orm'
+import { PgDialect } from 'drizzle-orm/pg-core'
+import { visitDaysSql } from '@/lib/data-center/visit-days'
+import { UPDATE_MONTHLY_ACTIVITY_SQL } from '@/cron/steps/refresh-monthly-activity'
+import { SPEND_BUCKET_FLOORS } from '@/lib/data-center/spend-buckets'
+import { determineMemberLevel } from '@/cron/lib/member-level'
 
 const ADMIN_CUSTOMER = path.resolve(__dirname, '../customer.ts')
 const STAFF_MGMT_TRAFFIC = path.resolve(
@@ -383,6 +391,28 @@ function sqlInFunction(src: string, fileName: string, fnName: string): string {
   return normalize(out.map(stripSqlComments).join(' \n '))
 }
 
+/**
+ * 指定函数声明的**完整源码**（剥 JS 注释 + 归一空白），含非 SQL 部分：
+ * scope 生产者的列名实参、mode→条件的三元映射、结果取值 —— sqlInFunction 只收模板串，看不到这些（#298 评审 P2）。
+ */
+function fnSource(src: string, fileName: string, fnName: string): string {
+  const sf = ts.createSourceFile(
+    fileName,
+    src,
+    ts.ScriptTarget.Latest,
+    true,
+    fileName.endsWith('.js') ? ts.ScriptKind.JS : ts.ScriptKind.TS,
+  )
+  const hits: string[] = []
+  const visit = (n: ts.Node): void => {
+    if (ts.isFunctionDeclaration(n) && n.name?.text === fnName) hits.push(src.slice(n.getStart(sf), n.getEnd()))
+    ts.forEachChild(n, visit)
+  }
+  ts.forEachChild(sf, visit)
+  if (hits.length !== 1) throw new Error(`fnSource: ${fnName} 在 ${fileName} 中命中 ${hits.length} 处`)
+  return normalize(stripComments(hits[0]))
+}
+
 describe('客量板块两端口径一致性守护', () => {
   let adminSrc: string
   let staffSrc: string
@@ -475,87 +505,159 @@ describe('客量板块两端口径一致性守护', () => {
     })
   })
 
-  describe('消费分桶阈值（左闭右开，6 档）', () => {
-    const thresholds = ['1990', '10000', '30000', '60000', '100000']
-
-    /**
-     * ⚠ 必须带数字边界（GLM r4 P3-2）：裸的 `toContain('10000')` 恒真，
-     * 因为 `100000` 里就含 `10000` —— 把 `< 10000` 整个删掉这条断言也不会红。
-     */
-    for (const [side, getSrc] of [
-      ['admin', () => adminSql],
-      ['staff', () => staffSql],
-    ] as Array<[string, () => string]>) {
-      it(`${side} 含全部 5 个阈值字面量（带数字边界）`, () => {
-        for (const t of thresholds) {
-          expect(getSrc(), `${side} 缺阈值 ${t}（或只作为更长数字的子串出现）`).toMatch(
-            new RegExp(`(?<!\\d)${t}(?!\\d)`),
-          )
-        }
-      })
+  /**
+   * 3. 消费分桶（左闭右开，6 档）—— #292 起档位来源收敛：
+   *   - 最低档下界 / 经营人数门槛 = 会员门槛 getMemberThreshold()（system_configs.new_member_threshold，与品项板同源）
+   *   - 其余四个下界 = SPEND_BUCKET_FLOORS（admin lib/data-center/spend-buckets.ts；staff mgmt-traffic.js 同值独立副本）
+   * 守护方式：两端分桶投影**整段逐字快照**（占位插值原文），+ 门槛/常量来源锁 + 两端常量值等值 +
+   * 常量与会员等级档位同数（determineMemberLevel）。SQL 里不得再出现写死的 1990。
+   * 行为侧（改配置值后两板块同步变化）见 member-threshold-sync.test.ts 与 staff mgmt-traffic.test.js。
+   */
+  describe('消费分桶档位来源（#292：门槛读配置 + 固定档位单源）', () => {
+    const between = (text: string, from: string, to: string): string => {
+      const a = text.indexOf(from)
+      const b = text.indexOf(to, a)
+      return a >= 0 && b > a ? text.slice(a, b).trim() : ''
     }
 
-    /**
-     * 分桶区间成对锁死。两端都必须有 —— GLM r4 指出 staff 此前只有 `toContain` 弱断言，
-     * 把 `< 60000` 改成 `< 50000` 时 `'60000'` 仍被下一桶的 `>= 60000` 满足 → 全绿。
-     */
-    const PAIRS: Array<[string, RegExp]> = [
-      ['[1990, 10000)', /spend\s*>=\s*1990\s+AND\s+spend\s*<\s*10000/g],
-      ['[10000, 30000)', /spend\s*>=\s*10000\s+AND\s+spend\s*<\s*30000/g],
-      ['[30000, 60000)', /spend\s*>=\s*30000\s+AND\s+spend\s*<\s*60000/g],
-      ['[60000, 100000)', /spend\s*>=\s*60000\s+AND\s+spend\s*<\s*100000/g],
-      ['[100000, ∞)', /spend\s*>=\s*100000/g],
-      ['(-∞, 1990)', /spend\s*<\s*1990/g],
-    ]
+    const ADMIN_BUCKETS =
+      'COUNT(*) FILTER (WHERE spend < ${threshold}) AS bucket_d, ' +
+      'COUNT(*) FILTER (WHERE spend >= ${threshold} AND spend < ${floors.star}) AS bucket_c, ' +
+      'COUNT(*) FILTER (WHERE spend >= ${floors.star} AND spend < ${floors.pink}) AS bucket_b, ' +
+      'COUNT(*) FILTER (WHERE spend >= ${floors.pink} AND spend < ${floors.gold}) AS bucket_a, ' +
+      'COUNT(*) FILTER (WHERE spend >= ${floors.gold} AND spend < ${floors.black}) AS bucket_v, ' +
+      'COUNT(*) FILTER (WHERE spend >= ${floors.black}) AS bucket_vic, ' +
+      'COUNT(*) FILTER (WHERE spend >= ${threshold}) AS operated_total,'
 
-    /**
-     * ⚠ 必须按**出现次数**断言，不能只判「存在」：
-     * staff 每个区间写两遍（`bucketN_count` 的 `COUNT(*) FILTER` + `bucketN_spend` 的
-     * `SUM(spend) FILTER`），只改其中一处时「存在」断言仍绿 —— 实测确认过这条漏网。
-     * admin 每个区间只写一遍。
-     */
-    for (const [side, getCode, times] of [
-      ['admin', () => adminSql, 1],
-      ['staff', () => staffSql, 2],
-    ] as Array<[string, () => string, number]>) {
-      it(`${side} 分桶区间为左闭右开（按出现次数锁死，防单处漂移）`, () => {
-        for (const [label, re] of PAIRS) {
-          const hits = getCode().match(re) ?? []
-          expect(
-            hits.length,
-            `${side} 的分桶区间 ${label} 出现 ${hits.length} 次，期望 ${times} 次` +
-              `（改了其中一处上/下界？${side === 'staff' ? 'count 与 spend 两处必须同改' : ''}）`,
-          ).toBe(times)
-        }
-      })
+    const STAFF_BUCKETS =
+      'COUNT(*) FILTER (WHERE spend < ${th}) AS bucket1_count, ' +
+      'COALESCE(SUM(spend) FILTER (WHERE spend < ${th}), 0) AS bucket1_spend, ' +
+      'COUNT(*) FILTER (WHERE spend >= ${th} AND spend < ${f.star}) AS bucket2_count, ' +
+      'COALESCE(SUM(spend) FILTER (WHERE spend >= ${th} AND spend < ${f.star}), 0) AS bucket2_spend, ' +
+      'COUNT(*) FILTER (WHERE spend >= ${f.star} AND spend < ${f.pink}) AS bucket3_count, ' +
+      'COALESCE(SUM(spend) FILTER (WHERE spend >= ${f.star} AND spend < ${f.pink}), 0) AS bucket3_spend, ' +
+      'COUNT(*) FILTER (WHERE spend >= ${f.pink} AND spend < ${f.gold}) AS bucket4_count, ' +
+      'COALESCE(SUM(spend) FILTER (WHERE spend >= ${f.pink} AND spend < ${f.gold}), 0) AS bucket4_spend, ' +
+      'COUNT(*) FILTER (WHERE spend >= ${f.gold} AND spend < ${f.black}) AS bucket5_count, ' +
+      'COALESCE(SUM(spend) FILTER (WHERE spend >= ${f.gold} AND spend < ${f.black}), 0) AS bucket5_spend, ' +
+      'COUNT(*) FILTER (WHERE spend >= ${f.black}) AS bucket6_count, ' +
+      'COALESCE(SUM(spend) FILTER (WHERE spend >= ${f.black}), 0) AS bucket6_spend,'
+
+    const adminBuckets = (src: string) =>
+      between(
+        sqlInFunction(src, ADMIN_CUSTOMER, 'queryOpsBreakdown'),
+        'COUNT(*) FILTER (WHERE spend <',
+        'COALESCE(SUM(spend), 0) AS member_spend_total',
+      )
+    const staffBuckets = (src: string) =>
+      between(
+        sqlInFunction(src, STAFF_MGMT_TRAFFIC, 'queryMemberOps'),
+        'COUNT(*) FILTER (WHERE spend <',
+        'COALESCE(SUM(spend), 0) AS total_spend',
+      )
+    /** 剥 JS 注释 + 归一空白后，切出某个函数声明到下一个顶层 function 之间的源码 */
+    const fnCode = (src: string, head: string): string => {
+      const code = normalize(stripComments(src))
+      const a = code.indexOf(head)
+      const b = code.indexOf(' function ', a + head.length)
+      return a >= 0 ? code.slice(a, b > a ? b : undefined) : ''
     }
 
-    /**
-     * 「会员经营人数」（spend >= 1990 去重人数）的门槛必须与分桶同值。
-     * 它落在 GROUP BY **之后**的外层投影里，不在块级快照射程内（GLM r4 P3-2），
-     * 故单独锁一条；否则把 `>= 1990` 改成 `>= 199` 时，分桶断言仍由明细查询满足 → 全绿。
-     *
-     * ⚠ **仅 admin 有这条**：staff 的 `queryMemberOps` 只返回 6 个桶的 count/spend
-     * （`bucket1_count` … `bucket6_count`），不产出「经营人数」聚合，由调用方按桶汇总。
-     * 这是两端有意的产出差异，不是漏改 —— 两端的**分桶阈值**仍由上面的成对 regex 共同锁死。
-     */
-    it('admin「经营人数」门槛为 spend >= 1990（staff 无此聚合，见注释）', () => {
-      // ⚠ 必须逐个 alias 锁：admin 有两处（KPI 的 `AS v` + 明细的 `AS operated_total`），
-      // 只判「存在」时改掉其中一处，另一处仍满足正则 → 全绿（实测确认过这条漏网）。
-      for (const alias of ['v', 'operated_total']) {
-        expect(
-          adminSql,
-          `admin 的经营人数门槛（AS ${alias}）不是 FILTER (WHERE spend >= 1990)`,
-        ).toMatch(new RegExp(`FILTER\\s*\\(\\s*WHERE\\s+spend\\s*>=\\s*1990\\s*\\)\\s+AS\\s+${alias}(?![A-Za-z0-9_])`))
+    it('admin 明细分桶投影整段快照（门槛 + SPEND_BUCKET_FLOORS）', () => {
+      expect(adminBuckets(adminSrc)).toBe(ADMIN_BUCKETS)
+    })
+
+    it('admin 会员经营人数 KPI = spend >= 门槛（外层投影整段，到模板结尾）', () => {
+      const t = sqlInFunction(adminSrc, ADMIN_CUSTOMER, 'queryOperatedMembers')
+      const at = t.lastIndexOf(') SELECT ')
+      expect(at).toBeGreaterThan(0)
+      expect(t.slice(at + 2)).toBe('SELECT COUNT(*) FILTER (WHERE spend >= ${threshold}) AS v FROM member_spend')
+    })
+
+    it('staff queryMemberOps 分桶投影整段快照（占位 th + 本地 SPEND_BUCKET_FLOORS）', () => {
+      expect(staffBuckets(staffSrc)).toBe(STAFF_BUCKETS)
+    })
+
+    it('门槛来源：两端都走 getMemberThreshold()，且真正传进了查询', () => {
+      expect(adminCode).toContain("import { getMemberThreshold } from '@/lib/member-threshold'")
+      expect(adminCode).toContain("import { SPEND_BUCKET_FLOORS } from '@/lib/data-center/spend-buckets'")
+      expect(adminCode.match(/const threshold = await getMemberThreshold\(\)/g)).toHaveLength(1)
+      expect(adminCode).toContain('queryOperatedMembers(session, scope, r, threshold)')
+      expect(adminCode).toContain("queryOpsBreakdown(session, scope, cur, 'market', threshold)")
+      expect(adminCode).toContain("queryOpsBreakdown(session, scope, cur, 'store', threshold)")
+      expect(fnCode(adminSrc, 'async function queryOpsBreakdown(')).toMatch(/const floors = SPEND_BUCKET_FLOORS(?![\w$])/)
+
+      const staffCode = normalize(stripComments(staffSrc))
+      expect(staffCode).toContain("const { getMemberThreshold } = require('../utils/config')")
+      const ops = fnCode(staffSrc, 'async function queryMemberOps(')
+      expect(ops).toContain('const threshold = await getMemberThreshold()')
+      expect(ops).toContain("const th = '$' + (sc.params.length + 1)")
+      expect(ops).toMatch(/const f = SPEND_BUCKET_FLOORS(?![\w$])/)
+      expect(ops).toContain('[...sc.params, threshold],')
+    })
+
+    it('两端固定档位同值，且与会员等级档位同数（星钻/粉钻/金钻/黑钻下界）', () => {
+      expect({ ...SPEND_BUCKET_FLOORS }).toEqual({ star: 10000, pink: 30000, gold: 60000, black: 100000 })
+      const staffCode = normalize(stripComments(staffSrc))
+      const m = staffCode.match(/const SPEND_BUCKET_FLOORS = Object\.freeze\(\{([^}]*)\}\)/g)
+      expect(m).toHaveLength(1)
+      expect(m![0]).toBe(
+        'const SPEND_BUCKET_FLOORS = Object.freeze({ ' +
+          `star: ${SPEND_BUCKET_FLOORS.star}, pink: ${SPEND_BUCKET_FLOORS.pink}, ` +
+          `gold: ${SPEND_BUCKET_FLOORS.gold}, black: ${SPEND_BUCKET_FLOORS.black}, })`,
+      )
+      const huge = 1e9 // 门槛取极大，只看固定档位
+      for (const [k, level] of [
+        ['star', '星钻'],
+        ['pink', '粉钻'],
+        ['gold', '金钻'],
+        ['black', '黑钻'],
+      ] as const) {
+        expect(determineMemberLevel(SPEND_BUCKET_FLOORS[k], huge)).toBe(level)
+        expect(determineMemberLevel(SPEND_BUCKET_FLOORS[k] - 0.01, huge)).not.toBe(level)
       }
-      expect(
-        staffSql,
-        'staff 侧出现了经营人数聚合 —— 若这是有意新增，请同步本用例与两端出数对比',
-      ).not.toMatch(/FILTER\s*\(\s*WHERE\s+spend\s*>=\s*1990\s*\)/)
+    })
+
+    it('两端 SQL 不得再写死门槛 1990', () => {
+      expect(adminSql).not.toMatch(/(?<!\d)1990(?!\d)/)
+      expect(sqlInFunction(adminSrc, ADMIN_CUSTOMER, 'queryOperatedMembers')).not.toMatch(/(?<!\d)1990(?!\d)/)
+      expect(sqlInFunction(adminSrc, ADMIN_CUSTOMER, 'queryOpsBreakdown')).not.toMatch(/(?<!\d)1990(?!\d)/)
+      expect(sqlInFunction(staffSrc, STAFF_MGMT_TRAFFIC, 'queryMemberOps')).not.toMatch(/(?<!\d)1990(?!\d)/)
+    })
+
+    it('staff 无「经营人数」聚合（两端有意的产出差异，由调用方按桶汇总）', () => {
+      expect(sqlInFunction(staffSrc, STAFF_MGMT_TRAFFIC, 'queryMemberOps')).not.toMatch(
+        /FILTER\s*\(\s*WHERE\s+spend\s*>=\s*\$\{th\}\s*\)\s+AS/,
+      )
     })
 
     it('admin 不复用 spending_tier 列（区间消费 ≠ lifetime 快照）', () => {
       expect(adminCode).not.toMatch(/spending_tier/)
+    })
+
+    it('反向验证：改档位 / 写回 1990 / 门槛不传入都会红', () => {
+      const mut = (src: string, a: string, b: string) => {
+        expect(src).toContain(a)
+        return src.replace(a, b)
+      }
+      expect(adminBuckets(mut(adminSrc, 'spend < ${threshold}) AS bucket_d', 'spend < 1990) AS bucket_d'))).not.toBe(
+        ADMIN_BUCKETS,
+      )
+      expect(
+        adminBuckets(mut(adminSrc, 'spend >= ${floors.star} AND spend < ${floors.pink}', 'spend >= ${floors.star} AND spend < 25000')),
+      ).not.toBe(ADMIN_BUCKETS)
+      // staff 只改 count 不改 spend（两处必须同改）
+      expect(
+        staffBuckets(mut(staffSrc, 'COUNT(*) FILTER (WHERE spend >= ${f.gold} AND spend < ${f.black})', 'COUNT(*) FILTER (WHERE spend >= ${f.gold} AND spend < 90000)')),
+      ).not.toBe(STAFF_BUCKETS)
+      // 用 SQL 注释把原文补回去
+      expect(
+        staffBuckets(mut(staffSrc, 'FILTER (WHERE spend < ${th}) AS bucket1_count', 'FILTER (WHERE spend < 1990) AS bucket1_count -- FILTER (WHERE spend < ${th}) AS bucket1_count')),
+      ).not.toBe(STAFF_BUCKETS)
+      // staff 取了门槛却没传进参数
+      expect(fnCode(mut(staffSrc, '[...sc.params, threshold],', 'sc.params,'), 'async function queryMemberOps(')).not.toContain(
+        '[...sc.params, threshold],',
+      )
     })
   })
 
@@ -1306,6 +1408,222 @@ describe('客量板块两端口径一致性守护', () => {
   describe('维护者提醒 — 漂移时双端对照', () => {
     it('admin 注释提及移植源 mgmt-traffic', () => {
       expect(adminSrc).toMatch(/mgmt-traffic/i)
+    })
+  })
+  /**
+   * 8. 一次/二次客活 = 到店天数（#298）—— **跨定义**一致性守护
+   *
+   * 同名概念「一次客活 / 二次客活」在仓里有三处运行时定义，2026-09 审计发现前两处按服务单行数、
+   * 后一处按到店天数，同一个 admin 里差 62 人（审计区间 09-01~09-22；到 09-24 为 63 人）：
+   *   ① admin 数据中心 KPI（queryActive）与明细（queryRegActiveBreakdown）→ 共用 visitDaysSql
+   *   ② staffApi mgmt-traffic（queryActiveOnce / queryActiveTwice）→ 独立副本
+   *   ③ cron refresh-monthly-activity（顾客列表「月度客活」筛选的数据源）
+   * 三方的预期文本都由下面同一组口径常量拼出来：改任何一方的去重列 / 过滤条件 / 档位阈值，
+   * 要么它自己的整段快照红，要么（改了常量）其余两方一起红 —— 不存在只改一侧还全绿的路径。
+   * （db/scripts/calc-monthly-activity.js 与一次性 repair 脚本同为按天，但已退役/一次性，不在守护内。）
+   *
+   * 整段逐字等值，不做「含某字面量」匹配（见 EXPECTED_SPE_BLOCKS 上方四轮评审记录）。
+   *   - visitDaysSql 按 **Drizzle 实际渲染出的 SQL** 比对，连同日期轴白名单的取值一起锁住；
+   *   - customer.ts 用的 visitDaysSql 必须就是上面被渲染的那一个（import 来源 + 无本地同名替身）；
+   *   - KPI / staff 按**整个函数源码**比对（含 scope 列名实参与 once/twice 映射，只锁模板串会漏）。
+   */
+  describe('一次/二次客活 = 到店天数，(顾客, service_date) 去重（#298，跨定义）', () => {
+    const VISIT_DAY_COL = 'so.service_date'
+    const VISIT_FILTER = "so.status = '已完成' AND so.client_user_id IS NOT NULL"
+    const RETAINED = "c.customer_status IN ('保有会员-稳定', '保有会员-有效')"
+
+    const staffExpected = (fnName: string, daysClause: string): string =>
+      `async function ${fnName}(scopeType, scopeId, period) { ` +
+      "const ssc = buildSaleScope(scopeType, scopeId, 'so', 1) " +
+      "const csc = buildClientScope(scopeType, scopeId, 'c', 1 + ssc.params.length) " +
+      'const rows = await pg.query( ' +
+      `\`WITH visit_count AS ( SELECT so.client_user_id, COUNT(DISTINCT ${VISIT_DAY_COL}) AS days ` +
+      `FROM service_orders so WHERE \${ssc.sql} AND ${VISIT_FILTER} ` +
+      `AND ${VISIT_DAY_COL} BETWEEN \${startDateExpr(period)} AND \${endDateExpr(period)} ` +
+      'GROUP BY so.client_user_id ) SELECT COUNT(*) AS v FROM visit_count vc ' +
+      'JOIN client_wechat_users c ON c.user_id = vc.client_user_id ' +
+      `WHERE \${csc.sql} AND ${RETAINED} AND ${daysClause}\`, ` +
+      '[...ssc.params, ...csc.params], ) return Number(rows[0]?.v || 0) }'
+
+    const adminKpiExpected =
+      'async function queryActive( session: AuthSession, scope: DataCenterScope, range: ResolvedRange, ' +
+      "mode: 'once' | 'twice', ): Promise<number> { " +
+      "const ssc = scopeFilterSql(session, scope, 'so.store_id') " +
+      "const csc = scopeFilterSql(session, scope, 'c.bound_store_id') " +
+      "const daysClause = mode === 'once' ? sql`vc.days = 1` : sql`vc.days >= 2` " +
+      'const rows = await db.execute(sql` ' +
+      "WITH visit_days AS (${visitDaysSql({ axis: 'service_date', scope: ssc, range })}), " +
+      'visit_count AS ( SELECT vd.client_user_id, COUNT(DISTINCT vd.visit_date) AS days ' +
+      'FROM visit_days vd GROUP BY vd.client_user_id ) ' +
+      'SELECT COUNT(*) AS v FROM visit_count vc JOIN client_wechat_users c ON c.user_id = vc.client_user_id ' +
+      `WHERE \${csc} AND ${RETAINED} AND \${daysClause} \`) return num(first(rows).v) }`
+
+    const breakdownActiveExpected =
+      "visit_days AS (${visitDaysSql({ axis: 'service_date', scope: serviceScope, range })}), " +
+      'visit_count AS ( SELECT vd.client_user_id, c.bound_store_id AS store_id, ' +
+      'COUNT(DISTINCT vd.visit_date) AS days, c.customer_status AS cstatus ' +
+      'FROM visit_days vd JOIN client_wechat_users c ON c.user_id = vd.client_user_id ' +
+      'WHERE ${customerScope} AND c.bound_store_id IS NOT NULL ' +
+      'GROUP BY vd.client_user_id, c.bound_store_id, c.customer_status ), ' +
+      'active AS ( SELECT store_id, COUNT(*) FILTER (WHERE days = 1) AS visit_once, ' +
+      'COUNT(*) FILTER (WHERE days >= 2) AS visit_twice FROM visit_count ' +
+      `WHERE cstatus IN ('保有会员-稳定', '保有会员-有效') GROUP BY store_id ), `
+
+    const cronActivity = (src: string): string => normalize(stripSqlComments(src))
+    const breakdownActive = (src: string): string => {
+      const bd = sqlInFunction(src, ADMIN_CUSTOMER, 'queryRegActiveBreakdown')
+      const from = bd.indexOf('visit_days AS (')
+      const to = bd.indexOf('status_agg AS (')
+      return from > 0 && to > from ? bd.slice(from, to) : ''
+    }
+
+    /** customer.ts 里 visitDaysSql 标识符的全部出现：来源 import + 声明 + 引用 */
+    const visitDaysSqlUsage = (src: string) => {
+      const sf = ts.createSourceFile(ADMIN_CUSTOMER, src, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
+      const imports: string[] = []
+      let localDecls = 0
+      let refs = 0
+      const visit = (n: ts.Node): void => {
+        if (ts.isImportDeclaration(n)) {
+          const named = n.importClause?.namedBindings
+          if (named && ts.isNamedImports(named) && named.elements.some((e) => e.name.text === 'visitDaysSql')) {
+            imports.push(normalize(n.getText(sf)))
+          }
+          return
+        }
+        if (
+          (ts.isVariableDeclaration(n) || ts.isFunctionDeclaration(n) || ts.isParameter(n) || ts.isClassDeclaration(n)) &&
+          n.name &&
+          ts.isIdentifier(n.name) &&
+          n.name.text === 'visitDaysSql'
+        ) {
+          localDecls++
+        }
+        if (ts.isIdentifier(n) && n.text === 'visitDaysSql') refs++
+        ts.forEachChild(n, visit)
+      }
+      ts.forEachChild(sf, visit)
+      return { imports, localDecls, refs }
+    }
+
+    it('admin visitDaysSql 渲染结果：DISTINCT (client_user_id, service_date) + 已完成 + 挂顾客', () => {
+      const q = new PgDialect().sqlToQuery(
+        visitDaysSql({ axis: 'service_date', scope: sql`TRUE`, range: { start: '2026-09-01', end: '2026-09-24' } }),
+      )
+      expect(normalize(q.sql)).toBe(
+        `SELECT DISTINCT so.client_user_id, ${VISIT_DAY_COL} AS visit_date FROM service_orders so ` +
+          `WHERE TRUE AND ${VISIT_FILTER} AND ${VISIT_DAY_COL} BETWEEN $1 AND $2`,
+      )
+      expect(q.params).toEqual(['2026-09-01', '2026-09-24'])
+    })
+
+    it('visitDaysSql 拒绝白名单外的日期轴（含原型链键；sql.raw 只吃闭集）', () => {
+      for (const axis of ['completed_at', 'toString', 'constructor', '__proto__']) {
+        expect(() =>
+          visitDaysSql({ axis: axis as never, scope: sql`TRUE`, range: { start: '2026-09-01', end: '2026-09-24' } }),
+        ).toThrow(/未知日期轴/)
+      }
+    })
+
+    it('customer.ts 用的 visitDaysSql 就是被渲染校验的那一个（import 来源锁定，无本地替身）', () => {
+      const u = visitDaysSqlUsage(adminSrc)
+      expect(u.imports).toEqual(["import { visitDaysSql } from '@/lib/data-center/visit-days'"])
+      expect(u.localDecls).toBe(0)
+      // 引用恰为 KPI 1 + 明细 1（import 节点不计入）
+      expect(u.refs).toBe(2)
+    })
+
+    it('admin KPI queryActive 整个函数快照（scope 列名 + once/twice 映射 + 经 visitDaysSql 按天数分档）', () => {
+      expect(fnSource(adminSrc, ADMIN_CUSTOMER, 'queryActive')).toBe(adminKpiExpected)
+    })
+
+    it('admin 明细 queryRegActiveBreakdown：客活段整段快照 + scope 生产者 + 外层汇总不对调', () => {
+      expect(breakdownActive(adminSrc)).toBe(breakdownActiveExpected)
+      const fn = fnSource(adminSrc, ADMIN_CUSTOMER, 'queryRegActiveBreakdown')
+      expect(fn).toContain("const serviceScope = scopeFilterSql(session, scope, 'so.store_id')")
+      expect(fn).toContain("const customerScope = scopeFilterSql(session, scope, 'c.bound_store_id')")
+      expect(fn.match(/const serviceScope = /g)).toHaveLength(1)
+      expect(fn.match(/const customerScope = /g)).toHaveLength(1)
+      // 外层汇总：两列各恰好出现一次且一一对应（对调 → 红）
+      const sqlText = sqlInFunction(adminSrc, ADMIN_CUSTOMER, 'queryRegActiveBreakdown')
+      expect(sqlText).toContain(
+        'COALESCE(SUM(active.visit_once), 0) AS visit_once, COALESCE(SUM(active.visit_twice), 0) AS visit_twice,',
+      )
+      expect(sqlText.match(/active\.visit_once/g)).toHaveLength(1)
+      expect(sqlText.match(/active\.visit_twice/g)).toHaveLength(1)
+      // 结果映射（行为侧另见 customer.test.ts 的 visitOnce=3 / visitTwice=2 断言）
+      expect(fn).toContain('visitOnce: num(r.visit_once), visitTwice: num(r.visit_twice),')
+    })
+
+    it('staff queryActiveOnce / queryActiveTwice 整个函数快照（含 scope 生产者）', () => {
+      expect(fnSource(staffSrc, STAFF_MGMT_TRAFFIC, 'queryActiveOnce')).toBe(
+        staffExpected('queryActiveOnce', 'vc.days = 1'),
+      )
+      expect(fnSource(staffSrc, STAFF_MGMT_TRAFFIC, 'queryActiveTwice')).toBe(
+        staffExpected('queryActiveTwice', 'vc.days >= 2'),
+      )
+    })
+
+    it('cron monthly_activity 段 2 整段快照（顾客列表「月度客活」筛选的数据源）', () => {
+      expect(cronActivity(UPDATE_MONTHLY_ACTIVITY_SQL)).toBe(
+        `WITH visit_days AS ( SELECT so.client_user_id, COUNT(DISTINCT ${VISIT_DAY_COL}) AS days ` +
+          `FROM service_orders so WHERE ${VISIT_FILTER} ` +
+          `AND ${VISIT_DAY_COL} >= date_trunc('month', CURRENT_DATE)::date ` +
+          `AND ${VISIT_DAY_COL} < (date_trunc('month', CURRENT_DATE) + INTERVAL '1 month')::date ` +
+          'GROUP BY so.client_user_id ) UPDATE client_wechat_users u SET monthly_activity = ' +
+          "(CASE WHEN vd.days >= 2 THEN '二次客活' ELSE '一次客活' END)::monthly_activity, updated_at = NOW() " +
+          'FROM visit_days vd WHERE u.user_id = vd.client_user_id',
+      )
+    })
+
+    it('反向验证：各侧回退 / 对调 / 替身都会让对应快照红', () => {
+      const mutate = (src: string, from: string, to: string): string => {
+        expect(src).toContain(from)
+        return src.replace(from, to)
+      }
+      const onlyIn = (src: string, fnHead: string, from: string, to: string): string => {
+        const at = src.indexOf(fnHead)
+        expect(at).toBeGreaterThanOrEqual(0)
+        return src.slice(0, at) + mutate(src.slice(at), from, to)
+      }
+      // staff：只改 once（孪生函数 twice 保持原样 → 按函数名定位）
+      const staffMut = onlyIn(staffSrc, 'async function queryActiveOnce', 'COUNT(DISTINCT so.service_date) AS days', 'COUNT(*) AS days')
+      expect(fnSource(staffMut, STAFF_MGMT_TRAFFIC, 'queryActiveOnce')).not.toBe(staffExpected('queryActiveOnce', 'vc.days = 1'))
+      expect(fnSource(staffMut, STAFF_MGMT_TRAFFIC, 'queryActiveTwice')).toBe(staffExpected('queryActiveTwice', 'vc.days >= 2'))
+      // staff：改完用 SQL 注释把字面量补回去
+      const staffComment = onlyIn(
+        staffSrc,
+        'async function queryActiveOnce',
+        'COUNT(DISTINCT so.service_date) AS days',
+        'COUNT(*) AS days -- COUNT(DISTINCT so.service_date) AS days',
+      )
+      expect(fnSource(staffComment, STAFF_MGMT_TRAFFIC, 'queryActiveOnce')).not.toBe(staffExpected('queryActiveOnce', 'vc.days = 1'))
+      // staff：scope 生产者列别名被改
+      const staffScope = onlyIn(staffSrc, 'async function queryActiveTwice', "buildSaleScope(scopeType, scopeId, 'so', 1)", "buildSaleScope(scopeType, scopeId, 'c', 1)")
+      expect(fnSource(staffScope, STAFF_MGMT_TRAFFIC, 'queryActiveTwice')).not.toBe(staffExpected('queryActiveTwice', 'vc.days >= 2'))
+      // cron 改成按行数
+      const cronMut = mutate(UPDATE_MONTHLY_ACTIVITY_SQL, 'COUNT(DISTINCT so.service_date)', 'COUNT(so.service_date)')
+      expect(cronActivity(cronMut)).not.toBe(cronActivity(UPDATE_MONTHLY_ACTIVITY_SQL))
+      // admin KPI：once/twice 映射对调
+      const kpiSwap = mutate(adminSrc, "mode === 'once' ? sql`vc.days = 1`", "mode !== 'once' ? sql`vc.days = 1`")
+      expect(fnSource(kpiSwap, ADMIN_CUSTOMER, 'queryActive')).not.toBe(adminKpiExpected)
+      // admin KPI：scope 列名被改
+      const kpiScope = onlyIn(adminSrc, 'async function queryActive(', "scopeFilterSql(session, scope, 'so.store_id')", "scopeFilterSql(session, scope, 'c.bound_store_id')")
+      expect(fnSource(kpiScope, ADMIN_CUSTOMER, 'queryActive')).not.toBe(adminKpiExpected)
+      // admin 明细：绕开 visitDaysSql 直接数行
+      const bdMut = mutate(adminSrc, 'COUNT(DISTINCT vd.visit_date) AS days,', 'COUNT(*) AS days,')
+      expect(breakdownActive(bdMut)).not.toBe(breakdownActiveExpected)
+      // admin：换 import 来源 / 本地同名替身
+      const importSwap = mutate(adminSrc, "from '@/lib/data-center/visit-days'", "from '@/lib/data-center/visit-days-legacy'")
+      expect(visitDaysSqlUsage(importSwap).imports).not.toEqual(["import { visitDaysSql } from '@/lib/data-center/visit-days'"])
+      const localStub = mutate(
+        adminSrc,
+        "import { visitDaysSql } from '@/lib/data-center/visit-days'\n",
+        'const visitDaysSql = (o: unknown) => sql`${o}`\n',
+      )
+      const u = visitDaysSqlUsage(localStub)
+      expect(u.imports).toEqual([])
+      expect(u.localDecls).toBe(1)
     })
   })
 })

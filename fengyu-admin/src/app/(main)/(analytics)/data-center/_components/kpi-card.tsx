@@ -69,11 +69,14 @@ export function KpiCard({
   cell,
   hint,
   baseRanges,
+  momLabel = "环比",
 }: {
   label: string
   cell: KpiCell
   hint?: string
   baseRanges?: BasePeriodRanges
+  /** 环比徽章的文案（经营明细报表写「较上期」） */
+  momLabel?: string
 }) {
   return (
     <Card className="p-4 flex flex-col gap-1">
@@ -82,7 +85,7 @@ export function KpiCard({
       {(cell.mom !== undefined || cell.yoy !== undefined) && (
         <div className="flex items-center gap-3">
           {cell.mom !== undefined && (
-            <DeltaBadge label="环比" display={cell.mom} baseRange={baseRanges?.previous ?? null} />
+            <DeltaBadge label={momLabel} display={cell.mom} baseRange={baseRanges?.previous ?? null} />
           )}
           {cell.yoy !== undefined && (
             <DeltaBadge label="同比" display={cell.yoy} baseRange={baseRanges?.lastYear ?? null} />

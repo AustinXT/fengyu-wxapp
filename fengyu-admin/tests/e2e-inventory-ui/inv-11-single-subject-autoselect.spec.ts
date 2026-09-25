@@ -124,8 +124,7 @@ test.describe('INV-11 候选唯一即自动选中', () => {
     expect(await expectNoRedundantChoice(page, '供应链库存主体')).toBe('fixed')
     await expectFixedTo(page, '供应链库存主体', INVT_ACCOUNTS.SC.scopeId)
 
-    await openOperation(page, 'supply-chain', '品项公司发货')
-    await expectFixedTo(page, '发货总部', INVT_ACCOUNTS.SC.scopeId)
+    // 品项公司发货表单在 #336a 暂为占位（无「发货总部」字段），#336b 上线新表单时恢复这条断言。
 
     await openOperation(page, 'supply-chain', '供应链库存转换')
     await expectFixedTo(page, '转换库存主体', INVT_ACCOUNTS.SC.scopeId)

@@ -181,8 +181,11 @@
 | `amount_tier_min` | numeric(10,2) | 金额阶段下限（含） |
 | `amount_tier_max` | numeric(10,2) \| null | 金额阶段上限（不含；null 表示无上限） |
 | `commission_rate` | numeric(5,4) | 提成比例（如 0.08 = 8%） |
+| `price_threshold` | numeric(10,2) \| null | 划卡单价阈值（#379，2026-09-18 会议拍板）：仅服务单的自销自耗 / 他销自耗行可配，默认 100、按市场逐行改；null = 不启用 |
 
 > UNIQUE 约束：`(org_id, order_type, role_type, sales_category, amount_tier_min)`
+>
+> **划卡单价阈值（#379）**：服务提成的消耗部分 = max(单次实价, 阈值) × 次数 × 分配比例 × 提成比例；赠送（单价 0）同样按阈值计；手工费照常叠加；金额阶段仍按真实「单价 × 次数」匹配；阈值作用于单价，多人按比例拆分时合计等于单人保底额。只对上线后计算/保存的提成生效，不回溯已落库提成。
 
 ### 2.8 sale_orders（订单主表）
 

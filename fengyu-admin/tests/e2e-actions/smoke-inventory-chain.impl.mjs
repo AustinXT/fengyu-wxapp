@@ -8,9 +8,9 @@
 import path from 'node:path'
 import { closePool, pgQuery } from './setup.mjs'
 import {
-  HQ_ORG, MKA_ORG, MKB_ORG, STA1_ID, STA1_ORG,
-  SKU_SUPPLY, SUPPLIER_ID, PROMO_ID,
-  cleanupInventoryFixture, ensureInventoryFixture,
+  HQ_ORG, MKA_ORG, MKB_ORG, STA1_ID, STA1_ORG, STA2_ORG,
+  SKU_SUPPLY, SKU_SELF, SUPPLIER_ID, PROMO_ID,
+  cleanupInventoryFixture, ensureInventoryFixture, insertSeedLot, lotQuantity,
   docHeader, docItems, locationLots,
   marketASession, marketBSession, storeA1Session, storeA2Session, supplyChainSession,
 } from './helpers/inventory-fixtures.mjs'
@@ -301,19 +301,35 @@ try {
     biz.cancelSupplyChainPurchaseOrder({ purchaseOrderId: cgdId, cancellationReason: '测试' }))
 
   // ════ 阶段 5：品项公司发货（§5.2 赠送 / §5.3 无金额）════
-  // #335 过渡期：发货仍以采购行数量封顶（由 #336 改为引用市场报货单），发货批次也不必是
-  // 本采购行入库的那一批 —— 这里沿用总部备货批次，下游库存断言保持不变。
-  await expectThrow('正常发货数量超过采购订单被拒(CONFLICT)', /CONFLICT/, () =>
+  // #336 起发货直接引用市场原始报货单，以报货行未发量封顶，不再经采购订单；
+  // 发货批次沿用总部备货批次，下游库存断言保持不变。
+  await expectThrow('正常发货数量超过报货未发量被拒，报错写明可发上限(#336)', /CONFLICT.*最多可发 6/, () =>
     biz.createItemCompanyShipment({
-      purchaseOrderId: cgdId,
+      marketId: MKA_ORG,
       sourceOrgNodeId: HQ_ORG,
-      items: [{ purchaseOrderItemId: cgdItem.id, lotId: hqLot.id, quantity: 7 }],
+      items: [{ reportItemId: mbhItem.id, lotId: hqLot.id, quantity: 7 }],
+    }))
+  await expectThrow('发往别的市场被拒：报货单不是该收货市场报的(#336)', /INVALID_STATE/, () =>
+    biz.createItemCompanyShipment({
+      marketId: MKB_ORG,
+      sourceOrgNodeId: HQ_ORG,
+      items: [{ reportItemId: mbhItem.id, lotId: hqLot.id, quantity: 1 }],
     }))
   const { id: gfhId } = await biz.createItemCompanyShipment({
-    purchaseOrderId: cgdId,
+    marketId: MKA_ORG,
     sourceOrgNodeId: HQ_ORG,
-    items: [{ purchaseOrderItemId: cgdItem.id, lotId: hqLot.id, quantity: 6, giftQuantity: 2 }],
+    items: [{ reportItemId: mbhItem.id, lotId: hqLot.id, quantity: 6 }],
+    giftItems: [{ reportItemId: mbhItem.id, lotId: hqLot.id, quantity: 2 }],
   })
+  const gfhLinks = await pgQuery(
+    `SELECT from_doc_id, from_item_id, relation_type, quantity FROM inventory_doc_links
+      WHERE to_doc_id = $1 ORDER BY relation_type`, [gfhId])
+  check('发货写「市场报货 → 品项公司发货」直连血缘，不再挂采购订单(#336)',
+    gfhLinks.length === 2
+      && gfhLinks.every((link) => link.from_doc_id === mbhId && Number(link.from_item_id) === Number(mbhItem.id))
+      && gfhLinks.some((link) => link.relation_type === '市场报货发货' && num(link.quantity) === 6)
+      && gfhLinks.some((link) => link.relation_type === '市场报货赠送发货' && num(link.quantity) === 2),
+    JSON.stringify(gfhLinks))
   check('发货不回写采购行 fulfilled（只记入库量）(#335)',
     num((await docItems(cgdId))[0]?.fulfilled_quantity) === 6, `${(await docItems(cgdId))[0]?.fulfilled_quantity}`)
   const gfhHead = await docHeader(gfhId)
@@ -323,6 +339,8 @@ try {
   check('品项公司发货：正常+赠送两行且总量可大于报货(§5.2)',
     gfhItems.length === 2 && num(gfhNormal?.quantity) === 6 && num(gfhGift?.quantity) === 2,
     `items=${gfhItems.length}`)
+  check('发货正常行 request_quantity 存报货数量(#336)',
+    num(gfhNormal?.request_quantity) === num(mbhItem.quantity), `${gfhNormal?.request_quantity}`)
   check('品项公司发货：正常行沿用来源批号，赠送行按「发货单号-行号」生成独立批号(#345)',
     gfhNormal?.batch_no === 'B100' && gfhGift?.batch_no === expectedLineBatchNo(gfhId, gfhItems, gfhGift),
     JSON.stringify({ normal: gfhNormal?.batch_no, gift: gfhGift?.batch_no }))
@@ -366,13 +384,21 @@ try {
   const mkaLots = await locationLots(MKA_ORG, SKU_SUPPLY)
   const mkaNormalLot = mkaLots.find((lot) => !lot.is_gift)
   const mkaGiftLot = mkaLots.find((lot) => lot.is_gift)
-  check('市场批次价格快照（真实单价 950 / 门店标准价 1200 / 成本 800）',
+  check('市场批次价格快照（真实单价 950 取自报货行 / 门店标准价 1200 / 成本 800 取自总部批次）',
     num(mkaNormalLot?.quantity_on_hand) === 6
+      && num(mkaNormalLot?.market_actual_unit_price) === num(mbhItem.market_actual_unit_price)
       && num(mkaNormalLot?.market_actual_unit_price) === 950
       && num(mkaNormalLot?.store_standard_unit_price) === 1200
-      && num(mkaNormalLot?.supply_chain_unit_cost) === 800
+      && num(mkaNormalLot?.supply_chain_unit_cost) === num(hqLot.supply_chain_unit_cost)
       && num(mkaGiftLot?.quantity_on_hand) === 2,
     JSON.stringify({ normal: mkaNormalLot?.quantity_on_hand, gift: mkaGiftLot?.quantity_on_hand }))
+  check('赠送批次两类价格都记 0（市场价三列 + 供应链成本）(#336 拍板)',
+    num(mkaGiftLot?.market_standard_unit_price) === 0 && num(mkaGiftLot?.market_unit_discount) === 0
+      && num(mkaGiftLot?.market_actual_unit_price) === 0 && num(mkaGiftLot?.supply_chain_unit_cost) === 0,
+    JSON.stringify({
+      std: mkaGiftLot?.market_standard_unit_price, disc: mkaGiftLot?.market_unit_discount,
+      act: mkaGiftLot?.market_actual_unit_price, cost: mkaGiftLot?.supply_chain_unit_cost,
+    }))
   // 分院配货的批次下拉按 batch_no 展示：赠送批次与同源正常批次必须能区分
   check('市场收货沿用发货明细批号：赠送批次与正常批次批号不同(#345)',
     mkaNormalLot?.batch_no === 'B100' && mkaGiftLot?.batch_no === expectedLineBatchNo(gfhId, gfhItems, gfhGift),
@@ -582,9 +608,9 @@ try {
   })
   const [cgd2Item] = await docItems(cgd2Id)
   const { id: gfh2Id } = await biz.createItemCompanyShipment({
-    purchaseOrderId: cgd2Id,
+    marketId: MKA_ORG,
     sourceOrgNodeId: HQ_ORG,
-    items: [{ purchaseOrderItemId: cgd2Item.id, lotId: hqLot.id, quantity: 3 }],
+    items: [{ reportItemId: mbh2Item.id, lotId: hqLot.id, quantity: 3 }],
   })
   check('第二笔发货扣减总部库存 92-3=89',
     num((await locationLots(HQ_ORG, SKU_SUPPLY))[0]?.quantity_on_hand) === 89, '')
@@ -599,21 +625,21 @@ try {
   check('撤回申请后发货单转待审批', (await docHeader(gfh2Id))?.status === '待审批', '')
 
   setSession(supplyChainSession())
-  // 发货 3 > 已入库 0：关单会让这 3 件失去采购依据，必须先撤回发货（#335）
-  await expectThrow('市场行发货量超过已入库量时不能关闭采购订单(#335)', /INVALID_STATE/, () =>
-    biz.cancelSupplyChainPurchaseOrder({ purchaseOrderId: cgd2Id, cancellationReason: '测试' }))
+  const mbh2PendingShipped = (await docs.getInventoryCoreDocById(mbh2Id))?.fulfillmentProgress?.items?.[0]?.normalFulfilledQuantity
+  check('撤回待审批期间发货量仍占报货额度（与封顶同口径）(#336)', mbh2PendingShipped === 3, `${mbh2PendingShipped}`)
   await biz.approveItemCompanyShipmentCancellation({ shipmentId: gfh2Id, auditRemark: '同意撤回' })
   const gfh2Head = await docHeader(gfh2Id)
   const [cgd2ItemAfter] = await docItems(cgd2Id)
-  const cgd2Progress = (await docs.getInventoryCoreDocById(cgd2Id))?.fulfillmentProgress
-  check('供应链审批撤回：单据取消 + 总部库存回滚 + 采购行可发量恢复、入库量不动(§6.2/#335)',
+  const mbh2Progress = (await docs.getInventoryCoreDocById(mbh2Id))?.fulfillmentProgress?.items?.[0]
+  check('供应链审批撤回：单据取消 + 总部库存回滚 + 报货行可发量恢复、采购行不动(§6.2/#336)',
     gfh2Head?.status === '已取消'
       && num((await locationLots(HQ_ORG, SKU_SUPPLY))[0]?.quantity_on_hand) === 92
       && num(cgd2ItemAfter?.fulfilled_quantity) === 0
-      && cgd2Progress?.kind === '供应链采购收货' && cgd2Progress.items[0]?.shippedQuantity === 0,
-    `status=${gfh2Head?.status} fulfilled=${cgd2ItemAfter?.fulfilled_quantity} progress=${JSON.stringify(cgd2Progress)}`)
+      && mbh2Progress?.normalFulfilledQuantity === 0,
+    `status=${gfh2Head?.status} fulfilled=${cgd2ItemAfter?.fulfilled_quantity} progress=${JSON.stringify(mbh2Progress)}`)
+  // 发货与采购单脱钩（#336）：关单不再看发货量
   await biz.cancelSupplyChainPurchaseOrder({ purchaseOrderId: cgd2Id, cancellationReason: '撤回后关闭' })
-  check('撤回发货后市场行采购订单可关闭(#335)', (await docHeader(cgd2Id))?.status === '已取消', '')
+  check('市场行采购订单可关闭(#335/#336)', (await docHeader(cgd2Id))?.status === '已取消', '')
   await expectThrow('已关闭的采购订单不能入库(INVALID_STATE)', /INVALID_STATE/, () =>
     biz.receiveSupplyChainPurchaseOrder({
       purchaseOrderId: cgd2Id,
@@ -780,12 +806,6 @@ try {
     items: [{ purchaseOrderItemId: trioPoItem.id, quantity: 1, batchNo: 'TRIO-1' }],
   })
   await biz.cancelSupplyChainPurchaseOrder({ purchaseOrderId: trioPoId, cancellationReason: '供应商短供' })
-  await expectThrow('已关闭的采购订单不能再发货(Q4, INVALID_STATE)', /INVALID_STATE/, () =>
-    biz.createItemCompanyShipment({
-      purchaseOrderId: trioPoId,
-      sourceOrgNodeId: HQ_ORG,
-      items: [{ purchaseOrderItemId: trioPoItem.id, lotId: hqLot.id, quantity: 1 }],
-    }))
   const trioRetained = []
   for (const item of trioReportItems) {
     trioRetained.push((await docs.getInventoryCoreDocById(item.docId))?.fulfillmentProgress?.items?.[0]?.orderedQuantity)
@@ -961,6 +981,396 @@ try {
   check('门店批次：同一批号不会同时出现赠送与正常两种属性(#345)',
     storeLotsAfterFlip.length >= 4 && [...giftFlagsByBatch.values()].every((flags) => flags.size === 1),
     JSON.stringify(storeLotsAfterFlip.map((lot) => [lot.batch_no, lot.is_gift])))
+
+  // ════ 阶段 11：总部现货直接发货（#336）════
+  // 报货 30、批号 A 只有 10：第一张发 10 → 仍待发 20 → 第二张从批号 B 发 20 → 报货单退出待发货。
+  // 全程不建采购订单；市场批次价格取报货行快照、成本取所发总部批次。
+  setSession(supplyChainSession())
+  const directReq = await biz.createItemCompanyReplenishment({
+    supplyChainLocationId: HQ_ORG,
+    items: [{ skuId: SKU_SUPPLY, quantity: 30 }],
+  })
+  const [directReqItem] = await docItems(directReq.id)
+  const { id: directPoId } = await biz.createPurchaseOrder({
+    supplyChainLocationId: HQ_ORG,
+    items: [{ sourceItemId: directReqItem.id, quantity: 30 }],
+  })
+  const [directPoItem] = await docItems(directPoId)
+  await biz.receiveSupplyChainPurchaseOrder({
+    purchaseOrderId: directPoId, supplyChainLocationId: HQ_ORG,
+    items: [{ purchaseOrderItemId: directPoItem.id, quantity: 10, batchNo: 'LOT-A' }],
+  })
+  await biz.receiveSupplyChainPurchaseOrder({
+    purchaseOrderId: directPoId, supplyChainLocationId: HQ_ORG,
+    items: [{ purchaseOrderItemId: directPoItem.id, quantity: 20, batchNo: 'LOT-B' }],
+  })
+  const hqLotsNow = await locationLots(HQ_ORG, SKU_SUPPLY)
+  const lotA = hqLotsNow.find((lot) => lot.batch_no === 'LOT-A')
+  const lotB = hqLotsNow.find((lot) => lot.batch_no === 'LOT-B')
+  // 让两批总部成本与报货行档案价（800）不同，才验得出「成本取所发批次」而不是取报货快照
+  await pgQuery('UPDATE inventory_stock_lots SET supply_chain_unit_cost = 777 WHERE id = $1', [lotA.id])
+  await pgQuery('UPDATE inventory_stock_lots SET supply_chain_unit_cost = 666 WHERE id = $1', [lotB.id])
+
+  setSession(storeA1Session())
+  const { id: directDbhId } = await biz.createStoreReplenishmentRequest({
+    storeId: STA1_ID, marketId: MKA_ORG,
+    items: [{ skuId: SKU_SUPPLY, quantity: 30 }],
+  })
+  const [directDbhItem] = await docItems(directDbhId)
+  setSession(marketASession())
+  const { id: directMbhId } = await biz.createMarketReplenishment({
+    marketId: MKA_ORG, supplyChainLocationId: HQ_ORG,
+    items: [{ skuId: SKU_SUPPLY, sourceRequestItemIds: [directDbhItem.id], purchaseQuantity: 30 }],
+  })
+  const [directMbhItem] = await docItems(directMbhId)
+
+  setSession(supplyChainSession())
+  const engine = await import(A('src', 'lib', 'inventory', 'engine.ts'))
+  // 按单号检索：结果集只剩目标单，「看不到 / 已退出」的断言不会因为翻页截断而恒真
+  const pendingIds = async () => (await engine.listInventoryCoreDocs({
+    docTypes: ['市场报货'], pendingItemScope: 'company-shipment', keyword: directMbhId,
+  })).data.map((row) => row.id)
+  const candidateFor = async (marketId) => (await docs.listInventoryDocCandidates({
+    purpose: 'company-shipment-source', sourceOrgNodeId: marketId, keyword: directMbhId,
+  })).data.find((row) => row.id === directMbhId)
+  check('按单号检索的候选能命中目标单（后面「看不到」断言的前提）',
+    (await docs.listInventoryDocCandidates({ purpose: 'company-shipment-source', keyword: directMbhId }))
+      .data.some((row) => row.id === directMbhId), '')
+  check('报货单未进任何采购单即出现在待发货与发货候选(#336)',
+    (await pendingIds()).includes(directMbhId) && (await candidateFor(MKA_ORG))?.progress?.done === 0,
+    JSON.stringify((await candidateFor(MKA_ORG))?.progress ?? null))
+  check('发货候选按收货市场收窄：市场B 看不到市场A 的报货单(#336)',
+    (await candidateFor(MKB_ORG)) === undefined, '')
+
+  const { id: directGfh1 } = await biz.createItemCompanyShipment({
+    marketId: MKA_ORG, sourceOrgNodeId: HQ_ORG,
+    items: [{ reportItemId: directMbhItem.id, lotId: lotA.id, quantity: 10 }],
+  })
+  const afterFirst = await candidateFor(MKA_ORG)
+  check('第一张发 10 后仍待发 20（还有 20 件未发）(#336)',
+    afterFirst?.progress?.done === 10 && afterFirst?.progress?.total === 30
+      && (await pendingIds()).includes(directMbhId),
+    JSON.stringify(afterFirst?.progress ?? null))
+  await expectThrow('再发 21 超过未发 20 被拒并写明上限(#336)', /CONFLICT.*最多可发 20/, () =>
+    biz.createItemCompanyShipment({
+      marketId: MKA_ORG, sourceOrgNodeId: HQ_ORG,
+      items: [{ reportItemId: directMbhItem.id, lotId: lotB.id, quantity: 21 }],
+    }))
+  const { id: directGfh2 } = await biz.createItemCompanyShipment({
+    marketId: MKA_ORG, sourceOrgNodeId: HQ_ORG,
+    items: [{ reportItemId: directMbhItem.id, lotId: lotB.id, quantity: 20 }],
+  })
+  check('发满后报货单退出待发货段与默认候选(#336)',
+    !(await pendingIds()).includes(directMbhId) && (await candidateFor(MKA_ORG)) === undefined, '')
+
+  // 市场账号：发货单详情能看到并跳到原始报货单
+  setSession(marketASession())
+  const gfh1AsMarket = await docs.getInventoryCoreDocById(directGfh1)
+  check('市场账号在发货单上看到原始报货单号(#336)',
+    gfh1AsMarket?.lineage?.some((row) => row.docId === directMbhId && row.relationType === '市场报货发货' && row.direction === '上游'),
+    JSON.stringify(gfh1AsMarket?.lineage ?? null))
+
+  // 两条收货路径各验一次：逐行「去收货」与一键收货
+  const gfh1Items = await docItems(directGfh1)
+  const { id: directMrk1 } = await biz.receiveItemCompanyShipment({
+    shipmentId: directGfh1,
+    items: gfh1Items.map((item) => ({ shipmentItemId: item.id, receivedQuantity: num(item.quantity) })),
+  })
+  const { id: directMrk2 } = await biz.receiveItemCompanyShipmentInFull({ shipmentId: directGfh2 })
+  for (const [label, inboundId] of [['去收货', directMrk1], ['一键收货', directMrk2]]) {
+    const inbound = await docs.getInventoryCoreDocById(inboundId)
+    check(`市场采购入库（${label}）详情带出原始报货单(#336)`,
+      inbound?.lineage?.some((row) => row.docId === directMbhId && row.relationType === '原始报货单（经品项公司发货）'),
+      JSON.stringify(inbound?.lineage?.map((row) => [row.relationType, row.docId]) ?? null))
+  }
+  const directMarketLots = (await locationLots(MKA_ORG, SKU_SUPPLY))
+    .filter((lot) => lot.batch_no === 'LOT-A' || lot.batch_no === 'LOT-B')
+  const marketLotA = directMarketLots.find((lot) => lot.batch_no === 'LOT-A')
+  const marketLotB = directMarketLots.find((lot) => lot.batch_no === 'LOT-B')
+  check('不经采购单的市场批次：市场实际单价 = 报货行快照，供应链成本 = 所发总部批次成本(#336 SQL)',
+    num(marketLotA?.market_actual_unit_price) === num(directMbhItem.market_actual_unit_price)
+      && num(marketLotB?.market_actual_unit_price) === num(directMbhItem.market_actual_unit_price)
+      && num(marketLotA?.supply_chain_unit_cost) === 777 && num(marketLotB?.supply_chain_unit_cost) === 666,
+    JSON.stringify(directMarketLots.map((lot) => [lot.batch_no, lot.market_actual_unit_price, lot.supply_chain_unit_cost])))
+
+  const directProgress = (await docs.getInventoryCoreDocById(directMbhId))?.fulfillmentProgress?.items?.[0]
+  const [directShippedSql] = await pgQuery(
+    `SELECT COALESCE(SUM(l.quantity), 0) AS shipped FROM inventory_doc_links l
+       JOIN inventory_docs d ON d.id = l.to_doc_id
+      WHERE l.from_item_id = $1 AND l.relation_type = '市场报货发货' AND d.status <> '已取消'`, [directMbhItem.id])
+  check('报货单已发 / 已收按直连血缘累计，整数不出小数，且 = SQL 直连发货量之和(#336)',
+    directProgress?.normalFulfilledQuantity === 30 && directProgress?.normalReceivedQuantity === 30
+      && num(directShippedSql?.shipped) === directProgress?.normalFulfilledQuantity
+      && directProgress?.orderedQuantity === 0,
+    JSON.stringify({ progress: directProgress, sql: directShippedSql?.shipped }))
+
+  // ════ 阶段 12：赠送不对等（#336）════
+  // 「报 1 送 2」、多次发货累计赠送超过报货量都能保存（此前被 0043 链接守卫 RAISE）。
+  setSession(storeA1Session())
+  const { id: giftDbhId } = await biz.createStoreReplenishmentRequest({
+    storeId: STA1_ID, marketId: MKA_ORG,
+    items: [{ skuId: SKU_SUPPLY, quantity: 1 }],
+  })
+  const [giftDbhItem] = await docItems(giftDbhId)
+  setSession(marketASession())
+  const { id: giftMbhId } = await biz.createMarketReplenishment({
+    marketId: MKA_ORG, supplyChainLocationId: HQ_ORG,
+    items: [{ skuId: SKU_SUPPLY, sourceRequestItemIds: [giftDbhItem.id], purchaseQuantity: 1 }],
+  })
+  const [giftMbhItem] = await docItems(giftMbhId)
+  setSession(supplyChainSession())
+  const { id: giftGfh1 } = await biz.createItemCompanyShipment({
+    marketId: MKA_ORG, sourceOrgNodeId: HQ_ORG,
+    items: [{ reportItemId: giftMbhItem.id, lotId: hqLot.id, quantity: 1 }],
+    giftItems: [{ reportItemId: giftMbhItem.id, lotId: hqLot.id, quantity: 2 }],
+  })
+  // 赠送行单独选批次：与正常行来自不同总部批次（LOT-A / LOT-B 已在阶段 11 发完，挑另一个有货的批次）
+  const altLot = (await locationLots(HQ_ORG, SKU_SUPPLY))
+    .find((lot) => Number(lot.id) !== Number(hqLot.id) && num(lot.quantity_on_hand) >= 3)
+  const { id: giftGfh2 } = await biz.createItemCompanyShipment({
+    marketId: MKA_ORG, sourceOrgNodeId: HQ_ORG,
+    items: [],
+    giftItems: [{ reportItemId: giftMbhItem.id, lotId: altLot.id, quantity: 3 }],
+  })
+  const giftProgress = (await docs.getInventoryCoreDocById(giftMbhId))?.fulfillmentProgress?.items?.[0]
+  check('报 1 送 2、再单独补送 3：累计赠送 5 > 报货 1 仍能保存(#336)',
+    giftProgress?.normalFulfilledQuantity === 1 && giftProgress?.giftFulfilledQuantity === 5,
+    JSON.stringify(giftProgress ?? null))
+  const giftGfh2Items = await docItems(giftGfh2)
+  check('单独补送的赠送行：独立批号、来源为另一总部批次(#336/#345)',
+    giftGfh2Items.length === 1 && giftGfh2Items[0].is_gift
+      && Number(giftGfh2Items[0].lot_id) === Number(altLot.id)
+      && giftGfh2Items[0].batch_no === expectedLineBatchNo(giftGfh2, giftGfh2Items, giftGfh2Items[0]),
+    JSON.stringify(giftGfh2Items.map((item) => [item.lot_id, item.batch_no, item.is_gift])))
+  await expectThrow('正常行与赠送行都为空时被拒', /INVALID_PARAMS/, () =>
+    biz.createItemCompanyShipment({ marketId: MKA_ORG, sourceOrgNodeId: HQ_ORG, items: [], giftItems: [] }))
+  void giftGfh1
+
+  // 门店报货赠送配货同样不再被封顶在门店报货行数量（拍板 A）
+  setSession(marketASession())
+  const giftMarketLot = (await locationLots(MKA_ORG, SKU_SUPPLY)).find((lot) => lot.batch_no === 'LOT-B')
+  const { id: giftFphId } = await biz.createStoreAllocation({
+    storeRequestId: giftDbhId,
+    sourceMarketId: MKA_ORG,
+    items: [{ requestItemId: giftDbhItem.id, lotId: giftMarketLot.id, quantity: 1, giftQuantity: 3 }],
+  })
+  const giftFphLinks = await pgQuery(
+    `SELECT relation_type, quantity FROM inventory_doc_links WHERE to_doc_id = $1 ORDER BY relation_type`, [giftFphId])
+  check('门店报货 1、配货正常 1 + 赠送 3 能保存（DB 守卫不再对赠送配货累计封顶）(#336)',
+    giftFphLinks.some((link) => link.relation_type === '门店报货赠送配货' && num(link.quantity) === 3),
+    JSON.stringify(giftFphLinks))
+  // ════ 阶段 13：批次合并时入库明细仍记本次报货快照（#336 评审 codex round-1 P1）════
+  // 市场批次身份只含实际价：标准价 / 优惠不同、实际价相同的报货，从同一总部批次发出后会并进同一市场批次。
+  // 批次上留第一次的快照没关系，但这次入库明细的 market_* 三列必须是这张报货行的快照。
+  setSession(storeA1Session())
+  const { id: snapDbhId } = await biz.createStoreReplenishmentRequest({
+    storeId: STA1_ID, marketId: MKA_ORG,
+    items: [{ skuId: SKU_SUPPLY, quantity: 1 }],
+  })
+  const [snapDbhItem] = await docItems(snapDbhId)
+  setSession(marketASession())
+  const { id: snapMbhId } = await biz.createMarketReplenishment({
+    marketId: MKA_ORG, supplyChainLocationId: HQ_ORG,
+    items: [{ skuId: SKU_SUPPLY, sourceRequestItemIds: [snapDbhItem.id], purchaseQuantity: 1 }],
+  })
+  const [snapMbhItem] = await docItems(snapMbhId)
+  await pgQuery(
+    `UPDATE inventory_doc_items
+        SET market_standard_unit_price = 1100, market_unit_discount = 150, market_actual_unit_price = 950,
+            store_standard_unit_price = 1300, store_unit_discount = 100, store_actual_unit_price = 1200
+      WHERE id = $1`, [snapMbhItem.id])
+  setSession(supplyChainSession())
+  const { id: snapGfhId } = await biz.createItemCompanyShipment({
+    marketId: MKA_ORG, sourceOrgNodeId: HQ_ORG,
+    items: [{ reportItemId: snapMbhItem.id, lotId: hqLot.id, quantity: 1 }],
+  })
+  setSession(marketASession())
+  const { id: snapMrkId } = await biz.receiveItemCompanyShipmentInFull({ shipmentId: snapGfhId })
+  // docItems() 不带 market_standard / market_discount 两列，这里直接查
+  const [snapMrkItem] = await pgQuery(
+    `SELECT lot_id, standard_unit_price, unit_discount,
+            market_standard_unit_price, market_unit_discount, market_actual_unit_price,
+            store_standard_unit_price, store_unit_discount, store_actual_unit_price
+       FROM inventory_doc_items WHERE doc_id = $1`, [snapMrkId])
+  const snapMarketLot = (await locationLots(MKA_ORG, SKU_SUPPLY)).find((lot) => Number(lot.id) === Number(snapMrkItem?.lot_id))
+  check('标准价 / 优惠不同、实际价相同：并进已有市场批次，入库明细仍记本次报货快照（市场 1100/150/950、门店 1300/100/1200）',
+    num(snapMarketLot?.market_standard_unit_price) === 1000
+      && num(snapMarketLot?.store_standard_unit_price) === 1200
+      && num(snapMrkItem?.store_standard_unit_price) === 1300 && num(snapMrkItem?.store_unit_discount) === 100
+      && num(snapMrkItem?.store_actual_unit_price) === 1200
+      && num(snapMrkItem?.market_standard_unit_price) === 1100 && num(snapMrkItem?.market_unit_discount) === 150
+      && num(snapMrkItem?.market_actual_unit_price) === 950
+      && num(snapMrkItem?.standard_unit_price) === 1100 && num(snapMrkItem?.unit_discount) === 150,
+    JSON.stringify({
+      lot: [snapMarketLot?.market_standard_unit_price, snapMarketLot?.market_unit_discount],
+      item: [snapMrkItem?.market_standard_unit_price, snapMrkItem?.market_unit_discount, snapMrkItem?.market_actual_unit_price],
+      store: [snapMarketLot?.store_standard_unit_price, snapMrkItem?.store_standard_unit_price, snapMrkItem?.store_unit_discount, snapMrkItem?.store_actual_unit_price],
+    }))
+
+  // ════ #337 分院配货不引用门店报货（市场直接配货）：纯自选 / 混合 ════
+  // 门店A1 另提一张未配报货（供应链品 3 件），用来断言自选配货不动报货进度与汇总待配量
+  setSession(storeA1Session())
+  const { id: dbh337Id } = await biz.createStoreReplenishmentRequest({
+    storeId: STA1_ID, marketId: MKA_ORG,
+    items: [{ skuId: SKU_SUPPLY, quantity: 3 }],
+  })
+  const [dbh337Item] = await docItems(dbh337Id)
+  setSession(marketASession())
+  const selfLotId = await insertSeedLot({
+    locationId: MKA_ORG, skuId: SKU_SELF, skuName: `${SKU_SELF}_名`, quantity: 10, batchNo: 'SELF-337',
+    marketStandardUnitPrice: 30, marketUnitDiscount: 0, marketActualUnitPrice: 30,
+  })
+  const supplyLotId = await insertSeedLot({
+    locationId: MKA_ORG, skuId: SKU_SUPPLY, skuName: `${SKU_SUPPLY}_名`, quantity: 10, batchNo: 'SC-337',
+    supplyChainUnitCost: 800, marketStandardUnitPrice: 1000, marketUnitDiscount: 50, marketActualUnitPrice: 950,
+  })
+  const settlementStoreRow = async () => {
+    const settlements = await import(A('src', 'actions', 'inventory', 'settlements.ts'))
+    const report = await settlements.listInventorySettlements({})
+    return report.storeRows.find((row) => row.sourceOrgNodeId === MKA_ORG && row.targetOrgNodeId === STA1_ORG)
+      ?? { docCount: 0, payableAmount: 0 }
+  }
+  const pendingOf = async () => (await biz.summarizeStoreReplenishmentRequests({ marketId: MKA_ORG }))
+    .items.find((line) => line.skuId === SKU_SUPPLY)?.outstandingQuantity ?? 0
+  const requestLinkCount = async () => Number((await pgQuery(
+    `SELECT count(*)::int AS n FROM inventory_doc_links WHERE from_doc_id = $1`, [dbh337Id],
+  ))[0].n)
+  const requestReservationCount = async () => Number((await pgQuery(
+    `SELECT count(*)::int AS n FROM inventory_stock_reservations WHERE request_doc_id = $1`, [dbh337Id],
+  ))[0].n)
+  const pendingBefore = await pendingOf()
+  const settlementBefore = await settlementStoreRow()
+  const hints = await docs.listStoreUnallocatedRequestSkus({ storeOrgNodeId: STA1_ORG, marketId: MKA_ORG })
+  const supplyHint = hints.find((hint) => hint.skuId === SKU_SUPPLY)
+  check('#337 未配提示：门店A1 对供应链品仍有未配报货（含新报货单）',
+    Boolean(supplyHint?.docIds.includes(dbh337Id)) && (supplyHint?.remainingQuantity ?? 0) >= 3,
+    JSON.stringify(supplyHint ?? null))
+
+  // 纯自选：不选报货单，含一个该门店有未配报货的 SKU（拍板 A：提示不拦截）
+  const { id: fphSelfId } = await biz.createStoreAllocation({
+    targetStoreId: STA1_ORG,
+    sourceMarketId: MKA_ORG,
+    items: [
+      { skuId: SKU_SELF, lotId: selfLotId, quantity: 4, giftQuantity: 1, storeUnitDiscount: 5 },
+      { skuId: SKU_SUPPLY, lotId: supplyLotId, quantity: 2 },
+    ],
+  })
+  const fphSelfHead = await docHeader(fphSelfId)
+  const fphSelfItems = await docItems(fphSelfId)
+  const selfNormal = fphSelfItems.find((item) => item.sku_id === SKU_SELF && !item.is_gift)
+  check('#337 纯自选建单：待收货、收货门店=门店A1、金额 (40-5)×4 + 1200×2 = 2540',
+    fphSelfHead?.status === '待收货' && fphSelfHead?.target_org_node_id === STA1_ORG
+      && num(selfNormal?.actual_unit_price) === 35 && num(fphSelfHead?.total_amount) === 2540
+      && fphSelfItems.length === 3 && fphSelfItems.every((item) => item.request_quantity === null),
+    JSON.stringify({ status: fphSelfHead?.status, target: fphSelfHead?.target_org_node_id, total: fphSelfHead?.total_amount, n: fphSelfItems.length }))
+  const selfLinks = await pgQuery(
+    `SELECT count(*)::int AS n FROM inventory_doc_links WHERE to_doc_id = $1`, [fphSelfId],
+  )
+  check('#337 纯自选：配货单没有任何入向血缘', Number(selfLinks[0].n) === 0, `links=${selfLinks[0].n}`)
+  check('#337 纯自选：批次流水正确（自选品 10→5、供应链品 10→8）',
+    (await lotQuantity(selfLotId)) === 5 && (await lotQuantity(supplyLotId)) === 8,
+    `${await lotQuantity(selfLotId)} / ${await lotQuantity(supplyLotId)}`)
+  const dbh337AfterSelf = (await docItems(dbh337Id))[0]
+  check('#337 SQL 断言：自选配货后门店报货 fulfilled_quantity / 血缘 / 预留 / 汇总待配量均不变',
+    num(dbh337AfterSelf?.fulfilled_quantity) === 0 && (await requestLinkCount()) === 0
+      && (await requestReservationCount()) === 0 && (await pendingOf()) === pendingBefore,
+    JSON.stringify({ fulfilled: dbh337AfterSelf?.fulfilled_quantity, pendingBefore, pendingAfter: await pendingOf() }))
+  const settlementAfterSelf = await settlementStoreRow()
+  check('#337 分院货款结算统计到自选配货单（待收货即计）',
+    settlementAfterSelf.docCount === settlementBefore.docCount + 1
+      && Math.abs(settlementAfterSelf.payableAmount - settlementBefore.payableAmount - 2540) < 0.001,
+    JSON.stringify({ before: settlementBefore, after: settlementAfterSelf }))
+
+  setSession(storeA1Session())
+  const storeSelfBefore = (await locationLots(STA1_ID, SKU_SELF)).reduce((sum, lot) => sum + Number(lot.quantity_on_hand), 0)
+  const { id: yrkSelfId } = await biz.receiveStoreAllocationInFull({ shipmentId: fphSelfId })
+  const storeSelfAfter = (await locationLots(STA1_ID, SKU_SELF)).reduce((sum, lot) => sum + Number(lot.quantity_on_hand), 0)
+  check('#337 纯自选 → 门店收货：配货单完结，门店自选品 +5（含赠送 1），院入库金额 2540',
+    (await docHeader(fphSelfId))?.status === '已完成' && storeSelfAfter - storeSelfBefore === 5
+      && num((await docHeader(yrkSelfId))?.total_amount) === 2540,
+    JSON.stringify({ storeSelfBefore, storeSelfAfter }))
+
+  // 同一批次跨两条自选行（第二行带赠送）：真 0009 触发器下流水 before/after 必须首尾相接
+  setSession(marketASession())
+  const selfLotBeforeSame = await lotQuantity(selfLotId)
+  const { id: fphSameLotId } = await biz.createStoreAllocation({
+    targetStoreId: STA1_ORG,
+    sourceMarketId: MKA_ORG,
+    items: [
+      { skuId: SKU_SELF, lotId: selfLotId, quantity: 1 },
+      { skuId: SKU_SELF, lotId: selfLotId, quantity: 1, giftQuantity: 1 },
+    ],
+  })
+  const sameLotMovements = await pgQuery(
+    `SELECT quantity_before, quantity_after FROM inventory_movements WHERE doc_id = $1 ORDER BY id`, [fphSameLotId],
+  )
+  const chain = sameLotMovements.map((row) => [num(row.quantity_before), num(row.quantity_after)])
+  check('#337 同批次两条自选行：共享快照，流水 before/after 首尾相接、批次扣 3',
+    JSON.stringify(chain) === JSON.stringify([
+      [selfLotBeforeSame, selfLotBeforeSame - 1],
+      [selfLotBeforeSame - 1, selfLotBeforeSame - 2],
+      [selfLotBeforeSame - 2, selfLotBeforeSame - 3],
+    ]) && (await lotQuantity(selfLotId)) === selfLotBeforeSame - 3,
+    JSON.stringify(chain))
+  await expectThrow('#337 同批次跨行累计超出可用量被拒', /库存不足/, () =>
+    biz.createStoreAllocation({
+      targetStoreId: STA1_ORG,
+      sourceMarketId: MKA_ORG,
+      items: [
+        { skuId: SKU_SELF, lotId: selfLotId, quantity: selfLotBeforeSame - 3 },
+        { skuId: SKU_SELF, lotId: selfLotId, quantity: 1 },
+      ],
+    }))
+  // 把余下的自选品留给混合段：刚才的累计超量单整笔回滚，批次数量不变
+  check('#337 累计超量被拒后批次数量不变', (await lotQuantity(selfLotId)) === selfLotBeforeSame - 3, '')
+
+  // 混合：引用 dbh337 配 2 件 + 追加自选品 1 件
+  setSession(marketASession())
+  await expectThrow('#337 引用单里已有的 SKU 不能再以自选行追加', /已在引用的门店报货单中/, () =>
+    biz.createStoreAllocation({
+      storeRequestId: dbh337Id, targetStoreId: STA1_ORG, sourceMarketId: MKA_ORG,
+      items: [
+        { requestItemId: dbh337Item.id, lotId: supplyLotId, quantity: 1 },
+        { skuId: SKU_SUPPLY, lotId: supplyLotId, quantity: 1 },
+      ],
+    }))
+  await expectThrow('#337 收货门店与报货主体不一致被拒', /收货门店与门店报货单的报货门店不一致/, () =>
+    biz.createStoreAllocation({
+      storeRequestId: dbh337Id, targetStoreId: STA2_ORG, sourceMarketId: MKA_ORG,
+      items: [{ requestItemId: dbh337Item.id, lotId: supplyLotId, quantity: 1 }],
+    }))
+  const { id: fphMixId } = await biz.createStoreAllocation({
+    storeRequestId: dbh337Id,
+    targetStoreId: STA1_ORG,
+    sourceMarketId: MKA_ORG,
+    items: [
+      { requestItemId: dbh337Item.id, lotId: supplyLotId, quantity: 2 },
+      { skuId: SKU_SELF, lotId: selfLotId, quantity: 1 },
+    ],
+  })
+  const fphMixItems = await docItems(fphMixId)
+  const mixRef = fphMixItems.find((item) => item.sku_id === SKU_SUPPLY)
+  const mixSelf = fphMixItems.find((item) => item.sku_id === SKU_SELF)
+  const mixLinks = await pgQuery(
+    `SELECT to_item_id, relation_type, quantity FROM inventory_doc_links WHERE to_doc_id = $1`, [fphMixId],
+  )
+  check('#337 混合：只有引用行写「门店报货配货」血缘，自选行没有',
+    mixLinks.length === 1 && Number(mixLinks[0].to_item_id) === Number(mixRef?.id)
+      && mixLinks[0].relation_type === '门店报货配货' && num(mixLinks[0].quantity) === 2
+      && !mixLinks.some((link) => Number(link.to_item_id) === Number(mixSelf?.id)),
+    JSON.stringify(mixLinks))
+  const dbh337AfterMix = (await docItems(dbh337Id))[0]
+  check('#337 混合：报货明细 fulfilled_quantity 只加引用行的 2，预留 1 条，汇总待配量减 2',
+    num(dbh337AfterMix?.fulfilled_quantity) === 2 && (await requestReservationCount()) === 1
+      && (await pendingOf()) === pendingBefore - 2,
+    JSON.stringify({ fulfilled: dbh337AfterMix?.fulfilled_quantity, pending: await pendingOf(), pendingBefore }))
+  setSession(storeA1Session())
+  await biz.receiveStoreAllocationInFull({ shipmentId: fphMixId })
+  const dbh337Progress = (await docs.getInventoryCoreDocById(dbh337Id))?.fulfillmentProgress?.items?.[0]
+  check('#337 混合 → 门店收货：配货单完结，报货进度只计引用行（配 2 收 2）',
+    (await docHeader(fphMixId))?.status === '已完成'
+      && dbh337Progress?.normalFulfilledQuantity === 2 && dbh337Progress?.normalReceivedQuantity === 2,
+    JSON.stringify(dbh337Progress ?? null))
 } catch (e) {
   check('冒烟整体', false, '致命错误：' + (e?.stack || e?.message || String(e)))
 } finally {

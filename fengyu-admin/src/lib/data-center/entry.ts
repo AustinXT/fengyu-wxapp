@@ -5,19 +5,33 @@
  *   1. 非总部账号 + URL 无有效 scope → 重定向补上权限默认 scope（非总部绝不以 'all' 取数）
  *   2. 重复 query key → 规范化成单值（服务端按首值判定、客户端按末值取数，两边必须看同一份 query）
  *   3. 非总部却没有可用默认 scope → 不跳转，交给页面渲染空态（不进入无限重定向）
+ *   4. URL 选中权限内的已停用门店 → 不跳转，交给页面渲染「已停用」空态（#293）
  *
  * 背景见 memory `project-data-center-default-scope-non-hq`：scope='all' 抵达取数 action 会抛
  * PERMISSION_DENIED，生产脱敏后表现为「数据加载失败」。
  */
 import { collapseQuery, firstQueryValue, hasRepeatedQueryKey, parseScope } from './params'
-import { resolveDefaultDataCenterScope } from './scope-options'
-import type { DataCenterScope, DataCenterScopeOptions } from './types'
+import { findInactiveScopeStore, resolveDefaultDataCenterScope } from './scope-options'
+import type { DataCenterScope, DataCenterScopeOptions, ScopeOptionInactiveStore } from './types'
 
 export type SearchQuery = Record<string, string | string[] | undefined>
 
 export type DataCenterEntry =
   | { kind: 'redirect'; url: string }
-  | { kind: 'render'; noViewableScope: boolean }
+  | {
+      kind: 'render'
+      noViewableScope: boolean
+      /**
+       * URL 选中的是权限内已停用门店（#293）：页面渲染「已停用」空态、不取数。
+       * 取数 SQL 的启用门店过滤会把它的数据全部滤掉，放行取数只会得到满屏 0。
+       */
+      inactiveStore: ScopeOptionInactiveStore | null
+      /**
+       * 停用门店空态的出口：本页 + 权限默认范围（保留其余参数）。没有可回的默认范围时为 null。
+       * 单在营门店账号的范围下拉是锁定的、板块页也没有「重置」，不给这个出口就只能靠侧边栏离开。
+       */
+      defaultScopeHref: string | null
+    }
 
 type ConcreteScope = Exclude<DataCenterScope, { type: 'all' }>
 
@@ -75,5 +89,20 @@ export function resolveDataCenterEntry(
     return { kind: 'redirect', url: `${path}${qs ? `?${qs}` : ''}` }
   }
 
-  return { kind: 'render', noViewableScope: scopeOptions.topLevel !== 'all' && defaults === null }
+  // 两者可同时成立：店长唯一的门店被停用、URL 又指向它。此时仍带出 inactiveStore，
+  // 让空态说「已停用」而不是泛化的「暂无可查看范围」（筛选器此时也回显「XX（已停用）」，两处口径一致）。
+  const inactiveStore = findInactiveScopeStore(scopeOptions, rawScope)
+  let defaultScopeHref: string | null = null
+  if (inactiveStore && defaults) {
+    const next = collapseQuery(query, [...legacyKeys, 'scope', 'scopeId'])
+    for (const [key, value] of Object.entries(defaults)) next.set(key, value)
+    const qs = next.toString()
+    defaultScopeHref = `${path}${qs ? `?${qs}` : ''}`
+  }
+  return {
+    kind: 'render',
+    noViewableScope: scopeOptions.topLevel !== 'all' && defaults === null,
+    inactiveStore,
+    defaultScopeHref,
+  }
 }

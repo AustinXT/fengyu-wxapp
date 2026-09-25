@@ -45,6 +45,7 @@ import {
 import type { AuthSession } from './types'
 import { INVENTORY_ENTRY_ENABLED } from './inventory-feature-flags'
 import { isAdminScope } from './session-role-guards'
+import { scopeSessionToAllActions } from './action-scope'
 import {
   DATA_CENTER_DASHBOARD_ACTION,
   DATA_CENTER_REPORT_LIST,
@@ -60,6 +61,11 @@ export interface MenuItem {
   requiredActions: string[]
   /** 除 requiredActions 外，还必须同时具备的权限。 */
   requiredAllActions?: string[]
+  /**
+   * requiredAllActions 必须由**同一条角色授权**同时提供（与页面 / 取数 action 的 `withAllPermissions` 同口径）。
+   * 不设时按全部角色的权限并集判定：两个角色各给一半时菜单会显示、点进去却是 403。
+   */
+  allActionsFromSameRole?: boolean
   /** 指向同一功能的历史深链，沿用该菜单项的高亮和父级展开状态。 */
   matchPaths?: string[]
   /** 仅向持有指定组织范围的账号显示；总部账号可按配置进入下级业务。 */
@@ -105,6 +111,7 @@ function dataCenterReportMenuItems(): MenuItem[] {
         href: report.path,
         requiredActions: [DATA_CENTER_DASHBOARD_ACTION],
         requiredAllActions: [...report.requiredActions],
+        allActionsFromSameRole: true,
         section: report.menu.section,
         hidden: !report.menu.enabled,
       }]
@@ -292,13 +299,17 @@ export function getVisibleMenuItems(session: AuthSession): MenuNode[] {
   const scopeTypes = isAdminScope(session)
     ? (['总部', '市场', '门店'] as const)
     : session.roles.map((role) => role.scopeType)
+  // 同角色判定复用 withAllPermissions 的收窄函数，菜单与页面闸门不会各算各的
+  const visibleItem = (item: MenuItem) => hasMenuItemAccess(item, actions, scopeTypes)
+    && (!item.allActionsFromSameRole || !item.requiredAllActions
+      || scopeSessionToAllActions(session, item.requiredAllActions).roles.length > 0)
   return MENU_CONFIG.reduce<MenuNode[]>((visible, node) => {
     if (!isMenuParent(node)) {
-      if (hasMenuItemAccess(node, actions, scopeTypes)) visible.push(node)
+      if (visibleItem(node)) visible.push(node)
       return visible
     }
     if (node.hidden) return visible
-    const children = node.children.filter((item) => hasMenuItemAccess(item, actions, scopeTypes))
+    const children = node.children.filter(visibleItem)
     if (children.length > 0) visible.push({ ...node, children })
     return visible
   }, [])

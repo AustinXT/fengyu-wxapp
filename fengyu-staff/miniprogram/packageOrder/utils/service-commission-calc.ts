@@ -6,6 +6,8 @@
 //   consumeBase   = round(unit_real_price × session_used, 2)
 //   allocAmount   = round(consumeBase × ratio, 2)
 //   consumeAmount = round(allocAmount × rate, 2)            // = consumeBase × ratio × rate
+//   #379 阈值保底：命中行 priceThreshold > 单次实价时，consumeAmount 改用
+//   effConsumeBase = round(max(单次实价, 阈值) × session_used, 2) 代替 consumeBase；分配额与选档不变
 //   fixedFee      = round(service_fee × session_used × ratio, 2)
 //   commissionAmount = round(fixedFee + consumeAmount, 2)
 
@@ -14,6 +16,14 @@ export interface ServiceRateRow {
   amountMin: number
   amountMax: number
   serviceRates: Record<string, number>
+  /** #379 各销售分类的划卡单价阈值（null / 缺省 = 不启用） */
+  serviceThresholds?: Record<string, number | null>
+}
+
+export interface ServiceRateHit {
+  rate: number
+  /** 命中行阈值；0 = 不启用 */
+  priceThreshold: number
 }
 
 const round2 = (n: number) => Math.round(Number(n) * 100) / 100
@@ -26,7 +36,7 @@ export function lookupServiceRate(
   salesCat: string,
   consumeBase: number,
   rates: ServiceRateRow[]
-): number {
+): ServiceRateHit {
   let hit: ServiceRateRow | null = null
   for (const r of rates) {
     if (r.department !== role) continue
@@ -35,7 +45,16 @@ export function lookupServiceRate(
     if (!rate || rate <= 0) continue
     if (!hit || r.amountMin > hit.amountMin) hit = r
   }
-  return (hit && hit.serviceRates[salesCat]) || 0
+  if (!hit) return { rate: 0, priceThreshold: 0 }
+  return {
+    rate: hit.serviceRates[salesCat] || 0,
+    priceThreshold: Number(hit.serviceThresholds?.[salesCat]) || 0,
+  }
+}
+
+/** #379 计提成基数：round(max(单次实价, 阈值) × 次数, 2)，与五个写入副本同口径 */
+export function effServiceConsumeBase(perSession: number, sessionUsed: number, priceThreshold: number): number {
+  return round2(Math.max(perSession, priceThreshold || 0) * sessionUsed)
 }
 
 /**
@@ -46,10 +65,11 @@ export function computeServiceLine(
   consumeBase: number,
   fixedFeeBase: number,
   ratio: number,
-  rate: number
+  rate: number,
+  effConsumeBase: number = consumeBase
 ): { allocAmount: string; commissionAmount: string } {
   const allocAmount = round2(consumeBase * ratio)
-  const consumeAmount = round2(allocAmount * rate)
+  const consumeAmount = round2(round2(effConsumeBase * ratio) * rate)
   const fixedFee = round2(fixedFeeBase * ratio)
   const commissionAmount = round2(fixedFee + consumeAmount)
   return { allocAmount: allocAmount.toFixed(2), commissionAmount: commissionAmount.toFixed(2) }

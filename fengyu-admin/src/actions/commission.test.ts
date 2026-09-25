@@ -19,6 +19,7 @@ vi.mock('@db/commission', () => ({
     amountTierMin: 'amount_tier_min',
     amountTierMax: 'amount_tier_max',
     commissionRate: 'commission_rate',
+    priceThreshold: 'price_threshold',
     createdAt: 'created_at',
     updatedAt: 'updated_at',
   },
@@ -293,6 +294,178 @@ describe('updateRate — 金额阶段重叠校验（排除自身）', () => {
     ;(db.update as any).mockReturnValue({ set })
 
     await expect(updateRate(42, { commissionRate: '0.09' })).rejects.toThrow('connection lost')
+  })
+})
+
+// ── #379 划卡单价阈值 ─────────────────────────────────────────────────────────
+// 仅服务单的自销自耗 / 他销自耗可配（与 DB CHECK 同集合）；新建默认 100；不可配行一律清空
+
+describe('#379 createRate — 单价阈值', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockSession)
+    ;(db.select as any).mockReturnValue(setupOverlapCheck(false).select())
+  })
+
+  function captureInsert() {
+    const values = vi.fn().mockResolvedValue({})
+    ;(db.insert as any).mockReturnValue({ values })
+    return values
+  }
+  const svc = (salesCategory: string, priceThreshold?: string | null) => ({
+    orgId: 'market-1', orderType: '服务单', roleType: '美容师', salesCategory,
+    amountTierMin: '0', amountTierMax: null, commissionRate: '0.15',
+    ...(priceThreshold === undefined ? {} : { priceThreshold }),
+  })
+
+  it.each([
+    ['服务单自销自耗未传 → 默认 100', svc('自销自耗'), '100'],
+    ['服务单他销自耗未传 → 默认 100', svc('他销自耗'), '100'],
+    ['可配行显式 50 → 50', svc('自销自耗', '50'), '50'],
+    ['可配行空串 → null（不启用）', svc('自销自耗', ''), null],
+    ['服务单他销他耗未传 → null', svc('他销他耗'), null],
+    ['销售单自销自耗未传 → null', { ...svc('自销自耗'), orderType: '销售单' }, null],
+  ] as const)('%s', async (_n, data, expected) => {
+    const values = captureInsert()
+    const result = await createRate(data)
+    expect(result.success).toBe(true)
+    expect(values.mock.calls[0][0].priceThreshold).toBe(expected)
+  })
+
+  it('插入撞 CHECK（23514）→ 友好提示而非 500', async () => {
+    const values = vi.fn().mockRejectedValue(Object.assign(new Error('violates check constraint'), { code: '23514' }))
+    ;(db.insert as any).mockReturnValue({ values })
+    const result = await createRate(svc('自销自耗'))
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('仅适用于')
+  })
+
+  it('可配行阈值 "0" → 归一为 null（与不启用等价）', async () => {
+    const values = captureInsert()
+    await createRate(svc('自销自耗', '0'))
+    expect(values.mock.calls[0][0].priceThreshold).toBeNull()
+  })
+
+  it.each([
+    ['可配行传数字（绕过 TS 直调端点）→ 格式错误', { ...svc('自销自耗'), priceThreshold: 100 }, '格式不正确'],
+    ['不可配行传数字 → 拒绝而非 TypeError', { ...svc('他销他耗'), priceThreshold: 100 }, '仅适用于'],
+  ] as const)('%s', async (_n, data, msg) => {
+    captureInsert()
+    const result = await createRate(data as any)
+    expect(result.success).toBe(false)
+    expect(result.message).toContain(msg)
+    expect(db.insert).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['不可配行传阈值 → 拒绝', svc('他销他耗', '100'), '仅适用于'],
+    ['负数 → 拒绝', svc('自销自耗', '-1'), '非负数'],
+    ['三位小数 → 拒绝', svc('自销自耗', '1.005'), '两位小数'],
+  ] as const)('%s', async (_n, data, msg) => {
+    captureInsert()
+    const result = await createRate(data)
+    expect(result.success).toBe(false)
+    expect(result.message).toContain(msg)
+    expect(db.insert).not.toHaveBeenCalled()
+  })
+})
+
+describe('#379 updateRate — 单价阈值 + set 白名单', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockSession)
+  })
+
+  /** before-fetch 返回 before 行，捕获 .set() 入参 */
+  function setup(before: Record<string, unknown>) {
+    const chain: any = {}
+    chain.from = vi.fn().mockReturnValue(chain)
+    chain.where = vi.fn().mockReturnValue(chain)
+    chain.limit = vi.fn().mockResolvedValue([before])
+    ;(db.select as any).mockReturnValue(chain)
+    const where = vi.fn().mockResolvedValue({ count: 1 })
+    const set = vi.fn().mockReturnValue({ where })
+    ;(db.update as any).mockReturnValue({ set })
+    return set
+  }
+  const SELF = { id: 42, orderType: '服务单', salesCategory: '自销自耗', priceThreshold: '100.00' }
+
+  it('可配行改阈值 → 写入新值', async () => {
+    const set = setup(SELF)
+    expect((await updateRate(42, { priceThreshold: '50' })).success).toBe(true)
+    expect(set.mock.calls[0][0]).toEqual({ priceThreshold: '50' })
+  })
+
+  it('只改比例 → 不动阈值', async () => {
+    const set = setup(SELF)
+    await updateRate(42, { commissionRate: '0.14' })
+    expect(set.mock.calls[0][0]).toEqual({ commissionRate: '0.14' })
+  })
+
+  it('可配行改成他销他耗 → 阈值清空（否则撞 CHECK）', async () => {
+    const set = setup(SELF)
+    await updateRate(42, { salesCategory: '他销他耗' })
+    expect(set.mock.calls[0][0]).toEqual({ salesCategory: '他销他耗', priceThreshold: null })
+  })
+
+  it('不可配行改成自销自耗且未传阈值 → 取默认 100', async () => {
+    const set = setup({ ...SELF, salesCategory: '他销他耗', priceThreshold: null })
+    await updateRate(42, { salesCategory: '自销自耗' })
+    expect(set.mock.calls[0][0]).toEqual({ salesCategory: '自销自耗', priceThreshold: '100' })
+  })
+
+  it('不可配行传阈值 → 拒绝且不写库', async () => {
+    setup({ ...SELF, orderType: '销售单', priceThreshold: null })
+    const result = await updateRate(42, { priceThreshold: '100' })
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('仅适用于')
+    expect(db.update).not.toHaveBeenCalled()
+  })
+
+  it('并发改类目撞 CHECK（23514）→ 友好提示而非 500', async () => {
+    setup(SELF)
+    const where = vi.fn().mockRejectedValue(Object.assign(new Error('violates check constraint'), { code: '23514' }))
+    ;(db.update as any).mockReturnValue({ set: vi.fn().mockReturnValue({ where }) })
+    const result = await updateRate(42, { priceThreshold: '50' })
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('已被其他人修改')
+  })
+
+  it('空更新 / 只夹带非表单字段 → 返回提示，不调 .set({})', async () => {
+    setup({ ...SELF, orderType: '服务单', salesCategory: '自销自耗' })
+    expect(await updateRate(42, {})).toEqual({ success: false, message: '没有可更新的字段' })
+    expect(await updateRate(42, { createdAt: new Date(0) } as any)).toEqual({ success: false, message: '没有可更新的字段' })
+    expect(db.update).not.toHaveBeenCalled()
+  })
+
+  it('不可配行（阈值本就 NULL）空更新 → 仍被空更新守卫拦下', async () => {
+    setup({ ...SELF, orderType: '销售单', priceThreshold: null })
+    expect(await updateRate(42, {})).toEqual({ success: false, message: '没有可更新的字段' })
+    expect(db.update).not.toHaveBeenCalled()
+  })
+
+  it('不可配行（阈值本就 NULL）只改比例 → .set() 不带 priceThreshold', async () => {
+    const set = setup({ ...SELF, salesCategory: '他销他耗', priceThreshold: null })
+    await updateRate(42, { commissionRate: '0.03', priceThreshold: null })
+    expect(set.mock.calls[0][0]).toEqual({ commissionRate: '0.03' })
+  })
+
+  it('可配行（阈值本就 NULL，已停用）改成他销他耗 → .set() 不带 priceThreshold', async () => {
+    const set = setup({ ...SELF, priceThreshold: null })
+    await updateRate(42, { salesCategory: '他销他耗' })
+    expect(set.mock.calls[0][0]).toEqual({ salesCategory: '他销他耗' })
+  })
+
+  it('updateRate 传数字阈值 → 格式错误而非 TypeError', async () => {
+    setup(SELF)
+    const result = await updateRate(42, { priceThreshold: 100 } as any)
+    expect(result).toEqual({ success: false, message: '单价阈值格式不正确' })
+  })
+
+  it('调用方夹带非表单字段 → 不进 .set()（显式白名单）', async () => {
+    const set = setup(SELF)
+    await updateRate(42, { commissionRate: '0.14', createdAt: new Date(0), id: 7 } as any)
+    expect(set.mock.calls[0][0]).toEqual({ commissionRate: '0.14' })
   })
 })
 

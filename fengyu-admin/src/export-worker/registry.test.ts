@@ -12,8 +12,44 @@ vi.mock('@/actions/data-center/product', () => ({
 vi.mock('@/actions/data-center/efficiency', () => ({
   getEfficiencyBoard: vi.fn(),
 }))
+vi.mock('@/actions/data-center/operating-master', () => ({
+  getOperatingMaster: vi.fn(),
+}))
+vi.mock('@/actions/data-center/daily-overview', () => ({
+  getDailyOverview: vi.fn(),
+}))
 vi.mock('@/actions/refunds', () => ({
   exportRefunds: vi.fn(),
+}))
+vi.mock('@/actions/data-center/customer-frequency', () => ({
+  // 缺省返回空结果：「报表视图分发」用例会遍历全部报表视图
+  exportCustomerFrequencyReport: vi.fn(async () => ({
+    rows: [], totals: { visitDays: 0, amount: 0 },
+    params: {
+      scope: { type: 'all' }, searchLabel: '', show: 'all',
+      month: '2026-08', monthLabel: '2026年8月', range: { start: '2026-08-01', end: '2026-08-31' },
+    },
+  })),
+}))
+vi.mock('@/actions/data-center/remaining-cards', () => ({
+  // 缺省返回空结果：「报表视图分发」用例会遍历全部报表视图
+  exportRemainingCardsReport: vi.fn(async () => ({
+    columns: [], rows: [], totals: { remaining: 0 },
+    params: { scope: { type: 'all' }, q: '', show: 'all' }, asOf: '2026-09-25',
+  })),
+}))
+// 员工提成日报 / 明细（#375）：缺省返回空结果，「报表视图分发」用例会遍历全部报表视图
+vi.mock('@/actions/data-center/commission', () => ({
+  getCommissionDaily: vi.fn(async () => ({
+    month: '2026-08', scopeName: '全部', isAllScope: true,
+    options: { view: 'total', group: 'employee', merge: false, search: '', hideZero: false },
+    grain: 'employee-store', sort: { key: 'total', direction: 'desc' }, rows: [],
+    totals: { days: {}, total: { sale: 0, service: 0, orders: 0 }, employeeCount: 0, rowCount: 0 },
+  })),
+  exportCommissionDetail: vi.fn(async () => ({
+    rows: [], truncated: false, hasMore: false, summary: null, scopeName: '全部', month: '2026-08',
+    filters: { employeeId: null, storeId: null, date: null, source: null },
+  })),
 }))
 // 员工导出分支会立即查 org_nodes 建路径映射（其余分支的 rows 都是惰性的，不碰 db）
 vi.mock('@/db', () => ({
@@ -24,13 +60,28 @@ import { getSalesBoard } from '@/actions/data-center/sales'
 import { getCustomerBoard } from '@/actions/data-center/customer'
 import { getProductBoard } from '@/actions/data-center/product'
 import { getEfficiencyBoard } from '@/actions/data-center/efficiency'
+import { getOperatingMaster } from '@/actions/data-center/operating-master'
 import { exportRefunds } from '@/actions/refunds'
+import { exportRemainingCardsReport } from '@/actions/data-center/remaining-cards'
+import { getDailyOverview } from '@/actions/data-center/daily-overview'
+import { buildDailyOverview } from '@/lib/data-center/daily-overview'
+import { exportCustomerFrequencyReport } from '@/actions/data-center/customer-frequency'
 import {
   DATA_CENTER_VIEW_CONFIG,
   getDataCenterBreakdownConfig,
   getDataCenterRankingConfig,
 } from '@/lib/data-center/columns'
-import { DATA_CENTER_EXPORT_VIEWS } from '@/lib/export-job-types'
+import {
+  DATA_CENTER_BOARD_EXPORT_VIEWS,
+  DATA_CENTER_EXPORT_VIEWS,
+  DATA_CENTER_REPORT_EXPORT_VIEWS,
+  DATA_CENTER_REPORT_VIEW_PREFIX,
+  type DataCenterBoardExportView,
+} from '@/lib/export-job-types'
+import { buildOperatingMasterTable } from '@/lib/data-center/operating-master'
+import { DATA_CENTER_VIEW_REQUIRED_ACTIONS } from '@/lib/export-job-types'
+import { DATA_CENTER_STAFF_COMMISSION_ACTIONS } from '@/lib/data-center/reports'
+import { exportCommissionDetail, getCommissionDaily } from '@/actions/data-center/commission'
 import { createExportContent } from './registry'
 
 function metricValue(unit: 'amount' | 'count' | 'percent'): number {
@@ -39,7 +90,7 @@ function metricValue(unit: 'amount' | 'count' | 'percent'): number {
   return 3.6
 }
 
-function headersForBreakdown(view: (typeof DATA_CENTER_EXPORT_VIEWS)[number]): string[] {
+function headersForBreakdown(view: DataCenterBoardExportView): string[] {
   const config = getDataCenterBreakdownConfig(view)
   return [
     config.groupLabel,
@@ -48,7 +99,7 @@ function headersForBreakdown(view: (typeof DATA_CENTER_EXPORT_VIEWS)[number]): s
   ]
 }
 
-function boardRow(view: (typeof DATA_CENTER_EXPORT_VIEWS)[number]) {
+function boardRow(view: DataCenterBoardExportView) {
   const config = DATA_CENTER_VIEW_CONFIG[view]
   if (config.kind !== 'breakdown') throw new Error(`预期明细视图: ${view}`)
   return {
@@ -69,6 +120,7 @@ const rankingRow = {
 }
 
 beforeEach(() => {
+  vi.clearAllMocks()
   const sales = boardRow('sales-market')
   const customer = boardRow('customer-market-reg')
   const product = boardRow('product-market')
@@ -288,7 +340,7 @@ describe('数据中心客量门店导出列', () => {
 })
 
 describe('数据中心全部导出视图', () => {
-  const breakdownViews = DATA_CENTER_EXPORT_VIEWS.filter(
+  const breakdownViews = DATA_CENTER_BOARD_EXPORT_VIEWS.filter(
     (view) => DATA_CENTER_VIEW_CONFIG[view].kind === 'breakdown',
   )
 
@@ -307,7 +359,7 @@ describe('数据中心全部导出视图', () => {
     }
   })
 
-  const rankingViews = DATA_CENTER_EXPORT_VIEWS.filter(
+  const rankingViews = DATA_CENTER_BOARD_EXPORT_VIEWS.filter(
     (view) => DATA_CENTER_VIEW_CONFIG[view].kind === 'ranking',
   )
 
@@ -325,5 +377,323 @@ describe('数据中心全部导出视图', () => {
       ])
       expect(content.columns[3]?.value(rankingRow)).toBe(metric.unit === 'amount' ? 123.46 : 123)
     }
+  })
+})
+
+/**
+ * 报表视图分发守护（#372）。queryDataCenter 对旧板块按视图名前缀分发，且历史上把「其余一切」兜底派给人效板：
+ * 新视图撞前缀或漏登记分发时会静默导出别的板块的内容、任务照样成功。这里从两头钉住：
+ *   1. 命名：报表视图一律 `report-` 前缀，且不以任何板块前缀开头
+ *   2. 行为：每个报表视图导出时一个板块取数函数都不调用
+ */
+describe('数据中心导出 · 报表视图分发', () => {
+  const BOARD_PREFIXES = Array.from(new Set(DATA_CENTER_BOARD_EXPORT_VIEWS.map((view) => view.split('-')[0] + '-')))
+
+  it('报表视图名一律 report- 前缀，不撞任何板块前缀；板块视图也不占用 report- 前缀', () => {
+    expect(BOARD_PREFIXES).toEqual(['sales-', 'customer-', 'product-', 'efficiency-'])
+    for (const view of DATA_CENTER_REPORT_EXPORT_VIEWS) {
+      expect(view.startsWith(DATA_CENTER_REPORT_VIEW_PREFIX), view).toBe(true)
+      for (const prefix of BOARD_PREFIXES) expect(view.startsWith(prefix), `${view} 撞前缀 ${prefix}`).toBe(false)
+    }
+    for (const view of DATA_CENTER_BOARD_EXPORT_VIEWS) {
+      expect(view.startsWith(DATA_CENTER_REPORT_VIEW_PREFIX), view).toBe(false)
+    }
+    expect(DATA_CENTER_EXPORT_VIEWS).toEqual([...DATA_CENTER_BOARD_EXPORT_VIEWS, ...DATA_CENTER_REPORT_EXPORT_VIEWS])
+    // 等式两边同源拼接，重复登记照样相等：单独钉住「没有重复视图」
+    expect(new Set(DATA_CENTER_EXPORT_VIEWS).size).toBe(DATA_CENTER_EXPORT_VIEWS.length)
+  })
+
+  it.each(DATA_CENTER_REPORT_EXPORT_VIEWS)('%s 导出不调用任何板块取数', async (view) => {
+    vi.mocked(getOperatingMaster).mockResolvedValue({
+      month: '2026-08',
+      range: { start: '2026-08-01', end: '2026-08-31' },
+      ytd: { start: '2026-01-01', end: '2026-08-31' },
+      scopeName: '全部',
+      ...buildOperatingMasterTable([], new Map()),
+    } as never)
+    vi.mocked(getDailyOverview).mockResolvedValue({
+      data: buildDailyOverview({ stores: [], categories: [], performanceParts: [], performanceTotals: [], recharge: [], service: [] }),
+      kpis: {} as never,
+      storeCount: 0,
+      period: { label: '上月', current: { start: '2026-08-01', end: '2026-08-31' }, previous: { start: '2026-07-01', end: '2026-07-31' } },
+      scope: { type: 'all', name: '全部' },
+    })
+    vi.mocked(getSalesBoard).mockClear()
+    vi.mocked(getCustomerBoard).mockClear()
+    vi.mocked(getProductBoard).mockClear()
+    vi.mocked(getEfficiencyBoard).mockClear()
+
+    await createExportContent('data-center', { view, params: { month: '2026-08' } })
+
+    for (const fetcher of [getSalesBoard, getCustomerBoard, getProductBoard, getEfficiencyBoard]) {
+      expect(fetcher).not.toHaveBeenCalled()
+    }
+  })
+
+  it('未登记的视图名抛错，不再兜底派给人效板', async () => {
+    vi.mocked(getEfficiencyBoard).mockClear()
+    await expect(
+      createExportContent('data-center', { view: 'daily-overview' as never, params: {} }),
+    ).rejects.toThrow('INVALID_PARAMS')
+    expect(getEfficiencyBoard).not.toHaveBeenCalled()
+  })
+})
+
+describe('数据中心导出 · 员工提成日报 / 提成明细（#375）', () => {
+  it.each([
+    ['report-commission-daily', getCommissionDaily],
+    ['report-commission-detail', exportCommissionDetail],
+  ] as const)('%s 走提成取数 action，URL 参数原样透传；权限 = dashboard + staff_commission', async (view, action) => {
+    vi.mocked(action).mockClear()
+    const params = { month: '2026-08', scope: 'market', scopeId: 'M1', view: 'split' }
+    await createExportContent('data-center', { view, params })
+    expect(action).toHaveBeenCalledWith(params, ...(view === 'report-commission-detail' ? [{ limit: expect.any(Number) }] : []))
+    expect(DATA_CENTER_VIEW_REQUIRED_ACTIONS[view]).toBe(DATA_CENTER_STAFF_COMMISSION_ACTIONS)
+  })
+})
+
+describe('数据中心导出 · 经营数据主表', () => {
+  const stores = [
+    { storeId: 'S1', storeName: '汇东店', marketId: 'M1', marketName: '自贡' },
+    { storeId: 'S2', storeName: '南湖店', marketId: 'M1', marketName: '自贡' },
+    { storeId: 'S3', storeName: '蓝莱店', marketId: 'M2', marketName: '南昌凤御' },
+  ]
+  const metrics = new Map([
+    ['S1', { beauticianCount: 4, monthRevenue: 91182, ytdRevenue: 156152, shengmeiProjectCount: 298, monthConsume: 100.5, shengmeiConsume: 60.25 }],
+    ['S2', { beauticianCount: 3, monthRevenue: 1000, ytdRevenue: 2000, shengmeiProjectCount: 2, monthConsume: 10, shengmeiConsume: 5 }],
+    ['S3', { beauticianCount: 5, monthRevenue: -20, ytdRevenue: 30, shengmeiProjectCount: 0, monthConsume: 0, shengmeiConsume: 0 }],
+  ])
+
+  beforeEach(() => {
+    vi.mocked(getOperatingMaster).mockResolvedValue({
+      month: '2026-08',
+      range: { start: '2026-08-01', end: '2026-08-31' },
+      ytd: { start: '2026-01-01', end: '2026-08-31' },
+      scopeName: '全部',
+      ...buildOperatingMasterTable(stores, metrics),
+    } as never)
+  })
+
+  it('按页面生效的范围与月份取数；缺月份直接失败，不按默认月出数', async () => {
+    await createExportContent('data-center', {
+      view: 'report-operating-master',
+      params: { scope: 'market', scopeId: 'M1', month: '2026-08' },
+    })
+    expect(getOperatingMaster).toHaveBeenLastCalledWith({ scope: { type: 'market', id: 'M1' }, month: '2026-08' })
+
+    await expect(
+      createExportContent('data-center', { view: 'report-operating-master', params: {} }),
+    ).rejects.toThrow('INVALID_PARAMS')
+  })
+
+  it('范围参数 fail-closed：声明了市场 / 门店却缺 scopeId、未知 scope 都拒绝，不回落成全集团', async () => {
+    vi.mocked(getOperatingMaster).mockClear()
+    const cases: Record<string, string>[] = [
+      { month: '2026-08', scope: 'market' },
+      { month: '2026-08', scope: 'store', scopeId: '' },
+      { month: '2026-08', scope: 'everything' },
+      { month: '2026-08', scopeId: 'M1' },
+      { month: '2026-08', scope: 'authorized', scopeId: 'M1' },
+    ]
+    for (const params of cases) {
+      await expect(
+        createExportContent('data-center', { view: 'report-operating-master', params }),
+        JSON.stringify(params),
+      ).rejects.toThrow('INVALID_PARAMS')
+    }
+    expect(getOperatingMaster).not.toHaveBeenCalled()
+  })
+
+  it('元信息的范围带类型：市场 · 名称', async () => {
+    const content = await createExportContent('data-center', {
+      view: 'report-operating-master',
+      params: { scope: 'market', scopeId: 'M1', month: '2026-08' },
+    })
+    expect(content.meta?.scope).toBe('市场 · 全部')
+  })
+
+  it('两行分组表头 + 冻结市场门店 + 小计加粗 + 总计行，占位列数据与合计都写「—」', async () => {
+    const content = await createExportContent('data-center', {
+      view: 'report-operating-master',
+      params: { month: '2026-08' },
+    })
+    const rows: Record<string, unknown>[] = []
+    for await (const row of content.rows) rows.push(row)
+
+    expect(content.columns).toHaveLength(24) // B~Y
+    expect(content.columns[0]).toMatchObject({ header: '市场', group: { header: '' } })
+    // B–D 上方空白表头在导出里是同一个分组 → 合并成一整块（模板 B2:D2）；页面因冻结边界才拆开
+    expect(new Set(content.columns.slice(0, 3).map((column) => column.group?.key)).size).toBe(1)
+    expect(content.columns[3].group?.key).not.toBe(content.columns[0].group?.key)
+    expect(content.columns[3].group?.header).toMatch(/^保有会员（售前不算）\n会员标准/)
+    expect(content.frozenColumns).toBe(2)
+    expect(content.totalsLabel).toBe('总计')
+    expect(content.meta).toMatchObject({ period: '2026-08-01 ~ 2026-08-31', scope: '全部' })
+
+    // 门店 2 + 小计 + 门店 1 + 小计
+    expect(rows.map((row) => content.isEmphasisRow?.(row))).toEqual([false, false, true, false, true])
+    const header = (name: string) => content.columns.find((column) => column.header === name)!
+    const revenue = header('当月\n完成')
+    expect(rows.map((row) => revenue.value(row))).toEqual([91182, 1000, 92182, -20, -20])
+    expect(revenue.total).toBe(92162)
+    expect(header('美容师\n人数').total).toBe(12)
+
+    const pending = header('被经营率\n年度标准60%')
+    expect(rows.map((row) => pending.value(row))).toEqual(['—', '—', '—', '—', '—'])
+    expect(pending.total).toBe('—')
+    expect(header('年度销售\n业绩目标').total).toBe('—')
+  })
+})
+
+describe('数据中心导出 · 顾客剩余卡项清单（#371）', () => {
+  it('report-remaining-cards 走报表取数，不触碰任何旧板块取数函数；URL 参数原样透传', async () => {
+    vi.clearAllMocks()
+    vi.mocked(exportRemainingCardsReport).mockResolvedValue({
+      columns: [{ categoryId: 'C1', categoryName: '招牌', kind: '招牌', kindSort: 1, sort: 1 }],
+      rows: [{
+        key: 'U1:S1', clientUserId: 'U1', storeId: 'S1', storeName: '蓝莱店', customerName: '张三',
+        phoneMasked: '138****2222', level: '会员客', remaining: 3,
+        cells: { C1: { state: 'remaining', remaining: 3, unpaid: 0, served: 1, convertedOut: 0, deposit: true, frozen: false } },
+      }],
+      totals: { remaining: 3, 'cat:C1': 3 },
+      params: { scope: { type: 'all' }, q: '', show: 'all' },
+      asOf: '2026-09-25',
+    })
+    const params = { q: '张', show: 'remaining', tab: 'x' }
+    const content = await createExportContent('data-center', { view: 'report-remaining-cards', params })
+
+    expect(exportRemainingCardsReport).toHaveBeenCalledWith(params)
+    for (const board of [getSalesBoard, getCustomerBoard, getProductBoard, getEfficiencyBoard]) {
+      expect(board).not.toHaveBeenCalled()
+    }
+    expect(content.columns.map((column) => column.header)).toEqual(['门店', '顾客', '会员等级', '招牌', '剩余次数'])
+    expect(content.columns.map((column) => column.total ?? null)).toEqual([null, null, null, 3, 3])
+    expect(content.frozenColumns).toBe(3)
+    expect(content.totalsLabel).toBe('合计')
+    expect(content.meta).toMatchObject({ period: null, scope: '全部' })
+    const rows: Record<string, unknown>[] = []
+    for await (const row of content.rows) rows.push(row)
+    expect(content.columns.map((column) => column.value(rows[0]))).toEqual(['蓝莱店', '张三 138****2222', '会员客', 3, 3])
+  })
+})
+
+describe('日常数据一览表导出（#369）', () => {
+  const data = buildDailyOverview({
+    stores: [
+      { storeId: 'S1', storeName: '蓝莱店', marketId: 'M1', marketName: '南昌凤御' },
+      { storeId: 'S2', storeName: '自贡一店', marketId: 'M2', marketName: '自贡凤御' },
+    ],
+    categories: [
+      { categoryId: 'P1', categoryName: '招牌', productKind: null, sortOrder: 1, isValid: true },
+      { categoryId: 'C1', categoryName: '绝对招牌', productKind: '招牌', sortOrder: 1, isValid: true },
+    ],
+    performanceTotals: [{ storeId: 'S1', amount: '100.00' }],
+    performanceParts: [{ storeId: 'S1', salesCategory: '自销自耗', categoryId: 'C1', amount: '100' }],
+    recharge: [{ storeId: 'S2', amount: '20.00' }],
+    service: [{ storeId: 'S1', salesCategory: '他销他耗', amount: '30.00' }],
+  })
+
+  beforeEach(() => {
+    vi.mocked(getDailyOverview).mockResolvedValue({
+      data,
+      kpis: {} as never,
+      storeCount: 2,
+      period: {
+        label: '上月（2026年8月）',
+        current: { start: '2026-08-01', end: '2026-08-31' },
+        previous: { start: '2026-07-01', end: '2026-07-31' },
+      },
+      scope: { type: 'market', name: '南昌凤御' },
+    })
+  })
+
+  it('派给一览表取数函数（不是板块），参数原样透传', async () => {
+    const params = { scope: 'market', scopeId: 'M1', period: 'lastMonth', tab: 'secondary' }
+    await createExportContent('data-center', { view: 'report-daily-overview', params })
+    expect(getDailyOverview).toHaveBeenCalledWith(params)
+    expect(getSalesBoard).not.toHaveBeenCalled()
+  })
+
+  it('☆ 只导当前页签：视角③带两行合并表头的分组，合计行取服务端 totals，元信息写明期间 / 范围 / 视角', async () => {
+    const content = await createExportContent('data-center', { view: 'report-daily-overview', params: { tab: 'secondary' } })
+    expect(content.sheetName).toBe('二级品项汇总')
+    expect(content.columns.map((column) => column.header)).toEqual(['门店', '所属市场', '绝对招牌', '充值', '品项业绩合计'])
+    expect(content.columns[2].group).toEqual({ key: 'P1', header: '招牌' })
+    expect(content.columns.map((column) => column.total)).toEqual([undefined, undefined, 100, 20, 120])
+    expect(content.frozenColumns).toBe(2)
+    expect(content.totalsLabel).toBe('合计')
+    expect(content.meta).toEqual({
+      period: '2026-08-01 ~ 2026-08-31',
+      scope: '市场 · 南昌凤御',
+      extra: [{ label: '视角', value: '二级品项汇总' }],
+    })
+  })
+
+  it('缺省 / 非法 tab 导出经营类型视角', async () => {
+    const content = await createExportContent('data-center', { view: 'report-daily-overview', params: { tab: 'bogus' } })
+    expect(content.sheetName).toBe('经营类型汇总')
+    expect(content.columns.map((column) => column.header)).toContain('业绩合计')
+    expect(content.columns.map((column) => column.header)).toContain('服务合计')
+  })
+})
+
+describe('数据中心导出 · 顾客频率表', () => {
+  it('report-customer-frequency 走报表取数，不触碰任何旧板块取数函数；日期格拆「到店 / 金额」两列', async () => {
+    vi.clearAllMocks()
+    const day = (visited: boolean, amount: number | null) => ({ visited, amount, consume: null, items: [], stores: [] })
+    vi.mocked(exportCustomerFrequencyReport).mockResolvedValue({
+      rows: [{
+        clientUserId: 'U1', customerName: '张三', phoneMasked: '138****2222', level: '金卡', storeName: '蓝莱店',
+        // 1 日：到店有消费；2 日：到店消费为 0；3 日：只有退款（没到店）
+        days: { 1: day(true, 120), 2: day(true, 0), 3: day(false, -50) },
+        visitDays: 2, amount: 70, consume: 0,
+      }],
+      totals: { visitDays: 2, amount: 70 },
+      params: {
+        scope: { type: 'all' }, searchLabel: '138****5678', show: 'visited',
+        month: '2026-02', monthLabel: '2026年2月', range: { start: '2026-02-01', end: '2026-02-28' },
+      },
+    })
+    const params = { month: '2026-02', show: 'visited', sort: 'amount' }
+    const content = await createExportContent('data-center', { view: 'report-customer-frequency', params })
+
+    expect(exportCustomerFrequencyReport).toHaveBeenCalledWith(params)
+    for (const board of [getSalesBoard, getCustomerBoard, getProductBoard, getEfficiencyBoard]) {
+      expect(board).not.toHaveBeenCalled()
+    }
+    const headers = content.columns.map((column) => column.header)
+    // 4 列顾客信息 + 28 天 × 2 + 2 列汇总；2 月横轴 28 天
+    expect(headers).toHaveLength(4 + 28 * 2 + 2)
+    expect(headers.slice(0, 6)).toEqual(['姓名', '电话', '会员等级', '所属门店', '到店', '金额'])
+    expect(headers.slice(-2)).toEqual(['到店次数', '消费合计'])
+    expect(content.columns[4].group).toEqual({ key: 'day-1', header: '1日' })
+    expect(content.columns.at(-1)?.total).toBe(70)
+    expect(content.columns.at(-2)?.total).toBe(2)
+    expect(content.frozenColumns).toBe(4)
+    expect(content.totalsLabel).toBe('合计')
+    expect(content.meta).toMatchObject({ period: '2026-02-01 ~ 2026-02-28（2026年2月）', scope: '全部' })
+    // 按完整手机号搜索后导出：导出说明里的搜索词是 action 给出的脱敏值
+    expect(content.meta?.extra).toContainEqual({ label: '顾客搜索', value: '138****5678' })
+    expect(JSON.stringify(content.meta)).not.toMatch(/1\d{10}/)
+    const rows: Record<string, unknown>[] = []
+    for await (const row of content.rows) rows.push(row)
+    const values = content.columns.map((column) => column.value(rows[0]))
+    expect(values.slice(0, 4)).toEqual(['张三', '138****2222', '金卡', '蓝莱店'])
+    // 到店有金额：✓ + 数值；到店金额为 0：保留 ✓、金额空；没到店只有退款：到店空、金额负数
+    expect(values.slice(4, 10)).toEqual(['✓', 120, '✓', '', '', -50])
+    expect(values.slice(10, 12)).toEqual(['', ''])
+    expect(values.slice(-2)).toEqual([2, 70])
+    expect(JSON.stringify(values)).not.toMatch(/1\d{10}/)
+  })
+
+  it('缺统计月份 / 格式非法 / 未来月份都直接失败，不按执行当天的默认月出数', async () => {
+    vi.mocked(exportCustomerFrequencyReport).mockClear()
+    for (const params of [{}, { month: '2026-13' }, { month: '2026/08' }, { month: '2099-01' }] as Record<string, string>[]) {
+      await expect(
+        createExportContent('data-center', { view: 'report-customer-frequency', params }),
+        JSON.stringify(params),
+      ).rejects.toThrow('INVALID_PARAMS')
+    }
+    expect(exportCustomerFrequencyReport).not.toHaveBeenCalled()
   })
 })

@@ -130,9 +130,10 @@ import {
 import { db } from '@/db'
 import { getSession } from '@/lib/auth'
 import { isInScope, isAdminScope, scopeCondition } from '@/lib/permissions'
-import { eq, ilike, gte, lte, desc } from 'drizzle-orm'
+import { eq, ilike, gte, lte, desc, sql } from 'drizzle-orm'
 import { serviceOrders } from '@db/service'
 import { DEPOSIT_REFUND_REMARK } from '@/lib/service-remark'
+import { productSkus } from '@db/product'
 import { grantVisitPointsSafe } from '@/lib/visit-points'
 
 const mockSession = {
@@ -792,6 +793,29 @@ describe('createServiceOrder — scope + 次数校验 + 事务错误处理', () 
     expect(serviceItemInsert).toBeDefined()
     expect(serviceItemInsert!.values.isShengmei).toBe(true)
     expect(serviceItemInsert!.values.salesCategory).toBe('自销自耗')
+  })
+
+  it('is_shengmei 快照取 SKU 当前值优先、sale_items 兜底（#378，与 staff service.js 同源）', async () => {
+    ;(db.select as any).mockImplementation(
+      makeSelectChain([{ remainingSessions: 5, unitRealPrice: '200.00', boundStoreId: 'store-1', isShengmei: true }])
+    )
+    mockTx('FY-FW-260925001')
+    ;(sql as any).mockClear()
+
+    const result = await createServiceOrder(baseData)
+    expect(result.success).toBe(true)
+
+    // 找到 SELECT 里构造 isShengmei 的 COALESCE 模板：参数顺序即优先级
+    const coalesceCalls = (sql as any).mock.calls.filter(
+      ([strings, ...values]: [TemplateStringsArray, ...unknown[]]) =>
+        Array.isArray(strings) && strings.join('?').includes('COALESCE(') &&
+        values.includes(productSkus.isShengmei),
+    )
+    expect(coalesceCalls).toHaveLength(1)
+    const [strings, ...values] = coalesceCalls[0]
+    expect(strings.join('?').replace(/\s+/g, '')).toBe('COALESCE(?,?)')
+    expect(values[0]).toBe(productSkus.isShengmei)
+    expect(values[1]).toBe('is_shengmei') // saleItems.isShengmei（mock 列名）
   })
 })
 

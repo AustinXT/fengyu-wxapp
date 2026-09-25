@@ -61,19 +61,20 @@ BEGIN
     ON CONFLICT ON CONSTRAINT uq_commission_matrix DO NOTHING;
 
     -- ─── 服务单 ────────────────────────────────────────────────────────
+    -- price_threshold（#379）：自销自耗 / 他销自耗默认 100，其余 NULL（与迁移 0051 回填口径一致）
     INSERT INTO commission_rate_matrix
-      (org_id, order_type, role_type, sales_category, amount_tier_min, amount_tier_max, commission_rate)
+      (org_id, order_type, role_type, sales_category, amount_tier_min, amount_tier_max, commission_rate, price_threshold)
     VALUES
       -- 美容师
-      (v_org_id, '服务单', '美容师', '自销自耗',    0, 5000, 0.1200),
-      (v_org_id, '服务单', '美容师', '自销自耗', 5000, NULL, 0.1800),
-      (v_org_id, '服务单', '美容师', '他销自耗',    0, NULL, 0.1000),
-      (v_org_id, '服务单', '美容师', '他销他耗',    0, NULL, 0.0800),
+      (v_org_id, '服务单', '美容师', '自销自耗',    0, 5000, 0.1200,  100),
+      (v_org_id, '服务单', '美容师', '自销自耗', 5000, NULL, 0.1800,  100),
+      (v_org_id, '服务单', '美容师', '他销自耗',    0, NULL, 0.1000,  100),
+      (v_org_id, '服务单', '美容师', '他销他耗',    0, NULL, 0.0800, NULL),
       -- 养生师
-      (v_org_id, '服务单', '养生师', '自销自耗',    0, 5000, 0.1200),
-      (v_org_id, '服务单', '养生师', '自销自耗', 5000, NULL, 0.1800),
-      (v_org_id, '服务单', '养生师', '他销自耗',    0, NULL, 0.1000),
-      (v_org_id, '服务单', '养生师', '他销他耗',    0, NULL, 0.0800)
+      (v_org_id, '服务单', '养生师', '自销自耗',    0, 5000, 0.1200,  100),
+      (v_org_id, '服务单', '养生师', '自销自耗', 5000, NULL, 0.1800,  100),
+      (v_org_id, '服务单', '养生师', '他销自耗',    0, NULL, 0.1000,  100),
+      (v_org_id, '服务单', '养生师', '他销他耗',    0, NULL, 0.0800, NULL)
     ON CONFLICT ON CONSTRAINT uq_commission_matrix DO NOTHING;
 
     RAISE NOTICE 'seeded commission_rate_matrix for %', v_org_id;

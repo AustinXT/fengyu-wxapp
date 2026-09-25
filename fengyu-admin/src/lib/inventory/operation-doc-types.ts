@@ -87,7 +87,7 @@ export interface InventoryOperationDocFilter {
    * 类型是字面量而不是 `boolean` / 开放字符串：与 `cancellationRequested` 同理，
    * 这个条件只有收窄一个方向，别留出能写进去却退化成不过滤的值。
    */
-  pendingItemScope?: 'supply-chain'
+  pendingItemScope?: 'supply-chain' | 'company-shipment'
 }
 
 /**
@@ -177,9 +177,9 @@ export const INVENTORY_OPERATION_DOC_QUERY: Record<InventoryOperationId, Invento
      * `order.docType !== '采购订单' || order.status !== '待收货'` → INVALID_STATE。
      *
      * ⚠️ 与上一条不同，这里**刻意不加 pendingItemScope**：关闭作用于整单，
-     * 真正的拒绝条件是「市场行正常发货量超过已入库量」（要算 `inventory_doc_links` 的
-     * 采购订单发货 / 采购订单供应链采购入库 血缘），SQL 表达不划算。而且排掉之后
+     * 关单的拒绝条件在事务内逐行判定，SQL 表达不划算。而且排掉之后
      * 操作员会找不到那张关不掉的单、也不知道为什么，比点一次拿到明确报错更难排障。
+     * （#336 起发货直连市场报货单，「发货量超过已入库量」这条关单障碍已随之删除。）
      *
      * scopeRole=target：`cancelSupplyChainPurchaseOrder` 里
      * `supplyChainLocationId = order.targetOrgNodeId` → `assertLocationWritable(supplyChain)`，

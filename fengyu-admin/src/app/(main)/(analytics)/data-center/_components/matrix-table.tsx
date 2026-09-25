@@ -40,6 +40,8 @@ export interface MatrixColumn<T> extends MatrixColumnSpec<T> {
   sortable?: boolean
   /** 周末列：整列浅底 */
   weekend?: boolean
+  /** 列组底色：`service` = 服务类列浅绿底（一览表原型 §5.1） */
+  band?: "service"
   cell?: (row: T) => React.ReactNode
   tone?: (row: T) => MatrixCellTone | null | undefined
   /** 单元格悬停提示（如「待付清 ¥120.00」），同样渲染在浮层里 */
@@ -78,13 +80,24 @@ export interface MatrixTableProps<T> {
   onSortChange?: (sort: MatrixSort) => void
   /** 表体最大高度（px），超出纵向滚动、表头与合计行吸附 */
   maxHeight?: number
+  /**
+   * 两行表头各行高度（px），缺省各 36。分组标题或列头含换行（多行文字）时调高，
+   * 第二行的 sticky top 与纵向合并格的高度都按它算。
+   */
+  headerHeights?: readonly [number, number]
   onRowClick?: (row: T) => void
   className?: string
 }
 
 const DEFAULT_WIDTH = 96
-/** 两行表头时第二行的 sticky top；与第一行 th 的固定高度一致 */
+/** 表头每行的缺省高度；两行表头时第二行的 sticky top = 第一行高度 */
 const HEADER_ROW_HEIGHT = 36
+const DEFAULT_HEADER_HEIGHTS = [HEADER_ROW_HEIGHT, HEADER_ROW_HEIGHT] as const
+
+/** 含换行的表头文字按行折行显示；其余保持不换行（与原先一致） */
+function headerWhitespace(text: string | undefined) {
+  return text?.includes("\n") ? "whitespace-pre-line leading-snug" : "whitespace-nowrap"
+}
 
 // ─── 浮层提示：portal 到 body + fixed 定位，逃出 overflow:auto 容器的裁剪 ──────
 
@@ -244,6 +257,7 @@ function MatrixTable<T>({
   sort,
   onSortChange,
   maxHeight = 640,
+  headerHeights = DEFAULT_HEADER_HEIGHTS,
   onRowClick,
   className,
 }: MatrixTableProps<T>) {
@@ -322,6 +336,7 @@ function MatrixTable<T>({
           tone === "pending" ? "bg-[#FFF4E0]"
             : subtotal ? "bg-[var(--color-brand-warm)]"
             : column.weekend ? "bg-[#FAFAF7]"
+            : column.band === "service" ? "bg-[#F2F8F3]"
             : "bg-[var(--card)]",
           !tone && !subtotal && "group-hover:bg-[var(--color-brand-light)]",
           tone === "accent" && "font-semibold text-[var(--color-brand)]",
@@ -358,9 +373,13 @@ function MatrixTable<T>({
                   const firstPosition = frozen.get(columns[cell.firstLeafIndex].key)
                   const position = firstPosition?.side === "right" ? frozen.get(lastLeaf.key) : firstPosition
                   const edgeKey = firstPosition?.side === "right" ? columns[cell.firstLeafIndex].key : lastLeaf.key
-                  const weekend = column
-                    ? column.weekend
-                    : columns.slice(cell.firstLeafIndex, cell.firstLeafIndex + cell.colSpan).every((leaf) => leaf.weekend)
+                  const leaves = columns.slice(cell.firstLeafIndex, cell.firstLeafIndex + cell.colSpan)
+                  const weekend = column ? column.weekend : leaves.every((leaf) => leaf.weekend)
+                  const serviceBand = column ? column.band === "service" : leaves.every((leaf) => leaf.band === "service")
+                  // 分组底色：分组格取自身分组，叶子格取所属分组（不属于任何分组的纵向合并格不上色）
+                  const tint = group?.color ?? (column && cell.rowSpan === 1 ? column.group?.color : undefined)
+                  const top = rowIndex === 0 ? 0 : headerHeights[0]
+                  const height = cell.rowSpan > 1 ? headerHeights[0] + headerHeights[1] : headerHeights[rowIndex] ?? HEADER_ROW_HEIGHT
                   return (
                     <th
                       key={cell.key}
@@ -368,11 +387,12 @@ function MatrixTable<T>({
                       rowSpan={cell.rowSpan > 1 ? cell.rowSpan : undefined}
                       scope={group ? "colgroup" : "col"}
                       aria-sort={column && sort?.key === column.key ? (sort.direction === "asc" ? "ascending" : "descending") : undefined}
-                      style={stickyStyle(position, { top: rowIndex * HEADER_ROW_HEIGHT, height: HEADER_ROW_HEIGHT * cell.rowSpan })}
+                      style={stickyStyle(position, { top, height, ...(tint ? { backgroundColor: tint } : {}) })}
                       className={cn(
-                        "sticky border-b border-[var(--border)] px-3 align-middle text-xs font-medium whitespace-nowrap text-[var(--muted-foreground)]",
+                        "sticky border-b border-[var(--border)] px-3 align-middle text-xs font-medium text-[var(--muted-foreground)]",
+                        headerWhitespace(group ? group.header : column?.header),
                         position ? "z-30" : "z-20",
-                        weekend ? "bg-[#F0EFEA]" : "bg-[var(--muted)]",
+                        weekend ? "bg-[#F0EFEA]" : serviceBand ? "bg-[#E4F1E7]" : "bg-[var(--muted)]",
                         group ? "text-center" : alignClass(column?.align),
                         group ? "border-l border-l-[var(--border)]" : column && groupStartClass(column.key),
                         position && frozenEdgeClass(edgeKey),

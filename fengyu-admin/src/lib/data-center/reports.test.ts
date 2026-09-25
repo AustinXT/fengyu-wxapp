@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { KNOWN_PERMISSION_ACTIONS, getUiDependencyClosure } from '@/lib/permission-contract'
 import { DATA_CENTER_TABS } from './params'
+import { DATA_CENTER_VIEW_REQUIRED_ACTIONS } from '@/lib/export-job-types'
 import { DATA_CENTER_REPORT_LIST, DATA_CENTER_REPORTS } from './reports'
 
 describe('经营明细报表登记表（#367）', () => {
@@ -41,5 +42,14 @@ describe('经营明细报表登记表（#367）', () => {
     for (const key of ['customerFrequency', 'operatingMaster', 'commissionDaily', 'commissionDetail'] as const) {
       expect(DATA_CENTER_REPORTS[key].periodKind, key).toBe('month')
     }
+  })
+
+  it('5 个一级报表页面均已开放菜单入口', () => {
+    expect(DATA_CENTER_REPORT_LIST.filter((report) => report.menu).every((report) => report.menu?.enabled)).toBe(true)
+  })
+
+  it('报表导出视图的权限组合与所属报表页一致（页面 / action / 导出三处同一组常量）', () => {
+    expect(DATA_CENTER_VIEW_REQUIRED_ACTIONS['report-remaining-cards']).toEqual(DATA_CENTER_REPORTS.remainingCards.requiredActions)
+    expect(DATA_CENTER_VIEW_REQUIRED_ACTIONS['report-customer-frequency']).toEqual(DATA_CENTER_REPORTS.customerFrequency.requiredActions)
   })
 })

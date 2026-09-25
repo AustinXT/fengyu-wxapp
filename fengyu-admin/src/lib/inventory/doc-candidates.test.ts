@@ -24,7 +24,7 @@ vi.mock('@/lib/permissions', () => ({
 vi.mock('@/lib/operation-log', () => ({ logOperation: vi.fn() }))
 vi.mock('next/cache', () => ({ revalidatePath: vi.fn() }))
 
-import { getInventoryCoreDocsByIds, listInventoryDocCandidateIds, listInventoryDocCandidates } from './engine'
+import { getInventoryCoreDocsByIds, listInventoryDocCandidateIds, listInventoryDocCandidates, listStoreUnallocatedRequestSkus } from './engine'
 import {
   INVENTORY_DOC_CANDIDATES,
   INVENTORY_DOC_CANDIDATE_BULK_LIMIT,
@@ -204,12 +204,25 @@ describe('候选查询的类型 / 状态 / 剩余量口径', () => {
     expect(text).toContain('COALESCE(cand_item.fulfilled_quantity, 0) < cand_item.quantity')
   })
 
-  it('发货来源：未发量看「采购订单发货」血缘（排已取消目标单），只算有市场归属的行', async () => {
+  it('发货来源（#336）：市场报货单，未发量看「市场报货发货」直连血缘（排已取消目标单）', async () => {
     const { text, params } = await whereOf({ purpose: 'company-shipment-source' })
-    expect(text).toContain('cand_item.market_id IS NOT NULL')
-    expect(text).toContain('cand_link.from_item_id = cand_item.id')
-    expect(text).toContain("cand_link_doc.status <> '已取消'")
-    expect(params).toContain('采购订单发货')
+    expect(params).toContain('市场报货')
+    // 与 createItemCompanyShipment 同口径只认「已完成」（草稿 / 待审批的异常报货单不进发货候选）
+    expect(text).toMatch(/"inventory_docs"\."status" in \(\$\d+\)/)
+    expect(params).toContain('已完成')
+    expect(params).not.toContain('采购订单')
+    expect(text).toContain('shipped_link.from_item_id = cand_item.id')
+    expect(text).toContain("shipped_link.relation_type = '市场报货发货'")
+    expect(text).toContain("shipped_link_doc.status <> '已取消'")
+    // 报货行没有行级 market_id，不能沿用采购单那条「只算市场行」的过滤，否则候选恒为空
+    expect(text).not.toContain('market_id IS NOT NULL')
+    expect(text).not.toContain('采购订单发货')
+  })
+
+  it('发货来源按收货市场（发起端）收窄候选', async () => {
+    const { text, params } = await whereOf({ purpose: 'company-shipment-source', sourceOrgNodeId: 'M1' })
+    expect(text).toMatch(/"inventory_docs"\."source_org_node_id" = \$\d+/)
+    expect(params).toContain('M1')
   })
 
   it('配货来源：未配量看「门店报货配货」血缘', async () => {
@@ -239,10 +252,10 @@ describe('候选查询的类型 / 状态 / 剩余量口径', () => {
     expect(receipt.text).not.toContain('cand_received')
   })
 
-  it('发货来源「显示全部」仍要求至少一条市场行（纯自用采购单无行可发）', async () => {
+  it('发货来源「显示全部」去掉未发量条件（赠送可在正常量发完后单独补）', async () => {
     const { text } = await whereOf({ purpose: 'company-shipment-source', includeExhausted: true })
-    expect(text).toContain('cand_item.market_id IS NOT NULL')
-    expect(text).not.toContain('cand_link')
+    expect(text).not.toContain('EXISTS')
+    expect(text).not.toContain('shipped_link')
   })
 
   it('状态类候选不加剩余量条件（关闭采购作用于整单）', async () => {
@@ -273,6 +286,7 @@ describe('候选查询的检索与分页', () => {
       { purpose: 'market-receipt', keyword: 123 },
       { purpose: 'market-receipt', startDate: ['2026-09-01'] },
       { purpose: 'market-receipt', targetOrgNodeId: { a: 1 } },
+      { purpose: 'company-shipment-source', sourceOrgNodeId: { a: 1 } },
       { purpose: 'market-receipt', startDate: '2026-09-10', endDate: '2026-09-01' },
       { purpose: 'store-allocation-source', includeExhausted: 'true' },
     ]) {
@@ -296,6 +310,15 @@ describe('候选查询的检索与分页', () => {
     const { text, params } = await whereOf({ purpose: 'purchase-order-source', targetOrgNodeId: 'HQ-1' })
     expect(text).toMatch(/"target_org_node_id" = \$\d+/)
     expect(params).toContain('HQ-1')
+  })
+
+  it('发起端收窄参数生效（#337 分院配货选了收货门店后只列该门店的报货单）；类型不对按参数错误', async () => {
+    const { text, params } = await whereOf({ purpose: 'store-allocation-source', sourceOrgNodeId: 'ORG-S1', targetOrgNodeId: 'MKT-A' })
+    expect(text).toMatch(/"source_org_node_id" = \$\d+/)
+    expect(text).toMatch(/"target_org_node_id" = \$\d+/)
+    expect(params).toEqual(expect.arrayContaining(['ORG-S1', 'MKT-A']))
+    await expect(listInventoryDocCandidates({ purpose: 'store-allocation-source', sourceOrgNodeId: 42 } as never))
+      .rejects.toThrow(/^INVALID_PARAMS/)
   })
 
   it('排序末位是 id（翻页不重不漏），页长夹白名单、offset 按页算', async () => {
@@ -400,5 +423,44 @@ describe('批量取详情（getInventoryCoreDocsByIds）', () => {
   it('空数组直接返回空，不查库', async () => {
     await expect(getInventoryCoreDocsByIds([])).resolves.toEqual([])
     expect(mockDb.select).not.toHaveBeenCalled()
+  })
+})
+
+describe('门店未配报货 SKU（#337 拍板 A 的提示数据）', () => {
+  it('与 store-allocation-source 候选同一套条件（scope / 类型 / 已取消排除 / 门店收窄），行级未配量与建单守卫同口径', async () => {
+    mockDb.execute
+      .mockResolvedValueOnce([{ drifted: false }] as never)
+      .mockResolvedValueOnce([{ sku_id: 'SKU-1', remaining_quantity: '3.00', doc_ids: ['DBH-1', 'DBH-2'] }] as never)
+    const result = await listStoreUnallocatedRequestSkus({ storeOrgNodeId: 'ORG-S1', marketId: 'MKT-A' })
+    expect(result).toEqual([{ skuId: 'SKU-1', remainingQuantity: 3, docIds: ['DBH-1', 'DBH-2'] }])
+    const query = compile(mockDb.execute.mock.calls[1][0])
+    // 与候选选择器同样按配货市场（报货单接收端）收窄
+    expect(query.text).toMatch(/"inventory_docs"\."target_org_node_id" = \$\d+/)
+    // scope：两端 OR + 动作端（报货单的接收市场）收窄
+    expect(query.text).toMatch(/"inventory_docs"\."target_org_node_id" in \(\$\d+, \$\d+\)/)
+    expect(query.text).toMatch(/"inventory_docs"\."source_org_node_id" = \$\d+/)
+    expect(query.text).toMatch(/"inventory_docs"\."status" <> \$\d+/)
+    // 已配量只数「门店报货配货」且目标单未取消 —— 自选行不写血缘，天然不计入
+    expect(query.text).toContain('cand_link.relation_type = $')
+    expect(query.text).toContain("cand_link_doc.status <> '已取消'")
+    expect(query.params).toEqual(expect.arrayContaining(['门店报货', '已取消', 'ORG-S1', '门店报货配货', 'MKT-A', 'NODE-A1']))
+  })
+
+  it('越权空 scope 恒为空条件；缺门店 / 类型不对按参数错误且不碰库', async () => {
+    await expect(listStoreUnallocatedRequestSkus({ storeOrgNodeId: '', marketId: 'MKT-A' })).rejects.toThrow(/^INVALID_PARAMS/)
+    await expect(listStoreUnallocatedRequestSkus({ storeOrgNodeId: 7, marketId: 'MKT-A' } as never)).rejects.toThrow(/^INVALID_PARAMS/)
+    // 配货市场必填：不收窄市场时提示会混入本市场引用不了的旧市场报货单
+    await expect(listStoreUnallocatedRequestSkus({ storeOrgNodeId: 'ORG-S1' } as never)).rejects.toThrow(/^INVALID_PARAMS/)
+    expect(mockDb.execute).not.toHaveBeenCalled()
+
+    mockGetSession.mockResolvedValue({
+      employeeId: 'E-NONE', name: '无绑定', phone: '13800000000', roles: [],
+      permissions: { actions: ['inventory:list'], scopeStoreIds: [], scopeOrgNodeIds: [] },
+    } as never)
+    mockDb.execute
+      .mockResolvedValueOnce([{ drifted: false }] as never)
+      .mockResolvedValueOnce([] as never)
+    await listStoreUnallocatedRequestSkus({ storeOrgNodeId: 'ORG-S1', marketId: 'MKT-A' })
+    expect(compile(mockDb.execute.mock.calls[1][0]).text).toMatch(/WHERE\s+false/i)
   })
 })

@@ -15,6 +15,20 @@ const pg = require('../db/pg')
 const { requireManagementLevel } = require('../middleware/auth')
 const { validateManagementScope, buildManagementStoreScope } = require('../utils/scope')
 const { excludeDepositRefundSql } = require('../utils/consume-filter')
+const { getMemberThreshold } = require('../utils/config')
+
+/**
+ * 会员被经营 6 档分桶的固定下界（星钻 1w / 粉钻 3w / 金钻 6w / 黑钻 10w）。
+ * 最低一档下界 = 会员门槛 system_configs.new_member_threshold（getMemberThreshold，#292）。
+ * ⚠️ admin 同值独立副本：fengyu-admin/src/lib/data-center/spend-buckets.ts（禁止跨端共享代码），
+ * 由 fengyu-admin consistency.customer.test.ts 守护。tier 标签 '<1990' / '1990-1W' 保持写死（2026-09-25 拍板）。
+ */
+const SPEND_BUCKET_FLOORS = Object.freeze({
+  star: 10000,
+  pink: 30000,
+  gold: 60000,
+  black: 100000,
+})
 
 const VALID_PERIODS = ['month', 'lastMonth', 'year']
 
@@ -264,14 +278,18 @@ async function queryStatusBreakdown(scopeType, scopeId) {
 }
 
 /**
- * 一次客活 / 二次客活
+ * 一次客活 / 二次客活 = 区间内到店**天数** = 1 / >= 2（#298）
+ *
+ * 到店天数按 (client_user_id, service_date) 去重，同日多张服务单只算 1 天；
+ * 与 cron monthly_activity 同轴。admin 侧同口径在 lib/data-center/visit-days.ts（visitDaysSql），
+ * 两端独立副本，由 fengyu-admin consistency.customer.test.ts 守护。
  */
 async function queryActiveOnce(scopeType, scopeId, period) {
   const ssc = buildSaleScope(scopeType, scopeId, 'so', 1)
   const csc = buildClientScope(scopeType, scopeId, 'c', 1 + ssc.params.length)
   const rows = await pg.query(
     `WITH visit_count AS (
-       SELECT so.client_user_id, COUNT(*) AS n
+       SELECT so.client_user_id, COUNT(DISTINCT so.service_date) AS days
          FROM service_orders so
         WHERE ${ssc.sql}
           AND so.status = '已完成'
@@ -284,7 +302,7 @@ async function queryActiveOnce(scopeType, scopeId, period) {
        JOIN client_wechat_users c ON c.user_id = vc.client_user_id
       WHERE ${csc.sql}
         AND c.customer_status IN ('保有会员-稳定', '保有会员-有效')
-        AND vc.n = 1`,
+        AND vc.days = 1`,
     [...ssc.params, ...csc.params],
   )
   return Number(rows[0]?.v || 0)
@@ -295,7 +313,7 @@ async function queryActiveTwice(scopeType, scopeId, period) {
   const csc = buildClientScope(scopeType, scopeId, 'c', 1 + ssc.params.length)
   const rows = await pg.query(
     `WITH visit_count AS (
-       SELECT so.client_user_id, COUNT(*) AS n
+       SELECT so.client_user_id, COUNT(DISTINCT so.service_date) AS days
          FROM service_orders so
         WHERE ${ssc.sql}
           AND so.status = '已完成'
@@ -308,7 +326,7 @@ async function queryActiveTwice(scopeType, scopeId, period) {
        JOIN client_wechat_users c ON c.user_id = vc.client_user_id
       WHERE ${csc.sql}
         AND c.customer_status IN ('保有会员-稳定', '保有会员-有效')
-        AND vc.n >= 2`,
+        AND vc.days >= 2`,
     [...ssc.params, ...csc.params],
   )
   return Number(rows[0]?.v || 0)
@@ -391,6 +409,10 @@ async function queryReactivated(scopeType, scopeId, period, startDate, bucket) {
 
 async function queryMemberOps(scopeType, scopeId, period) {
   const sc = buildSaleScope(scopeType, scopeId, 'o', 1)
+  const threshold = await getMemberThreshold()
+  // 门槛参数占位（字符串拼接而非模板串：守护的 SQL 词法器会把 `$${` 读成 PG dollar-quote）
+  const th = '$' + (sc.params.length + 1)
+  const f = SPEND_BUCKET_FLOORS
   const rows = await pg.query(
     `WITH member_spend AS (
        SELECT o.client_user_id,
@@ -408,22 +430,22 @@ async function queryMemberOps(scopeType, scopeId, period) {
         GROUP BY o.client_user_id
      )
      SELECT
-       COUNT(*) FILTER (WHERE spend < 1990) AS bucket1_count,
-       COALESCE(SUM(spend) FILTER (WHERE spend < 1990), 0) AS bucket1_spend,
-       COUNT(*) FILTER (WHERE spend >= 1990 AND spend < 10000) AS bucket2_count,
-       COALESCE(SUM(spend) FILTER (WHERE spend >= 1990 AND spend < 10000), 0) AS bucket2_spend,
-       COUNT(*) FILTER (WHERE spend >= 10000 AND spend < 30000) AS bucket3_count,
-       COALESCE(SUM(spend) FILTER (WHERE spend >= 10000 AND spend < 30000), 0) AS bucket3_spend,
-       COUNT(*) FILTER (WHERE spend >= 30000 AND spend < 60000) AS bucket4_count,
-       COALESCE(SUM(spend) FILTER (WHERE spend >= 30000 AND spend < 60000), 0) AS bucket4_spend,
-       COUNT(*) FILTER (WHERE spend >= 60000 AND spend < 100000) AS bucket5_count,
-       COALESCE(SUM(spend) FILTER (WHERE spend >= 60000 AND spend < 100000), 0) AS bucket5_spend,
-       COUNT(*) FILTER (WHERE spend >= 100000) AS bucket6_count,
-       COALESCE(SUM(spend) FILTER (WHERE spend >= 100000), 0) AS bucket6_spend,
+       COUNT(*) FILTER (WHERE spend < ${th}) AS bucket1_count,
+       COALESCE(SUM(spend) FILTER (WHERE spend < ${th}), 0) AS bucket1_spend,
+       COUNT(*) FILTER (WHERE spend >= ${th} AND spend < ${f.star}) AS bucket2_count,
+       COALESCE(SUM(spend) FILTER (WHERE spend >= ${th} AND spend < ${f.star}), 0) AS bucket2_spend,
+       COUNT(*) FILTER (WHERE spend >= ${f.star} AND spend < ${f.pink}) AS bucket3_count,
+       COALESCE(SUM(spend) FILTER (WHERE spend >= ${f.star} AND spend < ${f.pink}), 0) AS bucket3_spend,
+       COUNT(*) FILTER (WHERE spend >= ${f.pink} AND spend < ${f.gold}) AS bucket4_count,
+       COALESCE(SUM(spend) FILTER (WHERE spend >= ${f.pink} AND spend < ${f.gold}), 0) AS bucket4_spend,
+       COUNT(*) FILTER (WHERE spend >= ${f.gold} AND spend < ${f.black}) AS bucket5_count,
+       COALESCE(SUM(spend) FILTER (WHERE spend >= ${f.gold} AND spend < ${f.black}), 0) AS bucket5_spend,
+       COUNT(*) FILTER (WHERE spend >= ${f.black}) AS bucket6_count,
+       COALESCE(SUM(spend) FILTER (WHERE spend >= ${f.black}), 0) AS bucket6_spend,
        COALESCE(SUM(spend), 0) AS total_spend,
        COUNT(*) AS total_count
      FROM member_spend`,
-    sc.params,
+    [...sc.params, threshold],
   )
   const r = rows[0] || {}
   const round2 = (v) => Math.round(Number(v || 0) * 100) / 100

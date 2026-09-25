@@ -8,7 +8,7 @@ import { defaultScopeParams, resolveDataCenterEntry, type SearchQuery } from './
 import { collapseQuery, firstQueryValue, parseScope } from './params'
 import { parseReportMonth, parseReportRange, type ReportPeriod } from './report-period'
 import { shanghaiToday } from './time-range'
-import type { DataCenterScope, DataCenterScopeOptions, ResolvedRange } from './types'
+import type { DataCenterScope, DataCenterScopeOptions, ResolvedRange, ScopeOptionInactiveStore } from './types'
 
 export type ReportPeriodKind = 'range' | 'month' | 'none'
 
@@ -16,12 +16,18 @@ export interface ReportPageContext {
   /**
    * 生效的 scope。非总部且没有可查看门店（noViewableScope）时为 null——此时 URL 里只可能是 'all'，
    * 拿它取数必被 validateScope 拒成 PERMISSION_DENIED；置 null 让页面漏判 noViewableScope 在 tsc 就报错。
+   * 选中已停用门店（inactiveStore）时同样为 null：拿它取数只会得到满屏 0。
+   * ⚠️ 页面判「要不要取数 / 渲染自定义空态」一律以 `scope === null` 为准，别只看 noViewableScope——会漏掉停用门店。
    */
   scope: DataCenterScope | null
   /** 仅范围型页面为 null */
   period: ReportPeriod | null
   /** 非总部却没有可查看的门店：页面渲染空态，不取数 */
   noViewableScope: boolean
+  /** URL 选中权限内的已停用门店（#293）：页面渲染「已停用」空态，不取数、不跳回默认范围 */
+  inactiveStore: ScopeOptionInactiveStore | null
+  /** 停用门店空态里「回到默认范围」的目标（见 DataCenterEntry.defaultScopeHref） */
+  defaultScopeHref: string | null
   /** 「重置」目标：权限默认范围对应的 URL 参数（总部为空对象） */
   defaultQuery: Record<string, string>
   /** Asia/Shanghai 的今天，服务端算好传给筛选器，避免客户端跨午夜算出另一天 */
@@ -51,8 +57,11 @@ export function resolveReportPage(input: {
   // 保留其余参数。不这么做，页面会显示「未知门店（0 家门店）」且下拉回显错位，取数时再被 validateScope 拒成 403。
   // 终止性显式校验：默认范围本身必须在数据源内才跳（按构造恒成立：authorized / 数据源里的门店 / 总部 all），
   // 否则降级成空态，绝不冒无限重定向的险。
+  // 已停用门店不在筛选器数据源里，但不能按「数据源外」跳回默认范围：那样用户点开停用门店的链接会被悄悄换成
+  // 别的范围、看到别家的数，照样分不清「已停用」。entry 已识别出它，这里直接渲染空态。
+  const { inactiveStore, defaultScopeHref } = entry
   let noViewableScope = entry.noViewableScope
-  if (!noViewableScope && !isScopeInOptions(scope, input.scopeOptions)) {
+  if (!noViewableScope && !inactiveStore && !isScopeInOptions(scope, input.scopeOptions)) {
     const fallback = parseScope({ scope: defaultQuery.scope, scopeId: defaultQuery.scopeId })
     if (isScopeInOptions(fallback, input.scopeOptions)) {
       const next = collapseQuery(input.query, ['scope', 'scopeId'])
@@ -72,7 +81,15 @@ export function resolveReportPage(input: {
 
   return {
     kind: 'render',
-    context: { scope: noViewableScope ? null : scope, period, noViewableScope, defaultQuery, today },
+    context: {
+      scope: noViewableScope || inactiveStore ? null : scope,
+      period,
+      noViewableScope,
+      inactiveStore,
+      defaultScopeHref,
+      defaultQuery,
+      today,
+    },
   }
 }
 

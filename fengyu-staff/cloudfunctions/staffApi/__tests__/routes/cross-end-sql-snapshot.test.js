@@ -57,6 +57,8 @@ const FILES = {
   adminHomeProductTs: path.resolve(__dirname, '../../../../../fengyu-admin/src/lib/home-product.ts'),
   staffMgmtCustomerJs: path.resolve(__dirname, '../../routes/mgmt-customer.js'),
   adminCardsTs: path.resolve(__dirname, '../../../../../fengyu-admin/src/actions/cards.ts'),
+  adminCardEntitlementTs: path.resolve(__dirname, '../../../../../fengyu-admin/src/lib/card-entitlement.ts'),
+  adminRemainingCardsQueryTs: path.resolve(__dirname, '../../../../../fengyu-admin/src/lib/data-center/remaining-cards-query.ts'),
   adminPickupRecordsTs: path.resolve(__dirname, '../../../../../fengyu-admin/src/actions/pickup-records.ts'),
   staffPaymentAllocatableJs: path.resolve(__dirname, '../../utils/payment-allocatable.js'),
   clientPaymentAllocatableJs: path.resolve(__dirname, '../../../../../fengyu-client/cloudfunctions/clientApi/utils/payment-allocatable.js'),
@@ -112,6 +114,9 @@ const FILES = {
   // M1（2026-07-14）：admin confirmServiceOrder 经 lib/service-commission-settle.ts 镜像同口径
   adminServiceCommissionSettleTs: path.resolve(__dirname, '../../../../../fengyu-admin/src/lib/service-commission-settle.ts'),
   adminServicesTs: path.resolve(__dirname, '../../../../../fengyu-admin/src/actions/services.ts'),
+  // #379 服务提成手动保存两端（staff save / admin batchSave）：与 finalize 同算阈值保底
+  staffServiceCommissionJs: path.resolve(__dirname, '../../routes/serviceCommission.js'),
+  adminServiceCommissionsTs: path.resolve(__dirname, '../../../../../fengyu-admin/src/actions/service-commissions.ts'),
   staffVisitPointsJs: path.resolve(__dirname, '../../utils/visit-points.js'),
   clientVisitPointsJs: path.resolve(__dirname, '../../../../../fengyu-client/cloudfunctions/clientApi/utils/visit-points.js'),
   adminVisitPointsTs: path.resolve(__dirname, '../../../../../fengyu-admin/src/lib/visit-points.ts'),
@@ -1683,7 +1688,7 @@ describe("STEP 1.5 逐项退款净额 SQL 四端字节同义守护", () => {
 // operation_logs 缺率告警 INSERT 因 operator/source 字面不同（staffApi vs clientApi），不纳入比对。
 describe('服务单 finalize 跨端 SQL 一致性守护（staff / client / admin 三端）', () => {
   const MARKER_SVC_DEDUCT = 'remaining_sessions = remaining_sessions - $1'
-  const MARKER_SVC_RATE = 'commission_rate FROM commission_rate_matrix'
+  const MARKER_SVC_RATE = 'commission_rate, price_threshold FROM commission_rate_matrix'
   const MARKER_SVC_COMM_INSERT = 'INSERT INTO service_commissions'
 
   let deduct, rate, commInsert
@@ -1728,6 +1733,10 @@ describe('服务单 finalize 跨端 SQL 一致性守护（staff / client / admin
       expect(rate.staff).toContain("order_type = '服务单'")
       expect(rate.admin).toContain("order_type = '服务单'")
     })
+    test('#379 staff serviceCommission.save 查率 SELECT 与 finalize 归一化后一致（阈值取自同一命中行）', () => {
+      const saveRate = normalizeSql(extractBacktickStringContaining(readFile(FILES.staffServiceCommissionJs), MARKER_SVC_RATE))
+      expect(saveRate).toBe(rate.staff)
+    })
     test('按服务单所属市场过滤（org_id = store→org 树解析市场节点，防跨市场费率行碰撞）', () => {
       expect(rate.staff).toContain('org_id =')
       expect(rate.staff).toContain('JOIN org_nodes m ON son.parent_id = m.id')
@@ -1735,6 +1744,60 @@ describe('服务单 finalize 跨端 SQL 一致性守护（staff / client / admin
       expect(rate.admin).toContain('org_id =')
       expect(rate.admin).toContain('JOIN org_nodes m ON son.parent_id = m.id')
     })
+  })
+
+  // #379 划卡单价阈值：五个写入副本（finalize ×3 + 手动保存 ×2）的消耗提成计算段**整行等值**守护。
+  // 各副本变量名不同，先按副本登记「单价 P / 次数 N / 命中行 R」三个别名，把 Math.round(x * 100) / 100
+  // 归一成 round2(x)、drizzle 驼峰字段归一成列名，再与标准形态逐字比较——次数、舍入、ratio、选档参数
+  // 任何一处被改（如 × (N + 1)、选档改用 effConsumeBase）都会失败。先剥注释，防「注释掉新行留旧行」。
+  describe('#379 消耗提成阈值保底五端整段等值', () => {
+    const COPIES = [
+      { name: 'staff finalize', file: () => FILES.staffServiceJs, P: 'perSession', N: 'row.session_used', R: 'rateRows.rows[0]', split: false,
+        perSession: 'Number(row.unit_real_price || 0)', tier: /\[roleType, row\.sales_category, consumeBase, serviceOrderId\]/ },
+      { name: 'client finalize', file: () => FILES.clientServiceFinalizeJs, P: 'perSession', N: 'row.session_used', R: 'rateRows.rows[0]', split: false,
+        perSession: 'Number(row.unit_real_price || 0)', tier: /\[roleType, row\.sales_category, consumeBase, serviceOrderId\]/ },
+      { name: 'admin settle', file: () => FILES.adminServiceCommissionSettleTs, P: 'perSession', N: 'sessionUsed', R: 'rateRows[0]', split: false,
+        perSession: 'Number(row.unit_real_price || 0)', tier: /amount_tier_min <= \$\{consumeBase\}\s+AND \(amount_tier_max IS NULL OR amount_tier_max >= \$\{consumeBase\}\)/ },
+      { name: 'staff save', file: () => FILES.staffServiceCommissionJs, P: 'Number(p.unit_real_price || 0)', N: 'sessionUsed', R: 'rateRows.rows[0]', split: true,
+        perSession: null, tier: /\[c\.roleType, p\.sales_category, consumeBase, serviceOrderId\]/ },
+      { name: 'admin batchSave', file: () => FILES.adminServiceCommissionsTs, P: 'perSession', N: 'pricing.sessionUsed', R: 'rateRows[0]', split: true,
+        perSession: 'Number(pricing.unitRealPrice)', tier: /amountTierMin\} <= \$\{consumeBase\}`,\s+sql`\(\$\{commissionRateMatrix\.amountTierMax\} IS NULL OR \$\{commissionRateMatrix\.amountTierMax\} >= \$\{consumeBase\}\)/ },
+    ]
+    const EXPECTED = {
+      consumeBase: 'round2(P * N)',
+      rate: 'Number(R?.commission_rate || 0)',
+      effConsumeBase: 'round2(Math.max(P, Number(R?.price_threshold || 0)) * N)',
+    }
+
+    /** 取 `const <name> = <rhs>` 的 rhs（须恰好一处），归一舍入写法与别名 */
+    function canon(src, name, copy) {
+      const hits = [...src.matchAll(new RegExp(`const ${name} = ([^\\n]+)`, 'g'))].map((m) => m[1].trim())
+      expect(hits, `${copy.name}: const ${name} 应恰好一处`).toHaveLength(1)
+      let rhs = hits[0]
+      const mr = rhs.match(/^Math\.round\((.*) \* 100\) \/ 100$/)
+      if (mr) rhs = `round2(${mr[1]})`
+      return rhs
+        .split(copy.R).join('R')
+        .split(copy.P).join('P')
+        .split(copy.N).join('N')
+        .replace(/\bpriceThreshold\b/g, 'price_threshold')
+        .replace(/\bcommissionRate\b/g, 'commission_rate')
+    }
+
+    for (const copy of COPIES) {
+      test(`${copy.name}：consumeBase / rate / effConsumeBase / consumeAmount 整行等值 + 选档用原始 consumeBase`, () => {
+        const src = stripJsComments(readFile(copy.file()))
+        if (copy.perSession) {
+          const ps = [...src.matchAll(/const perSession = ([^\n]+)/g)].map((m) => m[1].trim())
+          expect(ps).toEqual([copy.perSession])
+        }
+        expect(canon(src, 'consumeBase', copy)).toBe(EXPECTED.consumeBase)
+        expect(canon(src, 'rate', copy)).toBe(EXPECTED.rate)
+        expect(canon(src, 'effConsumeBase', copy)).toBe(EXPECTED.effConsumeBase)
+        expect(canon(src, 'consumeAmount', copy)).toBe(copy.split ? 'round2(effConsumeBase * ratio * rate)' : 'round2(effConsumeBase * rate)')
+        expect(src).toMatch(copy.tier)
+      })
+    }
   })
 
   describe('service_commissions 写入 INSERT 镜像比对', () => {
@@ -3306,9 +3369,13 @@ describe('#125 家居转换折抵跨端守护', () => {
       expect(src).toContain("row.order_status !== '已支付' && row.order_status !== '部分支付' && row.order_status !== '已完成'")
     })
     test('admin getCustomerHeldCards 复用 CARD_ENTITLEMENT_ORDER_STATUSES，createConversionOrder 同步放开', () => {
-      const cardsSrc = readFile(path.resolve(__dirname, '../../../../../fengyu-admin/src/actions/cards.ts'))
-      // 与卡包列表共用同一组状态常量，避免两处硬编码漂移
-      expect(cardsSrc).toContain("const CARD_ENTITLEMENT_ORDER_STATUSES = ['已支付', '部分支付', '已完成']")
+      const cardsSrc = readFile(FILES.adminCardsTs)
+      // 与卡包列表共用同一组状态常量（#371 起单源在 lib/card-entitlement.ts），避免两处硬编码漂移
+      expect(readFile(FILES.adminCardEntitlementTs)).toContain("export const CARD_ENTITLEMENT_ORDER_STATUSES = ['已支付', '部分支付', '已完成']")
+      expect(cardsSrc, 'cards.ts 须从 lib/card-entitlement 引用状态常量，不得本地再写一份').toMatch(
+        /import \{[^}]*\bCARD_ENTITLEMENT_ORDER_STATUSES\b[^}]*\} from '@\/lib\/card-entitlement'/,
+      )
+      expect(cardsSrc).not.toMatch(/const CARD_ENTITLEMENT_ORDER_STATUSES\s*=/)
       expect(cardsSrc).toMatch(/inArray\(saleOrders\.status, \[\.\.\.CARD_ENTITLEMENT_ORDER_STATUSES\]\)[\s\S]{0,600}疗程卡/)
       const ordersSrc = readFile(FILES.adminOrdersTs)
       expect(ordersSrc).toContain("row.order_status !== '已支付' && row.order_status !== '部分支付' && row.order_status !== '已完成'")
@@ -3425,13 +3492,17 @@ describe('疗程卡可用次数为 0 时仍展示的跨端守护（issue #122）
   })
 
   test('admin 卡包列表按剩余次数展示，不再按已付次数硬过滤', () => {
-    const src = readFile(FILES.adminCardsTs)
-    // 断言必须锁在 buildCardBaseConditions 函数体内：同文件别处也有
-    // `remainingSessions > 0`，文件级 toContain 会被兄弟代码兜底而测不出回退。
-    const body = src.match(
+    // #371 起基础集单源在 lib/card-entitlement.ts 的 cardBaseConditions()，卡包列表与数据中心剩余卡项清单共用。
+    // 断言必须锁在函数体内：同一批文件别处也有 `remainingSessions > 0`，文件级 toContain 会被兄弟代码兜底而测不出回退。
+    const cardsBody = readFile(FILES.adminCardsTs).match(
       /function buildCardBaseConditions\b[\s\S]*?\n\}/,
     )?.[0]
-    expect(body, '未能定位 buildCardBaseConditions 函数体').toBeTruthy()
+    expect(cardsBody, '未能定位 buildCardBaseConditions 函数体').toBeTruthy()
+    expect(cardsBody, 'buildCardBaseConditions 须展开共用基础集').toContain('...cardBaseConditions()')
+    const body = readFile(FILES.adminCardEntitlementTs).match(
+      /export function cardBaseConditions\b[\s\S]*?\n\}/,
+    )?.[0]
+    expect(body, '未能定位 cardBaseConditions 函数体').toBeTruthy()
     expect(body, '不得回退到 paid_sessions > 0 硬过滤').not.toContain(
       'sql`${saleItems.paidSessions} > 0`',
     )
@@ -3440,6 +3511,21 @@ describe('疗程卡可用次数为 0 时仍展示的跨端守护（issue #122）
     expect(body, '基础集不得按次数过滤').not.toContain(
       'sql`${saleItems.remainingSessions} > 0`',
     )
+  })
+
+  // #371：admin「已退完」守卫从 getCustomerHeldCards 内联抽到 lib/card-entitlement.ts，持卡折抵候选与
+  // 数据中心剩余卡项清单共用。它一漂，已退款的卡会在两处复活（见 staff customer.js 同款守卫注释）。
+  test('admin 已退完守卫单源锁住，且折抵候选与剩余卡项清单都走它', () => {
+    const body = readFile(FILES.adminCardEntitlementTs).match(
+      /export function cardNotFullyRefundedCondition\b[\s\S]*?\n\}/,
+    )?.[0]
+    expect(body, '未能定位 cardNotFullyRefundedCondition 函数体').toBeTruthy()
+    expect(body).toContain("sop.change_type = '退款' AND sop.status = '已支付'")
+    expect(body).toContain('${saleItems.paidSessions} IS NULL OR ${saleItems.paidSessions} > (${saleItems.sessionCount} - ${saleItems.remainingSessions})')
+    const heldCards = readFile(FILES.adminCardsTs).match(/export const getCustomerHeldCards\b[\s\S]*?\n\)\n/)?.[0]
+    expect(heldCards, '未能定位 getCustomerHeldCards').toBeTruthy()
+    expect(heldCards).toContain('cardNotFullyRefundedCondition()')
+    expect(readFile(FILES.adminRemainingCardsQueryTs)).toContain('cardNotFullyRefundedCondition()')
   })
 
   // 核销限额与展示解耦：service 侧三处校验必须原样保留，放宽展示不得放宽核销。

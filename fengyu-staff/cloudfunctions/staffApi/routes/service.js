@@ -282,12 +282,15 @@ async function create(ctx) {
     for (const item of normalizedItems) {
       const serviceItemId = generateServiceItemId()
 
-      // sale_items → product_skus + product_categories fallback：
-      // 历史 sale_items（WorkFine migration 进入）这两列常为 NULL，导致看板"项目数 / 生美实耗"为 0。
-      // 优先取 sale_items 上已快照值；为 NULL 时回退到 product_skus + product_categories。
+      // 快照来源：
+      // - is_shengmei：服务单创建时取 product_skus 当前值，SKU 为 NULL 时回退 sale_items 开单快照（#378）。
+      //   生美实耗按服务单创建时的 SKU 配置计；sale_items 的开单快照仍服务生美业绩，两者口径不同。
+      //   admin services.ts createServiceOrder 同源，改一端必同步另一端。
+      // - sales_category：优先 sale_items 快照，NULL 时回退 product_categories
+      //   （历史 WorkFine 迁入的 sale_items 常为 NULL）。
       const siRows = await client.query(
         `SELECT si.unit_real_price,
-                COALESCE(si.is_shengmei, ps.is_shengmei) AS is_shengmei,
+                COALESCE(ps.is_shengmei, si.is_shengmei) AS is_shengmei,
                 COALESCE(si.sales_category, pc.sales_category) AS sales_category
          FROM sale_items si
          LEFT JOIN product_skus ps ON ps.sku_id = si.sku_id
@@ -647,7 +650,7 @@ async function finalizeServiceOrder(client, so, items, ctx, now) {
 
   // ========== 计算并写入服务提成（service_commissions）==========
   // 双字段模型：fixed_fee = service_fee × session_used
-  //            consume_amount = unit_real_price × session_used × commission_rate
+  //            consume_amount = max(unit_real_price, price_threshold) × session_used × commission_rate（#379 阈值保底）
   //            commission_amount = fixed_fee + consume_amount
   // 说明：sale_items/service_items.unit_real_price 已是 per-session 单次价（如 5次卡 3500/5=700），
   //       直接作为每次消耗基准，无需再 ÷session_count。
@@ -665,7 +668,7 @@ async function finalizeServiceOrder(client, so, items, ctx, now) {
     const consumeBase = Math.round(perSession * row.session_used * 100) / 100
 
     const rateRows = await client.query(
-      `SELECT commission_rate FROM commission_rate_matrix
+      `SELECT commission_rate, price_threshold FROM commission_rate_matrix
        WHERE order_type = '服务单'
          AND role_type = $1
          AND sales_category = $2
@@ -683,7 +686,9 @@ async function finalizeServiceOrder(client, so, items, ctx, now) {
       [roleType, row.sales_category, consumeBase, serviceOrderId]
     )
     const rate = Number(rateRows.rows[0]?.commission_rate || 0)
-    const consumeAmount = Math.round(consumeBase * rate * 100) / 100
+    // #379 划卡单价阈值：单次实价低于命中行 price_threshold 时按阈值计消耗提成（NULL=不启用；选档仍用原始 consumeBase）
+    const effConsumeBase = Math.round(Math.max(perSession, Number(rateRows.rows[0]?.price_threshold || 0)) * row.session_used * 100) / 100
+    const consumeAmount = Math.round(effConsumeBase * rate * 100) / 100
     const commissionAmount = Math.round((fixedFee + consumeAmount) * 100) / 100
 
     // rate=0 且有消耗金额时，提示运维补齐矩阵规则

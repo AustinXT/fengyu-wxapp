@@ -20,6 +20,9 @@
  *   2b. 顾客出库只走提货（#350）— admin `INVENTORY_GENERIC_DOC_TYPES`（types.ts）与
  *      staff `STAFF_CREATE_DOC_TYPES` 都不得含「院顾客产品出库」，取舍两端一致。
  *
+ *   7. 建单明细数量规则（#351）— 盘点类型允许实盘 0、留空一律拒；admin engine 与 staff
+ *      的 `isValidDocItemQuantity` 函数体逐字一致，DB trigger 的盘点类型清单与集合一致。
+ *
  *   3. staff 端安全护栏 —
  *      a. 所有 throw new Error 的一级前缀 ⊆ 9 项错误码白名单
  *      b. assertNoStaffMoneyFields 金额字段禁提交保护必须存在
@@ -38,6 +41,8 @@ const FILES = {
   dbSchemaInventoryTs: path.resolve(__dirname, '../../../../../db/schema/inventory.ts'),
   // #350：通用建单白名单是 `as const` 数组字面量，住在 types.ts
   adminTypesTs: path.resolve(__dirname, '../../../../../fengyu-admin/src/lib/inventory/types.ts'),
+  // #351：非盘点类型「数量 > 0」的 DB 兜底 trigger 住在迁移里
+  dbMigrationsDir: path.resolve(__dirname, '../../../../../db/migrations'),
 }
 
 function readFile(p) {
@@ -470,6 +475,127 @@ describe('PR #113 进销存单据组织端点跨端守护（staff / admin / sche
       // `ORDER BY (org_node_id = $1) DESC` 当排序键的原因之一（NULL 比较得 NULL，
       // 且 DESC 默认 NULLS FIRST），也是 `org_node_id || locationId` 兜底那个已知缺陷的前提。
       expect(schemaSrc).toMatch(/orgNodeId: text\('org_node_id'\)\.references\(\(\) => orgNodes\.id\),/)
+    })
+  })
+
+  /**
+   * §7 建单明细数量规则（#351）。
+   *
+   * 盘点单的数量是实盘数：0（账上有货、货架上没有）必须能录，留空不能被 `Number()` 悄悄变成 0。
+   * 三层同一条规则：admin engine / staffApi 的 `isValidDocItemQuantity`，以及 DB trigger
+   * `inventory_assert_doc_item_quantity`（CHECK 放宽为 >= 0 后，非盘点类型靠它兜底）。
+   *
+   * 守法：**整段函数体逐字相等 + 钉全文快照 + 在函数体上真跑一张真值表**，而不是逐条找
+   * 「有没有写 n > 0」—— 逐条找的守护总能被等价改写绕过，也会被无害重排误红。
+   */
+  describe('§7 建单明细数量规则两端一致（#351）', () => {
+    /** 取 `function <name>(...)` 的函数体（首个 `{` 到行首 `}`），要求全文恰好一处定义。 */
+    function extractFunctionBody(src, name) {
+      const hits = src.split(`function ${name}(`).length - 1
+      if (hits !== 1) throw new Error(`「function ${name}(」应恰好 1 处，实际 ${hits} 处`)
+      const at = src.indexOf(`function ${name}(`)
+      const open = src.indexOf(') {', at) + 2
+      const typedOpen = src.indexOf('): boolean {', at)
+      const start = typedOpen > -1 && typedOpen < open ? typedOpen + '): boolean '.length : open
+      const end = src.indexOf('\n}', start)
+      return src.slice(start + 1, end).trim()
+    }
+    const flat = (text) => text.replace(/\s+/g, ' ').trim()
+
+    const EXPECTED_BODY = [
+      "if (typeof quantity !== 'number' && typeof quantity !== 'string') return false",
+      "if (typeof quantity === 'string' && quantity.trim() === '') return false",
+      'const n = Number(quantity)',
+      'if (!Number.isFinite(n) || n > 9999999999.99 || Number(n.toFixed(2)) !== n) return false',
+      'return n > 0 || (n === 0 && STOCKTAKE_DOC_TYPES.has(docType))',
+    ].join(' ')
+
+    test('两端 isValidDocItemQuantity 函数体逐字一致，且等于钉住的快照', () => {
+      const staffBody = flat(extractFunctionBody(staffSrc, 'isValidDocItemQuantity'))
+      const adminBody = flat(extractFunctionBody(adminSrc, 'isValidDocItemQuantity'))
+      expect(staffBody).toBe(adminBody)
+      // 改规则就该是有意的：改了来更新这里，并同步 DB trigger 与另一端
+      expect(staffBody).toBe(EXPECTED_BODY)
+    })
+
+    test('函数体真值表：盘点允许 0、留空/负数/非数字一律拒，非盘点仍须 > 0', () => {
+      const STOCKTAKE_DOC_TYPES = new Set(extractSetItems(staffSrc, 'STOCKTAKE_DOC_TYPES'))
+      // eslint-disable-next-line no-new-func
+      const run = new Function('STOCKTAKE_DOC_TYPES', 'docType', 'quantity', extractFunctionBody(staffSrc, 'isValidDocItemQuantity'))
+      const check = (docType, quantity) => run(STOCKTAKE_DOC_TYPES, docType, quantity)
+      for (const docType of ['市场库存盘点', '分院库存盘点']) {
+        expect(check(docType, 0), `${docType} 实盘 0`).toBe(true)
+        expect(check(docType, '0'), `${docType} 实盘 '0'`).toBe(true)
+        expect(check(docType, 3.5), `${docType} 实盘 3.5`).toBe(true)
+        expect(check(docType, 1.1), `${docType} 实盘 1.1（toFixed 判两位小数不能被浮点误伤）`).toBe(true)
+        expect(check(docType, 0.29), `${docType} 实盘 0.29`).toBe(true)
+        expect(check(docType, 9999999999.99), `${docType} numeric(12,2) 上限`).toBe(true)
+        // false / [0] 经 Number() 都是 0；0.004 落 numeric(12,2) 会被舍成 0.00 —— 都会凭空变成「实盘 0」
+        for (const bad of [null, undefined, '', '  ', -1, Number.NaN, 'abc', Infinity, false, true, [0], ['0'], {}, 0.004, 0.005, 10000000000]) {
+          expect(check(docType, bad), `${docType} 实盘 ${String(bad)}`).toBe(false)
+        }
+      }
+      for (const docType of ['院产品报损', '门店报货', '市场产品盘溢', '院顾客退货']) {
+        expect(check(docType, 0), `${docType} 数量 0`).toBe(false)
+        expect(check(docType, 1), `${docType} 数量 1`).toBe(true)
+        expect(check(docType, ''), `${docType} 数量空`).toBe(false)
+        expect(check(docType, 0.004), `${docType} 数量 0.004（落库即 0）`).toBe(false)
+      }
+    })
+
+    test('两端建单路径都走这条规则（旧的只认 > 0 的校验不再用于建单明细）', () => {
+      // 调用次数钉死为 2（事务外汇总 + 事务内逐行）：新增建单入口或抽 helper 时这里会红，
+      // 那是提醒来人确认新入口也走本规则，然后同步改这里的计数，不是误红。
+      expect(adminSrc).not.toContain('assertPositiveQuantity')
+      expect(adminSrc.split('assertDocItemQuantity(input.docType, item.quantity)').length - 1).toBe(2)
+      expect(staffSrc.split('assertDocItemQty(docType, item.quantity)').length - 1).toBe(2)
+    })
+
+    /**
+     * DB 层的闭集判据（#351 评审）：不逐条禁止「DROP / ALTER / schema 限定重定义 / DISABLE …」
+     * 这些写法（开放集合，永远枚举不完），而是钉两件事：
+     *   1. 全部迁移里**提到**这三个标识符之一的文件恰好是 {0007, 0053}（大小写、引号、schema 前缀
+     *      都不影响子串命中）—— 之后任何迁移碰它们，不论怎么写，都先在这里红，逼来人回来改守护；
+     *   2. 0053 去注释后整段等值 —— 条件、盘点清单、NaN 拦截、报错码、触发列任一处改动都红。
+     */
+    test('DB：触及数量守卫的迁移恰为 {0007, 0053}，且 0053 整段钉死', () => {
+      expect(schemaSrc).toContain("check('chk_inventory_doc_items_qty', sql`${table.quantity} >= 0`)")
+      const IDENTS = /inventory_assert_doc_item_quantity|trg_inventory_doc_items_assert_quantity|chk_inventory_doc_items_qty/i
+      const migrations = fs.readdirSync(FILES.dbMigrationsDir).filter((name) => name.endsWith('.sql')).sort()
+      expect(migrations.length, '迁移目录读取失败').toBeGreaterThan(50)
+      const touching = migrations.filter((name) => IDENTS.test(readFile(path.join(FILES.dbMigrationsDir, name))))
+      expect(touching, '有新迁移触及 #351 的数量守卫：确认口径后更新本守护与 pg 套件').toEqual([
+        '0007_moaning_salo.sql',
+        '0053_stocktake_zero_quantity.sql',
+      ])
+      const code = flat(readFile(path.join(FILES.dbMigrationsDir, '0053_stocktake_zero_quantity.sql')).replace(/--(?!> statement-breakpoint)[^\n]*/g, ''))
+      expect(code).toBe(flat(`
+        SET LOCAL lock_timeout = '3s';--> statement-breakpoint
+        ALTER TABLE "inventory_doc_items" DROP CONSTRAINT "chk_inventory_doc_items_qty";--> statement-breakpoint
+        ALTER TABLE "inventory_doc_items" ADD CONSTRAINT "chk_inventory_doc_items_qty" CHECK ("inventory_doc_items"."quantity" >= 0);--> statement-breakpoint
+        CREATE OR REPLACE FUNCTION inventory_assert_doc_item_quantity()
+        RETURNS trigger LANGUAGE plpgsql AS $$
+        DECLARE item_doc_type text;
+        BEGIN
+          IF NEW.quantity IS NULL THEN RETURN NEW; END IF;
+          IF NEW.quantity = 'NaN'::numeric THEN
+            RAISE EXCEPTION 'inventory_doc_items.quantity must be a finite number (doc %)', NEW.doc_id
+              USING ERRCODE = 'check_violation', CONSTRAINT = 'chk_inventory_doc_items_qty';
+          END IF;
+          IF NEW.quantity > 0 THEN RETURN NEW; END IF;
+          SELECT doc_type INTO item_doc_type FROM inventory_docs WHERE id = NEW.doc_id;
+          IF NOT FOUND THEN RETURN NEW; END IF;
+          IF item_doc_type IN ('市场库存盘点', '分院库存盘点') THEN RETURN NEW; END IF;
+          RAISE EXCEPTION 'inventory_doc_items.quantity must be > 0 for doc_type % (doc %)', item_doc_type, NEW.doc_id
+            USING ERRCODE = 'check_violation', CONSTRAINT = 'chk_inventory_doc_items_qty';
+        END; $$;--> statement-breakpoint
+        CREATE TRIGGER trg_inventory_doc_items_assert_quantity
+        BEFORE INSERT OR UPDATE OF doc_id, quantity
+        ON inventory_doc_items
+        FOR EACH ROW EXECUTE FUNCTION inventory_assert_doc_item_quantity();`))
+      // trigger 里的盘点清单与两端集合一致（上面快照已钉死，这里给出可读的失败原因）
+      const triggerTypes = [...code.match(/item_doc_type IN \(([^)]*)\)/)[1].matchAll(/'([^']+)'/g)].map((x) => x[1]).sort()
+      expect(triggerTypes).toEqual(extractSetItems(staffSrc, 'STOCKTAKE_DOC_TYPES'))
     })
   })
 

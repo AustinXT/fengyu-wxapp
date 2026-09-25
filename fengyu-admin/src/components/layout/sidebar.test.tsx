@@ -94,9 +94,21 @@ describe('Sidebar 二级菜单', () => {
     for (const label of ['销售', '人效', '品项']) {
       expect(screen.getByRole('link', { name: label })).not.toHaveClass('text-[var(--primary)]')
     }
-    // #367 出厂态：经营明细报表入口未打开时只剩「看板」一个分段，不渲染分段小标题（与改动前一致）
-    expect(screen.queryByText('看板')).not.toBeInTheDocument()
-    expect(screen.queryByText('经营明细')).not.toBeInTheDocument()
+    // #372 打开经营数据主表入口后出现分段小标题；报表入口不抢板块的高亮
+    expect(screen.getByText('看板')).toBeInTheDocument()
+    expect(screen.getByText('经营明细')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: '经营数据主表' })).not.toHaveClass('text-[var(--primary)]')
+    expect(screen.getByRole('link', { name: '日常数据一览表' })).not.toHaveClass('text-[var(--primary)]')
+  })
+
+  it('访问经营数据主表时只高亮该报表入口', () => {
+    pathname = '/data-center/operating-master'
+    render(<Sidebar collapsed={false} onToggle={() => {}} session={session} />)
+
+    expect(screen.getByRole('link', { name: '经营数据主表' })).toHaveClass('text-[var(--primary)]')
+    for (const label of ['销售', '客量', '人效', '品项']) {
+      expect(screen.getByRole('link', { name: label })).not.toHaveClass('text-[var(--primary)]')
+    }
   })
 
   it('折叠态点击数据中心弹出 4 个板块浮层', async () => {

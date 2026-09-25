@@ -276,7 +276,7 @@ describe('mgmtTraffic.summary 会员状态 + 客活 SQL 形态', () => {
     expect(ctx.result.status.dormantDeep).toBe(200)
   })
 
-  test('客活 SQL 含 visit_count CTE + n=1 / n>=2', async () => {
+  test('客活 SQL 按到店天数（service_date 去重）+ days=1 / days>=2（#298）', async () => {
     setupDefaultMocks()
     const ctx = makeHqCtx({ period: 'month', scopeType: 'all' })
     await summary(ctx)
@@ -285,17 +285,35 @@ describe('mgmtTraffic.summary 会员状态 + 客活 SQL 形态', () => {
     const onceSql = sqlList.find(
       (s) =>
         /WITH visit_count AS/.test(s) &&
-        /vc\.n\s*=\s*1/.test(s),
+        /vc\.days\s*=\s*1/.test(s),
     )
     expect(onceSql).toBeDefined()
+    expect(onceSql).toMatch(/COUNT\(DISTINCT so\.service_date\) AS days/)
     expect(onceSql).toMatch(/c\.customer_status IN \('保有会员-稳定',\s*'保有会员-有效'\)/)
 
     const twiceSql = sqlList.find(
       (s) =>
         /WITH visit_count AS/.test(s) &&
-        /vc\.n\s*>=\s*2/.test(s),
+        /vc\.days\s*>=\s*2/.test(s),
     )
     expect(twiceSql).toBeDefined()
+    expect(twiceSql).toMatch(/COUNT\(DISTINCT so\.service_date\) AS days/)
+    // 服务单行数口径已废弃，禁止回退
+    for (const s of [onceSql, twiceSql]) expect(s).not.toMatch(/COUNT\(\*\) AS n\b/)
+  })
+
+  test('#298 activeOnce / activeTwice 结果不对调（days=1 → activeOnce）', async () => {
+    setupDefaultMocks()
+    const base = pg.query.getMockImplementation()
+    pg.query.mockImplementation(async (sql, params) => {
+      if (/WITH visit_count AS/.test(sql) && /vc\.days = 1\b/.test(sql)) return [{ v: 11 }]
+      if (/WITH visit_count AS/.test(sql) && /vc\.days >= 2\b/.test(sql)) return [{ v: 22 }]
+      return base(sql, params)
+    })
+    const ctx = makeHqCtx({ period: 'month', scopeType: 'all' })
+    await summary(ctx)
+    expect(ctx.result.status.activeOnce).toBe(11)
+    expect(ctx.result.status.activeTwice).toBe(22)
   })
 
   test('本月激活 3 项含 anchor=startDate-1 展开 + visits_90d_prev=0', async () => {
@@ -353,12 +371,49 @@ describe('mgmtTraffic.summary 会员被经营 6 桶 SQL 形态', () => {
     expect(opsSql).not.toMatch(/received::numeric\s*-\s*COALESCE/)
     expect(opsSql).not.toMatch(/o\.paid_at::date\s+BETWEEN/)
     expect(opsSql).not.toMatch(/o\.status\s*=\s*'已支付'/)
-    expect(opsSql).toMatch(/FILTER \(WHERE spend\s*<\s*1990\)/)
-    expect(opsSql).toMatch(/FILTER \(WHERE spend\s*>=\s*1990\s+AND\s+spend\s*<\s*10000\)/)
+    // #292：最低档下界 = 会员门槛，走参数占位（不再写死 1990）；占位号 = 最后一个参数
+    const opsCall = pg.query.mock.calls.find((c) => c[0] === opsSql)
+    const th = `\\$${opsCall[1].length}`
+    expect(opsCall[1][opsCall[1].length - 1]).toBe(1980) // setup.js 全局 mock 的默认门槛
+    expect(opsSql).not.toMatch(/(?<!\d)1990(?!\d)/)
+    expect(opsSql).toMatch(new RegExp(`FILTER \\(WHERE spend\\s*<\\s*${th}\\)`))
+    expect(opsSql).toMatch(new RegExp(`FILTER \\(WHERE spend\\s*>=\\s*${th}\\s+AND\\s+spend\\s*<\\s*10000\\)`))
     expect(opsSql).toMatch(/FILTER \(WHERE spend\s*>=\s*10000\s+AND\s+spend\s*<\s*30000\)/)
     expect(opsSql).toMatch(/FILTER \(WHERE spend\s*>=\s*30000\s+AND\s+spend\s*<\s*60000\)/)
     expect(opsSql).toMatch(/FILTER \(WHERE spend\s*>=\s*60000\s+AND\s+spend\s*<\s*100000\)/)
     expect(opsSql).toMatch(/FILTER \(WHERE spend\s*>=\s*100000\)/)
+  })
+
+  test('#292 会员门槛读 system_configs：改配置值后分桶下界同步变化', async () => {
+    setupDefaultMocks()
+    globalThis.__mocks__.config.getMemberThreshold.mockResolvedValue(2990)
+    const ctx = makeHqCtx({ period: 'month', scopeType: 'all' })
+    await summary(ctx)
+    const call = pg.query.mock.calls.find((c) => /WITH member_spend AS/.test(c[0]) && /bucket1_count/.test(c[0]))
+    expect(call).toBeDefined()
+    const params = call[1]
+    expect(params[params.length - 1]).toBe(2990)
+    const th = `$${params.length}`
+    expect(call[0]).toContain(`FILTER (WHERE spend < ${th}) AS bucket1_count`)
+    expect(call[0]).toContain(`FILTER (WHERE spend >= ${th} AND spend < 10000) AS bucket2_count`)
+  })
+
+  test('#292 门槛占位号随 scope 参数个数对齐（market scope 下为 $2）', async () => {
+    for (const ctx of [makeMarketCtx({ period: 'month', scopeType: 'market', scopeId: 'mkt-A' })]) {
+      setupDefaultMocks()
+      globalThis.__mocks__.config.getMemberThreshold.mockResolvedValue(2990)
+      await summary(ctx)
+      const call = pg.query.mock.calls.find((c) => /WITH member_spend AS/.test(c[0]) && /bucket1_count/.test(c[0]))
+      expect(call).toBeDefined()
+      const params = call[1]
+      expect(params.length).toBeGreaterThanOrEqual(2) // scope 至少 1 个参数 + 门槛
+      expect(params[params.length - 1]).toBe(2990)
+      const th = `$${params.length}`
+      expect(call[0]).toContain(`FILTER (WHERE spend < ${th}) AS bucket1_count`)
+      // SQL 里出现的最大占位号恰好等于参数个数（无错位、无悬空）
+      const maxPh = Math.max(...[...call[0].matchAll(/\$(\d+)/g)].map((m) => Number(m[1])))
+      expect(maxPh).toBe(params.length)
+    }
   })
 
   test('返回 6 桶 + avgTicket（防除零）', async () => {

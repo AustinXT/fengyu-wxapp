@@ -15,10 +15,16 @@
  *     - cycleStats：体验/新增/复购全套 CTE（区间维度，时间轴为支付事件业绩归属日）
  *
  * ★ 口径红线（consistency.product.test.ts 字面量守护，禁止偏离）：
- *   - 持卡 = si.paid_sessions > 0；DISTINCT client。不再按 product_type 过滤。
+ *   - 持卡 = si.paid_sessions > 0。不再按 product_type 过滤。
  *   - 持卡 sale_order_type IN ('销售单','转换单','寄存单')（寄存单为 WorkFine 剩余次数初始化纳入）。
  *   - 占比分母 = memberCount（client_wechat_users.became_member_at IS NOT NULL ∩ scope by bound_store_id，
  *     持卡为截面，不带 $date 守卫）。
+ *   - ★★ **持卡占比的分子必须与分母同源，两个维度都要同**（#287，2026-09-24 拍板）：
+ *       ① 人群：分子也只算会员（became_member_at IS NOT NULL），不是全部顾客
+ *       ② 归店：分子的 scope / 分组键也用 c.bound_store_id，不是 so.store_id
+ *     两条合起来 ⇒ 分子人群 ⊆ 分母人群、归店键相同 ⇒ 占比数学上恒 ≤ 100%。
+ *     此前两条都不满足：集团恒 253%、单店最高 2600%、40 家在营门店 36 家 > 100%。
+ *     **只修 ① 不够** —— 实测仍有 7 家 > 100%、最高 104.55%。
  *   - 进入达标日 = 销售单/转换单/寄存单的 SUM(sale_item_performance_events.amount) 在
  *     (client_user_id, store_id, 分组键, purchase_date) 分组下 >= threshold。
  *   - 复购达标日与区间业绩只统计销售单/转换单；寄存单只作为进入基线，不能触发复购。
@@ -27,7 +33,8 @@
  *     复购 = 区间内 entry_date 后再次达标（threshold 共用）；体验 = 区间内有购买但全历史无达标日。
  *   - cycleStats 基础过滤 sale_order_type IN ('销售单','转换单','寄存单') ∩ 排除已关闭/已作废/未审核/待审批/支付失败；
  *     不要求 status='已支付'，received 达标即计入。
- *   - scope 用 so.store_id；客户维度（memberCount）用 c.bound_store_id。
+ *   - scope：cycleStats 用 so.store_id；**持卡分子与 memberCount 分母都用 c.bound_store_id**
+ *     （#287 起，见上面那条同源红线 —— 这里曾写作「scope 用 so.store_id」，是缺陷的来源之一）。
  *
  * ★ 一级/二级筛选（admin 独有，staff 仅一级 product_kind）：
  *   - 都不选 / 仅选一级 → 分组键 = pc.product_kind（仅选一级时额外 WHERE pc.product_kind = $kind）
@@ -120,28 +127,53 @@ async function queryFilterOptions(): Promise<Array<{ kind: string; categories: s
 // =====================================================================
 
 /**
- * 持卡人数（DISTINCT client）：si.paid_sessions > 0，不按 product_type 过滤
- *   ∩ sale_order_type IN ('销售单','转换单','寄存单') ∩ status='已支付' ∩ scope（so.store_id）
- *   ∩ 品项过滤（一级/二级）。截面快照，无时间区间。
+ * 持卡人数（占比分子）：**会员** ∩ 买过带次数商品 ∩ scope（`c.bound_store_id`）∩ 品项过滤。
+ * 截面快照，无时间区间。
+ *
+ * ★ **口径红线：分子必须与分母 `queryMemberCount` 同源**（#287）。
+ *
+ * 写法上用「分母的壳 + `EXISTS`」而不是「JOIN 顾客表再加条件」，是为了让
+ * **分子 ⊆ 分母** 成为结构性事实而非巧合 —— 两者共用同一个
+ * `FROM client_wechat_users c WHERE <scope on bound_store_id> AND became_member_at IS NOT NULL`
+ * 前缀，`EXISTS` 只做收窄。**改这里时务必保持这个形状**，`consistency.product.test.ts` 有断言锁它。
+ *
+ * ⚠️ **两处曾经不同源，2026-09-22 审计时占比恒 253%、单店最高 2600%**：
+ *   1. **人群**：分子统计全部顾客（不限客型）、分母只统计会员 —— 分子里有 60.8% 的人
+ *      永不可能进分母
+ *   2. **归店**：分子按 `so.store_id`（**订单所属门店**）、分母按 `c.bound_store_id`
+ *      （**顾客绑定门店**）—— 绑在 B 店的会员在 A 店买卡，会进 A 的分子、B 的分母
+ *
+ * 只修 ①（issue #287 原推荐）实测仍有 **7 家门店 > 100%、最高 104.55%**；
+ * ① ② 都修后 **0 家 > 100%、最高正好 100.00%**（集团 1917 / 1931 = 99.27%，2026-09-24 实测）。
+ *
+ * ⚠️ 绝对值每日漂移，**别写进断言** —— 可锁的是「0 家 > 100%」这个结构性不变量。
+ *
+ * ⚠️ **该列已失去区分度，勿用于门店排名**：修正后各店在 **95.83% ~ 100%** 之间。
+ * 此前的全部店间方差都来自「非会员数量」，按旧列排名会得到与事实相反的结论。
  */
 async function queryCardHolders(
   session: AuthSession,
   scope: DataCenterScope,
   filter: SQL,
 ): Promise<number> {
-  const sc = scopeFilterSql(session, scope, 'so.store_id')
+  const sc = scopeFilterSql(session, scope, 'c.bound_store_id')
   const rows = await db.execute(sql`
-    SELECT COUNT(DISTINCT so.client_user_id) AS v
-    FROM sale_items si
-    JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
-    JOIN product_skus sk ON sk.sku_id = si.sku_id
-    JOIN product_categories pc ON pc.category_id = sk.category_id
+    SELECT COUNT(*) AS v
+    FROM client_wechat_users c
     WHERE ${sc}
-      AND si.paid_sessions > 0
-      AND so.sale_order_type IN ('销售单', '转换单', '寄存单')
-      AND so.status = '已支付'
-      AND so.client_user_id IS NOT NULL
-      AND ${filter}
+      AND c.became_member_at IS NOT NULL
+      AND EXISTS (
+        SELECT 1
+        FROM sale_items si
+        JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
+        JOIN product_skus sk ON sk.sku_id = si.sku_id
+        JOIN product_categories pc ON pc.category_id = sk.category_id
+        WHERE so.client_user_id = c.user_id
+          AND si.paid_sessions > 0
+          AND so.sale_order_type IN ('销售单', '转换单', '寄存单')
+          AND so.status = '已支付'
+          AND ${filter}
+      )
   `)
   return num(first(rows).v)
 }
@@ -283,27 +315,41 @@ interface ProductStoreAgg {
 }
 
 /**
- * 持卡人数（截面）按 store_id 归组（DISTINCT client per store；同一顾客跨店各算一次）。
+ * 持卡人数（截面）按门店归组 —— **归店键必须是 `c.bound_store_id`，与分母
+ * `queryMemberCountByStore` 完全一致**（#287）。
+ *
+ * 归店键一致 + 人群是分母的子集 ⇒ **每个门店的占比数学上恒 ≤ 100%**，不靠数据侥幸。
+ * 此前按 `so.store_id` 归店，同一顾客跨店各算一次，单店占比可以超过 100%（实测最高 2600%）。
+ *
+ * 代价：语义从「在本店买过卡的人」变成「本店绑定会员里持卡的人」。
+ * 受影响的是**买卡门店 ≠ 绑定门店**的那批人（2026-09-24 实测 11 人，占分子 0.57%）——
+ * 他们从「买卡那家店」挪到「绑定那家店」，不是被丢弃。2026-09-24 拍板取后者。
  */
 async function queryCardHoldersByStore(
   session: AuthSession,
   scope: DataCenterScope,
   filter: SQL,
 ): Promise<Map<string, number>> {
-  const sc = scopeFilterSql(session, scope, 'so.store_id')
+  const sc = scopeFilterSql(session, scope, 'c.bound_store_id')
   const rows = await db.execute(sql`
-    SELECT so.store_id, COUNT(DISTINCT so.client_user_id) AS v
-    FROM sale_items si
-    JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
-    JOIN product_skus sk ON sk.sku_id = si.sku_id
-    JOIN product_categories pc ON pc.category_id = sk.category_id
+    SELECT c.bound_store_id AS store_id, COUNT(*) AS v
+    FROM client_wechat_users c
     WHERE ${sc}
-      AND si.paid_sessions > 0
-      AND so.sale_order_type IN ('销售单', '转换单', '寄存单')
-      AND so.status = '已支付'
-      AND so.client_user_id IS NOT NULL
-      AND ${filter}
-    GROUP BY so.store_id
+      AND c.bound_store_id IS NOT NULL
+      AND c.became_member_at IS NOT NULL
+      AND EXISTS (
+        SELECT 1
+        FROM sale_items si
+        JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
+        JOIN product_skus sk ON sk.sku_id = si.sku_id
+        JOIN product_categories pc ON pc.category_id = sk.category_id
+        WHERE so.client_user_id = c.user_id
+          AND si.paid_sessions > 0
+          AND so.sale_order_type IN ('销售单', '转换单', '寄存单')
+          AND so.status = '已支付'
+          AND ${filter}
+      )
+    GROUP BY c.bound_store_id
   `)
   const m = new Map<string, number>()
   for (const raw of rows as unknown[]) {

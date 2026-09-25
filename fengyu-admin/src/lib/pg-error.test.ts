@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { pgErrorCode, pgErrorConstraint, pgErrorDetail } from './pg-error'
+import { pgErrorCode, pgErrorConstraint, pgErrorDetail, pgRaiseMessage } from './pg-error'
 
 /** 模拟 drizzle 0.44+ 的包装错误：外层 Failed query，真实 pg 错误在 cause。 */
 function wrappedPgError(code: string, constraint?: string, detail?: string) {
@@ -69,5 +69,26 @@ describe('pgErrorDetail', () => {
     expect(pgErrorDetail(wrappedPgError('23505'))).toBeUndefined()
     expect(pgErrorDetail(new Error('connection lost'))).toBeUndefined()
     expect(pgErrorDetail(null)).toBeUndefined()
+  })
+})
+
+describe('pgRaiseMessage', () => {
+  const raise = (message: string, code = 'P0001') =>
+    Object.assign(new Error('Failed query: insert into inventory_doc_links ...'), {
+      cause: Object.assign(new Error(message), { code }),
+    })
+
+  it('从 cause 链取触发器 RAISE 原文，而不是外层 Failed query', () => {
+    expect(pgRaiseMessage(raise('关联数量超出来源明细：来源 1'))).toBe('关联数量超出来源明细：来源 1')
+  })
+
+  it('P0001 含字母，pgErrorCode 的纯数字正则取不到它 —— 这正是单独加 pgRaiseMessage 的原因', () => {
+    expect(pgErrorCode(raise('x'))).toBeUndefined()
+  })
+
+  it('非 RAISE 的 pg 错误（如 23505）与无 code 的错误 → undefined', () => {
+    expect(pgRaiseMessage(raise('duplicate key', '23505'))).toBeUndefined()
+    expect(pgRaiseMessage(new Error('关联数量超出来源明细'))).toBeUndefined()
+    expect(pgRaiseMessage(null)).toBeUndefined()
   })
 })
