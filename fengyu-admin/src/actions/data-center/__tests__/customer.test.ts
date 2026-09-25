@@ -322,12 +322,12 @@ describe('getCustomerBoard 装配', () => {
     for (const t of visitQueries) {
       expect(t).toMatch(/AND c\.became_member_at IS NOT NULL\s+AND c\.became_member_at::date <=/)
     }
-    // 反向：分母 reg 段用的是同一条谓词（同源的另一半）
-    const breakdown = visitQueries.filter((t) => /WITH skel/.test(t))
-    expect(breakdown).toHaveLength(2)
-    for (const t of breakdown) {
-      expect(t.match(/c\.became_member_at IS NOT NULL/g)?.length ?? 0).toBeGreaterThanOrEqual(2)
-    }
+    // 四条里恰好两条来自明细（byMarket + byStore），另两条来自 KPI —— 确认闭集没漏边
+    expect(visitQueries.filter((t) => /WITH skel/.test(t))).toHaveLength(2)
+    // ⚠ 这里**不要**再加「明细查询里 became_member_at 出现 >= 2 次」那种断言：
+    // 同一条 SQL 里 reg / ret / anchor_stats 三段本来就各有一次，
+    // 把 visit_count 的守卫删光也照样 >= 2 ⇒ 恒真。
+    // 分子分母逐字同源由 consistency.customer.test.ts 第 9 组按**源码切片**校验。
   })
 
   it('明细派生防除零：分母 0 → null', async () => {
