@@ -382,6 +382,8 @@ describe('数据中心导出 · 报表视图分发', () => {
       expect(view.startsWith(DATA_CENTER_REPORT_VIEW_PREFIX), view).toBe(false)
     }
     expect(DATA_CENTER_EXPORT_VIEWS).toEqual([...DATA_CENTER_BOARD_EXPORT_VIEWS, ...DATA_CENTER_REPORT_EXPORT_VIEWS])
+    // 等式两边同源拼接，重复登记照样相等：单独钉住「没有重复视图」
+    expect(new Set(DATA_CENTER_EXPORT_VIEWS).size).toBe(DATA_CENTER_EXPORT_VIEWS.length)
   })
 
   it.each(DATA_CENTER_REPORT_EXPORT_VIEWS)('%s 导出不调用任何板块取数', async (view) => {
