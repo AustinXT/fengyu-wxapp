@@ -91454,7 +91454,7 @@ var init_inventory = __esm(() => {
     index2("idx_inventory_doc_items_market").on(table4.marketId),
     index2("idx_inventory_doc_items_promotion").on(table4.promotionPlanId),
     uniqueIndex2("uq_inventory_doc_items_id_doc").on(table4.id, table4.docId),
-    check2("chk_inventory_doc_items_qty", sql3`${table4.quantity} > 0`),
+    check2("chk_inventory_doc_items_qty", sql3`${table4.quantity} >= 0`),
     check2("chk_inventory_doc_items_promotion_rule_type", sql3`${table4.promotionRuleTypeSnapshot} IS NULL OR ${table4.promotionRuleTypeSnapshot} IN ('单品阶梯','组合')`),
     check2("chk_inventory_doc_items_promotion_selection_mode", sql3`${table4.promotionSelectionMode} IS NULL OR ${table4.promotionSelectionMode} IN ('系统推荐','人工选择')`)
   ]);
@@ -176170,12 +176170,23 @@ function numString(v) {
 function calculateAmount(unitPrice, quantity) {
   return unitPrice === null ? null : Number((unitPrice * quantity).toFixed(2));
 }
-function assertPositiveQuantity(quantity) {
+function isValidDocItemQuantity(docType, quantity) {
+  if (typeof quantity !== "number" && typeof quantity !== "string")
+    return false;
+  if (typeof quantity === "string" && quantity.trim() === "")
+    return false;
   const n = Number(quantity);
-  if (!Number.isFinite(n) || n <= 0) {
-    throw new ApiError("INVALID_PARAMS", "明细数量必须大于 0");
+  if (!Number.isFinite(n) || n > 9999999999.99 || Number(n.toFixed(2)) !== n)
+    return false;
+  return n > 0 || n === 0 && STOCKTAKE_DOC_TYPES.has(docType);
+}
+function assertDocItemQuantity(docType, quantity) {
+  if (isValidDocItemQuantity(docType, quantity))
+    return Number(quantity);
+  if (STOCKTAKE_DOC_TYPES.has(docType)) {
+    throw new ApiError("INVALID_PARAMS", "请填写实盘数（0 或正数，最多两位小数；货架上没有就填 0）");
   }
-  return n;
+  throw new ApiError("INVALID_PARAMS", "明细数量必须大于 0");
 }
 function defaultStatusForDoc(docType) {
   if (APPROVAL_DOC_TYPES.has(docType))
@@ -178400,7 +178411,7 @@ var createInventoryCoreDoc = withAnyPermission(["inventory:supply_chain_operate"
   if (!actingLocationId)
     throw new ApiError("NOT_FOUND", "组织节点没有对应库存主体");
   await assertGenericDocLocationRules(input, sourceOrgNodeId, targetOrgNodeId, actingOrgNodeId);
-  const totalQuantity = input.items.reduce((sum, item) => sum + assertPositiveQuantity(item.quantity), 0);
+  const totalQuantity = input.items.reduce((sum, item) => sum + assertDocItemQuantity(input.docType, item.quantity), 0);
   const id = await db2.transaction(async (tx) => {
     await assertInventoryBusinessWritable(tx);
     const docId = await generateDocNo(tx, input.docType);
@@ -178434,7 +178445,7 @@ var createInventoryCoreDoc = withAnyPermission(["inventory:supply_chain_operate"
     let hasCalculatedAmount = false;
     const bookQuantityBySkuId = await skuOnHandByLocation(tx, actingLocationId, stocktakeSkuIds);
     for (const item of input.items) {
-      const quantity = assertPositiveQuantity(item.quantity);
+      const quantity = assertDocItemQuantity(input.docType, item.quantity);
       const serverItem = stripPriceInput(item);
       let lot = null;
       let bookQuantity = null;
@@ -180734,19 +180745,24 @@ async function queryFilterOptions() {
   return Array.from(map.entries()).map(([kind, categories]) => ({ kind, categories }));
 }
 async function queryCardHolders(session4, scope, filter) {
-  const sc = scopeFilterSql(session4, scope, "so.store_id");
+  const sc = scopeFilterSql(session4, scope, "c.bound_store_id");
   const rows = await db2.execute(import_drizzle_orm66.sql`
-    SELECT COUNT(DISTINCT so.client_user_id) AS v
-    FROM sale_items si
-    JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
-    JOIN product_skus sk ON sk.sku_id = si.sku_id
-    JOIN product_categories pc ON pc.category_id = sk.category_id
+    SELECT COUNT(*) AS v
+    FROM client_wechat_users c
     WHERE ${sc}
-      AND si.paid_sessions > 0
-      AND so.sale_order_type IN ('销售单', '转换单', '寄存单')
-      AND so.status = '已支付'
-      AND so.client_user_id IS NOT NULL
-      AND ${filter}
+      AND c.became_member_at IS NOT NULL
+      AND EXISTS (
+        SELECT 1
+        FROM sale_items si
+        JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
+        JOIN product_skus sk ON sk.sku_id = si.sku_id
+        JOIN product_categories pc ON pc.category_id = sk.category_id
+        WHERE so.client_user_id = c.user_id
+          AND si.paid_sessions > 0
+          AND so.sale_order_type IN ('销售单', '转换单', '寄存单')
+          AND so.status = '已支付'
+          AND ${filter}
+      )
   `);
   return num2(first2(rows).v);
 }
@@ -180844,20 +180860,26 @@ async function queryCycle(session4, scope, range, threshold, groupCol, filter, g
   return metric === "count" ? num2(r.count) : round24(r.revenue);
 }
 async function queryCardHoldersByStore(session4, scope, filter) {
-  const sc = scopeFilterSql(session4, scope, "so.store_id");
+  const sc = scopeFilterSql(session4, scope, "c.bound_store_id");
   const rows = await db2.execute(import_drizzle_orm66.sql`
-    SELECT so.store_id, COUNT(DISTINCT so.client_user_id) AS v
-    FROM sale_items si
-    JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
-    JOIN product_skus sk ON sk.sku_id = si.sku_id
-    JOIN product_categories pc ON pc.category_id = sk.category_id
+    SELECT c.bound_store_id AS store_id, COUNT(*) AS v
+    FROM client_wechat_users c
     WHERE ${sc}
-      AND si.paid_sessions > 0
-      AND so.sale_order_type IN ('销售单', '转换单', '寄存单')
-      AND so.status = '已支付'
-      AND so.client_user_id IS NOT NULL
-      AND ${filter}
-    GROUP BY so.store_id
+      AND c.bound_store_id IS NOT NULL
+      AND c.became_member_at IS NOT NULL
+      AND EXISTS (
+        SELECT 1
+        FROM sale_items si
+        JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
+        JOIN product_skus sk ON sk.sku_id = si.sku_id
+        JOIN product_categories pc ON pc.category_id = sk.category_id
+        WHERE so.client_user_id = c.user_id
+          AND si.paid_sessions > 0
+          AND so.sale_order_type IN ('销售单', '转换单', '寄存单')
+          AND so.status = '已支付'
+          AND ${filter}
+      )
+    GROUP BY c.bound_store_id
   `);
   const m = new Map;
   for (const raw of rows) {

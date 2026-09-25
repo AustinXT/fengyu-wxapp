@@ -68,7 +68,7 @@
         <text wx:if="{{item.customerName}}" class="customer">{{item.customerName}}</text>
       </view>
       <view class="item-foot">
-        <text class="qty">总数量：{{item.totalQuantity || '—'}}</text>
+        <text class="qty">总数量：{{item.totalQuantity === undefined ? '—' : item.totalQuantity}}</text>
         <text wx:if="{{item.status === '待收货'}}" class="receive-action">进入详情确认收货</text>
         <text wx:elif="{{item.employeeName}}" class="by">相关员工：{{item.employeeName}}</text>
       </view>

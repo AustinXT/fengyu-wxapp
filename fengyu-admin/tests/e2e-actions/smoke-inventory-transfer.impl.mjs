@@ -313,23 +313,27 @@ try {
   await expectThrow('#343 市场账号不能做库存转换(PERMISSION_DENIED)', /PERMISSION_DENIED/, () =>
     biz.createInventoryConversion({
       locationId: MKA_ORG,
-      items: [{ sourceLotId: marketLotId, sourceQuantity: 1, targetSkuId: SKU_SUPPLY2, targetQuantity: 1 }],
+      sources: [{ sourceLotId: marketLotId, quantity: 1 }],
+      targets: [{ targetSkuId: SKU_SUPPLY2, quantity: 1, unitPrice: 0 }],
     }))
   setSession(supplyChainSession())
   // 只认主体类型文案：删掉 assertType 的话 scope 闸会报 PERMISSION_DENIED，这里必须转红
   await expectThrow('#343 供应链账号传市场主体被拒（主体类型闸）', /INVALID_PARAMS.*库存转换主体必须是总部库存主体/, () =>
     biz.createInventoryConversion({
       locationId: MKA_ORG,
-      items: [{ sourceLotId: marketLotId, sourceQuantity: 1, targetSkuId: SKU_SUPPLY2, targetQuantity: 1 }],
+      sources: [{ sourceLotId: marketLotId, quantity: 1 }],
+      targets: [{ targetSkuId: SKU_SUPPLY2, quantity: 1, unitPrice: 0 }],
     }))
   await expectThrow('#343 自建商品不能作转换目标', /自建商品不能转换/, () =>
     biz.createInventoryConversion({
       locationId: HQ_ORG,
-      items: [{ sourceLotId: hqConvLotId, sourceQuantity: 1, targetSkuId: SKU_SELF, targetQuantity: 1 }],
+      sources: [{ sourceLotId: hqConvLotId, quantity: 1 }],
+      targets: [{ targetSkuId: SKU_SELF, quantity: 1, unitPrice: 800 }],
     }))
   const conversion = await biz.createInventoryConversion({
     locationId: HQ_ORG,
-    items: [{ sourceLotId: hqConvLotId, sourceQuantity: 2, targetSkuId: SKU_SUPPLY2, targetQuantity: 2, targetBatchNo: 'CONV-1' }],
+    sources: [{ sourceLotId: hqConvLotId, quantity: 2 }],
+    targets: [{ targetSkuId: SKU_SUPPLY2, quantity: 2, unitPrice: 800, targetBatchNo: 'CONV-1' }],
   })
   const convLinks = await pgQuery(
     `SELECT relation_type FROM inventory_doc_links WHERE from_doc_id = $1 AND to_doc_id = $2`,
@@ -352,7 +356,8 @@ try {
   // ════ #345 批号留空自动生成：库存转换 / 自采产品入库 ════
   const autoConversion = await biz.createInventoryConversion({
     locationId: HQ_ORG,
-    items: [{ sourceLotId: hqConvLotId, sourceQuantity: 1, targetSkuId: SKU_SUPPLY2, targetQuantity: 1 }],
+    sources: [{ sourceLotId: hqConvLotId, quantity: 1 }],
+    targets: [{ targetSkuId: SKU_SUPPLY2, quantity: 1, unitPrice: 800 }],
   })
   const [autoConvInItem] = await docItems(autoConversion.inboundId)
   const autoConvLot = (await locationLots(HQ_ORG, SKU_SUPPLY2)).find((lot) => lot.batch_no === `${autoConversion.inboundId}-01`)
@@ -361,6 +366,160 @@ try {
       && autoConvInItem.batch_no !== 'TSEED-HQ-CONV'
       && num(autoConvLot?.quantity_on_hand) === 1,
     JSON.stringify({ item: autoConvInItem?.batch_no, lot: autoConvLot?.batch_no }))
+
+  // ════ #344 转换多对多与拆分：目标价自填、成本守恒，doc_link 记分摊来源数量 ════
+  // 跑在真 PG 触发器上：明细金额（0043 inventory_set_doc_item_amount）、单头合计（0039）、
+  // 关联数量上限（0043 inventory_validate_doc_link）—— 1→2 拆分与 1→N 若仍按目标数量记 doc_link 会在这里被 RAISE。
+  const convSku = async (suffix, name) => {
+    const skuId = `${INS}_SKU_CV_${suffix}`
+    await pgQuery(
+      `INSERT INTO inventory_skus (
+         sku_id, product_code, product_name, spec_name, source_type, supplier, supplier_id,
+         accounting_price, market_purchase_discount, market_purchase_price, market_purchase_price_mode,
+         supply_chain_purchase_price, store_purchase_price, is_reportable, is_active
+       ) VALUES ($1, $2, $3, '件', '供应链', $5, $4, 100, 0.25, 50, '公式', 40, 60, true, true)
+       ON CONFLICT (sku_id) DO UPDATE SET is_active = true`,
+      [skuId, `${INS}-CV-${suffix}`, `${INS}_转换_${name}`, SUPPLIER_ID, `${INS}_供应商1`],
+    )
+    return skuId
+  }
+  const convSeed = (skuId, quantity, cost, batchNo, isGift = false) => insertSeedLot({
+    locationId: HQ_ORG, skuId, skuName: skuId, quantity, batchNo, supplyChainUnitCost: cost, isGift,
+  })
+  const convLinkRows = (outboundId) => pgQuery(
+    `SELECT link.from_item_id, link.to_item_id, link.quantity, src.sku_id AS from_sku, dst.sku_id AS to_sku
+       FROM inventory_doc_links link
+       JOIN inventory_doc_items src ON src.id = link.from_item_id
+       JOIN inventory_doc_items dst ON dst.id = link.to_item_id
+      WHERE link.from_doc_id = $1 AND link.relation_type = '库存转换'
+      ORDER BY link.id`, [outboundId])
+  const convTotals = async (conv) => [num((await docHeader(conv.outboundId))?.total_amount), num((await docHeader(conv.inboundId))?.total_amount)]
+  const [cvA, cvB, cvSet, cvBottle, cvHalf, cvBox, cvP1, cvP2, cvP3] = await Promise.all([
+    convSku('A', 'A'), convSku('B', 'B'), convSku('SET', '套装'), convSku('BOTTLE', '整瓶'), convSku('HALF', '半瓶'),
+    convSku('BOX', '整盒'), convSku('P1', '内裤'), convSku('P2', '连体衣'), convSku('P3', '文胸'),
+  ])
+
+  // 13A + 13B → 13 套（N→1）
+  const lotA = await convSeed(cvA, 20, 10, 'TSEED-CV-A')
+  const lotB = await convSeed(cvB, 20, 20, 'TSEED-CV-B')
+  const setConv = await biz.createInventoryConversion({
+    locationId: HQ_ORG,
+    sources: [{ sourceLotId: lotA, quantity: 13 }, { sourceLotId: lotB, quantity: 13 }],
+    targets: [{ targetSkuId: cvSet, quantity: 13, unitPrice: 30 }],
+  })
+  const setLinks = await convLinkRows(setConv.outboundId)
+  const [setOut, setIn] = await convTotals(setConv)
+  const setLots = await locationLots(HQ_ORG, cvSet)
+  check('#344 13A+13B→13 套：来源各扣 13、套装 +13 单价 30；出入库 total_amount 相等(390)；两条来源明细都关联到套装明细',
+    (await lotQuantity(lotA)) === 7 && (await lotQuantity(lotB)) === 7
+      && setLots.length === 1 && num(setLots[0].quantity_on_hand) === 13 && num(setLots[0].supply_chain_unit_cost) === 30
+      && setOut === 390 && setIn === 390 && Math.abs(setOut - setIn) <= 0.01
+      && setLinks.length === 2 && new Set(setLinks.map((link) => link.to_item_id)).size === 1
+      && setLinks.map((link) => link.from_sku).sort().join() === [cvA, cvB].sort().join()
+      && setLinks.every((link) => num(link.quantity) === 13),
+    JSON.stringify({ setOut, setIn, links: setLinks, lots: setLots.map((lot) => [lot.quantity_on_hand, lot.supply_chain_unit_cost]) }))
+
+  // 一瓶拆两个半瓶（入 > 出）：写 doc_link 不被 0043 数量上限拒绝
+  const lotBottle = await convSeed(cvBottle, 3, 50, 'TSEED-CV-BOTTLE')
+  const halfConv = await biz.createInventoryConversion({
+    locationId: HQ_ORG,
+    sources: [{ sourceLotId: lotBottle, quantity: 1 }],
+    targets: [{ targetSkuId: cvHalf, quantity: 2, unitPrice: 25 }],
+  })
+  const halfLinks = await convLinkRows(halfConv.outboundId)
+  const [halfOut, halfIn] = await convTotals(halfConv)
+  const halfLots = await locationLots(HQ_ORG, cvHalf)
+  check('#344 一瓶拆两个半瓶：瓶 -1、半瓶 +2 单价 25；doc_link 记 1 未被触发器拒；金额 50 = 50',
+    (await lotQuantity(lotBottle)) === 2 && num(halfLots[0]?.quantity_on_hand) === 2 && num(halfLots[0]?.supply_chain_unit_cost) === 25
+      && halfLinks.length === 1 && num(halfLinks[0].quantity) === 1 && halfOut === 50 && halfIn === 50,
+    JSON.stringify({ halfOut, halfIn, links: halfLinks }))
+
+  // 一盒拆三种单件（1→N），单价各自填
+  const lotBox = await convSeed(cvBox, 2, 90, 'TSEED-CV-BOX')
+  const boxConv = await biz.createInventoryConversion({
+    locationId: HQ_ORG,
+    sources: [{ sourceLotId: lotBox, quantity: 1 }],
+    targets: [
+      { targetSkuId: cvP1, quantity: 1, unitPrice: 20 },
+      { targetSkuId: cvP2, quantity: 1, unitPrice: 30 },
+      { targetSkuId: cvP3, quantity: 1, unitPrice: 40 },
+    ],
+  })
+  const boxLinks = await convLinkRows(boxConv.outboundId)
+  const [boxOut, boxIn] = await convTotals(boxConv)
+  const boxInItems = await docItems(boxConv.inboundId)
+  check('#344 一盒拆三种单件：盒 -1、三单件各 +1、明细金额 20/30/40；doc_link 合计 = 1（0.34/0.33/0.33）',
+    (await lotQuantity(lotBox)) === 1
+      && boxInItems.map((item) => num(item.amount)).join() === '20,30,40'
+      && boxOut === 90 && boxIn === 90
+      && boxLinks.map((link) => num(link.quantity)).join() === '0.34,0.33,0.33',
+    JSON.stringify({ boxOut, boxIn, items: boxInItems.map((item) => [item.sku_id, item.quantity, item.amount]), links: boxLinks.map((link) => link.quantity) }))
+
+  // 同一批次 25 → 12 X + 13 Y（复用 A 的剩余 7 不够 → 先被可用量拦，再换足量批次）
+  await expectThrow('#344 同一批次分两行出库超出可用量被拒（按批次汇总）', /库存不足/, () =>
+    biz.createInventoryConversion({
+      locationId: HQ_ORG,
+      sources: [{ sourceLotId: lotA, quantity: 4 }, { sourceLotId: lotA, quantity: 4 }],
+      targets: [{ targetSkuId: cvSet, quantity: 8, unitPrice: 10 }],
+    }))
+  const lotA25 = await convSeed(cvA, 25, 10, 'TSEED-CV-A25')
+  const splitConv = await biz.createInventoryConversion({
+    locationId: HQ_ORG,
+    sources: [{ sourceLotId: lotA25, quantity: 25 }],
+    targets: [{ targetSkuId: cvP1, quantity: 12, unitPrice: 10 }, { targetSkuId: cvP2, quantity: 13, unitPrice: 10 }],
+  })
+  const splitLinks = await convLinkRows(splitConv.outboundId)
+  check('#344 同一批次 25 → 12 X + 13 Y：批次清零、关联 12 / 13',
+    (await lotQuantity(lotA25)) === 0 && splitLinks.map((link) => num(link.quantity)).join() === '12,13',
+    JSON.stringify(splitLinks.map((link) => [link.to_sku, link.quantity])))
+
+  // 同一批次分两行出库成功 + 两条目标行命中同一 lot_key：真库里过 0009 流水前值校验（mock 单测过不了触发器）
+  const lotA10 = await convSeed(cvA, 10, 10, 'TSEED-CV-A10')
+  const sameConv = await biz.createInventoryConversion({
+    locationId: HQ_ORG,
+    sources: [{ sourceLotId: lotA10, quantity: 6 }, { sourceLotId: lotA10, quantity: 3 }],
+    targets: [
+      { targetSkuId: cvSet, quantity: 4, unitPrice: 10, targetBatchNo: 'CV-SAME', targetExpiryDate: '2027-01-01' },
+      { targetSkuId: cvSet, quantity: 5, unitPrice: 10, targetBatchNo: 'CV-SAME', targetExpiryDate: '2027-01-01' },
+    ],
+  })
+  const sameMovements = await pgQuery(
+    `SELECT doc_id, lot_id, quantity_before, quantity_after FROM inventory_movements WHERE doc_id IN ($1, $2) ORDER BY id`,
+    [sameConv.outboundId, sameConv.inboundId])
+  const sameLots = (await locationLots(HQ_ORG, cvSet)).filter((lot) => lot.batch_no === 'CV-SAME')
+  const flow = (docId) => sameMovements.filter((m) => m.doc_id === docId).map((m) => `${num(m.quantity_before)}→${num(m.quantity_after)}`).join(',')
+  check('#344 同批次两行出库成功（10→4→1）+ 两目标行同 lot_key 并入一个批次（0→4→9）',
+    (await lotQuantity(lotA10)) === 1 && flow(sameConv.outboundId) === '10→4,4→1'
+      && sameLots.length === 1 && num(sameLots[0].quantity_on_hand) === 9 && flow(sameConv.inboundId) === '0→4,4→9',
+    JSON.stringify({ out: flow(sameConv.outboundId), in: flow(sameConv.inboundId), lots: sameLots.map((lot) => lot.quantity_on_hand) }))
+
+  // 成本不守恒硬拦截，且整单回滚不落任何单据 / 流水
+  const docsBeforeReject = await inventoryDocCount('库存转换出库')
+  await expectThrow('#344 成本不守恒（7 个 B 成本 140 → 7 套按 21）硬拦截', /INVALID_PARAMS.*成本不守恒/, () =>
+    biz.createInventoryConversion({
+      locationId: HQ_ORG,
+      sources: [{ sourceLotId: lotB, quantity: 7 }],
+      targets: [{ targetSkuId: cvSet, quantity: 7, unitPrice: 21 }],
+    }))
+  check('#344 守恒拦截后不落单、来源批次不扣', (await inventoryDocCount('库存转换出库')) === docsBeforeReject && (await lotQuantity(lotB)) === 7)
+
+  // 赠送：混放被拒；全赠送 → 目标标赠送、金额 0
+  const giftLot = await convSeed(cvBottle, 2, 0, 'TSEED-CV-GIFT', true)
+  await expectThrow('#344 赠送与非赠送批次混放被拒', /赠送批次与非赠送批次不能混在同一张转换单里/, () =>
+    biz.createInventoryConversion({
+      locationId: HQ_ORG,
+      sources: [{ sourceLotId: giftLot, quantity: 1 }, { sourceLotId: lotBottle, quantity: 1 }],
+      targets: [{ targetSkuId: cvHalf, quantity: 4, unitPrice: 12.5 }],
+    }))
+  const giftConv = await biz.createInventoryConversion({
+    locationId: HQ_ORG,
+    sources: [{ sourceLotId: giftLot, quantity: 1 }],
+    targets: [{ targetSkuId: cvHalf, quantity: 2, unitPrice: 0 }],
+  })
+  const [giftIn] = await docItems(giftConv.inboundId)
+  check('#344 全赠送来源：目标明细标赠送、金额 0',
+    giftIn?.is_gift === true && num(giftIn?.amount) === 0 && num((await docHeader(giftConv.inboundId))?.total_amount) === 0,
+    JSON.stringify({ gift: giftIn?.is_gift, amount: giftIn?.amount }))
 
   setSession(marketASession())
   const autoSelfIds = []

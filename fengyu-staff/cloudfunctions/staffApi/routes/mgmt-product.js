@@ -6,6 +6,8 @@
  * mgmtProduct.cardHolders — 持卡人数（截面快照，不随 period 变化）
  *   持卡 = 已解锁次数大于 0（paid_sessions > 0），不按 product_type 过滤
  *   按 product_kind 分组 + memberCount（分母）
+ *   ★★ 分子必须与分母同源（#287）：人群都只算会员、scope 都走 c.bound_store_id。
+ *      此前分子不限客型且按 so.store_id 归店 → 集团占比恒 253%、单店最高 2600%。
  *
  * mgmtProduct.cycleStats — 体验/进入/复购（区间维度）
  *   达标日：SUM(sipe.amount) 在 (client_user_id, store_id, product_kind, purchase_date) 分组下 ≥ threshold
@@ -107,9 +109,11 @@ async function resolveScopeName(scopeType, scopeId) {
  *   rate = count / memberCount * 100，保留 2 位小数（数值类型）；memberCount=0 → null
  *
  * SQL：
- *   - 持卡：sale_items JOIN sale_orders JOIN product_skus JOIN product_categories
- *     WHERE paid_sessions > 0
- *     ∩ sale_order_type IN ('销售单','转换单','寄存单') ∩ status='已支付' ∩ scope（so.store_id）
+ *   - 持卡（占比分子）：**client_wechat_users c** JOIN sale_orders JOIN sale_items
+ *     JOIN product_skus JOIN product_categories
+ *     WHERE became_member_at IS NOT NULL ∩ paid_sessions > 0
+ *     ∩ sale_order_type IN ('销售单','转换单','寄存单') ∩ status='已支付'
+ *     ∩ scope（**c.bound_store_id**，与分母同源 —— #287，此处曾是 so.store_id）
  *     （寄存单为 WorkFine 剩余次数初始化，按次数维度纳入持卡人数）
  *   - 会员数：client_wechat_users WHERE became_member_at IS NOT NULL ∩ scope（c.bound_store_id）
  *     （与 metrics.md memberCount T2 历史化口径一致；持卡人数为截面，本接口不带 $date 守卫）
@@ -130,26 +134,38 @@ async function cardHolders(ctx) {
 
   const t0 = Date.now()
 
-  // 持卡 SQL —— $1=scopeId（仅当 scopeType !== 'all'）
-  const sc = buildSaleScope(scopeType, scopeId, 'so', 1)
+  // 持卡 SQL（占比分子）—— $1=scopeId（仅当 scopeType !== 'all'）
+  //
+  // ★ 口径红线：**分子必须与下面的 memberSql 同源**（#287）。两条铁律：
+  //   ① 驱动表是 client_wechat_users，且带 became_member_at IS NOT NULL —— 人群与分母相同
+  //   ② scope 用 buildClientScope（c.bound_store_id），**不是** buildSaleScope（so.store_id）
+  //      —— 归店键与分母相同
+  // 二者合起来 ⇒ 分子人群 ⊆ 分母人群、归店键一致 ⇒ 占比数学上恒 ≤ 100%。
+  //
+  // ⚠️ 2026-09-22 审计：此前分子不限客型、且按 so.store_id 归店，
+  //    集团占比恒 253%、单店最高 2600%（admin 同型缺陷见 product.ts queryCardHolders）。
+  //    admin 侧用「分母壳 + EXISTS」，这里因为要 GROUP BY pc.product_kind
+  //    （分组键在连接表上）改用 JOIN + COUNT(DISTINCT c.user_id)，同源性等价。
+  const cs = buildClientScope(scopeType, scopeId, 'c', 1)
   const cardSql = `
     SELECT pc.product_kind AS product_kind,
-           COUNT(DISTINCT so.client_user_id)::int AS count
-      FROM sale_items si
-      JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
+           COUNT(DISTINCT c.user_id)::int AS count
+      FROM client_wechat_users c
+      JOIN sale_orders so ON so.client_user_id = c.user_id
+      JOIN sale_items si ON si.sale_order_id = so.sale_order_id
       JOIN product_skus sk ON sk.sku_id = si.sku_id
       JOIN product_categories pc ON pc.category_id = sk.category_id
-     WHERE ${sc.sql}
+     WHERE ${cs.sql}
+       AND c.became_member_at IS NOT NULL
        AND si.paid_sessions > 0
        AND so.sale_order_type IN ('销售单','转换单','寄存单')
        AND so.status = '已支付'
-       AND so.client_user_id IS NOT NULL
        AND pc.product_kind IS NOT NULL
      GROUP BY pc.product_kind`
 
-  // 会员 SQL（与 metrics.md memberCount 定义对齐：T2 历史化口径，与 mgmt-dashboard.js 一致）
-  // —— $1=scopeId（仅当 scopeType !== 'all'）
-  const cs = buildClientScope(scopeType, scopeId, 'c', 1)
+  // 会员 SQL（占比分母；与 metrics.md memberCount 定义对齐：T2 历史化口径，与 mgmt-dashboard.js 一致）
+  // —— 复用上面同一个 cs：**分子分母必须共用同一个 scope 构造**（#287），
+  //    各建一个会让「归店键一致」退化成靠自觉维护。
   const memberSql = `
     SELECT COUNT(*)::int AS cnt
       FROM client_wechat_users c
@@ -157,7 +173,7 @@ async function cardHolders(ctx) {
        AND c.became_member_at IS NOT NULL`
 
   const [cardRows, memberRows, scopeName] = await Promise.all([
-    pg.query(cardSql, sc.params),
+    pg.query(cardSql, cs.params),
     pg.query(memberSql, cs.params),
     resolveScopeName(scopeType, scopeId),
   ])

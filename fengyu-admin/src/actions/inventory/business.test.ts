@@ -219,7 +219,7 @@ describe('待办区行内动作的权限派发表', () => {
 describe('库存转换仅供应链可做（#343）', () => {
   it('createInventoryConversion 只闸 inventory:supply_chain_operate，不再是 any 版本', async () => {
     mockBusiness.createInventoryConversion.mockResolvedValue({ outboundId: 'ZHC-1', inboundId: 'ZHR-1' })
-    await createInventoryConversion({ locationId: 'HQ', items: [] } as never)
+    await createInventoryConversion({ locationId: 'HQ', sources: [], targets: [] })
 
     expect(requirePermission).toHaveBeenCalledTimes(1)
     expect(requirePermission).toHaveBeenCalledWith(SESSION, 'inventory:supply_chain_operate')
@@ -232,7 +232,7 @@ describe('库存转换仅供应链可做（#343）', () => {
     vi.mocked(requirePermission).mockImplementation(() => {
       throw new ApiError('PERMISSION_DENIED', '缺少权限')
     })
-    await expect(createInventoryConversion({ locationId: 'M1', items: [] } as never))
+    await expect(createInventoryConversion({ locationId: 'M1', sources: [], targets: [] }))
       .rejects.toThrow('PERMISSION_DENIED')
     expect(mockBusiness.createInventoryConversion).not.toHaveBeenCalled()
   })
