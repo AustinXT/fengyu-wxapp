@@ -76,16 +76,25 @@ interface Probe {
  * （会被误当模块头截断区段，表现为误红，方向是 fail-closed）。bun 升级改了注释格式时这里要跟着改。
  */
 /**
- * 去掉 SQL 行注释再比对 —— 否则把产物里的某行 `--` 掉，**子串与出现次数都不变**，
- * `exactCountsInModule` 与 `missing` 双双照绿，而那行 SQL 实际已失效（codex round-5 P2）。
+ * 去掉 SQL 注释再比对 —— 否则把产物里的某行注释掉，**子串与出现次数都不变**，
+ * `exactCountsInModule` 与 `missing` 双双照绿，而那行 SQL 实际已失效
+ * （codex round-5 抓到 `--`，round-6 之后又用 `/* … *\/` 绕过一次）。
  * 这是全部探针共用的通病，不只 #414 那两条。
  *
+ * ⚠ **这个函数本身是开放集合**：它只处理注释落在**同一行**的情况。
+ * 真正兜底的是下面那条「产物模块区段里不得出现 `/*`」的闭集断言
+ * —— 跨行块注释、嵌套块注释、把指纹包进 `/* *\/` 的各种变体都由它拦，
+ * 不需要在这里逐个补写法（本项目在 #286/#287 上已经证明逐条禁写法必被绕过）。
+ *
  * 两侧（源码 / 产物）都要过这一道，否则源码里带尾注释的指纹会在产物侧找不到而误红。
- * 只切第一个 `--`：本文件全部 pattern 都不含 `--`，不存在把指纹自身切断的情况。
  */
 function uncomment(line: string): string {
-  const i = line.indexOf('--')
-  return (i >= 0 ? line.slice(0, i) : line).trim()
+  let cut = line.length
+  for (const marker of ['--', '/*']) {
+    const i = line.indexOf(marker)
+    if (i >= 0 && i < cut) cut = i
+  }
+  return line.slice(0, cut).trim()
 }
 
 function moduleSegments(dist: string, file: string): string[] {
@@ -321,6 +330,24 @@ describe('dist/export-worker.mjs 新鲜度（改了 data-center SQL 口径必须
         const segment = moduleSegments(dist, probe.file)
         const srcLines = src.split('\n').map((l) => l.trim())
         expect(segment.length, `${probe.label}：产物里找不到 // ${probe.file} 模块区段${REBUILD_HINT}`).toBeGreaterThan(0)
+
+        /**
+         * 闭集兜底：`bun build` 会剥掉**全部** JS 注释，而被守护的这些源文件的 SQL 模板里
+         * 一条块注释都没有 —— 实测 8 个探针文件的模块区段 `/*` 计数全为 0。
+         * 所以「区段里出现了 `/*`」只有两种可能：产物被手改过，或源码 SQL 里新引入了块注释。
+         * 两种都必须停下来看，不能让「把指纹包进 `/* … *\/`」这类变体一个个补正则去追
+         * （codex round-7 P2；同族教训见 memory「守护别枚举开放集合，换闭集」）。
+         * 真要在 SQL 里写块注释，就在这里放行并把该文件排除 —— 那是**有意识**的决定。
+         */
+        const blockComments = segment.filter((l) => l.includes('/*'))
+        expect(
+          blockComments,
+          `${probe.label}：产物的 // ${probe.file} 模块区段里出现了块注释 \`/*\` —— ` +
+            'bun build 会剥掉全部 JS 注释，这些源文件的 SQL 模板里也没有块注释，' +
+            '所以这只能是产物被手改过（例如把口径指纹包进注释里让本守护假绿），或源码新引入了 SQL 块注释。\n' +
+            blockComments.slice(0, 5).map((l) => `  · ${l}`).join('\n') +
+            REBUILD_HINT,
+        ).toEqual([])
         const drift = [...new Set(lines)]
           .map((line) => ({
             line,
