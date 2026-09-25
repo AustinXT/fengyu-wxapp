@@ -471,6 +471,11 @@ function LotPicker({
 }) {
   const [lots, setLots] = useState<InventoryLotRow[]>([])
   const [loading, setLoading] = useState(false)
+  // 取数回调里读最新的已选值与回调，不把它们放进 effect 依赖（否则每次选择都重查）
+  const valueRef = useRef(value)
+  valueRef.current = value
+  const onChangeRef = useRef(onChange)
+  onChangeRef.current = onChange
 
   useEffect(() => {
     let cancelled = false
@@ -481,7 +486,14 @@ function LotPicker({
     setLoading(true)
     load(locationId, skuId)
       .then((rows) => {
-        if (!cancelled) setLots(rows)
+        if (cancelled) return
+        setLots(rows)
+        // 重查后已选批次不在可用列表里（被出完 / 被别的单占满）：原生 select 会显示成空占位，
+        // 但父级仍握着旧 lotId，看似未选却能把它提交出去 —— 显式清空，让「请选择批次」校验接住
+        if (valueRef.current && !rows.some((lot) => String(lot.id) === valueRef.current)) {
+          onChangeRef.current('')
+          toast.warning('所选批次已无可用库存，请重新选择')
+        }
       })
       .catch((error) => {
         if (!cancelled) {
@@ -3021,6 +3033,23 @@ function CompanyShipmentForm({
     }))
   }
 
+  // 只刷新已选报货单的履约进度（未发量），不动用户已填的明细行
+  async function refreshReports() {
+    const epoch = epochRef.current
+    const ids = selectedRef.current
+    await Promise.all(ids.map(async (id) => {
+      const seq = (requestSeqRef.current.get(id) ?? 0) + 1
+      requestSeqRef.current.set(id, seq)
+      try {
+        const detail = await getInventoryCoreDocById(id)
+        if (epoch !== epochRef.current || requestSeqRef.current.get(id) !== seq || !selectedRef.current.includes(id)) return
+        if (detail && detail.docType === '市场报货') setReports((previous) => new Map(previous).set(id, detail))
+      } catch {
+        // 刷新失败保留旧进度，服务端封顶兜底
+      }
+    }))
+  }
+
   function selectReports(nextIds: string[]) {
     const removed = reportIds.filter((id) => !nextIds.includes(id))
     const added = nextIds.filter((id) => !reportIds.includes(id))
@@ -3181,8 +3210,10 @@ function CompanyShipmentForm({
     } catch (error) {
       // 超量等 CONFLICT 文案由服务端给出（含「本次最多可发 N」），原样展示
       toast.error(actionErrorMessage(error, '创建品项公司发货失败'))
-      // 已选批次保留，但可用量按最新重查（成功路径由 clearSelection 作废）
+      // 失败多为库存或未发量被并发改动：批次可用量与报货单未发量都按最新重取，
+      // 已填的批次与数量保留（成功路径由 clearSelection 作废）
       invalidateLots()
+      void refreshReports()
     } finally {
       setSaving(false)
     }

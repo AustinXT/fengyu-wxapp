@@ -2197,6 +2197,31 @@ describe('品项公司发货引用市场报货单（#336b）', () => {
     await waitFor(() => expect(lotSelect.value).toBe('41'))
   })
 
+  it('未发量被并发发货改动：服务端拒绝后重取报货进度；已选批次被出完则清空并提示', async () => {
+    const row = report('SBH-1')
+    vi.mocked(getInventoryCoreDocById)
+      .mockResolvedValueOnce(reportDetail(row, 11, 30, 10))
+      .mockResolvedValueOnce(reportDetail(row, 11, 30, 25))
+    vi.mocked(createItemCompanyShipment).mockRejectedValueOnce(new Error('CONFLICT: 精华液 正常发货数量超过报货未发量，本次最多可发 5'))
+    renderPage({ level: 'supply-chain', operation: 'company-shipment', locations: [HQ], shipmentMarketTargets: [M1], candidates: [row] })
+    fireEvent.click(await screen.findByRole('checkbox', { name: '选择 SBH-1' }))
+    await chooseLot(0, '41')
+    // 重查时批号 A 已被别的单出完（查询排除零库存批次）
+    vi.mocked(listInventoryLotOptions).mockResolvedValue([
+      { id: 42, batchNo: 'B', isGift: false, quantityOnHand: 50, availableQuantity: 50, expiryDate: null },
+    ] as never)
+    submitShipment()
+    expect(await screen.findByText(/报货 30 · 已发 25 · 未发 5/)).toBeInTheDocument()
+    expect(screen.getByRole('status', { name: '未发进度' })).toHaveTextContent('所选报货单还有 5 件未发')
+    await waitFor(() => expect(toast.warning).toHaveBeenCalledWith('所选批次已无可用库存，请重新选择'))
+    const lotSelect = screen.getAllByRole('option', { name: '选择库存批次' })[0].closest('select') as HTMLSelectElement
+    expect(lotSelect.value).toBe('')
+    // 父级也清了：再提交被「请选择批次」校验接住，不会带旧 lotId 出去
+    submitShipment()
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('请为每条发货明细选择批次并填写数量；不发的行请删除'))
+    expect(createItemCompanyShipment).toHaveBeenCalledTimes(1)
+  })
+
   it('同一报货明细同一批次重复两行：前端先拦，按服务端口径提示合并', async () => {
     const row = report('SBH-1')
     vi.mocked(getInventoryCoreDocById).mockResolvedValue(reportDetail(row))
