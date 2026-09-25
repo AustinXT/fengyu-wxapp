@@ -141,6 +141,20 @@ describe('附加能力按每条角色授权判定（不拼接）', () => {
   })
 })
 
+describe('附加能力判定 fail-closed', () => {
+  it('角色缺逐条动作元数据时不回退到并集：照样脱敏、订单号不可点', async () => {
+    mockGetSession.mockResolvedValue({
+      employeeId: 'EMP-3', name: '旧会话', phone: '',
+      roles: [{ role: 'admin', isSuperAdmin: true, scopeId: 'HQ', scopeType: '总部' }],
+      permissions: { actions: [...COMMISSION, 'customer:list', 'allocation:list'], scopeStoreIds: [] },
+    } satisfies AuthSession)
+    pageRows = [detailRow(1, '2026-08-02')]
+    const result = await getCommissionDetail({ month: '2026-08' })
+    expect(result.customerMasked).toBe(true)
+    expect(result.canLinkOrders).toBe(false)
+  })
+})
+
 describe('getCommissionDetail · keyset 翻页', () => {
   const signature = commissionFilterSignature({
     scope: 'all', scopeId: '', month: '2026-08', employeeId: null, storeId: null, date: null, type: null,

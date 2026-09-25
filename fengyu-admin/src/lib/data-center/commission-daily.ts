@@ -351,7 +351,12 @@ export function commissionExportParams(entries: Iterable<[string, string]>): Rec
   return Object.fromEntries(
     [...entries]
       .filter(([key, value]) => !dropped.has(key) && value !== '')
-      // 搜索词与页面取数同一截断（手改 URL 的超长 q 不能让导出按另一个关键词取数，也不能撑爆导出参数上限）
-      .map(([key, value]) => [key, key === 'q' ? value.trim().slice(0, MAX_SEARCH_LENGTH) : value]),
+      // 搜索词 / 员工与门店 id 与页面取数同一截断（手改 URL 的超长 q 不能让导出按另一个关键词取数，也不能撑爆导出参数上限）
+      .map(([key, value]) => [
+        key,
+        key === 'q' ? value.trim().slice(0, MAX_SEARCH_LENGTH)
+          : key === 'employeeId' || key === 'storeId' ? value.trim().slice(0, MAX_ID_LENGTH)
+            : value,
+      ]),
   )
 }

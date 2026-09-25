@@ -201,7 +201,10 @@ export interface CommissionDetailSummary {
   commission: number
   sale: number
   service: number
-  /** 平均提成点 = Σ提成 ÷ Σ分配金额（含负数行、0 费率行）；Σ分配金额为 0 时为空 */
+  /**
+   * 平均提成点 = Σ提成 ÷ Σ分配金额（含负数行、0 费率行，issue 原文口径）；Σ分配金额为 0 时为空。
+   * 分母为负（整段期间净退款）时照算不截断：负数冲销是真实发生的，页面按负数配色显示。
+   */
   averageRate: number | null
 }
 
@@ -298,7 +301,8 @@ function keyOf(row: CommissionDetailRow): CommissionDetailKey {
  */
 function grantedOnAllRoles(session: AuthSession, action: string): boolean {
   if (session.roles.length === 0) return false
-  return session.roles.every((role) => hasUiCapability(role.actions ?? session.permissions.actions, action))
+  // 角色缺逐条动作元数据时按「没有」处理（fail-closed）：回退到并集判定正是这里要堵的拼接
+  return session.roles.every((role) => (role.actions ? hasUiCapability(role.actions, action) : false))
 }
 
 /** 顾客姓名脱敏判定：与页面 / 导出同一处，没有 customer:list 就脱敏 */
