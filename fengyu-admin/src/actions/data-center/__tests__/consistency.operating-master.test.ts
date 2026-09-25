@@ -30,14 +30,14 @@ function slice(src: string, start: string, end: string): string {
 }
 
 /**
- * 切片内唯一一段 sql`...` 模板，空白压缩。插值**只归一区间变量**（两边变量名不同：`cur` / `range`），
+ * 切片内唯一一段 sql`...` 模板，空白压缩。插值**只归一区间变量**（变量名不同：`cur` / `range` / `ytd`），
  * 其余插值原文保留——scope 过滤的列、寄存退款过滤的别名一旦不同必须变红。
  */
 function template(section: string): string {
   const matches = [...section.matchAll(/sql`([\s\S]*?)`/g)]
   if (matches.length !== 1) throw new Error(`切片里应恰有 1 段 sql 模板，实际 ${matches.length} 段`)
   return matches[0][1]
-    .replace(/\$\{(?:cur|range)\.(start|end)\}/g, '${$1}')
+    .replace(/\$\{(?:cur|range|ytd)\.(start|end)\}/g, '${$1}')
     .replace(/\s+/g, ' ')
     .trim()
 }
@@ -71,7 +71,7 @@ function firstTemplate(section: string): string {
 
 const retained = {
   customerBoard: template(slice(CUSTOMER, 'async function queryRetainedMembers', '// ====')),
-  master: firstTemplate(slice(MASTER, '// E 保有会员', '// L 被经营当月')),
+  master: firstTemplate(slice(MASTER, '// E 保有会员', '// K 被经营年度')),
 }
 const managed = template(slice(MASTER, 'function managedByStoreSql', 'export const getOperatingMaster'))
 

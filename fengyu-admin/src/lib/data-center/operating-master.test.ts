@@ -115,6 +115,9 @@ describe('统计时点 T', () => {
     expect(retainedAsOf('2026-09', '2026-09-25')).toBe('2026-09-25')
     expect(retainedWindow('2026-08', '2026-09-25')).toEqual({ start: '2026-06-02', end: '2026-08-31' })
     expect(retainedWindow('2026-09', '2026-09-25')).toEqual({ start: '2026-06-27', end: '2026-09-25' })
+    // 跨年、闰年：与 PG `T::date - INTERVAL '90 days'` 同一天（窗口含两端共 91 天，与客量板有效保有会员一致）
+    expect(retainedWindow('2027-01', '2027-02-10')).toEqual({ start: '2026-11-02', end: '2027-01-31' })
+    expect(retainedWindow('2028-02', '2028-03-10')).toEqual({ start: '2027-12-01', end: '2028-02-29' })
   })
 })
 

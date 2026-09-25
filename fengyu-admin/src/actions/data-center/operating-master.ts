@@ -21,6 +21,7 @@
  *     款项 = P 的谓词只把 sale_order_type 收窄到 ('销售单', '转换单')——不含充值、寄存单；change_type 不含储值卡抵扣。
  *   - S / T / U 客流（#373）：(服务门店, 顾客, service_date) 去重的到店天数；T = 当天在该店的服务单核销过体验项目
  *     （sale_items.is_experience），U = S − T。**不读** service_orders.service_order_type（开单时快照，已过时）。
+ *     寄存单退款专用单**不剔除**（metrics.md「剔除 / 不剔除」表：寄存退款是真到店、假消耗），与 F / H 同一个到店日集合。
  *   - 日期一律按 DATE 列与 'YYYY-MM-DD' 字符串比较，不依赖会话时区（#291）；各查询都不加 >0 过滤（#290）。
  */
 
@@ -79,14 +80,25 @@ function revenueByStoreSql(session: AuthSession, scope: DataCenterScope, range: 
 }
 
 /**
- * K / L 被经营人头：(下单门店, 顾客) 区间内款项净额 ≥ 门槛。款项谓词 = revenueByStoreSql 只把类型收窄到销售单 + 转换单
- * （consistency.operating-master 守护）。门槛比较放在外层 WHERE，不用 HAVING。
+ * K / L 被经营人头：(下单门店, 顾客) 年度 / 当月款项净额 ≥ 门槛，一条查询扫年度区间、当月用 FILTER 截取。
+ * 款项谓词 = revenueByStoreSql 只把类型收窄到销售单 + 转换单（consistency.operating-master 守护）。
+ * 门槛比较放在外层 COUNT FILTER，不用 HAVING。
  */
-function managedByStoreSql(session: AuthSession, scope: DataCenterScope, range: ResolvedRange, threshold: number): SQL {
+function managedByStoreSql(
+  session: AuthSession,
+  scope: DataCenterScope,
+  ytd: ResolvedRange,
+  month: ResolvedRange,
+  threshold: number,
+): SQL {
   return sql`
-        SELECT t.store_id, COUNT(*) AS v
+        SELECT t.store_id,
+               COUNT(*) FILTER (WHERE t.year_amount >= ${threshold}) AS year_v,
+               COUNT(*) FILTER (WHERE t.month_amount >= ${threshold}) AS month_v
         FROM (
-          SELECT spe.store_id, so.client_user_id, SUM(spe.amount::numeric) AS amount
+          SELECT spe.store_id, so.client_user_id,
+                 SUM(spe.amount::numeric) AS year_amount,
+                 SUM(spe.amount::numeric) FILTER (WHERE spe.performance_date >= ${month.start}) AS month_amount
           FROM sale_order_performance_events spe
           JOIN sale_orders so ON so.sale_order_id = spe.sale_order_id
           WHERE ${scopeFilterSql(session, scope, 'spe.store_id')}
@@ -94,11 +106,10 @@ function managedByStoreSql(session: AuthSession, scope: DataCenterScope, range: 
             AND spe.change_type IN ('首次支付', '回款', '退款')
             AND spe.sale_order_type IN ('销售单', '转换单')
             AND spe.legacy_source IS DISTINCT FROM 'workfine'
-            AND spe.performance_date BETWEEN ${range.start} AND ${range.end}
+            AND spe.performance_date BETWEEN ${ytd.start} AND ${ytd.end}
             AND so.client_user_id IS NOT NULL
           GROUP BY spe.store_id, so.client_user_id
         ) t
-        WHERE t.amount >= ${threshold}
         GROUP BY t.store_id
       `
 }
@@ -118,7 +129,7 @@ export const getOperatingMaster = withPermission(
 
     const [
       scopeName, skelRows, beauticianRows, revRows, ytdRevRows, projectRows, consRows, shengmeiConsRows,
-      retainedRows, managedMonthRows, managedYearRows, footfallRows,
+      retainedRows, managedRows, footfallRows,
     ] =
       await Promise.all([
         resolveScopeName(scope),
@@ -200,10 +211,8 @@ export const getOperatingMaster = withPermission(
           LEFT JOIN month_visits mv ON mv.client_user_id = r.client_user_id
           GROUP BY r.store_id
         `),
-        // L 被经营当月
-        db.execute(managedByStoreSql(session, scope, cur, threshold)),
-        // K 被经营年度
-        db.execute(managedByStoreSql(session, scope, ytd, threshold)),
+        // K 被经营年度 / L 被经营当月（年度区间的终点即当月末，当月是它的尾段）
+        db.execute(managedByStoreSql(session, scope, ytd, cur, threshold)),
         // S 服务到店天数 / T 售前到店天数
         db.execute(sql`
           WITH visit_days AS (
@@ -220,7 +229,6 @@ export const getOperatingMaster = withPermission(
               AND so.status = '已完成'
               AND so.client_user_id IS NOT NULL
               AND so.service_date BETWEEN ${cur.start} AND ${cur.end}
-              AND ${excludeDepositRefundSql('so')}
             GROUP BY so.store_id, so.client_user_id, so.service_date
           )
           SELECT store_id, COUNT(*) AS footfall, COUNT(*) FILTER (WHERE pre_sale) AS pre_sale
@@ -248,8 +256,7 @@ export const getOperatingMaster = withPermission(
     collect(consRows, 'monthConsume')
     collect(shengmeiConsRows, 'shengmeiConsume')
     collect(retainedRows, { retained: 'retainedMembers', once: 'returnOnceHeads', twice: 'returnTwiceHeads' })
-    collect(managedMonthRows, 'managedMonthCustomers')
-    collect(managedYearRows, 'managedYearCustomers')
+    collect(managedRows, { year_v: 'managedYearCustomers', month_v: 'managedMonthCustomers' })
     collect(footfallRows, { footfall: 'monthFootfall', pre_sale: 'preSaleFootfall' })
     // U 售后 = S − T（同一行查询的两个计数，恒 ≥ 0）
     for (const [id, values] of metrics) {

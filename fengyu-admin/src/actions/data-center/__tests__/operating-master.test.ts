@@ -5,7 +5,7 @@
  * 直接断言「编译后发往 PG 的东西」——口径谓词本身与销售板的逐字一致由 consistency.operating-master 守护。
  *
  * 查询顺序（Promise.all 位置）：0 骨架 / 1 美容师 / 2 P 当月 / 3 R 年度 / 4 V 生美项目数 / 5 W 实耗 / 6 X 生美实耗 /
- * 7 E·F·H 保有会员与回店 / 8 L 被经营当月 / 9 K 被经营年度 / 10 S·T 到店天数（#373）
+ * 7 E·F·H 保有会员与回店 / 8 K·L 被经营年度与当月 / 9 S·T 到店天数（#373）
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { PgDialect } from 'drizzle-orm/pg-core'
@@ -33,7 +33,7 @@ import { getOperatingMaster } from '../operating-master'
 const dialect = new PgDialect()
 const Q = {
   skeleton: 0, beautician: 1, month: 2, ytd: 3, project: 4, consume: 5, shengmei: 6,
-  retained: 7, managedMonth: 8, managedYear: 9, footfall: 10,
+  retained: 7, managed: 8, footfall: 9,
 } as const
 
 function compiled(index: number) {
@@ -96,26 +96,28 @@ describe('getOperatingMaster', () => {
     }
   })
 
-  it('K / L 被经营：款项只含销售单 + 转换单（不含充值、寄存单），门槛读配置、外层 >= 比较；1 月 K 与 L 同 SQL 同参数（K = L）', async () => {
-    await getOperatingMaster({ scope: { type: 'all' }, month: '2026-01' })
-    const l = compiled(Q.managedMonth)
-    const k = compiled(Q.managedYear)
-    expect(k.sql).toBe(l.sql)
-    expect(k.params).toEqual(l.params)
-
-    feed({})
+  it('K / L 被经营：一条查询扫年度区间、当月用 FILTER 截取；款项只含销售单 + 转换单，门槛读配置、外层 >=', async () => {
     await getOperatingMaster({ scope: { type: 'all' }, month: '2026-08' })
-    const month = compiled(Q.managedMonth)
-    const year = compiled(Q.managedYear)
-    expect(year.sql).toBe(month.sql)
-    expect(month.params.slice(-3)).toEqual(['2026-08-01', '2026-08-31', 1990])
-    expect(year.params.slice(-3)).toEqual(['2026-01-01', '2026-08-31', 1990])
-    const flat = month.sql.replace(/\s+/g, ' ')
+    const { sql, params } = compiled(Q.managed)
+    const flat = sql.replace(/\s+/g, ' ')
+    expect(params.slice(0, 3)).toEqual([1990, 1990, '2026-08-01'])
+    expect(params.slice(-2)).toEqual(['2026-01-01', '2026-08-31'])
+    expect(flat).toMatch(/COUNT\(\*\) FILTER \(WHERE t\.year_amount >= \$1\) AS year_v, COUNT\(\*\) FILTER \(WHERE t\.month_amount >= \$2\) AS month_v/)
+    expect(flat).toMatch(/SUM\(spe\.amount::numeric\) FILTER \(WHERE spe\.performance_date >= \$3\) AS month_amount/)
     expect(flat).toContain("spe.sale_order_type IN ('销售单', '转换单')")
     expect(flat).not.toMatch(/充值单|寄存单|储值卡抵扣/)
     expect(flat).toContain("spe.change_type IN ('首次支付', '回款', '退款')")
     expect(flat).toContain("spe.legacy_source IS DISTINCT FROM 'workfine'")
-    expect(flat).toMatch(/GROUP BY spe\.store_id, so\.client_user_id \) t WHERE t\.amount >= \$\d+ GROUP BY t\.store_id/)
+    expect(flat).toMatch(/GROUP BY spe\.store_id, so\.client_user_id \) t GROUP BY t\.store_id/)
+  })
+
+  it('1 月：年度区间 = 当月区间，K 与 L 同一门槛同一区间（K = L）', async () => {
+    feed({ managed: [{ store_id: 'S1', year_v: '3', month_v: '3' }], skeleton: [{ store_id: 'S1', store_name: 'A', market_id: 'M1', market_name: 'M' }] })
+    const result = await getOperatingMaster({ scope: { type: 'all' }, month: '2026-01' })
+    const { params } = compiled(Q.managed)
+    expect(params[2]).toBe('2026-01-01')
+    expect(params.slice(-2)).toEqual(['2026-01-01', '2026-01-31'])
+    expect(result.rows[0].values).toMatchObject({ managedYearCustomers: 3, managedMonthCustomers: 3 })
   })
 
   it('E 保有会员：按绑定门店 scope，截至统计时点 T（过去月份 = 月末、当月 = 今天）；F / H 用 #298 到店天数、不限到店门店', async () => {
@@ -137,14 +139,15 @@ describe('getOperatingMaster', () => {
     expect(current.params).toContain('2026-09-30') // F / H 仍按整月（今天之后没有已完成服务单）
   })
 
-  it('S / T 到店天数：按服务门店 × 顾客 × 服务日去重，售前 = 当天核销过体验项，剔除寄存单退款专用单', async () => {
+  it('S / T 到店天数：按服务门店 × 顾客 × 服务日去重，售前 = 当天核销过体验项；寄存单退款专用单照常算到店（真到店、假消耗）', async () => {
     await getOperatingMaster({ scope: { type: 'all' }, month: '2026-08' })
     const { sql, params } = compiled(Q.footfall)
     const flat = sql.replace(/\s+/g, ' ')
     expect(flat).toContain('GROUP BY so.store_id, so.client_user_id, so.service_date')
     expect(flat).toContain('si.is_experience = TRUE')
     expect(flat).toContain("so.status = '已完成'")
-    expect(params).toContain('寄存单退款专用 — 老系统寄存疗程卡退款核销，不计消耗业绩')
+    expect(flat).not.toMatch(/remark/)
+    expect(params).not.toContain('寄存单退款专用 — 老系统寄存疗程卡退款核销，不计消耗业绩')
   })
 
   it('V 生美项目数 = SUM(session_used) ∩ 已完成 ∩ 生美 ∩ 剔除寄存单退款专用单', async () => {
@@ -190,8 +193,7 @@ describe('getOperatingMaster', () => {
       consume: [{ store_id: 'S3', v: '12.34' }],
       shengmei: [],
       retained: [{ store_id: 'S1', retained: '120', once: '90', twice: '40' }],
-      managedMonth: [{ store_id: 'S1', v: '7' }],
-      managedYear: [{ store_id: 'S1', v: '11' }, { store_id: 'S2', v: '1' }],
+      managed: [{ store_id: 'S1', year_v: '11', month_v: '7' }, { store_id: 'S2', year_v: '1', month_v: '0' }],
       footfall: [{ store_id: 'S1', footfall: '300', pre_sale: '12' }, { store_id: 'S3', footfall: '5', pre_sale: '0' }],
     })
     const result = await getOperatingMaster({ scope: { type: 'all' }, month: '2026-08' })

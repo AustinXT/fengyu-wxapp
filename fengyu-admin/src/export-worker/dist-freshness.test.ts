@@ -169,7 +169,7 @@ const PROBES: Probe[] = [
   {
     label: '经营数据主表 · 被经营门槛 / 回店≥2 天 / 售前按体验项（#373）',
     file: 'src/actions/data-center/operating-master.ts',
-    pattern: /^(WHERE t\.amount >= \$\{threshold\}|COUNT\(\*\) FILTER \(WHERE mv\.days >= 2\) AS twice|AND si\.is_experience = TRUE)$/,
+    pattern: /^(COUNT\(\*\) FILTER \(WHERE t\.month_amount >= \$\{threshold\}\) AS month_v|COUNT\(\*\) FILTER \(WHERE mv\.days >= 2\) AS twice|AND si\.is_experience = TRUE)$/,
     minLines: 3,
   },
   {

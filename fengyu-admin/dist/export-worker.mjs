@@ -182278,7 +182278,7 @@ function pendingColumn(letter, key, header, group, unit, pending) {
     exportWidth: headerExportWidth(header, 12)
   };
 }
-function metricColumn(letter, key, header, group, unit, hint) {
+function numberColumn(letter, key, header, group, unit, hint) {
   return {
     letter,
     key,
@@ -182288,10 +182288,11 @@ function metricColumn(letter, key, header, group, unit, hint) {
     align: "right",
     width: headerWidth(header, unit === "amount" ? 120 : 96),
     hint,
-    value: metric(key),
-    aggregate: { kind: "sum" },
     exportWidth: headerExportWidth(header, unit === "amount" ? 16 : 12)
   };
+}
+function metricColumn(letter, key, header, group, unit, hint) {
+  return { ...numberColumn(letter, key, header, group, unit, hint), value: metric(key), aggregate: { kind: "sum" } };
 }
 function ratioOf(numerator, denominator) {
   if (numerator == null || denominator == null || !Number.isFinite(numerator) || !Number.isFinite(denominator))
@@ -182302,17 +182303,9 @@ function ratioColumn(letter, key, header, group, unit, numerator, denominator, h
   const top = metric(numerator);
   const bottom = metric(denominator);
   return {
-    letter,
-    key,
-    header,
-    group,
-    unit,
-    align: "right",
-    width: headerWidth(header, unit === "amount" ? 120 : 96),
-    hint,
+    ...numberColumn(letter, key, header, group, unit, hint),
     value: (row) => ratioOf(top(row), bottom(row)),
-    aggregate: { kind: "ratio", numerator: top, denominator: bottom },
-    exportWidth: headerExportWidth(header, unit === "amount" ? 16 : 12)
+    aggregate: { kind: "ratio", numerator: top, denominator: bottom }
   };
 }
 var OPERATING_MASTER_COLUMNS = [
@@ -182479,11 +182472,15 @@ function revenueByStoreSql(session4, scope, range) {
         GROUP BY spe.store_id
       `;
 }
-function managedByStoreSql(session4, scope, range, threshold) {
+function managedByStoreSql(session4, scope, ytd, month, threshold) {
   return import_drizzle_orm68.sql`
-        SELECT t.store_id, COUNT(*) AS v
+        SELECT t.store_id,
+               COUNT(*) FILTER (WHERE t.year_amount >= ${threshold}) AS year_v,
+               COUNT(*) FILTER (WHERE t.month_amount >= ${threshold}) AS month_v
         FROM (
-          SELECT spe.store_id, so.client_user_id, SUM(spe.amount::numeric) AS amount
+          SELECT spe.store_id, so.client_user_id,
+                 SUM(spe.amount::numeric) AS year_amount,
+                 SUM(spe.amount::numeric) FILTER (WHERE spe.performance_date >= ${month.start}) AS month_amount
           FROM sale_order_performance_events spe
           JOIN sale_orders so ON so.sale_order_id = spe.sale_order_id
           WHERE ${scopeFilterSql(session4, scope, "spe.store_id")}
@@ -182491,11 +182488,10 @@ function managedByStoreSql(session4, scope, range, threshold) {
             AND spe.change_type IN ('首次支付', '回款', '退款')
             AND spe.sale_order_type IN ('销售单', '转换单')
             AND spe.legacy_source IS DISTINCT FROM 'workfine'
-            AND spe.performance_date BETWEEN ${range.start} AND ${range.end}
+            AND spe.performance_date BETWEEN ${ytd.start} AND ${ytd.end}
             AND so.client_user_id IS NOT NULL
           GROUP BY spe.store_id, so.client_user_id
         ) t
-        WHERE t.amount >= ${threshold}
         GROUP BY t.store_id
       `;
 }
@@ -182520,8 +182516,7 @@ var getOperatingMaster = withPermission(DATA_CENTER_DASHBOARD_ACTION, async (ses
     consRows,
     shengmeiConsRows,
     retainedRows,
-    managedMonthRows,
-    managedYearRows,
+    managedRows,
     footfallRows
   ] = await Promise.all([
     resolveScopeName(scope),
@@ -182595,8 +182590,7 @@ var getOperatingMaster = withPermission(DATA_CENTER_DASHBOARD_ACTION, async (ses
           LEFT JOIN month_visits mv ON mv.client_user_id = r.client_user_id
           GROUP BY r.store_id
         `),
-    db2.execute(managedByStoreSql(session4, scope, cur, threshold)),
-    db2.execute(managedByStoreSql(session4, scope, ytd, threshold)),
+    db2.execute(managedByStoreSql(session4, scope, ytd, cur, threshold)),
     db2.execute(import_drizzle_orm68.sql`
           WITH visit_days AS (
             SELECT so.store_id, so.client_user_id, so.service_date,
@@ -182612,7 +182606,6 @@ var getOperatingMaster = withPermission(DATA_CENTER_DASHBOARD_ACTION, async (ses
               AND so.status = '已完成'
               AND so.client_user_id IS NOT NULL
               AND so.service_date BETWEEN ${cur.start} AND ${cur.end}
-              AND ${excludeDepositRefundSql("so")}
             GROUP BY so.store_id, so.client_user_id, so.service_date
           )
           SELECT store_id, COUNT(*) AS footfall, COUNT(*) FILTER (WHERE pre_sale) AS pre_sale
@@ -182621,7 +182614,8 @@ var getOperatingMaster = withPermission(DATA_CENTER_DASHBOARD_ACTION, async (ses
         `)
   ]);
   const metrics = new Map;
-  const collect = (rows, key, fields = { v: key }) => {
+  const collect = (rows, target) => {
+    const fields = typeof target === "string" ? { v: target } : target;
     for (const row of rows) {
       const id = String(row.store_id);
       const next = { ...metrics.get(id) };
@@ -182636,10 +182630,9 @@ var getOperatingMaster = withPermission(DATA_CENTER_DASHBOARD_ACTION, async (ses
   collect(projectRows, "shengmeiProjectCount");
   collect(consRows, "monthConsume");
   collect(shengmeiConsRows, "shengmeiConsume");
-  collect(retainedRows, "retainedMembers", { retained: "retainedMembers", once: "returnOnceHeads", twice: "returnTwiceHeads" });
-  collect(managedMonthRows, "managedMonthCustomers");
-  collect(managedYearRows, "managedYearCustomers");
-  collect(footfallRows, "monthFootfall", { footfall: "monthFootfall", pre_sale: "preSaleFootfall" });
+  collect(retainedRows, { retained: "retainedMembers", once: "returnOnceHeads", twice: "returnTwiceHeads" });
+  collect(managedRows, { year_v: "managedYearCustomers", month_v: "managedMonthCustomers" });
+  collect(footfallRows, { footfall: "monthFootfall", pre_sale: "preSaleFootfall" });
   for (const [id, values2] of metrics) {
     metrics.set(id, { ...values2, afterSaleFootfall: (values2.monthFootfall ?? 0) - (values2.preSaleFootfall ?? 0) });
   }
