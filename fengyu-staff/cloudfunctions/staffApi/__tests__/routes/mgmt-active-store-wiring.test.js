@@ -15,14 +15,20 @@
 
 const fs = require('node:fs')
 const path = require('node:path')
+const { createHash } = require('node:crypto')
 const pg = globalThis.__mocks__.pg
 const { createCtx } = require('../helpers')
 
-const ROUTES = {
-  'mgmt-dashboard': require('../../routes/mgmt-dashboard'),
-  'mgmt-traffic': require('../../routes/mgmt-traffic'),
-  'mgmt-product': require('../../routes/mgmt-product'),
-}
+/**
+ * 统计路由 = routes/mgmt-*.js 去掉非统计文件（顾客档案）。按目录动态构造，新增管理层路由自动纳入
+ * 运行时闭集（闸门 2 codex round-5 P2：写死三个文件时新路由整个逃过扫描）。
+ */
+const NON_STATS_ROUTE_FILES = ['mgmt-customer.js']
+const ROUTES = Object.fromEntries(
+  fs.readdirSync(path.resolve(__dirname, '../../routes'))
+    .filter((n) => /^mgmt-.*\.js$/.test(n) && !NON_STATS_ROUTE_FILES.includes(n))
+    .map((n) => [n.replace(/\.js$/, ''), require(`../../routes/${n}`)]),
+)
 
 const DATE = '2026-09-10'
 
@@ -92,6 +98,9 @@ const results = []
 const errors = []
 
 beforeAll(async () => {
+  // 固定「今天」：period=month 等按当前日期解析，SQL 全文不随运行日漂移
+  vi.useFakeTimers({ toFake: ['Date'] })
+  vi.setSystemTime(new Date('2026-09-15T04:00:00Z'))
   for (const [route, name, mk, metric] of CALLS) {
     const label = metric ? `${route}:${name}[${metric}]` : `${route}:${name}`
     for (const s of SCOPES) {
@@ -108,8 +117,13 @@ beforeAll(async () => {
   }
 })
 
+afterAll(() => {
+  vi.useRealTimers()
+})
+
 describe('#401 管理层取数在营接线 · 运行时闭集', () => {
   it('统计路由的每个导出 handler 都已归类（取数 / 豁免），无遗漏无多余', () => {
+    expect(Object.keys(ROUTES).sort()).toEqual(['mgmt-dashboard', 'mgmt-product', 'mgmt-traffic']) // 目录扫描本身不能落空
     const exported = Object.entries(ROUTES).flatMap(([route, mod]) => Object.keys(mod).map((k) => `${route}:${k}`))
     const classified = [...new Set(CALLS.map(([route, name]) => `${route}:${name}`)), ...EXEMPT_HANDLERS]
     expect(exported.sort()).toEqual(classified.sort())
@@ -150,15 +164,14 @@ describe('#401 管理层取数在营接线 · 运行时闭集', () => {
     expect(results.some((r) => new RegExp(TIMEPOINT.source).test(r.sql))).toBe(true)
   })
 
-  it('每个 handler × 范围下，各条 SQL 含在营子查询的次数钉快照（双 scope 查询删掉任一侧即变红）', () => {
-    // 闸门 2 codex round-4 P2：「每条 SQL 至少含一处」证明不了同一 SQL 内顾客侧 / 服务单侧两个 scope 都过滤了
-    const count = (sql) => sql.split(ACTIVE_SUBQUERY).length - 1
+  it('每个 handler × 范围下，逐条 SQL（按调用顺序）全文哈希钉快照', () => {
+    // 闸门 2 codex round-4/5 P2：只数在营子查询出现次数，证明不了它是生效的合取条件
+    // （`WHERE ${sc.sql} OR TRUE` 次数不变）。改为钉每条 SQL 全文：任何字面改动都要求显式
+    // `npx vitest run <本文件> -u` 更新快照 —— 评审时对照源码 diff 确认改动没有绕开在营过滤。
     const table = {}
     for (const r of results) {
-      if (EXEMPT_SQL.some(([, re]) => re.test(r.sql))) continue
-      ;(table[`${r.handler} ${r.scope}`] ??= []).push(count(r.sql))
+      ;(table[`${r.handler} ${r.scope}`] ??= []).push(createHash('sha256').update(r.sql).digest('hex').slice(0, 16))
     }
-    for (const key of Object.keys(table)) table[key].sort((a, b) => a - b)
     expect(table).toMatchSnapshot()
   })
 

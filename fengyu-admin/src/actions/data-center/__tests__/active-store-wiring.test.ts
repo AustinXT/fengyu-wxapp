@@ -12,8 +12,9 @@
  *   2. SQL 豁免闭集：非统计查询（配置 / 字典 / 会话参数 / 数据起点）按全文模式登记，其余一律须含在营子查询
  *   3. 豁免必须被命中：登记了却一次没命中的豁免视为过期（防豁免表只增不减、变成后门）
  */
-import { beforeAll, describe, expect, it, vi } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import fs from 'node:fs'
+import { createHash } from 'node:crypto'
 import path from 'node:path'
 import type { AuthSession } from '@/lib/types'
 
@@ -121,6 +122,9 @@ const results: Captured[] = []
 const errors: string[] = []
 
 beforeAll(async () => {
+  // 固定「今天」：period=month 等按当前日期解析，SQL 全文 / 参数不随运行日漂移
+  vi.useFakeTimers({ toFake: ['Date'] })
+  vi.setSystemTime(new Date('2026-09-15T04:00:00Z'))
   const runs: Array<[AuthSession, Scope]> = [
     [HQ_SESSION, { type: 'all' }],
     [MARKET_SESSION, { type: 'authorized' }],
@@ -142,6 +146,10 @@ beforeAll(async () => {
     }
   }
 }, 60_000)
+
+afterAll(() => {
+  vi.useRealTimers()
+})
 
 describe('#401 数据中心取数在营接线 · 运行时闭集', () => {
   it('actions/data-center 的每个运行时导出都已归类（取数 / 豁免），无遗漏无多余', async () => {
@@ -187,15 +195,14 @@ describe('#401 数据中心取数在营接线 · 运行时闭集', () => {
     expect(results.some((r) => new RegExp(TIMEPOINT.source).test(r.sql))).toBe(true)
   })
 
-  it('每个 action × 范围下，各条 SQL 含在营子查询的次数钉快照（双 scope 查询删掉任一侧即变红）', () => {
-    // 闸门 2 codex round-4 P2：「每条 SQL 至少含一处」证明不了同一 SQL 内顾客侧 / 服务单侧两个 scope 都过滤了
-    const count = (sql: string) => sql.split(ACTIVE_SUBQUERY).length - 1
-    const table: Record<string, number[]> = {}
+  it('每个 action × 范围下，逐条 SQL（按调用顺序）全文哈希钉快照', () => {
+    // 闸门 2 codex round-4/5 P2：只数在营子查询出现次数，证明不了它是生效的合取条件
+    // （`WHERE ${scope} OR TRUE` 次数不变）。改为钉每条 SQL 的全文：任何字面改动都要求显式
+    // `npx vitest run <本文件> -u` 更新快照 —— 评审时对照源码 diff 确认改动没有绕开在营过滤。
+    const table: Record<string, string[]> = {}
     for (const r of results) {
-      if (EXEMPT_SQL.some(([, re]) => re.test(r.sql))) continue
-      ;(table[`${r.action} ${r.scope}`] ??= []).push(count(r.sql))
+      ;(table[`${r.action} ${r.scope}`] ??= []).push(createHash('sha256').update(r.sql).digest('hex').slice(0, 16))
     }
-    for (const key of Object.keys(table)) table[key].sort((a, b) => a - b)
     expect(table).toMatchSnapshot()
   })
 
