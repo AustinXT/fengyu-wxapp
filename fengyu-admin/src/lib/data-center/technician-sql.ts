@@ -34,27 +34,10 @@ import { scopeFilterSql, orgAnchorScopeSql } from '@/lib/data-center/scope-sql'
  * 过滤的查询。只修其中一处会让**同一个数据中心的两个板块技师数差 14 人**
  * （闸门 2 codex round-2 判 P0）。两处必须共用本模块。
  */
-/**
- * 人池。缺省 `producer`（产能技师，上面那套口径，所有人均派生分母用它）。
- *
- * `beautician` 只收窄技能条件为「含美容师」（经营数据主表 D 列「美容师人数」，#372）：
- * 在职历史化、双轨归属、scope 可见性与 `producer` 完全相同——只是换一组技能，不是另一套口径。
- * 技能条件写成两个 SQL 字面量而不是绑定数组参数：drizzle 模板里裸数组会被摊开成多个参数
- * （见 memory reference-drizzle-sql-bare-array-splices），且 `producer` 的字面量有一致性守护在盯。
- */
-export type TechnicianPool = 'producer' | 'beautician'
-
-function skillFilterSql(pool: TechnicianPool): SQL {
-  return pool === 'beautician'
-    ? sql`sw.skills && ARRAY['美容师']::text[]`
-    : sql`sw.skills && ARRAY['美容师','养生师']::text[]`
-}
-
 export function technicianCteSql(
   session: AuthSession,
   scope: DataCenterScope,
   endDate: string,
-  pool: TechnicianPool = 'producer',
 ): SQL {
   return sql`
       technician_base AS (
@@ -69,7 +52,7 @@ export function technicianCteSql(
         LEFT JOIN org_nodes o ON o.id = sw.org_node_id
         LEFT JOIN org_nodes op ON op.id = o.parent_id
         LEFT JOIN stores ds ON ds.org_node_id = sw.org_node_id
-        WHERE ${skillFilterSql(pool)}
+        WHERE sw.skills && ARRAY['美容师','养生师']::text[]
           AND sw.hired_at IS NOT NULL
           AND sw.hired_at::date <= ${endDate}
           AND (sw.resigned_at IS NULL OR sw.resigned_at::date > ${endDate})
@@ -95,6 +78,28 @@ export function technicianCountSql(
     `
 }
 
+/**
+ * 人池。缺省 `producer`（产能技师，即 `technicianCteSql` 的口径）。
+ *
+ * `beautician`（经营数据主表 D 列「美容师人数」，#372）是 producer 的**子集**：在 technician_scoped 之上
+ * 再收窄为「技能含美容师」。在职历史化、双轨归属、scope 可见性全部沿用 producer，不是另一套口径。
+ *
+ * ⚠️ 收窄必须加在**外层**，不能改 `technicianCteSql`：staffApi 的
+ * `cross-end-technician-denominator.test.js`（#320）逐字钉住 technician_base 的 FROM/JOIN/WHERE 与
+ * technician_scoped 的 SELECT，两端人均分母靠它对齐；往 CTE 里插任何条件都会让跨端守护变红。
+ */
+export type TechnicianPool = 'producer' | 'beautician'
+
+function technicianPoolFilterSql(pool: TechnicianPool): SQL {
+  if (pool === 'producer') return sql``
+  return sql`
+        AND EXISTS (
+          SELECT 1 FROM staff_wechat_users bw
+          WHERE bw.employee_id = ts.employee_id
+            AND bw.skills && ARRAY['美容师']::text[]
+        )`
+}
+
 /** 产能技师数 by store（**仅**有门店归属的那部分）；`pool='beautician'` 时为美容师人数 */
 export function technicianByStoreSql(
   session: AuthSession,
@@ -103,10 +108,10 @@ export function technicianByStoreSql(
   pool: TechnicianPool = 'producer',
 ): SQL {
   return sql`
-      WITH ${technicianCteSql(session, scope, endDate, pool)}
+      WITH ${technicianCteSql(session, scope, endDate)}
       SELECT store_id, COUNT(*)::int AS v
-      FROM technician_scoped
-      WHERE store_id IS NOT NULL
+      FROM technician_scoped ts
+      WHERE store_id IS NOT NULL${technicianPoolFilterSql(pool)}
       GROUP BY store_id
     `
 }

@@ -102,17 +102,21 @@ describe('getOperatingMaster', () => {
     expect(sql).not.toMatch(/sales_category/)
   })
 
-  it('D 美容师人数：technician-sql 单源、技能只含美容师、按所选月末历史化', async () => {
+  it('D 美容师人数：产能技师人池（technician-sql 单源，不改 CTE）之上只收窄「技能含美容师」，按所选月末历史化', async () => {
     await getOperatingMaster({ scope: { type: 'all' }, month: '2026-08' })
     const { sql, params } = compiled(Q.beautician)
-    // 钉住 technician_base 的完整 WHERE：只换技能数组，在职历史化条件不变，且不得多出岗位等人群条件
-    const where = sql.replace(/\s+/g, ' ').match(/FROM staff_wechat_users sw .*? WHERE (.*?) \),/)?.[1]
-    expect(where).toMatch(
-      /^sw\.skills && ARRAY\['美容师'\]::text\[\] AND sw\.hired_at IS NOT NULL AND sw\.hired_at::date <= \$\d+ AND \(sw\.resigned_at IS NULL OR sw\.resigned_at::date > \$\d+\)$/,
+    const flat = sql.replace(/\s+/g, ' ')
+    // technician_base 仍是产能技师原样（#320 跨端守护钉的就是这段），没有被改成别的人池
+    const baseWhere = flat.match(/FROM staff_wechat_users sw .*? WHERE (.*?) \),/)?.[1]
+    expect(baseWhere).toMatch(
+      /^sw\.skills && ARRAY\['美容师','养生师'\]::text\[\] AND sw\.hired_at IS NOT NULL AND sw\.hired_at::date <= \$\d+ AND \(sw\.resigned_at IS NULL OR sw\.resigned_at::date > \$\d+\)$/,
     )
-    expect(sql).not.toContain('养生师')
+    // 外层整段钉死：只在 technician_scoped 上加一个「技能含美容师」的 EXISTS，不得多出岗位等人群条件
+    const outer = flat.slice(flat.lastIndexOf(') SELECT store_id'))
+    expect(outer).toBe(
+      ") SELECT store_id, COUNT(*)::int AS v FROM technician_scoped ts WHERE store_id IS NOT NULL AND EXISTS ( SELECT 1 FROM staff_wechat_users bw WHERE bw.employee_id = ts.employee_id AND bw.skills && ARRAY['美容师']::text[] ) GROUP BY store_id ",
+    )
     expect(sql).not.toMatch(/position/i)
-    expect(sql).toContain('FROM technician_scoped')
     expect(params).toContain('2026-08-31')
   })
 
