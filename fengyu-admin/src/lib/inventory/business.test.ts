@@ -1727,6 +1727,9 @@ describe('库存转换多对多与成本守恒（#344）', () => {
     ['单价为 false', { sources: [{ sourceLotId: 101, quantity: 1 }], targets: [{ targetSkuId: 'SKU-X', quantity: 1, unitPrice: false }] }, '转换目标单价不能为空且不能小于 0'],
     ['单价缺省', { sources: [{ sourceLotId: 101, quantity: 1 }], targets: [{ targetSkuId: 'SKU-X', quantity: 1 }] }, '转换目标单价不能为空且不能小于 0'],
     ['数量超 numeric(12,2) 上界', { sources: [{ sourceLotId: 101, quantity: 1e11 }], targets: [{ targetSkuId: 'SKU-X', quantity: 1, unitPrice: 1 }] }, '转换出库数量不能超过 9999999999.99'],
+    ['来源批次 id 为 true', { sources: [{ sourceLotId: true, quantity: 1 }], targets: [{ targetSkuId: 'SKU-X', quantity: 1, unitPrice: 0 }] }, '请选择转换来源批次'],
+    ['来源批次 id 为数组', { sources: [{ sourceLotId: [101], quantity: 1 }], targets: [{ targetSkuId: 'SKU-X', quantity: 1, unitPrice: 0 }] }, '请选择转换来源批次'],
+    ['来源批次 id 为十六进制串', { sources: [{ sourceLotId: '0x65', quantity: 1 }], targets: [{ targetSkuId: 'SKU-X', quantity: 1, unitPrice: 0 }] }, '请选择转换来源批次'],
     ['来源明细为 null', { sources: [null], targets: [{ targetSkuId: 'SKU-X', quantity: 1, unitPrice: 1 }] }, '库存转换来源明细格式不正确'],
     ['目标 SKU 非字符串', { sources: [{ sourceLotId: 101, quantity: 1 }], targets: [{ targetSkuId: 123, quantity: 1, unitPrice: 1 }] }, '转换目标 SKU格式不正确'],
     ['来源数量太少分不到每个目标', { sources: [{ sourceLotId: 101, quantity: 0.01 }], targets: [{ targetSkuId: 'SKU-X', quantity: 1, unitPrice: 0 }, { targetSkuId: 'SKU-Y', quantity: 1, unitPrice: 0 }] }, '无法分摊到每个目标行'],
@@ -1739,7 +1742,7 @@ describe('库存转换多对多与成本守恒（#344）', () => {
     expect(db.transaction).not.toHaveBeenCalled()
   })
 
-  it('看不到供应链价格的会话：不守恒报错不带来源合计（不泄露供应链成本）', async () => {
+  it('看不到供应链价格的会话：读任何批次之前就 PERMISSION_DENIED（防止拿守恒结果当判定器探成本）', async () => {
     const operatorOnly = {
       employeeId: 'E-SC2', name: '供应链办理员', phone: '13800000013',
       roles: [{
@@ -1748,26 +1751,17 @@ describe('库存转换多对多与成本守恒（#344）', () => {
       }],
       permissions: { actions: ['inventory:supply_chain_operate'], scopeStoreIds: [] },
     } as never
-    fakeDb([{ id: 101, sku_id: 'SKU-A', supply_chain_unit_cost: '37.5' }])
-    const error = await createInventoryConversion(operatorOnly, {
+    const fake = fakeDb([{ id: 101, sku_id: 'SKU-A', supply_chain_unit_cost: '37.5' }])
+    // 即便单价恰好守恒也拒：成功与否本身就会泄露成本
+    await expect(createInventoryConversion(operatorOnly, {
       locationId: 'HQ',
       sources: [{ sourceLotId: 101, quantity: 1 }],
-      targets: [{ targetSkuId: 'SKU-X', quantity: 1, unitPrice: 1 }],
-    }).catch((caught: Error) => caught)
-    expect(String(error)).toContain('转换前后成本不守恒')
-    expect(String(error)).not.toMatch(/37\.5|来源合计/)
+      targets: [{ targetSkuId: 'SKU-X', quantity: 1, unitPrice: 37.5 }],
+    })).rejects.toThrow(/PERMISSION_DENIED.*供应链价格查看权限/)
+    expect(fake.lotLocks).toEqual([])
   })
 
-  it('金额合计超出 numeric(12,2)：事务内按成本算出后拒绝，不等 PG 抛 22003', async () => {
-    fakeDb([{ id: 101, sku_id: 'SKU-A', supply_chain_unit_cost: '100000', quantity_on_hand: 200000 }])
-    await expect(createInventoryConversion(SESSION, {
-      locationId: 'HQ',
-      sources: [{ sourceLotId: 101, quantity: 100000 }],
-      targets: [{ targetSkuId: 'SKU-X', quantity: 100000, unitPrice: 100000 }],
-    })).rejects.toThrow('库存转换金额合计超出上限')
-  })
-
-  it('价格可见性按本主体的角色绑定判：绑定 A 在 HQ2 有价格权、绑定 B 在 HQ 只有办理权 → HQ 上报错不带金额', async () => {
+  it('价格可见性按本主体的角色绑定判：绑定 A 在 HQ2 有价格权、绑定 B 在 HQ 只有办理权 → 在 HQ 转换被拒', async () => {
     const binding = (scopeId: string, actions: string[]) => ({
       role: `custom_${scopeId}`, scopeId, scopeType: '总部', actions, scopeStoreIds: [], scopeOrgNodeIds: [scopeId],
     })
@@ -1784,10 +1778,9 @@ describe('库存转换多对多与成本守恒（#344）', () => {
       sources: [{ sourceLotId: 101, quantity: 1 }],
       targets: [{ targetSkuId: 'SKU-X', quantity: 1, unitPrice: 1 }],
     }
-    fakeDb([{ id: 101, sku_id: 'SKU-A', supply_chain_unit_cost: '37.5' }])
-    const hidden = await createInventoryConversion(mixed, input).catch((caught: Error) => caught)
-    expect(String(hidden)).toContain('转换前后成本不守恒')
-    expect(String(hidden)).not.toMatch(/37\.5|来源合计/)
+    const fake = fakeDb([{ id: 101, sku_id: 'SKU-A', supply_chain_unit_cost: '37.5' }])
+    await expect(createInventoryConversion(mixed, input)).rejects.toThrow('PERMISSION_DENIED')
+    expect(fake.lotLocks).toEqual([])
 
     // 对照：价格权绑定就在 HQ 上时照常给出金额
     const priced = { ...(mixed as object), roles: [binding('HQ', ['inventory:supply_chain_operate', 'inventory:supply_chain_price_view'])] } as never

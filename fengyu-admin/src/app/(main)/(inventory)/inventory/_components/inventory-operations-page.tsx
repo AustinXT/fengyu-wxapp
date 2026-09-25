@@ -4244,13 +4244,22 @@ function ConversionForm({
   const giftFlags = new Set(sources.filter((line) => line.lot).map((line) => line.lot!.isGift))
   const mixedGift = giftFlags.size > 1
   const allGift = giftFlags.size === 1 && giftFlags.has(true)
-  // 已选批次但成本拿不到 = 当前账号看不到供应链价格（或批次缺成本），前端无从核算，交服务端判定
-  const costHidden = sources.some((line) => line.lot !== null && conversionSourceUnitCost(line.lot) === null)
+  // 成本拿不到分两种：价格档遮蔽（字段缺省 = 看不到）与批次本身缺成本（null），服务端都会拒，前端提前说清原因
+  const costHidden = sources.some((line) => line.lot !== null && !line.lot.isGift && line.lot.supplyChainUnitCost === undefined)
+  const costMissing = sources.some((line) => line.lot !== null && !line.lot.isGift && line.lot.supplyChainUnitCost === null)
 
   async function submit() {
     if (saving) return
     if (!locationId) {
       toast.error('请选择转换库存主体')
+      return
+    }
+    if (costHidden) {
+      toast.error('库存转换需要本主体的供应链价格查看权限（要按成本核算守恒）')
+      return
+    }
+    if (costMissing) {
+      toast.error('来源批次缺少供应链成本，无法核算转换成本')
       return
     }
     const sourceItems = sources.map((line) => ({
@@ -4400,7 +4409,9 @@ function ConversionForm({
             <span className="text-[var(--muted-foreground)]">允许误差 ±{formatConversionAmount(balance.tolerance)}</span>
           </>
         ) : costHidden ? (
-          <span className="text-[var(--muted-foreground)]">当前账号看不到来源批次的供应链成本，无法核算合计；提交时由系统校验成本守恒</span>
+          <span className="text-[#D94040]">当前账号看不到来源批次的供应链成本，无法核算守恒；库存转换需要本主体的供应链价格查看权限</span>
+        ) : costMissing ? (
+          <span className="text-[#D94040]">来源批次缺少供应链成本，无法核算转换成本</span>
         ) : (
           <span className="text-[var(--muted-foreground)]">选好来源批次后显示来源合计、目标合计与差额</span>
         )}

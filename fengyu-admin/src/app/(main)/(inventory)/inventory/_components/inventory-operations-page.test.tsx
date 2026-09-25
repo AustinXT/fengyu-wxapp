@@ -1926,11 +1926,21 @@ describe('库存转换两段式表单与成本守恒（#344）', () => {
     expect(createInventoryConversion).not.toHaveBeenCalled()
   })
 
-  it('成本不可见（价格档遮蔽）：不预填、提示交服务端校验', async () => {
+  it('成本不可见（价格档遮蔽）：不预填、提示需要价格权限，提交被拦', async () => {
     vi.mocked(listInventoryLotOptions).mockResolvedValue([{ ...lot, supplyChainUnitCost: undefined }] as never)
     await fillThirteenToThirteen()
     expect(numberInputs()[2]).toHaveValue(null)
-    expect(balanceText()).toContain('看不到来源批次的供应链成本')
+    expect(balanceText()).toContain('需要本主体的供应链价格查看权限')
+    fireEvent.change(numberInputs()[2], { target: { value: '10' } })
+    fireEvent.submit(screen.getByRole('button', { name: '创建库存转换单' }).closest('form')!)
+    await waitFor(() => expect(vi.mocked(toast.error)).toHaveBeenCalledWith('库存转换需要本主体的供应链价格查看权限（要按成本核算守恒）'))
+    expect(createInventoryConversion).not.toHaveBeenCalled()
+  })
+
+  it('批次缺成本（null，看得到但没有）：提示缺成本而不是权限', async () => {
+    vi.mocked(listInventoryLotOptions).mockResolvedValue([{ ...lot, supplyChainUnitCost: null }] as never)
+    await fillThirteenToThirteen()
+    expect(balanceText()).toContain('来源批次缺少供应链成本')
   })
 
   it('同一批次两行合计超过可用量：前端按批次汇总拦下（与服务端同口径）', async () => {

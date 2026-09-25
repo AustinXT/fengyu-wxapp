@@ -5331,8 +5331,12 @@ export async function createInventoryConversion(
   // 纯入参校验放在开事务之前：不合法的数量 / 单价不必去锁主体和批次。
   const sourceLines = (input.sources as unknown[]).map((line) => {
     if (!isLine(line)) throw new ApiError('INVALID_PARAMS', '库存转换来源明细格式不正确')
-    const sourceLotId = Number(line.sourceLotId)
-    if (!Number.isInteger(sourceLotId) || sourceLotId <= 0) {
+    // 只收正整数 number 或纯十进制数字串：Number(true) / Number([101]) / Number('0x65') 都会被宽松地转成整数
+    const rawLotId = line.sourceLotId
+    const sourceLotId = typeof rawLotId === 'number' ? rawLotId
+      : typeof rawLotId === 'string' && /^\d+$/.test(rawLotId.trim()) ? Number(rawLotId.trim())
+        : Number.NaN
+    if (!Number.isSafeInteger(sourceLotId) || sourceLotId <= 0) {
       throw new ApiError('INVALID_PARAMS', '请选择转换来源批次')
     }
     return {
@@ -5378,6 +5382,14 @@ export async function createInventoryConversion(
     // 持有供应链权限的账号传入市场/门店主体同样拒绝。
     assertType(location, '总部', '库存转换主体')
     assertLocationWritable(session, location)
+    // 成本守恒要拿自填单价去比来源成本：在本主体看不到供应链价格的会话若也能提交，
+    // 「不守恒 / 成功」本身就成了探测批次成本的判定器（只藏报错金额挡不住）。所以转换须具备
+    // 本主体的供应链价格可见性 —— 按角色绑定逐条判（不用会话并集），且在读任何批次之前拒。
+    // 预置角色 inventory_supply_chain_operator / admin 都带 supply_chain_price_view，不受影响。
+    const priceVisibility = inventoryPriceVisibilityForOrgNodes(inventoryPriceScopeByTier(session), [location.orgNodeId])
+    if (priceVisibility !== 'all' && priceVisibility !== 'supply_chain') {
+      throw new ApiError('PERMISSION_DENIED', '库存转换需要本主体的供应链价格查看权限（要按成本核算守恒）')
+    }
     const marketId = marketIdForLocation(location)
 
     // 同一批次可以出现在多行（#344 去掉「只能转换一次」）：每个批次只锁一次、共用同一个快照对象 ——
@@ -5440,15 +5452,11 @@ export async function createInventoryConversion(
       throw new ApiError('INVALID_PARAMS', `库存转换金额合计超出上限 ${CONVERSION_NUMBER_MAX}`)
     }
     if (!balance.balanced) {
-      // 来源合计就是供应链成本：在**本主体**上看不到供应链价格的会话不能从报错里读出来。
-      // 按角色绑定逐条判（不用会话并集）：绑定 A 在别处有价格权、绑定 B 在这里只有办理权时，这里仍不给金额。
-      const visibility = inventoryPriceVisibilityForOrgNodes(inventoryPriceScopeByTier(session), [location.orgNodeId])
+      // 走到这里的会话已确认在本主体看得到供应链价格（见事务开头），报错可以带金额
       throw new ApiError(
         'INVALID_PARAMS',
-        visibility === 'all' || visibility === 'supply_chain'
-          ? `转换前后成本不守恒：来源合计 ${formatConversionAmount(balance.sourceAmount)}，目标合计 ${formatConversionAmount(balance.targetAmount)}，`
-            + `差额 ${formatConversionAmount(balance.difference)} 超出允许误差 ${formatConversionAmount(balance.tolerance)}`
-          : '转换前后成本不守恒：目标合计与来源成本的差额超出允许误差',
+        `转换前后成本不守恒：来源合计 ${formatConversionAmount(balance.sourceAmount)}，目标合计 ${formatConversionAmount(balance.targetAmount)}，`
+          + `差额 ${formatConversionAmount(balance.difference)} 超出允许误差 ${formatConversionAmount(balance.tolerance)}`,
       )
     }
     // 目标效期留空时取来源批次中最早的效期（多来源时保守取短的那个）。
