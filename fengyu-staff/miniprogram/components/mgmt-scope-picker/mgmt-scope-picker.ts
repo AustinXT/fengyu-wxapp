@@ -41,6 +41,8 @@ Component({
     },
     // 页面以 summary 回包确认的停用状态（#400）：门店在会话中被启停时同步触发器上的「（已停用）」
     appliedInactive: { type: Boolean, value: false },
+    // false = 当前范围是用户显式选的：落在停用门店时只标注、不自动换店
+    autoCorrect: { type: Boolean, value: true },
   },
 
   data: {
@@ -149,7 +151,7 @@ Component({
           const firstActiveOf = (m: MarketMini) => (storeListByMarket[m.id] || []).find((store) => !inactiveIds.has(store.storeId))
           const market = marketList.find((m) => !!firstActiveOf(m))
           const firstActive = market ? firstActiveOf(market) : undefined
-          nextApplied = market && firstActive
+          nextApplied = market && firstActive && this.properties.autoCorrect
             ? {
               scopeType: 'store',
               marketId: market.id,
@@ -280,6 +282,7 @@ Component({
         scopeId: next.scopeId,
         scopeName: next.scopeName,
         inactive,
+        userPicked: true,
       })
     },
 

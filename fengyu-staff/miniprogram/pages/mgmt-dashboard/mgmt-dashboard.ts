@@ -95,8 +95,8 @@ interface SummaryData {
     name: string
     /** #400：门店组织节点已停用 */
     inactive?: boolean
-    /** #400：inactive 时账号还有没有别的在营门店可切（后端按范围下拉同口径判） */
-    hasActiveAlternative?: boolean
+    /** #400：inactive 时账号还有没有别的在营门店可切（后端按范围下拉同口径判）；null = 未知 */
+    hasActiveAlternative?: boolean | null
   }
   storeRevenue: { today: number; month: number; monthlyAvgPerStore: number }
   shengmeiRevenue: { today: number; month: number; monthlyAvgPerStore: number }
@@ -205,6 +205,8 @@ Page({
     summaryState: 'content' as 'loading' | 'empty' | 'error' | 'content',
     // 仅 summaryState='empty'（scope 落在停用门店，#400）时使用
     summaryEmptyText: '',
+    // 默认范围落在停用门店时允许 picker 自动换到在营门店；用户显式选过后关掉
+    scopeAutoCorrect: true,
     summaryEmptyHint: '',
 
     // 门店排行榜
@@ -358,9 +360,11 @@ Page({
     this.loadSummary()
   },
 
-  onScopeChange(e: WechatMiniprogram.CustomEvent<ScopeValue>) {
-    // defaultScope 同步成当前选择：picker 在 wx:if 切 tab 后会重建，重建时须回到当前 scope 而非初始默认值
-    this.setData({ scope: e.detail, defaultScope: e.detail })
+  onScopeChange(e: WechatMiniprogram.CustomEvent<ScopeValue & { userPicked?: boolean }>) {
+    const { userPicked, ...scope } = e.detail
+    // defaultScope 同步成当前选择：picker 在 wx:if 切 tab 后会重建，重建时须回到当前 scope 而非初始默认值。
+    // 用户显式选过范围后关掉自动纠正：重建的 picker 不能把用户选的（后来被停用的）门店换成别家
+    this.setData({ scope, defaultScope: scope, ...(userPicked ? { scopeAutoCorrect: false } : {}) })
     this.loadSummary()
   },
 
@@ -395,7 +399,7 @@ Page({
           'defaultScope.inactive': true,
           summaryState: 'empty',
           summaryEmptyText: inactiveScopeText(summary.scope.name || this.data.scope.scopeName),
-          summaryEmptyHint: inactiveScopeHint(summary.scope.hasActiveAlternative !== false),
+          summaryEmptyHint: inactiveScopeHint(summary.scope.hasActiveAlternative),
         })
         return
       }

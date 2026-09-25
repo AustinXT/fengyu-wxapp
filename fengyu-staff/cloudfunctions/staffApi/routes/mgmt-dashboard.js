@@ -720,8 +720,12 @@ async function summary(ctx) {
     resolveScope(scopeType, scopeId),
   ])
   const elapsed = Date.now() - t0
+  // 只影响空态第二行文案：查失败回 null（未知，前端不出第二行），不能拖垮整个 summary
   const scopeHasAlternative = resolvedScope.inactive
-    ? await hasActiveAlternative(ctx.auth, scopeId)
+    ? await hasActiveAlternative(ctx.auth, scopeId).catch((err) => {
+      console.error('[mgmtDashboard.summary] hasActiveAlternative failed:', err)
+      return null
+    })
     : true
 
   const round2 = (v) => Math.round(Number(v) * 100) / 100
@@ -735,7 +739,7 @@ async function summary(ctx) {
       id: scopeId || null,
       name: resolvedScope.name,
       inactive: resolvedScope.inactive,
-      // 仅 inactive 时有意义：false → 空态提示「当前账号没有其它在营门店可查看」
+      // 仅 inactive 时有意义：false → 空态提示「当前账号没有其它在营门店可查看」；null = 未知
       hasActiveAlternative: scopeHasAlternative,
     },
     storeRevenue: {

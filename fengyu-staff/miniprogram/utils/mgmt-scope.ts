@@ -15,9 +15,11 @@ export function inactiveScopeText(storeName: string): string {
   return `「${storeName || '该门店'}」已停用，无可展示数据`
 }
 
-/** 空态第二行：后端判定账号还有没有别的在营门店可切 */
-export function inactiveScopeHint(hasActiveAlternative: boolean): string {
-  return hasActiveAlternative ? '请点击上方范围切换到在营门店' : '当前账号没有其它在营门店可查看'
+/** 空态第二行：后端判定账号还有没有别的在营门店可切；未知（null / 旧云函数）不出第二行 */
+export function inactiveScopeHint(hasActiveAlternative: boolean | null | undefined): string {
+  if (hasActiveAlternative === true) return '请点击上方范围切换到在营门店'
+  if (hasActiveAlternative === false) return '当前账号没有其它在营门店可查看'
+  return ''
 }
 
 /** 子页 query 是否带停用标记（仅用于范围标签展示） */

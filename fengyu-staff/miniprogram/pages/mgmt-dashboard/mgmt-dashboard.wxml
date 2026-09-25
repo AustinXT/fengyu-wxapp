@@ -13,6 +13,7 @@
         <mgmt-scope-picker
           default-scope="{{ defaultScope }}"
           applied-inactive="{{ scope.inactive }}"
+          auto-correct="{{ scopeAutoCorrect }}"
           bind:change="onScopeChange"
         />
       </view>

@@ -35,7 +35,10 @@ function instantiate(name: string, extra: Record<string, unknown> = {}) {
     ...methods,
     ...extra,
     data: JSON.parse(JSON.stringify(def.data)),
-    properties: {},
+    // 组件属性取声明里的默认值（Page 无 properties）
+    properties: Object.fromEntries(
+      Object.entries(def.properties || {}).map(([k, v]: [string, any]) => [k, v?.value]),
+    ),
     events: [] as Array<{ name: string; detail: any }>,
   }
   inst.setData = (update: Record<string, unknown>) => {
@@ -277,6 +280,23 @@ describe('hub · summary 空态以服务端 scope.inactive 为准', () => {
     expect(hub.data.display).not.toBeNull()
   })
 
+  test('用户显式选择（userPicked）→ 关掉自动纠正；picker 自动纠正的 change 不关', () => {
+    const hub = hubAt({ scopeType: 'store', scopeId: 'store-a', scopeName: 'A 店' })
+    hub.onScopeChange({ detail: { scopeType: 'store', scopeId: 'store-lw', scopeName: '蓝湾', inactive: false } })
+    expect(hub.data.scopeAutoCorrect).toBe(true)
+    hub.onScopeChange({ detail: { scopeType: 'store', scopeId: 'store-b', scopeName: 'B 店', inactive: false, userPicked: true } })
+    expect(hub.data.scopeAutoCorrect).toBe(false)
+    expect(hub.data.scope).not.toHaveProperty('userPicked')
+  })
+
+  test('hasActiveAlternative 未知（null / 旧云函数）→ 空态不出第二行', async () => {
+    mocked.mockResolvedValueOnce(summaryResp({ type: 'store', id: 'store-zh', name: '九江中辉店', inactive: true, hasActiveAlternative: null as any }))
+    const hub = hubAt({ scopeType: 'store', scopeId: 'store-zh', scopeName: '九江中辉店' })
+    await hub.loadSummary()
+    expect(hub.data.summaryState).toBe('empty')
+    expect(hub.data.summaryEmptyHint).toBe('')
+  })
+
   test('子页入口透传 scopeInactive=1（客量 / 销售 / 品项 / 顾客）', () => {
     const hub = hubAt({ scopeType: 'store', scopeId: 'store-zh', scopeName: '九江中辉店', inactive: true })
     for (const entry of ['traffic', 'sales', 'products', 'customers']) {
@@ -412,6 +432,15 @@ describe('scope-picker · 纠正落在停用门店的默认范围', () => {
     picker.onOpen()
     await vi.waitFor(() => expect(picker.data.optionsLoaded).toBe(true))
     expect(mocked).toHaveBeenCalledTimes(2)
+  })
+
+  test('用户显式选过范围（autoCorrect=false）后门店被停用：重建的 picker 只标注、不自动换店', async () => {
+    mocked.mockResolvedValueOnce(options())
+    const picker = pickerWith({ scopeType: 'store', scopeId: 'store-zh', scopeName: '九江中辉店', inactive: true })
+    picker.properties.autoCorrect = false
+    await picker.loadOptions()
+    expect(picker.data.applied).toMatchObject({ scopeId: 'store-zh', inactive: true })
+    expect(picker.events).toEqual([])
   })
 
   test('只关店、节点在营（不在下拉也不在 inactiveStores）→ 不纠正，保留其历史数据', async () => {

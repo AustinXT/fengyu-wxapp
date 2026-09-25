@@ -388,6 +388,20 @@ describe('mgmtDashboard.summary scopeType=store', () => {
     expect(params).toEqual(['store-001', false, ['store-001']])
   })
 
+  test('替代门店查询失败 → hasActiveAlternative=null，summary 照常返回 inactive=true（不拖垮首页空态）', async () => {
+    mockStoreScope({ row: { store_name: '九江中辉店', is_active: false } })
+    const base = pg.query.getMockImplementation()
+    pg.query.mockImplementation(async (sql, params) => {
+      if (/SELECT EXISTS/.test(sql)) throw new Error('statement timeout')
+      return base(sql, params)
+    })
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const ctx = makeHqCtx({ date: '2026-09-25', scopeType: 'store', scopeId: 'store-001' })
+    await summary(ctx)
+    expect(ctx.result.scope).toMatchObject({ inactive: true, hasActiveAlternative: null })
+    spy.mockRestore()
+  })
+
   test('在营门店不查替代门店（EXISTS 只在 inactive 时跑）', async () => {
     mockStoreScope({ row: { store_name: '九江蓝湾店', is_active: true } })
     const ctx = makeHqCtx({ date: '2026-09-25', scopeType: 'store', scopeId: 'store-001' })
