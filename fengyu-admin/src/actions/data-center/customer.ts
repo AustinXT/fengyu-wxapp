@@ -25,6 +25,8 @@
  *     ② 分支与分子 newmem/queryNewMemberCount 同源，保证分子 ⊆ 分母、成交率恒 ≤ 100%）
  *   - 项目数 = SUM(session_used) WHERE sales_category IN ('自销自耗','他销自耗')（D-5）
  *   - customer_status 枚举 '沉睡'/'冰冻'/'休眠'（非 '预警沉睡'）
+ *   - 一次/二次客活 = 区间内**到店天数** = 1 / >= 2（#298）：到店日由 visitDaysSql 按
+ *     (client_user_id, service_date) 去重，同日多张服务单只算 1 天；与 cron monthly_activity 同轴
  *   - 客户维度 scope 用 bound_store_id，服务/订单维度用 store_id
  *   - 本月激活 3 档：anchor=startDate-1 实时反推 customer_status（D-react-source=C），
  *     用 last_dt 区间判定（沉睡 last_dt>=anchor-6m / 冰冻 [anchor-12m,anchor-6m) / 休眠 <anchor-12m OR NULL）
@@ -39,6 +41,7 @@ import { withPermission } from '@/lib/with-permission'
 import { prepareBoardContext } from '@/lib/data-center/context'
 import { scopeFilterSql, scopeStoreSkeletonSql } from '@/lib/data-center/scope-sql'
 import { excludeDepositRefundSql } from '@/lib/data-center/consume-filter'
+import { visitDaysSql } from '@/lib/data-center/visit-days'
 import { SPEND_BUCKET_FLOORS } from '@/lib/data-center/spend-buckets'
 import { getMemberThreshold } from '@/lib/member-threshold'
 import { withComparison } from '@/lib/data-center/comparison'
@@ -194,7 +197,10 @@ async function queryStatusCount(
   return num(first(rows).v)
 }
 
-/** 一次客活 / 二次客活（区间内到店次数 = 1 或 >= 2，且 customer_status 为保有会员） */
+/**
+ * 一次客活 / 二次客活（区间内到店天数 = 1 或 >= 2，且 customer_status 为保有会员）。
+ * 到店天数按 (顾客, service_date) 去重（#298），不是服务单行数。
+ */
 async function queryActive(
   session: AuthSession,
   scope: DataCenterScope,
@@ -203,23 +209,20 @@ async function queryActive(
 ): Promise<number> {
   const ssc = scopeFilterSql(session, scope, 'so.store_id')
   const csc = scopeFilterSql(session, scope, 'c.bound_store_id')
-  const nClause = mode === 'once' ? sql`vc.n = 1` : sql`vc.n >= 2`
+  const daysClause = mode === 'once' ? sql`vc.days = 1` : sql`vc.days >= 2`
   const rows = await db.execute(sql`
-    WITH visit_count AS (
-      SELECT so.client_user_id, COUNT(*) AS n
-      FROM service_orders so
-      WHERE ${ssc}
-        AND so.status = '已完成'
-        AND so.client_user_id IS NOT NULL
-        AND so.service_date BETWEEN ${range.start} AND ${range.end}
-      GROUP BY so.client_user_id
+    WITH visit_days AS (${visitDaysSql({ axis: 'service_date', scope: ssc, range })}),
+    visit_count AS (
+      SELECT vd.client_user_id, COUNT(DISTINCT vd.visit_date) AS days
+      FROM visit_days vd
+      GROUP BY vd.client_user_id
     )
     SELECT COUNT(*) AS v
     FROM visit_count vc
     JOIN client_wechat_users c ON c.user_id = vc.client_user_id
     WHERE ${csc}
       AND c.customer_status IN ('保有会员-稳定', '保有会员-有效')
-      AND ${nClause}
+      AND ${daysClause}
   `)
   return num(first(rows).v)
 }
@@ -556,24 +559,23 @@ async function queryRegActiveBreakdown(
         AND c.became_member_at::date <= ${end}
       GROUP BY c.bound_store_id
     ),
-    -- 区间到店次数（按客户 + bound_store_id），区分一次/二次客活（仅保有会员）
+    -- 区间到店天数（按客户 + bound_store_id），区分一次/二次客活（仅保有会员）。
+    -- 到店日按 (顾客, service_date) 去重（#298），与 KPI queryActive 同一个 visitDaysSql
+    visit_days AS (${visitDaysSql({ axis: 'service_date', scope: serviceScope, range })}),
     visit_count AS (
-      SELECT so.client_user_id, c.bound_store_id AS store_id, COUNT(*) AS n,
+      SELECT vd.client_user_id, c.bound_store_id AS store_id,
+             COUNT(DISTINCT vd.visit_date) AS days,
              c.customer_status AS cstatus
-      FROM service_orders so
-      JOIN client_wechat_users c ON c.user_id = so.client_user_id
-      WHERE ${serviceScope}
-        AND ${customerScope}
+      FROM visit_days vd
+      JOIN client_wechat_users c ON c.user_id = vd.client_user_id
+      WHERE ${customerScope}
         AND c.bound_store_id IS NOT NULL
-        AND so.status = '已完成'
-        AND so.client_user_id IS NOT NULL
-        AND so.service_date BETWEEN ${start} AND ${end}
-      GROUP BY so.client_user_id, c.bound_store_id, c.customer_status
+      GROUP BY vd.client_user_id, c.bound_store_id, c.customer_status
     ),
     active AS (
       SELECT store_id,
-             COUNT(*) FILTER (WHERE n = 1) AS visit_once,
-             COUNT(*) FILTER (WHERE n >= 2) AS visit_twice
+             COUNT(*) FILTER (WHERE days = 1) AS visit_once,
+             COUNT(*) FILTER (WHERE days >= 2) AS visit_twice
       FROM visit_count
       WHERE cstatus IN ('保有会员-稳定', '保有会员-有效')
       GROUP BY store_id

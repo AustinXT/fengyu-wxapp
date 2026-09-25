@@ -1,6 +1,7 @@
 import { existsSync, readdirSync } from 'node:fs'
 import path from 'node:path'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { render, screen } from '@testing-library/react'
 import type { DataCenterScopeOptions } from '@/lib/data-center/types'
 import { DATA_CENTER_REPORT_LIST } from '@/lib/data-center/reports'
 
@@ -27,7 +28,7 @@ const { getDataCenterScopeOptions, redirect, notFound } = vi.hoisted(() => ({
 vi.mock('next/navigation', () => ({ redirect, notFound }))
 vi.mock('@/actions/data-center/shared', () => ({ getDataCenterScopeOptions }))
 vi.mock('../_components/scope-time-filter', () => ({ ScopeTimeFilter: () => null }))
-vi.mock('../_components/sales/sales-board', () => ({ SalesBoard: () => null }))
+vi.mock('../_components/sales/sales-board', () => ({ SalesBoard: () => <div data-testid="board" /> }))
 vi.mock('../_components/customer/customer-board', () => ({ CustomerBoard: () => null }))
 vi.mock('../_components/efficiency/efficiency-board', () => ({ EfficiencyBoard: () => null }))
 vi.mock('../_components/product/product-board', () => ({ ProductBoard: () => null }))
@@ -36,19 +37,19 @@ import Page from './page'
 
 /** 总部账号：topLevel 'all'，不需要补 scope。 */
 const hqOptions: DataCenterScopeOptions = {
-  topLevel: 'all',
+  topLevel: 'all', inactiveStores: [],
   markets: [{ id: 'M1', name: '南昌市场', stores: [{ storeId: 'S1', storeName: '蓝莱店' }] }],
 }
 
 /** 单店账号（店长）：只有一家可见门店 → 默认落到该店。 */
 const singleStoreOptions: DataCenterScopeOptions = {
-  topLevel: 'store',
+  topLevel: 'store', inactiveStores: [],
   markets: [{ id: 'M1', name: '南昌市场', stores: [{ storeId: 'S1', storeName: '蓝莱店' }] }],
 }
 
 /** 多店账号（市场财务）：多家可见门店 → 默认落到授权汇总。 */
 const multiStoreOptions: DataCenterScopeOptions = {
-  topLevel: 'market',
+  topLevel: 'market', inactiveStores: [],
   markets: [
     {
       id: 'M1',
@@ -63,7 +64,7 @@ const multiStoreOptions: DataCenterScopeOptions = {
 
 /** 非总部但一家可见门店都没有 → resolveDefaultDataCenterScope 返回 null。 */
 const noStoreOptions: DataCenterScopeOptions = {
-  topLevel: 'store',
+  topLevel: 'store', inactiveStores: [],
   markets: [{ id: 'M1', name: '南昌市场', stores: [] }],
 }
 
@@ -137,7 +138,7 @@ describe('数据中心板块页 · 非总部默认 scope 解析', () => {
     // 契约被破坏的假想场景：非总部却拿到空 storeId。
     // 若不收口，redirect 后 parseScope 认不出空 scopeId → 回落 'all' → 再次 redirect → 浏览器转死。
     getDataCenterScopeOptions.mockResolvedValue({
-      topLevel: 'store',
+      topLevel: 'store', inactiveStores: [],
       markets: [{ id: 'M1', name: '南昌市场', stores: [{ storeId: '', storeName: '坏数据店' }] }],
     } satisfies DataCenterScopeOptions)
 
@@ -241,5 +242,40 @@ describe('数据中心板块页 · 动态段收口', () => {
       await expect(call(board), `板块 ${board} 渲染失败`).resolves.toBeTruthy()
     }
     expect(notFound).not.toHaveBeenCalled()
+  })
+})
+
+describe('数据中心板块页 · 已停用门店空态（#293）', () => {
+  const withInactive: DataCenterScopeOptions = {
+    ...hqOptions,
+    inactiveStores: [{ storeId: 'X1', storeName: '南昌龙大店', marketId: 'M1' }],
+  }
+
+  it('选中已停用门店：渲染「已停用」空态，不挂板块（不取数、满屏 0 不会出现）', async () => {
+    getDataCenterScopeOptions.mockResolvedValue(withInactive)
+    render(await call('sales', { scope: 'store', scopeId: 'X1' }))
+
+    expect(screen.getByTestId('scope-empty-state')).toHaveTextContent('「南昌龙大店」已停用，无可展示数据')
+    expect(screen.queryByTestId('board')).not.toBeInTheDocument()
+    expect(redirect).not.toHaveBeenCalled()
+  })
+
+  it('范围下拉被锁定的账号（只剩一家在营门店）：空态给出回到默认范围的链接，停在当前板块', async () => {
+    getDataCenterScopeOptions.mockResolvedValue({
+      ...singleStoreOptions,
+      inactiveStores: [{ storeId: 'X1', storeName: '南昌龙大店', marketId: 'M1' }],
+    } satisfies DataCenterScopeOptions)
+    render(await call('customer', { scope: 'store', scopeId: 'X1', preset: 'year' }))
+
+    expect(screen.getByRole('link', { name: '回到默认范围' }))
+      .toHaveAttribute('href', '/data-center/customer?preset=year&scope=store&scopeId=S1')
+  })
+
+  it('在营门店照常挂板块（本期无业绩由板块显示 0）', async () => {
+    getDataCenterScopeOptions.mockResolvedValue(withInactive)
+    render(await call('sales', { scope: 'store', scopeId: 'S1' }))
+
+    expect(screen.getByTestId('board')).toBeInTheDocument()
+    expect(screen.queryByTestId('scope-empty-state')).not.toBeInTheDocument()
   })
 })

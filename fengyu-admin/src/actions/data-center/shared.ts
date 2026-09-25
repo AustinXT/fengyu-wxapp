@@ -32,6 +32,7 @@ import type { AuthSession } from '@/lib/types'
  * - 总部/admin：全部市场 + 全部在营门店
  * - 市场：所有获授权市场 + 其下授权门店
  * - 门店：所有获授权门店及其所属市场（可能是多店）
+ * 另附权限内的已停用门店 `inactiveStores`（不进下拉，供入口识别 URL 里的停用门店出空态，#293）。
  */
 export const getDataCenterScopeOptions = withPermission(
   'data_center:dashboard',
@@ -71,7 +72,7 @@ async function loadScopeOptions(session: AuthSession): Promise<DataCenterScopeOp
 
   // 非总部且无可见市场 → 空
   if (!seeAll && (visibleMarketIds?.length ?? 0) === 0) {
-    return { topLevel, markets: [] }
+    return { topLevel, markets: [], inactiveStores: [] }
   }
 
   // 市场列表
@@ -87,22 +88,24 @@ async function loadScopeOptions(session: AuthSession): Promise<DataCenterScopeOp
     // 例外：sortOrder 手工排序权重
     .orderBy(asc(orgNodes.sortOrder))
 
-  // 门店列表（JOIN 门店节点拿所属市场 = 节点 parent_id）
+  // 门店列表（JOIN 门店节点拿所属市场 = 节点 parent_id）。
+  // 在营与停用一次查出、内存分流：两份列表出自同一快照，查出的同一家门店不会同时进两份列表。
   const orgStore = alias(orgNodes, 'org_store')
-  const storeRows = await db
+  const allStoreRows = await db
     .select({
       storeId: stores.storeId,
       storeName: stores.storeName,
       marketId: orgStore.parentId,
+      isClosed: stores.isClosed,
+      isActive: orgStore.isActive,
     })
     .from(stores)
     .innerJoin(orgStore, eq(stores.orgNodeId, orgStore.id))
     .where(
       and(
-        eq(stores.isClosed, false),
         eq(orgStore.type, '门店'),
-        eq(orgStore.isActive, true),
-        // 总部看全部门店；其他角色仅看 scopeStoreIds（市场账号=其下门店，门店账号=本店）
+        // 总部看全部门店；其他角色仅看 scopeStoreIds（市场账号=其下门店，门店账号=本店）。
+        // 停用门店仍在 scopeStoreIds 里（expandRoleScope 不看启停），只能给权限内的停用门店出空态。
         seeAll
           ? undefined
           : session.permissions.scopeStoreIds.length > 0
@@ -111,6 +114,13 @@ async function loadScopeOptions(session: AuthSession): Promise<DataCenterScopeOp
       ),
     )
     .orderBy(asc(stores.storeName))
+  const storeRows = allStoreRows.filter((s) => !s.isClosed && s.isActive)
+  // 「已停用」只看组织节点，与取数 SQL 的 activeStoreCondition（scope-sql.ts）同一口径。
+  // ⚠️ 不能把 is_closed 算进来：只关店、节点仍在营的门店，取数 SQL 照样返回它的历史数据，
+  // 判成停用会用「无可展示数据」藏掉真实数字（它仍不进下拉，维持改动前的行为）。
+  const inactiveStores = allStoreRows
+    .filter((s) => !s.isActive)
+    .map((s) => ({ storeId: s.storeId, storeName: s.storeName, marketId: s.marketId }))
 
   const markets = marketRows.map((m) => ({
     id: m.id,
@@ -120,5 +130,5 @@ async function loadScopeOptions(session: AuthSession): Promise<DataCenterScopeOp
       .map((s) => ({ storeId: s.storeId, storeName: s.storeName })),
   }))
 
-  return { topLevel, markets }
+  return { topLevel, markets, inactiveStores }
 }

@@ -10,6 +10,11 @@ import type { CommissionRate } from '@/lib/types'
 import { withPermission } from '@/lib/with-permission'
 import { expandVisibleMarketIds, requireAdmin } from '@/lib/permissions'
 import { logOperation, logUpdate } from '@/lib/operation-log'
+import { DEFAULT_PRICE_THRESHOLD, hasPriceThresholdValue, isPriceThresholdEligible, parsePriceThreshold } from '@/lib/commission-threshold'
+
+const THRESHOLD_INELIGIBLE_MESSAGE = '单价阈值仅适用于服务单的自销自耗 / 他销自耗规则'
+/** 23514 = CHECK 违反（前置校验已拦，兜底并发改类目等窗口，避免 500） */
+const CHECK_VIOLATION = '23514'
 
 export interface MarketOption {
   orgId: string
@@ -48,6 +53,7 @@ export const getRates = withPermission(
       amountTierMin: commissionRateMatrix.amountTierMin,
       amountTierMax: commissionRateMatrix.amountTierMax,
       commissionRate: commissionRateMatrix.commissionRate,
+      priceThreshold: commissionRateMatrix.priceThreshold,
       createdAt: commissionRateMatrix.createdAt,
       updatedAt: commissionRateMatrix.updatedAt,
       orgName: orgNodes.name,
@@ -66,6 +72,7 @@ export const getRates = withPermission(
     amountTierMin: r.amountTierMin,
     amountTierMax: r.amountTierMax,
     commissionRate: r.commissionRate,
+    priceThreshold: r.priceThreshold,
     createdAt: r.createdAt.toISOString(),
     updatedAt: r.updatedAt.toISOString(),
     orgName: r.orgName ?? undefined,
@@ -85,8 +92,21 @@ export const createRate = withPermission(
       amountTierMin: string
       amountTierMax?: string | null
       commissionRate: string
+      /** #379 undefined = 可配行取默认 100；null / '' = 不启用 */
+      priceThreshold?: string | null
     },
   ): Promise<{ success: boolean; message: string }> => {
+  let priceThreshold: string | null = null
+  if (isPriceThresholdEligible(data.orderType, data.salesCategory)) {
+    const parsed = data.priceThreshold === undefined
+      ? { ok: true as const, value: DEFAULT_PRICE_THRESHOLD }
+      : parsePriceThreshold(data.priceThreshold)
+    if (!parsed.ok) return { success: false, message: parsed.message }
+    priceThreshold = parsed.value
+  } else if (hasPriceThresholdValue(data.priceThreshold)) {
+    return { success: false, message: THRESHOLD_INELIGIBLE_MESSAGE }
+  }
+
   // 金额阶段重叠校验（AC-07）
   if (await hasTierOverlap(data)) {
     return { success: false, message: '金额阶段与现有规则重叠，请调整区间范围' }
@@ -101,16 +121,20 @@ export const createRate = withPermission(
       amountTierMin: data.amountTierMin,
       amountTierMax: data.amountTierMax ?? null,
       commissionRate: data.commissionRate,
+      priceThreshold,
     })
   } catch (err: any) {
     if (pgErrorCode(err) === '23505') {
       return { success: false, message: '相同条件的提成规则已存在' }
     }
+    if (pgErrorCode(err) === CHECK_VIOLATION) {
+      return { success: false, message: THRESHOLD_INELIGIBLE_MESSAGE }
+    }
     throw err
   }
 
   await logOperation(session, 'commission.create', 'commission_rate', data.orgId, {
-    orderType: data.orderType, roleType: data.roleType,
+    orderType: data.orderType, roleType: data.roleType, salesCategory: data.salesCategory, priceThreshold,
   })
   revalidatePath('/commission')
   return { success: true, message: '提成规则创建成功' }
@@ -130,6 +154,8 @@ export const updateRate = withPermission(
       amountTierMin?: string
       amountTierMax?: string | null
       commissionRate?: string
+      /** #379 undefined = 不改（类目由不可配切到可配时取默认 100）；null / '' = 不启用 */
+      priceThreshold?: string | null
     },
     /** 乐观锁：提交时携带的 updated_at */
     expectedUpdatedAt?: string,
@@ -153,6 +179,41 @@ export const updateRate = withPermission(
 
   // 获取旧值用于日志 diff
   const [before] = await db.select().from(commissionRateMatrix).where(eq(commissionRateMatrix.id, id)).limit(1)
+  if (!before) return { success: false, message: '提成规则不存在' }
+
+  // #379 阈值按「改后」的订单类型 + 销售分类判定可配性；不可配行一律清空（否则撞 CHECK）
+  const nextOrderType = data.orderType ?? before.orderType
+  const nextSalesCategory = data.salesCategory ?? before.salesCategory
+  let priceThreshold: string | null | undefined
+  if (isPriceThresholdEligible(nextOrderType, nextSalesCategory)) {
+    if (data.priceThreshold !== undefined) {
+      const parsed = parsePriceThreshold(data.priceThreshold)
+      if (!parsed.ok) return { success: false, message: parsed.message }
+      priceThreshold = parsed.value
+    } else if (!isPriceThresholdEligible(before.orderType, before.salesCategory)) {
+      priceThreshold = DEFAULT_PRICE_THRESHOLD
+    }
+  } else {
+    if (hasPriceThresholdValue(data.priceThreshold)) {
+      return { success: false, message: THRESHOLD_INELIGIBLE_MESSAGE }
+    }
+    // 只在确有旧阈值需要清时才写 null（可配行改成不可配类目，否则撞 CHECK）；
+    // 原本就是 NULL 的不可配行不凭空加字段 —— 否则 {} 会绕过下方空更新守卫，白刷 updated_at + 审计
+    if (before.priceThreshold != null) priceThreshold = null
+  }
+
+  // 显式白名单：只写表单字段，不把调用方对象裸 spread 进 .set()
+  const setValues: Partial<typeof commissionRateMatrix.$inferInsert> = {}
+  if (data.orgId !== undefined) setValues.orgId = data.orgId
+  if (data.orderType !== undefined) setValues.orderType = data.orderType
+  if (data.roleType !== undefined) setValues.roleType = data.roleType
+  if (data.salesCategory !== undefined) setValues.salesCategory = data.salesCategory
+  if (data.amountTierMin !== undefined) setValues.amountTierMin = data.amountTierMin
+  if (data.amountTierMax !== undefined) setValues.amountTierMax = data.amountTierMax
+  if (data.commissionRate !== undefined) setValues.commissionRate = data.commissionRate
+  if (priceThreshold !== undefined) setValues.priceThreshold = priceThreshold
+  // 白名单剥空（{} 或只夹带了非表单字段）→ drizzle .set({}) 会抛 "No values to set"
+  if (Object.keys(setValues).length === 0) return { success: false, message: '没有可更新的字段' }
 
   const whereConditions = expectedUpdatedAt
     ? and(eq(commissionRateMatrix.id, id), sql`date_trunc('milliseconds', ${commissionRateMatrix.updatedAt}) = ${expectedUpdatedAt}`)
@@ -162,9 +223,12 @@ export const updateRate = withPermission(
   try {
     result = await db
       .update(commissionRateMatrix)
-      .set(data)
+      .set(setValues)
       .where(whereConditions)
   } catch (err: any) {
+    if (pgErrorCode(err) === CHECK_VIOLATION) {
+      return { success: false, message: '数据已被其他人修改，请刷新后重试' }
+    }
     throw err
   }
 
@@ -175,7 +239,7 @@ export const updateRate = withPermission(
     }
   }
 
-  await logUpdate(session, 'commission.update', 'commission_rate', String(id), before as Record<string, unknown>, data)
+  await logUpdate(session, 'commission.update', 'commission_rate', String(id), before as Record<string, unknown>, setValues)
   revalidatePath('/commission')
   return { success: true, message: '提成规则已更新' }
   },

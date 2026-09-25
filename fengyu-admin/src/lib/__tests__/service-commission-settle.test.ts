@@ -49,11 +49,11 @@ const OPERATOR = { employeeId: 'ADMIN-1', name: '管理员', role: 'admin' }
  * 构造 executor：按 SQL 关键字路由返回值；记录全部调用，供断言「是否发了某类 SQL」。
  * 路由顺序：service_items 明细 → 费率矩阵 → remark（service_orders）→ 默认（INSERT/UPDATE）。
  */
-function makeExecutor(opts: { remark: string | null; rate: string }) {
+function makeExecutor(opts: { remark: string | null; rate: string; priceThreshold?: string | null; item?: Partial<Omit<typeof ITEM, 'unit_real_price'>> & { unit_real_price?: string | null } }) {
   const calls: unknown[] = []
-  const itemsRows = [ITEM]
+  const itemsRows = [{ ...ITEM, ...opts.item }]
   const remarkRows = [{ remark: opts.remark }]
-  const rateRows = [{ commission_rate: opts.rate }]
+  const rateRows = [{ commission_rate: opts.rate, price_threshold: opts.priceThreshold ?? null }]
   const execute = vi.fn(async (sqlObj: unknown) => {
     calls.push(sqlObj)
     const t = textOf(sqlObj)
@@ -115,5 +115,38 @@ describe('settleServiceCommissions — 寄存退款单跳过提成（M8 镜像 s
 
     expect(sent(exec.calls, 'INSERT INTO operation_logs')).toBe(true)
     expect(sent(exec.calls, 'INSERT INTO service_commissions')).toBe(true)
+  })
+})
+
+// #379 划卡单价阈值：单次实价 < 命中行 price_threshold → 按阈值 × 比例；选档仍用原始 consumeBase；手工费叠加
+describe('settleServiceCommissions — #379 消耗提成阈值保底', () => {
+  beforeEach(() => vi.clearAllMocks())
+
+  async function settle(opts: Parameters<typeof makeExecutor>[0]) {
+    const exec = makeExecutor(opts)
+    await settleServiceCommissions(exec as unknown as Parameters<typeof settleServiceCommissions>[0], 'svc-379', OPERATOR)
+    const rateSql = exec.calls.find((c) => textOf(c).includes('commission_rate_matrix')) as SqlObj
+    const insert = exec.calls.find((c) => textOf(c).includes('INSERT INTO service_commissions')) as SqlObj
+    // INSERT 值序：service_item_id, employee_id, role_type, rate, commission_amount, fixed_fee, consume_amount
+    const [, , , , commissionAmount, fixedFee, consumeAmount] = insert.__vals
+    return { tierBase: rateSql.__vals[2], commissionAmount, fixedFee, consumeAmount }
+  }
+
+  it.each([
+    ['单价 80 < 阈值 → 100 × 2 次 × 15%', { unit_real_price: '80' }, '100.00', '0.15', 160, 30],
+    ['赠送单价 NULL → 按阈值', { unit_real_price: null }, '100.00', '0.15', 0, 30],
+    ['单价 ≥ 阈值 → 与改动前一致', { unit_real_price: '150' }, '100.00', '0.15', 300, 45],
+    ['阈值 NULL（非自销行）→ 不保底', { unit_real_price: '80' }, null, '0.02', 160, 3.2],
+  ] as const)('%s', async (_n, item, priceThreshold, rate, tierBase, consumeAmount) => {
+    const r = await settle({ remark: null, rate, priceThreshold, item })
+    expect(r.tierBase).toBe(tierBase)
+    expect(r.consumeAmount).toBe(consumeAmount)
+  })
+
+  it('手工费叠加：fixed_fee 不受阈值影响', async () => {
+    const r = await settle({ remark: null, rate: '0.15', priceThreshold: '100.00', item: { unit_real_price: '80', service_fee: '5' } })
+    expect(r.fixedFee).toBe(10)
+    expect(r.consumeAmount).toBe(30)
+    expect(r.commissionAmount).toBe(40)
   })
 })

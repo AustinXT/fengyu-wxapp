@@ -220,6 +220,7 @@ const EXPECTED_HELPER_USERS = [
   'db/scripts/repair-deposit-refund-service-remarks-20260907.js',
   'db/scripts/repair-deposit-refund-service-remarks-20260921.js',
   'db/scripts/verify-quantity-split.js',
+  'db/scripts/backfill-378-service-items-shengmei.js',
 ]
 
 test('每个预期入口都确实引用了权威实现（防守卫被整个删掉）', () => {

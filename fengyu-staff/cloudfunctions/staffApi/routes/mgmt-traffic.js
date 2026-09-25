@@ -278,14 +278,18 @@ async function queryStatusBreakdown(scopeType, scopeId) {
 }
 
 /**
- * 一次客活 / 二次客活
+ * 一次客活 / 二次客活 = 区间内到店**天数** = 1 / >= 2（#298）
+ *
+ * 到店天数按 (client_user_id, service_date) 去重，同日多张服务单只算 1 天；
+ * 与 cron monthly_activity 同轴。admin 侧同口径在 lib/data-center/visit-days.ts（visitDaysSql），
+ * 两端独立副本，由 fengyu-admin consistency.customer.test.ts 守护。
  */
 async function queryActiveOnce(scopeType, scopeId, period) {
   const ssc = buildSaleScope(scopeType, scopeId, 'so', 1)
   const csc = buildClientScope(scopeType, scopeId, 'c', 1 + ssc.params.length)
   const rows = await pg.query(
     `WITH visit_count AS (
-       SELECT so.client_user_id, COUNT(*) AS n
+       SELECT so.client_user_id, COUNT(DISTINCT so.service_date) AS days
          FROM service_orders so
         WHERE ${ssc.sql}
           AND so.status = '已完成'
@@ -298,7 +302,7 @@ async function queryActiveOnce(scopeType, scopeId, period) {
        JOIN client_wechat_users c ON c.user_id = vc.client_user_id
       WHERE ${csc.sql}
         AND c.customer_status IN ('保有会员-稳定', '保有会员-有效')
-        AND vc.n = 1`,
+        AND vc.days = 1`,
     [...ssc.params, ...csc.params],
   )
   return Number(rows[0]?.v || 0)
@@ -309,7 +313,7 @@ async function queryActiveTwice(scopeType, scopeId, period) {
   const csc = buildClientScope(scopeType, scopeId, 'c', 1 + ssc.params.length)
   const rows = await pg.query(
     `WITH visit_count AS (
-       SELECT so.client_user_id, COUNT(*) AS n
+       SELECT so.client_user_id, COUNT(DISTINCT so.service_date) AS days
          FROM service_orders so
         WHERE ${ssc.sql}
           AND so.status = '已完成'
@@ -322,7 +326,7 @@ async function queryActiveTwice(scopeType, scopeId, period) {
        JOIN client_wechat_users c ON c.user_id = vc.client_user_id
       WHERE ${csc.sql}
         AND c.customer_status IN ('保有会员-稳定', '保有会员-有效')
-        AND vc.n >= 2`,
+        AND vc.days >= 2`,
     [...ssc.params, ...csc.params],
   )
   return Number(rows[0]?.v || 0)

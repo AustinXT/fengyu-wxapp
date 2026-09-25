@@ -174,8 +174,21 @@ export interface ScopeOptionMarket {
   name: string
   stores: ScopeOptionStore[]
 }
+/**
+ * 账号权限内、组织节点已停用的门店：不进下拉，仅用于识别 URL 里的停用门店（#293）。
+ * 判定与取数 SQL 的启用门店过滤同源（只看 org_nodes.is_active），这样「已停用」必然等于「取不到数」。
+ */
+export interface ScopeOptionInactiveStore extends ScopeOptionStore {
+  /** 所属市场节点；筛选器据此回显市场下拉（市场不在数据源时回显落空，不影响空态） */
+  marketId: string | null
+}
 export interface DataCenterScopeOptions {
   /** 当前账号的最高授权层级：store 也可能由多条门店角色组成多店范围。 */
   topLevel: 'all' | 'market' | 'store'
   markets: ScopeOptionMarket[]
+  /**
+   * 权限内已停用的门店（#293）。URL 指向其中一家时页面渲染「该门店已停用」空态，
+   * 而不是满屏 0（在营门店本期无业绩才显示 0，两者必须可区分）。
+   */
+  inactiveStores: ScopeOptionInactiveStore[]
 }
