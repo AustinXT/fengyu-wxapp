@@ -53,13 +53,36 @@ describe('单源守护：数据中心一侧不许再长出日历校验（#308「
     }
   })
 
-  // 日历校验的两种写法签名（闭集）：YYYY-MM-DD 正则字面量；UTC 往返比对日 / 月
-  it.each([
-    ['YYYY-MM-DD 正则', /\\d\{4\}\)?-\(?\\d\{2\}\)?-\(?\\d\{2\}/],
-    ['UTC 往返比对', /getUTC(?:Date|Month)\(\)\s*===/],
-  ])('%s 只允许出现在 @/lib/calendar-date', (_, signature) => {
-    const offenders = files.filter((f) => signature.test(readFileSync(f, 'utf8'))).map((f) => relative(SRC, f))
-    expect(offenders).toEqual([])
+  /**
+   * 闭集判据（不枚举「日历校验的写法」——那是开放集合，换个操作数顺序、换个分组写法就绕过）：
+   * 钉住各文件里**日期运算原语**的出现次数。任何新增的日期解析 / 往返比对 / 日期正则都必然用到其中之一，
+   * 表一变就红，逼改动者回来确认它不是第三份日历校验（是的话改用 @/lib/calendar-date）。
+   * 合法的日期运算（time-range 的加减、report-period 的月末）照实登记进表即可。计数含注释，改注释也要同步。
+   * 刻意不计 `new Date(`：export-worker 的心跳 / 时间戳大量使用，计入会让无关改动频繁误红。
+   */
+  const DATE_PRIMITIVE = /getUTC(?:Date|Month|FullYear|Day)|get(?:Date|Month|FullYear|Day)\(|Date\.UTC|Date\.parse|getTime\(|toISOString|\\d\{[0-9,]+\}|\[0-9\]/g
+  const EXPECTED_DATE_PRIMITIVES: Record<string, number> = {
+    'lib/data-center/time-range.ts': 11,
+    'lib/data-center/report-period.ts': 9,
+    'lib/data-center/matrix.ts': 7,
+    'lib/data-center/customer-frequency.ts': 2,
+    'lib/data-center/remaining-cards.ts': 1,
+    'app/(main)/(analytics)/data-center/_components/kpi-card.tsx': 2,
+    'export-worker/index.ts': 1,
+  }
+
+  it('日期运算原语的分布与登记表逐文件相等', () => {
+    const actual: Record<string, number> = {}
+    for (const f of files) {
+      const n = readFileSync(f, 'utf8').match(DATE_PRIMITIVE)?.length ?? 0
+      if (n > 0) actual[relative(SRC, f)] = n
+    }
+    expect(actual).toEqual(EXPECTED_DATE_PRIMITIVES)
+  })
+
+  it('原语正则自检：calendar-date.ts 本体的正则与 UTC 往返都被计入', () => {
+    const own = readFileSync(join(SRC, 'lib/calendar-date.ts'), 'utf8').match(DATE_PRIMITIVE) ?? []
+    expect(own).toEqual(expect.arrayContaining(['\\d{4}', 'Date.UTC', 'getUTCFullYear', 'getUTCMonth', 'getUTCDate']))
   })
 
   it('params / report-period / commission-daily 都从 @/lib/calendar-date 取校验函数', () => {
@@ -69,9 +92,10 @@ describe('单源守护：数据中心一侧不许再长出日历校验（#308「
     }
   })
 
-  it('calendar-date.ts 自身确实带这两种签名（守护的正则没写错）', () => {
-    const own = readFileSync(join(SRC, 'lib/calendar-date.ts'), 'utf8')
-    expect(own).toMatch(/\\d\{4\}\)?-\(?\\d\{2\}\)?-\(?\\d\{2\}/)
-    expect(own).toMatch(/getUTC(?:Date|Month)\(\)\s*===/)
+  it('两个服务端复检入口从 params 取校验函数（context → isValidTimeRangeInput，导出 → isValidCustomRange）', () => {
+    const ctx = readFileSync(join(SRC, 'lib/data-center/context.ts'), 'utf8')
+    expect(ctx).toMatch(/import \{[^}]*\bisValidTimeRangeInput\b[^}]*\} from '\.\/params'/)
+    const reg = readFileSync(join(SRC, 'export-worker/registry.ts'), 'utf8')
+    expect(reg).toMatch(/import \{[^}]*\bisValidCustomRange\b[^}]*\} from '@\/lib\/data-center\/params'/)
   })
 })

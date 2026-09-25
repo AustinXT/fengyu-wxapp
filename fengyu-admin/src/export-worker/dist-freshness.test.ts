@@ -376,12 +376,33 @@ describe('dist/export-worker.mjs 新鲜度 · 提货记录导出接线（#341）
  * #308 自定义区间日历校验与服务端复检的 JS 接线。与 #341 同法：按**产物里的写法**在模块区段内找固定片段。
  * 漏重建产物时，导出会继续把非法日期静默回落本月（源码单测只加载 src，发现不了）。
  */
+/** calendar-date.ts 里随口径变化的字面量（年份上下界、日期正则），按产物写法拼成片段；提取失配直接抛错（fail-closed）。 */
+function calendarDateSourceFragments(): string[] {
+  const src = fs.readFileSync(path.join(ADMIN_ROOT, 'src/lib/calendar-date.ts'), 'utf-8')
+  const pick = (re: RegExp, what: string) => {
+    const m = re.exec(src)
+    if (!m) throw new Error(`calendar-date.ts 里提取不到${what}，dist 探针需要跟着源码调整`)
+    return m[1]
+  }
+  return [
+    `var CALENDAR_MIN_YEAR = ${pick(/^export const CALENDAR_MIN_YEAR = (\d+)$/m, '年份下界')};`,
+    `var CALENDAR_MAX_YEAR = ${pick(/^export const CALENDAR_MAX_YEAR = (\d+)$/m, '年份上界')};`,
+    ` = ${pick(/^const DATE_RE = (\/.+\/)$/m, '日期正则')};`,
+  ]
+}
+
 describe('dist/export-worker.mjs 新鲜度 · 自定义区间校验接线（#308）', () => {
   const SEGMENT_FRAGMENTS: Array<[string, string[]]> = [
     ['src/lib/calendar-date.ts', [
-      'var CALENDAR_MIN_YEAR = 1900;',
-      'var CALENDAR_MAX_YEAR = 2100;',
+      // 年份上下界与日期正则从源码动态提取：源码改了值而没重建，产物里找不到新值 → 红
+      ...calendarDateSourceFragments(),
+      'if (typeof value !== "string")',
+      'const [year, month, day] = [Number(match[1]), Number(match[2]), Number(match[3])];',
       'if (year < CALENDAR_MIN_YEAR || year > CALENDAR_MAX_YEAR)',
+      // UTC 往返比对（bun 会给局部变量改名，只钉比较部分）
+      '.getUTCFullYear() === year && ',
+      '.getUTCMonth() === month - 1 && ',
+      '.getUTCDate() === day;',
     ]],
     ['src/lib/data-center/params.ts', [
       'return isValidCalendarDate(start) && isValidCalendarDate(end) && start <= end;',
