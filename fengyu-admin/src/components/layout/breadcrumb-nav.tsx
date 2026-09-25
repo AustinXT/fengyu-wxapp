@@ -21,6 +21,7 @@ const ROUTE_LABELS: Record<string, string> = {
   "/store-unbind": "门店解绑",
   "/inventory": "库存管理",
   "/inventory/stocks": "库存查询",
+  "/inventory/movements": "进出明细",
   "/inventory/operations": "库存业务",
   "/inventory/operations/supply-chain": "供应链业务",
   "/inventory/operations/market": "市场业务",

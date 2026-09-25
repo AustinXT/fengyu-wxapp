@@ -29,6 +29,7 @@ import {
   SlidersHorizontal,
   Stethoscope,
   Activity,
+  ArrowLeftRight,
   Store,
   Ticket,
   TrendingUp,
@@ -166,6 +167,7 @@ export const MENU_CONFIG: MenuNode[] = [
     hidden: !INVENTORY_ENTRY_ENABLED,
     children: [
       { label: '库存查询', icon: PackageCheck, href: '/inventory/stocks', requiredActions: ['inventory:stock_list'] },
+      { label: '进出明细', icon: ArrowLeftRight, href: '/inventory/movements', requiredActions: ['inventory:stock_list'] },
       {
         label: '供应链业务',
         icon: Factory,

@@ -364,6 +364,49 @@ export interface InventorySettlementReport {
   storeRows: InventorySettlementRow[]
 }
 
+export type InventoryMovementDirection = '入库' | '出库' | '调整'
+
+/** 进出明细查询条件（#360）：主体必选，商品编号 / 批号二选一，日期按上海自然日闭区间。 */
+export interface InventoryMovementFilters {
+  locationId?: string
+  skuCode?: string
+  batchNo?: string
+  startDate?: string
+  endDate?: string
+}
+
+/** 进出明细行（#360）。结存是**批次结存**（流水自带 before/after），不是主体合计。 */
+export interface InventoryMovementRow {
+  id: number
+  lotId: number
+  skuId: string
+  skuName: string | null
+  specName: string | null
+  batchNo: string | null
+  /** 为空 = 无单据流水，单号列留空 */
+  docId: string | null
+  docType: string | null
+  direction: InventoryMovementDirection
+  /** 带符号：出库为负 */
+  quantityDelta: number
+  quantityBefore: number
+  quantityAfter: number
+  /** 对方主体：单据 source / target 中不是本主体的一方；外部方回落供应商 / 顾客 / 外部对象 / 员工名称快照 */
+  counterpartyName: string | null
+  operatorId: string | null
+  operatorName: string | null
+  remark: string | null
+  /** 上海时间 `YYYY-MM-DD HH:mm:ss` */
+  createdAt: string
+}
+
+export interface InventoryMovementPage {
+  rows: InventoryMovementRow[]
+  total: number
+  hasPrev: boolean
+  hasNext: boolean
+}
+
 export interface InventoryLotRow {
   id: number
   locationId: string
