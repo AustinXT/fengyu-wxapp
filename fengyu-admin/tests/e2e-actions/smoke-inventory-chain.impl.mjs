@@ -1159,6 +1159,47 @@ try {
   check('门店报货 1、配货正常 1 + 赠送 3 能保存（DB 守卫不再对赠送配货累计封顶）(#336)',
     giftFphLinks.some((link) => link.relation_type === '门店报货赠送配货' && num(link.quantity) === 3),
     JSON.stringify(giftFphLinks))
+  // ════ 阶段 13：批次合并时入库明细仍记本次报货快照（#336 评审 codex round-1 P1）════
+  // 市场批次身份只含实际价：标准价 / 优惠不同、实际价相同的报货，从同一总部批次发出后会并进同一市场批次。
+  // 批次上留第一次的快照没关系，但这次入库明细的 market_* 三列必须是这张报货行的快照。
+  setSession(storeA1Session())
+  const { id: snapDbhId } = await biz.createStoreReplenishmentRequest({
+    storeId: STA1_ID, marketId: MKA_ORG,
+    items: [{ skuId: SKU_SUPPLY, quantity: 1 }],
+  })
+  const [snapDbhItem] = await docItems(snapDbhId)
+  setSession(marketASession())
+  const { id: snapMbhId } = await biz.createMarketReplenishment({
+    marketId: MKA_ORG, supplyChainLocationId: HQ_ORG,
+    items: [{ skuId: SKU_SUPPLY, sourceRequestItemIds: [snapDbhItem.id], purchaseQuantity: 1 }],
+  })
+  const [snapMbhItem] = await docItems(snapMbhId)
+  await pgQuery(
+    `UPDATE inventory_doc_items
+        SET market_standard_unit_price = 1100, market_unit_discount = 150, market_actual_unit_price = 950
+      WHERE id = $1`, [snapMbhItem.id])
+  setSession(supplyChainSession())
+  const { id: snapGfhId } = await biz.createItemCompanyShipment({
+    marketId: MKA_ORG, sourceOrgNodeId: HQ_ORG,
+    items: [{ reportItemId: snapMbhItem.id, lotId: hqLot.id, quantity: 1 }],
+  })
+  setSession(marketASession())
+  const { id: snapMrkId } = await biz.receiveItemCompanyShipmentInFull({ shipmentId: snapGfhId })
+  // docItems() 不带 market_standard / market_discount 两列，这里直接查
+  const [snapMrkItem] = await pgQuery(
+    `SELECT lot_id, standard_unit_price, unit_discount,
+            market_standard_unit_price, market_unit_discount, market_actual_unit_price
+       FROM inventory_doc_items WHERE doc_id = $1`, [snapMrkId])
+  const snapMarketLot = (await locationLots(MKA_ORG, SKU_SUPPLY)).find((lot) => Number(lot.id) === Number(snapMrkItem?.lot_id))
+  check('标准价 / 优惠不同、实际价相同：并进已有市场批次，入库明细仍记本次报货快照 1100/150/950',
+    num(snapMarketLot?.market_standard_unit_price) === 1000
+      && num(snapMrkItem?.market_standard_unit_price) === 1100 && num(snapMrkItem?.market_unit_discount) === 150
+      && num(snapMrkItem?.market_actual_unit_price) === 950
+      && num(snapMrkItem?.standard_unit_price) === 1100 && num(snapMrkItem?.unit_discount) === 150,
+    JSON.stringify({
+      lot: [snapMarketLot?.market_standard_unit_price, snapMarketLot?.market_unit_discount],
+      item: [snapMrkItem?.market_standard_unit_price, snapMrkItem?.market_unit_discount, snapMrkItem?.market_actual_unit_price],
+    }))
 } catch (e) {
   check('冒烟整体', false, '致命错误：' + (e?.stack || e?.message || String(e)))
 } finally {

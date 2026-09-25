@@ -3705,6 +3705,15 @@ async function receivePhysicalShipment(
         actualUnitPrice,
         amount: targetLot.isGift || actualUnitPrice === null ? 0 : fixed(item.quantity * actualUnitPrice),
         ...priceFromLot(targetLot),
+        // 批次身份（lot_key）只含实际价：标准价 / 优惠不同而实际价相同的两次收货会并进同一批次，
+        // 批次上留的是第一次的快照。入库明细的 market_* 三列必须是**本次**报货行快照（#336），不取批次。
+        ...(inboundDocType === '市场采购入库'
+          ? {
+            marketStandardUnitPrice: item.price.marketStandardUnitPrice,
+            marketUnitDiscount: item.price.marketUnitDiscount,
+            marketActualUnitPrice: item.price.marketActualUnitPrice,
+          }
+          : {}),
         remark: item.remark,
       })
       await applyLotDelta(tx, {
