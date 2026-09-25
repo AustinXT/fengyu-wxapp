@@ -57,6 +57,11 @@ interface Probe {
   pattern: RegExp
   /** 期望至少提取到几行 —— 防止正则失配导致「零条指纹全通过」的 fail-open */
   minLines: number
+  /**
+   * 期望恰好提取到几条**不同**的指纹（可选）。只看原始行数时，把某条公式改成文件里已有的另一条同形指纹，
+   * 行数不变、去重后全在旧产物里，守护恒绿；给出精确的唯一数，这类「改成另一条已有表达式」也会红。
+   */
+  uniqueLines?: number
 }
 
 const PROBES: Probe[] = [
@@ -98,6 +103,7 @@ const PROBES: Probe[] = [
     // 直接脱离探针，守护恒绿）。排除带 ${…} 的行：bun 打包可能给模板里的局部变量改名，那种行在产物里不一定逐字存在。
     pattern: /^(?!.*\$\{)(AND (spia|sc|so|spe)\.(is_void|sale_order_type|status) .*|HAVING .*|ROUND\(ROUND\(.* AS allocated,)$/,
     minLines: 7,
+    uniqueLines: 8,
   },
   {
     label: '提成日报 / 明细 · 聚合与计数口径（实收按 receipt 去重、各项合计、条数 / 去重单数 / 去重人数）（#375）',
@@ -105,12 +111,14 @@ const PROBES: Probe[] = [
     // 聚合行整行比对：改公式（或删掉某个聚合列）后当前行不在旧产物里即红
     pattern: /^(?!.*\$\{)((SELECT )?\(?(SELECT )?COUNT\(.*|COALESCE\(SUM\(.*|\(SELECT COALESCE\(SUM\(r\.received\), 0\)|FROM \(SELECT DISTINCT receipt_id, received FROM summary_rows WHERE receipt_id IS NOT NULL\) r\) AS received,)$/,
     minLines: 15,
+    uniqueLines: 15,
   },
   {
     label: '提成明细 · 平均提成点公式（#375）',
     file: 'src/actions/data-center/commission.ts',
     pattern: /^const averageRate = /,
     minLines: 1,
+    uniqueLines: 1,
   },
 ]
 
@@ -141,6 +149,14 @@ describe('dist/export-worker.mjs 新鲜度（改了 data-center SQL 口径必须
           `少于预期的 ${probe.minLines} 行。要么源码口径变了（请同步更新本探针的 pattern/minLines），` +
           '要么正则失配 —— 无论哪种，都不能让这条守护静默通过。',
       ).toBeGreaterThanOrEqual(probe.minLines)
+
+      if (probe.uniqueLines !== undefined) {
+        expect(
+          new Set(lines).size,
+          `${probe.label}：在 ${probe.file} 里提取到的不同指纹数与预期的 ${probe.uniqueLines} 条不符。` +
+            '源码口径变了就同步更新本探针的 uniqueLines；若是把某条表达式改成了另一条已有的，这正是本断言要拦的。',
+        ).toBe(probe.uniqueLines)
+      }
 
       const missing = [...new Set(lines)].filter((l) => !dist.includes(l))
       expect(

@@ -282,16 +282,35 @@ function fromBase64Url(text: string): string {
   return new TextDecoder().decode(Uint8Array.from(binary, (ch) => ch.charCodeAt(0)))
 }
 
+/**
+ * 签名摘要：游标里只放摘要不放签名原文，游标长度与 scopeId / 员工 id 的长度无关（id 列是无长度约束的 text）。
+ * 两个 32 位 FNV-1a（不同种子）拼接；只用于识别「筛选变了」，不承担防篡改——伪造游标只能改变起始位置，
+ * 取数 SQL 始终带 scope 与筛选条件。
+ */
+function signatureDigest(signature: string): string {
+  let a = 0x811c9dc5
+  let b = 0x01000193 ^ 0x5bd1e995
+  for (let i = 0; i < signature.length; i += 1) {
+    const code = signature.charCodeAt(i)
+    a = Math.imul(a ^ code, 0x01000193) >>> 0
+    b = Math.imul(b ^ code, 0x01000193) >>> 0
+  }
+  return a.toString(36) + b.toString(36)
+}
+
+/** 游标串长度上限：日期 10 + 来源 7 + 安全整数 16 + 摘要 14 + JSON 与 base64 开销，远小于此 */
+const MAX_CURSOR_LENGTH = 200
+
 export function encodeCommissionCursor(key: CommissionDetailKey, signature: string): string {
-  return toBase64Url(JSON.stringify({ d: key.d, t: key.t, id: key.id, s: signature }))
+  return toBase64Url(JSON.stringify({ d: key.d, t: key.t, id: key.id, s: signatureDigest(signature) }))
 }
 
 /** 解析失败 / 签名不符 / 字段不合法一律返回 null（回到第一页），不抛错：URL 可被手改 */
 export function decodeCommissionCursor(raw: string | undefined | null, signature: string): CommissionDetailKey | null {
-  if (!raw || raw.length > 512) return null
+  if (!raw || raw.length > MAX_CURSOR_LENGTH) return null
   try {
     const parsed = JSON.parse(fromBase64Url(raw)) as Record<string, unknown>
-    if (parsed.s !== signature) return null
+    if (parsed.s !== signatureDigest(signature)) return null
     const { d, t, id } = parsed
     if (typeof d !== 'string' || !isValidCalendarDate(d)) return null
     if (t !== 'sale' && t !== 'service') return null

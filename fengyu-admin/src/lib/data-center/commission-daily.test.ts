@@ -148,6 +148,15 @@ describe('明细 keyset 游标', () => {
     expect(decodeCommissionCursor(encodeCommissionCursor({ d: '2026-08-02', t: 'sale', id: -1 }, signature), signature)).toBeNull()
   })
 
+  it('游标长度与筛选取值长度无关：超长中文 scopeId / 员工 id 生成的游标照样可解码', () => {
+    const longSignature = commissionFilterSignature({ scope: 'market', scopeId: '市'.repeat(200), employeeId: 'E'.repeat(80), storeId: 'S'.repeat(80) })
+    const key: CommissionDetailKey = { d: '2026-08-31', t: 'service', id: Number.MAX_SAFE_INTEGER }
+    const cursor = encodeCommissionCursor(key, longSignature)
+    expect(cursor.length).toBeLessThan(120)
+    expect(decodeCommissionCursor(cursor, longSignature)).toEqual(key)
+    expect(decodeCommissionCursor(cursor, longSignature + 'x')).toBeNull()
+  })
+
   it('签名与参数顺序无关', () => {
     expect(commissionFilterSignature({ b: '2', a: '1' })).toBe(commissionFilterSignature({ a: '1', b: '2' }))
   })
