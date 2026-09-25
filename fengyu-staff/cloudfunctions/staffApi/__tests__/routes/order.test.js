@@ -16,6 +16,7 @@ const {
   assertNormalSkuMarketScopeForCurrentStore,
   resolveCustomerOrderMarketScope,
   buildCustomerOrderMarketScopeFilter,
+  pickupAmountSnapshot,
 } = orderRoutes.__testables__
 
 /**
@@ -7158,6 +7159,8 @@ describe('order.createPickup', () => {
                 sale_item_id: 'item-001', sale_order_id: 'FY-001', store_id: 'store-001',
                 sku_id: 'sku-001', product_name: '家居产品A', product_type: '家居产品',
                 item_direction: '购买', quantity: 5, settled_quantity: 0, picked_quantity: 0,
+                // staffApi 的 pg 把 numeric 解析成 float（88.50 → 88.5），夹具照实模拟
+                unit_real_price: 88.5,
                 paid_quantity: 5, order_status: '已支付', client_user_id: 'cu-001', customer_name: '顾客A',
               }],
               rowCount: 1,
@@ -7186,7 +7189,13 @@ describe('order.createPickup', () => {
           }
           if (/FROM inventory_stock_lots/.test(sql)) {
             const skuId = params[1]
-            return { rows: [{ id: skuId === 'inventory-sku-001' ? 1 : 2, location_id: 'store-001', sku_id: skuId, sku_name: skuId, batch_no: 'B1', expiry_date: null, quantity_on_hand: 10 }], rowCount: 1 }
+            return { rows: [{
+              id: skuId === 'inventory-sku-001' ? 1 : 2, location_id: 'store-001', sku_id: skuId, sku_name: skuId,
+              batch_no: 'B1', expiry_date: null, quantity_on_hand: 10,
+              supply_chain_unit_cost: 12, market_standard_unit_price: 20, market_unit_discount: 1,
+              market_actual_unit_price: 19, store_standard_unit_price: 32, store_unit_discount: 2,
+              store_actual_unit_price: 30,
+            }], rowCount: 1 }
           }
           if (/SELECT id FROM inventory_docs/.test(sql)) {
             return { rows: [], rowCount: 0 }
@@ -7206,6 +7215,19 @@ describe('order.createPickup', () => {
 
     await orderRoutes.createPickup(ctx)
 
+    // #341：出库金额 = 提货数 × 顾客实际单价，冻结进 pickup_records（88.50 × 2 = 177.00）
+    const frozenInsert = transactionClient.query.mock.calls.find(([sql]) => /INSERT INTO pickup_records/.test(sql))
+    expect(frozenInsert[0]).toMatch(/pickup_unit_price, pickup_amount/)
+    expect(frozenInsert[1].slice(-2)).toEqual(['88.50', '177.00'])
+    // #341：GCK 明细带锁定批次的价格快照（成本），actual_unit_price 不写——交给触发器按门店成本算 amount
+    const docItemInserts = transactionClient.query.mock.calls.filter(([sql]) => /INSERT INTO inventory_doc_items/.test(sql))
+    expect(docItemInserts).toHaveLength(2)
+    for (const [sql, params] of docItemInserts) {
+      expect(sql).toMatch(/store_actual_unit_price/)
+      expect(sql).not.toMatch(/\bactual_unit_price\b/)
+      expect(params.slice(-7)).toEqual([12, 20, 1, 19, 32, 2, 30])
+    }
+
     expect(ctx.result.saleItemId).toBe('item-001')
     expect(ctx.result.pickedUp).toBe(2)
     expect(ctx.result.remaining).toBe(3) // 5 - 2
@@ -7217,6 +7239,81 @@ describe('order.createPickup', () => {
     expect(transactionClient.query.mock.calls.some(([sql]) => /INSERT INTO inventory_movements/.test(sql))).toBe(true)
     const pickupInsert = transactionClient.query.mock.calls.find(([sql]) => /INSERT INTO pickup_records/.test(sql))
     expect(pickupInsert[0]).toMatch(/VALUES \(\$1, NULL/)
+  })
+
+  test('#341 合并提货：每条来源明细各冻结一件的出库金额', async () => {
+    const ctx = createManagerCtx({ saleItemId: 'g-1', saleItemIds: ['g-2', 'g-1'], pickupQuantity: 2 })
+    let transactionClient
+    const snapshot = {
+      version: 1,
+      components: [{ inventorySkuId: 'inventory-sku-001', productCode: 'I001', productName: '库存品A', specName: null, quantityPerSaleUnit: 1 }],
+    }
+    const lockedRow = (id) => ({
+      sale_item_id: id, sale_item_group_id: 'grp-1', sale_order_id: 'FY-001', store_id: 'store-001',
+      sku_id: 'sku-001', product_name: '家居产品A', quantity: 1, picked_up_quantity: 0,
+      inventory_composition_snapshot: snapshot, settled_quantity: 0,
+      sale_amount: 19.99, unit_real_price: 19.99, received: 19.99, paid_quantity: 1,
+      product_type: '家居产品', item_direction: '购买', sale_order_type: '普通单',
+      client_user_id: 'cu-001', customer_name: '顾客A', order_status: '已支付',
+    })
+    pg.transaction.mockImplementation(async (cb) => {
+      const client = {
+        query: vi.fn(withDeductible(async (sql, params) => {
+          if (/FROM inventory_cutover_states/.test(sql)) return { rows: [{ status: '已初始化' }], rowCount: 1 }
+          if (/FOR UPDATE OF si/.test(sql) && /AS paid_quantity/.test(sql)) {
+            return { rows: [lockedRow('g-1'), lockedRow('g-2')], rowCount: 2 }
+          }
+          if (/FROM inventory_stock_lots/.test(sql)) {
+            return { rows: [{ id: 1, location_id: 'store-001', sku_id: params[1], sku_name: params[1], batch_no: 'B1', expiry_date: null, quantity_on_hand: 10, store_actual_unit_price: 7.5 }], rowCount: 1 }
+          }
+          if (/SELECT id FROM inventory_docs/.test(sql)) return { rows: [], rowCount: 0 }
+          if (/SELECT org_node_id/.test(sql) && /FROM inventory_locations/.test(sql)) {
+            return { rows: [{ org_node_id: 'org-node-store-001' }], rowCount: 1 }
+          }
+          if (/INSERT INTO inventory_doc_items/.test(sql)) return { rows: [{ id: 10 }], rowCount: 1 }
+          if (/UPDATE sale_items/.test(sql)) return { rows: [{ sale_item_id: params[0] }], rowCount: 1 }
+          return { rows: [], rowCount: 1 }
+        })),
+      }
+      transactionClient = client
+      return await cb(client)
+    })
+
+    await orderRoutes.createPickup(ctx)
+
+    expect(ctx.result.pickedUp).toBe(2)
+    const inserts = transactionClient.query.mock.calls.filter(([sql]) => /INSERT INTO pickup_records/.test(sql))
+    expect(inserts).toHaveLength(2)
+    for (const [sql, params] of inserts) {
+      expect(sql).toMatch(/pickup_unit_price, pickup_amount/)
+      expect(params.slice(-2)).toEqual(['19.99', '19.99'])
+    }
+    const docItem = transactionClient.query.mock.calls.find(([sql]) => /INSERT INTO inventory_doc_items/.test(sql))
+    // 缺失的价格快照一律写 NULL（不是 undefined），门店成本 7.5 在末位
+    expect(docItem[1].slice(-7)).toEqual([null, null, null, null, null, null, 7.5])
+  })
+
+  describe('#341 pickupAmountSnapshot（与 admin 副本同一组用例）', () => {
+    test('88.50 × 2 = 177.00', () => {
+      expect(pickupAmountSnapshot('88.50', 2)).toEqual({ unitPrice: '88.50', amount: '177.00' })
+      expect(pickupAmountSnapshot(88.5, 2)).toEqual({ unitPrice: '88.50', amount: '177.00' })
+    })
+    test('按分计算，不带浮点尾差', () => {
+      expect(pickupAmountSnapshot(19.99, 3)).toEqual({ unitPrice: '19.99', amount: '59.97' })
+      expect(pickupAmountSnapshot(0.1, 3)).toEqual({ unitPrice: '0.10', amount: '0.30' })
+    })
+    test('0 元行冻结为 0，不是 NULL', () => {
+      expect(pickupAmountSnapshot(0, 4)).toEqual({ unitPrice: '0.00', amount: '0.00' })
+      expect(pickupAmountSnapshot('0.00', 1)).toEqual({ unitPrice: '0.00', amount: '0.00' })
+    })
+    test('单价缺失或数量非法直接拒绝', () => {
+      for (const price of [null, undefined, '', 'abc']) {
+        expect(() => pickupAmountSnapshot(price, 1)).toThrow(/INVALID_STATE/)
+      }
+      for (const qty of [0, -1, 1.5, '2']) {
+        expect(() => pickupAmountSnapshot('10.00', qty)).toThrow(/INVALID_STATE/)
+      }
+    })
   })
 
   test('超出可提货数量拒绝', async () => {
