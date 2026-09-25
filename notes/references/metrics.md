@@ -353,7 +353,13 @@ WHERE c.customer_status IN ('保有会员-稳定','保有会员-有效')
 | 人群判据 | `customer_status`（cron 当前截面快照） | 实时 SQL 末 90 天到店 + `became_member_at` | 两者当时恰好等价；「状态为保有会员但 `became_member_at IS NULL`」实测 0 人 |
 | 归店 | scope 按 `so.store_id` | scope 只按 `c.bound_store_id`（不限服务门店，含关店） | 跨店服务仅 27 人，影响 3 家门店各 1 人在 1次/2次 档间移动；关店服务 0 人 |
 
-**改后**：分母 = `registered`（§1「会员注册」同一列，会员截面 `became_member_at::date <= endDate`）。
+**改后**：分母 = `registered`（明细表「会员注册」列，会员截面 `became_member_at::date <= endDate`）。
+
+> ⚠ **「明细的会员注册」与「KPI 卡的会员注册人数」不是同一个数**（非本单引入，但按字面读容易误解）：
+> KPI 侧 `queryRegistration` 只有 `scopeFilterSql + became_member_at` 两条谓词，**不经 skel**、
+> 也**不要求** `bound_store_id IS NOT NULL`；明细的 `reg` 两者都有。
+> 于是「绑定店为空」或「绑定店不在 skel 内（如已关店）」的会员会进 KPI 卡、不进任何门店行
+> ⇒ **KPI 会员注册人数 ≥ Σ明细会员注册**。达成率只用 `reg`，所以这**不影响 ≤100%**。
 同轮把会员守卫补进 admin 的两处分子**与 staff `mgmt-traffic.js` 的两个同名函数**（用户拍板同步，见实现位置表）。
 
 **只换分母不够** —— 分子必须同时补上与分母**逐字相同**的会员守卫

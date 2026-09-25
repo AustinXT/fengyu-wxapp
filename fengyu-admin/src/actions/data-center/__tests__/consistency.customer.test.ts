@@ -41,9 +41,17 @@ const ADMIN_BOARD = path.resolve(
 
 /**
  * #414 会员守卫：达成率的分子必须带与分母 `reg` 逐字相同的谓词。
- * `endExpr` 是各处对区间终点的写法（KPI 用 `range.end`、明细用 `end`），其余逐字相同。
- * ⚠ staff 端 mgmt-traffic 与 cron monthly_activity **不带**这条 —— 它们不产出达成率，
- * 所以 staffExpected / cronActivity 不拼这段，别"顺手统一"。
+ * `endExpr` 是各处对区间终点的写法，其余逐字相同：
+ *   - admin 明细 `end` / admin KPI `range.end` / staff `endDateExpr(period)`
+ *
+ * **四份副本里三份带、一份不带**（用户 2026-09-25 拍板）：
+ *   - **带**：admin `queryActive` + 明细 `visit_count` + staff `mgmt-traffic.js` 两个函数
+ *     （同名指标两端不分叉，延续 #298 的统一）
+ *   - **不带**：cron `refresh-monthly-activity` 与 `db/scripts/calc-monthly-activity.js`
+ *     —— 它们给当月到店的**所有**顾客打标（含非会员），加了会改自己的口径
+ *
+ * 所以 `staffExpected` **要**拼这段、`cronActivity` **不**拼；两个方向各有一条断言钉着
+ * （见第 9 组「staff 两个客活函数带……」与「cron monthly_activity 不得带……」）。
  */
 const memberGuard = (endExpr: string): string =>
   'c.became_member_at IS NOT NULL AND c.became_member_at::date <= ${' + endExpr + '}'
@@ -1731,6 +1739,22 @@ describe('客量板块两端口径一致性守护', () => {
      * 而上面全部断言照绿（GLM round-2 提出，本 session 复核成立）。
      * 六条 JOIN 整段逐字钉死 —— 分子分母任何一条改了归组键都会红。
      */
+    /**
+     * 归组键生产者（`groupId` 三元 + `group_name` 三元）也不在任何快照内（GLM round-3 P3-2）：
+     * JOIN 快照刻意截在 ` GROUP BY ` 之前，投影断言只覆盖 `SUM(...)` 行。
+     * 两分支对调 ⇒ `buildBreakdownRows` 按 marketId/storeId 取 map 全 miss ⇒ 明细整列 0/null。
+     * 那是**响亮**的破坏不是静默错数，但一行断言就能收口，没理由不收。
+     */
+    it('明细归组键生产者不得对调（market ↔ store）', () => {
+      const fn = fnSource(adminSrc, ADMIN_CUSTOMER, 'queryRegActiveBreakdown')
+      expect(fn).toContain(
+        "const groupId = group === 'market' ? sql.raw('sk.market_id') : sql.raw('sk.store_id')",
+      )
+      expect(fn).toContain(
+        "${group === 'market' ? sql.raw('MAX(sk.market_name)') : sql.raw('MAX(sk.store_name)')} AS group_name,",
+      )
+    })
+
     it('外层骨架 JOIN 的关联条件整段快照（归组键错位 = 分子分母对不上号）', () => {
       expect(sliceBlock(breakdownSql(adminSrc), 'FROM skel sk ', ' GROUP BY ')).toBe(
         'FROM skel sk ' +
