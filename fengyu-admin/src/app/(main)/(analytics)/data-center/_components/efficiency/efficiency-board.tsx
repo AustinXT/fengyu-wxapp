@@ -61,12 +61,18 @@ export function EfficiencyBoard() {
 
   const kpis = data?.kpis ?? {}
   const label = data?.timeRange.presetLabel ?? ""
+  const noStoreMarkets = data?.noStoreMarkets ?? []
 
   return (
     <div className="flex flex-col gap-6">
       {/* 人均派生 KPI */}
       <section className="flex flex-col gap-3">
         <h2 className="text-sm font-semibold text-[var(--foreground)]">人均效能</h2>
+        {!loading && data?.noStoreScope && (
+          <p className="text-xs text-[var(--muted-foreground)]" data-testid="efficiency-no-store-note">
+            当前范围内没有在营门店。员工人均业绩、实耗、收入、会员量、项目数的分子按门店统计，不适用于无门店范围，显示为「--」；店长人均因范围内没有店长同样显示「--」。员工个人业绩请看「员工排名榜」。
+          </p>
+        )}
         <KpiGrid items={KPI_ITEMS} kpis={kpis} columns={4} baseRanges={loading ? undefined : data?.timeRange} />
       </section>
 
@@ -78,13 +84,18 @@ export function EfficiencyBoard() {
           <TabsTrigger value="store-rank">门店排名榜</TabsTrigger>
           <TabsTrigger value="staff-rank">员工排名榜</TabsTrigger>
         </TabsList>
-        <TabsContent value="detail">
+        <TabsContent value="detail" className="flex flex-col gap-2">
           <BreakdownTable
             rows={data?.byMarket ?? []}
             loading={loading}
             exportFilename={`人效明细_按市场_${label}`}
             exportView="efficiency-market"
           />
+          {!loading && noStoreMarkets.length > 0 && (
+            <p className="text-xs text-[var(--muted-foreground)]" data-testid="efficiency-no-store-market-note">
+              {noStoreMarkets.join("、")} 下没有在营门店，业绩、实耗、收入按门店统计，技师人均显示为「--」；技师人数照常计入。
+            </p>
+          )}
         </TabsContent>
         <TabsContent value="staff-detail">
           <BreakdownTable

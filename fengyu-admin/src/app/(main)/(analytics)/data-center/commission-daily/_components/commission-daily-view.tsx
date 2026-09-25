@@ -150,6 +150,7 @@ export function CommissionDailyView({ data, today }: { data: CommissionDailyResu
     const params = new URLSearchParams({ tab: "sale", allocStatus: "待分配", from: range.start, to: range.end })
     if (scopeParam === "market" && scopeIdParam) params.set("market", scopeIdParam)
     if (scopeParam === "store" && scopeIdParam) params.set("store", scopeIdParam)
+    // 多店（#376）不带门店参数：/allocations 只支持单店筛选，落地页按账号权限范围展示
     return `/allocations?${params.toString()}`
   }, [data.month, scopeParam, scopeIdParam])
 
@@ -167,7 +168,11 @@ export function CommissionDailyView({ data, today }: { data: CommissionDailyResu
         <KpiCard
           label="人均提成"
           cell={{ value: kpis.perTechnician, unit: "amount" }}
-          hint={`÷ 产能技师 ${formatCount(kpis.technicianCount)} 人（同人效板；非超管的总部账号不含无门店市场的直挂技师）`}
+          hint={
+            kpis.noStoreScope
+              ? `当前范围内没有在营门店，提成按门店统计，人均不适用（产能技师 ${formatCount(kpis.technicianCount)} 人）`
+              : `÷ 产能技师 ${formatCount(kpis.technicianCount)} 人（同人效板；非超管的总部账号不含无门店市场的直挂技师）`
+          }
         />
         <KpiCard label="单均提成" cell={{ value: kpis.perOrder, unit: "amount" }} hint={`÷ ${formatCount(kpis.orders)} 单（含 0 提成订单）`} />
       </div>

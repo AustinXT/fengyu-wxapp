@@ -9,6 +9,11 @@ import {
   parseScope,
   parseTimeRange,
   parseBoardParams,
+  parseStoreIdList,
+  scopeFromStoreIds,
+  scopeToParams,
+  collapseQuery,
+  MAX_SCOPE_STORES,
 } from './params'
 
 describe('parseBoard', () => {
@@ -126,5 +131,54 @@ describe('parseBoardParams', () => {
     expect(parseBoardParams({ scope: 'authorized', preset: 'month' }).scope).toEqual({
       type: 'authorized',
     })
+  })
+})
+
+describe('多店范围编码（#376）', () => {
+  it('scope=stores + 逗号串 → 去重升序的 stores', () => {
+    expect(parseScope({ scope: 'stores', scopeId: 'S3,S1,S3' })).toEqual({ type: 'stores', ids: ['S1', 'S3'] })
+  })
+
+  it('只有 1 家 → 编成 store', () => {
+    expect(parseScope({ scope: 'stores', scopeId: 'S1' })).toEqual({ type: 'store', id: 'S1' })
+    expect(parseScope({ scope: 'stores', scopeId: 'S1,S1' })).toEqual({ type: 'store', id: 'S1' })
+  })
+
+  it('非法串（空段 / 非法字符 / 缺 scopeId / 超上限）→ 回落 all', () => {
+    expect(parseScope({ scope: 'stores', scopeId: 'S1,,S2' })).toEqual({ type: 'all' })
+    expect(parseScope({ scope: 'stores', scopeId: 'S1,S2;drop' })).toEqual({ type: 'all' })
+    expect(parseScope({ scope: 'stores', scopeId: 'S1, S2' })).toEqual({ type: 'all' })
+    expect(parseScope({ scope: 'stores' })).toEqual({ type: 'all' })
+    const tooMany = Array.from({ length: MAX_SCOPE_STORES + 1 }, (_, i) => `S${i}`).join(',')
+    expect(parseScope({ scope: 'stores', scopeId: tooMany })).toEqual({ type: 'all' })
+  })
+
+  it('恰好上限可解析', () => {
+    const max = Array.from({ length: MAX_SCOPE_STORES }, (_, i) => `S${i}`).join(',')
+    expect(parseStoreIdList(max)).toHaveLength(MAX_SCOPE_STORES)
+  })
+
+  it('scopeToParams 是 parseScope 的逆（五种形态往返）', () => {
+    const scopes = [
+      { type: 'all' as const },
+      { type: 'authorized' as const },
+      { type: 'market' as const, id: 'M1' },
+      { type: 'store' as const, id: 'S1' },
+      { type: 'stores' as const, ids: ['S1', 'S2'] },
+    ]
+    for (const scope of scopes) expect(parseScope(scopeToParams(scope))).toEqual(scope)
+    expect(scopeToParams({ type: 'stores', ids: ['S2', 'S1'] })).toEqual({ scope: 'stores', scopeId: 'S1,S2' })
+  })
+
+  it('单 key 编码不触发 hasRepeatedQueryKey，collapseQuery 原样保留逗号串', () => {
+    const query = { scope: 'stores', scopeId: 'S1,S2' }
+    expect(hasRepeatedQueryKey(query)).toBe(false)
+    expect(collapseQuery(query).get('scopeId')).toBe('S1,S2')
+  })
+
+  it('scopeFromStoreIds：空集 null / 1 家 store / 多家 stores', () => {
+    expect(scopeFromStoreIds([])).toBeNull()
+    expect(scopeFromStoreIds(['S1'])).toEqual({ type: 'store', id: 'S1' })
+    expect(scopeFromStoreIds(['S2', 'S1'])).toEqual({ type: 'stores', ids: ['S1', 'S2'] })
   })
 })

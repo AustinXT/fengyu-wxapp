@@ -19,6 +19,7 @@
  */
 import { computeMatrixTotals, type MatrixColumnGroup, type MatrixTotals } from './matrix'
 import type { MatrixExportColumnSpec } from './matrix-export'
+import { parseStoreIdList, scopeToParams } from './params'
 import { monthRange } from './report-period'
 import { addDays, shanghaiToday } from './time-range'
 import type { DataCenterScope, MetricUnit, ResolvedRange } from './types'
@@ -411,13 +412,7 @@ export const OPERATING_MASTER_EMPTY_TEXT = '所选范围内没有在营门店，
  * 否则地址栏写了非法月份时，页面显示回落后的月份，导出却按 worker 的解析结果出另一个月。
  */
 export function operatingMasterExportParams(scope: DataCenterScope, month: string): Record<string, string> {
-  const params: Record<string, string> = { month }
-  if (scope.type === 'authorized') params.scope = 'authorized'
-  if (scope.type === 'market' || scope.type === 'store') {
-    params.scope = scope.type
-    params.scopeId = scope.id
-  }
-  return params
+  return { month, ...scopeToParams(scope) } as Record<string, string>
 }
 
 /**
@@ -432,13 +427,18 @@ export function parseOperatingMasterExportScope(raw: { scope?: string; scopeId?:
   }
   if (raw.scope === 'authorized' && !raw.scopeId) return { type: 'authorized' }
   if ((raw.scope === 'market' || raw.scope === 'store') && raw.scopeId) return { type: raw.scope, id: raw.scopeId }
+  // 多店（#376）：逗号串须全部合法且 ≥2 家（1 家应编成 store）；否则拒绝，绝不回落成「全部」
+  if (raw.scope === 'stores') {
+    const ids = parseStoreIdList(raw.scopeId)
+    if (ids && ids.length >= 2) return { type: 'stores', ids }
+  }
   throw new Error('INVALID_PARAMS: 导出范围参数不完整或无效')
 }
 
 /** 导出元信息的范围描述：带上范围类型（「市场 · 南昌凤御」「门店 · 汇东店」），同名时也能自证 */
 export function operatingMasterScopeMeta(scope: DataCenterScope, name: string): string {
   if (scope.type === 'market') return `市场 · ${name}`
-  if (scope.type === 'store') return `门店 · ${name}`
+  if (scope.type === 'store' || scope.type === 'stores') return `门店 · ${name}`
   return name
 }
 

@@ -66,6 +66,7 @@ beforeEach(() => {
     if (text.includes('GROUPING SETS')) return []
     if (text.includes('earning_employees')) return [{ sale: '201746.24', service: '374896.13', orders: 8065, earning_employees: 151, employees: 196 }]
     if (text.includes('technician_scoped')) return [{ v: 158 }]
+    if (text.includes('AS has_store')) return [{ has_store: true }]
     if (text.includes("allocation_status = '待分配'")) return [{ count: 15, amount: '21188.00' }]
     throw new Error(`未预期的 SQL：${text.slice(0, 80)}`)
   })
@@ -92,6 +93,7 @@ describe('getCommissionDaily · 指标卡', () => {
     expect(result.kpis.earningEmployees).toBe(151)
     expect(result.kpis.employees).toBe(196)
     expect(result.kpis.technicianCount).toBe(158)
+    expect(result.kpis.noStoreScope).toBe(false)
     expect(result.kpis.perTechnician).toBeCloseTo(3649.64, 2)
     expect(result.kpis.perOrder).toBeCloseTo(71.5, 2)
     expect(result.pending).toEqual({ count: 15, amount: 21188 })

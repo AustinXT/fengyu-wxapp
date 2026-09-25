@@ -802,16 +802,30 @@ async function lockInventoryLotById(client, lotId, locationId) {
   }
 }
 
-async function inventorySkuSnapshot(client, skuId) {
+/**
+ * 不带批次的明细（门店报货 / 门店盘点）取 SKU 快照，并校验 SKU 归属——非供应链 SKU 只能在
+ * 归属市场（及其门店）使用，与 admin `createDoc` 的 `assertSkuIdAvailableAtLocation` 同一道闸。
+ * 两个候选接口（reportableSkuOptions / stocktakeSkuOptions）与这道闸同谓词
+ * （供应链 OR 归属本店所属市场），候选能选到的建单一定收；抓包直传别的市场自采 SKU 时建单拦下。
+ * `locationId` 契约同 `assertSkuAvailableAtLocation`：必须是 inventory_locations.location_id。
+ * `reportableOnly`（门店报货）：同时要求 is_reportable，与 admin 门店报货 `loadSku(tx, skuId, true)`
+ * 同口径——候选只出可报货 SKU，直调接口也不能把不可报货的 SKU 写进报货单（下游市场汇总会拒）。
+ */
+async function inventorySkuSnapshot(client, skuId, locationId, { reportableOnly = false } = {}) {
   const res = await client.query(
-    `SELECT sku_id, product_name, spec_name, supplier, product_series
+    `SELECT sku_id, product_name, spec_name, supplier, product_series, source_type, owner_market_id
        FROM inventory_skus
-      WHERE sku_id = $1 AND is_active = true
+      WHERE sku_id = $1 AND is_active = true${reportableOnly ? ' AND is_reportable = true' : ''}
       LIMIT 1`,
     [skuId],
   )
   const r = res.rows[0]
-  if (!r) throw new Error('NOT_FOUND: 库存 SKU 不存在或已停用')
+  if (!r) {
+    throw new Error(reportableOnly
+      ? 'NOT_FOUND: 库存 SKU 不存在、已停用或不可报货'
+      : 'NOT_FOUND: 库存 SKU 不存在或已停用')
+  }
+  await assertSkuAvailableAtLocation(client, r, locationId)
   return {
     skuId: r.sku_id,
     skuName: r.product_name,
@@ -834,6 +848,7 @@ async function inventorySkuSnapshot(client, skuId) {
  * 契约成立；新增调用点时务必沿用。
  */
 async function assertSkuAvailableAtLocation(client, sku, locationId) {
+  // source_type 是 NOT NULL（默认 供应链），`||` 兜底不可达，只为防御旧数据；判定与 admin 同义
   const sourceType = sku.source_type || '供应链'
   if (sourceType === '供应链') return
   const locationRes = await client.query(
@@ -1111,7 +1126,7 @@ async function stockList(ctx) {
     conditions.push('st.quantity_on_hand > 0')
   }
   if (keyword) {
-    const escaped = String(keyword).replace(/[%_]/g, '\\$&')
+    const escaped = String(keyword).replace(/[\\%_]/g, '\\$&')
     conditions.push(`(st.sku_id ILIKE $${idx} OR st.sku_name ILIKE $${idx} OR st.batch_no ILIKE $${idx} OR loc.name ILIKE $${idx})`)
     params.push(`%${escaped}%`)
     idx++
@@ -1187,12 +1202,13 @@ async function reportableSkuOptions(ctx) {
   const conditions = [
     'sku.is_active = true',
     'sku.is_reportable = true',
-    '(sku.owner_market_id IS NULL OR sku.owner_market_id = $2)',
+    // 与建单闸门 assertSkuAvailableAtLocation、admin listInventorySkus({ availableToMarketId }) 同义
+    "(sku.source_type = '供应链' OR sku.owner_market_id = $2)",
   ]
   const params = [sourceOrgNodeId, source.parent_location_id]
   let idx = 3
   if (keyword) {
-    const escaped = String(keyword).replace(/[%_]/g, '\\$&')
+    const escaped = String(keyword).replace(/[\\%_]/g, '\\$&')
     conditions.push(`(sku.sku_id ILIKE $${idx} OR sku.product_code ILIKE $${idx} OR sku.product_name ILIKE $${idx} OR sku.spec_name ILIKE $${idx})`)
     params.push(`%${escaped}%`)
     idx++
@@ -1201,11 +1217,11 @@ async function reportableSkuOptions(ctx) {
   const countConditions = [
     'sku.is_active = true',
     'sku.is_reportable = true',
-    '(sku.owner_market_id IS NULL OR sku.owner_market_id = $1)',
+    "(sku.source_type = '供应链' OR sku.owner_market_id = $1)",
   ]
   const countParams = [source.parent_location_id]
   if (keyword) {
-    const escaped = String(keyword).replace(/[%_]/g, '\\$&')
+    const escaped = String(keyword).replace(/[\\%_]/g, '\\$&')
     countConditions.push('(sku.sku_id ILIKE $2 OR sku.product_code ILIKE $2 OR sku.product_name ILIKE $2 OR sku.spec_name ILIKE $2)')
     countParams.push(`%${escaped}%`)
   }
@@ -1241,6 +1257,90 @@ async function reportableSkuOptions(ctx) {
       supplier: row.supplier || null,
       productSeries: row.product_series || null,
       stockReference: Number(row.stock_reference || 0),
+    })),
+    total: Number(countRows[0]?.cnt || 0),
+    page: Math.max(1, parseInt(page, 10) || 1),
+    pageSize: limit,
+  }
+  return ctx.result
+}
+
+/**
+ * 门店盘点可选 SKU（#352）。
+ *
+ * 与 reportableSkuOptions 的差别在口径：盘点要能盘到本店手上的任何货，不限 is_reportable
+ * （admin 盘点同样用全量 SKU 检索）。归属谓词与建单闸门 `assertSkuAvailableAtLocation`、
+ * admin `listInventorySkus({ availableToMarketId })` 逐字同义：供应链 SKU 或归属本店所属市场——
+ * 候选能选到的，createDoc 一定收；候选选不到的，createDoc 一定拒。
+ *
+ * 刻意**不下发账面数**：盘点是盲盘，录入时看到账面数就会照抄；账面数由 createDoc 在提交时记入
+ * stock_snapshot。本店有货的 SKU 排在前面，免得在全量目录里翻找。
+ */
+async function stocktakeSkuOptions(ctx) {
+  await requireStaffBound()(ctx, async () => {})
+  const {
+    locationId,
+    keyword,
+    page = 1,
+    pageSize = 50,
+  } = ctx.event.payload || {}
+
+  await syncInventoryLocations()
+  const sourceOrgNodeId = locationId || ctx.auth.effectiveStoreId
+  await assertInventoryWriteStoreScope(pg, ctx.auth, sourceOrgNodeId)
+  const source = await ensureStoreLocation(sourceOrgNodeId)
+  if (!source.parent_location_id) {
+    throw new Error('INVALID_STATE: 当前门店未关联市场，无法查询盘点 SKU')
+  }
+
+  const limit = Math.max(1, Math.min(100, parseInt(pageSize, 10) || 50))
+  const offset = (Math.max(1, parseInt(page, 10) || 1) - 1) * limit
+  // 主查询与 count 共用同一组条件与参数（$1 = 市场，$2 = 关键词），口径不会漂；
+  // 本店主体只在排序里用，放在最后一个参数。
+  const conditions = [
+    'sku.is_active = true',
+    "(sku.source_type = '供应链' OR sku.owner_market_id = $1)",
+  ]
+  const params = [source.parent_location_id]
+  if (keyword) {
+    // 反斜杠也要转义：ILIKE 默认转义符就是 \，结尾单个 \ 会让 PG 直接报错
+    const escaped = String(keyword).replace(/[\\%_]/g, '\\$&')
+    conditions.push('(sku.sku_id ILIKE $2 OR sku.product_code ILIKE $2 OR sku.product_name ILIKE $2 OR sku.spec_name ILIKE $2)')
+    params.push(`%${escaped}%`)
+  }
+  const whereSql = `WHERE ${conditions.join(' AND ')}`
+  const storeParamIndex = params.length + 1
+  const rows = await pg.query(
+    `SELECT sku.sku_id, sku.product_code, sku.product_name, sku.spec_name,
+            sku.supplier, sku.product_series,
+            EXISTS (
+              SELECT 1 FROM inventory_stock_lots lot
+               WHERE lot.sku_id = sku.sku_id
+                 AND lot.location_id = $${storeParamIndex}
+                 AND lot.quantity_on_hand > 0
+            ) AS in_stock
+       FROM inventory_skus sku
+       ${whereSql}
+   ORDER BY in_stock DESC, sku.product_name, sku.spec_name NULLS LAST, sku.sku_id
+      LIMIT ${limit} OFFSET ${offset}`,
+    [...params, source.location_id],
+  )
+  const countRows = await pg.query(
+    `SELECT COUNT(*)::int AS cnt
+       FROM inventory_skus sku
+       ${whereSql}`,
+    params,
+  )
+
+  ctx.result = {
+    items: rows.map((row) => ({
+      skuId: row.sku_id,
+      productCode: row.product_code,
+      skuName: row.product_name,
+      specName: row.spec_name || null,
+      supplier: row.supplier || null,
+      productSeries: row.product_series || null,
+      inStock: Boolean(row.in_stock),
     })),
     total: Number(countRows[0]?.cnt || 0),
     page: Math.max(1, parseInt(page, 10) || 1),
@@ -1400,7 +1500,7 @@ async function docList(ctx) {
     idx++
   }
   if (keyword) {
-    const escaped = String(keyword).replace(/[%_]/g, '\\$&')
+    const escaped = String(keyword).replace(/[\\%_]/g, '\\$&')
     conditions.push(`(d.id ILIKE $${idx} OR d.customer_name ILIKE $${idx} OR d.employee_name ILIKE $${idx} OR d.remark ILIKE $${idx})`)
     params.push(`%${escaped}%`)
     idx++
@@ -1671,7 +1771,9 @@ async function createDoc(ctx) {
         snapshot = lot
       } else {
         if (!item.skuId) throw new Error('INVALID_PARAMS: 明细缺少库存 SKU')
-        snapshot = await inventorySkuSnapshot(client, item.skuId)
+        snapshot = await inventorySkuSnapshot(client, item.skuId, actingLocationId, {
+          reportableOnly: docType === '门店报货',
+        })
       }
       // 盘点单没有批次选择器，lot 恒为 null —— 账面数只能来自上面的汇总。
       // 一个批次都没有时 GROUP BY 不出行，落 0（不是 NULL）：账上就是 0，实盘有货即盘盈。
@@ -2335,6 +2437,7 @@ async function uploadReceipt(ctx) {
 module.exports = {
   stockList,
   reportableSkuOptions,
+  stocktakeSkuOptions,
   storeOptions,
   docOrgOptions,
   docList,

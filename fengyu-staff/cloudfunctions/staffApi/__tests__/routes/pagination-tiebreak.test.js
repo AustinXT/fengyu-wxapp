@@ -214,9 +214,10 @@ describe('#282 · 分页 SQL 的 ORDER BY 必须带唯一键 tie-break', () => {
       // 但那本来就该是一次有意识的改动（改的人正好该看一眼守护还覆不覆盖）。
       // admin 侧同姿态（`toBe(33)`）。
       //
-      // routes 下共 17 条带 OFFSET 的分页 SQL（`grep -rn OFFSET routes/*.js` 得 18 行，其中 1 行是 customer.js 里写着「无 OFFSET」的注释）
+      // routes 下共 18 条带 OFFSET 的分页 SQL（`grep -rn OFFSET routes/*.js` 得 19 行，其中 1 行是 customer.js 里写着「无 OFFSET」的注释）
+      // #352 新增 inventory.stocktakeSkuOptions（17 → 18）
       expect(scanned, '扫到的分页 SQL 数与 routes 下 OFFSET 的实际条数不符 —— 提取器可能漏了某种写法')
-        .toBe(17)
+        .toBe(18)
     })
   })
 
@@ -258,7 +259,7 @@ describe('#282 · 分页 SQL 的 ORDER BY 必须带唯一键 tie-break', () => {
       // 其余 3 支仍能满足 `toContain` → 三层全绿（评审实证）。
       // admin 侧的修法（改为对提取出的参数列表断言）在这里**不管用** ——
       // 那边同子句分属「分页」与「keyset 导出」两类，这边 4 处全是分页。
-      // ⚠️ 这张表必须与 EXPECTED **合起来覆盖全部 17 支**分页 SQL。
+      // ⚠️ 这张表必须与 EXPECTED **合起来覆盖全部 18 支**分页 SQL。
       // 只钉「本次改的 6 支」是不够的 —— 评审实测：把未钉死的
       // `mgmt-customer.js:319` / `appointment.js:108` / `allocation.js:269` 的末位键
       // 改成外键（`c.bound_store_id` / `store_id` / `p.store_id`），
@@ -269,6 +270,8 @@ describe('#282 · 分页 SQL 的 ORDER BY 必须带唯一键 tie-break', () => {
           '顾客搜索 / 标签列表等三支（#181 修的）——同文件第 4 处无 OFFSET，不算分页'],
         ['order.js', 'o.sale_order_datetime DESC, o.sale_order_id DESC', 1, '订单列表'],
         ['inventory.js', 'sku.product_name, sku.spec_name NULLS LAST, sku.sku_id', 1, 'SKU 列表'],
+        ['inventory.js', 'in_stock DESC, sku.product_name, sku.spec_name NULLS LAST, sku.sku_id', 1,
+          '盘点 SKU 候选（#352）：本店有货排前，sku_id 兜底'],
         ['allocation.js', 'p.paid_at DESC NULLS LAST, p.id DESC', 1, '营业额分配待办'],
         ['appointment.js', 'a.appointment_time DESC, a.appointment_id DESC', 1, '预约列表'],
         ['mgmt-customer.js', 'c.user_id ASC', 2, '管理层顾客列表两支'],
@@ -286,7 +289,7 @@ describe('#282 · 分页 SQL 的 ORDER BY 必须带唯一键 tie-break', () => {
     })
   })
 
-    test('EXPECTED + SAFE 合起来覆盖全部 17 支分页 SQL（新增查询忘了登记会红）', () => {
+    test('EXPECTED + SAFE 合起来覆盖全部 18 支分页 SQL（新增查询忘了登记会红）', () => {
       // 第 1 层是启发式（`looksUnique` 对任何 `*_id` 放行，外键也算），
       // 真正的位置级保护只能靠清单。所以清单必须是**全覆盖**的，
       // 否则未登记的那几支改坏后两层皆绿（评审实测 3 例）。
@@ -297,10 +300,11 @@ describe('#282 · 分页 SQL 的 ORDER BY 必须带唯一键 tie-break', () => {
         'loc.location_type, loc.name, st.sku_name, st.batch_no, st.id',
         'd.doc_date DESC, d.created_at DESC, d.id DESC',
         'pr.created_at DESC, pr.id DESC',
-        // SAFE（本来就正确的 11 支）
+        // SAFE（本来就正确的 11 支 + #352 新增 1 支）
         'c.user_id ASC',
         'o.sale_order_datetime DESC, o.sale_order_id DESC',
         'sku.product_name, sku.spec_name NULLS LAST, sku.sku_id',
+        'in_stock DESC, sku.product_name, sku.spec_name NULLS LAST, sku.sku_id',
         'p.paid_at DESC NULLS LAST, p.id DESC',
         'a.appointment_time DESC, a.appointment_id DESC',
         'so.service_date DESC, so.created_at DESC, so.service_order_id DESC',

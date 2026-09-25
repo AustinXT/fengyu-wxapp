@@ -12,13 +12,19 @@ import type { DeltaDisplay } from '@/lib/delta-display'
 export type { DeltaDisplay }
 
 // ─────────────────────────────────────────────
-// scope（集团/授权汇总/市场/门店）
+// scope（集团/授权汇总/市场/门店/多店）
 // ─────────────────────────────────────────────
 export type DataCenterScope =
   | { type: 'all' }
   | { type: 'authorized' }
   | { type: 'market'; id: string }
   | { type: 'store'; id: string }
+  /**
+   * 多店（#376）：授权门店内任选的子集。`ids` 去重升序、至少 2 家（1 家编成 store）。
+   * URL 编码为 `scope=stores&scopeId=a,b`（单 key 逗号串，重复 key 会被 collapseQuery 压成首值）。
+   * 全选 / 恰好勾满一个市场时由 `canonicalizeScope` 折叠成 all|authorized / market。
+   */
+  | { type: 'stores'; ids: string[] }
 
 // ─────────────────────────────────────────────
 // 时间维度
@@ -142,6 +148,10 @@ export interface CustomerBoardResult extends BoardMeta {
 /** 人效板块 */
 export interface EfficiencyBoardResult extends BoardMeta {
   kpis: Record<string, KpiCell>
+  /** 范围内没有在营门店（#423）：技师人均 KPI 均为 null，前端显示「--」并加说明 */
+  noStoreScope: boolean
+  /** byMarket 中没有在营门店的市场名（品项公司等），这些行的技师人均为 null（#423） */
+  noStoreMarkets: string[]
   byMarket: BreakdownRow[]
   /** 按技师人效明细（员工粒度，labels 带门店/职级；metrics = 当月业绩 + 销售额按
    *  salesCategoryEnum 4 枚举值拆分 + 实耗合计 + 纳客数/项目数/服务人头/服务人次） */
@@ -184,6 +194,8 @@ export interface ScopeOptionMarket {
  * 判定与取数 SQL 的启用门店过滤同源（只看 org_nodes.is_active），这样「已停用」必然等于「取不到数」。
  */
 export interface ScopeOptionInactiveStore extends ScopeOptionStore {
+  // ⚠️ 多店全部停用时由 findInactiveScopeStore 合成一项：storeId 为逗号串、storeName 为合并店名（#376）。
+  //    消费方只用于展示空态文案，不得把 storeId 当单个门店 id 查找。
   /** 所属市场节点；筛选器据此回显市场下拉（市场不在数据源时回显落空，不影响空态） */
   marketId: string | null
 }

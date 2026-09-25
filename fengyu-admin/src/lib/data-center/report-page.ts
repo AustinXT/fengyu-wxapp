@@ -102,6 +102,15 @@ function isScopeInOptions(scope: DataCenterScope, scopeOptions: DataCenterScopeO
   if (scope.type === 'store') {
     return scopeOptions.markets.some((market) => market.stores.some((store) => store.storeId === scope.id))
   }
+  // 多店（#376）：每家都须在数据源内——在营列表或权限内停用列表（部分停用照常渲染、只算在营部分；
+  // 全部停用已由 entry 识别为空态，不会走到这里）。任一家不在 → 跳默认范围，与单店的数据源外同一处理。
+  if (scope.type === 'stores') {
+    const known = new Set([
+      ...visibleScopeStores(scopeOptions).map((store) => store.storeId),
+      ...scopeOptions.inactiveStores.map((store) => store.storeId),
+    ])
+    return scope.ids.every((id) => known.has(id))
+  }
   return true
 }
 

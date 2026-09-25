@@ -553,6 +553,8 @@ export function InventoryDocCreateForm({
                 epoch={lotEpoch}
                 active={visible}
                 label={`明细 ${index + 1} 来源批次`}
+                // 市场间调货（§2.17）：告诉区域主管这批货进来时花了多少钱（#359）
+                showReferencePrice={docType === '市场间调货出库'}
               />
             )}
             <InventorySkuSearchSelect
@@ -604,6 +606,7 @@ function DocLotSelect({
   epoch,
   active,
   label,
+  showReferencePrice = false,
 }: {
   locationId: string
   skuId: string
@@ -616,6 +619,11 @@ function DocLotSelect({
   /** 表单是否在用户眼前。不可见时绝不能取数（见 InventoryDocCreateForm 的 visible） */
   active: boolean
   label: string
+  /**
+   * 选中批次后在下拉下方显示黄底「参考进价」（#359）：只读、只作参考，不进提交。
+   * 可见范围沿用 lotRow 的价格档 —— 无档账号拿到 undefined，不渲染。
+   */
+  showReferencePrice?: boolean
 }) {
   // 用 JSON 数组当 key，避免 ('a:b','c') 与 ('a','b:c') 这类分隔符歧义撞进同一个缓存槽。
   // 组件自己的新鲜度 key 含代次（换代即判定过期）；查缓存用的 key 不含代次（在途请求跨代可复用）。
@@ -674,8 +682,9 @@ function DocLotSelect({
   const lots = isCurrent ? loaded.lots : []
   const failed = isCurrent && loaded.failed === true
   const isLoadingLots = Boolean(cacheKey) && !isCurrent
+  const selectedLot = showReferencePrice ? lots.find((lot) => String(lot.id) === value) ?? null : null
 
-  return (
+  const select = (
     <Select
       aria-label={label}
       value={value}
@@ -708,9 +717,21 @@ function DocLotSelect({
             服务端扣减时校验的就是可用量，显示在手量会出现「界面写着可用 30、提交却报库存不足」
             的自相矛盾。接口本来就把这个字段算好返回了，之前只是没用上。
           */}
-          {`${lot.batchNo || '无批号'} · 可用 ${lot.availableQuantity}${lot.expiryDate ? ` · ${formatDate(lot.expiryDate)}` : ''}`}
+          {`${lot.batchNo || '无批号'}${lot.isGift ? '（赠送）' : ''} · 可用 ${lot.availableQuantity}${lot.expiryDate ? ` · ${formatDate(lot.expiryDate)}` : ''}`}
         </option>
       ))}
     </Select>
+  )
+  if (!showReferencePrice) return select
+  // 开了参考价就恒定包一层：若只在选中后才包，select 会换挂载位置被重建，刚选完就丢焦点
+  return (
+    <div className="space-y-1">
+      {select}
+      {selectedLot && selectedLot.marketActualUnitPrice !== undefined && (
+        <div role="note" aria-label={`${label}参考进价`} className="rounded-md bg-[#FFF4C2] px-2 py-1 text-xs text-[#7B5E2B]">
+          参考进价 {selectedLot.marketActualUnitPrice === null || !Number.isFinite(selectedLot.marketActualUnitPrice) ? '—' : selectedLot.marketActualUnitPrice.toFixed(2)}{selectedLot.isGift ? '（赠送批次）' : ''}
+        </div>
+      )}
+    </div>
   )
 }
