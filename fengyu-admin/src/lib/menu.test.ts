@@ -177,6 +177,26 @@ describe('MENU_CONFIG 完整性', () => {
     expect(hasMenuItemAccess(byHref('/data-center/commission-daily'), [...dashboardOnly, 'data_center:staff_commission'])).toBe(true)
   })
 
+  it('顾客频率表：dashboard 与 customer_detail 由两个角色各给一半 → 菜单不可见（与页面 / action 的同角色闸门一致）', () => {
+    type Role = AuthSession['roles'][number]
+    const role = (actions: string[], scopeId: string): Role => ({
+      role: 'manager', scopeId, scopeType: '门店', actions, scopeStoreIds: [scopeId], scopeOrgNodeIds: [scopeId],
+    })
+    const asSession = (roles: Role[]): AuthSession => ({
+      employeeId: 'EMP-1', name: '测试', phone: '', roles,
+      permissions: { actions: [...new Set(roles.flatMap((r) => r.actions ?? []))], scopeStoreIds: roles.map((r) => r.scopeId) },
+    })
+    const labels = (session: AuthSession) =>
+      getVisibleMenuItems(session).flatMap((node) => ('children' in node ? node.children : [node])).map((item) => item.label)
+
+    const split = asSession([role(['data_center:dashboard'], 'S1'), role(['data_center:customer_detail'], 'S2')])
+    expect(labels(split)).not.toContain('顾客频率表')
+    // dashboard 类入口不受影响
+    expect(labels(split)).toContain('销售')
+    const same = asSession([role(['data_center:dashboard', 'data_center:customer_detail'], 'S1')])
+    expect(labels(same)).toContain('顾客频率表')
+  })
+
   it('提成明细高亮员工提成日报（前缀匹配），不误伤其它数据中心子项', () => {
     expect(getMenuItemForPath(MENU_CONFIG, '/data-center/commission-daily/detail')?.href).toBe('/data-center/commission-daily')
     expect(getMenuItemForPath(MENU_CONFIG, '/data-center/customer-frequency')?.href).toBe('/data-center/customer-frequency')

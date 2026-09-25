@@ -21,6 +21,16 @@ vi.mock('@/actions/data-center/daily-overview', () => ({
 vi.mock('@/actions/refunds', () => ({
   exportRefunds: vi.fn(),
 }))
+vi.mock('@/actions/data-center/customer-frequency', () => ({
+  // 缺省返回空结果：「报表视图分发」用例会遍历全部报表视图
+  exportCustomerFrequencyReport: vi.fn(async () => ({
+    rows: [], totals: { visitDays: 0, amount: 0 },
+    params: {
+      scope: { type: 'all' }, searchLabel: '', show: 'all',
+      month: '2026-08', monthLabel: '2026年8月', range: { start: '2026-08-01', end: '2026-08-31' },
+    },
+  })),
+}))
 vi.mock('@/actions/data-center/remaining-cards', () => ({
   // 缺省返回空结果：「报表视图分发」用例会遍历全部报表视图
   exportRemainingCardsReport: vi.fn(async () => ({
@@ -42,6 +52,7 @@ import { exportRefunds } from '@/actions/refunds'
 import { exportRemainingCardsReport } from '@/actions/data-center/remaining-cards'
 import { getDailyOverview } from '@/actions/data-center/daily-overview'
 import { buildDailyOverview } from '@/lib/data-center/daily-overview'
+import { exportCustomerFrequencyReport } from '@/actions/data-center/customer-frequency'
 import {
   DATA_CENTER_VIEW_CONFIG,
   getDataCenterBreakdownConfig,
@@ -592,5 +603,66 @@ describe('日常数据一览表导出（#369）', () => {
     expect(content.sheetName).toBe('经营类型汇总')
     expect(content.columns.map((column) => column.header)).toContain('业绩合计')
     expect(content.columns.map((column) => column.header)).toContain('服务合计')
+  })
+})
+
+describe('数据中心导出 · 顾客频率表', () => {
+  it('report-customer-frequency 走报表取数，不触碰任何旧板块取数函数；日期格拆「到店 / 金额」两列', async () => {
+    vi.clearAllMocks()
+    const day = (visited: boolean, amount: number | null) => ({ visited, amount, consume: null, items: [], stores: [] })
+    vi.mocked(exportCustomerFrequencyReport).mockResolvedValue({
+      rows: [{
+        clientUserId: 'U1', customerName: '张三', phoneMasked: '138****2222', level: '金卡', storeName: '蓝莱店',
+        // 1 日：到店有消费；2 日：到店消费为 0；3 日：只有退款（没到店）
+        days: { 1: day(true, 120), 2: day(true, 0), 3: day(false, -50) },
+        visitDays: 2, amount: 70, consume: 0,
+      }],
+      totals: { visitDays: 2, amount: 70 },
+      params: {
+        scope: { type: 'all' }, searchLabel: '138****5678', show: 'visited',
+        month: '2026-02', monthLabel: '2026年2月', range: { start: '2026-02-01', end: '2026-02-28' },
+      },
+    })
+    const params = { month: '2026-02', show: 'visited', sort: 'amount' }
+    const content = await createExportContent('data-center', { view: 'report-customer-frequency', params })
+
+    expect(exportCustomerFrequencyReport).toHaveBeenCalledWith(params)
+    for (const board of [getSalesBoard, getCustomerBoard, getProductBoard, getEfficiencyBoard]) {
+      expect(board).not.toHaveBeenCalled()
+    }
+    const headers = content.columns.map((column) => column.header)
+    // 4 列顾客信息 + 28 天 × 2 + 2 列汇总；2 月横轴 28 天
+    expect(headers).toHaveLength(4 + 28 * 2 + 2)
+    expect(headers.slice(0, 6)).toEqual(['姓名', '电话', '会员等级', '所属门店', '到店', '金额'])
+    expect(headers.slice(-2)).toEqual(['到店次数', '消费合计'])
+    expect(content.columns[4].group).toEqual({ key: 'day-1', header: '1日' })
+    expect(content.columns.at(-1)?.total).toBe(70)
+    expect(content.columns.at(-2)?.total).toBe(2)
+    expect(content.frozenColumns).toBe(4)
+    expect(content.totalsLabel).toBe('合计')
+    expect(content.meta).toMatchObject({ period: '2026-02-01 ~ 2026-02-28（2026年2月）', scope: '全部' })
+    // 按完整手机号搜索后导出：导出说明里的搜索词是 action 给出的脱敏值
+    expect(content.meta?.extra).toContainEqual({ label: '顾客搜索', value: '138****5678' })
+    expect(JSON.stringify(content.meta)).not.toMatch(/1\d{10}/)
+    const rows: Record<string, unknown>[] = []
+    for await (const row of content.rows) rows.push(row)
+    const values = content.columns.map((column) => column.value(rows[0]))
+    expect(values.slice(0, 4)).toEqual(['张三', '138****2222', '金卡', '蓝莱店'])
+    // 到店有金额：✓ + 数值；到店金额为 0：保留 ✓、金额空；没到店只有退款：到店空、金额负数
+    expect(values.slice(4, 10)).toEqual(['✓', 120, '✓', '', '', -50])
+    expect(values.slice(10, 12)).toEqual(['', ''])
+    expect(values.slice(-2)).toEqual([2, 70])
+    expect(JSON.stringify(values)).not.toMatch(/1\d{10}/)
+  })
+
+  it('缺统计月份 / 格式非法 / 未来月份都直接失败，不按执行当天的默认月出数', async () => {
+    vi.mocked(exportCustomerFrequencyReport).mockClear()
+    for (const params of [{}, { month: '2026-13' }, { month: '2026/08' }, { month: '2099-01' }] as Record<string, string>[]) {
+      await expect(
+        createExportContent('data-center', { view: 'report-customer-frequency', params }),
+        JSON.stringify(params),
+      ).rejects.toThrow('INVALID_PARAMS')
+    }
+    expect(exportCustomerFrequencyReport).not.toHaveBeenCalled()
   })
 })

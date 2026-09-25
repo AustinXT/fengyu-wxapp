@@ -71,6 +71,7 @@ export const DATA_CENTER_REPORT_EXPORT_VIEWS = [
   'report-operating-master',
   'report-remaining-cards',
   'report-daily-overview',
+  'report-customer-frequency',
 ] as const
 
 export type DataCenterReportExportView = (typeof DATA_CENTER_REPORT_EXPORT_VIEWS)[number]
@@ -170,6 +171,7 @@ export const DATA_CENTER_VIEW_REQUIRED_ACTIONS: Record<DataCenterExportView, rea
   'report-operating-master': DATA_CENTER_REPORTS.operatingMaster.requiredActions,
   'report-remaining-cards': DATA_CENTER_REPORTS.remainingCards.requiredActions,
   'report-daily-overview': DATA_CENTER_REPORTS.dailyOverview.requiredActions,
+  'report-customer-frequency': DATA_CENTER_REPORTS.customerFrequency.requiredActions,
 }
 
 export const EXPORT_PERMISSION_ACTIONS = Array.from(
@@ -226,6 +228,7 @@ export function exportJobLabel(
     'report-operating-master': '经营数据主表',
     'report-remaining-cards': '顾客剩余卡项清单',
     'report-daily-overview': '日常数据一览表',
+    'report-customer-frequency': '顾客频率表',
   }
   return viewLabels[payload.view as DataCenterExportView]
 }
