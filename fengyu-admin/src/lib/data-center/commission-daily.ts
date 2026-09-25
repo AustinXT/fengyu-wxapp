@@ -288,7 +288,7 @@ export function encodeCommissionCursor(key: CommissionDetailKey, signature: stri
 
 /** 解析失败 / 签名不符 / 字段不合法一律返回 null（回到第一页），不抛错：URL 可被手改 */
 export function decodeCommissionCursor(raw: string | undefined | null, signature: string): CommissionDetailKey | null {
-  if (!raw || raw.length > 400) return null
+  if (!raw || raw.length > 512) return null
   try {
     const parsed = JSON.parse(fromBase64Url(raw)) as Record<string, unknown>
     if (parsed.s !== signature) return null

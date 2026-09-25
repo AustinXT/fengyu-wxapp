@@ -253,9 +253,9 @@ function toDetailRow(row: DbRow, maskCustomer: boolean): CommissionDetailRow {
     sourceId,
     date: String(row.biz_date ?? ''),
     storeId: String(row.store_id ?? ''),
-    storeName: String(row.store_name ?? row.store_id ?? ''),
+    storeName: String(row.store_name || row.store_id || ''),
     employeeId: String(row.employee_id ?? ''),
-    employeeName: String(row.employee_name ?? row.employee_id ?? ''),
+    employeeName: String(row.employee_name || row.employee_id || ''),
     positionName: row.position_name == null ? '' : String(row.position_name),
     orderId: String(row.order_id ?? ''),
     paymentId: toNullableNumber(row.payment_id),
@@ -298,6 +298,7 @@ function keyOf(row: CommissionDetailRow): CommissionDetailKey {
  * session 已被 withAllPermissions 收窄到「同时持有 dashboard + staff_commission」的角色，但
  * `permissions.actions` 仍是全部角色的并集——拿并集判定，另一条角色（别的门店）的 customer:list
  * 会让本页范围内的顾客姓名也不脱敏，正是 #367 要堵的跨角色拼接。
+ * 近似：按「全部提供本页权限的角色」判定，而不是「覆盖当前所选 scope 的角色」——多角色部分授权时会偏严（多脱敏），方向安全。
  */
 function grantedOnAllRoles(session: AuthSession, action: string): boolean {
   if (session.roles.length === 0) return false
@@ -359,8 +360,8 @@ export const getCommissionDetail = withAllPermissions(
       prevCursor: hasPrev && first ? encodeCommissionCursor(keyOf(first), signature) : null,
       nextCursor: hasNext && last ? encodeCommissionCursor(keyOf(last), signature) : null,
       employeeOptions: rowsOf(optionRows).map((row) => {
-        const name = String(row.name ?? row.employee_id ?? '')
-        const home = row.home_name == null ? '无门店' : String(row.home_name)
+        const name = String(row.name || row.employee_id || '')
+        const home = row.home_name ? String(row.home_name) : '无门店'
         const position = row.position_name ? String(row.position_name) : '无岗位'
         return { employeeId: String(row.employee_id), label: `${home} · ${name}（${position}）` }
       }),
