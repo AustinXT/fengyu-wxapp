@@ -94,6 +94,7 @@ import {
   approveItemCompanyShipmentCancellation,
   approveReturnForRestock,
   cancelSupplyChainPurchaseOrder,
+  createInventoryConversion,
   receiveItemCompanyShipmentInFull,
   receiveStoreAllocationInFull,
   rejectItemCompanyShipmentCancellation,
@@ -160,8 +161,8 @@ describe('办理台表单一致性（#135）', () => {
     expect(source).not.toMatch(/inputMode="decimal"/)
 
     const numberInputs = source.match(/type="number"[^/>]*/g) ?? []
-    // 21 个数值输入分布在 18 行（有的一行多个）
-    expect(numberInputs.length).toBe(21)
+    // 22 个数值输入分布在 19 行（有的一行多个）；#344 转换目标行新增「单价」
+    expect(numberInputs.length).toBe(22)
     for (const attrs of numberInputs) {
       expect(attrs).toMatch(/min="0(\.01)?"/)
       expect(attrs).toMatch(/step="0\.01"/)
@@ -179,7 +180,8 @@ describe('办理台表单一致性（#135）', () => {
     const strict = source.match(/min="0\.01"/g) ?? []
     const loose = source.match(/min="0"/g) ?? []
     expect(strict.length).toBe(9)
-    expect(loose.length).toBe(12)
+    // #344 转换目标「单价」允许 0（赠送转换 / 自填 0 价），走 nonnegativeNumber → min="0"
+    expect(loose.length).toBe(13)
 
     // 抽样两个方向，防止整体计数对了但分配错了
     const store = block('function StoreRequestForm(', 'function ItemCompanyReplenishmentForm(')
@@ -321,8 +323,10 @@ describe('办理台表单一致性（#135）', () => {
     //
     // 55 → 56：#338 的候选单选择器取代 DocPicker（8 处 → 9 处调用），采购来源的多选清单
     // 也改用它、带上了 required，不再是标题里手写的 *。
+    //
+    // 56 → 57：#344 转换拆成来源 / 目标两段，目标行新增必填「单价」（未手改时按来源合计预填）。
     const marked = source.match(/<(?:FormField|InventoryDocCandidatePicker)\s+label=(?:"[^"]*"|\{[^}]*\})\s+required/g) ?? []
-    expect(marked.length).toBe(56)
+    expect(marked.length).toBe(57)
   })
 })
 
@@ -1826,5 +1830,79 @@ describe('采购订单来源多选与一键带出（#338）', () => {
     await waitFor(() => expect(toast.warning).toHaveBeenCalledWith(expect.stringContaining('MHZ-9')))
     await waitFor(() => expect(getInventoryCoreDocsByIds).toHaveBeenLastCalledWith(['MHZ-1']))
     expect(await screen.findByText(/^已选 1 张：MHZ-1$/)).toBeInTheDocument()
+  })
+})
+
+/**
+ * #344 转换表单：来源 / 目标两段 N:M，目标单价按「来源合计 ÷ 目标总数量」预填、可改，
+ * 实时显示来源合计 / 目标合计 / 差额；超出允许误差时提交前拦下（服务端同公式再硬拦截一次）。
+ */
+describe('库存转换两段式表单与成本守恒（#344）', () => {
+  const LOCATIONS: InventoryLocationRow[] = [
+    { locationId: 'HQ', locationType: '总部', name: '品牌总部', orgNodeId: 'HQ', storeId: null, parentLocationId: null, isActive: true },
+  ]
+  const lot = {
+    id: 101, locationId: 'HQ', locationName: '品牌总部', locationType: '总部', skuId: 'SKU-1', skuName: '精华液', specName: null,
+    supplier: null, productSeries: null, batchNo: 'B1', expiryDate: null, isGift: false, quantityOnHand: 30, availableQuantity: 30,
+    supplyChainUnitCost: 10, remark: null, updatedAt: '2026-09-25T00:00:00.000Z',
+  }
+  beforeEach(() => {
+    mockDocs({})
+    vi.mocked(toast.error).mockReset()
+    vi.mocked(createInventoryConversion).mockReset()
+    vi.mocked(listInventoryLotOptions).mockResolvedValue([lot] as never)
+  })
+  const pickers = () => Array.from(document.querySelectorAll<HTMLSelectElement>('[data-sku-picker]'))
+  const numberInputs = () => Array.from(document.querySelectorAll<HTMLInputElement>('input[type="number"]'))
+  const balanceText = () => screen.getByTestId('conversion-balance').textContent ?? ''
+
+  async function fillThirteenToThirteen() {
+    renderPage({ level: 'supply-chain', operation: 'supply-chain-conversion', locations: LOCATIONS })
+    const subject = screen.queryByRole('option', { name: '请选择总部' })?.closest('select')
+    if (subject) fireEvent.change(subject, { target: { value: 'HQ' } })
+    const [sourcePicker, targetPicker] = pickers()
+    fireEvent.change(sourcePicker, { target: { value: 'SKU-1' } })
+    const lotOption = await screen.findByRole('option', { name: /批次 B1/ })
+    fireEvent.change(lotOption.closest('select')!, { target: { value: '101' } })
+    fireEvent.change(targetPicker, { target: { value: 'SKU-2' } })
+    const [sourceQuantity, targetQuantity] = numberInputs()
+    fireEvent.change(sourceQuantity, { target: { value: '13' } })
+    fireEvent.change(targetQuantity, { target: { value: '13' } })
+  }
+
+  it('选好来源批次后显示来源合计，目标单价按合计 ÷ 目标总数量预填', async () => {
+    await fillThirteenToThirteen()
+    expect(screen.getAllByDisplayValue('130.00')).toHaveLength(2) // 来源带出成本 + 目标金额
+    expect(numberInputs()[2]).toHaveValue(10) // 单价预填 130 ÷ 13
+    expect(balanceText()).toMatch(/来源合计 130\.00.*目标合计 130\.00.*差额 0\.00/)
+  })
+
+  it('手改单价超出允许误差：差额标红、提交被拦；恢复预填后按预填价提交', async () => {
+    await fillThirteenToThirteen()
+    fireEvent.change(numberInputs()[2], { target: { value: '11' } })
+    expect(balanceText()).toMatch(/目标合计 143\.00.*差额 13\.00/)
+    fireEvent.submit(screen.getByRole('button', { name: '创建库存转换单' }).closest('form')!)
+    await waitFor(() => expect(vi.mocked(toast.error)).toHaveBeenCalledWith(expect.stringContaining('转换前后成本不守恒')))
+    expect(createInventoryConversion).not.toHaveBeenCalled()
+
+    vi.mocked(createInventoryConversion).mockResolvedValue({ outboundId: 'ZHO-1', inboundId: 'ZHI-1' })
+    fireEvent.click(screen.getByRole('button', { name: '单价恢复预填' }))
+    expect(numberInputs()[2]).toHaveValue(10)
+    fireEvent.submit(screen.getByRole('button', { name: '创建库存转换单' }).closest('form')!)
+    await waitFor(() => expect(createInventoryConversion).toHaveBeenCalledTimes(1))
+    expect(vi.mocked(createInventoryConversion).mock.calls[0][0]).toMatchObject({
+      locationId: 'HQ',
+      sources: [{ sourceLotId: 101, quantity: 13, remark: null }],
+      targets: [{ targetSkuId: 'SKU-2', quantity: 13, unitPrice: 10, targetBatchNo: null, targetExpiryDate: null, remark: null }],
+    })
+  })
+
+  it('来源 / 目标可各自增行（N:M 解耦）', async () => {
+    renderPage({ level: 'supply-chain', operation: 'supply-chain-conversion', locations: LOCATIONS })
+    fireEvent.click(screen.getByRole('button', { name: '添加来源' }))
+    fireEvent.click(screen.getByRole('button', { name: '添加目标' }))
+    fireEvent.click(screen.getByRole('button', { name: '添加目标' }))
+    expect(screen.getAllByText('来源批次')).toHaveLength(2)
+    expect(screen.getAllByText('目标商品')).toHaveLength(3)
   })
 })
