@@ -84,6 +84,8 @@ interface ScopeValue {
   scopeType: 'all' | 'market' | 'store'
   scopeId: string | null
   scopeName: string
+  /** picker 回传的所属市场；写回 defaultScope 供 picker 重建时定位弹窗里的市场 */
+  marketId?: string
   /** 门店组织节点已停用（#400）：整段出「已停用」空态，子页经 query 继承 */
   inactive?: boolean
 }

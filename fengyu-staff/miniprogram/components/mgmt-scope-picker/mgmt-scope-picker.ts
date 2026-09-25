@@ -75,7 +75,15 @@ Component({
     defaultScope(def: Scope) {
       if (!def || this.data.userPicked) return
       const applied = this.data.applied as Scope
-      if (def.scopeType === applied.scopeType && def.scopeId === applied.scopeId && !!def.inactive === !!applied.inactive) return
+      if (def.scopeType === applied.scopeType && def.scopeId === applied.scopeId) {
+        // 同一范围只是启停标记变了（页面据 summary 回包确认）：照抄，不重新校正、不广播。
+        // 若拿缓存的 inactiveStoreIds 重新校正，会把服务端刚确认的停用撤掉 → change → 重新 summary →
+        // 又确认停用 …… 形成请求死循环（#400 评审发现）
+        if (!!def.inactive !== !!applied.inactive) {
+          this.setData({ 'applied.inactive': !!def.inactive, 'current.inactive': !!def.inactive })
+        }
+        return
+      }
       this.setData({ applied: def, current: def })
       if (this.data.optionsLoaded) this._normalizeApplied()
     },
@@ -176,6 +184,7 @@ Component({
           scopeType: nextApplied.scopeType,
           scopeId: nextApplied.scopeId,
           scopeName: nextApplied.scopeName,
+          marketId: nextApplied.marketId,
           inactive: nextApplied.inactive === true,
         })
       }
@@ -281,6 +290,8 @@ Component({
         scopeType: next.scopeType,
         scopeId: next.scopeId,
         scopeName: next.scopeName,
+        // 带上所属市场：门店日后停用、picker 重建时已无法从在营列表反推市场
+        marketId: next.marketId,
         inactive,
         userPicked: true,
       })

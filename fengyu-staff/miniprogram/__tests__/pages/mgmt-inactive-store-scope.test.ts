@@ -333,7 +333,7 @@ describe('scope-picker · 纠正落在停用门店的默认范围', () => {
     await picker.loadOptions()
 
     expect(picker.data.applied).toMatchObject({ scopeType: 'store', scopeId: 'store-lw', scopeName: '九江凤御 · 九江蓝湾店' })
-    expect(picker.events).toEqual([{ name: 'change', detail: { scopeType: 'store', scopeId: 'store-lw', scopeName: '九江凤御 · 九江蓝湾店', inactive: false } }])
+    expect(picker.events).toEqual([{ name: 'change', detail: { scopeType: 'store', scopeId: 'store-lw', scopeName: '九江凤御 · 九江蓝湾店', marketId: 'mkt-jj', inactive: false } }])
   })
 
   test('没有在营门店 → 保留停用门店，标 inactive（触发器显示「（已停用）」）', async () => {
@@ -441,6 +441,22 @@ describe('scope-picker · 纠正落在停用门店的默认范围', () => {
     await picker.loadOptions()
     expect(picker.data.applied).toMatchObject({ scopeId: 'store-zh', inactive: true })
     expect(picker.events).toEqual([])
+  })
+
+  test('会话中门店被停用：页面据 summary 写回 defaultScope.inactive → 只照抄标记，不拿旧选项撤销、不广播（防死循环）', async () => {
+    mocked.mockResolvedValueOnce(options({ inactiveStores: [] }))
+    const picker = pickerWith({ scopeType: 'store', scopeId: 'store-lw', scopeName: '九江蓝湾店' })
+    await picker.loadOptions()
+    picker.events.length = 0 // loadOptions 回填 marketId 的那次广播不算
+    picker.observers.defaultScope.call(picker, { scopeType: 'store', scopeId: 'store-lw', scopeName: '九江蓝湾店', inactive: true })
+    expect(picker.data.applied.inactive).toBe(true)
+    expect(picker.events).toEqual([])
+  })
+
+  test('显式选择的 change 事件带所属市场，供 picker 重建时定位', () => {
+    const picker = pickerWith({ scopeType: 'all', scopeId: null, scopeName: '全部市场' })
+    picker._confirmAndEmit({ scopeType: 'store', marketId: 'mkt-jj', scopeId: 'store-lw', scopeName: '九江凤御 · 九江蓝湾店' })
+    expect(picker.events.at(-1).detail).toMatchObject({ marketId: 'mkt-jj' })
   })
 
   test('只关店、节点在营（不在下拉也不在 inactiveStores）→ 不纠正，保留其历史数据', async () => {
