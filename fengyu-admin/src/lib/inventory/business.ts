@@ -3911,8 +3911,13 @@ export async function receiveSupplyChainPurchaseOrder(
       if (expiryDate && !/^\d{4}-\d{2}-\d{2}$/.test(expiryDate)) {
         throw new ApiError('INVALID_PARAMS', '效期格式应为 YYYY-MM-DD')
       }
-      const standardCost = requiredSupplyChainCost(sku, orderItem.supplyChainUnitCost)
       const unitDiscount = discounts[lineIndex]
+      // 优惠只能扣在采购行的下单价快照上：快照为空时 requiredSupplyChainCost 会回退到商品档案**现价**，
+      // 那就不是这张单的标准进价了，扣完写进批次会把错成本固化下来。无优惠的入库保持原有回退行为。
+      if (unitDiscount > 0 && orderItem.supplyChainUnitCost === null) {
+        throw new ApiError('INVALID_STATE', `采购行缺少下单价快照，不能填单价优惠：${sku.productName}`)
+      }
+      const standardCost = requiredSupplyChainCost(sku, orderItem.supplyChainUnitCost)
       if (nearlyGreater(unitDiscount, standardCost)) {
         throw new ApiError('INVALID_PARAMS', `单价优惠不能大于标准进价：${sku.productName}`)
       }

@@ -2967,7 +2967,8 @@ interface SupplyChainPurchaseReceiptDraftLine {
 function receiptActualCost(line: SupplyChainPurchaseReceiptDraftLine): string {
   if (line.standardCost === null) return '—'
   const discount = line.unitDiscount.trim() === '' ? 0 : nonnegativeNumber(line.unitDiscount)
-  if (discount === null || discount > line.standardCost) return '—'
+  // 与提交校验同判据：非法、超两位小数、大于标准进价都不给预览值
+  if (discount === null || Number(discount.toFixed(2)) !== discount || discount > line.standardCost) return '—'
   return (Math.round((line.standardCost - discount) * 100) / 100).toFixed(2)
 }
 

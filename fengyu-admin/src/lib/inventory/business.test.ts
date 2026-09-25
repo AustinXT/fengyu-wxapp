@@ -1565,6 +1565,59 @@ describe('批号自动生成（#345）', () => {
     expect(lotInserts).toHaveLength(0)
   })
 
+  it('#346 办理权与价格权分在同一主体的两条绑定上不能拼接：填优惠被拒；同一绑定两权兼具放行', async () => {
+    const binding = (actions: string[]) => ({
+      role: `custom_${actions.length}`, scopeId: 'HQ', scopeType: '总部', actions, scopeStoreIds: [], scopeOrgNodeIds: ['HQ'],
+    })
+    const split = {
+      employeeId: 'E-SC4', name: '拆分绑定', phone: '13800000015',
+      roles: [binding(['inventory:supply_chain_operate']), binding(['inventory:stock_list', 'inventory:supply_chain_price_view'])],
+      permissions: { actions: ['inventory:supply_chain_operate', 'inventory:supply_chain_price_view'], scopeStoreIds: [] },
+    } as never
+    const { executor } = mockSupplyChainReceipt()
+    await expect(receiveSupplyChainPurchaseOrder(split, {
+      purchaseOrderId: 'CGD-1', supplyChainLocationId: 'HQ',
+      items: [{ purchaseOrderItemId: 1, quantity: 1, unitDiscount: 10 }],
+    })).rejects.toThrow('PERMISSION_DENIED')
+    expect(executor.mock.calls.some(([query]) => renderSql(query).includes('FROM inventory_doc_items'))).toBe(false)
+
+    const single = { ...(split as object), roles: [binding(['inventory:supply_chain_operate', 'inventory:supply_chain_price_view'])] } as never
+    const { lotInserts } = mockSupplyChainReceipt()
+    await receiveSupplyChainPurchaseOrder(single, {
+      purchaseOrderId: 'CGD-1', supplyChainLocationId: 'HQ',
+      items: [{ purchaseOrderItemId: 1, quantity: 1, unitDiscount: 10 }],
+    })
+    expect(lotInserts[0][12]).toBe('70')
+  })
+
+  it('#346 采购行缺下单价快照时不能填优惠（否则会扣在商品档案现价上）', async () => {
+    const lotInserts: unknown[][] = []
+    const executor = vi.fn(async (query: unknown) => {
+      const rendered = renderSql(query)
+      if (rendered.includes('INSERT INTO inventory_stock_lots')) { lotInserts.push(sqlParams(query)); return [{ id: '7' }] }
+      if (rendered.includes('FROM inventory_doc_links')) return [{ quantity: '0' }]
+      if (rendered.includes('FROM inventory_doc_items')) {
+        return [{ ...storeRequestItemRow(), doc_id: 'CGD-1', market_id: null, supply_chain_unit_cost: null }]
+      }
+      if (rendered.includes('FROM inventory_skus')) return [supplierBoundSkuRow()]
+      if (rendered.includes('FROM inventory_locations')) {
+        return [{ location_id: 'HQ', org_node_id: 'HQ', location_type: '总部', name: '供应链', parent_location_id: null }]
+      }
+      if (rendered.includes('FROM inventory_docs') && rendered.includes('FOR UPDATE')) {
+        return [{ id: 'CGD-1', doc_type: '采购订单', status: '待收货', source_org_node_id: null, target_org_node_id: 'HQ', market_id: null, supplier_id: null, supplier_name: null }]
+      }
+      return []
+    })
+    mockSyncLocationsShortCircuit()
+    vi.mocked(db.execute).mockResolvedValue([] as never)
+    vi.mocked(db.transaction).mockImplementationOnce(async (callback) => callback({ execute: initializedCutoverExecutor(executor) } as never))
+    await expect(receiveSupplyChainPurchaseOrder(SESSION, {
+      purchaseOrderId: 'CGD-1', supplyChainLocationId: 'HQ',
+      items: [{ purchaseOrderItemId: 1, quantity: 1, unitDiscount: 10 }],
+    })).rejects.toThrow('采购行缺少下单价快照，不能填单价优惠')
+    expect(lotInserts).toHaveLength(0)
+  })
+
   it('#346 看不到供应链价格的办理人填优惠：读采购行之前 PERMISSION_DENIED（防探测进价）；不填优惠照常入库', async () => {
     const operatorOnly = {
       employeeId: 'E-SC2', name: '供应链办理员', phone: '13800000013',
