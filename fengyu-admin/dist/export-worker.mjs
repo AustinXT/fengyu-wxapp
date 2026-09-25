@@ -182169,16 +182169,23 @@ var formatPhoneSafe = maskPhone;
 var REMAINING_CARDS_PAGE_SIZES = [20, 50, 100];
 var REMAINING_CARDS_DEFAULT_PAGE_SIZE = 50;
 function parseRemainingCardsParams(raw) {
-  const page = Number.parseInt(raw.page ?? "", 10);
-  const size2 = Number.parseInt(raw.size ?? "", 10);
+  const { page, pageSize } = resolveRemainingCardsPaging(raw.page, Number(raw.size));
   return {
     scope: parseScope({ scope: raw.scope, scopeId: raw.scopeId }),
     q: (raw.q ?? "").trim().slice(0, 50),
     show: raw.show === "remaining" ? "remaining" : "all",
     direction: raw.dir === "asc" ? "asc" : "desc",
-    page: Number.isFinite(page) && page > 0 ? page : 1,
-    pageSize: REMAINING_CARDS_PAGE_SIZES.includes(size2) ? size2 : REMAINING_CARDS_DEFAULT_PAGE_SIZE
+    page,
+    pageSize
   };
+}
+function resolveRemainingCardsPaging(page, pageSize) {
+  return resolvePaging({
+    page,
+    pageSize,
+    defaultPageSize: REMAINING_CARDS_DEFAULT_PAGE_SIZE,
+    allowedPageSizes: [...REMAINING_CARDS_PAGE_SIZES]
+  });
 }
 var UNCATEGORIZED_KEY = "__none__";
 var UNCATEGORIZED = {
@@ -182422,11 +182429,10 @@ var getRemainingCardsReport = withAllPermissions(DATA_CENTER_CUSTOMER_DETAIL_ACT
   const params = parseRemainingCardsParams(raw);
   const { model, rows, asOf } = await loadFiltered(session4, params);
   const pageCount = Math.max(1, Math.ceil(rows.length / params.pageSize));
-  const page = Math.min(params.page, pageCount);
-  const start = (page - 1) * params.pageSize;
+  const { page, offset } = resolveRemainingCardsPaging(Math.min(params.page, pageCount), params.pageSize);
   return {
     columns: model.columns,
-    rows: rows.slice(start, start + params.pageSize).map(toPublicRow),
+    rows: rows.slice(offset, offset + params.pageSize).map(toPublicRow),
     total: rows.length,
     filteredCustomerCount: new Set(rows.map((row) => row.clientUserId)).size,
     filtered: params.q !== "" || params.show === "remaining",
