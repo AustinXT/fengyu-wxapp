@@ -541,7 +541,8 @@ export const getEfficiencyBoard = withPermission(
      *     1. store_id  —— 档案 store_id 空但直挂门店节点时反查该门店；
      *     2. 展示名    —— store_name 空时显示直挂节点名（「品项公司」「养生部」），不留空白列；
      *     3. 可见性锚  —— anchor_market_id = 直挂节点自身（若为市场）或其父节点，交
-     *        orgAnchorScopeSql 判定；品项公司下无门店故仅 admin/总部可见。
+     *        orgAnchorScopeSql 判定；品项公司下无门店：汇总范围仅 admin/总部可见，
+     *        直接授权到品项公司的账号以市场范围可见（#399）。
      */
     const producerCte = sql`
       WITH producer_base AS (

@@ -133,8 +133,8 @@ describe('scope 数据源 · 已停用门店分流（#293）', () => {
     await expect(getDataCenterScopeOptions()).resolves.toEqual({
       topLevel: 'all',
       markets: [
-        { id: 'M1', name: '九江凤御', stores: [{ storeId: 'S1', storeName: '九江蓝湾店' }] },
-        { id: 'M2', name: '自贡凤御', stores: [{ storeId: 'X3', storeName: '只关店未停节点' }] },
+        { id: 'M1', name: '九江凤御', granted: true, stores: [{ storeId: 'S1', storeName: '九江蓝湾店' }] },
+        { id: 'M2', name: '自贡凤御', granted: true, stores: [{ storeId: 'X3', storeName: '只关店未停节点' }] },
       ],
       inactiveStores: [
         { storeId: 'X1', storeName: '九江中辉店', marketId: 'M1' },

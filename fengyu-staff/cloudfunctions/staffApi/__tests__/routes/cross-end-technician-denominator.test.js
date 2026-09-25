@@ -184,8 +184,9 @@ describe('产能技师分母跨端字面量守护（#320）', () => {
     staffAnchorFn = squeeze(
       extractSection(staffSrc, 'function buildTechnicianOrgAnchorScope(', '\n/**'),
     )
+    // #399 起 orgAnchorScopeSql 拆出 isGrantedMarketScope / visibleActiveAnchorSql 两个私有 helper，三者连同抽取
     adminAnchorFn = squeeze(
-      extractSection(adminScopeSrc, 'export function orgAnchorScopeSql(', '\n/**'),
+      extractSection(adminScopeSrc, 'export function orgAnchorScopeSql(', '/**\n * 按市场/按门店明细表'),
     )
     staffActiveFn = squeeze(
       extractSection(
@@ -351,9 +352,21 @@ describe('产能技师分母跨端字面量守护（#320）', () => {
     expect(adminAnchorFn, 'admin 侧 store 分支必须恒假').toMatch(
       /if \(scope\.type === 'store'\) return sql`FALSE`/,
     )
-    expect(adminAnchorFn, 'admin 侧 market 分支必须比锚定市场').toMatch(
-      /if \(scope\.type === 'market'\) return sql`\$\{col\} = \$\{scope\.id\}`/,
+    /**
+     * #399：admin market 分支 = 直接授权（或超管）→ 锚定相等；门店级账号的祖先市场 → 锚定相等 AND 可见在营门店。
+     * staff 侧不需要后一支：staff validateManagementScope 的市场范围只放行 auth.scopeOrgNodeIds（= 直接授权），
+     * 祖先市场根本进不来 —— 两端形态不同、语义一致（见下方 staff validateManagementScope 断言）。
+     */
+    expect(adminAnchorFn, 'admin 侧 market 分支形态漂移').toContain(
+      "if (scope.type === 'market') { if (isGrantedMarketScope(session, scope.id)) return sql`${col} = ${scope.id}` return sql`${col} = ${scope.id} AND ${visibleActiveAnchorSql(session, col)}` }",
     )
+    expect(adminAnchorFn, 'admin 侧「直接授权」判定漂移').toContain(
+      'function isGrantedMarketScope(session: AuthSession, marketId: string): boolean { return isAdminScope(session) || (session.permissions.scopeOrgNodeIds ?? []).includes(marketId) }',
+    )
+    expect(
+      squeeze(readFile(path.resolve(__dirname, '../../utils/scope.js'))),
+      'staff 市场范围必须只放行直接授权（scopeOrgNodeIds），admin 的祖先市场回退才可省',
+    ).toContain("if (scopeType === 'market') { const allowed = auth.scopeOrgNodeIds || []")
     expect(adminAnchorFn, 'admin 侧 all 分支对超管恒真').toMatch(
       /if \(isAdminScope\(session\)\) return sql`TRUE`/,
     )

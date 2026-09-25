@@ -27,6 +27,7 @@ vi.mock('@/lib/auth', () => ({ getSession: mockGetSession }))
 vi.mock('@/lib/permissions', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/permissions')>()),
   expandVisibleMarketIds: vi.fn(async () => ['MKT-A']),
+  expandMarketVisibility: vi.fn(async () => ({ visible: ['MKT-A'], granted: ['MKT-A'] })),
 }))
 // 真 drizzle（pg-proxy 驱动）：db.execute 与 db.select / 事务内查询都生成真实 SQL 并被截获，
 // 不再用替身吞掉 query builder（闸门 2 codex round-3 P2：用 db.select 写的统计查询不能逃过扫描）
@@ -88,11 +89,11 @@ const DROPDOWN_STORE_COLUMNS =
   'select "stores"."store_id", "stores"."store_name", "org_store"."parent_id", "org_store"."is_active" from "stores" inner join "org_nodes" "org_store" on "stores"."org_node_id" = "org_store"."id"'
 const DROPDOWN_SQL = {
   hq: [
-    'select "id", "name" from "org_nodes" where "org_nodes"."type" = $1 order by "org_nodes"."sort_order" asc',
+    'select "id", "name" from "org_nodes" where "org_nodes"."type" = $1 order by "org_nodes"."sort_order" asc, "org_nodes"."name" asc, "org_nodes"."id" asc',
     `${DROPDOWN_STORE_COLUMNS} where "org_store"."type" = $1 order by "stores"."store_name" asc`,
   ],
   market: [
-    'select "id", "name" from "org_nodes" where ("org_nodes"."type" = $1 and "org_nodes"."id" in ($2)) order by "org_nodes"."sort_order" asc',
+    'select "id", "name" from "org_nodes" where ("org_nodes"."type" = $1 and "org_nodes"."id" in ($2)) order by "org_nodes"."sort_order" asc, "org_nodes"."name" asc, "org_nodes"."id" asc',
     `${DROPDOWN_STORE_COLUMNS} where ("org_store"."type" = $1 and "stores"."store_id" in ($2, $3)) order by "stores"."store_name" asc`,
   ],
 }
