@@ -312,6 +312,31 @@ describe('库存单据详情页 · 采购订单市场行（#335）', () => {
     expect(screen.queryByRole('columnheader', { name: '已发货' })).toBeNull()
   })
 
+  it('#346 有金额时：单头显示「入库后实际金额」（Σ各行），进度多一列「已入库金额」；「金额」仍是下单金额', async () => {
+    await renderPage(purchaseOrder({
+      fulfillmentProgress: {
+        kind: '供应链采购收货',
+        items: [
+          // 自用行已入库 4 件按优惠价 700 = 2800，未入库 6 件 × 下单价 800 = 4800 → 7600
+          { itemId: 1, purchasedQuantity: 10, receivedQuantity: 4, outstandingQuantity: 6, receivedAmount: 2800, actualAmount: 7600 },
+          { itemId: 2, purchasedQuantity: 10, receivedQuantity: 3, outstandingQuantity: 7, receivedAmount: 2400, actualAmount: 8000 },
+        ],
+      },
+    } as Partial<InventoryDocDetail>))
+    const label = screen.getByText('入库后实际金额')
+    expect(label.nextElementSibling?.textContent).toBe('15600')
+    const orderAmount = screen.getAllByText('金额').find((element) => element.nextElementSibling?.textContent === '16000')
+    expect(orderAmount).toBeTruthy() // 单头「金额」仍是下单金额
+    expect(cellByHeader('SKU-SC', '已入库金额')).toBe('2800')
+    expect(cellByHeader('SKU-MKT', '已入库金额')).toBe('2400')
+  })
+
+  it('#346 价格被遮蔽（进度不带金额）时不出现「入库后实际金额」与「已入库金额」', async () => {
+    await renderPage(purchaseOrder({ totalAmount: undefined }))
+    expect(screen.queryByText('入库后实际金额')).toBeNull()
+    expect(screen.queryByRole('columnheader', { name: '已入库金额' })).toBeNull()
+  })
+
   it('只有自用行的采购订单不出现市场结算价列', async () => {
     await renderPage(purchaseOrder({
       partiallyReceived: false,

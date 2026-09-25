@@ -232,11 +232,18 @@ try {
     }))
 
   // ════ 阶段 4b：市场行供应链采购入库（#335，分批 2 + 1 + 3，超量被拒；批号留空自动生成 #345）════
+  // #346：第一批填单价优惠 20（实际进价 780），第二批（1 件）优惠 30（770），第三批不填（800）
   const { id: cgdFirstInboundId } = await biz.receiveSupplyChainPurchaseOrder({
     purchaseOrderId: cgdId,
     supplyChainLocationId: HQ_ORG,
-    items: [{ purchaseOrderItemId: cgdItem.id, quantity: 2, expiryDate: '2027-12-31' }],
+    items: [{ purchaseOrderItemId: cgdItem.id, quantity: 2, unitDiscount: 20, expiryDate: '2027-12-31' }],
   })
+  const [cgdFirstInboundItem] = await docItems(cgdFirstInboundId)
+  check('#346 入库明细 标准 800 / 优惠 20 / 实际 780，金额 = 2 × 780',
+    num(cgdFirstInboundItem?.standard_unit_price) === 800 && num(cgdFirstInboundItem?.unit_discount) === 20
+      && num(cgdFirstInboundItem?.actual_unit_price) === 780 && num(cgdFirstInboundItem?.amount) === 1560
+      && num(cgdFirstInboundItem?.supply_chain_unit_cost) === 780,
+    JSON.stringify(cgdFirstInboundItem))
   const cgdPartialRow = (await docs.getInventoryCoreDocById(cgdId))
   const cgdPartialProgress = cgdPartialRow?.fulfillmentProgress
   check('市场行入库 2/6：待收货 + 派生「部分入库」，剩余 4(#335)',
@@ -245,6 +252,10 @@ try {
       && cgdPartialProgress.items[0]?.receivedQuantity === 2
       && cgdPartialProgress.items[0]?.outstandingQuantity === 4,
     JSON.stringify({ status: cgdPartialRow?.status, partial: cgdPartialRow?.partiallyReceived, progress: cgdPartialProgress }))
+  check('#346 部分入库时入库后实际金额 = 已入库 2 × 780 + 未入库 4 × 下单价 800 = 4760；下单金额仍 4800',
+    cgdPartialProgress?.items[0]?.receivedAmount === 1560 && cgdPartialProgress?.items[0]?.actualAmount === 4760
+      && cgdPartialRow?.totalAmount === 4800,
+    JSON.stringify({ progress: cgdPartialProgress?.items[0], total: cgdPartialRow?.totalAmount }))
   await expectThrow('市场行超过剩余量入库被拒(CONFLICT)', /CONFLICT/, () =>
     biz.receiveSupplyChainPurchaseOrder({
       purchaseOrderId: cgdId,
@@ -256,7 +267,7 @@ try {
     biz.receiveSupplyChainPurchaseOrder({
       purchaseOrderId: cgdId,
       supplyChainLocationId: HQ_ORG,
-      items: [{ purchaseOrderItemId: cgdItem.id, quantity: 1, expiryDate: '2027-12-31' }],
+      items: [{ purchaseOrderItemId: cgdItem.id, quantity: 1, unitDiscount: 30, expiryDate: '2027-12-31' }],
     }),
     biz.receiveSupplyChainPurchaseOrder({
       purchaseOrderId: cgdId,
@@ -268,11 +279,21 @@ try {
   // 三次入库各落一个批次（批次键含来源入库单），合计 6 件
   const cgdInboundIds = [cgdFirstInboundId, cgdSecondInboundId, cgdInboundId]
   const mktHqLots = (await locationLots(HQ_ORG, SKU_SUPPLY)).filter((lot) => lot.batch_no !== 'B100')
-  check('市场行入库生成总部批次合计 6 件、成本 800(#335)',
+  check('市场行入库生成总部批次合计 6 件；批次成本按各次实际进价 780 / 770 / 800(#335 #346)',
     mktHqLots.length === 3
       && mktHqLots.reduce((sum, lot) => sum + num(lot.quantity_on_hand), 0) === 6
-      && mktHqLots.every((lot) => num(lot.supply_chain_unit_cost) === 800),
+      && JSON.stringify(mktHqLots.map((lot) => [num(lot.quantity_on_hand), num(lot.supply_chain_unit_cost)]).sort((a, b) => a[1] - b[1]))
+        === JSON.stringify([[1, 770], [2, 780], [3, 800]]),
     JSON.stringify(mktHqLots.map((lot) => [lot.quantity_on_hand, lot.supply_chain_unit_cost])))
+  const skuMaster = await pgQuery(`SELECT supply_chain_purchase_price FROM inventory_skus WHERE sku_id = $1`, [SKU_SUPPLY])
+  check('#346 商品档案供应链采购价不变（仍 800）', num(skuMaster[0]?.supply_chain_purchase_price) === 800,
+    `${skuMaster[0]?.supply_chain_purchase_price}`)
+  const cgdDoneProgress = (await docs.getInventoryCoreDocById(cgdId))?.fulfillmentProgress?.items?.[0]
+  const cgdInboundTotal = (await Promise.all([cgdFirstInboundId, cgdSecondInboundId, cgdInboundId].map((id) => docHeader(id))))
+    .reduce((sum, head) => sum + num(head?.total_amount), 0)
+  check('#346 全部入库后：入库后实际金额 = 各入库单金额之和（1560 + 770 + 2400 = 4730）',
+    cgdDoneProgress?.actualAmount === 4730 && cgdInboundTotal === 4730,
+    JSON.stringify({ progress: cgdDoneProgress, inboundTotal: cgdInboundTotal }))
   const cgdInboundItems = (await Promise.all(cgdInboundIds.map((id) => docItems(id)))).flat()
   const expectedAutoBatchNos = cgdInboundIds.map((id) => `${id}-01`)
   check('批号留空：入库明细与批次按「入库单号-行号」生成，三次（含并发两次）互不相同(#345)',
@@ -741,9 +762,13 @@ try {
   await biz.receiveSupplyChainPurchaseOrder({
     purchaseOrderId: pcPoId,
     supplyChainLocationId: HQ_ORG,
-    items: [{ purchaseOrderItemId: pcPoItem.id, quantity: 1, batchNo: 'PC-1' }],
+    items: [{ purchaseOrderItemId: pcPoItem.id, quantity: 1, unitDiscount: 50, batchNo: 'PC-1' }],
   })
   await biz.cancelSupplyChainPurchaseOrder({ purchaseOrderId: pcPoId, cancellationReason: '供应商短供' })
+  const pcClosedProgress = (await docs.getInventoryCoreDocById(pcPoId))?.fulfillmentProgress?.items?.[0]
+  check('#346 部分入库后关单：入库后实际金额只算已入库 1 × 750（口径 A），未入库 3 件不计',
+    pcClosedProgress?.actualAmount === 750 && pcClosedProgress?.outstandingQuantity === 0,
+    JSON.stringify(pcClosedProgress))
   const pcMbhAfterClose = (await docs.getInventoryCoreDocById(pcMbhId))?.fulfillmentProgress?.items?.[0]
   check('部分入库后关单：汇总行保留已入库 1，原始报货「已采购」保留 1(#335)',
     (await docHeader(pcPoId))?.status === '已取消'
