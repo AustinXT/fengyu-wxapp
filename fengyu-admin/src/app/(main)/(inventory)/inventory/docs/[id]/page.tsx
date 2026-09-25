@@ -87,11 +87,10 @@ export default async function Page({
     : 0
   const shipmentColumnCount = shipmentFulfillment ? 2 : 0
   const itemCompanyRequestColumnCount = itemCompanyRequestFulfillment ? 3 : 0
-  // 采购订单的市场行（#335）：同样经供应链采购入库，另列正常发货量与市场结算价（参考）。
+  // 采购订单的市场行（#335）：同样经供应链采购入库，另列市场结算价（参考）。
+  // 发货自 #336 起直连市场报货单，采购单上不再有「已发货」列。
   const hasPurchaseMarketLine = doc.docType === '采购订单' && doc.items.some((item) => item.marketId)
-  const supplyChainPurchaseColumnCount = supplyChainPurchaseFulfillment
-    ? (hasPurchaseMarketLine ? 3 : 2)
-    : 0
+  const supplyChainPurchaseColumnCount = supplyChainPurchaseFulfillment ? 2 : 0
   // 盘点单：把「数量」当实盘数，额外并排展示账面数与差异。
   // 差异是纯派生值（实盘 − 账面），**前端算、不落库** —— 落库就多一个会漂的数（issue #131 Q2）。
   const isStocktake = isStocktakeDocType(doc.docType)
@@ -295,7 +294,6 @@ export default async function Page({
               {supplyChainPurchaseFulfillment && <>
                 <th className="px-3 py-2 text-right">已入库</th>
                 <th className="px-3 py-2 text-right">待入库</th>
-                {hasPurchaseMarketLine && <th className="px-3 py-2 text-right">已发货</th>}
               </>}
               <th className="px-3 py-2 text-left">原因</th>
             </tr>
@@ -370,9 +368,6 @@ export default async function Page({
                   {supplyChainPurchaseFulfillment && <>
                     <td className="px-3 py-2 text-right">{fmt(supplyChainPurchaseProgress?.receivedQuantity)}</td>
                     <td className="px-3 py-2 text-right">{fmt(supplyChainPurchaseProgress?.outstandingQuantity)}</td>
-                    {hasPurchaseMarketLine && (
-                      <td className="px-3 py-2 text-right">{item.marketId ? fmt(supplyChainPurchaseProgress?.shippedQuantity) : '—'}</td>
-                    )}
                   </>}
                   <td className="px-3 py-2">{fmt(item.reason)}</td>
                 </tr>

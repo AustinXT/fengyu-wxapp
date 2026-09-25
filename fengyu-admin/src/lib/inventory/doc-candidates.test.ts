@@ -204,12 +204,22 @@ describe('候选查询的类型 / 状态 / 剩余量口径', () => {
     expect(text).toContain('COALESCE(cand_item.fulfilled_quantity, 0) < cand_item.quantity')
   })
 
-  it('发货来源：未发量看「采购订单发货」血缘（排已取消目标单），只算有市场归属的行', async () => {
+  it('发货来源（#336）：市场报货单，未发量看「市场报货发货」直连血缘（排已取消目标单）', async () => {
     const { text, params } = await whereOf({ purpose: 'company-shipment-source' })
-    expect(text).toContain('cand_item.market_id IS NOT NULL')
-    expect(text).toContain('cand_link.from_item_id = cand_item.id')
-    expect(text).toContain("cand_link_doc.status <> '已取消'")
-    expect(params).toContain('采购订单发货')
+    expect(params).toContain('市场报货')
+    expect(params).not.toContain('采购订单')
+    expect(text).toContain('shipped_link.from_item_id = cand_item.id')
+    expect(text).toContain("shipped_link.relation_type = '市场报货发货'")
+    expect(text).toContain("shipped_link_doc.status <> '已取消'")
+    // 报货行没有行级 market_id，不能沿用采购单那条「只算市场行」的过滤，否则候选恒为空
+    expect(text).not.toContain('market_id IS NOT NULL')
+    expect(text).not.toContain('采购订单发货')
+  })
+
+  it('发货来源按收货市场（发起端）收窄候选', async () => {
+    const { text, params } = await whereOf({ purpose: 'company-shipment-source', sourceOrgNodeId: 'M1' })
+    expect(text).toMatch(/"inventory_docs"\."source_org_node_id" = \$\d+/)
+    expect(params).toContain('M1')
   })
 
   it('配货来源：未配量看「门店报货配货」血缘', async () => {
@@ -239,10 +249,10 @@ describe('候选查询的类型 / 状态 / 剩余量口径', () => {
     expect(receipt.text).not.toContain('cand_received')
   })
 
-  it('发货来源「显示全部」仍要求至少一条市场行（纯自用采购单无行可发）', async () => {
+  it('发货来源「显示全部」去掉未发量条件（赠送可在正常量发完后单独补）', async () => {
     const { text } = await whereOf({ purpose: 'company-shipment-source', includeExhausted: true })
-    expect(text).toContain('cand_item.market_id IS NOT NULL')
-    expect(text).not.toContain('cand_link')
+    expect(text).not.toContain('EXISTS')
+    expect(text).not.toContain('shipped_link')
   })
 
   it('状态类候选不加剩余量条件（关闭采购作用于整单）', async () => {
@@ -273,6 +283,7 @@ describe('候选查询的检索与分页', () => {
       { purpose: 'market-receipt', keyword: 123 },
       { purpose: 'market-receipt', startDate: ['2026-09-01'] },
       { purpose: 'market-receipt', targetOrgNodeId: { a: 1 } },
+      { purpose: 'company-shipment-source', sourceOrgNodeId: { a: 1 } },
       { purpose: 'market-receipt', startDate: '2026-09-10', endDate: '2026-09-01' },
       { purpose: 'store-allocation-source', includeExhausted: 'true' },
     ]) {

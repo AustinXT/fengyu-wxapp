@@ -579,8 +579,6 @@ export interface InventorySupplyChainPurchaseReceiptProgressItem {
   purchasedQuantity: number
   receivedQuantity: number
   outstandingQuantity: number
-  /** 正常发货量（排除已取消发货单、不含赠送）；无市场归属的行恒为 0。 */
-  shippedQuantity: number
 }
 
 export interface InventorySupplyChainPurchaseReceiptProgress {

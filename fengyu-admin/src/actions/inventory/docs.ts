@@ -106,6 +106,7 @@ export const listInventoryDocCandidates = withPermission(
       keyword: input.keyword,
       startDate: input.startDate,
       endDate: input.endDate,
+      sourceOrgNodeId: input.sourceOrgNodeId,
       targetOrgNodeId: input.targetOrgNodeId,
       includeExhausted: input.includeExhausted,
       page: input.page,
@@ -124,6 +125,7 @@ export const listInventoryDocCandidateIds = withPermission(
       keyword: input.keyword,
       startDate: input.startDate,
       endDate: input.endDate,
+      sourceOrgNodeId: input.sourceOrgNodeId,
       targetOrgNodeId: input.targetOrgNodeId,
     })
   },

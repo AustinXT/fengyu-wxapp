@@ -160,8 +160,8 @@ describe('办理台表单一致性（#135）', () => {
     expect(source).not.toMatch(/inputMode="decimal"/)
 
     const numberInputs = source.match(/type="number"[^/>]*/g) ?? []
-    // 21 个数值输入分布在 18 行（有的一行多个）
-    expect(numberInputs.length).toBe(21)
+    // 19 个数值输入（#336a：品项公司发货表单暂为占位，#336b 上线新表单时回填本计数）
+    expect(numberInputs.length).toBe(19)
     for (const attrs of numberInputs) {
       expect(attrs).toMatch(/min="0(\.01)?"/)
       expect(attrs).toMatch(/step="0\.01"/)
@@ -179,14 +179,15 @@ describe('办理台表单一致性（#135）', () => {
     const strict = source.match(/min="0\.01"/g) ?? []
     const loose = source.match(/min="0"/g) ?? []
     expect(strict.length).toBe(9)
-    expect(loose.length).toBe(12)
+    // （#336a：品项公司发货表单暂为占位，#336b 上线新表单时回填本计数）
+    expect(loose.length).toBe(10)
 
     // 抽样两个方向，防止整体计数对了但分配错了
     const store = block('function StoreRequestForm(', 'function ItemCompanyReplenishmentForm(')
     expect(store).toMatch(/min="0\.01"/)          // 数量走 positiveNumber
     // #194 把「供应链采购订单」并入「采购订单」，原右锚 SupplyChainPurchaseOrderForm 已不存在，
     // 改用紧随其后的 interface 作右锚。
-    const purchase = block('function PurchaseOrderForm(', 'interface ShipmentDraftLine {')
+    const purchase = block('function PurchaseOrderForm(', 'function CompanyShipmentForm(')
     expect(purchase).toMatch(/<FormField label="采购数量">/)
     expect(purchase).toMatch(/min="0"/)
     // 市场报货汇总（#193）同属「至少填一条」语义，也走 min="0"
@@ -210,7 +211,7 @@ describe('办理台表单一致性（#135）', () => {
   it('「请填写至少一条」语义的字段**不**标必填', () => {
     // 采购订单的「采购数量」：submit() 先 .filter(quantity !== null) 再判
     // 「请填写至少一条采购数量」—— 逐行标 * 是误导（单行留空是允许的）。
-    const purchase = block('function PurchaseOrderForm(', 'interface ShipmentDraftLine {')
+    const purchase = block('function PurchaseOrderForm(', 'function CompanyShipmentForm(')
     expect(purchase).toMatch(/<FormField label="采购数量">/)
     expect(purchase).not.toMatch(/<FormField label="采购数量" required/)
 
@@ -221,13 +222,14 @@ describe('办理台表单一致性（#135）', () => {
   })
 
   it('nonnegativeNumber 字段不标必填（空串等于 0，不是漏填）', () => {
-    // 品项公司发货的「正常发货」「赠送数量」都走 nonnegativeNumber，且 submit()
+    // 分院配货的「正常配货」「赠送数量」都走 nonnegativeNumber，且 submit()
     // 先 filter 掉两者之和为 0 的行 —— 单独清空任一个都是合法的。
-    const shipment = block('function CompanyShipmentForm(', 'interface ReceiptProgressLine')
-    expect(shipment).toMatch(/<FormField label="正常发货">/)
-    expect(shipment).not.toMatch(/<FormField label="正常发货" required/)
-    expect(shipment).toMatch(/<FormField label="赠送数量">/)
-    expect(shipment).not.toMatch(/<FormField label="赠送数量" required/)
+    // （#336a：品项公司发货表单暂为占位，#336b 上线新表单时回填本计数）
+    const allocation = block('function StoreAllocationForm(', 'function ReturnForm(')
+    expect(allocation).toMatch(/<FormField label="正常配货">/)
+    expect(allocation).not.toMatch(/<FormField label="正常配货" required/)
+    expect(allocation).toMatch(/<FormField label="赠送数量">/)
+    expect(allocation).not.toMatch(/<FormField label="赠送数量" required/)
   })
 
   it('filter-then-validate 的批次字段不标必填（条件必填）', () => {
@@ -238,7 +240,6 @@ describe('办理台表单一致性（#135）', () => {
     // 标上 * 会逼用户去给不发货的行挑批次，而该 SKU 在该库位可能压根没有批次可挑。
     // 这与「采购数量不该逐行标」是同一类判据，只是发生在批次上。
     for (const [from, to, label] of [
-      ['function CompanyShipmentForm(', 'interface ReceiptProgressLine', '发货批次'],
       ['function StoreAllocationForm(', 'function ReturnForm(', '市场批次'],
     ] as const) {
       const form = block(from, to)
@@ -256,7 +257,8 @@ describe('办理台表单一致性（#135）', () => {
     // 组件单测只测组件自身、INV-11 默认 skip —— 把这 17 处换回 `<Select>` 不会让
     // 任何测试变红，而回退的后果（唯一候选还要手点一次 / 联动被吞）在总部、市场
     // 都只有一个的环境里肉眼难辨。这里钉住接线本身。
-    expect(source.match(/<InventorySubjectSelect/g) ?? []).toHaveLength(17)
+    // （#336a：品项公司发货表单暂为占位，#336b 上线新表单时回填本计数）
+    expect(source.match(/<InventorySubjectSelect/g) ?? []).toHaveLength(16)
 
     // 反向：主体类 state 不得再出现在裸 `<Select value={...}>` 上。
     const subjectStates = [
@@ -296,16 +298,16 @@ describe('办理台表单一致性（#135）', () => {
     // 清单从 5 条减到 4 条。合并后的 `PurchaseOrderForm` 没有单选的来源单，
     // 同一语义写成 `autoSelect={selectedDocIds.length === 0}`（勾了来源就交还单据决定），
     // 所以它不计入 `!doc` 那一组，单独断言。
-    expect(source.match(/autoSelect=\{!doc\}/g) ?? []).toHaveLength(3)
+    // （#336a：品项公司发货表单暂为占位，#336b 上线新表单时回填本计数）
+    expect(source.match(/autoSelect=\{!doc\}/g) ?? []).toHaveLength(2)
 
     for (const [from, to] of [
-      ['function CompanyShipmentForm(', 'interface ReceiptProgressLine'],
       ['function SupplyChainPurchaseReceiptForm(', 'function SupplyChainPurchaseCancelForm('],
       ['function StoreAllocationForm(', 'function ReturnForm('],
     ] as const) {
       expect(block(from, to)).toMatch(/autoSelect=\{!doc\}/)
     }
-    expect(block('function PurchaseOrderForm(', 'interface ShipmentDraftLine {'))
+    expect(block('function PurchaseOrderForm(', 'function CompanyShipmentForm('))
       .toMatch(/autoSelect=\{selectedDocIds\.length === 0\}/)
   })
 
@@ -321,8 +323,10 @@ describe('办理台表单一致性（#135）', () => {
     //
     // 55 → 56：#338 的候选单选择器取代 DocPicker（8 处 → 9 处调用），采购来源的多选清单
     // 也改用它、带上了 required，不再是标题里手写的 *。
+    //
+    // 56 → 53（#336a：品项公司发货表单暂为占位，#336b 上线新表单时回填本计数）：去掉发货总部 / 采购订单 / 发往市场 3 个。
     const marked = source.match(/<(?:FormField|InventoryDocCandidatePicker)\s+label=(?:"[^"]*"|\{[^}]*\})\s+required/g) ?? []
-    expect(marked.length).toBe(56)
+    expect(marked.length).toBe(53)
   })
 })
 
@@ -1390,8 +1394,9 @@ describe('候选单选择改走服务端检索（#338）', () => {
 
   it('每个单选候选调用点都把当前单据交给 current，且用途都在白名单里', () => {
     const calls = source.match(/<InventoryDocCandidatePicker\b[\s\S]*?\/>/g) ?? []
-    // 采购来源（多选）+ 发货、配货、收货（市场/门店共用）、采购入库、关闭采购、撤回申请、撤回审批、退货审批（两级共用）
-    expect(calls.length).toBe(9)
+    // 采购来源（多选）+ 配货、收货（市场/门店共用）、采购入库、关闭采购、撤回申请、撤回审批、退货审批（两级共用）
+    // （#336a：品项公司发货表单暂为占位，#336b 上线新表单时回填本计数）
+    expect(calls.length).toBe(8)
     for (const call of calls) {
       if (call.includes("mode: 'multi'")) continue
       expect(call).toMatch(/current: doc/)
@@ -1633,7 +1638,7 @@ describe('分院配货按 skuIds 精确取当前门店进货价（#339）', () =
 
 /**
  * #335：采购订单的所有行都走供应链采购入库；采购行 fulfilledQuantity 只记入库量，
- * 品项公司发货的剩余可发量改看发货进度（fulfillmentProgress.shippedQuantity）。
+ * 品项公司发货自 #336 起直接引用市场报货单，不再从采购订单出发。
  */
 describe('采购订单市场行走供应链采购入库（#335）', () => {
   beforeEach(async () => {
@@ -1678,24 +1683,6 @@ describe('采购订单市场行走供应链采购入库（#335）', () => {
     expect(screen.getByDisplayValue('6')).toBeInTheDocument()
     // 批号留空由服务端生成（#345），每行批号框都要提示
     expect(screen.getAllByPlaceholderText('留空自动生成')).toHaveLength(2)
-  })
-
-  it('品项公司发货的剩余可发量看发货进度，不看已入库量', async () => {
-    const row = docRow({ id: 'CGD-335', docType: '采购订单', status: '待收货' })
-    vi.mocked(getInventoryCoreDocById).mockResolvedValue({
-      ...docDetail(row),
-      items: [purchaseItem({ id: 2, marketId: 'M1', marketName: '市场甲', quantity: 10, fulfilledQuantity: 4 })],
-      fulfillmentProgress: {
-        kind: '供应链采购收货',
-        items: [{ itemId: 2, purchasedQuantity: 10, receivedQuantity: 4, outstandingQuantity: 6, shippedQuantity: 3 }],
-      },
-    })
-    renderPage({ level: 'supply-chain', operation: 'company-shipment', candidates: [row] })
-    await pickPurchaseOrder(row)
-
-    // 10 − 已发 3 = 7；按旧口径读 fulfilledQuantity（已入库 4）会得到 6
-    expect(await screen.findByDisplayValue('7')).toBeInTheDocument()
-    expect(screen.queryByDisplayValue('6')).not.toBeInTheDocument()
   })
 
   it('候选表格把「待收货 + 已有入库」的采购订单标成「部分入库」', async () => {
