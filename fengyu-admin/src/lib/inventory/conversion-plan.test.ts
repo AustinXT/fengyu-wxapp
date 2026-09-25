@@ -6,6 +6,7 @@ import {
   conversionLineAmount,
   formatConversionAmount,
   summarizeConversion,
+  splitTargetForExactConservation,
   suggestConversionUnitPrice,
   uncoveredConversionTargets,
 } from './conversion-plan'
@@ -25,17 +26,29 @@ describe('库存转换成本守恒（#344）', () => {
     expect(summarizeConversion(sources, [{ quantity: 2, unitPrice: 25 }]).balanced).toBe(true)
   })
 
-  it('除不尽：100 拆 7 件，预填 14.29 的差额落在允许误差内；再多 1 分/件就超出', () => {
+  it('严格 1 分：100 拆 7 件，统一预填 14.29 差 0.03 被拒；拆分补差成 3 件 14.28 + 4 件 14.29 = 100.00', () => {
     const sources = [{ quantity: 1, unitCost: 100 }]
-    const price = suggestConversionUnitPrice(100, 7)!
-    expect(price).toBe(14.29)
-    const ok = summarizeConversion(sources, [{ quantity: 7, unitPrice: price }])
-    expect(ok.difference).toBeCloseTo(0.03, 6)
-    expect(ok.tolerance).toBe(0.03) // 允许误差 = 按预填价的不可避免差额
-    expect(ok.balanced).toBe(true)
-    // 人为改价 14.30 → 差额 0.10，超出 0.03；14.28 → 差 -0.04，比预填更偏离，也拒
-    expect(summarizeConversion(sources, [{ quantity: 7, unitPrice: 14.28 }]).balanced).toBe(false)
-    expect(summarizeConversion(sources, [{ quantity: 7, unitPrice: 14.3 }]).balanced).toBe(false)
+    expect(suggestConversionUnitPrice(100, 7)).toBe(14.29)
+    const prefilled = summarizeConversion(sources, [{ quantity: 7, unitPrice: 14.29 }])
+    expect(prefilled).toMatchObject({ difference: 0.03, tolerance: 0.01, balanced: false })
+    const split = splitTargetForExactConservation(sources, [{ quantity: 7, unitPrice: 14.29 }], 0)
+    expect(split).toEqual({ low: { quantity: 3, unitPrice: 14.28 }, high: { quantity: 4, unitPrice: 14.29 } })
+    expect(summarizeConversion(sources, [split!.low, split!.high!])).toMatchObject({ difference: 0, balanced: true })
+  })
+
+  it('拍板原例：成本 0.03 × 1 万件拆 2 万件，精确单价 0.015 → 1 万件 0.01 + 1 万件 0.02 = 300.00', () => {
+    const sources = [{ quantity: 10000, unitCost: 0.03 }]
+    expect(summarizeConversion(sources, [{ quantity: 20000, unitPrice: 0.02 }]).balanced).toBe(false) // 预填 0.02 差 100 元
+    const split = splitTargetForExactConservation(sources, [{ quantity: 20000, unitPrice: 0.02 }], 0)
+    expect(split).toEqual({ low: { quantity: 10000, unitPrice: 0.01 }, high: { quantity: 10000, unitPrice: 0.02 } })
+  })
+
+  it('拆分补差：能用单一单价守恒时不拆行；其它目标已超过来源合计时返回 null；小数数量按 0.01 拆', () => {
+    expect(splitTargetForExactConservation([{ quantity: 13, unitCost: 30 }], [{ quantity: 13, unitPrice: 0 }], 0))
+      .toEqual({ low: { quantity: 13, unitPrice: 30 }, high: null })
+    expect(splitTargetForExactConservation([{ quantity: 1, unitCost: 10 }], [{ quantity: 1, unitPrice: 20 }, { quantity: 1, unitPrice: 0 }], 1)).toBeNull()
+    const split = splitTargetForExactConservation([{ quantity: 1, unitCost: 1 }], [{ quantity: 0.3, unitPrice: 0 }], 0)!
+    expect(summarizeConversion([{ quantity: 1, unitCost: 1 }], [split.low, ...(split.high ? [split.high] : [])]).difference).toBe(0)
   })
 
   it('一盒(90) 拆三种单件，各自单价自填，只看合计', () => {
@@ -115,18 +128,28 @@ describe('库存转换成本守恒（#344）', () => {
     expect(suggestConversionUnitPrice(100, 0)).toBeNull()
   })
 
-  it('性质：任意来源合计 / 目标数量组合，统一预填单价都落在允许误差内', () => {
-    for (const sourceCents of [1, 99, 100, 3333, 10001, 123457, 999999]) {
-      for (const quantities of [[1], [3], [7], [0.5, 0.5], [12, 13], [1, 1, 1], [0.33, 0.67], [2.5, 3.25, 4]]) {
-        const sourceAmount = sourceCents / 100
-        const total = quantities.reduce((sum, value) => sum + value, 0)
-        const price = suggestConversionUnitPrice(sourceAmount, total)!
-        const balance = summarizeConversion(
-          [{ quantity: 1, unitCost: sourceAmount }],
-          quantities.map((quantity) => ({ quantity, unitPrice: price })),
-        )
-        expect(balance.balanced, `${sourceAmount} → ${quantities.join('+')} @ ${price}`).toBe(true)
-      }
+  it('性质（随机 3000 例）：对任一目标行拆分补差后，目标合计与来源精确合计之差 ≤ 0.01', () => {
+    let seed = 20260925
+    const random = () => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed / 2147483648 }
+    const amount = (max: number) => Math.max(1, Math.floor(random() ** 2 * max)) / 100
+    for (let round = 0; round < 3000; round += 1) {
+      const sources = Array.from({ length: 1 + Math.floor(random() * 3) }, () => ({ quantity: amount(100000), unitCost: amount(50000) }))
+      const sourceTotal = summarizeConversion(sources, []).sourceAmount
+      const integer = random() < 0.5
+      const targets = Array.from({ length: 1 + Math.floor(random() * 3) }, () => ({
+        quantity: integer ? Math.max(1, Math.floor(random() * 500)) : amount(50000),
+        unitPrice: 0,
+      }))
+      // 除被拆行外的目标按预填价，被拆行随机选
+      const suggested = suggestConversionUnitPrice(sourceTotal, targets.reduce((sum, target) => sum + target.quantity, 0)) ?? 0
+      const priced = targets.map((target) => ({ ...target, unitPrice: Math.max(0, suggested - 0.01) }))
+      const index = Math.floor(random() * priced.length)
+      const split = splitTargetForExactConservation(sources, priced, index)
+      if (!split) continue
+      const rows = priced.flatMap((target, targetIndex) => (targetIndex === index ? [split.low, ...(split.high ? [split.high] : [])] : [target]))
+      const balance = summarizeConversion(sources, rows)
+      expect(balance.balanced, `${JSON.stringify(sources)} → ${JSON.stringify(rows)} diff ${balance.difference}`).toBe(true)
+      expect(rows.every((row) => row.quantity > 0 && row.unitPrice >= 0)).toBe(true)
     }
   })
 })

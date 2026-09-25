@@ -78,7 +78,14 @@ import type {
 } from '@/lib/inventory/types'
 import type { InventoryBusinessLevel } from '@/lib/inventory/business-level'
 import { inventoryDocStatusLabel } from '@/lib/inventory/doc-status-label'
-import { allocateConversionLinks, conversionLineAmount, formatConversionAmount, summarizeConversion, uncoveredConversionTargets } from '@/lib/inventory/conversion-plan'
+import {
+  allocateConversionLinks,
+  conversionLineAmount,
+  formatConversionAmount,
+  splitTargetForExactConservation,
+  summarizeConversion,
+  uncoveredConversionTargets,
+} from '@/lib/inventory/conversion-plan'
 import {
   INVENTORY_INBOX_ACTION_STATUS,
   genericOperationId,
@@ -4241,12 +4248,39 @@ function ConversionForm({
     sourceInputs,
     targetQuantities.map((quantity, index) => ({ quantity, unitPrice: targetPrices[index] ?? 0 })),
   )
+  const pricesFilled = targetPrices.every((price) => price !== null)
   const giftFlags = new Set(sources.filter((line) => line.lot).map((line) => line.lot!.isGift))
   const mixedGift = giftFlags.size > 1
   const allGift = giftFlags.size === 1 && giftFlags.has(true)
   // 成本拿不到分两种：价格档遮蔽（字段缺省 = 看不到）与批次本身缺成本（null），服务端都会拒，前端提前说清原因
   const costHidden = sources.some((line) => line.lot !== null && !line.lot.isGift && line.lot.supplyChainUnitCost === undefined)
   const costMissing = sources.some((line) => line.lot !== null && !line.lot.isGift && line.lot.supplyChainUnitCost === null)
+
+  /**
+   * 拆分补差：单价只能到分，统一单价除不尽时（例：300 元拆 2 万件，精确单价 0.015），
+   * 把这一行拆成单价差 1 分的两行，精确补足来源合计（用户 2026-09-25 拍板「严格 1 分 + 一键拆分」）。
+   * 新增行批号留空（自动生成），免得同一手填批号下出现两个成本不同的批次。
+   */
+  function splitTarget(index: number) {
+    const split = splitTargetForExactConservation(
+      sourceInputs,
+      targetQuantities.map((quantity, lineIndex) => ({ quantity, unitPrice: targetPrices[lineIndex] ?? 0 })),
+      index,
+    )
+    if (!split) {
+      toast.error('其它目标的金额已超过来源合计，无法拆分补差')
+      return
+    }
+    setTargets((previous) => {
+      const line = previous[index]
+      const next = [...previous]
+      next[index] = { ...line, quantity: String(split.low.quantity), unitPrice: split.low.unitPrice.toFixed(2) }
+      if (split.high) {
+        next.splice(index + 1, 0, { ...line, batchNo: '', quantity: String(split.high.quantity), unitPrice: split.high.unitPrice.toFixed(2) })
+      }
+      return next
+    })
+  }
 
   async function submit() {
     if (saving) return
@@ -4393,6 +4427,7 @@ function ConversionForm({
               <FormField label="目标效期"><DatePicker value={line.expiryDate} onValueChange={(value) => updateTarget(index, { expiryDate: value })} /></FormField>
               <div className="flex items-end justify-end"><SmallIconButton label="删除目标" onClick={() => setTargets((previous) => previous.length > 1 ? previous.filter((_, lineIndex) => lineIndex !== index) : previous)} disabled={targets.length === 1} /></div>
               <FormField label="目标备注" className="xl:col-span-6"><Input value={line.remark} onChange={(event) => updateTarget(index, { remark: event.target.value })} /></FormField>
+              <div className="flex items-end justify-end"><Button type="button" variant="ghost" size="sm" disabled={!costKnown || !pricesFilled || balance.balanced || quantity === null || targets.length >= CONVERSION_LINES_MAX} onClick={() => splitTarget(index)}>拆分补差</Button></div>
             </div>
           )
         })}
@@ -4400,13 +4435,14 @@ function ConversionForm({
           <Button type="button" variant="ghost" size="sm" disabled={suggestedPrice === null || targets.every((line) => line.unitPrice === null)} onClick={() => setTargets((previous) => previous.map((line) => ({ ...line, unitPrice: null })))}>单价恢复预填</Button>
         </div>
       </div>
-      <div data-testid="conversion-balance" className={`flex flex-wrap items-center gap-x-6 gap-y-1 rounded-[var(--radius)] border px-3 py-2 text-sm ${costKnown && (!balance.balanced || mixedGift) ? 'border-[#D94040] text-[#D94040]' : 'border-[var(--border)]'}`}>
+      <div data-testid="conversion-balance" className={`flex flex-wrap items-center gap-x-6 gap-y-1 rounded-[var(--radius)] border px-3 py-2 text-sm ${(costKnown && pricesFilled && !balance.balanced) || mixedGift ? 'border-[#D94040] text-[#D94040]' : 'border-[var(--border)]'}`}>
         {costKnown ? (
           <>
             <span>来源合计 {formatConversionAmount(balance.sourceAmount)}</span>
             <span>目标合计 {formatConversionAmount(balance.targetAmount)}</span>
             <span>差额 {formatConversionAmount(balance.difference)}</span>
             <span className="text-[var(--muted-foreground)]">允许误差 ±{formatConversionAmount(balance.tolerance)}</span>
+            {pricesFilled && !balance.balanced && <span>单价只能精确到分，除不尽时点目标行的「拆分补差」</span>}
           </>
         ) : costHidden ? (
           <span className="text-[#D94040]">当前账号看不到来源批次的供应链成本，无法核算守恒；库存转换需要本主体的供应链价格查看权限</span>

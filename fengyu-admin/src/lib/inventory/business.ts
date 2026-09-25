@@ -5287,7 +5287,7 @@ function conversionNumber(value: unknown, label: string, allowZero: boolean): nu
 /** 可选文本字段：非字符串（数字、对象）按入参错误拒绝，不让 `text()` 抛 TypeError 变成 500。 */
 function conversionText(value: unknown, label: string): string | null {
   if (value === null || value === undefined) return null
-  if (typeof value !== 'string') throw new ApiError('INVALID_PARAMS', `${label}格式不正确`)
+  if (typeof value !== 'string') throw new ApiError('INVALID_PARAMS', `${label}${/[A-Za-z0-9]$/.test(label) ? ' ' : ''}格式不正确`)
   return text(value)
 }
 

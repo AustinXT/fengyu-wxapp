@@ -90,12 +90,11 @@ function roundDiv(value: bigint, divisor: bigint): bigint {
 }
 
 /**
- * 允许误差 = max(1 分, 所有目标都按统一预填单价时的精确差额)。
+ * 允许误差固定 0.01 元（用户 2026-09-25 拍板「严格 1 分」）。
  *
- * 预填单价 p = ROUND(来源精确合计 ÷ Σ目标数量, 2)。单价只能精确到分，一般做不到分毫不差，
- * 预填产生的差额（≤ 0.005 × Σ目标数量）就是这张单不可避免的舍入误差；手改单价可以更接近守恒，
- * 但不能比预填更偏离 —— 否则就是借舍入改账面成本（例：来源 1 件 0.01 元拆 3 件，
- * 预填 0.00 差 0.01；按 0.01 元填差 0.02，拒绝）。
+ * 单价只能精确到分，统一单价往往做不到分毫不差（例：300 元拆 2 万件，精确单价 0.015），
+ * 这时不放宽容差，而是用 {@link splitTargetForExactConservation} 把某个目标拆成单价差 1 分的两行补足。
+ * 预填单价 p = ROUND(来源精确合计 ÷ Σ目标数量, 2) 只是起点，不保证守恒。
  */
 export function summarizeConversion(
   sources: ConversionSourceCost[],
@@ -105,27 +104,67 @@ export function summarizeConversion(
   const targetExact = targets.reduce((sum, target) => sum + exactAmount(target.quantity, target.unitPrice), ZERO)
   const quantityCents = targets.reduce((sum, target) => sum + toCents(target.quantity), ZERO)
   const suggestedCents = quantityCents > ZERO ? roundDiv(sourceExact, quantityCents) : null
-  const unavoidable = suggestedCents === null ? ZERO : absCents(quantityCents * suggestedCents - sourceExact)
-  const tolerance = unavoidable > MICRO_PER_CENT ? unavoidable : MICRO_PER_CENT
   const roundedSource = sources.reduce((sum, source) => sum + lineAmountCents(source.quantity, source.unitCost), ZERO)
   const roundedTarget = targets.reduce((sum, target) => sum + lineAmountCents(target.quantity, target.unitPrice), ZERO)
   return {
     sourceAmount: microToYuan(sourceExact),
     targetAmount: microToYuan(targetExact),
     difference: microToYuan(targetExact - sourceExact),
-    tolerance: microToYuan(tolerance),
-    balanced: absCents(targetExact - sourceExact) <= tolerance,
+    tolerance: microToYuan(MICRO_PER_CENT),
+    balanced: absCents(targetExact - sourceExact) <= MICRO_PER_CENT,
     suggestedUnitPrice: suggestedCents === null ? null : centsToYuan(suggestedCents),
     exceedsAmountLimit: roundedSource > AMOUNT_LIMIT_CENTS || roundedTarget > AMOUNT_LIMIT_CENTS,
   }
 }
 
-/** 目标单价预填 = ROUND(来源合计 ÷ Σ目标数量, 2)；目标数量为 0 时无从预填。 */
+export interface ConversionTargetSplit {
+  /** 保留在原行的数量与单价 */
+  low: ConversionTargetPrice
+  /** 需要新增的一行（单价高 1 分）；恰好能用单一单价守恒时为 null */
+  high: ConversionTargetPrice | null
+}
+
+/**
+ * 「拆分补差」：保持其它目标行不动，把第 `index` 个目标拆成单价 p / p+0.01 的两行，使目标合计与来源合计之差 ≤ 0.01。
+ *
+ * 余额 R = 来源精确合计 − 其它目标精确合计，p = ⌊R ÷ 该行数量⌋（分），剩下的差额由若干数量按 p+0.01 补上。
+ * 数量是整数时按整件拆（不会拆出 0.33 套），残差 < 0.005 元；否则按 0.01 拆，精确到万分之一元。
+ * R < 0（其它目标已超过来源合计）或该行数量为 0 时无法拆分，返回 null。
+ */
+export function splitTargetForExactConservation(
+  sources: ConversionSourceCost[],
+  targets: ConversionTargetPrice[],
+  index: number,
+): ConversionTargetSplit | null {
+  const target = targets[index]
+  if (!target) return null
+  const quantityCents = toCents(target.quantity)
+  if (quantityCents <= ZERO) return null
+  const sourceExact = sources.reduce((sum, source) => sum + exactAmount(source.quantity, source.unitCost), ZERO)
+  const othersExact = targets.reduce((sum, other, otherIndex) => (
+    otherIndex === index ? sum : sum + exactAmount(other.quantity, other.unitPrice)
+  ), ZERO)
+  const remaining = sourceExact - othersExact
+  if (remaining < ZERO) return null
+  const lowCents = remaining / quantityCents
+  const shortfall = remaining - quantityCents * lowCents // 单位：万分之一元；每 0.01 数量加价 1 分补 1
+  // 整数件按整件拆：每件加价 1 分补 100
+  const step = quantityCents % HUNDRED === ZERO ? HUNDRED : ONE
+  let highCents = roundDiv(shortfall, step) * step
+  if (highCents >= quantityCents) highCents = quantityCents
+  if (highCents === ZERO) return { low: { quantity: target.quantity, unitPrice: centsToYuan(lowCents) }, high: null }
+  if (highCents === quantityCents) return { low: { quantity: target.quantity, unitPrice: centsToYuan(lowCents + ONE) }, high: null }
+  return {
+    low: { quantity: centsToYuan(quantityCents - highCents), unitPrice: centsToYuan(lowCents) },
+    high: { quantity: centsToYuan(highCents), unitPrice: centsToYuan(lowCents + ONE) },
+  }
+}
+
+/** 目标单价预填 = ROUND(来源合计 ÷ Σ目标数量, 2)；来源合计按精确值（最多 4 位小数）参与，不先取整分。 */
 export function suggestConversionUnitPrice(sourceAmount: number, targetQuantityTotal: number): number | null {
-  return summarizeConversion(
-    [{ quantity: 1, unitCost: sourceAmount }],
-    [{ quantity: targetQuantityTotal, unitPrice: 0 }],
-  ).suggestedUnitPrice
+  const quantityCents = toCents(targetQuantityTotal)
+  if (quantityCents <= ZERO) return null
+  return centsToYuan(roundDiv(BigInt(Math.round(sourceAmount * 10000)), quantityCents))
 }
 
 /** 金额展示：整分给两位小数，不足一分（精确值）给到四位，免得「差额 0.01、允许 ±0.01」却被拒。 */

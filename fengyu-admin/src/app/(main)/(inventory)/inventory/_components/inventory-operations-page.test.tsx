@@ -1956,6 +1956,27 @@ describe('库存转换两段式表单与成本守恒（#344）', () => {
     expect(createInventoryConversion).not.toHaveBeenCalled()
   })
 
+  it('严格 1 分：100 元拆 7 件预填 14.29 差 0.03 标红；点「拆分补差」拆成 3 × 14.28 + 4 × 14.29 后按两行提交', async () => {
+    vi.mocked(listInventoryLotOptions).mockResolvedValue([{ ...lot, supplyChainUnitCost: 100 }] as never)
+    await fillThirteenToThirteen()
+    fireEvent.change(numberInputs()[0], { target: { value: '1' } })
+    fireEvent.change(numberInputs()[1], { target: { value: '7' } })
+    expect(numberInputs()[2]).toHaveValue(14.29)
+    expect(balanceText()).toMatch(/差额 0\.03.*允许误差 ±0\.01.*拆分补差/)
+    fireEvent.click(screen.getByRole('button', { name: '拆分补差' }))
+    await waitFor(() => expect(screen.getAllByRole('button', { name: '拆分补差' })).toHaveLength(2))
+    const values = numberInputs().map((input) => input.value)
+    expect(values.slice(1)).toEqual(['3', '14.28', '4', '14.29'])
+    expect(balanceText()).toMatch(/差额 0\.00/)
+    vi.mocked(createInventoryConversion).mockResolvedValue({ outboundId: 'ZHO-1', inboundId: 'ZHI-1' })
+    fireEvent.submit(screen.getByRole('button', { name: '创建库存转换单' }).closest('form')!)
+    await waitFor(() => expect(createInventoryConversion).toHaveBeenCalledTimes(1))
+    expect(vi.mocked(createInventoryConversion).mock.calls[0][0].targets).toMatchObject([
+      { targetSkuId: 'SKU-2', quantity: 3, unitPrice: 14.28, targetBatchNo: null },
+      { targetSkuId: 'SKU-2', quantity: 4, unitPrice: 14.29, targetBatchNo: null },
+    ])
+  })
+
   it('来源 / 目标可各自增行（N:M 解耦）', async () => {
     renderPage({ level: 'supply-chain', operation: 'supply-chain-conversion', locations: LOCATIONS })
     fireEvent.click(screen.getByRole('button', { name: '添加来源' }))

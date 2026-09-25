@@ -1648,14 +1648,20 @@ describe('库存转换多对多与成本守恒（#344）', () => {
     })).rejects.toThrow(/INVALID_PARAMS.*成本不守恒.*来源合计 390\.00.*目标合计 403\.00/)
   })
 
-  it('分位误差内放行：100 拆 7 件按 14.29', async () => {
+  it('严格 1 分：100 拆 7 件统一按 14.29（差 0.03）被拒；拆分补差 3 件 14.28 + 4 件 14.29 放行', async () => {
+    fakeDb([{ id: 101, sku_id: 'SKU-A', supply_chain_unit_cost: '100' }])
+    await expect(createInventoryConversion(SESSION, {
+      locationId: 'HQ',
+      sources: [{ sourceLotId: 101, quantity: 1 }],
+      targets: [{ targetSkuId: 'SKU-X', quantity: 7, unitPrice: 14.29 }],
+    })).rejects.toThrow(/成本不守恒.*差额 0\.03 超出允许误差 0\.01/)
     const fake = fakeDb([{ id: 101, sku_id: 'SKU-A', supply_chain_unit_cost: '100' }])
     await createInventoryConversion(SESSION, {
       locationId: 'HQ',
       sources: [{ sourceLotId: 101, quantity: 1 }],
-      targets: [{ targetSkuId: 'SKU-X', quantity: 7, unitPrice: 14.29 }],
+      targets: [{ targetSkuId: 'SKU-X', quantity: 3, unitPrice: 14.28 }, { targetSkuId: 'SKU-X', quantity: 4, unitPrice: 14.29 }],
     })
-    expect(fake.newLots()[0]).toMatchObject({ quantity_on_hand: 7, supply_chain_unit_cost: '14.29' })
+    expect(fake.newLots().map((lot) => [lot.quantity_on_hand, lot.supply_chain_unit_cost])).toEqual([[3, '14.28'], [4, '14.29']])
   })
 
   it('赠送与非赠送批次混放被拒', async () => {
@@ -1731,7 +1737,7 @@ describe('库存转换多对多与成本守恒（#344）', () => {
     ['来源批次 id 为数组', { sources: [{ sourceLotId: [101], quantity: 1 }], targets: [{ targetSkuId: 'SKU-X', quantity: 1, unitPrice: 0 }] }, '请选择转换来源批次'],
     ['来源批次 id 为十六进制串', { sources: [{ sourceLotId: '0x65', quantity: 1 }], targets: [{ targetSkuId: 'SKU-X', quantity: 1, unitPrice: 0 }] }, '请选择转换来源批次'],
     ['来源明细为 null', { sources: [null], targets: [{ targetSkuId: 'SKU-X', quantity: 1, unitPrice: 1 }] }, '库存转换来源明细格式不正确'],
-    ['目标 SKU 非字符串', { sources: [{ sourceLotId: 101, quantity: 1 }], targets: [{ targetSkuId: 123, quantity: 1, unitPrice: 1 }] }, '转换目标 SKU格式不正确'],
+    ['目标 SKU 非字符串', { sources: [{ sourceLotId: 101, quantity: 1 }], targets: [{ targetSkuId: 123, quantity: 1, unitPrice: 1 }] }, '转换目标 SKU 格式不正确'],
     ['来源数量太少分不到每个目标', { sources: [{ sourceLotId: 101, quantity: 0.01 }], targets: [{ targetSkuId: 'SKU-X', quantity: 1, unitPrice: 0 }, { targetSkuId: 'SKU-Y', quantity: 1, unitPrice: 0 }] }, '无法分摊到每个目标行'],
     ['目标数量合计超上界', { sources: [{ sourceLotId: 101, quantity: 1 }], targets: [{ targetSkuId: 'SKU-X', quantity: 9999999999, unitPrice: 0 }, { targetSkuId: 'SKU-Y', quantity: 9999999999, unitPrice: 0 }] }, '目标数量合计不能超过'],
     ['单头备注非字符串', { remark: 123, sources: [{ sourceLotId: 101, quantity: 1 }], targets: [{ targetSkuId: 'SKU-X', quantity: 1, unitPrice: 0 }] }, '备注格式不正确'],
