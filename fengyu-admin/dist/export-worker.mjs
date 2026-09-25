@@ -182928,7 +182928,7 @@ function keyOf(row) {
 function grantedOnAllRoles(session4, action) {
   if (session4.roles.length === 0)
     return false;
-  return session4.roles.every((role) => hasUiCapability(role.actions ?? session4.permissions.actions, action));
+  return session4.roles.every((role) => role.actions ? hasUiCapability(role.actions, action) : false);
 }
 function shouldMaskCustomer(session4) {
   return !grantedOnAllRoles(session4, "customer:list");
