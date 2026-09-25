@@ -34,7 +34,7 @@ describe('经营数据主表列结构（对照《经营数据主表.xlsx》凤�
     expect(keys.slice(0, 2)).toEqual(['marketName', 'storeName'])
   })
 
-  it('分组跨度 E–I / J–M / N–R / S–Y，标题照抄模板 E2/J2/N2/S2 全文，四组各一种底色；B–D 上方留空', () => {
+  it('分组跨度 E–I / J–M / N–R / S–Y，标题照抄模板 E2/J2/N2/S2 全文（E2 的会员标准行按 #373 拍板改写），四组各一种底色；B–D 上方留空', () => {
     const layout = buildMatrixHeaderLayout(OPERATING_MASTER_COLUMNS)
     const groups = layout.rows[0].map((cell) => ({
       header: OPERATING_MASTER_COLUMNS[cell.firstLeafIndex].group?.header,
@@ -43,7 +43,7 @@ describe('经营数据主表列结构（对照《经营数据主表.xlsx》凤�
     }))
     expect(groups.map(({ from, span }) => `${from}+${span}`)).toEqual(['B+2', 'D+1', 'E+5', 'J+4', 'N+5', 'S+7'])
     expect(groups.slice(0, 2).map((group) => group.header)).toEqual(['', ''])
-    expect(groups[2].header).toBe('保有会员（售前不算）\n会员标准：单笔订单≥1990元(购买疗程有余卡顾客)\n当月回店1次的人头目标：80%\n当月回店人头到店2次的目标：60%')
+    expect(groups[2].header).toBe('保有会员（售前不算）\n会员标准：近90天有到店的会员（到店状态为保有会员）\n当月回店1次的人头目标：80%\n当月回店人头到店2次的目标：60%')
     expect(groups[3].header).toBe('被经营顾客目标(拆分季度/月度)\n核算标准：消费≥1990算人数\n一季度目标:20%-30%，二季度目标:50%-60%\n三季度目标:70%-80%，四季度目标:100%完成')
     expect(groups[4].header).toBe('销售业绩目标')
     expect(groups[5].header).toBe('客流及客耗\n美容师:3人/250客流 4人/300客量 5人/400客流\n美容师消耗：每天1000元\n客流目标：售前20%  售后80%')

@@ -182224,7 +182224,7 @@ var BLANK_GROUP = { key: "blank", header: "" };
 var RETAINED_GROUP = {
   key: "retained",
   header: `保有会员（售前不算）
-会员标准：单笔订单≥1990元(购买疗程有余卡顾客)
+会员标准：近90天有到店的会员（到店状态为保有会员）
 当月回店1次的人头目标：80%
 当月回店人头到店2次的目标：60%`,
   color: "#EAF2FB"

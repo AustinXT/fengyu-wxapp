@@ -80,7 +80,8 @@ const BLANK_GROUP: MatrixColumnGroup = { key: 'blank', header: '' }
 
 const RETAINED_GROUP: MatrixColumnGroup = {
   key: 'retained',
-  header: '保有会员（售前不算）\n会员标准：单笔订单≥1990元(购买疗程有余卡顾客)\n当月回店1次的人头目标：80%\n当月回店人头到店2次的目标：60%',
+  // 第 2 行按 #373 拍板改写（模板原文「单笔订单≥1990元(购买疗程有余卡顾客)」与取数口径不符），其余照抄模板
+  header: '保有会员（售前不算）\n会员标准：近90天有到店的会员（到店状态为保有会员）\n当月回店1次的人头目标：80%\n当月回店人头到店2次的目标：60%',
   color: '#EAF2FB',
 }
 const MANAGED_GROUP: MatrixColumnGroup = {
