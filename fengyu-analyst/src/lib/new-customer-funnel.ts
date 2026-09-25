@@ -2,7 +2,8 @@ import "server-only"
 
 import { sql, type SQL } from "drizzle-orm"
 import { db } from "@/db"
-import { analystScopeCacheKey, scopeFilterSql, type AnalystScope } from "@/lib/analyst-scope"
+import { analystScopeCacheKey, scopeFilterSql, scopeRangeSql, type AnalystScope } from "@/lib/analyst-scope"
+import { activeStoreCondition } from "@/lib/store-status"
 import type { AuthSession } from "@/lib/types"
 import { AsyncTtlCache } from "@/lib/async-ttl-cache"
 import { logAnalystDataLoad } from "@/lib/performance-log"
@@ -167,7 +168,9 @@ function mapEntryRows(rows: unknown): NewCustomerFunnelEntry[] {
 async function queryFunnelEntries(session: AuthSession, scope: AnalystScope): Promise<NewCustomerFunnelEntry[]> {
   const key = analystScopeCacheKey(session, scope)
   return entryCache.getOrLoad(key, async () => {
-    const firstOrderScope = scopeFilterSql(session, scope, "so.store_id")
+    // 首单判定用全历史（#421）：停用门店的单也参与「是不是第一单」，归属门店在营另在 entries 里判
+    const firstOrderScope = scopeRangeSql(session, scope, "so.store_id")
+    const firstOrderStoreActive = activeStoreCondition(sql.raw("fo.store_id"))
     const transferScope = scopeFilterSql(session, scope, "c.bound_store_id")
     const serviceScope = scopeFilterSql(session, scope, "svc.store_id")
     const memberAmountScope = scopeFilterSql(session, scope, "mo.store_id")
@@ -221,7 +224,7 @@ async function queryFunnelEntries(session: AuthSession, scope: AnalystScope): Pr
       LEFT JOIN org_nodes bound_market ON bound_market.id = bound_store_node.parent_id
       WHERE (
         (c.customer_source::text = ${TRANSFER_SOURCE} AND ${transferScope})
-        OR (c.customer_source::text IS DISTINCT FROM ${TRANSFER_SOURCE} AND fo.client_user_id IS NOT NULL)
+        OR (c.customer_source::text IS DISTINCT FROM ${TRANSFER_SOURCE} AND fo.client_user_id IS NOT NULL AND ${firstOrderStoreActive})
       )
         AND (CASE WHEN c.customer_source::text = ${TRANSFER_SOURCE} THEN c.created_at ELSE fo.order_at END) IS NOT NULL
     ),

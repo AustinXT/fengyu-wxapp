@@ -105,9 +105,13 @@ describe('门店在营判定跨端字面量守护（#400）', () => {
     const scope = read(path.join(ANALYST, 'lib/analyst-scope.ts'))
     expect(scope).toContain('import { activeStoreCondition } from "./store-status"')
     const filter = squeeze(extractSection(scope, 'export function scopeFilterSql(', '\n}\n'))
-    expect(filter).toContain('const parts: SQL[] = [activeStoreCondition(col)]')
-    expect(filter).toContain('return sql.join(parts, sql` AND `)')
+    expect(filter).toContain('if (!range) return sql`FALSE`')
+    expect(filter).toContain('return sql.join([activeStoreCondition(range.col), ...range.parts], sql` AND `)')
     expect(filter).not.toMatch(/sql`TRUE`/)
+    // 不含在营的 scopeRangeSql 只许出现在新客首单 / 复购首次进入两处基线（#421 拍板：首次判定用全历史）
+    const rangeUsers = ['lib/repurchase.ts', 'lib/penetration.ts', 'lib/new-customer-funnel.ts']
+      .filter((f) => read(path.join(ANALYST, f)).includes('scopeRangeSql('))
+    expect(rangeUsers).toEqual(['lib/repurchase.ts', 'lib/new-customer-funnel.ts'])
     const options = squeeze(extractSection(scope, 'export async function getAnalystScopeOptions(', '\n}\n'))
     expect(options).toContain('eq(storeNode.type, "门店"), eq(storeNode.isActive, true),')
     expect(scope).not.toMatch(/is_closed|isClosed/)

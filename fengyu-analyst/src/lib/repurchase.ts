@@ -2,7 +2,8 @@ import "server-only"
 
 import { sql, type SQL } from "drizzle-orm"
 import { db } from "@/db"
-import { analystScopeCacheKey, scopeFilterSql, type AnalystScope } from "@/lib/analyst-scope"
+import { analystScopeCacheKey, scopeFilterSql, scopeRangeSql, type AnalystScope } from "@/lib/analyst-scope"
+import { activeStoreCondition } from "@/lib/store-status"
 import { getMemberThreshold } from "@/lib/member-threshold"
 import type { AuthSession } from "@/lib/types"
 import { bucketCascadeOptions, type CascadeOption } from "./cascade-tree"
@@ -228,13 +229,16 @@ function previousYearFilters(filters: RepurchaseFilters): RepurchaseFilters | nu
   return filters.year ? { ...filters, year: filters.year - 1 } : null
 }
 
-function buildBaseConditions(session: AuthSession, scope: AnalystScope, filters: RepurchaseFilters): SQL {
+/**
+ * @param storeScope 门店条件：首次进入基线传 `scopeRangeSql`（全历史，#421），筛选项目录传 `scopeFilterSql`（只列在营门店）
+ */
+function buildBaseConditions(storeScope: SQL, filters: RepurchaseFilters): SQL {
   const productKindExpr = sql`pc.product_kind`
   const categoryNameExpr = sql`pc.category_name`
   const purchaseAtExpr = sql`COALESCE(so.sale_order_datetime, so.paid_at)`
 
   const conditions: SQL[] = [
-    scopeFilterSql(session, scope, "so.store_id"),
+    storeScope,
     // 寄存单承载 WorkFine 历史持卡品项及历史实收，只参与首次进入基线。
     sql`so.sale_order_type IN ('销售单', '转换单', '寄存单')`,
     sql`so.status NOT IN ('已关闭', '已作废', '未审核', '待审批', '支付失败')`,
@@ -280,7 +284,8 @@ async function queryRepurchaseEntries(
     threshold,
   })
   return rowCache.getOrLoad(key, async () => {
-    const whereSql = buildBaseConditions(session, scope, filters)
+    // 首次进入判定用全历史（#421）：停用门店的单也参与基线；复购达标日与归属门店的在营过滤在下面另叠
+    const whereSql = buildBaseConditions(scopeRangeSql(session, scope, "so.store_id"), filters)
     const productKindExpr = sql`pc.product_kind`
     const categoryNameExpr = sql`pc.category_name`
     const marketExpr = sql`COALESCE(NULLIF(so.market_name, ''), market_node.name, '')`
@@ -359,6 +364,7 @@ async function queryRepurchaseEntries(
       SELECT *
       FROM daily_agg
       WHERE repurchase_day_amount >= ${threshold}
+        AND ${activeStoreCondition(sql.raw("store_id"))}
     ),
     first_entry AS (
       SELECT
@@ -395,8 +401,8 @@ async function queryRepurchaseEntries(
       q.category_name AS "categoryName",
       CONCAT(q.product_kind, ' / ', q.category_name) AS "category",
       f.first_date AS "firstDate",
-      (ARRAY_AGG(q.store ORDER BY q.sale_date, q.min_date))[1] AS "store",
-      (ARRAY_AGG(q.market ORDER BY q.sale_date, q.min_date))[1] AS "market",
+      (ARRAY_AGG(q.store ORDER BY q.sale_date, q.min_date, q.store_id))[1] AS "store",
+      (ARRAY_AGG(q.market ORDER BY q.sale_date, q.min_date, q.store_id))[1] AS "market",
       f.repurchased AS "repurchased"
     FROM qualified_days q
     JOIN repurchase_flags f
@@ -404,6 +410,7 @@ async function queryRepurchaseEntries(
      AND f.product_kind = q.product_kind
      AND f.category_name = q.category_name
     GROUP BY q.client_user_id, q.customer_code, q.product_kind, q.category_name, f.first_date, f.repurchased
+    HAVING ${activeStoreCondition(sql`(ARRAY_AGG(q.store_id ORDER BY q.sale_date, q.min_date, q.store_id))[1]`)}
     ORDER BY f.first_date DESC, q.product_kind, q.category_name
     `)
     return mapEntryRows(rows)
@@ -566,7 +573,7 @@ export async function getRepurchaseDashboard(
 async function queryRepurchaseCatalog(session: AuthSession, scope: AnalystScope): Promise<RepurchaseCatalogRow[]> {
   const key = analystScopeCacheKey(session, scope)
   return catalogCache.getOrLoad(key, async () => {
-    const whereSql = buildBaseConditions(session, scope, {})
+    const whereSql = buildBaseConditions(scopeFilterSql(session, scope, "so.store_id"), {})
     const purchaseAtExpr = sql`COALESCE(so.sale_order_datetime, so.paid_at)`
     const rows = await db.execute<{ year: unknown; productKind: unknown; categoryName: unknown }>(sql`
       SELECT DISTINCT

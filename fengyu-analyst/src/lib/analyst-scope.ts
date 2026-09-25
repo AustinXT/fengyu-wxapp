@@ -251,21 +251,52 @@ export function validateAnalystScopeWithOptions(
 
 const VALID_COLUMN_NAME = /^[a-zA-Z_][a-zA-Z0-9_.]*$/
 
+/**
+ * 统计口径的门店过滤：在营门店（#421，跟随数据中心 #401）AND 账号权限 AND 所选范围。
+ * 所有「计入哪些数据」的条件都走它；只有「首次」基线（新客首单 / 复购首次进入）走 `scopeRangeSql`。
+ */
 export function scopeFilterSql(
   session: AuthSession,
   scope: AnalystScope,
   storeCol = "so.store_id",
 ): SQL {
+  const range = scopeRangeParts(session, scope, storeCol)
+  if (!range) return sql`FALSE`
+  // 统计始终排除当前已停用的门店；直接构造停用门店 URL 也只能得到零数据。
+  return sql.join([activeStoreCondition(range.col), ...range.parts], sql` AND `)
+}
+
+/**
+ * 只含账号权限 + 所选范围、**不含在营过滤**的门店条件，仅供「首次」基线使用（#421 拍板：首单判定用全历史）。
+ *
+ * 停用门店的历史单仍参与判定「是不是第一次」，否则在停用门店买过的老顾客换到在营门店后会被误判成新客 /
+ * 首次进入；调用方必须在归属门店上另叠 `activeStoreCondition`，停用门店的顾客才不会出现在结果里。
+ */
+export function scopeRangeSql(
+  session: AuthSession,
+  scope: AnalystScope,
+  storeCol = "so.store_id",
+): SQL {
+  const range = scopeRangeParts(session, scope, storeCol)
+  if (!range) return sql`FALSE`
+  return range.parts.length > 0 ? sql.join(range.parts, sql` AND `) : sql`TRUE`
+}
+
+/** 账号权限 + 所选范围的条件片段；账号无任何可见门店时返回 null（调用方输出 FALSE） */
+function scopeRangeParts(
+  session: AuthSession,
+  scope: AnalystScope,
+  storeCol: string,
+): { col: SQL; parts: SQL[] } | null {
   if (!VALID_COLUMN_NAME.test(storeCol)) {
     throw new Error(`INVALID_PARAMS: invalid storeCol parameter: ${storeCol}`)
   }
   const col = sql.raw(storeCol)
-  // 统计始终排除当前已停用的门店；直接构造停用门店 URL 也只能得到零数据。
-  const parts: SQL[] = [activeStoreCondition(col)]
+  const parts: SQL[] = []
 
   if (!hasGlobalAnalystScope(session)) {
     const ids = session.permissions.scopeStoreIds
-    if (ids.length === 0) return sql`FALSE`
+    if (ids.length === 0) return null
     parts.push(sql`${col} IN (${sql.join(ids.map((id) => sql`${id}`), sql`, `)})`)
   }
 
@@ -281,5 +312,5 @@ export function scopeFilterSql(
     )`)
   }
 
-  return sql.join(parts, sql` AND `)
+  return { col, parts }
 }

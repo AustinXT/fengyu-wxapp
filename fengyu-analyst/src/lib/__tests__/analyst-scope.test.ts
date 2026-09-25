@@ -5,6 +5,7 @@ import {
   getEffectiveAnalystScope,
   hasGlobalAnalystScope,
   scopeFilterSql,
+  scopeRangeSql,
   type AnalystScope,
   type AnalystScopeOptions,
 } from "../analyst-scope"
@@ -104,6 +105,39 @@ describe("analyst scope", () => {
     expect(sql).toContain("c.bound_store_id in")
     expect(params).toEqual(["S1"])
     expect(squeeze(raw).startsWith(`${activeStoreClause("c.bound_store_id")} AND `)).toBe(true)
+  })
+
+  describe("scopeRangeSql（首次基线用，不含在营过滤，#421）", () => {
+    it("global all scope is TRUE: stopped stores still count toward first-order baseline", () => {
+      const session = makeSession([{ role: "admin", scopeType: "总部" }], [])
+      const { raw, params } = render(scopeRangeSql(session, allScope, "so.store_id"))
+
+      expect(raw.trim().toUpperCase()).toBe("TRUE")
+      expect(params).toEqual([])
+    })
+
+    it("non global empty store scope is still FALSE", () => {
+      const session = makeSession([{ role: "manager", scopeType: "门店" }], [])
+      const { raw } = render(scopeRangeSql(session, allScope, "so.store_id"))
+
+      expect(raw.trim().toUpperCase()).toBe("FALSE")
+    })
+
+    it("keeps account and selected scope but never the active-store clause", () => {
+      const session = makeSession([{ role: "manager", scopeType: "市场" }], ["S1"])
+      const range = render(scopeRangeSql(session, { type: "market", id: "MKT-1" }, "so.store_id"))
+      const filter = render(scopeFilterSql(session, { type: "market", id: "MKT-1" }, "so.store_id"))
+
+      expect(range.sql).not.toContain("active_node")
+      expect(range.params).toEqual(["S1", "MKT-1"])
+      expect(squeeze(filter.raw)).toBe(`${activeStoreClause("so.store_id")} AND ${squeeze(range.raw)}`)
+      expect(filter.params).toEqual(range.params)
+    })
+
+    it("rejects unsafe column names like scopeFilterSql", () => {
+      const session = makeSession([{ role: "admin", scopeType: "总部" }], [])
+      expect(() => scopeRangeSql(session, allScope, "so.store_id; drop table x")).toThrow("INVALID_PARAMS")
+    })
   })
 
   it("cache key includes account scope and selected org scope", () => {
