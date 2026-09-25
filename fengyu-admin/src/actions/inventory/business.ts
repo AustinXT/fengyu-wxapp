@@ -9,6 +9,8 @@ import {
   createItemCompanyReplenishment as createItemCompanyReplenishmentImpl,
   createInventoryConversion as createInventoryConversionImpl,
   createMarketReplenishment as createMarketReplenishmentImpl,
+  deleteMarketReplenishmentDraft as deleteMarketReplenishmentDraftImpl,
+  saveMarketReplenishmentDraft as saveMarketReplenishmentDraftImpl,
   createMarketReportSummary as createMarketReportSummaryImpl,
   resolveInventorySkuSupplierStatus as resolveInventorySkuSupplierStatusImpl,
   createMarketStaffPurchase as createMarketStaffPurchaseImpl,
@@ -40,6 +42,7 @@ import {
   type CreateExternalMarketOutboundInput,
   type CreateInventoryConversionInput,
   type CreateMarketReplenishmentInput,
+  type SaveMarketReplenishmentDraftInput,
   type MarketPromotionSelectionInput,
   type CreateMarketStaffPurchaseInput,
   type CreateSupplyChainStaffPurchaseInput,
@@ -94,6 +97,19 @@ export const createMarketReplenishment = withPermission(
   'inventory:market_operate',
   async (session, input: CreateMarketReplenishmentInput) =>
     createMarketReplenishmentImpl(session, input),
+)
+
+/** 市场报货草稿（#348）：与新建 / 提交同一权限，草稿本身不占用门店报货。 */
+export const saveMarketReplenishmentDraft = withPermission(
+  'inventory:market_operate',
+  async (session, input: SaveMarketReplenishmentDraftInput) =>
+    saveMarketReplenishmentDraftImpl(session, input),
+)
+
+export const deleteMarketReplenishmentDraft = withPermission(
+  'inventory:market_operate',
+  async (session, input: { draftId: string }) =>
+    deleteMarketReplenishmentDraftImpl(session, input),
 )
 
 export const createItemCompanyReplenishment = withPermission(
