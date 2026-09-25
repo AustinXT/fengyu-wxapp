@@ -247,12 +247,27 @@ describe('品项板块两端口径一致性守护', () => {
      * 「会员表驱动 + `COUNT(DISTINCT c.user_id)`」。所以这里按端分别断言，不做字面量对齐。
      */
     describe('持卡占比分子分母同源（#287）', () => {
-      /** 切出 admin 某个查询函数的 **SQL 模板** */
+      /**
+       * 切出 admin 某个查询函数的 **SQL 模板**。
+       *
+       * ⚠️ 必须**先用词法扫描器切出真实函数体、再从里面取模板**（round-5 codex）。
+       * 上一版直接在整份 `adminSrc` 上跑
+       * `new RegExp('async function <fn>\\(…db\\.execute…')` —— 于是「声明定位走词法扫描」
+       * 只对 `functionBody` 成立，这条核心 SQL 断言仍可被**注释或字符串里的伪声明**劫持。
+       *
+       * 并且对「零个或多个模板」**fail-closed**：函数体里恰好一条 `db.execute(sql\`…\`)`，
+       * 多一条（诱饵）或一条都没有（改成别名/计算属性调用）都直接红。
+       */
       const adminCardSql = (fn: string): string => {
-        const body = new RegExp(
-          `async function ${fn}\\((?:[\\s\\S]*?)db\\.execute\\(sql\`([\\s\\S]*?)\`\\)`,
-        ).exec(adminSrc)?.[1]
-        return normalize(body ?? '')
+        const body = functionBody(adminSrc, fn)
+        expect(body, `${fn} 的函数体未切出 —— 切片锚点需同步更新`).toBeTruthy()
+        const tpls = [...body.matchAll(/db\.execute\(sql`([\s\S]*?)`\)/g)]
+        expect(
+          tpls.length,
+          `${fn} 里的 db.execute(sql\`…\`) 不是恰好一条（实测 ${tpls.length} 条）—— ` +
+            '多一条可能是诱饵，零条说明改成了别名/计算属性调用',
+        ).toBe(1)
+        return normalize(tpls[0][1])
       }
       /**
        * ★★ **守护检查的那段，必须就是数据库真正执行的那段**（round-2 DeepSeek）。
