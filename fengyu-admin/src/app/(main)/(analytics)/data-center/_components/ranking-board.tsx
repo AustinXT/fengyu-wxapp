@@ -14,7 +14,8 @@ import { useSearchParams } from "next/navigation"
 
 /**
  * 排名榜（泛化）：顶部 metric 切换 Tab（组件内部状态，非 URL），下方排名表。
- * 门店榜 / 员工榜共用；showMarket 控制是否展示「所属市场」列。
+ * 门店榜 / 员工榜共用；showMarket 控制是否展示「所属市场」列；note 是标题下的口径说明，
+ * 只由需要的榜单传入（员工榜传 #299 全域说明，门店榜不传）。
  * 排名指标由 data-center/columns.ts 按 exportView 统一提供。
  */
 export function RankingBoard({
@@ -24,6 +25,7 @@ export function RankingBoard({
   loading = false,
   exportFilenamePrefix,
   exportView,
+  note,
 }: {
   title: string
   rankings: Record<string, RankingRow[]>
@@ -31,6 +33,7 @@ export function RankingBoard({
   loading?: boolean
   exportFilenamePrefix?: string
   exportView: DataCenterRankingView
+  note?: string
 }) {
   const searchParams = useSearchParams()
   const { metrics } = getDataCenterRankingConfig(exportView)
@@ -53,6 +56,11 @@ export function RankingBoard({
   return (
     <Card className="p-4 flex flex-col gap-3">
       <h3 className="text-sm font-semibold">{title}</h3>
+      {note && (
+        <p className="text-xs text-[var(--muted-foreground)]" data-testid="ranking-board-note">
+          {note}
+        </p>
+      )}
       <Tabs defaultValue={metrics[0].key}>
         <TabsList>
           {metrics.map((m) => (
