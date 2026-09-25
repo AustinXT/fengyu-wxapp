@@ -182186,7 +182186,7 @@ var COMMISSION_SOURCES = ["sale", "service"];
 var COMMISSION_SOURCE_LABELS = { sale: "业绩", service: "消耗" };
 var COMMISSION_DETAIL_PAGE_SIZES = [20, 50, 100];
 var DEFAULT_COMMISSION_DETAIL_PAGE_SIZE = 50;
-var ID_RE = /^[A-Za-z0-9_\-:.]{1,80}$/;
+var MAX_ID_LENGTH = 80;
 function parseCommissionDetailFilters(query, month) {
   const get = (key) => firstQueryValue(query[key])?.trim();
   const employeeId = get("employeeId");
@@ -182194,8 +182194,8 @@ function parseCommissionDetailFilters(query, month) {
   const date5 = get("date");
   const source = get("type");
   return {
-    employeeId: employeeId && ID_RE.test(employeeId) ? employeeId : null,
-    storeId: storeId && ID_RE.test(storeId) ? storeId : null,
+    employeeId: employeeId ? employeeId.slice(0, MAX_ID_LENGTH) : null,
+    storeId: storeId ? storeId.slice(0, MAX_ID_LENGTH) : null,
     date: isValidCalendarDate(date5) && date5 >= month.start && date5 <= month.end ? date5 : null,
     source: COMMISSION_SOURCES.includes(source ?? "") ? source : null
   };
@@ -182392,7 +182392,7 @@ function buildCommissionDailyColumns(input) {
         weekend: day2.weekend,
         day: day2.date,
         part,
-        value: (row) => future ? null : partValue(row.days[day2.date], part),
+        value: (row) => future && !row.days[day2.date] ? null : partValue(row.days[day2.date], part),
         aggregate: { kind: "sum" },
         exportWidth: 11
       });
@@ -182482,7 +182482,7 @@ function buildCommissionDetailColumns(input) {
       header: "实收金额",
       width: 104,
       align: "right",
-      hint: "销售行 = 这笔款项落在该商品行上的金额（退款为负）；服务行为 0，见消耗额",
+      hint: "销售行 = 这笔款项落在该商品行上的金额（退款为负；多人分配时每人一行、金额相同）；服务行为 0，见消耗额。合计按款项去重",
       value: (row) => row.received,
       aggregate: { kind: "sum" }
     },
@@ -182763,6 +182763,7 @@ function commissionDetailPageSql(session4, scope, filters, page) {
 function commissionDetailSummarySql(session4, scope, filters) {
   const sale = import_drizzle_orm67.sql`
       SELECT 'sale'::text AS source, 'S:' || so.sale_order_id AS order_key,
+             spir.id AS receipt_id,
              spir.amount::numeric AS received,
              spia.allocated_amount::numeric AS allocated,
              COALESCE(spia.commission_amount::numeric, 0) AS commission
@@ -182770,6 +182771,7 @@ function commissionDetailSummarySql(session4, scope, filters) {
       ${saleWhere(session4, scope, filters)}`;
   const service = import_drizzle_orm67.sql`
       SELECT 'service'::text AS source, 'V:' || so.service_order_id AS order_key,
+             NULL::bigint AS receipt_id,
              0::numeric AS received,
              ROUND(ROUND(sit.unit_real_price::numeric * sit.session_used, 2) * sc.allocation_ratio::numeric, 2) AS allocated,
              sc.commission_amount::numeric AS commission
@@ -182779,9 +182781,13 @@ function commissionDetailSummarySql(session4, scope, filters) {
     WITH summary_rows AS (${import_drizzle_orm67.sql.join(sourceParts(filters.source, sale, service), import_drizzle_orm67.sql` UNION ALL `)})
     SELECT COUNT(*)::int AS count,
            COUNT(DISTINCT order_key)::int AS orders,
-           COALESCE(SUM(received), 0) AS received,
+           -- 一条 receipt 会分给多名员工 / 多个角色，实收按 receipt 去重后再合计，否则成倍放大
+           (SELECT COALESCE(SUM(r.received), 0)
+              FROM (SELECT DISTINCT receipt_id, received FROM summary_rows WHERE receipt_id IS NOT NULL) r) AS received,
            COALESCE(SUM(allocated), 0) AS allocated,
            COALESCE(SUM(commission), 0) AS commission,
+           -- 平均提成点的分子只取分配金额可算的行（分配比例缺失的服务行分母为 NULL，分子也不能计入）
+           COALESCE(SUM(commission) FILTER (WHERE allocated IS NOT NULL), 0) AS rate_commission,
            COALESCE(SUM(commission) FILTER (WHERE source = 'sale'), 0) AS sale,
            COALESCE(SUM(commission) FILTER (WHERE source = 'service'), 0) AS service
     FROM summary_rows
@@ -182861,7 +182867,7 @@ var getCommissionDaily = withAllPermissions(DATA_CENTER_STAFF_COMMISSION_ACTIONS
       perOrder: ratio2(total, orders)
     },
     pending: { count: toNumber(pending.count), amount: toNumber(pending.amount) },
-    canLinkAllocations: hasUiCapability(session4.permissions.actions, "allocation:list")
+    canLinkAllocations: grantedOnAllRoles(session4, "allocation:list")
   };
 });
 function detailSignature(scope, month, filters) {
@@ -182903,11 +182909,30 @@ function toDetailRow(row, maskCustomer) {
     commission: toNumber(row.commission)
   };
 }
+function toSummary(raw) {
+  const allocated = toNumber(raw.allocated);
+  const commission = toNumber(raw.commission);
+  return {
+    count: toNumber(raw.count),
+    orders: toNumber(raw.orders),
+    received: toNumber(raw.received),
+    allocated,
+    commission,
+    sale: toNumber(raw.sale),
+    service: toNumber(raw.service),
+    averageRate: allocated !== 0 ? toNumber(raw.rate_commission) / allocated : null
+  };
+}
 function keyOf(row) {
   return { d: row.date, t: row.source, id: row.sourceId };
 }
+function grantedOnAllRoles(session4, action) {
+  if (session4.roles.length === 0)
+    return false;
+  return session4.roles.every((role) => hasUiCapability(role.actions ?? session4.permissions.actions, action));
+}
 function shouldMaskCustomer(session4) {
-  return !hasUiCapability(session4.permissions.actions, "customer:list");
+  return !grantedOnAllRoles(session4, "customer:list");
 }
 var getCommissionDetail = withAllPermissions(DATA_CENTER_STAFF_COMMISSION_ACTIONS, async (session4, query) => {
   const { scope, period, get } = await resolveContext(session4, query);
@@ -182918,39 +182943,33 @@ var getCommissionDetail = withAllPermissions(DATA_CENTER_STAFF_COMMISSION_ACTION
   const before = after ? null : decodeCommissionCursor(get("before"), signature);
   const lineFilters = detailLineFilters(filters, period.current);
   const maskCustomer = shouldMaskCustomer(session4);
-  const [pageRows, summaryRows, optionRows, scopeName] = await Promise.all([
+  const [firstFetch, summaryRows, optionRows, scopeName] = await Promise.all([
     db2.execute(commissionDetailPageSql(session4, scope, lineFilters, { limit: pageSize, after, before })),
     db2.execute(commissionDetailSummarySql(session4, scope, lineFilters)),
     db2.execute(commissionEmployeeOptionsSql(session4, scope, period.current)),
     resolveScopeName(scope)
   ]);
+  let pageRows = firstFetch;
+  let backward = !!before;
+  if (backward && rowsOf(pageRows).length === 0) {
+    pageRows = await db2.execute(commissionDetailPageSql(session4, scope, lineFilters, { limit: pageSize }));
+    backward = false;
+  }
   const fetched = rowsOf(pageRows).map((row) => toDetailRow(row, maskCustomer));
   const hasMore = fetched.length > pageSize;
   const visible = hasMore ? fetched.slice(0, pageSize) : fetched;
-  const rows = before ? visible.reverse() : visible;
+  const rows = backward ? visible.reverse() : visible;
   const first3 = rows[0];
   const last = rows[rows.length - 1];
-  const hasPrev = before ? hasMore : !!after;
-  const hasNext = before ? true : hasMore;
-  const summary = rowsOf(summaryRows)[0] ?? {};
-  const allocated = toNumber(summary.allocated);
-  const commission = toNumber(summary.commission);
+  const hasPrev = backward ? hasMore : !!after;
+  const hasNext = backward ? true : hasMore;
   return {
     month: period.month,
     scopeName,
     filters,
     pageSize,
     rows,
-    summary: {
-      count: toNumber(summary.count),
-      orders: toNumber(summary.orders),
-      received: toNumber(summary.received),
-      allocated,
-      commission,
-      sale: toNumber(summary.sale),
-      service: toNumber(summary.service),
-      averageRate: allocated !== 0 ? commission / allocated : null
-    },
+    summary: toSummary(rowsOf(summaryRows)[0] ?? {}),
     prevCursor: hasPrev && first3 ? encodeCommissionCursor(keyOf(first3), signature) : null,
     nextCursor: hasNext && last ? encodeCommissionCursor(keyOf(last), signature) : null,
     employeeOptions: rowsOf(optionRows).map((row) => {
@@ -182959,7 +182978,7 @@ var getCommissionDetail = withAllPermissions(DATA_CENTER_STAFF_COMMISSION_ACTION
       const position = row.position_name ? String(row.position_name) : "无岗位";
       return { employeeId: String(row.employee_id), label: `${home} · ${name}（${position}）` };
     }),
-    canLinkOrders: hasUiCapability(session4.permissions.actions, "allocation:list"),
+    canLinkOrders: grantedOnAllRoles(session4, "allocation:list"),
     customerMasked: maskCustomer
   };
 });
@@ -182975,28 +182994,13 @@ var exportCommissionDetail = withAllPermissions(DATA_CENTER_STAFF_COMMISSION_ACT
   const [pageRows, summaryRows, scopeName] = await Promise.all([
     db2.execute(commissionDetailPageSql(session4, scope, lineFilters, { limit, after })),
     after ? Promise.resolve(null) : db2.execute(commissionDetailSummarySql(session4, scope, lineFilters)),
-    resolveScopeName(scope)
+    after ? Promise.resolve("") : resolveScopeName(scope)
   ]);
   const maskCustomer = shouldMaskCustomer(session4);
   const fetched = rowsOf(pageRows).map((row) => toDetailRow(row, maskCustomer));
   const hasMore = fetched.length > limit;
   const rows = hasMore ? fetched.slice(0, limit) : fetched;
-  let summary = null;
-  if (summaryRows) {
-    const raw = rowsOf(summaryRows)[0] ?? {};
-    const allocated = toNumber(raw.allocated);
-    const commission = toNumber(raw.commission);
-    summary = {
-      count: toNumber(raw.count),
-      orders: toNumber(raw.orders),
-      received: toNumber(raw.received),
-      allocated,
-      commission,
-      sale: toNumber(raw.sale),
-      service: toNumber(raw.service),
-      averageRate: allocated !== 0 ? commission / allocated : null
-    };
-  }
+  const summary = summaryRows ? toSummary(rowsOf(summaryRows)[0] ?? {}) : null;
   return {
     rows,
     truncated: false,
@@ -183033,7 +183037,7 @@ function countLeftFrozen(columns3) {
   return count;
 }
 
-// src/export-worker/report-views/commission.ts
+// src/export-worker/report-handlers/commission.ts
 init_time_range();
 function asRows(rows) {
   return async function* () {
@@ -183105,7 +183109,7 @@ async function commissionDetailExport(params) {
   };
 }
 
-// src/export-worker/report-views/index.ts
+// src/export-worker/report-handlers/index.ts
 var DATA_CENTER_REPORT_EXPORT_HANDLERS = {
   "report-commission-daily": commissionDailyExport,
   "report-commission-detail": commissionDetailExport
@@ -183534,6 +183538,8 @@ async function queryDataCenterBoard(view3, payload) {
     const rows = view3 === "product-market" ? board2.byMarket : board2.byStore;
     return breakdownContent(view3, rows);
   }
+  if (!view3.startsWith("efficiency-"))
+    throw new Error(`INVALID_PARAMS: 未知的数据中心导出视图 ${view3}`);
   const board = await getEfficiencyBoard(base);
   if (view3 === "efficiency-market")
     return breakdownContent(view3, board.byMarket);
