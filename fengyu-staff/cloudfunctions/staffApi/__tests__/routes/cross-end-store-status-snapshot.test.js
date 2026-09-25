@@ -40,7 +40,12 @@ function stripCommentsKeepLines(src, filePath = 'x.ts') {
   const plugins = []
   if (/\.tsx?$/.test(filePath)) plugins.push('typescript')
   if (/\.(tsx|jsx)$/.test(filePath)) plugins.push('jsx')
-  const ast = babelParse(src, { sourceType: 'unambiguous', plugins, errorRecovery: false })
+  let ast
+  try {
+    ast = babelParse(src, { sourceType: 'unambiguous', plugins, errorRecovery: false })
+  } catch (err) {
+    throw new Error(`stripCommentsKeepLines 解析失败 ${filePath}: ${err.message}`)
+  }
   let out = src
   for (const c of ast.comments) {
     out = out.slice(0, c.start) + out.slice(c.start, c.end).replace(/[^\n]/g, ' ') + out.slice(c.end)
