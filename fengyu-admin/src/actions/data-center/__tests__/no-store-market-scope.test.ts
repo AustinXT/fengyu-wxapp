@@ -36,6 +36,10 @@ vi.mock('@/db', async () => {
   const { drizzle } = await import('drizzle-orm/pg-proxy')
   const db = drizzle(async (sql: string, params: unknown[]) => {
     captured.push({ sql, params })
+    // 人效板员工榜（业绩）：返回一名直挂品项公司、store_id 为空的品项老师，验证结果装配不会把无门店员工滤掉
+    if (/FROM producer_employees pe\s+LEFT JOIN revenue_by_emp r/.test(sql)) {
+      return { rows: [{ employee_id: 'FY-PX-01', employee_name: '王润', store_id: null, store_name: '品项公司', market_name: '品项公司', value: '42624.00' }] }
+    }
     return { rows: [] }
   })
   return { db: Object.assign(db, { transaction: async (fn: (tx: typeof db) => unknown) => fn(db) }) }
@@ -67,7 +71,7 @@ const CALLS: Array<[file: string, name: string, args: unknown[]]> = [
   ['remaining-cards', 'exportRemainingCardsReport', [raw]],
 ]
 
-const outcome = new Map<string, { error: string | null; sqls: Array<{ sql: string; params: unknown[] }>; filters: unknown[] }>()
+const outcome = new Map<string, { error: string | null; sqls: Array<{ sql: string; params: unknown[] }>; filters: unknown[]; result: unknown }>()
 
 beforeAll(async () => {
   vi.useFakeTimers({ toFake: ['Date'] })
@@ -78,12 +82,13 @@ beforeAll(async () => {
     captured.length = 0
     scopeFilterResults.length = 0
     let error: string | null = null
+    let result: unknown = null
     try {
-      await mod[name](...args)
+      result = await mod[name](...args)
     } catch (e) {
       error = (e as Error).message
     }
-    outcome.set(`${file}:${name}`, { error, sqls: [...captured], filters: [...scopeFilterResults] })
+    outcome.set(`${file}:${name}`, { error, sqls: [...captured], filters: [...scopeFilterResults], result })
   }
 }, 60_000)
 
@@ -99,10 +104,15 @@ describe('#399 无门店市场账号 · 市场范围取数', () => {
     expect(r.sqls.some((q) => /store_id|anchor_market_id/.test(q.sql))).toBe(true)
   })
 
-  it('人效板按锚定市场收录无门店员工（anchor_market_id = 品项公司）', () => {
-    const { sqls } = outcome.get('efficiency:getEfficiencyBoard')!
+  it('人效板按锚定市场收录无门店员工：取数带 anchor_market_id = 品项公司，且直挂员工进入最终员工榜', () => {
+    const { sqls, result } = outcome.get('efficiency:getEfficiencyBoard')!
     const anchored = sqls.filter((q) => /anchor_market_id = \$\d+/.test(q.sql) && q.params.includes('PX'))
     expect(anchored.length).toBeGreaterThan(0)
+    // 结果级：store_id 为空的品项老师必须出现在业绩榜（装配误加 store_id 过滤时这里会红）
+    const board = result as { staffRankings: Record<string, Array<{ id: string; name: string; marketName?: string; value: number }>> }
+    expect(board.staffRankings.revenue).toEqual([
+      expect.objectContaining({ id: 'FY-PX-01', name: '王润', marketName: '品项公司', value: 42624 }),
+    ])
   })
 
   // 逐 action 记录（闸门 2 codex round-1 P2：按全局集合聚合时，删掉某一个 action 的过滤仍会因别的 action 凑够数而全绿）
