@@ -3525,6 +3525,25 @@ export async function createItemCompanyShipment(
  * 门店价三列沿用报货行快照，门店收货时再按配货行重新定价。
  */
 async function linkedSourcePricing(tx: Tx, shipmentItem: DocItemSnapshot, sourceLot: LotSnapshot): Promise<PriceSnapshot> {
+  // 先确认本行挂着 #336 的直连血缘（赠送行也要查）：旧口径（采购订单发货 / 采购订单赠送发货）的单
+  // 一行都不能收 —— 若放过赠送行，混合旧单先收了赠送、正常行却收不了，而已有实收又挡住撤回，单据卡死。
+  const [row] = rows<Record<string, unknown>>(await tx.execute(sql`
+    SELECT i.market_standard_unit_price, i.market_unit_discount, i.market_actual_unit_price,
+           i.store_standard_unit_price, i.store_unit_discount, i.store_actual_unit_price
+      FROM inventory_doc_links l
+      JOIN inventory_doc_items i ON i.id = l.from_item_id
+     WHERE l.to_item_id = ${shipmentItem.id}
+       AND l.relation_type = ${shipmentItem.isGift ? '市场报货赠送发货' : '市场报货发货'}
+     LIMIT 1
+  `))
+  // 旧口径（#336 之前按采购订单建）的发货单没有这条血缘。0051 迁移会拦住在途旧单，但迁移后到新版上线前
+  // 的窗口里仍可能建出来 —— 给出可操作的出路，而不是只报「缺快照」。
+  if (!row) {
+    throw new ApiError(
+      'INVALID_STATE',
+      '发货明细缺少市场报货价格快照：按采购订单建的旧发货单不能再收货，请申请撤回后按市场报货单重新发货',
+    )
+  }
   if (shipmentItem.isGift) {
     return {
       supplyChainUnitCost: 0,
@@ -3535,23 +3554,6 @@ async function linkedSourcePricing(tx: Tx, shipmentItem: DocItemSnapshot, source
       storeUnitDiscount: null,
       storeActualUnitPrice: null,
     }
-  }
-  const [row] = rows<Record<string, unknown>>(await tx.execute(sql`
-    SELECT i.market_standard_unit_price, i.market_unit_discount, i.market_actual_unit_price,
-           i.store_standard_unit_price, i.store_unit_discount, i.store_actual_unit_price
-      FROM inventory_doc_links l
-      JOIN inventory_doc_items i ON i.id = l.from_item_id
-     WHERE l.to_item_id = ${shipmentItem.id}
-       AND l.relation_type = '市场报货发货'
-     LIMIT 1
-  `))
-  // 旧口径（#336 之前按采购订单建）的发货单没有这条血缘。0051 迁移会拦住在途旧单，但迁移后到新版上线前
-  // 的窗口里仍可能建出来 —— 给出可操作的出路，而不是只报「缺快照」。
-  if (!row) {
-    throw new ApiError(
-      'INVALID_STATE',
-      '发货明细缺少市场报货价格快照：按采购订单建的旧发货单不能再收货，请申请撤回后按市场报货单重新发货',
-    )
   }
   return {
     supplyChainUnitCost: sourceLot.supplyChainUnitCost,

@@ -1358,7 +1358,7 @@ describe('品项公司发货直接引用市场报货单（#336）', () => {
     expect(links).toHaveLength(2)
   })
 
-  it('旧口径（采购订单发货）的发货单收货时给出可操作的报错：撤回后按报货单重发', async () => {
+  it.each([false, true])('旧口径（采购订单发货）的发货单收货时给出可操作的报错：撤回后按报货单重发（赠送行=%s 也拦）', async (isGift) => {
     const shipmentRow = {
       id: 'GFH-OLD', doc_type: '品项公司发货', status: '待收货',
       source_org_node_id: 'HQ', target_org_node_id: 'M1', market_id: 'M1',
@@ -1378,7 +1378,7 @@ describe('品项公司发货直接引用市场报货单（#336）', () => {
           : [{ location_id: 'HQ', org_node_id: 'HQ', location_type: '总部', name: '供应链', parent_location_id: null }]
       }
       if (rendered.includes('FROM inventory_doc_items')) {
-        return [{ ...storeRequestItemRow(), id: 7, doc_id: 'GFH-OLD', lot_id: 101, quantity: '1' }]
+        return [{ ...storeRequestItemRow(), id: 7, doc_id: 'GFH-OLD', lot_id: 101, quantity: '1', is_gift: isGift }]
       }
       if (rendered.includes('FROM inventory_docs')) return [shipmentRow]
       return []
