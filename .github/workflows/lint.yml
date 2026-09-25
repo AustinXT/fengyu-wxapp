@@ -6,6 +6,8 @@ on:
       - 'fengyu-admin/src/**/*.ts'
       - 'fengyu-admin/src/**/*.tsx'
       - 'fengyu-admin/src/**/*.js'
+      # 预构建产物（package.json 的 export-worker 直跑它）：单独被换回旧版时要让新鲜度守护跑一遍
+      - 'fengyu-admin/dist/export-worker.mjs'
       - 'fengyu-staff/cloudfunctions/**/*.js'
       - 'fengyu-client/cloudfunctions/**/*.js'
       - 'scripts/lint-cas-guards.mjs'
@@ -268,6 +270,18 @@ jobs:
       - name: Run admin action-error drift guards
         working-directory: fengyu-admin
         run: npx vitest run src/lib/__tests__/action-error.test.ts
+
+      # 客量板会员门槛单源（#292）：分桶 / 经营人数门槛读 system_configs、固定档位 SPEND_BUCKET_FLOORS
+      # 的两端整段快照 + 「改配置值后客量板与品项板同步变化」行为测试 + 导出产物新鲜度。
+      # 不进 CI 的话，把 1990 写回 SQL 或让两端档位漂移，GitHub 检查照样全绿。
+      - name: Run customer board member-threshold guards (#292)
+        working-directory: fengyu-admin
+        run: |
+          npx vitest run \
+            src/actions/data-center/__tests__/consistency.customer.test.ts \
+            src/actions/data-center/__tests__/member-threshold-sync.test.ts \
+            src/actions/data-center/__tests__/customer.test.ts \
+            src/export-worker/dist-freshness.test.ts
 
       # SKU 供货商关联档案（#132）：`supplierId` 三态（undefined=不动 / null=清空 / id=写两列）
       # 与「供货商必须是 select 而不是自由文本」的守护。不进 CI 的话，把下拉改回 <Input>、

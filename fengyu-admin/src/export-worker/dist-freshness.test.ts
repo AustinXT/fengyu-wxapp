@@ -78,6 +78,12 @@ const PROBES: Probe[] = [
     pattern: /^\(COALESCE\(cardinality\(array_remove\(array_remove\(sw\.skills, ''\), NULL\)\), 0\) > 0\) AS has_skills$/,
     minLines: 1,
   },
+  {
+    label: '客量板 · 分桶最低档下界 / 经营人数改读会员门槛（#292）',
+    file: 'src/actions/data-center/customer.ts',
+    pattern: /FILTER \(WHERE spend >= \$\{threshold\}/,
+    minLines: 3,
+  },
 ]
 
 describe('dist/export-worker.mjs 新鲜度（改了 data-center SQL 口径必须重建产物）', () => {
