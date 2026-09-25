@@ -60,6 +60,7 @@ const FILES = {
   adminCardEntitlementTs: path.resolve(__dirname, '../../../../../fengyu-admin/src/lib/card-entitlement.ts'),
   adminRemainingCardsQueryTs: path.resolve(__dirname, '../../../../../fengyu-admin/src/lib/data-center/remaining-cards-query.ts'),
   adminPickupRecordsTs: path.resolve(__dirname, '../../../../../fengyu-admin/src/actions/pickup-records.ts'),
+  adminPickupAmountTs: path.resolve(__dirname, '../../../../../fengyu-admin/src/lib/pickup-amount.ts'),
   staffPaymentAllocatableJs: path.resolve(__dirname, '../../utils/payment-allocatable.js'),
   clientPaymentAllocatableJs: path.resolve(__dirname, '../../../../../fengyu-client/cloudfunctions/clientApi/utils/payment-allocatable.js'),
   payNotifyPaymentAllocatableJs: path.resolve(__dirname, '../../../../../fengyu-client/cloudfunctions/payNotify/payment-allocatable.js'),
@@ -3755,4 +3756,229 @@ describe('#224 服务单门店门：counts 与 todoList 店长分支同口径', 
     const mgmtGuards = (serviceSrc.match(/管理层模式仅支持只读操作/g) || []).length
     expect(mgmtGuards).toBe(2) // start + complete
   })
+})
+
+/**
+ * #341 提货冻结出库金额：staffApi `routes/order.js` 与 admin `actions/pickup-records.ts`（helper 在
+ * `lib/pickup-amount.ts`）两个副本。守护按闭集写：helper 函数体整段等值；写入点逐一登记（每端恰好两处），
+ * 多一处 / 少一处 / 列清单或取值换了任何一端都会红。
+ */
+describe('#341 提货冻结出库金额：两端副本一致', () => {
+  const staffSrc = () => stripJsComments(readFile(FILES.staffOrderJs))
+  const adminSrc = () => stripJsComments(readFile(FILES.adminPickupRecordsTs))
+
+  /** 取 `function <name>(` 的参数表与函数体（花括号配平）；参数去掉 TS 类型标注 */
+  function extractSyncFunction(src, name) {
+    const start = src.indexOf(`function ${name}(`)
+    expect(start, `未找到 function ${name}`).toBeGreaterThanOrEqual(0)
+    const paramsStart = src.indexOf('(', start)
+    const paramsEnd = src.indexOf(')', paramsStart)
+    const params = src.slice(paramsStart + 1, paramsEnd)
+      .split(',')
+      .map((param) => param.split(':')[0].trim())
+      .filter(Boolean)
+    const bodyStart = src.indexOf('{', paramsEnd)
+    let depth = 0
+    for (let i = bodyStart; i < src.length; i++) {
+      if (src[i] === '{') depth++
+      if (src[i] === '}') depth--
+      if (depth === 0) return { params, body: src.slice(bodyStart + 1, i) }
+    }
+    throw new Error(`function ${name} 花括号不配平`)
+  }
+
+  test('pickupAmountSnapshot 两端参数与函数体整段等值（仅 throw 语句允许 Error / ApiError 之差）', () => {
+    const staff = extractSyncFunction(staffSrc(), 'pickupAmountSnapshot')
+    const admin = extractSyncFunction(stripJsComments(readFile(FILES.adminPickupAmountTs)), 'pickupAmountSnapshot')
+    expect(admin.params).toEqual(staff.params)
+    const compute = (body) => body.split('\n').filter((line) => !/^\s*throw /.test(line)).join('\n').replace(/\s+/g, ' ').trim()
+    expect(compute(admin.body)).toBe(compute(staff.body))
+    // 两端都必须真的抛（去掉 throw 的整段等值测不到这一点），且报错文案一致
+    const throwLine = (body) => (body.match(/^\s*throw .*$/m) || [''])[0]
+    expect(throwLine(staff.body)).toContain("new Error('INVALID_STATE: 销售明细缺少顾客实际单价，无法计算出库金额')")
+    expect(throwLine(admin.body)).toContain("new ApiError('INVALID_STATE', '销售明细缺少顾客实际单价，无法计算出库金额')")
+  })
+
+  test('冻结调用闭集：每端恰好两处，单价都取已加锁 sale_items 行的 unit_real_price', () => {
+    const calls = (src) => [...src.matchAll(/const frozen = pickupAmountSnapshot\(([^)]*)\)/g)].map((m) => m[1].replace(/\s+/g, ' '))
+    expect(calls(staffSrc())).toEqual(['item.unit_real_price, 1', 'row.unit_real_price, requestedQuantity'])
+    expect(calls(adminSrc())).toEqual(['item.unit_real_price, 1', 'lockedItem.unit_real_price, data.pickupQuantity'])
+    // 除定义与这两处外不得再有别的调用（绕开冻结口径另算金额）
+    expect(staffSrc().match(/pickupAmountSnapshot\(/g)).toHaveLength(3)
+    expect(adminSrc().match(/pickupAmountSnapshot\(/g)).toHaveLength(2)
+  })
+
+  test('staffApi 两处 pickup_records INSERT：列清单整段等值，数量与冻结调用一致，末两位参数是冻结值', () => {
+    const src = staffSrc()
+    const EXPECTED_COLUMNS = '(sale_item_id, inventory_sku_id, pickup_quantity, store_id, client_user_id, confirmed_by, remark, idempotency_key, pickup_unit_price, pickup_amount)'
+    const sites = [...src.matchAll(/const frozen = pickupAmountSnapshot\([\s\S]*?frozen\.amount\]/g)].map((m) => m[0])
+    expect(sites).toHaveLength(2)
+    expect(src.match(/INSERT INTO pickup_records/g)).toHaveLength(2)
+    const expected = [
+      { values: 'VALUES (?, NULL, 1, ?, ?, ?, ?, ?, ?, ?)', paramsHead: '[item.sale_item_id, ctx.auth.effectiveStoreId,' },
+      { values: 'VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?)', paramsHead: '[saleItemId, requestedQuantity,' },
+    ]
+    sites.forEach((site, index) => {
+      expect(site.match(/INSERT INTO pickup_records/g), `第 ${index + 1} 处冻结与 INSERT 之间夹了别的写入`).toHaveLength(1)
+      const insert = normalizeSql(extractBacktickStringContaining(site, 'INSERT INTO pickup_records'))
+      expect(insert).toBe(`INSERT INTO pickup_records ${EXPECTED_COLUMNS} ${expected[index].values}`)
+      const params = site.slice(site.lastIndexOf('`,') + 2).replace(/\s+/g, ' ').trim()
+      expect(params.startsWith(expected[index].paramsHead), params).toBe(true)
+      expect(params.endsWith('frozen.unitPrice, frozen.amount]'), params).toBe(true)
+    })
+  })
+
+  test('admin 两处 insert(pickupRecords)：数量与冻结调用一致，写入冻结值', () => {
+    const src = adminSrc()
+    const sites = [...src.matchAll(/const frozen = pickupAmountSnapshot\([\s\S]*?\.returning\(\{ id: pickupRecords\.id \}\)/g)].map((m) => m[0])
+    expect(sites).toHaveLength(2)
+    expect(src.match(/insert\(pickupRecords\)/g)).toHaveLength(2)
+    const quantities = ['1', 'data.pickupQuantity']
+    sites.forEach((site, index) => {
+      expect(site.match(/insert\(pickupRecords\)/g)).toHaveLength(1)
+      const values = site.slice(site.indexOf('.values({')).replace(/\s+/g, ' ')
+      expect(values).toContain(`pickupQuantity: ${quantities[index]},`)
+      expect(values).toContain('pickupUnitPrice: frozen.unitPrice, pickupAmount: frozen.amount, })')
+    })
+  })
+
+  test('GCK 明细带锁定批次价格快照：两端列清单整段等值、取值同序，且不写 actual_unit_price', () => {
+    const SNAPSHOT_COLUMNS = [
+      'supply_chain_unit_cost', 'market_standard_unit_price', 'market_unit_discount',
+      'market_actual_unit_price', 'store_standard_unit_price', 'store_unit_discount',
+      'store_actual_unit_price',
+    ]
+    const staffGck = extractFunctionSection(staffSrc(), 'createPickupInventoryDoc')
+    const adminGck = extractFunctionSection(adminSrc(), 'createPickupInventoryDoc')
+    const insertColumns = (section) => {
+      const insert = normalizeSql(extractBacktickStringContaining(section, 'INSERT INTO inventory_doc_items'))
+      return insert.slice(insert.indexOf('('), insert.indexOf(')') + 1)
+    }
+    expect(insertColumns(adminGck)).toBe(insertColumns(staffGck))
+    expect(insertColumns(staffGck).endsWith(`remark, ${SNAPSHOT_COLUMNS.join(', ')})`)).toBe(true)
+    for (const section of [staffGck, adminGck]) {
+      expect(insertColumns(section)).not.toMatch(/\bactual_unit_price\b/)
+      expect(insertColumns(section)).not.toMatch(/\bamount\b/)
+      const lotSelect = normalizeSql(extractBacktickStringContaining(section, 'FROM inventory_stock_lots lot'))
+      for (const column of SNAPSHOT_COLUMNS) expect(lotSelect).toContain(`lot.${column}`)
+      const valueOrder = [...section.matchAll(/lot\.([a-z_]+) \?\? null/g)].map((m) => m[1])
+      expect(valueOrder).toEqual(SNAPSHOT_COLUMNS)
+    }
+  })
+
+  /** 扫非测试源码（不含 migrations / 归档 / 产物），返回命中 pattern 的仓库相对路径（已剥注释） */
+  function repoFilesMatching(pattern, roots = ['fengyu-admin/src', 'fengyu-staff/cloudfunctions', 'fengyu-client/cloudfunctions', 'db/scripts']) {
+    const repoRoot = path.resolve(__dirname, '../../../../..')
+    const SKIP_DIRS = new Set(['node_modules', '__tests__', 'dist', '.next'])
+    const hits = []
+    const walk = (dir) => {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        if (entry.isDirectory()) {
+          if (!SKIP_DIRS.has(entry.name) && !entry.name.startsWith('_archive')) walk(path.join(dir, entry.name))
+          continue
+        }
+        if (!/\.(js|mjs|cjs|ts|tsx|sql)$/.test(entry.name) || /\.test\.|\.spec\./.test(entry.name)) continue
+        const file = path.join(dir, entry.name)
+        if (pattern.test(stripJsComments(readFile(file)))) hits.push(path.relative(repoRoot, file))
+      }
+    }
+    for (const root of roots) walk(path.join(repoRoot, root))
+    return hits.sort()
+  }
+
+  test('全仓写入闭集 · INSERT：非测试代码里新增 pickup_records 行的只有这两个文件（新写入口必须先接入冻结金额再登记）', () => {
+    // 容忍空白 / 换行 / schema 限定名 / 大小写：`tx.insert (pickupRecords)`、`INSERT INTO public.pickup_records`
+    const INSERT_WRITER = /INSERT\s+INTO\s+(?:"?public"?\s*\.\s*)?"?pickup_records"?|\binsert\s*\(\s*pickupRecords\s*\)/i
+    expect(repoFilesMatching(INSERT_WRITER)).toEqual([
+      'fengyu-admin/src/actions/pickup-records.ts',
+      'fengyu-staff/cloudfunctions/staffApi/routes/order.js',
+    ])
+  })
+
+  test('全仓写入闭集 · UPDATE：只有顾客合并改写 client_user_id，且不碰数量与冻结金额', () => {
+    // 容忍 ONLY / schema / `AS pr` 与裸别名 `pickup_records pr SET`（#341 评审 round-3）
+    const UPDATE_WRITER = /UPDATE\s+(?:ONLY\s+)?(?:"?public"?\s*\.\s*)?"?pickup_records"?(?:\s+(?:AS\s+)?(?!SET\b)\w+)?\s+SET\b|\bupdate\s*\(\s*pickupRecords\s*\)|reassignCol\s*\(\s*pickupRecords\b/i
+    expect(repoFilesMatching(UPDATE_WRITER)).toEqual([
+      // 豁免：2026-04 销售单领域重构的一次性脚本，改的是早已删除的 pickup_records.picked_up_quantity 列
+      'db/scripts/migrate-sale-order-domain.sql',
+      'db/scripts/migration-2026-04-26-domain-refactor/04_step_d_5channel_rollback.sql',
+      'fengyu-admin/src/actions/customers.ts',
+    ])
+    const customers = stripJsComments(readFile(path.resolve(__dirname, '../../../../../fengyu-admin/src/actions/customers.ts')))
+    const calls = customers.match(/reassignCol\s*\(\s*pickupRecords\b[^)]*\)/g) || []
+    expect(calls.map((call) => call.replace(/\s+/g, ' '))).toEqual([
+      'reassignCol(pickupRecords, pickupRecords.clientUserId, { clientUserId: sourceUserId })',
+    ])
+  })
+
+  test('冻结列标识符闭集：引用 pickup_unit_price / pickup_amount 的非测试源码只有已登记的这些', () => {
+    const FROZEN_COLUMN = /\b(?:pickup_unit_price|pickup_amount|pickupUnitPrice|pickupAmount)\b/
+    expect(repoFilesMatching(FROZEN_COLUMN, [
+      'fengyu-admin/src', 'fengyu-staff/cloudfunctions', 'fengyu-client/cloudfunctions', 'db/scripts', 'db/schema',
+    ])).toEqual([
+      'db/schema/pickup.ts',
+      'fengyu-admin/src/actions/pickup-records.ts',
+      'fengyu-admin/src/app/(main)/(operations)/pickup-records/_components/pickup-records-page.tsx',
+      'fengyu-admin/src/export-worker/registry.ts',
+      'fengyu-staff/cloudfunctions/staffApi/routes/order.js',
+    ])
+  })
+
+  test('GCK 单头 INSERT 两端整段等值，类型固定「院顾客产品出库」（类型决定金额触发器取哪档成本）', () => {
+    const header = (src) => normalizeSql(extractBacktickStringContaining(
+      extractFunctionSection(src, 'createPickupInventoryDoc'), 'INSERT INTO inventory_docs (',
+    ))
+    const staff = header(staffSrc())
+    expect(header(adminSrc())).toBe(staff)
+    expect(staff).toContain("VALUES (?, '院顾客产品出库', '已完成', ?")
+  })
+
+  /** 按起止锚点切段（admin 的 createPickupRecord 是 `export const … = withPermission(`，不是 function 声明） */
+  function sectionBetween(src, startMarker, endMarker) {
+    const start = src.indexOf(startMarker)
+    expect(start, `未找到 ${startMarker}`).toBeGreaterThanOrEqual(0)
+    const end = src.indexOf(endMarker, start + startMarker.length)
+    expect(end, `未找到 ${endMarker}`).toBeGreaterThan(start)
+    return src.slice(start, end)
+  }
+
+  const PICKUP_SITES = [
+    { name: 'staff createGroupedPickup', file: () => staffSrc(), start: 'async function createGroupedPickup(', end: 'async function createPickup(' },
+    { name: 'staff createPickup', file: () => staffSrc(), start: 'async function createPickup(', end: 'async function availablePickupItems(' },
+    { name: 'admin createGroupedPickupRecord', file: () => adminSrc(), start: 'async function createGroupedPickupRecord(', end: 'export const createPickupRecord' },
+    { name: 'admin createPickupRecord', file: () => adminSrc(), start: 'export const createPickupRecord', end: 'export const deletePickupRecord' },
+  ]
+
+  test.each(PICKUP_SITES)('$name：冻结单价的来源是锁行 SQL 的 si.unit_real_price（不许别名顶替）', ({ file, start, end }) => {
+    const section = sectionBetween(file(), start, end)
+    const lockSql = normalizeSql(extractBacktickStringContaining(section, 'FOR UPDATE OF si'))
+    expect(lockSql).toMatch(/[\s,]si\.unit_real_price[\s,]/)
+    // `si.unit_price AS unit_real_price` 之类的别名会让 helper 读到错价，而其它断言全绿（#341 评审 round-1）
+    expect(lockSql).not.toMatch(/\bAS\s+unit_real_price\b/i)
+    expect(section).toMatch(/const frozen = pickupAmountSnapshot\(\w+\.unit_real_price,/)
+  })
+
+  test.each(PICKUP_SITES)('$name：联动开启时生成 GCK —— 恰好一处 createPickupInventoryDoc 调用，且在开关门控内', ({ file, start, end }) => {
+    const section = sectionBetween(file(), start, end)
+    expect(section.match(/createPickupInventoryDoc\(/g)).toHaveLength(1)
+    const call = section.indexOf('inventoryDocId = await createPickupInventoryDoc(')
+    expect(call).toBeGreaterThan(0)
+    // 调用必须落在 `if (INVENTORY_LINKAGE_ENABLED) {` 块内（花括号配平找块尾，块内有对象字面量）
+    const gate = section.lastIndexOf('if (INVENTORY_LINKAGE_ENABLED) {', call)
+    expect(gate, '调用点前没有联动开关门控').toBeGreaterThanOrEqual(0)
+    let depth = 0
+    let blockEnd = -1
+    for (let i = section.indexOf('{', gate); i < section.length; i++) {
+      if (section[i] === '{') depth++
+      if (section[i] === '}' && --depth === 0) { blockEnd = i; break }
+    }
+    expect(call).toBeLessThan(blockEnd)
+  })
+
+  function extractFunctionSection(src, functionName) {
+    const start = src.indexOf(`async function ${functionName}(`)
+    expect(start, `未找到 ${functionName}`).toBeGreaterThanOrEqual(0)
+    const next = src.indexOf('\nasync function ', start + functionName.length)
+    return src.slice(start, next === -1 ? src.length : next)
+  }
 })

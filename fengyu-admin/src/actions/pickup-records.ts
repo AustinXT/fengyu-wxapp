@@ -8,10 +8,11 @@ import { stores } from '@db/org'
 import { clientWechatUsers, staffWechatUsers } from '@db/user'
 import { productSkus } from '@db/product'
 import { inventorySkus } from '@db/inventory'
-import { and, desc, eq, gte, ilike, lte, or, sql } from 'drizzle-orm'
-import { beijingBoundaryTs } from '@/lib/db-time'
+import { and, desc, eq, gte, ilike, lt, or, sql } from 'drizzle-orm'
+import { beijingBoundaryTs, beijingNextDayBoundaryTs } from '@/lib/db-time'
 import { shanghaiToday, shanghaiYmd } from '@/lib/datetime'
 import type { SQL } from 'drizzle-orm'
+import type { AuthSession } from '@/lib/types'
 import { isInScope, scopeCondition, requireAdmin } from '@/lib/permissions'
 import { withPermission } from '@/lib/with-permission'
 import { logOperation } from '@/lib/operation-log'
@@ -25,6 +26,13 @@ import { computeAvailableByLot } from '@/lib/inventory/lot-availability'
 import { isConvertibleEntitlementRow } from '@/lib/home-product'
 import { businessErrorMessage } from '@/lib/action-error'
 import { resolvePaging } from '@/lib/paging'
+import { pickupAmountSnapshot } from '@/lib/pickup-amount'
+import {
+  resolveExportBatchLimit,
+  resolveExportKeysetPage,
+  type ExportBatchOptions,
+  type ExportBatchResult,
+} from '@/lib/export-pagination'
 
 export interface AdminPickupRecord {
   id: number
@@ -48,6 +56,10 @@ export interface AdminPickupRecord {
   saleOrderId?: string
   itemQuantity?: number
   itemPickedUpQuantity?: number
+  /** #341 提货时冻结的顾客实际单价；上线前的历史记录为 null（不回填） */
+  pickupUnitPrice: string | null
+  /** #341 出库金额 = 本次提货数 × 冻结单价；历史记录为 null */
+  pickupAmount: string | null
 }
 
 export interface PickupRecordFilters {
@@ -234,6 +246,13 @@ async function createPickupInventoryDoc(
     expiry_date: string | null
     is_gift: boolean
     quantity_on_hand: string | number
+    supply_chain_unit_cost: string | null
+    market_standard_unit_price: string | null
+    market_unit_discount: string | null
+    market_actual_unit_price: string | null
+    store_standard_unit_price: string | null
+    store_unit_discount: string | null
+    store_actual_unit_price: string | null
   }
 
   const plans: Array<{
@@ -246,7 +265,10 @@ async function createPickupInventoryDoc(
     const rawLotRows = (await tx.execute(sql`
       SELECT lot.id, lot.location_id, lot.sku_id, lot.sku_name, lot.spec_name,
              lot.supplier, lot.product_series, lot.batch_no, lot.expiry_date,
-             lot.is_gift, lot.quantity_on_hand
+             lot.is_gift, lot.quantity_on_hand,
+             lot.supply_chain_unit_cost, lot.market_standard_unit_price, lot.market_unit_discount,
+             lot.market_actual_unit_price, lot.store_standard_unit_price, lot.store_unit_discount,
+             lot.store_actual_unit_price
         FROM inventory_stock_lots lot
        WHERE lot.location_id = ${data.storeId}
          AND lot.sku_id = ${requirement.inventorySkuId}
@@ -303,16 +325,25 @@ async function createPickupInventoryDoc(
       const deduct = Math.min(plan.availableByLot.get(lot.id) ?? 0, remaining)
       if (deduct <= 0) continue
       const after = before - deduct
+      // #341：带上锁定批次的价格快照（与 engine 通用建单同一组列）。actual_unit_price 留空，
+      // 由 inventory_set_doc_item_amount 按 store → market → 供应链 取成本算 amount；赠送批次记 0。
+      // 这是**出库成本**；顾客售价口径的出库金额另存 pickup_records.pickup_amount，两列不混。
       const inserted = (await tx.execute(sql`
       INSERT INTO inventory_doc_items (
         doc_id, lot_id, sku_id, sale_item_id, sku_name, spec_name, supplier,
-        product_series, batch_no, expiry_date, is_gift, quantity, stock_snapshot, remark
+        product_series, batch_no, expiry_date, is_gift, quantity, stock_snapshot, remark,
+        supply_chain_unit_cost, market_standard_unit_price, market_unit_discount,
+        market_actual_unit_price, store_standard_unit_price, store_unit_discount,
+        store_actual_unit_price
       )
       VALUES (
         ${docId}, ${lot.id}, ${lot.sku_id}, ${data.saleItemId},
         ${lot.sku_name || plan.requirement.productName || data.productName || plan.requirement.inventorySkuId}, ${lot.spec_name}, ${lot.supplier},
         ${lot.product_series}, ${lot.batch_no || ''}, ${lot.expiry_date}, ${Boolean(lot.is_gift)},
-        ${deduct}, ${before}, ${data.remark?.trim() || null}
+        ${deduct}, ${before}, ${data.remark?.trim() || null},
+        ${lot.supply_chain_unit_cost ?? null}, ${lot.market_standard_unit_price ?? null}, ${lot.market_unit_discount ?? null},
+        ${lot.market_actual_unit_price ?? null}, ${lot.store_standard_unit_price ?? null}, ${lot.store_unit_discount ?? null},
+        ${lot.store_actual_unit_price ?? null}
       )
       RETURNING id
       `)) as unknown as Array<{ id: number | string }>
@@ -338,24 +369,10 @@ async function createPickupInventoryDoc(
 }
 
 /**
- * 服务端分页提货记录列表
- *
- * scope 基于 pickup_records.store_id（提货门店）。
- * JOIN sale_items/stores/client/staff/product/sku 拼接展示信息。
+ * 列表与导出共用的筛选条件（#341：导出行数必须等于列表筛选结果行数）。
+ * search 命中被 JOIN 的列，调用方必须 JOIN clientWechatUsers / staffWechatUsers / saleItems / productSkus。
  */
-export const getPickupRecordsPaginated = withPermission(
-  'pickup_record:list',
-  async (
-    session,
-    filters: PickupRecordFilters = {},
-  ): Promise<PaginatedPickupRecords> => {
-  const { page, pageSize, offset } = resolvePaging({
-    page: filters.page,
-    pageSize: filters.pageSize,
-    defaultPageSize: 20,
-    allowedPageSizes: [10, 20, 50],
-  })
-
+function pickupRecordConditions(session: AuthSession, filters: PickupRecordFilters): (SQL | undefined)[] {
   const conditions: (SQL | undefined)[] = [
     scopeCondition(session, pickupRecords.storeId),
   ]
@@ -379,10 +396,34 @@ export const getPickupRecordsPaginated = withPermission(
     conditions.push(gte(pickupRecords.createdAt, beijingBoundaryTs(filters.dateFrom, '00:00:00')))
   }
   if (filters.dateTo) {
-    conditions.push(lte(pickupRecords.createdAt, beijingBoundaryTs(filters.dateTo, '23:59:59')))
+    // 半开区间 [from, nextDay(to))：`<= 23:59:59` 会漏掉结束日最后一秒（timestamptz 存到微秒），
+    // 出库金额是提成数据源，一条都不能漏（#341）。
+    conditions.push(lt(pickupRecords.createdAt, beijingNextDayBoundaryTs(filters.dateTo)))
   }
 
-  const whereClause = and(...conditions)
+  return conditions
+}
+
+/**
+ * 服务端分页提货记录列表
+ *
+ * scope 基于 pickup_records.store_id（提货门店）。
+ * JOIN sale_items/stores/client/staff/product/sku 拼接展示信息。
+ */
+export const getPickupRecordsPaginated = withPermission(
+  'pickup_record:list',
+  async (
+    session,
+    filters: PickupRecordFilters = {},
+  ): Promise<PaginatedPickupRecords> => {
+  const { page, pageSize, offset } = resolvePaging({
+    page: filters.page,
+    pageSize: filters.pageSize,
+    defaultPageSize: 20,
+    allowedPageSizes: [10, 20, 50],
+  })
+
+  const whereClause = and(...pickupRecordConditions(session, filters))
 
   // COUNT 查询（同样需要 JOIN，因为 search 命中了被 JOIN 的列）
   const countQuery = db
@@ -443,9 +484,102 @@ export const getPickupRecordsPaginated = withPermission(
       saleOrderId: r.saleOrderId ?? undefined,
       itemQuantity: r.itemQuantity ?? undefined,
       itemPickedUpQuantity: r.itemPickedUpQuantity ?? undefined,
+      pickupUnitPrice: r.record.pickupUnitPrice,
+      pickupAmount: r.record.pickupAmount,
     })),
     total: countRow?.count ?? 0,
   }
+  },
+)
+
+export interface ExportPickupRecordRow {
+  createdAt: string
+  storeName: string | null
+  clientName: string | null
+  saleOrderId: string | null
+  productName: string | null
+  pickupQuantity: number
+  pickupUnitPrice: string | null
+  pickupAmount: string | null
+}
+
+/**
+ * 导出提货记录（#341）：筛选与列表页同源（`pickupRecordConditions`），URL 参数名与列表页一致。
+ *
+ * 分页用 keyset，游标是 pickup_records.id（bigserial，不可变）——不用列表页的 created_at + offset：
+ * 导出期间新提货会插到最前，offset 翻页会让已导出的行被挤到下一页重复输出。提货记录全部由应用写入
+ * （created_at 默认 now()，无历史导入），按 id 降序与列表「最新在前」基本一致；仅并发事务可能在同一时刻
+ * 附近交错（now() 取事务开始时间）。不用 (created_at, id) 复合游标：JS Date 只到毫秒，PG 存到微秒，
+ * 游标回传会截断精度而重复/漏行。删除的记录物理消失，自然不再出现。
+ */
+export const exportPickupRecords = withPermission(
+  'pickup_record:list',
+  async (
+    session,
+    params: Record<string, string | undefined>,
+    options?: ExportBatchOptions<number>,
+  ): Promise<ExportBatchResult<ExportPickupRecordRow, number>> => {
+    const limit = resolveExportBatchLimit(options?.limit)
+    const cursor = options?.cursor
+    // 只有 undefined 代表「首批」；其余非正整数一律视为畸形，不能静默从头重扫
+    if (cursor !== undefined && (!Number.isSafeInteger(cursor) || cursor <= 0)) {
+      throw new ApiError('INVALID_STATE', '导出分页游标无效')
+    }
+
+    const whereClause = and(
+      ...pickupRecordConditions(session, {
+        marketId: params.market || undefined,
+        storeId: params.store || undefined,
+        search: params.q || undefined,
+        dateFrom: params.from || undefined,
+        dateTo: params.to || undefined,
+      }),
+      ...(cursor === undefined ? [] : [lt(pickupRecords.id, cursor)]),
+    )
+
+    const query = db
+      .select({
+        id: pickupRecords.id,
+        createdAt: pickupRecords.createdAt,
+        pickupQuantity: pickupRecords.pickupQuantity,
+        pickupUnitPrice: pickupRecords.pickupUnitPrice,
+        pickupAmount: pickupRecords.pickupAmount,
+        storeName: stores.storeName,
+        clientName: clientWechatUsers.name,
+        saleOrderId: saleItems.saleOrderId,
+        productName: sql<string | null>`COALESCE(${productSkus.specName}, ${saleItems.productName})`,
+      })
+      .from(pickupRecords)
+      .leftJoin(stores, eq(pickupRecords.storeId, stores.storeId))
+      .leftJoin(clientWechatUsers, eq(pickupRecords.clientUserId, clientWechatUsers.userId))
+      .leftJoin(staffWechatUsers, eq(pickupRecords.confirmedBy, staffWechatUsers.employeeId))
+      .leftJoin(saleItems, eq(pickupRecords.saleItemId, saleItems.saleItemId))
+      .leftJoin(productSkus, eq(saleItems.skuId, productSkus.skuId))
+      .where(whereClause)
+      // 例外：导出走 keyset 分页，排序键必须是不可变唯一键（见上方注释）
+      .orderBy(desc(pickupRecords.id))
+    const fetchedRows = limit == null ? await query : await query.limit(limit + 1)
+    const { pageRows, hasMore, nextCursor } = resolveExportKeysetPage(
+      fetchedRows,
+      limit,
+      (lastRow) => lastRow.id,
+    )
+
+    return {
+      rows: pageRows.map((row) => ({
+        createdAt: row.createdAt.toISOString(),
+        storeName: row.storeName,
+        clientName: row.clientName,
+        saleOrderId: row.saleOrderId,
+        productName: row.productName,
+        pickupQuantity: row.pickupQuantity,
+        pickupUnitPrice: row.pickupUnitPrice,
+        pickupAmount: row.pickupAmount,
+      })),
+      truncated: false,
+      hasMore,
+      ...(nextCursor === undefined ? {} : { nextCursor }),
+    }
   },
 )
 
@@ -505,6 +639,8 @@ export const getPickupRecordById = withPermission(
     saleOrderId: r.saleOrderId ?? undefined,
     itemQuantity: r.itemQuantity ?? undefined,
     itemPickedUpQuantity: r.itemPickedUpQuantity ?? undefined,
+    pickupUnitPrice: r.record.pickupUnitPrice,
+    pickupAmount: r.record.pickupAmount,
   }
   },
 )
@@ -956,6 +1092,8 @@ async function createGroupedPickupRecord(
       `)) as unknown as Array<{ sale_item_id: string }>
       if (updated.length !== 1) throw new ApiError('CONFLICT', '家居产品状态已更新，请刷新后重试')
 
+      // #341：合并提货每条来源明细 quantity=1，各自冻结一件的出库金额
+      const frozen = pickupAmountSnapshot(item.unit_real_price, 1)
       const inserted = await tx.insert(pickupRecords).values({
         saleItemId: item.sale_item_id,
         inventorySkuId: null,
@@ -965,6 +1103,8 @@ async function createGroupedPickupRecord(
         confirmedBy: session.employeeId,
         remark: data.remark?.trim() || null,
         idempotencyKey: idemKey,
+        pickupUnitPrice: frozen.unitPrice,
+        pickupAmount: frozen.amount,
       }).returning({ id: pickupRecords.id })
       pickupRecordIds.push(inserted[0]?.id ?? 0)
     }
@@ -1103,6 +1243,7 @@ export const createPickupRecord = withPermission(
         item_direction: string
         sale_order_type: string
         converted_amount: string
+        unit_real_price: string
         quantity: number
         picked_up_quantity: number
         settled_quantity: number
@@ -1150,6 +1291,8 @@ export const createPickupRecord = withPermission(
       if (await hasPendingRefund(tx, lockedItem.sale_order_id)) {
         throw new ApiError('INVALID_STATE', '该订单退款审批中，暂不可提货')
       }
+      // #341：单价取自上面已加锁的 sale_items 行，冻结提货这一刻的顾客实际单价
+      const frozen = pickupAmountSnapshot(lockedItem.unit_real_price, data.pickupQuantity)
 
       // 锁行后再累加结算数；WHERE 物理上限作为最后一道数据保护。
       const updated = await tx.execute(sql`
@@ -1228,6 +1371,8 @@ export const createPickupRecord = withPermission(
             confirmedBy: session.employeeId,
             remark: data.remark?.trim() || null,
             idempotencyKey: idemKey,
+            pickupUnitPrice: frozen.unitPrice,
+            pickupAmount: frozen.amount,
           })
           .returning({ id: pickupRecords.id })
 
@@ -1288,6 +1433,8 @@ export const deletePickupRecord = withPermission(
         storeId: pickupRecords.storeId,
         clientUserId: pickupRecords.clientUserId,
         confirmedBy: pickupRecords.confirmedBy,
+        pickupUnitPrice: pickupRecords.pickupUnitPrice,
+        pickupAmount: pickupRecords.pickupAmount,
       })
       .from(pickupRecords)
       .where(and(eq(pickupRecords.id, id), scopeCondition(session, pickupRecords.storeId)))
@@ -1335,6 +1482,9 @@ export const deletePickupRecord = withPermission(
         storeId: rec.storeId,
         clientUserId: rec.clientUserId,
         confirmedBy: rec.confirmedBy,
+        // #341：冻结金额是店长提成的数据来源，删除后只剩审计日志可追溯
+        pickupUnitPrice: rec.pickupUnitPrice,
+        pickupAmount: rec.pickupAmount,
       },
     })
 

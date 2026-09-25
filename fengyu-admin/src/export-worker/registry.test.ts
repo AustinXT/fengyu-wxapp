@@ -21,6 +21,9 @@ vi.mock('@/actions/data-center/daily-overview', () => ({
 vi.mock('@/actions/refunds', () => ({
   exportRefunds: vi.fn(),
 }))
+vi.mock('@/actions/pickup-records', () => ({
+  exportPickupRecords: vi.fn(),
+}))
 vi.mock('@/actions/data-center/customer-frequency', () => ({
   // 缺省返回空结果：「报表视图分发」用例会遍历全部报表视图
   exportCustomerFrequencyReport: vi.fn(async () => ({
@@ -62,6 +65,7 @@ import { getProductBoard } from '@/actions/data-center/product'
 import { getEfficiencyBoard } from '@/actions/data-center/efficiency'
 import { getOperatingMaster } from '@/actions/data-center/operating-master'
 import { exportRefunds } from '@/actions/refunds'
+import { exportPickupRecords } from '@/actions/pickup-records'
 import { exportRemainingCardsReport } from '@/actions/data-center/remaining-cards'
 import { getDailyOverview } from '@/actions/data-center/daily-overview'
 import { buildDailyOverview } from '@/lib/data-center/daily-overview'
@@ -219,6 +223,73 @@ describe('退款导出', () => {
     expect(columns['退款金额']?.value(first.value!)).toBe(-500)
     expect(columns['状态']?.value(first.value!)).toBe('已通过')
     expect(columns['退款方式']?.value(first.value!)).toBe('微信支付')
+  })
+})
+
+describe('提货记录导出（#341）', () => {
+  it('透传筛选条件；列齐全且顺序固定；金额输出数值，历史行（未冻结）留空而不是 0', async () => {
+    vi.mocked(exportPickupRecords).mockResolvedValue({
+      rows: [
+        {
+          createdAt: '2026-09-25T02:03:04.000Z', storeName: '一店', clientName: '顾客A',
+          saleOrderId: 'FY-XSD-WX-2609250001', productName: '家居A', pickupQuantity: 2,
+          pickupUnitPrice: '88.50', pickupAmount: '177.00',
+        },
+        {
+          createdAt: '2026-08-01T02:03:04.000Z', storeName: '一店', clientName: '顾客B',
+          saleOrderId: 'FY-XSD-WX-2608010001', productName: '家居B', pickupQuantity: 1,
+          pickupUnitPrice: null, pickupAmount: null,
+        },
+      ],
+      truncated: false,
+      hasMore: false,
+    } as never)
+
+    const content = await createExportContent('pickup-records', { store: 'store-1', from: '2026-09-01', to: '2026-09-30' })
+    const iterator = content.rows[Symbol.asyncIterator]()
+    const frozen = (await iterator.next()).value!
+    const legacy = (await iterator.next()).value!
+    const columns = Object.fromEntries(content.columns.map((column) => [column.header, column]))
+
+    expect(exportPickupRecords).toHaveBeenCalledWith(
+      { store: 'store-1', from: '2026-09-01', to: '2026-09-30' },
+      { limit: 500 },
+    )
+    expect(content.sheetName).toBe('提货记录')
+    expect(content.columns.map((column) => column.header)).toEqual([
+      '提货时间', '门店', '顾客', '销售单号', '商品', '数量', '顾客实际单价', '出库金额',
+    ])
+    expect(columns['数量']?.value(frozen)).toBe(2)
+    expect(columns['顾客实际单价']?.value(frozen)).toBe(88.5)
+    expect(columns['出库金额']?.value(frozen)).toBe(177)
+    expect(columns['顾客实际单价']?.value(legacy)).toBe('')
+    expect(columns['出库金额']?.value(legacy)).toBe('')
+    expect(columns['销售单号']?.value(frozen)).toBe('FY-XSD-WX-2609250001')
+  })
+})
+
+describe('提货记录导出 · 跨页接线（#341 评审 round-2）', () => {
+  it('第一页 hasMore → 带游标取第二页；501 行全量输出、无重复', async () => {
+    const row = (id: number) => ({
+      id, createdAt: '2026-09-25T02:03:04.000Z', storeName: '一店', clientName: '顾客', saleOrderId: `SO-${id}`,
+      productName: '家居', pickupQuantity: 1, pickupUnitPrice: '10.00', pickupAmount: '10.00',
+    })
+    const first = Array.from({ length: 500 }, (_, index) => row(1000 - index))
+    vi.mocked(exportPickupRecords).mockReset()
+    vi.mocked(exportPickupRecords)
+      .mockResolvedValueOnce({ rows: first, truncated: false, hasMore: true, nextCursor: 501 } as never)
+      .mockResolvedValueOnce({ rows: [row(500)], truncated: false, hasMore: false } as never)
+
+    const content = await createExportContent('pickup-records', { store: 'store-1' })
+    const saleOrderIds: unknown[] = []
+    for await (const value of content.rows) saleOrderIds.push(value.saleOrderId)
+
+    expect(saleOrderIds).toHaveLength(501)
+    expect(new Set(saleOrderIds).size).toBe(501)
+    expect(vi.mocked(exportPickupRecords).mock.calls).toEqual([
+      [{ store: 'store-1' }, { limit: 500 }],
+      [{ store: 'store-1' }, { limit: 500, cursor: 501 }],
+    ])
   })
 })
 

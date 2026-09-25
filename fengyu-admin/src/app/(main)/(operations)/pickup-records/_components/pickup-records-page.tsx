@@ -19,7 +19,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
-import { formatPhone, formatDateTime as fmtDateTime } from '@/lib/utils'
+import { formatCurrency, formatPhone, formatDateTime as fmtDateTime } from '@/lib/utils'
+import { ExportButton } from '@/components/ui/export-button'
 import { RowDeleteMenu } from '@/components/delete-action'
 import { deletePickupRecord } from '@/actions/pickup-records'
 import { normalizePage } from '@/lib/paging'
@@ -29,6 +30,11 @@ const PAGE_SIZE_OPTIONS = [10, 20, 50]
 function formatDateTime(dt: string | null | undefined) {
   if (!dt) return "—"
   return fmtDateTime(dt)
+}
+
+/** #341 上线前的历史提货记录没有冻结金额（不回填），显示「—」而不是 ¥0.00 */
+function formatFrozenAmount(value: string | null | undefined) {
+  return value == null ? '—' : formatCurrency(value)
 }
 
 interface Props {
@@ -117,6 +123,18 @@ export default function PickupRecordsPage({ records, filterOptions, total, canCr
           {row.pickupQuantity}
         </span>
       ),
+    },
+    {
+      key: 'pickupUnitPrice',
+      header: '顾客实际单价',
+      className: 'whitespace-nowrap text-right',
+      cell: (row) => <span className="tabular-nums">{formatFrozenAmount(row.pickupUnitPrice)}</span>,
+    },
+    {
+      key: 'pickupAmount',
+      header: '出库金额',
+      className: 'whitespace-nowrap text-right',
+      cell: (row) => <span className="font-medium tabular-nums">{formatFrozenAmount(row.pickupAmount)}</span>,
     },
     {
       key: 'progress',
@@ -221,6 +239,21 @@ export default function PickupRecordsPage({ records, filterOptions, total, canCr
               value={searchInput}
               onChange={(e) => handleSearchChange(e.target.value)}
             />
+            <ExportButton
+              exportRequest={{
+                exportType: 'pickup-records',
+                // 只带筛选条件（与列表页同名参数）；分页参数不影响导出范围，带上反而拆散任务去重
+                payload: Object.fromEntries(
+                  Object.entries({
+                    market: marketFilter,
+                    store: storeFilter,
+                    q: get('q'),
+                    from: dateFrom,
+                    to: dateTo,
+                  }).filter(([, value]) => value),
+                ),
+              }}
+            />
           </div>
         </CardContent>
       </Card>
@@ -291,6 +324,14 @@ export default function PickupRecordsPage({ records, filterOptions, total, canCr
               <span className="font-medium text-[#C0322A]">
                 {detail.pickupQuantity}
               </span>
+            </div>
+            <div className="flex justify-between gap-4">
+              <span className="text-[#999999]">顾客实际单价</span>
+              <span className="tabular-nums">{formatFrozenAmount(detail.pickupUnitPrice)}</span>
+            </div>
+            <div className="flex justify-between gap-4">
+              <span className="text-[#999999]">出库金额</span>
+              <span className="font-medium tabular-nums">{formatFrozenAmount(detail.pickupAmount)}</span>
             </div>
             {detail.itemQuantity != null && (
               <div className="flex justify-between gap-4">

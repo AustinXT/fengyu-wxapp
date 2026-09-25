@@ -6046,6 +6046,29 @@ function pendingHomeProductQuantity(row) {
   return Math.min(physicalRemaining, Math.floor(remainingCents / unitCents))
 }
 
+/**
+ * #341：提货时冻结的出库金额 = 本次提货数 × 顾客实际单价（sale_items.unit_real_price）。
+ *
+ * - 口径（用户拍板）：部分支付也按 unit_real_price；寄存单 / 0 元赠品 / 转换转入一律同式，
+ *   0 元行即记 0；套装只在销售明细级记一次（这里），不按库存组件拆。
+ * - 调用方必须传**已加锁**的 sale_items 行上的单价，冻结的是提货那一刻的值。
+ * - 按「分」算：staffApi 的 pg 把 numeric 解析成 float，直接相乘会带出 0.1+0.2 式尾差；
+ *   单价 0 是合法值，不能写成 `|| null`（会把 0 元行冻结成 NULL）。
+ * - DB 有 chk_pickup_amount_frozen 兜底：金额 ≠ ROUND(单价 × 数量, 2) 的写入直接被拒。
+ * - admin `actions/pickup-records.ts` 有同名副本，cross-end-sql-snapshot 整段守护。
+ */
+function pickupAmountSnapshot(unitRealPrice, pickupQuantity) {
+  const unitCents = Math.round(Number(unitRealPrice) * 100)
+  const amountCents = unitCents * pickupQuantity
+  if (unitRealPrice === null || unitRealPrice === undefined || String(unitRealPrice).trim() === '' || !Number.isFinite(unitCents) || !Number.isInteger(pickupQuantity) || pickupQuantity <= 0) {
+    throw new Error('INVALID_STATE: 销售明细缺少顾客实际单价，无法计算出库金额')
+  }
+  return {
+    unitPrice: (unitCents / 100).toFixed(2),
+    amount: (amountCents / 100).toFixed(2),
+  }
+}
+
 async function generatePickupInventoryDocNo(client) {
   const prefix = 'GCK'
   const ymd = shanghaiYMD()
@@ -6152,7 +6175,10 @@ async function createPickupInventoryDoc(client, ctx, updatedItem, requirements, 
     const lotRows = await client.query(
       `SELECT lot.id, lot.location_id, lot.sku_id, lot.sku_name, lot.spec_name,
               lot.supplier, lot.product_series, lot.batch_no, lot.expiry_date,
-              lot.is_gift, lot.quantity_on_hand
+              lot.is_gift, lot.quantity_on_hand,
+              lot.supply_chain_unit_cost, lot.market_standard_unit_price, lot.market_unit_discount,
+              lot.market_actual_unit_price, lot.store_standard_unit_price, lot.store_unit_discount,
+              lot.store_actual_unit_price
          FROM inventory_stock_lots lot
         WHERE lot.location_id = $1
           AND lot.sku_id = $2
@@ -6230,11 +6256,17 @@ async function createPickupInventoryDoc(client, ctx, updatedItem, requirements, 
       if (deduct <= 0) continue
       const after = before - deduct
       const inserted = await client.query(
+      // #341：带上锁定批次的价格快照（与 admin engine 通用建单同一组列）。actual_unit_price 留空，
+      // 由 inventory_set_doc_item_amount 按 store → market → 供应链 取成本算 amount；赠送批次记 0。
+      // 这是**出库成本**；顾客售价口径的出库金额另存 pickup_records.pickup_amount，两列不混。
       `INSERT INTO inventory_doc_items (
          doc_id, lot_id, sku_id, sale_item_id, sku_name, spec_name, supplier,
-         product_series, batch_no, expiry_date, is_gift, quantity, stock_snapshot, remark
+         product_series, batch_no, expiry_date, is_gift, quantity, stock_snapshot, remark,
+         supply_chain_unit_cost, market_standard_unit_price, market_unit_discount,
+         market_actual_unit_price, store_standard_unit_price, store_unit_discount,
+         store_actual_unit_price
        )
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
        RETURNING id`,
       [
         docId,
@@ -6251,6 +6283,13 @@ async function createPickupInventoryDoc(client, ctx, updatedItem, requirements, 
         deduct,
         before,
         remark || null,
+        lot.supply_chain_unit_cost ?? null,
+        lot.market_standard_unit_price ?? null,
+        lot.market_unit_discount ?? null,
+        lot.market_actual_unit_price ?? null,
+        lot.store_standard_unit_price ?? null,
+        lot.store_unit_discount ?? null,
+        lot.store_actual_unit_price ?? null,
       ],
     )
       const docItemId = inserted.rows[0].id
@@ -6433,13 +6472,16 @@ async function createGroupedPickup(ctx, saleItemIds, pickupQuantity, remark, ide
         [item.sale_item_id],
       )
       if (updated.rowCount !== 1) throw new Error('CONFLICT: 家居产品状态已更新，请刷新后重试')
+      // #341：合并提货每条来源明细 quantity=1，各自冻结一件的出库金额
+      const frozen = pickupAmountSnapshot(item.unit_real_price, 1)
       await client.query(
         `INSERT INTO pickup_records (
            sale_item_id, inventory_sku_id, pickup_quantity, store_id, client_user_id,
-           confirmed_by, remark, idempotency_key
-         ) VALUES ($1, NULL, 1, $2, $3, $4, $5, $6)`,
+           confirmed_by, remark, idempotency_key, pickup_unit_price, pickup_amount
+         ) VALUES ($1, NULL, 1, $2, $3, $4, $5, $6, $7, $8)`,
         [item.sale_item_id, ctx.auth.effectiveStoreId, first.client_user_id,
-          ctx.auth.staffWfId, remark || null, idempotencyKey || null],
+          ctx.auth.staffWfId, remark || null, idempotencyKey || null,
+          frozen.unitPrice, frozen.amount],
       )
     }
 
@@ -6600,6 +6642,8 @@ async function createPickup(ctx) {
       throw new Error(`INVALID_STATE: 已支付可提数量不足，当前可提 ${pendingBeforePickup}`)
     }
     await assertNoPendingRefund(client, row.sale_order_id)
+    // #341：单价取自上面已加锁的 sale_items 行，冻结提货这一刻的顾客实际单价
+    const frozen = pickupAmountSnapshot(row.unit_real_price, requestedQuantity)
 
     const result = await client.query(
       // #154：守卫看「已结算」三列之和而非单列——只看 picked_up 会把已退款/已折抵占用的额度重新放出来提货。
@@ -6643,9 +6687,10 @@ async function createPickup(ctx) {
       await client.query(
         `INSERT INTO pickup_records (
            sale_item_id, inventory_sku_id, pickup_quantity, store_id, client_user_id,
-           confirmed_by, remark, idempotency_key
-         ) VALUES ($1, NULL, $2, $3, $4, $5, $6, $7)`,
-        [saleItemId, requestedQuantity, ctx.auth.effectiveStoreId, clientUserId, ctx.auth.staffWfId, remark || null, idempotencyKey || null]
+           confirmed_by, remark, idempotency_key, pickup_unit_price, pickup_amount
+         ) VALUES ($1, NULL, $2, $3, $4, $5, $6, $7, $8, $9)`,
+        [saleItemId, requestedQuantity, ctx.auth.effectiveStoreId, clientUserId, ctx.auth.staffWfId, remark || null, idempotencyKey || null,
+          frozen.unitPrice, frozen.amount]
       )
     } catch (err) {
       if (err && err.code === '23505' && err.constraint === 'uq_pickup_idempotency') {
@@ -7550,5 +7595,6 @@ Object.defineProperty(module.exports, '__testables__', {
     assertNormalSkuMarketScopeForCurrentStore,
     resolveCustomerOrderMarketScope,
     buildCustomerOrderMarketScopeFilter,
+    pickupAmountSnapshot,
   },
 })

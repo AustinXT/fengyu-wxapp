@@ -12,6 +12,8 @@ vi.mock('@db/pickup', () => ({
     storeId: 'store_id',
     clientUserId: 'client_user_id',
     confirmedBy: 'confirmed_by',
+    pickupUnitPrice: 'pickup_unit_price',
+    pickupAmount: 'pickup_amount',
   },
 }))
 
@@ -84,10 +86,16 @@ function mockSelect(rows: any[]) {
   ;(db.select as any).mockReturnValue(chain)
 }
 
+const deleteCalls: Array<{ table: unknown; where: unknown }> = []
 function setupTx(deleteCount: number, captureExecute?: (sqlArg: any) => void) {
   ;(db.transaction as any).mockImplementation(async (fn: any) => {
     const tx = {
-      delete: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({ count: deleteCount }) }),
+      delete: vi.fn((table: unknown) => ({
+        where: vi.fn(async (where: unknown) => {
+          deleteCalls.push({ table, where })
+          return { count: deleteCount }
+        }),
+      })),
       execute: vi.fn().mockImplementation(async (arg: any) => { captureExecute?.(arg); return undefined }),
     }
     return fn(tx)
@@ -106,6 +114,25 @@ describe('deletePickupRecord — 删除 + 回退已提数量', () => {
     expect(result.success).toBe(false)
     expect(result.message).toContain('不存在')
     expect(db.transaction).not.toHaveBeenCalled()
+  })
+
+  it('#341 审计快照留存冻结单价与出库金额（删除后唯一可追溯处）', async () => {
+    mockSelect([{
+      saleItemId: 'SI-1', pickupQuantity: 2, storeId: 'S1', clientUserId: 'U1', confirmedBy: 'E1',
+      pickupUnitPrice: '88.50', pickupAmount: '177.00',
+    }])
+    setupTx(1, () => {})
+    await deletePickupRecord(1)
+    // 删的是按主键 id（+ scope）命中的那一行：条件写错时记录不删，金额仍留在列表与导出里（#341 评审 round-8）
+    expect(deleteCalls.at(-1)?.table).toMatchObject({ id: 'id', pickupAmount: 'pickup_amount' })
+    expect((deleteCalls.at(-1)?.where as any).args[0]).toEqual({ type: 'eq', a: 'id', b: 1 })
+    // 投影把两列绑到各自的 DB 列（互换即红，#341 评审 round-7）
+    const projection = (db.select as any).mock.calls[0][0]
+    expect(projection).toMatchObject({ pickupUnitPrice: 'pickup_unit_price', pickupAmount: 'pickup_amount' })
+    expect(logOperation).toHaveBeenCalledWith(
+      mockSession, 'pickup_record.delete', 'pickup_record', '1',
+      { snapshot: expect.objectContaining({ pickupUnitPrice: '88.50', pickupAmount: '177.00' }) },
+    )
   })
 
   it('记录存在 → 删除 + 回退计数 + 审计', async () => {

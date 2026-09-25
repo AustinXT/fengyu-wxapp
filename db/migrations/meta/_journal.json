@@ -379,6 +379,13 @@
       "when": 1790307069052,
       "tag": "0053_stocktake_zero_quantity",
       "breakpoints": true
+    },
+    {
+      "idx": 54,
+      "version": "7",
+      "when": 1790333373116,
+      "tag": "0054_pickup_frozen_amount",
+      "breakpoints": true
     }
   ]
 }

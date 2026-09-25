@@ -94,3 +94,10 @@ jobs:
         env:
           INVENTORY_PG_TEST_URL: postgresql://postgres:test@localhost:5432/test
         run: node --test db/scripts/__tests__/inventory-doc-item-quantity.pg.test.js
+
+      # #341 提货冻结出库金额：CHECK 两列同生同灭 + 金额恒等式、BEFORE INSERT 兜底补齐、
+      # GCK 明细成本兜底顺序（门店 → 市场 → 供应链）都是 DB 语义，跨端守护只钉得住源码文本
+      - name: Run #341 pickup frozen amount regression
+        env:
+          PICKUP_PG_TEST_URL: postgresql://postgres:test@localhost:5432/test
+        run: node --test db/scripts/__tests__/pickup-amount.pg.test.js
