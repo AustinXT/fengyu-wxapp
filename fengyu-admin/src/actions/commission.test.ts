@@ -450,6 +450,12 @@ describe('#379 updateRate — 单价阈值 + set 白名单', () => {
     expect(set.mock.calls[0][0]).toEqual({ commissionRate: '0.03' })
   })
 
+  it('可配行（阈值本就 NULL，已停用）改成他销他耗 → .set() 不带 priceThreshold', async () => {
+    const set = setup({ ...SELF, priceThreshold: null })
+    await updateRate(42, { salesCategory: '他销他耗' })
+    expect(set.mock.calls[0][0]).toEqual({ salesCategory: '他销他耗' })
+  })
+
   it('updateRate 传数字阈值 → 格式错误而非 TypeError', async () => {
     setup(SELF)
     const result = await updateRate(42, { priceThreshold: 100 } as any)
