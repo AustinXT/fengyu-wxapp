@@ -175790,6 +175790,7 @@ var INVENTORY_GENERIC_DOC_TYPES = [
   "分院库存盘点"
 ];
 var INVENTORY_MOVEMENT_PAGE_SIZES = [20, 50, 100];
+var INVENTORY_MOVEMENT_DEFAULT_PAGE_SIZE = 20;
 
 // src/lib/inventory/business-level.ts
 init_permissions();
@@ -177087,19 +177088,24 @@ var listInventoryLocations = withPermission("inventory:stock_list", async (sessi
     isActive: row.isActive
   }));
 });
-async function inventoryLocationFilterOptions(session4) {
+async function inventoryLocationFilterOptions(session4, { includeInactive = false } = {}) {
   await syncInventoryLocations();
   const scoped = await scopedLocationIds(session4);
-  const rows = await db2.select().from(inventoryLocations).where(import_drizzle_orm58.eq(inventoryLocations.isActive, true)).orderBy(import_drizzle_orm58.asc(inventoryLocations.locationType), import_drizzle_orm58.asc(inventoryLocations.name));
-  return buildInventoryLocationFilterOptions(rows.map((row) => ({
+  const rows = await db2.select().from(inventoryLocations).where(includeInactive ? undefined : import_drizzle_orm58.eq(inventoryLocations.isActive, true)).orderBy(import_drizzle_orm58.asc(inventoryLocations.locationType), import_drizzle_orm58.asc(inventoryLocations.name));
+  const toRow = (row) => ({
     locationId: row.locationId,
     locationType: row.locationType,
-    name: row.name,
+    name: row.isActive ? row.name : `${row.name}（已停用）`,
     orgNodeId: row.orgNodeId,
     storeId: row.storeId,
     parentLocationId: row.parentLocationId,
     isActive: row.isActive
-  })), scoped);
+  });
+  const options = buildInventoryLocationFilterOptions(rows.map(toRow), scoped);
+  if (!includeInactive)
+    return options;
+  const activeDefault = buildInventoryLocationFilterOptions(rows.filter((row) => row.isActive).map(toRow), scoped).defaultLocationId;
+  return { ...options, defaultLocationId: activeDefault ?? options.defaultLocationId };
 }
 async function inventoryDocLocationFilterOptions(session4) {
   await syncInventoryLocations();
@@ -177115,7 +177121,8 @@ async function inventoryDocLocationFilterOptions(session4) {
     isActive: row.isActive
   })), scoped);
 }
-var listInventoryLocationFilterOptions = withPermission("inventory:stock_list", inventoryLocationFilterOptions);
+var listInventoryLocationFilterOptions = withPermission("inventory:stock_list", (session4) => inventoryLocationFilterOptions(session4));
+var listInventoryMovementLocationFilterOptions = withPermission("inventory:stock_list", (session4) => inventoryLocationFilterOptions(session4, { includeInactive: true }));
 var listInventoryDocLocationFilterOptions = withPermission("inventory:list", inventoryDocLocationFilterOptions);
 async function resolveSkuSupplier(tx, supplierIdInput, currentSupplierId) {
   if (supplierIdInput === undefined)
@@ -179452,7 +179459,6 @@ var listInventorySettlements = withPermission("inventory:list", async (session4,
 });
 
 // src/lib/inventory/movements.ts
-var DEFAULT_PAGE_SIZE = 20;
 var DATE_PATTERN2 = /^\d{4}-\d{2}-\d{2}$/;
 var CURSOR_PATTERN = /^[1-9]\d{0,17}$/;
 var MAX_TEXT_LENGTH = 64;
@@ -179541,18 +179547,21 @@ function inventoryMovementSelectSql(filters, bound, limit) {
            m.quantity_delta,
            m.quantity_before,
            m.quantity_after,
-           -- 对方主体：组织端点优先；非组织对象回落名称快照。employee_name 是单据的「相关员工」
-           -- （员工购出库里是购买员工），不是经办人 —— 经办人另取 m.created_by
+           -- 对方主体：组织端点优先（流水主体必是单据的 source 或 target，另一端即对方；端点无主体行时显示节点 id）；
+           -- 非组织对象回落名称快照。employee_name 是单据的「相关员工」（员工购出库里是购买员工），
+           -- 不是经办人 —— 经办人另取 m.created_by
            CASE
              WHEN doc.id IS NULL THEN NULL
-             WHEN doc.source_org_node_id IS NOT NULL AND doc.source_org_node_id <> loc.org_node_id THEN src.name
-             WHEN doc.target_org_node_id IS NOT NULL AND doc.target_org_node_id <> loc.org_node_id THEN tgt.name
+             WHEN doc.source_org_node_id IS NOT NULL AND doc.source_org_node_id <> loc.org_node_id THEN COALESCE(src.name, doc.source_org_node_id)
+             WHEN doc.target_org_node_id IS NOT NULL AND doc.target_org_node_id <> loc.org_node_id THEN COALESCE(tgt.name, doc.target_org_node_id)
              ELSE COALESCE(doc.supplier_name, doc.customer_name, doc.external_party_name, doc.employee_name)
            END AS counterparty_name,
            m.created_by,
            operator.name AS operator_name,
            m.remark,
            to_char(m.created_at AT TIME ZONE 'Asia/Shanghai', 'YYYY-MM-DD HH24:MI:SS') AS created_at
+      -- 以下 JOIN 键全部唯一（lot.id / location_id / doc.id 主键，org_node_id 唯一索引，employee_id 主键），
+      -- 不会放大行数：计数 SQL 不 JOIN 它们也与列表行数一致
       FROM inventory_movements m
       JOIN inventory_stock_lots lot ON lot.id = m.lot_id
       JOIN inventory_locations loc ON loc.location_id = m.location_id
@@ -179606,7 +179615,7 @@ async function listInventoryMovementsForSession(session4, params) {
     throw new ApiError("INVALID_PARAMS", "翻页游标只能指定一个方向");
   }
   const requestedSize = Number(params.pageSize);
-  const pageSize = INVENTORY_MOVEMENT_PAGE_SIZES.includes(requestedSize) ? requestedSize : DEFAULT_PAGE_SIZE;
+  const pageSize = INVENTORY_MOVEMENT_PAGE_SIZES.includes(requestedSize) ? requestedSize : INVENTORY_MOVEMENT_DEFAULT_PAGE_SIZE;
   assertInventoryLocationInScope(session4, filters.locationId);
   const bound = after !== undefined ? { after } : before !== undefined ? { before } : null;
   const [countResult, fetched] = await Promise.all([

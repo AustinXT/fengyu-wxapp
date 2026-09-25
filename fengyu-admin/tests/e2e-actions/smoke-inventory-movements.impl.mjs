@@ -14,7 +14,7 @@
 import path from 'node:path'
 import { closePool, pgQuery } from './setup.mjs'
 import {
-  MKA_ORG, STA1_ID, SKU_SUPPLY,
+  MKA_ORG, STA1_ID, STA2_ID, SKU_SUPPLY,
   cleanupInventoryFixture, ensureInventoryFixture, insertSeedLot, lotQuantity,
   marketASession, storeA1Session, storeA2Session, supplyChainSession,
 } from './helpers/inventory-fixtures.mjs'
@@ -127,10 +127,27 @@ try {
   const [outDoc] = outRow?.docId
     ? await pgQuery(`SELECT doc_type, source_org_node_id FROM inventory_docs WHERE id = $1`, [outRow.docId])
     : []
-  check('出库行单号指向院退货相关单据，单据类型与对方主体（市场A）取自 JOIN',
-    Boolean(outRow?.docId) && outRow.docType === outDoc?.doc_type && outDoc?.source_org_node_id != null
-      && typeof outRow.counterpartyName === 'string' && outRow.counterpartyName.length > 0,
-    `doc=${outRow?.docId} type=${outRow?.docType} 对方=${outRow?.counterpartyName}`)
+  const [approver] = await pgQuery(`SELECT name FROM staff_wechat_users WHERE employee_id = $1`, [marketASession().employeeId])
+  check('出库行：单号 = 院退货单、单据类型取自 JOIN、对方主体 = 市场A、经办人 = 审批的市场财务',
+    outRow?.docId === returnDocId && outRow.docType === outDoc?.doc_type && outDoc?.doc_type === '院退货'
+      && outRow.counterpartyName === 'TE2AI_市场A'
+      && outRow.operatorId === marketASession().employeeId && outRow.operatorName === approver?.name,
+    `doc=${outRow?.docId} type=${outRow?.docType} 对方=${outRow?.counterpartyName} 经办=${outRow?.operatorName}`)
+  // 时间列：上海时区、带秒，独立于 SQL 的 to_char 用 JS 重算
+  const shanghai = (value) => new Intl.DateTimeFormat('sv-SE', {
+    timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+  }).format(new Date(value))
+  check('时间列 = created_at 的上海时间（YYYY-MM-DD HH:mm:ss）',
+    byBatch.rows.every((row, index) => row.createdAt === shanghai(rawA[index].createdAt)),
+    JSON.stringify(byBatch.rows.map((row, index) => [row.createdAt, shanghai(rawA[index].createdAt)])))
+  // 反方向：市场A 视角看同一批号的退货入库，对方主体是门店A1
+  setSession(marketASession())
+  const marketView = await mv.listInventoryMovements({ locationId: MKA_ORG, batchNo: 'TMV-A' })
+  check('市场视角：退货入库的对方主体 = 门店A1',
+    marketView.rows.some((row) => row.direction === '入库' && row.docId && row.counterpartyName === 'TE2AI_门店A1'),
+    JSON.stringify(marketView.rows.map((row) => [row.direction, row.docType, row.counterpartyName])))
+  setSession(storeA1Session())
   const seedRow = byBatch.rows[0]
   check('无单据流水（种子入库）单号留空', seedRow.docId === null && seedRow.docType === null, JSON.stringify(seedRow))
   const [lotAFinal] = await pgQuery(`SELECT quantity_on_hand FROM inventory_stock_lots WHERE id = $1`, [lotA])
@@ -246,6 +263,25 @@ try {
       && typeof firstOut?.[col('数量')] === 'number' && firstOut[col('数量')] < 0
       && typeof firstOut?.[col('批次 ID')] === 'number',
     `sheet=${content.sheetName} rows=${sheetRows.length} total=${skuTotal} 出库行=${JSON.stringify(firstOut)}`)
+
+  // ════ 停用主体：关店后仍可在进出明细选到并查询历史（库存查询页不列停用主体）════
+  const locations = await import(A('src', 'actions', 'inventory', 'locations.ts'))
+  await pgQuery(`UPDATE stores SET is_closed = true WHERE store_id = $1`, [STA2_ID])
+  try {
+    setSession(marketASession())
+    const movementOptions = await locations.listInventoryMovementLocationFilterOptions()
+    const stockOptions = await locations.listInventoryLocationFilterOptions()
+    const storeNames = (options) => options.markets.flatMap((market) => market.stores.map((store) => store.name))
+    check('停用门店：进出明细选项含「（已停用）」、库存查询选项不含；默认主体仍在营',
+      storeNames(movementOptions).includes('TE2AI_门店A2（已停用）')
+        && !storeNames(stockOptions).some((name) => name.startsWith('TE2AI_门店A2'))
+        && movementOptions.defaultLocationId === stockOptions.defaultLocationId,
+      `movement=${storeNames(movementOptions)} stock=${storeNames(stockOptions)} default=${movementOptions.defaultLocationId}`)
+    const closedStore = await mv.listInventoryMovements({ locationId: STA2_ID, skuCode: SKU_SUPPLY })
+    check('停用门店的流水可查询（scope 内）', closedStore.total === 0 && Array.isArray(closedStore.rows), `total=${closedStore.total}`)
+  } finally {
+    await pgQuery(`UPDATE stores SET is_closed = false WHERE store_id = $1`, [STA2_ID])
+  }
 
   // ════ issue 验收 SQL：每个批次最后一条流水 quantity_after = quantity_on_hand ════
   const mismatch = await pgQuery(`

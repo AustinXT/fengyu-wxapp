@@ -12,7 +12,7 @@ import { sql, type SQL } from 'drizzle-orm'
 import type { AuthSession } from '@/lib/types'
 import { assertInventoryLocationInScope } from './access'
 import { assertRealCalendarDate } from './settlements'
-import { INVENTORY_MOVEMENT_PAGE_SIZES } from './types'
+import { INVENTORY_MOVEMENT_DEFAULT_PAGE_SIZE, INVENTORY_MOVEMENT_PAGE_SIZES } from './types'
 import type {
   InventoryMovementDirection,
   InventoryMovementFilters,
@@ -33,7 +33,6 @@ import type {
  *   （FOR UPDATE）内写入，id 序 = 提交序 = 结存链序，单批次的前后结存链不会断。
  */
 
-const DEFAULT_PAGE_SIZE = 20
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/
 const CURSOR_PATTERN = /^[1-9]\d{0,17}$/
 const MAX_TEXT_LENGTH = 64
@@ -94,6 +93,9 @@ export function normalizeInventoryMovementFilters(filters: InventoryMovementFilt
 /**
  * 查询条件（不含翻页键）：计数、列表、导出三处共用同一份，同一时刻下三者条数一致。
  * （计数与列表是两条独立语句、导出异步执行，期间新写入的流水会造成个位数差异。）
+ *
+ * ⚠ 只允许引用 `m`（inventory_movements）与 `lot`（inventory_stock_lots）两个别名：
+ * 计数 SQL 只 JOIN 了这两张表，引用 doc / loc / operator 会让计数在运行时报错。
  */
 export function inventoryMovementWhereSql(filters: NormalizedMovementFilters): SQL {
   const conditions: SQL[] = [sql`m.location_id = ${filters.locationId}`]
@@ -142,18 +144,21 @@ export function inventoryMovementSelectSql(
            m.quantity_delta,
            m.quantity_before,
            m.quantity_after,
-           -- 对方主体：组织端点优先；非组织对象回落名称快照。employee_name 是单据的「相关员工」
-           -- （员工购出库里是购买员工），不是经办人 —— 经办人另取 m.created_by
+           -- 对方主体：组织端点优先（流水主体必是单据的 source 或 target，另一端即对方；端点无主体行时显示节点 id）；
+           -- 非组织对象回落名称快照。employee_name 是单据的「相关员工」（员工购出库里是购买员工），
+           -- 不是经办人 —— 经办人另取 m.created_by
            CASE
              WHEN doc.id IS NULL THEN NULL
-             WHEN doc.source_org_node_id IS NOT NULL AND doc.source_org_node_id <> loc.org_node_id THEN src.name
-             WHEN doc.target_org_node_id IS NOT NULL AND doc.target_org_node_id <> loc.org_node_id THEN tgt.name
+             WHEN doc.source_org_node_id IS NOT NULL AND doc.source_org_node_id <> loc.org_node_id THEN COALESCE(src.name, doc.source_org_node_id)
+             WHEN doc.target_org_node_id IS NOT NULL AND doc.target_org_node_id <> loc.org_node_id THEN COALESCE(tgt.name, doc.target_org_node_id)
              ELSE COALESCE(doc.supplier_name, doc.customer_name, doc.external_party_name, doc.employee_name)
            END AS counterparty_name,
            m.created_by,
            operator.name AS operator_name,
            m.remark,
            to_char(m.created_at AT TIME ZONE 'Asia/Shanghai', 'YYYY-MM-DD HH24:MI:SS') AS created_at
+      -- 以下 JOIN 键全部唯一（lot.id / location_id / doc.id 主键，org_node_id 唯一索引，employee_id 主键），
+      -- 不会放大行数：计数 SQL 不 JOIN 它们也与列表行数一致
       FROM inventory_movements m
       JOIN inventory_stock_lots lot ON lot.id = m.lot_id
       JOIN inventory_locations loc ON loc.location_id = m.location_id
@@ -237,7 +242,7 @@ export async function listInventoryMovementsForSession(
   const requestedSize = Number(params.pageSize)
   const pageSize = (INVENTORY_MOVEMENT_PAGE_SIZES as readonly number[]).includes(requestedSize)
     ? requestedSize
-    : DEFAULT_PAGE_SIZE
+    : INVENTORY_MOVEMENT_DEFAULT_PAGE_SIZE
   assertInventoryLocationInScope(session, filters.locationId)
 
   const bound: KeysetBound = after !== undefined ? { after } : before !== undefined ? { before } : null

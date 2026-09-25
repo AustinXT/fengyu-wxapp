@@ -15,6 +15,7 @@ import {
   exportInventoryMovements,
   inventoryMovementCountSql,
   inventoryMovementSelectSql,
+  inventoryMovementWhereSql,
   listInventoryMovements,
   normalizeInventoryMovementFilters,
 } from './movements'
@@ -148,6 +149,24 @@ describe('进出明细入参校验（#360）', () => {
   })
 })
 
+describe('进出明细 入参校验先于 scope 判定（#360）', () => {
+  // 页面只兜 INVALID_PARAMS：越权会话 + 非法入参若先报 PERMISSION_DENIED，同一入参的对错就取决于谁在调
+  it('越权主体 + 缺二选一 / 假日期 / 畸形游标 → 仍是 INVALID_PARAMS，且不碰数据库', async () => {
+    mockGetSession.mockResolvedValue(STORE_SESSION)
+    await expect(listInventoryMovements({ locationId: 'S2' })).rejects.toThrow(/^INVALID_PARAMS/)
+    await expect(listInventoryMovements({ locationId: 'S2', batchNo: 'B-1', startDate: '2026-02-30' })).rejects.toThrow(/^INVALID_PARAMS/)
+    await expect(listInventoryMovements({ locationId: 'S2', batchNo: 'B-1', after: 'x' })).rejects.toThrow(/^INVALID_PARAMS/)
+    expect(mockDb.execute).not.toHaveBeenCalled()
+  })
+
+  it('导出：越权主体 + 缺条件 → INVALID_PARAMS；越权主体 + 畸形游标 → INVALID_STATE', async () => {
+    mockGetSession.mockResolvedValue(HQ_SESSION)
+    await expect(exportInventoryMovements({ location: 'S1' }, { limit: 10 })).rejects.toThrow(/^INVALID_PARAMS/)
+    await expect(exportInventoryMovements({ location: 'S1', batch: 'B-1' }, { limit: 10, cursor: -1 })).rejects.toThrow(/^INVALID_STATE/)
+    expect(mockDb.execute).not.toHaveBeenCalled()
+  })
+})
+
 describe('进出明细 scope（#360）', () => {
   it('主体不在 scope 内 → PERMISSION_DENIED，且不碰数据库', async () => {
     mockGetSession.mockResolvedValue(STORE_SESSION)
@@ -201,6 +220,19 @@ describe('进出明细取数 SQL（#360）', () => {
     expect(text).toMatch(/m\.created_at < \(\$4::date \+ 1\)::timestamp AT TIME ZONE 'Asia\/Shanghai'/)
   })
 
+  it('计数 SQL 必须 JOIN lot（where 的批号条件引用 lot 别名），且只 JOIN 这一张', () => {
+    const { sql: text } = compile(inventoryMovementCountSql(filters({ locationId: 'S1', batchNo: 'B-1' })))
+    expect(text).toMatch(/FROM inventory_movements m\s+JOIN inventory_stock_lots lot ON lot\.id = m\.lot_id\s+WHERE/)
+    // where 只许引用 m / lot：计数 SQL 里没有 doc / loc / operator 别名
+    const where = compile(inventoryMovementWhereSql(filters({
+      locationId: 'S1', skuCode: 'P-01', startDate: '2026-09-01', endDate: '2026-09-30',
+    }))).sql
+    const aliases = [...where.matchAll(/\b([a-z_]+)\.[a-z_]+/g)].map((match) => match[1])
+    expect(new Set(aliases.filter((alias) => alias !== 'sku'))).toEqual(new Set(['m']))
+    const batchWhere = compile(inventoryMovementWhereSql(filters({ locationId: 'S1', batchNo: 'B-1' }))).sql
+    expect(new Set([...batchWhere.matchAll(/\b([a-z_]+)\.[a-z_]+/g)].map((match) => match[1]))).toEqual(new Set(['m', 'lot']))
+  })
+
   it('计数与列表共用同一 where（导出行数 = 页面总数的前提）', () => {
     const where = (query: SQL) => compile(query).sql.replace(/\s+/g, ' ').match(/WHERE (m\.location_id.*?)( ORDER BY|$)/)?.[1]
     const f = filters({ locationId: 'S1', skuCode: 'P-01', startDate: '2026-09-01' })
@@ -216,8 +248,14 @@ describe('进出明细取数 SQL（#360）', () => {
 
   it('对方主体取 source / target 中不是本主体的一方；单据类型、批号、经办人来自 JOIN', () => {
     const { sql: text } = compile(inventoryMovementSelectSql(filters({ locationId: 'S1', batchNo: 'B-1' }), null, 21))
-    expect(text).toMatch(/WHEN doc\.source_org_node_id IS NOT NULL AND doc\.source_org_node_id <> loc\.org_node_id THEN src\.name/)
-    expect(text).toMatch(/WHEN doc\.target_org_node_id IS NOT NULL AND doc\.target_org_node_id <> loc\.org_node_id THEN tgt\.name/)
+    expect(text).toMatch(/WHEN doc\.source_org_node_id IS NOT NULL AND doc\.source_org_node_id <> loc\.org_node_id THEN COALESCE\(src\.name, doc\.source_org_node_id\)/)
+    expect(text).toMatch(/WHEN doc\.target_org_node_id IS NOT NULL AND doc\.target_org_node_id <> loc\.org_node_id THEN COALESCE\(tgt\.name, doc\.target_org_node_id\)/)
+    expect(text).toMatch(/ELSE COALESCE\(doc\.supplier_name, doc\.customer_name, doc\.external_party_name, doc\.employee_name\)/)
+    expect(text).toMatch(/LEFT JOIN inventory_locations src ON src\.org_node_id = doc\.source_org_node_id/)
+    expect(text).toMatch(/LEFT JOIN inventory_locations tgt ON tgt\.org_node_id = doc\.target_org_node_id/)
+    expect(text).toMatch(/JOIN inventory_locations loc ON loc\.location_id = m\.location_id/)
+    // 上海时间、带秒
+    expect(text).toMatch(/to_char\(m\.created_at AT TIME ZONE 'Asia\/Shanghai', 'YYYY-MM-DD HH24:MI:SS'\) AS created_at/)
     expect(text).toMatch(/LEFT JOIN inventory_docs doc ON doc\.id = m\.doc_id/)
     expect(text).toMatch(/JOIN inventory_stock_lots lot ON lot\.id = m\.lot_id/)
     expect(text).toMatch(/LEFT JOIN staff_wechat_users operator ON operator\.employee_id = m\.created_by/)
@@ -229,7 +267,7 @@ describe('进出明细行映射（#360）', () => {
     mockGetSession.mockResolvedValue(STORE_SESSION)
     const rows = [
       rawRow(1, { direction: '入库', quantity_delta: '10.00', quantity_before: '0.00', quantity_after: '10.00', doc_id: 'YRK-1', doc_type: '院入库' }),
-      rawRow(2, { direction: '出库', quantity_delta: '-3.00', quantity_before: '10.00', quantity_after: '7.00', doc_id: 'YTH-1', doc_type: '院退货' }),
+      rawRow(2, { direction: '出库', quantity_delta: '-3.00', quantity_before: '10.00', quantity_after: '7.00', doc_id: 'YTH-1', doc_type: '院退货', remark: '效期临近', created_by: 'E2', operator_name: null }),
       rawRow(3, { direction: '调整', quantity_delta: '1.50', quantity_before: '7.00', quantity_after: '8.50', doc_id: null, doc_type: null, counterparty_name: null }),
     ]
     mockDb.execute.mockImplementation(async (query: SQL) =>
@@ -242,6 +280,14 @@ describe('进出明细行映射（#360）', () => {
       [3, '调整', 1.5, 7, 8.5, null, null],
     ])
     expect(typeof page.rows[0].lotId).toBe('number')
+    // 其余列逐字段照搬：错接任一列（如对方主体接成产品名）都会红
+    expect(page.rows[0]).toEqual({
+      id: 1, lotId: 11, skuId: 'SKU-1', skuName: '修护精华', specName: '30ml', batchNo: 'B-1',
+      docId: 'YRK-1', docType: '院入库', direction: '入库', quantityDelta: 10, quantityBefore: 0, quantityAfter: 10,
+      counterpartyName: '市场一', operatorId: 'E1', operatorName: '张三', remark: null, createdAt: '2026-09-26 10:00:00',
+    })
+    expect(page.rows[2]).toMatchObject({ counterpartyName: null, remark: null })
+    expect(page.rows[1]).toMatchObject({ remark: '效期临近', operatorId: 'E2', operatorName: null })
   })
 
   it('按商品编号：两个批次的流水各带自己的批号', async () => {

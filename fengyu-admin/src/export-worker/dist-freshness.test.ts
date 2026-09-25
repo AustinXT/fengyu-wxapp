@@ -334,12 +334,25 @@ const PROBES: Probe[] = [
     exactCountsInModule: true,
   },
   {
-    // 页面与导出共用同一段 SQL：改了取数口径（JOIN / 对方主体 CASE）不重建，导出就与页面分叉
-    label: '进出明细取数 SQL（#360，列表 / 计数 / 导出共用）',
+    // 页面与导出共用同一段 SQL：多行模板正文逐字比对（bun 原样保留模板串）。覆盖投影、对方主体 CASE、
+    // 全部 JOIN、商品编号子查询、排序 / LIMIT 与上海时间 —— 单删 product_code、把 JOIN 换键都会红。
+    // `WHERE ${…}` 两行不入闭集：插值里的 JS 标识符会被 bun 改写（sql → import_drizzle_ormN.sql）
+    label: '进出明细取数 SQL · 多行模板正文（#360，列表 / 计数 / 导出共用）',
     file: 'src/lib/inventory/movements.ts',
-    pattern: /^(FROM inventory_movements m|(LEFT )?JOIN (inventory_|staff_wechat_users )|WHEN doc\.|ELSE COALESCE\(doc\.)/,
-    minLines: 13,
-    uniqueLines: 11,
+    pattern: /^(SELECT (m\.id,|COUNT|sku\.)|WHERE sku\.|(m|lot)\.[a-z_]+,$|doc\.doc_type,$|CASE$|WHEN doc\.|ELSE COALESCE|END AS |operator\.name AS|to_char\(|(LEFT )?JOIN |FROM inventory_movements|ORDER BY m\.id|LIMIT \$\{limit\})/,
+    minLines: 36,
+    uniqueLines: 34,
+    exactCountsInModule: true,
+    exactLinesInModule: true,
+  },
+  {
+    // 单行 sql`…` 条件（主体 / 批号 / 上海日界 / keyset 游标）：bun 会改写这些 JS 行（加分号、改 import 别名），
+    // 只能取模板正文按「包含 + 频次」比对 —— 把日界 `<` 改成 `<=`、游标 `>` 改成 `>=` 都会让正文失配
+    label: '进出明细取数 SQL · 单行条件（#360）',
+    file: 'src/lib/inventory/movements.ts',
+    pattern: /conditions(\.push\(sql`|: SQL\[\] = \[sql`)(m\.(location_id|created_at|id) |lot\.batch_no)/,
+    minLines: 6,
+    uniqueLines: 6,
     exactCountsInModule: true,
   },
   {

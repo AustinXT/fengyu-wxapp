@@ -4,6 +4,7 @@ import { useState } from 'react'
 import Link from 'next/link'
 import { ArrowLeftRight } from 'lucide-react'
 import {
+  INVENTORY_MOVEMENT_DEFAULT_PAGE_SIZE,
   INVENTORY_MOVEMENT_PAGE_SIZES,
   type InventoryLocationFilterOptions,
   type InventoryMovementPage,
@@ -56,7 +57,7 @@ export default function InventoryMovementsPage({
   const [mode, setMode] = useState<SearchMode>(initialMode)
   const [code, setCode] = useState(initialMode === 'batch' ? get('batch') : get('sku'))
   const bySku = Boolean(get('sku'))
-  const pageSize = PAGE_SIZE_OPTIONS.includes(Number(get('size'))) ? Number(get('size')) : 20
+  const pageSize = PAGE_SIZE_OPTIONS.includes(Number(get('size'))) ? Number(get('size')) : INVENTORY_MOVEMENT_DEFAULT_PAGE_SIZE
   const resetCursor = { after: '', before: '' }
 
   const submit = () => {

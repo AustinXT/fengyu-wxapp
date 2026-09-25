@@ -1,5 +1,5 @@
 import { Suspense } from 'react'
-import { listInventoryLocationFilterOptions } from '@/actions/inventory/locations'
+import { listInventoryMovementLocationFilterOptions } from '@/actions/inventory/locations'
 import { listInventoryMovements } from '@/actions/inventory/movements'
 import { ApiError } from '@/lib/api-error'
 import { getSession } from '@/lib/auth'
@@ -16,18 +16,23 @@ const EMPTY_PAGE: InventoryMovementPage = { rows: [], total: 0, hasPrev: false, 
 export default async function Page({
   searchParams,
 }: {
-  searchParams: Promise<Record<string, string | undefined>>
+  searchParams: Promise<Record<string, string | string[] | undefined>>
 }) {
-  const params = await searchParams
+  const raw = await searchParams
+  // 同名参数重复（?sku=A&sku=B）时 Next 给数组：不猜取哪个，按非法条件提示
+  const duplicated = Object.values(raw).some(Array.isArray)
+  const params: Record<string, string | undefined> = Object.fromEntries(
+    Object.entries(raw).map(([key, value]) => [key, Array.isArray(value) ? undefined : value]),
+  )
   const session = await getSession()
   requireAllUiPageCapabilities(session, ['inventory:stock_list'])
-  const filterOptions = await listInventoryLocationFilterOptions()
+  const filterOptions = await listInventoryMovementLocationFilterOptions()
   const selectedLocationId = resolveInventoryFilterLocationId(filterOptions, params.location)
   const hasQuery = Boolean(params.sku?.trim() || params.batch?.trim())
 
   let result = EMPTY_PAGE
-  let errorMessage: string | null = null
-  if (selectedLocationId && hasQuery) {
+  let errorMessage: string | null = duplicated ? '查询参数重复，请重新输入条件查询' : null
+  if (selectedLocationId && hasQuery && !duplicated) {
     try {
       result = await listInventoryMovements({
         locationId: selectedLocationId,
