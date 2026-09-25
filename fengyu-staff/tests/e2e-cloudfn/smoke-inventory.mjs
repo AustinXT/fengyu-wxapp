@@ -5,6 +5,11 @@
  * 覆盖员工端实际使用的 v3 单据接口，而不是已保留的旧 inventory.list/detail 兼容路由。
  * 夹具构造一张已完成的“院入库”单，验证店长按库存主体可见、无效单据类型被拒绝，
  * 以及详情能够返回 v3 单据头和批次明细。
+ *
+ * #352 门店盘点：盘点 SKU 候选（不限可报货、不带账面数）→ 建盘点单（一个实盘=账面、一个实盘 0）
+ * → SQL 断言 stock_snapshot = 该店该 SKU 在手量汇总、不产流水、在手量不变 → 列表 / 详情可见；
+ * 同 SKU 两行、实盘留空被拒。
+ * ⚠️ 实盘 0 依赖迁移 0053（#351 放宽 quantity CHECK）；目标库没迁 0053 时这一步会被 CHECK 拒绝。
  */
 import './setup.mjs'
 import {
@@ -18,6 +23,8 @@ import {
 
 const INV_DOC_ID = `${NS}_INV_PROC_1`
 const INV_SKU_ID = `${NS}_INV_SKU_1`
+// 盘点第二个 SKU：非可报货、本店没有任何批次（账面 0）
+const INV_SKU_ID_2 = `${NS}_INV_SKU_2`
 
 let pass = false
 let exitCode = 1
@@ -61,6 +68,16 @@ async function createInventoryFixture() {
            is_active = true,
            updated_at = NOW()`,
     [INV_SKU_ID, `${NS}_PCODE_1`, `${NS}_采购商品`],
+  )
+  await pgQuery(
+    `INSERT INTO inventory_skus (
+       sku_id, product_code, product_name, spec_name, retail_price, is_active, is_reportable,
+       accounting_price, market_purchase_discount, market_purchase_price_mode
+     )
+     VALUES ($1, $2, $3, '默认规格', 100, true, false, 50, 0.8, '公式')
+     ON CONFLICT (sku_id) DO UPDATE
+       SET is_active = true, is_reportable = false, updated_at = NOW()`,
+    [INV_SKU_ID_2, `${NS}_PCODE_2`, `${NS}_盘点商品`],
   )
   const lots = await pgQuery(
     // 余额必须是 0 且不能在 DO UPDATE 里改：0009 的
@@ -180,6 +197,8 @@ async function main() {
     if (errors.length === 0) rec(`  ✓ inventory.docDetail 返回单据头 + ${(detail.items || []).length} 行 v3 明细`)
   }
 
+  await stocktakeFlow(errors)
+
   if (errors.length) {
     rec('  ✗ FAIL')
     for (const error of errors) rec(`    - ${error}`)
@@ -188,6 +207,95 @@ async function main() {
   pass = true
   exitCode = 0
   rec('  ✅ PASS')
+}
+
+/** #352：门店库存员在小程序做门店盘点的整条后端链路 */
+async function stocktakeFlow(errors) {
+  const before = errors.length
+  const bookOf = async (skuId) => {
+    const rows = await pgQuery(
+      `SELECT COALESCE(SUM(quantity_on_hand), 0)::numeric AS q
+         FROM inventory_stock_lots WHERE location_id = $1 AND sku_id = $2`,
+      [TEST_STORE_ID, skuId],
+    )
+    return Number(rows[0].q)
+  }
+  const book1 = await bookOf(INV_SKU_ID)
+  const book2 = await bookOf(INV_SKU_ID_2)
+
+  const rOpts = await invokeStaffApi('inventory.stocktakeSkuOptions', {
+    _testOpenid: TEST_MANAGER_OPENID,
+    locationId: TEST_STORE_ID,
+    keyword: NS,
+    pageSize: 20,
+  })
+  if (rOpts.code !== 0) {
+    errors.push(`stocktakeSkuOptions code=${rOpts.code} msg=${rOpts.message}`)
+    return
+  }
+  const optIds = (rOpts.data?.items || []).map((item) => item.skuId)
+  if (!optIds.includes(INV_SKU_ID_2)) errors.push(`盘点候选应含非可报货 SKU ${INV_SKU_ID_2}，实际 ${optIds.join(',')}`)
+  if (JSON.stringify(rOpts.data).match(/stockReference|price|amount|quantity/i)) {
+    errors.push('盘点候选不应下发账面数 / 金额字段')
+  }
+
+  const create = (items) => invokeStaffApi('inventory.createDoc', {
+    _testOpenid: TEST_MANAGER_OPENID,
+    _loginLevel: 'store',
+    _currentStoreId: TEST_STORE_ID,
+    docType: '分院库存盘点',
+    storeId: TEST_STORE_ID,
+    items,
+  })
+
+  const rDup = await create([{ skuId: INV_SKU_ID, quantity: 1 }, { skuId: INV_SKU_ID, quantity: 2 }])
+  if (rDup.code !== -400) errors.push(`同 SKU 两行应 -400，实际 code=${rDup.code} msg=${rDup.message}`)
+  const rBlank = await create([{ skuId: INV_SKU_ID, quantity: '' }])
+  if (rBlank.code !== -400) errors.push(`实盘留空应 -400，实际 code=${rBlank.code} msg=${rBlank.message}`)
+
+  const rCreate = await create([
+    { skuId: INV_SKU_ID, quantity: book1 },
+    { skuId: INV_SKU_ID_2, quantity: 0 },
+  ])
+  if (rCreate.code !== 0) {
+    errors.push(`盘点建单 code=${rCreate.code} msg=${rCreate.message}`)
+    return
+  }
+  const docId = rCreate.data?.id
+  const itemRows = await pgQuery(
+    `SELECT sku_id, quantity::numeric AS quantity, stock_snapshot::numeric AS stock_snapshot
+       FROM inventory_doc_items WHERE doc_id = $1 ORDER BY sku_id`,
+    [docId],
+  )
+  const snapshotBySku = Object.fromEntries(itemRows.map((row) => [row.sku_id, Number(row.stock_snapshot)]))
+  if (itemRows.length !== 2) errors.push(`盘点明细应 2 行，实际 ${itemRows.length}`)
+  if (snapshotBySku[INV_SKU_ID] !== book1) errors.push(`${INV_SKU_ID} 账面=${snapshotBySku[INV_SKU_ID]}，期望在手汇总 ${book1}`)
+  if (snapshotBySku[INV_SKU_ID_2] !== book2) errors.push(`${INV_SKU_ID_2} 账面=${snapshotBySku[INV_SKU_ID_2]}，期望在手汇总 ${book2}`)
+
+  const movements = await pgQuery('SELECT COUNT(*)::int AS cnt FROM inventory_movements WHERE doc_id = $1', [docId])
+  if (movements[0].cnt !== 0) errors.push(`盘点单不应产生流水，实际 ${movements[0].cnt} 条`)
+  if (await bookOf(INV_SKU_ID) !== book1 || await bookOf(INV_SKU_ID_2) !== book2) {
+    errors.push('盘点后门店在手量发生了变化')
+  }
+
+  const rList = await invokeStaffApi('inventory.docList', {
+    _testOpenid: TEST_MANAGER_OPENID,
+    docTypes: ['分院库存盘点'],
+    page: 1,
+    pageSize: 20,
+  })
+  if (!(rList.data?.items || []).some((item) => item.id === docId)) {
+    errors.push(`盘点分类列表应含 ${docId}（code=${rList.code} msg=${rList.message}）`)
+  }
+  const rDetail = await invokeStaffApi('inventory.docDetail', { _testOpenid: TEST_MANAGER_OPENID, id: docId })
+  const detailItems = rDetail.data?.items || []
+  const zeroRow = detailItems.find((item) => item.skuId === INV_SKU_ID_2)
+  if (rDetail.data?.docType !== '分院库存盘点' || !zeroRow || zeroRow.quantity !== 0 || zeroRow.stockSnapshot !== book2) {
+    errors.push(`盘点详情应返回实盘 0 / 账面 ${book2}：${JSON.stringify(zeroRow)}`)
+  }
+  if (errors.length === before) {
+    rec(`  ✓ 门店盘点 ${docId}：候选含非可报货 SKU、账面=在手汇总、无流水、列表/详情可见；重复 SKU / 留空被拒`)
+  }
 }
 
 try {
