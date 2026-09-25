@@ -3879,7 +3879,7 @@ describe('#341 提货冻结出库金额：两端副本一致', () => {
         }
         if (!/\.(js|mjs|cjs|ts|tsx|sql)$/.test(entry.name) || /\.test\.|\.spec\./.test(entry.name)) continue
         const file = path.join(dir, entry.name)
-        if (/INSERT\s+INTO\s+"?pickup_records"?|insert\(pickupRecords\)/.test(stripJsComments(readFile(file)))) {
+        if (/INSERT\s+INTO\s+"?pickup_records"?|insert\(pickupRecords\)/i.test(stripJsComments(readFile(file)))) {
           writers.push(path.relative(repoRoot, file))
         }
       }
@@ -3889,6 +3889,48 @@ describe('#341 提货冻结出库金额：两端副本一致', () => {
       'fengyu-admin/src/actions/pickup-records.ts',
       'fengyu-staff/cloudfunctions/staffApi/routes/order.js',
     ])
+  })
+
+  /** 按起止锚点切段（admin 的 createPickupRecord 是 `export const … = withPermission(`，不是 function 声明） */
+  function sectionBetween(src, startMarker, endMarker) {
+    const start = src.indexOf(startMarker)
+    expect(start, `未找到 ${startMarker}`).toBeGreaterThanOrEqual(0)
+    const end = src.indexOf(endMarker, start + startMarker.length)
+    expect(end, `未找到 ${endMarker}`).toBeGreaterThan(start)
+    return src.slice(start, end)
+  }
+
+  const PICKUP_SITES = [
+    { name: 'staff createGroupedPickup', file: () => staffSrc(), start: 'async function createGroupedPickup(', end: 'async function createPickup(' },
+    { name: 'staff createPickup', file: () => staffSrc(), start: 'async function createPickup(', end: 'async function availablePickupItems(' },
+    { name: 'admin createGroupedPickupRecord', file: () => adminSrc(), start: 'async function createGroupedPickupRecord(', end: 'export const createPickupRecord' },
+    { name: 'admin createPickupRecord', file: () => adminSrc(), start: 'export const createPickupRecord', end: 'export const deletePickupRecord' },
+  ]
+
+  test.each(PICKUP_SITES)('$name：冻结单价的来源是锁行 SQL 的 si.unit_real_price（不许别名顶替）', ({ file, start, end }) => {
+    const section = sectionBetween(file(), start, end)
+    const lockSql = normalizeSql(extractBacktickStringContaining(section, 'FOR UPDATE OF si'))
+    expect(lockSql).toMatch(/[\s,]si\.unit_real_price[\s,]/)
+    // `si.unit_price AS unit_real_price` 之类的别名会让 helper 读到错价，而其它断言全绿（#341 评审 round-1）
+    expect(lockSql).not.toMatch(/\bAS\s+unit_real_price\b/i)
+    expect(section).toMatch(/const frozen = pickupAmountSnapshot\(\w+\.unit_real_price,/)
+  })
+
+  test.each(PICKUP_SITES)('$name：联动开启时生成 GCK —— 恰好一处 createPickupInventoryDoc 调用，且在开关门控内', ({ file, start, end }) => {
+    const section = sectionBetween(file(), start, end)
+    expect(section.match(/createPickupInventoryDoc\(/g)).toHaveLength(1)
+    const call = section.indexOf('inventoryDocId = await createPickupInventoryDoc(')
+    expect(call).toBeGreaterThan(0)
+    // 调用必须落在 `if (INVENTORY_LINKAGE_ENABLED) {` 块内（花括号配平找块尾，块内有对象字面量）
+    const gate = section.lastIndexOf('if (INVENTORY_LINKAGE_ENABLED) {', call)
+    expect(gate, '调用点前没有联动开关门控').toBeGreaterThanOrEqual(0)
+    let depth = 0
+    let blockEnd = -1
+    for (let i = section.indexOf('{', gate); i < section.length; i++) {
+      if (section[i] === '{') depth++
+      if (section[i] === '}' && --depth === 0) { blockEnd = i; break }
+    }
+    expect(call).toBeLessThan(blockEnd)
   })
 
   function extractFunctionSection(src, functionName) {
