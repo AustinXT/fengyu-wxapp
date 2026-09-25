@@ -2181,6 +2181,22 @@ describe('品项公司发货引用市场报货单（#336b）', () => {
     expect(screen.queryByText(/^已选 /)).toBeNull()
   })
 
+  it('服务端拒绝（库存 / 未发量冲突）后，已挂载的批次选择器按最新可用量重查，已选批次保留', async () => {
+    const row = report('SBH-1')
+    vi.mocked(getInventoryCoreDocById).mockResolvedValue(reportDetail(row))
+    vi.mocked(createItemCompanyShipment).mockRejectedValueOnce(new Error('INVALID_STATE: 库存不足：精华液 可用 10'))
+    renderPage({ level: 'supply-chain', operation: 'company-shipment', locations: [HQ], shipmentMarketTargets: [M1], candidates: [row] })
+    fireEvent.click(await screen.findByRole('checkbox', { name: '选择 SBH-1' }))
+    await chooseLot(0, '41')
+    const lotQueries = () => vi.mocked(listInventoryLotOptions).mock.calls.length
+    const before = lotQueries()
+    submitShipment()
+    await waitFor(() => expect(toast.error).toHaveBeenCalled())
+    await waitFor(() => expect(lotQueries()).toBe(before + 1))
+    const lotSelect = screen.getAllByRole('option', { name: '选择库存批次' })[0].closest('select') as HTMLSelectElement
+    await waitFor(() => expect(lotSelect.value).toBe('41'))
+  })
+
   it('同一报货明细同一批次重复两行：前端先拦，按服务端口径提示合并', async () => {
     const row = report('SBH-1')
     vi.mocked(getInventoryCoreDocById).mockResolvedValue(reportDetail(row))

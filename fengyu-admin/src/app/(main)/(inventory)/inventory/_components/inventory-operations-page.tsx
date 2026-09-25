@@ -2911,9 +2911,16 @@ function CompanyShipmentForm({
   const lineKeyRef = useRef(0)
   /*
    * 同「总部 + SKU」的批次只查一次，拆批次 / 赠送 / 多张报货单共用（复用在途请求）。
-   * 失败的请求移出缓存以便重试；提交时整体作废（可用量会变，下一张单要按最新量选）。
+   * 失败的请求移出缓存，后挂载的行会重查。作废 = 清缓存 + 换 loadLots 引用（lotVersion）——
+   * 只清缓存的话已挂载的选择器 effect 依赖不变、不会重查，界面上仍是旧的可用量。
+   * 作废时机：换市场 / 换总部 / 提交结束（成功则可用量已变，失败多为库存或未发量冲突，要按最新量重选）。
    */
   const lotCacheRef = useRef(new Map<string, Promise<InventoryLotRow[]>>())
+  const [lotVersion, setLotVersion] = useState(0)
+  const invalidateLots = useCallback(() => {
+    lotCacheRef.current.clear()
+    setLotVersion((version) => version + 1)
+  }, [])
   const loadLots = useCallback((locationId: string, skuId: string) => {
     const key = `${locationId}|${skuId}`
     let pending = lotCacheRef.current.get(key)
@@ -2924,7 +2931,9 @@ function CompanyShipmentForm({
       pending = request
     }
     return pending
-  }, [])
+    // lotVersion 只用来换引用，触发已挂载选择器重查
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lotVersion])
   /*
    * 报货单明细是异步装载的。换市场 / 换总部 / 提交成功都会作废当前选择，
    * 迟到的响应只在「同一轮选择 + 该单最后一次发起的请求」时落地：否则会把旧市场的明细塞回来，
@@ -2956,6 +2965,7 @@ function CompanyShipmentForm({
 
   function clearSelection() {
     epochRef.current += 1
+    invalidateLots()
     setReportIds([])
     setReports(new Map())
     setLoadingIds([])
@@ -3151,7 +3161,6 @@ function CompanyShipmentForm({
       remark: optionalText(line.remark),
     })
     setSaving(true)
-    lotCacheRef.current.clear()
     try {
       const result = await createItemCompanyShipment({
         marketId,
@@ -3172,6 +3181,8 @@ function CompanyShipmentForm({
     } catch (error) {
       // 超量等 CONFLICT 文案由服务端给出（含「本次最多可发 N」），原样展示
       toast.error(actionErrorMessage(error, '创建品项公司发货失败'))
+      // 已选批次保留，但可用量按最新重查（成功路径由 clearSelection 作废）
+      invalidateLots()
     } finally {
       setSaving(false)
     }
