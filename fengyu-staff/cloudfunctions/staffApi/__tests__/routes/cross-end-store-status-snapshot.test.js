@@ -46,7 +46,8 @@ function listSources(dir, exts) {
 
 /**
  * staff 管理层路由分类（闭集）：新增 `routes/mgmt-*.js` 必须在这里归类，否则下面的分类用例变红。
- *   - STATS：数据中心统计子页，取数必须叠加在营口径
+ *   - STATS：数据中心统计子页，取数必须叠加在营口径。⚠️ 归入 STATS 只保证 is_closed / closed_at 被扫描，
+ *     不保证真的接了线 —— 新文件须照下方「接线」用例补整段等值 + 调用计数断言自证
  *   - EXEMPT：非统计（顾客档案查询 / 详情），停用门店的顾客档案仍可查，不叠加
  */
 const STAFF_MGMT_STATS = ['mgmt-dashboard.js', 'mgmt-product.js', 'mgmt-traffic.js']
@@ -90,6 +91,24 @@ describe('#401 数据中心在营口径 · 闭集', () => {
       })
     }
     expect(offenders).toEqual([])
+  })
+})
+
+describe('#401 数据中心在营口径 · helper 本体', () => {
+  it('两端 store-status helper 的代码行不出现 is_closed / isClosed（注释可解释口径，代码不许用）', () => {
+    const helpers = [path.join(ADMIN_SRC, 'lib/store-status.ts'), path.join(STAFF_ROOT, 'utils/store-status.js')]
+    const offenders = []
+    let codeLines = 0
+    for (const file of helpers) {
+      readFile(file).split('\n').forEach((line, i) => {
+        const t = line.trim()
+        if (!t || /^(\*|\/\*|\/\/)/.test(t)) return
+        codeLines++
+        if (/\bis_closed\b|\bisClosed\b|closed_at|closedAt/.test(t)) offenders.push(`${rel(file)}:${i + 1}: ${t}`)
+      })
+    }
+    expect(offenders).toEqual([])
+    expect(codeLines).toBeGreaterThan(15) // 防剥注释把全文剥空
   })
 })
 
@@ -137,11 +156,7 @@ describe('#401 数据中心在营口径 · 单源', () => {
   })
 
   it('staffApi 全部源码只在 utils/store-status.js 定义一次 activeStoreCondition', () => {
-    const files = [
-      ...listSources(path.join(STAFF_ROOT, 'routes'), ['.js']),
-      ...listSources(path.join(STAFF_ROOT, 'utils'), ['.js']),
-      path.join(STAFF_ROOT, 'index.js'),
-    ]
+    const files = listSources(STAFF_ROOT, ['.js']) // 整个 staffApi（listSources 已跳过 node_modules 与测试文件）
     const sites = definitionSites(files)
     expect(sites.map(rel)).toEqual(['fengyu-staff/cloudfunctions/staffApi/utils/store-status.js'])
   })

@@ -234,6 +234,7 @@ async function syncOrgNodesAndStores(mssqlPool, pgPool, dryRun) {
       // is_closed ↔ closed_at 双写一致（schema 不变量；admin updateStore 首次关店同样记当天）：
       // 关店且原本无闭店日期 → 记今天；已有闭店日期保留；重新开业 → 清空。
       // 只动营业时间轴，不碰 org_nodes.is_active（关店不联动停用节点，#401）。
+      // ⚠️ closed_at 精度 = 同步周期：记的是「本脚本首次观测到关店」的那天，不是 WorkFine 真实闭店日。
       await client.query(`
         INSERT INTO stores (store_id, store_name, org_node_id, opening_date, bed_count, is_closed, closed_at)
         VALUES ($1, $2, $3, $4, $5, $6, CASE WHEN $6 THEN (now() AT TIME ZONE 'Asia/Shanghai')::date END)

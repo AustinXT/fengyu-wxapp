@@ -40,8 +40,9 @@ const ZERO_BUSINESS: Pick<DashboardStats,
 /**
  * 查询系统概览指标（admin/hr/product 共用）
  *
- * 门店数是「今天仍在营业」的时点计数 = 统计范围（lib/store-status，只看节点 is_active）
- * ∩ 当前未关店；与数据中心门店数按 closed_at 历史化同理，is_closed 只作时点条件、不作范围（#401）。
+ * 门店数 = 统计范围（lib/store-status，只看节点 is_active）∩ 当前未关店；is_closed 只作时点条件、
+ * 不作范围（#401）。⚠️ 不看 opening_date：筹备中未开业的门店也计入，与数据中心门店数
+ * （opening_date / closed_at 历史化）存在口径差，对数时注意。
  */
 async function getAdminStats() {
   const rows = await db.execute(sql`
