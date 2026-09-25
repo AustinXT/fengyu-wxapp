@@ -148,6 +148,25 @@ const PROBES: Probe[] = [
     pattern: /^AND (spe\.sale_order_type (IN|=) |so\.status = )/,
     minLines: 5,
   },
+  {
+    label: '频率表 · 到店日并入支付日，按 paid_at 上海日界（#370，visitDaysSql service_or_payment）',
+    file: 'src/lib/data-center/visit-days.ts',
+    pattern: /^AND \$\{PAYMENT_VISIT_DAY\} BETWEEN \$\{range\.start\} AND \$\{range\.end\}$/,
+    minLines: 1,
+  },
+  {
+    // 消耗那一行含 excludeDepositRefundSql('so')，bun 会把单引号改写成双引号，逐字比对必失配；取同一 CTE 的相邻行
+    label: '频率表 · 当日消耗 / 服务项目按 (顾客, service_date) 聚合（#370）',
+    file: 'src/lib/data-center/customer-frequency-query.ts',
+    pattern: /^array_agg\(DISTINCT si\.product_name\) AS items$/,
+    minLines: 1,
+  },
+  {
+    label: '频率表 · 交易跟着顾客走：款项 / 服务按顾客归属过滤（#370）',
+    file: 'src/lib/data-center/customer-frequency-query.ts',
+    pattern: /^AND so\.client_user_id IN \(SELECT user_id FROM cust\)$/,
+    minLines: 2,
+  },
 ]
 
 describe('dist/export-worker.mjs 新鲜度（改了 data-center SQL 口径必须重建产物）', () => {

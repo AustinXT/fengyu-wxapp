@@ -42,6 +42,8 @@ const PATHS = {
   adminCustomer: A('../customer.ts'),
   adminOperatingMaster: A('../operating-master.ts'),
   adminDailyOverview: A('../../../lib/data-center/daily-overview-sql.ts'),
+  // 顾客频率表（#370）的消耗在 lib 取数模块里（actions 只做闸门与派生）
+  adminCustomerFrequency: A('../../../lib/data-center/customer-frequency-query.ts'),
   staffHelper: STAFF('utils/consume-filter.js'),
   staffDashboard: STAFF('routes/mgmt-dashboard.js'),
   staffTraffic: STAFF('routes/mgmt-traffic.js'),
@@ -127,6 +129,9 @@ describe('寄存单退款单不计入消耗业绩 — 两端过滤一致性守�
     it('admin daily-overview-sql.ts = 2（日常数据一览表：服务合计基期 + 按经营类型分组的服务，#369）', () => {
       expect(countCalls(src.adminDailyOverview)).toBe(2)
     })
+    it('admin customer-frequency-query.ts = 1（频率表当日消耗；到店不剔除——寄存退款是真到店）', () => {
+      expect(countCalls(src.adminCustomerFrequency)).toBe(1)
+    })
     it('staff mgmt-dashboard.js = 9（消耗 6 + 项目 3：summary/salesData/门店榜/员工榜）', () => {
       expect(countCalls(src.staffDashboard)).toBe(9)
     })
@@ -138,6 +143,7 @@ describe('寄存单退款单不计入消耗业绩 — 两端过滤一致性守�
   describe('调用方正确引用各端 helper', () => {
     it('admin 调用方 import consume-filter（actions 走 @/ 别名，同目录的 lib 走相对路径）', () => {
       expect(src.adminDailyOverview).toMatch(/from\s+'\.\/consume-filter'/)
+      expect(src.adminCustomerFrequency).toMatch(/from\s+'\.\/consume-filter'/)
       for (const k of ['adminSales', 'adminEfficiency', 'adminCustomer', 'adminOperatingMaster']) {
         expect(src[k]).toMatch(/from\s+'@\/lib\/data-center\/consume-filter'/)
       }
