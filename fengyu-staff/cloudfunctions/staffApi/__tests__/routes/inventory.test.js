@@ -615,7 +615,7 @@ describe('inventory.createDoc 权限与状态', () => {
   // 与 admin 端分叉（同一种单据，admin 建的有账面数、staff 建的没有）。
 
   /** 建一张 staff 侧分院盘点单，返回事务 client 以便断言发出的 SQL。 */
-  function mockStoreStocktake({ bookRows, items, skuRow = {}, docType = '分院库存盘点' }) {
+  function mockStoreStocktake({ bookRows, items, skuRow = {}, docType = '分院库存盘点', skuMissing = false }) {
     const ctx = createCtx({
       payload: {
         docType,
@@ -650,6 +650,7 @@ describe('inventory.createDoc 权限与状态', () => {
             return { rows: bookRows, rowCount: bookRows.length, _params: params }
           }
           if (text.includes('FROM inventory_skus')) {
+            if (skuMissing) return { rows: [], rowCount: 0 }
             return {
               rows: [{
                 sku_id: params[0], product_name: '测试商品',
@@ -696,21 +697,94 @@ describe('inventory.createDoc 权限与状态', () => {
     expect(client.query.mock.calls.some(([sql]) => String(sql).includes('INSERT INTO inventory_doc_items'))).toBe(false)
   })
 
-  test('门店报货本 PR 不加归属闸（候选谓词未对齐前不能「能选却提交被拒」）', async () => {
+  test.each([
+    ['非供应链且归属缺失', { source_type: '市场自采', owner_market_id: null }],
+    ['别的市场自采', { source_type: '市场自采', owner_market_id: 'market-B' }],
+  ])('门店报货拒绝%s的 SKU（候选同谓词选不到，建单同闸拦下）', async (_label, skuRow) => {
     const { ctx, getClient } = mockStoreStocktake({
       docType: '门店报货',
       bookRows: [],
-      items: [{ skuId: 'sku-null-owner', quantity: 1 }],
-      skuRow: { product_name: '归属缺失自采', source_type: '市场自采', owner_market_id: null },
+      items: [{ skuId: 'sku-x', quantity: 1 }],
+      skuRow: { product_name: '外来自采', ...skuRow },
     })
 
-    await inventoryRoutes.createDoc(ctx)
-
+    await expect(inventoryRoutes.createDoc(ctx)).rejects.toThrow('INVALID_STATE: 市场自采 SKU 外来自采 仅可在归属市场使用')
     const client = getClient()
-    expect(client.query.mock.calls.some(([sql]) => String(sql).includes('INSERT INTO inventory_doc_items'))).toBe(true)
-    expect(client.query.mock.calls.some(([sql]) => (
+    // 归属按发起门店主体（location_id）查所属市场
+    const locationCall = client.query.mock.calls.find(([sql]) => (
       String(sql).includes('FROM inventory_locations') && String(sql).includes('WHERE location_id = $1')
-    ))).toBe(false)
+    ))
+    expect(locationCall[1]).toEqual(['store-A'])
+    expect(client.query.mock.calls.some(([sql]) => String(sql).includes('INSERT INTO inventory_doc_items'))).toBe(false)
+  })
+
+  test('门店报货只收可报货 SKU（与 admin loadSku(reportable) 同口径），盘点不限', async () => {
+    const report = mockStoreStocktake({ docType: '门店报货', bookRows: [], items: [{ skuId: 'sku-r', quantity: 1 }] })
+    await inventoryRoutes.createDoc(report.ctx)
+    const reportSkuSql = report.getClient().query.mock.calls.find(([sql]) => String(sql).includes('FROM inventory_skus'))[0]
+    expect(reportSkuSql).toMatch(/is_active = true AND is_reportable = true/)
+
+    const stocktake = mockStoreStocktake({ bookRows: [], items: [{ skuId: 'sku-s', quantity: 1 }] })
+    await inventoryRoutes.createDoc(stocktake.ctx)
+    const stocktakeSkuSql = stocktake.getClient().query.mock.calls.find(([sql]) => String(sql).includes('FROM inventory_skus'))[0]
+    expect(stocktakeSkuSql).not.toMatch(/is_reportable/)
+  })
+
+  test('门店报货提交不可报货 SKU → NOT_FOUND（带 is_reportable 条件查不到行）', async () => {
+    const { ctx, getClient } = mockStoreStocktake({
+      docType: '门店报货', bookRows: [], items: [{ skuId: 'sku-n', quantity: 1 }], skuMissing: true,
+    })
+    await expect(inventoryRoutes.createDoc(ctx)).rejects.toThrow('NOT_FOUND: 库存 SKU 不存在、已停用或不可报货')
+    expect(getClient().query.mock.calls.some(([sql]) => String(sql).includes('INSERT INTO inventory_doc_items'))).toBe(false)
+  })
+
+  test('门店报货接受供应链 SKU 与本市场自采 SKU', async () => {
+    for (const skuRow of [{ source_type: '供应链', owner_market_id: null }, { source_type: '市场自采', owner_market_id: 'market-A' }]) {
+      const { ctx, getClient } = mockStoreStocktake({
+        docType: '门店报货', bookRows: [], items: [{ skuId: 'sku-ok', quantity: 1 }], skuRow,
+      })
+      await inventoryRoutes.createDoc(ctx)
+      expect(getClient().query.mock.calls.some(([sql]) => String(sql).includes('INSERT INTO inventory_doc_items'))).toBe(true)
+    }
+  })
+
+  test.each([
+    ['stockList', 'FROM inventory_stock_lots st'],
+    ['docList', 'FROM inventory_docs d'],
+  ])('%s 关键词里的 \\ % _ 都按字面匹配（列表与 count 同参）', async (action, fromSql) => {
+    const ctx = createCtx({ payload: { keyword: 'a\\b%_' } })
+    pg.query.mockImplementation(async (query) => {
+      const sql = String(query)
+      if (sql.includes('WITH RECURSIVE descendants')) return [{ store_id: 'store-001' }]
+      if (sql.includes('COUNT(')) return [{ cnt: 0, total: 0 }]
+      return []
+    })
+
+    await inventoryRoutes[action](ctx)
+
+    const calls = pg.query.mock.calls.filter(([sql]) => String(sql).includes(fromSql) && String(sql).includes('ILIKE'))
+    expect(calls.length).toBeGreaterThanOrEqual(2)
+    for (const [, params] of calls) expect(params).toContain('%a\\\\b\\%\\_%')
+  })
+
+  test('reportableSkuOptions 关键词里的 \\ % _ 都按字面匹配', async () => {
+    const ctx = createCtx({ payload: { locationId: 'store-001', keyword: 'a\\b%_' } })
+    pg.query.mockImplementation(async (query) => {
+      const sql = String(query)
+      if (sql.includes('WITH RECURSIVE descendants')) return [{ store_id: 'store-001' }]
+      if (sql.includes('SELECT location_id, location_type, parent_location_id')) {
+        return [{ location_id: 'store-001', location_type: '门店', parent_location_id: 'market-A' }]
+      }
+      if (sql.includes('SELECT COUNT(*)::int AS cnt')) return [{ cnt: 0 }]
+      return []
+    })
+
+    await inventoryRoutes.reportableSkuOptions(ctx)
+
+    const listCall = pg.query.mock.calls.find(([sql]) => String(sql).includes('FROM inventory_skus sku') && String(sql).includes('LIMIT'))
+    const countCall = pg.query.mock.calls.find(([sql]) => String(sql).includes('SELECT COUNT(*)::int AS cnt') && String(sql).includes('FROM inventory_skus sku'))
+    expect(listCall[1][2]).toBe('%a\\\\b\\%\\_%')
+    expect(countCall[1][1]).toBe('%a\\\\b\\%\\_%')
   })
 
   test('分院库存盘点接受本市场的自采 SKU', async () => {
@@ -1056,7 +1130,7 @@ describe('inventory 办理选项无金额响应', () => {
     expect(skuCall[1]).toEqual(['store-001', 'market-A', '%凝胶%'])
   })
 
-  test('reportableSkuOptions 主查询与 count 同口径：启用 + 可报货 + 无归属或归属门店所属市场（#339）', async () => {
+  test('reportableSkuOptions 主查询与 count 同口径：启用 + 可报货 + 供应链或归属门店所属市场（#339）', async () => {
     // admin 门店报货代建候选与这里同口径（#339 Q1=A），staff 端改候选口径必须回来同步
     const ctx = createCtx({ payload: { locationId: 'store-001', keyword: '凝胶', page: 2, pageSize: 20 } })
     pg.query.mockImplementation(async (query) => {
@@ -1076,7 +1150,9 @@ describe('inventory 办理选项无金额响应', () => {
     for (const [sql] of [listCall, countCall]) {
       expect(sql).toMatch(/sku\.is_active = true/)
       expect(sql).toMatch(/sku\.is_reportable = true/)
-      expect(sql).toMatch(/\(sku\.owner_market_id IS NULL OR sku\.owner_market_id = \$\d\)/)
+      // 与建单闸门 assertSkuAvailableAtLocation / admin availableToMarketId 同义：归属 NULL 的非供应链 SKU 不进候选
+      expect(sql).toMatch(/\(sku\.source_type = '供应链' OR sku\.owner_market_id = \$\d\)/)
+      expect(sql).not.toMatch(/owner_market_id IS NULL/)
       expect(sql).toMatch(/sku\.product_name ILIKE/)
     }
     expect(listCall[1]).toEqual(['store-001', 'market-A', '%凝胶%'])
