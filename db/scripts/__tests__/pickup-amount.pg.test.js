@@ -35,6 +35,16 @@ const FORBIDDEN_DB_NAMES = ['fengyu_wxapp', 'fengyu_e2e', 'fengyu']
 
 const P = 'T341PG_'
 
+// 元守护（不连库，db:test 常跑）：迁移里 trigger 的取值列钉死 sale_items.unit_real_price
+test('0054 trigger 从 sale_items.unit_real_price 取冻结单价（不是 unit_price）', () => {
+  const fs = require('node:fs')
+  const path = require('node:path')
+  const migration = fs.readFileSync(path.resolve(__dirname, '../../migrations/0054_pickup_frozen_amount.sql'), 'utf8')
+  const body = migration.slice(migration.indexOf('CREATE OR REPLACE FUNCTION pickup_records_fill_frozen_amount()'))
+  assert.match(body, /SELECT si\.unit_real_price INTO NEW\.pickup_unit_price\s+FROM sale_items si\s+WHERE si\.sale_item_id = NEW\.sale_item_id;/)
+  assert.doesNotMatch(body, /\bunit_price\b/)
+})
+
 // 元守护（不连库，db:test 常跑）：本套件缺 env 会整套 skip，CI 必须真的带着 PICKUP_PG_TEST_URL 跑它，
 // 否则 DB 层语义在 CI 零覆盖（#341 评审 round-1）。
 test('CI workflow 带 PICKUP_PG_TEST_URL 执行本套件', () => {
@@ -68,7 +78,11 @@ function runSuite() {
     await client.end()
   })
 
-  /** 在事务里 seed 门店 + 员工 + 一条家居销售明细，跑完回滚。 */
+  /**
+   * 在事务里 seed 门店 + 员工 + 一条家居销售明细，跑完回滚。
+   * ⚠ 标价 unit_price=100 与实际单价 unit_real_price=88.50 故意不同：同值时把 trigger 的取值列
+   *   误改成 unit_price 也全绿（#341 评审 round-2）。
+   */
   async function withFixtures(fn) {
     await client.query('BEGIN')
     try {
@@ -86,7 +100,7 @@ function runSuite() {
       await client.query(
         `INSERT INTO sale_items (sale_item_id, sale_order_id, store_id, product_type, product_name,
                                  item_direction, quantity, unit_price, unit_real_price, sale_amount, received)
-         VALUES ('${P}SI', '${P}SO', '${P}ST', '家居产品', '${P}家居', '购买', 5, 88.5, 88.5, 442.5, 442.5)`,
+         VALUES ('${P}SI', '${P}SO', '${P}ST', '家居产品', '${P}家居', '购买', 5, 100, 88.5, 442.5, 442.5)`,
       )
       await fn()
     } finally {

@@ -3866,11 +3866,11 @@ describe('#341 提货冻结出库金额：两端副本一致', () => {
     }
   })
 
-  test('全仓写入闭集：非测试代码里写 pickup_records 的只有这两个文件（新写入口必须先接入冻结金额再登记）', () => {
+  /** 扫非测试源码（不含 migrations / 归档 / 产物），返回命中 pattern 的仓库相对路径（已剥注释） */
+  function repoFilesMatching(pattern, roots = ['fengyu-admin/src', 'fengyu-staff/cloudfunctions', 'fengyu-client/cloudfunctions', 'db/scripts']) {
     const repoRoot = path.resolve(__dirname, '../../../../..')
-    const roots = ['fengyu-admin/src', 'fengyu-staff/cloudfunctions', 'fengyu-client/cloudfunctions', 'db/scripts']
     const SKIP_DIRS = new Set(['node_modules', '__tests__', 'dist', '.next'])
-    const writers = []
+    const hits = []
     const walk = (dir) => {
       for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
         if (entry.isDirectory()) {
@@ -3879,14 +3879,41 @@ describe('#341 提货冻结出库金额：两端副本一致', () => {
         }
         if (!/\.(js|mjs|cjs|ts|tsx|sql)$/.test(entry.name) || /\.test\.|\.spec\./.test(entry.name)) continue
         const file = path.join(dir, entry.name)
-        if (/INSERT\s+INTO\s+"?pickup_records"?|insert\(pickupRecords\)/i.test(stripJsComments(readFile(file)))) {
-          writers.push(path.relative(repoRoot, file))
-        }
+        if (pattern.test(stripJsComments(readFile(file)))) hits.push(path.relative(repoRoot, file))
       }
     }
     for (const root of roots) walk(path.join(repoRoot, root))
-    expect(writers.sort()).toEqual([
+    return hits.sort()
+  }
+
+  test('全仓写入闭集 · INSERT：非测试代码里新增 pickup_records 行的只有这两个文件（新写入口必须先接入冻结金额再登记）', () => {
+    // 容忍空白 / 换行 / schema 限定名 / 大小写：`tx.insert (pickupRecords)`、`INSERT INTO public.pickup_records`
+    const INSERT_WRITER = /INSERT\s+INTO\s+(?:"?public"?\s*\.\s*)?"?pickup_records"?|\binsert\s*\(\s*pickupRecords\s*\)/i
+    expect(repoFilesMatching(INSERT_WRITER)).toEqual([
       'fengyu-admin/src/actions/pickup-records.ts',
+      'fengyu-staff/cloudfunctions/staffApi/routes/order.js',
+    ])
+  })
+
+  test('全仓写入闭集 · UPDATE：只有顾客合并改写 client_user_id，且不碰数量与冻结金额', () => {
+    const UPDATE_WRITER = /UPDATE\s+(?:"?public"?\s*\.\s*)?"?pickup_records"?\s+SET|\bupdate\s*\(\s*pickupRecords\s*\)|reassignCol\s*\(\s*pickupRecords\b/i
+    expect(repoFilesMatching(UPDATE_WRITER)).toEqual(['fengyu-admin/src/actions/customers.ts'])
+    const customers = stripJsComments(readFile(path.resolve(__dirname, '../../../../../fengyu-admin/src/actions/customers.ts')))
+    const calls = customers.match(/reassignCol\s*\(\s*pickupRecords\b[^)]*\)/g) || []
+    expect(calls.map((call) => call.replace(/\s+/g, ' '))).toEqual([
+      'reassignCol(pickupRecords, pickupRecords.clientUserId, { clientUserId: sourceUserId })',
+    ])
+  })
+
+  test('冻结列标识符闭集：引用 pickup_unit_price / pickup_amount 的非测试源码只有已登记的这些', () => {
+    const FROZEN_COLUMN = /\b(?:pickup_unit_price|pickup_amount|pickupUnitPrice|pickupAmount)\b/
+    expect(repoFilesMatching(FROZEN_COLUMN, [
+      'fengyu-admin/src', 'fengyu-staff/cloudfunctions', 'fengyu-client/cloudfunctions', 'db/scripts', 'db/schema',
+    ])).toEqual([
+      'db/schema/pickup.ts',
+      'fengyu-admin/src/actions/pickup-records.ts',
+      'fengyu-admin/src/app/(main)/(operations)/pickup-records/_components/pickup-records-page.tsx',
+      'fengyu-admin/src/export-worker/registry.ts',
       'fengyu-staff/cloudfunctions/staffApi/routes/order.js',
     ])
   })

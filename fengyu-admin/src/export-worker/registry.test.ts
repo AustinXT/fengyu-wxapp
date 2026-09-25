@@ -268,6 +268,31 @@ describe('提货记录导出（#341）', () => {
   })
 })
 
+describe('提货记录导出 · 跨页接线（#341 评审 round-2）', () => {
+  it('第一页 hasMore → 带游标取第二页；501 行全量输出、无重复', async () => {
+    const row = (id: number) => ({
+      id, createdAt: '2026-09-25T02:03:04.000Z', storeName: '一店', clientName: '顾客', saleOrderId: `SO-${id}`,
+      productName: '家居', pickupQuantity: 1, pickupUnitPrice: '10.00', pickupAmount: '10.00',
+    })
+    const first = Array.from({ length: 500 }, (_, index) => row(1000 - index))
+    vi.mocked(exportPickupRecords).mockReset()
+    vi.mocked(exportPickupRecords)
+      .mockResolvedValueOnce({ rows: first, truncated: false, hasMore: true, nextCursor: 501 } as never)
+      .mockResolvedValueOnce({ rows: [row(500)], truncated: false, hasMore: false } as never)
+
+    const content = await createExportContent('pickup-records', { store: 'store-1' })
+    const saleOrderIds: unknown[] = []
+    for await (const value of content.rows) saleOrderIds.push(value.saleOrderId)
+
+    expect(saleOrderIds).toHaveLength(501)
+    expect(new Set(saleOrderIds).size).toBe(501)
+    expect(vi.mocked(exportPickupRecords).mock.calls).toEqual([
+      [{ store: 'store-1' }, { limit: 500 }],
+      [{ store: 'store-1' }, { limit: 500, cursor: 501 }],
+    ])
+  })
+})
+
 describe('疗程卡导出列', () => {
   it('剩余、已付、总量与剩余零头均独立输出数值', async () => {
     const content = await createExportContent('cards', {})
