@@ -48,7 +48,13 @@ export function CommissionDetailView({
   const pathname = usePathname()
   const searchParams = useSearchParams()
   const { summary } = data
-  const selfHref = `${pathname}${searchParams.size > 0 ? `?${searchParams.toString()}` : ""}`
+  // 订单详情的返回地址：本页当前筛选，但去掉本页自己的 returnTo，免得地址层层嵌套变长
+  const selfHref = React.useMemo(() => {
+    const params = new URLSearchParams(searchParams.toString())
+    params.delete("returnTo")
+    const qs = params.toString()
+    return `${pathname}${qs ? `?${qs}` : ""}`
+  }, [pathname, searchParams])
 
   const columns = React.useMemo<MatrixColumn<CommissionDetailRow>[]>(
     () => buildCommissionDetailColumns({ showEmployee: !data.filters.employeeId }).map((spec) => {

@@ -257,7 +257,8 @@ export function detailLineFilters(filters: CommissionDetailFilters, month: Resol
  * received, consume_amount, allocated, rate, commission
  *
  * 分配金额：销售行 = spia.allocated_amount；服务行 = round(round(单价 × 次数, 2) × allocation_ratio, 2)，
- * 与服务提成导出（actions/services.ts selectServiceCommissionExportRows）同一算法。
+ * 与服务提成导出（actions/services.ts selectServiceCommissionExportRows）同一公式，舍入以 PG ROUND 为准
+ * （JS Math.round 在 .xx5 边界可能因浮点差 1 分）。
  * 实收金额：销售行 = 这笔款项落在该商品行上的金额（spir.amount，退款为负）；服务行 0，另给「消耗额」。
  */
 function detailRowsCteSql(session: AuthSession, scope: DataCenterScope, filters: CommissionLineFilters): SQL {
@@ -346,7 +347,8 @@ export function commissionDetailPageSql(
 
 /**
  * 明细汇总（按全量筛选，不随翻页变化）：条数、各项合计、去重单数。
- * 平均提成点 = Σ提成 ÷ Σ分配金额（含负数行与 0 费率行），由调用方计算。
+ * 实收合计按 receipt 去重（明细每行展示的是该 receipt 的实收，多人分配时同一笔会出现多行）。
+ * 平均提成点 = Σ提成 ÷ Σ分配金额（含负数行与 0 费率行；分配金额缺失的行两边都不计），由调用方计算。
  * 直接对取数链聚合，不经展示字段的 LEFT JOIN。
  */
 export function commissionDetailSummarySql(
@@ -356,6 +358,7 @@ export function commissionDetailSummarySql(
 ): SQL {
   const sale = sql`
       SELECT 'sale'::text AS source, 'S:' || so.sale_order_id AS order_key,
+             spir.id AS receipt_id,
              spir.amount::numeric AS received,
              spia.allocated_amount::numeric AS allocated,
              COALESCE(spia.commission_amount::numeric, 0) AS commission
@@ -363,6 +366,7 @@ export function commissionDetailSummarySql(
       ${saleWhere(session, scope, filters)}`
   const service = sql`
       SELECT 'service'::text AS source, 'V:' || so.service_order_id AS order_key,
+             NULL::bigint AS receipt_id,
              0::numeric AS received,
              ROUND(ROUND(sit.unit_real_price::numeric * sit.session_used, 2) * sc.allocation_ratio::numeric, 2) AS allocated,
              sc.commission_amount::numeric AS commission
@@ -372,9 +376,13 @@ export function commissionDetailSummarySql(
     WITH summary_rows AS (${sql.join(sourceParts(filters.source, sale, service), sql` UNION ALL `)})
     SELECT COUNT(*)::int AS count,
            COUNT(DISTINCT order_key)::int AS orders,
-           COALESCE(SUM(received), 0) AS received,
+           -- 一条 receipt 会分给多名员工 / 多个角色，实收按 receipt 去重后再合计，否则成倍放大
+           (SELECT COALESCE(SUM(r.received), 0)
+              FROM (SELECT DISTINCT receipt_id, received FROM summary_rows WHERE receipt_id IS NOT NULL) r) AS received,
            COALESCE(SUM(allocated), 0) AS allocated,
            COALESCE(SUM(commission), 0) AS commission,
+           -- 平均提成点的分子只取分配金额可算的行（分配比例缺失的服务行分母为 NULL，分子也不能计入）
+           COALESCE(SUM(commission) FILTER (WHERE allocated IS NOT NULL), 0) AS rate_commission,
            COALESCE(SUM(commission) FILTER (WHERE source = 'sale'), 0) AS sale,
            COALESCE(SUM(commission) FILTER (WHERE source = 'service'), 0) AS service
     FROM summary_rows

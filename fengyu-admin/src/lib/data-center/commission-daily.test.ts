@@ -121,9 +121,11 @@ describe('明细筛选', () => {
     expect(parseCommissionDetailFilters({ date: '2026-08-32' }, AUG).date).toBeNull()
   })
 
-  it('员工 / 门店 id 只收安全字符，其余视为未指定', () => {
+  it('员工 / 门店 id 照原值过滤（只截长度），不合法的不放宽成「全部」；空串视为未指定', () => {
     expect(parseCommissionDetailFilters({ employeeId: 'FY-260728032', storeId: 'S1' }, AUG)).toMatchObject({ employeeId: 'FY-260728032', storeId: 'S1' })
-    expect(parseCommissionDetailFilters({ employeeId: "E1' OR 1=1" }, AUG).employeeId).toBeNull()
+    expect(parseCommissionDetailFilters({ employeeId: "E1' OR 1=1" }, AUG).employeeId).toBe("E1' OR 1=1")
+    expect(parseCommissionDetailFilters({ employeeId: 'x'.repeat(200) }, AUG).employeeId).toHaveLength(80)
+    expect(parseCommissionDetailFilters({ employeeId: '  ' }, AUG).employeeId).toBeNull()
   })
 
   it('每页条数白名单，缺省 50', () => {

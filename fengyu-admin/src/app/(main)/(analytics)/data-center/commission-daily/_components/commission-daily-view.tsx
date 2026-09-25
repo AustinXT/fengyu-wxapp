@@ -2,13 +2,14 @@
 
 import * as React from "react"
 import Link from "next/link"
-import { usePathname, useSearchParams } from "next/navigation"
+import { useRouter, useSearchParams } from "next/navigation"
 import { AlertCircle } from "lucide-react"
 import { Card } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Switch } from "@/components/ui/switch"
 import { ExportButton } from "@/components/ui/export-button"
 import { useUrlFilters } from "@/lib/hooks/use-url-filters"
+import { withReturnTo } from "@/lib/return-context"
 import { formatAmount, formatCount, formatPercent } from "@/lib/data-center/format"
 import { monthRange } from "@/lib/data-center/report-period"
 import {
@@ -32,6 +33,30 @@ import { KpiCard } from "../../_components/kpi-card"
 import { MatrixAmount, MatrixTable, type MatrixColumn } from "../../_components/matrix-table"
 
 const SEARCH_DEBOUNCE_MS = 300
+/** 与 parseCommissionDailyOptions 的截断长度一致；超长 q 还会让导出参数超过 240 字上限 */
+const SEARCH_MAX_LENGTH = 50
+
+/**
+ * 下钻链接。全国双列视图约 3 万格，href 里不带 returnTo（下钻时才拼上当前地址，面包屑据此回到原筛选），
+ * 也不 prefetch——每格一个完整 URL 加预取请求会让 DOM 与网络开销失控。
+ * 修饰键 / 中键点击走浏览器默认（新标签页打开，不带 returnTo）。
+ */
+function DrillLink({ href, className, children }: { href: string; className?: string; children: React.ReactNode }) {
+  const router = useRouter()
+  return (
+    <a
+      href={href}
+      className={className}
+      onClick={(event) => {
+        if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) return
+        event.preventDefault()
+        router.push(withReturnTo(href, `${window.location.pathname}${window.location.search}`))
+      }}
+    >
+      {children}
+    </a>
+  )
+}
 
 function cellHint(cell: CommissionCell | undefined): string {
   const value = cell ?? { sale: 0, service: 0, orders: 0 }
@@ -45,10 +70,8 @@ function cellHint(cell: CommissionCell | undefined): string {
 export function CommissionDailyView({ data, today }: { data: CommissionDailyResult; today: string }) {
   const filters = useUrlFilters()
   const setFilter = filters.set
-  const pathname = usePathname()
   const searchParams = useSearchParams()
   const { options, grain, kpis, totals } = data
-  const returnTo = `${pathname}${searchParams.size > 0 ? `?${searchParams.toString()}` : ""}`
   const scopeParam = searchParams.get("scope")
   const scopeIdParam = searchParams.get("scopeId")
 
@@ -76,10 +99,9 @@ export function CommissionDailyView({ data, today }: { data: CommissionDailyResu
             storeId: grain === "employee-store" ? row.storeId : null,
             date: extra.date,
             source: extra.source,
-            returnTo,
           })
         : null,
-    [scopeParam, scopeIdParam, data.month, grain, returnTo],
+    [scopeParam, scopeIdParam, data.month, grain],
   )
 
   const columns = React.useMemo<MatrixColumn<CommissionDailyRow>[]>(() => {
@@ -91,7 +113,9 @@ export function CommissionDailyView({ data, today }: { data: CommissionDailyResu
           ...base,
           cell: (row) => {
             const href = drill(row)
-            return href ? <Link href={href} className="text-[var(--color-brand)] hover:underline">{row.employeeName}</Link> : row.employeeName
+            // 0 提成行整行灰显，姓名链接也跟着灰，不用品牌色盖掉
+            const color = cellTotal(row.total) === 0 ? "text-[var(--muted-foreground)]" : "text-[var(--color-brand)]"
+            return href ? <DrillLink href={href} className={`${color} hover:underline`}>{row.employeeName}</DrillLink> : row.employeeName
           },
         }
       }
@@ -103,20 +127,20 @@ export function CommissionDailyView({ data, today }: { data: CommissionDailyResu
       const day = spec.day
       const source = spec.part === "sale" || spec.part === "service" ? spec.part : undefined
       const cellOf = (row: CommissionDailyRow) => (day === "total" ? row.total : row.days[day])
-      const future = day !== "total" && day > today
       return {
         ...base,
-        cellHint: future ? undefined : (row) => cellHint(cellOf(row)),
+        // 只有有提成行的格子才挂浮层与下钻链接：空格（含未来日期、早于数据起点的日期）点进去也是空明细
+        cellHint: (row) => (cellOf(row) ? cellHint(cellOf(row)) : undefined),
         cell: (row) => {
           const amount = <MatrixAmount value={spec.value!(row)} />
-          if (future) return amount
+          if (!cellOf(row)) return amount
           // 岗位视图不下钻；点日期格进当日明细，点本期合计进整月明细
           const href = drill(row, { date: day === "total" ? undefined : day, source })
-          return href ? <Link href={href} className="hover:underline">{amount}</Link> : amount
+          return href ? <DrillLink href={href} className="hover:underline">{amount}</DrillLink> : amount
         },
       }
     })
-  }, [specs, drill, today])
+  }, [specs, drill])
 
   const totalsValues = React.useMemo(() => commissionDailyTotalsMap(specs, totals), [specs, totals])
 
@@ -220,6 +244,7 @@ export function CommissionDailyView({ data, today }: { data: CommissionDailyResu
             className="w-56"
             aria-label="员工搜索"
             placeholder="搜索姓名 / 岗位 / 门店"
+            maxLength={SEARCH_MAX_LENGTH}
             value={search}
             onChange={(event) => setSearch(event.target.value)}
           />

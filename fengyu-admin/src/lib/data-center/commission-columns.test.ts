@@ -54,11 +54,14 @@ describe('buildCommissionDailyColumns', () => {
     expect(sale.find((c) => c.key === 'total')?.value?.(r)).toBe(10)
   })
 
-  it('2026-07：07-01~07-07 早于数据起点照常显示 0（不是空），未来日期留空', () => {
+  it('2026-07：07-01~07-07 早于数据起点照常显示 0（不是空），未来日期无值留空、有值照显', () => {
     const columns = buildCommissionDailyColumns({ month: '2026-09', view: 'total', grain: 'employee-store', today: TODAY })
     const r = row('E1|S1', '张三', {})
     expect(columns.find((c) => c.key === 'd:2026-09-25')?.value?.(r)).toBe(0)
     expect(columns.find((c) => c.key === 'd:2026-09-26')?.value?.(r)).toBeNull()
+    // 款项归属日期可调到今天之后：有值的未来格照常显示，行合计 = 可见格之和
+    const adjusted = row('E1|S1', '张三', { '2026-09-28': [30, 0, 1] })
+    expect(columns.find((c) => c.key === 'd:2026-09-28')?.value?.(adjusted)).toBe(30)
 
     const july = buildCommissionDailyColumns({ month: '2026-07', view: 'total', grain: 'employee-store', today: TODAY })
     for (let day = 1; day <= 7; day += 1) {

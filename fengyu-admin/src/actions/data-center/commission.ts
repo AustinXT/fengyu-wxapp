@@ -195,12 +195,13 @@ export const getCommissionDaily = withAllPermissions(
 export interface CommissionDetailSummary {
   count: number
   orders: number
+  /** 实收合计（按 receipt 去重） */
   received: number
   allocated: number
   commission: number
   sale: number
   service: number
-  /** 平均提成点 = Σ提成 ÷ Σ分配金额（含负数行、0 费率行）；Σ分配金额为 0 时为空 */
+  /** 平均提成点 = Σ提成 ÷ Σ分配金额（含负数行、0 费率行；分配金额缺失的行不计）；Σ分配金额为 0 时为空 */
   averageRate: number | null
 }
 
@@ -279,7 +280,7 @@ function toSummary(raw: DbRow): CommissionDetailSummary {
     commission,
     sale: toNumber(raw.sale),
     service: toNumber(raw.service),
-    averageRate: allocated !== 0 ? commission / allocated : null,
+    averageRate: allocated !== 0 ? toNumber(raw.rate_commission) / allocated : null,
   }
 }
 
@@ -315,23 +316,30 @@ export const getCommissionDetail = withAllPermissions(
     const lineFilters = detailLineFilters(filters, period.current)
     const maskCustomer = shouldMaskCustomer(session)
 
-    const [pageRows, summaryRows, optionRows, scopeName] = await Promise.all([
+    const [firstFetch, summaryRows, optionRows, scopeName] = await Promise.all([
       db.execute(commissionDetailPageSql(session, scope, lineFilters, { limit: pageSize, after, before })),
       db.execute(commissionDetailSummarySql(session, scope, lineFilters)),
       db.execute(commissionEmployeeOptionsSql(session, scope, period.current)),
       resolveScopeName(scope),
     ])
 
+    let pageRows = firstFetch
+    let backward = !!before
+    // 往前翻却一行都没有（期间数据被改，游标之前已空）：回到第一页，免得上下页按钮同时禁用、卡在空页
+    if (backward && rowsOf(pageRows).length === 0) {
+      pageRows = await db.execute(commissionDetailPageSql(session, scope, lineFilters, { limit: pageSize }))
+      backward = false
+    }
     const fetched = rowsOf(pageRows).map((row) => toDetailRow(row, maskCustomer))
     const hasMore = fetched.length > pageSize
     const visible = hasMore ? fetched.slice(0, pageSize) : fetched
     // 上一页是 SQL 反向取的，翻回正序
-    const rows = before ? visible.reverse() : visible
+    const rows = backward ? visible.reverse() : visible
     const first = rows[0]
     const last = rows[rows.length - 1]
     // 正向：有游标即有上一页，探测行决定下一页；反向：探测行决定上一页，游标本身之后必有下一页
-    const hasPrev = before ? hasMore : !!after
-    const hasNext = before ? true : hasMore
+    const hasPrev = backward ? hasMore : !!after
+    const hasNext = backward ? true : hasMore
 
     return {
       month: period.month,

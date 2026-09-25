@@ -235,7 +235,8 @@ export interface CommissionDetailKey {
   id: number
 }
 
-const ID_RE = /^[A-Za-z0-9_\-:.]{1,80}$/
+/** 员工 / 门店 id 长度上限（与库列 varchar(30) / text 相比留足余量）；取值只作参数化绑定，不拼进 SQL */
+const MAX_ID_LENGTH = 80
 
 /** 当日参数必须落在所选月份内，否则按全月（手改 URL 不报错，也不能拿它越出期间取数） */
 export function parseCommissionDetailFilters(query: SearchQuery, month: { start: string; end: string }): CommissionDetailFilters {
@@ -245,8 +246,9 @@ export function parseCommissionDetailFilters(query: SearchQuery, month: { start:
   const date = get('date')
   const source = get('type')
   return {
-    employeeId: employeeId && ID_RE.test(employeeId) ? employeeId : null,
-    storeId: storeId && ID_RE.test(storeId) ? storeId : null,
+    // 不合法 / 不存在的 id 照原值过滤（得到空明细），不能静默放宽成「全部员工 / 全部门店」
+    employeeId: employeeId ? employeeId.slice(0, MAX_ID_LENGTH) : null,
+    storeId: storeId ? storeId.slice(0, MAX_ID_LENGTH) : null,
     date: isValidCalendarDate(date) && date >= month.start && date <= month.end ? date : null,
     source: (COMMISSION_SOURCES as readonly string[]).includes(source ?? '') ? (source as CommissionSource) : null,
   }

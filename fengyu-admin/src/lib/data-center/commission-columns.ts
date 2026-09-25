@@ -58,7 +58,7 @@ const PART_HEADERS: Record<'total' | CommissionSource, string> = {
 
 /**
  * 日报矩阵列。
- * @param today Asia/Shanghai 今天：晚于今天的日期还没发生，格子留空（「—」）而不是 0；
+ * @param today Asia/Shanghai 今天：晚于今天且没有提成行的日期留空（「—」）而不是 0；
  *              早于数据起点的日期（如 2026-07-01~07-07）照常显示 0，配合数据起点提示。
  */
 export function buildCommissionDailyColumns(input: {
@@ -99,7 +99,8 @@ export function buildCommissionDailyColumns(input: {
         weekend: day.weekend,
         day: day.date,
         part,
-        value: (row) => (future ? null : partValue(row.days[day.date], part)),
+        // 未来日期：还没发生的留空；但款项归属日期可调到今天之后（±7 天），有值就照常显示，保证行合计 = 可见格之和
+        value: (row) => (future && !row.days[day.date] ? null : partValue(row.days[day.date], part)),
         aggregate: { kind: 'sum' },
         exportWidth: 11,
       })
@@ -254,7 +255,7 @@ export function buildCommissionDetailColumns(input: { showEmployee: boolean }): 
     { key: 'product', header: '项目名称', width: 240, exportValue: (row) => productLabel(row), exportWidth: 36 },
     {
       key: 'received', header: '实收金额', width: 104, align: 'right',
-      hint: '销售行 = 这笔款项落在该商品行上的金额（退款为负）；服务行为 0，见消耗额',
+      hint: '销售行 = 这笔款项落在该商品行上的金额（退款为负；多人分配时每人一行、金额相同）；服务行为 0，见消耗额。合计按款项去重',
       value: (row) => row.received, aggregate: { kind: 'sum' },
     },
     {
