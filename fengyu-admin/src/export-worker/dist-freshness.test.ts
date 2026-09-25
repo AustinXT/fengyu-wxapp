@@ -614,9 +614,12 @@ describe('dist/export-worker.mjs 客量明细 SQL 整段逐字进入产物（#41
 describe('dist/export-worker.mjs 与当前源码逐字节一致（完整性兜底）', () => {
   /** 复刻 REBUILD_HINT 的构建环境：NODE_ENV 必须不设（见下方 it 里的说明） */
   const buildEnv = (): NodeJS.ProcessEnv => {
-    const env = { ...process.env }
-    delete env.NODE_ENV
-    return env
+    // 用解构摘掉而不是 `delete` —— 本仓把 NODE_ENV 声明成了必填，`delete` 会 TS2790
+    const { NODE_ENV: _dropped, ...rest } = process.env
+    void _dropped
+    // 本仓把 NODE_ENV 声明成必填，摘掉后类型对不上；断言回去（运行时确实没有这个键，
+    // 下面的逐字节比对通过本身就是它真被摘掉的证据 —— 没摘掉会 6622668 vs 6636632 直接红）
+    return rest as NodeJS.ProcessEnv
   }
 
   it('重新构建一次，产物与已提交的完全相同', () => {
