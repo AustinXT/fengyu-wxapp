@@ -222,6 +222,28 @@ describe('auth.login', () => {
     expect([...new Set(ctx.result.inventoryStoreIds)].sort()).toEqual(['store-A', 'store-B'])
     expect(ctx.result.inventoryOperateStoreIds).toEqual(['store-A'])
   })
+
+  test('超管绑定（无显式库存动作）也进 inventoryOperateStoreIds（与云端写鉴权对超管放行一致）', async () => {
+    pg.query.mockImplementation(async (sql) => {
+      if (/FROM\s+staff_wechat_users\s+u/.test(sql)) {
+        return [{
+          employee_id: 'emp-root', phone: '137', name: '超管', position_name: '总部',
+          is_resigned: false, skills: [], store_id: null, store_name: null, market_name: null,
+        }]
+      }
+      if (/UPDATE staff_wechat_users SET last_login_at/.test(sql)) return []
+      if (/FROM\s+permission_roles\s+pr/.test(sql)) {
+        return [{ role: 'admin', scope_id: 'org-hq', scope_type: '总部', scope_name: '总部', is_super_admin: true, actions: [] }]
+      }
+      if (/SELECT store_id FROM stores/.test(sql)) return [{ store_id: 'store-A' }, { store_id: 'store-B' }]
+      return []
+    })
+
+    const ctx = { event: {}, context: {}, auth: {}, result: null }
+    await authRoutes.login(ctx)
+
+    expect([...ctx.result.inventoryOperateStoreIds].sort()).toEqual(['store-A', 'store-B'])
+  })
 })
 
 describe('auth.bindPhone', () => {

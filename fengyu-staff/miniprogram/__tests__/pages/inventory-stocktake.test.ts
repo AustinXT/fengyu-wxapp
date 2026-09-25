@@ -169,6 +169,7 @@ describe('门店盘点表单', () => {
     } finally {
       vi.useRealTimers()
     }
+    expect((globalThis as any).wx.redirectTo).toHaveBeenCalledTimes(1)
     const redirectArg = ((globalThis as any).wx.redirectTo as ReturnType<typeof vi.fn>).mock.calls[0][0]
     expect(redirectArg.url).toBe('/packageMy/inventory/detail?id=YPD-1')
     // 跳转失败（页面栈满等）：单已建成，只提示去列表，不复位 submitting（复位会引出重复建单）
