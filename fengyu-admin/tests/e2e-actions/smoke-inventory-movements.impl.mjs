@@ -231,6 +231,22 @@ try {
     exported.length === skuTotal && same(exported.map(pick), rawAll.map(pick)),
     `export=${exported.length} total=${skuTotal} raw=${rawAll.length}`)
 
+  // ════ worker 分发：createExportContent('inventory-movements') 接线与列映射 ════
+  const { createExportContent } = await import(A('src', 'export-worker', 'registry.ts'))
+  setSession(marketASession())
+  const content = await createExportContent('inventory-movements', { location: STA1_ID, sku: SKU_SUPPLY })
+  const sheetRows = []
+  for await (const row of content.rows) sheetRows.push(content.columns.map((column) => column.value(row)))
+  const headers = content.columns.map((column) => column.header)
+  const col = (header) => headers.indexOf(header)
+  const firstOut = sheetRows.find((cells) => cells[col('方向')] === '出库')
+  check('worker 导出：行数 = 页面总数，列含批号 / 批次 ID / 前后结存，数值列是 number',
+    sheetRows.length === skuTotal
+      && ['单号', '批号', '批次 ID', '变动前结存', '变动后结存', '对方主体'].every((header) => col(header) >= 0)
+      && typeof firstOut?.[col('数量')] === 'number' && firstOut[col('数量')] < 0
+      && typeof firstOut?.[col('批次 ID')] === 'number',
+    `sheet=${content.sheetName} rows=${sheetRows.length} total=${skuTotal} 出库行=${JSON.stringify(firstOut)}`)
+
   // ════ issue 验收 SQL：每个批次最后一条流水 quantity_after = quantity_on_hand ════
   const mismatch = await pgQuery(`
     SELECT l.id, l.batch_no, l.quantity_on_hand, m.quantity_after

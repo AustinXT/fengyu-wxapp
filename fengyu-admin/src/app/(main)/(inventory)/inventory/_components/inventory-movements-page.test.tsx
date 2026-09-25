@@ -162,3 +162,17 @@ describe('InventoryMovementsPage（#360）', () => {
     expect(within(table).getByText('请选择库存主体，并输入商品编号或批号后查询')).toBeInTheDocument()
   })
 })
+
+describe('InventoryMovementsPage 批次结存可读性（#360 口径 A）', () => {
+  it('同一批号拆成多个批次时，每行带批次 ID 区分各自的结存序列', () => {
+    renderPage({
+      page: page([
+        row(1, { lotId: 21, direction: '入库', quantityDelta: 30, quantityBefore: 0, quantityAfter: 30 }),
+        row(2, { lotId: 22, direction: '入库', quantityDelta: 5, quantityBefore: 0, quantityAfter: 5 }),
+      ]),
+    })
+    expect(screen.getByRole('columnheader', { name: '批次 ID' })).toBeInTheDocument()
+    expect(screen.getByText('21')).toBeInTheDocument()
+    expect(screen.getByText('22')).toBeInTheDocument()
+  })
+})

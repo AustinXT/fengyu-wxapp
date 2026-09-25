@@ -187114,6 +187114,7 @@ var inventoryMovementColumns = mapColumns([
   { header: "产品", width: 32, key: "skuName" },
   { header: "规格", width: 16, key: "specName" },
   { header: "批号", width: 16, key: "batchNo" },
+  { header: "批次 ID", width: 10, key: "lotId", map: (row) => numberOrEmpty(row, "lotId") },
   { header: "方向", width: 8, key: "direction" },
   { header: "数量", width: 10, key: "quantityDelta", map: (row) => numberOrEmpty(row, "quantityDelta") },
   { header: "变动前结存", width: 12, key: "quantityBefore", map: (row) => numberOrEmpty(row, "quantityBefore") },

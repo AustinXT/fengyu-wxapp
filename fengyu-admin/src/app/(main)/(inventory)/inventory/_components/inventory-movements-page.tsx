@@ -18,6 +18,8 @@ import { Select, SelectOption } from '@/components/ui/select'
 import { useUrlFilters } from '@/lib/hooks/use-url-filters'
 
 const PAGE_SIZE_OPTIONS = [20, 50, 100]
+// 短列（方向 / 数量 / 结存）被产品列挤压时会逐字折行，统一不换行
+const NOWRAP = 'whitespace-nowrap'
 
 type SearchMode = 'sku' | 'batch'
 
@@ -66,11 +68,12 @@ export default function InventoryMovementsPage({
   }
 
   const columns: Column<InventoryMovementRow>[] = [
-    { key: 'createdAt', header: '时间', cell: (r) => <span className="whitespace-nowrap">{r.createdAt}</span> },
-    { key: 'docType', header: '单据类型', cell: (r) => r.docType ?? '—' },
+    { key: 'createdAt', header: '时间', className: NOWRAP, cell: (r) => r.createdAt },
+    { key: 'docType', header: '单据类型', className: NOWRAP, cell: (r) => r.docType ?? '—' },
     {
       key: 'docId',
       header: '单号',
+      className: NOWRAP,
       cell: (r) => {
         if (!r.docId) return ''
         return canOpenDoc
@@ -81,6 +84,7 @@ export default function InventoryMovementsPage({
     {
       key: 'skuName',
       header: '产品',
+      className: 'min-w-48',
       cell: (r) => (
         <div>
           <div className="font-medium">{r.skuName ?? r.skuId}</div>
@@ -89,22 +93,31 @@ export default function InventoryMovementsPage({
       ),
     },
     ...(bySku
-      ? [{ key: 'batchNo', header: '批号', cell: (r: InventoryMovementRow) => r.batchNo || '—' } as Column<InventoryMovementRow>]
+      ? [{ key: 'batchNo', header: '批号', className: NOWRAP, cell: (r: InventoryMovementRow) => r.batchNo || '—' } as Column<InventoryMovementRow>]
       : []),
+    {
+      // 结存是批次结存：同一批号可能拆成多个批次（价格 / 效期 / 赠送不同），靠批次 ID 区分各自的结存序列
+      key: 'lotId',
+      header: '批次 ID',
+      className: NOWRAP,
+      cell: (r) => <span className="font-mono text-xs text-[#888888]">{r.lotId}</span>,
+    },
     {
       key: 'direction',
       header: '方向',
+      className: NOWRAP,
       cell: (r) => <span className={`font-medium ${DIRECTION_TONE[r.direction] ?? ''}`}>{r.direction}</span>,
     },
     {
       key: 'quantityDelta',
       header: '数量',
+      className: NOWRAP,
       cell: (r) => <span className="font-semibold">{signed(r.quantityDelta)}</span>,
     },
-    { key: 'quantityBefore', header: '变动前结存', cell: (r) => r.quantityBefore },
-    { key: 'quantityAfter', header: '变动后结存', cell: (r) => <span className="font-semibold">{r.quantityAfter}</span> },
-    { key: 'counterpartyName', header: '对方主体', cell: (r) => r.counterpartyName ?? '—' },
-    { key: 'operatorName', header: '经办人', cell: (r) => r.operatorName ?? r.operatorId ?? '—' },
+    { key: 'quantityBefore', header: '变动前结存', className: NOWRAP, cell: (r) => r.quantityBefore },
+    { key: 'quantityAfter', header: '变动后结存', className: NOWRAP, cell: (r) => <span className="font-semibold">{r.quantityAfter}</span> },
+    { key: 'counterpartyName', header: '对方主体', className: 'min-w-28', cell: (r) => r.counterpartyName ?? '—' },
+    { key: 'operatorName', header: '经办人', className: NOWRAP, cell: (r) => r.operatorName ?? r.operatorId ?? '—' },
   ]
 
   const firstRow = page.rows[0]
