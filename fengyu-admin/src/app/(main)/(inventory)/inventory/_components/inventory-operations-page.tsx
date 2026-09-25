@@ -456,11 +456,14 @@ function LotPicker({
   onChange,
   onLotChange,
   load = listInventoryLotOptions,
+  giftOnly = false,
 }: {
   locationId: string
   skuId: string
   value: string
   onChange: (value: string) => void
+  /** 只列赠送批次（#359 分院配货的赠送数量默认只从赠送批次出）。切换时重取并按新列表清掉失效的已选值 */
+  giftOnly?: boolean
   /** 用户切换批次时回传所选批次的完整行（成本、赠送、可用量），选回空项时回传 null（#344 转换成本）。 */
   onLotChange?: (lot: InventoryLotRow | null) => void
   /**
@@ -500,9 +503,10 @@ function LotPicker({
     load(locationId, skuId)
       .then((rows) => {
         if (cancelled) return
-        setLots(rows)
-        if (!rows.some((lot) => String(lot.id) === valueRef.current) && dropStaleSelection()) {
-          toast.warning('所选批次已无可用库存，请重新选择')
+        const visible = giftOnly ? rows.filter((lot) => lot.isGift) : rows
+        setLots(visible)
+        if (!visible.some((lot) => String(lot.id) === valueRef.current) && dropStaleSelection()) {
+          toast.warning(giftOnly ? '所选批次不是赠送批次，请重新选择' : '所选批次已无可用库存，请重新选择')
         }
       })
       .catch((error) => {
@@ -516,7 +520,7 @@ function LotPicker({
         if (!cancelled) setLoading(false)
       })
     return () => { cancelled = true }
-  }, [locationId, skuId, load])
+  }, [locationId, skuId, load, giftOnly])
 
   return (
     <Select
@@ -527,14 +531,36 @@ function LotPicker({
       }}
       disabled={!locationId || !skuId || loading}
     >
-      <option value="">{loading ? '正在加载批次' : '选择库存批次'}</option>
+      <option value="">{loading ? '正在加载批次' : giftOnly && !loading && locationId && skuId && lots.length === 0 ? '暂无赠送批次' : '选择库存批次'}</option>
       {lots.map((lot) => (
         <option key={lot.id} value={String(lot.id)}>
-          批次 {lot.batchNo || '未填写'} · 可用 {lot.availableQuantity}{lot.expiryDate ? ` · 效期 ${lot.expiryDate}` : ''}
+          批次 {lot.batchNo || '未填写'}{lot.isGift ? '（赠送）' : ''} · 可用 {lot.availableQuantity}{lot.expiryDate ? ` · 效期 ${lot.expiryDate}` : ''}
         </option>
       ))}
     </Select>
   )
+}
+
+/**
+ * 批次的「参考进价」（#359 会议 §2.9 / §2.17 的黄色字段）：该批次进市场时的实际进货单价，供主管决定照收还是优惠。
+ * 只读、只作参考 —— 不参与金额计算、不进提交 payload、不改默认价。
+ * 可见范围沿用 lotRow 的价格档：无档账号拿到的是 undefined（不渲染）；有档但未记录是 null（显示「—」）。
+ */
+function LotReferencePrice({ lot, label }: { lot: InventoryLotRow | null; label: string }) {
+  if (!lot || lot.marketActualUnitPrice === undefined) return null
+  return (
+    <div role="note" aria-label={label} className="rounded-[var(--radius)] bg-[#FFF4C2] px-2 py-1 text-xs text-[#7B5E2B]">
+      参考进价 {formatPrice(lot.marketActualUnitPrice)}{lot.isGift ? '（赠送批次）' : ''}
+    </div>
+  )
+}
+
+/** 正常数量选到赠送批次：只提示不禁止（§2.9 允许主管对进价 0 的赠送货照收门店价）。 */
+function giftLotNotice(lot: InventoryLotRow | null): string | null {
+  if (!lot?.isGift) return null
+  return lot.marketActualUnitPrice === undefined
+    ? '该批次为赠送货'
+    : `该批次为赠送货，参考进价 ${formatPrice(lot.marketActualUnitPrice)}`
 }
 
 function useLoadedDocument() {
@@ -2858,6 +2884,8 @@ interface ShipmentDraftLine {
   reportItemId: number
   isGift: boolean
   lotId: string
+  /** 所选批次快照，只用于「正常行选到赠送批次」的提示（#359） */
+  lot?: InventoryLotRow | null
   quantity: string
   remark: string
 }
@@ -3310,7 +3338,8 @@ function CompanyShipmentForm({
                 {itemLines.map((line, lineIndex) => (
                   <div key={line.key} className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-[minmax(0,1.4fr)_8rem_minmax(0,1fr)_2.5rem]">
                     <FormField label="发货批次" required>
-                      <LotPicker locationId={sourceLocationId} skuId={entry.item.skuId} value={line.lotId} onChange={(lotId) => updateLine(line.key, { lotId })} load={loadLots} />
+                      <LotPicker locationId={sourceLocationId} skuId={entry.item.skuId} value={line.lotId} onChange={(lotId) => updateLine(line.key, { lotId })} onLotChange={(lot) => updateLine(line.key, { lot })} load={loadLots} />
+                      {!line.isGift && giftLotNotice(line.lot ?? null) && <div className="mt-1 text-xs text-[#D4820A]">{giftLotNotice(line.lot ?? null)}</div>}
                     </FormField>
                     <FormField label={line.isGift ? '赠送数量' : '正常发货'} required>
                       <Input type="number" min="0.01" step="0.01" max="9999999999.99" value={line.quantity} onChange={(event) => updateLine(line.key, { quantity: event.target.value })} />
@@ -3697,12 +3726,25 @@ function SupplyChainPurchaseCancelForm({
   )
 }
 
-interface StoreAllocationDraftLine {
+/**
+ * 分院配货一行的批次选择（#359）：正常与赠送各自选批次 —— 赠送货跟着批号走，赠送数量默认只列赠送批次；
+ * 市场也可以拿普通货赠送，勾「从普通批次赠送」后列全部批次。批次快照只用于参考进价 / 提示，不进提交。
+ */
+interface StoreAllocationLotState {
+  lotId: string
+  lot: InventoryLotRow | null
+  giftLotId: string
+  giftLot: InventoryLotRow | null
+  giftFromNormalLot: boolean
+}
+
+const EMPTY_ALLOCATION_LOTS: StoreAllocationLotState = { lotId: '', lot: null, giftLotId: '', giftLot: null, giftFromNormalLot: false }
+
+interface StoreAllocationDraftLine extends StoreAllocationLotState {
   requestItemId: number
   skuId: string
   skuName: string
   specName: string | null
-  lotId: string
   remainingQuantity: number
   quantity: string
   giftQuantity: string
@@ -3713,10 +3755,9 @@ interface StoreAllocationDraftLine {
 }
 
 /** 市场自选配货行（#337）：不引用门店报货，从配货市场库存自选商品与批次。 */
-interface StoreAllocationSelfLine {
+interface StoreAllocationSelfLine extends StoreAllocationLotState {
   key: number
   skuId: string
-  lotId: string
   quantity: string
   giftQuantity: string
   /** 所选 SKU 的当前门店进货价，纯展示预览（实价以服务端建单时计算为准） */
@@ -3761,7 +3802,62 @@ function StoreAllocationPriceSummary({
 }
 
 function emptySelfLine(key: number): StoreAllocationSelfLine {
-  return { key, skuId: '', lotId: '', quantity: '1', giftQuantity: '0', storeStandardUnitPrice: null, storeUnitDiscount: '0', remark: '' }
+  return { key, skuId: '', ...EMPTY_ALLOCATION_LOTS, quantity: '1', giftQuantity: '0', storeStandardUnitPrice: null, storeUnitDiscount: '0', remark: '' }
+}
+
+/**
+ * 分院配货行的批次附加区（#359）：正常批次的参考进价与赠送批次提示、赠送数量的独立批次选择。
+ * 正常批次选择器仍在行内网格里（与改造前同位），这里只接它的快照。
+ */
+function StoreAllocationLotExtras({
+  marketId,
+  skuId,
+  rowName,
+  line,
+  onChange,
+}: {
+  marketId: string
+  skuId: string
+  rowName: string
+  line: StoreAllocationLotState & { quantity: string; giftQuantity: string }
+  onChange: (patch: Partial<StoreAllocationLotState>) => void
+}) {
+  const hasNormal = (nonnegativeNumber(line.quantity) ?? 0) > 0
+  const hasGift = (nonnegativeNumber(line.giftQuantity) ?? 0) > 0
+  const notice = hasNormal ? giftLotNotice(line.lot) : null
+  if (!hasGift && !(hasNormal && line.lot)) return null
+  return (
+    <div className="mt-3 grid grid-cols-1 gap-3 border-t border-[var(--border)] pt-3 md:grid-cols-2">
+      <div className="space-y-1">
+        {hasNormal && <LotReferencePrice lot={line.lot} label={`正常批次参考进价 ${rowName}`} />}
+        {notice && <div className="text-xs text-[#D4820A]">{notice}</div>}
+      </div>
+      {hasGift && (
+        <div className="space-y-1">
+          <FormField label="赠送批次">
+            <LotPicker
+              locationId={marketId}
+              skuId={skuId}
+              value={line.giftLotId}
+              onChange={(giftLotId) => onChange({ giftLotId })}
+              onLotChange={(giftLot) => onChange({ giftLot })}
+              giftOnly={!line.giftFromNormalLot}
+            />
+          </FormField>
+          <label className="flex items-center gap-2 text-xs text-[#666666]">
+            <input
+              type="checkbox"
+              aria-label={`从普通批次赠送 ${rowName}`}
+              checked={line.giftFromNormalLot}
+              onChange={(event) => onChange({ giftFromNormalLot: event.target.checked })}
+            />
+            从普通批次赠送
+          </label>
+          <LotReferencePrice lot={line.giftLot} label={`赠送批次参考进价 ${rowName}`} />
+        </div>
+      )}
+    </div>
+  )
 }
 
 /**
@@ -3813,7 +3909,7 @@ function StoreAllocationForm({
         skuId: item.skuId,
         skuName: item.skuName,
         specName: item.specName,
-        lotId: '',
+        ...EMPTY_ALLOCATION_LOTS,
         remainingQuantity: remaining,
         quantity: String(remaining),
         giftQuantity: '0',
@@ -3902,7 +3998,7 @@ function StoreAllocationForm({
   }
 
   function selectSelfSku(key: number, skuId: string) {
-    updateSelfLine(key, { skuId, lotId: '', storeStandardUnitPrice: null })
+    updateSelfLine(key, { skuId, ...EMPTY_ALLOCATION_LOTS, storeStandardUnitPrice: null })
     // 价格区只对有价格档的账号渲染；其余账号不取价，也就不会为看不到的预览弹失败提示
     if (!skuId || !canViewPrice) return
     listInventorySkus({ skuIds: [skuId], onlyActive: false, page: 1, pageSize: 100 })
@@ -3933,12 +4029,15 @@ function StoreAllocationForm({
       toast.error('门店报货单尚未加载完成，请稍候或清除后重选')
       return
     }
+    // 正常 / 赠送各自的批次只在对应数量 > 0 时提交（#359）；没数量的那一侧不要求选批次
+    const lotIdFor = (lotId: string, quantity: number | null) => ((quantity ?? 0) > 0 ? Number(lotId) : null)
     const requestItems = lines.map((line) => ({
       requestItemId: line.requestItemId,
       skuId: null as string | null,
-      lotId: Number(line.lotId),
+      lotId: lotIdFor(line.lotId, nonnegativeNumber(line.quantity)),
       quantity: nonnegativeNumber(line.quantity),
       giftQuantity: nonnegativeNumber(line.giftQuantity),
+      giftLotId: lotIdFor(line.giftLotId, nonnegativeNumber(line.giftQuantity)),
       storeUnitDiscount: canViewPrice ? nonnegativeNumber(line.storeUnitDiscount) : 0,
       remark: optionalText(line.remark),
     })).filter((line) => (line.quantity ?? 0) + (line.giftQuantity ?? 0) > 0)
@@ -3946,9 +4045,10 @@ function StoreAllocationForm({
     const selfItems = selfLines.map((line) => ({
       requestItemId: null,
       skuId: line.skuId || null,
-      lotId: Number(line.lotId),
+      lotId: lotIdFor(line.lotId, nonnegativeNumber(line.quantity)),
       quantity: nonnegativeNumber(line.quantity),
       giftQuantity: nonnegativeNumber(line.giftQuantity),
+      giftLotId: lotIdFor(line.giftLotId, nonnegativeNumber(line.giftQuantity)),
       storeUnitDiscount: canViewPrice ? nonnegativeNumber(line.storeUnitDiscount) : 0,
       remark: optionalText(line.remark),
     }))
@@ -3957,8 +4057,13 @@ function StoreAllocationForm({
       return
     }
     const items = [...requestItems, ...selfItems]
-    if (items.length === 0 || items.some((line) => !Number.isInteger(line.lotId) || line.lotId <= 0 || line.quantity === null || line.giftQuantity === null || line.storeUnitDiscount === null)) {
+    const invalidLot = (lotId: number | null) => lotId !== null && (!Number.isInteger(lotId) || lotId <= 0)
+    if (items.length === 0 || items.some((line) => line.quantity === null || line.giftQuantity === null || line.storeUnitDiscount === null || invalidLot(line.lotId))) {
       toast.error('请为每条配货明细选择批次并填写数量')
+      return
+    }
+    if (items.some((line) => invalidLot(line.giftLotId))) {
+      toast.error('请为赠送数量选择赠送批次')
       return
     }
     setSaving(true)
@@ -4034,12 +4139,13 @@ function StoreAllocationForm({
                   <div className="text-xs text-[#888888]">{line.specName || line.skuId}</div>
                   {line.remainingQuantity <= 0.000001 && <div className="mt-1 text-xs text-[#888888]">正常已履约，仍可单独填写赠送数量</div>}
                 </div>
-                <FormField label="市场批次"><LotPicker locationId={sourceMarketId} skuId={line.skuId} value={line.lotId} onChange={(lotId) => updateLine(index, { lotId })} /></FormField>
+                <FormField label="市场批次"><LotPicker locationId={sourceMarketId} skuId={line.skuId} value={line.lotId} onChange={(lotId) => updateLine(index, { lotId })} onLotChange={(lot) => updateLine(index, { lot })} /></FormField>
                 <FormField label="正常配货"><Input type="number" min="0" step="0.01" max="9999999999.99" value={line.quantity} onChange={(event) => updateLine(index, { quantity: event.target.value })} /></FormField>
                 <FormField label="赠送数量"><Input type="number" min="0" step="0.01" max="9999999999.99" value={line.giftQuantity} onChange={(event) => updateLine(index, { giftQuantity: event.target.value })} /></FormField>
                 {canViewPrice && <FormField label="门店单价优惠"><Input type="number" min="0" step="0.01" max="9999999999.99" value={line.storeUnitDiscount} onChange={(event) => updateLine(index, { storeUnitDiscount: event.target.value })} /></FormField>}
                 <FormField label="明细备注"><Input value={line.remark} onChange={(event) => updateLine(index, { remark: event.target.value })} /></FormField>
               </div>
+              <StoreAllocationLotExtras marketId={sourceMarketId} skuId={line.skuId} rowName={`${line.skuName} ${line.specName || line.skuId}`} line={line} onChange={(patch) => updateLine(index, patch)} />
               {canViewPrice && <StoreAllocationPriceSummary line={line} />}
             </div>
           ))}
@@ -4057,7 +4163,7 @@ function StoreAllocationForm({
             <div key={line.key} className="rounded-[var(--radius)] border border-[var(--border)] p-3">
               <div className={`grid grid-cols-1 gap-3 ${canViewPrice ? 'xl:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_7rem_7rem_7rem_minmax(0,1fr)_2.5rem]' : 'md:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_7rem_7rem_minmax(0,1fr)_2.5rem]'}`}>
                 <FormField label="商品" required group><SkuPicker value={line.skuId} onChange={(skuId) => selectSelfSku(line.key, skuId)} filters={{ availableToMarketId: sourceMarketId }} disabled={!sourceMarketId} disabledHint="请先选择配货市场" /></FormField>
-                <FormField label="市场批次" required><LotPicker locationId={sourceMarketId} skuId={line.skuId} value={line.lotId} onChange={(lotId) => updateSelfLine(line.key, { lotId })} /></FormField>
+                <FormField label="市场批次" required><LotPicker locationId={sourceMarketId} skuId={line.skuId} value={line.lotId} onChange={(lotId) => updateSelfLine(line.key, { lotId })} onLotChange={(lot) => updateSelfLine(line.key, { lot })} /></FormField>
                 <FormField label="正常配货"><Input type="number" min="0" step="0.01" max="9999999999.99" value={line.quantity} onChange={(event) => updateSelfLine(line.key, { quantity: event.target.value })} /></FormField>
                 <FormField label="赠送数量"><Input type="number" min="0" step="0.01" max="9999999999.99" value={line.giftQuantity} onChange={(event) => updateSelfLine(line.key, { giftQuantity: event.target.value })} /></FormField>
                 {canViewPrice && <FormField label="门店单价优惠"><Input type="number" min="0" step="0.01" max="9999999999.99" value={line.storeUnitDiscount} onChange={(event) => updateSelfLine(line.key, { storeUnitDiscount: event.target.value })} /></FormField>}
@@ -4072,6 +4178,7 @@ function StoreAllocationForm({
                   该门店对此商品仍有未配报货（{otherDocIds.join('、')}，合计未配 {pending!.remainingQuantity}），建议引用报货单配货；自选配货不计入报货履约
                 </div>
               )}
+              {line.skuId && <StoreAllocationLotExtras marketId={sourceMarketId} skuId={line.skuId} rowName={`自选 ${line.skuId}`} line={line} onChange={(patch) => updateSelfLine(line.key, patch)} />}
               {canViewPrice && <StoreAllocationPriceSummary line={line} />}
             </div>
           )

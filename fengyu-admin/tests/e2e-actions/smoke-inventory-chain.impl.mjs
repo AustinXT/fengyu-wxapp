@@ -1396,6 +1396,50 @@ try {
     (await docHeader(fphMixId))?.status === '已完成'
       && dbh337Progress?.normalFulfilledQuantity === 2 && dbh337Progress?.normalReceivedQuantity === 2,
     JSON.stringify(dbh337Progress ?? null))
+
+  // ════ #359：分院配货赠送数量单独选赠送批次 ════
+  setSession(storeA1Session())
+  const { id: dbh359Id } = await biz.createStoreReplenishmentRequest({
+    storeId: STA1_ID, marketId: MKA_ORG, items: [{ skuId: SKU_SUPPLY, quantity: 3 }],
+  })
+  const [dbh359Item] = await docItems(dbh359Id)
+  const normalLot359 = await insertSeedLot({
+    locationId: MKA_ORG, skuId: SKU_SUPPLY, skuName: `${SKU_SUPPLY}_名`, quantity: 5, batchNo: 'SC-359',
+    supplyChainUnitCost: 800, marketStandardUnitPrice: 1000, marketUnitDiscount: 50, marketActualUnitPrice: 950,
+  })
+  const giftLot359 = await insertSeedLot({
+    locationId: MKA_ORG, skuId: SKU_SUPPLY, skuName: `${SKU_SUPPLY}_名`, quantity: 2, batchNo: 'GIFT-359', isGift: true,
+    supplyChainUnitCost: 0, marketStandardUnitPrice: 0, marketUnitDiscount: 0, marketActualUnitPrice: 0,
+  })
+  setSession(marketASession())
+  const lotOptions359 = await (await import(A('src', 'actions', 'inventory', 'stocks.ts'))).listInventoryLotOptions(MKA_ORG, SKU_SUPPLY)
+  const giftOption359 = lotOptions359.find((lot) => lot.id === giftLot359)
+  check('#359 批次选项下发赠送标记与参考进价（市场价格档可见）',
+    giftOption359?.isGift === true && giftOption359?.marketActualUnitPrice === 0
+      && lotOptions359.find((lot) => lot.id === normalLot359)?.marketActualUnitPrice === 950,
+    JSON.stringify(lotOptions359.filter((lot) => [normalLot359, giftLot359].includes(lot.id))
+      .map((lot) => ({ id: lot.id, isGift: lot.isGift, price: lot.marketActualUnitPrice }))))
+  const { id: fph359Id } = await biz.createStoreAllocation({
+    storeRequestId: dbh359Id, sourceMarketId: MKA_ORG,
+    items: [{ requestItemId: dbh359Item.id, lotId: normalLot359, quantity: 3, giftQuantity: 2, giftLotId: giftLot359 }],
+  })
+  const fph359Items = await docItems(fph359Id)
+  const fph359Normal = fph359Items.find((item) => !item.is_gift)
+  const fph359Gift = fph359Items.find((item) => item.is_gift)
+  check('#359 正常行出普通批次、赠送行出赠送批次，赠送行金额 0',
+    Number(fph359Normal?.lot_id) === normalLot359 && num(fph359Normal?.quantity) === 3
+      && Number(fph359Gift?.lot_id) === giftLot359 && num(fph359Gift?.quantity) === 2 && num(fph359Gift?.amount) === 0,
+    JSON.stringify(fph359Items.map((item) => ({ lot: item.lot_id, gift: item.is_gift, qty: item.quantity, amount: item.amount }))))
+  check('#359 两个批次各自扣减（普通 5→2、赠送 2→0）',
+    (await lotQuantity(normalLot359)) === 2 && (await lotQuantity(giftLot359)) === 0,
+    `${await lotQuantity(normalLot359)} / ${await lotQuantity(giftLot359)}`)
+  const fph359Links = await pgQuery(
+    `SELECT relation_type, quantity FROM inventory_doc_links WHERE to_doc_id = $1 ORDER BY relation_type`, [fph359Id],
+  )
+  check('#359 血缘照旧：门店报货配货 3 + 门店报货赠送配货 2',
+    JSON.stringify(fph359Links.map((link) => [link.relation_type, num(link.quantity)]))
+      === JSON.stringify([['门店报货赠送配货', 2], ['门店报货配货', 3]]),
+    JSON.stringify(fph359Links))
 } catch (e) {
   check('冒烟整体', false, '致命错误：' + (e?.stack || e?.message || String(e)))
 } finally {

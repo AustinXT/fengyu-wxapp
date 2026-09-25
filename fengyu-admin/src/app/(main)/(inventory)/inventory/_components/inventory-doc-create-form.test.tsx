@@ -611,3 +611,69 @@ describe('盘点单实盘数：0 可提交、留空拦下（#351）', () => {
     }))
   })
 })
+
+describe('市场间调货批次的赠送标记与参考进价（#359）', () => {
+  const SCOPED_LOCATIONS = [
+    { locationId: 'LOC-M1', orgNodeId: 'NODE-M1', name: '市场一部', locationType: '市场', isActive: true },
+  ] as never
+  const TARGETS = [{ orgNodeId: 'NODE-M1', name: '市场一部' }, { orgNodeId: 'NODE-M2', name: '市场二部' }]
+  const LOTS = [
+    { id: 1, batchNo: 'B001', isGift: false, availableQuantity: 8, expiryDate: null, marketActualUnitPrice: 27 },
+    { id: 2, batchNo: 'G002', isGift: true, availableQuantity: 3, expiryDate: null, marketActualUnitPrice: 0 },
+  ]
+  const referenceNote = () => screen.queryByRole('note', { name: '明细 1 来源批次参考进价' })
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockCreateDoc.mockResolvedValue({ success: true, id: 'MTO-260925-0001' })
+  })
+
+  async function openTransfer(docType = '市场间调货出库', lots: unknown[] = LOTS) {
+    mockListLots.mockResolvedValue(lots)
+    const result = renderForm({
+      locations: SCOPED_LOCATIONS,
+      marketTransferTargets: TARGETS,
+      initialDocType: docType,
+      allowedDocTypes: [docType],
+    })
+    await act(async () => {
+      fireEvent.change(selectByPlaceholder('库存 SKU'), { target: { value: 'SKU-1' } })
+    })
+    await waitFor(() => expect(screen.getByRole('option', { name: /^B001 · 可用 8$/ })).toBeTruthy())
+    return { ...result, lotSelect: screen.getByRole('combobox', { name: '明细 1 来源批次' }) as HTMLSelectElement }
+  }
+
+  it('选项带赠送标记；选中批次显示黄色参考进价并随切换更新；提交 payload 不含参考价', async () => {
+    const { lotSelect } = await openTransfer()
+    expect(screen.getByRole('option', { name: /^G002（赠送） · 可用 3$/ })).toBeTruthy()
+    expect(referenceNote()).toBeNull()
+    fireEvent.change(lotSelect, { target: { value: '1' } })
+    expect(referenceNote()?.textContent).toBe('参考进价 27.00')
+    fireEvent.change(lotSelect, { target: { value: '2' } })
+    expect(referenceNote()?.textContent).toBe('参考进价 0.00（赠送批次）')
+    // 改数量不影响参考值
+    fireEvent.change(screen.getByPlaceholderText('数量'), { target: { value: '2' } })
+    expect(referenceNote()?.textContent).toBe('参考进价 0.00（赠送批次）')
+
+    // 接收端除自己外只剩市场二部：唯一候选自动落定
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: '提交' }))
+    })
+    await waitFor(() => expect(mockCreateDoc).toHaveBeenCalledTimes(1))
+    expect(mockCreateDoc.mock.calls[0][0]).toMatchObject({ docType: '市场间调货出库', targetOrgNodeId: 'NODE-M2' })
+    expect(JSON.stringify(mockCreateDoc.mock.calls[0][0])).not.toMatch(/marketActualUnitPrice|参考/)
+  })
+
+  it('无价格档（接口不下发 marketActualUnitPrice）不渲染参考进价', async () => {
+    const { lotSelect } = await openTransfer('市场间调货出库', LOTS.map(({ marketActualUnitPrice: _price, ...lot }) => lot))
+    fireEvent.change(lotSelect, { target: { value: '1' } })
+    expect(referenceNote()).toBeNull()
+  })
+
+  it('其他出库类型（市场产品报损）只加赠送标记，不显示参考进价', async () => {
+    const { lotSelect } = await openTransfer('市场产品报损')
+    expect(screen.getByRole('option', { name: /^G002（赠送） · 可用 3$/ })).toBeTruthy()
+    fireEvent.change(lotSelect, { target: { value: '1' } })
+    expect(referenceNote()).toBeNull()
+  })
+})

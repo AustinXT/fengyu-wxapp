@@ -3682,10 +3682,12 @@ describe('分院配货报货单可选：引用 / 自选 / 混合（#337）', () 
     S2: { location_id: 'S2', org_node_id: 'ORG-S2', location_type: '门店', name: '门店二', parent_location_id: 'M1', is_active: true },
     S9: { location_id: 'S9', org_node_id: 'ORG-S9', location_type: '门店', name: '外市场门店', parent_location_id: 'M2', is_active: true },
   }
-  const LOTS: Record<number, { skuId: string; onHand: string }> = {
+  const LOTS: Record<number, { skuId: string; onHand: string; isGift?: boolean }> = {
     11: { skuId: 'SKU-1', onHand: '10' },
     12: { skuId: 'SKU-2', onHand: '10' },
     13: { skuId: 'SKU-3', onHand: '3' },
+    // #359：SKU-1 的赠送批次（赠送货跟着批号走，市场价记 0）
+    14: { skuId: 'SKU-1', onHand: '2', isGift: true },
   }
 
   function mockAllocation(options: { storePrices?: Record<string, string | null>; requestSource?: string } = {}) {
@@ -3725,6 +3727,7 @@ describe('分院配货报货单可选：引用 / 自选 / 混合（#337）', () 
         return [{
           ...shipmentSourceLotRow(), id: lotId, location_id: 'M1', sku_id: lot.skuId, sku_name: `测试 ${lot.skuId}`,
           batch_no: `B-${lotId}`, quantity_on_hand: lot.onHand, source_doc_id: null, supplier_id: null,
+          ...(lot.isGift ? { is_gift: true, market_standard_unit_price: '0', market_actual_unit_price: '0', supply_chain_unit_cost: '0' } : {}),
         }]
       }
       if (rendered.includes('FROM inventory_skus')) {
@@ -3923,5 +3926,78 @@ describe('分院配货报货单可选：引用 / 自选 / 混合（#337）', () 
     await expect(createStoreAllocation(SESSION, {
       targetStoreId: 'S1', sourceMarketId: 'M1', items: [{ skuId: 'SKU-2', lotId: '12' as never, quantity: 1 }],
     })).resolves.toMatchObject({ id: expect.stringMatching(/^FPH-/) })
+  })
+  describe('赠送数量单独选批次（#359）', () => {
+    /** 明细写入参数里的 lot_id 是第 2 个绑定参数（doc_id 之后）；按写入顺序给出每行的批次 */
+    const itemLotIds = (items: unknown[][]) => items.map((params) => params[1])
+
+    it('正常从普通批次、赠送从赠送批次：两行各记各的批次与流水，赠送行金额 0', async () => {
+      const { writes } = mockAllocation()
+      await createStoreAllocation(SESSION, {
+        storeRequestId: 'DBH-1', sourceMarketId: 'M1',
+        items: [{ requestItemId: 1, lotId: 11, quantity: 3, giftQuantity: 2, giftLotId: 14 }],
+      })
+      expect(itemLotIds(writes.items)).toEqual([11, 14])
+      // 出库流水同样分别落在两个批次上
+      expect(writes.movements.map((params) => params.find((param) => param === 11 || param === 14))).toEqual([11, 14])
+      // 血缘：正常 → 门店报货配货（3），赠送 → 门店报货赠送配货（2）
+      expect(writes.links.map((params) => params.find((param) => typeof param === 'string' && param.startsWith('门店报货'))))
+        .toEqual(['门店报货配货', '门店报货赠送配货'])
+      expect(writes.fulfilledUpdates).toHaveLength(1)
+    })
+
+    it('只配赠送：不必选正常批次；不传赠送批次则沿用正常批次（改造前口径）', async () => {
+      const giftOnly = mockAllocation()
+      await createStoreAllocation(SESSION, {
+        storeRequestId: 'DBH-1', sourceMarketId: 'M1',
+        items: [{ requestItemId: 1, quantity: 0, giftQuantity: 1, giftLotId: 14 }],
+      })
+      expect(itemLotIds(giftOnly.writes.items)).toEqual([14])
+      expect(giftOnly.writes.fulfilledUpdates).toHaveLength(0)
+
+      const legacy = mockAllocation()
+      await createStoreAllocation(SESSION, {
+        storeRequestId: 'DBH-1', sourceMarketId: 'M1',
+        items: [{ requestItemId: 1, lotId: 11, quantity: 1, giftQuantity: 1 }],
+      })
+      expect(itemLotIds(legacy.writes.items)).toEqual([11, 11])
+    })
+
+    it('入口校验：有正常数量必须选正常批次、有赠送数量必须有赠送批次；非法赠送批次号被拒', async () => {
+      await expect(createStoreAllocation(SESSION, {
+        storeRequestId: 'DBH-1', sourceMarketId: 'M1',
+        items: [{ requestItemId: 1, quantity: 1, giftQuantity: 1, giftLotId: 14 }],
+      })).rejects.toThrow('INVALID_PARAMS: 请为每条配货明细选择库存批次')
+      await expect(createStoreAllocation(SESSION, {
+        storeRequestId: 'DBH-1', sourceMarketId: 'M1',
+        items: [{ requestItemId: 1, quantity: 0, giftQuantity: 1 }],
+      })).rejects.toThrow('INVALID_PARAMS: 请为赠送数量选择库存批次')
+      for (const giftLotId of ['abc', 0, 1.5, true]) {
+        await expect(createStoreAllocation(SESSION, {
+          storeRequestId: 'DBH-1', sourceMarketId: 'M1',
+          items: [{ requestItemId: 1, lotId: 11, quantity: 1, giftQuantity: 1, giftLotId: giftLotId as never }],
+        })).rejects.toThrow('INVALID_PARAMS: 请为赠送数量选择库存批次')
+      }
+      expect(db.transaction).not.toHaveBeenCalled()
+    })
+
+    it('赠送批次同样核 SKU 与可用量：SKU 不符 / 超出赠送批次可用量被拒', async () => {
+      mockAllocation()
+      await expect(createStoreAllocation(SESSION, {
+        storeRequestId: 'DBH-1', sourceMarketId: 'M1',
+        items: [{ requestItemId: 1, lotId: 11, quantity: 1, giftQuantity: 1, giftLotId: 12 }],
+      })).rejects.toThrow('配货批次与门店报货 SKU 不一致')
+      mockAllocation()
+      await expect(createStoreAllocation(SESSION, {
+        targetStoreId: 'S1', sourceMarketId: 'M1',
+        items: [{ skuId: 'SKU-2', lotId: 12, quantity: 1, giftQuantity: 1, giftLotId: 14 }],
+      })).rejects.toThrow('配货批次与所选商品不一致')
+      // 赠送批次 14 只有 2 件：赠送 3 件超出（可用量按各自批次累计，不与正常批次 11 的 10 件混算）
+      mockAllocation()
+      await expect(createStoreAllocation(SESSION, {
+        storeRequestId: 'DBH-1', sourceMarketId: 'M1',
+        items: [{ requestItemId: 1, lotId: 11, quantity: 1, giftQuantity: 3, giftLotId: 14 }],
+      })).rejects.toThrow(/库存不足/)
+    })
   })
 })
