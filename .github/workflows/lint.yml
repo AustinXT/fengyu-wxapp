@@ -9,6 +9,9 @@ on:
       # 预构建产物（package.json 的 export-worker 直跑它）：单独被换回旧版时要让新鲜度守护跑一遍（#298）
       - 'fengyu-admin/dist/export-worker.mjs'
       - 'fengyu-staff/cloudfunctions/**/*.js'
+      # 经营分析站的在营口径副本由 staffApi 的 cross-end-store-active-snapshot 守护（#421）；
+      # analyst 自己的 vitest 不进 CI（#382），只改 analyst 的 PR 不加这条就一条守护都不跑。
+      - 'fengyu-analyst/src/**'
       - 'fengyu-client/cloudfunctions/**/*.js'
       - 'scripts/lint-cas-guards.mjs'
       - '.claude/skills/remote-deploy/**'

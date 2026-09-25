@@ -10,8 +10,9 @@
 // 判定（routes/store.js、staff.js、order.js、inventory.js），不归本文件管。
 //
 // ⚠️ 本项目禁跨端共享目录（用户已 veto cloudfunctions-shared），本文件**仅供 staffApi 内部**复用；
-//    admin 独立副本：fengyu-admin/src/lib/store-status.ts。改这里须同步那边，一致性由
-//    __tests__/routes/cross-end-technician-denominator.test.js（整段等值）
+//    独立副本共三份：admin fengyu-admin/src/lib/store-status.ts、经营分析站 fengyu-analyst/src/lib/store-status.ts（#421）。
+//    改这里须同步那两份，一致性由 __tests__/routes/cross-end-technician-denominator.test.js
+//    + cross-end-store-active-snapshot.test.js（整段等值）
 //    + __tests__/routes/cross-end-store-status-snapshot.test.js（数据中心范围禁 is_closed 闭集）守护。
 
 /** 当前启用的门店组织节点对应的 store_id 集合（按当前状态作用于全部历史区间）。 */
