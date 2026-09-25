@@ -155443,7 +155443,7 @@ var require_excel = __commonJS((exports, module) => {
 
 // src/export-worker/index.ts
 init_db2();
-var import_drizzle_orm67 = __toESM(require_drizzle_orm(), 1);
+var import_drizzle_orm68 = __toESM(require_drizzle_orm(), 1);
 import { createReadStream } from "node:fs";
 import { mkdtemp, rm as rm2 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -172440,7 +172440,7 @@ var createServiceOrder = withPermission("service:create", async (session4, data)
       unitRealPrice: saleItems.unitRealPrice,
       saleOrderType: saleOrders.saleOrderType,
       orderStatus: saleOrders.status,
-      isShengmei: import_drizzle_orm41.sql`COALESCE(${saleItems.isShengmei}, ${productSkus.isShengmei})`,
+      isShengmei: import_drizzle_orm41.sql`COALESCE(${productSkus.isShengmei}, ${saleItems.isShengmei})`,
       salesCategory: import_drizzle_orm41.sql`COALESCE(${saleItems.salesCategory}, ${productCategories.salesCategory})`,
       hasPendingRefund: import_drizzle_orm41.sql`EXISTS (SELECT 1 FROM sale_order_payments sop WHERE sop.sale_order_id = ${saleOrders.saleOrderId} AND sop.change_type = '退款' AND sop.status = '待审批')`,
       hasApprovedRefund: import_drizzle_orm41.sql`EXISTS (SELECT 1 FROM sale_order_payments sop WHERE sop.sale_order_id = ${saleOrders.saleOrderId} AND sop.change_type = '退款' AND sop.status = '已支付')`
@@ -182533,41 +182533,41 @@ function buildCommissionDetailColumns(input) {
 }
 
 // src/lib/data-center/commission-sql.ts
-var import_drizzle_orm66 = __toESM(require_drizzle_orm(), 1);
-var SALE_FROM = import_drizzle_orm66.sql`
+var import_drizzle_orm67 = __toESM(require_drizzle_orm(), 1);
+var SALE_FROM = import_drizzle_orm67.sql`
       FROM sale_payment_item_allocations spia
       JOIN sale_payment_item_receipts spir ON spir.id = spia.sale_payment_item_receipt_id
       JOIN sale_items si ON si.sale_item_id = spir.sale_item_id
       JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
       JOIN sale_order_performance_events spe ON spe.sale_payment_id = spir.sale_payment_id`;
 function saleWhere(session4, scope, filters) {
-  return import_drizzle_orm66.sql`
+  return import_drizzle_orm67.sql`
       WHERE ${scopeFilterSql(session4, scope, "so.store_id")}
         AND spia.is_void = FALSE
         AND so.sale_order_type IN ('销售单', '转换单')
         AND spe.status = '已支付'
         AND spe.performance_date BETWEEN ${filters.range.start} AND ${filters.range.end}
-        ${filters.employeeId ? import_drizzle_orm66.sql`AND spia.employee_id = ${filters.employeeId}` : import_drizzle_orm66.sql``}
-        ${filters.storeId ? import_drizzle_orm66.sql`AND so.store_id = ${filters.storeId}` : import_drizzle_orm66.sql``}`;
+        ${filters.employeeId ? import_drizzle_orm67.sql`AND spia.employee_id = ${filters.employeeId}` : import_drizzle_orm67.sql``}
+        ${filters.storeId ? import_drizzle_orm67.sql`AND so.store_id = ${filters.storeId}` : import_drizzle_orm67.sql``}`;
 }
-var SERVICE_FROM = import_drizzle_orm66.sql`
+var SERVICE_FROM = import_drizzle_orm67.sql`
       FROM service_commissions sc
       JOIN service_items sit ON sit.service_item_id = sc.service_item_id
       JOIN service_orders so ON so.service_order_id = sit.service_order_id`;
 function serviceWhere(session4, scope, filters) {
-  return import_drizzle_orm66.sql`
+  return import_drizzle_orm67.sql`
       WHERE ${scopeFilterSql(session4, scope, "so.store_id")}
         AND sc.is_void = FALSE
         AND so.status = '已完成'
         AND so.service_date BETWEEN ${filters.range.start} AND ${filters.range.end}
-        ${filters.employeeId ? import_drizzle_orm66.sql`AND sc.employee_id = ${filters.employeeId}` : import_drizzle_orm66.sql``}
-        ${filters.storeId ? import_drizzle_orm66.sql`AND so.store_id = ${filters.storeId}` : import_drizzle_orm66.sql``}`;
+        ${filters.employeeId ? import_drizzle_orm67.sql`AND sc.employee_id = ${filters.employeeId}` : import_drizzle_orm67.sql``}
+        ${filters.storeId ? import_drizzle_orm67.sql`AND so.store_id = ${filters.storeId}` : import_drizzle_orm67.sql``}`;
 }
 function sourceParts(source, sale, service) {
   return source === "sale" ? [sale] : source === "service" ? [service] : [sale, service];
 }
 function commissionLinesCteSql(session4, scope, filters) {
-  const sale = import_drizzle_orm66.sql`
+  const sale = import_drizzle_orm67.sql`
       SELECT 'sale'::text AS source, spia.id AS source_id, spia.employee_id, so.store_id,
              spe.performance_date AS biz_date,
              COALESCE(spia.commission_amount::numeric, 0) AS sale_commission,
@@ -182575,7 +182575,7 @@ function commissionLinesCteSql(session4, scope, filters) {
              'S:' || so.sale_order_id AS order_key
       ${SALE_FROM}
       ${saleWhere(session4, scope, filters)}`;
-  const service = import_drizzle_orm66.sql`
+  const service = import_drizzle_orm67.sql`
       SELECT 'service'::text AS source, sc.id AS source_id, sc.employee_id, so.store_id,
              so.service_date AS biz_date,
              0::numeric AS sale_commission,
@@ -182583,21 +182583,21 @@ function commissionLinesCteSql(session4, scope, filters) {
              'V:' || so.service_order_id AS order_key
       ${SERVICE_FROM}
       ${serviceWhere(session4, scope, filters)}`;
-  return import_drizzle_orm66.sql`commission_lines AS (${import_drizzle_orm66.sql.join(sourceParts(filters.source, sale, service), import_drizzle_orm66.sql` UNION ALL `)})`;
+  return import_drizzle_orm67.sql`commission_lines AS (${import_drizzle_orm67.sql.join(sourceParts(filters.source, sale, service), import_drizzle_orm67.sql` UNION ALL `)})`;
 }
 function escapeLike(text5) {
   return text5.replace(/[\\%_]/g, (ch) => `\\${ch}`);
 }
 function groupKeySql(grain) {
   if (grain === "position")
-    return import_drizzle_orm66.sql`COALESCE(NULLIF(TRIM(sw.position_name), ''), ${NO_POSITION_LABEL})`;
+    return import_drizzle_orm67.sql`COALESCE(NULLIF(TRIM(sw.position_name), ''), ${NO_POSITION_LABEL})`;
   if (grain === "employee")
-    return import_drizzle_orm66.sql`cl.employee_id`;
-  return import_drizzle_orm66.sql`cl.employee_id || '|' || cl.store_id`;
+    return import_drizzle_orm67.sql`cl.employee_id`;
+  return import_drizzle_orm67.sql`cl.employee_id || '|' || cl.store_id`;
 }
 function commissionMatrixSql(session4, scope, range, grain, options) {
   const pattern = options.search ? `%${escapeLike(options.search)}%` : null;
-  return import_drizzle_orm66.sql`
+  return import_drizzle_orm67.sql`
     WITH ${commissionLinesCteSql(session4, scope, { range })},
     tagged AS (
       SELECT cl.*, ${groupKeySql(grain)} AS gk,
@@ -182605,14 +182605,14 @@ function commissionMatrixSql(session4, scope, range, grain, options) {
       FROM commission_lines cl
       LEFT JOIN staff_wechat_users sw ON sw.employee_id = cl.employee_id
       LEFT JOIN stores st ON st.store_id = cl.store_id
-      ${pattern ? import_drizzle_orm66.sql`WHERE (sw.name ILIKE ${pattern} OR sw.position_name ILIKE ${pattern} OR st.store_name ILIKE ${pattern})` : import_drizzle_orm66.sql``}
+      ${pattern ? import_drizzle_orm67.sql`WHERE (sw.name ILIKE ${pattern} OR sw.position_name ILIKE ${pattern} OR st.store_name ILIKE ${pattern})` : import_drizzle_orm67.sql``}
     ),
     visible AS (
       SELECT * FROM tagged
-      ${options.hideZero ? import_drizzle_orm66.sql`WHERE gk IN (
+      ${options.hideZero ? import_drizzle_orm67.sql`WHERE gk IN (
             SELECT gk FROM tagged GROUP BY gk
             HAVING SUM(sale_commission + service_commission) <> 0
-          )` : import_drizzle_orm66.sql``}
+          )` : import_drizzle_orm67.sql``}
     )
     SELECT gk,
            biz_date::text AS d,
@@ -182633,7 +182633,7 @@ function commissionMatrixSql(session4, scope, range, grain, options) {
   `;
 }
 function commissionKpiSql(session4, scope, range) {
-  return import_drizzle_orm66.sql`
+  return import_drizzle_orm67.sql`
     WITH ${commissionLinesCteSql(session4, scope, { range })},
     per_employee AS (
       SELECT employee_id, SUM(sale_commission + service_commission) AS net
@@ -182649,7 +182649,7 @@ function commissionKpiSql(session4, scope, range) {
   `;
 }
 function pendingAllocationSql(session4, scope, range) {
-  return import_drizzle_orm66.sql`
+  return import_drizzle_orm67.sql`
     SELECT COUNT(*)::int AS count, COALESCE(SUM(sop.amount::numeric), 0) AS amount
     FROM sale_order_payments sop
     JOIN sale_orders so ON so.sale_order_id = sop.sale_order_id
@@ -182679,7 +182679,7 @@ function pendingAllocationSql(session4, scope, range) {
   `;
 }
 function commissionEmployeeOptionsSql(session4, scope, range) {
-  return import_drizzle_orm66.sql`
+  return import_drizzle_orm67.sql`
     WITH ${commissionLinesCteSql(session4, scope, { range })}
     SELECT e.employee_id, sw.name, sw.position_name,
            COALESCE(home.store_name, org.name) AS home_name
@@ -182699,7 +182699,7 @@ function detailLineFilters(filters, month) {
   };
 }
 function detailRowsCteSql(session4, scope, filters) {
-  const sale = import_drizzle_orm66.sql`
+  const sale = import_drizzle_orm67.sql`
       SELECT 'sale'::text AS source, spia.id AS source_id, spe.performance_date AS biz_date,
              so.store_id, COALESCE(st.store_name, so.store_name) AS store_name,
              spia.employee_id, sw.name AS employee_name, sw.position_name,
@@ -182719,7 +182719,7 @@ function detailRowsCteSql(session4, scope, filters) {
       LEFT JOIN product_skus ps ON ps.sku_id = si.sku_id
       LEFT JOIN product_categories pc ON pc.category_id = ps.category_id
       ${saleWhere(session4, scope, filters)}`;
-  const service = import_drizzle_orm66.sql`
+  const service = import_drizzle_orm67.sql`
       SELECT 'service'::text AS source, sc.id AS source_id, so.service_date AS biz_date,
              so.store_id, st.store_name,
              sc.employee_id, sw.name AS employee_name, sw.position_name,
@@ -182740,16 +182740,16 @@ function detailRowsCteSql(session4, scope, filters) {
       LEFT JOIN product_skus ps ON ps.sku_id = si.sku_id
       LEFT JOIN product_categories pc ON pc.category_id = ps.category_id
       ${serviceWhere(session4, scope, filters)}`;
-  return import_drizzle_orm66.sql`detail_rows AS (${import_drizzle_orm66.sql.join(sourceParts(filters.source, sale, service), import_drizzle_orm66.sql` UNION ALL `)})`;
+  return import_drizzle_orm67.sql`detail_rows AS (${import_drizzle_orm67.sql.join(sourceParts(filters.source, sale, service), import_drizzle_orm67.sql` UNION ALL `)})`;
 }
 function commissionDetailPageSql(session4, scope, filters, page) {
-  const seek = page.after ? import_drizzle_orm66.sql`WHERE (biz_date < ${page.after.d}::date
+  const seek = page.after ? import_drizzle_orm67.sql`WHERE (biz_date < ${page.after.d}::date
             OR (biz_date = ${page.after.d}::date AND source > ${page.after.t})
-            OR (biz_date = ${page.after.d}::date AND source = ${page.after.t} AND source_id < ${page.after.id}))` : page.before ? import_drizzle_orm66.sql`WHERE (biz_date > ${page.before.d}::date
+            OR (biz_date = ${page.after.d}::date AND source = ${page.after.t} AND source_id < ${page.after.id}))` : page.before ? import_drizzle_orm67.sql`WHERE (biz_date > ${page.before.d}::date
             OR (biz_date = ${page.before.d}::date AND source < ${page.before.t})
-            OR (biz_date = ${page.before.d}::date AND source = ${page.before.t} AND source_id > ${page.before.id}))` : import_drizzle_orm66.sql``;
-  const order = page.before && !page.after ? import_drizzle_orm66.sql`ORDER BY biz_date ASC, source DESC, source_id ASC` : import_drizzle_orm66.sql`ORDER BY biz_date DESC, source ASC, source_id DESC`;
-  return import_drizzle_orm66.sql`
+            OR (biz_date = ${page.before.d}::date AND source = ${page.before.t} AND source_id > ${page.before.id}))` : import_drizzle_orm67.sql``;
+  const order = page.before && !page.after ? import_drizzle_orm67.sql`ORDER BY biz_date ASC, source DESC, source_id ASC` : import_drizzle_orm67.sql`ORDER BY biz_date DESC, source ASC, source_id DESC`;
+  return import_drizzle_orm67.sql`
     WITH ${detailRowsCteSql(session4, scope, filters)}
     SELECT source, source_id, biz_date::text AS biz_date, store_id, store_name, employee_id, employee_name,
            position_name, order_id, payment_id, customer_name, order_kind, product_name, category_l1, category_l2,
@@ -182761,22 +182761,22 @@ function commissionDetailPageSql(session4, scope, filters, page) {
   `;
 }
 function commissionDetailSummarySql(session4, scope, filters) {
-  const sale = import_drizzle_orm66.sql`
+  const sale = import_drizzle_orm67.sql`
       SELECT 'sale'::text AS source, 'S:' || so.sale_order_id AS order_key,
              spir.amount::numeric AS received,
              spia.allocated_amount::numeric AS allocated,
              COALESCE(spia.commission_amount::numeric, 0) AS commission
       ${SALE_FROM}
       ${saleWhere(session4, scope, filters)}`;
-  const service = import_drizzle_orm66.sql`
+  const service = import_drizzle_orm67.sql`
       SELECT 'service'::text AS source, 'V:' || so.service_order_id AS order_key,
              0::numeric AS received,
              ROUND(ROUND(sit.unit_real_price::numeric * sit.session_used, 2) * sc.allocation_ratio::numeric, 2) AS allocated,
              sc.commission_amount::numeric AS commission
       ${SERVICE_FROM}
       ${serviceWhere(session4, scope, filters)}`;
-  return import_drizzle_orm66.sql`
-    WITH summary_rows AS (${import_drizzle_orm66.sql.join(sourceParts(filters.source, sale, service), import_drizzle_orm66.sql` UNION ALL `)})
+  return import_drizzle_orm67.sql`
+    WITH summary_rows AS (${import_drizzle_orm67.sql.join(sourceParts(filters.source, sale, service), import_drizzle_orm67.sql` UNION ALL `)})
     SELECT COUNT(*)::int AS count,
            COUNT(DISTINCT order_key)::int AS orders,
            COALESCE(SUM(received), 0) AS received,
@@ -183948,7 +183948,7 @@ function asClaimedId(rows) {
   return Number.isSafeInteger(id) && id > 0 ? id : null;
 }
 async function recoverExpiredLeases() {
-  await db2.execute(import_drizzle_orm67.sql`
+  await db2.execute(import_drizzle_orm68.sql`
     UPDATE admin_export_jobs
        SET status = CASE
              WHEN attempt_count >= ${MAX_ATTEMPTS} THEN 'failed'
@@ -183972,12 +183972,12 @@ async function recoverExpiredLeases() {
   `);
 }
 async function claimNextJob() {
-  const claimed = await db2.execute(import_drizzle_orm67.sql`
+  const claimed = await db2.execute(import_drizzle_orm68.sql`
     UPDATE admin_export_jobs
        SET status = 'running',
            attempt_count = attempt_count + 1,
            started_at = COALESCE(started_at, NOW()),
-           lease_expires_at = NOW() + ${import_drizzle_orm67.sql.raw(`interval '${LEASE_MINUTES} minutes'`)},
+           lease_expires_at = NOW() + ${import_drizzle_orm68.sql.raw(`interval '${LEASE_MINUTES} minutes'`)},
            error_code = NULL,
            error_message = NULL,
            updated_at = NOW()
@@ -183995,13 +183995,13 @@ async function claimNextJob() {
   const id = asClaimedId(claimed);
   if (!id)
     return null;
-  const [job] = await db2.select().from(adminExportJobs).where(import_drizzle_orm67.eq(adminExportJobs.id, id)).limit(1);
+  const [job] = await db2.select().from(adminExportJobs).where(import_drizzle_orm68.eq(adminExportJobs.id, id)).limit(1);
   return job ?? null;
 }
 async function renewLease(id) {
-  await db2.execute(import_drizzle_orm67.sql`
+  await db2.execute(import_drizzle_orm68.sql`
     UPDATE admin_export_jobs
-       SET lease_expires_at = NOW() + ${import_drizzle_orm67.sql.raw(`interval '${LEASE_MINUTES} minutes'`)},
+       SET lease_expires_at = NOW() + ${import_drizzle_orm68.sql.raw(`interval '${LEASE_MINUTES} minutes'`)},
            updated_at = NOW()
      WHERE id = ${id}
        AND status = 'running'
@@ -184024,7 +184024,7 @@ async function failJob(job, err) {
     completedAt: shouldRetry ? null : new Date,
     errorCode: failure.code,
     errorMessage: shouldRetry ? `${failure.message}（第 ${job.attemptCount} 次失败，正在重试）` : failure.message
-  }).where(import_drizzle_orm67.and(import_drizzle_orm67.eq(adminExportJobs.id, job.id), import_drizzle_orm67.eq(adminExportJobs.status, "running")));
+  }).where(import_drizzle_orm68.and(import_drizzle_orm68.eq(adminExportJobs.id, job.id), import_drizzle_orm68.eq(adminExportJobs.status, "running")));
   if (!shouldRetry) {
     const session4 = parseExportSession(job.scopeSnapshot);
     await logOperation(session4, "export_job.failed", "admin_export_jobs", String(job.id), {
@@ -184035,12 +184035,12 @@ async function failJob(job, err) {
   }
 }
 async function expireFinishedFiles() {
-  const expired = await db2.select({ id: adminExportJobs.id, fileCloudPath: adminExportJobs.fileCloudPath }).from(adminExportJobs).where(import_drizzle_orm67.and(import_drizzle_orm67.inArray(adminExportJobs.status, ["ready", "expired"]), import_drizzle_orm67.isNotNull(adminExportJobs.fileCloudPath), import_drizzle_orm67.lt(adminExportJobs.expiresAt, new Date))).limit(100);
+  const expired = await db2.select({ id: adminExportJobs.id, fileCloudPath: adminExportJobs.fileCloudPath }).from(adminExportJobs).where(import_drizzle_orm68.and(import_drizzle_orm68.inArray(adminExportJobs.status, ["ready", "expired"]), import_drizzle_orm68.isNotNull(adminExportJobs.fileCloudPath), import_drizzle_orm68.lt(adminExportJobs.expiresAt, new Date))).limit(100);
   for (const job of expired) {
     try {
       if (job.fileCloudPath)
         await deleteByCloudPaths([job.fileCloudPath]);
-      await db2.update(adminExportJobs).set({ status: "expired", fileCloudPath: null, updatedAt: new Date }).where(import_drizzle_orm67.and(import_drizzle_orm67.eq(adminExportJobs.id, job.id), import_drizzle_orm67.inArray(adminExportJobs.status, ["ready", "expired"])));
+      await db2.update(adminExportJobs).set({ status: "expired", fileCloudPath: null, updatedAt: new Date }).where(import_drizzle_orm68.and(import_drizzle_orm68.eq(adminExportJobs.id, job.id), import_drizzle_orm68.inArray(adminExportJobs.status, ["ready", "expired"])));
     } catch (err) {
       console.error(`[export-worker] cleanup failed for job ${job.id}:`, err);
     }
@@ -184094,7 +184094,7 @@ async function processJob(job) {
           if (rowCount - lastProgress < 1000)
             return;
           lastProgress = rowCount;
-          await db2.update(adminExportJobs).set({ progressRows: rowCount }).where(import_drizzle_orm67.and(import_drizzle_orm67.eq(adminExportJobs.id, job.id), import_drizzle_orm67.eq(adminExportJobs.status, "running")));
+          await db2.update(adminExportJobs).set({ progressRows: rowCount }).where(import_drizzle_orm68.and(import_drizzle_orm68.eq(adminExportJobs.id, job.id), import_drizzle_orm68.eq(adminExportJobs.status, "running")));
         }
       });
       return { content, fileName, filePath, writeResult };
@@ -184110,7 +184110,7 @@ async function processJob(job) {
         progressRows: 0,
         errorCode: null,
         errorMessage: null
-      }).where(import_drizzle_orm67.and(import_drizzle_orm67.eq(adminExportJobs.id, job.id), import_drizzle_orm67.eq(adminExportJobs.status, "running")));
+      }).where(import_drizzle_orm68.and(import_drizzle_orm68.eq(adminExportJobs.id, job.id), import_drizzle_orm68.eq(adminExportJobs.status, "running")));
       await logOperation(session4, "export_job.empty", "admin_export_jobs", String(job.id), {
         exportType
       }).catch((logError) => console.error("[export-worker] empty audit log error:", logError));
@@ -184135,7 +184135,7 @@ async function processJob(job) {
       fileName: output.fileName,
       errorCode: null,
       errorMessage: null
-    }).where(import_drizzle_orm67.and(import_drizzle_orm67.eq(adminExportJobs.id, job.id), import_drizzle_orm67.eq(adminExportJobs.status, "running")));
+    }).where(import_drizzle_orm68.and(import_drizzle_orm68.eq(adminExportJobs.id, job.id), import_drizzle_orm68.eq(adminExportJobs.status, "running")));
     await logOperation(session4, "export_job.ready", "admin_export_jobs", String(job.id), {
       exportType,
       rowCount: output.writeResult.rowCount,
