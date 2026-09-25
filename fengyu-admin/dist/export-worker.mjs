@@ -42399,7 +42399,7 @@ var require_wxCloudToken = __commonJS((exports) => {
 
 // ../../../../fengyu-admin/node_modules/@cloudbase/node-sdk/dist/utils/version.js
 var require_version2 = __commonJS((exports) => {
-  var __dirname = "/Users/nv/proj.xt.com/worktrees/fengyu-wxapp/release/fengyu-wxapp/fengyu-admin/node_modules/@cloudbase/node-sdk/dist/utils";
+  var __dirname = "/Users/nv/proj.xt.com/fengyu-wxapp/fengyu-admin/node_modules/@cloudbase/node-sdk/dist/utils";
   var __createBinding = exports && exports.__createBinding || (Object.create ? function(o, m, k, k2) {
     if (k2 === undefined)
       k2 = k;
@@ -75376,7 +75376,7 @@ var require_is_thenable = __commonJS((exports) => {
 
 // ../../../../fengyu-admin/node_modules/next/dist/compiled/@opentelemetry/api/index.js
 var require_api = __commonJS((exports, module) => {
-  var __dirname = "/Users/nv/proj.xt.com/worktrees/fengyu-wxapp/release/fengyu-wxapp/fengyu-admin/node_modules/next/dist/compiled/@opentelemetry/api";
+  var __dirname = "/Users/nv/proj.xt.com/fengyu-wxapp/fengyu-admin/node_modules/next/dist/compiled/@opentelemetry/api";
   (() => {
     var e = { 491: (e2, t2, r2) => {
       Object.defineProperty(t2, "__esModule", { value: true });
@@ -95671,7 +95671,7 @@ var require_process_nextick_args = __commonJS((exports, module) => {
   }
 });
 
-// ../../../../fengyu-admin/node_modules/jszip/node_modules/isarray/index.js
+// ../../../../fengyu-admin/node_modules/isarray/index.js
 var require_isarray = __commonJS((exports, module) => {
   var toString = {}.toString;
   module.exports = Array.isArray || function(arr) {
@@ -127955,14 +127955,6 @@ GFS4: `);
   }
 });
 
-// ../../../../fengyu-admin/node_modules/lazystream/node_modules/isarray/index.js
-var require_isarray2 = __commonJS((exports, module) => {
-  var toString = {}.toString;
-  module.exports = Array.isArray || function(arr) {
-    return toString.call(arr) == "[object Array]";
-  };
-});
-
 // ../../../../fengyu-admin/node_modules/lazystream/node_modules/readable-stream/node_modules/safe-buffer/index.js
 var require_safe_buffer3 = __commonJS((exports, module) => {
   var buffer2 = __require("buffer");
@@ -128964,7 +128956,7 @@ var require_string_decoder3 = __commonJS((exports) => {
 var require__stream_readable3 = __commonJS((exports, module) => {
   var pna = require_process_nextick_args();
   module.exports = Readable;
-  var isArray = require_isarray2();
+  var isArray = require_isarray();
   var Duplex;
   Readable.ReadableState = ReadableState;
   var EE = __require("events").EventEmitter;
@@ -130111,14 +130103,6 @@ var require_lodash18 = __commonJS((exports, module) => {
   module.exports = defaults;
 });
 
-// ../../../../fengyu-admin/node_modules/archiver-utils/node_modules/isarray/index.js
-var require_isarray3 = __commonJS((exports, module) => {
-  var toString = {}.toString;
-  module.exports = Array.isArray || function(arr) {
-    return toString.call(arr) == "[object Array]";
-  };
-});
-
 // ../../../../fengyu-admin/node_modules/archiver-utils/node_modules/readable-stream/node_modules/safe-buffer/index.js
 var require_safe_buffer4 = __commonJS((exports, module) => {
   var buffer2 = __require("buffer");
@@ -131120,7 +131104,7 @@ var require_string_decoder4 = __commonJS((exports) => {
 var require__stream_readable4 = __commonJS((exports, module) => {
   var pna = require_process_nextick_args();
   module.exports = Readable;
-  var isArray = require_isarray3();
+  var isArray = require_isarray();
   var Duplex;
   Readable.ReadableState = ReadableState;
   var EE = __require("events").EventEmitter;
@@ -146071,14 +146055,6 @@ var require_Buffer = __commonJS((exports, module) => {
   module.exports = Buffer2;
 });
 
-// ../../../../fengyu-admin/node_modules/unzipper/node_modules/isarray/index.js
-var require_isarray4 = __commonJS((exports, module) => {
-  var toString = {}.toString;
-  module.exports = Array.isArray || function(arr) {
-    return toString.call(arr) == "[object Array]";
-  };
-});
-
 // ../../../../fengyu-admin/node_modules/unzipper/node_modules/readable-stream/node_modules/safe-buffer/index.js
 var require_safe_buffer5 = __commonJS((exports, module) => {
   var buffer2 = __require("buffer");
@@ -147080,7 +147056,7 @@ var require_string_decoder5 = __commonJS((exports) => {
 var require__stream_readable5 = __commonJS((exports, module) => {
   var pna = require_process_nextick_args();
   module.exports = Readable;
-  var isArray = require_isarray4();
+  var isArray = require_isarray();
   var Duplex;
   Readable.ReadableState = ReadableState;
   var EE = __require("events").EventEmitter;
@@ -148364,14 +148340,6 @@ var require_parse4 = __commonJS((exports, module) => {
   module.exports = Parse;
 });
 
-// ../../../../fengyu-admin/node_modules/duplexer2/node_modules/isarray/index.js
-var require_isarray5 = __commonJS((exports, module) => {
-  var toString = {}.toString;
-  module.exports = Array.isArray || function(arr) {
-    return toString.call(arr) == "[object Array]";
-  };
-});
-
 // ../../../../fengyu-admin/node_modules/duplexer2/node_modules/readable-stream/node_modules/safe-buffer/index.js
 var require_safe_buffer6 = __commonJS((exports, module) => {
   var buffer2 = __require("buffer");
@@ -149373,7 +149341,7 @@ var require_string_decoder6 = __commonJS((exports) => {
 var require__stream_readable6 = __commonJS((exports, module) => {
   var pna = require_process_nextick_args();
   module.exports = Readable;
-  var isArray = require_isarray5();
+  var isArray = require_isarray();
   var Duplex;
   Readable.ReadableState = ReadableState;
   var EE = __require("events").EventEmitter;
@@ -175681,6 +175649,100 @@ function buildInventoryLocationFilterOptions(activeLocations, scopedLocationIds)
   return { headquarters, markets, defaultLocationId };
 }
 
+// src/lib/inventory/doc-candidates.ts
+var INVENTORY_DOC_CANDIDATE_PURPOSES = [
+  "purchase-order-source",
+  "company-shipment-source",
+  "store-allocation-source",
+  "market-receipt",
+  "store-receipt",
+  "supply-chain-receipt",
+  "supply-chain-purchase-cancel",
+  "shipment-cancel-request",
+  "shipment-cancel-approval",
+  "store-return-approval",
+  "market-return-approval"
+];
+var INVENTORY_DOC_CANDIDATES = {
+  "purchase-order-source": {
+    rules: [{ docType: "市场报货汇总" }, { docType: "品项公司报货需求", statuses: ["已完成"] }],
+    scopeRole: "target",
+    progress: "ordered",
+    remainingToggle: true
+  },
+  "company-shipment-source": {
+    rules: [{ docType: "采购订单" }],
+    scopeRole: "target",
+    progress: "shipped",
+    remainingToggle: true
+  },
+  "store-allocation-source": {
+    rules: [{ docType: "门店报货" }],
+    scopeRole: "target",
+    progress: "allocated",
+    remainingToggle: true
+  },
+  "market-receipt": {
+    rules: [{ docType: "品项公司发货", statuses: ["待收货"] }],
+    scopeRole: "target",
+    progress: "received",
+    remainingToggle: false
+  },
+  "store-receipt": {
+    rules: [{ docType: "分院配货", statuses: ["待收货"] }],
+    scopeRole: "target",
+    progress: "received",
+    remainingToggle: false
+  },
+  "supply-chain-receipt": {
+    rules: [{ docType: "采购订单", statuses: ["待收货"] }],
+    scopeRole: "target",
+    progress: "received",
+    remainingToggle: false,
+    requireRemaining: true
+  },
+  "supply-chain-purchase-cancel": {
+    rules: [{ docType: "采购订单", statuses: ["待收货"] }],
+    scopeRole: "target",
+    progress: "received",
+    remainingToggle: false
+  },
+  "shipment-cancel-request": {
+    rules: [{ docType: "品项公司发货", statuses: ["待收货"] }],
+    scopeRole: "target",
+    progress: "received",
+    remainingToggle: false,
+    requireNoReceipt: true
+  },
+  "shipment-cancel-approval": {
+    rules: [{ docType: "品项公司发货", statuses: ["待审批"] }],
+    scopeRole: "source",
+    progress: "none",
+    remainingToggle: false,
+    cancellationRequested: true
+  },
+  "store-return-approval": {
+    rules: [{ docType: "院退货", statuses: ["待审批"] }],
+    scopeRole: "target",
+    progress: "none",
+    remainingToggle: false
+  },
+  "market-return-approval": {
+    rules: [{ docType: "市场退货", statuses: ["待审批"] }],
+    scopeRole: "target",
+    progress: "none",
+    remainingToggle: false
+  }
+};
+function resolveInventoryDocCandidate(purpose) {
+  if (typeof purpose !== "string")
+    return null;
+  if (!INVENTORY_DOC_CANDIDATE_PURPOSES.includes(purpose))
+    return null;
+  return INVENTORY_DOC_CANDIDATES[purpose];
+}
+var INVENTORY_DOC_CANDIDATE_BULK_LIMIT = 100;
+
 // src/lib/inventory/access.ts
 init_api_error();
 init_permissions();
@@ -175786,6 +175848,17 @@ function inventoryPriceVisibilityForOrgNodes(tiers, orgNodeIds) {
   if (market)
     return "market";
   return "none";
+}
+var INVENTORY_PROMOTION_MAINTAIN_ACTION = "inventory:supply_chain_master_data_manage";
+function isInventoryPromotionMaintainer(session4) {
+  if (isAdminScope(session4))
+    return true;
+  return session4.roles.some((role) => role.scopeType === "总部" && Array.isArray(role.actions) && role.actions.includes(INVENTORY_PROMOTION_MAINTAIN_ACTION));
+}
+function assertInventoryPromotionMaintainer(session4) {
+  if (!isInventoryPromotionMaintainer(session4)) {
+    throw new ApiError("PERMISSION_DENIED", "报货福利方案只能由总部供应链维护");
+  }
 }
 
 // src/lib/inventory/engine.ts
@@ -176723,6 +176796,24 @@ var listInventoryMarketTransferTargets = withAnyPermission([...inventoryDelegata
   const rows = await db2.select({ orgNodeId: inventoryLocations.orgNodeId, name: inventoryLocations.name }).from(inventoryLocations).where(import_drizzle_orm57.and(import_drizzle_orm57.eq(inventoryLocations.isActive, true), import_drizzle_orm57.eq(inventoryLocations.locationType, "市场"), import_drizzle_orm57.isNotNull(inventoryLocations.orgNodeId))).orderBy(import_drizzle_orm57.asc(inventoryLocations.name));
   return rows.flatMap((row) => row.orgNodeId ? [{ orgNodeId: row.orgNodeId, name: row.name }] : []);
 });
+var PROMOTION_READ_SCOPE = { scopeActions: ["inventory:stock_list", INVENTORY_PROMOTION_MAINTAIN_ACTION] };
+async function promotionVisibleLocationIds(session4) {
+  if (isInventoryPromotionMaintainer(session4))
+    return null;
+  return scopedLocationIds(scopeSessionToActions(session4, ["inventory:stock_list"]));
+}
+var listInventoryPromotionMarketOptions = withPermission("inventory:stock_list", async (session4) => {
+  await syncInventoryLocations();
+  const conditions3 = [
+    import_drizzle_orm57.eq(inventoryLocations.isActive, true),
+    import_drizzle_orm57.eq(inventoryLocations.locationType, "市场")
+  ];
+  const scoped = await promotionVisibleLocationIds(session4);
+  if (scoped !== null) {
+    conditions3.push(scoped.length > 0 ? import_drizzle_orm57.inArray(inventoryLocations.locationId, scoped) : import_drizzle_orm57.sql`FALSE`);
+  }
+  return db2.select({ locationId: inventoryLocations.locationId, name: inventoryLocations.name }).from(inventoryLocations).where(import_drizzle_orm57.and(...conditions3)).orderBy(import_drizzle_orm57.asc(inventoryLocations.name));
+}, PROMOTION_READ_SCOPE);
 var listInventoryLocations = withPermission("inventory:stock_list", async (session4) => {
   await syncInventoryLocations();
   const scoped = await scopedLocationIds(session4);
@@ -177298,6 +177389,176 @@ var listInventoryCoreDocs = withPermission("inventory:list", async (session4, fi
     priceVisibility
   };
 });
+function candidateItemDoneSql(kind) {
+  if (kind === "shipped" || kind === "allocated") {
+    const relationType = kind === "shipped" ? "采购订单发货" : "门店报货配货";
+    return import_drizzle_orm57.sql`(
+      SELECT COALESCE(SUM(cand_link.quantity), 0)
+        FROM inventory_doc_links cand_link
+        JOIN inventory_docs cand_link_doc ON cand_link_doc.id = cand_link.to_doc_id
+       WHERE cand_link.from_item_id = cand_item.id
+         AND cand_link.relation_type = ${relationType}
+         AND cand_link_doc.status <> '已取消'
+    )`;
+  }
+  return import_drizzle_orm57.sql`COALESCE(cand_item.fulfilled_quantity, 0)`;
+}
+function candidateItemFilterSql(kind) {
+  return kind === "shipped" ? import_drizzle_orm57.sql`AND cand_item.market_id IS NOT NULL` : import_drizzle_orm57.sql``;
+}
+function candidateRemainingSql(kind) {
+  return import_drizzle_orm57.sql`EXISTS (
+    SELECT 1 FROM inventory_doc_items cand_item
+     WHERE cand_item.doc_id = ${inventoryDocs.id}
+       ${candidateItemFilterSql(kind)}
+       AND ${candidateItemDoneSql(kind)} < cand_item.quantity
+  )`;
+}
+function candidateProgressSql(kind) {
+  const total = import_drizzle_orm57.sql`(
+    SELECT COALESCE(SUM(cand_item.quantity), 0)
+      FROM inventory_doc_items cand_item
+     WHERE cand_item.doc_id = ${inventoryDocs.id}
+       ${candidateItemFilterSql(kind)}
+  )`;
+  const done = kind === "none" ? import_drizzle_orm57.sql`NULL` : import_drizzle_orm57.sql`(
+      SELECT COALESCE(SUM(LEAST(${candidateItemDoneSql(kind)}, cand_item.quantity)), 0)
+        FROM inventory_doc_items cand_item
+       WHERE cand_item.doc_id = ${inventoryDocs.id}
+         ${candidateItemFilterSql(kind)}
+    )`;
+  return { total, done };
+}
+var CANDIDATE_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+function candidateText(value, label) {
+  if (value === undefined || value === null)
+    return;
+  if (typeof value !== "string")
+    throw new ApiError("INVALID_PARAMS", `${label}格式不正确`);
+  return value.trim() || undefined;
+}
+function candidateDate(value, label) {
+  const text5 = candidateText(value, label);
+  if (!text5)
+    return;
+  const [year2, month, day2] = CANDIDATE_DATE_PATTERN.test(text5) ? text5.split("-").map(Number) : [NaN, NaN, NaN];
+  const parsed = new Date(Date.UTC(year2, month - 1, day2));
+  if (Number.isNaN(parsed.getTime()) || parsed.getUTCFullYear() !== year2 || parsed.getUTCMonth() !== month - 1 || parsed.getUTCDate() !== day2) {
+    throw new ApiError("INVALID_PARAMS", `${label}格式不正确`);
+  }
+  return text5;
+}
+function parseCandidateFilters(filters) {
+  const includeExhausted = filters.includeExhausted;
+  if (includeExhausted !== undefined && includeExhausted !== null && typeof includeExhausted !== "boolean") {
+    throw new ApiError("INVALID_PARAMS", "显示全部参数格式不正确");
+  }
+  const startDate = candidateDate(filters.startDate, "开始日期");
+  const endDate = candidateDate(filters.endDate, "结束日期");
+  if (startDate && endDate && startDate > endDate) {
+    throw new ApiError("INVALID_PARAMS", "开始日期不能晚于结束日期");
+  }
+  return {
+    keyword: candidateText(filters.keyword, "检索关键字")?.slice(0, 64),
+    startDate,
+    endDate,
+    targetOrgNodeId: candidateText(filters.targetOrgNodeId, "接收主体"),
+    includeExhausted: includeExhausted === true
+  };
+}
+function candidateConditions(session4, definition, filters, { onlyRemaining }) {
+  const scoped = inventoryScopedOrgNodeIds(session4);
+  const conditions3 = [];
+  if (scoped !== null) {
+    if (scoped.length === 0)
+      return import_drizzle_orm57.sql`FALSE`;
+    conditions3.push(import_drizzle_orm57.or(import_drizzle_orm57.inArray(inventoryDocs.sourceOrgNodeId, scoped), import_drizzle_orm57.inArray(inventoryDocs.targetOrgNodeId, scoped)));
+    const endpointColumn = definition.scopeRole === "source" ? inventoryDocs.sourceOrgNodeId : inventoryDocs.targetOrgNodeId;
+    conditions3.push(import_drizzle_orm57.inArray(endpointColumn, scoped));
+  }
+  conditions3.push(import_drizzle_orm57.or(...definition.rules.map((rule) => import_drizzle_orm57.and(import_drizzle_orm57.eq(inventoryDocs.docType, rule.docType), rule.statuses ? import_drizzle_orm57.inArray(inventoryDocs.status, [...rule.statuses]) : import_drizzle_orm57.ne(inventoryDocs.status, "已取消")))));
+  if (definition.cancellationRequested)
+    conditions3.push(import_drizzle_orm57.isNotNull(inventoryDocs.cancellationRequestReason));
+  if (definition.requireNoReceipt) {
+    conditions3.push(import_drizzle_orm57.sql`NOT EXISTS (
+      SELECT 1 FROM inventory_doc_items cand_received
+       WHERE cand_received.doc_id = ${inventoryDocs.id}
+         AND COALESCE(cand_received.fulfilled_quantity, 0) > 0
+    )`);
+  }
+  if (onlyRemaining || definition.requireRemaining) {
+    conditions3.push(candidateRemainingSql(definition.progress));
+  } else if (definition.progress === "shipped") {
+    conditions3.push(import_drizzle_orm57.sql`EXISTS (
+      SELECT 1 FROM inventory_doc_items cand_item
+       WHERE cand_item.doc_id = ${inventoryDocs.id}
+         AND cand_item.market_id IS NOT NULL
+    )`);
+  }
+  const { targetOrgNodeId, startDate, endDate, keyword } = filters;
+  if (targetOrgNodeId)
+    conditions3.push(import_drizzle_orm57.eq(inventoryDocs.targetOrgNodeId, targetOrgNodeId));
+  if (startDate)
+    conditions3.push(import_drizzle_orm57.gte(inventoryDocs.docDate, startDate));
+  if (endDate)
+    conditions3.push(import_drizzle_orm57.lte(inventoryDocs.docDate, endDate));
+  if (keyword) {
+    const pattern = `%${keyword.replace(/[\\%_]/g, "\\$&")}%`;
+    conditions3.push(import_drizzle_orm57.or(import_drizzle_orm57.ilike(inventoryDocs.id, pattern), import_drizzle_orm57.ilike(sourceLocation.name, pattern), import_drizzle_orm57.ilike(targetLocation.name, pattern)));
+  }
+  return import_drizzle_orm57.and(...conditions3) ?? import_drizzle_orm57.sql`TRUE`;
+}
+var listInventoryDocCandidates = withPermission("inventory:list", async (session4, filters) => {
+  const definition = resolveInventoryDocCandidate(filters?.purpose);
+  if (!definition)
+    throw new ApiError("INVALID_PARAMS", "未知的候选单据用途");
+  const parsed = parseCandidateFilters(filters);
+  await syncInventoryLocations();
+  const { pageSize, offset } = resolvePaging({
+    page: filters.page,
+    pageSize: filters.pageSize,
+    defaultPageSize: 20,
+    allowedPageSizes: PAGE_SIZE_WHITELIST
+  });
+  const onlyRemaining = definition.remainingToggle && !parsed.includeExhausted;
+  const whereClause = candidateConditions(session4, definition, parsed, { onlyRemaining });
+  const [countRow] = await db2.select({ count: import_drizzle_orm57.sql`cast(count(*) as int)` }).from(inventoryDocs).leftJoin(sourceLocation, import_drizzle_orm57.eq(sourceLocation.orgNodeId, inventoryDocs.sourceOrgNodeId)).leftJoin(targetLocation, import_drizzle_orm57.eq(targetLocation.orgNodeId, inventoryDocs.targetOrgNodeId)).where(whereClause);
+  const progress = candidateProgressSql(definition.progress);
+  const rows = await db2.select({
+    doc: inventoryDocs,
+    sourceOrgNodeName: sourceLocation.name,
+    sourceOrgNodeType: sourceLocation.locationType,
+    targetOrgNodeName: targetLocation.name,
+    targetOrgNodeType: targetLocation.locationType,
+    partiallyReceived: partiallyReceivedSql,
+    progressTotal: progress.total,
+    progressDone: progress.done
+  }).from(inventoryDocs).leftJoin(sourceLocation, import_drizzle_orm57.eq(sourceLocation.orgNodeId, inventoryDocs.sourceOrgNodeId)).leftJoin(targetLocation, import_drizzle_orm57.eq(targetLocation.orgNodeId, inventoryDocs.targetOrgNodeId)).where(whereClause).orderBy(import_drizzle_orm57.desc(inventoryDocs.docDate), import_drizzle_orm57.desc(inventoryDocs.createdAt), import_drizzle_orm57.desc(inventoryDocs.id)).limit(pageSize).offset(offset);
+  return {
+    data: rows.map((row) => ({
+      ...docRow({ ...row, includePrice: false }),
+      progress: {
+        done: row.progressDone === null ? null : Number(row.progressDone),
+        total: Number(row.progressTotal)
+      }
+    })),
+    total: countRow?.count ?? 0,
+    pageSize
+  };
+});
+var listInventoryDocCandidateIds = withPermission("inventory:list", async (session4, filters) => {
+  const definition = resolveInventoryDocCandidate(filters?.purpose);
+  if (!definition || !definition.remainingToggle)
+    throw new ApiError("INVALID_PARAMS", "未知的候选单据用途");
+  const parsed = parseCandidateFilters(filters);
+  await syncInventoryLocations();
+  const whereClause = candidateConditions(session4, definition, parsed, { onlyRemaining: true });
+  const rows = await db2.select({ id: inventoryDocs.id }).from(inventoryDocs).leftJoin(sourceLocation, import_drizzle_orm57.eq(sourceLocation.orgNodeId, inventoryDocs.sourceOrgNodeId)).leftJoin(targetLocation, import_drizzle_orm57.eq(targetLocation.orgNodeId, inventoryDocs.targetOrgNodeId)).where(whereClause).orderBy(import_drizzle_orm57.asc(inventoryDocs.docDate), import_drizzle_orm57.asc(inventoryDocs.createdAt), import_drizzle_orm57.asc(inventoryDocs.id)).limit(INVENTORY_DOC_CANDIDATE_BULK_LIMIT + 1);
+  if (rows.length > INVENTORY_DOC_CANDIDATE_BULK_LIMIT) {
+    throw new ApiError("INVALID_PARAMS", `符合条件的单据超过 ${INVENTORY_DOC_CANDIDATE_BULK_LIMIT} 张，请缩小日期区间后再带出`);
+  }
+  return { ids: rows.map((row) => row.id) };
+});
 function inventoryDocScopeSql(scoped, sourceColumn, targetColumn) {
   if (scoped === null)
     return import_drizzle_orm57.sql`TRUE`;
@@ -177814,6 +178075,22 @@ async function loadInventoryDocFulfillmentProgress(docType, docId, scoped) {
   }
   return null;
 }
+var getInventoryCoreDocsByIds = withPermission("inventory:list", async (_session, ids) => {
+  if (!Array.isArray(ids) || ids.some((id) => typeof id !== "string")) {
+    throw new ApiError("INVALID_PARAMS", "单据编号格式不正确");
+  }
+  const unique3 = Array.from(new Set(ids));
+  if (unique3.length > INVENTORY_DOC_CANDIDATE_BULK_LIMIT) {
+    throw new ApiError("INVALID_PARAMS", `一次最多加载 ${INVENTORY_DOC_CANDIDATE_BULK_LIMIT} 张单据`);
+  }
+  const details = [];
+  for (const id of unique3) {
+    const detail = await getInventoryCoreDocById(id);
+    if (detail)
+      details.push(detail);
+  }
+  return details;
+});
 var getInventoryCoreDocById = withPermission("inventory:list", async (session4, id) => {
   const priceTiers = inventoryPriceScopeByTier(session4);
   const scoped = inventoryScopedOrgNodeIds(session4);
@@ -178439,41 +178716,26 @@ var updateInventorySupplier = withPermission("inventory:supply_chain_master_data
   import_cache11.revalidatePath("/inventory/suppliers");
   return { success: true };
 });
-async function assertPromotionMarketScope(session4, marketId) {
+async function assertPromotionMarketScope(marketId) {
   const normalized = normalizeText(marketId);
-  if (!normalized) {
-    if (!isAdminScope(session4) && !session4.roles.some((role) => role.scopeType === "总部")) {
-      throw new ApiError("PERMISSION_DENIED", "市场用户只能维护本市场的福利方案");
-    }
+  if (!normalized)
     return null;
-  }
   await syncInventoryLocations();
   const [location] = await db2.select({ locationType: inventoryLocations.locationType }).from(inventoryLocations).where(import_drizzle_orm57.eq(inventoryLocations.locationId, normalized)).limit(1);
   if (!location || location.locationType !== "市场") {
     throw new ApiError("INVALID_PARAMS", "福利方案所属主体必须是市场");
   }
-  await assertLocationVisible(session4, normalized);
   return normalized;
 }
-async function assertPromotionPlanMutableScope(session4, scopeMarketId) {
-  if (scopeMarketId === null) {
-    if (isAdminScope(session4) || session4.roles.some((role) => role.scopeType === "总部"))
-      return;
-    throw new ApiError("PERMISSION_DENIED", "市场用户不能修改或停用全局福利方案");
-  }
-  await assertLocationVisible(session4, scopeMarketId);
-}
-async function lockPromotionPlanScopeForMutation(tx, id) {
+async function lockPromotionPlanForMutation(tx, id) {
   const rows = await tx.execute(import_drizzle_orm57.sql`
-    SELECT scope_market_id
+    SELECT id
       FROM inventory_promotion_plans
      WHERE id = ${id}
      FOR UPDATE
   `);
-  const row = rows[0];
-  if (!row)
+  if (!rows[0])
     throw new ApiError("NOT_FOUND", "福利方案不存在或无权查看");
-  return row.scope_market_id ?? null;
 }
 function normalizePromotionRuleType(value) {
   if (value === undefined || value === null || value === "")
@@ -178579,7 +178841,7 @@ function promotionItemRow(row) {
 }
 async function promotionPlanRows(session4, onlyId) {
   const priceVisible = canViewPrice(session4);
-  const scoped = await scopedLocationIds(session4);
+  const scoped = await promotionVisibleLocationIds(session4);
   const conditions3 = [];
   if (onlyId)
     conditions3.push(import_drizzle_orm57.eq(inventoryPromotionPlans.id, onlyId));
@@ -178636,13 +178898,14 @@ async function promotionPlanRows(session4, onlyId) {
     updatedAt: plan.updatedAt.toISOString()
   }));
 }
-var listInventoryPromotionPlans = withPermission("inventory:stock_list", async (session4) => promotionPlanRows(session4));
+var listInventoryPromotionPlans = withPermission("inventory:stock_list", async (session4) => promotionPlanRows(session4), PROMOTION_READ_SCOPE);
 var getInventoryPromotionPlanById = withPermission("inventory:stock_list", async (session4, idInput) => {
   const id = normalizeRequired(idInput, "福利方案");
   return (await promotionPlanRows(session4, id))[0] ?? null;
-});
-var createInventoryPromotionPlan = withAnyPermission(["inventory:supply_chain_master_data_manage", "inventory:market_operate"], async (session4, input) => {
+}, PROMOTION_READ_SCOPE);
+var createInventoryPromotionPlan = withPermission(INVENTORY_PROMOTION_MAINTAIN_ACTION, async (session4, input) => {
   assertPromotionPriceWritable(session4);
+  assertInventoryPromotionMaintainer(session4);
   const name = normalizeRequired(input.name, "方案名称");
   const startsAt = normalizeYmd(input.startsAt, "开始日期");
   const endsAt = normalizeYmd(input.endsAt, "结束日期");
@@ -178652,7 +178915,7 @@ var createInventoryPromotionPlan = withAnyPermission(["inventory:supply_chain_ma
   if (input.status && input.status !== "启用" && input.status !== "停用") {
     throw new ApiError("INVALID_PARAMS", "福利方案状态无效");
   }
-  const scopeMarketId = await assertPromotionMarketScope(session4, input.scopeMarketId);
+  const scopeMarketId = await assertPromotionMarketScope(input.scopeMarketId);
   const items = normalizePromotionItems(input.items, ruleType);
   await assertPromotionSkus(items);
   const id = `INV-PROMO-${crypto.randomUUID()}`;
@@ -178687,8 +178950,9 @@ var createInventoryPromotionPlan = withAnyPermission(["inventory:supply_chain_ma
   import_cache11.revalidatePath("/inventory/promotions");
   return { id };
 });
-var updateInventoryPromotionPlan = withAnyPermission(["inventory:supply_chain_master_data_manage", "inventory:market_operate"], async (session4, idInput, input) => {
+var updateInventoryPromotionPlan = withPermission(INVENTORY_PROMOTION_MAINTAIN_ACTION, async (session4, idInput, input) => {
   assertPromotionPriceWritable(session4);
+  assertInventoryPromotionMaintainer(session4);
   const id = normalizeRequired(idInput, "福利方案");
   const name = normalizeRequired(input.name, "方案名称");
   const startsAt = normalizeYmd(input.startsAt, "开始日期");
@@ -178702,11 +178966,10 @@ var updateInventoryPromotionPlan = withAnyPermission(["inventory:supply_chain_ma
   const current = (await promotionPlanRows(session4, id))[0];
   if (!current)
     throw new ApiError("NOT_FOUND", "福利方案不存在或无权查看");
-  const scopeMarketId = await assertPromotionMarketScope(session4, input.scopeMarketId);
+  const scopeMarketId = await assertPromotionMarketScope(input.scopeMarketId);
   const items = normalizePromotionItems(input.items, ruleType);
   await db2.transaction(async (tx) => {
-    const currentScopeMarketId = await lockPromotionPlanScopeForMutation(tx, id);
-    await assertPromotionPlanMutableScope(session4, currentScopeMarketId);
+    await lockPromotionPlanForMutation(tx, id);
     await assertPromotionSkus(items);
     await tx.update(inventoryPromotionPlans).set({
       name,
@@ -178735,14 +178998,14 @@ var updateInventoryPromotionPlan = withAnyPermission(["inventory:supply_chain_ma
   import_cache11.revalidatePath("/inventory/promotions");
   return { success: true };
 });
-var disableInventoryPromotionPlan = withAnyPermission(["inventory:supply_chain_master_data_manage", "inventory:market_operate"], async (session4, idInput) => {
+var disableInventoryPromotionPlan = withPermission(INVENTORY_PROMOTION_MAINTAIN_ACTION, async (session4, idInput) => {
+  assertInventoryPromotionMaintainer(session4);
   const id = normalizeRequired(idInput, "福利方案");
   const current = (await promotionPlanRows(session4, id))[0];
   if (!current)
     throw new ApiError("NOT_FOUND", "福利方案不存在或无权查看");
   await db2.transaction(async (tx) => {
-    const currentScopeMarketId = await lockPromotionPlanScopeForMutation(tx, id);
-    await assertPromotionPlanMutableScope(session4, currentScopeMarketId);
+    await lockPromotionPlanForMutation(tx, id);
     await tx.update(inventoryPromotionPlans).set({ status: "停用", updatedAt: new Date }).where(import_drizzle_orm57.eq(inventoryPromotionPlans.id, id));
   });
   await logOperation(session4, "inventory.promotion.disable", "inventory_promotion_plans", id);
