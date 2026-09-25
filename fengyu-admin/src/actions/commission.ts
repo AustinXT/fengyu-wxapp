@@ -13,6 +13,8 @@ import { logOperation, logUpdate } from '@/lib/operation-log'
 import { DEFAULT_PRICE_THRESHOLD, isPriceThresholdEligible, parsePriceThreshold } from '@/lib/commission-threshold'
 
 const THRESHOLD_INELIGIBLE_MESSAGE = '单价阈值仅适用于服务单的自销自耗 / 他销自耗规则'
+/** 23514 = CHECK 违反（前置校验已拦，兜底并发改类目等窗口，避免 500） */
+const CHECK_VIOLATION = '23514'
 
 export interface MarketOption {
   orgId: string
@@ -125,6 +127,9 @@ export const createRate = withPermission(
     if (pgErrorCode(err) === '23505') {
       return { success: false, message: '相同条件的提成规则已存在' }
     }
+    if (pgErrorCode(err) === CHECK_VIOLATION) {
+      return { success: false, message: THRESHOLD_INELIGIBLE_MESSAGE }
+    }
     throw err
   }
 
@@ -217,6 +222,9 @@ export const updateRate = withPermission(
       .set(setValues)
       .where(whereConditions)
   } catch (err: any) {
+    if (pgErrorCode(err) === CHECK_VIOLATION) {
+      return { success: false, message: '数据已被其他人修改，请刷新后重试' }
+    }
     throw err
   }
 

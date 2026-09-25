@@ -171136,7 +171136,7 @@ async function settleServiceCommissions(executor, serviceOrderId, operator) {
     const perSession = Number(row.unit_real_price || 0);
     const consumeBase = round22(perSession * sessionUsed);
     const rateRows = await executor.execute(import_drizzle_orm39.sql`
-      SELECT commission_rate FROM commission_rate_matrix
+      SELECT commission_rate, price_threshold FROM commission_rate_matrix
        WHERE order_type = '服务单'
          AND role_type = ${roleType}
          AND sales_category = ${row.sales_category}
@@ -171153,7 +171153,8 @@ async function settleServiceCommissions(executor, serviceOrderId, operator) {
        LIMIT 1
     `);
     const rate = Number(rateRows[0]?.commission_rate || 0);
-    const consumeAmount = round22(consumeBase * rate);
+    const effConsumeBase = round22(Math.max(perSession, Number(rateRows[0]?.price_threshold || 0)) * sessionUsed);
+    const consumeAmount = round22(effConsumeBase * rate);
     const commissionAmount = round22(fixedFee + consumeAmount);
     if (rate === 0 && consumeBase > 0) {
       await executor.execute(import_drizzle_orm39.sql`

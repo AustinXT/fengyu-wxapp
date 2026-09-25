@@ -458,10 +458,10 @@ const salesCategories = useMemo(
           {isPriceThresholdEligible(form.orderType, form.salesCategory) && (
             <div className="space-y-2">
               <label className="text-sm font-medium">单价阈值（元）</label>
+              {/* type=text：type=number 遇到 "100." / "abc" 这类非法输入时 value 变成 ""，会被静默当成「不启用」 */}
               <Input
-                type="number"
-                min={0}
-                step={0.01}
+                type="text"
+                inputMode="decimal"
                 value={form.priceThreshold}
                 onChange={(e) => setForm({ ...form, priceThreshold: e.target.value })}
                 placeholder="留空表示不启用"

@@ -1094,6 +1094,27 @@ describe('staff.performanceDetail', () => {
     expect(svc.fixedFee + svc.consumeAmount).toBe(svc.amount)
   })
 
+  // #379：thresholdApplied 用落库值反推（不查当前矩阵，历史单不回溯）
+  test.each([
+    ['单价 80 按阈值 100 计（15 > 12）', '80.00', '15.00', '1.000', true],
+    ['赠送 NULL 按阈值计', null, '15.00', '1.000', true],
+    ['单价 ≥ 阈值（与旧公式相等）', '500.00', '75.00', '1.000', false],
+    ['上线前落库的低价单（旧公式 12）→ 不标', '80.00', '12.00', '1.000', false],
+    ['两人各 50%：7.5 > 6', '80.00', '7.50', '0.500', true],
+    ['舍入/历史手改偏差 ≤ 0.05 不误报', '33.33', '5.05', '1.000', false],
+  ])('%s', async (_n, price, consume, ratio, expected) => {
+    const ctx = createManagerCtx({ ...rangePayload, filterType: 'service' })
+    pg.query.mockResolvedValueOnce([])
+    pg.query.mockResolvedValueOnce([{
+      commission_amount: consume, fixed_fee: '0.00', consume_amount: consume,
+      role_type: '美容师', commission_rate: '0.1500', allocation_ratio: ratio, session_used: 1, service_unit_price: price,
+      product_name: '面部护理', sales_category: '自销自耗',
+      service_order_id: 'HLD-379', service_date: '2026-09-25', store_id: 'store-001', customer_name: '张三', client_phone: null,
+    }])
+    await staffRoutes.performanceDetail(ctx)
+    expect(ctx.result.items[0].thresholdApplied).toBe(expected)
+  })
+
   test('保留 totalServiceFee 字段向后兼容老版本前端', async () => {
     const ctx = createManagerCtx(rangePayload)
 

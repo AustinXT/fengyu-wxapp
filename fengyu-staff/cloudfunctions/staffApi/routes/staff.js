@@ -758,6 +758,7 @@ async function performanceDetail(ctx) {
       sc.consume_amount,
       sc.role_type,
       sc.commission_rate,
+      sc.allocation_ratio,
       sit.session_used,
       sit.unit_real_price AS service_unit_price,
       si.product_name,
@@ -849,6 +850,10 @@ async function performanceDetail(ctx) {
     commissionRate: Number(r.commission_rate || 0),
     sessionUsed: r.session_used,
     servicePrice: Number(r.service_unit_price || 0),
+    // #379 本行消耗提成是否按划卡单价阈值保底计：用**落库值**反推（落库 consume_amount 高于「真实单价 ×
+    // 次数 × 比例 × 费率」），不查当前矩阵——历史单不回溯，不能因为今天矩阵有阈值就标成「按阈值」。
+    // 容差 0.05：存量 2.4 万行（2026-07 起）落库值与重算值的最大正向偏差即 0.05（舍入/历史手改），零误报。
+    thresholdApplied: Number(r.consume_amount || 0) - Math.round(Number(r.service_unit_price || 0) * Number(r.session_used || 0) * Number(r.allocation_ratio || 0) * Number(r.commission_rate || 0) * 100) / 100 > 0.05,
     unit: r.unit || '次',
     customerName: r.customer_name,
     clientPhone: r.client_phone,

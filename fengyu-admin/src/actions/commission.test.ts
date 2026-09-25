@@ -332,6 +332,14 @@ describe('#379 createRate — 单价阈值', () => {
     expect(values.mock.calls[0][0].priceThreshold).toBe(expected)
   })
 
+  it('插入撞 CHECK（23514）→ 友好提示而非 500', async () => {
+    const values = vi.fn().mockRejectedValue(Object.assign(new Error('violates check constraint'), { code: '23514' }))
+    ;(db.insert as any).mockReturnValue({ values })
+    const result = await createRate(svc('自销自耗'))
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('仅适用于')
+  })
+
   it.each([
     ['不可配行传阈值 → 拒绝', svc('他销他耗', '100'), '仅适用于'],
     ['负数 → 拒绝', svc('自销自耗', '-1'), '非负数'],
@@ -395,6 +403,15 @@ describe('#379 updateRate — 单价阈值 + set 白名单', () => {
     expect(result.success).toBe(false)
     expect(result.message).toContain('仅适用于')
     expect(db.update).not.toHaveBeenCalled()
+  })
+
+  it('并发改类目撞 CHECK（23514）→ 友好提示而非 500', async () => {
+    setup(SELF)
+    const where = vi.fn().mockRejectedValue(Object.assign(new Error('violates check constraint'), { code: '23514' }))
+    ;(db.update as any).mockReturnValue({ set: vi.fn().mockReturnValue({ where }) })
+    const result = await updateRate(42, { priceThreshold: '50' })
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('已被其他人修改')
   })
 
   it('调用方夹带非表单字段 → 不进 .set()（显式白名单）', async () => {
