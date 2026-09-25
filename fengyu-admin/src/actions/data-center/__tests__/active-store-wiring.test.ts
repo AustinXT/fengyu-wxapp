@@ -13,20 +13,11 @@
  *   3. 豁免必须被命中：登记了却一次没命中的豁免视为过期（防豁免表只增不减、变成后门）
  */
 import { beforeAll, describe, expect, it, vi } from 'vitest'
-import { PgDialect } from 'drizzle-orm/pg-core'
 import fs from 'node:fs'
 import path from 'node:path'
 import type { AuthSession } from '@/lib/types'
 
-const { captured, mockGetSession } = vi.hoisted(() => ({ captured: [] as unknown[], mockGetSession: vi.fn() }))
-
-/** drizzle 链式查询替身：scope 数据源 / 配置读取走 db.select，统一给空结果 */
-function chain(): unknown {
-  const c: Record<string, unknown> = {}
-  for (const m of ['select', 'from', 'where', 'innerJoin', 'leftJoin', 'orderBy', 'limit', 'groupBy', 'offset']) c[m] = () => c
-  c.then = (resolve: (v: unknown) => unknown, reject: (e: unknown) => unknown) => Promise.resolve([]).then(resolve, reject)
-  return c
-}
+const { captured, mockGetSession } = vi.hoisted(() => ({ captured: [] as string[], mockGetSession: vi.fn() }))
 
 vi.mock('next/navigation', () => ({ redirect: vi.fn() }))
 vi.mock('next/cache', () => ({ unstable_cache: (fn: unknown) => fn, revalidateTag: vi.fn() }))
@@ -36,12 +27,16 @@ vi.mock('@/lib/permissions', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/permissions')>()),
   expandVisibleMarketIds: vi.fn(async () => ['MKT-A']),
 }))
-vi.mock('@/db', () => {
-  const execute = vi.fn(async (q: unknown) => {
-    captured.push(q)
-    return []
+// 真 drizzle（pg-proxy 驱动）：db.execute 与 db.select / 事务内查询都生成真实 SQL 并被截获，
+// 不再用替身吞掉 query builder（闸门 2 codex round-3 P2：用 db.select 写的统计查询不能逃过扫描）
+vi.mock('@/db', async () => {
+  const { drizzle } = await import('drizzle-orm/pg-proxy')
+  const db = drizzle(async (sql: string) => {
+    captured.push(sql)
+    return { rows: [] }
   })
-  return { db: { execute, select: () => chain(), transaction: async (fn: (tx: unknown) => unknown) => fn({ execute }) } }
+  // pg-proxy 不支持事务：事务体直接在同一个截获连接上执行（SET LOCAL 等照样被截获）
+  return { db: Object.assign(db, { transaction: async (fn: (tx: typeof db) => unknown) => fn(db) }) }
 })
 
 const ACTIONS = ['data_center:dashboard', 'data_center:customer_detail', 'data_center:staff_commission']
@@ -89,6 +84,8 @@ const EXEMPT_ACTIONS = new Set([
 
 /** 非统计 SQL 全文模式（归一空白后整句匹配）。新增须写明理由，且必须真的被命中 */
 const EXEMPT_SQL: Array<[reason: string, pattern: RegExp]> = [
+  ['scope 展示名·市场（resolveScopeName）', /^select "name" from "org_nodes" where "org_nodes"\."id" = \$1 limit \$2$/],
+  ['scope 展示名·门店（resolveScopeName）', /^select "store_name" from "stores" where "stores"\."store_id" = \$1 limit \$2$/],
   ['会员门槛配置', /^SELECT value FROM system_configs WHERE key = 'new_member_threshold'$/],
   ['品项板一二级字典', /^SELECT DISTINCT pc\.product_kind AS kind, pc\.category_name AS category FROM product_categories pc WHERE pc\.product_kind IS NOT NULL ORDER BY pc\.product_kind, pc\.category_name$/],
   ['日报品类字典', /^SELECT category_id, category_name, product_kind, sort_order, is_valid FROM product_categories$/],
@@ -110,7 +107,6 @@ const results: Captured[] = []
 const errors: string[] = []
 
 beforeAll(async () => {
-  const dialect = new PgDialect()
   const runs: Array<[AuthSession, Scope]> = [
     [HQ_SESSION, { type: 'all' }],
     [MARKET_SESSION, { type: 'authorized' }],
@@ -128,22 +124,21 @@ beforeAll(async () => {
       } catch (e) {
         errors.push(`${label} ${scope.type}: ${(e as Error).message}`)
       }
-      for (const q of captured) {
-        const sql = normalize(dialect.sqlToQuery(q as never).sql)
-        results.push({ action: label, scope: scope.type, sql })
-      }
+      for (const q of captured) results.push({ action: label, scope: scope.type, sql: normalize(q) })
     }
   }
 }, 60_000)
 
 describe('#401 数据中心取数在营接线 · 运行时闭集', () => {
-  it('actions/data-center 的每个导出 action 都已归类（取数 / 豁免），无遗漏无多余', () => {
+  it('actions/data-center 的每个运行时导出都已归类（取数 / 豁免），无遗漏无多余', async () => {
+    // 按模块真实导出枚举（不扫源码文本：换行写法 / re-export / 别名都逃不掉，闸门 2 codex round-3 P2）
     const dir = path.resolve(__dirname, '..')
     const exported: string[] = []
-    for (const f of fs.readdirSync(dir).filter((n) => n.endsWith('.ts'))) {
-      for (const m of fs.readFileSync(path.join(dir, f), 'utf8').matchAll(/^export const (\w+) = with\w+\(/gm)) {
-        exported.push(`${f.replace(/\.ts$/, '')}:${m[1]}`)
-      }
+    const files = fs.readdirSync(dir).filter((n) => n.endsWith('.ts') && !n.endsWith('.d.ts'))
+    expect(files.length).toBeGreaterThan(8)
+    for (const f of files) {
+      const mod = (await import(`../${f.replace(/\.ts$/, '')}`)) as Record<string, unknown>
+      for (const key of Object.keys(mod)) exported.push(`${f.replace(/\.ts$/, '')}:${key}`)
     }
     const classified = [...CALLS.map(([file, name]) => `${file}:${name}`), ...EXEMPT_ACTIONS]
     expect(exported.sort()).toEqual(classified.sort())
@@ -165,6 +160,17 @@ describe('#401 数据中心取数在营接线 · 运行时闭集', () => {
       .filter((r) => !EXEMPT_SQL.some(([, re]) => re.test(r.sql)))
       .map((r) => `${r.action} ${r.scope}: ${r.sql.slice(0, 200)}`)
     expect([...new Set(offenders)]).toEqual([])
+  })
+
+  it('渲染后的 SQL 不出现关店字段（剔除唯一允许的门店数时点表达式后，大小写不敏感）', () => {
+    // PG 会把未加引号的 IS_CLOSED / CLOSED_AT 折叠成小写列名，源码 token 扫描按大小写可能漏；这里在最终 SQL 上兜底
+    const TIMEPOINT = /\(s\.closed_at IS NULL OR s\.closed_at::date > \$\d+(::date)?\)/g
+    const offenders = results
+      .filter((r) => /is_?closed|closed_?at/i.test(r.sql.replace(TIMEPOINT, '')))
+      .map((r) => `${r.action} ${r.scope}: ${r.sql.slice(0, 200)}`)
+    expect([...new Set(offenders)]).toEqual([])
+    // 时点表达式本身确实出现过（门店数查询），防剔除正则失配导致恒绿
+    expect(results.some((r) => new RegExp(TIMEPOINT.source).test(r.sql))).toBe(true)
   })
 
   it('每条豁免都被真实命中（过期豁免须删除）', () => {

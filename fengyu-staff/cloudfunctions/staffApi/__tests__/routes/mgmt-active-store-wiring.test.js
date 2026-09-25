@@ -13,6 +13,8 @@
  *   3. 豁免必须被命中：登记了却没命中的豁免视为过期
  */
 
+const fs = require('node:fs')
+const path = require('node:path')
 const pg = globalThis.__mocks__.pg
 const { createCtx } = require('../helpers')
 
@@ -23,11 +25,25 @@ const ROUTES = {
 }
 
 const DATE = '2026-09-10'
-/** handler → 入参构造（s = { scopeType, scopeId }） */
+
+/**
+ * 排行榜按 metric 分发到不同 SQL：每个合法 metric 都要跑（闸门 2 codex round-3 P2：只跑 revenue 时
+ * 把 consume 分支的 scope 换成 TRUE 仍全绿）。metric 清单从路由源码的白名单常量解析，新增 metric 自动纳入。
+ */
+function parseMetricList(constName) {
+  const src = fs.readFileSync(path.resolve(__dirname, '../../routes/mgmt-dashboard.js'), 'utf8')
+  const m = src.match(new RegExp(`const ${constName} = \\[([^\\]]*)\\]`))
+  if (!m) throw new Error(`未找到 ${constName}`)
+  return [...m[1].matchAll(/'([^']+)'/g)].map((x) => x[1])
+}
+const STORE_METRICS = parseMetricList('VALID_METRICS')
+const STAFF_METRICS = parseMetricList('VALID_STAFF_METRICS')
+
+/** handler → 入参构造（s = { scopeType, scopeId }）；排行榜按 metric 展开成多条 */
 const CALLS = [
   ['mgmt-dashboard', 'summary', (s) => ({ date: DATE, ...s })],
-  ['mgmt-dashboard', 'storeRanking', (s) => ({ date: DATE, period: 'month', metric: 'revenue', ...s })],
-  ['mgmt-dashboard', 'staffRanking', (s) => ({ date: DATE, period: 'month', metric: 'revenue', ...s })],
+  ...STORE_METRICS.map((metric) => ['mgmt-dashboard', 'storeRanking', (s) => ({ date: DATE, period: 'month', metric, ...s }), metric]),
+  ...STAFF_METRICS.map((metric) => ['mgmt-dashboard', 'staffRanking', (s) => ({ date: DATE, period: 'month', metric, ...s }), metric]),
   ['mgmt-dashboard', 'salesData', (s) => ({ period: 'month', scope: { type: s.scopeType, id: s.scopeId } })],
   ['mgmt-traffic', 'summary', (s) => ({ period: 'month', ...s })],
   ['mgmt-product', 'cardHolders', (s) => ({ ...s })],
@@ -72,16 +88,17 @@ const results = []
 const errors = []
 
 beforeAll(async () => {
-  for (const [route, name, mk] of CALLS) {
+  for (const [route, name, mk, metric] of CALLS) {
+    const label = metric ? `${route}:${name}[${metric}]` : `${route}:${name}`
     for (const s of SCOPES) {
       pg.query.mockReset().mockImplementation(async () => [])
       try {
         await ROUTES[route][name](hqCtx(mk(s)))
       } catch (e) {
-        errors.push(`${route}:${name} ${s.scopeType}: ${e.message}`)
+        errors.push(`${label} ${s.scopeType}: ${e.message}`)
       }
       for (const call of pg.query.mock.calls) {
-        results.push({ handler: `${route}:${name}`, scope: s.scopeType, sql: normalize(call[0]) })
+        results.push({ handler: label, scope: s.scopeType, sql: normalize(call[0]) })
       }
     }
   }
@@ -90,18 +107,22 @@ beforeAll(async () => {
 describe('#401 管理层取数在营接线 · 运行时闭集', () => {
   it('统计路由的每个导出 handler 都已归类（取数 / 豁免），无遗漏无多余', () => {
     const exported = Object.entries(ROUTES).flatMap(([route, mod]) => Object.keys(mod).map((k) => `${route}:${k}`))
-    const classified = [...CALLS.map(([route, name]) => `${route}:${name}`), ...EXEMPT_HANDLERS]
+    const classified = [...new Set(CALLS.map(([route, name]) => `${route}:${name}`)), ...EXEMPT_HANDLERS]
     expect(exported.sort()).toEqual(classified.sort())
+    // metric 解析本身不能落空
+    expect(STORE_METRICS).toContain('consume')
+    expect(STAFF_METRICS).toContain('income')
   })
 
   it('每个 handler 在 all / market / store 下都跑通，且各自产生带在营过滤的 SQL（防空跑恒绿）', () => {
     expect(errors).toEqual([])
-    for (const [route, name] of CALLS) {
+    for (const [route, name, , metric] of CALLS) {
+      const label = metric ? `${route}:${name}[${metric}]` : `${route}:${name}`
       for (const { scopeType } of SCOPES) {
         const n = results.filter(
-          (r) => r.handler === `${route}:${name}` && r.scope === scopeType && r.sql.includes(ACTIVE_SUBQUERY),
+          (r) => r.handler === label && r.scope === scopeType && r.sql.includes(ACTIVE_SUBQUERY),
         ).length
-        expect(n, `${route}:${name} ${scopeType} 没有任何带在营过滤的 SQL`).toBeGreaterThan(0)
+        expect(n, `${label} ${scopeType} 没有任何带在营过滤的 SQL`).toBeGreaterThan(0)
       }
     }
   })
@@ -112,6 +133,17 @@ describe('#401 管理层取数在营接线 · 运行时闭集', () => {
       .filter((r) => !EXEMPT_SQL.some(([, re]) => re.test(r.sql)))
       .map((r) => `${r.handler} ${r.scope}: ${r.sql.slice(0, 200)}`)
     expect([...new Set(offenders)]).toEqual([])
+  })
+
+  it('渲染后的 SQL 不出现关店字段（剔除唯一允许的门店数时点表达式后，大小写不敏感）', () => {
+    // PG 会把未加引号的 IS_CLOSED / CLOSED_AT 折叠成小写列名，源码 token 扫描按大小写可能漏；这里在最终 SQL 上兜底
+    const TIMEPOINT = /\(s\.closed_at IS NULL OR s\.closed_at::date > \$\d+(::date)?\)/g
+    const offenders = results
+      .filter((r) => /is_?closed|closed_?at/i.test(r.sql.replace(TIMEPOINT, '')))
+      .map((r) => `${r.handler} ${r.scope}: ${r.sql.slice(0, 200)}`)
+    expect([...new Set(offenders)]).toEqual([])
+    // 时点表达式本身确实出现过（门店数查询），防剔除正则失配导致恒绿
+    expect(results.some((r) => new RegExp(TIMEPOINT.source).test(r.sql))).toBe(true)
   })
 
   it('每条豁免都被真实命中（过期豁免须删除）', () => {

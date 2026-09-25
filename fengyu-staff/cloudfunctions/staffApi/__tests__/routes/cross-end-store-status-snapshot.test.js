@@ -87,7 +87,7 @@ describe('#401 数据中心在营口径 · 闭集', () => {
     const offenders = []
     for (const file of CONSUMER_FILES) {
       readFile(file).split('\n').forEach((line, i) => {
-        if (/\bis_closed\b|\bisClosed\b/.test(line)) offenders.push(`${rel(file)}:${i + 1}: ${line.trim()}`)
+        if (/\bis_?closed\b/i.test(line)) offenders.push(`${rel(file)}:${i + 1}: ${line.trim()}`)
       })
     }
     expect(offenders).toEqual([])
@@ -104,7 +104,7 @@ describe('#401 数据中心在营口径 · helper 本体', () => {
         const t = line.trim()
         if (!t || /^(\*|\/\*|\/\/)/.test(t)) return
         codeLines++
-        if (/\bis_closed\b|\bisClosed\b|closed_at|closedAt/.test(t)) offenders.push(`${rel(file)}:${i + 1}: ${t}`)
+        if (/\bis_?closed\b|closed_?at/i.test(t)) offenders.push(`${rel(file)}:${i + 1}: ${t}`)
       })
     }
     expect(offenders).toEqual([])
@@ -128,7 +128,7 @@ describe('#401 数据中心在营口径 · closed_at 白名单', () => {
     for (const file of CONSUMER_FILES) {
       readFile(file).split('\n').forEach((line, i) => {
         const t = line.trim()
-        if (!/closed_at|closedAt/.test(t)) return
+        if (!/closed_?at/i.test(t)) return
         if (/^(\*|\/\*|\/\/)/.test(t)) return
         seen++
         if (!ALLOWED.test(t)) offenders.push(`${rel(file)}:${i + 1}: ${t}`)
