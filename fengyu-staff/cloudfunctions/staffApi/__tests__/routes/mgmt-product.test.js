@@ -461,7 +461,12 @@ describe('mgmtProduct.cycleStats SQL 形态', () => {
 
     const sql = getCycleSql()
     expect(sql).toMatch(/repurchase_qualifying_days\s+AS\s*\([\s\S]*?purchase_received\s*>=\s*\$3/)
-    expect(sql).toMatch(/period_agg\s+AS\s*\([\s\S]*?purchase_received\s+AS\s+day_received[\s\S]*?purchase_received\s*>\s*0/)
+    // #288：period_agg 整段等值 —— 只排除纯寄存日（<> 0），负数冲销日必须保留；追加任何谓词都会让冲销重新被吞
+    const flat = sql.replace(/--[^\n]*/g, ' ').replace(/\s+/g, ' ')
+    expect(/\bperiod_agg AS \( ([\s\S]*?) \), \w+ AS /.exec(flat)?.[1]).toBe(
+      'SELECT client_user_id, store_id, product_kind, purchase_date, purchase_received AS day_received ' +
+        'FROM daily_agg WHERE purchase_date BETWEEN $1 AND $2 AND purchase_received <> 0',
+    )
     expect(sql).toMatch(/fugou\s+AS\s*\([\s\S]*?FROM\s+repurchase_qualifying_days\s+q/)
   })
 
@@ -501,6 +506,31 @@ describe('mgmtProduct.cycleStats SQL 形态', () => {
     const sql = getCycleSql()
     expect(sql).toMatch(/tiyan\s+AS\s*\(/)
     expect(sql).toMatch(/NOT EXISTS\s*\(\s*SELECT\s+1\s+FROM\s+first_entry\s+f/)
+  })
+
+  test('#288 tiyan 只从正数购买日派生（负数冲销行不造体验客）', async () => {
+    setupCycleMocks({})
+    const ctx = makeHqCtx({ period: 'month', scopeType: 'all' })
+    await cycleStats(ctx)
+
+    const flat = getCycleSql().replace(/--[^\n]*/g, ' ').replace(/\s+/g, ' ')
+    expect(/\btiyan AS \( ([\s\S]*?) \) SELECT /.exec(flat)?.[1]).toBe(
+      'SELECT DISTINCT pa.client_user_id, pa.product_kind FROM period_agg pa WHERE pa.day_received > 0 ' +
+        'AND NOT EXISTS ( SELECT 1 FROM first_entry f WHERE f.client_user_id = pa.client_user_id ' +
+        'AND f.product_kind = pa.product_kind )',
+    )
+  })
+
+  test('#288 daily_agg 的 HAVING 只剔除两列都为 0 的空组（负数净额日保留）', async () => {
+    setupCycleMocks({})
+    const ctx = makeHqCtx({ period: 'month', scopeType: 'all' })
+    await cycleStats(ctx)
+
+    const flat = getCycleSql().replace(/--[^\n]*/g, ' ').replace(/\s+/g, ' ')
+    expect(flat.match(/\bHAVING\b/g)).toHaveLength(1)
+    expect(/\bHAVING ([\s\S]*?) \), qualifying_days AS /.exec(flat)?.[1]).toBe(
+      "SUM(sipe.amount::numeric) <> 0 OR SUM(sipe.amount::numeric) FILTER (WHERE so.sale_order_type IN ('销售单','转换单')) <> 0",
+    )
   })
 
   test('period_agg WHERE 含 purchase_date BETWEEN $1 AND $2', async () => {

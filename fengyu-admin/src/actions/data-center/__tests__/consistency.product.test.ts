@@ -15,6 +15,7 @@
  *   5. cycle 进入基线纳入寄存单；复购达标与区间业绩只统计销售单/转换单
  *   6. 业绩 = SUM(sale_item_performance_events.amount)（禁 paid_amount）
  *   7. 一级分组键 product_kind（admin 额外 category_name 二级，为 admin 独有扩展）
+ *   8. 区间业绩为净额（#288）：负数冲销日不整组丢弃；体验判定与人数归店只认正数购买日
  *
  * 任一端一级口径变更必须双端同步，否则数据中心品项板块与员工端 mgmtProduct 数字对不上。
  */
@@ -752,12 +753,9 @@ describe('品项板块两端口径一致性守护', () => {
         /so\.status\s+NOT\s+IN\s*\(\s*'已关闭'\s*,\s*'已作废'\s*,\s*'未审核'\s*,\s*'待审批'\s*,\s*'支付失败'\s*\)/,
       )
     })
-    it('两端 fugou 只读取 repurchase_qualifying_days，且区间业绩排除寄存金额', () => {
+    it('两端 fugou 只读取 repurchase_qualifying_days（区间业绩的整段快照见下方 #288 一组）', () => {
       for (const code of [adminCode, staffCode]) {
         expect(code).toMatch(/repurchase_qualifying_days\s+AS\s*\([\s\S]*?WHERE\s+purchase_received\s*>=/)
-        expect(code).toMatch(
-          /period_agg\s+AS\s*\([\s\S]*?purchase_received\s+AS\s+day_received[\s\S]*?purchase_received\s*>\s*0/,
-        )
         expect(code).toMatch(/fugou\s+AS\s*\([\s\S]*?FROM\s+repurchase_qualifying_days\s+q/)
       }
     })
@@ -771,6 +769,107 @@ describe('品项板块两端口径一致性守护', () => {
     it('staff', () => {
       expect(staffCode).toMatch(/JOIN\s+xinzeng\s+x\s+ON\s+x\.client_user_id\s*=\s*q\.client_user_id\s+AND\s+x\.product_kind\s*=\s*q\.product_kind/)
       expect(staffCode).toMatch(/q\.purchase_date\s*>\s*x\.entry_date/)
+    })
+  })
+
+  /**
+   * #288：区间业绩是**净额** —— 退款负数冲销逐笔抵减，不得因「当日净额 ≤ 0」整组丢弃；
+   * 但负数行只进业绩、不造人（体验判定与人数归店只认 `day_received > 0`）。
+   *
+   * 缺陷原理：旧写法 `HAVING SUM(...) > 0` + `period_agg ... purchase_received > 0` 把净额为负的
+   * (顾客, 门店, 品项, 日) 整组丢掉 —— 同一批退款约 38% 被净入、62% 被吞，取决于当日净额符号。
+   * 2026-09 prod 实测新增业绩虚高 12%、复购业绩虚高 7%，门店级最高 +30%。
+   *
+   * 为什么是三段**整段等值**快照而不是「出现过 `<> 0`」：
+   *   - HAVING 只写 `SUM(...) <> 0` 仍会丢「寄存单恰好抵平销售单/转换单」的日子（prod 实测 14 组）
+   *   - `period_agg` 追加任何谓词（如 `AND day_received > 0`）都会让冲销重新被吞
+   *   - `tiyan` 丢了 `day_received > 0` 就会把「期内只有退款」的顾客算成体验客（prod 实测 +60 人）
+   * 这些都是「局部字面量仍在、整体语义已变」的形态，只有整段等值能挡住。
+   *
+   * 三份模板（admin KPI / admin 明细 / staff）各自钉死，同时构成跨端对齐。
+   */
+  describe('区间业绩净额，负数冲销不整组丢弃（#288）', () => {
+    /** SQL 行注释剥掉 + 空白压平（三份模板的字符串字面量里都没有 `--`） */
+    const flatSql = (tpl: string): string => normalize(tpl.replace(/--[^\n]*/g, ' '))
+    /**
+     * 三份模板。admin KPI 的模板中途嵌了 `sql` 子模板（cohort 三选一），
+     * 惰性匹配会停在第一个嵌套反引号处 —— 本组要看的 daily_agg / period_agg / tiyan 都在它之前，够用；
+     * KPI 的出口 SELECT 在嵌套之后，单独切。
+     */
+    const templates = (): Array<[string, string]> => {
+      const tpl = (body: string): string => /db\.execute\(sql`([\s\S]*?)`/.exec(body)?.[1] ?? ''
+      const staffSql = /const sql = `([\s\S]*?)`/.exec(functionBody(staffSrc, 'cycleStats'))?.[1] ?? ''
+      return [
+        ['admin KPI queryCycle', flatSql(tpl(functionBody(adminSrc, 'queryCycle')))],
+        ['admin 明细 queryCycleByStore', flatSql(tpl(functionBody(adminSrc, 'queryCycleByStore')))],
+        ['staff cycleStats', flatSql(staffSql)],
+      ]
+    }
+    const isStaff = (label: string): boolean => label.startsWith('staff')
+
+    it('三份模板都切得出来，且每份恰好一个 HAVING / period_agg / tiyan', () => {
+      for (const [label, sqlText] of templates()) {
+        expect(sqlText, `${label} 模板未切出`).toMatch(/daily_agg\s+AS\s+\(/)
+        expect((sqlText.match(/\bHAVING\b/gi) ?? []).length, `${label} 的 HAVING 不止一处`).toBe(1)
+        expect((sqlText.match(/\bperiod_agg\s+AS\b/gi) ?? []).length, `${label} 的 period_agg 声明不唯一`).toBe(1)
+        expect((sqlText.match(/\btiyan\s+AS\b/gi) ?? []).length, `${label} 的 tiyan 声明不唯一`).toBe(1)
+      }
+    })
+
+    it('daily_agg 的 HAVING 只剔除「两列都为 0」的空组', () => {
+      for (const [label, sqlText] of templates()) {
+        const having = /\bHAVING\s+([\s\S]*?)\s*\),\s*qualifying_days\s+AS\s/.exec(sqlText)?.[1] ?? ''
+        const sep = isStaff(label) ? "'销售单','转换单'" : "'销售单', '转换单'"
+        expect(
+          having,
+          `${label}：HAVING 变了 —— 「> 0」会吞掉负数冲销日，只判 day_received 会吞掉寄存单抵平日`,
+        ).toBe(
+          `SUM(sipe.amount::numeric) <> 0 OR SUM(sipe.amount::numeric) FILTER (WHERE so.sale_order_type IN (${sep})) <> 0`,
+        )
+      }
+    })
+
+    it('period_agg 只排除纯寄存日（purchase_received <> 0），不追加任何谓词', () => {
+      for (const [label, sqlText] of templates()) {
+        const block = /\bperiod_agg\s+AS\s+\(\s*([\s\S]*?)\s*\),\s*\w+\s+AS\s/.exec(sqlText)?.[1] ?? ''
+        expect(block, `${label}：period_agg 变了 —— 追加谓词会让退款冲销重新被吞`).toBe(
+          isStaff(label)
+            ? 'SELECT client_user_id, store_id, product_kind, purchase_date, purchase_received AS day_received ' +
+                'FROM daily_agg WHERE purchase_date BETWEEN $1 AND $2 AND purchase_received <> 0'
+            : 'SELECT client_user_id, store_id, grp, purchase_date, purchase_received AS day_received ' +
+                'FROM daily_agg WHERE purchase_date BETWEEN ${range.start} AND ${range.end} AND purchase_received <> 0',
+        )
+      }
+    })
+
+    it('tiyan 只从正数购买日派生（负数行不造体验客）', () => {
+      for (const [label, sqlText] of templates()) {
+        const block = /\btiyan\s+AS\s+\(\s*([\s\S]*?)\s*\)\s*(?:,\s*\w+\s+AS\s|SELECT\s)/.exec(sqlText)?.[1] ?? ''
+        const k = isStaff(label) ? 'product_kind' : 'grp'
+        expect(block, `${label}：tiyan 变了 —— 丢掉 day_received > 0 会把「期内只有退款」的顾客算成体验客`).toBe(
+          `SELECT DISTINCT pa.client_user_id, pa.${k} FROM period_agg pa WHERE pa.day_received > 0 ` +
+            `AND NOT EXISTS ( SELECT 1 FROM first_entry f WHERE f.client_user_id = pa.client_user_id AND f.${k} = pa.${k} )`,
+        )
+      }
+    })
+
+    it('业绩出口读 period_agg 全部行（不得在出口处再滤掉负数）', () => {
+      const kpiBody = normalize(functionBody(adminSrc, 'queryCycle').replace(/--[^\n]*/g, ' '))
+      const kpiOut = /\)\s*(SELECT COUNT\(DISTINCT c\.client_user_id\)[\s\S]*?)\s*`\)/.exec(kpiBody)?.[1] ?? ''
+      expect(kpiOut, 'admin KPI 出口 SELECT 变了').toBe(
+        'SELECT COUNT(DISTINCT c.client_user_id) AS count, COALESCE(SUM(pa.day_received), 0) AS revenue ' +
+          'FROM cohort c LEFT JOIN period_agg pa ON pa.client_user_id = c.client_user_id AND pa.grp = c.grp',
+      )
+      const staffSql = templates()[2][1]
+      const staffOut = /\)\s*(SELECT 'trial' AS group_kind[\s\S]*)$/.exec(staffSql)?.[1] ?? ''
+      const seg = (alias: string, cohort: string, kind: string): string =>
+        `SELECT '${kind}' AS group_kind, ${alias}.product_kind, ` +
+        `COUNT(DISTINCT ${alias}.client_user_id)::int AS count, COALESCE(SUM(pa.day_received), 0)::numeric AS revenue ` +
+        `FROM ${cohort} ${alias} LEFT JOIN period_agg pa ON pa.client_user_id = ${alias}.client_user_id ` +
+        `AND pa.product_kind = ${alias}.product_kind GROUP BY ${alias}.product_kind`
+      expect(staffOut, 'staff 三段 UNION ALL 出口变了').toBe(
+        [seg('t', 'tiyan', 'trial'), seg('x', 'xinzeng', 'new'), seg('f', 'fugou', 'repurchase')].join(' UNION ALL '),
+      )
     })
   })
 
@@ -965,7 +1064,7 @@ describe('品项板块两端口径一致性守护', () => {
 
     it('切片锚点有效（能切出明细侧 SQL 且含关键 CTE）', () => {
       expect(adminDetail, 'queryCycleByStore 的 SQL 模板未切出').toBeTruthy()
-      for (const cte of ['entry_store', 'xinzeng', 'new_store', 'store_ids', 'period_agg']) {
+      for (const cte of ['entry_store', 'xinzeng', 'new_store', 'new_revenue_store', 'store_ids', 'period_agg']) {
         expect(adminDetail, `明细侧缺 ${cte} CTE`).toMatch(new RegExp(`${cte}\\s+AS\\s`))
       }
       // ⚠️ 必须用词法扫描出的真实函数体来数，不能再用正则切片 ——
@@ -1173,19 +1272,23 @@ describe('品项板块两端口径一致性守护', () => {
      *   A) 换别名写成内连接 + 注释补字面量
      *   H) 加 `HAVING SUM(pa.day_received) > 0` —— entry-only 兜底组 revenue=0 被整体滤掉
      *   J) 追加一条裸 `JOIN period_agg gate ...` —— 不含 INNER/RIGHT/FULL/CROSS 关键字
+     *
+     * #288 起 `new_store` **只算人数**，业绩挪到 `new_revenue_store`：ON 里的 `pa.day_received > 0`
+     * 是有意的 —— 只有正数购买日决定人落在哪家店，负数冲销行不造人。它不会打掉兜底人群：
+     * LEFT JOIN 的 ON 谓词不减少 xinzeng 行，匹配不到正数行的人照样落回 entry_store_id。
      */
     it('new_store：以 xinzeng 为主表、恰一条 LEFT JOIN、无 WHERE/HAVING、计数主体是 x', () => {
-      const block = cteBlock(adminDetail, 'new_store', 'repurchase_store')
+      const block = cteBlock(adminDetail, 'new_store', 'new_revenue_store')
       expect(block, 'new_store 块未切出（CTE 顺序变了？）').toBeTruthy()
       assertNoNestedCte(block, 'new_store')
       // 堵「, LATERAL (SELECT 1 LIMIT 0)」这类零行破坏，以及任何回查子查询
       expect(block, 'new_store 体内出现子查询').not.toMatch(/\(\s*SELECT\s/i)
 
       // ON 子句整条钉死：JOIN 计数 = 1 只管「有几条连接」，管不住在这一条的 ON 里
-      // 追加谓词（如 `AND pa.store_id IS DISTINCT FROM 'store-x'` 把某店业绩挪走，
-      // 或 `AND pa.day_received > 0` 把兜底人群的消费行打掉）—— round-3 GLM 探针 P-b 实测可绕。
-      expect(block, 'new_store 的主表不是 xinzeng，或 ON 子句被追加了连接键以外的谓词').toMatch(
-        /FROM\s+xinzeng\s+x\s+LEFT\s+JOIN\s+period_agg\s+pa\s+ON\s+pa\.client_user_id\s*=\s*x\.client_user_id\s+AND\s+pa\.grp\s*=\s*x\.grp\s+GROUP\s+BY\b/,
+      // 追加谓词（如 `AND pa.store_id IS DISTINCT FROM 'store-x'` 把某店的人挪走）
+      // —— round-3 GLM 探针 P-b 实测可绕。唯一允许的额外谓词是 #288 的 `pa.day_received > 0`。
+      expect(block, 'new_store 的主表不是 xinzeng，或 ON 子句被追加了连接键与正数行之外的谓词').toMatch(
+        /FROM\s+xinzeng\s+x\s+LEFT\s+JOIN\s+period_agg\s+pa\s+ON\s+pa\.client_user_id\s*=\s*x\.client_user_id\s+AND\s+pa\.grp\s*=\s*x\.grp\s+AND\s+pa\.day_received\s*>\s*0\s+GROUP\s+BY\b/,
       )
       // 恰好一条 JOIN，且必是 LEFT —— 堵「追加一条裸 JOIN 当过滤闸」
       expect(
@@ -1198,11 +1301,11 @@ describe('品项板块两端口径一致性守护', () => {
       expect(block, 'new_store 用逗号连接了两个表 —— 等价于内连接').not.toMatch(
         /FROM\s+\w+\s+\w+\s*,/,
       )
-      // WHERE 对右表加过滤会把 LEFT JOIN 打回内连接；HAVING 会把 revenue=0 的兜底组整体滤掉
+      // WHERE 对右表加过滤会把 LEFT JOIN 打回内连接；HAVING 会把兜底组整体滤掉
       expect(block, 'new_store 体内出现 WHERE —— 对右表过滤会退化成内连接').not.toMatch(/\bWHERE\b/i)
       expect(
         block,
-        'new_store 体内出现 HAVING —— 「只有寄存单进入」的门店 revenue=0，会被整组滤掉（#286 换个写法回归）',
+        'new_store 体内出现 HAVING —— 「只有寄存单进入」的兜底组会被整组滤掉（#286 换个写法回归）',
       ).not.toMatch(/\bHAVING\b/i)
       // 计数主体必须是 xinzeng 的顾客：兜底分组里 pa.* 全是 NULL
       expect(block, 'new_store 回退成按 pa 计数').not.toMatch(/COUNT\(DISTINCT\s+pa\.client_user_id\)/)
@@ -1232,12 +1335,28 @@ describe('品项板块两端口径一致性守护', () => {
         'new_store 块与字面快照不符 —— 先确认语义没变（尤其是计数主体与 GROUP BY 维度），再同步更新本断言',
       ).toBe(
         'SELECT COALESCE(pa.store_id, x.entry_store_id) AS store_id, ' +
-          'COUNT(DISTINCT x.client_user_id) AS cnt, ' +
-          'COALESCE(SUM(pa.day_received), 0) AS revenue ' +
+          'COUNT(DISTINCT x.client_user_id) AS cnt ' +
           'FROM xinzeng x ' +
           'LEFT JOIN period_agg pa ' +
-          'ON pa.client_user_id = x.client_user_id AND pa.grp = x.grp ' +
+          'ON pa.client_user_id = x.client_user_id AND pa.grp = x.grp AND pa.day_received > 0 ' +
           'GROUP BY COALESCE(pa.store_id, x.entry_store_id)',
+      )
+    })
+
+    /**
+     * #288：新增业绩按 `period_agg` **全部行**（含负数冲销）归到消费发生的门店，净额可为负。
+     * 内连接不扇出：xinzeng 每个 (client_user_id, grp) 恰一行（entry_store 的 DISTINCT ON）。
+     * 在这里加 `pa.day_received > 0`（ON 或 WHERE）就是 #288 原样复活 —— 字面快照挡住。
+     */
+    it('new_revenue_store：xinzeng 在 period_agg 全部行上的净额，按消费门店归组', () => {
+      const block = cteBlock(adminDetail, 'new_revenue_store', 'repurchase_store')
+      expect(block, 'new_revenue_store 块未切出（CTE 顺序变了？）').toBeTruthy()
+      assertNoNestedCte(block, 'new_revenue_store')
+      expect(block.trim(), 'new_revenue_store 块与字面快照不符 —— 追加任何谓词都可能让退款冲销重新被吞').toBe(
+        'SELECT pa.store_id, SUM(pa.day_received) AS revenue ' +
+          'FROM xinzeng x JOIN period_agg pa ' +
+          'ON pa.client_user_id = x.client_user_id AND pa.grp = x.grp ' +
+          'GROUP BY pa.store_id',
       )
     })
 
@@ -1257,10 +1376,12 @@ describe('品项板块两端口径一致性守护', () => {
      *
      * 前面所有断言都切到 `store_ids` 就结束了 —— CTE 全部算对，结果仍可在**消费端**被丢掉：
      *
-     *   LEFT JOIN new_store n ON n.store_id = s.store_id AND n.revenue > 0
+     *   LEFT JOIN new_store n ON n.store_id = s.store_id AND EXISTS (SELECT 1 FROM period_agg …)
      *
-     * 这一条就把「只有寄存单进入、零销售单消费」的门店（revenue = 0）重新滤掉，
+     * 这一条就把「只有寄存单进入、零销售单消费」的门店重新滤掉，
      * 正好抵消 `store_ids` 第二个 UNION 分支要保护的场景，而上面的断言无一触发。
+     * 同理，`LEFT JOIN new_revenue_store nr ON … AND nr.revenue > 0` 会把净额为负的门店业绩
+     * 抹成 0 —— #288 在消费端换个写法复活。
      *
      * 同理，把 `COALESCE(n.cnt, 0) AS new_count` 改成 `COALESCE(n.cnt, 0) * 0` 之类也无人拦。
      * 与 `new_store` 同样处理：**字面快照**，见上面那段关于 fail-closed 取舍的说明。
@@ -1275,34 +1396,48 @@ describe('品项板块两端口径一致性守护', () => {
         'SELECT s.store_id AS store_id, ' +
           'COALESCE(t.cnt, 0) AS trial_count, ' +
           'COALESCE(n.cnt, 0) AS new_count, ' +
-          'COALESCE(n.revenue, 0) AS new_revenue, ' +
+          'COALESCE(nr.revenue, 0) AS new_revenue, ' +
           'COALESCE(r.cnt, 0) AS repurchase_count, ' +
           'COALESCE(r.revenue, 0) AS repurchase_revenue ' +
           'FROM store_ids s ' +
           'LEFT JOIN trial_store t ON t.store_id = s.store_id ' +
           'LEFT JOIN new_store n ON n.store_id = s.store_id ' +
+          'LEFT JOIN new_revenue_store nr ON nr.store_id = s.store_id ' +
           'LEFT JOIN repurchase_store r ON r.store_id = s.store_id',
       )
     })
 
     /**
-     * 体验/复购不需要兜底：`tiyan` 本就从 `period_agg` 派生，
-     * `fugou` 要求 `purchase_received >= threshold > 0`，两者必然在 `period_agg` 里有行。
+     * 体验/复购不需要兜底：`tiyan` 本就从正数 `period_agg` 行派生，
+     * `fugou` 要求 `purchase_received >= threshold > 0`，两者必然在 `period_agg` 里有正数行。
      * 锁住这一点，免得日后有人"顺手"把它们也改成 LEFT JOIN 兜底，反而引入无处归店的行。
+     *
+     * #288 起两块钉成整块字面快照：人数只认正数购买日（`day_received > 0`），
+     * 复购业绩读全部行求净额。把 FILTER 挪成 WHERE 会让复购业绩重新吞掉冲销；
+     * 删掉 trial_store 的 WHERE 会让「只有退款」的门店多出体验人数 —— 局部断言都看不出来。
      */
-    it('体验/复购仍以 period_agg 为主表（它们必然有 period 行，无需兜底）', () => {
+    it('体验/复购仍以 period_agg 为主表，人数只认正数行、业绩读全部行', () => {
       const trial = cteBlock(adminDetail, 'trial_store', 'new_store')
       const repurchase = cteBlock(adminDetail, 'repurchase_store', 'store_ids')
       expect(trial, 'trial_store 块未切出').toBeTruthy()
       expect(repurchase, 'repurchase_store 块未切出').toBeTruthy()
-      expect(trial).toMatch(/FROM\s+period_agg\s+pa\s+JOIN\s+tiyan\s+t/)
-      expect(repurchase).toMatch(/FROM\s+period_agg\s+pa\s+JOIN\s+fugou\s+fg/)
-      // 与 new_store 同理：正向断言只认前缀，追加第二条 JOIN 当过滤闸仍然全绿
-      expect((trial.match(/\bJOIN\b/gi) ?? []).length, 'trial_store 的 JOIN 不止一条').toBe(1)
-      expect(
-        (repurchase.match(/\bJOIN\b/gi) ?? []).length,
-        'repurchase_store 的 JOIN 不止一条',
-      ).toBe(1)
+      assertNoNestedCte(trial, 'trial_store')
+      assertNoNestedCte(repurchase, 'repurchase_store')
+      expect(trial.trim(), 'trial_store 块与字面快照不符').toBe(
+        'SELECT pa.store_id, COUNT(DISTINCT pa.client_user_id) AS cnt ' +
+          'FROM period_agg pa ' +
+          'JOIN tiyan t ON t.client_user_id = pa.client_user_id AND t.grp = pa.grp ' +
+          'WHERE pa.day_received > 0 ' +
+          'GROUP BY pa.store_id',
+      )
+      expect(repurchase.trim(), 'repurchase_store 块与字面快照不符').toBe(
+        'SELECT pa.store_id, ' +
+          'COUNT(DISTINCT pa.client_user_id) FILTER (WHERE pa.day_received > 0) AS cnt, ' +
+          'COALESCE(SUM(pa.day_received), 0) AS revenue ' +
+          'FROM period_agg pa ' +
+          'JOIN fugou fg ON fg.client_user_id = pa.client_user_id AND fg.grp = pa.grp ' +
+          'GROUP BY pa.store_id',
+      )
     })
 
     /**
