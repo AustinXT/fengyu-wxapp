@@ -62,6 +62,11 @@ vi.mock('@/db', () => ({
   },
 }))
 
+// ── mock 会员门槛（getMemberThreshold 走 unstable_cache，测试环境无 incrementalCache）──
+vi.mock('@/lib/member-threshold', () => ({
+  getMemberThreshold: vi.fn(async () => 1990),
+}))
+
 // ── mock 鉴权闸门（withPermission 内部 getSession + requirePermission）──
 const fakeSession = {
   employeeId: 'e1',
