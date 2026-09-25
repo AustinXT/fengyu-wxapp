@@ -30,6 +30,8 @@ const {
   hasHeadquartersScope,
 } = require('../utils/scope')
 const { excludeDepositRefundSql } = require('../utils/consume-filter')
+// 在营口径单源（#401）：只看门店组织节点 is_active，不看门店关店标记
+const { activeStoreCondition } = require('../utils/store-status')
 
 /**
  * 取 selectedDate 所属月份的月末日期（YYYY-MM-DD）。
@@ -75,7 +77,7 @@ async function loadAllMarkets() {
       ON o_store.id = d.node_id
      AND o_store.type = '门店'
      AND o_store.is_active = TRUE
-    LEFT JOIN stores s ON s.org_node_id = o_store.id AND s.is_closed = false
+    LEFT JOIN stores s ON s.org_node_id = o_store.id
     WHERE m.type = '市场'
     ORDER BY m.name ASC, s.store_name ASC
   `)
@@ -143,17 +145,6 @@ async function scopeOptions(ctx) {
 // =====================================================================
 // summary —— 8 卡片汇总
 // =====================================================================
-
-/** 当前启用的门店组织节点对应的 store_id 集合（按当前状态作用于全部历史区间）。 */
-function activeStoreCondition(column) {
-  return `${column} IN (
-    SELECT active_store.store_id
-    FROM stores active_store
-    JOIN org_nodes active_node ON active_store.org_node_id = active_node.id
-    WHERE active_node.type = '门店'
-      AND active_node.is_active = TRUE
-  )`
-}
 
 /**
  * 在既有权限/UI scope 外叠加经营门店启用条件；不改共享 scope 工具，避免影响其他路由。
@@ -659,8 +650,10 @@ async function summary(ctx) {
   const elapsed = Date.now() - t0
 
   const round2 = (v) => Math.round(Number(v) * 100) / 100
-  // monthlyAvgPerStore：分母用月末口径，与"月度业绩 = 整月在营"语义对齐
-  const avg = (m) => (storeCountMonth > 0 ? round2(m / storeCountMonth) : 0)
+  // monthlyAvgPerStore：分母用月末口径，与"月度业绩 = 整月在营"语义对齐。
+  // 月末在营 0 店（只关店仍可选的门店、未开业门店）→ null，前端 formatAmount 显示「--」，
+  // 与 admin 数据中心 perStore 分母 ≤0 返回 null 一致（#401）；返回 0 会和「在营但零业绩」混淆。
+  const avg = (m) => (storeCountMonth > 0 ? round2(m / storeCountMonth) : null)
 
   ctx.result = {
     date,

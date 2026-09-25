@@ -343,7 +343,7 @@ describe('mgmtDashboard.summary scopeType=store', () => {
     }
 
     expect(ctx.result.storeCount).toEqual({ day: 0, month: 0 })
-    expect(ctx.result.storeRevenue.monthlyAvgPerStore).toBe(0)
+    expect(ctx.result.storeRevenue.monthlyAvgPerStore).toBeNull()
     expect(ctx.result.scope).toEqual({ type: 'store', id: 'store-001', name: '凤御B店' })
   })
 })
@@ -393,7 +393,7 @@ describe('mgmtDashboard.summary 月店均与防除零', () => {
     expect(ctx.result.shengmeiConsume.monthlyAvgPerStore).toBe(100)
   })
 
-  test('storeCount=0 → monthlyAvgPerStore 返回 0 而非 NaN', async () => {
+  test('storeCount=0 → monthlyAvgPerStore 返回 null（前端显示「--」，与 admin perStore 一致，#401），不是 0 也不是 NaN', async () => {
     pg.query.mockReset().mockImplementation(async (sql) => {
       if (isStoreCountSql(sql)) return [{ cnt: 0 }]
       if (/FROM org_nodes\b/.test(sql) && /SELECT name\b/.test(sql)) return [{ name: '' }]
@@ -405,8 +405,10 @@ describe('mgmtDashboard.summary 月店均与防除零', () => {
 
     // T6：双口径都为 0
     expect(ctx.result.storeCount).toEqual({ day: 0, month: 0 })
-    expect(ctx.result.storeRevenue.monthlyAvgPerStore).toBe(0)
-    expect(Number.isNaN(ctx.result.storeRevenue.monthlyAvgPerStore)).toBe(false)
+    // 月业绩 999 非零、月末 0 店：返回 0 会冒充「在营但零业绩」
+    for (const k of ['storeRevenue', 'shengmeiRevenue', 'storeConsume', 'shengmeiConsume']) {
+      expect(ctx.result[k].monthlyAvgPerStore, k).toBeNull()
+    }
   })
 
   test('T6：monthlyAvgPerStore 用 storeCount.month（day=5, month=4, monthRev=400 → avg=100）', async () => {

@@ -51,6 +51,12 @@ const FILES = {
     __dirname,
     '../../../../../fengyu-admin/src/lib/data-center/scope-sql.ts',
   ),
+  // #401 起「启用门店过滤」收敛到两端各自的在营口径 helper（独立副本）
+  staffStoreStatus: path.resolve(__dirname, '../../utils/store-status.js'),
+  adminStoreStatus: path.resolve(
+    __dirname,
+    '../../../../../fengyu-admin/src/lib/store-status.ts',
+  ),
 }
 
 function readFile(filePath) {
@@ -182,7 +188,11 @@ describe('产能技师分母跨端字面量守护（#320）', () => {
       extractSection(adminScopeSrc, 'export function orgAnchorScopeSql(', '\n/**'),
     )
     staffActiveFn = squeeze(
-      extractSection(staffSrc, 'function activeStoreCondition(column)', '\n/**'),
+      extractSection(
+        readFile(FILES.staffStoreStatus),
+        'function activeStoreCondition(column)',
+        '\nmodule.exports',
+      ),
     )
     staffWithActiveFn = squeeze(
       extractSection(staffSrc, 'function withActiveStoreCondition(', '\n/**'),
@@ -198,7 +208,11 @@ describe('产能技师分母跨端字面量守护（#320）', () => {
       ),
     )
     adminActiveFn = squeeze(
-      extractSection(adminScopeSrc, 'function activeStoreCondition(storeCol: SQL)', '\n/**'),
+      extractSection(
+        readFile(FILES.adminStoreStatus),
+        'function activeStoreCondition(storeCol: SQL)',
+        '\n/**',
+      ),
     )
     adminScopeFilterFn = squeeze(
       extractSection(adminScopeSrc, 'export function scopeFilterSql(', '\n/**'),

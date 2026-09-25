@@ -19,25 +19,8 @@ import { isAdminScope } from '@/lib/permissions'
 import type { AuthSession } from '@/lib/types'
 import type { DataCenterScope } from './types'
 import { orgNodeStoreIdsSubquery } from '@/lib/market-store-sql'
-
-/**
- * 数据中心统一的经营门店集合：仅组织树中已启用的门店节点。
- *
- * `is_active` 没有历史时间轴，按当前状态作用于所有报表时间范围；开闭店的历史口径由
- * 各指标自身的 opening_date / closed_at 条件继续负责。把它放进公共 scope 过滤器，
- * 可避免销售、客量、人效、品项四个板块只修部分查询而再次漂移。
- */
-function activeStoreCondition(storeCol: SQL): SQL {
-  return sql`
-    ${storeCol} IN (
-      SELECT active_store.store_id
-      FROM stores active_store
-      JOIN org_nodes active_node ON active_store.org_node_id = active_node.id
-      WHERE active_node.type = '门店'
-        AND active_node.is_active = TRUE
-    )
-  `
-}
+// 在营口径单源（#401）：只看门店组织节点 is_active，不看门店关店标记
+import { activeStoreCondition } from '@/lib/store-status'
 
 /**
  * 构造 store_id 维度的 scope 过滤片段。

@@ -18,6 +18,7 @@ import { alias } from 'drizzle-orm/pg-core'
 import { withAllPermissions, withPermission } from '@/lib/with-permission'
 import { isAdminScope, expandVisibleMarketIds } from '@/lib/permissions'
 import { getScopeTopLevel } from '@/lib/data-center/context'
+import { isDataCenterActiveStore } from '@/lib/store-status'
 import { loadStoreDataStarts } from '@/lib/data-center/data-start-query'
 import {
   DATA_CENTER_CUSTOMER_DETAIL_ACTIONS,
@@ -96,7 +97,6 @@ async function loadScopeOptions(session: AuthSession): Promise<DataCenterScopeOp
       storeId: stores.storeId,
       storeName: stores.storeName,
       marketId: orgStore.parentId,
-      isClosed: stores.isClosed,
       isActive: orgStore.isActive,
     })
     .from(stores)
@@ -114,12 +114,11 @@ async function loadScopeOptions(session: AuthSession): Promise<DataCenterScopeOp
       ),
     )
     .orderBy(asc(stores.storeName))
-  const storeRows = allStoreRows.filter((s) => !s.isClosed && s.isActive)
-  // 「已停用」只看组织节点，与取数 SQL 的 activeStoreCondition（scope-sql.ts）同一口径。
-  // ⚠️ 不能把 is_closed 算进来：只关店、节点仍在营的门店，取数 SQL 照样返回它的历史数据，
-  // 判成停用会用「无可展示数据」藏掉真实数字（它仍不进下拉，维持改动前的行为）。
+  // 在营 / 停用只看组织节点（#401 口径单源 lib/store-status，与取数 SQL 的 activeStoreCondition 同源）。
+  // 只关店、节点仍启用的门店照样进下拉：取数 SQL 仍返回它关店前的历史数据，要能选到它看。
+  const storeRows = allStoreRows.filter(isDataCenterActiveStore)
   const inactiveStores = allStoreRows
-    .filter((s) => !s.isActive)
+    .filter((s) => !isDataCenterActiveStore(s))
     .map((s) => ({ storeId: s.storeId, storeName: s.storeName, marketId: s.marketId }))
 
   const markets = marketRows.map((m) => ({

@@ -86,10 +86,10 @@ interface ScopeValue {
 }
 
 interface SummaryData {
-  storeRevenue: { today: number; month: number; monthlyAvgPerStore: number }
-  shengmeiRevenue: { today: number; month: number; monthlyAvgPerStore: number }
-  storeConsume: { today: number; month: number; monthlyAvgPerStore: number }
-  shengmeiConsume: { today: number; month: number; monthlyAvgPerStore: number }
+  storeRevenue: { today: number; month: number; monthlyAvgPerStore: number | null }
+  shengmeiRevenue: { today: number; month: number; monthlyAvgPerStore: number | null }
+  storeConsume: { today: number; month: number; monthlyAvgPerStore: number | null }
+  shengmeiConsume: { today: number; month: number; monthlyAvgPerStore: number | null }
   footfall: { today: number; month: number }
   headcount: { today: number; month: number }
   newMembers: { today: number; month: number }

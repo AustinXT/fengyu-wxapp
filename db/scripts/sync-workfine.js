@@ -231,15 +231,19 @@ async function syncOrgNodesAndStores(mssqlPool, pgPool, dryRun) {
       // stores 详情
       const storeId = hashId('store', storeName)
       const isClosed = toBool(row.is_closed_raw)
+      // is_closed ↔ closed_at 双写一致（schema 不变量；admin updateStore 首次关店同样记当天）：
+      // 关店且原本无闭店日期 → 记今天；已有闭店日期保留；重新开业 → 清空。
+      // 只动营业时间轴，不碰 org_nodes.is_active（关店不联动停用节点，#401）。
       await client.query(`
-        INSERT INTO stores (store_id, store_name, org_node_id, opening_date, bed_count, is_closed)
-        VALUES ($1, $2, $3, $4, $5, $6)
+        INSERT INTO stores (store_id, store_name, org_node_id, opening_date, bed_count, is_closed, closed_at)
+        VALUES ($1, $2, $3, $4, $5, $6, CASE WHEN $6 THEN (now() AT TIME ZONE 'Asia/Shanghai')::date END)
         ON CONFLICT (store_id) DO UPDATE SET
           store_name = EXCLUDED.store_name,
           org_node_id = EXCLUDED.org_node_id,
           opening_date = EXCLUDED.opening_date,
           bed_count = EXCLUDED.bed_count,
           is_closed = EXCLUDED.is_closed,
+          closed_at = CASE WHEN EXCLUDED.is_closed THEN COALESCE(stores.closed_at, EXCLUDED.closed_at) END,
           updated_at = now()
       `, [storeId, storeName, storeOrgNodeId, toDateStr(row.opening_date), row.bed_count || null, isClosed])
 

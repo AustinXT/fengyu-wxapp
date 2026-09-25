@@ -27,6 +27,11 @@ const STAFF_MGMT_DASHBOARD = path.resolve(
   __dirname,
   '../../../../../fengyu-staff/cloudfunctions/staffApi/routes/mgmt-dashboard.js',
 )
+/** #401 起启用门店过滤收敛到 staff 在营口径 helper（mgmt-dashboard 经 require 引入） */
+const STAFF_STORE_STATUS = path.resolve(
+  __dirname,
+  '../../../../../fengyu-staff/cloudfunctions/staffApi/utils/store-status.js',
+)
 
 function normalize(src: string): string {
   return src.replace(/\s+/g, ' ').trim()
@@ -197,7 +202,8 @@ describe('数据中心销售板块两端口径一致性守护', () => {
       expect(adminBody).toMatch(/closed_at\s+IS\s+NULL\s+OR\s+s\.closed_at::date\s*>/i)
     })
     it('staff mgmt-dashboard.js 门店数同口径（启用节点 + opening_date / closed_at 历史化）', () => {
-      expect(staffBody).toMatch(/active_node\.is_active\s*=\s*TRUE/i)
+      expect(staffBody).toContain("require('../utils/store-status')")
+      expect(fs.readFileSync(STAFF_STORE_STATUS, 'utf-8')).toMatch(/active_node\.is_active\s*=\s*TRUE/i)
       expect(staffBody).toMatch(/o\.is_active\s*=\s*TRUE/i)
       expect(staffBody).toMatch(/opening_date::date\s*<=/i)
       expect(staffBody).toMatch(/closed_at\s+IS\s+NULL\s+OR\s+s\.closed_at::date\s*>/i)

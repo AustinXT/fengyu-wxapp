@@ -49,7 +49,8 @@ export function scopeStores(scopeOptions: DataCenterScopeOptions, scope: DataCen
 
 /**
  * scope 的展示名（信息条用）。用语与板块 meta / 导出件的 `resolveScopeName`（context.ts，查库版）一致；
- * 这里只在筛选器数据源里找，找不到（越权 / 已关店的 scopeId）回落同样的「未知」名，不抛错。
+ * 这里只在筛选器数据源里找，找不到（越权的 scopeId）回落同样的「未知」名，不抛错。
+ * 只关店、节点仍启用的门店在数据源里（#401 在营只看节点），能正常显示店名。
  * 已停用门店不会走到这里：入口把它的 scope 置 null，信息条不渲染（#293）。
  */
 export function scopeLabel(scopeOptions: DataCenterScopeOptions, scope: DataCenterScope): string {

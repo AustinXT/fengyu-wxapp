@@ -119,22 +119,22 @@ describe('scope 数据源 · 已停用门店分流（#293）', () => {
     return chain
   }
 
-  it('在营门店进下拉、节点停用的门店进 inactiveStores；只关店节点在营的两边都不进（取数 SQL 仍有其历史数据，不能判停用）', async () => {
+  it('在营只看节点（#401）：节点启用的进下拉（含只关店、节点仍启用的），节点停用的进 inactiveStores', async () => {
     mockGetSession.mockResolvedValue(session([role(['data_center:dashboard'], '总部', [])]))
     db.select
       .mockImplementationOnce(() => rowsOf([{ id: 'M1', name: '九江凤御' }, { id: 'M2', name: '自贡凤御' }]) as never)
       .mockImplementationOnce(() => rowsOf([
-        { storeId: 'S1', storeName: '九江蓝湾店', marketId: 'M1', isClosed: false, isActive: true },
-        { storeId: 'X1', storeName: '九江中辉店', marketId: 'M1', isClosed: false, isActive: false },
-        { storeId: 'X2', storeName: '自贡旭阳店', marketId: 'M2', isClosed: true, isActive: false },
-        { storeId: 'X3', storeName: '只关店未停节点', marketId: 'M2', isClosed: true, isActive: true },
+        { storeId: 'S1', storeName: '九江蓝湾店', marketId: 'M1', isActive: true },
+        { storeId: 'X1', storeName: '九江中辉店', marketId: 'M1', isActive: false },
+        { storeId: 'X2', storeName: '自贡旭阳店', marketId: 'M2', isActive: false },
+        { storeId: 'X3', storeName: '只关店未停节点', marketId: 'M2', isActive: true },
       ]) as never)
 
     await expect(getDataCenterScopeOptions()).resolves.toEqual({
       topLevel: 'all',
       markets: [
         { id: 'M1', name: '九江凤御', stores: [{ storeId: 'S1', storeName: '九江蓝湾店' }] },
-        { id: 'M2', name: '自贡凤御', stores: [] },
+        { id: 'M2', name: '自贡凤御', stores: [{ storeId: 'X3', storeName: '只关店未停节点' }] },
       ],
       inactiveStores: [
         { storeId: 'X1', storeName: '九江中辉店', marketId: 'M1' },
