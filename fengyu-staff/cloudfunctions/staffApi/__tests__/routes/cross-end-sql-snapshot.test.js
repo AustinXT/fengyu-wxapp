@@ -3924,6 +3924,15 @@ describe('#341 提货冻结出库金额：两端副本一致', () => {
     ])
   })
 
+  test('GCK 单头 INSERT 两端整段等值，类型固定「院顾客产品出库」（类型决定金额触发器取哪档成本）', () => {
+    const header = (src) => normalizeSql(extractBacktickStringContaining(
+      extractFunctionSection(src, 'createPickupInventoryDoc'), 'INSERT INTO inventory_docs (',
+    ))
+    const staff = header(staffSrc())
+    expect(header(adminSrc())).toBe(staff)
+    expect(staff).toContain("VALUES (?, '院顾客产品出库', '已完成', ?")
+  })
+
   /** 按起止锚点切段（admin 的 createPickupRecord 是 `export const … = withPermission(`，不是 function 声明） */
   function sectionBetween(src, startMarker, endMarker) {
     const start = src.indexOf(startMarker)

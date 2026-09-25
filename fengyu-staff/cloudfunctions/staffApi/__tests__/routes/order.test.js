@@ -7191,7 +7191,8 @@ describe('order.createPickup', () => {
             const skuId = params[1]
             return { rows: [{
               id: skuId === 'inventory-sku-001' ? 1 : 2, location_id: 'store-001', sku_id: skuId, sku_name: skuId,
-              batch_no: 'B1', expiry_date: null, quantity_on_hand: 10,
+              // 第二个组件用赠送批次：is_gift 必须原样取自锁定批次（误绑成常量会让触发器把成本算成 0 或把赠品计成本）
+              batch_no: 'B1', expiry_date: null, quantity_on_hand: 10, is_gift: skuId === 'inventory-sku-002',
               supply_chain_unit_cost: 12, market_standard_unit_price: 20, market_unit_discount: 1,
               market_actual_unit_price: 19, store_standard_unit_price: 32, store_unit_discount: 2,
               store_actual_unit_price: 30,
@@ -7229,12 +7230,12 @@ describe('order.createPickup', () => {
       return Object.fromEntries(columns.map((column, index) => [column, params[index]]))
     }
     expect(docItemInserts.map(byColumn).map((row) => ({
-      sku_id: row.sku_id, quantity: row.quantity, stock_snapshot: row.stock_snapshot,
+      sku_id: row.sku_id, quantity: row.quantity, stock_snapshot: row.stock_snapshot, is_gift: row.is_gift,
       supply_chain_unit_cost: row.supply_chain_unit_cost, market_actual_unit_price: row.market_actual_unit_price,
       store_actual_unit_price: row.store_actual_unit_price, actual_unit_price: row.actual_unit_price,
     }))).toEqual([
-      { sku_id: 'inventory-sku-001', quantity: 2, stock_snapshot: 10, supply_chain_unit_cost: 12, market_actual_unit_price: 19, store_actual_unit_price: 30, actual_unit_price: undefined },
-      { sku_id: 'inventory-sku-002', quantity: 4, stock_snapshot: 10, supply_chain_unit_cost: 12, market_actual_unit_price: 19, store_actual_unit_price: 30, actual_unit_price: undefined },
+      { sku_id: 'inventory-sku-001', quantity: 2, stock_snapshot: 10, is_gift: false, supply_chain_unit_cost: 12, market_actual_unit_price: 19, store_actual_unit_price: 30, actual_unit_price: undefined },
+      { sku_id: 'inventory-sku-002', quantity: 4, stock_snapshot: 10, is_gift: true, supply_chain_unit_cost: 12, market_actual_unit_price: 19, store_actual_unit_price: 30, actual_unit_price: undefined },
     ])
     for (const [sql, params] of docItemInserts) {
       expect(sql).not.toMatch(/\bactual_unit_price\b/)
@@ -7248,7 +7249,9 @@ describe('order.createPickup', () => {
     expect(ctx.result.message).toContain('取货成功')
     expect(transactionClient.query.mock.calls.some(([sql]) => /FROM inventory_cutover_states/.test(sql))).toBe(true)
     expect(transactionClient.query.mock.calls.some(([sql]) => /FROM inventory_stock_lots/.test(sql))).toBe(true)
-    expect(transactionClient.query.mock.calls.some(([sql]) => /INSERT INTO inventory_docs/.test(sql))).toBe(true)
+    // 单头类型决定金额触发器取哪档成本：必须是「院顾客产品出库」（#341 评审 round-5）
+    const docInsert = transactionClient.query.mock.calls.find(([sql]) => /INSERT INTO inventory_docs\b/.test(sql))
+    expect(docInsert[0]).toMatch(/VALUES \(\$1, '院顾客产品出库', '已完成',/)
     expect(transactionClient.query.mock.calls.some(([sql]) => /INSERT INTO inventory_movements/.test(sql))).toBe(true)
     const pickupInsert = transactionClient.query.mock.calls.find(([sql]) => /INSERT INTO pickup_records/.test(sql))
     expect(pickupInsert[0]).toMatch(/VALUES \(\$1, NULL/)

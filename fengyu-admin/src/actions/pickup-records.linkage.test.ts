@@ -115,7 +115,7 @@ function lockedRow(id: string, extra: Record<string, unknown> = {}) {
 }
 
 /** 按 SQL 文本分派 tx.execute（sql mock 把模板片段用 ? 拼接进 __sqlText） */
-function makeTx(locked: any[]) {
+function makeTx(locked: any[], lot: Record<string, unknown> = LOT) {
   const executed: Array<{ text: string; values: unknown[] }> = []
   const inserted: any[] = []
   const tx = {
@@ -128,7 +128,7 @@ function makeTx(locked: any[]) {
         return [{ ...locked[0], sale_item_id: q.values[q.values.length - 1] ?? locked[0].sale_item_id, picked_up_quantity: 2 }]
       }
       if (/FROM inventory_locations/.test(t) && /SELECT org_node_id/.test(t)) return [{ org_node_id: 'ORG-ST-1' }]
-      if (/FROM inventory_stock_lots lot/.test(t)) return [LOT]
+      if (/FROM inventory_stock_lots lot/.test(t)) return [lot]
       if (/FROM inventory_stock_reservations/.test(t)) return []
       if (/FROM inventory_docs/.test(t) && /LIKE/.test(t)) return []
       if (/INSERT INTO inventory_doc_items/.test(t)) return [{ id: '501' }]
@@ -144,7 +144,7 @@ function makeTx(locked: any[]) {
   return { tx, executed, inserted }
 }
 
-function assertGck(executed: Array<{ text: string; values: unknown[] }>, expectedQuantity: number) {
+function assertGck(executed: Array<{ text: string; values: unknown[] }>, expectedQuantity: number, expectedGift = false) {
   const docItems = executed.filter((q) => /INSERT INTO inventory_doc_items/.test(q.text))
   expect(docItems).toHaveLength(1)
   const [item] = docItems
@@ -160,6 +160,8 @@ function assertGck(executed: Array<{ text: string; values: unknown[] }>, expecte
   expect(row).toMatchObject({
     quantity: expectedQuantity,
     stock_snapshot: 10,
+    // 取自锁定批次；误绑成常量时触发器会把成本算成 0（赠送）或把赠品计成本
+    is_gift: expectedGift,
     lot_id: 7,
     store_actual_unit_price: '30.00',
     market_actual_unit_price: '19.00',
@@ -168,7 +170,9 @@ function assertGck(executed: Array<{ text: string; values: unknown[] }>, expecte
   const movements = executed.filter((q) => /INSERT INTO inventory_movements/.test(q.text))
   expect(movements).toHaveLength(1)
   expect(movements[0].values).toContain(-expectedQuantity)
-  expect(executed.some((q) => /INSERT INTO inventory_docs/.test(q.text) && /院顾客产品出库/.test(q.text))).toBe(true)
+  const docInsert = executed.find((q) => /INSERT INTO inventory_docs\b/.test(q.text))!
+  // 单头类型决定金额触发器取哪档成本
+  expect(docInsert.text.replace(/\s+/g, ' ')).toMatch(/VALUES \( \?, '院顾客产品出库', '已完成', \?/)
 }
 
 beforeEach(() => {
@@ -191,7 +195,8 @@ describe('#341 联动开启：提货同时冻结售价金额并生成带成本�
 
   it('合并路径：两条 quantity=1 来源 → 各冻结 19.99；GCK 一张、数量 2', async () => {
     const group = { sale_item_group_id: 'G-1', quantity: 1, sale_amount: '19.99', unit_real_price: '19.99', received: '19.99', paid_quantity: 1 }
-    const { tx, executed, inserted } = makeTx([lockedRow('SI-A', group), lockedRow('SI-B', group)])
+    // 合并路径走赠送批次：is_gift=true 原样写入 GCK 明细
+    const { tx, executed, inserted } = makeTx([lockedRow('SI-A', group), lockedRow('SI-B', group)], { ...LOT, is_gift: true })
     ;(db.transaction as any).mockImplementation(async (cb: any) => cb(tx))
 
     const result = await createPickupRecord({
@@ -203,6 +208,6 @@ describe('#341 联动开启：提货同时冻结售价金额并生成带成本�
       expect.objectContaining({ saleItemId: 'SI-A', pickupQuantity: 1, pickupUnitPrice: '19.99', pickupAmount: '19.99' }),
       expect.objectContaining({ saleItemId: 'SI-B', pickupQuantity: 1, pickupUnitPrice: '19.99', pickupAmount: '19.99' }),
     ])
-    assertGck(executed, 2)
+    assertGck(executed, 2, true)
   })
 })
