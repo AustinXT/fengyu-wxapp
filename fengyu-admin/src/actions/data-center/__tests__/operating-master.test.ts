@@ -6,7 +6,7 @@
  *
  * 查询顺序（Promise.all 位置）：0 骨架 / 1 美容师 / 2 P 当月 / 3 R 年度 / 4 V 生美项目数 / 5 W 实耗 / 6 X 生美实耗
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { PgDialect } from 'drizzle-orm/pg-core'
 import type { SQL } from 'drizzle-orm'
 
@@ -44,8 +44,15 @@ function feed(results: Partial<Record<keyof typeof Q, unknown[]>>) {
 }
 
 beforeEach(() => {
+  // 未来月份守卫读真实时钟：钉死「今天」，用例里的 2026-08 / 2026-01 不随运行日期变化
+  vi.useFakeTimers({ toFake: ['Date'] })
+  vi.setSystemTime(new Date('2026-09-25T10:00:00+08:00'))
   mockValidateScope.mockReset()
   feed({})
+})
+
+afterEach(() => {
+  vi.useRealTimers()
 })
 
 describe('getOperatingMaster', () => {

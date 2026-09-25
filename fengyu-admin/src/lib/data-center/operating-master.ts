@@ -354,7 +354,7 @@ export function parseOperatingMasterExportScope(raw: { scope?: string; scopeId?:
     if (raw.scopeId) throw new Error('INVALID_PARAMS: 导出范围缺少类型')
     return { type: 'all' }
   }
-  if (raw.scope === 'authorized') return { type: 'authorized' }
+  if (raw.scope === 'authorized' && !raw.scopeId) return { type: 'authorized' }
   if ((raw.scope === 'market' || raw.scope === 'store') && raw.scopeId) return { type: raw.scope, id: raw.scopeId }
   throw new Error('INVALID_PARAMS: 导出范围参数不完整或无效')
 }

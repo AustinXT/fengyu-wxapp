@@ -430,6 +430,7 @@ describe('数据中心导出 · 经营数据主表', () => {
       { month: '2026-08', scope: 'store', scopeId: '' },
       { month: '2026-08', scope: 'everything' },
       { month: '2026-08', scopeId: 'M1' },
+      { month: '2026-08', scope: 'authorized', scopeId: 'M1' },
     ]
     for (const params of cases) {
       await expect(
