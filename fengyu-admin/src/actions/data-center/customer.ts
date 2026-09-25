@@ -15,7 +15,9 @@
  *
  * 关键口径红线（与 mgmt-traffic.js 字面一致，consistency.customer.test.ts 守护）：
  *   - 新会员/会员数 = became_member_at（历史化）；保有会员 = 90 天到店窗口 + became_member_at 守卫
- *   - 消费分桶 = member_spend CTE 左闭右开 [1990,1w)/[1w,3w)/[3w,6w)/[6w,10w)/[10w,+∞)，
+ *   - 消费分桶 = member_spend CTE 左闭右开 [门槛,1w)/[1w,3w)/[3w,6w)/[6w,10w)/[10w,+∞)，
+ *     门槛 = system_configs.new_member_threshold（getMemberThreshold，与品项板同源；#292），
+ *     1w/3w/6w/10w 取 SPEND_BUCKET_FLOORS；
  *     不复用 spending_tier 列（lifetime 快照）；
  *     spend = SUM(sale_order_performance_events.amount) @ performance_date（#138 起，与业绩 KPI 同源；
  *     不按父订单 status 过滤、排除储值卡抵扣；与 mgmt-traffic.js 逐条一致，由 consistency.customer.test.ts 守护）
@@ -40,6 +42,8 @@ import { prepareBoardContext } from '@/lib/data-center/context'
 import { scopeFilterSql, scopeStoreSkeletonSql } from '@/lib/data-center/scope-sql'
 import { excludeDepositRefundSql } from '@/lib/data-center/consume-filter'
 import { visitDaysSql } from '@/lib/data-center/visit-days'
+import { SPEND_BUCKET_FLOORS } from '@/lib/data-center/spend-buckets'
+import { getMemberThreshold } from '@/lib/member-threshold'
 import { withComparison } from '@/lib/data-center/comparison'
 import { resolveDeltaDisplay } from '@/lib/delta-display'
 import type { AuthSession } from '@/lib/types'
@@ -292,14 +296,16 @@ async function queryReactivated(
 }
 
 /**
- * 会员经营人数（区间内**已入账款项净额合计** >= 1990 的会员客去重人数）。
- * ⚠ 不是「单笔订单 >= 1990」——SQL 先 GROUP BY client_user_id 汇总区间内全部款项流水，
- * 再按 1990 分档。#138 起金额口径为款项流水净额（含退款负数），日期按业绩归属日期。
+ * 会员经营人数（区间内**已入账款项净额合计** >= 会员门槛的会员客去重人数）。
+ * 门槛 = system_configs.new_member_threshold（#292 前写死 1990）。
+ * ⚠ 不是「单笔订单 >= 门槛」——SQL 先 GROUP BY client_user_id 汇总区间内全部款项流水，
+ * 再按门槛分档。#138 起金额口径为款项流水净额（含退款负数），日期按业绩归属日期。
  */
 async function queryOperatedMembers(
   session: AuthSession,
   scope: DataCenterScope,
   range: ResolvedRange,
+  threshold: number,
 ): Promise<number> {
   const sc = scopeFilterSql(session, scope, 'o.store_id')
   const rows = await db.execute(sql`
@@ -318,7 +324,7 @@ async function queryOperatedMembers(
         AND c.customer_type = '会员客'
       GROUP BY o.client_user_id
     )
-    SELECT COUNT(*) FILTER (WHERE spend >= 1990) AS v
+    SELECT COUNT(*) FILTER (WHERE spend >= ${threshold}) AS v
     FROM member_spend
   `)
   return num(first(rows).v)
@@ -689,7 +695,9 @@ async function queryOpsBreakdown(
   scope: DataCenterScope,
   range: ResolvedRange,
   group: 'market' | 'store',
+  threshold: number,
 ): Promise<Map<string, OpsAgg>> {
+  const floors = SPEND_BUCKET_FLOORS
   const skeleton = scopeStoreSkeletonSql(session, scope)
   const groupId = group === 'market' ? sql.raw('sk.market_id') : sql.raw('sk.store_id')
   const groupName = group === 'market' ? sql.raw('sk.market_name') : sql.raw('sk.store_name')
@@ -723,13 +731,13 @@ async function queryOpsBreakdown(
     ),
     spend_agg AS (
       SELECT group_id,
-        COUNT(*) FILTER (WHERE spend < 1990) AS bucket_d,
-        COUNT(*) FILTER (WHERE spend >= 1990 AND spend < 10000) AS bucket_c,
-        COUNT(*) FILTER (WHERE spend >= 10000 AND spend < 30000) AS bucket_b,
-        COUNT(*) FILTER (WHERE spend >= 30000 AND spend < 60000) AS bucket_a,
-        COUNT(*) FILTER (WHERE spend >= 60000 AND spend < 100000) AS bucket_v,
-        COUNT(*) FILTER (WHERE spend >= 100000) AS bucket_vic,
-        COUNT(*) FILTER (WHERE spend >= 1990) AS operated_total,
+        COUNT(*) FILTER (WHERE spend < ${threshold}) AS bucket_d,
+        COUNT(*) FILTER (WHERE spend >= ${threshold} AND spend < ${floors.star}) AS bucket_c,
+        COUNT(*) FILTER (WHERE spend >= ${floors.star} AND spend < ${floors.pink}) AS bucket_b,
+        COUNT(*) FILTER (WHERE spend >= ${floors.pink} AND spend < ${floors.gold}) AS bucket_a,
+        COUNT(*) FILTER (WHERE spend >= ${floors.gold} AND spend < ${floors.black}) AS bucket_v,
+        COUNT(*) FILTER (WHERE spend >= ${floors.black}) AS bucket_vic,
+        COUNT(*) FILTER (WHERE spend >= ${threshold}) AS operated_total,
         COALESCE(SUM(spend), 0) AS member_spend_total,
         COUNT(*) AS member_spend_count
       FROM member_spend
@@ -977,6 +985,8 @@ export const getCustomerBoard = withPermission(
     const ctx = await prepareBoardContext(session, params)
     const { scope, comparison, enabled } = ctx
     const cur = comparison.current
+    // 会员门槛（分桶最低档下界 + 经营人数门槛）：与品项板同一个 getMemberThreshold（#292）
+    const threshold = await getMemberThreshold()
 
     // ── KPI（按语义分组并行查询）──────────────────────────────
     // 同比环比类（注册/到店/经营核心指标）走 withComparison；
@@ -1023,8 +1033,8 @@ export const getCustomerBoard = withPermission(
       withComparison((r) => queryReactivated(session, scope, r, 'frozen'), comparison, 'count', false),
       withComparison(() => queryStatusCount(session, scope, '休眠'), comparison, 'count', false),
       withComparison((r) => queryReactivated(session, scope, r, 'deep'), comparison, 'count', false),
-      // 会员经营人数（区间内款项净额合计 ≥1990，非单笔）
-      withComparison((r) => queryOperatedMembers(session, scope, r), comparison, 'count', enabled),
+      // 会员经营人数（区间内款项净额合计 ≥ 会员门槛，非单笔）
+      withComparison((r) => queryOperatedMembers(session, scope, r, threshold), comparison, 'count', enabled),
       // 会员新增
       withComparison((r) => queryNewMemberCount(session, scope, r), comparison, 'count', enabled),
       // 成交率分母（#284 起为「期初未达会员活跃池 ∪ 本期全部新增会员」）
@@ -1146,9 +1156,9 @@ export const getCustomerBoard = withPermission(
       opsByStore,
     ] = await Promise.all([
       queryRegActiveBreakdown(session, scope, cur, 'market'),
-      queryOpsBreakdown(session, scope, cur, 'market'),
+      queryOpsBreakdown(session, scope, cur, 'market', threshold),
       queryRegActiveBreakdown(session, scope, cur, 'store'),
-      queryOpsBreakdown(session, scope, cur, 'store'),
+      queryOpsBreakdown(session, scope, cur, 'store', threshold),
     ])
 
     const byMarket = buildBreakdownRows('market', skeleton, regActiveByMarket, opsByMarket)

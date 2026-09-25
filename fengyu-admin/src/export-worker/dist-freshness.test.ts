@@ -115,6 +115,27 @@ const PROBES: Probe[] = [
     pattern: /^export const paidUnusedSessionsExpr = sql/,
     minLines: 1,
   },
+  {
+    label: '客量板 · 分桶最低档下界 / 经营人数改读会员门槛（#292）',
+    file: 'src/actions/data-center/customer.ts',
+    // 4 行：KPI 的 `AS v`、明细 bucket_d / bucket_c / operated_total（含 `<` 与 `>=` 两种比较）
+    pattern: /FILTER \(WHERE spend (<|>=) \$\{threshold\}/,
+    minLines: 4,
+  },
+  {
+    label: '客量板 · 分桶固定档位取 SPEND_BUCKET_FLOORS（#292）',
+    file: 'src/actions/data-center/customer.ts',
+    pattern: /\$\{floors\.(star|pink|gold|black)\}\) AS bucket_/,
+    minLines: 5,
+  },
+  {
+    // bun build 会重排 JS 代码、只原样保留模板字符串，所以探针只能取 SQL 行。主表 SQL 进了产物，
+    // 就说明引用它的 registry 报表分发、technician-sql 人池参数是同一次构建带进去的
+    label: '经营数据主表 · 门店骨架与行序（#372）',
+    file: 'src/actions/data-center/operating-master.ts',
+    pattern: /^(JOIN org_nodes mkt ON mkt\.id = sk\.market_id|ORDER BY mkt\.sort_order ASC NULLS LAST, sk\.market_name ASC, sk\.market_id ASC,)$/,
+    minLines: 2,
+  },
 ]
 
 describe('dist/export-worker.mjs 新鲜度（改了 data-center SQL 口径必须重建产物）', () => {
@@ -158,4 +179,21 @@ describe('dist/export-worker.mjs 新鲜度（改了 data-center SQL 口径必须
       ).toEqual([])
     },
   )
+})
+
+/**
+ * #292：导出进程（本产物）没有 Next incrementalCache，`unstable_cache` 一调就抛。
+ * member-threshold.ts 为此加了直读分支；构建期 define 把 `process.env.FENGYU_EXPORT_WORKER === '1'`
+ * 折叠成 `true`。源码行和产物行形态不同（类型被擦、判断被常量折叠），所以不走上面的逐行探针，单独断言。
+ * 不重建产物的话，客量板 / 品项板导出全部失败（品项板在 prod 已 6/6 失败）。
+ */
+describe('dist/export-worker.mjs 会员门槛直读分支（#292）', () => {
+  it('产物含 readMemberThreshold 直读函数，且导出进程分支已折叠为直读', () => {
+    const dist = fs.readFileSync(DIST, 'utf-8')
+    expect(dist, `产物缺 readMemberThreshold${REBUILD_HINT}`).toContain('async function readMemberThreshold(')
+    const fn = dist.slice(dist.indexOf('async function getMemberThreshold('))
+    expect(fn.slice(0, 200), `产物里 getMemberThreshold 没有先走直读${REBUILD_HINT}`).toMatch(
+      /if \(true\)\s*return await readMemberThreshold\(\)/,
+    )
+  })
 })

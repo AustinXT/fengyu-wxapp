@@ -70,7 +70,7 @@ export const DATA_CENTER_REPORTS = {
     title: '经营数据主表',
     periodKind: 'month',
     requiredActions: [DATA_CENTER_DASHBOARD_ACTION],
-    menu: { section: '经营明细', enabled: false },
+    menu: { section: '经营明细', enabled: true },
   },
   commissionDaily: {
     path: '/data-center/commission-daily',

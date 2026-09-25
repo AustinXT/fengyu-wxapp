@@ -1,16 +1,21 @@
 import { getDataCenterScopeOptions } from "@/actions/data-center/shared"
+import { getOperatingMaster } from "@/actions/data-center/operating-master"
 import { DATA_CENTER_REPORTS } from "@/lib/data-center/reports"
+import { operatingMasterExportParams, ytdRange } from "@/lib/data-center/operating-master"
 import { prepareReport } from "../_components/report/prepare-report"
-import { ReportLayout, ReportPendingState } from "../_components/report/report-layout"
+import { ReportLayout } from "../_components/report/report-layout"
+import { OperatingMasterTable } from "../_components/operating-master/operating-master-table"
 
 export const dynamic = "force-dynamic"
 
 const REPORT = DATA_CENTER_REPORTS.operatingMaster
 
 /**
- * 经营数据主表。
- * 骨架（#367）：筛选器 + 数据起点提示 + 信息条 + 空态；页面内容由 #372 实现。
+ * 经营数据主表（#372）。单月型筛选；行 = 权限内且在筛选范围内的在营门店。
  * getDataCenterScopeOptions 兼任 SSR 权限闸门（见 DATA_CENTER_REPORTS.requiredActions）。
+ *
+ * 数据起点提示：所选月份按业绩 + 服务两条轴；R 列年度累计（当年 1 月起）另按业绩轴提示——
+ * 本期不接 WorkFine 历史单，2026 年内年度累计必然早于各市场上线日。
  */
 export default async function Page({
   searchParams,
@@ -22,7 +27,18 @@ export default async function Page({
     query: await searchParams,
     loadScopeOptions: getDataCenterScopeOptions,
     axes: ["performance", "service"],
+    // 1 月的年度累计区间就是所选月份，已由上面的「所选月份」提示覆盖，不重复出一条
+    extraNotices: (period) =>
+      period?.kind === "month" && !period.month.endsWith("-01")
+        ? [{ label: "年度累计（R 列）", range: ytdRange(period.month), axes: ["performance"] }]
+        : [],
   })
+
+  const { scope, period } = context
+  // scope 为 null（无可查看范围 / 选中已停用门店，#293）时不取数，ReportLayout 渲染 ScopeEmptyState
+  const data = scope && period?.kind === "month"
+    ? await getOperatingMaster({ scope, month: period.month })
+    : null
 
   return (
     <ReportLayout
@@ -31,8 +47,17 @@ export default async function Page({
       periodKind={REPORT.periodKind}
       context={context}
       notice={notice}
+      periodLabel="统计月份"
+      infoItems={data ? [{ label: "展示", value: `${data.rows.length} 行` }] : []}
     >
-      <ReportPendingState />
+      {data && scope && (
+        <OperatingMasterTable
+          rows={data.rows}
+          totals={data.totals}
+          multiMarket={data.multiMarket}
+          exportParams={operatingMasterExportParams(scope, data.month)}
+        />
+      )}
     </ReportLayout>
   )
 }

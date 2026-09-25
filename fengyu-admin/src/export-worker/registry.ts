@@ -24,12 +24,24 @@ import { getSalesBoard } from '@/actions/data-center/sales'
 import { getCustomerBoard } from '@/actions/data-center/customer'
 import { getProductBoard } from '@/actions/data-center/product'
 import { getEfficiencyBoard } from '@/actions/data-center/efficiency'
+import { getOperatingMaster } from '@/actions/data-center/operating-master'
 import {
   getDataCenterBreakdownConfig,
   getDataCenterRankingConfig,
   type DataCenterMetricColumn,
 } from '@/lib/data-center/columns'
 import { parseBoardParams } from '@/lib/data-center/params'
+import { countLeftFrozen, toWorkerExportColumns } from '@/lib/data-center/matrix-export'
+import {
+  OPERATING_MASTER_COLUMNS,
+  isOperatingMasterSubtotal,
+  operatingMasterExportGroup,
+  operatingMasterScopeMeta,
+  operatingMasterTotalsLabel,
+  parseOperatingMasterExportScope,
+  type OperatingMasterRow,
+} from '@/lib/data-center/operating-master'
+import { isValidMonth } from '@/lib/data-center/report-period'
 import { headerWithUnit, metricCell } from '@/lib/data-center/export'
 import type { BreakdownRow, RankingRow } from '@/lib/data-center/types'
 import { fmtDate, fmtDateTime } from '@/lib/datetime'
@@ -47,13 +59,15 @@ import {
 } from '@/lib/export-row-aggregation'
 import {
   exportJobLabel,
+  isDataCenterReportExportView,
   type DataCenterBoardExportView,
   type DataCenterExportPayload,
+  type DataCenterReportExportView,
   type ExportJobPayload,
   type ExportJobType,
 } from '@/lib/export-job-types'
 import type { WorkerExportColumn, ExportCell } from './xlsx-writer'
-import { isDataCenterReportView, queryDataCenterReport } from './report-views'
+import { remainingCardsContent } from './report-views'
 import type { ExportContextMeta } from './export-meta'
 
 export interface ExportContent {
@@ -535,15 +549,66 @@ function rankingContent(
   }
 }
 
+/** 经营数据主表（#372）：列定义与页面同源，合计 / 小计由 action 按全量门店算好 */
+async function operatingMasterContent(raw: Record<string, string>): Promise<ExportContent> {
+  // 导出参数来自页面生效值（非法 URL 已在页面回落），这里再拒一次：拿不到月份宁可失败，也不按某个默认月出数
+  if (!isValidMonth(raw.month)) throw new Error('INVALID_PARAMS: 导出缺少统计月份')
+  const scope = parseOperatingMasterExportScope({ scope: raw.scope, scopeId: raw.scopeId })
+  const result = await getOperatingMaster({ scope, month: raw.month })
+  const columns = toWorkerExportColumns(OPERATING_MASTER_COLUMNS, result.totals).map((column, index) => {
+    const spec = OPERATING_MASTER_COLUMNS[index]
+    const group = operatingMasterExportGroup(spec)
+    return {
+      ...column,
+      group: group ? { key: group.key, header: group.header } : undefined,
+      // 占位列在合计行同样显示「—」（#374 拍板），不是空白
+      ...(spec.pending ? { total: '—' } : {}),
+    }
+  })
+  return {
+    sheetName: '经营数据主表',
+    columns: columns as unknown as WorkerExportColumn<Row>[],
+    rows: fromRows(result.rows as unknown as Row[]),
+    frozenColumns: countLeftFrozen(OPERATING_MASTER_COLUMNS),
+    totalsLabel: operatingMasterTotalsLabel(result.multiMarket),
+    isEmphasisRow: (row) => isOperatingMasterSubtotal(row as unknown as OperatingMasterRow),
+    meta: {
+      period: `${result.range.start} ~ ${result.range.end}`,
+      scope: operatingMasterScopeMeta(scope, result.scopeName),
+      extra: [
+        { label: '年度累计区间', value: `${result.ytd.start} ~ ${result.ytd.end}（不含 WorkFine 历史单）` },
+        { label: '说明', value: '显示「—」的列口径待定或目标未设，本期不取数' },
+      ],
+    },
+  }
+}
+
+/**
+ * 经营明细报表视图（#367 起，`report-` 前缀）。按视图名**精确**分发，不用前缀判断；
+ * 新登记的报表视图漏了这里 tsc 就报错（switch 穷尽）。
+ */
+async function queryReport(view: DataCenterReportExportView, raw: Record<string, string>): Promise<ExportContent> {
+  switch (view) {
+    case 'report-operating-master':
+      return operatingMasterContent(raw)
+    case 'report-remaining-cards':
+      return remainingCardsContent(raw)
+    default: {
+      const unhandled: never = view
+      throw new Error(`INVALID_PARAMS: 未知的报表导出视图 ${String(unhandled)}`)
+    }
+  }
+}
+
 async function queryDataCenter(
   payload: DataCenterExportPayload,
 ): Promise<ExportContent> {
-  const view = payload.view
-  // 经营明细报表视图必须先于下方的前缀分发：视图名一旦撞上 sales- / customer- / product- 前缀，
-  // 会被派给旧板块取数、静默导出错误内容（前缀守护见 registry.test.ts）
-  if (isDataCenterReportView(view)) return queryDataCenterReport({ ...payload, view })
   const raw = payload.params
+  // ⚠ 报表视图必须最先分发：下面的旧板块按视图名前缀判断，报表视图若撞上 `sales-` 等前缀会被派给
+  // 板块取数、静默导错内容（registry.test 守护「报表视图不走板块取数」+「视图名 report- 前缀」）
+  if (isDataCenterReportExportView(payload.view)) return queryReport(payload.view, raw)
   const base = parseBoardParams(raw)
+  const view: DataCenterBoardExportView = payload.view
   if (view.startsWith('sales-')) {
     const board = await getSalesBoard(base)
     const rows = view === 'sales-market' ? board.byMarket : board.byStore
@@ -566,6 +631,8 @@ async function queryDataCenter(
     return breakdownContent(view, rows)
   }
 
+  // 人效是最后一个板块：显式判前缀，未知视图抛错而不是兜底派给人效板（旧写法对任何新视图都 fail-open）
+  if (!view.startsWith('efficiency-')) throw new Error(`INVALID_PARAMS: 未知的数据中心导出视图 ${view}`)
   const board = await getEfficiencyBoard(base)
   if (view === 'efficiency-market') return breakdownContent(view, board.byMarket)
   if (view === 'efficiency-staff') return breakdownContent(view, board.byStaff)

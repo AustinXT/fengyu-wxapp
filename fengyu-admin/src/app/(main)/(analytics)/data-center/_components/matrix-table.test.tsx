@@ -257,3 +257,36 @@ describe('MatrixTable · 排序与提示', () => {
     expect(document.body.querySelector('[role="tooltip"]')).toBeNull()
   })
 })
+
+describe('MatrixTable · 多行表头与分组底色（#372）', () => {
+  const columns: MatrixColumn<Row>[] = [
+    { key: 'name', header: '顾客', width: 120, freeze: 'left', cell: (r) => r.name },
+    { key: 'a', header: '当月\n完成', group: { key: 'g', header: '第一行\n第二行', color: '#EAF2FB' }, value: (r) => r.cells['d1:sales'] },
+    { key: 'b', header: '实耗', group: { key: 'g', header: '第一行\n第二行', color: '#EAF2FB' }, value: (r) => r.cells['d1:consume'] },
+  ]
+
+  it('headerHeights 决定第二行 sticky top 与纵向合并格高度；含换行的表头按行折行', () => {
+    const { container } = render(<MatrixTable columns={columns} rows={ROWS} rowKey={(r) => r.id} headerHeights={[80, 44]} />)
+    const [top, bottom] = Array.from(container.querySelectorAll('thead tr'))
+    const [nameTh, groupTh] = Array.from(top.querySelectorAll('th'))
+    expect(nameTh.style.height).toBe('124px')
+    expect(groupTh.style.top).toBe('0px')
+    expect(groupTh.style.height).toBe('80px')
+    expect(groupTh.className).toContain('whitespace-pre-line')
+    const leaves = Array.from(bottom.querySelectorAll('th'))
+    expect(leaves.map((th) => th.style.top)).toEqual(['80px', '80px'])
+    expect(leaves[0].className).toContain('whitespace-pre-line')
+    expect(leaves[1].className).toContain('whitespace-nowrap')
+  })
+
+  it('分组底色作用于分组格与其叶子表头；缺省高度与原先一致（36 + 36）', () => {
+    const { container } = render(<MatrixTable columns={columns} rows={ROWS} rowKey={(r) => r.id} />)
+    const ths = Array.from(container.querySelectorAll('thead th')) as HTMLElement[]
+    const byText = (text: string) => ths.find((th) => th.textContent?.startsWith(text))!
+    expect(byText('第一行').style.backgroundColor).toBe('#EAF2FB')
+    expect(byText('实耗').style.backgroundColor).toBe('#EAF2FB')
+    expect(byText('顾客').style.backgroundColor).toBe('')
+    expect(byText('顾客').style.height).toBe('72px')
+    expect(byText('实耗').style.top).toBe('36px')
+  })
+})

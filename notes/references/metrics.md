@@ -421,10 +421,28 @@ WITH member_spend AS (
 > 与 `fengyu-staff/.../routes/mgmt-traffic.js`（2 处），由
 > `consistency.customer.test.ts` 的块级逐字快照守护，任一端漂移立即失败。
 
+**档位来源（#292，2026-09-25）**：最低档下界 = 会员门槛 `system_configs.new_member_threshold`
+（admin `getMemberThreshold()` / staffApi `utils/config.getMemberThreshold()`，与品项板同源），
+下表的 `1990` 即当前配置值；其余四个下界固定为 1w / 3w / 6w / 10w（与会员等级星钻 / 粉钻 / 金钻 / 黑钻下界同数），
+admin 取 `fengyu-admin/src/lib/data-center/spend-buckets.ts` 的 `SPEND_BUCKET_FLOORS`，staffApi `mgmt-traffic.js` 有同值独立副本。
+「会员经营人数」= `spend >= 门槛`。
+
+> ⚠️ **门槛必须 < 10000**：恰好 = 1w 时 `[门槛, 1w)` 为空（各档之和仍等于总数）；> 1w 时 `< 门槛` 与 `[1w, 3w)` 等档重叠，
+> 分桶之和大于总数；> 10w 时 `operated_total` 会小于 `bucket_vic`（会员等级「初钻」同样判不到）。设置页不做上限校验（2026-09-25 拍板）。
+> ⚠️ **兜底 1980（≠ 旧写死的 1990）**：配置缺失 / 非正数 / 非数字 / 读库异常时两端都回退 1980。admin 读库异常时打告警、不缓存兜底值；
+> staff 热实例遇到非法值会**保留上一次的合法缓存值**、冷实例才回退 1980 —— 两端可能短暂不一致（staff `utils/config.js` 既有行为）。
+> ⚠️ **生效时差**：admin 按 `unstable_cache` 缓存 300s（保存设置的那个实例立即失效，其它实例最长滞后 5 分钟）；staff 30s 核对 `updated_at`。
+> 导出进程（export-worker）没有 Next 缓存上下文，直接读库（#292 同时修复了品项板导出因此一直失败的问题）。
+> ⚠️ **同比 / 环比按当前门槛重算**：系统不存历史门槛，基期（上期 / 去年同期）也用当前配置值分档；调整门槛后历史区间数字会随之变化（品项板同理）。
+> ⚠️ **标签写死**：UI 与导出的分桶标签「<1990 / ≥1990」、经营人数 hint「≥ 1990」、staff 小程序档位名保持写死（同日拍板），
+> 调整门槛后标签不会跟着变，需要人工同步文案。
+> ⚠️ 与 `client_wechat_users.spending_tier`（终身档位，枚举字面量 `'1990-1W'`）不同：后者边界固定、不跟门槛。
+> 门槛一旦调整，两者的最低档边界就不再相同。
+
 | 指标 | 公式 | 数据源 |
 |------|------|--------|
-| 当期消费 < 1990（人数 / 金额） | `COUNT(*)` / `SUM(spend)` | `member_spend` WHERE `spend < 1990` |
-| 当期消费 ≥ 1990（人数 / 金额） | 同上 | WHERE `spend >= 1990 AND spend < 10000` |
+| 当期消费 < 1990（人数 / 金额） | `COUNT(*)` / `SUM(spend)` | `member_spend` WHERE `spend < 门槛` |
+| 当期消费 ≥ 1990（人数 / 金额） | 同上 | WHERE `spend >= 门槛 AND spend < 10000` |
 | 当期消费 ≥ 1w（人数 / 金额） | 同上 | WHERE `spend >= 10000 AND spend < 30000` |
 | 当期消费 ≥ 3w（人数 / 金额） | 同上 | WHERE `spend >= 30000 AND spend < 60000` |
 | 当期消费 ≥ 6w（人数 / 金额） | 同上 | WHERE `spend >= 60000 AND spend < 100000` |
@@ -766,6 +784,7 @@ SELECT COUNT(*) FROM org_nodes WHERE type='store' [AND parent_id=$market]
 | 2026-08-08 | 数据中心经营统计统一仅纳入 `org_nodes.is_active=TRUE` 的门店：门店数、全部区间指标、门店/员工排行榜及范围下拉同步过滤；单店范围不再固定计 1，停用门店返回零数据 |
 | 2026-09-22 | **D-conv-denom 改判 B → 1c（#284）**：成交率分母由「区间内到店的体验客 + 小美客」改为「期初未达会员的到店活跃池 ∪ 本期全部新增会员」。`customer_type` 只升不降，本期已转化者当期已是会员客、被从分母整体剔除，而他们正是分子 —— 35 家有新会员的门店全部虚高、单店最高 800%、分母归零反显 '--'。分支 ② 保证分子 ⊆ 分母，上限 ≤ 100% 恒成立（纯活跃池方案 1a 做不到，本期有 10 名新增会员无已完成服务单）。集团 2026-09 由 28.01%（151/539）改为 **21.88%（151/690）**。两端同步：`customer.ts::queryTrialFootfall` + 明细 `traffic_cust` CTE、`mgmt-traffic.js::queryTrialFootfall` |
 | 2026-09-25 | **一次/二次客活改按到店天数（#298）**：由服务单行数 `COUNT(*)` 改为 `COUNT(DISTINCT service_date)`，去重键 `(client_user_id, service_date)`，日期轴拍板为 `service_date`；admin 数据中心（KPI + 明细）与 staff mgmt-traffic 同步。补登 `monthly_activity` 口径（此前在本文档完全缺席，是两套定义分叉的根因）。prod 2026-09-01~09-24 集团一次/二次 527/982 → 590/919，63 人由「二次」回到「一次」 |
+| 2026-09-25 | **客量板会员门槛读配置（#292）**：会员被经营 6 档的最低档下界与「会员经营人数」门槛由写死的 `1990` 改读 `system_configs.new_member_threshold`（与品项板同源），1w/3w/6w/10w 收敛到 `SPEND_BUCKET_FLOORS`；admin 与 staffApi 同步。prod/dev 当前配置均为 1990，上线后数字不变。标签保持写死；门槛须 < 1w（不加校验，仅文档化） |
 | **2026-09-14** | **款项业绩归属日期收口（#137，迁移 0039 + 0040）**。视图 `sale_order_performance_events.performance_date` 改为**直读** `sale_order_payments.performance_attribution_date`，**查询侧不再有任何回退分支**；取值规则全部下沉到写入侧两个 trigger。0040 给该列加了 **CHECK 约束** `chk_sop_attribution_date_present`（列本身**不是** `NOT NULL`，Drizzle schema 里仍是 nullable）。<br>**影响面**：原文「首次支付取订单归属日、回款/退款取自身 `paid_at`」的表述在全文档失效——每一笔款项都有自己的归属日期。金额类指标按类型分流：**业绩/现金流类**（总业绩、分客型业绩、员工业绩、销售提成）走 `[spe.performance_date]`；**子项类**（生美业绩、产品出库、品项周期业绩）走 `[sipe.performance_date]`；**实耗 / 生美实耗 / 服务提成**仍走 `[service_date]`，不受本次收口影响。<br>⚠ **部署前置**：先 apply 0039 + 0040 再部署各端，否则未迁库时首次支付行归属日为 NULL，会被三值逻辑吞掉正数主体。 |
 | **2026-09-16** | **口径变更登记（#138 / #139 / #140 / #141）**，四条均为「从 `paid_at` 切到归属日期」：<br>· **#138** 客量数据子页 §4/§5：会员被经营 6 档分桶、会员客单价、新会员对应消费改按款项流水归属（`SUM(spe.amount) @ performance_date`；旧实现为 `SUM(o.received - COALESCE(o.refunded_amount,0)) @ o.paid_at::date` ∩ `o.status='已支付'`，旧文档曾误记为 `paid_amount`，该列已 DROP）。dev 实测 2026-08 经营人数 321→324、会员总数 470→413、消费合计 +7.78 万；含退款负行故 `spend` 可为负（本期净消费，不 clamp）。<br>· **#139** staff 订单列表 / 营业额分配列表的日期筛选固定按 `performance_attribution_date`。<br>· **#140** admin 工作台「今日实付 / 今日退款 / 昨日实付」改按 `spe.performance_date`（`total_paid_amount` 无日期条件不受影响）。⚠ 财务注意：这三项不再与银行流水逐日对齐。<br>· **#141** staff 顾客档案「年度消费」/ 列表「年消费」改按 `performance_attribution_date`（半开年区间）；**月度消费日历仍按 `paid_at`**，两个口径并存且有意。<br>同轮订正三处存量滞后表述：销售数据页总述、分客型业绩 `[sop.paid_at_period]`、分客型产品出库与品项维度汇总的 `SUM(si.received) @ paid_at`（实现早已是 `SUM(sipe.amount) @ sipe.performance_date`）；员工排行榜「复用 `[paid_at_period]`」。<br>另补登记一条历史遗漏：实耗 / 生美实耗 / 项目数等**消耗类**指标两端都套了 `excludeDepositRefundSql()` 剔除寄存单退款专用服务单（admin 19 处 / staff 12 处，由 `consistency.deposit-refund-filter.test.ts` 守护 31 处中的 29 处，且只校验文件级调用次数）——**客流 / 到店 / 服务人次 / 保有会员 / 提成不剔除**（寄存退款是真到店、假消耗）。本文档此前从未登记，照公式抄会多算。 |
 | **2026-09-22** | **环比基期（上期）长度首次登记（#283）**，见文末「数据中心（admin）板块专属指标」节。此前全文只登记了「上期」这个概念、从未定义其长度，`time-range.ts` 遂把本节「时间窗口补充」里 staff 端的**三选一并列维度**「上月=上月初~上月末」误当成环比分母，于是 `本周`/`本月` 两个 preset 拿 N 天的当期比整周/整月的基期（同文件 `今日`/`自定义` 恒等长，`今年` 另有跨闰年偏差）。现明确：**基期按日历同期对齐、不得无条件取完整上一周期**，`本周`→上周同一星期几、`本月`→上月同一日。同轮登记三条日历固有例外（`本月` 上月天数不足时 clamp 到上月末短 1~3 天；`今年` 的环比/同比基期跨闰年 ±1 天；`本周`/`自定义` 的**同比**基期跨闰年 ±1 天且星期漂移——后两条源自 `addYears` 的 2/29 归一化，**均尚未修复**）。并明确**同比基期与环比基期同受「不得长于当期」约束**（二者同走一个 `deltaPct`）。另补登记 `delta%` 的「算不出」情形含**基期 `<= 0`** 与**非有限值**（负基期会让符号翻转）。⚠ 「本月」与「自定义同起止日」的环比值本就不同，属语义差异非缺陷。 |
@@ -774,6 +793,7 @@ SELECT COUNT(*) FROM org_nodes WHERE type='store' [AND parent_id=$market]
 | **2026-09-23** | **人效板「员工/技师人均业绩」分子改回门店现金流口径（#285）**，见文末「数据中心（admin）板块专属指标」节的「业绩两套口径」。原实现把 `SUM(spia.allocated_amount)` 跨员工求和当门店业绩用——`allocated_amount` 是**角色归属额**（写入侧按 `(sale_item_id, role_type)` 分池校验，单 receipt 的 ratio 合计 2.0/3.0 属正常形态），只在 `GROUP BY employee_id` 时才是钱。2026-09-01~09-21 集团实测虚高 **+32.30%**（4,867,397.55 vs 3,679,035.98），与同页「门店排名榜-业绩」差 111 万；另有 950 张零分配 receipt 反向漏计，**偏差不同向、无法用系数校正**。现分子改为 `SUM(spe.amount)`，与门店排名榜 / 销售板总业绩 / staff `queryStoreRevenue` 四处同源。<br>⚠ **恢复 role_type 白名单不是修法**（实测仍差 −4.45%，只是偶然的部分去重）。<br>⚠ 员工排行榜 / 按技师人效明细**维持** allocation 口径不变（分组到人时语义正确，见 §员工排行榜归属）。<br>**根因**：2026-07-27 `23405ddf` 换表时把全局大卡一并留在 allocation 口径，并把守护断言反向钉死；该断言是文件级 `toMatch`、分不清聚合粒度，两边都写 `spia` 时恒绿，缺陷存活两个月。现改为按 Part 分段断言 + Part A/B 的 WHERE 子句逐字相等。<br>**同轮修复分母**（评审抓出）：人均派生分母只按 `staff_wechat_users.store_id` 过滤，漏掉 13 名 `store_id IS NULL` 直挂市场/部门的在职产能技师（集团 150 vs 164，虚高 **+9.33%**；南昌凤御 +13.8%、南昌易大师 +5.3%；昭通凤御技师数少报 4 人；「品项公司」整个市场不出现在按市场表里）。现归属规则与 Part D `producer_base` 对齐。⚠️ 单店 scope 下直挂者仍不出现，`集团技师数 ≠ Σ门店技师数`（与员工榜同语义，非缺陷）。 |
 | **2026-09-23** | **analyst 增幅文案两条本地例外落地（#314，拍板）**，见文末基期章节「analyst 的两条本地例外」小节。<br>· **`rate` 型零基期不再算「算不出」**：百分点差值走减法、不需要非零分母，两道基期守卫改排在 rate 分支之后，`0% → 30%` 出 `+30.0pct`。此前 `previous === 0` 排在前面，**只藏涨不藏跌**（`30% → 0%` 照常出 `-30.0pct`）。⚠️ **已知代价**：`service_orders` 最早 2026-07-08 而新客入口走首单（回溯 2022-08），2022–2025 的 1,352 个新客到店恒为 0，故**凡 `entry_date < 2026-07-08` 的基期新客其到店数都不可信**（观察窗 `[entry_date, +90天]` 完全早于割点=恒为 0 的假零基期、跨割点=可能低估；⚠️ 别写成固定失效日、也别写成「与割点重叠」或「割点前的基期都是 0」——分别忽略了同比平移 12 个月致 2027 上半年仍命中、漏掉最严重的恒零形态、把跨线的低估误说成归零），集团级到店率同比将显示约 `+86.7pct`。该代价在拍板时已量化告知并被接受（根因由 #289 跟踪），**不要据此回头推翻**。<br>· **伪持平并入「持平」**：`toFixed(1)` 舍成 `0.0` 的不再带符号输出 `+0.0%` / `-0.0%`，配色一并变灰；判据是印出来的那个数（`Number(scaled.toFixed(1)) === 0`）而非原始 delta。⚠️ 阈值随展示精度走，analyst 1 位、admin 数据中心 2 位、首页看板整数，**别互抄**。<br>· 同轮确立 **文案与配色同源**：tone 读实际渲染值，不再自己重算方向；没印出数字时才退而用两期差值补方向，而**四种成因（零基期 / 负基期 / 非有限入参 / 溢出）里只有负基期允许这么做**（#307 既定分叉不变），其余弃判置灰。<br>· 同轮把 AI 助手的 `assistant-answer.ts` `formatSignedRate`（与看板吃同一个 `kpi.delta` 的第二实现，曾各自判零、且不挡 `NaN`）**收敛到 `metric-delta` 的无前缀内核**，顺带修掉 #317 登记的 `NaNpct`。<br>⚠️ 决策 1（负基期「由负转正 / 未转正」矩阵）点名的 **analyst 侧尚未落地**，不在 #314 范围。 |
 
+| **2026-09-25** | **新增「经营数据主表」口径（#372）**，见文末「经营数据主表（admin 数据中心 · 经营明细）」节。首版取数 D/P/R/V/W/X 六列；P/W/X 与销售板门店明细逐字同谓词（`consistency.operating-master.test.ts` 整段模板等值守护）；D 复用 `technician-sql` 单源、人池换为「技能含美容师」；V「生美项目数」与人效板/门店榜「项目数」（`sales_category` 口径）**不是同一指标**。其余 16 列占位待 #373/#374 |
 ---
 
 ## 销售数据页 — 分客型业绩 / 实耗 / 产品出库
@@ -1239,6 +1259,28 @@ tiyan AS (                                    -- 体验：期内有购买但全�
 > admin 全站单一真相源，数据中心与首页看板共用，别再抄第三份）；analyst 内走 `metric-delta.ts`
 > （AI 助手侧走它导出的 `formatPointDeltaValue` 内核）；
 > 全新站点把本节矩阵先抄进它自己的模块头——本节是唯一的口径真相源。
+
+---
+
+## 经营数据主表（admin 数据中心 · 经营明细，#372）
+
+> 页面 `/data-center/operating-master`，列结构照抄《经营数据主表.xlsx》「凤御·经营」B~Y。单月型筛选（自然月）。
+> 行 = 账号权限内、筛选范围内的**当前启用**门店（`scopeStoreSkeletonSql`，与各板块明细同一骨架）；
+> 跨市场时每个市场一行小计，表尾总计；小计与合计只由门店行求和（比率列将来用合计后的分子分母重算）。
+> 代码：`fengyu-admin/src/actions/data-center/operating-master.ts`（取数）+ `src/lib/data-center/operating-master.ts`（列定义 / 装配，页面与导出共用）。
+
+| 列 | 列名 | 公式 | 说明 |
+|---|---|---|---|
+| D | 美容师人数 | `technicianByStoreSql(…, 月末, 'beautician')` | `skills && ARRAY['美容师']` ∩ 月末在职历史化；归属 `COALESCE(sw.store_id, ds.store_id)`，按**当前**归属门店计（调店不历史化）。直挂市场/部门者不属任何门店行，不计入（☆ 与人效板「技师人数」不是同一指标：后者含养生师、按市场并入直挂者，且 #297 定稿 164 口径不受本列影响）。合计 = Σ门店行 |
+| P | 当月完成 | = 销售板门店「总业绩」 | `SUM(spe.amount)` ∩ 已支付 ∩ `change_type IN ('首次支付','回款','退款')` ∩ `sale_order_type IN ('销售单','转换单','充值单')` ∩ 非 workfine ∩ `[spe.performance_date]` 在所选月。寄存单款项不进入 |
+| R | 年度累计达成 | P 的同一 SQL，区间换成 `[当年-01-01, 所选月末]` | 故 R = 当年各月 P 之和、1 月 R = P。**不接 WorkFine 历史单**（与 #289 补 legacy 的做法不同）；2026 年内必早于各市场上线日，页面按业绩轴提示数据起点 |
+| V | 当月生美项目数 | `SUM(service_items.session_used)` | ∩ `service_orders.status='已完成'` ∩ `service_date` 在所选月 ∩ `service_items.is_shengmei=TRUE` ∩ 剔除寄存单退款专用单。⚠️ 与人效板/门店榜「项目数」（`sales_category IN ('自销自耗','他销自耗')`）**不同口径**，列名须写「生美项目数」 |
+| W | 当月总实耗 | = 销售板门店「总实耗」 | `SUM(unit_real_price * session_used)` ∩ 已完成 ∩ `service_date` ∩ 剔除寄存单退款；与人效板 `qConsumeByStore` 同谓词 |
+| X | 当月生美实耗 | = 销售板门店「生美实耗」 | W 再加 `service_items.is_shengmei=TRUE`（快照；#378 在治理约 9 万元错标）。模板批注「除去美艺+抗衰+美芯+医美+其他合作」与系统分类的对应关系待甲方确认（#372 待答 2） |
+| E–I、K–M、S–U、Y | 保有会员 / 被经营 / 客流 / 单次生美客耗 | — | 口径待 #373 拍板，本期显示「—」、不参与合计。⚠️ 售前/售后客流**不得**直接读 `service_orders.service_order_type`（开单时快照，已过时） |
+| J、N、O、Q | 目标列 | — | #374 拍板（2026-09-25）：本期固定「—」，合计行也「—」；不建目标表 |
+
+---
 
 ## 顾客剩余卡项清单（admin 数据中心经营明细，#371）
 
