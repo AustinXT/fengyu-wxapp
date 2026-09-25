@@ -1937,6 +1937,15 @@ describe('库存转换两段式表单与成本守恒（#344）', () => {
     expect(createInventoryConversion).not.toHaveBeenCalled()
   })
 
+  it('赠送批次成本被遮蔽同样视为无价格权（服务端对赠送来源也要求价格权）', async () => {
+    vi.mocked(listInventoryLotOptions).mockResolvedValue([{ ...lot, isGift: true, supplyChainUnitCost: undefined }] as never)
+    await fillThirteenToThirteen()
+    expect(balanceText()).toContain('需要本主体的供应链价格查看权限')
+    fireEvent.submit(screen.getByRole('button', { name: '创建库存转换单' }).closest('form')!)
+    await waitFor(() => expect(vi.mocked(toast.error)).toHaveBeenCalledWith('库存转换需要本主体的供应链价格查看权限（要按成本核算守恒）'))
+    expect(createInventoryConversion).not.toHaveBeenCalled()
+  })
+
   it('批次缺成本（null，看得到但没有）：提示缺成本而不是权限', async () => {
     vi.mocked(listInventoryLotOptions).mockResolvedValue([{ ...lot, supplyChainUnitCost: null }] as never)
     await fillThirteenToThirteen()

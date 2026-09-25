@@ -4235,7 +4235,9 @@ function ConversionForm({
     quantity: positiveNumber(line.quantity) ?? 0,
     unitCost: conversionSourceUnitCost(line.lot),
   }))
-  const costKnown = sources.every((line, index) => line.lot !== null && sourceCosts[index].unitCost !== null)
+  const costKnown = sources.every((line, index) => (
+    line.lot !== null && line.lot.supplyChainUnitCost !== undefined && sourceCosts[index].unitCost !== null
+  ))
   const sourceInputs = sourceCosts.map((cost) => ({ quantity: cost.quantity, unitCost: cost.unitCost ?? 0 }))
   const targetQuantities = targets.map((line) => positiveNumber(line.quantity) ?? 0)
   // 预填单价只依赖来源精确合计与目标数量（单价先按 0 占位），与服务端容差推导同一个 p
@@ -4253,7 +4255,8 @@ function ConversionForm({
   const mixedGift = giftFlags.size > 1
   const allGift = giftFlags.size === 1 && giftFlags.has(true)
   // 成本拿不到分两种：价格档遮蔽（字段缺省 = 看不到）与批次本身缺成本（null），服务端都会拒，前端提前说清原因
-  const costHidden = sources.some((line) => line.lot !== null && !line.lot.isGift && line.lot.supplyChainUnitCost === undefined)
+  // 赠送批次成本按 0 核算，但字段被遮蔽同样说明看不到价格 —— 服务端对赠送来源也要求价格权，这里不能放过
+  const costHidden = sources.some((line) => line.lot !== null && line.lot.supplyChainUnitCost === undefined)
   const costMissing = sources.some((line) => line.lot !== null && !line.lot.isGift && line.lot.supplyChainUnitCost === null)
 
   /**

@@ -1794,6 +1794,30 @@ describe('库存转换多对多与成本守恒（#344）', () => {
     await expect(createInventoryConversion(priced, input)).rejects.toThrow('来源合计 37.50')
   })
 
+  it('同一主体两条绑定分别持办理权 / 价格权不能拼接：须有一条绑定同时持两权', async () => {
+    const binding = (actions: string[]) => ({
+      role: `custom_${actions.length}`, scopeId: 'HQ', scopeType: '总部', actions, scopeStoreIds: [], scopeOrgNodeIds: ['HQ'],
+    })
+    const input = {
+      locationId: 'HQ',
+      sources: [{ sourceLotId: 101, quantity: 1 }],
+      targets: [{ targetSkuId: 'SKU-X', quantity: 1, unitPrice: 10 }],
+    }
+    const split = {
+      employeeId: 'E-SC4', name: '拆分绑定', phone: '13800000015',
+      roles: [binding(['inventory:supply_chain_operate']), binding(['inventory:stock_list', 'inventory:supply_chain_price_view'])],
+      permissions: { actions: ['inventory:supply_chain_operate', 'inventory:supply_chain_price_view'], scopeStoreIds: [] },
+    } as never
+    const fake = fakeDb([{ id: 101, sku_id: 'SKU-A', supply_chain_unit_cost: '10' }])
+    await expect(createInventoryConversion(split, input)).rejects.toThrow('PERMISSION_DENIED')
+    expect(fake.lotLocks).toEqual([])
+
+    const single = { ...(split as object), roles: [binding(['inventory:supply_chain_operate', 'inventory:supply_chain_price_view'])] } as never
+    const ok = fakeDb([{ id: 101, sku_id: 'SKU-A', supply_chain_unit_cost: '10' }])
+    await createInventoryConversion(single, input)
+    expect(ok.newLots()).toHaveLength(1)
+  })
+
   it('金额超上限且不守恒：先报金额上限（与表单同序）', async () => {
     fakeDb([{ id: 101, sku_id: 'SKU-A', supply_chain_unit_cost: '100000', quantity_on_hand: 200000 }])
     await expect(createInventoryConversion(SESSION, {

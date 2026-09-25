@@ -5,6 +5,7 @@ import { ApiError } from '@/lib/api-error'
 import { shanghaiToday, shanghaiYmd } from '@/lib/datetime'
 import { logOperation } from '@/lib/operation-log'
 import { hasPermission } from '@/lib/permissions'
+import { scopeSessionToAllActions } from '@/lib/action-scope'
 import {
   assertInventoryLocationInScope,
   inventoryPriceScopeByTier,
@@ -5386,7 +5387,10 @@ export async function createInventoryConversion(
     // 「不守恒 / 成功」本身就成了探测批次成本的判定器（只藏报错金额挡不住）。所以转换须具备
     // 本主体的供应链价格可见性 —— 按角色绑定逐条判（不用会话并集），且在读任何批次之前拒。
     // 预置角色 inventory_supply_chain_operator / admin 都带 supply_chain_price_view，不受影响。
-    const priceVisibility = inventoryPriceVisibilityForOrgNodes(inventoryPriceScopeByTier(session), [location.orgNodeId])
+    // 办理权与价格权必须落在同一条角色绑定上（action-scope.ts 的进销存 AND 原则）：Server Action 已把会话
+    // 收窄到持办理权的绑定，这里不依赖调用方，再按「同时持两权的绑定」收窄一次后判本主体
+    const bothGranted = scopeSessionToAllActions(session, ['inventory:supply_chain_operate', 'inventory:supply_chain_price_view'])
+    const priceVisibility = inventoryPriceVisibilityForOrgNodes(inventoryPriceScopeByTier(bothGranted), [location.orgNodeId])
     if (priceVisibility !== 'all' && priceVisibility !== 'supply_chain') {
       throw new ApiError('PERMISSION_DENIED', '库存转换需要本主体的供应链价格查看权限（要按成本核算守恒）')
     }
