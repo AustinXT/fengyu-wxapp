@@ -63,7 +63,7 @@ export const DATA_CENTER_REPORTS = {
     title: '顾客剩余卡项清单',
     periodKind: 'none',
     requiredActions: DATA_CENTER_CUSTOMER_DETAIL_ACTIONS,
-    menu: { section: '经营明细', enabled: false },
+    menu: { section: '经营明细', enabled: true },
   },
   operatingMaster: {
     path: '/data-center/operating-master',

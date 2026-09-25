@@ -18,6 +18,13 @@ vi.mock('@/actions/data-center/operating-master', () => ({
 vi.mock('@/actions/refunds', () => ({
   exportRefunds: vi.fn(),
 }))
+vi.mock('@/actions/data-center/remaining-cards', () => ({
+  // 缺省返回空结果：「报表视图分发」用例会遍历全部报表视图
+  exportRemainingCardsReport: vi.fn(async () => ({
+    columns: [], rows: [], totals: { remaining: 0 },
+    params: { scope: { type: 'all' }, q: '', show: 'all' }, asOf: '2026-09-25',
+  })),
+}))
 // 员工导出分支会立即查 org_nodes 建路径映射（其余分支的 rows 都是惰性的，不碰 db）
 vi.mock('@/db', () => ({
   db: { select: vi.fn(() => ({ from: vi.fn().mockResolvedValue([]) })) },
@@ -29,6 +36,7 @@ import { getProductBoard } from '@/actions/data-center/product'
 import { getEfficiencyBoard } from '@/actions/data-center/efficiency'
 import { getOperatingMaster } from '@/actions/data-center/operating-master'
 import { exportRefunds } from '@/actions/refunds'
+import { exportRemainingCardsReport } from '@/actions/data-center/remaining-cards'
 import {
   DATA_CENTER_VIEW_CONFIG,
   getDataCenterBreakdownConfig,
@@ -479,5 +487,37 @@ describe('数据中心导出 · 经营数据主表', () => {
     expect(rows.map((row) => pending.value(row))).toEqual(['—', '—', '—', '—', '—'])
     expect(pending.total).toBe('—')
     expect(header('年度销售\n业绩目标').total).toBe('—')
+  })
+})
+
+describe('数据中心导出 · 顾客剩余卡项清单（#371）', () => {
+  it('report-remaining-cards 走报表取数，不触碰任何旧板块取数函数；URL 参数原样透传', async () => {
+    vi.clearAllMocks()
+    vi.mocked(exportRemainingCardsReport).mockResolvedValue({
+      columns: [{ categoryId: 'C1', categoryName: '招牌', kind: '招牌', kindSort: 1, sort: 1 }],
+      rows: [{
+        key: 'U1:S1', clientUserId: 'U1', storeId: 'S1', storeName: '蓝莱店', customerName: '张三',
+        phoneMasked: '138****2222', level: '会员客', remaining: 3,
+        cells: { C1: { state: 'remaining', remaining: 3, unpaid: 0, served: 1, convertedOut: 0, deposit: true, frozen: false } },
+      }],
+      totals: { remaining: 3, 'cat:C1': 3 },
+      params: { scope: { type: 'all' }, q: '', show: 'all' },
+      asOf: '2026-09-25',
+    })
+    const params = { q: '张', show: 'remaining', tab: 'x' }
+    const content = await createExportContent('data-center', { view: 'report-remaining-cards', params })
+
+    expect(exportRemainingCardsReport).toHaveBeenCalledWith(params)
+    for (const board of [getSalesBoard, getCustomerBoard, getProductBoard, getEfficiencyBoard]) {
+      expect(board).not.toHaveBeenCalled()
+    }
+    expect(content.columns.map((column) => column.header)).toEqual(['门店', '顾客', '会员等级', '招牌', '剩余次数'])
+    expect(content.columns.map((column) => column.total ?? null)).toEqual([null, null, null, 3, 3])
+    expect(content.frozenColumns).toBe(3)
+    expect(content.totalsLabel).toBe('合计')
+    expect(content.meta).toMatchObject({ period: null, scope: '全部' })
+    const rows: Record<string, unknown>[] = []
+    for await (const row of content.rows) rows.push(row)
+    expect(content.columns.map((column) => column.value(rows[0]))).toEqual(['蓝莱店', '张三 138****2222', '会员客', 3, 3])
   })
 })

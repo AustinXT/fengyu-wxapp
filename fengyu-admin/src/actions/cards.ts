@@ -21,6 +21,12 @@ import {
   type ExportBatchResult,
 } from '@/lib/export-pagination'
 import { paidUnusedSessionsExpr } from '@/lib/paid-sessions'
+import {
+  CARD_ENTITLEMENT_ORDER_STATUSES,
+  cardBaseConditions,
+  cardEntitlementDirectionCondition,
+  cardNotFullyRefundedCondition,
+} from '@/lib/card-entitlement'
 import { computeItemOverpayRemainders, type RefundSourceItem } from '@/lib/refund'
 import { storeInMarketCondition } from '@/lib/market-store-sql'
 import { getPointsToYuanRate, getPointsDeductionMaxRate } from '@/lib/system-config'
@@ -36,8 +42,6 @@ export type CardTypeFilter = 'all' | '疗程卡' | '单次卡'
 
 /** 状态（UI 下拉） */
 export type CardStatusFilter = 'active' | 'exhausted' | 'expired'
-
-const CARD_ENTITLEMENT_ORDER_STATUSES = ['已支付', '部分支付', '已完成'] as const
 
 /** 卡包列表筛选参数 */
 export interface CardFilters {
@@ -207,24 +211,12 @@ export const getCardFilterOptions = withPermission(
 // paidUnusedSessionsExpr（已付未用 = 可用次数 派生）已提升为 admin 共享单源（@/lib/paid-sessions），
 // 卡包列表/详情 + 订单/营业额分配导出复用同一表达式；NULL 退回物理剩余、clamp 等口径细节见该文件注释。
 
-function cardEntitlementDirectionCondition() {
-  return or(
-    eq(saleItems.itemDirection, '购买'),
-    and(
-      eq(saleOrders.saleOrderType, '转换单'),
-      eq(saleItems.itemDirection, '转入'),
-    ),
-  )
-}
-
 function buildCardBaseConditions(
   session: Parameters<typeof scopeCondition>[0],
 ): (SQL | undefined)[] {
   return [
-    cardEntitlementDirectionCondition(),
-    inArray(saleOrders.status, [...CARD_ENTITLEMENT_ORDER_STATUSES]),
-    eq(saleItems.productType, '疗程卡'),
-    isNotNull(saleItems.remainingSessions),
+    // 权益方向 + 有效订单状态 + 疗程卡 + 余次不为空（lib/card-entitlement.ts，与数据中心剩余卡项清单共用）
+    ...cardBaseConditions(),
     // issue #122：移除原本的 `paid_sessions > 0` —— 它会把部分支付的欠款卡整行隐藏，
     // 顾客买了卡却在卡包里查无此卡。基础集不再按次数过滤（"是否已用完"交给 status 分支，
     // exhausted 要的正是 remaining_sessions = 0，基础集若先排掉它会让该筛选恒空、卡详情 404）。
@@ -894,7 +886,7 @@ export const getCustomerHeldCards = withPermission(
         // 审批后隐藏已退完的卡：仅当订单存在已审批退款时按 paid_sessions 有效余量判定（不影响无退款的分期卡）
         // 家居产品不适用：已退数量落 refunded_quantity（#154 拆列前并入 picked_up_quantity），
         // 而未结算件数 = quantity − 已提货 − 已退款 − 已转换，天然已扣除
-        sql`(${saleItems.productType} <> '疗程卡' OR NOT EXISTS (SELECT 1 FROM sale_order_payments sop WHERE sop.sale_order_id = ${saleItems.saleOrderId} AND sop.change_type = '退款' AND sop.status = '已支付') OR ${saleItems.paidSessions} IS NULL OR ${saleItems.paidSessions} > (${saleItems.sessionCount} - ${saleItems.remainingSessions}))`,
+        cardNotFullyRefundedCondition(),
       ),
     )
 

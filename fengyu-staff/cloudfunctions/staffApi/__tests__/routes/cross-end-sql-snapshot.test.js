@@ -57,6 +57,8 @@ const FILES = {
   adminHomeProductTs: path.resolve(__dirname, '../../../../../fengyu-admin/src/lib/home-product.ts'),
   staffMgmtCustomerJs: path.resolve(__dirname, '../../routes/mgmt-customer.js'),
   adminCardsTs: path.resolve(__dirname, '../../../../../fengyu-admin/src/actions/cards.ts'),
+  adminCardEntitlementTs: path.resolve(__dirname, '../../../../../fengyu-admin/src/lib/card-entitlement.ts'),
+  adminRemainingCardsQueryTs: path.resolve(__dirname, '../../../../../fengyu-admin/src/lib/data-center/remaining-cards-query.ts'),
   adminPickupRecordsTs: path.resolve(__dirname, '../../../../../fengyu-admin/src/actions/pickup-records.ts'),
   staffPaymentAllocatableJs: path.resolve(__dirname, '../../utils/payment-allocatable.js'),
   clientPaymentAllocatableJs: path.resolve(__dirname, '../../../../../fengyu-client/cloudfunctions/clientApi/utils/payment-allocatable.js'),
@@ -3367,9 +3369,13 @@ describe('#125 家居转换折抵跨端守护', () => {
       expect(src).toContain("row.order_status !== '已支付' && row.order_status !== '部分支付' && row.order_status !== '已完成'")
     })
     test('admin getCustomerHeldCards 复用 CARD_ENTITLEMENT_ORDER_STATUSES，createConversionOrder 同步放开', () => {
-      const cardsSrc = readFile(path.resolve(__dirname, '../../../../../fengyu-admin/src/actions/cards.ts'))
-      // 与卡包列表共用同一组状态常量，避免两处硬编码漂移
-      expect(cardsSrc).toContain("const CARD_ENTITLEMENT_ORDER_STATUSES = ['已支付', '部分支付', '已完成']")
+      const cardsSrc = readFile(FILES.adminCardsTs)
+      // 与卡包列表共用同一组状态常量（#371 起单源在 lib/card-entitlement.ts），避免两处硬编码漂移
+      expect(readFile(FILES.adminCardEntitlementTs)).toContain("export const CARD_ENTITLEMENT_ORDER_STATUSES = ['已支付', '部分支付', '已完成']")
+      expect(cardsSrc, 'cards.ts 须从 lib/card-entitlement 引用状态常量，不得本地再写一份').toMatch(
+        /import \{[^}]*\bCARD_ENTITLEMENT_ORDER_STATUSES\b[^}]*\} from '@\/lib\/card-entitlement'/,
+      )
+      expect(cardsSrc).not.toMatch(/const CARD_ENTITLEMENT_ORDER_STATUSES\s*=/)
       expect(cardsSrc).toMatch(/inArray\(saleOrders\.status, \[\.\.\.CARD_ENTITLEMENT_ORDER_STATUSES\]\)[\s\S]{0,600}疗程卡/)
       const ordersSrc = readFile(FILES.adminOrdersTs)
       expect(ordersSrc).toContain("row.order_status !== '已支付' && row.order_status !== '部分支付' && row.order_status !== '已完成'")
@@ -3486,13 +3492,17 @@ describe('疗程卡可用次数为 0 时仍展示的跨端守护（issue #122）
   })
 
   test('admin 卡包列表按剩余次数展示，不再按已付次数硬过滤', () => {
-    const src = readFile(FILES.adminCardsTs)
-    // 断言必须锁在 buildCardBaseConditions 函数体内：同文件别处也有
-    // `remainingSessions > 0`，文件级 toContain 会被兄弟代码兜底而测不出回退。
-    const body = src.match(
+    // #371 起基础集单源在 lib/card-entitlement.ts 的 cardBaseConditions()，卡包列表与数据中心剩余卡项清单共用。
+    // 断言必须锁在函数体内：同一批文件别处也有 `remainingSessions > 0`，文件级 toContain 会被兄弟代码兜底而测不出回退。
+    const cardsBody = readFile(FILES.adminCardsTs).match(
       /function buildCardBaseConditions\b[\s\S]*?\n\}/,
     )?.[0]
-    expect(body, '未能定位 buildCardBaseConditions 函数体').toBeTruthy()
+    expect(cardsBody, '未能定位 buildCardBaseConditions 函数体').toBeTruthy()
+    expect(cardsBody, 'buildCardBaseConditions 须展开共用基础集').toContain('...cardBaseConditions()')
+    const body = readFile(FILES.adminCardEntitlementTs).match(
+      /export function cardBaseConditions\b[\s\S]*?\n\}/,
+    )?.[0]
+    expect(body, '未能定位 cardBaseConditions 函数体').toBeTruthy()
     expect(body, '不得回退到 paid_sessions > 0 硬过滤').not.toContain(
       'sql`${saleItems.paidSessions} > 0`',
     )
@@ -3501,6 +3511,21 @@ describe('疗程卡可用次数为 0 时仍展示的跨端守护（issue #122）
     expect(body, '基础集不得按次数过滤').not.toContain(
       'sql`${saleItems.remainingSessions} > 0`',
     )
+  })
+
+  // #371：admin「已退完」守卫从 getCustomerHeldCards 内联抽到 lib/card-entitlement.ts，持卡折抵候选与
+  // 数据中心剩余卡项清单共用。它一漂，已退款的卡会在两处复活（见 staff customer.js 同款守卫注释）。
+  test('admin 已退完守卫单源锁住，且折抵候选与剩余卡项清单都走它', () => {
+    const body = readFile(FILES.adminCardEntitlementTs).match(
+      /export function cardNotFullyRefundedCondition\b[\s\S]*?\n\}/,
+    )?.[0]
+    expect(body, '未能定位 cardNotFullyRefundedCondition 函数体').toBeTruthy()
+    expect(body).toContain("sop.change_type = '退款' AND sop.status = '已支付'")
+    expect(body).toContain('${saleItems.paidSessions} IS NULL OR ${saleItems.paidSessions} > (${saleItems.sessionCount} - ${saleItems.remainingSessions})')
+    const heldCards = readFile(FILES.adminCardsTs).match(/export const getCustomerHeldCards\b[\s\S]*?\n\)\n/)?.[0]
+    expect(heldCards, '未能定位 getCustomerHeldCards').toBeTruthy()
+    expect(heldCards).toContain('cardNotFullyRefundedCondition()')
+    expect(readFile(FILES.adminRemainingCardsQueryTs)).toContain('cardNotFullyRefundedCondition()')
   })
 
   // 核销限额与展示解耦：service 侧三处校验必须原样保留，放宽展示不得放宽核销。
