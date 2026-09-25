@@ -23,8 +23,11 @@ export type MatrixAggregate<T> =
 export interface MatrixColumnGroup {
   /** 分组身份。相邻且 key 相同的列合并为一个分组表头；同名不同组（如两个「合计」）靠 key 区分 */
   key: string
+  /** 可含换行（`\n`）：多行分组标题（如主表照抄模板的口径说明行），配合 MatrixTable 的 headerHeights 使用 */
   header: string
   hint?: string
+  /** 分组底色（分组格与其下各列的表头格），CSS 颜色值；缺省沿用表头默认底色 */
+  color?: string
 }
 
 /** 纯逻辑层关心的列属性（React 层的 MatrixColumn 是它的超集）。 */

@@ -3,8 +3,8 @@ import { notFound, redirect } from "next/navigation"
 import { getDataCenterScopeOptions } from "@/actions/data-center/shared"
 import { DATA_CENTER_BOARD_LABELS, parseBoard, type DataCenterTab } from "@/lib/data-center/params"
 import { resolveDataCenterEntry } from "@/lib/data-center/entry"
-import { Card, CardContent } from "@/components/ui/card"
 import { ScopeTimeFilter } from "../_components/scope-time-filter"
+import { ScopeEmptyState } from "../_components/scope-empty-state"
 import { SalesBoard } from "../_components/sales/sales-board"
 import { CustomerBoard } from "../_components/customer/customer-board"
 import { EfficiencyBoard } from "../_components/efficiency/efficiency-board"
@@ -52,7 +52,8 @@ export default async function Page({
   // 遗留的 `tab` 参数一并剔除：板块已由路径承载。
   const entry = resolveDataCenterEntry(`/data-center/${board}`, query, scopeOptions, ["tab"])
   if (entry.kind === "redirect") redirect(entry.url)
-  const { noViewableScope } = entry
+  // 无可查看范围 / 选中已停用门店（#293）：渲染空态、不挂板块，板块内的取数与导出都不会发生。
+  const { noViewableScope, inactiveStore, defaultScopeHref } = entry
 
   const Board = BOARD_COMPONENTS[board]
 
@@ -60,12 +61,8 @@ export default async function Page({
     <div className="flex flex-col gap-4">
       <h1 className="text-xl font-semibold text-[var(--foreground)]">{DATA_CENTER_BOARD_LABELS[board]}</h1>
       <ScopeTimeFilter scopeOptions={scopeOptions} />
-      {noViewableScope ? (
-        <Card>
-          <CardContent className="p-8 text-center text-sm text-[var(--muted-foreground)]">
-            当前账号暂无可查看的数据范围
-          </CardContent>
-        </Card>
+      {noViewableScope || inactiveStore ? (
+        <ScopeEmptyState inactiveStore={inactiveStore} defaultScopeHref={defaultScopeHref} />
       ) : (
         <Board />
       )}

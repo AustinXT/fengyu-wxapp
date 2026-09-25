@@ -8,7 +8,7 @@
  *
  * 守护对象（项目禁止跨端共享代码目录，各端独立副本）：
  *   - admin: src/lib/service-remark.ts（常量）+ src/lib/data-center/consume-filter.ts（Drizzle helper）
- *            + data-center/{sales,efficiency,customer}.ts（调用方）
+ *            + data-center/{sales,efficiency,customer,operating-master}.ts（调用方）
  *   - staff 读端: cloudfunctions/staffApi/utils/consume-filter.js（常量 + helper）
  *            + routes/{mgmt-dashboard,mgmt-traffic}.js（调用方）
  *   - staff 写入端: miniprogram/packageService/service-create/service-create.ts（常量；真正落库
@@ -40,6 +40,7 @@ const PATHS = {
   adminSales: A('../sales.ts'),
   adminEfficiency: A('../efficiency.ts'),
   adminCustomer: A('../customer.ts'),
+  adminOperatingMaster: A('../operating-master.ts'),
   staffHelper: STAFF('utils/consume-filter.js'),
   staffDashboard: STAFF('routes/mgmt-dashboard.js'),
   staffTraffic: STAFF('routes/mgmt-traffic.js'),
@@ -119,6 +120,9 @@ describe('寄存单退款单不计入消耗业绩 — 两端过滤一致性守�
     it('admin customer.ts = 4（queryProjectCount/queryShengmeiConsume + proj_agg/sm_consume）', () => {
       expect(countCalls(src.adminCustomer)).toBe(4)
     })
+    it('admin operating-master.ts = 3（经营数据主表 V 生美项目数 / W 实耗 / X 生美实耗，#372）', () => {
+      expect(countCalls(src.adminOperatingMaster)).toBe(3)
+    })
     it('staff mgmt-dashboard.js = 9（消耗 6 + 项目 3：summary/salesData/门店榜/员工榜）', () => {
       expect(countCalls(src.staffDashboard)).toBe(9)
     })
@@ -128,8 +132,8 @@ describe('寄存单退款单不计入消耗业绩 — 两端过滤一致性守�
   })
 
   describe('调用方正确引用各端 helper', () => {
-    it('admin 三调用方 import @/lib/data-center/consume-filter', () => {
-      for (const k of ['adminSales', 'adminEfficiency', 'adminCustomer']) {
+    it('admin 四调用方 import @/lib/data-center/consume-filter', () => {
+      for (const k of ['adminSales', 'adminEfficiency', 'adminCustomer', 'adminOperatingMaster']) {
         expect(src[k]).toMatch(/from\s+'@\/lib\/data-center\/consume-filter'/)
       }
     })

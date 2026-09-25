@@ -256,7 +256,7 @@ describe('batchSaveServiceCommissions — per-session consumeBase', () => {
    * 注入一条带真实卡数据的 pricing 行；rate 矩阵返回 0.30。
    * 捕获最终 INSERT 的 values 数组以验证 consume/commission 金额。
    */
-  function setupCardScenario(pricingRow: any, rate: string | null = '0.3000') {
+  function setupCardScenario(pricingRow: any, rate: string | null = '0.3000', priceThreshold: string | null = null) {
     // 4 步调用序对齐 mockScopeAndItems：scope → remark(null) → items → pricing
     const items = [{ serviceItemId: pricingRow.serviceItemId }]
     let selectCalls = 0
@@ -282,7 +282,7 @@ describe('batchSaveServiceCommissions — per-session consumeBase', () => {
           set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({}) }),
         }),
         // commission_rate_matrix 查档：rate=null 表示查无匹配行（真缺失）
-        select: makeSelectChain(rate === null ? [] : [{ commissionRate: rate }]),
+        select: makeSelectChain(rate === null ? [] : [{ commissionRate: rate, priceThreshold }]),
       }
       return fn(tx)
     })
@@ -463,5 +463,48 @@ describe('batchSaveServiceCommissions — per-session consumeBase', () => {
     expect(Number(inserted[0].commissionRate)).toBe(0) // 查无行 → 容错 rate=0
     expect(Number(inserted[0].consumeAmount)).toBe(0) // consumeBase × ratio × 0
     expect(Number(inserted[0].commissionAmount)).toBe(0) // fixedFee(0) + 0
+  })
+
+  // #379 划卡单价阈值：阈值作用于单价（整池）→ 再按 ratio 拆；选档仍用原始 consumeBase；手工费叠加
+  describe('#379 消耗提成阈值保底', () => {
+    const row = (unitRealPrice: string | null, extra: Record<string, unknown> = {}) => ({
+      serviceItemId: 'si-379', unitRealPrice, sessionUsed: 1, salesCategory: '自销自耗', serviceFee: '0', sessionCount: 1, quantity: 1, ...extra,
+    })
+    const save = (ratios: string[]) => batchSaveServiceCommissions('so-1', ratios.map((r, i) => (
+      { serviceItemId: 'si-379', employeeId: `EMP-00${i + 1}`, roleType: '美容师', allocationRatio: r, commissionRate: '0', commissionAmount: '0' }
+    )))
+
+    it('单价 80 < 阈值 100 → 100 × 2 次 × 15% = 30', async () => {
+      const inserted = setupCardScenario(row('80', { sessionUsed: 2 }), '0.1500', '100.00')
+      expect((await save(['1.00'])).success).toBe(true)
+      expect(Number(inserted[0].consumeAmount)).toBe(30)
+    })
+    it('单价 80、两人各 50% → 各 7.5', async () => {
+      const inserted = setupCardScenario(row('80'), '0.1500', '100.00')
+      await save(['0.50', '0.50'])
+      expect(inserted.map((v) => Number(v.consumeAmount))).toEqual([7.5, 7.5])
+    })
+    it('赠送单价 NULL → 按阈值', async () => {
+      const inserted = setupCardScenario(row(null), '0.1500', '100.00')
+      await save(['1.00'])
+      expect(Number(inserted[0].consumeAmount)).toBe(15)
+    })
+    it('单价 ≥ 阈值 → 与改动前一致', async () => {
+      const inserted = setupCardScenario(row('123.45', { sessionUsed: 3 }), '0.1500', '100.00')
+      await save(['1.00'])
+      expect(Number(inserted[0].consumeAmount)).toBe(55.55)
+    })
+    it('阈值 NULL（非自销行）→ 不保底', async () => {
+      const inserted = setupCardScenario(row('80'), '0.0200', null)
+      await save(['1.00'])
+      expect(Number(inserted[0].consumeAmount)).toBe(1.6)
+    })
+    it('手工费叠加：fixed_fee 不受阈值影响', async () => {
+      const inserted = setupCardScenario(row('80', { serviceFee: '20' }), '0.1500', '100.00')
+      await save(['0.50'])
+      expect(Number(inserted[0].fixedFee)).toBe(10)
+      expect(Number(inserted[0].consumeAmount)).toBe(7.5)
+      expect(Number(inserted[0].commissionAmount)).toBe(17.5)
+    })
   })
 })

@@ -91420,7 +91420,7 @@ var init_inventory = __esm(() => {
         OR (${table4.fromItemId} IS NOT NULL AND ${table4.quantity} IS NOT NULL)`),
     check2("chk_inventory_doc_links_relation_type", sql3`${table4.relationType} IN (
         '门店报货汇总','市场报货汇总','市场报货采购订单','报货汇总采购订单','品项公司报货采购订单',
-        '采购订单发货','采购订单赠送发货','市场报货发货','市场报货赠送发货','发货收货','采购订单供应链采购入库',
+        '采购订单发货','采购订单赠送发货','发货收货','采购订单供应链采购入库',
         '门店报货配货','门店报货赠送配货','退货回库','库存转换','历史关联'
       )`)
   ]);
@@ -155373,7 +155373,7 @@ var require_excel = __commonJS((exports, module) => {
 
 // src/export-worker/index.ts
 init_db2();
-var import_drizzle_orm66 = __toESM(require_drizzle_orm(), 1);
+var import_drizzle_orm68 = __toESM(require_drizzle_orm(), 1);
 import { createReadStream } from "node:fs";
 import { mkdtemp, rm as rm2 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -159490,7 +159490,7 @@ var DATA_CENTER_REPORTS = {
     title: "经营数据主表",
     periodKind: "month",
     requiredActions: [DATA_CENTER_DASHBOARD_ACTION],
-    menu: { section: "经营明细", enabled: false }
+    menu: { section: "经营明细", enabled: true }
   },
   commissionDaily: {
     path: "/data-center/commission-daily",
@@ -159541,7 +159541,13 @@ var DATA_CENTER_BOARD_EXPORT_VIEWS = [
   "efficiency-store-ranking",
   "efficiency-staff-ranking"
 ];
-var DATA_CENTER_REPORT_EXPORT_VIEWS = [];
+var DATA_CENTER_REPORT_EXPORT_VIEWS = [
+  "report-operating-master"
+];
+var REPORT_EXPORT_VIEW_SET = new Set(DATA_CENTER_REPORT_EXPORT_VIEWS);
+function isDataCenterReportExportView(view3) {
+  return REPORT_EXPORT_VIEW_SET.has(view3);
+}
 var DATA_CENTER_EXPORT_VIEWS = [
   ...DATA_CENTER_BOARD_EXPORT_VIEWS,
   ...DATA_CENTER_REPORT_EXPORT_VIEWS
@@ -159562,6 +159568,21 @@ var EXPORT_PERMISSIONS_BY_TYPE = {
   "mall-products": ["product:list"],
   coupons: ["coupon:list"],
   "data-center": ["data_center:dashboard"]
+};
+var DATA_CENTER_VIEW_REQUIRED_ACTIONS = {
+  "sales-market": [DATA_CENTER_DASHBOARD_ACTION],
+  "sales-store": [DATA_CENTER_DASHBOARD_ACTION],
+  "customer-market-reg": [DATA_CENTER_DASHBOARD_ACTION],
+  "customer-market-ops": [DATA_CENTER_DASHBOARD_ACTION],
+  "customer-store-reg": [DATA_CENTER_DASHBOARD_ACTION],
+  "customer-store-ops": [DATA_CENTER_DASHBOARD_ACTION],
+  "product-market": [DATA_CENTER_DASHBOARD_ACTION],
+  "product-store": [DATA_CENTER_DASHBOARD_ACTION],
+  "efficiency-market": [DATA_CENTER_DASHBOARD_ACTION],
+  "efficiency-staff": [DATA_CENTER_DASHBOARD_ACTION],
+  "efficiency-store-ranking": [DATA_CENTER_DASHBOARD_ACTION],
+  "efficiency-staff-ranking": [DATA_CENTER_DASHBOARD_ACTION],
+  "report-operating-master": DATA_CENTER_REPORTS.operatingMaster.requiredActions
 };
 var EXPORT_PERMISSION_ACTIONS = Array.from(new Set(Object.values(EXPORT_PERMISSIONS_BY_TYPE).flat()));
 var EXPORT_LABEL_BY_TYPE = {
@@ -159597,7 +159618,8 @@ function exportJobLabel(exportType, payload) {
     "efficiency-market": "人效明细-按市场",
     "efficiency-staff": "人效明细-按技师",
     "efficiency-store-ranking": "人效-门店排名榜",
-    "efficiency-staff-ranking": "人效-员工排名榜"
+    "efficiency-staff-ranking": "人效-员工排名榜",
+    "report-operating-master": "经营数据主表"
   };
   return viewLabels[payload.view];
 }
@@ -162707,18 +162729,37 @@ var import_cache4 = __toESM(require_cache3(), 1);
 var import_drizzle_orm22 = __toESM(require_drizzle_orm(), 1);
 var MEMBER_THRESHOLD_FALLBACK = 1980;
 var MEMBER_THRESHOLD_TAG = "new_member_threshold";
-var getMemberThreshold = import_cache4.unstable_cache(async () => {
+async function readMemberThreshold() {
+  const rows = await db2.execute(import_drizzle_orm22.sql`
+    SELECT value FROM system_configs WHERE key = 'new_member_threshold'
+  `);
+  const raw = rows[0]?.value;
+  const v = Number(raw);
+  return Number.isFinite(v) && v > 0 ? v : MEMBER_THRESHOLD_FALLBACK;
+}
+var cachedMemberThreshold = import_cache4.unstable_cache(readMemberThreshold, ["new_member_threshold"], {
+  tags: [MEMBER_THRESHOLD_TAG],
+  revalidate: 300
+});
+function isMissingIncrementalCache(err) {
+  return err instanceof Error && err.message.includes("incrementalCache missing");
+}
+async function getMemberThreshold() {
   try {
-    const rows = await db2.execute(import_drizzle_orm22.sql`
-        SELECT value FROM system_configs WHERE key = 'new_member_threshold'
-      `);
-    const raw = rows[0]?.value;
-    const v = Number(raw);
-    return Number.isFinite(v) && v > 0 ? v : MEMBER_THRESHOLD_FALLBACK;
-  } catch {
+    if (true)
+      return await readMemberThreshold();
+    try {
+      return await cachedMemberThreshold();
+    } catch (err) {
+      if (isMissingIncrementalCache(err))
+        return await readMemberThreshold();
+      throw err;
+    }
+  } catch (err) {
+    console.warn("[member-threshold] 读取失败，回退", MEMBER_THRESHOLD_FALLBACK, err?.message);
     return MEMBER_THRESHOLD_FALLBACK;
   }
-}, ["new_member_threshold"], { tags: [MEMBER_THRESHOLD_TAG], revalidate: 300 });
+}
 
 // src/lib/member-pricing.ts
 function isMember(customerType, memberLevel) {
@@ -171207,7 +171248,7 @@ async function settleServiceCommissions(executor, serviceOrderId, operator) {
     const perSession = Number(row.unit_real_price || 0);
     const consumeBase = round22(perSession * sessionUsed);
     const rateRows = await executor.execute(import_drizzle_orm39.sql`
-      SELECT commission_rate FROM commission_rate_matrix
+      SELECT commission_rate, price_threshold FROM commission_rate_matrix
        WHERE order_type = '服务单'
          AND role_type = ${roleType}
          AND sales_category = ${row.sales_category}
@@ -171224,7 +171265,8 @@ async function settleServiceCommissions(executor, serviceOrderId, operator) {
        LIMIT 1
     `);
     const rate = Number(rateRows[0]?.commission_rate || 0);
-    const consumeAmount = round22(consumeBase * rate);
+    const effConsumeBase = round22(Math.max(perSession, Number(rateRows[0]?.price_threshold || 0)) * sessionUsed);
+    const consumeAmount = round22(effConsumeBase * rate);
     const commissionAmount = round22(fixedFee + consumeAmount);
     if (rate === 0 && consumeBase > 0) {
       await executor.execute(import_drizzle_orm39.sql`
@@ -172365,7 +172407,7 @@ var createServiceOrder = withPermission("service:create", async (session4, data)
       unitRealPrice: saleItems.unitRealPrice,
       saleOrderType: saleOrders.saleOrderType,
       orderStatus: saleOrders.status,
-      isShengmei: import_drizzle_orm41.sql`COALESCE(${saleItems.isShengmei}, ${productSkus.isShengmei})`,
+      isShengmei: import_drizzle_orm41.sql`COALESCE(${productSkus.isShengmei}, ${saleItems.isShengmei})`,
       salesCategory: import_drizzle_orm41.sql`COALESCE(${saleItems.salesCategory}, ${productCategories.salesCategory})`,
       hasPendingRefund: import_drizzle_orm41.sql`EXISTS (SELECT 1 FROM sale_order_payments sop WHERE sop.sale_order_id = ${saleOrders.saleOrderId} AND sop.change_type = '退款' AND sop.status = '待审批')`,
       hasApprovedRefund: import_drizzle_orm41.sql`EXISTS (SELECT 1 FROM sale_order_payments sop WHERE sop.sale_order_id = ${saleOrders.saleOrderId} AND sop.change_type = '退款' AND sop.status = '已支付')`
@@ -175671,7 +175713,7 @@ var INVENTORY_DOC_CANDIDATES = {
     remainingToggle: true
   },
   "company-shipment-source": {
-    rules: [{ docType: "市场报货", statuses: ["已完成"] }],
+    rules: [{ docType: "采购订单" }],
     scopeRole: "target",
     progress: "shipped",
     remainingToggle: true
@@ -175848,6 +175890,17 @@ function inventoryPriceVisibilityForOrgNodes(tiers, orgNodeIds) {
   if (market)
     return "market";
   return "none";
+}
+var INVENTORY_PROMOTION_MAINTAIN_ACTION = "inventory:supply_chain_master_data_manage";
+function isInventoryPromotionMaintainer(session4) {
+  if (isAdminScope(session4))
+    return true;
+  return session4.roles.some((role) => role.scopeType === "总部" && Array.isArray(role.actions) && role.actions.includes(INVENTORY_PROMOTION_MAINTAIN_ACTION));
+}
+function assertInventoryPromotionMaintainer(session4) {
+  if (!isInventoryPromotionMaintainer(session4)) {
+    throw new ApiError("PERMISSION_DENIED", "报货福利方案只能由总部供应链维护");
+  }
 }
 
 // src/lib/inventory/engine.ts
@@ -176785,6 +176838,24 @@ var listInventoryMarketTransferTargets = withAnyPermission([...inventoryDelegata
   const rows = await db2.select({ orgNodeId: inventoryLocations.orgNodeId, name: inventoryLocations.name }).from(inventoryLocations).where(import_drizzle_orm57.and(import_drizzle_orm57.eq(inventoryLocations.isActive, true), import_drizzle_orm57.eq(inventoryLocations.locationType, "市场"), import_drizzle_orm57.isNotNull(inventoryLocations.orgNodeId))).orderBy(import_drizzle_orm57.asc(inventoryLocations.name));
   return rows.flatMap((row) => row.orgNodeId ? [{ orgNodeId: row.orgNodeId, name: row.name }] : []);
 });
+var PROMOTION_READ_SCOPE = { scopeActions: ["inventory:stock_list", INVENTORY_PROMOTION_MAINTAIN_ACTION] };
+async function promotionVisibleLocationIds(session4) {
+  if (isInventoryPromotionMaintainer(session4))
+    return null;
+  return scopedLocationIds(scopeSessionToActions(session4, ["inventory:stock_list"]));
+}
+var listInventoryPromotionMarketOptions = withPermission("inventory:stock_list", async (session4) => {
+  await syncInventoryLocations();
+  const conditions3 = [
+    import_drizzle_orm57.eq(inventoryLocations.isActive, true),
+    import_drizzle_orm57.eq(inventoryLocations.locationType, "市场")
+  ];
+  const scoped = await promotionVisibleLocationIds(session4);
+  if (scoped !== null) {
+    conditions3.push(scoped.length > 0 ? import_drizzle_orm57.inArray(inventoryLocations.locationId, scoped) : import_drizzle_orm57.sql`FALSE`);
+  }
+  return db2.select({ locationId: inventoryLocations.locationId, name: inventoryLocations.name }).from(inventoryLocations).where(import_drizzle_orm57.and(...conditions3)).orderBy(import_drizzle_orm57.asc(inventoryLocations.name));
+}, PROMOTION_READ_SCOPE);
 var listInventoryLocations = withPermission("inventory:stock_list", async (session4) => {
   await syncInventoryLocations();
   const scoped = await scopedLocationIds(session4);
@@ -177323,15 +177394,11 @@ var listInventoryCoreDocs = withPermission("inventory:list", async (session4, fi
     conditions3.push(import_drizzle_orm57.isNotNull(inventoryDocs.cancellationRequestReason));
   }
   if (filters.pendingItemScope) {
-    conditions3.push(filters.pendingItemScope === "company-shipment" ? import_drizzle_orm57.sql`EXISTS (
-          SELECT 1 FROM ${inventoryDocItems} pending_item
-           WHERE pending_item.doc_id = ${inventoryDocs.id}
-             AND ${reportItemShippedSql(import_drizzle_orm57.sql`pending_item.id`)} < pending_item.quantity
-        )` : import_drizzle_orm57.sql`EXISTS (
-          SELECT 1 FROM ${inventoryDocItems} pending_item
-           WHERE pending_item.doc_id = ${inventoryDocs.id}
-             AND COALESCE(pending_item.fulfilled_quantity, 0) < pending_item.quantity
-        )`);
+    conditions3.push(import_drizzle_orm57.sql`EXISTS (
+        SELECT 1 FROM ${inventoryDocItems} pending_item
+         WHERE pending_item.doc_id = ${inventoryDocs.id}
+           AND COALESCE(pending_item.fulfilled_quantity, 0) < pending_item.quantity
+      )`);
   }
   if (filters.startDate)
     conditions3.push(import_drizzle_orm57.gte(inventoryDocs.docDate, filters.startDate));
@@ -177364,21 +177431,9 @@ var listInventoryCoreDocs = withPermission("inventory:list", async (session4, fi
     priceVisibility
   };
 });
-function reportItemShippedSql(reportItemId) {
-  return import_drizzle_orm57.sql`(
-    SELECT COALESCE(SUM(shipped_link.quantity), 0)
-      FROM inventory_doc_links shipped_link
-      JOIN inventory_docs shipped_link_doc ON shipped_link_doc.id = shipped_link.to_doc_id
-     WHERE shipped_link.from_item_id = ${reportItemId}
-       AND shipped_link.relation_type = '市场报货发货'
-       AND shipped_link_doc.status <> '已取消'
-  )`;
-}
 function candidateItemDoneSql(kind) {
-  if (kind === "shipped")
-    return reportItemShippedSql(import_drizzle_orm57.sql`cand_item.id`);
-  if (kind === "allocated") {
-    const relationType = "门店报货配货";
+  if (kind === "shipped" || kind === "allocated") {
+    const relationType = kind === "shipped" ? "采购订单发货" : "门店报货配货";
     return import_drizzle_orm57.sql`(
       SELECT COALESCE(SUM(cand_link.quantity), 0)
         FROM inventory_doc_links cand_link
@@ -177390,10 +177445,14 @@ function candidateItemDoneSql(kind) {
   }
   return import_drizzle_orm57.sql`COALESCE(cand_item.fulfilled_quantity, 0)`;
 }
+function candidateItemFilterSql(kind) {
+  return kind === "shipped" ? import_drizzle_orm57.sql`AND cand_item.market_id IS NOT NULL` : import_drizzle_orm57.sql``;
+}
 function candidateRemainingSql(kind) {
   return import_drizzle_orm57.sql`EXISTS (
     SELECT 1 FROM inventory_doc_items cand_item
      WHERE cand_item.doc_id = ${inventoryDocs.id}
+       ${candidateItemFilterSql(kind)}
        AND ${candidateItemDoneSql(kind)} < cand_item.quantity
   )`;
 }
@@ -177402,11 +177461,13 @@ function candidateProgressSql(kind) {
     SELECT COALESCE(SUM(cand_item.quantity), 0)
       FROM inventory_doc_items cand_item
      WHERE cand_item.doc_id = ${inventoryDocs.id}
+       ${candidateItemFilterSql(kind)}
   )`;
   const done = kind === "none" ? import_drizzle_orm57.sql`NULL` : import_drizzle_orm57.sql`(
       SELECT COALESCE(SUM(LEAST(${candidateItemDoneSql(kind)}, cand_item.quantity)), 0)
         FROM inventory_doc_items cand_item
        WHERE cand_item.doc_id = ${inventoryDocs.id}
+         ${candidateItemFilterSql(kind)}
     )`;
   return { total, done };
 }
@@ -177443,7 +177504,6 @@ function parseCandidateFilters(filters) {
     keyword: candidateText(filters.keyword, "检索关键字")?.slice(0, 64),
     startDate,
     endDate,
-    sourceOrgNodeId: candidateText(filters.sourceOrgNodeId, "发起主体"),
     targetOrgNodeId: candidateText(filters.targetOrgNodeId, "接收主体"),
     includeExhausted: includeExhausted === true
   };
@@ -177470,10 +177530,14 @@ function candidateConditions(session4, definition, filters, { onlyRemaining }) {
   }
   if (onlyRemaining || definition.requireRemaining) {
     conditions3.push(candidateRemainingSql(definition.progress));
+  } else if (definition.progress === "shipped") {
+    conditions3.push(import_drizzle_orm57.sql`EXISTS (
+      SELECT 1 FROM inventory_doc_items cand_item
+       WHERE cand_item.doc_id = ${inventoryDocs.id}
+         AND cand_item.market_id IS NOT NULL
+    )`);
   }
-  const { sourceOrgNodeId, targetOrgNodeId, startDate, endDate, keyword } = filters;
-  if (sourceOrgNodeId)
-    conditions3.push(import_drizzle_orm57.eq(inventoryDocs.sourceOrgNodeId, sourceOrgNodeId));
+  const { targetOrgNodeId, startDate, endDate, keyword } = filters;
   if (targetOrgNodeId)
     conditions3.push(import_drizzle_orm57.eq(inventoryDocs.targetOrgNodeId, targetOrgNodeId));
   if (startDate)
@@ -177555,7 +177619,7 @@ function visibleInventoryDocsSql(scoped) {
 function asDocDate(value) {
   return fmtDate(value);
 }
-async function loadInventoryDocLineage(docId, docType, scoped) {
+async function loadInventoryDocLineage(docId, scoped) {
   const linkedDocVisible = scoped === null ? import_drizzle_orm57.sql`TRUE` : import_drizzle_orm57.sql`(
       (doc_link.from_doc_id = ${docId} AND ${inventoryDocScopeSql(scoped, import_drizzle_orm57.sql`to_doc.source_org_node_id`, import_drizzle_orm57.sql`to_doc.target_org_node_id`)})
       OR
@@ -177593,35 +177657,6 @@ async function loadInventoryDocLineage(docId, docType, scoped) {
       to_doc.total_quantity
     ORDER BY linked_at DESC, doc_link.relation_type ASC
   `);
-  if (docType !== "市场采购入库")
-    return mapLineageRows(rows);
-  const reportVisible = scoped === null ? import_drizzle_orm57.sql`TRUE` : inventoryDocScopeSql(scoped, import_drizzle_orm57.sql`origin_report.source_org_node_id`, import_drizzle_orm57.sql`origin_report.target_org_node_id`);
-  const originReportRows = await db2.execute(import_drizzle_orm57.sql`
-    SELECT
-      '上游' AS direction,
-      '原始报货单（经品项公司发货）' AS relation_type,
-      origin_report.id AS doc_id,
-      origin_report.doc_type,
-      origin_report.status,
-      origin_report.doc_date,
-      origin_report.total_quantity,
-      COALESCE(SUM(origin_receipt_link.quantity), 0) AS linked_quantity,
-      MAX(origin_receipt_link.created_at) AS linked_at
-    FROM inventory_doc_links origin_receipt_link
-    JOIN inventory_doc_links origin_ship_link
-      ON origin_ship_link.to_item_id = origin_receipt_link.from_item_id
-     AND origin_ship_link.relation_type IN ('市场报货发货', '市场报货赠送发货')
-    JOIN inventory_docs origin_report ON origin_report.id = origin_ship_link.from_doc_id
-    WHERE origin_receipt_link.to_doc_id = ${docId}
-      AND origin_receipt_link.relation_type = '发货收货'
-      AND ${reportVisible}
-    GROUP BY origin_report.id, origin_report.doc_type, origin_report.status,
-             origin_report.doc_date, origin_report.total_quantity
-    ORDER BY linked_at DESC
-  `);
-  return mapLineageRows([...rows, ...originReportRows]);
-}
-function mapLineageRows(rows) {
   return rows.map((row) => ({
     direction: row.direction,
     relationType: row.relation_type,
@@ -177662,7 +177697,7 @@ async function loadMarketReportFulfillmentProgress(docId, scoped) {
       -- （单号、其它市场的明细都不出现在返回值里），所以放开这层过滤是安全的。
       --
       -- 已取消的采购单也要带上（#335）：市场行可以部分入库后再关单，已入库的那部分
-      -- 仍占着需求额度，整张排除会让「已采购」归零（发货 / 收货自 #336 起按直连血缘另算，与采购单无关）。
+      -- 仍占着需求额度、也可能已经发了货，整张排除会让「已采购 / 已发 / 已收」一起归零。
       -- 已下单量在下面 purchase_totals 里只计已入库的保留部分（cancelled_retained）。
       SELECT
         doc_link.from_item_id AS root_item_id,
@@ -177676,6 +177711,30 @@ async function loadMarketReportFulfillmentProgress(docId, scoped) {
          AND doc_link.relation_type = '市场报货采购订单'
          AND purchase_doc.status IN ('已完成', '待收货', '已取消')
     ),
+    -- 一条采购明细可以由**多个**来源行合并而来（#194），所以下游的发货/收货量必须
+    -- 按各来源在该采购行里的占比分摊，不能每个来源都记全量 ——
+    -- 来源 A 5 件、B 5 件合成采购行 10 件、实发 6 件时，不分摊会让 A 与 B 各显示 6，
+    -- 合计 12 件，凭空多出一倍。
+    --
+    -- ⚠️ 分母必须取该采购行的**全部**来源血缘，不能用 PARTITION BY 的窗口和：
+    -- purchase_links 已经被 from_doc_id 限定成「当前这张单」的血缘，
+    -- 窗口函数看不到同一采购行来自**其它来源单**的那部分，share 又会退回 1，
+    -- 跨单合并的场景照样重复计数。
+    purchase_share AS (
+      SELECT
+        purchase_link.root_item_id,
+        purchase_link.purchase_item_id,
+        purchase_link.quantity,
+        purchase_link.purchase_status,
+        purchase_link.quantity / NULLIF(source_total.total_quantity, 0) AS share
+        FROM purchase_links purchase_link
+        JOIN LATERAL (
+          SELECT COALESCE(SUM(COALESCE(all_link.quantity, 0)), 0) AS total_quantity
+            FROM inventory_doc_links all_link
+           WHERE all_link.to_item_id = purchase_link.purchase_item_id
+             AND all_link.relation_type = '市场报货采购订单'
+        ) source_total ON true
+    ),
     -- 已取消的采购单只剩已入库那部分仍算已采购：按分做最大余数分配，与建单容量
     -- （business.ts allocateSummaryToMarketReportItems）共用同一片段，保证同源。
     cancelled_retained AS (${cancelledMarketReportRetainedSql(import_drizzle_orm57.sql`SELECT item_id FROM root_items`)}),
@@ -177684,7 +177743,7 @@ async function loadMarketReportFulfillmentProgress(docId, scoped) {
     -- 各自一次 GROUP BY 再左连接，避免按 root_items 逐行跑相关子查询。
     active_purchase_totals AS (
       SELECT active_link.root_item_id, SUM(active_link.quantity) AS quantity
-        FROM purchase_links active_link
+        FROM purchase_share active_link
        WHERE active_link.purchase_status <> '已取消'
        GROUP BY active_link.root_item_id
     ),
@@ -177701,28 +177760,28 @@ async function loadMarketReportFulfillmentProgress(docId, scoped) {
         LEFT JOIN active_purchase_totals active_total ON active_total.root_item_id = root_item.item_id
         LEFT JOIN cancelled_purchase_totals cancelled_total ON cancelled_total.report_item_id = root_item.item_id
     ),
-    -- 发货直连报货行（#336），按血缘原值累计、不再经采购行占比分摊 —— 已发 / 已收都是整数不出小数。
-    -- 存量「采购订单 → 发货」的旧单不再折算回报货单（拍板 C：只对新单生效）。
-    -- 正常已发与 business.ts createItemCompanyShipment 的封顶同口径：排除已取消，「待审批」的撤回申请仍占额度。
     shipment_links AS (
       SELECT
-        doc_link.from_item_id AS root_item_id,
+        purchase_link.root_item_id,
         doc_link.to_item_id AS shipment_item_id,
         doc_link.relation_type,
-        COALESCE(doc_link.quantity, 0) AS quantity
-        FROM inventory_doc_links doc_link
-        JOIN root_items root_item ON root_item.item_id = doc_link.from_item_id
+        COALESCE(doc_link.quantity, 0) * COALESCE(purchase_link.share, 0) AS quantity,
+        -- 发货明细由采购行一对一产生，所以收货沿用采购层的占比即可。
+        -- 早先在这里按当前单据子集再归一化一次，等于把 share 重新拉回 1，白分摊了。
+        COALESCE(purchase_link.share, 0) AS share
+        FROM purchase_share purchase_link
+        JOIN inventory_doc_links doc_link
+          ON doc_link.from_item_id = purchase_link.purchase_item_id
         JOIN inventory_docs shipment_doc ON shipment_doc.id = doc_link.to_doc_id
        JOIN visible_docs visible_shipment ON visible_shipment.id = shipment_doc.id
-       WHERE doc_link.from_doc_id = ${docId}
-         AND doc_link.relation_type IN ('市场报货发货', '市场报货赠送发货')
-         AND shipment_doc.status <> '已取消'
+       WHERE doc_link.relation_type IN ('采购订单发货', '采购订单赠送发货')
+         AND shipment_doc.status IN ('待收货', '已完成')
     ),
     shipment_totals AS (
       SELECT
         root_item_id,
-        SUM(CASE WHEN relation_type = '市场报货发货' THEN quantity ELSE 0 END) AS normal_fulfilled_quantity,
-        SUM(CASE WHEN relation_type = '市场报货赠送发货' THEN quantity ELSE 0 END) AS gift_fulfilled_quantity
+        SUM(CASE WHEN relation_type = '采购订单发货' THEN quantity ELSE 0 END) AS normal_fulfilled_quantity,
+        SUM(CASE WHEN relation_type = '采购订单赠送发货' THEN quantity ELSE 0 END) AS gift_fulfilled_quantity
         FROM shipment_links
        GROUP BY root_item_id
     ),
@@ -177730,7 +177789,7 @@ async function loadMarketReportFulfillmentProgress(docId, scoped) {
       SELECT
         shipment_link.root_item_id,
         shipment_link.relation_type AS shipment_relation_type,
-        COALESCE(doc_link.quantity, 0) AS quantity
+        COALESCE(doc_link.quantity, 0) * COALESCE(shipment_link.share, 0) AS quantity
         FROM shipment_links shipment_link
         JOIN inventory_doc_links doc_link
           ON doc_link.from_item_id = shipment_link.shipment_item_id
@@ -177742,8 +177801,8 @@ async function loadMarketReportFulfillmentProgress(docId, scoped) {
     receipt_totals AS (
       SELECT
         root_item_id,
-        SUM(CASE WHEN shipment_relation_type = '市场报货发货' THEN quantity ELSE 0 END) AS normal_received_quantity,
-        SUM(CASE WHEN shipment_relation_type = '市场报货赠送发货' THEN quantity ELSE 0 END) AS gift_received_quantity
+        SUM(CASE WHEN shipment_relation_type = '采购订单发货' THEN quantity ELSE 0 END) AS normal_received_quantity,
+        SUM(CASE WHEN shipment_relation_type = '采购订单赠送发货' THEN quantity ELSE 0 END) AS gift_received_quantity
         FROM receipt_links
        GROUP BY root_item_id
     )
@@ -177949,14 +178008,32 @@ async function loadSupplyChainPurchaseReceiptProgress(docId, scoped) {
          AND doc_link.relation_type = '采购订单供应链采购入库'
          AND receipt_doc.status = '已完成'
        GROUP BY doc_link.from_item_id
+    ),
+    -- 市场行的正常发货量（#335 过渡期：发货仍以采购行数量封顶，由 #336 改为引用市场报货单）。
+    -- 与 business.ts linkedQuantity 同口径：排除已取消的发货单，赠送发货不占采购数量。
+    -- 只聚合已过可见性校验的采购行，不外泄发货单本身的内容，所以发货单不再套 visible_docs。
+    purchase_shipment_totals AS (
+      SELECT
+        doc_link.from_item_id AS purchase_item_id,
+        SUM(COALESCE(doc_link.quantity, 0)) AS shipped_quantity
+        FROM inventory_doc_links doc_link
+        JOIN purchase_items purchase_item ON purchase_item.item_id = doc_link.from_item_id
+        JOIN inventory_docs shipment_doc ON shipment_doc.id = doc_link.to_doc_id
+       WHERE doc_link.from_doc_id = ${docId}
+         AND doc_link.relation_type = '采购订单发货'
+         AND shipment_doc.status <> '已取消'
+       GROUP BY doc_link.from_item_id
     )
     SELECT
       purchase_item.item_id,
       purchase_item.quantity AS purchased_quantity,
       COALESCE(receipt_total.received_quantity, 0) AS received_quantity,
+      COALESCE(purchase_shipment_total.shipped_quantity, 0) AS shipped_quantity,
       purchase_item.purchase_status
       FROM purchase_items purchase_item
       LEFT JOIN receipt_totals receipt_total ON receipt_total.purchase_item_id = purchase_item.item_id
+      LEFT JOIN purchase_shipment_totals purchase_shipment_total
+        ON purchase_shipment_total.purchase_item_id = purchase_item.item_id
      ORDER BY purchase_item.item_id
   `);
   if (rows.length === 0)
@@ -177970,6 +178047,7 @@ async function loadSupplyChainPurchaseReceiptProgress(docId, scoped) {
         itemId: Number(row.item_id),
         purchasedQuantity,
         receivedQuantity,
+        shippedQuantity: numberOrNull(row.shipped_quantity) ?? 0,
         outstandingQuantity: row.purchase_status === "待收货" ? Math.max(0, purchasedQuantity - receivedQuantity) : 0
       };
     })
@@ -178078,7 +178156,7 @@ var getInventoryCoreDocById = withPermission("inventory:list", async (session4, 
   const includeItemAmount = itemPriceVisibility !== "none";
   const [items, lineage, fulfillmentProgress] = await Promise.all([
     db2.select().from(inventoryDocItems).where(import_drizzle_orm57.eq(inventoryDocItems.docId, id)).orderBy(import_drizzle_orm57.asc(inventoryDocItems.id)),
-    loadInventoryDocLineage(id, head.docType, scoped),
+    loadInventoryDocLineage(id, scoped),
     loadInventoryDocFulfillmentProgress(head.docType, id, scoped)
   ]);
   const itemMarketIds = [...new Set(items.map((item) => item.marketId).filter((id2) => Boolean(id2)))];
@@ -178680,41 +178758,26 @@ var updateInventorySupplier = withPermission("inventory:supply_chain_master_data
   import_cache11.revalidatePath("/inventory/suppliers");
   return { success: true };
 });
-async function assertPromotionMarketScope(session4, marketId) {
+async function assertPromotionMarketScope(marketId) {
   const normalized = normalizeText(marketId);
-  if (!normalized) {
-    if (!isAdminScope(session4) && !session4.roles.some((role) => role.scopeType === "总部")) {
-      throw new ApiError("PERMISSION_DENIED", "市场用户只能维护本市场的福利方案");
-    }
+  if (!normalized)
     return null;
-  }
   await syncInventoryLocations();
   const [location] = await db2.select({ locationType: inventoryLocations.locationType }).from(inventoryLocations).where(import_drizzle_orm57.eq(inventoryLocations.locationId, normalized)).limit(1);
   if (!location || location.locationType !== "市场") {
     throw new ApiError("INVALID_PARAMS", "福利方案所属主体必须是市场");
   }
-  await assertLocationVisible(session4, normalized);
   return normalized;
 }
-async function assertPromotionPlanMutableScope(session4, scopeMarketId) {
-  if (scopeMarketId === null) {
-    if (isAdminScope(session4) || session4.roles.some((role) => role.scopeType === "总部"))
-      return;
-    throw new ApiError("PERMISSION_DENIED", "市场用户不能修改或停用全局福利方案");
-  }
-  await assertLocationVisible(session4, scopeMarketId);
-}
-async function lockPromotionPlanScopeForMutation(tx, id) {
+async function lockPromotionPlanForMutation(tx, id) {
   const rows = await tx.execute(import_drizzle_orm57.sql`
-    SELECT scope_market_id
+    SELECT id
       FROM inventory_promotion_plans
      WHERE id = ${id}
      FOR UPDATE
   `);
-  const row = rows[0];
-  if (!row)
+  if (!rows[0])
     throw new ApiError("NOT_FOUND", "福利方案不存在或无权查看");
-  return row.scope_market_id ?? null;
 }
 function normalizePromotionRuleType(value) {
   if (value === undefined || value === null || value === "")
@@ -178820,7 +178883,7 @@ function promotionItemRow(row) {
 }
 async function promotionPlanRows(session4, onlyId) {
   const priceVisible = canViewPrice(session4);
-  const scoped = await scopedLocationIds(session4);
+  const scoped = await promotionVisibleLocationIds(session4);
   const conditions3 = [];
   if (onlyId)
     conditions3.push(import_drizzle_orm57.eq(inventoryPromotionPlans.id, onlyId));
@@ -178877,13 +178940,14 @@ async function promotionPlanRows(session4, onlyId) {
     updatedAt: plan.updatedAt.toISOString()
   }));
 }
-var listInventoryPromotionPlans = withPermission("inventory:stock_list", async (session4) => promotionPlanRows(session4));
+var listInventoryPromotionPlans = withPermission("inventory:stock_list", async (session4) => promotionPlanRows(session4), PROMOTION_READ_SCOPE);
 var getInventoryPromotionPlanById = withPermission("inventory:stock_list", async (session4, idInput) => {
   const id = normalizeRequired(idInput, "福利方案");
   return (await promotionPlanRows(session4, id))[0] ?? null;
-});
-var createInventoryPromotionPlan = withAnyPermission(["inventory:supply_chain_master_data_manage", "inventory:market_operate"], async (session4, input) => {
+}, PROMOTION_READ_SCOPE);
+var createInventoryPromotionPlan = withPermission(INVENTORY_PROMOTION_MAINTAIN_ACTION, async (session4, input) => {
   assertPromotionPriceWritable(session4);
+  assertInventoryPromotionMaintainer(session4);
   const name = normalizeRequired(input.name, "方案名称");
   const startsAt = normalizeYmd(input.startsAt, "开始日期");
   const endsAt = normalizeYmd(input.endsAt, "结束日期");
@@ -178893,7 +178957,7 @@ var createInventoryPromotionPlan = withAnyPermission(["inventory:supply_chain_ma
   if (input.status && input.status !== "启用" && input.status !== "停用") {
     throw new ApiError("INVALID_PARAMS", "福利方案状态无效");
   }
-  const scopeMarketId = await assertPromotionMarketScope(session4, input.scopeMarketId);
+  const scopeMarketId = await assertPromotionMarketScope(input.scopeMarketId);
   const items = normalizePromotionItems(input.items, ruleType);
   await assertPromotionSkus(items);
   const id = `INV-PROMO-${crypto.randomUUID()}`;
@@ -178928,8 +178992,9 @@ var createInventoryPromotionPlan = withAnyPermission(["inventory:supply_chain_ma
   import_cache11.revalidatePath("/inventory/promotions");
   return { id };
 });
-var updateInventoryPromotionPlan = withAnyPermission(["inventory:supply_chain_master_data_manage", "inventory:market_operate"], async (session4, idInput, input) => {
+var updateInventoryPromotionPlan = withPermission(INVENTORY_PROMOTION_MAINTAIN_ACTION, async (session4, idInput, input) => {
   assertPromotionPriceWritable(session4);
+  assertInventoryPromotionMaintainer(session4);
   const id = normalizeRequired(idInput, "福利方案");
   const name = normalizeRequired(input.name, "方案名称");
   const startsAt = normalizeYmd(input.startsAt, "开始日期");
@@ -178943,11 +179008,10 @@ var updateInventoryPromotionPlan = withAnyPermission(["inventory:supply_chain_ma
   const current = (await promotionPlanRows(session4, id))[0];
   if (!current)
     throw new ApiError("NOT_FOUND", "福利方案不存在或无权查看");
-  const scopeMarketId = await assertPromotionMarketScope(session4, input.scopeMarketId);
+  const scopeMarketId = await assertPromotionMarketScope(input.scopeMarketId);
   const items = normalizePromotionItems(input.items, ruleType);
   await db2.transaction(async (tx) => {
-    const currentScopeMarketId = await lockPromotionPlanScopeForMutation(tx, id);
-    await assertPromotionPlanMutableScope(session4, currentScopeMarketId);
+    await lockPromotionPlanForMutation(tx, id);
     await assertPromotionSkus(items);
     await tx.update(inventoryPromotionPlans).set({
       name,
@@ -178976,14 +179040,14 @@ var updateInventoryPromotionPlan = withAnyPermission(["inventory:supply_chain_ma
   import_cache11.revalidatePath("/inventory/promotions");
   return { success: true };
 });
-var disableInventoryPromotionPlan = withAnyPermission(["inventory:supply_chain_master_data_manage", "inventory:market_operate"], async (session4, idInput) => {
+var disableInventoryPromotionPlan = withPermission(INVENTORY_PROMOTION_MAINTAIN_ACTION, async (session4, idInput) => {
+  assertInventoryPromotionMaintainer(session4);
   const id = normalizeRequired(idInput, "福利方案");
   const current = (await promotionPlanRows(session4, id))[0];
   if (!current)
     throw new ApiError("NOT_FOUND", "福利方案不存在或无权查看");
   await db2.transaction(async (tx) => {
-    const currentScopeMarketId = await lockPromotionPlanScopeForMutation(tx, id);
-    await assertPromotionPlanMutableScope(session4, currentScopeMarketId);
+    await lockPromotionPlanForMutation(tx, id);
     await tx.update(inventoryPromotionPlans).set({ status: "停用", updatedAt: new Date }).where(import_drizzle_orm57.eq(inventoryPromotionPlans.id, id));
   });
   await logOperation(session4, "inventory.promotion.disable", "inventory_promotion_plans", id);
@@ -179214,12 +179278,22 @@ function technicianCountSql(session4, scope, endDate) {
       SELECT COUNT(*)::int AS v FROM technician_scoped
     `;
 }
-function technicianByStoreSql(session4, scope, endDate) {
+function technicianPoolFilterSql(pool) {
+  if (pool === "producer")
+    return import_drizzle_orm61.sql``;
+  return import_drizzle_orm61.sql`
+        AND EXISTS (
+          SELECT 1 FROM staff_wechat_users bw
+          WHERE bw.employee_id = ts.employee_id
+            AND bw.skills && ARRAY['美容师']::text[]
+        )`;
+}
+function technicianByStoreSql(session4, scope, endDate, pool = "producer") {
   return import_drizzle_orm61.sql`
       WITH ${technicianCteSql(session4, scope, endDate)}
       SELECT store_id, COUNT(*)::int AS v
-      FROM technician_scoped
-      WHERE store_id IS NOT NULL
+      FROM technician_scoped ts
+      WHERE store_id IS NOT NULL${technicianPoolFilterSql(pool)}
       GROUP BY store_id
     `;
 }
@@ -179582,7 +179656,37 @@ var getSalesBoard = withPermission("data_center:dashboard", async (session4, par
 // src/actions/data-center/customer.ts
 init_db2();
 init_with_permission();
+var import_drizzle_orm64 = __toESM(require_drizzle_orm(), 1);
+
+// src/lib/data-center/visit-days.ts
 var import_drizzle_orm63 = __toESM(require_drizzle_orm(), 1);
+var VISIT_DAY_AXIS_COLUMN = {
+  service_date: "so.service_date"
+};
+function visitDaysSql(opts) {
+  const column2 = Object.hasOwn(VISIT_DAY_AXIS_COLUMN, opts.axis) ? VISIT_DAY_AXIS_COLUMN[opts.axis] : undefined;
+  if (!column2)
+    throw new Error(`visitDaysSql: 未知日期轴 ${String(opts.axis)}`);
+  const col = import_drizzle_orm63.sql.raw(column2);
+  return import_drizzle_orm63.sql`
+    SELECT DISTINCT so.client_user_id, ${col} AS visit_date
+    FROM service_orders so
+    WHERE ${opts.scope}
+      AND so.status = '已完成'
+      AND so.client_user_id IS NOT NULL
+      AND ${col} BETWEEN ${opts.range.start} AND ${opts.range.end}
+  `;
+}
+
+// src/lib/data-center/spend-buckets.ts
+var SPEND_BUCKET_FLOORS = Object.freeze({
+  star: 1e4,
+  pink: 30000,
+  gold: 60000,
+  black: 1e5
+});
+
+// src/actions/data-center/customer.ts
 "use server";
 var num = (v) => {
   const n = Number(v ?? 0);
@@ -179593,7 +179697,7 @@ var first = (rows) => rows[0] ?? {};
 async function queryRegistration(session4, scope, range, customerType) {
   const sc = scopeFilterSql(session4, scope, "c.bound_store_id");
   if (customerType === "会员客") {
-    const rows2 = await db2.execute(import_drizzle_orm63.sql`
+    const rows2 = await db2.execute(import_drizzle_orm64.sql`
       SELECT COUNT(*) AS v
       FROM client_wechat_users c
       WHERE ${sc}
@@ -179602,8 +179706,8 @@ async function queryRegistration(session4, scope, range, customerType) {
     `);
     return num(first(rows2).v);
   }
-  const typeClause = customerType ? import_drizzle_orm63.sql` AND c.customer_type = ${customerType}` : import_drizzle_orm63.sql``;
-  const rows = await db2.execute(import_drizzle_orm63.sql`
+  const typeClause = customerType ? import_drizzle_orm64.sql` AND c.customer_type = ${customerType}` : import_drizzle_orm64.sql``;
+  const rows = await db2.execute(import_drizzle_orm64.sql`
     SELECT COUNT(*) AS v
     FROM client_wechat_users c
     WHERE ${sc}
@@ -179613,9 +179717,9 @@ async function queryRegistration(session4, scope, range, customerType) {
 }
 async function queryTrafficCount(session4, scope, range, customerType, metric) {
   const sc = scopeFilterSql(session4, scope, "so.store_id");
-  const typeClause = customerType ? import_drizzle_orm63.sql` AND c.customer_type = ${customerType}` : import_drizzle_orm63.sql``;
-  const expr = metric === "users" ? import_drizzle_orm63.sql`COUNT(DISTINCT so.client_user_id)` : import_drizzle_orm63.sql`COUNT(*)`;
-  const rows = await db2.execute(import_drizzle_orm63.sql`
+  const typeClause = customerType ? import_drizzle_orm64.sql` AND c.customer_type = ${customerType}` : import_drizzle_orm64.sql``;
+  const expr = metric === "users" ? import_drizzle_orm64.sql`COUNT(DISTINCT so.client_user_id)` : import_drizzle_orm64.sql`COUNT(*)`;
+  const rows = await db2.execute(import_drizzle_orm64.sql`
     SELECT ${expr} AS v
     FROM service_orders so
     JOIN client_wechat_users c ON c.user_id = so.client_user_id
@@ -179627,7 +179731,7 @@ async function queryTrafficCount(session4, scope, range, customerType, metric) {
 }
 async function queryProjectCount(session4, scope, range) {
   const sc = scopeFilterSql(session4, scope, "so.store_id");
-  const rows = await db2.execute(import_drizzle_orm63.sql`
+  const rows = await db2.execute(import_drizzle_orm64.sql`
     SELECT COALESCE(SUM(sit.session_used), 0) AS v
     FROM service_orders so
     JOIN service_items sit ON sit.service_order_id = so.service_order_id
@@ -179641,7 +179745,7 @@ async function queryProjectCount(session4, scope, range) {
 }
 async function queryServiceCount(session4, scope, range) {
   const sc = scopeFilterSql(session4, scope, "so.store_id");
-  const rows = await db2.execute(import_drizzle_orm63.sql`
+  const rows = await db2.execute(import_drizzle_orm64.sql`
     SELECT COUNT(*) AS v
     FROM service_orders so
     WHERE ${sc}
@@ -179652,7 +179756,7 @@ async function queryServiceCount(session4, scope, range) {
 }
 async function queryShengmeiConsume(session4, scope, range) {
   const sc = scopeFilterSql(session4, scope, "so.store_id");
-  const rows = await db2.execute(import_drizzle_orm63.sql`
+  const rows = await db2.execute(import_drizzle_orm64.sql`
     SELECT COALESCE(SUM(sit.unit_real_price::numeric * sit.session_used::numeric), 0) AS v
     FROM service_orders so
     JOIN service_items sit ON sit.service_order_id = so.service_order_id
@@ -179666,8 +179770,8 @@ async function queryShengmeiConsume(session4, scope, range) {
 }
 async function queryStatusCount(session4, scope, status) {
   const sc = scopeFilterSql(session4, scope, "c.bound_store_id");
-  const memberClause = status === "沉睡" ? import_drizzle_orm63.sql` AND c.customer_type = '会员客'` : import_drizzle_orm63.sql``;
-  const rows = await db2.execute(import_drizzle_orm63.sql`
+  const memberClause = status === "沉睡" ? import_drizzle_orm64.sql` AND c.customer_type = '会员客'` : import_drizzle_orm64.sql``;
+  const rows = await db2.execute(import_drizzle_orm64.sql`
     SELECT COUNT(*) AS v
     FROM client_wechat_users c
     WHERE ${sc}
@@ -179678,23 +179782,20 @@ async function queryStatusCount(session4, scope, status) {
 async function queryActive(session4, scope, range, mode) {
   const ssc = scopeFilterSql(session4, scope, "so.store_id");
   const csc = scopeFilterSql(session4, scope, "c.bound_store_id");
-  const nClause = mode === "once" ? import_drizzle_orm63.sql`vc.n = 1` : import_drizzle_orm63.sql`vc.n >= 2`;
-  const rows = await db2.execute(import_drizzle_orm63.sql`
-    WITH visit_count AS (
-      SELECT so.client_user_id, COUNT(*) AS n
-      FROM service_orders so
-      WHERE ${ssc}
-        AND so.status = '已完成'
-        AND so.client_user_id IS NOT NULL
-        AND so.service_date BETWEEN ${range.start} AND ${range.end}
-      GROUP BY so.client_user_id
+  const daysClause = mode === "once" ? import_drizzle_orm64.sql`vc.days = 1` : import_drizzle_orm64.sql`vc.days >= 2`;
+  const rows = await db2.execute(import_drizzle_orm64.sql`
+    WITH visit_days AS (${visitDaysSql({ axis: "service_date", scope: ssc, range })}),
+    visit_count AS (
+      SELECT vd.client_user_id, COUNT(DISTINCT vd.visit_date) AS days
+      FROM visit_days vd
+      GROUP BY vd.client_user_id
     )
     SELECT COUNT(*) AS v
     FROM visit_count vc
     JOIN client_wechat_users c ON c.user_id = vc.client_user_id
     WHERE ${csc}
       AND c.customer_status IN ('保有会员-稳定', '保有会员-有效')
-      AND ${nClause}
+      AND ${daysClause}
   `);
   return num(first(rows).v);
 }
@@ -179704,17 +179805,17 @@ async function queryReactivated(session4, scope, range, bucket) {
   const start = range.start;
   let lastDtClause;
   if (bucket === "warn") {
-    lastDtClause = import_drizzle_orm63.sql`a.last_dt IS NOT NULL
+    lastDtClause = import_drizzle_orm64.sql`a.last_dt IS NOT NULL
       AND a.last_dt >= (${start}::date - 1 - INTERVAL '6 months')::date`;
   } else if (bucket === "frozen") {
-    lastDtClause = import_drizzle_orm63.sql`a.last_dt IS NOT NULL
+    lastDtClause = import_drizzle_orm64.sql`a.last_dt IS NOT NULL
       AND a.last_dt < (${start}::date - 1 - INTERVAL '6 months')::date
       AND a.last_dt >= (${start}::date - 1 - INTERVAL '12 months')::date`;
   } else {
-    lastDtClause = import_drizzle_orm63.sql`(a.last_dt IS NULL
+    lastDtClause = import_drizzle_orm64.sql`(a.last_dt IS NULL
       OR a.last_dt < (${start}::date - 1 - INTERVAL '12 months')::date)`;
   }
-  const rows = await db2.execute(import_drizzle_orm63.sql`
+  const rows = await db2.execute(import_drizzle_orm64.sql`
     WITH visited_in_period AS (
       SELECT DISTINCT so.client_user_id
       FROM service_orders so
@@ -179750,9 +179851,9 @@ async function queryReactivated(session4, scope, range, bucket) {
   `);
   return num(first(rows).v);
 }
-async function queryOperatedMembers(session4, scope, range) {
+async function queryOperatedMembers(session4, scope, range, threshold) {
   const sc = scopeFilterSql(session4, scope, "o.store_id");
-  const rows = await db2.execute(import_drizzle_orm63.sql`
+  const rows = await db2.execute(import_drizzle_orm64.sql`
     WITH member_spend AS (
       SELECT o.client_user_id,
              SUM(spe.amount::numeric) AS spend
@@ -179768,14 +179869,14 @@ async function queryOperatedMembers(session4, scope, range) {
         AND c.customer_type = '会员客'
       GROUP BY o.client_user_id
     )
-    SELECT COUNT(*) FILTER (WHERE spend >= 1990) AS v
+    SELECT COUNT(*) FILTER (WHERE spend >= ${threshold}) AS v
     FROM member_spend
   `);
   return num(first(rows).v);
 }
 async function queryMemberAvgTicket(session4, scope, range) {
   const sc = scopeFilterSql(session4, scope, "o.store_id");
-  const rows = await db2.execute(import_drizzle_orm63.sql`
+  const rows = await db2.execute(import_drizzle_orm64.sql`
     WITH member_spend AS (
       SELECT o.client_user_id,
              SUM(spe.amount::numeric) AS spend
@@ -179800,7 +179901,7 @@ async function queryMemberAvgTicket(session4, scope, range) {
 }
 async function queryNewMemberCount(session4, scope, range) {
   const sc = scopeFilterSql(session4, scope, "c.bound_store_id");
-  const rows = await db2.execute(import_drizzle_orm63.sql`
+  const rows = await db2.execute(import_drizzle_orm64.sql`
     SELECT COUNT(*) AS v
     FROM client_wechat_users c
     WHERE ${sc}
@@ -179811,7 +179912,7 @@ async function queryNewMemberCount(session4, scope, range) {
 }
 async function queryNewMemberSpend(session4, scope, range) {
   const sc = scopeFilterSql(session4, scope, "o.store_id");
-  const rows = await db2.execute(import_drizzle_orm63.sql`
+  const rows = await db2.execute(import_drizzle_orm64.sql`
     SELECT COALESCE(SUM(spe.amount::numeric), 0) AS v
     FROM sale_order_performance_events spe
     JOIN sale_orders o ON o.sale_order_id = spe.sale_order_id
@@ -179830,7 +179931,7 @@ async function queryNewMemberSpend(session4, scope, range) {
 async function queryTrialFootfall(session4, scope, range) {
   const scVisit = scopeFilterSql(session4, scope, "so.store_id");
   const scMember = scopeFilterSql(session4, scope, "c.bound_store_id");
-  const rows = await db2.execute(import_drizzle_orm63.sql`
+  const rows = await db2.execute(import_drizzle_orm64.sql`
     SELECT COUNT(DISTINCT t.uid) AS v
     FROM (
       -- ① 本期到店 且 期初未达会员（当前仍未达会员 OR 本期内才转化）
@@ -179858,7 +179959,7 @@ async function queryTrialFootfall(session4, scope, range) {
 }
 async function queryRetainedMembers(session4, scope, range) {
   const sc = scopeFilterSql(session4, scope, "c.bound_store_id");
-  const rows = await db2.execute(import_drizzle_orm63.sql`
+  const rows = await db2.execute(import_drizzle_orm64.sql`
     SELECT COUNT(DISTINCT so.client_user_id) AS v
     FROM service_orders so
     JOIN client_wechat_users c ON c.user_id = so.client_user_id
@@ -179873,12 +179974,12 @@ async function queryRetainedMembers(session4, scope, range) {
 }
 async function queryRegActiveBreakdown(session4, scope, range, group) {
   const skeleton = scopeStoreSkeletonSql(session4, scope);
-  const groupId = group === "market" ? import_drizzle_orm63.sql.raw("sk.market_id") : import_drizzle_orm63.sql.raw("sk.store_id");
+  const groupId = group === "market" ? import_drizzle_orm64.sql.raw("sk.market_id") : import_drizzle_orm64.sql.raw("sk.store_id");
   const start = range.start;
   const end = range.end;
   const serviceScope = scopeFilterSql(session4, scope, "so.store_id");
   const customerScope = scopeFilterSql(session4, scope, "c.bound_store_id");
-  const rows = await db2.execute(import_drizzle_orm63.sql`
+  const rows = await db2.execute(import_drizzle_orm64.sql`
     WITH skel AS (${skeleton}),
     -- 注册（会员客口径，became_member_at 截面）按 bound_store_id 归组
     reg AS (
@@ -179904,24 +180005,23 @@ async function queryRegActiveBreakdown(session4, scope, range, group) {
         AND c.became_member_at::date <= ${end}
       GROUP BY c.bound_store_id
     ),
-    -- 区间到店次数（按客户 + bound_store_id），区分一次/二次客活（仅保有会员）
+    -- 区间到店天数（按客户 + bound_store_id），区分一次/二次客活（仅保有会员）。
+    -- 到店日按 (顾客, service_date) 去重（#298），与 KPI queryActive 同一个 visitDaysSql
+    visit_days AS (${visitDaysSql({ axis: "service_date", scope: serviceScope, range })}),
     visit_count AS (
-      SELECT so.client_user_id, c.bound_store_id AS store_id, COUNT(*) AS n,
+      SELECT vd.client_user_id, c.bound_store_id AS store_id,
+             COUNT(DISTINCT vd.visit_date) AS days,
              c.customer_status AS cstatus
-      FROM service_orders so
-      JOIN client_wechat_users c ON c.user_id = so.client_user_id
-      WHERE ${serviceScope}
-        AND ${customerScope}
+      FROM visit_days vd
+      JOIN client_wechat_users c ON c.user_id = vd.client_user_id
+      WHERE ${customerScope}
         AND c.bound_store_id IS NOT NULL
-        AND so.status = '已完成'
-        AND so.client_user_id IS NOT NULL
-        AND so.service_date BETWEEN ${start} AND ${end}
-      GROUP BY so.client_user_id, c.bound_store_id, c.customer_status
+      GROUP BY vd.client_user_id, c.bound_store_id, c.customer_status
     ),
     active AS (
       SELECT store_id,
-             COUNT(*) FILTER (WHERE n = 1) AS visit_once,
-             COUNT(*) FILTER (WHERE n >= 2) AS visit_twice
+             COUNT(*) FILTER (WHERE days = 1) AS visit_once,
+             COUNT(*) FILTER (WHERE days >= 2) AS visit_twice
       FROM visit_count
       WHERE cstatus IN ('保有会员-稳定', '保有会员-有效')
       GROUP BY store_id
@@ -179988,7 +180088,7 @@ async function queryRegActiveBreakdown(session4, scope, range, group) {
     )
     SELECT
       ${groupId} AS group_id,
-      ${group === "market" ? import_drizzle_orm63.sql.raw("MAX(sk.market_name)") : import_drizzle_orm63.sql.raw("MAX(sk.store_name)")} AS group_name,
+      ${group === "market" ? import_drizzle_orm64.sql.raw("MAX(sk.market_name)") : import_drizzle_orm64.sql.raw("MAX(sk.store_name)")} AS group_name,
       MAX(sk.market_name) AS market_name,
       COALESCE(SUM(reg.registered), 0) AS registered,
       COALESCE(SUM(ret.retained), 0) AS retained,
@@ -180029,13 +180129,14 @@ async function queryRegActiveBreakdown(session4, scope, range, group) {
   }
   return map;
 }
-async function queryOpsBreakdown(session4, scope, range, group) {
+async function queryOpsBreakdown(session4, scope, range, group, threshold) {
+  const floors = SPEND_BUCKET_FLOORS;
   const skeleton = scopeStoreSkeletonSql(session4, scope);
-  const groupId = group === "market" ? import_drizzle_orm63.sql.raw("sk.market_id") : import_drizzle_orm63.sql.raw("sk.store_id");
-  const groupName = group === "market" ? import_drizzle_orm63.sql.raw("sk.market_name") : import_drizzle_orm63.sql.raw("sk.store_name");
+  const groupId = group === "market" ? import_drizzle_orm64.sql.raw("sk.market_id") : import_drizzle_orm64.sql.raw("sk.store_id");
+  const groupName = group === "market" ? import_drizzle_orm64.sql.raw("sk.market_name") : import_drizzle_orm64.sql.raw("sk.store_name");
   const start = range.start;
   const end = range.end;
-  const rows = await db2.execute(import_drizzle_orm63.sql`
+  const rows = await db2.execute(import_drizzle_orm64.sql`
     WITH skel AS (${skeleton}),
     group_skel AS (
       SELECT ${groupId} AS group_id,
@@ -180062,13 +180163,13 @@ async function queryOpsBreakdown(session4, scope, range, group) {
     ),
     spend_agg AS (
       SELECT group_id,
-        COUNT(*) FILTER (WHERE spend < 1990) AS bucket_d,
-        COUNT(*) FILTER (WHERE spend >= 1990 AND spend < 10000) AS bucket_c,
-        COUNT(*) FILTER (WHERE spend >= 10000 AND spend < 30000) AS bucket_b,
-        COUNT(*) FILTER (WHERE spend >= 30000 AND spend < 60000) AS bucket_a,
-        COUNT(*) FILTER (WHERE spend >= 60000 AND spend < 100000) AS bucket_v,
-        COUNT(*) FILTER (WHERE spend >= 100000) AS bucket_vic,
-        COUNT(*) FILTER (WHERE spend >= 1990) AS operated_total,
+        COUNT(*) FILTER (WHERE spend < ${threshold}) AS bucket_d,
+        COUNT(*) FILTER (WHERE spend >= ${threshold} AND spend < ${floors.star}) AS bucket_c,
+        COUNT(*) FILTER (WHERE spend >= ${floors.star} AND spend < ${floors.pink}) AS bucket_b,
+        COUNT(*) FILTER (WHERE spend >= ${floors.pink} AND spend < ${floors.gold}) AS bucket_a,
+        COUNT(*) FILTER (WHERE spend >= ${floors.gold} AND spend < ${floors.black}) AS bucket_v,
+        COUNT(*) FILTER (WHERE spend >= ${floors.black}) AS bucket_vic,
+        COUNT(*) FILTER (WHERE spend >= ${threshold}) AS operated_total,
         COALESCE(SUM(spend), 0) AS member_spend_total,
         COUNT(*) AS member_spend_count
       FROM member_spend
@@ -180295,6 +180396,7 @@ var getCustomerBoard = withPermission("data_center:dashboard", async (session4, 
   const ctx = await prepareBoardContext(session4, params);
   const { scope, comparison, enabled } = ctx;
   const cur = comparison.current;
+  const threshold = await getMemberThreshold();
   const reg = (ct) => (r) => queryRegistration(session4, scope, r, ct);
   const trafficC = (ct, metric) => (r) => queryTrafficCount(session4, scope, r, ct, metric);
   const [
@@ -180327,7 +180429,7 @@ var getCustomerBoard = withPermission("data_center:dashboard", async (session4, 
     withComparison((r) => queryReactivated(session4, scope, r, "frozen"), comparison, "count", false),
     withComparison(() => queryStatusCount(session4, scope, "休眠"), comparison, "count", false),
     withComparison((r) => queryReactivated(session4, scope, r, "deep"), comparison, "count", false),
-    withComparison((r) => queryOperatedMembers(session4, scope, r), comparison, "count", enabled),
+    withComparison((r) => queryOperatedMembers(session4, scope, r, threshold), comparison, "count", enabled),
     withComparison((r) => queryNewMemberCount(session4, scope, r), comparison, "count", enabled),
     withComparison((r) => queryTrialFootfall(session4, scope, r), comparison, "count", false),
     withComparison((r) => queryMemberAvgTicket(session4, scope, r), comparison, "amount", enabled),
@@ -180397,9 +180499,9 @@ var getCustomerBoard = withPermission("data_center:dashboard", async (session4, 
     opsByStore
   ] = await Promise.all([
     queryRegActiveBreakdown(session4, scope, cur, "market"),
-    queryOpsBreakdown(session4, scope, cur, "market"),
+    queryOpsBreakdown(session4, scope, cur, "market", threshold),
     queryRegActiveBreakdown(session4, scope, cur, "store"),
-    queryOpsBreakdown(session4, scope, cur, "store")
+    queryOpsBreakdown(session4, scope, cur, "store", threshold)
   ]);
   const byMarket = buildBreakdownRows("market", skeleton, regActiveByMarket, opsByMarket);
   const byStore = buildBreakdownRows("store", skeleton, regActiveByStore, opsByStore);
@@ -180414,7 +180516,7 @@ var getCustomerBoard = withPermission("data_center:dashboard", async (session4, 
 // src/actions/data-center/product.ts
 init_db2();
 init_with_permission();
-var import_drizzle_orm64 = __toESM(require_drizzle_orm(), 1);
+var import_drizzle_orm65 = __toESM(require_drizzle_orm(), 1);
 "use server";
 var num2 = (v) => {
   const n = Number(v ?? 0);
@@ -180428,23 +180530,23 @@ function resolveGrouping(params) {
   const category = params.categoryName?.trim() || "";
   if (category) {
     return {
-      groupCol: import_drizzle_orm64.sql.raw("pc.category_name"),
-      filter: import_drizzle_orm64.sql`pc.product_kind = ${kind} AND pc.category_name = ${category}`
+      groupCol: import_drizzle_orm65.sql.raw("pc.category_name"),
+      filter: import_drizzle_orm65.sql`pc.product_kind = ${kind} AND pc.category_name = ${category}`
     };
   }
   if (kind) {
     return {
-      groupCol: import_drizzle_orm64.sql.raw("pc.product_kind"),
-      filter: import_drizzle_orm64.sql`pc.product_kind = ${kind}`
+      groupCol: import_drizzle_orm65.sql.raw("pc.product_kind"),
+      filter: import_drizzle_orm65.sql`pc.product_kind = ${kind}`
     };
   }
   return {
-    groupCol: import_drizzle_orm64.sql.raw("pc.product_kind"),
-    filter: import_drizzle_orm64.sql`pc.product_kind IS NOT NULL`
+    groupCol: import_drizzle_orm65.sql.raw("pc.product_kind"),
+    filter: import_drizzle_orm65.sql`pc.product_kind IS NOT NULL`
   };
 }
 async function queryFilterOptions() {
-  const rows = await db2.execute(import_drizzle_orm64.sql`
+  const rows = await db2.execute(import_drizzle_orm65.sql`
     SELECT DISTINCT pc.product_kind AS kind, pc.category_name AS category
     FROM product_categories pc
     WHERE pc.product_kind IS NOT NULL
@@ -180466,7 +180568,7 @@ async function queryFilterOptions() {
 }
 async function queryCardHolders(session4, scope, filter) {
   const sc = scopeFilterSql(session4, scope, "so.store_id");
-  const rows = await db2.execute(import_drizzle_orm64.sql`
+  const rows = await db2.execute(import_drizzle_orm65.sql`
     SELECT COUNT(DISTINCT so.client_user_id) AS v
     FROM sale_items si
     JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
@@ -180483,7 +180585,7 @@ async function queryCardHolders(session4, scope, filter) {
 }
 async function queryMemberCount(session4, scope) {
   const sc = scopeFilterSql(session4, scope, "c.bound_store_id");
-  const rows = await db2.execute(import_drizzle_orm64.sql`
+  const rows = await db2.execute(import_drizzle_orm65.sql`
     SELECT COUNT(*) AS v
     FROM client_wechat_users c
     WHERE ${sc}
@@ -180493,7 +180595,7 @@ async function queryMemberCount(session4, scope) {
 }
 async function queryCycle(session4, scope, range, threshold, groupCol, filter, group, metric) {
   const sc = scopeFilterSql(session4, scope, "so.store_id");
-  const rows = await db2.execute(import_drizzle_orm64.sql`
+  const rows = await db2.execute(import_drizzle_orm65.sql`
     WITH daily_agg AS (
       SELECT so.client_user_id,
              so.store_id,
@@ -180562,7 +180664,7 @@ async function queryCycle(session4, scope, range, threshold, groupCol, filter, g
       )
     ),
     cohort AS (
-      ${group === "trial" ? import_drizzle_orm64.sql`SELECT client_user_id, grp FROM tiyan` : group === "new" ? import_drizzle_orm64.sql`SELECT client_user_id, grp FROM xinzeng` : import_drizzle_orm64.sql`SELECT client_user_id, grp FROM fugou`}
+      ${group === "trial" ? import_drizzle_orm65.sql`SELECT client_user_id, grp FROM tiyan` : group === "new" ? import_drizzle_orm65.sql`SELECT client_user_id, grp FROM xinzeng` : import_drizzle_orm65.sql`SELECT client_user_id, grp FROM fugou`}
     )
     SELECT
       COUNT(DISTINCT c.client_user_id) AS count,
@@ -180576,7 +180678,7 @@ async function queryCycle(session4, scope, range, threshold, groupCol, filter, g
 }
 async function queryCardHoldersByStore(session4, scope, filter) {
   const sc = scopeFilterSql(session4, scope, "so.store_id");
-  const rows = await db2.execute(import_drizzle_orm64.sql`
+  const rows = await db2.execute(import_drizzle_orm65.sql`
     SELECT so.store_id, COUNT(DISTINCT so.client_user_id) AS v
     FROM sale_items si
     JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
@@ -180601,7 +180703,7 @@ async function queryCardHoldersByStore(session4, scope, filter) {
 }
 async function queryMemberCountByStore(session4, scope) {
   const sc = scopeFilterSql(session4, scope, "c.bound_store_id");
-  const rows = await db2.execute(import_drizzle_orm64.sql`
+  const rows = await db2.execute(import_drizzle_orm65.sql`
     SELECT c.bound_store_id AS store_id, COUNT(*) AS v
     FROM client_wechat_users c
     WHERE ${sc}
@@ -180620,7 +180722,7 @@ async function queryMemberCountByStore(session4, scope) {
 }
 async function queryCycleByStore(session4, scope, range, threshold, groupCol, filter) {
   const sc = scopeFilterSql(session4, scope, "so.store_id");
-  const rows = await db2.execute(import_drizzle_orm64.sql`
+  const rows = await db2.execute(import_drizzle_orm65.sql`
     WITH daily_agg AS (
       SELECT so.client_user_id,
              so.store_id,
@@ -180933,7 +181035,7 @@ var getProductBoard = withPermission("data_center:dashboard", async (session4, p
 // src/actions/data-center/efficiency.ts
 init_db2();
 init_with_permission();
-var import_drizzle_orm65 = __toESM(require_drizzle_orm(), 1);
+var import_drizzle_orm66 = __toESM(require_drizzle_orm(), 1);
 "use server";
 function scalar2(rows, key = "v") {
   const r = rows[0];
@@ -180948,8 +181050,8 @@ function ratio(num3, den) {
   return num3 / den;
 }
 function performanceEventDateBetween(eventAlias, start, end) {
-  return import_drizzle_orm65.sql`${import_drizzle_orm65.sql.raw(`${eventAlias}.status`)} = '已支付'
-    AND ${import_drizzle_orm65.sql.raw(`${eventAlias}.performance_date`)} BETWEEN ${start} AND ${end}`;
+  return import_drizzle_orm66.sql`${import_drizzle_orm66.sql.raw(`${eventAlias}.status`)} = '已支付'
+    AND ${import_drizzle_orm66.sql.raw(`${eventAlias}.performance_date`)} BETWEEN ${start} AND ${end}`;
 }
 function toMap(rows) {
   const m = new Map;
@@ -180975,7 +181077,7 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
   const ctx = await prepareBoardContext(session4, params);
   const { scope } = ctx;
   const cur = ctx.comparison.current;
-  const qRevenueTotal = db2.execute(import_drizzle_orm65.sql`
+  const qRevenueTotal = db2.execute(import_drizzle_orm66.sql`
       SELECT COALESCE(SUM(spe.amount::numeric), 0) AS v
       FROM sale_order_performance_events spe
       WHERE ${scopeFilterSql(session4, scope, "spe.store_id")}
@@ -180984,7 +181086,7 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
         AND spe.legacy_source IS DISTINCT FROM 'workfine'
         AND ${performanceEventDateBetween("spe", cur.start, cur.end)}
     `);
-  const qConsumeTotal = db2.execute(import_drizzle_orm65.sql`
+  const qConsumeTotal = db2.execute(import_drizzle_orm66.sql`
       SELECT COALESCE(SUM(sit.unit_real_price::numeric * sit.session_used), 0) AS v
       FROM service_items sit
       JOIN service_orders so ON so.service_order_id = sit.service_order_id
@@ -180993,7 +181095,7 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
         AND so.service_date BETWEEN ${cur.start} AND ${cur.end}
         AND ${excludeDepositRefundSql("so")}
     `);
-  const qSalesCommTotal = db2.execute(import_drizzle_orm65.sql`
+  const qSalesCommTotal = db2.execute(import_drizzle_orm66.sql`
       SELECT COALESCE(SUM(spia.commission_amount::numeric), 0) AS v
       FROM sale_payment_item_allocations spia
       JOIN sale_payment_item_receipts spir ON spir.id = spia.sale_payment_item_receipt_id
@@ -181005,7 +181107,7 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
         AND so.sale_order_type IN ('销售单', '转换单')
         AND ${performanceEventDateBetween("spe", cur.start, cur.end)}
     `);
-  const qServiceCommTotal = db2.execute(import_drizzle_orm65.sql`
+  const qServiceCommTotal = db2.execute(import_drizzle_orm66.sql`
       SELECT COALESCE(SUM(sc.commission_amount::numeric), 0) AS v
       FROM service_commissions sc
       JOIN service_items sit ON sit.service_item_id = sc.service_item_id
@@ -181015,7 +181117,7 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
         AND so.status = '已完成'
         AND so.service_date BETWEEN ${cur.start} AND ${cur.end}
     `);
-  const qFootfallTotal = db2.execute(import_drizzle_orm65.sql`
+  const qFootfallTotal = db2.execute(import_drizzle_orm66.sql`
       SELECT COUNT(DISTINCT so.client_user_id) AS v
       FROM service_orders so
       WHERE ${scopeFilterSql(session4, scope, "so.store_id")}
@@ -181023,7 +181125,7 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
         AND so.client_user_id IS NOT NULL
         AND so.service_date BETWEEN ${cur.start} AND ${cur.end}
     `);
-  const qProjectCountTotal = db2.execute(import_drizzle_orm65.sql`
+  const qProjectCountTotal = db2.execute(import_drizzle_orm66.sql`
       SELECT COALESCE(SUM(sit.session_used), 0) AS v
       FROM service_orders so
       JOIN service_items sit ON sit.service_order_id = so.service_order_id
@@ -181033,7 +181135,7 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
         AND so.service_date BETWEEN ${cur.start} AND ${cur.end}
         AND ${excludeDepositRefundSql("so")}
     `);
-  const qMemberCount = db2.execute(import_drizzle_orm65.sql`
+  const qMemberCount = db2.execute(import_drizzle_orm66.sql`
       SELECT COUNT(*) AS v
       FROM client_wechat_users c
       WHERE ${scopeFilterSql(session4, scope, "c.bound_store_id")}
@@ -181041,7 +181143,7 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
         AND c.became_member_at::date <= ${cur.end}
     `);
   const qTechnicianCount = db2.execute(technicianCountSql(session4, scope, cur.end));
-  const qManagerCount = db2.execute(import_drizzle_orm65.sql`
+  const qManagerCount = db2.execute(import_drizzle_orm66.sql`
       SELECT COUNT(*)::int AS v
       FROM stores s
       JOIN org_nodes o ON s.org_node_id = o.id AND o.type = '门店'
@@ -181052,7 +181154,7 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
     `);
   const skeleton = scopeStoreSkeletonSql(session4, scope);
   const qStoreSkeleton = db2.execute(skeleton);
-  const qManagerByStore = db2.execute(import_drizzle_orm65.sql`
+  const qManagerByStore = db2.execute(import_drizzle_orm66.sql`
       SELECT s.store_id, 1::int AS v
       FROM stores s
       JOIN org_nodes o ON s.org_node_id = o.id AND o.type = '门店'
@@ -181063,7 +181165,7 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
     `);
   const qTechByStore = db2.execute(technicianByStoreSql(session4, scope, cur.end));
   const qTechDirectByMarket = db2.execute(technicianDirectByMarketSql(session4, scope, cur.end));
-  const qRevenueByStore = db2.execute(import_drizzle_orm65.sql`
+  const qRevenueByStore = db2.execute(import_drizzle_orm66.sql`
       SELECT spe.store_id, COALESCE(SUM(spe.amount::numeric), 0) AS v
       FROM sale_order_performance_events spe
       WHERE ${scopeFilterSql(session4, scope, "spe.store_id")}
@@ -181073,7 +181175,7 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
         AND ${performanceEventDateBetween("spe", cur.start, cur.end)}
       GROUP BY spe.store_id
     `);
-  const qConsumeByStore = db2.execute(import_drizzle_orm65.sql`
+  const qConsumeByStore = db2.execute(import_drizzle_orm66.sql`
       SELECT so.store_id, COALESCE(SUM(sit.unit_real_price::numeric * sit.session_used), 0) AS v
       FROM service_items sit
       JOIN service_orders so ON so.service_order_id = sit.service_order_id
@@ -181083,7 +181185,7 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
         AND ${excludeDepositRefundSql("so")}
       GROUP BY so.store_id
     `);
-  const qShengmeiConsumeByStore = db2.execute(import_drizzle_orm65.sql`
+  const qShengmeiConsumeByStore = db2.execute(import_drizzle_orm66.sql`
       SELECT so.store_id, COALESCE(SUM(sit.unit_real_price::numeric * sit.session_used), 0) AS v
       FROM service_items sit
       JOIN service_orders so ON so.service_order_id = sit.service_order_id
@@ -181094,7 +181196,7 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
         AND ${excludeDepositRefundSql("so")}
       GROUP BY so.store_id
     `);
-  const qSalesCommByStore = db2.execute(import_drizzle_orm65.sql`
+  const qSalesCommByStore = db2.execute(import_drizzle_orm66.sql`
       SELECT so.store_id, COALESCE(SUM(spia.commission_amount::numeric), 0) AS v
       FROM sale_payment_item_allocations spia
       JOIN sale_payment_item_receipts spir ON spir.id = spia.sale_payment_item_receipt_id
@@ -181107,7 +181209,7 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
         AND ${performanceEventDateBetween("spe", cur.start, cur.end)}
       GROUP BY so.store_id
     `);
-  const qServiceCommByStore = db2.execute(import_drizzle_orm65.sql`
+  const qServiceCommByStore = db2.execute(import_drizzle_orm66.sql`
       SELECT so.store_id, COALESCE(SUM(sc.commission_amount::numeric), 0) AS v
       FROM service_commissions sc
       JOIN service_items sit ON sit.service_item_id = sc.service_item_id
@@ -181118,7 +181220,7 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
         AND so.service_date BETWEEN ${cur.start} AND ${cur.end}
       GROUP BY so.store_id
     `);
-  const qFootfallByMarket = db2.execute(import_drizzle_orm65.sql`
+  const qFootfallByMarket = db2.execute(import_drizzle_orm66.sql`
       WITH skel AS (${skeleton})
       SELECT sk.market_id, COUNT(DISTINCT so.client_user_id) AS v
       FROM service_orders so
@@ -181128,7 +181230,7 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
         AND so.service_date BETWEEN ${cur.start} AND ${cur.end}
       GROUP BY sk.market_id
     `);
-  const qProjectByStore = db2.execute(import_drizzle_orm65.sql`
+  const qProjectByStore = db2.execute(import_drizzle_orm66.sql`
       SELECT so.store_id, COALESCE(SUM(sit.session_used), 0) AS v
       FROM service_orders so
       JOIN service_items sit ON sit.service_order_id = so.service_order_id
@@ -181139,7 +181241,7 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
         AND ${excludeDepositRefundSql("so")}
       GROUP BY so.store_id
     `);
-  const qStoreRankRevenue = db2.execute(import_drizzle_orm65.sql`
+  const qStoreRankRevenue = db2.execute(import_drizzle_orm66.sql`
       SELECT s.store_id, s.store_name, o.name AS market_name,
         COALESCE(SUM(spe.amount::numeric), 0) AS value
       FROM stores s
@@ -181156,7 +181258,7 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
       GROUP BY s.store_id, s.store_name, o.name
       ORDER BY value DESC, s.store_name ASC
     `);
-  const qStoreRankConsume = db2.execute(import_drizzle_orm65.sql`
+  const qStoreRankConsume = db2.execute(import_drizzle_orm66.sql`
       SELECT s.store_id, s.store_name, o.name AS market_name,
         COALESCE(SUM(sit.unit_real_price::numeric * sit.session_used), 0) AS value
       FROM stores s
@@ -181172,7 +181274,7 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
       GROUP BY s.store_id, s.store_name, o.name
       ORDER BY value DESC, s.store_name ASC
     `);
-  const qStoreRankRetainedMember = db2.execute(import_drizzle_orm65.sql`
+  const qStoreRankRetainedMember = db2.execute(import_drizzle_orm66.sql`
       SELECT s.store_id, s.store_name, o.name AS market_name,
         COUNT(DISTINCT c.user_id) AS value
       FROM stores s
@@ -181192,7 +181294,7 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
       GROUP BY s.store_id, s.store_name, o.name
       ORDER BY value DESC, s.store_name ASC
     `);
-  const qStoreRankNewMember = db2.execute(import_drizzle_orm65.sql`
+  const qStoreRankNewMember = db2.execute(import_drizzle_orm66.sql`
       SELECT s.store_id, s.store_name, o.name AS market_name,
         COUNT(c.user_id) AS value
       FROM stores s
@@ -181206,7 +181308,7 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
       GROUP BY s.store_id, s.store_name, o.name
       ORDER BY value DESC, s.store_name ASC
     `);
-  const qStoreRankProjectCount = db2.execute(import_drizzle_orm65.sql`
+  const qStoreRankProjectCount = db2.execute(import_drizzle_orm66.sql`
       SELECT s.store_id, s.store_name, o.name AS market_name,
         COALESCE(SUM(sit.session_used), 0) AS value
       FROM stores s
@@ -181224,7 +181326,7 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
       GROUP BY s.store_id, s.store_name, o.name
       ORDER BY value DESC, s.store_name ASC
     `);
-  const producerCte = import_drizzle_orm65.sql`
+  const producerCte = import_drizzle_orm66.sql`
       WITH producer_base AS (
         SELECT sw.employee_id, sw.name AS employee_name,
                COALESCE(sw.store_id, ds.store_id) AS store_id,
@@ -181257,7 +181359,7 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
            OR (pb.store_id IS NULL AND ${orgAnchorScopeSql(session4, scope)})
       )
     `;
-  const qStaffRankRevenue = db2.execute(import_drizzle_orm65.sql`
+  const qStaffRankRevenue = db2.execute(import_drizzle_orm66.sql`
       ${producerCte},
       revenue_by_emp AS (
         SELECT spia.employee_id, COALESCE(SUM(spia.allocated_amount::numeric), 0) AS v
@@ -181278,7 +181380,7 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
       WHERE (pe.has_skills OR COALESCE(r.v, 0) <> 0)
       ORDER BY (COALESCE(r.v, 0) <> 0) DESC, COALESCE(r.v, 0) DESC, pe.employee_name ASC, pe.employee_id ASC
     `);
-  const qStaffRankConsume = db2.execute(import_drizzle_orm65.sql`
+  const qStaffRankConsume = db2.execute(import_drizzle_orm66.sql`
       ${producerCte},
       consume_by_emp AS (
         SELECT sc.employee_id,
@@ -181299,7 +181401,7 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
       WHERE (pe.has_skills OR COALESCE(c.v, 0) <> 0)
       ORDER BY (COALESCE(c.v, 0) <> 0) DESC, COALESCE(c.v, 0) DESC, pe.employee_name ASC, pe.employee_id ASC
     `);
-  const qStaffRankNewMember = db2.execute(import_drizzle_orm65.sql`
+  const qStaffRankNewMember = db2.execute(import_drizzle_orm66.sql`
       ${producerCte},
       new_member_by_emp AS (
         SELECT c.bound_employee_id AS employee_id, COUNT(*) AS v
@@ -181316,7 +181418,7 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
       WHERE (pe.has_skills OR COALESCE(n.v, 0) <> 0)
       ORDER BY (COALESCE(n.v, 0) <> 0) DESC, COALESCE(n.v, 0) DESC, pe.employee_name ASC, pe.employee_id ASC
     `);
-  const qStaffRankProjectCount = db2.execute(import_drizzle_orm65.sql`
+  const qStaffRankProjectCount = db2.execute(import_drizzle_orm66.sql`
       ${producerCte},
       project_by_emp AS (
         SELECT employee_id, COALESCE(SUM(session_used), 0) AS v
@@ -181340,7 +181442,7 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
       WHERE (pe.has_skills OR COALESCE(p.v, 0) <> 0)
       ORDER BY (COALESCE(p.v, 0) <> 0) DESC, COALESCE(p.v, 0) DESC, pe.employee_name ASC, pe.employee_id ASC
     `);
-  const qStaffRankIncome = db2.execute(import_drizzle_orm65.sql`
+  const qStaffRankIncome = db2.execute(import_drizzle_orm66.sql`
       ${producerCte},
       sales_comm AS (
         SELECT spia.employee_id, COALESCE(SUM(spia.commission_amount::numeric), 0) AS v
@@ -181372,7 +181474,7 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
       WHERE (pe.has_skills OR COALESCE(sc1.v, 0) + COALESCE(sc2.v, 0) <> 0)
       ORDER BY (COALESCE(sc1.v, 0) + COALESCE(sc2.v, 0) <> 0) DESC, COALESCE(sc1.v, 0) + COALESCE(sc2.v, 0) DESC, pe.employee_name ASC, pe.employee_id ASC
     `);
-  const qStaffDetail = db2.execute(import_drizzle_orm65.sql`
+  const qStaffDetail = db2.execute(import_drizzle_orm66.sql`
       ${producerCte},
       revenue_by_emp_cat AS (
         SELECT spia.employee_id,
@@ -181663,6 +181765,445 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
   };
 });
 
+// src/actions/data-center/operating-master.ts
+init_db2();
+init_with_permission();
+var import_drizzle_orm67 = __toESM(require_drizzle_orm(), 1);
+
+// src/lib/data-center/report-period.ts
+init_time_range();
+var MONTH_RE = /^(\d{4})-(\d{2})$/;
+var MIN_YEAR = 2000;
+var MAX_YEAR = 2099;
+function isValidMonth(value) {
+  const match = value?.match(MONTH_RE);
+  if (!match)
+    return false;
+  const [year2, month] = [Number(match[1]), Number(match[2])];
+  return year2 >= MIN_YEAR && year2 <= MAX_YEAR && month >= 1 && month <= 12;
+}
+function monthRange(month) {
+  const [year2, mon] = month.split("-").map(Number);
+  const last = new Date(Date.UTC(year2, mon, 0)).getUTCDate();
+  return { start: `${month}-01`, end: `${month}-${String(last).padStart(2, "0")}` };
+}
+
+// src/actions/data-center/operating-master.ts
+init_time_range();
+
+// src/lib/data-center/matrix.ts
+function buildMatrixHeaderLayout(columns3) {
+  const groupStartKeys = new Set;
+  const grouped = columns3.some((column2) => column2.group);
+  if (!grouped) {
+    return {
+      depth: 1,
+      rows: [columns3.map((column2, index3) => ({
+        key: column2.key,
+        columnKey: column2.key,
+        colSpan: 1,
+        rowSpan: 1,
+        firstLeafIndex: index3
+      }))],
+      groupStartKeys
+    };
+  }
+  const top = [];
+  const bottom = [];
+  const closedGroups = new Set;
+  let current = null;
+  columns3.forEach((column2, index3) => {
+    const groupKey2 = column2.group?.key;
+    if (current && current.groupKey !== groupKey2) {
+      closedGroups.add(current.groupKey);
+      current = null;
+    }
+    if (!groupKey2) {
+      top.push({ key: column2.key, columnKey: column2.key, colSpan: 1, rowSpan: 2, firstLeafIndex: index3 });
+      return;
+    }
+    if (current) {
+      current.colSpan += 1;
+    } else {
+      if (closedGroups.has(groupKey2)) {
+        throw new Error(`INVALID_STATE: 矩阵表分组「${groupKey2}」的列不相邻`);
+      }
+      current = { key: `group:${groupKey2}`, groupKey: groupKey2, colSpan: 1, rowSpan: 1, firstLeafIndex: index3 };
+      top.push(current);
+      groupStartKeys.add(column2.key);
+    }
+    bottom.push({ key: column2.key, columnKey: column2.key, colSpan: 1, rowSpan: 1, firstLeafIndex: index3 });
+  });
+  return { depth: 2, rows: [top, bottom], groupStartKeys };
+}
+function finite(value) {
+  return value != null && Number.isFinite(value);
+}
+function toTotal(value) {
+  const parsed = typeof value === "string" && value.trim() !== "" ? Number(value) : value;
+  return typeof parsed === "number" && Number.isFinite(parsed) ? parsed : null;
+}
+function sumOf(rows, accessor) {
+  let total = 0;
+  let seen = false;
+  for (const row of rows) {
+    const value = accessor(row);
+    if (!finite(value))
+      continue;
+    total += value;
+    seen = true;
+  }
+  return seen ? total : null;
+}
+function computeMatrixTotals(columns3, rows, options) {
+  const detailRows = options.isSubtotal ? rows.filter((row) => !options.isSubtotal(row)) : rows;
+  const totals = {};
+  for (const column2 of columns3) {
+    const server = options.serverTotals;
+    if (server && Object.prototype.hasOwnProperty.call(server, column2.key)) {
+      totals[column2.key] = toTotal(server[column2.key]);
+      continue;
+    }
+    const aggregate3 = column2.aggregate ?? { kind: "none" };
+    if (options.paginated || aggregate3.kind === "none" || aggregate3.kind === "server") {
+      totals[column2.key] = null;
+      continue;
+    }
+    if (aggregate3.kind === "sum") {
+      totals[column2.key] = column2.value ? sumOf(detailRows, column2.value) : null;
+      continue;
+    }
+    let numerator = 0;
+    let denominator = 0;
+    for (const row of detailRows) {
+      const top = aggregate3.numerator(row);
+      const bottom = aggregate3.denominator(row);
+      if (!finite(top) || !finite(bottom))
+        continue;
+      numerator += top;
+      denominator += bottom;
+    }
+    totals[column2.key] = denominator > 0 ? numerator / denominator : null;
+  }
+  return totals;
+}
+
+// src/lib/data-center/operating-master.ts
+var OPERATING_MASTER_METRIC_KEYS = [
+  "beauticianCount",
+  "monthRevenue",
+  "ytdRevenue",
+  "shengmeiProjectCount",
+  "monthConsume",
+  "shengmeiConsume"
+];
+var BLANK_FROZEN_GROUP = { key: "blank-frozen", header: "" };
+var BLANK_GROUP = { key: "blank", header: "" };
+var RETAINED_GROUP = {
+  key: "retained",
+  header: `保有会员（售前不算）
+会员标准：单笔订单≥1990元(购买疗程有余卡顾客)
+当月回店1次的人头目标：80%
+当月回店人头到店2次的目标：60%`,
+  color: "#EAF2FB"
+};
+var MANAGED_GROUP = {
+  key: "managed",
+  header: `被经营顾客目标(拆分季度/月度)
+核算标准：消费≥1990算人数
+一季度目标:20%-30%，二季度目标:50%-60%
+三季度目标:70%-80%，四季度目标:100%完成`,
+  color: "#EDF6EA"
+};
+var SALES_GROUP = {
+  key: "sales",
+  header: "销售业绩目标",
+  color: "#FFF3E0"
+};
+var FOOTFALL_GROUP = {
+  key: "footfall",
+  header: `客流及客耗
+美容师:3人/250客流 4人/300客量 5人/400客流
+美容师消耗：每天1000元
+客流目标：售前20%  售后80%`,
+  color: "#F3EEF9"
+};
+function headerWidth(header, min) {
+  const longest = Math.max(...header.split(`
+`).map((line5) => line5.length));
+  return Math.max(min, longest * 12 + 48);
+}
+function headerExportWidth(header, min) {
+  const longest = Math.max(...header.split(`
+`).map((line5) => [...line5].reduce((sum, char5) => sum + (/[\u0000-\u00ff]/.test(char5) ? 1 : 2), 0)));
+  return Math.max(min, longest + 2);
+}
+function metric(key) {
+  return (row) => row.values[key] ?? null;
+}
+function pendingColumn(letter, key, header, group, unit, pending) {
+  return {
+    letter,
+    key,
+    header,
+    group,
+    unit,
+    pending,
+    align: "right",
+    width: headerWidth(header, 96),
+    hint: pending === "#374" ? "目标列：本期不取数（#374）" : "口径待确认，本期不取数（#373）",
+    exportValue: () => "—",
+    exportWidth: headerExportWidth(header, 12)
+  };
+}
+function metricColumn(letter, key, header, group, unit, hint) {
+  return {
+    letter,
+    key,
+    header,
+    group,
+    unit,
+    align: "right",
+    width: headerWidth(header, unit === "amount" ? 120 : 96),
+    hint,
+    value: metric(key),
+    aggregate: { kind: "sum" },
+    exportWidth: headerExportWidth(header, unit === "amount" ? 16 : 12)
+  };
+}
+var OPERATING_MASTER_COLUMNS = [
+  {
+    letter: "B",
+    key: "marketName",
+    header: "市场",
+    group: BLANK_FROZEN_GROUP,
+    freeze: "left",
+    width: 112,
+    exportValue: (row) => row.marketName,
+    exportWidth: 14
+  },
+  {
+    letter: "C",
+    key: "storeName",
+    header: "门店",
+    group: BLANK_FROZEN_GROUP,
+    freeze: "left",
+    width: 148,
+    exportValue: (row) => row.storeName,
+    exportWidth: 16
+  },
+  metricColumn("D", "beauticianCount", `美容师
+人数`, BLANK_GROUP, "count", "统计月末在职、技能含「美容师」的员工，按当前归属门店计（调店不做历史化）；直挂市场 / 部门的员工不属于任何门店，不计入"),
+  pendingColumn("E", "retainedMembers", `保有会员
+前三月有回店1次人头数`, RETAINED_GROUP, "count", "#373"),
+  pendingColumn("F", "returnOnceHeads", `回店1次
+当月人头`, RETAINED_GROUP, "count", "#373"),
+  pendingColumn("G", "returnOnceRate", `回店1次
+达成率`, RETAINED_GROUP, "percent", "#373"),
+  pendingColumn("H", "returnTwiceHeads", `回店≥2次
+当月人头`, RETAINED_GROUP, "count", "#373"),
+  pendingColumn("I", "returnTwiceRate", `回店≥2次
+达成率`, RETAINED_GROUP, "percent", "#373"),
+  pendingColumn("J", "managedYearTarget", `被经营顾客
+年度目标`, MANAGED_GROUP, "count", "#374"),
+  pendingColumn("K", "managedYearCustomers", `被经营顾客
+年度消费人数`, MANAGED_GROUP, "count", "#373"),
+  pendingColumn("L", "managedMonthCustomers", `被经营顾客
+当月消费人数`, MANAGED_GROUP, "count", "#373"),
+  pendingColumn("M", "managedRate", `被经营率
+年度标准60%`, MANAGED_GROUP, "percent", "#373"),
+  pendingColumn("N", "salesYearTarget", `年度销售
+业绩目标`, SALES_GROUP, "amount", "#374"),
+  pendingColumn("O", "salesMonthTarget", `当月业绩
+目标`, SALES_GROUP, "amount", "#374"),
+  metricColumn("P", "monthRevenue", `当月
+完成`, SALES_GROUP, "amount", "当月总业绩：与销售板「门店」明细的「总业绩」同口径（款项按业绩归属日期计入，含退款冲减）"),
+  pendingColumn("Q", "salesCompletionRate", `当月
+完成率`, SALES_GROUP, "percent", "#374"),
+  metricColumn("R", "ytdRevenue", `年度
+累计达成`, SALES_GROUP, "amount", "当年 1 月至所选月份各月「当月完成」之和。只含新系统上线后的数据，不含 WorkFine 历史单"),
+  pendingColumn("S", "monthFootfall", `当月
+客流`, FOOTFALL_GROUP, "count", "#373"),
+  pendingColumn("T", "preSaleFootfall", `当月
+售前客流`, FOOTFALL_GROUP, "count", "#373"),
+  pendingColumn("U", "afterSaleFootfall", `当月
+售后客流`, FOOTFALL_GROUP, "count", "#373"),
+  metricColumn("V", "shengmeiProjectCount", `当月
+生美项目数`, FOOTFALL_GROUP, "count", "已完成服务单中生美项目的核销次数之和（剔除寄存单退款专用单）。与人效板、门店榜的「项目数」（按经营类型统计）口径不同"),
+  metricColumn("W", "monthConsume", `当月
+总实耗`, FOOTFALL_GROUP, "amount", "与销售板「门店」明细的「总实耗」同口径"),
+  metricColumn("X", "shengmeiConsume", `当月
+生美实耗`, FOOTFALL_GROUP, "amount", "与销售板「门店」明细的「生美实耗」同口径（按服务项目的「是否生美」标记）"),
+  pendingColumn("Y", "shengmeiConsumePerVisit", `单次
+生美客耗`, FOOTFALL_GROUP, "amount", "#373")
+];
+function ytdRange(month) {
+  return { start: `${month.slice(0, 4)}-01-01`, end: monthRange(month).end };
+}
+var METRIC_COLUMNS = OPERATING_MASTER_COLUMNS.filter((column2) => column2.value);
+var metricColumnKeys = METRIC_COLUMNS.map((column2) => column2.key);
+function buildOperatingMasterTable(stores3, metrics) {
+  const storeRows = stores3.map((store) => {
+    const found = metrics.get(store.storeId);
+    const values2 = Object.fromEntries(OPERATING_MASTER_METRIC_KEYS.map((key) => [key, found?.[key] ?? 0]));
+    return {
+      rowKey: store.storeId,
+      kind: "store",
+      marketId: store.marketId,
+      marketName: store.marketName,
+      storeId: store.storeId,
+      storeName: store.storeName,
+      values: values2
+    };
+  });
+  const marketIds = Array.from(new Set(storeRows.map((row) => row.marketId)));
+  const multiMarket = marketIds.length > 1;
+  const totalsOf = (rows2) => pickMetricTotals(computeMatrixTotals(METRIC_COLUMNS, rows2, { paginated: false }));
+  const rows = [];
+  if (multiMarket) {
+    for (const marketId of marketIds) {
+      const marketRows = storeRows.filter((row) => row.marketId === marketId);
+      rows.push(...marketRows, {
+        rowKey: `subtotal:${marketId}`,
+        kind: "subtotal",
+        marketId,
+        marketName: marketRows[0].marketName,
+        storeId: null,
+        storeName: "小计",
+        values: totalsOf(marketRows)
+      });
+    }
+  } else {
+    rows.push(...storeRows);
+  }
+  return { rows, totals: totalsOf(storeRows), storeCount: storeRows.length, multiMarket };
+}
+function pickMetricTotals(totals) {
+  return Object.fromEntries(metricColumnKeys.map((key) => [key, totals[key] ?? null]));
+}
+function isOperatingMasterSubtotal(row) {
+  return row.kind === "subtotal";
+}
+function operatingMasterTotalsLabel(multiMarket) {
+  return multiMarket ? "总计" : "合计";
+}
+function parseOperatingMasterExportScope(raw) {
+  if (!raw.scope) {
+    if (raw.scopeId)
+      throw new Error("INVALID_PARAMS: 导出范围缺少类型");
+    return { type: "all" };
+  }
+  if (raw.scope === "authorized" && !raw.scopeId)
+    return { type: "authorized" };
+  if ((raw.scope === "market" || raw.scope === "store") && raw.scopeId)
+    return { type: raw.scope, id: raw.scopeId };
+  throw new Error("INVALID_PARAMS: 导出范围参数不完整或无效");
+}
+function operatingMasterScopeMeta(scope, name) {
+  if (scope.type === "market")
+    return `市场 · ${name}`;
+  if (scope.type === "store")
+    return `门店 · ${name}`;
+  return name;
+}
+function operatingMasterExportGroup(column2) {
+  return column2.group?.key === BLANK_GROUP.key ? BLANK_FROZEN_GROUP : column2.group;
+}
+
+// src/actions/data-center/operating-master.ts
+"use server";
+function revenueByStoreSql(session4, scope, range) {
+  return import_drizzle_orm67.sql`
+        SELECT spe.store_id, COALESCE(SUM(spe.amount::numeric), 0) AS v
+        FROM sale_order_performance_events spe
+        WHERE ${scopeFilterSql(session4, scope, "spe.store_id")}
+          AND spe.status = '已支付'
+          AND spe.change_type IN ('首次支付', '回款', '退款')
+          AND spe.sale_order_type IN ('销售单', '转换单', '充值单')
+          AND spe.legacy_source IS DISTINCT FROM 'workfine'
+          AND spe.performance_date BETWEEN ${range.start} AND ${range.end}
+        GROUP BY spe.store_id
+      `;
+}
+var getOperatingMaster = withPermission(DATA_CENTER_DASHBOARD_ACTION, async (session4, params) => {
+  if (!isValidMonth(params.month))
+    throw new Error("INVALID_PARAMS: 月份格式应为 YYYY-MM");
+  if (params.month > shanghaiToday().slice(0, 7))
+    throw new Error("INVALID_PARAMS: 不能查询未来月份");
+  await validateScope(session4, params.scope);
+  const { scope, month } = params;
+  const cur = monthRange(month);
+  const ytd = ytdRange(month);
+  const [scopeName, skelRows, beauticianRows, revRows, ytdRevRows, projectRows, consRows, shengmeiConsRows] = await Promise.all([
+    resolveScopeName(scope),
+    db2.execute(import_drizzle_orm67.sql`
+          SELECT sk.store_id, sk.store_name, sk.market_id, sk.market_name
+          FROM (${scopeStoreSkeletonSql(session4, scope)}) sk
+          JOIN org_nodes mkt ON mkt.id = sk.market_id
+          ORDER BY mkt.sort_order ASC NULLS LAST, sk.market_name ASC, sk.market_id ASC,
+                   sk.store_name ASC, sk.store_id ASC
+        `),
+    db2.execute(technicianByStoreSql(session4, scope, cur.end, "beautician")),
+    db2.execute(revenueByStoreSql(session4, scope, cur)),
+    db2.execute(revenueByStoreSql(session4, scope, ytd)),
+    db2.execute(import_drizzle_orm67.sql`
+          SELECT so.store_id, COALESCE(SUM(sit.session_used), 0) AS v
+          FROM service_orders so
+          JOIN service_items sit ON sit.service_order_id = so.service_order_id
+          JOIN sale_items si ON si.sale_item_id = sit.sale_item_id
+          WHERE ${scopeFilterSql(session4, scope, "so.store_id")}
+            AND so.status = '已完成'
+            AND sit.is_shengmei = TRUE
+            AND so.service_date BETWEEN ${cur.start} AND ${cur.end}
+            AND ${excludeDepositRefundSql("so")}
+          GROUP BY so.store_id
+        `),
+    db2.execute(import_drizzle_orm67.sql`
+          SELECT so.store_id, COALESCE(SUM(sit.unit_real_price::numeric * sit.session_used), 0) AS v
+          FROM service_orders so
+          JOIN service_items sit ON sit.service_order_id = so.service_order_id
+          JOIN sale_items si ON si.sale_item_id = sit.sale_item_id
+          WHERE ${scopeFilterSql(session4, scope, "so.store_id")}
+            AND so.status = '已完成'
+            AND so.service_date BETWEEN ${cur.start} AND ${cur.end}
+            AND ${excludeDepositRefundSql("so")}
+          GROUP BY so.store_id
+        `),
+    db2.execute(import_drizzle_orm67.sql`
+          SELECT so.store_id, COALESCE(SUM(sit.unit_real_price::numeric * sit.session_used), 0) AS v
+          FROM service_orders so
+          JOIN service_items sit ON sit.service_order_id = so.service_order_id
+          JOIN sale_items si ON si.sale_item_id = sit.sale_item_id
+          WHERE ${scopeFilterSql(session4, scope, "so.store_id")}
+            AND so.status = '已完成'
+            AND sit.is_shengmei = TRUE
+            AND so.service_date BETWEEN ${cur.start} AND ${cur.end}
+            AND ${excludeDepositRefundSql("so")}
+          GROUP BY so.store_id
+        `)
+  ]);
+  const metrics = new Map;
+  const collect = (rows, key) => {
+    for (const row of rows) {
+      const id = String(row.store_id);
+      metrics.set(id, { ...metrics.get(id), [key]: Number(row.v ?? 0) });
+    }
+  };
+  collect(beauticianRows, "beauticianCount");
+  collect(revRows, "monthRevenue");
+  collect(ytdRevRows, "ytdRevenue");
+  collect(projectRows, "shengmeiProjectCount");
+  collect(consRows, "monthConsume");
+  collect(shengmeiConsRows, "shengmeiConsume");
+  const stores3 = skelRows.map((row) => ({
+    storeId: String(row.store_id),
+    storeName: String(row.store_name ?? ""),
+    marketId: String(row.market_id ?? ""),
+    marketName: String(row.market_name ?? "")
+  }));
+  return { month, range: cur, ytd, scopeName, ...buildOperatingMasterTable(stores3, metrics) };
+});
+
 // src/lib/sales-categories.ts
 var SALES_CATEGORIES = Object.freeze(["自销自耗", "他销自耗", "他销他耗", "生态合作"]);
 var SALES_CATEGORY_COLUMN_KEYS = Object.freeze({
@@ -181905,6 +182446,30 @@ function metricCell(value, unit) {
 }
 function headerWithUnit(label, unit) {
   return unit === "percent" ? `${label}(%)` : label;
+}
+
+// src/lib/data-center/matrix-export.ts
+var NUM_FMT = { amount: "#,##0.00", percent: "0.00", count: "#,##0" };
+function toWorkerExportColumns(columns3, serverTotals) {
+  return columns3.map((column2) => {
+    const unit = column2.unit ?? "amount";
+    const numeric5 = !column2.exportValue && !!column2.value;
+    const hasTotal = !!serverTotals && Object.prototype.hasOwnProperty.call(serverTotals, column2.key);
+    return {
+      header: numeric5 ? headerWithUnit(column2.header, unit) : column2.header,
+      width: column2.exportWidth,
+      group: column2.group ? { key: column2.group.key, header: column2.group.header } : undefined,
+      value: column2.exportValue ?? (column2.value ? (row) => metricCell(column2.value(row), unit) : () => ""),
+      ...numeric5 ? { numFmt: NUM_FMT[unit] } : {},
+      ...hasTotal ? { total: metricCell(toTotal(serverTotals[column2.key]), unit) } : {}
+    };
+  });
+}
+function countLeftFrozen(columns3) {
+  let count = 0;
+  while (count < columns3.length && columns3[count].freeze === "left")
+    count += 1;
+  return count;
 }
 
 // src/export-worker/registry.ts
@@ -182286,21 +182851,64 @@ function breakdownContent(view3, rows) {
     rows: fromRows(rows)
   };
 }
-function rankingContent(rows, metric) {
+function rankingContent(rows, metric2) {
   const columns3 = [
     { header: "排名", width: 8, value: (row) => numberOrEmpty(row, "rank") },
     { header: "名称", width: 20, value: (row) => text5(row, "name") },
     { header: "所属市场", width: 16, value: (row) => text5(row, "marketName") },
-    { header: headerWithUnit(metric.label, metric.unit), value: (row) => metricCell(value(row, "value"), metric.unit) }
+    { header: headerWithUnit(metric2.label, metric2.unit), value: (row) => metricCell(value(row, "value"), metric2.unit) }
   ];
   return {
-    sheetName: metric.label,
+    sheetName: metric2.label,
     columns: columns3,
     rows: fromRows(rows)
   };
 }
+async function operatingMasterContent(raw) {
+  if (!isValidMonth(raw.month))
+    throw new Error("INVALID_PARAMS: 导出缺少统计月份");
+  const scope = parseOperatingMasterExportScope({ scope: raw.scope, scopeId: raw.scopeId });
+  const result = await getOperatingMaster({ scope, month: raw.month });
+  const columns3 = toWorkerExportColumns(OPERATING_MASTER_COLUMNS, result.totals).map((column2, index3) => {
+    const spec = OPERATING_MASTER_COLUMNS[index3];
+    const group = operatingMasterExportGroup(spec);
+    return {
+      ...column2,
+      group: group ? { key: group.key, header: group.header } : undefined,
+      ...spec.pending ? { total: "—" } : {}
+    };
+  });
+  return {
+    sheetName: "经营数据主表",
+    columns: columns3,
+    rows: fromRows(result.rows),
+    frozenColumns: countLeftFrozen(OPERATING_MASTER_COLUMNS),
+    totalsLabel: operatingMasterTotalsLabel(result.multiMarket),
+    isEmphasisRow: (row) => isOperatingMasterSubtotal(row),
+    meta: {
+      period: `${result.range.start} ~ ${result.range.end}`,
+      scope: operatingMasterScopeMeta(scope, result.scopeName),
+      extra: [
+        { label: "年度累计区间", value: `${result.ytd.start} ~ ${result.ytd.end}（不含 WorkFine 历史单）` },
+        { label: "说明", value: "显示「—」的列口径待定或目标未设，本期不取数" }
+      ]
+    }
+  };
+}
+async function queryReport(view3, raw) {
+  switch (view3) {
+    case "report-operating-master":
+      return operatingMasterContent(raw);
+    default: {
+      const unhandled = view3;
+      throw new Error(`INVALID_PARAMS: 未知的报表导出视图 ${String(unhandled)}`);
+    }
+  }
+}
 async function queryDataCenter(payload) {
   const raw = payload.params;
+  if (isDataCenterReportExportView(payload.view))
+    return queryReport(payload.view, raw);
   const base = parseBoardParams(raw);
   const view3 = payload.view;
   if (view3.startsWith("sales-")) {
@@ -182322,17 +182930,19 @@ async function queryDataCenter(payload) {
     const rows = view3 === "product-market" ? board2.byMarket : board2.byStore;
     return breakdownContent(view3, rows);
   }
+  if (!view3.startsWith("efficiency-"))
+    throw new Error(`INVALID_PARAMS: 未知的数据中心导出视图 ${view3}`);
   const board = await getEfficiencyBoard(base);
   if (view3 === "efficiency-market")
     return breakdownContent(view3, board.byMarket);
   if (view3 === "efficiency-staff")
     return breakdownContent(view3, board.byStaff);
   const config = getDataCenterRankingConfig(view3);
-  const metric = config.metrics.find((item) => item.key === payload.metric);
-  if (!metric)
+  const metric2 = config.metrics.find((item) => item.key === payload.metric);
+  if (!metric2)
     throw new Error("INVALID_PARAMS: 排名指标无效");
   const source = view3 === "efficiency-store-ranking" ? board.storeRankings : board.staffRankings;
-  return rankingContent(source[metric.key] ?? [], metric);
+  return rankingContent(source[metric2.key] ?? [], metric2);
 }
 function queryProducts(payload) {
   return {
@@ -182512,54 +183122,6 @@ function exportCloudPath(jobId, fileName) {
 
 // src/export-worker/xlsx-writer.ts
 var import_exceljs = __toESM(require_excel(), 1);
-
-// src/lib/data-center/matrix.ts
-function buildMatrixHeaderLayout(columns3) {
-  const groupStartKeys = new Set;
-  const grouped = columns3.some((column2) => column2.group);
-  if (!grouped) {
-    return {
-      depth: 1,
-      rows: [columns3.map((column2, index3) => ({
-        key: column2.key,
-        columnKey: column2.key,
-        colSpan: 1,
-        rowSpan: 1,
-        firstLeafIndex: index3
-      }))],
-      groupStartKeys
-    };
-  }
-  const top = [];
-  const bottom = [];
-  const closedGroups = new Set;
-  let current = null;
-  columns3.forEach((column2, index3) => {
-    const groupKey2 = column2.group?.key;
-    if (current && current.groupKey !== groupKey2) {
-      closedGroups.add(current.groupKey);
-      current = null;
-    }
-    if (!groupKey2) {
-      top.push({ key: column2.key, columnKey: column2.key, colSpan: 1, rowSpan: 2, firstLeafIndex: index3 });
-      return;
-    }
-    if (current) {
-      current.colSpan += 1;
-    } else {
-      if (closedGroups.has(groupKey2)) {
-        throw new Error(`INVALID_STATE: 矩阵表分组「${groupKey2}」的列不相邻`);
-      }
-      current = { key: `group:${groupKey2}`, groupKey: groupKey2, colSpan: 1, rowSpan: 1, firstLeafIndex: index3 };
-      top.push(current);
-      groupStartKeys.add(column2.key);
-    }
-    bottom.push({ key: column2.key, columnKey: column2.key, colSpan: 1, rowSpan: 1, firstLeafIndex: index3 });
-  });
-  return { depth: 2, rows: [top, bottom], groupStartKeys };
-}
-
-// src/export-worker/xlsx-writer.ts
 var EXPORT_META_SHEET_NAME = "导出说明";
 var XLSX_ROWS_PER_SHEET = 1e6;
 function safeSheetName(input, sequence3) {
@@ -182597,9 +183159,14 @@ async function writeStreamXlsx(options) {
     layout.rows.forEach((cells, rowIndex) => {
       for (const cell of cells) {
         const target = headerRows[rowIndex].getCell(cell.firstLeafIndex + 1);
-        target.value = cell.groupKey ? options.columns[cell.firstLeafIndex].group.header : options.columns[cell.firstLeafIndex].header;
+        const text6 = cell.groupKey ? options.columns[cell.firstLeafIndex].group.header : options.columns[cell.firstLeafIndex].header;
+        target.value = text6;
+        const wrapText = text6.includes(`
+`) || undefined;
         if (layout.depth === 2) {
-          target.alignment = { vertical: "middle", horizontal: cell.groupKey ? "center" : undefined };
+          target.alignment = { vertical: "middle", horizontal: cell.groupKey ? "center" : undefined, wrapText };
+        } else if (wrapText) {
+          target.alignment = { wrapText };
         }
         if (cell.groupKey || groupStarts.has(cell.firstLeafIndex)) {
           target.border = { left: { style: "thin" } };
@@ -182612,6 +183179,12 @@ async function writeStreamXlsx(options) {
         worksheet.mergeCells(1, column2, cell.rowSpan, column2 + cell.colSpan - 1);
       }
     }
+    layout.rows.forEach((cells, rowIndex) => {
+      const lines = Math.max(1, ...cells.map((cell) => (cell.groupKey ? options.columns[cell.firstLeafIndex].group.header : options.columns[cell.firstLeafIndex].header).split(`
+`).filter(Boolean).length));
+      if (lines > 1)
+        headerRows[rowIndex].height = lines * 15 + 4;
+    });
     for (const header of headerRows) {
       header.font = { bold: true };
       header.commit();
@@ -182784,7 +183357,7 @@ function asClaimedId(rows) {
   return Number.isSafeInteger(id) && id > 0 ? id : null;
 }
 async function recoverExpiredLeases() {
-  await db2.execute(import_drizzle_orm66.sql`
+  await db2.execute(import_drizzle_orm68.sql`
     UPDATE admin_export_jobs
        SET status = CASE
              WHEN attempt_count >= ${MAX_ATTEMPTS} THEN 'failed'
@@ -182808,12 +183381,12 @@ async function recoverExpiredLeases() {
   `);
 }
 async function claimNextJob() {
-  const claimed = await db2.execute(import_drizzle_orm66.sql`
+  const claimed = await db2.execute(import_drizzle_orm68.sql`
     UPDATE admin_export_jobs
        SET status = 'running',
            attempt_count = attempt_count + 1,
            started_at = COALESCE(started_at, NOW()),
-           lease_expires_at = NOW() + ${import_drizzle_orm66.sql.raw(`interval '${LEASE_MINUTES} minutes'`)},
+           lease_expires_at = NOW() + ${import_drizzle_orm68.sql.raw(`interval '${LEASE_MINUTES} minutes'`)},
            error_code = NULL,
            error_message = NULL,
            updated_at = NOW()
@@ -182831,13 +183404,13 @@ async function claimNextJob() {
   const id = asClaimedId(claimed);
   if (!id)
     return null;
-  const [job] = await db2.select().from(adminExportJobs).where(import_drizzle_orm66.eq(adminExportJobs.id, id)).limit(1);
+  const [job] = await db2.select().from(adminExportJobs).where(import_drizzle_orm68.eq(adminExportJobs.id, id)).limit(1);
   return job ?? null;
 }
 async function renewLease(id) {
-  await db2.execute(import_drizzle_orm66.sql`
+  await db2.execute(import_drizzle_orm68.sql`
     UPDATE admin_export_jobs
-       SET lease_expires_at = NOW() + ${import_drizzle_orm66.sql.raw(`interval '${LEASE_MINUTES} minutes'`)},
+       SET lease_expires_at = NOW() + ${import_drizzle_orm68.sql.raw(`interval '${LEASE_MINUTES} minutes'`)},
            updated_at = NOW()
      WHERE id = ${id}
        AND status = 'running'
@@ -182860,7 +183433,7 @@ async function failJob(job, err) {
     completedAt: shouldRetry ? null : new Date,
     errorCode: failure.code,
     errorMessage: shouldRetry ? `${failure.message}（第 ${job.attemptCount} 次失败，正在重试）` : failure.message
-  }).where(import_drizzle_orm66.and(import_drizzle_orm66.eq(adminExportJobs.id, job.id), import_drizzle_orm66.eq(adminExportJobs.status, "running")));
+  }).where(import_drizzle_orm68.and(import_drizzle_orm68.eq(adminExportJobs.id, job.id), import_drizzle_orm68.eq(adminExportJobs.status, "running")));
   if (!shouldRetry) {
     const session4 = parseExportSession(job.scopeSnapshot);
     await logOperation(session4, "export_job.failed", "admin_export_jobs", String(job.id), {
@@ -182871,12 +183444,12 @@ async function failJob(job, err) {
   }
 }
 async function expireFinishedFiles() {
-  const expired = await db2.select({ id: adminExportJobs.id, fileCloudPath: adminExportJobs.fileCloudPath }).from(adminExportJobs).where(import_drizzle_orm66.and(import_drizzle_orm66.inArray(adminExportJobs.status, ["ready", "expired"]), import_drizzle_orm66.isNotNull(adminExportJobs.fileCloudPath), import_drizzle_orm66.lt(adminExportJobs.expiresAt, new Date))).limit(100);
+  const expired = await db2.select({ id: adminExportJobs.id, fileCloudPath: adminExportJobs.fileCloudPath }).from(adminExportJobs).where(import_drizzle_orm68.and(import_drizzle_orm68.inArray(adminExportJobs.status, ["ready", "expired"]), import_drizzle_orm68.isNotNull(adminExportJobs.fileCloudPath), import_drizzle_orm68.lt(adminExportJobs.expiresAt, new Date))).limit(100);
   for (const job of expired) {
     try {
       if (job.fileCloudPath)
         await deleteByCloudPaths([job.fileCloudPath]);
-      await db2.update(adminExportJobs).set({ status: "expired", fileCloudPath: null, updatedAt: new Date }).where(import_drizzle_orm66.and(import_drizzle_orm66.eq(adminExportJobs.id, job.id), import_drizzle_orm66.inArray(adminExportJobs.status, ["ready", "expired"])));
+      await db2.update(adminExportJobs).set({ status: "expired", fileCloudPath: null, updatedAt: new Date }).where(import_drizzle_orm68.and(import_drizzle_orm68.eq(adminExportJobs.id, job.id), import_drizzle_orm68.inArray(adminExportJobs.status, ["ready", "expired"])));
     } catch (err) {
       console.error(`[export-worker] cleanup failed for job ${job.id}:`, err);
     }
@@ -182930,7 +183503,7 @@ async function processJob(job) {
           if (rowCount - lastProgress < 1000)
             return;
           lastProgress = rowCount;
-          await db2.update(adminExportJobs).set({ progressRows: rowCount }).where(import_drizzle_orm66.and(import_drizzle_orm66.eq(adminExportJobs.id, job.id), import_drizzle_orm66.eq(adminExportJobs.status, "running")));
+          await db2.update(adminExportJobs).set({ progressRows: rowCount }).where(import_drizzle_orm68.and(import_drizzle_orm68.eq(adminExportJobs.id, job.id), import_drizzle_orm68.eq(adminExportJobs.status, "running")));
         }
       });
       return { content, fileName, filePath, writeResult };
@@ -182946,7 +183519,7 @@ async function processJob(job) {
         progressRows: 0,
         errorCode: null,
         errorMessage: null
-      }).where(import_drizzle_orm66.and(import_drizzle_orm66.eq(adminExportJobs.id, job.id), import_drizzle_orm66.eq(adminExportJobs.status, "running")));
+      }).where(import_drizzle_orm68.and(import_drizzle_orm68.eq(adminExportJobs.id, job.id), import_drizzle_orm68.eq(adminExportJobs.status, "running")));
       await logOperation(session4, "export_job.empty", "admin_export_jobs", String(job.id), {
         exportType
       }).catch((logError) => console.error("[export-worker] empty audit log error:", logError));
@@ -182971,7 +183544,7 @@ async function processJob(job) {
       fileName: output.fileName,
       errorCode: null,
       errorMessage: null
-    }).where(import_drizzle_orm66.and(import_drizzle_orm66.eq(adminExportJobs.id, job.id), import_drizzle_orm66.eq(adminExportJobs.status, "running")));
+    }).where(import_drizzle_orm68.and(import_drizzle_orm68.eq(adminExportJobs.id, job.id), import_drizzle_orm68.eq(adminExportJobs.status, "running")));
     await logOperation(session4, "export_job.ready", "admin_export_jobs", String(job.id), {
       exportType,
       rowCount: output.writeResult.rowCount,

@@ -78,17 +78,40 @@ export function technicianCountSql(
     `
 }
 
-/** 产能技师数 by store（**仅**有门店归属的那部分） */
+/**
+ * 人池。缺省 `producer`（产能技师，即 `technicianCteSql` 的口径）。
+ *
+ * `beautician`（经营数据主表 D 列「美容师人数」，#372）是 producer 的**子集**：在 technician_scoped 之上
+ * 再收窄为「技能含美容师」。在职历史化、双轨归属、scope 可见性全部沿用 producer，不是另一套口径。
+ *
+ * ⚠️ 收窄必须加在**外层**，不能改 `technicianCteSql`：staffApi 的
+ * `cross-end-technician-denominator.test.js`（#320）逐字钉住 technician_base 的 FROM/JOIN/WHERE 与
+ * technician_scoped 的 SELECT，两端人均分母靠它对齐；往 CTE 里插任何条件都会让跨端守护变红。
+ */
+export type TechnicianPool = 'producer' | 'beautician'
+
+function technicianPoolFilterSql(pool: TechnicianPool): SQL {
+  if (pool === 'producer') return sql``
+  return sql`
+        AND EXISTS (
+          SELECT 1 FROM staff_wechat_users bw
+          WHERE bw.employee_id = ts.employee_id
+            AND bw.skills && ARRAY['美容师']::text[]
+        )`
+}
+
+/** 产能技师数 by store（**仅**有门店归属的那部分）；`pool='beautician'` 时为美容师人数 */
 export function technicianByStoreSql(
   session: AuthSession,
   scope: DataCenterScope,
   endDate: string,
+  pool: TechnicianPool = 'producer',
 ): SQL {
   return sql`
       WITH ${technicianCteSql(session, scope, endDate)}
       SELECT store_id, COUNT(*)::int AS v
-      FROM technician_scoped
-      WHERE store_id IS NOT NULL
+      FROM technician_scoped ts
+      WHERE store_id IS NOT NULL${technicianPoolFilterSql(pool)}
       GROUP BY store_id
     `
 }
