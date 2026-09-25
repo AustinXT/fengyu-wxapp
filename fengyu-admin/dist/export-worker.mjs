@@ -179245,10 +179245,7 @@ function excludeDepositRefundSql(soAlias = "so") {
 
 // src/lib/data-center/technician-sql.ts
 var import_drizzle_orm61 = __toESM(require_drizzle_orm(), 1);
-function skillFilterSql(pool) {
-  return pool === "beautician" ? import_drizzle_orm61.sql`sw.skills && ARRAY['美容师']::text[]` : import_drizzle_orm61.sql`sw.skills && ARRAY['美容师','养生师']::text[]`;
-}
-function technicianCteSql(session4, scope, endDate, pool = "producer") {
+function technicianCteSql(session4, scope, endDate) {
   return import_drizzle_orm61.sql`
       technician_base AS (
         SELECT sw.employee_id,
@@ -179262,7 +179259,7 @@ function technicianCteSql(session4, scope, endDate, pool = "producer") {
         LEFT JOIN org_nodes o ON o.id = sw.org_node_id
         LEFT JOIN org_nodes op ON op.id = o.parent_id
         LEFT JOIN stores ds ON ds.org_node_id = sw.org_node_id
-        WHERE ${skillFilterSql(pool)}
+        WHERE sw.skills && ARRAY['美容师','养生师']::text[]
           AND sw.hired_at IS NOT NULL
           AND sw.hired_at::date <= ${endDate}
           AND (sw.resigned_at IS NULL OR sw.resigned_at::date > ${endDate})
@@ -179281,12 +179278,22 @@ function technicianCountSql(session4, scope, endDate) {
       SELECT COUNT(*)::int AS v FROM technician_scoped
     `;
 }
+function technicianPoolFilterSql(pool) {
+  if (pool === "producer")
+    return import_drizzle_orm61.sql``;
+  return import_drizzle_orm61.sql`
+        AND EXISTS (
+          SELECT 1 FROM staff_wechat_users bw
+          WHERE bw.employee_id = ts.employee_id
+            AND bw.skills && ARRAY['美容师']::text[]
+        )`;
+}
 function technicianByStoreSql(session4, scope, endDate, pool = "producer") {
   return import_drizzle_orm61.sql`
-      WITH ${technicianCteSql(session4, scope, endDate, pool)}
+      WITH ${technicianCteSql(session4, scope, endDate)}
       SELECT store_id, COUNT(*)::int AS v
-      FROM technician_scoped
-      WHERE store_id IS NOT NULL
+      FROM technician_scoped ts
+      WHERE store_id IS NOT NULL${technicianPoolFilterSql(pool)}
       GROUP BY store_id
     `;
 }
