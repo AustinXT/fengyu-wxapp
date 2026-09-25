@@ -136,6 +136,18 @@ const PROBES: Probe[] = [
     pattern: /^(JOIN org_nodes mkt ON mkt\.id = sk\.market_id|ORDER BY mkt\.sort_order ASC NULLS LAST, sk\.market_name ASC, sk\.market_id ASC,)$/,
     minLines: 2,
   },
+  {
+    label: '日常数据一览表 · 子项拆分缩放（#369）',
+    file: 'src/lib/data-center/daily-overview-sql.ts',
+    pattern: /^SUM\(rc\.amount \* pay\.amount \/ rc\.denominator\)::text AS amount$/,
+    minLines: 1,
+  },
+  {
+    label: '日常数据一览表 · 业绩 / 充值 / 服务的单据类型与状态口径（#369）',
+    file: 'src/lib/data-center/daily-overview-sql.ts',
+    pattern: /^AND (spe\.sale_order_type (IN|=) |so\.status = )/,
+    minLines: 5,
+  },
 ]
 
 describe('dist/export-worker.mjs 新鲜度（改了 data-center SQL 口径必须重建产物）', () => {

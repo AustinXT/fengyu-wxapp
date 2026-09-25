@@ -68,8 +68,20 @@ describe('parseReportRange（区间型）', () => {
   })
 
   it('自定义恰好 366 天（含闰日的整年）可用', () => {
-    const p = parseReportRange({ period: 'custom', start: '2028-01-01', end: '2028-12-31' }, TODAY)
+    const p = parseReportRange({ period: 'custom', start: '2028-01-01', end: '2028-12-31' }, '2029-01-10')
     expect(p.preset).toBe('custom')
+  })
+
+  it('自定义结束日在未来：截到今天，基期按截后的长度取（不出假的大幅下降，#369）', () => {
+    const p = parseReportRange({ period: 'custom', start: '2026-09-01', end: '2026-10-15' }, TODAY)
+    expect(p.preset).toBe('custom')
+    expect(p.current).toEqual({ start: '2026-09-01', end: '2026-09-25' })
+    expect(p.previous).toEqual({ start: '2026-08-07', end: '2026-08-31' })
+  })
+
+  it('自定义整段在未来：回落默认上月', () => {
+    const p = parseReportRange({ period: 'custom', start: '2026-10-01', end: '2026-10-31' }, TODAY)
+    expect(p.preset).toBe('lastMonth')
   })
 
   it('未知预设（含板块页的 month / year）回落默认上月，两套预设互不串用', () => {

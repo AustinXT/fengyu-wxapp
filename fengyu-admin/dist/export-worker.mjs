@@ -120086,8 +120086,8 @@ var require_lodash12 = __commonJS((exports, module) => {
       return func(value2);
     };
   }
-  function cacheHas(cache3, key) {
-    return cache3.has(key);
+  function cacheHas(cache4, key) {
+    return cache4.has(key);
   }
   function getValue(object, key) {
     return object == null ? undefined : object[key];
@@ -121321,8 +121321,8 @@ var require_lodash16 = __commonJS((exports, module) => {
   function baseIsNaN(value2) {
     return value2 !== value2;
   }
-  function cacheHas(cache3, key) {
-    return cache3.has(key);
+  function cacheHas(cache4, key) {
+    return cache4.has(key);
   }
   function getValue(object, key) {
     return object == null ? undefined : object[key];
@@ -121894,16 +121894,16 @@ var require_lodash17 = __commonJS((exports, module) => {
     return this.__data__.has(key);
   }
   function stackSet(key, value2) {
-    var cache3 = this.__data__;
-    if (cache3 instanceof ListCache) {
-      var pairs = cache3.__data__;
+    var cache4 = this.__data__;
+    if (cache4 instanceof ListCache) {
+      var pairs = cache4.__data__;
       if (!Map2 || pairs.length < LARGE_ARRAY_SIZE - 1) {
         pairs.push([key, value2]);
         return this;
       }
-      cache3 = this.__data__ = new MapCache(pairs);
+      cache4 = this.__data__ = new MapCache(pairs);
     }
-    cache3.set(key, value2);
+    cache4.set(key, value2);
     return this;
   }
   Stack.prototype.clear = stackClear;
@@ -122389,12 +122389,12 @@ var require_lodash17 = __commonJS((exports, module) => {
       throw new TypeError(FUNC_ERROR_TEXT);
     }
     var memoized = function() {
-      var args = arguments, key = resolver ? resolver.apply(this, args) : args[0], cache3 = memoized.cache;
-      if (cache3.has(key)) {
-        return cache3.get(key);
+      var args = arguments, key = resolver ? resolver.apply(this, args) : args[0], cache4 = memoized.cache;
+      if (cache4.has(key)) {
+        return cache4.get(key);
       }
       var result = func.apply(this, args);
-      memoized.cache = cache3.set(key, result);
+      memoized.cache = cache4.set(key, result);
       return result;
     };
     memoized.cache = new (memoize.Cache || MapCache);
@@ -125831,7 +125831,7 @@ var require_async2 = __commonJS((exports, module) => {
       }
       return stripped;
     }
-    function parseParams(func) {
+    function parseParams2(func) {
       const src = stripComments(func.toString());
       let match = src.match(FN_ARGS);
       if (!match) {
@@ -125858,7 +125858,7 @@ Source:
         } else if (hasNoDeps) {
           newTasks[key] = taskFn;
         } else {
-          params = parseParams(taskFn);
+          params = parseParams2(taskFn);
           if (taskFn.length === 0 && !fnIsAsync && params.length === 0) {
             throw new Error("autoInject task functions require explicit parameters.");
           }
@@ -132195,8 +132195,8 @@ var require_lodash20 = __commonJS((exports, module) => {
       return func(value2);
     };
   }
-  function cacheHas(cache3, key) {
-    return cache3.has(key);
+  function cacheHas(cache4, key) {
+    return cache4.has(key);
   }
   function getValue(object, key) {
     return object == null ? undefined : object[key];
@@ -132576,8 +132576,8 @@ var require_lodash21 = __commonJS((exports, module) => {
   function baseIsNaN(value2) {
     return value2 !== value2;
   }
-  function cacheHas(cache3, key) {
-    return cache3.has(key);
+  function cacheHas(cache4, key) {
+    return cache4.has(key);
   }
   function getValue(object, key) {
     return object == null ? undefined : object[key];
@@ -132955,10 +132955,10 @@ var require_old = __commonJS((exports) => {
     splitRootRe = /^[\/]*/;
   }
   var splitRootRe;
-  exports.realpathSync = function realpathSync(p, cache3) {
+  exports.realpathSync = function realpathSync(p, cache4) {
     p = pathModule.resolve(p);
-    if (cache3 && Object.prototype.hasOwnProperty.call(cache3, p)) {
-      return cache3[p];
+    if (cache4 && Object.prototype.hasOwnProperty.call(cache4, p)) {
+      return cache4[p];
     }
     var original = p, seenLinks = {}, knownHard = {};
     var pos;
@@ -132984,18 +132984,18 @@ var require_old = __commonJS((exports) => {
       current += result[0];
       base = previous + result[1];
       pos = nextPartRe.lastIndex;
-      if (knownHard[base] || cache3 && cache3[base] === base) {
+      if (knownHard[base] || cache4 && cache4[base] === base) {
         continue;
       }
       var resolvedLink;
-      if (cache3 && Object.prototype.hasOwnProperty.call(cache3, base)) {
-        resolvedLink = cache3[base];
+      if (cache4 && Object.prototype.hasOwnProperty.call(cache4, base)) {
+        resolvedLink = cache4[base];
       } else {
         var stat = fs2.lstatSync(base);
         if (!stat.isSymbolicLink()) {
           knownHard[base] = true;
-          if (cache3)
-            cache3[base] = base;
+          if (cache4)
+            cache4[base] = base;
           continue;
         }
         var linkTarget = null;
@@ -133010,26 +133010,26 @@ var require_old = __commonJS((exports) => {
           linkTarget = fs2.readlinkSync(base);
         }
         resolvedLink = pathModule.resolve(previous, linkTarget);
-        if (cache3)
-          cache3[base] = resolvedLink;
+        if (cache4)
+          cache4[base] = resolvedLink;
         if (!isWindows)
           seenLinks[id] = linkTarget;
       }
       p = pathModule.resolve(resolvedLink, p.slice(pos));
       start();
     }
-    if (cache3)
-      cache3[original] = p;
+    if (cache4)
+      cache4[original] = p;
     return p;
   };
-  exports.realpath = function realpath(p, cache3, cb) {
+  exports.realpath = function realpath(p, cache4, cb) {
     if (typeof cb !== "function") {
-      cb = maybeCallback(cache3);
-      cache3 = null;
+      cb = maybeCallback(cache4);
+      cache4 = null;
     }
     p = pathModule.resolve(p);
-    if (cache3 && Object.prototype.hasOwnProperty.call(cache3, p)) {
-      return process.nextTick(cb.bind(null, null, cache3[p]));
+    if (cache4 && Object.prototype.hasOwnProperty.call(cache4, p)) {
+      return process.nextTick(cb.bind(null, null, cache4[p]));
     }
     var original = p, seenLinks = {}, knownHard = {};
     var pos;
@@ -133056,8 +133056,8 @@ var require_old = __commonJS((exports) => {
     }
     function LOOP() {
       if (pos >= p.length) {
-        if (cache3)
-          cache3[original] = p;
+        if (cache4)
+          cache4[original] = p;
         return cb(null, p);
       }
       nextPartRe.lastIndex = pos;
@@ -133066,11 +133066,11 @@ var require_old = __commonJS((exports) => {
       current += result[0];
       base = previous + result[1];
       pos = nextPartRe.lastIndex;
-      if (knownHard[base] || cache3 && cache3[base] === base) {
+      if (knownHard[base] || cache4 && cache4[base] === base) {
         return process.nextTick(LOOP);
       }
-      if (cache3 && Object.prototype.hasOwnProperty.call(cache3, base)) {
-        return gotResolvedLink(cache3[base]);
+      if (cache4 && Object.prototype.hasOwnProperty.call(cache4, base)) {
+        return gotResolvedLink(cache4[base]);
       }
       return fs2.lstat(base, gotStat);
     }
@@ -133079,8 +133079,8 @@ var require_old = __commonJS((exports) => {
         return cb(err);
       if (!stat.isSymbolicLink()) {
         knownHard[base] = true;
-        if (cache3)
-          cache3[base] = base;
+        if (cache4)
+          cache4[base] = base;
         return process.nextTick(LOOP);
       }
       if (!isWindows) {
@@ -133103,8 +133103,8 @@ var require_old = __commonJS((exports) => {
       if (err)
         return cb(err);
       var resolvedLink = pathModule.resolve(previous, target);
-      if (cache3)
-        cache3[base2] = resolvedLink;
+      if (cache4)
+        cache4[base2] = resolvedLink;
       gotResolvedLink(resolvedLink);
     }
     function gotResolvedLink(resolvedLink) {
@@ -133131,31 +133131,31 @@ var require_fs = __commonJS((exports, module) => {
   function newError(er) {
     return er && er.syscall === "realpath" && (er.code === "ELOOP" || er.code === "ENOMEM" || er.code === "ENAMETOOLONG");
   }
-  function realpath(p, cache3, cb) {
+  function realpath(p, cache4, cb) {
     if (ok) {
-      return origRealpath(p, cache3, cb);
+      return origRealpath(p, cache4, cb);
     }
-    if (typeof cache3 === "function") {
-      cb = cache3;
-      cache3 = null;
+    if (typeof cache4 === "function") {
+      cb = cache4;
+      cache4 = null;
     }
-    origRealpath(p, cache3, function(er, result) {
+    origRealpath(p, cache4, function(er, result) {
       if (newError(er)) {
-        old.realpath(p, cache3, cb);
+        old.realpath(p, cache4, cb);
       } else {
         cb(er, result);
       }
     });
   }
-  function realpathSync(p, cache3) {
+  function realpathSync(p, cache4) {
     if (ok) {
-      return origRealpathSync(p, cache3);
+      return origRealpathSync(p, cache4);
     }
     try {
-      return origRealpathSync(p, cache3);
+      return origRealpathSync(p, cache4);
     } catch (er) {
       if (newError(er)) {
-        return old.realpathSync(p, cache3);
+        return old.realpathSync(p, cache4);
       } else {
         throw er;
       }
@@ -134634,8 +134634,8 @@ var require_inflight = __commonJS((exports, module) => {
   var wrappy = require_wrappy();
   var reqs = Object.create(null);
   var once = require_once();
-  module.exports = wrappy(inflight);
-  function inflight(key, cb) {
+  module.exports = wrappy(inflight2);
+  function inflight2(key, cb) {
     if (reqs[key]) {
       reqs[key].push(cb);
       return null;
@@ -134689,7 +134689,7 @@ var require_glob = __commonJS((exports, module) => {
   var common3 = require_common7();
   var setopts = common3.setopts;
   var ownProp = common3.ownProp;
-  var inflight = require_inflight();
+  var inflight2 = require_inflight();
   var util3 = __require("util");
   var childrenIgnored = common3.childrenIgnored;
   var isIgnored = common3.isIgnored;
@@ -135019,7 +135019,7 @@ var require_glob = __commonJS((exports, module) => {
       return this._readdir(abs, false, cb);
     var lstatkey = "lstat\x00" + abs;
     var self2 = this;
-    var lstatcb = inflight(lstatkey, lstatcb_);
+    var lstatcb = inflight2(lstatkey, lstatcb_);
     if (lstatcb)
       self2.fs.lstat(abs, lstatcb);
     function lstatcb_(er, lstat) {
@@ -135037,7 +135037,7 @@ var require_glob = __commonJS((exports, module) => {
   Glob.prototype._readdir = function(abs, inGlobStar, cb) {
     if (this.aborted)
       return;
-    cb = inflight("readdir\x00" + abs + "\x00" + inGlobStar, cb);
+    cb = inflight2("readdir\x00" + abs + "\x00" + inGlobStar, cb);
     if (!cb)
       return;
     if (inGlobStar && !ownProp(this.symlinks, abs))
@@ -135192,7 +135192,7 @@ var require_glob = __commonJS((exports, module) => {
       }
     }
     var self2 = this;
-    var statcb = inflight("stat\x00" + abs, lstatcb_);
+    var statcb = inflight2("stat\x00" + abs, lstatcb_);
     if (statcb)
       self2.fs.lstat(abs, statcb);
     function lstatcb_(er, lstat) {
@@ -144007,20 +144007,20 @@ var require_call_get = __commonJS((exports, module) => {
         return obj.propertyName;                                             
         `.replace("propertyName", propertyName));
       };
-      var getCompiled = function(name, compiler, cache3) {
-        var ret = cache3[name];
+      var getCompiled = function(name, compiler, cache4) {
+        var ret = cache4[name];
         if (typeof ret !== "function") {
           if (!isIdentifier(name)) {
             return null;
           }
           ret = compiler(name);
-          cache3[name] = ret;
-          cache3[" size"]++;
-          if (cache3[" size"] > 512) {
-            var keys = Object.keys(cache3);
+          cache4[name] = ret;
+          cache4[" size"]++;
+          if (cache4[" size"] > 512) {
+            var keys = Object.keys(cache4);
             for (var i = 0;i < 256; ++i)
-              delete cache3[keys[i]];
-            cache3[" size"] = keys.length - 256;
+              delete cache4[keys[i]];
+            cache4[" size"] = keys.length - 256;
           }
         }
         return ret;
@@ -155419,7 +155419,7 @@ var require_excel = __commonJS((exports, module) => {
 
 // src/export-worker/index.ts
 init_db2();
-var import_drizzle_orm70 = __toESM(require_drizzle_orm(), 1);
+var import_drizzle_orm72 = __toESM(require_drizzle_orm(), 1);
 import { createReadStream } from "node:fs";
 import { mkdtemp, rm as rm2 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -159589,7 +159589,8 @@ var DATA_CENTER_BOARD_EXPORT_VIEWS = [
 ];
 var DATA_CENTER_REPORT_EXPORT_VIEWS = [
   "report-operating-master",
-  "report-remaining-cards"
+  "report-remaining-cards",
+  "report-daily-overview"
 ];
 var REPORT_EXPORT_VIEW_SET = new Set(DATA_CENTER_REPORT_EXPORT_VIEWS);
 function isDataCenterReportExportView(view3) {
@@ -159630,7 +159631,8 @@ var DATA_CENTER_VIEW_REQUIRED_ACTIONS = {
   "efficiency-store-ranking": [DATA_CENTER_DASHBOARD_ACTION],
   "efficiency-staff-ranking": [DATA_CENTER_DASHBOARD_ACTION],
   "report-operating-master": DATA_CENTER_REPORTS.operatingMaster.requiredActions,
-  "report-remaining-cards": DATA_CENTER_REPORTS.remainingCards.requiredActions
+  "report-remaining-cards": DATA_CENTER_REPORTS.remainingCards.requiredActions,
+  "report-daily-overview": DATA_CENTER_REPORTS.dailyOverview.requiredActions
 };
 var EXPORT_PERMISSION_ACTIONS = Array.from(new Set(Object.values(EXPORT_PERMISSIONS_BY_TYPE).flat()));
 var EXPORT_LABEL_BY_TYPE = {
@@ -159668,7 +159670,8 @@ function exportJobLabel(exportType, payload) {
     "efficiency-store-ranking": "人效-门店排名榜",
     "efficiency-staff-ranking": "人效-员工排名榜",
     "report-operating-master": "经营数据主表",
-    "report-remaining-cards": "顾客剩余卡项清单"
+    "report-remaining-cards": "顾客剩余卡项清单",
+    "report-daily-overview": "日常数据一览表"
   };
   return viewLabels[payload.view];
 }
@@ -181857,9 +181860,29 @@ var import_drizzle_orm68 = __toESM(require_drizzle_orm(), 1);
 
 // src/lib/data-center/report-period.ts
 init_time_range();
+var REPORT_RANGE_PRESETS = ["lastMonth", "thisMonth", "last30", "custom"];
+var REPORT_RANGE_PRESET_LABELS = {
+  lastMonth: "上月",
+  thisMonth: "本月",
+  last30: "近 30 天",
+  custom: "自定义"
+};
+var DEFAULT_REPORT_RANGE_PRESET = "lastMonth";
+var MAX_CUSTOM_RANGE_DAYS = 366;
+var DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
 var MONTH_RE = /^(\d{4})-(\d{2})$/;
 var MIN_YEAR = 2000;
 var MAX_YEAR = 2099;
+function isValidCalendarDate(value) {
+  const match = value?.match(DATE_RE);
+  if (!match)
+    return false;
+  const [year2, month, day2] = [Number(match[1]), Number(match[2]), Number(match[3])];
+  if (year2 < MIN_YEAR || year2 > MAX_YEAR)
+    return false;
+  const date5 = new Date(Date.UTC(year2, month - 1, day2));
+  return date5.getUTCFullYear() === year2 && date5.getUTCMonth() === month - 1 && date5.getUTCDate() === day2;
+}
 function isValidMonth(value) {
   const match = value?.match(MONTH_RE);
   if (!match)
@@ -181867,10 +181890,71 @@ function isValidMonth(value) {
   const [year2, month] = [Number(match[1]), Number(match[2])];
   return year2 >= MIN_YEAR && year2 <= MAX_YEAR && month >= 1 && month <= 12;
 }
+function daysInclusive2(start, end) {
+  return Math.round((Date.parse(`${end}T00:00:00Z`) - Date.parse(`${start}T00:00:00Z`)) / 86400000) + 1;
+}
 function monthRange(month) {
   const [year2, mon] = month.split("-").map(Number);
   const last = new Date(Date.UTC(year2, mon, 0)).getUTCDate();
   return { start: `${month}-01`, end: `${month}-${String(last).padStart(2, "0")}` };
+}
+function shiftMonth(month, n) {
+  const [year2, mon] = month.split("-").map(Number);
+  const d = new Date(Date.UTC(year2, mon - 1 + n, 1));
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
+}
+function monthLabel(month) {
+  const [year2, mon] = month.split("-");
+  return `${year2}年${Number(mon)}月`;
+}
+function parseReportRange(raw, today = shanghaiToday()) {
+  const preset = REPORT_RANGE_PRESETS.includes(raw.period ?? "") ? raw.period : DEFAULT_REPORT_RANGE_PRESET;
+  if (preset === "custom") {
+    if (isValidCalendarDate(raw.start) && isValidCalendarDate(raw.end) && raw.start <= raw.end && raw.start <= today && daysInclusive2(raw.start, raw.end) <= MAX_CUSTOM_RANGE_DAYS) {
+      const end = raw.end > today ? today : raw.end;
+      const len = daysInclusive2(raw.start, end);
+      const prevEnd = addDays(raw.start, -1);
+      return {
+        kind: "range",
+        preset,
+        current: { start: raw.start, end },
+        previous: { start: addDays(prevEnd, -(len - 1)), end: prevEnd },
+        label: REPORT_RANGE_PRESET_LABELS.custom
+      };
+    }
+    return parseReportRange({ period: DEFAULT_REPORT_RANGE_PRESET }, today);
+  }
+  if (preset === "thisMonth") {
+    const resolved = resolveTimeRange({ preset: "month" }, new Date(`${today}T12:00:00+08:00`));
+    if (!resolved.previous)
+      throw new Error("INVALID_STATE: 本月预设缺少上月同期基期");
+    return {
+      kind: "range",
+      preset,
+      current: resolved.current,
+      previous: resolved.previous,
+      label: REPORT_RANGE_PRESET_LABELS.thisMonth
+    };
+  }
+  if (preset === "last30") {
+    const start = addDays(today, -29);
+    const prevEnd = addDays(start, -1);
+    return {
+      kind: "range",
+      preset,
+      current: { start, end: today },
+      previous: { start: addDays(prevEnd, -29), end: prevEnd },
+      label: REPORT_RANGE_PRESET_LABELS.last30
+    };
+  }
+  const month = shiftMonth(today.slice(0, 7), -1);
+  return {
+    kind: "range",
+    preset,
+    current: monthRange(month),
+    previous: monthRange(shiftMonth(month, -1)),
+    label: `${REPORT_RANGE_PRESET_LABELS.lastMonth}（${monthLabel(month)}）`
+  };
 }
 
 // src/actions/data-center/operating-master.ts
@@ -182289,6 +182373,201 @@ var getOperatingMaster = withPermission(DATA_CENTER_DASHBOARD_ACTION, async (ses
   return { month, range: cur, ytd, scopeName, ...buildOperatingMasterTable(stores3, metrics) };
 });
 
+// src/actions/data-center/daily-overview.ts
+init_db2();
+init_with_permission();
+
+// src/lib/data-center/daily-overview-sql.ts
+var import_drizzle_orm69 = __toESM(require_drizzle_orm(), 1);
+function performanceTotalSql(session4, scope, range) {
+  return import_drizzle_orm69.sql`
+    SELECT COALESCE(SUM(spe.amount::numeric), 0) AS v
+    FROM sale_order_performance_events spe
+    WHERE ${scopeFilterSql(session4, scope, "spe.store_id")}
+      AND spe.status = '已支付'
+      AND spe.change_type IN ('首次支付', '回款', '退款')
+      AND spe.sale_order_type IN ('销售单', '转换单', '充值单')
+      AND spe.legacy_source IS DISTINCT FROM 'workfine'
+      AND spe.performance_date BETWEEN ${range.start} AND ${range.end}
+  `;
+}
+function serviceTotalSql(session4, scope, range) {
+  return import_drizzle_orm69.sql`
+    SELECT COALESCE(SUM(sit.unit_real_price::numeric * sit.session_used), 0) AS v
+    FROM service_orders so
+    JOIN service_items sit ON sit.service_order_id = so.service_order_id
+    JOIN sale_items si ON si.sale_item_id = sit.sale_item_id
+    WHERE ${scopeFilterSql(session4, scope, "so.store_id")}
+      AND so.status = '已完成'
+      AND so.service_date BETWEEN ${range.start} AND ${range.end}
+      AND ${excludeDepositRefundSql("so")}
+  `;
+}
+function dailyOverviewQueries(session4, scope, range) {
+  return {
+    stores: scopeStoreSkeletonSql(session4, scope),
+    categories: import_drizzle_orm69.sql`
+      SELECT category_id, category_name, product_kind, sort_order, is_valid
+      FROM product_categories
+    `,
+    performance: import_drizzle_orm69.sql`
+      WITH pay AS (
+        SELECT spe.sale_payment_id, spe.store_id, spe.amount::numeric AS amount
+        FROM sale_order_performance_events spe
+        WHERE ${scopeFilterSql(session4, scope, "spe.store_id")}
+          AND spe.status = '已支付'
+          AND spe.change_type IN ('首次支付', '回款', '退款')
+          AND spe.sale_order_type IN ('销售单', '转换单')
+          AND spe.legacy_source IS DISTINCT FROM 'workfine'
+          AND spe.performance_date BETWEEN ${range.start} AND ${range.end}
+      ),
+      receipt AS (
+        SELECT r.sale_payment_id, r.sale_item_id, r.amount::numeric AS amount,
+               SUM(r.amount::numeric) OVER (PARTITION BY r.sale_payment_id) AS denominator
+        FROM sale_payment_item_receipts r
+        WHERE r.sale_payment_id IN (SELECT sale_payment_id FROM pay)
+      )
+      SELECT 'total' AS kind, pay.store_id, NULL::text AS sales_category, NULL::text AS category_id,
+             SUM(pay.amount)::text AS amount
+      FROM pay
+      GROUP BY pay.store_id
+      UNION ALL
+      SELECT 'part' AS kind, pay.store_id, si.sales_category::text AS sales_category, sku.category_id,
+             SUM(rc.amount * pay.amount / rc.denominator)::text AS amount
+      FROM pay
+      JOIN receipt rc ON rc.sale_payment_id = pay.sale_payment_id AND rc.denominator <> 0
+      LEFT JOIN sale_items si ON si.sale_item_id = rc.sale_item_id
+      LEFT JOIN product_skus sku ON sku.sku_id = si.sku_id
+      GROUP BY pay.store_id, si.sales_category, sku.category_id
+      UNION ALL
+      SELECT 'part' AS kind, pay.store_id, NULL::text AS sales_category, NULL::text AS category_id,
+             SUM(pay.amount)::text AS amount
+      FROM pay
+      WHERE NOT EXISTS (
+        SELECT 1 FROM receipt rc WHERE rc.sale_payment_id = pay.sale_payment_id AND rc.denominator <> 0
+      )
+      GROUP BY pay.store_id
+    `,
+    recharge: import_drizzle_orm69.sql`
+      SELECT spe.store_id, SUM(spe.amount::numeric)::text AS amount
+      FROM sale_order_performance_events spe
+      WHERE ${scopeFilterSql(session4, scope, "spe.store_id")}
+        AND spe.status = '已支付'
+        AND spe.change_type IN ('首次支付', '回款', '退款')
+        AND spe.sale_order_type = '充值单'
+        AND spe.legacy_source IS DISTINCT FROM 'workfine'
+        AND spe.performance_date BETWEEN ${range.start} AND ${range.end}
+      GROUP BY spe.store_id
+    `,
+    service: import_drizzle_orm69.sql`
+      SELECT so.store_id, sit.sales_category::text AS sales_category,
+             SUM(sit.unit_real_price::numeric * sit.session_used)::text AS amount
+      FROM service_orders so
+      JOIN service_items sit ON sit.service_order_id = so.service_order_id
+      JOIN sale_items si ON si.sale_item_id = sit.sale_item_id
+      WHERE ${scopeFilterSql(session4, scope, "so.store_id")}
+        AND so.status = '已完成'
+        AND so.service_date BETWEEN ${range.start} AND ${range.end}
+        AND ${excludeDepositRefundSql("so")}
+      GROUP BY so.store_id, sit.sales_category
+    `
+  };
+}
+
+// src/lib/data-center/params.ts
+var DATE_RE2 = /^\d{4}-\d{2}-\d{2}$/;
+function parseScope(raw) {
+  if (raw.scope === "authorized")
+    return { type: "authorized" };
+  if (raw.scope === "market" && raw.scopeId)
+    return { type: "market", id: raw.scopeId };
+  if (raw.scope === "store" && raw.scopeId)
+    return { type: "store", id: raw.scopeId };
+  return { type: "all" };
+}
+function parseTimeRange(raw) {
+  const p = raw.preset;
+  if (p === "custom" && raw.start && raw.end && DATE_RE2.test(raw.start) && DATE_RE2.test(raw.end) && raw.start <= raw.end) {
+    return { preset: "custom", start: raw.start, end: raw.end };
+  }
+  if (p === "today" || p === "week" || p === "year")
+    return { preset: p };
+  return { preset: "month" };
+}
+function parseBoardParams(raw) {
+  return {
+    scope: parseScope(raw),
+    timeRange: parseTimeRange(raw),
+    withComparison: raw.cmp !== "0"
+  };
+}
+
+// src/lib/data-center/data-start-query.ts
+init_db2();
+var import_drizzle_orm70 = __toESM(require_drizzle_orm(), 1);
+var CACHE_TTL_MS = 10 * 60 * 1000;
+var cache3 = null;
+var inflight = null;
+async function queryStoreDataStarts() {
+  const [performanceRows, serviceRows] = await Promise.all([
+    db2.execute(import_drizzle_orm70.sql`
+      SELECT so.store_id, to_char(MIN(p.performance_attribution_date), 'YYYY-MM-DD') AS start
+        FROM sale_order_payments p
+        JOIN sale_orders so ON so.sale_order_id = p.sale_order_id
+       WHERE p.status = '已支付'
+         AND p.change_type IN ('首次支付', '回款', '退款')
+         AND so.sale_order_type IN ('销售单', '转换单', '充值单')
+         AND so.legacy_source IS DISTINCT FROM 'workfine'
+       GROUP BY so.store_id
+    `),
+    db2.execute(import_drizzle_orm70.sql`
+      SELECT store_id, to_char(MIN(service_date), 'YYYY-MM-DD') AS start
+        FROM service_orders
+       WHERE status = '已完成'
+       GROUP BY store_id
+    `)
+  ]);
+  const value = {};
+  const collect = (rows, axis) => {
+    for (const row of rows) {
+      if (!row.start)
+        continue;
+      value[row.store_id] = { ...value[row.store_id], [axis]: row.start };
+    }
+  };
+  collect(performanceRows, "performance");
+  collect(serviceRows, "service");
+  for (const entry of Object.values(value))
+    Object.freeze(entry);
+  return Object.freeze(value);
+}
+async function loadStoreDataStarts(now = Date.now()) {
+  if (cache3 && cache3.expiresAt > now)
+    return cache3.value;
+  inflight ??= queryStoreDataStarts().then((value) => {
+    cache3 = { value, expiresAt: now + CACHE_TTL_MS };
+    return value;
+  }).finally(() => {
+    inflight = null;
+  });
+  return inflight;
+}
+
+// src/lib/data-center/data-start.ts
+function scopeDataStart(axis, stores3, starts) {
+  let earliest = null;
+  for (const store of stores3) {
+    const start = starts[store.storeId]?.[axis];
+    if (start && (earliest === null || start < earliest))
+      earliest = start;
+  }
+  return earliest;
+}
+function isRangeBeforeScopeStart(range, axis, stores3, starts) {
+  const start = scopeDataStart(axis, stores3, starts);
+  return start !== null && range.start < start;
+}
+
 // src/lib/sales-categories.ts
 var SALES_CATEGORIES = Object.freeze(["自销自耗", "他销自耗", "他销他耗", "生态合作"]);
 var SALES_CATEGORY_COLUMN_KEYS = Object.freeze({
@@ -182296,6 +182575,409 @@ var SALES_CATEGORY_COLUMN_KEYS = Object.freeze({
   他销自耗: "saleTxzh",
   他销他耗: "saleTxth",
   生态合作: "saleEco"
+});
+
+// src/lib/data-center/daily-overview.ts
+var DAILY_OVERVIEW_TABS = ["business", "primary", "secondary"];
+var DAILY_OVERVIEW_TAB_LABELS = {
+  business: "经营类型汇总",
+  primary: "具体品项汇总",
+  secondary: "二级品项汇总"
+};
+var DEFAULT_DAILY_OVERVIEW_TAB = "business";
+function parseDailyOverviewTab(raw) {
+  return DAILY_OVERVIEW_TABS.includes(raw ?? "") ? raw : DEFAULT_DAILY_OVERVIEW_TAB;
+}
+var [SELF_SELF, OTHER_SELF, OTHER_OTHER, ECO] = SALES_CATEGORIES;
+var DAILY_OVERVIEW_SALES_CATEGORY_ORDER = Object.freeze([
+  SELF_SELF,
+  OTHER_OTHER,
+  OTHER_SELF,
+  ECO
+]);
+var UNCLASSIFIED = "unclassified";
+var DAILY_OVERVIEW_KEYS = {
+  store: "store",
+  market: "market",
+  performance: (category) => `perf:${category}`,
+  performanceUnclassified: `perf:${UNCLASSIFIED}`,
+  recharge: "recharge",
+  performanceTotal: "perfTotal",
+  service: (category) => `svc:${category}`,
+  serviceUnclassified: `svc:${UNCLASSIFIED}`,
+  serviceTotal: "svcTotal",
+  primary: (categoryId) => `pri:${categoryId}`,
+  secondary: (categoryId) => `sec:${categoryId}`,
+  itemUnclassified: `item:${UNCLASSIFIED}`
+};
+function toCents(value) {
+  const parsed = typeof value === "string" ? Number(value) : value;
+  if (parsed == null || !Number.isFinite(parsed))
+    return 0;
+  return Math.round(parsed * 100);
+}
+function fromCents(cents2) {
+  return cents2 / 100 || 0;
+}
+function absorbRounding(raw, exactTotalCents, order, fallbackKey) {
+  const cents2 = new Map;
+  for (const key of order)
+    cents2.set(key, Math.round((raw.get(key) ?? 0) * 100) || 0);
+  let sum = 0;
+  for (const value of cents2.values())
+    sum += value;
+  const diff = exactTotalCents - sum;
+  if (diff !== 0) {
+    if (Math.abs(diff) > order.length) {
+      console.warn(`[daily-overview] 拆分片段与款项合计相差 ${diff} 分，超出舍入误差`);
+    }
+    const pick2 = (magnitudeOf) => {
+      let target2 = null;
+      let best = 0;
+      for (const key of order) {
+        const magnitude = magnitudeOf(key);
+        if (magnitude > best) {
+          best = magnitude;
+          target2 = key;
+        }
+      }
+      return target2;
+    };
+    const target = pick2((key) => Math.abs(cents2.get(key) ?? 0)) ?? pick2((key) => Math.abs(raw.get(key) ?? 0)) ?? fallbackKey;
+    cents2.set(target, (cents2.get(target) ?? 0) + diff);
+  }
+  return cents2;
+}
+function compareCategory(a, b2) {
+  return a.sortOrder - b2.sortOrder || (a.categoryId < b2.categoryId ? -1 : a.categoryId > b2.categoryId ? 1 : 0);
+}
+function buildCategoryTree(categories) {
+  const primaries = categories.filter((row) => row.productKind === null).sort(compareCategory).map((row) => ({ ...row, children: [] }));
+  const primaryByName = new Map;
+  for (const primary of primaries) {
+    if (!primaryByName.has(primary.categoryName))
+      primaryByName.set(primary.categoryName, primary);
+  }
+  const parentOf = new Map;
+  for (const row of [...categories].sort(compareCategory)) {
+    if (row.productKind === null)
+      continue;
+    const parent = primaryByName.get(row.productKind);
+    if (!parent)
+      continue;
+    parent.children.push(row);
+    parentOf.set(row.categoryId, parent.categoryId);
+  }
+  return { primaries, parentOf };
+}
+function byStore(rows) {
+  const map = new Map;
+  for (const row of rows) {
+    const list = map.get(row.storeId);
+    if (list)
+      list.push(row);
+    else
+      map.set(row.storeId, [row]);
+  }
+  return map;
+}
+function sumCentsByStore(rows) {
+  const map = new Map;
+  for (const row of rows)
+    map.set(row.storeId, (map.get(row.storeId) ?? 0) + toCents(row.amount));
+  return map;
+}
+var collator = new Intl.Collator("zh-CN", { numeric: true });
+function buildDailyOverview(input) {
+  const K = DAILY_OVERVIEW_KEYS;
+  const tree = buildCategoryTree(input.categories);
+  const salesCategories = new Set(DAILY_OVERVIEW_SALES_CATEGORY_ORDER);
+  const isSalesCategory = (value) => value !== null && salesCategories.has(value);
+  const partsByStore = byStore(input.performanceParts);
+  const serviceByStore = byStore(input.service);
+  const performanceTotals = sumCentsByStore(input.performanceTotals);
+  const recharge = sumCentsByStore(input.recharge);
+  const businessKeys = [...DAILY_OVERVIEW_SALES_CATEGORY_ORDER.map((c) => K.performance(c)), K.performanceUnclassified];
+  const secondaryKeys = [
+    ...tree.primaries.flatMap((primary) => primary.children.map((child) => K.secondary(child.categoryId))),
+    K.itemUnclassified
+  ];
+  const stores3 = [...input.stores].sort((a, b2) => collator.compare(a.marketName, b2.marketName) || collator.compare(a.storeName, b2.storeName) || (a.storeId < b2.storeId ? -1 : a.storeId > b2.storeId ? 1 : 0));
+  const totalsCents = new Map;
+  const addTotal = (key, cents2) => totalsCents.set(key, (totalsCents.get(key) ?? 0) + cents2);
+  const rows = stores3.map((store) => {
+    const cents2 = new Map;
+    const parts = partsByStore.get(store.storeId) ?? [];
+    const exactPerformance = performanceTotals.get(store.storeId) ?? 0;
+    const rechargeCents = recharge.get(store.storeId) ?? 0;
+    const businessRaw = new Map;
+    const secondaryRaw = new Map;
+    for (const part of parts) {
+      const amount = typeof part.amount === "string" ? Number(part.amount) : part.amount;
+      if (!Number.isFinite(amount))
+        continue;
+      const businessKey = isSalesCategory(part.salesCategory) ? K.performance(part.salesCategory) : K.performanceUnclassified;
+      businessRaw.set(businessKey, (businessRaw.get(businessKey) ?? 0) + amount);
+      const secondaryKey = part.categoryId && tree.parentOf.has(part.categoryId) ? K.secondary(part.categoryId) : K.itemUnclassified;
+      secondaryRaw.set(secondaryKey, (secondaryRaw.get(secondaryKey) ?? 0) + amount);
+    }
+    for (const [key, value] of absorbRounding(businessRaw, exactPerformance, businessKeys, K.performanceUnclassified)) {
+      cents2.set(key, value);
+    }
+    const secondaryCents = absorbRounding(secondaryRaw, exactPerformance, secondaryKeys, K.itemUnclassified);
+    for (const [key, value] of secondaryCents)
+      cents2.set(key, value);
+    for (const primary of tree.primaries) {
+      let sum = 0;
+      for (const child of primary.children)
+        sum += secondaryCents.get(K.secondary(child.categoryId)) ?? 0;
+      cents2.set(K.primary(primary.categoryId), sum);
+    }
+    cents2.set(K.recharge, rechargeCents);
+    cents2.set(K.performanceTotal, exactPerformance + rechargeCents);
+    let serviceTotal = 0;
+    for (const category of DAILY_OVERVIEW_SALES_CATEGORY_ORDER)
+      cents2.set(K.service(category), 0);
+    cents2.set(K.serviceUnclassified, 0);
+    for (const row of serviceByStore.get(store.storeId) ?? []) {
+      const key = isSalesCategory(row.salesCategory) ? K.service(row.salesCategory) : K.serviceUnclassified;
+      const value = toCents(row.amount);
+      cents2.set(key, (cents2.get(key) ?? 0) + value);
+      serviceTotal += value;
+    }
+    cents2.set(K.serviceTotal, serviceTotal);
+    const values2 = {};
+    for (const [key, value] of cents2) {
+      values2[key] = fromCents(value);
+      addTotal(key, value);
+    }
+    return { ...store, values: values2 };
+  });
+  const totals = {};
+  for (const [key, value] of totalsCents)
+    totals[key] = fromCents(value);
+  const hasData = (key) => rows.some((row) => (row.values[key] ?? 0) !== 0);
+  const secondaryGroups = [];
+  const primaries = [];
+  for (const primary of tree.primaries) {
+    const children2 = primary.children.filter((child) => child.isValid || hasData(K.secondary(child.categoryId))).map((child) => ({ categoryId: child.categoryId, name: child.categoryName }));
+    if (children2.length > 0) {
+      secondaryGroups.push({ categoryId: primary.categoryId, name: primary.categoryName, children: children2 });
+    }
+    if (primary.isValid || hasData(K.primary(primary.categoryId)) || children2.length > 0) {
+      primaries.push({ categoryId: primary.categoryId, name: primary.categoryName });
+    }
+  }
+  return {
+    rows,
+    totals,
+    primaries,
+    secondaryGroups,
+    showUnclassified: {
+      performance: hasData(K.performanceUnclassified),
+      service: hasData(K.serviceUnclassified),
+      item: hasData(K.itemUnclassified)
+    },
+    multiMarket: new Set(stores3.map((store) => store.marketId)).size > 1
+  };
+}
+function computeDailyOverviewKpis(data) {
+  const K = DAILY_OVERVIEW_KEYS;
+  const total = data.totals[K.performanceTotal] ?? 0;
+  const share = (key) => total !== 0 ? (data.totals[key] ?? 0) / total || 0 : null;
+  const storeCount = data.rows.length;
+  return {
+    performanceTotal: total,
+    serviceTotal: data.totals[K.serviceTotal] ?? 0,
+    selfShare: share(K.performance(SELF_SELF)),
+    ecoShare: share(K.performance(ECO)),
+    averagePerStore: storeCount > 0 ? total / storeCount : null,
+    storeCount
+  };
+}
+var STORE_WIDTH = 140;
+var MARKET_WIDTH = 110;
+var AMOUNT_WIDTH = 120;
+function amountColumn(key, header, extra = {}) {
+  return {
+    key,
+    header,
+    width: AMOUNT_WIDTH,
+    unit: "amount",
+    value: (row) => row.values[key] ?? 0,
+    aggregate: { kind: "sum" },
+    exportWidth: 14,
+    ...extra
+  };
+}
+function leadingColumns(data) {
+  const K = DAILY_OVERVIEW_KEYS;
+  const columns3 = [
+    {
+      key: K.store,
+      header: "门店",
+      text: "store",
+      width: STORE_WIDTH,
+      freeze: "left",
+      exportValue: (row) => row.storeName,
+      exportWidth: 18
+    }
+  ];
+  if (data.multiMarket) {
+    columns3.push({
+      key: K.market,
+      header: "所属市场",
+      text: "market",
+      width: MARKET_WIDTH,
+      freeze: "left",
+      exportValue: (row) => row.marketName,
+      exportWidth: 14
+    });
+  }
+  return columns3;
+}
+var PERFORMANCE_TOTAL_HINT = "= 各经营类型业绩 + 未分类 + 充值，与销售板「总业绩」同口径";
+var RECHARGE_HINT = "充值单没有商品明细，单列；储值卡消费不再重复计入各品项";
+var UNCLASSIFIED_HINT = "经营类型或品项无法判定的业绩（无子项明细、SKU 未挂二级品项等），计入合计、不丢钱";
+function buildDailyOverviewColumns(tab, data) {
+  const K = DAILY_OVERVIEW_KEYS;
+  const columns3 = leadingColumns(data);
+  if (tab === "business") {
+    for (const category of DAILY_OVERVIEW_SALES_CATEGORY_ORDER) {
+      columns3.push(amountColumn(K.performance(category), `${category}业绩`));
+    }
+    if (data.showUnclassified.performance) {
+      columns3.push(amountColumn(K.performanceUnclassified, "未分类业绩", { hint: UNCLASSIFIED_HINT }));
+    }
+    columns3.push(amountColumn(K.recharge, "充值", { hint: RECHARGE_HINT }));
+    columns3.push(amountColumn(K.performanceTotal, "业绩合计", { hint: PERFORMANCE_TOTAL_HINT }));
+    for (const category of DAILY_OVERVIEW_SALES_CATEGORY_ORDER) {
+      columns3.push(amountColumn(K.service(category), `${category}服务`, { band: "service" }));
+    }
+    if (data.showUnclassified.service) {
+      columns3.push(amountColumn(K.serviceUnclassified, "未分类服务", { band: "service" }));
+    }
+    columns3.push(amountColumn(K.serviceTotal, "服务合计", {
+      band: "service",
+      hint: "单次优惠价 × 本次次数，按服务日期、已完成服务单，剔除寄存单退款专用单；含寄存单老卡核销。与销售板「总实耗」同口径"
+    }));
+    return columns3;
+  }
+  if (tab === "primary") {
+    for (const primary of data.primaries) {
+      columns3.push(amountColumn(K.primary(primary.categoryId), primary.name));
+    }
+  } else {
+    for (const group of data.secondaryGroups) {
+      for (const child of group.children) {
+        columns3.push(amountColumn(K.secondary(child.categoryId), child.name, {
+          group: { key: group.categoryId, header: group.name }
+        }));
+      }
+    }
+  }
+  if (data.showUnclassified.item) {
+    columns3.push(amountColumn(K.itemUnclassified, "未分类", { hint: UNCLASSIFIED_HINT }));
+  }
+  columns3.push(amountColumn(K.recharge, "充值", { hint: RECHARGE_HINT }));
+  columns3.push(amountColumn(K.performanceTotal, "品项业绩合计", { hint: PERFORMANCE_TOTAL_HINT }));
+  return columns3;
+}
+
+// src/actions/data-center/daily-overview.ts
+"use server";
+function asRows(result) {
+  return result;
+}
+function scalar3(result) {
+  const value = Number(asRows(result)[0]?.v ?? 0);
+  return Number.isFinite(value) ? value : 0;
+}
+async function loadInput(session4, scope, range) {
+  const queries = dailyOverviewQueries(session4, scope, range);
+  const [storeRows, categoryRows, performanceRows, rechargeRows, serviceRows] = await Promise.all([
+    db2.execute(queries.stores),
+    db2.execute(queries.categories),
+    db2.execute(queries.performance),
+    db2.execute(queries.recharge),
+    db2.execute(queries.service)
+  ]);
+  const text5 = (value) => value == null ? null : String(value);
+  const performance3 = asRows(performanceRows);
+  return {
+    stores: asRows(storeRows).map((row) => ({
+      storeId: String(row.store_id),
+      storeName: String(row.store_name ?? ""),
+      marketId: String(row.market_id ?? ""),
+      marketName: String(row.market_name ?? "")
+    })),
+    categories: asRows(categoryRows).map((row) => ({
+      categoryId: String(row.category_id),
+      categoryName: String(row.category_name ?? ""),
+      productKind: text5(row.product_kind),
+      sortOrder: Number(row.sort_order ?? 0),
+      isValid: row.is_valid !== false
+    })),
+    performanceTotals: performance3.filter((row) => row.kind === "total").map((row) => ({ storeId: String(row.store_id), amount: String(row.amount ?? "0") })),
+    performanceParts: performance3.filter((row) => row.kind === "part").map((row) => ({
+      storeId: String(row.store_id),
+      salesCategory: text5(row.sales_category),
+      categoryId: text5(row.category_id),
+      amount: String(row.amount ?? "0")
+    })),
+    recharge: asRows(rechargeRows).map((row) => ({ storeId: String(row.store_id), amount: String(row.amount ?? "0") })),
+    service: asRows(serviceRows).map((row) => ({
+      storeId: String(row.store_id),
+      salesCategory: text5(row.sales_category),
+      amount: String(row.amount ?? "0")
+    }))
+  };
+}
+function parseParams(params) {
+  return {
+    scope: parseScope({ scope: params.scope, scopeId: params.scopeId }),
+    period: parseReportRange({ period: params.period, start: params.start, end: params.end })
+  };
+}
+var getDailyOverview = withPermission("data_center:dashboard", async (session4, params) => {
+  const { scope, period } = parseParams(params);
+  await validateScope(session4, scope);
+  const [input, previousPerformance, previousService, starts, scopeName] = await Promise.all([
+    loadInput(session4, scope, period.current),
+    db2.execute(performanceTotalSql(session4, scope, period.previous)).then(scalar3),
+    db2.execute(serviceTotalSql(session4, scope, period.previous)).then(scalar3),
+    loadStoreDataStarts().catch((error) => {
+      console.error("[daily-overview] 数据起点取数失败，本次较上期一律显示「--」", error);
+      return null;
+    }),
+    resolveScopeName(scope)
+  ]);
+  const data = buildDailyOverview(input);
+  const values2 = computeDailyOverviewKpis(data);
+  const basePerformance = !starts || isRangeBeforeScopeStart(period.previous, "performance", input.stores, starts) ? null : previousPerformance;
+  const baseService = !starts || isRangeBeforeScopeStart(period.previous, "service", input.stores, starts) ? null : previousService;
+  const kpis = {
+    performanceTotal: {
+      value: values2.performanceTotal,
+      mom: resolveDeltaDisplay(values2.performanceTotal, basePerformance),
+      unit: "amount"
+    },
+    serviceTotal: {
+      value: values2.serviceTotal,
+      mom: resolveDeltaDisplay(values2.serviceTotal, baseService),
+      unit: "amount"
+    },
+    selfShare: { value: values2.selfShare, unit: "percent" },
+    ecoShare: { value: values2.ecoShare, unit: "percent" },
+    averagePerStore: { value: values2.averagePerStore, unit: "amount" }
+  };
+  return {
+    data,
+    kpis,
+    storeCount: values2.storeCount,
+    period: { label: period.label, current: period.current, previous: period.previous },
+    scope: { type: scope.type, name: scopeName }
+  };
 });
 
 // src/lib/data-center/columns.ts
@@ -182491,34 +183173,6 @@ function getDataCenterRankingConfig(view3) {
   return config;
 }
 
-// src/lib/data-center/params.ts
-var DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
-function parseScope(raw) {
-  if (raw.scope === "authorized")
-    return { type: "authorized" };
-  if (raw.scope === "market" && raw.scopeId)
-    return { type: "market", id: raw.scopeId };
-  if (raw.scope === "store" && raw.scopeId)
-    return { type: "store", id: raw.scopeId };
-  return { type: "all" };
-}
-function parseTimeRange(raw) {
-  const p = raw.preset;
-  if (p === "custom" && raw.start && raw.end && DATE_RE.test(raw.start) && DATE_RE.test(raw.end) && raw.start <= raw.end) {
-    return { preset: "custom", start: raw.start, end: raw.end };
-  }
-  if (p === "today" || p === "week" || p === "year")
-    return { preset: p };
-  return { preset: "month" };
-}
-function parseBoardParams(raw) {
-  return {
-    scope: parseScope(raw),
-    timeRange: parseTimeRange(raw),
-    withComparison: raw.cmp !== "0"
-  };
-}
-
 // src/lib/data-center/export.ts
 function metricCell(value, unit) {
   if (value == null || !Number.isFinite(value))
@@ -182565,7 +183219,7 @@ init_with_permission();
 
 // src/lib/data-center/remaining-cards-query.ts
 init_db2();
-var import_drizzle_orm69 = __toESM(require_drizzle_orm(), 1);
+var import_drizzle_orm71 = __toESM(require_drizzle_orm(), 1);
 var num3 = (value) => {
   const parsed = Number(value ?? 0);
   return Number.isFinite(parsed) ? parsed : 0;
@@ -182589,16 +183243,16 @@ function toCell(raw) {
 }
 async function loadRemainingCardsSnapshot(session4, scope, today) {
   return db2.transaction(async (tx) => {
-    await tx.execute(import_drizzle_orm69.sql`SET LOCAL statement_timeout = '20s'`);
-    await tx.execute(import_drizzle_orm69.sql`SET LOCAL jit = off`);
-    await tx.execute(import_drizzle_orm69.sql`SET LOCAL enable_nestloop = off`);
+    await tx.execute(import_drizzle_orm71.sql`SET LOCAL statement_timeout = '20s'`);
+    await tx.execute(import_drizzle_orm71.sql`SET LOCAL jit = off`);
+    await tx.execute(import_drizzle_orm71.sql`SET LOCAL enable_nestloop = off`);
     const rows = await queryRemainingCardsRows(tx, session4, scope, today);
     const categories = await queryRemainingCardsCategories(tx);
     return { rows, categories };
   }, { isolationLevel: "repeatable read", accessMode: "read only" });
 }
 async function queryRemainingCardsRows(executor, session4, scope, today) {
-  const rows = await executor.execute(import_drizzle_orm69.sql`
+  const rows = await executor.execute(import_drizzle_orm71.sql`
     WITH card AS MATERIALIZED (
       SELECT sale_items.sale_item_id,
              sale_orders.client_user_id,
@@ -182616,7 +183270,7 @@ async function queryRemainingCardsRows(executor, session4, scope, today) {
       FROM sale_items
       JOIN sale_orders ON sale_orders.sale_order_id = sale_items.sale_order_id
       LEFT JOIN product_skus ps ON ps.sku_id = sale_items.sku_id
-      WHERE ${import_drizzle_orm69.and(...cardBaseConditions(), cardNotFullyRefundedCondition())}
+      WHERE ${import_drizzle_orm71.and(...cardBaseConditions(), cardNotFullyRefundedCondition())}
         AND (sale_orders.sale_order_type <> '寄存单' OR sale_orders.status = '已支付')
         AND sale_orders.legacy_source IS NULL
         AND sale_orders.client_user_id IS NOT NULL
@@ -182693,7 +183347,7 @@ async function queryRemainingCardsRows(executor, session4, scope, today) {
   });
 }
 async function queryRemainingCardsCategories(executor) {
-  const rows = await executor.execute(import_drizzle_orm69.sql`
+  const rows = await executor.execute(import_drizzle_orm71.sql`
     -- 一级名没有唯一约束：同名一级行有多条时取最小排序权重，保证每个二级只出一行、同一级排序一致
     SELECT c.category_id, c.category_name, c.product_kind, c.sort_order,
            MIN(kind_row.sort_order) AS kind_sort
@@ -183490,12 +184144,38 @@ async function operatingMasterContent(raw) {
     }
   };
 }
+function scopeMetaLabel2(scope) {
+  if (scope.type === "market")
+    return `市场 · ${scope.name}`;
+  if (scope.type === "store")
+    return `门店 · ${scope.name}`;
+  return scope.name;
+}
+async function queryDailyOverview(raw) {
+  const tab = parseDailyOverviewTab(raw.tab);
+  const result = await getDailyOverview(raw);
+  const columns3 = buildDailyOverviewColumns(tab, result.data);
+  return {
+    sheetName: DAILY_OVERVIEW_TAB_LABELS[tab],
+    columns: toWorkerExportColumns(columns3, result.data.totals),
+    rows: fromRows(result.data.rows),
+    frozenColumns: countLeftFrozen(columns3),
+    totalsLabel: "合计",
+    meta: {
+      period: `${result.period.current.start} ~ ${result.period.current.end}`,
+      scope: scopeMetaLabel2(result.scope),
+      extra: [{ label: "视角", value: DAILY_OVERVIEW_TAB_LABELS[tab] }]
+    }
+  };
+}
 async function queryReport(view3, raw) {
   switch (view3) {
     case "report-operating-master":
       return operatingMasterContent(raw);
     case "report-remaining-cards":
       return remainingCardsContent(raw);
+    case "report-daily-overview":
+      return queryDailyOverview(raw);
     default: {
       const unhandled = view3;
       throw new Error(`INVALID_PARAMS: 未知的报表导出视图 ${String(unhandled)}`);
@@ -183954,7 +184634,7 @@ function asClaimedId(rows) {
   return Number.isSafeInteger(id) && id > 0 ? id : null;
 }
 async function recoverExpiredLeases() {
-  await db2.execute(import_drizzle_orm70.sql`
+  await db2.execute(import_drizzle_orm72.sql`
     UPDATE admin_export_jobs
        SET status = CASE
              WHEN attempt_count >= ${MAX_ATTEMPTS} THEN 'failed'
@@ -183978,12 +184658,12 @@ async function recoverExpiredLeases() {
   `);
 }
 async function claimNextJob() {
-  const claimed = await db2.execute(import_drizzle_orm70.sql`
+  const claimed = await db2.execute(import_drizzle_orm72.sql`
     UPDATE admin_export_jobs
        SET status = 'running',
            attempt_count = attempt_count + 1,
            started_at = COALESCE(started_at, NOW()),
-           lease_expires_at = NOW() + ${import_drizzle_orm70.sql.raw(`interval '${LEASE_MINUTES} minutes'`)},
+           lease_expires_at = NOW() + ${import_drizzle_orm72.sql.raw(`interval '${LEASE_MINUTES} minutes'`)},
            error_code = NULL,
            error_message = NULL,
            updated_at = NOW()
@@ -184001,13 +184681,13 @@ async function claimNextJob() {
   const id = asClaimedId(claimed);
   if (!id)
     return null;
-  const [job] = await db2.select().from(adminExportJobs).where(import_drizzle_orm70.eq(adminExportJobs.id, id)).limit(1);
+  const [job] = await db2.select().from(adminExportJobs).where(import_drizzle_orm72.eq(adminExportJobs.id, id)).limit(1);
   return job ?? null;
 }
 async function renewLease(id) {
-  await db2.execute(import_drizzle_orm70.sql`
+  await db2.execute(import_drizzle_orm72.sql`
     UPDATE admin_export_jobs
-       SET lease_expires_at = NOW() + ${import_drizzle_orm70.sql.raw(`interval '${LEASE_MINUTES} minutes'`)},
+       SET lease_expires_at = NOW() + ${import_drizzle_orm72.sql.raw(`interval '${LEASE_MINUTES} minutes'`)},
            updated_at = NOW()
      WHERE id = ${id}
        AND status = 'running'
@@ -184030,7 +184710,7 @@ async function failJob(job, err) {
     completedAt: shouldRetry ? null : new Date,
     errorCode: failure.code,
     errorMessage: shouldRetry ? `${failure.message}（第 ${job.attemptCount} 次失败，正在重试）` : failure.message
-  }).where(import_drizzle_orm70.and(import_drizzle_orm70.eq(adminExportJobs.id, job.id), import_drizzle_orm70.eq(adminExportJobs.status, "running")));
+  }).where(import_drizzle_orm72.and(import_drizzle_orm72.eq(adminExportJobs.id, job.id), import_drizzle_orm72.eq(adminExportJobs.status, "running")));
   if (!shouldRetry) {
     const session4 = parseExportSession(job.scopeSnapshot);
     await logOperation(session4, "export_job.failed", "admin_export_jobs", String(job.id), {
@@ -184041,12 +184721,12 @@ async function failJob(job, err) {
   }
 }
 async function expireFinishedFiles() {
-  const expired = await db2.select({ id: adminExportJobs.id, fileCloudPath: adminExportJobs.fileCloudPath }).from(adminExportJobs).where(import_drizzle_orm70.and(import_drizzle_orm70.inArray(adminExportJobs.status, ["ready", "expired"]), import_drizzle_orm70.isNotNull(adminExportJobs.fileCloudPath), import_drizzle_orm70.lt(adminExportJobs.expiresAt, new Date))).limit(100);
+  const expired = await db2.select({ id: adminExportJobs.id, fileCloudPath: adminExportJobs.fileCloudPath }).from(adminExportJobs).where(import_drizzle_orm72.and(import_drizzle_orm72.inArray(adminExportJobs.status, ["ready", "expired"]), import_drizzle_orm72.isNotNull(adminExportJobs.fileCloudPath), import_drizzle_orm72.lt(adminExportJobs.expiresAt, new Date))).limit(100);
   for (const job of expired) {
     try {
       if (job.fileCloudPath)
         await deleteByCloudPaths([job.fileCloudPath]);
-      await db2.update(adminExportJobs).set({ status: "expired", fileCloudPath: null, updatedAt: new Date }).where(import_drizzle_orm70.and(import_drizzle_orm70.eq(adminExportJobs.id, job.id), import_drizzle_orm70.inArray(adminExportJobs.status, ["ready", "expired"])));
+      await db2.update(adminExportJobs).set({ status: "expired", fileCloudPath: null, updatedAt: new Date }).where(import_drizzle_orm72.and(import_drizzle_orm72.eq(adminExportJobs.id, job.id), import_drizzle_orm72.inArray(adminExportJobs.status, ["ready", "expired"])));
     } catch (err) {
       console.error(`[export-worker] cleanup failed for job ${job.id}:`, err);
     }
@@ -184100,7 +184780,7 @@ async function processJob(job) {
           if (rowCount - lastProgress < 1000)
             return;
           lastProgress = rowCount;
-          await db2.update(adminExportJobs).set({ progressRows: rowCount }).where(import_drizzle_orm70.and(import_drizzle_orm70.eq(adminExportJobs.id, job.id), import_drizzle_orm70.eq(adminExportJobs.status, "running")));
+          await db2.update(adminExportJobs).set({ progressRows: rowCount }).where(import_drizzle_orm72.and(import_drizzle_orm72.eq(adminExportJobs.id, job.id), import_drizzle_orm72.eq(adminExportJobs.status, "running")));
         }
       });
       return { content, fileName, filePath, writeResult };
@@ -184116,7 +184796,7 @@ async function processJob(job) {
         progressRows: 0,
         errorCode: null,
         errorMessage: null
-      }).where(import_drizzle_orm70.and(import_drizzle_orm70.eq(adminExportJobs.id, job.id), import_drizzle_orm70.eq(adminExportJobs.status, "running")));
+      }).where(import_drizzle_orm72.and(import_drizzle_orm72.eq(adminExportJobs.id, job.id), import_drizzle_orm72.eq(adminExportJobs.status, "running")));
       await logOperation(session4, "export_job.empty", "admin_export_jobs", String(job.id), {
         exportType
       }).catch((logError) => console.error("[export-worker] empty audit log error:", logError));
@@ -184141,7 +184821,7 @@ async function processJob(job) {
       fileName: output.fileName,
       errorCode: null,
       errorMessage: null
-    }).where(import_drizzle_orm70.and(import_drizzle_orm70.eq(adminExportJobs.id, job.id), import_drizzle_orm70.eq(adminExportJobs.status, "running")));
+    }).where(import_drizzle_orm72.and(import_drizzle_orm72.eq(adminExportJobs.id, job.id), import_drizzle_orm72.eq(adminExportJobs.status, "running")));
     await logOperation(session4, "export_job.ready", "admin_export_jobs", String(job.id), {
       exportType,
       rowCount: output.writeResult.rowCount,

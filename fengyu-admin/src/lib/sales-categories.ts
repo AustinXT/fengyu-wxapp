@@ -11,6 +11,7 @@
  *      fengyu-staff/cloudfunctions/staffApi/utils/sales-categories.js
  *      fengyu-client/cloudfunctions/payNotify/index.js            orderRates / serviceRates 骨架
  *      fengyu-admin/src/actions/data-center/efficiency.ts         员工人效 4 列 FILTER SQL（见下方说明）
+ *      fengyu-admin/src/lib/data-center/daily-overview.ts         日常数据一览表的展示顺序常量（有意与本数组顺序不同，集合相等守护）
  *
  * ⚠️ 本文件**禁 import 任何 app 内模块**（当前零 import）。`data-center/columns.ts` 在模块初始化期
  *    就解引用 `SALES_CATEGORY_COLUMN_KEYS`，一旦形成环，TDZ 下会在模块加载期抛

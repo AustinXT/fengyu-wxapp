@@ -67,8 +67,10 @@ function groupsFor(
 }
 
 /**
- * 期间是否早于（或跨过）scope 内任一门店在该轴上的数据起点。
- * 各页面据此把基期值置为 null，交给 `resolveDeltaDisplay` 输出「--」（#369 / #310）。
+ * 期间是否早于（或跨过）scope 内**任一**门店在该轴上的数据起点——「数据不完整」提示口径。
+ *
+ * ⚠️ 较上期要不要置 null **不用它**，用下面的 `isRangeBeforeScopeStart`（范围内最早起点，#369）：
+ * 按「任一门店」判，新市场陆续上线会让全国范围的较上期整月整月地变成「--」。
  */
 export function isRangeBeforeDataStart(
   range: ResolvedRange,
@@ -80,6 +82,38 @@ export function isRangeBeforeDataStart(
     const start = starts[store.storeId]?.[axis]
     return Boolean(start && start > range.start)
   })
+}
+
+/**
+ * 范围的数据起点：scope 内各门店在该轴上起点的**最早**值（#369：全国 = 2026-07-08，选单个市场时 = 该市场起点）。
+ * 范围内没有任何门店有该轴数据时返回 null（没有起点可比）。
+ *
+ * 与 `isRangeBeforeDataStart`（任一门店晚于期间起点即算）的区别：那是「期间里有门店还没上线」的提示口径；
+ * 这里是「整个范围还没有数据」的割点口径——较上期基期早于它时，基期值是割点伪影，必须置 null 出「--」。
+ * 新市场陆续上线（易大师 08-23、昭通 09-14）不应让全国范围的较上期整月整月地变成「--」。
+ */
+export function scopeDataStart(
+  axis: DataStartAxis,
+  stores: ReadonlyArray<{ storeId: string }>,
+  starts: StoreDataStarts,
+): string | null {
+  let earliest: string | null = null
+  for (const store of stores) {
+    const start = starts[store.storeId]?.[axis]
+    if (start && (earliest === null || start < earliest)) earliest = start
+  }
+  return earliest
+}
+
+/** 期间开始日早于范围数据起点（含只覆盖一部分的情况）。范围没有起点时为 false。 */
+export function isRangeBeforeScopeStart(
+  range: ResolvedRange,
+  axis: DataStartAxis,
+  stores: ReadonlyArray<{ storeId: string }>,
+  starts: StoreDataStarts,
+): boolean {
+  const start = scopeDataStart(axis, stores, starts)
+  return start !== null && range.start < start
 }
 
 /**

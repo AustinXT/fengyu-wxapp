@@ -40,6 +40,8 @@ export interface MatrixColumn<T> extends MatrixColumnSpec<T> {
   sortable?: boolean
   /** 周末列：整列浅底 */
   weekend?: boolean
+  /** 列组底色：`service` = 服务类列浅绿底（一览表原型 §5.1） */
+  band?: "service"
   cell?: (row: T) => React.ReactNode
   tone?: (row: T) => MatrixCellTone | null | undefined
   /** 单元格悬停提示（如「待付清 ¥120.00」），同样渲染在浮层里 */
@@ -334,6 +336,7 @@ function MatrixTable<T>({
           tone === "pending" ? "bg-[#FFF4E0]"
             : subtotal ? "bg-[var(--color-brand-warm)]"
             : column.weekend ? "bg-[#FAFAF7]"
+            : column.band === "service" ? "bg-[#F2F8F3]"
             : "bg-[var(--card)]",
           !tone && !subtotal && "group-hover:bg-[var(--color-brand-light)]",
           tone === "accent" && "font-semibold text-[var(--color-brand)]",
@@ -370,9 +373,9 @@ function MatrixTable<T>({
                   const firstPosition = frozen.get(columns[cell.firstLeafIndex].key)
                   const position = firstPosition?.side === "right" ? frozen.get(lastLeaf.key) : firstPosition
                   const edgeKey = firstPosition?.side === "right" ? columns[cell.firstLeafIndex].key : lastLeaf.key
-                  const weekend = column
-                    ? column.weekend
-                    : columns.slice(cell.firstLeafIndex, cell.firstLeafIndex + cell.colSpan).every((leaf) => leaf.weekend)
+                  const leaves = columns.slice(cell.firstLeafIndex, cell.firstLeafIndex + cell.colSpan)
+                  const weekend = column ? column.weekend : leaves.every((leaf) => leaf.weekend)
+                  const serviceBand = column ? column.band === "service" : leaves.every((leaf) => leaf.band === "service")
                   // 分组底色：分组格取自身分组，叶子格取所属分组（不属于任何分组的纵向合并格不上色）
                   const tint = group?.color ?? (column && cell.rowSpan === 1 ? column.group?.color : undefined)
                   const top = rowIndex === 0 ? 0 : headerHeights[0]
@@ -389,7 +392,7 @@ function MatrixTable<T>({
                         "sticky border-b border-[var(--border)] px-3 align-middle text-xs font-medium text-[var(--muted-foreground)]",
                         headerWhitespace(group ? group.header : column?.header),
                         position ? "z-30" : "z-20",
-                        weekend ? "bg-[#F0EFEA]" : "bg-[var(--muted)]",
+                        weekend ? "bg-[#F0EFEA]" : serviceBand ? "bg-[#E4F1E7]" : "bg-[var(--muted)]",
                         group ? "text-center" : alignClass(column?.align),
                         group ? "border-l border-l-[var(--border)]" : column && groupStartClass(column.key),
                         position && frozenEdgeClass(edgeKey),

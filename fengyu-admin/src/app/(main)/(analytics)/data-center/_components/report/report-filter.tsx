@@ -72,7 +72,7 @@ export function ReportFilter({
         showStoreCount
         trailing={periodKind === "none" ? resetButton : undefined}
       />
-      {period?.kind === "range" && <RangeRow filters={filters} period={period} trailing={resetButton} />}
+      {period?.kind === "range" && <RangeRow filters={filters} period={period} today={today} trailing={resetButton} />}
       {period?.kind === "month" && (
         <MonthRow filters={filters} month={period.month} today={today} trailing={resetButton} />
       )}
@@ -85,10 +85,12 @@ type UrlFilters = ReturnType<typeof useUrlFilters>
 function RangeRow({
   filters,
   period,
+  today,
   trailing,
 }: {
   filters: UrlFilters
   period: Extract<ReportPeriod, { kind: "range" }>
+  today: string
   trailing: ReactNode
 }) {
   const { get, setMany } = filters
@@ -98,6 +100,8 @@ function RangeRow({
   const start = requestedCustom ? get("start") : period.current.start
   const end = requestedCustom ? get("end") : period.current.end
   const customInvalid = requestedCustom && period.preset !== "custom"
+  // 结束日晚于今天时服务端已截到今天（report-period.ts），这里如实告知，别让控件回显的日期与实际取数区间不一致
+  const customTruncated = requestedCustom && period.preset === "custom" && end !== period.current.end
 
   function onPreset(key: ReportRangePreset) {
     // 切到自定义时用当前生效区间预填，避免出现「按钮是自定义、数据却回落上月」的空窗
@@ -130,7 +134,7 @@ function RangeRow({
             className="w-40"
             aria-label="开始日期"
             value={start}
-            max={end || undefined}
+            max={end && end < today ? end : today}
             onValueChange={(value) => setMany({ period: "custom", start: value })}
           />
           <span className="text-[var(--muted-foreground)]">~</span>
@@ -139,11 +143,17 @@ function RangeRow({
             aria-label="结束日期"
             value={end}
             min={start || undefined}
+            max={today}
             onValueChange={(value) => setMany({ period: "custom", end: value })}
           />
           {customInvalid && (
             <span className="text-xs text-[#D94040]">
-              区间不完整、无效或超过 {MAX_CUSTOM_RANGE_DAYS} 天，当前按{REPORT_RANGE_PRESET_LABELS[period.preset]}显示
+              区间不完整、无效、晚于今天或超过 {MAX_CUSTOM_RANGE_DAYS} 天，当前按{REPORT_RANGE_PRESET_LABELS[period.preset]}显示
+            </span>
+          )}
+          {customTruncated && (
+            <span className="text-xs text-[#D4820A]" data-testid="report-range-truncated">
+              结束日晚于今天，已按 {period.current.start} ~ {period.current.end} 统计
             </span>
           )}
         </div>

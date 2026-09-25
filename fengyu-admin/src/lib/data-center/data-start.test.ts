@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { evaluateDataStart, isRangeBeforeDataStart, type StoreDataStarts } from './data-start'
+import { evaluateDataStart, isRangeBeforeDataStart, isRangeBeforeScopeStart, scopeDataStart, type StoreDataStarts } from './data-start'
 import { scopeStores } from './scope-options'
 import type { DataCenterScopeOptions } from './types'
 
@@ -124,5 +124,39 @@ describe('isRangeBeforeDataStart（页面据此把基期置 null）', () => {
       scopeStores(options, { type: 'store', id: 'NC1' }),
       starts,
     )).toBe(false)
+  })
+})
+
+describe('scopeDataStart / isRangeBeforeScopeStart（#369 较上期割点）', () => {
+  const all = scopeStores(options, { type: 'all' })
+
+  it('范围起点 = 范围内各门店该轴起点的最早值；单个市场取该市场起点', () => {
+    expect(scopeDataStart('performance', all, starts)).toBe('2026-07-08')
+    expect(scopeDataStart('service', scopeStores(options, { type: 'market', id: 'JJ' }), starts)).toBe('2026-07-28')
+    expect(scopeDataStart('performance', scopeStores(options, { type: 'market', id: 'YDS' }), starts)).toBe('2026-08-23')
+    // 昭通没有服务数据：该轴无起点
+    expect(scopeDataStart('service', scopeStores(options, { type: 'market', id: 'ZT' }), starts)).toBeNull()
+  })
+
+  it('默认上月 2026-08 的基期 2026-07 早于全国起点 07-08（只覆盖一部分也算）→ 置 null', () => {
+    expect(isRangeBeforeScopeStart({ start: '2026-07-01', end: '2026-07-31' }, 'performance', all, starts)).toBe(true)
+  })
+
+  it('基期从起点当天开始不算早于；新市场晚上线不让全国范围的较上期变成「--」', () => {
+    expect(isRangeBeforeScopeStart({ start: '2026-07-08', end: '2026-08-07' }, 'performance', all, starts)).toBe(false)
+    // 易大师 08-23 才上线：任一门店口径会判 true，范围起点口径不判
+    expect(isRangeBeforeDataStart({ start: '2026-08-01', end: '2026-08-31' }, 'performance', all, starts)).toBe(true)
+    expect(isRangeBeforeScopeStart({ start: '2026-08-01', end: '2026-08-31' }, 'performance', all, starts)).toBe(false)
+  })
+
+  it('选单个市场时按该市场起点：九江 08 月基期（07 月）早于 07-30', () => {
+    const jj = scopeStores(options, { type: 'market', id: 'JJ' })
+    expect(isRangeBeforeScopeStart({ start: '2026-07-01', end: '2026-07-31' }, 'performance', jj, starts)).toBe(true)
+    expect(isRangeBeforeScopeStart({ start: '2026-08-01', end: '2026-08-31' }, 'performance', jj, starts)).toBe(false)
+  })
+
+  it('范围没有该轴起点时不置 null（当期基期都是 0，resolveDeltaDisplay 自会出「--」）', () => {
+    const zt = scopeStores(options, { type: 'market', id: 'ZT' })
+    expect(isRangeBeforeScopeStart({ start: '2026-01-01', end: '2026-01-31' }, 'service', zt, starts)).toBe(false)
   })
 })

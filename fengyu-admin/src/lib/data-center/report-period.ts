@@ -148,14 +148,18 @@ export function parseReportRange(
       isValidCalendarDate(raw.start) &&
       isValidCalendarDate(raw.end) &&
       raw.start <= raw.end &&
+      raw.start <= today &&
       daysInclusive(raw.start, raw.end) <= MAX_CUSTOM_RANGE_DAYS
     ) {
-      const len = daysInclusive(raw.start, raw.end)
+      // 结束日晚于今天的部分还没发生：截到今天（与单月型拒绝未来月份同理）。不截的话本期缺了未来那段、
+      // 基期却是完整等长的真实数据，较上期会出假的大幅下降（整段在未来时就是 -100%）。
+      const end = raw.end > today ? today : raw.end
+      const len = daysInclusive(raw.start, end)
       const prevEnd = addDays(raw.start, -1)
       return {
         kind: 'range',
         preset,
-        current: { start: raw.start, end: raw.end },
+        current: { start: raw.start, end },
         // 紧邻前一等长区间（与板块页 custom 同口径）
         previous: { start: addDays(prevEnd, -(len - 1)), end: prevEnd },
         label: REPORT_RANGE_PRESET_LABELS.custom,
