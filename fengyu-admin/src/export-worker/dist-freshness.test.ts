@@ -126,12 +126,22 @@ const PROBES: Probe[] = [
     // 写 5 的话，把其中一处改成 `${start}` 仍能提取到 5 行 → 探针照绿、产物过期无人知
     // （红检 R19 实测过这个 fail-open）。多一处同形写法会让它变 7 行，仍 >= 6，不误报。
     minLines: 6,
+    // 6 行只有 2 种文本（`${end}` ×4 / `${range.end}` ×2）。默认的 includes 比对去重后只查这 2 种
+    // 在不在产物里 —— 单独从产物里删掉 `visit_count` 那一处，另外几处仍在 ⇒ 照绿
+    // （codex round-4 P2）。必须开频次比对：区间 2026-07-01~07-31、门店 A，
+    // 1 人 7 月前入会未到店 + 2 人 7 月各到店 1 天但 8-01 才入会 ⇒ 正确 0/1，缺守卫的产物给 2/1 = 200%。
+    uniqueLines: 2,
+    exactCountsInModule: true,
   },
   {
-    label: '客量板 · 达成率分母 = registered（#414）',
+    label: '客量板 · 达成率分母 = registered（#414，两条比率都要钉）',
     file: 'src/actions/data-center/customer.ts',
-    pattern: /^visitOnceRate: ra \? safeDiv\(ra\.visitOnce, ra\.registered\) : null,$/,
-    minLines: 1,
+    // ⚠ 只钉 visitOnceRate 的话，单独让产物里的 visitTwiceRate 回退成 ra.retained 仍全绿
+    // （codex round-4 P2）：registered=10 / retained=4 / visit_twice=2 时，页面 20% 而 Excel 50%。
+    pattern: /^visit(Once|Twice)Rate: ra \? safeDiv\(ra\.visit\1, ra\.registered\) : null,$/,
+    minLines: 2,
+    uniqueLines: 2,
+    exactCountsInModule: true,
   },
   {
     label: '客量板 · 到店日事件集 (顾客, service_date) 去重（#298，visitDaysSql）',
