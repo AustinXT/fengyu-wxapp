@@ -312,6 +312,45 @@ describe('库存单据详情页 · 采购订单市场行（#335）', () => {
     expect(screen.queryByRole('columnheader', { name: '已发货' })).toBeNull()
   })
 
+  it('#346 有金额时：单头显示「入库后实际金额」（Σ各行），进度多一列「已入库金额」；「金额」仍是下单金额', async () => {
+    await renderPage(purchaseOrder({
+      fulfillmentProgress: {
+        kind: '供应链采购收货',
+        items: [
+          // 自用行已入库 4 件按优惠价 700 = 2800，未入库 6 件 × 下单价 800 = 4800 → 7600
+          { itemId: 1, purchasedQuantity: 10, receivedQuantity: 4, outstandingQuantity: 6, receivedAmount: 2800, actualAmount: 7600 },
+          { itemId: 2, purchasedQuantity: 10, receivedQuantity: 3, outstandingQuantity: 7, receivedAmount: 2400, actualAmount: 8000 },
+        ],
+      },
+    } as Partial<InventoryDocDetail>))
+    const label = screen.getByText('入库后实际金额')
+    expect(label.nextElementSibling?.textContent).toBe('15600')
+    const orderAmount = screen.getAllByText('金额').find((element) => element.nextElementSibling?.textContent === '16000')
+    expect(orderAmount).toBeTruthy() // 单头「金额」仍是下单金额
+    expect(cellByHeader('SKU-SC', '已入库金额')).toBe('2800')
+    expect(cellByHeader('SKU-MKT', '已入库金额')).toBe('2400')
+  })
+
+  it('#346 任一行算不出入库后金额（历史按发货完结 / 缺下单价）时不显示单头合计，已入库金额列照常', async () => {
+    await renderPage(purchaseOrder({
+      fulfillmentProgress: {
+        kind: '供应链采购收货',
+        items: [
+          { itemId: 1, purchasedQuantity: 10, receivedQuantity: 4, outstandingQuantity: 6, receivedAmount: 2800, actualAmount: 7600 },
+          { itemId: 2, purchasedQuantity: 10, receivedQuantity: 0, outstandingQuantity: 0, receivedAmount: 0 },
+        ],
+      },
+    } as Partial<InventoryDocDetail>))
+    expect(screen.queryByText('入库后实际金额')).toBeNull()
+    expect(cellByHeader('SKU-SC', '已入库金额')).toBe('2800')
+  })
+
+  it('#346 价格被遮蔽（进度不带金额）时不出现「入库后实际金额」与「已入库金额」', async () => {
+    await renderPage(purchaseOrder({ totalAmount: undefined }))
+    expect(screen.queryByText('入库后实际金额')).toBeNull()
+    expect(screen.queryByRole('columnheader', { name: '已入库金额' })).toBeNull()
+  })
+
   it('只有自用行的采购订单不出现市场结算价列', async () => {
     await renderPage(purchaseOrder({
       partiallyReceived: false,
@@ -324,6 +363,25 @@ describe('库存单据详情页 · 采购订单市场行（#335）', () => {
     expect(screen.queryByRole('columnheader', { name: '已发货' })).toBeNull()
     expect(screen.queryByRole('columnheader', { name: '市场结算价（参考）' })).toBeNull()
     expect(screen.getByText('待收货')).toBeTruthy()
+  })
+})
+
+describe('库存单据详情页 · 供应链采购入库单价优惠（#346）', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockGetSession.mockResolvedValue({ employeeId: 'E1', permissions: { actions: [] } })
+  })
+
+  it('入库单明细显示标准进价 / 单价优惠 / 实际进价 / 金额，优惠可核对', async () => {
+    await renderPage(docFixture({
+      id: 'GRK-20260925-0001', docType: '供应链采购入库', sourceOrgNodeId: null, targetOrgNodeId: 'HQ', totalAmount: 160,
+      items: [itemFixture({ id: 1, skuId: 'SKU-SC', quantity: 2, standardUnitPrice: 100, unitDiscount: 20, actualUnitPrice: 80, amount: 160 })],
+    } as Partial<InventoryDocDetail>))
+    expect(cellByHeader('SKU-SC', '标准进价')).toBe('100')
+    expect(cellByHeader('SKU-SC', '单价优惠')).toBe('20')
+    expect(cellByHeader('SKU-SC', '实际进价')).toBe('80')
+    expect(cellByHeader('SKU-SC', '金额')).toBe('160')
+    expect(screen.queryByRole('columnheader', { name: '应付货款' })).toBeNull()
   })
 })
 

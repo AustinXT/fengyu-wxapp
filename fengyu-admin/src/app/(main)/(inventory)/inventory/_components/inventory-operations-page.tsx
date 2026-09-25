@@ -657,6 +657,7 @@ export default function InventoryOperationsPage({
   canRequestShipmentCancellation,
   canApproveShipmentCancellation,
   canViewPrice,
+  receiptDiscountOrgNodeIds,
   canCreatePickupRecord,
   initialOperationId,
 }: {
@@ -673,6 +674,11 @@ export default function InventoryOperationsPage({
   canRequestShipmentCancellation: boolean
   canApproveShipmentCancellation: boolean
   canViewPrice: boolean
+  /**
+   * 可填入库单价优惠的总部节点（#346，服务端按「办理权与供应链价格权同一绑定」算）；
+   * null = 不受节点限制（admin）。必传：漏传就会退回「前端放行、服务端拒」。
+   */
+  receiptDiscountOrgNodeIds: string[] | null
   /** 跳转卡「顾客产品出库」的可用判据：目标页（提货录入）的入口权限（#350） */
   canCreatePickupRecord: boolean
   /** 深链 `?create=<docType>` 解析出的初始业务（#191），服务端已校验权限与白名单。 */
@@ -906,6 +912,7 @@ export default function InventoryOperationsPage({
               shipmentMarketTargets={shipmentMarketTargets}
               suppliers={suppliers}
               canViewPrice={canViewPrice}
+              receiptDiscountOrgNodeIds={receiptDiscountOrgNodeIds}
               onClose={() => { setPendingDocsTabFor(null); setActiveOperation(null) }}
               onSuccess={afterSuccess}
             />
@@ -928,6 +935,7 @@ function OperationWorkspace({
   shipmentMarketTargets,
   suppliers,
   canViewPrice,
+  receiptDiscountOrgNodeIds,
   onClose,
   onSuccess,
 }: {
@@ -950,6 +958,7 @@ function OperationWorkspace({
   shipmentMarketTargets?: readonly InventoryMarketTransferTarget[]
   suppliers: InventorySupplierRow[]
   canViewPrice: boolean
+  receiptDiscountOrgNodeIds: string[] | null
   onClose: () => void
   onSuccess: (message: string) => void
 }) {
@@ -1071,7 +1080,7 @@ function OperationWorkspace({
           {operation === 'market-report-summary' && <MarketReportSummaryForm locations={locations} onSuccess={handleSuccess} />}
           {operation === 'company-shipment' && <CompanyShipmentForm locations={locations} markets={shipmentMarketTargets ?? []} prefill={prefill} onSuccess={handleSuccess} onBusyChange={setFormBusy} />}
           {operation === 'market-receipt' && <ShipmentReceiptForm kind="market" prefill={prefill} onSuccess={handleSuccess} />}
-          {operation === 'supply-chain-receipt' && <SupplyChainPurchaseReceiptForm locations={locations} canViewPrice={canViewPrice} prefill={prefill} onSuccess={handleSuccess} />}
+          {operation === 'supply-chain-receipt' && <SupplyChainPurchaseReceiptForm locations={locations} canViewPrice={canViewPrice} receiptDiscountOrgNodeIds={receiptDiscountOrgNodeIds} prefill={prefill} onSuccess={handleSuccess} />}
           {operation === 'supply-chain-purchase-cancel' && <SupplyChainPurchaseCancelForm prefill={prefill} onSuccess={handleSuccess} />}
           {operation === 'store-allocation' && <StoreAllocationForm locations={locations} canViewPrice={canViewPrice} onSuccess={handleSuccess} />}
           {operation === 'store-receipt' && <ShipmentReceiptForm kind="store" prefill={prefill} onSuccess={handleSuccess} />}
@@ -3466,19 +3475,35 @@ interface SupplyChainPurchaseReceiptDraftLine {
   skuName: string
   specName: string | null
   quantity: string
+  /** 标准进价 = 采购行的供应链采购价快照；价格不可见时为 null（#346） */
+  standardCost: number | null
+  /** 单价优惠（#346），只在入库时填；留空 = 0 */
+  unitDiscount: string
   batchNo: string
   expiryDate: string
   remark: string
 }
 
+/** 实际进价 = 标准进价 − 单价优惠（#346）；优惠非法或超过标准进价时显示「—」，提交时再报具体原因。 */
+function receiptActualCost(line: SupplyChainPurchaseReceiptDraftLine): string {
+  if (line.standardCost === null) return '—'
+  const discount = line.unitDiscount.trim() === '' ? 0 : nonnegativeNumber(line.unitDiscount)
+  // 与提交校验同判据：非法、超两位小数、大于标准进价都不给预览值
+  if (discount === null || Number(discount.toFixed(2)) !== discount || discount > line.standardCost) return '—'
+  return (Math.round((line.standardCost - discount) * 100) / 100).toFixed(2)
+}
+
 function SupplyChainPurchaseReceiptForm({
   locations,
   canViewPrice,
+  receiptDiscountOrgNodeIds,
   prefill,
   onSuccess,
 }: {
   locations: InventoryLocationRow[]
   canViewPrice: boolean
+  /** 见 InventoryOperationsPage 同名 prop（#346） */
+  receiptDiscountOrgNodeIds: string[] | null
   /** 待办区「去收货」带来的预选券（#192）。 */
   prefill?: OperationFormPrefill | null
   onSuccess: (message: string) => void
@@ -3491,6 +3516,10 @@ function SupplyChainPurchaseReceiptForm({
   const [remark, setRemark] = useState('')
   const [lines, setLines] = useState<SupplyChainPurchaseReceiptDraftLine[]>([])
   const [saving, setSaving] = useState(false)
+  // 与服务端同判据：本单总部主体上，办理权与供应链价格权同一绑定（#346）
+  const canFillDiscount = canViewPrice && Boolean(doc?.targetOrgNodeId) && (
+    receiptDiscountOrgNodeIds === null || receiptDiscountOrgNodeIds.includes(doc!.targetOrgNodeId!)
+  )
 
   useEffect(() => {
     if (!doc) {
@@ -3504,6 +3533,10 @@ function SupplyChainPurchaseReceiptForm({
       skuName: item.skuName,
       specName: item.specName,
       quantity: String(Math.max(0, item.quantity - (item.fulfilledQuantity ?? 0))),
+      // 只取供应链成本：它按供应链价格档遮蔽（看不到时为 undefined），与服务端「填优惠须有供应链价格权」同档；
+      // 不回退到下单实际价 —— 那一列市场档也看得到，会让看不到进价的人也能填优惠、提交才被拒
+      standardCost: item.supplyChainUnitCost ?? null,
+      unitDiscount: '',
       batchNo: '',
       expiryDate: '',
       remark: '',
@@ -3523,12 +3556,30 @@ function SupplyChainPurchaseReceiptForm({
     const items = lines.map((line) => ({
       purchaseOrderItemId: line.purchaseOrderItemId,
       quantity: positiveNumber(line.quantity),
+      unitDiscount: line.unitDiscount.trim() === '' ? null : nonnegativeNumber(line.unitDiscount),
+      rawDiscount: line.unitDiscount.trim(),
+      standardCost: line.standardCost,
+      skuName: line.skuName,
       batchNo: optionalText(line.batchNo),
       expiryDate: optionalText(line.expiryDate),
       remark: optionalText(line.remark),
     })).filter((line) => line.quantity !== null)
     if (items.length === 0) {
       toast.error('请填写至少一条实收数量')
+      return
+    }
+    // 与服务端 receiveSupplyChainPurchaseOrder 同判据：优惠 ≥ 0、两位小数、不大于标准进价
+    const badDiscount = items.find((item) => item.rawDiscount !== '' && (
+      item.unitDiscount === null
+      || Number(item.unitDiscount.toFixed(2)) !== item.unitDiscount
+      || (item.standardCost !== null && item.unitDiscount > item.standardCost)
+    ))
+    if (badDiscount) {
+      toast.error(badDiscount.unitDiscount === null
+        ? (Number.isNaN(Number(badDiscount.rawDiscount)) ? '单价优惠不是有效数字' : '单价优惠不能小于 0')
+        : Number(badDiscount.unitDiscount.toFixed(2)) !== badDiscount.unitDiscount
+          ? '单价优惠最多保留两位小数'
+          : `单价优惠不能大于标准进价：${badDiscount.skuName}`)
       return
     }
     setSaving(true)
@@ -3538,7 +3589,14 @@ function SupplyChainPurchaseReceiptForm({
         supplyChainLocationId,
         docDate: optionalText(docDate),
         remark: optionalText(remark),
-        items: items.map((item) => ({ ...item, quantity: item.quantity! })),
+        items: items.map((item) => ({
+          purchaseOrderItemId: item.purchaseOrderItemId,
+          quantity: item.quantity!,
+          unitDiscount: item.unitDiscount,
+          batchNo: item.batchNo,
+          expiryDate: item.expiryDate,
+          remark: item.remark,
+        })),
       })
       onSuccess(`供应链采购入库单已创建：${result.id}`)
       setLines([])
@@ -3571,9 +3629,15 @@ function SupplyChainPurchaseReceiptForm({
         <div className="space-y-3">
           <h3 className="text-sm font-medium">本次实收入库</h3>
           {lines.map((line, index) => (
-            <div key={line.purchaseOrderItemId} className="grid grid-cols-1 gap-2 rounded-[var(--radius)] border border-[var(--border)] p-3 md:grid-cols-5">
+            <div key={line.purchaseOrderItemId} className={`grid grid-cols-1 gap-2 rounded-[var(--radius)] border border-[var(--border)] p-3 ${canFillDiscount && line.standardCost !== null ? 'md:grid-cols-8' : 'md:grid-cols-5'}`}>
               <div><div className="font-medium text-sm">{line.skuName}</div><div className="text-xs text-[#888888]">{line.specName || `明细 #${line.purchaseOrderItemId}`}</div></div>
               <FormField label="实收数量"><Input type="number" min="0" step="0.01" max="9999999999.99" value={line.quantity} onChange={(event) => updateLine(index, { quantity: event.target.value })} /></FormField>
+              {/* #346：单价优惠只在入库时填，写进本次批次成本；商品档案的供应链采购价不变。看不到价格的账号不填 */}
+              {canFillDiscount && line.standardCost !== null && <>
+                <FormField label="标准进价"><Input value={line.standardCost === null ? '—' : line.standardCost.toFixed(2)} readOnly tabIndex={-1} /></FormField>
+                <FormField label="单价优惠"><Input type="number" min="0" step="0.01" max="9999999999.99" value={line.unitDiscount} placeholder="0" onChange={(event) => updateLine(index, { unitDiscount: event.target.value })} /></FormField>
+                <FormField label="实际进价"><Input value={receiptActualCost(line)} readOnly tabIndex={-1} /></FormField>
+              </>}
               <FormField label="批号"><Input value={line.batchNo} onChange={(event) => updateLine(index, { batchNo: event.target.value })} placeholder="留空自动生成" /></FormField>
               <FormField label="效期"><DatePicker value={line.expiryDate} onValueChange={(value) => updateLine(index, { expiryDate: value })} /></FormField>
               <FormField label="明细备注"><Input value={line.remark} onChange={(event) => updateLine(index, { remark: event.target.value })} /></FormField>

@@ -353,6 +353,11 @@ export interface CreateCompanyPurchaseOrderInput {
 export interface SupplyChainPurchaseReceiptLineInput {
   purchaseOrderItemId: number
   quantity: number
+  /**
+   * 单价优惠（#346，9/18 会议 §2.6）：厂家活动让利，只在入库时填。实际进价 = 标准进价 − 优惠，
+   * 写进本次入库明细与总部批次成本；商品档案的供应链采购价不变。留空 = 0。
+   */
+  unitDiscount?: number | null
   batchNo?: string | null
   expiryDate?: string | null
   isGift?: boolean
@@ -1416,6 +1421,11 @@ async function docItemForUpdate(tx: Tx, id: number, docId?: string): Promise<Doc
   return asDocItem(row)
 }
 
+/**
+ * 某来源明细在某关系下的已关联数量（排除已取消的目标单）。采购订单 → 供应链采购入库这条关系上，
+ * 与 engine.ts loadSupplyChainPurchaseReceiptProgress 的 `receipt_doc.status = '已完成'` 当前等价（#346）；
+ * 给入库单加新状态时两处必须一起改。
+ */
 async function linkedQuantity(
   tx: Tx,
   fromItemId: number,
@@ -3815,6 +3825,17 @@ async function completePurchaseOrderIfFullyFulfilled(tx: Tx, purchaseOrderId: st
   }
 }
 
+/** 入库单价优惠（#346）：留空 = 0；只收非负、两位小数的 number 或纯十进制数字串。 */
+function receiptUnitDiscount(value: unknown): number {
+  if (value === null || value === undefined || value === '') return 0
+  const parsed = typeof value === 'number' ? value
+    : typeof value === 'string' && /^\d+(\.\d+)?$/.test(value.trim()) ? Number(value.trim())
+      : Number.NaN
+  if (!Number.isFinite(parsed)) throw new ApiError('INVALID_PARAMS', '单价优惠不是有效数字')
+  if (parsed < 0) throw new ApiError('INVALID_PARAMS', '单价优惠不能小于 0')
+  return twoDecimals(parsed, '单价优惠')
+}
+
 /**
  * 外部供应商到总部的实际收货。没有上游库存批次，不复用“品项公司发货 -> 市场收货”服务；
  * 每次收货直接以供应链采购订单的价格快照创建总部批次与入库流水。
@@ -3854,10 +3875,27 @@ export async function receiveSupplyChainPurchaseOrder(
       batchNo: string | null
       expiryDate: string | null
       isGift: boolean
+      /** 标准进价 = 采购行的供应链采购价快照 */
+      standardCost: number
+      unitDiscount: number
+      /** 实际进价 = 标准进价 − 单价优惠，即批次成本 */
       cost: number
       remark: string | null
     }> = []
-    for (const line of input.items) {
+    // 填了优惠就得看得到标准进价：看不到还能填，「优惠 ≤ 标准进价」的拒绝与否就成了探测进价的判定器
+    // （与 #344 库存转换同一处理）。所以在读任何采购行之前判；价格权须与办理权落在同一条角色绑定上，按本主体判。
+    const discounts = input.items.map((line) => {
+      if (typeof line !== 'object' || line === null) throw new ApiError('INVALID_PARAMS', '供应链采购入库明细格式不正确')
+      return receiptUnitDiscount(line.unitDiscount)
+    })
+    if (discounts.some((discount) => discount > 0)) {
+      const bothGranted = scopeSessionToAllActions(session, ['inventory:supply_chain_operate', 'inventory:supply_chain_price_view'])
+      const visibility = inventoryPriceVisibilityForOrgNodes(inventoryPriceScopeByTier(bothGranted), [supplyChain.orgNodeId])
+      if (visibility !== 'all' && visibility !== 'supply_chain') {
+        throw new ApiError('PERMISSION_DENIED', '填写单价优惠需要供应链价格查看权限')
+      }
+    }
+    for (const [lineIndex, line] of input.items.entries()) {
       const itemId = Number(line.purchaseOrderItemId)
       if (!Number.isInteger(itemId) || itemId <= 0 || seen.has(itemId)) {
         throw new ApiError('INVALID_PARAMS', '采购订单明细不能重复收货')
@@ -3878,6 +3916,16 @@ export async function receiveSupplyChainPurchaseOrder(
       if (expiryDate && !/^\d{4}-\d{2}-\d{2}$/.test(expiryDate)) {
         throw new ApiError('INVALID_PARAMS', '效期格式应为 YYYY-MM-DD')
       }
+      const unitDiscount = discounts[lineIndex]
+      // 优惠只能扣在采购行的下单价快照上：快照为空时 requiredSupplyChainCost 会回退到商品档案**现价**，
+      // 那就不是这张单的标准进价了，扣完写进批次会把错成本固化下来。无优惠的入库保持原有回退行为。
+      if (unitDiscount > 0 && orderItem.supplyChainUnitCost == null) {
+        throw new ApiError('INVALID_STATE', `采购行缺少下单价快照，不能填单价优惠：${sku.productName}`)
+      }
+      const standardCost = requiredSupplyChainCost(sku, orderItem.supplyChainUnitCost)
+      if (nearlyGreater(unitDiscount, standardCost)) {
+        throw new ApiError('INVALID_PARAMS', `单价优惠不能大于标准进价：${sku.productName}`)
+      }
       prepared.push({
         orderItem,
         sku,
@@ -3885,13 +3933,16 @@ export async function receiveSupplyChainPurchaseOrder(
         batchNo: text(line.batchNo),
         expiryDate,
         isGift: false,
-        cost: requiredSupplyChainCost(sku, orderItem.supplyChainUnitCost),
+        standardCost,
+        unitDiscount,
+        cost: roundCents(standardCost - unitDiscount),
         remark: text(line.remark),
       })
     }
     const docId = await generateDocId(tx, '供应链采购入库')
     const totalQuantity = fixed(prepared.reduce((sum, line) => sum + line.quantity, 0))
-    const totalAmount = fixed(prepared.reduce((sum, line) => sum + line.quantity * line.cost, 0))
+    // 与明细同口径逐行取整（落库后仍由 0039 触发器按明细金额重算覆盖）
+    const totalAmount = fixed(prepared.reduce((sum, line) => sum + roundCents(line.quantity * line.cost), 0))
     await insertDocHeader(tx, {
       id: docId,
       docType: '供应链采购入库',
@@ -3948,9 +3999,11 @@ export async function receiveSupplyChainPurchaseOrder(
         stockSnapshot: targetLot.quantityOnHand,
         requestQuantity: line.orderItem.quantity,
         fulfilledQuantity: 0,
-        standardUnitPrice: line.cost,
+        // 标准进价 / 优惠 / 实际进价三列都落库；金额由 0043 触发器按 actual_unit_price 算
+        standardUnitPrice: line.standardCost,
+        unitDiscount: line.unitDiscount,
         actualUnitPrice: line.cost,
-        amount: fixed(line.quantity * line.cost),
+        amount: roundCents(line.quantity * line.cost),
         ...priceFromLot(targetLot),
         remark: line.remark,
       })

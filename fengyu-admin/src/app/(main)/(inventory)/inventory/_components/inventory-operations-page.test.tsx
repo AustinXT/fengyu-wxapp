@@ -101,6 +101,7 @@ import {
   createInventoryConversion,
   createStoreAllocation,
   receiveItemCompanyShipmentInFull,
+  receiveSupplyChainPurchaseOrder,
   receiveStoreAllocationInFull,
   rejectItemCompanyShipmentCancellation,
   rejectReturnForRestock,
@@ -170,7 +171,8 @@ describe('办理台表单一致性（#135）', () => {
     // 24 → 22（#336a：品项公司发货表单暂为占位，去掉正常发货 / 赠送数量 2 个）
     // 22 → 23（#344：转换目标行新增「单价」）
     // 23 → 24（#336b：新发货表单每行一个数量框，正常 / 赠送共用一个 Input，标签按行属性切换）
-    expect(numberInputs.length).toBe(24)
+    // 24 → 25（#346：供应链采购入库行新增「单价优惠」）
+    expect(numberInputs.length).toBe(25)
     for (const attrs of numberInputs) {
       expect(attrs).toMatch(/min="0(\.01)?"/)
       expect(attrs).toMatch(/step="0\.01"/)
@@ -192,7 +194,8 @@ describe('办理台表单一致性（#135）', () => {
     // #337 +3：分院配货自选行的正常 / 赠送 / 优惠都走 nonnegativeNumber（正常与赠送二选一）
     // 15 → 13（#336a：品项公司发货表单暂为占位；#336b 新表单逐行显式校验，不再有 nonnegative 字段）
     // 13 → 14（#344：转换目标「单价」允许 0（赠送转换 / 自填 0 价），走 nonnegativeNumber → min="0"）
-    expect(loose.length).toBe(14)
+    // 14 → 15（#346：入库「单价优惠」允许 0 / 留空，走 nonnegativeNumber → min="0"）
+    expect(loose.length).toBe(15)
 
     // 抽样两个方向，防止整体计数对了但分配错了
     const store = block('function StoreRequestForm(', 'function ItemCompanyReplenishmentForm(')
@@ -851,6 +854,7 @@ function renderPage(options: {
   shipmentMarketTargets?: Array<{ orgNodeId: string; name: string }>
   canSelfPurchase?: boolean
   canCreatePickupRecord?: boolean
+  receiptDiscountOrgNodeIds?: string[] | null
 }) {
   mockCandidates(options.candidates ?? [])
   return render(
@@ -865,6 +869,7 @@ function renderPage(options: {
       canRequestShipmentCancellation={false}
       canApproveShipmentCancellation={false}
       canViewPrice
+      receiptDiscountOrgNodeIds={options.receiptDiscountOrgNodeIds === undefined ? null : options.receiptDiscountOrgNodeIds}
       canCreatePickupRecord={options.canCreatePickupRecord ?? true}
       // 深链入口：省掉「先点卡片」这一步，工作区直接展开在目标业务上
       initialOperationId={options.operation}
@@ -1861,6 +1866,75 @@ describe('采购订单市场行走供应链采购入库（#335）', () => {
     expect(screen.getByDisplayValue('6')).toBeInTheDocument()
     // 批号留空由服务端生成（#345），每行批号框都要提示
     expect(screen.getAllByPlaceholderText('留空自动生成')).toHaveLength(2)
+  })
+
+  it('#346 入库行显示标准进价，填单价优惠后实际进价 = 标准 − 优惠，提交带 unitDiscount', async () => {
+    const row = docRow({ id: 'CGD-346', docType: '采购订单', status: '待收货' })
+    vi.mocked(getInventoryCoreDocById).mockResolvedValue({
+      ...docDetail(row),
+      targetOrgNodeId: 'HQ',
+      items: [purchaseItem({ id: 1, skuName: '精华', quantity: 5, supplyChainUnitCost: 100, actualUnitPrice: 100 })],
+    })
+    vi.mocked(receiveSupplyChainPurchaseOrder).mockReset().mockResolvedValue({ id: 'GRK-1', purchaseOrderId: 'CGD-346' })
+    renderPage({ level: 'supply-chain', operation: 'supply-chain-receipt', candidates: [row] })
+    await pickPurchaseOrder(row)
+    await screen.findByText('本次实收入库')
+    expect(screen.getAllByDisplayValue('100.00')).toHaveLength(2) // 标准进价 + 未填优惠时的实际进价
+    const discount = screen.getByPlaceholderText('0')
+    fireEvent.change(discount, { target: { value: '20' } })
+    expect(screen.getByDisplayValue('80.00')).toBeInTheDocument() // 实际进价
+    fireEvent.submit(screen.getByRole('button', { name: '登记供应链采购入库' }).closest('form')!)
+    await waitFor(() => expect(receiveSupplyChainPurchaseOrder).toHaveBeenCalledTimes(1))
+    expect(vi.mocked(receiveSupplyChainPurchaseOrder).mock.calls[0][0].items).toEqual([
+      { purchaseOrderItemId: 1, quantity: 5, unitDiscount: 20, batchNo: null, expiryDate: null, remark: null },
+    ])
+  })
+
+  it('#346 优惠大于标准进价：前端按服务端同判据拦下', async () => {
+    const row = docRow({ id: 'CGD-347', docType: '采购订单', status: '待收货' })
+    vi.mocked(getInventoryCoreDocById).mockResolvedValue({
+      ...docDetail(row),
+      targetOrgNodeId: 'HQ',
+      items: [purchaseItem({ id: 1, skuName: '精华', quantity: 5, supplyChainUnitCost: 100, actualUnitPrice: 100 })],
+    })
+    vi.mocked(receiveSupplyChainPurchaseOrder).mockReset()
+    vi.mocked(toast.error).mockReset()
+    renderPage({ level: 'supply-chain', operation: 'supply-chain-receipt', candidates: [row] })
+    await pickPurchaseOrder(row)
+    await screen.findByText('本次实收入库')
+    fireEvent.change(screen.getByPlaceholderText('0'), { target: { value: '100.01' } })
+    expect(screen.getAllByDisplayValue('—').length).toBeGreaterThan(0) // 实际进价无效
+    fireEvent.submit(screen.getByRole('button', { name: '登记供应链采购入库' }).closest('form')!)
+    await waitFor(() => expect(vi.mocked(toast.error)).toHaveBeenCalledWith('单价优惠不能大于标准进价：精华'))
+    expect(receiveSupplyChainPurchaseOrder).not.toHaveBeenCalled()
+  })
+
+  it('#346 办理权与价格权不在同一绑定（本单总部不在可填优惠节点里）：不显示优惠框，与服务端同判据', async () => {
+    const row = docRow({ id: 'CGD-349', docType: '采购订单', status: '待收货' })
+    vi.mocked(getInventoryCoreDocById).mockResolvedValue({
+      ...docDetail(row),
+      targetOrgNodeId: 'HQ',
+      items: [purchaseItem({ id: 1, skuName: '精华', quantity: 5, supplyChainUnitCost: 100, actualUnitPrice: 100 })],
+    })
+    renderPage({ level: 'supply-chain', operation: 'supply-chain-receipt', candidates: [row], receiptDiscountOrgNodeIds: [] })
+    await pickPurchaseOrder(row)
+    await screen.findByText('本次实收入库')
+    expect(screen.queryByText('单价优惠')).toBeNull()
+  })
+
+  it('#346 采购行供应链成本不可见（被价格档遮蔽）：不显示标准进价 / 单价优惠框', async () => {
+    const row = docRow({ id: 'CGD-348', docType: '采购订单', status: '待收货' })
+    vi.mocked(getInventoryCoreDocById).mockResolvedValue({
+      ...docDetail(row),
+      targetOrgNodeId: 'HQ',
+      // 市场档能看到下单实际价，看不到供应链成本
+      items: [purchaseItem({ id: 1, skuName: '精华', quantity: 5, actualUnitPrice: 100 })],
+    })
+    renderPage({ level: 'supply-chain', operation: 'supply-chain-receipt', candidates: [row] })
+    await pickPurchaseOrder(row)
+    await screen.findByText('本次实收入库')
+    expect(screen.queryByText('单价优惠')).toBeNull()
+    expect(screen.queryByText('标准进价')).toBeNull()
   })
 
   it('候选表格把「待收货 + 已有入库」的采购订单标成「部分入库」', async () => {
