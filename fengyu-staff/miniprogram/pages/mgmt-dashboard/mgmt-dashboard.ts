@@ -200,6 +200,8 @@ Page({
     summary: null as SummaryData | null,
     loading: false,
     display: null as DisplayData | null,
+    /** display 对应的 scope + 日期（scopeType|scopeId|date） */
+    displayKey: '',
     summaryState: 'content' as 'loading' | 'empty' | 'error' | 'content',
     // 仅 summaryState='empty'（scope 落在停用门店，#400）时使用
     summaryEmptyText: '',
@@ -366,9 +368,14 @@ Page({
     if (!this.data.selectedDate) return
     // 只认最后一次请求：切 scope / 日期后，迟到的旧响应（含失败）一律丢弃
     const seq = ++summarySeq
+    // 旧内容只在「同一 scope + 同一日期」的刷新里保留；换了 scope / 日期还挂着旧数字，
+    // 请求一失败就成了「B 店（已停用）」配 A 店指标（#400 评审发现）
+    const key = `${this.data.scope.scopeType}|${this.data.scope.scopeId || ''}|${this.data.selectedDate}`
+    const keep = !!this.data.display && this.data.displayKey === key
     this.setData({
       loading: true,
-      summaryState: this.data.display ? 'content' : 'loading',
+      summaryState: keep ? 'content' : 'loading',
+      ...(keep ? {} : { display: null, displayKey: '' }),
     })
     try {
       const summary = await callStaffApi<SummaryData>('mgmtDashboard.summary', {
@@ -395,6 +402,7 @@ Page({
       this.setData({
         summary,
         display: this.buildDisplay(summary),
+        displayKey: key,
         loading: false,
         'scope.inactive': false,
         'defaultScope.inactive': false,
@@ -404,7 +412,7 @@ Page({
       if (seq !== summarySeq) return
       this.setData({
         loading: false,
-        summaryState: this.data.display ? 'content' : 'error',
+        summaryState: keep ? 'content' : 'error',
       })
       wx.showToast({ icon: 'none', title: '加载失败，请重试' })
     }

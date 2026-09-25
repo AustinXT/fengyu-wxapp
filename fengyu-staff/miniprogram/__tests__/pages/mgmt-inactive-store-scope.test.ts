@@ -256,6 +256,27 @@ describe('hub · summary 空态以服务端 scope.inactive 为准', () => {
     expect(hub.data.defaultScope.inactive).toBe(true)
   })
 
+  test('换 scope 后请求失败 → 出错误态，不挂着上一门店的指标', async () => {
+    mocked.mockResolvedValueOnce(summaryResp({ type: 'store', id: 'store-a', name: 'A 店', inactive: false }))
+    const hub = hubAt({ scopeType: 'store', scopeId: 'store-a', scopeName: 'A 店' })
+    await hub.loadSummary()
+    expect(hub.data.summaryState).toBe('content')
+
+    mocked.mockRejectedValueOnce(new Error('timeout'))
+    hub.data.scope = { scopeType: 'store', scopeId: 'store-b', scopeName: 'B 店' }
+    await hub.loadSummary()
+    expect(hub.data.display).toBeNull()
+    expect(hub.data.summaryState).toBe('error')
+
+    // 同 scope 同日期的刷新失败仍保留旧内容
+    mocked.mockResolvedValueOnce(summaryResp({ type: 'store', id: 'store-b', name: 'B 店', inactive: false }))
+    await hub.loadSummary()
+    mocked.mockRejectedValueOnce(new Error('timeout'))
+    await hub.loadSummary()
+    expect(hub.data.summaryState).toBe('content')
+    expect(hub.data.display).not.toBeNull()
+  })
+
   test('子页入口透传 scopeInactive=1（客量 / 销售 / 品项 / 顾客）', () => {
     const hub = hubAt({ scopeType: 'store', scopeId: 'store-zh', scopeName: '九江中辉店', inactive: true })
     for (const entry of ['traffic', 'sales', 'products', 'customers']) {
