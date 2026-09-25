@@ -91454,7 +91454,7 @@ var init_inventory = __esm(() => {
     index2("idx_inventory_doc_items_market").on(table4.marketId),
     index2("idx_inventory_doc_items_promotion").on(table4.promotionPlanId),
     uniqueIndex2("uq_inventory_doc_items_id_doc").on(table4.id, table4.docId),
-    check2("chk_inventory_doc_items_qty", sql3`${table4.quantity} > 0`),
+    check2("chk_inventory_doc_items_qty", sql3`${table4.quantity} >= 0`),
     check2("chk_inventory_doc_items_promotion_rule_type", sql3`${table4.promotionRuleTypeSnapshot} IS NULL OR ${table4.promotionRuleTypeSnapshot} IN ('单品阶梯','组合')`),
     check2("chk_inventory_doc_items_promotion_selection_mode", sql3`${table4.promotionSelectionMode} IS NULL OR ${table4.promotionSelectionMode} IN ('系统推荐','人工选择')`)
   ]);
@@ -176170,12 +176170,23 @@ function numString(v) {
 function calculateAmount(unitPrice, quantity) {
   return unitPrice === null ? null : Number((unitPrice * quantity).toFixed(2));
 }
-function assertPositiveQuantity(quantity) {
+function isValidDocItemQuantity(docType, quantity) {
+  if (typeof quantity !== "number" && typeof quantity !== "string")
+    return false;
+  if (typeof quantity === "string" && quantity.trim() === "")
+    return false;
   const n = Number(quantity);
-  if (!Number.isFinite(n) || n <= 0) {
-    throw new ApiError("INVALID_PARAMS", "明细数量必须大于 0");
+  if (!Number.isFinite(n) || n > 9999999999.99 || Number(n.toFixed(2)) !== n)
+    return false;
+  return n > 0 || n === 0 && STOCKTAKE_DOC_TYPES.has(docType);
+}
+function assertDocItemQuantity(docType, quantity) {
+  if (isValidDocItemQuantity(docType, quantity))
+    return Number(quantity);
+  if (STOCKTAKE_DOC_TYPES.has(docType)) {
+    throw new ApiError("INVALID_PARAMS", "请填写实盘数（0 或正数，最多两位小数；货架上没有就填 0）");
   }
-  return n;
+  throw new ApiError("INVALID_PARAMS", "明细数量必须大于 0");
 }
 function defaultStatusForDoc(docType) {
   if (APPROVAL_DOC_TYPES.has(docType))
@@ -176930,11 +176941,13 @@ function lotRow(row, priceTiers) {
     updatedAt: row.lot.updatedAt.toISOString()
   };
 }
-var listInventoryMarketTransferTargets = withAnyPermission([...inventoryDelegatableOperateActions("market")], async () => {
+var listInventoryMarketTransferTargets = withAnyPermission([...inventoryDelegatableOperateActions("market")], async () => activeMarketTargets());
+async function activeMarketTargets() {
   await syncInventoryLocations();
   const rows = await db2.select({ orgNodeId: inventoryLocations.orgNodeId, name: inventoryLocations.name }).from(inventoryLocations).where(import_drizzle_orm58.and(import_drizzle_orm58.eq(inventoryLocations.isActive, true), import_drizzle_orm58.eq(inventoryLocations.locationType, "市场"), import_drizzle_orm58.isNotNull(inventoryLocations.orgNodeId))).orderBy(import_drizzle_orm58.asc(inventoryLocations.name));
   return rows.flatMap((row) => row.orgNodeId ? [{ orgNodeId: row.orgNodeId, name: row.name }] : []);
-});
+}
+var listInventoryShipmentMarketTargets = withPermission("inventory:supply_chain_operate", async () => activeMarketTargets());
 var PROMOTION_READ_SCOPE = { scopeActions: ["inventory:stock_list", INVENTORY_PROMOTION_MAINTAIN_ACTION] };
 async function promotionVisibleLocationIds(session4) {
   if (isInventoryPromotionMaintainer(session4))
@@ -178398,7 +178411,7 @@ var createInventoryCoreDoc = withAnyPermission(["inventory:supply_chain_operate"
   if (!actingLocationId)
     throw new ApiError("NOT_FOUND", "组织节点没有对应库存主体");
   await assertGenericDocLocationRules(input, sourceOrgNodeId, targetOrgNodeId, actingOrgNodeId);
-  const totalQuantity = input.items.reduce((sum, item) => sum + assertPositiveQuantity(item.quantity), 0);
+  const totalQuantity = input.items.reduce((sum, item) => sum + assertDocItemQuantity(input.docType, item.quantity), 0);
   const id = await db2.transaction(async (tx) => {
     await assertInventoryBusinessWritable(tx);
     const docId = await generateDocNo(tx, input.docType);
@@ -178432,7 +178445,7 @@ var createInventoryCoreDoc = withAnyPermission(["inventory:supply_chain_operate"
     let hasCalculatedAmount = false;
     const bookQuantityBySkuId = await skuOnHandByLocation(tx, actingLocationId, stocktakeSkuIds);
     for (const item of input.items) {
-      const quantity = assertPositiveQuantity(item.quantity);
+      const quantity = assertDocItemQuantity(input.docType, item.quantity);
       const serverItem = stripPriceInput(item);
       let lot = null;
       let bookQuantity = null;

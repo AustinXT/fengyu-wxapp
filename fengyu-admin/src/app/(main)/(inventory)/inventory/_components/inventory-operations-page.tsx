@@ -29,6 +29,7 @@ import {
   createExternalMarketOutbound,
   createInventoryConversion,
   createItemCompanyReplenishment,
+  createItemCompanyShipment,
   createMarketReplenishment,
   createMarketStaffPurchase,
   createSupplyChainStaffPurchase,
@@ -454,6 +455,7 @@ function LotPicker({
   value,
   onChange,
   onLotChange,
+  load = listInventoryLotOptions,
 }: {
   locationId: string
   skuId: string
@@ -461,9 +463,32 @@ function LotPicker({
   onChange: (value: string) => void
   /** 用户切换批次时回传所选批次的完整行（成本、赠送、可用量），选回空项时回传 null（#344 转换成本）。 */
   onLotChange?: (lot: InventoryLotRow | null) => void
+  /**
+   * 批次取数。默认每个选择器自己查；同一表单多行同「主体 + SKU」时（#336b 发货拆批次 / 赠送 / 多张报货单）
+   * 由表单传入带缓存的取数，避免同参数请求在全局串行的 Server Action 队列里排成一串。须是稳定引用。
+   */
+  load?: (locationId: string, skuId: string) => Promise<InventoryLotRow[]>
 }) {
   const [lots, setLots] = useState<InventoryLotRow[]>([])
   const [loading, setLoading] = useState(false)
+  // 取数回调里读最新的已选值与回调，不把它们放进 effect 依赖（否则每次选择都重查）
+  const valueRef = useRef(value)
+  valueRef.current = value
+  const onChangeRef = useRef(onChange)
+  onChangeRef.current = onChange
+  const onLotChangeRef = useRef(onLotChange)
+  onLotChangeRef.current = onLotChange
+  /*
+   * 已选值与当前可选列表脱节时（批次被出完 / 重取失败清空了列表）：原生 select 显示成空占位，
+   * 父级却仍握着旧 lotId（转换表单还握着整条批次快照），看似未选却能把它提交出去。
+   * 两路一起清，让「请选择批次」校验接住。
+   */
+  const dropStaleSelection = () => {
+    if (!valueRef.current) return false
+    onChangeRef.current('')
+    onLotChangeRef.current?.(null)
+    return true
+  }
 
   useEffect(() => {
     let cancelled = false
@@ -472,13 +497,18 @@ function LotPicker({
       return () => { cancelled = true }
     }
     setLoading(true)
-    listInventoryLotOptions(locationId, skuId)
+    load(locationId, skuId)
       .then((rows) => {
-        if (!cancelled) setLots(rows)
+        if (cancelled) return
+        setLots(rows)
+        if (!rows.some((lot) => String(lot.id) === valueRef.current) && dropStaleSelection()) {
+          toast.warning('所选批次已无可用库存，请重新选择')
+        }
       })
       .catch((error) => {
         if (!cancelled) {
           setLots([])
+          dropStaleSelection()
           toast.error(actionErrorMessage(error, '加载可用批次失败'))
         }
       })
@@ -486,7 +516,7 @@ function LotPicker({
         if (!cancelled) setLoading(false)
       })
     return () => { cancelled = true }
-  }, [locationId, skuId])
+  }, [locationId, skuId, load])
 
   return (
     <Select
@@ -619,6 +649,7 @@ export default function InventoryOperationsPage({
   level,
   locations,
   marketTransferTargets,
+  shipmentMarketTargets,
   suppliers,
   canCreate,
   canApprove,
@@ -633,6 +664,8 @@ export default function InventoryOperationsPage({
   locations: InventoryLocationRow[]
   /** 市场间调货出库的接收主体候选（#340），只喂给通用建单表单，见其同名 prop */
   marketTransferTargets?: readonly InventoryMarketTransferTarget[]
+  /** 品项公司发货的收货市场候选（#336b，不按 scope 的全部启用市场），只喂给发货表单 */
+  shipmentMarketTargets?: readonly InventoryMarketTransferTarget[]
   suppliers: InventorySupplierRow[]
   canCreate: boolean
   canApprove: boolean
@@ -870,6 +903,7 @@ export default function InventoryOperationsPage({
               onBusyChange={setWorkspaceBusy}
               locations={locations}
               marketTransferTargets={marketTransferTargets}
+              shipmentMarketTargets={shipmentMarketTargets}
               suppliers={suppliers}
               canViewPrice={canViewPrice}
               onClose={() => { setPendingDocsTabFor(null); setActiveOperation(null) }}
@@ -891,6 +925,7 @@ function OperationWorkspace({
   onBusyChange,
   locations,
   marketTransferTargets,
+  shipmentMarketTargets,
   suppliers,
   canViewPrice,
   onClose,
@@ -912,6 +947,7 @@ function OperationWorkspace({
   onBusyChange: (busy: boolean) => void
   locations: InventoryLocationRow[]
   marketTransferTargets?: readonly InventoryMarketTransferTarget[]
+  shipmentMarketTargets?: readonly InventoryMarketTransferTarget[]
   suppliers: InventorySupplierRow[]
   canViewPrice: boolean
   onClose: () => void
@@ -1033,7 +1069,7 @@ function OperationWorkspace({
           {operation === 'item-company-request' && <ItemCompanyReplenishmentForm locations={locations} onSuccess={handleSuccess} />}
           {operation === 'purchase-order' && <PurchaseOrderForm locations={locations} canViewPrice={canViewPrice} onSuccess={handleSuccess} />}
           {operation === 'market-report-summary' && <MarketReportSummaryForm locations={locations} onSuccess={handleSuccess} />}
-          {operation === 'company-shipment' && <CompanyShipmentForm locations={locations} onSuccess={handleSuccess} />}
+          {operation === 'company-shipment' && <CompanyShipmentForm locations={locations} markets={shipmentMarketTargets ?? []} prefill={prefill} onSuccess={handleSuccess} onBusyChange={setFormBusy} />}
           {operation === 'market-receipt' && <ShipmentReceiptForm kind="market" prefill={prefill} onSuccess={handleSuccess} />}
           {operation === 'supply-chain-receipt' && <SupplyChainPurchaseReceiptForm locations={locations} canViewPrice={canViewPrice} prefill={prefill} onSuccess={handleSuccess} />}
           {operation === 'supply-chain-purchase-cancel' && <SupplyChainPurchaseCancelForm prefill={prefill} onSuccess={handleSuccess} />}
@@ -1090,13 +1126,13 @@ const OPERATION_DOCS_PAGE_SIZE = 20
  */
 
 /**
- * **不进弹窗**的两个动作：只把用户送回「填报表单」Tab 并预选这张单。
+ * **不进弹窗**的三个动作：只把用户送回「填报表单」Tab 并预选这张单。
  *
  * 供应链采购入库要逐行核对效期（批号留空已由服务端按入库单号+行号生成（#345），效期推断不出来），
  * 所以它只有跳转版、没有一键版；市场 / 门店收货两条既有一键版也留跳转版，
- * 部分收货与差异登记仍得回表单。
+ * 部分收货与差异登记仍得回表单。「去发货」（#336）要逐行选总部批次，同样只能回表单。
  */
-const INBOX_GOTO_ACTION_KINDS = ['shipment-receive-goto', 'purchase-receive-goto'] as const
+const INBOX_GOTO_ACTION_KINDS = ['shipment-receive-goto', 'purchase-receive-goto', 'report-ship-goto'] as const
 type InboxGotoActionKind = (typeof INBOX_GOTO_ACTION_KINDS)[number]
 /**
  * 走 `DocActionDialog` 的动作。
@@ -1132,6 +1168,7 @@ const INBOX_ACTION_LABEL: Record<InventoryInboxActionKind, string> = {
   'purchase-receive-goto': '去收货',
   'purchase-close': '关闭采购',
   'generic-receive': '确认收货',
+  'report-ship-goto': '去发货',
 }
 
 /**
@@ -1280,7 +1317,7 @@ function buildInboxActionConfig(
 /**
  * 业务工作区的「单据」Tab（#190 一段 → #192 两段）。
  *
- * 上段「待我处理」= 本业务要经手、但由上游产出的单（待审批 / 待收货），带行内动作；
+ * 上段「待我处理」= 本业务要经手、但由上游产出的单（待审批 / 待收货；品项公司发货是仍有未发量的已完成市场报货单，#336b），带行内动作；
  * 下段「本业务产出」= #190 的原语义，只读。
  *
  * 单据类型 / 状态 / 层级的收窄规则在服务端按 operationId 查映射表解析
@@ -1328,7 +1365,12 @@ export function OperationDocsTab({
    */
   onActionBusyChange: (busy: boolean) => void
 }) {
-  const { bump: bumpCandidates } = useContext(DocCandidateReloadContext)
+  /*
+   * 候选重取版本号同时也是本 Tab 的重取信号：填报表单建单成功会 bump 它（工作区 handleSuccess）。
+   * 不跟着重取的话，「去发货」发完回来那张报货单仍挂在待发货里（#336b），产出段也缺刚建的单。
+   * 行内动作同一轮既 bump 又 setReloadToken，两者同批提交，只触发一次重取。
+   */
+  const { version: candidateVersion, bump: bumpCandidates } = useContext(DocCandidateReloadContext)
   const router = useRouter()
   const [rows, setRows] = useState<InventoryDocRow[]>([])
   const [total, setTotal] = useState(0)
@@ -1426,7 +1468,7 @@ export function OperationDocsTab({
         if (!cancelled) setLoading(false)
       })
     return () => { cancelled = true }
-  }, [operation, page, inboxPage, reloadToken])
+  }, [operation, page, inboxPage, reloadToken, candidateVersion])
 
   useEffect(() => {
     onInboxTotalChange(hasInbox ? inboxTotal : 0)
@@ -1579,13 +1621,16 @@ export function OperationDocsTab({
 
   return (
     <div className="space-y-6">
-      {/* 无 inbox 语义的业务（17 个内置 + 9 个通用）整段不渲染，外观与 #190 完全一致。 */}
+      {/* 无 inbox 语义的业务（16 个内置 + 其余通用，#336b 起品项公司发货有「待发货」段）整段不渲染，外观与 #190 完全一致。 */}
       {hasInbox && (
         <section className="space-y-2" aria-label="待我处理">
           <div className="flex flex-wrap items-center gap-2">
             <h3 className="text-sm font-medium">待我处理</h3>
             <Badge variant="outline">{inboxTotal}</Badge>
-            <span className="text-xs text-[#888888]">上游已提交、等你审批或收货的单据</span>
+            <span className="text-xs text-[#888888]">
+              {/* 品项公司发货的待办是「待发货」的市场报货单（#336），不是审批 / 收货 */}
+              {operation === 'company-shipment' ? '待发货：仍有未发量的市场报货单' : '上游已提交、等你审批或收货的单据'}
+            </span>
           </div>
           {inboxEmpty ? (
             <p className="px-1 py-2 text-sm text-[#888888]">{inboxEmptyText}</p>
@@ -1609,7 +1654,7 @@ export function OperationDocsTab({
         </section>
       )}
 
-      {/* space-y-3 与 #190 的原布局逐字一致：无 inbox 的 17 个业务外观不能有任何变化 */}
+      {/* space-y-3 与 #190 的原布局逐字一致：无 inbox 的业务外观不能有任何变化 */}
       <section className="space-y-3" aria-label="本业务产出">
         {/*
           * 产出段**不加任何行内动作**：产出单绝大多数是终态，少数非终态的处理入口在别的
@@ -2798,19 +2843,486 @@ function PurchaseOrderForm({
 }
 
 
-/*
- * 品项公司发货表单过渡占位（#336a → #336b）：发货已改为直接引用市场报货单，
- * 服务端 createItemCompanyShipment 的入参换成 { marketId, items[reportItemId…], giftItems }，
- * 旧的「选采购订单」表单随之下线；新表单由 #336b 上线。中间态不可用是已拍板的代价。
+/** 发货明细的一行：挂在某条市场报货明细上，从一个总部批次出库（一行一个批号）。 */
+interface ShipmentDraftLine {
+  key: number
+  reportItemId: number
+  isGift: boolean
+  lotId: string
+  quantity: string
+  remark: string
+}
+
+/** 所选报货单的一条明细 + 截至打开时的正常未发量（`报货履约` 进度的直连已发量）。 */
+interface ShipmentReportItem {
+  reportId: string
+  item: InventoryDocDetail['items'][number]
+  shippedQuantity: number
+  remainingQuantity: number
+  /** 进度缺失时 fail-closed（未发记 0），界面据此单独提示，别显示成「已发完」 */
+  progressLoaded: boolean
+}
+
+function shipmentReportItems(doc: InventoryDocDetail): ShipmentReportItem[] {
+  // 正常已发 = 「市场报货发货」直连血缘累计（engine loadMarketReportFulfillmentProgress），
+  // 与服务端 createItemCompanyShipment 的 `reportItem.quantity - shipped` 同口径。
+  // 拿不到进度时 fail-closed（未发记 0，只能加赠送），不退化成全量可发。
+  // 前提：进度按可见单据累计、服务端封顶不按 scope 过滤，二者今天一致是因为发货总部必须等于
+  // 报货单 target —— 同一张报货单的发货全出自同一总部，能发货的账号都看得到。改 scope 口径时复核。
+  const shippedByItem = new Map(
+    doc.fulfillmentProgress?.kind === '报货履约'
+      ? doc.fulfillmentProgress.items.map((progress) => [progress.itemId, progress.normalFulfilledQuantity])
+      : [],
+  )
+  return doc.items.map((item) => {
+    const shipped = shippedByItem.get(item.id)
+    return {
+      reportId: doc.id,
+      item,
+      shippedQuantity: shipped ?? 0,
+      progressLoaded: shipped !== undefined,
+      remainingQuantity: shipped === undefined ? 0 : Math.max(0, Number((item.quantity - shipped).toFixed(2))),
+    }
+  })
+}
+
+/**
+ * 品项公司发货（#336）：直接引用市场原始报货单，不经采购订单。
+ * 先选收货市场（唯一时只读）与发货总部 → 多选该市场的报货单 → 每条报货明细默认一行正常发货
+ * （数量 = 未发量），逐行选总部批次；库存不足可删行、剩余下次再发，也可拆成多批次。
+ * 赠送只能挂本次引用的报货明细（拍板 A），单独选批次、不受报货量封顶、不计价。
  */
-function CompanyShipmentForm(_props: {
+function CompanyShipmentForm({
+  locations,
+  markets,
+  prefill,
+  onSuccess,
+  onBusyChange,
+}: {
   locations: InventoryLocationRow[]
+  /**
+   * 收货市场候选：不按 scope 的全部启用市场（服务端 listInventoryShipmentMarketTargets）。
+   * 不能取 `locations` —— 总部库存 scope 不向下展开市场，供应链操作员的 locations 里只有总部。
+   */
+  markets: readonly InventoryMarketTransferTarget[]
+  /** 待办区「去发货」带来的报货单预选券 */
+  prefill?: OperationFormPrefill | null
   onSuccess: (message: string) => void
+  /**
+   * 提交在途上报给工作区（与通用建单表单同一套 formBusy）：在途时锁业务卡片与「关闭」，
+   * 否则关掉工作区会把在途请求连同表单一起卸载，单其实发出去了界面却没有反馈。须是稳定引用。
+   */
+  onBusyChange: (busy: boolean) => void
 }) {
+  // 两端都用 org_node_id：总部 / 市场的 location_id 与之同值，候选收窄与服务端入参都认它
+  const headquarters = locations.filter((location) => location.locationType === '总部' && location.isActive && location.orgNodeId)
+  const [marketId, setMarketId] = useState('')
+  const [sourceOrgNodeId, setSourceOrgNodeId] = useState('')
+  const [reportIds, setReportIds] = useState<string[]>([])
+  const [reports, setReports] = useState<Map<string, InventoryDocDetail>>(() => new Map())
+  const [loadingIds, setLoadingIds] = useState<string[]>([])
+  const [lines, setLines] = useState<ShipmentDraftLine[]>([])
+  const [docDate, setDocDate] = useState(today)
+  const [logisticsCompany, setLogisticsCompany] = useState('')
+  const [trackingNo, setTrackingNo] = useState('')
+  const [remark, setRemark] = useState('')
+  const [saving, setSaving] = useState(false)
+  useEffect(() => {
+    onBusyChange(saving)
+  }, [saving, onBusyChange])
+  useEffect(() => () => onBusyChange(false), [onBusyChange])
+  const lineKeyRef = useRef(0)
+  /*
+   * 同「总部 + SKU」的批次只查一次，拆批次 / 赠送 / 多张报货单共用（复用在途请求）。
+   * 失败的请求移出缓存，后挂载的行会重查。作废 = 清缓存 + 换 loadLots 引用（lotVersion）——
+   * 只清缓存的话已挂载的选择器 effect 依赖不变、不会重查，界面上仍是旧的可用量。
+   * 作废时机：换市场 / 换总部 / 提交结束（成功则可用量已变，失败多为库存或未发量冲突，要按最新量重选）。
+   */
+  const lotCacheRef = useRef(new Map<string, Promise<InventoryLotRow[]>>())
+  const [lotVersion, setLotVersion] = useState(0)
+  const invalidateLots = useCallback(() => {
+    lotCacheRef.current.clear()
+    setLotVersion((version) => version + 1)
+  }, [])
+  const loadLots = useCallback((locationId: string, skuId: string) => {
+    const key = `${locationId}|${skuId}`
+    let pending = lotCacheRef.current.get(key)
+    if (!pending) {
+      const request = listInventoryLotOptions(locationId, skuId)
+      request.catch(() => { if (lotCacheRef.current.get(key) === request) lotCacheRef.current.delete(key) })
+      lotCacheRef.current.set(key, request)
+      pending = request
+    }
+    return pending
+    // lotVersion 只用来换引用，触发已挂载选择器重查
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lotVersion])
+  /*
+   * 报货单明细是异步装载的。换市场 / 换总部 / 提交成功都会作废当前选择，
+   * 迟到的响应只在「同一轮选择 + 该单最后一次发起的请求」时落地：否则会把旧市场的明细塞回来，
+   * 或同一张单「取消勾选再勾上」时两次响应各带出一遍明细。
+   */
+  const epochRef = useRef(0)
+  const requestSeqRef = useRef(new Map<string, number>())
+  const selectedRef = useRef<string[]>([])
+  selectedRef.current = reportIds
+  const sourceLocationId = headquarters.find((location) => location.orgNodeId === sourceOrgNodeId)?.locationId ?? ''
+
+  function nextKey() {
+    lineKeyRef.current += 1
+    return lineKeyRef.current
+  }
+
+  function defaultLines(doc: InventoryDocDetail): ShipmentDraftLine[] {
+    return shipmentReportItems(doc)
+      .filter((entry) => entry.remainingQuantity > 0.000001)
+      .map((entry) => ({
+        key: nextKey(),
+        reportItemId: entry.item.id,
+        isGift: false,
+        lotId: '',
+        quantity: String(entry.remainingQuantity),
+        remark: '',
+      }))
+  }
+
+  function clearSelection() {
+    epochRef.current += 1
+    invalidateLots()
+    setReportIds([])
+    setReports(new Map())
+    setLoadingIds([])
+    setLines([])
+  }
+
+  // 装载失败的单退出勾选：留着的话「已选」里有它、明细里却没有，提交时它被静默漏掉
+  function dropSelected(id: string) {
+    selectedRef.current = selectedRef.current.filter((value) => value !== id)
+    setReportIds((previous) => previous.filter((value) => value !== id))
+  }
+
+  async function loadReports(ids: string[]) {
+    if (ids.length === 0) return
+    const epoch = epochRef.current
+    // 装载时的两端：候选列表可能是上一组条件下的旧行，或单据在候选展示后被改了状态
+    const expectedMarketId = marketId
+    const expectedSourceId = sourceOrgNodeId
+    setLoadingIds((previous) => [...previous, ...ids])
+    await Promise.all(ids.map(async (id) => {
+      const seq = (requestSeqRef.current.get(id) ?? 0) + 1
+      requestSeqRef.current.set(id, seq)
+      const isCurrent = () => epoch === epochRef.current && requestSeqRef.current.get(id) === seq
+      try {
+        const detail = await getInventoryCoreDocById(id)
+        if (!isCurrent() || !selectedRef.current.includes(id)) return
+        if (!detail || detail.docType !== '市场报货') {
+          toast.error(`未找到可发货的市场报货单 ${id}`)
+          dropSelected(id)
+          return
+        }
+        // 与 createItemCompanyShipment 同口径复核：已完成 + 发起方 = market_id = 收货市场 + 接收方 = 发货总部
+        if (
+          detail.status !== '已完成'
+          || detail.sourceOrgNodeId !== expectedMarketId
+          || detail.marketId !== expectedMarketId
+          || detail.targetOrgNodeId !== expectedSourceId
+        ) {
+          toast.error(`市场报货单 ${id} 不是当前收货市场报给该总部的已完成单，已取消勾选`)
+          dropSelected(id)
+          return
+        }
+        setReports((previous) => new Map(previous).set(id, detail))
+        setLines((previous) => [...previous, ...defaultLines(detail)])
+      } catch (error) {
+        if (isCurrent() && selectedRef.current.includes(id)) {
+          toast.error(actionErrorMessage(error, `加载市场报货单 ${id} 失败`))
+          dropSelected(id)
+        }
+      } finally {
+        if (isCurrent()) setLoadingIds((previous) => previous.filter((value) => value !== id))
+      }
+    }))
+  }
+
+  // 只刷新已选报货单的履约进度（未发量），不动用户已填的明细行
+  async function refreshReports() {
+    const epoch = epochRef.current
+    const ids = selectedRef.current
+    await Promise.all(ids.map(async (id) => {
+      const seq = (requestSeqRef.current.get(id) ?? 0) + 1
+      requestSeqRef.current.set(id, seq)
+      try {
+        const detail = await getInventoryCoreDocById(id)
+        if (epoch !== epochRef.current || requestSeqRef.current.get(id) !== seq || !selectedRef.current.includes(id)) return
+        if (detail && detail.docType === '市场报货') setReports((previous) => new Map(previous).set(id, detail))
+      } catch {
+        // 刷新失败保留旧进度，服务端封顶兜底
+      }
+    }))
+  }
+
+  function selectReports(nextIds: string[]) {
+    const removed = reportIds.filter((id) => !nextIds.includes(id))
+    const added = nextIds.filter((id) => !reportIds.includes(id))
+    selectedRef.current = nextIds
+    setReportIds(nextIds)
+    if (removed.length > 0) {
+      const removedItemIds = new Set(removed.flatMap((id) => reports.get(id)?.items.map((item) => item.id) ?? []))
+      setReports((previous) => {
+        const next = new Map(previous)
+        for (const id of removed) next.delete(id)
+        return next
+      })
+      setLines((previous) => previous.filter((line) => !removedItemIds.has(line.reportItemId)))
+      setLoadingIds((previous) => previous.filter((id) => !removed.includes(id)))
+    }
+    void loadReports(added)
+  }
+
+  function selectMarket(nextMarketId: string) {
+    if (nextMarketId === marketId) return
+    setMarketId(nextMarketId)
+    // 报货单属于市场：换市场即解除全部引用
+    clearSelection()
+  }
+
+  function selectHeadquarters(nextId: string) {
+    if (nextId === sourceOrgNodeId) return
+    setSourceOrgNodeId(nextId)
+    // 报货单指定了供应链主体（服务端校验 report.target = 发货总部），批次也是该总部的库存
+    clearSelection()
+  }
+
+  // 待办区「去发货」：按报货单带出收货市场与发货总部，再勾上这张单。
+  // 点下即作废当前选择并计入装载中（装载期间不能提交旧选择）；响应迟到时若用户已换市场 / 总部
+  // （epoch 变了）或已自己勾了单，就丢弃，不覆盖用户的后续操作。
+  const prefillToken = prefill?.token
+  useEffect(() => {
+    const id = prefill?.docId
+    if (!id) return
+    clearSelection()
+    const epoch = epochRef.current
+    const isCurrent = () => epoch === epochRef.current && selectedRef.current.length === 0
+    setLoadingIds([id])
+    void getInventoryCoreDocById(id)
+      .then((detail) => {
+        if (!isCurrent()) return
+        // 待办列表可能已过时：只认服务端可发货的「已完成」报货单（与 createItemCompanyShipment 同口径）
+        if (
+          !detail || detail.docType !== '市场报货' || detail.status !== '已完成'
+          || !detail.sourceOrgNodeId || !detail.targetOrgNodeId || detail.marketId !== detail.sourceOrgNodeId
+        ) {
+          toast.error('该市场报货单当前不可发货，请刷新待办')
+          return
+        }
+        setMarketId(detail.sourceOrgNodeId)
+        setSourceOrgNodeId(detail.targetOrgNodeId)
+        selectedRef.current = [detail.id]
+        setReportIds([detail.id])
+        setReports(new Map([[detail.id, detail]]))
+        setLines(defaultLines(detail))
+        toast.info(`已切换到单据 ${detail.id}`)
+      })
+      .catch((error: unknown) => {
+        if (isCurrent()) toast.error(actionErrorMessage(error, '加载市场报货单失败'))
+      })
+      .finally(() => {
+        if (epoch === epochRef.current) setLoadingIds((previous) => previous.filter((value) => value !== id))
+      })
+    // 只挂 token（同 useDocumentPrefill）：同一张单点第二次也要能再触发
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [prefillToken])
+
+  const reportItems = reportIds.flatMap((id) => {
+    const doc = reports.get(id)
+    return doc ? shipmentReportItems(doc) : []
+  })
+  const reportItemById = new Map(reportItems.map((entry) => [entry.item.id, entry]))
+  const outstandingTotal = Number(reportItems.reduce((sum, entry) => sum + entry.remainingQuantity, 0).toFixed(2))
+  const normalThisTime = Number(lines
+    .filter((line) => !line.isGift)
+    .reduce((sum, line) => sum + (positiveNumber(line.quantity) ?? 0), 0)
+    .toFixed(2))
+
+  function updateLine(key: number, patch: Partial<ShipmentDraftLine>) {
+    setLines((previous) => previous.map((line) => line.key === key ? { ...line, ...patch } : line))
+  }
+
+  function addLine(reportItemId: number, isGift: boolean) {
+    setLines((previous) => [...previous, { key: nextKey(), reportItemId, isGift, lotId: '', quantity: '', remark: '' }])
+  }
+
+  async function submit() {
+    if (saving) return
+    if (!marketId || !sourceOrgNodeId) {
+      toast.error('请选择收货市场和发货总部')
+      return
+    }
+    if (loadingIds.length > 0) {
+      toast.error('市场报货单明细尚未加载完成，请稍候')
+      return
+    }
+    if (lines.length === 0) {
+      toast.error('请至少保留一条发货明细')
+      return
+    }
+    const parsed = lines.map((line) => ({
+      line,
+      lotId: Number(line.lotId),
+      quantity: positiveNumber(line.quantity),
+    }))
+    if (parsed.some((entry) => !Number.isInteger(entry.lotId) || entry.lotId <= 0 || entry.quantity === null)) {
+      toast.error('请为每条发货明细选择批次并填写数量；不发的行请删除')
+      return
+    }
+    // 与服务端同一把尺子先拦一遍：同报货行 + 同批次 + 同属性重复、正常发货超未发量
+    const seen = new Set<string>()
+    const normalByItem = new Map<number, number>()
+    for (const { line, lotId, quantity } of parsed) {
+      const key = `${line.reportItemId}|${lotId}|${line.isGift}`
+      if (seen.has(key)) {
+        toast.error('同一报货明细的同一批次不能重复填写，请合并数量')
+        return
+      }
+      seen.add(key)
+      if (!line.isGift) normalByItem.set(line.reportItemId, (normalByItem.get(line.reportItemId) ?? 0) + quantity!)
+    }
+    for (const [reportItemId, quantity] of normalByItem) {
+      const entry = reportItemById.get(reportItemId)
+      if (entry && quantity > entry.remainingQuantity + 0.000001) {
+        toast.error(`${entry.item.skuName} 正常发货数量超过报货未发量，本次最多可发 ${entry.remainingQuantity}`)
+        return
+      }
+    }
+    const toInput = ({ line, lotId, quantity }: (typeof parsed)[number]) => ({
+      reportItemId: line.reportItemId,
+      lotId,
+      quantity: quantity!,
+      remark: optionalText(line.remark),
+    })
+    setSaving(true)
+    try {
+      const result = await createItemCompanyShipment({
+        marketId,
+        sourceOrgNodeId,
+        docDate: optionalText(docDate),
+        logisticsCompany: optionalText(logisticsCompany),
+        trackingNo: optionalText(trackingNo),
+        remark: optionalText(remark),
+        items: parsed.filter((entry) => !entry.line.isGift).map(toInput),
+        giftItems: parsed.filter((entry) => entry.line.isGift).map(toInput),
+      })
+      onSuccess(`品项公司发货单已创建：${result.id}`)
+      clearSelection()
+      // 物流单号 / 备注是这一张单的，留着会被下一张误带（日期保留，同一天常连发多张）
+      setLogisticsCompany('')
+      setTrackingNo('')
+      setRemark('')
+    } catch (error) {
+      // 超量等 CONFLICT 文案由服务端给出（含「本次最多可发 N」），原样展示
+      toast.error(actionErrorMessage(error, '创建品项公司发货失败'))
+      // 失败多为库存或未发量被并发改动：批次可用量与报货单未发量都按最新重取，
+      // 已填数量保留；批次按重取结果保留，已不可用或重取失败时由 LotPicker 清空（成功路径由 clearSelection 作废）
+      invalidateLots()
+      void refreshReports()
+    } finally {
+      setSaving(false)
+    }
+  }
+
   return (
-    <div role="status" className="rounded-[var(--radius)] border border-[#D4820A] bg-[#FFF8E6] p-3 text-sm text-[#7B5E2B]">
-      品项公司发货表单升级中：发货改为直接引用市场报货单，新表单上线前暂不可用。
-    </div>
+    <form onSubmit={(event) => { event.preventDefault(); void submit() }}>
+      {/* 提交在途锁住整张表：否则在途期间改选的单会被成功后的 clearSelection 一并清掉 */}
+      <fieldset disabled={saving} className="m-0 min-w-0 space-y-5 border-0 p-0">
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+        <FormField label="收货市场" required>
+          <InventorySubjectSelect
+            options={markets.map((market) => ({ value: market.orgNodeId, label: market.name }))}
+            value={marketId}
+            onChange={selectMarket}
+            placeholder="请选择市场"
+          />
+        </FormField>
+        <FormField label="发货总部" required>
+          <InventorySubjectSelect
+            options={headquarters.map((location) => ({ value: location.orgNodeId!, label: location.name }))}
+            value={sourceOrgNodeId}
+            onChange={selectHeadquarters}
+            placeholder="请选择总部"
+          />
+        </FormField>
+        <FormField label="发货日期"><DatePicker value={docDate} onValueChange={setDocDate} /></FormField>
+        <FormField label="物流公司"><Input value={logisticsCompany} onChange={(event) => setLogisticsCompany(event.target.value)} /></FormField>
+        <FormField label="物流单号"><Input value={trackingNo} onChange={(event) => setTrackingNo(event.target.value)} /></FormField>
+      </div>
+      {/* 先定两端再选单：候选按收货市场（报货发起方）与发货总部（报货接收方）收窄 */}
+      <InventoryDocCandidatePicker
+        label="市场报货单"
+        required
+        purpose="company-shipment-source"
+        disabled={!marketId || !sourceOrgNodeId}
+        disabledHint="请先选择收货市场和发货总部"
+        sourceOrgNodeId={marketId || undefined}
+        targetOrgNodeId={sourceOrgNodeId || undefined}
+        selection={{ mode: 'multi', values: reportIds, onChange: selectReports }}
+      />
+      {loadingIds.length > 0 && <div className="text-sm text-[#666666]">正在加载市场报货明细</div>}
+      {reportItems.length > 0 && (
+        <div role="status" aria-label="未发进度" className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--muted)] p-3 text-sm">
+          所选报货单还有 <span className="font-medium">{outstandingTotal}</span> 件未发
+          {normalThisTime > 0 && <>，本次正常发货 {normalThisTime} 件，发后还剩 {Math.max(0, Number((outstandingTotal - normalThisTime).toFixed(2)))} 件</>}
+        </div>
+      )}
+      {reportItems.length > 0 && (
+        <div className="space-y-3">
+          <h3 className="text-sm font-medium">发货明细（一行一个批号；库存不足可删行，剩余下次再发）</h3>
+          {reportItems.map((entry) => {
+            const itemLines = lines.filter((line) => line.reportItemId === entry.item.id)
+            // 行内控件的可访问名带行标识（#194 口径）：多条报货明细时按钮不重名
+            const rowName = `${entry.item.skuName} ${entry.item.specName || entry.item.skuId} ${entry.reportId}`
+            return (
+              <div key={entry.item.id} className="rounded-[var(--radius)] border border-[var(--border)] p-3">
+                <div className="flex flex-wrap items-start justify-between gap-2">
+                  <div>
+                    <div className="text-sm font-medium">{entry.item.skuName}</div>
+                    <div className="text-xs text-[#888888]">
+                      {entry.reportId} · {entry.item.specName || entry.item.skuId} · 报货 {entry.item.quantity} · 已发 {entry.shippedQuantity} · 未发 {entry.remainingQuantity}
+                    </div>
+                    {!entry.progressLoaded && <div className="mt-1 text-xs text-[#D94040]">履约进度加载失败，暂只能加赠送；请刷新后重试</div>}
+                    {entry.progressLoaded && entry.remainingQuantity <= 0.000001 && <div className="mt-1 text-xs text-[#888888]">正常已发完，仍可加赠送</div>}
+                  </div>
+                  <div className="flex gap-2">
+                    <Button type="button" variant="outline" size="sm" aria-label={`加批次 ${rowName}`} disabled={entry.remainingQuantity <= 0.000001} onClick={() => addLine(entry.item.id, false)}>
+                      加批次
+                    </Button>
+                    <Button type="button" variant="outline" size="sm" aria-label={`加赠送 ${rowName}`} onClick={() => addLine(entry.item.id, true)}>加赠送</Button>
+                  </div>
+                </div>
+                {itemLines.map((line, lineIndex) => (
+                  <div key={line.key} className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-[minmax(0,1.4fr)_8rem_minmax(0,1fr)_2.5rem]">
+                    <FormField label="发货批次" required>
+                      <LotPicker locationId={sourceLocationId} skuId={entry.item.skuId} value={line.lotId} onChange={(lotId) => updateLine(line.key, { lotId })} load={loadLots} />
+                    </FormField>
+                    <FormField label={line.isGift ? '赠送数量' : '正常发货'} required>
+                      <Input type="number" min="0.01" step="0.01" max="9999999999.99" value={line.quantity} onChange={(event) => updateLine(line.key, { quantity: event.target.value })} />
+                    </FormField>
+                    <FormField label="明细备注"><Input value={line.remark} onChange={(event) => updateLine(line.key, { remark: event.target.value })} /></FormField>
+                    <div className="flex items-end justify-end">
+                      <SmallIconButton label={`${line.isGift ? '删除赠送行' : '删除发货行'} ${rowName} 第${lineIndex + 1}行`} onClick={() => setLines((previous) => previous.filter((item) => item.key !== line.key))} />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )
+          })}
+        </div>
+      )}
+      <RemarkField value={remark} onChange={setRemark} />
+      <div className="flex justify-end">
+        <Button type="submit" loading={saving} disabled={loadingIds.length > 0 || lines.length === 0}>创建品项公司发货单</Button>
+      </div>
+      </fieldset>
+    </form>
   )
 }
 
