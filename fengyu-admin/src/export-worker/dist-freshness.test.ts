@@ -456,9 +456,14 @@ describe('dist/export-worker.mjs 客活分子守卫的**位置**（#414）', () 
     const segment = moduleSegments(dist, 'src/actions/data-center/customer.ts').join('\n')
     expect(segment.length, `产物里找不到客量板模块区段${REBUILD_HINT}`).toBeGreaterThan(0)
 
-    const from = segment.indexOf('visit_count AS (')
+    // ⚠ 起点**不能**用 `visit_count AS (` —— KPI 的 queryActive 里有个同名 CTE 且排在前面，
+    // 切片会一路跨到明细的 `active AS (`，把仍带守卫的 reg / ret 段包进来 ⇒ 断言恒真。
+    // 红检 R37 实测过这个假绿。用明细独有的投影行做锚，并断言它唯一。
+    const NUM_ANCHOR = 'SELECT vd.client_user_id, c.bound_store_id AS store_id'
+    expect(segment.split(NUM_ANCHOR), `产物里明细 visit_count 的锚点不唯一${REBUILD_HINT}`).toHaveLength(2)
+    const from = segment.indexOf(NUM_ANCHOR)
     const to = segment.indexOf('active AS (', from + 1)
-    expect(from, `产物里找不到 visit_count CTE${REBUILD_HINT}`).toBeGreaterThan(0)
+    expect(from, `产物里找不到明细 visit_count CTE${REBUILD_HINT}`).toBeGreaterThan(0)
     expect(to, `产物里 visit_count 之后找不到 active CTE${REBUILD_HINT}`).toBeGreaterThan(from)
 
     expect(
