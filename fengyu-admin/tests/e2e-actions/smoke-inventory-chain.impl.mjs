@@ -1472,6 +1472,23 @@ try {
       && !afterMisaligned362?.requestItemIds.includes(Number(item362A.id)),
     JSON.stringify(afterMisaligned362?.requestItemIds ?? null))
 
+  // 市场自采商品的市场报货进不了供应链采购、也不会有发货收货血缘：不计在途（否则永远核销不掉）
+  setSession(storeA1Session())
+  const { id: reqSelf362 } = await biz.createStoreReplenishmentRequest({
+    storeId: STA1_ID, marketId: MKA_ORG, items: [{ skuId: SKU_SELF, quantity: 4 }],
+  })
+  const [itemSelf362] = await docItems(reqSelf362)
+  setSession(marketASession())
+  await biz.createMarketReplenishment({
+    marketId: MKA_ORG, supplyChainLocationId: HQ_ORG,
+    items: [{ skuId: SKU_SELF, sourceRequestItemIds: [itemSelf362.id], purchaseQuantity: 2 }],
+  })
+  const selfLine362 = (await biz.summarizeStoreReplenishmentRequests({ marketId: MKA_ORG }))
+    .items.find((line) => line.skuId === SKU_SELF)
+  check('#362 自采商品的市场报货不计在途：剩余 2 照常待配',
+    selfLine362?.inTransitQuantity === 0 && selfLine362?.outstandingQuantity === 2,
+    JSON.stringify(shape(selfLine362 ?? null)))
+
   // 在途的「已收货」口径对账：SKU_SUPPLY 在前面各段真实走过发货 → 市场收货，
   // 汇总里的在途必须等于各市场报货单履约进度（engine）的 Σ(报货 − 正常已收)。
   setSession(storeA1Session())

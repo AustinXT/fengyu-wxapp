@@ -2262,6 +2262,8 @@ export function storeReplenishmentCoverage(input: {
  * 本市场各 SKU 的未送达门店需求与在途采购（#362，口径见 storeReplenishmentCoverage）。
  * 在途 = 已完成市场报货的数量 − 经「市场报货发货 → 发货收货」且收货单已完成的正常数量，逐行截断为 0；
  * 收货口径与 engine.ts loadMarketReportFulfillmentProgress 的 normal_received_quantity 一致（赠送另算、不计）。
+ * 只计供应链商品：市场自采 / 转让店商品进不了供应链采购订单（createPurchaseOrder 建单即拒），
+ * 只能走市场自采入库、不写发货收货血缘 —— 计入的话它们的市场报货会变成永远核销不掉的在途。
  */
 async function loadStoreReplenishmentCoverage(
   tx: Tx,
@@ -2291,7 +2293,9 @@ async function loadStoreReplenishmentCoverage(
       SELECT report_item.id, report_item.sku_id, report_item.quantity
         FROM inventory_docs report_doc
         JOIN inventory_doc_items report_item ON report_item.doc_id = report_doc.id
+        JOIN inventory_skus report_sku ON report_sku.sku_id = report_item.sku_id
        WHERE report_doc.doc_type = '市场报货'
+         AND report_sku.source_type = '供应链'
          AND report_doc.status = '已完成'
          AND report_doc.market_id = ${marketId}
          AND report_item.sku_id IN (${skuFilter})
@@ -2408,8 +2412,9 @@ export async function summarizeStoreReplenishmentRequests(
         // 只是这里查单个 SKU、盘点那条 GROUP BY 批量查），复用时别把这一行的扣减一起抄走。
         const availableQuantity = Math.max(0, fixed(onHandQuantity - reservedQuantity))
         const rowOutstanding = Math.max(0, fixed(Number(row.outstanding_quantity)))
-        // 覆盖查询与主查询同在本事务、且都在上面那把市场行锁之下（报货 / 配货 / 市场报货 / 发货 / 收货都先锁市场），
-        // 两条语句读到的是同一份数据，demand 必含主查询的 SKU。这里的回退只是防御：退回逐行口径，不抛错。
+        // 覆盖查询与主查询同在本事务、且都在上面那把市场行锁之下（门店报货 / 配货 / 市场报货 / 品项公司发货 /
+        // 市场收货都会 FOR UPDATE 本市场行），两条语句读到的是同一份数据，demand 必含主查询的 SKU。
+        // 这里的回退只是防御：退回逐行口径，不抛错。
         // ⚠️ 别按「只读路径用 locationForRead」把上面的锁换掉 —— 两条 SQL 之间的一致性靠的就是它。
         const skuCoverage = coverage.get(row.sku_id) ?? { undelivered: rowOutstanding, inTransit: 0 }
         const { outstandingQuantity, suggestedPurchaseQuantity } = storeReplenishmentCoverage({

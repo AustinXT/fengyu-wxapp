@@ -4059,6 +4059,8 @@ describe('门店报货汇总按在途采购封顶（#362）', () => {
     const rendered = renderSql(coverageQueries[0])
     // 在途只认已完成市场报货 + 正常发货血缘 + 已完成收货（与 engine 报货履约的 normal_received 同口径）
     expect(rendered).toContain("report_doc.status = '已完成'")
+    // 自采 / 转让店商品走不了供应链采购与发货收货，不计在途（否则永远核销不掉）
+    expect(rendered).toContain("report_sku.source_type = '供应链'")
     expect(rendered).toContain("shipment_link.relation_type = '市场报货发货'")
     expect(rendered).toContain("receipt_doc.status = '已完成'")
     expect(rendered).toContain("shipment_doc.status <> '已取消'")
