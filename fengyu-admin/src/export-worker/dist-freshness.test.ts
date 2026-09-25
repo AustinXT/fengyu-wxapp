@@ -70,7 +70,11 @@ interface Probe {
   exactCountsInModule?: boolean
 }
 
-/** 产物中属于某源文件的所有模块区段（同一模块可能被拆成多段） */
+/**
+ * 产物中属于某源文件的所有模块区段（同一模块可能被拆成多段）。
+ * 前提：模块头是 bun 写的行首 `// src/…` / `// node_modules/…` / `// ../…` 注释；被守护的源文件自己不要写这种行首注释
+ * （会被误当模块头截断区段，表现为误红，方向是 fail-closed）。bun 升级改了注释格式时这里要跟着改。
+ */
 function moduleSegments(dist: string, file: string): string[] {
   const lines = dist.split('\n')
   const out: string[] = []
@@ -123,7 +127,7 @@ const PROBES: Probe[] = [
     // 按「列名」抓整行、不限取值：取值被改的行照样被提取出来，再去产物里逐字比对（只按取值抓会让改过的行
     // 直接脱离探针，守护恒绿）。排除带 ${…} 的行：bun 打包可能给模板里的局部变量改名，那种行在产物里不一定逐字存在。
     pattern: /^(?!.*\$\{)(AND (spia|sc|so|spe)\.(is_void|sale_order_type|status) .*|HAVING .*|ROUND\(ROUND\(.* AS allocated,)$/,
-    minLines: 7,
+    minLines: 10,
     uniqueLines: 8,
     exactCountsInModule: true,
   },
