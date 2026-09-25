@@ -57,6 +57,36 @@ interface Probe {
   pattern: RegExp
   /** 期望至少提取到几行 —— 防止正则失配导致「零条指纹全通过」的 fail-open */
   minLines: number
+  /**
+   * 期望恰好提取到几条**不同**的指纹（可选）。只看原始行数时，把某条公式改成文件里已有的另一条同形指纹，
+   * 行数不变、去重后全在旧产物里，守护恒绿；给出精确的唯一数，这类「改成另一条已有表达式」也会红。
+   */
+  uniqueLines?: number
+  /**
+   * 在产物里**该源文件的模块区段内**逐条比对指纹出现次数（可选）。bun 在每个模块前写 `// <源文件路径>` 注释，
+   * 据此切出区段；源码里出现两次的指纹（如两处同形的分配金额公式）删掉其中一处而不重建时，
+   * 去重后的 includes 比对仍全绿，只有频次比对能发现。
+   */
+  exactCountsInModule?: boolean
+}
+
+/**
+ * 产物中属于某源文件的所有模块区段（同一模块可能被拆成多段）。
+ * 前提：模块头是 bun 写的行首 `// src/…` / `// node_modules/…` / `// ../…` 注释；被守护的源文件自己不要写这种行首注释
+ * （会被误当模块头截断区段，表现为误红，方向是 fail-closed）。bun 升级改了注释格式时这里要跟着改。
+ */
+function moduleSegments(dist: string, file: string): string[] {
+  const lines = dist.split('\n')
+  const out: string[] = []
+  let inside = false
+  for (const line of lines) {
+    if (/^\/\/ (src|node_modules|\.\.)\//.test(line)) {
+      inside = line === `// ${file}`
+      continue
+    }
+    if (inside) out.push(line.trim())
+  }
+  return out
 }
 
 const PROBES: Probe[] = [
@@ -167,6 +197,33 @@ const PROBES: Probe[] = [
     pattern: /^AND so\.client_user_id IN \(SELECT user_id FROM cust\)$/,
     minLines: 2,
   },
+  {
+    label: '员工提成日报 / 明细 · 取数条件与分配金额算法（#375）',
+    file: 'src/lib/data-center/commission-sql.ts',
+    // 按「列名」抓整行、不限取值：取值被改的行照样被提取出来，再去产物里逐字比对（只按取值抓会让改过的行
+    // 直接脱离探针，守护恒绿）。排除带 ${…} 的行：bun 打包可能给模板里的局部变量改名，那种行在产物里不一定逐字存在。
+    pattern: /^(?!.*\$\{)(AND (spia|sc|so|spe)\.(is_void|sale_order_type|status) .*|HAVING .*|ROUND\(ROUND\(.* AS allocated,)$/,
+    minLines: 10,
+    uniqueLines: 8,
+    exactCountsInModule: true,
+  },
+  {
+    label: '提成日报 / 明细 · 聚合与计数口径（实收按 receipt 去重、各项合计、条数 / 去重单数 / 去重人数）（#375）',
+    file: 'src/lib/data-center/commission-sql.ts',
+    // 聚合行整行比对：改公式（或删掉某个聚合列）后当前行不在旧产物里即红
+    pattern: /^(?!.*\$\{)((SELECT )?\(?(SELECT )?COUNT\(.*|COALESCE\(SUM\(.*|\(SELECT COALESCE\(SUM\(r\.received\), 0\)|FROM \(SELECT DISTINCT receipt_id, received FROM summary_rows WHERE receipt_id IS NOT NULL\) r\) AS received,)$/,
+    minLines: 15,
+    uniqueLines: 15,
+    exactCountsInModule: true,
+  },
+  {
+    label: '提成明细 · 平均提成点公式（#375）',
+    file: 'src/actions/data-center/commission.ts',
+    pattern: /^const averageRate = /,
+    minLines: 1,
+    uniqueLines: 1,
+    exactCountsInModule: true,
+  },
 ]
 
 describe('dist/export-worker.mjs 新鲜度（改了 data-center SQL 口径必须重建产物）', () => {
@@ -199,6 +256,34 @@ describe('dist/export-worker.mjs 新鲜度（改了 data-center SQL 口径必须
           `少于预期的 ${probe.minLines} 行。要么源码口径变了（请同步更新本探针的 pattern/minLines），` +
           '要么正则失配 —— 无论哪种，都不能让这条守护静默通过。',
       ).toBeGreaterThanOrEqual(probe.minLines)
+
+      if (probe.uniqueLines !== undefined) {
+        expect(
+          new Set(lines).size,
+          `${probe.label}：在 ${probe.file} 里提取到的不同指纹数与预期的 ${probe.uniqueLines} 条不符。` +
+            '源码口径变了就同步更新本探针的 uniqueLines；若是把某条表达式改成了另一条已有的，这正是本断言要拦的。',
+        ).toBe(probe.uniqueLines)
+      }
+
+      if (probe.exactCountsInModule) {
+        const segment = moduleSegments(dist, probe.file)
+        const srcLines = src.split('\n').map((l) => l.trim())
+        expect(segment.length, `${probe.label}：产物里找不到 // ${probe.file} 模块区段${REBUILD_HINT}`).toBeGreaterThan(0)
+        const drift = [...new Set(lines)]
+          .map((line) => ({
+            line,
+            // 两侧同一计数口径（按「包含」）：一条指纹可能是另一行的前缀（如 SELECT COUNT(*)::int AS count,）
+            src: srcLines.filter((l) => l.includes(line)).length,
+            dist: segment.filter((l) => l.includes(line)).length,
+          }))
+          .filter((item) => item.src !== item.dist)
+        expect(
+          drift,
+          `${probe.label}：以下指纹在源码与产物模块区段中的出现次数不一致 —— 产物不是按当前源码构建的：\n` +
+            drift.map((d) => `  · 源码 ${d.src} 次 / 产物 ${d.dist} 次：${d.line}`).join('\n') +
+            REBUILD_HINT,
+        ).toEqual([])
+      }
 
       const missing = [...new Set(lines)].filter((l) => !dist.includes(l))
       expect(

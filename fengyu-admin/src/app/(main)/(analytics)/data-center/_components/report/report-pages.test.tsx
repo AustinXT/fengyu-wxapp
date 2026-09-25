@@ -95,6 +95,49 @@ const emptyCustomerFrequencyReport = {
   },
 }
 
+/** 员工提成日报 / 明细的取数 action（#375）：本文件只测入口控制流与骨架，取数给空结果 */
+const commission = vi.hoisted(() => ({
+  getCommissionDaily: vi.fn(),
+  getCommissionDetail: vi.fn(),
+}))
+vi.mock('@/actions/data-center/commission', () => commission)
+
+function emptyCommissionDaily(month: string) {
+  const cell = { sale: 0, service: 0, orders: 0 }
+  return {
+    month,
+    scopeName: '全部',
+    isAllScope: true,
+    options: { view: 'total', group: 'employee', merge: false, search: '', hideZero: false },
+    grain: 'employee-store',
+    sort: { key: 'total', direction: 'desc' },
+    rows: [],
+    totals: { days: {}, total: cell, employeeCount: 0, rowCount: 0 },
+    kpis: {
+      total: 0, sale: 0, service: 0, saleShare: null, serviceShare: null, earningEmployees: 0, employees: 0,
+      technicianCount: 0, perTechnician: null, orders: 0, perOrder: null,
+    },
+    pending: { count: 0, amount: 0 },
+    canLinkAllocations: false,
+  }
+}
+
+function emptyCommissionDetail(month: string) {
+  return {
+    month,
+    scopeName: '全部',
+    filters: { employeeId: null, storeId: null, date: null, source: null },
+    pageSize: 50,
+    rows: [],
+    summary: { count: 0, orders: 0, received: 0, allocated: 0, commission: 0, sale: 0, service: 0, averageRate: null },
+    prevCursor: null,
+    nextCursor: null,
+    employeeOptions: [],
+    canLinkOrders: false,
+    customerMasked: true,
+  }
+}
+
 import DailyOverviewPage from '../../daily-overview/page'
 import CustomerFrequencyPage from '../../customer-frequency/page'
 import RemainingCardsPage from '../../remaining-cards/page'
@@ -214,6 +257,8 @@ beforeEach(() => {
   vi.useFakeTimers({ toFake: ['Date'] })
   vi.setSystemTime(new Date('2026-09-25T10:00:00+08:00'))
   actions.getDataStartDates.mockResolvedValue(starts)
+  commission.getCommissionDaily.mockImplementation(async (query: Query) => emptyCommissionDaily(String(query.month ?? '2026-08')))
+  commission.getCommissionDetail.mockImplementation(async (query: Query) => emptyCommissionDetail(String(query.month ?? '2026-08')))
   reportActions.getRemainingCardsReport.mockResolvedValue(emptyRemainingCardsReport)
   mockOperatingMaster([{ storeId: 'S1', storeName: '蓝莱店', marketId: 'M1', marketName: '南昌凤御' }])
   dailyOverview.getDailyOverview.mockResolvedValue(dailyOverviewResult())
@@ -318,7 +363,9 @@ describe('报表页 · 骨架渲染', () => {
 
     expect(screen.getByRole('combobox', { name: '月份' })).toHaveValue('2026-05')
     expect(screen.getByRole('note', { name: '数据起点提示' })).toHaveTextContent('所选月份（2026-05-01 ~ 2026-05-31）')
-    expect(screen.getByText('报表建设中，暂无数据')).toBeInTheDocument()
+    // 手传的早月照常取数（action 自己按同一月份解析），表格显示空态而不是报错
+    expect(commission.getCommissionDaily).toHaveBeenCalledWith(expect.objectContaining({ month: '2026-05' }))
+    expect(screen.getByText('本月暂无提成数据')).toBeInTheDocument()
   })
 
   it('频率表：URL 参数原样交给取数 action；信息条写天数与顾客数；数据起点只看服务轴', async () => {
@@ -424,6 +471,15 @@ describe('报表页 · 骨架渲染', () => {
     mockScope(hqOptions)
     actions.getDataStartDates.mockRejectedValue(new Error('REDIRECT:/login?expired=1'))
     await expect(call('dailyOverview')).rejects.toThrow('REDIRECT:/login?expired=1')
+  })
+
+  it.each(['commissionDaily', 'commissionDetail'] as const)('%s：非总部且无可查看门店时不取数（scope 为 null）', async (key) => {
+    mockScope(noStoreOptions)
+    await renderPage(key)
+
+    expect(screen.getByText('当前账号暂无可查看的数据范围')).toBeInTheDocument()
+    expect(commission.getCommissionDaily).not.toHaveBeenCalled()
+    expect(commission.getCommissionDetail).not.toHaveBeenCalled()
   })
 
   it('非总部且无可查看门店：渲染空态，不出提示', async () => {

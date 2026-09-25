@@ -75,6 +75,7 @@ import {
 } from '@/lib/export-job-types'
 import type { WorkerExportColumn, ExportCell } from './xlsx-writer'
 import { customerFrequencyContent, remainingCardsContent } from './report-views'
+import { commissionDailyExport, commissionDetailExport } from './report-commission'
 import type { ExportContextMeta } from './export-meta'
 
 export interface ExportContent {
@@ -629,6 +630,10 @@ async function queryReport(view: DataCenterReportExportView, raw: Record<string,
       return queryDailyOverview(raw)
     case 'report-customer-frequency':
       return customerFrequencyContent(raw)
+    case 'report-commission-daily':
+      return commissionDailyExport(raw)
+    case 'report-commission-detail':
+      return commissionDetailExport(raw)
     default: {
       const unhandled: never = view
       throw new Error(`INVALID_PARAMS: 未知的报表导出视图 ${String(unhandled)}`)

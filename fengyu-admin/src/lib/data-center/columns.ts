@@ -2,6 +2,7 @@
  * 数据中心明细表与导出列的唯一配置来源。
  *
  * 本文件不依赖 Server Action 或 Node API，页面和异步导出 worker 都可以安全引用。
+ * 只配置旧 4 板块的视图；经营明细报表（report-*）的列定义在各自页面的 lib 模块里。
  */
 import type { DataCenterBoardExportView } from '@/lib/export-job-types'
 import { SALES_CATEGORIES, SALES_CATEGORY_COLUMN_KEYS } from '@/lib/sales-categories'

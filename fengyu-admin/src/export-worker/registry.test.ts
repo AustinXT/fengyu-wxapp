@@ -38,6 +38,19 @@ vi.mock('@/actions/data-center/remaining-cards', () => ({
     params: { scope: { type: 'all' }, q: '', show: 'all' }, asOf: '2026-09-25',
   })),
 }))
+// 员工提成日报 / 明细（#375）：缺省返回空结果，「报表视图分发」用例会遍历全部报表视图
+vi.mock('@/actions/data-center/commission', () => ({
+  getCommissionDaily: vi.fn(async () => ({
+    month: '2026-08', scopeName: '全部', isAllScope: true,
+    options: { view: 'total', group: 'employee', merge: false, search: '', hideZero: false },
+    grain: 'employee-store', sort: { key: 'total', direction: 'desc' }, rows: [],
+    totals: { days: {}, total: { sale: 0, service: 0, orders: 0 }, employeeCount: 0, rowCount: 0 },
+  })),
+  exportCommissionDetail: vi.fn(async () => ({
+    rows: [], truncated: false, hasMore: false, summary: null, scopeName: '全部', month: '2026-08',
+    filters: { employeeId: null, storeId: null, date: null, source: null },
+  })),
+}))
 // 员工导出分支会立即查 org_nodes 建路径映射（其余分支的 rows 都是惰性的，不碰 db）
 vi.mock('@/db', () => ({
   db: { select: vi.fn(() => ({ from: vi.fn().mockResolvedValue([]) })) },
@@ -66,6 +79,9 @@ import {
   type DataCenterBoardExportView,
 } from '@/lib/export-job-types'
 import { buildOperatingMasterTable } from '@/lib/data-center/operating-master'
+import { DATA_CENTER_VIEW_REQUIRED_ACTIONS } from '@/lib/export-job-types'
+import { DATA_CENTER_STAFF_COMMISSION_ACTIONS } from '@/lib/data-center/reports'
+import { exportCommissionDetail, getCommissionDaily } from '@/actions/data-center/commission'
 import { createExportContent } from './registry'
 
 function metricValue(unit: 'amount' | 'count' | 'percent'): number {
@@ -383,6 +399,8 @@ describe('数据中心导出 · 报表视图分发', () => {
       expect(view.startsWith(DATA_CENTER_REPORT_VIEW_PREFIX), view).toBe(false)
     }
     expect(DATA_CENTER_EXPORT_VIEWS).toEqual([...DATA_CENTER_BOARD_EXPORT_VIEWS, ...DATA_CENTER_REPORT_EXPORT_VIEWS])
+    // 等式两边同源拼接，重复登记照样相等：单独钉住「没有重复视图」
+    expect(new Set(DATA_CENTER_EXPORT_VIEWS).size).toBe(DATA_CENTER_EXPORT_VIEWS.length)
   })
 
   it.each(DATA_CENTER_REPORT_EXPORT_VIEWS)('%s 导出不调用任何板块取数', async (view) => {
@@ -418,6 +436,19 @@ describe('数据中心导出 · 报表视图分发', () => {
       createExportContent('data-center', { view: 'daily-overview' as never, params: {} }),
     ).rejects.toThrow('INVALID_PARAMS')
     expect(getEfficiencyBoard).not.toHaveBeenCalled()
+  })
+})
+
+describe('数据中心导出 · 员工提成日报 / 提成明细（#375）', () => {
+  it.each([
+    ['report-commission-daily', getCommissionDaily],
+    ['report-commission-detail', exportCommissionDetail],
+  ] as const)('%s 走提成取数 action，URL 参数原样透传；权限 = dashboard + staff_commission', async (view, action) => {
+    vi.mocked(action).mockClear()
+    const params = { month: '2026-08', scope: 'market', scopeId: 'M1', view: 'split' }
+    await createExportContent('data-center', { view, params })
+    expect(action).toHaveBeenCalledWith(params, ...(view === 'report-commission-detail' ? [{ limit: expect.any(Number) }] : []))
+    expect(DATA_CENTER_VIEW_REQUIRED_ACTIONS[view]).toBe(DATA_CENTER_STAFF_COMMISSION_ACTIONS)
   })
 })
 
