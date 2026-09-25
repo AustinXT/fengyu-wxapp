@@ -1730,6 +1730,8 @@ describe('库存转换多对多与成本守恒（#344）', () => {
     ['效期不是真实日期', { sources: [{ sourceLotId: 101, quantity: 1 }], targets: [{ targetSkuId: 'SKU-X', quantity: 1, unitPrice: 10, targetExpiryDate: '2026-02-31' }] }, '目标效期格式应为 YYYY-MM-DD'],
     ['转换日期不是真实日期', { docDate: '2026-02-31', sources: [{ sourceLotId: 101, quantity: 1 }], targets: [{ targetSkuId: 'SKU-X', quantity: 1, unitPrice: 0 }] }, '转换日期格式应为 YYYY-MM-DD'],
     ['单价为空串（Number 会当 0）', { sources: [{ sourceLotId: 101, quantity: 1 }], targets: [{ targetSkuId: 'SKU-X', quantity: 1, unitPrice: '' }] }, '转换目标单价不能为空且不能小于 0'],
+    ['单价为十六进制串', { sources: [{ sourceLotId: 101, quantity: 1 }], targets: [{ targetSkuId: 'SKU-X', quantity: 1, unitPrice: '0x10' }] }, '转换目标单价不能为空且不能小于 0'],
+    ['数量为科学计数串', { sources: [{ sourceLotId: 101, quantity: '1e2' }], targets: [{ targetSkuId: 'SKU-X', quantity: 1, unitPrice: 0 }] }, '转换出库数量必须大于 0'],
     ['单价为 false', { sources: [{ sourceLotId: 101, quantity: 1 }], targets: [{ targetSkuId: 'SKU-X', quantity: 1, unitPrice: false }] }, '转换目标单价不能为空且不能小于 0'],
     ['单价缺省', { sources: [{ sourceLotId: 101, quantity: 1 }], targets: [{ targetSkuId: 'SKU-X', quantity: 1 }] }, '转换目标单价不能为空且不能小于 0'],
     ['数量超 numeric(12,2) 上界', { sources: [{ sourceLotId: 101, quantity: 1e11 }], targets: [{ targetSkuId: 'SKU-X', quantity: 1, unitPrice: 1 }] }, '转换出库数量不能超过 9999999999.99'],

@@ -5273,8 +5273,9 @@ const CONVERSION_LINKS_MAX = 500
  * `''` / `false` / `[]` 这类会被 `Number()` 静默当成 0 的值一律拒绝 —— Server Action 入参原样到达。
  */
 function conversionNumber(value: unknown, label: string, allowZero: boolean): number {
+  // 字符串只收纯十进制（'0x10' / '1e2' 这类 Number() 也认的写法拒掉，与 sourceLotId 同口径）
   const parsed = typeof value === 'number' ? value
-    : typeof value === 'string' && value.trim() !== '' ? Number(value)
+    : typeof value === 'string' && /^\d+(\.\d+)?$/.test(value.trim()) ? Number(value.trim())
       : Number.NaN
   if (!Number.isFinite(parsed) || parsed < 0 || (!allowZero && parsed === 0)) {
     throw new ApiError('INVALID_PARAMS', allowZero ? `${label}不能为空且不能小于 0` : `${label}必须大于 0`)

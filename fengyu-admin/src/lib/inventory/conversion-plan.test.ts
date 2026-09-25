@@ -260,6 +260,7 @@ describe('库存转换上限前后端字面量一致（#344）', () => {
   it('金额上限文案与服务端 CONVERSION_NUMBER_MAX 一致', () => {
     const max = constant(server, 'CONVERSION_NUMBER_MAX')
     expect(max).toBe('9999999999.99')
+    expect(constant(form, 'CONVERSION_NUMBER_MAX')).toBe(max)
     expect(form).toContain(`库存转换金额合计超出上限 ${max}`)
   })
 })

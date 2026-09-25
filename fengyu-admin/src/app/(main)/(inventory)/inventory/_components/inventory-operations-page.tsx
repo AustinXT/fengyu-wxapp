@@ -4191,6 +4191,7 @@ const EMPTY_CONVERSION_TARGET: ConversionTargetDraft = { skuId: '', quantity: '1
 /** 与服务端 CONVERSION_LINES_MAX / CONVERSION_LINKS_MAX 一致。 */
 const CONVERSION_LINES_MAX = 100
 const CONVERSION_LINKS_MAX = 500
+const CONVERSION_NUMBER_MAX = 9999999999.99
 /** 与服务端 twoDecimals 同判据：最多两位小数。 */
 const hasAtMostTwoDecimals = (value: number) => Number(value.toFixed(2)) === value
 
@@ -4328,6 +4329,13 @@ function ConversionForm({
       toast.error('数量和单价最多保留两位小数')
       return
     }
+    // 与服务端 CONVERSION_NUMBER_MAX 同判据：单行与每侧数量合计都不超过 numeric(12,2)
+    for (const [label, quantities] of [['来源', sourceItems.map((item) => item.quantity!)], ['目标', targetItems.map((item) => item.quantity!)]] as const) {
+      if (Number(quantities.reduce((sum, value) => sum + value, 0).toFixed(4)) > CONVERSION_NUMBER_MAX) {
+        toast.error(`库存转换${label}数量合计不能超过 ${CONVERSION_NUMBER_MAX}`)
+        return
+      }
+    }
     // 同一批次多行：按批次汇总后比对可用量（服务端在锁内再按同口径校验）
     const requestedByLot = new Map<string, { lot: InventoryLotRow; quantity: number }>()
     for (const [index, line] of sources.entries()) {
@@ -4427,7 +4435,7 @@ function ConversionForm({
               <FormField label="单价" required><Input type="number" min="0" step="0.01" max="9999999999.99" value={line.unitPrice ?? (suggestedPrice === null ? '' : suggestedPrice.toFixed(2))} placeholder="按来源合计预填" onChange={(event) => updateTarget(index, { unitPrice: event.target.value })} /></FormField>
               <FormField label="金额"><Input value={price === null || quantity === null ? '—' : conversionLineAmount(quantity, price).toFixed(2)} readOnly tabIndex={-1} /></FormField>
               <FormField label="目标批号"><Input value={line.batchNo} onChange={(event) => updateTarget(index, { batchNo: event.target.value })} placeholder="留空自动生成" /></FormField>
-              <FormField label="目标效期"><DatePicker value={line.expiryDate} onValueChange={(value) => updateTarget(index, { expiryDate: value })} /></FormField>
+              <FormField label="目标效期"><DatePicker value={line.expiryDate} onValueChange={(value) => updateTarget(index, { expiryDate: value })} placeholder="留空取来源最早效期" /></FormField>
               <div className="flex items-end justify-end"><SmallIconButton label="删除目标" onClick={() => setTargets((previous) => previous.length > 1 ? previous.filter((_, lineIndex) => lineIndex !== index) : previous)} disabled={targets.length === 1} /></div>
               <FormField label="目标备注" className="xl:col-span-6"><Input value={line.remark} onChange={(event) => updateTarget(index, { remark: event.target.value })} /></FormField>
               <div className="flex items-end justify-end"><Button type="button" variant="ghost" size="sm" disabled={!costKnown || !pricesFilled || balance.balanced || quantity === null || targets.length >= CONVERSION_LINES_MAX} onClick={() => splitTarget(index)}>拆分补差</Button></div>
