@@ -91,11 +91,13 @@ import {
   listInventoryDocCandidateIds,
   listInventoryDocCandidates,
   listInventoryOperationDocs,
+  listStoreUnallocatedRequestSkus,
 } from '@/actions/inventory/docs'
 import {
   approveItemCompanyShipmentCancellation,
   approveReturnForRestock,
   cancelSupplyChainPurchaseOrder,
+  createStoreAllocation,
   receiveItemCompanyShipmentInFull,
   receiveStoreAllocationInFull,
   rejectItemCompanyShipmentCancellation,
@@ -1640,6 +1642,113 @@ describe('分院配货按 skuIds 精确取当前门店进货价（#339）', () =
     await pickRequest([item(1, 'S-200', 60)])
     await waitFor(() => expect(toast.warning).toHaveBeenCalled())
     expect(prices()).toEqual(['60.00'])
+  })
+})
+
+/**
+ * #337：分院配货先选市场与收货门店，门店报货单可选；不引用时从市场库存自选商品与批次。
+ * 自选行命中该门店仍有未配报货的 SKU → 提示「建议引用报货单」，不拦截（拍板 A）。
+ */
+describe('分院配货不引用门店报货（#337）', () => {
+  const LOCATIONS: InventoryLocationRow[] = [
+    { locationId: 'M1', locationType: '市场', name: '市场一部', orgNodeId: 'M1', storeId: null, parentLocationId: 'HQ', isActive: true },
+    { locationId: 'M2', locationType: '市场', name: '市场二部', orgNodeId: 'M2', storeId: null, parentLocationId: 'HQ', isActive: true },
+    { locationId: 'S1', locationType: '门店', name: '一店', orgNodeId: 'N-S1', storeId: 'S1', parentLocationId: 'M1', isActive: true },
+    { locationId: 'S3', locationType: '门店', name: '三店', orgNodeId: 'N-S3', storeId: 'S3', parentLocationId: 'M1', isActive: true },
+    { locationId: 'S2', locationType: '门店', name: '二店', orgNodeId: 'N-S2', storeId: 'S2', parentLocationId: 'M2', isActive: true },
+  ]
+  /*
+   * 直接派 submit 事件：happy-dom 的 step 校验有浮点误差（value=1、step=0.01 被判 stepMismatch），
+   * 点提交按钮会被它的约束校验拦下；真浏览器不存在这个问题。
+   */
+  function submitAllocation() {
+    fireEvent.submit(screen.getByRole('button', { name: '创建分院配货单' }).closest('form')!)
+  }
+  function chooseSubject(placeholder: string, value: string) {
+    const select = screen.getByRole('option', { name: placeholder }).closest('select') as HTMLSelectElement
+    fireEvent.change(select, { target: { value } })
+  }
+
+  beforeEach(() => {
+    mockDocs({})
+    vi.mocked(createStoreAllocation).mockReset()
+    vi.mocked(createStoreAllocation).mockResolvedValue({ id: 'FPH-20260925-0001' })
+    vi.mocked(listInventorySkus).mockReset()
+    vi.mocked(listInventorySkus).mockResolvedValue({ data: [{ skuId: 'SKU-1', storePurchasePrice: 88 } as never], total: 1 })
+    vi.mocked(listInventoryLotOptions).mockResolvedValue([
+      { id: 31, batchNo: 'B31', isGift: false, quantityOnHand: 5, expiryDate: null },
+    ] as never)
+    vi.mocked(listStoreUnallocatedRequestSkus).mockReset()
+    vi.mocked(listStoreUnallocatedRequestSkus).mockResolvedValue([
+      { skuId: 'SKU-1', remainingQuantity: 4, docIds: ['DBH-9'] },
+    ])
+    vi.mocked(toast.error).mockReset()
+  })
+
+  it('只选门店不选报货单：候选按门店收窄，自选行命中未配报货时提示但照常提交，报货单为空', async () => {
+    renderPage({ level: 'market', operation: 'store-allocation', locations: LOCATIONS })
+    chooseSubject('请选择市场', 'M1')
+    // 门店只列所选市场下属门店
+    expect(screen.queryByRole('option', { name: '二店' })).toBeNull()
+    chooseSubject('请选择门店', 'N-S1')
+    await waitFor(() => expect(listInventoryDocCandidates).toHaveBeenLastCalledWith(
+      expect.objectContaining({ purpose: 'store-allocation-source', sourceOrgNodeId: 'N-S1', targetOrgNodeId: 'M1' }),
+    ))
+    await waitFor(() => expect(listStoreUnallocatedRequestSkus).toHaveBeenCalledWith({ storeOrgNodeId: 'N-S1' }))
+
+    fireEvent.click(screen.getByRole('button', { name: '添加自选商品' }))
+    const picker = document.querySelector<HTMLSelectElement>('[data-sku-picker]')!
+    expect(JSON.parse(picker.dataset.filters ?? '{}')).toEqual({ availableToMarketId: 'M1' })
+    fireEvent.change(picker, { target: { value: 'SKU-1' } })
+    expect(await screen.findByText(/该门店对此商品仍有未配报货（DBH-9，合计未配 4），建议引用报货单配货/)).toBeTruthy()
+    // 自选行的门店标准单价按所选 SKU 的当前门店进货价预览
+    await waitFor(() => expect(screen.getAllByText('88.00').length).toBeGreaterThan(0))
+
+    const lot = await screen.findByRole<HTMLOptionElement>('option', { name: /^批次 B31 · 可用 5$/ })
+    fireEvent.change(lot.closest('select')!, { target: { value: '31' } })
+    submitAllocation()
+    await waitFor(() => expect(createStoreAllocation).toHaveBeenCalledWith({
+      storeRequestId: null,
+      targetStoreId: 'N-S1',
+      sourceMarketId: 'M1',
+      docDate: expect.any(String),
+      remark: null,
+      items: [{ requestItemId: null, skuId: 'SKU-1', lotId: 31, quantity: 1, giftQuantity: 0, storeUnitDiscount: 0, remark: null }],
+    }))
+  })
+
+  it('没选收货门店不提交；自选行没选商品也不提交', async () => {
+    renderPage({ level: 'market', operation: 'store-allocation', locations: LOCATIONS })
+    chooseSubject('请选择市场', 'M1')
+    fireEvent.click(screen.getByRole('button', { name: '添加自选商品' }))
+    submitAllocation()
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('请选择配货市场和收货门店'))
+    chooseSubject('请选择门店', 'N-S3')
+    submitAllocation()
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('请为每条自选明细选择商品并填写配货数量或赠送数量'))
+    expect(createStoreAllocation).not.toHaveBeenCalled()
+  })
+
+  it('选了报货单：门店随报货主体回填，报货里已有的 SKU 再加自选行时就地提示', async () => {
+    const request = docRow({ id: 'DBH-1', docType: '门店报货', status: '已完成', sourceOrgNodeId: 'N-S1', targetOrgNodeId: 'M1', marketId: 'M1' })
+    vi.mocked(getInventoryCoreDocById).mockResolvedValue({
+      ...docDetail(request),
+      items: [{
+        id: 1, docId: 'DBH-1', lotId: null, skuId: 'SKU-1', skuName: '精华液', specName: null, quantity: 2, fulfilledQuantity: 0,
+        standardUnitPrice: 88, actualUnitPrice: null, unitDiscount: 0,
+      } as unknown as InventoryDocDetail['items'][number]],
+    })
+    renderPage({ level: 'market', operation: 'store-allocation', locations: LOCATIONS, candidates: [request] })
+    await pickCandidate('DBH-1')
+    await screen.findByText('报货配货批次与数量')
+    const storeSelect = screen.getByRole('option', { name: '一店' }).closest('select') as HTMLSelectElement
+    expect(storeSelect.value).toBe('N-S1')
+    fireEvent.click(screen.getByRole('button', { name: '添加自选商品' }))
+    const pickers = document.querySelectorAll<HTMLSelectElement>('[data-sku-picker]')
+    fireEvent.change(pickers[pickers.length - 1], { target: { value: 'SKU-1' } })
+    expect(await screen.findByText('该商品已在引用的门店报货单中，请在上方报货明细上配货')).toBeTruthy()
+    // 引用单自身的报货不再重复提示「建议引用」
+    expect(screen.queryByText(/仍有未配报货/)).toBeNull()
   })
 })
 
