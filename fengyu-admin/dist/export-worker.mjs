@@ -91454,7 +91454,7 @@ var init_inventory = __esm(() => {
     index2("idx_inventory_doc_items_market").on(table4.marketId),
     index2("idx_inventory_doc_items_promotion").on(table4.promotionPlanId),
     uniqueIndex2("uq_inventory_doc_items_id_doc").on(table4.id, table4.docId),
-    check2("chk_inventory_doc_items_qty", sql3`${table4.quantity} > 0`),
+    check2("chk_inventory_doc_items_qty", sql3`${table4.quantity} >= 0`),
     check2("chk_inventory_doc_items_promotion_rule_type", sql3`${table4.promotionRuleTypeSnapshot} IS NULL OR ${table4.promotionRuleTypeSnapshot} IN ('单品阶梯','组合')`),
     check2("chk_inventory_doc_items_promotion_selection_mode", sql3`${table4.promotionSelectionMode} IS NULL OR ${table4.promotionSelectionMode} IN ('系统推荐','人工选择')`)
   ]);
@@ -176170,12 +176170,23 @@ function numString(v) {
 function calculateAmount(unitPrice, quantity) {
   return unitPrice === null ? null : Number((unitPrice * quantity).toFixed(2));
 }
-function assertPositiveQuantity(quantity) {
+function isValidDocItemQuantity(docType, quantity) {
+  if (typeof quantity !== "number" && typeof quantity !== "string")
+    return false;
+  if (typeof quantity === "string" && quantity.trim() === "")
+    return false;
   const n = Number(quantity);
-  if (!Number.isFinite(n) || n <= 0) {
-    throw new ApiError("INVALID_PARAMS", "明细数量必须大于 0");
+  if (!Number.isFinite(n) || n > 9999999999.99 || Number(n.toFixed(2)) !== n)
+    return false;
+  return n > 0 || n === 0 && STOCKTAKE_DOC_TYPES.has(docType);
+}
+function assertDocItemQuantity(docType, quantity) {
+  if (isValidDocItemQuantity(docType, quantity))
+    return Number(quantity);
+  if (STOCKTAKE_DOC_TYPES.has(docType)) {
+    throw new ApiError("INVALID_PARAMS", "请填写实盘数（0 或正数，最多两位小数；货架上没有就填 0）");
   }
-  return n;
+  throw new ApiError("INVALID_PARAMS", "明细数量必须大于 0");
 }
 function defaultStatusForDoc(docType) {
   if (APPROVAL_DOC_TYPES.has(docType))
@@ -178398,7 +178409,7 @@ var createInventoryCoreDoc = withAnyPermission(["inventory:supply_chain_operate"
   if (!actingLocationId)
     throw new ApiError("NOT_FOUND", "组织节点没有对应库存主体");
   await assertGenericDocLocationRules(input, sourceOrgNodeId, targetOrgNodeId, actingOrgNodeId);
-  const totalQuantity = input.items.reduce((sum, item) => sum + assertPositiveQuantity(item.quantity), 0);
+  const totalQuantity = input.items.reduce((sum, item) => sum + assertDocItemQuantity(input.docType, item.quantity), 0);
   const id = await db2.transaction(async (tx) => {
     await assertInventoryBusinessWritable(tx);
     const docId = await generateDocNo(tx, input.docType);
@@ -178432,7 +178443,7 @@ var createInventoryCoreDoc = withAnyPermission(["inventory:supply_chain_operate"
     let hasCalculatedAmount = false;
     const bookQuantityBySkuId = await skuOnHandByLocation(tx, actingLocationId, stocktakeSkuIds);
     for (const item of input.items) {
-      const quantity = assertPositiveQuantity(item.quantity);
+      const quantity = assertDocItemQuantity(input.docType, item.quantity);
       const serverItem = stripPriceInput(item);
       let lot = null;
       let bookQuantity = null;
@@ -179960,6 +179971,8 @@ async function queryActive(session4, scope, range, mode) {
     JOIN client_wechat_users c ON c.user_id = vc.client_user_id
     WHERE ${csc}
       AND c.customer_status IN ('保有会员-稳定', '保有会员-有效')
+      AND c.became_member_at IS NOT NULL
+      AND c.became_member_at::date <= ${range.end}
       AND ${daysClause}
   `);
   return num(first(rows).v);
@@ -180171,7 +180184,8 @@ async function queryRegActiveBreakdown(session4, scope, range, group) {
       GROUP BY c.bound_store_id
     ),
     -- 区间到店天数（按客户 + bound_store_id），区分一次/二次客活（仅保有会员）。
-    -- 到店日按 (顾客, service_date) 去重（#298），与 KPI queryActive 同一个 visitDaysSql
+    -- 到店日按 (顾客, service_date) 去重（#298），与 KPI queryActive 同一个 visitDaysSql。
+    -- 会员守卫与上面的 reg（达成率分母）逐字同源（#414），理由见 queryActive 的注释。
     visit_days AS (${visitDaysSql({ axis: "service_date", scope: serviceScope, range })}),
     visit_count AS (
       SELECT vd.client_user_id, c.bound_store_id AS store_id,
@@ -180181,6 +180195,8 @@ async function queryRegActiveBreakdown(session4, scope, range, group) {
       JOIN client_wechat_users c ON c.user_id = vd.client_user_id
       WHERE ${customerScope}
         AND c.bound_store_id IS NOT NULL
+        AND c.became_member_at IS NOT NULL
+        AND c.became_member_at::date <= ${end}
       GROUP BY vd.client_user_id, c.bound_store_id, c.customer_status
     ),
     active AS (
@@ -180526,9 +180542,9 @@ function buildBreakdownRows(group, skeletonRows, regActive, ops) {
         registered: ra?.registered ?? 0,
         retained: ra?.retained ?? 0,
         visitOnce: ra?.visitOnce ?? 0,
-        visitOnceRate: ra ? safeDiv(ra.visitOnce, ra.retained) : null,
+        visitOnceRate: ra ? safeDiv(ra.visitOnce, ra.registered) : null,
         visitTwice: ra?.visitTwice ?? 0,
-        visitTwiceRate: ra ? safeDiv(ra.visitTwice, ra.retained) : null,
+        visitTwiceRate: ra ? safeDiv(ra.visitTwice, ra.registered) : null,
         dormant: ra?.dormant ?? 0,
         reactivatedDormant: ra?.reactivatedDormant ?? 0,
         frozen: ra?.frozen ?? 0,
@@ -180732,19 +180748,24 @@ async function queryFilterOptions() {
   return Array.from(map.entries()).map(([kind, categories]) => ({ kind, categories }));
 }
 async function queryCardHolders(session4, scope, filter) {
-  const sc = scopeFilterSql(session4, scope, "so.store_id");
+  const sc = scopeFilterSql(session4, scope, "c.bound_store_id");
   const rows = await db2.execute(import_drizzle_orm66.sql`
-    SELECT COUNT(DISTINCT so.client_user_id) AS v
-    FROM sale_items si
-    JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
-    JOIN product_skus sk ON sk.sku_id = si.sku_id
-    JOIN product_categories pc ON pc.category_id = sk.category_id
+    SELECT COUNT(*) AS v
+    FROM client_wechat_users c
     WHERE ${sc}
-      AND si.paid_sessions > 0
-      AND so.sale_order_type IN ('销售单', '转换单', '寄存单')
-      AND so.status = '已支付'
-      AND so.client_user_id IS NOT NULL
-      AND ${filter}
+      AND c.became_member_at IS NOT NULL
+      AND EXISTS (
+        SELECT 1
+        FROM sale_items si
+        JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
+        JOIN product_skus sk ON sk.sku_id = si.sku_id
+        JOIN product_categories pc ON pc.category_id = sk.category_id
+        WHERE so.client_user_id = c.user_id
+          AND si.paid_sessions > 0
+          AND so.sale_order_type IN ('销售单', '转换单', '寄存单')
+          AND so.status = '已支付'
+          AND ${filter}
+      )
   `);
   return num2(first2(rows).v);
 }
@@ -180842,20 +180863,26 @@ async function queryCycle(session4, scope, range, threshold, groupCol, filter, g
   return metric === "count" ? num2(r.count) : round24(r.revenue);
 }
 async function queryCardHoldersByStore(session4, scope, filter) {
-  const sc = scopeFilterSql(session4, scope, "so.store_id");
+  const sc = scopeFilterSql(session4, scope, "c.bound_store_id");
   const rows = await db2.execute(import_drizzle_orm66.sql`
-    SELECT so.store_id, COUNT(DISTINCT so.client_user_id) AS v
-    FROM sale_items si
-    JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
-    JOIN product_skus sk ON sk.sku_id = si.sku_id
-    JOIN product_categories pc ON pc.category_id = sk.category_id
+    SELECT c.bound_store_id AS store_id, COUNT(*) AS v
+    FROM client_wechat_users c
     WHERE ${sc}
-      AND si.paid_sessions > 0
-      AND so.sale_order_type IN ('销售单', '转换单', '寄存单')
-      AND so.status = '已支付'
-      AND so.client_user_id IS NOT NULL
-      AND ${filter}
-    GROUP BY so.store_id
+      AND c.bound_store_id IS NOT NULL
+      AND c.became_member_at IS NOT NULL
+      AND EXISTS (
+        SELECT 1
+        FROM sale_items si
+        JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
+        JOIN product_skus sk ON sk.sku_id = si.sku_id
+        JOIN product_categories pc ON pc.category_id = sk.category_id
+        WHERE so.client_user_id = c.user_id
+          AND si.paid_sessions > 0
+          AND so.sale_order_type IN ('销售单', '转换单', '寄存单')
+          AND so.status = '已支付'
+          AND ${filter}
+      )
+    GROUP BY c.bound_store_id
   `);
   const m = new Map;
   for (const raw of rows) {
@@ -183134,9 +183161,9 @@ var customerRegistrationMetricColumns = [
   { key: "registered", label: "会员注册", unit: "count" },
   { key: "retained", label: "保有会员", unit: "count" },
   { key: "visitOnce", label: "回店1次", unit: "count" },
-  { key: "visitOnceRate", label: "1次达成率", unit: "percent" },
+  { key: "visitOnceRate", label: "1次达成率(÷会员注册)", unit: "percent" },
   { key: "visitTwice", label: "回店2次", unit: "count" },
-  { key: "visitTwiceRate", label: "2次达成率", unit: "percent" },
+  { key: "visitTwiceRate", label: "2次达成率(÷会员注册)", unit: "percent" },
   { key: "dormant", label: "沉睡(截面·仅会员客)", unit: "count" },
   { key: "reactivatedDormant", label: "激活沉睡", unit: "count" },
   { key: "frozen", label: "冰冻(截面)", unit: "count" },
