@@ -93,6 +93,34 @@ describe('#401 数据中心在营口径 · 闭集', () => {
   })
 })
 
+describe('#401 数据中心在营口径 · closed_at 白名单', () => {
+  /**
+   * closed_at 在数据中心只允许一种用法：时点门店数的历史化表达式
+   * `(s.closed_at IS NULL OR s.closed_at::date > <截止日>)`。任何别的写法（如
+   * `EXISTS (... closed_at IS NULL)`、`isNull(stores.closedAt)`）都等于把「当前是否关店」
+   * 偷渡进统计范围，会抹掉关店前的历史业绩 —— 与只禁 is_closed token 互补（闸门 2 codex round-1 P2）。
+   * 注释行（`*` / `//` 开头）不计。
+   */
+  const ALLOWED = /^AND \(s\.closed_at IS NULL OR s\.closed_at::date > (\$\{(?:cur\.end|range\.end)\}|\$1::date)\)(`,)?$/
+
+  it('数据中心消费方代码行里的 closed_at / closedAt 只允许门店数历史化表达式', () => {
+    const offenders = []
+    let seen = 0
+    for (const file of CONSUMER_FILES) {
+      readFile(file).split('\n').forEach((line, i) => {
+        const t = line.trim()
+        if (!/closed_at|closedAt/.test(t)) return
+        if (/^(\*|\/\*|\/\/)/.test(t)) return
+        seen++
+        if (!ALLOWED.test(t)) offenders.push(`${rel(file)}:${i + 1}: ${t}`)
+      })
+    }
+    expect(offenders).toEqual([])
+    // 防扫描落空：admin sales/efficiency 三处 + staff queryStoreCount 一处
+    expect(seen).toBe(4)
+  })
+})
+
 describe('#401 数据中心在营口径 · 单源', () => {
   function definitionSites(files) {
     const sites = []
