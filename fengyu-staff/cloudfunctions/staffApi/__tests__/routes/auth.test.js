@@ -189,6 +189,39 @@ describe('auth.login', () => {
     // managerStores 仍仅 manager 绑定（A），仅供门店模式写授权使用。
     expect(ctx.result.managerStores.map((s) => s.storeId)).toEqual(['store-A'])
   })
+
+  test('inventoryOperateStoreIds 只由 store_operate 绑定展开，不含其它库存动作的 scope（#352）', async () => {
+    pg.query.mockImplementation(async (sql, params = []) => {
+      if (/FROM\s+staff_wechat_users\s+u/.test(sql)) {
+        return [{
+          employee_id: 'emp-inv', phone: '139', name: '库存员兼市场财务',
+          position_name: '门店库存员', is_resigned: false, skills: [],
+          store_id: 'store-A', store_name: 'A店', market_name: 'M',
+        }]
+      }
+      if (/UPDATE staff_wechat_users SET last_login_at/.test(sql)) return []
+      if (/FROM\s+permission_roles\s+pr/.test(sql)) {
+        return [
+          { role: 'inventory_store_operator', scope_id: 'node-A', scope_type: '门店', scope_name: 'A店', actions: ['inventory:store_operate'] },
+          { role: 'finance', scope_id: 'node-M', scope_type: '市场', scope_name: 'M', actions: ['inventory:market_approve'] },
+        ]
+      }
+      if (/SELECT DISTINCT\s+s\.store_id/.test(sql)) {
+        const nodes = params[0] || []
+        return [
+          ...(nodes.includes('node-A') ? [{ store_id: 'store-A' }] : []),
+          ...(nodes.includes('node-M') ? [{ store_id: 'store-A' }, { store_id: 'store-B' }] : []),
+        ]
+      }
+      return []
+    })
+
+    const ctx = { event: {}, context: {}, auth: {}, result: null }
+    await authRoutes.login(ctx)
+
+    expect([...new Set(ctx.result.inventoryStoreIds)].sort()).toEqual(['store-A', 'store-B'])
+    expect(ctx.result.inventoryOperateStoreIds).toEqual(['store-A'])
+  })
 })
 
 describe('auth.bindPhone', () => {

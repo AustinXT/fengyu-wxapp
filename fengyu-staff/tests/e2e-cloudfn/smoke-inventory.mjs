@@ -14,8 +14,10 @@
  * 只能在小程序盘点）。
  * 账面非零：共享 dev 库上批次余额只能经 append-only 的 inventory_movements 入账、删不掉，
  * 所以默认夹具账面恒 0（只能验证「无批次落 0」）。在**私有 docker 库**上设
- * SMOKE_INVENTORY_SEED_STOCK=1，会绕过余额守护给两个 SKU 灌非零余额（SKU1 两个批次 5+3，
- * SKU2 一个批次 4），验证账面 = 多批次汇总、实盘 0 记盘亏；非 localhost 库拒绝灌数。
+ * SMOKE_INVENTORY_SEED_STOCK=<私有库库名>，会绕过余额守护给两个 SKU 灌非零余额（SKU1 两个批次 5+3，
+ * SKU2 一个批次 4），验证账面 = 多批次汇总、实盘 0 记盘亏。
+ * 私有库判定不只看 localhost（SSH 端口转发的共享库也是 localhost）：还要求连上的 current_database()
+ * 与该变量值相同，且不是共享库名 fengyu_wxapp。
  */
 import './setup.mjs'
 import {
@@ -225,18 +227,26 @@ async function main() {
 /** 本流程在私有库上补的期初状态行：结束时删掉，不留全局副作用 */
 let insertedCutover = false
 
-/** 灌数模式（SMOKE_INVENTORY_SEED_STOCK=1）只允许 localhost 私有库，否则直接抛错 */
-function isPrivateSeedRun() {
-  if (process.env.SMOKE_INVENTORY_SEED_STOCK !== '1') return false
+/** 共享库（dev / prod）的库名：灌数模式遇到一律拒绝 */
+const SHARED_DATABASE_NAMES = new Set(['fengyu_wxapp'])
+
+/**
+ * 灌数模式只允许显式点名的私有库：SMOKE_INVENTORY_SEED_STOCK 的值必须等于连上的库名，
+ * 且 host 为 localhost、库名不是共享库名。任一不满足直接抛错（不静默降级为普通跑法）。
+ */
+async function isPrivateSeedRun() {
+  const expected = process.env.SMOKE_INVENTORY_SEED_STOCK
+  if (!expected) return false
   const host = new URL(process.env.PG_CONNECTION_STRING).hostname
-  if (!['localhost', '127.0.0.1'].includes(host)) {
-    throw new Error(`SMOKE_INVENTORY_SEED_STOCK 只允许私有库，当前 host=${host}`)
+  const [{ db }] = await pgQuery('SELECT current_database() AS db')
+  if (!['localhost', '127.0.0.1'].includes(host) || db !== expected || SHARED_DATABASE_NAMES.has(db)) {
+    throw new Error(`SMOKE_INVENTORY_SEED_STOCK 只允许点名的私有库：host=${host} db=${db} 期望=${expected}`)
   }
   return true
 }
 
 async function seedStocktakeBook() {
-  if (!isPrivateSeedRun()) return false
+  if (!(await isPrivateSeedRun())) return false
   const client = await getPool().connect()
   try {
     await client.query('BEGIN')
@@ -287,7 +297,7 @@ async function stocktakeFlow(errors) {
   // 绝不替它补「已初始化」（缺行本身就表示期初没做，补了等于永久打开全库的库存写闸）。
   // 只有私有 localhost 库（灌数模式）才临时补行，并在本流程结束时删掉自己补的那行。
   const cutover = await pgQuery(`SELECT status FROM inventory_cutover_states WHERE cutover_key = 'workfine_inventory'`)
-  if (!cutover[0] && isPrivateSeedRun()) {
+  if (!cutover[0] && (await isPrivateSeedRun())) {
     await pgQuery(`INSERT INTO inventory_cutover_states (cutover_key, status) VALUES ('workfine_inventory', '已初始化')`)
     insertedCutover = true
   } else if (cutover[0]?.status !== '已初始化') {
@@ -306,7 +316,7 @@ async function stocktakeFlow(errors) {
   const book1 = await bookOf(INV_SKU_ID)
   const book2 = await bookOf(INV_SKU_ID_2)
   if (seeded && (book1 !== 8 || book2 !== 4)) errors.push(`灌数后账面应为 8 / 4，实际 ${book1} / ${book2}`)
-  if (!seeded) rec('  · 未设 SMOKE_INVENTORY_SEED_STOCK：夹具账面恒 0，只验证「无批次落 0」，多批次汇总由私有库跑法覆盖')
+  if (!seeded) rec('  · 未设 SMOKE_INVENTORY_SEED_STOCK=<私有库名>：夹具账面恒 0，只验证「无批次落 0」，多批次汇总由私有库跑法覆盖')
 
   const rOpts = await invokeStaffApi('inventory.stocktakeSkuOptions', {
     _testOpenid: INV_OPERATOR_OPENID,
@@ -394,9 +404,16 @@ try {
 } finally {
   try { await cleanupTestData(NS) } catch {}
   if (insertedCutover) {
+    // 清理失败不能报 PASS：残留的「已初始化」行会被后续跑法当成真实期初状态
     try {
       await pgQuery(`DELETE FROM inventory_cutover_states WHERE cutover_key = 'workfine_inventory' AND status = '已初始化'`)
-    } catch {}
+      const left = await pgQuery(`SELECT 1 FROM inventory_cutover_states WHERE cutover_key = 'workfine_inventory'`)
+      if (left.length > 0) throw new Error('删除后仍存在')
+    } catch (error) {
+      console.error(`清理临时期初状态失败：${error.message}`)
+      pass = false
+      exitCode = 1
+    }
   }
   await closePool()
   console.log(`end | ${pass ? 'PASS' : 'FAIL'} | exit=${exitCode}`)

@@ -169,7 +169,13 @@ describe('门店盘点表单', () => {
     } finally {
       vi.useRealTimers()
     }
-    expect((globalThis as any).wx.redirectTo).toHaveBeenCalledWith(expect.objectContaining({ url: '/packageMy/inventory/detail?id=YPD-1' }))
+    const redirectArg = ((globalThis as any).wx.redirectTo as ReturnType<typeof vi.fn>).mock.calls[0][0]
+    expect(redirectArg.url).toBe('/packageMy/inventory/detail?id=YPD-1')
+    // 跳转失败（页面栈满等）：单已建成，只提示去列表，不复位 submitting（复位会引出重复建单）
+    expect(typeof redirectArg.fail).toBe('function')
+    redirectArg.fail()
+    expect(toastTitle()).toMatch(/已提交.*库存记录/)
+    expect(page.data.submitting).toBe(true)
     const [action, payload] = mockedCall.mock.calls.at(-1) as [string, any]
     expect(action).toBe('inventory.createDoc')
     expect(payload).toMatchObject({ docType: '分院库存盘点', storeId: 'store-001' })
@@ -312,5 +318,24 @@ describe('盘点单详情', () => {
     expect(page.data.isStocktake).toBe(false)
     expect(page.data.stocktakeSummary).toBe('')
     expect(page.data.detail.items[0].diffText).toBeUndefined()
+  })
+})
+
+describe('列表同主体单据不显示对端（WXML 静态守护）', () => {
+  const fs = require('fs') as typeof import('fs')
+  const path = require('path') as typeof import('path')
+  const wxml = fs.readFileSync(path.resolve(__dirname, '../../packageMy/inventory/list.wxml'), 'utf8')
+
+  test('对端只在 target ≠ source 时显示（报损 / 盘点同主体隐藏，调货异主体照常显示）', () => {
+    const counterpart = wxml.match(/<text wx:if="\{\{([^"]*)\}\}" class="counterpart">/)
+    expect(counterpart, '找不到 counterpart 行').toBeTruthy()
+    expect(counterpart![1].replace(/\s+/g, ' ')).toBe(
+      '(item.targetOrgNodeName || item.targetOrgNodeId) && item.targetOrgNodeId !== item.sourceOrgNodeId',
+    )
+  })
+
+  test('合计文案按预算的 item.isStocktake 切换，不硬编码类型名', () => {
+    expect(wxml).toContain("{{item.isStocktake ? '实盘合计' : '总数量'}}")
+    expect(wxml).not.toContain('分院库存盘点')
   })
 })

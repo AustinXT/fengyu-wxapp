@@ -157,7 +157,7 @@
 }
 
 .diff-unknown {
-  color: #B8B8B8;
+  color: #999999;
 }
 
 .item-extra {
