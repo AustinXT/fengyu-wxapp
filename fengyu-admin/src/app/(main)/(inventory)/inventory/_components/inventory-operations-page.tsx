@@ -509,7 +509,8 @@ function LotPicker({
         const visible = giftOnly ? rows.filter((lot) => lot.isGift) : rows
         setLots(visible)
         setGiftEmpty(giftOnly && visible.length === 0)
-        // 只列赠送批次时掉出列表，可能是它不是赠送批次，也可能是被出完了 —— 清空前先判清是哪一种
+        // 只列赠送批次时掉出列表，可能是它不是赠送批次，也可能是被出完了 —— 清空前先判清是哪一种。
+        // （分院配货取消「从普通批次赠送」已在勾选框上同步清空普通批次，「不是赠送批次」这支在那里走不到，防御性保留）
         const stillListed = rows.some((lot) => String(lot.id) === valueRef.current)
         if (!visible.some((lot) => String(lot.id) === valueRef.current) && dropStaleSelection()) {
           toast.warning(giftOnly && stillListed ? '所选批次不是赠送批次，请重新选择' : '所选批次已无可用库存，请重新选择')
@@ -3835,7 +3836,7 @@ function StoreAllocationLotExtras({
   const showNormalReference = hasNormal && line.lot !== null && line.lot.marketActualUnitPrice !== undefined
   if (!hasGift && !showNormalReference && !notice) return null
   return (
-    <div className="mt-3 grid grid-cols-1 gap-3 border-t border-[var(--border)] pt-3 md:grid-cols-2">
+    <div data-allocation-lot-extras className="mt-3 grid grid-cols-1 gap-3 border-t border-[var(--border)] pt-3 md:grid-cols-2">
       <div className="space-y-1">
         {hasNormal && <LotReferencePrice lot={line.lot} label={`正常批次参考进价 ${rowName}`} />}
         {notice && <div className="text-xs text-[#D4820A]">{notice}</div>}

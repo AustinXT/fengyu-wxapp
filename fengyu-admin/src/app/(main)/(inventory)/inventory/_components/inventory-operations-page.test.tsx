@@ -254,8 +254,8 @@ describe('办理台表单一致性（#135）', () => {
     // 数量为 0 的行根本不检查 lotId —— 部分发货时"这次不发"的行留空批次完全合法。
     // 标上 * 会逼用户去给不发货的行挑批次，而该 SKU 在该库位可能压根没有批次可挑。
     // 这与「采购数量不该逐行标」是同一类判据，只是发生在批次上。
-    // 分院配货只截到自选区之前：#337 的自选行是用户主动添加的，不做 filter、逐行校验，
-    // 它的「市场批次」是无条件必填（下面单独反向断言）。
+    // 分院配货只截到自选区之前：#337 的自选行是用户主动添加的，不做 filter、逐行校验；
+    // #359 起它的「市场批次」同样只在正常数量 > 0 时必填（条件必填，下面单独断言不标 *）。
     for (const [from, to, label] of [
       ['function StoreAllocationForm(', '自选配货（不引用报货', '市场批次'],
     ] as const) {
@@ -2640,6 +2640,10 @@ describe('分院配货批次的赠送标记与参考进价（#359）', () => {
     const strip = ({ marketActualUnitPrice: _price, ...lot }: typeof NORMAL) => lot
     await openAllocation([strip(NORMAL), strip(GIFT)])
     await screen.findByRole('option', { name: /^批次 B100/ })
+    // 选普通批次：无参考价、无提示、无赠送 → 附加区整块不渲染（不留空分隔线）
+    fireEvent.change(normalLotSelect(), { target: { value: '11' } })
+    expect(normalLotSelect().value).toBe('11')
+    expect(document.querySelector('[data-allocation-lot-extras]')).toBeNull()
     fireEvent.change(normalLotSelect(), { target: { value: '12' } })
     expect(screen.queryAllByRole('note')).toHaveLength(0)
     // 赠送提示仍在，但不带价格
