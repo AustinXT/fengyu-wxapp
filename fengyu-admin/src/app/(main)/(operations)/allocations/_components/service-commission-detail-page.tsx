@@ -28,7 +28,8 @@ interface CommissionEntry {
   ratioPercent: string
   allocAmount: string       // 分配金额 = ratioPercent/100 × perSessionPrice × sessionUsed
   commissionRate: number    // 提成比例（从矩阵获取，按 consumeBase 查档）
-  commissionAmount: string  // 提成金额 = allocAmount × commissionRate
+  priceThreshold: number | null  // 命中矩阵行的划卡单价阈值（#379；null = 不启用）
+  commissionAmount: string  // 提成金额 = 比例 × effConsumeBase × commissionRate（单价 ≥ 阈值时即 allocAmount × commissionRate）
   legacyEmployeeName?: string
 }
 
@@ -68,6 +69,23 @@ function perSessionPrice(item: ServiceItemDetail): number {
 /** 本次服务可分配金额基底 = perSessionPrice × sessionUsed */
 function consumeBase(item: ServiceItemDetail): number {
   return Math.round(perSessionPrice(item) * item.sessionUsed * 100) / 100
+}
+
+/**
+ * #379 计提成用的基数：单次实价低于命中行阈值时按阈值（与五个写入副本同口径；选档仍用原始 consumeBase）。
+ * 分配额 allocAmount 仍按真实单价展示，只有提成额用它。
+ */
+function effConsumeBase(item: ServiceItemDetail, priceThreshold: number | null): number {
+  return Math.round(Math.max(perSessionPrice(item), priceThreshold || 0) * item.sessionUsed * 100) / 100
+}
+
+function thresholdOf(rateRef: CommissionRate | null): number | null {
+  return rateRef?.priceThreshold != null ? Number(rateRef.priceThreshold) : null
+}
+
+function calcCommissionAmount(ratioPercent: string, item: ServiceItemDetail | undefined, rate: number, priceThreshold: number | null): string {
+  const effBase = item ? effConsumeBase(item, priceThreshold) : 0
+  return (Number(calcAllocAmount(ratioPercent, effBase)) * rate).toFixed(2)
 }
 
 function calcAllocAmount(ratioPercent: string, base: number): string {
@@ -110,6 +128,7 @@ function buildEntry(
   const allocAmount = calcAllocAmount(ratioPercent, base)
   const rateRef = findMatchingRate(commissionRates, marketName, skillTag, item?.salesCategory ?? null, base)
   const commRate = rateRef ? Number(rateRef.commissionRate) : fallbackRate
+  const priceThreshold = thresholdOf(rateRef)
   return {
     id: Date.now() + Math.random(),
     skillTag,
@@ -117,7 +136,8 @@ function buildEntry(
     ratioPercent,
     allocAmount,
     commissionRate: commRate,
-    commissionAmount: (Number(allocAmount) * commRate).toFixed(2),
+    priceThreshold,
+    commissionAmount: calcCommissionAmount(ratioPercent, item, commRate, priceThreshold),
   }
 }
 
@@ -223,6 +243,7 @@ export default function ServiceCommissionDetailPageClient({
           ratioPercent: '',
           allocAmount: '0.00',
           commissionRate: 0,
+          priceThreshold: null,
           commissionAmount: '0.00',
         },
       ],
@@ -251,15 +272,17 @@ export default function ServiceCommissionDetailPageClient({
             updated.employeeId = ''
             const rateRef = findMatchingRate(commissionRates, marketName, value, item?.salesCategory ?? null, base)
             updated.commissionRate = rateRef ? Number(rateRef.commissionRate) : 0
+            updated.priceThreshold = thresholdOf(rateRef)
           }
 
           if (field === 'employeeId' && updated.skillTag) {
             const rateRef = findMatchingRate(commissionRates, marketName, updated.skillTag, item?.salesCategory ?? null, base)
             updated.commissionRate = rateRef ? Number(rateRef.commissionRate) : 0
+            updated.priceThreshold = thresholdOf(rateRef)
           }
 
           updated.allocAmount = calcAllocAmount(updated.ratioPercent, base)
-          updated.commissionAmount = (Number(updated.allocAmount) * updated.commissionRate).toFixed(2)
+          updated.commissionAmount = calcCommissionAmount(updated.ratioPercent, item, updated.commissionRate, updated.priceThreshold)
 
           return updated
         }),
@@ -501,6 +524,9 @@ function ServiceItemCard({
                 <div className="w-20 shrink-0 text-right">
                   <label className="text-[10px] text-[#999999]">提成额</label>
                   <p className="text-sm font-medium h-9 flex items-center justify-end text-[var(--primary)]">¥{Number(entry.commissionAmount).toLocaleString()}</p>
+                  {entry.priceThreshold != null && entry.commissionRate > 0 && perSessionPrice(item) < entry.priceThreshold && (
+                    <p className="text-[10px] text-[#D4820A] -mt-1">按阈值 ¥{entry.priceThreshold.toFixed(2)} 计</p>
+                  )}
                 </div>
 
                 {/* 删除 */}

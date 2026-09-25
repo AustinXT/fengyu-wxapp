@@ -59,7 +59,8 @@ VALUES
 ON CONFLICT (id) DO UPDATE SET
   org_id = EXCLUDED.org_id, order_type = EXCLUDED.order_type, role_type = EXCLUDED.role_type,
   sales_category = EXCLUDED.sales_category, amount_tier_min = EXCLUDED.amount_tier_min,
-  amount_tier_max = EXCLUDED.amount_tier_max, commission_rate = 0.0800, updated_at = NOW();
+  amount_tier_max = EXCLUDED.amount_tier_max, commission_rate = 0.0800,
+  price_threshold = NULL, updated_at = NOW();  -- #379：改成销售单行须清阈值，否则撞 chk_commission_matrix_price_threshold
 -- 重置序列，避免后续 nextval 与显式 id=1 冲突
 SELECT setval('commission_rate_matrix_id_seq', GREATEST(1, (SELECT MAX(id) FROM commission_rate_matrix)));
 

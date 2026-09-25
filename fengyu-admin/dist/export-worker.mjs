@@ -171207,7 +171207,7 @@ async function settleServiceCommissions(executor, serviceOrderId, operator) {
     const perSession = Number(row.unit_real_price || 0);
     const consumeBase = round22(perSession * sessionUsed);
     const rateRows = await executor.execute(import_drizzle_orm39.sql`
-      SELECT commission_rate FROM commission_rate_matrix
+      SELECT commission_rate, price_threshold FROM commission_rate_matrix
        WHERE order_type = '服务单'
          AND role_type = ${roleType}
          AND sales_category = ${row.sales_category}
@@ -171224,7 +171224,8 @@ async function settleServiceCommissions(executor, serviceOrderId, operator) {
        LIMIT 1
     `);
     const rate = Number(rateRows[0]?.commission_rate || 0);
-    const consumeAmount = round22(consumeBase * rate);
+    const effConsumeBase = round22(Math.max(perSession, Number(rateRows[0]?.price_threshold || 0)) * sessionUsed);
+    const consumeAmount = round22(effConsumeBase * rate);
     const commissionAmount = round22(fixedFee + consumeAmount);
     if (rate === 0 && consumeBase > 0) {
       await executor.execute(import_drizzle_orm39.sql`
@@ -172365,7 +172366,7 @@ var createServiceOrder = withPermission("service:create", async (session4, data)
       unitRealPrice: saleItems.unitRealPrice,
       saleOrderType: saleOrders.saleOrderType,
       orderStatus: saleOrders.status,
-      isShengmei: import_drizzle_orm41.sql`COALESCE(${saleItems.isShengmei}, ${productSkus.isShengmei})`,
+      isShengmei: import_drizzle_orm41.sql`COALESCE(${productSkus.isShengmei}, ${saleItems.isShengmei})`,
       salesCategory: import_drizzle_orm41.sql`COALESCE(${saleItems.salesCategory}, ${productCategories.salesCategory})`,
       hasPendingRefund: import_drizzle_orm41.sql`EXISTS (SELECT 1 FROM sale_order_payments sop WHERE sop.sale_order_id = ${saleOrders.saleOrderId} AND sop.change_type = '退款' AND sop.status = '待审批')`,
       hasApprovedRefund: import_drizzle_orm41.sql`EXISTS (SELECT 1 FROM sale_order_payments sop WHERE sop.sale_order_id = ${saleOrders.saleOrderId} AND sop.change_type = '退款' AND sop.status = '已支付')`
