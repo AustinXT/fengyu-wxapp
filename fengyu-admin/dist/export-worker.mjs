@@ -176930,11 +176930,13 @@ function lotRow(row, priceTiers) {
     updatedAt: row.lot.updatedAt.toISOString()
   };
 }
-var listInventoryMarketTransferTargets = withAnyPermission([...inventoryDelegatableOperateActions("market")], async () => {
+var listInventoryMarketTransferTargets = withAnyPermission([...inventoryDelegatableOperateActions("market")], async () => activeMarketTargets());
+async function activeMarketTargets() {
   await syncInventoryLocations();
   const rows = await db2.select({ orgNodeId: inventoryLocations.orgNodeId, name: inventoryLocations.name }).from(inventoryLocations).where(import_drizzle_orm58.and(import_drizzle_orm58.eq(inventoryLocations.isActive, true), import_drizzle_orm58.eq(inventoryLocations.locationType, "市场"), import_drizzle_orm58.isNotNull(inventoryLocations.orgNodeId))).orderBy(import_drizzle_orm58.asc(inventoryLocations.name));
   return rows.flatMap((row) => row.orgNodeId ? [{ orgNodeId: row.orgNodeId, name: row.name }] : []);
-});
+}
+var listInventoryShipmentMarketTargets = withPermission("inventory:supply_chain_operate", async () => activeMarketTargets());
 var PROMOTION_READ_SCOPE = { scopeActions: ["inventory:stock_list", INVENTORY_PROMOTION_MAINTAIN_ACTION] };
 async function promotionVisibleLocationIds(session4) {
   if (isInventoryPromotionMaintainer(session4))
