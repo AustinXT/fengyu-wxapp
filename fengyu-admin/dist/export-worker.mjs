@@ -182360,7 +182360,7 @@ var OPERATING_MASTER_COLUMNS = [
   metricColumn("R", "ytdRevenue", `年度
 累计达成`, SALES_GROUP, "amount", "当年 1 月至所选月份各月「当月完成」之和。只含新系统上线后的数据，不含 WorkFine 历史单"),
   metricColumn("S", "monthFootfall", `当月服务
-到店天数`, FOOTFALL_GROUP, "count", "当月在本店有已完成服务单的「顾客 × 服务日期」数（同一顾客同一天多单只算 1 天，剔除寄存单退款专用单）。" + "与客量板「客流量（次）」按单数计不同"),
+到店天数`, FOOTFALL_GROUP, "count", "当月在本店有已完成服务单的「顾客 × 服务日期」数（同一顾客同一天多单只算 1 天）。" + "与客量板「客流量（次）」按单数计不同"),
   metricColumn("T", "preSaleFootfall", `当月售前
 到店天数`, FOOTFALL_GROUP, "count", "当天在本店的服务单核销过体验项目的到店天数（查询时判定，不读服务单开单时的售前 / 售后标记）"),
   metricColumn("U", "afterSaleFootfall", `当月售后
