@@ -314,3 +314,18 @@ jobs:
             src/lib/inventory/engine.test.ts \
             src/lib/inventory/stocktake.test.ts \
             'src/app/(main)/(inventory)/inventory/docs/[id]/page.test.tsx'
+
+      # 提货冻结出库金额 + 提货记录导出（#341）：冻结金额 helper、单件 / 合并 × 联动开 / 关的写入接线、
+      # GCK 明细逐列（数量 / 库存快照 / 赠送 / 成本快照）与单头类型、列表 / 详情 / 导出的字段映射、
+      # keyset 分页与跨页接线、页面两列与「—」三态、删除审计留存。不进 CI 的话，把出库金额误绑成单价
+      # 或让导出只取第一页，GitHub 检查照样全绿（跨端守护在 staffApi 全量里跑，这里补 admin 侧行为）。
+      - name: Run pickup frozen amount guards (#341)
+        working-directory: fengyu-admin
+        run: |
+          npx vitest run \
+            src/lib/pickup-amount.test.ts \
+            src/actions/pickup-records.amount.test.ts \
+            src/actions/pickup-records.linkage.test.ts \
+            src/actions/pickup-records.delete.test.ts \
+            src/export-worker/registry.test.ts \
+            'src/app/(main)/(operations)/pickup-records/_components/pickup-records-page.test.tsx'
