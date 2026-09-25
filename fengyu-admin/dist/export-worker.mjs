@@ -85440,6 +85440,30 @@ var init_permission_presentation = __esm(() => {
 function isAdminOnlyAction(action) {
   return ADMIN_ONLY_ACTIONS.includes(action);
 }
+function collectDependencies(action, result, visiting) {
+  if (visiting.has(action))
+    return;
+  visiting.add(action);
+  for (const dependency of UI_ACTION_DEPENDENCIES[action] ?? []) {
+    if (!result.has(dependency)) {
+      result.add(dependency);
+      collectDependencies(dependency, result, visiting);
+    }
+  }
+  visiting.delete(action);
+}
+function getUiDependencyClosure(action) {
+  const dependencies = new Set;
+  collectDependencies(action, dependencies, new Set);
+  return [...dependencies].sort();
+}
+function getMissingUiDependencies(actions, action) {
+  const owned = new Set(actions);
+  return getUiDependencyClosure(action).filter((dependency) => !owned.has(dependency));
+}
+function hasUiCapability(actions, action) {
+  return actions.includes(action) && getMissingUiDependencies(actions, action).length === 0;
+}
 function sanitizeRoleDefinitionActions(actions, isSuperAdmin, knownActions = KNOWN_PERMISSION_ACTIONS) {
   const known = new Set(knownActions);
   return [...new Set(actions.map((action) => typeof action === "string" ? action.trim() : "").filter(Boolean))].filter((action) => known.has(action) && (isSuperAdmin || !isAdminOnlyAction(action))).sort();
@@ -85802,6 +85826,32 @@ function scopeSessionToActions(session4, actions) {
     return session4;
   const requested = new Set(actions);
   const roles3 = session4.roles.filter((role) => role.actions.some((action) => requested.has(action)));
+  return {
+    ...session4,
+    roles: roles3,
+    permissions: {
+      ...session4.permissions,
+      scopeStoreIds: Array.from(new Set(roles3.flatMap((role) => role.scopeStoreIds))),
+      scopeOrgNodeIds: Array.from(new Set(roles3.flatMap((role) => role.scopeOrgNodeIds)))
+    }
+  };
+}
+function scopeSessionToAllActions(session4, actions) {
+  const hasRoleScopeMetadata = session4.roles.every((role) => Array.isArray(role.actions) && Array.isArray(role.scopeStoreIds) && Array.isArray(role.scopeOrgNodeIds));
+  if (!hasRoleScopeMetadata)
+    return session4;
+  const roles3 = session4.roles.filter((role) => actions.every((action) => role.actions.includes(action)));
+  if (roles3.length === 0) {
+    return {
+      ...session4,
+      roles: [],
+      permissions: {
+        ...session4.permissions,
+        scopeStoreIds: [],
+        scopeOrgNodeIds: []
+      }
+    };
+  }
   return {
     ...session4,
     roles: roles3,
@@ -90566,6 +90616,26 @@ function withAnyPermission(actions, fn) {
     requireAnyPermission(session4, actions);
     try {
       return await fn(scopeSessionToActions(session4, actions), ...args);
+    } catch (err) {
+      rethrowWithDigest(err);
+    }
+  };
+}
+function withAllPermissions(actions, fn) {
+  return async (...args) => {
+    const session4 = await getActionSession();
+    const [firstAction, ...remainingActions] = actions;
+    if (!firstAction)
+      throw new Error("INVALID_PARAMS: withAllPermissions 至少需要一个权限项");
+    requirePermission(session4, firstAction);
+    for (const action of remainingActions)
+      requirePermission(session4, action);
+    try {
+      const scopedSession = scopeSessionToAllActions(session4, actions);
+      if (scopedSession.roles.length === 0) {
+        throw new Error("PERMISSION_DENIED: 多项权限必须由同一角色授权范围同时提供");
+      }
+      return await fn(scopedSession, ...args);
     } catch (err) {
       rethrowWithDigest(err);
     }
@@ -109842,17 +109912,17 @@ var require_saxes = __commonJS((exports) => {
         this.fail(this.isName(entity2) ? "undefined entity." : "disallowed character in entity name.");
         return `&${entity2};`;
       }
-      let num3 = NaN;
+      let num4 = NaN;
       if (entity2[1] === "x" && /^#x[0-9a-f]+$/i.test(entity2)) {
-        num3 = parseInt(entity2.slice(2), 16);
+        num4 = parseInt(entity2.slice(2), 16);
       } else if (/^#[0-9]+$/.test(entity2)) {
-        num3 = parseInt(entity2.slice(1), 10);
+        num4 = parseInt(entity2.slice(1), 10);
       }
-      if (!this.isChar(num3)) {
+      if (!this.isChar(num4)) {
         this.fail("malformed character entity.");
         return `&${entity2};`;
       }
-      return String.fromCodePoint(num3);
+      return String.fromCodePoint(num4);
     }
   }
   exports.SaxesParser = SaxesParser;
@@ -136770,9 +136840,9 @@ var require_buffer_crc32 = __commonJS((exports, module) => {
       throw new Error("input must be buffer, number, or string, received " + typeof input);
     }
   }
-  function bufferizeInt(num3) {
+  function bufferizeInt(num4) {
     var tmp = ensureBuffer(4);
-    tmp.writeInt32BE(num3, 0);
+    tmp.writeInt32BE(num4, 0);
     return tmp;
   }
   function _crc32(buf, previous) {
@@ -138135,9 +138205,9 @@ var require_headers3 = __commonJS((exports) => {
     }
     return 0;
   };
-  var indexOf = function(block, num3, offset, end) {
+  var indexOf = function(block, num4, offset, end) {
     for (;offset < end; offset++) {
-      if (block[offset] === num3)
+      if (block[offset] === num4)
         return offset;
     }
     return end;
@@ -159497,7 +159567,7 @@ var DATA_CENTER_REPORTS = {
     title: "员工提成日报",
     periodKind: "month",
     requiredActions: DATA_CENTER_STAFF_COMMISSION_ACTIONS,
-    menu: { section: "员工收入", enabled: false }
+    menu: { section: "员工收入", enabled: true }
   },
   commissionDetail: {
     path: "/data-center/commission-daily/detail",
@@ -159541,7 +159611,10 @@ var DATA_CENTER_BOARD_EXPORT_VIEWS = [
   "efficiency-store-ranking",
   "efficiency-staff-ranking"
 ];
-var DATA_CENTER_REPORT_EXPORT_VIEWS = [];
+var DATA_CENTER_REPORT_EXPORT_VIEWS = [
+  "report-commission-daily",
+  "report-commission-detail"
+];
 var DATA_CENTER_EXPORT_VIEWS = [
   ...DATA_CENTER_BOARD_EXPORT_VIEWS,
   ...DATA_CENTER_REPORT_EXPORT_VIEWS
@@ -159597,7 +159670,9 @@ function exportJobLabel(exportType, payload) {
     "efficiency-market": "人效明细-按市场",
     "efficiency-staff": "人效明细-按技师",
     "efficiency-store-ranking": "人效-门店排名榜",
-    "efficiency-staff-ranking": "人效-员工排名榜"
+    "efficiency-staff-ranking": "人效-员工排名榜",
+    "report-commission-daily": "员工提成日报",
+    "report-commission-detail": "提成明细"
   };
   return viewLabels[payload.view];
 }
@@ -181907,6 +181982,9 @@ function getDataCenterRankingConfig(view3) {
 
 // src/lib/data-center/params.ts
 var DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+function firstQueryValue(raw) {
+  return Array.isArray(raw) ? raw[0] : raw;
+}
 function parseScope(raw) {
   if (raw.scope === "authorized")
     return { type: "authorized" };
@@ -181949,6 +182027,1091 @@ function headerWithUnit(label, unit) {
 
 // src/export-worker/registry.ts
 init_datetime();
+
+// src/actions/data-center/commission.ts
+init_db2();
+init_with_permission();
+init_permission_contract();
+init_pii();
+
+// src/lib/data-center/report-period.ts
+init_time_range();
+var REPORT_MIN_MONTH = "2026-07";
+var DATE_RE2 = /^(\d{4})-(\d{2})-(\d{2})$/;
+var MONTH_RE = /^(\d{4})-(\d{2})$/;
+var MIN_YEAR = 2000;
+var MAX_YEAR = 2099;
+function isValidCalendarDate(value) {
+  const match = value?.match(DATE_RE2);
+  if (!match)
+    return false;
+  const [year2, month, day2] = [Number(match[1]), Number(match[2]), Number(match[3])];
+  if (year2 < MIN_YEAR || year2 > MAX_YEAR)
+    return false;
+  const date5 = new Date(Date.UTC(year2, month - 1, day2));
+  return date5.getUTCFullYear() === year2 && date5.getUTCMonth() === month - 1 && date5.getUTCDate() === day2;
+}
+function isValidMonth(value) {
+  const match = value?.match(MONTH_RE);
+  if (!match)
+    return false;
+  const [year2, month] = [Number(match[1]), Number(match[2])];
+  return year2 >= MIN_YEAR && year2 <= MAX_YEAR && month >= 1 && month <= 12;
+}
+function monthRange(month) {
+  const [year2, mon] = month.split("-").map(Number);
+  const last = new Date(Date.UTC(year2, mon, 0)).getUTCDate();
+  return { start: `${month}-01`, end: `${month}-${String(last).padStart(2, "0")}` };
+}
+function shiftMonth(month, n) {
+  const [year2, mon] = month.split("-").map(Number);
+  const d = new Date(Date.UTC(year2, mon - 1 + n, 1));
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
+}
+function monthLabel(month) {
+  const [year2, mon] = month.split("-");
+  return `${year2}年${Number(mon)}月`;
+}
+function defaultReportMonth(today = shanghaiToday()) {
+  const lastMonth = shiftMonth(today.slice(0, 7), -1);
+  return lastMonth < REPORT_MIN_MONTH ? REPORT_MIN_MONTH : lastMonth;
+}
+function parseReportMonth(raw, today = shanghaiToday()) {
+  const month = isValidMonth(raw.month) && raw.month <= today.slice(0, 7) ? raw.month : defaultReportMonth(today);
+  return { kind: "month", month, current: monthRange(month), label: monthLabel(month) };
+}
+
+// src/actions/data-center/commission.ts
+init_time_range();
+
+// src/lib/data-center/commission-daily.ts
+var COMMISSION_VIEWS = ["total", "split", "sale", "service"];
+var COMMISSION_VIEW_LABELS = {
+  total: "提成合计",
+  split: "双列",
+  sale: "仅业绩",
+  service: "仅消耗"
+};
+var COMMISSION_GROUPS = ["employee", "position"];
+var MAX_SEARCH_LENGTH = 50;
+function pick2(value, allowed, fallback) {
+  return allowed.includes(value ?? "") ? value : fallback;
+}
+function parseCommissionDailyOptions(query) {
+  const get = (key) => firstQueryValue(query[key]);
+  return {
+    view: pick2(get("view"), COMMISSION_VIEWS, "total"),
+    group: pick2(get("group"), COMMISSION_GROUPS, "employee"),
+    merge: get("merge") === "1",
+    search: (get("q") ?? "").trim().slice(0, MAX_SEARCH_LENGTH),
+    hideZero: get("hideZero") === "1"
+  };
+}
+function grainOf(options, isAllScope) {
+  if (options.group === "position")
+    return "position";
+  return options.merge && isAllScope ? "employee" : "employee-store";
+}
+function num3(value) {
+  const n = typeof value === "string" ? Number(value) : value;
+  return typeof n === "number" && Number.isFinite(n) ? n : 0;
+}
+function cellOf(record) {
+  return { sale: num3(record.sale), service: num3(record.service), orders: num3(record.orders) };
+}
+var EMPTY_CELL = Object.freeze({ sale: 0, service: 0, orders: 0 });
+var NO_POSITION_LABEL = "（无岗位）";
+function assembleCommissionMatrix(records, grain) {
+  const rows = new Map;
+  const totals = { days: {}, total: { ...EMPTY_CELL }, employeeCount: 0, rowCount: 0 };
+  const rowOf = (gk) => {
+    let row = rows.get(gk);
+    if (!row) {
+      row = {
+        key: gk,
+        employeeId: null,
+        employeeName: "",
+        positionName: "",
+        storeId: null,
+        storeName: "",
+        storeCount: 0,
+        employeeCount: 0,
+        days: {},
+        total: { ...EMPTY_CELL }
+      };
+      rows.set(gk, row);
+    }
+    return row;
+  };
+  for (const record of records) {
+    const byKey = num3(record.g_gk) === 0;
+    const byDay = num3(record.g_d) === 0;
+    if (byKey && record.gk != null) {
+      const row = rowOf(record.gk);
+      if (byDay && record.d) {
+        row.days[record.d] = cellOf(record);
+      } else if (!byDay) {
+        row.total = cellOf(record);
+        row.employeeCount = num3(record.employees);
+        row.storeCount = num3(record.stores);
+        row.positionName = record.position_name?.trim() || NO_POSITION_LABEL;
+        if (grain === "position") {
+          row.employeeName = row.positionName;
+        } else {
+          row.employeeId = record.employee_id;
+          row.employeeName = record.employee_name?.trim() || record.employee_id || "";
+          if (grain === "employee-store") {
+            row.storeId = record.store_id;
+            row.storeName = record.store_name?.trim() || record.store_id || "";
+          } else {
+            row.storeName = row.storeCount > 1 ? `多店（${row.storeCount}）` : record.store_name?.trim() || record.store_id || "";
+          }
+        }
+      }
+    } else if (!byKey && byDay && record.d) {
+      totals.days[record.d] = cellOf(record);
+    } else if (!byKey && !byDay) {
+      totals.total = cellOf(record);
+      totals.employeeCount = num3(record.employees);
+    }
+  }
+  const list = [...rows.values()];
+  totals.rowCount = list.length;
+  return { rows: list, totals };
+}
+function cellTotal(cell) {
+  return cell ? cell.sale + cell.service : 0;
+}
+var COMMISSION_SOURCES = ["sale", "service"];
+var COMMISSION_SOURCE_LABELS = { sale: "业绩", service: "消耗" };
+var COMMISSION_DETAIL_PAGE_SIZES = [20, 50, 100];
+var DEFAULT_COMMISSION_DETAIL_PAGE_SIZE = 50;
+var ID_RE = /^[A-Za-z0-9_\-:.]{1,80}$/;
+function parseCommissionDetailFilters(query, month) {
+  const get = (key) => firstQueryValue(query[key])?.trim();
+  const employeeId = get("employeeId");
+  const storeId = get("storeId");
+  const date5 = get("date");
+  const source = get("type");
+  return {
+    employeeId: employeeId && ID_RE.test(employeeId) ? employeeId : null,
+    storeId: storeId && ID_RE.test(storeId) ? storeId : null,
+    date: isValidCalendarDate(date5) && date5 >= month.start && date5 <= month.end ? date5 : null,
+    source: COMMISSION_SOURCES.includes(source ?? "") ? source : null
+  };
+}
+function parseCommissionDetailPageSize(raw) {
+  const n = Number(raw);
+  return COMMISSION_DETAIL_PAGE_SIZES.includes(n) ? n : DEFAULT_COMMISSION_DETAIL_PAGE_SIZE;
+}
+function commissionFilterSignature(parts) {
+  return Object.keys(parts).sort().map((key) => `${key}=${parts[key] ?? ""}`).join("&");
+}
+function toBase64Url(text5) {
+  const bytes = new TextEncoder().encode(text5);
+  let binary = "";
+  for (const byte of bytes)
+    binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+function fromBase64Url(text5) {
+  const binary = atob(text5.replace(/-/g, "+").replace(/_/g, "/"));
+  return new TextDecoder().decode(Uint8Array.from(binary, (ch) => ch.charCodeAt(0)));
+}
+function encodeCommissionCursor(key, signature) {
+  return toBase64Url(JSON.stringify({ d: key.d, t: key.t, id: key.id, s: signature }));
+}
+function decodeCommissionCursor(raw, signature) {
+  if (!raw || raw.length > 400)
+    return null;
+  try {
+    const parsed = JSON.parse(fromBase64Url(raw));
+    if (parsed.s !== signature)
+      return null;
+    const { d, t, id } = parsed;
+    if (typeof d !== "string" || !isValidCalendarDate(d))
+      return null;
+    if (t !== "sale" && t !== "service")
+      return null;
+    if (typeof id !== "number" || !Number.isSafeInteger(id) || id <= 0)
+      return null;
+    return { d, t, id };
+  } catch {
+    return null;
+  }
+}
+var DETAIL_PATH = DATA_CENTER_REPORTS.commissionDetail.path;
+
+// src/lib/data-center/matrix.ts
+function buildMatrixHeaderLayout(columns3) {
+  const groupStartKeys = new Set;
+  const grouped = columns3.some((column2) => column2.group);
+  if (!grouped) {
+    return {
+      depth: 1,
+      rows: [columns3.map((column2, index3) => ({
+        key: column2.key,
+        columnKey: column2.key,
+        colSpan: 1,
+        rowSpan: 1,
+        firstLeafIndex: index3
+      }))],
+      groupStartKeys
+    };
+  }
+  const top = [];
+  const bottom = [];
+  const closedGroups = new Set;
+  let current = null;
+  columns3.forEach((column2, index3) => {
+    const groupKey2 = column2.group?.key;
+    if (current && current.groupKey !== groupKey2) {
+      closedGroups.add(current.groupKey);
+      current = null;
+    }
+    if (!groupKey2) {
+      top.push({ key: column2.key, columnKey: column2.key, colSpan: 1, rowSpan: 2, firstLeafIndex: index3 });
+      return;
+    }
+    if (current) {
+      current.colSpan += 1;
+    } else {
+      if (closedGroups.has(groupKey2)) {
+        throw new Error(`INVALID_STATE: 矩阵表分组「${groupKey2}」的列不相邻`);
+      }
+      current = { key: `group:${groupKey2}`, groupKey: groupKey2, colSpan: 1, rowSpan: 1, firstLeafIndex: index3 };
+      top.push(current);
+      groupStartKeys.add(column2.key);
+    }
+    bottom.push({ key: column2.key, columnKey: column2.key, colSpan: 1, rowSpan: 1, firstLeafIndex: index3 });
+  });
+  return { depth: 2, rows: [top, bottom], groupStartKeys };
+}
+function toTotal(value) {
+  const parsed = typeof value === "string" && value.trim() !== "" ? Number(value) : value;
+  return typeof parsed === "number" && Number.isFinite(parsed) ? parsed : null;
+}
+function numericString(value) {
+  if (typeof value !== "string" || value.trim() === "")
+    return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+function sortMatrixRows(rows, sortValue, direction, rowKey) {
+  const sign = direction === "asc" ? 1 : -1;
+  const keyed = rows.map((row) => {
+    const raw = sortValue(row);
+    const missing = raw == null || typeof raw === "number" && Number.isNaN(raw);
+    return { row, raw, missing, key: rowKey(row) };
+  });
+  const numeric5 = keyed.every((item) => item.missing || (typeof item.raw === "number" ? true : numericString(item.raw) != null));
+  const collator = new Intl.Collator("zh-CN", { numeric: true });
+  const valueOf = (raw) => typeof raw === "number" ? raw : numericString(raw);
+  keyed.sort((a, b2) => {
+    if (a.missing !== b2.missing)
+      return a.missing ? 1 : -1;
+    if (!a.missing && !b2.missing) {
+      const order = numeric5 ? valueOf(a.raw) - valueOf(b2.raw) : collator.compare(String(a.raw), String(b2.raw));
+      if (order !== 0)
+        return order * sign;
+    }
+    return a.key < b2.key ? -1 : a.key > b2.key ? 1 : 0;
+  });
+  return keyed.map((item) => item.row);
+}
+function listMonthDays(month) {
+  const match = /^(\d{4})-(\d{2})$/.exec(month);
+  if (!match)
+    throw new Error(`INVALID_PARAMS: 月份格式应为 YYYY-MM：${month}`);
+  const year2 = Number(match[1]);
+  const monthIndex = Number(match[2]) - 1;
+  if (year2 < 1000 || monthIndex < 0 || monthIndex > 11)
+    throw new Error(`INVALID_PARAMS: 月份格式应为 YYYY-MM：${month}`);
+  const dayCount = new Date(Date.UTC(year2, monthIndex + 1, 0)).getUTCDate();
+  return Array.from({ length: dayCount }, (_2, offset) => {
+    const day2 = offset + 1;
+    const weekday = new Date(Date.UTC(year2, monthIndex, day2)).getUTCDay();
+    return {
+      date: `${match[1]}-${match[2]}-${String(day2).padStart(2, "0")}`,
+      day: day2,
+      weekend: weekday === 0 || weekday === 6
+    };
+  });
+}
+
+// src/lib/data-center/commission-columns.ts
+var DAY_WIDTH = 88;
+var SPLIT_WIDTH = 80;
+var TOTAL_WIDTH = 112;
+function partValue(cell, part) {
+  if (!cell)
+    return 0;
+  return part === "total" ? cellTotal(cell) : cell[part];
+}
+function partsOf(view3) {
+  if (view3 === "split")
+    return ["sale", "service"];
+  if (view3 === "sale")
+    return ["sale"];
+  if (view3 === "service")
+    return ["service"];
+  return ["total"];
+}
+var PART_HEADERS = {
+  total: "提成",
+  sale: COMMISSION_SOURCE_LABELS.sale,
+  service: COMMISSION_SOURCE_LABELS.service
+};
+function buildCommissionDailyColumns(input) {
+  const { month, view: view3, grain, today } = input;
+  const columns3 = [];
+  if (grain === "position") {
+    columns3.push({ key: "position", header: "岗位", width: 120, freeze: "left", role: "position", exportValue: (row) => row.positionName, exportWidth: 16 }, {
+      key: "employees",
+      header: "人数",
+      width: 72,
+      freeze: "left",
+      unit: "count",
+      role: "employees",
+      value: (row) => row.employeeCount,
+      aggregate: { kind: "server" }
+    });
+  } else {
+    columns3.push({ key: "name", header: "姓名", width: 96, freeze: "left", role: "name", exportValue: (row) => row.employeeName, exportWidth: 12 }, { key: "position", header: "岗位", width: 96, freeze: "left", role: "position", exportValue: (row) => row.positionName, exportWidth: 14 }, { key: "store", header: "门店", width: 120, freeze: "left", role: "store", exportValue: (row) => row.storeName, exportWidth: 16 });
+  }
+  const parts = partsOf(view3);
+  for (const day2 of listMonthDays(month)) {
+    const future = day2.date > today;
+    for (const part of parts) {
+      columns3.push({
+        key: parts.length > 1 ? `d:${day2.date}:${part}` : `d:${day2.date}`,
+        header: parts.length > 1 ? PART_HEADERS[part] : `${day2.day}日`,
+        group: parts.length > 1 ? { key: `day:${day2.date}`, header: `${day2.day}日` } : undefined,
+        width: parts.length > 1 ? SPLIT_WIDTH : DAY_WIDTH,
+        align: "right",
+        weekend: day2.weekend,
+        day: day2.date,
+        part,
+        value: (row) => future ? null : partValue(row.days[day2.date], part),
+        aggregate: { kind: "sum" },
+        exportWidth: 11
+      });
+    }
+  }
+  for (const part of parts) {
+    columns3.push({
+      key: parts.length > 1 ? `total:${part}` : "total",
+      header: parts.length > 1 ? PART_HEADERS[part] : "本期合计",
+      group: parts.length > 1 ? { key: "total", header: "本期合计" } : undefined,
+      width: TOTAL_WIDTH,
+      freeze: "right",
+      align: "right",
+      day: "total",
+      part,
+      value: (row) => partValue(row.total, part),
+      aggregate: { kind: "sum" },
+      exportWidth: 14
+    });
+  }
+  return columns3;
+}
+function commissionDailyTotalsMap(columns3, totals) {
+  const pseudo = {
+    key: "__totals__",
+    employeeId: null,
+    employeeName: "",
+    positionName: "",
+    storeId: null,
+    storeName: "",
+    storeCount: 0,
+    employeeCount: totals.employeeCount,
+    days: totals.days,
+    total: totals.total
+  };
+  const map = {};
+  for (const column2 of columns3) {
+    if (!column2.value || (column2.aggregate?.kind ?? "none") === "none")
+      continue;
+    map[column2.key] = column2.value(pseudo) ?? null;
+  }
+  return map;
+}
+var DEFAULT_COMMISSION_SORT = { key: "total", direction: "desc" };
+function parseCommissionSort(raw, columns3) {
+  const key = raw.sort?.trim();
+  if (!key || !columns3.some((column2) => column2.key === key))
+    return DEFAULT_COMMISSION_SORT;
+  return { key, direction: raw.dir === "asc" ? "asc" : "desc" };
+}
+function sortCommissionDailyRows(rows, columns3, sort) {
+  const column2 = columns3.find((item) => item.key === sort.key);
+  const sortValue = (row) => {
+    if (!column2)
+      return cellTotal(row.total);
+    if (column2.value)
+      return column2.value(row);
+    const exported = column2.exportValue?.(row);
+    return exported == null || exported instanceof Date || typeof exported === "boolean" ? null : exported;
+  };
+  return sortMatrixRows(rows, sortValue, sort.direction, (row) => row.key);
+}
+function commissionTotalsLabel(grain, totals) {
+  return grain === "position" ? `合计（${totals.rowCount} 个岗位）` : `合计（${totals.employeeCount} 人）`;
+}
+function productLabel(row) {
+  const category = [row.categoryL1, row.categoryL2].filter(Boolean).join(" / ");
+  return category ? `${row.productName}（${category}）` : row.productName;
+}
+function buildCommissionDetailColumns(input) {
+  return [
+    { key: "store", header: "门店", width: 120, freeze: "left", exportValue: (row) => row.storeName, exportWidth: 16 },
+    { key: "date", header: "日期", width: 104, freeze: "left", exportValue: (row) => row.date, exportWidth: 12 },
+    ...input.showEmployee ? [{
+      key: "employee",
+      header: "员工",
+      width: 120,
+      exportValue: (row) => `${row.employeeName}（${row.positionName || "无岗位"}）`,
+      exportWidth: 16
+    }] : [],
+    { key: "order", header: "订单号", width: 176, role: "order", exportValue: (row) => row.orderId, exportWidth: 22 },
+    { key: "customer", header: "顾客姓名", width: 96, exportValue: (row) => row.customerName, exportWidth: 12 },
+    { key: "kind", header: "订单类型", width: 140, exportValue: (row) => row.orderKind, exportWidth: 16 },
+    { key: "product", header: "项目名称", width: 240, exportValue: (row) => productLabel(row), exportWidth: 36 },
+    {
+      key: "received",
+      header: "实收金额",
+      width: 104,
+      align: "right",
+      hint: "销售行 = 这笔款项落在该商品行上的金额（退款为负）；服务行为 0，见消耗额",
+      value: (row) => row.received,
+      aggregate: { kind: "sum" }
+    },
+    {
+      key: "consume",
+      header: "消耗额",
+      width: 96,
+      align: "right",
+      hint: "仅服务行：单价 × 次数",
+      value: (row) => row.consumeAmount
+    },
+    {
+      key: "allocated",
+      header: "分配金额",
+      width: 104,
+      align: "right",
+      hint: "销售行 = 分配给该员工的营业额；服务行 = round(round(单价 × 次数, 2) × 分配比例, 2)",
+      value: (row) => row.allocated,
+      aggregate: { kind: "sum" }
+    },
+    {
+      key: "rate",
+      header: "提成点",
+      width: 88,
+      align: "right",
+      unit: "percent",
+      hint: "落库的费率快照；合计行为平均提成点 = Σ提成 ÷ Σ分配金额",
+      value: (row) => row.rate,
+      aggregate: { kind: "server" }
+    },
+    {
+      key: "commission",
+      header: "提成",
+      width: 104,
+      align: "right",
+      value: (row) => row.commission,
+      aggregate: { kind: "sum" }
+    },
+    {
+      key: "source",
+      header: "提成类型",
+      width: 80,
+      role: "source",
+      exportValue: (row) => COMMISSION_SOURCE_LABELS[row.source],
+      exportWidth: 10
+    }
+  ];
+}
+
+// src/lib/data-center/commission-sql.ts
+var import_drizzle_orm66 = __toESM(require_drizzle_orm(), 1);
+var SALE_FROM = import_drizzle_orm66.sql`
+      FROM sale_payment_item_allocations spia
+      JOIN sale_payment_item_receipts spir ON spir.id = spia.sale_payment_item_receipt_id
+      JOIN sale_items si ON si.sale_item_id = spir.sale_item_id
+      JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
+      JOIN sale_order_performance_events spe ON spe.sale_payment_id = spir.sale_payment_id`;
+function saleWhere(session4, scope, filters) {
+  return import_drizzle_orm66.sql`
+      WHERE ${scopeFilterSql(session4, scope, "so.store_id")}
+        AND spia.is_void = FALSE
+        AND so.sale_order_type IN ('销售单', '转换单')
+        AND spe.status = '已支付'
+        AND spe.performance_date BETWEEN ${filters.range.start} AND ${filters.range.end}
+        ${filters.employeeId ? import_drizzle_orm66.sql`AND spia.employee_id = ${filters.employeeId}` : import_drizzle_orm66.sql``}
+        ${filters.storeId ? import_drizzle_orm66.sql`AND so.store_id = ${filters.storeId}` : import_drizzle_orm66.sql``}`;
+}
+var SERVICE_FROM = import_drizzle_orm66.sql`
+      FROM service_commissions sc
+      JOIN service_items sit ON sit.service_item_id = sc.service_item_id
+      JOIN service_orders so ON so.service_order_id = sit.service_order_id`;
+function serviceWhere(session4, scope, filters) {
+  return import_drizzle_orm66.sql`
+      WHERE ${scopeFilterSql(session4, scope, "so.store_id")}
+        AND sc.is_void = FALSE
+        AND so.status = '已完成'
+        AND so.service_date BETWEEN ${filters.range.start} AND ${filters.range.end}
+        ${filters.employeeId ? import_drizzle_orm66.sql`AND sc.employee_id = ${filters.employeeId}` : import_drizzle_orm66.sql``}
+        ${filters.storeId ? import_drizzle_orm66.sql`AND so.store_id = ${filters.storeId}` : import_drizzle_orm66.sql``}`;
+}
+function sourceParts(source, sale, service) {
+  return source === "sale" ? [sale] : source === "service" ? [service] : [sale, service];
+}
+function commissionLinesCteSql(session4, scope, filters) {
+  const sale = import_drizzle_orm66.sql`
+      SELECT 'sale'::text AS source, spia.id AS source_id, spia.employee_id, so.store_id,
+             spe.performance_date AS biz_date,
+             COALESCE(spia.commission_amount::numeric, 0) AS sale_commission,
+             0::numeric AS service_commission,
+             'S:' || so.sale_order_id AS order_key
+      ${SALE_FROM}
+      ${saleWhere(session4, scope, filters)}`;
+  const service = import_drizzle_orm66.sql`
+      SELECT 'service'::text AS source, sc.id AS source_id, sc.employee_id, so.store_id,
+             so.service_date AS biz_date,
+             0::numeric AS sale_commission,
+             sc.commission_amount::numeric AS service_commission,
+             'V:' || so.service_order_id AS order_key
+      ${SERVICE_FROM}
+      ${serviceWhere(session4, scope, filters)}`;
+  return import_drizzle_orm66.sql`commission_lines AS (${import_drizzle_orm66.sql.join(sourceParts(filters.source, sale, service), import_drizzle_orm66.sql` UNION ALL `)})`;
+}
+function escapeLike(text5) {
+  return text5.replace(/[\\%_]/g, (ch) => `\\${ch}`);
+}
+function groupKeySql(grain) {
+  if (grain === "position")
+    return import_drizzle_orm66.sql`COALESCE(NULLIF(TRIM(sw.position_name), ''), ${NO_POSITION_LABEL})`;
+  if (grain === "employee")
+    return import_drizzle_orm66.sql`cl.employee_id`;
+  return import_drizzle_orm66.sql`cl.employee_id || '|' || cl.store_id`;
+}
+function commissionMatrixSql(session4, scope, range, grain, options) {
+  const pattern = options.search ? `%${escapeLike(options.search)}%` : null;
+  return import_drizzle_orm66.sql`
+    WITH ${commissionLinesCteSql(session4, scope, { range })},
+    tagged AS (
+      SELECT cl.*, ${groupKeySql(grain)} AS gk,
+             sw.name AS employee_name, sw.position_name, st.store_name
+      FROM commission_lines cl
+      LEFT JOIN staff_wechat_users sw ON sw.employee_id = cl.employee_id
+      LEFT JOIN stores st ON st.store_id = cl.store_id
+      ${pattern ? import_drizzle_orm66.sql`WHERE (sw.name ILIKE ${pattern} OR sw.position_name ILIKE ${pattern} OR st.store_name ILIKE ${pattern})` : import_drizzle_orm66.sql``}
+    ),
+    visible AS (
+      SELECT * FROM tagged
+      ${options.hideZero ? import_drizzle_orm66.sql`WHERE gk IN (
+            SELECT gk FROM tagged GROUP BY gk
+            HAVING SUM(sale_commission + service_commission) <> 0
+          )` : import_drizzle_orm66.sql``}
+    )
+    SELECT gk,
+           biz_date::text AS d,
+           GROUPING(gk) AS g_gk,
+           GROUPING(biz_date) AS g_d,
+           SUM(sale_commission) AS sale,
+           SUM(service_commission) AS service,
+           COUNT(DISTINCT order_key) AS orders,
+           COUNT(DISTINCT employee_id) AS employees,
+           COUNT(DISTINCT store_id) AS stores,
+           MIN(employee_id) AS employee_id,
+           MIN(employee_name) AS employee_name,
+           MIN(position_name) AS position_name,
+           MIN(store_id) AS store_id,
+           MIN(store_name) AS store_name
+    FROM visible
+    GROUP BY GROUPING SETS ((gk, biz_date), (gk), (biz_date), ())
+  `;
+}
+function commissionKpiSql(session4, scope, range) {
+  return import_drizzle_orm66.sql`
+    WITH ${commissionLinesCteSql(session4, scope, { range })},
+    per_employee AS (
+      SELECT employee_id, SUM(sale_commission + service_commission) AS net
+      FROM commission_lines
+      GROUP BY employee_id
+    )
+    SELECT
+      (SELECT COALESCE(SUM(sale_commission), 0) FROM commission_lines) AS sale,
+      (SELECT COALESCE(SUM(service_commission), 0) FROM commission_lines) AS service,
+      (SELECT COUNT(DISTINCT order_key) FROM commission_lines)::int AS orders,
+      (SELECT COUNT(*) FROM per_employee WHERE net > 0)::int AS earning_employees,
+      (SELECT COUNT(*) FROM per_employee)::int AS employees
+  `;
+}
+function pendingAllocationSql(session4, scope, range) {
+  return import_drizzle_orm66.sql`
+    SELECT COUNT(*)::int AS count, COALESCE(SUM(sop.amount::numeric), 0) AS amount
+    FROM sale_order_payments sop
+    JOIN sale_orders so ON so.sale_order_id = sop.sale_order_id
+    WHERE ${scopeFilterSql(session4, scope, "so.store_id")}
+      AND sop.allocation_status = '待分配'
+      AND so.sale_order_type IN ('销售单', '转换单')
+      AND so.legacy_source IS DISTINCT FROM 'workfine'
+      AND sop.performance_attribution_date BETWEEN ${range.start} AND ${range.end}
+      AND (
+        EXISTS (
+          SELECT 1
+            FROM sale_payment_item_receipts spir
+           WHERE spir.sale_payment_id = sop.id
+             AND spir.amount::numeric <> 0
+             AND NOT EXISTS (
+               SELECT 1
+                 FROM sale_payment_item_allocations spia
+                WHERE spia.sale_payment_item_receipt_id = spir.id
+                  AND spia.is_void = false
+             )
+        )
+        OR (
+          NOT EXISTS (SELECT 1 FROM sale_payment_item_receipts spir WHERE spir.sale_payment_id = sop.id)
+          AND GREATEST(COALESCE(so.received::numeric, 0) - COALESCE(so.refunded_amount::numeric, 0), 0) > 0
+        )
+      )
+  `;
+}
+function commissionEmployeeOptionsSql(session4, scope, range) {
+  return import_drizzle_orm66.sql`
+    WITH ${commissionLinesCteSql(session4, scope, { range })}
+    SELECT e.employee_id, sw.name, sw.position_name,
+           COALESCE(home.store_name, org.name) AS home_name
+    FROM (SELECT DISTINCT employee_id FROM commission_lines) e
+    LEFT JOIN staff_wechat_users sw ON sw.employee_id = e.employee_id
+    LEFT JOIN stores home ON home.store_id = sw.store_id
+    LEFT JOIN org_nodes org ON org.id = sw.org_node_id
+    ORDER BY COALESCE(home.store_name, org.name) ASC NULLS LAST, sw.name ASC NULLS LAST, e.employee_id ASC
+  `;
+}
+function detailLineFilters(filters, month) {
+  return {
+    range: filters.date ? { start: filters.date, end: filters.date } : month,
+    employeeId: filters.employeeId,
+    storeId: filters.storeId,
+    source: filters.source
+  };
+}
+function detailRowsCteSql(session4, scope, filters) {
+  const sale = import_drizzle_orm66.sql`
+      SELECT 'sale'::text AS source, spia.id AS source_id, spe.performance_date AS biz_date,
+             so.store_id, COALESCE(st.store_name, so.store_name) AS store_name,
+             spia.employee_id, sw.name AS employee_name, sw.position_name,
+             so.sale_order_id AS order_id, spir.sale_payment_id AS payment_id,
+             COALESCE(cw.name, so.customer_name) AS customer_name,
+             so.sale_order_type::text || '·' || spe.change_type::text AS order_kind,
+             si.product_name, pc.product_kind AS category_l1, pc.category_name AS category_l2,
+             spir.amount::numeric AS received,
+             NULL::numeric AS consume_amount,
+             spia.allocated_amount::numeric AS allocated,
+             spia.commission_rate::numeric AS rate,
+             COALESCE(spia.commission_amount::numeric, 0) AS commission
+      ${SALE_FROM}
+      LEFT JOIN stores st ON st.store_id = so.store_id
+      LEFT JOIN staff_wechat_users sw ON sw.employee_id = spia.employee_id
+      LEFT JOIN client_wechat_users cw ON cw.user_id = so.client_user_id
+      LEFT JOIN product_skus ps ON ps.sku_id = si.sku_id
+      LEFT JOIN product_categories pc ON pc.category_id = ps.category_id
+      ${saleWhere(session4, scope, filters)}`;
+  const service = import_drizzle_orm66.sql`
+      SELECT 'service'::text AS source, sc.id AS source_id, so.service_date AS biz_date,
+             so.store_id, st.store_name,
+             sc.employee_id, sw.name AS employee_name, sw.position_name,
+             so.service_order_id AS order_id, NULL::bigint AS payment_id,
+             cw.name AS customer_name,
+             '服务单' || COALESCE('·' || so.service_order_type::text, '') AS order_kind,
+             si.product_name, pc.product_kind AS category_l1, pc.category_name AS category_l2,
+             0::numeric AS received,
+             ROUND(sit.unit_real_price::numeric * sit.session_used, 2) AS consume_amount,
+             ROUND(ROUND(sit.unit_real_price::numeric * sit.session_used, 2) * sc.allocation_ratio::numeric, 2) AS allocated,
+             sc.commission_rate::numeric AS rate,
+             sc.commission_amount::numeric AS commission
+      ${SERVICE_FROM}
+      LEFT JOIN stores st ON st.store_id = so.store_id
+      LEFT JOIN staff_wechat_users sw ON sw.employee_id = sc.employee_id
+      LEFT JOIN client_wechat_users cw ON cw.user_id = so.client_user_id
+      LEFT JOIN sale_items si ON si.sale_item_id = sit.sale_item_id
+      LEFT JOIN product_skus ps ON ps.sku_id = si.sku_id
+      LEFT JOIN product_categories pc ON pc.category_id = ps.category_id
+      ${serviceWhere(session4, scope, filters)}`;
+  return import_drizzle_orm66.sql`detail_rows AS (${import_drizzle_orm66.sql.join(sourceParts(filters.source, sale, service), import_drizzle_orm66.sql` UNION ALL `)})`;
+}
+function commissionDetailPageSql(session4, scope, filters, page) {
+  const seek = page.after ? import_drizzle_orm66.sql`WHERE (biz_date < ${page.after.d}::date
+            OR (biz_date = ${page.after.d}::date AND source > ${page.after.t})
+            OR (biz_date = ${page.after.d}::date AND source = ${page.after.t} AND source_id < ${page.after.id}))` : page.before ? import_drizzle_orm66.sql`WHERE (biz_date > ${page.before.d}::date
+            OR (biz_date = ${page.before.d}::date AND source < ${page.before.t})
+            OR (biz_date = ${page.before.d}::date AND source = ${page.before.t} AND source_id > ${page.before.id}))` : import_drizzle_orm66.sql``;
+  const order = page.before && !page.after ? import_drizzle_orm66.sql`ORDER BY biz_date ASC, source DESC, source_id ASC` : import_drizzle_orm66.sql`ORDER BY biz_date DESC, source ASC, source_id DESC`;
+  return import_drizzle_orm66.sql`
+    WITH ${detailRowsCteSql(session4, scope, filters)}
+    SELECT source, source_id, biz_date::text AS biz_date, store_id, store_name, employee_id, employee_name,
+           position_name, order_id, payment_id, customer_name, order_kind, product_name, category_l1, category_l2,
+           received, consume_amount, allocated, rate, commission
+    FROM detail_rows
+    ${seek}
+    ${order}
+    LIMIT ${page.limit + 1}
+  `;
+}
+function commissionDetailSummarySql(session4, scope, filters) {
+  const sale = import_drizzle_orm66.sql`
+      SELECT 'sale'::text AS source, 'S:' || so.sale_order_id AS order_key,
+             spir.amount::numeric AS received,
+             spia.allocated_amount::numeric AS allocated,
+             COALESCE(spia.commission_amount::numeric, 0) AS commission
+      ${SALE_FROM}
+      ${saleWhere(session4, scope, filters)}`;
+  const service = import_drizzle_orm66.sql`
+      SELECT 'service'::text AS source, 'V:' || so.service_order_id AS order_key,
+             0::numeric AS received,
+             ROUND(ROUND(sit.unit_real_price::numeric * sit.session_used, 2) * sc.allocation_ratio::numeric, 2) AS allocated,
+             sc.commission_amount::numeric AS commission
+      ${SERVICE_FROM}
+      ${serviceWhere(session4, scope, filters)}`;
+  return import_drizzle_orm66.sql`
+    WITH summary_rows AS (${import_drizzle_orm66.sql.join(sourceParts(filters.source, sale, service), import_drizzle_orm66.sql` UNION ALL `)})
+    SELECT COUNT(*)::int AS count,
+           COUNT(DISTINCT order_key)::int AS orders,
+           COALESCE(SUM(received), 0) AS received,
+           COALESCE(SUM(allocated), 0) AS allocated,
+           COALESCE(SUM(commission), 0) AS commission,
+           COALESCE(SUM(commission) FILTER (WHERE source = 'sale'), 0) AS sale,
+           COALESCE(SUM(commission) FILTER (WHERE source = 'service'), 0) AS service
+    FROM summary_rows
+  `;
+}
+
+// src/actions/data-center/commission.ts
+"use server";
+function rowsOf(result) {
+  return result;
+}
+function toNumber(value) {
+  const n = typeof value === "string" ? Number(value) : typeof value === "number" ? value : NaN;
+  return Number.isFinite(n) ? n : 0;
+}
+function toNullableNumber(value) {
+  if (value == null || value === "")
+    return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+function ratio2(numerator, denominator) {
+  return denominator > 0 ? numerator / denominator : null;
+}
+async function resolveContext(session4, query) {
+  const get = (key) => firstQueryValue(query[key]);
+  const scope = parseScope({ scope: get("scope"), scopeId: get("scopeId") });
+  await validateScope(session4, scope);
+  const today = shanghaiToday();
+  const period = parseReportMonth({ month: get("month") }, today);
+  return { scope, period, today, get };
+}
+var getCommissionDaily = withAllPermissions(DATA_CENTER_STAFF_COMMISSION_ACTIONS, async (session4, query) => {
+  const { scope, period, today, get } = await resolveContext(session4, query);
+  const options = parseCommissionDailyOptions(query);
+  const isAllScope = scope.type === "all";
+  const grain = grainOf(options, isAllScope);
+  const range = period.current;
+  const technicianEnd = range.end > today ? today : range.end;
+  const [matrixRows, kpiRows, technicianRows, pendingRows, scopeName] = await Promise.all([
+    db2.execute(commissionMatrixSql(session4, scope, range, grain, options)),
+    db2.execute(commissionKpiSql(session4, scope, range)),
+    db2.execute(technicianCountSql(session4, scope, technicianEnd)),
+    db2.execute(pendingAllocationSql(session4, scope, range)),
+    resolveScopeName(scope)
+  ]);
+  const { rows, totals } = assembleCommissionMatrix(rowsOf(matrixRows), grain);
+  const columns3 = buildCommissionDailyColumns({ month: period.month, view: options.view, grain, today });
+  const sort = parseCommissionSort({ sort: get("sort"), dir: get("dir") }, columns3);
+  const kpi = rowsOf(kpiRows)[0] ?? {};
+  const sale = toNumber(kpi.sale);
+  const service = toNumber(kpi.service);
+  const total = sale + service;
+  const orders = toNumber(kpi.orders);
+  const technicianCount = toNumber(rowsOf(technicianRows)[0]?.v);
+  const pending = rowsOf(pendingRows)[0] ?? {};
+  return {
+    month: period.month,
+    scopeName,
+    isAllScope,
+    options,
+    grain,
+    sort,
+    rows: sortCommissionDailyRows(rows, columns3, sort),
+    totals,
+    kpis: {
+      total,
+      sale,
+      service,
+      saleShare: ratio2(sale, total),
+      serviceShare: ratio2(service, total),
+      earningEmployees: toNumber(kpi.earning_employees),
+      employees: toNumber(kpi.employees),
+      technicianCount,
+      perTechnician: ratio2(total, technicianCount),
+      orders,
+      perOrder: ratio2(total, orders)
+    },
+    pending: { count: toNumber(pending.count), amount: toNumber(pending.amount) },
+    canLinkAllocations: hasUiCapability(session4.permissions.actions, "allocation:list")
+  };
+});
+function detailSignature(scope, month, filters) {
+  return commissionFilterSignature({
+    scope: scope.type,
+    scopeId: scope.type === "market" || scope.type === "store" ? scope.id : "",
+    month,
+    employeeId: filters.employeeId,
+    storeId: filters.storeId,
+    date: filters.date,
+    type: filters.source
+  });
+}
+function toDetailRow(row, maskCustomer) {
+  const source = row.source === "service" ? "service" : "sale";
+  const sourceId = toNumber(row.source_id);
+  const customer = row.customer_name == null ? "" : String(row.customer_name);
+  return {
+    key: `${source}:${sourceId}`,
+    source,
+    sourceId,
+    date: String(row.biz_date ?? ""),
+    storeId: String(row.store_id ?? ""),
+    storeName: String(row.store_name ?? row.store_id ?? ""),
+    employeeId: String(row.employee_id ?? ""),
+    employeeName: String(row.employee_name ?? row.employee_id ?? ""),
+    positionName: row.position_name == null ? "" : String(row.position_name),
+    orderId: String(row.order_id ?? ""),
+    paymentId: toNullableNumber(row.payment_id),
+    customerName: maskCustomer ? maskName(customer) : customer,
+    orderKind: String(row.order_kind ?? ""),
+    productName: row.product_name == null ? "" : String(row.product_name),
+    categoryL1: row.category_l1 == null ? "" : String(row.category_l1),
+    categoryL2: row.category_l2 == null ? "" : String(row.category_l2),
+    received: toNumber(row.received),
+    consumeAmount: toNullableNumber(row.consume_amount),
+    allocated: toNullableNumber(row.allocated),
+    rate: toNullableNumber(row.rate),
+    commission: toNumber(row.commission)
+  };
+}
+function keyOf(row) {
+  return { d: row.date, t: row.source, id: row.sourceId };
+}
+function shouldMaskCustomer(session4) {
+  return !hasUiCapability(session4.permissions.actions, "customer:list");
+}
+var getCommissionDetail = withAllPermissions(DATA_CENTER_STAFF_COMMISSION_ACTIONS, async (session4, query) => {
+  const { scope, period, get } = await resolveContext(session4, query);
+  const filters = parseCommissionDetailFilters(query, period.current);
+  const pageSize = parseCommissionDetailPageSize(get("size"));
+  const signature = detailSignature(scope, period.month, filters);
+  const after = decodeCommissionCursor(get("after"), signature);
+  const before = after ? null : decodeCommissionCursor(get("before"), signature);
+  const lineFilters = detailLineFilters(filters, period.current);
+  const maskCustomer = shouldMaskCustomer(session4);
+  const [pageRows, summaryRows, optionRows, scopeName] = await Promise.all([
+    db2.execute(commissionDetailPageSql(session4, scope, lineFilters, { limit: pageSize, after, before })),
+    db2.execute(commissionDetailSummarySql(session4, scope, lineFilters)),
+    db2.execute(commissionEmployeeOptionsSql(session4, scope, period.current)),
+    resolveScopeName(scope)
+  ]);
+  const fetched = rowsOf(pageRows).map((row) => toDetailRow(row, maskCustomer));
+  const hasMore = fetched.length > pageSize;
+  const visible = hasMore ? fetched.slice(0, pageSize) : fetched;
+  const rows = before ? visible.reverse() : visible;
+  const first3 = rows[0];
+  const last = rows[rows.length - 1];
+  const hasPrev = before ? hasMore : !!after;
+  const hasNext = before ? true : hasMore;
+  const summary = rowsOf(summaryRows)[0] ?? {};
+  const allocated = toNumber(summary.allocated);
+  const commission = toNumber(summary.commission);
+  return {
+    month: period.month,
+    scopeName,
+    filters,
+    pageSize,
+    rows,
+    summary: {
+      count: toNumber(summary.count),
+      orders: toNumber(summary.orders),
+      received: toNumber(summary.received),
+      allocated,
+      commission,
+      sale: toNumber(summary.sale),
+      service: toNumber(summary.service),
+      averageRate: allocated !== 0 ? commission / allocated : null
+    },
+    prevCursor: hasPrev && first3 ? encodeCommissionCursor(keyOf(first3), signature) : null,
+    nextCursor: hasNext && last ? encodeCommissionCursor(keyOf(last), signature) : null,
+    employeeOptions: rowsOf(optionRows).map((row) => {
+      const name = String(row.name ?? row.employee_id ?? "");
+      const home = row.home_name == null ? "无门店" : String(row.home_name);
+      const position = row.position_name ? String(row.position_name) : "无岗位";
+      return { employeeId: String(row.employee_id), label: `${home} · ${name}（${position}）` };
+    }),
+    canLinkOrders: hasUiCapability(session4.permissions.actions, "allocation:list"),
+    customerMasked: maskCustomer
+  };
+});
+var exportCommissionDetail = withAllPermissions(DATA_CENTER_STAFF_COMMISSION_ACTIONS, async (session4, query, options = {}) => {
+  const { scope, period } = await resolveContext(session4, query);
+  const filters = parseCommissionDetailFilters(query, period.current);
+  const signature = detailSignature(scope, period.month, filters);
+  const limit = resolveExportBatchLimit(options.limit) ?? EXPORT_WORKER_BATCH_SIZE;
+  const after = decodeCommissionCursor(options.cursor, signature);
+  if (options.cursor && !after)
+    throw new Error("INVALID_STATE: 导出分页游标无效");
+  const lineFilters = detailLineFilters(filters, period.current);
+  const [pageRows, summaryRows, scopeName] = await Promise.all([
+    db2.execute(commissionDetailPageSql(session4, scope, lineFilters, { limit, after })),
+    after ? Promise.resolve(null) : db2.execute(commissionDetailSummarySql(session4, scope, lineFilters)),
+    resolveScopeName(scope)
+  ]);
+  const maskCustomer = shouldMaskCustomer(session4);
+  const fetched = rowsOf(pageRows).map((row) => toDetailRow(row, maskCustomer));
+  const hasMore = fetched.length > limit;
+  const rows = hasMore ? fetched.slice(0, limit) : fetched;
+  let summary = null;
+  if (summaryRows) {
+    const raw = rowsOf(summaryRows)[0] ?? {};
+    const allocated = toNumber(raw.allocated);
+    const commission = toNumber(raw.commission);
+    summary = {
+      count: toNumber(raw.count),
+      orders: toNumber(raw.orders),
+      received: toNumber(raw.received),
+      allocated,
+      commission,
+      sale: toNumber(raw.sale),
+      service: toNumber(raw.service),
+      averageRate: allocated !== 0 ? commission / allocated : null
+    };
+  }
+  return {
+    rows,
+    truncated: false,
+    hasMore,
+    ...hasMore ? { nextCursor: encodeCommissionCursor(keyOf(rows[rows.length - 1]), signature) } : {},
+    summary,
+    scopeName,
+    month: period.month,
+    filters
+  };
+});
+
+// src/lib/data-center/matrix-export.ts
+var NUM_FMT = { amount: "#,##0.00", percent: "0.00", count: "#,##0" };
+function toWorkerExportColumns(columns3, serverTotals) {
+  return columns3.map((column2) => {
+    const unit = column2.unit ?? "amount";
+    const numeric5 = !column2.exportValue && !!column2.value;
+    const hasTotal = !!serverTotals && Object.prototype.hasOwnProperty.call(serverTotals, column2.key);
+    return {
+      header: numeric5 ? headerWithUnit(column2.header, unit) : column2.header,
+      width: column2.exportWidth,
+      group: column2.group ? { key: column2.group.key, header: column2.group.header } : undefined,
+      value: column2.exportValue ?? (column2.value ? (row) => metricCell(column2.value(row), unit) : () => ""),
+      ...numeric5 ? { numFmt: NUM_FMT[unit] } : {},
+      ...hasTotal ? { total: metricCell(toTotal(serverTotals[column2.key]), unit) } : {}
+    };
+  });
+}
+function countLeftFrozen(columns3) {
+  let count = 0;
+  while (count < columns3.length && columns3[count].freeze === "left")
+    count += 1;
+  return count;
+}
+
+// src/export-worker/report-views/commission.ts
+init_time_range();
+function asRows(rows) {
+  return async function* () {
+    for (const row of rows)
+      yield row;
+  }();
+}
+function periodText(month) {
+  const range = monthRange(month);
+  return `${range.start} ~ ${range.end}`;
+}
+async function commissionDailyExport(params) {
+  const data = await getCommissionDaily(params);
+  const columns3 = buildCommissionDailyColumns({
+    month: data.month,
+    view: data.options.view,
+    grain: data.grain,
+    today: shanghaiToday()
+  });
+  const extra = [
+    { label: "视图", value: COMMISSION_VIEW_LABELS[data.options.view] },
+    {
+      label: "汇总维度",
+      value: data.grain === "position" ? "按岗位" : data.grain === "employee" ? "按员工（合并门店）" : "按员工 × 单据门店"
+    },
+    ...data.options.search ? [{ label: "员工搜索", value: data.options.search }] : [],
+    ...data.options.hideZero ? [{ label: "隐藏 0 提成行", value: "是（负数行保留）" }] : [],
+    { label: "口径", value: "业绩提成按款项归属日期、消耗提成按服务日期；读落库提成额，按单据门店切分" }
+  ];
+  return {
+    sheetName: "员工提成日报",
+    columns: toWorkerExportColumns(columns3, commissionDailyTotalsMap(columns3, data.totals)),
+    rows: asRows(data.rows),
+    frozenColumns: countLeftFrozen(columns3),
+    totalsLabel: commissionTotalsLabel(data.grain, data.totals),
+    meta: { period: periodText(data.month), scope: data.scopeName, extra }
+  };
+}
+async function commissionDetailExport(params) {
+  const fetch2 = (options) => exportCommissionDetail(params, options);
+  const first3 = await fetch2({ limit: EXPORT_WORKER_BATCH_SIZE });
+  const { filters, summary } = first3;
+  const columns3 = buildCommissionDetailColumns({ showEmployee: !filters.employeeId });
+  const totals = summary ? { received: summary.received, allocated: summary.allocated, commission: summary.commission, rate: summary.averageRate } : undefined;
+  const employee = filters.employeeId ? (() => {
+    const row = first3.rows[0];
+    return row ? `${row.employeeName}（${row.positionName || "无岗位"}）` : filters.employeeId;
+  })() : "全部员工";
+  const extra = [
+    { label: "员工", value: employee },
+    { label: "门店", value: filters.storeId ? first3.rows[0]?.storeName ?? filters.storeId : "范围内全部门店" },
+    { label: "提成类型", value: filters.source ? COMMISSION_SOURCE_LABELS[filters.source] : "全部" },
+    ...summary ? [{ label: "明细条数", value: String(summary.count) }] : []
+  ];
+  return {
+    sheetName: "提成明细",
+    columns: toWorkerExportColumns(columns3, totals),
+    rows: async function* () {
+      for await (const row of iterateExportPages(fetch2, first3))
+        yield row;
+    }(),
+    frozenColumns: countLeftFrozen(columns3),
+    totalsLabel: `合计（${summary?.count ?? 0} 条）`,
+    meta: {
+      period: filters.date ? `${filters.date} ~ ${filters.date}` : periodText(first3.month),
+      scope: first3.scopeName,
+      extra
+    }
+  };
+}
+
+// src/export-worker/report-views/index.ts
+var DATA_CENTER_REPORT_EXPORT_HANDLERS = {
+  "report-commission-daily": commissionDailyExport,
+  "report-commission-detail": commissionDetailExport
+};
+
+// src/export-worker/registry.ts
 function value(row, key) {
   return row[key];
 }
@@ -182339,10 +183502,19 @@ function rankingContent(rows, metric) {
     rows: fromRows(rows)
   };
 }
+var REPORT_EXPORT_VIEWS = new Set(DATA_CENTER_REPORT_EXPORT_VIEWS);
+function isReportExportView(view3) {
+  return REPORT_EXPORT_VIEWS.has(view3);
+}
 async function queryDataCenter(payload) {
+  const view3 = payload.view;
+  if (isReportExportView(view3))
+    return DATA_CENTER_REPORT_EXPORT_HANDLERS[view3](payload.params);
+  return queryDataCenterBoard(view3, payload);
+}
+async function queryDataCenterBoard(view3, payload) {
   const raw = payload.params;
   const base = parseBoardParams(raw);
-  const view3 = payload.view;
   if (view3.startsWith("sales-")) {
     const board2 = await getSalesBoard(base);
     const rows = view3 === "sales-market" ? board2.byMarket : board2.byStore;
@@ -182552,54 +183724,6 @@ function exportCloudPath(jobId, fileName) {
 
 // src/export-worker/xlsx-writer.ts
 var import_exceljs = __toESM(require_excel(), 1);
-
-// src/lib/data-center/matrix.ts
-function buildMatrixHeaderLayout(columns3) {
-  const groupStartKeys = new Set;
-  const grouped = columns3.some((column2) => column2.group);
-  if (!grouped) {
-    return {
-      depth: 1,
-      rows: [columns3.map((column2, index3) => ({
-        key: column2.key,
-        columnKey: column2.key,
-        colSpan: 1,
-        rowSpan: 1,
-        firstLeafIndex: index3
-      }))],
-      groupStartKeys
-    };
-  }
-  const top = [];
-  const bottom = [];
-  const closedGroups = new Set;
-  let current = null;
-  columns3.forEach((column2, index3) => {
-    const groupKey2 = column2.group?.key;
-    if (current && current.groupKey !== groupKey2) {
-      closedGroups.add(current.groupKey);
-      current = null;
-    }
-    if (!groupKey2) {
-      top.push({ key: column2.key, columnKey: column2.key, colSpan: 1, rowSpan: 2, firstLeafIndex: index3 });
-      return;
-    }
-    if (current) {
-      current.colSpan += 1;
-    } else {
-      if (closedGroups.has(groupKey2)) {
-        throw new Error(`INVALID_STATE: 矩阵表分组「${groupKey2}」的列不相邻`);
-      }
-      current = { key: `group:${groupKey2}`, groupKey: groupKey2, colSpan: 1, rowSpan: 1, firstLeafIndex: index3 };
-      top.push(current);
-      groupStartKeys.add(column2.key);
-    }
-    bottom.push({ key: column2.key, columnKey: column2.key, colSpan: 1, rowSpan: 1, firstLeafIndex: index3 });
-  });
-  return { depth: 2, rows: [top, bottom], groupStartKeys };
-}
-
-// src/export-worker/xlsx-writer.ts
 var EXPORT_META_SHEET_NAME = "导出说明";
 var XLSX_ROWS_PER_SHEET = 1e6;
 function safeSheetName(input, sequence3) {
