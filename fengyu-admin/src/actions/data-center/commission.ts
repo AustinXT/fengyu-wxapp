@@ -268,6 +268,21 @@ function toDetailRow(row: DbRow, maskCustomer: boolean): CommissionDetailRow {
   }
 }
 
+function toSummary(raw: DbRow): CommissionDetailSummary {
+  const allocated = toNumber(raw.allocated)
+  const commission = toNumber(raw.commission)
+  return {
+    count: toNumber(raw.count),
+    orders: toNumber(raw.orders),
+    received: toNumber(raw.received),
+    allocated,
+    commission,
+    sale: toNumber(raw.sale),
+    service: toNumber(raw.service),
+    averageRate: allocated !== 0 ? commission / allocated : null,
+  }
+}
+
 function keyOf(row: CommissionDetailRow): CommissionDetailKey {
   return { d: row.date, t: row.source as CommissionSource, id: row.sourceId }
 }
@@ -307,26 +322,13 @@ export const getCommissionDetail = withAllPermissions(
     const hasPrev = before ? hasMore : !!after
     const hasNext = before ? true : hasMore
 
-    const summary = rowsOf(summaryRows)[0] ?? {}
-    const allocated = toNumber(summary.allocated)
-    const commission = toNumber(summary.commission)
-
     return {
       month: period.month,
       scopeName,
       filters,
       pageSize,
       rows,
-      summary: {
-        count: toNumber(summary.count),
-        orders: toNumber(summary.orders),
-        received: toNumber(summary.received),
-        allocated,
-        commission,
-        sale: toNumber(summary.sale),
-        service: toNumber(summary.service),
-        averageRate: allocated !== 0 ? commission / allocated : null,
-      },
+      summary: toSummary(rowsOf(summaryRows)[0] ?? {}),
       prevCursor: hasPrev && first ? encodeCommissionCursor(keyOf(first), signature) : null,
       nextCursor: hasNext && last ? encodeCommissionCursor(keyOf(last), signature) : null,
       employeeOptions: rowsOf(optionRows).map((row) => {
@@ -372,22 +374,7 @@ export const exportCommissionDetail = withAllPermissions(
     const hasMore = fetched.length > limit
     const rows = hasMore ? fetched.slice(0, limit) : fetched
 
-    let summary: CommissionDetailSummary | null = null
-    if (summaryRows) {
-      const raw = rowsOf(summaryRows)[0] ?? {}
-      const allocated = toNumber(raw.allocated)
-      const commission = toNumber(raw.commission)
-      summary = {
-        count: toNumber(raw.count),
-        orders: toNumber(raw.orders),
-        received: toNumber(raw.received),
-        allocated,
-        commission,
-        sale: toNumber(raw.sale),
-        service: toNumber(raw.service),
-        averageRate: allocated !== 0 ? commission / allocated : null,
-      }
-    }
+    const summary = summaryRows ? toSummary(rowsOf(summaryRows)[0] ?? {}) : null
     return {
       rows,
       truncated: false,
