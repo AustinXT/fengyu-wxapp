@@ -1924,6 +1924,30 @@ describe('客量板块两端口径一致性守护', () => {
     })
 
     /**
+     * 构造器与调用点之间还有最后一跳：`tx.execute(sql.raw(updateSql))` 与
+     * `queryRegActiveBreakdown(session, scope, cur, 'market' | 'store')`。
+     * 在这两处插一次 `.replace()` / 换掉实参，上面全部快照都看不见（codex round-11 P2）。
+     *
+     * ⚠ **这条回退到此为止**：再往下还有 `sql.raw` → drizzle → pg driver，
+     * 「守住下一跳」可以无限推下去。本组守护的目标是**口径漂移**（有人改 SQL 忘了同步另一侧），
+     * 不是「对有提交权限的人做防篡改」——后者任何字面量守护都做不到（同理见本文件开头
+     * 关于「改测试来配合改坏的代码」的声明）。
+     * 收在这一跳的理由：这两处是**口径值真正被消费**的地方，再往下都是通用管道、与口径无关。
+     */
+    it('执行跳与调用点不得夹带加工（回退链的终点）', () => {
+      const cronSrc = normalize(stripComments(fs.readFileSync(ADMIN_CRON_ACTIVITY, 'utf-8')))
+      expect(cronSrc).toContain('const updated = (await tx.execute(sql.raw(updateSql)))')
+      expect(cronSrc.match(/tx\.execute\(sql\.raw\(updateSql\)\)/g)).toHaveLength(1)
+
+      // `getCustomerBoard` 是 `withPermission(...)` 赋值的 const，不是函数声明，
+      // `fnSource` 切不出（它对此 fail-closed 地 throw）—— 所以在剥注释后的全文上按调用形态断言。
+      expect(adminCode).toContain("queryRegActiveBreakdown(session, scope, cur, 'market'),")
+      expect(adminCode).toContain("queryRegActiveBreakdown(session, scope, cur, 'store'),")
+      // 只数「带实参的调用」，函数声明自身是 `async function queryRegActiveBreakdown(` 不计入
+      expect(adminCode.match(/queryRegActiveBreakdown\(session,/g)).toHaveLength(2)
+    })
+
+    /**
      * staff 侧的守卫写的是 `${endDateExpr(period)}` —— 派生式断言只看到这个**调用字面量**，
      * 看不到它算出什么（codex round-1 P2）。把 `lastMonth` 分支改成 `NOW()::date`，
      * 整函数快照与派生式断言全绿，而 staff 的上月客活会把"9 月才入会的人"算进 8 月，
