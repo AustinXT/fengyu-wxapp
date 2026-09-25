@@ -4437,8 +4437,8 @@ function ConversionForm({
               <FormField label="目标批号"><Input value={line.batchNo} onChange={(event) => updateTarget(index, { batchNo: event.target.value })} placeholder="留空自动生成" /></FormField>
               <FormField label="目标效期"><DatePicker value={line.expiryDate} onValueChange={(value) => updateTarget(index, { expiryDate: value })} placeholder="留空取来源最早效期" /></FormField>
               <div className="flex items-end justify-end"><SmallIconButton label="删除目标" onClick={() => setTargets((previous) => previous.length > 1 ? previous.filter((_, lineIndex) => lineIndex !== index) : previous)} disabled={targets.length === 1} /></div>
-              <FormField label="目标备注" className="xl:col-span-6"><Input value={line.remark} onChange={(event) => updateTarget(index, { remark: event.target.value })} /></FormField>
-              <div className="flex items-end justify-end"><Button type="button" variant="ghost" size="sm" disabled={!costKnown || !pricesFilled || balance.balanced || quantity === null || targets.length >= CONVERSION_LINES_MAX} onClick={() => splitTarget(index)}>拆分补差</Button></div>
+              <FormField label="目标备注" className="xl:col-span-5"><Input value={line.remark} onChange={(event) => updateTarget(index, { remark: event.target.value })} /></FormField>
+              <div className="flex items-end justify-end xl:col-span-2"><Button type="button" variant="ghost" size="sm" disabled={!costKnown || !pricesFilled || balance.balanced || quantity === null || targets.length >= CONVERSION_LINES_MAX} onClick={() => splitTarget(index)}>拆分补差</Button></div>
             </div>
           )
         })}
