@@ -505,8 +505,10 @@ export interface ExportPickupRecordRow {
  * 导出提货记录（#341）：筛选与列表页同源（`pickupRecordConditions`），URL 参数名与列表页一致。
  *
  * 分页用 keyset，游标是 pickup_records.id（bigserial，不可变）——不用列表页的 created_at + offset：
- * 导出期间新提货会插到最前，offset 翻页会让已导出的行被挤到下一页重复输出。按 id 降序与
- * 「最新在前」的列表顺序一致（id 与 created_at 同序递增）。删除的记录物理消失，自然不再出现。
+ * 导出期间新提货会插到最前，offset 翻页会让已导出的行被挤到下一页重复输出。提货记录全部由应用写入
+ * （created_at 默认 now()，无历史导入），按 id 降序与列表「最新在前」基本一致；仅并发事务可能在同一时刻
+ * 附近交错（now() 取事务开始时间）。不用 (created_at, id) 复合游标：JS Date 只到毫秒，PG 存到微秒，
+ * 游标回传会截断精度而重复/漏行。删除的记录物理消失，自然不再出现。
  */
 export const exportPickupRecords = withPermission(
   'pickup_record:list',
