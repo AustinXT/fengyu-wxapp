@@ -60,7 +60,7 @@ beforeEach(() => {
     const text = sqlText(query)
     if (text.includes('detail_rows')) return pageRows
     if (text.includes('summary_rows')) {
-      return [{ count: 3, orders: 2, received: '300.00', allocated: '150.00', commission: '4.50', rate_commission: '4.50', sale: '3.00', service: '1.50' }]
+      return [{ count: 3, orders: 2, received: '300.00', allocated: '150.00', commission: '4.50', sale: '3.00', service: '1.50' }]
     }
     if (text.includes('SELECT e.employee_id')) return [{ employee_id: 'E1', name: '张三', position_name: null, home_name: '蓝莱店' }]
     if (text.includes('GROUPING SETS')) return []
@@ -176,18 +176,18 @@ describe('getCommissionDetail · keyset 翻页', () => {
     expect(sqlText(execute.mock.calls.find(([q]) => sqlText(q).includes('detail_rows'))![0])).toContain('ORDER BY biz_date ASC, source DESC, source_id ASC')
   })
 
-  it('往前翻却查回 0 行（期间数据被改）：回到第一页，不卡在上下页都禁用的空页', async () => {
+  it.each(['before', 'after'] as const)('%s 游标查回 0 行（期间数据被改）：回到第一页，不卡在上下页都禁用的空页', async (direction) => {
     mockGetSession.mockResolvedValue(session())
     const firstPage = [detailRow(9, '2026-08-03'), detailRow(8, '2026-08-03')]
     let call = 0
     execute.mockImplementation(async (query: SQL) => {
       const text = sqlText(query)
       if (text.includes('detail_rows')) return call++ === 0 ? [] : firstPage
-      if (text.includes('summary_rows')) return [{ count: 2, orders: 2, received: '0', allocated: '0', commission: '0', rate_commission: '0', sale: '0', service: '0' }]
+      if (text.includes('summary_rows')) return [{ count: 2, orders: 2, received: '0', allocated: '0', commission: '0', sale: '0', service: '0' }]
       return []
     })
-    const before = encodeCommissionCursor({ d: '2026-08-01', t: 'sale', id: 1 }, signature)
-    const result = await getCommissionDetail({ month: '2026-08', before })
+    const cursor = encodeCommissionCursor({ d: '2026-08-01', t: 'sale', id: 1 }, signature)
+    const result = await getCommissionDetail({ month: '2026-08', [direction]: cursor })
     expect(result.rows.map((row) => row.key)).toEqual(['sale:9', 'sale:8'])
     expect(result.prevCursor).toBeNull()
     expect(result.nextCursor).toBeNull()

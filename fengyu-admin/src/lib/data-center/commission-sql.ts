@@ -348,7 +348,8 @@ export function commissionDetailPageSql(
 /**
  * 明细汇总（按全量筛选，不随翻页变化）：条数、各项合计、去重单数。
  * 实收合计按 receipt 去重（明细每行展示的是该 receipt 的实收，多人分配时同一笔会出现多行）。
- * 平均提成点 = Σ提成 ÷ Σ分配金额（含负数行与 0 费率行；分配金额缺失的行两边都不计），由调用方计算。
+ * 平均提成点 = Σ提成 ÷ Σ分配金额（含负数行与 0 费率行，issue 原文口径），由调用方计算。
+ * 单价缺失的服务行分配金额为 NULL、不进分母；prod 2026-09-25 实测这类行 3,600 条提成全部为 0，不影响分子。
  * 直接对取数链聚合，不经展示字段的 LEFT JOIN。
  */
 export function commissionDetailSummarySql(
@@ -381,8 +382,6 @@ export function commissionDetailSummarySql(
               FROM (SELECT DISTINCT receipt_id, received FROM summary_rows WHERE receipt_id IS NOT NULL) r) AS received,
            COALESCE(SUM(allocated), 0) AS allocated,
            COALESCE(SUM(commission), 0) AS commission,
-           -- 平均提成点的分子只取分配金额可算的行（分配比例缺失的服务行分母为 NULL，分子也不能计入）
-           COALESCE(SUM(commission) FILTER (WHERE allocated IS NOT NULL), 0) AS rate_commission,
            COALESCE(SUM(commission) FILTER (WHERE source = 'sale'), 0) AS sale,
            COALESCE(SUM(commission) FILTER (WHERE source = 'service'), 0) AS service
     FROM summary_rows

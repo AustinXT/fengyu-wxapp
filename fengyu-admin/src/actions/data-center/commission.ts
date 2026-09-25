@@ -201,7 +201,7 @@ export interface CommissionDetailSummary {
   commission: number
   sale: number
   service: number
-  /** 平均提成点 = Σ提成 ÷ Σ分配金额（含负数行、0 费率行；分配金额缺失的行不计）；Σ分配金额为 0 时为空 */
+  /** 平均提成点 = Σ提成 ÷ Σ分配金额（含负数行、0 费率行）；Σ分配金额为 0 时为空 */
   averageRate: number | null
 }
 
@@ -280,7 +280,7 @@ function toSummary(raw: DbRow): CommissionDetailSummary {
     commission,
     sale: toNumber(raw.sale),
     service: toNumber(raw.service),
-    averageRate: allocated !== 0 ? toNumber(raw.rate_commission) / allocated : null,
+    averageRate: allocated !== 0 ? commission / allocated : null,
   }
 }
 
@@ -325,10 +325,12 @@ export const getCommissionDetail = withAllPermissions(
 
     let pageRows = firstFetch
     let backward = !!before
-    // 往前翻却一行都没有（期间数据被改，游标之前已空）：回到第一页，免得上下页按钮同时禁用、卡在空页
-    if (backward && rowsOf(pageRows).length === 0) {
+    let forward = !!after
+    // 带游标却一行都没有（期间数据被改，游标前 / 后已空）：回到第一页，免得上下页按钮同时禁用、卡在空页
+    if ((backward || forward) && rowsOf(pageRows).length === 0) {
       pageRows = await db.execute(commissionDetailPageSql(session, scope, lineFilters, { limit: pageSize }))
       backward = false
+      forward = false
     }
     const fetched = rowsOf(pageRows).map((row) => toDetailRow(row, maskCustomer))
     const hasMore = fetched.length > pageSize
@@ -338,7 +340,7 @@ export const getCommissionDetail = withAllPermissions(
     const first = rows[0]
     const last = rows[rows.length - 1]
     // 正向：有游标即有上一页，探测行决定下一页；反向：探测行决定上一页，游标本身之后必有下一页
-    const hasPrev = backward ? hasMore : !!after
+    const hasPrev = backward ? hasMore : forward
     const hasNext = backward ? true : hasMore
 
     return {
