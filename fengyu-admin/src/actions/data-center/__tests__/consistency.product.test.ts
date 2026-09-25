@@ -876,7 +876,7 @@ describe('品项板块两端口径一致性守护', () => {
   /**
    * #286：明细「新增人数」的归店必须以 `xinzeng` 为主表 LEFT JOIN `period_agg`。
    *
-   * 缺陷原理：`period_agg` 要求 `purchase_received > 0`（只统计销售单/转换单，**不含寄存单**），
+   * 缺陷原理：`period_agg` 只收 `purchase_received <> 0` 的行（#288 前是 `> 0`；只统计销售单/转换单，**不含寄存单**），
    * 而进入达标（`first_entry` → `entry_store` → `xinzeng`）走 `day_received`（**含寄存单**）。
    * 以 `period_agg` 作主表再内连接回来，会把「进入达标日金额全部来自寄存单」的顾客整体丢弃 ——
    * 生产实测明细合计只有 KPI 的三分之一（**漏 65.5%**），派生的新增客单价与复购率双双虚高 **2.90 倍**。

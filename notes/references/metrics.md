@@ -1161,7 +1161,7 @@ tiyan AS (                                    -- 体验：期内有正数购买�
 | 体验客单价（trialAvgTicket） | `trialRevenue / trialCount` | 派生；防除零 → `--` |
 | 品项进入人数（newCount）per product_kind | `COUNT(DISTINCT xinzeng.client_user_id)` | CTE `xinzeng` |
 | 进入业绩（newRevenue）per product_kind | `SUM(period_agg.day_received)` WHERE client ∈ xinzeng | `xinzeng` JOIN `period_agg` |
-| 进入客单价（newAvgTicket） | `newRevenue / newCount` | 派生；防除零 → `--` |
+| 进入客单价（newAvgTicket） | `newRevenue / newCount` | 派生；防除零 → `--`；业绩为负时可为负（#288） |
 | 复购人数（repurchaseCount）per product_kind | `COUNT(DISTINCT fugou.client_user_id)` | CTE `fugou` |
 | 复购业绩（repurchaseRevenue）per product_kind | `SUM(period_agg.day_received)` WHERE client ∈ fugou | `fugou` JOIN `period_agg` |
 | 复购客单价（repurchaseAvgTicket） | `repurchaseRevenue / repurchaseCount` | 派生；防除零 → `--` |
@@ -1176,6 +1176,11 @@ tiyan AS (                                    -- 体验：期内有正数购买�
 > (顾客, 门店, 品项, 日) 整组丢弃：同一批退款约 38% 被净入、62% 被吞，取决于当日净额符号（审计附录 A11）。
 > 现在只剔除「两列都为 0」的空组与纯寄存日（`purchase_received = 0`）；HAVING 不能只判 `day_received <> 0`，
 > 否则寄存单恰好抵平销售单/转换单净额的日子（prod 实测 14 组）仍会被误丢。
+> 负数事件不只是退款：转换单**转出行**（`received` 为负，冲减原品项）与 legacy 残差同样计入。2026-01-01~09-22 prod
+> 销售单/转换单负数事件：退款 -92.5 万、转换单转出 -126.2 万、回款 -1.8 万 —— 转换只把价值从原品项挪到新品项，净额口径下不在新品项凭空多算。
+> 寄存单大额冲销压过当日购买（`day_received ≤ 0 < purchase_received`）的组现在保留，按其 `purchase_received` 参与复购达标与人数判定（prod 全历史 0 组）。
+> 业绩为负、人数 > 0 时客单价为负；只有冲销、没有购买的门店会出现「人数 0、业绩为负」的明细行（客单价 `--`）。
+> 期内只有冲销、且不属于体验/进入/复购任一客群的顾客（如上期体验客本期退款），其冲销不在任何客群业绩里扣 —— 客群口径本身的边界。
 > **负数行只进业绩、不造人**：体验判定只认正数购买日；admin 明细的门店归店同理 ——
 > 人数只按正数购买日（新增无正数购买日时落 entry 门店），业绩按全部行（含冲销）归到发生门店，净额可为负。
 > 2026-01-01~09-22 集团 prod 实测：新增业绩 818.29 万 → 730.69 万（原虚高 11.99%），复购业绩 439.28 万 → 410.80 万

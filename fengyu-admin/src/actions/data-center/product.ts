@@ -28,9 +28,14 @@
  *   - 进入达标日 = 销售单/转换单/寄存单的 SUM(sale_item_performance_events.amount) 在
  *     (client_user_id, store_id, 分组键, purchase_date) 分组下 >= threshold。
  *   - 复购达标日与区间业绩只统计销售单/转换单；寄存单只作为进入基线，不能触发复购。
- *   - ★ 区间业绩是**净额**（#288）：退款负数冲销逐笔抵减，净额为负的日子不得整组丢弃；
+ *   - ★ 区间业绩是**净额**（#288）：负数事件逐笔抵减，净额为负的日子不得整组丢弃；
  *     只剔除纯寄存日（purchase_received = 0）。体验判定与人数归店只认正数购买日（day_received > 0），
  *     负数行只进业绩、不造人。
+ *     负数事件不只是退款：转换单**转出行**（received 为负，冲减原品项）与历史残差同样计入 ——
+ *     2026-01~09 prod 销售单/转换单负数事件中，退款 -92.5 万、转换单转出 -126 万。这与
+ *     「业绩 = SUM(sipe.amount)」的成文口径一致：转换只把价值从原品项挪到新品项，不应在新品项凭空多算。
+ *     另：寄存单大额冲销压过当日购买（day_received ≤ 0 < purchase_received）的组现在也会保留，
+ *     按其 purchase_received 参与复购达标与人数判定（寄存单本就不参与复购与区间业绩）；prod 全历史 0 组。
  *   - purchase_date = sale_item_performance_events.performance_date。
  *   - entry_date = 全历史（截至 endDate）最早达标日，跨店合并；新增 = entry_date 落区间；
  *     复购 = 区间内 entry_date 后再次达标（threshold 共用）；体验 = 区间内有购买但全历史无达标日。
@@ -69,7 +74,8 @@ const num = (v: unknown): number => {
   const n = Number(v ?? 0)
   return Number.isFinite(n) ? n : 0
 }
-const round2 = (v: unknown): number => Math.round(num(v) * 100) / 100
+// `|| 0` 把 -0 归一成 0：#288 起业绩可为负，正负抵消的浮点残差（如 -5e-17）舍入后是 -0，会显示成 -0.00
+const round2 = (v: unknown): number => Math.round(num(v) * 100) / 100 || 0
 /** 取数组首行（db.execute 返回数组） */
 const first = (rows: unknown): Record<string, unknown> =>
   ((rows as unknown[])[0] as Record<string, unknown>) ?? {}
@@ -408,8 +414,8 @@ async function queryMemberCountByStore(
  * 若让负数行参与归店，2026-09 prod 实测会凭空多出 60 名体验顾客、133 个新增归店组合。
  * 于是新增拆成 `new_store`（人数）与 `new_revenue_store`（业绩）两个 CTE。
  *
- * ⚠️ 为什么新增必须兜底（#286，实测漏 **65.5%**）：`period_agg` 要求
- * `purchase_received > 0`，而 `purchase_received` 只统计销售单/转换单、**不含寄存单**；
+ * ⚠️ 为什么新增必须兜底（#286，实测漏 **65.5%**）：`period_agg` 只收
+ * `purchase_received <> 0` 的行（#288 前是 `> 0`），而 `purchase_received` 只统计销售单/转换单、**不含寄存单**；
  * 而进入达标（`first_entry` → `entry_store` → `xinzeng`）走的是 `day_received`，**含寄存单**。
  * 于是「进入达标日金额全部来自寄存单」的顾客在 `xinzeng` 里有、在 `period_agg` 里没有 ——
  * 旧实现以 `period_agg` 作主表再内连接回来，把他们整体丢弃，

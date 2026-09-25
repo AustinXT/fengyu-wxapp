@@ -669,6 +669,22 @@ describe('mgmtProduct.cycleStats 出数与防除零', () => {
     expect(ctx.result.newEntry[0].avgTicket).toBe(333.33)
   })
 
+  test('#288 净额为负：业绩与客单价如实为负，不被截成 0 或 null', async () => {
+    setupCycleMocks({
+      unionRows: [
+        { group_kind: 'new', product_kind: '护理项目', count: 2, revenue: '-1500.50' },
+        { group_kind: 'repurchase', product_kind: '护理项目', count: 1, revenue: '-300' },
+      ],
+    })
+    const ctx = makeHqCtx({ period: 'month', scopeType: 'all' })
+    await cycleStats(ctx)
+
+    expect(ctx.result.newEntry).toEqual([
+      { productKind: '护理项目', count: 2, revenue: -1500.5, avgTicket: -750.25 },
+    ])
+    expect(ctx.result.repurchase[0]).toMatchObject({ revenue: -300, avgTicket: -300, repurchaseRate: 0.5 })
+  })
+
   test('空 unionRows → trial / newEntry / repurchase 都为 []', async () => {
     setupCycleMocks({ unionRows: [] })
     const ctx = makeHqCtx({ period: 'month', scopeType: 'all' })
