@@ -155373,7 +155373,7 @@ var require_excel = __commonJS((exports, module) => {
 
 // src/export-worker/index.ts
 init_db2();
-var import_drizzle_orm67 = __toESM(require_drizzle_orm(), 1);
+var import_drizzle_orm68 = __toESM(require_drizzle_orm(), 1);
 import { createReadStream } from "node:fs";
 import { mkdtemp, rm as rm2 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -181761,7 +181761,7 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
 // src/actions/data-center/operating-master.ts
 init_db2();
 init_with_permission();
-var import_drizzle_orm66 = __toESM(require_drizzle_orm(), 1);
+var import_drizzle_orm67 = __toESM(require_drizzle_orm(), 1);
 
 // src/lib/data-center/report-period.ts
 init_time_range();
@@ -182106,7 +182106,7 @@ function operatingMasterExportGroup(column2) {
 // src/actions/data-center/operating-master.ts
 "use server";
 function revenueByStoreSql(session4, scope, range) {
-  return import_drizzle_orm66.sql`
+  return import_drizzle_orm67.sql`
         SELECT spe.store_id, COALESCE(SUM(spe.amount::numeric), 0) AS v
         FROM sale_order_performance_events spe
         WHERE ${scopeFilterSql(session4, scope, "spe.store_id")}
@@ -182129,7 +182129,7 @@ var getOperatingMaster = withPermission(DATA_CENTER_DASHBOARD_ACTION, async (ses
   const ytd = ytdRange(month);
   const [scopeName, skelRows, beauticianRows, revRows, ytdRevRows, projectRows, consRows, shengmeiConsRows] = await Promise.all([
     resolveScopeName(scope),
-    db2.execute(import_drizzle_orm66.sql`
+    db2.execute(import_drizzle_orm67.sql`
           SELECT sk.store_id, sk.store_name, sk.market_id, sk.market_name
           FROM (${scopeStoreSkeletonSql(session4, scope)}) sk
           JOIN org_nodes mkt ON mkt.id = sk.market_id
@@ -182139,7 +182139,7 @@ var getOperatingMaster = withPermission(DATA_CENTER_DASHBOARD_ACTION, async (ses
     db2.execute(technicianByStoreSql(session4, scope, cur.end, "beautician")),
     db2.execute(revenueByStoreSql(session4, scope, cur)),
     db2.execute(revenueByStoreSql(session4, scope, ytd)),
-    db2.execute(import_drizzle_orm66.sql`
+    db2.execute(import_drizzle_orm67.sql`
           SELECT so.store_id, COALESCE(SUM(sit.session_used), 0) AS v
           FROM service_orders so
           JOIN service_items sit ON sit.service_order_id = so.service_order_id
@@ -182151,7 +182151,7 @@ var getOperatingMaster = withPermission(DATA_CENTER_DASHBOARD_ACTION, async (ses
             AND ${excludeDepositRefundSql("so")}
           GROUP BY so.store_id
         `),
-    db2.execute(import_drizzle_orm66.sql`
+    db2.execute(import_drizzle_orm67.sql`
           SELECT so.store_id, COALESCE(SUM(sit.unit_real_price::numeric * sit.session_used), 0) AS v
           FROM service_orders so
           JOIN service_items sit ON sit.service_order_id = so.service_order_id
@@ -182162,7 +182162,7 @@ var getOperatingMaster = withPermission(DATA_CENTER_DASHBOARD_ACTION, async (ses
             AND ${excludeDepositRefundSql("so")}
           GROUP BY so.store_id
         `),
-    db2.execute(import_drizzle_orm66.sql`
+    db2.execute(import_drizzle_orm67.sql`
           SELECT so.store_id, COALESCE(SUM(sit.unit_real_price::numeric * sit.session_used), 0) AS v
           FROM service_orders so
           JOIN service_items sit ON sit.service_order_id = so.service_order_id
@@ -183350,7 +183350,7 @@ function asClaimedId(rows) {
   return Number.isSafeInteger(id) && id > 0 ? id : null;
 }
 async function recoverExpiredLeases() {
-  await db2.execute(import_drizzle_orm67.sql`
+  await db2.execute(import_drizzle_orm68.sql`
     UPDATE admin_export_jobs
        SET status = CASE
              WHEN attempt_count >= ${MAX_ATTEMPTS} THEN 'failed'
@@ -183374,12 +183374,12 @@ async function recoverExpiredLeases() {
   `);
 }
 async function claimNextJob() {
-  const claimed = await db2.execute(import_drizzle_orm67.sql`
+  const claimed = await db2.execute(import_drizzle_orm68.sql`
     UPDATE admin_export_jobs
        SET status = 'running',
            attempt_count = attempt_count + 1,
            started_at = COALESCE(started_at, NOW()),
-           lease_expires_at = NOW() + ${import_drizzle_orm67.sql.raw(`interval '${LEASE_MINUTES} minutes'`)},
+           lease_expires_at = NOW() + ${import_drizzle_orm68.sql.raw(`interval '${LEASE_MINUTES} minutes'`)},
            error_code = NULL,
            error_message = NULL,
            updated_at = NOW()
@@ -183397,13 +183397,13 @@ async function claimNextJob() {
   const id = asClaimedId(claimed);
   if (!id)
     return null;
-  const [job] = await db2.select().from(adminExportJobs).where(import_drizzle_orm67.eq(adminExportJobs.id, id)).limit(1);
+  const [job] = await db2.select().from(adminExportJobs).where(import_drizzle_orm68.eq(adminExportJobs.id, id)).limit(1);
   return job ?? null;
 }
 async function renewLease(id) {
-  await db2.execute(import_drizzle_orm67.sql`
+  await db2.execute(import_drizzle_orm68.sql`
     UPDATE admin_export_jobs
-       SET lease_expires_at = NOW() + ${import_drizzle_orm67.sql.raw(`interval '${LEASE_MINUTES} minutes'`)},
+       SET lease_expires_at = NOW() + ${import_drizzle_orm68.sql.raw(`interval '${LEASE_MINUTES} minutes'`)},
            updated_at = NOW()
      WHERE id = ${id}
        AND status = 'running'
@@ -183426,7 +183426,7 @@ async function failJob(job, err) {
     completedAt: shouldRetry ? null : new Date,
     errorCode: failure.code,
     errorMessage: shouldRetry ? `${failure.message}（第 ${job.attemptCount} 次失败，正在重试）` : failure.message
-  }).where(import_drizzle_orm67.and(import_drizzle_orm67.eq(adminExportJobs.id, job.id), import_drizzle_orm67.eq(adminExportJobs.status, "running")));
+  }).where(import_drizzle_orm68.and(import_drizzle_orm68.eq(adminExportJobs.id, job.id), import_drizzle_orm68.eq(adminExportJobs.status, "running")));
   if (!shouldRetry) {
     const session4 = parseExportSession(job.scopeSnapshot);
     await logOperation(session4, "export_job.failed", "admin_export_jobs", String(job.id), {
@@ -183437,12 +183437,12 @@ async function failJob(job, err) {
   }
 }
 async function expireFinishedFiles() {
-  const expired = await db2.select({ id: adminExportJobs.id, fileCloudPath: adminExportJobs.fileCloudPath }).from(adminExportJobs).where(import_drizzle_orm67.and(import_drizzle_orm67.inArray(adminExportJobs.status, ["ready", "expired"]), import_drizzle_orm67.isNotNull(adminExportJobs.fileCloudPath), import_drizzle_orm67.lt(adminExportJobs.expiresAt, new Date))).limit(100);
+  const expired = await db2.select({ id: adminExportJobs.id, fileCloudPath: adminExportJobs.fileCloudPath }).from(adminExportJobs).where(import_drizzle_orm68.and(import_drizzle_orm68.inArray(adminExportJobs.status, ["ready", "expired"]), import_drizzle_orm68.isNotNull(adminExportJobs.fileCloudPath), import_drizzle_orm68.lt(adminExportJobs.expiresAt, new Date))).limit(100);
   for (const job of expired) {
     try {
       if (job.fileCloudPath)
         await deleteByCloudPaths([job.fileCloudPath]);
-      await db2.update(adminExportJobs).set({ status: "expired", fileCloudPath: null, updatedAt: new Date }).where(import_drizzle_orm67.and(import_drizzle_orm67.eq(adminExportJobs.id, job.id), import_drizzle_orm67.inArray(adminExportJobs.status, ["ready", "expired"])));
+      await db2.update(adminExportJobs).set({ status: "expired", fileCloudPath: null, updatedAt: new Date }).where(import_drizzle_orm68.and(import_drizzle_orm68.eq(adminExportJobs.id, job.id), import_drizzle_orm68.inArray(adminExportJobs.status, ["ready", "expired"])));
     } catch (err) {
       console.error(`[export-worker] cleanup failed for job ${job.id}:`, err);
     }
@@ -183496,7 +183496,7 @@ async function processJob(job) {
           if (rowCount - lastProgress < 1000)
             return;
           lastProgress = rowCount;
-          await db2.update(adminExportJobs).set({ progressRows: rowCount }).where(import_drizzle_orm67.and(import_drizzle_orm67.eq(adminExportJobs.id, job.id), import_drizzle_orm67.eq(adminExportJobs.status, "running")));
+          await db2.update(adminExportJobs).set({ progressRows: rowCount }).where(import_drizzle_orm68.and(import_drizzle_orm68.eq(adminExportJobs.id, job.id), import_drizzle_orm68.eq(adminExportJobs.status, "running")));
         }
       });
       return { content, fileName, filePath, writeResult };
@@ -183512,7 +183512,7 @@ async function processJob(job) {
         progressRows: 0,
         errorCode: null,
         errorMessage: null
-      }).where(import_drizzle_orm67.and(import_drizzle_orm67.eq(adminExportJobs.id, job.id), import_drizzle_orm67.eq(adminExportJobs.status, "running")));
+      }).where(import_drizzle_orm68.and(import_drizzle_orm68.eq(adminExportJobs.id, job.id), import_drizzle_orm68.eq(adminExportJobs.status, "running")));
       await logOperation(session4, "export_job.empty", "admin_export_jobs", String(job.id), {
         exportType
       }).catch((logError) => console.error("[export-worker] empty audit log error:", logError));
@@ -183537,7 +183537,7 @@ async function processJob(job) {
       fileName: output.fileName,
       errorCode: null,
       errorMessage: null
-    }).where(import_drizzle_orm67.and(import_drizzle_orm67.eq(adminExportJobs.id, job.id), import_drizzle_orm67.eq(adminExportJobs.status, "running")));
+    }).where(import_drizzle_orm68.and(import_drizzle_orm68.eq(adminExportJobs.id, job.id), import_drizzle_orm68.eq(adminExportJobs.status, "running")));
     await logOperation(session4, "export_job.ready", "admin_export_jobs", String(job.id), {
       exportType,
       rowCount: output.writeResult.rowCount,
