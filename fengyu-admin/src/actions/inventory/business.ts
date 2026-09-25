@@ -108,7 +108,7 @@ export const saveMarketReplenishmentDraft = withPermission(
 
 export const deleteMarketReplenishmentDraft = withPermission(
   'inventory:market_operate',
-  async (session, input: { draftId: string }) =>
+  async (session, input: { draftId: string; reason?: string | null }) =>
     deleteMarketReplenishmentDraftImpl(session, input),
 )
 

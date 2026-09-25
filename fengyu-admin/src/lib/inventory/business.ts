@@ -2808,9 +2808,10 @@ export async function saveMarketReplenishmentDraft(
  */
 export async function deleteMarketReplenishmentDraft(
   session: AuthSession,
-  input: { draftId: string },
+  input: { draftId: string; reason?: string | null },
 ): Promise<{ id: string }> {
   const draftId = required(input.draftId, '草稿单号')
+  const reason = text(input.reason) ?? '删除草稿'
   await syncLocations()
   await db.transaction(async (tx) => {
     await assertInventoryBusinessWritable(tx)
@@ -2825,7 +2826,7 @@ export async function deleteMarketReplenishmentDraft(
     await tx.execute(sql`
       UPDATE inventory_docs
          SET status = '已取消',
-             cancellation_reason = '删除草稿',
+             cancellation_reason = ${reason},
              cancelled_by = ${session.employeeId},
              cancelled_at = NOW()
        WHERE id = ${draftId}

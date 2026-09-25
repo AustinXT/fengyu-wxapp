@@ -32,6 +32,8 @@ import {
   createItemCompanyShipment,
   createMarketReplenishment,
   createMarketStaffPurchase,
+  deleteMarketReplenishmentDraft,
+  saveMarketReplenishmentDraft,
   createSupplyChainStaffPurchase,
   createPurchaseOrder,
   createMarketReportSummary,
@@ -55,7 +57,7 @@ import {
   requestItemCompanyShipmentCancellation,
   summarizeStoreReplenishmentRequests,
 } from '@/actions/inventory/business'
-import type { MarketPromotionQuoteResult, ReceiveShipmentInFullInput } from '@/lib/inventory/business'
+import type { MarketPromotionQuoteResult, MarketPromotionSelectionInput, ReceiveShipmentInFullInput } from '@/lib/inventory/business'
 import type { StoreUnallocatedRequestSku } from '@/lib/inventory/doc-candidates'
 import {
   confirmInventoryCoreReceive,
@@ -1107,7 +1109,7 @@ function OperationWorkspace({
             />
           )}
           {operation === 'store-request' && <StoreRequestForm locations={locations} onSuccess={handleSuccess} />}
-          {operation === 'market-report' && <MarketReportForm locations={locations} canViewPrice={canViewPrice} onSuccess={handleSuccess} />}
+          {operation === 'market-report' && <MarketReportForm locations={locations} canViewPrice={canViewPrice} prefill={prefill} onSuccess={handleSuccess} />}
           {operation === 'item-company-request' && <ItemCompanyReplenishmentForm locations={locations} onSuccess={handleSuccess} />}
           {operation === 'purchase-order' && <PurchaseOrderForm locations={locations} canViewPrice={canViewPrice} onSuccess={handleSuccess} />}
           {operation === 'market-report-summary' && <MarketReportSummaryForm locations={locations} onSuccess={handleSuccess} />}
@@ -1168,13 +1170,14 @@ const OPERATION_DOCS_PAGE_SIZE = 20
  */
 
 /**
- * **不进弹窗**的三个动作：只把用户送回「填报表单」Tab 并预选这张单。
+ * **不进弹窗**的四个动作：只把用户送回「填报表单」Tab 并预选这张单。
  *
  * 供应链采购入库要逐行核对效期（批号留空已由服务端按入库单号+行号生成（#345），效期推断不出来），
  * 所以它只有跳转版、没有一键版；市场 / 门店收货两条既有一键版也留跳转版，
  * 部分收货与差异登记仍得回表单。「去发货」（#336）要逐行选总部批次，同样只能回表单。
+ * 「继续编辑」（#348）要重新汇总门店需求、重新取价，也只能回表单。
  */
-const INBOX_GOTO_ACTION_KINDS = ['shipment-receive-goto', 'purchase-receive-goto', 'report-ship-goto'] as const
+const INBOX_GOTO_ACTION_KINDS = ['shipment-receive-goto', 'purchase-receive-goto', 'report-ship-goto', 'draft-edit-goto'] as const
 type InboxGotoActionKind = (typeof INBOX_GOTO_ACTION_KINDS)[number]
 /**
  * 走 `DocActionDialog` 的动作。
@@ -1194,11 +1197,8 @@ function isInboxGotoAction(kind: InventoryInboxActionKind): kind is InboxGotoAct
 /**
  * 行内按钮文案。同一张卡片上不会同时出现「通过」的两种来源（退货 / 撤回），不会撞名。
  *
- * ⚠️ 这里**没有「草稿 → 取消」**，是数据层刻意的决定不是遗漏：
- * 没有任何业务产出草稿单（`insertDocHeader` 每次都显式传 status，`草稿` 只是列默认值），
- * 全仓也没有「取消草稿」的 Server Action。口径与理由写在
- * `@/lib/inventory/operation-doc-types` 的 `INVENTORY_INBOX_ACTION_KINDS` 上，
- * 并有单测断言状态值域不含 `草稿` —— 哪天真有业务产出草稿单，那条会红并提醒补这个动作。
+ * 草稿的两个动作（#348）只配在报货类业务上：「继续编辑」跳回表单回填，「删除草稿」= 草稿 → 已取消。
+ * 口径写在 `@/lib/inventory/operation-doc-types` 的 `INVENTORY_INBOX_ACTION_KINDS` 上。
  */
 const INBOX_ACTION_LABEL: Record<InventoryInboxActionKind, string> = {
   'return-approve': '通过',
@@ -1211,6 +1211,8 @@ const INBOX_ACTION_LABEL: Record<InventoryInboxActionKind, string> = {
   'purchase-close': '关闭采购',
   'generic-receive': '确认收货',
   'report-ship-goto': '去发货',
+  'draft-edit-goto': '继续编辑',
+  'draft-delete': '删除草稿',
 }
 
 /**
@@ -1352,6 +1354,19 @@ function buildInboxActionConfig(
        * 走 generic 会被 100% 拒掉（INVALID_STATE「必须通过对应的专用业务流程处理」）。
        */
       run: (docId, remark) => confirmInventoryCoreReceive(docId, remark),
+    },
+    'draft-delete': {
+      title: '删除市场报货草稿？',
+      label: '删除原因',
+      placeholder: '选填，将记录在单据上',
+      // business.ts 的 deleteMarketReplenishmentDraft：reason 可选，缺省记「删除草稿」
+      remarkRequired: false,
+      consequence: '草稿将转为已取消，不再出现在办理台，也不会进入任何下游；单据中心仍可查到。',
+      confirmText: '确认删除',
+      confirmVariant: 'destructive',
+      successMessage: () => '草稿已删除',
+      errorFallback: '删除草稿失败',
+      run: (docId, remark) => deleteMarketReplenishmentDraft({ draftId: docId, reason: remark || null }),
     },
   }
 }
@@ -1671,7 +1686,11 @@ export function OperationDocsTab({
             <Badge variant="outline">{inboxTotal}</Badge>
             <span className="text-xs text-[#888888]">
               {/* 品项公司发货的待办是「待发货」的市场报货单（#336），不是审批 / 收货 */}
-              {operation === 'company-shipment' ? '待发货：仍有未发量的市场报货单' : '上游已提交、等你审批或收货的单据'}
+              {operation === 'company-shipment'
+                ? '待发货：仍有未发量的市场报货单'
+                : operation === 'market-report'
+                  ? '草稿：存了未提交的市场报货单，提交后才进入下游'
+                  : '上游已提交、等你审批或收货的单据'}
             </span>
           </div>
           {inboxEmpty ? (
@@ -1979,13 +1998,69 @@ interface MarketReportLine {
   purchaseQuantity: string
 }
 
+function summaryToMarketReportLines(summary: Awaited<ReturnType<typeof summarizeStoreReplenishmentRequests>>): MarketReportLine[] {
+  return summary.items.map((item) => ({
+    skuId: item.skuId,
+    skuName: item.skuName,
+    specName: item.specName,
+    requestItemIds: item.requestItemIds,
+    requestQuantity: item.outstandingQuantity,
+    availableQuantity: item.availableQuantity,
+    inTransitQuantity: item.inTransitQuantity,
+    inTransitCoveredQuantity: item.inTransitCoveredQuantity,
+    suggestedPurchaseQuantity: item.suggestedPurchaseQuantity,
+    // 库存已覆盖的行默认不建市场报货；需要补货时由操作人显式勾选并填写数量。
+    selected: item.suggestedPurchaseQuantity > 0,
+    purchaseQuantity: item.suggestedPurchaseQuantity > 0 ? String(item.suggestedPurchaseQuantity) : '',
+  }))
+}
+
+/**
+ * 把草稿明细叠到当前门店需求汇总上（#348）：只勾选草稿里的 SKU、数量取草稿值；
+ * 草稿里有、但当前已无待汇总门店需求的 SKU 仍列出（requestItemIds 为空），可继续存草稿，
+ * 提交前必须取消勾选 —— 市场报货的来源只能是当时仍未汇总的门店报货明细。
+ */
+export function mergeMarketReportDraftLines(
+  summaryLines: MarketReportLine[],
+  draftItems: ReadonlyArray<{ skuId: string; skuName: string; specName: string | null; quantity: number }>,
+): MarketReportLine[] {
+  const draftBySku = new Map(draftItems.map((item) => [item.skuId, item]))
+  const merged = summaryLines.map((line) => {
+    const draft = draftBySku.get(line.skuId)
+    return draft
+      ? { ...line, selected: true, purchaseQuantity: String(draft.quantity) }
+      : { ...line, selected: false, purchaseQuantity: '' }
+  })
+  const summarized = new Set(summaryLines.map((line) => line.skuId))
+  for (const item of draftItems) {
+    if (summarized.has(item.skuId)) continue
+    merged.push({
+      skuId: item.skuId,
+      skuName: item.skuName,
+      specName: item.specName,
+      requestItemIds: [],
+      requestQuantity: 0,
+      availableQuantity: 0,
+      inTransitQuantity: 0,
+      inTransitCoveredQuantity: 0,
+      suggestedPurchaseQuantity: 0,
+      selected: true,
+      purchaseQuantity: String(item.quantity),
+    })
+  }
+  return merged
+}
+
 function MarketReportForm({
   locations,
   canViewPrice,
+  prefill,
   onSuccess,
 }: {
   locations: InventoryLocationRow[]
   canViewPrice: boolean
+  /** 待办区「继续编辑」（#348）：把一张市场报货草稿回填进表单。 */
+  prefill?: OperationFormPrefill | null
   onSuccess: (message: string) => void
 }) {
   const markets = locations.filter((location) => location.locationType === '市场' && location.isActive)
@@ -2001,7 +2076,14 @@ function MarketReportForm({
   const [loadingSummary, setLoadingSummary] = useState(false)
   const [quoting, setQuoting] = useState(false)
   const [saving, setSaving] = useState(false)
+  /** 正在编辑的草稿单号（#348）。非空时报货市场锁定，「提交」在该草稿上转已完成。 */
+  const [draftId, setDraftId] = useState<string | null>(null)
   const quoteRequestRef = useRef(0)
+  /*
+   * 草稿里人工改选过的福利方案（#348）：只给回填后的**第一次**自动取价用，用完即清。
+   * 方案已失效（停用 / 数量不再命中）时服务端报 CONFLICT，退回系统推荐并提示 —— 草稿价格本来就只是预览。
+   */
+  const restoredSelectionsRef = useRef<MarketPromotionSelectionInput[] | null>(null)
 
   const quoteItems = useMemo(() => lines
     .filter((line) => line.selected)
@@ -2022,7 +2104,19 @@ function MarketReportForm({
     }
     setQuoting(true)
     const timer = setTimeout(() => {
-      void quoteMarketReplenishmentPrices({ marketId, docDate: optionalText(docDate), items: quoteItems })
+      const restored = restoredSelectionsRef.current
+      restoredSelectionsRef.current = null
+      const quote = (selections?: MarketPromotionSelectionInput[]) =>
+        quoteMarketReplenishmentPrices({ marketId, docDate: optionalText(docDate), items: quoteItems, selections })
+      const request = restored && restored.length > 0
+        ? quote(restored).catch(() => {
+            if (quoteRequestRef.current === requestId) {
+              toast.warning('草稿里改选的福利方案已失效，已按系统推荐重新取价')
+            }
+            return quote()
+          })
+        : quote()
+      void request
         .then((result) => {
           if (quoteRequestRef.current === requestId) setQuoteResult(result)
         })
@@ -2038,6 +2132,14 @@ function MarketReportForm({
     return () => clearTimeout(timer)
   }, [canViewPrice, docDate, marketId, quoteBasketKey, quoteItems])
 
+  function resetForm() {
+    setDraftId(null)
+    setLines([])
+    setQuoteResult(null)
+    setRemark('')
+    restoredSelectionsRef.current = null
+  }
+
   async function loadSummary() {
     if (!marketId) {
       toast.error('请选择市场')
@@ -2050,20 +2152,7 @@ function MarketReportForm({
         startDate: optionalText(startDate),
         endDate: optionalText(endDate),
       })
-      setLines(summary.items.map((item) => ({
-        skuId: item.skuId,
-        skuName: item.skuName,
-        specName: item.specName,
-        requestItemIds: item.requestItemIds,
-        requestQuantity: item.outstandingQuantity,
-        availableQuantity: item.availableQuantity,
-        inTransitQuantity: item.inTransitQuantity,
-        inTransitCoveredQuantity: item.inTransitCoveredQuantity,
-        suggestedPurchaseQuantity: item.suggestedPurchaseQuantity,
-        // 库存已覆盖的行默认不建市场报货；需要补货时由操作人显式勾选并填写数量。
-        selected: item.suggestedPurchaseQuantity > 0,
-        purchaseQuantity: item.suggestedPurchaseQuantity > 0 ? String(item.suggestedPurchaseQuantity) : '',
-      })))
+      setLines(summaryToMarketReportLines(summary))
       if (summary.items.length === 0) toast.info('当前没有待汇总的门店报货明细')
     } catch (error) {
       toast.error(actionErrorMessage(error, '汇总门店报货失败'))
@@ -2071,6 +2160,49 @@ function MarketReportForm({
       setLoadingSummary(false)
     }
   }
+
+  /*
+   * 回填草稿（#348）。草稿不存来源明细与汇总日期区间：按当前全部待配门店需求重新汇总后叠上草稿明细，
+   * 这样表单上的待配 / 可用 / 在途都是最新的，提交时服务端也按同一批来源重新校验。
+   */
+  const loadDraftRef = useRef<(id: string) => Promise<void>>(async () => {})
+  loadDraftRef.current = async (id: string) => {
+    setLoadingSummary(true)
+    try {
+      const detail = await getInventoryCoreDocById(id)
+      if (!detail || detail.docType !== '市场报货' || detail.status !== '草稿' || !detail.marketId) {
+        toast.error(`单据 ${id} 不是可编辑的市场报货草稿`)
+        return
+      }
+      const draftMarketId = detail.marketId
+      const supplyChain = headquarters.find((location) => (
+        location.locationId === detail.targetOrgNodeId || location.orgNodeId === detail.targetOrgNodeId
+      ))
+      const summary = await summarizeStoreReplenishmentRequests({ marketId: draftMarketId })
+      setDraftId(detail.id)
+      setMarketId(draftMarketId)
+      setSupplyChainLocationId(supplyChain?.locationId ?? '')
+      setDocDate(detail.docDate.slice(0, 10))
+      setStartDate('')
+      setEndDate('')
+      setRemark(detail.remark ?? '')
+      restoredSelectionsRef.current = detail.items
+        .filter((item) => item.promotionSelectionMode === '人工选择' && item.promotionPlanId)
+        .map((item) => ({ skuId: item.skuId, promotionPlanId: item.promotionPlanId! }))
+      setLines(mergeMarketReportDraftLines(summaryToMarketReportLines(summary), detail.items))
+      toast.info(`正在编辑草稿 ${detail.id}`)
+    } catch (error) {
+      toast.error(actionErrorMessage(error, '加载市场报货草稿失败'))
+    } finally {
+      setLoadingSummary(false)
+    }
+  }
+  const prefillToken = prefill?.token
+  useEffect(() => {
+    if (prefill?.docId) void loadDraftRef.current(prefill.docId)
+    // 依赖只挂 token（同 useDocumentPrefill）：同一张草稿点第二次也要能重新回填
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [prefillToken])
 
   async function selectPromotion(skuId: string, promotionPlanId: string) {
     if (!quoteResult) return
@@ -2129,13 +2261,67 @@ function MarketReportForm({
     }
   }
 
-  async function submit() {
+  /** 当前报价里的福利方案选择；无价格权限时不传，由服务端按系统推荐取价（与新建同口径）。 */
+  function currentPromotionSelections(): MarketPromotionSelectionInput[] | undefined {
+    return canViewPrice
+      ? quoteResult!.items
+          .filter((item) => item.promotionPlanId)
+          .map((item) => ({ skuId: item.skuId, promotionPlanId: item.promotionPlanId! }))
+      : undefined
+  }
+
+  async function saveDraft() {
     if (saving) return
     if (!marketId || !supplyChainLocationId) {
       toast.error('请选择市场和供应链库存主体')
       return
     }
     const items = lines.filter((line) => line.selected).map((line) => ({
+      skuId: line.skuId,
+      purchaseQuantity: positiveNumber(line.purchaseQuantity),
+    }))
+    if (items.length === 0 || items.some((item) => item.purchaseQuantity === null)) {
+      toast.error('请选择至少一条明细并填写实际采购数量')
+      return
+    }
+    if (canViewPrice && (!quoteResult || quoting)) {
+      toast.error('福利报价尚未完成，请稍候')
+      return
+    }
+    setSaving(true)
+    try {
+      const result = await saveMarketReplenishmentDraft({
+        draftId,
+        marketId,
+        supplyChainLocationId,
+        docDate: optionalText(docDate),
+        remark: optionalText(remark),
+        items: items.map((item) => ({ ...item, purchaseQuantity: item.purchaseQuantity! })),
+        promotionSelections: currentPromotionSelections(),
+      })
+      // 存完留在编辑态：同一张草稿可以接着改、再存或直接提交
+      setDraftId(result.id)
+      onSuccess(`市场报货草稿已保存：${result.id}（未提交，不进入下游）`)
+    } catch (error) {
+      toast.error(actionErrorMessage(error, '保存市场报货草稿失败'))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function submit() {
+    if (saving) return
+    if (!marketId || !supplyChainLocationId) {
+      toast.error('请选择市场和供应链库存主体')
+      return
+    }
+    const selectedLines = lines.filter((line) => line.selected)
+    const noDemand = selectedLines.find((line) => line.requestItemIds.length === 0)
+    if (noDemand) {
+      toast.error(`${noDemand.skuName} 当前已无待汇总的门店报货，请取消勾选后再提交`)
+      return
+    }
+    const items = selectedLines.map((line) => ({
       skuId: line.skuId,
       sourceRequestItemIds: line.requestItemIds,
       purchaseQuantity: positiveNumber(line.purchaseQuantity),
@@ -2156,17 +2342,13 @@ function MarketReportForm({
         docDate: optionalText(docDate),
         remark: optionalText(remark),
         items: items.map((item) => ({ ...item, purchaseQuantity: item.purchaseQuantity! })),
-        promotionSelections: canViewPrice
-          ? quoteResult!.items
-              .filter((item) => item.promotionPlanId)
-              .map((item) => ({ skuId: item.skuId, promotionPlanId: item.promotionPlanId! }))
-          : undefined,
+        promotionSelections: currentPromotionSelections(),
+        draftId,
       })
-      onSuccess(`市场报货单已创建：${result.id}`)
-      setLines([])
-      setQuoteResult(null)
+      onSuccess(draftId ? `市场报货草稿已提交：${result.id}` : `市场报货单已创建：${result.id}`)
+      resetForm()
     } catch (error) {
-      toast.error(actionErrorMessage(error, '创建市场报货失败'))
+      toast.error(actionErrorMessage(error, draftId ? '提交市场报货草稿失败' : '创建市场报货失败'))
     } finally {
       setSaving(false)
     }
@@ -2174,6 +2356,15 @@ function MarketReportForm({
 
   return (
     <form className="space-y-5" onSubmit={(event) => { event.preventDefault(); void submit() }}>
+      {draftId && (
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-[var(--radius)] border border-[#F0D9B5] bg-[#FFF8EC] px-3 py-2 text-sm">
+          <span>
+            正在编辑草稿 <span className="font-mono">{draftId}</span>
+            <span className="ml-2 text-xs text-[#888888]">草稿不占用门店报货；页面价格仅作预览，提交时按最新福利重新取价，提交后锁定不能再改。</span>
+          </span>
+          <Button type="button" variant="ghost" size="sm" onClick={resetForm} disabled={saving}>退出编辑</Button>
+        </div>
+      )}
       <div className="grid grid-cols-1 gap-3 md:grid-cols-3 xl:grid-cols-5">
         <FormField label="市场" required>
           <InventorySubjectSelect
@@ -2181,6 +2372,8 @@ function MarketReportForm({
             value={marketId}
             onChange={(nextMarketId) => { setMarketId(nextMarketId); setLines([]); setQuoteResult(null) }}
             placeholder="请选择市场"
+            // 草稿的报货市场不可改（服务端 lockMarketReplenishmentDraft 同口径）
+            disabled={draftId !== null}
           />
         </FormField>
         <FormField label="供应链库存主体" required>
@@ -2314,8 +2507,10 @@ function MarketReportForm({
       )}
 
       <RemarkField value={remark} onChange={setRemark} />
-      <div className="flex justify-end">
-        <Button type="submit" loading={saving} disabled={lines.length === 0}>创建市场报货单</Button>
+      <div className="flex justify-end gap-2">
+        {/* 存草稿（#348）：不引用门店报货、不进下游，可在「单据 → 待我处理」继续编辑或删除 */}
+        <Button type="button" variant="outline" loading={saving} disabled={lines.length === 0} onClick={() => void saveDraft()}>存草稿</Button>
+        <Button type="submit" loading={saving} disabled={lines.length === 0}>{draftId ? '提交市场报货单' : '创建市场报货单'}</Button>
       </div>
     </form>
   )
