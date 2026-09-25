@@ -272,6 +272,8 @@ function toDetailRow(row: DbRow, maskCustomer: boolean): CommissionDetailRow {
 function toSummary(raw: DbRow): CommissionDetailSummary {
   const allocated = toNumber(raw.allocated)
   const commission = toNumber(raw.commission)
+  // 独立成行：dist-freshness 以整行指纹比对产物（对象字面量行尾逗号会被打包去掉，逐字比对不上）
+  const averageRate = allocated !== 0 ? commission / allocated : null
   return {
     count: toNumber(raw.count),
     orders: toNumber(raw.orders),
@@ -280,7 +282,7 @@ function toSummary(raw: DbRow): CommissionDetailSummary {
     commission,
     sale: toNumber(raw.sale),
     service: toNumber(raw.service),
-    averageRate: allocated !== 0 ? commission / allocated : null,
+    averageRate,
   }
 }
 

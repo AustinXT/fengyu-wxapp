@@ -99,6 +99,19 @@ const PROBES: Probe[] = [
     pattern: /^(?!.*\$\{)(AND (spia|sc|so|spe)\.(is_void|sale_order_type|status) .*|HAVING .*|ROUND\(ROUND\(.* AS allocated,)$/,
     minLines: 7,
   },
+  {
+    label: '提成明细 · 汇总聚合（实收按 receipt 去重、各项合计）（#375）',
+    file: 'src/lib/data-center/commission-sql.ts',
+    // 聚合行整行比对：改公式（或删掉某个聚合列）后当前行不在旧产物里即红
+    pattern: /^(?!.*\$\{)(COALESCE\(SUM\(.*|\(SELECT COALESCE\(SUM\(r\.received\), 0\)|FROM \(SELECT DISTINCT receipt_id, received FROM summary_rows WHERE receipt_id IS NOT NULL\) r\) AS received,)$/,
+    minLines: 6,
+  },
+  {
+    label: '提成明细 · 平均提成点公式（#375）',
+    file: 'src/actions/data-center/commission.ts',
+    pattern: /^const averageRate = /,
+    minLines: 1,
+  },
 ]
 
 describe('dist/export-worker.mjs 新鲜度（改了 data-center SQL 口径必须重建产物）', () => {
