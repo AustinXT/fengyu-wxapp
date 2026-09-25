@@ -455,6 +455,7 @@ function LotPicker({
   value,
   onChange,
   onLotChange,
+  load = listInventoryLotOptions,
 }: {
   locationId: string
   skuId: string
@@ -462,6 +463,11 @@ function LotPicker({
   onChange: (value: string) => void
   /** 用户切换批次时回传所选批次的完整行（成本、赠送、可用量），选回空项时回传 null（#344 转换成本）。 */
   onLotChange?: (lot: InventoryLotRow | null) => void
+  /**
+   * 批次取数。默认每个选择器自己查；同一表单多行同「主体 + SKU」时（#336b 发货拆批次 / 赠送 / 多张报货单）
+   * 由表单传入带缓存的取数，避免同参数请求在全局串行的 Server Action 队列里排成一串。须是稳定引用。
+   */
+  load?: (locationId: string, skuId: string) => Promise<InventoryLotRow[]>
 }) {
   const [lots, setLots] = useState<InventoryLotRow[]>([])
   const [loading, setLoading] = useState(false)
@@ -473,7 +479,7 @@ function LotPicker({
       return () => { cancelled = true }
     }
     setLoading(true)
-    listInventoryLotOptions(locationId, skuId)
+    load(locationId, skuId)
       .then((rows) => {
         if (!cancelled) setLots(rows)
       })
@@ -487,7 +493,7 @@ function LotPicker({
         if (!cancelled) setLoading(false)
       })
     return () => { cancelled = true }
-  }, [locationId, skuId])
+  }, [locationId, skuId, load])
 
   return (
     <Select
@@ -2904,6 +2910,22 @@ function CompanyShipmentForm({
   useEffect(() => () => onBusyChange(false), [onBusyChange])
   const lineKeyRef = useRef(0)
   /*
+   * 同「总部 + SKU」的批次只查一次，拆批次 / 赠送 / 多张报货单共用（复用在途请求）。
+   * 失败的请求移出缓存以便重试；提交时整体作废（可用量会变，下一张单要按最新量选）。
+   */
+  const lotCacheRef = useRef(new Map<string, Promise<InventoryLotRow[]>>())
+  const loadLots = useCallback((locationId: string, skuId: string) => {
+    const key = `${locationId}|${skuId}`
+    let pending = lotCacheRef.current.get(key)
+    if (!pending) {
+      const request = listInventoryLotOptions(locationId, skuId)
+      request.catch(() => { if (lotCacheRef.current.get(key) === request) lotCacheRef.current.delete(key) })
+      lotCacheRef.current.set(key, request)
+      pending = request
+    }
+    return pending
+  }, [])
+  /*
    * 报货单明细是异步装载的。换市场 / 换总部 / 提交成功都会作废当前选择，
    * 迟到的响应只在「同一轮选择 + 该单最后一次发起的请求」时落地：否则会把旧市场的明细塞回来，
    * 或同一张单「取消勾选再勾上」时两次响应各带出一遍明细。
@@ -2965,8 +2987,13 @@ function CompanyShipmentForm({
           dropSelected(id)
           return
         }
-        // 与 createItemCompanyShipment 同口径复核：已完成 + 发起方 = 收货市场 + 接收方 = 发货总部
-        if (detail.status !== '已完成' || detail.sourceOrgNodeId !== expectedMarketId || detail.targetOrgNodeId !== expectedSourceId) {
+        // 与 createItemCompanyShipment 同口径复核：已完成 + 发起方 = market_id = 收货市场 + 接收方 = 发货总部
+        if (
+          detail.status !== '已完成'
+          || detail.sourceOrgNodeId !== expectedMarketId
+          || detail.marketId !== expectedMarketId
+          || detail.targetOrgNodeId !== expectedSourceId
+        ) {
           toast.error(`市场报货单 ${id} 不是当前收货市场报给该总部的已完成单，已取消勾选`)
           dropSelected(id)
           return
@@ -3031,7 +3058,10 @@ function CompanyShipmentForm({
       .then((detail) => {
         if (!isCurrent()) return
         // 待办列表可能已过时：只认服务端可发货的「已完成」报货单（与 createItemCompanyShipment 同口径）
-        if (!detail || detail.docType !== '市场报货' || detail.status !== '已完成' || !detail.sourceOrgNodeId || !detail.targetOrgNodeId) {
+        if (
+          !detail || detail.docType !== '市场报货' || detail.status !== '已完成'
+          || !detail.sourceOrgNodeId || !detail.targetOrgNodeId || detail.marketId !== detail.sourceOrgNodeId
+        ) {
           toast.error('该市场报货单当前不可发货，请刷新待办')
           return
         }
@@ -3121,6 +3151,7 @@ function CompanyShipmentForm({
       remark: optionalText(line.remark),
     })
     setSaving(true)
+    lotCacheRef.current.clear()
     try {
       const result = await createItemCompanyShipment({
         marketId,
@@ -3217,7 +3248,7 @@ function CompanyShipmentForm({
                 {itemLines.map((line, lineIndex) => (
                   <div key={line.key} className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-[minmax(0,1.4fr)_8rem_minmax(0,1fr)_2.5rem]">
                     <FormField label="发货批次" required>
-                      <LotPicker locationId={sourceLocationId} skuId={entry.item.skuId} value={line.lotId} onChange={(lotId) => updateLine(line.key, { lotId })} />
+                      <LotPicker locationId={sourceLocationId} skuId={entry.item.skuId} value={line.lotId} onChange={(lotId) => updateLine(line.key, { lotId })} load={loadLots} />
                     </FormField>
                     <FormField label={line.isGift ? '赠送数量' : '正常发货'} required>
                       <Input type="number" min="0.01" step="0.01" max="9999999999.99" value={line.quantity} onChange={(event) => updateLine(line.key, { quantity: event.target.value })} />

@@ -2067,6 +2067,8 @@ describe('品项公司发货引用市场报货单（#336b）', () => {
     await chooseLot(1, '42')
     await chooseLot(2, '42')
     expect(screen.getByRole('status', { name: '未发进度' })).toHaveTextContent('本次正常发货 20 件，发后还剩 0 件')
+    // 三行同「总部 + SKU」共用一次批次查询（Server Action 全局串行，别排成一串）
+    expect(vi.mocked(listInventoryLotOptions).mock.calls.filter(([location, sku]) => location === 'HQ' && sku === 'SKU-1')).toHaveLength(1)
 
     const docsLoadsBefore = vi.mocked(listInventoryOperationDocs).mock.calls.length
     submitShipment()
@@ -2168,9 +2170,15 @@ describe('品项公司发货引用市场报货单（#336b）', () => {
     expect(screen.queryByText(/报货 30/)).toBeNull()
     expect(screen.queryByText(/^已选 /)).toBeNull()
 
-    vi.mocked(getInventoryCoreDocById).mockResolvedValue(reportDetail({ ...report('SBH-8'), status: '已取消' }))
+    // 同一张单（市场对了但 market_id 漂了 / 状态已变）同样退勾
+    vi.mocked(getInventoryCoreDocById).mockResolvedValue(reportDetail({ ...stale, sourceOrgNodeId: 'M1', marketId: 'M2' }))
     fireEvent.click(await screen.findByRole('checkbox', { name: '选择 SBH-7' }))
     await waitFor(() => expect(toast.error).toHaveBeenCalledTimes(2))
+    vi.mocked(getInventoryCoreDocById).mockResolvedValue(reportDetail({ ...stale, sourceOrgNodeId: 'M1', marketId: 'M1', status: '已取消' }))
+    fireEvent.click(await screen.findByRole('checkbox', { name: '选择 SBH-7' }))
+    await waitFor(() => expect(toast.error).toHaveBeenCalledTimes(3))
+    expect(screen.queryByText(/报货 30/)).toBeNull()
+    expect(screen.queryByText(/^已选 /)).toBeNull()
   })
 
   it('同一报货明细同一批次重复两行：前端先拦，按服务端口径提示合并', async () => {
