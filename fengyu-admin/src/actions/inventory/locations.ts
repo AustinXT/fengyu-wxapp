@@ -5,6 +5,7 @@ import {
   listInventoryLocationFilterOptions as listInventoryLocationFilterOptionsImpl,
   listInventoryLocations as listInventoryLocationsImpl,
   listInventoryMarketTransferTargets as listInventoryMarketTransferTargetsImpl,
+  listInventoryShipmentMarketTargets as listInventoryShipmentMarketTargetsImpl,
 } from '@/lib/inventory/engine'
 import { inventoryDelegatableOperateActions } from '@/lib/inventory/business-level'
 import { withAnyPermission, withPermission } from '@/lib/with-permission'
@@ -18,6 +19,12 @@ export const listInventoryLocations = withPermission(
 export const listInventoryMarketTransferTargets = withAnyPermission(
   [...inventoryDelegatableOperateActions('market')],
   async () => listInventoryMarketTransferTargetsImpl(),
+)
+
+/** #336b：品项公司发货的收货市场候选（不按 scope，字段只有名称与 orgNodeId）。权限与发货 action 同源。 */
+export const listInventoryShipmentMarketTargets = withPermission(
+  'inventory:supply_chain_operate',
+  async () => listInventoryShipmentMarketTargetsImpl(),
 )
 
 export const listInventoryLocationFilterOptions = withPermission(

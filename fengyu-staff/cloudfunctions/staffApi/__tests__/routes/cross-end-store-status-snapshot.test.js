@@ -241,7 +241,9 @@ describe('#401 数据中心在营口径 · 接线', () => {
 
   it('staff mgmt-dashboard.js 从 helper 引入 activeStoreCondition 并叠加到三条 scope', () => {
     const src = readFile(path.join(STAFF_ROOT, 'routes/mgmt-dashboard.js'))
-    expect(src).toContain("const { activeStoreCondition, activeStoreNodeCondition } = require('../utils/store-status')")
+    expect(src.replace(/\s+/g, ' ')).toContain(
+      "const { activeStoreCondition, activeStoreNodeCondition, STORE_NODE_JOIN, STORE_IS_ACTIVE, } = require('../utils/store-status')",
+    )
     expect(src).toContain('sql: `(${scope.sql}) AND ${activeStoreCondition(column)}`,')
     // 三个构造器整段等值（buildStaffScope 另由 technician-denominator 要件 7 钉住，这里一并钉，互不依赖）
     const squeeze = (t) => t.replace(/\s+/g, ' ').trim()

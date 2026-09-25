@@ -5,28 +5,37 @@
  * 下行是明细列。页面（MatrixTable）与导出（export-worker）从本文件的同一份列定义出发，
  * 表头 / 单位 / 合计口径不会漂移。
  *
- * 首版只有 D / P / R / V / W / X 六列取数，其余 16 列按口径来源分两类占位，一律显示「—」、
- * 不参与合计和其它列的计算：
- *   - #373（口径待拍板）：E–I、K–M、S–U、Y —— 拍板后增量上线：
- *       1. 服务端给门店行 `values` 补该列（OPERATING_MASTER_METRIC_KEYS 加键 + action 取数）；
- *       2. 列定义补 `value: metric(key)` 与 `aggregate`。可加列用 sum；比率列用
- *          `{ kind: 'ratio', numerator, denominator }`（分子分母读 `row.values` 里对应列），
- *          按模板公式 G=F/E、I=H/F、M=K/E、Y=X/U（Q=P/O 属 #374）。
- *       小计与合计按「有 value 的列」挑取（见 metricColumnKeys），比率列在小计 / 合计行用合计后的分子分母重算。
- *   - #374（目标列，2026-09-25 拍板本期固定「—」、合计行也「—」）：J、N、O、Q
+ * 取数列（#372 首版 D / P / R / V / W / X；#373 补 E–I、K–M、S–U、Y）。比率列（G / I / M / Y）按模板公式
+ * G=F/E、I=H/F、M=K/E、Y=X/U 由同行分子分母现算，小计 / 合计行用合计后的分子分母重算（不取各行比率平均）。
+ * 小计与合计按「有 value 的列」挑取（见 METRIC_COLUMNS）。
+ *
+ * 「时间点」T（#373 拍板）：页面仍选月份，T = min(所选月末, 今天)；「当月」= 月初 ~ T，「年度」= 当年 1 月 1 日 ~ T。
+ * 过去月份的 T 就是月末；当月的 T 是今天（今天之后的日期本就没有服务单 / 款项，按月末取数等价）。
+ * 唯一依赖 T 本身的是 E 保有会员（截至 T 近 90 天到店），见 retainedAsOf。
+ *
+ * 目标列 J、N、O、Q（#374，2026-09-25 拍板本期固定「—」、合计行也「—」）仍是占位列。
  *
  * 口径登记：notes/references/metrics.md §经营数据主表。
  */
 import { computeMatrixTotals, type MatrixColumnGroup, type MatrixTotals } from './matrix'
 import type { MatrixExportColumnSpec } from './matrix-export'
 import { monthRange } from './report-period'
+import { addDays, shanghaiToday } from './time-range'
 import type { DataCenterScope, MetricUnit, ResolvedRange } from './types'
 
 /** 能取数的列（服务端按门店给值） */
 export const OPERATING_MASTER_METRIC_KEYS = [
   'beauticianCount',
+  'retainedMembers',
+  'returnOnceHeads',
+  'returnTwiceHeads',
+  'managedYearCustomers',
+  'managedMonthCustomers',
   'monthRevenue',
   'ytdRevenue',
+  'monthFootfall',
+  'preSaleFootfall',
+  'afterSaleFootfall',
   'shengmeiProjectCount',
   'monthConsume',
   'shengmeiConsume',
@@ -44,12 +53,12 @@ export interface OperatingMasterRow {
   storeId: string | null
   /** 小计行为「小计」 */
   storeName: string
-  /** 小计行的值来自 computeMatrixTotals（可能为 null）；门店行六项恒有值（无数据 = 0） */
+  /** 只含可加列（比率列由 value 现算）。小计行的值来自 computeMatrixTotals（可能为 null）；门店行恒有值（无数据 = 0） */
   values: Partial<Record<OperatingMasterMetricKey, number | null>>
 }
 
 /** 占位列的口径来源 */
-export type OperatingMasterPending = '#373' | '#374'
+export type OperatingMasterPending = '#374'
 
 export interface OperatingMasterColumn extends MatrixExportColumnSpec<OperatingMasterRow> {
   /** 模板列号（B~Y），便于对账与评审 */
@@ -71,7 +80,8 @@ const BLANK_GROUP: MatrixColumnGroup = { key: 'blank', header: '' }
 
 const RETAINED_GROUP: MatrixColumnGroup = {
   key: 'retained',
-  header: '保有会员（售前不算）\n会员标准：单笔订单≥1990元(购买疗程有余卡顾客)\n当月回店1次的人头目标：80%\n当月回店人头到店2次的目标：60%',
+  // 第 2 行按 #373 拍板改写（模板原文「单笔订单≥1990元(购买疗程有余卡顾客)」与取数口径不符），其余照抄模板
+  header: '保有会员（售前不算）\n会员标准：近90天有到店的会员（到店状态为保有会员）\n当月回店1次的人头目标：80%\n当月回店人头到店2次的目标：60%',
   color: '#EAF2FB',
 }
 const MANAGED_GROUP: MatrixColumnGroup = {
@@ -135,15 +145,16 @@ function pendingColumn(
     pending,
     align: 'right',
     width: headerWidth(header, 96),
-    hint: pending === '#374' ? '目标列：本期不取数（#374）' : '口径待确认，本期不取数（#373）',
+    hint: '目标列：本期不取数（#374）',
     exportValue: () => '—',
     exportWidth: headerExportWidth(header, 12),
   }
 }
 
-function metricColumn(
+/** 数值列的公共部分（右对齐、按单位给列宽下限） */
+function numberColumn(
   letter: string,
-  key: OperatingMasterMetricKey,
+  key: string,
   header: string,
   group: MatrixColumnGroup,
   unit: MetricUnit,
@@ -158,9 +169,45 @@ function metricColumn(
     align: 'right',
     width: headerWidth(header, unit === 'amount' ? 120 : 96),
     hint,
-    value: metric(key),
-    aggregate: { kind: 'sum' },
     exportWidth: headerExportWidth(header, unit === 'amount' ? 16 : 12),
+  }
+}
+
+/** 可加列：服务端按门店给值，小计 / 合计逐店相加 */
+function metricColumn(
+  letter: string,
+  key: OperatingMasterMetricKey,
+  header: string,
+  group: MatrixColumnGroup,
+  unit: MetricUnit,
+  hint: string,
+): OperatingMasterColumn {
+  return { ...numberColumn(letter, key, header, group, unit, hint), value: metric(key), aggregate: { kind: 'sum' } }
+}
+
+/** 比率：分母 ≤ 0 或任一侧为空 → null（与 computeMatrixTotals 的合计口径一致） */
+function ratioOf(numerator: number | null | undefined, denominator: number | null | undefined): number | null {
+  if (numerator == null || denominator == null || !Number.isFinite(numerator) || !Number.isFinite(denominator)) return null
+  return denominator > 0 ? numerator / denominator : null
+}
+
+/** 比率列：门店 / 小计行由同行分子分母现算；合计行用合计后的分子分母重算 */
+function ratioColumn(
+  letter: string,
+  key: string,
+  header: string,
+  group: MatrixColumnGroup,
+  unit: MetricUnit,
+  numerator: OperatingMasterMetricKey,
+  denominator: OperatingMasterMetricKey,
+  hint: string,
+): OperatingMasterColumn {
+  const top = metric(numerator)
+  const bottom = metric(denominator)
+  return {
+    ...numberColumn(letter, key, header, group, unit, hint),
+    value: (row) => ratioOf(top(row), bottom(row)),
+    aggregate: { kind: 'ratio', numerator: top, denominator: bottom },
   }
 }
 
@@ -192,16 +239,26 @@ export const OPERATING_MASTER_COLUMNS: readonly OperatingMasterColumn[] = [
   metricColumn('D', 'beauticianCount', '美容师\n人数', BLANK_GROUP, 'count',
     '统计月末在职、技能含「美容师」的员工，按当前归属门店计（调店不做历史化）；直挂市场 / 部门的员工不属于任何门店，不计入'),
 
-  pendingColumn('E', 'retainedMembers', '保有会员\n前三月有回店1次人头数', RETAINED_GROUP, 'count', '#373'),
-  pendingColumn('F', 'returnOnceHeads', '回店1次\n当月人头', RETAINED_GROUP, 'count', '#373'),
-  pendingColumn('G', 'returnOnceRate', '回店1次\n达成率', RETAINED_GROUP, 'percent', '#373'),
-  pendingColumn('H', 'returnTwiceHeads', '回店≥2次\n当月人头', RETAINED_GROUP, 'count', '#373'),
-  pendingColumn('I', 'returnTwiceRate', '回店≥2次\n达成率', RETAINED_GROUP, 'percent', '#373'),
+  metricColumn('E', 'retainedMembers', '保有会员\n近90天到店人头', RETAINED_GROUP, 'count',
+    '截至统计时点（所选月末；当月为今天）前 90 天内有已完成服务单、且已成为会员的顾客，按顾客绑定门店计。'
+    + '与客量板「有效保有会员」同口径（即顾客状态「保有会员-稳定 / 有效」按时点还原）'),
+  metricColumn('F', 'returnOnceHeads', '回店1次\n当月人头', RETAINED_GROUP, 'count',
+    '保有会员（E）中当月到店天数 ≥1 的人头：到店天数按服务日期去重（同日多单算 1 天），不限到店门店'),
+  ratioColumn('G', 'returnOnceRate', '回店1次\n达成率', RETAINED_GROUP, 'percent', 'returnOnceHeads', 'retainedMembers',
+    '回店1次当月人头 ÷ 保有会员（F / E）'),
+  metricColumn('H', 'returnTwiceHeads', '回店≥2次\n当月人头', RETAINED_GROUP, 'count',
+    '保有会员（E）中当月到店天数 ≥2 的人头（H ⊆ F）'),
+  ratioColumn('I', 'returnTwiceRate', '回店≥2次\n达成率', RETAINED_GROUP, 'percent', 'returnTwiceHeads', 'returnOnceHeads',
+    '回店≥2次当月人头 ÷ 回店1次当月人头（H / F）'),
 
   pendingColumn('J', 'managedYearTarget', '被经营顾客\n年度目标', MANAGED_GROUP, 'count', '#374'),
-  pendingColumn('K', 'managedYearCustomers', '被经营顾客\n年度消费人数', MANAGED_GROUP, 'count', '#373'),
-  pendingColumn('L', 'managedMonthCustomers', '被经营顾客\n当月消费人数', MANAGED_GROUP, 'count', '#373'),
-  pendingColumn('M', 'managedRate', '被经营率\n年度标准60%', MANAGED_GROUP, 'percent', '#373'),
+  metricColumn('K', 'managedYearCustomers', '被经营顾客\n年度消费人数', MANAGED_GROUP, 'count',
+    '当年 1 月 1 日至统计时点，在本店的消费（销售单 + 转换单款项，含退款冲减；不含充值、储值卡抵扣、寄存单）累计 ≥ 会员门槛（系统设置）的顾客数，按下单门店计。'
+    + '不含 WorkFine 历史单；跨店消费的顾客可能在多家店各计一次，合计为逐店相加'),
+  metricColumn('L', 'managedMonthCustomers', '被经营顾客\n当月消费人数', MANAGED_GROUP, 'count',
+    '当月在本店的消费（同 K 的款项口径）累计 ≥ 会员门槛的顾客数，按下单门店计'),
+  ratioColumn('M', 'managedRate', '被经营率\n年度标准60%', MANAGED_GROUP, 'percent', 'managedYearCustomers', 'retainedMembers',
+    '被经营顾客年度消费人数 ÷ 保有会员（K / E）'),
 
   pendingColumn('N', 'salesYearTarget', '年度销售\n业绩目标', SALES_GROUP, 'amount', '#374'),
   pendingColumn('O', 'salesMonthTarget', '当月业绩\n目标', SALES_GROUP, 'amount', '#374'),
@@ -211,23 +268,40 @@ export const OPERATING_MASTER_COLUMNS: readonly OperatingMasterColumn[] = [
   metricColumn('R', 'ytdRevenue', '年度\n累计达成', SALES_GROUP, 'amount',
     '当年 1 月至所选月份各月「当月完成」之和。只含新系统上线后的数据，不含 WorkFine 历史单'),
 
-  pendingColumn('S', 'monthFootfall', '当月\n客流', FOOTFALL_GROUP, 'count', '#373'),
-  pendingColumn('T', 'preSaleFootfall', '当月\n售前客流', FOOTFALL_GROUP, 'count', '#373'),
-  pendingColumn('U', 'afterSaleFootfall', '当月\n售后客流', FOOTFALL_GROUP, 'count', '#373'),
+  metricColumn('S', 'monthFootfall', '当月服务\n到店天数', FOOTFALL_GROUP, 'count',
+    '当月在本店有已完成服务单的「顾客 × 服务日期」数（同一顾客同一天多单只算 1 天）。'
+    + '与客量板「客流量（次）」按单数计不同'),
+  metricColumn('T', 'preSaleFootfall', '当月售前\n到店天数', FOOTFALL_GROUP, 'count',
+    '当天在本店的服务单核销过体验项目的到店天数（查询时判定，不读服务单开单时的售前 / 售后标记）'),
+  metricColumn('U', 'afterSaleFootfall', '当月售后\n到店天数', FOOTFALL_GROUP, 'count',
+    '服务到店天数 − 售前到店天数（S − T）'),
   metricColumn('V', 'shengmeiProjectCount', '当月\n生美项目数', FOOTFALL_GROUP, 'count',
     '已完成服务单中生美项目的核销次数之和（剔除寄存单退款专用单）。与人效板、门店榜的「项目数」（按经营类型统计）口径不同'),
   metricColumn('W', 'monthConsume', '当月\n总实耗', FOOTFALL_GROUP, 'amount',
     '与销售板「门店」明细的「总实耗」同口径'),
   metricColumn('X', 'shengmeiConsume', '当月\n生美实耗', FOOTFALL_GROUP, 'amount',
     '与销售板「门店」明细的「生美实耗」同口径（按服务项目的「是否生美」标记）'),
-  pendingColumn('Y', 'shengmeiConsumePerVisit', '单次\n生美客耗', FOOTFALL_GROUP, 'amount', '#373'),
+  ratioColumn('Y', 'shengmeiConsumePerVisit', '单次\n生美客耗', FOOTFALL_GROUP, 'amount', 'shengmeiConsume', 'afterSaleFootfall',
+    '当月生美实耗 ÷ 当月售后到店天数（X / U）'),
 ]
 
 // ─── 期间 ─────────────────────────────────────────────────────────────────────
 
-/** R 列的年度累计区间：当年 1 月 1 日 ~ 所选月末。1 月时与当月区间相同（R = P）。 */
+/** R / K 列的年度累计区间：当年 1 月 1 日 ~ 所选月末。1 月时与当月区间相同（R = P、K = L）。 */
 export function ytdRange(month: string): ResolvedRange {
   return { start: `${month.slice(0, 4)}-01-01`, end: monthRange(month).end }
+}
+
+/** 统计时点 T = min(所选月末, 今天)（#373「选时间点」拍板）：E 保有会员截至这一天 */
+export function retainedAsOf(month: string, today: string = shanghaiToday()): string {
+  const end = monthRange(month).end
+  return end < today ? end : today
+}
+
+/** E 保有会员的到店窗口 [T − 90 天, T]（与客量板有效保有会员的 `T::date - INTERVAL '90 days'` 同一天） */
+export function retainedWindow(month: string, today?: string): ResolvedRange {
+  const end = retainedAsOf(month, today)
+  return { start: addDays(end, -90), end }
 }
 
 // ─── 行装配 ───────────────────────────────────────────────────────────────────
@@ -241,7 +315,7 @@ export interface OperatingMasterStore {
 
 export interface OperatingMasterTable {
   rows: OperatingMasterRow[]
-  /** 表尾合计（跨市场时即「总计」）：只含取数列；占位列不在内 */
+  /** 表尾合计（跨市场时即「总计」）：含全部取数列（比率列为合计后重算的比率）；占位列不在内 */
   totals: MatrixTotals
   /** 门店行数（不含小计） */
   storeCount: number
@@ -249,7 +323,7 @@ export interface OperatingMasterTable {
   multiMarket: boolean
 }
 
-/** 有 value 的列 = 参与小计 / 合计的列（#373 增量补齐的列按这个自动纳入，不必再改装配） */
+/** 有 value 的列 = 参与小计 / 合计的列（可加列求和、比率列重算） */
 const METRIC_COLUMNS = OPERATING_MASTER_COLUMNS.filter((column) => column.value)
 const metricColumnKeys = METRIC_COLUMNS.map((column) => column.key)
 
@@ -280,8 +354,7 @@ export function buildOperatingMasterTable(
 
   const marketIds = Array.from(new Set(storeRows.map((row) => row.marketId)))
   const multiMarket = marketIds.length > 1
-  const totalsOf = (rows: readonly OperatingMasterRow[]) =>
-    pickMetricTotals(computeMatrixTotals(METRIC_COLUMNS, rows, { paginated: false }))
+  const totalsOf = (rows: readonly OperatingMasterRow[]) => computeMatrixTotals(METRIC_COLUMNS, rows, { paginated: false })
 
   const rows: OperatingMasterRow[] = []
   if (multiMarket) {
@@ -294,18 +367,25 @@ export function buildOperatingMasterTable(
         marketName: marketRows[0].marketName,
         storeId: null,
         storeName: '小计',
-        values: totalsOf(marketRows),
+        // 小计行只存可加列：比率列的 value 由这一行的分子分母现算（= 合计后重算），与表尾合计同一规则
+        values: pickAdditive(totalsOf(marketRows)),
       })
     }
   } else {
     rows.push(...storeRows)
   }
 
-  return { rows, totals: totalsOf(storeRows), storeCount: storeRows.length, multiMarket }
+  const totals = totalsOf(storeRows)
+  return {
+    rows,
+    totals: Object.fromEntries(metricColumnKeys.map((key) => [key, totals[key] ?? null])),
+    storeCount: storeRows.length,
+    multiMarket,
+  }
 }
 
-function pickMetricTotals(totals: MatrixTotals): Record<OperatingMasterMetricKey, number | null> {
-  return Object.fromEntries(metricColumnKeys.map((key) => [key, totals[key] ?? null])) as Record<
+function pickAdditive(totals: MatrixTotals): Record<OperatingMasterMetricKey, number | null> {
+  return Object.fromEntries(OPERATING_MASTER_METRIC_KEYS.map((key) => [key, totals[key] ?? null])) as Record<
     OperatingMasterMetricKey,
     number | null
   >

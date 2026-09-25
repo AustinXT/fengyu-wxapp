@@ -40,6 +40,7 @@ import {
   listInventoryLots,
   listInventorySkus,
   listInventoryMarketTransferTargets,
+  listInventoryShipmentMarketTargets,
   listInventorySuppliers,
   inventorySkuOptionConditions,
   rejectInventoryCoreDoc,
@@ -1890,6 +1891,29 @@ describe('市场间调货接收主体候选（#340）', () => {
     const rows = await listInventoryMarketTransferTargets()
     expect(Object.keys(sink.fields ?? {}).sort()).toEqual(['name', 'orgNodeId'])
     expect(Object.keys(rows[0]).sort()).toEqual(['name', 'orgNodeId'])
+  })
+
+  it('品项公司发货的收货市场候选（#336b）与调货候选同一条查询：全部启用市场、无 scope 收窄、只取两列', async () => {
+    const sink = captureSelect([{ orgNodeId: 'M2', name: '九江市场' }])
+    const rows = await listInventoryShipmentMarketTargets()
+    const { text, params } = compile(sink.where)
+    expect(text).toBe(
+      '("inventory_locations"."is_active" = $1 and "inventory_locations"."location_type" = $2'
+      + ' and "inventory_locations"."org_node_id" is not null)',
+    )
+    expect(params).toEqual(['true', '市场'])
+    expect(Object.keys(sink.fields ?? {}).sort()).toEqual(['name', 'orgNodeId'])
+    expect(rows).toEqual([{ orgNodeId: 'M2', name: '九江市场' }])
+  })
+
+  it('发货收货市场候选只认供应链 operate（与 createItemCompanyShipment 同一权限门）', async () => {
+    const { requirePermission: requirePermissionMock } = await import('@/lib/permissions')
+    vi.mocked(requirePermissionMock).mockImplementationOnce(() => {
+      throw new Error('PERMISSION_DENIED: 无权限')
+    })
+    await expect(listInventoryShipmentMarketTargets()).rejects.toThrow('PERMISSION_DENIED')
+    expect(vi.mocked(requirePermissionMock)).toHaveBeenCalledWith(expect.anything(), 'inventory:supply_chain_operate')
+    expect(mockDb.select).not.toHaveBeenCalled()
   })
 
   it('没有市场办理权限的账号被拒（含只有供应链 operate 的）', async () => {

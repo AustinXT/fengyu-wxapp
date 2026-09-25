@@ -20,6 +20,8 @@ interface RoleBinding {
 interface ScopedStore {
   storeId: string
   storeName: string
+  /** 门店组织节点是否在营（#400）。旧缓存无此字段，按在营处理，由 scope-picker 以服务端数据纠正 */
+  isActive?: boolean
 }
 
 interface IAppOption {

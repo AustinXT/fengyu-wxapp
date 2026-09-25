@@ -52,7 +52,7 @@ export const listInventoryCoreDocs = withPermission(
  *
  * ⚠️ 有 inbox 的业务每次加载是 **2 次** engine 调用（各带一次 COUNT +
  * syncInventoryLocations + getSession，因为 `listInventoryCoreDocs` 自身是
- * withPermission 包装的）。没有 inbox 的 17 个业务仍只查 1 次 —— 别图省事无条件查两次。
+ * withPermission 包装的）。没有 inbox 的业务仍只查 1 次 —— 别图省事无条件查两次。
  */
 export const listInventoryOperationDocs = withPermission(
   'inventory:list',

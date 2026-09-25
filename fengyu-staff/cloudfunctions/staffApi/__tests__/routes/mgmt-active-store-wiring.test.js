@@ -62,6 +62,8 @@ const EXEMPT_HANDLERS = ['mgmt-dashboard:scopeOptions']
 const EXEMPT_SQL = [
   ['市场名称（scope 展示名）', /^SELECT name FROM org_nodes WHERE id = \$1 AND type = '市场'$/],
   ['门店名称（scope 展示名）', /^SELECT store_name FROM stores WHERE store_id = \$1$/],
+  // #400：单店 scope 的展示名 + 停用标记（经 store-status STORE_NODE_JOIN / STORE_IS_ACTIVE），不取统计数
+  ['门店名称 + 停用标记（resolveScope，#400）', /^SELECT s\.store_name, COALESCE\(store_node\.is_active, FALSE\) AS is_active FROM stores s LEFT JOIN org_nodes store_node ON store_node\.id = s\.org_node_id AND store_node\.type = '门店' WHERE s\.store_id = \$1$/],
   ['品类字典', /^SELECT product_kind, category_name FROM product_categories WHERE product_kind IS NOT NULL AND category_name IS NOT NULL ORDER BY product_kind, category_name$/],
 ]
 
@@ -69,6 +71,10 @@ const ACTIVE_SUBQUERY =
   "IN ( SELECT active_store.store_id FROM stores active_store JOIN org_nodes active_node ON active_store.org_node_id = active_node.id WHERE active_node.type = '门店' AND active_node.is_active = TRUE )"
 
 const normalize = (text) => text.replace(/\s+/g, ' ').trim()
+
+/** #400 权限内停用门店清单（mgmt-dashboard.js loadInactiveStores） */
+const LOAD_INACTIVE_STORES_SQL =
+  "SELECT s.store_id, s.store_name FROM stores s LEFT JOIN org_nodes store_node ON store_node.id = s.org_node_id AND store_node.type = '门店' WHERE NOT COALESCE(store_node.is_active, FALSE) AND ($1::boolean OR s.store_id = ANY($2::text[])) ORDER BY s.store_name ASC"
 
 /** staff 范围下拉数据源（mgmt-dashboard.js loadAllMarkets）的完整 SQL（归一空白后） */
 const LOAD_ALL_MARKETS_SQL =
@@ -189,7 +195,8 @@ describe('#401 管理层取数在营接线 · 运行时闭集', () => {
     pg.query.mockReset().mockImplementation(async () => [])
     await ROUTES['mgmt-dashboard'].scopeOptions(hqCtx({}))
     const sqls = pg.query.mock.calls.map((c) => normalize(c[0]))
-    expect(sqls).toEqual([LOAD_ALL_MARKETS_SQL])
+    // #400 起下拉还带出权限内停用门店清单（给「已停用」空态用），同样整段钉死、同样只看节点
+    expect(sqls).toEqual([LOAD_ALL_MARKETS_SQL, LOAD_INACTIVE_STORES_SQL])
   })
 
   it('每条豁免都被真实命中（过期豁免须删除）', () => {
