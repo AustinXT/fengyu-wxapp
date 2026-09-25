@@ -179605,6 +179605,16 @@ var getSalesBoard = withPermission("data_center:dashboard", async (session4, par
 init_db2();
 init_with_permission();
 var import_drizzle_orm63 = __toESM(require_drizzle_orm(), 1);
+
+// src/lib/data-center/spend-buckets.ts
+var SPEND_BUCKET_FLOORS = Object.freeze({
+  star: 1e4,
+  pink: 30000,
+  gold: 60000,
+  black: 1e5
+});
+
+// src/actions/data-center/customer.ts
 "use server";
 var num = (v) => {
   const n = Number(v ?? 0);
@@ -179772,7 +179782,7 @@ async function queryReactivated(session4, scope, range, bucket) {
   `);
   return num(first(rows).v);
 }
-async function queryOperatedMembers(session4, scope, range) {
+async function queryOperatedMembers(session4, scope, range, threshold) {
   const sc = scopeFilterSql(session4, scope, "o.store_id");
   const rows = await db2.execute(import_drizzle_orm63.sql`
     WITH member_spend AS (
@@ -179790,7 +179800,7 @@ async function queryOperatedMembers(session4, scope, range) {
         AND c.customer_type = '会员客'
       GROUP BY o.client_user_id
     )
-    SELECT COUNT(*) FILTER (WHERE spend >= 1990) AS v
+    SELECT COUNT(*) FILTER (WHERE spend >= ${threshold}) AS v
     FROM member_spend
   `);
   return num(first(rows).v);
@@ -180051,7 +180061,8 @@ async function queryRegActiveBreakdown(session4, scope, range, group) {
   }
   return map;
 }
-async function queryOpsBreakdown(session4, scope, range, group) {
+async function queryOpsBreakdown(session4, scope, range, group, threshold) {
+  const floors = SPEND_BUCKET_FLOORS;
   const skeleton = scopeStoreSkeletonSql(session4, scope);
   const groupId = group === "market" ? import_drizzle_orm63.sql.raw("sk.market_id") : import_drizzle_orm63.sql.raw("sk.store_id");
   const groupName = group === "market" ? import_drizzle_orm63.sql.raw("sk.market_name") : import_drizzle_orm63.sql.raw("sk.store_name");
@@ -180084,13 +180095,13 @@ async function queryOpsBreakdown(session4, scope, range, group) {
     ),
     spend_agg AS (
       SELECT group_id,
-        COUNT(*) FILTER (WHERE spend < 1990) AS bucket_d,
-        COUNT(*) FILTER (WHERE spend >= 1990 AND spend < 10000) AS bucket_c,
-        COUNT(*) FILTER (WHERE spend >= 10000 AND spend < 30000) AS bucket_b,
-        COUNT(*) FILTER (WHERE spend >= 30000 AND spend < 60000) AS bucket_a,
-        COUNT(*) FILTER (WHERE spend >= 60000 AND spend < 100000) AS bucket_v,
-        COUNT(*) FILTER (WHERE spend >= 100000) AS bucket_vic,
-        COUNT(*) FILTER (WHERE spend >= 1990) AS operated_total,
+        COUNT(*) FILTER (WHERE spend < ${threshold}) AS bucket_d,
+        COUNT(*) FILTER (WHERE spend >= ${threshold} AND spend < ${floors.star}) AS bucket_c,
+        COUNT(*) FILTER (WHERE spend >= ${floors.star} AND spend < ${floors.pink}) AS bucket_b,
+        COUNT(*) FILTER (WHERE spend >= ${floors.pink} AND spend < ${floors.gold}) AS bucket_a,
+        COUNT(*) FILTER (WHERE spend >= ${floors.gold} AND spend < ${floors.black}) AS bucket_v,
+        COUNT(*) FILTER (WHERE spend >= ${floors.black}) AS bucket_vic,
+        COUNT(*) FILTER (WHERE spend >= ${threshold}) AS operated_total,
         COALESCE(SUM(spend), 0) AS member_spend_total,
         COUNT(*) AS member_spend_count
       FROM member_spend
@@ -180317,6 +180328,7 @@ var getCustomerBoard = withPermission("data_center:dashboard", async (session4, 
   const ctx = await prepareBoardContext(session4, params);
   const { scope, comparison, enabled } = ctx;
   const cur = comparison.current;
+  const threshold = await getMemberThreshold();
   const reg = (ct) => (r) => queryRegistration(session4, scope, r, ct);
   const trafficC = (ct, metric) => (r) => queryTrafficCount(session4, scope, r, ct, metric);
   const [
@@ -180349,7 +180361,7 @@ var getCustomerBoard = withPermission("data_center:dashboard", async (session4, 
     withComparison((r) => queryReactivated(session4, scope, r, "frozen"), comparison, "count", false),
     withComparison(() => queryStatusCount(session4, scope, "休眠"), comparison, "count", false),
     withComparison((r) => queryReactivated(session4, scope, r, "deep"), comparison, "count", false),
-    withComparison((r) => queryOperatedMembers(session4, scope, r), comparison, "count", enabled),
+    withComparison((r) => queryOperatedMembers(session4, scope, r, threshold), comparison, "count", enabled),
     withComparison((r) => queryNewMemberCount(session4, scope, r), comparison, "count", enabled),
     withComparison((r) => queryTrialFootfall(session4, scope, r), comparison, "count", false),
     withComparison((r) => queryMemberAvgTicket(session4, scope, r), comparison, "amount", enabled),
@@ -180419,9 +180431,9 @@ var getCustomerBoard = withPermission("data_center:dashboard", async (session4, 
     opsByStore
   ] = await Promise.all([
     queryRegActiveBreakdown(session4, scope, cur, "market"),
-    queryOpsBreakdown(session4, scope, cur, "market"),
+    queryOpsBreakdown(session4, scope, cur, "market", threshold),
     queryRegActiveBreakdown(session4, scope, cur, "store"),
-    queryOpsBreakdown(session4, scope, cur, "store")
+    queryOpsBreakdown(session4, scope, cur, "store", threshold)
   ]);
   const byMarket = buildBreakdownRows("market", skeleton, regActiveByMarket, opsByMarket);
   const byStore = buildBreakdownRows("store", skeleton, regActiveByStore, opsByStore);
