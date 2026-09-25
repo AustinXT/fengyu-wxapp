@@ -182218,15 +182218,26 @@ function fromBase64Url(text5) {
   const binary = atob(text5.replace(/-/g, "+").replace(/_/g, "/"));
   return new TextDecoder().decode(Uint8Array.from(binary, (ch) => ch.charCodeAt(0)));
 }
+function signatureDigest(signature) {
+  let a = 2166136261;
+  let b2 = 16777619 ^ 1540483477;
+  for (let i = 0;i < signature.length; i += 1) {
+    const code = signature.charCodeAt(i);
+    a = Math.imul(a ^ code, 16777619) >>> 0;
+    b2 = Math.imul(b2 ^ code, 16777619) >>> 0;
+  }
+  return a.toString(36) + b2.toString(36);
+}
+var MAX_CURSOR_LENGTH = 200;
 function encodeCommissionCursor(key, signature) {
-  return toBase64Url(JSON.stringify({ d: key.d, t: key.t, id: key.id, s: signature }));
+  return toBase64Url(JSON.stringify({ d: key.d, t: key.t, id: key.id, s: signatureDigest(signature) }));
 }
 function decodeCommissionCursor(raw, signature) {
-  if (!raw || raw.length > 512)
+  if (!raw || raw.length > MAX_CURSOR_LENGTH)
     return null;
   try {
     const parsed = JSON.parse(fromBase64Url(raw));
-    if (parsed.s !== signature)
+    if (parsed.s !== signatureDigest(signature))
       return null;
     const { d, t, id } = parsed;
     if (typeof d !== "string" || !isValidCalendarDate(d))
