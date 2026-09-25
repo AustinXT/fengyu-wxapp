@@ -3,7 +3,8 @@ import { notFound, redirect } from 'next/navigation'
 import { listInventoryLocations, listInventoryMarketTransferTargets } from '@/actions/inventory/locations'
 import { listInventorySuppliers } from '@/actions/inventory/suppliers'
 import { getSession } from '@/lib/auth'
-import { inventoryPriceVisibility } from '@/lib/inventory/access'
+import { inventoryPriceScopeByTier, inventoryPriceVisibility } from '@/lib/inventory/access'
+import { scopeSessionToAllActions } from '@/lib/action-scope'
 import {
   INVENTORY_BUSINESS_LEVELS,
   genericDocBusinessLevel,
@@ -97,6 +98,9 @@ export default async function Page({
           canApproveShipmentCancellation={hasUiCapability(actions, 'inventory:shipment_cancel_approve')}
           // 与单据列表查询回传的 canViewPrice 同一判据
           canViewPrice={inventoryPriceVisibility(session) !== 'none'}
+          // 入库单价优惠（#346）与服务端 receiveSupplyChainPurchaseOrder 同判据：办理权与供应链价格权
+          // 落在同一条角色绑定上，按总部节点判；null = 不受节点限制（admin）
+          receiptDiscountOrgNodeIds={receiptDiscountOrgNodeIds(session)}
           // 「顾客产品出库」跳转卡（#350）：与提货录入页 requireUiPageCapability 同一判据
           canCreatePickupRecord={hasUiCapability(actions, 'pickup_record:create')}
           initialOperationId={initialOperationId}
@@ -104,4 +108,11 @@ export default async function Page({
       </Suspense>
     </div>
   )
+}
+
+function receiptDiscountOrgNodeIds(session: NonNullable<Awaited<ReturnType<typeof getSession>>>): string[] | null {
+  const tiers = inventoryPriceScopeByTier(
+    scopeSessionToAllActions(session, ['inventory:supply_chain_operate', 'inventory:supply_chain_price_view']),
+  )
+  return tiers.supplyChain === null ? null : [...tiers.supplyChain]
 }

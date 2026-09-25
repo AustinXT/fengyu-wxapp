@@ -626,6 +626,7 @@ export default function InventoryOperationsPage({
   canRequestShipmentCancellation,
   canApproveShipmentCancellation,
   canViewPrice,
+  receiptDiscountOrgNodeIds,
   canCreatePickupRecord,
   initialOperationId,
 }: {
@@ -640,6 +641,11 @@ export default function InventoryOperationsPage({
   canRequestShipmentCancellation: boolean
   canApproveShipmentCancellation: boolean
   canViewPrice: boolean
+  /**
+   * 可填入库单价优惠的总部节点（#346，服务端按「办理权与供应链价格权同一绑定」算）；
+   * null = 不受节点限制（admin），undefined 按不受限处理（仅测试）。
+   */
+  receiptDiscountOrgNodeIds?: string[] | null
   /** 跳转卡「顾客产品出库」的可用判据：目标页（提货录入）的入口权限（#350） */
   canCreatePickupRecord: boolean
   /** 深链 `?create=<docType>` 解析出的初始业务（#191），服务端已校验权限与白名单。 */
@@ -872,6 +878,7 @@ export default function InventoryOperationsPage({
               marketTransferTargets={marketTransferTargets}
               suppliers={suppliers}
               canViewPrice={canViewPrice}
+              receiptDiscountOrgNodeIds={receiptDiscountOrgNodeIds}
               onClose={() => { setPendingDocsTabFor(null); setActiveOperation(null) }}
               onSuccess={afterSuccess}
             />
@@ -893,6 +900,7 @@ function OperationWorkspace({
   marketTransferTargets,
   suppliers,
   canViewPrice,
+  receiptDiscountOrgNodeIds,
   onClose,
   onSuccess,
 }: {
@@ -914,6 +922,7 @@ function OperationWorkspace({
   marketTransferTargets?: readonly InventoryMarketTransferTarget[]
   suppliers: InventorySupplierRow[]
   canViewPrice: boolean
+  receiptDiscountOrgNodeIds?: string[] | null
   onClose: () => void
   onSuccess: (message: string) => void
 }) {
@@ -1035,7 +1044,7 @@ function OperationWorkspace({
           {operation === 'market-report-summary' && <MarketReportSummaryForm locations={locations} onSuccess={handleSuccess} />}
           {operation === 'company-shipment' && <CompanyShipmentForm locations={locations} onSuccess={handleSuccess} />}
           {operation === 'market-receipt' && <ShipmentReceiptForm kind="market" prefill={prefill} onSuccess={handleSuccess} />}
-          {operation === 'supply-chain-receipt' && <SupplyChainPurchaseReceiptForm locations={locations} canViewPrice={canViewPrice} prefill={prefill} onSuccess={handleSuccess} />}
+          {operation === 'supply-chain-receipt' && <SupplyChainPurchaseReceiptForm locations={locations} canViewPrice={canViewPrice} receiptDiscountOrgNodeIds={receiptDiscountOrgNodeIds} prefill={prefill} onSuccess={handleSuccess} />}
           {operation === 'supply-chain-purchase-cancel' && <SupplyChainPurchaseCancelForm prefill={prefill} onSuccess={handleSuccess} />}
           {operation === 'store-allocation' && <StoreAllocationForm locations={locations} canViewPrice={canViewPrice} onSuccess={handleSuccess} />}
           {operation === 'store-receipt' && <ShipmentReceiptForm kind="store" prefill={prefill} onSuccess={handleSuccess} />}
@@ -2975,11 +2984,14 @@ function receiptActualCost(line: SupplyChainPurchaseReceiptDraftLine): string {
 function SupplyChainPurchaseReceiptForm({
   locations,
   canViewPrice,
+  receiptDiscountOrgNodeIds,
   prefill,
   onSuccess,
 }: {
   locations: InventoryLocationRow[]
   canViewPrice: boolean
+  /** 见 InventoryOperationsPage 同名 prop（#346） */
+  receiptDiscountOrgNodeIds?: string[] | null
   /** 待办区「去收货」带来的预选券（#192）。 */
   prefill?: OperationFormPrefill | null
   onSuccess: (message: string) => void
@@ -2992,6 +3004,10 @@ function SupplyChainPurchaseReceiptForm({
   const [remark, setRemark] = useState('')
   const [lines, setLines] = useState<SupplyChainPurchaseReceiptDraftLine[]>([])
   const [saving, setSaving] = useState(false)
+  // 与服务端同判据：本单总部主体上，办理权与供应链价格权同一绑定（#346）
+  const canFillDiscount = canViewPrice && Boolean(doc?.targetOrgNodeId) && (
+    receiptDiscountOrgNodeIds == null || receiptDiscountOrgNodeIds.includes(doc!.targetOrgNodeId!)
+  )
 
   useEffect(() => {
     if (!doc) {
@@ -3101,11 +3117,11 @@ function SupplyChainPurchaseReceiptForm({
         <div className="space-y-3">
           <h3 className="text-sm font-medium">本次实收入库</h3>
           {lines.map((line, index) => (
-            <div key={line.purchaseOrderItemId} className={`grid grid-cols-1 gap-2 rounded-[var(--radius)] border border-[var(--border)] p-3 ${canViewPrice && line.standardCost !== null ? 'md:grid-cols-8' : 'md:grid-cols-5'}`}>
+            <div key={line.purchaseOrderItemId} className={`grid grid-cols-1 gap-2 rounded-[var(--radius)] border border-[var(--border)] p-3 ${canFillDiscount && line.standardCost !== null ? 'md:grid-cols-8' : 'md:grid-cols-5'}`}>
               <div><div className="font-medium text-sm">{line.skuName}</div><div className="text-xs text-[#888888]">{line.specName || `明细 #${line.purchaseOrderItemId}`}</div></div>
               <FormField label="实收数量"><Input type="number" min="0" step="0.01" max="9999999999.99" value={line.quantity} onChange={(event) => updateLine(index, { quantity: event.target.value })} /></FormField>
               {/* #346：单价优惠只在入库时填，写进本次批次成本；商品档案的供应链采购价不变。看不到价格的账号不填 */}
-              {canViewPrice && line.standardCost !== null && <>
+              {canFillDiscount && line.standardCost !== null && <>
                 <FormField label="标准进价"><Input value={line.standardCost === null ? '—' : line.standardCost.toFixed(2)} readOnly tabIndex={-1} /></FormField>
                 <FormField label="单价优惠"><Input type="number" min="0" step="0.01" max="9999999999.99" value={line.unitDiscount} placeholder="0" onChange={(event) => updateLine(index, { unitDiscount: event.target.value })} /></FormField>
                 <FormField label="实际进价"><Input value={receiptActualCost(line)} readOnly tabIndex={-1} /></FormField>

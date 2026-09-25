@@ -2807,6 +2807,40 @@ describe('§9.5 单据详情价格档位逐字段遮蔽', () => {
     expect(JSON.stringify(detail!.fulfillmentProgress)).not.toMatch(/Amount/)
   })
 
+  it('#346 market 档看供应链采购入库单：单头与明细都不给价格（全是供应链成本）', async () => {
+    mockGetSession.mockResolvedValue(sessionWithActions(['inventory:list', 'inventory:market_price_view'], ['HQ']) as never)
+    const now = new Date('2026-09-25T09:00:00.000Z')
+    mockDb.select
+      .mockReturnValueOnce(detailHeadSelect([{
+        doc: {
+          id: 'GRK-346', docType: '供应链采购入库', status: '已完成', sourceOrgNodeId: null, targetOrgNodeId: 'HQ',
+          marketId: null, supplierId: null, docDate: '2026-09-25', relatedSaleOrderId: null, customerName: null,
+          employeeName: null, supplierName: null, externalPartyName: null, logisticsCompany: null, trackingNo: null,
+          receiptAttachmentUrl: null, totalQuantity: '2', totalAmount: '160', remark: null, auditRemark: null,
+          createdBy: 'E001', confirmedAt: now, approvedAt: null, rejectedAt: null, cancellationReason: null,
+          cancelledAt: null, createdAt: now, updatedAt: now,
+        },
+        sourceOrgNodeName: null, sourceOrgNodeType: null, targetOrgNodeName: '总部', targetOrgNodeType: '总部',
+      }]))
+      .mockReturnValueOnce(detailItemsSelect([{
+        id: 1, docId: 'GRK-346', lotId: 7, skuId: 'SKU-1', saleItemId: null, skuName: '精华', specName: null,
+        supplier: null, supplierId: null, marketId: null, productSeries: null, batchNo: 'B1', expiryDate: null,
+        isGift: false, quantity: '2', stockSnapshot: '0', requestQuantity: null, fulfilledQuantity: null,
+        standardUnitPrice: '100', unitDiscount: '20', actualUnitPrice: '80', amount: '160', supplyChainUnitCost: '80',
+        marketActualUnitPrice: null, storeActualUnitPrice: null, promotionPlanId: null, promotionPlanNoSnapshot: null,
+        promotionPlanNameSnapshot: null, promotionRuleTypeSnapshot: null, promotionSelectionMode: null,
+        reason: null, remark: null, createdAt: now,
+      }]))
+    mockDb.execute.mockResolvedValue([] as never)
+
+    const detail = await getInventoryCoreDocById('GRK-346')
+
+    expect(detail!.totalAmount).toBeUndefined()
+    const [item] = detail!.items
+    expect([item.standardUnitPrice, item.unitDiscount, item.actualUnitPrice, item.amount, item.supplyChainUnitCost])
+      .toEqual([undefined, undefined, undefined, undefined, undefined])
+  })
+
   it('none 档（门店）：单头与明细逐字段无任何金额，序列化后不出现金额键', async () => {
     mockGetSession.mockResolvedValue(sessionWithActions(
       ['inventory:list', 'inventory:store_operate'],

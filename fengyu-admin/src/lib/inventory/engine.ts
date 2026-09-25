@@ -1315,6 +1315,19 @@ function skuRow(row: {
  */
 const AMOUNTLESS_DOC_TYPES = new Set<InventoryDocType>(['品项公司发货'])
 
+/**
+ * 价格全是供应链成本的单据类型（#346）：供应链采购入库的标准进价 / 单价优惠 / 实际进价 / 金额
+ * 都能直接还原批次成本，市场价格档不该看到 —— 只认 all / supply_chain 档，market 档按 none 处理。
+ */
+const SUPPLY_CHAIN_COST_DOC_TYPES = new Set<InventoryDocType>(['供应链采购入库'])
+
+function docTypePriceVisibility(
+  docType: string,
+  visibility: import('./types').InventoryPriceVisibility,
+): import('./types').InventoryPriceVisibility {
+  return SUPPLY_CHAIN_COST_DOC_TYPES.has(docType as InventoryDocType) && visibility === 'market' ? 'none' : visibility
+}
+
 function docRow(row: {
   doc: typeof inventoryDocs.$inferSelect
   sourceOrgNodeName: string | null
@@ -2525,10 +2538,10 @@ export const listInventoryCoreDocs = withPermission(
     return {
       data: rows.map((row) => docRow({
         ...row,
-        includePrice: inventoryPriceVisibilityForOrgNodes(
+        includePrice: docTypePriceVisibility(row.doc.docType, inventoryPriceVisibilityForOrgNodes(
           priceTiers,
           [row.doc.sourceOrgNodeId, row.doc.targetOrgNodeId],
-        ) !== 'none',
+        )) !== 'none',
       })),
       total: countRow?.count ?? 0,
       // 回传**夹过白名单后**的实际页长：调用方若传了非白名单值（如 30），这里按 20 取数，
@@ -3559,10 +3572,10 @@ export const getInventoryCoreDocById = withPermission(
     if (!headRow) return null
     // 行级档位（§9.3/§9.5）：金额可见性按单据 source/target 端点命中该档位绑定的
     // org 集合判定（与单据可见性同构），防混合绑定会话跨绑定借权看价。
-    const priceVisibility = inventoryPriceVisibilityForOrgNodes(
+    const priceVisibility = docTypePriceVisibility(headRow.doc.docType, inventoryPriceVisibilityForOrgNodes(
       priceTiers,
       [headRow.doc.sourceOrgNodeId, headRow.doc.targetOrgNodeId],
-    )
+    ))
     const head = docRow({ ...headRow, includePrice: priceVisibility !== 'none' })
     // 无金额单据类型（§5.3/§10.4）所有价格/折扣/成本/金额字段一律遮蔽（含 admin）：
     // 明细可能残留历史价格快照（DB 保留供入库/退货/审计追溯），业务响应统一不返回。

@@ -841,6 +841,7 @@ function renderPage(options: {
   locations?: InventoryLocationRow[]
   canSelfPurchase?: boolean
   canCreatePickupRecord?: boolean
+  receiptDiscountOrgNodeIds?: string[] | null
 }) {
   mockCandidates(options.candidates ?? [])
   return render(
@@ -854,6 +855,7 @@ function renderPage(options: {
       canRequestShipmentCancellation={false}
       canApproveShipmentCancellation={false}
       canViewPrice
+      receiptDiscountOrgNodeIds={options.receiptDiscountOrgNodeIds}
       canCreatePickupRecord={options.canCreatePickupRecord ?? true}
       // 深链入口：省掉「先点卡片」这一步，工作区直接展开在目标业务上
       initialOperationId={options.operation}
@@ -1889,6 +1891,19 @@ describe('采购订单市场行走供应链采购入库（#335）', () => {
     fireEvent.submit(screen.getByRole('button', { name: '登记供应链采购入库' }).closest('form')!)
     await waitFor(() => expect(vi.mocked(toast.error)).toHaveBeenCalledWith('单价优惠不能大于标准进价：精华'))
     expect(receiveSupplyChainPurchaseOrder).not.toHaveBeenCalled()
+  })
+
+  it('#346 办理权与价格权不在同一绑定（本单总部不在可填优惠节点里）：不显示优惠框，与服务端同判据', async () => {
+    const row = docRow({ id: 'CGD-349', docType: '采购订单', status: '待收货' })
+    vi.mocked(getInventoryCoreDocById).mockResolvedValue({
+      ...docDetail(row),
+      targetOrgNodeId: 'HQ',
+      items: [purchaseItem({ id: 1, skuName: '精华', quantity: 5, supplyChainUnitCost: 100, actualUnitPrice: 100 })],
+    })
+    renderPage({ level: 'supply-chain', operation: 'supply-chain-receipt', candidates: [row], receiptDiscountOrgNodeIds: [] })
+    await pickPurchaseOrder(row)
+    await screen.findByText('本次实收入库')
+    expect(screen.queryByText('单价优惠')).toBeNull()
   })
 
   it('#346 采购行供应链成本不可见（被价格档遮蔽）：不显示标准进价 / 单价优惠框', async () => {
