@@ -4270,6 +4270,10 @@ function ConversionForm({
       targetExpiryDate: optionalText(line.expiryDate),
       remark: optionalText(line.remark),
     }))
+    if (targets.some((line, index) => line.unitPrice !== null && line.unitPrice.trim() !== '' && targetPrices[index] === null)) {
+      toast.error('转换目标单价不能小于 0')
+      return
+    }
     if (targetItems.some((item) => !item.targetSkuId || item.quantity === null || item.unitPrice === null)) {
       toast.error('请完整填写目标商品、入库数量和单价')
       return
@@ -4394,13 +4398,14 @@ function ConversionForm({
             <span>目标合计 {balance.targetAmount.toFixed(2)}</span>
             <span>差额 {balance.difference.toFixed(2)}</span>
             <span className="text-[var(--muted-foreground)]">允许误差 ±{balance.tolerance.toFixed(2)}</span>
-            {mixedGift && <span>赠送批次与非赠送批次不能混在同一张转换单里</span>}
           </>
         ) : costHidden ? (
           <span className="text-[var(--muted-foreground)]">当前账号看不到来源批次的供应链成本，无法核算合计；提交时由系统校验成本守恒</span>
         ) : (
           <span className="text-[var(--muted-foreground)]">选好来源批次后显示来源合计、目标合计与差额</span>
         )}
+        {/* 赠送标记不受价格档遮蔽，成本不可见时也要提示混放 */}
+        {mixedGift && <span className="text-[#D94040]">赠送批次与非赠送批次不能混在同一张转换单里</span>}
       </div>
       <RemarkField value={remark} onChange={setRemark} />
       <div className="flex justify-end"><Button type="submit" loading={saving}>创建库存转换单</Button></div>

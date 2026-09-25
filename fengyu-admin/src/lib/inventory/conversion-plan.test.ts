@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { allocateConversionLinks, summarizeConversion, suggestConversionUnitPrice, uncoveredConversionTargets } from './conversion-plan'
 
@@ -191,5 +193,26 @@ describe('库存转换血缘分摊（#344）', () => {
       const totals = sumBySource(shares)
       sources.forEach((quantity, index) => expect(totals.get(index)).toBe(quantity))
     }
+  })
+})
+
+/**
+ * 行数 / 关联条数 / 数值上界在服务端（business.ts）与办理台表单各有一份字面量（禁跨端共享目录，
+ * 同端两文件也各自声明以免前端引入 server-only 模块）。单侧调整只会表现为「前端放行、服务端拒」，这里钉住两份相等。
+ */
+describe('库存转换上限前后端字面量一致（#344）', () => {
+  const server = readFileSync(resolve(__dirname, 'business.ts'), 'utf8')
+  const form = readFileSync(resolve(__dirname, '../../app/(main)/(inventory)/inventory/_components/inventory-operations-page.tsx'), 'utf8')
+  const constant = (source: string, name: string) => source.match(new RegExp(`const ${name} = ([0-9.]+)`))?.[1]
+
+  it.each(['CONVERSION_LINES_MAX', 'CONVERSION_LINKS_MAX'])('%s 两份相等', (name) => {
+    expect(constant(server, name)).toBeDefined()
+    expect(constant(form, name)).toBe(constant(server, name))
+  })
+
+  it('金额上限文案与服务端 CONVERSION_NUMBER_MAX 一致', () => {
+    const max = constant(server, 'CONVERSION_NUMBER_MAX')
+    expect(max).toBe('9999999999.99')
+    expect(form).toContain(`库存转换金额合计超出上限 ${max}`)
   })
 })

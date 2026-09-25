@@ -5287,14 +5287,14 @@ function conversionText(value: unknown, label: string): string | null {
 }
 
 /** YYYY-MM-DD 且是真实日期（2026-02-31 在这里拒，不等 PG 报 22008）。 */
-function conversionExpiryDate(value: unknown): string | null {
-  const normalized = conversionText(value, '目标效期')
+function conversionDate(value: unknown, label: string): string | null {
+  const normalized = conversionText(value, label)
   if (!normalized) return null
   const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(normalized)
   const [year, month, day] = match ? match.slice(1).map(Number) : [0, 0, 0]
   const parsed = new Date(Date.UTC(year, month - 1, day))
   if (!match || parsed.getUTCFullYear() !== year || parsed.getUTCMonth() !== month - 1 || parsed.getUTCDate() !== day) {
-    throw new ApiError('INVALID_PARAMS', '效期格式应为 YYYY-MM-DD')
+    throw new ApiError('INVALID_PARAMS', `${label}格式应为 YYYY-MM-DD`)
   }
   return normalized
 }
@@ -5311,7 +5311,7 @@ export async function createInventoryConversion(
   input: CreateInventoryConversionInput,
 ): Promise<{ outboundId: string; inboundId: string }> {
   const locationId = required(conversionText(input.locationId, '转换库存主体'), '转换库存主体')
-  const docDate = conversionText(input.docDate, '转换日期')
+  const docDate = conversionDate(input.docDate, '转换日期')
   const remark = conversionText(input.remark, '备注')
   if (!Array.isArray(input.sources) || input.sources.length === 0) {
     throw new ApiError('INVALID_PARAMS', '库存转换至少需要一条来源明细')
@@ -5344,7 +5344,7 @@ export async function createInventoryConversion(
       unitPrice: conversionNumber(line.unitPrice, '转换目标单价', true),
       /** 手填目标批号；null = 留空，按库存转换入库单号+行号生成新批号（#345 §2.15） */
       targetBatchNo: conversionText(line.targetBatchNo, '目标批号'),
-      targetExpiryDate: conversionExpiryDate(line.targetExpiryDate),
+      targetExpiryDate: conversionDate(line.targetExpiryDate, '目标效期'),
       remark: conversionText(line.remark, '目标备注'),
     }
   })
