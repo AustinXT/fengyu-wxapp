@@ -91,6 +91,14 @@ const PROBES: Probe[] = [
     pattern: /^SELECT DISTINCT so\.client_user_id, \$\{col\} AS visit_date$/,
     minLines: 1,
   },
+  {
+    label: '员工提成日报 / 明细 · 取数条件与分配金额算法（#375）',
+    file: 'src/lib/data-center/commission-sql.ts',
+    // 按「列名」抓整行、不限取值：取值被改的行照样被提取出来，再去产物里逐字比对（只按取值抓会让改过的行
+    // 直接脱离探针，守护恒绿）。排除带 ${…} 的行：bun 打包可能给模板里的局部变量改名，那种行在产物里不一定逐字存在。
+    pattern: /^(?!.*\$\{)(AND (spia|sc|so|spe)\.(is_void|sale_order_type|status) .*|HAVING .*|ROUND\(ROUND\(.* AS allocated,)$/,
+    minLines: 7,
+  },
 ]
 
 describe('dist/export-worker.mjs 新鲜度（改了 data-center SQL 口径必须重建产物）', () => {
