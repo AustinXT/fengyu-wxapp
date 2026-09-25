@@ -11,7 +11,7 @@
  * PERMISSION_DENIED，生产脱敏后表现为「数据加载失败」。
  */
 import { collapseQuery, firstQueryValue, hasRepeatedQueryKey, parseScope } from './params'
-import { findInactiveScopeStore, resolveDefaultDataCenterScope } from './scope-options'
+import { findInactiveScopeStore, resolveDefaultDataCenterScope, visibleScopeStores } from './scope-options'
 import type { DataCenterScope, DataCenterScopeOptions, ScopeOptionInactiveStore } from './types'
 
 export type SearchQuery = Record<string, string | string[] | undefined>
@@ -73,7 +73,13 @@ export function resolveDataCenterEntry(
     scopeId: firstQueryValue(query.scopeId),
   })
   const defaults = defaultScopeParams(scopeOptions)
-  const needsDefaultScope = rawScope.type === 'all' && scopeOptions.topLevel !== 'all'
+  // 非总部账号的 'all' 必须补默认范围；'authorized' 在账号没有任何可见在营门店时同样不可用
+  // （validateScope 会拒成 PERMISSION_DENIED）——多店同事转来的 ?scope=authorized 链接到了
+  // 只授权无门店市场的账号手里，要落到它自己的默认范围（#399），而不是满屏报错。
+  // 终止性：零门店账号的默认范围只可能是 market 或 null，不会是 authorized。
+  const needsDefaultScope = scopeOptions.topLevel !== 'all' && (
+    rawScope.type === 'all' || (rawScope.type === 'authorized' && visibleScopeStores(scopeOptions).length === 0)
+  )
 
   if (needsDefaultScope && defaults) {
     const next = collapseQuery(query, [...legacyKeys, 'scope', 'scopeId'])

@@ -8,6 +8,7 @@ import { defaultScopeParams, resolveDataCenterEntry, type SearchQuery } from './
 import { collapseQuery, firstQueryValue, parseScope } from './params'
 import { parseReportMonth, parseReportRange, type ReportPeriod } from './report-period'
 import { shanghaiToday } from './time-range'
+import { visibleScopeStores } from './scope-options'
 import type { DataCenterScope, DataCenterScopeOptions, ResolvedRange, ScopeOptionInactiveStore } from './types'
 
 export type ReportPeriodKind = 'range' | 'month' | 'none'
@@ -95,6 +96,8 @@ export function resolveReportPage(input: {
 
 function isScopeInOptions(scope: DataCenterScope, scopeOptions: DataCenterScopeOptions): boolean {
   if (scope.type === 'market') return scopeOptions.markets.some((market) => market.id === scope.id)
+  // 授权汇总要有可见在营门店才成立（#399：只授权无门店市场的账号拿到 ?scope=authorized 链接）
+  if (scope.type === 'authorized') return scopeOptions.topLevel === 'all' || visibleScopeStores(scopeOptions).length > 0
   if (scope.type === 'store') {
     return scopeOptions.markets.some((market) => market.stores.some((store) => store.storeId === scope.id))
   }

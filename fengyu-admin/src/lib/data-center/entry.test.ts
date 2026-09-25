@@ -148,3 +148,30 @@ describe('#399 零在营门店但市场 scope 合法（只授权品项公司这�
     expect(defaultScopeParams(none)).toBeNull()
   })
 })
+
+describe('#399 ?scope=authorized 链接 + 零可见门店账号', () => {
+  const pxOnly: DataCenterScopeOptions = {
+    topLevel: 'market', inactiveStores: [],
+    markets: [{ id: 'PX', name: '品项公司', stores: [], granted: true }],
+  }
+
+  it('板块页：authorized 不可用 → 跳到默认市场（不再渲染后被 validateScope 拒成报错）', () => {
+    expect(resolveDataCenterEntry('/data-center/sales', { scope: 'authorized', preset: 'month' }, pxOnly))
+      .toEqual({ kind: 'redirect', url: '/data-center/sales?preset=month&scope=market&scopeId=PX' })
+  })
+
+  it('报表页：同样跳到默认市场', () => {
+    expect(resolveReportPage({ path: '/r', query: { scope: 'authorized', month: '2026-08' }, scopeOptions: pxOnly, periodKind: 'month', today: '2026-09-25' }))
+      .toEqual({ kind: 'redirect', url: '/r?month=2026-08&scope=market&scopeId=PX' })
+  })
+
+  it('连默认市场都没有（祖先市场）：仍是空态，不循环', () => {
+    expect(resolveDataCenterEntry('/p', { scope: 'authorized' }, none))
+      .toEqual({ kind: 'render', noViewableScope: true, inactiveStore: null, defaultScopeHref: null })
+  })
+
+  it('有可见门店的账号：authorized 照常渲染（行为不变）', () => {
+    expect(resolveDataCenterEntry('/p', { scope: 'authorized' }, multi))
+      .toEqual({ kind: 'render', noViewableScope: false, inactiveStore: null, defaultScopeHref: null })
+  })
+})
