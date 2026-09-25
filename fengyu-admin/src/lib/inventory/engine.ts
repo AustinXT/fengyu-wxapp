@@ -89,11 +89,14 @@ import {
   type InventoryDocCandidateRow,
 } from './doc-candidates'
 import {
+  INVENTORY_PROMOTION_MAINTAIN_ACTION,
+  assertInventoryPromotionMaintainer,
   inventoryPriceScopeByTier,
   inventoryPriceVisibility,
   inventoryPriceVisibilityForOrgNodes,
   inventoryScopedLocationIds,
   inventoryScopedOrgNodeIds,
+  isInventoryPromotionMaintainer,
 } from './access'
 
 const sourceLocation = alias(inventoryLocations, 'source_loc')
@@ -1436,6 +1439,49 @@ export const listInventoryMarketTransferTargets = withAnyPermission(
       .orderBy(asc(inventoryLocations.name))
     return rows.flatMap((row) => (row.orgNodeId ? [{ orgNodeId: row.orgNodeId, name: row.name }] : []))
   },
+)
+
+/**
+ * 福利方案「适用市场」候选（#354）。维护方是总部供应链，而总部库存 scope 不展开市场，
+ * 沿用 listInventoryLocations 会让它的下拉只剩「全部市场」、建不了市场专属方案；
+ * 所以维护方取全部启用市场，其余（市场只读账号的列表筛选）仍按库存 scope。
+ */
+/**
+ * 福利方案读路径的角色收紧集合（#354）：入口仍只要 stock_list，但收紧时一并保留授予维护动作的绑定，
+ * 否则 MANAGE 与 stock_list 落在两条绑定上时，维护方判定会随 stock_list 收紧丢掉，
+ * 与写路径（按 MANAGE 收紧）判据分叉 —— 能建方案却看不到。
+ */
+const PROMOTION_READ_SCOPE = { scopeActions: ['inventory:stock_list', INVENTORY_PROMOTION_MAINTAIN_ACTION] } as const
+
+/**
+ * 福利方案读路径的库存主体范围：维护方（按并集收紧后的会话判定）不过滤；其余一律**重新按
+ * stock_list 收紧**再算 scope —— 并集里那条只授维护动作的绑定（如市场 B 误授）不能把
+ * 市场 B 的方案带进市场 A 账号的可见范围。
+ */
+async function promotionVisibleLocationIds(session: AuthSession): Promise<string[] | null> {
+  if (isInventoryPromotionMaintainer(session)) return null
+  return scopedLocationIds(scopeSessionToActions(session, ['inventory:stock_list']))
+}
+
+export const listInventoryPromotionMarketOptions = withPermission(
+  'inventory:stock_list',
+  async (session): Promise<Array<{ locationId: string; name: string }>> => {
+    await syncInventoryLocations()
+    const conditions: (SQL | undefined)[] = [
+      eq(inventoryLocations.isActive, true),
+      eq(inventoryLocations.locationType, '市场'),
+    ]
+    const scoped = await promotionVisibleLocationIds(session)
+    if (scoped !== null) {
+      conditions.push(scoped.length > 0 ? inArray(inventoryLocations.locationId, scoped) : sql`FALSE`)
+    }
+    return db
+      .select({ locationId: inventoryLocations.locationId, name: inventoryLocations.name })
+      .from(inventoryLocations)
+      .where(and(...conditions))
+      .orderBy(asc(inventoryLocations.name))
+  },
+  PROMOTION_READ_SCOPE,
 )
 
 export const listInventoryLocations = withPermission(
@@ -4366,17 +4412,16 @@ export const updateInventorySupplier = withPermission(
   },
 )
 
+/**
+ * 方案适用市场：留空 = 全局方案；指定时只校验主体类型是市场。
+ * 调用方已由 assertInventoryPromotionMaintainer 限定为总部供应链（#354），而总部库存 scope
+ * 不展开市场（access.ts），这里再走 assertLocationVisible 会让非超管供应链建不了市场专属方案。
+ */
 async function assertPromotionMarketScope(
-  session: AuthSession,
   marketId: string | null | undefined,
 ): Promise<string | null> {
   const normalized = normalizeText(marketId)
-  if (!normalized) {
-    if (!isAdminScope(session) && !session.roles.some((role) => role.scopeType === '总部')) {
-      throw new ApiError('PERMISSION_DENIED', '市场用户只能维护本市场的福利方案')
-    }
-    return null
-  }
+  if (!normalized) return null
   await syncInventoryLocations()
   const [location] = await db
     .select({ locationType: inventoryLocations.locationType })
@@ -4386,31 +4431,17 @@ async function assertPromotionMarketScope(
   if (!location || location.locationType !== '市场') {
     throw new ApiError('INVALID_PARAMS', '福利方案所属主体必须是市场')
   }
-  await assertLocationVisible(session, normalized)
   return normalized
 }
 
-async function assertPromotionPlanMutableScope(
-  session: AuthSession,
-  scopeMarketId: string | null,
-): Promise<void> {
-  if (scopeMarketId === null) {
-    if (isAdminScope(session) || session.roles.some((role) => role.scopeType === '总部')) return
-    throw new ApiError('PERMISSION_DENIED', '市场用户不能修改或停用全局福利方案')
-  }
-  await assertLocationVisible(session, scopeMarketId)
-}
-
-async function lockPromotionPlanScopeForMutation(tx: Tx, id: string): Promise<string | null> {
+async function lockPromotionPlanForMutation(tx: Tx, id: string): Promise<void> {
   const rows = await tx.execute(sql`
-    SELECT scope_market_id
+    SELECT id
       FROM inventory_promotion_plans
      WHERE id = ${id}
      FOR UPDATE
   `)
-  const row = (rows as unknown as Array<{ scope_market_id: string | null }>)[0]
-  if (!row) throw new ApiError('NOT_FOUND', '福利方案不存在或无权查看')
-  return row.scope_market_id ?? null
+  if (!(rows as unknown as unknown[])[0]) throw new ApiError('NOT_FOUND', '福利方案不存在或无权查看')
 }
 
 function normalizePromotionRuleType(value: unknown): InventoryPromotionRuleType {
@@ -4546,7 +4577,9 @@ async function promotionPlanRows(
   onlyId?: string,
 ): Promise<InventoryPromotionPlanRow[]> {
   const priceVisible = canViewPrice(session)
-  const scoped = await scopedLocationIds(session)
+  // 维护方（总部供应链）要能看到并维护各市场的专属方案；总部库存 scope 不展开市场，
+  // 按 scope 过滤会让它建完市场方案就看不到（#354）。市场仍只见全局 + 本市场方案。
+  const scoped = await promotionVisibleLocationIds(session)
   const conditions: (SQL | undefined)[] = []
   if (onlyId) conditions.push(eq(inventoryPromotionPlans.id, onlyId))
   if (scoped !== null) {
@@ -4627,6 +4660,7 @@ async function promotionPlanRows(
 export const listInventoryPromotionPlans = withPermission(
   'inventory:stock_list',
   async (session): Promise<InventoryPromotionPlanRow[]> => promotionPlanRows(session),
+  PROMOTION_READ_SCOPE,
 )
 
 export const getInventoryPromotionPlanById = withPermission(
@@ -4635,12 +4669,14 @@ export const getInventoryPromotionPlanById = withPermission(
     const id = normalizeRequired(idInput, '福利方案')
     return (await promotionPlanRows(session, id))[0] ?? null
   },
+  PROMOTION_READ_SCOPE,
 )
 
-export const createInventoryPromotionPlan = withAnyPermission(
-  ['inventory:supply_chain_master_data_manage', 'inventory:market_operate'],
+export const createInventoryPromotionPlan = withPermission(
+  INVENTORY_PROMOTION_MAINTAIN_ACTION,
   async (session, input: InventoryPromotionPlanInput): Promise<{ id: string }> => {
     assertPromotionPriceWritable(session)
+    assertInventoryPromotionMaintainer(session)
     const name = normalizeRequired(input.name, '方案名称')
     const startsAt = normalizeYmd(input.startsAt, '开始日期')
     const endsAt = normalizeYmd(input.endsAt, '结束日期')
@@ -4649,7 +4685,7 @@ export const createInventoryPromotionPlan = withAnyPermission(
     if (input.status && input.status !== '启用' && input.status !== '停用') {
       throw new ApiError('INVALID_PARAMS', '福利方案状态无效')
     }
-    const scopeMarketId = await assertPromotionMarketScope(session, input.scopeMarketId)
+    const scopeMarketId = await assertPromotionMarketScope(input.scopeMarketId)
     const items = normalizePromotionItems(input.items, ruleType)
     await assertPromotionSkus(items)
     const id = `INV-PROMO-${crypto.randomUUID()}`
@@ -4686,14 +4722,15 @@ export const createInventoryPromotionPlan = withAnyPermission(
   },
 )
 
-export const updateInventoryPromotionPlan = withAnyPermission(
-  ['inventory:supply_chain_master_data_manage', 'inventory:market_operate'],
+export const updateInventoryPromotionPlan = withPermission(
+  INVENTORY_PROMOTION_MAINTAIN_ACTION,
   async (
     session,
     idInput: string,
     input: InventoryPromotionPlanInput,
   ): Promise<{ success: true }> => {
     assertPromotionPriceWritable(session)
+    assertInventoryPromotionMaintainer(session)
     const id = normalizeRequired(idInput, '福利方案')
     const name = normalizeRequired(input.name, '方案名称')
     const startsAt = normalizeYmd(input.startsAt, '开始日期')
@@ -4705,11 +4742,10 @@ export const updateInventoryPromotionPlan = withAnyPermission(
     }
     const current = (await promotionPlanRows(session, id))[0]
     if (!current) throw new ApiError('NOT_FOUND', '福利方案不存在或无权查看')
-    const scopeMarketId = await assertPromotionMarketScope(session, input.scopeMarketId)
+    const scopeMarketId = await assertPromotionMarketScope(input.scopeMarketId)
     const items = normalizePromotionItems(input.items, ruleType)
     await db.transaction(async (tx) => {
-      const currentScopeMarketId = await lockPromotionPlanScopeForMutation(tx, id)
-      await assertPromotionPlanMutableScope(session, currentScopeMarketId)
+      await lockPromotionPlanForMutation(tx, id)
       await assertPromotionSkus(items)
       await tx
         .update(inventoryPromotionPlans)
@@ -4743,15 +4779,15 @@ export const updateInventoryPromotionPlan = withAnyPermission(
   },
 )
 
-export const disableInventoryPromotionPlan = withAnyPermission(
-  ['inventory:supply_chain_master_data_manage', 'inventory:market_operate'],
+export const disableInventoryPromotionPlan = withPermission(
+  INVENTORY_PROMOTION_MAINTAIN_ACTION,
   async (session, idInput: string): Promise<{ success: true }> => {
+    assertInventoryPromotionMaintainer(session)
     const id = normalizeRequired(idInput, '福利方案')
     const current = (await promotionPlanRows(session, id))[0]
     if (!current) throw new ApiError('NOT_FOUND', '福利方案不存在或无权查看')
     await db.transaction(async (tx) => {
-      const currentScopeMarketId = await lockPromotionPlanScopeForMutation(tx, id)
-      await assertPromotionPlanMutableScope(session, currentScopeMarketId)
+      await lockPromotionPlanForMutation(tx, id)
       await tx
         .update(inventoryPromotionPlans)
         .set({ status: '停用', updatedAt: new Date() })
