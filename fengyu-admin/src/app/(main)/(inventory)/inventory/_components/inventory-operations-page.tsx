@@ -2830,12 +2830,16 @@ interface ShipmentReportItem {
   item: InventoryDocDetail['items'][number]
   shippedQuantity: number
   remainingQuantity: number
+  /** 进度缺失时 fail-closed（未发记 0），界面据此单独提示，别显示成「已发完」 */
+  progressLoaded: boolean
 }
 
 function shipmentReportItems(doc: InventoryDocDetail): ShipmentReportItem[] {
   // 正常已发 = 「市场报货发货」直连血缘累计（engine loadMarketReportFulfillmentProgress），
   // 与服务端 createItemCompanyShipment 的 `reportItem.quantity - shipped` 同口径。
   // 拿不到进度时 fail-closed（未发记 0，只能加赠送），不退化成全量可发。
+  // 前提：进度按可见单据累计、服务端封顶不按 scope 过滤，二者今天一致是因为发货总部必须等于
+  // 报货单 target —— 同一张报货单的发货全出自同一总部，能发货的账号都看得到。改 scope 口径时复核。
   const shippedByItem = new Map(
     doc.fulfillmentProgress?.kind === '报货履约'
       ? doc.fulfillmentProgress.items.map((progress) => [progress.itemId, progress.normalFulfilledQuantity])
@@ -2847,6 +2851,7 @@ function shipmentReportItems(doc: InventoryDocDetail): ShipmentReportItem[] {
       reportId: doc.id,
       item,
       shippedQuantity: shipped ?? 0,
+      progressLoaded: shipped !== undefined,
       remainingQuantity: shipped === undefined ? 0 : Math.max(0, Number((item.quantity - shipped).toFixed(2))),
     }
   })
@@ -3006,8 +3011,9 @@ function CompanyShipmentForm({
     void getInventoryCoreDocById(id)
       .then((detail) => {
         if (!isCurrent()) return
-        if (!detail || detail.docType !== '市场报货' || !detail.sourceOrgNodeId || !detail.targetOrgNodeId) {
-          toast.error('未找到可发货的市场报货单')
+        // 待办列表可能已过时：只认服务端可发货的「已完成」报货单（与 createItemCompanyShipment 同口径）
+        if (!detail || detail.docType !== '市场报货' || detail.status !== '已完成' || !detail.sourceOrgNodeId || !detail.targetOrgNodeId) {
+          toast.error('该市场报货单当前不可发货，请刷新待办')
           return
         }
         setMarketId(detail.sourceOrgNodeId)
@@ -3109,6 +3115,10 @@ function CompanyShipmentForm({
       })
       onSuccess(`品项公司发货单已创建：${result.id}`)
       clearSelection()
+      // 物流单号 / 备注是这一张单的，留着会被下一张误带（日期保留，同一天常连发多张）
+      setLogisticsCompany('')
+      setTrackingNo('')
+      setRemark('')
     } catch (error) {
       // 超量等 CONFLICT 文案由服务端给出（含「本次最多可发 N」），原样展示
       toast.error(actionErrorMessage(error, '创建品项公司发货失败'))
@@ -3165,6 +3175,8 @@ function CompanyShipmentForm({
           <h3 className="text-sm font-medium">发货明细（一行一个批号；库存不足可删行，剩余下次再发）</h3>
           {reportItems.map((entry) => {
             const itemLines = lines.filter((line) => line.reportItemId === entry.item.id)
+            // 行内控件的可访问名带行标识（#194 口径）：多条报货明细时按钮不重名
+            const rowName = `${entry.item.skuName} ${entry.item.specName || entry.item.skuId} ${entry.reportId}`
             return (
               <div key={entry.item.id} className="rounded-[var(--radius)] border border-[var(--border)] p-3">
                 <div className="flex flex-wrap items-start justify-between gap-2">
@@ -3173,16 +3185,17 @@ function CompanyShipmentForm({
                     <div className="text-xs text-[#888888]">
                       {entry.reportId} · {entry.item.specName || entry.item.skuId} · 报货 {entry.item.quantity} · 已发 {entry.shippedQuantity} · 未发 {entry.remainingQuantity}
                     </div>
-                    {entry.remainingQuantity <= 0.000001 && <div className="mt-1 text-xs text-[#888888]">正常已发完，仍可加赠送</div>}
+                    {!entry.progressLoaded && <div className="mt-1 text-xs text-[#D94040]">履约进度加载失败，暂只能加赠送；请刷新后重试</div>}
+                    {entry.progressLoaded && entry.remainingQuantity <= 0.000001 && <div className="mt-1 text-xs text-[#888888]">正常已发完，仍可加赠送</div>}
                   </div>
                   <div className="flex gap-2">
-                    <Button type="button" variant="outline" size="sm" disabled={entry.remainingQuantity <= 0.000001} onClick={() => addLine(entry.item.id, false)}>
+                    <Button type="button" variant="outline" size="sm" aria-label={`加批次 ${rowName}`} disabled={entry.remainingQuantity <= 0.000001} onClick={() => addLine(entry.item.id, false)}>
                       加批次
                     </Button>
-                    <Button type="button" variant="outline" size="sm" onClick={() => addLine(entry.item.id, true)}>加赠送</Button>
+                    <Button type="button" variant="outline" size="sm" aria-label={`加赠送 ${rowName}`} onClick={() => addLine(entry.item.id, true)}>加赠送</Button>
                   </div>
                 </div>
-                {itemLines.map((line) => (
+                {itemLines.map((line, lineIndex) => (
                   <div key={line.key} className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-[minmax(0,1.4fr)_8rem_minmax(0,1fr)_2.5rem]">
                     <FormField label="发货批次" required>
                       <LotPicker locationId={sourceLocationId} skuId={entry.item.skuId} value={line.lotId} onChange={(lotId) => updateLine(line.key, { lotId })} />
@@ -3192,7 +3205,7 @@ function CompanyShipmentForm({
                     </FormField>
                     <FormField label="明细备注"><Input value={line.remark} onChange={(event) => updateLine(line.key, { remark: event.target.value })} /></FormField>
                     <div className="flex items-end justify-end">
-                      <SmallIconButton label={line.isGift ? '删除赠送行' : '删除发货行'} onClick={() => setLines((previous) => previous.filter((item) => item.key !== line.key))} />
+                      <SmallIconButton label={`${line.isGift ? '删除赠送行' : '删除发货行'} ${rowName} 第${lineIndex + 1}行`} onClick={() => setLines((previous) => previous.filter((item) => item.key !== line.key))} />
                     </div>
                   </div>
                 ))}

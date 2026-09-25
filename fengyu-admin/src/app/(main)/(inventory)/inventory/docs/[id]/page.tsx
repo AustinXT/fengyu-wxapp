@@ -116,7 +116,7 @@ export default async function Page({
     stocktakeColumnCount
   // 市场报货单的整单履约（#336）：已发 / 已收都按「市场报货发货」直连血缘累计，只算正常量（赠送不占报货量），
   // 用来判断「是否已全部发出 / 全部入库」。
-  const marketReportSummary = doc.docType === '市场报货' && reportFulfillment
+  const marketReportSummary = doc.docType === '市场报货' && reportFulfillment && reportFulfillment.items.length > 0
     ? ((items) => {
       const sum = (pick: (item: (typeof items)[number]) => number) =>
         Number(items.reduce((total, item) => total + pick(item), 0).toFixed(2))

@@ -298,7 +298,7 @@ test('INV-03：三级正向主链 —— 报货→采购→发货→入库→配
 
     await selectLotContaining(page, '发货批次', hqBatch)
     await fillByLabel(page, '正常发货', String(QTY.shipNormal))
-    await page.getByRole('button', { name: '加赠送' }).click()
+    await page.getByRole('button', { name: new RegExp(`^加赠送 ${escapeRe(inv01.supplySkuName)} `) }).click()
     // 赠送行是第二个「发货批次」：与正常行同一个总部批次出库，市场收货后落成独立的赠送批次
     const giftLot = labelled(page, '发货批次').nth(1).locator('select')
     await expect(giftLot).toBeEnabled({ timeout: 20_000 })
@@ -338,8 +338,10 @@ test('INV-03：三级正向主链 —— 报货→采购→发货→入库→配
     )
     // 验收：发货单详情能跳到原始报货单
     await page.goto(`${BASE}/inventory/docs/${encodeURIComponent(shipId)}`)
-    const reportLink = page.getByRole('link', { name: marketReqId })
+    // 正常 / 赠送两类血缘各一行，都链到同一张报货单：按关系类型定位，别让 strict mode 撞两行
+    const reportLink = page.getByRole('row').filter({ hasText: '市场报货发货' }).first().getByRole('link', { name: marketReqId })
     await expect(reportLink).toBeVisible({ timeout: 20_000 })
+    await expect(page.getByRole('row').filter({ hasText: '市场报货赠送发货' }).getByRole('link', { name: marketReqId })).toBeVisible()
     recordVerdict(verdicts, '#336 发货单详情血缘带出原始市场报货单并可跳转', true, marketReqId)
 
     // 发货即扣发货方库存（RECEIVE_REQUIRED 类型：source 出库）

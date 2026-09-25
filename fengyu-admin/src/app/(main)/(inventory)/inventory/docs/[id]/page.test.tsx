@@ -417,6 +417,11 @@ describe('市场报货单的整单发货 / 入库进度（#336b）', () => {
     expect(screen.getByText('未全部入库（已收 8 / 报货 8）')).toBeTruthy()
   })
 
+  it('报货单没有明细时不出进度字段（every() 空集为真，别显示成「已全部入库」）', async () => {
+    await renderPage(marketReport([]))
+    expect(screen.queryByText('入库进度')).toBeNull()
+  })
+
   it('其它单据类型不出这两个字段', async () => {
     await renderPage(docFixture())
     expect(screen.queryByText('发货进度')).toBeNull()

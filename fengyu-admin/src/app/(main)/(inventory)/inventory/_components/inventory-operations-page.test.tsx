@@ -2058,8 +2058,8 @@ describe('品项公司发货引用市场报货单（#336b）', () => {
     const normal = screen.getByLabelText(/^正常发货/) as HTMLInputElement
     expect(normal.value).toBe('20')
     fireEvent.change(normal, { target: { value: '10' } })
-    fireEvent.click(screen.getByRole('button', { name: '加批次' }))
-    fireEvent.click(screen.getByRole('button', { name: '加赠送' }))
+    fireEvent.click(screen.getByRole('button', { name: '加批次 精华液 50ml SBH-1' }))
+    fireEvent.click(screen.getByRole('button', { name: '加赠送 精华液 50ml SBH-1' }))
     const quantities = screen.getAllByRole('spinbutton')
     fireEvent.change(quantities[1], { target: { value: '10' } })
     fireEvent.change(quantities[2], { target: { value: '2' } })
@@ -2101,7 +2101,7 @@ describe('品项公司发货引用市场报货单（#336b）', () => {
     expect(createItemCompanyShipment).not.toHaveBeenCalled()
 
     // 库存不足时删行：没有明细就不能提交
-    fireEvent.click(screen.getByRole('button', { name: '删除发货行' }))
+    fireEvent.click(screen.getByRole('button', { name: '删除发货行 精华液 50ml SBH-1 第1行' }))
     expect(screen.getByRole('button', { name: '创建品项公司发货单' })).toBeDisabled()
   })
 
