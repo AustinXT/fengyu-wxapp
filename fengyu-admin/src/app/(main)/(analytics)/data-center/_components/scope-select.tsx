@@ -5,7 +5,7 @@ import { Select, SelectOption } from "@/components/ui/select"
 import type { useUrlFilters } from "@/lib/hooks/use-url-filters"
 import { parseScope } from "@/lib/data-center/params"
 import type { DataCenterScopeOptions } from "@/lib/data-center/types"
-import { scopeStores, visibleScopeStores } from "@/lib/data-center/scope-options"
+import { findInactiveScopeStore, scopeStores, visibleScopeStores } from "@/lib/data-center/scope-options"
 
 /**
  * 数据中心范围选择（授权汇总 + 市场/门店级联），板块页 ScopeTimeFilter 与经营明细报表 ReportFilter 共用。
@@ -37,20 +37,29 @@ export function ScopeSelect({
   const canAggregateAuthorized = topLevel !== "all" && visibleStoreCount > 1
   const scopeLocked = topLevel !== "all" && visibleStoreCount <= 1
 
+  // URL 选中的已停用门店（#293）：页面主体渲染空态，下拉同步回显「XX（已停用）」，别显示成「全部门店」自相矛盾
+  const inactiveStore = useMemo(
+    () => findInactiveScopeStore(scopeOptions, parseScope({ scope, scopeId })),
+    [scopeOptions, scope, scopeId],
+  )
+
   // 从 URL 推导当前选中的市场/门店
   const selectedMarketId = useMemo(() => {
     if (scope === "market") return scopeId
     if (scope === "store") {
-      return markets.find((m) => m.stores.some((s) => s.storeId === scopeId))?.id ?? ""
+      const marketId = markets.find((m) => m.stores.some((s) => s.storeId === scopeId))?.id ?? inactiveStore?.marketId
+      return marketId && markets.some((m) => m.id === marketId) ? marketId : ""
     }
     return ""
-  }, [scope, scopeId, markets])
+  }, [scope, scopeId, markets, inactiveStore])
   const selectedStoreId = scope === "store" ? scopeId : ""
 
   const storesOfMarket = useMemo(
     () => markets.find((m) => m.id === selectedMarketId)?.stores ?? [],
     [markets, selectedMarketId],
   )
+  // 停用门店只作为当前值回显（disabled，不可再选中）；市场不在数据源时两个下拉都回显不出，由页面空态说明
+  const showInactiveOption = inactiveStore !== null && selectedMarketId !== "" && inactiveStore.marketId === selectedMarketId
   const scopedStoreCount = useMemo(
     () => scopeStores(scopeOptions, parseScope({ scope, scopeId })).length,
     [scopeOptions, scope, scopeId],
@@ -105,8 +114,13 @@ export function ScopeSelect({
             {s.storeName}
           </SelectOption>
         ))}
+        {showInactiveOption && (
+          <SelectOption value={inactiveStore.storeId} disabled>
+            {inactiveStore.storeName}（已停用）
+          </SelectOption>
+        )}
       </Select>
-      {showStoreCount && (
+      {showStoreCount && !inactiveStore && (
         <span className="text-sm text-[var(--muted-foreground)]" data-testid="scope-store-count">
           共 {scopedStoreCount} 家门店
         </span>

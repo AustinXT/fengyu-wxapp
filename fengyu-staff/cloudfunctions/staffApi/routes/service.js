@@ -282,12 +282,15 @@ async function create(ctx) {
     for (const item of normalizedItems) {
       const serviceItemId = generateServiceItemId()
 
-      // sale_items → product_skus + product_categories fallback：
-      // 历史 sale_items（WorkFine migration 进入）这两列常为 NULL，导致看板"项目数 / 生美实耗"为 0。
-      // 优先取 sale_items 上已快照值；为 NULL 时回退到 product_skus + product_categories。
+      // 快照来源：
+      // - is_shengmei：服务单创建时取 product_skus 当前值，SKU 为 NULL 时回退 sale_items 开单快照（#378）。
+      //   生美实耗按服务单创建时的 SKU 配置计；sale_items 的开单快照仍服务生美业绩，两者口径不同。
+      //   admin services.ts createServiceOrder 同源，改一端必同步另一端。
+      // - sales_category：优先 sale_items 快照，NULL 时回退 product_categories
+      //   （历史 WorkFine 迁入的 sale_items 常为 NULL）。
       const siRows = await client.query(
         `SELECT si.unit_real_price,
-                COALESCE(si.is_shengmei, ps.is_shengmei) AS is_shengmei,
+                COALESCE(ps.is_shengmei, si.is_shengmei) AS is_shengmei,
                 COALESCE(si.sales_category, pc.sales_category) AS sales_category
          FROM sale_items si
          LEFT JOIN product_skus ps ON ps.sku_id = si.sku_id

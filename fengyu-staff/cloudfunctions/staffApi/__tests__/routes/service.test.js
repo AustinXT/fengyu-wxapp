@@ -510,7 +510,10 @@ describe('service.create', () => {
     // 守护 fallback SQL 形状：LEFT JOIN product_skus + product_categories + COALESCE
     expect(capturedSiSelectSql).toMatch(/LEFT JOIN product_skus/)
     expect(capturedSiSelectSql).toMatch(/LEFT JOIN product_categories/)
-    expect(capturedSiSelectSql).toMatch(/COALESCE\(si\.is_shengmei,\s*ps\.is_shengmei\)/)
+    // #378：is_shengmei 取 SKU 当前值优先、sale_items 开单快照兜底（与 admin services.ts 同源）
+    expect(capturedSiSelectSql).toMatch(/COALESCE\(ps\.is_shengmei,\s*si\.is_shengmei\)\s+AS\s+is_shengmei\b/)
+    expect(capturedSiSelectSql).toMatch(/LEFT JOIN product_skus ps ON ps\.sku_id = si\.sku_id/)
+    expect(capturedSiSelectSql).not.toMatch(/COALESCE\(si\.is_shengmei/)
     expect(capturedSiSelectSql).toMatch(/COALESCE\(si\.sales_category,\s*pc\.sales_category\)/)
     expect(capturedInsertParams[7]).toBe(true)
     expect(capturedInsertParams[8]).toBe('自销自耗')
