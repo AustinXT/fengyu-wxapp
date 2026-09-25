@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { MAX_SCOPE_STORES, MAX_STORE_ID_LENGTH } from '@/lib/data-center/params'
 import {
   DATA_CENTER_EXPORT_VIEWS,
   EXPORT_JOB_TYPES,
@@ -9,14 +10,24 @@ import {
 } from '@/lib/export-job-types'
 import type { AuthSession } from '@/lib/types'
 
-// 单值上限按数据中心多店范围（#376）定：scopeId 为逗号串，最多 MAX_SCOPE_STORES(200) 家 × store_id(实测 ≤19 字符)
 const queryPayloadSchema = z
-  .record(z.string().max(4096, '筛选条件过长'))
+  .record(z.string().max(240, '筛选条件过长'))
   .refine((value) => Object.keys(value).length <= 40, '筛选条件过多')
+
+// 数据中心导出单独放宽 scopeId：多店范围（#376）为逗号串，最多 MAX_SCOPE_STORES 家 × (门店 id 上限 + 逗号)。
+// 其余键仍按 240 截断（关键词等会进 ILIKE，不随之放宽）。
+const DATA_CENTER_SCOPE_ID_MAX = MAX_SCOPE_STORES * (MAX_STORE_ID_LENGTH + 1)
+const dataCenterParamsSchema = z
+  .record(z.string().max(DATA_CENTER_SCOPE_ID_MAX, '筛选条件过长'))
+  .refine((value) => Object.keys(value).length <= 40, '筛选条件过多')
+  .refine(
+    (value) => Object.entries(value).every(([key, v]) => key === 'scopeId' || v.length <= 240),
+    '筛选条件过长',
+  )
 
 const dataCenterPayloadSchema = z.object({
   view: z.enum(DATA_CENTER_EXPORT_VIEWS),
-  params: queryPayloadSchema,
+  params: dataCenterParamsSchema,
   metric: z.string().min(1).max(80).optional(),
 }).strict()
 

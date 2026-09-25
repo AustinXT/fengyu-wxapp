@@ -3,11 +3,12 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import { cn } from "@/lib/utils"
 import type { useUrlFilters } from "@/lib/hooks/use-url-filters"
-import { parseScope, scopeFromStoreIds, scopeToParams } from "@/lib/data-center/params"
+import { MAX_SCOPE_STORES, parseScope, scopeToParams } from "@/lib/data-center/params"
 import type { DataCenterScope, DataCenterScopeOptions } from "@/lib/data-center/types"
 import {
   canonicalizeScope,
   findInactiveScopeStore,
+  scopeFromSelection,
   inactiveStoresInScope,
   isScopeLocked,
   scopeLabel,
@@ -20,8 +21,9 @@ import {
  * 状态写 URL 的 `scope` / `scopeId`（与全站 useUrlFilters 一致）。
  *
  * 下拉面板：门店搜索 +「全选（当前权限范围）」+ 按市场分组的门店勾选（市场标题可整组勾选）。
- * 「确定」时把勾选的门店集合经 `canonicalizeScope` 规范化再写 URL：全选 → all / authorized，
- * 恰好勾满一个市场 → market，1 家 → store，其余 → stores（`scopeId` 为升序逗号串）。
+ * 「确定」时把勾选的门店集合经 `scopeFromSelection` 规范化再写 URL：全选 → all / authorized，
+ * 恰好勾满一个市场（含只有 1 家店的市场）→ market，其余 1 家 → store，多家 → stores（`scopeId` 为升序逗号串）。
+ * 勾选与打开时相同则只关面板、不写 URL：否则 URL 里的停用门店（打开时不回填）或单店市场的单店范围会被原样「确定」悄悄改掉。
  * 直接授权的无门店市场（如品项公司，#399）没有门店可勾，作为单选项列在分组末尾，点即切到该市场。
  *
  * @param filters        父级筛选器的 useUrlFilters 实例。⚠️ 必须由父级传入、整张筛选卡片只用一个实例：
@@ -107,6 +109,7 @@ function ScopePicker({
   const [open, setOpen] = useState(false)
   const [keyword, setKeyword] = useState("")
   const [draft, setDraft] = useState<Set<string>>(() => new Set())
+  const [initial, setInitial] = useState<Set<string>>(() => new Set())
   const containerRef = useRef<HTMLDivElement>(null)
 
   const allStoreIds = useMemo(() => visibleScopeStores(scopeOptions).map((s) => s.storeId), [scopeOptions])
@@ -137,7 +140,9 @@ function ScopePicker({
   function toggleOpen() {
     if (disabled) return
     if (!open) {
-      setDraft(initialSelection(scopeOptions, scope))
+      const selection = initialSelection(scopeOptions, scope)
+      setInitial(selection)
+      setDraft(new Set(selection))
       setKeyword("")
     }
     setOpen(!open)
@@ -155,7 +160,7 @@ function ScopePicker({
     [emptyMarkets, kw],
   )
 
-  function setMany(ids: readonly string[], checked: boolean) {
+  function toggleIds(ids: readonly string[], checked: boolean) {
     setDraft((prev) => {
       const next = new Set(prev)
       for (const id of ids) {
@@ -166,8 +171,17 @@ function ScopePicker({
     })
   }
 
+  const unchanged = draft.size === initial.size && Array.from(draft).every((id) => initial.has(id))
+  const isAll = draft.size === allStoreIds.length
+  // 超上限且不是全选（全选会折叠成 all / authorized）：URL 会被解析回落，禁止提交
+  const overLimit = draft.size > MAX_SCOPE_STORES && !isAll
+
   function confirm() {
-    const next = scopeFromStoreIds(Array.from(draft))
+    if (unchanged) {
+      setOpen(false)
+      return
+    }
+    const next = scopeFromSelection(scopeOptions, Array.from(draft))
     if (!next) return
     onApply(next)
     setOpen(false)
@@ -215,7 +229,7 @@ function ScopePicker({
               <CheckRow
                 label="全选（当前权限范围）"
                 state={checkState(allStoreIds, draft)}
-                onChange={(checked) => setMany(allStoreIds, checked)}
+                onChange={(checked) => toggleIds(allStoreIds, checked)}
                 strong
               />
             )}
@@ -223,18 +237,23 @@ function ScopePicker({
               const ids = market.stores.map((s) => s.storeId)
               return (
                 <div key={market.id} role="group" aria-label={market.name}>
-                  <CheckRow
-                    label={market.name}
-                    state={checkState(ids, draft)}
-                    onChange={(checked) => setMany(ids, checked)}
-                    strong
-                  />
+                  {kw ? (
+                    // 搜索中只列命中的门店，市场标题的勾选态会误导成「整组已选」，改成纯标题
+                    <div className="px-3 py-1.5 text-sm font-medium text-[var(--muted-foreground)]">{market.name}</div>
+                  ) : (
+                    <CheckRow
+                      label={market.name}
+                      state={checkState(ids, draft)}
+                      onChange={(checked) => toggleIds(ids, checked)}
+                      strong
+                    />
+                  )}
                   {market.stores.map((store) => (
                     <CheckRow
                       key={store.storeId}
                       label={store.storeName}
                       state={draft.has(store.storeId) ? "checked" : "unchecked"}
-                      onChange={(checked) => setMany([store.storeId], checked)}
+                      onChange={(checked) => toggleIds([store.storeId], checked)}
                       indent
                     />
                   ))}
@@ -264,7 +283,7 @@ function ScopePicker({
           </div>
           <div className="flex items-center justify-between border-t border-[var(--border)] px-3 py-2">
             <span className="text-xs text-[var(--muted-foreground)]" data-testid="scope-picker-count">
-              已选 {draft.size} 家
+              已选 {draft.size} 家{overLimit ? `（最多 ${MAX_SCOPE_STORES} 家）` : ""}
             </span>
             <div className="flex gap-2">
               <button
@@ -277,7 +296,7 @@ function ScopePicker({
               <button
                 type="button"
                 onClick={confirm}
-                disabled={draft.size === 0}
+                disabled={draft.size === 0 || overLimit}
                 className="h-8 rounded-[var(--radius)] bg-[#C0322A] px-3 text-sm text-white disabled:cursor-not-allowed disabled:opacity-50"
               >
                 确定

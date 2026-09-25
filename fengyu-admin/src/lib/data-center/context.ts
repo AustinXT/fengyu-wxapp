@@ -18,6 +18,7 @@ import type { BoardMeta, BoardParams, DataCenterScope } from './types'
 import { resolveTimeRange } from './time-range'
 import { toComparisonRanges, type ComparisonRanges } from './comparison'
 import { multiStoreName } from './scope-options'
+import { isValidStoresScopeIds, MAX_SCOPE_STORES } from './params'
 
 /** 账号能选的最高 scope 层级（驱动筛选器禁用「全部」等） */
 export function getScopeTopLevel(session: AuthSession): 'all' | 'market' | 'store' {
@@ -44,6 +45,10 @@ export function getScopeTopLevel(session: AuthSession): 'all' | 'market' | 'stor
  * PermissionError 定一句面向用户的话，才能放开透传 —— 属文案决策，另开 issue。
  */
 export async function validateScope(session: AuthSession, scope: DataCenterScope): Promise<void> {
+  // 多店形状先于任何角色短路：admin / 总部同样不能带空列表或超长列表进 SQL（#376）
+  if (scope.type === 'stores' && !isValidStoresScopeIds(scope.ids)) {
+    throw new Error(`INVALID_PARAMS: 多店范围须为 2~${MAX_SCOPE_STORES} 家不重复的门店`)
+  }
   if (isAdminScope(session)) return
   if (session.roles.some((r) => r.scopeType === '总部')) return
 

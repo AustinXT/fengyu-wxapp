@@ -85,8 +85,28 @@ export function collapseQuery(
 /** 多店范围最多可选的门店数（prod 在营门店 40 余家，留足余量；防超长 IN 列表） */
 export const MAX_SCOPE_STORES = 200
 
-/** 单个门店 id 的合法字符（store_id 实测为 `store-<数字>` / 字母数字编码；逗号是多店分隔符） */
-const STORE_ID_RE = /^[A-Za-z0-9_-]{1,80}$/
+/**
+ * 单个门店 id 的合法字符与长度（逗号是多店分隔符）。实测来源：sync-workfine 16 位十六进制、
+ * 后台新建 `store-<毫秒时间戳>`、e2e 夹具 `TE2L2_STORE` 等，均 ≤ 20 字符。
+ * 上限 40 与导出参数的 scopeId 长度上限（MAX_SCOPE_STORES × 41）联动。
+ */
+export const MAX_STORE_ID_LENGTH = 40
+const STORE_ID_RE = /^[A-Za-z0-9_-]{1,40}$/
+
+/**
+ * 多店 scope 对象的形状是否合法（服务端边界用）：数组、2 ≤ 长度 ≤ MAX_SCOPE_STORES、每个 id 合法且不重复。
+ * server action 直接收客户端传来的 scope 对象、不经过 parseScope，必须在 validateScope 再校验一次——
+ * 否则 `ids: []` 会拼出 `IN ()` 语法错误，超长列表会撞 PG 绑定参数上限（admin / 总部没有权限 IN 兜底）。
+ */
+export function isValidStoresScopeIds(ids: unknown): ids is string[] {
+  return (
+    Array.isArray(ids) &&
+    ids.length >= 2 &&
+    ids.length <= MAX_SCOPE_STORES &&
+    ids.every((id) => typeof id === 'string' && STORE_ID_RE.test(id)) &&
+    new Set(ids).size === ids.length
+  )
+}
 
 /**
  * 解析多店的 `scopeId` 逗号串：去重升序。任一段为空 / 非法字符 / 超过上限 → null。

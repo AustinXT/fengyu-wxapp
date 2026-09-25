@@ -95,7 +95,9 @@ export function orgAnchorScopeSql(
     return sql`${col} = ${scope.id} AND ${visibleActiveAnchorSql(session, col)}`
   }
 
-  // 多店（#376）：锚定市场下至少有一家所选的在营门店才出现——authorized 的同一条可见性按所选子集收窄
+  // 多店（#376）：锚定市场下至少有一家所选的在营门店才出现——authorized 的同一条可见性按所选子集收窄。
+  // 注意与单店（上面恒 FALSE）的跳变：选 1 家不见直挂员工、选同市场 2 家则可见；所选里部分停用、只剩 1 家在营时
+  // 仍按多店判定（可见）。这是拍板规则「锚定市场下有所选门店」的直接推论，见 metrics.md #376 变更记录。
   if (scope.type === 'stores') {
     const ids = isAdminScope(session)
       ? scope.ids

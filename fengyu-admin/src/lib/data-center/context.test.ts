@@ -203,3 +203,22 @@ describe('resolveScopeName · 多店（#376）', () => {
     await expect(resolveScopeName({ type: 'stores', ids: ['S1', 'S2', 'S9'] })).resolves.toBe('蓝莱店、绿湖店、未知门店')
   })
 })
+
+describe('validateScope · 多店形状（#376，server action 直收客户端对象）', () => {
+  it.each([
+    ['空列表', []],
+    ['只有 1 家', ['S1']],
+    ['重复 id', ['S1', 'S1']],
+    ['非法字符', ['S1', 'S2;x']],
+    ['非字符串', ['S1', 2]],
+    ['超上限', Array.from({ length: 201 }, (_, i) => `S${i}`)],
+  ])('%s → INVALID_PARAMS（admin 也不放行）', async (_label, ids) => {
+    mockIsAdminScope.mockReturnValue(true)
+    await expect(validateScope(makeSession([]), { type: 'stores', ids: ids as string[] })).rejects.toThrow(/^INVALID_PARAMS/)
+  })
+
+  it('非数组 → INVALID_PARAMS', async () => {
+    mockIsAdminScope.mockReturnValue(true)
+    await expect(validateScope(makeSession([]), { type: 'stores', ids: 'S1,S2' as unknown as string[] })).rejects.toThrow(/^INVALID_PARAMS/)
+  })
+})

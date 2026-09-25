@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { canonicalizeScope, findInactiveScopeStore, inactiveStoresInScope, isScopeLocked, multiStoreName, resolveDefaultDataCenterScope, scopeLabel, scopeStores, selectableScopeCount, visibleScopeStores } from './scope-options'
+import { canonicalizeScope, scopeFromSelection, findInactiveScopeStore, inactiveStoresInScope, isScopeLocked, multiStoreName, resolveDefaultDataCenterScope, scopeLabel, scopeStores, selectableScopeCount, visibleScopeStores } from './scope-options'
 import type { DataCenterScopeOptions } from './types'
 
 const multiStoreOptions: DataCenterScopeOptions = {
@@ -231,5 +231,18 @@ describe('多店：停用识别 / 覆盖门店 / 展示名（#376）', () => {
     expect(scopeLabel(three, stores('S1', 'S3'))).toBe('一、三')
     expect(multiStoreName(['a', 'b', 'c', 'd'])).toBe('a、b、c 等 4 家门店')
     expect(scopeLabel(three, stores('S1', 'X1'))).toBe('一、停用店')
+  })
+})
+
+describe('scopeFromSelection（面板勾选 → 范围）', () => {
+  it('勾满只有 1 家店的市场 → market；非整市场的 1 家 → store', () => {
+    expect(scopeFromSelection(three, ['S3'])).toEqual({ type: 'market', id: 'M2' })
+    expect(scopeFromSelection(three, ['S1'])).toEqual({ type: 'store', id: 'S1' })
+  })
+  it('空集 null；多家同 canonicalizeScope；去重排序', () => {
+    expect(scopeFromSelection(three, [])).toBeNull()
+    expect(scopeFromSelection(three, ['S4', 'S1', 'S4'])).toEqual(stores('S1', 'S4'))
+    expect(scopeFromSelection(three, ['S2', 'S1'])).toEqual({ type: 'market', id: 'M1' })
+    expect(scopeFromSelection(three, ['S1', 'S2', 'S3', 'S4', 'S5'])).toEqual({ type: 'authorized' })
   })
 })

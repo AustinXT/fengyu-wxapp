@@ -150,6 +150,48 @@ describe('ScopeSelect · 门店多选（#376）', () => {
   })
 })
 
+describe('ScopeSelect · pr-ready 边界整改（#376）', () => {
+  const withSingle: DataCenterScopeOptions = {
+    ...multi,
+    markets: [...multi.markets, { id: 'M3', name: '昭通市场', stores: [{ storeId: 'S5', storeName: '昭通店' }] }],
+  }
+
+  it('勾满只有 1 家店的市场 → market（不退化成单店，锚定员工口径不变）', async () => {
+    const { trigger, setMany } = renderWith(withSingle, { scope: 'store', scopeId: 'S1' })
+    const user = userEvent.setup()
+    await user.click(trigger)
+    await user.click(screen.getByRole('checkbox', { name: '蓝莱店' }))
+    await user.click(screen.getByRole('checkbox', { name: '昭通市场' }))
+    await user.click(screen.getByRole('button', { name: '确定' }))
+    expect(setMany).toHaveBeenCalledWith({ scope: 'market', scopeId: 'M3' })
+  })
+
+  it('原样确定不写 URL：market 书签、部分停用多店都不会被悄悄改掉', async () => {
+    const user = userEvent.setup()
+    const a = renderWith(withSingle, { scope: 'market', scopeId: 'M1' })
+    await user.click(a.trigger)
+    await user.click(screen.getByRole('button', { name: '确定' }))
+    expect(a.setMany).not.toHaveBeenCalled()
+  })
+
+  it('部分停用多店原样确定：不剔除停用门店', async () => {
+    const user = userEvent.setup()
+    const { trigger, setMany } = renderWith(multi, { scope: 'stores', scopeId: 'S1,X1' })
+    await user.click(trigger)
+    await user.click(screen.getByRole('button', { name: '确定' }))
+    expect(setMany).not.toHaveBeenCalled()
+  })
+
+  it('搜索时市场标题不带复选框（避免「整组已选」的误读）', async () => {
+    const { trigger } = renderWith(multi, { scope: 'authorized' })
+    const user = userEvent.setup()
+    await user.click(trigger)
+    await user.type(screen.getByRole('searchbox', { name: '搜索门店' }), '浔阳')
+    expect(screen.queryByRole('checkbox', { name: '九江市场' })).not.toBeInTheDocument()
+    expect(screen.getByRole('group', { name: '九江市场' })).toHaveTextContent('九江市场')
+  })
+})
+
 describe('ScopeSelect · 停用门店（#293 / #376）', () => {
   it('单店停用：按钮回显「XX（已停用）」，不显示门店数', () => {
     const { trigger } = renderWith(multi, { scope: 'store', scopeId: 'X1' })

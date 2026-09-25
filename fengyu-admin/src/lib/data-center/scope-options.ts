@@ -157,6 +157,8 @@ function storeNameIn(scopeOptions: DataCenterScopeOptions, storeId: string): str
  * 范围规范化（#376）：前端写 URL 与服务端入口共用，保证同一选择只有一种编码。
  *   - 多店恰好等于账号全部可见在营门店 → 总部 'all'、非总部 'authorized'（沿用现有编码）
  *   - 多店恰好等于某一市场下全部可见在营门店（且未勾别的）→ 折叠成 'market'。
+ *     ⚠️ 前提：市场下门店都是直属子节点（数据源 `m.stores` 按 parent_id 取，market 取数 SQL 按子树取）；
+ *     现网组织树无「市场 → 中间节点 → 门店」结构，若将来出现，两边会差出中间节点下的门店。
  *     与 stores 语义等价：scopeFilterSql 两边都是「该市场的可见在营门店」；orgAnchorScopeSql 两边都是
  *     「锚定 = 该市场」且该市场下有可见在营门店（祖先市场走同一条可见性，#399）。
  *     同时勾满两个及以上市场不折叠（没有「多市场」形态），保持 stores。
@@ -165,13 +167,32 @@ function storeNameIn(scopeOptions: DataCenterScopeOptions, storeId: string): str
  */
 export function canonicalizeScope(scopeOptions: DataCenterScopeOptions, scope: DataCenterScope): DataCenterScope {
   if (scope.type !== 'stores') return scope
+  return canonicalizeStoreSelection(scopeOptions, scope.ids) ?? scope
+}
+
+/**
+ * 面板勾选集合 → 范围（ScopeSelect「确定」用）。与 canonicalizeScope 同一套折叠，差别只在单店市场：
+ * 勾满一个只有 1 家店的市场也折叠成 market——面板里点市场标题就是「选这个市场」，旧级联下拉可直接选任意市场，
+ * 不能因为该市场只有 1 家店就退化成单店（单店下锚定员工恒不可见，口径会变）。
+ * 其余：全选 → all / authorized；1 家（非整市场）→ store；多家 → canonicalizeScope。空集 → null。
+ */
+export function scopeFromSelection(scopeOptions: DataCenterScopeOptions, storeIds: readonly string[]): DataCenterScope | null {
+  const ids = Array.from(new Set(storeIds)).sort()
+  if (ids.length === 0) return null
+  const folded = canonicalizeStoreSelection(scopeOptions, ids)
+  if (folded) return folded
+  return ids.length === 1 ? { type: 'store', id: ids[0] } : { type: 'stores', ids }
+}
+
+/** 勾选集合的折叠（全选 / 恰好一个市场）；不折叠返回 null。ids 须已去重。 */
+function canonicalizeStoreSelection(scopeOptions: DataCenterScopeOptions, ids: readonly string[]): DataCenterScope | null {
   const visible = new Set(visibleScopeStores(scopeOptions).map((store) => store.storeId))
-  if (!scope.ids.every((id) => visible.has(id))) return scope
-  if (scope.ids.length === visible.size) {
+  if (!ids.every((id) => visible.has(id))) return null
+  if (ids.length === visible.size) {
     return scopeOptions.topLevel === 'all' ? { type: 'all' } : { type: 'authorized' }
   }
   const market = scopeOptions.markets.find(
-    (m) => m.stores.length === scope.ids.length && m.stores.every((store) => scope.ids.includes(store.storeId)),
+    (m) => m.stores.length === ids.length && m.stores.every((store) => ids.includes(store.storeId)),
   )
-  return market ? { type: 'market', id: market.id } : scope
+  return market ? { type: 'market', id: market.id } : null
 }
