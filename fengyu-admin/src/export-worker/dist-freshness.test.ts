@@ -166,6 +166,19 @@ const PROBES: Probe[] = [
     exactLinesInModule: true,
   },
   {
+    // SQL 与比率之间还有一跳 **JS 结果映射**（`num(r.registered)`），它在模板反引号**之外**，
+    // 整段模板逐字比对覆盖不到（codex round-15 P2）。构造：用 `num(r.registered) / 2` 的源码
+    // 构建产物、再把源码改回正确版本但不重建 ⇒ 页面 6/10 = 60%、导出 6/5 = 120%。
+    // 四列一起钉：分母被除以 2 和分子被乘 2 是同一类错误。
+    label: '客量板 · 明细 SQL 结果映射（#414，分子分母四列）',
+    file: 'src/actions/data-center/customer.ts',
+    pattern: /^(registered|retained|visitOnce|visitTwice): num\(r\.(registered|retained|visit_once|visit_twice)\),$/,
+    minLines: 4,
+    uniqueLines: 4,
+    exactCountsInModule: true,
+    exactLinesInModule: true,
+  },
+  {
     label: '客量板 · 达成率分母 = registered（#414，两条比率都要钉）',
     file: 'src/actions/data-center/customer.ts',
     // ⚠ 只钉 visitOnceRate 的话，单独让产物里的 visitTwiceRate 回退成 ra.retained 仍全绿
