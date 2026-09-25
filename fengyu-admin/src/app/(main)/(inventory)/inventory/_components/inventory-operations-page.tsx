@@ -2089,8 +2089,9 @@ function MarketReportForm({
   const markets = locations.filter((location) => location.locationType === '市场' && location.isActive)
   const headquarters = locations.filter((location) => location.locationType === '总部' && location.isActive)
   const [marketId, setMarketId] = useState('')
+  // 本市场能否取 / 改选福利报价（勿与外层「任一价格档可见」的 canViewPrice 混用）。
   // 按当前市场判：价格权只在部分市场的账号，换到没有价格权的市场就按系统推荐取价（与服务端同口径）
-  const canViewPrice = Boolean(marketId) && (marketPriceLocationIds === null || marketPriceLocationIds.includes(marketId))
+  const canQuoteMarketPrice = Boolean(marketId) && (marketPriceLocationIds === null || marketPriceLocationIds.includes(marketId))
   const [supplyChainLocationId, setSupplyChainLocationId] = useState('')
   const [docDate, setDocDate] = useState(today)
   const [startDate, setStartDate] = useState('')
@@ -2136,7 +2137,7 @@ function MarketReportForm({
     const requestId = ++quoteRequestRef.current
     setQuoteResult(null)
     setQuoteFailed(false)
-    if (!canViewPrice || !marketId || quoteItems.length === 0) {
+    if (!canQuoteMarketPrice || !marketId || quoteItems.length === 0) {
       setQuoting(false)
       return
     }
@@ -2173,7 +2174,7 @@ function MarketReportForm({
         })
     }, 300)
     return () => clearTimeout(timer)
-  }, [canViewPrice, docDate, marketId, quoteBasketKey, quoteItems])
+  }, [canQuoteMarketPrice, docDate, marketId, quoteBasketKey, quoteItems])
 
   /** 进入新世代：在途的回填 / 汇总被作废，它们的 finally 不会再清 loading，这里必须当场释放 */
   function bumpEpoch() {
@@ -2334,7 +2335,7 @@ function MarketReportForm({
    * 无价格权限时不传，由服务端按系统推荐取价（与新建同口径）。
    */
   function currentPromotionSelections(): MarketPromotionSelectionInput[] | undefined {
-    if (!canViewPrice) return undefined
+    if (!canQuoteMarketPrice) return undefined
     const manual = quoteResult!.items
       .filter((item) => item.promotionPlanId && item.selectionMode === '人工选择')
       .map((item) => ({ skuId: item.skuId, promotionPlanId: item.promotionPlanId! }))
@@ -2355,7 +2356,7 @@ function MarketReportForm({
       toast.error('请选择至少一条明细并填写实际采购数量')
       return
     }
-    if (canViewPrice && (!quoteResult || quoting)) {
+    if (canQuoteMarketPrice && (!quoteResult || quoting)) {
       toast.error(quoteFailed ? '福利报价失败，请按提示调整明细后再保存' : '福利报价尚未完成，请稍候')
       return
     }
@@ -2403,7 +2404,7 @@ function MarketReportForm({
       toast.error('请选择至少一条明细并填写实际采购数量')
       return
     }
-    if (canViewPrice && (!quoteResult || quoting)) {
+    if (canQuoteMarketPrice && (!quoteResult || quoting)) {
       toast.error(quoteFailed ? '福利报价失败，请按提示调整明细后再提交' : '福利报价尚未完成，请稍候')
       return
     }
@@ -2487,7 +2488,7 @@ function MarketReportForm({
                   <th className="px-3 py-2 font-medium">在途采购</th>
                   <th className="px-3 py-2 font-medium">建议采购</th>
                   <th className="px-3 py-2 font-medium">实际采购</th>
-                  {canViewPrice && <th className="px-3 py-2 font-medium">福利报价</th>}
+                  {canQuoteMarketPrice && <th className="px-3 py-2 font-medium">福利报价</th>}
                 </tr>
               </thead>
               <tbody>
@@ -2520,7 +2521,7 @@ function MarketReportForm({
                       <td className="px-3 py-2">{line.inTransitQuantity}</td>
                       <td className="px-3 py-2">{line.suggestedPurchaseQuantity}</td>
                       <td className="px-3 py-2"><Input className="w-24" aria-label={`实际采购 ${rowName}`} type="number" min="0" step="0.01" max="9999999999.99" value={line.purchaseQuantity} onChange={(event) => updateLine(index, { purchaseQuantity: event.target.value })} disabled={!line.selected} /></td>
-                      {canViewPrice && (
+                      {canQuoteMarketPrice && (
                         <td className="px-3 py-2">
                           {!line.selected ? (
                             <span className="text-xs text-[#888888]">未参与本次报货</span>
@@ -2570,7 +2571,7 @@ function MarketReportForm({
               </tbody>
             </table>
           </div>
-          {canViewPrice && quoteResult && (
+          {canQuoteMarketPrice && quoteResult && (
             <div className="grid grid-cols-1 gap-3 rounded-[var(--radius)] border border-[#E8D8B8] bg-[#FFFDF8] p-3 text-sm sm:grid-cols-3">
               <div><span className="text-[#888888]">标准金额</span><div className="mt-1 font-medium">{quoteResult.totalStandardAmount.toFixed(2)}</div></div>
               <div><span className="text-[#888888]">福利优惠</span><div className="mt-1 font-medium text-[#C0322A]">-{quoteResult.totalDiscountAmount.toFixed(2)}</div></div>
