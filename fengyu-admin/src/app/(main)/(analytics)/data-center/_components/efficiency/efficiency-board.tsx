@@ -70,7 +70,7 @@ export function EfficiencyBoard() {
         <h2 className="text-sm font-semibold text-[var(--foreground)]">人均效能</h2>
         {!loading && data?.noStoreScope && (
           <p className="text-xs text-[var(--muted-foreground)]" data-testid="efficiency-no-store-note">
-            当前范围内没有在营门店。员工人均业绩、实耗、收入、会员量、项目数的分子按门店统计，不适用于无门店范围，显示为「--」；员工个人业绩请看「员工排名榜」。
+            当前范围内没有在营门店。员工人均业绩、实耗、收入、会员量、项目数的分子按门店统计，不适用于无门店范围，显示为「--」；店长人均因范围内没有店长同样显示「--」。员工个人业绩请看「员工排名榜」。
           </p>
         )}
         <KpiGrid items={KPI_ITEMS} kpis={kpis} columns={4} baseRanges={loading ? undefined : data?.timeRange} />
