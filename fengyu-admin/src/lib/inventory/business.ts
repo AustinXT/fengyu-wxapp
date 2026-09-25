@@ -3914,7 +3914,7 @@ export async function receiveSupplyChainPurchaseOrder(
       const unitDiscount = discounts[lineIndex]
       // 优惠只能扣在采购行的下单价快照上：快照为空时 requiredSupplyChainCost 会回退到商品档案**现价**，
       // 那就不是这张单的标准进价了，扣完写进批次会把错成本固化下来。无优惠的入库保持原有回退行为。
-      if (unitDiscount > 0 && orderItem.supplyChainUnitCost === null) {
+      if (unitDiscount > 0 && orderItem.supplyChainUnitCost == null) {
         throw new ApiError('INVALID_STATE', `采购行缺少下单价快照，不能填单价优惠：${sku.productName}`)
       }
       const standardCost = requiredSupplyChainCost(sku, orderItem.supplyChainUnitCost)
@@ -3998,7 +3998,7 @@ export async function receiveSupplyChainPurchaseOrder(
         standardUnitPrice: line.standardCost,
         unitDiscount: line.unitDiscount,
         actualUnitPrice: line.cost,
-        amount: fixed(line.quantity * line.cost),
+        amount: roundCents(line.quantity * line.cost),
         ...priceFromLot(targetLot),
         remark: line.remark,
       })

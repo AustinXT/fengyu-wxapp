@@ -3048,7 +3048,7 @@ function SupplyChainPurchaseReceiptForm({
     ))
     if (badDiscount) {
       toast.error(badDiscount.unitDiscount === null
-        ? '单价优惠不能小于 0'
+        ? (Number.isNaN(Number(badDiscount.rawDiscount)) ? '单价优惠不是有效数字' : '单价优惠不能小于 0')
         : Number(badDiscount.unitDiscount.toFixed(2)) !== badDiscount.unitDiscount
           ? '单价优惠最多保留两位小数'
           : `单价优惠不能大于标准进价：${badDiscount.skuName}`)

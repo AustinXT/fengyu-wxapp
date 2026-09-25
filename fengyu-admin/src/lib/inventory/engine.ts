@@ -3335,7 +3335,8 @@ async function loadSupplyChainPurchaseReceiptProgress(
     WITH visible_docs AS (${visibleInventoryDocsSql(scoped)}),
     purchase_items AS (
       SELECT item.id AS item_id, item.quantity, item.fulfilled_quantity,
-             COALESCE(item.actual_unit_price, item.supply_chain_unit_cost) AS order_unit_price,
+             -- 未入库部分按供应链采购价（下单价快照）计，与入库侧优惠的基准同源
+             COALESCE(item.supply_chain_unit_cost, item.actual_unit_price) AS order_unit_price,
              purchase_doc.status AS purchase_status
         FROM inventory_doc_items item
         JOIN inventory_docs purchase_doc ON purchase_doc.id = item.doc_id
@@ -3347,7 +3348,9 @@ async function loadSupplyChainPurchaseReceiptProgress(
       SELECT
         doc_link.from_item_id AS purchase_item_id,
         SUM(COALESCE(doc_link.quantity, 0)) AS received_quantity,
-        SUM(COALESCE(receipt_item.amount, 0)) AS received_amount
+        SUM(COALESCE(receipt_item.amount, 0)) AS received_amount,
+        -- 入库明细金额为空的存量行：金额算不准，整行不给金额（别把 NULL 当 0 静默低估）
+        BOOL_OR(receipt_item.amount IS NULL) AS has_unpriced_receipt
         FROM inventory_doc_links doc_link
         JOIN purchase_items purchase_item ON purchase_item.item_id = doc_link.from_item_id
         JOIN inventory_docs receipt_doc ON receipt_doc.id = doc_link.to_doc_id
@@ -3365,6 +3368,7 @@ async function loadSupplyChainPurchaseReceiptProgress(
       purchase_item.fulfilled_quantity,
       COALESCE(receipt_total.received_quantity, 0) AS received_quantity,
       COALESCE(receipt_total.received_amount, 0) AS received_amount,
+      COALESCE(receipt_total.has_unpriced_receipt, false) AS has_unpriced_receipt,
       purchase_item.purchase_status
       FROM purchase_items purchase_item
       LEFT JOIN receipt_totals receipt_total ON receipt_total.purchase_item_id = purchase_item.item_id
@@ -3381,6 +3385,7 @@ async function loadSupplyChainPurchaseReceiptProgress(
       fulfilled_quantity: string | number | null
       received_quantity: string | number | null
       received_amount: string | number | null
+      has_unpriced_receipt: boolean | null
       purchase_status: InventoryCoreDocStatus
     }>).map((row) => {
       const purchasedQuantity = numberOrNull(row.purchased_quantity) ?? 0
@@ -3394,15 +3399,22 @@ async function loadSupplyChainPurchaseReceiptProgress(
       //  · 历史单：#335 之前市场行按发货完结，fulfilled_quantity 记的是发货量、没有入库血缘 ——
       //    非待收货状态下 fulfilled > 入库量即此类，入库后金额无从谈起；
       //  · 还有未入库量却没有下单价（成本快照为空的存量行）。
-      const legacy = row.purchase_status !== '待收货'
-        && (numberOrNull(row.fulfilled_quantity) ?? 0) - receivedQuantity > 0.000001
-      const unpriced = outstandingQuantity > 0 && orderUnitPrice === null
+      //    fulfilled_quantity 为空也按历史单处理；已完成却没收满（新模型只有入库收满才完结）同理；
+      //  · 还有未入库量却没有下单价（成本快照为空的存量行）；
+      //  · 关联的入库明细金额为空。
+      const fulfilledQuantity = numberOrNull(row.fulfilled_quantity)
+      const legacy = row.purchase_status !== '待收货' && (
+        fulfilledQuantity === null
+        || fulfilledQuantity - receivedQuantity > 0.000001
+        || (row.purchase_status === '已完成' && purchasedQuantity - receivedQuantity > 0.000001)
+      )
+      const unpriced = (outstandingQuantity > 0 && orderUnitPrice === null) || row.has_unpriced_receipt === true
       return {
         itemId: Number(row.item_id),
         purchasedQuantity,
         receivedQuantity,
         outstandingQuantity,
-        receivedAmount,
+        receivedAmount: row.has_unpriced_receipt === true ? undefined : receivedAmount,
         // 入库后实际金额（#346）：已入库部分按各次入库的实际进价；仍待收货时未入库部分按下单价；
         // 已完成 / 已关闭（已取消）只算已入库部分（口径 A，outstanding 已是 0）。
         actualAmount: legacy || unpriced
@@ -3619,8 +3631,10 @@ export const getInventoryCoreDocById = withPermission(
         createdAt: item.createdAt.toISOString(),
       })),
       lineage,
-      // 采购收货进度里的金额（#346）与明细金额同一价格档：看不到明细金额就不返回
-      fulfillmentProgress: fulfillmentProgress?.kind === '供应链采购收货' && !includeItemAmount
+      // 采购收货进度里的金额（#346）是供应链成本口径（已入库金额 ÷ 数量 = 实际进价），按供应链价格档遮蔽，
+      // 与 supplyChainUnitCost、与写入侧「填优惠须有供应链价格权」同档 —— 不能借明细金额的宽档
+      fulfillmentProgress: fulfillmentProgress?.kind === '供应链采购收货'
+        && itemPriceVisibility !== 'all' && itemPriceVisibility !== 'supply_chain'
         ? {
             ...fulfillmentProgress,
             items: fulfillmentProgress.items.map(({ receivedAmount: _received, actualAmount: _actual, ...item }) => item),
