@@ -167,6 +167,18 @@ const PROBES: Probe[] = [
     minLines: 2,
   },
   {
+    label: '日常数据一览表 · 子项拆分缩放（#369）',
+    file: 'src/lib/data-center/daily-overview-sql.ts',
+    pattern: /^SUM\(rc\.amount \* pay\.amount \/ rc\.denominator\)::text AS amount$/,
+    minLines: 1,
+  },
+  {
+    label: '日常数据一览表 · 业绩 / 充值 / 服务的单据类型与状态口径（#369）',
+    file: 'src/lib/data-center/daily-overview-sql.ts',
+    pattern: /^AND (spe\.sale_order_type (IN|=) |so\.status = )/,
+    minLines: 5,
+  },
+  {
     label: '员工提成日报 / 明细 · 取数条件与分配金额算法（#375）',
     file: 'src/lib/data-center/commission-sql.ts',
     // 按「列名」抓整行、不限取值：取值被改的行照样被提取出来，再去产物里逐字比对（只按取值抓会让改过的行

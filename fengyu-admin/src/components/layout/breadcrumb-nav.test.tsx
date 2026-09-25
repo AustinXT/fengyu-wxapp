@@ -64,7 +64,7 @@ describe("BreadcrumbNav return context", () => {
     expect(screen.getByRole("link", { name: "数据中心" })).toHaveAttribute("href", "/data-center")
   })
 
-  // 经营明细报表（#367）：入口未打开（menu.enabled=false）时父级「数据中心」仍由 MENU_CONFIG 推出
+  // 经营明细报表（#367）：入口无论打开与否（menu.enabled，#369 起一览表已打开）父级「数据中心」仍由 MENU_CONFIG 推出
   // （getMenuParentForPath 不看 hidden），深链进来的面包屑与入口打开后一致。
   it.each(DATA_CENTER_REPORT_LIST.filter((report) => !report.parent))(
     "经营明细报表 $path 显示「数据中心 / 报表名」两级",

@@ -45,6 +45,8 @@ vi.mock('next/navigation', () => ({
 vi.mock('@/actions/data-center/shared', () => actions)
 const operatingMaster = vi.hoisted(() => ({ getOperatingMaster: vi.fn() }))
 vi.mock('@/actions/data-center/operating-master', () => operatingMaster)
+const dailyOverview = vi.hoisted(() => ({ getDailyOverview: vi.fn() }))
+vi.mock('@/actions/data-center/daily-overview', () => dailyOverview)
 vi.mock('@/actions/export-jobs', () => ({ createExportJob: vi.fn() }))
 
 /** 剩余卡项清单的取数 action（#371） */
@@ -119,6 +121,8 @@ import RemainingCardsPage from '../../remaining-cards/page'
 import OperatingMasterPage from '../../operating-master/page'
 import CommissionDailyPage from '../../commission-daily/page'
 import CommissionDetailPage from '../../commission-daily/detail/page'
+import { buildDailyOverview } from '@/lib/data-center/daily-overview'
+import { resolveDeltaDisplay } from '@/lib/delta-display'
 
 type Query = Record<string, string | string[] | undefined>
 type PageComponent = (props: { searchParams: Promise<Query> }) => Promise<ReactElement>
@@ -192,6 +196,39 @@ async function renderPage(key: DataCenterReportKey, query: Record<string, string
 
 const KEYS = DATA_CENTER_REPORT_LIST.map((report) => report.key)
 
+/** 一览表取数（#369）：页面层只关心「有范围才取数、取到就渲染」，口径由 action / lib 单测守护 */
+function dailyOverviewResult() {
+  const data = buildDailyOverview({
+    stores: [
+      { storeId: 'S1', storeName: '蓝莱店', marketId: 'M1', marketName: '南昌凤御' },
+      { storeId: 'S2', storeName: '绿湖店', marketId: 'M1', marketName: '南昌凤御' },
+      { storeId: 'S3', storeName: '易大师一店', marketId: 'M2', marketName: '南昌易大师' },
+    ],
+    categories: [],
+    performanceTotals: [{ storeId: 'S1', amount: '100.00' }],
+    performanceParts: [{ storeId: 'S1', salesCategory: '自销自耗', categoryId: null, amount: '100' }],
+    recharge: [],
+    service: [],
+  })
+  return {
+    data,
+    kpis: {
+      performanceTotal: { value: 100, mom: resolveDeltaDisplay(100, null), unit: 'amount' },
+      serviceTotal: { value: 0, mom: resolveDeltaDisplay(0, null), unit: 'amount' },
+      selfShare: { value: 1, unit: 'percent' },
+      ecoShare: { value: 0, unit: 'percent' },
+      averagePerStore: { value: 100 / 3, unit: 'amount' },
+    },
+    storeCount: 3,
+    period: {
+      label: '上月（2026年8月）',
+      current: { start: '2026-08-01', end: '2026-08-31' },
+      previous: { start: '2026-07-01', end: '2026-07-31' },
+    },
+    scope: { type: 'all', name: '全部' },
+  }
+}
+
 beforeEach(() => {
   vi.clearAllMocks()
   vi.useFakeTimers({ toFake: ['Date'] })
@@ -201,6 +238,7 @@ beforeEach(() => {
   commission.getCommissionDetail.mockImplementation(async (query: Query) => emptyCommissionDetail(String(query.month ?? '2026-08')))
   reportActions.getRemainingCardsReport.mockResolvedValue(emptyRemainingCardsReport)
   mockOperatingMaster([{ storeId: 'S1', storeName: '蓝莱店', marketId: 'M1', marketName: '南昌凤御' }])
+  dailyOverview.getDailyOverview.mockResolvedValue(dailyOverviewResult())
 })
 
 function mockOperatingMaster(stores: OperatingMasterStore[]) {
@@ -519,5 +557,66 @@ describe('经营数据主表（#372）', () => {
 
     expect(screen.getByText('当前账号暂无可查看的数据范围')).toBeInTheDocument()
     expect(operatingMaster.getOperatingMaster).not.toHaveBeenCalled()
+  })
+})
+
+describe('日常数据一览表（#369）', () => {
+  it('有范围才取数：URL 参数原样透传给取数 action，渲染指标卡 / 三页签 / 表格 / 门店数', async () => {
+    mockScope(hqOptions)
+    await renderPage('dailyOverview', { period: 'custom', start: '2026-09-01', end: '2026-09-24' })
+
+    expect(dailyOverview.getDailyOverview).toHaveBeenCalledWith({
+      scope: undefined, scopeId: undefined, period: 'custom', start: '2026-09-01', end: '2026-09-24',
+    })
+    for (const label of ['销售业绩合计（元）', '服务业绩合计（元）', '自销自耗业绩占比', '生态合作业绩占比', '平均单店业绩（元）']) {
+      expect(screen.getByText(label)).toBeInTheDocument()
+    }
+    expect(screen.getAllByText('较上期 --')).toHaveLength(2)
+    expect(screen.getAllByText('3 家门店').length).toBeGreaterThanOrEqual(2) // 信息条 + 平均单店业绩小字
+    expect(screen.getByTestId('report-info-bar')).toHaveTextContent('展示3 家门店')
+    expect(screen.getAllByRole('tab').map((tab) => tab.textContent)).toEqual(['经营类型汇总', '具体品项汇总', '二级品项汇总'])
+    expect(screen.getByRole('tab', { name: '经营类型汇总' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByRole('columnheader', { name: /业绩合计/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '导出当前页签' })).toBeInTheDocument()
+  })
+
+  it('非总部且无可查看门店：不取数', async () => {
+    mockScope(noStoreOptions)
+    await renderPage('dailyOverview', { scope: 'all' })
+    expect(dailyOverview.getDailyOverview).not.toHaveBeenCalled()
+  })
+
+  it('切页签只改 URL 的 tab（replaceState，不重新取数）；默认视角不写 tab', async () => {
+    mockScope(hqOptions)
+    const replaceState = vi.spyOn(window.history, 'replaceState')
+    await renderPage('dailyOverview', { period: 'thisMonth' })
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+
+    await user.click(screen.getByRole('tab', { name: '二级品项汇总' }))
+    expect(replaceState).toHaveBeenLastCalledWith(null, '', '/data-center/daily-overview?period=thisMonth&tab=secondary')
+    expect(dailyOverview.getDailyOverview).toHaveBeenCalledTimes(1)
+    replaceState.mockRestore()
+  })
+
+  it('URL 带 tab=secondary：渲染二级品项视角', async () => {
+    mockScope(hqOptions)
+    await renderPage('dailyOverview', { tab: 'secondary' })
+    expect(screen.getByRole('tab', { name: '二级品项汇总' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByRole('columnheader', { name: /品项业绩合计/ })).toBeInTheDocument()
+  })
+})
+
+describe('区间型自定义结束日晚于今天（#369 评审）', () => {
+  it('服务端截到今天，筛选器如实提示实际统计区间，日期控件不可选未来', async () => {
+    mockScope(hqOptions)
+    await renderPage('dailyOverview', { period: 'custom', start: '2026-09-01', end: '2026-10-15' })
+    expect(screen.getByTestId('report-range-truncated')).toHaveTextContent('已按 2026-09-01 ~ 2026-09-25 统计')
+    expect(screen.getByTestId('report-info-bar')).toHaveTextContent('2026-09-01 ~ 2026-09-25')
+  })
+
+  it('区间未越过今天时不出截断提示', async () => {
+    mockScope(hqOptions)
+    await renderPage('dailyOverview', { period: 'custom', start: '2026-09-01', end: '2026-09-20' })
+    expect(screen.queryByTestId('report-range-truncated')).not.toBeInTheDocument()
   })
 })

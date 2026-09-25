@@ -25,6 +25,12 @@ import { getCustomerBoard } from '@/actions/data-center/customer'
 import { getProductBoard } from '@/actions/data-center/product'
 import { getEfficiencyBoard } from '@/actions/data-center/efficiency'
 import { getOperatingMaster } from '@/actions/data-center/operating-master'
+import { getDailyOverview } from '@/actions/data-center/daily-overview'
+import {
+  DAILY_OVERVIEW_TAB_LABELS,
+  buildDailyOverviewColumns,
+  parseDailyOverviewTab,
+} from '@/lib/data-center/daily-overview'
 import {
   getDataCenterBreakdownConfig,
   getDataCenterRankingConfig,
@@ -58,6 +64,7 @@ import {
   aggregateOrderExportRows,
 } from '@/lib/export-row-aggregation'
 import {
+  DATA_CENTER_REPORT_VIEW_PREFIX,
   exportJobLabel,
   isDataCenterReportExportView,
   type DataCenterBoardExportView,
@@ -584,6 +591,31 @@ async function operatingMasterContent(raw: Record<string, string>): Promise<Expo
   }
 }
 
+function scopeMetaLabel(scope: { type: string; name: string }): string {
+  if (scope.type === 'market') return `市场 · ${scope.name}`
+  if (scope.type === 'store') return `门店 · ${scope.name}`
+  return scope.name
+}
+
+/** 日常数据一览表（#369）：只导 `tab` 指定的视角（☆ 默认只导当前页签），视角③带两行合并表头。 */
+async function queryDailyOverview(raw: Record<string, string>): Promise<ExportContent> {
+  const tab = parseDailyOverviewTab(raw.tab)
+  const result = await getDailyOverview(raw)
+  const columns = buildDailyOverviewColumns(tab, result.data)
+  return {
+    sheetName: DAILY_OVERVIEW_TAB_LABELS[tab],
+    columns: toWorkerExportColumns(columns, result.data.totals) as unknown as WorkerExportColumn<Row>[],
+    rows: fromRows(result.data.rows as unknown as Row[]),
+    frozenColumns: countLeftFrozen(columns),
+    totalsLabel: '合计',
+    meta: {
+      period: `${result.period.current.start} ~ ${result.period.current.end}`,
+      scope: scopeMetaLabel(result.scope),
+      extra: [{ label: '视角', value: DAILY_OVERVIEW_TAB_LABELS[tab] }],
+    },
+  }
+}
+
 /**
  * 经营明细报表视图（#367 起，`report-` 前缀）。按视图名**精确**分发，不用前缀判断；
  * 新登记的报表视图漏了这里 tsc 就报错（switch 穷尽）。
@@ -594,6 +626,8 @@ async function queryReport(view: DataCenterReportExportView, raw: Record<string,
       return operatingMasterContent(raw)
     case 'report-remaining-cards':
       return remainingCardsContent(raw)
+    case 'report-daily-overview':
+      return queryDailyOverview(raw)
     case 'report-commission-daily':
       return commissionDailyExport(raw)
     case 'report-commission-detail':

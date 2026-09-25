@@ -18,6 +18,7 @@ import { describe, expect, test } from 'vitest'
 
 import { SALES_CATEGORIES, SALES_CATEGORY_COLUMN_KEYS } from '../sales-categories'
 import { DATA_CENTER_VIEW_CONFIG } from '../data-center/columns'
+import { DAILY_OVERVIEW_SALES_CATEGORY_ORDER } from '../data-center/daily-overview'
 
 describe('admin sales_category 端内单源', () => {
   test('四值与顺序固定（顺序即下拉与报表列的展示顺序）', () => {
@@ -65,5 +66,17 @@ describe('人效表视图确实接入了分类列', () => {
     ).toEqual(SALES_CATEGORIES.map((category) => SALES_CATEGORY_COLUMN_KEYS[category]))
 
     expect(actual.every((column) => column.unit === 'amount')).toBe(true)
+  })
+})
+
+describe('日常数据一览表的经营类型展示顺序（#369）', () => {
+  // 本页按原型把「他销他耗」排在「他销自耗」前，有意偏离「数组顺序即展示顺序」的约定。
+  // 只断言集合相等、不断言顺序：取值仍以 SALES_CATEGORIES 为单源，枚举增删值时这里当场红。
+  test('与 SALES_CATEGORIES 集合相等', () => {
+    expect([...DAILY_OVERVIEW_SALES_CATEGORY_ORDER].sort()).toEqual([...SALES_CATEGORIES].sort())
+  })
+
+  test('运行时冻结', () => {
+    expect(Object.isFrozen(DAILY_OVERVIEW_SALES_CATEGORY_ORDER)).toBe(true)
   })
 })

@@ -70,6 +70,7 @@ export const DATA_CENTER_REPORT_VIEW_PREFIX = 'report-'
 export const DATA_CENTER_REPORT_EXPORT_VIEWS = [
   'report-operating-master',
   'report-remaining-cards',
+  'report-daily-overview',
   'report-commission-daily',
   'report-commission-detail',
 ] as const satisfies readonly `${typeof DATA_CENTER_REPORT_VIEW_PREFIX}${string}`[]
@@ -81,6 +82,9 @@ const REPORT_EXPORT_VIEW_SET: ReadonlySet<string> = new Set(DATA_CENTER_REPORT_E
 export function isDataCenterReportExportView(view: string): view is DataCenterReportExportView {
   return REPORT_EXPORT_VIEW_SET.has(view)
 }
+
+/** 日常数据一览表（#369）：一个视图，`tab` 参数决定导出哪个视角（☆ 默认只导当前页签） */
+export const DAILY_OVERVIEW_EXPORT_VIEW = 'report-daily-overview' satisfies DataCenterReportExportView
 
 export const DATA_CENTER_EXPORT_VIEWS = [
   ...DATA_CENTER_BOARD_EXPORT_VIEWS,
@@ -167,6 +171,7 @@ export const DATA_CENTER_VIEW_REQUIRED_ACTIONS: Record<DataCenterExportView, rea
   'efficiency-staff-ranking': [DATA_CENTER_DASHBOARD_ACTION],
   'report-operating-master': DATA_CENTER_REPORTS.operatingMaster.requiredActions,
   'report-remaining-cards': DATA_CENTER_REPORTS.remainingCards.requiredActions,
+  'report-daily-overview': DATA_CENTER_REPORTS.dailyOverview.requiredActions,
   'report-commission-daily': DATA_CENTER_REPORTS.commissionDaily.requiredActions,
   'report-commission-detail': DATA_CENTER_REPORTS.commissionDetail.requiredActions,
 }
@@ -224,6 +229,7 @@ export function exportJobLabel(
     'efficiency-staff-ranking': '人效-员工排名榜',
     'report-operating-master': '经营数据主表',
     'report-remaining-cards': '顾客剩余卡项清单',
+    'report-daily-overview': '日常数据一览表',
     'report-commission-daily': '员工提成日报',
     'report-commission-detail': '提成明细',
   }
