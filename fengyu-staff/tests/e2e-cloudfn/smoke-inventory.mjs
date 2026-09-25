@@ -222,12 +222,21 @@ async function main() {
  * 仅私有库：绕过余额守护灌非零余额（见文件头）。共享 dev 库上 movements 删不掉，不能走正规入账。
  * 返回是否已灌数。
  */
-async function seedStocktakeBook() {
+/** 本流程在私有库上补的期初状态行：结束时删掉，不留全局副作用 */
+let insertedCutover = false
+
+/** 灌数模式（SMOKE_INVENTORY_SEED_STOCK=1）只允许 localhost 私有库，否则直接抛错 */
+function isPrivateSeedRun() {
   if (process.env.SMOKE_INVENTORY_SEED_STOCK !== '1') return false
   const host = new URL(process.env.PG_CONNECTION_STRING).hostname
   if (!['localhost', '127.0.0.1'].includes(host)) {
     throw new Error(`SMOKE_INVENTORY_SEED_STOCK 只允许私有库，当前 host=${host}`)
   }
+  return true
+}
+
+async function seedStocktakeBook() {
+  if (!isPrivateSeedRun()) return false
   const client = await getPool().connect()
   try {
     await client.query('BEGIN')
@@ -274,16 +283,15 @@ async function stocktakeFlow(errors) {
     role: 'inventory_store_operator',
     scopeId: TEST_STORE_ORG_ID,
   })
-  // createDoc 要求 WorkFine 期初已核验。只补缺失行、不改已有状态：共享 dev 库上这是真实业务状态，
-  // 覆盖成「已初始化」会绕过真实的期初核验闸门。
-  await pgQuery(
-    `INSERT INTO inventory_cutover_states (cutover_key, status)
-     VALUES ('workfine_inventory', '已初始化')
-     ON CONFLICT (cutover_key) DO NOTHING`,
-  )
+  // createDoc 要求 WorkFine 期初已核验。这是全局业务闸门：共享库上**只读检查**，不满足就失败，
+  // 绝不替它补「已初始化」（缺行本身就表示期初没做，补了等于永久打开全库的库存写闸）。
+  // 只有私有 localhost 库（灌数模式）才临时补行，并在本流程结束时删掉自己补的那行。
   const cutover = await pgQuery(`SELECT status FROM inventory_cutover_states WHERE cutover_key = 'workfine_inventory'`)
-  if (cutover[0]?.status !== '已初始化') {
-    errors.push(`目标库 WorkFine 库存期初状态为「${cutover[0]?.status}」，盘点建单会被拒；请在已核验的库上跑`)
+  if (!cutover[0] && isPrivateSeedRun()) {
+    await pgQuery(`INSERT INTO inventory_cutover_states (cutover_key, status) VALUES ('workfine_inventory', '已初始化')`)
+    insertedCutover = true
+  } else if (cutover[0]?.status !== '已初始化') {
+    errors.push(`目标库 WorkFine 库存期初状态为「${cutover[0]?.status ?? '缺失'}」，盘点建单会被拒；请在已核验的库上跑`)
     return
   }
   const seeded = await seedStocktakeBook()
@@ -385,6 +393,11 @@ try {
   console.error('EXCEPTION:', error.message)
 } finally {
   try { await cleanupTestData(NS) } catch {}
+  if (insertedCutover) {
+    try {
+      await pgQuery(`DELETE FROM inventory_cutover_states WHERE cutover_key = 'workfine_inventory' AND status = '已初始化'`)
+    } catch {}
+  }
   await closePool()
   console.log(`end | ${pass ? 'PASS' : 'FAIL'} | exit=${exitCode}`)
   process.exit(exitCode)
