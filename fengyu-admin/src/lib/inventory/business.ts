@@ -3545,7 +3545,14 @@ async function linkedSourcePricing(tx: Tx, shipmentItem: DocItemSnapshot, source
        AND l.relation_type = '市场报货发货'
      LIMIT 1
   `))
-  if (!row) throw new ApiError('INVALID_STATE', '发货明细缺少市场报货价格快照')
+  // 旧口径（#336 之前按采购订单建）的发货单没有这条血缘。0051 迁移会拦住在途旧单，但迁移后到新版上线前
+  // 的窗口里仍可能建出来 —— 给出可操作的出路，而不是只报「缺快照」。
+  if (!row) {
+    throw new ApiError(
+      'INVALID_STATE',
+      '发货明细缺少市场报货价格快照：按采购订单建的旧发货单不能再收货，请申请撤回后按市场报货单重新发货',
+    )
+  }
   return {
     supplyChainUnitCost: sourceLot.supplyChainUnitCost,
     marketStandardUnitPrice: numberOrNull(row.market_standard_unit_price),

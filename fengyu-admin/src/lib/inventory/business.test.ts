@@ -1358,6 +1358,41 @@ describe('品项公司发货直接引用市场报货单（#336）', () => {
     expect(links).toHaveLength(2)
   })
 
+  it('旧口径（采购订单发货）的发货单收货时给出可操作的报错：撤回后按报货单重发', async () => {
+    const shipmentRow = {
+      id: 'GFH-OLD', doc_type: '品项公司发货', status: '待收货',
+      source_org_node_id: 'HQ', target_org_node_id: 'M1', market_id: 'M1',
+      supplier_id: null, supplier_name: null,
+      cancellation_request_reason: null, cancellation_requested_by: null, cancellation_requested_at: null,
+    }
+    const executor = vi.fn(async (query: unknown) => {
+      const rendered = renderSql(query)
+      const params = sqlParams(query)
+      // 价格快照 SQL 也 JOIN inventory_doc_items，必须排在明细分支之前；旧单没有「市场报货发货」血缘
+      if (rendered.includes('FROM inventory_doc_links')) return []
+      if (rendered.includes('FROM inventory_stock_lots')) return [shipmentSourceLotRow()]
+      if (rendered.includes('FROM inventory_skus')) return [marketSkuRow('SKU-1')]
+      if (rendered.includes('FROM inventory_locations')) {
+        return params.includes('M1')
+          ? [{ location_id: 'M1', org_node_id: 'M1', location_type: '市场', name: '市场一', parent_location_id: 'HQ' }]
+          : [{ location_id: 'HQ', org_node_id: 'HQ', location_type: '总部', name: '供应链', parent_location_id: null }]
+      }
+      if (rendered.includes('FROM inventory_doc_items')) {
+        return [{ ...storeRequestItemRow(), id: 7, doc_id: 'GFH-OLD', lot_id: 101, quantity: '1' }]
+      }
+      if (rendered.includes('FROM inventory_docs')) return [shipmentRow]
+      return []
+    })
+    mockSyncLocationsShortCircuit()
+    vi.mocked(db.execute).mockResolvedValue([] as never)
+    vi.mocked(db.transaction).mockImplementationOnce(async (callback) => callback({
+      execute: initializedCutoverExecutor(executor),
+    } as never))
+    await expect(receiveItemCompanyShipment(SESSION, {
+      shipmentId: 'GFH-OLD', items: [{ shipmentItemId: 7, receivedQuantity: 1 }],
+    })).rejects.toThrow('请申请撤回后按市场报货单重新发货')
+  })
+
   it('触发器兜底 RAISE「关联数量超出来源明细」改写为可读的 CONFLICT 文案', async () => {
     const raise = Object.assign(new Error('Failed query: insert into inventory_doc_links'), {
       cause: Object.assign(new Error('关联数量超出来源明细：来源 1, 现有关联 1, 本次 1'), { code: 'P0001' }),
