@@ -2141,6 +2141,24 @@ describe('品项公司发货引用市场报货单（#336b）', () => {
     expect(screen.getByRole('button', { name: '创建品项公司发货单' })).toBeEnabled()
   })
 
+  it('「去发货」装载中不能提交；装载中用户改选了市场，迟到的预选不覆盖', async () => {
+    const row = report('SBH-9', 'M2')
+    let resolveDoc: (value: InventoryDocDetail) => void = () => {}
+    vi.mocked(getInventoryCoreDocById).mockImplementationOnce(() => new Promise((resolve) => { resolveDoc = resolve }))
+    mockDocs({ inbox: segment([row]) })
+    renderPage({ level: 'supply-chain', operation: 'company-shipment', locations: [HQ], shipmentMarketTargets: [M1, M2], candidates: [row] })
+    await openDocsTab()
+    fireEvent.click(await screen.findByRole('button', { name: '去发货 SBH-9' }))
+    expect(await screen.findByText('正在加载市场报货明细')).toBeInTheDocument()
+
+    const marketSelect = screen.getByRole('option', { name: '请选择市场' }).closest('select') as HTMLSelectElement
+    fireEvent.change(marketSelect, { target: { value: 'M1' } })
+    await act(async () => { resolveDoc(reportDetail(row, 91, 5, 0)) })
+    expect(marketSelect.value).toBe('M1')
+    expect(screen.queryByText(/报货 5 · 已发 0/)).toBeNull()
+    expect(screen.queryByText('正在加载市场报货明细')).toBeNull()
+  })
+
   it('待办「去发货」：带出收货市场、发货总部并勾上这张报货单', async () => {
     const row = report('SBH-9', 'M2')
     vi.mocked(getInventoryCoreDocById).mockResolvedValue(reportDetail(row, 91, 5, 0))

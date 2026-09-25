@@ -96,7 +96,7 @@ describe('业务 → 产出单据类型映射（#190）', () => {
   it('只有共用 docType 的转换业务需要 locationType，其余业务不画蛇添足', () => {
     // 多余的 locationType 会把本来该看到的单据筛掉（比如给「分院配货」加上
     // locationType=市场，source 是市场能过、但语义已经跑偏），属于静默丢数据。
-    // 两段一起扫：inbox 侧同样不该出现 locationType（7 条 inbox 的 docType 都不跨层级共用）。
+    // 两段一起扫：inbox 侧同样不该出现 locationType（8 条 inbox 的 docType 都不跨层级共用）。
     const withLocationType = Object.entries(INVENTORY_OPERATION_DOC_QUERY)
       .filter(([, query]) => query.produced.locationType !== undefined || query.inbox?.locationType !== undefined)
       .map(([operation]) => operation)

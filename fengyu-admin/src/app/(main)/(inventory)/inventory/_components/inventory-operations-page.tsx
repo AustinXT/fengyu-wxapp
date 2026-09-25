@@ -1288,7 +1288,7 @@ function buildInboxActionConfig(
 /**
  * 业务工作区的「单据」Tab（#190 一段 → #192 两段）。
  *
- * 上段「待我处理」= 本业务要经手、但由上游产出的单（待审批 / 待收货），带行内动作；
+ * 上段「待我处理」= 本业务要经手、但由上游产出的单（待审批 / 待收货；品项公司发货是仍有未发量的已完成市场报货单，#336b），带行内动作；
  * 下段「本业务产出」= #190 的原语义，只读。
  *
  * 单据类型 / 状态 / 层级的收窄规则在服务端按 operationId 查映射表解析
@@ -1592,7 +1592,7 @@ export function OperationDocsTab({
 
   return (
     <div className="space-y-6">
-      {/* 无 inbox 语义的业务（17 个内置 + 9 个通用）整段不渲染，外观与 #190 完全一致。 */}
+      {/* 无 inbox 语义的业务（16 个内置 + 其余通用，#336b 起品项公司发货有「待发货」段）整段不渲染，外观与 #190 完全一致。 */}
       {hasInbox && (
         <section className="space-y-2" aria-label="待我处理">
           <div className="flex flex-wrap items-center gap-2">
@@ -1625,7 +1625,7 @@ export function OperationDocsTab({
         </section>
       )}
 
-      {/* space-y-3 与 #190 的原布局逐字一致：无 inbox 的 17 个业务外观不能有任何变化 */}
+      {/* space-y-3 与 #190 的原布局逐字一致：无 inbox 的业务外观不能有任何变化 */}
       <section className="space-y-3" aria-label="本业务产出">
         {/*
           * 产出段**不加任何行内动作**：产出单绝大多数是终态，少数非终态的处理入口在别的
@@ -2992,20 +2992,24 @@ function CompanyShipmentForm({
     clearSelection()
   }
 
-  // 待办区「去发货」：按报货单带出收货市场与发货总部，再勾上这张单
+  // 待办区「去发货」：按报货单带出收货市场与发货总部，再勾上这张单。
+  // 点下即作废当前选择并计入装载中（装载期间不能提交旧选择）；响应迟到时若用户已换市场 / 总部
+  // （epoch 变了）或已自己勾了单，就丢弃，不覆盖用户的后续操作。
   const prefillToken = prefill?.token
   useEffect(() => {
     const id = prefill?.docId
     if (!id) return
-    let cancelled = false
+    clearSelection()
+    const epoch = epochRef.current
+    const isCurrent = () => epoch === epochRef.current && selectedRef.current.length === 0
+    setLoadingIds([id])
     void getInventoryCoreDocById(id)
       .then((detail) => {
-        if (cancelled) return
+        if (!isCurrent()) return
         if (!detail || detail.docType !== '市场报货' || !detail.sourceOrgNodeId || !detail.targetOrgNodeId) {
           toast.error('未找到可发货的市场报货单')
           return
         }
-        clearSelection()
         setMarketId(detail.sourceOrgNodeId)
         setSourceOrgNodeId(detail.targetOrgNodeId)
         selectedRef.current = [detail.id]
@@ -3015,9 +3019,11 @@ function CompanyShipmentForm({
         toast.info(`已切换到单据 ${detail.id}`)
       })
       .catch((error: unknown) => {
-        if (!cancelled) toast.error(actionErrorMessage(error, '加载市场报货单失败'))
+        if (isCurrent()) toast.error(actionErrorMessage(error, '加载市场报货单失败'))
       })
-    return () => { cancelled = true }
+      .finally(() => {
+        if (epoch === epochRef.current) setLoadingIds((previous) => previous.filter((value) => value !== id))
+      })
     // 只挂 token（同 useDocumentPrefill）：同一张单点第二次也要能再触发
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [prefillToken])
@@ -3112,7 +3118,9 @@ function CompanyShipmentForm({
   }
 
   return (
-    <form className="space-y-5" onSubmit={(event) => { event.preventDefault(); void submit() }}>
+    <form onSubmit={(event) => { event.preventDefault(); void submit() }}>
+      {/* 提交在途锁住整张表：否则在途期间改选的单会被成功后的 clearSelection 一并清掉 */}
+      <fieldset disabled={saving} className="m-0 min-w-0 space-y-5 border-0 p-0">
       <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
         <FormField label="收货市场" required>
           <InventorySubjectSelect
@@ -3197,6 +3205,7 @@ function CompanyShipmentForm({
       <div className="flex justify-end">
         <Button type="submit" loading={saving} disabled={loadingIds.length > 0 || lines.length === 0}>创建品项公司发货单</Button>
       </div>
+      </fieldset>
     </form>
   )
 }
