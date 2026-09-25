@@ -1939,6 +1939,8 @@ interface MarketReportLine {
   requestItemIds: number[]
   requestQuantity: number
   availableQuantity: number
+  inTransitQuantity: number
+  inTransitCoveredQuantity: number
   suggestedPurchaseQuantity: number
   selected: boolean
   purchaseQuantity: string
@@ -2022,6 +2024,8 @@ function MarketReportForm({
         requestItemIds: item.requestItemIds,
         requestQuantity: item.outstandingQuantity,
         availableQuantity: item.availableQuantity,
+        inTransitQuantity: item.inTransitQuantity,
+        inTransitCoveredQuantity: item.inTransitCoveredQuantity,
         suggestedPurchaseQuantity: item.suggestedPurchaseQuantity,
         // 库存已覆盖的行默认不建市场报货；需要补货时由操作人显式勾选并填写数量。
         selected: item.suggestedPurchaseQuantity > 0,
@@ -2172,13 +2176,15 @@ function MarketReportForm({
         <div className="space-y-3">
           <h3 className="text-sm font-medium">市场报货明细</h3>
           <div className="overflow-x-auto rounded-[var(--radius)] border border-[var(--border)]">
-            <table className="w-full min-w-[760px] text-sm">
+            <table className="w-full min-w-[860px] text-sm">
               <thead className="bg-[var(--muted)] text-left text-xs text-[var(--muted-foreground)]">
                 <tr>
                   <th className="w-12 px-3 py-2 font-medium">选择</th>
                   <th className="px-3 py-2 font-medium">商品</th>
                   <th className="px-3 py-2 font-medium">待配数量</th>
                   <th className="px-3 py-2 font-medium">市场可用库存</th>
+                  {/* #362：已报货未入市场库的量；待配数量已扣掉被它覆盖的部分 */}
+                  <th className="px-3 py-2 font-medium">在途采购</th>
                   <th className="px-3 py-2 font-medium">建议采购</th>
                   <th className="px-3 py-2 font-medium">实际采购</th>
                   {canViewPrice && <th className="px-3 py-2 font-medium">福利报价</th>}
@@ -2205,8 +2211,13 @@ function MarketReportForm({
                     <tr key={line.skuId} className="border-t border-[var(--border)]">
                       <td className="px-3 py-2"><input aria-label={`选择 ${rowName}`} type="checkbox" checked={line.selected} onChange={(event) => updateLine(index, { selected: event.target.checked })} /></td>
                       <td className="px-3 py-2"><div className="font-medium">{line.skuName}</div><div className="text-xs text-[#888888]">{line.specName || line.skuId}</div></td>
-                      <td className="px-3 py-2">{line.requestQuantity}</td>
+                      <td className="px-3 py-2">
+                        {line.requestQuantity}
+                        {/* 待配已被在途封顶时亮出扣了多少：在途挂着不到货（短收 / 总部不发）时人能看出来，不至于整行静默漏报 */}
+                        {line.inTransitCoveredQuantity > 0 && <div className="text-xs text-[#888888]">在途已覆盖 {line.inTransitCoveredQuantity}</div>}
+                      </td>
                       <td className="px-3 py-2">{line.availableQuantity}</td>
+                      <td className="px-3 py-2">{line.inTransitQuantity}</td>
                       <td className="px-3 py-2">{line.suggestedPurchaseQuantity}</td>
                       <td className="px-3 py-2"><Input className="w-24" aria-label={`实际采购 ${rowName}`} type="number" min="0" step="0.01" max="9999999999.99" value={line.purchaseQuantity} onChange={(event) => updateLine(index, { purchaseQuantity: event.target.value })} disabled={!line.selected} /></td>
                       {canViewPrice && (
