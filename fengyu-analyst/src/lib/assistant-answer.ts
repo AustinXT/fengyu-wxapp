@@ -13,6 +13,7 @@ import {
   resolveAssistantProductTerms,
   type AssistantProductTermOptions,
 } from "@/lib/assistant-domain-terms"
+import { getAssistantOrgNameCatalog, type AssistantOrgNameCatalog } from "@/lib/assistant-org-names"
 import { getSystemProductTermOptions } from "@/lib/assistant-product-terms"
 import type { AssistantChatResponse, AssistantVisualization } from "@/lib/assistant-types"
 import { formatPointDeltaValue } from "@/lib/metric-delta"
@@ -731,6 +732,21 @@ function findMention(question: string, options: string[]): string | undefined {
   return [...options].sort((a, b) => b.length - a.length).find((value) => question.includes(value))
 }
 
+interface UnavailableOrgMention {
+  kind: "门店" | "市场"
+  name: string
+}
+
+function unavailableOrgMessage(mentions: UnavailableOrgMention[]): string {
+  const names = mentions.map((mention) => `${mention.kind}「${mention.name}」`).join("、")
+  // 停用与无权限用同一句话，不向提问人暴露门店的具体状态（#436 拍板）
+  return `未找到可查看的${names}（可能已停用，或不在你的查看范围内），因此没有取数。请换成当前可查看的门店或市场再问。`
+}
+
+/**
+ * 点名了门店 / 市场就必须命中账号可见范围（在营 + 权限），命中不了直接报错，
+ * 不再静默回落成市场或「全部」——那样回答的范围和提问对不上（#436）。
+ */
 function scopeFromNames(
   options: AnalystScopeOptions,
   input: { market?: string | null; store?: string | null },
@@ -741,15 +757,52 @@ function scopeFromNames(
       const store = market.stores.find((item) => item.storeName === storeText || item.storeName.includes(storeText))
       if (store) return { type: "store", id: store.storeId }
     }
+    throw new Error(`NOT_FOUND: ${unavailableOrgMessage([{ kind: "门店", name: storeText }])}`)
   }
 
   const marketText = input.market?.trim()
   if (marketText) {
     const market = options.markets.find((item) => item.name === marketText || marketText.includes(item.name))
     if (market) return { type: "market", id: market.id }
+    throw new Error(`NOT_FOUND: ${unavailableOrgMessage([{ kind: "市场", name: marketText }])}`)
   }
 
   return { type: "all" }
+}
+
+/**
+ * 问题里点名、但不在账号可见范围（已停用 / 无权限）的门店或市场。
+ * 先把可见名称（长的优先）从问题里抠掉，避免「可见门店名包含某个不可见名称」被误判。
+ */
+export function findUnavailableOrgMentions(
+  question: string,
+  options: AnalystScopeOptions,
+  catalog: AssistantOrgNameCatalog,
+): UnavailableOrgMention[] {
+  const visibleStores = options.markets.flatMap((market) => market.stores.map((store) => store.storeName))
+  const visibleMarkets = options.markets.map((market) => market.name)
+  const visible = new Set([...visibleStores, ...visibleMarkets])
+  const byLengthDesc = (a: { name: string }, b: { name: string }) => b.name.length - a.name.length
+
+  let rest = question
+  for (const name of [...visible].filter(Boolean).sort((a, b) => b.length - a.length)) {
+    rest = rest.split(name).join("\u0000")
+  }
+
+  const candidates: UnavailableOrgMention[] = [
+    ...catalog.storeNames.map((name) => ({ kind: "门店" as const, name: name.trim() })),
+    ...catalog.marketNames.map((name) => ({ kind: "市场" as const, name: name.trim() })),
+  ]
+    .filter((mention) => mention.name && !visible.has(mention.name))
+    .sort(byLengthDesc)
+
+  const found: UnavailableOrgMention[] = []
+  for (const mention of candidates) {
+    if (!rest.includes(mention.name)) continue
+    found.push(mention)
+    rest = rest.split(mention.name).join("\u0000")
+  }
+  return found
 }
 
 function scopeFromQuestion(options: AnalystScopeOptions, question: string): AnalystScope {
@@ -1944,6 +1997,15 @@ export async function answerQuestionWithVisualizations(
   if (questionKind === "time") return answerCurrentTime(now)
   if (questionKind === "clarification") return answerClarification()
   if (questionKind === "unsupported") return answerUnsupportedQuestion()
+
+  const [entryScopeOptions, orgNameCatalog] = await Promise.all([
+    getAnalystScopeOptions(session),
+    getAssistantOrgNameCatalog(),
+  ])
+  const unavailable = findUnavailableOrgMentions(question, entryScopeOptions, orgNameCatalog)
+  if (unavailable.length > 0) {
+    return { content: unavailableOrgMessage(unavailable), visualizations: [] }
+  }
 
   const intents = detectAssistantMetricIntents(question)
   if (intents.length >= 2) {

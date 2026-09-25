@@ -166,6 +166,7 @@ describe('门店在营判定跨端字面量守护（#400）', () => {
       'app/api/health/route.ts',
       'lib/analyst-scope.ts',
       'lib/assistant-chat-store.ts',
+      'lib/assistant-org-names.ts', // 助手识别不可见门店 / 市场名称（#436），不取数
       'lib/assistant-product-terms.ts',
       'lib/auth.ts',
       'lib/member-threshold.ts',
