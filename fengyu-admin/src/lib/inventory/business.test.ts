@@ -3138,6 +3138,16 @@ describe('分院配货报货单可选：引用 / 自选 / 混合（#337）', () 
     await expect(createStoreAllocation(SESSION, {
       targetStoreId: 42 as never, sourceMarketId: 'M1', items: [{ lotId: 12, quantity: 1 }],
     })).rejects.toThrow('INVALID_PARAMS: 收货门店格式不正确')
+    for (const lotId of [NaN, 1.5, 'abc', 0, undefined]) {
+      await expect(createStoreAllocation(SESSION, {
+        targetStoreId: 'S1', sourceMarketId: 'M1', items: [{ skuId: 'SKU-2', lotId: lotId as never, quantity: 1 }],
+      })).rejects.toThrow('INVALID_PARAMS: 请为每条配货明细选择库存批次')
+    }
+    for (const requestItemId of [true, [5], 1.5]) {
+      await expect(createStoreAllocation(SESSION, {
+        storeRequestId: 'DBH-1', sourceMarketId: 'M1', items: [{ requestItemId: requestItemId as never, lotId: 11, quantity: 1 }],
+      })).rejects.toThrow('INVALID_PARAMS: 门店报货明细不正确')
+    }
     expect(db.transaction).not.toHaveBeenCalled()
 
     mockAllocation()

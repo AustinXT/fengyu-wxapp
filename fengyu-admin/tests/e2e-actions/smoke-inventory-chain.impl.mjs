@@ -1045,6 +1045,40 @@ try {
       && num((await docHeader(yrkSelfId))?.total_amount) === 2540,
     JSON.stringify({ storeSelfBefore, storeSelfAfter }))
 
+  // 同一批次跨两条自选行（第二行带赠送）：真 0009 触发器下流水 before/after 必须首尾相接
+  setSession(marketASession())
+  const selfLotBeforeSame = await lotQuantity(selfLotId)
+  const { id: fphSameLotId } = await biz.createStoreAllocation({
+    targetStoreId: STA1_ORG,
+    sourceMarketId: MKA_ORG,
+    items: [
+      { skuId: SKU_SELF, lotId: selfLotId, quantity: 1 },
+      { skuId: SKU_SELF, lotId: selfLotId, quantity: 1, giftQuantity: 1 },
+    ],
+  })
+  const sameLotMovements = await pgQuery(
+    `SELECT quantity_before, quantity_after FROM inventory_movements WHERE doc_id = $1 ORDER BY id`, [fphSameLotId],
+  )
+  const chain = sameLotMovements.map((row) => [num(row.quantity_before), num(row.quantity_after)])
+  check('#337 同批次两条自选行：共享快照，流水 before/after 首尾相接、批次扣 3',
+    JSON.stringify(chain) === JSON.stringify([
+      [selfLotBeforeSame, selfLotBeforeSame - 1],
+      [selfLotBeforeSame - 1, selfLotBeforeSame - 2],
+      [selfLotBeforeSame - 2, selfLotBeforeSame - 3],
+    ]) && (await lotQuantity(selfLotId)) === selfLotBeforeSame - 3,
+    JSON.stringify(chain))
+  await expectThrow('#337 同批次跨行累计超出可用量被拒', /库存不足/, () =>
+    biz.createStoreAllocation({
+      targetStoreId: STA1_ORG,
+      sourceMarketId: MKA_ORG,
+      items: [
+        { skuId: SKU_SELF, lotId: selfLotId, quantity: selfLotBeforeSame - 3 },
+        { skuId: SKU_SELF, lotId: selfLotId, quantity: 1 },
+      ],
+    }))
+  // 把余下的自选品留给混合段：刚才的累计超量单整笔回滚，批次数量不变
+  check('#337 累计超量被拒后批次数量不变', (await lotQuantity(selfLotId)) === selfLotBeforeSame - 3, '')
+
   // 混合：引用 dbh337 配 2 件 + 追加自选品 1 件
   setSession(marketASession())
   await expectThrow('#337 引用单里已有的 SKU 不能再以自选行追加', /已在引用的门店报货单中/, () =>

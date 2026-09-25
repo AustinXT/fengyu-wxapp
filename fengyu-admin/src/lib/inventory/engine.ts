@@ -2792,13 +2792,16 @@ export const listInventoryDocCandidateIds = withPermission(
  */
 export const listStoreUnallocatedRequestSkus = withPermission(
   'inventory:list',
-  async (session, raw: { storeOrgNodeId: string }): Promise<StoreUnallocatedRequestSku[]> => {
+  async (session, raw: { storeOrgNodeId: string; marketId?: string }): Promise<StoreUnallocatedRequestSku[]> => {
     const storeOrgNodeId = candidateText(raw?.storeOrgNodeId, '收货门店')
+    // 与候选选择器同样按配货市场（报货单接收端）收窄：门店换过市场时，旧市场的报货单本市场引用不了
+    const marketId = candidateText(raw?.marketId, '配货市场')
     if (!storeOrgNodeId) throw new ApiError('INVALID_PARAMS', '缺少收货门店')
     const definition = INVENTORY_DOC_CANDIDATES['store-allocation-source']
     await syncInventoryLocations()
     const whereClause = candidateConditions(session, definition, {
       sourceOrgNodeId: storeOrgNodeId,
+      targetOrgNodeId: marketId,
       includeExhausted: true,
     }, { onlyRemaining: false })
     const done = candidateItemDoneSql('allocated')

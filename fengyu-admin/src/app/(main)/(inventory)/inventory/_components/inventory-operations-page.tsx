@@ -494,23 +494,32 @@ function useLoadedDocument() {
   const [docId, setDocId] = useState('')
   const [doc, setDoc] = useState<InventoryDocDetail | null>(null)
   const [loading, setLoading] = useState(false)
+  // 只有最后一次选择的响应能落地：加载中改选 / 清空（#337 换门店即解除引用）后，
+  // 旧单迟到的响应不得把 doc 与表单主体改回去
+  const requestSeqRef = useRef(0)
 
   const selectDocument = useCallback(async (id: string) => {
+    const seq = ++requestSeqRef.current
     setDocId(id)
     setDoc(null)
-    if (!id) return
+    if (!id) {
+      setLoading(false)
+      return
+    }
     setLoading(true)
     try {
       const detail = await getInventoryCoreDocById(id)
+      if (seq !== requestSeqRef.current) return
       if (!detail) {
         toast.error('未找到可操作的关联单据')
         return
       }
       setDoc(detail)
     } catch (error) {
+      if (seq !== requestSeqRef.current) return
       toast.error(actionErrorMessage(error, '加载关联单据失败'))
     } finally {
-      setLoading(false)
+      if (seq === requestSeqRef.current) setLoading(false)
     }
   }, [])
 
@@ -3430,14 +3439,14 @@ function StoreAllocationForm({
   useEffect(() => {
     let cancelled = false
     setUnallocated(new Map())
-    if (!targetStoreId) return () => { cancelled = true }
-    listStoreUnallocatedRequestSkus({ storeOrgNodeId: targetStoreId })
+    if (!targetStoreId || !sourceMarketId) return () => { cancelled = true }
+    listStoreUnallocatedRequestSkus({ storeOrgNodeId: targetStoreId, marketId: sourceMarketId })
       .then((rows) => {
         if (!cancelled) setUnallocated(new Map(rows.map((row) => [row.skuId, row])))
       })
       .catch(() => undefined)
     return () => { cancelled = true }
-  }, [targetStoreId, unallocatedVersion])
+  }, [targetStoreId, sourceMarketId, unallocatedVersion])
 
   function selectMarket(nextMarketId: string) {
     if (nextMarketId === sourceMarketId) return
@@ -3470,7 +3479,8 @@ function StoreAllocationForm({
 
   function selectSelfSku(key: number, skuId: string) {
     updateSelfLine(key, { skuId, lotId: '', storeStandardUnitPrice: null })
-    if (!skuId) return
+    // 价格区只对有价格档的账号渲染；其余账号不取价，也就不会为看不到的预览弹失败提示
+    if (!skuId || !canViewPrice) return
     listInventorySkus({ skuIds: [skuId], onlyActive: false, page: 1, pageSize: 100 })
       .then((result) => {
         const sku = result.data.find((row) => row.skuId === skuId)
@@ -3492,6 +3502,11 @@ function StoreAllocationForm({
     if (saving) return
     if (!sourceMarketId || !targetStoreId) {
       toast.error('请选择配货市场和收货门店')
+      return
+    }
+    // 选了报货单但明细还没装载（加载中 / 加载失败）：此时提交会静默变成不引用报货的直接配货
+    if (docId && !doc) {
+      toast.error('门店报货单尚未加载完成，请稍候或清除后重选')
       return
     }
     const requestItems = lines.map((line) => ({
@@ -3580,6 +3595,7 @@ function StoreAllocationForm({
         selection={{ mode: 'single', value: docId, current: doc, onChange: (id) => void selectDocument(id) }}
       />
       {loading && <div className="text-sm text-[#666666]">正在加载门店报货明细</div>}
+      {doc && !doc.sourceOrgNodeId && <div className="text-sm text-[#D94040]">该门店报货单缺少报货门店，无法引用配货，请清除后改为直接配货</div>}
       <SourceDocumentItems doc={doc} canViewPrice={canViewPrice} />
       {lines.length > 0 && (
         <div className="space-y-3">
@@ -3636,7 +3652,7 @@ function StoreAllocationForm({
         })}
       </div>
       <RemarkField value={remark} onChange={setRemark} />
-      <div className="flex justify-end"><Button type="submit" loading={saving} disabled={lines.length === 0 && selfLines.length === 0}>创建分院配货单</Button></div>
+      <div className="flex justify-end"><Button type="submit" loading={saving} disabled={(lines.length === 0 && selfLines.length === 0) || Boolean(docId && !doc)}>创建分院配货单</Button></div>
     </form>
   )
 }

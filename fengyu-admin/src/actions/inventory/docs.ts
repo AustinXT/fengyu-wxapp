@@ -135,8 +135,9 @@ export const listInventoryDocCandidateIds = withPermission(
 /** 分院配货自选行的「建议引用报货单」提示（#337）：该门店仍有未配报货的 SKU。纯提示，不参与写入判定。 */
 export const listStoreUnallocatedRequestSkus = withPermission(
   'inventory:list',
-  async (_session, raw: { storeOrgNodeId: string }) => listStoreUnallocatedRequestSkusImpl({
+  async (_session, raw: { storeOrgNodeId: string; marketId?: string }) => listStoreUnallocatedRequestSkusImpl({
     storeOrgNodeId: raw?.storeOrgNodeId,
+    marketId: raw?.marketId,
   }),
 )
 

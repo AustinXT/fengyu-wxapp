@@ -1694,7 +1694,7 @@ describe('分院配货不引用门店报货（#337）', () => {
     await waitFor(() => expect(listInventoryDocCandidates).toHaveBeenLastCalledWith(
       expect.objectContaining({ purpose: 'store-allocation-source', sourceOrgNodeId: 'N-S1', targetOrgNodeId: 'M1' }),
     ))
-    await waitFor(() => expect(listStoreUnallocatedRequestSkus).toHaveBeenCalledWith({ storeOrgNodeId: 'N-S1' }))
+    await waitFor(() => expect(listStoreUnallocatedRequestSkus).toHaveBeenCalledWith({ storeOrgNodeId: 'N-S1', marketId: 'M1' }))
 
     fireEvent.click(screen.getByRole('button', { name: '添加自选商品' }))
     const picker = document.querySelector<HTMLSelectElement>('[data-sku-picker]')!
@@ -1749,6 +1749,31 @@ describe('分院配货不引用门店报货（#337）', () => {
     expect(await screen.findByText('该商品已在引用的门店报货单中，请在上方报货明细上配货')).toBeTruthy()
     // 引用单自身的报货不再重复提示「建议引用」
     expect(screen.queryByText(/仍有未配报货/)).toBeNull()
+  })
+
+  it('报货单加载中不能提交（否则静默变成直接配货）；加载中换门店后旧单迟到的响应不把门店改回去', async () => {
+    const request = docRow({ id: 'DBH-1', docType: '门店报货', status: '已完成', sourceOrgNodeId: 'N-S1', targetOrgNodeId: 'M1', marketId: 'M1' })
+    let resolveDoc: (value: InventoryDocDetail) => void = () => {}
+    vi.mocked(getInventoryCoreDocById).mockImplementationOnce(() => new Promise((resolve) => { resolveDoc = resolve }))
+    renderPage({ level: 'market', operation: 'store-allocation', locations: LOCATIONS, candidates: [request] })
+    chooseSubject('请选择市场', 'M1')
+    chooseSubject('请选择门店', 'N-S1')
+    fireEvent.click(screen.getByRole('button', { name: '添加自选商品' }))
+    await pickCandidate('DBH-1')
+    expect(screen.getByRole('button', { name: '创建分院配货单' })).toBeDisabled()
+    submitAllocation()
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('门店报货单尚未加载完成，请稍候或清除后重选'))
+    expect(createStoreAllocation).not.toHaveBeenCalled()
+
+    // 加载中改选三店：解除引用；A 单随后才回来，不得把门店改回一店、也不得重新带出报货行
+    chooseSubject('请选择门店', 'N-S3')
+    await act(async () => {
+      resolveDoc({ ...docDetail(request), items: [{ id: 1, docId: 'DBH-1', skuId: 'SKU-1', skuName: '精华液', quantity: 2, fulfilledQuantity: 0 } as unknown as InventoryDocDetail['items'][number]] })
+    })
+    const storeSelect = screen.getByRole('option', { name: '三店' }).closest('select') as HTMLSelectElement
+    expect(storeSelect.value).toBe('N-S3')
+    expect(screen.queryByText('报货配货批次与数量')).toBeNull()
+    expect(screen.getByRole('button', { name: '创建分院配货单' })).toBeEnabled()
   })
 })
 

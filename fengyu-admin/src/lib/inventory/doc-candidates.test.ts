@@ -417,9 +417,11 @@ describe('门店未配报货 SKU（#337 拍板 A 的提示数据）', () => {
     mockDb.execute
       .mockResolvedValueOnce([{ drifted: false }] as never)
       .mockResolvedValueOnce([{ sku_id: 'SKU-1', remaining_quantity: '3.00', doc_ids: ['DBH-1', 'DBH-2'] }] as never)
-    const result = await listStoreUnallocatedRequestSkus({ storeOrgNodeId: 'ORG-S1' })
+    const result = await listStoreUnallocatedRequestSkus({ storeOrgNodeId: 'ORG-S1', marketId: 'MKT-A' })
     expect(result).toEqual([{ skuId: 'SKU-1', remainingQuantity: 3, docIds: ['DBH-1', 'DBH-2'] }])
     const query = compile(mockDb.execute.mock.calls[1][0])
+    // 与候选选择器同样按配货市场（报货单接收端）收窄
+    expect(query.text).toMatch(/"inventory_docs"\."target_org_node_id" = \$\d+/)
     // scope：两端 OR + 动作端（报货单的接收市场）收窄
     expect(query.text).toMatch(/"inventory_docs"\."target_org_node_id" in \(\$\d+, \$\d+\)/)
     expect(query.text).toMatch(/"inventory_docs"\."source_org_node_id" = \$\d+/)

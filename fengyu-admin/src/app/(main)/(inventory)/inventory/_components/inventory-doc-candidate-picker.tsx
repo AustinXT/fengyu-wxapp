@@ -215,7 +215,7 @@ export function InventoryDocCandidatePicker({
         startDate: startDate || undefined,
         endDate: endDate || undefined,
         targetOrgNodeId: targetOrgNodeId || undefined,
-      sourceOrgNodeId: sourceOrgNodeId || undefined,
+        sourceOrgNodeId: sourceOrgNodeId || undefined,
       })
       // 在途时改了日期 / 关键字 / 主体，或已选被清除 / 改勾选：旧结果不能再覆盖当前选择
       if (!isCurrent()) return

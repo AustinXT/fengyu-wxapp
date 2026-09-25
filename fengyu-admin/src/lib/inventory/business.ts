@@ -4110,13 +4110,21 @@ export async function createStoreAllocation(
   // 行形态在入口判定：引用行必须有报货单可引，自选行不看 requestItemId
   const lineRequestItemIds = input.items.map((line) => {
     if (line.requestItemId === undefined || line.requestItemId === null) return null
-    const requestItemId = Number(line.requestItemId)
+    // 只收 number / 数字串：true、[5] 之类经 Number() 会变成合法 id，不能放行
+    const requestItemId = typeof line.requestItemId === 'number' || typeof line.requestItemId === 'string'
+      ? Number(line.requestItemId)
+      : NaN
     if (!Number.isInteger(requestItemId) || requestItemId <= 0) {
       throw new ApiError('INVALID_PARAMS', '门店报货明细不正确')
     }
     if (!storeRequestId) throw new ApiError('INVALID_PARAMS', '未引用门店报货单时不能按报货明细配货')
     return requestItemId
   })
+  for (const line of input.items) {
+    const lotId = Number(line.lotId)
+    // 非法批次号直接进 bigint 参数会让 PG 抛 22P02 变 500
+    if (!Number.isInteger(lotId) || lotId <= 0) throw new ApiError('INVALID_PARAMS', '请为每条配货明细选择库存批次')
+  }
   await syncLocations()
   const id = await db.transaction(async (tx) => {
     await assertInventoryBusinessWritable(tx)
@@ -4155,7 +4163,12 @@ export async function createStoreAllocation(
     assertLocationWritable(session, market)
     const seen = new Set<number>()
     // 同一批次可能同时出现在引用行与自选行：共用一份快照（出库流水的 quantity_before 链才连续），
-    // 可用量按本单对该批次的累计占用判，而不是逐行各判一次
+    // 可用量按本单对该批次的累计占用判，而不是逐行各判一次。
+    // 由此同批次后续明细的 stock_snapshot 记的是本单前序行扣减后的余额（与同一行赠送明细的既有口径一致）。
+    //
+    // 锁序注：本函数是「报货单 → 市场 → 门店 → 明细 / 批次」，createMarketReplenishment 等是「市场 → … → 单据」，
+    // 两者相反；今天靠 assertInventoryBusinessWritable 对 cutover 行的 FOR UPDATE 把库存写事务全局串行才不成环，
+    // 放宽那把锁前必须先统一锁序。
     const lotsById = new Map<number, LotSnapshot>()
     const lotDemand = new Map<number, number>()
     const prepared: Array<{
