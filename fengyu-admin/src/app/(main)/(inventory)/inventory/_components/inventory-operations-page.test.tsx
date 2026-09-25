@@ -37,6 +37,8 @@ vi.mock('@/actions/inventory/docs', () => ({
   listInventoryDocCandidateIds: vi.fn(),
   listInventoryDocCandidates: vi.fn(),
   listInventoryOperationDocs: vi.fn(),
+  // #337 分院配货自选行的未配报货提示：默认无提示
+  listStoreUnallocatedRequestSkus: vi.fn(async () => []),
 }))
 
 vi.mock('@/actions/inventory/stocks', () => ({ listInventoryLotOptions: vi.fn() }))
@@ -160,8 +162,8 @@ describe('办理台表单一致性（#135）', () => {
     expect(source).not.toMatch(/inputMode="decimal"/)
 
     const numberInputs = source.match(/type="number"[^/>]*/g) ?? []
-    // 21 个数值输入分布在 18 行（有的一行多个）
-    expect(numberInputs.length).toBe(21)
+    // 21 个数值输入分布在 18 行（有的一行多个）；#337 分院配货自选行 +3（正常 / 赠送 / 优惠）
+    expect(numberInputs.length).toBe(24)
     for (const attrs of numberInputs) {
       expect(attrs).toMatch(/min="0(\.01)?"/)
       expect(attrs).toMatch(/step="0\.01"/)
@@ -179,7 +181,8 @@ describe('办理台表单一致性（#135）', () => {
     const strict = source.match(/min="0\.01"/g) ?? []
     const loose = source.match(/min="0"/g) ?? []
     expect(strict.length).toBe(9)
-    expect(loose.length).toBe(12)
+    // #337 +3：分院配货自选行的正常 / 赠送 / 优惠都走 nonnegativeNumber（正常与赠送二选一）
+    expect(loose.length).toBe(15)
 
     // 抽样两个方向，防止整体计数对了但分配错了
     const store = block('function StoreRequestForm(', 'function ItemCompanyReplenishmentForm(')
@@ -237,9 +240,11 @@ describe('办理台表单一致性（#135）', () => {
     // 数量为 0 的行根本不检查 lotId —— 部分发货时"这次不发"的行留空批次完全合法。
     // 标上 * 会逼用户去给不发货的行挑批次，而该 SKU 在该库位可能压根没有批次可挑。
     // 这与「采购数量不该逐行标」是同一类判据，只是发生在批次上。
+    // 分院配货只截到自选区之前：#337 的自选行是用户主动添加的，不做 filter、逐行校验，
+    // 它的「市场批次」是无条件必填（下面单独反向断言）。
     for (const [from, to, label] of [
       ['function CompanyShipmentForm(', 'interface ReceiptProgressLine', '发货批次'],
-      ['function StoreAllocationForm(', 'function ReturnForm(', '市场批次'],
+      ['function StoreAllocationForm(', '自选配货（不引用报货', '市场批次'],
     ] as const) {
       const form = block(from, to)
       expect(form).toMatch(new RegExp(`<FormField label="${label}">`))
@@ -250,13 +255,16 @@ describe('办理台表单一致性（#135）', () => {
     // 是无条件必填，必须仍标着 —— 否则这条测试就退化成"把所有批次都去掉标记"也能过。
     const staffPurchase = block('function MarketStaffPurchaseForm(', 'function SelfPurchaseForm(')
     expect(staffPurchase).toMatch(/<FormField label="市场批次" required/)
+    const allocationSelf = block('自选配货（不引用报货', 'function ReturnForm(')
+    expect(allocationSelf).toMatch(/<FormField label="市场批次" required/)
   })
 
   it('主体字段一律走 InventorySubjectSelect，不退回裸 Select（#189）', () => {
     // 组件单测只测组件自身、INV-11 默认 skip —— 把这 17 处换回 `<Select>` 不会让
     // 任何测试变红，而回退的后果（唯一候选还要手点一次 / 联动被吞）在总部、市场
     // 都只有一个的环境里肉眼难辨。这里钉住接线本身。
-    expect(source.match(/<InventorySubjectSelect/g) ?? []).toHaveLength(17)
+    // 17 → 18：#337 分院配货新增「收货门店」
+    expect(source.match(/<InventorySubjectSelect/g) ?? []).toHaveLength(18)
 
     // 反向：主体类 state 不得再出现在裸 `<Select value={...}>` 上。
     const subjectStates = [
@@ -296,7 +304,8 @@ describe('办理台表单一致性（#135）', () => {
     // 清单从 5 条减到 4 条。合并后的 `PurchaseOrderForm` 没有单选的来源单，
     // 同一语义写成 `autoSelect={selectedDocIds.length === 0}`（勾了来源就交还单据决定），
     // 所以它不计入 `!doc` 那一组，单独断言。
-    expect(source.match(/autoSelect=\{!doc\}/g) ?? []).toHaveLength(3)
+    // 3 → 4：#337 分院配货的「收货门店」同样随报货单回填（报货主体），选了单就交还单据决定
+    expect(source.match(/autoSelect=\{!doc\}/g) ?? []).toHaveLength(4)
 
     for (const [from, to] of [
       ['function CompanyShipmentForm(', 'interface ReceiptProgressLine'],
@@ -322,7 +331,10 @@ describe('办理台表单一致性（#135）', () => {
     // 55 → 56：#338 的候选单选择器取代 DocPicker（8 处 → 9 处调用），采购来源的多选清单
     // 也改用它、带上了 required，不再是标题里手写的 *。
     const marked = source.match(/<(?:FormField|InventoryDocCandidatePicker)\s+label=(?:"[^"]*"|\{[^}]*\})\s+required/g) ?? []
-    expect(marked.length).toBe(56)
+    //
+    // 56 → 58：#337 分院配货的门店报货单改为可选（−1），新增「收货门店」与自选行的
+    // 「商品」「市场批次」三个必填（+3）。
+    expect(marked.length).toBe(58)
   })
 })
 
