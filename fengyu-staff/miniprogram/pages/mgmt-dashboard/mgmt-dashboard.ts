@@ -306,11 +306,12 @@ Page({
     }
     const marketBinding = (roleBindings || []).find((b: any) => b.scopeType === '市场')
     if (marketBinding) {
-      // scopeName 留空，由 mgmt-scope-picker 加载 scopeOptions 后回填真实市场名
+      // scopeName 先用绑定上的市场名；缺省时由 mgmt-scope-picker 加载 scopeOptions 后回填。
+      // 不能留空：市场下门店全停用时它会被下拉剔除、回填不到，触发器会误显示「全部市场」
       return {
         scopeType: 'market',
         scopeId: marketBinding.scopeId,
-        scopeName: '',
+        scopeName: marketBinding.scopeName || '',
       }
     }
     // 默认范围跳过已停用门店（#400）：停用门店的数据被取数 SQL 全部滤掉，落上去只会满屏 0。
@@ -488,7 +489,11 @@ Page({
     }
   },
 
-  /** 子页 query：继承 scope；停用门店带 scopeInactive=1，子页直接出空态不取数（#400） */
+  /**
+   * 子页 query：继承 scope；停用门店带 scopeInactive=1（#400）。
+   * 客量 / 品项 / 顾客的接口不滤停用门店，只拿它标注范围、照常取数（别藏掉真实历史数据）；
+   * 销售数据以 salesData 回包的 scope.inactive 出空态。
+   */
   buildScopeQuery(): string {
     const { scope } = this.data
     return [

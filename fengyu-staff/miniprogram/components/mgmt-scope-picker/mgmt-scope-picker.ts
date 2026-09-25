@@ -117,11 +117,11 @@ Component({
       const storeListByMarket = this.data.storeListByMarket as Record<string, StoreMini[]>
       const allowedMarketIds = this.data.allowedMarketIds as string[]
 
-      // 若调用方传入的 defaultScope 是 market 维度但 scopeName 缺失（页面层占位），
+      // 若调用方传入的 defaultScope 是 market 维度但 scopeName / marketId 缺失（页面层占位），
       // 按返回数据回填真实市场名，并广播一次 change 同步页面显示。
       const applied = this.data.applied as Scope
       let nextApplied = applied
-      if (applied.scopeType === 'market' && !applied.scopeName && applied.scopeId) {
+      if (applied.scopeType === 'market' && applied.scopeId && (!applied.scopeName || !applied.marketId)) {
         const m = marketList.find(x => x.id === applied.scopeId)
         if (m) nextApplied = { ...applied, marketId: m.id, scopeName: m.name }
       }
@@ -180,6 +180,8 @@ Component({
     },
 
     onOpen() {
+      // 首次加载失败时弹窗里没有可选项：打开时重拉一次
+      if (!this.data.optionsLoaded) this.loadOptions()
       const applied = this.data.applied as Scope
       this.setData({
         showPopup: true,
@@ -262,19 +264,22 @@ Component({
 
     // 同步写入 applied + current，避免 loadOptions 异步回填时读到陈旧 current 覆盖选择
     _confirmAndEmit(scope: Scope) {
+      // 下拉只列在营门店；仅在「两条查询之间被停用」的窗口里会选到停用门店，按停用集合如实标注
+      const inactive = scope.scopeType === 'store'
+        && ((this.data.inactiveStoreIds as string[] | null) || []).includes(scope.scopeId || '')
+      const next: Scope = { ...scope, inactive }
       this.setData({
         userPicked: true,
-        applied: scope,
-        current: scope,
-        currentAllowsMarket: this._allowsMarket(scope.marketId),
+        applied: next,
+        current: next,
+        currentAllowsMarket: this._allowsMarket(next.marketId),
         showPopup: false,
       })
-      // 下拉里只有在营门店，显式选择恒为在营
       this.triggerEvent('change', {
-        scopeType: scope.scopeType,
-        scopeId: scope.scopeId,
-        scopeName: scope.scopeName,
-        inactive: false,
+        scopeType: next.scopeType,
+        scopeId: next.scopeId,
+        scopeName: next.scopeName,
+        inactive,
       })
     },
 

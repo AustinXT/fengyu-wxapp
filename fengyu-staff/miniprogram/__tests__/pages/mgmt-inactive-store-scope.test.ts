@@ -162,6 +162,11 @@ describe('hub · computeDefaultScope 跳过停用门店', () => {
     expect(instantiate('hub').computeDefaultScope().scopeId).toBe('store-lw')
   })
 
+  test('市场账号 → 默认范围带绑定上的市场名（市场下门店全停用被下拉剔除时，触发器不误显示「全部市场」）', () => {
+    setGlobalData({ roleBindings: [{ role: 'manager', scopeType: '市场', scopeId: 'org-mkt-zg', scopeName: '自贡凤御' }] })
+    expect(instantiate('hub').computeDefaultScope()).toEqual({ scopeType: 'market', scopeId: 'org-mkt-zg', scopeName: '自贡凤御' })
+  })
+
   test('旧缓存无 isActive 字段 → 按在营处理（行为同改动前）', () => {
     setGlobalData({
       roleBindings: [managerOf('org-门店-b')],
@@ -355,6 +360,27 @@ describe('scope-picker · 纠正落在停用门店的默认范围', () => {
     const all = pickerWith({ scopeType: 'all', scopeId: null, scopeName: '全部市场' })
     all.observers.appliedInactive.call(all, true)
     expect(all.data.applied.inactive).toBeUndefined()
+  })
+
+  test('显式选择时按停用集合如实标注 inactive（两条查询之间被停用的窗口）', async () => {
+    mocked.mockResolvedValueOnce(options())
+    const picker = pickerWith({ scopeType: 'all', scopeId: null, scopeName: '全部市场' })
+    await picker.loadOptions()
+    picker._confirmAndEmit({ scopeType: 'store', marketId: 'mkt-jj', scopeId: 'store-zh', scopeName: '九江凤御 · 九江中辉店' })
+    expect(picker.events.at(-1).detail).toMatchObject({ scopeId: 'store-zh', inactive: true })
+    picker._confirmAndEmit({ scopeType: 'store', marketId: 'mkt-jj', scopeId: 'store-lw', scopeName: '九江凤御 · 九江蓝湾店' })
+    expect(picker.events.at(-1).detail).toMatchObject({ scopeId: 'store-lw', inactive: false })
+  })
+
+  test('首次加载失败 → 打开弹窗时重拉', async () => {
+    mocked.mockRejectedValueOnce(new Error('network'))
+    const picker = pickerWith({ scopeType: 'all', scopeId: null, scopeName: '全部市场' })
+    await picker.loadOptions()
+    expect(picker.data.optionsLoaded).toBe(false)
+    mocked.mockResolvedValueOnce(options())
+    picker.onOpen()
+    await vi.waitFor(() => expect(picker.data.optionsLoaded).toBe(true))
+    expect(mocked).toHaveBeenCalledTimes(2)
   })
 
   test('只关店、节点在营（不在下拉也不在 inactiveStores）→ 不纠正，保留其历史数据', async () => {
