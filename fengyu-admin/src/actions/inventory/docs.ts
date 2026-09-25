@@ -9,6 +9,7 @@ import {
   listInventoryCoreDocs as listInventoryCoreDocsImpl,
   listInventoryDocCandidateIds as listInventoryDocCandidateIdsImpl,
   listInventoryDocCandidates as listInventoryDocCandidatesImpl,
+  listStoreUnallocatedRequestSkus as listStoreUnallocatedRequestSkusImpl,
   rejectInventoryCoreDoc as rejectInventoryCoreDocImpl,
 } from '@/lib/inventory/engine'
 import type { CreateInventoryDocInput, InventoryCoreDocStatus, InventoryDocType, InventoryLocationType } from '@/lib/inventory/types'
@@ -107,6 +108,7 @@ export const listInventoryDocCandidates = withPermission(
       startDate: input.startDate,
       endDate: input.endDate,
       targetOrgNodeId: input.targetOrgNodeId,
+      sourceOrgNodeId: input.sourceOrgNodeId,
       includeExhausted: input.includeExhausted,
       page: input.page,
       pageSize: input.pageSize,
@@ -125,8 +127,18 @@ export const listInventoryDocCandidateIds = withPermission(
       startDate: input.startDate,
       endDate: input.endDate,
       targetOrgNodeId: input.targetOrgNodeId,
+      sourceOrgNodeId: input.sourceOrgNodeId,
     })
   },
+)
+
+/** 分院配货自选行的「建议引用报货单」提示（#337）：该门店仍有未配报货的 SKU。纯提示，不参与写入判定。 */
+export const listStoreUnallocatedRequestSkus = withPermission(
+  'inventory:list',
+  async (_session, raw: { storeOrgNodeId: string; marketId: string }) => listStoreUnallocatedRequestSkusImpl({
+    storeOrgNodeId: raw?.storeOrgNodeId,
+    marketId: raw?.marketId,
+  }),
 )
 
 export const getInventoryCoreDocById = withPermission(

@@ -77,15 +77,24 @@ export function InventoryDocCandidatePicker({
   selection,
   required = false,
   disabled = false,
+  disabledHint,
   targetOrgNodeId,
+  sourceOrgNodeId,
 }: {
   label: string
   purpose: InventoryDocCandidatePurpose
   selection: Selection
   required?: boolean
+  /**
+   * 禁用时**不发候选查询**、列表显示 disabledHint：用于「上游条件没选齐时候选必然不对」的场景
+   * （#337 分院配货未选市场 / 门店时，不带端点收窄的候选会列出整个权限范围的报货单）
+   */
   disabled?: boolean
+  disabledHint?: string
   /** 收窄到某个接收端（采购订单表单选了供应链主体后） */
   targetOrgNodeId?: string
+  /** 收窄到某个发起端（分院配货表单选了收货门店后，#337） */
+  sourceOrgNodeId?: string
 }) {
   const definition = INVENTORY_DOC_CANDIDATES[purpose]
   const showDocType = definition.rules.length > 1
@@ -119,6 +128,7 @@ export function InventoryDocCandidatePicker({
     startDate,
     endDate,
     targetOrgNodeId ?? '',
+    sourceOrgNodeId ?? '',
     selection.mode === 'multi' ? selection.values : [],
   ])
   const latestBulkKeyRef = useRef(bulkKey)
@@ -135,21 +145,28 @@ export function InventoryDocCandidatePicker({
    * state 里、渲染期直接判定，而不是另起一个 effect 去 setPage(1) —— 那样每次换条件都会先按
    * 旧页码发一次注定作废的请求。
    */
-  const filterKey = JSON.stringify([purpose, debouncedKeyword, startDate, endDate, includeExhausted, targetOrgNodeId ?? ''])
+  const filterKey = JSON.stringify([purpose, debouncedKeyword, startDate, endDate, includeExhausted, targetOrgNodeId ?? '', sourceOrgNodeId ?? '', disabled])
   const [pageState, setPageState] = useState({ key: filterKey, page: 1 })
   const page = pageState.key === filterKey ? pageState.page : 1
   const setPage = useCallback((next: number) => setPageState({ key: filterKey, page: next }), [filterKey])
 
   useEffect(() => {
     const seq = ++requestSeqRef.current
-    setLoading(true)
     setError(null)
+    if (disabled) {
+      setRows([])
+      setTotal(0)
+      setLoading(false)
+      return
+    }
+    setLoading(true)
     listInventoryDocCandidates({
       purpose,
       keyword: debouncedKeyword || undefined,
       startDate: startDate || undefined,
       endDate: endDate || undefined,
       targetOrgNodeId: targetOrgNodeId || undefined,
+      sourceOrgNodeId: sourceOrgNodeId || undefined,
       includeExhausted: definition.remainingToggle ? includeExhausted : undefined,
       page,
       pageSize: DOC_CANDIDATE_PAGE_SIZE,
@@ -210,6 +227,7 @@ export function InventoryDocCandidatePicker({
         startDate: startDate || undefined,
         endDate: endDate || undefined,
         targetOrgNodeId: targetOrgNodeId || undefined,
+        sourceOrgNodeId: sourceOrgNodeId || undefined,
       })
       // 在途时改了日期 / 关键字 / 主体，或已选被清除 / 改勾选：旧结果不能再覆盖当前选择
       if (!isCurrent()) return
@@ -352,7 +370,9 @@ export function InventoryDocCandidatePicker({
             {!loading && !error && rows.length === 0 && (
               <tr>
                 <td colSpan={showDocType ? 8 : 7} className="px-3 py-6 text-center text-sm text-[#888888]">
-                  {definition.remainingToggle && !includeExhausted ? '没有仍有剩余量的单据' : '没有符合条件的单据'}
+                  {disabled && disabledHint
+                    ? disabledHint
+                    : definition.remainingToggle && !includeExhausted ? '没有仍有剩余量的单据' : '没有符合条件的单据'}
                 </td>
               </tr>
             )}
