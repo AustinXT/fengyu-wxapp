@@ -42399,7 +42399,7 @@ var require_wxCloudToken = __commonJS((exports) => {
 
 // ../../../../fengyu-admin/node_modules/@cloudbase/node-sdk/dist/utils/version.js
 var require_version2 = __commonJS((exports) => {
-  var __dirname = "/Users/nv/proj.xt.com/worktrees/fengyu-wxapp/release/fengyu-wxapp/fengyu-admin/node_modules/@cloudbase/node-sdk/dist/utils";
+  var __dirname = "/Users/nv/proj.xt.com/fengyu-wxapp/fengyu-admin/node_modules/@cloudbase/node-sdk/dist/utils";
   var __createBinding = exports && exports.__createBinding || (Object.create ? function(o, m, k, k2) {
     if (k2 === undefined)
       k2 = k;
@@ -75376,7 +75376,7 @@ var require_is_thenable = __commonJS((exports) => {
 
 // ../../../../fengyu-admin/node_modules/next/dist/compiled/@opentelemetry/api/index.js
 var require_api = __commonJS((exports, module) => {
-  var __dirname = "/Users/nv/proj.xt.com/worktrees/fengyu-wxapp/release/fengyu-wxapp/fengyu-admin/node_modules/next/dist/compiled/@opentelemetry/api";
+  var __dirname = "/Users/nv/proj.xt.com/fengyu-wxapp/fengyu-admin/node_modules/next/dist/compiled/@opentelemetry/api";
   (() => {
     var e = { 491: (e2, t2, r2) => {
       Object.defineProperty(t2, "__esModule", { value: true });
@@ -91420,7 +91420,7 @@ var init_inventory = __esm(() => {
         OR (${table4.fromItemId} IS NOT NULL AND ${table4.quantity} IS NOT NULL)`),
     check2("chk_inventory_doc_links_relation_type", sql3`${table4.relationType} IN (
         '门店报货汇总','市场报货汇总','市场报货采购订单','报货汇总采购订单','品项公司报货采购订单',
-        '采购订单发货','采购订单赠送发货','发货收货','采购订单供应链采购入库',
+        '采购订单发货','采购订单赠送发货','市场报货发货','市场报货赠送发货','发货收货','采购订单供应链采购入库',
         '门店报货配货','门店报货赠送配货','退货回库','库存转换','历史关联'
       )`)
   ]);
@@ -95671,7 +95671,7 @@ var require_process_nextick_args = __commonJS((exports, module) => {
   }
 });
 
-// ../../../../fengyu-admin/node_modules/jszip/node_modules/isarray/index.js
+// ../../../../fengyu-admin/node_modules/isarray/index.js
 var require_isarray = __commonJS((exports, module) => {
   var toString = {}.toString;
   module.exports = Array.isArray || function(arr) {
@@ -127955,14 +127955,6 @@ GFS4: `);
   }
 });
 
-// ../../../../fengyu-admin/node_modules/lazystream/node_modules/isarray/index.js
-var require_isarray2 = __commonJS((exports, module) => {
-  var toString = {}.toString;
-  module.exports = Array.isArray || function(arr) {
-    return toString.call(arr) == "[object Array]";
-  };
-});
-
 // ../../../../fengyu-admin/node_modules/lazystream/node_modules/readable-stream/node_modules/safe-buffer/index.js
 var require_safe_buffer3 = __commonJS((exports, module) => {
   var buffer2 = __require("buffer");
@@ -128964,7 +128956,7 @@ var require_string_decoder3 = __commonJS((exports) => {
 var require__stream_readable3 = __commonJS((exports, module) => {
   var pna = require_process_nextick_args();
   module.exports = Readable;
-  var isArray = require_isarray2();
+  var isArray = require_isarray();
   var Duplex;
   Readable.ReadableState = ReadableState;
   var EE = __require("events").EventEmitter;
@@ -130111,14 +130103,6 @@ var require_lodash18 = __commonJS((exports, module) => {
   module.exports = defaults;
 });
 
-// ../../../../fengyu-admin/node_modules/archiver-utils/node_modules/isarray/index.js
-var require_isarray3 = __commonJS((exports, module) => {
-  var toString = {}.toString;
-  module.exports = Array.isArray || function(arr) {
-    return toString.call(arr) == "[object Array]";
-  };
-});
-
 // ../../../../fengyu-admin/node_modules/archiver-utils/node_modules/readable-stream/node_modules/safe-buffer/index.js
 var require_safe_buffer4 = __commonJS((exports, module) => {
   var buffer2 = __require("buffer");
@@ -131120,7 +131104,7 @@ var require_string_decoder4 = __commonJS((exports) => {
 var require__stream_readable4 = __commonJS((exports, module) => {
   var pna = require_process_nextick_args();
   module.exports = Readable;
-  var isArray = require_isarray3();
+  var isArray = require_isarray();
   var Duplex;
   Readable.ReadableState = ReadableState;
   var EE = __require("events").EventEmitter;
@@ -146071,14 +146055,6 @@ var require_Buffer = __commonJS((exports, module) => {
   module.exports = Buffer2;
 });
 
-// ../../../../fengyu-admin/node_modules/unzipper/node_modules/isarray/index.js
-var require_isarray4 = __commonJS((exports, module) => {
-  var toString = {}.toString;
-  module.exports = Array.isArray || function(arr) {
-    return toString.call(arr) == "[object Array]";
-  };
-});
-
 // ../../../../fengyu-admin/node_modules/unzipper/node_modules/readable-stream/node_modules/safe-buffer/index.js
 var require_safe_buffer5 = __commonJS((exports, module) => {
   var buffer2 = __require("buffer");
@@ -147080,7 +147056,7 @@ var require_string_decoder5 = __commonJS((exports) => {
 var require__stream_readable5 = __commonJS((exports, module) => {
   var pna = require_process_nextick_args();
   module.exports = Readable;
-  var isArray = require_isarray4();
+  var isArray = require_isarray();
   var Duplex;
   Readable.ReadableState = ReadableState;
   var EE = __require("events").EventEmitter;
@@ -148364,14 +148340,6 @@ var require_parse4 = __commonJS((exports, module) => {
   module.exports = Parse;
 });
 
-// ../../../../fengyu-admin/node_modules/duplexer2/node_modules/isarray/index.js
-var require_isarray5 = __commonJS((exports, module) => {
-  var toString = {}.toString;
-  module.exports = Array.isArray || function(arr) {
-    return toString.call(arr) == "[object Array]";
-  };
-});
-
 // ../../../../fengyu-admin/node_modules/duplexer2/node_modules/readable-stream/node_modules/safe-buffer/index.js
 var require_safe_buffer6 = __commonJS((exports, module) => {
   var buffer2 = __require("buffer");
@@ -149373,7 +149341,7 @@ var require_string_decoder6 = __commonJS((exports) => {
 var require__stream_readable6 = __commonJS((exports, module) => {
   var pna = require_process_nextick_args();
   module.exports = Readable;
-  var isArray = require_isarray5();
+  var isArray = require_isarray();
   var Duplex;
   Readable.ReadableState = ReadableState;
   var EE = __require("events").EventEmitter;
@@ -175681,6 +175649,100 @@ function buildInventoryLocationFilterOptions(activeLocations, scopedLocationIds)
   return { headquarters, markets, defaultLocationId };
 }
 
+// src/lib/inventory/doc-candidates.ts
+var INVENTORY_DOC_CANDIDATE_PURPOSES = [
+  "purchase-order-source",
+  "company-shipment-source",
+  "store-allocation-source",
+  "market-receipt",
+  "store-receipt",
+  "supply-chain-receipt",
+  "supply-chain-purchase-cancel",
+  "shipment-cancel-request",
+  "shipment-cancel-approval",
+  "store-return-approval",
+  "market-return-approval"
+];
+var INVENTORY_DOC_CANDIDATES = {
+  "purchase-order-source": {
+    rules: [{ docType: "市场报货汇总" }, { docType: "品项公司报货需求", statuses: ["已完成"] }],
+    scopeRole: "target",
+    progress: "ordered",
+    remainingToggle: true
+  },
+  "company-shipment-source": {
+    rules: [{ docType: "市场报货" }],
+    scopeRole: "target",
+    progress: "shipped",
+    remainingToggle: true
+  },
+  "store-allocation-source": {
+    rules: [{ docType: "门店报货" }],
+    scopeRole: "target",
+    progress: "allocated",
+    remainingToggle: true
+  },
+  "market-receipt": {
+    rules: [{ docType: "品项公司发货", statuses: ["待收货"] }],
+    scopeRole: "target",
+    progress: "received",
+    remainingToggle: false
+  },
+  "store-receipt": {
+    rules: [{ docType: "分院配货", statuses: ["待收货"] }],
+    scopeRole: "target",
+    progress: "received",
+    remainingToggle: false
+  },
+  "supply-chain-receipt": {
+    rules: [{ docType: "采购订单", statuses: ["待收货"] }],
+    scopeRole: "target",
+    progress: "received",
+    remainingToggle: false,
+    requireRemaining: true
+  },
+  "supply-chain-purchase-cancel": {
+    rules: [{ docType: "采购订单", statuses: ["待收货"] }],
+    scopeRole: "target",
+    progress: "received",
+    remainingToggle: false
+  },
+  "shipment-cancel-request": {
+    rules: [{ docType: "品项公司发货", statuses: ["待收货"] }],
+    scopeRole: "target",
+    progress: "received",
+    remainingToggle: false,
+    requireNoReceipt: true
+  },
+  "shipment-cancel-approval": {
+    rules: [{ docType: "品项公司发货", statuses: ["待审批"] }],
+    scopeRole: "source",
+    progress: "none",
+    remainingToggle: false,
+    cancellationRequested: true
+  },
+  "store-return-approval": {
+    rules: [{ docType: "院退货", statuses: ["待审批"] }],
+    scopeRole: "target",
+    progress: "none",
+    remainingToggle: false
+  },
+  "market-return-approval": {
+    rules: [{ docType: "市场退货", statuses: ["待审批"] }],
+    scopeRole: "target",
+    progress: "none",
+    remainingToggle: false
+  }
+};
+function resolveInventoryDocCandidate(purpose) {
+  if (typeof purpose !== "string")
+    return null;
+  if (!INVENTORY_DOC_CANDIDATE_PURPOSES.includes(purpose))
+    return null;
+  return INVENTORY_DOC_CANDIDATES[purpose];
+}
+var INVENTORY_DOC_CANDIDATE_BULK_LIMIT = 100;
+
 // src/lib/inventory/access.ts
 init_api_error();
 init_permissions();
@@ -177261,11 +177323,15 @@ var listInventoryCoreDocs = withPermission("inventory:list", async (session4, fi
     conditions3.push(import_drizzle_orm57.isNotNull(inventoryDocs.cancellationRequestReason));
   }
   if (filters.pendingItemScope) {
-    conditions3.push(import_drizzle_orm57.sql`EXISTS (
-        SELECT 1 FROM ${inventoryDocItems} pending_item
-         WHERE pending_item.doc_id = ${inventoryDocs.id}
-           AND COALESCE(pending_item.fulfilled_quantity, 0) < pending_item.quantity
-      )`);
+    conditions3.push(filters.pendingItemScope === "company-shipment" ? import_drizzle_orm57.sql`EXISTS (
+          SELECT 1 FROM ${inventoryDocItems} pending_item
+           WHERE pending_item.doc_id = ${inventoryDocs.id}
+             AND ${reportItemShippedSql(import_drizzle_orm57.sql`pending_item.id`)} < pending_item.quantity
+        )` : import_drizzle_orm57.sql`EXISTS (
+          SELECT 1 FROM ${inventoryDocItems} pending_item
+           WHERE pending_item.doc_id = ${inventoryDocs.id}
+             AND COALESCE(pending_item.fulfilled_quantity, 0) < pending_item.quantity
+        )`);
   }
   if (filters.startDate)
     conditions3.push(import_drizzle_orm57.gte(inventoryDocs.docDate, filters.startDate));
@@ -177298,6 +177364,179 @@ var listInventoryCoreDocs = withPermission("inventory:list", async (session4, fi
     priceVisibility
   };
 });
+function reportItemShippedSql(reportItemId) {
+  return import_drizzle_orm57.sql`(
+    SELECT COALESCE(SUM(shipped_link.quantity), 0)
+      FROM inventory_doc_links shipped_link
+      JOIN inventory_docs shipped_link_doc ON shipped_link_doc.id = shipped_link.to_doc_id
+     WHERE shipped_link.from_item_id = ${reportItemId}
+       AND shipped_link.relation_type = '市场报货发货'
+       AND shipped_link_doc.status <> '已取消'
+  )`;
+}
+function candidateItemDoneSql(kind) {
+  if (kind === "shipped")
+    return reportItemShippedSql(import_drizzle_orm57.sql`cand_item.id`);
+  if (kind === "allocated") {
+    const relationType = "门店报货配货";
+    return import_drizzle_orm57.sql`(
+      SELECT COALESCE(SUM(cand_link.quantity), 0)
+        FROM inventory_doc_links cand_link
+        JOIN inventory_docs cand_link_doc ON cand_link_doc.id = cand_link.to_doc_id
+       WHERE cand_link.from_item_id = cand_item.id
+         AND cand_link.relation_type = ${relationType}
+         AND cand_link_doc.status <> '已取消'
+    )`;
+  }
+  return import_drizzle_orm57.sql`COALESCE(cand_item.fulfilled_quantity, 0)`;
+}
+function candidateRemainingSql(kind) {
+  return import_drizzle_orm57.sql`EXISTS (
+    SELECT 1 FROM inventory_doc_items cand_item
+     WHERE cand_item.doc_id = ${inventoryDocs.id}
+       AND ${candidateItemDoneSql(kind)} < cand_item.quantity
+  )`;
+}
+function candidateProgressSql(kind) {
+  const total = import_drizzle_orm57.sql`(
+    SELECT COALESCE(SUM(cand_item.quantity), 0)
+      FROM inventory_doc_items cand_item
+     WHERE cand_item.doc_id = ${inventoryDocs.id}
+  )`;
+  const done = kind === "none" ? import_drizzle_orm57.sql`NULL` : import_drizzle_orm57.sql`(
+      SELECT COALESCE(SUM(LEAST(${candidateItemDoneSql(kind)}, cand_item.quantity)), 0)
+        FROM inventory_doc_items cand_item
+       WHERE cand_item.doc_id = ${inventoryDocs.id}
+    )`;
+  return { total, done };
+}
+var CANDIDATE_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+function candidateText(value, label) {
+  if (value === undefined || value === null)
+    return;
+  if (typeof value !== "string")
+    throw new ApiError("INVALID_PARAMS", `${label}格式不正确`);
+  return value.trim() || undefined;
+}
+function candidateDate(value, label) {
+  const text5 = candidateText(value, label);
+  if (!text5)
+    return;
+  const [year2, month, day2] = CANDIDATE_DATE_PATTERN.test(text5) ? text5.split("-").map(Number) : [NaN, NaN, NaN];
+  const parsed = new Date(Date.UTC(year2, month - 1, day2));
+  if (Number.isNaN(parsed.getTime()) || parsed.getUTCFullYear() !== year2 || parsed.getUTCMonth() !== month - 1 || parsed.getUTCDate() !== day2) {
+    throw new ApiError("INVALID_PARAMS", `${label}格式不正确`);
+  }
+  return text5;
+}
+function parseCandidateFilters(filters) {
+  const includeExhausted = filters.includeExhausted;
+  if (includeExhausted !== undefined && includeExhausted !== null && typeof includeExhausted !== "boolean") {
+    throw new ApiError("INVALID_PARAMS", "显示全部参数格式不正确");
+  }
+  const startDate = candidateDate(filters.startDate, "开始日期");
+  const endDate = candidateDate(filters.endDate, "结束日期");
+  if (startDate && endDate && startDate > endDate) {
+    throw new ApiError("INVALID_PARAMS", "开始日期不能晚于结束日期");
+  }
+  return {
+    keyword: candidateText(filters.keyword, "检索关键字")?.slice(0, 64),
+    startDate,
+    endDate,
+    sourceOrgNodeId: candidateText(filters.sourceOrgNodeId, "发起主体"),
+    targetOrgNodeId: candidateText(filters.targetOrgNodeId, "接收主体"),
+    includeExhausted: includeExhausted === true
+  };
+}
+function candidateConditions(session4, definition, filters, { onlyRemaining }) {
+  const scoped = inventoryScopedOrgNodeIds(session4);
+  const conditions3 = [];
+  if (scoped !== null) {
+    if (scoped.length === 0)
+      return import_drizzle_orm57.sql`FALSE`;
+    conditions3.push(import_drizzle_orm57.or(import_drizzle_orm57.inArray(inventoryDocs.sourceOrgNodeId, scoped), import_drizzle_orm57.inArray(inventoryDocs.targetOrgNodeId, scoped)));
+    const endpointColumn = definition.scopeRole === "source" ? inventoryDocs.sourceOrgNodeId : inventoryDocs.targetOrgNodeId;
+    conditions3.push(import_drizzle_orm57.inArray(endpointColumn, scoped));
+  }
+  conditions3.push(import_drizzle_orm57.or(...definition.rules.map((rule) => import_drizzle_orm57.and(import_drizzle_orm57.eq(inventoryDocs.docType, rule.docType), rule.statuses ? import_drizzle_orm57.inArray(inventoryDocs.status, [...rule.statuses]) : import_drizzle_orm57.ne(inventoryDocs.status, "已取消")))));
+  if (definition.cancellationRequested)
+    conditions3.push(import_drizzle_orm57.isNotNull(inventoryDocs.cancellationRequestReason));
+  if (definition.requireNoReceipt) {
+    conditions3.push(import_drizzle_orm57.sql`NOT EXISTS (
+      SELECT 1 FROM inventory_doc_items cand_received
+       WHERE cand_received.doc_id = ${inventoryDocs.id}
+         AND COALESCE(cand_received.fulfilled_quantity, 0) > 0
+    )`);
+  }
+  if (onlyRemaining || definition.requireRemaining) {
+    conditions3.push(candidateRemainingSql(definition.progress));
+  }
+  const { sourceOrgNodeId, targetOrgNodeId, startDate, endDate, keyword } = filters;
+  if (sourceOrgNodeId)
+    conditions3.push(import_drizzle_orm57.eq(inventoryDocs.sourceOrgNodeId, sourceOrgNodeId));
+  if (targetOrgNodeId)
+    conditions3.push(import_drizzle_orm57.eq(inventoryDocs.targetOrgNodeId, targetOrgNodeId));
+  if (startDate)
+    conditions3.push(import_drizzle_orm57.gte(inventoryDocs.docDate, startDate));
+  if (endDate)
+    conditions3.push(import_drizzle_orm57.lte(inventoryDocs.docDate, endDate));
+  if (keyword) {
+    const pattern = `%${keyword.replace(/[\\%_]/g, "\\$&")}%`;
+    conditions3.push(import_drizzle_orm57.or(import_drizzle_orm57.ilike(inventoryDocs.id, pattern), import_drizzle_orm57.ilike(sourceLocation.name, pattern), import_drizzle_orm57.ilike(targetLocation.name, pattern)));
+  }
+  return import_drizzle_orm57.and(...conditions3) ?? import_drizzle_orm57.sql`TRUE`;
+}
+var listInventoryDocCandidates = withPermission("inventory:list", async (session4, filters) => {
+  const definition = resolveInventoryDocCandidate(filters?.purpose);
+  if (!definition)
+    throw new ApiError("INVALID_PARAMS", "未知的候选单据用途");
+  const parsed = parseCandidateFilters(filters);
+  await syncInventoryLocations();
+  const { pageSize, offset } = resolvePaging({
+    page: filters.page,
+    pageSize: filters.pageSize,
+    defaultPageSize: 20,
+    allowedPageSizes: PAGE_SIZE_WHITELIST
+  });
+  const onlyRemaining = definition.remainingToggle && !parsed.includeExhausted;
+  const whereClause = candidateConditions(session4, definition, parsed, { onlyRemaining });
+  const [countRow] = await db2.select({ count: import_drizzle_orm57.sql`cast(count(*) as int)` }).from(inventoryDocs).leftJoin(sourceLocation, import_drizzle_orm57.eq(sourceLocation.orgNodeId, inventoryDocs.sourceOrgNodeId)).leftJoin(targetLocation, import_drizzle_orm57.eq(targetLocation.orgNodeId, inventoryDocs.targetOrgNodeId)).where(whereClause);
+  const progress = candidateProgressSql(definition.progress);
+  const rows = await db2.select({
+    doc: inventoryDocs,
+    sourceOrgNodeName: sourceLocation.name,
+    sourceOrgNodeType: sourceLocation.locationType,
+    targetOrgNodeName: targetLocation.name,
+    targetOrgNodeType: targetLocation.locationType,
+    partiallyReceived: partiallyReceivedSql,
+    progressTotal: progress.total,
+    progressDone: progress.done
+  }).from(inventoryDocs).leftJoin(sourceLocation, import_drizzle_orm57.eq(sourceLocation.orgNodeId, inventoryDocs.sourceOrgNodeId)).leftJoin(targetLocation, import_drizzle_orm57.eq(targetLocation.orgNodeId, inventoryDocs.targetOrgNodeId)).where(whereClause).orderBy(import_drizzle_orm57.desc(inventoryDocs.docDate), import_drizzle_orm57.desc(inventoryDocs.createdAt), import_drizzle_orm57.desc(inventoryDocs.id)).limit(pageSize).offset(offset);
+  return {
+    data: rows.map((row) => ({
+      ...docRow({ ...row, includePrice: false }),
+      progress: {
+        done: row.progressDone === null ? null : Number(row.progressDone),
+        total: Number(row.progressTotal)
+      }
+    })),
+    total: countRow?.count ?? 0,
+    pageSize
+  };
+});
+var listInventoryDocCandidateIds = withPermission("inventory:list", async (session4, filters) => {
+  const definition = resolveInventoryDocCandidate(filters?.purpose);
+  if (!definition || !definition.remainingToggle)
+    throw new ApiError("INVALID_PARAMS", "未知的候选单据用途");
+  const parsed = parseCandidateFilters(filters);
+  await syncInventoryLocations();
+  const whereClause = candidateConditions(session4, definition, parsed, { onlyRemaining: true });
+  const rows = await db2.select({ id: inventoryDocs.id }).from(inventoryDocs).leftJoin(sourceLocation, import_drizzle_orm57.eq(sourceLocation.orgNodeId, inventoryDocs.sourceOrgNodeId)).leftJoin(targetLocation, import_drizzle_orm57.eq(targetLocation.orgNodeId, inventoryDocs.targetOrgNodeId)).where(whereClause).orderBy(import_drizzle_orm57.asc(inventoryDocs.docDate), import_drizzle_orm57.asc(inventoryDocs.createdAt), import_drizzle_orm57.asc(inventoryDocs.id)).limit(INVENTORY_DOC_CANDIDATE_BULK_LIMIT + 1);
+  if (rows.length > INVENTORY_DOC_CANDIDATE_BULK_LIMIT) {
+    throw new ApiError("INVALID_PARAMS", `符合条件的单据超过 ${INVENTORY_DOC_CANDIDATE_BULK_LIMIT} 张，请缩小日期区间后再带出`);
+  }
+  return { ids: rows.map((row) => row.id) };
+});
 function inventoryDocScopeSql(scoped, sourceColumn, targetColumn) {
   if (scoped === null)
     return import_drizzle_orm57.sql`TRUE`;
@@ -177316,7 +177555,7 @@ function visibleInventoryDocsSql(scoped) {
 function asDocDate(value) {
   return fmtDate(value);
 }
-async function loadInventoryDocLineage(docId, scoped) {
+async function loadInventoryDocLineage(docId, docType, scoped) {
   const linkedDocVisible = scoped === null ? import_drizzle_orm57.sql`TRUE` : import_drizzle_orm57.sql`(
       (doc_link.from_doc_id = ${docId} AND ${inventoryDocScopeSql(scoped, import_drizzle_orm57.sql`to_doc.source_org_node_id`, import_drizzle_orm57.sql`to_doc.target_org_node_id`)})
       OR
@@ -177354,6 +177593,35 @@ async function loadInventoryDocLineage(docId, scoped) {
       to_doc.total_quantity
     ORDER BY linked_at DESC, doc_link.relation_type ASC
   `);
+  if (docType !== "市场采购入库")
+    return mapLineageRows(rows);
+  const reportVisible = scoped === null ? import_drizzle_orm57.sql`TRUE` : inventoryDocScopeSql(scoped, import_drizzle_orm57.sql`origin_report.source_org_node_id`, import_drizzle_orm57.sql`origin_report.target_org_node_id`);
+  const originReportRows = await db2.execute(import_drizzle_orm57.sql`
+    SELECT
+      '上游' AS direction,
+      '原始报货单（经品项公司发货）' AS relation_type,
+      origin_report.id AS doc_id,
+      origin_report.doc_type,
+      origin_report.status,
+      origin_report.doc_date,
+      origin_report.total_quantity,
+      COALESCE(SUM(origin_receipt_link.quantity), 0) AS linked_quantity,
+      MAX(origin_receipt_link.created_at) AS linked_at
+    FROM inventory_doc_links origin_receipt_link
+    JOIN inventory_doc_links origin_ship_link
+      ON origin_ship_link.to_item_id = origin_receipt_link.from_item_id
+     AND origin_ship_link.relation_type IN ('市场报货发货', '市场报货赠送发货')
+    JOIN inventory_docs origin_report ON origin_report.id = origin_ship_link.from_doc_id
+    WHERE origin_receipt_link.to_doc_id = ${docId}
+      AND origin_receipt_link.relation_type = '发货收货'
+      AND ${reportVisible}
+    GROUP BY origin_report.id, origin_report.doc_type, origin_report.status,
+             origin_report.doc_date, origin_report.total_quantity
+    ORDER BY linked_at DESC
+  `);
+  return mapLineageRows([...rows, ...originReportRows]);
+}
+function mapLineageRows(rows) {
   return rows.map((row) => ({
     direction: row.direction,
     relationType: row.relation_type,
@@ -177408,30 +177676,6 @@ async function loadMarketReportFulfillmentProgress(docId, scoped) {
          AND doc_link.relation_type = '市场报货采购订单'
          AND purchase_doc.status IN ('已完成', '待收货', '已取消')
     ),
-    -- 一条采购明细可以由**多个**来源行合并而来（#194），所以下游的发货/收货量必须
-    -- 按各来源在该采购行里的占比分摊，不能每个来源都记全量 ——
-    -- 来源 A 5 件、B 5 件合成采购行 10 件、实发 6 件时，不分摊会让 A 与 B 各显示 6，
-    -- 合计 12 件，凭空多出一倍。
-    --
-    -- ⚠️ 分母必须取该采购行的**全部**来源血缘，不能用 PARTITION BY 的窗口和：
-    -- purchase_links 已经被 from_doc_id 限定成「当前这张单」的血缘，
-    -- 窗口函数看不到同一采购行来自**其它来源单**的那部分，share 又会退回 1，
-    -- 跨单合并的场景照样重复计数。
-    purchase_share AS (
-      SELECT
-        purchase_link.root_item_id,
-        purchase_link.purchase_item_id,
-        purchase_link.quantity,
-        purchase_link.purchase_status,
-        purchase_link.quantity / NULLIF(source_total.total_quantity, 0) AS share
-        FROM purchase_links purchase_link
-        JOIN LATERAL (
-          SELECT COALESCE(SUM(COALESCE(all_link.quantity, 0)), 0) AS total_quantity
-            FROM inventory_doc_links all_link
-           WHERE all_link.to_item_id = purchase_link.purchase_item_id
-             AND all_link.relation_type = '市场报货采购订单'
-        ) source_total ON true
-    ),
     -- 已取消的采购单只剩已入库那部分仍算已采购：按分做最大余数分配，与建单容量
     -- （business.ts allocateSummaryToMarketReportItems）共用同一片段，保证同源。
     cancelled_retained AS (${cancelledMarketReportRetainedSql(import_drizzle_orm57.sql`SELECT item_id FROM root_items`)}),
@@ -177440,7 +177684,7 @@ async function loadMarketReportFulfillmentProgress(docId, scoped) {
     -- 各自一次 GROUP BY 再左连接，避免按 root_items 逐行跑相关子查询。
     active_purchase_totals AS (
       SELECT active_link.root_item_id, SUM(active_link.quantity) AS quantity
-        FROM purchase_share active_link
+        FROM purchase_links active_link
        WHERE active_link.purchase_status <> '已取消'
        GROUP BY active_link.root_item_id
     ),
@@ -177457,28 +177701,28 @@ async function loadMarketReportFulfillmentProgress(docId, scoped) {
         LEFT JOIN active_purchase_totals active_total ON active_total.root_item_id = root_item.item_id
         LEFT JOIN cancelled_purchase_totals cancelled_total ON cancelled_total.report_item_id = root_item.item_id
     ),
+    -- 发货直连报货行（#336），按血缘原值累计、不再经采购行占比分摊 —— 已发 / 已收都是整数不出小数。
+    -- 存量「采购订单 → 发货」的旧单不再折算回报货单（拍板 C：只对新单生效）。
+    -- 正常已发与 business.ts createItemCompanyShipment 的封顶同口径：排除已取消，「待审批」的撤回申请仍占额度。
     shipment_links AS (
       SELECT
-        purchase_link.root_item_id,
+        doc_link.from_item_id AS root_item_id,
         doc_link.to_item_id AS shipment_item_id,
         doc_link.relation_type,
-        COALESCE(doc_link.quantity, 0) * COALESCE(purchase_link.share, 0) AS quantity,
-        -- 发货明细由采购行一对一产生，所以收货沿用采购层的占比即可。
-        -- 早先在这里按当前单据子集再归一化一次，等于把 share 重新拉回 1，白分摊了。
-        COALESCE(purchase_link.share, 0) AS share
-        FROM purchase_share purchase_link
-        JOIN inventory_doc_links doc_link
-          ON doc_link.from_item_id = purchase_link.purchase_item_id
+        COALESCE(doc_link.quantity, 0) AS quantity
+        FROM inventory_doc_links doc_link
+        JOIN root_items root_item ON root_item.item_id = doc_link.from_item_id
         JOIN inventory_docs shipment_doc ON shipment_doc.id = doc_link.to_doc_id
        JOIN visible_docs visible_shipment ON visible_shipment.id = shipment_doc.id
-       WHERE doc_link.relation_type IN ('采购订单发货', '采购订单赠送发货')
-         AND shipment_doc.status IN ('待收货', '已完成')
+       WHERE doc_link.from_doc_id = ${docId}
+         AND doc_link.relation_type IN ('市场报货发货', '市场报货赠送发货')
+         AND shipment_doc.status <> '已取消'
     ),
     shipment_totals AS (
       SELECT
         root_item_id,
-        SUM(CASE WHEN relation_type = '采购订单发货' THEN quantity ELSE 0 END) AS normal_fulfilled_quantity,
-        SUM(CASE WHEN relation_type = '采购订单赠送发货' THEN quantity ELSE 0 END) AS gift_fulfilled_quantity
+        SUM(CASE WHEN relation_type = '市场报货发货' THEN quantity ELSE 0 END) AS normal_fulfilled_quantity,
+        SUM(CASE WHEN relation_type = '市场报货赠送发货' THEN quantity ELSE 0 END) AS gift_fulfilled_quantity
         FROM shipment_links
        GROUP BY root_item_id
     ),
@@ -177486,7 +177730,7 @@ async function loadMarketReportFulfillmentProgress(docId, scoped) {
       SELECT
         shipment_link.root_item_id,
         shipment_link.relation_type AS shipment_relation_type,
-        COALESCE(doc_link.quantity, 0) * COALESCE(shipment_link.share, 0) AS quantity
+        COALESCE(doc_link.quantity, 0) AS quantity
         FROM shipment_links shipment_link
         JOIN inventory_doc_links doc_link
           ON doc_link.from_item_id = shipment_link.shipment_item_id
@@ -177498,8 +177742,8 @@ async function loadMarketReportFulfillmentProgress(docId, scoped) {
     receipt_totals AS (
       SELECT
         root_item_id,
-        SUM(CASE WHEN shipment_relation_type = '采购订单发货' THEN quantity ELSE 0 END) AS normal_received_quantity,
-        SUM(CASE WHEN shipment_relation_type = '采购订单赠送发货' THEN quantity ELSE 0 END) AS gift_received_quantity
+        SUM(CASE WHEN shipment_relation_type = '市场报货发货' THEN quantity ELSE 0 END) AS normal_received_quantity,
+        SUM(CASE WHEN shipment_relation_type = '市场报货赠送发货' THEN quantity ELSE 0 END) AS gift_received_quantity
         FROM receipt_links
        GROUP BY root_item_id
     )
@@ -177705,32 +177949,14 @@ async function loadSupplyChainPurchaseReceiptProgress(docId, scoped) {
          AND doc_link.relation_type = '采购订单供应链采购入库'
          AND receipt_doc.status = '已完成'
        GROUP BY doc_link.from_item_id
-    ),
-    -- 市场行的正常发货量（#335 过渡期：发货仍以采购行数量封顶，由 #336 改为引用市场报货单）。
-    -- 与 business.ts linkedQuantity 同口径：排除已取消的发货单，赠送发货不占采购数量。
-    -- 只聚合已过可见性校验的采购行，不外泄发货单本身的内容，所以发货单不再套 visible_docs。
-    purchase_shipment_totals AS (
-      SELECT
-        doc_link.from_item_id AS purchase_item_id,
-        SUM(COALESCE(doc_link.quantity, 0)) AS shipped_quantity
-        FROM inventory_doc_links doc_link
-        JOIN purchase_items purchase_item ON purchase_item.item_id = doc_link.from_item_id
-        JOIN inventory_docs shipment_doc ON shipment_doc.id = doc_link.to_doc_id
-       WHERE doc_link.from_doc_id = ${docId}
-         AND doc_link.relation_type = '采购订单发货'
-         AND shipment_doc.status <> '已取消'
-       GROUP BY doc_link.from_item_id
     )
     SELECT
       purchase_item.item_id,
       purchase_item.quantity AS purchased_quantity,
       COALESCE(receipt_total.received_quantity, 0) AS received_quantity,
-      COALESCE(purchase_shipment_total.shipped_quantity, 0) AS shipped_quantity,
       purchase_item.purchase_status
       FROM purchase_items purchase_item
       LEFT JOIN receipt_totals receipt_total ON receipt_total.purchase_item_id = purchase_item.item_id
-      LEFT JOIN purchase_shipment_totals purchase_shipment_total
-        ON purchase_shipment_total.purchase_item_id = purchase_item.item_id
      ORDER BY purchase_item.item_id
   `);
   if (rows.length === 0)
@@ -177744,7 +177970,6 @@ async function loadSupplyChainPurchaseReceiptProgress(docId, scoped) {
         itemId: Number(row.item_id),
         purchasedQuantity,
         receivedQuantity,
-        shippedQuantity: numberOrNull(row.shipped_quantity) ?? 0,
         outstandingQuantity: row.purchase_status === "待收货" ? Math.max(0, purchasedQuantity - receivedQuantity) : 0
       };
     })
@@ -177814,6 +178039,22 @@ async function loadInventoryDocFulfillmentProgress(docType, docId, scoped) {
   }
   return null;
 }
+var getInventoryCoreDocsByIds = withPermission("inventory:list", async (_session, ids) => {
+  if (!Array.isArray(ids) || ids.some((id) => typeof id !== "string")) {
+    throw new ApiError("INVALID_PARAMS", "单据编号格式不正确");
+  }
+  const unique3 = Array.from(new Set(ids));
+  if (unique3.length > INVENTORY_DOC_CANDIDATE_BULK_LIMIT) {
+    throw new ApiError("INVALID_PARAMS", `一次最多加载 ${INVENTORY_DOC_CANDIDATE_BULK_LIMIT} 张单据`);
+  }
+  const details = [];
+  for (const id of unique3) {
+    const detail = await getInventoryCoreDocById(id);
+    if (detail)
+      details.push(detail);
+  }
+  return details;
+});
 var getInventoryCoreDocById = withPermission("inventory:list", async (session4, id) => {
   const priceTiers = inventoryPriceScopeByTier(session4);
   const scoped = inventoryScopedOrgNodeIds(session4);
@@ -177837,7 +178078,7 @@ var getInventoryCoreDocById = withPermission("inventory:list", async (session4, 
   const includeItemAmount = itemPriceVisibility !== "none";
   const [items, lineage, fulfillmentProgress] = await Promise.all([
     db2.select().from(inventoryDocItems).where(import_drizzle_orm57.eq(inventoryDocItems.docId, id)).orderBy(import_drizzle_orm57.asc(inventoryDocItems.id)),
-    loadInventoryDocLineage(id, scoped),
+    loadInventoryDocLineage(id, head.docType, scoped),
     loadInventoryDocFulfillmentProgress(head.docType, id, scoped)
   ]);
   const itemMarketIds = [...new Set(items.map((item) => item.marketId).filter((id2) => Boolean(id2)))];
