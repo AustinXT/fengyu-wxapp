@@ -49,7 +49,7 @@ const CALLS = [
   ['mgmt-product', 'cardHolders', (s) => ({ ...s })],
   ['mgmt-product', 'cycleStats', (s) => ({ period: 'month', ...s })],
 ]
-/** 非取数 handler：范围下拉数据源（在营过滤由 loadAllMarkets 的 o_store.is_active 与字面量守护覆盖） */
+/** 非取数 handler：范围下拉数据源（不走 activeStoreCondition；其 SQL 由下方「loadAllMarkets 整段等值」用例钉死） */
 const EXEMPT_HANDLERS = ['mgmt-dashboard:scopeOptions']
 
 /** 非统计 SQL 全文模式（归一空白后整句匹配） */
@@ -63,6 +63,10 @@ const ACTIVE_SUBQUERY =
   "IN ( SELECT active_store.store_id FROM stores active_store JOIN org_nodes active_node ON active_store.org_node_id = active_node.id WHERE active_node.type = '门店' AND active_node.is_active = TRUE )"
 
 const normalize = (text) => text.replace(/\s+/g, ' ').trim()
+
+/** staff 范围下拉数据源（mgmt-dashboard.js loadAllMarkets）的完整 SQL（归一空白后） */
+const LOAD_ALL_MARKETS_SQL =
+  "WITH RECURSIVE market_descendants(market_id, node_id, path) AS ( SELECT m.id, m.id, ARRAY[m.id] FROM org_nodes m WHERE m.type = '市场' UNION ALL SELECT market_descendants.market_id, child.id, market_descendants.path || child.id FROM org_nodes child JOIN market_descendants ON child.parent_id = market_descendants.node_id WHERE NOT child.id = ANY(market_descendants.path) ) SELECT m.id AS market_id, m.name AS market_name, s.store_id AS store_id, s.store_name AS store_name FROM org_nodes m LEFT JOIN market_descendants d ON d.market_id = m.id LEFT JOIN org_nodes o_store ON o_store.id = d.node_id AND o_store.type = '门店' AND o_store.is_active = TRUE LEFT JOIN stores s ON s.org_node_id = o_store.id WHERE m.type = '市场' ORDER BY m.name ASC, s.store_name ASC"
 
 function hqCtx(payload) {
   return createCtx({
@@ -98,7 +102,7 @@ beforeAll(async () => {
         errors.push(`${label} ${s.scopeType}: ${e.message}`)
       }
       for (const call of pg.query.mock.calls) {
-        results.push({ handler: label, scope: s.scopeType, sql: normalize(call[0]) })
+        results.push({ handler: label, scope: s.scopeType, sql: normalize(call[0]), params: call[1] || [] })
       }
     }
   }
@@ -144,6 +148,35 @@ describe('#401 管理层取数在营接线 · 运行时闭集', () => {
     expect([...new Set(offenders)]).toEqual([])
     // 时点表达式本身确实出现过（门店数查询），防剔除正则失配导致恒绿
     expect(results.some((r) => new RegExp(TIMEPOINT.source).test(r.sql))).toBe(true)
+  })
+
+  it('每个 handler × 范围下，各条 SQL 含在营子查询的次数钉快照（双 scope 查询删掉任一侧即变红）', () => {
+    // 闸门 2 codex round-4 P2：「每条 SQL 至少含一处」证明不了同一 SQL 内顾客侧 / 服务单侧两个 scope 都过滤了
+    const count = (sql) => sql.split(ACTIVE_SUBQUERY).length - 1
+    const table = {}
+    for (const r of results) {
+      if (EXEMPT_SQL.some(([, re]) => re.test(r.sql))) continue
+      ;(table[`${r.handler} ${r.scope}`] ??= []).push(count(r.sql))
+    }
+    for (const key of Object.keys(table)) table[key].sort((a, b) => a - b)
+    expect(table).toMatchSnapshot()
+  })
+
+  it('每条 SQL 的最高占位符 = 实际传参个数（删掉一侧 scope 残留绑定参数时真实 PG 会报错，mock 不会）', () => {
+    const offenders = []
+    for (const r of results) {
+      const max = Math.max(0, ...[...r.sql.matchAll(/\$(\d+)/g)].map((m) => Number(m[1])))
+      if (max !== r.params.length) offenders.push(`${r.handler} ${r.scope}: $${max} vs ${r.params.length} 个参数 — ${r.sql.slice(0, 120)}`)
+    }
+    expect([...new Set(offenders)]).toEqual([])
+  })
+
+  it('范围下拉 loadAllMarkets 的 SQL 整段等值（只看门店节点 is_active，不看关店）', async () => {
+    // 闸门 2 codex round-4 P2：只断言 `o_store.is_active = TRUE` 字样时，改成 `(… = TRUE OR … = FALSE)` 仍绿
+    pg.query.mockReset().mockImplementation(async () => [])
+    await ROUTES['mgmt-dashboard'].scopeOptions(hqCtx({}))
+    const sqls = pg.query.mock.calls.map((c) => normalize(c[0]))
+    expect(sqls).toEqual([LOAD_ALL_MARKETS_SQL])
   })
 
   it('每条豁免都被真实命中（过期豁免须删除）', () => {

@@ -74,13 +74,27 @@ const CALLS: Array<[file: string, name: string, args: (s: Scope) => unknown[]]> 
   ['remaining-cards', 'exportRemainingCardsReport', (s) => [raw(s)]],
 ]
 
-/** 不取统计数的 action：筛选器数据源（在营 / 停用分流另由 shared.test 与字面量守护覆盖）、数据起点 */
-const EXEMPT_ACTIONS = new Set([
-  'shared:getDataCenterScopeOptions',
-  'shared:getCustomerDetailScopeOptions',
-  'shared:getStaffCommissionScopeOptions',
-  'shared:getDataStartDates',
-])
+/** 不取统计数的 action：数据起点（只判定较上期是否跨割点） */
+const EXEMPT_ACTIONS = new Set(['shared:getDataStartDates'])
+
+/**
+ * 范围下拉数据源：不走 activeStoreCondition（要同时拿到停用门店给 #293 空态），在营判定在内存里用
+ * isDataCenterActiveStore 分流（shared.test 覆盖分流行为）。这里把两条查询的渲染 SQL 整段钉死，
+ * 保证分流读的确实是门店节点的 is_active（闸门 2 codex round-4 P2：投影改成常量 / 取反时行为测试照样绿）。
+ */
+const DROPDOWN_ACTIONS = ['getDataCenterScopeOptions', 'getCustomerDetailScopeOptions', 'getStaffCommissionScopeOptions']
+const DROPDOWN_STORE_COLUMNS =
+  'select "stores"."store_id", "stores"."store_name", "org_store"."parent_id", "org_store"."is_active" from "stores" inner join "org_nodes" "org_store" on "stores"."org_node_id" = "org_store"."id"'
+const DROPDOWN_SQL = {
+  hq: [
+    'select "id", "name" from "org_nodes" where "org_nodes"."type" = $1 order by "org_nodes"."sort_order" asc',
+    `${DROPDOWN_STORE_COLUMNS} where "org_store"."type" = $1 order by "stores"."store_name" asc`,
+  ],
+  market: [
+    'select "id", "name" from "org_nodes" where ("org_nodes"."type" = $1 and "org_nodes"."id" in ($2)) order by "org_nodes"."sort_order" asc',
+    `${DROPDOWN_STORE_COLUMNS} where ("org_store"."type" = $1 and "stores"."store_id" in ($2, $3)) order by "stores"."store_name" asc`,
+  ],
+}
 
 /** 非统计 SQL 全文模式（归一空白后整句匹配）。新增须写明理由，且必须真的被命中 */
 const EXEMPT_SQL: Array<[reason: string, pattern: RegExp]> = [
@@ -140,7 +154,7 @@ describe('#401 数据中心取数在营接线 · 运行时闭集', () => {
       const mod = (await import(`../${f.replace(/\.ts$/, '')}`)) as Record<string, unknown>
       for (const key of Object.keys(mod)) exported.push(`${f.replace(/\.ts$/, '')}:${key}`)
     }
-    const classified = [...CALLS.map(([file, name]) => `${file}:${name}`), ...EXEMPT_ACTIONS]
+    const classified = [...CALLS.map(([file, name]) => `${file}:${name}`), ...DROPDOWN_ACTIONS.map((n) => `shared:${n}`), ...EXEMPT_ACTIONS]
     expect(exported.sort()).toEqual(classified.sort())
   })
 
@@ -171,6 +185,30 @@ describe('#401 数据中心取数在营接线 · 运行时闭集', () => {
     expect([...new Set(offenders)]).toEqual([])
     // 时点表达式本身确实出现过（门店数查询），防剔除正则失配导致恒绿
     expect(results.some((r) => new RegExp(TIMEPOINT.source).test(r.sql))).toBe(true)
+  })
+
+  it('每个 action × 范围下，各条 SQL 含在营子查询的次数钉快照（双 scope 查询删掉任一侧即变红）', () => {
+    // 闸门 2 codex round-4 P2：「每条 SQL 至少含一处」证明不了同一 SQL 内顾客侧 / 服务单侧两个 scope 都过滤了
+    const count = (sql: string) => sql.split(ACTIVE_SUBQUERY).length - 1
+    const table: Record<string, number[]> = {}
+    for (const r of results) {
+      if (EXEMPT_SQL.some(([, re]) => re.test(r.sql))) continue
+      ;(table[`${r.action} ${r.scope}`] ??= []).push(count(r.sql))
+    }
+    for (const key of Object.keys(table)) table[key].sort((a, b) => a - b)
+    expect(table).toMatchSnapshot()
+  })
+
+  it('范围下拉两条查询的渲染 SQL 整段等值（在营 / 停用分流读的是门店节点 is_active）', async () => {
+    const mod = (await import('../shared')) as Record<string, () => Promise<unknown>>
+    for (const [label, session] of [['hq', HQ_SESSION], ['market', MARKET_SESSION]] as const) {
+      for (const name of DROPDOWN_ACTIONS) {
+        mockGetSession.mockResolvedValue(session)
+        captured.length = 0
+        await mod[name]()
+        expect(captured.map(normalize), `${label} ${name}`).toEqual(DROPDOWN_SQL[label])
+      }
+    }
   })
 
   it('每条豁免都被真实命中（过期豁免须删除）', () => {
