@@ -1,4 +1,4 @@
-import { bigserial, check, index, integer, pgTable, text, timestamp, uniqueIndex, varchar } from 'drizzle-orm/pg-core'
+import { bigserial, check, index, integer, numeric, pgTable, text, timestamp, uniqueIndex, varchar } from 'drizzle-orm/pg-core'
 import { sql } from 'drizzle-orm'
 import { saleItems } from './order'
 import { stores } from './org'
@@ -37,6 +37,17 @@ export const pickupRecords = pgTable(
     remark: text('remark'),
     /** 调用方传入的幂等键（如 pickup-{saleItemId}-{timestamp}），NULL 时不参与唯一约束（向后兼容旧前端） */
     idempotencyKey: text('idempotency_key'),
+    /**
+     * 提货时冻结的顾客实际单价（= 当时 sale_items.unit_real_price，#341）。
+     * 之后订单改价不回写；上线前的历史行为 NULL（不回填）。
+     */
+    pickupUnitPrice: numeric('pickup_unit_price', { precision: 12, scale: 2 }),
+    /**
+     * 出库金额 = 本次提货数 × 冻结单价（#341，店长产品出库提成的数据来源）。
+     * 销售单位级、套装只记一次；与 GCK 明细的成本金额（inventory_doc_items.amount）分开存。
+     * 寄存单 / 0 元赠品 / 转换转入同样按 unit_real_price 计（0 元行即 0）。
+     */
+    pickupAmount: numeric('pickup_amount', { precision: 12, scale: 2 }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
@@ -47,6 +58,11 @@ export const pickupRecords = pgTable(
       .on(table.saleItemId, table.idempotencyKey)
       .where(sql`idempotency_key IS NOT NULL`),
     check('chk_pickup_quantity', sql`${table.pickupQuantity} > 0`),
+    // 两列同生同灭（历史行双 NULL），且金额必须等于 数量 × 冻结单价：写入端算错会直接被拒。
+    check(
+      'chk_pickup_amount_frozen',
+      sql`(${table.pickupUnitPrice} IS NULL AND ${table.pickupAmount} IS NULL) OR (${table.pickupUnitPrice} IS NOT NULL AND ${table.pickupAmount} = ROUND(${table.pickupUnitPrice} * ${table.pickupQuantity}, 2))`,
+    ),
   ],
 )
 
