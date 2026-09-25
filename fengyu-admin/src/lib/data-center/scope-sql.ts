@@ -63,9 +63,12 @@ export function scopeFilterSql(
  *
  * 可见性锚 = 员工直挂节点所属市场（`producer_base.anchor_market_id`，调用方负责产出该列）：
  *   - UI 选了具体门店 → 无门店员工不属于任何单店，一律不出现
- *   - UI 选了市场     → 锚定市场等于该市场才出现
+ *   - UI 选了市场     → 锚定市场等于该市场才出现；该市场若只是门店级账号的**祖先市场**（未直接授权），
+ *                       另须「锚定市场下有本账号可见的在营门店」——与 authorized 同一条可见性（#399），
+ *                       即选祖先市场看到的直挂员工 ⊆ 汇总范围看到的，不会更多
  *   - all / authorized → admin 全可见；其他角色按「锚定市场下是否有本账号可见门店」判定
- * 品项公司是总部直属市场节点、其下无门店，因此只有 admin/总部能看到；
+ * 品项公司是总部直属市场节点、其下无门店：admin/总部，以及直接授权到品项公司的账号（以市场范围，#399）可见；
+ * 汇总范围（all / authorized）下非超管看不到它（锚定市场下没有可见门店）。
  * 养生部锚到南昌凤御，该市场范围的账号可见。
  *
  * @param anchorCol 锚定市场列引用（默认 `pb.anchor_market_id`）
@@ -79,11 +82,34 @@ export function orgAnchorScopeSql(
 
   // 单店视角：无门店员工不归属任何门店，直接排除
   if (scope.type === 'store') return sql`FALSE`
-  // 市场视角：锚定市场须等于所选市场
-  if (scope.type === 'market') return sql`${col} = ${scope.id}`
+  // 市场视角：锚定市场须等于所选市场。直接授权的市场（或超管）到此为止；只是门店级账号祖先市场的，
+  // 另叠「锚定市场下有本账号可见的在营门店」——与 authorized 同一条可见性，选市场不会比汇总多看到人（#399）。
+  // 注意：店长所属市场下有他的在营门店时，该市场的直挂员工（养生部等）本就在 authorized 里可见，这是既有设计；
+  // 这里防的是「所属市场下已没有他可见的在营门店」（唯一门店停用）时仍按市场看到整个市场的直挂员工。
+  if (scope.type === 'market') {
+    if (isGrantedMarketScope(session, scope.id)) return sql`${col} = ${scope.id}`
+    return sql`${col} = ${scope.id} AND ${visibleActiveAnchorSql(session, col)}`
+  }
 
   // all / authorized：admin 全开；其他角色按锚定市场下的可见门店判定
   if (isAdminScope(session)) return sql`TRUE`
+  return visibleActiveAnchorSql(session, col)
+}
+
+/**
+ * 市场是否直接授权给本账号（超管恒真）：角色范围展开后的组织节点含该市场。
+ * 与数据中心范围下拉的 `granted`（lib/permissions expandMarketVisibility）同源——门店级账号补进来的
+ * 祖先市场不在 scopeOrgNodeIds 里。旧会话缺 scopeOrgNodeIds 时按未授权处理（保守，走可见门店判定）。
+ */
+function isGrantedMarketScope(session: AuthSession, marketId: string): boolean {
+  return isAdminScope(session) || (session.permissions.scopeOrgNodeIds ?? []).includes(marketId)
+}
+
+/**
+ * 锚定市场下存在本账号可见的**在营**门店（非超管 all / authorized 与祖先市场共用）。
+ * 无授权门店时恒 FALSE。
+ */
+function visibleActiveAnchorSql(session: AuthSession, col: SQL): SQL {
   const ids = session.permissions.scopeStoreIds
   if (ids.length === 0) return sql`FALSE`
   return sql`EXISTS (

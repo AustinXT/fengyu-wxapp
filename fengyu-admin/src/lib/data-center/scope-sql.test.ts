@@ -167,3 +167,53 @@ describe('orgAnchorScopeSql — 无门店员工（直挂组织节点）的可见
     expect(raw.trim().toUpperCase()).toBe('FALSE')
   })
 })
+
+describe('orgAnchorScopeSql — 市场分支按「直接授权」收窄（#399）', () => {
+  const MKT: DataCenterScope = { type: 'market', id: 'mkt-A' }
+  function withNodes(session: AuthSession, scopeOrgNodeIds: string[] | undefined): AuthSession {
+    return { ...session, permissions: { ...session.permissions, scopeOrgNodeIds } }
+  }
+
+  it('直接授权的市场（hr@品项公司 这类）：只比锚定市场，不要求门店（其下本就无门店）', () => {
+    const session = withNodes(makeSession([{ role: 'hr', scopeType: '市场' }], []), ['mkt-A'])
+    const { raw, params } = render(orgAnchorScopeSql(session, MKT))
+    expect(raw.replace(/\s+/g, ' ').trim()).toBe('pb.anchor_market_id = $1')
+    expect(params).toEqual(['mkt-A'])
+  })
+
+  it('门店级账号的祖先市场：锚定相等 AND 锚定市场下有本账号可见的在营门店（与 authorized 同口径）', () => {
+    const session = withNodes(makeSession([{ role: 'manager', scopeType: '门店' }], ['S1']), ['node-S1'])
+    const { sql, params } = render(orgAnchorScopeSql(session, MKT))
+    expect(sql).toMatch(/^pb\.anchor_market_id = \$1 and exists \(/)
+    expect(sql).toContain('vn.is_active = true')
+    expect(sql).toContain('vn.parent_id = pb.anchor_market_id')
+    expect(params).toEqual(['mkt-A', 'S1'])
+  })
+
+  it('祖先市场 + 无授权门店（唯一门店被停用后被剔除等）→ 锚定分支恒假', () => {
+    const session = withNodes(makeSession([{ role: 'manager', scopeType: '门店' }], []), ['node-S1'])
+    const { sql } = render(orgAnchorScopeSql(session, MKT))
+    expect(sql.replace(/\s+/g, ' ').trim()).toBe('pb.anchor_market_id = $1 and false')
+  })
+
+  it('旧会话缺 scopeOrgNodeIds：按未授权处理（保守走可见门店判定）', () => {
+    const session = withNodes(makeSession([{ role: 'manager', scopeType: '市场' }], ['S1']), undefined)
+    expect(render(orgAnchorScopeSql(session, MKT)).sql).toContain('exists (')
+  })
+
+  it('超管：市场分支照旧只比锚定市场', () => {
+    const session = withNodes(makeSession([{ role: 'admin', scopeType: '总部' }], []), undefined)
+    expect(render(orgAnchorScopeSql(session, MKT)).raw.replace(/\s+/g, ' ').trim()).toBe('pb.anchor_market_id = $1')
+  })
+
+  it('祖先市场 = 锚定相等 AND「全部授权门店」同一条可见性（选市场看到的直挂员工 ⊆ 汇总范围，不会更多）', () => {
+    const session = withNodes(makeSession([{ role: 'manager', scopeType: '门店' }], ['S1', 'S2']), ['node-S1', 'node-S2'])
+    const market = render(orgAnchorScopeSql(session, MKT))
+    const authorized = render(orgAnchorScopeSql(session, { type: 'authorized' }))
+    const norm = (t: string) => t.replace(/\s+/g, ' ').trim()
+    // 市场分支 = `锚定 = $1 AND <authorized 分支原样>`，参数 = [市场 id, ...authorized 参数]（占位符顺延一位）
+    const shifted = norm(authorized.raw).replace(/\$(\d+)/g, (_m, n) => `$${Number(n) + 1}`)
+    expect(norm(market.raw)).toBe(`pb.anchor_market_id = $1 AND ${shifted}`)
+    expect(market.params).toEqual(['mkt-A', ...authorized.params])
+  })
+})
