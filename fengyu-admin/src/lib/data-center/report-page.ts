@@ -15,7 +15,8 @@ export type ReportPeriodKind = 'range' | 'month' | 'none'
 
 export interface ReportPageContext {
   /**
-   * 生效的 scope。非总部且没有可查看门店（noViewableScope）时为 null——此时 URL 里只可能是 'all'，
+   * 生效的 scope。非总部且没有可用默认范围（noViewableScope：既无可见在营门店、也无直接授权的无门店市场，#399）
+   * 时为 null——此时 URL 里只可能是 'all' / 'authorized'，
    * 拿它取数必被 validateScope 拒成 PERMISSION_DENIED；置 null 让页面漏判 noViewableScope 在 tsc 就报错。
    * 选中已停用门店（inactiveStore）时同样为 null：拿它取数只会得到满屏 0。
    * ⚠️ 页面判「要不要取数 / 渲染自定义空态」一律以 `scope === null` 为准，别只看 noViewableScope——会漏掉停用门店。
@@ -23,7 +24,7 @@ export interface ReportPageContext {
   scope: DataCenterScope | null
   /** 仅范围型页面为 null */
   period: ReportPeriod | null
-  /** 非总部却没有可查看的门店：页面渲染空态，不取数 */
+  /** 非总部却没有可用默认范围（无可见在营门店且无直接授权的无门店市场，#399）：页面渲染空态，不取数 */
   noViewableScope: boolean
   /** URL 选中权限内的已停用门店（#293）：页面渲染「已停用」空态，不取数、不跳回默认范围 */
   inactiveStore: ScopeOptionInactiveStore | null
