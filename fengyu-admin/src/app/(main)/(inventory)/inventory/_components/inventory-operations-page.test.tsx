@@ -2222,6 +2222,32 @@ describe('品项公司发货引用市场报货单（#336b）', () => {
     expect(createItemCompanyShipment).toHaveBeenCalledTimes(1)
   })
 
+  it('提交失败后批次重取也失败：列表清空的同时清掉已选批次，不带旧 lotId 再提交', async () => {
+    const row = report('SBH-1')
+    vi.mocked(getInventoryCoreDocById).mockResolvedValue(reportDetail(row))
+    vi.mocked(createItemCompanyShipment).mockRejectedValueOnce(new Error('INVALID_STATE: 库存不足：精华液 可用 10'))
+    renderPage({ level: 'supply-chain', operation: 'company-shipment', locations: [HQ], shipmentMarketTargets: [M1], candidates: [row] })
+    fireEvent.click(await screen.findByRole('checkbox', { name: '选择 SBH-1' }))
+    await chooseLot(0, '41')
+    vi.mocked(listInventoryLotOptions).mockRejectedValue(new Error('网络异常'))
+    submitShipment()
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('网络异常'))
+    submitShipment()
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('请为每条发货明细选择批次并填写数量；不发的行请删除'))
+    expect(createItemCompanyShipment).toHaveBeenCalledTimes(1)
+  })
+
+  it('LotPicker 自动清空已选批次时两路一起清：lotId 与批次快照（转换表单的 onLotChange）', () => {
+    // 转换表单同时保存 lotId 与整条批次快照（成本 / 赠送 / 可用量），只清 id 会让守恒预览按旧批次算
+    const source = readFileSync(resolve(__dirname, 'inventory-operations-page.tsx'), 'utf8')
+    const picker = source.slice(source.indexOf('function LotPicker('), source.indexOf('function useLoadedDocument('))
+    const drop = picker.slice(picker.indexOf('const dropStaleSelection = () => {'), picker.indexOf('useEffect('))
+    expect(drop).toContain("onChangeRef.current('')")
+    expect(drop).toContain('onLotChangeRef.current?.(null)')
+    // 成功重取（已选不在列表）与重取失败两条路径都走它
+    expect(picker.match(/dropStaleSelection\(\)/g)).toHaveLength(2)
+  })
+
   it('同一报货明细同一批次重复两行：前端先拦，按服务端口径提示合并', async () => {
     const row = report('SBH-1')
     vi.mocked(getInventoryCoreDocById).mockResolvedValue(reportDetail(row))

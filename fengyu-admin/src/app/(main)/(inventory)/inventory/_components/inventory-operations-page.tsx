@@ -476,6 +476,19 @@ function LotPicker({
   valueRef.current = value
   const onChangeRef = useRef(onChange)
   onChangeRef.current = onChange
+  const onLotChangeRef = useRef(onLotChange)
+  onLotChangeRef.current = onLotChange
+  /*
+   * 已选值与当前可选列表脱节时（批次被出完 / 重取失败清空了列表）：原生 select 显示成空占位，
+   * 父级却仍握着旧 lotId（转换表单还握着整条批次快照），看似未选却能把它提交出去。
+   * 两路一起清，让「请选择批次」校验接住。
+   */
+  const dropStaleSelection = () => {
+    if (!valueRef.current) return false
+    onChangeRef.current('')
+    onLotChangeRef.current?.(null)
+    return true
+  }
 
   useEffect(() => {
     let cancelled = false
@@ -488,16 +501,14 @@ function LotPicker({
       .then((rows) => {
         if (cancelled) return
         setLots(rows)
-        // 重查后已选批次不在可用列表里（被出完 / 被别的单占满）：原生 select 会显示成空占位，
-        // 但父级仍握着旧 lotId，看似未选却能把它提交出去 —— 显式清空，让「请选择批次」校验接住
-        if (valueRef.current && !rows.some((lot) => String(lot.id) === valueRef.current)) {
-          onChangeRef.current('')
+        if (!rows.some((lot) => String(lot.id) === valueRef.current) && dropStaleSelection()) {
           toast.warning('所选批次已无可用库存，请重新选择')
         }
       })
       .catch((error) => {
         if (!cancelled) {
           setLots([])
+          dropStaleSelection()
           toast.error(actionErrorMessage(error, '加载可用批次失败'))
         }
       })
