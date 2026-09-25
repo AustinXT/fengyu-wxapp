@@ -386,14 +386,21 @@ describe('经营数据主表（#372）', () => {
     expect(screen.getByText('导出')).toBeInTheDocument()
   })
 
-  it('范围内没有在营门店：整表空态，不渲染一屏 0（#293 合入前的最小实现）', async () => {
+  it('范围合法但没有在营门店：表格显示空行文案，信息条「展示0 行」', async () => {
     mockScope(hqOptions)
     mockOperatingMaster([])
     await renderPage('operatingMaster', { scope: 'store', scopeId: 'S2' })
 
-    expect(screen.getByText(/所选范围内没有在营门店/)).toBeInTheDocument()
-    expect(document.querySelector('table')).toBeNull()
+    expect(screen.getByText('所选范围内没有在营门店，暂无数据')).toBeInTheDocument()
     expect(screen.getByTestId('report-info-bar')).toHaveTextContent('展示0 行')
+  })
+
+  it('选中已停用门店：走 #293 的「已停用」空态，不调取数 action', async () => {
+    mockScope({ ...hqOptions, inactiveStores: [{ storeId: 'X1', storeName: '自贡旭阳店', marketId: 'M1' }] })
+    await renderPage('operatingMaster', { scope: 'store', scopeId: 'X1' })
+
+    expect(screen.getByTestId('scope-empty-state')).toHaveTextContent('「自贡旭阳店」已停用')
+    expect(operatingMaster.getOperatingMaster).not.toHaveBeenCalled()
   })
 
   it('无可查看范围时不取数', async () => {

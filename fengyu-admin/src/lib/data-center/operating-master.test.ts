@@ -5,7 +5,6 @@ import {
   OPERATING_MASTER_METRIC_KEYS,
   buildOperatingMasterTable,
   isOperatingMasterSubtotal,
-  operatingMasterEmptyText,
   operatingMasterExportParams,
   operatingMasterTotalsLabel,
   ytdRange,
@@ -136,18 +135,18 @@ describe('buildOperatingMasterTable', () => {
     expect(operatingMasterTotalsLabel(table.multiMarket)).toBe('总计')
   })
 
-  it('没有任何数据的在营门店照常出行、各列为 0（与「门店已停用」的空态区分）', () => {
+  it('没有任何数据的在营门店照常出行、各列为 0（「门店已停用」的空态由 #293 在入口拦截）', () => {
     const table = buildOperatingMasterTable([nc], new Map())
     expect(table.rows[0].values).toEqual({
       beauticianCount: 0, monthRevenue: 0, ytdRevenue: 0, shengmeiProjectCount: 0, monthConsume: 0, shengmeiConsume: 0,
     })
-    expect(operatingMasterEmptyText(table)).toBeNull()
   })
 
-  it('范围内没有在营门店 → 空态文案', () => {
+  it('范围内没有在营门店 → 没有任何行（表格显示空行文案），合计为空', () => {
     const table = buildOperatingMasterTable([], metrics)
     expect(table.rows).toEqual([])
-    expect(operatingMasterEmptyText(table)).toMatch(/没有在营门店/)
+    expect(table.storeCount).toBe(0)
+    expect(table.totals.monthRevenue).toBeNull()
   })
 })
 

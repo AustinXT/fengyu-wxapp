@@ -3,6 +3,7 @@
 import { ExportButton } from "@/components/ui/export-button"
 import {
   OPERATING_MASTER_COLUMNS,
+  OPERATING_MASTER_EMPTY_TEXT,
   OPERATING_MASTER_HEADER_HEIGHTS,
   isOperatingMasterSubtotal,
   operatingMasterTotalsLabel,
@@ -58,6 +59,7 @@ export function OperatingMasterTable({
         columns={COLUMNS}
         rows={rows}
         rowKey={(row) => row.rowKey}
+        emptyText={OPERATING_MASTER_EMPTY_TEXT}
         isSubtotal={isOperatingMasterSubtotal}
         totals={{ label: operatingMasterTotalsLabel(multiMarket), values: { ...PENDING_TOTALS, ...totals } }}
         headerHeights={OPERATING_MASTER_HEADER_HEIGHTS}

@@ -1,12 +1,7 @@
-import { Card, CardContent } from "@/components/ui/card"
 import { getDataCenterScopeOptions } from "@/actions/data-center/shared"
 import { getOperatingMaster } from "@/actions/data-center/operating-master"
 import { DATA_CENTER_REPORTS } from "@/lib/data-center/reports"
-import {
-  operatingMasterEmptyText,
-  operatingMasterExportParams,
-  ytdRange,
-} from "@/lib/data-center/operating-master"
+import { operatingMasterExportParams, ytdRange } from "@/lib/data-center/operating-master"
 import { prepareReport } from "../_components/report/prepare-report"
 import { ReportLayout } from "../_components/report/report-layout"
 import { OperatingMasterTable } from "../_components/operating-master/operating-master-table"
@@ -40,11 +35,10 @@ export default async function Page({
   })
 
   const { scope, period } = context
-  // scope 为 null（无可查看范围）时不取数，ReportLayout 渲染空态
+  // scope 为 null（无可查看范围 / 选中已停用门店，#293）时不取数，ReportLayout 渲染 ScopeEmptyState
   const data = scope && period?.kind === "month"
     ? await getOperatingMaster({ scope, month: period.month })
     : null
-  const emptyText = data ? operatingMasterEmptyText(data) : null
 
   return (
     <ReportLayout
@@ -57,18 +51,12 @@ export default async function Page({
       infoItems={data ? [{ label: "展示", value: `${data.rows.length} 行` }] : []}
     >
       {data && scope && (
-        emptyText ? (
-          <Card>
-            <CardContent className="p-8 text-center text-sm text-[var(--muted-foreground)]">{emptyText}</CardContent>
-          </Card>
-        ) : (
-          <OperatingMasterTable
-            rows={data.rows}
-            totals={data.totals}
-            multiMarket={data.multiMarket}
-            exportParams={operatingMasterExportParams(scope, data.month)}
-          />
-        )
+        <OperatingMasterTable
+          rows={data.rows}
+          totals={data.totals}
+          multiMarket={data.multiMarket}
+          exportParams={operatingMasterExportParams(scope, data.month)}
+        />
       )}
     </ReportLayout>
   )

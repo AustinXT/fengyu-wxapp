@@ -320,15 +320,11 @@ export function operatingMasterTotalsLabel(multiMarket: boolean): string {
 }
 
 /**
- * 空态判定（#372 最小实现）：所选范围内没有在营门店 → 整表空态，而不是一屏 0。
- * 典型场景：URL 指向已停用门店（scope 校验放行、但经营统计剔除停用门店）。
- * 「在营门店本期确实无数据」仍出行显示 0，两种情形可区分。
- *
- * TODO(#293)：#293 合入后收敛到它的统一空态判定与文案，本函数随之删除。
+ * 范围合法、却没有一家在营门店时（如所选市场下门店全部停用）表格的空行文案。
+ * 「选中已停用门店」由 #293 在页面入口拦下（scope 置 null → ScopeEmptyState，不取数），走不到这里；
+ * 在营门店本期无数据照常出行显示 0。
  */
-export function operatingMasterEmptyText(table: Pick<OperatingMasterTable, 'storeCount'>): string | null {
-  return table.storeCount === 0 ? '所选范围内没有在营门店（门店可能已停用），暂无数据' : null
-}
+export const OPERATING_MASTER_EMPTY_TEXT = '所选范围内没有在营门店，暂无数据'
 
 /**
  * 导出参数：取页面**生效**的范围与月份（非法 URL 已回落），而不是原样转发地址栏——
