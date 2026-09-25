@@ -162707,18 +162707,37 @@ var import_cache4 = __toESM(require_cache3(), 1);
 var import_drizzle_orm22 = __toESM(require_drizzle_orm(), 1);
 var MEMBER_THRESHOLD_FALLBACK = 1980;
 var MEMBER_THRESHOLD_TAG = "new_member_threshold";
-var getMemberThreshold = import_cache4.unstable_cache(async () => {
+async function readMemberThreshold() {
+  const rows = await db2.execute(import_drizzle_orm22.sql`
+    SELECT value FROM system_configs WHERE key = 'new_member_threshold'
+  `);
+  const raw = rows[0]?.value;
+  const v = Number(raw);
+  return Number.isFinite(v) && v > 0 ? v : MEMBER_THRESHOLD_FALLBACK;
+}
+var cachedMemberThreshold = import_cache4.unstable_cache(readMemberThreshold, ["new_member_threshold"], {
+  tags: [MEMBER_THRESHOLD_TAG],
+  revalidate: 300
+});
+function isMissingIncrementalCache(err) {
+  return err instanceof Error && err.message.includes("incrementalCache missing");
+}
+async function getMemberThreshold() {
   try {
-    const rows = await db2.execute(import_drizzle_orm22.sql`
-        SELECT value FROM system_configs WHERE key = 'new_member_threshold'
-      `);
-    const raw = rows[0]?.value;
-    const v = Number(raw);
-    return Number.isFinite(v) && v > 0 ? v : MEMBER_THRESHOLD_FALLBACK;
-  } catch {
+    if (true)
+      return await readMemberThreshold();
+    try {
+      return await cachedMemberThreshold();
+    } catch (err) {
+      if (isMissingIncrementalCache(err))
+        return await readMemberThreshold();
+      throw err;
+    }
+  } catch (err) {
+    console.warn("[member-threshold] 读取失败，回退", MEMBER_THRESHOLD_FALLBACK, err?.message);
     return MEMBER_THRESHOLD_FALLBACK;
   }
-}, ["new_member_threshold"], { tags: [MEMBER_THRESHOLD_TAG], revalidate: 300 });
+}
 
 // src/lib/member-pricing.ts
 function isMember(customerType, memberLevel) {
