@@ -105,6 +105,7 @@ import {
   receiveStoreAllocationInFull,
   rejectItemCompanyShipmentCancellation,
   rejectReturnForRestock,
+  summarizeStoreReplenishmentRequests,
 } from '@/actions/inventory/business'
 import InventoryOperationsPage, { OperationDocsTab } from './inventory-operations-page'
 import type { InventoryAnyOperationId } from '@/lib/inventory/operation-doc-types'
@@ -2559,5 +2560,58 @@ describe('库存转换两段式表单与成本守恒（#344）', () => {
     fireEvent.click(screen.getByRole('button', { name: '添加目标' }))
     expect(screen.getAllByText('来源批次')).toHaveLength(2)
     expect(screen.getAllByText('目标商品')).toHaveLength(3)
+  })
+})
+
+/**
+ * 市场汇总报货显示在途采购（#362）：待配量 / 建议采购已由服务端扣掉在途覆盖的部分，
+ * 表单要把在途量亮出来，填报人才知道建议采购没算漏已报货未到的货。
+ */
+describe('市场汇总报货显示在途采购（#362）', () => {
+  const M1: InventoryLocationRow = { locationId: 'M1', locationType: '市场', name: '市场一部', orgNodeId: 'M1', storeId: null, parentLocationId: 'HQ', isActive: true }
+  const HQ: InventoryLocationRow = { locationId: 'HQ', locationType: '总部', name: '品牌总部', orgNodeId: 'HQ', storeId: null, parentLocationId: null, isActive: true }
+
+  beforeEach(() => {
+    mockDocs({})
+  })
+
+  it('在途列与待配 / 可用 / 建议采购并排；在途已覆盖的行建议采购为 0、默认不勾选', async () => {
+    vi.mocked(summarizeStoreReplenishmentRequests).mockResolvedValue({
+      marketId: 'M1',
+      items: [
+        {
+          skuId: 'SKU-1', skuName: '精华液', specName: '50ml',
+          requestedQuantity: 16, fulfilledQuantity: 6, outstandingQuantity: 0,
+          onHandQuantity: 0, reservedQuantity: 0, availableQuantity: 0,
+          inTransitQuantity: 10, inTransitCoveredQuantity: 6, suggestedPurchaseQuantity: 0, requestItemIds: [2],
+        },
+        {
+          skuId: 'SKU-2', skuName: '面霜', specName: '30g',
+          requestedQuantity: 8, fulfilledQuantity: 0, outstandingQuantity: 5,
+          onHandQuantity: 1, reservedQuantity: 0, availableQuantity: 1,
+          inTransitQuantity: 3, inTransitCoveredQuantity: 0, suggestedPurchaseQuantity: 4, requestItemIds: [3],
+        },
+      ],
+    })
+    renderPage({ level: 'market', operation: 'market-report', locations: [M1, HQ] })
+    // 唯一市场自动选中（InventorySubjectSelect #189），不用再手选
+    fireEvent.click(await screen.findByRole('button', { name: '汇总门店报货' }))
+    await waitFor(() => expect(summarizeStoreReplenishmentRequests).toHaveBeenCalledWith(
+      expect.objectContaining({ marketId: 'M1' }),
+    ))
+
+    const headers = (await screen.findAllByRole('columnheader')).map((cell) => cell.textContent)
+    expect(headers.slice(2, 6)).toEqual(['待配数量', '市场可用库存', '在途采购', '建议采购'])
+    const rowCells = (name: string) => {
+      const row = screen.getByRole('checkbox', { name: `选择 ${name}` }).closest('tr')!
+      return [...row.querySelectorAll('td')].slice(2, 6).map((cell) => cell.textContent)
+    }
+    // 被在途封顶的行在待配下注明扣了多少；没被封顶的行不出提示
+    expect(rowCells('精华液 50ml')).toEqual(['0在途已覆盖 6', '0', '10', '0'])
+    expect(rowCells('面霜 30g')).toEqual(['5', '1', '3', '4'])
+    expect(screen.getAllByText(/^在途已覆盖/)).toHaveLength(1)
+    expect(screen.getByRole('checkbox', { name: '选择 精华液 50ml' })).not.toBeChecked()
+    expect(screen.getByRole('checkbox', { name: '选择 面霜 30g' })).toBeChecked()
+    expect(screen.getByLabelText('实际采购 面霜 30g')).toHaveValue(4)
   })
 })

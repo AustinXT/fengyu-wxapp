@@ -41,6 +41,8 @@ import {
   receiveSupplyChainPurchaseOrder,
   rejectItemCompanyShipmentCancellation,
   requestItemCompanyShipmentCancellation,
+  storeReplenishmentCoverage,
+  summarizeStoreReplenishmentRequests,
 } from './business'
 import { db } from '@/db'
 import ts from 'typescript'
@@ -3923,5 +3925,153 @@ describe('分院配货报货单可选：引用 / 自选 / 混合（#337）', () 
     await expect(createStoreAllocation(SESSION, {
       targetStoreId: 'S1', sourceMarketId: 'M1', items: [{ skuId: 'SKU-2', lotId: '12' as never, quantity: 1 }],
     })).resolves.toMatchObject({ id: expect.stringMatching(/^FPH-/) })
+  })
+})
+
+/**
+ * 采购覆盖的门店与实际配货门店错位（#362）。
+ * 复现：同市场同 SKU，门店 A（报货明细 id 小）报 10、B 报 6，市场可用 6；
+ * 市场报货采购 10，血缘按 id 全挂 A；到货前市场把现货 6 配给 A。
+ * 旧口径逐行截断：A = max(10 − 10 − 6, 0) = 0，B = 6 → 待配 6、建议采购 6；
+ * 实际 16 已被现货 6 + 在途 10 覆盖。
+ */
+describe('门店报货汇总按在途采购封顶（#362）', () => {
+  beforeEach(() => {
+    vi.resetAllMocks()
+  })
+
+  /** 改造前的逐行口径，只作对照：新口径在「无在途」时必须与它逐字相同 */
+  const legacy = (rows: Array<{ q: number; s: number; f: number }>, available: number) => {
+    const outstanding = rows.reduce((sum, row) => sum + Math.max(row.q - row.s - row.f, 0), 0)
+    return { outstandingQuantity: outstanding, suggestedPurchaseQuantity: Math.max(outstanding - available, 0) }
+  }
+  const coverage = (rows: Array<{ q: number; s: number; f: number }>, inTransit: number, available: number) =>
+    storeReplenishmentCoverage({
+      rowOutstanding: rows.reduce((sum, row) => sum + Math.max(row.q - row.s - row.f, 0), 0),
+      undelivered: rows.reduce((sum, row) => sum + (row.q - row.f), 0),
+      inTransit,
+      available,
+    })
+
+  it('复现场景：A 被采购覆盖又拿到现货，B 不再显示待配 6 / 建议采购 6', () => {
+    const rows = [{ q: 10, s: 10, f: 6 }, { q: 6, s: 0, f: 0 }]
+    expect(legacy(rows, 0)).toEqual({ outstandingQuantity: 6, suggestedPurchaseQuantity: 6 })
+    expect(coverage(rows, 10, 0)).toEqual({ outstandingQuantity: 0, suggestedPurchaseQuantity: 0 })
+  })
+
+  it('对照：配货门店与采购覆盖门店一致 / 无在途时，与旧口径逐字相同', () => {
+    // A 被采购覆盖 10（在途），现货 6 配给未被覆盖的 B；C 另报 4
+    const aligned = [{ q: 10, s: 10, f: 0 }, { q: 6, s: 0, f: 6 }, { q: 4, s: 0, f: 0 }]
+    expect(coverage(aligned, 10, 0)).toEqual(legacy(aligned, 0))
+    expect(coverage(aligned, 10, 0)).toEqual({ outstandingQuantity: 4, suggestedPurchaseQuantity: 4 })
+    // 采购已全部到货（在途 0）并配给同一门店：已汇总与已配指向同一批货，不能相减双扣
+    const arrived = [{ q: 10, s: 10, f: 10 }, { q: 6, s: 0, f: 0 }]
+    expect(coverage(arrived, 0, 0)).toEqual(legacy(arrived, 0))
+    expect(coverage(arrived, 0, 0)).toEqual({ outstandingQuantity: 6, suggestedPurchaseQuantity: 6 })
+    // 从没报过货：在途 0，未送达 = 逐行口径
+    const fresh = [{ q: 5, s: 0, f: 2 }, { q: 3, s: 0, f: 0 }]
+    expect(coverage(fresh, 0, 4)).toEqual(legacy(fresh, 4))
+  })
+
+  it('配货量超过采购覆盖时仍正确扣减：溢出的在途只抵别家门店的真实缺口', () => {
+    // A 报 10、采购覆盖 4（在途），现货配给 A 8 → A 只差 2，在途 4 里 2 是 B 的；B 报 6 → 还差 4
+    const rows = [{ q: 10, s: 4, f: 8 }, { q: 6, s: 0, f: 0 }]
+    expect(legacy(rows, 1)).toEqual({ outstandingQuantity: 6, suggestedPurchaseQuantity: 5 })
+    expect(coverage(rows, 4, 1)).toEqual({ outstandingQuantity: 4, suggestedPurchaseQuantity: 3 })
+    // 在途未被溢出（A 没多拿）：封顶不收紧，结果与旧口径相同
+    const partial = [{ q: 10, s: 4, f: 3 }, { q: 6, s: 0, f: 0 }]
+    expect(coverage(partial, 4, 0)).toEqual(legacy(partial, 0))
+  })
+
+  it('性质：任意多行 × 任意在途，结果不高于旧口径；在途为 0 时与旧口径逐字相同', () => {
+    // 线性同余伪随机（固定种子，可复现），枚举 500 组行形态：已汇总、已配各自独立取值且满足 已配 ≤ 数量
+    let seed = 362
+    const rand = (max: number) => {
+      seed = (seed * 1103515245 + 12345) % 2147483648
+      return seed % (max + 1)
+    }
+    for (let round = 0; round < 500; round += 1) {
+      const rows = Array.from({ length: 1 + rand(4) }, () => {
+        const q = 1 + rand(20)
+        return { q, s: rand(q), f: rand(q) }
+      })
+      const available = rand(15)
+      const inTransit = rand(30)
+      const next = coverage(rows, inTransit, available)
+      const old = legacy(rows, available)
+      expect(next.outstandingQuantity).toBeLessThanOrEqual(old.outstandingQuantity)
+      expect(next.suggestedPurchaseQuantity).toBeLessThanOrEqual(old.suggestedPurchaseQuantity)
+      expect(next.outstandingQuantity).toBeGreaterThanOrEqual(0)
+      expect(coverage(rows, 0, available)).toEqual(old)
+    }
+  })
+
+  it('只会调低不会调高：陈旧未配需求让未送达很大时，退回逐行口径', () => {
+    expect(storeReplenishmentCoverage({ rowOutstanding: 6, undelivered: 100, inTransit: 10, available: 2 }))
+      .toEqual({ outstandingQuantity: 6, suggestedPurchaseQuantity: 4 })
+    expect(storeReplenishmentCoverage({ rowOutstanding: 6, undelivered: 3, inTransit: 10, available: 0 }))
+      .toEqual({ outstandingQuantity: 0, suggestedPurchaseQuantity: 0 })
+  })
+
+  function mockSummary(options: { coverageRows: unknown[] }) {
+    const coverageQueries: unknown[] = []
+    const executor = vi.fn(async (query: unknown) => {
+      const rendered = renderSql(query)
+      if (rendered.includes('FROM inventory_locations')) {
+        return [{ location_id: 'M1', org_node_id: 'M1', location_type: '市场', name: '市场一', parent_location_id: 'HQ', is_active: true }]
+      }
+      if (rendered.includes('WITH demand AS')) {
+        coverageQueries.push(query)
+        return options.coverageRows
+      }
+      if (rendered.includes("d.doc_type = '门店报货'")) {
+        return [{
+          sku_id: 'SKU-1', sku_name: '测试 SKU', spec_name: null,
+          requested_quantity: '16', fulfilled_quantity: '6', outstanding_quantity: '6', request_item_ids: '{1,2}',
+        }]
+      }
+      if (rendered.includes('FROM inventory_stock_lots')) return [{ quantity: '0' }]
+      if (rendered.includes('FROM inventory_stock_reservations')) return [{ quantity: '0' }]
+      return []
+    })
+    mockSyncLocationsShortCircuit()
+    vi.mocked(db.transaction).mockImplementationOnce(async (callback) => callback({ execute: executor } as never))
+    return { coverageQueries }
+  }
+
+  it('summarize 接上覆盖查询：在途 10 把 B 的待配 / 建议采购压到 0，并回传在途量', async () => {
+    const { coverageQueries } = mockSummary({
+      coverageRows: [{ sku_id: 'SKU-1', undelivered_quantity: '10', in_transit_quantity: '10' }],
+    })
+    const summary = await summarizeStoreReplenishmentRequests(SESSION, { marketId: 'M1' })
+    expect(summary.items).toEqual([expect.objectContaining({
+      skuId: 'SKU-1', outstandingQuantity: 0, availableQuantity: 0, inTransitQuantity: 10,
+      inTransitCoveredQuantity: 6, suggestedPurchaseQuantity: 0, requestItemIds: [1, 2],
+    })])
+    // 一次查全部 SKU；SKU 列表经 sql.join 展开成独立参数（裸数组会被摊成非法 SQL）
+    expect(coverageQueries).toHaveLength(1)
+    // sql.join 产出嵌套 SQL 片段，逐层展开后 SKU 应是独立的标量参数
+    const flatParams = (query: unknown): unknown[] => sqlParams(query).flatMap((param) => (
+      typeof param === 'object' && param !== null && 'queryChunks' in param ? flatParams(param) : [param]
+    ))
+    expect(flatParams(coverageQueries[0])).toEqual(expect.arrayContaining(['M1', 'SKU-1']))
+    expect(flatParams(coverageQueries[0]).some((param) => Array.isArray(param))).toBe(false)
+    const rendered = renderSql(coverageQueries[0])
+    // 在途只认已完成市场报货 + 正常发货血缘 + 已完成收货（与 engine 报货履约的 normal_received 同口径）
+    expect(rendered).toContain("report_doc.status = '已完成'")
+    // 自采 / 转让店商品走不了供应链采购与发货收货，不计在途（否则永远核销不掉）
+    expect(rendered).toContain("report_sku.source_type = '供应链'")
+    expect(rendered).toContain("shipment_link.relation_type = '市场报货发货'")
+    expect(rendered).toContain("receipt_doc.status = '已完成'")
+    expect(rendered).toContain("shipment_doc.status <> '已取消'")
+    expect(rendered).not.toContain('市场报货赠送发货')
+  })
+
+  it('summarize：无在途时结果与改造前相同（待配 6、建议采购 6、在途 0）', async () => {
+    mockSummary({ coverageRows: [{ sku_id: 'SKU-1', undelivered_quantity: '10', in_transit_quantity: '0' }] })
+    const summary = await summarizeStoreReplenishmentRequests(SESSION, { marketId: 'M1' })
+    expect(summary.items).toEqual([expect.objectContaining({
+      outstandingQuantity: 6, inTransitQuantity: 0, inTransitCoveredQuantity: 0, suggestedPurchaseQuantity: 6,
+    })])
   })
 })

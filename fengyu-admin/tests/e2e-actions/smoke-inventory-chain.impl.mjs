@@ -8,7 +8,7 @@
 import path from 'node:path'
 import { closePool, pgQuery } from './setup.mjs'
 import {
-  HQ_ORG, MKA_ORG, MKB_ORG, STA1_ID, STA1_ORG, STA2_ORG,
+  HQ_ORG, MKA_ORG, MKB_ORG, STA1_ID, STA1_ORG, STA2_ID, STA2_ORG,
   SKU_SUPPLY, SKU_SELF, SUPPLIER_ID, PROMO_ID,
   cleanupInventoryFixture, ensureInventoryFixture, insertSeedLot, lotQuantity,
   docHeader, docItems, locationLots,
@@ -1396,6 +1396,125 @@ try {
     (await docHeader(fphMixId))?.status === '已完成'
       && dbh337Progress?.normalFulfilledQuantity === 2 && dbh337Progress?.normalReceivedQuantity === 2,
     JSON.stringify(dbh337Progress ?? null))
+
+  // ════ #362：采购覆盖门店与实际配货门店错位时，待配 / 建议采购按在途封顶 ════
+  // 独立 SKU（复制 SKU_SUPPLY 的档案），不受前面各段遗留的需求 / 在途影响；TE2AI 前缀随退场清理。
+  const SKU_362 = `${SKU_SUPPLY}_362`
+  await pgQuery(
+    `INSERT INTO inventory_skus (
+       sku_id, product_code, product_name, spec_name, source_type, supplier, supplier_id,
+       retail_price, accounting_price, market_purchase_discount, market_purchase_price, market_purchase_price_mode,
+       supply_chain_purchase_price, store_purchase_price, market_staff_purchase_price, item_company_purchase_price,
+       is_reportable, is_active
+     )
+     SELECT $1, product_code || '-362', product_name || '_362', spec_name, source_type, supplier, supplier_id,
+            retail_price, accounting_price, market_purchase_discount, market_purchase_price, market_purchase_price_mode,
+            supply_chain_purchase_price, store_purchase_price, market_staff_purchase_price, item_company_purchase_price,
+            is_reportable, is_active
+       FROM inventory_skus WHERE sku_id = $2
+     ON CONFLICT (sku_id) DO NOTHING`,
+    [SKU_362, SKU_SUPPLY],
+  )
+  // 门店 A 先报（明细 id 小）10，门店 B 后报 6；市场现货 6
+  setSession(storeA1Session())
+  const { id: req362A } = await biz.createStoreReplenishmentRequest({
+    storeId: STA1_ID, marketId: MKA_ORG, items: [{ skuId: SKU_362, quantity: 10 }],
+  })
+  setSession(storeA2Session())
+  const { id: req362B } = await biz.createStoreReplenishmentRequest({
+    storeId: STA2_ID, marketId: MKA_ORG, items: [{ skuId: SKU_362, quantity: 6 }],
+  })
+  const [item362A] = await docItems(req362A)
+  const [item362B] = await docItems(req362B)
+  const lot362 = await insertSeedLot({
+    locationId: MKA_ORG, skuId: SKU_362, skuName: `${SKU_362}_名`, quantity: 6, batchNo: 'SEED-362',
+    supplyChainUnitCost: 800, marketStandardUnitPrice: 1000, marketUnitDiscount: 0, marketActualUnitPrice: 1000,
+  })
+  setSession(marketASession())
+  const line362 = async () => (await biz.summarizeStoreReplenishmentRequests({ marketId: MKA_ORG }))
+    .items.find((line) => line.skuId === SKU_362) ?? null
+  const shape = (line) => line && {
+    outstanding: line.outstandingQuantity, available: line.availableQuantity,
+    inTransit: line.inTransitQuantity, covered: line.inTransitCoveredQuantity, suggested: line.suggestedPurchaseQuantity,
+  }
+  const start362 = await line362()
+  check('#362 起点：待配 16、可用 6、在途 0、建议采购 10（与改造前同口径）',
+    JSON.stringify(shape(start362)) === JSON.stringify({ outstanding: 16, available: 6, inTransit: 0, covered: 0, suggested: 10 }),
+    JSON.stringify(shape(start362)))
+  // 市场报货实际采购 10，血缘按明细 id 升序全部挂在 A
+  const { id: mbh362Id } = await biz.createMarketReplenishment({
+    marketId: MKA_ORG, supplyChainLocationId: HQ_ORG,
+    items: [{ skuId: SKU_362, sourceRequestItemIds: [item362A.id, item362B.id], purchaseQuantity: 10 }],
+  })
+  const links362 = await pgQuery(
+    `SELECT from_item_id, quantity FROM inventory_doc_links WHERE to_doc_id = $1 AND relation_type = '门店报货汇总'`,
+    [mbh362Id],
+  )
+  check('#362 采购 10 的汇总血缘全挂在 A（复现前提）',
+    links362.length === 1 && Number(links362[0].from_item_id) === Number(item362A.id) && num(links362[0].quantity) === 10,
+    JSON.stringify(links362))
+  const afterReport362 = await line362()
+  check('#362 报货后：B 待配 6、在途 10、现货 6 够 B → 建议采购 0',
+    JSON.stringify(shape(afterReport362)) === JSON.stringify({ outstanding: 6, available: 6, inTransit: 10, covered: 0, suggested: 0 }),
+    JSON.stringify(shape(afterReport362)))
+  // 到货前市场把现货 6 配给 A（A 的已配 0，上限检查放行）
+  await biz.createStoreAllocation({
+    storeRequestId: req362A, sourceMarketId: MKA_ORG,
+    items: [{ requestItemId: item362A.id, lotId: lot362, quantity: 6 }],
+  })
+  const afterMisaligned362 = await line362()
+  // 改造前：A 截断为 0、B 6、可用 0 → 待配 6、建议采购 6（误导再采 6）
+  check('#362 错位配货后：16 已被现货 6 + 在途 10 覆盖 → 待配 0、建议采购 0，在途 10 亮出来',
+    JSON.stringify(shape(afterMisaligned362)) === JSON.stringify({ outstanding: 0, available: 0, inTransit: 10, covered: 6, suggested: 0 }),
+    JSON.stringify(shape(afterMisaligned362)))
+  check('#362 B 的明细仍可被下次市场报货引用（只调显示口径，不改血缘）',
+    afterMisaligned362?.requestItemIds.includes(Number(item362B.id)) === true
+      && !afterMisaligned362?.requestItemIds.includes(Number(item362A.id)),
+    JSON.stringify(afterMisaligned362?.requestItemIds ?? null))
+
+  // 市场自采商品的市场报货进不了供应链采购、也不会有发货收货血缘：不计在途（否则永远核销不掉）
+  setSession(storeA1Session())
+  const { id: reqSelf362 } = await biz.createStoreReplenishmentRequest({
+    storeId: STA1_ID, marketId: MKA_ORG, items: [{ skuId: SKU_SELF, quantity: 4 }],
+  })
+  const [itemSelf362] = await docItems(reqSelf362)
+  setSession(marketASession())
+  await biz.createMarketReplenishment({
+    marketId: MKA_ORG, supplyChainLocationId: HQ_ORG,
+    items: [{ skuId: SKU_SELF, sourceRequestItemIds: [itemSelf362.id], purchaseQuantity: 2 }],
+  })
+  const selfLine362 = (await biz.summarizeStoreReplenishmentRequests({ marketId: MKA_ORG }))
+    .items.find((line) => line.skuId === SKU_SELF)
+  check('#362 自采商品的市场报货不计在途：剩余 2 照常待配',
+    selfLine362?.inTransitQuantity === 0 && selfLine362?.outstandingQuantity === 2,
+    JSON.stringify(shape(selfLine362 ?? null)))
+
+  // 在途的「已收货」口径对账：SKU_SUPPLY 在前面各段真实走过发货 → 市场收货，
+  // 汇总里的在途必须等于各市场报货单履约进度（engine）的 Σ(报货 − 正常已收)。
+  setSession(storeA1Session())
+  await biz.createStoreReplenishmentRequest({
+    storeId: STA1_ID, marketId: MKA_ORG, items: [{ skuId: SKU_SUPPLY, quantity: 1 }],
+  })
+  setSession(marketASession())
+  const supplyLine = (await biz.summarizeStoreReplenishmentRequests({ marketId: MKA_ORG }))
+    .items.find((line) => line.skuId === SKU_SUPPLY)
+  const mkaReports = await pgQuery(
+    `SELECT id FROM inventory_docs WHERE doc_type = '市场报货' AND status = '已完成' AND market_id = $1`, [MKA_ORG],
+  )
+  let expectedInTransit = 0
+  let receivedTotal = 0
+  for (const { id } of mkaReports) {
+    const detail = await docs.getInventoryCoreDocById(id)
+    const skuItemIds = new Set(detail.items.filter((item) => item.skuId === SKU_SUPPLY).map((item) => Number(item.id)))
+    for (const progress of detail.fulfillmentProgress?.items ?? []) {
+      if (!skuItemIds.has(Number(progress.itemId))) continue
+      expectedInTransit += Math.max(progress.normalDemandQuantity - progress.normalReceivedQuantity, 0)
+      receivedTotal += progress.normalReceivedQuantity
+    }
+  }
+  check('#362 在途 = Σ(市场报货 − engine 正常已收)，且样本里确有已收货（非空集对账）',
+    receivedTotal > 0 && supplyLine?.inTransitQuantity === expectedInTransit,
+    JSON.stringify({ inTransit: supplyLine?.inTransitQuantity, expectedInTransit, receivedTotal, reports: mkaReports.length }))
 } catch (e) {
   check('冒烟整体', false, '致命错误：' + (e?.stack || e?.message || String(e)))
 } finally {
