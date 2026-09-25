@@ -1707,6 +1707,23 @@ describe('客量板块两端口径一致性守护', () => {
       expect(regBlock(adminSrc)).toBe(regExpected)
     })
 
+    /**
+     * `reg` CTE 到返回字段之间还有**一跳外层投影**，此前无人守（codex round-1 P1）。
+     * 把它改成 `COALESCE(SUM(reg.registered), 0) / 2 AS registered`：
+     * `regBlock` 快照不变、`visit_count` 不变、`buildBreakdownRows` 仍除以 `ra.registered`、
+     * 行为测试直接注入 `regActiveRows` 根本不跑这段 SQL ⇒ **全绿**，而单店 10 人会变成 5 人、两率合计 200%。
+     * 第 8 组已对分子的两列投影做了同样的钉（`active.visit_once` / `visit_twice`），分母这列漏了。
+     */
+    it('分母的外层投影不得被加工（SUM(reg.registered) 原样透传）', () => {
+      const sqlText = breakdownSql(adminSrc)
+      expect(sqlText).toContain('COALESCE(SUM(reg.registered), 0) AS registered,')
+      expect(sqlText.match(/reg\.registered/g)).toHaveLength(1)
+      // 结果映射同样不得改道
+      expect(fnSource(adminSrc, ADMIN_CUSTOMER, 'queryRegActiveBreakdown')).toContain(
+        'registered: num(r.registered),',
+      )
+    })
+
     it('分子（明细 visit_count）带的会员守卫与分母逐字相同 —— 从分母现读，不硬编码', () => {
       const denom = regBlock(adminSrc).match(GUARD_RE)
       expect(denom).not.toBeNull()
@@ -1807,6 +1824,27 @@ describe('客量板块两端口径一致性守护', () => {
 
     it('cron monthly_activity 不得带会员守卫（它含非会员，加了会改自己的口径）', () => {
       expect(normalize(stripSqlComments(UPDATE_MONTHLY_ACTIVITY_SQL))).not.toMatch(/became_member_at/)
+    })
+
+    /**
+     * staff 侧的守卫写的是 `${endDateExpr(period)}` —— 派生式断言只看到这个**调用字面量**，
+     * 看不到它算出什么（codex round-1 P2）。把 `lastMonth` 分支改成 `NOW()::date`，
+     * 整函数快照与派生式断言全绿，而 staff 的上月客活会把"9 月才入会的人"算进 8 月，
+     * 与 admin 静默分叉 —— 正好是本轮刚合并掉的那个分叉。
+     * 两个生产者一起钉：`endDateExpr` 是守卫的终点，`startDateExpr` 是同一条 SQL 的区间起点。
+     */
+    it('staff 的区间端点生产者整函数快照（守卫终点的实际含义）', () => {
+      expect(fnSource(staffSrc, STAFF_MGMT_TRAFFIC, 'endDateExpr')).toBe(
+        'function endDateExpr(period) { ' +
+          "if (period === 'lastMonth') { return `(date_trunc('month', NOW()) - INTERVAL '1 day')::date` } " +
+          'return `NOW()::date` }',
+      )
+      expect(fnSource(staffSrc, STAFF_MGMT_TRAFFIC, 'startDateExpr')).toBe(
+        'function startDateExpr(period) { ' +
+          "if (period === 'month') { return `date_trunc('month', NOW())::date` } " +
+          "if (period === 'lastMonth') { return `date_trunc('month', NOW() - INTERVAL '1 month')::date` } " +
+          "return `date_trunc('year', NOW())::date` }",
+      )
     })
 
     it('反向验证：删守卫 / 改分母 / 改表头 都会红', () => {
