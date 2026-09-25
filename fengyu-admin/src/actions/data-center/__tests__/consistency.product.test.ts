@@ -853,11 +853,16 @@ describe('品项板块两端口径一致性守护', () => {
       }
     })
 
-    it('业绩出口读 period_agg 全部行（不得在出口处再滤掉负数）', () => {
+    it('业绩出口读 period_agg 全部行（不得在出口处再滤掉负数）；KPI cohort 三选一原样', () => {
       const kpiBody = normalize(functionBody(adminSrc, 'queryCycle').replace(/--[^\n]*/g, ' '))
-      const kpiOut = /\)\s*(SELECT COUNT\(DISTINCT c\.client_user_id\)[\s\S]*?)\s*`\)/.exec(kpiBody)?.[1] ?? ''
-      expect(kpiOut, 'admin KPI 出口 SELECT 变了').toBe(
-        'SELECT COUNT(DISTINCT c.client_user_id) AS count, COALESCE(SUM(pa.day_received), 0) AS revenue ' +
+      // 从 cohort 起整段钉到模板结尾：三选一的嵌套子模板也在其中（上面 templates() 的惰性切片会在
+      // 第一个嵌套反引号处截断，看不到这一段 —— 闸门 2 round-1 GLM 指出的盲区）
+      expect((kpiBody.match(/\bcohort AS \(/g) ?? []).length, 'admin KPI 的 cohort 声明不唯一').toBe(1)
+      const kpiTail = /\bcohort AS \(([\s\S]*?)\s*`\)/.exec(kpiBody)?.[1] ?? ''
+      expect(kpiTail, 'admin KPI 的 cohort 三选一或出口 SELECT 变了').toBe(
+        " ${ group === 'trial' ? sql`SELECT client_user_id, grp FROM tiyan` : group === 'new' " +
+          "? sql`SELECT client_user_id, grp FROM xinzeng` : sql`SELECT client_user_id, grp FROM fugou` } ) " +
+          'SELECT COUNT(DISTINCT c.client_user_id) AS count, COALESCE(SUM(pa.day_received), 0) AS revenue ' +
           'FROM cohort c LEFT JOIN period_agg pa ON pa.client_user_id = c.client_user_id AND pa.grp = c.grp',
       )
       const staffSql = templates()[2][1]
