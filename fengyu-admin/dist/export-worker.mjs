@@ -182256,7 +182256,7 @@ function buildRemainingCardsModel(sqlRows, dictionary) {
       storeId: source.storeId,
       storeName: source.storeName,
       customerName: source.customerName ?? "",
-      phoneMasked: source.phone ? formatPhoneSafe(source.phone) : "",
+      phoneMasked: formatPhoneSafe(normalizePhone(source.phone)),
       level: memberLevel || customerType,
       remaining,
       cells,
