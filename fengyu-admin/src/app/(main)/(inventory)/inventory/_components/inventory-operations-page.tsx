@@ -1040,7 +1040,7 @@ function OperationWorkspace({
           {operation === 'item-company-request' && <ItemCompanyReplenishmentForm locations={locations} onSuccess={handleSuccess} />}
           {operation === 'purchase-order' && <PurchaseOrderForm locations={locations} canViewPrice={canViewPrice} onSuccess={handleSuccess} />}
           {operation === 'market-report-summary' && <MarketReportSummaryForm locations={locations} onSuccess={handleSuccess} />}
-          {operation === 'company-shipment' && <CompanyShipmentForm locations={locations} markets={shipmentMarketTargets ?? []} prefill={prefill} onSuccess={handleSuccess} />}
+          {operation === 'company-shipment' && <CompanyShipmentForm locations={locations} markets={shipmentMarketTargets ?? []} prefill={prefill} onSuccess={handleSuccess} onBusyChange={setFormBusy} />}
           {operation === 'market-receipt' && <ShipmentReceiptForm kind="market" prefill={prefill} onSuccess={handleSuccess} />}
           {operation === 'supply-chain-receipt' && <SupplyChainPurchaseReceiptForm locations={locations} canViewPrice={canViewPrice} prefill={prefill} onSuccess={handleSuccess} />}
           {operation === 'supply-chain-purchase-cancel' && <SupplyChainPurchaseCancelForm prefill={prefill} onSuccess={handleSuccess} />}
@@ -2868,6 +2868,7 @@ function CompanyShipmentForm({
   markets,
   prefill,
   onSuccess,
+  onBusyChange,
 }: {
   locations: InventoryLocationRow[]
   /**
@@ -2878,6 +2879,11 @@ function CompanyShipmentForm({
   /** 待办区「去发货」带来的报货单预选券 */
   prefill?: OperationFormPrefill | null
   onSuccess: (message: string) => void
+  /**
+   * 提交在途上报给工作区（与通用建单表单同一套 formBusy）：在途时锁业务卡片与「关闭」，
+   * 否则关掉工作区会把在途请求连同表单一起卸载，单其实发出去了界面却没有反馈。须是稳定引用。
+   */
+  onBusyChange: (busy: boolean) => void
 }) {
   // 两端都用 org_node_id：总部 / 市场的 location_id 与之同值，候选收窄与服务端入参都认它
   const headquarters = locations.filter((location) => location.locationType === '总部' && location.isActive && location.orgNodeId)
@@ -2892,6 +2898,10 @@ function CompanyShipmentForm({
   const [trackingNo, setTrackingNo] = useState('')
   const [remark, setRemark] = useState('')
   const [saving, setSaving] = useState(false)
+  useEffect(() => {
+    onBusyChange(saving)
+  }, [saving, onBusyChange])
+  useEffect(() => () => onBusyChange(false), [onBusyChange])
   const lineKeyRef = useRef(0)
   /*
    * 报货单明细是异步装载的。换市场 / 换总部 / 提交成功都会作废当前选择，
@@ -2939,6 +2949,9 @@ function CompanyShipmentForm({
   async function loadReports(ids: string[]) {
     if (ids.length === 0) return
     const epoch = epochRef.current
+    // 装载时的两端：候选列表可能是上一组条件下的旧行，或单据在候选展示后被改了状态
+    const expectedMarketId = marketId
+    const expectedSourceId = sourceOrgNodeId
     setLoadingIds((previous) => [...previous, ...ids])
     await Promise.all(ids.map(async (id) => {
       const seq = (requestSeqRef.current.get(id) ?? 0) + 1
@@ -2949,6 +2962,12 @@ function CompanyShipmentForm({
         if (!isCurrent() || !selectedRef.current.includes(id)) return
         if (!detail || detail.docType !== '市场报货') {
           toast.error(`未找到可发货的市场报货单 ${id}`)
+          dropSelected(id)
+          return
+        }
+        // 与 createItemCompanyShipment 同口径复核：已完成 + 发起方 = 收货市场 + 接收方 = 发货总部
+        if (detail.status !== '已完成' || detail.sourceOrgNodeId !== expectedMarketId || detail.targetOrgNodeId !== expectedSourceId) {
+          toast.error(`市场报货单 ${id} 不是当前收货市场报给该总部的已完成单，已取消勾选`)
           dropSelected(id)
           return
         }

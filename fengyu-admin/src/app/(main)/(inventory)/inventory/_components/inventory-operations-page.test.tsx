@@ -2159,6 +2159,77 @@ describe('品项公司发货引用市场报货单（#336b）', () => {
     expect(screen.queryByText('正在加载市场报货明细')).toBeNull()
   })
 
+  it('装载时复核报货单两端与状态：旧候选行 / 已变状态的单不带出明细并取消勾选', async () => {
+    const stale = report('SBH-7', 'M2')
+    vi.mocked(getInventoryCoreDocById).mockResolvedValue(reportDetail(stale))
+    renderPage({ level: 'supply-chain', operation: 'company-shipment', locations: [HQ], shipmentMarketTargets: [M1], candidates: [stale] })
+    fireEvent.click(await screen.findByRole('checkbox', { name: '选择 SBH-7' }))
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('市场报货单 SBH-7 不是当前收货市场报给该总部的已完成单，已取消勾选'))
+    expect(screen.queryByText(/报货 30/)).toBeNull()
+    expect(screen.queryByText(/^已选 /)).toBeNull()
+
+    vi.mocked(getInventoryCoreDocById).mockResolvedValue(reportDetail({ ...report('SBH-8'), status: '已取消' }))
+    fireEvent.click(await screen.findByRole('checkbox', { name: '选择 SBH-7' }))
+    await waitFor(() => expect(toast.error).toHaveBeenCalledTimes(2))
+  })
+
+  it('同一报货明细同一批次重复两行：前端先拦，按服务端口径提示合并', async () => {
+    const row = report('SBH-1')
+    vi.mocked(getInventoryCoreDocById).mockResolvedValue(reportDetail(row))
+    renderPage({ level: 'supply-chain', operation: 'company-shipment', locations: [HQ], shipmentMarketTargets: [M1], candidates: [row] })
+    fireEvent.click(await screen.findByRole('checkbox', { name: '选择 SBH-1' }))
+    await screen.findByText(/报货 30 · 已发 10 · 未发 20/)
+    fireEvent.change(screen.getByLabelText(/^正常发货/), { target: { value: '5' } })
+    fireEvent.click(screen.getByRole('button', { name: '加批次 精华液 50ml SBH-1' }))
+    fireEvent.change(screen.getAllByRole('spinbutton')[1], { target: { value: '5' } })
+    await chooseLot(0, '42')
+    await chooseLot(1, '42')
+    submitShipment()
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('同一报货明细的同一批次不能重复填写，请合并数量'))
+    expect(createItemCompanyShipment).not.toHaveBeenCalled()
+  })
+
+  it('两张报货单：未发量跨单合计，按各自报货行提交；提交在途锁住「关闭」', async () => {
+    const a = report('SBH-1')
+    const b = report('SBH-2')
+    vi.mocked(getInventoryCoreDocById).mockImplementation(async (id) => (
+      id === 'SBH-1' ? reportDetail(a, 11, 30, 10) : reportDetail(b, 12, 4, 0)
+    ))
+    let resolveCreate: (value: { id: string }) => void = () => {}
+    vi.mocked(createItemCompanyShipment).mockImplementationOnce(() => new Promise((resolve) => { resolveCreate = resolve }))
+    renderPage({ level: 'supply-chain', operation: 'company-shipment', locations: [HQ], shipmentMarketTargets: [M1], candidates: [a, b] })
+    fireEvent.click(await screen.findByRole('checkbox', { name: '选择 SBH-1' }))
+    fireEvent.click(await screen.findByRole('checkbox', { name: '选择 SBH-2' }))
+    await screen.findByText(/SBH-2 · 50ml · 报货 4 · 已发 0 · 未发 4/)
+    expect(screen.getByRole('status', { name: '未发进度' })).toHaveTextContent('所选报货单还有 24 件未发')
+    await chooseLot(0, '42')
+    await chooseLot(1, '41')
+    submitShipment()
+    await waitFor(() => expect(createItemCompanyShipment).toHaveBeenCalledWith(expect.objectContaining({
+      items: [
+        { reportItemId: 11, lotId: 42, quantity: 20, remark: null },
+        { reportItemId: 12, lotId: 41, quantity: 4, remark: null },
+      ],
+      giftItems: [],
+    })))
+    expect(screen.getByRole('button', { name: '关闭' })).toBeDisabled()
+    await act(async () => { resolveCreate({ id: 'GFH-1' }) })
+    await waitFor(() => expect(screen.getByRole('button', { name: '关闭' })).toBeEnabled())
+  })
+
+  it('「去发货」的报货单已不可发（状态变了）：提示且不回填市场与已选', async () => {
+    const row = report('SBH-9', 'M2')
+    vi.mocked(getInventoryCoreDocById).mockResolvedValue(reportDetail({ ...row, status: '已取消' }, 91, 5, 0))
+    mockDocs({ inbox: segment([row]) })
+    renderPage({ level: 'supply-chain', operation: 'company-shipment', locations: [HQ], shipmentMarketTargets: [M1, M2], candidates: [row] })
+    await openDocsTab()
+    fireEvent.click(await screen.findByRole('button', { name: '去发货 SBH-9' }))
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('该市场报货单当前不可发货，请刷新待办'))
+    const marketSelect = screen.getByRole('option', { name: '请选择市场' }).closest('select') as HTMLSelectElement
+    expect(marketSelect.value).toBe('')
+    expect(screen.queryByText(/^已选 /)).toBeNull()
+  })
+
   it('待办「去发货」：带出收货市场、发货总部并勾上这张报货单', async () => {
     const row = report('SBH-9', 'M2')
     vi.mocked(getInventoryCoreDocById).mockResolvedValue(reportDetail(row, 91, 5, 0))
