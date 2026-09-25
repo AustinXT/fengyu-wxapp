@@ -57,6 +57,7 @@ Component({
     // null = 未知（旧云函数不下发 / 查询失败）：不做停用纠正，也不撤已知的停用标记
     inactiveStoreIds: null as string[] | null,
     optionsLoaded: false,
+    optionsSeq: 0,
     userPicked: false,
   },
 
@@ -95,9 +96,17 @@ Component({
   },
 
   methods: {
+    /**
+     * 拉范围数据。首次加载后校正默认范围；之后每次打开弹窗重拉（会话中门店可能被启停），
+     * 重拉只刷新可选列表、不动当前范围——当前范围的启停由页面按 summary 回包同步，不在这里自动换店。
+     */
     async loadOptions() {
+      const seq = this.data.optionsSeq + 1
+      const initial = !this.data.optionsLoaded
+      this.setData({ optionsSeq: seq })
       try {
         const res = await callStaffApi<ScopeOptionsResp>('mgmtDashboard.scopeOptions', {})
+        if (seq !== this.data.optionsSeq) return
         const allowAll = !!res.allowAll
         const allowedMarketIds = res.allowedMarketIds || []
         const marketList: MarketMini[] = (res.markets || []).map(m => ({ id: m.id, name: m.name }))
@@ -115,9 +124,11 @@ Component({
             : null,
           optionsLoaded: true,
         })
-        this._normalizeApplied()
+        if (initial) this._normalizeApplied()
       } catch (err) {
-        wx.showToast({ title: '加载范围失败', icon: 'none' })
+        if (seq !== this.data.optionsSeq) return
+        // 重拉失败保留已有列表，不打扰；首次失败才提示
+        if (initial) wx.showToast({ title: '加载范围失败', icon: 'none' })
       }
     },
 
@@ -191,8 +202,8 @@ Component({
     },
 
     onOpen() {
-      // 首次加载失败时弹窗里没有可选项：打开时重拉一次
-      if (!this.data.optionsLoaded) this.loadOptions()
+      // 每次打开都重拉：首次加载失败时补救；会话中门店被启停时刷新可选列表（#400 评审发现）
+      this.loadOptions()
       const applied = this.data.applied as Scope
       this.setData({
         showPopup: true,

@@ -297,6 +297,14 @@ describe('hub · summary 空态以服务端 scope.inactive 为准', () => {
     expect(hub.data.summaryEmptyHint).toBe('')
   })
 
+  test('在营门店展示过真实数字 → 关掉自动纠正（之后被停用，重建 picker 也不自动换店）', async () => {
+    mocked.mockResolvedValueOnce(summaryResp({ type: 'store', id: 'store-lw', name: '九江蓝湾店', inactive: false }))
+    const hub = hubAt({ scopeType: 'store', scopeId: 'store-lw', scopeName: '九江蓝湾店' })
+    expect(hub.data.scopeAutoCorrect).toBe(true)
+    await hub.loadSummary()
+    expect(hub.data.scopeAutoCorrect).toBe(false)
+  })
+
   test('子页入口透传 scopeInactive=1（客量 / 销售 / 品项 / 顾客）', () => {
     const hub = hubAt({ scopeType: 'store', scopeId: 'store-zh', scopeName: '九江中辉店', inactive: true })
     for (const entry of ['traffic', 'sales', 'products', 'customers']) {
@@ -457,6 +465,36 @@ describe('scope-picker · 纠正落在停用门店的默认范围', () => {
     const picker = pickerWith({ scopeType: 'all', scopeId: null, scopeName: '全部市场' })
     picker._confirmAndEmit({ scopeType: 'store', marketId: 'mkt-jj', scopeId: 'store-lw', scopeName: '九江凤御 · 九江蓝湾店' })
     expect(picker.events.at(-1).detail).toMatchObject({ marketId: 'mkt-jj' })
+  })
+
+  test('打开弹窗重拉选项：刷新可选列表（会话中启停互换），但不动当前范围、不广播', async () => {
+    mocked.mockResolvedValueOnce(options())
+    const picker = pickerWith({ scopeType: 'store', marketId: 'mkt-jj', scopeId: 'store-lw', scopeName: '九江凤御 · 九江蓝湾店' })
+    await picker.loadOptions()
+    picker.events.length = 0
+    // 蓝湾停用、中辉启用
+    mocked.mockResolvedValueOnce(options({
+      markets: [{ id: 'mkt-jj', name: '九江凤御', stores: [{ storeId: 'store-zh', storeName: '九江中辉店' }] }],
+      inactiveStores: [{ storeId: 'store-lw', storeName: '九江蓝湾店' }],
+    }))
+    picker.onOpen()
+    await vi.waitFor(() => expect(picker.data.storeListByMarket['mkt-jj'][0].storeId).toBe('store-zh'))
+    expect(picker.data.applied.scopeId).toBe('store-lw')
+    expect(picker.events).toEqual([])
+  })
+
+  test('并发重拉：迟到的旧响应被丢弃', async () => {
+    mocked.mockResolvedValueOnce(options())
+    const picker = pickerWith({ scopeType: 'all', scopeId: null, scopeName: '全部市场' })
+    await picker.loadOptions()
+    let resolveOld!: (v: unknown) => void
+    mocked.mockReturnValueOnce(new Promise((r) => { resolveOld = r }) as any)
+    const older = picker.loadOptions()
+    mocked.mockResolvedValueOnce(options({ markets: [{ id: 'mkt-new', name: '新市场', stores: [] }] }))
+    await picker.loadOptions()
+    resolveOld(options({ markets: [{ id: 'mkt-old', name: '旧市场', stores: [] }] }))
+    await older
+    expect(picker.data.marketList.map((m: any) => m.id)).toEqual(['mkt-new'])
   })
 
   test('只关店、节点在营（不在下拉也不在 inactiveStores）→ 不纠正，保留其历史数据', async () => {

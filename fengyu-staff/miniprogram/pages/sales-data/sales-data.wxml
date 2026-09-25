@@ -28,7 +28,7 @@
 
   <!-- 三态壳：loading / error 时由组件接管 -->
   <!-- empty 仅在 scope 落到已停用门店时出现（#400）；在营门店无业绩照常渲染 0 -->
-  <mgmt-data-state state="{{ state }}" empty-text="{{ inactiveText }}" empty-hint="返回上一页可切换范围" bind:retry="onRetry">
+  <mgmt-data-state state="{{ state }}" empty-text="{{ inactiveText }}" empty-hint="可返回上一页调整查看范围" bind:retry="onRetry">
     <!-- 业绩与实耗区 -->
     <view class="sd-section">
       <view class="sd-section-title">业绩与实耗</view>

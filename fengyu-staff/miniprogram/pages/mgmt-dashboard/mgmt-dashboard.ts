@@ -411,6 +411,8 @@ Page({
         displayKey: key,
         loading: false,
         'scope.inactive': false,
+        // 这家店的真实数字已经展示过：之后它在会话中被停用，picker 重建时也不能自动换到别家（#400 评审发现）
+        scopeAutoCorrect: false,
         'defaultScope.inactive': false,
         summaryState: 'content',
       })
