@@ -89,8 +89,9 @@ async function loadScopeOptions(session: AuthSession): Promise<DataCenterScopeOp
         seeAll ? undefined : inArray(orgNodes.id, visibleMarketIds as string[]),
       ),
     )
-    // 例外：sortOrder 手工排序权重
-    .orderBy(asc(orgNodes.sortOrder))
+    // 例外：sortOrder 手工排序权重；name / id 兜底——sortOrder 默认 0 会并列，无门店市场账号的默认范围
+    // 取「第一个」直接授权的空市场，顺序不确定会让每次请求落到不同市场（#399）
+    .orderBy(asc(orgNodes.sortOrder), asc(orgNodes.name), asc(orgNodes.id))
 
   // 门店列表（JOIN 门店节点拿所属市场 = 节点 parent_id）。
   // 在营与停用一次查出、内存分流：两份列表出自同一快照，查出的同一家门店不会同时进两份列表。

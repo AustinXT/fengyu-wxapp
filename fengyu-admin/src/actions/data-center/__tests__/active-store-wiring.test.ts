@@ -89,11 +89,11 @@ const DROPDOWN_STORE_COLUMNS =
   'select "stores"."store_id", "stores"."store_name", "org_store"."parent_id", "org_store"."is_active" from "stores" inner join "org_nodes" "org_store" on "stores"."org_node_id" = "org_store"."id"'
 const DROPDOWN_SQL = {
   hq: [
-    'select "id", "name" from "org_nodes" where "org_nodes"."type" = $1 order by "org_nodes"."sort_order" asc',
+    'select "id", "name" from "org_nodes" where "org_nodes"."type" = $1 order by "org_nodes"."sort_order" asc, "org_nodes"."name" asc, "org_nodes"."id" asc',
     `${DROPDOWN_STORE_COLUMNS} where "org_store"."type" = $1 order by "stores"."store_name" asc`,
   ],
   market: [
-    'select "id", "name" from "org_nodes" where ("org_nodes"."type" = $1 and "org_nodes"."id" in ($2)) order by "org_nodes"."sort_order" asc',
+    'select "id", "name" from "org_nodes" where ("org_nodes"."type" = $1 and "org_nodes"."id" in ($2)) order by "org_nodes"."sort_order" asc, "org_nodes"."name" asc, "org_nodes"."id" asc',
     `${DROPDOWN_STORE_COLUMNS} where ("org_store"."type" = $1 and "stores"."store_id" in ($2, $3)) order by "stores"."store_name" asc`,
   ],
 }

@@ -6,6 +6,7 @@
  * 用 pg-proxy 真 drizzle 截获 SQL，库返回空行（本文件只验「能走通 + 走对分支」，数值口径由各板块单测负责）。
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
+import { PgDialect } from 'drizzle-orm/pg-core'
 import type { AuthSession } from '@/lib/types'
 
 const { captured, mockGetSession } = vi.hoisted(() => ({ captured: [] as Array<{ sql: string; params: unknown[] }>, mockGetSession: vi.fn() }))
@@ -18,6 +19,19 @@ vi.mock('@/lib/permissions', async (importOriginal) => ({
   expandVisibleMarketIds: vi.fn(async () => ['PX']),
   expandMarketVisibility: vi.fn(async () => ({ visible: ['PX'], granted: ['PX'] })),
 }))
+// 截获每次 scopeFilterSql 的返回值：零授权门店时每一次都必须是字面 FALSE（门店维度无从越权）
+const { scopeFilterResults } = vi.hoisted(() => ({ scopeFilterResults: [] as unknown[] }))
+vi.mock('@/lib/data-center/scope-sql', async (importOriginal) => {
+  const mod = await importOriginal<typeof import('@/lib/data-center/scope-sql')>()
+  return {
+    ...mod,
+    scopeFilterSql: (...args: Parameters<typeof mod.scopeFilterSql>) => {
+      const fragment = mod.scopeFilterSql(...args)
+      scopeFilterResults.push(fragment)
+      return fragment
+    },
+  }
+})
 vi.mock('@/db', async () => {
   const { drizzle } = await import('drizzle-orm/pg-proxy')
   const db = drizzle(async (sql: string, params: unknown[]) => {
@@ -77,10 +91,11 @@ afterAll(() => {
 })
 
 describe('#399 无门店市场账号 · 市场范围取数', () => {
-  it.each(CALLS.map(([file, name]) => `${file}:${name}`))('%s 正常返回（不被拒、不抛错）且确实取数', (key) => {
+  it.each(CALLS.map(([file, name]) => `${file}:${name}`))('%s 正常返回（不被拒、不抛错）且确实跑了统计 SQL', (key) => {
     const r = outcome.get(key)!
     expect(r.error).toBeNull()
-    expect(r.sqls.length).toBeGreaterThan(0)
+    // 展示名 / 配置 / 字典查询不算：至少一条带门店或锚定维度的统计 SQL（防 action 提前 return 恒绿）
+    expect(r.sqls.some((q) => /store_id|anchor_market_id/.test(q.sql))).toBe(true)
   })
 
   it('人效板按锚定市场收录无门店员工（anchor_market_id = 品项公司）', () => {
@@ -89,11 +104,11 @@ describe('#399 无门店市场账号 · 市场范围取数', () => {
     expect(anchored.length).toBeGreaterThan(0)
   })
 
-  it('门店维度统计对空授权门店集合恒为 FALSE（不会越权看到别的门店）', () => {
-    // scopeFilterSql：非 admin 且 scopeStoreIds 为空 → FALSE；这里抽查销售板每条带门店列的 SQL 都含 FALSE 条件
-    const { sqls } = outcome.get('sales:getSalesBoard')!
-    const storeScoped = sqls.filter((q) => /store_id/.test(q.sql))
-    expect(storeScoped.length).toBeGreaterThan(0)
-    for (const q of storeScoped) expect(q.sql).toMatch(/\bfalse\b/i)
+  it('全部 action 的门店维度过滤（scopeFilterSql）对空授权门店集合每一次都是字面 FALSE', () => {
+    // 覆盖 4 板块 + 5 报表 + 导出里所有 scopeFilterSql 调用；锚定员工另走 orgAnchorScopeSql（上一条）
+    expect(scopeFilterResults.length).toBeGreaterThan(20)
+    const dialect = new PgDialect()
+    const rendered = new Set(scopeFilterResults.map((f) => dialect.sqlToQuery(f as never).sql.trim().toUpperCase()))
+    expect([...rendered]).toEqual(['FALSE'])
   })
 })

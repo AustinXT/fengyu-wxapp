@@ -306,7 +306,8 @@ export async function expandScopeDeptNodeIds(roles: AuthSession['roles']): Promi
  * - 市场角色 → scopeId 直接计入
  * - 门店角色 → 通过 org_nodes.parent_id 反查所属市场计入
  *
- * 用于 admin /commission /products /coupons 三处 `getMarkets()` 下拉列表 scope 过滤。
+ * 用于 admin /commission /products /coupons /merchants 的市场下拉 scope 过滤，以及数据中心
+ * validateScope 的市场校验（门店级账号可选所属市场；锚定员工另按直接授权收窄，见 scope-sql orgAnchorScopeSql）。
  */
 export async function expandVisibleMarketIds(
   session: AuthSession,

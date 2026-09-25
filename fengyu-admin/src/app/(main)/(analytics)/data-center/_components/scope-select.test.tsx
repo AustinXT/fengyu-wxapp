@@ -27,7 +27,7 @@ describe('ScopeSelect · 无门店市场（#399）', () => {
   })
 
   it('单店 + 品项公司：解锁，市场下拉可选品项公司；不出现「全部授权门店」（只有一家店）', () => {
-    const { marketSelect } = renderWith({ topLevel: 'store', inactiveStores: [], markets: [nc, px] }, { scope: 'store', scopeId: 'S1' })
+    const { marketSelect } = renderWith({ topLevel: 'market', inactiveStores: [], markets: [nc, px] }, { scope: 'store', scopeId: 'S1' })
     expect(marketSelect.disabled).toBe(false)
     const labels = Array.from(marketSelect.options).map((o) => o.textContent)
     expect(labels).toContain('品项公司')
