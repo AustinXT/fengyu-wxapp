@@ -1394,7 +1394,7 @@ describe('候选单选择改走服务端检索（#338）', () => {
     renderPage({ level: 'supply-chain', operation: 'supply-chain-receipt', candidates: [] })
 
     await openDocsTab()
-    fireEvent.click(screen.getByRole('button', { name: '去收货 CGD-77' }))
+    fireEvent.click(await screen.findByRole('button', { name: '去收货 CGD-77' }))
 
     expect(await screen.findByText(/^已选 CGD-77 · /)).toBeInTheDocument()
     // 候选按用途向服务端查，不再由前端对预加载单据过滤
@@ -1408,7 +1408,7 @@ describe('候选单选择改走服务端检索（#338）', () => {
     renderPage({ level: 'supply-chain', operation: 'supply-chain-receipt', candidates: [row] })
 
     await openDocsTab()
-    fireEvent.click(screen.getByRole('button', { name: '去收货 CGD-88' }))
+    fireEvent.click(await screen.findByRole('button', { name: '去收货 CGD-88' }))
 
     await waitFor(() => expect(screen.getByRole<HTMLInputElement>('radio', { name: '选择 CGD-88' }).checked).toBe(true))
   })
@@ -2142,7 +2142,7 @@ describe('品项公司发货引用市场报货单（#336b）', () => {
 
     await openDocsTab()
     expect(screen.getByText('待发货：仍有未发量的市场报货单')).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: '去发货 SBH-9' }))
+    fireEvent.click(await screen.findByRole('button', { name: '去发货 SBH-9' }))
 
     expect(await screen.findByText(/报货 5 · 已发 0 · 未发 5/)).toBeInTheDocument()
     const marketSelect = screen.getByRole('option', { name: '市场二部' }).closest('select') as HTMLSelectElement
