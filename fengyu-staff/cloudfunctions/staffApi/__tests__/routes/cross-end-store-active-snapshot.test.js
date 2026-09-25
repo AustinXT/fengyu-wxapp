@@ -128,7 +128,7 @@ describe('门店在营判定跨端字面量守护（#400）', () => {
      * CI 里覆盖经营分析站的只有这一条（analyst 自身 vitest 不进 CI，#382）。
      * 不挑子串、也不按函数切片（切片会被「注释包住旧函数、另写一个同名实现」或
      * 「别名 import 指向别的模块」绕过——codex round-2），直接把决定「哪些门店计入」的
-     * 5 个文件**整份原文**（含 import、注释）钉 sha256：任何改动都会红。
+     * 文件（清单见 `ANALYST_FILE_SHA`）**整份原文**（含 import、注释）钉 sha256：任何改动都会红。
      * 红了先跑 analyst `src/lib/__tests__/store-status-cross-end.test.ts` 与 `analyst-scope.test.ts`
      * （那里有逐段可读的语义断言、import 来源 AST 校验、行为测试），确认口径没漂再更新这里的哈希。
      * 哈希取原始字节（只把 CRLF 规范成 LF）：换行在 JS 里有语义（ASI，`return` 后换行即返回 undefined），
