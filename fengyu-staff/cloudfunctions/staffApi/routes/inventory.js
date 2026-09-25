@@ -1250,6 +1250,88 @@ async function reportableSkuOptions(ctx) {
 }
 
 /**
+ * 门店盘点可选 SKU（#352）。
+ *
+ * 与 reportableSkuOptions 的差别只在口径：盘点要能盘到本店手上的任何货，不限 is_reportable
+ * （createDoc 对盘点明细也只要求 SKU 启用，见 inventorySkuSnapshot；admin 盘点同样用全量 SKU 检索）。
+ * 归属限制照旧：无归属或归属本店所属市场。
+ *
+ * 刻意**不下发账面数**：盘点是盲盘，录入时看到账面数就会照抄；账面数由 createDoc 在提交时记入
+ * stock_snapshot。本店有货的 SKU 排在前面，免得在全量目录里翻找。
+ */
+async function stocktakeSkuOptions(ctx) {
+  await requireStaffBound()(ctx, async () => {})
+  const {
+    locationId,
+    keyword,
+    page = 1,
+    pageSize = 50,
+  } = ctx.event.payload || {}
+
+  await syncInventoryLocations()
+  const sourceOrgNodeId = locationId || ctx.auth.effectiveStoreId
+  await assertInventoryWriteStoreScope(pg, ctx.auth, sourceOrgNodeId)
+  const source = await ensureStoreLocation(sourceOrgNodeId)
+  if (!source.parent_location_id) {
+    throw new Error('INVALID_STATE: 当前门店未关联市场，无法查询盘点 SKU')
+  }
+
+  const limit = Math.max(1, Math.min(100, parseInt(pageSize, 10) || 50))
+  const offset = (Math.max(1, parseInt(page, 10) || 1) - 1) * limit
+  // 主查询与 count 共用同一组条件与参数（$1 = 市场，$2 = 关键词），口径不会漂；
+  // 本店主体只在排序里用，放在最后一个参数。
+  const conditions = [
+    'sku.is_active = true',
+    '(sku.owner_market_id IS NULL OR sku.owner_market_id = $1)',
+  ]
+  const params = [source.parent_location_id]
+  if (keyword) {
+    const escaped = String(keyword).replace(/[%_]/g, '\\$&')
+    conditions.push('(sku.sku_id ILIKE $2 OR sku.product_code ILIKE $2 OR sku.product_name ILIKE $2 OR sku.spec_name ILIKE $2)')
+    params.push(`%${escaped}%`)
+  }
+  const whereSql = `WHERE ${conditions.join(' AND ')}`
+  const storeParamIndex = params.length + 1
+  const rows = await pg.query(
+    `SELECT sku.sku_id, sku.product_code, sku.product_name, sku.spec_name,
+            sku.supplier, sku.product_series,
+            EXISTS (
+              SELECT 1 FROM inventory_stock_lots lot
+               WHERE lot.sku_id = sku.sku_id
+                 AND lot.location_id = $${storeParamIndex}
+                 AND lot.quantity_on_hand > 0
+            ) AS in_stock
+       FROM inventory_skus sku
+       ${whereSql}
+   ORDER BY in_stock DESC, sku.product_name, sku.spec_name NULLS LAST, sku.sku_id
+      LIMIT ${limit} OFFSET ${offset}`,
+    [...params, source.location_id],
+  )
+  const countRows = await pg.query(
+    `SELECT COUNT(*)::int AS cnt
+       FROM inventory_skus sku
+       ${whereSql}`,
+    params,
+  )
+
+  ctx.result = {
+    items: rows.map((row) => ({
+      skuId: row.sku_id,
+      productCode: row.product_code,
+      skuName: row.product_name,
+      specName: row.spec_name || null,
+      supplier: row.supplier || null,
+      productSeries: row.product_series || null,
+      inStock: Boolean(row.in_stock),
+    })),
+    total: Number(countRows[0]?.cnt || 0),
+    page: Math.max(1, parseInt(page, 10) || 1),
+    pageSize: limit,
+  }
+  return ctx.result
+}
+
+/**
  * 同市场门店调货的接收门店选择器。
  *
  * 仅验证发起门店的库存写权限；接收门店可不在发起人的可见范围内，但必须与发起门店同市场。
@@ -2335,6 +2417,7 @@ async function uploadReceipt(ctx) {
 module.exports = {
   stockList,
   reportableSkuOptions,
+  stocktakeSkuOptions,
   storeOptions,
   docOrgOptions,
   docList,

@@ -1029,6 +1029,112 @@ describe('inventory 办理选项无金额响应', () => {
     expect(ctx.result).toMatchObject({ total: 21, page: 2, pageSize: 20 })
   })
 
+  test('stocktakeSkuOptions 不限可报货、不下发账面数与金额，本店有货的排前（#352）', async () => {
+    const ctx = createCtx({ payload: { locationId: 'store-001', keyword: '凝胶', page: 2, pageSize: 20 } })
+    pg.query.mockImplementation(async (query) => {
+      const sql = String(query)
+      if (sql.includes('WITH RECURSIVE descendants')) return [{ store_id: 'store-001' }]
+      if (sql.includes('SELECT location_id, location_type, parent_location_id')) {
+        return [{ location_id: 'store-001', location_type: '门店', parent_location_id: 'market-A' }]
+      }
+      if (sql.includes('SELECT COUNT(*)::int AS cnt') && sql.includes('FROM inventory_skus sku')) {
+        return [{ cnt: 21 }]
+      }
+      if (sql.includes('FROM inventory_skus sku')) {
+        return [{
+          sku_id: 'sku-1',
+          product_code: 'P-001',
+          product_name: '测试凝胶',
+          spec_name: null,
+          supplier: null,
+          product_series: null,
+          in_stock: true,
+          stock_reference: '7',
+          retail_price: '999.00',
+        }]
+      }
+      return []
+    })
+
+    await inventoryRoutes.stocktakeSkuOptions(ctx)
+
+    expect(ctx.result).toEqual({
+      items: [{
+        skuId: 'sku-1',
+        productCode: 'P-001',
+        skuName: '测试凝胶',
+        specName: null,
+        supplier: null,
+        productSeries: null,
+        inStock: true,
+      }],
+      total: 21,
+      page: 2,
+      pageSize: 20,
+    })
+    expect(JSON.stringify(ctx.result)).not.toMatch(/price|amount|cost|stockReference|quantity/i)
+
+    const listCall = pg.query.mock.calls.find(([sql]) => String(sql).includes('FROM inventory_skus sku') && String(sql).includes('LIMIT'))
+    const countCall = pg.query.mock.calls.find(([sql]) => String(sql).includes('SELECT COUNT(*)::int AS cnt') && String(sql).includes('FROM inventory_skus sku'))
+    for (const [sql] of [listCall, countCall]) {
+      expect(sql).toMatch(/sku\.is_active = true/)
+      expect(sql).not.toMatch(/is_reportable/)
+      expect(sql).toMatch(/\(sku\.owner_market_id IS NULL OR sku\.owner_market_id = \$1\)/)
+      expect(sql).toMatch(/sku\.product_name ILIKE \$2/)
+    }
+    expect(listCall[0]).not.toMatch(/price|amount|cost/i)
+    // 有货判定只看本店主体（第 3 个参数），排序把有货的放前面
+    expect(listCall[0]).toMatch(/lot\.location_id = \$3/)
+    expect(listCall[0]).toMatch(/ORDER BY in_stock DESC/)
+    expect(listCall[0]).toMatch(/LIMIT 20 OFFSET 20/)
+    expect(listCall[1]).toEqual(['market-A', '%凝胶%', 'store-001'])
+    expect(countCall[1]).toEqual(['market-A', '%凝胶%'])
+  })
+
+  test('stocktakeSkuOptions 无关键词时本店主体落在 $2', async () => {
+    const ctx = createCtx({ payload: { locationId: 'store-001' } })
+    pg.query.mockImplementation(async (query) => {
+      const sql = String(query)
+      if (sql.includes('WITH RECURSIVE descendants')) return [{ store_id: 'store-001' }]
+      if (sql.includes('SELECT location_id, location_type, parent_location_id')) {
+        return [{ location_id: 'store-001', location_type: '门店', parent_location_id: 'market-A' }]
+      }
+      if (sql.includes('SELECT COUNT(*)::int AS cnt')) return [{ cnt: 0 }]
+      return []
+    })
+
+    await inventoryRoutes.stocktakeSkuOptions(ctx)
+
+    const listCall = pg.query.mock.calls.find(([sql]) => String(sql).includes('FROM inventory_skus sku') && String(sql).includes('LIMIT'))
+    const countCall = pg.query.mock.calls.find(([sql]) => String(sql).includes('SELECT COUNT(*)::int AS cnt') && String(sql).includes('FROM inventory_skus sku'))
+    expect(listCall[0]).toMatch(/lot\.location_id = \$2/)
+    expect(listCall[0]).not.toMatch(/ILIKE/)
+    expect(listCall[1]).toEqual(['market-A', 'store-001'])
+    expect(countCall[1]).toEqual(['market-A'])
+    expect(ctx.result).toMatchObject({ items: [], total: 0, page: 1, pageSize: 50 })
+  })
+
+  test('stocktakeSkuOptions 无门店库存写权限时拒绝', async () => {
+    const ctx = createCtx({
+      payload: { locationId: 'store-001' },
+      auth: {
+        roleBindings: [{ role: 'customer_mgr', scopeId: 'node-store-001', scopeType: '门店' }],
+        scopeStoreIds: ['store-001'],
+      },
+    })
+    pg.query.mockImplementation(async (query, params) => (
+      String(query).includes('SELECT location_id, location_type, parent_location_id')
+        ? [{
+            location_id: params[0], org_node_id: params[0], location_type: '门店',
+            parent_location_id: 'market-A', is_active: true,
+          }]
+        : []
+    ))
+
+    await expect(inventoryRoutes.stocktakeSkuOptions(ctx)).rejects.toThrow('PERMISSION_DENIED: 无库存写入权限')
+    expect(pg.query.mock.calls.some(([sql]) => String(sql).includes('FROM inventory_skus sku'))).toBe(false)
+  })
+
   test('storeOptions 只允许有发起门店写权限的员工查询同市场接收门店', async () => {
     const ctx = createCtx({ payload: { sourceStoreId: 'store-001' } })
     pg.query.mockImplementation(async (query) => {

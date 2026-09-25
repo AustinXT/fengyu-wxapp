@@ -94,6 +94,7 @@ const routes = {
   // 库存（门店办理）
   'inventory.stockList':  () => require('./routes/inventory').stockList,
   'inventory.reportableSkuOptions': () => require('./routes/inventory').reportableSkuOptions,
+  'inventory.stocktakeSkuOptions': () => require('./routes/inventory').stocktakeSkuOptions,
   'inventory.storeOptions': () => require('./routes/inventory').storeOptions,
   'inventory.docOrgOptions': () => require('./routes/inventory').docOrgOptions,
   'inventory.docList':    () => require('./routes/inventory').docList,
