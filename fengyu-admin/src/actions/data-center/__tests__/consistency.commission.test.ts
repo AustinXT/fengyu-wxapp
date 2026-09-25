@@ -119,3 +119,69 @@ describe('明细与汇总复用同一取数链与条件（不另写一份）', (
     expect(body.match(/HAVING .*?(?= \))/g)).toEqual(['HAVING SUM(sale_commission + service_commission) <> 0'])
   })
 })
+
+describe('admin 人效板按门店 / 全局提成（efficiency.ts）与本页同一取数链与谓词', () => {
+  const efficiency = fs.readFileSync(path.resolve(__dirname, '../efficiency.ts'), 'utf8')
+  const adminSaleChain = fromChain(sliceOrFail(admin, 'const SALE_FROM = sql`', '`\n'), 'sale_payment_item_allocations')
+  const adminServiceChain = fromChain(sliceOrFail(admin, 'const SERVICE_FROM = sql`', '`\n'), 'service_commissions')
+
+  it.each([
+    ['全局', 'const qSalesCommTotal', 'const qServiceCommTotal'],
+    ['按门店', 'const qSalesCommByStore', 'const qServiceCommByStore'],
+  ])('业绩提成（%s）：取数链整段相等，谓词 = is_void + 单据类型，款项状态与归日经 performanceEventDateBetween', (_label, start, end) => {
+    const segment = sliceOrFail(efficiency, start, end)
+    expect(fromChain(segment, 'sale_payment_item_allocations')).toBe(adminSaleChain)
+    expect(staticPredicates(segment)).toEqual(["so.sale_order_type IN ('销售单', '转换单')", 'spia.is_void = FALSE'].sort())
+    expect(segment).toContain("performanceEventDateBetween('spe', cur.start, cur.end)")
+  })
+
+  it('performanceEventDateBetween 自身 = 款项状态已支付 + performance_date 区间', () => {
+    const helper = sliceOrFail(efficiency, 'function performanceEventDateBetween(', '\n}\n')
+    expect(helper).toContain(".status`)} = '已支付'")
+    expect(helper).toContain('.performance_date`)} BETWEEN ${start} AND ${end}')
+  })
+
+  it.each([
+    ['全局', 'const qServiceCommTotal', 'const qFootfallTotal'],
+    ['按门店', 'const qServiceCommByStore', '`)'],
+  ])('消耗提成（%s）：取数链与谓词闭集整段相等', (_label, start, end) => {
+    const segment = sliceOrFail(efficiency, start, end)
+    expect(fromChain(segment, 'service_commissions')).toBe(adminServiceChain)
+    expect(staticPredicates(segment)).toEqual(["so.status = '已完成'", 'sc.is_void = FALSE'].sort())
+  })
+})
+
+describe('待分配提示与 /allocations「待分配」筛选（actions/allocations.ts getPendingPayments）整段等值', () => {
+  const allocations = fs.readFileSync(path.resolve(__dirname, '../../allocations.ts'), 'utf8')
+
+  /** 「存在非 0 receipt 无有效分配 / 整笔无 receipt 但有净实收」判定块，归一两端的列引用写法 */
+  function pendingBlock(src: string): string {
+    const match = /\( EXISTS \( SELECT 1 FROM sale_payment_item_receipts spir.*?> 0 \) \)/.exec(src)
+    expect(match, '未找到待分配判定块').not.toBeNull()
+    return match![0]
+      .replace(/\$\{saleOrderPayments\.id\}/g, 'sop.id')
+      .replace(/\$\{saleOrders\.received\}/g, 'so.received')
+      .replace(/\$\{saleOrders\.refundedAmount\}/g, 'so.refunded_amount')
+      .replace(/\bfalse\b/g, 'FALSE')
+      .replace(/\( /g, '(')
+      .replace(/ \)/g, ')')
+  }
+
+  it('判定块逐字相等', () => {
+    const ours = pendingBlock(sliceOrFail(admin, 'export function pendingAllocationSql(', '\n}\n'))
+    const theirs = pendingBlock(sliceOrFail(allocations, 'export const getPendingPayments', 'inArray(saleOrders.saleOrderType'))
+    expect(ours).toBe(theirs)
+  })
+
+  it('其余条件同源：待分配状态 / 销售单与转换单 / 排除 workfine 历史单 / 按款项归属日期', () => {
+    const ours = sliceOrFail(admin, 'export function pendingAllocationSql(', '\n}\n')
+    expect(ours).toContain("sop.allocation_status = '待分配'")
+    expect(ours).toContain("so.sale_order_type IN ('销售单', '转换单')")
+    expect(ours).toContain("so.legacy_source IS DISTINCT FROM 'workfine'")
+    expect(ours).toContain('sop.performance_attribution_date BETWEEN')
+    const theirs = sliceOrFail(allocations, 'export const getPendingPayments', 'const where = and(')
+    expect(theirs).toContain("inArray(saleOrders.saleOrderType, ['销售单', '转换单']")
+    expect(theirs).toContain("${saleOrders.legacySource} IS DISTINCT FROM 'workfine'")
+    expect(theirs).toContain("dateBasis ?? 'attribution'")
+  })
+})

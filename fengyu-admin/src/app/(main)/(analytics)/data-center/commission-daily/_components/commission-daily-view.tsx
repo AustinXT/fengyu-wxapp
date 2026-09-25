@@ -175,7 +175,7 @@ export function CommissionDailyView({ data, today }: { data: CommissionDailyResu
       {data.pending.count > 0 && (
         <div className="flex items-center gap-2 text-sm text-[var(--color-status-pending)]" data-testid="commission-pending">
           <AlertCircle className="size-4" />
-          <span>
+          <span title="按本页范围统计（与本页一样不含已停用门店），款项归属日期在所选月">
             本月待分配 {formatCount(data.pending.count)} 笔 / ¥{formatAmount(data.pending.amount)}，分配后本页数字会随之变化
           </span>
           {data.canLinkAllocations && (

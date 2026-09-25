@@ -1263,6 +1263,10 @@ SQL 单源 `fengyu-admin/src/lib/data-center/commission-sql.ts`，与 staff 管�
 | 明细分配金额 | 销售行 = `spia.allocated_amount`；服务行 = `round(round(单价 × 次数, 2) × allocation_ratio, 2)`（同服务提成导出） |
 | 平均提成点 | Σ提成 ÷ Σ分配金额（含负数行、0 费率行） |
 | 明细排序 / 分页 | keyset `(biz_date DESC, source ASC, source_id DESC)`；spia 与 service_commissions 的 id 各自自增会撞号，唯一键必须是 (source, source_id)。游标绑定筛选签名，换筛选回到第一页 |
+| 实收合计（明细） | 按 receipt 去重（多人 / 多角色分配同一笔时明细每人一行、金额相同） |
+| 归属差异 | 本页按**单据门店**归属；员工排行榜收入按**员工**归属（#299 个人全域产出，含跨店与停用门店），同一员工数字不同属预期 |
+| 顾客姓名脱敏 | 没有 `customer:list` 即 `maskName`；判定按收窄后的**每条**角色授权（不拿全部角色动作并集，防跨角色拼接），页面与导出同一处 |
+| 待分配范围差 | 待分配提示按本页 scope（含启用门店过滤），点进 /allocations 的列表不过滤停用门店，停用门店有待分配时两边笔数可能不同 |
 | 实时 | 不做 06:00 快照：补分配、admin 改分配（不受 staff 3 天冻结）、调整款项归属日期后历史格子会变 |
 
 2026-08 全国 prod 基线（2026-09-25 实测）：业绩 201,746.24 + 消耗 374,896.13 = 576,642.37；456 行（242 行为 0）；
