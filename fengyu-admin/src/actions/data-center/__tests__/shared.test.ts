@@ -20,6 +20,7 @@ vi.mock('@/lib/data-center/data-start-query', () => ({ loadStoreDataStarts }))
 
 import {
   getCustomerDetailScopeOptions,
+  getDataCenterScopeOptions,
   getDataStartDates,
   getStaffCommissionScopeOptions,
 } from '../shared'
@@ -106,5 +107,39 @@ describe('getDataStartDates', () => {
 
     await expect(getDataStartDates()).rejects.toMatchObject({ digest: 'PERMISSION_DENIED' })
     expect(loadStoreDataStarts).not.toHaveBeenCalled()
+  })
+})
+
+describe('scope 数据源 · 已停用门店分流（#293）', () => {
+  /** drizzle 链式查询替身：任意链式方法返回自身，await 时给出 rows */
+  function rowsOf(rows: unknown[]) {
+    const chain: Record<string, unknown> = {}
+    for (const method of ['from', 'where', 'innerJoin', 'orderBy']) chain[method] = () => chain
+    chain.then = (resolve: (v: unknown) => unknown, reject: (e: unknown) => unknown) => Promise.resolve(rows).then(resolve, reject)
+    return chain
+  }
+
+  it('在营门店进下拉、节点停用的门店进 inactiveStores；只关店节点在营的两边都不进（取数 SQL 仍有其历史数据，不能判停用）', async () => {
+    mockGetSession.mockResolvedValue(session([role(['data_center:dashboard'], '总部', [])]))
+    db.select
+      .mockImplementationOnce(() => rowsOf([{ id: 'M1', name: '九江凤御' }, { id: 'M2', name: '自贡凤御' }]) as never)
+      .mockImplementationOnce(() => rowsOf([
+        { storeId: 'S1', storeName: '九江蓝湾店', marketId: 'M1', isClosed: false, isActive: true },
+        { storeId: 'X1', storeName: '九江中辉店', marketId: 'M1', isClosed: false, isActive: false },
+        { storeId: 'X2', storeName: '自贡旭阳店', marketId: 'M2', isClosed: true, isActive: false },
+        { storeId: 'X3', storeName: '只关店未停节点', marketId: 'M2', isClosed: true, isActive: true },
+      ]) as never)
+
+    await expect(getDataCenterScopeOptions()).resolves.toEqual({
+      topLevel: 'all',
+      markets: [
+        { id: 'M1', name: '九江凤御', stores: [{ storeId: 'S1', storeName: '九江蓝湾店' }] },
+        { id: 'M2', name: '自贡凤御', stores: [] },
+      ],
+      inactiveStores: [
+        { storeId: 'X1', storeName: '九江中辉店', marketId: 'M1' },
+        { storeId: 'X2', storeName: '自贡旭阳店', marketId: 'M2' },
+      ],
+    })
   })
 })

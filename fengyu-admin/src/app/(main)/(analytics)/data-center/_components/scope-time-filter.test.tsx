@@ -18,7 +18,7 @@ vi.mock('@/lib/hooks/use-url-filters', () => ({
 import { ScopeTimeFilter } from './scope-time-filter'
 
 const multiStoreOptions: DataCenterScopeOptions = {
-  topLevel: 'store',
+  topLevel: 'store', inactiveStores: [],
   markets: [
     {
       id: 'M1',
@@ -73,7 +73,7 @@ describe('ScopeTimeFilter 多门店权限', () => {
     params.scope = 'store'
     params.scopeId = 'S1'
     render(<ScopeTimeFilter scopeOptions={{
-      topLevel: 'store',
+      topLevel: 'store', inactiveStores: [],
       markets: [{ id: 'M1', name: '南昌市场', stores: [{ storeId: 'S1', storeName: '蓝莱店' }] }],
     }} />)
 
@@ -91,5 +91,26 @@ describe('ScopeTimeFilter 多门店权限', () => {
     const user = userEvent.setup()
     await user.selectOptions(marketSelect, '')
     expect(setMany).toHaveBeenCalledWith({ scope: '', scopeId: '' })
+  })
+})
+
+describe('ScopeTimeFilter 已停用门店回显（#293）', () => {
+  it('URL 选中停用门店：市场下拉回显其市场，门店下拉回显「XX（已停用）」且不可选', () => {
+    params.scope = 'store'
+    params.scopeId = 'X1'
+    render(<ScopeTimeFilter scopeOptions={{ ...multiStoreOptions, inactiveStores: [{ storeId: 'X1', storeName: '九江中辉店', marketId: 'M2' }] }} />)
+
+    const [marketSelect, storeSelect] = screen.getAllByRole('combobox')
+    expect(marketSelect).toHaveValue('M2')
+    expect(storeSelect).toHaveValue('X1')
+    expect(screen.getByRole('option', { name: '九江中辉店（已停用）' })).toBeDisabled()
+  })
+
+  it('未选中停用门店时下拉里不出现它', () => {
+    params.scope = 'market'
+    params.scopeId = 'M2'
+    render(<ScopeTimeFilter scopeOptions={{ ...multiStoreOptions, inactiveStores: [{ storeId: 'X1', storeName: '九江中辉店', marketId: 'M2' }] }} />)
+
+    expect(screen.queryByRole('option', { name: '九江中辉店（已停用）' })).not.toBeInTheDocument()
   })
 })

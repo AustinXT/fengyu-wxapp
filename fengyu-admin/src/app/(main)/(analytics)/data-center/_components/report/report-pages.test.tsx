@@ -78,22 +78,22 @@ const PAGES = Object.fromEntries(
 ) as Record<DataCenterReportKey, { page: PageComponent; needsStarts: boolean; loader: ReturnType<typeof expectedLoader> }>
 
 const hqOptions: DataCenterScopeOptions = {
-  topLevel: 'all',
+  topLevel: 'all', inactiveStores: [],
   markets: [
     { id: 'M1', name: '南昌凤御', stores: [{ storeId: 'S1', storeName: '蓝莱店' }, { storeId: 'S2', storeName: '绿湖店' }] },
     { id: 'M2', name: '南昌易大师', stores: [{ storeId: 'S3', storeName: '易大师一店' }] },
   ],
 }
 const singleStoreOptions: DataCenterScopeOptions = {
-  topLevel: 'store',
+  topLevel: 'store', inactiveStores: [],
   markets: [{ id: 'M1', name: '南昌凤御', stores: [{ storeId: 'S1', storeName: '蓝莱店' }] }],
 }
 const multiStoreOptions: DataCenterScopeOptions = {
-  topLevel: 'market',
+  topLevel: 'market', inactiveStores: [],
   markets: [{ id: 'M1', name: '南昌凤御', stores: [{ storeId: 'S1', storeName: '蓝莱店' }, { storeId: 'S2', storeName: '绿湖店' }] }],
 }
 const noStoreOptions: DataCenterScopeOptions = {
-  topLevel: 'store',
+  topLevel: 'store', inactiveStores: [],
   markets: [{ id: 'M1', name: '南昌凤御', stores: [] }],
 }
 
@@ -259,6 +259,20 @@ describe('报表页 · 骨架渲染', () => {
 
     expect(screen.getByText('当前账号暂无可查看的数据范围')).toBeInTheDocument()
     expect(screen.queryByRole('note', { name: '数据起点提示' })).not.toBeInTheDocument()
+  })
+
+  it.each(KEYS)('%s：选中已停用门店渲染「已停用」空态，不跳回默认范围、不出提示（#293）', async (key) => {
+    mockScope({ ...multiStoreOptions, inactiveStores: [{ storeId: 'X1', storeName: '自贡旭阳店', marketId: 'M1' }] })
+    await renderPage(key, { scope: 'store', scopeId: 'X1' })
+
+    expect(screen.getByTestId('scope-empty-state')).toHaveTextContent('「自贡旭阳店」已停用，无可展示数据')
+    expect(screen.queryByText('报表建设中，暂无数据')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('report-info-bar')).not.toBeInTheDocument()
+    expect(screen.queryByRole('note', { name: '数据起点提示' })).not.toBeInTheDocument()
+    expect(screen.getByRole('option', { name: '自贡旭阳店（已停用）' })).toBeDisabled()
+    expect(screen.queryByTestId('scope-store-count')).not.toBeInTheDocument()
+    expect(screen.getByRole('link', { name: '回到默认范围' }))
+      .toHaveAttribute('href', `${DATA_CENTER_REPORTS[key].path}?scope=authorized`)
   })
 
   it('重置：回到权限默认范围 + 默认期间，清掉其余参数', async () => {
