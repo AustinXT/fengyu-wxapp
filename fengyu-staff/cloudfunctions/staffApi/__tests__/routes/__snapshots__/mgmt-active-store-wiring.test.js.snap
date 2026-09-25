@@ -23,6 +23,7 @@ exports[`#401 管理层取数在营接线 · 运行时闭集 > 每个 handler ×
     "79a6a8fccea2d0be",
     "9ad7f036e6e648bc",
     "34218b7bdbed821d",
+    "f9140e76e6cbf7ea",
   ],
   "mgmt-dashboard:salesData store": [
     "5627b00c1f099ee2",
@@ -34,6 +35,7 @@ exports[`#401 管理层取数在营接线 · 运行时闭集 > 每个 handler ×
     "1bbf79ef30c67172",
     "57cb0e512e5e39d8",
     "34218b7bdbed821d",
+    "cf7329c274e6716c",
   ],
   "mgmt-dashboard:staffRanking[consume] all": [
     "c8b3f82736c586d3",
@@ -227,7 +229,7 @@ exports[`#401 管理层取数在营接线 · 运行时闭集 > 每个 handler ×
     "37dc9ac1d293d10c",
     "7e3256185a15dcc9",
     "37dc9ac1d293d10c",
-    "be179bed277d271f",
+    "cf7329c274e6716c",
   ],
   "mgmt-product:cardHolders all": [
     "8145968818f9929c",

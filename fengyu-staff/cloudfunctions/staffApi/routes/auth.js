@@ -20,6 +20,7 @@ const {
   expandScopeStoreIds,
 } = require('../utils/scope')
 const { hasDataCenterDashboard } = require('../utils/permission-matrix')
+const { STORE_NODE_JOIN, STORE_IS_ACTIVE } = require('../utils/store-status')
 
 /**
  * 查询员工权限角色（带 scope 类型）
@@ -49,18 +50,23 @@ async function queryRoleBindings(employeeId) {
 }
 
 /**
- * 根据 scopeStoreIds 批量取店名，给前端门店下拉用
+ * 根据 scopeStoreIds 批量取店名，给前端门店下拉用。
+ *
+ * 逐行附 isActive（门店组织节点是否在营，#400）而**不过滤**：门店模式的 currentStoreId、
+ * 门店切换、进销存表单都以本列表为准，停用门店的员工不能因此丢掉自己的门店；
+ * 只有管理层看板的默认范围（computeDefaultScope）按 isActive 跳过停用门店。
  */
 async function fetchScopedStores(storeIds) {
   if (!storeIds || storeIds.length === 0) return []
   const rows = await pg.query(
-    `SELECT store_id, store_name
-     FROM stores
-     WHERE store_id = ANY($1::text[])
-     ORDER BY store_name ASC`,
+    `SELECT s.store_id, s.store_name, ${STORE_IS_ACTIVE} AS is_active
+     FROM stores s
+     ${STORE_NODE_JOIN}
+     WHERE s.store_id = ANY($1::text[])
+     ORDER BY s.store_name ASC`,
     [storeIds]
   )
-  return rows.map((r) => ({ storeId: r.store_id, storeName: r.store_name }))
+  return rows.map((r) => ({ storeId: r.store_id, storeName: r.store_name, isActive: r.is_active === true }))
 }
 
 /**

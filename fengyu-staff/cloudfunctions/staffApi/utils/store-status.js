@@ -34,4 +34,16 @@ function activeStoreNodeCondition(alias) {
   return `${alias}.type = '门店' AND ${alias}.is_active = TRUE`
 }
 
-module.exports = { activeStoreCondition, activeStoreNodeCondition }
+/**
+ * #400 停用判定片段（原 utils/store-active.js，#401 并入本文件以保持单源）：
+ * 用于「逐店带出是否在营」的查询（登录门店列表 / 停用门店清单 / 单店 scope 停用标记 / 替代门店）。
+ * LEFT JOIN：缺门店节点的门店仍能查出，按停用处理（COALESCE → FALSE），与 activeStoreCondition 的
+ * 内连接语义一致（缺节点的门店取数时也被滤掉）。固定别名：门店表 `s`，门店节点 `store_node`。
+ * 与 activeStoreNodeCondition 同口径由 __tests__/routes/cross-end-store-status-snapshot.test.js 运行时断言。
+ */
+const STORE_NODE_JOIN = "LEFT JOIN org_nodes store_node ON store_node.id = s.org_node_id AND store_node.type = '门店'"
+
+/** 门店是否在营（布尔表达式；须配合 STORE_NODE_JOIN 使用） */
+const STORE_IS_ACTIVE = 'COALESCE(store_node.is_active, FALSE)'
+
+module.exports = { activeStoreCondition, activeStoreNodeCondition, STORE_NODE_JOIN, STORE_IS_ACTIVE }

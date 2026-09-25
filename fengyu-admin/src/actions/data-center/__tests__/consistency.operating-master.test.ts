@@ -8,12 +8,17 @@
  * feedback-literal-guard-whole-segment-equality）。
  *
  * V 生美项目数没有销售板对应物：钉成「X 生美实耗的模板，只把求和表达式换成 SUM(sit.session_used)」。
+ *
+ * #373 增量：
+ *   - E 保有会员 = 客量板「有效保有会员」（customer.ts queryRetainedMembers）：WHERE 整段等值（只归一时点变量名）；
+ *   - K / L 被经营的款项 WHERE = P 的 WHERE，只把 sale_order_type 收窄为 ('销售单', '转换单')、再加「挂了顾客」一条。
  */
 import fs from 'node:fs'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 
 const SALES = fs.readFileSync(path.resolve(__dirname, '../sales.ts'), 'utf8')
+const CUSTOMER = fs.readFileSync(path.resolve(__dirname, '../customer.ts'), 'utf8')
 const MASTER = fs.readFileSync(path.resolve(__dirname, '../operating-master.ts'), 'utf8')
 
 function slice(src: string, start: string, end: string): string {
@@ -25,14 +30,14 @@ function slice(src: string, start: string, end: string): string {
 }
 
 /**
- * 切片内唯一一段 sql`...` 模板，空白压缩。插值**只归一区间变量**（两边变量名不同：`cur` / `range`），
+ * 切片内唯一一段 sql`...` 模板，空白压缩。插值**只归一区间变量**（变量名不同：`cur` / `range` / `ytd`），
  * 其余插值原文保留——scope 过滤的列、寄存退款过滤的别名一旦不同必须变红。
  */
 function template(section: string): string {
   const matches = [...section.matchAll(/sql`([\s\S]*?)`/g)]
   if (matches.length !== 1) throw new Error(`切片里应恰有 1 段 sql 模板，实际 ${matches.length} 段`)
   return matches[0][1]
-    .replace(/\$\{(?:cur|range)\.(start|end)\}/g, '${$1}')
+    .replace(/\$\{(?:cur|range|ytd)\.(start|end)\}/g, '${$1}')
     .replace(/\s+/g, ' ')
     .trim()
 }
@@ -43,11 +48,36 @@ const sales = {
   shengmeiConsume: template(slice(SALES, '      // 生美实耗\n', '    ])')),
 }
 const master = {
-  revenue: template(slice(MASTER, 'function revenueByStoreSql', 'export const getOperatingMaster')),
+  revenue: template(slice(MASTER, 'function revenueByStoreSql', 'function managedByStoreSql')),
   project: template(slice(MASTER, '// V 生美项目数', '// W 实耗')),
   consume: template(slice(MASTER, '// W 实耗', '// X 生美实耗')),
-  shengmeiConsume: template(slice(MASTER, '// X 生美实耗', '      ])')),
+  shengmeiConsume: template(slice(MASTER, '// X 生美实耗', '// E 保有会员')),
 }
+
+/** 模板里第一个 WHERE 到其后第一个终止串之间（即过滤谓词整段）；终止串缺省 GROUP BY，传 null 取到模板末尾 */
+function whereClause(body: string, end: string | null = ' GROUP BY '): string {
+  const from = body.indexOf(' WHERE ')
+  const to = end === null ? body.length : body.indexOf(end, from)
+  if (from === -1 || to === -1) throw new Error(`模板里找不到 WHERE … ${end}`)
+  return body.slice(from, to).trim()
+}
+
+/**
+ * E 的切片：CTE 里的 visitDaysSql 插值带一段嵌套的 sql`TRUE`（scope 参数），先把它换成占位符，
+ * 剩下必须恰有 1 段模板（fail-closed：切片里再插进别的模板就报错，不静默只比第一段）。
+ */
+function retainedTemplate(section: string): string {
+  const flat = section.replace(/scope: sql`TRUE`/g, 'scope: TRUE')
+  const matches = [...flat.matchAll(/sql`([\s\S]*?)`/g)]
+  if (matches.length !== 1) throw new Error(`E 切片里应恰有 1 段 sql 模板，实际 ${matches.length} 段`)
+  return matches[0][1].replace(/\s+/g, ' ').trim()
+}
+
+const retained = {
+  customerBoard: template(slice(CUSTOMER, 'async function queryRetainedMembers', '// ====')),
+  master: retainedTemplate(slice(MASTER, '// E 保有会员', '// K 被经营年度')),
+}
+const managed = template(slice(MASTER, 'function managedByStoreSql', 'export const getOperatingMaster'))
 
 describe('经营数据主表 × 销售板门店明细 口径同源（#372）', () => {
   it('P 当月完成 / R 年度累计 = 销售板门店「总业绩」整段模板', () => {
@@ -80,7 +110,35 @@ describe('经营数据主表 × 销售板门店明细 口径同源（#372）', (
       expect(body).toContain("${scopeFilterSql(session, scope, 'so.store_id')}")
       expect(body).toContain("${excludeDepositRefundSql('so')}")
     }
-    expect(slice(MASTER, '// W 实耗', '      ])')).not.toMatch(/ytd\./)
+    // 原文切片（template() 会把 cur / ytd 都归一成 start / end，所以这里查未归一的原文）
+    expect(slice(MASTER, '// V 生美项目数', '// E 保有会员')).not.toMatch(/ytd\./)
+  })
+
+  it('E 保有会员 = 客量板「有效保有会员」WHERE 整段（按绑定门店 scope、90 天窗口、became_member_at 守卫）', () => {
+    const board = whereClause(retained.customerBoard, null).replace(/\$\{sc\}/, "${scopeFilterSql(session, scope, 'c.bound_store_id')}")
+      .replace(/\$\{end\}/g, '${T}') // template() 已把 range.end 归一成 end
+    // 客量板的 scope 片段是先赋给 sc 再插值：确认 sc 就是按绑定门店过滤
+    expect(slice(CUSTOMER, 'async function queryRetainedMembers', '// ====')).toContain(
+      "const sc = scopeFilterSql(session, scope, 'c.bound_store_id')",
+    )
+    const master = whereClause(retained.master, ' ), month_visits AS')
+      .replace(/\$\{asOf\}/g, '${T}')
+    expect(master).toBe(board)
+    expect(board).toContain("INTERVAL '90 days'")
+    // FROM / JOIN 也整段等值；人头按 (绑定门店, 顾客) 去重——去掉 DISTINCT 会让同一顾客多单按单数虚高
+    const fromJoin = (body: string) => body.slice(body.indexOf(' FROM '), body.indexOf(' WHERE ')).trim()
+    expect(fromJoin(retained.master)).toBe(fromJoin(retained.customerBoard))
+    expect(retained.customerBoard).toMatch(/^SELECT COUNT\(DISTINCT so\.client_user_id\) AS v FROM /)
+    expect(fromJoin(retained.customerBoard)).toBe('FROM service_orders so JOIN client_wechat_users c ON c.user_id = so.client_user_id')
+    expect(retained.master).toMatch(/^WITH retained AS \( SELECT DISTINCT c\.bound_store_id AS store_id, so\.client_user_id FROM /)
+  })
+
+  it('K / L 款项 WHERE = P 的 WHERE，只把类型收窄为销售单 + 转换单、再要求挂了顾客', () => {
+    const p = whereClause(master.revenue)
+    const expected = p.replace("spe.sale_order_type IN ('销售单', '转换单', '充值单')", "spe.sale_order_type IN ('销售单', '转换单')")
+      + ' AND so.client_user_id IS NOT NULL'
+    expect(expected).not.toBe(p + ' AND so.client_user_id IS NOT NULL')
+    expect(whereClause(managed)).toBe(expected)
   })
 
   it('守护自检：切到的模板确实是承重谓词（防切片漂移后两边一起变成空串也相等）', () => {

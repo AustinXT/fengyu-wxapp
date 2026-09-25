@@ -84,7 +84,7 @@ describe('listInventoryOperationDocs 入参闸门', () => {
       const { inbox } = INVENTORY_OPERATION_DOC_QUERY[operationId]
       const result = await listInventoryOperationDocs({ operationId, page: 3, inboxPage: 2, pageSize: 20 })
       if (!inbox) {
-        // ⚠️ 无 inbox 的 17 个业务不许图省事查两次：每次多一次 COUNT +
+        // ⚠️ 无 inbox 的业务不许图省事查两次：每次多一次 COUNT +
         // syncInventoryLocations + getSession。
         expect(mockEngine.listInventoryCoreDocs).toHaveBeenCalledTimes(1)
         expect(result.inbox).toBeNull()
