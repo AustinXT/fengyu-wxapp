@@ -90,6 +90,8 @@ Component({
         return
       }
       this.setData({ applied: def, current: def })
+      // 页面 initDashboard 在同一次 setData 里下发 defaultScope + resolveDefault（#424）：依赖框架「同批属性先全部提交、
+      // 再派发 observers」，此处读到的 resolveDefault 已是新值。若 optionsLoaded 此刻为 false，纠正在首次 loadOptions 里做
       if (this.data.optionsLoaded) this._normalizeApplied()
     },
     appliedInactive(inactive: boolean) {
