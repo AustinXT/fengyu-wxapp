@@ -289,5 +289,6 @@ describe('导出元信息的搜索词', () => {
   it('库里带空格的号码也能按完整号码搜到', () => {
     const built = buildRemainingCardsModel([sqlRow({ clientUserId: 'U1', storeId: 'S1', phone: '138 1111 2222' })], DICT)
     expect(filterRemainingCardsRows(built.rows, { q: '13811112222', show: 'all' })).toHaveLength(1)
+    expect(built.rows[0].phoneMasked).toBe('138****2222')
   })
 })
