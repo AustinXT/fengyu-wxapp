@@ -331,6 +331,20 @@ describe('库存单据详情页 · 采购订单市场行（#335）', () => {
     expect(cellByHeader('SKU-MKT', '已入库金额')).toBe('2400')
   })
 
+  it('#346 任一行算不出入库后金额（历史按发货完结 / 缺下单价）时不显示单头合计，已入库金额列照常', async () => {
+    await renderPage(purchaseOrder({
+      fulfillmentProgress: {
+        kind: '供应链采购收货',
+        items: [
+          { itemId: 1, purchasedQuantity: 10, receivedQuantity: 4, outstandingQuantity: 6, receivedAmount: 2800, actualAmount: 7600 },
+          { itemId: 2, purchasedQuantity: 10, receivedQuantity: 0, outstandingQuantity: 0, receivedAmount: 0 },
+        ],
+      },
+    } as Partial<InventoryDocDetail>))
+    expect(screen.queryByText('入库后实际金额')).toBeNull()
+    expect(cellByHeader('SKU-SC', '已入库金额')).toBe('2800')
+  })
+
   it('#346 价格被遮蔽（进度不带金额）时不出现「入库后实际金额」与「已入库金额」', async () => {
     await renderPage(purchaseOrder({ totalAmount: undefined }))
     expect(screen.queryByText('入库后实际金额')).toBeNull()
@@ -349,6 +363,25 @@ describe('库存单据详情页 · 采购订单市场行（#335）', () => {
     expect(screen.queryByRole('columnheader', { name: '已发货' })).toBeNull()
     expect(screen.queryByRole('columnheader', { name: '市场结算价（参考）' })).toBeNull()
     expect(screen.getByText('待收货')).toBeTruthy()
+  })
+})
+
+describe('库存单据详情页 · 供应链采购入库单价优惠（#346）', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockGetSession.mockResolvedValue({ employeeId: 'E1', permissions: { actions: [] } })
+  })
+
+  it('入库单明细显示标准进价 / 单价优惠 / 实际进价 / 金额，优惠可核对', async () => {
+    await renderPage(docFixture({
+      id: 'GRK-20260925-0001', docType: '供应链采购入库', sourceOrgNodeId: null, targetOrgNodeId: 'HQ', totalAmount: 160,
+      items: [itemFixture({ id: 1, skuId: 'SKU-SC', quantity: 2, standardUnitPrice: 100, unitDiscount: 20, actualUnitPrice: 80, amount: 160 })],
+    } as Partial<InventoryDocDetail>))
+    expect(cellByHeader('SKU-SC', '标准进价')).toBe('100')
+    expect(cellByHeader('SKU-SC', '单价优惠')).toBe('20')
+    expect(cellByHeader('SKU-SC', '实际进价')).toBe('80')
+    expect(cellByHeader('SKU-SC', '金额')).toBe('160')
+    expect(screen.queryByRole('columnheader', { name: '应付货款' })).toBeNull()
   })
 })
 

@@ -3334,7 +3334,9 @@ async function loadSupplyChainPurchaseReceiptProgress(
   const rows = await db.execute(sql`
     WITH visible_docs AS (${visibleInventoryDocsSql(scoped)}),
     purchase_items AS (
-      SELECT item.id AS item_id, item.quantity, item.actual_unit_price, purchase_doc.status AS purchase_status
+      SELECT item.id AS item_id, item.quantity, item.fulfilled_quantity,
+             COALESCE(item.actual_unit_price, item.supply_chain_unit_cost) AS order_unit_price,
+             purchase_doc.status AS purchase_status
         FROM inventory_doc_items item
         JOIN inventory_docs purchase_doc ON purchase_doc.id = item.doc_id
         JOIN visible_docs visible_purchase ON visible_purchase.id = purchase_doc.id
@@ -3359,7 +3361,8 @@ async function loadSupplyChainPurchaseReceiptProgress(
     SELECT
       purchase_item.item_id,
       purchase_item.quantity AS purchased_quantity,
-      purchase_item.actual_unit_price AS order_unit_price,
+      purchase_item.order_unit_price,
+      purchase_item.fulfilled_quantity,
       COALESCE(receipt_total.received_quantity, 0) AS received_quantity,
       COALESCE(receipt_total.received_amount, 0) AS received_amount,
       purchase_item.purchase_status
@@ -3375,6 +3378,7 @@ async function loadSupplyChainPurchaseReceiptProgress(
       item_id: number | string
       purchased_quantity: string | number | null
       order_unit_price: string | number | null
+      fulfilled_quantity: string | number | null
       received_quantity: string | number | null
       received_amount: string | number | null
       purchase_status: InventoryCoreDocStatus
@@ -3386,6 +3390,13 @@ async function loadSupplyChainPurchaseReceiptProgress(
         : 0
       const receivedAmount = numberOrNull(row.received_amount) ?? 0
       const orderUnitPrice = numberOrNull(row.order_unit_price)
+      // 算不准就不给（返回 undefined，详情页不展示），别给一个看似真实的错数：
+      //  · 历史单：#335 之前市场行按发货完结，fulfilled_quantity 记的是发货量、没有入库血缘 ——
+      //    非待收货状态下 fulfilled > 入库量即此类，入库后金额无从谈起；
+      //  · 还有未入库量却没有下单价（成本快照为空的存量行）。
+      const legacy = row.purchase_status !== '待收货'
+        && (numberOrNull(row.fulfilled_quantity) ?? 0) - receivedQuantity > 0.000001
+      const unpriced = outstandingQuantity > 0 && orderUnitPrice === null
       return {
         itemId: Number(row.item_id),
         purchasedQuantity,
@@ -3394,7 +3405,9 @@ async function loadSupplyChainPurchaseReceiptProgress(
         receivedAmount,
         // 入库后实际金额（#346）：已入库部分按各次入库的实际进价；仍待收货时未入库部分按下单价；
         // 已完成 / 已关闭（已取消）只算已入库部分（口径 A，outstanding 已是 0）。
-        actualAmount: Number((receivedAmount + roundCentsHalfUp(outstandingQuantity * (orderUnitPrice ?? 0))).toFixed(2)),
+        actualAmount: legacy || unpriced
+          ? undefined
+          : Number((receivedAmount + roundCentsHalfUp(outstandingQuantity * (orderUnitPrice ?? 0))).toFixed(2)),
       }
     }),
   }

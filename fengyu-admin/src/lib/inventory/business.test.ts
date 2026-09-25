@@ -1554,8 +1554,8 @@ describe('批号自动生成（#345）', () => {
     ['为负', -1, '单价优惠不能小于 0'],
     ['大于标准进价', 80.01, '单价优惠不能大于标准进价'],
     ['超两位小数', 1.005, '单价优惠最多保留两位小数'],
-    ['十六进制串', '0x10', '单价优惠不能小于 0'],
-    ['布尔', true, '单价优惠不能小于 0'],
+    ['十六进制串', '0x10', '单价优惠不是有效数字'],
+    ['布尔', true, '单价优惠不是有效数字'],
   ])('#346 优惠%s被拒', async (_label, unitDiscount, message) => {
     const { lotInserts } = mockSupplyChainReceipt()
     await expect(receiveSupplyChainPurchaseOrder(SESSION, {

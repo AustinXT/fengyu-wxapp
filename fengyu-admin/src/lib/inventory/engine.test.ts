@@ -2730,6 +2730,37 @@ describe('§9.5 单据详情价格档位逐字段遮蔽', () => {
     mockDb.execute.mockResolvedValue([] as never)
   })
 
+  it.each([
+    // #335 之前市场行按发货完结：已完成、fulfilled 10 却没有入库血缘 → 入库后金额无从谈起，不给
+    ['历史按发货完结', { purchase_status: '已完成', fulfilled_quantity: '10', received_quantity: '0', received_amount: '0', order_unit_price: '100' }],
+    // 还有未入库量却没有下单价 → 不给，别静默按 0 算
+    ['缺下单价', { purchase_status: '待收货', fulfilled_quantity: '4', received_quantity: '4', received_amount: '320', order_unit_price: null }],
+  ])('算不准时不给入库后实际金额（#346 %s）', async (_label, progressRow) => {
+    mockGetSession.mockResolvedValue(sessionWithActions(['inventory:list', 'inventory:supply_chain_price_view'], ['HQ']) as never)
+    const now = new Date('2026-09-25T09:00:00.000Z')
+    mockDb.select
+      .mockReturnValueOnce(detailHeadSelect([{
+        doc: {
+          id: 'CGD-346', docType: '采购订单', status: progressRow.purchase_status, sourceOrgNodeId: null, targetOrgNodeId: 'HQ',
+          marketId: null, supplierId: null, docDate: '2026-09-25', relatedSaleOrderId: null, customerName: null,
+          employeeName: null, supplierName: null, externalPartyName: null, logisticsCompany: null, trackingNo: null,
+          receiptAttachmentUrl: null, totalQuantity: '10', totalAmount: '1000', remark: null, auditRemark: null,
+          createdBy: 'E001', confirmedAt: now, approvedAt: null, rejectedAt: null, cancellationReason: null,
+          cancelledAt: null, createdAt: now, updatedAt: now,
+        },
+        sourceOrgNodeName: null, sourceOrgNodeType: null, targetOrgNodeName: '总部', targetOrgNodeType: '总部',
+      }]))
+      .mockReturnValueOnce(detailItemsSelect([]))
+    mockDb.execute
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ item_id: 201, purchased_quantity: '10', ...progressRow }])
+
+    const detail = await getInventoryCoreDocById('CGD-346')
+    const [item] = (detail!.fulfillmentProgress as { items: Array<{ actualAmount?: number; receivedAmount?: number }> }).items
+    expect(item.receivedAmount).toBeDefined()
+    expect(item.actualAmount).toBeUndefined()
+  })
+
   it('none 档：采购订单收货进度不带「已入库金额 / 入库后实际金额」（#346，与明细金额同档遮蔽）', async () => {
     mockGetSession.mockResolvedValue(sessionWithActions(['inventory:list'], ['HQ']) as never)
     const now = new Date('2026-09-25T09:00:00.000Z')

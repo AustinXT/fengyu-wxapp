@@ -3826,9 +3826,8 @@ function receiptUnitDiscount(value: unknown): number {
   const parsed = typeof value === 'number' ? value
     : typeof value === 'string' && /^\d+(\.\d+)?$/.test(value.trim()) ? Number(value.trim())
       : Number.NaN
-  if (!Number.isFinite(parsed) || parsed < 0) {
-    throw new ApiError('INVALID_PARAMS', '单价优惠不能小于 0')
-  }
+  if (!Number.isFinite(parsed)) throw new ApiError('INVALID_PARAMS', '单价优惠不是有效数字')
+  if (parsed < 0) throw new ApiError('INVALID_PARAMS', '单价优惠不能小于 0')
   return twoDecimals(parsed, '单价优惠')
 }
 
@@ -3880,7 +3879,10 @@ export async function receiveSupplyChainPurchaseOrder(
     }> = []
     // 填了优惠就得看得到标准进价：看不到还能填，「优惠 ≤ 标准进价」的拒绝与否就成了探测进价的判定器
     // （与 #344 库存转换同一处理）。所以在读任何采购行之前判；价格权须与办理权落在同一条角色绑定上，按本主体判。
-    const discounts = input.items.map((line) => receiptUnitDiscount(line.unitDiscount))
+    const discounts = input.items.map((line) => {
+      if (typeof line !== 'object' || line === null) throw new ApiError('INVALID_PARAMS', '供应链采购入库明细格式不正确')
+      return receiptUnitDiscount(line.unitDiscount)
+    })
     if (discounts.some((discount) => discount > 0)) {
       const bothGranted = scopeSessionToAllActions(session, ['inventory:supply_chain_operate', 'inventory:supply_chain_price_view'])
       const visibility = inventoryPriceVisibilityForOrgNodes(inventoryPriceScopeByTier(bothGranted), [supplyChain.orgNodeId])
@@ -3929,7 +3931,8 @@ export async function receiveSupplyChainPurchaseOrder(
     }
     const docId = await generateDocId(tx, '供应链采购入库')
     const totalQuantity = fixed(prepared.reduce((sum, line) => sum + line.quantity, 0))
-    const totalAmount = fixed(prepared.reduce((sum, line) => sum + line.quantity * line.cost, 0))
+    // 与明细同口径逐行取整（落库后仍由 0039 触发器按明细金额重算覆盖）
+    const totalAmount = fixed(prepared.reduce((sum, line) => sum + roundCents(line.quantity * line.cost), 0))
     await insertDocHeader(tx, {
       id: docId,
       docType: '供应链采购入库',

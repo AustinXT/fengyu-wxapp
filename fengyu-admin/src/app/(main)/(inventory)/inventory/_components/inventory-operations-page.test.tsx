@@ -1891,6 +1891,21 @@ describe('采购订单市场行走供应链采购入库（#335）', () => {
     expect(receiveSupplyChainPurchaseOrder).not.toHaveBeenCalled()
   })
 
+  it('#346 采购行供应链成本不可见（被价格档遮蔽）：不显示标准进价 / 单价优惠框', async () => {
+    const row = docRow({ id: 'CGD-348', docType: '采购订单', status: '待收货' })
+    vi.mocked(getInventoryCoreDocById).mockResolvedValue({
+      ...docDetail(row),
+      targetOrgNodeId: 'HQ',
+      // 市场档能看到下单实际价，看不到供应链成本
+      items: [purchaseItem({ id: 1, skuName: '精华', quantity: 5, actualUnitPrice: 100 })],
+    })
+    renderPage({ level: 'supply-chain', operation: 'supply-chain-receipt', candidates: [row] })
+    await pickPurchaseOrder(row)
+    await screen.findByText('本次实收入库')
+    expect(screen.queryByText('单价优惠')).toBeNull()
+    expect(screen.queryByText('标准进价')).toBeNull()
+  })
+
   it('候选表格把「待收货 + 已有入库」的采购订单标成「部分入库」', async () => {
     const row = docRow({ id: 'CGD-336', docType: '采购订单', status: '待收货', partiallyReceived: true })
     renderPage({ level: 'supply-chain', operation: 'supply-chain-receipt', candidates: [row] })

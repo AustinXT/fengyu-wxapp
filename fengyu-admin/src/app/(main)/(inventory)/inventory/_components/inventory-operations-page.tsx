@@ -3004,7 +3004,9 @@ function SupplyChainPurchaseReceiptForm({
       skuName: item.skuName,
       specName: item.specName,
       quantity: String(Math.max(0, item.quantity - (item.fulfilledQuantity ?? 0))),
-      standardCost: item.supplyChainUnitCost ?? item.actualUnitPrice ?? null,
+      // 只取供应链成本：它按供应链价格档遮蔽（看不到时为 undefined），与服务端「填优惠须有供应链价格权」同档；
+      // 不回退到下单实际价 —— 那一列市场档也看得到，会让看不到进价的人也能填优惠、提交才被拒
+      standardCost: item.supplyChainUnitCost ?? null,
       unitDiscount: '',
       batchNo: '',
       expiryDate: '',
@@ -3098,11 +3100,11 @@ function SupplyChainPurchaseReceiptForm({
         <div className="space-y-3">
           <h3 className="text-sm font-medium">本次实收入库</h3>
           {lines.map((line, index) => (
-            <div key={line.purchaseOrderItemId} className={`grid grid-cols-1 gap-2 rounded-[var(--radius)] border border-[var(--border)] p-3 ${canViewPrice ? 'md:grid-cols-8' : 'md:grid-cols-5'}`}>
+            <div key={line.purchaseOrderItemId} className={`grid grid-cols-1 gap-2 rounded-[var(--radius)] border border-[var(--border)] p-3 ${canViewPrice && line.standardCost !== null ? 'md:grid-cols-8' : 'md:grid-cols-5'}`}>
               <div><div className="font-medium text-sm">{line.skuName}</div><div className="text-xs text-[#888888]">{line.specName || `明细 #${line.purchaseOrderItemId}`}</div></div>
               <FormField label="实收数量"><Input type="number" min="0" step="0.01" max="9999999999.99" value={line.quantity} onChange={(event) => updateLine(index, { quantity: event.target.value })} /></FormField>
               {/* #346：单价优惠只在入库时填，写进本次批次成本；商品档案的供应链采购价不变。看不到价格的账号不填 */}
-              {canViewPrice && <>
+              {canViewPrice && line.standardCost !== null && <>
                 <FormField label="标准进价"><Input value={line.standardCost === null ? '—' : line.standardCost.toFixed(2)} readOnly tabIndex={-1} /></FormField>
                 <FormField label="单价优惠"><Input type="number" min="0" step="0.01" max="9999999999.99" value={line.unitDiscount} placeholder="0" onChange={(event) => updateLine(index, { unitDiscount: event.target.value })} /></FormField>
                 <FormField label="实际进价"><Input value={receiptActualCost(line)} readOnly tabIndex={-1} /></FormField>
