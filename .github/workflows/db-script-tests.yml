@@ -87,3 +87,10 @@ jobs:
         env:
           QUANTITY_SPLIT_PG_TEST_URL: postgresql://postgres:test@localhost:5432/test
         run: node --test db/scripts/__tests__/quantity-split-backfill.pg.test.js
+
+      # #351 盘点实盘数允许 0：非盘点类型「> 0」只剩 trigger 兜底，行为必须在真 PG 上跑
+      # （跨端 §7 只能钉 SQL 文本，钉不住 PL/pgSQL 的执行语义）
+      - name: Run #351 doc item quantity trigger regression
+        env:
+          INVENTORY_PG_TEST_URL: postgresql://postgres:test@localhost:5432/test
+        run: node --test db/scripts/__tests__/inventory-doc-item-quantity.pg.test.js

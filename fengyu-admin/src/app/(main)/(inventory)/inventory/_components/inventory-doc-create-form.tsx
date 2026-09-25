@@ -13,6 +13,7 @@ import type {
   InventoryMarketTransferTarget,
 } from '@/lib/inventory/types'
 import { INVENTORY_GENERIC_DOC_TYPES } from '@/lib/inventory/types'
+import { isStocktakeDocType } from '@/lib/inventory/stocktake'
 import { docActionErrorMessage, isStaleStateError } from '@/lib/inventory/doc-action-error'
 import { actionErrorMessage } from '@/lib/action-error'
 import { Button } from '@/components/ui/button'
@@ -128,14 +129,22 @@ interface DraftItem {
   remark: string
 }
 
-function defaultItem(): DraftItem {
+/**
+ * 盘点单（#351）的数量是实盘数，**默认留空**：默认 '1' 的话用户不改数就按「实盘 1」入库，
+ * 留空拦截也抓不到，凭空多出一笔盘亏/盘盈。其余类型维持默认 1。
+ */
+function defaultQuantity(docType: InventoryDocType): string {
+  return isStocktakeDocType(docType) ? '' : '1'
+}
+
+function defaultItem(docType: InventoryDocType): DraftItem {
   return {
     lotId: '',
     skuId: '',
     batchNo: '',
     expiryDate: '',
     isGift: false,
-    quantity: '1',
+    quantity: defaultQuantity(docType),
     reason: '',
     remark: '',
   }
@@ -224,7 +233,7 @@ export function InventoryDocCreateForm({
   const [targetOrgNodeId, setTargetOrgNodeId] = useState('')
   const [docDate, setDocDate] = useState(shanghaiToday)
   const [remark, setRemark] = useState('')
-  const [items, setItems] = useState<DraftItem[]>([defaultItem()])
+  const [items, setItems] = useState<DraftItem[]>(() => [defaultItem(docType)])
   const requiresSourceLot = SOURCE_LOT_DOC_TYPES.has(docType)
   /** 当前类型允许哪些端点（#200 S6）：决定两个主体下拉的禁用/镜像与 payload 的置空 */
   const endpointMode = genericDocEndpointMode(docType)
@@ -318,8 +327,22 @@ export function InventoryDocCreateForm({
     setItems((prev) => prev.map((item, i) => (i === index ? { ...item, ...patch } : item)))
   }
 
+  const isStocktake = isStocktakeDocType(docType)
+
   async function submit() {
     if (submitting) return
+    /*
+     * 盘点单（#351）：数量是实盘数，0 是合法值（货架上一件没有 = 盘亏），所以「没填」与
+     * 「填了 0」必须分开。下面 payload 的 `Number(item.quantity || 0)` 会把空串变成 0，
+     * 不在这里拦，漏填的行就会以「实盘 0」落库，凭空多出一笔盘亏。服务端同样拒空值，这里先给行号。
+     */
+    if (isStocktake) {
+      const blankIndex = items.findIndex((item) => item.quantity.trim() === '')
+      if (blankIndex >= 0) {
+        toast.error(`明细 ${blankIndex + 1} 请填写实盘数（货架上没有就填 0）`)
+        return
+      }
+    }
     setSubmitting(true)
     try {
       const payload: CreateInventoryDocInput = {
@@ -374,7 +397,7 @@ export function InventoryDocCreateForm({
        * 会被 `InventorySubjectSelect` 立刻填回那个唯一候选 —— 这是预期，不是没清掉。
        * 那种环境里一张单也只可能是它，上面说的残留风险根本无从发生。
        */
-      setItems([defaultItem()])
+      setItems([defaultItem(docType)])
       setRemark('')
       setSourceOrgNodeId('')
       setTargetOrgNodeId('')
@@ -422,9 +445,15 @@ export function InventoryDocCreateForm({
         <FieldLabel text="单据类型">
           <Select
             value={docType}
-            disabled={isDocTypeLocked}
+            /*
+             * 提交在途时锁住类型（#351 评审）：成功清场按提交那一刻闭包里的 docType 取默认数量，
+             * 在途中切成盘点的话，清场会把盘点行重置成旧类型的「1」—— 不填就是一笔「实盘 1」。
+             */
+            disabled={isDocTypeLocked || submitting}
             onChange={(e) => {
-              setDocType(e.target.value as InventoryDocType)
+              if (submitting) return
+              const nextDocType = e.target.value as InventoryDocType
+              setDocType(nextDocType)
               /*
                * 换类型必须清两端主体与各行批次（#200 S6-b）：新类型的合法端点可能不同。
                * 不清的话，先选「院产品报损」填了出库主体、再切「院顾客退货」，
@@ -433,10 +462,20 @@ export function InventoryDocCreateForm({
                *
                * ⚠️ 用 onChange 而不是 `useEffect([docType])` —— 这条链路有过 useEffect
                * 自循环把批次下拉卡死的 P0（#129，见 DocLotSelect 的注释），不再往里加 effect。
+               *
+               * 跨越「盘点 / 非盘点」时数量回到新类型的默认值（#351）：从报损切到盘点，旧行的 '1'
+               * 会被当成实盘 1 提交；反过来盘点的空行切到报损又会被当成 0 拒掉。
                */
+              const crossesStocktake = isStocktakeDocType(nextDocType) !== isStocktake
               setSourceOrgNodeId('')
               setTargetOrgNodeId('')
-              setItems((prev) => (prev.some((item) => item.lotId) ? prev.map((item) => ({ ...item, lotId: '' })) : prev))
+              setItems((prev) => (prev.some((item) => item.lotId) || crossesStocktake
+                ? prev.map((item) => ({
+                  ...item,
+                  lotId: '',
+                  quantity: crossesStocktake ? defaultQuantity(nextDocType) : item.quantity,
+                }))
+                : prev))
             }}
           >
             {availableDocTypes.map((type) => (
@@ -534,7 +573,7 @@ export function InventoryDocCreateForm({
             </Button>
           </div>
         ))}
-        <Button variant="outline" onClick={() => setItems((prev) => [...prev, defaultItem()])}>
+        <Button variant="outline" onClick={() => setItems((prev) => [...prev, defaultItem(docType)])}>
           添加明细
         </Button>
       </div>

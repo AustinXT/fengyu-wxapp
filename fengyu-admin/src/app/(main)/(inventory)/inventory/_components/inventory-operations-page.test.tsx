@@ -541,7 +541,8 @@ describe('办理台内嵌建单的闸门（#191）', () => {
       formSource.indexOf('const result = await createInventoryCoreDoc(payload)'),
       formSource.indexOf('} catch (err) {', formSource.indexOf('const result = await createInventoryCoreDoc')),
     )
-    expect(submitBody).toMatch(/setItems\(\[defaultItem\(\)\]\)/)
+    // #351 起默认行按单据类型取默认数量（盘点留空、其余 1），仍须清回单行默认草稿
+    expect(submitBody).toMatch(/setItems\(\[defaultItem\(docType\)\]\)/)
     expect(submitBody).toMatch(/setRemark\(''\)/)
     // 批次可用量刚被自己这单改掉，必须推代次让下一张单重新取数
     expect(submitBody).toMatch(/setLotEpoch\(\(n\) => n \+ 1\)/)

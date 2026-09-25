@@ -620,7 +620,12 @@ export const inventoryDocItems = pgTable(
     index('idx_inventory_doc_items_market').on(table.marketId),
     index('idx_inventory_doc_items_promotion').on(table.promotionPlanId),
     uniqueIndex('uq_inventory_doc_items_id_doc').on(table.id, table.docId),
-    check('chk_inventory_doc_items_qty', sql`${table.quantity} > 0`),
+    /**
+     * #351：盘点单的数量是实盘数，0（账上有货、货架上没有）必须能录，所以 CHECK 只拦负数。
+     * 「非盘点类型仍须 > 0」按 doc_id 查 doc_type 才能判断，CHECK 做不到，交给 trigger
+     * `inventory_assert_doc_item_quantity`（见迁移）兜底；admin engine / staffApi 两端同规则。
+     */
+    check('chk_inventory_doc_items_qty', sql`${table.quantity} >= 0`),
     check(
       'chk_inventory_doc_items_promotion_rule_type',
       sql`${table.promotionRuleTypeSnapshot} IS NULL OR ${table.promotionRuleTypeSnapshot} IN ('单品阶梯','组合')`,
