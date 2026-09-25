@@ -187,9 +187,13 @@ const PROBES: Probe[] = [
     // 上面两条探针的文本与频次完全不变 ⇒ 页面 60%/40% 而导出 120%/80%（codex round-6 P2）。
     label: '客量板 · 达成率分母的 SQL 投影与归组（#414）',
     file: 'src/actions/data-center/customer.ts',
-    pattern: /^(COALESCE\(SUM\(reg\.registered\), 0\) AS registered,|GROUP BY \$\{groupId\})$/,
-    minLines: 2,
-    uniqueLines: 2,
+    // `SELECT … COUNT(*) AS registered` 是**分母怎么算出来的**那一行（codex round-14 P2）：
+    // 不钉它的话，用「reg 改成 COUNT(*) / 2」的源码正常构建产物、再把源码改回正确版本但不重建，
+    // 六条守卫及其位置、两条 safeDiv、外层 SUM 与 GROUP BY **全都没变** ⇒ 全绿，
+    // 而页面 6/10 = 60%、导出 6/5 = 120%。
+    pattern: /^(SELECT c\.bound_store_id AS store_id, COUNT\(\*\) AS registered|COALESCE\(SUM\(reg\.registered\), 0\) AS registered,|GROUP BY \$\{groupId\})$/,
+    minLines: 3,
+    uniqueLines: 3,
     exactCountsInModule: true,
     exactLinesInModule: true,
   },
