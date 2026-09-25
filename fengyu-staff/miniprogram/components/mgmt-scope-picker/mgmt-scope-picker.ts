@@ -249,7 +249,7 @@ Component({
         currentAllowsMarket: this._allowsMarket(applied.marketId),
       })
       // 首次选项是在弹窗开着时才拿到的（首次加载失败、onOpen 重拉）：当时跳过的默认纠正在关弹窗后补做（#424）。
-      // 纠正过后页面会关掉 resolveDefault，这里不会重复纠正
+      // 纠正过后页面会关掉 resolveDefault，这里不会重复纠正（初判落在停用门店时不纠正、开关不关，重跑 normalize 幂等）
       if (this.properties.resolveDefault && !this.data.userPicked && this.data.optionsLoaded) this._normalizeApplied()
     },
 
