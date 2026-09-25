@@ -24,7 +24,7 @@ import { activeStoreCondition } from "../store-status"
  * 4. 闭集：analyst 源码（含注释）不得出现 `is_closed` / `isClosed` / `closed_at` / `closedAt`；会查库的文件是闭集，
  *    新增取数文件必须在这里归类（否则可能绕过 scopeFilterSql）。
  *
- * ⚠️ analyst 的 vitest 不在 CI 里跑（#382）：改动 analyst 取数时须本地跑本文件。
+ * analyst 全量 vitest 由 CI 的 analyst-tests job 跑（#436 起；此前不进 CI，#382）。
  */
 
 const ANALYST_SRC = path.resolve(__dirname, "../..")
