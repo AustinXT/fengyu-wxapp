@@ -15,8 +15,12 @@ on:
       - 'fengyu-analyst/src/**'
       - 'fengyu-analyst/package.json'
       - 'fengyu-analyst/package-lock.json'
-      - 'fengyu-analyst/vitest.config.ts'
+      - 'fengyu-analyst/vitest.*'
       - 'fengyu-analyst/tsconfig.json'
+      - 'fengyu-analyst/.npmrc'
+      # analyst-tests 会在 db/ 里 npm ci（drizzle-orm/pg-core 从那里解析），只升 db 依赖的 PR 也要跑一遍
+      - 'db/package.json'
+      - 'db/package-lock.json'
       - 'fengyu-client/cloudfunctions/**/*.js'
       - 'scripts/lint-cas-guards.mjs'
       - '.claude/skills/remote-deploy/**'
