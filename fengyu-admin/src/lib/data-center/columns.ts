@@ -63,9 +63,12 @@ const customerRegistrationMetricColumns = [
   { key: 'registered', label: '会员注册', unit: 'count' },
   { key: 'retained', label: '保有会员', unit: 'count' },
   { key: 'visitOnce', label: '回店1次', unit: 'count' },
-  { key: 'visitOnceRate', label: '1次达成率', unit: 'percent' },
+  // #414：分母是「会员注册」不是紧邻的「保有会员」——用户 2026-09-25 拍板改的就是这个分母，
+  // 不在表头标出来，读表人会默认除以语义更近的「保有会员」（那正是改之前的口径）。
+  // 括注写法照 dormant 的 `沉睡(截面·仅会员客)` 先例。
+  { key: 'visitOnceRate', label: '1次达成率(÷会员注册)', unit: 'percent' },
   { key: 'visitTwice', label: '回店2次', unit: 'count' },
-  { key: 'visitTwiceRate', label: '2次达成率', unit: 'percent' },
+  { key: 'visitTwiceRate', label: '2次达成率(÷会员注册)', unit: 'percent' },
   // #294：三档状态人数读 cron 每日重算的 customer_status 截面，**不随导出所选区间变化**；
   // 紧邻的「激活 X」三列才是区间统计。导出件脱离页面上下文，表头不标会被当同时态对比。
   // 沉睡额外带 `customer_type='会员客'`（customer.ts:181 标量侧 / :545 明细侧，

@@ -5,8 +5,11 @@
  *   - 同一顾客同一天开多张服务单 / 做多个项目只算 1 个到店日；
  *     **去重键 = (so.client_user_id, <日期轴列>)**，由本片段的 `SELECT DISTINCT` / `UNION` 保证
  *   - 只计 `status = '已完成'` 且挂了顾客的服务单
- *   - 与 cron `refresh-monthly-activity.ts`（`COUNT(DISTINCT so.service_date)`）同一条轴，
- *     故顾客列表「月度客活」筛选与数据中心「一次/二次人数」同一时点可逐人对上
+ *   - 与 cron `refresh-monthly-activity.ts`（`COUNT(DISTINCT so.service_date)`）同一条轴。
+ *     ⚠ **「逐人对上」自 #414 起只对「当月」成立，不再对历史月份成立**：数据中心的客活分子多了
+ *     会员守卫 `became_member_at::date <= 区间终点`，而 cron 侧没有（它给当月到店的所有顾客打标，
+ *     含非会员）。当月因终点 = 今天、守卫对全部会员恒真，故两侧仍可逐人对上；
+ *     选历史月份时数据中心会少掉"入会晚于该月月末"的人。差异原因见 metrics.md「D-visit-rate-denom」。
  *
  * 日期轴是闭集白名单参数：
  *   - `service_date`        客量板客活（#298）：只认已完成服务单的 service_date

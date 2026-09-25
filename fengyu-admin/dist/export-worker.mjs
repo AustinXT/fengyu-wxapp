@@ -180027,6 +180027,8 @@ async function queryActive(session4, scope, range, mode) {
     JOIN client_wechat_users c ON c.user_id = vc.client_user_id
     WHERE ${csc}
       AND c.customer_status IN ('保有会员-稳定', '保有会员-有效')
+      AND c.became_member_at IS NOT NULL
+      AND c.became_member_at::date <= ${range.end}
       AND ${daysClause}
   `);
   return num(first(rows).v);
@@ -180238,7 +180240,8 @@ async function queryRegActiveBreakdown(session4, scope, range, group) {
       GROUP BY c.bound_store_id
     ),
     -- 区间到店天数（按客户 + bound_store_id），区分一次/二次客活（仅保有会员）。
-    -- 到店日按 (顾客, service_date) 去重（#298），与 KPI queryActive 同一个 visitDaysSql
+    -- 到店日按 (顾客, service_date) 去重（#298），与 KPI queryActive 同一个 visitDaysSql。
+    -- 会员守卫与上面的 reg（达成率分母）逐字同源（#414），理由见 queryActive 的注释。
     visit_days AS (${visitDaysSql({ axis: "service_date", scope: serviceScope, range })}),
     visit_count AS (
       SELECT vd.client_user_id, c.bound_store_id AS store_id,
@@ -180248,6 +180251,8 @@ async function queryRegActiveBreakdown(session4, scope, range, group) {
       JOIN client_wechat_users c ON c.user_id = vd.client_user_id
       WHERE ${customerScope}
         AND c.bound_store_id IS NOT NULL
+        AND c.became_member_at IS NOT NULL
+        AND c.became_member_at::date <= ${end}
       GROUP BY vd.client_user_id, c.bound_store_id, c.customer_status
     ),
     active AS (
@@ -180593,9 +180598,9 @@ function buildBreakdownRows(group, skeletonRows, regActive, ops) {
         registered: ra?.registered ?? 0,
         retained: ra?.retained ?? 0,
         visitOnce: ra?.visitOnce ?? 0,
-        visitOnceRate: ra ? safeDiv(ra.visitOnce, ra.retained) : null,
+        visitOnceRate: ra ? safeDiv(ra.visitOnce, ra.registered) : null,
         visitTwice: ra?.visitTwice ?? 0,
-        visitTwiceRate: ra ? safeDiv(ra.visitTwice, ra.retained) : null,
+        visitTwiceRate: ra ? safeDiv(ra.visitTwice, ra.registered) : null,
         dormant: ra?.dormant ?? 0,
         reactivatedDormant: ra?.reactivatedDormant ?? 0,
         frozen: ra?.frozen ?? 0,
@@ -183350,9 +183355,9 @@ var customerRegistrationMetricColumns = [
   { key: "registered", label: "会员注册", unit: "count" },
   { key: "retained", label: "保有会员", unit: "count" },
   { key: "visitOnce", label: "回店1次", unit: "count" },
-  { key: "visitOnceRate", label: "1次达成率", unit: "percent" },
+  { key: "visitOnceRate", label: "1次达成率(÷会员注册)", unit: "percent" },
   { key: "visitTwice", label: "回店2次", unit: "count" },
-  { key: "visitTwiceRate", label: "2次达成率", unit: "percent" },
+  { key: "visitTwiceRate", label: "2次达成率(÷会员注册)", unit: "percent" },
   { key: "dormant", label: "沉睡(截面·仅会员客)", unit: "count" },
   { key: "reactivatedDormant", label: "激活沉睡", unit: "count" },
   { key: "frozen", label: "冰冻(截面)", unit: "count" },
