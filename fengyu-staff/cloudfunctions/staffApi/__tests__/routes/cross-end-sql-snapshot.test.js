@@ -3866,6 +3866,31 @@ describe('#341 提货冻结出库金额：两端副本一致', () => {
     }
   })
 
+  test('全仓写入闭集：非测试代码里写 pickup_records 的只有这两个文件（新写入口必须先接入冻结金额再登记）', () => {
+    const repoRoot = path.resolve(__dirname, '../../../../..')
+    const roots = ['fengyu-admin/src', 'fengyu-staff/cloudfunctions', 'fengyu-client/cloudfunctions', 'db/scripts']
+    const SKIP_DIRS = new Set(['node_modules', '__tests__', 'dist', '.next'])
+    const writers = []
+    const walk = (dir) => {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        if (entry.isDirectory()) {
+          if (!SKIP_DIRS.has(entry.name) && !entry.name.startsWith('_archive')) walk(path.join(dir, entry.name))
+          continue
+        }
+        if (!/\.(js|mjs|cjs|ts|tsx|sql)$/.test(entry.name) || /\.test\.|\.spec\./.test(entry.name)) continue
+        const file = path.join(dir, entry.name)
+        if (/INSERT\s+INTO\s+"?pickup_records"?|insert\(pickupRecords\)/.test(stripJsComments(readFile(file)))) {
+          writers.push(path.relative(repoRoot, file))
+        }
+      }
+    }
+    for (const root of roots) walk(path.join(repoRoot, root))
+    expect(writers.sort()).toEqual([
+      'fengyu-admin/src/actions/pickup-records.ts',
+      'fengyu-staff/cloudfunctions/staffApi/routes/order.js',
+    ])
+  })
+
   function extractFunctionSection(src, functionName) {
     const start = src.indexOf(`async function ${functionName}(`)
     expect(start, `未找到 ${functionName}`).toBeGreaterThanOrEqual(0)
