@@ -10,6 +10,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 vi.mock('@/db', () => ({ db: { execute: vi.fn() } }))
 
 import { unstable_cache } from 'next/cache'
+import { PgDialect } from 'drizzle-orm/pg-core'
+import type { SQL } from 'drizzle-orm'
 import { getMemberThreshold, MEMBER_THRESHOLD_FALLBACK } from './member-threshold'
 import { db } from '@/db'
 
@@ -34,6 +36,18 @@ describe('getMemberThreshold — 无 Next 缓存上下文（export-worker）', (
     process.env.FENGYU_EXPORT_WORKER = '1'
     exec.mockResolvedValue([{ value: '2990' }])
     await expect(getMemberThreshold()).resolves.toBe(2990)
+  })
+
+  it('读的就是 system_configs.new_member_threshold（渲染实际 SQL 断言，防改错 key）', async () => {
+    process.env.FENGYU_EXPORT_WORKER = '1'
+    exec.mockResolvedValue([{ value: '1990' }])
+    await getMemberThreshold()
+    expect(exec).toHaveBeenCalledTimes(1)
+    const q = new PgDialect().sqlToQuery(exec.mock.calls[0][0] as SQL)
+    expect(q.sql.replace(/\s+/g, ' ').trim()).toBe(
+      "SELECT value FROM system_configs WHERE key = 'new_member_threshold'",
+    )
+    expect(q.params).toEqual([])
   })
 
   it('未设标志但缺 incrementalCache → 回退直读，返回真实配置而不是 FALLBACK', async () => {

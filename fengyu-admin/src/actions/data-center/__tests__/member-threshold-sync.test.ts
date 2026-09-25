@@ -117,9 +117,23 @@ describe('会员门槛：客量板与品项板同源（#292）', () => {
         for (const m of [lt!, ge!, op!]) expect(q.params[Number(m[1]) - 1]).toBe(th)
       }
 
+      // 品项板：「新会员 / 进入」达标 day_received >= 门槛、复购 purchase_received >= 门槛。
+      // 逐个谓词核对参数值 —— 只看「某个参数含门槛」的话，把 day_received 改回写死 1990 也会全绿（codex r1 P1）
       const product = await renderedQueries('product')
-      const productThreshold = product.filter((q) => q.params.includes(th))
-      expect(productThreshold.length).toBeGreaterThan(0)
+      for (const col of ['day_received', 'purchase_received']) {
+        const withCol = product.filter((q) => q.sql.includes(`${col} >=`))
+        // 标量 cycle（WITH daily_agg … cohort）与按店 cycle（store_ids）两个函数都要命中
+        expect(withCol.some((q) => /cohort/.test(q.sql)), `${col}：标量 cycle 查询未命中`).toBe(true)
+        expect(withCol.some((q) => /store_ids/.test(q.sql)), `${col}：按店 cycle 查询未命中`).toBe(true)
+        for (const q of withCol) {
+          const hits = [...q.sql.matchAll(new RegExp(`${col} >= (\\$\\d+|[^\\s]+)`, 'g'))]
+          expect(hits.length).toBeGreaterThan(0)
+          for (const h of hits) {
+            expect(h[1], `${col} >= ${h[1]} 不是参数占位（写死了门槛？）`).toMatch(/^\$\d+$/)
+            expect(q.params[Number(h[1].slice(1)) - 1]).toBe(th)
+          }
+        }
+      }
     })
   }
 
