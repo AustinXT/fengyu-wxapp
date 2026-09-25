@@ -20,7 +20,7 @@ const {
   expandScopeStoreIds,
 } = require('../utils/scope')
 const { hasDataCenterDashboard } = require('../utils/permission-matrix')
-const { STORE_NODE_JOIN, STORE_IS_ACTIVE } = require('../utils/store-active')
+const { STORE_NODE_JOIN, STORE_IS_ACTIVE } = require('../utils/store-status')
 
 /**
  * 查询员工权限角色（带 scope 类型）

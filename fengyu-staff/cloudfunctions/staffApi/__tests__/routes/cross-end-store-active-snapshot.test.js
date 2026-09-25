@@ -1,7 +1,7 @@
 /**
  * 「门店在营 / 已停用」判定的跨端字面量守护（issue #400，口径对齐 admin #293）。
  *
- * staff `utils/store-active.js` 是 admin `actions/data-center/shared.ts`（inactiveStores 分流）
+ * staff `utils/store-status.js`（#401 起 #400 的判定片段并入此文件，原 utils/store-active.js）是 admin `actions/data-center/shared.ts`（inactiveStores 分流）
  * 的**独立副本**（根 CLAUDE.md：禁止跨端共享代码目录，一致性靠字面量 snapshot 守护）。
  *
  * ## 守什么
@@ -11,8 +11,8 @@
  * 2. 取数口径两端整段等值：staff `activeStoreCondition` ≡ admin `activeStoreCondition`。
  *    判定片段是照着它写的，它一变，判定就会和「满屏 0」错位。
  * 3. staff 四个使用点（fetchScopedStores / loadInactiveStores / resolveScope / hasActiveAlternative）的 SQL 整段等值，
- *    都经由 1 的常量拼出，不内联另一套判定（比如混进 is_closed）。
- * 4. admin 侧判定仍是「只看 isActive」且 isActive 取自门店组织节点，不含 isClosed。
+ *    都经由 1 的常量拼出，不内联另一套判定（比如混进 is_closed——#401 起 hasActiveAlternative 也随范围下拉去掉了关店排除）。
+ * 4. admin 侧判定仍是「只看 isActive」且 isActive 取自门店组织节点，不含 isClosed（#401 起经 lib/store-status isDataCenterActiveStore）。
  */
 
 const fs = require('node:fs')
@@ -41,7 +41,7 @@ function onlySqlTemplate(section) {
 }
 
 describe('门店在营判定跨端字面量守护（#400）', () => {
-  const { STORE_NODE_JOIN, STORE_IS_ACTIVE } = require('../../utils/store-active')
+  const { STORE_NODE_JOIN, STORE_IS_ACTIVE } = require('../../utils/store-status')
 
   test('1. 判定片段整段快照', () => {
     expect(STORE_NODE_JOIN).toBe(
@@ -51,13 +51,14 @@ describe('门店在营判定跨端字面量守护（#400）', () => {
   })
 
   test('2. 取数口径 activeStoreCondition 两端整段等值，且与判定片段要件一一对应', () => {
+    // #401 起两端 activeStoreCondition 都收敛到各自的 store-status helper
     const staffBody = extractSection(
-      read(path.join(STAFF, 'routes/mgmt-dashboard.js')),
+      read(path.join(STAFF, 'utils/store-status.js')),
       'function activeStoreCondition(column) {',
       '\n}\n',
     )
     const adminBody = extractSection(
-      read(path.join(ADMIN, 'lib/data-center/scope-sql.ts')),
+      read(path.join(ADMIN, 'lib/store-status.ts')),
       'function activeStoreCondition(storeCol: SQL): SQL {',
       '\n}\n',
     )
@@ -80,19 +81,22 @@ describe('门店在营判定跨端字面量守护（#400）', () => {
     expect(onlySqlTemplate(extractSection(dash, 'async function resolveScope(', '\n}\n'))).toBe(
       'SELECT s.store_name, ${STORE_IS_ACTIVE} AS is_active FROM stores s ${STORE_NODE_JOIN} WHERE s.store_id = $1',
     )
-    // 空态第二行「有没有别的门店可切」：在营判定同源 + 与范围下拉同口径排除关店
+    // 空态第二行「有没有别的门店可切」：在营判定同源 + 与范围下拉同口径（#401 起下拉只看节点在营，不排除关店）
     expect(onlySqlTemplate(extractSection(dash, 'async function hasActiveAlternative(', '\n}\n'))).toBe(
-      'SELECT EXISTS ( SELECT 1 FROM stores s ${STORE_NODE_JOIN} WHERE ${STORE_IS_ACTIVE} AND s.is_closed = false AND s.store_id <> $1 AND ($2::boolean OR s.store_id = ANY($3::text[])) ) AS has_alternative',
+      'SELECT EXISTS ( SELECT 1 FROM stores s ${STORE_NODE_JOIN} WHERE ${STORE_IS_ACTIVE} AND s.store_id <> $1 AND ($2::boolean OR s.store_id = ANY($3::text[])) ) AS has_alternative',
     )
-    // 两文件的常量都来自同一个 staff 工具（不在路由里另写一份）
-    for (const src of [auth, dash]) {
-      expect(src).toContain("const { STORE_NODE_JOIN, STORE_IS_ACTIVE } = require('../utils/store-active')")
-    }
+    // 两文件的常量都来自同一个 staff 在营 helper（不在路由里另写一份，也不另立 helper 文件）
+    expect(auth).toContain("const { STORE_NODE_JOIN, STORE_IS_ACTIVE } = require('../utils/store-status')")
+    expect(squeeze(dash)).toContain("const { activeStoreCondition, activeStoreNodeCondition, STORE_NODE_JOIN, STORE_IS_ACTIVE, } = require('../utils/store-status')")
   })
 
   test('4. admin 侧判定只看组织节点 isActive，不含 isClosed', () => {
     const shared = squeeze(read(path.join(ADMIN, 'actions/data-center/shared.ts')))
     expect(shared).toContain('isActive: orgStore.isActive,')
-    expect(shared).toContain('const inactiveStores = allStoreRows .filter((s) => !s.isActive) .map((s) => ({ storeId: s.storeId, storeName: s.storeName, marketId: s.marketId }))')
+    expect(shared).toContain('const inactiveStores = allStoreRows .filter((s) => !isDataCenterActiveStore(s)) .map((s) => ({ storeId: s.storeId, storeName: s.storeName, marketId: s.marketId }))')
+    // 谓词本体（admin lib/store-status）只看节点 isActive
+    expect(squeeze(read(path.join(ADMIN, 'lib/store-status.ts')))).toContain(
+      'export function isDataCenterActiveStore(store: { isActive: boolean }): boolean { return store.isActive }',
+    )
   })
 })

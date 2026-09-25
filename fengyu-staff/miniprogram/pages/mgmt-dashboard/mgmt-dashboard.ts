@@ -100,10 +100,10 @@ interface SummaryData {
     /** #400：inactive 时账号还有没有别的在营门店可切（后端按范围下拉同口径判）；null = 未知 */
     hasActiveAlternative?: boolean | null
   }
-  storeRevenue: { today: number; month: number; monthlyAvgPerStore: number }
-  shengmeiRevenue: { today: number; month: number; monthlyAvgPerStore: number }
-  storeConsume: { today: number; month: number; monthlyAvgPerStore: number }
-  shengmeiConsume: { today: number; month: number; monthlyAvgPerStore: number }
+  storeRevenue: { today: number; month: number; monthlyAvgPerStore: number | null }
+  shengmeiRevenue: { today: number; month: number; monthlyAvgPerStore: number | null }
+  storeConsume: { today: number; month: number; monthlyAvgPerStore: number | null }
+  shengmeiConsume: { today: number; month: number; monthlyAvgPerStore: number | null }
   footfall: { today: number; month: number }
   headcount: { today: number; month: number }
   newMembers: { today: number; month: number }

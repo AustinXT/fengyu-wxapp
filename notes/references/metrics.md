@@ -334,7 +334,7 @@ WHERE c.customer_status IN ('保有会员-稳定','保有会员-有效')
 与数据中心一次/二次客活的差别（口径相同，只是范围不同，数字对不上时先逐条查）：
 
 1. **不限保有会员**：`monthly_activity` 对当月到店的所有顾客（含非会员）都打标；数据中心只数 `customer_status IN ('保有会员-稳定','保有会员-有效')` 的人
-2. **不限门店**：cron 按全部门店（含已停用门店）的服务单数到店天数。admin 数据中心的 `scopeFilterSql` 即使选「全部」也恒带在营门店过滤（`org_nodes.is_active`），服务单侧按 `so.store_id`、顾客侧按 `bound_store_id` 各过滤一次；staff 管理层客量页选「全部」时不带在营门店过滤。所以在停用门店有服务单、或绑定在停用门店的顾客，三端可能分到不同档
+2. **不限门店**：cron 按全部门店（含已停用门店）的服务单数到店天数。admin 数据中心的 `scopeFilterSql` 即使选「全部」也恒带在营门店过滤（`org_nodes.is_active`），服务单侧按 `so.store_id`、顾客侧按 `bound_store_id` 各过滤一次；staff 管理层客量页 / 品项页自 #401 起同样恒带该过滤（`utils/store-status.js`，与 admin 同口径）。所以在停用门店有服务单、或绑定在停用门店的顾客，cron 与两端数据中心可能分到不同档
 3. **单店 scope 下跨店到店不计**：顾客绑定 A 店，1 号去 A、2 号去 B —— scope=A 时服务单侧只留 A 店的单，算「一次」；scope=全部时明细 A 行算「二次」（改口径前即如此）
 4. **快照时点**：`monthly_activity` 是最近一次 cron 的快照，此后新完成的服务单要等下一次 cron 才计入；数据中心实时查。每月 1 号的快照里当月几乎全是 0次客活 / NULL
 5. **区间长度**：`monthly_activity` 固定自然月；数据中心跟随顶部时间筛选。选「今日」这类单日区间时，到店天数最多 1 天，「二次」恒为 0（改口径前同日两单会被算成二次）
@@ -546,11 +546,10 @@ FROM (
    （其到店行记在 `member_visits` 而非 `traffic_visits`）和「本期没到过店的新会员」（完全无人次行），
    所以同一行出现 `成交率分母 > 流量人次`、甚至 `流量人次 = 0 而成交率分母 > 0`，
    **是合法状态，不是数据 bug**。旧口径下这在数学上不可能，因此这是 #284 之后的新现象。
-3. **两端数值在存在停用门店时不可比**。admin 的 `scopeFilterSql` 恒含
-   `org_nodes.is_active = TRUE` 过滤，staff 的 `buildManagementStoreScope` 没有（`all` 档直接 `TRUE`）。
-   绑定在停用门店的新增会员 admin 不计、staff 计；staff `all` 档还会计入 `bound_store_id IS NULL` 的会员。
-   **各端内部分子/分母配对是自洽的**（同一个 scope helper 同时作用于分子与分母 ②），
-   子集关系两端都成立；跨端对数时须先确认组织树里没有停用门店。
+3. ~~**两端数值在存在停用门店时不可比**~~（#401 已消除）。admin 的 `scopeFilterSql` 与 staff 客量页 / 品项页的
+   `buildSaleScope` / `buildClientScope` 自 #401 起都恒叠加在营门店过滤（`org_nodes.is_active = TRUE`，两端
+   `store-status` helper 独立副本 + 字面量守护）；`bound_store_id IS NULL` 的会员两端都不计（`NULL IN (...)` 不成立）。
+   **各端内部分子/分母配对是自洽的**（同一个 scope helper 同时作用于分子与分母 ②），子集关系两端都成立。
 
 > ⚠️ **已知限制（待拍板，#284 遗留）**：① 分支的判定 `became_member_at::date BETWEEN start AND end`
 > **带上界**，于是「在该区间之后才转化」的人会被排除出该历史区间的活跃池 —— 因为 `customer_type`
@@ -569,7 +568,7 @@ FROM (
 
 | 指标 | 公式 | 防除零 |
 |------|------|--------|
-| 月店均（monthlyAvgPerStore） | `本月数据 / storeCount.month` （月末口径，scope=单店时分母=1） | 分母=0 时返回 0 |
+| 月店均（monthlyAvgPerStore） | `本月数据 / storeCount.month` （月末口径，scope=单店时分母=1） | 分母=0 时返回 `null`，前端 `formatAmount` 显示 `--`（#401；与 admin perStore 一致，返回 0 会冒充「在营但零业绩」） |
 | 占比（memberRetainRate） | `retainedMemberCount / memberCount × 100%`（两者均按 `selectedDate` 历史化：`became_member_at` 守卫 + 90 天到店窗口） | `memberCount=0 → '--'` |
 | 店均会员（avgMembersPerStore） | `memberCount / storeCount.day`（屏幕展示：当日截面） | `storeCount.day=0 → '--'` |
 | 店均保有会员（avgRetainedPerStore） | `retainedMemberCount / storeCount.day` | 同上 |
@@ -795,6 +794,7 @@ SELECT COUNT(*) FROM org_nodes WHERE type='store' [AND parent_id=$market]
 | 2026-09-25 | **一次/二次客活改按到店天数（#298）**：由服务单行数 `COUNT(*)` 改为 `COUNT(DISTINCT service_date)`，去重键 `(client_user_id, service_date)`，日期轴拍板为 `service_date`；admin 数据中心（KPI + 明细）与 staff mgmt-traffic 同步。补登 `monthly_activity` 口径（此前在本文档完全缺席，是两套定义分叉的根因）。prod 2026-09-01~09-24 集团一次/二次 527/982 → 590/919，63 人由「二次」回到「一次」 |
 | 2026-09-25 | **经营数据主表补齐 E–I、K–M、S–U、Y（#373）**：保有会员按「保有会员-*」时点还原（= 客量板有效保有会员，绑定门店）；被经营 = 当期（当月 / 年初至今）销售 + 转换单款项 ≥ 会员门槛、按下单门店；客流改「服务到店天数」、售前 = 当天核销体验项、Y = X/U。prod 自贡 2026-08 实测（2026-09-25）：E/F/H = 237/226/168，K/L = 82/77（含充值则 L = 83），S/T/U = 1,642/89/1,553（与 issue 参考值一致） |
 | 2026-09-25 | **客量板会员门槛读配置（#292）**：会员被经营 6 档的最低档下界与「会员经营人数」门槛由写死的 `1990` 改读 `system_configs.new_member_threshold`（与品项板同源），1w/3w/6w/10w 收敛到 `SPEND_BUCKET_FLOORS`；admin 与 staffApi 同步。prod/dev 当前配置均为 1990，上线后数字不变。标签保持写死；门槛须 < 1w（不加校验，仅文档化） |
+| 2026-09-25 | **数据中心「在营门店」口径收敛（#401）**：取数、范围下拉、#293 停用空态统一**只看 `org_nodes.is_active`**；`stores.is_closed` / `closed_at` 只作营业时间轴（门店数按 `closed_at` 时点历史化），不作统计范围——否则关店会抹掉关店前全部历史业绩。关店不联动停用节点。单源：admin `lib/store-status.ts` / staff `utils/store-status.js`（独立副本，`cross-end-store-status-snapshot.test.js` 守护：is_closed 闭集 + closed_at 白名单 + mgmt-*.js 分类闭集）。连带：①「只关店、节点仍启用」的门店进入两端范围下拉；② staff 客量页 / 品项页补在营过滤（此前不排除停用门店，与 admin 分叉）；③ staff 月店均月末 0 店返回 `null`（前端 `--`）。「可营业」口径（前台门店列表 / 库存位 / 提货）不变 |
 | **2026-09-14** | **款项业绩归属日期收口（#137，迁移 0039 + 0040）**。视图 `sale_order_performance_events.performance_date` 改为**直读** `sale_order_payments.performance_attribution_date`，**查询侧不再有任何回退分支**；取值规则全部下沉到写入侧两个 trigger。0040 给该列加了 **CHECK 约束** `chk_sop_attribution_date_present`（列本身**不是** `NOT NULL`，Drizzle schema 里仍是 nullable）。<br>**影响面**：原文「首次支付取订单归属日、回款/退款取自身 `paid_at`」的表述在全文档失效——每一笔款项都有自己的归属日期。金额类指标按类型分流：**业绩/现金流类**（总业绩、分客型业绩、员工业绩、销售提成）走 `[spe.performance_date]`；**子项类**（生美业绩、产品出库、品项周期业绩）走 `[sipe.performance_date]`；**实耗 / 生美实耗 / 服务提成**仍走 `[service_date]`，不受本次收口影响。<br>⚠ **部署前置**：先 apply 0039 + 0040 再部署各端，否则未迁库时首次支付行归属日为 NULL，会被三值逻辑吞掉正数主体。 |
 | **2026-09-16** | **口径变更登记（#138 / #139 / #140 / #141）**，四条均为「从 `paid_at` 切到归属日期」：<br>· **#138** 客量数据子页 §4/§5：会员被经营 6 档分桶、会员客单价、新会员对应消费改按款项流水归属（`SUM(spe.amount) @ performance_date`；旧实现为 `SUM(o.received - COALESCE(o.refunded_amount,0)) @ o.paid_at::date` ∩ `o.status='已支付'`，旧文档曾误记为 `paid_amount`，该列已 DROP）。dev 实测 2026-08 经营人数 321→324、会员总数 470→413、消费合计 +7.78 万；含退款负行故 `spend` 可为负（本期净消费，不 clamp）。<br>· **#139** staff 订单列表 / 营业额分配列表的日期筛选固定按 `performance_attribution_date`。<br>· **#140** admin 工作台「今日实付 / 今日退款 / 昨日实付」改按 `spe.performance_date`（`total_paid_amount` 无日期条件不受影响）。⚠ 财务注意：这三项不再与银行流水逐日对齐。<br>· **#141** staff 顾客档案「年度消费」/ 列表「年消费」改按 `performance_attribution_date`（半开年区间）；**月度消费日历仍按 `paid_at`**，两个口径并存且有意。<br>同轮订正三处存量滞后表述：销售数据页总述、分客型业绩 `[sop.paid_at_period]`、分客型产品出库与品项维度汇总的 `SUM(si.received) @ paid_at`（实现早已是 `SUM(sipe.amount) @ sipe.performance_date`）；员工排行榜「复用 `[paid_at_period]`」。<br>另补登记一条历史遗漏：实耗 / 生美实耗 / 项目数等**消耗类**指标两端都套了 `excludeDepositRefundSql()` 剔除寄存单退款专用服务单（admin 19 处 / staff 12 处，由 `consistency.deposit-refund-filter.test.ts` 守护 31 处中的 29 处，且只校验文件级调用次数）——**客流 / 到店 / 服务人次 / 保有会员 / 提成不剔除**（寄存退款是真到店、假消耗）。本文档此前从未登记，照公式抄会多算。 |
 | **2026-09-22** | **环比基期（上期）长度首次登记（#283）**，见文末「数据中心（admin）板块专属指标」节。此前全文只登记了「上期」这个概念、从未定义其长度，`time-range.ts` 遂把本节「时间窗口补充」里 staff 端的**三选一并列维度**「上月=上月初~上月末」误当成环比分母，于是 `本周`/`本月` 两个 preset 拿 N 天的当期比整周/整月的基期（同文件 `今日`/`自定义` 恒等长，`今年` 另有跨闰年偏差）。现明确：**基期按日历同期对齐、不得无条件取完整上一周期**，`本周`→上周同一星期几、`本月`→上月同一日。同轮登记三条日历固有例外（`本月` 上月天数不足时 clamp 到上月末短 1~3 天；`今年` 的环比/同比基期跨闰年 ±1 天；`本周`/`自定义` 的**同比**基期跨闰年 ±1 天且星期漂移——后两条源自 `addYears` 的 2/29 归一化，**均尚未修复**）。并明确**同比基期与环比基期同受「不得长于当期」约束**（二者同走一个 `deltaPct`）。另补登记 `delta%` 的「算不出」情形含**基期 `<= 0`** 与**非有限值**（负基期会让符号翻转）。⚠ 「本月」与「自定义同起止日」的环比值本就不同，属语义差异非缺陷。 |
@@ -942,9 +942,9 @@ SELECT COUNT(*) FROM org_nodes WHERE type='store' [AND parent_id=$market]
 > （admin 侧集团 **1917 / 1931 = 99.27%**，2026-09-24 实测；**数字每日漂移，验收看不变量不看绝对值**）。
 > 此前的全部店间方差都来自「非会员数量」，按旧列排名会得到与事实相反的结论。
 >
-> ⚠️ **两端集团口径的绝对值本就不同，别拿来对数**：admin 的 `scopeFilterSql` **恒** AND 上
-> `activeStoreCondition`（只算在营门店），staff 的 `buildManagementStoreScope(scopeType='all')`
-> 直接返回 `TRUE`（不排除停用门店）。占比两端都 ≤ 100%（分子分母同受影响），但绝对值对不上。
+> ✅ **两端集团口径绝对值自 #401 起一致**：admin 的 `scopeFilterSql` 与 staff `mgmt-product.js` 的
+> `buildClientScope` 都恒 AND 上 `activeStoreCondition`（只算在营门店，只看 `org_nodes.is_active`）。
+> #401 之前 staff `all` 档直接 `TRUE`（不排除停用门店），两端绝对值对不上。
 >
 > ✅ **集团 == Σ门店**：`activeStoreCondition` 已把 `bound_store_id` 为空的会员排除在外
 > （实测这样的会员 1 人、绑定到非在营门店的 0 人），所以 byStore 里那句

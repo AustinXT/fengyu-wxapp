@@ -1,6 +1,6 @@
 // utils/mgmt-scope.ts — 管理层看板 scope 的「已停用门店」处理（#400，口径与文案对齐 admin #293）
 //
-// 「在营」只看门店组织节点 org_nodes.is_active（云函数判定，见 staffApi utils/store-active.js）。
+// 「在营」只看门店组织节点 org_nodes.is_active（云函数判定，见 staffApi utils/store-status.js）。
 // 首页 summary 与销售数据 salesData 的取数 SQL 会滤掉停用门店的全部数据（满屏 0，与「在营门店
 // 本期无业绩」分不开）→ 以接口下发的 scope.inactive 为准出空态；在营门店无业绩照常显示 0。
 //

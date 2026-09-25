@@ -343,7 +343,7 @@ describe('mgmtDashboard.summary scopeType=store', () => {
     }
 
     expect(ctx.result.storeCount).toEqual({ day: 0, month: 0 })
-    expect(ctx.result.storeRevenue.monthlyAvgPerStore).toBe(0)
+    expect(ctx.result.storeRevenue.monthlyAvgPerStore).toBeNull()
     expect(ctx.result.scope).toEqual({ type: 'store', id: 'store-001', name: '凤御B店', inactive: false, hasActiveAlternative: true })
   })
 
@@ -372,7 +372,7 @@ describe('mgmtDashboard.summary scopeType=store', () => {
     expect(scopeCall[1]).toEqual(['store-001'])
   })
 
-  test('停用门店 + 账号另有在营未关店门店 → hasActiveAlternative=true；判定限在 scope 内、排除当前店（#400）', async () => {
+  test('停用门店 + 账号另有在营门店 → hasActiveAlternative=true；判定限在 scope 内、排除当前店，不看关店（#400 / #401）', async () => {
     mockStoreScope({ row: { store_name: '九江中辉店', is_active: false } })
     const base = pg.query.getMockImplementation()
     pg.query.mockImplementation(async (sql, params) => (
@@ -384,7 +384,9 @@ describe('mgmtDashboard.summary scopeType=store', () => {
     expect(ctx.result.scope.hasActiveAlternative).toBe(true)
     const [sql, params] = pg.query.mock.calls.find((c) => /SELECT EXISTS/.test(c[0]))
     expect(sql).toContain("LEFT JOIN org_nodes store_node ON store_node.id = s.org_node_id AND store_node.type = '门店'")
-    expect(sql).toMatch(/WHERE COALESCE\(store_node\.is_active, FALSE\)\s+AND s\.is_closed = false\s+AND s\.store_id <> \$1\s+AND \(\$2::boolean OR s\.store_id = ANY\(\$3::text\[\]\)\)/)
+    // #401：与范围下拉同口径只看节点在营，只关店的门店也算可切（它在下拉里、能看关店前历史）
+    expect(sql).toMatch(/WHERE COALESCE\(store_node\.is_active, FALSE\)\s+AND s\.store_id <> \$1\s+AND \(\$2::boolean OR s\.store_id = ANY\(\$3::text\[\]\)\)/)
+    expect(sql).not.toMatch(/is_closed/i)
     expect(params).toEqual(['store-001', false, ['store-001']])
   })
 
@@ -415,7 +417,8 @@ describe('mgmtDashboard.summary scopeType=store', () => {
     await summary(ctx)
 
     expect(ctx.result.scope.inactive).toBe(false)
-    expect(ctx.result.storeRevenue).toEqual({ today: 0, month: 0, monthlyAvgPerStore: 0 })
+    // 月末 0 店（mock 的门店数为 0）→ 月店均 null（#401，前端 --）；当日 / 当月照常为 0
+    expect(ctx.result.storeRevenue).toEqual({ today: 0, month: 0, monthlyAvgPerStore: null })
     expect(ctx.result.footfall).toEqual({ today: 0, month: 0 })
   })
 
@@ -477,7 +480,7 @@ describe('mgmtDashboard.summary 月店均与防除零', () => {
     expect(ctx.result.shengmeiConsume.monthlyAvgPerStore).toBe(100)
   })
 
-  test('storeCount=0 → monthlyAvgPerStore 返回 0 而非 NaN', async () => {
+  test('storeCount=0 → monthlyAvgPerStore 返回 null（前端显示「--」，与 admin perStore 一致，#401），不是 0 也不是 NaN', async () => {
     pg.query.mockReset().mockImplementation(async (sql) => {
       if (isStoreCountSql(sql)) return [{ cnt: 0 }]
       if (/FROM org_nodes\b/.test(sql) && /SELECT name\b/.test(sql)) return [{ name: '' }]
@@ -489,8 +492,10 @@ describe('mgmtDashboard.summary 月店均与防除零', () => {
 
     // T6：双口径都为 0
     expect(ctx.result.storeCount).toEqual({ day: 0, month: 0 })
-    expect(ctx.result.storeRevenue.monthlyAvgPerStore).toBe(0)
-    expect(Number.isNaN(ctx.result.storeRevenue.monthlyAvgPerStore)).toBe(false)
+    // 月业绩 999 非零、月末 0 店：返回 0 会冒充「在营但零业绩」
+    for (const k of ['storeRevenue', 'shengmeiRevenue', 'storeConsume', 'shengmeiConsume']) {
+      expect(ctx.result[k].monthlyAvgPerStore, k).toBeNull()
+    }
   })
 
   test('T6：monthlyAvgPerStore 用 storeCount.month（day=5, month=4, monthRev=400 → avg=100）', async () => {

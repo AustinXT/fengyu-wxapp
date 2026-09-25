@@ -30,7 +30,14 @@ const {
   hasHeadquartersScope,
 } = require('../utils/scope')
 const { excludeDepositRefundSql } = require('../utils/consume-filter')
-const { STORE_NODE_JOIN, STORE_IS_ACTIVE } = require('../utils/store-active')
+// 在营口径单源（#401）：只看门店组织节点 is_active，不看门店关店标记。
+// #400 的停用判定片段（STORE_NODE_JOIN / STORE_IS_ACTIVE）也并入同一个 helper，不再另立文件。
+const {
+  activeStoreCondition,
+  activeStoreNodeCondition,
+  STORE_NODE_JOIN,
+  STORE_IS_ACTIVE,
+} = require('../utils/store-status')
 
 /**
  * 取 selectedDate 所属月份的月末日期（YYYY-MM-DD）。
@@ -74,9 +81,8 @@ async function loadAllMarkets() {
     LEFT JOIN market_descendants d ON d.market_id = m.id
     LEFT JOIN org_nodes o_store
       ON o_store.id = d.node_id
-     AND o_store.type = '门店'
-     AND o_store.is_active = TRUE
-    LEFT JOIN stores s ON s.org_node_id = o_store.id AND s.is_closed = false
+     AND ${activeStoreNodeCondition('o_store')}
+    LEFT JOIN stores s ON s.org_node_id = o_store.id
     WHERE m.type = '市场'
     ORDER BY m.name ASC, s.store_name ASC
   `)
@@ -154,7 +160,7 @@ async function scopeOptions(ctx) {
 }
 
 /**
- * 权限内门店组织节点已停用的门店（口径见 utils/store-active.js：只看 org_nodes.is_active）。
+ * 权限内门店组织节点已停用的门店（口径见 utils/store-status.js：只看 org_nodes.is_active）。
  * 总部看全部门店；其他账号仅看 scopeStoreIds（expandScopeStoreIds 不看启停，停用门店仍在其中）。
  */
 async function loadInactiveStores(allowAll, scopeStoreIds) {
@@ -174,17 +180,6 @@ async function loadInactiveStores(allowAll, scopeStoreIds) {
 // =====================================================================
 // summary —— 8 卡片汇总
 // =====================================================================
-
-/** 当前启用的门店组织节点对应的 store_id 集合（按当前状态作用于全部历史区间）。 */
-function activeStoreCondition(column) {
-  return `${column} IN (
-    SELECT active_store.store_id
-    FROM stores active_store
-    JOIN org_nodes active_node ON active_store.org_node_id = active_node.id
-    WHERE active_node.type = '门店'
-      AND active_node.is_active = TRUE
-  )`
-}
 
 /**
  * 在既有权限/UI scope 外叠加经营门店启用条件；不改共享 scope 工具，避免影响其他路由。
@@ -629,7 +624,8 @@ async function resolveScope(scopeType, scopeId) {
 
 /**
  * 落在停用门店时，账号还有没有别的门店可切（#400 空态第二行文案用）。
- * 与范围下拉 loadAllMarkets 同口径：节点在营且未关店；总部看全部，其余限 scopeStoreIds。
+ * 与范围下拉 loadAllMarkets 同口径：只看门店节点在营（#401 起下拉不再排除只关店的门店）；
+ * 总部看全部，其余限 scopeStoreIds。
  */
 async function hasActiveAlternative(auth, scopeId) {
   const allowAll = hasHeadquartersScope(auth.roleBindings)
@@ -641,7 +637,6 @@ async function hasActiveAlternative(auth, scopeId) {
          FROM stores s
          ${STORE_NODE_JOIN}
         WHERE ${STORE_IS_ACTIVE}
-          AND s.is_closed = false
           AND s.store_id <> $1
           AND ($2::boolean OR s.store_id = ANY($3::text[]))
      ) AS has_alternative`,
@@ -729,8 +724,10 @@ async function summary(ctx) {
     : true
 
   const round2 = (v) => Math.round(Number(v) * 100) / 100
-  // monthlyAvgPerStore：分母用月末口径，与"月度业绩 = 整月在营"语义对齐
-  const avg = (m) => (storeCountMonth > 0 ? round2(m / storeCountMonth) : 0)
+  // monthlyAvgPerStore：分母用月末口径，与"月度业绩 = 整月在营"语义对齐。
+  // 月末在营 0 店（只关店仍可选的门店、未开业门店）→ null，前端 formatAmount 显示「--」，
+  // 与 admin 数据中心 perStore 分母 ≤0 返回 null 一致（#401）；返回 0 会和「在营但零业绩」混淆。
+  const avg = (m) => (storeCountMonth > 0 ? round2(m / storeCountMonth) : null)
 
   ctx.result = {
     date,
