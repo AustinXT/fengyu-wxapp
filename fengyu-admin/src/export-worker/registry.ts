@@ -55,7 +55,7 @@ import {
   type ExportJobPayload,
   type ExportJobType,
 } from '@/lib/export-job-types'
-import { DATA_CENTER_REPORT_EXPORT_HANDLERS } from './report-views'
+import { DATA_CENTER_REPORT_EXPORT_HANDLERS } from './report-handlers'
 import type { WorkerExportColumn, ExportCell } from './xlsx-writer'
 import type { ExportContextMeta } from './export-meta'
 
@@ -547,7 +547,7 @@ export function isReportExportView(view: DataCenterExportView): view is DataCent
 /**
  * data-center 导出分发。⚠️ 报表视图（report-*）必须**先于**板块分发：板块按 `sales-` / `customer-` /
  * `product-` 前缀判定、其余一律落进人效分支，报表视图若漏在这之后会被静默派给板块取数函数（#367 记录的坑）。
- * 报表视图的处理函数登记在 `./report-views`（`Record<报表视图, handler>`，漏登记 tsc 即报错）。
+ * 报表视图的处理函数登记在 `./report-handlers`（`Record<报表视图, handler>`，漏登记 tsc 即报错）。
  */
 async function queryDataCenter(
   payload: DataCenterExportPayload,
@@ -585,6 +585,8 @@ async function queryDataCenterBoard(
     return breakdownContent(view, rows)
   }
 
+  // 兜底分支只收人效视图：新登记的视图既没进报表分发、也不是四板块之一时直接失败，不能静默拿人效板取数
+  if (!view.startsWith('efficiency-')) throw new Error(`INVALID_PARAMS: 未知的数据中心导出视图 ${view}`)
   const board = await getEfficiencyBoard(base)
   if (view === 'efficiency-market') return breakdownContent(view, board.byMarket)
   if (view === 'efficiency-staff') return breakdownContent(view, board.byStaff)

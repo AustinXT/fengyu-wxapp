@@ -2,11 +2,9 @@
  * 数据中心明细表与导出列的唯一配置来源。
  *
  * 本文件不依赖 Server Action 或 Node API，页面和异步导出 worker 都可以安全引用。
+ * 只配置旧 4 板块的视图；经营明细报表（report-*）的列定义在各自页面的 lib 模块里。
  */
 import type { DataCenterBoardExportView } from '@/lib/export-job-types'
-
-/** 本文件只配置旧 4 板块的视图；经营明细报表（report-*）的列定义在各自页面的 lib 模块里 */
-type DataCenterExportView = DataCenterBoardExportView
 import { SALES_CATEGORIES, SALES_CATEGORY_COLUMN_KEYS } from '@/lib/sales-categories'
 import type { MetricUnit } from './types'
 
@@ -235,21 +233,21 @@ export const DATA_CENTER_VIEW_CONFIG = {
       { key: 'income', label: '收入', unit: 'amount' },
     ],
   },
-} as const satisfies Record<DataCenterExportView, DataCenterViewConfig>
+} as const satisfies Record<DataCenterBoardExportView, DataCenterViewConfig>
 
 export type DataCenterBreakdownView = {
-  [View in DataCenterExportView]: (typeof DATA_CENTER_VIEW_CONFIG)[View]['kind'] extends 'breakdown'
+  [View in DataCenterBoardExportView]: (typeof DATA_CENTER_VIEW_CONFIG)[View]['kind'] extends 'breakdown'
     ? View
     : never
-}[DataCenterExportView]
+}[DataCenterBoardExportView]
 
 export type DataCenterRankingView = {
-  [View in DataCenterExportView]: (typeof DATA_CENTER_VIEW_CONFIG)[View]['kind'] extends 'ranking'
+  [View in DataCenterBoardExportView]: (typeof DATA_CENTER_VIEW_CONFIG)[View]['kind'] extends 'ranking'
     ? View
     : never
-}[DataCenterExportView]
+}[DataCenterBoardExportView]
 
-export function getDataCenterBreakdownConfig(view: DataCenterExportView): DataCenterBreakdownConfig {
+export function getDataCenterBreakdownConfig(view: DataCenterBoardExportView): DataCenterBreakdownConfig {
   const config = DATA_CENTER_VIEW_CONFIG[view]
   if (config.kind !== 'breakdown') {
     throw new Error(`INVALID_PARAMS: ${view} 不是明细导出视图`)
@@ -257,7 +255,7 @@ export function getDataCenterBreakdownConfig(view: DataCenterExportView): DataCe
   return config
 }
 
-export function getDataCenterRankingConfig(view: DataCenterExportView): DataCenterRankingConfig {
+export function getDataCenterRankingConfig(view: DataCenterBoardExportView): DataCenterRankingConfig {
   const config = DATA_CENTER_VIEW_CONFIG[view]
   if (config.kind !== 'ranking') {
     throw new Error(`INVALID_PARAMS: ${view} 不是排名导出视图`)

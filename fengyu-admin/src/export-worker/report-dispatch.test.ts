@@ -22,7 +22,7 @@ vi.mock('@/actions/data-center/customer', () => ({ getCustomerBoard: board.getCu
 vi.mock('@/actions/data-center/product', () => ({ getProductBoard: board.getProductBoard }))
 vi.mock('@/actions/data-center/efficiency', () => ({ getEfficiencyBoard: board.getEfficiencyBoard }))
 vi.mock('@/db', () => ({ db: {} }))
-vi.mock('./report-views', async () => {
+vi.mock('./report-handlers', async () => {
   const { DATA_CENTER_REPORT_EXPORT_VIEWS } = await import('@/lib/export-job-types')
   return {
     DATA_CENTER_REPORT_EXPORT_HANDLERS: Object.fromEntries(
