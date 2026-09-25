@@ -5,13 +5,18 @@ import { ApiError } from '@/lib/api-error'
 import { shanghaiToday, shanghaiYmd } from '@/lib/datetime'
 import { logOperation } from '@/lib/operation-log'
 import { hasPermission } from '@/lib/permissions'
-import { assertInventoryLocationInScope, inventoryPriceVisibility } from './access'
+import {
+  assertInventoryLocationInScope,
+  inventoryPriceScopeByTier,
+  inventoryPriceVisibility,
+  inventoryPriceVisibilityForOrgNodes,
+} from './access'
 import type { AuthSession } from '@/lib/types'
 import { revalidatePath } from 'next/cache'
 import { sql } from 'drizzle-orm'
 import { assertInventoryBusinessWritable } from './cutover'
 import { cancelledMarketReportRetainedSql } from './retained-sql'
-import { allocateConversionLinks, summarizeConversion, uncoveredConversionTargets } from './conversion-plan'
+import { allocateConversionLinks, formatConversionAmount, summarizeConversion, uncoveredConversionTargets } from './conversion-plan'
 // 仅用于给 INTERNAL_SAME_NODE_DOC_TYPES 标类型 —— 没有它，集合里写错别字不会编译报错，
 // 只会静默变成「该类型不属同主体」，与 engine.ts 那份的行为悄悄分叉。
 import type { InventoryDocType } from './types'
@@ -5430,19 +5435,21 @@ export async function createInventoryConversion(
       sources.map((source) => ({ quantity: source.quantity, unitCost: source.unitCost })),
       targets.map((target) => ({ quantity: target.quantity, unitPrice: target.unitPrice })),
     )
+    // 与表单同序：先金额上限、再守恒
+    if (balance.exceedsAmountLimit) {
+      throw new ApiError('INVALID_PARAMS', `库存转换金额合计超出上限 ${CONVERSION_NUMBER_MAX}`)
+    }
     if (!balance.balanced) {
-      // 来源合计就是供应链成本：看不到供应链价格的会话（自定义角色只给了办理权）不能从报错里读出来。
-      const visibility = inventoryPriceVisibility(session)
+      // 来源合计就是供应链成本：在**本主体**上看不到供应链价格的会话不能从报错里读出来。
+      // 按角色绑定逐条判（不用会话并集）：绑定 A 在别处有价格权、绑定 B 在这里只有办理权时，这里仍不给金额。
+      const visibility = inventoryPriceVisibilityForOrgNodes(inventoryPriceScopeByTier(session), [location.orgNodeId])
       throw new ApiError(
         'INVALID_PARAMS',
         visibility === 'all' || visibility === 'supply_chain'
-          ? `转换前后成本不守恒：来源合计 ${balance.sourceAmount.toFixed(2)}，目标合计 ${balance.targetAmount.toFixed(2)}，`
-            + `差额 ${balance.difference.toFixed(2)} 超出允许误差 ${balance.tolerance.toFixed(2)}`
+          ? `转换前后成本不守恒：来源合计 ${formatConversionAmount(balance.sourceAmount)}，目标合计 ${formatConversionAmount(balance.targetAmount)}，`
+            + `差额 ${formatConversionAmount(balance.difference)} 超出允许误差 ${formatConversionAmount(balance.tolerance)}`
           : '转换前后成本不守恒：目标合计与来源成本的差额超出允许误差',
       )
-    }
-    if (balance.exceedsAmountLimit) {
-      throw new ApiError('INVALID_PARAMS', `库存转换金额合计超出上限 ${CONVERSION_NUMBER_MAX}`)
     }
     // 目标效期留空时取来源批次中最早的效期（多来源时保守取短的那个）。
     const earliestSourceExpiry = sources

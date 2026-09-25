@@ -78,7 +78,7 @@ import type {
 } from '@/lib/inventory/types'
 import type { InventoryBusinessLevel } from '@/lib/inventory/business-level'
 import { inventoryDocStatusLabel } from '@/lib/inventory/doc-status-label'
-import { allocateConversionLinks, conversionLineAmount, summarizeConversion, suggestConversionUnitPrice, uncoveredConversionTargets } from '@/lib/inventory/conversion-plan'
+import { allocateConversionLinks, conversionLineAmount, formatConversionAmount, summarizeConversion, uncoveredConversionTargets } from '@/lib/inventory/conversion-plan'
 import {
   INVENTORY_INBOX_ACTION_STATUS,
   genericOperationId,
@@ -4229,17 +4229,17 @@ function ConversionForm({
     unitCost: conversionSourceUnitCost(line.lot),
   }))
   const costKnown = sources.every((line, index) => line.lot !== null && sourceCosts[index].unitCost !== null)
-  const sourceAmount = summarizeConversion(
-    sourceCosts.map((cost) => ({ quantity: cost.quantity, unitCost: cost.unitCost ?? 0 })),
-    [],
-  ).sourceAmount
-  const targetQuantityTotal = targets.reduce((sum, line) => sum + (positiveNumber(line.quantity) ?? 0), 0)
-  const suggestedPrice = costKnown ? suggestConversionUnitPrice(sourceAmount, targetQuantityTotal) : null
+  const sourceInputs = sourceCosts.map((cost) => ({ quantity: cost.quantity, unitCost: cost.unitCost ?? 0 }))
+  const targetQuantities = targets.map((line) => positiveNumber(line.quantity) ?? 0)
+  // 预填单价只依赖来源精确合计与目标数量（单价先按 0 占位），与服务端容差推导同一个 p
+  const suggestedPrice = costKnown
+    ? summarizeConversion(sourceInputs, targetQuantities.map((quantity) => ({ quantity, unitPrice: 0 }))).suggestedUnitPrice
+    : null
   // 清空的单价按「未填」处理（提交时拦），不能像 nonnegativeNumber('') 那样静默当 0
   const targetPrices = targets.map((line) => line.unitPrice === null ? suggestedPrice : line.unitPrice.trim() === '' ? null : nonnegativeNumber(line.unitPrice))
   const balance = summarizeConversion(
-    sourceCosts.map((cost) => ({ quantity: cost.quantity, unitCost: cost.unitCost ?? 0 })),
-    targets.map((line, index) => ({ quantity: positiveNumber(line.quantity) ?? 0, unitPrice: targetPrices[index] ?? 0 })),
+    sourceInputs,
+    targetQuantities.map((quantity, index) => ({ quantity, unitPrice: targetPrices[index] ?? 0 })),
   )
   const giftFlags = new Set(sources.filter((line) => line.lot).map((line) => line.lot!.isGift))
   const mixedGift = giftFlags.size > 1
@@ -4323,7 +4323,7 @@ function ConversionForm({
       return
     }
     if (costKnown && !balance.balanced) {
-      toast.error(`转换前后成本不守恒：差额 ${balance.difference.toFixed(2)} 超出允许误差 ${balance.tolerance.toFixed(2)}`)
+      toast.error(`转换前后成本不守恒：差额 ${formatConversionAmount(balance.difference)} 超出允许误差 ${formatConversionAmount(balance.tolerance)}`)
       return
     }
     setSaving(true)
@@ -4394,10 +4394,10 @@ function ConversionForm({
       <div data-testid="conversion-balance" className={`flex flex-wrap items-center gap-x-6 gap-y-1 rounded-[var(--radius)] border px-3 py-2 text-sm ${costKnown && (!balance.balanced || mixedGift) ? 'border-[#D94040] text-[#D94040]' : 'border-[var(--border)]'}`}>
         {costKnown ? (
           <>
-            <span>来源合计 {balance.sourceAmount.toFixed(2)}</span>
-            <span>目标合计 {balance.targetAmount.toFixed(2)}</span>
-            <span>差额 {balance.difference.toFixed(2)}</span>
-            <span className="text-[var(--muted-foreground)]">允许误差 ±{balance.tolerance.toFixed(2)}</span>
+            <span>来源合计 {formatConversionAmount(balance.sourceAmount)}</span>
+            <span>目标合计 {formatConversionAmount(balance.targetAmount)}</span>
+            <span>差额 {formatConversionAmount(balance.difference)}</span>
+            <span className="text-[var(--muted-foreground)]">允许误差 ±{formatConversionAmount(balance.tolerance)}</span>
           </>
         ) : costHidden ? (
           <span className="text-[var(--muted-foreground)]">当前账号看不到来源批次的供应链成本，无法核算合计；提交时由系统校验成本守恒</span>

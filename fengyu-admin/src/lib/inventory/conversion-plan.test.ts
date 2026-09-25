@@ -1,7 +1,14 @@
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { allocateConversionLinks, summarizeConversion, suggestConversionUnitPrice, uncoveredConversionTargets } from './conversion-plan'
+import {
+  allocateConversionLinks,
+  conversionLineAmount,
+  formatConversionAmount,
+  summarizeConversion,
+  suggestConversionUnitPrice,
+  uncoveredConversionTargets,
+} from './conversion-plan'
 
 describe('库存转换成本守恒（#344）', () => {
   it('13A(10) + 13B(20) → 13 套：预填单价 30，严格相等', () => {
@@ -71,15 +78,32 @@ describe('库存转换成本守恒（#344）', () => {
     expect(huge.balanced).toBe(true)
   })
 
-  it('逐行 ROUND 到分后再合计（与 0043 触发器同口径）：0.5 × 0.01 行金额取 0.01', () => {
-    // 0.5 × 0.01 = 0.005 → ROUND 远离 0 = 0.01
-    expect(summarizeConversion([{ quantity: 0.5, unitCost: 0.01 }], []).sourceAmount).toBe(0.01)
-    // 浮点残差不影响：0.1 + 0.2 数量
-    expect(summarizeConversion([{ quantity: 0.3, unitCost: 10 }], []).sourceAmount).toBe(3)
+  it('行金额（单据展示口径）逐行 ROUND 远离 0，与 0043 触发器一致；守恒用精确值', () => {
+    expect(conversionLineAmount(0.5, 0.01)).toBe(0.01) // 0.005 → 0.01
+    expect(conversionLineAmount(0.01, -0.5)).toBe(-0.01) // -0.005 → -0.01（PG ROUND 远离 0）
+    expect(conversionLineAmount(0.3, 10)).toBe(3) // 浮点残差不影响
+    expect(summarizeConversion([{ quantity: 0.5, unitCost: 0.01 }], []).sourceAmount).toBe(0.005)
   })
 
-  it('负数与 PG ROUND 一致（远离 0）：-0.005 取 -0.01，不是 0.00', () => {
-    expect(summarizeConversion([{ quantity: 0.01, unitCost: -0.5 }], []).sourceAmount).toBe(-0.01)
+  it('拆行不能借舍入放大来源成本：同一批次 1 件 × 0.50 拆成 100 行 0.01，精确合计仍是 0.50', () => {
+    const split = Array.from({ length: 100 }, () => ({ quantity: 0.01, unitCost: 0.5 }))
+    const balance = summarizeConversion(split, [{ quantity: 1, unitPrice: 1 }])
+    expect(balance.sourceAmount).toBe(0.5)
+    expect(balance.balanced).toBe(false)
+    expect(summarizeConversion(split, [{ quantity: 1, unitPrice: 0.5 }]).balanced).toBe(true)
+  })
+
+  it('拆行不能借舍入缩小目标成本：目标 100 行 0.01 × 0.50（逐行各进位成 0.01）精确合计只有 0.50', () => {
+    const targets = Array.from({ length: 100 }, () => ({ quantity: 0.01, unitPrice: 0.5 }))
+    const balance = summarizeConversion([{ quantity: 1, unitCost: 1 }], targets)
+    expect(balance.targetAmount).toBe(0.5)
+    expect(balance.balanced).toBe(false)
+  })
+
+  it('formatConversionAmount：整分两位、不足一分四位', () => {
+    expect(formatConversionAmount(390)).toBe('390.00')
+    expect(formatConversionAmount(0.005)).toBe('0.0050')
+    expect(formatConversionAmount(-0.03)).toBe('-0.03')
   })
 
   it('赠送来源（成本 0）→ 目标单价 0 守恒', () => {

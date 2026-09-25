@@ -1767,6 +1767,52 @@ describe('库存转换多对多与成本守恒（#344）', () => {
     })).rejects.toThrow('库存转换金额合计超出上限')
   })
 
+  it('价格可见性按本主体的角色绑定判：绑定 A 在 HQ2 有价格权、绑定 B 在 HQ 只有办理权 → HQ 上报错不带金额', async () => {
+    const binding = (scopeId: string, actions: string[]) => ({
+      role: `custom_${scopeId}`, scopeId, scopeType: '总部', actions, scopeStoreIds: [], scopeOrgNodeIds: [scopeId],
+    })
+    const mixed = {
+      employeeId: 'E-SC3', name: '混合绑定', phone: '13800000014',
+      roles: [
+        binding('HQ2', ['inventory:supply_chain_operate', 'inventory:supply_chain_price_view']),
+        binding('HQ', ['inventory:supply_chain_operate']),
+      ],
+      permissions: { actions: ['inventory:supply_chain_operate', 'inventory:supply_chain_price_view'], scopeStoreIds: [] },
+    } as never
+    const input = {
+      locationId: 'HQ',
+      sources: [{ sourceLotId: 101, quantity: 1 }],
+      targets: [{ targetSkuId: 'SKU-X', quantity: 1, unitPrice: 1 }],
+    }
+    fakeDb([{ id: 101, sku_id: 'SKU-A', supply_chain_unit_cost: '37.5' }])
+    const hidden = await createInventoryConversion(mixed, input).catch((caught: Error) => caught)
+    expect(String(hidden)).toContain('转换前后成本不守恒')
+    expect(String(hidden)).not.toMatch(/37\.5|来源合计/)
+
+    // 对照：价格权绑定就在 HQ 上时照常给出金额
+    const priced = { ...(mixed as object), roles: [binding('HQ', ['inventory:supply_chain_operate', 'inventory:supply_chain_price_view'])] } as never
+    fakeDb([{ id: 101, sku_id: 'SKU-A', supply_chain_unit_cost: '37.5' }])
+    await expect(createInventoryConversion(priced, input)).rejects.toThrow('来源合计 37.50')
+  })
+
+  it('金额超上限且不守恒：先报金额上限（与表单同序）', async () => {
+    fakeDb([{ id: 101, sku_id: 'SKU-A', supply_chain_unit_cost: '100000', quantity_on_hand: 200000 }])
+    await expect(createInventoryConversion(SESSION, {
+      locationId: 'HQ',
+      sources: [{ sourceLotId: 101, quantity: 100000 }],
+      targets: [{ targetSkuId: 'SKU-X', quantity: 100000, unitPrice: 99999 }],
+    })).rejects.toThrow('库存转换金额合计超出上限')
+  })
+
+  it('拆行放大成本被拒：同一批次（成本 0.50）拆 100 行 0.01，目标 1 件按 1.00', async () => {
+    fakeDb([{ id: 101, sku_id: 'SKU-A', supply_chain_unit_cost: '0.5', quantity_on_hand: 1 }])
+    await expect(createInventoryConversion(SESSION, {
+      locationId: 'HQ',
+      sources: Array.from({ length: 100 }, () => ({ sourceLotId: 101, quantity: 0.01 })),
+      targets: [{ targetSkuId: 'SKU-X', quantity: 1, unitPrice: 1 }],
+    })).rejects.toThrow(/成本不守恒.*来源合计 0\.50.*目标合计 1\.00/)
+  })
+
   it('目标效期留空取来源批次中最早的效期', async () => {
     const fake = fakeDb([
       { id: 101, sku_id: 'SKU-A', expiry_date: '2027-06-01' },
