@@ -2061,6 +2061,7 @@ describe('品项公司发货引用市场报货单（#336b）', () => {
     await chooseLot(2, '42')
     expect(screen.getByRole('status', { name: '未发进度' })).toHaveTextContent('本次正常发货 20 件，发后还剩 0 件')
 
+    const docsLoadsBefore = vi.mocked(listInventoryOperationDocs).mock.calls.length
     submitShipment()
     await waitFor(() => expect(createItemCompanyShipment).toHaveBeenCalledWith({
       marketId: 'M1',
@@ -2075,6 +2076,9 @@ describe('品项公司发货引用市场报货单（#336b）', () => {
       ],
       giftItems: [{ reportItemId: 11, lotId: 42, quantity: 2, remark: null }],
     }))
+    // 建单成功后单据 Tab（keepMounted）跟着重取：发完的报货单要退出「待发货」，产出段要出现新发货单
+    await waitFor(() => expect(vi.mocked(listInventoryOperationDocs).mock.calls.length).toBeGreaterThan(docsLoadsBefore))
+    expect(screen.queryByRole('status', { name: '未发进度' })).toBeNull()
   })
 
   it('正常发货超过未发量先在前端拦下并给出可发上限；删掉的行不提交', async () => {

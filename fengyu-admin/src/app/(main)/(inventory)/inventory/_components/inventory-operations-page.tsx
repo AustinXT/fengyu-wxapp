@@ -1318,7 +1318,12 @@ export function OperationDocsTab({
    */
   onActionBusyChange: (busy: boolean) => void
 }) {
-  const { bump: bumpCandidates } = useContext(DocCandidateReloadContext)
+  /*
+   * 候选重取版本号同时也是本 Tab 的重取信号：填报表单建单成功会 bump 它（工作区 handleSuccess）。
+   * 不跟着重取的话，「去发货」发完回来那张报货单仍挂在待发货里（#336b），产出段也缺刚建的单。
+   * 行内动作同一轮既 bump 又 setReloadToken，两者同批提交，只触发一次重取。
+   */
+  const { version: candidateVersion, bump: bumpCandidates } = useContext(DocCandidateReloadContext)
   const router = useRouter()
   const [rows, setRows] = useState<InventoryDocRow[]>([])
   const [total, setTotal] = useState(0)
@@ -1416,7 +1421,7 @@ export function OperationDocsTab({
         if (!cancelled) setLoading(false)
       })
     return () => { cancelled = true }
-  }, [operation, page, inboxPage, reloadToken])
+  }, [operation, page, inboxPage, reloadToken, candidateVersion])
 
   useEffect(() => {
     onInboxTotalChange(hasInbox ? inboxTotal : 0)
