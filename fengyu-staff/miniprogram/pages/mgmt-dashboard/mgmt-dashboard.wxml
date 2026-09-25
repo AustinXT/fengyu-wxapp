@@ -12,12 +12,20 @@
         </view>
         <mgmt-scope-picker
           default-scope="{{ defaultScope }}"
+          applied-inactive="{{ scope.inactive }}"
+          auto-correct="{{ scopeAutoCorrect }}"
           bind:change="onScopeChange"
         />
       </view>
 
       <!-- 三态壳：loading / error 时由组件接管，content 时渲染 slot -->
-      <mgmt-data-state state="{{ summaryState }}" bind:retry="onSummaryRetry">
+      <!-- empty 仅在 scope 落到已停用门店时出现（#400）；在营门店无业绩照常渲染 0 -->
+      <mgmt-data-state
+        state="{{ summaryState }}"
+        empty-text="{{ summaryEmptyText }}"
+        empty-hint="{{ summaryEmptyHint }}"
+        bind:retry="onSummaryRetry"
+      >
         <view wx:if="{{ display }}">
           <!-- 大卡片：2×2 -->
           <view class="mgmt-dash-grid-large">
