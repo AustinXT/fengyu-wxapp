@@ -10,7 +10,7 @@ const { mockDb, mockGetSession } = vi.hoisted(() => ({
 vi.mock('@/db', () => ({ db: mockDb }))
 vi.mock('@/lib/auth', () => ({ getSession: mockGetSession }))
 
-import { iterateExportPages } from '@/lib/export-pagination'
+import { iterateExportPages, type ExportBatchOptions } from '@/lib/export-pagination'
 import {
   exportInventoryMovements,
   inventoryMovementCountSql,
@@ -306,7 +306,7 @@ describe('进出明细 keyset 翻页（#360）', () => {
     useKeysetFakeDb(IDS)
     const cursors: Array<number | undefined> = []
     const exported: number[] = []
-    for await (const row of iterateExportPages((options) => {
+    for await (const row of iterateExportPages((options: ExportBatchOptions<number>) => {
       cursors.push(options.cursor)
       return exportInventoryMovements({ location: 'S1', batch: 'B-1' }, { ...options, limit: 7 })
     })) {
