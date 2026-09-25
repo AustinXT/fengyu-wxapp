@@ -27,6 +27,7 @@ vi.mock('@/lib/auth', () => ({ getSession: mockGetSession }))
 vi.mock('@/lib/permissions', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/permissions')>()),
   expandVisibleMarketIds: vi.fn(async () => ['MKT-A']),
+  expandMarketVisibility: vi.fn(async () => ({ visible: ['MKT-A'], granted: ['MKT-A'] })),
 }))
 // 真 drizzle（pg-proxy 驱动）：db.execute 与 db.select / 事务内查询都生成真实 SQL 并被截获，
 // 不再用替身吞掉 query builder（闸门 2 codex round-3 P2：用 db.select 写的统计查询不能逃过扫描）

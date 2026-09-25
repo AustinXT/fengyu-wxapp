@@ -4,7 +4,7 @@
  * 由 `[board]/page.tsx` 原内联逻辑抽出，行为逐条不变：
  *   1. 非总部账号 + URL 无有效 scope → 重定向补上权限默认 scope（非总部绝不以 'all' 取数）
  *   2. 重复 query key → 规范化成单值（服务端按首值判定、客户端按末值取数，两边必须看同一份 query）
- *   3. 非总部却没有可用默认 scope → 不跳转，交给页面渲染空态（不进入无限重定向）
+ *   3. 非总部却没有可用默认 scope（连无门店市场都没有，#399）→ 不跳转，交给页面渲染空态（不进入无限重定向）
  *   4. URL 选中权限内的已停用门店 → 不跳转，交给页面渲染「已停用」空态（#293）
  *
  * 背景见 memory `project-data-center-default-scope-non-hq`：scope='all' 抵达取数 action 会抛
@@ -39,8 +39,8 @@ type ConcreteScope = Exclude<DataCenterScope, { type: 'all' }>
  * 默认 scope 必须是「redirect 后 parseScope 还认得出」的具体值，否则下一跳又回落 'all'、
  * 再次需要补 scope —— 无限重定向，浏览器直接转死。
  *
- * `resolveDefaultDataCenterScope` 的契约本就保证非总部只会给 authorized/store（storeId 是 DB uuid），
- * 这里显式校验一次，把「依赖另一个文件的隐式契约」变成「不满足就降级成空态」。
+ * `resolveDefaultDataCenterScope` 的契约本就保证非总部只会给 authorized / store / market（id 取自筛选器数据源，
+ * 非空；market 为 #399 无门店市场账号），这里显式校验一次，把「依赖另一个文件的隐式契约」变成「不满足就降级成空态」。
  */
 function isUsableDefaultScope(scope: DataCenterScope | null): scope is ConcreteScope {
   if (scope === null || scope.type === 'all') return false

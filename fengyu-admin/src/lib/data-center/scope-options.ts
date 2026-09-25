@@ -10,8 +10,18 @@ export function visibleScopeStores(scopeOptions: DataCenterScopeOptions): ScopeO
 }
 
 /**
+ * 直接授权、且没有可见在营门店的市场（如品项公司）：只能以「市场」范围进入，看锚定到它的无门店员工（#399）。
+ * 门店级账号补进来的祖先市场（granted=false）不算——唯一门店被停用的店长不能因此被带到整个市场。
+ */
+function isGrantedEmptyMarket(market: DataCenterScopeOptions['markets'][number]): boolean {
+  return market.granted === true && market.stores.length === 0
+}
+
+/**
  * 数据中心默认范围：总部看全部，多店账号看全部授权门店，单店账号落到该店。
- * 非总部账号没有可见在营门店时返回 null，由页面展示空状态。
+ * 非总部账号没有可见在营门店、但有直接授权的无门店市场（如只授权到品项公司）时落到第一个这样的市场（#399）：
+ * 该市场的人效榜仍有锚定到它的无门店员工（orgAnchorScopeSql），其余板块按实为 0。
+ * 两者都没有才返回 null，由页面展示空状态。
  */
 export function resolveDefaultDataCenterScope(
   scopeOptions: DataCenterScopeOptions,
@@ -19,9 +29,24 @@ export function resolveDefaultDataCenterScope(
   if (scopeOptions.topLevel === 'all') return { type: 'all' }
 
   const stores = visibleScopeStores(scopeOptions)
-  if (stores.length === 0) return null
   if (stores.length > 1) return { type: 'authorized' }
-  return { type: 'store', id: stores[0].storeId }
+  if (stores.length === 1) return { type: 'store', id: stores[0].storeId }
+  const market = scopeOptions.markets.find(isGrantedEmptyMarket)
+  return market ? { type: 'market', id: market.id } : null
+}
+
+/**
+ * 非总部账号可切换到的范围个数 = 可见在营门店 + 直接授权的无门店市场（#399）。
+ * 后者只能以「市场」范围进入（看锚定员工），必须计入；有门店的市场不单独计数——
+ * 门店级账号的所属市场也在市场列表里（expandVisibleMarketIds 补的祖先市场），单店店长不能因此被解锁。
+ */
+export function selectableScopeCount(scopeOptions: DataCenterScopeOptions): number {
+  return visibleScopeStores(scopeOptions).length + scopeOptions.markets.filter(isGrantedEmptyMarket).length
+}
+
+/** 范围下拉是否锁定：非总部且只有一个可选范围（单店账号 / 只授权一个无门店市场的账号）。 */
+export function isScopeLocked(scopeOptions: DataCenterScopeOptions): boolean {
+  return scopeOptions.topLevel !== 'all' && selectableScopeCount(scopeOptions) <= 1
 }
 
 export interface ScopeStoreEntry {

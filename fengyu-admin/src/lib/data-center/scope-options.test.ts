@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { findInactiveScopeStore, resolveDefaultDataCenterScope, visibleScopeStores } from './scope-options'
+import { findInactiveScopeStore, isScopeLocked, resolveDefaultDataCenterScope, selectableScopeCount, visibleScopeStores } from './scope-options'
 import type { DataCenterScopeOptions } from './types'
 
 const multiStoreOptions: DataCenterScopeOptions = {
@@ -91,4 +91,48 @@ describe('findInactiveScopeStore（#293）', () => {
     expect(findInactiveScopeStore(withInactive, scope)).toBeNull()
   })
 
+})
+
+describe('#399 无门店市场账号', () => {
+  const px = { id: 'PX', name: '品项公司', stores: [], granted: true }
+  const px2 = { id: 'PX2', name: '另一无门店市场', stores: [], granted: true }
+  const ancestor = { id: 'M1', name: '南昌市场', stores: [], granted: false } // 店长唯一门店被停用时的祖先市场
+  const oneStore = { id: 'M1', name: '南昌市场', stores: [{ storeId: 'S1', storeName: '门店一' }], granted: false }
+  const opts = (markets: DataCenterScopeOptions['markets']): DataCenterScopeOptions => ({ topLevel: 'market', inactiveStores: [], markets })
+
+  it('只授权一个无门店市场：默认落到该市场、锁定', () => {
+    expect(resolveDefaultDataCenterScope(opts([px]))).toEqual({ type: 'market', id: 'PX' })
+    expect(selectableScopeCount(opts([px]))).toBe(1)
+    expect(isScopeLocked(opts([px]))).toBe(true)
+  })
+
+  it('多个无门店市场：默认第一个、不锁（可互切）', () => {
+    expect(resolveDefaultDataCenterScope(opts([px, px2]))).toEqual({ type: 'market', id: 'PX' })
+    expect(isScopeLocked(opts([px, px2]))).toBe(false)
+  })
+
+  it('单店 + 无门店市场：默认仍是门店，但不锁（能切到品项公司看锚定员工）', () => {
+    expect(resolveDefaultDataCenterScope(opts([oneStore, px]))).toEqual({ type: 'store', id: 'S1' })
+    expect(selectableScopeCount(opts([oneStore, px]))).toBe(2)
+    expect(isScopeLocked(opts([oneStore, px]))).toBe(false)
+  })
+
+  it('祖先市场（granted=false / 缺省）不算：唯一门店被停用的店长仍无默认范围、锁定', () => {
+    expect(resolveDefaultDataCenterScope(opts([ancestor]))).toBeNull()
+    expect(resolveDefaultDataCenterScope(opts([{ id: 'M1', name: '南昌市场', stores: [] }]))).toBeNull()
+    expect(isScopeLocked(opts([ancestor]))).toBe(true)
+  })
+
+  it('单店店长（祖先市场有店）：锁定行为不变', () => {
+    expect(isScopeLocked(opts([oneStore]))).toBe(true)
+  })
+
+  it('多店账号：不锁、默认授权汇总（行为不变）', () => {
+    expect(isScopeLocked(multiStoreOptions)).toBe(false)
+    expect(resolveDefaultDataCenterScope({ ...multiStoreOptions, markets: [...multiStoreOptions.markets, px] })).toEqual({ type: 'authorized' })
+  })
+
+  it('总部永不锁', () => {
+    expect(isScopeLocked({ topLevel: 'all', inactiveStores: [], markets: [] })).toBe(false)
+  })
 })

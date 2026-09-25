@@ -5,7 +5,7 @@ import { Select, SelectOption } from "@/components/ui/select"
 import type { useUrlFilters } from "@/lib/hooks/use-url-filters"
 import { parseScope } from "@/lib/data-center/params"
 import type { DataCenterScopeOptions } from "@/lib/data-center/types"
-import { findInactiveScopeStore, scopeStores, visibleScopeStores } from "@/lib/data-center/scope-options"
+import { findInactiveScopeStore, isScopeLocked, scopeStores, visibleScopeStores } from "@/lib/data-center/scope-options"
 
 /**
  * 数据中心范围选择（授权汇总 + 市场/门店级联），板块页 ScopeTimeFilter 与经营明细报表 ReportFilter 共用。
@@ -35,7 +35,8 @@ export function ScopeSelect({
   const scopeId = get("scopeId")
   const visibleStoreCount = useMemo(() => visibleScopeStores(scopeOptions).length, [scopeOptions])
   const canAggregateAuthorized = topLevel !== "all" && visibleStoreCount > 1
-  const scopeLocked = topLevel !== "all" && visibleStoreCount <= 1
+  // 只有一个可选范围才锁（单店账号 / 只授权一个无门店市场的账号）；单店 + 无门店市场的账号要能切到那个市场（#399）
+  const scopeLocked = useMemo(() => isScopeLocked(scopeOptions), [scopeOptions])
 
   // URL 选中的已停用门店（#293）：页面主体渲染空态，下拉同步回显「XX（已停用）」，别显示成「全部门店」自相矛盾
   const inactiveStore = useMemo(

@@ -16,7 +16,7 @@ import { orgNodes, stores } from '@db/org'
 import { eq, and, asc, inArray } from 'drizzle-orm'
 import { alias } from 'drizzle-orm/pg-core'
 import { withAllPermissions, withPermission } from '@/lib/with-permission'
-import { isAdminScope, expandVisibleMarketIds } from '@/lib/permissions'
+import { isAdminScope, expandMarketVisibility } from '@/lib/permissions'
 import { getScopeTopLevel } from '@/lib/data-center/context'
 import { isDataCenterActiveStore } from '@/lib/store-status'
 import { loadStoreDataStarts } from '@/lib/data-center/data-start-query'
@@ -68,8 +68,11 @@ export const getDataStartDates = withPermission(
 
 async function loadScopeOptions(session: AuthSession): Promise<DataCenterScopeOptions> {
   const topLevel = getScopeTopLevel(session)
-  const visibleMarketIds = await expandVisibleMarketIds(session) // null=总部全开
+  const marketVisibility = await expandMarketVisibility(session) // null=总部全开
+  const visibleMarketIds = marketVisibility?.visible ?? null
   const seeAll = isAdminScope(session) || visibleMarketIds === null
+  // 直接授权的市场（非门店级账号的祖先市场）：无门店时才能作为默认范围（#399）
+  const grantedMarketIds = new Set(marketVisibility?.granted ?? [])
 
   // 非总部且无可见市场 → 空
   if (!seeAll && (visibleMarketIds?.length ?? 0) === 0) {
@@ -124,6 +127,7 @@ async function loadScopeOptions(session: AuthSession): Promise<DataCenterScopeOp
   const markets = marketRows.map((m) => ({
     id: m.id,
     name: m.name,
+    granted: seeAll || grantedMarketIds.has(m.id),
     stores: storeRows
       .filter((s) => s.marketId === m.id)
       .map((s) => ({ storeId: s.storeId, storeName: s.storeName })),

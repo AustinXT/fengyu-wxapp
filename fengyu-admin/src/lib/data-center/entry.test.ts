@@ -106,3 +106,45 @@ describe('resolveReportPage · 无可查看范围', () => {
     expect(result).toMatchObject({ kind: 'render', context: { scope: null, noViewableScope: true } })
   })
 })
+
+describe('#399 零在营门店但市场 scope 合法（只授权品项公司这类无门店市场）', () => {
+  const pxOnly: DataCenterScopeOptions = {
+    topLevel: 'market', inactiveStores: [],
+    markets: [{ id: 'PX', name: '品项公司', stores: [], granted: true }],
+  }
+
+  it('默认范围 = 该市场', () => {
+    expect(defaultScopeParams(pxOnly)).toEqual({ scope: 'market', scopeId: 'PX' })
+  })
+
+  it('板块页：URL 无 scope → 跳到市场范围（不再整屏「暂无可查看范围」）', () => {
+    expect(resolveDataCenterEntry('/data-center/efficiency', { preset: 'month' }, pxOnly))
+      .toEqual({ kind: 'redirect', url: '/data-center/efficiency?preset=month&scope=market&scopeId=PX' })
+  })
+
+  it('板块页：市场 scope 照常渲染、noViewableScope=false', () => {
+    expect(resolveDataCenterEntry('/p', { scope: 'market', scopeId: 'PX' }, pxOnly))
+      .toEqual({ kind: 'render', noViewableScope: false, inactiveStore: null, defaultScopeHref: null })
+  })
+
+  it.each(['range', 'month', 'none'] as const)('报表页（%s 型）：无 scope → 跳到市场；市场 scope → 渲染且 scope 非 null', (periodKind) => {
+    expect(resolveReportPage({ path: '/r', query: {}, scopeOptions: pxOnly, periodKind, today: '2026-09-25' }))
+      .toEqual({ kind: 'redirect', url: '/r?scope=market&scopeId=PX' })
+    const result = resolveReportPage({ path: '/r', query: { scope: 'market', scopeId: 'PX' }, scopeOptions: pxOnly, periodKind, today: '2026-09-25' })
+    expect(result).toMatchObject({
+      kind: 'render',
+      context: { scope: { type: 'market', id: 'PX' }, noViewableScope: false, inactiveStore: null, defaultQuery: { scope: 'market', scopeId: 'PX' } },
+    })
+  })
+
+  it('报表页：URL 指向数据源外的市场 → 回到品项公司（终止）', () => {
+    expect(resolveReportPage({ path: '/r', query: { scope: 'market', scopeId: 'M9' }, scopeOptions: pxOnly, periodKind: 'none', today: '2026-09-25' }))
+      .toEqual({ kind: 'redirect', url: '/r?scope=market&scopeId=PX' })
+  })
+
+  it('祖先市场（门店店长唯一门店停用）仍是空态，不被带到整个市场', () => {
+    expect(resolveDataCenterEntry('/p', {}, none))
+      .toEqual({ kind: 'render', noViewableScope: true, inactiveStore: null, defaultScopeHref: null })
+    expect(defaultScopeParams(none)).toBeNull()
+  })
+})

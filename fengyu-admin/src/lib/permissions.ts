@@ -311,6 +311,21 @@ export async function expandScopeDeptNodeIds(roles: AuthSession['roles']): Promi
 export async function expandVisibleMarketIds(
   session: AuthSession,
 ): Promise<string[] | null> {
+  return (await expandMarketVisibility(session))?.visible ?? null
+}
+
+/**
+ * 市场可见性的两层结果（总部角色返回 null = 全开）：
+ * - `granted`：角色范围本身覆盖的市场节点（市场角色 / 挂在市场上的角色，如 hr@品项公司）
+ * - `visible`：granted ∪ 门店级角色的祖先市场（门店级账号的下拉要能回显所属市场）
+ *
+ * 两者的区别只在「祖先市场」：门店店长能看到所属市场的名字，但并未被授权整个市场。
+ * 数据中心据此决定无门店市场能否作为默认范围 / 计入可切换范围（#399）——
+ * 否则唯一门店被停用的店长会被默认带到整个市场，看到该市场锚定员工的数据。
+ */
+export async function expandMarketVisibility(
+  session: AuthSession,
+): Promise<{ visible: string[]; granted: string[] } | null> {
   // 任一总部角色即视为全开
   if (session.roles.some(r => r.scopeType === '总部')) {
     return null
@@ -322,9 +337,8 @@ export async function expandVisibleMarketIds(
   const scopeIds = session.permissions.scopeOrgNodeIds
     ?? collectDescendantNodeIds(nodes, session.roles.map((role) => role.scopeId))
   const scopeSet = new Set(scopeIds)
-  const marketIds = new Set(
-    nodes.filter((node) => node.type === '市场' && scopeSet.has(node.id)).map((node) => node.id),
-  )
+  const granted = nodes.filter((node) => node.type === '市场' && scopeSet.has(node.id)).map((node) => node.id)
+  const marketIds = new Set(granted)
 
   // 门店级绑定仍需要显示其所属市场；查找不限层级，防止未来树加中间节点后失效。
   for (const role of session.roles) {
@@ -332,7 +346,7 @@ export async function expandVisibleMarketIds(
     if (marketId) marketIds.add(marketId)
   }
 
-  return Array.from(marketIds)
+  return { visible: Array.from(marketIds), granted }
 }
 
 /**
