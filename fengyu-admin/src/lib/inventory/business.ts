@@ -11,6 +11,7 @@ import { revalidatePath } from 'next/cache'
 import { sql } from 'drizzle-orm'
 import { assertInventoryBusinessWritable } from './cutover'
 import { cancelledMarketReportRetainedSql } from './retained-sql'
+import { allocateConversionLinks, summarizeConversion } from './conversion-plan'
 // 仅用于给 INTERNAL_SAME_NODE_DOC_TYPES 标类型 —— 没有它，集合里写错别字不会编译报错，
 // 只会静默变成「该类型不属同主体」，与 engine.ts 那份的行为悄悄分叉。
 import type { InventoryDocType } from './types'
@@ -519,11 +520,18 @@ export interface CreateExternalMarketOutboundInput {
   items: ExternalMarketOutboundLineInput[]
 }
 
-export interface InventoryConversionLineInput {
+/** 库存转换来源行（#344）：同一批次可出现多行，按批次汇总后校验可用量。 */
+export interface InventoryConversionSourceInput {
   sourceLotId: number
-  sourceQuantity: number
+  quantity: number
+  remark?: string | null
+}
+
+/** 库存转换目标行（#344）：与来源行 N:M 解耦，单价自填、合计须与来源成本守恒。 */
+export interface InventoryConversionTargetInput {
   targetSkuId: string
-  targetQuantity: number
+  quantity: number
+  unitPrice: number
   targetBatchNo?: string | null
   targetExpiryDate?: string | null
   remark?: string | null
@@ -533,7 +541,8 @@ export interface CreateInventoryConversionInput {
   locationId: string
   docDate?: string | null
   remark?: string | null
-  items: InventoryConversionLineInput[]
+  sources: InventoryConversionSourceInput[]
+  targets: InventoryConversionTargetInput[]
 }
 
 export interface InventoryMarketEmployeeOption {
@@ -5246,14 +5255,58 @@ function assertConvertibleSku(sku: Pick<SkuSnapshot, 'sourceType' | 'productName
   }
 }
 
-/** 库存转换在同一事务内创建关联的出入库单，任何一侧失败都会回滚。仅供应链（总部主体）可做（#343）。 */
+/** 两位小数的非负单价（库存转换目标单价，#344）。 */
+function conversionUnitPrice(value: number, label: string): number {
+  const parsed = Number(value)
+  if (value === null || value === undefined || !Number.isFinite(parsed) || parsed < 0) {
+    throw new ApiError('INVALID_PARAMS', `${label}不能为空且不能小于 0`)
+  }
+  return twoDecimals(parsed, label)
+}
+
+/**
+ * 库存转换在同一事务内创建关联的出入库单，任何一侧失败都会回滚。仅供应链（总部主体）可做（#343）。
+ *
+ * #344（9/18 会议 §2.15）：来源行与目标行 N:M 解耦 —— 13A+13B→13 套、25→12X+13Y、一盒拆三种单件、
+ * 一瓶拆两个半瓶都在一张单里完成。目标单价自填，Σ来源成本与 Σ目标金额必须守恒（硬拦截，允许
+ * 单价取到分带来的舍入误差，见 conversion-plan.ts）；来源赠送与非赠送批次不能混在一张单里。
+ */
 export async function createInventoryConversion(
   session: AuthSession,
   input: CreateInventoryConversionInput,
 ): Promise<{ outboundId: string; inboundId: string }> {
   const locationId = required(input.locationId, '转换库存主体')
-  if (!Array.isArray(input.items) || input.items.length === 0) {
-    throw new ApiError('INVALID_PARAMS', '库存转换至少需要一条明细')
+  if (!Array.isArray(input.sources) || input.sources.length === 0) {
+    throw new ApiError('INVALID_PARAMS', '库存转换至少需要一条来源明细')
+  }
+  if (!Array.isArray(input.targets) || input.targets.length === 0) {
+    throw new ApiError('INVALID_PARAMS', '库存转换至少需要一条目标明细')
+  }
+  // 纯入参校验放在开事务之前：不合法的数量 / 单价不必去锁主体和批次。
+  const sourceLines = input.sources.map((line) => {
+    const sourceLotId = Number(line.sourceLotId)
+    if (!Number.isInteger(sourceLotId) || sourceLotId <= 0) {
+      throw new ApiError('INVALID_PARAMS', '请选择转换来源批次')
+    }
+    return {
+      sourceLotId,
+      quantity: twoDecimals(positive(line.quantity, '转换出库数量'), '转换出库数量'),
+      remark: text(line.remark),
+    }
+  })
+  const targetLines = input.targets.map((line) => ({
+    targetSkuId: required(line.targetSkuId, '转换目标 SKU'),
+    quantity: twoDecimals(positive(line.quantity, '转换入库数量'), '转换入库数量'),
+    unitPrice: conversionUnitPrice(line.unitPrice, '转换目标单价'),
+    /** 手填目标批号；null = 留空，按库存转换入库单号+行号生成新批号（#345 §2.15） */
+    targetBatchNo: text(line.targetBatchNo),
+    targetExpiryDate: text(line.targetExpiryDate),
+    remark: text(line.remark),
+  }))
+  for (const line of targetLines) {
+    if (line.targetExpiryDate && !/^\d{4}-\d{2}-\d{2}$/.test(line.targetExpiryDate)) {
+      throw new ApiError('INVALID_PARAMS', '效期格式应为 YYYY-MM-DD')
+    }
   }
   await syncLocations()
   const ids = await db.transaction(async (tx) => {
@@ -5264,50 +5317,71 @@ export async function createInventoryConversion(
     // 持有供应链权限的账号传入市场/门店主体同样拒绝。
     assertType(location, '总部', '库存转换主体')
     assertLocationWritable(session, location)
-    const seenLots = new Set<number>()
-    const prepared: Array<{
-      sourceLot: LotSnapshot
-      sourceQuantity: number
-      targetSku: SkuSnapshot
-      targetQuantity: number
-      /** 手填目标批号；null = 留空，按库存转换入库单号+行号生成新批号，不再沿用来源批号（#345 §2.15） */
-      targetBatchNo: string | null
-      targetExpiryDate: string | null
-      remark: string | null
-    }> = []
-    for (const line of input.items) {
-      const sourceLotId = Number(line.sourceLotId)
-      if (!Number.isInteger(sourceLotId) || sourceLotId <= 0 || seenLots.has(sourceLotId)) {
-        throw new ApiError('INVALID_PARAMS', '同一来源库存批次只能转换一次')
-      }
-      seenLots.add(sourceLotId)
-      const sourceLot = await lotForUpdate(tx, sourceLotId, locationId)
-      const sourceQuantity = positive(line.sourceQuantity, '转换出库数量')
-      const targetQuantity = positive(line.targetQuantity, '转换入库数量')
-      await assertLotAvailable(tx, sourceLot, sourceQuantity)
+    const marketId = marketIdForLocation(location)
+
+    // 同一批次可以出现在多行（#344 去掉「只能转换一次」）：按 id 升序各锁一次、共用同一个快照对象 ——
+    // applyLotDelta 靠快照推算 quantity_before/after，两行各拿一份快照会把第二条流水的前值记错。
+    const lots = new Map<number, LotSnapshot>()
+    const requestedByLot = new Map<number, number>()
+    for (const line of sourceLines) {
+      requestedByLot.set(line.sourceLotId, fixed((requestedByLot.get(line.sourceLotId) ?? 0) + line.quantity))
+    }
+    for (const lotId of [...requestedByLot.keys()].sort((left, right) => left - right)) {
+      const lot = await lotForUpdate(tx, lotId, locationId)
+      // 按批次汇总本单出库数量，不能超过该批次可用量（在手 − 未完成预留）。
+      await assertLotAvailable(tx, lot, requestedByLot.get(lotId) ?? 0)
       // 自建商品（市场自采 / 转让店）不能转换（§2.16）。总部主体下它们本就会被下面的
       // assertSkuAvailableToMarket(null) 拒掉，这里抢在它前面断言只为给出明确文案；
       // 后者保留作纵深兜底（将来若放开主体类型，它仍按市场归属把关）。
-      const sourceSku = await loadSku(tx, sourceLot.skuId, false, false)
+      const sourceSku = await loadSku(tx, lot.skuId, false, false)
       assertConvertibleSku(sourceSku)
-      assertSkuAvailableToMarket(sourceSku, marketIdForLocation(location))
-      const targetSku = await loadSku(tx, required(line.targetSkuId, '转换目标 SKU'))
-      assertConvertibleSku(targetSku)
-      assertSkuAvailableToMarket(targetSku, marketIdForLocation(location))
-      if (targetSku.skuId === sourceLot.skuId) {
+      assertSkuAvailableToMarket(sourceSku, marketId)
+      lots.set(lotId, lot)
+    }
+    const sources = sourceLines.map((line) => {
+      const lot = lots.get(line.sourceLotId)!
+      // 成本口径 = 总部批次的供应链成本；赠送批次按 0（#336 拍板：赠送批次价格全部记 0）。
+      if (!lot.isGift && lot.supplyChainUnitCost === null) {
+        throw new ApiError('INVALID_STATE', `来源批次缺少供应链成本，无法核算转换成本：${lot.skuName} 批次 ${lot.batchNo || '未填写'}`)
+      }
+      return { ...line, lot, unitCost: lot.isGift ? 0 : lot.supplyChainUnitCost! }
+    })
+    const giftSources = sources.filter((source) => source.lot.isGift).length
+    if (giftSources > 0 && giftSources < sources.length) {
+      throw new ApiError('INVALID_PARAMS', '赠送批次与非赠送批次不能混在同一张转换单里')
+    }
+    const isGift = giftSources > 0
+    const sourceSkuIds = new Set(sources.map((source) => source.lot.skuId))
+    const targets: Array<(typeof targetLines)[number] & { sku: SkuSnapshot }> = []
+    for (const line of targetLines) {
+      const sku = await loadSku(tx, line.targetSkuId)
+      assertConvertibleSku(sku)
+      assertSkuAvailableToMarket(sku, marketId)
+      if (sourceSkuIds.has(sku.skuId)) {
         throw new ApiError('INVALID_PARAMS', '库存转换目标 SKU 不能与来源 SKU 相同')
       }
-      prepared.push({
-        sourceLot,
-        sourceQuantity,
-        targetSku,
-        targetQuantity,
-        targetBatchNo: text(line.targetBatchNo),
-        targetExpiryDate: text(line.targetExpiryDate) ?? sourceLot.expiryDate,
-        remark: text(line.remark),
-      })
+      if (isGift && line.unitPrice !== 0) {
+        throw new ApiError('INVALID_PARAMS', '赠送批次转换的目标单价必须为 0')
+      }
+      targets.push({ ...line, sku })
     }
-    const marketId = marketIdForLocation(location)
+    const balance = summarizeConversion(
+      sources.map((source) => ({ quantity: source.quantity, unitCost: source.unitCost })),
+      targets.map((target) => ({ quantity: target.quantity, unitPrice: target.unitPrice })),
+    )
+    if (!balance.balanced) {
+      throw new ApiError(
+        'INVALID_PARAMS',
+        `转换前后成本不守恒：来源合计 ${balance.sourceAmount.toFixed(2)}，目标合计 ${balance.targetAmount.toFixed(2)}，`
+          + `差额 ${balance.difference.toFixed(2)} 超出允许误差 ${balance.tolerance.toFixed(2)}`,
+      )
+    }
+    // 目标效期留空时取来源批次中最早的效期（多来源时保守取短的那个）。
+    const earliestSourceExpiry = sources
+      .map((source) => source.lot.expiryDate)
+      .filter((value): value is string => Boolean(value))
+      .sort()[0] ?? null
+
     const outboundId = await generateDocId(tx, '库存转换出库')
     const inboundId = await generateDocId(tx, '库存转换入库')
     await insertDocHeader(tx, {
@@ -5317,7 +5391,7 @@ export async function createInventoryConversion(
       sourceOrgNodeId: locationId,
       marketId,
       docDate: input.docDate,
-      totalQuantity: fixed(prepared.reduce((sum, item) => sum + item.sourceQuantity, 0)),
+      totalQuantity: fixed(sources.reduce((sum, source) => sum + source.quantity, 0)),
       totalAmount: null,
       remark: input.remark,
       createdBy: session.employeeId,
@@ -5330,46 +5404,72 @@ export async function createInventoryConversion(
       targetOrgNodeId: locationId,
       marketId,
       docDate: input.docDate,
-      totalQuantity: fixed(prepared.reduce((sum, item) => sum + item.targetQuantity, 0)),
+      totalQuantity: fixed(targets.reduce((sum, target) => sum + target.quantity, 0)),
       totalAmount: null,
       remark: input.remark,
       createdBy: session.employeeId,
       confirmed: true,
     })
-    for (const [lineIndex, item] of prepared.entries()) {
+    const outboundItemIds: number[] = []
+    for (const source of sources) {
+      const { lot } = source
+      // 出库明细的实际单价显式写成本单价：金额仍由触发器 ROUND(数量 × actual_unit_price, 2) 计算，
+      // 不再落到 ELSE 分支的 COALESCE(门店价, 市场价, 供应链成本)（总部批次带市场价时会算错口径）。
       const outboundItemId = await insertDocItem(tx, {
         docId: outboundId,
-        lotId: item.sourceLot.id,
-        skuId: item.sourceLot.skuId,
-        skuName: item.sourceLot.skuName,
-        specName: item.sourceLot.specName,
-        supplier: item.sourceLot.supplier,
-        productSeries: item.sourceLot.productSeries,
-        batchNo: item.sourceLot.batchNo,
-        expiryDate: item.sourceLot.expiryDate,
-        isGift: item.sourceLot.isGift,
-        quantity: item.sourceQuantity,
-        stockSnapshot: item.sourceLot.quantityOnHand,
-        standardUnitPrice: item.sourceLot.marketStandardUnitPrice,
-        unitDiscount: item.sourceLot.marketUnitDiscount,
-        actualUnitPrice: item.sourceLot.marketActualUnitPrice,
+        lotId: lot.id,
+        skuId: lot.skuId,
+        skuName: lot.skuName,
+        specName: lot.specName,
+        supplier: lot.supplier,
+        productSeries: lot.productSeries,
+        batchNo: lot.batchNo,
+        expiryDate: lot.expiryDate,
+        isGift: lot.isGift,
+        quantity: source.quantity,
+        stockSnapshot: lot.quantityOnHand,
+        standardUnitPrice: source.unitCost,
+        unitDiscount: null,
+        actualUnitPrice: source.unitCost,
         amount: null,
-        ...priceFromLot(item.sourceLot),
-        remark: item.remark,
+        ...priceFromLot(lot),
+        remark: source.remark,
       })
+      await applyLotDelta(tx, {
+        lot,
+        docId: outboundId,
+        docItemId: outboundItemId,
+        direction: '出库',
+        quantityDelta: -source.quantity,
+        createdBy: session.employeeId,
+        movementKey: `inventory-conversion:out:${outboundId}:item:${outboundItemId}`,
+        remark: input.remark,
+      })
+      outboundItemIds.push(outboundItemId)
+    }
+    const inboundItemIds: number[] = []
+    for (const [lineIndex, target] of targets.entries()) {
+      // 目标是总部的新批次：成本 = 自填单价，市场 / 门店价为空（与供应链采购入库的批次同形）。
+      // source_doc_id 记本张转换入库单 —— 新批号、新价格，不再沿用某一个来源批次的来源单。
       const targetLot = await upsertLot(tx, {
         locationId,
-        skuId: item.targetSku.skuId,
-        skuName: item.targetSku.productName,
-        specName: item.targetSku.specName,
-        supplier: item.targetSku.supplier,
-        supplierId: item.sourceLot.supplierId,
-        productSeries: item.targetSku.productSeries,
-        batchNo: item.targetBatchNo ?? autoBatchNo(inboundId, lineIndex + 1),
-        expiryDate: item.targetExpiryDate,
-        isGift: item.sourceLot.isGift,
-        ...priceFromLot(item.sourceLot),
-        sourceDocId: item.sourceLot.sourceDocId ?? inboundId,
+        skuId: target.sku.skuId,
+        skuName: target.sku.productName,
+        specName: target.sku.specName,
+        supplier: target.sku.supplier,
+        supplierId: target.sku.supplierId,
+        productSeries: target.sku.productSeries,
+        batchNo: target.targetBatchNo ?? autoBatchNo(inboundId, lineIndex + 1),
+        expiryDate: target.targetExpiryDate ?? earliestSourceExpiry,
+        isGift,
+        supplyChainUnitCost: target.unitPrice,
+        marketStandardUnitPrice: null,
+        marketUnitDiscount: null,
+        marketActualUnitPrice: null,
+        storeStandardUnitPrice: null,
+        storeUnitDiscount: null,
+        storeActualUnitPrice: null,
+        sourceDocId: inboundId,
       })
       const inboundItemId = await insertDocItem(tx, {
         docId: inboundId,
@@ -5382,42 +5482,38 @@ export async function createInventoryConversion(
         batchNo: targetLot.batchNo,
         expiryDate: targetLot.expiryDate,
         isGift: targetLot.isGift,
-        quantity: item.targetQuantity,
+        quantity: target.quantity,
         stockSnapshot: targetLot.quantityOnHand,
-        standardUnitPrice: targetLot.marketStandardUnitPrice,
-        unitDiscount: targetLot.marketUnitDiscount,
-        actualUnitPrice: targetLot.marketActualUnitPrice,
+        standardUnitPrice: target.unitPrice,
+        unitDiscount: null,
+        actualUnitPrice: target.unitPrice,
         amount: null,
         ...priceFromLot(targetLot),
-        remark: item.remark,
-      })
-      await applyLotDelta(tx, {
-        lot: item.sourceLot,
-        docId: outboundId,
-        docItemId: outboundItemId,
-        direction: '出库',
-        quantityDelta: -item.sourceQuantity,
-        createdBy: session.employeeId,
-        movementKey: `inventory-conversion:out:${outboundId}:item:${outboundItemId}`,
-        remark: input.remark,
+        remark: target.remark,
       })
       await applyLotDelta(tx, {
         lot: targetLot,
         docId: inboundId,
         docItemId: inboundItemId,
         direction: '入库',
-        quantityDelta: item.targetQuantity,
+        quantityDelta: target.quantity,
         createdBy: session.employeeId,
         movementKey: `inventory-conversion:in:${inboundId}:item:${inboundItemId}`,
         remark: input.remark,
       })
+      inboundItemIds.push(inboundItemId)
+    }
+    for (const share of allocateConversionLinks(
+      sources.map((source) => source.quantity),
+      targets.map((target) => target.quantity),
+    )) {
       await insertDocLink(tx, {
         fromDocId: outboundId,
         toDocId: inboundId,
         relationType: '库存转换',
-        fromItemId: outboundItemId,
-        toItemId: inboundItemId,
-        quantity: item.targetQuantity,
+        fromItemId: outboundItemIds[share.sourceIndex],
+        toItemId: inboundItemIds[share.targetIndex],
+        quantity: share.quantity,
       })
     }
     return { outboundId, inboundId }

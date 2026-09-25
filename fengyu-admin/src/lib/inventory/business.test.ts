@@ -1383,7 +1383,8 @@ describe('库存转换仅供应链可做（#343）', () => {
   }
   const input = (locationId: string) => ({
     locationId,
-    items: [{ sourceLotId: 101, sourceQuantity: 1, targetSkuId: 'SKU-2', targetQuantity: 1 }],
+    sources: [{ sourceLotId: 101, quantity: 1 }],
+    targets: [{ targetSkuId: 'SKU-2', quantity: 1, unitPrice: 10 }],
   })
 
   it.each([
@@ -1425,6 +1426,307 @@ describe('库存转换仅供应链可做（#343）', () => {
     )
     await expect(createInventoryConversion(SESSION, input('HQ')))
       .rejects.toThrow('自建商品不能转换')
+  })
+})
+
+/**
+ * #344 转换多对多：用一个极小的内存假库跑完整流程 —— 批次表（lot_key 去重）+ 流水回写在手量，
+ * 逐一断言来源批次扣减量、目标批次增加量、目标批次单价与 doc_links 分摊数量。
+ * 真库上的触发器（金额 / 单头合计 / 0043 数量上限）由 smoke-inventory-transfer 在 PG 上实跑。
+ */
+describe('库存转换多对多与成本守恒（#344）', () => {
+  interface FakeLot { id: number; sku_id: string; batch_no: string; expiry_date: string | null; is_gift: boolean; quantity_on_hand: number; supply_chain_unit_cost: string | null; lot_key?: string; source_doc_id: string | null }
+  const hqRow = { location_id: 'HQ', org_node_id: 'HQ', location_type: '总部', name: '供应链', parent_location_id: null }
+
+  function fakeDb(seed: Array<Partial<FakeLot> & { id: number; sku_id: string }>, reserved: Record<number, number> = {}) {
+    const lots = new Map<number, FakeLot>()
+    for (const lot of seed) {
+      lots.set(lot.id, { batch_no: `B-${lot.id}`, expiry_date: null, is_gift: false, quantity_on_hand: 100, supply_chain_unit_cost: '10', source_doc_id: 'GRK-OLD', ...lot })
+    }
+    let nextLotId = 900
+    let nextItemId = 1
+    const items: Array<{ id: number; docId: string; lotId: number; quantity: number; standardUnitPrice: unknown; actualUnitPrice: unknown; supplyChainUnitCost: unknown }> = []
+    const links: Array<{ fromItemId: number; toItemId: number; quantity: number; relationType: string }> = []
+    const lotLocks: number[] = []
+    const movements: Array<{ lotId: number; delta: number; before: number; after: number }> = []
+    const executor = vi.fn(async (query: unknown) => {
+      const rendered = renderSql(query)
+      const params = sqlParams(query)
+      if (rendered.includes('INSERT INTO inventory_stock_lots')) {
+        // VALUES：location_id, sku_id, lot_key, sku_name, spec_name, supplier, supplier_id, product_series,
+        // batch_no, expiry_date, expiry_date_key, is_gift, supply_chain_unit_cost, …, source_doc_id
+        const lotKey = String(params[2])
+        const existing = [...lots.values()].find((lot) => lot.lot_key === lotKey)
+        if (existing) return [{ id: String(existing.id) }]
+        const id = nextLotId++
+        lots.set(id, {
+          id, sku_id: String(params[1]), lot_key: lotKey, batch_no: String(params[8]),
+          expiry_date: (params[9] as string | null) ?? null, is_gift: Boolean(params[11]), quantity_on_hand: 0,
+          supply_chain_unit_cost: params[12] as string | null, source_doc_id: String(params[params.length - 1]),
+        })
+        return [{ id: String(id) }]
+      }
+      if (rendered.includes('FROM inventory_stock_lots') && rendered.includes('FOR UPDATE')) {
+        const lot = lots.get(Number(params[0]))
+        if (!lot) return []
+        lotLocks.push(lot.id)
+        return [{
+          ...shipmentSourceLotRow(), ...lot, id: String(lot.id), sku_name: `商品${lot.sku_id}`,
+          quantity_on_hand: String(lot.quantity_on_hand),
+        }]
+      }
+      if (rendered.includes('FROM inventory_stock_reservations')) return [{ quantity: String(reserved[Number(params[0])] ?? 0) }]
+      if (rendered.includes('FROM inventory_skus')) return [supplierBoundSkuRow(String(params[0]))]
+      if (rendered.includes('FROM inventory_locations')) return [hqRow]
+      if (rendered.includes('INSERT INTO inventory_doc_items')) {
+        // VALUES：doc_id, lot_id, sku_id, sku_name, spec_name, supplier, supplier_id, market_id, product_series,
+        // batch_no, expiry_date, is_gift, quantity, stock_snapshot, request_quantity, fulfilled_quantity,
+        // standard_unit_price, unit_discount, actual_unit_price, amount, supply_chain_unit_cost, …
+        const id = nextItemId++
+        items.push({
+          id, docId: String(params[0]), lotId: Number(params[1]), quantity: Number(params[12]),
+          standardUnitPrice: params[16], actualUnitPrice: params[18], supplyChainUnitCost: params[20],
+        })
+        return [{ id: String(id) }]
+      }
+      if (rendered.includes('INSERT INTO inventory_movements')) {
+        // VALUES：movement_key, lot_id, location_id, sku_id, doc_id, doc_item_id, direction, quantity_delta, …
+        const lot = lots.get(Number(params[1]))!
+        movements.push({ lotId: lot.id, delta: Number(params[7]), before: Number(params[8]), after: Number(params[9]) })
+        lot.quantity_on_hand = Math.round((lot.quantity_on_hand + Number(params[7])) * 100) / 100
+        return []
+      }
+      if (rendered.includes('INSERT INTO inventory_doc_links')) {
+        links.push({ relationType: String(params[2]), fromItemId: Number(params[3]), toItemId: Number(params[4]), quantity: Number(params[5]) })
+        return []
+      }
+      return []
+    })
+    mockSyncLocationsShortCircuit()
+    vi.mocked(db.execute).mockResolvedValue([] as never)
+    vi.mocked(db.transaction).mockImplementationOnce(async (callback) => callback({
+      execute: initializedCutoverExecutor(executor),
+    } as never))
+    const newLots = () => [...lots.values()].filter((lot) => lot.id >= 900)
+    return { lots, items, links, lotLocks, movements, newLots }
+  }
+
+  beforeEach(() => {
+    vi.resetAllMocks()
+  })
+
+  it('13A + 13B → 13 套（N→1）：两批次各扣 13，套装批次 +13 单价 30，两条来源都关联到套装明细', async () => {
+    const fake = fakeDb([
+      { id: 101, sku_id: 'SKU-A', supply_chain_unit_cost: '10' },
+      { id: 102, sku_id: 'SKU-B', supply_chain_unit_cost: '20' },
+    ])
+    const result = await createInventoryConversion(SESSION, {
+      locationId: 'HQ',
+      sources: [{ sourceLotId: 101, quantity: 13 }, { sourceLotId: 102, quantity: 13 }],
+      targets: [{ targetSkuId: 'SKU-SET', quantity: 13, unitPrice: 30 }],
+    })
+    expect(fake.lots.get(101)!.quantity_on_hand).toBe(87)
+    expect(fake.lots.get(102)!.quantity_on_hand).toBe(87)
+    const [setLot] = fake.newLots()
+    expect(setLot).toMatchObject({ sku_id: 'SKU-SET', quantity_on_hand: 13, supply_chain_unit_cost: '30', is_gift: false })
+    expect(setLot.batch_no).toBe(`${result.inboundId}-01`)
+    expect(setLot.source_doc_id).toBe(result.inboundId)
+    const inbound = fake.items.find((item) => item.docId === result.inboundId)!
+    expect(inbound).toMatchObject({ standardUnitPrice: '30', actualUnitPrice: '30' })
+    // 出库明细实际单价显式写成本单价（金额由触发器按它计算）
+    expect(fake.items.filter((item) => item.docId === result.outboundId).map((item) => item.actualUnitPrice)).toEqual(['10', '20'])
+    expect(fake.links).toEqual([
+      { relationType: '库存转换', fromItemId: 1, toItemId: inbound.id, quantity: 13 },
+      { relationType: '库存转换', fromItemId: 2, toItemId: inbound.id, quantity: 13 },
+    ])
+  })
+
+  it('同一批次 25 → 12 X + 13 Y：批次扣 25，两个目标批次各 +12 / +13，关联 12 / 13', async () => {
+    const fake = fakeDb([{ id: 101, sku_id: 'SKU-A', supply_chain_unit_cost: '10', quantity_on_hand: 25 }])
+    await createInventoryConversion(SESSION, {
+      locationId: 'HQ',
+      sources: [{ sourceLotId: 101, quantity: 25 }],
+      targets: [
+        { targetSkuId: 'SKU-X', quantity: 12, unitPrice: 10 },
+        { targetSkuId: 'SKU-Y', quantity: 13, unitPrice: 10 },
+      ],
+    })
+    expect(fake.lots.get(101)!.quantity_on_hand).toBe(0)
+    expect(fake.newLots().map((lot) => [lot.sku_id, lot.quantity_on_hand, lot.supply_chain_unit_cost])).toEqual([
+      ['SKU-X', 12, '10'],
+      ['SKU-Y', 13, '10'],
+    ])
+    expect(fake.links.map((link) => link.quantity)).toEqual([12, 13])
+  })
+
+  it('一盒拆三种单件（1→N）：盒子扣 1，三个单件批次各 +1，单价按自填 20/30/40', async () => {
+    const fake = fakeDb([{ id: 103, sku_id: 'SKU-BOX', supply_chain_unit_cost: '90', quantity_on_hand: 5 }])
+    await createInventoryConversion(SESSION, {
+      locationId: 'HQ',
+      sources: [{ sourceLotId: 103, quantity: 1 }],
+      targets: [
+        { targetSkuId: 'SKU-PANTS', quantity: 1, unitPrice: 20 },
+        { targetSkuId: 'SKU-BODY', quantity: 1, unitPrice: 30 },
+        { targetSkuId: 'SKU-BRA', quantity: 1, unitPrice: 40 },
+      ],
+    })
+    expect(fake.lots.get(103)!.quantity_on_hand).toBe(4)
+    expect(fake.newLots().map((lot) => [lot.sku_id, lot.quantity_on_hand, lot.supply_chain_unit_cost])).toEqual([
+      ['SKU-PANTS', 1, '20'],
+      ['SKU-BODY', 1, '30'],
+      ['SKU-BRA', 1, '40'],
+    ])
+    // 同一来源明细的关联合计 = 1，不超过来源数量（0043 上限）
+    expect(fake.links.map((link) => link.quantity)).toEqual([0.34, 0.33, 0.33])
+  })
+
+  it('一瓶拆两个半瓶：瓶扣 1、半瓶 +2 单价 25；关联数量记 1（不是 2）', async () => {
+    const fake = fakeDb([{ id: 104, sku_id: 'SKU-BOTTLE', supply_chain_unit_cost: '50', quantity_on_hand: 3 }])
+    await createInventoryConversion(SESSION, {
+      locationId: 'HQ',
+      sources: [{ sourceLotId: 104, quantity: 1 }],
+      targets: [{ targetSkuId: 'SKU-HALF', quantity: 2, unitPrice: 25 }],
+    })
+    expect(fake.lots.get(104)!.quantity_on_hand).toBe(2)
+    expect(fake.newLots().map((lot) => [lot.sku_id, lot.quantity_on_hand, lot.supply_chain_unit_cost])).toEqual([['SKU-HALF', 2, '25']])
+    expect(fake.links.map((link) => link.quantity)).toEqual([1])
+  })
+
+  it('同一批次分两行出库：按批次汇总校验可用量（可用 10，6 + 5 被拒）', async () => {
+    fakeDb([{ id: 101, sku_id: 'SKU-A', quantity_on_hand: 10 }])
+    await expect(createInventoryConversion(SESSION, {
+      locationId: 'HQ',
+      sources: [{ sourceLotId: 101, quantity: 6 }, { sourceLotId: 101, quantity: 5 }],
+      targets: [{ targetSkuId: 'SKU-X', quantity: 11, unitPrice: 10 }],
+    })).rejects.toThrow('库存不足')
+  })
+
+  it('可用量扣除未完成预留：在手 10、预留 5 时出库 6 被拒', async () => {
+    fakeDb([{ id: 101, sku_id: 'SKU-A', quantity_on_hand: 10 }], { 101: 5 })
+    await expect(createInventoryConversion(SESSION, {
+      locationId: 'HQ',
+      sources: [{ sourceLotId: 101, quantity: 6 }],
+      targets: [{ targetSkuId: 'SKU-X', quantity: 6, unitPrice: 10 }],
+    })).rejects.toThrow('库存不足')
+  })
+
+  it('同一批次分两行出库且未超可用量：批次只锁一次，两条流水连续扣减（10 → 4 → 1）', async () => {
+    const fake = fakeDb([{ id: 101, sku_id: 'SKU-A', quantity_on_hand: 10 }])
+    await createInventoryConversion(SESSION, {
+      locationId: 'HQ',
+      sources: [{ sourceLotId: 101, quantity: 6 }, { sourceLotId: 101, quantity: 3 }],
+      targets: [{ targetSkuId: 'SKU-X', quantity: 9, unitPrice: 10 }],
+    })
+    expect(fake.lotLocks.filter((id) => id === 101)).toHaveLength(1)
+    expect(fake.lots.get(101)!.quantity_on_hand).toBe(1)
+    // 共用同一快照对象：第二条流水的前值是 4，不是重新读出的 10
+    expect(fake.movements.filter((movement) => movement.lotId === 101)).toEqual([
+      { lotId: 101, delta: -6, before: 10, after: 4 },
+      { lotId: 101, delta: -3, before: 4, after: 1 },
+    ])
+  })
+
+  it('多批次按 id 升序加锁（与入参顺序无关，防交叉死锁）', async () => {
+    const fake = fakeDb([
+      { id: 101, sku_id: 'SKU-A', supply_chain_unit_cost: '10' },
+      { id: 102, sku_id: 'SKU-B', supply_chain_unit_cost: '20' },
+    ])
+    await createInventoryConversion(SESSION, {
+      locationId: 'HQ',
+      sources: [{ sourceLotId: 102, quantity: 1 }, { sourceLotId: 101, quantity: 1 }],
+      targets: [{ targetSkuId: 'SKU-SET', quantity: 1, unitPrice: 30 }],
+    })
+    expect(fake.lotLocks.slice(0, 2)).toEqual([101, 102])
+  })
+
+  it('成本不守恒（差额超出分位误差）硬拦截', async () => {
+    fakeDb([{ id: 101, sku_id: 'SKU-A', supply_chain_unit_cost: '10' }, { id: 102, sku_id: 'SKU-B', supply_chain_unit_cost: '20' }])
+    await expect(createInventoryConversion(SESSION, {
+      locationId: 'HQ',
+      sources: [{ sourceLotId: 101, quantity: 13 }, { sourceLotId: 102, quantity: 13 }],
+      targets: [{ targetSkuId: 'SKU-SET', quantity: 13, unitPrice: 31 }],
+    })).rejects.toThrow(/INVALID_PARAMS.*成本不守恒.*来源合计 390\.00.*目标合计 403\.00/)
+  })
+
+  it('分位误差内放行：100 拆 7 件按 14.29', async () => {
+    const fake = fakeDb([{ id: 101, sku_id: 'SKU-A', supply_chain_unit_cost: '100' }])
+    await createInventoryConversion(SESSION, {
+      locationId: 'HQ',
+      sources: [{ sourceLotId: 101, quantity: 1 }],
+      targets: [{ targetSkuId: 'SKU-X', quantity: 7, unitPrice: 14.29 }],
+    })
+    expect(fake.newLots()[0]).toMatchObject({ quantity_on_hand: 7, supply_chain_unit_cost: '14.29' })
+  })
+
+  it('赠送与非赠送批次混放被拒', async () => {
+    fakeDb([{ id: 101, sku_id: 'SKU-A' }, { id: 105, sku_id: 'SKU-B', is_gift: true, supply_chain_unit_cost: '0' }])
+    await expect(createInventoryConversion(SESSION, {
+      locationId: 'HQ',
+      sources: [{ sourceLotId: 101, quantity: 1 }, { sourceLotId: 105, quantity: 1 }],
+      targets: [{ targetSkuId: 'SKU-SET', quantity: 1, unitPrice: 10 }],
+    })).rejects.toThrow('赠送批次与非赠送批次不能混在同一张转换单里')
+  })
+
+  it('全赠送来源：目标批次标赠送、单价 0；单价非 0 被拒', async () => {
+    const fake = fakeDb([{ id: 105, sku_id: 'SKU-B', is_gift: true, supply_chain_unit_cost: '15' }])
+    await createInventoryConversion(SESSION, {
+      locationId: 'HQ',
+      sources: [{ sourceLotId: 105, quantity: 2 }],
+      targets: [{ targetSkuId: 'SKU-HALF', quantity: 4, unitPrice: 0 }],
+    })
+    expect(fake.newLots()[0]).toMatchObject({ is_gift: true, supply_chain_unit_cost: '0', quantity_on_hand: 4 })
+    // 赠送来源的成本按 0 计，不管批次上残留的历史成本
+    expect(fake.items[0].actualUnitPrice).toBe('0')
+
+    fakeDb([{ id: 105, sku_id: 'SKU-B', is_gift: true, supply_chain_unit_cost: '0' }])
+    await expect(createInventoryConversion(SESSION, {
+      locationId: 'HQ',
+      sources: [{ sourceLotId: 105, quantity: 1 }],
+      targets: [{ targetSkuId: 'SKU-HALF', quantity: 2, unitPrice: 0.01 }],
+    })).rejects.toThrow('赠送批次转换的目标单价必须为 0')
+  })
+
+  it('来源批次缺少供应链成本：拒绝（无从守恒）', async () => {
+    fakeDb([{ id: 101, sku_id: 'SKU-A', supply_chain_unit_cost: null }])
+    await expect(createInventoryConversion(SESSION, {
+      locationId: 'HQ',
+      sources: [{ sourceLotId: 101, quantity: 1 }],
+      targets: [{ targetSkuId: 'SKU-X', quantity: 1, unitPrice: 0 }],
+    })).rejects.toThrow('来源批次缺少供应链成本')
+  })
+
+  it('目标 SKU 与任一来源 SKU 相同被拒', async () => {
+    fakeDb([{ id: 101, sku_id: 'SKU-A' }, { id: 102, sku_id: 'SKU-B' }])
+    await expect(createInventoryConversion(SESSION, {
+      locationId: 'HQ',
+      sources: [{ sourceLotId: 101, quantity: 1 }, { sourceLotId: 102, quantity: 1 }],
+      targets: [{ targetSkuId: 'SKU-B', quantity: 1, unitPrice: 20 }],
+    })).rejects.toThrow('目标 SKU 不能与来源 SKU 相同')
+  })
+
+  it.each([
+    ['来源为空', { sources: [], targets: [{ targetSkuId: 'SKU-X', quantity: 1, unitPrice: 1 }] }, '至少需要一条来源明细'],
+    ['目标为空', { sources: [{ sourceLotId: 101, quantity: 1 }], targets: [] }, '至少需要一条目标明细'],
+    ['单价为负', { sources: [{ sourceLotId: 101, quantity: 1 }], targets: [{ targetSkuId: 'SKU-X', quantity: 1, unitPrice: -1 }] }, '转换目标单价不能为空且不能小于 0'],
+    ['单价超两位小数', { sources: [{ sourceLotId: 101, quantity: 1 }], targets: [{ targetSkuId: 'SKU-X', quantity: 1, unitPrice: 1.005 }] }, '最多保留两位小数'],
+    ['数量为 0', { sources: [{ sourceLotId: 101, quantity: 0 }], targets: [{ targetSkuId: 'SKU-X', quantity: 1, unitPrice: 1 }] }, '转换出库数量必须大于 0'],
+    ['效期格式错', { sources: [{ sourceLotId: 101, quantity: 1 }], targets: [{ targetSkuId: 'SKU-X', quantity: 1, unitPrice: 10, targetExpiryDate: '2026/10/01' }] }, '效期格式应为 YYYY-MM-DD'],
+  ])('入参校验：%s（开事务前就拒）', async (_label, body, message) => {
+    await expect(createInventoryConversion(SESSION, { locationId: 'HQ', ...body } as never)).rejects.toThrow(message)
+    expect(db.transaction).not.toHaveBeenCalled()
+  })
+
+  it('目标效期留空取来源批次中最早的效期', async () => {
+    const fake = fakeDb([
+      { id: 101, sku_id: 'SKU-A', expiry_date: '2027-06-01' },
+      { id: 102, sku_id: 'SKU-B', expiry_date: '2027-01-01', supply_chain_unit_cost: '10' },
+    ])
+    await createInventoryConversion(SESSION, {
+      locationId: 'HQ',
+      sources: [{ sourceLotId: 101, quantity: 1 }, { sourceLotId: 102, quantity: 1 }],
+      targets: [{ targetSkuId: 'SKU-SET', quantity: 1, unitPrice: 20 }],
+    })
+    expect(fake.newLots()[0].expiry_date).toBe('2027-01-01')
   })
 })
 
