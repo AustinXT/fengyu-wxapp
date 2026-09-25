@@ -3537,7 +3537,7 @@ async function linkedSourcePricing(tx: Tx, shipmentItem: DocItemSnapshot, source
        AND l.relation_type = ${shipmentItem.isGift ? '市场报货赠送发货' : '市场报货发货'}
      LIMIT 1
   `))
-  // 旧口径（#336 之前按采购订单建）的发货单没有这条血缘。0051 迁移会拦住在途旧单，但迁移后到新版上线前
+  // 旧口径（#336 之前按采购订单建）的发货单没有这条血缘。0052 迁移会拦住在途旧单，但迁移后到新版上线前
   // 的窗口里仍可能建出来 —— 给出可操作的出路，而不是只报「缺快照」。
   if (!row) {
     throw new ApiError(

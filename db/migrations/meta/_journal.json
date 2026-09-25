@@ -365,6 +365,13 @@
       "when": 1790295411207,
       "tag": "0051_commission_price_threshold",
       "breakpoints": true
+    },
+    {
+      "idx": 52,
+      "version": "7",
+      "when": 1790302157503,
+      "tag": "0052_shipment_from_market_report",
+      "breakpoints": true
     }
   ]
 }
