@@ -1421,6 +1421,11 @@ async function docItemForUpdate(tx: Tx, id: number, docId?: string): Promise<Doc
   return asDocItem(row)
 }
 
+/**
+ * 某来源明细在某关系下的已关联数量（排除已取消的目标单）。采购订单 → 供应链采购入库这条关系上，
+ * 与 engine.ts loadSupplyChainPurchaseReceiptProgress 的 `receipt_doc.status = '已完成'` 当前等价（#346）；
+ * 给入库单加新状态时两处必须一起改。
+ */
 async function linkedQuantity(
   tx: Tx,
   fromItemId: number,

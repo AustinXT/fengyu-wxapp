@@ -643,9 +643,9 @@ export default function InventoryOperationsPage({
   canViewPrice: boolean
   /**
    * 可填入库单价优惠的总部节点（#346，服务端按「办理权与供应链价格权同一绑定」算）；
-   * null = 不受节点限制（admin），undefined 按不受限处理（仅测试）。
+   * null = 不受节点限制（admin）。必传：漏传就会退回「前端放行、服务端拒」。
    */
-  receiptDiscountOrgNodeIds?: string[] | null
+  receiptDiscountOrgNodeIds: string[] | null
   /** 跳转卡「顾客产品出库」的可用判据：目标页（提货录入）的入口权限（#350） */
   canCreatePickupRecord: boolean
   /** 深链 `?create=<docType>` 解析出的初始业务（#191），服务端已校验权限与白名单。 */
@@ -922,7 +922,7 @@ function OperationWorkspace({
   marketTransferTargets?: readonly InventoryMarketTransferTarget[]
   suppliers: InventorySupplierRow[]
   canViewPrice: boolean
-  receiptDiscountOrgNodeIds?: string[] | null
+  receiptDiscountOrgNodeIds: string[] | null
   onClose: () => void
   onSuccess: (message: string) => void
 }) {
@@ -2991,7 +2991,7 @@ function SupplyChainPurchaseReceiptForm({
   locations: InventoryLocationRow[]
   canViewPrice: boolean
   /** 见 InventoryOperationsPage 同名 prop（#346） */
-  receiptDiscountOrgNodeIds?: string[] | null
+  receiptDiscountOrgNodeIds: string[] | null
   /** 待办区「去收货」带来的预选券（#192）。 */
   prefill?: OperationFormPrefill | null
   onSuccess: (message: string) => void
@@ -3006,7 +3006,7 @@ function SupplyChainPurchaseReceiptForm({
   const [saving, setSaving] = useState(false)
   // 与服务端同判据：本单总部主体上，办理权与供应链价格权同一绑定（#346）
   const canFillDiscount = canViewPrice && Boolean(doc?.targetOrgNodeId) && (
-    receiptDiscountOrgNodeIds == null || receiptDiscountOrgNodeIds.includes(doc!.targetOrgNodeId!)
+    receiptDiscountOrgNodeIds === null || receiptDiscountOrgNodeIds.includes(doc!.targetOrgNodeId!)
   )
 
   useEffect(() => {

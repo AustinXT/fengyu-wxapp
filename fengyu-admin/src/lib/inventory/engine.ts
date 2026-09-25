@@ -3371,6 +3371,8 @@ async function loadSupplyChainPurchaseReceiptProgress(
         JOIN inventory_doc_items receipt_item ON receipt_item.id = doc_link.to_item_id
        WHERE doc_link.from_doc_id = ${docId}
          AND doc_link.relation_type = '采购订单供应链采购入库'
+         -- 「有效入库」口径：供应链采购入库只有「已完成」一种落库状态，与 business.ts linkedQuantity 的
+         -- status <> 已取消 当前等价；将来给入库单加草稿 / 作废态时两处必须一起改
          AND receipt_doc.status = '已完成'
        GROUP BY doc_link.from_item_id
     )
@@ -3404,14 +3406,13 @@ async function loadSupplyChainPurchaseReceiptProgress(
       const purchasedQuantity = numberOrNull(row.purchased_quantity) ?? 0
       const receivedQuantity = numberOrNull(row.received_quantity) ?? 0
       const outstandingQuantity = row.purchase_status === '待收货'
-        ? Math.max(0, purchasedQuantity - receivedQuantity)
+        ? Math.max(0, Number((purchasedQuantity - receivedQuantity).toFixed(4)))
         : 0
       const receivedAmount = numberOrNull(row.received_amount) ?? 0
       const orderUnitPrice = numberOrNull(row.order_unit_price)
       // 算不准就不给（返回 undefined，详情页不展示），别给一个看似真实的错数：
       //  · 历史单：#335 之前市场行按发货完结，fulfilled_quantity 记的是发货量、没有入库血缘 ——
       //    非待收货状态下 fulfilled > 入库量即此类，入库后金额无从谈起；
-      //  · 还有未入库量却没有下单价（成本快照为空的存量行）。
       //    fulfilled_quantity 为空也按历史单处理；已完成却没收满（新模型只有入库收满才完结）同理；
       //  · 还有未入库量却没有下单价（成本快照为空的存量行）；
       //  · 关联的入库明细金额为空。

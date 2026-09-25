@@ -855,7 +855,7 @@ function renderPage(options: {
       canRequestShipmentCancellation={false}
       canApproveShipmentCancellation={false}
       canViewPrice
-      receiptDiscountOrgNodeIds={options.receiptDiscountOrgNodeIds}
+      receiptDiscountOrgNodeIds={options.receiptDiscountOrgNodeIds === undefined ? null : options.receiptDiscountOrgNodeIds}
       canCreatePickupRecord={options.canCreatePickupRecord ?? true}
       // 深链入口：省掉「先点卡片」这一步，工作区直接展开在目标业务上
       initialOperationId={options.operation}
