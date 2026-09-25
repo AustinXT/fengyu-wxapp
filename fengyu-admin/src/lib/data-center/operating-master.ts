@@ -150,9 +150,10 @@ function pendingColumn(
   }
 }
 
-function metricColumn(
+/** 数值列的公共部分（右对齐、按单位给列宽下限） */
+function numberColumn(
   letter: string,
-  key: OperatingMasterMetricKey,
+  key: string,
   header: string,
   group: MatrixColumnGroup,
   unit: MetricUnit,
@@ -167,10 +168,20 @@ function metricColumn(
     align: 'right',
     width: headerWidth(header, unit === 'amount' ? 120 : 96),
     hint,
-    value: metric(key),
-    aggregate: { kind: 'sum' },
     exportWidth: headerExportWidth(header, unit === 'amount' ? 16 : 12),
   }
+}
+
+/** 可加列：服务端按门店给值，小计 / 合计逐店相加 */
+function metricColumn(
+  letter: string,
+  key: OperatingMasterMetricKey,
+  header: string,
+  group: MatrixColumnGroup,
+  unit: MetricUnit,
+  hint: string,
+): OperatingMasterColumn {
+  return { ...numberColumn(letter, key, header, group, unit, hint), value: metric(key), aggregate: { kind: 'sum' } }
 }
 
 /** 比率：分母 ≤ 0 或任一侧为空 → null（与 computeMatrixTotals 的合计口径一致） */
@@ -193,17 +204,9 @@ function ratioColumn(
   const top = metric(numerator)
   const bottom = metric(denominator)
   return {
-    letter,
-    key,
-    header,
-    group,
-    unit,
-    align: 'right',
-    width: headerWidth(header, unit === 'amount' ? 120 : 96),
-    hint,
+    ...numberColumn(letter, key, header, group, unit, hint),
     value: (row) => ratioOf(top(row), bottom(row)),
     aggregate: { kind: 'ratio', numerator: top, denominator: bottom },
-    exportWidth: headerExportWidth(header, unit === 'amount' ? 16 : 12),
   }
 }
 

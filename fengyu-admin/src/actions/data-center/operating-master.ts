@@ -230,17 +230,14 @@ export const getOperatingMaster = withPermission(
       ])
 
     const metrics = new Map<string, Partial<OperatingMasterMetrics>>()
-    /** @param fields 结果列 → 指标键；缺省只读 `v` */
-    const collect = (
-      rows: unknown,
-      key: OperatingMasterMetricKey,
-      fields: Partial<Record<string, OperatingMasterMetricKey>> = { v: key },
-    ) => {
+    /** @param target 指标键（读结果列 `v`），或「结果列 → 指标键」映射（一条查询出多列时） */
+    const collect = (rows: unknown, target: OperatingMasterMetricKey | Record<string, OperatingMasterMetricKey>) => {
+      const fields = typeof target === 'string' ? { v: target } : target
       for (const row of rows as Array<Record<string, unknown>>) {
         // 原生 SQL 的 numeric / bigint 回来是字符串，一律 Number()
         const id = String(row.store_id)
         const next = { ...metrics.get(id) }
-        for (const [column, metricKey] of Object.entries(fields)) next[metricKey!] = Number(row[column] ?? 0)
+        for (const [column, metricKey] of Object.entries(fields)) next[metricKey] = Number(row[column] ?? 0)
         metrics.set(id, next)
       }
     }
@@ -250,10 +247,10 @@ export const getOperatingMaster = withPermission(
     collect(projectRows, 'shengmeiProjectCount')
     collect(consRows, 'monthConsume')
     collect(shengmeiConsRows, 'shengmeiConsume')
-    collect(retainedRows, 'retainedMembers', { retained: 'retainedMembers', once: 'returnOnceHeads', twice: 'returnTwiceHeads' })
+    collect(retainedRows, { retained: 'retainedMembers', once: 'returnOnceHeads', twice: 'returnTwiceHeads' })
     collect(managedMonthRows, 'managedMonthCustomers')
     collect(managedYearRows, 'managedYearCustomers')
-    collect(footfallRows, 'monthFootfall', { footfall: 'monthFootfall', pre_sale: 'preSaleFootfall' })
+    collect(footfallRows, { footfall: 'monthFootfall', pre_sale: 'preSaleFootfall' })
     // U 售后 = S − T（同一行查询的两个计数，恒 ≥ 0）
     for (const [id, values] of metrics) {
       metrics.set(id, { ...values, afterSaleFootfall: (values.monthFootfall ?? 0) - (values.preSaleFootfall ?? 0) })
