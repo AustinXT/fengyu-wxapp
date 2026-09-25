@@ -1,14 +1,15 @@
 // packageMy/inventory/list.ts — 库存单据列表（只读）
 import { callStaffApi } from '../../utils/cloud'
 
-type DocCategory = 'procurement' | 'sale' | 'transfer' | 'scrap'
-type CreateDocType = '门店报货' | '分院调货出库' | '院退货' | '院产品报损'
+type DocCategory = 'procurement' | 'sale' | 'transfer' | 'scrap' | 'stocktake'
+type CreateDocType = '门店报货' | '分院调货出库' | '院退货' | '院产品报损' | '分院库存盘点'
 
 const TITLE_BY_CATEGORY: Record<DocCategory, string> = {
   procurement: '采购入库',
   sale: '销售出库',
   transfer: '门店调拨',
   scrap: '报损出库',
+  stocktake: '库存盘点',
 }
 
 const DOC_TYPES_BY_CATEGORY: Record<DocCategory, string[]> = {
@@ -16,6 +17,8 @@ const DOC_TYPES_BY_CATEGORY: Record<DocCategory, string[]> = {
   sale: ['院顾客产品出库', '院顾客退货', '院退货'],
   transfer: ['分院调货出库', '分院调货入库'],
   scrap: ['院产品报损'],
+  // staff 可见类型里只有门店盘点（STAFF_VISIBLE_DOC_TYPES 不含市场库存盘点）
+  stocktake: ['分院库存盘点'],
 }
 
 const CREATE_ACTION_BY_CATEGORY: Record<DocCategory, { docType: CreateDocType; label: string }> = {
@@ -23,6 +26,7 @@ const CREATE_ACTION_BY_CATEGORY: Record<DocCategory, { docType: CreateDocType; l
   sale: { docType: '院退货', label: '提交院退货' },
   transfer: { docType: '分院调货出库', label: '发起同市场调货' },
   scrap: { docType: '院产品报损', label: '提交产品报损' },
+  stocktake: { docType: '分院库存盘点', label: '发起门店盘点' },
 }
 
 interface InventoryRow {

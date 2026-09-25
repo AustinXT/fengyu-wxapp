@@ -120,6 +120,45 @@
   font-family: 'Courier New', monospace;
 }
 
+.stocktake-row {
+  display: flex;
+  margin: 8rpx 0;
+  padding: 12rpx 0;
+  border-top: 1rpx solid #F0F0F0;
+  border-bottom: 1rpx solid #F0F0F0;
+}
+
+.stocktake-cell {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4rpx;
+}
+
+.stocktake-label {
+  font-size: 22rpx;
+  color: #999;
+}
+
+.stocktake-value {
+  font-size: 28rpx;
+  font-weight: 500;
+  color: #333;
+}
+
+.diff-surplus {
+  color: #3D8A5A;
+}
+
+.diff-shortage {
+  color: var(--color-primary);
+}
+
+.diff-unknown {
+  color: #B8B8B8;
+}
+
 .item-extra {
   display: flex;
   gap: 16rpx;

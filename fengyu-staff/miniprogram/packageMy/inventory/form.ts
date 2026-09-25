@@ -2,9 +2,11 @@
 import { callStaffApi } from '../../utils/cloud'
 import { getCurrentStoreId, requireInventoryStoreOperate } from '../../utils/role'
 import { ReportableSkuSearch, SKU_PAGE_SIZE } from '../../utils/reportable-sku-search'
+import { isValidStocktakeQuantity } from '../../utils/stocktake'
 
-type OperateDocType = '门店报货' | '分院调货出库' | '院退货' | '院产品报损'
-type ItemMode = 'reportableSku' | 'stockLot'
+type OperateDocType = '门店报货' | '分院调货出库' | '院退货' | '院产品报损' | '分院库存盘点'
+// stocktakeSku（#352）：门店盘点按 SKU 录实盘数，账面数由 createDoc 在提交时汇总写入，前端不传
+type ItemMode = 'reportableSku' | 'stockLot' | 'stocktakeSku'
 
 interface FormConfig {
   title: string
@@ -20,7 +22,10 @@ interface ReportableSku {
   specName: string | null
   supplier: string | null
   productSeries: string | null
+  /** 门店报货：本店库存参考；盘点不下发（盲盘），恒 0 且不展示 */
   stockReference: number
+  /** 盘点：本店是否有货（只用于排序提示，不含数量） */
+  inStock: boolean
   displayName: string
 }
 
@@ -79,13 +84,19 @@ const FORM_CONFIG: Record<OperateDocType, FormConfig> = {
     needsTargetStore: false,
     needsReason: true,
   },
+  '分院库存盘点': {
+    title: '门店盘点',
+    itemMode: 'stocktakeSku',
+    needsTargetStore: false,
+    needsReason: false,
+  },
 }
 
 function validDocType(value: string): value is OperateDocType {
   return Object.prototype.hasOwnProperty.call(FORM_CONFIG, value)
 }
 
-function displaySku(item: Omit<ReportableSku, 'displayName'>): string {
+function displaySku(item: Pick<ReportableSku, 'skuName' | 'specName' | 'productCode'>): string {
   return [item.skuName, item.specName, item.productCode].filter(Boolean).join(' · ')
 }
 
@@ -101,6 +112,7 @@ Page({
     sourceStoreId: '',
     sourceStoreName: '',
     itemMode: 'stockLot' as ItemMode,
+    isStocktake: false,
     needsTargetStore: false,
     needsReason: false,
     skuOptions: [] as ReportableSku[],
@@ -115,6 +127,8 @@ Page({
     reasonInput: '',
     remark: '',
     items: [] as DraftItem[],
+    // 盘点：已加入明细的 SKU（WXML 不能调方法，选品弹层据此标「已添加」）
+    addedSkuIds: {} as Record<string, boolean>,
     loadingOptions: false,
     submitting: false,
     // 门店报货选品弹层（#339）：服务端检索 + 分页，替换原来只拉前 100 条的原生 picker
@@ -152,6 +166,7 @@ Page({
       sourceStoreId,
       sourceStoreName,
       itemMode: config.itemMode,
+      isStocktake: config.itemMode === 'stocktakeSku',
       needsTargetStore: config.needsTargetStore,
       needsReason: config.needsReason,
     })
@@ -198,12 +213,28 @@ Page({
     this._skuSearch?.dispose()
   },
 
-  /** 门店报货选品检索状态机（懒创建：只有门店报货用得到） */
+  /** 选品检索状态机（懒创建：只有门店报货与门店盘点用得到） */
   skuSearch(): ReportableSkuSearch<ReportableSku> {
     if (!this._skuSearch) {
       this._skuSearch = new ReportableSkuSearch<ReportableSku>({
         fetchPage: async (keyword, page) => {
-          const res = await callStaffApi<{ items: Omit<ReportableSku, 'displayName'>[]; total: number }>(
+          if (this.data.itemMode === 'stocktakeSku') {
+            // 盘点候选不限可报货（#352），且不带账面数
+            const res = await callStaffApi<{ items: Omit<ReportableSku, 'displayName' | 'stockReference'>[]; total: number }>(
+              'inventory.stocktakeSkuOptions',
+              { locationId: this.data.sourceStoreId, keyword: keyword || undefined, page, pageSize: SKU_PAGE_SIZE },
+            )
+            return {
+              total: res.total,
+              items: (res.items || []).map((item) => ({
+                ...item,
+                stockReference: 0,
+                inStock: Boolean(item.inStock),
+                displayName: displaySku(item),
+              })),
+            }
+          }
+          const res = await callStaffApi<{ items: Omit<ReportableSku, 'displayName' | 'inStock'>[]; total: number }>(
             'inventory.reportableSkuOptions',
             { locationId: this.data.sourceStoreId, keyword: keyword || undefined, page, pageSize: SKU_PAGE_SIZE },
           )
@@ -212,6 +243,7 @@ Page({
             items: (res.items || []).map((item) => ({
               ...item,
               stockReference: Number(item.stockReference || 0),
+              inStock: false,
               displayName: displaySku(item),
             })),
           }
@@ -264,6 +296,11 @@ Page({
     const index = Number(e.currentTarget.dataset.index)
     const sku = this.data.skuOptions[index]
     if (!sku) return
+    // 盘点一个 SKU 只能一行（账面数按 主体+SKU 汇总，重复行会重复计差异）：选的时候就挡住
+    if (this.data.itemMode === 'stocktakeSku' && this.data.addedSkuIds[sku.skuId]) {
+      wx.showToast({ title: '该产品已在盘点明细中，请先删除原行', icon: 'none' })
+      return
+    }
     // 已选产品独立保存一份：之后换关键词、列表里不再有它，展示名称也不受影响
     this.setData({ selectedSku: { ...sku }, showSkuPicker: false })
   },
@@ -293,6 +330,10 @@ Page({
   },
 
   onAddItem() {
+    if (this.data.itemMode === 'stocktakeSku') {
+      this.addStocktakeItem()
+      return
+    }
     const quantity = Number(this.data.quantityInput)
     if (!Number.isFinite(quantity) || quantity <= 0) {
       wx.showToast({ title: '请输入大于 0 的数量', icon: 'none' })
@@ -367,11 +408,52 @@ Page({
     })
   },
 
+  /**
+   * 盘点明细（#352）：实盘数可以是 0（货架上没有 = 盘亏），但**留空不行**——
+   * Number('') 是 0，不拦就把「没填」当成「实盘 0」。同一 SKU 不合并、直接拒绝：
+   * 两次录入是「补录」还是「改数」说不清，让用户删掉原行重录。
+   */
+  addStocktakeItem() {
+    const sku = this.data.selectedSku
+    if (!sku) {
+      wx.showToast({ title: '请选择盘点产品', icon: 'none' })
+      return
+    }
+    if (this.data.addedSkuIds[sku.skuId]) {
+      wx.showToast({ title: '该产品已在盘点明细中，请先删除原行', icon: 'none' })
+      return
+    }
+    const input = this.data.quantityInput.trim()
+    if (!isValidStocktakeQuantity(input)) {
+      wx.showToast({ title: '请填写实盘数（0 或正数，最多两位小数）', icon: 'none' })
+      return
+    }
+    const items: DraftItem[] = [...this.data.items, {
+      key: sku.skuId,
+      skuId: sku.skuId,
+      skuName: sku.skuName,
+      specName: sku.specName,
+      batchNo: '',
+      quantity: Number(input),
+      stockReference: 0,
+      reason: '',
+    }]
+    this.setData({
+      items,
+      addedSkuIds: { ...this.data.addedSkuIds, [sku.skuId]: true },
+      quantityInput: '',
+      selectedSku: null,
+    })
+  },
+
   onRemoveItem(e: WechatMiniprogram.CustomEvent) {
     const index = Number(e.currentTarget.dataset.index)
     if (!Number.isInteger(index) || index < 0 || index >= this.data.items.length) return
+    const removed = this.data.items[index]
     const items = this.data.items.filter((_, itemIndex) => itemIndex !== index)
-    this.setData({ items })
+    const addedSkuIds = { ...this.data.addedSkuIds }
+    delete addedSkuIds[removed.skuId]
+    this.setData({ items, addedSkuIds })
   },
 
   async onSubmit() {

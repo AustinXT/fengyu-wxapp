@@ -2,6 +2,7 @@
 import { callStaffApi } from '../../utils/cloud'
 import { formatDateTime } from '../../utils/formatters'
 import { canOperateStoreInventory } from '../../utils/role'
+import { isStocktakeDocType, stocktakeDiffDisplay, stocktakeSummary } from '../../utils/stocktake'
 
 const STATUS_KEY_MAP: Record<string, string> = {
   '已完成': 'done',
@@ -19,7 +20,12 @@ interface ItemRow {
   specName: string | null
   batchNo: string | null
   quantity: number
+  /** 盘点单账面数（提交时按 主体+SKU 汇总）；非盘点单 / 修复前的历史盘点单为 null */
+  stockSnapshot: number | null
   reason?: string | null
+  // 盘点单前端派生（#352）：差异 = 实盘 − 账面，不落库
+  diffText?: string
+  diffKey?: string
 }
 
 interface LineageRow {
@@ -63,6 +69,8 @@ Page({
     loading: true,
     canReceive: false,
     submitting: false,
+    isStocktake: false,
+    stocktakeSummary: '',
   },
 
   onLoad(query: { id?: string }) {
@@ -78,12 +86,20 @@ Page({
       const detail = await callStaffApi<InventoryDetail>('inventory.docDetail', {
         id: this.data.id,
       })
+      const isStocktake = Boolean(detail && isStocktakeDocType(detail.docType))
+      // 缺字段一律按 null（未记账面）处理，不能让 undefined 参与减法算出 NaN
+      const stocktakeItems = isStocktake && detail
+        ? (detail.items || []).map((item) => ({ ...item, stockSnapshot: item.stockSnapshot ?? null }))
+        : []
       const formatted = detail
         ? {
             ...detail,
             confirmedAt: detail.confirmedAt ? formatDateTime(detail.confirmedAt) : detail.confirmedAt,
             statusKey: STATUS_KEY_MAP[detail.status] || 'unknown',
             lineage: detail.lineage || [],
+            items: isStocktake
+              ? stocktakeItems.map((item) => ({ ...item, ...stocktakeDiffDisplay(item) }))
+              : detail.items,
           }
         : detail
       const canReceive = Boolean(
@@ -95,7 +111,13 @@ Page({
         && detail.status === '待收货'
         && ['分院配货', '分院调货出库'].includes(detail.docType),
       )
-      this.setData({ detail: formatted, loading: false, canReceive })
+      this.setData({
+        detail: formatted,
+        loading: false,
+        canReceive,
+        isStocktake,
+        stocktakeSummary: isStocktake ? stocktakeSummary(stocktakeItems) : '',
+      })
     } catch (err: any) {
       this.setData({ loading: false })
       wx.showToast({ title: err?.message || '加载失败', icon: 'none' })
