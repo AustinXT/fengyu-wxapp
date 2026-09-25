@@ -43,7 +43,8 @@
  *   两份文件都记录写入事务号 xid（pg_current_xact_id()）。
  *   ⚠ 残留 .pending 表示「提交状态未知」（COMMIT 与改名之间进程可能被杀），**不要手工删除**：
  *   直接拿它跑 --rollback —— 先用 pg_xact_status(xid) 查该事务真实状态：committed 则按 CAS 回滚；
- *   aborted 则判为未提交、不做任何改动（此时 .pending 可删）；查不到（事务号过旧）则拒绝自动处理。
+ *   aborted 则判为未提交、不做任何改动（此时 .pending 可删）；in progress / 查不到（事务号过旧或超前）
+ *   一律拒绝自动处理。
  *
  * 目标库：一律经 _lib/assert-db-target 白名单（dev 101.34.242.103 / prod 118.178.196.26，
  *   5433/fengyu_wxapp，拒绝 query 覆盖）；写入另需 --confirm-target 逐字确认。
@@ -221,7 +222,9 @@ async function runRollback(pool, opts, target) {
     throw new Error(`回滚文件无效：issue=${file.issue} status=${file.status}（只接受 #378 的 committed / pending 文件）`)
   }
   const pending = file.status === 'pending'
-  if (!file.xid) throw new Error('回滚文件缺少写入事务号 xid（旧格式文件），请人工核对后处理')
+  if (!/^\d+$/.test(String(file.xid ?? ''))) {
+    throw new Error(`回滚文件的写入事务号 xid 缺失或非法（${file.xid ?? '缺失'}；旧格式文件或被改动），请人工核对后处理`)
+  }
   if (!sameTarget(file.target, target)) {
     throw new Error(`回滚文件目标 ${targetLabel(file.target)} 与当前连接 ${targetLabel(target)} 不一致，已拒绝`)
   }
@@ -377,7 +380,7 @@ async function runBackfill(pool, opts, target) {
     try {
       fs.unlinkSync(pendingOut)
     } catch (err) {
-      log(`⚠ committed 回滚文件已写出，但删除 ${pendingOut} 失败: ${err.message}（内容与 committed 文件相同，可手工删除）`)
+      log(`⚠ committed 回滚文件已写出，但删除 ${pendingOut} 失败: ${err.message}（committed 文件已是权威回滚记录，此 .pending 可手工删除）`)
       process.exitCode = 2
     }
     log(`✓ 已回填 ${res.rowCount} 行；回滚文件: ${rollbackOut}`)
