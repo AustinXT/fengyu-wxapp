@@ -1897,6 +1897,42 @@ describe('库存转换两段式表单与成本守恒（#344）', () => {
     })
   })
 
+  it('清空单价按未填拦下，不当 0 提交', async () => {
+    await fillThirteenToThirteen()
+    fireEvent.change(numberInputs()[2], { target: { value: '' } })
+    fireEvent.submit(screen.getByRole('button', { name: '创建库存转换单' }).closest('form')!)
+    await waitFor(() => expect(vi.mocked(toast.error)).toHaveBeenCalledWith('请完整填写目标商品、入库数量和单价'))
+    expect(createInventoryConversion).not.toHaveBeenCalled()
+  })
+
+  it('与服务端同判据：目标 SKU 不能与来源相同；赠送来源的目标单价必须为 0', async () => {
+    await fillThirteenToThirteen()
+    fireEvent.change(pickers()[1], { target: { value: 'SKU-1' } })
+    fireEvent.submit(screen.getByRole('button', { name: '创建库存转换单' }).closest('form')!)
+    await waitFor(() => expect(vi.mocked(toast.error)).toHaveBeenCalledWith('库存转换目标 SKU 不能与来源 SKU 相同'))
+
+    vi.mocked(toast.error).mockReset()
+    vi.mocked(listInventoryLotOptions).mockResolvedValue([{ ...lot, isGift: true, supplyChainUnitCost: 0 }] as never)
+    fireEvent.change(pickers()[1], { target: { value: 'SKU-2' } })
+    fireEvent.change(pickers()[0], { target: { value: 'SKU-2' } })
+    fireEvent.change(pickers()[0], { target: { value: 'SKU-1' } })
+    const lotOption = await screen.findByRole('option', { name: /批次 B1/ })
+    fireEvent.change(lotOption.closest('select')!, { target: { value: '101' } })
+    expect(numberInputs()[2]).toHaveValue(0) // 赠送来源合计 0 → 预填 0
+    fireEvent.change(numberInputs()[2], { target: { value: '0.01' } })
+    fireEvent.change(numberInputs()[1], { target: { value: '1' } })
+    fireEvent.submit(screen.getByRole('button', { name: '创建库存转换单' }).closest('form')!)
+    await waitFor(() => expect(vi.mocked(toast.error)).toHaveBeenCalledWith('赠送批次转换的目标单价必须为 0'))
+    expect(createInventoryConversion).not.toHaveBeenCalled()
+  })
+
+  it('成本不可见（价格档遮蔽）：不预填、提示交服务端校验', async () => {
+    vi.mocked(listInventoryLotOptions).mockResolvedValue([{ ...lot, supplyChainUnitCost: undefined }] as never)
+    await fillThirteenToThirteen()
+    expect(numberInputs()[2]).toHaveValue(null)
+    expect(balanceText()).toContain('看不到来源批次的供应链成本')
+  })
+
   it('来源 / 目标可各自增行（N:M 解耦）', async () => {
     renderPage({ level: 'supply-chain', operation: 'supply-chain-conversion', locations: LOCATIONS })
     fireEvent.click(screen.getByRole('button', { name: '添加来源' }))

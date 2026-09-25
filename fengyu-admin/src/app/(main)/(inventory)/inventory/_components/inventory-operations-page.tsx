@@ -78,7 +78,7 @@ import type {
 } from '@/lib/inventory/types'
 import type { InventoryBusinessLevel } from '@/lib/inventory/business-level'
 import { inventoryDocStatusLabel } from '@/lib/inventory/doc-status-label'
-import { summarizeConversion, suggestConversionUnitPrice } from '@/lib/inventory/conversion-plan'
+import { conversionLineAmount, summarizeConversion, suggestConversionUnitPrice } from '@/lib/inventory/conversion-plan'
 import {
   INVENTORY_INBOX_ACTION_STATUS,
   genericOperationId,
@@ -451,7 +451,7 @@ function LotPicker({
   skuId: string
   value: string
   onChange: (value: string) => void
-  /** 所选批次的完整行（成本、赠送、可用量）；未选或批次列表重载后找不到时回传 null（#344 转换成本）。 */
+  /** 用户切换批次时回传所选批次的完整行（成本、赠送、可用量），选回空项时回传 null（#344 转换成本）。 */
   onLotChange?: (lot: InventoryLotRow | null) => void
 }) {
   const [lots, setLots] = useState<InventoryLotRow[]>([])
@@ -4230,13 +4230,17 @@ function ConversionForm({
   ).sourceAmount
   const targetQuantityTotal = targets.reduce((sum, line) => sum + (positiveNumber(line.quantity) ?? 0), 0)
   const suggestedPrice = costKnown ? suggestConversionUnitPrice(sourceAmount, targetQuantityTotal) : null
-  const targetPrices = targets.map((line) => line.unitPrice === null ? suggestedPrice : nonnegativeNumber(line.unitPrice))
+  // 清空的单价按「未填」处理（提交时拦），不能像 nonnegativeNumber('') 那样静默当 0
+  const targetPrices = targets.map((line) => line.unitPrice === null ? suggestedPrice : line.unitPrice.trim() === '' ? null : nonnegativeNumber(line.unitPrice))
   const balance = summarizeConversion(
     sourceCosts.map((cost) => ({ quantity: cost.quantity, unitCost: cost.unitCost ?? 0 })),
     targets.map((line, index) => ({ quantity: positiveNumber(line.quantity) ?? 0, unitPrice: targetPrices[index] ?? 0 })),
   )
   const giftFlags = new Set(sources.filter((line) => line.lot).map((line) => line.lot!.isGift))
   const mixedGift = giftFlags.size > 1
+  const allGift = giftFlags.size === 1 && giftFlags.has(true)
+  // 已选批次但成本拿不到 = 当前账号看不到供应链价格（或批次缺成本），前端无从核算，交服务端判定
+  const costHidden = sources.some((line) => line.lot !== null && conversionSourceUnitCost(line.lot) === null)
 
   async function submit() {
     if (saving) return
@@ -4267,6 +4271,16 @@ function ConversionForm({
     }
     if (mixedGift) {
       toast.error('赠送批次与非赠送批次不能混在同一张转换单里')
+      return
+    }
+    // 以下两条与服务端 createInventoryConversion 同判据（前端判据须与后端同源）
+    if (allGift && targetItems.some((item) => item.unitPrice !== 0)) {
+      toast.error('赠送批次转换的目标单价必须为 0')
+      return
+    }
+    const sourceSkuIds = new Set(sources.map((line) => line.lot?.skuId ?? line.skuId))
+    if (targetItems.some((item) => sourceSkuIds.has(item.targetSkuId))) {
+      toast.error('库存转换目标 SKU 不能与来源 SKU 相同')
       return
     }
     if (costKnown && !balance.balanced) {
@@ -4309,7 +4323,7 @@ function ConversionForm({
               <FormField label="来源批次" required><LotPicker locationId={locationId} skuId={line.skuId} value={line.lotId} onChange={(lotId) => updateSource(index, { lotId })} onLotChange={(lot) => updateSource(index, { lot })} /></FormField>
               <FormField label="出库数量" required><Input type="number" min="0.01" step="0.01" max="9999999999.99" value={line.quantity} onChange={(event) => updateSource(index, { quantity: event.target.value })} /></FormField>
               <FormField label={line.lot?.isGift ? '成本单价（赠送）' : '成本单价'}><Input value={unitCost === null ? '—' : unitCost.toFixed(2)} readOnly tabIndex={-1} /></FormField>
-              <FormField label="带出成本"><Input value={unitCost === null || quantity === null ? '—' : summarizeConversion([{ quantity, unitCost }], []).sourceAmount.toFixed(2)} readOnly tabIndex={-1} /></FormField>
+              <FormField label="带出成本"><Input value={unitCost === null || quantity === null ? '—' : conversionLineAmount(quantity, unitCost).toFixed(2)} readOnly tabIndex={-1} /></FormField>
               <div className="flex items-end justify-end"><SmallIconButton label="删除来源" onClick={() => setSources((previous) => previous.length > 1 ? previous.filter((_, lineIndex) => lineIndex !== index) : previous)} disabled={sources.length === 1} /></div>
               <FormField label="来源备注" className="xl:col-span-5"><Input value={line.remark} onChange={(event) => updateSource(index, { remark: event.target.value })} /></FormField>
             </div>
@@ -4326,7 +4340,7 @@ function ConversionForm({
               <FormField label="目标商品" required group><SkuPicker value={line.skuId} filters={targetSkuFilters} disabled={!locationId} disabledHint="请先选择转换库存主体" onChange={(skuId) => updateTarget(index, { skuId })} /></FormField>
               <FormField label="入库数量" required><Input type="number" min="0.01" step="0.01" max="9999999999.99" value={line.quantity} onChange={(event) => updateTarget(index, { quantity: event.target.value })} /></FormField>
               <FormField label="单价" required><Input type="number" min="0" step="0.01" max="9999999999.99" value={line.unitPrice ?? (suggestedPrice === null ? '' : suggestedPrice.toFixed(2))} placeholder="按来源合计预填" onChange={(event) => updateTarget(index, { unitPrice: event.target.value })} /></FormField>
-              <FormField label="金额"><Input value={price === null || quantity === null ? '—' : summarizeConversion([], [{ quantity, unitPrice: price }]).targetAmount.toFixed(2)} readOnly tabIndex={-1} /></FormField>
+              <FormField label="金额"><Input value={price === null || quantity === null ? '—' : conversionLineAmount(quantity, price).toFixed(2)} readOnly tabIndex={-1} /></FormField>
               <FormField label="目标批号"><Input value={line.batchNo} onChange={(event) => updateTarget(index, { batchNo: event.target.value })} placeholder="留空自动生成" /></FormField>
               <FormField label="目标效期"><DatePicker value={line.expiryDate} onValueChange={(value) => updateTarget(index, { expiryDate: value })} /></FormField>
               <div className="flex items-end justify-end"><SmallIconButton label="删除目标" onClick={() => setTargets((previous) => previous.length > 1 ? previous.filter((_, lineIndex) => lineIndex !== index) : previous)} disabled={targets.length === 1} /></div>
@@ -4347,6 +4361,8 @@ function ConversionForm({
             <span className="text-[var(--muted-foreground)]">允许误差 ±{balance.tolerance.toFixed(2)}</span>
             {mixedGift && <span>赠送批次与非赠送批次不能混在同一张转换单里</span>}
           </>
+        ) : costHidden ? (
+          <span className="text-[var(--muted-foreground)]">当前账号看不到来源批次的供应链成本，无法核算合计；提交时由系统校验成本守恒</span>
         ) : (
           <span className="text-[var(--muted-foreground)]">选好来源批次后显示来源合计、目标合计与差额</span>
         )}

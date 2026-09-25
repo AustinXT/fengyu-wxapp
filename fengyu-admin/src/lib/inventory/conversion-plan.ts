@@ -46,6 +46,11 @@ function lineAmountCents(quantity: number, unitPrice: number): number {
   return Math.round((toCents(quantity) * toCents(unitPrice)) / 100)
 }
 
+/** 一行金额（元），与触发器逐行 ROUND 同口径；表单的「带出成本」「金额」列用它。 */
+export function conversionLineAmount(quantity: number, unitPrice: number): number {
+  return lineAmountCents(quantity, unitPrice) / 100
+}
+
 /**
  * 允许误差（分）= max(1, ⌊0.5 × (Σ目标数量 + 目标行数)⌋)。
  *

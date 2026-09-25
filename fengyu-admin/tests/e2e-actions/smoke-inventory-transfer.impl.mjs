@@ -473,6 +473,26 @@ try {
     (await lotQuantity(lotA25)) === 0 && splitLinks.map((link) => num(link.quantity)).join() === '12,13',
     JSON.stringify(splitLinks.map((link) => [link.to_sku, link.quantity])))
 
+  // 同一批次分两行出库成功 + 两条目标行命中同一 lot_key：真库里过 0009 流水前值校验（mock 单测过不了触发器）
+  const lotA10 = await convSeed(cvA, 10, 10, 'TSEED-CV-A10')
+  const sameConv = await biz.createInventoryConversion({
+    locationId: HQ_ORG,
+    sources: [{ sourceLotId: lotA10, quantity: 6 }, { sourceLotId: lotA10, quantity: 3 }],
+    targets: [
+      { targetSkuId: cvSet, quantity: 4, unitPrice: 10, targetBatchNo: 'CV-SAME', targetExpiryDate: '2027-01-01' },
+      { targetSkuId: cvSet, quantity: 5, unitPrice: 10, targetBatchNo: 'CV-SAME', targetExpiryDate: '2027-01-01' },
+    ],
+  })
+  const sameMovements = await pgQuery(
+    `SELECT doc_id, lot_id, quantity_before, quantity_after FROM inventory_movements WHERE doc_id IN ($1, $2) ORDER BY id`,
+    [sameConv.outboundId, sameConv.inboundId])
+  const sameLots = (await locationLots(HQ_ORG, cvSet)).filter((lot) => lot.batch_no === 'CV-SAME')
+  const flow = (docId) => sameMovements.filter((m) => m.doc_id === docId).map((m) => `${num(m.quantity_before)}→${num(m.quantity_after)}`).join(',')
+  check('#344 同批次两行出库成功（10→4→1）+ 两目标行同 lot_key 并入一个批次（0→4→9）',
+    (await lotQuantity(lotA10)) === 1 && flow(sameConv.outboundId) === '10→4,4→1'
+      && sameLots.length === 1 && num(sameLots[0].quantity_on_hand) === 9 && flow(sameConv.inboundId) === '0→4,4→9',
+    JSON.stringify({ out: flow(sameConv.outboundId), in: flow(sameConv.inboundId), lots: sameLots.map((lot) => lot.quantity_on_hand) }))
+
   // 成本不守恒硬拦截，且整单回滚不落任何单据 / 流水
   const docsBeforeReject = await inventoryDocCount('库存转换出库')
   await expectThrow('#344 成本不守恒（7 个 B 成本 140 → 7 套按 21）硬拦截', /INVALID_PARAMS.*成本不守恒/, () =>

@@ -1626,7 +1626,7 @@ describe('库存转换多对多与成本守恒（#344）', () => {
     ])
   })
 
-  it('多批次按 id 升序加锁（与入参顺序无关，防交叉死锁）', async () => {
+  it('多批次按 id 升序加锁（与入参顺序无关；防并发主力是全局 cutover 锁，这里是纵深防御）', async () => {
     const fake = fakeDb([
       { id: 101, sku_id: 'SKU-A', supply_chain_unit_cost: '10' },
       { id: 102, sku_id: 'SKU-B', supply_chain_unit_cost: '20' },
@@ -1711,9 +1711,36 @@ describe('库存转换多对多与成本守恒（#344）', () => {
     ['单价超两位小数', { sources: [{ sourceLotId: 101, quantity: 1 }], targets: [{ targetSkuId: 'SKU-X', quantity: 1, unitPrice: 1.005 }] }, '最多保留两位小数'],
     ['数量为 0', { sources: [{ sourceLotId: 101, quantity: 0 }], targets: [{ targetSkuId: 'SKU-X', quantity: 1, unitPrice: 1 }] }, '转换出库数量必须大于 0'],
     ['效期格式错', { sources: [{ sourceLotId: 101, quantity: 1 }], targets: [{ targetSkuId: 'SKU-X', quantity: 1, unitPrice: 10, targetExpiryDate: '2026/10/01' }] }, '效期格式应为 YYYY-MM-DD'],
+    ['效期不是真实日期', { sources: [{ sourceLotId: 101, quantity: 1 }], targets: [{ targetSkuId: 'SKU-X', quantity: 1, unitPrice: 10, targetExpiryDate: '2026-02-31' }] }, '效期格式应为 YYYY-MM-DD'],
+    ['单价为空串（Number 会当 0）', { sources: [{ sourceLotId: 101, quantity: 1 }], targets: [{ targetSkuId: 'SKU-X', quantity: 1, unitPrice: '' }] }, '转换目标单价不能为空且不能小于 0'],
+    ['单价为 false', { sources: [{ sourceLotId: 101, quantity: 1 }], targets: [{ targetSkuId: 'SKU-X', quantity: 1, unitPrice: false }] }, '转换目标单价不能为空且不能小于 0'],
+    ['单价缺省', { sources: [{ sourceLotId: 101, quantity: 1 }], targets: [{ targetSkuId: 'SKU-X', quantity: 1 }] }, '转换目标单价不能为空且不能小于 0'],
+    ['数量超 numeric(12,2) 上界', { sources: [{ sourceLotId: 101, quantity: 1e11 }], targets: [{ targetSkuId: 'SKU-X', quantity: 1, unitPrice: 1 }] }, '转换出库数量不能超过 9999999999.99'],
+    ['来源明细为 null', { sources: [null], targets: [{ targetSkuId: 'SKU-X', quantity: 1, unitPrice: 1 }] }, '库存转换来源明细格式不正确'],
+    ['目标 SKU 非字符串', { sources: [{ sourceLotId: 101, quantity: 1 }], targets: [{ targetSkuId: 123, quantity: 1, unitPrice: 1 }] }, '转换目标 SKU格式不正确'],
+    ['目标行超过 100', { sources: [{ sourceLotId: 101, quantity: 1 }], targets: Array.from({ length: 101 }, () => ({ targetSkuId: 'SKU-X', quantity: 1, unitPrice: 0 })) }, '各不能超过 100 行'],
   ])('入参校验：%s（开事务前就拒）', async (_label, body, message) => {
     await expect(createInventoryConversion(SESSION, { locationId: 'HQ', ...body } as never)).rejects.toThrow(message)
     expect(db.transaction).not.toHaveBeenCalled()
+  })
+
+  it('看不到供应链价格的会话：不守恒报错不带来源合计（不泄露供应链成本）', async () => {
+    const operatorOnly = {
+      employeeId: 'E-SC2', name: '供应链办理员', phone: '13800000013',
+      roles: [{
+        role: 'custom_supply_chain_operator', scopeId: 'HQ', scopeType: '总部',
+        actions: ['inventory:supply_chain_operate'], scopeStoreIds: [], scopeOrgNodeIds: ['HQ'],
+      }],
+      permissions: { actions: ['inventory:supply_chain_operate'], scopeStoreIds: [] },
+    } as never
+    fakeDb([{ id: 101, sku_id: 'SKU-A', supply_chain_unit_cost: '37.5' }])
+    const error = await createInventoryConversion(operatorOnly, {
+      locationId: 'HQ',
+      sources: [{ sourceLotId: 101, quantity: 1 }],
+      targets: [{ targetSkuId: 'SKU-X', quantity: 1, unitPrice: 1 }],
+    }).catch((caught: Error) => caught)
+    expect(String(error)).toContain('转换前后成本不守恒')
+    expect(String(error)).not.toMatch(/37\.5|来源合计/)
   })
 
   it('目标效期留空取来源批次中最早的效期', async () => {

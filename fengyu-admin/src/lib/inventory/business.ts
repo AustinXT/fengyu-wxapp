@@ -5255,13 +5255,46 @@ function assertConvertibleSku(sku: Pick<SkuSnapshot, 'sourceType' | 'productName
   }
 }
 
-/** 两位小数的非负单价（库存转换目标单价，#344）。 */
-function conversionUnitPrice(value: number, label: string): number {
-  const parsed = Number(value)
-  if (value === null || value === undefined || !Number.isFinite(parsed) || parsed < 0) {
-    throw new ApiError('INVALID_PARAMS', `${label}不能为空且不能小于 0`)
+/** numeric(12,2) 的上界；再大 PG 抛 22003，且整数分乘法会越过 2^53。 */
+const CONVERSION_NUMBER_MAX = 9999999999.99
+/** 单张转换单的来源 / 目标行数上限：关联按 N×M 写入，每条都过 0043 触发器，且全程持有库存全局锁。 */
+const CONVERSION_LINES_MAX = 100
+
+/**
+ * 库存转换的数量 / 单价（#344）：只收 number 或数字字符串，两位小数，不超过 numeric(12,2) 上界。
+ * `''` / `false` / `[]` 这类会被 `Number()` 静默当成 0 的值一律拒绝 —— Server Action 入参原样到达。
+ */
+function conversionNumber(value: unknown, label: string, allowZero: boolean): number {
+  const parsed = typeof value === 'number' ? value
+    : typeof value === 'string' && value.trim() !== '' ? Number(value)
+      : Number.NaN
+  if (!Number.isFinite(parsed) || parsed < 0 || (!allowZero && parsed === 0)) {
+    throw new ApiError('INVALID_PARAMS', allowZero ? `${label}不能为空且不能小于 0` : `${label}必须大于 0`)
+  }
+  if (parsed > CONVERSION_NUMBER_MAX) {
+    throw new ApiError('INVALID_PARAMS', `${label}不能超过 ${CONVERSION_NUMBER_MAX}`)
   }
   return twoDecimals(parsed, label)
+}
+
+/** 可选文本字段：非字符串（数字、对象）按入参错误拒绝，不让 `text()` 抛 TypeError 变成 500。 */
+function conversionText(value: unknown, label: string): string | null {
+  if (value === null || value === undefined) return null
+  if (typeof value !== 'string') throw new ApiError('INVALID_PARAMS', `${label}格式不正确`)
+  return text(value)
+}
+
+/** YYYY-MM-DD 且是真实日期（2026-02-31 在这里拒，不等 PG 报 22008）。 */
+function conversionExpiryDate(value: unknown): string | null {
+  const normalized = conversionText(value, '目标效期')
+  if (!normalized) return null
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(normalized)
+  const [year, month, day] = match ? match.slice(1).map(Number) : [0, 0, 0]
+  const parsed = new Date(Date.UTC(year, month - 1, day))
+  if (!match || parsed.getUTCFullYear() !== year || parsed.getUTCMonth() !== month - 1 || parsed.getUTCDate() !== day) {
+    throw new ApiError('INVALID_PARAMS', '效期格式应为 YYYY-MM-DD')
+  }
+  return normalized
 }
 
 /**
@@ -5282,32 +5315,35 @@ export async function createInventoryConversion(
   if (!Array.isArray(input.targets) || input.targets.length === 0) {
     throw new ApiError('INVALID_PARAMS', '库存转换至少需要一条目标明细')
   }
+  if (input.sources.length > CONVERSION_LINES_MAX || input.targets.length > CONVERSION_LINES_MAX) {
+    throw new ApiError('INVALID_PARAMS', `库存转换来源、目标各不能超过 ${CONVERSION_LINES_MAX} 行`)
+  }
+  const isLine = (line: unknown): line is Record<string, unknown> => typeof line === 'object' && line !== null
   // 纯入参校验放在开事务之前：不合法的数量 / 单价不必去锁主体和批次。
-  const sourceLines = input.sources.map((line) => {
+  const sourceLines = (input.sources as unknown[]).map((line) => {
+    if (!isLine(line)) throw new ApiError('INVALID_PARAMS', '库存转换来源明细格式不正确')
     const sourceLotId = Number(line.sourceLotId)
     if (!Number.isInteger(sourceLotId) || sourceLotId <= 0) {
       throw new ApiError('INVALID_PARAMS', '请选择转换来源批次')
     }
     return {
       sourceLotId,
-      quantity: twoDecimals(positive(line.quantity, '转换出库数量'), '转换出库数量'),
-      remark: text(line.remark),
+      quantity: conversionNumber(line.quantity, '转换出库数量', false),
+      remark: conversionText(line.remark, '来源备注'),
     }
   })
-  const targetLines = input.targets.map((line) => ({
-    targetSkuId: required(line.targetSkuId, '转换目标 SKU'),
-    quantity: twoDecimals(positive(line.quantity, '转换入库数量'), '转换入库数量'),
-    unitPrice: conversionUnitPrice(line.unitPrice, '转换目标单价'),
-    /** 手填目标批号；null = 留空，按库存转换入库单号+行号生成新批号（#345 §2.15） */
-    targetBatchNo: text(line.targetBatchNo),
-    targetExpiryDate: text(line.targetExpiryDate),
-    remark: text(line.remark),
-  }))
-  for (const line of targetLines) {
-    if (line.targetExpiryDate && !/^\d{4}-\d{2}-\d{2}$/.test(line.targetExpiryDate)) {
-      throw new ApiError('INVALID_PARAMS', '效期格式应为 YYYY-MM-DD')
+  const targetLines = (input.targets as unknown[]).map((line) => {
+    if (!isLine(line)) throw new ApiError('INVALID_PARAMS', '库存转换目标明细格式不正确')
+    return {
+      targetSkuId: required(conversionText(line.targetSkuId, '转换目标 SKU'), '转换目标 SKU'),
+      quantity: conversionNumber(line.quantity, '转换入库数量', false),
+      unitPrice: conversionNumber(line.unitPrice, '转换目标单价', true),
+      /** 手填目标批号；null = 留空，按库存转换入库单号+行号生成新批号（#345 §2.15） */
+      targetBatchNo: conversionText(line.targetBatchNo, '目标批号'),
+      targetExpiryDate: conversionExpiryDate(line.targetExpiryDate),
+      remark: conversionText(line.remark, '目标备注'),
     }
-  }
+  })
   await syncLocations()
   const ids = await db.transaction(async (tx) => {
     await assertInventoryBusinessWritable(tx)
@@ -5319,8 +5355,9 @@ export async function createInventoryConversion(
     assertLocationWritable(session, location)
     const marketId = marketIdForLocation(location)
 
-    // 同一批次可以出现在多行（#344 去掉「只能转换一次」）：按 id 升序各锁一次、共用同一个快照对象 ——
+    // 同一批次可以出现在多行（#344 去掉「只能转换一次」）：每个批次只锁一次、共用同一个快照对象 ——
     // applyLotDelta 靠快照推算 quantity_before/after，两行各拿一份快照会把第二条流水的前值记错。
+    // 防并发的主力是 assertInventoryBusinessWritable 的全局 cutover 行锁；按 id 升序只是纵深防御。
     const lots = new Map<number, LotSnapshot>()
     const requestedByLot = new Map<number, number>()
     for (const line of sourceLines) {
@@ -5370,10 +5407,14 @@ export async function createInventoryConversion(
       targets.map((target) => ({ quantity: target.quantity, unitPrice: target.unitPrice })),
     )
     if (!balance.balanced) {
+      // 来源合计就是供应链成本：看不到供应链价格的会话（自定义角色只给了办理权）不能从报错里读出来。
+      const visibility = inventoryPriceVisibility(session)
       throw new ApiError(
         'INVALID_PARAMS',
-        `转换前后成本不守恒：来源合计 ${balance.sourceAmount.toFixed(2)}，目标合计 ${balance.targetAmount.toFixed(2)}，`
-          + `差额 ${balance.difference.toFixed(2)} 超出允许误差 ${balance.tolerance.toFixed(2)}`,
+        visibility === 'all' || visibility === 'supply_chain'
+          ? `转换前后成本不守恒：来源合计 ${balance.sourceAmount.toFixed(2)}，目标合计 ${balance.targetAmount.toFixed(2)}，`
+            + `差额 ${balance.difference.toFixed(2)} 超出允许误差 ${balance.tolerance.toFixed(2)}`
+          : '转换前后成本不守恒：目标合计与来源成本的差额超出允许误差',
       )
     }
     // 目标效期留空时取来源批次中最早的效期（多来源时保守取短的那个）。
