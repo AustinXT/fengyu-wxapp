@@ -30,8 +30,8 @@ export type InventoryDocCandidatePurpose = (typeof INVENTORY_DOC_CANDIDATE_PURPO
 /**
  * 进度 / 剩余量口径。每种都与对应守卫**逐字同口径**：
  * - `ordered`：来源行 `fulfilled_quantity` = 已下单量（createPurchaseOrder 的未下单守卫）
- * - `shipped`：采购订单**市场行**经「采购订单发货」血缘的已发量，目标单已取消的不算
- *   （createItemCompanyShipment 的 `orderItem.quantity - shipped`；无市场归属的自用行不参与）
+ * - `shipped`：市场报货行经「市场报货发货」直连血缘的正常已发量，目标单已取消的不算
+ *   （#336，createItemCompanyShipment 的 `reportItem.quantity - shipped`；赠送不占报货量）
  * - `allocated`：门店报货行经「门店报货配货」血缘的已配量，目标单已取消的不算
  *   （createStoreAllocation 的 `requestItem.quantity - allocated`）
  * - `received`：行 `fulfilled_quantity` = 已收 / 已入库量（getShipmentReceiptProgress 同口径）
@@ -77,9 +77,13 @@ export const INVENTORY_DOC_CANDIDATES: Record<InventoryDocCandidatePurpose, Inve
     progress: 'ordered',
     remainingToggle: true,
   },
-  // createItemCompanyShipment：`order.status === '已取消'` 拒；发货主体 = order.target 且可写。
+  /*
+   * createItemCompanyShipment（#336 起直接引用市场报货单）：`report.status !== '已完成'` 拒；
+   * 发货主体 = report.target（供应链总部）且可写；收货市场 = report.source，
+   * 表单先选市场再按 `sourceOrgNodeId` 收窄候选。
+   */
   'company-shipment-source': {
-    rules: [{ docType: '采购订单' }],
+    rules: [{ docType: '市场报货', statuses: ['已完成'] }],
     scopeRole: 'target',
     progress: 'shipped',
     remainingToggle: true,
@@ -188,7 +192,10 @@ export interface InventoryDocCandidateFilters {
   endDate?: string
   /** 只看某一收 / 发端（采购订单表单选了供应链主体后收窄到该总部） */
   targetOrgNodeId?: string
-  /** 只看某一发起端（分院配货表单选了收货门店后收窄到该门店的报货单，#337） */
+  /**
+   * 只看某一发起端：分院配货选了收货门店后收窄到该门店的报货单（#337）；
+   * 品项公司发货选了收货市场后收窄到该市场报的单（#336）。
+   */
   sourceOrgNodeId?: string
   /** 建单类来源：true = 连已无剩余量的也列出 */
   includeExhausted?: boolean

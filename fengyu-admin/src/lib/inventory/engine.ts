@@ -2335,8 +2335,12 @@ export const listInventoryCoreDocs = withPermission(
        *
        * 与 `cancellationRequested` 同样「只收窄不放宽」：类型是字面量而不是
        * boolean / 开放字符串，省得传进来一个 falsy 值就静默退化成不过滤。
+       *
+       * `company-shipment`（#336）：只保留还有**正常未发量**的市场报货单 —— 存在明细
+       * 「市场报货发货」血缘（目标单未取消）合计 < 报货数量，与 createItemCompanyShipment 的封顶同口径。
+       * 只管剩余量；「报货单须已完成」由调用方的 statuses 表达（inbox 配置里带 `statuses: ['已完成']`）。
        */
-      pendingItemScope?: 'supply-chain'
+      pendingItemScope?: 'supply-chain' | 'company-shipment'
       startDate?: string
       endDate?: string
       keyword?: string
@@ -2438,13 +2442,19 @@ export const listInventoryCoreDocs = withPermission(
        * 待办区的分页器必须按能操作的单数算页数）。
        * EXISTS 走 idx_inventory_doc_items_doc(doc_id)。
        */
-      // 采购订单的所有行都经供应链采购入库（#335），fulfilled_quantity 即已入库量，
-      // 不再按 market_id 分流。
-      conditions.push(sql`EXISTS (
-        SELECT 1 FROM ${inventoryDocItems} pending_item
-         WHERE pending_item.doc_id = ${inventoryDocs.id}
-           AND COALESCE(pending_item.fulfilled_quantity, 0) < pending_item.quantity
-      )`)
+      conditions.push(filters.pendingItemScope === 'company-shipment'
+        ? sql`EXISTS (
+          SELECT 1 FROM ${inventoryDocItems} pending_item
+           WHERE pending_item.doc_id = ${inventoryDocs.id}
+             AND ${reportItemShippedSql(sql`pending_item.id`)} < pending_item.quantity
+        )`
+        // 采购订单的所有行都经供应链采购入库（#335），fulfilled_quantity 即已入库量，
+        // 不再按 market_id 分流。
+        : sql`EXISTS (
+          SELECT 1 FROM ${inventoryDocItems} pending_item
+           WHERE pending_item.doc_id = ${inventoryDocs.id}
+             AND COALESCE(pending_item.fulfilled_quantity, 0) < pending_item.quantity
+        )`)
     }
     if (filters.startDate) conditions.push(gte(inventoryDocs.docDate, filters.startDate))
     if (filters.endDate) conditions.push(lte(inventoryDocs.docDate, filters.endDate))
@@ -2516,10 +2526,27 @@ export const listInventoryCoreDocs = withPermission(
  * 子查询别名统一 `cand_*` 前缀（本文件已有 pending_item / received_item / visible_doc 等，新增前先 grep）。
  */
 
+/**
+ * 市场报货行的正常已发量（#336）：「市场报货发货」直连血缘合计，目标单已取消的不算。
+ * 与 business.ts createItemCompanyShipment 的封顶（linkedQuantity）逐字同口径；
+ * 候选剩余量、待发货段、报货履约进度三处共用。别名 `shipped_link*` 在本文件唯一。
+ */
+function reportItemShippedSql(reportItemId: SQL): SQL {
+  return sql`(
+    SELECT COALESCE(SUM(shipped_link.quantity), 0)
+      FROM inventory_doc_links shipped_link
+      JOIN inventory_docs shipped_link_doc ON shipped_link_doc.id = shipped_link.to_doc_id
+     WHERE shipped_link.from_item_id = ${reportItemId}
+       AND shipped_link.relation_type = '市场报货发货'
+       AND shipped_link_doc.status <> '已取消'
+  )`
+}
+
 /** 单行「已完成量」：与各建单守卫逐字同口径，见 InventoryDocCandidateProgressKind 注释 */
 function candidateItemDoneSql(kind: InventoryDocCandidateProgressKind): SQL {
-  if (kind === 'shipped' || kind === 'allocated') {
-    const relationType = kind === 'shipped' ? '采购订单发货' : '门店报货配货'
+  if (kind === 'shipped') return reportItemShippedSql(sql`cand_item.id`)
+  if (kind === 'allocated') {
+    const relationType = '门店报货配货'
     // 同 business.ts linkedQuantity：目标单已取消的血缘不算
     return sql`(
       SELECT COALESCE(SUM(cand_link.quantity), 0)
@@ -2533,16 +2560,10 @@ function candidateItemDoneSql(kind: InventoryDocCandidateProgressKind): SQL {
   return sql`COALESCE(cand_item.fulfilled_quantity, 0)`
 }
 
-/** 参与进度的明细行：发货只看有市场归属的行（自用行不走发货，守卫直接拒） */
-function candidateItemFilterSql(kind: InventoryDocCandidateProgressKind): SQL {
-  return kind === 'shipped' ? sql`AND cand_item.market_id IS NOT NULL` : sql``
-}
-
 function candidateRemainingSql(kind: InventoryDocCandidateProgressKind): SQL {
   return sql`EXISTS (
     SELECT 1 FROM inventory_doc_items cand_item
      WHERE cand_item.doc_id = ${inventoryDocs.id}
-       ${candidateItemFilterSql(kind)}
        AND ${candidateItemDoneSql(kind)} < cand_item.quantity
   )`
 }
@@ -2552,7 +2573,6 @@ function candidateProgressSql(kind: InventoryDocCandidateProgressKind) {
     SELECT COALESCE(SUM(cand_item.quantity), 0)
       FROM inventory_doc_items cand_item
      WHERE cand_item.doc_id = ${inventoryDocs.id}
-       ${candidateItemFilterSql(kind)}
   )`
   // LEAST：超量（历史数据 / 赠送并行）不让进度超过 100%
   const done = kind === 'none'
@@ -2561,7 +2581,6 @@ function candidateProgressSql(kind: InventoryDocCandidateProgressKind) {
       SELECT COALESCE(SUM(LEAST(${candidateItemDoneSql(kind)}, cand_item.quantity)), 0)
         FROM inventory_doc_items cand_item
        WHERE cand_item.doc_id = ${inventoryDocs.id}
-         ${candidateItemFilterSql(kind)}
     )`
   return { total, done }
 }
@@ -2663,13 +2682,6 @@ function candidateConditions(
   }
   if (onlyRemaining || definition.requireRemaining) {
     conditions.push(candidateRemainingSql(definition.progress))
-  } else if (definition.progress === 'shipped') {
-    // 「显示全部」也不列纯自用采购单：它没有任何市场行，选中后发货表单无行可发
-    conditions.push(sql`EXISTS (
-      SELECT 1 FROM inventory_doc_items cand_item
-       WHERE cand_item.doc_id = ${inventoryDocs.id}
-         AND cand_item.market_id IS NOT NULL
-    )`)
   }
   const { targetOrgNodeId, sourceOrgNodeId, startDate, endDate, keyword } = filters
   if (targetOrgNodeId) conditions.push(eq(inventoryDocs.targetOrgNodeId, targetOrgNodeId))
@@ -2857,6 +2869,7 @@ function asDocDate(value: string | Date): string {
 
 async function loadInventoryDocLineage(
   docId: string,
+  docType: InventoryDocType,
   scoped: string[] | null,
 ): Promise<InventoryDocLineageRow[]> {
   const linkedDocVisible = scoped === null
@@ -2906,6 +2919,42 @@ async function loadInventoryDocLineage(
       to_doc.total_quantity
     ORDER BY linked_at DESC, doc_link.relation_type ASC
   `)
+  /*
+   * 市场采购入库 → 原始市场报货单（#336）：入库明细 ←「发货收货」← 发货明细 ←「市场报货发货 / 赠送发货」← 报货明细，
+   * 两跳推出来，让市场账号在入库单上也能看到并跳到自己报的单。只沿 #336 起的直连血缘推，
+   * 存量「采购订单 → 发货」的旧单不推算（拍板 C）。报货单按同一 scope 判可见。
+   */
+  if (docType !== '市场采购入库') return mapLineageRows(rows)
+  const reportVisible = scoped === null
+    ? sql`TRUE`
+    : inventoryDocScopeSql(scoped, sql`origin_report.source_org_node_id`, sql`origin_report.target_org_node_id`)
+  const originReportRows = await db.execute(sql`
+    SELECT
+      '上游' AS direction,
+      '原始报货单（经品项公司发货）' AS relation_type,
+      origin_report.id AS doc_id,
+      origin_report.doc_type,
+      origin_report.status,
+      origin_report.doc_date,
+      origin_report.total_quantity,
+      COALESCE(SUM(origin_receipt_link.quantity), 0) AS linked_quantity,
+      MAX(origin_receipt_link.created_at) AS linked_at
+    FROM inventory_doc_links origin_receipt_link
+    JOIN inventory_doc_links origin_ship_link
+      ON origin_ship_link.to_item_id = origin_receipt_link.from_item_id
+     AND origin_ship_link.relation_type IN ('市场报货发货', '市场报货赠送发货')
+    JOIN inventory_docs origin_report ON origin_report.id = origin_ship_link.from_doc_id
+    WHERE origin_receipt_link.to_doc_id = ${docId}
+      AND origin_receipt_link.relation_type = '发货收货'
+      AND ${reportVisible}
+    GROUP BY origin_report.id, origin_report.doc_type, origin_report.status,
+             origin_report.doc_date, origin_report.total_quantity
+    ORDER BY linked_at DESC
+  `)
+  return mapLineageRows([...rows, ...originReportRows])
+}
+
+function mapLineageRows(rows: unknown[]): InventoryDocLineageRow[] {
   return (rows as unknown as Array<{
     direction: '上游' | '下游'
     relation_type: string
@@ -2970,7 +3019,7 @@ async function loadMarketReportFulfillmentProgress(
       -- （单号、其它市场的明细都不出现在返回值里），所以放开这层过滤是安全的。
       --
       -- 已取消的采购单也要带上（#335）：市场行可以部分入库后再关单，已入库的那部分
-      -- 仍占着需求额度、也可能已经发了货，整张排除会让「已采购 / 已发 / 已收」一起归零。
+      -- 仍占着需求额度，整张排除会让「已采购」归零（发货 / 收货自 #336 起按直连血缘另算，与采购单无关）。
       -- 已下单量在下面 purchase_totals 里只计已入库的保留部分（cancelled_retained）。
       SELECT
         doc_link.from_item_id AS root_item_id,
@@ -2984,30 +3033,6 @@ async function loadMarketReportFulfillmentProgress(
          AND doc_link.relation_type = '市场报货采购订单'
          AND purchase_doc.status IN ('已完成', '待收货', '已取消')
     ),
-    -- 一条采购明细可以由**多个**来源行合并而来（#194），所以下游的发货/收货量必须
-    -- 按各来源在该采购行里的占比分摊，不能每个来源都记全量 ——
-    -- 来源 A 5 件、B 5 件合成采购行 10 件、实发 6 件时，不分摊会让 A 与 B 各显示 6，
-    -- 合计 12 件，凭空多出一倍。
-    --
-    -- ⚠️ 分母必须取该采购行的**全部**来源血缘，不能用 PARTITION BY 的窗口和：
-    -- purchase_links 已经被 from_doc_id 限定成「当前这张单」的血缘，
-    -- 窗口函数看不到同一采购行来自**其它来源单**的那部分，share 又会退回 1，
-    -- 跨单合并的场景照样重复计数。
-    purchase_share AS (
-      SELECT
-        purchase_link.root_item_id,
-        purchase_link.purchase_item_id,
-        purchase_link.quantity,
-        purchase_link.purchase_status,
-        purchase_link.quantity / NULLIF(source_total.total_quantity, 0) AS share
-        FROM purchase_links purchase_link
-        JOIN LATERAL (
-          SELECT COALESCE(SUM(COALESCE(all_link.quantity, 0)), 0) AS total_quantity
-            FROM inventory_doc_links all_link
-           WHERE all_link.to_item_id = purchase_link.purchase_item_id
-             AND all_link.relation_type = '市场报货采购订单'
-        ) source_total ON true
-    ),
     -- 已取消的采购单只剩已入库那部分仍算已采购：按分做最大余数分配，与建单容量
     -- （business.ts allocateSummaryToMarketReportItems）共用同一片段，保证同源。
     cancelled_retained AS (${cancelledMarketReportRetainedSql(sql`SELECT item_id FROM root_items`)}),
@@ -3016,7 +3041,7 @@ async function loadMarketReportFulfillmentProgress(
     -- 各自一次 GROUP BY 再左连接，避免按 root_items 逐行跑相关子查询。
     active_purchase_totals AS (
       SELECT active_link.root_item_id, SUM(active_link.quantity) AS quantity
-        FROM purchase_share active_link
+        FROM purchase_links active_link
        WHERE active_link.purchase_status <> '已取消'
        GROUP BY active_link.root_item_id
     ),
@@ -3033,28 +3058,28 @@ async function loadMarketReportFulfillmentProgress(
         LEFT JOIN active_purchase_totals active_total ON active_total.root_item_id = root_item.item_id
         LEFT JOIN cancelled_purchase_totals cancelled_total ON cancelled_total.report_item_id = root_item.item_id
     ),
+    -- 发货直连报货行（#336），按血缘原值累计、不再经采购行占比分摊 —— 已发 / 已收都是整数不出小数。
+    -- 存量「采购订单 → 发货」的旧单不再折算回报货单（拍板 C：只对新单生效）。
+    -- 正常已发与 business.ts createItemCompanyShipment 的封顶同口径：排除已取消，「待审批」的撤回申请仍占额度。
     shipment_links AS (
       SELECT
-        purchase_link.root_item_id,
+        doc_link.from_item_id AS root_item_id,
         doc_link.to_item_id AS shipment_item_id,
         doc_link.relation_type,
-        COALESCE(doc_link.quantity, 0) * COALESCE(purchase_link.share, 0) AS quantity,
-        -- 发货明细由采购行一对一产生，所以收货沿用采购层的占比即可。
-        -- 早先在这里按当前单据子集再归一化一次，等于把 share 重新拉回 1，白分摊了。
-        COALESCE(purchase_link.share, 0) AS share
-        FROM purchase_share purchase_link
-        JOIN inventory_doc_links doc_link
-          ON doc_link.from_item_id = purchase_link.purchase_item_id
+        COALESCE(doc_link.quantity, 0) AS quantity
+        FROM inventory_doc_links doc_link
+        JOIN root_items root_item ON root_item.item_id = doc_link.from_item_id
         JOIN inventory_docs shipment_doc ON shipment_doc.id = doc_link.to_doc_id
        JOIN visible_docs visible_shipment ON visible_shipment.id = shipment_doc.id
-       WHERE doc_link.relation_type IN ('采购订单发货', '采购订单赠送发货')
-         AND shipment_doc.status IN ('待收货', '已完成')
+       WHERE doc_link.from_doc_id = ${docId}
+         AND doc_link.relation_type IN ('市场报货发货', '市场报货赠送发货')
+         AND shipment_doc.status <> '已取消'
     ),
     shipment_totals AS (
       SELECT
         root_item_id,
-        SUM(CASE WHEN relation_type = '采购订单发货' THEN quantity ELSE 0 END) AS normal_fulfilled_quantity,
-        SUM(CASE WHEN relation_type = '采购订单赠送发货' THEN quantity ELSE 0 END) AS gift_fulfilled_quantity
+        SUM(CASE WHEN relation_type = '市场报货发货' THEN quantity ELSE 0 END) AS normal_fulfilled_quantity,
+        SUM(CASE WHEN relation_type = '市场报货赠送发货' THEN quantity ELSE 0 END) AS gift_fulfilled_quantity
         FROM shipment_links
        GROUP BY root_item_id
     ),
@@ -3062,7 +3087,7 @@ async function loadMarketReportFulfillmentProgress(
       SELECT
         shipment_link.root_item_id,
         shipment_link.relation_type AS shipment_relation_type,
-        COALESCE(doc_link.quantity, 0) * COALESCE(shipment_link.share, 0) AS quantity
+        COALESCE(doc_link.quantity, 0) AS quantity
         FROM shipment_links shipment_link
         JOIN inventory_doc_links doc_link
           ON doc_link.from_item_id = shipment_link.shipment_item_id
@@ -3074,8 +3099,8 @@ async function loadMarketReportFulfillmentProgress(
     receipt_totals AS (
       SELECT
         root_item_id,
-        SUM(CASE WHEN shipment_relation_type = '采购订单发货' THEN quantity ELSE 0 END) AS normal_received_quantity,
-        SUM(CASE WHEN shipment_relation_type = '采购订单赠送发货' THEN quantity ELSE 0 END) AS gift_received_quantity
+        SUM(CASE WHEN shipment_relation_type = '市场报货发货' THEN quantity ELSE 0 END) AS normal_received_quantity,
+        SUM(CASE WHEN shipment_relation_type = '市场报货赠送发货' THEN quantity ELSE 0 END) AS gift_received_quantity
         FROM receipt_links
        GROUP BY root_item_id
     )
@@ -3300,32 +3325,14 @@ async function loadSupplyChainPurchaseReceiptProgress(
          AND doc_link.relation_type = '采购订单供应链采购入库'
          AND receipt_doc.status = '已完成'
        GROUP BY doc_link.from_item_id
-    ),
-    -- 市场行的正常发货量（#335 过渡期：发货仍以采购行数量封顶，由 #336 改为引用市场报货单）。
-    -- 与 business.ts linkedQuantity 同口径：排除已取消的发货单，赠送发货不占采购数量。
-    -- 只聚合已过可见性校验的采购行，不外泄发货单本身的内容，所以发货单不再套 visible_docs。
-    purchase_shipment_totals AS (
-      SELECT
-        doc_link.from_item_id AS purchase_item_id,
-        SUM(COALESCE(doc_link.quantity, 0)) AS shipped_quantity
-        FROM inventory_doc_links doc_link
-        JOIN purchase_items purchase_item ON purchase_item.item_id = doc_link.from_item_id
-        JOIN inventory_docs shipment_doc ON shipment_doc.id = doc_link.to_doc_id
-       WHERE doc_link.from_doc_id = ${docId}
-         AND doc_link.relation_type = '采购订单发货'
-         AND shipment_doc.status <> '已取消'
-       GROUP BY doc_link.from_item_id
     )
     SELECT
       purchase_item.item_id,
       purchase_item.quantity AS purchased_quantity,
       COALESCE(receipt_total.received_quantity, 0) AS received_quantity,
-      COALESCE(purchase_shipment_total.shipped_quantity, 0) AS shipped_quantity,
       purchase_item.purchase_status
       FROM purchase_items purchase_item
       LEFT JOIN receipt_totals receipt_total ON receipt_total.purchase_item_id = purchase_item.item_id
-      LEFT JOIN purchase_shipment_totals purchase_shipment_total
-        ON purchase_shipment_total.purchase_item_id = purchase_item.item_id
      ORDER BY purchase_item.item_id
   `)
   // 采购单不可见（scope 外）时 purchase_items 为空集，返回 null 而不是空进度。
@@ -3336,7 +3343,6 @@ async function loadSupplyChainPurchaseReceiptProgress(
       item_id: number | string
       purchased_quantity: string | number | null
       received_quantity: string | number | null
-      shipped_quantity: string | number | null
       purchase_status: InventoryCoreDocStatus
     }>).map((row) => {
       const purchasedQuantity = numberOrNull(row.purchased_quantity) ?? 0
@@ -3345,7 +3351,6 @@ async function loadSupplyChainPurchaseReceiptProgress(
         itemId: Number(row.item_id),
         purchasedQuantity,
         receivedQuantity,
-        shippedQuantity: numberOrNull(row.shipped_quantity) ?? 0,
         outstandingQuantity: row.purchase_status === '待收货'
           ? Math.max(0, purchasedQuantity - receivedQuantity)
           : 0,
@@ -3504,7 +3509,7 @@ export const getInventoryCoreDocById = withPermission(
         .from(inventoryDocItems)
         .where(eq(inventoryDocItems.docId, id))
         .orderBy(asc(inventoryDocItems.id)),
-      loadInventoryDocLineage(id, scoped),
+      loadInventoryDocLineage(id, head.docType, scoped),
       loadInventoryDocFulfillmentProgress(head.docType, id, scoped),
     ])
     // 采购订单与市场报货汇总把市场归属挂在明细行上（#193/#194），单头没有这个字段，

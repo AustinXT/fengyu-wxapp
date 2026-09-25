@@ -91466,7 +91466,7 @@ var init_inventory = __esm(() => {
         OR (${table4.fromItemId} IS NOT NULL AND ${table4.quantity} IS NOT NULL)`),
     check2("chk_inventory_doc_links_relation_type", sql3`${table4.relationType} IN (
         '门店报货汇总','市场报货汇总','市场报货采购订单','报货汇总采购订单','品项公司报货采购订单',
-        '采购订单发货','采购订单赠送发货','发货收货','采购订单供应链采购入库',
+        '采购订单发货','采购订单赠送发货','市场报货发货','市场报货赠送发货','发货收货','采购订单供应链采购入库',
         '门店报货配货','门店报货赠送配货','退货回库','库存转换','历史关联'
       )`)
   ]);
@@ -159515,14 +159515,14 @@ var DATA_CENTER_REPORTS = {
     title: "日常数据一览表",
     periodKind: "range",
     requiredActions: [DATA_CENTER_DASHBOARD_ACTION],
-    menu: { section: "经营明细", enabled: false }
+    menu: { section: "经营明细", enabled: true }
   },
   customerFrequency: {
     path: "/data-center/customer-frequency",
     title: "顾客频率表",
     periodKind: "month",
     requiredActions: DATA_CENTER_CUSTOMER_DETAIL_ACTIONS,
-    menu: { section: "经营明细", enabled: false }
+    menu: { section: "经营明细", enabled: true }
   },
   remainingCards: {
     path: "/data-center/remaining-cards",
@@ -159543,7 +159543,7 @@ var DATA_CENTER_REPORTS = {
     title: "员工提成日报",
     periodKind: "month",
     requiredActions: DATA_CENTER_STAFF_COMMISSION_ACTIONS,
-    menu: { section: "员工收入", enabled: false }
+    menu: { section: "员工收入", enabled: true }
   },
   commissionDetail: {
     path: "/data-center/commission-daily/detail",
@@ -175774,7 +175774,7 @@ var INVENTORY_DOC_CANDIDATES = {
     remainingToggle: true
   },
   "company-shipment-source": {
-    rules: [{ docType: "采购订单" }],
+    rules: [{ docType: "市场报货", statuses: ["已完成"] }],
     scopeRole: "target",
     progress: "shipped",
     remainingToggle: true
@@ -177455,11 +177455,15 @@ var listInventoryCoreDocs = withPermission("inventory:list", async (session4, fi
     conditions3.push(import_drizzle_orm58.isNotNull(inventoryDocs.cancellationRequestReason));
   }
   if (filters.pendingItemScope) {
-    conditions3.push(import_drizzle_orm58.sql`EXISTS (
-        SELECT 1 FROM ${inventoryDocItems} pending_item
-         WHERE pending_item.doc_id = ${inventoryDocs.id}
-           AND COALESCE(pending_item.fulfilled_quantity, 0) < pending_item.quantity
-      )`);
+    conditions3.push(filters.pendingItemScope === "company-shipment" ? import_drizzle_orm58.sql`EXISTS (
+          SELECT 1 FROM ${inventoryDocItems} pending_item
+           WHERE pending_item.doc_id = ${inventoryDocs.id}
+             AND ${reportItemShippedSql(import_drizzle_orm58.sql`pending_item.id`)} < pending_item.quantity
+        )` : import_drizzle_orm58.sql`EXISTS (
+          SELECT 1 FROM ${inventoryDocItems} pending_item
+           WHERE pending_item.doc_id = ${inventoryDocs.id}
+             AND COALESCE(pending_item.fulfilled_quantity, 0) < pending_item.quantity
+        )`);
   }
   if (filters.startDate)
     conditions3.push(import_drizzle_orm58.gte(inventoryDocs.docDate, filters.startDate));
@@ -177492,9 +177496,21 @@ var listInventoryCoreDocs = withPermission("inventory:list", async (session4, fi
     priceVisibility
   };
 });
+function reportItemShippedSql(reportItemId) {
+  return import_drizzle_orm58.sql`(
+    SELECT COALESCE(SUM(shipped_link.quantity), 0)
+      FROM inventory_doc_links shipped_link
+      JOIN inventory_docs shipped_link_doc ON shipped_link_doc.id = shipped_link.to_doc_id
+     WHERE shipped_link.from_item_id = ${reportItemId}
+       AND shipped_link.relation_type = '市场报货发货'
+       AND shipped_link_doc.status <> '已取消'
+  )`;
+}
 function candidateItemDoneSql(kind) {
-  if (kind === "shipped" || kind === "allocated") {
-    const relationType = kind === "shipped" ? "采购订单发货" : "门店报货配货";
+  if (kind === "shipped")
+    return reportItemShippedSql(import_drizzle_orm58.sql`cand_item.id`);
+  if (kind === "allocated") {
+    const relationType = "门店报货配货";
     return import_drizzle_orm58.sql`(
       SELECT COALESCE(SUM(cand_link.quantity), 0)
         FROM inventory_doc_links cand_link
@@ -177506,14 +177522,10 @@ function candidateItemDoneSql(kind) {
   }
   return import_drizzle_orm58.sql`COALESCE(cand_item.fulfilled_quantity, 0)`;
 }
-function candidateItemFilterSql(kind) {
-  return kind === "shipped" ? import_drizzle_orm58.sql`AND cand_item.market_id IS NOT NULL` : import_drizzle_orm58.sql``;
-}
 function candidateRemainingSql(kind) {
   return import_drizzle_orm58.sql`EXISTS (
     SELECT 1 FROM inventory_doc_items cand_item
      WHERE cand_item.doc_id = ${inventoryDocs.id}
-       ${candidateItemFilterSql(kind)}
        AND ${candidateItemDoneSql(kind)} < cand_item.quantity
   )`;
 }
@@ -177522,13 +177534,11 @@ function candidateProgressSql(kind) {
     SELECT COALESCE(SUM(cand_item.quantity), 0)
       FROM inventory_doc_items cand_item
      WHERE cand_item.doc_id = ${inventoryDocs.id}
-       ${candidateItemFilterSql(kind)}
   )`;
   const done = kind === "none" ? import_drizzle_orm58.sql`NULL` : import_drizzle_orm58.sql`(
       SELECT COALESCE(SUM(LEAST(${candidateItemDoneSql(kind)}, cand_item.quantity)), 0)
         FROM inventory_doc_items cand_item
        WHERE cand_item.doc_id = ${inventoryDocs.id}
-         ${candidateItemFilterSql(kind)}
     )`;
   return { total, done };
 }
@@ -177566,6 +177576,7 @@ function parseCandidateFilters(filters) {
     startDate,
     endDate,
     targetOrgNodeId: candidateText(filters.targetOrgNodeId, "接收主体"),
+    sourceOrgNodeId: candidateText(filters.sourceOrgNodeId, "发起主体"),
     includeExhausted: includeExhausted === true
   };
 }
@@ -177591,16 +177602,12 @@ function candidateConditions(session4, definition, filters, { onlyRemaining }) {
   }
   if (onlyRemaining || definition.requireRemaining) {
     conditions3.push(candidateRemainingSql(definition.progress));
-  } else if (definition.progress === "shipped") {
-    conditions3.push(import_drizzle_orm58.sql`EXISTS (
-      SELECT 1 FROM inventory_doc_items cand_item
-       WHERE cand_item.doc_id = ${inventoryDocs.id}
-         AND cand_item.market_id IS NOT NULL
-    )`);
   }
-  const { targetOrgNodeId, startDate, endDate, keyword } = filters;
+  const { targetOrgNodeId, sourceOrgNodeId, startDate, endDate, keyword } = filters;
   if (targetOrgNodeId)
     conditions3.push(import_drizzle_orm58.eq(inventoryDocs.targetOrgNodeId, targetOrgNodeId));
+  if (sourceOrgNodeId)
+    conditions3.push(import_drizzle_orm58.eq(inventoryDocs.sourceOrgNodeId, sourceOrgNodeId));
   if (startDate)
     conditions3.push(import_drizzle_orm58.gte(inventoryDocs.docDate, startDate));
   if (endDate)
@@ -177662,6 +177669,37 @@ var listInventoryDocCandidateIds = withPermission("inventory:list", async (sessi
   }
   return { ids: rows.map((row) => row.id) };
 });
+var listStoreUnallocatedRequestSkus = withPermission("inventory:list", async (session4, raw) => {
+  const storeOrgNodeId = candidateText(raw?.storeOrgNodeId, "收货门店");
+  const marketId = candidateText(raw?.marketId, "配货市场");
+  if (!storeOrgNodeId)
+    throw new ApiError("INVALID_PARAMS", "缺少收货门店");
+  if (!marketId)
+    throw new ApiError("INVALID_PARAMS", "缺少配货市场");
+  const definition = INVENTORY_DOC_CANDIDATES["store-allocation-source"];
+  await syncInventoryLocations();
+  const whereClause = candidateConditions(session4, definition, {
+    sourceOrgNodeId: storeOrgNodeId,
+    targetOrgNodeId: marketId,
+    includeExhausted: true
+  }, { onlyRemaining: false });
+  const done = candidateItemDoneSql("allocated");
+  const rows = await db2.execute(import_drizzle_orm58.sql`
+      SELECT cand_item.sku_id,
+             SUM(cand_item.quantity - ${done}) AS remaining_quantity,
+             array_agg(DISTINCT ${inventoryDocs.id} ORDER BY ${inventoryDocs.id}) AS doc_ids
+        FROM ${inventoryDocs}
+        JOIN ${inventoryDocItems} cand_item ON cand_item.doc_id = ${inventoryDocs.id}
+       WHERE ${whereClause}
+         AND ${done} < cand_item.quantity
+       GROUP BY cand_item.sku_id
+    `);
+  return rows.map((row) => ({
+    skuId: row.sku_id,
+    remainingQuantity: Number(row.remaining_quantity),
+    docIds: row.doc_ids ?? []
+  }));
+});
 function inventoryDocScopeSql(scoped, sourceColumn, targetColumn) {
   if (scoped === null)
     return import_drizzle_orm58.sql`TRUE`;
@@ -177680,7 +177718,7 @@ function visibleInventoryDocsSql(scoped) {
 function asDocDate(value) {
   return fmtDate(value);
 }
-async function loadInventoryDocLineage(docId, scoped) {
+async function loadInventoryDocLineage(docId, docType, scoped) {
   const linkedDocVisible = scoped === null ? import_drizzle_orm58.sql`TRUE` : import_drizzle_orm58.sql`(
       (doc_link.from_doc_id = ${docId} AND ${inventoryDocScopeSql(scoped, import_drizzle_orm58.sql`to_doc.source_org_node_id`, import_drizzle_orm58.sql`to_doc.target_org_node_id`)})
       OR
@@ -177718,6 +177756,35 @@ async function loadInventoryDocLineage(docId, scoped) {
       to_doc.total_quantity
     ORDER BY linked_at DESC, doc_link.relation_type ASC
   `);
+  if (docType !== "市场采购入库")
+    return mapLineageRows(rows);
+  const reportVisible = scoped === null ? import_drizzle_orm58.sql`TRUE` : inventoryDocScopeSql(scoped, import_drizzle_orm58.sql`origin_report.source_org_node_id`, import_drizzle_orm58.sql`origin_report.target_org_node_id`);
+  const originReportRows = await db2.execute(import_drizzle_orm58.sql`
+    SELECT
+      '上游' AS direction,
+      '原始报货单（经品项公司发货）' AS relation_type,
+      origin_report.id AS doc_id,
+      origin_report.doc_type,
+      origin_report.status,
+      origin_report.doc_date,
+      origin_report.total_quantity,
+      COALESCE(SUM(origin_receipt_link.quantity), 0) AS linked_quantity,
+      MAX(origin_receipt_link.created_at) AS linked_at
+    FROM inventory_doc_links origin_receipt_link
+    JOIN inventory_doc_links origin_ship_link
+      ON origin_ship_link.to_item_id = origin_receipt_link.from_item_id
+     AND origin_ship_link.relation_type IN ('市场报货发货', '市场报货赠送发货')
+    JOIN inventory_docs origin_report ON origin_report.id = origin_ship_link.from_doc_id
+    WHERE origin_receipt_link.to_doc_id = ${docId}
+      AND origin_receipt_link.relation_type = '发货收货'
+      AND ${reportVisible}
+    GROUP BY origin_report.id, origin_report.doc_type, origin_report.status,
+             origin_report.doc_date, origin_report.total_quantity
+    ORDER BY linked_at DESC
+  `);
+  return mapLineageRows([...rows, ...originReportRows]);
+}
+function mapLineageRows(rows) {
   return rows.map((row) => ({
     direction: row.direction,
     relationType: row.relation_type,
@@ -177758,7 +177825,7 @@ async function loadMarketReportFulfillmentProgress(docId, scoped) {
       -- （单号、其它市场的明细都不出现在返回值里），所以放开这层过滤是安全的。
       --
       -- 已取消的采购单也要带上（#335）：市场行可以部分入库后再关单，已入库的那部分
-      -- 仍占着需求额度、也可能已经发了货，整张排除会让「已采购 / 已发 / 已收」一起归零。
+      -- 仍占着需求额度，整张排除会让「已采购」归零（发货 / 收货自 #336 起按直连血缘另算，与采购单无关）。
       -- 已下单量在下面 purchase_totals 里只计已入库的保留部分（cancelled_retained）。
       SELECT
         doc_link.from_item_id AS root_item_id,
@@ -177772,30 +177839,6 @@ async function loadMarketReportFulfillmentProgress(docId, scoped) {
          AND doc_link.relation_type = '市场报货采购订单'
          AND purchase_doc.status IN ('已完成', '待收货', '已取消')
     ),
-    -- 一条采购明细可以由**多个**来源行合并而来（#194），所以下游的发货/收货量必须
-    -- 按各来源在该采购行里的占比分摊，不能每个来源都记全量 ——
-    -- 来源 A 5 件、B 5 件合成采购行 10 件、实发 6 件时，不分摊会让 A 与 B 各显示 6，
-    -- 合计 12 件，凭空多出一倍。
-    --
-    -- ⚠️ 分母必须取该采购行的**全部**来源血缘，不能用 PARTITION BY 的窗口和：
-    -- purchase_links 已经被 from_doc_id 限定成「当前这张单」的血缘，
-    -- 窗口函数看不到同一采购行来自**其它来源单**的那部分，share 又会退回 1，
-    -- 跨单合并的场景照样重复计数。
-    purchase_share AS (
-      SELECT
-        purchase_link.root_item_id,
-        purchase_link.purchase_item_id,
-        purchase_link.quantity,
-        purchase_link.purchase_status,
-        purchase_link.quantity / NULLIF(source_total.total_quantity, 0) AS share
-        FROM purchase_links purchase_link
-        JOIN LATERAL (
-          SELECT COALESCE(SUM(COALESCE(all_link.quantity, 0)), 0) AS total_quantity
-            FROM inventory_doc_links all_link
-           WHERE all_link.to_item_id = purchase_link.purchase_item_id
-             AND all_link.relation_type = '市场报货采购订单'
-        ) source_total ON true
-    ),
     -- 已取消的采购单只剩已入库那部分仍算已采购：按分做最大余数分配，与建单容量
     -- （business.ts allocateSummaryToMarketReportItems）共用同一片段，保证同源。
     cancelled_retained AS (${cancelledMarketReportRetainedSql(import_drizzle_orm58.sql`SELECT item_id FROM root_items`)}),
@@ -177804,7 +177847,7 @@ async function loadMarketReportFulfillmentProgress(docId, scoped) {
     -- 各自一次 GROUP BY 再左连接，避免按 root_items 逐行跑相关子查询。
     active_purchase_totals AS (
       SELECT active_link.root_item_id, SUM(active_link.quantity) AS quantity
-        FROM purchase_share active_link
+        FROM purchase_links active_link
        WHERE active_link.purchase_status <> '已取消'
        GROUP BY active_link.root_item_id
     ),
@@ -177821,28 +177864,28 @@ async function loadMarketReportFulfillmentProgress(docId, scoped) {
         LEFT JOIN active_purchase_totals active_total ON active_total.root_item_id = root_item.item_id
         LEFT JOIN cancelled_purchase_totals cancelled_total ON cancelled_total.report_item_id = root_item.item_id
     ),
+    -- 发货直连报货行（#336），按血缘原值累计、不再经采购行占比分摊 —— 已发 / 已收都是整数不出小数。
+    -- 存量「采购订单 → 发货」的旧单不再折算回报货单（拍板 C：只对新单生效）。
+    -- 正常已发与 business.ts createItemCompanyShipment 的封顶同口径：排除已取消，「待审批」的撤回申请仍占额度。
     shipment_links AS (
       SELECT
-        purchase_link.root_item_id,
+        doc_link.from_item_id AS root_item_id,
         doc_link.to_item_id AS shipment_item_id,
         doc_link.relation_type,
-        COALESCE(doc_link.quantity, 0) * COALESCE(purchase_link.share, 0) AS quantity,
-        -- 发货明细由采购行一对一产生，所以收货沿用采购层的占比即可。
-        -- 早先在这里按当前单据子集再归一化一次，等于把 share 重新拉回 1，白分摊了。
-        COALESCE(purchase_link.share, 0) AS share
-        FROM purchase_share purchase_link
-        JOIN inventory_doc_links doc_link
-          ON doc_link.from_item_id = purchase_link.purchase_item_id
+        COALESCE(doc_link.quantity, 0) AS quantity
+        FROM inventory_doc_links doc_link
+        JOIN root_items root_item ON root_item.item_id = doc_link.from_item_id
         JOIN inventory_docs shipment_doc ON shipment_doc.id = doc_link.to_doc_id
        JOIN visible_docs visible_shipment ON visible_shipment.id = shipment_doc.id
-       WHERE doc_link.relation_type IN ('采购订单发货', '采购订单赠送发货')
-         AND shipment_doc.status IN ('待收货', '已完成')
+       WHERE doc_link.from_doc_id = ${docId}
+         AND doc_link.relation_type IN ('市场报货发货', '市场报货赠送发货')
+         AND shipment_doc.status <> '已取消'
     ),
     shipment_totals AS (
       SELECT
         root_item_id,
-        SUM(CASE WHEN relation_type = '采购订单发货' THEN quantity ELSE 0 END) AS normal_fulfilled_quantity,
-        SUM(CASE WHEN relation_type = '采购订单赠送发货' THEN quantity ELSE 0 END) AS gift_fulfilled_quantity
+        SUM(CASE WHEN relation_type = '市场报货发货' THEN quantity ELSE 0 END) AS normal_fulfilled_quantity,
+        SUM(CASE WHEN relation_type = '市场报货赠送发货' THEN quantity ELSE 0 END) AS gift_fulfilled_quantity
         FROM shipment_links
        GROUP BY root_item_id
     ),
@@ -177850,7 +177893,7 @@ async function loadMarketReportFulfillmentProgress(docId, scoped) {
       SELECT
         shipment_link.root_item_id,
         shipment_link.relation_type AS shipment_relation_type,
-        COALESCE(doc_link.quantity, 0) * COALESCE(shipment_link.share, 0) AS quantity
+        COALESCE(doc_link.quantity, 0) AS quantity
         FROM shipment_links shipment_link
         JOIN inventory_doc_links doc_link
           ON doc_link.from_item_id = shipment_link.shipment_item_id
@@ -177862,8 +177905,8 @@ async function loadMarketReportFulfillmentProgress(docId, scoped) {
     receipt_totals AS (
       SELECT
         root_item_id,
-        SUM(CASE WHEN shipment_relation_type = '采购订单发货' THEN quantity ELSE 0 END) AS normal_received_quantity,
-        SUM(CASE WHEN shipment_relation_type = '采购订单赠送发货' THEN quantity ELSE 0 END) AS gift_received_quantity
+        SUM(CASE WHEN shipment_relation_type = '市场报货发货' THEN quantity ELSE 0 END) AS normal_received_quantity,
+        SUM(CASE WHEN shipment_relation_type = '市场报货赠送发货' THEN quantity ELSE 0 END) AS gift_received_quantity
         FROM receipt_links
        GROUP BY root_item_id
     )
@@ -178069,32 +178112,14 @@ async function loadSupplyChainPurchaseReceiptProgress(docId, scoped) {
          AND doc_link.relation_type = '采购订单供应链采购入库'
          AND receipt_doc.status = '已完成'
        GROUP BY doc_link.from_item_id
-    ),
-    -- 市场行的正常发货量（#335 过渡期：发货仍以采购行数量封顶，由 #336 改为引用市场报货单）。
-    -- 与 business.ts linkedQuantity 同口径：排除已取消的发货单，赠送发货不占采购数量。
-    -- 只聚合已过可见性校验的采购行，不外泄发货单本身的内容，所以发货单不再套 visible_docs。
-    purchase_shipment_totals AS (
-      SELECT
-        doc_link.from_item_id AS purchase_item_id,
-        SUM(COALESCE(doc_link.quantity, 0)) AS shipped_quantity
-        FROM inventory_doc_links doc_link
-        JOIN purchase_items purchase_item ON purchase_item.item_id = doc_link.from_item_id
-        JOIN inventory_docs shipment_doc ON shipment_doc.id = doc_link.to_doc_id
-       WHERE doc_link.from_doc_id = ${docId}
-         AND doc_link.relation_type = '采购订单发货'
-         AND shipment_doc.status <> '已取消'
-       GROUP BY doc_link.from_item_id
     )
     SELECT
       purchase_item.item_id,
       purchase_item.quantity AS purchased_quantity,
       COALESCE(receipt_total.received_quantity, 0) AS received_quantity,
-      COALESCE(purchase_shipment_total.shipped_quantity, 0) AS shipped_quantity,
       purchase_item.purchase_status
       FROM purchase_items purchase_item
       LEFT JOIN receipt_totals receipt_total ON receipt_total.purchase_item_id = purchase_item.item_id
-      LEFT JOIN purchase_shipment_totals purchase_shipment_total
-        ON purchase_shipment_total.purchase_item_id = purchase_item.item_id
      ORDER BY purchase_item.item_id
   `);
   if (rows.length === 0)
@@ -178108,7 +178133,6 @@ async function loadSupplyChainPurchaseReceiptProgress(docId, scoped) {
         itemId: Number(row.item_id),
         purchasedQuantity,
         receivedQuantity,
-        shippedQuantity: numberOrNull(row.shipped_quantity) ?? 0,
         outstandingQuantity: row.purchase_status === "待收货" ? Math.max(0, purchasedQuantity - receivedQuantity) : 0
       };
     })
@@ -178217,7 +178241,7 @@ var getInventoryCoreDocById = withPermission("inventory:list", async (session4, 
   const includeItemAmount = itemPriceVisibility !== "none";
   const [items, lineage, fulfillmentProgress] = await Promise.all([
     db2.select().from(inventoryDocItems).where(import_drizzle_orm58.eq(inventoryDocItems.docId, id)).orderBy(import_drizzle_orm58.asc(inventoryDocItems.id)),
-    loadInventoryDocLineage(id, scoped),
+    loadInventoryDocLineage(id, head.docType, scoped),
     loadInventoryDocFulfillmentProgress(head.docType, id, scoped)
   ]);
   const itemMarketIds = [...new Set(items.map((item) => item.marketId).filter((id2) => Boolean(id2)))];

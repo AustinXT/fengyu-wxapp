@@ -2051,11 +2051,15 @@ describe('库存单据详情履约进度', () => {
     expect(sqlContains(lineageQuery, 'from_doc.target_org_node_id')).toBe(true)
     expect(fulfillmentSql).toContain('visible_docs')
     expect(sqlContains(fulfillmentQuery, 'visible_doc.source_org_node_id')).toBe(true)
-    expect(fulfillmentSql).toContain('采购订单赠送发货')
+    // #336：发货直连报货行，按血缘原值累计，不再经采购行占比分摊
+    expect(fulfillmentSql).toContain('市场报货赠送发货')
+    expect(fulfillmentSql).toContain("doc_link.relation_type IN ('市场报货发货', '市场报货赠送发货')")
+    expect(fulfillmentSql).not.toContain('采购订单发货')
+    expect(fulfillmentSql).not.toContain('share')
     expect(fulfillmentSql).toContain("receipt_doc.status = '已完成'")
   })
 
-  it('采购订单所有行按关联入库单聚合已收与待收数量，并带正常发货量（#335）', async () => {
+  it('采购订单所有行按关联入库单聚合已收与待收数量；发货直连报货单后不再带发货量（#336）', async () => {
     const now = new Date('2026-08-10T09:00:00.000Z')
     mockDb.select
       .mockReturnValueOnce(detailHeadSelect([{
@@ -2155,7 +2159,6 @@ describe('库存单据详情履约进度', () => {
         purchasedQuantity: 10,
         receivedQuantity: 4,
         outstandingQuantity: 6,
-        shippedQuantity: 2,
       }],
     })
 
@@ -2164,9 +2167,7 @@ describe('库存单据详情履约进度', () => {
     expect(sqlContains(fulfillmentQuery, "receipt_doc.status = '已完成'")).toBe(true)
     // 市场行同样经供应链采购入库（#335），不能再按 market_id 只统计自用行
     expect(sqlContains(fulfillmentQuery, 'market_id IS NULL')).toBe(false)
-    // 发货量与 linkedQuantity 同口径：只算正常发货、排除已取消发货单
-    expect(sqlContains(fulfillmentQuery, "doc_link.relation_type = '采购订单发货'")).toBe(true)
-    expect(sqlContains(fulfillmentQuery, "shipment_doc.status <> '已取消'")).toBe(true)
+    expect(sqlContains(fulfillmentQuery, '采购订单发货')).toBe(false)
   })
 
   it('已取消的品项公司发货不再显示待收数量', async () => {
@@ -2258,6 +2259,105 @@ describe('库存单据详情履约进度', () => {
     })
     const [, fulfillmentQuery] = mockDb.execute.mock.calls.map(([query]) => query)
     expect(sqlContains(fulfillmentQuery, 'shipment_doc.status AS shipment_status')).toBe(true)
+  })
+
+  it('市场采购入库经两跳血缘带出原始市场报货单（#336），报货单按 scope 判可见', async () => {
+    const now = new Date('2026-08-10T09:00:00.000Z')
+    mockDb.select
+      .mockReturnValueOnce(detailHeadSelect([{
+        doc: {
+          id: 'SRK-260810-0001',
+          docType: '市场采购入库',
+          status: '已完成',
+          sourceOrgNodeId: 'HQ',
+          targetOrgNodeId: 'MARKET-1',
+          marketId: 'MARKET-1',
+          supplierId: null,
+          docDate: '2026-08-10',
+          relatedSaleOrderId: null,
+          customerName: null,
+          employeeName: null,
+          supplierName: null,
+          externalPartyName: null,
+          logisticsCompany: null,
+          trackingNo: null,
+          receiptAttachmentUrl: null,
+          totalQuantity: '10',
+          totalAmount: '1000',
+          remark: null,
+          auditRemark: null,
+          createdBy: 'E001',
+          confirmedAt: now,
+          approvedAt: null,
+          rejectedAt: null,
+          cancellationReason: null,
+          cancelledAt: null,
+          createdAt: now,
+          updatedAt: now,
+        },
+        sourceOrgNodeName: '供应链总部',
+        sourceOrgNodeType: '总部',
+        targetOrgNodeName: '测试市场',
+        targetOrgNodeType: '市场',
+      }]))
+      .mockReturnValueOnce(detailItemsSelect([]))
+    mockDb.execute
+      .mockResolvedValueOnce([{
+        direction: '上游',
+        relation_type: '发货收货',
+        doc_id: 'GFH-260810-0001',
+        doc_type: '品项公司发货',
+        status: '已完成',
+        doc_date: '2026-08-10',
+        total_quantity: '10',
+        linked_quantity: '10',
+      }])
+      .mockResolvedValueOnce([{
+        direction: '上游',
+        relation_type: '原始报货单（经品项公司发货）',
+        doc_id: 'MBH-260809-0001',
+        doc_type: '市场报货',
+        status: '已完成',
+        doc_date: '2026-08-09',
+        total_quantity: '30',
+        linked_quantity: '10',
+      }])
+
+    const detail = await getInventoryCoreDocById('SRK-260810-0001')
+
+    expect(detail?.lineage.map((row) => [row.relationType, row.docId])).toEqual([
+      ['发货收货', 'GFH-260810-0001'],
+      ['原始报货单（经品项公司发货）', 'MBH-260809-0001'],
+    ])
+    const originQuery = mockDb.execute.mock.calls.map(([query]) => query)
+      .find((query) => sqlContains(query, 'origin_report'))
+    expect(originQuery).toBeDefined()
+    expect(sqlContains(originQuery, "origin_ship_link.relation_type IN ('市场报货发货', '市场报货赠送发货')")).toBe(true)
+    expect(sqlContains(originQuery, "origin_receipt_link.relation_type = '发货收货'")).toBe(true)
+  })
+
+  it('非市场采购入库的单据不跑原始报货单那条两跳查询', async () => {
+    const now = new Date('2026-08-10T09:00:00.000Z')
+    mockDb.select
+      .mockReturnValueOnce(detailHeadSelect([{
+        doc: {
+          id: 'YRK-260810-0001', docType: '院入库', status: '已完成',
+          sourceOrgNodeId: 'MARKET-1', targetOrgNodeId: 'STORE-1', marketId: 'MARKET-1', supplierId: null,
+          docDate: '2026-08-10', relatedSaleOrderId: null, customerName: null, employeeName: null,
+          supplierName: null, externalPartyName: null, logisticsCompany: null, trackingNo: null,
+          receiptAttachmentUrl: null, totalQuantity: '1', totalAmount: '0', remark: null, auditRemark: null,
+          createdBy: 'E001', confirmedAt: now, approvedAt: null, rejectedAt: null,
+          cancellationReason: null, cancelledAt: null, createdAt: now, updatedAt: now,
+        },
+        sourceOrgNodeName: '测试市场', sourceOrgNodeType: '市场',
+        targetOrgNodeName: '测试门店', targetOrgNodeType: '门店',
+      }]))
+      .mockReturnValueOnce(detailItemsSelect([]))
+    mockDb.execute.mockResolvedValueOnce([])
+
+    await getInventoryCoreDocById('YRK-260810-0001')
+
+    expect(mockDb.execute.mock.calls.some(([query]) => sqlContains(query, 'origin_report'))).toBe(false)
   })
 
   it('品项公司报货需求按采购订单与分批入库聚合履约数量', async () => {
@@ -3689,6 +3789,19 @@ describe('#190 单据列表的多类型 / 多状态 / 撤回标记过滤', () =>
     expect(text).toContain('FROM "inventory_doc_items" pending_item')
     expect(text).toContain('pending_item.doc_id = "inventory_docs"."id"')
     expect(text).toContain('COALESCE(pending_item.fulfilled_quantity, 0) < pending_item.quantity')
+  })
+
+  it("pendingItemScope='company-shipment' 只留仍有正常未发量的市场报货单（#336）", async () => {
+    // 与 createItemCompanyShipment 的封顶同口径：「市场报货发货」直连血缘合计（排已取消）< 报货数量；
+    // 不能拿 fulfilled_quantity 判（发货不回写报货行），也不能把赠送算进已发。
+    const { text } = await whereOf({ docTypes: ['市场报货'], pendingItemScope: 'company-shipment' })
+    expect(text).toContain('pending_item.doc_id = "inventory_docs"."id"')
+    expect(text).toContain('shipped_link.from_item_id = pending_item.id')
+    expect(text).toContain("shipped_link.relation_type = '市场报货发货'")
+    expect(text).toContain("shipped_link_doc.status <> '已取消'")
+    expect(text).toContain('< pending_item.quantity')
+    expect(text).not.toContain('pending_item.fulfilled_quantity')
+    expect(text).not.toContain('市场报货赠送发货')
   })
 
   it('locationType 与 docTypes 叠加：转换单按层级隔离', async () => {
