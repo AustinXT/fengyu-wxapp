@@ -355,11 +355,13 @@ describe('#422 范围下拉「（已关店）」展示标记 · 两端 helper', 
     const actual = {}
     for (const file of CONSUMER_FILES) {
       const hits = readFile(file).split('\n')
-        .map((line) => line.trim())
+        // 先剥同一行里的 /* … */ 片段，再按行首判注释：`/* x */ if (s.closed) continue` 不能被整行当注释丢掉
+        .map((line) => line.replace(/\/\*.*?\*\//g, '').trim())
         .filter((t) => t && !/^(\*|\/\*|\/\/)/.test(t))
-        // 结果 Set / helper 名 / 引入路径，以及 closed 字段的读写（`.closed`、`closed:`、`closed?:`）——
-        // 后者防止消费方拿 `filter((s) => !s.closed)` 之类把关店店排除出取数范围（#422 闸门 2 codex P2）
-        .filter((t) => /closedIds|loadClosedStoreIds|store-closed-label|\.closed\b|\bclosed\??:/.test(t))
+        // 结果 Set / helper 名 / 引入路径，以及**任何**写法的 closed 标识符（`.closed`、`['closed']`、`{ closed }`、
+        // `'closed' in s`、`closed:`）——防止消费方拿它把关店店排除出取数范围（#422 闸门 2 codex R1/R2 P2）。
+        // `\bclosed\b` 不命中 closed_at（下划线是词字符），后者由上方 closed_at 白名单单独管
+        .filter((t) => /closedIds|loadClosedStoreIds|store-closed-label|\bclosed\b/.test(t))
       if (hits.length > 0) actual[rel(file)] = hits
     }
     expect(actual).toEqual(EXPECTED)

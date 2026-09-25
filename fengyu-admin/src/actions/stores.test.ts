@@ -669,6 +669,7 @@ describe('updateStore — 关店时 closedAt 推导', () => {
     setupTx(1, null)
     const result = await updateStore('STORE-001', data as any)
     expect(result).toEqual({ success: false, message: '没有可更新的字段' })
+    expect(db.select, '早退在查旧值之前').not.toHaveBeenCalled()
     expect(db.transaction).not.toHaveBeenCalled()
   })
 

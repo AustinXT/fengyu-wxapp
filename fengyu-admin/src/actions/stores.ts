@@ -364,9 +364,6 @@ export const updateStore = withPermission(
     }
   }
 
-  // 获取旧值用于日志 diff
-  const [before] = await db.select().from(stores).where(eq(stores.storeId, storeId)).limit(1)
-
   // 乐观锁 + scope 隔离：WHERE store_id = $1 [AND updated_at = $2] [AND scope]
   // 注意：PostgreSQL NOW() 有微秒精度，JS Date 仅毫秒精度，需 date_trunc 对齐
   const scopeCond = scopeCondition(session, stores.storeId)
@@ -396,6 +393,14 @@ export const updateStore = withPermission(
   for (const key of EDITABLE) {
     if (data[key] !== undefined) storeFields[key] = data[key]
   }
+  // 白名单过滤后没有可写字段（如只传了已不受理的 closedAt）：Drizzle `.set({})` 会直接抛错成 500，
+  // 在查旧值、开事务之前就友好拒绝
+  if (Object.keys(storeFields).length === 0) {
+    return { success: false, message: '没有可更新的字段' }
+  }
+
+  // 获取旧值用于日志 diff
+  const [before] = await db.select().from(stores).where(eq(stores.storeId, storeId)).limit(1)
   /**
    * is_closed ↔ closed_at 双写一致：closedAt **只由 isClosed 推导**，不在白名单里（#422）。
    * 原先允许直传 closedAt，直调 Server Action 就能写出 is_closed=true + closed_at=NULL（或反过来），
@@ -420,10 +425,6 @@ export const updateStore = withPermission(
   }
   // 审计的 after：闭店日期是 SQL 表达式时换成落库后的真实值，别把表达式对象写进日志
   let auditAfter: Record<string, unknown> = storeFields
-  // 白名单过滤后没有可写字段（如只传了已不受理的 closedAt）：Drizzle `.set({})` 会直接抛错成 500，这里友好拒绝
-  if (Object.keys(storeFields).length === 0) {
-    return { success: false, message: '没有可更新的字段' }
-  }
   let result: any
   try {
     result = await db.transaction(async (tx) => {
