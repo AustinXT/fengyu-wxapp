@@ -28,6 +28,17 @@ function readFile(filePath) {
   return fs.readFileSync(filePath, 'utf8')
 }
 
+/**
+ * 剥注释但保留行号（#422 闸门 2 GLM R4）：块注释按**整份源码**匹配、跨行也能正确闭合，
+ * 注释内容换成空格、换行保留，块注释结束符后面同行的代码留下；`//` 只剥行首的（避免误伤字符串里的 URL）。
+ * 按行首星号 / 双斜线跳过整行的旧写法，会被「跨行块注释结束行后面接代码」绕过。已知窗口：字符串字面量里含块注释起始符时会误剥。
+ */
+function stripCommentsKeepLines(src) {
+  return src
+    .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))
+    .replace(/^[ \t]*\/\/.*$/gm, '')
+}
+
 function isTestFile(filePath) {
   return /(^|\/)__tests__\//.test(filePath) || /\.test\.[jt]sx?$/.test(filePath)
 }
@@ -112,9 +123,9 @@ describe('#401 数据中心在营口径 · helper 本体', () => {
     const offenders = []
     let codeLines = 0
     for (const file of helpers) {
-      readFile(file).split('\n').forEach((line, i) => {
+      stripCommentsKeepLines(readFile(file)).split('\n').forEach((line, i) => {
         const t = line.trim()
-        if (!t || /^(\*|\/\*|\/\/)/.test(t)) return
+        if (!t) return
         codeLines++
         if (/\bis_?closed\b|closed_?at/i.test(t)) offenders.push(`${rel(file)}:${i + 1}: ${t}`)
       })
@@ -130,7 +141,7 @@ describe('#401 数据中心在营口径 · closed_at 白名单', () => {
    * `(s.closed_at IS NULL OR s.closed_at::date > <截止日>)`。任何别的写法（如
    * `EXISTS (... closed_at IS NULL)`、`isNull(stores.closedAt)`）都等于把「当前是否关店」
    * 偷渡进统计范围，会抹掉关店前的历史业绩 —— 与只禁 is_closed token 互补（闸门 2 codex round-1 P2）。
-   * 注释行（`*` / `//` 开头）不计。
+   * 注释不计（stripCommentsKeepLines 剥掉，不再按行首跳过——那会被跨行块注释绕过）。
    */
   const ALLOWED = /^AND \(s\.closed_at IS NULL OR s\.closed_at::date > (\$\{(?:cur\.end|range\.end)\}|\$1::date)\)(`,)?$/
 
@@ -138,10 +149,9 @@ describe('#401 数据中心在营口径 · closed_at 白名单', () => {
     const offenders = []
     let seen = 0
     for (const file of CONSUMER_FILES) {
-      readFile(file).split('\n').forEach((line, i) => {
+      stripCommentsKeepLines(readFile(file)).split('\n').forEach((line, i) => {
         const t = line.trim()
         if (!/closed_?at/i.test(t)) return
-        if (/^(\*|\/\*|\/\/)/.test(t)) return
         seen++
         if (!ALLOWED.test(t)) offenders.push(`${rel(file)}:${i + 1}: ${t}`)
       })
@@ -149,6 +159,18 @@ describe('#401 数据中心在营口径 · closed_at 白名单', () => {
     expect(offenders).toEqual([])
     // 防扫描落空：admin sales/efficiency 三处 + staff queryStoreCount 一处
     expect(seen).toBe(4)
+  })
+})
+
+describe('#422 stripCommentsKeepLines', () => {
+  it('跨行 / 行内块注释后面的代码保留，注释内容剥掉，行号不变', () => {
+    const src = 'a\n/* 说明\n */ const v = s.closed_at\n/* x */ const w = s.closedAt\n// const z = s.closed_at\n * 注释里的 closed_at'
+    const out = stripCommentsKeepLines(src).split('\n')
+    expect(out).toHaveLength(6)
+    expect(out[2].trim()).toBe('const v = s.closed_at')
+    expect(out[3].trim()).toBe('const w = s.closedAt')
+    expect(out[4].trim()).toBe('')
+    expect(out[5].trim()).toBe('* 注释里的 closed_at') // 不在块注释里的裸 `*` 行是代码，照常被检查
   })
 })
 
@@ -286,12 +308,13 @@ describe('#401 数据中心在营口径 · 接线', () => {
  * 消费方源码里碰到关店展示标记的行（#422）：结果 Set / helper 名 / 引入路径 / 任何写法的 closed 标识符。
  * **不剥注释**（闸门 2 codex R3：按行剥注释的写法会被跨行块注释结束行后面接的代码绕过），注释里的提及也须登记。
  * `closed` 前后紧挨词字符或连字符的不算：closed_at 由上方白名单单独管，「fail-closed」是无关英文措辞。
- * 已知窗口：拼接出来的键名（`s['clo' + 'sed']`）这类对抗性写法正则拦不住，真要防须上 AST；这里防的是正常写法的误用。
+ * 不区分大小写（`s['CLOSED']` 也算）。已知窗口：拼接出来的键名（`s['clo' + 'sed']`）、不含上述 token 的 camelCase
+ * 派生变量名（如另起 `closedSet`）这类写法正则拦不住，真要防须上 AST；这里防的是正常写法的误用。
  */
 function closedMarkerLines(src) {
   return src.split('\n')
     .map((line) => line.trim())
-    .filter((t) => /closedIds|loadClosedStoreIds|store-closed-label|(?<![-\w])closed(?![-\w])/.test(t))
+    .filter((t) => /closedIds|loadClosedStoreIds|store-closed-label|(?<![-\w])closed(?![-\w])/i.test(t))
 }
 
 describe('#422 范围下拉「（已关店）」展示标记 · 两端 helper', () => {
@@ -385,6 +408,7 @@ describe('#422 范围下拉「（已关店）」展示标记 · 两端 helper', 
       '/* 说明\n*/ const visible = stores.filter((s) => !s.closed)',
       '/* x */ if (store.closed) continue',
       '// if (store.closed) continue',
+      "if (store['CLOSED']) continue",
     ]) {
       expect(closedMarkerLines(src).length, src).toBeGreaterThan(0)
     }
