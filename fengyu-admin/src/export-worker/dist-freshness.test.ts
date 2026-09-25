@@ -1,5 +1,7 @@
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
+import { spawnSync } from 'node:child_process'
 import { describe, it, expect, beforeAll } from 'vitest'
 
 /**
@@ -48,6 +50,10 @@ const REBUILD_HINT =
   '       --external @opentelemetry/api --external server-only \\\n' +
   "       --define process.env.FENGYU_EXPORT_WORKER='\"1\"'\n" +
   '     node --conditions=react-server dist/export-worker.mjs --check   # 应输出 bundle verified\n' +
+  '   ⚠ 重建时 **NODE_ENV 必须不设**（`env -u NODE_ENV bun build …`）。实测 bun 的输出随它变：\n' +
+  '     未设 6636632 字节 / NODE_ENV=test 6622668 / NODE_ENV=production 6598292，三份互不相同。\n' +
+  '     已提交的这份是「未设」那一档；Docker 构建阶段是 production（Dockerfile.admin:41），\n' +
+  '     但它自己会重建，不读这份 —— 这份服务的是 package.json 的 `export-worker` 直跑路径。\n' +
   '   然后单独成一个 build(admin): 提交（照 7d695743 / c88ed9bf 先例）。'
 
 interface Probe {
@@ -577,5 +583,86 @@ describe('dist/export-worker.mjs 客量明细 SQL 整段逐字进入产物（#41
         '（逐行探针可能仍全绿：它们只看单行的集合，看不出整段结构）' +
         REBUILD_HINT,
     ).toBe(true)
+  })
+})
+
+/**
+ * #414：**完整性兜底 —— 重建产物并逐字节比对。**
+ *
+ * ## 为什么最后还是回到这一条
+ *
+ * 上面所有探针都是「挑几条口径指纹去产物里找」，本质是**开放集合**：
+ * 漏掉任何一行，就有一条「源码正确、产物由另一个真实源码状态构建」的路径全绿。
+ * 双谱系评审在 #414 上连着**九轮**指出这类缺口（投影追加同名列 / 守卫位置 / 分母生产式 /
+ * JS 结果映射 / `${…}` 插值遮罩 / `const end = range.end` 生产者 …），
+ * 每补一条它就换下一条 —— 这正是本仓在 #286/#287 上反复验证过的「逐条禁写法必被绕过」。
+ *
+ * 而这条守护要回答的问题其实只有一个：**产物是不是按当前源码构建的**。
+ * 那就直接构建一次比对 —— 这是该问题的**完整**答案，不需要预先知道哪行重要。
+ *
+ * ## 可行性（实测，2026-09-25）
+ *
+ * - `bun build` 对同一份源码**确定性输出**：连跑两次逐字节相同
+ * - 已提交的 `dist/export-worker.mjs` 与新构建**逐字节相同**
+ * - 耗时约 **0.17s**，放在单测里不影响跑测体感
+ *
+ * ## 与上面那些探针的分工
+ *
+ * 探针**不删**：它们更快，且失败信息会指名道姓说「是哪条口径漂了」（如「客活分子会员守卫」），
+ * 而本条只会说「产物与源码不一致」。探针是**诊断**，本条是**完备性兜底**。
+ */
+describe('dist/export-worker.mjs 与当前源码逐字节一致（完整性兜底）', () => {
+  /** 复刻 REBUILD_HINT 的构建环境：NODE_ENV 必须不设（见下方 it 里的说明） */
+  const buildEnv = (): NodeJS.ProcessEnv => {
+    const env = { ...process.env }
+    delete env.NODE_ENV
+    return env
+  }
+
+  it('重新构建一次，产物与已提交的完全相同', () => {
+    const tmp = path.join(os.tmpdir(), `fy-export-worker-freshness-${process.pid}.mjs`)
+    try {
+      // 命令与 docker/Dockerfile.admin:99-106 及 REBUILD_HINT 逐字一致，只改 --outfile
+      const r = spawnSync(
+        'bun',
+        [
+          'build',
+          'src/export-worker/index.ts',
+          '--target=node',
+          '--format=esm',
+          `--outfile=${tmp}`,
+          '--external',
+          'pg-native',
+          '--external',
+          '@opentelemetry/api',
+          '--external',
+          'server-only',
+          '--define',
+          'process.env.FENGYU_EXPORT_WORKER="1"',
+        ],
+        // ⚠ **必须把 NODE_ENV 摘掉**：vitest 会设成 `test`，而 bun 的输出随它变
+        // （未设 6636632 / test 6622668 / production 6598292 字节，三份互不相同）。
+        // 已提交的产物是「未设」那一档，比对环境必须对齐，否则这条恒红。
+        { cwd: ADMIN_ROOT, encoding: 'utf-8', env: buildEnv() },
+      )
+      // fail-closed：bun 缺失 / 构建失败一律红，**不跳过** ——
+      // 「工具不在就静默放行」正是本仓记过的 fail-open 形态（守护存在 ≠ 生效）
+      expect(
+        r.error ? `${r.error}` : r.status,
+        `重建产物失败（bun 是本项目的包管理器，应当可用）：\n${r.stderr ?? ''}`,
+      ).toBe(0)
+
+      const rebuilt = fs.readFileSync(tmp)
+      const committed = fs.readFileSync(DIST)
+      expect(
+        rebuilt.equals(committed),
+        '`dist/export-worker.mjs` 与当前源码重建出的产物**不一致** —— 产物没跟着源码重建。\n' +
+          `（新构建 ${rebuilt.length} 字节 / 已提交 ${committed.length} 字节）\n` +
+          '上面那些按口径指纹的探针可能全绿：它们只挑了几行去找，看不出整体差异。' +
+          REBUILD_HINT,
+      ).toBe(true)
+    } finally {
+      fs.rmSync(tmp, { force: true })
+    }
   })
 })
