@@ -1724,6 +1724,24 @@ describe('客量板块两端口径一致性守护', () => {
       )
     })
 
+    /**
+     * 外层 `FROM skel sk LEFT JOIN ... ON ...` 的**关联条件**此前不在任何快照内
+     * （`regBlock` 止于 `ret AS (`、第 8 组片段止于 `status_agg AS (`、投影断言只覆盖 `SUM(...)` 行）。
+     * 把 `LEFT JOIN reg ON reg.store_id = sk.store_id` 改成 `= sk.market_id`，分母会整列错位归组
+     * 而上面全部断言照绿（GLM round-2 提出，本 session 复核成立）。
+     * 六条 JOIN 整段逐字钉死 —— 分子分母任何一条改了归组键都会红。
+     */
+    it('外层骨架 JOIN 的关联条件整段快照（归组键错位 = 分子分母对不上号）', () => {
+      expect(sliceBlock(breakdownSql(adminSrc), 'FROM skel sk ', ' GROUP BY ')).toBe(
+        'FROM skel sk ' +
+          'LEFT JOIN reg ON reg.store_id = sk.store_id ' +
+          'LEFT JOIN ret ON ret.store_id = sk.store_id ' +
+          'LEFT JOIN active ON active.store_id = sk.store_id ' +
+          'LEFT JOIN status_agg ON status_agg.store_id = sk.store_id ' +
+          'LEFT JOIN react ON react.store_id = sk.store_id',
+      )
+    })
+
     it('分子（明细 visit_count）带的会员守卫与分母逐字相同 —— 从分母现读，不硬编码', () => {
       const denom = regBlock(adminSrc).match(GUARD_RE)
       expect(denom).not.toBeNull()
