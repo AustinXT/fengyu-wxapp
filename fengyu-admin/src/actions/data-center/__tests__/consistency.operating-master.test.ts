@@ -110,7 +110,8 @@ describe('经营数据主表 × 销售板门店明细 口径同源（#372）', (
       expect(body).toContain("${scopeFilterSql(session, scope, 'so.store_id')}")
       expect(body).toContain("${excludeDepositRefundSql('so')}")
     }
-    expect(slice(MASTER, '// W 实耗', '// E 保有会员')).not.toMatch(/ytd\./)
+    // 原文切片（template() 会把 cur / ytd 都归一成 start / end，所以这里查未归一的原文）
+    expect(slice(MASTER, '// V 生美项目数', '// E 保有会员')).not.toMatch(/ytd\./)
   })
 
   it('E 保有会员 = 客量板「有效保有会员」WHERE 整段（按绑定门店 scope、90 天窗口、became_member_at 守卫）', () => {
@@ -127,6 +128,7 @@ describe('经营数据主表 × 销售板门店明细 口径同源（#372）', (
     // FROM / JOIN 也整段等值；人头按 (绑定门店, 顾客) 去重——去掉 DISTINCT 会让同一顾客多单按单数虚高
     const fromJoin = (body: string) => body.slice(body.indexOf(' FROM '), body.indexOf(' WHERE ')).trim()
     expect(fromJoin(retained.master)).toBe(fromJoin(retained.customerBoard))
+    expect(retained.customerBoard).toMatch(/^SELECT COUNT\(DISTINCT so\.client_user_id\) AS v FROM /)
     expect(fromJoin(retained.customerBoard)).toBe('FROM service_orders so JOIN client_wechat_users c ON c.user_id = so.client_user_id')
     expect(retained.master).toMatch(/^WITH retained AS \( SELECT DISTINCT c\.bound_store_id AS store_id, so\.client_user_id FROM /)
   })
