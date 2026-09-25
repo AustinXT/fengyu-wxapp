@@ -33,6 +33,16 @@ import { SPEND_BUCKET_FLOORS } from '@/lib/data-center/spend-buckets'
 import { determineMemberLevel } from '@/cron/lib/member-level'
 
 const ADMIN_CUSTOMER = path.resolve(__dirname, '../customer.ts')
+const ADMIN_COLUMNS = path.resolve(__dirname, '../../../lib/data-center/columns.ts')
+
+/**
+ * #414 会员守卫：达成率的分子必须带与分母 `reg` 逐字相同的谓词。
+ * `endExpr` 是各处对区间终点的写法（KPI 用 `range.end`、明细用 `end`），其余逐字相同。
+ * ⚠ staff 端 mgmt-traffic 与 cron monthly_activity **不带**这条 —— 它们不产出达成率，
+ * 所以 staffExpected / cronActivity 不拼这段，别"顺手统一"。
+ */
+const memberGuard = (endExpr: string): string =>
+  'c.became_member_at IS NOT NULL AND c.became_member_at::date <= ${' + endExpr + '}'
 const STAFF_MGMT_TRAFFIC = path.resolve(
   __dirname,
   '../../../../../fengyu-staff/cloudfunctions/staffApi/routes/mgmt-traffic.js',
@@ -1456,14 +1466,15 @@ describe('客量板块两端口径一致性守护', () => {
       'visit_count AS ( SELECT vd.client_user_id, COUNT(DISTINCT vd.visit_date) AS days ' +
       'FROM visit_days vd GROUP BY vd.client_user_id ) ' +
       'SELECT COUNT(*) AS v FROM visit_count vc JOIN client_wechat_users c ON c.user_id = vc.client_user_id ' +
-      `WHERE \${csc} AND ${RETAINED} AND \${daysClause} \`) return num(first(rows).v) }`
+      'WHERE ${csc} AND ' + RETAINED + ' AND ' + memberGuard('range.end') +
+      ' AND ${daysClause} `) return num(first(rows).v) }'
 
     const breakdownActiveExpected =
       "visit_days AS (${visitDaysSql({ axis: 'service_date', scope: serviceScope, range })}), " +
       'visit_count AS ( SELECT vd.client_user_id, c.bound_store_id AS store_id, ' +
       'COUNT(DISTINCT vd.visit_date) AS days, c.customer_status AS cstatus ' +
       'FROM visit_days vd JOIN client_wechat_users c ON c.user_id = vd.client_user_id ' +
-      'WHERE ${customerScope} AND c.bound_store_id IS NOT NULL ' +
+      'WHERE ${customerScope} AND c.bound_store_id IS NOT NULL AND ' + memberGuard('end') + ' ' +
       'GROUP BY vd.client_user_id, c.bound_store_id, c.customer_status ), ' +
       'active AS ( SELECT store_id, COUNT(*) FILTER (WHERE days = 1) AS visit_once, ' +
       'COUNT(*) FILTER (WHERE days >= 2) AS visit_twice FROM visit_count ' +
@@ -1624,6 +1635,164 @@ describe('客量板块两端口径一致性守护', () => {
       const u = visitDaysSqlUsage(localStub)
       expect(u.imports).toEqual([])
       expect(u.localDecls).toBe(1)
+    })
+  })
+
+  /**
+   * 9. 一次/二次**达成率**分母 = registered，且分子人群谓词 ⊇ 分母人群谓词（#414）
+   *
+   * ## 为什么需要一组单独的守护
+   *
+   * 改前的分母是 `retained`（末 90 天到店的保有会员），而分子是「区间内到店的保有会员」——
+   * 两者在生产上是**同一批人**（2026-09-25 实测两池各 1889、双向差集 0），
+   * 于是 36 家门店的 `1次达成率 + 2次达成率` **精确恒等 100.0%**，这两列不携带任何「达成」信息。
+   * 用户 2026-09-25 拍板改用 `registered`（会员注册截面）。
+   *
+   * 只换分母**不够**：`customer_status` 是 cron 重算的**当前**截面、不随 `end` 回溯，
+   * 而 `reg` 带 `became_member_at::date <= end`。缺守卫时「区间内到店、现在是保有会员、
+   * 但入会晚于区间终点」的人进分子不进分母（2026-07-08~07-31 实测 36 人，
+   * 把九江丽都店顶到 7/7 = 100.0%）。因此真正要钉的不变量是：
+   *
+   *   **分子的人群谓词 ⊇ 分母的人群谓词** ⇒ visit_once/visit_twice ⊆ registered ⇒ 达成率结构性 ≤ 100%。
+   *
+   * ## 写法：派生式，不是两处各抄一份
+   *
+   * 会员守卫从**分母段现读**，再断言它逐字出现在分子段（KPI 侧只允许区间终点的写法不同：
+   * `${range.end}` vs `${end}`）。改分母谓词而忘了同步分子 → 派生出的新串在分子段找不到 → 红。
+   * 另配两段整段快照（分母 `reg` / 分子 `visit_count`，后者在第 8 组），
+   * 堵住「两侧一起改成别的谓词」这条派生式看不见的路径。
+   *
+   * 切片一律 fail-closed（切不出即 throw），不退化成全文匹配。
+   */
+  describe('达成率分母 = registered + 分子人群谓词 ⊇ 分母人群谓词（#414）', () => {
+    /** CTE 段切片：定位不到 / 顺序反了都 throw，绝不静默退化成全文 */
+    const sliceBlock = (text: string, from: string, to: string): string => {
+      const a = text.indexOf(from)
+      const b = text.indexOf(to, a + from.length)
+      if (a < 0) throw new Error(`sliceBlock: 找不到起点 ${from}`)
+      if (b <= a) throw new Error(`sliceBlock: 找不到终点 ${to}（起点 ${from} 之后）`)
+      if (text.indexOf(from, a + from.length) >= 0) throw new Error(`sliceBlock: 起点 ${from} 命中多处`)
+      return text.slice(a, b)
+    }
+
+    const breakdownSql = (src: string): string => sqlInFunction(src, ADMIN_CUSTOMER, 'queryRegActiveBreakdown')
+    const regBlock = (src: string): string => sliceBlock(breakdownSql(src), 'reg AS (', 'ret AS (')
+    const visitCountBlock = (src: string): string =>
+      sliceBlock(breakdownSql(src), 'visit_count AS (', 'active AS (')
+
+    /** 分母整段快照 —— 堵「分子分母一起改成别的谓词」这条派生式看不见的路径 */
+    const regExpected =
+      'reg AS ( SELECT c.bound_store_id AS store_id, COUNT(*) AS registered ' +
+      'FROM client_wechat_users c WHERE ${customerScope} AND c.bound_store_id IS NOT NULL ' +
+      'AND ' + memberGuard('end') + ' GROUP BY c.bound_store_id ), '
+
+    /** 从**分母**现读会员守卫（派生源）；抓不到即红 */
+    const GUARD_RE = /c\.became_member_at IS NOT NULL AND c\.became_member_at::date <= \$\{[A-Za-z.]+\}/
+
+    it('分母 reg 整段快照（COUNT(*) AS registered + bound_store_id 归组 + 会员守卫）', () => {
+      expect(regBlock(adminSrc)).toBe(regExpected)
+    })
+
+    it('分子（明细 visit_count）带的会员守卫与分母逐字相同 —— 从分母现读，不硬编码', () => {
+      const denom = regBlock(adminSrc).match(GUARD_RE)
+      expect(denom).not.toBeNull()
+      expect(visitCountBlock(adminSrc)).toContain(denom![0])
+    })
+
+    it('分子（KPI queryActive）带的会员守卫与分母同源（仅区间终点写法 range.end vs end 不同）', () => {
+      const denom = regBlock(adminSrc).match(GUARD_RE)
+      expect(denom).not.toBeNull()
+      const kpi = fnSource(adminSrc, ADMIN_CUSTOMER, 'queryActive').match(GUARD_RE)
+      expect(kpi).not.toBeNull()
+      expect(kpi![0].replace('${range.end}', '${end}')).toBe(denom![0])
+    })
+
+    /**
+     * 取某个 metrics 属性的取值表达式（从该键到下一个键之间）。
+     *
+     * ⚠ 不要写成 `/visitOnceRate:[^,]*ra\.retained/` —— 取值里 `safeDiv(ra.visitOnce, ra.retained)`
+     * 本身含逗号，`[^,]*` 跨不过去 ⇒ 该正则**永不匹配** ⇒ 配 `not.toMatch` 就是恒真的空断言。
+     * 这条是本轮红检当场抓出来的（见 [[feedback-hollow-assertion-four-shapes]] 第 2 型）。
+     */
+    const propValue = (fn: string, key: string, nextKey: string): string => {
+      const a = fn.indexOf(key + ':')
+      const b = fn.indexOf(nextKey + ':', a + key.length)
+      if (a < 0) throw new Error(`propValue: 找不到 ${key}`)
+      if (b <= a) throw new Error(`propValue: ${key} 之后找不到 ${nextKey}`)
+      return fn.slice(a, b)
+    }
+
+    it('达成率分母取 registered，不是 retained', () => {
+      const fn = fnSource(adminSrc, ADMIN_CUSTOMER, 'buildBreakdownRows')
+      expect(fn).toContain('visitOnceRate: ra ? safeDiv(ra.visitOnce, ra.registered) : null,')
+      expect(fn).toContain('visitTwiceRate: ra ? safeDiv(ra.visitTwice, ra.registered) : null,')
+      // 回退防线：两条比率的取值里都不得再出现 retained
+      //（retained 自身仍是展示列，所以不能整函数禁 retained，只能限定在取值表达式内）
+      expect(propValue(fn, 'visitOnceRate', 'visitTwice')).not.toContain('ra.retained')
+      expect(propValue(fn, 'visitTwiceRate', 'dormant')).not.toContain('ra.retained')
+    })
+
+    it('明细/导出表头标出分母是「会员注册」（#294 同族：文案不得与口径脱钩）', () => {
+      const cols = fs.readFileSync(ADMIN_COLUMNS, 'utf-8')
+      const body = normalize(stripComments(cols))
+      expect(body).toContain("{ key: 'visitOnceRate', label: '1次达成率(÷会员注册)', unit: 'percent' }")
+      expect(body).toContain("{ key: 'visitTwiceRate', label: '2次达成率(÷会员注册)', unit: 'percent' }")
+    })
+
+    it('反向验证：删守卫 / 改分母 / 改表头 都会红', () => {
+      const mutate = (src: string, from: string, to: string): string => {
+        expect(src.split(from)).toHaveLength(2) // 锚点在目标文件里必须唯一，否则打到别处 → 假红
+        return src.replace(from, to)
+      }
+      const denom = regBlock(adminSrc).match(GUARD_RE)![0]
+
+      // ① 只删分子（明细）的守卫 —— 派生式断言必须红，且分母快照仍绿（证明变异落点精确）
+      const dropNum = mutate(
+        adminSrc,
+        '        AND c.bound_store_id IS NOT NULL\n        AND c.became_member_at IS NOT NULL\n        AND c.became_member_at::date <= ${end}\n      GROUP BY vd.client_user_id',
+        '        AND c.bound_store_id IS NOT NULL\n      GROUP BY vd.client_user_id',
+      )
+      expect(visitCountBlock(dropNum)).not.toContain(denom)
+      expect(regBlock(dropNum)).toBe(regExpected)
+
+      // ② 只删 KPI 分子的守卫
+      const dropKpi = mutate(
+        adminSrc,
+        "      AND c.customer_status IN ('保有会员-稳定', '保有会员-有效')\n      AND c.became_member_at IS NOT NULL\n      AND c.became_member_at::date <= ${range.end}\n",
+        "      AND c.customer_status IN ('保有会员-稳定', '保有会员-有效')\n",
+      )
+      expect(fnSource(dropKpi, ADMIN_CUSTOMER, 'queryActive').match(GUARD_RE)).toBeNull()
+
+      // ③ 用 SQL 注释把守卫「补回去」——剥注释后仍应红（#284 那条假绿路径的同型攻击）
+      const commentBack = mutate(
+        adminSrc,
+        '        AND c.became_member_at IS NOT NULL\n        AND c.became_member_at::date <= ${end}\n      GROUP BY vd.client_user_id',
+        '      -- AND c.became_member_at IS NOT NULL AND c.became_member_at::date <= ${end}\n      GROUP BY vd.client_user_id',
+      )
+      expect(visitCountBlock(commentBack)).not.toContain(denom)
+
+      // ④ 分母回退成 retained
+      const revert = mutate(
+        adminSrc,
+        'visitOnceRate: ra ? safeDiv(ra.visitOnce, ra.registered) : null,',
+        'visitOnceRate: ra ? safeDiv(ra.visitOnce, ra.retained) : null,',
+      )
+      const revertedFn = fnSource(revert, ADMIN_CUSTOMER, 'buildBreakdownRows')
+      expect(revertedFn).not.toContain('visitOnceRate: ra ? safeDiv(ra.visitOnce, ra.registered) : null,')
+      expect(propValue(revertedFn, 'visitOnceRate', 'visitTwice')).toContain('ra.retained')
+      // 只回退了 once，twice 仍是 registered —— 证明变异落点精确，不是整段被改花
+      expect(propValue(revertedFn, 'visitTwiceRate', 'dormant')).not.toContain('ra.retained')
+
+      // ⑤ 分母 CTE 被换成别的计数列（两侧一起改时派生式看不见，靠整段快照拦）
+      const regSwap = mutate(adminSrc, 'COUNT(*) AS registered', 'COUNT(DISTINCT c.user_id) AS registered')
+      expect(regBlock(regSwap)).not.toBe(regExpected)
+
+      // ⑥ 表头把分母标注抹掉
+      const cols = fs.readFileSync(ADMIN_COLUMNS, 'utf-8')
+      const colsMut = mutate(cols, "label: '1次达成率(÷会员注册)'", "label: '1次达成率'")
+      expect(normalize(stripComments(colsMut))).not.toContain(
+        "{ key: 'visitOnceRate', label: '1次达成率(÷会员注册)', unit: 'percent' }",
+      )
     })
   })
 })

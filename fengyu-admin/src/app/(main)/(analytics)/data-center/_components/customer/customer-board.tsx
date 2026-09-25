@@ -16,8 +16,10 @@ const KPI_REGISTER: KpiGridItem[] = [
   { key: "registeredMembers", label: "会员注册人数" },
   { key: "retainedMembers", label: "有效保有会员" },
   // #298：按到店天数分档（同一天多张服务单只算 1 天），与顾客列表「月度客活」同口径
-  { key: "visitOnce", label: "当月一次人数", hint: "所选区间内到店 1 天的保有会员（同日多单算 1 天）" },
-  { key: "visitTwice", label: "当月二次人数", hint: "所选区间内到店 ≥2 天的保有会员（同日多单算 1 天）" },
+  // #414：追加「截至区间终点已入会」—— customer_status 是当前截面，不随区间回溯，
+  // 缺这层守卫时入会晚于区间终点的人也会被计入（选历史区间时可见）。
+  { key: "visitOnce", label: "当月一次人数", hint: "所选区间内到店 1 天、且截至区间终点已入会的保有会员（同日多单算 1 天）" },
+  { key: "visitTwice", label: "当月二次人数", hint: "所选区间内到店 ≥2 天、且截至区间终点已入会的保有会员（同日多单算 1 天）" },
 ]
 
 // #294：左三格读 cron 每日重算的 customer_status 截面，**不随所选区间变化**；
