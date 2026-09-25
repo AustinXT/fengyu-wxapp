@@ -182041,13 +182041,13 @@ function toCell(raw) {
 }
 async function loadRemainingCardsSnapshot(session4, scope, today) {
   return db2.transaction(async (tx) => {
-    await tx.execute(import_drizzle_orm68.sql`SET TRANSACTION READ ONLY`);
+    await tx.execute(import_drizzle_orm68.sql`SET LOCAL statement_timeout = '20s'`);
     await tx.execute(import_drizzle_orm68.sql`SET LOCAL jit = off`);
     await tx.execute(import_drizzle_orm68.sql`SET LOCAL enable_nestloop = off`);
     const rows = await queryRemainingCardsRows(tx, session4, scope, today);
     const categories = await queryRemainingCardsCategories(tx);
     return { rows, categories };
-  });
+  }, { isolationLevel: "repeatable read", accessMode: "read only" });
 }
 async function queryRemainingCardsRows(executor, session4, scope, today) {
   const rows = await executor.execute(import_drizzle_orm68.sql`
@@ -182096,12 +182096,13 @@ async function queryRemainingCardsRows(executor, session4, scope, today) {
     cells AS (
       SELECT s.client_user_id, s.store_id, s.category_id,
              COALESCE(SUM(s.paid_unused) FILTER (WHERE NOT s.expired), 0) AS remaining,
-             COALESCE(SUM(s.remaining_sessions - s.paid_unused) FILTER (WHERE NOT s.expired), 0) AS unpaid,
+             COALESCE(SUM(GREATEST(s.remaining_sessions - s.paid_unused, 0)) FILTER (WHERE NOT s.expired), 0) AS unpaid,
              COUNT(*) FILTER (WHERE NOT s.expired) AS active_rows,
              COUNT(*) FILTER (WHERE s.expired) AS expired_rows,
-             COALESCE(SUM(sv.served), 0) AS served,
-             COALESCE(SUM(cv.converted_out), 0) AS converted_out,
-             BOOL_OR(s.deposit) AS deposit,
+             -- 悬停说明只描述参与判态的未过期卡行（只剩过期卡的格显示「已过期」，不用这三项）
+             COALESCE(SUM(sv.served) FILTER (WHERE NOT s.expired), 0) AS served,
+             COALESCE(SUM(cv.converted_out) FILTER (WHERE NOT s.expired), 0) AS converted_out,
+             COALESCE(BOOL_OR(s.deposit) FILTER (WHERE NOT s.expired), FALSE) AS deposit,
              COALESCE(BOOL_OR(s.frozen) FILTER (WHERE NOT s.expired), FALSE) AS frozen
       FROM scoped s
       LEFT JOIN served sv ON sv.sale_item_id = s.sale_item_id
@@ -182145,12 +182146,14 @@ async function queryRemainingCardsRows(executor, session4, scope, today) {
 }
 async function queryRemainingCardsCategories(executor) {
   const rows = await executor.execute(import_drizzle_orm68.sql`
+    -- 一级名没有唯一约束：同名一级行有多条时取最小排序权重，保证每个二级只出一行、同一级排序一致
     SELECT c.category_id, c.category_name, c.product_kind, c.sort_order,
-           kind_row.sort_order AS kind_sort
+           MIN(kind_row.sort_order) AS kind_sort
     FROM product_categories c
     LEFT JOIN product_categories kind_row
       ON kind_row.product_kind IS NULL AND kind_row.category_name = c.product_kind
     WHERE c.product_kind IS NOT NULL
+    GROUP BY c.category_id, c.category_name, c.product_kind, c.sort_order
   `);
   return rows.map((row) => ({
     categoryId: String(row.category_id),
@@ -182204,24 +182207,35 @@ function resolveCellState(cell) {
   }
   return cell.expiredRows > 0 ? "expired" : null;
 }
-function categoryKey(categoryId) {
-  return categoryId ?? UNCATEGORIZED_KEY;
-}
 function buildRemainingCardsModel(sqlRows, dictionary) {
   const byId = new Map(dictionary.map((category) => [category.categoryId, category]));
   const used = new Map;
+  const keyOf = (categoryId) => categoryId && byId.has(categoryId) ? categoryId : UNCATEGORIZED_KEY;
   const rows = sqlRows.map((source) => {
+    const merged = new Map;
+    for (const aggregate3 of source.cells) {
+      const key = keyOf(aggregate3.categoryId);
+      const prev = merged.get(key);
+      merged.set(key, prev ? {
+        categoryId: key,
+        remaining: prev.remaining + aggregate3.remaining,
+        unpaid: prev.unpaid + aggregate3.unpaid,
+        activeRows: prev.activeRows + aggregate3.activeRows,
+        expiredRows: prev.expiredRows + aggregate3.expiredRows,
+        served: prev.served + aggregate3.served,
+        convertedOut: prev.convertedOut + aggregate3.convertedOut,
+        deposit: prev.deposit || aggregate3.deposit,
+        frozen: prev.frozen || aggregate3.frozen
+      } : { ...aggregate3, categoryId: key });
+    }
     const cells = {};
     let remaining = 0;
-    for (const aggregate3 of source.cells) {
+    for (const [key, aggregate3] of merged) {
       const state = resolveCellState(aggregate3);
       if (!state)
         continue;
-      const key = categoryKey(aggregate3.categoryId);
-      if (!used.has(key)) {
-        const known = aggregate3.categoryId ? byId.get(aggregate3.categoryId) : undefined;
-        used.set(key, known ?? { categoryId: key, ...UNCATEGORIZED });
-      }
+      if (!used.has(key))
+        used.set(key, byId.get(key) ?? { categoryId: key, ...UNCATEGORIZED });
       const cellRemaining = state === "remaining" ? aggregate3.remaining : 0;
       remaining += cellRemaining;
       cells[key] = {
@@ -182246,13 +182260,23 @@ function buildRemainingCardsModel(sqlRows, dictionary) {
       level: memberLevel || customerType,
       remaining,
       cells,
-      rawPhone: source.phone ?? "",
+      rawPhone: normalizePhone(source.phone),
       memberLevel,
       customerType
     };
   });
-  const columns3 = [...used.values()].sort((a, b2) => a.kindSort - b2.kindSort || a.kind.localeCompare(b2.kind, "zh-CN") || a.sort - b2.sort || a.categoryName.localeCompare(b2.categoryName, "zh-CN") || (a.categoryId < b2.categoryId ? -1 : a.categoryId > b2.categoryId ? 1 : 0));
+  const kindSort = new Map;
+  for (const column2 of used.values()) {
+    if (column2.categoryId === UNCATEGORIZED_KEY)
+      continue;
+    kindSort.set(column2.kind, Math.min(kindSort.get(column2.kind) ?? Number.MAX_SAFE_INTEGER, column2.kindSort));
+  }
+  const rank2 = (column2) => column2.categoryId === UNCATEGORIZED_KEY ? Number.POSITIVE_INFINITY : kindSort.get(column2.kind);
+  const columns3 = [...used.values()].sort((a, b2) => (rank2(a) === rank2(b2) ? 0 : rank2(a) < rank2(b2) ? -1 : 1) || a.kind.localeCompare(b2.kind, "zh-CN") || compareText(a.kind, b2.kind) || a.sort - b2.sort || a.categoryName.localeCompare(b2.categoryName, "zh-CN") || compareText(a.categoryId, b2.categoryId));
   return { columns: columns3, rows };
+}
+function normalizePhone(phone) {
+  return (phone ?? "").replace(/\s+/g, "");
 }
 function summarizeRemainingCards(model) {
   const customers = new Set;
@@ -182311,6 +182335,10 @@ function filterRemainingCardsRows(rows, filter) {
       return true;
     return [row.customerName, row.storeName, row.memberLevel, row.customerType].some((text5) => text5.toLowerCase().includes(q));
   });
+}
+function displaySearchTerm(q) {
+  const trimmed = q.trim();
+  return FULL_PHONE.test(trimmed) ? formatPhoneSafe(trimmed) : trimmed;
 }
 var NAME_COLLATOR = new Intl.Collator("zh-CN");
 function compareText(a, b2) {
@@ -182394,7 +182422,10 @@ function remainingCardsColumnSpecs(columns3) {
     ...columns3.map((column2) => ({
       key: columnKey(column2),
       header: column2.categoryName,
-      group: { key: `kind:${column2.kind}`, header: column2.kind },
+      group: {
+        key: column2.categoryId === UNCATEGORIZED_KEY ? "kind:__uncategorized__" : `kind:${column2.kind}`,
+        header: column2.kind
+      },
       unit: "count",
       aggregate: { kind: "server" },
       value: (row) => row.cells[column2.categoryId]?.state === "remaining" ? row.cells[column2.categoryId].remaining : null,
@@ -182561,7 +182592,7 @@ async function remainingCardsContent(params) {
       extra: [
         { label: "快照日", value: report.asOf },
         { label: "显示范围", value: report.params.show === "remaining" ? "只看有剩余" : "全部顾客" },
-        ...report.params.q ? [{ label: "顾客搜索", value: report.params.q }] : []
+        ...report.params.q ? [{ label: "顾客搜索", value: displaySearchTerm(report.params.q) }] : []
       ]
     }
   };
