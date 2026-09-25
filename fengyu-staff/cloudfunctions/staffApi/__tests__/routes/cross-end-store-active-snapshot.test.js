@@ -47,19 +47,16 @@ function onlySqlTemplate(section) {
   return squeeze(sqls[0].slice(1, -1))
 }
 
-/** 经营分析站取数关键函数的全文快照（见 test 5）。改动后按失败输出的 actual 更新，先跑 analyst 本地守护 */
-const ANALYST_SECTION_SHA = {
-  'lib/analyst-scope.ts export async function getAnalystScopeOptions(': 'ccb9c526fa7b06d0',
-  'lib/analyst-scope.ts export function scopeFilterSql(': '9cff62ec3735905d',
-  'lib/analyst-scope.ts export function scopeRangeSql(': 'ce8d289ee987611d',
-  'lib/analyst-scope.ts function scopeRangeParts(': 'c69dcbd784e1d01a',
-  'lib/new-customer-funnel.ts async function queryFunnelEntries(': '8c5989a1413da0bb',
-  'lib/penetration.ts async function queryHolderRows(': '44a7db61f27f9e9e',
-  'lib/penetration.ts async function queryMemberRows(': '23be93e832cf21ff',
-  'lib/penetration.ts function memberConditions(': '90ebe52a8d3e52a8',
-  'lib/repurchase.ts async function queryRepurchaseCatalog(': '2c71fd5b2de1aae7',
-  'lib/repurchase.ts async function queryRepurchaseEntries(': '03440f42a856f67a',
-  'lib/repurchase.ts function buildBaseConditions(': '3992dc2450ed72c0',
+/**
+ * 经营分析站决定「哪些门店计入」的 5 个文件的整份全文快照（见 test 5）。
+ * 改动后按失败输出的 actual 更新——更新前先跑 analyst 本地守护（store-status-cross-end / analyst-scope 测试）。
+ */
+const ANALYST_FILE_SHA = {
+  'lib/store-status.ts': '6d678f301612bc14',
+  'lib/analyst-scope.ts': 'ab69a1b3f9775d9c',
+  'lib/repurchase.ts': '4df5ac253b31fa98',
+  'lib/new-customer-funnel.ts': '731c2c19b0cbd7a7',
+  'lib/penetration.ts': '6a191059a36743d4',
 }
 
 describe('门店在营判定跨端字面量守护（#400）', () => {
@@ -123,33 +120,21 @@ describe('门店在营判定跨端字面量守护（#400）', () => {
     expect(squeeze(dash)).toContain("const { activeStoreCondition, activeStoreNodeCondition, STORE_NODE_JOIN, STORE_IS_ACTIVE, } = require('../utils/store-status')")
   })
 
-  test('5. analyst 取数与范围下拉接线（#421）：关键函数整段全文快照 + scopeRangeSql 使用点闭集', () => {
+  test('5. analyst 取数与范围下拉接线（#421）：关键文件整份全文快照 + 使用点闭集', () => {
     /**
-     * CI 里覆盖经营分析站的只有这一条（analyst 自身 vitest 不进 CI，#382），所以不挑子串，
-     * 直接把「决定哪些门店计入」的函数整段（原文，含注释）钉 sha256：任何改动——包括把某行注释掉
-     * 再另写一行——都会红。红了先跑 analyst `src/lib/__tests__/store-status-cross-end.test.ts`
-     * （那里有逐段可读的语义断言），确认口径没漂再更新这里的哈希。
+     * CI 里覆盖经营分析站的只有这一条（analyst 自身 vitest 不进 CI，#382）。
+     * 不挑子串、也不按函数切片（切片会被「注释包住旧函数、另写一个同名实现」或
+     * 「别名 import 指向别的模块」绕过——codex round-2），直接把决定「哪些门店计入」的
+     * 5 个文件**整份原文**（含 import、注释）钉 sha256：任何改动都会红。
+     * 红了先跑 analyst `src/lib/__tests__/store-status-cross-end.test.ts` 与 `analyst-scope.test.ts`
+     * （那里有逐段可读的语义断言、import 来源 AST 校验、行为测试），确认口径没漂再更新这里的哈希。
      */
     const crypto = require('node:crypto')
     const sha = (text) => crypto.createHash('sha256').update(squeeze(text)).digest('hex').slice(0, 16)
-    const SECTIONS = [
-      ['lib/analyst-scope.ts', 'export async function getAnalystScopeOptions('],
-      ['lib/analyst-scope.ts', 'export function scopeFilterSql('],
-      ['lib/analyst-scope.ts', 'export function scopeRangeSql('],
-      ['lib/analyst-scope.ts', 'function scopeRangeParts('],
-      ['lib/repurchase.ts', 'function buildBaseConditions('],
-      ['lib/repurchase.ts', 'async function queryRepurchaseEntries('],
-      ['lib/repurchase.ts', 'async function queryRepurchaseCatalog('],
-      ['lib/new-customer-funnel.ts', 'async function queryFunnelEntries('],
-      ['lib/penetration.ts', 'function memberConditions('],
-      // 构造器之外还要钉消费方：只钉 memberConditions 时把 WHERE 改成 OR TRUE 全绿（GLM round-1 P2）
-      ['lib/penetration.ts', 'async function queryMemberRows('],
-      ['lib/penetration.ts', 'async function queryHolderRows('],
-    ]
     const actual = Object.fromEntries(
-      SECTIONS.map(([file, start]) => [`${file} ${start}`, sha(extractSection(read(path.join(ANALYST, file)), start, '\n}\n'))]),
+      Object.keys(ANALYST_FILE_SHA).map((file) => [file, sha(read(path.join(ANALYST, file)))]),
     )
-    expect(actual).toEqual(ANALYST_SECTION_SHA)
+    expect(actual).toEqual(ANALYST_FILE_SHA)
 
     // scopeRangeSql（不含在营）标识符闭集：遍历 analyst 全部源码，按出现次数钉死（别名 import / 命名空间调用也会计入）
     const listTs = (dir) => fs.readdirSync(dir, { withFileTypes: true }).flatMap((e) => {

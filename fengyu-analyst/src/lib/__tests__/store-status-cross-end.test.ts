@@ -153,7 +153,9 @@ describe("在营门店口径跨端守护（#421）", () => {
     expect(squeeze(stripComments(scope, "analyst-scope.ts"))).toContain(
       'import { activeStoreCondition } from "./store-status"',
     )
-    const body = (start: string) => squeeze(stripComments(extractSection(scope, start, "\n}\n"), "x.ts"))
+    // 先整份剥注释再定位声明：注释里包着的旧函数不会被当成实现（codex round-2 P2）
+    const code = stripComments(scope, "analyst-scope.ts")
+    const body = (start: string) => squeeze(extractSection(code, start, "\n}\n"))
 
     expect(body("export function scopeFilterSql(")).toBe(
       squeeze(`export function scopeFilterSql(
@@ -275,13 +277,65 @@ describe("在营门店口径跨端守护（#421）", () => {
     expect(rangeUsers).toEqual(["lib/analyst-scope.ts", "lib/new-customer-funnel.ts", "lib/repurchase.ts"])
   })
 
+  it("2c. helper 的 import 来源与绑定名钉死（AST）：别名 import / 本地同名定义都算违规", () => {
+    const EXPECTED: Record<string, string> = {
+      scopeFilterSql: "@/lib/analyst-scope",
+      scopeRangeSql: "@/lib/analyst-scope",
+      activeStoreCondition: "@/lib/store-status",
+    }
+    const bindings = (file: string) => {
+      const src = read(path.join(ANALYST_SRC, file))
+      const sf = ts.createSourceFile(file, src, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
+      const imported: string[] = []
+      const localDecls: string[] = []
+      const visit = (node: ts.Node) => {
+        if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier)) {
+          const from = node.moduleSpecifier.text
+          const named = node.importClause?.namedBindings
+          if (named && ts.isNamedImports(named)) {
+            for (const el of named.elements) {
+              const local = el.name.text
+              const original = el.propertyName?.text ?? local
+              if (local in EXPECTED || original in EXPECTED) imported.push(`${original} as ${local} from ${from}`)
+            }
+          }
+          if (named && ts.isNamespaceImport(named) && Object.values(EXPECTED).includes(from)) {
+            imported.push(`* as ${named.name.text} from ${from}`)
+          }
+        }
+        if ((ts.isFunctionDeclaration(node) || ts.isVariableDeclaration(node) || ts.isParameter(node)) && node.name && ts.isIdentifier(node.name) && node.name.text in EXPECTED) {
+          localDecls.push(node.name.text)
+        }
+        ts.forEachChild(node, visit)
+      }
+      visit(sf)
+      return { imported: imported.sort(), localDecls }
+    }
+    const ok = (name: string) => `${name} as ${name} from ${EXPECTED[name]}`
+    expect(bindings("lib/repurchase.ts")).toEqual({
+      imported: [ok("activeStoreCondition"), ok("scopeFilterSql"), ok("scopeRangeSql")],
+      localDecls: [],
+    })
+    expect(bindings("lib/new-customer-funnel.ts")).toEqual({
+      imported: [ok("activeStoreCondition"), ok("scopeFilterSql"), ok("scopeRangeSql")],
+      localDecls: [],
+    })
+    expect(bindings("lib/penetration.ts")).toEqual({ imported: [ok("scopeFilterSql")], localDecls: [] })
+    // 定义处：analyst-scope 只从 ./store-status 取 activeStoreCondition，且 scopeFilterSql / scopeRangeSql 各定义一次
+    expect(bindings("lib/analyst-scope.ts")).toEqual({
+      imported: ["activeStoreCondition as activeStoreCondition from ./store-status"],
+      localDecls: ["scopeFilterSql", "scopeRangeSql"],
+    })
+  })
+
   it("3. 范围下拉门店条件整段钉死：只看门店节点 isActive；门店级账号不列空市场", () => {
     const scope = read(path.join(ANALYST_SRC, "lib/analyst-scope.ts"))
-    expect(squeeze(stripComments(extractSection(scope, "export async function getAnalystScopeOptions(", "\n}\n"), "x.ts"))).toContain(
+    const code = stripComments(scope, "analyst-scope.ts")
+    expect(squeeze(extractSection(code, "export async function getAnalystScopeOptions(", "\n}\n"))).toContain(
       'markets: topLevel === "store" ? markets.filter((market) => market.stores.length > 0) : markets,',
     )
-    const where = extractSection(scope, "    .innerJoin(storeNode, eq(stores.orgNodeId, storeNode.id))", "    .orderBy(asc(stores.storeName))")
-    expect(squeeze(stripComments(where, "x.ts"))).toBe(
+    const where = extractSection(code, "    .innerJoin(storeNode, eq(stores.orgNodeId, storeNode.id))", "    .orderBy(asc(stores.storeName))")
+    expect(squeeze(where)).toBe(
       squeeze(`.innerJoin(storeNode, eq(stores.orgNodeId, storeNode.id))
     .where(
       and(

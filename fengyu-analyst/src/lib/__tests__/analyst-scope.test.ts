@@ -6,6 +6,7 @@ import {
   hasGlobalAnalystScope,
   scopeFilterSql,
   scopeRangeSql,
+  validateAnalystScopeWithOptions,
   type AnalystScope,
   type AnalystScopeOptions,
 } from "../analyst-scope"
@@ -105,6 +106,51 @@ describe("analyst scope", () => {
     expect(sql).toContain("c.bound_store_id in")
     expect(params).toEqual(["S1"])
     expect(squeeze(raw).startsWith(`${activeStoreClause("c.bound_store_id")} AND `)).toBe(true)
+  })
+
+  it("every store column the boards pass keeps the active-store clause on that column (#421)", () => {
+    const global = makeSession([{ role: "admin", scopeType: "总部" }], [])
+    const scoped = makeSession([{ role: "manager", scopeType: "门店" }], ["S1"])
+    for (const col of ["so.store_id", "c.bound_store_id", "svc.store_id", "mo.store_id", "yo.store_id"]) {
+      expect(squeeze(render(scopeFilterSql(global, allScope, col)).raw)).toBe(activeStoreClause(col))
+      expect(squeeze(render(scopeFilterSql(global, { type: "store", id: "S9" }, col)).raw)).toBe(
+        `${activeStoreClause(col)} AND ${col} = $1`,
+      )
+      expect(squeeze(render(scopeFilterSql(scoped, allScope, col)).raw)).toBe(`${activeStoreClause(col)} AND ${col} IN ($1)`)
+    }
+  })
+
+  describe("validateAnalystScopeWithOptions：停用门店（#421）", () => {
+    // 下拉只列在营门店；停用门店不在 options 里
+    const options: AnalystScopeOptions = {
+      topLevel: "store",
+      markets: [{ id: "M1", name: "市场一", stores: [{ storeId: "ACTIVE", storeName: "在营店" }] }],
+    }
+    const storeAccount = makeSession([{ role: "manager", scopeType: "门店" }], ["ACTIVE", "STOPPED"])
+
+    it("store account may open its active store", () => {
+      expect(() => validateAnalystScopeWithOptions(storeAccount, { type: "store", id: "ACTIVE" }, options)).not.toThrow()
+    })
+
+    it("store account is denied its own stopped store even though scopeStoreIds contains it", () => {
+      expect(() => validateAnalystScopeWithOptions(storeAccount, { type: "store", id: "STOPPED" }, options)).toThrow(
+        "PERMISSION_DENIED",
+      )
+    })
+
+    it("store account is denied another store", () => {
+      expect(() => validateAnalystScopeWithOptions(storeAccount, { type: "store", id: "OTHER" }, options)).toThrow(
+        "PERMISSION_DENIED",
+      )
+    })
+
+    it("global account passes validation; SQL then yields zero rows for a stopped store", () => {
+      const admin = makeSession([{ role: "admin", scopeType: "总部" }], [])
+      expect(() => validateAnalystScopeWithOptions(admin, { type: "store", id: "STOPPED" }, options)).not.toThrow()
+      expect(squeeze(render(scopeFilterSql(admin, { type: "store", id: "STOPPED" }, "so.store_id")).raw)).toBe(
+        `${activeStoreClause("so.store_id")} AND so.store_id = $1`,
+      )
+    })
   })
 
   describe("scopeRangeSql（首次基线用，不含在营过滤，#421）", () => {
