@@ -1239,3 +1239,31 @@ tiyan AS (                                    -- 体验：期内有购买但全�
 > admin 全站单一真相源，数据中心与首页看板共用，别再抄第三份）；analyst 内走 `metric-delta.ts`
 > （AI 助手侧走它导出的 `formatPointDeltaValue` 内核）；
 > 全新站点把本节矩阵先抄进它自己的模块头——本节是唯一的口径真相源。
+
+## 员工提成日报 / 提成明细（admin 数据中心经营明细，#375，2026-09-25）
+
+页面：`/data-center/commission-daily`（日报矩阵）、`/data-center/commission-daily/detail`（下钻明细）。
+权限：`data_center:dashboard` + `data_center:staff_commission` 由同一角色授权同时提供。
+SQL 单源 `fengyu-admin/src/lib/data-center/commission-sql.ts`，与 staff 管理层「员工收入」的取数链与静态谓词由
+`consistency.commission.test.ts` 整段等值守护。
+
+| 项 | 口径 |
+|---|---|
+| 业绩提成 | `SUM(sale_payment_item_allocations.commission_amount)`，`spia.is_void = FALSE` ∩ `so.sale_order_type IN ('销售单','转换单')` ∩ `spe.status = '已支付'`，按 `spe.performance_date`（款项归属日期）归日 |
+| 消耗提成 | `SUM(service_commissions.commission_amount)`，`sc.is_void = FALSE` ∩ `so.status = '已完成'`，按 `so.service_date` 归日 |
+| 不重算 | 读落库提成额与费率快照，不按「分配金额 × 提成点」重算（服务提成分项舍入；#379 划卡阈值上线后差更多） |
+| 行键 | 员工 × **单据门店**（同 staff 员工收入卡、人效板 KPI）；总部范围可「按员工合并」；可按岗位（`position_name` 当前岗位）汇总 |
+| 员工范围 | 期内有任意提成行的员工（含期内离职）；**不加 >0 过滤**（#290），0 提成行灰显；☆「隐藏 0 提成行」只隐藏行合计 = 0 的行，负数行保留 |
+| 负数 | 销售侧退款写负数冲销行，归退款款项的归属日期；格子允许负数。服务侧 CHECK ≥ 0，不会出现负数 |
+| 有提成员工数 | 净提成 > 0 的去重 employee_id（KPI 定义，不是行过滤）；副文案 = 有任意提成行的去重员工数 |
+| 人均提成 | 本月提成合计 ÷ 产能技师数（`technician-sql.ts` 单源，= 人效板 technicianCount；区间末在职，本月截到今天）。非超管总部账号差异见 #334 |
+| 单均提成 | 本月提成合计 ÷ 去重订单数（销售单号 + 服务单号，含 0 提成订单） |
+| 指标卡 | 按当前门店范围全量，不随员工搜索 / 隐藏 0 行变化（☆ 待答 7） |
+| 待分配提示 | 与 `/allocations`「待分配」筛选同源（`getPendingPayments`）+ 款项归属日期在所选月 + 当前 scope |
+| 明细分配金额 | 销售行 = `spia.allocated_amount`；服务行 = `round(round(单价 × 次数, 2) × allocation_ratio, 2)`（同服务提成导出） |
+| 平均提成点 | Σ提成 ÷ Σ分配金额（含负数行、0 费率行） |
+| 明细排序 / 分页 | keyset `(biz_date DESC, source ASC, source_id DESC)`；spia 与 service_commissions 的 id 各自自增会撞号，唯一键必须是 (source, source_id)。游标绑定筛选签名，换筛选回到第一页 |
+| 实时 | 不做 06:00 快照：补分配、admin 改分配（不受 staff 3 天冻结）、调整款项归属日期后历史格子会变 |
+
+2026-08 全国 prod 基线（2026-09-25 实测）：业绩 201,746.24 + 消耗 374,896.13 = 576,642.37；456 行（242 行为 0）；
+196 人有提成行、151 人净提成 > 0；8,065 单；产能技师 158；待分配 15 笔 / 21,188.00。
