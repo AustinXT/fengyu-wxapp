@@ -1675,8 +1675,9 @@ describe('库存转换多对多与成本守恒（#344）', () => {
       targets: [{ targetSkuId: 'SKU-HALF', quantity: 4, unitPrice: 0 }],
     })
     expect(fake.newLots()[0]).toMatchObject({ is_gift: true, supply_chain_unit_cost: '0', quantity_on_hand: 4 })
-    // 赠送来源的成本按 0 计，不管批次上残留的历史成本
+    // 赠送来源的成本按 0 计，不管批次上残留的历史成本（实际单价与成本快照都记 0）
     expect(fake.items[0].actualUnitPrice).toBe('0')
+    expect(fake.items[0].supplyChainUnitCost).toBe('0')
 
     fakeDb([{ id: 105, sku_id: 'SKU-B', is_gift: true, supply_chain_unit_cost: '0' }])
     await expect(createInventoryConversion(SESSION, {
@@ -1718,6 +1719,9 @@ describe('库存转换多对多与成本守恒（#344）', () => {
     ['数量超 numeric(12,2) 上界', { sources: [{ sourceLotId: 101, quantity: 1e11 }], targets: [{ targetSkuId: 'SKU-X', quantity: 1, unitPrice: 1 }] }, '转换出库数量不能超过 9999999999.99'],
     ['来源明细为 null', { sources: [null], targets: [{ targetSkuId: 'SKU-X', quantity: 1, unitPrice: 1 }] }, '库存转换来源明细格式不正确'],
     ['目标 SKU 非字符串', { sources: [{ sourceLotId: 101, quantity: 1 }], targets: [{ targetSkuId: 123, quantity: 1, unitPrice: 1 }] }, '转换目标 SKU格式不正确'],
+    ['来源数量太少分不到每个目标', { sources: [{ sourceLotId: 101, quantity: 0.01 }], targets: [{ targetSkuId: 'SKU-X', quantity: 1, unitPrice: 0 }, { targetSkuId: 'SKU-Y', quantity: 1, unitPrice: 0 }] }, '无法分摊到每个目标行'],
+    ['目标数量合计超上界', { sources: [{ sourceLotId: 101, quantity: 1 }], targets: [{ targetSkuId: 'SKU-X', quantity: 9999999999, unitPrice: 0 }, { targetSkuId: 'SKU-Y', quantity: 9999999999, unitPrice: 0 }] }, '目标数量合计不能超过'],
+    ['单头备注非字符串', { remark: 123, sources: [{ sourceLotId: 101, quantity: 1 }], targets: [{ targetSkuId: 'SKU-X', quantity: 1, unitPrice: 0 }] }, '备注格式不正确'],
     ['目标行超过 100', { sources: [{ sourceLotId: 101, quantity: 1 }], targets: Array.from({ length: 101 }, () => ({ targetSkuId: 'SKU-X', quantity: 1, unitPrice: 0 })) }, '各不能超过 100 行'],
   ])('入参校验：%s（开事务前就拒）', async (_label, body, message) => {
     await expect(createInventoryConversion(SESSION, { locationId: 'HQ', ...body } as never)).rejects.toThrow(message)
@@ -1741,6 +1745,15 @@ describe('库存转换多对多与成本守恒（#344）', () => {
     }).catch((caught: Error) => caught)
     expect(String(error)).toContain('转换前后成本不守恒')
     expect(String(error)).not.toMatch(/37\.5|来源合计/)
+  })
+
+  it('金额合计超出 numeric(12,2)：事务内按成本算出后拒绝，不等 PG 抛 22003', async () => {
+    fakeDb([{ id: 101, sku_id: 'SKU-A', supply_chain_unit_cost: '100000', quantity_on_hand: 200000 }])
+    await expect(createInventoryConversion(SESSION, {
+      locationId: 'HQ',
+      sources: [{ sourceLotId: 101, quantity: 100000 }],
+      targets: [{ targetSkuId: 'SKU-X', quantity: 100000, unitPrice: 100000 }],
+    })).rejects.toThrow('库存转换金额合计超出上限')
   })
 
   it('目标效期留空取来源批次中最早的效期', async () => {

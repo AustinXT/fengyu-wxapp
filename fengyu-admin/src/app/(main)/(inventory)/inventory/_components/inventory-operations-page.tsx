@@ -78,7 +78,7 @@ import type {
 } from '@/lib/inventory/types'
 import type { InventoryBusinessLevel } from '@/lib/inventory/business-level'
 import { inventoryDocStatusLabel } from '@/lib/inventory/doc-status-label'
-import { conversionLineAmount, summarizeConversion, suggestConversionUnitPrice } from '@/lib/inventory/conversion-plan'
+import { allocateConversionLinks, conversionLineAmount, summarizeConversion, suggestConversionUnitPrice, uncoveredConversionTargets } from '@/lib/inventory/conversion-plan'
 import {
   INVENTORY_INBOX_ACTION_STATUS,
   genericOperationId,
@@ -492,7 +492,7 @@ function LotPicker({
       <option value="">{loading ? '正在加载批次' : '选择库存批次'}</option>
       {lots.map((lot) => (
         <option key={lot.id} value={String(lot.id)}>
-          批次 {lot.batchNo || '未填写'} · 可用 {lot.quantityOnHand}{lot.expiryDate ? ` · 效期 ${lot.expiryDate}` : ''}
+          批次 {lot.batchNo || '未填写'} · 可用 {lot.availableQuantity}{lot.expiryDate ? ` · 效期 ${lot.expiryDate}` : ''}
         </option>
       ))}
     </Select>
@@ -4181,6 +4181,10 @@ interface ConversionTargetDraft {
 
 const EMPTY_CONVERSION_SOURCE: ConversionSourceDraft = { skuId: '', lotId: '', lot: null, quantity: '1', remark: '' }
 const EMPTY_CONVERSION_TARGET: ConversionTargetDraft = { skuId: '', quantity: '1', unitPrice: null, batchNo: '', expiryDate: '', remark: '' }
+/** 与服务端 CONVERSION_LINES_MAX 一致：来源、目标各不超过 100 行。 */
+const CONVERSION_LINES_MAX = 100
+/** 与服务端 twoDecimals 同判据：最多两位小数。 */
+const hasAtMostTwoDecimals = (value: number) => Number(value.toFixed(2)) === value
 
 /** 来源批次成本单价：赠送批次按 0；成本不可见（价格档遮蔽）或为空时返回 null，交服务端判定。 */
 function conversionSourceUnitCost(lot: InventoryLotRow | null): number | null {
@@ -4204,8 +4208,8 @@ function ConversionForm({
 }) {
   const availableLocations = locations.filter((location) => location.locationType === locationType && location.isActive)
   const [locationId, setLocationId] = useState('')
-  // #343 起转换只在总部做，目标只能是供应链商品（服务端 assertConvertibleSku 同口径）。
-  const targetSkuFilters: InventorySkuOptionFilters = { sourceType: '供应链' }
+  // #343 起转换只在总部做，来源、目标都只能是供应链商品（服务端 assertConvertibleSku 同口径）。
+  const convertibleSkuFilters: InventorySkuOptionFilters = { sourceType: '供应链' }
   const [docDate, setDocDate] = useState(today)
   const [remark, setRemark] = useState('')
   const [sources, setSources] = useState<ConversionSourceDraft[]>([EMPTY_CONVERSION_SOURCE])
@@ -4269,6 +4273,28 @@ function ConversionForm({
       toast.error('请完整填写目标商品、入库数量和单价')
       return
     }
+    if ([...sourceItems.map((item) => item.quantity!), ...targetItems.flatMap((item) => [item.quantity!, item.unitPrice!])].some((value) => !hasAtMostTwoDecimals(value))) {
+      toast.error('数量和单价最多保留两位小数')
+      return
+    }
+    // 同一批次多行：按批次汇总后比对可用量（服务端在锁内再按同口径校验）
+    const requestedByLot = new Map<string, { lot: InventoryLotRow; quantity: number }>()
+    for (const [index, line] of sources.entries()) {
+      if (!line.lot) continue
+      const entry = requestedByLot.get(line.lotId) ?? { lot: line.lot, quantity: 0 }
+      entry.quantity += sourceItems[index].quantity!
+      requestedByLot.set(line.lotId, entry)
+    }
+    const shortLot = [...requestedByLot.values()].find((entry) => entry.quantity - entry.lot.availableQuantity > 0.000001)
+    if (shortLot) {
+      toast.error(`库存不足：${shortLot.lot.skuName} 可用 ${shortLot.lot.availableQuantity}`)
+      return
+    }
+    const shares = allocateConversionLinks(sourceItems.map((item) => item.quantity!), targetItems.map((item) => item.quantity!))
+    if (uncoveredConversionTargets(shares, targetItems.length).length > 0) {
+      toast.error('来源数量太少，无法分摊到每个目标行（每个目标至少对应 0.01 来源数量）')
+      return
+    }
     if (mixedGift) {
       toast.error('赠送批次与非赠送批次不能混在同一张转换单里')
       return
@@ -4281,6 +4307,10 @@ function ConversionForm({
     const sourceSkuIds = new Set(sources.map((line) => line.lot?.skuId ?? line.skuId))
     if (targetItems.some((item) => sourceSkuIds.has(item.targetSkuId))) {
       toast.error('库存转换目标 SKU 不能与来源 SKU 相同')
+      return
+    }
+    if (balance.exceedsAmountLimit) {
+      toast.error('库存转换金额合计超出上限 9999999999.99')
       return
     }
     if (costKnown && !balance.balanced) {
@@ -4313,13 +4343,13 @@ function ConversionForm({
         <FormField label="转换日期"><DatePicker value={docDate} onValueChange={setDocDate} /></FormField>
       </div>
       <div className="space-y-3">
-        <div className="flex items-center justify-between gap-3"><h3 className="text-sm font-medium">来源（出库）</h3><Button type="button" variant="outline" size="sm" onClick={() => setSources((previous) => [...previous, EMPTY_CONVERSION_SOURCE])}>添加来源</Button></div>
+        <div className="flex items-center justify-between gap-3"><h3 className="text-sm font-medium">来源（出库）</h3><Button type="button" variant="outline" size="sm" disabled={sources.length >= CONVERSION_LINES_MAX} onClick={() => setSources((previous) => [...previous, EMPTY_CONVERSION_SOURCE])}>添加来源</Button></div>
         {sources.map((line, index) => {
           const unitCost = conversionSourceUnitCost(line.lot)
           const quantity = positiveNumber(line.quantity)
           return (
             <div key={index} className="grid grid-cols-1 gap-2 rounded-[var(--radius)] border border-[var(--border)] p-3 xl:grid-cols-[minmax(0,1.4fr)_minmax(0,1.4fr)_7rem_7rem_7rem_2.5rem]">
-              <FormField label="来源商品" required group><SkuPicker value={line.skuId} onChange={(skuId) => updateSource(index, { skuId, lotId: '', lot: null })} /></FormField>
+              <FormField label="来源商品" required group><SkuPicker value={line.skuId} filters={convertibleSkuFilters} onChange={(skuId) => updateSource(index, { skuId, lotId: '', lot: null })} /></FormField>
               <FormField label="来源批次" required><LotPicker locationId={locationId} skuId={line.skuId} value={line.lotId} onChange={(lotId) => updateSource(index, { lotId })} onLotChange={(lot) => updateSource(index, { lot })} /></FormField>
               <FormField label="出库数量" required><Input type="number" min="0.01" step="0.01" max="9999999999.99" value={line.quantity} onChange={(event) => updateSource(index, { quantity: event.target.value })} /></FormField>
               <FormField label={line.lot?.isGift ? '成本单价（赠送）' : '成本单价'}><Input value={unitCost === null ? '—' : unitCost.toFixed(2)} readOnly tabIndex={-1} /></FormField>
@@ -4331,13 +4361,13 @@ function ConversionForm({
         })}
       </div>
       <div className="space-y-3">
-        <div className="flex items-center justify-between gap-3"><h3 className="text-sm font-medium">目标（入库）</h3><Button type="button" variant="outline" size="sm" onClick={() => setTargets((previous) => [...previous, EMPTY_CONVERSION_TARGET])}>添加目标</Button></div>
+        <div className="flex items-center justify-between gap-3"><h3 className="text-sm font-medium">目标（入库）</h3><Button type="button" variant="outline" size="sm" disabled={targets.length >= CONVERSION_LINES_MAX} onClick={() => setTargets((previous) => [...previous, EMPTY_CONVERSION_TARGET])}>添加目标</Button></div>
         {targets.map((line, index) => {
           const price = targetPrices[index]
           const quantity = positiveNumber(line.quantity)
           return (
             <div key={index} className="grid grid-cols-1 gap-2 rounded-[var(--radius)] border border-[var(--border)] p-3 xl:grid-cols-[minmax(0,1.4fr)_7rem_7rem_7rem_minmax(0,1fr)_minmax(0,1fr)_2.5rem]">
-              <FormField label="目标商品" required group><SkuPicker value={line.skuId} filters={targetSkuFilters} disabled={!locationId} disabledHint="请先选择转换库存主体" onChange={(skuId) => updateTarget(index, { skuId })} /></FormField>
+              <FormField label="目标商品" required group><SkuPicker value={line.skuId} filters={convertibleSkuFilters} disabled={!locationId} disabledHint="请先选择转换库存主体" onChange={(skuId) => updateTarget(index, { skuId })} /></FormField>
               <FormField label="入库数量" required><Input type="number" min="0.01" step="0.01" max="9999999999.99" value={line.quantity} onChange={(event) => updateTarget(index, { quantity: event.target.value })} /></FormField>
               <FormField label="单价" required><Input type="number" min="0" step="0.01" max="9999999999.99" value={line.unitPrice ?? (suggestedPrice === null ? '' : suggestedPrice.toFixed(2))} placeholder="按来源合计预填" onChange={(event) => updateTarget(index, { unitPrice: event.target.value })} /></FormField>
               <FormField label="金额"><Input value={price === null || quantity === null ? '—' : conversionLineAmount(quantity, price).toFixed(2)} readOnly tabIndex={-1} /></FormField>

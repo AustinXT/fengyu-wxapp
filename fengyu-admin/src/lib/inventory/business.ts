@@ -11,7 +11,7 @@ import { revalidatePath } from 'next/cache'
 import { sql } from 'drizzle-orm'
 import { assertInventoryBusinessWritable } from './cutover'
 import { cancelledMarketReportRetainedSql } from './retained-sql'
-import { allocateConversionLinks, summarizeConversion } from './conversion-plan'
+import { allocateConversionLinks, summarizeConversion, uncoveredConversionTargets } from './conversion-plan'
 // 仅用于给 INTERNAL_SAME_NODE_DOC_TYPES 标类型 —— 没有它，集合里写错别字不会编译报错，
 // 只会静默变成「该类型不属同主体」，与 engine.ts 那份的行为悄悄分叉。
 import type { InventoryDocType } from './types'
@@ -5308,7 +5308,9 @@ export async function createInventoryConversion(
   session: AuthSession,
   input: CreateInventoryConversionInput,
 ): Promise<{ outboundId: string; inboundId: string }> {
-  const locationId = required(input.locationId, '转换库存主体')
+  const locationId = required(conversionText(input.locationId, '转换库存主体'), '转换库存主体')
+  const docDate = conversionText(input.docDate, '转换日期')
+  const remark = conversionText(input.remark, '备注')
   if (!Array.isArray(input.sources) || input.sources.length === 0) {
     throw new ApiError('INVALID_PARAMS', '库存转换至少需要一条来源明细')
   }
@@ -5344,6 +5346,19 @@ export async function createInventoryConversion(
       remark: conversionText(line.remark, '目标备注'),
     }
   })
+  for (const [label, lines] of [['来源', sourceLines], ['目标', targetLines]] as const) {
+    if (fixed(lines.reduce((sum, line) => sum + line.quantity, 0)) > CONVERSION_NUMBER_MAX) {
+      throw new ApiError('INVALID_PARAMS', `库存转换${label}数量合计不能超过 ${CONVERSION_NUMBER_MAX}`)
+    }
+  }
+  // 每个目标行都要分到来源关联，否则该入库明细没有血缘（来源数量太少、分到每个目标不足 0.01）。
+  const linkShares = allocateConversionLinks(
+    sourceLines.map((line) => line.quantity),
+    targetLines.map((line) => line.quantity),
+  )
+  if (uncoveredConversionTargets(linkShares, targetLines.length).length > 0) {
+    throw new ApiError('INVALID_PARAMS', '来源数量太少，无法分摊到每个目标行（每个目标至少对应 0.01 来源数量）')
+  }
   await syncLocations()
   const ids = await db.transaction(async (tx) => {
     await assertInventoryBusinessWritable(tx)
@@ -5417,6 +5432,9 @@ export async function createInventoryConversion(
           : '转换前后成本不守恒：目标合计与来源成本的差额超出允许误差',
       )
     }
+    if (balance.exceedsAmountLimit) {
+      throw new ApiError('INVALID_PARAMS', `库存转换金额合计超出上限 ${CONVERSION_NUMBER_MAX}`)
+    }
     // 目标效期留空时取来源批次中最早的效期（多来源时保守取短的那个）。
     const earliestSourceExpiry = sources
       .map((source) => source.lot.expiryDate)
@@ -5431,10 +5449,10 @@ export async function createInventoryConversion(
       status: '已完成',
       sourceOrgNodeId: locationId,
       marketId,
-      docDate: input.docDate,
+      docDate,
       totalQuantity: fixed(sources.reduce((sum, source) => sum + source.quantity, 0)),
       totalAmount: null,
-      remark: input.remark,
+      remark,
       createdBy: session.employeeId,
       confirmed: true,
     })
@@ -5444,10 +5462,10 @@ export async function createInventoryConversion(
       status: '已完成',
       targetOrgNodeId: locationId,
       marketId,
-      docDate: input.docDate,
+      docDate,
       totalQuantity: fixed(targets.reduce((sum, target) => sum + target.quantity, 0)),
       totalAmount: null,
-      remark: input.remark,
+      remark,
       createdBy: session.employeeId,
       confirmed: true,
     })
@@ -5473,7 +5491,9 @@ export async function createInventoryConversion(
         unitDiscount: null,
         actualUnitPrice: source.unitCost,
         amount: null,
+        // 成本快照同步写成核算用的成本单价：赠送来源记 0（#336），不带出批次上残留的历史成本
         ...priceFromLot(lot),
+        supplyChainUnitCost: source.unitCost,
         remark: source.remark,
       })
       await applyLotDelta(tx, {
@@ -5484,7 +5504,7 @@ export async function createInventoryConversion(
         quantityDelta: -source.quantity,
         createdBy: session.employeeId,
         movementKey: `inventory-conversion:out:${outboundId}:item:${outboundItemId}`,
-        remark: input.remark,
+        remark,
       })
       outboundItemIds.push(outboundItemId)
     }
@@ -5540,14 +5560,11 @@ export async function createInventoryConversion(
         quantityDelta: target.quantity,
         createdBy: session.employeeId,
         movementKey: `inventory-conversion:in:${inboundId}:item:${inboundItemId}`,
-        remark: input.remark,
+        remark,
       })
       inboundItemIds.push(inboundItemId)
     }
-    for (const share of allocateConversionLinks(
-      sources.map((source) => source.quantity),
-      targets.map((target) => target.quantity),
-    )) {
+    for (const share of linkShares) {
       await insertDocLink(tx, {
         fromDocId: outboundId,
         toDocId: inboundId,

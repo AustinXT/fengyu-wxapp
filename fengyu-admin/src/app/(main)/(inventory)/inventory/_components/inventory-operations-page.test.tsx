@@ -1565,11 +1565,11 @@ describe('SKU 候选按业务口径交给服务端过滤（#339）', () => {
     expect(screen.getAllByPlaceholderText('留空自动生成')).toHaveLength(1) // #345
   })
 
-  it('库存转换目标：总部主体 → 仅供应链；来源商品不加过滤（批次兜底）', () => {
+  it('库存转换来源 / 目标：总部主体 → 都只出供应链商品（与服务端 assertConvertibleSku 同口径，#344）', () => {
     // #343 起库存转换只剩供应链（总部主体）一层，市场 / 门店转换卡已下线
     renderPage({ level: 'supply-chain', operation: 'supply-chain-conversion', locations: LOCATIONS })
     const [source, target] = pickers()
-    expect(filtersOf(source)).toEqual({})
+    expect(filtersOf(source)).toEqual({ sourceType: '供应链' })
     expect(filtersOf(target)).toEqual({ sourceType: '供应链' })
     expect(screen.getAllByPlaceholderText('留空自动生成')).toHaveLength(1) // #345：目标批号留空生成新批号
   })
@@ -1616,8 +1616,8 @@ describe('分院配货按 skuIds 精确取当前门店进货价（#339）', () =
   it('批次下拉渲染正常与赠送两条批号不同的选项（#345）', async () => {
     vi.mocked(listInventorySkus).mockResolvedValue({ data: [], total: 0 })
     vi.mocked(listInventoryLotOptions).mockResolvedValue([
-      { id: 11, batchNo: 'B100', isGift: false, quantityOnHand: 6, expiryDate: null },
-      { id: 12, batchNo: 'GFH-20260925-0001-02', isGift: true, quantityOnHand: 2, expiryDate: null },
+      { id: 11, batchNo: 'B100', isGift: false, quantityOnHand: 6, availableQuantity: 6, expiryDate: null },
+      { id: 12, batchNo: 'GFH-20260925-0001-02', isGift: true, quantityOnHand: 2, availableQuantity: 2, expiryDate: null },
     ] as never)
     await pickRequest([item(1, 'S-200', 60)])
     const normal = await screen.findByRole<HTMLOptionElement>('option', { name: /^批次 B100 · 可用 6$/ })
@@ -1931,6 +1931,19 @@ describe('库存转换两段式表单与成本守恒（#344）', () => {
     await fillThirteenToThirteen()
     expect(numberInputs()[2]).toHaveValue(null)
     expect(balanceText()).toContain('看不到来源批次的供应链成本')
+  })
+
+  it('同一批次两行合计超过可用量：前端按批次汇总拦下（与服务端同口径）', async () => {
+    await fillThirteenToThirteen()
+    fireEvent.click(screen.getByRole('button', { name: '添加来源' }))
+    fireEvent.change(pickers()[1], { target: { value: 'SKU-1' } })
+    await waitFor(() => expect(screen.getAllByRole('option', { name: /批次 B1 · 可用 30/ })).toHaveLength(2))
+    const options = screen.getAllByRole('option', { name: /批次 B1 · 可用 30/ })
+    fireEvent.change(options[1].closest('select')!, { target: { value: '101' } })
+    fireEvent.change(numberInputs()[1], { target: { value: '18' } }) // 13 + 18 = 31 > 30
+    fireEvent.submit(screen.getByRole('button', { name: '创建库存转换单' }).closest('form')!)
+    await waitFor(() => expect(vi.mocked(toast.error)).toHaveBeenCalledWith('库存不足：精华液 可用 30'))
+    expect(createInventoryConversion).not.toHaveBeenCalled()
   })
 
   it('来源 / 目标可各自增行（N:M 解耦）', async () => {
