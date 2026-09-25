@@ -14,7 +14,13 @@
  *     快照（#378 在修错标，修好后数字随之变化，本页不另做处理）。
  *   - V 生美项目数：SUM(session_used) ∩ 已完成 ∩ 生美 ∩ 剔除寄存单退款专用单。
  *   - D 美容师人数：technician-sql 单源，`pool='beautician'`（在职历史化与双轨归属同产能技师，#297 口径不动）。
- *   - 不读 service_orders.service_order_type（售前 / 售后快照已过时，S–U 待 #373）。
+ *   - E 保有会员（#373）：与客量板「有效保有会员」（customer.ts queryRetainedMembers）逐字同谓词，
+ *     截至统计时点 T = min(所选月末, 今天)，按顾客**绑定门店**归店；F / H = E 人群里当月到店天数（#298 visitDaysSql，
+ *     service_date 轴、不限到店门店）≥1 / ≥2。
+ *   - K / L 被经营（#373）：(下单门店, 顾客) 在年度 / 当月的款项净额 ≥ 会员门槛（getMemberThreshold，#292）。
+ *     款项 = P 的谓词只把 sale_order_type 收窄到 ('销售单', '转换单')——不含充值、寄存单；change_type 不含储值卡抵扣。
+ *   - S / T / U 客流（#373）：(服务门店, 顾客, service_date) 去重的到店天数；T = 当天在该店的服务单核销过体验项目
+ *     （sale_items.is_experience），U = S − T。**不读** service_orders.service_order_type（开单时快照，已过时）。
  *   - 日期一律按 DATE 列与 'YYYY-MM-DD' 字符串比较，不依赖会话时区（#291）；各查询都不加 >0 过滤（#290）。
  */
 
@@ -26,11 +32,14 @@ import { resolveScopeName, validateScope } from '@/lib/data-center/context'
 import { scopeFilterSql, scopeStoreSkeletonSql } from '@/lib/data-center/scope-sql'
 import { excludeDepositRefundSql } from '@/lib/data-center/consume-filter'
 import { technicianByStoreSql } from '@/lib/data-center/technician-sql'
+import { visitDaysSql } from '@/lib/data-center/visit-days'
+import { getMemberThreshold } from '@/lib/member-threshold'
 import { isValidMonth, monthRange } from '@/lib/data-center/report-period'
 import { shanghaiToday } from '@/lib/data-center/time-range'
 import { DATA_CENTER_DASHBOARD_ACTION } from '@/lib/data-center/reports'
 import {
   buildOperatingMasterTable,
+  retainedAsOf,
   ytdRange,
   type OperatingMasterMetricKey,
   type OperatingMasterMetrics,
@@ -49,6 +58,8 @@ export interface OperatingMasterResult extends OperatingMasterTable {
   month: string
   range: ResolvedRange
   ytd: ResolvedRange
+  /** 统计时点 T = min(所选月末, 今天)：E 保有会员截至这一天 */
+  asOf: string
   scopeName: string
 }
 
@@ -67,6 +78,31 @@ function revenueByStoreSql(session: AuthSession, scope: DataCenterScope, range: 
       `
 }
 
+/**
+ * K / L 被经营人头：(下单门店, 顾客) 区间内款项净额 ≥ 门槛。款项谓词 = revenueByStoreSql 只把类型收窄到销售单 + 转换单
+ * （consistency.operating-master 守护）。门槛比较放在外层 WHERE，不用 HAVING。
+ */
+function managedByStoreSql(session: AuthSession, scope: DataCenterScope, range: ResolvedRange, threshold: number): SQL {
+  return sql`
+        SELECT t.store_id, COUNT(*) AS v
+        FROM (
+          SELECT spe.store_id, so.client_user_id, SUM(spe.amount::numeric) AS amount
+          FROM sale_order_performance_events spe
+          JOIN sale_orders so ON so.sale_order_id = spe.sale_order_id
+          WHERE ${scopeFilterSql(session, scope, 'spe.store_id')}
+            AND spe.status = '已支付'
+            AND spe.change_type IN ('首次支付', '回款', '退款')
+            AND spe.sale_order_type IN ('销售单', '转换单')
+            AND spe.legacy_source IS DISTINCT FROM 'workfine'
+            AND spe.performance_date BETWEEN ${range.start} AND ${range.end}
+            AND so.client_user_id IS NOT NULL
+          GROUP BY spe.store_id, so.client_user_id
+        ) t
+        WHERE t.amount >= ${threshold}
+        GROUP BY t.store_id
+      `
+}
+
 export const getOperatingMaster = withPermission(
   DATA_CENTER_DASHBOARD_ACTION,
   async (session: AuthSession, params: OperatingMasterParams): Promise<OperatingMasterResult> => {
@@ -77,8 +113,13 @@ export const getOperatingMaster = withPermission(
     const { scope, month } = params
     const cur = monthRange(month)
     const ytd = ytdRange(month)
+    const asOf = retainedAsOf(month)
+    const threshold = await getMemberThreshold()
 
-    const [scopeName, skelRows, beauticianRows, revRows, ytdRevRows, projectRows, consRows, shengmeiConsRows] =
+    const [
+      scopeName, skelRows, beauticianRows, revRows, ytdRevRows, projectRows, consRows, shengmeiConsRows,
+      retainedRows, managedMonthRows, managedYearRows, footfallRows,
+    ] =
       await Promise.all([
         resolveScopeName(scope),
         // 门店骨架：市场按组织树排序权重，门店按名称；store_id 兜底保证顺序恒定（#282）
@@ -133,14 +174,74 @@ export const getOperatingMaster = withPermission(
             AND ${excludeDepositRefundSql('so')}
           GROUP BY so.store_id
         `),
+        // E 保有会员 / F 回店1次 / H 回店≥2次
+        db.execute(sql`
+          WITH retained AS (
+            SELECT DISTINCT c.bound_store_id AS store_id, so.client_user_id
+            FROM service_orders so
+            JOIN client_wechat_users c ON c.user_id = so.client_user_id
+            WHERE ${scopeFilterSql(session, scope, 'c.bound_store_id')}
+              AND so.status = '已完成'
+              AND so.client_user_id IS NOT NULL
+              AND so.service_date BETWEEN (${asOf}::date - INTERVAL '90 days')::date AND ${asOf}
+              AND c.became_member_at IS NOT NULL
+              AND c.became_member_at::date <= ${asOf}
+          ),
+          month_visits AS (
+            SELECT vd.client_user_id, COUNT(*) AS days
+            FROM (${visitDaysSql({ axis: 'service_date', scope: sql`TRUE`, range: cur })}) vd
+            GROUP BY vd.client_user_id
+          )
+          SELECT r.store_id,
+                 COUNT(*) AS retained,
+                 COUNT(*) FILTER (WHERE mv.days >= 1) AS once,
+                 COUNT(*) FILTER (WHERE mv.days >= 2) AS twice
+          FROM retained r
+          LEFT JOIN month_visits mv ON mv.client_user_id = r.client_user_id
+          GROUP BY r.store_id
+        `),
+        // L 被经营当月
+        db.execute(managedByStoreSql(session, scope, cur, threshold)),
+        // K 被经营年度
+        db.execute(managedByStoreSql(session, scope, ytd, threshold)),
+        // S 服务到店天数 / T 售前到店天数
+        db.execute(sql`
+          WITH visit_days AS (
+            SELECT so.store_id, so.client_user_id, so.service_date,
+                   BOOL_OR(EXISTS (
+                     SELECT 1
+                     FROM service_items sit
+                     JOIN sale_items si ON si.sale_item_id = sit.sale_item_id
+                     WHERE sit.service_order_id = so.service_order_id
+                       AND si.is_experience = TRUE
+                   )) AS pre_sale
+            FROM service_orders so
+            WHERE ${scopeFilterSql(session, scope, 'so.store_id')}
+              AND so.status = '已完成'
+              AND so.client_user_id IS NOT NULL
+              AND so.service_date BETWEEN ${cur.start} AND ${cur.end}
+              AND ${excludeDepositRefundSql('so')}
+            GROUP BY so.store_id, so.client_user_id, so.service_date
+          )
+          SELECT store_id, COUNT(*) AS footfall, COUNT(*) FILTER (WHERE pre_sale) AS pre_sale
+          FROM visit_days
+          GROUP BY store_id
+        `),
       ])
 
     const metrics = new Map<string, Partial<OperatingMasterMetrics>>()
-    const collect = (rows: unknown, key: OperatingMasterMetricKey) => {
+    /** @param fields 结果列 → 指标键；缺省只读 `v` */
+    const collect = (
+      rows: unknown,
+      key: OperatingMasterMetricKey,
+      fields: Partial<Record<string, OperatingMasterMetricKey>> = { v: key },
+    ) => {
       for (const row of rows as Array<Record<string, unknown>>) {
         // 原生 SQL 的 numeric / bigint 回来是字符串，一律 Number()
         const id = String(row.store_id)
-        metrics.set(id, { ...metrics.get(id), [key]: Number(row.v ?? 0) })
+        const next = { ...metrics.get(id) }
+        for (const [column, metricKey] of Object.entries(fields)) next[metricKey!] = Number(row[column] ?? 0)
+        metrics.set(id, next)
       }
     }
     collect(beauticianRows, 'beauticianCount')
@@ -149,6 +250,14 @@ export const getOperatingMaster = withPermission(
     collect(projectRows, 'shengmeiProjectCount')
     collect(consRows, 'monthConsume')
     collect(shengmeiConsRows, 'shengmeiConsume')
+    collect(retainedRows, 'retainedMembers', { retained: 'retainedMembers', once: 'returnOnceHeads', twice: 'returnTwiceHeads' })
+    collect(managedMonthRows, 'managedMonthCustomers')
+    collect(managedYearRows, 'managedYearCustomers')
+    collect(footfallRows, 'monthFootfall', { footfall: 'monthFootfall', pre_sale: 'preSaleFootfall' })
+    // U 售后 = S − T（同一行查询的两个计数，恒 ≥ 0）
+    for (const [id, values] of metrics) {
+      metrics.set(id, { ...values, afterSaleFootfall: (values.monthFootfall ?? 0) - (values.preSaleFootfall ?? 0) })
+    }
 
     const stores: OperatingMasterStore[] = (skelRows as Array<Record<string, unknown>>).map((row) => ({
       storeId: String(row.store_id),
@@ -157,6 +266,6 @@ export const getOperatingMaster = withPermission(
       marketName: String(row.market_name ?? ''),
     }))
 
-    return { month, range: cur, ytd, scopeName, ...buildOperatingMasterTable(stores, metrics) }
+    return { month, range: cur, ytd, asOf, scopeName, ...buildOperatingMasterTable(stores, metrics) }
   },
 )

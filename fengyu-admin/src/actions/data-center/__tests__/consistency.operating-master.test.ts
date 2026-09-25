@@ -8,12 +8,17 @@
  * feedback-literal-guard-whole-segment-equality）。
  *
  * V 生美项目数没有销售板对应物：钉成「X 生美实耗的模板，只把求和表达式换成 SUM(sit.session_used)」。
+ *
+ * #373 增量：
+ *   - E 保有会员 = 客量板「有效保有会员」（customer.ts queryRetainedMembers）：WHERE 整段等值（只归一时点变量名）；
+ *   - K / L 被经营的款项 WHERE = P 的 WHERE，只把 sale_order_type 收窄为 ('销售单', '转换单')、再加「挂了顾客」一条。
  */
 import fs from 'node:fs'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 
 const SALES = fs.readFileSync(path.resolve(__dirname, '../sales.ts'), 'utf8')
+const CUSTOMER = fs.readFileSync(path.resolve(__dirname, '../customer.ts'), 'utf8')
 const MASTER = fs.readFileSync(path.resolve(__dirname, '../operating-master.ts'), 'utf8')
 
 function slice(src: string, start: string, end: string): string {
@@ -43,11 +48,32 @@ const sales = {
   shengmeiConsume: template(slice(SALES, '      // 生美实耗\n', '    ])')),
 }
 const master = {
-  revenue: template(slice(MASTER, 'function revenueByStoreSql', 'export const getOperatingMaster')),
+  revenue: template(slice(MASTER, 'function revenueByStoreSql', 'function managedByStoreSql')),
   project: template(slice(MASTER, '// V 生美项目数', '// W 实耗')),
   consume: template(slice(MASTER, '// W 实耗', '// X 生美实耗')),
-  shengmeiConsume: template(slice(MASTER, '// X 生美实耗', '      ])')),
+  shengmeiConsume: template(slice(MASTER, '// X 生美实耗', '// E 保有会员')),
 }
+
+/** 模板里第一个 WHERE 到其后第一个终止串之间（即过滤谓词整段）；终止串缺省 GROUP BY，传 null 取到模板末尾 */
+function whereClause(body: string, end: string | null = ' GROUP BY '): string {
+  const from = body.indexOf(' WHERE ')
+  const to = end === null ? body.length : body.indexOf(end, from)
+  if (from === -1 || to === -1) throw new Error(`模板里找不到 WHERE … ${end}`)
+  return body.slice(from, to).trim()
+}
+
+/** 多段 sql 模板的切片：取第一段（E 的 CTE 里嵌了 visitDaysSql 插值，模板本身只有一段） */
+function firstTemplate(section: string): string {
+  const match = section.match(/sql`([\s\S]*?)`/)
+  if (!match) throw new Error('切片里没有 sql 模板')
+  return match[1].replace(/\s+/g, ' ').trim()
+}
+
+const retained = {
+  customerBoard: template(slice(CUSTOMER, 'async function queryRetainedMembers', '// ====')),
+  master: firstTemplate(slice(MASTER, '// E 保有会员', '// L 被经营当月')),
+}
+const managed = template(slice(MASTER, 'function managedByStoreSql', 'export const getOperatingMaster'))
 
 describe('经营数据主表 × 销售板门店明细 口径同源（#372）', () => {
   it('P 当月完成 / R 年度累计 = 销售板门店「总业绩」整段模板', () => {
@@ -81,6 +107,27 @@ describe('经营数据主表 × 销售板门店明细 口径同源（#372）', (
       expect(body).toContain("${excludeDepositRefundSql('so')}")
     }
     expect(slice(MASTER, '// W 实耗', '      ])')).not.toMatch(/ytd\./)
+  })
+
+  it('E 保有会员 = 客量板「有效保有会员」WHERE 整段（按绑定门店 scope、90 天窗口、became_member_at 守卫）', () => {
+    const board = whereClause(retained.customerBoard, null).replace(/\$\{sc\}/, "${scopeFilterSql(session, scope, 'c.bound_store_id')}")
+      .replace(/\$\{end\}/g, '${T}') // template() 已把 range.end 归一成 end
+    // 客量板的 scope 片段是先赋给 sc 再插值：确认 sc 就是按绑定门店过滤
+    expect(slice(CUSTOMER, 'async function queryRetainedMembers', '// ====')).toContain(
+      "const sc = scopeFilterSql(session, scope, 'c.bound_store_id')",
+    )
+    const master = whereClause(retained.master, ' ), month_visits AS')
+      .replace(/\$\{asOf\}/g, '${T}')
+    expect(master).toBe(board)
+    expect(board).toContain("INTERVAL '90 days'")
+  })
+
+  it('K / L 款项 WHERE = P 的 WHERE，只把类型收窄为销售单 + 转换单、再要求挂了顾客', () => {
+    const p = whereClause(master.revenue)
+    const expected = p.replace("spe.sale_order_type IN ('销售单', '转换单', '充值单')", "spe.sale_order_type IN ('销售单', '转换单')")
+      + ' AND so.client_user_id IS NOT NULL'
+    expect(expected).not.toBe(p + ' AND so.client_user_id IS NOT NULL')
+    expect(whereClause(managed)).toBe(expected)
   })
 
   it('守护自检：切到的模板确实是承重谓词（防切片漂移后两边一起变成空串也相等）', () => {
