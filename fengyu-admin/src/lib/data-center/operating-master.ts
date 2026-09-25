@@ -90,6 +90,15 @@ export const OPERATING_MASTER_HEADER_HEIGHTS = [84, 44] as const
 
 // ─── 列定义 ───────────────────────────────────────────────────────────────────
 
+/**
+ * 列宽按列名最长的一行估算（text-xs 约 12px/字 + 左右内边距与「?」说明图标约 48px），
+ * 保证模板两行列名不被挤成三四行；数值列再按单位给下限。
+ */
+function headerWidth(header: string, min: number): number {
+  const longest = Math.max(...header.split('\n').map((line) => line.length))
+  return Math.max(min, longest * 12 + 48)
+}
+
 function metric(key: OperatingMasterMetricKey) {
   return (row: OperatingMasterRow) => row.values[key] ?? null
 }
@@ -110,7 +119,7 @@ function pendingColumn(
     unit,
     pending,
     align: 'right',
-    width: 96,
+    width: headerWidth(header, 96),
     hint: pending === '#374' ? '目标列：本期不取数（#374）' : '口径待确认，本期不取数（#373）',
     exportValue: () => '—',
     exportWidth: 12,
@@ -132,7 +141,7 @@ function metricColumn(
     group,
     unit,
     align: 'right',
-    width: unit === 'amount' ? 120 : 96,
+    width: headerWidth(header, unit === 'amount' ? 120 : 96),
     hint,
     value: metric(key),
     aggregate: { kind: 'sum' },
@@ -151,7 +160,7 @@ export const OPERATING_MASTER_COLUMNS: readonly OperatingMasterColumn[] = [
     header: '市场',
     group: BLANK_FROZEN_GROUP,
     freeze: 'left',
-    width: 104,
+    width: 112,
     exportValue: (row) => row.marketName,
     exportWidth: 14,
   },
@@ -161,7 +170,7 @@ export const OPERATING_MASTER_COLUMNS: readonly OperatingMasterColumn[] = [
     header: '门店',
     group: BLANK_FROZEN_GROUP,
     freeze: 'left',
-    width: 120,
+    width: 148,
     exportValue: (row) => row.storeName,
     exportWidth: 16,
   },

@@ -11,10 +11,15 @@ import {
 import type { MatrixTotals } from "@/lib/data-center/matrix"
 import { MatrixTable, type MatrixColumn } from "../matrix-table"
 
+/** 冻结列宽度固定：长名截断、悬停看全名，不溢出盖住相邻列 */
+function DimensionText({ text }: { text: string }) {
+  return <span className="block truncate" title={text}>{text}</span>
+}
+
 /** 列定义来自 lib（与导出同源），这里只补页面渲染：维度列显示文本、占位列合计行显示「—」 */
 const COLUMNS: MatrixColumn<OperatingMasterRow>[] = OPERATING_MASTER_COLUMNS.map((column) => {
-  if (column.key === "marketName") return { ...column, cell: (row: OperatingMasterRow) => row.marketName }
-  if (column.key === "storeName") return { ...column, cell: (row: OperatingMasterRow) => row.storeName }
+  if (column.key === "marketName") return { ...column, cell: (row: OperatingMasterRow) => <DimensionText text={row.marketName} /> }
+  if (column.key === "storeName") return { ...column, cell: (row: OperatingMasterRow) => <DimensionText text={row.storeName} /> }
   if (column.pending) return { ...column, formatTotal: () => "—" }
   return column
 })
