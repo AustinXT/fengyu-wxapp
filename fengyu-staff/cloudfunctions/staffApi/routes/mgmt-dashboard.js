@@ -31,7 +31,7 @@ const {
 } = require('../utils/scope')
 const { excludeDepositRefundSql } = require('../utils/consume-filter')
 // 在营口径单源（#401）：只看门店组织节点 is_active，不看门店关店标记
-const { activeStoreCondition } = require('../utils/store-status')
+const { activeStoreCondition, activeStoreNodeCondition } = require('../utils/store-status')
 
 /**
  * 取 selectedDate 所属月份的月末日期（YYYY-MM-DD）。
@@ -75,8 +75,7 @@ async function loadAllMarkets() {
     LEFT JOIN market_descendants d ON d.market_id = m.id
     LEFT JOIN org_nodes o_store
       ON o_store.id = d.node_id
-     AND o_store.type = '门店'
-     AND o_store.is_active = TRUE
+     AND ${activeStoreNodeCondition('o_store')}
     LEFT JOIN stores s ON s.org_node_id = o_store.id
     WHERE m.type = '市场'
     ORDER BY m.name ASC, s.store_name ASC

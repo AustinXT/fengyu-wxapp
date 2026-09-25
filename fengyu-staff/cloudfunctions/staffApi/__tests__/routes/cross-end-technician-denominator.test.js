@@ -191,7 +191,7 @@ describe('产能技师分母跨端字面量守护（#320）', () => {
       extractSection(
         readFile(FILES.staffStoreStatus),
         'function activeStoreCondition(column)',
-        '\nmodule.exports',
+        '\n/**',
       ),
     )
     staffWithActiveFn = squeeze(

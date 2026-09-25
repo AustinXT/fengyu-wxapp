@@ -25,4 +25,13 @@ function activeStoreCondition(column) {
   )`
 }
 
-module.exports = { activeStoreCondition }
+/**
+ * 门店组织节点在营谓词（节点级，给直接 JOIN org_nodes 的查询用，如范围下拉 loadAllMarkets）。
+ * 与 activeStoreCondition 子查询里的 WHERE 同一口径 —— 两者一致由
+ * __tests__/routes/cross-end-store-status-snapshot.test.js 运行时断言守护。
+ */
+function activeStoreNodeCondition(alias) {
+  return `${alias}.type = '门店' AND ${alias}.is_active = TRUE`
+}
+
+module.exports = { activeStoreCondition, activeStoreNodeCondition }

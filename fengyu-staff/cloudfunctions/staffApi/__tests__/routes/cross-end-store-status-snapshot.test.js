@@ -218,9 +218,30 @@ describe('#401 数据中心在营口径 · 接线', () => {
     }
   })
 
+  it('staff 范围下拉 loadAllMarkets 的节点判定经 helper（不再手写 o_store.is_active）', () => {
+    // 闸门 2 codex round-6 P2：下拉原先手写 `o_store.is_active = TRUE`，是 helper 之外的第三份实现
+    const src = readFile(path.join(STAFF_ROOT, 'routes/mgmt-dashboard.js'))
+    const i = src.indexOf('async function loadAllMarkets(')
+    const body = src.slice(i, src.indexOf('\n}\n', i))
+    expect(i).toBeGreaterThan(-1)
+    expect(body).toContain("AND ${activeStoreNodeCondition('o_store')}")
+    expect(src).not.toMatch(/o_store\.is_active/i)
+  })
+
+  it('staff helper 内部同源：activeStoreCondition 子查询的 WHERE 正是 activeStoreNodeCondition(active_node)', () => {
+    const { activeStoreCondition, activeStoreNodeCondition } = require('../../utils/store-status')
+    const squeeze = (t) => t.replace(/\s+/g, ' ').trim()
+    expect(squeeze(activeStoreCondition('x.store_id'))).toBe(
+      'x.store_id IN ( SELECT active_store.store_id FROM stores active_store' +
+        ' JOIN org_nodes active_node ON active_store.org_node_id = active_node.id' +
+        ` WHERE ${activeStoreNodeCondition('active_node')} )`,
+    )
+    expect(activeStoreNodeCondition('n')).toBe("n.type = '门店' AND n.is_active = TRUE")
+  })
+
   it('staff mgmt-dashboard.js 从 helper 引入 activeStoreCondition 并叠加到三条 scope', () => {
     const src = readFile(path.join(STAFF_ROOT, 'routes/mgmt-dashboard.js'))
-    expect(src).toContain("const { activeStoreCondition } = require('../utils/store-status')")
+    expect(src).toContain("const { activeStoreCondition, activeStoreNodeCondition } = require('../utils/store-status')")
     expect(src).toContain('sql: `(${scope.sql}) AND ${activeStoreCondition(column)}`,')
     // 三个构造器整段等值（buildStaffScope 另由 technician-denominator 要件 7 钉住，这里一并钉，互不依赖）
     const squeeze = (t) => t.replace(/\s+/g, ' ').trim()
