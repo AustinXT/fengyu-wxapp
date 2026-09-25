@@ -16,6 +16,8 @@
  *   6. spend = SUM(sale_order_performance_events.amount) @ performance_date（#138 起，与业绩 KPI 同源；
  *      不再按父订单 status 过滤、排除储值卡抵扣；非 metrics.md 的 paid_amount）
  *   7. anchor 反推关键字面量（visits_90d_prev / 6 months / 12 months / 90 days）
+ *   8. 一次/二次客活 = 到店天数，(顾客, service_date) 去重（#298）—— 跨定义：admin visitDaysSql /
+ *      staff mgmt-traffic / cron refresh-monthly-activity 三方由同一组口径常量拼出整段快照
  *
  * 任一端口径变更必须双端同步，否则数据中心客量板块与员工端 mgmtTraffic 数字对不上。
  */
@@ -23,6 +25,10 @@ import fs from 'node:fs'
 import path from 'node:path'
 import ts from 'typescript'
 import { describe, it, expect, beforeAll } from 'vitest'
+import { sql } from 'drizzle-orm'
+import { PgDialect } from 'drizzle-orm/pg-core'
+import { visitDaysSql } from '@/lib/data-center/visit-days'
+import { UPDATE_MONTHLY_ACTIVITY_SQL } from '@/cron/steps/refresh-monthly-activity'
 
 const ADMIN_CUSTOMER = path.resolve(__dirname, '../customer.ts')
 const STAFF_MGMT_TRAFFIC = path.resolve(
@@ -381,6 +387,28 @@ function sqlInFunction(src: string, fileName: string, fnName: string): string {
   }
   ts.forEachChild(sf, visit)
   return normalize(out.map(stripSqlComments).join(' \n '))
+}
+
+/**
+ * 指定函数声明的**完整源码**（剥 JS 注释 + 归一空白），含非 SQL 部分：
+ * scope 生产者的列名实参、mode→条件的三元映射、结果取值 —— sqlInFunction 只收模板串，看不到这些（#298 评审 P2）。
+ */
+function fnSource(src: string, fileName: string, fnName: string): string {
+  const sf = ts.createSourceFile(
+    fileName,
+    src,
+    ts.ScriptTarget.Latest,
+    true,
+    fileName.endsWith('.js') ? ts.ScriptKind.JS : ts.ScriptKind.TS,
+  )
+  const hits: string[] = []
+  const visit = (n: ts.Node): void => {
+    if (ts.isFunctionDeclaration(n) && n.name?.text === fnName) hits.push(src.slice(n.getStart(sf), n.getEnd()))
+    ts.forEachChild(n, visit)
+  }
+  ts.forEachChild(sf, visit)
+  if (hits.length !== 1) throw new Error(`fnSource: ${fnName} 在 ${fileName} 中命中 ${hits.length} 处`)
+  return normalize(stripComments(hits[0]))
 }
 
 describe('客量板块两端口径一致性守护', () => {
@@ -1306,6 +1334,222 @@ describe('客量板块两端口径一致性守护', () => {
   describe('维护者提醒 — 漂移时双端对照', () => {
     it('admin 注释提及移植源 mgmt-traffic', () => {
       expect(adminSrc).toMatch(/mgmt-traffic/i)
+    })
+  })
+  /**
+   * 8. 一次/二次客活 = 到店天数（#298）—— **跨定义**一致性守护
+   *
+   * 同名概念「一次客活 / 二次客活」在仓里有三处运行时定义，2026-09 审计发现前两处按服务单行数、
+   * 后一处按到店天数，同一个 admin 里差 62 人（审计区间 09-01~09-22；到 09-24 为 63 人）：
+   *   ① admin 数据中心 KPI（queryActive）与明细（queryRegActiveBreakdown）→ 共用 visitDaysSql
+   *   ② staffApi mgmt-traffic（queryActiveOnce / queryActiveTwice）→ 独立副本
+   *   ③ cron refresh-monthly-activity（顾客列表「月度客活」筛选的数据源）
+   * 三方的预期文本都由下面同一组口径常量拼出来：改任何一方的去重列 / 过滤条件 / 档位阈值，
+   * 要么它自己的整段快照红，要么（改了常量）其余两方一起红 —— 不存在只改一侧还全绿的路径。
+   * （db/scripts/calc-monthly-activity.js 与一次性 repair 脚本同为按天，但已退役/一次性，不在守护内。）
+   *
+   * 整段逐字等值，不做「含某字面量」匹配（见 EXPECTED_SPE_BLOCKS 上方四轮评审记录）。
+   *   - visitDaysSql 按 **Drizzle 实际渲染出的 SQL** 比对，连同日期轴白名单的取值一起锁住；
+   *   - customer.ts 用的 visitDaysSql 必须就是上面被渲染的那一个（import 来源 + 无本地同名替身）；
+   *   - KPI / staff 按**整个函数源码**比对（含 scope 列名实参与 once/twice 映射，只锁模板串会漏）。
+   */
+  describe('一次/二次客活 = 到店天数，(顾客, service_date) 去重（#298，跨定义）', () => {
+    const VISIT_DAY_COL = 'so.service_date'
+    const VISIT_FILTER = "so.status = '已完成' AND so.client_user_id IS NOT NULL"
+    const RETAINED = "c.customer_status IN ('保有会员-稳定', '保有会员-有效')"
+
+    const staffExpected = (fnName: string, daysClause: string): string =>
+      `async function ${fnName}(scopeType, scopeId, period) { ` +
+      "const ssc = buildSaleScope(scopeType, scopeId, 'so', 1) " +
+      "const csc = buildClientScope(scopeType, scopeId, 'c', 1 + ssc.params.length) " +
+      'const rows = await pg.query( ' +
+      `\`WITH visit_count AS ( SELECT so.client_user_id, COUNT(DISTINCT ${VISIT_DAY_COL}) AS days ` +
+      `FROM service_orders so WHERE \${ssc.sql} AND ${VISIT_FILTER} ` +
+      `AND ${VISIT_DAY_COL} BETWEEN \${startDateExpr(period)} AND \${endDateExpr(period)} ` +
+      'GROUP BY so.client_user_id ) SELECT COUNT(*) AS v FROM visit_count vc ' +
+      'JOIN client_wechat_users c ON c.user_id = vc.client_user_id ' +
+      `WHERE \${csc.sql} AND ${RETAINED} AND ${daysClause}\`, ` +
+      '[...ssc.params, ...csc.params], ) return Number(rows[0]?.v || 0) }'
+
+    const adminKpiExpected =
+      'async function queryActive( session: AuthSession, scope: DataCenterScope, range: ResolvedRange, ' +
+      "mode: 'once' | 'twice', ): Promise<number> { " +
+      "const ssc = scopeFilterSql(session, scope, 'so.store_id') " +
+      "const csc = scopeFilterSql(session, scope, 'c.bound_store_id') " +
+      "const daysClause = mode === 'once' ? sql`vc.days = 1` : sql`vc.days >= 2` " +
+      'const rows = await db.execute(sql` ' +
+      "WITH visit_days AS (${visitDaysSql({ axis: 'service_date', scope: ssc, range })}), " +
+      'visit_count AS ( SELECT vd.client_user_id, COUNT(DISTINCT vd.visit_date) AS days ' +
+      'FROM visit_days vd GROUP BY vd.client_user_id ) ' +
+      'SELECT COUNT(*) AS v FROM visit_count vc JOIN client_wechat_users c ON c.user_id = vc.client_user_id ' +
+      `WHERE \${csc} AND ${RETAINED} AND \${daysClause} \`) return num(first(rows).v) }`
+
+    const breakdownActiveExpected =
+      "visit_days AS (${visitDaysSql({ axis: 'service_date', scope: serviceScope, range })}), " +
+      'visit_count AS ( SELECT vd.client_user_id, c.bound_store_id AS store_id, ' +
+      'COUNT(DISTINCT vd.visit_date) AS days, c.customer_status AS cstatus ' +
+      'FROM visit_days vd JOIN client_wechat_users c ON c.user_id = vd.client_user_id ' +
+      'WHERE ${customerScope} AND c.bound_store_id IS NOT NULL ' +
+      'GROUP BY vd.client_user_id, c.bound_store_id, c.customer_status ), ' +
+      'active AS ( SELECT store_id, COUNT(*) FILTER (WHERE days = 1) AS visit_once, ' +
+      'COUNT(*) FILTER (WHERE days >= 2) AS visit_twice FROM visit_count ' +
+      `WHERE cstatus IN ('保有会员-稳定', '保有会员-有效') GROUP BY store_id ), `
+
+    const cronActivity = (src: string): string => normalize(stripSqlComments(src))
+    const breakdownActive = (src: string): string => {
+      const bd = sqlInFunction(src, ADMIN_CUSTOMER, 'queryRegActiveBreakdown')
+      const from = bd.indexOf('visit_days AS (')
+      const to = bd.indexOf('status_agg AS (')
+      return from > 0 && to > from ? bd.slice(from, to) : ''
+    }
+
+    /** customer.ts 里 visitDaysSql 标识符的全部出现：来源 import + 声明 + 引用 */
+    const visitDaysSqlUsage = (src: string) => {
+      const sf = ts.createSourceFile(ADMIN_CUSTOMER, src, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
+      const imports: string[] = []
+      let localDecls = 0
+      let refs = 0
+      const visit = (n: ts.Node): void => {
+        if (ts.isImportDeclaration(n)) {
+          const named = n.importClause?.namedBindings
+          if (named && ts.isNamedImports(named) && named.elements.some((e) => e.name.text === 'visitDaysSql')) {
+            imports.push(normalize(n.getText(sf)))
+          }
+          return
+        }
+        if (
+          (ts.isVariableDeclaration(n) || ts.isFunctionDeclaration(n) || ts.isParameter(n) || ts.isClassDeclaration(n)) &&
+          n.name &&
+          ts.isIdentifier(n.name) &&
+          n.name.text === 'visitDaysSql'
+        ) {
+          localDecls++
+        }
+        if (ts.isIdentifier(n) && n.text === 'visitDaysSql') refs++
+        ts.forEachChild(n, visit)
+      }
+      ts.forEachChild(sf, visit)
+      return { imports, localDecls, refs }
+    }
+
+    it('admin visitDaysSql 渲染结果：DISTINCT (client_user_id, service_date) + 已完成 + 挂顾客', () => {
+      const q = new PgDialect().sqlToQuery(
+        visitDaysSql({ axis: 'service_date', scope: sql`TRUE`, range: { start: '2026-09-01', end: '2026-09-24' } }),
+      )
+      expect(normalize(q.sql)).toBe(
+        `SELECT DISTINCT so.client_user_id, ${VISIT_DAY_COL} AS visit_date FROM service_orders so ` +
+          `WHERE TRUE AND ${VISIT_FILTER} AND ${VISIT_DAY_COL} BETWEEN $1 AND $2`,
+      )
+      expect(q.params).toEqual(['2026-09-01', '2026-09-24'])
+    })
+
+    it('visitDaysSql 拒绝白名单外的日期轴（含原型链键；sql.raw 只吃闭集）', () => {
+      for (const axis of ['completed_at', 'toString', 'constructor', '__proto__']) {
+        expect(() =>
+          visitDaysSql({ axis: axis as never, scope: sql`TRUE`, range: { start: '2026-09-01', end: '2026-09-24' } }),
+        ).toThrow(/未知日期轴/)
+      }
+    })
+
+    it('customer.ts 用的 visitDaysSql 就是被渲染校验的那一个（import 来源锁定，无本地替身）', () => {
+      const u = visitDaysSqlUsage(adminSrc)
+      expect(u.imports).toEqual(["import { visitDaysSql } from '@/lib/data-center/visit-days'"])
+      expect(u.localDecls).toBe(0)
+      // 引用恰为 KPI 1 + 明细 1（import 节点不计入）
+      expect(u.refs).toBe(2)
+    })
+
+    it('admin KPI queryActive 整个函数快照（scope 列名 + once/twice 映射 + 经 visitDaysSql 按天数分档）', () => {
+      expect(fnSource(adminSrc, ADMIN_CUSTOMER, 'queryActive')).toBe(adminKpiExpected)
+    })
+
+    it('admin 明细 queryRegActiveBreakdown：客活段整段快照 + scope 生产者 + 外层汇总不对调', () => {
+      expect(breakdownActive(adminSrc)).toBe(breakdownActiveExpected)
+      const fn = fnSource(adminSrc, ADMIN_CUSTOMER, 'queryRegActiveBreakdown')
+      expect(fn).toContain("const serviceScope = scopeFilterSql(session, scope, 'so.store_id')")
+      expect(fn).toContain("const customerScope = scopeFilterSql(session, scope, 'c.bound_store_id')")
+      expect(fn.match(/const serviceScope = /g)).toHaveLength(1)
+      expect(fn.match(/const customerScope = /g)).toHaveLength(1)
+      // 外层汇总：两列各恰好出现一次且一一对应（对调 → 红）
+      const sqlText = sqlInFunction(adminSrc, ADMIN_CUSTOMER, 'queryRegActiveBreakdown')
+      expect(sqlText).toContain(
+        'COALESCE(SUM(active.visit_once), 0) AS visit_once, COALESCE(SUM(active.visit_twice), 0) AS visit_twice,',
+      )
+      expect(sqlText.match(/active\.visit_once/g)).toHaveLength(1)
+      expect(sqlText.match(/active\.visit_twice/g)).toHaveLength(1)
+      // 结果映射（行为侧另见 customer.test.ts 的 visitOnce=3 / visitTwice=2 断言）
+      expect(fn).toContain('visitOnce: num(r.visit_once), visitTwice: num(r.visit_twice),')
+    })
+
+    it('staff queryActiveOnce / queryActiveTwice 整个函数快照（含 scope 生产者）', () => {
+      expect(fnSource(staffSrc, STAFF_MGMT_TRAFFIC, 'queryActiveOnce')).toBe(
+        staffExpected('queryActiveOnce', 'vc.days = 1'),
+      )
+      expect(fnSource(staffSrc, STAFF_MGMT_TRAFFIC, 'queryActiveTwice')).toBe(
+        staffExpected('queryActiveTwice', 'vc.days >= 2'),
+      )
+    })
+
+    it('cron monthly_activity 段 2 整段快照（顾客列表「月度客活」筛选的数据源）', () => {
+      expect(cronActivity(UPDATE_MONTHLY_ACTIVITY_SQL)).toBe(
+        `WITH visit_days AS ( SELECT so.client_user_id, COUNT(DISTINCT ${VISIT_DAY_COL}) AS days ` +
+          `FROM service_orders so WHERE ${VISIT_FILTER} ` +
+          `AND ${VISIT_DAY_COL} >= date_trunc('month', CURRENT_DATE)::date ` +
+          `AND ${VISIT_DAY_COL} < (date_trunc('month', CURRENT_DATE) + INTERVAL '1 month')::date ` +
+          'GROUP BY so.client_user_id ) UPDATE client_wechat_users u SET monthly_activity = ' +
+          "(CASE WHEN vd.days >= 2 THEN '二次客活' ELSE '一次客活' END)::monthly_activity, updated_at = NOW() " +
+          'FROM visit_days vd WHERE u.user_id = vd.client_user_id',
+      )
+    })
+
+    it('反向验证：各侧回退 / 对调 / 替身都会让对应快照红', () => {
+      const mutate = (src: string, from: string, to: string): string => {
+        expect(src).toContain(from)
+        return src.replace(from, to)
+      }
+      const onlyIn = (src: string, fnHead: string, from: string, to: string): string => {
+        const at = src.indexOf(fnHead)
+        expect(at).toBeGreaterThanOrEqual(0)
+        return src.slice(0, at) + mutate(src.slice(at), from, to)
+      }
+      // staff：只改 once（孪生函数 twice 保持原样 → 按函数名定位）
+      const staffMut = onlyIn(staffSrc, 'async function queryActiveOnce', 'COUNT(DISTINCT so.service_date) AS days', 'COUNT(*) AS days')
+      expect(fnSource(staffMut, STAFF_MGMT_TRAFFIC, 'queryActiveOnce')).not.toBe(staffExpected('queryActiveOnce', 'vc.days = 1'))
+      expect(fnSource(staffMut, STAFF_MGMT_TRAFFIC, 'queryActiveTwice')).toBe(staffExpected('queryActiveTwice', 'vc.days >= 2'))
+      // staff：改完用 SQL 注释把字面量补回去
+      const staffComment = onlyIn(
+        staffSrc,
+        'async function queryActiveOnce',
+        'COUNT(DISTINCT so.service_date) AS days',
+        'COUNT(*) AS days -- COUNT(DISTINCT so.service_date) AS days',
+      )
+      expect(fnSource(staffComment, STAFF_MGMT_TRAFFIC, 'queryActiveOnce')).not.toBe(staffExpected('queryActiveOnce', 'vc.days = 1'))
+      // staff：scope 生产者列别名被改
+      const staffScope = onlyIn(staffSrc, 'async function queryActiveTwice', "buildSaleScope(scopeType, scopeId, 'so', 1)", "buildSaleScope(scopeType, scopeId, 'c', 1)")
+      expect(fnSource(staffScope, STAFF_MGMT_TRAFFIC, 'queryActiveTwice')).not.toBe(staffExpected('queryActiveTwice', 'vc.days >= 2'))
+      // cron 改成按行数
+      const cronMut = mutate(UPDATE_MONTHLY_ACTIVITY_SQL, 'COUNT(DISTINCT so.service_date)', 'COUNT(so.service_date)')
+      expect(cronActivity(cronMut)).not.toBe(cronActivity(UPDATE_MONTHLY_ACTIVITY_SQL))
+      // admin KPI：once/twice 映射对调
+      const kpiSwap = mutate(adminSrc, "mode === 'once' ? sql`vc.days = 1`", "mode !== 'once' ? sql`vc.days = 1`")
+      expect(fnSource(kpiSwap, ADMIN_CUSTOMER, 'queryActive')).not.toBe(adminKpiExpected)
+      // admin KPI：scope 列名被改
+      const kpiScope = onlyIn(adminSrc, 'async function queryActive(', "scopeFilterSql(session, scope, 'so.store_id')", "scopeFilterSql(session, scope, 'c.bound_store_id')")
+      expect(fnSource(kpiScope, ADMIN_CUSTOMER, 'queryActive')).not.toBe(adminKpiExpected)
+      // admin 明细：绕开 visitDaysSql 直接数行
+      const bdMut = mutate(adminSrc, 'COUNT(DISTINCT vd.visit_date) AS days,', 'COUNT(*) AS days,')
+      expect(breakdownActive(bdMut)).not.toBe(breakdownActiveExpected)
+      // admin：换 import 来源 / 本地同名替身
+      const importSwap = mutate(adminSrc, "from '@/lib/data-center/visit-days'", "from '@/lib/data-center/visit-days-legacy'")
+      expect(visitDaysSqlUsage(importSwap).imports).not.toEqual(["import { visitDaysSql } from '@/lib/data-center/visit-days'"])
+      const localStub = mutate(
+        adminSrc,
+        "import { visitDaysSql } from '@/lib/data-center/visit-days'\n",
+        'const visitDaysSql = (o: unknown) => sql`${o}`\n',
+      )
+      const u = visitDaysSqlUsage(localStub)
+      expect(u.imports).toEqual([])
+      expect(u.localDecls).toBe(1)
     })
   })
 })

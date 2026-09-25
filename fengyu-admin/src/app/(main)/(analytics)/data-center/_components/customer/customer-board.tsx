@@ -15,8 +15,9 @@ import type { CustomerBoardResult } from "@/lib/data-center/types"
 const KPI_REGISTER: KpiGridItem[] = [
   { key: "registeredMembers", label: "会员注册人数" },
   { key: "retainedMembers", label: "有效保有会员" },
-  { key: "visitOnce", label: "当月一次人数" },
-  { key: "visitTwice", label: "当月二次人数" },
+  // #298：按到店天数分档（同一天多张服务单只算 1 天），与顾客列表「月度客活」同口径
+  { key: "visitOnce", label: "当月一次人数", hint: "所选区间内到店 1 天的保有会员（同日多单算 1 天）" },
+  { key: "visitTwice", label: "当月二次人数", hint: "所选区间内到店 ≥2 天的保有会员（同日多单算 1 天）" },
 ]
 
 // #294：左三格读 cron 每日重算的 customer_status 截面，**不随所选区间变化**；

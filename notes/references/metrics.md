@@ -271,17 +271,25 @@
 | 沉睡人数（dormantWarn） | 同上 | 同上 | `customer_status='沉睡'` ∩ `customer_type='会员客'`<br>_2026-04-25 决策 D-6=B：schema 枚举已重命名 `'预警沉睡'`→`'沉睡'`（migration 0013），详见 ticket [`customer-status-rename-warn`](../tickets/2026-04-25-customer-status-rename-warn.md)_ |
 | 冰冻人数（dormantFrozen） | 同上 | 同上 | `customer_status='冰冻'` |
 | 休眠人数（dormantDeep） | 同上 | 同上 | `customer_status='休眠'` |
-| 一次客活（activeOnce） | `COUNT(*)` | `client_wechat_users` | `customer_status IN ('保有会员-稳定','保有会员-有效')` ∩ 区间内到店次数 = 1 ∩ scope |
-| 二次客活（activeTwice） | 同上 | 同上 | 同上但区间内到店次数 ≥ 2 |
+| 一次客活（activeOnce） | `COUNT(*)` | `client_wechat_users` | `customer_status IN ('保有会员-稳定','保有会员-有效')` ∩ 区间内**到店天数** = 1 ∩ scope |
+| 二次客活（activeTwice） | 同上 | 同上 | 同上但区间内**到店天数** ≥ 2 |
 | 本月激活-沉睡（reactivatedFromWarn） | `COUNT(*)` | `client_wechat_users` + `service_orders` | 见下方"本月激活"决策点 |
 | 本月激活-冰冻（reactivatedFromFrozen） | 同上 | 同上 | 同上 |
 | 本月激活-休眠（reactivatedFromDeep） | 同上 | 同上 | 同上 |
 
-**到店次数 SQL 模板（一次/二次客活共用）**：
+**到店天数 SQL 模板（一次/二次客活共用）**（#298，2026-09-23 拍板按到店天数，2026-09-25 拍板日期轴）：
+
+- **到店天数** = 区间内去重后的到店日期个数，**去重键 `(so.client_user_id, so.service_date)`**：同一顾客同一天开多张服务单、做多个项目只算 1 天。**不是**服务单行数（`COUNT(*)`）
+- **日期轴 = `service_orders.service_date`**（服务日期，开单时确定的服务当天）。**不用**以下三条轴：
+  - `completed_at`：顾客点确认的时刻，有滞后（prod 实测 15411 张已完成单里 1450 张与服务日不在同一天，最长滞后 23 天）
+  - 预约日：只有 110/15411 张服务单挂了预约，不可用
+  - 款项归属日期：是付款事件不是到店事件，且可人工改期
+- 只计 `status='已完成'` 且 `client_user_id IS NOT NULL` 的服务单
+- 与「客流量（次）」不同：客流量仍按服务单行数计（见 §2），两者不要混用
 
 ```sql
 WITH visit_count AS (
-  SELECT so.client_user_id, COUNT(*) AS n
+  SELECT so.client_user_id, COUNT(DISTINCT so.service_date) AS days
   FROM service_orders so
   WHERE so.status='已完成' AND so.client_user_id IS NOT NULL
     AND so.service_date BETWEEN $startDate AND $endDate
@@ -291,9 +299,39 @@ WITH visit_count AS (
 SELECT COUNT(*) FROM visit_count vc
 JOIN client_wechat_users c ON c.user_id = vc.client_user_id
 WHERE c.customer_status IN ('保有会员-稳定','保有会员-有效')
-  AND vc.n = 1   -- 一次客活；二次客活改 vc.n >= 2
+  AND vc.days = 1   -- 一次客活；二次客活改 vc.days >= 2
   AND <scope on c.bound_store_id>
 ```
+
+实现位置（三处运行时实现同口径：admin 两个查询共用 `visitDaysSql`、staff 两个查询、cron 一个刷新函数；由 `fengyu-admin/src/actions/data-center/__tests__/consistency.customer.test.ts`「#298 跨定义」一组整段快照守护，任一侧漂移即红）：
+
+| 实现 | 位置 |
+|---|---|
+| admin 数据中心 KPI + 市场/门店明细 | `fengyu-admin/src/lib/data-center/visit-days.ts` `visitDaysSql`（日期轴为白名单参数；#370 的「服务日 ∪ 支付日」并集轴需要把它改成按轴构造整段事件 SQL，输出列契约不变） |
+| staff 管理层客量页 | `fengyu-staff/cloudfunctions/staffApi/routes/mgmt-traffic.js` `queryActiveOnce` / `queryActiveTwice`（独立副本） |
+| 顾客列表「月度客活」筛选 | cron `refresh-monthly-activity.ts`（见下节 `monthly_activity`） |
+
+#### 月度客活 `client_wechat_users.monthly_activity`（顾客列表筛选项）
+
+> 枚举 `'二次客活' / '一次客活' / '0次客活'`，由 cron-worker STEP 3 `fengyu-admin/src/cron/steps/refresh-monthly-activity.ts` 每日重算（03:00 触发，先跑完数据库备份才执行 STEP，实际时点略晚于 03:00），
+> admin 顾客列表与 staff 顾客列表都能按它筛选。**与上面一次/二次客活是同一个到店天数口径、同一条日期轴。**
+
+| 取值 | 判定 |
+|---|---|
+| 二次客活 | **自然月**（`date_trunc('month', CURRENT_DATE)` 起到月底）内到店天数 ≥ 2 |
+| 一次客活 | 当月到店天数 = 1 |
+| 0次客活 | `customer_type='会员客'` 且当月没有到店 |
+| NULL | 非会员客当月没有到店 |
+
+与数据中心一次/二次客活的差别（口径相同，只是范围不同，数字对不上时先逐条查）：
+
+1. **不限保有会员**：`monthly_activity` 对当月到店的所有顾客（含非会员）都打标；数据中心只数 `customer_status IN ('保有会员-稳定','保有会员-有效')` 的人
+2. **不限门店**：cron 按全部门店（含已停用门店）的服务单数到店天数。admin 数据中心的 `scopeFilterSql` 即使选「全部」也恒带在营门店过滤（`org_nodes.is_active`），服务单侧按 `so.store_id`、顾客侧按 `bound_store_id` 各过滤一次；staff 管理层客量页选「全部」时不带在营门店过滤。所以在停用门店有服务单、或绑定在停用门店的顾客，三端可能分到不同档
+3. **单店 scope 下跨店到店不计**：顾客绑定 A 店，1 号去 A、2 号去 B —— scope=A 时服务单侧只留 A 店的单，算「一次」；scope=全部时明细 A 行算「二次」（改口径前即如此）
+4. **快照时点**：`monthly_activity` 是最近一次 cron 的快照，此后新完成的服务单要等下一次 cron 才计入；数据中心实时查。每月 1 号的快照里当月几乎全是 0次客活 / NULL
+5. **区间长度**：`monthly_activity` 固定自然月；数据中心跟随顶部时间筛选。选「今日」这类单日区间时，到店天数最多 1 天，「二次」恒为 0（改口径前同日两单会被算成二次）
+
+验证（prod，2026-09-25）：按当天 cron 快照时点（`completed_at` 早于 03:01:58）、全部在营门店、限保有会员复算，数据中心口径得一次 615 / 二次 922，与 `monthly_activity` **逐人比对 0 差异**（1537 人，双向 EXCEPT 均为空）。
 
 > **D-act-status-mapping（已决 D-6=B）**：UI"沉睡 / 冰冻 / 休眠" 与 schema "沉睡 / 冰冻 / 休眠" 命名对齐。
 > schema 枚举已通过 migration 0013 完成 `'预警沉睡'`→`'沉睡'` 重命名（独立 ticket [`customer-status-rename-warn`](../tickets/2026-04-25-customer-status-rename-warn.md)）；本表所有字面量已同步使用 `'沉睡'`。
@@ -727,6 +765,7 @@ SELECT COUNT(*) FROM org_nodes WHERE type='store' [AND parent_id=$market]
 | 2026-05-26 | admin 数据中心（`/data-center`）上线：新增 §「数据中心（admin）板块专属指标」+ 品项二级（category_name）粒度节。3 项用户拍板口径——流量客业绩=仅 `customer_type='流量客'`；单次客耗=`生美实耗÷服务人次`；店长人数=`在营门店数`（每店一店长，不依赖 position_name）。排名榜/区间指标统一走顶部 TimeRange（today/week/month/year/custom），同比环比仅作用 KPI 标量 |
 | 2026-08-08 | 数据中心经营统计统一仅纳入 `org_nodes.is_active=TRUE` 的门店：门店数、全部区间指标、门店/员工排行榜及范围下拉同步过滤；单店范围不再固定计 1，停用门店返回零数据 |
 | 2026-09-22 | **D-conv-denom 改判 B → 1c（#284）**：成交率分母由「区间内到店的体验客 + 小美客」改为「期初未达会员的到店活跃池 ∪ 本期全部新增会员」。`customer_type` 只升不降，本期已转化者当期已是会员客、被从分母整体剔除，而他们正是分子 —— 35 家有新会员的门店全部虚高、单店最高 800%、分母归零反显 '--'。分支 ② 保证分子 ⊆ 分母，上限 ≤ 100% 恒成立（纯活跃池方案 1a 做不到，本期有 10 名新增会员无已完成服务单）。集团 2026-09 由 28.01%（151/539）改为 **21.88%（151/690）**。两端同步：`customer.ts::queryTrialFootfall` + 明细 `traffic_cust` CTE、`mgmt-traffic.js::queryTrialFootfall` |
+| 2026-09-25 | **一次/二次客活改按到店天数（#298）**：由服务单行数 `COUNT(*)` 改为 `COUNT(DISTINCT service_date)`，去重键 `(client_user_id, service_date)`，日期轴拍板为 `service_date`；admin 数据中心（KPI + 明细）与 staff mgmt-traffic 同步。补登 `monthly_activity` 口径（此前在本文档完全缺席，是两套定义分叉的根因）。prod 2026-09-01~09-24 集团一次/二次 527/982 → 590/919，63 人由「二次」回到「一次」 |
 | **2026-09-14** | **款项业绩归属日期收口（#137，迁移 0039 + 0040）**。视图 `sale_order_performance_events.performance_date` 改为**直读** `sale_order_payments.performance_attribution_date`，**查询侧不再有任何回退分支**；取值规则全部下沉到写入侧两个 trigger。0040 给该列加了 **CHECK 约束** `chk_sop_attribution_date_present`（列本身**不是** `NOT NULL`，Drizzle schema 里仍是 nullable）。<br>**影响面**：原文「首次支付取订单归属日、回款/退款取自身 `paid_at`」的表述在全文档失效——每一笔款项都有自己的归属日期。金额类指标按类型分流：**业绩/现金流类**（总业绩、分客型业绩、员工业绩、销售提成）走 `[spe.performance_date]`；**子项类**（生美业绩、产品出库、品项周期业绩）走 `[sipe.performance_date]`；**实耗 / 生美实耗 / 服务提成**仍走 `[service_date]`，不受本次收口影响。<br>⚠ **部署前置**：先 apply 0039 + 0040 再部署各端，否则未迁库时首次支付行归属日为 NULL，会被三值逻辑吞掉正数主体。 |
 | **2026-09-16** | **口径变更登记（#138 / #139 / #140 / #141）**，四条均为「从 `paid_at` 切到归属日期」：<br>· **#138** 客量数据子页 §4/§5：会员被经营 6 档分桶、会员客单价、新会员对应消费改按款项流水归属（`SUM(spe.amount) @ performance_date`；旧实现为 `SUM(o.received - COALESCE(o.refunded_amount,0)) @ o.paid_at::date` ∩ `o.status='已支付'`，旧文档曾误记为 `paid_amount`，该列已 DROP）。dev 实测 2026-08 经营人数 321→324、会员总数 470→413、消费合计 +7.78 万；含退款负行故 `spend` 可为负（本期净消费，不 clamp）。<br>· **#139** staff 订单列表 / 营业额分配列表的日期筛选固定按 `performance_attribution_date`。<br>· **#140** admin 工作台「今日实付 / 今日退款 / 昨日实付」改按 `spe.performance_date`（`total_paid_amount` 无日期条件不受影响）。⚠ 财务注意：这三项不再与银行流水逐日对齐。<br>· **#141** staff 顾客档案「年度消费」/ 列表「年消费」改按 `performance_attribution_date`（半开年区间）；**月度消费日历仍按 `paid_at`**，两个口径并存且有意。<br>同轮订正三处存量滞后表述：销售数据页总述、分客型业绩 `[sop.paid_at_period]`、分客型产品出库与品项维度汇总的 `SUM(si.received) @ paid_at`（实现早已是 `SUM(sipe.amount) @ sipe.performance_date`）；员工排行榜「复用 `[paid_at_period]`」。<br>另补登记一条历史遗漏：实耗 / 生美实耗 / 项目数等**消耗类**指标两端都套了 `excludeDepositRefundSql()` 剔除寄存单退款专用服务单（admin 19 处 / staff 12 处，由 `consistency.deposit-refund-filter.test.ts` 守护 31 处中的 29 处，且只校验文件级调用次数）——**客流 / 到店 / 服务人次 / 保有会员 / 提成不剔除**（寄存退款是真到店、假消耗）。本文档此前从未登记，照公式抄会多算。 |
 | **2026-09-22** | **环比基期（上期）长度首次登记（#283）**，见文末「数据中心（admin）板块专属指标」节。此前全文只登记了「上期」这个概念、从未定义其长度，`time-range.ts` 遂把本节「时间窗口补充」里 staff 端的**三选一并列维度**「上月=上月初~上月末」误当成环比分母，于是 `本周`/`本月` 两个 preset 拿 N 天的当期比整周/整月的基期（同文件 `今日`/`自定义` 恒等长，`今年` 另有跨闰年偏差）。现明确：**基期按日历同期对齐、不得无条件取完整上一周期**，`本周`→上周同一星期几、`本月`→上月同一日。同轮登记三条日历固有例外（`本月` 上月天数不足时 clamp 到上月末短 1~3 天；`今年` 的环比/同比基期跨闰年 ±1 天；`本周`/`自定义` 的**同比**基期跨闰年 ±1 天且星期漂移——后两条源自 `addYears` 的 2/29 归一化，**均尚未修复**）。并明确**同比基期与环比基期同受「不得长于当期」约束**（二者同走一个 `deltaPct`）。另补登记 `delta%` 的「算不出」情形含**基期 `<= 0`** 与**非有限值**（负基期会让符号翻转）。⚠ 「本月」与「自定义同起止日」的环比值本就不同，属语义差异非缺陷。 |

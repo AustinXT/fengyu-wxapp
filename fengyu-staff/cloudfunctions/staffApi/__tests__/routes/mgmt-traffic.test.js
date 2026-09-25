@@ -276,7 +276,7 @@ describe('mgmtTraffic.summary 会员状态 + 客活 SQL 形态', () => {
     expect(ctx.result.status.dormantDeep).toBe(200)
   })
 
-  test('客活 SQL 含 visit_count CTE + n=1 / n>=2', async () => {
+  test('客活 SQL 按到店天数（service_date 去重）+ days=1 / days>=2（#298）', async () => {
     setupDefaultMocks()
     const ctx = makeHqCtx({ period: 'month', scopeType: 'all' })
     await summary(ctx)
@@ -285,17 +285,35 @@ describe('mgmtTraffic.summary 会员状态 + 客活 SQL 形态', () => {
     const onceSql = sqlList.find(
       (s) =>
         /WITH visit_count AS/.test(s) &&
-        /vc\.n\s*=\s*1/.test(s),
+        /vc\.days\s*=\s*1/.test(s),
     )
     expect(onceSql).toBeDefined()
+    expect(onceSql).toMatch(/COUNT\(DISTINCT so\.service_date\) AS days/)
     expect(onceSql).toMatch(/c\.customer_status IN \('保有会员-稳定',\s*'保有会员-有效'\)/)
 
     const twiceSql = sqlList.find(
       (s) =>
         /WITH visit_count AS/.test(s) &&
-        /vc\.n\s*>=\s*2/.test(s),
+        /vc\.days\s*>=\s*2/.test(s),
     )
     expect(twiceSql).toBeDefined()
+    expect(twiceSql).toMatch(/COUNT\(DISTINCT so\.service_date\) AS days/)
+    // 服务单行数口径已废弃，禁止回退
+    for (const s of [onceSql, twiceSql]) expect(s).not.toMatch(/COUNT\(\*\) AS n\b/)
+  })
+
+  test('#298 activeOnce / activeTwice 结果不对调（days=1 → activeOnce）', async () => {
+    setupDefaultMocks()
+    const base = pg.query.getMockImplementation()
+    pg.query.mockImplementation(async (sql, params) => {
+      if (/WITH visit_count AS/.test(sql) && /vc\.days = 1\b/.test(sql)) return [{ v: 11 }]
+      if (/WITH visit_count AS/.test(sql) && /vc\.days >= 2\b/.test(sql)) return [{ v: 22 }]
+      return base(sql, params)
+    })
+    const ctx = makeHqCtx({ period: 'month', scopeType: 'all' })
+    await summary(ctx)
+    expect(ctx.result.status.activeOnce).toBe(11)
+    expect(ctx.result.status.activeTwice).toBe(22)
   })
 
   test('本月激活 3 项含 anchor=startDate-1 展开 + visits_90d_prev=0', async () => {

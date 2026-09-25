@@ -24,6 +24,8 @@ const responder: {
   skeletonRows: Array<Record<string, unknown>>
   regActiveRows: Array<Record<string, unknown>>
   opsRows: Array<Record<string, unknown>>
+  /** 可选：按嵌套展开后的 SQL 全文优先路由（返回 undefined 则走默认路由） */
+  route?: (deepSql: string) => Array<Record<string, unknown>> | undefined
 } = {
   scalarRow: { v: 0, total_count: 0, total_spend: 0 },
   skeletonRows: [],
@@ -44,9 +46,24 @@ function sqlText(q: unknown): string {
     .join(' ')
 }
 
+/** 递归展开嵌套 sql 片段（sqlText 只看顶层，看不到 ${daysClause} 这类内嵌条件） */
+function deepSqlText(q: unknown): string {
+  const chunks = (q as { queryChunks?: unknown[] })?.queryChunks ?? []
+  return chunks
+    .map((c) => {
+      if (c && typeof c === 'object' && 'queryChunks' in c) return deepSqlText(c)
+      const v = (c as { value?: unknown })?.value
+      if (Array.isArray(v)) return v.join(' ')
+      return typeof v === 'string' ? v : ''
+    })
+    .join(' ')
+}
+
 vi.mock('@/db', () => ({
   db: {
     execute: vi.fn(async (q: unknown) => {
+      const routed = responder.route?.(deepSqlText(q))
+      if (routed) return routed
       const t = sqlText(q)
       // 骨架查询特征：JOIN org_nodes o_store ... market_id
       if (/o_store/.test(t) && /market_id/.test(t) && !/group_id/i.test(t) && !/WITH skel/.test(t)) {
@@ -116,6 +133,7 @@ const PARAMS: BoardParams = {
 
 beforeEach(() => {
   ctxState.enabled = false
+  responder.route = undefined
   responder.scalarRow = { v: 0, total_count: 0, total_spend: 0 }
   responder.skeletonRows = []
   responder.regActiveRows = []
@@ -249,9 +267,23 @@ describe('getCustomerBoard 装配', () => {
     expect(m.metrics.convRate).toBeCloseTo(0.4, 5)
     // 1 次达成率 = 3 / 8 = 0.375
     expect(m.metrics.visitOnceRate).toBeCloseTo(0.375, 5)
+    // #298：visit_once / visit_twice 列不得对调
+    expect(m.metrics.visitOnce).toBe(3)
+    expect(m.metrics.visitTwice).toBe(2)
 
     // 门店行带 marketName
     expect(res.byStore[0].marketName).toBe('市场A')
+  })
+
+  it('#298 KPI 一次/二次按到店天数分档且不对调：days = 1 → visitOnce，days >= 2 → visitTwice', async () => {
+    responder.route = (t) => {
+      if (/vc\.days = 1\b/.test(t) && /WITH visit_days AS/.test(t)) return [{ v: 11 }]
+      if (/vc\.days >= 2\b/.test(t) && /WITH visit_days AS/.test(t)) return [{ v: 22 }]
+      return undefined
+    }
+    const res = await getCustomerBoard(PARAMS)
+    expect(res.kpis.visitOnce.value).toBe(11)
+    expect(res.kpis.visitTwice.value).toBe(22)
   })
 
   it('明细派生防除零：分母 0 → null', async () => {
