@@ -848,6 +848,7 @@ async function inventorySkuSnapshot(client, skuId, locationId, { reportableOnly 
  * 契约成立；新增调用点时务必沿用。
  */
 async function assertSkuAvailableAtLocation(client, sku, locationId) {
+  // source_type 是 NOT NULL（默认 供应链），`||` 兜底不可达，只为防御旧数据；判定与 admin 同义
   const sourceType = sku.source_type || '供应链'
   if (sourceType === '供应链') return
   const locationRes = await client.query(
@@ -1125,7 +1126,7 @@ async function stockList(ctx) {
     conditions.push('st.quantity_on_hand > 0')
   }
   if (keyword) {
-    const escaped = String(keyword).replace(/[%_]/g, '\\$&')
+    const escaped = String(keyword).replace(/[\\%_]/g, '\\$&')
     conditions.push(`(st.sku_id ILIKE $${idx} OR st.sku_name ILIKE $${idx} OR st.batch_no ILIKE $${idx} OR loc.name ILIKE $${idx})`)
     params.push(`%${escaped}%`)
     idx++
@@ -1499,7 +1500,7 @@ async function docList(ctx) {
     idx++
   }
   if (keyword) {
-    const escaped = String(keyword).replace(/[%_]/g, '\\$&')
+    const escaped = String(keyword).replace(/[\\%_]/g, '\\$&')
     conditions.push(`(d.id ILIKE $${idx} OR d.customer_name ILIKE $${idx} OR d.employee_name ILIKE $${idx} OR d.remark ILIKE $${idx})`)
     params.push(`%${escaped}%`)
     idx++
