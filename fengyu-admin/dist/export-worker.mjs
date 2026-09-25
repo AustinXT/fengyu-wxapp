@@ -182222,7 +182222,7 @@ function encodeCommissionCursor(key, signature) {
   return toBase64Url(JSON.stringify({ d: key.d, t: key.t, id: key.id, s: signature }));
 }
 function decodeCommissionCursor(raw, signature) {
-  if (!raw || raw.length > 400)
+  if (!raw || raw.length > 512)
     return null;
   try {
     const parsed = JSON.parse(fromBase64Url(raw));
@@ -182889,9 +182889,9 @@ function toDetailRow(row, maskCustomer) {
     sourceId,
     date: String(row.biz_date ?? ""),
     storeId: String(row.store_id ?? ""),
-    storeName: String(row.store_name ?? row.store_id ?? ""),
+    storeName: String(row.store_name || row.store_id || ""),
     employeeId: String(row.employee_id ?? ""),
-    employeeName: String(row.employee_name ?? row.employee_id ?? ""),
+    employeeName: String(row.employee_name || row.employee_id || ""),
     positionName: row.position_name == null ? "" : String(row.position_name),
     orderId: String(row.order_id ?? ""),
     paymentId: toNullableNumber(row.payment_id),
@@ -182974,8 +182974,8 @@ var getCommissionDetail = withAllPermissions(DATA_CENTER_STAFF_COMMISSION_ACTION
     prevCursor: hasPrev && first3 ? encodeCommissionCursor(keyOf(first3), signature) : null,
     nextCursor: hasNext && last ? encodeCommissionCursor(keyOf(last), signature) : null,
     employeeOptions: rowsOf(optionRows).map((row) => {
-      const name = String(row.name ?? row.employee_id ?? "");
-      const home = row.home_name == null ? "无门店" : String(row.home_name);
+      const name = String(row.name || row.employee_id || "");
+      const home = row.home_name ? String(row.home_name) : "无门店";
       const position = row.position_name ? String(row.position_name) : "无岗位";
       return { employeeId: String(row.employee_id), label: `${home} · ${name}（${position}）` };
     }),
