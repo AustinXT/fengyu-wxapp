@@ -1176,7 +1176,8 @@ try {
   const [snapMbhItem] = await docItems(snapMbhId)
   await pgQuery(
     `UPDATE inventory_doc_items
-        SET market_standard_unit_price = 1100, market_unit_discount = 150, market_actual_unit_price = 950
+        SET market_standard_unit_price = 1100, market_unit_discount = 150, market_actual_unit_price = 950,
+            store_standard_unit_price = 1300, store_unit_discount = 100, store_actual_unit_price = 1200
       WHERE id = $1`, [snapMbhItem.id])
   setSession(supplyChainSession())
   const { id: snapGfhId } = await biz.createItemCompanyShipment({
@@ -1188,17 +1189,22 @@ try {
   // docItems() 不带 market_standard / market_discount 两列，这里直接查
   const [snapMrkItem] = await pgQuery(
     `SELECT lot_id, standard_unit_price, unit_discount,
-            market_standard_unit_price, market_unit_discount, market_actual_unit_price
+            market_standard_unit_price, market_unit_discount, market_actual_unit_price,
+            store_standard_unit_price, store_unit_discount, store_actual_unit_price
        FROM inventory_doc_items WHERE doc_id = $1`, [snapMrkId])
   const snapMarketLot = (await locationLots(MKA_ORG, SKU_SUPPLY)).find((lot) => Number(lot.id) === Number(snapMrkItem?.lot_id))
-  check('标准价 / 优惠不同、实际价相同：并进已有市场批次，入库明细仍记本次报货快照 1100/150/950',
+  check('标准价 / 优惠不同、实际价相同：并进已有市场批次，入库明细仍记本次报货快照（市场 1100/150/950、门店 1300/100/1200）',
     num(snapMarketLot?.market_standard_unit_price) === 1000
+      && num(snapMarketLot?.store_standard_unit_price) === 1200
+      && num(snapMrkItem?.store_standard_unit_price) === 1300 && num(snapMrkItem?.store_unit_discount) === 100
+      && num(snapMrkItem?.store_actual_unit_price) === 1200
       && num(snapMrkItem?.market_standard_unit_price) === 1100 && num(snapMrkItem?.market_unit_discount) === 150
       && num(snapMrkItem?.market_actual_unit_price) === 950
       && num(snapMrkItem?.standard_unit_price) === 1100 && num(snapMrkItem?.unit_discount) === 150,
     JSON.stringify({
       lot: [snapMarketLot?.market_standard_unit_price, snapMarketLot?.market_unit_discount],
       item: [snapMrkItem?.market_standard_unit_price, snapMrkItem?.market_unit_discount, snapMrkItem?.market_actual_unit_price],
+      store: [snapMarketLot?.store_standard_unit_price, snapMrkItem?.store_standard_unit_price, snapMrkItem?.store_unit_discount, snapMrkItem?.store_actual_unit_price],
     }))
 } catch (e) {
   check('冒烟整体', false, '致命错误：' + (e?.stack || e?.message || String(e)))
