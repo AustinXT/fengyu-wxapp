@@ -222,6 +222,13 @@ describe('scope-picker · 无门店市场回填与默认纠正', () => {
     await picker.loadOptions()
     expect(picker.data.applied).toMatchObject({ scopeType: 'market', scopeId: PX.id })
     expect(picker.events.map((e: any) => e.name)).not.toContain('defaultresolved')
+
+    // 关弹窗后补做纠正
+    picker.onCancel()
+    expect(picker.data.applied).toMatchObject({ scopeType: 'store', scopeId: 'store-lw' })
+    // 首个 change 是弹窗加载时的 marketId 回填；关弹窗后才纠正
+    expect(picker.events.map((e: any) => e.name)).toEqual(['change', 'defaultresolved', 'change'])
+    expect(picker.events[2].detail).toMatchObject({ scopeType: 'store', scopeId: 'store-lw' })
   })
 
   test('scopeOptions 先于页面初判返回：占位「全部市场」不纠正，页面下发初判后经 observer 纠正', async () => {
