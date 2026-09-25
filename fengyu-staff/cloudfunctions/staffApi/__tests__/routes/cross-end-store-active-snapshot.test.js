@@ -13,6 +13,8 @@
  * 3. staff 四个使用点（fetchScopedStores / loadInactiveStores / resolveScope / hasActiveAlternative）的 SQL 整段等值，
  *    都经由 1 的常量拼出，不内联另一套判定（比如混进 is_closed——#401 起 hasActiveAlternative 也随范围下拉去掉了关店排除）。
  * 4. admin 侧判定仍是「只看 isActive」且 isActive 取自门店组织节点，不含 isClosed（#401 起经 lib/store-status isDataCenterActiveStore）。
+ * 5. 经营分析站 fengyu-analyst（#421 跟随 #401）：第三份副本 lib/store-status.ts 纳入 2 的整段等值；
+ *    analyst-scope.ts 取数首位叠在营子查询、范围下拉只看节点 isActive。
  */
 
 const fs = require('node:fs')
@@ -20,6 +22,9 @@ const path = require('node:path')
 
 const STAFF = path.resolve(__dirname, '../..')
 const ADMIN = path.resolve(__dirname, '../../../../../fengyu-admin/src')
+// 经营分析站（#421 跟随 #401）：独立部署，第三份副本。analyst 自己的 vitest 不进 CI（#382），
+// 这里在 staff 全量套件（CI 必跑）里补一道源码级守护；完整守护见 analyst src/lib/__tests__/store-status-cross-end.test.ts
+const ANALYST = path.resolve(__dirname, '../../../../../fengyu-analyst/src')
 
 const read = (p) => fs.readFileSync(p, 'utf8')
 const squeeze = (s) => s.replace(/\s+/g, ' ').trim()
@@ -64,8 +69,14 @@ describe('门店在营判定跨端字面量守护（#400）', () => {
     )
     const inner = (body) => squeeze(body.slice(body.indexOf('IN ('), body.lastIndexOf(')') + 1))
     const expected = "IN ( SELECT active_store.store_id FROM stores active_store JOIN org_nodes active_node ON active_store.org_node_id = active_node.id WHERE active_node.type = '门店' AND active_node.is_active = TRUE )"
+    const analystBody = extractSection(
+      read(path.join(ANALYST, 'lib/store-status.ts')),
+      'export function activeStoreCondition(storeCol: SQL): SQL {',
+      '\n}\n',
+    )
     expect(inner(staffBody)).toBe(expected)
     expect(inner(adminBody)).toBe(expected)
+    expect(inner(analystBody)).toBe(expected)
   })
 
   test('3. staff 四个使用点 SQL 整段等值（经常量拼出，不内联别的判定）', () => {
@@ -88,6 +99,18 @@ describe('门店在营判定跨端字面量守护（#400）', () => {
     // 两文件的常量都来自同一个 staff 在营 helper（不在路由里另写一份，也不另立 helper 文件）
     expect(auth).toContain("const { STORE_NODE_JOIN, STORE_IS_ACTIVE } = require('../utils/store-status')")
     expect(squeeze(dash)).toContain("const { activeStoreCondition, activeStoreNodeCondition, STORE_NODE_JOIN, STORE_IS_ACTIVE, } = require('../utils/store-status')")
+  })
+
+  test('5. analyst 取数与范围下拉接线（#421）：取数首位叠在营子查询，下拉只看节点 isActive', () => {
+    const scope = read(path.join(ANALYST, 'lib/analyst-scope.ts'))
+    expect(scope).toContain('import { activeStoreCondition } from "./store-status"')
+    const filter = squeeze(extractSection(scope, 'export function scopeFilterSql(', '\n}\n'))
+    expect(filter).toContain('const parts: SQL[] = [activeStoreCondition(col)]')
+    expect(filter).toContain('return sql.join(parts, sql` AND `)')
+    expect(filter).not.toMatch(/sql`TRUE`/)
+    const options = squeeze(extractSection(scope, 'export async function getAnalystScopeOptions(', '\n}\n'))
+    expect(options).toContain('eq(storeNode.type, "门店"), eq(storeNode.isActive, true),')
+    expect(scope).not.toMatch(/is_closed|isClosed/)
   })
 
   test('4. admin 侧判定只看组织节点 isActive，不含 isClosed', () => {

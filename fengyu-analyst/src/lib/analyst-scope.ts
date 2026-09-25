@@ -3,6 +3,8 @@ import { orgNodes, stores } from "../../../db/schema/org"
 import { and, asc, eq, inArray, sql, type SQL } from "drizzle-orm"
 import { alias } from "drizzle-orm/pg-core"
 import type { AuthSession } from "./types"
+// 在营口径（#421，跟随数据中心 #401）：只看门店组织节点 is_active，不看门店关店标记
+import { activeStoreCondition } from "./store-status"
 
 export type AnalystScope =
   | { type: "all" }
@@ -95,7 +97,7 @@ export async function getAnalystScopeOptions(session: AuthSession): Promise<Anal
     .where(
       and(
         eq(storeNode.type, "门店"),
-        eq(stores.isClosed, false),
+        eq(storeNode.isActive, true),
         seeAll
           ? undefined
           : session.permissions.scopeStoreIds.length > 0
@@ -258,7 +260,8 @@ export function scopeFilterSql(
     throw new Error(`INVALID_PARAMS: invalid storeCol parameter: ${storeCol}`)
   }
   const col = sql.raw(storeCol)
-  const parts: SQL[] = []
+  // 统计始终排除当前已停用的门店；直接构造停用门店 URL 也只能得到零数据。
+  const parts: SQL[] = [activeStoreCondition(col)]
 
   if (!hasGlobalAnalystScope(session)) {
     const ids = session.permissions.scopeStoreIds
@@ -278,5 +281,5 @@ export function scopeFilterSql(
     )`)
   }
 
-  return parts.length > 0 ? sql.join(parts, sql` AND `) : sql`TRUE`
+  return sql.join(parts, sql` AND `)
 }

@@ -12,6 +12,12 @@ import type { AuthSession, RoleType } from "../types"
 
 const dialect = new PgDialect()
 
+const squeeze = (text: string) => text.replace(/\s+/g, " ").trim()
+
+/** 在营门店子查询（#421，跟随数据中心 #401）：只看门店组织节点 is_active，不看 is_closed */
+const activeStoreClause = (col: string) =>
+  `${col} IN ( SELECT active_store.store_id FROM stores active_store JOIN org_nodes active_node ON active_store.org_node_id = active_node.id WHERE active_node.type = '门店' AND active_node.is_active = TRUE )`
+
 function render(fragment: ReturnType<typeof scopeFilterSql>) {
   const query = dialect.sqlToQuery(fragment)
   return { sql: query.sql.toLowerCase(), raw: query.sql, params: query.params }
@@ -42,7 +48,8 @@ describe("analyst scope", () => {
     const { raw, params } = render(scopeFilterSql(session, allScope, "so.store_id"))
 
     expect(hasGlobalAnalystScope(session)).toBe(true)
-    expect(raw.trim().toUpperCase()).toBe("TRUE")
+    // 全局账号不再是 TRUE：仍须排除已停用门店（以及门店为空 / 悬空的行）
+    expect(squeeze(raw)).toBe(activeStoreClause("so.store_id"))
     expect(params).toEqual([])
   })
 
@@ -51,7 +58,7 @@ describe("analyst scope", () => {
     const { raw } = render(scopeFilterSql(session, allScope, "so.store_id"))
 
     expect(hasGlobalAnalystScope(session)).toBe(true)
-    expect(raw.trim().toUpperCase()).toBe("TRUE")
+    expect(squeeze(raw)).toBe(activeStoreClause("so.store_id"))
   })
 
   it("non global empty store scope returns FALSE", () => {
@@ -63,36 +70,40 @@ describe("analyst scope", () => {
 
   it("non global account scope filters by visible store ids", () => {
     const session = makeSession([{ role: "manager", scopeType: "市场" }], ["S1", "S2"])
-    const { sql, params } = render(scopeFilterSql(session, allScope, "so.store_id"))
+    const { sql, raw, params } = render(scopeFilterSql(session, allScope, "so.store_id"))
 
     expect(sql).toContain("so.store_id in")
     expect(params).toEqual(["S1", "S2"])
+    expect(squeeze(raw).startsWith(`${activeStoreClause("so.store_id")} AND `)).toBe(true)
   })
 
   it("market scope expands org node to store_id through stores.org_node_id", () => {
     const session = makeSession([{ role: "admin", scopeType: "总部" }], [])
-    const { sql, params } = render(scopeFilterSql(session, { type: "market", id: "MKT-1" }, "so.store_id"))
+    const { sql, raw, params } = render(scopeFilterSql(session, { type: "market", id: "MKT-1" }, "so.store_id"))
 
     expect(sql).toContain("from stores s")
     expect(sql).toContain("join org_nodes o on o.id = s.org_node_id")
     expect(sql).toContain("o.parent_id =")
     expect(params).toEqual(["MKT-1"])
+    expect(squeeze(raw).startsWith(`${activeStoreClause("so.store_id")} AND `)).toBe(true)
   })
 
   it("store scope filters directly by business store_id", () => {
     const session = makeSession([{ role: "admin", scopeType: "总部" }], [])
-    const { sql, params } = render(scopeFilterSql(session, { type: "store", id: "STORE-9" }, "so.store_id"))
+    const { sql, raw, params } = render(scopeFilterSql(session, { type: "store", id: "STORE-9" }, "so.store_id"))
 
     expect(sql).toContain("so.store_id =")
     expect(params).toEqual(["STORE-9"])
+    expect(squeeze(raw).startsWith(`${activeStoreClause("so.store_id")} AND `)).toBe(true)
   })
 
   it("supports customer bound store columns", () => {
     const session = makeSession([{ role: "manager", scopeType: "门店" }], ["S1"])
-    const { sql, params } = render(scopeFilterSql(session, allScope, "c.bound_store_id"))
+    const { sql, raw, params } = render(scopeFilterSql(session, allScope, "c.bound_store_id"))
 
     expect(sql).toContain("c.bound_store_id in")
     expect(params).toEqual(["S1"])
+    expect(squeeze(raw).startsWith(`${activeStoreClause("c.bound_store_id")} AND `)).toBe(true)
   })
 
   it("cache key includes account scope and selected org scope", () => {
