@@ -107,15 +107,19 @@ export async function getAnalystScopeOptions(session: AuthSession): Promise<Anal
     )
     .orderBy(asc(stores.storeName))
 
+  const markets = marketRows.map((market) => ({
+    id: market.id,
+    name: market.name,
+    stores: storeRows
+      .filter((store) => store.marketId === market.id)
+      .map((store) => ({ storeId: store.storeId, storeName: store.storeName })),
+  }))
+
   return {
     topLevel,
-    markets: marketRows.map((market) => ({
-      id: market.id,
-      name: market.name,
-      stores: storeRows
-        .filter((store) => store.marketId === market.id)
-        .map((store) => ({ storeId: store.storeId, storeName: store.storeName })),
-    })),
+    // 门店级账号的市场只是其门店的父节点：门店全部停用后该市场没有可看的数据，不再列出，
+    // 否则默认范围会落到零数据的市场，而不是「暂无可查看的数据范围」（#421）
+    markets: topLevel === "store" ? markets.filter((market) => market.stores.length > 0) : markets,
   }
 }
 

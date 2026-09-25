@@ -32,8 +32,10 @@ const squeeze = (s) => s.replace(/\s+/g, ' ').trim()
 /** 抽出 `start` 到 `end` 之间的源码片段（end 不含） */
 function extractSection(src, startMarker, endMarker) {
   const start = src.indexOf(startMarker)
+  if (start < 0) throw new Error(`未找到源码片段起点：${startMarker}`)
+  if (src.indexOf(startMarker, start + startMarker.length) >= 0) throw new Error(`源码片段起点不唯一：${startMarker}`)
   const end = src.indexOf(endMarker, start + startMarker.length)
-  if (start < 0 || end < 0) throw new Error(`未找到源码片段：${startMarker} → ${endMarker}`)
+  if (end < 0) throw new Error(`未找到源码片段终点：${startMarker} → ${endMarker}`)
   return src.slice(start, end)
 }
 
@@ -43,6 +45,19 @@ function onlySqlTemplate(section) {
   const sqls = all.filter((t) => /\bSELECT\b/.test(t))
   if (sqls.length !== 1) throw new Error(`期望 1 条 SQL 模板，实得 ${sqls.length}`)
   return squeeze(sqls[0].slice(1, -1))
+}
+
+/** 经营分析站取数关键函数的全文快照（见 test 5）。改动后按失败输出的 actual 更新，先跑 analyst 本地守护 */
+const ANALYST_SECTION_SHA = {
+  'lib/analyst-scope.ts export async function getAnalystScopeOptions(': 'ccb9c526fa7b06d0',
+  'lib/analyst-scope.ts export function scopeFilterSql(': '9cff62ec3735905d',
+  'lib/analyst-scope.ts export function scopeRangeSql(': 'ce8d289ee987611d',
+  'lib/analyst-scope.ts function scopeRangeParts(': 'c69dcbd784e1d01a',
+  'lib/new-customer-funnel.ts async function queryFunnelEntries(': 'a30bcd7f9fe7b0c3',
+  'lib/penetration.ts function memberConditions(': '90ebe52a8d3e52a8',
+  'lib/repurchase.ts async function queryRepurchaseCatalog(': '2c71fd5b2de1aae7',
+  'lib/repurchase.ts async function queryRepurchaseEntries(': '03440f42a856f67a',
+  'lib/repurchase.ts function buildBaseConditions(': '3992dc2450ed72c0',
 }
 
 describe('门店在营判定跨端字面量守护（#400）', () => {
@@ -57,6 +72,7 @@ describe('门店在营判定跨端字面量守护（#400）', () => {
 
   test('2. 取数口径 activeStoreCondition 两端整段等值，且与判定片段要件一一对应', () => {
     // #401 起两端 activeStoreCondition 都收敛到各自的 store-status helper
+    // 三端：staff / admin / 经营分析站（#421）
     const staffBody = extractSection(
       read(path.join(STAFF, 'utils/store-status.js')),
       'function activeStoreCondition(column) {',
@@ -101,20 +117,67 @@ describe('门店在营判定跨端字面量守护（#400）', () => {
     expect(squeeze(dash)).toContain("const { activeStoreCondition, activeStoreNodeCondition, STORE_NODE_JOIN, STORE_IS_ACTIVE, } = require('../utils/store-status')")
   })
 
-  test('5. analyst 取数与范围下拉接线（#421）：取数首位叠在营子查询，下拉只看节点 isActive', () => {
-    const scope = read(path.join(ANALYST, 'lib/analyst-scope.ts'))
-    expect(scope).toContain('import { activeStoreCondition } from "./store-status"')
-    const filter = squeeze(extractSection(scope, 'export function scopeFilterSql(', '\n}\n'))
-    expect(filter).toContain('if (!range) return sql`FALSE`')
-    expect(filter).toContain('return sql.join([activeStoreCondition(range.col), ...range.parts], sql` AND `)')
-    expect(filter).not.toMatch(/sql`TRUE`/)
-    // 不含在营的 scopeRangeSql 只许出现在新客首单 / 复购首次进入两处基线（#421 拍板：首次判定用全历史）
-    const rangeUsers = ['lib/repurchase.ts', 'lib/penetration.ts', 'lib/new-customer-funnel.ts']
-      .filter((f) => read(path.join(ANALYST, f)).includes('scopeRangeSql('))
-    expect(rangeUsers).toEqual(['lib/repurchase.ts', 'lib/new-customer-funnel.ts'])
-    const options = squeeze(extractSection(scope, 'export async function getAnalystScopeOptions(', '\n}\n'))
-    expect(options).toContain('eq(storeNode.type, "门店"), eq(storeNode.isActive, true),')
-    expect(scope).not.toMatch(/is_closed|isClosed/)
+  test('5. analyst 取数与范围下拉接线（#421）：关键函数整段全文快照 + scopeRangeSql 使用点闭集', () => {
+    /**
+     * CI 里覆盖经营分析站的只有这一条（analyst 自身 vitest 不进 CI，#382），所以不挑子串，
+     * 直接把「决定哪些门店计入」的函数整段（原文，含注释）钉 sha256：任何改动——包括把某行注释掉
+     * 再另写一行——都会红。红了先跑 analyst `src/lib/__tests__/store-status-cross-end.test.ts`
+     * （那里有逐段可读的语义断言），确认口径没漂再更新这里的哈希。
+     */
+    const crypto = require('node:crypto')
+    const sha = (text) => crypto.createHash('sha256').update(squeeze(text)).digest('hex').slice(0, 16)
+    const SECTIONS = [
+      ['lib/analyst-scope.ts', 'export async function getAnalystScopeOptions('],
+      ['lib/analyst-scope.ts', 'export function scopeFilterSql('],
+      ['lib/analyst-scope.ts', 'export function scopeRangeSql('],
+      ['lib/analyst-scope.ts', 'function scopeRangeParts('],
+      ['lib/repurchase.ts', 'function buildBaseConditions('],
+      ['lib/repurchase.ts', 'async function queryRepurchaseEntries('],
+      ['lib/repurchase.ts', 'async function queryRepurchaseCatalog('],
+      ['lib/new-customer-funnel.ts', 'async function queryFunnelEntries('],
+      ['lib/penetration.ts', 'function memberConditions('],
+    ]
+    const actual = Object.fromEntries(
+      SECTIONS.map(([file, start]) => [`${file} ${start}`, sha(extractSection(read(path.join(ANALYST, file)), start, '\n}\n'))]),
+    )
+    expect(actual).toEqual(ANALYST_SECTION_SHA)
+
+    // scopeRangeSql（不含在营）标识符闭集：遍历 analyst 全部源码，按出现次数钉死（别名 import / 命名空间调用也会计入）
+    const listTs = (dir) => fs.readdirSync(dir, { withFileTypes: true }).flatMap((e) => {
+      const full = path.join(dir, e.name)
+      if (e.isDirectory()) return e.name === '__tests__' ? [] : listTs(full)
+      return /\.tsx?$/.test(e.name) && !/\.test\.tsx?$/.test(e.name) ? [full] : []
+    })
+    const files = listTs(ANALYST)
+    expect(files.length).toBeGreaterThan(20)
+    const mentions = Object.fromEntries(
+      files
+        .map((f) => [path.relative(ANALYST, f), (read(f).match(/\bscopeRangeSql\b/g) || []).length])
+        .filter(([, n]) => n > 0),
+    )
+    // 查库文件闭集（按 import db 判定）：新增取数文件必须先确认经 scopeFilterSql 过滤在营门店，再加进来
+    const dbFiles = files
+      .filter((f) => /\bfrom\s+["'](?:@\/db|(?:\.\.?\/)+db)["']/.test(read(f)))
+      .map((f) => path.relative(ANALYST, f))
+      .sort()
+    expect(dbFiles).toEqual([
+      'app/api/health/route.ts',
+      'lib/analyst-scope.ts',
+      'lib/assistant-chat-store.ts',
+      'lib/assistant-product-terms.ts',
+      'lib/auth.ts',
+      'lib/member-threshold.ts',
+      'lib/new-customer-funnel.ts',
+      'lib/operation-log.ts',
+      'lib/penetration.ts',
+      'lib/permissions.ts',
+      'lib/repurchase.ts',
+    ])
+    expect(mentions).toEqual({
+      'lib/analyst-scope.ts': 2, // 定义 + 注释
+      'lib/new-customer-funnel.ts': 2, // import + 首单基线
+      'lib/repurchase.ts': 3, // import + 首次进入基线 + 注释
+    })
   })
 
   test('4. admin 侧判定只看组织节点 isActive，不含 isClosed', () => {

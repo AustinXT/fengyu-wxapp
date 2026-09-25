@@ -11,9 +11,10 @@
  * 另一个概念「可营业」（能否接单 / 预约 / 绑定 / 作库存位）仍按 `is_closed`
  * 或 `is_active AND NOT is_closed` 判定（client/staff 门店列表、库存位 upsert、提货），不归本文件管。
  *
- * staff 端独立副本：`fengyu-staff/cloudfunctions/staffApi/utils/store-status.js`，
- * 一致性由 `__tests__/routes/cross-end-technician-denominator.test.js`（整段等值）
- * + `cross-end-store-status-snapshot.test.js`（数据中心范围禁 is_closed 闭集）守护。
+ * 独立副本（共三份）：staff `fengyu-staff/cloudfunctions/staffApi/utils/store-status.js`、
+ * 经营分析站 `fengyu-analyst/src/lib/store-status.ts`（#421）。一致性由 staff
+ * `__tests__/routes/cross-end-technician-denominator.test.js` / `cross-end-store-active-snapshot.test.js`（整段等值）
+ * + `cross-end-store-status-snapshot.test.js`（数据中心与 analyst 禁 is_closed 闭集）守护。
  */
 import { sql, type SQL } from 'drizzle-orm'
 

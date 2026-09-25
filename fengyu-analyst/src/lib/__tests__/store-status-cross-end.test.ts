@@ -21,7 +21,7 @@ import { activeStoreCondition } from "../store-status"
  *    否则在停用门店买过的老顾客换到在营门店会被误判成新客），调用方必须在归属门店上另叠在营条件。
  *    三个板块的 scopeFilterSql / scopeRangeSql / activeStoreCondition 调用点逐个钉死。
  * 3. 范围下拉的门店条件整段钉死：只看门店节点 `isActive`。
- * 4. 闭集：analyst 源码（剥掉注释后）不得出现 `is_closed` / `isClosed`；会查库的文件是闭集，
+ * 4. 闭集：analyst 源码（含注释）不得出现 `is_closed` / `isClosed` / `closed_at` / `closedAt`；会查库的文件是闭集，
  *    新增取数文件必须在这里归类（否则可能绕过 scopeFilterSql）。
  *
  * ⚠️ analyst 的 vitest 不在 CI 里跑（#382）：改动 analyst 取数时须本地跑本文件。
@@ -51,36 +51,40 @@ const inner = (body: string) => squeeze(body.slice(body.indexOf("IN ("), body.la
 const EXPECTED_ACTIVE =
   "IN ( SELECT active_store.store_id FROM stores active_store JOIN org_nodes active_node ON active_store.org_node_id = active_node.id WHERE active_node.type = '门店' AND active_node.is_active = TRUE )"
 
-/** 用 TypeScript 扫描器剥掉注释，只留代码 token（比正则剥注释可靠：不会误伤字符串 / 模板里的 `//`） */
+/**
+ * 用 TypeScript parser 剥掉注释，只留代码。注释区间取自语法树每个节点 / token 的前后 trivia，
+ * 不会被正则字面量（`/[/*]/`）、字符串、模板或 JSX 文本里的 `//` 带偏。
+ */
 function stripComments(src: string, file: string): string {
-  const scanner = ts.createScanner(
-    ts.ScriptTarget.Latest,
-    false,
-    file.endsWith(".tsx") ? ts.LanguageVariant.JSX : ts.LanguageVariant.Standard,
+  const sf = ts.createSourceFile(
+    file,
     src,
+    ts.ScriptTarget.Latest,
+    true,
+    file.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
   )
-  const parts: string[] = []
-  // 模板 `${` 内的花括号深度栈：遇到收尾的 `}` 须 reScanTemplateToken，否则模板剩余文本会被当成代码扫
-  const templateBraces: number[] = []
-  for (let kind = scanner.scan(); kind !== ts.SyntaxKind.EndOfFileToken; kind = scanner.scan()) {
-    if (kind === ts.SyntaxKind.CloseBraceToken && templateBraces.length > 0) {
-      if (templateBraces[templateBraces.length - 1] === 0) {
-        kind = scanner.reScanTemplateToken(false)
-        templateBraces.pop()
-      } else {
-        templateBraces[templateBraces.length - 1] -= 1
-      }
-    } else if (kind === ts.SyntaxKind.OpenBraceToken && templateBraces.length > 0) {
-      templateBraces[templateBraces.length - 1] += 1
-    }
-    if (kind === ts.SyntaxKind.TemplateHead || kind === ts.SyntaxKind.TemplateMiddle) templateBraces.push(0)
-    if (kind === ts.SyntaxKind.SingleLineCommentTrivia || kind === ts.SyntaxKind.MultiLineCommentTrivia) continue
-    parts.push(scanner.getTokenText())
+  const ranges = new Map<number, number>()
+  const collect = (list: ts.CommentRange[] | undefined) => {
+    for (const range of list ?? []) ranges.set(range.pos, range.end)
   }
-  const out = parts.join("")
-  // 自检：剥注释只会让文本变短，且去掉空白后必须是原文去空白后的子序列前缀一致（防扫描器吞字符）
-  if (out.length > src.length) throw new Error(`stripComments 输出比原文长：${file}`)
-  return out
+  const visit = (node: ts.Node) => {
+    // JSX 文本不是 trivia，从它的起点扫注释会把 `http://` 之类当成注释
+    if (node.kind !== ts.SyntaxKind.JsxText) {
+      collect(ts.getLeadingCommentRanges(src, node.pos))
+      collect(ts.getTrailingCommentRanges(src, node.end))
+    }
+    node.getChildren(sf).forEach(visit)
+  }
+  visit(sf)
+  collect(ts.getLeadingCommentRanges(src, sf.endOfFileToken.pos))
+  let out = ""
+  let cursor = 0
+  for (const [pos, end] of [...ranges].sort((x, y) => x[0] - y[0])) {
+    if (pos < cursor) continue
+    out += src.slice(cursor, pos)
+    cursor = end
+  }
+  return out + src.slice(cursor)
 }
 
 function listSourceFiles(dir: string): string[] {
@@ -94,7 +98,7 @@ function listSourceFiles(dir: string): string[] {
 /** 源码里 `name(` 的全部调用（括号配平取完整实参），排除 import / 函数声明；已排序 */
 function callsOf(src: string, name: string): string[] {
   const out: string[] = []
-  const re = new RegExp(`(?<![\\w.])${name}\\(`, "g")
+  const re = new RegExp(`(?<![\\w])${name}\\s*\\(`, "g")
   for (let m = re.exec(src); m; m = re.exec(src)) {
     const before = src.slice(Math.max(0, m.index - 16), m.index)
     if (/function\s+$/.test(before)) continue
@@ -111,6 +115,23 @@ function callsOf(src: string, name: string): string[] {
 }
 
 describe("在营门店口径跨端守护（#421）", () => {
+  it("0. stripComments 自检：只剥注释，不被正则字面量 / 字符串 / 模板 / JSX 文本里的 // 带偏", () => {
+    const src = [
+      "const re = /[/*]/ // 尾注释",
+      "const keep1 = 1",
+      "const url = 'http://x' /* 块注释 */",
+      "const tpl = `a // b ${url} /* c */`",
+      "/** 文档注释 */",
+      "const el = <p>http://x</p>",
+      "const keep2 = 2",
+    ].join("\n")
+    const out = stripComments(src, "fixture.tsx")
+    for (const code of ["const re = /[/*]/", "const keep1 = 1", "'http://x'", "`a // b ${url} /* c */`", "<p>http://x</p>", "const keep2 = 2"]) {
+      expect(out).toContain(code)
+    }
+    for (const comment of ["尾注释", "块注释", "文档注释"]) expect(out).not.toContain(comment)
+  })
+
   it("1. activeStoreCondition 三端整段等值（analyst 取实际渲染结果）", () => {
     const rendered = new PgDialect().sqlToQuery(activeStoreCondition(sql.raw("so.store_id"))).sql
     expect(squeeze(rendered)).toBe(`so.store_id ${EXPECTED_ACTIVE}`)
@@ -194,10 +215,22 @@ describe("在营门店口径跨端守护（#421）", () => {
       filter: ['scopeFilterSql(session, scope, "so.store_id")'],
       range: ['scopeRangeSql(session, scope, "so.store_id")'],
       active: [
+        'activeStoreCondition(sql.raw("q.store_id"))',
         'activeStoreCondition(sql.raw("store_id"))',
-        "activeStoreCondition(sql`(ARRAY_AGG(q.store_id ORDER BY q.sale_date, q.min_date, q.store_id))[1]`)",
+        "activeStoreCondition(sql`(ARRAY_AGG(q.store_id ORDER BY ${firstStoreOrder}))[1]`)",
       ].sort(),
     })
+    // 首次进入归属：门店名 / 市场 / 在营判定三处 ARRAY_AGG 同一排序，且同日优先在营门店
+    const repurchase = squeeze(stripComments(read(path.join(ANALYST_SRC, "lib/repurchase.ts")), "x.ts"))
+    expect(repurchase).toContain(
+      'const firstStoreOrder = sql`q.sale_date, (CASE WHEN ${activeStoreCondition(sql.raw("q.store_id"))} THEN 0 ELSE 1 END), q.min_date, q.store_id`',
+    )
+    expect(repurchase.match(/ARRAY_AGG\(q\.(store|market|store_id) ORDER BY \$\{firstStoreOrder\}\)/g)).toEqual([
+      "ARRAY_AGG(q.store ORDER BY ${firstStoreOrder})",
+      "ARRAY_AGG(q.market ORDER BY ${firstStoreOrder})",
+      "ARRAY_AGG(q.store_id ORDER BY ${firstStoreOrder})",
+    ])
+    expect(repurchase).not.toMatch(/ARRAY_AGG\(q\.(store|market|store_id) ORDER BY q\./)
     // 渗透：会员按当前绑定门店截面，无首次基线
     expect(calls("lib/penetration.ts")).toEqual({
       filter: ['scopeFilterSql(session, scope, "c.bound_store_id")'],
@@ -219,16 +252,19 @@ describe("在营门店口径跨端守护（#421）", () => {
     expect(squeeze(stripComments(read(path.join(ANALYST_SRC, "lib/new-customer-funnel.ts")), "x.ts"))).toContain(
       "OR (c.customer_source::text IS DISTINCT FROM ${TRANSFER_SOURCE} AND fo.client_user_id IS NOT NULL AND ${firstOrderStoreActive})",
     )
-    // scopeRangeSql 全仓只在这两处基线出现
+    // scopeRangeSql 全仓只在这两处基线出现：按标识符出现（剥注释后）判定，别名 import / 命名空间调用也会被数到
     const rangeUsers = listSourceFiles(ANALYST_SRC)
-      .filter((file) => /scopeRangeSql\(/.test(stripComments(read(file), file)))
+      .filter((file) => /\bscopeRangeSql\b/.test(stripComments(read(file), file)))
       .map((file) => path.relative(ANALYST_SRC, file))
       .sort()
     expect(rangeUsers).toEqual(["lib/analyst-scope.ts", "lib/new-customer-funnel.ts", "lib/repurchase.ts"])
   })
 
-  it("3. 范围下拉门店条件整段钉死：只看门店节点 isActive", () => {
+  it("3. 范围下拉门店条件整段钉死：只看门店节点 isActive；门店级账号不列空市场", () => {
     const scope = read(path.join(ANALYST_SRC, "lib/analyst-scope.ts"))
+    expect(squeeze(stripComments(extractSection(scope, "export async function getAnalystScopeOptions(", "\n}\n"), "x.ts"))).toContain(
+      'markets: topLevel === "store" ? markets.filter((market) => market.stores.length > 0) : markets,',
+    )
     const where = extractSection(scope, "    .innerJoin(storeNode, eq(stores.orgNodeId, storeNode.id))", "    .orderBy(asc(stores.storeName))")
     expect(squeeze(stripComments(where, "x.ts"))).toBe(
       squeeze(`.innerJoin(storeNode, eq(stores.orgNodeId, storeNode.id))
@@ -250,12 +286,14 @@ describe("在营门店口径跨端守护（#421）", () => {
     const files = listSourceFiles(ANALYST_SRC)
     expect(files.length).toBeGreaterThan(20)
 
-    const closedHits = files.filter((file) => /is_closed|isClosed/.test(stripComments(read(file), file)))
+    // 扫原文（含注释）：源码里连注释都不写该字段名，闭集就不依赖注释剥离器
+    const closedHits = files.filter((file) => /is_?closed|closed_?at/i.test(read(file)))
     expect(closedHits.map((file) => path.relative(ANALYST_SRC, file))).toEqual([])
 
-    // 会查库的文件闭集：新增取数文件必须先确认经 scopeFilterSql 过滤在营门店，再加进来
+    // 会查库的文件闭集：按「import 了 db 模块」判定（tx / 别名 / 解构等写法都绕不过 import），
+    // 新增取数文件必须先确认经 scopeFilterSql 过滤在营门店，再加进来
     const dbFiles = files
-      .filter((file) => /\bdb\s*\.\s*(execute|select|insert|update|delete)\b/.test(stripComments(read(file), file)))
+      .filter((file) => /\bfrom\s+["'](?:@\/db|(?:\.\.?\/)+db)["']/.test(read(file)))
       .map((file) => path.relative(ANALYST_SRC, file))
       .sort()
     expect(dbFiles).toEqual([

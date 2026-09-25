@@ -3,13 +3,15 @@
  *
  * 口径 = **只看门店组织节点 `org_nodes.is_active`**，范围下拉与取数 SQL 同源：
  *   - 节点停用 → 从下拉与全部指标中隐藏（全部历史区间，`is_active` 没有时间轴）
- *   - `stores.is_closed` 不参与：它是营业时间轴，算进范围会抹掉关店前的全部历史业绩
+ *   - 门店的关店标记不参与：它是营业时间轴，算进范围会抹掉关店前的全部历史业绩
+ *     （本目录源码连注释都不出现该字段名，staff `cross-end-store-status-snapshot.test.js` 按原文扫描闭集）
  *   - 门店为空 / 悬空的行（如未绑定门店的会员）同样不计入，与 admin 数据中心一致
  *
  * analyst 是独立部署的站点，本文件是 admin `fengyu-admin/src/lib/store-status.ts` 的**独立副本**
- * （根 CLAUDE.md：禁止跨端共享代码目录）。一致性由
- * `src/lib/__tests__/store-status-cross-end.test.ts` 与 staff
- * `__tests__/routes/cross-end-store-active-snapshot.test.js` 的字面量整段等值守护。
+ * （根 CLAUDE.md：禁止跨端共享代码目录；staff 另有 `utils/store-status.js`，共三份）。一致性由
+ * `src/lib/__tests__/store-status-cross-end.test.ts`（不进 CI，#382）与 staff
+ * `__tests__/routes/cross-end-store-active-snapshot.test.js` / `cross-end-store-status-snapshot.test.js`
+ * （staffApi 全量在 CI 跑）的字面量整段等值 + 闭集守护。
  */
 import { sql, type SQL } from "drizzle-orm"
 

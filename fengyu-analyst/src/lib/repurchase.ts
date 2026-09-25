@@ -304,6 +304,9 @@ async function queryRepurchaseEntries(
       repurchaseConditions.push(sql`r.sale_date <= ${range.endDate}::date`)
     }
     const firstEntrySql = sql.join(firstEntryConditions, sql` AND `)
+    // 首次进入归属门店：取首个达标日；同一天在多家门店都达标时优先在营门店（#421），
+    // 否则同日停用门店排在前面会把本可归属在营门店的顾客整行剔除
+    const firstStoreOrder = sql`q.sale_date, (CASE WHEN ${activeStoreCondition(sql.raw("q.store_id"))} THEN 0 ELSE 1 END), q.min_date, q.store_id`
     const repurchaseSql = sql.join(repurchaseConditions, sql` AND `)
 
     const rows = await db.execute<RawRepurchaseEntryRow>(sql`
@@ -401,8 +404,8 @@ async function queryRepurchaseEntries(
       q.category_name AS "categoryName",
       CONCAT(q.product_kind, ' / ', q.category_name) AS "category",
       f.first_date AS "firstDate",
-      (ARRAY_AGG(q.store ORDER BY q.sale_date, q.min_date, q.store_id))[1] AS "store",
-      (ARRAY_AGG(q.market ORDER BY q.sale_date, q.min_date, q.store_id))[1] AS "market",
+      (ARRAY_AGG(q.store ORDER BY ${firstStoreOrder}))[1] AS "store",
+      (ARRAY_AGG(q.market ORDER BY ${firstStoreOrder}))[1] AS "market",
       f.repurchased AS "repurchased"
     FROM qualified_days q
     JOIN repurchase_flags f
@@ -410,7 +413,7 @@ async function queryRepurchaseEntries(
      AND f.product_kind = q.product_kind
      AND f.category_name = q.category_name
     GROUP BY q.client_user_id, q.customer_code, q.product_kind, q.category_name, f.first_date, f.repurchased
-    HAVING ${activeStoreCondition(sql`(ARRAY_AGG(q.store_id ORDER BY q.sale_date, q.min_date, q.store_id))[1]`)}
+    HAVING ${activeStoreCondition(sql`(ARRAY_AGG(q.store_id ORDER BY ${firstStoreOrder}))[1]`)}
     ORDER BY f.first_date DESC, q.product_kind, q.category_name
     `)
     return mapEntryRows(rows)
