@@ -106,6 +106,35 @@ function looksUnique(arg: string): boolean {
 }
 
 /**
+ * `matrixOrderBySql(sort, SORTABLE, [a, b])` → 兜底键数组的末位 `b` 的源码文本。
+ *
+ * 用 TypeScript AST 精确取**第三个实参**，不做字符扫描：「取最后一对方括号」会被第二个实参里的数组骗过
+ * （`matrixOrderBySql(sort, make([sql`c.id`]), TIEBREAK)` 会误取 `c.id`），模板字符串里的逗号 / 括号也会让
+ * 手写的深度计数失真。第三个实参缺失、不是数组字面量（如传变量）、数组为空、解析失败 → 一律返回 ''，判不通过。
+ */
+function matrixTiebreakTail(call: string): string {
+  const sf = ts.createSourceFile('matrix-order-call.ts', `(${call})`, ts.ScriptTarget.Latest, true)
+  const statement = sf.statements[0]
+  if (!statement || !ts.isExpressionStatement(statement)) return ''
+  let expression: ts.Expression = statement.expression
+  while (ts.isParenthesizedExpression(expression)) expression = expression.expression
+  if (!ts.isCallExpression(expression)) return ''
+  if (!ts.isIdentifier(expression.expression) || expression.expression.text !== 'matrixOrderBySql') return ''
+  const tiebreak = expression.arguments[2]
+  if (!tiebreak || !ts.isArrayLiteralExpression(tiebreak)) return ''
+  const last = tiebreak.elements[tiebreak.elements.length - 1]
+  if (!last || ts.isSpreadElement(last)) return ''
+  return last.getText(sf)
+}
+
+/** 原生 SQL 模板里的兜底键：sql`c.customer_id` / sql`${customers.userId}` */
+function looksUniqueSqlColumn(arg: string): boolean {
+  const body = arg.trim().match(/^sql`([\s\S]*)`$/)?.[1]?.trim()
+  if (!body) return false
+  return /(^|\.)(id|[a-z0-9_]*_id)$/.test(body) || /\.\s*(id|[a-zA-Z0-9]*Id)\s*\}$/.test(body)
+}
+
+/**
  * 从 `end` 位置起，吃掉**同一条链**上后续的 `.method(...)`，遇到非链式 token 即停。
  *
  * ⚠️ 不能用「往后取 N 个字符/行」当窗口：第一版取 1200 字符，
@@ -254,6 +283,31 @@ function pagedOrderBys(code: string, fileName = 'x.ts'): Array<{ index: number; 
   return out
 }
 
+describe('#368 · matrixOrderBySql 兜底键判据的灵敏度（解析坏了会 fail-open）', () => {
+  const verdict = (call: string) => {
+    const tail = matrixTiebreakTail(call)
+    return looksUnique(tail) || looksUniqueSqlColumn(tail)
+  }
+  it('末位是主键 → 认', () => {
+    expect(verdict('matrixOrderBySql(sort, SORTABLE, [sql`c.customer_id`])')).toBe(true)
+    expect(verdict('matrixOrderBySql(sort, SORTABLE, [sql`s.store_id`, sql`c.id`])')).toBe(true)
+    expect(verdict('matrixOrderBySql(sort, SORTABLE, [sql`${customers.userId}`])')).toBe(true)
+    expect(verdict('matrixOrderBySql(sort, { a: sql`x, y` }, [sql`e.employee_id`])')).toBe(true)
+  })
+  it('末位不是唯一键 / 没有兜底数组 → 不认', () => {
+    expect(verdict('matrixOrderBySql(sort, SORTABLE, [sql`c.name`])')).toBe(false)
+    expect(verdict('matrixOrderBySql(sort, SORTABLE, [sql`c.customer_id`, sql`c.name`])')).toBe(false)
+    expect(verdict('matrixOrderBySql(sort, SORTABLE, TIEBREAK)')).toBe(false)
+    expect(verdict('matrixOrderBySql(sort, SORTABLE, [sql`c.paid_id_text`])')).toBe(false)
+    // 第二个实参里的数组不能被当成兜底键（字符扫描「取最后一对方括号」的版本会被这条骗过）
+    expect(verdict('matrixOrderBySql(sort, make([sql`c.id`]), TIEBREAK)')).toBe(false)
+    expect(verdict('matrixOrderBySql(sort, SORTABLE, [])')).toBe(false)
+    expect(verdict('matrixOrderBySql(sort, SORTABLE, [...KEYS])')).toBe(false)
+    expect(verdict('matrixOrderBySql(sort, SORTABLE)')).toBe(false)
+    expect(verdict('matrixOrderBySql(sort, SORTABLE, [sql`c.id`, sql`c.name, c.x`])')).toBe(false)
+  })
+})
+
 describe('#282 · admin 分页查询的 orderBy 必须带唯一键 tie-break', () => {
   describe('第 1 层 · 通用规则（防将来新增的分页查询忘了加）', () => {
     it('每个带 .offset() 的 .orderBy() 末位参数都含唯一键', () => {
@@ -275,8 +329,12 @@ describe('#282 · admin 分页查询的 orderBy 必须带唯一键 tie-break', (
               cur += ch
             }
             last = cur || last
-            const exempt = UNIQUE_BY_INDEX.some(([re]) => re.test(last.trim()))
-            if (!looksUnique(last) && !exempt) {
+            // 矩阵表（#368）的排序走 matrixOrderBySql(sort, SORTABLE, [兜底键...])：整体以 `])` 结尾，
+            // looksUnique 认不出来。改为检查它第三个参数（兜底键数组）的**末位**是否像唯一键 ——
+            // 不能整体豁免：传 [sql`c.name`] 这种非唯一兜底同样会让翻页重复 / 漏行。
+            const checked = /^matrixOrderBySql\(/.test(last.trim()) ? matrixTiebreakTail(last) : last
+            const exempt = UNIQUE_BY_INDEX.some(([re]) => re.test(checked.trim()))
+            if (!looksUnique(checked) && !looksUniqueSqlColumn(checked) && !exempt) {
               const line = code.slice(0, index).split('\n').length
               offenders.push(`${relative(SRC, file)}:${line} · 末位「${last.trim()}」不像唯一键\n    orderBy(${args})`)
             }
@@ -286,12 +344,12 @@ describe('#282 · admin 分页查询的 orderBy 必须带唯一键 tie-break', (
       expect(offenders, `缺 tie-break 的分页查询:\n${offenders.join('\n')}`).toEqual([])
       // 下界防「守护被掏空」：切片逻辑若改坏，一个都扫不到、offenders 恒空而断言恒绿。
       //
-      // ⚠️ 这个数字要与 **`src/` 下 `.offset(` 的实际总数**对齐（当前 33，
+      // ⚠️ 这个数字要与 **`src/` 下 `.offset(` 的实际总数**对齐（当前 34，#338 +1，
       // `grep -rn "\.offset(" src --include="*.ts" | grep -v "\.test\." | wc -l`）。
       // 初版判据只认同链写法，只扫到 19 —— 14 处 deferred 写法
       // （`const query = …orderBy(…)` + `await query.limit().offset()`，本仓导出的主流写法）
       // 完全隐形，删掉它们的 tie-break 全套用例照样绿。补上 deferred 关联后才是 100%。
-      const totalOffsetCalls = 33
+      const totalOffsetCalls = 34
       expect(scanned, '扫到的分页查询数与 src 里 .offset( 的总数不符 —— 判据可能又漏了某种写法')
         .toBe(totalOffsetCalls)
     })
@@ -408,7 +466,7 @@ describe('#282 · admin 分页查询的 orderBy 必须带唯一键 tie-break', (
     })
   })
 
-  describe('覆盖率 · 全部 33 支分页查询都被按「文件 + 子句 + 次数」钉死', () => {
+  describe('覆盖率 · 全部 34 支分页查询都被按「文件 + 子句 + 次数」钉死', () => {
     // 第 1 层是启发式 —— `looksUnique` 对**任何** `*Id` 放行，**外键也算**。
     // 真正的位置级保护只能靠这张表。
     //
@@ -451,7 +509,8 @@ describe('#282 · admin 分页查询的 orderBy 必须带唯一键 tie-break', (
       ['lib/inventory/engine.ts', 'asc(inventoryLocations.locationType), asc(inventoryLocations.name), asc(inventoryStockLots.skuName), asc(inventoryStockLots.batchNo), asc(inventoryStockLots.id)', 1],
       ['lib/inventory/engine.ts', 'asc(inventorySkus.productCode)', 1],
       ['lib/inventory/engine.ts', 'asc(inventorySuppliers.name)', 1],
-      ['lib/inventory/engine.ts', 'desc(inventoryDocs.docDate), desc(inventoryDocs.createdAt), desc(inventoryDocs.id)', 1],
+      // ×2：单据列表 listInventoryCoreDocs + #338 的办理台候选单 listInventoryDocCandidates
+      ['lib/inventory/engine.ts', 'desc(inventoryDocs.docDate), desc(inventoryDocs.createdAt), desc(inventoryDocs.id)', 2],
     ]
 
     it('没有未登记的分页查询，且每处的子句与次数都对得上', () => {
@@ -478,7 +537,7 @@ describe('#282 · admin 分页查询的 orderBy 必须带唯一键 tie-break', (
 
       // 总数兜底：防两张表同时改错还互相抵消
       const total = [...actual.values()].reduce((a, b) => a + b, 0)
-      expect(total, '分页查询总数变了 —— 确认是新增/删除还是提取器失效').toBe(33)
+      expect(total, '分页查询总数变了 —— 确认是新增/删除还是提取器失效').toBe(34)
     })
   })
 

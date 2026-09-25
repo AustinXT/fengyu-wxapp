@@ -6,6 +6,7 @@ import { ChevronRight } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { getMenuParentForPath, MENU_CONFIG } from '@/lib/menu'
 import { resolveReturnTo } from '@/lib/return-context'
+import { DATA_CENTER_REPORT_LIST, DATA_CENTER_REPORTS, type DataCenterReportKey } from '@/lib/data-center/reports'
 
 const ROUTE_LABELS: Record<string, string> = {
   "/dashboard": "工作台",
@@ -51,6 +52,8 @@ const ROUTE_LABELS: Record<string, string> = {
   "/data-center/customer": "客量",
   "/data-center/efficiency": "人效",
   "/data-center/product": "品项",
+  // 经营明细报表（#367）：标题来自登记表，与页面 h1、菜单同源
+  ...Object.fromEntries(DATA_CENTER_REPORT_LIST.map((report) => [report.path, report.title])),
   "/permissions": "权限管理",
   "/messages": "消息中心",
   "/logs": "操作日志",
@@ -58,6 +61,16 @@ const ROUTE_LABELS: Record<string, string> = {
   "/settings/diagnostics": "系统自检",
   "/settings/lakala-diagnostics": "系统自检",
 }
+
+/**
+ * 下钻子页 → 父页（直达匹配时在当前页前补一级可点的父页）。
+ * 如「数据中心 / 员工提成日报 / 提成明细」：父页链接走 returnTo，回到下钻前的筛选状态。
+ */
+const ROUTE_PARENTS: Record<string, string> = Object.fromEntries(
+  DATA_CENTER_REPORT_LIST.flatMap((report) => report.parent
+    ? [[report.path, DATA_CENTER_REPORTS[report.parent as DataCenterReportKey].path]]
+    : []),
+)
 
 interface BreadcrumbItem {
   label: string
@@ -71,6 +84,8 @@ function buildBreadcrumbs(pathname: string): BreadcrumbItem[] {
 
   // Direct match first
   if (ROUTE_LABELS[pathname]) {
+    const parentPath = ROUTE_PARENTS[pathname]
+    if (parentPath) items.push({ label: ROUTE_LABELS[parentPath], href: parentPath })
     items.push({ label: ROUTE_LABELS[pathname], href: pathname })
     return items
   }

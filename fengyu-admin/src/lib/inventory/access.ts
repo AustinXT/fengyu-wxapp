@@ -1,5 +1,6 @@
 import { ApiError } from '@/lib/api-error'
 import type { AuthSession } from '@/lib/types'
+import { scopeSessionToActions } from '@/lib/action-scope'
 import { hasPermission, isAdminScope } from '@/lib/permissions'
 import type { InventoryPriceVisibility } from './types'
 
@@ -158,5 +159,40 @@ export function assertInventoryLocationInScope(session: AuthSession, locationId:
   if (scoped !== null && !scoped.includes(locationId)) {
     // ApiError 保证 runWithApiResponse 按 errorType 序列化为 -403，而非降级 -1。
     throw new ApiError('PERMISSION_DENIED', '无权操作该库存主体')
+  }
+}
+
+/** 报货福利方案的维护权限（#354）。 */
+export const INVENTORY_PROMOTION_MAINTAIN_ACTION = 'inventory:supply_chain_master_data_manage'
+
+/**
+ * 报货福利方案只由总部供应链维护（#354，9/18 会议 §2.2「单价优惠不可手填，由报货福利自动提取」）：
+ * 维护权限必须来自**总部 scope** 的角色绑定，超级管理员除外。市场账号即便被误授了这项动作，
+ * 也不能给本市场建优惠来压低对供应链的应付。
+ *
+ * 判的是角色绑定自带的 actions（withPermission 收紧后的 session 仍保留每条绑定的完整 actions），
+ * 所以在 `inventory:stock_list` 包装下调用（列表可见性）同样成立。缺角色级 actions 的绑定一律不算：
+ * 退回会话级权限会把「总部绑定 + 别处绑定授的维护动作」拼接放行（登录会话每条绑定都带 actions）。
+ */
+export function isInventoryPromotionMaintainer(session: AuthSession): boolean {
+  if (isAdminScope(session)) return true
+  return session.roles.some((role) => role.scopeType === '总部'
+    && Array.isArray(role.actions)
+    && role.actions.includes(INVENTORY_PROMOTION_MAINTAIN_ACTION))
+}
+
+/**
+ * 页面入口判据：与 action / 引擎完全同构 —— `withPermission(MANAGE)` 先要求会话级持有 MANAGE，
+ * 再把角色收紧到授予 MANAGE 的绑定，最后过维护方判定。直接拿未收紧的会话判会把
+ * 「超管绑定（无 MANAGE）+ 别处绑定授的 MANAGE」拼成可维护，页面显示入口而后端拒绝。
+ */
+export function canMaintainInventoryPromotions(session: AuthSession): boolean {
+  if (!hasPermission(session, INVENTORY_PROMOTION_MAINTAIN_ACTION)) return false
+  return isInventoryPromotionMaintainer(scopeSessionToActions(session, [INVENTORY_PROMOTION_MAINTAIN_ACTION]))
+}
+
+export function assertInventoryPromotionMaintainer(session: AuthSession): void {
+  if (!isInventoryPromotionMaintainer(session)) {
+    throw new ApiError('PERMISSION_DENIED', '报货福利方案只能由总部供应链维护')
   }
 }

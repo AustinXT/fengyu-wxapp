@@ -79,14 +79,14 @@ function newDraftItem(): PromotionDraftItem {
   }
 }
 
-function emptyForm(defaultMarketId = ''): PromotionForm {
+function emptyForm(): PromotionForm {
   const today = todayYmd()
   return {
     name: '',
     ruleType: '单品阶梯',
     startsAt: today,
     endsAt: today,
-    scopeMarketId: defaultMarketId,
+    scopeMarketId: '',
     status: '启用',
     remark: '',
     items: [newDraftItem()],
@@ -143,14 +143,12 @@ export default function InventoryPromotionsPage({
   canCreate,
   canUpdate,
   canViewPrice,
-  canManageGlobal,
 }: {
   rows: InventoryPromotionPlanRow[]
   marketOptions: MarketOption[]
   canCreate: boolean
   canUpdate: boolean
   canViewPrice: boolean
-  canManageGlobal: boolean
 }) {
   const router = useRouter()
   const { get, setMany } = useUrlFilters()
@@ -206,7 +204,8 @@ export default function InventoryPromotionsPage({
     if (rawPage > totalPages) setMany({ page: '' })
   }, [rawPage, totalPages, setMany])
 
-  const canCreatePlan = canCreate && (canManageGlobal || marketOptions.length > 0)
+  // 维护方只有总部供应链（#354），全局方案永远可建，不再按「有无可选市场」决定入口
+  const canCreatePlan = canCreate
   const readOnly = mode === 'view'
 
   function closeEditor(open: boolean) {
@@ -217,7 +216,8 @@ export default function InventoryPromotionsPage({
 
   function openCreate() {
     setSelectedPlan(null)
-    setForm(emptyForm(marketOptions.length === 1 ? marketOptions[0].locationId : ''))
+    // 维护方是总部供应链（#354），新建默认全局方案，需要时再指定市场
+    setForm(emptyForm())
     setMode('create')
   }
 
@@ -410,7 +410,7 @@ export default function InventoryPromotionsPage({
       key: 'actions',
       header: '操作',
       cell: (row) => {
-        const canEditRow = canUpdate && (row.scopeMarketId !== null || canManageGlobal)
+        const canEditRow = canUpdate
         return (
           <div className="flex items-center gap-1">
             <Button variant="link" size="sm" className="h-auto px-1" onClick={() => openPlan(row, 'view')}>
@@ -526,7 +526,7 @@ export default function InventoryPromotionsPage({
                 disabled={readOnly || saving}
                 onChange={(event) => setField('scopeMarketId', event.target.value)}
               >
-                {(canManageGlobal || form.scopeMarketId === '') && <option value="">全部市场</option>}
+                <option value="">全部市场</option>
                 {marketOptions.map((market) => (
                   <option key={market.locationId} value={market.locationId}>{market.name}</option>
                 ))}

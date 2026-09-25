@@ -65,5 +65,24 @@ export function useUrlFilters() {
     [router, pathname]
   )
 
-  return { get, set, setMany, searchParams }
+  /**
+   * 整体替换筛选参数（只保留 next 里的键），如「重置」。与 set/setMany 共用 paramsRef，
+   * 所以**同一实例**上紧接着的筛选操作基于重置后的参数，而不是被旧参数覆盖回去。
+   * ⚠️ paramsRef 是实例级的：同页其它 useUrlFilters 实例要等新 searchParams 到达才同步，
+   * 这段窗口里它们写 URL 会把重置前的参数带回来——同一张筛选卡片 / 同一个页面的筛选请共用一个实例。
+   */
+  const replaceAll = useCallback(
+    (next: Record<string, string>) => {
+      const params = new URLSearchParams()
+      for (const [key, value] of Object.entries(next)) {
+        if (value) params.set(key, value)
+      }
+      paramsRef.current = params
+      const qs = params.toString()
+      router.replace(`${pathname}${qs ? `?${qs}` : ''}`, { scroll: false })
+    },
+    [router, pathname]
+  )
+
+  return { get, set, setMany, replaceAll, searchParams }
 }

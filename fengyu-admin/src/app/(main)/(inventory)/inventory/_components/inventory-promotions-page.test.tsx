@@ -55,7 +55,6 @@ function renderPage(rows: InventoryPromotionPlanRow[]) {
       canCreate={false}
       canUpdate={false}
       canViewPrice
-      canManageGlobal
     />,
   )
 }

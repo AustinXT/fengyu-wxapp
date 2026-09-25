@@ -5,13 +5,17 @@ import {
   confirmInventoryCoreReceive as confirmInventoryCoreReceiveImpl,
   createInventoryCoreDoc as createInventoryCoreDocImpl,
   getInventoryCoreDocById as getInventoryCoreDocByIdImpl,
+  getInventoryCoreDocsByIds as getInventoryCoreDocsByIdsImpl,
   listInventoryCoreDocs as listInventoryCoreDocsImpl,
+  listInventoryDocCandidateIds as listInventoryDocCandidateIdsImpl,
+  listInventoryDocCandidates as listInventoryDocCandidatesImpl,
   rejectInventoryCoreDoc as rejectInventoryCoreDocImpl,
 } from '@/lib/inventory/engine'
 import type { CreateInventoryDocInput, InventoryCoreDocStatus, InventoryDocType, InventoryLocationType } from '@/lib/inventory/types'
 import { INVENTORY_CORE_RECEIVE_ACTIONS } from '@/lib/inventory/business-level'
 import { resolveOperationDocQuery } from '@/lib/inventory/operation-doc-types'
 import type { InventoryOperationDocFilter } from '@/lib/inventory/operation-doc-types'
+import type { InventoryDocCandidateFilters } from '@/lib/inventory/doc-candidates'
 import { ApiError } from '@/lib/api-error'
 import { withAnyPermission, withPermission } from '@/lib/with-permission'
 
@@ -88,9 +92,52 @@ export const listInventoryOperationDocs = withPermission(
   },
 )
 
+/**
+ * 办理台来源单 / 待处理单候选（#338）：按用途服务端检索 + 分页，取代页面预加载的最近 100 张。
+ * 用途 → 单据类型 / 状态 / 方向 / 剩余量口径在服务端白名单解析，客户端不能直接指定 docType。
+ * 显式逐字段转发（不 spread），与 listInventoryOperationDocs 同理。
+ */
+export const listInventoryDocCandidates = withPermission(
+  'inventory:list',
+  async (_session, raw: InventoryDocCandidateFilters) => {
+    const input = raw ?? ({} as InventoryDocCandidateFilters)
+    return listInventoryDocCandidatesImpl({
+      purpose: input.purpose,
+      keyword: input.keyword,
+      startDate: input.startDate,
+      endDate: input.endDate,
+      targetOrgNodeId: input.targetOrgNodeId,
+      includeExhausted: input.includeExhausted,
+      page: input.page,
+      pageSize: input.pageSize,
+    })
+  },
+)
+
+/** 一键带出：检索条件下全部仍有剩余量的候选单号（上限见 INVENTORY_DOC_CANDIDATE_BULK_LIMIT）。 */
+export const listInventoryDocCandidateIds = withPermission(
+  'inventory:list',
+  async (_session, raw: Omit<InventoryDocCandidateFilters, 'includeExhausted' | 'page' | 'pageSize'>) => {
+    const input = raw ?? ({} as typeof raw)
+    return listInventoryDocCandidateIdsImpl({
+      purpose: input.purpose,
+      keyword: input.keyword,
+      startDate: input.startDate,
+      endDate: input.endDate,
+      targetOrgNodeId: input.targetOrgNodeId,
+    })
+  },
+)
+
 export const getInventoryCoreDocById = withPermission(
   'inventory:list',
   async (_session, id: string) => getInventoryCoreDocByIdImpl(id),
+)
+
+/** 批量取单据详情（#338 采购表单装载带出的来源单），一次请求代替逐张串行调用。 */
+export const getInventoryCoreDocsByIds = withPermission(
+  'inventory:list',
+  async (_session, ids: string[]) => getInventoryCoreDocsByIdsImpl(ids),
 )
 
 export const createInventoryCoreDoc = withAnyPermission(

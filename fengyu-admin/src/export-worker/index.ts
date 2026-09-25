@@ -14,6 +14,8 @@ import { exportJobLabel } from '@/lib/export-job-types'
 import { createExportContent } from './registry'
 import { exportCloudPath, exportFileName } from './file-name'
 import { writeStreamXlsx } from './xlsx-writer'
+import { completeExportMeta } from './export-meta'
+import { shouldRetryExportFailure } from './retry-policy'
 import { writeWorkerHeartbeat } from '@/lib/worker-heartbeat'
 import { createSerializedAsyncRunner, runWorkerSlots } from './worker-slots'
 
@@ -125,7 +127,7 @@ function safeFailure(err: unknown): { code: string; message: string } {
 
 async function failJob(job: ExportJob, err: unknown): Promise<void> {
   const failure = safeFailure(err)
-  const shouldRetry = job.attemptCount < MAX_ATTEMPTS
+  const shouldRetry = shouldRetryExportFailure(failure.code, job.attemptCount, MAX_ATTEMPTS)
   await db
     .update(adminExportJobs)
     .set({
@@ -219,6 +221,10 @@ async function processJob(job: ExportJob): Promise<void> {
         sheetName: content.sheetName,
         columns: content.columns,
         rows: content.rows,
+        frozenColumns: content.frozenColumns,
+        totalsLabel: content.totalsLabel,
+        isEmphasisRow: content.isEmphasisRow,
+        meta: completeExportMeta(content.meta, { generatedAt: new Date(), exporterName: session.name }),
         onProgress: async (rowCount) => {
           if (rowCount - lastProgress < 1_000) return
           lastProgress = rowCount
