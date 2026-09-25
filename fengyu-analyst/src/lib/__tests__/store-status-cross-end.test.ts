@@ -232,12 +232,23 @@ describe("在营门店口径跨端守护（#421）", () => {
     expect(repurchase).toContain(
       'const firstStoreOrder = sql`q.sale_date, (CASE WHEN ${activeStoreCondition(sql.raw("q.store_id"))} THEN 0 ELSE 1 END), q.min_date, q.store_id`',
     )
-    expect(repurchase.match(/ARRAY_AGG\(q\.(store|market|store_id) ORDER BY \$\{firstStoreOrder\}\)/g)).toEqual([
+    expect(repurchase.match(/ARRAY_AGG\(q\.(customer_name|store|market|store_id) ORDER BY \$\{firstStoreOrder\}\)/g)).toEqual([
+      "ARRAY_AGG(q.customer_name ORDER BY ${firstStoreOrder})",
       "ARRAY_AGG(q.store ORDER BY ${firstStoreOrder})",
       "ARRAY_AGG(q.market ORDER BY ${firstStoreOrder})",
       "ARRAY_AGG(q.store_id ORDER BY ${firstStoreOrder})",
     ])
-    expect(repurchase).not.toMatch(/ARRAY_AGG\(q\.(store|market|store_id) ORDER BY q\./)
+    expect(repurchase).not.toMatch(/ARRAY_AGG\(q\.(customer_name|store|market|store_id) ORDER BY q\./)
+    // 复购条件真的接进了 WHERE / HAVING / 达标日（GLM round-2 P2：只钉调用文本时可删接线）
+    expect(repurchase.match(/WHERE \$\{\w+\}\s*\S+/g)).toEqual([
+      "WHERE ${whereSql} ${range.endDate",
+      "WHERE ${firstEntrySql} ),",
+      "WHERE ${whereSql} ORDER",
+    ])
+    expect(repurchase).toContain("const whereSql = buildBaseConditions(scopeRangeSql(session, scope, \"so.store_id\"), filters)")
+    expect(repurchase).toContain("const whereSql = buildBaseConditions(scopeFilterSql(session, scope, \"so.store_id\"), {})")
+    expect(repurchase).toContain('WHERE repurchase_day_amount >= ${threshold} AND ${activeStoreCondition(sql.raw("store_id"))} ),')
+    expect(repurchase).toContain("HAVING ${activeStoreCondition(sql`(ARRAY_AGG(q.store_id ORDER BY ${firstStoreOrder}))[1]`)} ORDER BY")
     // 渗透：条件构造器必须真的接进两条查询的 WHERE（GLM round-1 P2：只钉构造器时 `OR TRUE` 全绿）
     const penetration = squeeze(stripComments(read(path.join(ANALYST_SRC, "lib/penetration.ts")), "x.ts"))
     // 两个注入点：WHERE 后紧跟的就是收尾反引号 / 下一条 AND，中间不能夹 OR 之类的放宽
@@ -262,6 +273,28 @@ describe("在营门店口径跨端守护（#421）", () => {
       active: ['activeStoreCondition(sql.raw("fo.store_id"))', 'activeStoreCondition(sql.raw("so.store_id"))'],
     })
     const funnel = squeeze(stripComments(read(path.join(ANALYST_SRC, "lib/new-customer-funnel.ts")), "x.ts"))
+    // 定义逐字钉死（GLM round-2 P2：CASE 极性反转 / NOT 包裹时调用文本不变）
+    for (const decl of [
+      'const firstOrderScope = scopeRangeSql(session, scope, "so.store_id")',
+      'const firstOrderStoreActive = activeStoreCondition(sql.raw("fo.store_id"))',
+      'const firstOrderSameDayActiveFirst = sql`(CASE WHEN ${activeStoreCondition(sql.raw("so.store_id"))} THEN 0 ELSE 1 END)`',
+      'const transferScope = scopeFilterSql(session, scope, "c.bound_store_id")',
+      'const serviceScope = scopeFilterSql(session, scope, "svc.store_id")',
+      'const memberAmountScope = scopeFilterSql(session, scope, "mo.store_id")',
+      'const annualAmountScope = scopeFilterSql(session, scope, "yo.store_id")',
+    ]) {
+      expect(funnel).toContain(decl)
+    }
+    // 每个范围条件都真的接进了 WHERE，entries 两个分支整段钉死
+    expect(funnel.match(/WHERE \$\{\w+\}\s*\S+/g)).toEqual([
+      "WHERE ${firstOrderScope} AND",
+      "WHERE ${serviceScope} AND",
+      "WHERE ${memberAmountScope} AND",
+      "WHERE ${annualAmountScope} AND",
+    ])
+    expect(funnel).toContain(
+      "WHERE ( (c.customer_source::text = ${TRANSFER_SOURCE} AND ${transferScope}) OR (c.customer_source::text IS DISTINCT FROM ${TRANSFER_SOURCE} AND fo.client_user_id IS NOT NULL AND ${firstOrderStoreActive}) ) AND",
+    )
     expect(funnel).toContain(
       "ORDER BY so.client_user_id, (COALESCE(so.sale_order_datetime, so.paid_at, so.created_at) AT TIME ZONE 'Asia/Shanghai')::date ASC, ${firstOrderSameDayActiveFirst}, order_at ASC,",
     )
@@ -351,6 +384,13 @@ describe("在营门店口径跨端守护（#421）", () => {
     )
   })
 
+  it("4a. 账号可见门店不按在营过滤：scopeRangeSql 首次基线依赖它含停用门店（GLM round-2 P2）", () => {
+    const perms = stripComments(read(path.join(ANALYST_SRC, "lib/permissions.ts")), "permissions.ts")
+    const body = squeeze(extractSection(perms, "export async function expandScopeStoreIds(", "\n}\n"))
+    expect(body.length).toBeGreaterThan(200)
+    expect(body).not.toMatch(/is_?active|activeStoreCondition/i)
+  })
+
   it("4. 闭集：源码禁关店标记；查库文件须归类", () => {
     const files = listSourceFiles(ANALYST_SRC)
     expect(files.length).toBeGreaterThan(20)
@@ -362,7 +402,8 @@ describe("在营门店口径跨端守护（#421）", () => {
     // 会查库的文件闭集：按「import 了 db 模块」判定（tx / 别名 / 解构等写法都绕不过 import），
     // 新增取数文件必须先确认经 scopeFilterSql 过滤在营门店，再加进来
     const dbFiles = files
-      .filter((file) => /\bfrom\s+["'](?:@\/db|(?:\.\.?\/)+db)["']/.test(read(file)))
+      // 静态 import（含 @/db/* 子路径）与动态 import() / require 都算
+      .filter((file) => /(?:\bfrom\s+|\bimport\s*\(\s*|\brequire\s*\(\s*)["'](?:@\/db|(?:\.\.?\/)+db)(?:\/[^"']*)?["']/.test(read(file)))
       .map((file) => path.relative(ANALYST_SRC, file))
       .sort()
     expect(dbFiles).toEqual([

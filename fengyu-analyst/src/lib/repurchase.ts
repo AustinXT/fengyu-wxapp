@@ -399,7 +399,7 @@ async function queryRepurchaseEntries(
     )
     SELECT
       q.customer_code AS "customerId",
-      (ARRAY_AGG(q.customer_name ORDER BY q.sale_date, q.min_date))[1] AS "customerName",
+      (ARRAY_AGG(q.customer_name ORDER BY ${firstStoreOrder}))[1] AS "customerName",
       q.product_kind AS "productKind",
       q.category_name AS "categoryName",
       CONCAT(q.product_kind, ' / ', q.category_name) AS "category",

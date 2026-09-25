@@ -48,15 +48,18 @@ function onlySqlTemplate(section) {
 }
 
 /**
- * 经营分析站决定「哪些门店计入」的 5 个文件的整份全文快照（见 test 5）。
+ * 经营分析站决定「哪些门店计入」的 7 个文件的整份全文快照（见 test 5）。
  * 改动后按失败输出的 actual 更新——更新前先跑 analyst 本地守护（store-status-cross-end / analyst-scope 测试）。
  */
 const ANALYST_FILE_SHA = {
   'lib/store-status.ts': '6d678f301612bc14',
-  'lib/analyst-scope.ts': 'ab69a1b3f9775d9c',
-  'lib/repurchase.ts': '4df5ac253b31fa98',
+  'lib/analyst-scope.ts': '930d2bf5a5a022c1',
+  'lib/repurchase.ts': 'e0bddfd880c0f21a',
   'lib/new-customer-funnel.ts': '731c2c19b0cbd7a7',
   'lib/penetration.ts': '6a191059a36743d4',
+  // 账号可见门店（须含停用门店，首次基线依赖）与 roles→全局判定的输入源（GLM round-2 P2）
+  'lib/permissions.ts': 'd32575c523fc4692',
+  'lib/auth.ts': '0d6b53fedf481f91',
 }
 
 describe('门店在营判定跨端字面量守护（#400）', () => {
@@ -151,7 +154,7 @@ describe('门店在营判定跨端字面量守护（#400）', () => {
     )
     // 查库文件闭集（按 import db 判定）：新增取数文件必须先确认经 scopeFilterSql 过滤在营门店，再加进来
     const dbFiles = files
-      .filter((f) => /\bfrom\s+["'](?:@\/db|(?:\.\.?\/)+db)["']/.test(read(f)))
+      .filter((f) => /(?:\bfrom\s+|\bimport\s*\(\s*|\brequire\s*\(\s*)["'](?:@\/db|(?:\.\.?\/)+db)(?:\/[^"']*)?["']/.test(read(f)))
       .map((f) => path.relative(ANALYST, f))
       .sort()
     expect(dbFiles).toEqual([
@@ -170,6 +173,7 @@ describe('门店在营判定跨端字面量守护（#400）', () => {
     expect(mentions).toEqual({
       'lib/analyst-scope.ts': 2, // 定义 + 注释
       'lib/new-customer-funnel.ts': 2, // import + 首单基线
+      'lib/permissions.ts': 1, // 注释：expandScopeStoreIds 须含停用门店，首次基线依赖它
       'lib/repurchase.ts': 3, // import + 首次进入基线 + 注释
     })
   })

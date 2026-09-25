@@ -209,23 +209,6 @@ export function getAnalystScopeLabel(scope: AnalystScope, options: AnalystScopeO
   return "未知门店"
 }
 
-export async function validateAnalystScope(session: AuthSession, scope: AnalystScope): Promise<void> {
-  if (hasGlobalAnalystScope(session)) return
-
-  if (scope.type === "all") {
-    throw new Error("PERMISSION_DENIED: 无权查看全部数据")
-  }
-
-  if (scope.type === "market") {
-    const visibleMarketIds = await expandVisibleMarketIds(session)
-    if (visibleMarketIds === null || visibleMarketIds.includes(scope.id)) return
-    throw new Error("PERMISSION_DENIED: 越权访问其他市场数据")
-  }
-
-  if (session.permissions.scopeStoreIds.includes(scope.id)) return
-  throw new Error("PERMISSION_DENIED: 越权访问其他门店数据")
-}
-
 /**
  * 验证 scope 权限（基于已查询的 options，避免重复查询）
  */
