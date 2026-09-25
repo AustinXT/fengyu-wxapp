@@ -106,6 +106,9 @@ export interface InventoryOperationDocQuery {
    * 1. **必须带 `statuses`，且只能是可操作态**（`待审批` / `待收货`）。不限状态会把
    *    已完成 / 已驳回 / 已取消的终态单倒进待办区 —— 用户点进去每一张都报
    *    `INVALID_STATE`，待办区反而成了噪音源。
+   *    唯一例外是 `company-shipment` 的「待发货」段（#336）：市场报货单的「已完成」
+   *    是**可发货态**（createItemCompanyShipment 只认已完成的报货单），可操作性由
+   *    `pendingItemScope: 'company-shipment'`（仍有正常未发量）收窄，二者必须同时出现。
    * 2. inbox 与 produced **允许同 docType，但 statuses 必须互斥**。
    *    命中两条，都是「本身不产出新单、只改目标单状态」的业务（两段自然同 docType）：
    *    `shipment-cancel-approval`（品项公司发货：已取消 vs 待审批）与
@@ -113,9 +116,11 @@ export interface InventoryOperationDocQuery {
    *    同一张单在两段里表达的是两件事（本业务处理过 vs 待我处理），
    *    状态一旦有交集，同一张单会在两个区块同时出现。
    * 3. **只给「动作归属在本办理台、单据由上游产出」的业务写。** 建单类业务
-   *    （purchase-order / company-shipment / store-allocation / market-report…）的
+   *    （purchase-order / store-allocation / market-report…）的
    *    上游来源单**不进** inbox：它们在建单表单的候选单选择器（#338 服务端检索）里已经可选，
    *    而待办区没有任何行内动作可对它们做，列出来只是重复。
+   *    例外同样只有 `company-shipment`（#336 会议 §2.8 与验收要求「待发货」待办段）：
+   *    它配「去发货」跳转动作，把报货单带回发货表单预选。
    * 4. **必须带 `scopeRole`**，值 = 对应动作在服务端拿哪一端做 scope 断言。
    *    engine 的可见性是双端 OR，而动作校验是单边，两者不一致就会把**对端**的单
    *    列成「待我处理」并渲染出行内按钮 —— 点了必 PERMISSION_DENIED，刷新后还在，
@@ -145,7 +150,25 @@ export const INVENTORY_OPERATION_DOC_QUERY: Record<InventoryOperationId, Invento
    * #335 起所有行都走供应链采购入库，`market_id` 只是来源追溯标记。
    */
   'purchase-order': { produced: { docTypes: ['采购订单'] } },
-  'company-shipment': { produced: { docTypes: ['品项公司发货'] } },
+  'company-shipment': {
+    produced: { docTypes: ['品项公司发货'] },
+    /*
+     * 「待发货」：仍有正常未发量的市场报货单（#336）。对齐 `createItemCompanyShipment`：
+     * `report.docType !== '市场报货' || report.status !== '已完成'` → INVALID_STATE；
+     * 未发量 = 报货数量 − 「市场报货发货」直连血缘（目标单未取消），与 pendingItemScope 同口径。
+     * 「已完成」是报货单的可发货态，不是终态待办（不变量 1 的唯一例外，靠 pendingItemScope 收窄）。
+     *
+     * scopeRole=target：`assertLocationWritable(session, source)` 断的是发货总部，
+     * 而服务端要求 `report.targetOrgNodeId === source.orgNodeId` —— 即报货单的 target 端。
+     * 不收窄的话报货发起方市场会在自己的待办里看到「去发货」，点进去必 PERMISSION_DENIED。
+     */
+    inbox: {
+      docTypes: ['市场报货'],
+      statuses: ['已完成'],
+      scopeRole: 'target',
+      pendingItemScope: 'company-shipment',
+    },
+  },
   'supply-chain-receipt': {
     produced: { docTypes: ['供应链采购入库'] },
     /*
@@ -473,6 +496,7 @@ export const INVENTORY_INBOX_ACTION_KINDS = [
   'purchase-receive-goto',
   'purchase-close',
   'generic-receive',
+  'report-ship-goto',
 ] as const
 export type InventoryInboxActionKind = (typeof INVENTORY_INBOX_ACTION_KINDS)[number]
 
@@ -493,6 +517,8 @@ export const INVENTORY_INBOX_ACTION_STATUS: Record<InventoryInboxActionKind, Inv
   'purchase-receive-goto': '待收货',
   'purchase-close': '待收货',
   'generic-receive': '待收货',
+  // 市场报货单「已完成」即可发货（#336，见 company-shipment 的 inbox 注释）
+  'report-ship-goto': '已完成',
 }
 
 /** 内置业务 → 待办行内动作。键集合必须与「有 inbox 的内置业务」完全一致（单测钉住）。 */
@@ -506,6 +532,8 @@ export const INVENTORY_OPERATION_INBOX_ACTIONS = {
   // 所以只给「去收货」跳转，没有一键整单收货。
   'supply-chain-receipt': ['purchase-receive-goto'],
   'supply-chain-purchase-cancel': ['purchase-close'],
+  // 发货要逐行选批次，只给「去发货」跳转（#336）
+  'company-shipment': ['report-ship-goto'],
 } as const satisfies Partial<Record<InventoryOperationId, readonly InventoryInboxActionKind[]>>
 
 /** 通用业务 → 待办行内动作。键集合必须与 `INVENTORY_GENERIC_OPERATION_INBOX` 一致（单测钉住）。 */

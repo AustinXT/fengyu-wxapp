@@ -165,8 +165,9 @@ describe('办理台表单一致性（#135）', () => {
 
     const numberInputs = source.match(/type="number"[^/>]*/g) ?? []
     // 21 个数值输入分布在 18 行（有的一行多个）；#337 分院配货自选行 +3（正常 / 赠送 / 优惠）
-    // 24 → 22（#336a：品项公司发货表单暂为占位，去掉正常发货 / 赠送数量 2 个；#336b 上线新表单时回填）
-    expect(numberInputs.length).toBe(22)
+    // 24 → 22（#336a：品项公司发货表单暂为占位，去掉正常发货 / 赠送数量 2 个）
+    // 22 → 23（#336b：新发货表单每行一个数量框，正常 / 赠送共用一个 Input，标签按行属性切换）
+    expect(numberInputs.length).toBe(23)
     for (const attrs of numberInputs) {
       expect(attrs).toMatch(/min="0(\.01)?"/)
       expect(attrs).toMatch(/step="0\.01"/)
@@ -183,9 +184,10 @@ describe('办理台表单一致性（#135）', () => {
     // .filter(x !== null) 剔除，等于「这行不选」，是合法操作，不能拦。
     const strict = source.match(/min="0\.01"/g) ?? []
     const loose = source.match(/min="0"/g) ?? []
-    expect(strict.length).toBe(9)
+    // 9 → 10（#336b：发货行数量走 positiveNumber —— 不发的行要删掉，不是填 0）
+    expect(strict.length).toBe(10)
     // #337 +3：分院配货自选行的正常 / 赠送 / 优惠都走 nonnegativeNumber（正常与赠送二选一）
-    // 15 → 13（#336a：品项公司发货表单暂为占位；#336b 上线新表单时回填）
+    // 15 → 13（#336a：品项公司发货表单暂为占位；#336b 新表单逐行显式校验，不再有 nonnegative 字段）
     expect(loose.length).toBe(13)
 
     // 抽样两个方向，防止整体计数对了但分配错了
@@ -230,7 +232,7 @@ describe('办理台表单一致性（#135）', () => {
   it('nonnegativeNumber 字段不标必填（空串等于 0，不是漏填）', () => {
     // 分院配货的「正常配货」「赠送数量」都走 nonnegativeNumber，且 submit()
     // 先 filter 掉两者之和为 0 的行 —— 单独清空任一个都是合法的。
-    // （#336a：品项公司发货表单暂为占位，#336b 上线新表单时回填本计数）
+    // （#336b 的发货表单改为逐行显式校验、数量必填，不再属于这一类，见下方批次那条的反向断言）
     const allocation = block('function StoreAllocationForm(', 'function ReturnForm(')
     expect(allocation).toMatch(/<FormField label="正常配货">/)
     expect(allocation).not.toMatch(/<FormField label="正常配货" required/)
@@ -239,7 +241,7 @@ describe('办理台表单一致性（#135）', () => {
   })
 
   it('filter-then-validate 的批次字段不标必填（条件必填）', () => {
-    // 品项公司发货 / 分院配货的 submit() 都是**先 filter 再校验**：
+    // 分院配货的 submit() 是**先 filter 再校验**（#336b 之前品项公司发货也是）：
     //   .filter((line) => (line.quantity ?? 0) + (line.giftQuantity ?? 0) > 0)
     //   .some((line) => !Number.isInteger(line.lotId) || ...)
     // 数量为 0 的行根本不检查 lotId —— 部分发货时"这次不发"的行留空批次完全合法。
@@ -261,14 +263,21 @@ describe('办理台表单一致性（#135）', () => {
     expect(staffPurchase).toMatch(/<FormField label="市场批次" required/)
     const allocationSelf = block('自选配货（不引用报货', 'function ReturnForm(')
     expect(allocationSelf).toMatch(/<FormField label="市场批次" required/)
+    // #336b 品项公司发货：每行都是显式保留的（默认按未发量带出，不发就删行），submit() 不 filter、
+    // 逐行校验批次与正数数量 —— 批次与数量都是无条件必填。
+    const shipment = block('function CompanyShipmentForm(', 'interface ReceiptProgressLine')
+    expect(shipment).toMatch(/<FormField label="发货批次" required/)
+    expect(shipment).toMatch(/<FormField label=\{line\.isGift \? '赠送数量' : '正常发货'\} required/)
+    expect(shipment).not.toMatch(/\.filter\(\(line\) => \(line\.quantity \?\? 0\)/)
   })
 
   it('主体字段一律走 InventorySubjectSelect，不退回裸 Select（#189）', () => {
     // 组件单测只测组件自身、INV-11 默认 skip —— 把这 17 处换回 `<Select>` 不会让
     // 任何测试变红，而回退的后果（唯一候选还要手点一次 / 联动被吞）在总部、市场
     // 都只有一个的环境里肉眼难辨。这里钉住接线本身。
-    // 17 → 18：#337 分院配货新增「收货门店」；18 → 17（#336a：品项公司发货表单暂为占位，去掉「发货总部」；#336b 回填）
-    expect(source.match(/<InventorySubjectSelect/g) ?? []).toHaveLength(17)
+    // 17 → 18：#337 分院配货新增「收货门店」；18 → 17（#336a：品项公司发货表单暂为占位，去掉「发货总部」）
+    // 17 → 19（#336b：发货表单回填「发货总部」并新增「收货市场」）
+    expect(source.match(/<InventorySubjectSelect/g) ?? []).toHaveLength(19)
 
     // 反向：主体类 state 不得再出现在裸 `<Select value={...}>` 上。
     const subjectStates = [
@@ -309,7 +318,8 @@ describe('办理台表单一致性（#135）', () => {
     // 同一语义写成 `autoSelect={selectedDocIds.length === 0}`（勾了来源就交还单据决定），
     // 所以它不计入 `!doc` 那一组，单独断言。
     // 3 → 4：#337 分院配货的「收货门店」同样随报货单回填（报货主体），选了单就交还单据决定
-    // 4 → 3（#336a：品项公司发货表单暂为占位；#336b 回填）
+    // 4 → 3（#336a：品项公司发货表单暂为占位）。#336b 的新表单**不回填**：先选市场与总部再选报货单，
+    // 两端由用户定；「去发货」预选是显式写入非空值，唯一候选的自动补值只在值为空时发生，盖不掉它。
     expect(source.match(/autoSelect=\{!doc\}/g) ?? []).toHaveLength(3)
 
     for (const [from, to] of [
@@ -338,8 +348,9 @@ describe('办理台表单一致性（#135）', () => {
     //
     // 56 → 58：#337 分院配货的门店报货单改为可选（−1），新增「收货门店」与自选行的
     // 「商品」「市场批次」三个必填（+3）。
-    // 58 → 55（#336a：品项公司发货表单暂为占位，去掉发货总部 / 采购订单 / 发往市场 3 个；#336b 回填）
-    expect(marked.length).toBe(55)
+    // 58 → 55（#336a：品项公司发货表单暂为占位，去掉发货总部 / 采购订单 / 发往市场 3 个）
+    // 55 → 60（#336b：收货市场 / 发货总部 / 市场报货单 / 发货批次 / 发货数量 5 个）
+    expect(marked.length).toBe(60)
   })
 })
 
@@ -1408,8 +1419,8 @@ describe('候选单选择改走服务端检索（#338）', () => {
   it('每个单选候选调用点都把当前单据交给 current，且用途都在白名单里', () => {
     const calls = source.match(/<InventoryDocCandidatePicker\b[\s\S]*?\/>/g) ?? []
     // 采购来源（多选）+ 配货、收货（市场/门店共用）、采购入库、关闭采购、撤回申请、撤回审批、退货审批（两级共用）
-    // （#336a：品项公司发货表单暂为占位，#336b 上线新表单时回填本计数）
-    expect(calls.length).toBe(8)
+    // 8 → 9（#336b：品项公司发货的市场报货单多选）
+    expect(calls.length).toBe(9)
     for (const call of calls) {
       if (call.includes("mode: 'multi'")) continue
       expect(call).toMatch(/current: doc/)

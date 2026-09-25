@@ -1073,13 +1073,13 @@ const OPERATION_DOCS_PAGE_SIZE = 20
  */
 
 /**
- * **不进弹窗**的两个动作：只把用户送回「填报表单」Tab 并预选这张单。
+ * **不进弹窗**的三个动作：只把用户送回「填报表单」Tab 并预选这张单。
  *
  * 供应链采购入库要逐行核对效期（批号留空已由服务端按入库单号+行号生成（#345），效期推断不出来），
  * 所以它只有跳转版、没有一键版；市场 / 门店收货两条既有一键版也留跳转版，
- * 部分收货与差异登记仍得回表单。
+ * 部分收货与差异登记仍得回表单。「去发货」（#336）要逐行选总部批次，同样只能回表单。
  */
-const INBOX_GOTO_ACTION_KINDS = ['shipment-receive-goto', 'purchase-receive-goto'] as const
+const INBOX_GOTO_ACTION_KINDS = ['shipment-receive-goto', 'purchase-receive-goto', 'report-ship-goto'] as const
 type InboxGotoActionKind = (typeof INBOX_GOTO_ACTION_KINDS)[number]
 /**
  * 走 `DocActionDialog` 的动作。
@@ -1115,6 +1115,7 @@ const INBOX_ACTION_LABEL: Record<InventoryInboxActionKind, string> = {
   'purchase-receive-goto': '去收货',
   'purchase-close': '关闭采购',
   'generic-receive': '确认收货',
+  'report-ship-goto': '去发货',
 }
 
 /**
@@ -2852,9 +2853,11 @@ function CompanyShipmentForm({
   const lineKeyRef = useRef(0)
   /*
    * 报货单明细是异步装载的。换市场 / 换总部 / 提交成功都会作废当前选择，
-   * 迟到的响应只在「同一轮选择 + 该单仍被勾选」时落地，否则会把旧市场的明细塞回来。
+   * 迟到的响应只在「同一轮选择 + 该单最后一次发起的请求」时落地：否则会把旧市场的明细塞回来，
+   * 或同一张单「取消勾选再勾上」时两次响应各带出一遍明细。
    */
   const epochRef = useRef(0)
+  const requestSeqRef = useRef(new Map<string, number>())
   const selectedRef = useRef<string[]>([])
   selectedRef.current = reportIds
   const sourceLocationId = headquarters.find((location) => location.orgNodeId === sourceOrgNodeId)?.locationId ?? ''
@@ -2885,24 +2888,37 @@ function CompanyShipmentForm({
     setLines([])
   }
 
+  // 装载失败的单退出勾选：留着的话「已选」里有它、明细里却没有，提交时它被静默漏掉
+  function dropSelected(id: string) {
+    selectedRef.current = selectedRef.current.filter((value) => value !== id)
+    setReportIds((previous) => previous.filter((value) => value !== id))
+  }
+
   async function loadReports(ids: string[]) {
     if (ids.length === 0) return
     const epoch = epochRef.current
     setLoadingIds((previous) => [...previous, ...ids])
     await Promise.all(ids.map(async (id) => {
+      const seq = (requestSeqRef.current.get(id) ?? 0) + 1
+      requestSeqRef.current.set(id, seq)
+      const isCurrent = () => epoch === epochRef.current && requestSeqRef.current.get(id) === seq
       try {
         const detail = await getInventoryCoreDocById(id)
-        if (epoch !== epochRef.current || !selectedRef.current.includes(id)) return
+        if (!isCurrent() || !selectedRef.current.includes(id)) return
         if (!detail || detail.docType !== '市场报货') {
           toast.error(`未找到可发货的市场报货单 ${id}`)
+          dropSelected(id)
           return
         }
         setReports((previous) => new Map(previous).set(id, detail))
         setLines((previous) => [...previous, ...defaultLines(detail)])
       } catch (error) {
-        if (epoch === epochRef.current) toast.error(actionErrorMessage(error, `加载市场报货单 ${id} 失败`))
+        if (isCurrent() && selectedRef.current.includes(id)) {
+          toast.error(actionErrorMessage(error, `加载市场报货单 ${id} 失败`))
+          dropSelected(id)
+        }
       } finally {
-        if (epoch === epochRef.current) setLoadingIds((previous) => previous.filter((value) => value !== id))
+        if (isCurrent()) setLoadingIds((previous) => previous.filter((value) => value !== id))
       }
     }))
   }
