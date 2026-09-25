@@ -181918,6 +181918,16 @@ var FOOTFALL_GROUP = {
 客流目标：售前20%  售后80%`,
   color: "#F3EEF9"
 };
+function headerWidth(header, min) {
+  const longest = Math.max(...header.split(`
+`).map((line5) => line5.length));
+  return Math.max(min, longest * 12 + 48);
+}
+function headerExportWidth(header, min) {
+  const longest = Math.max(...header.split(`
+`).map((line5) => [...line5].reduce((sum, char5) => sum + (/[\u0000-\u00ff]/.test(char5) ? 1 : 2), 0)));
+  return Math.max(min, longest + 2);
+}
 function metric(key) {
   return (row) => row.values[key] ?? null;
 }
@@ -181930,10 +181940,10 @@ function pendingColumn(letter, key, header, group, unit, pending) {
     unit,
     pending,
     align: "right",
-    width: 96,
+    width: headerWidth(header, 96),
     hint: pending === "#374" ? "目标列：本期不取数（#374）" : "口径待确认，本期不取数（#373）",
     exportValue: () => "—",
-    exportWidth: 12
+    exportWidth: headerExportWidth(header, 12)
   };
 }
 function metricColumn(letter, key, header, group, unit, hint) {
@@ -181944,11 +181954,11 @@ function metricColumn(letter, key, header, group, unit, hint) {
     group,
     unit,
     align: "right",
-    width: unit === "amount" ? 120 : 96,
+    width: headerWidth(header, unit === "amount" ? 120 : 96),
     hint,
     value: metric(key),
     aggregate: { kind: "sum" },
-    exportWidth: unit === "amount" ? 16 : 12
+    exportWidth: headerExportWidth(header, unit === "amount" ? 16 : 12)
   };
 }
 var OPERATING_MASTER_COLUMNS = [
@@ -181958,7 +181968,7 @@ var OPERATING_MASTER_COLUMNS = [
     header: "市场",
     group: BLANK_FROZEN_GROUP,
     freeze: "left",
-    width: 104,
+    width: 112,
     exportValue: (row) => row.marketName,
     exportWidth: 14
   },
@@ -181968,7 +181978,7 @@ var OPERATING_MASTER_COLUMNS = [
     header: "门店",
     group: BLANK_FROZEN_GROUP,
     freeze: "left",
-    width: 120,
+    width: 148,
     exportValue: (row) => row.storeName,
     exportWidth: 16
   },
@@ -182021,6 +182031,7 @@ function ytdRange(month) {
   return { start: `${month.slice(0, 4)}-01-01`, end: monthRange(month).end };
 }
 var METRIC_COLUMNS = OPERATING_MASTER_COLUMNS.filter((column2) => column2.value);
+var metricColumnKeys = METRIC_COLUMNS.map((column2) => column2.key);
 function buildOperatingMasterTable(stores3, metrics) {
   const storeRows = stores3.map((store) => {
     const found = metrics.get(store.storeId);
@@ -182058,7 +182069,7 @@ function buildOperatingMasterTable(stores3, metrics) {
   return { rows, totals: totalsOf(storeRows), storeCount: storeRows.length, multiMarket };
 }
 function pickMetricTotals(totals) {
-  return Object.fromEntries(OPERATING_MASTER_METRIC_KEYS.map((key) => [key, totals[key] ?? null]));
+  return Object.fromEntries(metricColumnKeys.map((key) => [key, totals[key] ?? null]));
 }
 function isOperatingMasterSubtotal(row) {
   return row.kind === "subtotal";
