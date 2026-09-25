@@ -157,7 +157,7 @@ const PROBES: Probe[] = [
     // 写 5 的话，把其中一处改成 `${start}` 仍能提取到 5 行 → 探针照绿、产物过期无人知
     // （红检 R19 实测过这个 fail-open）。多一处同形写法会让它变 7 行，仍 >= 6，不误报。
     minLines: 6,
-    // 6 行只有 2 种文本（`${end}` ×4 / `${range.end}` ×2）。默认的 includes 比对去重后只查这 2 种
+    // 6 行只有 2 种文本（`${range.end}` ×3 @95/236/483 + `${end}` ×3 @561/575/591）。默认的 includes 比对去重后只查这 2 种
     // 在不在产物里 —— 单独从产物里删掉 `visit_count` 那一处，另外几处仍在 ⇒ 照绿
     // （codex round-4 P2）。必须开频次比对：区间 2026-07-01~07-31、门店 A，
     // 1 人 7 月前入会未到店 + 2 人 7 月各到店 1 天但 8-01 才入会 ⇒ 正确 0/1，缺守卫的产物给 2/1 = 200%。
@@ -174,6 +174,11 @@ const PROBES: Probe[] = [
     minLines: 2,
     uniqueLines: 2,
     exactCountsInModule: true,
+    // ⚠ 这是本文件唯一把 exactLinesInModule 用在 **JS 行**上的探针，与上面「只适用于 SQL 模板行」
+    // 的规则看似矛盾（GLM round-12 P3-2）。依据是**实测**：当前 bun 版本对这两行逐字保留
+    // （节点 129-131 的比对结果 2/2 完全相等），而 `#375 平均提成点` 那条 JS 行会被重排。
+    // 构建配置若变（例如开 minify），这条会**误红**而不是静默错数 —— fail-closed，
+    // 届时按提示重建产物仍红的话，把它降级成退化口径（去掉 exactLinesInModule）即可。
     exactLinesInModule: true,
   },
   {
