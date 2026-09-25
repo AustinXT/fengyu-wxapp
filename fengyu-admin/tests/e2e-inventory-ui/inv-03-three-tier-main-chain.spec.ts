@@ -58,7 +58,9 @@ const QTY = {
   storeReceive: 22,
 }
 
-test('INV-03：三级正向主链 —— 报货→采购→发货→入库→配货→收货', async ({ browser }) => {
+// #336a：品项公司发货改为直接引用市场报货单，服务端入参已换，办理台发货表单暂为占位；
+// 第 4 步（选采购订单 → 填正常发货 / 赠送数量）走不通，整条主链先挂起，#336b 上线新表单时改写第 4 步并恢复。
+test.fixme('INV-03：三级正向主链 —— 报货→采购→发货→入库→配货→收货', async ({ browser }) => {
   const verdicts: Verdict[] = []
   const inv01 = readCtx<{ supplySkuId: string; supplySkuName: string; supplierName: string }>('inv01')
   const inv02 = readCtx<{ batchNo: string }>('inv02')

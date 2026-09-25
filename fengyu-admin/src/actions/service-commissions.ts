@@ -230,7 +230,7 @@ export const batchSaveServiceCommissions = withPermission(
           // Look up commission rate from matrix
           const salesCategory = pricing.salesCategory
           const rateRows = await tx
-            .select({ commissionRate: commissionRateMatrix.commissionRate })
+            .select({ commissionRate: commissionRateMatrix.commissionRate, priceThreshold: commissionRateMatrix.priceThreshold })
             .from(commissionRateMatrix)
             .where(and(
               eq(commissionRateMatrix.orderType, '服务单'),
@@ -253,8 +253,10 @@ export const batchSaveServiceCommissions = withPermission(
           // 容错口径（对齐 finalize：lib/service-commission-settle.ts:114）：
           // 查无匹配行 / 命中行 rate=0 统一按 rate=0 落库，不阻塞保存（与 staffApi 镜像）。
           const rate = Number(rateRows[0]?.commissionRate || 0)
+          // #379 划卡单价阈值：单次实价低于命中行 priceThreshold 时按阈值计消耗提成（NULL=不启用；选档仍用原始 consumeBase）
+          const effConsumeBase = Math.round(Math.max(perSession, Number(rateRows[0]?.priceThreshold || 0)) * pricing.sessionUsed * 100) / 100
 
-          const consumeAmount = Math.round(consumeBase * ratio * rate * 100) / 100
+          const consumeAmount = Math.round(effConsumeBase * ratio * rate * 100) / 100
           const commissionAmount = Math.round((fixedFee + consumeAmount) * 100) / 100
 
           values.push({

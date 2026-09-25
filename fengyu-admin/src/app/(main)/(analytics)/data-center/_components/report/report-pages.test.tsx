@@ -5,6 +5,7 @@ import type { ReactElement } from 'react'
 import { PermissionError } from '@/lib/permissions'
 import { DATA_CENTER_REPORT_LIST, DATA_CENTER_REPORTS, type DataCenterReportKey } from '@/lib/data-center/reports'
 import type { DataCenterScopeOptions } from '@/lib/data-center/types'
+import { buildOperatingMasterTable, type OperatingMasterStore } from '@/lib/data-center/operating-master'
 
 /**
  * 经营明细报表空壳路由（#367）的入口控制流与骨架渲染。
@@ -42,6 +43,32 @@ vi.mock('next/navigation', () => ({
   useSearchParams: () => new URLSearchParams(nav.search),
 }))
 vi.mock('@/actions/data-center/shared', () => actions)
+const operatingMaster = vi.hoisted(() => ({ getOperatingMaster: vi.fn() }))
+vi.mock('@/actions/data-center/operating-master', () => operatingMaster)
+vi.mock('@/actions/export-jobs', () => ({ createExportJob: vi.fn() }))
+
+/** 剩余卡项清单的取数 action（#371） */
+const reportActions = vi.hoisted(() => ({
+  getRemainingCardsReport: vi.fn(),
+}))
+vi.mock('@/actions/data-center/remaining-cards', () => reportActions)
+
+const emptyRemainingCardsReport = {
+  columns: [],
+  rows: [],
+  total: 0,
+  filteredCustomerCount: 0,
+  filtered: false,
+  page: 1,
+  pageSize: 50,
+  totals: { remaining: 0 },
+  summary: {
+    rowCount: 0, customerCount: 0, remainingCustomerCount: 0, remainingCustomerRate: null,
+    remainingSessions: 0, remainingCategoryCount: 0, remainingCells: 0, unpaidCells: 0,
+    doneCells: 0, neverCells: 0, expiredCells: 0, categoryCount: 0, kindCount: 0,
+  },
+  asOf: '2026-09-25',
+}
 
 /** 员工提成日报 / 明细的取数 action（#375）：本文件只测入口控制流与骨架，取数给空结果 */
 const commission = vi.hoisted(() => ({
@@ -172,7 +199,19 @@ beforeEach(() => {
   actions.getDataStartDates.mockResolvedValue(starts)
   commission.getCommissionDaily.mockImplementation(async (query: Query) => emptyCommissionDaily(String(query.month ?? '2026-08')))
   commission.getCommissionDetail.mockImplementation(async (query: Query) => emptyCommissionDetail(String(query.month ?? '2026-08')))
+  reportActions.getRemainingCardsReport.mockResolvedValue(emptyRemainingCardsReport)
+  mockOperatingMaster([{ storeId: 'S1', storeName: '蓝莱店', marketId: 'M1', marketName: '南昌凤御' }])
 })
+
+function mockOperatingMaster(stores: OperatingMasterStore[]) {
+  operatingMaster.getOperatingMaster.mockImplementation(async ({ month }: { month: string }) => ({
+    month,
+    range: { start: `${month}-01`, end: `${month}-31` },
+    ytd: { start: `${month.slice(0, 4)}-01-01`, end: `${month}-31` },
+    scopeName: '测试范围',
+    ...buildOperatingMasterTable(stores, new Map()),
+  }))
+}
 
 afterEach(() => {
   vi.useRealTimers()
@@ -272,11 +311,39 @@ describe('报表页 · 骨架渲染', () => {
     expect(screen.queryByRole('note', { name: '数据起点提示' })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: '重置' })).toBeInTheDocument()
     expect(screen.getByTestId('report-info-bar')).not.toHaveTextContent('期间')
+    // 取数 action 收到的是 URL 参数本身（同一份参数给导出任务，页面与导出看同一份筛选）
+    expect(reportActions.getRemainingCardsReport).toHaveBeenCalledWith({})
+  })
+
+  it('剩余卡项：URL 参数原样交给取数 action，信息条写明顾客数与筛选结果', async () => {
+    mockScope(hqOptions)
+    reportActions.getRemainingCardsReport.mockResolvedValue({
+      ...emptyRemainingCardsReport,
+      filtered: true,
+      filteredCustomerCount: 3,
+      summary: { ...emptyRemainingCardsReport.summary, customerCount: 120, kindCount: 2, categoryCount: 5, remainingCells: 40, remainingSessions: 321 },
+    })
+    await renderPage('remainingCards', { q: '张', show: 'remaining' })
+
+    expect(reportActions.getRemainingCardsReport).toHaveBeenCalledWith({ q: '张', show: 'remaining' })
+    const bar = screen.getByTestId('report-info-bar')
+    expect(bar).toHaveTextContent('顾客筛出 3 位（共 120 位）')
+    expect(bar).toHaveTextContent('品项一级 2 / 二级 5')
+    expect(bar).toHaveTextContent('有余额品项40 项次')
+    expect(bar).toHaveTextContent('待服务剩余321 次')
+  })
+
+  it('剩余卡项：非总部无可查看范围时不取数', async () => {
+    mockScope(noStoreOptions)
+    await renderPage('remainingCards')
+
+    expect(screen.getByText('当前账号暂无可查看的数据范围')).toBeInTheDocument()
+    expect(reportActions.getRemainingCardsReport).not.toHaveBeenCalled()
   })
 
   it('单店账号的完整区间不出提示（只看本店起点）', async () => {
     mockScope(singleStoreOptions)
-    await renderPage('operatingMaster', { scope: 'store', scopeId: 'S1' })
+    await renderPage('commissionDaily', { scope: 'store', scopeId: 'S1' })
 
     expect(screen.queryByRole('note', { name: '数据起点提示' })).not.toBeInTheDocument()
     expect(screen.getByTestId('scope-store-count')).toHaveTextContent('共 1 家门店')
@@ -386,5 +453,71 @@ describe('报表页 · 骨架渲染', () => {
     )
     await user.click(screen.getByRole('button', { name: '近 30 天' }))
     expect(nav.replace).toHaveBeenLastCalledWith('/data-center/daily-overview?period=last30', { scroll: false })
+  })
+})
+
+describe('经营数据主表（#372）', () => {
+  it('所选月份完整时仍按业绩轴提示 R 列年度累计的数据起点（2026 年内必早于上线日）', async () => {
+    mockScope(singleStoreOptions)
+    await renderPage('operatingMaster', { scope: 'store', scopeId: 'S1' })
+
+    const notice = screen.getByRole('note', { name: '数据起点提示' })
+    expect(notice).toHaveTextContent('年度累计（R 列）（2026-01-01 ~ 2026-08-31）早于部分门店的数据起点')
+    expect(notice).toHaveTextContent('业绩 · 南昌凤御 1 家（2026-07-08 起）')
+    // 所选月份本身完整：不出「所选月份」那条，服务轴也不出现在年度累计里
+    expect(notice).not.toHaveTextContent('所选月份')
+    expect(notice).not.toHaveTextContent('服务 ·')
+  })
+
+  it('1 月：年度累计区间即所选月份，不重复出年度累计那条提示', async () => {
+    mockScope(singleStoreOptions)
+    await renderPage('operatingMaster', { scope: 'store', scopeId: 'S1', month: '2026-01' })
+
+    const notice = screen.getByRole('note', { name: '数据起点提示' })
+    expect(notice).toHaveTextContent('所选月份（2026-01-01 ~ 2026-01-31）')
+    expect(notice).not.toHaveTextContent('年度累计')
+  })
+
+  it('按页面生效的范围与月份取数；信息条写「统计月份」与展示行数；表头两行照抄模板', async () => {
+    mockScope(hqOptions)
+    await renderPage('operatingMaster', { month: '2026-13' })
+
+    expect(operatingMaster.getOperatingMaster).toHaveBeenCalledWith({ scope: { type: 'all' }, month: '2026-08' })
+    const info = screen.getByTestId('report-info-bar')
+    expect(info).toHaveTextContent('统计月份2026年8月 2026-08-01 ~ 2026-08-31')
+    expect(info).toHaveTextContent('展示1 行')
+    // 24 列大表上 getByRole 要算整棵无障碍树，全量并发跑时会超时：直接查 DOM
+    const groupHeader = (prefix: string) =>
+      Array.from(document.querySelectorAll('thead th')).find((th) => th.textContent?.startsWith(prefix))
+    expect(groupHeader('保有会员（售前不算）')).toHaveAttribute('colspan', '5')
+    expect(groupHeader('客流及客耗')).toHaveAttribute('colspan', '7')
+    expect(screen.getByText('导出')).toBeInTheDocument()
+  })
+
+  it('选中门店全部停用的市场（真实可达：市场下拉不依赖在营门店）：表格空行文案、不给导出', async () => {
+    mockScope({ ...hqOptions, markets: [...hqOptions.markets, { id: 'M3', name: '昭通凤御', stores: [] }] })
+    mockOperatingMaster([])
+    await renderPage('operatingMaster', { scope: 'market', scopeId: 'M3' })
+
+    expect(operatingMaster.getOperatingMaster).toHaveBeenCalledWith({ scope: { type: 'market', id: 'M3' }, month: '2026-08' })
+    expect(screen.getByText('所选范围内没有在营门店，暂无数据')).toBeInTheDocument()
+    expect(screen.getByTestId('report-info-bar')).toHaveTextContent('展示0 行')
+    expect(screen.queryByText('导出')).not.toBeInTheDocument()
+  })
+
+  it('选中已停用门店：走 #293 的「已停用」空态，不调取数 action', async () => {
+    mockScope({ ...hqOptions, inactiveStores: [{ storeId: 'X1', storeName: '自贡旭阳店', marketId: 'M1' }] })
+    await renderPage('operatingMaster', { scope: 'store', scopeId: 'X1' })
+
+    expect(screen.getByTestId('scope-empty-state')).toHaveTextContent('「自贡旭阳店」已停用')
+    expect(operatingMaster.getOperatingMaster).not.toHaveBeenCalled()
+  })
+
+  it('无可查看范围时不取数', async () => {
+    mockScope(noStoreOptions)
+    await renderPage('operatingMaster')
+
+    expect(screen.getByText('当前账号暂无可查看的数据范围')).toBeInTheDocument()
+    expect(operatingMaster.getOperatingMaster).not.toHaveBeenCalled()
   })
 })

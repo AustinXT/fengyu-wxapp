@@ -122,6 +122,51 @@ const PROBES: Probe[] = [
     minLines: 1,
   },
   {
+    label: '剩余卡项 · 寄存单只计已支付（#371）',
+    file: 'src/lib/data-center/remaining-cards-query.ts',
+    pattern: /^AND \(sale_orders\.sale_order_type <> '寄存单' OR sale_orders\.status = '已支付'\)$/,
+    minLines: 1,
+  },
+  {
+    label: '剩余卡项 · 格剩余 = 未过期卡行的已付未用（#371）',
+    file: 'src/lib/data-center/remaining-cards-query.ts',
+    pattern: /^COALESCE\(SUM\(s\.paid_unused\) FILTER \(WHERE NOT s\.expired\), 0\) AS remaining,$/,
+    minLines: 1,
+  },
+  {
+    label: '剩余卡项 / 持卡折抵 · 已退完守卫（#371，lib/card-entitlement.ts）',
+    file: 'src/lib/card-entitlement.ts',
+    pattern: /sop\.change_type = '退款' AND sop\.status = '已支付'/,
+    minLines: 1,
+  },
+  {
+    label: '剩余卡项 · 已付未用表达式（paidUnusedSessionsExpr）',
+    file: 'src/lib/paid-sessions.ts',
+    pattern: /^export const paidUnusedSessionsExpr = sql/,
+    minLines: 1,
+  },
+  {
+    label: '客量板 · 分桶最低档下界 / 经营人数改读会员门槛（#292）',
+    file: 'src/actions/data-center/customer.ts',
+    // 4 行：KPI 的 `AS v`、明细 bucket_d / bucket_c / operated_total（含 `<` 与 `>=` 两种比较）
+    pattern: /FILTER \(WHERE spend (<|>=) \$\{threshold\}/,
+    minLines: 4,
+  },
+  {
+    label: '客量板 · 分桶固定档位取 SPEND_BUCKET_FLOORS（#292）',
+    file: 'src/actions/data-center/customer.ts',
+    pattern: /\$\{floors\.(star|pink|gold|black)\}\) AS bucket_/,
+    minLines: 5,
+  },
+  {
+    // bun build 会重排 JS 代码、只原样保留模板字符串，所以探针只能取 SQL 行。主表 SQL 进了产物，
+    // 就说明引用它的 registry 报表分发、technician-sql 人池参数是同一次构建带进去的
+    label: '经营数据主表 · 门店骨架与行序（#372）',
+    file: 'src/actions/data-center/operating-master.ts',
+    pattern: /^(JOIN org_nodes mkt ON mkt\.id = sk\.market_id|ORDER BY mkt\.sort_order ASC NULLS LAST, sk\.market_name ASC, sk\.market_id ASC,)$/,
+    minLines: 2,
+  },
+  {
     label: '员工提成日报 / 明细 · 取数条件与分配金额算法（#375）',
     file: 'src/lib/data-center/commission-sql.ts',
     // 按「列名」抓整行、不限取值：取值被改的行照样被提取出来，再去产物里逐字比对（只按取值抓会让改过的行
@@ -169,6 +214,9 @@ describe('dist/export-worker.mjs 新鲜度（改了 data-center SQL 口径必须
         .split('\n')
         .map((l) => l.trim())
         .filter((l) => probe.pattern.test(l))
+        // 单行 sql`…` 模板（如 `export const x = sql<number>\`…\``）只取反引号内的模板正文：
+        // 模板正文 bun build 原样保留，而声明部分会被改写（import 别名、去掉类型参数）
+        .map((l) => /`([^`]*)`/.exec(l)?.[1] ?? l)
 
       // fail-closed：正则失配（比如源码重构后换了写法）不得静默通过
       expect(
@@ -216,4 +264,21 @@ describe('dist/export-worker.mjs 新鲜度（改了 data-center SQL 口径必须
       ).toEqual([])
     },
   )
+})
+
+/**
+ * #292：导出进程（本产物）没有 Next incrementalCache，`unstable_cache` 一调就抛。
+ * member-threshold.ts 为此加了直读分支；构建期 define 把 `process.env.FENGYU_EXPORT_WORKER === '1'`
+ * 折叠成 `true`。源码行和产物行形态不同（类型被擦、判断被常量折叠），所以不走上面的逐行探针，单独断言。
+ * 不重建产物的话，客量板 / 品项板导出全部失败（品项板在 prod 已 6/6 失败）。
+ */
+describe('dist/export-worker.mjs 会员门槛直读分支（#292）', () => {
+  it('产物含 readMemberThreshold 直读函数，且导出进程分支已折叠为直读', () => {
+    const dist = fs.readFileSync(DIST, 'utf-8')
+    expect(dist, `产物缺 readMemberThreshold${REBUILD_HINT}`).toContain('async function readMemberThreshold(')
+    const fn = dist.slice(dist.indexOf('async function getMemberThreshold('))
+    expect(fn.slice(0, 200), `产物里 getMemberThreshold 没有先走直读${REBUILD_HINT}`).toMatch(
+      /if \(true\)\s*return await readMemberThreshold\(\)/,
+    )
+  })
 })

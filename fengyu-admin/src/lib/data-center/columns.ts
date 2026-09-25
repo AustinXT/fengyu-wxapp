@@ -80,6 +80,8 @@ const customerRegistrationMetricColumns = [
 ] as const satisfies readonly DataCenterMetricColumn[]
 
 const customerOperationMetricColumns = [
+  // #292：分桶下界已改读会员门槛（system_configs.new_member_threshold），标签按 2026-09-25 拍板保持写死 1990；
+  // 调整门槛后需人工同步这里、customer-board.tsx 经营人数 hint 与 staff 小程序 TIER_LABELS
   { key: 'bucketD', label: '<1990', unit: 'count' },
   { key: 'bucketC', label: '≥1990', unit: 'count' },
   { key: 'bucketB', label: '≥1万', unit: 'count' },

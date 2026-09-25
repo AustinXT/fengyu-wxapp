@@ -77,7 +77,7 @@ export async function settleServiceCommissions(
 
   // ========== 计算并写入服务提成（service_commissions）==========
   // 双字段模型：fixed_fee = service_fee × session_used
-  //            consume_amount = unit_real_price × session_used × commission_rate
+  //            consume_amount = max(unit_real_price, price_threshold) × session_used × commission_rate（#379 阈值保底）
   //            commission_amount = fixed_fee + consume_amount
   // 说明：sale_items/service_items.unit_real_price 已是 per-session 单次价（如 5次卡 3500/5=700），
   //       直接作为每次消耗基准，无需再 ÷session_count。
@@ -95,7 +95,7 @@ export async function settleServiceCommissions(
 
     // 2. 查 commission_rate_matrix（org_id via stores→org_nodes 市场节点）
     const rateRows = (await executor.execute(sql`
-      SELECT commission_rate FROM commission_rate_matrix
+      SELECT commission_rate, price_threshold FROM commission_rate_matrix
        WHERE order_type = '服务单'
          AND role_type = ${roleType}
          AND sales_category = ${row.sales_category}
@@ -110,9 +110,11 @@ export async function settleServiceCommissions(
          )
        ORDER BY amount_tier_min DESC
        LIMIT 1
-    `)) as unknown as Array<{ commission_rate: string | number | null }>
+    `)) as unknown as Array<{ commission_rate: string | number | null; price_threshold: string | number | null }>
     const rate = Number(rateRows[0]?.commission_rate || 0)
-    const consumeAmount = round2(consumeBase * rate)
+    // #379 划卡单价阈值：单次实价低于命中行 price_threshold 时按阈值计消耗提成（NULL=不启用；选档仍用原始 consumeBase）
+    const effConsumeBase = round2(Math.max(perSession, Number(rateRows[0]?.price_threshold || 0)) * sessionUsed)
+    const consumeAmount = round2(effConsumeBase * rate)
     const commissionAmount = round2(fixedFee + consumeAmount)
 
     // 3. rate=0 且有消耗金额时，提示运维补齐矩阵规则（容错不 throw，与 staff/client finalize 一致）

@@ -3,7 +3,7 @@
  *
  * 这里不依赖数据库、Node API 或 Server Action，允许客户端仅以类型形式引用。
  */
-import { DATA_CENTER_DASHBOARD_ACTION, DATA_CENTER_STAFF_COMMISSION_ACTIONS } from './data-center/reports'
+import { DATA_CENTER_DASHBOARD_ACTION, DATA_CENTER_REPORTS } from './data-center/reports'
 
 export const EXPORT_JOB_TYPES = [
   'orders',
@@ -57,23 +57,30 @@ export const DATA_CENTER_BOARD_EXPORT_VIEWS = [
 
 export type DataCenterBoardExportView = (typeof DATA_CENTER_BOARD_EXPORT_VIEWS)[number]
 
-/** 经营明细报表导出视图名的统一前缀（export-worker 按它先于板块前缀分发，见 registry.ts queryDataCenter） */
-export const DATA_CENTER_REPORT_VIEW_PREFIX = 'report-'
-
 /**
  * 经营明细报表（#367 起）的导出视图，由各页面单登记。报表页的 `tab` 可能是页内视角参数
  * （如一览表三视角），导出时**保留**——剔掉会按默认视角出数，且两个只差视角的导出会被去重成同一个任务。
  *
- * ⚠️ 视图名必须是 `report-<页面>-...`：export-worker 对板块视图按 `sales-` / `customer-` / `product-` 前缀分发，
- * 报表视图撞上这些前缀会被派给板块取数函数，导出内容错误且不报错。`satisfies` 在编译期拦住没带前缀的名字，
- * registry.test.ts 再钉住「报表视图全部走报表分发、不落进板块分支」。
+ * ⚠ 视图名一律 `report-<页面>-...` 前缀（`DATA_CENTER_REPORT_VIEW_PREFIX`）。export-worker 的
+ * `queryDataCenter` 历史上按 `sales-` / `customer-` / `product-` 前缀分发板块取数，撞前缀的视图会被派给
+ * 旧板块、静默导出错内容（#372 起报表视图最先分发，registry.test 守护前缀）。
  */
+export const DATA_CENTER_REPORT_VIEW_PREFIX = 'report-'
+
 export const DATA_CENTER_REPORT_EXPORT_VIEWS = [
+  'report-operating-master',
+  'report-remaining-cards',
   'report-commission-daily',
   'report-commission-detail',
 ] as const satisfies readonly `${typeof DATA_CENTER_REPORT_VIEW_PREFIX}${string}`[]
 
 export type DataCenterReportExportView = (typeof DATA_CENTER_REPORT_EXPORT_VIEWS)[number]
+
+const REPORT_EXPORT_VIEW_SET: ReadonlySet<string> = new Set(DATA_CENTER_REPORT_EXPORT_VIEWS)
+
+export function isDataCenterReportExportView(view: string): view is DataCenterReportExportView {
+  return REPORT_EXPORT_VIEW_SET.has(view)
+}
 
 export const DATA_CENTER_EXPORT_VIEWS = [
   ...DATA_CENTER_BOARD_EXPORT_VIEWS,
@@ -158,8 +165,10 @@ export const DATA_CENTER_VIEW_REQUIRED_ACTIONS: Record<DataCenterExportView, rea
   'efficiency-staff': [DATA_CENTER_DASHBOARD_ACTION],
   'efficiency-store-ranking': [DATA_CENTER_DASHBOARD_ACTION],
   'efficiency-staff-ranking': [DATA_CENTER_DASHBOARD_ACTION],
-  'report-commission-daily': DATA_CENTER_STAFF_COMMISSION_ACTIONS,
-  'report-commission-detail': DATA_CENTER_STAFF_COMMISSION_ACTIONS,
+  'report-operating-master': DATA_CENTER_REPORTS.operatingMaster.requiredActions,
+  'report-remaining-cards': DATA_CENTER_REPORTS.remainingCards.requiredActions,
+  'report-commission-daily': DATA_CENTER_REPORTS.commissionDaily.requiredActions,
+  'report-commission-detail': DATA_CENTER_REPORTS.commissionDetail.requiredActions,
 }
 
 export const EXPORT_PERMISSION_ACTIONS = Array.from(
@@ -213,6 +222,8 @@ export function exportJobLabel(
     'efficiency-staff': '人效明细-按技师',
     'efficiency-store-ranking': '人效-门店排名榜',
     'efficiency-staff-ranking': '人效-员工排名榜',
+    'report-operating-master': '经营数据主表',
+    'report-remaining-cards': '顾客剩余卡项清单',
     'report-commission-daily': '员工提成日报',
     'report-commission-detail': '提成明细',
   }

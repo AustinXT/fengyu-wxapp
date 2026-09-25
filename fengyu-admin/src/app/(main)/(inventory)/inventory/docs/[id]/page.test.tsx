@@ -288,8 +288,8 @@ describe('库存单据详情页 · 采购订单市场行（#335）', () => {
       fulfillmentProgress: {
         kind: '供应链采购收货',
         items: [
-          { itemId: 1, purchasedQuantity: 10, receivedQuantity: 4, outstandingQuantity: 6, shippedQuantity: 0 },
-          { itemId: 2, purchasedQuantity: 10, receivedQuantity: 3, outstandingQuantity: 7, shippedQuantity: 2 },
+          { itemId: 1, purchasedQuantity: 10, receivedQuantity: 4, outstandingQuantity: 6 },
+          { itemId: 2, purchasedQuantity: 10, receivedQuantity: 3, outstandingQuantity: 7 },
         ],
       },
       ...overrides,
@@ -301,25 +301,24 @@ describe('库存单据详情页 · 采购订单市场行（#335）', () => {
     expect(screen.getByText('部分入库')).toBeTruthy()
   })
 
-  it('市场行同样列出已入库/待入库，并带已发货与市场结算价（参考）', async () => {
+  it('市场行同样列出已入库/待入库与市场结算价（参考）；发货直连报货单后不再有「已发货」列（#336）', async () => {
     await renderPage(purchaseOrder())
     expect(cellByHeader('SKU-MKT', '已入库')).toBe('3')
     expect(cellByHeader('SKU-MKT', '待入库')).toBe('7')
-    expect(cellByHeader('SKU-MKT', '已发货')).toBe('2')
     expect(cellByHeader('SKU-MKT', '实际单价')).toBe('800')
     expect(cellByHeader('SKU-MKT', '市场结算价（参考）')).toBe('950')
-    // 自用行没有市场结算价与发货
+    // 自用行没有市场结算价
     expect(cellByHeader('SKU-SC', '市场结算价（参考）')).toBe('—')
-    expect(cellByHeader('SKU-SC', '已发货')).toBe('—')
+    expect(screen.queryByRole('columnheader', { name: '已发货' })).toBeNull()
   })
 
-  it('只有自用行的采购订单不出现已发货 / 市场结算价两列', async () => {
+  it('只有自用行的采购订单不出现市场结算价列', async () => {
     await renderPage(purchaseOrder({
       partiallyReceived: false,
       items: [itemFixture({ id: 1, skuId: 'SKU-SC', quantity: 10, fulfilledQuantity: 0, actualUnitPrice: 800, amount: 8000 })],
       fulfillmentProgress: {
         kind: '供应链采购收货',
-        items: [{ itemId: 1, purchasedQuantity: 10, receivedQuantity: 0, outstandingQuantity: 10, shippedQuantity: 0 }],
+        items: [{ itemId: 1, purchasedQuantity: 10, receivedQuantity: 0, outstandingQuantity: 10 }],
       },
     } as Partial<InventoryDocDetail>))
     expect(screen.queryByRole('columnheader', { name: '已发货' })).toBeNull()

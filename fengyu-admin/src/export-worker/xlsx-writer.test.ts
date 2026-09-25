@@ -130,6 +130,24 @@ describe('writeStreamXlsx', () => {
     expect(meta.getCell('B2').text).toBe('张三')
   })
 
+  it('多行表头（含换行）开自动换行并撑高行；不含换行的表头不加换行样式（#372）', async () => {
+    const columns: WorkerExportColumn<{ id: number }>[] = [
+      { header: '门店', group: { key: 'blank', header: '' }, value: (row) => row.id },
+      { header: '当月\n完成', group: { key: 'sales', header: '销售业绩目标\n第二行\n第三行' }, value: (row) => row.id },
+    ]
+    async function* rows() { yield { id: 1 } }
+    const filePath = await tempFile()
+    await writeStreamXlsx({ filePath, sheetName: '主表', rows: rows(), columns })
+
+    const sheet = (await readBack(filePath)).worksheets[0]
+    expect(sheet.getCell('B1').text).toBe('销售业绩目标\n第二行\n第三行')
+    expect(sheet.getCell('B1').alignment?.wrapText).toBe(true)
+    expect(sheet.getCell('B2').alignment?.wrapText).toBe(true)
+    expect(sheet.getCell('A2').alignment?.wrapText).toBeFalsy()
+    expect(sheet.getRow(1).height).toBe(3 * 15 + 4)
+    expect(sheet.getRow(2).height).toBe(2 * 15 + 4)
+  })
+
   it('分 sheet 时每个 sheet 都有两行表头与合并，合计行只在最后一个 sheet', async () => {
     const filePath = await tempFile()
     await writeStreamXlsx({

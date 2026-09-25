@@ -23,8 +23,8 @@ import {
   type ExportBatchOptions,
 } from '@/lib/export-pagination'
 import type { ExportQueryPayload } from '@/lib/export-job-types'
-import type { ExportMetaEntry, WorkerExportColumn } from '../xlsx-writer'
-import type { ExportContent } from '../registry'
+import type { ExportMetaEntry, WorkerExportColumn } from './xlsx-writer'
+import type { ExportContent } from './registry'
 
 type Row = Record<string, unknown>
 
