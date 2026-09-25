@@ -3521,7 +3521,8 @@ export async function createItemCompanyShipment(
 /**
  * 市场收货的价格快照（#336）：发货直连市场报货行，市场价三列从该报货行快照取（与报货时的福利报价一致）；
  * 供应链成本取所发**总部批次**的 `supply_chain_unit_cost`（入库优惠后的真实成本），不取报货行上的档案价。
- * 赠送行（拍板：赠送批次两类价格都记 0）不查快照，市场价与供应链成本一律为 0。
+ * 赠送行同样先验证「市场报货赠送发货」直连血缘（旧口径单拒收），但不用快照定价：
+ * 拍板赠送批次两类价格都记 0，市场价三列与供应链成本一律为 0。
  * 门店价三列沿用报货行快照，门店收货时再按配货行重新定价。
  */
 async function linkedSourcePricing(tx: Tx, shipmentItem: DocItemSnapshot, sourceLot: LotSnapshot): Promise<PriceSnapshot> {
