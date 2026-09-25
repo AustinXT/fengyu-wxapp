@@ -166,6 +166,15 @@ describe('ScopeSelect · pr-ready 边界整改（#376）', () => {
     expect(setMany).toHaveBeenCalledWith({ scope: 'market', scopeId: 'M3' })
   })
 
+  it('当前已是无门店市场时再点它：只关面板，不重复写 URL', async () => {
+    const user = userEvent.setup()
+    const { trigger, setMany } = renderWith({ topLevel: 'market', inactiveStores: [], markets: [nc, px] }, { scope: 'market', scopeId: 'PX' })
+    await user.click(trigger)
+    await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: /品项公司/ }))
+    expect(setMany).not.toHaveBeenCalled()
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  })
+
   it('原样确定不写 URL：market 书签、部分停用多店都不会被悄悄改掉', async () => {
     const user = userEvent.setup()
     const a = renderWith(withSingle, { scope: 'market', scopeId: 'M1' })

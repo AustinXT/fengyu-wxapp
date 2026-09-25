@@ -221,6 +221,8 @@ function ScopePicker({
               onChange={(e) => setKeyword(e.target.value)}
               placeholder="搜索门店 / 市场"
               aria-label="搜索门店"
+              // 打开即聚焦搜索框：键盘用户不必从触发按钮 Tab 进面板
+              autoFocus
               className="h-8 w-full rounded-[var(--radius)] border border-[var(--input)] bg-[var(--background)] px-2 text-sm focus:outline-none focus:ring-2 focus:ring-[var(--ring)]"
             />
           </div>
@@ -265,7 +267,8 @@ function ScopePicker({
                 key={market.id}
                 type="button"
                 onClick={() => {
-                  onApply({ type: "market", id: market.id })
+                  // 已是该市场：只关面板，不重复写 URL（与「勾选未变时确定不写 URL」一致）
+                  if (!(scope.type === "market" && scope.id === market.id)) onApply({ type: "market", id: market.id })
                   setOpen(false)
                 }}
                 className={cn(

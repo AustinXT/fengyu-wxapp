@@ -202,6 +202,11 @@ describe('多店入口（#376）', () => {
     expect(resolveDataCenterEntry('/p', { scope: 'stores', scopeId: 'S1' }, opts)).toEqual({ kind: 'redirect', url: '/p?scope=store&scopeId=S1' })
   })
 
+  it('1 家的多店串恰是单店市场的全部门店 → market（与面板同一套折叠）', () => {
+    const withSingle = { ...opts, markets: [...opts.markets, { id: 'M3', name: '昭通', stores: [{ storeId: 'S5', storeName: '昭通店' }], granted: true }] }
+    expect(resolveDataCenterEntry('/p', { scope: 'stores', scopeId: 'S5' }, withSingle)).toEqual({ kind: 'redirect', url: '/p?scope=market&scopeId=M3' })
+  })
+
   it('总部全选 → 去掉 scope（all）', () => {
     expect(resolveDataCenterEntry('/p', { scope: 'stores', scopeId: 'S1,S2,S3,S4', preset: 'week' }, { ...opts, topLevel: 'all' }))
       .toEqual({ kind: 'redirect', url: '/p?preset=week' })

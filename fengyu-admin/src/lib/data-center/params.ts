@@ -89,6 +89,8 @@ export const MAX_SCOPE_STORES = 200
  * 单个门店 id 的合法字符与长度（逗号是多店分隔符）。实测来源：sync-workfine 16 位十六进制、
  * 后台新建 `store-<毫秒时间戳>`、e2e 夹具 `TE2L2_STORE` 等，均 ≤ 20 字符。
  * 上限 40 与导出参数的 scopeId 长度上限（MAX_SCOPE_STORES × 41）联动。
+ * ⚠️ 不符合本正则的 store_id 无法进入任何多店编码（整串回落 all → 入口跳默认范围）。后台 createStore 目前不校验
+ *    id 格式（follow-up：复用本正则校验）；新增门店 id 生成规则时须同时满足这里。
  */
 export const MAX_STORE_ID_LENGTH = 40
 const STORE_ID_RE = /^[A-Za-z0-9_-]{1,40}$/

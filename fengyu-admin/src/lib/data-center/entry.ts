@@ -11,8 +11,8 @@
  * 背景见 memory `project-data-center-default-scope-non-hq`：scope='all' 抵达取数 action 会抛
  * PERMISSION_DENIED，生产脱敏后表现为「数据加载失败」。
  */
-import { collapseQuery, firstQueryValue, hasRepeatedQueryKey, parseScope, scopeToParams } from './params'
-import { canonicalizeScope, findInactiveScopeStore, resolveDefaultDataCenterScope, visibleScopeStores } from './scope-options'
+import { collapseQuery, firstQueryValue, hasRepeatedQueryKey, parseScope, parseStoreIdList, scopeToParams } from './params'
+import { canonicalizeScope, findInactiveScopeStore, resolveDefaultDataCenterScope, scopeFromSelection, visibleScopeStores } from './scope-options'
 import type { DataCenterScope, DataCenterScopeOptions, ScopeOptionInactiveStore } from './types'
 
 export type SearchQuery = Record<string, string | string[] | undefined>
@@ -101,7 +101,10 @@ export function resolveDataCenterEntry(
   // id 去重升序；非法串（空段 / 非法字符 / 超上限）parseScope 已回落 'all'，这里连同 scope 参数一起剥掉。
   // 规范化后 scopeToParams(canonical) 与 URL 一致，不会二次进入本分支。
   if (firstQueryValue(query.scope) === 'stores') {
-    const canonical = scopeToParams(canonicalizeScope(scopeOptions, rawScope))
+    // 与范围面板同一套折叠（scopeFromSelection）：1 家的多店串若恰是某单店市场的全部门店，同样记为 market，
+    // 不能入口一套（store）、面板一套（market）——两者锚定员工口径不同
+    const ids = parseStoreIdList(firstQueryValue(query.scopeId))
+    const canonical = scopeToParams(ids ? (scopeFromSelection(scopeOptions, ids) ?? rawScope) : canonicalizeScope(scopeOptions, rawScope))
     if (canonical.scope !== 'stores' || canonical.scopeId !== firstQueryValue(query.scopeId)) {
       const next = collapseQuery(query, [...legacyKeys, 'scope', 'scopeId'])
       for (const [key, value] of Object.entries(canonical)) if (value) next.set(key, value)
