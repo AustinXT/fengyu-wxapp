@@ -100,11 +100,11 @@ const PROBES: Probe[] = [
     minLines: 7,
   },
   {
-    label: '提成明细 · 汇总聚合（实收按 receipt 去重、各项合计）（#375）',
+    label: '提成日报 / 明细 · 聚合与计数口径（实收按 receipt 去重、各项合计、条数 / 去重单数 / 去重人数）（#375）',
     file: 'src/lib/data-center/commission-sql.ts',
     // 聚合行整行比对：改公式（或删掉某个聚合列）后当前行不在旧产物里即红
-    pattern: /^(?!.*\$\{)(COALESCE\(SUM\(.*|\(SELECT COALESCE\(SUM\(r\.received\), 0\)|FROM \(SELECT DISTINCT receipt_id, received FROM summary_rows WHERE receipt_id IS NOT NULL\) r\) AS received,)$/,
-    minLines: 6,
+    pattern: /^(?!.*\$\{)((SELECT )?\(?(SELECT )?COUNT\(.*|COALESCE\(SUM\(.*|\(SELECT COALESCE\(SUM\(r\.received\), 0\)|FROM \(SELECT DISTINCT receipt_id, received FROM summary_rows WHERE receipt_id IS NOT NULL\) r\) AS received,)$/,
+    minLines: 15,
   },
   {
     label: '提成明细 · 平均提成点公式（#375）',
