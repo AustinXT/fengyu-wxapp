@@ -3138,15 +3138,21 @@ describe('分院配货报货单可选：引用 / 自选 / 混合（#337）', () 
     await expect(createStoreAllocation(SESSION, {
       targetStoreId: 42 as never, sourceMarketId: 'M1', items: [{ lotId: 12, quantity: 1 }],
     })).rejects.toThrow('INVALID_PARAMS: 收货门店格式不正确')
-    for (const lotId of [NaN, 1.5, 'abc', 0, undefined]) {
+    for (const lotId of [NaN, 1.5, 'abc', 0, undefined, true, [12], { id: 12 }, 1e21, '12abc']) {
       await expect(createStoreAllocation(SESSION, {
         targetStoreId: 'S1', sourceMarketId: 'M1', items: [{ skuId: 'SKU-2', lotId: lotId as never, quantity: 1 }],
       })).rejects.toThrow('INVALID_PARAMS: 请为每条配货明细选择库存批次')
     }
-    for (const requestItemId of [true, [5], 1.5]) {
+    for (const requestItemId of [true, [5], 1.5, 1e21]) {
       await expect(createStoreAllocation(SESSION, {
         storeRequestId: 'DBH-1', sourceMarketId: 'M1', items: [{ requestItemId: requestItemId as never, lotId: 11, quantity: 1 }],
       })).rejects.toThrow('INVALID_PARAMS: 门店报货明细不正确')
+    }
+    // 自选行商品必填（与前端「商品」必填同源）
+    for (const skuId of [undefined, null, '', '   ']) {
+      await expect(createStoreAllocation(SESSION, {
+        targetStoreId: 'S1', sourceMarketId: 'M1', items: [{ skuId: skuId as never, lotId: 12, quantity: 1 }],
+      })).rejects.toThrow('INVALID_PARAMS: 自选配货明细必须选择商品')
     }
     expect(db.transaction).not.toHaveBeenCalled()
 
@@ -3154,5 +3160,10 @@ describe('分院配货报货单可选：引用 / 自选 / 混合（#337）', () 
     await expect(createStoreAllocation(SESSION, {
       targetStoreId: 'S1', sourceMarketId: 'M1', items: [{ skuId: 'SKU-1', lotId: 12, quantity: 1 }],
     })).rejects.toThrow('配货批次与所选商品不一致')
+    // 数字串批次号照常接受
+    mockAllocation()
+    await expect(createStoreAllocation(SESSION, {
+      targetStoreId: 'S1', sourceMarketId: 'M1', items: [{ skuId: 'SKU-2', lotId: '12' as never, quantity: 1 }],
+    })).resolves.toMatchObject({ id: expect.stringMatching(/^FPH-/) })
   })
 })

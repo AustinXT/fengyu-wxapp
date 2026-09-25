@@ -435,7 +435,7 @@ export type ReceivableShipmentDocType = '品项公司发货' | '分院配货'
  */
 export interface StoreAllocationLineInput {
   requestItemId?: number | null
-  /** 自选行可带上所选 SKU，服务端校验与批次 SKU 一致（防前端换批次后 SKU 串位） */
+  /** 自选行必填：服务端校验与批次 SKU 一致（防前端换批次后 SKU 串位）；引用行忽略 */
   skuId?: string | null
   lotId: number
   quantity: number
@@ -4065,6 +4065,17 @@ export async function cancelSupplyChainPurchaseOrder(
   return { success: true }
 }
 
+/**
+ * Server Action 入参原样到达的正整数标识：只收 number / 十进制数字串，且在安全整数内。
+ * `Number(true)`、`Number([12])` 会变成合法 id，超出 int8 的整数会让 PG 抛 22003 —— 都按参数错误处理。
+ */
+function positiveIdentifier(value: unknown): number | null {
+  if (typeof value === 'string' && !/^\d+$/.test(value.trim())) return null
+  if (typeof value !== 'number' && typeof value !== 'string') return null
+  const parsed = Number(value)
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null
+}
+
 /** Server Action 入参原样到达：可选标识非字符串按参数错误处理，别让 `.trim` 抛 TypeError 变成 500 */
 function optionalIdentifier(value: unknown, label: string): string | null {
   if (value === undefined || value === null) return null
@@ -4110,21 +4121,23 @@ export async function createStoreAllocation(
   // 行形态在入口判定：引用行必须有报货单可引，自选行不看 requestItemId
   const lineRequestItemIds = input.items.map((line) => {
     if (line.requestItemId === undefined || line.requestItemId === null) return null
-    // 只收 number / 数字串：true、[5] 之类经 Number() 会变成合法 id，不能放行
-    const requestItemId = typeof line.requestItemId === 'number' || typeof line.requestItemId === 'string'
-      ? Number(line.requestItemId)
-      : NaN
-    if (!Number.isInteger(requestItemId) || requestItemId <= 0) {
-      throw new ApiError('INVALID_PARAMS', '门店报货明细不正确')
-    }
+    const requestItemId = positiveIdentifier(line.requestItemId)
+    if (requestItemId === null) throw new ApiError('INVALID_PARAMS', '门店报货明细不正确')
     if (!storeRequestId) throw new ApiError('INVALID_PARAMS', '未引用门店报货单时不能按报货明细配货')
     return requestItemId
   })
-  for (const line of input.items) {
-    const lotId = Number(line.lotId)
-    // 非法批次号直接进 bigint 参数会让 PG 抛 22P02 变 500
-    if (!Number.isInteger(lotId) || lotId <= 0) throw new ApiError('INVALID_PARAMS', '请为每条配货明细选择库存批次')
-  }
+  const lineLotIds = input.items.map((line) => {
+    const lotId = positiveIdentifier(line.lotId)
+    if (lotId === null) throw new ApiError('INVALID_PARAMS', '请为每条配货明细选择库存批次')
+    return lotId
+  })
+  // 自选行必须带上所选商品：服务端据此核对批次 SKU，与前端「商品」必填同源
+  const lineSkuIds = input.items.map((line, lineIndex) => {
+    if (lineRequestItemIds[lineIndex] !== null) return null
+    const skuId = optionalIdentifier(line.skuId, '配货商品')
+    if (!skuId) throw new ApiError('INVALID_PARAMS', '自选配货明细必须选择商品')
+    return skuId
+  })
   await syncLocations()
   const id = await db.transaction(async (tx) => {
     await assertInventoryBusinessWritable(tx)
@@ -4194,7 +4207,7 @@ export async function createStoreAllocation(
           throw new ApiError('CONFLICT', '正常配货数量不能超过门店报货未配数量')
         }
       }
-      const lotId = Number(line.lotId)
+      const lotId = lineLotIds[lineIndex]
       let lot = lotsById.get(lotId)
       if (!lot) {
         lot = await lotForUpdate(tx, lotId, sourceMarketId)
@@ -4204,8 +4217,7 @@ export async function createStoreAllocation(
         throw new ApiError('INVALID_PARAMS', '配货批次与门店报货 SKU 不一致')
       }
       if (!requestItem) {
-        const claimedSkuId = optionalIdentifier(line.skuId, '配货商品')
-        if (claimedSkuId && claimedSkuId !== lot.skuId) throw new ApiError('INVALID_PARAMS', '配货批次与所选商品不一致')
+        if (lineSkuIds[lineIndex] !== lot.skuId) throw new ApiError('INVALID_PARAMS', '配货批次与所选商品不一致')
         if (requestSkuIds.has(lot.skuId)) {
           throw new ApiError('INVALID_PARAMS', `${lot.skuName} 已在引用的门店报货单中，请在报货明细上配货`)
         }

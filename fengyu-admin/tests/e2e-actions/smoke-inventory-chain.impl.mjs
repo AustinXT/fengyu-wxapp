@@ -995,7 +995,7 @@ try {
   ))[0].n)
   const pendingBefore = await pendingOf()
   const settlementBefore = await settlementStoreRow()
-  const hints = await docs.listStoreUnallocatedRequestSkus({ storeOrgNodeId: STA1_ORG })
+  const hints = await docs.listStoreUnallocatedRequestSkus({ storeOrgNodeId: STA1_ORG, marketId: MKA_ORG })
   const supplyHint = hints.find((hint) => hint.skuId === SKU_SUPPLY)
   check('#337 未配提示：门店A1 对供应链品仍有未配报货（含新报货单）',
     Boolean(supplyHint?.docIds.includes(dbh337Id)) && (supplyHint?.remainingQuantity ?? 0) >= 3,

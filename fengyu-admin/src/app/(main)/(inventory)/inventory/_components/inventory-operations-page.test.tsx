@@ -1607,9 +1607,14 @@ describe('分院配货按 skuIds 精确取当前门店进货价（#339）', () =
     vi.mocked(listInventoryLotOptions).mockResolvedValue([])
   })
 
+  // #337 起须先选配货市场与收货门店，报货单候选才可用
+  const ALLOCATION_LOCATIONS: InventoryLocationRow[] = [
+    { locationId: 'M1', locationType: '市场', name: '南昌市场', orgNodeId: 'M1', storeId: null, parentLocationId: 'HQ', isActive: true },
+    { locationId: 'S1', locationType: '门店', name: '一分院', orgNodeId: 'S1', storeId: 'S1', parentLocationId: 'M1', isActive: true },
+  ]
   async function pickRequest(items: InventoryDocDetail['items']) {
     vi.mocked(getInventoryCoreDocById).mockResolvedValue({ ...docDetail(request), items })
-    renderPage({ level: 'market', operation: 'store-allocation', candidates: [request] })
+    renderPage({ level: 'market', operation: 'store-allocation', candidates: [request], locations: ALLOCATION_LOCATIONS })
     await pickCandidate('DBH-1')
   }
 
@@ -1739,6 +1744,11 @@ describe('分院配货不引用门店报货（#337）', () => {
       } as unknown as InventoryDocDetail['items'][number]],
     })
     renderPage({ level: 'market', operation: 'store-allocation', locations: LOCATIONS, candidates: [request] })
+    // 未选齐市场与门店：候选禁用且不发查询
+    expect(await screen.findByText('请先选择配货市场和收货门店')).toBeTruthy()
+    expect(listInventoryDocCandidates).not.toHaveBeenCalled()
+    chooseSubject('请选择市场', 'M1')
+    chooseSubject('请选择门店', 'N-S1')
     await pickCandidate('DBH-1')
     await screen.findByText('报货配货批次与数量')
     const storeSelect = screen.getByRole('option', { name: '一店' }).closest('select') as HTMLSelectElement

@@ -433,8 +433,10 @@ describe('门店未配报货 SKU（#337 拍板 A 的提示数据）', () => {
   })
 
   it('越权空 scope 恒为空条件；缺门店 / 类型不对按参数错误且不碰库', async () => {
-    await expect(listStoreUnallocatedRequestSkus({ storeOrgNodeId: '' })).rejects.toThrow(/^INVALID_PARAMS/)
-    await expect(listStoreUnallocatedRequestSkus({ storeOrgNodeId: 7 } as never)).rejects.toThrow(/^INVALID_PARAMS/)
+    await expect(listStoreUnallocatedRequestSkus({ storeOrgNodeId: '', marketId: 'MKT-A' })).rejects.toThrow(/^INVALID_PARAMS/)
+    await expect(listStoreUnallocatedRequestSkus({ storeOrgNodeId: 7, marketId: 'MKT-A' } as never)).rejects.toThrow(/^INVALID_PARAMS/)
+    // 配货市场必填：不收窄市场时提示会混入本市场引用不了的旧市场报货单
+    await expect(listStoreUnallocatedRequestSkus({ storeOrgNodeId: 'ORG-S1' } as never)).rejects.toThrow(/^INVALID_PARAMS/)
     expect(mockDb.execute).not.toHaveBeenCalled()
 
     mockGetSession.mockResolvedValue({
@@ -444,7 +446,7 @@ describe('门店未配报货 SKU（#337 拍板 A 的提示数据）', () => {
     mockDb.execute
       .mockResolvedValueOnce([{ drifted: false }] as never)
       .mockResolvedValueOnce([] as never)
-    await listStoreUnallocatedRequestSkus({ storeOrgNodeId: 'ORG-S1' })
+    await listStoreUnallocatedRequestSkus({ storeOrgNodeId: 'ORG-S1', marketId: 'MKT-A' })
     expect(compile(mockDb.execute.mock.calls[1][0]).text).toMatch(/WHERE\s+false/i)
   })
 })

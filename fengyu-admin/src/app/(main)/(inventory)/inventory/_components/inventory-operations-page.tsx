@@ -3587,15 +3587,17 @@ function StoreAllocationForm({
         </FormField>
         <FormField label="配货日期"><DatePicker value={docDate} onValueChange={setDocDate} /></FormField>
       </div>
+      {/* 先选市场与门店再选报货单：候选按两端收窄，避免先挑单再被单据静默改写收货门店 */}
       <InventoryDocCandidatePicker
         label="门店报货单（可选，不选即市场直接配货）"
         purpose="store-allocation-source"
+        disabled={!sourceMarketId || !targetStoreId}
+        disabledHint="请先选择配货市场和收货门店"
         sourceOrgNodeId={targetStoreId || undefined}
         targetOrgNodeId={sourceMarketId || undefined}
         selection={{ mode: 'single', value: docId, current: doc, onChange: (id) => void selectDocument(id) }}
       />
       {loading && <div className="text-sm text-[#666666]">正在加载门店报货明细</div>}
-      {doc && !doc.sourceOrgNodeId && <div className="text-sm text-[#D94040]">该门店报货单缺少报货门店，无法引用配货，请清除后改为直接配货</div>}
       <SourceDocumentItems doc={doc} canViewPrice={canViewPrice} />
       {lines.length > 0 && (
         <div className="space-y-3">
