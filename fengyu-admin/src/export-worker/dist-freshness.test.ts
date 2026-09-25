@@ -341,6 +341,7 @@ const PROBES: Probe[] = [
       /^(?!.*\$\{)(HAVING SUM\(sipe\.amount.*|OR SUM\(sipe\.amount::numeric\) FILTER .*|AND purchase_received .*|WHERE pa\.day_received .*|ON pa\.client_user_id = x\.client_user_id AND pa\.grp = x\.grp.*|COUNT\(DISTINCT pa\.client_user_id\).*|new_revenue_store AS \(|LEFT JOIN new_revenue_store .*|COALESCE\(nr?\.revenue, 0\) AS new_revenue,)$/,
     minLines: 16,
     uniqueLines: 11,
+    exactCountsInModule: true,
     exactLinesInModule: true,
   },
   {
