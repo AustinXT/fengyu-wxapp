@@ -114,6 +114,22 @@ export default async function Page({
   const itemColumnCount = 9 + lineOwnershipColumnCount + priceColumnCount + reportColumnCount + shipmentColumnCount +
     itemCompanyRequestColumnCount + supplyChainPurchaseColumnCount + promotionColumnCount +
     stocktakeColumnCount
+  // 市场报货单的整单履约（#336）：已发 / 已收都按「市场报货发货」直连血缘累计，只算正常量（赠送不占报货量），
+  // 用来判断「是否已全部发出 / 全部入库」。
+  const marketReportSummary = doc.docType === '市场报货' && reportFulfillment
+    ? ((items) => {
+      const sum = (pick: (item: (typeof items)[number]) => number) =>
+        Number(items.reduce((total, item) => total + pick(item), 0).toFixed(2))
+      const demand = sum((item) => item.normalDemandQuantity)
+      const shipped = sum((item) => item.normalFulfilledQuantity)
+      const received = sum((item) => item.normalReceivedQuantity)
+      const allReceived = items.every((item) => item.normalReceivedQuantity >= item.normalDemandQuantity - 0.000001)
+      return {
+        shipping: `已发 ${shipped} / 报货 ${demand}（未发 ${Math.max(0, Number((demand - shipped).toFixed(2)))}）`,
+        receiving: allReceived ? `已全部入库（已收 ${received}）` : `未全部入库（已收 ${received} / 报货 ${demand}）`,
+      }
+    })(reportFulfillment.items)
+    : null
   const fields = [
     ['单据号', doc.id],
     ['类型', doc.docType],
@@ -123,6 +139,9 @@ export default async function Page({
     ['单据日期', doc.docDate?.slice(0, 10)],
     ['总数量', doc.totalQuantity],
     ...(isStocktake ? ([['盘点结论', stocktakeSummary(doc.items)]] as const) : []),
+    ...(marketReportSummary
+      ? ([['发货进度', marketReportSummary.shipping], ['入库进度', marketReportSummary.receiving]] as const)
+      : []),
     ...(showPrice ? ([['金额', doc.totalAmount]] as const) : []),
     ['顾客', doc.customerName],
     // #350：顾客出库（GCK）由提货服务产生，related_sale_order_id 记着是哪张销售单的货
