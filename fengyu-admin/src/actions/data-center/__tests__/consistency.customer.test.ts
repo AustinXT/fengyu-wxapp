@@ -1755,14 +1755,25 @@ describe('客量板块两端口径一致性守护', () => {
       )
     })
 
-    it('外层骨架 JOIN 的关联条件整段快照（归组键错位 = 分子分母对不上号）', () => {
-      expect(sliceBlock(breakdownSql(adminSrc), 'FROM skel sk ', ' GROUP BY ')).toBe(
+    /**
+     * ⚠ 快照必须**一直包到 `GROUP BY` 为止**，不能截在它之前（codex round-6 P2）。
+     * 把 `GROUP BY ${groupId}` 改成 `GROUP BY ${groupId}, sk.store_id`：JOIN 部分逐字未变、
+     * 其余断言也不碰它 ⇒ 全绿；而 SQL 会为同一个 group_id 返回多行，
+     * `map.set(id, …)` 相互覆盖。构造：scope = 市场 M，店 A 注册 10 人且 10 人各到店 1 次、
+     * 店 B 注册 90 人且无人到店 —— 正确市场行是 10/100 = 10%，改后会变成 10/10 = 100% 或 0/90 = 0%。
+     */
+    it('外层骨架 JOIN + GROUP BY 整段快照（归组键错位 / 多归一行 = 分子分母对不上号）', () => {
+      const sqlText = breakdownSql(adminSrc)
+      const from = sqlText.indexOf('FROM skel sk ')
+      expect(from).toBeGreaterThan(0)
+      expect(sqlText.slice(from).trim()).toBe(
         'FROM skel sk ' +
           'LEFT JOIN reg ON reg.store_id = sk.store_id ' +
           'LEFT JOIN ret ON ret.store_id = sk.store_id ' +
           'LEFT JOIN active ON active.store_id = sk.store_id ' +
           'LEFT JOIN status_agg ON status_agg.store_id = sk.store_id ' +
-          'LEFT JOIN react ON react.store_id = sk.store_id',
+          'LEFT JOIN react ON react.store_id = sk.store_id ' +
+          'GROUP BY ${groupId}',
       )
     })
 

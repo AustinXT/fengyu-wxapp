@@ -157,6 +157,17 @@ const PROBES: Probe[] = [
     exactCountsInModule: true,
   },
   {
+    // 只钉 `safeDiv(..., ra.registered)` 不够：`registered` 是怎么算出来的在 SQL 里，
+    // 单独把产物的投影改成 `COALESCE(SUM(reg.registered), 0) / 2 AS registered`，
+    // 上面两条探针的文本与频次完全不变 ⇒ 页面 60%/40% 而导出 120%/80%（codex round-6 P2）。
+    label: '客量板 · 达成率分母的 SQL 投影与归组（#414）',
+    file: 'src/actions/data-center/customer.ts',
+    pattern: /^(COALESCE\(SUM\(reg\.registered\), 0\) AS registered,|GROUP BY \$\{groupId\})$/,
+    minLines: 2,
+    uniqueLines: 2,
+    exactCountsInModule: true,
+  },
+  {
     label: '客量板 · 到店日事件集 (顾客, service_date) 去重（#298，visitDaysSql）',
     file: 'src/lib/data-center/visit-days.ts',
     pattern: /^SELECT DISTINCT so\.client_user_id, \$\{col\} AS visit_date$/,
