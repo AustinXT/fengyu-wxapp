@@ -104,6 +104,14 @@ const PROBES: Probe[] = [
     pattern: /\$\{floors\.(star|pink|gold|black)\}\) AS bucket_/,
     minLines: 5,
   },
+  {
+    // bun build 会重排 JS 代码、只原样保留模板字符串，所以探针只能取 SQL 行。主表 SQL 进了产物，
+    // 就说明引用它的 registry 报表分发、technician-sql 人池参数是同一次构建带进去的
+    label: '经营数据主表 · 门店骨架与行序（#372）',
+    file: 'src/actions/data-center/operating-master.ts',
+    pattern: /^(JOIN org_nodes mkt ON mkt\.id = sk\.market_id|ORDER BY mkt\.sort_order ASC NULLS LAST, sk\.market_name ASC, sk\.market_id ASC,)$/,
+    minLines: 2,
+  },
 ]
 
 describe('dist/export-worker.mjs 新鲜度（改了 data-center SQL 口径必须重建产物）', () => {

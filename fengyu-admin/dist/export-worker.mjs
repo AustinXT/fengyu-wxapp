@@ -155373,7 +155373,7 @@ var require_excel = __commonJS((exports, module) => {
 
 // src/export-worker/index.ts
 init_db2();
-var import_drizzle_orm67 = __toESM(require_drizzle_orm(), 1);
+var import_drizzle_orm68 = __toESM(require_drizzle_orm(), 1);
 import { createReadStream } from "node:fs";
 import { mkdtemp, rm as rm2 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -159490,7 +159490,7 @@ var DATA_CENTER_REPORTS = {
     title: "经营数据主表",
     periodKind: "month",
     requiredActions: [DATA_CENTER_DASHBOARD_ACTION],
-    menu: { section: "经营明细", enabled: false }
+    menu: { section: "经营明细", enabled: true }
   },
   commissionDaily: {
     path: "/data-center/commission-daily",
@@ -159541,7 +159541,13 @@ var DATA_CENTER_BOARD_EXPORT_VIEWS = [
   "efficiency-store-ranking",
   "efficiency-staff-ranking"
 ];
-var DATA_CENTER_REPORT_EXPORT_VIEWS = [];
+var DATA_CENTER_REPORT_EXPORT_VIEWS = [
+  "report-operating-master"
+];
+var REPORT_EXPORT_VIEW_SET = new Set(DATA_CENTER_REPORT_EXPORT_VIEWS);
+function isDataCenterReportExportView(view3) {
+  return REPORT_EXPORT_VIEW_SET.has(view3);
+}
 var DATA_CENTER_EXPORT_VIEWS = [
   ...DATA_CENTER_BOARD_EXPORT_VIEWS,
   ...DATA_CENTER_REPORT_EXPORT_VIEWS
@@ -159562,6 +159568,21 @@ var EXPORT_PERMISSIONS_BY_TYPE = {
   "mall-products": ["product:list"],
   coupons: ["coupon:list"],
   "data-center": ["data_center:dashboard"]
+};
+var DATA_CENTER_VIEW_REQUIRED_ACTIONS = {
+  "sales-market": [DATA_CENTER_DASHBOARD_ACTION],
+  "sales-store": [DATA_CENTER_DASHBOARD_ACTION],
+  "customer-market-reg": [DATA_CENTER_DASHBOARD_ACTION],
+  "customer-market-ops": [DATA_CENTER_DASHBOARD_ACTION],
+  "customer-store-reg": [DATA_CENTER_DASHBOARD_ACTION],
+  "customer-store-ops": [DATA_CENTER_DASHBOARD_ACTION],
+  "product-market": [DATA_CENTER_DASHBOARD_ACTION],
+  "product-store": [DATA_CENTER_DASHBOARD_ACTION],
+  "efficiency-market": [DATA_CENTER_DASHBOARD_ACTION],
+  "efficiency-staff": [DATA_CENTER_DASHBOARD_ACTION],
+  "efficiency-store-ranking": [DATA_CENTER_DASHBOARD_ACTION],
+  "efficiency-staff-ranking": [DATA_CENTER_DASHBOARD_ACTION],
+  "report-operating-master": DATA_CENTER_REPORTS.operatingMaster.requiredActions
 };
 var EXPORT_PERMISSION_ACTIONS = Array.from(new Set(Object.values(EXPORT_PERMISSIONS_BY_TYPE).flat()));
 var EXPORT_LABEL_BY_TYPE = {
@@ -159597,7 +159618,8 @@ function exportJobLabel(exportType, payload) {
     "efficiency-market": "人效明细-按市场",
     "efficiency-staff": "人效明细-按技师",
     "efficiency-store-ranking": "人效-门店排名榜",
-    "efficiency-staff-ranking": "人效-员工排名榜"
+    "efficiency-staff-ranking": "人效-员工排名榜",
+    "report-operating-master": "经营数据主表"
   };
   return viewLabels[payload.view];
 }
@@ -179256,12 +179278,22 @@ function technicianCountSql(session4, scope, endDate) {
       SELECT COUNT(*)::int AS v FROM technician_scoped
     `;
 }
-function technicianByStoreSql(session4, scope, endDate) {
+function technicianPoolFilterSql(pool) {
+  if (pool === "producer")
+    return import_drizzle_orm61.sql``;
+  return import_drizzle_orm61.sql`
+        AND EXISTS (
+          SELECT 1 FROM staff_wechat_users bw
+          WHERE bw.employee_id = ts.employee_id
+            AND bw.skills && ARRAY['美容师']::text[]
+        )`;
+}
+function technicianByStoreSql(session4, scope, endDate, pool = "producer") {
   return import_drizzle_orm61.sql`
       WITH ${technicianCteSql(session4, scope, endDate)}
       SELECT store_id, COUNT(*)::int AS v
-      FROM technician_scoped
-      WHERE store_id IS NOT NULL
+      FROM technician_scoped ts
+      WHERE store_id IS NOT NULL${technicianPoolFilterSql(pool)}
       GROUP BY store_id
     `;
 }
@@ -181733,6 +181765,445 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
   };
 });
 
+// src/actions/data-center/operating-master.ts
+init_db2();
+init_with_permission();
+var import_drizzle_orm67 = __toESM(require_drizzle_orm(), 1);
+
+// src/lib/data-center/report-period.ts
+init_time_range();
+var MONTH_RE = /^(\d{4})-(\d{2})$/;
+var MIN_YEAR = 2000;
+var MAX_YEAR = 2099;
+function isValidMonth(value) {
+  const match = value?.match(MONTH_RE);
+  if (!match)
+    return false;
+  const [year2, month] = [Number(match[1]), Number(match[2])];
+  return year2 >= MIN_YEAR && year2 <= MAX_YEAR && month >= 1 && month <= 12;
+}
+function monthRange(month) {
+  const [year2, mon] = month.split("-").map(Number);
+  const last = new Date(Date.UTC(year2, mon, 0)).getUTCDate();
+  return { start: `${month}-01`, end: `${month}-${String(last).padStart(2, "0")}` };
+}
+
+// src/actions/data-center/operating-master.ts
+init_time_range();
+
+// src/lib/data-center/matrix.ts
+function buildMatrixHeaderLayout(columns3) {
+  const groupStartKeys = new Set;
+  const grouped = columns3.some((column2) => column2.group);
+  if (!grouped) {
+    return {
+      depth: 1,
+      rows: [columns3.map((column2, index3) => ({
+        key: column2.key,
+        columnKey: column2.key,
+        colSpan: 1,
+        rowSpan: 1,
+        firstLeafIndex: index3
+      }))],
+      groupStartKeys
+    };
+  }
+  const top = [];
+  const bottom = [];
+  const closedGroups = new Set;
+  let current = null;
+  columns3.forEach((column2, index3) => {
+    const groupKey2 = column2.group?.key;
+    if (current && current.groupKey !== groupKey2) {
+      closedGroups.add(current.groupKey);
+      current = null;
+    }
+    if (!groupKey2) {
+      top.push({ key: column2.key, columnKey: column2.key, colSpan: 1, rowSpan: 2, firstLeafIndex: index3 });
+      return;
+    }
+    if (current) {
+      current.colSpan += 1;
+    } else {
+      if (closedGroups.has(groupKey2)) {
+        throw new Error(`INVALID_STATE: 矩阵表分组「${groupKey2}」的列不相邻`);
+      }
+      current = { key: `group:${groupKey2}`, groupKey: groupKey2, colSpan: 1, rowSpan: 1, firstLeafIndex: index3 };
+      top.push(current);
+      groupStartKeys.add(column2.key);
+    }
+    bottom.push({ key: column2.key, columnKey: column2.key, colSpan: 1, rowSpan: 1, firstLeafIndex: index3 });
+  });
+  return { depth: 2, rows: [top, bottom], groupStartKeys };
+}
+function finite(value) {
+  return value != null && Number.isFinite(value);
+}
+function toTotal(value) {
+  const parsed = typeof value === "string" && value.trim() !== "" ? Number(value) : value;
+  return typeof parsed === "number" && Number.isFinite(parsed) ? parsed : null;
+}
+function sumOf(rows, accessor) {
+  let total = 0;
+  let seen = false;
+  for (const row of rows) {
+    const value = accessor(row);
+    if (!finite(value))
+      continue;
+    total += value;
+    seen = true;
+  }
+  return seen ? total : null;
+}
+function computeMatrixTotals(columns3, rows, options) {
+  const detailRows = options.isSubtotal ? rows.filter((row) => !options.isSubtotal(row)) : rows;
+  const totals = {};
+  for (const column2 of columns3) {
+    const server = options.serverTotals;
+    if (server && Object.prototype.hasOwnProperty.call(server, column2.key)) {
+      totals[column2.key] = toTotal(server[column2.key]);
+      continue;
+    }
+    const aggregate3 = column2.aggregate ?? { kind: "none" };
+    if (options.paginated || aggregate3.kind === "none" || aggregate3.kind === "server") {
+      totals[column2.key] = null;
+      continue;
+    }
+    if (aggregate3.kind === "sum") {
+      totals[column2.key] = column2.value ? sumOf(detailRows, column2.value) : null;
+      continue;
+    }
+    let numerator = 0;
+    let denominator = 0;
+    for (const row of detailRows) {
+      const top = aggregate3.numerator(row);
+      const bottom = aggregate3.denominator(row);
+      if (!finite(top) || !finite(bottom))
+        continue;
+      numerator += top;
+      denominator += bottom;
+    }
+    totals[column2.key] = denominator > 0 ? numerator / denominator : null;
+  }
+  return totals;
+}
+
+// src/lib/data-center/operating-master.ts
+var OPERATING_MASTER_METRIC_KEYS = [
+  "beauticianCount",
+  "monthRevenue",
+  "ytdRevenue",
+  "shengmeiProjectCount",
+  "monthConsume",
+  "shengmeiConsume"
+];
+var BLANK_FROZEN_GROUP = { key: "blank-frozen", header: "" };
+var BLANK_GROUP = { key: "blank", header: "" };
+var RETAINED_GROUP = {
+  key: "retained",
+  header: `保有会员（售前不算）
+会员标准：单笔订单≥1990元(购买疗程有余卡顾客)
+当月回店1次的人头目标：80%
+当月回店人头到店2次的目标：60%`,
+  color: "#EAF2FB"
+};
+var MANAGED_GROUP = {
+  key: "managed",
+  header: `被经营顾客目标(拆分季度/月度)
+核算标准：消费≥1990算人数
+一季度目标:20%-30%，二季度目标:50%-60%
+三季度目标:70%-80%，四季度目标:100%完成`,
+  color: "#EDF6EA"
+};
+var SALES_GROUP = {
+  key: "sales",
+  header: "销售业绩目标",
+  color: "#FFF3E0"
+};
+var FOOTFALL_GROUP = {
+  key: "footfall",
+  header: `客流及客耗
+美容师:3人/250客流 4人/300客量 5人/400客流
+美容师消耗：每天1000元
+客流目标：售前20%  售后80%`,
+  color: "#F3EEF9"
+};
+function headerWidth(header, min) {
+  const longest = Math.max(...header.split(`
+`).map((line5) => line5.length));
+  return Math.max(min, longest * 12 + 48);
+}
+function headerExportWidth(header, min) {
+  const longest = Math.max(...header.split(`
+`).map((line5) => [...line5].reduce((sum, char5) => sum + (/[\u0000-\u00ff]/.test(char5) ? 1 : 2), 0)));
+  return Math.max(min, longest + 2);
+}
+function metric(key) {
+  return (row) => row.values[key] ?? null;
+}
+function pendingColumn(letter, key, header, group, unit, pending) {
+  return {
+    letter,
+    key,
+    header,
+    group,
+    unit,
+    pending,
+    align: "right",
+    width: headerWidth(header, 96),
+    hint: pending === "#374" ? "目标列：本期不取数（#374）" : "口径待确认，本期不取数（#373）",
+    exportValue: () => "—",
+    exportWidth: headerExportWidth(header, 12)
+  };
+}
+function metricColumn(letter, key, header, group, unit, hint) {
+  return {
+    letter,
+    key,
+    header,
+    group,
+    unit,
+    align: "right",
+    width: headerWidth(header, unit === "amount" ? 120 : 96),
+    hint,
+    value: metric(key),
+    aggregate: { kind: "sum" },
+    exportWidth: headerExportWidth(header, unit === "amount" ? 16 : 12)
+  };
+}
+var OPERATING_MASTER_COLUMNS = [
+  {
+    letter: "B",
+    key: "marketName",
+    header: "市场",
+    group: BLANK_FROZEN_GROUP,
+    freeze: "left",
+    width: 112,
+    exportValue: (row) => row.marketName,
+    exportWidth: 14
+  },
+  {
+    letter: "C",
+    key: "storeName",
+    header: "门店",
+    group: BLANK_FROZEN_GROUP,
+    freeze: "left",
+    width: 148,
+    exportValue: (row) => row.storeName,
+    exportWidth: 16
+  },
+  metricColumn("D", "beauticianCount", `美容师
+人数`, BLANK_GROUP, "count", "统计月末在职、技能含「美容师」的员工，按当前归属门店计（调店不做历史化）；直挂市场 / 部门的员工不属于任何门店，不计入"),
+  pendingColumn("E", "retainedMembers", `保有会员
+前三月有回店1次人头数`, RETAINED_GROUP, "count", "#373"),
+  pendingColumn("F", "returnOnceHeads", `回店1次
+当月人头`, RETAINED_GROUP, "count", "#373"),
+  pendingColumn("G", "returnOnceRate", `回店1次
+达成率`, RETAINED_GROUP, "percent", "#373"),
+  pendingColumn("H", "returnTwiceHeads", `回店≥2次
+当月人头`, RETAINED_GROUP, "count", "#373"),
+  pendingColumn("I", "returnTwiceRate", `回店≥2次
+达成率`, RETAINED_GROUP, "percent", "#373"),
+  pendingColumn("J", "managedYearTarget", `被经营顾客
+年度目标`, MANAGED_GROUP, "count", "#374"),
+  pendingColumn("K", "managedYearCustomers", `被经营顾客
+年度消费人数`, MANAGED_GROUP, "count", "#373"),
+  pendingColumn("L", "managedMonthCustomers", `被经营顾客
+当月消费人数`, MANAGED_GROUP, "count", "#373"),
+  pendingColumn("M", "managedRate", `被经营率
+年度标准60%`, MANAGED_GROUP, "percent", "#373"),
+  pendingColumn("N", "salesYearTarget", `年度销售
+业绩目标`, SALES_GROUP, "amount", "#374"),
+  pendingColumn("O", "salesMonthTarget", `当月业绩
+目标`, SALES_GROUP, "amount", "#374"),
+  metricColumn("P", "monthRevenue", `当月
+完成`, SALES_GROUP, "amount", "当月总业绩：与销售板「门店」明细的「总业绩」同口径（款项按业绩归属日期计入，含退款冲减）"),
+  pendingColumn("Q", "salesCompletionRate", `当月
+完成率`, SALES_GROUP, "percent", "#374"),
+  metricColumn("R", "ytdRevenue", `年度
+累计达成`, SALES_GROUP, "amount", "当年 1 月至所选月份各月「当月完成」之和。只含新系统上线后的数据，不含 WorkFine 历史单"),
+  pendingColumn("S", "monthFootfall", `当月
+客流`, FOOTFALL_GROUP, "count", "#373"),
+  pendingColumn("T", "preSaleFootfall", `当月
+售前客流`, FOOTFALL_GROUP, "count", "#373"),
+  pendingColumn("U", "afterSaleFootfall", `当月
+售后客流`, FOOTFALL_GROUP, "count", "#373"),
+  metricColumn("V", "shengmeiProjectCount", `当月
+生美项目数`, FOOTFALL_GROUP, "count", "已完成服务单中生美项目的核销次数之和（剔除寄存单退款专用单）。与人效板、门店榜的「项目数」（按经营类型统计）口径不同"),
+  metricColumn("W", "monthConsume", `当月
+总实耗`, FOOTFALL_GROUP, "amount", "与销售板「门店」明细的「总实耗」同口径"),
+  metricColumn("X", "shengmeiConsume", `当月
+生美实耗`, FOOTFALL_GROUP, "amount", "与销售板「门店」明细的「生美实耗」同口径（按服务项目的「是否生美」标记）"),
+  pendingColumn("Y", "shengmeiConsumePerVisit", `单次
+生美客耗`, FOOTFALL_GROUP, "amount", "#373")
+];
+function ytdRange(month) {
+  return { start: `${month.slice(0, 4)}-01-01`, end: monthRange(month).end };
+}
+var METRIC_COLUMNS = OPERATING_MASTER_COLUMNS.filter((column2) => column2.value);
+var metricColumnKeys = METRIC_COLUMNS.map((column2) => column2.key);
+function buildOperatingMasterTable(stores3, metrics) {
+  const storeRows = stores3.map((store) => {
+    const found = metrics.get(store.storeId);
+    const values2 = Object.fromEntries(OPERATING_MASTER_METRIC_KEYS.map((key) => [key, found?.[key] ?? 0]));
+    return {
+      rowKey: store.storeId,
+      kind: "store",
+      marketId: store.marketId,
+      marketName: store.marketName,
+      storeId: store.storeId,
+      storeName: store.storeName,
+      values: values2
+    };
+  });
+  const marketIds = Array.from(new Set(storeRows.map((row) => row.marketId)));
+  const multiMarket = marketIds.length > 1;
+  const totalsOf = (rows2) => pickMetricTotals(computeMatrixTotals(METRIC_COLUMNS, rows2, { paginated: false }));
+  const rows = [];
+  if (multiMarket) {
+    for (const marketId of marketIds) {
+      const marketRows = storeRows.filter((row) => row.marketId === marketId);
+      rows.push(...marketRows, {
+        rowKey: `subtotal:${marketId}`,
+        kind: "subtotal",
+        marketId,
+        marketName: marketRows[0].marketName,
+        storeId: null,
+        storeName: "小计",
+        values: totalsOf(marketRows)
+      });
+    }
+  } else {
+    rows.push(...storeRows);
+  }
+  return { rows, totals: totalsOf(storeRows), storeCount: storeRows.length, multiMarket };
+}
+function pickMetricTotals(totals) {
+  return Object.fromEntries(metricColumnKeys.map((key) => [key, totals[key] ?? null]));
+}
+function isOperatingMasterSubtotal(row) {
+  return row.kind === "subtotal";
+}
+function operatingMasterTotalsLabel(multiMarket) {
+  return multiMarket ? "总计" : "合计";
+}
+function parseOperatingMasterExportScope(raw) {
+  if (!raw.scope) {
+    if (raw.scopeId)
+      throw new Error("INVALID_PARAMS: 导出范围缺少类型");
+    return { type: "all" };
+  }
+  if (raw.scope === "authorized" && !raw.scopeId)
+    return { type: "authorized" };
+  if ((raw.scope === "market" || raw.scope === "store") && raw.scopeId)
+    return { type: raw.scope, id: raw.scopeId };
+  throw new Error("INVALID_PARAMS: 导出范围参数不完整或无效");
+}
+function operatingMasterScopeMeta(scope, name) {
+  if (scope.type === "market")
+    return `市场 · ${name}`;
+  if (scope.type === "store")
+    return `门店 · ${name}`;
+  return name;
+}
+function operatingMasterExportGroup(column2) {
+  return column2.group?.key === BLANK_GROUP.key ? BLANK_FROZEN_GROUP : column2.group;
+}
+
+// src/actions/data-center/operating-master.ts
+"use server";
+function revenueByStoreSql(session4, scope, range) {
+  return import_drizzle_orm67.sql`
+        SELECT spe.store_id, COALESCE(SUM(spe.amount::numeric), 0) AS v
+        FROM sale_order_performance_events spe
+        WHERE ${scopeFilterSql(session4, scope, "spe.store_id")}
+          AND spe.status = '已支付'
+          AND spe.change_type IN ('首次支付', '回款', '退款')
+          AND spe.sale_order_type IN ('销售单', '转换单', '充值单')
+          AND spe.legacy_source IS DISTINCT FROM 'workfine'
+          AND spe.performance_date BETWEEN ${range.start} AND ${range.end}
+        GROUP BY spe.store_id
+      `;
+}
+var getOperatingMaster = withPermission(DATA_CENTER_DASHBOARD_ACTION, async (session4, params) => {
+  if (!isValidMonth(params.month))
+    throw new Error("INVALID_PARAMS: 月份格式应为 YYYY-MM");
+  if (params.month > shanghaiToday().slice(0, 7))
+    throw new Error("INVALID_PARAMS: 不能查询未来月份");
+  await validateScope(session4, params.scope);
+  const { scope, month } = params;
+  const cur = monthRange(month);
+  const ytd = ytdRange(month);
+  const [scopeName, skelRows, beauticianRows, revRows, ytdRevRows, projectRows, consRows, shengmeiConsRows] = await Promise.all([
+    resolveScopeName(scope),
+    db2.execute(import_drizzle_orm67.sql`
+          SELECT sk.store_id, sk.store_name, sk.market_id, sk.market_name
+          FROM (${scopeStoreSkeletonSql(session4, scope)}) sk
+          JOIN org_nodes mkt ON mkt.id = sk.market_id
+          ORDER BY mkt.sort_order ASC NULLS LAST, sk.market_name ASC, sk.market_id ASC,
+                   sk.store_name ASC, sk.store_id ASC
+        `),
+    db2.execute(technicianByStoreSql(session4, scope, cur.end, "beautician")),
+    db2.execute(revenueByStoreSql(session4, scope, cur)),
+    db2.execute(revenueByStoreSql(session4, scope, ytd)),
+    db2.execute(import_drizzle_orm67.sql`
+          SELECT so.store_id, COALESCE(SUM(sit.session_used), 0) AS v
+          FROM service_orders so
+          JOIN service_items sit ON sit.service_order_id = so.service_order_id
+          JOIN sale_items si ON si.sale_item_id = sit.sale_item_id
+          WHERE ${scopeFilterSql(session4, scope, "so.store_id")}
+            AND so.status = '已完成'
+            AND sit.is_shengmei = TRUE
+            AND so.service_date BETWEEN ${cur.start} AND ${cur.end}
+            AND ${excludeDepositRefundSql("so")}
+          GROUP BY so.store_id
+        `),
+    db2.execute(import_drizzle_orm67.sql`
+          SELECT so.store_id, COALESCE(SUM(sit.unit_real_price::numeric * sit.session_used), 0) AS v
+          FROM service_orders so
+          JOIN service_items sit ON sit.service_order_id = so.service_order_id
+          JOIN sale_items si ON si.sale_item_id = sit.sale_item_id
+          WHERE ${scopeFilterSql(session4, scope, "so.store_id")}
+            AND so.status = '已完成'
+            AND so.service_date BETWEEN ${cur.start} AND ${cur.end}
+            AND ${excludeDepositRefundSql("so")}
+          GROUP BY so.store_id
+        `),
+    db2.execute(import_drizzle_orm67.sql`
+          SELECT so.store_id, COALESCE(SUM(sit.unit_real_price::numeric * sit.session_used), 0) AS v
+          FROM service_orders so
+          JOIN service_items sit ON sit.service_order_id = so.service_order_id
+          JOIN sale_items si ON si.sale_item_id = sit.sale_item_id
+          WHERE ${scopeFilterSql(session4, scope, "so.store_id")}
+            AND so.status = '已完成'
+            AND sit.is_shengmei = TRUE
+            AND so.service_date BETWEEN ${cur.start} AND ${cur.end}
+            AND ${excludeDepositRefundSql("so")}
+          GROUP BY so.store_id
+        `)
+  ]);
+  const metrics = new Map;
+  const collect = (rows, key) => {
+    for (const row of rows) {
+      const id = String(row.store_id);
+      metrics.set(id, { ...metrics.get(id), [key]: Number(row.v ?? 0) });
+    }
+  };
+  collect(beauticianRows, "beauticianCount");
+  collect(revRows, "monthRevenue");
+  collect(ytdRevRows, "ytdRevenue");
+  collect(projectRows, "shengmeiProjectCount");
+  collect(consRows, "monthConsume");
+  collect(shengmeiConsRows, "shengmeiConsume");
+  const stores3 = skelRows.map((row) => ({
+    storeId: String(row.store_id),
+    storeName: String(row.store_name ?? ""),
+    marketId: String(row.market_id ?? ""),
+    marketName: String(row.market_name ?? "")
+  }));
+  return { month, range: cur, ytd, scopeName, ...buildOperatingMasterTable(stores3, metrics) };
+});
+
 // src/lib/sales-categories.ts
 var SALES_CATEGORIES = Object.freeze(["自销自耗", "他销自耗", "他销他耗", "生态合作"]);
 var SALES_CATEGORY_COLUMN_KEYS = Object.freeze({
@@ -181975,6 +182446,30 @@ function metricCell(value, unit) {
 }
 function headerWithUnit(label, unit) {
   return unit === "percent" ? `${label}(%)` : label;
+}
+
+// src/lib/data-center/matrix-export.ts
+var NUM_FMT = { amount: "#,##0.00", percent: "0.00", count: "#,##0" };
+function toWorkerExportColumns(columns3, serverTotals) {
+  return columns3.map((column2) => {
+    const unit = column2.unit ?? "amount";
+    const numeric5 = !column2.exportValue && !!column2.value;
+    const hasTotal = !!serverTotals && Object.prototype.hasOwnProperty.call(serverTotals, column2.key);
+    return {
+      header: numeric5 ? headerWithUnit(column2.header, unit) : column2.header,
+      width: column2.exportWidth,
+      group: column2.group ? { key: column2.group.key, header: column2.group.header } : undefined,
+      value: column2.exportValue ?? (column2.value ? (row) => metricCell(column2.value(row), unit) : () => ""),
+      ...numeric5 ? { numFmt: NUM_FMT[unit] } : {},
+      ...hasTotal ? { total: metricCell(toTotal(serverTotals[column2.key]), unit) } : {}
+    };
+  });
+}
+function countLeftFrozen(columns3) {
+  let count = 0;
+  while (count < columns3.length && columns3[count].freeze === "left")
+    count += 1;
+  return count;
 }
 
 // src/export-worker/registry.ts
@@ -182356,21 +182851,64 @@ function breakdownContent(view3, rows) {
     rows: fromRows(rows)
   };
 }
-function rankingContent(rows, metric) {
+function rankingContent(rows, metric2) {
   const columns3 = [
     { header: "排名", width: 8, value: (row) => numberOrEmpty(row, "rank") },
     { header: "名称", width: 20, value: (row) => text5(row, "name") },
     { header: "所属市场", width: 16, value: (row) => text5(row, "marketName") },
-    { header: headerWithUnit(metric.label, metric.unit), value: (row) => metricCell(value(row, "value"), metric.unit) }
+    { header: headerWithUnit(metric2.label, metric2.unit), value: (row) => metricCell(value(row, "value"), metric2.unit) }
   ];
   return {
-    sheetName: metric.label,
+    sheetName: metric2.label,
     columns: columns3,
     rows: fromRows(rows)
   };
 }
+async function operatingMasterContent(raw) {
+  if (!isValidMonth(raw.month))
+    throw new Error("INVALID_PARAMS: 导出缺少统计月份");
+  const scope = parseOperatingMasterExportScope({ scope: raw.scope, scopeId: raw.scopeId });
+  const result = await getOperatingMaster({ scope, month: raw.month });
+  const columns3 = toWorkerExportColumns(OPERATING_MASTER_COLUMNS, result.totals).map((column2, index3) => {
+    const spec = OPERATING_MASTER_COLUMNS[index3];
+    const group = operatingMasterExportGroup(spec);
+    return {
+      ...column2,
+      group: group ? { key: group.key, header: group.header } : undefined,
+      ...spec.pending ? { total: "—" } : {}
+    };
+  });
+  return {
+    sheetName: "经营数据主表",
+    columns: columns3,
+    rows: fromRows(result.rows),
+    frozenColumns: countLeftFrozen(OPERATING_MASTER_COLUMNS),
+    totalsLabel: operatingMasterTotalsLabel(result.multiMarket),
+    isEmphasisRow: (row) => isOperatingMasterSubtotal(row),
+    meta: {
+      period: `${result.range.start} ~ ${result.range.end}`,
+      scope: operatingMasterScopeMeta(scope, result.scopeName),
+      extra: [
+        { label: "年度累计区间", value: `${result.ytd.start} ~ ${result.ytd.end}（不含 WorkFine 历史单）` },
+        { label: "说明", value: "显示「—」的列口径待定或目标未设，本期不取数" }
+      ]
+    }
+  };
+}
+async function queryReport(view3, raw) {
+  switch (view3) {
+    case "report-operating-master":
+      return operatingMasterContent(raw);
+    default: {
+      const unhandled = view3;
+      throw new Error(`INVALID_PARAMS: 未知的报表导出视图 ${String(unhandled)}`);
+    }
+  }
+}
 async function queryDataCenter(payload) {
   const raw = payload.params;
+  if (isDataCenterReportExportView(payload.view))
+    return queryReport(payload.view, raw);
   const base = parseBoardParams(raw);
   const view3 = payload.view;
   if (view3.startsWith("sales-")) {
@@ -182392,17 +182930,19 @@ async function queryDataCenter(payload) {
     const rows = view3 === "product-market" ? board2.byMarket : board2.byStore;
     return breakdownContent(view3, rows);
   }
+  if (!view3.startsWith("efficiency-"))
+    throw new Error(`INVALID_PARAMS: 未知的数据中心导出视图 ${view3}`);
   const board = await getEfficiencyBoard(base);
   if (view3 === "efficiency-market")
     return breakdownContent(view3, board.byMarket);
   if (view3 === "efficiency-staff")
     return breakdownContent(view3, board.byStaff);
   const config = getDataCenterRankingConfig(view3);
-  const metric = config.metrics.find((item) => item.key === payload.metric);
-  if (!metric)
+  const metric2 = config.metrics.find((item) => item.key === payload.metric);
+  if (!metric2)
     throw new Error("INVALID_PARAMS: 排名指标无效");
   const source = view3 === "efficiency-store-ranking" ? board.storeRankings : board.staffRankings;
-  return rankingContent(source[metric.key] ?? [], metric);
+  return rankingContent(source[metric2.key] ?? [], metric2);
 }
 function queryProducts(payload) {
   return {
@@ -182582,54 +183122,6 @@ function exportCloudPath(jobId, fileName) {
 
 // src/export-worker/xlsx-writer.ts
 var import_exceljs = __toESM(require_excel(), 1);
-
-// src/lib/data-center/matrix.ts
-function buildMatrixHeaderLayout(columns3) {
-  const groupStartKeys = new Set;
-  const grouped = columns3.some((column2) => column2.group);
-  if (!grouped) {
-    return {
-      depth: 1,
-      rows: [columns3.map((column2, index3) => ({
-        key: column2.key,
-        columnKey: column2.key,
-        colSpan: 1,
-        rowSpan: 1,
-        firstLeafIndex: index3
-      }))],
-      groupStartKeys
-    };
-  }
-  const top = [];
-  const bottom = [];
-  const closedGroups = new Set;
-  let current = null;
-  columns3.forEach((column2, index3) => {
-    const groupKey2 = column2.group?.key;
-    if (current && current.groupKey !== groupKey2) {
-      closedGroups.add(current.groupKey);
-      current = null;
-    }
-    if (!groupKey2) {
-      top.push({ key: column2.key, columnKey: column2.key, colSpan: 1, rowSpan: 2, firstLeafIndex: index3 });
-      return;
-    }
-    if (current) {
-      current.colSpan += 1;
-    } else {
-      if (closedGroups.has(groupKey2)) {
-        throw new Error(`INVALID_STATE: 矩阵表分组「${groupKey2}」的列不相邻`);
-      }
-      current = { key: `group:${groupKey2}`, groupKey: groupKey2, colSpan: 1, rowSpan: 1, firstLeafIndex: index3 };
-      top.push(current);
-      groupStartKeys.add(column2.key);
-    }
-    bottom.push({ key: column2.key, columnKey: column2.key, colSpan: 1, rowSpan: 1, firstLeafIndex: index3 });
-  });
-  return { depth: 2, rows: [top, bottom], groupStartKeys };
-}
-
-// src/export-worker/xlsx-writer.ts
 var EXPORT_META_SHEET_NAME = "导出说明";
 var XLSX_ROWS_PER_SHEET = 1e6;
 function safeSheetName(input, sequence3) {
@@ -182667,9 +183159,14 @@ async function writeStreamXlsx(options) {
     layout.rows.forEach((cells, rowIndex) => {
       for (const cell of cells) {
         const target = headerRows[rowIndex].getCell(cell.firstLeafIndex + 1);
-        target.value = cell.groupKey ? options.columns[cell.firstLeafIndex].group.header : options.columns[cell.firstLeafIndex].header;
+        const text6 = cell.groupKey ? options.columns[cell.firstLeafIndex].group.header : options.columns[cell.firstLeafIndex].header;
+        target.value = text6;
+        const wrapText = text6.includes(`
+`) || undefined;
         if (layout.depth === 2) {
-          target.alignment = { vertical: "middle", horizontal: cell.groupKey ? "center" : undefined };
+          target.alignment = { vertical: "middle", horizontal: cell.groupKey ? "center" : undefined, wrapText };
+        } else if (wrapText) {
+          target.alignment = { wrapText };
         }
         if (cell.groupKey || groupStarts.has(cell.firstLeafIndex)) {
           target.border = { left: { style: "thin" } };
@@ -182682,6 +183179,12 @@ async function writeStreamXlsx(options) {
         worksheet.mergeCells(1, column2, cell.rowSpan, column2 + cell.colSpan - 1);
       }
     }
+    layout.rows.forEach((cells, rowIndex) => {
+      const lines = Math.max(1, ...cells.map((cell) => (cell.groupKey ? options.columns[cell.firstLeafIndex].group.header : options.columns[cell.firstLeafIndex].header).split(`
+`).filter(Boolean).length));
+      if (lines > 1)
+        headerRows[rowIndex].height = lines * 15 + 4;
+    });
     for (const header of headerRows) {
       header.font = { bold: true };
       header.commit();
@@ -182854,7 +183357,7 @@ function asClaimedId(rows) {
   return Number.isSafeInteger(id) && id > 0 ? id : null;
 }
 async function recoverExpiredLeases() {
-  await db2.execute(import_drizzle_orm67.sql`
+  await db2.execute(import_drizzle_orm68.sql`
     UPDATE admin_export_jobs
        SET status = CASE
              WHEN attempt_count >= ${MAX_ATTEMPTS} THEN 'failed'
@@ -182878,12 +183381,12 @@ async function recoverExpiredLeases() {
   `);
 }
 async function claimNextJob() {
-  const claimed = await db2.execute(import_drizzle_orm67.sql`
+  const claimed = await db2.execute(import_drizzle_orm68.sql`
     UPDATE admin_export_jobs
        SET status = 'running',
            attempt_count = attempt_count + 1,
            started_at = COALESCE(started_at, NOW()),
-           lease_expires_at = NOW() + ${import_drizzle_orm67.sql.raw(`interval '${LEASE_MINUTES} minutes'`)},
+           lease_expires_at = NOW() + ${import_drizzle_orm68.sql.raw(`interval '${LEASE_MINUTES} minutes'`)},
            error_code = NULL,
            error_message = NULL,
            updated_at = NOW()
@@ -182901,13 +183404,13 @@ async function claimNextJob() {
   const id = asClaimedId(claimed);
   if (!id)
     return null;
-  const [job] = await db2.select().from(adminExportJobs).where(import_drizzle_orm67.eq(adminExportJobs.id, id)).limit(1);
+  const [job] = await db2.select().from(adminExportJobs).where(import_drizzle_orm68.eq(adminExportJobs.id, id)).limit(1);
   return job ?? null;
 }
 async function renewLease(id) {
-  await db2.execute(import_drizzle_orm67.sql`
+  await db2.execute(import_drizzle_orm68.sql`
     UPDATE admin_export_jobs
-       SET lease_expires_at = NOW() + ${import_drizzle_orm67.sql.raw(`interval '${LEASE_MINUTES} minutes'`)},
+       SET lease_expires_at = NOW() + ${import_drizzle_orm68.sql.raw(`interval '${LEASE_MINUTES} minutes'`)},
            updated_at = NOW()
      WHERE id = ${id}
        AND status = 'running'
@@ -182930,7 +183433,7 @@ async function failJob(job, err) {
     completedAt: shouldRetry ? null : new Date,
     errorCode: failure.code,
     errorMessage: shouldRetry ? `${failure.message}（第 ${job.attemptCount} 次失败，正在重试）` : failure.message
-  }).where(import_drizzle_orm67.and(import_drizzle_orm67.eq(adminExportJobs.id, job.id), import_drizzle_orm67.eq(adminExportJobs.status, "running")));
+  }).where(import_drizzle_orm68.and(import_drizzle_orm68.eq(adminExportJobs.id, job.id), import_drizzle_orm68.eq(adminExportJobs.status, "running")));
   if (!shouldRetry) {
     const session4 = parseExportSession(job.scopeSnapshot);
     await logOperation(session4, "export_job.failed", "admin_export_jobs", String(job.id), {
@@ -182941,12 +183444,12 @@ async function failJob(job, err) {
   }
 }
 async function expireFinishedFiles() {
-  const expired = await db2.select({ id: adminExportJobs.id, fileCloudPath: adminExportJobs.fileCloudPath }).from(adminExportJobs).where(import_drizzle_orm67.and(import_drizzle_orm67.inArray(adminExportJobs.status, ["ready", "expired"]), import_drizzle_orm67.isNotNull(adminExportJobs.fileCloudPath), import_drizzle_orm67.lt(adminExportJobs.expiresAt, new Date))).limit(100);
+  const expired = await db2.select({ id: adminExportJobs.id, fileCloudPath: adminExportJobs.fileCloudPath }).from(adminExportJobs).where(import_drizzle_orm68.and(import_drizzle_orm68.inArray(adminExportJobs.status, ["ready", "expired"]), import_drizzle_orm68.isNotNull(adminExportJobs.fileCloudPath), import_drizzle_orm68.lt(adminExportJobs.expiresAt, new Date))).limit(100);
   for (const job of expired) {
     try {
       if (job.fileCloudPath)
         await deleteByCloudPaths([job.fileCloudPath]);
-      await db2.update(adminExportJobs).set({ status: "expired", fileCloudPath: null, updatedAt: new Date }).where(import_drizzle_orm67.and(import_drizzle_orm67.eq(adminExportJobs.id, job.id), import_drizzle_orm67.inArray(adminExportJobs.status, ["ready", "expired"])));
+      await db2.update(adminExportJobs).set({ status: "expired", fileCloudPath: null, updatedAt: new Date }).where(import_drizzle_orm68.and(import_drizzle_orm68.eq(adminExportJobs.id, job.id), import_drizzle_orm68.inArray(adminExportJobs.status, ["ready", "expired"])));
     } catch (err) {
       console.error(`[export-worker] cleanup failed for job ${job.id}:`, err);
     }
@@ -183000,7 +183503,7 @@ async function processJob(job) {
           if (rowCount - lastProgress < 1000)
             return;
           lastProgress = rowCount;
-          await db2.update(adminExportJobs).set({ progressRows: rowCount }).where(import_drizzle_orm67.and(import_drizzle_orm67.eq(adminExportJobs.id, job.id), import_drizzle_orm67.eq(adminExportJobs.status, "running")));
+          await db2.update(adminExportJobs).set({ progressRows: rowCount }).where(import_drizzle_orm68.and(import_drizzle_orm68.eq(adminExportJobs.id, job.id), import_drizzle_orm68.eq(adminExportJobs.status, "running")));
         }
       });
       return { content, fileName, filePath, writeResult };
@@ -183016,7 +183519,7 @@ async function processJob(job) {
         progressRows: 0,
         errorCode: null,
         errorMessage: null
-      }).where(import_drizzle_orm67.and(import_drizzle_orm67.eq(adminExportJobs.id, job.id), import_drizzle_orm67.eq(adminExportJobs.status, "running")));
+      }).where(import_drizzle_orm68.and(import_drizzle_orm68.eq(adminExportJobs.id, job.id), import_drizzle_orm68.eq(adminExportJobs.status, "running")));
       await logOperation(session4, "export_job.empty", "admin_export_jobs", String(job.id), {
         exportType
       }).catch((logError) => console.error("[export-worker] empty audit log error:", logError));
@@ -183041,7 +183544,7 @@ async function processJob(job) {
       fileName: output.fileName,
       errorCode: null,
       errorMessage: null
-    }).where(import_drizzle_orm67.and(import_drizzle_orm67.eq(adminExportJobs.id, job.id), import_drizzle_orm67.eq(adminExportJobs.status, "running")));
+    }).where(import_drizzle_orm68.and(import_drizzle_orm68.eq(adminExportJobs.id, job.id), import_drizzle_orm68.eq(adminExportJobs.status, "running")));
     await logOperation(session4, "export_job.ready", "admin_export_jobs", String(job.id), {
       exportType,
       rowCount: output.writeResult.rowCount,

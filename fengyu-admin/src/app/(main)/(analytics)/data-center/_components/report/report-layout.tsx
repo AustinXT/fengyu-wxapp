@@ -23,6 +23,7 @@ export function ReportLayout({
   context,
   notice = [],
   infoItems = [],
+  periodLabel = "期间",
   children,
 }: {
   title: string
@@ -31,13 +32,15 @@ export function ReportLayout({
   context: ReportPageContext
   notice?: readonly DataStartRangeResult[]
   infoItems?: readonly ReportInfoItem[]
+  /** 信息条里期间一项的标签（主表按模板写「统计月份」） */
+  periodLabel?: string
   children: ReactNode
 }) {
   const { period, scope } = context
   const baseItems: ReportInfoItem[] = scope
     ? [
         { label: "范围", value: `${scopeLabel(scopeOptions, scope)}（${scopeStores(scopeOptions, scope).length} 家门店）` },
-        ...(period ? [{ label: "期间", value: `${period.label} ${period.current.start} ~ ${period.current.end}` }] : []),
+        ...(period ? [{ label: periodLabel, value: `${period.label} ${period.current.start} ~ ${period.current.end}` }] : []),
       ]
     : []
 
