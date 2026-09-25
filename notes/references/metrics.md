@@ -275,7 +275,7 @@
 | 沉睡人数（dormantWarn） | 同上 | 同上 | `customer_status='沉睡'` ∩ `customer_type='会员客'`<br>_2026-04-25 决策 D-6=B：schema 枚举已重命名 `'预警沉睡'`→`'沉睡'`（migration 0013），详见 ticket [`customer-status-rename-warn`](../tickets/2026-04-25-customer-status-rename-warn.md)_ |
 | 冰冻人数（dormantFrozen） | 同上 | 同上 | `customer_status='冰冻'` |
 | 休眠人数（dormantDeep） | 同上 | 同上 | `customer_status='休眠'` |
-| 一次客活（activeOnce） | `COUNT(*)` | `client_wechat_users` | `customer_status IN ('保有会员-稳定','保有会员-有效')` ∩ **`became_member_at IS NOT NULL` ∩ `became_member_at::date <= endDate`**（#414）∩ 区间内**到店天数** = 1 ∩ scope |
+| 一次客活（activeOnce） | `COUNT(*)` | `client_wechat_users` | `customer_status IN ('保有会员-稳定','保有会员-有效')` ∩ **`became_member_at IS NOT NULL` ∩ `became_member_at::date <= endDate`（⚠ 仅 admin 带，#414；staff `mgmt-traffic.js` 不带，见下方实现位置表的分叉说明）** ∩ 区间内**到店天数** = 1 ∩ scope |
 | 二次客活（activeTwice） | 同上 | 同上 | 同上但区间内**到店天数** ≥ 2 |
 | 1次达成率（visitOnceRate） | `一次客活 ÷ 会员注册数` | 派生（明细表专有，KPI 卡无此格） | 分母 = §1「会员注册」同一列（截面，`became_member_at::date <= endDate`），**不是**「保有会员」——见下方 D-visit-rate-denom |
 | 2次达成率（visitTwiceRate） | `二次客活 ÷ 会员注册数` | 同上 | 同上 |
@@ -316,6 +316,15 @@ WHERE c.customer_status IN ('保有会员-稳定','保有会员-有效')
 | admin 数据中心 KPI + 市场/门店明细 | `fengyu-admin/src/lib/data-center/visit-days.ts` `visitDaysSql({ axis: 'service_date' })`（日期轴为白名单参数，客活只用这一条轴） |
 | staff 管理层客量页 | `fengyu-staff/cloudfunctions/staffApi/routes/mgmt-traffic.js` `queryActiveOnce` / `queryActiveTwice`（独立副本） |
 | 顾客列表「月度客活」筛选 | cron `refresh-monthly-activity.ts`（见下节 `monthly_activity`） |
+| 手动补数脚本（已退役，仅追史用） | `db/scripts/calc-monthly-activity.js`（**第 4 份副本**，本表此前遗漏） |
+
+> ⚠ **只有 admin 数据中心那一份带 #414 的会员守卫**（它是达成率分子）。staff `mgmt-traffic.js` 与
+> cron / 补数脚本都**不带**，因为它们不产出比率、加了反而改自己的口径。
+> 代价：**同名指标「一次/二次客活」在 admin 与 staff 之间对历史区间会分叉**——
+> staff 选「上月」实测 一次 511 / 二次 894，若补同一条守卫则变成 486 / 847（合计 −72 人，−5.1%）。
+> 这是 #414 主动接受并登记的分叉，不是漏改；要不要合并需另行拍板。
+> `consistency.customer.test.ts` 已对 staff 两个函数钉了**整函数逐字快照**（不含守卫），
+> 谁顺手加上去都会红，不会静默漂移。
 
 > ⚠ **与顾客频率表（#370）的「到店」不是同一个口径**：客活只认服务日；频率表的到店日 = 服务日 ∪ **消费（支付）日**，
 > 同一个 `visitDaysSql` 换 `service_or_payment` 轴。2026-08 全国：客活口径（只认服务单）有到店 3,023 人 / 6,199 人次，
@@ -347,8 +356,39 @@ WHERE c.customer_status IN ('保有会员-稳定','保有会员-有效')
 
 **真正要守的不变量**：**分子人群谓词 ⊇ 分母人群谓词**（同一归组列 `c.bound_store_id` + 同一 scope 生产者
 + 逐字相同的会员守卫）⇒ `visit_once`/`visit_twice` ⊆ `registered` ⇒ 达成率结构性 ≤ 100%。
-分子额外多一层 `serviceScope`（`so.store_id`）只让分子更小，不破坏包含关系，故本轮**不动**它
-（归店维度的「集团视角门店行 vs 切到该店」差异另行登记）。
+分子额外多一层 `serviceScope`（`so.store_id`）只让分子更小，不破坏包含关系，故本轮**不动**它。
+
+> **不变量的隐含前提**：分子侧 `JOIN client_wechat_users c ON c.user_id = vd.client_user_id` 必须保持
+> **每 `client_user_id` 至多一行**（`user_id` 是主键）。分子用 `COUNT(*) FILTER` 而分母用 `COUNT(*)`，
+> 一旦分子侧新增任何非唯一键 JOIN（例如为拿 `store_name` 再 JOIN 一次 `stores`），
+> 分子会按扇出倍数放大而分母不会 ⇒ **直接 >100%**。这是唯一能从内部把不变量打穿的改动形态。
+
+### #414 **没有**解决的三件事（都已实测确认，勿当回归）
+
+**① `customer_status` 仍是"今日"截面 —— 时态只修了一半。**
+守卫修好了 `became_member_at`，但分子仍用 `c.customer_status IN ('保有会员-稳定','保有会员-有效')` 判"是不是保有会员"，
+而该列由 cron 每日重算、**不随所选区间回溯**。后果：**同一历史区间的「回店1次/2次/达成率」非单调、会来回跳**，
+与上月导出的 Excel 对不上。构造：顾客 W 于 05-10 到店 1 天、6~8 月无到店 —— 05-31 查 5 月「计入」；
+08-20 查 5 月（W 已被 cron 标成沉睡）「不计入」；W 于 09-20 再到店后，09-21 查 5 月又「计入」。
+方向上分子偏小（保守），**不破 ≤100%**，所以「0 家 >100%」这条验收测不到它。
+历史重建 `customer_status` 代价大（同 D-react-source 的既有取舍），本轮不做。
+⚠ 因此前端 hint 写的是「到店 N 天、**且截至区间终点已入会**的保有会员」——
+「截至区间终点」只修饰"已入会"，**不修饰"保有会员"**，措辞不能简化成「截至区间终点的保有会员」。
+
+**② 切 scope 会让人在 1次/2次 档之间搬家。**
+分子的 `visit_days` 受 `serviceScope`（`so.store_id`）约束而分母 `reg` 不受。
+顾客 X 绑定 A，本月在 A、B 各到店 1 天：集团/市场视图 `days = 2` → 计入 A 行「回店2次」；
+切到单门店 A 时 `days = 1` → 计入 A 行「回店1次」。而分母两种 scope 下**完全相同**
+⇒ **同一门店行的达成率在集团视图恒 ≥ 单店视图**，表头无提示。
+生产实测跨店服务 27 人，影响 3 家门店各 1 人。另行登记，本轮不动。
+
+**③ `became_member_at::date` 依赖会话时区（#291 同族）。**
+`became_member_at` 是 `timestamptz`，`timestamptz::date` 走会话 `TimeZone`；
+同仓正解范式是 `visit-days.ts` 对 `paid_at` 写的 `(... AT TIME ZONE 'Asia/Shanghai')::date`。
+本轮两处新守卫**照既有 14 处的写法**（不带 `AT TIME ZONE`），因为改成异体会破坏与 `reg` 的逐字同源。
+分层结论：**包含关系不受影响**（同列同表达式同 `end`，分子分母一起漂，⊆ 恒成立，不会 >100%）；
+但**绝对数会错**（`so.service_date` 是裸 `date` 不受影响，只有会员侧偏移）。
+当前不炸靠 server 默认 `Asia/Shanghai`（migration 0028 锁定），是**环境依赖的正确**，归 #291 一并收口。
 
 > **验收看不变量不看绝对值**：上面的百分比每日漂移。判对错看
 > ①「任取跨度 > 90 天的区间，0 家门店 > 100%」②「`endDate = 今天` 时回店1次/2次人数与改前逐店相等」

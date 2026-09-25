@@ -34,6 +34,10 @@ import { determineMemberLevel } from '@/cron/lib/member-level'
 
 const ADMIN_CUSTOMER = path.resolve(__dirname, '../customer.ts')
 const ADMIN_COLUMNS = path.resolve(__dirname, '../../../lib/data-center/columns.ts')
+const ADMIN_BOARD = path.resolve(
+  __dirname,
+  '../../../app/(main)/(analytics)/data-center/_components/customer/customer-board.tsx',
+)
 
 /**
  * #414 会员守卫：达成率的分子必须带与分母 `reg` 逐字相同的谓词。
@@ -43,6 +47,21 @@ const ADMIN_COLUMNS = path.resolve(__dirname, '../../../lib/data-center/columns.
  */
 const memberGuard = (endExpr: string): string =>
   'c.became_member_at IS NOT NULL AND c.became_member_at::date <= ${' + endExpr + '}'
+
+/**
+ * CTE 段切片：定位不到 / 顺序反了 / 起点多命中都 **throw**，绝不静默退化成"匹配全文"或返回空串。
+ *
+ * ⚠ 返回空串是危险默认：配 `toBe(expected)` 还算 fail-closed，一旦日后有人改成 `toContain`，
+ * `''.includes(x)` 里 `toContain('')` 就恒真了（pr-ready boundary P3-8）。
+ */
+function sliceBlock(text: string, from: string, to: string): string {
+  const a = text.indexOf(from)
+  const b = text.indexOf(to, a + from.length)
+  if (a < 0) throw new Error(`sliceBlock: 找不到起点 ${from}`)
+  if (b <= a) throw new Error(`sliceBlock: 找不到终点 ${to}（起点 ${from} 之后）`)
+  if (text.indexOf(from, a + from.length) >= 0) throw new Error(`sliceBlock: 起点 ${from} 命中多处`)
+  return text.slice(a, b)
+}
 const STAFF_MGMT_TRAFFIC = path.resolve(
   __dirname,
   '../../../../../fengyu-staff/cloudfunctions/staffApi/routes/mgmt-traffic.js',
@@ -1481,12 +1500,9 @@ describe('客量板块两端口径一致性守护', () => {
       `WHERE cstatus IN ('保有会员-稳定', '保有会员-有效') GROUP BY store_id ), `
 
     const cronActivity = (src: string): string => normalize(stripSqlComments(src))
-    const breakdownActive = (src: string): string => {
-      const bd = sqlInFunction(src, ADMIN_CUSTOMER, 'queryRegActiveBreakdown')
-      const from = bd.indexOf('visit_days AS (')
-      const to = bd.indexOf('status_agg AS (')
-      return from > 0 && to > from ? bd.slice(from, to) : ''
-    }
+    // 切不出即 throw（原先返回 ''，配 toBe 尚且 fail-closed，但改成 toContain 就会恒真）
+    const breakdownActive = (src: string): string =>
+      sliceBlock(sqlInFunction(src, ADMIN_CUSTOMER, 'queryRegActiveBreakdown'), 'visit_days AS (', 'status_agg AS (')
 
     /** customer.ts 里 visitDaysSql 标识符的全部出现：来源 import + 声明 + 引用 */
     const visitDaysSqlUsage = (src: string) => {
@@ -1665,16 +1681,6 @@ describe('客量板块两端口径一致性守护', () => {
    * 切片一律 fail-closed（切不出即 throw），不退化成全文匹配。
    */
   describe('达成率分母 = registered + 分子人群谓词 ⊇ 分母人群谓词（#414）', () => {
-    /** CTE 段切片：定位不到 / 顺序反了都 throw，绝不静默退化成全文 */
-    const sliceBlock = (text: string, from: string, to: string): string => {
-      const a = text.indexOf(from)
-      const b = text.indexOf(to, a + from.length)
-      if (a < 0) throw new Error(`sliceBlock: 找不到起点 ${from}`)
-      if (b <= a) throw new Error(`sliceBlock: 找不到终点 ${to}（起点 ${from} 之后）`)
-      if (text.indexOf(from, a + from.length) >= 0) throw new Error(`sliceBlock: 起点 ${from} 命中多处`)
-      return text.slice(a, b)
-    }
-
     const breakdownSql = (src: string): string => sqlInFunction(src, ADMIN_CUSTOMER, 'queryRegActiveBreakdown')
     const regBlock = (src: string): string => sliceBlock(breakdownSql(src), 'reg AS (', 'ret AS (')
     const visitCountBlock = (src: string): string =>
@@ -1702,9 +1708,27 @@ describe('客量板块两端口径一致性守护', () => {
     it('分子（KPI queryActive）带的会员守卫与分母同源（仅区间终点写法 range.end vs end 不同）', () => {
       const denom = regBlock(adminSrc).match(GUARD_RE)
       expect(denom).not.toBeNull()
-      const kpi = fnSource(adminSrc, ADMIN_CUSTOMER, 'queryActive').match(GUARD_RE)
+      // ⚠ 必须用 sqlInFunction 而不是 fnSource：fnSource 走 stripComments，它**刻意不剥 SQL `--`**，
+      // 于是「把守卫整行注释掉」也能让 GUARD_RE 在注释文本上命中 → 绿（pr-ready boundary P2-1）。
+      // sqlInFunction 复用 stripSqlComments，注释掉即匹配不到。
+      const kpi = sqlInFunction(adminSrc, ADMIN_CUSTOMER, 'queryActive').match(GUARD_RE)
       expect(kpi).not.toBeNull()
       expect(kpi![0].replace('${range.end}', '${end}')).toBe(denom![0])
+    })
+
+    /**
+     * `${end}` / `${start}` 是明细侧三处守卫（reg / ret / visit_count）的**唯一**日期来源，
+     * 而整段快照只锁 `${end}` 这个**字面**、不锁它是谁。
+     * 把 `const end = range.end` 改成 `const end = todayStr()`，本组全部断言 + 第 8 组快照**照样全绿**，
+     * 而明细不再随所选区间回溯、与直接用 `range.end` 的 KPI 当场分叉（pr-ready boundary P1-1）。
+     * 同函数的 serviceScope / customerScope 生产者在第 8 组已被锁住，这两个漏了。
+     */
+    it('明细的区间端点直取 range，不得换成别的日期源', () => {
+      const fn = fnSource(adminSrc, ADMIN_CUSTOMER, 'queryRegActiveBreakdown')
+      expect(fn).toContain('const start = range.start')
+      expect(fn).toContain('const end = range.end')
+      expect(fn.match(/const start = /g)).toHaveLength(1)
+      expect(fn.match(/const end = /g)).toHaveLength(1)
     })
 
     /**
@@ -1737,6 +1761,38 @@ describe('客量板块两端口径一致性守护', () => {
       const body = normalize(stripComments(cols))
       expect(body).toContain("{ key: 'visitOnceRate', label: '1次达成率(÷会员注册)', unit: 'percent' }")
       expect(body).toContain("{ key: 'visitTwiceRate', label: '2次达成率(÷会员注册)', unit: 'percent' }")
+    })
+
+    /**
+     * KPI 卡的 hint 同样是口径自述，删掉不会有任何测试红（pr-ready boundary P3-5）。
+     * ⚠ 措辞有讲究：「截至区间终点」只修饰「已入会」，**不**修饰「保有会员」——
+     * `customer_status` 仍是**今日**截面（#414 只修了时态的一半，见 metrics.md D-visit-rate-denom），
+     * 写成「截至区间终点的保有会员」就是新的文案-口径脱钩。
+     */
+    it('KPI 卡 hint 标出会员守卫，且不把「保有会员」也说成截至区间终点', () => {
+      const board = normalize(stripComments(fs.readFileSync(ADMIN_BOARD, 'utf-8')))
+      for (const k of ['visitOnce', 'visitTwice']) {
+        const cell = sliceBlock(board, `{ key: "${k}",`, '}')
+        expect(cell).toContain('截至区间终点已入会')
+      }
+      expect(board).not.toContain('截至区间终点的保有会员')
+    })
+
+    /**
+     * **已登记的跨端分叉**：staff `mgmt-traffic.js` 的同名指标「一次/二次客活」**不带**会员守卫。
+     * 理由：它不产出达成率，加上去等于改它自己的口径（实测 staff 选「上月」一次 511→486 / 二次 894→847，
+     * 合计 −72 人 −5.1%）。要不要合并须另行拍板，见 metrics.md「D-visit-rate-denom」实现位置表下的说明。
+     *
+     * 这里写成**显式正向断言**而不是靠"静默缺席"：缺席是看不出"有意"还是"漏改"的，
+     * 将来有人顺手给 staff 加上，第 8 组的整函数快照会红但失败原因指向"快照漂移"；
+     * 这一条会直接说清是跨端口径分叉被动了（pr-ready sibling/concurrency P1）。
+     */
+    it('已登记分叉：staff 两个客活函数不得带会员守卫（动了要先拍板）', () => {
+      for (const fn of ['queryActiveOnce', 'queryActiveTwice']) {
+        expect(sqlInFunction(staffSrc, STAFF_MGMT_TRAFFIC, fn)).not.toMatch(/became_member_at/)
+      }
+      // 同文件的 regMember 是带的 —— 证明上面不是"staff 整个文件都没有这个词"的恒真断言
+      expect(staffSrc).toMatch(/became_member_at/)
     })
 
     it('反向验证：删守卫 / 改分母 / 改表头 都会红', () => {
@@ -1783,9 +1839,37 @@ describe('客量板块两端口径一致性守护', () => {
       // 只回退了 once，twice 仍是 registered —— 证明变异落点精确，不是整段被改花
       expect(propValue(revertedFn, 'visitTwiceRate', 'dormant')).not.toContain('ra.retained')
 
-      // ⑤ 分母 CTE 被换成别的计数列（两侧一起改时派生式看不见，靠整段快照拦）
+      // ⑤ 分母计数列改写。⚠ 这条**语义中性**（`user_id` 是 PK，两种写法恒等），
+      // 它证明的是"整段快照逐字紧"，**不是**"口径被改坏了"。别把它当口径级红检数（pr-ready boundary P3-1）。
       const regSwap = mutate(adminSrc, 'COUNT(*) AS registered', 'COUNT(DISTINCT c.user_id) AS registered')
       expect(regBlock(regSwap)).not.toBe(regExpected)
+
+      // ⑦ KPI 侧的 comment-back 攻击（此前只对明细侧做了，两侧不对称 = 遗漏）
+      const kpiComment = mutate(
+        adminSrc,
+        '      AND c.became_member_at IS NOT NULL\n      AND c.became_member_at::date <= ${range.end}\n      AND ${daysClause}',
+        '      -- AND c.became_member_at IS NOT NULL AND c.became_member_at::date <= ${range.end}\n      AND ${daysClause}',
+      )
+      expect(sqlInFunction(kpiComment, ADMIN_CUSTOMER, 'queryActive').match(GUARD_RE)).toBeNull()
+
+      // ⑧ 明细的日期源被换掉（整段快照看不见，靠上面那条 `const end = range.end` 断言拦）
+      // ⚠ `const end = range.end` 在文件里有两处（queryRegActiveBreakdown / queryOpsBreakdown），
+      // 锚点必须带下一行才唯一 —— 否则 replace 打到另一个函数上就是假红。
+      const endSwap = mutate(
+        adminSrc,
+        "const end = range.end\n  const serviceScope = scopeFilterSql(session, scope, 'so.store_id')",
+        "const end = range.start\n  const serviceScope = scopeFilterSql(session, scope, 'so.store_id')",
+      )
+      const endSwapFn = fnSource(endSwap, ADMIN_CUSTOMER, 'queryRegActiveBreakdown')
+      expect(endSwapFn).not.toContain('const end = range.end')
+      // 段级快照与派生式**都看不见**这个改动（SQL 文本里仍是 `${end}`）→ 证明上一条断言不是冗余
+      expect(regBlock(endSwap)).toBe(regExpected)
+      expect(visitCountBlock(endSwap)).toContain(denom)
+
+      // ⑨ KPI 卡 hint 被抹掉
+      const board = fs.readFileSync(ADMIN_BOARD, 'utf-8')
+      const hintMut = mutate(board, '、且截至区间终点已入会的保有会员（同日多单算 1 天）" },\n  { key: "visitTwice"', '的保有会员（同日多单算 1 天）" },\n  { key: "visitTwice"')
+      expect(normalize(stripComments(hintMut))).not.toContain('到店 1 天、且截至区间终点已入会')
 
       // ⑥ 表头把分母标注抹掉
       const cols = fs.readFileSync(ADMIN_COLUMNS, 'utf-8')

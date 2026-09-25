@@ -116,6 +116,21 @@ const PROBES: Probe[] = [
     minLines: 2,
   },
   {
+    // #414 的承重口径有两半：分子的会员守卫 + 达成率的分母列。旧探针只盯到店天数，
+    // 只改这两半而不重建产物的话，页面已是新口径、导出的 Excel 仍是旧口径，且没有测试会红。
+    label: '客量板 · 客活分子会员守卫 became_member_at（#414，分子分母同源的承重半边）',
+    file: 'src/actions/data-center/customer.ts',
+    // 明细用 ${end}、KPI 用 ${range.end}；(start::date - 1) 形态的 anchor 不匹配
+    pattern: /^AND c\.became_member_at::date <= \$\{(range\.)?end\}$/,
+    minLines: 5,
+  },
+  {
+    label: '客量板 · 达成率分母 = registered（#414）',
+    file: 'src/actions/data-center/customer.ts',
+    pattern: /^visitOnceRate: ra \? safeDiv\(ra\.visitOnce, ra\.registered\) : null,$/,
+    minLines: 1,
+  },
+  {
     label: '客量板 · 到店日事件集 (顾客, service_date) 去重（#298，visitDaysSql）',
     file: 'src/lib/data-center/visit-days.ts',
     pattern: /^SELECT DISTINCT so\.client_user_id, \$\{col\} AS visit_date$/,
