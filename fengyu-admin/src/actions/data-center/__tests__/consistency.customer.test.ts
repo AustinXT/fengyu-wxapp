@@ -539,10 +539,11 @@ describe('客量板块两端口径一致性守护', () => {
       expect(adminBuckets(adminSrc)).toBe(ADMIN_BUCKETS)
     })
 
-    it('admin 会员经营人数 KPI = spend >= 门槛（整段）', () => {
-      expect(sqlInFunction(adminSrc, ADMIN_CUSTOMER, 'queryOperatedMembers')).toContain(
-        'SELECT COUNT(*) FILTER (WHERE spend >= ${threshold}) AS v FROM member_spend',
-      )
+    it('admin 会员经营人数 KPI = spend >= 门槛（外层投影整段，到模板结尾）', () => {
+      const t = sqlInFunction(adminSrc, ADMIN_CUSTOMER, 'queryOperatedMembers')
+      const at = t.lastIndexOf(') SELECT ')
+      expect(at).toBeGreaterThan(0)
+      expect(t.slice(at + 2)).toBe('SELECT COUNT(*) FILTER (WHERE spend >= ${threshold}) AS v FROM member_spend')
     })
 
     it('staff queryMemberOps 分桶投影整段快照（占位 th + 本地 SPEND_BUCKET_FLOORS）', () => {
@@ -556,14 +557,14 @@ describe('客量板块两端口径一致性守护', () => {
       expect(adminCode).toContain('queryOperatedMembers(session, scope, r, threshold)')
       expect(adminCode).toContain("queryOpsBreakdown(session, scope, cur, 'market', threshold)")
       expect(adminCode).toContain("queryOpsBreakdown(session, scope, cur, 'store', threshold)")
-      expect(fnCode(adminSrc, 'async function queryOpsBreakdown(')).toContain('const floors = SPEND_BUCKET_FLOORS')
+      expect(fnCode(adminSrc, 'async function queryOpsBreakdown(')).toMatch(/const floors = SPEND_BUCKET_FLOORS(?![\w$])/)
 
       const staffCode = normalize(stripComments(staffSrc))
       expect(staffCode).toContain("const { getMemberThreshold } = require('../utils/config')")
       const ops = fnCode(staffSrc, 'async function queryMemberOps(')
       expect(ops).toContain('const threshold = await getMemberThreshold()')
       expect(ops).toContain("const th = '$' + (sc.params.length + 1)")
-      expect(ops).toContain('const f = SPEND_BUCKET_FLOORS')
+      expect(ops).toMatch(/const f = SPEND_BUCKET_FLOORS(?![\w$])/)
       expect(ops).toContain('[...sc.params, threshold],')
     })
 

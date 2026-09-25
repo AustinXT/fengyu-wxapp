@@ -384,13 +384,18 @@ WITH member_spend AS (
 > `consistency.customer.test.ts` 的块级逐字快照守护，任一端漂移立即失败。
 
 **档位来源（#292，2026-09-25）**：最低档下界 = 会员门槛 `system_configs.new_member_threshold`
-（admin `getMemberThreshold()` / staffApi `utils/config.getMemberThreshold()`，与品项板同源；读取失败兜底 1980），
+（admin `getMemberThreshold()` / staffApi `utils/config.getMemberThreshold()`，与品项板同源），
 下表的 `1990` 即当前配置值；其余四个下界固定为 1w / 3w / 6w / 10w（与会员等级星钻 / 粉钻 / 金钻 / 黑钻下界同数），
 admin 取 `fengyu-admin/src/lib/data-center/spend-buckets.ts` 的 `SPEND_BUCKET_FLOORS`，staffApi `mgmt-traffic.js` 有同值独立副本。
 「会员经营人数」= `spend >= 门槛`。
 
-> ⚠️ **门槛必须 < 10000**：设到 ≥ 1w 时 `[门槛, 1w)` 为空、`< 门槛` 与 `[1w, 3w)` 重叠，分桶之和不再等于总数
-> （会员等级「初钻」也同样判不到）。设置页不做上限校验（2026-09-25 拍板）。
+> ⚠️ **门槛必须 < 10000**：恰好 = 1w 时 `[门槛, 1w)` 为空（各档之和仍等于总数）；> 1w 时 `< 门槛` 与 `[1w, 3w)` 等档重叠，
+> 分桶之和大于总数；> 10w 时 `operated_total` 会小于 `bucket_vic`（会员等级「初钻」同样判不到）。设置页不做上限校验（2026-09-25 拍板）。
+> ⚠️ **兜底 1980（≠ 旧写死的 1990）**：配置缺失 / 非正数 / 非数字 / 读库异常时两端都回退 1980。admin 读库异常时打告警、不缓存兜底值；
+> staff 热实例遇到非法值会**保留上一次的合法缓存值**、冷实例才回退 1980 —— 两端可能短暂不一致（staff `utils/config.js` 既有行为）。
+> ⚠️ **生效时差**：admin 按 `unstable_cache` 缓存 300s（保存设置的那个实例立即失效，其它实例最长滞后 5 分钟）；staff 30s 核对 `updated_at`。
+> 导出进程（export-worker）没有 Next 缓存上下文，直接读库（#292 同时修复了品项板导出因此一直失败的问题）。
+> ⚠️ **同比 / 环比按当前门槛重算**：系统不存历史门槛，基期（上期 / 去年同期）也用当前配置值分档；调整门槛后历史区间数字会随之变化（品项板同理）。
 > ⚠️ **标签写死**：UI 与导出的分桶标签「<1990 / ≥1990」、经营人数 hint「≥ 1990」、staff 小程序档位名保持写死（同日拍板），
 > 调整门槛后标签不会跟着变，需要人工同步文案。
 > ⚠️ 与 `client_wechat_users.spending_tier`（终身档位，枚举字面量 `'1990-1W'`）不同：后者边界固定、不跟门槛。

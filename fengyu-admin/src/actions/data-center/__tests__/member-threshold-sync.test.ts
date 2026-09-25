@@ -94,7 +94,8 @@ describe('会员门槛：客量板与品项板同源（#292）', () => {
     thresholdState.value = 1990
   })
 
-  for (const th of [1990, 2990]) {
+  // 1980 = 真实 FALLBACK/DEFAULT、1990.5 = 小数：挡住「Math.max(门槛, 1990)」这类只在 ≥1990 时不显形的钳制（pr-ready P2）
+  for (const th of [1980, 1990, 1990.5, 2990]) {
     it(`门槛 = ${th} 时，两个板块的 SQL 参数都带上 ${th}`, async () => {
       thresholdState.value = th
 

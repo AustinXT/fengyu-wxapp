@@ -380,6 +380,24 @@ describe('mgmtTraffic.summary 会员被经营 6 桶 SQL 形态', () => {
     expect(call[0]).toContain(`FILTER (WHERE spend >= ${th} AND spend < 10000) AS bucket2_count`)
   })
 
+  test('#292 门槛占位号随 scope 参数个数对齐（market scope 下为 $2）', async () => {
+    for (const ctx of [makeMarketCtx({ period: 'month', scopeType: 'market', scopeId: 'mkt-A' })]) {
+      setupDefaultMocks()
+      globalThis.__mocks__.config.getMemberThreshold.mockResolvedValue(2990)
+      await summary(ctx)
+      const call = pg.query.mock.calls.find((c) => /WITH member_spend AS/.test(c[0]) && /bucket1_count/.test(c[0]))
+      expect(call).toBeDefined()
+      const params = call[1]
+      expect(params.length).toBeGreaterThanOrEqual(2) // scope 至少 1 个参数 + 门槛
+      expect(params[params.length - 1]).toBe(2990)
+      const th = `$${params.length}`
+      expect(call[0]).toContain(`FILTER (WHERE spend < ${th}) AS bucket1_count`)
+      // SQL 里出现的最大占位号恰好等于参数个数（无错位、无悬空）
+      const maxPh = Math.max(...[...call[0].matchAll(/\$(\d+)/g)].map((m) => Number(m[1])))
+      expect(maxPh).toBe(params.length)
+    }
+  })
+
   test('返回 6 桶 + avgTicket（防除零）', async () => {
     setupDefaultMocks()
     const ctx = makeHqCtx({ period: 'month', scopeType: 'all' })
