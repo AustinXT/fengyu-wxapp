@@ -229,7 +229,8 @@ export default async function Page({
                     </td>
                     <td className="px-3 py-2">{lineage.docType}</td>
                     <td className="px-3 py-2">{lineage.status}</td>
-                    <td className="px-3 py-2 text-right">{lineage.linkedQuantity}</td>
+                    {/* #344 库存转换 N:M：关联数量记的是分摊到该目标的来源（出库）数量，与入库单总数量不同口径 */}
+                    <td className="px-3 py-2 text-right">{lineage.linkedQuantity}{lineage.relationType === '库存转换' && <span className="ml-1 text-xs text-[#999999]">（按出库数量）</span>}</td>
                     <td className="px-3 py-2 text-right">{lineage.totalQuantity}</td>
                     <td className="px-3 py-2">{fmt(lineage.docDate?.slice(0, 10))}</td>
                   </tr>
