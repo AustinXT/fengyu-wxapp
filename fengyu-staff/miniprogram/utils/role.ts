@@ -109,9 +109,13 @@ export function canAccessInventory(): boolean {
  */
 export function canOperateStoreInventory(): boolean {
   const currentStoreId = getCurrentStoreId();
+  const globalData = app().globalData;
+  // #352：必须用只由 store_operate 绑定展开的门店集合（动作与 scope 同一绑定，与云端同源）；
+  // 旧版云端未下发时才回退三动作并集
+  const operateStoreIds = globalData.inventoryOperateStoreIds ?? globalData.inventoryStoreIds ?? [];
   return hasAction('inventory:store_operate')
     && !!currentStoreId
-    && (app().globalData.inventoryStoreIds || []).includes(currentStoreId);
+    && operateStoreIds.includes(currentStoreId);
 }
 
 export function requireInventoryStoreOperate(tipMsg = '当前账号无门店库存办理权限'): boolean {
