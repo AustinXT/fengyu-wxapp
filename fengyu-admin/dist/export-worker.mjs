@@ -181781,6 +181781,9 @@ function monthRange(month) {
   return { start: `${month}-01`, end: `${month}-${String(last).padStart(2, "0")}` };
 }
 
+// src/actions/data-center/operating-master.ts
+init_time_range();
+
 // src/lib/data-center/matrix.ts
 function buildMatrixHeaderLayout(columns3) {
   const groupStartKeys = new Set;
@@ -182077,6 +182080,28 @@ function isOperatingMasterSubtotal(row) {
 function operatingMasterTotalsLabel(multiMarket) {
   return multiMarket ? "总计" : "合计";
 }
+function parseOperatingMasterExportScope(raw) {
+  if (!raw.scope) {
+    if (raw.scopeId)
+      throw new Error("INVALID_PARAMS: 导出范围缺少类型");
+    return { type: "all" };
+  }
+  if (raw.scope === "authorized")
+    return { type: "authorized" };
+  if ((raw.scope === "market" || raw.scope === "store") && raw.scopeId)
+    return { type: raw.scope, id: raw.scopeId };
+  throw new Error("INVALID_PARAMS: 导出范围参数不完整或无效");
+}
+function operatingMasterScopeMeta(scope, name) {
+  if (scope.type === "market")
+    return `市场 · ${name}`;
+  if (scope.type === "store")
+    return `门店 · ${name}`;
+  return name;
+}
+function operatingMasterExportGroup(column2) {
+  return column2.group?.key === BLANK_GROUP.key ? BLANK_FROZEN_GROUP : column2.group;
+}
 
 // src/actions/data-center/operating-master.ts
 "use server";
@@ -182096,6 +182121,8 @@ function revenueByStoreSql(session4, scope, range) {
 var getOperatingMaster = withPermission(DATA_CENTER_DASHBOARD_ACTION, async (session4, params) => {
   if (!isValidMonth(params.month))
     throw new Error("INVALID_PARAMS: 月份格式应为 YYYY-MM");
+  if (params.month > shanghaiToday().slice(0, 7))
+    throw new Error("INVALID_PARAMS: 不能查询未来月份");
   await validateScope(session4, params.scope);
   const { scope, month } = params;
   const cur = monthRange(month);
@@ -182833,11 +182860,17 @@ function rankingContent(rows, metric2) {
 async function operatingMasterContent(raw) {
   if (!isValidMonth(raw.month))
     throw new Error("INVALID_PARAMS: 导出缺少统计月份");
-  const result = await getOperatingMaster({
-    scope: parseScope({ scope: raw.scope, scopeId: raw.scopeId }),
-    month: raw.month
+  const scope = parseOperatingMasterExportScope({ scope: raw.scope, scopeId: raw.scopeId });
+  const result = await getOperatingMaster({ scope, month: raw.month });
+  const columns3 = toWorkerExportColumns(OPERATING_MASTER_COLUMNS, result.totals).map((column2, index3) => {
+    const spec = OPERATING_MASTER_COLUMNS[index3];
+    const group = operatingMasterExportGroup(spec);
+    return {
+      ...column2,
+      group: group ? { key: group.key, header: group.header } : undefined,
+      ...spec.pending ? { total: "—" } : {}
+    };
   });
-  const columns3 = toWorkerExportColumns(OPERATING_MASTER_COLUMNS, result.totals).map((column2, index3) => OPERATING_MASTER_COLUMNS[index3].pending ? { ...column2, total: "—" } : column2);
   return {
     sheetName: "经营数据主表",
     columns: columns3,
@@ -182847,7 +182880,7 @@ async function operatingMasterContent(raw) {
     isEmphasisRow: (row) => isOperatingMasterSubtotal(row),
     meta: {
       period: `${result.range.start} ~ ${result.range.end}`,
-      scope: result.scopeName,
+      scope: operatingMasterScopeMeta(scope, result.scopeName),
       extra: [
         { label: "年度累计区间", value: `${result.ytd.start} ~ ${result.ytd.end}（不含 WorkFine 历史单）` },
         { label: "说明", value: "显示「—」的列口径待定或目标未设，本期不取数" }
