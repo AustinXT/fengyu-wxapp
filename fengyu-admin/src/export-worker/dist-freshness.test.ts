@@ -122,7 +122,10 @@ const PROBES: Probe[] = [
     file: 'src/actions/data-center/customer.ts',
     // 明细用 ${end}、KPI 用 ${range.end}；(start::date - 1) 形态的 anchor 不匹配
     pattern: /^AND c\.became_member_at::date <= \$\{(range\.)?end\}$/,
-    minLines: 5,
+    // ⚠ 必须是**当前实际条数**（customer.ts:95/236/483/561/575/591），不能图保险写小。
+    // 写 5 的话，把其中一处改成 `${start}` 仍能提取到 5 行 → 探针照绿、产物过期无人知
+    // （红检 R19 实测过这个 fail-open）。多一处同形写法会让它变 7 行，仍 >= 6，不误报。
+    minLines: 6,
   },
   {
     label: '客量板 · 达成率分母 = registered（#414）',
