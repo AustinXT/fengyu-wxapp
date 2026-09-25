@@ -2,7 +2,7 @@
 <view class="scope-picker">
   <view class="scope-trigger" bindtap="onOpen">
     <van-icon name="shop-o" size="32rpx" color="#C0322A" />
-    <text class="scope-trigger-text">{{ applied.scopeName || '全部市场' }}</text>
+    <text class="scope-trigger-text">{{ applied.scopeName || '全部市场' }}{{ applied.inactive ? '（已停用）' : '' }}</text>
     <van-icon name="arrow-down" size="24rpx" color="#C0322A" />
   </view>
 

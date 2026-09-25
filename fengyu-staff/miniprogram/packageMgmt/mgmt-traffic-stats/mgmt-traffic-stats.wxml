@@ -7,11 +7,13 @@
   />
   <view class="mgmt-scope-tag">
     <text>范围：</text>
-    <text class="mgmt-scope-tag-value">{{scopeName || '全部市场'}}</text>
+    <text class="mgmt-scope-tag-value">{{scopeName || '全部市场'}}{{inactiveText ? '（已停用）' : ''}}</text>
   </view>
 </view>
 
-<view class="tf-page">
+<!-- scope 落在已停用门店（#400）：整页空态，不取数 -->
+<mgmt-data-state wx:if="{{ inactiveText }}" state="empty" empty-text="{{ inactiveText }}" />
+<view wx:else class="tf-page">
 
   <!-- 三态壳：loading / error 时由组件接管 -->
   <mgmt-data-state state="{{ state }}" bind:retry="onRetry">

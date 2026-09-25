@@ -3,6 +3,7 @@
 // 持卡人数为截面快照，不随 period 变化（仅 onLoad 时拉一次）
 import { isManagementMode } from '../../utils/role'
 import { callStaffApi } from '../../utils/cloud'
+import { inactiveTextFromQuery } from '../../utils/mgmt-scope'
 import { formatAmount, formatCount, formatPercent } from '../../utils/number'
 
 type Period = 'month' | 'lastMonth' | 'year' | 'custom'
@@ -94,6 +95,7 @@ Page({
     scopeType: 'all' as ScopeType,
     scopeId: null as string | null,
     scopeName: '' as string,
+    inactiveText: '',
 
     cardLoading: false,
     cardError: false,
@@ -108,7 +110,7 @@ Page({
     display: null as CycleDisplay | null,
   },
 
-  onLoad(query: { scopeType?: string; scopeId?: string; scopeName?: string }) {
+  onLoad(query: { scopeType?: string; scopeId?: string; scopeName?: string; scopeInactive?: string }) {
     if (!isManagementMode()) {
       wx.reLaunch({ url: '/pages/workbench/workbench' })
       return
@@ -116,7 +118,7 @@ Page({
     const scopeType = (query?.scopeType as ScopeType) || 'all'
     const scopeId = query?.scopeId ? query.scopeId : null
     const scopeName = query?.scopeName ? decodeURIComponent(query.scopeName) : ''
-    this.setData({ scopeType, scopeId, scopeName })
+    this.setData({ scopeType, scopeId, scopeName, inactiveText: inactiveTextFromQuery(query, scopeName) })
     // 并行触发持卡人数 + 周期数据
     this.loadCardHolders()
     this.loadCycleStats()
@@ -151,6 +153,8 @@ Page({
   },
 
   async loadCardHolders() {
+    // scope 落在已停用门店（#400）：整页空态，不取数
+    if (this.data.inactiveText) return
     this.setData({ cardLoading: true, cardError: false })
     try {
       const resp = await callStaffApi<CardHoldersResp>('mgmtProduct.cardHolders', {
@@ -176,6 +180,8 @@ Page({
   },
 
   async loadCycleStats() {
+    // scope 落在已停用门店（#400）：整页空态，不取数
+    if (this.data.inactiveText) return
     this.setData({ loading: true, cycleError: false })
     try {
       const payload: Record<string, unknown> = {

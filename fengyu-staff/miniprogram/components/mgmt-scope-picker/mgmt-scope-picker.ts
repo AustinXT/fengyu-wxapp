@@ -8,6 +8,8 @@ interface Scope {
   scopeId: string | null
   scopeName: string
   marketId?: string
+  /** 门店组织节点已停用（#400）：触发器标「（已停用）」，页面出空态 */
+  inactive?: boolean
 }
 
 interface MarketMini {
@@ -25,6 +27,8 @@ interface ScopeOptionsResp {
   allowAll: boolean
   allowedMarketIds: string[]
   markets: Array<{ id: string; name: string; stores: StoreMini[] }>
+  /** 权限内门店组织节点已停用的门店（不进下拉） */
+  inactiveStores?: StoreMini[]
 }
 
 const DEFAULT_ALL: Scope = { scopeType: 'all', scopeId: null, scopeName: '全部市场' }
@@ -89,6 +93,25 @@ Component({
             }
           }
         }
+        // 默认门店落在已停用门店（#400）：取数会滤掉它的全部数据（满屏 0）。
+        // 有在营门店可选就纠正到第一家在营门店；没有就保留，标「已停用」由页面出空态。
+        // 只纠正停用门店 —— 只关店、节点仍在营的门店不在下拉里但照样有历史数据，不动它。
+        const inactiveIds = new Set((res.inactiveStores || []).map((store) => store.storeId))
+        if (nextApplied.scopeType === 'store' && nextApplied.scopeId && inactiveIds.has(nextApplied.scopeId)) {
+          const market = (res.markets || []).find((m) => (m.stores || []).length > 0)
+          const firstActive = market?.stores[0]
+          nextApplied = market && firstActive
+            ? {
+              scopeType: 'store',
+              marketId: market.id,
+              scopeId: firstActive.storeId,
+              scopeName: `${market.name} · ${firstActive.storeName}`,
+            }
+            : nextApplied.inactive ? nextApplied : { ...nextApplied, inactive: true }
+        } else if (nextApplied.inactive) {
+          // 页面初判停用（旧缓存 / 期间已启用），服务端说在营 → 撤掉标记
+          nextApplied = { ...nextApplied, inactive: false }
+        }
         const currentAllowsMarket = !!nextApplied.marketId
           && allowedMarketIds.includes(nextApplied.marketId)
 
@@ -107,6 +130,7 @@ Component({
             scopeType: nextApplied.scopeType,
             scopeId: nextApplied.scopeId,
             scopeName: nextApplied.scopeName,
+            inactive: nextApplied.inactive === true,
           })
         }
       } catch (err) {
@@ -203,10 +227,12 @@ Component({
         currentAllowsMarket: this._allowsMarket(scope.marketId),
         showPopup: false,
       })
+      // 下拉里只有在营门店，显式选择恒为在营
       this.triggerEvent('change', {
         scopeType: scope.scopeType,
         scopeId: scope.scopeId,
         scopeName: scope.scopeName,
+        inactive: false,
       })
     },
 

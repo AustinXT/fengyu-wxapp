@@ -2,6 +2,7 @@
 // 数据来源：staffApi mgmtDashboard.salesData
 // scope 由 hub（mgmt-dashboard）通过路由参数透传
 import { callStaffApi } from '../../utils/cloud'
+import { inactiveTextFromQuery } from '../../utils/mgmt-scope'
 import { formatAmount } from '../../utils/number'
 import { isManagementMode } from '../../utils/role'
 
@@ -45,6 +46,8 @@ interface IData {
   scopeType: ScopeType
   scopeId: string | null
   scopeName: string
+  /** scope 落在已停用门店时的空态文案（#400）；空串 = 照常取数 */
+  inactiveText: string
   loading: boolean
   state: 'loading' | 'error' | 'content'
 
@@ -74,6 +77,7 @@ Page<IData, WechatMiniprogram.IAnyObject>({
     scopeType: 'all',
     scopeId: null,
     scopeName: '',
+    inactiveText: '',
     loading: false,
     state: 'loading',
 
@@ -95,7 +99,7 @@ Page<IData, WechatMiniprogram.IAnyObject>({
     byProductKind: [],
   },
 
-  onLoad(query: { scopeType?: string; scopeId?: string; scopeName?: string }) {
+  onLoad(query: { scopeType?: string; scopeId?: string; scopeName?: string; scopeInactive?: string }) {
     if (!isManagementMode()) {
       wx.reLaunch({ url: '/pages/workbench/workbench' })
       return
@@ -103,7 +107,7 @@ Page<IData, WechatMiniprogram.IAnyObject>({
     const scopeType = (query?.scopeType as ScopeType) || 'all'
     const scopeId = query?.scopeId || null
     const scopeName = query?.scopeName ? decodeURIComponent(query.scopeName) : ''
-    this.setData({ scopeType, scopeId, scopeName })
+    this.setData({ scopeType, scopeId, scopeName, inactiveText: inactiveTextFromQuery(query, scopeName) })
     this.loadData()
   },
 
@@ -120,6 +124,8 @@ Page<IData, WechatMiniprogram.IAnyObject>({
   },
 
   async loadData() {
+    // scope 落在已停用门店（#400）：整页空态，不取数
+    if (this.data.inactiveText) return
     this.setData({ loading: true, state: 'loading' })
     try {
       const d = await callStaffApi<SalesDataResp>('mgmtDashboard.salesData', {

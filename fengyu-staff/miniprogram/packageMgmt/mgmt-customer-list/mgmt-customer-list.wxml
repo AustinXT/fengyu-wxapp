@@ -5,64 +5,68 @@
   <view class="mgmt-filter-bar">
     <view class="mgmt-scope-tag">
       <text>范围：</text>
-      <text class="mgmt-scope-tag-value">{{scopeName || (scopeType === 'all' ? '全部市场' : '')}}</text>
+      <text class="mgmt-scope-tag-value">{{scopeName || (scopeType === 'all' ? '全部市场' : '')}}{{inactiveText ? '（已停用）' : ''}}</text>
     </view>
   </view>
 
-  <!-- sticky 筛选区：搜索 -->
-  <view class="mc-sticky-filters">
-    <van-search
-      value="{{searchKeyword}}"
-      placeholder="搜索姓名或手机号"
-      bind:search="onSearch"
-      bind:change="onSearchChange"
-      use-action-slot
-    >
-      <view slot="action" bindtap="onSearch">搜索</view>
-    </van-search>
-  </view>
-
-  <!-- 三态壳：错误 / 加载 / 空 / 内容 -->
-  <mgmt-data-state
-    state="{{ listError ? 'error' : (loading && results.length === 0 ? 'loading' : (results.length === 0 ? 'empty' : 'content')) }}"
-    empty-text="{{searched ? '未找到该顾客' : '当前范围内暂无顾客'}}"
-    bind:retry="onListRetry"
-  >
-    <view wx:if="{{results.length > 0}}" class="customer-list">
-      <view
-        wx:for="{{results}}"
-        wx:key="clientUserId"
-        class="customer-card"
-        data-id="{{item.id}}"
-        data-client-user-id="{{item.clientUserId}}"
-        data-name="{{item.name}}"
-        bindtap="onItemTap"
+  <!-- scope 落在已停用门店（#400）：整页空态，不取数 -->
+  <mgmt-data-state wx:if="{{ inactiveText }}" state="empty" empty-text="{{ inactiveText }}" />
+  <block wx:else>
+    <!-- sticky 筛选区：搜索 -->
+    <view class="mc-sticky-filters">
+      <van-search
+        value="{{searchKeyword}}"
+        placeholder="搜索姓名或手机号"
+        bind:search="onSearch"
+        bind:change="onSearchChange"
+        use-action-slot
       >
-        <view class="customer-avatar">
-          <text class="customer-avatar-text">{{item.name ? item.name[0] : '?'}}</text>
-        </view>
-        <view class="customer-info">
-          <view class="customer-name-row">
-            <text class="customer-name">{{item.name || '未知'}}</text>
-            <text wx:if="{{item.memberLevel}}" class="member-level-badge {{item.memberLevelBadgeClass}}">{{item.memberLevel}}</text>
-            <text wx:if="{{item.tier === 'diamond'}}" class="tier-badge tier-badge--diamond">黑钻</text>
-            <text wx:elif="{{item.tier === 'iron'}}" class="tier-badge tier-badge--iron">铁粉</text>
-            <text wx:elif="{{item.tier === 'fan'}}" class="tier-badge tier-badge--fan">粉丝</text>
-          </view>
-          <text class="customer-phone">{{item.phone}}</text>
-          <text wx:if="{{item.storeName}}" class="customer-store">{{item.storeName}}</text>
-          <text wx:if="{{item.lastPurchaseName}}" class="customer-recent">最近购买：{{item.lastPurchaseName}}</text>
-          <text wx:if="{{item.lastServiceDate}}" class="customer-recent">最近到店：{{item.lastServiceDate}}</text>
-        </view>
-      </view>
-      <view wx:if="{{loading}}" class="loading-more">
-        <van-loading size="24rpx" />
-      </view>
-      <view wx:if="{{!loading && !hasMore && results.length > 0}}" class="loading-more">
-        <text class="no-more-text">没有更多了</text>
-      </view>
+        <view slot="action" bindtap="onSearch">搜索</view>
+      </van-search>
     </view>
-  </mgmt-data-state>
 
-  <view class="safe-area-bottom" />
+    <!-- 三态壳：错误 / 加载 / 空 / 内容 -->
+    <mgmt-data-state
+      state="{{ listError ? 'error' : (loading && results.length === 0 ? 'loading' : (results.length === 0 ? 'empty' : 'content')) }}"
+      empty-text="{{searched ? '未找到该顾客' : '当前范围内暂无顾客'}}"
+      bind:retry="onListRetry"
+    >
+      <view wx:if="{{results.length > 0}}" class="customer-list">
+        <view
+          wx:for="{{results}}"
+          wx:key="clientUserId"
+          class="customer-card"
+          data-id="{{item.id}}"
+          data-client-user-id="{{item.clientUserId}}"
+          data-name="{{item.name}}"
+          bindtap="onItemTap"
+        >
+          <view class="customer-avatar">
+            <text class="customer-avatar-text">{{item.name ? item.name[0] : '?'}}</text>
+          </view>
+          <view class="customer-info">
+            <view class="customer-name-row">
+              <text class="customer-name">{{item.name || '未知'}}</text>
+              <text wx:if="{{item.memberLevel}}" class="member-level-badge {{item.memberLevelBadgeClass}}">{{item.memberLevel}}</text>
+              <text wx:if="{{item.tier === 'diamond'}}" class="tier-badge tier-badge--diamond">黑钻</text>
+              <text wx:elif="{{item.tier === 'iron'}}" class="tier-badge tier-badge--iron">铁粉</text>
+              <text wx:elif="{{item.tier === 'fan'}}" class="tier-badge tier-badge--fan">粉丝</text>
+            </view>
+            <text class="customer-phone">{{item.phone}}</text>
+            <text wx:if="{{item.storeName}}" class="customer-store">{{item.storeName}}</text>
+            <text wx:if="{{item.lastPurchaseName}}" class="customer-recent">最近购买：{{item.lastPurchaseName}}</text>
+            <text wx:if="{{item.lastServiceDate}}" class="customer-recent">最近到店：{{item.lastServiceDate}}</text>
+          </view>
+        </view>
+        <view wx:if="{{loading}}" class="loading-more">
+          <van-loading size="24rpx" />
+        </view>
+        <view wx:if="{{!loading && !hasMore && results.length > 0}}" class="loading-more">
+          <text class="no-more-text">没有更多了</text>
+        </view>
+      </view>
+    </mgmt-data-state>
+
+    <view class="safe-area-bottom" />
+  </block>
 </view>

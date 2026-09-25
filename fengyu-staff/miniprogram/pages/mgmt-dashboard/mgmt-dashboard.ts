@@ -3,6 +3,7 @@
 import { canSwitchLoginLevel, isManagementMode } from '../../utils/role'
 import { callStaffApi } from '../../utils/cloud'
 import { formatAmount, formatCount, formatPercent } from '../../utils/number'
+import { SCOPE_INACTIVE_QUERY_KEY, inactiveScopeText } from '../../utils/mgmt-scope'
 
 const app = getApp<IAppOption>()
 
@@ -83,9 +84,12 @@ interface ScopeValue {
   scopeType: 'all' | 'market' | 'store'
   scopeId: string | null
   scopeName: string
+  /** 门店组织节点已停用（#400）：整段出「已停用」空态，子页经 query 继承 */
+  inactive?: boolean
 }
 
 interface SummaryData {
+  scope: { type: ScopeValue['scopeType']; id: string | null; name: string; inactive?: boolean }
   storeRevenue: { today: number; month: number; monthlyAvgPerStore: number }
   shengmeiRevenue: { today: number; month: number; monthlyAvgPerStore: number }
   storeConsume: { today: number; month: number; monthlyAvgPerStore: number }
@@ -186,6 +190,9 @@ Page({
     loading: false,
     display: null as DisplayData | null,
     summaryState: 'content' as 'loading' | 'empty' | 'error' | 'content',
+    // 仅 summaryState='empty'（scope 落在停用门店，#400）时使用
+    summaryEmptyText: '',
+    summaryEmptyHint: '',
 
     // 门店排行榜
     storeRanking: {
@@ -295,31 +302,29 @@ Page({
         scopeName: '',
       }
     }
+    // 默认范围跳过已停用门店（#400）：停用门店的数据被取数 SQL 全部滤掉，落上去只会满屏 0。
+    // isActive 缺省（旧缓存）按在营处理，scope-picker 拿到服务端 inactiveStores 后再纠正。
+    const stores = (scopedStores || []) as ScopedStore[]
+    const activeStores = stores.filter((s) => s.isActive !== false)
+    const toScope = (store: ScopedStore, inactive: boolean): ScopeValue => ({
+      scopeType: 'store',
+      scopeId: store.storeId,
+      scopeName: store.storeName,
+      ...(inactive ? { inactive: true } : {}),
+    })
     // 店长能力角色绑定优先匹配门店，确保默认 scope 落在可执行店长写操作的门店。
     const managerStoreBinding = (roleBindings || []).find(
       (b: any) => (b.isStoreManager ?? b.role === 'manager') && b.scopeType === '门店',
     )
-    if (managerStoreBinding?.scopeId) {
-      const matched = (scopedStores || []).find(
-        (s: any) => s.storeId === managerStoreBinding.scopeId,
-      )
-      if (matched) {
-        return {
-          scopeType: 'store',
-          scopeId: matched.storeId,
-          scopeName: matched.storeName,
-        }
-      }
-    }
+    const managerStore = managerStoreBinding?.scopeId
+      ? stores.find((s) => s.storeId === managerStoreBinding.scopeId)
+      : undefined
+    if (managerStore && managerStore.isActive !== false) return toScope(managerStore, false)
+    if (activeStores[0]) return toScope(activeStores[0], false)
 
-    const firstStore = (scopedStores || [])[0]
-    if (firstStore) {
-      return {
-        scopeType: 'store',
-        scopeId: firstStore.storeId,
-        scopeName: firstStore.storeName,
-      }
-    }
+    // 权限内全部门店都已停用：照旧落到（店长绑定 / 第一家）门店，由空态告知已停用
+    const fallback = managerStore || stores[0]
+    if (fallback) return toScope(fallback, true)
     return { scopeType: 'store', scopeId: '', scopeName: '' }
   },
 
@@ -350,6 +355,7 @@ Page({
 
   async loadSummary() {
     if (!this.data.selectedDate) return
+    const requested = this.data.scope
     this.setData({
       loading: true,
       summaryState: this.data.display ? 'content' : 'loading',
@@ -357,13 +363,33 @@ Page({
     try {
       const summary = await callStaffApi<SummaryData>('mgmtDashboard.summary', {
         date: this.data.selectedDate,
-        scopeType: this.data.scope.scopeType,
-        scopeId: this.data.scope.scopeId,
+        scopeType: requested.scopeType,
+        scopeId: requested.scopeId,
       })
+      // 期间已切换 scope：丢弃迟到响应，别把旧 scope 的停用标记 / 数字盖到新 scope 上
+      const current = this.data.scope
+      if (current.scopeType !== requested.scopeType || current.scopeId !== requested.scopeId) return
+      // 停用判定以服务端为准（#400）：同一 scope 可能被启停，本地默认值只是初判
+      const inactive = summary.scope?.inactive === true
+      if (inactive) {
+        this.setData({
+          summary,
+          display: null,
+          loading: false,
+          'scope.inactive': true,
+          summaryState: 'empty',
+          summaryEmptyText: inactiveScopeText(summary.scope.name || current.scopeName),
+          summaryEmptyHint: this.hasOtherActiveStore(current.scopeId)
+            ? '请点击上方范围切换到在营门店'
+            : '当前账号没有其它在营门店可查看',
+        })
+        return
+      }
       this.setData({
         summary,
         display: this.buildDisplay(summary),
         loading: false,
+        'scope.inactive': false,
         summaryState: 'content',
       })
     } catch {
@@ -373,6 +399,13 @@ Page({
       })
       wx.showToast({ icon: 'none', title: '加载失败，请重试' })
     }
+  },
+
+  /** 除当前门店外，账号还有没有在营门店可切（市场 / 总部账号恒有范围可切） */
+  hasOtherActiveStore(scopeId: string | null): boolean {
+    const { roleBindings, scopedStores } = app.globalData
+    if ((roleBindings || []).some((b) => b.scopeType === '总部' || b.scopeType === '市场')) return true
+    return ((scopedStores || []) as ScopedStore[]).some((s) => s.isActive !== false && s.storeId !== scopeId)
   },
 
   onSummaryRetry() {
@@ -457,46 +490,27 @@ Page({
     }
   },
 
+  /** 子页 query：继承 scope；停用门店带 scopeInactive=1，子页直接出空态不取数（#400） */
+  buildScopeQuery(): string {
+    const { scope } = this.data
+    return [
+      `scopeType=${scope.scopeType}`,
+      scope.scopeId ? `scopeId=${encodeURIComponent(scope.scopeId)}` : '',
+      `scopeName=${encodeURIComponent(scope.scopeName || '')}`,
+      scope.inactive ? `${SCOPE_INACTIVE_QUERY_KEY}=1` : '',
+    ].filter(Boolean).join('&')
+  },
+
   onEntryTap(e: WechatMiniprogram.BaseEvent) {
     const entry = (e.currentTarget.dataset as { entry?: string }).entry
-    if (entry === 'traffic') {
-      const { scope } = this.data
-      const params = [
-        `scopeType=${scope.scopeType}`,
-        scope.scopeId ? `scopeId=${encodeURIComponent(scope.scopeId)}` : '',
-        `scopeName=${encodeURIComponent(scope.scopeName || '')}`,
-      ].filter(Boolean).join('&')
-      wx.navigateTo({ url: `/packageMgmt/mgmt-traffic-stats/mgmt-traffic-stats?${params}` })
-      return
+    const pages: Record<string, string> = {
+      traffic: '/packageMgmt/mgmt-traffic-stats/mgmt-traffic-stats',
+      products: '/packageMgmt/mgmt-product-cycle/mgmt-product-cycle',
+      customers: '/packageMgmt/mgmt-customer-list/mgmt-customer-list',
+      sales: '/pages/sales-data/sales-data',
     }
-    if (entry === 'products') {
-      const { scope } = this.data
-      const params = [
-        `scopeType=${scope.scopeType}`,
-        scope.scopeId ? `scopeId=${encodeURIComponent(scope.scopeId)}` : '',
-        `scopeName=${encodeURIComponent(scope.scopeName || '')}`,
-      ].filter(Boolean).join('&')
-      wx.navigateTo({ url: `/packageMgmt/mgmt-product-cycle/mgmt-product-cycle?${params}` })
-      return
-    }
-    if (entry === 'customers') {
-      const { scope } = this.data
-      const params = [
-        `scopeType=${scope.scopeType}`,
-        scope.scopeId ? `scopeId=${encodeURIComponent(scope.scopeId)}` : '',
-        `scopeName=${encodeURIComponent(scope.scopeName || '')}`,
-      ].filter(Boolean).join('&')
-      wx.navigateTo({ url: `/packageMgmt/mgmt-customer-list/mgmt-customer-list?${params}` })
-      return
-    }
-    if (entry === 'sales') {
-      const { scope } = this.data
-      const params = [
-        `scopeType=${scope.scopeType}`,
-        scope.scopeId ? `scopeId=${encodeURIComponent(scope.scopeId)}` : '',
-        `scopeName=${encodeURIComponent(scope.scopeName || '')}`,
-      ].filter(Boolean).join('&')
-      wx.navigateTo({ url: `/pages/sales-data/sales-data?${params}` })
+    if (entry && pages[entry]) {
+      wx.navigateTo({ url: `${pages[entry]}?${this.buildScopeQuery()}` })
       return
     }
     const labelMap: Record<string, string> = {}

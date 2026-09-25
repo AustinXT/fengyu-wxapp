@@ -2,6 +2,7 @@
 // scope 由 hub（mgmt-dashboard）通过路由参数透传，本页不再出 scope-picker
 // 搜索框为空 = scope 内全部顾客分页（50/页），有 keyword = 关键字分页（50/页）
 import { callStaffApi } from '../../utils/cloud';
+import { inactiveTextFromQuery } from '../../utils/mgmt-scope';
 import { isManagementMode } from '../../utils/role';
 import { MemberLevelBadgeData, withMemberLevelBadgeClasses } from '../../utils/member-level-badge';
 
@@ -47,6 +48,7 @@ Page({
     scopeType: 'all' as ScopeType,
     scopeId: null as string | null,
     scopeName: '',
+    inactiveText: '',
     scopeTypeLabel: '全部市场',
 
     searchKeyword: '',
@@ -58,7 +60,7 @@ Page({
     listError: false,
   },
 
-  onLoad(query: { scopeType?: string; scopeId?: string; scopeName?: string }) {
+  onLoad(query: { scopeType?: string; scopeId?: string; scopeName?: string; scopeInactive?: string }) {
     if (!isManagementMode()) {
       wx.reLaunch({ url: '/pages/workbench/workbench' });
       return;
@@ -70,6 +72,7 @@ Page({
       scopeType,
       scopeId,
       scopeName,
+      inactiveText: inactiveTextFromQuery(query, scopeName),
       scopeTypeLabel: SCOPE_TYPE_LABELS[scopeType] || '全部市场',
     });
   },
@@ -99,6 +102,8 @@ Page({
   },
 
   async loadPage(page: number, reset: boolean): Promise<void> {
+    // scope 落在已停用门店（#400）：整页空态，不取数
+    if (this.data.inactiveText) return;
     this.setData({ loading: true, listError: false });
     try {
       const keyword = this.data.searchKeyword.trim();
