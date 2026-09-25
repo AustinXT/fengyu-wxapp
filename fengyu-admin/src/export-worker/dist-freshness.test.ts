@@ -606,10 +606,18 @@ describe('dist/export-worker.mjs 客量明细 SQL 整段逐字进入产物（#41
  * 而这条守护要回答的问题其实只有一个：**产物是不是按当前源码构建的**。
  * 那就直接构建一次比对 —— 这是该问题的**完整**答案，不需要预先知道哪行重要。
  *
+ * ## 比对范围：**只比我们自己的 `// src/…` 模块区段**，不比整份文件
+ *
+ * 整份文件逐字节相等只在**同一台机器同一套依赖**下成立：bun 版本、
+ * `npm ci` 与 `bun install` 解析出的依赖树都会改变 `node_modules` 段的字节，
+ * CI 与本地必然对不上（CI 是 ubuntu + npm，本地是 macOS + bun）。
+ * 而本守护要防的东西**全在我们自己的源码段里** —— 双谱系那九轮攻击无一例外。
+ * 所以按模块区段比，且把 bun 生成的 `import_drizzle_orm65` 这类标识符归一
+ * （它的数字后缀随整个模块图变，与口径无关）。
+ *
  * ## 可行性（实测，2026-09-25）
  *
  * - `bun build` 对同一份源码**确定性输出**：连跑两次逐字节相同
- * - 已提交的 `dist/export-worker.mjs` 与新构建**逐字节相同**
  * - 耗时约 **0.17s**，放在单测里不影响跑测体感
  *
  * ## 与上面那些探针的分工
@@ -661,15 +669,40 @@ describe('dist/export-worker.mjs 与当前源码逐字节一致（完整性兜�
         `重建产物失败（bun 是本项目的包管理器，应当可用）：\n${r.stderr ?? ''}`,
       ).toBe(0)
 
-      const rebuilt = fs.readFileSync(tmp)
-      const committed = fs.readFileSync(DIST)
+      const rebuilt = fs.readFileSync(tmp, 'utf-8')
+      const committed = fs.readFileSync(DIST, 'utf-8')
+
+      /** 取全部 `// src/…` 模块区段；bun 生成的 `import_xxx` 标识符归一（数字后缀随模块图变） */
+      const ownModules = (bundle: string): Record<string, string> => {
+        const out: Record<string, string> = {}
+        let current: string | null = null
+        for (const line of bundle.split('\n')) {
+          const header = /^\/\/ ((?:src|node_modules|\.\.)\/.*)$/.exec(line)
+          if (header) {
+            current = header[1].startsWith('src/') ? header[1] : null
+            if (current) out[current] ??= ''
+            continue
+          }
+          if (current) out[current] += line.replace(/\bimport_[A-Za-z0-9_$]+\b/g, 'IMPORT_REF') + '\n'
+        }
+        return out
+      }
+
+      const a = ownModules(committed)
+      const b = ownModules(rebuilt)
+      // fail-closed：一个 src 模块都没切出来说明 bun 换了注释格式，不能静默通过
+      expect(Object.keys(b).length, `重建产物里切不出任何 // src/ 模块区段${REBUILD_HINT}`).toBeGreaterThan(20)
+
+      const drifted = Object.keys(b).filter((k) => a[k] !== b[k])
+      const missing = Object.keys(b).filter((k) => !(k in a))
       expect(
-        rebuilt.equals(committed),
-        '`dist/export-worker.mjs` 与当前源码重建出的产物**不一致** —— 产物没跟着源码重建。\n' +
-          `（新构建 ${rebuilt.length} 字节 / 已提交 ${committed.length} 字节）\n` +
-          '上面那些按口径指纹的探针可能全绿：它们只挑了几行去找，看不出整体差异。' +
+        [...new Set([...drifted, ...missing])],
+        '`dist/export-worker.mjs` 里下列源文件的编译结果与当前源码**对不上** —— 产物没跟着源码重建。\n' +
+          '（只比对 `// src/…` 自有模块段，已归一 bun 的 import 标识符；node_modules 段不参与，' +
+          '因为它随 bun 版本与依赖安装方式变）\n' +
+          '上面那些按口径指纹的探针可能全绿：它们只挑了几行去找，看不出整段差异。' +
           REBUILD_HINT,
-      ).toBe(true)
+      ).toEqual([])
     } finally {
       fs.rmSync(tmp, { force: true })
     }
