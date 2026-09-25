@@ -3831,7 +3831,9 @@ function StoreAllocationLotExtras({
   const hasNormal = (nonnegativeNumber(line.quantity) ?? 0) > 0
   const hasGift = (nonnegativeNumber(line.giftQuantity) ?? 0) > 0
   const notice = hasNormal ? giftLotNotice(line.lot) : null
-  if (!hasGift && !(hasNormal && line.lot)) return null
+  // 无价格档账号的参考价不渲染：左侧无内容且无赠送时整块不出，免得留一条空分隔线
+  const showNormalReference = hasNormal && line.lot !== null && line.lot.marketActualUnitPrice !== undefined
+  if (!hasGift && !showNormalReference && !notice) return null
   return (
     <div className="mt-3 grid grid-cols-1 gap-3 border-t border-[var(--border)] pt-3 md:grid-cols-2">
       <div className="space-y-1">
