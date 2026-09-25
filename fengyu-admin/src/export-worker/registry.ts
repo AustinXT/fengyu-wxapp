@@ -20,6 +20,7 @@ import { exportEmployees } from '@/actions/employees'
 import { exportPointTransactions } from '@/actions/points'
 import { exportCards } from '@/actions/cards'
 import { exportInventoryLots } from '@/actions/inventory/stocks'
+import { exportPickupRecords } from '@/actions/pickup-records'
 import { getSalesBoard } from '@/actions/data-center/sales'
 import { getCustomerBoard } from '@/actions/data-center/customer'
 import { getProductBoard } from '@/actions/data-center/product'
@@ -487,6 +488,18 @@ const cardColumns = mapColumns([
   { header: '付款时间', width: 20, key: 'paidAt', map: (row) => fmtDateTime(value(row, 'paidAt') as string | Date | null) },
 ])
 
+// #341：出库金额是提货时冻结的「数量 × 顾客实际单价」；上线前的历史记录两列留空（不回填）
+const pickupRecordColumns = mapColumns([
+  { header: '提货时间', width: 20, key: 'createdAt', map: (row) => fmtDateTime(value(row, 'createdAt') as string | Date | null) },
+  { header: '门店', width: 18, key: 'storeName' },
+  { header: '顾客', width: 14, key: 'clientName' },
+  { header: '销售单号', width: 24, key: 'saleOrderId' },
+  { header: '商品', width: 28, key: 'productName' },
+  { header: '数量', width: 8, key: 'pickupQuantity', map: (row) => numberOrEmpty(row, 'pickupQuantity') },
+  { header: '顾客实际单价', width: 14, key: 'pickupUnitPrice', map: (row) => numberOrEmpty(row, 'pickupUnitPrice') },
+  { header: '出库金额', width: 14, key: 'pickupAmount', map: (row) => numberOrEmpty(row, 'pickupAmount') },
+])
+
 const inventoryColumns = (canViewPrice: boolean) => mapColumns([
   { header: '库存主体类型', width: 12, key: 'locationType' },
   { header: '库存主体', width: 20, key: 'locationName', map: (row) => String(value(row, 'locationName') ?? value(row, 'locationId') ?? '') },
@@ -850,6 +863,12 @@ export async function createExportContent(
         rows: pagedRows((options: ExportBatchOptions<number>) => exportInventoryLots(params, options), firstPage),
       }
     }
+    case 'pickup-records':
+      return {
+        sheetName: '提货记录',
+        columns: pickupRecordColumns,
+        rows: pagedRows((options: ExportBatchOptions<number>) => exportPickupRecords(params, options)),
+      }
     case 'products':
       return queryProducts(params)
     case 'mall-products':
