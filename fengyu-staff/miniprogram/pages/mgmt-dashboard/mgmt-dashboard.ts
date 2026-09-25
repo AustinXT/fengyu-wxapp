@@ -357,7 +357,8 @@ Page({
   },
 
   onScopeChange(e: WechatMiniprogram.CustomEvent<ScopeValue>) {
-    this.setData({ scope: e.detail })
+    // defaultScope 同步成当前选择：picker 在 wx:if 切 tab 后会重建，重建时须回到当前 scope 而非初始默认值
+    this.setData({ scope: e.detail, defaultScope: e.detail })
     this.loadSummary()
   },
 
@@ -384,6 +385,7 @@ Page({
           display: null,
           loading: false,
           'scope.inactive': true,
+          'defaultScope.inactive': true,
           summaryState: 'empty',
           summaryEmptyText: inactiveScopeText(summary.scope.name || this.data.scope.scopeName),
           summaryEmptyHint: inactiveScopeHint(summary.scope.hasActiveAlternative !== false),
@@ -395,6 +397,7 @@ Page({
         display: this.buildDisplay(summary),
         loading: false,
         'scope.inactive': false,
+        'defaultScope.inactive': false,
         summaryState: 'content',
       })
     } catch {

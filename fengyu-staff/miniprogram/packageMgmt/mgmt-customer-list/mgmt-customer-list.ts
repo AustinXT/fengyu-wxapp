@@ -2,7 +2,7 @@
 // scope 由 hub（mgmt-dashboard）通过路由参数透传，本页不再出 scope-picker
 // 搜索框为空 = scope 内全部顾客分页（50/页），有 keyword = 关键字分页（50/页）
 import { callStaffApi } from '../../utils/cloud';
-import { isInactiveScopeQuery } from '../../utils/mgmt-scope';
+import { SCOPE_INACTIVE_QUERY_KEY, isInactiveScopeQuery } from '../../utils/mgmt-scope';
 import { isManagementMode } from '../../utils/role';
 import { MemberLevelBadgeData, withMemberLevelBadgeClasses } from '../../utils/member-level-badge';
 
@@ -154,13 +154,15 @@ Page({
   onItemTap(e: WechatMiniprogram.TouchEvent) {
     const { clientUserId } = e.currentTarget.dataset as { clientUserId?: string };
     if (!clientUserId) return;
-    const { scopeType, scopeId, scopeName } = this.data;
+    const { scopeType, scopeId, scopeName, scopeInactive } = this.data;
     const params = [
       `clientUserId=${encodeURIComponent(clientUserId)}`,
       `scopeType=${encodeURIComponent(scopeType)}`,
       `scopeId=${encodeURIComponent(scopeId || '')}`,
       `scopeName=${encodeURIComponent(scopeName || '')}`,
-    ].join('&');
+      // 停用门店标记继续透传到详情页范围标签（#400）
+      scopeInactive ? `${SCOPE_INACTIVE_QUERY_KEY}=1` : '',
+    ].filter(Boolean).join('&');
     wx.navigateTo({ url: `/packageMgmt/mgmt-customer-detail/mgmt-customer-detail?${params}` });
   },
 });

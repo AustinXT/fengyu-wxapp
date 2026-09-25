@@ -246,6 +246,16 @@ describe('hub · summary 空态以服务端 scope.inactive 为准', () => {
     expect(hub.data.summaryState).toBe('content')
   })
 
+  test('选择范围 → 切 tab 重建 picker 时回到当前 scope：defaultScope 跟随 onScopeChange 与服务端启停', async () => {
+    const hub = hubAt({ scopeType: 'store', scopeId: 'store-a', scopeName: 'A 店' })
+    hub.data.defaultScope = { scopeType: 'store', scopeId: 'store-a', scopeName: 'A 店' }
+    mocked.mockResolvedValueOnce(summaryResp({ type: 'store', id: 'store-b', name: 'B 店', inactive: true, hasActiveAlternative: true }))
+    hub.onScopeChange({ detail: { scopeType: 'store', scopeId: 'store-b', scopeName: 'B 店', inactive: false } })
+    expect(hub.data.defaultScope).toMatchObject({ scopeId: 'store-b' })
+    await vi.waitFor(() => expect(hub.data.summaryState).toBe('empty'))
+    expect(hub.data.defaultScope.inactive).toBe(true)
+  })
+
   test('子页入口透传 scopeInactive=1（客量 / 销售 / 品项 / 顾客）', () => {
     const hub = hubAt({ scopeType: 'store', scopeId: 'store-zh', scopeName: '九江中辉店', inactive: true })
     for (const entry of ['traffic', 'sales', 'products', 'customers']) {
@@ -443,6 +453,14 @@ describe('子页：销售数据以回包出空态；客量 / 品项 / 顾客照�
     page.onShow()
     expect(page.data.scopeInactive).toBe(true)
     expect(callStaffApi).toHaveBeenCalledWith('mgmtCustomer.search', expect.anything())
+  })
+
+  test('customers → 详情：停用标记继续透传，详情页范围标签标注', () => {
+    const list = instantiate('customers')
+    list.onLoad(inactiveQuery)
+    list.onItemTap({ currentTarget: { dataset: { clientUserId: 'cu-1' } } })
+    const url = vi.mocked((globalThis as any).wx.navigateTo).mock.calls.at(-1)![0].url as string
+    expect(url).toMatch(/scopeInactive=1/)
   })
 
   test('无停用标记 → 不标注', () => {
