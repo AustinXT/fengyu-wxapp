@@ -179520,6 +179520,9 @@ function scopeStoreSkeletonSql(session4, scope) {
     WHERE ${scopeFilterSql(session4, scope, "s.store_id")}
   `;
 }
+function scopeHasStoreSql(session4, scope) {
+  return import_drizzle_orm61.sql`SELECT EXISTS (${scopeStoreSkeletonSql(session4, scope)}) AS has_store`;
+}
 
 // src/lib/data-center/consume-filter.ts
 var import_drizzle_orm62 = __toESM(require_drizzle_orm(), 1);
@@ -180123,6 +180126,8 @@ async function queryActive(session4, scope, range, mode) {
     JOIN client_wechat_users c ON c.user_id = vc.client_user_id
     WHERE ${csc}
       AND c.customer_status IN ('保有会员-稳定', '保有会员-有效')
+      AND c.became_member_at IS NOT NULL
+      AND c.became_member_at::date <= ${range.end}
       AND ${daysClause}
   `);
   return num(first(rows).v);
@@ -180334,7 +180339,8 @@ async function queryRegActiveBreakdown(session4, scope, range, group) {
       GROUP BY c.bound_store_id
     ),
     -- 区间到店天数（按客户 + bound_store_id），区分一次/二次客活（仅保有会员）。
-    -- 到店日按 (顾客, service_date) 去重（#298），与 KPI queryActive 同一个 visitDaysSql
+    -- 到店日按 (顾客, service_date) 去重（#298），与 KPI queryActive 同一个 visitDaysSql。
+    -- 会员守卫与上面的 reg（达成率分母）逐字同源（#414），理由见 queryActive 的注释。
     visit_days AS (${visitDaysSql({ axis: "service_date", scope: serviceScope, range })}),
     visit_count AS (
       SELECT vd.client_user_id, c.bound_store_id AS store_id,
@@ -180344,6 +180350,8 @@ async function queryRegActiveBreakdown(session4, scope, range, group) {
       JOIN client_wechat_users c ON c.user_id = vd.client_user_id
       WHERE ${customerScope}
         AND c.bound_store_id IS NOT NULL
+        AND c.became_member_at IS NOT NULL
+        AND c.became_member_at::date <= ${end}
       GROUP BY vd.client_user_id, c.bound_store_id, c.customer_status
     ),
     active AS (
@@ -180689,9 +180697,9 @@ function buildBreakdownRows(group, skeletonRows, regActive, ops) {
         registered: ra?.registered ?? 0,
         retained: ra?.retained ?? 0,
         visitOnce: ra?.visitOnce ?? 0,
-        visitOnceRate: ra ? safeDiv(ra.visitOnce, ra.retained) : null,
+        visitOnceRate: ra ? safeDiv(ra.visitOnce, ra.registered) : null,
         visitTwice: ra?.visitTwice ?? 0,
-        visitTwiceRate: ra ? safeDiv(ra.visitTwice, ra.retained) : null,
+        visitTwiceRate: ra ? safeDiv(ra.visitTwice, ra.registered) : null,
         dormant: ra?.dormant ?? 0,
         reactivatedDormant: ra?.reactivatedDormant ?? 0,
         frozen: ra?.frozen ?? 0,
@@ -181978,14 +181986,16 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
   const technicianCount = scalar2(technicianCountR);
   const managerCount = scalar2(managerCountR);
   const mk = (value, unit) => ({ value, unit });
+  const scopeHasStore = skelRows.length > 0;
+  const perTechnician = (num3) => scopeHasStore ? ratio(num3, technicianCount) : null;
   const kpis = {
     managerAvgMembers: mk(ratio(memberCount, managerCount), "count"),
     managerAvgEmployees: mk(ratio(technicianCount, managerCount), "count"),
-    empAvgRevenue: mk(ratio(revenueTotal, technicianCount), "amount"),
-    empAvgConsume: mk(ratio(consumeTotal, technicianCount), "amount"),
-    empAvgIncome: mk(ratio(incomeTotal, technicianCount), "amount"),
-    empAvgMembers: mk(ratio(footfallTotal, technicianCount), "count"),
-    empAvgProjects: mk(ratio(projectCountTotal, technicianCount), "count")
+    empAvgRevenue: mk(perTechnician(revenueTotal), "amount"),
+    empAvgConsume: mk(perTechnician(consumeTotal), "amount"),
+    empAvgIncome: mk(perTechnician(incomeTotal), "amount"),
+    empAvgMembers: mk(perTechnician(footfallTotal), "count"),
+    empAvgProjects: mk(perTechnician(projectCountTotal), "count")
   };
   const managerMap = toMap(managerByStoreR);
   const techMap = toMap(techByStoreR);
@@ -182003,6 +182013,7 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
       m = {
         marketId,
         marketName: marketName2,
+        storeCount: 0,
         managerCount: 0,
         technicianCount: 0,
         revenue: 0,
@@ -182018,6 +182029,7 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
   for (const r of skelRows) {
     const storeId = String(r.store_id);
     const m = marketRowOf(String(r.market_id ?? ""), String(r.market_name ?? ""));
+    m.storeCount += 1;
     m.managerCount += managerMap.get(storeId) ?? 0;
     m.technicianCount += techMap.get(storeId) ?? 0;
     m.revenue += revMap.get(storeId) ?? 0;
@@ -182032,21 +182044,25 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
     const m = marketRowOf(String(r.market_id), String(r.market_name ?? ""));
     m.technicianCount += Number(r.v ?? 0);
   }
-  const byMarket = Array.from(marketMap.values()).map((m) => ({
-    groupId: m.marketId,
-    groupName: m.marketName,
-    metrics: {
-      managerCount: m.managerCount,
-      managerAvgIncome: ratio(m.income, m.managerCount),
-      technicianCount: m.technicianCount,
-      techAvgRevenue: ratio(m.revenue, m.technicianCount),
-      techAvgConsume: ratio(m.consume, m.technicianCount),
-      techAvgShengmeiConsume: ratio(m.shengmeiConsume, m.technicianCount),
-      techAvgIncome: ratio(m.income, m.technicianCount),
-      techAvgMembers: ratio(footfallByMarketMap.get(m.marketId) ?? 0, m.technicianCount),
-      techAvgProjects: ratio(m.projectCount, m.technicianCount)
-    }
-  }));
+  const marketRows = Array.from(marketMap.values());
+  const byMarket = marketRows.map((m) => {
+    const perTech = (num3) => m.storeCount > 0 ? ratio(num3, m.technicianCount) : null;
+    return {
+      groupId: m.marketId,
+      groupName: m.marketName,
+      metrics: {
+        managerCount: m.managerCount,
+        managerAvgIncome: ratio(m.income, m.managerCount),
+        technicianCount: m.technicianCount,
+        techAvgRevenue: perTech(m.revenue),
+        techAvgConsume: perTech(m.consume),
+        techAvgShengmeiConsume: perTech(m.shengmeiConsume),
+        techAvgIncome: perTech(m.income),
+        techAvgMembers: perTech(footfallByMarketMap.get(m.marketId) ?? 0),
+        techAvgProjects: perTech(m.projectCount)
+      }
+    };
+  });
   const mapStoreRank = (rows) => assignRanks(rows.map((r) => ({
     id: String(r.store_id),
     name: String(r.store_name ?? ""),
@@ -182097,6 +182113,8 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
   return {
     ...ctx.meta,
     kpis,
+    noStoreScope: !scopeHasStore,
+    noStoreMarkets: marketRows.filter((m) => m.storeCount === 0).map((m) => m.marketName),
     byMarket,
     byStaff,
     storeRankings,
@@ -183410,9 +183428,9 @@ var customerRegistrationMetricColumns = [
   { key: "registered", label: "会员注册", unit: "count" },
   { key: "retained", label: "保有会员", unit: "count" },
   { key: "visitOnce", label: "回店1次", unit: "count" },
-  { key: "visitOnceRate", label: "1次达成率", unit: "percent" },
+  { key: "visitOnceRate", label: "1次达成率(÷会员注册)", unit: "percent" },
   { key: "visitTwice", label: "回店2次", unit: "count" },
-  { key: "visitTwiceRate", label: "2次达成率", unit: "percent" },
+  { key: "visitTwiceRate", label: "2次达成率(÷会员注册)", unit: "percent" },
   { key: "dormant", label: "沉睡(截面·仅会员客)", unit: "count" },
   { key: "reactivatedDormant", label: "激活沉睡", unit: "count" },
   { key: "frozen", label: "冰冻(截面)", unit: "count" },
@@ -185215,10 +185233,11 @@ var getCommissionDaily = withAllPermissions(DATA_CENTER_STAFF_COMMISSION_ACTIONS
   const grain = grainOf(options, isAllScope);
   const range = period.current;
   const technicianEnd = range.end > today ? today : range.end;
-  const [matrixRows, kpiRows, technicianRows, pendingRows, scopeName] = await Promise.all([
+  const [matrixRows, kpiRows, technicianRows, hasStoreRows, pendingRows, scopeName] = await Promise.all([
     db2.execute(commissionMatrixSql(session4, scope, range, grain, options)),
     db2.execute(commissionKpiSql(session4, scope, range)),
     db2.execute(technicianCountSql(session4, scope, technicianEnd)),
+    db2.execute(scopeHasStoreSql(session4, scope)),
     db2.execute(pendingAllocationSql(session4, scope, range)),
     resolveScopeName(scope)
   ]);
@@ -185231,6 +185250,7 @@ var getCommissionDaily = withAllPermissions(DATA_CENTER_STAFF_COMMISSION_ACTIONS
   const total = sale + service;
   const orders = toNumber(kpi.orders);
   const technicianCount = toNumber(rowsOf(technicianRows)[0]?.v);
+  const noStoreScope = rowsOf(hasStoreRows)[0]?.has_store !== true;
   const pending = rowsOf(pendingRows)[0] ?? {};
   return {
     month: period.month,
@@ -185250,7 +185270,8 @@ var getCommissionDaily = withAllPermissions(DATA_CENTER_STAFF_COMMISSION_ACTIONS
       earningEmployees: toNumber(kpi.earning_employees),
       employees: toNumber(kpi.employees),
       technicianCount,
-      perTechnician: ratio3(total, technicianCount),
+      noStoreScope,
+      perTechnician: noStoreScope ? null : ratio3(total, technicianCount),
       orders,
       perOrder: ratio3(total, orders)
     },

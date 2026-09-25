@@ -3,7 +3,8 @@
  *
  * mgmtDashboard.scopeOptions — 市场/门店二级筛选器数据源
  *   - 总部 scope：返回所有市场及其下属门店
- *   - 其他账号：仅返回账号全部 scope 覆盖的门店及可完整选择的市场
+ *   - 其他账号：仅返回账号全部 scope 覆盖的门店及可完整选择的市场；
+ *     直接授权的无门店市场（如品项公司）也返回，stores 为空（#424）
  *   - 不缓存，确保组织节点启停后范围下拉立即刷新
  *
  * mgmtDashboard.summary — 数据中心首页 8 卡片汇总
@@ -141,7 +142,10 @@ async function scopeOptions(ctx) {
         ...market,
         stores: (market.stores || []).filter((store) => allowedStores.has(store.storeId)),
       }))
-      .filter((market) => market.stores.length > 0)
+      // 直接授权（scopeOrgNodeIds 含）的市场即使没有在营门店也保留（#424，对齐 admin #399）：
+      // 如只授权到品项公司的账号，须能以「市场」范围进入、picker 能回填市场名。
+      // 门店级账号不会因此多出市场：其所属市场不在 scopeOrgNodeIds 里。
+      .filter((market) => market.stores.length > 0 || allowedNodes.has(market.id))
 
   // 停用门店只用于纠正默认范围，查失败不能拖垮整个范围下拉（空态仍由 summary.scope.inactive 兜住）。
   // 失败回 null（未知）而不是 []：[] 会被前端读成「确认没有停用门店」而撤掉已知的停用标记。

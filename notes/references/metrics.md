@@ -279,8 +279,10 @@
 | 沉睡人数（dormantWarn） | 同上 | 同上 | `customer_status='沉睡'` ∩ `customer_type='会员客'`<br>_2026-04-25 决策 D-6=B：schema 枚举已重命名 `'预警沉睡'`→`'沉睡'`（migration 0013），详见 ticket [`customer-status-rename-warn`](../tickets/2026-04-25-customer-status-rename-warn.md)_ |
 | 冰冻人数（dormantFrozen） | 同上 | 同上 | `customer_status='冰冻'` |
 | 休眠人数（dormantDeep） | 同上 | 同上 | `customer_status='休眠'` |
-| 一次客活（activeOnce） | `COUNT(*)` | `client_wechat_users` | `customer_status IN ('保有会员-稳定','保有会员-有效')` ∩ 区间内**到店天数** = 1 ∩ scope（⚠️ 经营数据主表 F「回店1次」是近名不同口径，见文末主表节）|
+| 一次客活（activeOnce） | `COUNT(*)` | `client_wechat_users` | `customer_status IN ('保有会员-稳定','保有会员-有效')` ∩ **`became_member_at IS NOT NULL` ∩ `became_member_at::date <= endDate`（#414，admin + staff 两端同步；cron `monthly_activity` 不带，见下方实现位置表）** ∩ 区间内**到店天数** = 1 ∩ scope（⚠️ 经营数据主表 F「回店1次」是近名不同口径，见文末主表节）|
 | 二次客活（activeTwice） | 同上 | 同上 | 同上但区间内**到店天数** ≥ 2 |
+| 1次达成率（visitOnceRate） | `一次客活 ÷ 会员注册数` | 派生（明细表专有，KPI 卡无此格） | 分母 = §1「会员注册」同一列（截面，`became_member_at::date <= endDate`），**不是**「保有会员」——见下方 D-visit-rate-denom |
+| 2次达成率（visitTwiceRate） | `二次客活 ÷ 会员注册数` | 同上 | 同上 |
 | 本月激活-沉睡（reactivatedFromWarn） | `COUNT(*)` | `client_wechat_users` + `service_orders` | 见下方"本月激活"决策点 |
 | 本月激活-冰冻（reactivatedFromFrozen） | 同上 | 同上 | 同上 |
 | 本月激活-休眠（reactivatedFromDeep） | 同上 | 同上 | 同上 |
@@ -318,10 +320,103 @@ WHERE c.customer_status IN ('保有会员-稳定','保有会员-有效')
 | admin 数据中心 KPI + 市场/门店明细 | `fengyu-admin/src/lib/data-center/visit-days.ts` `visitDaysSql({ axis: 'service_date' })`（日期轴为白名单参数，客活只用这一条轴） |
 | staff 管理层客量页 | `fengyu-staff/cloudfunctions/staffApi/routes/mgmt-traffic.js` `queryActiveOnce` / `queryActiveTwice`（独立副本） |
 | 顾客列表「月度客活」筛选 | cron `refresh-monthly-activity.ts`（见下节 `monthly_activity`） |
+| 手动补数脚本（已退役，仅追史用） | `db/scripts/calc-monthly-activity.js`（**第 4 份副本**，本表此前遗漏） |
+
+> **#414 的会员守卫：admin 与 staff 两份都带，cron / 补数脚本两份都不带。**
+> - **带**（admin `customer.ts` KPI + 明细、staff `mgmt-traffic.js` 两个函数）：
+>   同名指标「一次/二次客活」两端不分叉（用户 2026-09-25 拍板同步，延续 #298 的统一）。
+>   staff 侧只影响 `period='lastMonth'`（终点是上月末）：prod 实测 **一次 511→486 / 二次 894→847，合计 −72 人（−5.1%）**；
+>   `'month'`/`'year'` 的终点是 `NOW()::date`，守卫对全部会员恒真，数字不变。
+> - **不带**（cron `refresh-monthly-activity` + `db/scripts/calc-monthly-activity.js`）：
+>   它们给当月到店的**所有**顾客打标（含非会员），加了会改自己的口径。
+>
+> 四份都由 `consistency.customer.test.ts` 钉死：admin/staff 三处走**派生式**（守卫从 admin 分母 `reg` 现读，
+> 只允许区间终点写法不同 `${end}` / `${range.end}` / `${endDateExpr(period)}`）+ 整函数逐字快照；
+> cron 侧配一条**正向断言「不得带 `became_member_at`」**，两个方向的漂移都会红。
+>
+> ⚠ **staffApi 是独立云函数通道**，本 PR merge 后必须同批跑 `scripts/deploy-cloudfunctions.sh`，
+> 否则 admin 已是新口径而员工端仍是旧的。
 
 > ⚠ **与顾客频率表（#370）的「到店」不是同一个口径**：客活只认服务日；频率表的到店日 = 服务日 ∪ **消费（支付）日**，
 > 同一个 `visitDaysSql` 换 `service_or_payment` 轴。2026-08 全国：客活口径（只认服务单）有到店 3,023 人 / 6,199 人次，
 > 频率表口径 3,108 人 / 6,700 人次。两处数字对不上时先看是不是轴不同，口径见文末「顾客频率表」。
+
+#### D-visit-rate-denom：1次/2次达成率的分母 = **会员注册数**（#414，2026-09-25 拍板）
+
+> ⚠ 这两列**只在市场/门店明细表与导出件里**，KPI 卡片没有对应格。
+
+**改前（错的）**：分母 = `retained`（保有会员，末 90 天到店窗口）。
+而分子是「区间内到店过的保有会员」—— 两者是**同一批人**：2026-09-25 生产实测两池各 **1889 人、双向差集 0**，
+于是 36 家有数据门店的 `1次达成率 + 2次达成率` **精确恒等 100.0%**，这两列不携带任何「达成」信息。
+
+**三处结构性不同源**（当时都被数据特征掩盖，掩盖条件会失效）：
+
+| 维度 | 分子（改前） | 分母（改前） | 当时为何没显形 |
+|---|---|---|---|
+| 时间窗口 | 所选区间 | 固定末 90 天 | 服务单最早 2026-07-08、跨度 78 天 < 90 天，末 90 天窗口覆盖了全部数据。**2026-10-06 起失效** |
+| 人群判据 | `customer_status`（cron 当前截面快照） | 实时 SQL 末 90 天到店 + `became_member_at` | 两者当时恰好等价；「状态为保有会员但 `became_member_at IS NULL`」实测 0 人 |
+| 归店 | scope 按 `so.store_id` | scope 只按 `c.bound_store_id`（不限服务门店，含关店） | 跨店服务仅 27 人，影响 3 家门店各 1 人在 1次/2次 档间移动；关店服务 0 人 |
+
+**改后**：分母 = `registered`（明细表「会员注册」列，会员截面 `became_member_at::date <= endDate`）。
+
+> ⚠ **「明细的会员注册」与「KPI 卡的会员注册人数」不是同一个数**（非本单引入，但按字面读容易误解）：
+> KPI 侧 `queryRegistration` 只有 `scopeFilterSql + became_member_at` 两条谓词，**不经 skel**、
+> 也**不要求** `bound_store_id IS NOT NULL`；明细的 `reg` 两者都有。
+> 于是「绑定店为空」或「绑定店不在 skel 内（如已关店）」的会员会进 KPI 卡、不进任何门店行
+> ⇒ **KPI 会员注册人数 ≥ Σ明细会员注册**。达成率只用 `reg`，所以这**不影响 ≤100%**。
+同轮把会员守卫补进 admin 的两处分子**与 staff `mgmt-traffic.js` 的两个同名函数**（用户拍板同步，见实现位置表）。
+
+**只换分母不够** —— 分子必须同时补上与分母**逐字相同**的会员守卫
+`became_member_at IS NOT NULL AND became_member_at::date <= endDate`：
+`customer_status` 是 cron 重算的**当前**截面、**不随所选区间的 `endDate` 回溯**，
+于是「区间内到店过、现在是保有会员、但入会晚于区间终点」的人会进分子却不在分母。
+2026-07-08~07-31 实测这样的人 **36 人**，把九江丽都店顶到 **7/7 = 100.0%**；补守卫后单店最高降到 **62.7%**、集团 24.3%。
+
+**真正要守的不变量**：**分子人群谓词 ⊇ 分母人群谓词**（同一归组列 `c.bound_store_id` + 同一 scope 生产者
++ 逐字相同的会员守卫）⇒ `visit_once`/`visit_twice` ⊆ `registered` ⇒ 达成率结构性 ≤ 100%。
+分子额外多一层 `serviceScope`（`so.store_id`）只让分子更小，不破坏包含关系，故本轮**不动**它。
+
+> **不变量的隐含前提**：分子侧 `JOIN client_wechat_users c ON c.user_id = vd.client_user_id` 必须保持
+> **每 `client_user_id` 至多一行**（`user_id` 是主键）。分子用 `COUNT(*) FILTER` 而分母用 `COUNT(*)`，
+> 一旦分子侧新增任何非唯一键 JOIN（例如为拿 `store_name` 再 JOIN 一次 `stores`），
+> 分子会按扇出倍数放大而分母不会 ⇒ **直接 >100%**。这是唯一能从内部把不变量打穿的改动形态。
+
+### #414 **没有**解决的三件事（都已实测确认，勿当回归）
+
+**① `customer_status` 仍是"今日"截面 —— 时态只修了一半。**
+守卫修好了 `became_member_at`，但分子仍用 `c.customer_status IN ('保有会员-稳定','保有会员-有效')` 判"是不是保有会员"，
+而该列由 cron 每日重算、**不随所选区间回溯**。后果：**同一历史区间的「回店1次/2次/达成率」非单调、会来回跳**，
+与上月导出的 Excel 对不上。构造：顾客 W 于 05-10 到店 1 天、6~8 月无到店 —— 05-31 查 5 月「计入」；
+08-20 查 5 月（W 已被 cron 标成沉睡）「不计入」；W 于 09-20 再到店后，09-21 查 5 月又「计入」。
+方向上分子偏小（保守），**不破 ≤100%**，所以「0 家 >100%」这条验收测不到它。
+历史重建 `customer_status` 代价大（同 D-react-source 的既有取舍），本轮不做。
+⚠ 因此前端 hint 写的是「到店 N 天、**且截至区间终点已入会**的保有会员」——
+「截至区间终点」只修饰"已入会"，**不修饰"保有会员"**，措辞不能简化成「截至区间终点的保有会员」。
+
+**② 切 scope 会让人在 1次/2次 档之间搬家。**
+分子的 `visit_days` 受 `serviceScope`（`so.store_id`）约束而分母 `reg` 不受。
+顾客 X 绑定 A，本月在 A、B 各到店 1 天：集团/市场视图 `days = 2` → 计入 A 行「回店2次」；
+切到单门店 A 时 `days = 1` → 计入 A 行「回店1次」。而分母两种 scope 下**完全相同**
+⇒ **同一门店行的达成率在集团视图恒 ≥ 单店视图**，表头无提示。
+生产实测跨店服务 27 人，影响 3 家门店各 1 人。另行登记，本轮不动。
+
+**③ `became_member_at::date` 依赖会话时区（#291 同族）。**
+`became_member_at` 是 `timestamptz`，`timestamptz::date` 走会话 `TimeZone`；
+同仓正解范式是 `visit-days.ts` 对 `paid_at` 写的 `(... AT TIME ZONE 'Asia/Shanghai')::date`。
+本轮两处新守卫**照既有 14 处的写法**（不带 `AT TIME ZONE`），因为改成异体会破坏与 `reg` 的逐字同源。
+分层结论：**包含关系不受影响**（同列同表达式同 `end`，分子分母一起漂，⊆ 恒成立，不会 >100%）；
+但**绝对数会错**（`so.service_date` 是裸 `date` 不受影响，只有会员侧偏移）。
+当前不炸靠 server 默认 `Asia/Shanghai`（migration 0028 锁定），是**环境依赖的正确**，归 #291 一并收口。
+
+> **验收看不变量不看绝对值**：上面的百分比每日漂移。判对错看
+> ①「任取跨度 > 90 天的区间，0 家门店 > 100%」②「`endDate = 今天` 时回店1次/2次人数与改前逐店相等」
+> （证明只修历史区间、不动当期数字）③ 集团合计 = Σ 各门店。
+
+> 代价（拍板时已知悉）：分母含大量早已流失的历史会员，比率偏低且随时间单调下降，
+> 门店之间的区分度部分来自开店年限而非本期经营。
+
+**守护**：`fengyu-admin/src/actions/data-center/__tests__/consistency.customer.test.ts` 第 9 组
+（分母 `reg` 整段快照 + 会员守卫从分母**现读**再断言逐字出现在两处分子 + 分母取 `registered` + 表头标注 + 6 条反向变异）。
 
 #### 月度客活 `client_wechat_users.monthly_activity`（顾客列表筛选项）
 
@@ -798,6 +893,7 @@ SELECT COUNT(*) FROM org_nodes WHERE type='store' [AND parent_id=$market]
 | 2026-09-24 | **D-card-same-source 确立（#287）**：持卡占比分子分母此前**两个维度都不同源** —— ① 分子统计全部顾客、分母只统计会员（分子里 60.8% 的人永不可能进分母）；② 分子按 `so.store_id`（订单所属门店）归店、分母按 `c.bound_store_id`（顾客绑定门店）归店。集团占比恒 **253%**、单店最高 **2600%**、40 家在营门店 36 家 > 100%。**只修 ① 不够**（实测仍 7 家 > 100%、最高 104.55%）；两条都修后 **0 家 > 100%、最高正好 100.00%**，admin 侧集团 **1917 / 1931 = 99.27%**（2026-09-24 实测，含 `activeStoreCondition`；数字每日漂移，**验收看不变量不看绝对值**）。写法上 admin 用「分母壳 + `EXISTS`」、staff 因需 `GROUP BY pc.product_kind` 用「会员表驱动 + `COUNT(DISTINCT c.user_id)`」，两端 scope 均走 `bound_store_id`。⚠️ 该列修正后各店在 95.83%~100% 之间、**已失去区分度，勿用于门店排名**（旧列的店间方差全部来自非会员数量）。两端同步：`product.ts::queryCardHolders/queryCardHoldersByStore` + `mgmt-product.js::cardSql` |
 | 2026-09-25 | **一次/二次客活改按到店天数（#298）**：由服务单行数 `COUNT(*)` 改为 `COUNT(DISTINCT service_date)`，去重键 `(client_user_id, service_date)`，日期轴拍板为 `service_date`；admin 数据中心（KPI + 明细）与 staff mgmt-traffic 同步。补登 `monthly_activity` 口径（此前在本文档完全缺席，是两套定义分叉的根因）。prod 2026-09-01~09-24 集团一次/二次 527/982 → 590/919，63 人由「二次」回到「一次」 |
 | 2026-09-25 | **经营数据主表补齐 E–I、K–M、S–U、Y（#373）**：保有会员按「保有会员-*」时点还原（= 客量板有效保有会员，绑定门店）；被经营 = 当期（当月 / 年初至今）销售 + 转换单款项 ≥ 会员门槛、按下单门店；客流改「服务到店天数」、售前 = 当天核销体验项、Y = X/U。prod 自贡 2026-08 实测（2026-09-25）：E/F/H = 237/226/168，K/L = 82/77（含充值则 L = 83），S/T/U = 1,642/89/1,553（与 issue 参考值一致） |
+| 2026-09-25 | **1次/2次达成率分母改为会员注册数（#414，用户拍板）**：原分母 `retained`（保有会员，末 90 天窗口）与分子是同一批人 —— 生产实测两池各 1889、双向差集 0，36 家有数据门店 `1次达成率+2次达成率` **精确恒等 100.0%**，两列不携带「达成」信息。改用 `registered`（会员注册截面）。同轮给分子（KPI `queryActive` + 明细 `visit_count`）补上与分母逐字相同的会员守卫 `became_member_at IS NOT NULL AND ::date <= endDate` —— `customer_status` 是 cron 的**当前**截面、不随 `endDate` 回溯，缺守卫时「入会晚于区间终点」的人进分子不进分母（2026-07-08~07-31 实测 36 人，九江丽都店 7/7 = 100.0%；补后单店最高 62.7%、集团 24.3%）。**`endDate = 今天` 时 admin 当期数字一人不变**，只修历史区间；staff 同步补同一条守卫（仅 `lastMonth` 受影响：一次 511→486 / 二次 894→847，合计 −72 人），**merge 后须同批 deploy staffApi**。明细/导出表头改为「1次达成率(÷会员注册)」。另登记两处**当时未显形**的同源缺陷：窗口错配（服务单最早 2026-07-08，**2026-10-06 起**选跨度 > 90 天的区间会 >100%；模拟 78 天:30 天几何实测 29/36 家 >100%、最高 135.3%、集团 117.5%）与归店维度（跨店服务 27 人，影响 3 家各 1 人在 1次/2次 档间移动）。口径详见本文 D-visit-rate-denom |
 | 2026-09-25 | **客量板会员门槛读配置（#292）**：会员被经营 6 档的最低档下界与「会员经营人数」门槛由写死的 `1990` 改读 `system_configs.new_member_threshold`（与品项板同源），1w/3w/6w/10w 收敛到 `SPEND_BUCKET_FLOORS`；admin 与 staffApi 同步。prod/dev 当前配置均为 1990，上线后数字不变。标签保持写死；门槛须 < 1w（不加校验，仅文档化） |
 | 2026-09-25 | **数据中心「在营门店」口径收敛（#401）**：取数、范围下拉、#293 停用空态统一**只看 `org_nodes.is_active`**；`stores.is_closed` / `closed_at` 只作营业时间轴（门店数按 `closed_at` 时点历史化），不作统计范围——否则关店会抹掉关店前全部历史业绩。关店不联动停用节点。单源：admin `lib/store-status.ts` / staff `utils/store-status.js`（独立副本，`cross-end-store-status-snapshot.test.js` 守护：is_closed 闭集 + closed_at 白名单 + mgmt-*.js 分类闭集）。连带：①「只关店、节点仍启用」的门店进入两端范围下拉；② staff 客量页 / 品项页补在营过滤（此前不排除停用门店，与 admin 分叉）；③ staff 月店均月末 0 店返回 `null`（前端 `--`）。「可营业」口径（前台门店列表 / 库存位 / 提货）不变 |
 | 2026-09-25 | **数据中心范围支持门店多选（#376）**：新增「多店」范围 `scope=stores&scopeId=a,b`（单 key 逗号串，升序去重，≤200 家）。规范化：全选 → 总部 `all` / 非总部 `authorized`；恰好勾满单个市场 → `market`（范围面板里勾满只有 1 家店的市场也记为 `market`，与旧下拉「选市场」一致）；其余 1 家 → `store`；含停用门店不折叠。服务端所选门店须全在授权门店内，否则 `PERMISSION_DENIED`。无门店员工按「锚定市场下至少有一家所选在营门店」可见（⚠️ 单店仍恒不可见，1 家与 2 家之间有此跳变，是拍板语义；变体：所选多店部分停用、只剩 1 家在营时仍按多店判定，锚定员工可见）。所选全部停用 → #293 空态；部分停用 → 只算在营部分并提示。超管 `all` ≠ 全部在营门店的 `stores`（后者不含品项公司等无门店市场的锚定员工），故全选必须折叠成 `all`。dev 库对账：全选 / 勾满单市场与改造前 authorized / market 在 4 板块 + 5 新页逐项一致 |

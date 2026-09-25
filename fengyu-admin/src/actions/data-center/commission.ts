@@ -19,6 +19,7 @@ import { firstQueryValue, parseScope, scopeToParams } from '@/lib/data-center/pa
 import { parseReportMonth } from '@/lib/data-center/report-period'
 import { shanghaiToday } from '@/lib/data-center/time-range'
 import { technicianCountSql } from '@/lib/data-center/technician-sql'
+import { scopeHasStoreSql } from '@/lib/data-center/scope-sql'
 import {
   assembleCommissionMatrix,
   commissionFilterSignature,
@@ -108,6 +109,11 @@ export interface CommissionDailyKpis {
   employees: number
   /** 人均提成分母：产能技师数，与人效板 technicianCount 同源（#285 单源） */
   technicianCount: number
+  /**
+   * 范围内没有在营门店（#423 方案 A）：提成按门店统计恒 0、分母却含直挂技师，人均不适用 → perTechnician 为 null。
+   * 与人效板 `noStoreScope` 同一判定（门店骨架）。
+   */
+  noStoreScope: boolean
   perTechnician: number | null
   /** 去重订单数（销售单号 + 服务单号，含 0 提成订单） */
   orders: number
@@ -141,10 +147,11 @@ export const getCommissionDaily = withAllPermissions(
     // 人均分母按区间末在职历史化；本月未走完时截到今天（与人效板「本月」同口径）
     const technicianEnd = range.end > today ? today : range.end
 
-    const [matrixRows, kpiRows, technicianRows, pendingRows, scopeName] = await Promise.all([
+    const [matrixRows, kpiRows, technicianRows, hasStoreRows, pendingRows, scopeName] = await Promise.all([
       db.execute(commissionMatrixSql(session, scope, range, grain, options)),
       db.execute(commissionKpiSql(session, scope, range)),
       db.execute(technicianCountSql(session, scope, technicianEnd)),
+      db.execute(scopeHasStoreSql(session, scope)),
       db.execute(pendingAllocationSql(session, scope, range)),
       resolveScopeName(scope),
     ])
@@ -159,6 +166,7 @@ export const getCommissionDaily = withAllPermissions(
     const total = sale + service
     const orders = toNumber(kpi.orders)
     const technicianCount = toNumber(rowsOf(technicianRows)[0]?.v)
+    const noStoreScope = rowsOf(hasStoreRows)[0]?.has_store !== true
     const pending = rowsOf(pendingRows)[0] ?? {}
 
     return {
@@ -180,7 +188,8 @@ export const getCommissionDaily = withAllPermissions(
         earningEmployees: toNumber(kpi.earning_employees),
         employees: toNumber(kpi.employees),
         technicianCount,
-        perTechnician: ratio(total, technicianCount),
+        noStoreScope,
+        perTechnician: noStoreScope ? null : ratio(total, technicianCount),
         orders,
         perOrder: ratio(total, orders),
       },

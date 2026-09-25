@@ -270,8 +270,14 @@ describe('getCustomerBoard 装配', () => {
     expect(m.metrics.newCustomerAvgTicket).toBe(4000)
     // 成交率 = 2 / 5 = 0.4
     expect(m.metrics.convRate).toBeCloseTo(0.4, 5)
-    // 1 次达成率 = 3 / 8 = 0.375
-    expect(m.metrics.visitOnceRate).toBeCloseTo(0.375, 5)
+    // #414：达成率分母 = registered(10)，不是 retained(8)。
+    // 夹具刻意让两者不等（10 ≠ 8），回退到 retained 会得 0.375 / 0.25 → 红。
+    // 1 次达成率 = 3 / 10 = 0.3；2 次达成率 = 2 / 10 = 0.2
+    expect(m.metrics.visitOnceRate).toBeCloseTo(0.3, 5)
+    expect(m.metrics.visitTwiceRate).toBeCloseTo(0.2, 5)
+    // 分母确实取的是 registered 这一列（而非碰巧相等的别的列）
+    expect(m.metrics.registered).toBe(10)
+    expect(m.metrics.retained).toBe(8)
     // #298：visit_once / visit_twice 列不得对调
     expect(m.metrics.visitOnce).toBe(3)
     expect(m.metrics.visitTwice).toBe(2)
@@ -291,12 +297,101 @@ describe('getCustomerBoard 装配', () => {
     expect(res.kpis.visitTwice.value).toBe(22)
   })
 
+  /**
+   * #414：客活分子（KPI 2 条 + 明细 2 条）必须都带会员守卫。
+   *
+   * 这里用**闭集**写法——「凡是含到店天数指纹 `COUNT(DISTINCT vd.visit_date)` 的查询，
+   * 逐条都必须带守卫」，而不是逐条点名。点名式漏掉将来新增的第 5 条副本也不会红；
+   * 并且条数先断言为恰好 4，防「一条都没匹配到」的 fail-open（正则失配时 for 循环空跑必绿）。
+   */
+  it('#414 每条客活分子查询都带会员守卫 became_member_at（与 registered 分母同源）', async () => {
+    const seen: string[] = []
+    responder.route = (t) => {
+      seen.push(t)
+      return undefined
+    }
+    responder.skeletonRows = [
+      { market_id: 'm1', market_name: '市场A', store_id: 's1', store_name: '门店1' },
+    ]
+    await getCustomerBoard(PARAMS)
+    responder.route = undefined
+
+    const GUARD = /AND c\.became_member_at IS NOT NULL\s+AND c\.became_member_at::date <=/
+    const visitQueries = seen.filter((t) => /COUNT\(DISTINCT vd\.visit_date\)/.test(t))
+    // KPI queryActive once/twice + 明细 queryRegActiveBreakdown market/store
+    expect(visitQueries).toHaveLength(4)
+
+    // KPI 两条：整条 SQL 里只有一处会员守卫，直接断言即可
+    const kpi = visitQueries.filter((t) => !/WITH skel/.test(t))
+    expect(kpi).toHaveLength(2)
+    for (const t of kpi) expect(t).toMatch(GUARD)
+
+    // ⚠ 明细两条**不能**对整条 SQL 断言：同一条里 reg / ret / anchor_stats 各自也有这条谓词，
+    // 分母 reg 自己就能满足 —— 把 visit_count 的守卫删光照样绿（pr-ready boundary P2-3）。
+    // 必须切到 visit_count 段内再断言。
+    const detail = visitQueries.filter((t) => /WITH skel/.test(t))
+    expect(detail).toHaveLength(2)
+    for (const t of detail) {
+      const from = t.indexOf('visit_count AS (')
+      const to = t.indexOf('active AS (', from + 1)
+      expect(from).toBeGreaterThan(0)
+      expect(to).toBeGreaterThan(from)
+      expect(t.slice(from, to)).toMatch(GUARD)
+    }
+  })
+
+  /**
+   * #414 分子 ⊄ 分母时**唯一**的可观测症状：某店 `registered = 0` 而 `visitOnce > 0`。
+   * `safeDiv` 会把分母 0 静默吞成 null → UI 显示 `--`，与「本期无会员」的正常空态完全同形，
+   * 无人会报障（pr-ready boundary P2-2；#284 的 convRate 已为同一不变量写过这个态）。
+   * 这里钉住：不得出现 Infinity / NaN，且计数列如实透传（不被比率的 null 连带抹成 0）。
+   */
+  it('#414 registered=0 而 visitOnce>0：两率为 null 而非 Infinity，计数如实透传', async () => {
+    responder.scalarRow = { v: 0, total_count: 0, total_spend: 0 }
+    responder.skeletonRows = [
+      { market_id: 'm1', market_name: '市场A', store_id: 's1', store_name: '门店1' },
+    ]
+    const bad = {
+      registered: 0, retained: 5, visit_once: 2, visit_twice: 1,
+      dormant: 0, react_dormant: 0, frozen: 0, react_frozen: 0, deep: 0, react_deep: 0,
+    }
+    responder.regActiveRows = [
+      { group_id: 'm1', group_name: '市场A', market_name: '市场A', ...bad },
+      { group_id: 's1', group_name: '门店1', market_name: '市场A', ...bad },
+    ]
+    responder.opsRows = []
+
+    const m = (await getCustomerBoard(PARAMS)).byMarket[0]
+    expect(m.metrics.visitOnceRate).toBeNull()
+    expect(m.metrics.visitTwiceRate).toBeNull()
+    expect(Number.isFinite(m.metrics.visitOnceRate as number)).toBe(false)
+    expect(m.metrics.visitOnce).toBe(2)
+    expect(m.metrics.visitTwice).toBe(1)
+    // 回退到 retained(5) 会得 0.4 / 0.2 —— 这条同时钉死分母不是 retained
+    expect(m.metrics.retained).toBe(5)
+  })
+
+  it('#414 骨架有行但聚合无对应行（ra undefined）：计数归 0、两率 null', async () => {
+    responder.scalarRow = { v: 0, total_count: 0, total_spend: 0 }
+    responder.skeletonRows = [
+      { market_id: 'm1', market_name: '市场A', store_id: 's1', store_name: '门店1' },
+    ]
+    responder.regActiveRows = []
+    responder.opsRows = []
+
+    const m = (await getCustomerBoard(PARAMS)).byMarket[0]
+    expect(m.metrics.registered).toBe(0)
+    expect(m.metrics.visitOnce).toBe(0)
+    expect(m.metrics.visitOnceRate).toBeNull()
+    expect(m.metrics.visitTwiceRate).toBeNull()
+  })
+
   it('明细派生防除零：分母 0 → null', async () => {
     responder.scalarRow = { v: 0, total_count: 0, total_spend: 0 }
     responder.skeletonRows = [
       { market_id: 'm1', market_name: '市场A', store_id: 's1', store_name: '门店1' },
     ]
-    // retained=0 → 达成率 null
+    // registered=0 → 达成率 null（#414 起分母是 registered）
     responder.regActiveRows = [
       { group_id: 'm1', group_name: '市场A', market_name: '市场A', registered: 0, retained: 0, visit_once: 0, visit_twice: 0, dormant: 0, react_dormant: 0, frozen: 0, react_frozen: 0, deep: 0, react_deep: 0 },
       { group_id: 's1', group_name: '门店1', market_name: '市场A', registered: 0, retained: 0, visit_once: 0, visit_twice: 0, dormant: 0, react_dormant: 0, frozen: 0, react_frozen: 0, deep: 0, react_deep: 0 },

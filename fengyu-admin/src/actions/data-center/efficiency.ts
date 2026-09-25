@@ -851,14 +851,23 @@ export const getEfficiencyBoard = withPermission(
 
     const mk = (value: number | null, unit: 'amount' | 'count'): KpiCell => ({ value, unit })
 
+    /**
+     * 无门店范围（#423 方案 A）：骨架无在营门店时，技师人均的分子（门店口径）恒 0、分母却含直挂技师，
+     * `0 / N` 与员工榜对不上 → 一律给 null（前端「--」+ 说明）。骨架与 `scopeHasStoreSql` 同源。
+     * 店长人均两项不用管：无门店时店长数必为 0，`ratio` 已返回 null。
+     */
+    const scopeHasStore = (skelRows as unknown[]).length > 0
+    const perTechnician = (num: number): number | null =>
+      scopeHasStore ? ratio(num, technicianCount) : null
+
     const kpis: Record<string, KpiCell> = {
       managerAvgMembers: mk(ratio(memberCount, managerCount), 'count'),
       managerAvgEmployees: mk(ratio(technicianCount, managerCount), 'count'),
-      empAvgRevenue: mk(ratio(revenueTotal, technicianCount), 'amount'),
-      empAvgConsume: mk(ratio(consumeTotal, technicianCount), 'amount'),
-      empAvgIncome: mk(ratio(incomeTotal, technicianCount), 'amount'),
-      empAvgMembers: mk(ratio(footfallTotal, technicianCount), 'count'),
-      empAvgProjects: mk(ratio(projectCountTotal, technicianCount), 'count'),
+      empAvgRevenue: mk(perTechnician(revenueTotal), 'amount'),
+      empAvgConsume: mk(perTechnician(consumeTotal), 'amount'),
+      empAvgIncome: mk(perTechnician(incomeTotal), 'amount'),
+      empAvgMembers: mk(perTechnician(footfallTotal), 'count'),
+      empAvgProjects: mk(perTechnician(projectCountTotal), 'count'),
     }
 
     // ── byMarket 装配（事件指标按门店汇总；客流直接取市场去重值）─────────
@@ -875,6 +884,8 @@ export const getEfficiencyBoard = withPermission(
     type MarketAgg = {
       marketId: string
       marketName: string
+      /** 骨架里该市场的在营门店数；0 = 无门店市场（品项公司等），技师人均给 null（#423） */
+      storeCount: number
       managerCount: number
       technicianCount: number
       revenue: number
@@ -890,6 +901,7 @@ export const getEfficiencyBoard = withPermission(
         m = {
           marketId,
           marketName,
+          storeCount: 0,
           managerCount: 0,
           technicianCount: 0,
           revenue: 0,
@@ -906,6 +918,7 @@ export const getEfficiencyBoard = withPermission(
     for (const r of skelRows as Array<Record<string, unknown>>) {
       const storeId = String(r.store_id)
       const m = marketRowOf(String(r.market_id ?? ''), String(r.market_name ?? ''))
+      m.storeCount += 1
       m.managerCount += managerMap.get(storeId) ?? 0
       m.technicianCount += techMap.get(storeId) ?? 0
       m.revenue += revMap.get(storeId) ?? 0
@@ -931,21 +944,27 @@ export const getEfficiencyBoard = withPermission(
       m.technicianCount += Number(r.v ?? 0)
     }
 
-    const byMarket: BreakdownRow[] = Array.from(marketMap.values()).map((m) => ({
-      groupId: m.marketId,
-      groupName: m.marketName,
-      metrics: {
-        managerCount: m.managerCount,
-        managerAvgIncome: ratio(m.income, m.managerCount),
-        technicianCount: m.technicianCount,
-        techAvgRevenue: ratio(m.revenue, m.technicianCount),
-        techAvgConsume: ratio(m.consume, m.technicianCount),
-        techAvgShengmeiConsume: ratio(m.shengmeiConsume, m.technicianCount),
-        techAvgIncome: ratio(m.income, m.technicianCount),
-        techAvgMembers: ratio(footfallByMarketMap.get(m.marketId) ?? 0, m.technicianCount),
-        techAvgProjects: ratio(m.projectCount, m.technicianCount),
-      },
-    }))
+    const marketRows = Array.from(marketMap.values())
+    const byMarket: BreakdownRow[] = marketRows.map((m) => {
+      // 与顶部 KPI 同一条（#423）：该市场没有在营门店 → 门店口径分子恒 0，技师人均不适用
+      const perTech = (num: number): number | null =>
+        m.storeCount > 0 ? ratio(num, m.technicianCount) : null
+      return {
+        groupId: m.marketId,
+        groupName: m.marketName,
+        metrics: {
+          managerCount: m.managerCount,
+          managerAvgIncome: ratio(m.income, m.managerCount),
+          technicianCount: m.technicianCount,
+          techAvgRevenue: perTech(m.revenue),
+          techAvgConsume: perTech(m.consume),
+          techAvgShengmeiConsume: perTech(m.shengmeiConsume),
+          techAvgIncome: perTech(m.income),
+          techAvgMembers: perTech(footfallByMarketMap.get(m.marketId) ?? 0),
+          techAvgProjects: perTech(m.projectCount),
+        },
+      }
+    })
 
     // ── 排名榜装配（assignRanks 并列跳号）──────────────────────────────
     const mapStoreRank = (rows: unknown): RankingRow[] =>
@@ -1015,6 +1034,8 @@ export const getEfficiencyBoard = withPermission(
     return {
       ...ctx.meta,
       kpis,
+      noStoreScope: !scopeHasStore,
+      noStoreMarkets: marketRows.filter((m) => m.storeCount === 0).map((m) => m.marketName),
       byMarket,
       byStaff,
       storeRankings,

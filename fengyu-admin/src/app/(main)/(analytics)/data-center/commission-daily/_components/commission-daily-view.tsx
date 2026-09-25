@@ -168,7 +168,11 @@ export function CommissionDailyView({ data, today }: { data: CommissionDailyResu
         <KpiCard
           label="人均提成"
           cell={{ value: kpis.perTechnician, unit: "amount" }}
-          hint={`÷ 产能技师 ${formatCount(kpis.technicianCount)} 人（同人效板；非超管的总部账号不含无门店市场的直挂技师）`}
+          hint={
+            kpis.noStoreScope
+              ? `当前范围内没有在营门店，提成按门店统计，人均不适用（产能技师 ${formatCount(kpis.technicianCount)} 人）`
+              : `÷ 产能技师 ${formatCount(kpis.technicianCount)} 人（同人效板；非超管的总部账号不含无门店市场的直挂技师）`
+          }
         />
         <KpiCard label="单均提成" cell={{ value: kpis.perOrder, unit: "amount" }} hint={`÷ ${formatCount(kpis.orders)} 单（含 0 提成订单）`} />
       </div>

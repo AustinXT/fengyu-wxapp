@@ -148,6 +148,10 @@ export interface CustomerBoardResult extends BoardMeta {
 /** 人效板块 */
 export interface EfficiencyBoardResult extends BoardMeta {
   kpis: Record<string, KpiCell>
+  /** 范围内没有在营门店（#423）：技师人均 KPI 均为 null，前端显示「--」并加说明 */
+  noStoreScope: boolean
+  /** byMarket 中没有在营门店的市场名（品项公司等），这些行的技师人均为 null（#423） */
+  noStoreMarkets: string[]
   byMarket: BreakdownRow[]
   /** 按技师人效明细（员工粒度，labels 带门店/职级；metrics = 当月业绩 + 销售额按
    *  salesCategoryEnum 4 枚举值拆分 + 实耗合计 + 纳客数/项目数/服务人头/服务人次） */
