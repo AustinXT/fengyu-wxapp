@@ -182086,7 +182086,7 @@ function parseOperatingMasterExportScope(raw) {
       throw new Error("INVALID_PARAMS: 导出范围缺少类型");
     return { type: "all" };
   }
-  if (raw.scope === "authorized")
+  if (raw.scope === "authorized" && !raw.scopeId)
     return { type: "authorized" };
   if ((raw.scope === "market" || raw.scope === "store") && raw.scopeId)
     return { type: raw.scope, id: raw.scopeId };
