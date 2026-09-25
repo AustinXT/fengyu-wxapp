@@ -93891,8 +93891,8 @@ var require_column2 = __commonJS((exports, module) => {
     set header(value2) {
       if (value2 !== undefined) {
         this._header = value2;
-        this.headers.forEach((text6, index3) => {
-          this._worksheet.getCell(index3 + 1, this.number).value = text6;
+        this.headers.forEach((text7, index3) => {
+          this._worksheet.getCell(index3 + 1, this.number).value = text7;
         });
       } else {
         this._header = undefined;
@@ -107517,16 +107517,16 @@ var require_utils15 = __commonJS((exports, module) => {
       const path = utils6.parsePath(filepath);
       return `${path.path}/_rels/${path.name}.rels`;
     },
-    xmlEncode(text6) {
-      const regexResult = xmlDecodeRegex.exec(text6);
+    xmlEncode(text7) {
+      const regexResult = xmlDecodeRegex.exec(text7);
       if (!regexResult)
-        return text6;
+        return text7;
       let result = "";
       let escape3 = "";
       let lastIndex = 0;
       let i = regexResult.index;
-      for (;i < text6.length; i++) {
-        const charCode = text6.charCodeAt(i);
+      for (;i < text7.length; i++) {
+        const charCode = text7.charCodeAt(i);
         switch (charCode) {
           case 34:
             escape3 = "&quot;";
@@ -107555,17 +107555,17 @@ var require_utils15 = __commonJS((exports, module) => {
           }
         }
         if (lastIndex !== i)
-          result += text6.substring(lastIndex, i);
+          result += text7.substring(lastIndex, i);
         lastIndex = i + 1;
         if (escape3)
           result += escape3;
       }
       if (lastIndex !== i)
-        return result + text6.substring(lastIndex, i);
+        return result + text7.substring(lastIndex, i);
       return result;
     },
-    xmlDecode(text6) {
-      return text6.replace(/&([a-z]*);/g, (c) => {
+    xmlDecode(text7) {
+      return text7.replace(/&([a-z]*);/g, (c) => {
         switch (c) {
           case "&lt;":
             return "<";
@@ -107653,12 +107653,12 @@ var require_string_buf = __commonJS((exports, module) => {
       this._buf.copy(buf, 0);
       this._buf = buf;
     }
-    addText(text6) {
+    addText(text7) {
       this._buffer = undefined;
-      let inPos = this._inPos + this._buf.write(text6, this._inPos, this._encoding);
+      let inPos = this._inPos + this._buf.write(text7, this._inPos, this._encoding);
       while (inPos >= this._buf.length - 4) {
-        this._grow(this._inPos + text6.length);
-        inPos = this._inPos + this._buf.write(text6, this._inPos, this._encoding);
+        this._grow(this._inPos + text7.length);
+        inPos = this._inPos + this._buf.write(text7, this._inPos, this._encoding);
       }
       this._inPos = inPos;
     }
@@ -108097,14 +108097,14 @@ var require_xml_stream = __commonJS((exports, module) => {
       }
       pushAttributes(this._xml, attrs);
     }
-    writeText(text6) {
+    writeText(text7) {
       const xml = this._xml;
       if (this.open) {
         xml.push(CLOSE_ANGLE);
         this.open = false;
       }
       this.leaf = false;
-      xml.push(utils6.xmlEncode(text6.toString()));
+      xml.push(utils6.xmlEncode(text7.toString()));
     }
     writeXml(xml) {
       if (this.open) {
@@ -108127,10 +108127,10 @@ var require_xml_stream = __commonJS((exports, module) => {
       this.open = false;
       this.leaf = false;
     }
-    leafNode(name, attributes, text6) {
+    leafNode(name, attributes, text7) {
       this.openNode(name, attributes);
-      if (text6 !== undefined) {
-        this.writeText(text6);
+      if (text7 !== undefined) {
+        this.writeText(text7);
       }
       this.closeNode();
     }
@@ -109569,10 +109569,10 @@ var require_saxes = __commonJS((exports) => {
             case LESS: {
               this.state = S_OPEN_WAKA;
               if (handler !== undefined) {
-                const { text: text6 } = this;
+                const { text: text7 } = this;
                 const slice = chunk.slice(start, this.prevI);
-                if (text6.length !== 0) {
-                  handler(text6 + slice);
+                if (text7.length !== 0) {
+                  handler(text7 + slice);
                   this.text = "";
                 } else if (slice.length !== 0) {
                   handler(slice);
@@ -109639,10 +109639,10 @@ var require_saxes = __commonJS((exports) => {
             case LESS: {
               this.state = S_OPEN_WAKA;
               if (handler !== undefined) {
-                const { text: text6 } = this;
+                const { text: text7 } = this;
                 const slice = chunk.slice(start, this.prevI);
-                if (text6.length !== 0) {
-                  handler(text6 + slice);
+                if (text7.length !== 0) {
+                  handler(text7 + slice);
                   this.text = "";
                 } else if (slice.length !== 0) {
                   handler(slice);
@@ -109726,9 +109726,9 @@ var require_saxes = __commonJS((exports) => {
       if (this.state !== S_BEGIN && this.state !== S_TEXT) {
         this.fail("unexpected end.");
       }
-      const { text: text6 } = this;
-      if (text6.length !== 0) {
-        (_a = this.textHandler) === null || _a === undefined || _a.call(this, text6);
+      const { text: text7 } = this;
+      if (text7.length !== 0) {
+        (_a = this.textHandler) === null || _a === undefined || _a.call(this, text7);
         this.text = "";
       }
       this._closed = true;
@@ -109941,7 +109941,7 @@ var require_base_xform = __commonJS((exports, module) => {
     prepare() {}
     render() {}
     parseOpen(node) {}
-    parseText(text6) {}
+    parseText(text7) {}
     parseClose(name) {}
     reconcile(model, options) {}
     reset() {
@@ -110134,9 +110134,9 @@ var require_list_xform = __commonJS((exports, module) => {
           return false;
       }
     }
-    parseText(text6) {
+    parseText(text7) {
       if (this.parser) {
-        this.parser.parseText(text6);
+        this.parser.parseText(text7);
       }
     }
     parseClose(name) {
@@ -110288,9 +110288,9 @@ var require_integer_xform = __commonJS((exports, module) => {
       }
       return false;
     }
-    parseText(text6) {
+    parseText(text7) {
       if (!this.attr) {
-        this.text.push(text6);
+        this.text.push(text7);
       }
     }
     parseClose() {
@@ -110337,9 +110337,9 @@ var require_string_xform = __commonJS((exports, module) => {
         }
       }
     }
-    parseText(text6) {
+    parseText(text7) {
       if (!this.attr) {
-        this.text.push(text6);
+        this.text.push(text7);
       }
     }
     parseClose() {
@@ -110457,9 +110457,9 @@ var require_font_xform = __commonJS((exports, module) => {
           return false;
       }
     }
-    parseText(text6) {
+    parseText(text7) {
       if (this.parser) {
-        this.parser.parseText(text6);
+        this.parser.parseText(text7);
       }
     }
     parseClose(name) {
@@ -110585,9 +110585,9 @@ var require_fill_xform = __commonJS((exports, module) => {
           return false;
       }
     }
-    parseText(text6) {
+    parseText(text7) {
       if (this.parser) {
-        this.parser.parseText(text6);
+        this.parser.parseText(text7);
       }
     }
     parseClose(name) {
@@ -110689,9 +110689,9 @@ var require_fill_xform = __commonJS((exports, module) => {
           return false;
       }
     }
-    parseText(text6) {
+    parseText(text7) {
       if (this.parser) {
-        this.parser.parseText(text6);
+        this.parser.parseText(text7);
       }
     }
     parseClose(name) {
@@ -110752,9 +110752,9 @@ var require_fill_xform = __commonJS((exports, module) => {
           return false;
       }
     }
-    parseText(text6) {
+    parseText(text7) {
       if (this.parser) {
-        this.parser.parseText(text6);
+        this.parser.parseText(text7);
       }
     }
     parseClose(name) {
@@ -110857,9 +110857,9 @@ var require_border_xform = __commonJS((exports, module) => {
           return false;
       }
     }
-    parseText(text6) {
+    parseText(text7) {
       if (this.parser) {
-        this.parser.parseText(text6);
+        this.parser.parseText(text7);
       }
     }
     parseClose(name) {
@@ -110960,9 +110960,9 @@ var require_border_xform = __commonJS((exports, module) => {
           return false;
       }
     }
-    parseText(text6) {
+    parseText(text7) {
       if (this.parser) {
-        this.parser.parseText(text6);
+        this.parser.parseText(text7);
       }
     }
     parseClose(name) {
@@ -111482,9 +111482,9 @@ var require_style_xform = __commonJS((exports, module) => {
           return false;
       }
     }
-    parseText(text6) {
+    parseText(text7) {
       if (this.parser) {
-        this.parser.parseText(text6);
+        this.parser.parseText(text7);
       }
     }
     parseClose(name) {
@@ -111570,9 +111570,9 @@ var require_dxf_xform = __commonJS((exports, module) => {
           return true;
       }
     }
-    parseText(text6) {
+    parseText(text7) {
       if (this.parser) {
-        this.parser.parseText(text6);
+        this.parser.parseText(text7);
       }
     }
     parseClose(name) {
@@ -111740,9 +111740,9 @@ var require_styles_xform = __commonJS((exports, module) => {
           return true;
       }
     }
-    parseText(text6) {
+    parseText(text7) {
       if (this.parser) {
-        this.parser.parseText(text6);
+        this.parser.parseText(text7);
       }
     }
     parseClose(name) {
@@ -112052,9 +112052,9 @@ var require_date_xform = __commonJS((exports, module) => {
         }
       }
     }
-    parseText(text6) {
+    parseText(text7) {
       if (!this.attr) {
-        this.text.push(text6);
+        this.text.push(text7);
       }
     }
     parseClose() {
@@ -112144,9 +112144,9 @@ var require_core_xform = __commonJS((exports, module) => {
           throw new Error(`Unexpected xml node in parseOpen: ${JSON.stringify(node)}`);
       }
     }
-    parseText(text6) {
+    parseText(text7) {
       if (this.parser) {
-        this.parser.parseText(text6);
+        this.parser.parseText(text7);
       }
     }
     parseClose(name) {
@@ -112224,8 +112224,8 @@ var require_text_xform = __commonJS((exports, module) => {
           return false;
       }
     }
-    parseText(text6) {
-      this._text.push(text6);
+    parseText(text7) {
+      this._text.push(text7);
     }
     parseClose() {
       return false;
@@ -112284,9 +112284,9 @@ var require_rich_text_xform = __commonJS((exports, module) => {
           return false;
       }
     }
-    parseText(text6) {
+    parseText(text7) {
       if (this.parser) {
-        this.parser.parseText(text6);
+        this.parser.parseText(text7);
       }
     }
     parseClose(name) {
@@ -112340,8 +112340,8 @@ var require_phonetic_text_xform = __commonJS((exports, module) => {
       });
       if (model && model.hasOwnProperty("richText") && model.richText) {
         const { r } = this.map;
-        model.richText.forEach((text6) => {
-          r.render(xmlStream, text6);
+        model.richText.forEach((text7) => {
+          r.render(xmlStream, text7);
         });
       } else if (model) {
         this.map.t.render(xmlStream, model.text);
@@ -112368,9 +112368,9 @@ var require_phonetic_text_xform = __commonJS((exports, module) => {
       }
       return false;
     }
-    parseText(text6) {
+    parseText(text7) {
       if (this.parser) {
-        this.parser.parseText(text6);
+        this.parser.parseText(text7);
       }
     }
     parseClose(name) {
@@ -112430,8 +112430,8 @@ var require_shared_string_xform = __commonJS((exports, module) => {
       xmlStream.openNode(this.tag);
       if (model && model.hasOwnProperty("richText") && model.richText) {
         if (model.richText.length) {
-          model.richText.forEach((text6) => {
-            this.map.r.render(xmlStream, text6);
+          model.richText.forEach((text7) => {
+            this.map.r.render(xmlStream, text7);
           });
         } else {
           this.map.t.render(xmlStream, "");
@@ -112458,9 +112458,9 @@ var require_shared_string_xform = __commonJS((exports, module) => {
       }
       return false;
     }
-    parseText(text6) {
+    parseText(text7) {
       if (this.parser) {
-        this.parser.parseText(text6);
+        this.parser.parseText(text7);
       }
     }
     parseClose(name) {
@@ -112579,9 +112579,9 @@ var require_shared_strings_xform = __commonJS((exports, module) => {
           throw new Error(`Unexpected xml node in parseOpen: ${JSON.stringify(node)}`);
       }
     }
-    parseText(text6) {
+    parseText(text7) {
       if (this.parser) {
-        this.parser.parseText(text6);
+        this.parser.parseText(text7);
       }
     }
     parseClose(name) {
@@ -112669,9 +112669,9 @@ var require_relationships_xform = __commonJS((exports, module) => {
           throw new Error(`Unexpected xml node in parseOpen: ${JSON.stringify(node)}`);
       }
     }
-    parseText(text6) {
+    parseText(text7) {
       if (this.parser) {
-        this.parser.parseText(text6);
+        this.parser.parseText(text7);
       }
     }
     parseClose(name) {
@@ -112902,9 +112902,9 @@ var require_app_xform = __commonJS((exports, module) => {
           return false;
       }
     }
-    parseText(text6) {
+    parseText(text7) {
       if (this.parser) {
-        this.parser.parseText(text6);
+        this.parser.parseText(text7);
       }
     }
     parseClose(name) {
@@ -112963,8 +112963,8 @@ var require_defined_name_xform = __commonJS((exports, module) => {
           return false;
       }
     }
-    parseText(text6) {
-      this._parsedText.push(text6);
+    parseText(text7) {
+      this._parsedText.push(text7);
     }
     parseClose() {
       this.model = {
@@ -113266,9 +113266,9 @@ var require_workbook_xform = __commonJS((exports, module) => {
           return true;
       }
     }
-    parseText(text6) {
+    parseText(text7) {
       if (this.parser) {
-        this.parser.parseText(text6);
+        this.parser.parseText(text7);
       }
     }
     parseClose(name) {
@@ -113640,8 +113640,8 @@ var require_cell_xform = __commonJS((exports, module) => {
           } else if (model.value && model.value.richText) {
             xmlStream.addAttribute("t", "inlineStr");
             xmlStream.openNode("is");
-            model.value.richText.forEach((text6) => {
-              this.richTextXForm.render(xmlStream, text6);
+            model.value.richText.forEach((text7) => {
+              this.richTextXForm.render(xmlStream, text7);
             });
             xmlStream.closeNode("is");
           } else {
@@ -113706,21 +113706,21 @@ var require_cell_xform = __commonJS((exports, module) => {
           return false;
       }
     }
-    parseText(text6) {
+    parseText(text7) {
       if (this.parser) {
-        this.parser.parseText(text6);
+        this.parser.parseText(text7);
         return;
       }
       switch (this.currentNode) {
         case "f":
-          this.model.formula = this.model.formula ? this.model.formula + text6 : text6;
+          this.model.formula = this.model.formula ? this.model.formula + text7 : text7;
           break;
         case "v":
         case "t":
           if (this.model.value && this.model.value.richText) {
-            this.model.value.richText.text = this.model.value.richText.text ? this.model.value.richText.text + text6 : text6;
+            this.model.value.richText.text = this.model.value.richText.text ? this.model.value.richText.text + text7 : text7;
           } else {
-            this.model.value = this.model.value ? this.model.value + text6 : text6;
+            this.model.value = this.model.value ? this.model.value + text7 : text7;
           }
           break;
         default:
@@ -113966,9 +113966,9 @@ var require_row_xform = __commonJS((exports, module) => {
       }
       return false;
     }
-    parseText(text6) {
+    parseText(text7) {
       if (this.parser) {
-        this.parser.parseText(text6);
+        this.parser.parseText(text7);
       }
     }
     parseClose(name) {
@@ -114355,9 +114355,9 @@ var require_data_validations_xform = __commonJS((exports, module) => {
           return false;
       }
     }
-    parseText(text6) {
+    parseText(text7) {
       if (this._formula) {
-        this._formula.push(text6);
+        this._formula.push(text7);
       }
     }
     parseClose(name) {
@@ -114533,9 +114533,9 @@ var require_sheet_properties_xform = __commonJS((exports, module) => {
       }
       return false;
     }
-    parseText(text6) {
+    parseText(text7) {
       if (this.parser) {
-        this.parser.parseText(text6);
+        this.parser.parseText(text7);
         return true;
       }
       return false;
@@ -115369,25 +115369,25 @@ var require_header_footer_xform = __commonJS((exports, module) => {
           return false;
       }
     }
-    parseText(text6) {
+    parseText(text7) {
       switch (this.currentNode) {
         case "oddHeader":
-          this.model.oddHeader = text6;
+          this.model.oddHeader = text7;
           break;
         case "oddFooter":
-          this.model.oddFooter = text6;
+          this.model.oddFooter = text7;
           break;
         case "evenHeader":
-          this.model.evenHeader = text6;
+          this.model.evenHeader = text7;
           break;
         case "evenFooter":
-          this.model.evenFooter = text6;
+          this.model.evenFooter = text7;
           break;
         case "firstHeader":
-          this.model.firstHeader = text6;
+          this.model.firstHeader = text7;
           break;
         case "firstFooter":
-          this.model.firstFooter = text6;
+          this.model.firstFooter = text7;
           break;
         default:
           break;
@@ -115431,9 +115431,9 @@ var require_composite_xform = __commonJS((exports, module) => {
       }
       return false;
     }
-    parseText(text6) {
+    parseText(text7) {
       if (this.parser) {
-        this.parser.parseText(text6);
+        this.parser.parseText(text7);
       }
     }
     onParserClose(name, parser) {
@@ -115539,8 +115539,8 @@ var require_ext_lst_ref_xform = __commonJS((exports, module) => {
     parseOpen() {
       this.model = "";
     }
-    parseText(text6) {
-      this.model += text6;
+    parseText(text7) {
+      this.model += text7;
     }
     parseClose(name) {
       return name !== this.tag;
@@ -115612,8 +115612,8 @@ var require_formula_xform = __commonJS((exports, module) => {
     parseOpen() {
       this.model = "";
     }
-    parseText(text6) {
-      this.model += text6;
+    parseText(text7) {
+      this.model += text7;
     }
     parseClose(name) {
       return name !== this.tag;
@@ -116053,9 +116053,9 @@ var require_conditional_formattings_xform = __commonJS((exports, module) => {
           return false;
       }
     }
-    parseText(text6) {
+    parseText(text7) {
       if (this.parser) {
-        this.parser.parseText(text6);
+        this.parser.parseText(text7);
       }
     }
     parseClose(name) {
@@ -116542,8 +116542,8 @@ var require_f_ext_xform = __commonJS((exports, module) => {
     parseOpen() {
       this.model = "";
     }
-    parseText(text6) {
-      this.model += text6;
+    parseText(text7) {
+      this.model += text7;
     }
     parseClose(name) {
       return name !== this.tag;
@@ -116854,8 +116854,8 @@ var require_sqref_ext_xform = __commonJS((exports, module) => {
     parseOpen() {
       this.model = "";
     }
-    parseText(text6) {
-      this.model += text6;
+    parseText(text7) {
+      this.model += text7;
     }
     parseClose(name) {
       return name !== this.tag;
@@ -117351,9 +117351,9 @@ var require_worksheet_xform = __commonJS((exports, module) => {
       }
       return true;
     }
-    parseText(text6) {
+    parseText(text7) {
       if (this.parser) {
-        this.parser.parseText(text6);
+        this.parser.parseText(text7);
       }
     }
     parseClose(name) {
@@ -117518,9 +117518,9 @@ var require_base_cell_anchor_xform = __commonJS((exports, module) => {
       }
       return true;
     }
-    parseText(text6) {
+    parseText(text7) {
       if (this.parser) {
-        this.parser.parseText(text6);
+        this.parser.parseText(text7);
       }
     }
     reconcilePicture(model, options) {
@@ -117581,9 +117581,9 @@ var require_cell_position_xform = __commonJS((exports, module) => {
       }
       return true;
     }
-    parseText(text6) {
+    parseText(text7) {
       if (this.parser) {
-        this.parser.parseText(text6);
+        this.parser.parseText(text7);
       }
     }
     parseClose(name) {
@@ -118249,9 +118249,9 @@ var require_drawing_xform2 = __commonJS((exports, module) => {
       }
       return true;
     }
-    parseText(text6) {
+    parseText(text7) {
       if (this.parser) {
-        this.parser.parseText(text6);
+        this.parser.parseText(text7);
       }
     }
     parseClose(name) {
@@ -118485,9 +118485,9 @@ var require_auto_filter_xform2 = __commonJS((exports, module) => {
           throw new Error(`Unexpected xml node in parseOpen: ${JSON.stringify(node)}`);
       }
     }
-    parseText(text6) {
+    parseText(text7) {
       if (this.parser) {
-        this.parser.parseText(text6);
+        this.parser.parseText(text7);
       }
     }
     parseClose(name) {
@@ -118664,9 +118664,9 @@ var require_table_xform = __commonJS((exports, module) => {
       }
       return true;
     }
-    parseText(text6) {
+    parseText(text7) {
       if (this.parser) {
-        this.parser.parseText(text6);
+        this.parser.parseText(text7);
       }
     }
     parseClose(name) {
@@ -118735,8 +118735,8 @@ var require_comment_xform = __commonJS((exports, module) => {
       });
       xmlStream.openNode("text");
       if (model && model.note && model.note.texts) {
-        model.note.texts.forEach((text6) => {
-          this.richTextXform.render(xmlStream, text6);
+        model.note.texts.forEach((text7) => {
+          this.richTextXform.render(xmlStream, text7);
         });
       }
       xmlStream.closeNode();
@@ -118765,9 +118765,9 @@ var require_comment_xform = __commonJS((exports, module) => {
           return false;
       }
     },
-    parseText(text6) {
+    parseText(text7) {
       if (this.parser) {
-        this.parser.parseText(text6);
+        this.parser.parseText(text7);
       }
     },
     parseClose(name) {
@@ -118837,9 +118837,9 @@ var require_comments_xform = __commonJS((exports, module) => {
           return false;
       }
     },
-    parseText(text6) {
+    parseText(text7) {
       if (this.parser) {
-        this.parser.parseText(text6);
+        this.parser.parseText(text7);
       }
     },
     parseClose(name) {
@@ -118962,8 +118962,8 @@ var require_vml_anchor_xform = __commonJS((exports, module) => {
           return false;
       }
     }
-    parseText(text6) {
-      this.text = text6;
+    parseText(text7) {
+      this.text = text7;
     }
     parseClose() {
       return false;
@@ -118996,8 +118996,8 @@ var require_vml_protection_xform = __commonJS((exports, module) => {
           return false;
       }
     }
-    parseText(text6) {
-      this.text = text6;
+    parseText(text7) {
+      this.text = text7;
     }
     parseClose() {
       return false;
@@ -119097,9 +119097,9 @@ var require_vml_client_data_xform = __commonJS((exports, module) => {
       }
       return true;
     }
-    parseText(text6) {
+    parseText(text7) {
       if (this.parser) {
-        this.parser.parseText(text6);
+        this.parser.parseText(text7);
       }
     }
     parseClose(name) {
@@ -119181,9 +119181,9 @@ var require_vml_shape_xform = __commonJS((exports, module) => {
       }
       return true;
     }
-    parseText(text6) {
+    parseText(text7) {
       if (this.parser) {
-        this.parser.parseText(text6);
+        this.parser.parseText(text7);
       }
     }
     parseClose(name) {
@@ -119273,9 +119273,9 @@ var require_vml_notes_xform = __commonJS((exports, module) => {
       }
       return true;
     }
-    parseText(text6) {
+    parseText(text7) {
       if (this.parser) {
-        this.parser.parseText(text6);
+        this.parser.parseText(text7);
       }
     }
     parseClose(name) {
@@ -139677,9 +139677,9 @@ var require_worksheet_writer = __commonJS((exports, module) => {
     unprotect() {
       this.sheetProtection = null;
     }
-    _write(text6) {
+    _write(text7) {
       xmlBuffer.reset();
-      xmlBuffer.addText(text6);
+      xmlBuffer.addText(text7);
       this.stream.write(xmlBuffer);
     }
     _writeSheetProperties(xmlBuf, properties, pageSetup) {
@@ -153600,14 +153600,14 @@ var require_BigInteger = __commonJS((exports, module) => {
       }
       return low.add(Integer.fromArray(result, BASE, false));
     }
-    var parseBase = function(text6, base, alphabet, caseSensitive) {
+    var parseBase = function(text7, base, alphabet, caseSensitive) {
       alphabet = alphabet || DEFAULT_ALPHABET;
-      text6 = String(text6);
+      text7 = String(text7);
       if (!caseSensitive) {
-        text6 = text6.toLowerCase();
+        text7 = text7.toLowerCase();
         alphabet = alphabet.toLowerCase();
       }
-      var length = text6.length;
+      var length = text7.length;
       var i2;
       var absBase = Math.abs(base);
       var alphabetValues = {};
@@ -153615,7 +153615,7 @@ var require_BigInteger = __commonJS((exports, module) => {
         alphabetValues[alphabet[i2]] = i2;
       }
       for (i2 = 0;i2 < length; i2++) {
-        var c = text6[i2];
+        var c = text7[i2];
         if (c === "-")
           continue;
         if (c in alphabetValues) {
@@ -153628,17 +153628,17 @@ var require_BigInteger = __commonJS((exports, module) => {
       }
       base = parseValue(base);
       var digits = [];
-      var isNegative = text6[0] === "-";
-      for (i2 = isNegative ? 1 : 0;i2 < text6.length; i2++) {
-        var c = text6[i2];
+      var isNegative = text7[0] === "-";
+      for (i2 = isNegative ? 1 : 0;i2 < text7.length; i2++) {
+        var c = text7[i2];
         if (c in alphabetValues)
           digits.push(parseValue(alphabetValues[c]));
         else if (c === "<") {
           var start = i2;
           do {
             i2++;
-          } while (text6[i2] !== ">" && i2 < text6.length);
-          digits.push(parseValue(text6.slice(start + 1, i2)));
+          } while (text7[i2] !== ">" && i2 < text7.length);
+          digits.push(parseValue(text7.slice(start + 1, i2)));
         } else
           throw new Error(c + " is not a valid character");
       }
@@ -153779,16 +153779,16 @@ var require_BigInteger = __commonJS((exports, module) => {
         exp = +exp;
         if (exp !== truncate(exp) || !isPrecise(exp))
           throw new Error("Invalid integer: " + exp + " is not a valid exponent.");
-        var text6 = split[0];
-        var decimalPlace = text6.indexOf(".");
+        var text7 = split[0];
+        var decimalPlace = text7.indexOf(".");
         if (decimalPlace >= 0) {
-          exp -= text6.length - decimalPlace - 1;
-          text6 = text6.slice(0, decimalPlace) + text6.slice(decimalPlace + 1);
+          exp -= text7.length - decimalPlace - 1;
+          text7 = text7.slice(0, decimalPlace) + text7.slice(decimalPlace + 1);
         }
         if (exp < 0)
           throw new Error("Cannot include negative exponent part for integers");
-        text6 += new Array(exp + 1).join("0");
-        v = text6;
+        text7 += new Array(exp + 1).join("0");
+        v = text7;
       }
       var isValid2 = /^([0-9][0-9]*)$/.test(v);
       if (!isValid2)
@@ -155247,7 +155247,7 @@ var require_workbook_reader = __commonJS((exports, module) => {
         default:
           return;
       }
-      let text6 = null;
+      let text7 = null;
       let richText = [];
       let index3 = 0;
       let font = null;
@@ -155296,7 +155296,7 @@ var require_workbook_reader = __commonJS((exports, module) => {
               case "si":
                 font = null;
                 richText = [];
-                text6 = null;
+                text7 = null;
                 break;
               case "sz":
                 font = font || {};
@@ -155305,7 +155305,7 @@ var require_workbook_reader = __commonJS((exports, module) => {
               case "strike":
                 break;
               case "t":
-                text6 = null;
+                text7 = null;
                 break;
               case "u":
                 font = font || {};
@@ -155317,27 +155317,27 @@ var require_workbook_reader = __commonJS((exports, module) => {
                 break;
             }
           } else if (eventType === "text") {
-            text6 = text6 ? text6 + value2 : value2;
+            text7 = text7 ? text7 + value2 : value2;
           } else if (eventType === "closetag") {
             const node = value2;
             switch (node.name) {
               case "r":
                 richText.push({
                   font,
-                  text: text6
+                  text: text7
                 });
                 font = null;
-                text6 = null;
+                text7 = null;
                 break;
               case "si":
                 if (this.options.sharedStrings === "cache") {
-                  this.sharedStrings.push(richText.length ? { richText } : text6);
+                  this.sharedStrings.push(richText.length ? { richText } : text7);
                 } else if (this.options.sharedStrings === "emit") {
-                  yield { index: index3++, text: richText.length ? { richText } : text6 };
+                  yield { index: index3++, text: richText.length ? { richText } : text7 };
                 }
                 richText = [];
                 font = null;
-                text6 = null;
+                text7 = null;
                 break;
             }
           }
@@ -155419,7 +155419,7 @@ var require_excel = __commonJS((exports, module) => {
 
 // src/export-worker/index.ts
 init_db2();
-var import_drizzle_orm72 = __toESM(require_drizzle_orm(), 1);
+var import_drizzle_orm73 = __toESM(require_drizzle_orm(), 1);
 import { createReadStream } from "node:fs";
 import { mkdtemp, rm as rm2 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -159590,7 +159590,8 @@ var DATA_CENTER_BOARD_EXPORT_VIEWS = [
 var DATA_CENTER_REPORT_EXPORT_VIEWS = [
   "report-operating-master",
   "report-remaining-cards",
-  "report-daily-overview"
+  "report-daily-overview",
+  "report-customer-frequency"
 ];
 var REPORT_EXPORT_VIEW_SET = new Set(DATA_CENTER_REPORT_EXPORT_VIEWS);
 function isDataCenterReportExportView(view3) {
@@ -159632,7 +159633,8 @@ var DATA_CENTER_VIEW_REQUIRED_ACTIONS = {
   "efficiency-staff-ranking": [DATA_CENTER_DASHBOARD_ACTION],
   "report-operating-master": DATA_CENTER_REPORTS.operatingMaster.requiredActions,
   "report-remaining-cards": DATA_CENTER_REPORTS.remainingCards.requiredActions,
-  "report-daily-overview": DATA_CENTER_REPORTS.dailyOverview.requiredActions
+  "report-daily-overview": DATA_CENTER_REPORTS.dailyOverview.requiredActions,
+  "report-customer-frequency": DATA_CENTER_REPORTS.customerFrequency.requiredActions
 };
 var EXPORT_PERMISSION_ACTIONS = Array.from(new Set(Object.values(EXPORT_PERMISSIONS_BY_TYPE).flat()));
 var EXPORT_LABEL_BY_TYPE = {
@@ -159671,7 +159673,8 @@ function exportJobLabel(exportType, payload) {
     "efficiency-staff-ranking": "人效-员工排名榜",
     "report-operating-master": "经营数据主表",
     "report-remaining-cards": "顾客剩余卡项清单",
-    "report-daily-overview": "日常数据一览表"
+    "report-daily-overview": "日常数据一览表",
+    "report-customer-frequency": "顾客频率表"
   };
   return viewLabels[payload.view];
 }
@@ -179748,21 +179751,65 @@ var import_drizzle_orm65 = __toESM(require_drizzle_orm(), 1);
 
 // src/lib/data-center/visit-days.ts
 var import_drizzle_orm64 = __toESM(require_drizzle_orm(), 1);
-var VISIT_DAY_AXIS_COLUMN = {
-  service_date: "so.service_date"
+var VISIT_DAY_AXIS_WITH_PAYMENT = {
+  service_date: false,
+  service_or_payment: true
 };
-function visitDaysSql(opts) {
-  const column2 = Object.hasOwn(VISIT_DAY_AXIS_COLUMN, opts.axis) ? VISIT_DAY_AXIS_COLUMN[opts.axis] : undefined;
-  if (!column2)
-    throw new Error(`visitDaysSql: 未知日期轴 ${String(opts.axis)}`);
-  const col = import_drizzle_orm64.sql.raw(column2);
+var PAYMENT_VISIT_DAY = import_drizzle_orm64.sql.raw(`(sop.paid_at AT TIME ZONE 'Asia/Shanghai')::date`);
+function withPayment(axis) {
+  if (!Object.hasOwn(VISIT_DAY_AXIS_WITH_PAYMENT, axis))
+    throw new Error(`visitDaysSql: 未知日期轴 ${String(axis)}`);
+  return VISIT_DAY_AXIS_WITH_PAYMENT[axis];
+}
+function paymentVisitSource(scope, range) {
   return import_drizzle_orm64.sql`
+    FROM sale_order_payments sop
+    JOIN sale_orders so ON so.sale_order_id = sop.sale_order_id
+    WHERE ${scope}
+      AND sop.status = '已支付'
+      AND sop.change_type IN ('首次支付', '回款', '储值卡抵扣')
+      AND so.sale_order_type IN ('销售单', '转换单', '充值单')
+      AND so.client_user_id IS NOT NULL
+      AND ${PAYMENT_VISIT_DAY} BETWEEN ${range.start} AND ${range.end}
+  `;
+}
+function visitDaysSql(opts) {
+  const payment = withPayment(opts.axis);
+  const col = import_drizzle_orm64.sql.raw("so.service_date");
+  const serviceDays = import_drizzle_orm64.sql`
     SELECT DISTINCT so.client_user_id, ${col} AS visit_date
     FROM service_orders so
     WHERE ${opts.scope}
       AND so.status = '已完成'
       AND so.client_user_id IS NOT NULL
       AND ${col} BETWEEN ${opts.range.start} AND ${opts.range.end}
+  `;
+  if (!payment)
+    return serviceDays;
+  return import_drizzle_orm64.sql`
+    ${serviceDays}
+    UNION
+    SELECT so.client_user_id, ${PAYMENT_VISIT_DAY} AS visit_date
+    ${paymentVisitSource(opts.scope, opts.range)}
+  `;
+}
+function visitDayStoresSql(opts) {
+  const payment = withPayment(opts.axis);
+  const serviceStores = import_drizzle_orm64.sql`
+    SELECT so.client_user_id, so.service_date AS visit_date, so.store_id
+    FROM service_orders so
+    WHERE ${opts.scope}
+      AND so.status = '已完成'
+      AND so.client_user_id IS NOT NULL
+      AND so.service_date BETWEEN ${opts.range.start} AND ${opts.range.end}
+  `;
+  if (!payment)
+    return import_drizzle_orm64.sql`${serviceStores} GROUP BY 1, 2, 3`;
+  return import_drizzle_orm64.sql`
+    ${serviceStores}
+    UNION
+    SELECT so.client_user_id, ${PAYMENT_VISIT_DAY} AS visit_date, so.store_id
+    ${paymentVisitSource(opts.scope, opts.range)}
   `;
 }
 
@@ -181869,6 +181916,7 @@ var REPORT_RANGE_PRESET_LABELS = {
 };
 var DEFAULT_REPORT_RANGE_PRESET = "lastMonth";
 var MAX_CUSTOM_RANGE_DAYS = 366;
+var REPORT_MIN_MONTH = "2026-07";
 var DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
 var MONTH_RE = /^(\d{4})-(\d{2})$/;
 var MIN_YEAR = 2000;
@@ -181906,6 +181954,14 @@ function shiftMonth(month, n) {
 function monthLabel(month) {
   const [year2, mon] = month.split("-");
   return `${year2}年${Number(mon)}月`;
+}
+function defaultReportMonth(today = shanghaiToday()) {
+  const lastMonth = shiftMonth(today.slice(0, 7), -1);
+  return lastMonth < REPORT_MIN_MONTH ? REPORT_MIN_MONTH : lastMonth;
+}
+function parseReportMonth(raw, today = shanghaiToday()) {
+  const month = isValidMonth(raw.month) && raw.month <= today.slice(0, 7) ? raw.month : defaultReportMonth(today);
+  return { kind: "month", month, current: monthRange(month), label: monthLabel(month) };
 }
 function parseReportRange(raw, today = shanghaiToday()) {
   const preset = REPORT_RANGE_PRESETS.includes(raw.period ?? "") ? raw.period : DEFAULT_REPORT_RANGE_PRESET;
@@ -182055,6 +182111,25 @@ function computeMatrixTotals(columns3, rows, options) {
     totals[column2.key] = denominator > 0 ? numerator / denominator : null;
   }
   return totals;
+}
+function listMonthDays(month) {
+  const match = /^(\d{4})-(\d{2})$/.exec(month);
+  if (!match)
+    throw new Error(`INVALID_PARAMS: 月份格式应为 YYYY-MM：${month}`);
+  const year2 = Number(match[1]);
+  const monthIndex = Number(match[2]) - 1;
+  if (year2 < 1000 || monthIndex < 0 || monthIndex > 11)
+    throw new Error(`INVALID_PARAMS: 月份格式应为 YYYY-MM：${month}`);
+  const dayCount = new Date(Date.UTC(year2, monthIndex + 1, 0)).getUTCDate();
+  return Array.from({ length: dayCount }, (_2, offset) => {
+    const day2 = offset + 1;
+    const weekday = new Date(Date.UTC(year2, monthIndex, day2)).getUTCDay();
+    return {
+      date: `${match[1]}-${match[2]}-${String(day2).padStart(2, "0")}`,
+      day: day2,
+      weekend: weekday === 0 || weekday === 6
+    };
+  });
 }
 
 // src/lib/data-center/operating-master.ts
@@ -183688,7 +183763,402 @@ var exportRemainingCardsReport = withAllPermissions(DATA_CENTER_CUSTOMER_DETAIL_
   };
 });
 
+// src/actions/data-center/customer-frequency.ts
+init_with_permission();
+
+// src/lib/data-center/customer-frequency-query.ts
+init_db2();
+var import_drizzle_orm72 = __toESM(require_drizzle_orm(), 1);
+function text5(value) {
+  return value == null ? null : String(value);
+}
+function textArray(value) {
+  return Array.isArray(value) ? value.filter((item) => typeof item === "string" && item !== "") : [];
+}
+async function loadCustomerFrequencySource(session4, scope, range) {
+  const inCust = import_drizzle_orm72.sql`so.client_user_id IN (SELECT user_id FROM cust)`;
+  const rows = await db2.execute(import_drizzle_orm72.sql`
+    WITH cust AS (
+      SELECT c.user_id, c.name, c.phone,
+             c.member_level::text AS member_level, c.customer_type::text AS customer_type,
+             bs.store_name AS bound_store_name
+      FROM client_wechat_users c
+      LEFT JOIN stores bs ON bs.store_id = c.bound_store_id
+      WHERE ${scopeFilterSql(session4, scope, "c.bound_store_id")}
+    ),
+    visit_days AS (${visitDaysSql({ axis: "service_or_payment", scope: inCust, range })}),
+    visit_store_events AS (${visitDayStoresSql({ axis: "service_or_payment", scope: inCust, range })}),
+    amount_days AS (
+      SELECT so.client_user_id, spe.performance_date AS day,
+             SUM(spe.amount::numeric) AS amount,
+             array_agg(DISTINCT st.store_name) AS stores
+      FROM sale_order_performance_events spe
+      JOIN sale_orders so ON so.sale_order_id = spe.sale_order_id
+      LEFT JOIN stores st ON st.store_id = spe.store_id
+      WHERE spe.status = '已支付'
+        AND spe.change_type IN ('首次支付', '回款', '退款')
+        AND spe.sale_order_type IN ('销售单', '转换单', '充值单')
+        AND spe.legacy_source IS DISTINCT FROM 'workfine'
+        AND spe.performance_date BETWEEN ${range.start} AND ${range.end}
+        AND so.client_user_id IN (SELECT user_id FROM cust)
+      GROUP BY so.client_user_id, spe.performance_date
+    ),
+    service_days AS (
+      SELECT so.client_user_id, so.service_date AS day,
+             SUM(sit.unit_real_price::numeric * sit.session_used)
+               FILTER (WHERE ${excludeDepositRefundSql("so")}) AS consume,
+             array_agg(DISTINCT si.product_name) AS items
+      FROM service_orders so
+      JOIN service_items sit ON sit.service_order_id = so.service_order_id
+      JOIN sale_items si ON si.sale_item_id = sit.sale_item_id
+      WHERE so.status = '已完成'
+        AND so.service_date BETWEEN ${range.start} AND ${range.end}
+        AND so.client_user_id IN (SELECT user_id FROM cust)
+      GROUP BY so.client_user_id, so.service_date
+    ),
+    visit_stores AS (
+      SELECT ve.client_user_id, ve.visit_date AS day, array_agg(DISTINCT st.store_name) AS stores
+      FROM visit_store_events ve
+      LEFT JOIN stores st ON st.store_id = ve.store_id
+      GROUP BY ve.client_user_id, ve.visit_date
+    ),
+    day_keys AS (
+      SELECT client_user_id, visit_date AS day FROM visit_days
+      UNION SELECT client_user_id, day FROM amount_days
+      UNION SELECT client_user_id, day FROM service_days
+    )
+    SELECT c.user_id, c.name, c.phone, c.member_level, c.customer_type, c.bound_store_name,
+           to_char(k.day, 'YYYY-MM-DD') AS day,
+           (vd.client_user_id IS NOT NULL) AS visited,
+           ad.amount::text AS amount,
+           sd.consume::text AS consume,
+           sd.items,
+           vs.stores AS visit_stores,
+           ad.stores AS amount_stores
+    FROM cust c
+    LEFT JOIN day_keys k ON k.client_user_id = c.user_id
+    LEFT JOIN visit_days vd ON vd.client_user_id = k.client_user_id AND vd.visit_date = k.day
+    LEFT JOIN amount_days ad ON ad.client_user_id = k.client_user_id AND ad.day = k.day
+    LEFT JOIN service_days sd ON sd.client_user_id = k.client_user_id AND sd.day = k.day
+    LEFT JOIN visit_stores vs ON vs.client_user_id = k.client_user_id AND vs.day = k.day
+    ORDER BY c.user_id, k.day
+  `);
+  return rows.map((row) => ({
+    clientUserId: String(row.user_id),
+    customerName: text5(row.name),
+    phone: text5(row.phone),
+    memberLevel: text5(row.member_level),
+    customerType: text5(row.customer_type),
+    storeName: text5(row.bound_store_name),
+    day: text5(row.day),
+    visited: row.visited === true,
+    amount: text5(row.amount),
+    consume: text5(row.consume),
+    items: textArray(row.items),
+    stores: Array.from(new Set([...textArray(row.visit_stores), ...textArray(row.amount_stores)]))
+  }));
+}
+
+// src/lib/data-center/customer-frequency.ts
+var CUSTOMER_FREQUENCY_TIERS = [
+  { key: "low", label: "低频", min: 1, max: 2 },
+  { key: "mid", label: "中频", min: 3, max: 4 },
+  { key: "high", label: "高频", min: 5, max: null }
+];
+var CUSTOMER_FREQUENCY_PAGE_SIZES = [20, 50, 100];
+var CUSTOMER_FREQUENCY_DEFAULT_PAGE_SIZE = 50;
+var CUSTOMER_FREQUENCY_SORT_KEYS = ["visitDays", "amount"];
+var CUSTOMER_FREQUENCY_DEFAULT_SORT = { key: "visitDays", direction: "desc" };
+var CUSTOMER_FREQUENCY_SEARCH_MAX_LENGTH = 50;
+var FREQUENCY_DAY_KEY_PREFIX = "day:";
+var FREQUENCY_VISIT_DAYS_KEY = "visitDays";
+var FREQUENCY_AMOUNT_KEY = "amount";
+function isSortKey(value) {
+  return CUSTOMER_FREQUENCY_SORT_KEYS.includes(value ?? "");
+}
+function parseCustomerFrequencyParams(input, today) {
+  const raw = (key) => typeof input[key] === "string" ? input[key] : undefined;
+  const { page, pageSize } = resolveCustomerFrequencyPaging(raw("page"), Number(raw("size")));
+  const sortKey = raw("sort");
+  const sort = isSortKey(sortKey) ? { key: sortKey, direction: raw("dir") === "asc" ? "asc" : "desc" } : CUSTOMER_FREQUENCY_DEFAULT_SORT;
+  return {
+    scope: parseScope({ scope: raw("scope"), scopeId: raw("scopeId") }),
+    period: parseReportMonth({ month: raw("month") }, today),
+    q: (raw("q") ?? "").trim().slice(0, CUSTOMER_FREQUENCY_SEARCH_MAX_LENGTH),
+    show: raw("show") === "visited" ? "visited" : "all",
+    sort,
+    page,
+    pageSize
+  };
+}
+function resolveCustomerFrequencyPaging(page, pageSize) {
+  return resolvePaging({
+    page,
+    pageSize,
+    defaultPageSize: CUSTOMER_FREQUENCY_DEFAULT_PAGE_SIZE,
+    allowedPageSizes: [...CUSTOMER_FREQUENCY_PAGE_SIZES]
+  });
+}
+function isBeforeFrequencyDataStart(month) {
+  return month < REPORT_MIN_MONTH;
+}
+function toCents2(value) {
+  if (value == null || value.trim() === "")
+    return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? Math.round(parsed * 100) : null;
+}
+function buildCustomerFrequencyRows(source) {
+  const byClient = new Map;
+  for (const item of source) {
+    let row = byClient.get(item.clientUserId);
+    if (!row) {
+      row = {
+        clientUserId: item.clientUserId,
+        customerName: item.customerName ?? "",
+        phoneMasked: item.phone ? formatPhoneSafe(normalizePhone2(item.phone)) : "",
+        rawPhone: normalizePhone2(item.phone),
+        level: item.memberLevel || item.customerType || "",
+        storeName: item.storeName ?? "",
+        days: {},
+        visitDays: 0,
+        amount: 0,
+        consume: 0,
+        amountCents: 0,
+        consumeCents: 0
+      };
+      byClient.set(item.clientUserId, row);
+    }
+    if (!item.day)
+      continue;
+    const day2 = String(Number(item.day.slice(8, 10)));
+    const amountCents = toCents2(item.amount);
+    const consumeCents = toCents2(item.consume);
+    row.days[day2] = {
+      visited: item.visited,
+      amount: amountCents == null ? null : amountCents / 100,
+      consume: consumeCents == null ? null : consumeCents / 100,
+      items: item.items,
+      stores: item.stores
+    };
+    if (item.visited)
+      row.visitDays += 1;
+    row.amountCents += amountCents ?? 0;
+    row.consumeCents += consumeCents ?? 0;
+  }
+  const rows = Array.from(byClient.values());
+  for (const row of rows) {
+    row.amount = row.amountCents / 100;
+    row.consume = row.consumeCents / 100;
+  }
+  return rows;
+}
+function tierOf(visitDays) {
+  for (const tier of CUSTOMER_FREQUENCY_TIERS) {
+    if (visitDays >= tier.min && (tier.max === null || visitDays <= tier.max))
+      return tier.key;
+  }
+  return null;
+}
+function ratio2(numerator, denominator) {
+  return denominator > 0 ? numerator / denominator : null;
+}
+function summarizeCustomerFrequency(rows) {
+  const tierCounts = { low: 0, mid: 0, high: 0 };
+  let visitedCount = 0;
+  let visitTotal = 0;
+  let amountCents = 0;
+  let consumeCents = 0;
+  for (const row of rows) {
+    const tier = tierOf(row.visitDays);
+    if (tier)
+      tierCounts[tier] += 1;
+    if (row.visitDays > 0)
+      visitedCount += 1;
+    visitTotal += row.visitDays;
+    amountCents += row.amountCents;
+    consumeCents += row.consumeCents;
+  }
+  const tiers = Object.fromEntries(CUSTOMER_FREQUENCY_TIERS.map((tier) => [tier.key, { count: tierCounts[tier.key], share: ratio2(tierCounts[tier.key], visitedCount) }]));
+  return {
+    customerCount: rows.length,
+    visitedCount,
+    visitRate: ratio2(visitedCount, rows.length),
+    tiers,
+    visitTotal,
+    visitsPerVisitor: ratio2(visitTotal, visitedCount),
+    amountTotal: amountCents / 100,
+    consumeTotal: consumeCents / 100,
+    consumeRatio: ratio2(consumeCents, amountCents)
+  };
+}
+var FULL_PHONE2 = /^1\d{10}$/;
+function normalizePhone2(phone) {
+  const digits = (phone ?? "").replace(/[\s-]/g, "").replace(/^(?:\+|00)?86(?=1\d{10}$)/, "");
+  return digits;
+}
+function displaySearchTerm2(q) {
+  const phone = normalizePhone2(q);
+  return FULL_PHONE2.test(phone) ? formatPhoneSafe(phone) : q;
+}
+function filterCustomerFrequencyRows(rows, params) {
+  const q = params.q;
+  const normalized = normalizePhone2(q);
+  const phone = FULL_PHONE2.test(normalized) ? normalized : null;
+  const name = q.toLowerCase();
+  return rows.filter((row) => {
+    if (params.show === "visited" && row.visitDays === 0)
+      return false;
+    if (!q)
+      return true;
+    if (phone)
+      return row.rawPhone === phone;
+    return row.customerName.toLowerCase().includes(name);
+  });
+}
+function sortCustomerFrequencyRows(rows, sort) {
+  const sign = sort.direction === "asc" ? 1 : -1;
+  const primary = sort.key === "amount" ? (row) => row.amountCents : (row) => row.visitDays;
+  const secondary = sort.key === "amount" ? (row) => row.visitDays : (row) => row.amountCents;
+  return [...rows].sort((a, b2) => (primary(a) - primary(b2)) * sign || secondary(b2) - secondary(a) || (a.clientUserId < b2.clientUserId ? -1 : a.clientUserId > b2.clientUserId ? 1 : 0));
+}
+function customerFrequencyTotals(rows) {
+  let visitDays = 0;
+  let amountCents = 0;
+  for (const row of rows) {
+    visitDays += row.visitDays;
+    amountCents += row.amountCents;
+  }
+  return { [FREQUENCY_VISIT_DAYS_KEY]: visitDays, [FREQUENCY_AMOUNT_KEY]: amountCents / 100 };
+}
+function toPublicFrequencyRow(row) {
+  return {
+    clientUserId: row.clientUserId,
+    customerName: row.customerName,
+    phoneMasked: row.phoneMasked,
+    level: row.level,
+    storeName: row.storeName,
+    days: row.days,
+    visitDays: row.visitDays,
+    amount: row.amount,
+    consume: row.consume
+  };
+}
+function hasCellAmount(cell) {
+  return cell?.amount != null && Math.round(cell.amount * 100) !== 0;
+}
+function customerFrequencyColumnSpecs(month) {
+  const dayGroup = { key: "days", header: "本月日历" };
+  const totalGroup = { key: "month-total", header: "本月合计" };
+  return [
+    { key: "name", header: "姓名", width: 88, freeze: "left", exportValue: (row) => row.customerName },
+    { key: "phone", header: "电话", width: 116, freeze: "left", exportValue: (row) => row.phoneMasked, exportWidth: 14 },
+    { key: "level", header: "会员等级", width: 88, freeze: "left", exportValue: (row) => row.level, exportWidth: 10 },
+    { key: "store", header: "所属门店", width: 104, freeze: "left", exportValue: (row) => row.storeName },
+    ...listMonthDays(month).map((day2) => ({
+      key: `${FREQUENCY_DAY_KEY_PREFIX}${day2.day}`,
+      header: String(day2.day),
+      group: dayGroup,
+      width: 64,
+      day: day2
+    })),
+    {
+      key: FREQUENCY_VISIT_DAYS_KEY,
+      header: "到店次数",
+      group: totalGroup,
+      width: 88,
+      freeze: "right",
+      unit: "count",
+      value: (row) => row.visitDays,
+      aggregate: { kind: "sum" },
+      exportWidth: 10
+    },
+    {
+      key: FREQUENCY_AMOUNT_KEY,
+      header: "消费合计",
+      group: totalGroup,
+      width: 112,
+      freeze: "right",
+      unit: "amount",
+      value: (row) => row.amount,
+      aggregate: { kind: "sum" },
+      exportWidth: 14
+    }
+  ];
+}
+function frequencyVisitMark(cell) {
+  return cell?.visited ? "✓" : "";
+}
+function frequencyAmountCell(cell) {
+  return hasCellAmount(cell) ? cell.amount : null;
+}
+function frequencyExportColumnSpecs(month) {
+  return customerFrequencyColumnSpecs(month).flatMap((spec) => {
+    if (!spec.day)
+      return [spec];
+    const day2 = spec.day;
+    const key = String(day2.day);
+    const group = { key: `day-${key}`, header: `${day2.day}日` };
+    return [
+      { key: `${spec.key}:visit`, header: "到店", group, exportValue: (row) => frequencyVisitMark(row.days[key]), exportWidth: 5 },
+      {
+        key: `${spec.key}:amount`,
+        header: "金额",
+        group,
+        unit: "amount",
+        value: (row) => frequencyAmountCell(row.days[key]),
+        exportWidth: 11
+      }
+    ];
+  });
+}
+
+// src/actions/data-center/customer-frequency.ts
+"use server";
+async function loadFiltered2(session4, params) {
+  await validateScope(session4, params.scope);
+  const beforeDataStart = isBeforeFrequencyDataStart(params.period.month);
+  const all = beforeDataStart ? [] : buildCustomerFrequencyRows(await loadCustomerFrequencySource(session4, params.scope, params.period.current));
+  const rows = sortCustomerFrequencyRows(filterCustomerFrequencyRows(all, params), params.sort);
+  return { all, rows, beforeDataStart };
+}
+var getCustomerFrequencyReport = withAllPermissions(DATA_CENTER_CUSTOMER_DETAIL_ACTIONS, async (session4, raw) => {
+  const params = parseCustomerFrequencyParams(raw);
+  const { all, rows, beforeDataStart } = await loadFiltered2(session4, params);
+  const pageCount = Math.max(1, Math.ceil(rows.length / params.pageSize));
+  const { page, offset } = resolveCustomerFrequencyPaging(Math.min(params.page, pageCount), params.pageSize);
+  return {
+    month: params.period.month,
+    rows: rows.slice(offset, offset + params.pageSize).map(toPublicFrequencyRow),
+    total: rows.length,
+    filtered: params.q !== "" || params.show === "visited",
+    beforeDataStart,
+    page,
+    pageSize: params.pageSize,
+    sort: params.sort,
+    totals: customerFrequencyTotals(rows),
+    summary: summarizeCustomerFrequency(all)
+  };
+});
+var exportCustomerFrequencyReport = withAllPermissions(DATA_CENTER_CUSTOMER_DETAIL_ACTIONS, async (session4, raw) => {
+  const params = parseCustomerFrequencyParams(raw);
+  const { rows } = await loadFiltered2(session4, params);
+  return {
+    rows: rows.map(toPublicFrequencyRow),
+    totals: customerFrequencyTotals(rows),
+    params: {
+      scope: params.scope,
+      searchLabel: displaySearchTerm2(params.q),
+      show: params.show,
+      month: params.period.month,
+      monthLabel: params.period.label,
+      range: params.period.current
+    }
+  };
+});
+
 // src/export-worker/report-views.ts
+init_time_range();
 async function scopeMetaLabel(scope) {
   const name = await resolveScopeName(scope);
   if (scope.type === "market")
@@ -183721,12 +184191,36 @@ async function remainingCardsContent(params) {
     }
   };
 }
+async function customerFrequencyContent(params) {
+  if (!isValidMonth(params.month))
+    throw new Error("INVALID_PARAMS: 导出缺少统计月份");
+  if (params.month > shanghaiToday().slice(0, 7))
+    throw new Error("INVALID_PARAMS: 不能导出未来月份");
+  const report = await exportCustomerFrequencyReport(params);
+  const specs = frequencyExportColumnSpecs(report.params.month);
+  return {
+    sheetName: "顾客频率表",
+    columns: toWorkerExportColumns(specs, report.totals),
+    rows: fromArray(report.rows),
+    frozenColumns: countLeftFrozen(specs),
+    totalsLabel: "合计",
+    meta: {
+      period: `${report.params.range.start} ~ ${report.params.range.end}（${report.params.monthLabel}）`,
+      scope: await scopeMetaLabel(report.params.scope),
+      extra: [
+        { label: "显示范围", value: report.params.show === "visited" ? "只看有到店" : "全部顾客" },
+        ...report.params.searchLabel ? [{ label: "顾客搜索", value: report.params.searchLabel }] : [],
+        { label: "日期格", value: "每日拆「到店 / 金额」两列：到店写 ✓；金额为当日消费净额（按款项归属日期，退款为负）" }
+      ]
+    }
+  };
+}
 
 // src/export-worker/registry.ts
 function value(row, key) {
   return row[key];
 }
-function text5(row, key) {
+function text6(row, key) {
   const item = value(row, key);
   return item == null ? "" : String(item);
 }
@@ -183775,7 +184269,7 @@ function mapColumns(definitions) {
   return definitions.map((definition) => ({
     header: definition.header,
     width: definition.width,
-    value: definition.map ?? ((row) => text5(row, definition.key))
+    value: definition.map ?? ((row) => text6(row, definition.key))
   }));
 }
 var paymentMethodMap = {
@@ -183808,7 +184302,7 @@ var orderColumns = mapColumns([
   { header: "已退", width: 10, key: "refundedAmount" },
   { header: "单价", width: 10, key: "unitRealPrice", map: (row) => numberOrEmpty(row, "unitRealPrice") },
   { header: "状态", width: 10, key: "status" },
-  { header: "支付方式", width: 12, key: "paymentMethod", map: (row) => paymentMethodMap[String(value(row, "paymentMethod") ?? "")] ?? text5(row, "paymentMethod") },
+  { header: "支付方式", width: 12, key: "paymentMethod", map: (row) => paymentMethodMap[String(value(row, "paymentMethod") ?? "")] ?? text6(row, "paymentMethod") },
   { header: "是否纳客", width: 8, key: "isMembershipUpgrade", map: (row) => boolLabel(row, "isMembershipUpgrade") },
   { header: "是否活动", width: 8, key: "isActivity", map: (row) => boolLabel(row, "isActivity") },
   { header: "是否体验转换", width: 12, key: "isExperienceConversion", map: (row) => boolLabel(row, "isExperienceConversion") },
@@ -183844,7 +184338,7 @@ var paymentColumns = mapColumns([
   { header: "已退", width: 10, key: "refundedAmount" },
   { header: "单价", width: 10, key: "unitRealPrice", map: (row) => numberOrEmpty(row, "unitRealPrice") },
   { header: "状态", width: 10, key: "status" },
-  { header: "支付方式", width: 12, key: "paymentMethod", map: (row) => paymentMethodMap[String(value(row, "paymentMethod") ?? "")] ?? text5(row, "paymentMethod") },
+  { header: "支付方式", width: 12, key: "paymentMethod", map: (row) => paymentMethodMap[String(value(row, "paymentMethod") ?? "")] ?? text6(row, "paymentMethod") },
   { header: "是否纳客", width: 8, key: "isMembershipUpgrade", map: (row) => boolLabel(row, "isMembershipUpgrade") },
   { header: "是否活动", width: 8, key: "isActivity", map: (row) => boolLabel(row, "isActivity") },
   { header: "是否体验转换", width: 12, key: "isExperienceConversion", map: (row) => boolLabel(row, "isExperienceConversion") },
@@ -183855,7 +184349,7 @@ var paymentColumns = mapColumns([
   { header: "业绩归属日期", width: 14, key: "performanceAttributionDate", map: (row) => fmtDate(value(row, "performanceAttributionDate")) },
   { header: "创建时间", width: 20, key: "createdAt", map: (row) => fmtDateTime(value(row, "createdAt")) },
   { header: "备注", width: 24, key: "remark" },
-  { header: "款项流水号", width: 14, key: "paymentId", map: (row) => `#${text5(row, "paymentId")}` },
+  { header: "款项流水号", width: 14, key: "paymentId", map: (row) => `#${text6(row, "paymentId")}` },
   { header: "款项类型", width: 12, key: "changeType" },
   { header: "款项状态", width: 10, key: "paymentStatus" },
   { header: "款项金额", width: 12, key: "paymentAmount", map: (row) => numberOrEmpty(row, "paymentAmount") },
@@ -183870,7 +184364,7 @@ var paymentColumns = mapColumns([
   { header: "款项备注", width: 32, key: "note" }
 ]);
 var refundColumns = mapColumns([
-  { header: "退款单号", width: 14, key: "refundPaymentId", map: (row) => `#${text5(row, "refundPaymentId")}` },
+  { header: "退款单号", width: 14, key: "refundPaymentId", map: (row) => `#${text6(row, "refundPaymentId")}` },
   { header: "关联原单", width: 22, key: "refSaleOrderId" },
   { header: "市场", width: 12, key: "marketName" },
   { header: "门店", width: 16, key: "storeName" },
@@ -183881,7 +184375,7 @@ var refundColumns = mapColumns([
     return Number.isFinite(amount) ? -Math.abs(amount) : "";
   } },
   { header: "状态", width: 10, key: "status", map: (row) => {
-    const status = text5(row, "status");
+    const status = text6(row, "status");
     return status === "已支付" ? "已通过" : status === "已作废" ? "已驳回" : status;
   } },
   { header: "原因", width: 32, key: "refundReason" },
@@ -184079,13 +184573,13 @@ var inventoryColumns = (canViewPrice2) => mapColumns([
 function breakdownContent(view3, rows) {
   const config = getDataCenterBreakdownConfig(view3);
   const columns3 = [
-    { header: config.groupLabel, width: 18, value: (row) => text5(row, "groupName") }
+    { header: config.groupLabel, width: 18, value: (row) => text6(row, "groupName") }
   ];
   for (const textColumn of config.textColumns) {
     columns3.push({
       header: textColumn.label,
       width: textColumn.source === "marketName" ? 16 : 14,
-      value: (row) => textColumn.source === "marketName" ? text5(row, "marketName") : String(value(row, "labels")?.[textColumn.key] ?? "")
+      value: (row) => textColumn.source === "marketName" ? text6(row, "marketName") : String(value(row, "labels")?.[textColumn.key] ?? "")
     });
   }
   for (const definition of config.metricColumns) {
@@ -184103,8 +184597,8 @@ function breakdownContent(view3, rows) {
 function rankingContent(rows, metric2) {
   const columns3 = [
     { header: "排名", width: 8, value: (row) => numberOrEmpty(row, "rank") },
-    { header: "名称", width: 20, value: (row) => text5(row, "name") },
-    { header: "所属市场", width: 16, value: (row) => text5(row, "marketName") },
+    { header: "名称", width: 20, value: (row) => text6(row, "name") },
+    { header: "所属市场", width: 16, value: (row) => text6(row, "marketName") },
     { header: headerWithUnit(metric2.label, metric2.unit), value: (row) => metricCell(value(row, "value"), metric2.unit) }
   ];
   return {
@@ -184176,6 +184670,8 @@ async function queryReport(view3, raw) {
       return remainingCardsContent(raw);
     case "report-daily-overview":
       return queryDailyOverview(raw);
+    case "report-customer-frequency":
+      return customerFrequencyContent(raw);
     default: {
       const unhandled = view3;
       throw new Error(`INVALID_PARAMS: 未知的报表导出视图 ${String(unhandled)}`);
@@ -184233,7 +184729,7 @@ function queryProducts(payload) {
       { header: "项目系列", key: "projectSeriesName" },
       { header: "标价", key: "price", map: (row) => numberOrEmpty(row, "price") },
       { header: "会员价", key: "specialPrice", map: (row) => numberOrEmpty(row, "specialPrice") },
-      { header: "数量", key: "sessionCount", map: (row) => value(row, "sessionCount") == null ? "" : `${value(row, "sessionCount")} ${text5(row, "unit")}` },
+      { header: "数量", key: "sessionCount", map: (row) => value(row, "sessionCount") == null ? "" : `${value(row, "sessionCount")} ${text6(row, "unit")}` },
       { header: "单位", key: "unit" },
       { header: "限购次数", key: "purchaseLimit" },
       { header: "手工费", key: "serviceFee", map: (row) => numberOrEmpty(row, "serviceFee") },
@@ -184436,9 +184932,9 @@ async function writeStreamXlsx(options) {
     layout.rows.forEach((cells, rowIndex) => {
       for (const cell of cells) {
         const target = headerRows[rowIndex].getCell(cell.firstLeafIndex + 1);
-        const text6 = cell.groupKey ? options.columns[cell.firstLeafIndex].group.header : options.columns[cell.firstLeafIndex].header;
-        target.value = text6;
-        const wrapText = text6.includes(`
+        const text7 = cell.groupKey ? options.columns[cell.firstLeafIndex].group.header : options.columns[cell.firstLeafIndex].header;
+        target.value = text7;
+        const wrapText = text7.includes(`
 `) || undefined;
         if (layout.depth === 2) {
           target.alignment = { vertical: "middle", horizontal: cell.groupKey ? "center" : undefined, wrapText };
@@ -184634,7 +185130,7 @@ function asClaimedId(rows) {
   return Number.isSafeInteger(id) && id > 0 ? id : null;
 }
 async function recoverExpiredLeases() {
-  await db2.execute(import_drizzle_orm72.sql`
+  await db2.execute(import_drizzle_orm73.sql`
     UPDATE admin_export_jobs
        SET status = CASE
              WHEN attempt_count >= ${MAX_ATTEMPTS} THEN 'failed'
@@ -184658,12 +185154,12 @@ async function recoverExpiredLeases() {
   `);
 }
 async function claimNextJob() {
-  const claimed = await db2.execute(import_drizzle_orm72.sql`
+  const claimed = await db2.execute(import_drizzle_orm73.sql`
     UPDATE admin_export_jobs
        SET status = 'running',
            attempt_count = attempt_count + 1,
            started_at = COALESCE(started_at, NOW()),
-           lease_expires_at = NOW() + ${import_drizzle_orm72.sql.raw(`interval '${LEASE_MINUTES} minutes'`)},
+           lease_expires_at = NOW() + ${import_drizzle_orm73.sql.raw(`interval '${LEASE_MINUTES} minutes'`)},
            error_code = NULL,
            error_message = NULL,
            updated_at = NOW()
@@ -184681,13 +185177,13 @@ async function claimNextJob() {
   const id = asClaimedId(claimed);
   if (!id)
     return null;
-  const [job] = await db2.select().from(adminExportJobs).where(import_drizzle_orm72.eq(adminExportJobs.id, id)).limit(1);
+  const [job] = await db2.select().from(adminExportJobs).where(import_drizzle_orm73.eq(adminExportJobs.id, id)).limit(1);
   return job ?? null;
 }
 async function renewLease(id) {
-  await db2.execute(import_drizzle_orm72.sql`
+  await db2.execute(import_drizzle_orm73.sql`
     UPDATE admin_export_jobs
-       SET lease_expires_at = NOW() + ${import_drizzle_orm72.sql.raw(`interval '${LEASE_MINUTES} minutes'`)},
+       SET lease_expires_at = NOW() + ${import_drizzle_orm73.sql.raw(`interval '${LEASE_MINUTES} minutes'`)},
            updated_at = NOW()
      WHERE id = ${id}
        AND status = 'running'
@@ -184710,7 +185206,7 @@ async function failJob(job, err) {
     completedAt: shouldRetry ? null : new Date,
     errorCode: failure.code,
     errorMessage: shouldRetry ? `${failure.message}（第 ${job.attemptCount} 次失败，正在重试）` : failure.message
-  }).where(import_drizzle_orm72.and(import_drizzle_orm72.eq(adminExportJobs.id, job.id), import_drizzle_orm72.eq(adminExportJobs.status, "running")));
+  }).where(import_drizzle_orm73.and(import_drizzle_orm73.eq(adminExportJobs.id, job.id), import_drizzle_orm73.eq(adminExportJobs.status, "running")));
   if (!shouldRetry) {
     const session4 = parseExportSession(job.scopeSnapshot);
     await logOperation(session4, "export_job.failed", "admin_export_jobs", String(job.id), {
@@ -184721,12 +185217,12 @@ async function failJob(job, err) {
   }
 }
 async function expireFinishedFiles() {
-  const expired = await db2.select({ id: adminExportJobs.id, fileCloudPath: adminExportJobs.fileCloudPath }).from(adminExportJobs).where(import_drizzle_orm72.and(import_drizzle_orm72.inArray(adminExportJobs.status, ["ready", "expired"]), import_drizzle_orm72.isNotNull(adminExportJobs.fileCloudPath), import_drizzle_orm72.lt(adminExportJobs.expiresAt, new Date))).limit(100);
+  const expired = await db2.select({ id: adminExportJobs.id, fileCloudPath: adminExportJobs.fileCloudPath }).from(adminExportJobs).where(import_drizzle_orm73.and(import_drizzle_orm73.inArray(adminExportJobs.status, ["ready", "expired"]), import_drizzle_orm73.isNotNull(adminExportJobs.fileCloudPath), import_drizzle_orm73.lt(adminExportJobs.expiresAt, new Date))).limit(100);
   for (const job of expired) {
     try {
       if (job.fileCloudPath)
         await deleteByCloudPaths([job.fileCloudPath]);
-      await db2.update(adminExportJobs).set({ status: "expired", fileCloudPath: null, updatedAt: new Date }).where(import_drizzle_orm72.and(import_drizzle_orm72.eq(adminExportJobs.id, job.id), import_drizzle_orm72.inArray(adminExportJobs.status, ["ready", "expired"])));
+      await db2.update(adminExportJobs).set({ status: "expired", fileCloudPath: null, updatedAt: new Date }).where(import_drizzle_orm73.and(import_drizzle_orm73.eq(adminExportJobs.id, job.id), import_drizzle_orm73.inArray(adminExportJobs.status, ["ready", "expired"])));
     } catch (err) {
       console.error(`[export-worker] cleanup failed for job ${job.id}:`, err);
     }
@@ -184780,7 +185276,7 @@ async function processJob(job) {
           if (rowCount - lastProgress < 1000)
             return;
           lastProgress = rowCount;
-          await db2.update(adminExportJobs).set({ progressRows: rowCount }).where(import_drizzle_orm72.and(import_drizzle_orm72.eq(adminExportJobs.id, job.id), import_drizzle_orm72.eq(adminExportJobs.status, "running")));
+          await db2.update(adminExportJobs).set({ progressRows: rowCount }).where(import_drizzle_orm73.and(import_drizzle_orm73.eq(adminExportJobs.id, job.id), import_drizzle_orm73.eq(adminExportJobs.status, "running")));
         }
       });
       return { content, fileName, filePath, writeResult };
@@ -184796,7 +185292,7 @@ async function processJob(job) {
         progressRows: 0,
         errorCode: null,
         errorMessage: null
-      }).where(import_drizzle_orm72.and(import_drizzle_orm72.eq(adminExportJobs.id, job.id), import_drizzle_orm72.eq(adminExportJobs.status, "running")));
+      }).where(import_drizzle_orm73.and(import_drizzle_orm73.eq(adminExportJobs.id, job.id), import_drizzle_orm73.eq(adminExportJobs.status, "running")));
       await logOperation(session4, "export_job.empty", "admin_export_jobs", String(job.id), {
         exportType
       }).catch((logError) => console.error("[export-worker] empty audit log error:", logError));
@@ -184821,7 +185317,7 @@ async function processJob(job) {
       fileName: output.fileName,
       errorCode: null,
       errorMessage: null
-    }).where(import_drizzle_orm72.and(import_drizzle_orm72.eq(adminExportJobs.id, job.id), import_drizzle_orm72.eq(adminExportJobs.status, "running")));
+    }).where(import_drizzle_orm73.and(import_drizzle_orm73.eq(adminExportJobs.id, job.id), import_drizzle_orm73.eq(adminExportJobs.status, "running")));
     await logOperation(session4, "export_job.ready", "admin_export_jobs", String(job.id), {
       exportType,
       rowCount: output.writeResult.rowCount,
