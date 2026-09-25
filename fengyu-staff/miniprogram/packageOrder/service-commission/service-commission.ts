@@ -82,6 +82,7 @@ interface CommLine {
   commissionAmount: string; // 提成额 = fixedFee + consumeAmount
   priceThreshold: number;   // #379 命中矩阵行的划卡单价阈值（0=不启用）
   thresholdApplied: boolean; // 本行提成是否按阈值计（wxml 提示用）
+  priceThresholdText?: string; // 阈值展示文本（toFixed(2)；WXML 不支持方法调用，在此预格式化）
 }
 
 interface DisplayItem {
@@ -233,7 +234,7 @@ Page({
       di.consumeBase, di.fixedFeeBase, line.ratioPercent / 100, rate, effConsumeBase
     );
     const thresholdApplied = rate > 0 && line.priceThreshold > di.perSession;
-    return { ...line, allocAmount, commissionAmount, thresholdApplied };
+    return { ...line, allocAmount, commissionAmount, thresholdApplied, priceThresholdText: line.priceThreshold.toFixed(2) };
   },
 
   /** 按技能过滤后保持「本店 → 本市场出差 → 跨市场出差」顺序。 */

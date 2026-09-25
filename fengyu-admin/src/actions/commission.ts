@@ -10,7 +10,7 @@ import type { CommissionRate } from '@/lib/types'
 import { withPermission } from '@/lib/with-permission'
 import { expandVisibleMarketIds, requireAdmin } from '@/lib/permissions'
 import { logOperation, logUpdate } from '@/lib/operation-log'
-import { DEFAULT_PRICE_THRESHOLD, isPriceThresholdEligible, parsePriceThreshold } from '@/lib/commission-threshold'
+import { DEFAULT_PRICE_THRESHOLD, hasPriceThresholdValue, isPriceThresholdEligible, parsePriceThreshold } from '@/lib/commission-threshold'
 
 const THRESHOLD_INELIGIBLE_MESSAGE = '单价阈值仅适用于服务单的自销自耗 / 他销自耗规则'
 /** 23514 = CHECK 违反（前置校验已拦，兜底并发改类目等窗口，避免 500） */
@@ -103,7 +103,7 @@ export const createRate = withPermission(
       : parsePriceThreshold(data.priceThreshold)
     if (!parsed.ok) return { success: false, message: parsed.message }
     priceThreshold = parsed.value
-  } else if (data.priceThreshold != null && data.priceThreshold.trim() !== '') {
+  } else if (hasPriceThresholdValue(data.priceThreshold)) {
     return { success: false, message: THRESHOLD_INELIGIBLE_MESSAGE }
   }
 
@@ -134,7 +134,7 @@ export const createRate = withPermission(
   }
 
   await logOperation(session, 'commission.create', 'commission_rate', data.orgId, {
-    orderType: data.orderType, roleType: data.roleType,
+    orderType: data.orderType, roleType: data.roleType, salesCategory: data.salesCategory, priceThreshold,
   })
   revalidatePath('/commission')
   return { success: true, message: '提成规则创建成功' }
@@ -194,7 +194,7 @@ export const updateRate = withPermission(
       priceThreshold = DEFAULT_PRICE_THRESHOLD
     }
   } else {
-    if (data.priceThreshold != null && data.priceThreshold.trim() !== '') {
+    if (hasPriceThresholdValue(data.priceThreshold)) {
       return { success: false, message: THRESHOLD_INELIGIBLE_MESSAGE }
     }
     priceThreshold = null
@@ -210,6 +210,8 @@ export const updateRate = withPermission(
   if (data.amountTierMax !== undefined) setValues.amountTierMax = data.amountTierMax
   if (data.commissionRate !== undefined) setValues.commissionRate = data.commissionRate
   if (priceThreshold !== undefined) setValues.priceThreshold = priceThreshold
+  // 白名单剥空（{} 或只夹带了非表单字段）→ drizzle .set({}) 会抛 "No values to set"
+  if (Object.keys(setValues).length === 0) return { success: false, message: '没有可更新的字段' }
 
   const whereConditions = expectedUpdatedAt
     ? and(eq(commissionRateMatrix.id, id), sql`date_trunc('milliseconds', ${commissionRateMatrix.updatedAt}) = ${expectedUpdatedAt}`)

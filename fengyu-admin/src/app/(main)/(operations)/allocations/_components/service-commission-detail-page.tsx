@@ -525,7 +525,7 @@ function ServiceItemCard({
                   <label className="text-[10px] text-[#999999]">提成额</label>
                   <p className="text-sm font-medium h-9 flex items-center justify-end text-[var(--primary)]">¥{Number(entry.commissionAmount).toLocaleString()}</p>
                   {entry.priceThreshold != null && entry.commissionRate > 0 && perSessionPrice(item) < entry.priceThreshold && (
-                    <p className="text-[10px] text-[#D4820A] -mt-1">按阈值 ¥{entry.priceThreshold} 计</p>
+                    <p className="text-[10px] text-[#D4820A] -mt-1">按阈值 ¥{entry.priceThreshold.toFixed(2)} 计</p>
                   )}
                 </div>
 

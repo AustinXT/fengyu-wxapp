@@ -19,13 +19,25 @@ export function isPriceThresholdEligible(orderType: string, salesCategory: strin
     && (PRICE_THRESHOLD_SALES_CATEGORIES as readonly string[]).includes(salesCategory)
 }
 
-/** 空串 / null → null（不启用）；否则须为 0 ~ 99999999.99、最多两位小数 */
+/** 调用方是否真的给了阈值值（undefined / null / 空白串都算没给）；Server Action 入参运行时不受 TS 约束，按 unknown 判 */
+export function hasPriceThresholdValue(raw: unknown): boolean {
+  return raw != null && !(typeof raw === 'string' && raw.trim() === '')
+}
+
+/**
+ * 空串 / null → null（不启用）；0 同样归一为 null（max(单价, 0) 恒等于单价，与「不启用」等价，
+ * 统一存 NULL 免得列表显示 ¥0.00 却不起作用）；否则须为 0 ~ 99999999.99、最多两位小数的**字符串**
+ * （Server Action 是可直接调用的端点，非字符串入参给可读报错而不是在 .trim() 处抛 TypeError）。
+ */
 export function parsePriceThreshold(
-  raw: string | null | undefined,
+  raw: unknown,
 ): { ok: true; value: string | null } | { ok: false; message: string } {
-  const s = (raw ?? '').trim()
+  if (raw == null) return { ok: true, value: null }
+  if (typeof raw !== 'string') return { ok: false, message: '单价阈值格式不正确' }
+  const s = raw.trim()
   if (s === '') return { ok: true, value: null }
   if (!/^\d+(\.\d{1,2})?$/.test(s)) return { ok: false, message: '单价阈值须为非负数，最多两位小数' }
   if (Number(s) > MAX_PRICE_THRESHOLD) return { ok: false, message: '单价阈值超出上限' }
+  if (Number(s) === 0) return { ok: true, value: null }
   return { ok: true, value: s }
 }

@@ -1744,27 +1744,56 @@ describe('服务单 finalize 跨端 SQL 一致性守护（staff / client / admin
     })
   })
 
-  // #379 划卡单价阈值：五个写入副本（finalize ×3 + 手动保存 ×2）消耗提成必须基于
-  // effConsumeBase = round(max(单价, 命中行 price_threshold) × 次数)，选档仍用原始 consumeBase。
-  // 先剥注释再断言，防「把新行注释掉、留着旧算式」骗过守护。
-  describe('#379 消耗提成阈值保底五端一致', () => {
-    const COPIES = {
-      'staff finalize': () => FILES.staffServiceJs,
-      'client finalize': () => FILES.clientServiceFinalizeJs,
-      'admin settle': () => FILES.adminServiceCommissionSettleTs,
-      'staff save': () => FILES.staffServiceCommissionJs,
-      'admin batchSave': () => FILES.adminServiceCommissionsTs,
+  // #379 划卡单价阈值：五个写入副本（finalize ×3 + 手动保存 ×2）的消耗提成计算段**整行等值**守护。
+  // 各副本变量名不同，先按副本登记「单价 P / 次数 N / 命中行 R」三个别名，把 Math.round(x * 100) / 100
+  // 归一成 round2(x)、drizzle 驼峰字段归一成列名，再与标准形态逐字比较——次数、舍入、ratio、选档参数
+  // 任何一处被改（如 × (N + 1)、选档改用 effConsumeBase）都会失败。先剥注释，防「注释掉新行留旧行」。
+  describe('#379 消耗提成阈值保底五端整段等值', () => {
+    const COPIES = [
+      { name: 'staff finalize', file: () => FILES.staffServiceJs, P: 'perSession', N: 'row.session_used', R: 'rateRows.rows[0]', split: false,
+        perSession: 'Number(row.unit_real_price || 0)', tier: /\[roleType, row\.sales_category, consumeBase, serviceOrderId\]/ },
+      { name: 'client finalize', file: () => FILES.clientServiceFinalizeJs, P: 'perSession', N: 'row.session_used', R: 'rateRows.rows[0]', split: false,
+        perSession: 'Number(row.unit_real_price || 0)', tier: /\[roleType, row\.sales_category, consumeBase, serviceOrderId\]/ },
+      { name: 'admin settle', file: () => FILES.adminServiceCommissionSettleTs, P: 'perSession', N: 'sessionUsed', R: 'rateRows[0]', split: false,
+        perSession: 'Number(row.unit_real_price || 0)', tier: /amount_tier_min <= \$\{consumeBase\}\s+AND \(amount_tier_max IS NULL OR amount_tier_max >= \$\{consumeBase\}\)/ },
+      { name: 'staff save', file: () => FILES.staffServiceCommissionJs, P: 'Number(p.unit_real_price || 0)', N: 'sessionUsed', R: 'rateRows.rows[0]', split: true,
+        perSession: null, tier: /\[c\.roleType, p\.sales_category, consumeBase, serviceOrderId\]/ },
+      { name: 'admin batchSave', file: () => FILES.adminServiceCommissionsTs, P: 'perSession', N: 'pricing.sessionUsed', R: 'rateRows[0]', split: true,
+        perSession: 'Number(pricing.unitRealPrice)', tier: /amountTierMin\} <= \$\{consumeBase\}`,\s+sql`\(\$\{commissionRateMatrix\.amountTierMax\} IS NULL OR \$\{commissionRateMatrix\.amountTierMax\} >= \$\{consumeBase\}\)/ },
+    ]
+    const EXPECTED = {
+      consumeBase: 'round2(P * N)',
+      rate: 'Number(R?.commission_rate || 0)',
+      effConsumeBase: 'round2(Math.max(P, Number(R?.price_threshold || 0)) * N)',
     }
-    for (const [name, file] of Object.entries(COPIES)) {
-      test(`${name}：effConsumeBase 取 max(单价, 阈值)，consumeAmount 只用 effConsumeBase`, () => {
-        const src = stripJsComments(readFile(file()))
-        const eff = src.match(/const effConsumeBase = [^\n]*/g) || []
-        expect(eff).toHaveLength(1)
-        expect(eff[0]).toMatch(/Math\.max\([^\n]*(price_threshold|priceThreshold) \|\| 0\)\)/)
-        const consume = src.match(/const consumeAmount = [^\n]*/g) || []
-        expect(consume).toHaveLength(1)
-        expect(consume[0]).toMatch(/\beffConsumeBase\b/)
-        expect(consume[0]).not.toMatch(/\bconsumeBase\b/)
+
+    /** 取 `const <name> = <rhs>` 的 rhs（须恰好一处），归一舍入写法与别名 */
+    function canon(src, name, copy) {
+      const hits = [...src.matchAll(new RegExp(`const ${name} = ([^\\n]+)`, 'g'))].map((m) => m[1].trim())
+      expect(hits, `${copy.name}: const ${name} 应恰好一处`).toHaveLength(1)
+      let rhs = hits[0]
+      const mr = rhs.match(/^Math\.round\((.*) \* 100\) \/ 100$/)
+      if (mr) rhs = `round2(${mr[1]})`
+      return rhs
+        .split(copy.R).join('R')
+        .split(copy.P).join('P')
+        .split(copy.N).join('N')
+        .replace(/\bpriceThreshold\b/g, 'price_threshold')
+        .replace(/\bcommissionRate\b/g, 'commission_rate')
+    }
+
+    for (const copy of COPIES) {
+      test(`${copy.name}：consumeBase / rate / effConsumeBase / consumeAmount 整行等值 + 选档用原始 consumeBase`, () => {
+        const src = stripJsComments(readFile(copy.file()))
+        if (copy.perSession) {
+          const ps = [...src.matchAll(/const perSession = ([^\n]+)/g)].map((m) => m[1].trim())
+          expect(ps).toEqual([copy.perSession])
+        }
+        expect(canon(src, 'consumeBase', copy)).toBe(EXPECTED.consumeBase)
+        expect(canon(src, 'rate', copy)).toBe(EXPECTED.rate)
+        expect(canon(src, 'effConsumeBase', copy)).toBe(EXPECTED.effConsumeBase)
+        expect(canon(src, 'consumeAmount', copy)).toBe(copy.split ? 'round2(effConsumeBase * ratio * rate)' : 'round2(effConsumeBase * rate)')
+        expect(src).toMatch(copy.tier)
       })
     }
   })

@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import {
+  hasPriceThresholdValue,
   PRICE_THRESHOLD_ORDER_TYPE,
   PRICE_THRESHOLD_SALES_CATEGORIES,
   isPriceThresholdEligible,
@@ -30,11 +31,19 @@ describe('#379 commission-threshold', () => {
     expect(isPriceThresholdEligible('销售单', '自销自耗')).toBe(false)
   })
 
+  it('hasPriceThresholdValue：undefined / null / 空白串 = 未给；其它任何值（含非字符串）= 给了', () => {
+    expect([undefined, null, '', '  '].map(hasPriceThresholdValue)).toEqual([false, false, false, false])
+    expect(['0', '100', 100, 0].map(hasPriceThresholdValue)).toEqual([true, true, true, true])
+  })
+
   it.each([
     ['', { ok: true, value: null }],
     [null, { ok: true, value: null }],
     [' 100 ', { ok: true, value: '100' }],
-    ['0', { ok: true, value: '0' }],
+    ['0', { ok: true, value: null }],
+    ['0.00', { ok: true, value: null }],
+    [100, { ok: false }],
+    [undefined, { ok: true, value: null }],
     ['49.9', { ok: true, value: '49.9' }],
     ['-1', { ok: false }],
     ['1e3', { ok: false }],

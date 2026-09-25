@@ -340,6 +340,23 @@ describe('#379 createRate — 单价阈值', () => {
     expect(result.message).toContain('仅适用于')
   })
 
+  it('可配行阈值 "0" → 归一为 null（与不启用等价）', async () => {
+    const values = captureInsert()
+    await createRate(svc('自销自耗', '0'))
+    expect(values.mock.calls[0][0].priceThreshold).toBeNull()
+  })
+
+  it.each([
+    ['可配行传数字（绕过 TS 直调端点）→ 格式错误', { ...svc('自销自耗'), priceThreshold: 100 }, '格式不正确'],
+    ['不可配行传数字 → 拒绝而非 TypeError', { ...svc('他销他耗'), priceThreshold: 100 }, '仅适用于'],
+  ] as const)('%s', async (_n, data, msg) => {
+    captureInsert()
+    const result = await createRate(data as any)
+    expect(result.success).toBe(false)
+    expect(result.message).toContain(msg)
+    expect(db.insert).not.toHaveBeenCalled()
+  })
+
   it.each([
     ['不可配行传阈值 → 拒绝', svc('他销他耗', '100'), '仅适用于'],
     ['负数 → 拒绝', svc('自销自耗', '-1'), '非负数'],
@@ -412,6 +429,19 @@ describe('#379 updateRate — 单价阈值 + set 白名单', () => {
     const result = await updateRate(42, { priceThreshold: '50' })
     expect(result.success).toBe(false)
     expect(result.message).toContain('已被其他人修改')
+  })
+
+  it('空更新 / 只夹带非表单字段 → 返回提示，不调 .set({})', async () => {
+    setup({ ...SELF, orderType: '服务单', salesCategory: '自销自耗' })
+    expect(await updateRate(42, {})).toEqual({ success: false, message: '没有可更新的字段' })
+    expect(await updateRate(42, { createdAt: new Date(0) } as any)).toEqual({ success: false, message: '没有可更新的字段' })
+    expect(db.update).not.toHaveBeenCalled()
+  })
+
+  it('updateRate 传数字阈值 → 格式错误而非 TypeError', async () => {
+    setup(SELF)
+    const result = await updateRate(42, { priceThreshold: 100 } as any)
+    expect(result).toEqual({ success: false, message: '单价阈值格式不正确' })
   })
 
   it('调用方夹带非表单字段 → 不进 .set()（显式白名单）', async () => {
