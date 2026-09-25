@@ -369,9 +369,12 @@ describe('经营数据主表（#372）', () => {
     const info = screen.getByTestId('report-info-bar')
     expect(info).toHaveTextContent('统计月份2026年8月 2026-08-01 ~ 2026-08-31')
     expect(info).toHaveTextContent('展示1 行')
-    expect(screen.getByRole('columnheader', { name: /^保有会员（售前不算）/ })).toHaveAttribute('colspan', '5')
-    expect(screen.getByRole('columnheader', { name: /^客流及客耗/ })).toHaveAttribute('colspan', '7')
-    expect(screen.getByRole('button', { name: '导出' })).toBeInTheDocument()
+    // 24 列大表上 getByRole 要算整棵无障碍树，全量并发跑时会超时：直接查 DOM
+    const groupHeader = (prefix: string) =>
+      Array.from(document.querySelectorAll('thead th')).find((th) => th.textContent?.startsWith(prefix))
+    expect(groupHeader('保有会员（售前不算）')).toHaveAttribute('colspan', '5')
+    expect(groupHeader('客流及客耗')).toHaveAttribute('colspan', '7')
+    expect(screen.getByText('导出')).toBeInTheDocument()
   })
 
   it('范围内没有在营门店：整表空态，不渲染一屏 0（#293 合入前的最小实现）', async () => {
@@ -380,7 +383,7 @@ describe('经营数据主表（#372）', () => {
     await renderPage('operatingMaster', { scope: 'store', scopeId: 'S2' })
 
     expect(screen.getByText(/所选范围内没有在营门店/)).toBeInTheDocument()
-    expect(screen.queryByRole('table')).not.toBeInTheDocument()
+    expect(document.querySelector('table')).toBeNull()
     expect(screen.getByTestId('report-info-bar')).toHaveTextContent('展示0 行')
   })
 
