@@ -175,3 +175,31 @@ describe('prepareBoardContext', () => {
     })
   })
 })
+
+describe('validateScope · 多店（#376）', () => {
+  it('所选门店全部在授权门店内 → 放行', async () => {
+    mockIsAdminScope.mockReturnValue(false)
+    const s = makeSession([{ role: 'manager', scopeType: '门店' }], ['S1', 'S2', 'S3'])
+    await expect(validateScope(s, { type: 'stores', ids: ['S1', 'S3'] })).resolves.toBeUndefined()
+  })
+
+  it('任一门店越权 → PERMISSION_DENIED（整单拒绝，不静默剔除）', async () => {
+    mockIsAdminScope.mockReturnValue(false)
+    const s = makeSession([{ role: 'manager', scopeType: '市场' }], ['S1', 'S2'])
+    await expect(validateScope(s, { type: 'stores', ids: ['S1', 'S9'] })).rejects.toThrow(/PERMISSION_DENIED/)
+  })
+
+  it('admin / 总部放行', async () => {
+    mockIsAdminScope.mockReturnValue(true)
+    await expect(validateScope(makeSession([]), { type: 'stores', ids: ['S1', 'S9'] })).resolves.toBeUndefined()
+    mockIsAdminScope.mockReturnValue(false)
+    await expect(validateScope(makeSession([{ role: 'manager', scopeType: '总部' }]), { type: 'stores', ids: ['S1', 'S9'] })).resolves.toBeUndefined()
+  })
+})
+
+describe('resolveScopeName · 多店（#376）', () => {
+  it('按所选顺序列店名，查不到的记「未知门店」', async () => {
+    dbRows.value = [{ id: 'S2', name: '绿湖店' }, { id: 'S1', name: '蓝莱店' }] as unknown as Array<{ name: string }>
+    await expect(resolveScopeName({ type: 'stores', ids: ['S1', 'S2', 'S9'] })).resolves.toBe('蓝莱店、绿湖店、未知门店')
+  })
+})

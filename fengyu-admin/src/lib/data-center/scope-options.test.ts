@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { findInactiveScopeStore, isScopeLocked, resolveDefaultDataCenterScope, selectableScopeCount, visibleScopeStores } from './scope-options'
+import { canonicalizeScope, findInactiveScopeStore, inactiveStoresInScope, isScopeLocked, multiStoreName, resolveDefaultDataCenterScope, scopeLabel, scopeStores, selectableScopeCount, visibleScopeStores } from './scope-options'
 import type { DataCenterScopeOptions } from './types'
 
 const multiStoreOptions: DataCenterScopeOptions = {
@@ -134,5 +134,102 @@ describe('#399 无门店市场账号', () => {
 
   it('总部永不锁', () => {
     expect(isScopeLocked({ topLevel: 'all', inactiveStores: [], markets: [] })).toBe(false)
+  })
+})
+
+/** 3 市场：M1 两店 / M2 一店 / M3 两店；另有一家停用门店 X1（在 M3） */
+const three: DataCenterScopeOptions = {
+  topLevel: 'market',
+  inactiveStores: [{ storeId: 'X1', storeName: '停用店', marketId: 'M3' }],
+  markets: [
+    { id: 'M1', name: '南昌', stores: [{ storeId: 'S1', storeName: '一' }, { storeId: 'S2', storeName: '二' }], granted: true },
+    { id: 'M2', name: '九江', stores: [{ storeId: 'S3', storeName: '三' }], granted: true },
+    { id: 'M3', name: '自贡', stores: [{ storeId: 'S4', storeName: '四' }, { storeId: 'S5', storeName: '五' }], granted: true },
+  ],
+}
+const stores = (...ids: string[]) => ({ type: 'stores' as const, ids })
+
+describe('canonicalizeScope（#376 折叠规则）', () => {
+  it('全选（= 全部可见在营门店）：非总部 → authorized', () => {
+    expect(canonicalizeScope(three, stores('S1', 'S2', 'S3', 'S4', 'S5'))).toEqual({ type: 'authorized' })
+  })
+
+  it('全选：总部 → all', () => {
+    expect(canonicalizeScope({ ...three, topLevel: 'all' }, stores('S1', 'S2', 'S3', 'S4', 'S5'))).toEqual({ type: 'all' })
+  })
+
+  it('恰好勾满一个市场、未勾别的 → market', () => {
+    expect(canonicalizeScope(three, stores('S1', 'S2'))).toEqual({ type: 'market', id: 'M1' })
+    expect(canonicalizeScope(three, stores('S4', 'S5'))).toEqual({ type: 'market', id: 'M3' })
+  })
+
+  it('勾满一个市场 + 别的市场一家 → 不折叠', () => {
+    expect(canonicalizeScope(three, stores('S1', 'S2', 'S3'))).toEqual(stores('S1', 'S2', 'S3'))
+  })
+
+  it('勾满两个市场（非全部）→ 不折叠（没有「多市场」形态）', () => {
+    expect(canonicalizeScope(three, stores('S1', 'S2', 'S4', 'S5'))).toEqual(stores('S1', 'S2', 'S4', 'S5'))
+  })
+
+  it('市场内部分门店 → 不折叠', () => {
+    expect(canonicalizeScope(three, stores('S1', 'S4'))).toEqual(stores('S1', 'S4'))
+  })
+
+  it('含停用门店 → 原样（保留「N 家已停用」提示），即使在营部分恰好勾满市场', () => {
+    expect(canonicalizeScope(three, stores('S4', 'S5', 'X1'))).toEqual(stores('S4', 'S5', 'X1'))
+  })
+
+  it('含数据源外门店 → 原样（交给入口跳默认 / validateScope 拒）', () => {
+    expect(canonicalizeScope(three, stores('S1', 'S2', 'Z9'))).toEqual(stores('S1', 'S2', 'Z9'))
+  })
+
+  it('非多店范围原样返回', () => {
+    for (const scope of [{ type: 'all' as const }, { type: 'authorized' as const }, { type: 'market' as const, id: 'M1' }, { type: 'store' as const, id: 'S1' }]) {
+      expect(canonicalizeScope(three, scope)).toEqual(scope)
+    }
+  })
+
+  it('「1 市场 + 1 门店」混合账号：勾市场 A 全部 + 祖先市场 B 的那家店 = 全选 → authorized；只勾那家店 → store', () => {
+    const mixed: DataCenterScopeOptions = {
+      topLevel: 'market', inactiveStores: [],
+      markets: [
+        { id: 'MA', name: '市场A', stores: [{ storeId: 'A1', storeName: 'A1' }, { storeId: 'A2', storeName: 'A2' }], granted: true },
+        { id: 'MB', name: '市场B', stores: [{ storeId: 'B1', storeName: 'B1' }], granted: false },
+      ],
+    }
+    expect(canonicalizeScope(mixed, stores('A1', 'A2', 'B1'))).toEqual({ type: 'authorized' })
+    expect(canonicalizeScope(mixed, stores('A1', 'A2'))).toEqual({ type: 'market', id: 'MA' })
+    expect(canonicalizeScope(mixed, stores('A1', 'B1'))).toEqual(stores('A1', 'B1'))
+  })
+})
+
+describe('多店：停用识别 / 覆盖门店 / 展示名（#376）', () => {
+  it('全部停用 → 空态（合成的停用项带全部店名）', () => {
+    const opts = { ...three, inactiveStores: [...three.inactiveStores, { storeId: 'X2', storeName: '停用二', marketId: 'M1' }] }
+    expect(findInactiveScopeStore(opts, stores('X1', 'X2'))).toEqual({ storeId: 'X1,X2', storeName: '停用店、停用二', marketId: null })
+  })
+
+  it('部分停用 → 不走空态；inactiveStoresInScope 列出停用那部分', () => {
+    expect(findInactiveScopeStore(three, stores('S1', 'X1'))).toBeNull()
+    expect(inactiveStoresInScope(three, stores('S1', 'X1')).map((s) => s.storeId)).toEqual(['X1'])
+  })
+
+  it('没有停用 / 非多店 → inactiveStoresInScope 为空', () => {
+    expect(inactiveStoresInScope(three, stores('S1', 'S3'))).toEqual([])
+    expect(inactiveStoresInScope(three, { type: 'store', id: 'X1' })).toEqual([])
+  })
+
+  it('含数据源外门店（非停用）→ 不判空态', () => {
+    expect(findInactiveScopeStore(three, stores('X1', 'Z9'))).toBeNull()
+  })
+
+  it('scopeStores 只展开所选在营门店', () => {
+    expect(scopeStores(three, stores('S1', 'S4', 'X1')).map((s) => s.storeId)).toEqual(['S1', 'S4'])
+  })
+
+  it('展示名：≤3 家列全名，更多加「等 N 家门店」', () => {
+    expect(scopeLabel(three, stores('S1', 'S3'))).toBe('一、三')
+    expect(multiStoreName(['a', 'b', 'c', 'd'])).toBe('a、b、c 等 4 家门店')
+    expect(scopeLabel(three, stores('S1', 'X1'))).toBe('一、停用店')
   })
 })

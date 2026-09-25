@@ -88,6 +88,7 @@ export async function resolveScopeName(scope: DataCenterScope): Promise<string> 
       .select({ id: stores.storeId, name: stores.storeName })
       .from(stores)
       .where(inArray(stores.storeId, scope.ids))
+      .limit(scope.ids.length)
     const names = new Map(rows.map((r) => [r.id, r.name]))
     return multiStoreName(scope.ids.map((id) => names.get(id) ?? '未知门店'))
   }
