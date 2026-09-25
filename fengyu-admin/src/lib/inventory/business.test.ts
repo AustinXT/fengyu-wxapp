@@ -4353,7 +4353,7 @@ describe('市场报货草稿（#348）', () => {
     await expect(createMarketReplenishment(MIXED, {
       ...input, items: [{ skuId: 'SKU-1', sourceRequestItemIds: [1], purchaseQuantity: 1 }],
     })).rejects.toThrow('PERMISSION_DENIED: 无权切换市场报货福利方案')
-    // 不改选福利（系统推荐）时照常可存
+    // 不改选福利（系统推荐）时照常可存 —— 前端只回传人工改选的行，系统推荐不传（见办理台用例「只回传人工改选的福利」）
     mockDraftTx(null)
     await expect(saveMarketReplenishmentDraft(MIXED, { ...input, promotionSelections: undefined })).resolves.toEqual({ id: expect.stringMatching(/^MBH-/) })
   })

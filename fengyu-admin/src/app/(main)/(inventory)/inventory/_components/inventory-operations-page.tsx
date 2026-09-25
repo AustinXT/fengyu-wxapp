@@ -692,7 +692,7 @@ export default function InventoryOperationsPage({
   canRequestShipmentCancellation,
   canApproveShipmentCancellation,
   canViewPrice,
-  canViewMarketPrice,
+  marketPriceLocationIds,
   receiptDiscountOrgNodeIds,
   canCreatePickupRecord,
   initialOperationId,
@@ -711,11 +711,12 @@ export default function InventoryOperationsPage({
   canApproveShipmentCancellation: boolean
   canViewPrice: boolean
   /**
-   * 市场报货取福利报价的判据（#348）：与 `quoteMarketReplenishmentPrices` / 服务端改选福利同一权限
-   * `inventory:market_price_view`。`canViewPrice` 是价格**可见性**（任一价格档），比它宽 ——
-   * 只有供应链价格权的账号拿它去取市场报价会被拒，表单就永远卡在「报价未完成」。
+   * 市场报货取 / 改选福利报价的主体范围（#348）：`market_operate` 与 `market_price_view` 落在同一条绑定上、
+   * 该绑定覆盖的库存主体；null = 不受限（admin），[] = 没有。与服务端 `assertMarketPromotionSelectable` 同源。
+   * `canViewPrice` 是价格**可见性**（任一价格档），比它宽 —— 拿它判会让「A 市场办理 + B 市场价格权」的账号
+   * 在 A 市场取价被拒，表单永远卡在「报价未完成」。
    */
-  canViewMarketPrice: boolean
+  marketPriceLocationIds: string[] | null
   /**
    * 可填入库单价优惠的总部节点（#346，服务端按「办理权与供应链价格权同一绑定」算）；
    * null = 不受节点限制（admin）。必传：漏传就会退回「前端放行、服务端拒」。
@@ -954,7 +955,7 @@ export default function InventoryOperationsPage({
               shipmentMarketTargets={shipmentMarketTargets}
               suppliers={suppliers}
               canViewPrice={canViewPrice}
-              canViewMarketPrice={canViewMarketPrice}
+              marketPriceLocationIds={marketPriceLocationIds}
               receiptDiscountOrgNodeIds={receiptDiscountOrgNodeIds}
               onClose={() => { setPendingDocsTabFor(null); setActiveOperation(null) }}
               onSuccess={afterSuccess}
@@ -978,7 +979,7 @@ function OperationWorkspace({
   shipmentMarketTargets,
   suppliers,
   canViewPrice,
-  canViewMarketPrice,
+  marketPriceLocationIds,
   receiptDiscountOrgNodeIds,
   onClose,
   onSuccess,
@@ -1002,7 +1003,7 @@ function OperationWorkspace({
   shipmentMarketTargets?: readonly InventoryMarketTransferTarget[]
   suppliers: InventorySupplierRow[]
   canViewPrice: boolean
-  canViewMarketPrice: boolean
+  marketPriceLocationIds: string[] | null
   receiptDiscountOrgNodeIds: string[] | null
   onClose: () => void
   onSuccess: (message: string) => void
@@ -1119,7 +1120,7 @@ function OperationWorkspace({
             />
           )}
           {operation === 'store-request' && <StoreRequestForm locations={locations} onSuccess={handleSuccess} />}
-          {operation === 'market-report' && <MarketReportForm locations={locations} canViewPrice={canViewMarketPrice} prefill={prefill} onSuccess={handleSuccess} onBusyChange={setFormBusy} />}
+          {operation === 'market-report' && <MarketReportForm locations={locations} marketPriceLocationIds={marketPriceLocationIds} prefill={prefill} onSuccess={handleSuccess} onBusyChange={setFormBusy} />}
           {operation === 'item-company-request' && <ItemCompanyReplenishmentForm locations={locations} onSuccess={handleSuccess} />}
           {operation === 'purchase-order' && <PurchaseOrderForm locations={locations} canViewPrice={canViewPrice} onSuccess={handleSuccess} />}
           {operation === 'market-report-summary' && <MarketReportSummaryForm locations={locations} onSuccess={handleSuccess} />}
@@ -2071,13 +2072,14 @@ export function mergeMarketReportDraftLines(
 
 function MarketReportForm({
   locations,
-  canViewPrice,
+  marketPriceLocationIds,
   prefill,
   onSuccess,
   onBusyChange,
 }: {
   locations: InventoryLocationRow[]
-  canViewPrice: boolean
+  /** 可取 / 改选市场福利报价的主体（见 InventoryOperationsPage 同名 prop）；null = 不受限 */
+  marketPriceLocationIds: string[] | null
   /** 待办区「继续编辑」（#348）：把一张市场报货草稿回填进表单。 */
   prefill?: OperationFormPrefill | null
   onSuccess: (message: string) => void
@@ -2087,6 +2089,8 @@ function MarketReportForm({
   const markets = locations.filter((location) => location.locationType === '市场' && location.isActive)
   const headquarters = locations.filter((location) => location.locationType === '总部' && location.isActive)
   const [marketId, setMarketId] = useState('')
+  // 按当前市场判：价格权只在部分市场的账号，换到没有价格权的市场就按系统推荐取价（与服务端同口径）
+  const canViewPrice = Boolean(marketId) && (marketPriceLocationIds === null || marketPriceLocationIds.includes(marketId))
   const [supplyChainLocationId, setSupplyChainLocationId] = useState('')
   const [docDate, setDocDate] = useState(today)
   const [startDate, setStartDate] = useState('')
@@ -2171,8 +2175,14 @@ function MarketReportForm({
     return () => clearTimeout(timer)
   }, [canViewPrice, docDate, marketId, quoteBasketKey, quoteItems])
 
-  function resetForm() {
+  /** 进入新世代：在途的回填 / 汇总被作废，它们的 finally 不会再清 loading，这里必须当场释放 */
+  function bumpEpoch() {
     epochRef.current += 1
+    setLoadingSummary(false)
+  }
+
+  function resetForm() {
+    bumpEpoch()
     setDraftId(null)
     setLines([])
     setQuoteResult(null)
@@ -2318,13 +2328,17 @@ function MarketReportForm({
     }
   }
 
-  /** 当前报价里的福利方案选择；无价格权限时不传，由服务端按系统推荐取价（与新建同口径）。 */
+  /**
+   * 只回传**人工改选**的福利方案；系统推荐的行不传，服务端提交时按同一规则重新推荐（结果相同）。
+   * 全量回传会把「没改选」也当成改选去过价格权闸，还会把推荐结果钉死、提交时不再随新福利变化。
+   * 无价格权限时不传，由服务端按系统推荐取价（与新建同口径）。
+   */
   function currentPromotionSelections(): MarketPromotionSelectionInput[] | undefined {
-    return canViewPrice
-      ? quoteResult!.items
-          .filter((item) => item.promotionPlanId)
-          .map((item) => ({ skuId: item.skuId, promotionPlanId: item.promotionPlanId! }))
-      : undefined
+    if (!canViewPrice) return undefined
+    const manual = quoteResult!.items
+      .filter((item) => item.promotionPlanId && item.selectionMode === '人工选择')
+      .map((item) => ({ skuId: item.skuId, promotionPlanId: item.promotionPlanId! }))
+    return manual.length > 0 ? manual : undefined
   }
 
   async function saveDraft() {
@@ -2430,7 +2444,7 @@ function MarketReportForm({
           <InventorySubjectSelect
             options={markets.map((location) => ({ value: location.locationId, label: location.name }))}
             value={marketId}
-            onChange={(nextMarketId) => { epochRef.current += 1; setMarketId(nextMarketId); setLines([]); setQuoteResult(null) }}
+            onChange={(nextMarketId) => { bumpEpoch(); setMarketId(nextMarketId); setLines([]); setQuoteResult(null) }}
             placeholder="请选择市场"
             // 草稿的报货市场不可改（服务端 lockMarketReplenishmentDraft 同口径）
             disabled={draftId !== null}

@@ -865,7 +865,7 @@ function renderPage(options: {
   canSelfPurchase?: boolean
   canCreatePickupRecord?: boolean
   receiptDiscountOrgNodeIds?: string[] | null
-  canViewMarketPrice?: boolean
+  marketPriceLocationIds?: string[] | null
 }) {
   mockCandidates(options.candidates ?? [])
   return render(
@@ -880,7 +880,7 @@ function renderPage(options: {
       canRequestShipmentCancellation={false}
       canApproveShipmentCancellation={false}
       canViewPrice
-      canViewMarketPrice={options.canViewMarketPrice ?? true}
+      marketPriceLocationIds={options.marketPriceLocationIds === undefined ? null : options.marketPriceLocationIds}
       receiptDiscountOrgNodeIds={options.receiptDiscountOrgNodeIds === undefined ? null : options.receiptDiscountOrgNodeIds}
       canCreatePickupRecord={options.canCreatePickupRecord ?? true}
       // 深链入口：省掉「先点卡片」这一步，工作区直接展开在目标业务上
@@ -2953,16 +2953,61 @@ describe('市场报货草稿（#348）', () => {
     expect(screen.getByRole('button', { name: '创建市场报货单' })).toBeInTheDocument()
   })
 
-  it('无市场价格权限（canViewMarketPrice=false）：不取福利报价，存草稿不带福利选择', async () => {
+  it('无市场价格权限（marketPriceLocationIds=[]）：不取福利报价，存草稿不带福利选择', async () => {
     mockDocs({})
     vi.mocked(summarizeStoreReplenishmentRequests).mockResolvedValue({ marketId: 'M1', items: [summaryLine('SKU-1', [11], 4)] })
     vi.mocked(saveMarketReplenishmentDraft).mockResolvedValue({ id: 'MBH-D9' })
-    renderPage({ level: 'market', operation: 'market-report', locations: [HQ, M1], canViewMarketPrice: false })
+    renderPage({ level: 'market', operation: 'market-report', locations: [HQ, M1], marketPriceLocationIds: [] })
     fireEvent.click(await screen.findByRole('button', { name: '汇总门店报货' }))
     await screen.findByRole('checkbox', { name: '选择 商品SKU-1 SKU-1' })
     fireEvent.click(screen.getByRole('button', { name: '存草稿' }))
     await waitFor(() => expect(saveMarketReplenishmentDraft).toHaveBeenCalledWith(expect.objectContaining({ promotionSelections: undefined })))
     expect(quoteMarketReplenishmentPrices).not.toHaveBeenCalled()
+  })
+
+  it('价格权只覆盖别的市场（办理 A、价格权在 B）：在 A 市场不取价、不带福利选择（与服务端同绑定判据同源）', async () => {
+    mockDocs({})
+    vi.mocked(summarizeStoreReplenishmentRequests).mockResolvedValue({ marketId: 'M1', items: [summaryLine('SKU-1', [11], 4)] })
+    vi.mocked(saveMarketReplenishmentDraft).mockResolvedValue({ id: 'MBH-D9' })
+    renderPage({ level: 'market', operation: 'market-report', locations: [HQ, M1], marketPriceLocationIds: ['M2'] })
+    fireEvent.click(await screen.findByRole('button', { name: '汇总门店报货' }))
+    await screen.findByRole('checkbox', { name: '选择 商品SKU-1 SKU-1' })
+    fireEvent.click(screen.getByRole('button', { name: '存草稿' }))
+    await waitFor(() => expect(saveMarketReplenishmentDraft).toHaveBeenCalledWith(expect.objectContaining({ promotionSelections: undefined })))
+    expect(quoteMarketReplenishmentPrices).not.toHaveBeenCalled()
+  })
+
+  it('只回传人工改选的福利：系统推荐命中的方案不当作改选提交', async () => {
+    mockDocs({})
+    vi.mocked(summarizeStoreReplenishmentRequests).mockResolvedValue({ marketId: 'M1', items: [summaryLine('SKU-1', [11], 4)] })
+    vi.mocked(quoteMarketReplenishmentPrices).mockImplementation(async (input) => ({
+      ...quoteFor(input.items),
+      items: quoteFor(input.items).items.map((item) => ({
+        ...item, promotionPlanId: 'P-REC', promotionPlanNo: 'FL-1', promotionName: '推荐福利',
+        promotionRuleType: '单品阶梯', recommendedPromotionPlanId: 'P-REC', selectionMode: '系统推荐',
+      })),
+    }) as never)
+    vi.mocked(saveMarketReplenishmentDraft).mockResolvedValue({ id: 'MBH-D9' })
+    renderPage({ level: 'market', operation: 'market-report', locations: [HQ, M1] })
+    fireEvent.click(await screen.findByRole('button', { name: '汇总门店报货' }))
+    await screen.findByText('FL-1 · 推荐福利')
+    fireEvent.click(screen.getByRole('button', { name: '存草稿' }))
+    await waitFor(() => expect(saveMarketReplenishmentDraft).toHaveBeenCalledWith(expect.objectContaining({ promotionSelections: undefined })))
+  })
+
+  it('汇总在途时换市场：汇总按钮与工作区立即解锁，迟到的汇总不覆盖', async () => {
+    mockDocs({})
+    const slowSummary = deferred<Awaited<ReturnType<typeof summarizeStoreReplenishmentRequests>>>()
+    vi.mocked(summarizeStoreReplenishmentRequests).mockReturnValue(slowSummary.promise)
+    renderPage({ level: 'market', operation: 'market-report', locations: [HQ, M1, M2] })
+    const marketSelect = (await screen.findByRole('option', { name: '南昌市场' })).closest('select') as HTMLSelectElement
+    fireEvent.change(marketSelect, { target: { value: 'M1' } })
+    fireEvent.click(screen.getByRole('button', { name: '汇总门店报货' }))
+    await waitFor(() => expect(summarizeStoreReplenishmentRequests).toHaveBeenCalledTimes(1))
+    fireEvent.change(marketSelect, { target: { value: 'M2' } })
+    await waitFor(() => expect(screen.getByRole('button', { name: '汇总门店报货' })).not.toBeDisabled())
+    await act(async () => { slowSummary.resolve({ marketId: 'M1', items: [summaryLine('SKU-1', [11], 4)] }) })
+    expect(screen.queryByRole('checkbox', { name: '选择 商品SKU-1 SKU-1' })).not.toBeInTheDocument()
   })
 
   it('跨天续编：报货日期更新为今天并提示', async () => {

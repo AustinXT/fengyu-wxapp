@@ -2507,7 +2507,8 @@ function marketReportItemPriceFields(
 /**
  * 改选福利方案的授权（#348 闸门 2）：`market_price_view` 必须与 `market_operate` 落在**同一条**角色绑定上，
  * 且该绑定覆盖本市场 —— 只按全局 `permissions.actions` 判，会让「A 市场办理 + B 市场价格权」的账号
- * 在 A 市场改选福利、影响货款（与 #346 入库单价优惠同一处理）。
+ * 在 A 市场改选福利、影响货款。原则与 #346 入库单价优惠相同（AND 权限须在同一绑定），但判定函数不同：
+ * #346 按价格档位（inventoryPriceVisibilityForOrgNodes），这里按可操作主体 scope；前端 marketPriceLocationIds 与这里同源。
  */
 function assertMarketPromotionSelectable(session: AuthSession, market: Location): void {
   const bothGranted = scopeSessionToAllActions(session, ['inventory:market_operate', 'inventory:market_price_view'])
