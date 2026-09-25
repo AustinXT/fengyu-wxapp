@@ -91848,7 +91848,7 @@ var init_pickup = __esm(() => {
     index2("idx_pickup_records_client").on(table4.clientUserId),
     uniqueIndex2("uq_pickup_idempotency").on(table4.saleItemId, table4.idempotencyKey).where(sql3`idempotency_key IS NOT NULL`),
     check2("chk_pickup_quantity", sql3`${table4.pickupQuantity} > 0`),
-    check2("chk_pickup_amount_frozen", sql3`(${table4.pickupUnitPrice} IS NULL AND ${table4.pickupAmount} IS NULL) OR (${table4.pickupUnitPrice} IS NOT NULL AND ${table4.pickupAmount} = ROUND(${table4.pickupUnitPrice} * ${table4.pickupQuantity}, 2))`)
+    check2("chk_pickup_amount_frozen", sql3`(${table4.pickupUnitPrice} IS NULL AND ${table4.pickupAmount} IS NULL) OR (${table4.pickupUnitPrice} IS NOT NULL AND ${table4.pickupAmount} IS NOT NULL AND ${table4.pickupAmount} = ROUND(${table4.pickupUnitPrice} * ${table4.pickupQuantity}, 2))`)
   ]);
 });
 
@@ -124384,7 +124384,7 @@ var require_brace_expansion = __commonJS((exports, module) => {
   function isPadded(el) {
     return /^-?0\d/.test(el);
   }
-  function lte8(i, y) {
+  function lte7(i, y) {
     return i <= y;
   }
   function gte9(i, y) {
@@ -124434,7 +124434,7 @@ var require_brace_expansion = __commonJS((exports, module) => {
         var y = numeric5(n[1]);
         var width = Math.max(n[0].length, n[1].length);
         var incr = n.length == 3 ? Math.max(Math.abs(numeric5(n[2])), 1) : 1;
-        var test = lte8;
+        var test = lte7;
         var reverse = y < x;
         if (reverse) {
           incr *= -1;
@@ -133273,7 +133273,7 @@ var require_brace_expansion2 = __commonJS((exports, module) => {
   function isPadded(el) {
     return /^-?0\d/.test(el);
   }
-  function lte8(i, y) {
+  function lte7(i, y) {
     return i <= y;
   }
   function gte9(i, y) {
@@ -133318,7 +133318,7 @@ var require_brace_expansion2 = __commonJS((exports, module) => {
       var y = numeric5(n[1]);
       var width = Math.max(n[0].length, n[1].length);
       var incr = n.length == 3 ? Math.abs(numeric5(n[2])) : 1;
-      var test = lte8;
+      var test = lte7;
       var reverse = y < x;
       if (reverse) {
         incr *= -1;
@@ -179270,7 +179270,7 @@ init_api_error();
 function pickupAmountSnapshot(unitRealPrice, pickupQuantity) {
   const unitCents = Math.round(Number(unitRealPrice) * 100);
   const amountCents = unitCents * pickupQuantity;
-  if (unitRealPrice === null || unitRealPrice === undefined || unitRealPrice === "" || !Number.isFinite(unitCents) || !Number.isInteger(pickupQuantity) || pickupQuantity <= 0) {
+  if (unitRealPrice === null || unitRealPrice === undefined || String(unitRealPrice).trim() === "" || !Number.isFinite(unitCents) || !Number.isInteger(pickupQuantity) || pickupQuantity <= 0) {
     throw new ApiError("INVALID_STATE", "销售明细缺少顾客实际单价，无法计算出库金额");
   }
   return {
@@ -179516,7 +179516,7 @@ function pickupRecordConditions(session4, filters) {
     conditions3.push(import_drizzle_orm59.gte(pickupRecords.createdAt, beijingBoundaryTs(filters.dateFrom, "00:00:00")));
   }
   if (filters.dateTo) {
-    conditions3.push(import_drizzle_orm59.lte(pickupRecords.createdAt, beijingBoundaryTs(filters.dateTo, "23:59:59")));
+    conditions3.push(import_drizzle_orm59.lt(pickupRecords.createdAt, beijingNextDayBoundaryTs(filters.dateTo)));
   }
   return conditions3;
 }
@@ -180209,7 +180209,9 @@ var deletePickupRecord = withPermission("pickup_record:delete", async (session4,
     pickupQuantity: pickupRecords.pickupQuantity,
     storeId: pickupRecords.storeId,
     clientUserId: pickupRecords.clientUserId,
-    confirmedBy: pickupRecords.confirmedBy
+    confirmedBy: pickupRecords.confirmedBy,
+    pickupUnitPrice: pickupRecords.pickupUnitPrice,
+    pickupAmount: pickupRecords.pickupAmount
   }).from(pickupRecords).where(import_drizzle_orm59.and(import_drizzle_orm59.eq(pickupRecords.id, id), scopeCondition(session4, pickupRecords.storeId))).limit(1);
   if (!rec) {
     return { success: false, message: "提货记录不存在或无权操作" };
@@ -180243,7 +180245,9 @@ var deletePickupRecord = withPermission("pickup_record:delete", async (session4,
       pickupQuantity: rec.pickupQuantity,
       storeId: rec.storeId,
       clientUserId: rec.clientUserId,
-      confirmedBy: rec.confirmedBy
+      confirmedBy: rec.confirmedBy,
+      pickupUnitPrice: rec.pickupUnitPrice,
+      pickupAmount: rec.pickupAmount
     }
   });
   import_cache12.revalidatePath("/pickup-records");
