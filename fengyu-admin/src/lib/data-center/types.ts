@@ -178,6 +178,11 @@ export interface ProductBoardResult extends BoardMeta {
 export interface ScopeOptionStore {
   storeId: string
   storeName: string
+  /**
+   * 只关店、组织节点仍启用（#422）：照常可选（有关店前的历史数据），下拉标「（已关店）」。
+   * 纯展示，缺省 = 未关店；判定在 `lib/store-closed-label`，不参与取数范围。
+   */
+  closed?: boolean
 }
 export interface ScopeOptionMarket {
   id: string

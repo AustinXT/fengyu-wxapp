@@ -21,6 +21,8 @@ interface MarketMini {
 interface StoreMini {
   storeId: string
   storeName: string
+  /** 只关店、组织节点仍启用（#422）：照常可选（有关店前的历史数据），下拉标「（已关店）」 */
+  closed?: boolean
 }
 
 interface ScopeOptionsResp {
@@ -190,7 +192,7 @@ Component({
       }
       // 默认门店落在已停用门店（#400）：取数会滤掉它的全部数据（满屏 0）。
       // 有在营门店可选就纠正到第一家在营门店；没有就保留，标「已停用」由页面出空态。
-      // 只纠正停用门店 —— 只关店、节点仍在营的门店不在下拉里但照样有历史数据，不动它。
+      // 只纠正停用门店 —— 只关店、节点仍在营的门店照常在下拉里（标「（已关店）」，#422）、照样有历史数据，不动它。
       const knownInactive = this.data.inactiveStoreIds as string[] | null
       if (knownInactive) {
         const inactiveIds = new Set(knownInactive)
@@ -265,7 +267,8 @@ Component({
       if (!market) return
       const currentAllowsMarket = this._allowsMarket(marketId)
       const stores = (this.data.storeListByMarket as Record<string, StoreMini[]>)[marketId] || []
-      const firstStore = stores[0]
+      // 默认门店跳过已关店门店（关店后区间业绩为 0，易误判为数据异常）；全都关了才回落到第一家（#422）
+      const firstStore = stores.find((store) => !store.closed) || stores[0]
       const next: Scope = currentAllowsMarket
         ? { scopeType: 'market', marketId, scopeId: marketId, scopeName: market.name }
         : firstStore

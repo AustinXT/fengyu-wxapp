@@ -252,6 +252,9 @@ export const createStore = withPermission(
         }
       }
 
+      // is_closed ↔ closed_at 双写一致（#422）：建档即关店也要记闭店日期，与 updateStore / sync-workfine 同口径
+      const isClosed = data.isClosed === true
+      const closedAt = isClosed ? shanghaiToday() : null
       await tx.insert(stores).values({
         storeId: data.storeId,
         // 门店名以组织节点为权威 → 用**锁内**复读到的名字，事务外那个可能已被并发改掉
@@ -259,7 +262,8 @@ export const createStore = withPermission(
         orgNodeId: data.orgNodeId,
         openingDate: data.openingDate ?? null,
         bedCount: data.bedCount ?? null,
-        isClosed: data.isClosed ?? false,
+        isClosed,
+        closedAt,
         coverImage: data.coverImage ?? null,
         images: data.images ?? null,
         district: data.district ?? null,
@@ -276,7 +280,8 @@ export const createStore = withPermission(
       })
       await logOperation(
         session, 'store.create', 'store', data.storeId,
-        { storeName: lockedNode.name, orgNodeId: data.orgNodeId }, tx,
+        // 建档即关店要能从审计里看出来（#422 闸门 2 GLM P3）
+        { storeName: lockedNode.name, orgNodeId: data.orgNodeId, isClosed, closedAt }, tx,
       )
       return { ok: true }
     })
@@ -324,9 +329,8 @@ export const updateStore = withPermission(
       storeName: string
       openingDate: string | null
       bedCount: number | null
+      /** 关店 / 重新开业；闭店日期 closed_at 由 action 按此推导（#422：不接受调用方直传，防写出与 is_closed 不一致的行） */
       isClosed: boolean
-      /** 闭店日期（YYYY-MM-DD）；与 isClosed 双写一致，由 action 自动维护 */
-      closedAt: string | null
       coverImage: string | null
       images: string[] | null
       district: string | null
@@ -360,9 +364,6 @@ export const updateStore = withPermission(
     }
   }
 
-  // 获取旧值用于日志 diff
-  const [before] = await db.select().from(stores).where(eq(stores.storeId, storeId)).limit(1)
-
   // 乐观锁 + scope 隔离：WHERE store_id = $1 [AND updated_at = $2] [AND scope]
   // 注意：PostgreSQL NOW() 有微秒精度，JS Date 仅毫秒精度，需 date_trunc 对齐
   const scopeCond = scopeCondition(session, stores.storeId)
@@ -384,7 +385,7 @@ export const updateStore = withPermission(
    */
   const storeFields: Record<string, unknown> = {}
   const EDITABLE = [
-    'storeName', 'openingDate', 'bedCount', 'isClosed', 'closedAt',
+    'storeName', 'openingDate', 'bedCount', 'isClosed',
     'coverImage', 'images', 'district', 'streetAddress', 'latitude', 'longitude',
     'phone', 'businessHours', 'description', 'announcement', 'parkingInfo',
     'lakalaMerchantId',
@@ -392,16 +393,50 @@ export const updateStore = withPermission(
   for (const key of EDITABLE) {
     if (data[key] !== undefined) storeFields[key] = data[key]
   }
-  // is_closed ↔ closed_at 双写一致：调用方仅传 isClosed 时由 action 自动推导 closedAt
-  // - isClosed=true 且未显式给 closedAt：写 today
-  // - isClosed=false：清空 closedAt（重新开业）
-  if (storeFields.isClosed !== undefined && storeFields.closedAt === undefined) {
-    storeFields.closedAt = storeFields.isClosed ? shanghaiToday() : null
+  // 白名单过滤后没有可写字段（如只传了已不受理的 closedAt）：Drizzle `.set({})` 会直接抛错成 500，
+  // 在查旧值、开事务之前就友好拒绝
+  if (Object.keys(storeFields).length === 0) {
+    return { success: false, message: '没有可更新的字段' }
   }
+
+  // 获取旧值用于日志 diff
+  const [before] = await db.select().from(stores).where(eq(stores.storeId, storeId)).limit(1)
+  /**
+   * is_closed ↔ closed_at 双写一致：closedAt **只由 isClosed 推导**，不在白名单里（#422）。
+   * 原先允许直传 closedAt，直调 Server Action 就能写出 is_closed=true + closed_at=NULL（或反过来），
+   * 而系统概览门店数按 closed_at 历史化，这种行会被错计。UI 从不传 closedAt。
+   * - isClosed=true：原本无闭店日期 → 记今天；**已有闭店日期保留**
+   * - isClosed=false：清空 closedAt（重新开业）
+   * isClosed 按 `=== true` 归一：直调时传非布尔值（如字符串 "false"）不会被当成关店。
+   *
+   * 「保留原日期」在 SET 里用 `COALESCE(closed_at, today)` 表达（PG 的 SET 读的是更新前的行），
+   * 与 `db/scripts/sync-workfine.js` 的 STORE_UPSERT_SQL 同一写法。不按事务外读到的 `before`
+   * 判：并发重新开业会让「before 已关店」过时，据此不写 closedAt 就留下 is_closed=true + closed_at=NULL。
+   */
+  let closedAtKept = false
+  if (storeFields.isClosed !== undefined) {
+    storeFields.isClosed = storeFields.isClosed === true
+    if (storeFields.isClosed) {
+      storeFields.closedAt = sql`COALESCE(${stores.closedAt}, ${shanghaiToday()}::date)`
+      closedAtKept = true
+    } else {
+      storeFields.closedAt = null
+    }
+  }
+  // 审计的 after：闭店日期是 SQL 表达式时换成落库后的真实值，别把表达式对象写进日志
+  let auditAfter: Record<string, unknown> = storeFields
   let result: any
   try {
     result = await db.transaction(async (tx) => {
       const r: any = await tx.update(stores).set(storeFields).where(whereConditions)
+      if (closedAtKept && r.count > 0) {
+        const [after] = await tx
+          .select({ closedAt: stores.closedAt })
+          .from(stores)
+          .where(eq(stores.storeId, storeId))
+          .limit(1)
+        auditAfter = { ...storeFields, closedAt: after?.closedAt ?? null }
+      }
       // 门店名以组织节点为权威：改名时同步 org_nodes.name，保持两者一致
       if (
         r.count > 0 &&
@@ -437,7 +472,7 @@ export const updateStore = withPermission(
   }
 
   // 审计的 after 用净化后的白名单对象，别把客户端多塞的键记进日志
-  await logUpdate(session, 'store.update', 'store', storeId, before as Record<string, unknown>, storeFields)
+  await logUpdate(session, 'store.update', 'store', storeId, before as Record<string, unknown>, auditAfter)
   revalidatePath('/stores')
   return { success: true, message: '门店信息已更新' }
   },

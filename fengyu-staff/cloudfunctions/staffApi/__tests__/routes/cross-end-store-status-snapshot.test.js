@@ -18,6 +18,7 @@
 
 const fs = require('node:fs')
 const path = require('node:path')
+const { parse: babelParse } = require('@babel/parser')
 
 const ADMIN_SRC = path.resolve(__dirname, '../../../../../fengyu-admin/src')
 const STAFF_ROOT = path.resolve(__dirname, '../..')
@@ -26,6 +27,30 @@ const ANALYST_SRC = path.resolve(__dirname, '../../../../../fengyu-analyst/src')
 
 function readFile(filePath) {
   return fs.readFileSync(filePath, 'utf8')
+}
+
+/**
+ * 剥注释但保留行号（#422 闸门 2 GLM R4 / codex R5）：用真解析器 @babel/parser 拿到**真正的注释**位置，
+ * 只把注释内容换成空格（换行保留，行号不变），字符串 / 模板 / 正则字面量 / JSX 文本原样保留。
+ * 正则剥注释的两种旧写法都能被绕过：按行首星号 / 双斜线跳过整行，会被「跨行块注释结束行后面接代码」绕过；
+ * 整份源码正则匹配块注释，会被「字符串里写块注释起止符、把中间真代码一起抹掉」绕过。
+ * 解析失败直接抛错（守护变红），不静默回落。
+ */
+function stripCommentsKeepLines(src, filePath = 'x.ts') {
+  const plugins = []
+  if (/\.tsx?$/.test(filePath)) plugins.push('typescript')
+  if (/\.(tsx|jsx)$/.test(filePath)) plugins.push('jsx')
+  let ast
+  try {
+    ast = babelParse(src, { sourceType: 'unambiguous', plugins, errorRecovery: false })
+  } catch (err) {
+    throw new Error(`stripCommentsKeepLines 解析失败 ${filePath}: ${err.message}`)
+  }
+  let out = src
+  for (const c of ast.comments) {
+    out = out.slice(0, c.start) + out.slice(c.start, c.end).replace(/[^\n]/g, ' ') + out.slice(c.end)
+  }
+  return out
 }
 
 function isTestFile(filePath) {
@@ -112,9 +137,9 @@ describe('#401 数据中心在营口径 · helper 本体', () => {
     const offenders = []
     let codeLines = 0
     for (const file of helpers) {
-      readFile(file).split('\n').forEach((line, i) => {
+      stripCommentsKeepLines(readFile(file), file).split('\n').forEach((line, i) => {
         const t = line.trim()
-        if (!t || /^(\*|\/\*|\/\/)/.test(t)) return
+        if (!t) return
         codeLines++
         if (/\bis_?closed\b|closed_?at/i.test(t)) offenders.push(`${rel(file)}:${i + 1}: ${t}`)
       })
@@ -130,7 +155,7 @@ describe('#401 数据中心在营口径 · closed_at 白名单', () => {
    * `(s.closed_at IS NULL OR s.closed_at::date > <截止日>)`。任何别的写法（如
    * `EXISTS (... closed_at IS NULL)`、`isNull(stores.closedAt)`）都等于把「当前是否关店」
    * 偷渡进统计范围，会抹掉关店前的历史业绩 —— 与只禁 is_closed token 互补（闸门 2 codex round-1 P2）。
-   * 注释行（`*` / `//` 开头）不计。
+   * 注释不计（stripCommentsKeepLines 剥掉，不再按行首跳过——那会被跨行块注释绕过）。
    */
   const ALLOWED = /^AND \(s\.closed_at IS NULL OR s\.closed_at::date > (\$\{(?:cur\.end|range\.end)\}|\$1::date)\)(`,)?$/
 
@@ -138,10 +163,9 @@ describe('#401 数据中心在营口径 · closed_at 白名单', () => {
     const offenders = []
     let seen = 0
     for (const file of CONSUMER_FILES) {
-      readFile(file).split('\n').forEach((line, i) => {
+      stripCommentsKeepLines(readFile(file), file).split('\n').forEach((line, i) => {
         const t = line.trim()
         if (!/closed_?at/i.test(t)) return
-        if (/^(\*|\/\*|\/\/)/.test(t)) return
         seen++
         if (!ALLOWED.test(t)) offenders.push(`${rel(file)}:${i + 1}: ${t}`)
       })
@@ -149,6 +173,37 @@ describe('#401 数据中心在营口径 · closed_at 白名单', () => {
     expect(offenders).toEqual([])
     // 防扫描落空：admin sales/efficiency 三处 + staff queryStoreCount 一处
     expect(seen).toBe(4)
+  })
+})
+
+describe('#422 stripCommentsKeepLines', () => {
+  it('跨行 / 行内块注释后面的代码保留，注释内容剥掉，行号不变', () => {
+    const src = 'const a = 1\n/* 说明\n */ const v = s.closed_at\n/* x */ const w = s.closedAt\n// const z = s.closed_at\nconst q = 2'
+    const out = stripCommentsKeepLines(src, 'x.js').split('\n')
+    expect(out).toHaveLength(6)
+    expect(out[2].trim()).toBe('const v = s.closed_at')
+    expect(out[3].trim()).toBe('const w = s.closedAt')
+    expect(out[4].trim()).toBe('')
+  })
+
+  it('字符串里的块注释起止符不会把中间真代码抹掉（codex R5）', () => {
+    const src = "const a = '/*'\nconst v = stores.closedAt\nconst b = '*/'\nconst re = /\\s*[\\/]\\s*/"
+    const out = stripCommentsKeepLines(src, 'x.ts').split('\n')
+    expect(out[1].trim()).toBe('const v = stores.closedAt')
+    expect(out[3]).toContain('/\\s*[\\/]\\s*/')
+  })
+
+  it('字符串里的 // 与 URL 原样保留', () => {
+    const out = stripCommentsKeepLines("const u = 'https://x//y' // 尾注释 closed_at", 'x.js')
+    expect(out).toContain("'https://x//y'")
+    expect(out).not.toContain('closed_at')
+  })
+
+  it('JSX 注释剥掉、模板字符串原样保留', () => {
+    const src = 'const x = <div>{/* 注释 closed_at */}</div>\nconst sql = `/* 不是注释 */ s.closed_at`'
+    const out = stripCommentsKeepLines(src, 'x.tsx').split('\n')
+    expect(out[0]).not.toContain('closed_at')
+    expect(out[1]).toContain('/* 不是注释 */ s.closed_at')
   })
 })
 
@@ -203,11 +258,15 @@ describe('#401 数据中心在营口径 · 接线', () => {
     expect(src).toMatch(/const inactiveStores = allStoreRows\s*\.filter\(\(s\) => !isDataCenterActiveStore\(s\)\)/)
   })
 
-  it('admin 系统概览门店数 = helper 统计范围 ∩ 当前未关店（时点计数）', () => {
+  it('admin 系统概览门店数 = helper 统计范围 ∩ 按今天历史化在营（与数据中心门店数同口径，#422）', () => {
     const src = readFile(path.join(ADMIN_SRC, 'actions/dashboard.ts'))
     expect(src).toContain("import { activeStoreCondition } from '@/lib/store-status'")
+    const today = "(NOW() AT TIME ZONE 'Asia/Shanghai')::date"
     expect(src.replace(/\s+/g, ' ')).toContain(
-      'FROM stores s WHERE ${activeStoreCondition(sql`s.store_id`)} AND s.is_closed = false) AS total_stores',
+      '(SELECT COUNT(*) FROM stores s WHERE ${activeStoreCondition(sql`s.store_id`)}' +
+        ' AND s.opening_date IS NOT NULL' +
+        ` AND s.opening_date::date <= ${today}` +
+        ` AND (s.closed_at IS NULL OR s.closed_at::date > ${today})) AS total_stores,`,
     )
   })
 
@@ -275,5 +334,119 @@ describe('#401 数据中心在营口径 · 接线', () => {
     }
     // 全文件 buildManagementStoreScope 调用恰好 3 处（就是上面三个构造器），没有绕开启用过滤的直调
     expect(src.split('buildManagementStoreScope(').length - 1).toBe(3)
+  })
+})
+
+/**
+ * 消费方源码里碰到关店展示标记的行（#422）：结果 Set / helper 名 / 引入路径 / 任何写法的 closed 标识符。
+ * **不剥注释**（闸门 2 codex R3：按行剥注释的写法会被跨行块注释结束行后面接的代码绕过），注释里的提及也须登记。
+ * `closed` 前后紧挨词字符或连字符的不算：closed_at 由上方白名单单独管，「fail-closed」是无关英文措辞。
+ * 不区分大小写（`s['CLOSED']` 也算）。已知窗口：拼接出来的键名（`s['clo' + 'sed']`）、不含上述 token 的 camelCase
+ * 派生变量名（如另起 `closedSet`）这类写法正则拦不住，真要防须上 AST；这里防的是正常写法的误用。
+ */
+function closedMarkerLines(src) {
+  return src.split('\n')
+    .map((line) => line.trim())
+    .filter((t) => /closedIds|loadClosedStoreIds|store-closed-label|(?<![-\w])closed(?![-\w])/i.test(t))
+}
+
+describe('#422 范围下拉「（已关店）」展示标记 · 两端 helper', () => {
+  /**
+   * 展示标记是数据中心链路里 is_closed 唯一合法的用途：判定只许出现在两端 store-closed-label helper 里，
+   * 消费方（范围下拉数据源）只拿到 Set，上面的闭集守护照旧禁止消费方出现 is_closed token。
+   * 这里整段钉死两个 helper 的查询本体——改成别的谓词（如 closed_at <= 今天、并入节点启停）必须同步两端并改这里。
+   */
+  const squeeze = (t) => t.replace(/\s+/g, ' ').trim()
+  const extract = (src, start, end) => {
+    const i = src.indexOf(start)
+    expect(i, `未找到 ${start}`).toBeGreaterThan(-1)
+    const j = src.indexOf(end, i)
+    expect(j, `未找到 ${start} 的结尾`).toBeGreaterThan(i)
+    return squeeze(src.slice(i, j + end.length))
+  }
+
+  it('staff helper 本体整段等值', () => {
+    const src = readFile(path.join(STAFF_ROOT, 'utils/store-closed-label.js'))
+    expect(extract(src, 'async function loadClosedStoreIds(', '\n}\n')).toBe(
+      'async function loadClosedStoreIds(pg, storeIds) {' +
+        ' if (storeIds.length === 0) return new Set()' +
+        ' const rows = await pg.query(' +
+        " 'SELECT store_id FROM stores WHERE is_closed = TRUE AND store_id = ANY($1::text[])'," +
+        ' [storeIds], )' +
+        ' return new Set((rows || []).map((row) => row.store_id)) }',
+    )
+    expect(src).toContain('module.exports = { loadClosedStoreIds }')
+  })
+
+  it('admin helper 本体整段等值（与 staff 同一谓词：is_closed = TRUE ∩ 给定门店）', () => {
+    const src = readFile(path.join(ADMIN_SRC, 'lib/store-closed-label.ts'))
+    expect(extract(src, 'export async function loadClosedStoreIds(', '\n}\n')).toBe(
+      'export async function loadClosedStoreIds(storeIds: string[]): Promise<Set<string>> {' +
+        ' if (storeIds.length === 0) return new Set()' +
+        ' const rows = await db .select({ storeId: stores.storeId }) .from(stores)' +
+        ' .where(and(eq(stores.isClosed, true), inArray(stores.storeId, storeIds)))' +
+        ' return new Set(rows.map((row) => row.storeId)) }',
+    )
+  })
+
+  /**
+   * 数据中心消费方里凡是碰到关店标记的代码行（helper 名 / 引入路径 / 结果 Set）必须**整行**等于下表（闭集）。
+   * 只按文件放行会漏：mgmt-dashboard.js 本身也是统计文件，在 summary 里再调一次 helper、或拿 Set 去
+   * `filter(!closedIds.has(...))` 收窄统计范围都不会变红（#422 pr-ready boundary P2）。
+   * 换变量名 / 换 import 写法同样会让行对不上而变红——改动须在这里登记并说明为何仍是纯展示。
+   */
+  it('消费方里关店标记的用法闭集：只在两份下拉数据源里打 closed 标、只在下拉展示里读它', () => {
+    const EXPECTED = {
+      'fengyu-admin/src/lib/data-center/types.ts': [
+        '* 纯展示，缺省 = 未关店；判定在 `lib/store-closed-label`，不参与取数范围。',
+        'closed?: boolean',
+      ],
+      'fengyu-admin/src/lib/data-center/scope-options.ts': [
+        'closed?: boolean',
+        'export function storeOptionLabel(store: { storeName: string; closed?: boolean }): string {',
+        'return store.closed ? `${store.storeName}（已关店）` : store.storeName',
+        '...(store.closed ? { closed: true } : {}),',
+      ],
+      'fengyu-staff/cloudfunctions/staffApi/routes/mgmt-dashboard.js': [
+        "const { loadClosedStoreIds } = require('../utils/store-closed-label')",
+        '*     markets: [{ id, name, stores: [{ storeId, storeName, closed? }] }, ...],   // closed: 只关店、节点仍启用（#422）',
+        '// 只关店、节点仍启用的门店留在下拉里（有关店前的历史数据），打 closed 标给前端显示「（已关店）」、',
+        'const closedIds = await loadClosedStoreIds(pg, visible.flatMap((market) => market.stores.map((store) => store.storeId)))',
+        "console.error('[mgmtDashboard.scopeOptions] loadClosedStoreIds failed:', err)",
+        'const markets = closedIds.size === 0',
+        'stores: market.stores.map((store) => (closedIds.has(store.storeId) ? { ...store, closed: true } : store)),',
+      ],
+      'fengyu-admin/src/actions/data-center/shared.ts': [
+        "import { loadClosedStoreIds } from '@/lib/store-closed-label'",
+        '// 只关店、节点仍启用的门店打 closed 标，下拉显示「（已关店）」（#422）。纯展示：查失败就不打标，不拖垮筛选器',
+        'const closedIds = await loadClosedStoreIds(storeRows.map((s) => s.storeId)).catch((err: unknown) => {',
+        "console.error('[data-center] loadClosedStoreIds failed:', err)",
+        '.map((s) => ({ storeId: s.storeId, storeName: s.storeName, ...(closedIds.has(s.storeId) ? { closed: true } : {}) })),',
+      ],
+    }
+    const actual = {}
+    for (const file of CONSUMER_FILES) {
+      const hits = closedMarkerLines(readFile(file))
+      if (hits.length > 0) actual[rel(file)] = hits
+    }
+    expect(actual).toEqual(EXPECTED)
+  })
+
+  it('closedMarkerLines 对各种写法都命中（含注释里的，不做注释剥离）', () => {
+    for (const src of [
+      'if (store.closed) continue',
+      "if (store['closed']) continue",
+      'const { closed } = store',
+      "const x = 'closed' in store",
+      '/* 说明\n*/ const visible = stores.filter((s) => !s.closed)',
+      '/* x */ if (store.closed) continue',
+      '// if (store.closed) continue',
+      "if (store['CLOSED']) continue",
+    ]) {
+      expect(closedMarkerLines(src).length, src).toBeGreaterThan(0)
+    }
+    // 不误伤：closed_at（另有白名单管）、fail-closed 这类英文措辞
+    expect(closedMarkerLines('AND (s.closed_at IS NULL OR s.closed_at::date > $1::date)')).toEqual([])
+    expect(closedMarkerLines(' * 未知取值一律 fail-closed')).toEqual([])
   })
 })

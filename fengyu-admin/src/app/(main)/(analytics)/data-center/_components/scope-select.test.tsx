@@ -221,3 +221,37 @@ describe('ScopeSelect · 停用门店（#293 / #376）', () => {
     expect(screen.getByTestId('scope-picker-count')).toHaveTextContent('已选 1 家')
   })
 })
+
+/**
+ * 只关店、组织节点仍启用的门店（#422）：照常进面板、照常可勾（有关店前的历史数据），
+ * 仅在门店行加「（已关店）」后缀；搜索仍按店名匹配。
+ */
+describe('ScopeSelect · 已关店门店（#422）', () => {
+  const closed: DataCenterScopeOptions = {
+    topLevel: 'store', inactiveStores: [],
+    markets: [
+      { id: 'M1', name: '南昌市场', stores: [{ storeId: 'S1', storeName: '蓝莱店', closed: true }, { storeId: 'S2', storeName: '绿湖店' }] },
+      { id: 'M2', name: '九江市场', stores: [{ storeId: 'S3', storeName: '九江店' }] },
+    ],
+  }
+
+  it('门店行带「（已关店）」后缀，未关店门店不带', async () => {
+    const { trigger } = renderWith(closed, { scope: 'store', scopeId: 'S2' })
+    const user = userEvent.setup()
+    await user.click(trigger)
+    const group = screen.getByRole('group', { name: '南昌市场' })
+    expect(within(group).getByRole('checkbox', { name: '蓝莱店（已关店）' })).not.toBeChecked()
+    expect(within(group).getByRole('checkbox', { name: '绿湖店' })).toBeChecked()
+  })
+
+  it('已关店门店照常可勾选、参与折叠；搜索按店名命中', async () => {
+    const { trigger, setMany } = renderWith(closed, { scope: 'store', scopeId: 'S2' })
+    const user = userEvent.setup()
+    await user.click(trigger)
+    await user.type(screen.getByRole('searchbox', { name: '搜索门店' }), '蓝莱')
+    await user.click(screen.getByRole('checkbox', { name: '蓝莱店（已关店）' }))
+    await user.click(screen.getByRole('button', { name: '确定' }))
+    // S1+S2 勾满南昌市场 → 折叠成 market
+    expect(setMany).toHaveBeenCalledWith({ scope: 'market', scopeId: 'M1' })
+  })
+})

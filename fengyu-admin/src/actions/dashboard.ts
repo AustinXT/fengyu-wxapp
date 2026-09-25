@@ -40,9 +40,10 @@ const ZERO_BUSINESS: Pick<DashboardStats,
 /**
  * 查询系统概览指标（admin/hr/product 共用）
  *
- * 门店数 = 统计范围（lib/store-status，只看节点 is_active）∩ 当前未关店；is_closed 只作时点条件、
- * 不作范围（#401）。⚠️ 不看 opening_date：筹备中未开业的门店也计入，与数据中心门店数
- * （opening_date / closed_at 历史化）存在口径差，对数时注意。
+ * 门店数 = 统计范围（lib/store-status，只看节点 is_active）∩ 按今天（上海）历史化的在营：
+ * `opening_date <= 今天 AND (closed_at IS NULL OR closed_at > 今天)`，与数据中心门店数
+ * （`data-center/sales.ts` runStoreCount，区间末取今天）同一口径（#422）。
+ * 筹备中未开业、无开业日期的门店不计入；is_closed 只作时点条件、不作范围（#401），由 closed_at 表达。
  */
 async function getAdminStats() {
   const rows = await db.execute(sql`
@@ -50,7 +51,9 @@ async function getAdminStats() {
       (SELECT COUNT(*)
          FROM stores s
         WHERE ${activeStoreCondition(sql`s.store_id`)}
-          AND s.is_closed = false) AS total_stores,
+          AND s.opening_date IS NOT NULL
+          AND s.opening_date::date <= (NOW() AT TIME ZONE 'Asia/Shanghai')::date
+          AND (s.closed_at IS NULL OR s.closed_at::date > (NOW() AT TIME ZONE 'Asia/Shanghai')::date)) AS total_stores,
       (SELECT COUNT(*) FROM staff_wechat_users WHERE is_resigned = false) AS total_employees,
       (SELECT COUNT(*) FROM products WHERE deleted_at IS NULL) AS total_products,
       (SELECT COUNT(*) FROM client_wechat_users) AS total_customers
