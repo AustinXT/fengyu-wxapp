@@ -487,3 +487,76 @@ describe('dist/export-worker.mjs 客活分子守卫的**位置**（#414）', () 
     )
   })
 })
+
+/**
+ * #414：**整段 SQL 模板**逐字进入产物 —— 一次覆盖这份 SQL 的每一行。
+ *
+ * ## 为什么要这条
+ *
+ * 逐行探针是**开放集合**：每加一条口径行就得回来补一个 pattern，漏一行就有一条
+ * 「源码正确、产物是另一个真实源码状态构建的」路径全绿。双谱系评审连着五轮
+ * （r9 投影追加同名列 / r10-11 cron 与调用点 / r13 守卫位置 / r14 分母生产式）
+ * 逐行指出缺口，就是这个形态。这里换**闭集**：把 `queryRegActiveBreakdown` 的整段模板
+ * 拿去产物里找，任何一个字符的增删改都红，不需要预先知道哪行重要。
+ *
+ * ## 唯一的归一化：把 `${…}` 插值整段遮成 `${}`
+ *
+ * `bun build` 原样保留模板**正文**，但会重写**插值表达式内部**：JS 字符串 `'x'` → `"x"`、
+ * 标识符 `sql.raw(…)` → `import_drizzle_orm65.sql.raw(…)`。这些改写与口径无关，
+ * 所以两侧都把 `${…}` 遮成 `${}` 再比。
+ *
+ * ⚠ **SQL 正文里的引号一个都不碰** —— `'保有会员-稳定'` 的 `'` 与 `"` 在 PG 是
+ * 字面量 vs 标识符，一起归一会放过真实的语义变化。
+ *
+ * 插值**内部**的口径（`${visitDaysSql({ axis: 'service_date', … })}` 的日期轴、
+ * `${customerScope}` 用哪个 scope 生产者…）由源码侧 `consistency.customer.test.ts`
+ * 的整段快照逐字钉死，两边各管一段，不重复也不留缝。
+ */
+describe('dist/export-worker.mjs 客量明细 SQL 整段逐字进入产物（#414）', () => {
+  /** 把 `${…}` 插值整段遮成 `${}`（bun 会重写插值内部的引号与标识符，与口径无关） */
+  const maskInterpolations = (text: string): string => {
+    let out = ''
+    for (let i = 0; i < text.length; ) {
+      if (text.startsWith('${', i)) {
+        let depth = 0
+        let j = i
+        for (; j < text.length; j++) {
+          if (text[j] === '{') depth++
+          else if (text[j] === '}' && --depth === 0) {
+            j++
+            break
+          }
+        }
+        out += '${}'
+        i = j
+      } else {
+        out += text[i++]
+      }
+    }
+    return out
+  }
+
+  it('queryRegActiveBreakdown 的整段模板在产物里逐字可找到', () => {
+    const src = fs.readFileSync(path.join(ADMIN_ROOT, 'src/actions/data-center/customer.ts'), 'utf-8')
+    const from = src.indexOf('WITH skel AS (${skeleton})')
+    const to = src.indexOf('GROUP BY ${groupId}', from)
+    expect(from, '源码里找不到明细 SQL 模板起点').toBeGreaterThan(0)
+    expect(to, '源码里找不到明细 SQL 模板终点').toBeGreaterThan(from)
+    const template = maskInterpolations(
+      src.slice(from, to + 'GROUP BY ${groupId}'.length).replace(/\s+/g, ' ').trim(),
+    )
+    // fail-closed：模板短得离谱说明锚点漂了，不能让这条守护静默通过
+    expect(template.length).toBeGreaterThan(2500)
+
+    const dist = fs.readFileSync(DIST, 'utf-8')
+    const segment = maskInterpolations(
+      moduleSegments(dist, 'src/actions/data-center/customer.ts').join('\n').replace(/\s+/g, ' '),
+    )
+    expect(
+      segment.includes(template),
+      '产物里的客量明细 SQL 与当前源码**不逐字相同** —— 产物不是按当前源码构建的。' +
+        '（逐行探针可能仍全绿：它们只看单行的集合，看不出整段结构）' +
+        REBUILD_HINT,
+    ).toBe(true)
+  })
+})
