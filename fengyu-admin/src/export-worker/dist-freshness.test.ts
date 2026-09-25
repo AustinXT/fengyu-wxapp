@@ -62,6 +62,27 @@ interface Probe {
    * 行数不变、去重后全在旧产物里，守护恒绿；给出精确的唯一数，这类「改成另一条已有表达式」也会红。
    */
   uniqueLines?: number
+  /**
+   * 在产物里**该源文件的模块区段内**逐条比对指纹出现次数（可选）。bun 在每个模块前写 `// <源文件路径>` 注释，
+   * 据此切出区段；源码里出现两次的指纹（如两处同形的分配金额公式）删掉其中一处而不重建时，
+   * 去重后的 includes 比对仍全绿，只有频次比对能发现。
+   */
+  exactCountsInModule?: boolean
+}
+
+/** 产物中属于某源文件的所有模块区段（同一模块可能被拆成多段） */
+function moduleSegments(dist: string, file: string): string[] {
+  const lines = dist.split('\n')
+  const out: string[] = []
+  let inside = false
+  for (const line of lines) {
+    if (/^\/\/ (src|node_modules|\.\.)\//.test(line)) {
+      inside = line === `// ${file}`
+      continue
+    }
+    if (inside) out.push(line.trim())
+  }
+  return out
 }
 
 const PROBES: Probe[] = [
@@ -104,6 +125,7 @@ const PROBES: Probe[] = [
     pattern: /^(?!.*\$\{)(AND (spia|sc|so|spe)\.(is_void|sale_order_type|status) .*|HAVING .*|ROUND\(ROUND\(.* AS allocated,)$/,
     minLines: 7,
     uniqueLines: 8,
+    exactCountsInModule: true,
   },
   {
     label: '提成日报 / 明细 · 聚合与计数口径（实收按 receipt 去重、各项合计、条数 / 去重单数 / 去重人数）（#375）',
@@ -112,6 +134,7 @@ const PROBES: Probe[] = [
     pattern: /^(?!.*\$\{)((SELECT )?\(?(SELECT )?COUNT\(.*|COALESCE\(SUM\(.*|\(SELECT COALESCE\(SUM\(r\.received\), 0\)|FROM \(SELECT DISTINCT receipt_id, received FROM summary_rows WHERE receipt_id IS NOT NULL\) r\) AS received,)$/,
     minLines: 15,
     uniqueLines: 15,
+    exactCountsInModule: true,
   },
   {
     label: '提成明细 · 平均提成点公式（#375）',
@@ -119,6 +142,7 @@ const PROBES: Probe[] = [
     pattern: /^const averageRate = /,
     minLines: 1,
     uniqueLines: 1,
+    exactCountsInModule: true,
   },
 ]
 
@@ -156,6 +180,26 @@ describe('dist/export-worker.mjs 新鲜度（改了 data-center SQL 口径必须
           `${probe.label}：在 ${probe.file} 里提取到的不同指纹数与预期的 ${probe.uniqueLines} 条不符。` +
             '源码口径变了就同步更新本探针的 uniqueLines；若是把某条表达式改成了另一条已有的，这正是本断言要拦的。',
         ).toBe(probe.uniqueLines)
+      }
+
+      if (probe.exactCountsInModule) {
+        const segment = moduleSegments(dist, probe.file)
+        const srcLines = src.split('\n').map((l) => l.trim())
+        expect(segment.length, `${probe.label}：产物里找不到 // ${probe.file} 模块区段${REBUILD_HINT}`).toBeGreaterThan(0)
+        const drift = [...new Set(lines)]
+          .map((line) => ({
+            line,
+            // 两侧同一计数口径（按「包含」）：一条指纹可能是另一行的前缀（如 SELECT COUNT(*)::int AS count,）
+            src: srcLines.filter((l) => l.includes(line)).length,
+            dist: segment.filter((l) => l.includes(line)).length,
+          }))
+          .filter((item) => item.src !== item.dist)
+        expect(
+          drift,
+          `${probe.label}：以下指纹在源码与产物模块区段中的出现次数不一致 —— 产物不是按当前源码构建的：\n` +
+            drift.map((d) => `  · 源码 ${d.src} 次 / 产物 ${d.dist} 次：${d.line}`).join('\n') +
+            REBUILD_HINT,
+        ).toEqual([])
       }
 
       const missing = [...new Set(lines)].filter((l) => !dist.includes(l))
