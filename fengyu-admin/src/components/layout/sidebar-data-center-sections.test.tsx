@@ -4,9 +4,9 @@ import userEvent from '@testing-library/user-event'
 import type { AuthSession } from '@/lib/types'
 
 /**
- * 「数据中心」分段菜单（#367）。本单只交付骨架，报表入口在 reports.ts 里是 `menu.enabled=false`；
- * 这里把入口全部打开，验证各页面单合入后的形态：分段小标题出现、点击只高亮当前项、
- * 提成明细（下钻页）高亮员工提成日报、没有专用权限点的账号看不到对应入口。
+ * 「数据中心」分段菜单（#367）：验证真实登记表中的已开放入口。
+ * 分段小标题出现、点击只高亮当前项、提成明细（下钻页）高亮员工提成日报、
+ * 没有专用权限点的账号看不到对应入口。
  */
 
 let pathname = '/dashboard'
@@ -17,16 +17,6 @@ vi.mock('next/link', () => ({
   default: ({ href, children, ...props }: React.AnchorHTMLAttributes<HTMLAnchorElement>) => <a href={href} {...props}>{children}</a>,
 }))
 vi.mock('@/generated/version', () => ({ APP_VERSION: 'test', APP_COMMIT: '', BUILD_TIME: 'test' }))
-vi.mock('@/lib/data-center/reports', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/lib/data-center/reports')>()
-  return {
-    ...actual,
-    DATA_CENTER_REPORT_LIST: actual.DATA_CENTER_REPORT_LIST.map((report) => (
-      report.menu ? { ...report, menu: { ...report.menu, enabled: true } } : report
-    )),
-  }
-})
-
 import { Sidebar } from './sidebar'
 
 function session(actions: string[]): AuthSession {

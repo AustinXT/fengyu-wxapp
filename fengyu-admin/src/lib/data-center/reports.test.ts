@@ -44,6 +44,10 @@ describe('经营明细报表登记表（#367）', () => {
     }
   })
 
+  it('5 个一级报表页面均已开放菜单入口', () => {
+    expect(DATA_CENTER_REPORT_LIST.filter((report) => report.menu).every((report) => report.menu?.enabled)).toBe(true)
+  })
+
   it('报表导出视图的权限组合与所属报表页一致（页面 / action / 导出三处同一组常量）', () => {
     expect(DATA_CENTER_VIEW_REQUIRED_ACTIONS['report-remaining-cards']).toEqual(DATA_CENTER_REPORTS.remainingCards.requiredActions)
   })
