@@ -282,6 +282,18 @@ describe('#401 数据中心在营口径 · 接线', () => {
   })
 })
 
+/**
+ * 消费方源码里碰到关店展示标记的行（#422）：结果 Set / helper 名 / 引入路径 / 任何写法的 closed 标识符。
+ * **不剥注释**（闸门 2 codex R3：按行剥注释的写法会被跨行块注释结束行后面接的代码绕过），注释里的提及也须登记。
+ * `closed` 前后紧挨词字符或连字符的不算：closed_at 由上方白名单单独管，「fail-closed」是无关英文措辞。
+ * 已知窗口：拼接出来的键名（`s['clo' + 'sed']`）这类对抗性写法正则拦不住，真要防须上 AST；这里防的是正常写法的误用。
+ */
+function closedMarkerLines(src) {
+  return src.split('\n')
+    .map((line) => line.trim())
+    .filter((t) => /closedIds|loadClosedStoreIds|store-closed-label|(?<![-\w])closed(?![-\w])/.test(t))
+}
+
 describe('#422 范围下拉「（已关店）」展示标记 · 两端 helper', () => {
   /**
    * 展示标记是数据中心链路里 is_closed 唯一合法的用途：判定只许出现在两端 store-closed-label helper 里，
@@ -330,6 +342,7 @@ describe('#422 范围下拉「（已关店）」展示标记 · 两端 helper', 
   it('消费方里关店标记的用法闭集：只在两份下拉数据源里打 closed 标、只在下拉展示里读它', () => {
     const EXPECTED = {
       'fengyu-admin/src/lib/data-center/types.ts': [
+        '* 纯展示，缺省 = 未关店；判定在 `lib/store-closed-label`，不参与取数范围。',
         'closed?: boolean',
       ],
       'fengyu-admin/src/lib/data-center/scope-options.ts': [
@@ -340,6 +353,8 @@ describe('#422 范围下拉「（已关店）」展示标记 · 两端 helper', 
       ],
       'fengyu-staff/cloudfunctions/staffApi/routes/mgmt-dashboard.js': [
         "const { loadClosedStoreIds } = require('../utils/store-closed-label')",
+        '*     markets: [{ id, name, stores: [{ storeId, storeName, closed? }] }, ...],   // closed: 只关店、节点仍启用（#422）',
+        '// 只关店、节点仍启用的门店留在下拉里（有关店前的历史数据），打 closed 标给前端显示「（已关店）」、',
         'const closedIds = await loadClosedStoreIds(pg, visible.flatMap((market) => market.stores.map((store) => store.storeId)))',
         "console.error('[mgmtDashboard.scopeOptions] loadClosedStoreIds failed:', err)",
         'const markets = closedIds.size === 0',
@@ -347,6 +362,7 @@ describe('#422 范围下拉「（已关店）」展示标记 · 两端 helper', 
       ],
       'fengyu-admin/src/actions/data-center/shared.ts': [
         "import { loadClosedStoreIds } from '@/lib/store-closed-label'",
+        '// 只关店、节点仍启用的门店打 closed 标，下拉显示「（已关店）」（#422）。纯展示：查失败就不打标，不拖垮筛选器',
         'const closedIds = await loadClosedStoreIds(storeRows.map((s) => s.storeId)).catch((err: unknown) => {',
         "console.error('[data-center] loadClosedStoreIds failed:', err)",
         '.map((s) => ({ storeId: s.storeId, storeName: s.storeName, ...(closedIds.has(s.storeId) ? { closed: true } : {}) })),',
@@ -354,16 +370,26 @@ describe('#422 范围下拉「（已关店）」展示标记 · 两端 helper', 
     }
     const actual = {}
     for (const file of CONSUMER_FILES) {
-      const hits = readFile(file).split('\n')
-        // 先剥同一行里的 /* … */ 片段，再按行首判注释：`/* x */ if (s.closed) continue` 不能被整行当注释丢掉
-        .map((line) => line.replace(/\/\*.*?\*\//g, '').trim())
-        .filter((t) => t && !/^(\*|\/\*|\/\/)/.test(t))
-        // 结果 Set / helper 名 / 引入路径，以及**任何**写法的 closed 标识符（`.closed`、`['closed']`、`{ closed }`、
-        // `'closed' in s`、`closed:`）——防止消费方拿它把关店店排除出取数范围（#422 闸门 2 codex R1/R2 P2）。
-        // `\bclosed\b` 不命中 closed_at（下划线是词字符），后者由上方 closed_at 白名单单独管
-        .filter((t) => /closedIds|loadClosedStoreIds|store-closed-label|\bclosed\b/.test(t))
+      const hits = closedMarkerLines(readFile(file))
       if (hits.length > 0) actual[rel(file)] = hits
     }
     expect(actual).toEqual(EXPECTED)
+  })
+
+  it('closedMarkerLines 对各种写法都命中（含注释里的，不做注释剥离）', () => {
+    for (const src of [
+      'if (store.closed) continue',
+      "if (store['closed']) continue",
+      'const { closed } = store',
+      "const x = 'closed' in store",
+      '/* 说明\n*/ const visible = stores.filter((s) => !s.closed)',
+      '/* x */ if (store.closed) continue',
+      '// if (store.closed) continue',
+    ]) {
+      expect(closedMarkerLines(src).length, src).toBeGreaterThan(0)
+    }
+    // 不误伤：closed_at（另有白名单管）、fail-closed 这类英文措辞
+    expect(closedMarkerLines('AND (s.closed_at IS NULL OR s.closed_at::date > $1::date)')).toEqual([])
+    expect(closedMarkerLines(' * 未知取值一律 fail-closed')).toEqual([])
   })
 })
