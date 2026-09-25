@@ -67,6 +67,7 @@ import {
   type ExportJobType,
 } from '@/lib/export-job-types'
 import type { WorkerExportColumn, ExportCell } from './xlsx-writer'
+import { remainingCardsContent } from './report-views'
 import type { ExportContextMeta } from './export-meta'
 
 export interface ExportContent {
@@ -590,6 +591,8 @@ async function queryReport(view: DataCenterReportExportView, raw: Record<string,
   switch (view) {
     case 'report-operating-master':
       return operatingMasterContent(raw)
+    case 'report-remaining-cards':
+      return remainingCardsContent(raw)
     default: {
       const unhandled: never = view
       throw new Error(`INVALID_PARAMS: 未知的报表导出视图 ${String(unhandled)}`)

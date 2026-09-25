@@ -49,21 +49,21 @@ export const DATA_CENTER_REPORTS = {
     title: '日常数据一览表',
     periodKind: 'range',
     requiredActions: [DATA_CENTER_DASHBOARD_ACTION],
-    menu: { section: '经营明细', enabled: false },
+    menu: { section: '经营明细', enabled: true },
   },
   customerFrequency: {
     path: '/data-center/customer-frequency',
     title: '顾客频率表',
     periodKind: 'month',
     requiredActions: DATA_CENTER_CUSTOMER_DETAIL_ACTIONS,
-    menu: { section: '经营明细', enabled: false },
+    menu: { section: '经营明细', enabled: true },
   },
   remainingCards: {
     path: '/data-center/remaining-cards',
     title: '顾客剩余卡项清单',
     periodKind: 'none',
     requiredActions: DATA_CENTER_CUSTOMER_DETAIL_ACTIONS,
-    menu: { section: '经营明细', enabled: false },
+    menu: { section: '经营明细', enabled: true },
   },
   operatingMaster: {
     path: '/data-center/operating-master',
@@ -77,7 +77,7 @@ export const DATA_CENTER_REPORTS = {
     title: '员工提成日报',
     periodKind: 'month',
     requiredActions: DATA_CENTER_STAFF_COMMISSION_ACTIONS,
-    menu: { section: '员工收入', enabled: false },
+    menu: { section: '员工收入', enabled: true },
   },
   commissionDetail: {
     path: '/data-center/commission-daily/detail',

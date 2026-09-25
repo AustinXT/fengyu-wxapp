@@ -82,11 +82,13 @@ import {
 import { buildInventoryLocationFilterOptions } from './location-filter'
 import {
   INVENTORY_DOC_CANDIDATE_BULK_LIMIT,
+  INVENTORY_DOC_CANDIDATES,
   resolveInventoryDocCandidate,
   type InventoryDocCandidateDefinition,
   type InventoryDocCandidateFilters,
   type InventoryDocCandidateProgressKind,
   type InventoryDocCandidateRow,
+  type StoreUnallocatedRequestSku,
 } from './doc-candidates'
 import {
   INVENTORY_PROMOTION_MAINTAIN_ACTION,
@@ -2614,8 +2616,8 @@ interface ParsedCandidateFilters {
   keyword?: string
   startDate?: string
   endDate?: string
-  sourceOrgNodeId?: string
   targetOrgNodeId?: string
+  sourceOrgNodeId?: string
   includeExhausted: boolean
 }
 
@@ -2638,8 +2640,8 @@ function parseCandidateFilters(filters: Record<string, unknown>): ParsedCandidat
     keyword: candidateText(filters.keyword, '检索关键字')?.slice(0, 64),
     startDate,
     endDate,
-    sourceOrgNodeId: candidateText(filters.sourceOrgNodeId, '发起主体'),
     targetOrgNodeId: candidateText(filters.targetOrgNodeId, '接收主体'),
+    sourceOrgNodeId: candidateText(filters.sourceOrgNodeId, '发起主体'),
     includeExhausted: includeExhausted === true,
   }
 }
@@ -2681,9 +2683,9 @@ function candidateConditions(
   if (onlyRemaining || definition.requireRemaining) {
     conditions.push(candidateRemainingSql(definition.progress))
   }
-  const { sourceOrgNodeId, targetOrgNodeId, startDate, endDate, keyword } = filters
-  if (sourceOrgNodeId) conditions.push(eq(inventoryDocs.sourceOrgNodeId, sourceOrgNodeId))
+  const { targetOrgNodeId, sourceOrgNodeId, startDate, endDate, keyword } = filters
   if (targetOrgNodeId) conditions.push(eq(inventoryDocs.targetOrgNodeId, targetOrgNodeId))
+  if (sourceOrgNodeId) conditions.push(eq(inventoryDocs.sourceOrgNodeId, sourceOrgNodeId))
   if (startDate) conditions.push(gte(inventoryDocs.docDate, startDate))
   if (endDate) conditions.push(lte(inventoryDocs.docDate, endDate))
   if (keyword) {
@@ -2790,6 +2792,47 @@ export const listInventoryDocCandidateIds = withPermission(
       )
     }
     return { ids: rows.map((row) => row.id) }
+  },
+)
+
+/**
+ * 门店仍有未配报货的 SKU（#337 拍板 A：自选行命中时提示「建议引用报货单」，不拦截）。
+ *
+ * 候选范围与 `store-allocation-source` 同一套 `candidateConditions`（scope / 类型 / 已取消排除 / 门店收窄），
+ * 行级未配量与建单守卫 `requestItem.quantity - allocated` 逐字同口径（`candidateItemDoneSql('allocated')`）。
+ * 纯提示用途：结果不参与任何写入判定。
+ */
+export const listStoreUnallocatedRequestSkus = withPermission(
+  'inventory:list',
+  async (session, raw: { storeOrgNodeId: string; marketId: string }): Promise<StoreUnallocatedRequestSku[]> => {
+    const storeOrgNodeId = candidateText(raw?.storeOrgNodeId, '收货门店')
+    // 与候选选择器同样按配货市场（报货单接收端）收窄：门店换过市场时，旧市场的报货单本市场引用不了
+    const marketId = candidateText(raw?.marketId, '配货市场')
+    if (!storeOrgNodeId) throw new ApiError('INVALID_PARAMS', '缺少收货门店')
+    if (!marketId) throw new ApiError('INVALID_PARAMS', '缺少配货市场')
+    const definition = INVENTORY_DOC_CANDIDATES['store-allocation-source']
+    await syncInventoryLocations()
+    const whereClause = candidateConditions(session, definition, {
+      sourceOrgNodeId: storeOrgNodeId,
+      targetOrgNodeId: marketId,
+      includeExhausted: true,
+    }, { onlyRemaining: false })
+    const done = candidateItemDoneSql('allocated')
+    const rows = await db.execute(sql`
+      SELECT cand_item.sku_id,
+             SUM(cand_item.quantity - ${done}) AS remaining_quantity,
+             array_agg(DISTINCT ${inventoryDocs.id} ORDER BY ${inventoryDocs.id}) AS doc_ids
+        FROM ${inventoryDocs}
+        JOIN ${inventoryDocItems} cand_item ON cand_item.doc_id = ${inventoryDocs.id}
+       WHERE ${whereClause}
+         AND ${done} < cand_item.quantity
+       GROUP BY cand_item.sku_id
+    `) as unknown as Array<{ sku_id: string; remaining_quantity: string | number; doc_ids: string[] | null }>
+    return rows.map((row) => ({
+      skuId: row.sku_id,
+      remainingQuantity: Number(row.remaining_quantity),
+      docIds: row.doc_ids ?? [],
+    }))
   },
 )
 

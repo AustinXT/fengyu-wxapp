@@ -69,6 +69,7 @@ export const DATA_CENTER_REPORT_VIEW_PREFIX = 'report-'
 
 export const DATA_CENTER_REPORT_EXPORT_VIEWS = [
   'report-operating-master',
+  'report-remaining-cards',
 ] as const
 
 export type DataCenterReportExportView = (typeof DATA_CENTER_REPORT_EXPORT_VIEWS)[number]
@@ -163,6 +164,7 @@ export const DATA_CENTER_VIEW_REQUIRED_ACTIONS: Record<DataCenterExportView, rea
   'efficiency-store-ranking': [DATA_CENTER_DASHBOARD_ACTION],
   'efficiency-staff-ranking': [DATA_CENTER_DASHBOARD_ACTION],
   'report-operating-master': DATA_CENTER_REPORTS.operatingMaster.requiredActions,
+  'report-remaining-cards': DATA_CENTER_REPORTS.remainingCards.requiredActions,
 }
 
 export const EXPORT_PERMISSION_ACTIONS = Array.from(
@@ -217,6 +219,7 @@ export function exportJobLabel(
     'efficiency-store-ranking': '人效-门店排名榜',
     'efficiency-staff-ranking': '人效-员工排名榜',
     'report-operating-master': '经营数据主表',
+    'report-remaining-cards': '顾客剩余卡项清单',
   }
   return viewLabels[payload.view as DataCenterExportView]
 }

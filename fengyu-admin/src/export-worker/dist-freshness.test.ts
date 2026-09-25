@@ -92,6 +92,30 @@ const PROBES: Probe[] = [
     minLines: 1,
   },
   {
+    label: '剩余卡项 · 寄存单只计已支付（#371）',
+    file: 'src/lib/data-center/remaining-cards-query.ts',
+    pattern: /^AND \(sale_orders\.sale_order_type <> '寄存单' OR sale_orders\.status = '已支付'\)$/,
+    minLines: 1,
+  },
+  {
+    label: '剩余卡项 · 格剩余 = 未过期卡行的已付未用（#371）',
+    file: 'src/lib/data-center/remaining-cards-query.ts',
+    pattern: /^COALESCE\(SUM\(s\.paid_unused\) FILTER \(WHERE NOT s\.expired\), 0\) AS remaining,$/,
+    minLines: 1,
+  },
+  {
+    label: '剩余卡项 / 持卡折抵 · 已退完守卫（#371，lib/card-entitlement.ts）',
+    file: 'src/lib/card-entitlement.ts',
+    pattern: /sop\.change_type = '退款' AND sop\.status = '已支付'/,
+    minLines: 1,
+  },
+  {
+    label: '剩余卡项 · 已付未用表达式（paidUnusedSessionsExpr）',
+    file: 'src/lib/paid-sessions.ts',
+    pattern: /^export const paidUnusedSessionsExpr = sql/,
+    minLines: 1,
+  },
+  {
     label: '客量板 · 分桶最低档下界 / 经营人数改读会员门槛（#292）',
     file: 'src/actions/data-center/customer.ts',
     // 4 行：KPI 的 `AS v`、明细 bucket_d / bucket_c / operated_total（含 `<` 与 `>=` 两种比较）
@@ -133,6 +157,9 @@ describe('dist/export-worker.mjs 新鲜度（改了 data-center SQL 口径必须
         .split('\n')
         .map((l) => l.trim())
         .filter((l) => probe.pattern.test(l))
+        // 单行 sql`…` 模板（如 `export const x = sql<number>\`…\``）只取反引号内的模板正文：
+        // 模板正文 bun build 原样保留，而声明部分会被改写（import 别名、去掉类型参数）
+        .map((l) => /`([^`]*)`/.exec(l)?.[1] ?? l)
 
       // fail-closed：正则失配（比如源码重构后换了写法）不得静默通过
       expect(
