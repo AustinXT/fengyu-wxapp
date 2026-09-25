@@ -159525,6 +159525,72 @@ var coerce = {
   date: (arg) => ZodDate.create({ ...arg, coerce: true })
 };
 var NEVER = INVALID;
+// src/lib/data-center/params.ts
+var DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+function firstQueryValue(raw) {
+  return Array.isArray(raw) ? raw[0] : raw;
+}
+var MAX_SCOPE_STORES = 200;
+var MAX_STORE_ID_LENGTH = 40;
+var STORE_ID_RE = /^[A-Za-z0-9_-]{1,40}$/;
+function isValidStoresScopeIds(ids) {
+  return Array.isArray(ids) && ids.length >= 2 && ids.length <= MAX_SCOPE_STORES && ids.every((id) => typeof id === "string" && STORE_ID_RE.test(id)) && new Set(ids).size === ids.length;
+}
+function parseStoreIdList(raw) {
+  if (!raw)
+    return null;
+  const parts = raw.split(",");
+  if (parts.some((id) => !STORE_ID_RE.test(id)))
+    return null;
+  const ids = Array.from(new Set(parts)).sort();
+  return ids.length > MAX_SCOPE_STORES ? null : ids;
+}
+function scopeFromStoreIds(storeIds) {
+  const ids = Array.from(new Set(storeIds)).sort();
+  if (ids.length === 0)
+    return null;
+  return ids.length === 1 ? { type: "store", id: ids[0] } : { type: "stores", ids };
+}
+function parseScope(raw) {
+  if (raw.scope === "authorized")
+    return { type: "authorized" };
+  if (raw.scope === "market" && raw.scopeId)
+    return { type: "market", id: raw.scopeId };
+  if (raw.scope === "store" && raw.scopeId)
+    return { type: "store", id: raw.scopeId };
+  if (raw.scope === "stores") {
+    const ids = parseStoreIdList(raw.scopeId);
+    if (ids)
+      return scopeFromStoreIds(ids) ?? { type: "all" };
+  }
+  return { type: "all" };
+}
+function scopeToParams(scope) {
+  if (scope.type === "all")
+    return {};
+  if (scope.type === "authorized")
+    return { scope: "authorized" };
+  if (scope.type === "stores")
+    return { scope: "stores", scopeId: [...scope.ids].sort().join(",") };
+  return { scope: scope.type, scopeId: scope.id };
+}
+function parseTimeRange(raw) {
+  const p = raw.preset;
+  if (p === "custom" && raw.start && raw.end && DATE_RE.test(raw.start) && DATE_RE.test(raw.end) && raw.start <= raw.end) {
+    return { preset: "custom", start: raw.start, end: raw.end };
+  }
+  if (p === "today" || p === "week" || p === "year")
+    return { preset: p };
+  return { preset: "month" };
+}
+function parseBoardParams(raw) {
+  return {
+    scope: parseScope(raw),
+    timeRange: parseTimeRange(raw),
+    withComparison: raw.cmp !== "0"
+  };
+}
+
 // src/lib/data-center/reports.ts
 var DATA_CENTER_DASHBOARD_ACTION = "data_center:dashboard";
 var DATA_CENTER_CUSTOMER_DETAIL_ACTION = "data_center:customer_detail";
@@ -159714,10 +159780,12 @@ function exportJobLabel(exportType, payload) {
 }
 
 // src/lib/export-job-schema.ts
-var queryPayloadSchema = exports_external.record(exports_external.string().max(4096, "筛选条件过长")).refine((value) => Object.keys(value).length <= 40, "筛选条件过多");
+var queryPayloadSchema = exports_external.record(exports_external.string().max(240, "筛选条件过长")).refine((value) => Object.keys(value).length <= 40, "筛选条件过多");
+var DATA_CENTER_SCOPE_ID_MAX = MAX_SCOPE_STORES * (MAX_STORE_ID_LENGTH + 1);
+var dataCenterParamsSchema = exports_external.record(exports_external.string().max(DATA_CENTER_SCOPE_ID_MAX, "筛选条件过长")).refine((value) => Object.keys(value).length <= 40, "筛选条件过多").refine((value) => Object.entries(value).every(([key, v]) => key === "scopeId" || v.length <= 240), "筛选条件过长");
 var dataCenterPayloadSchema = exports_external.object({
   view: exports_external.enum(DATA_CENTER_EXPORT_VIEWS),
-  params: queryPayloadSchema,
+  params: dataCenterParamsSchema,
   metric: exports_external.string().min(1).max(80).optional()
 }).strict();
 var createExportJobSchema = exports_external.union([
@@ -179291,6 +179359,9 @@ function multiStoreName(names) {
 
 // src/lib/data-center/context.ts
 async function validateScope(session4, scope) {
+  if (scope.type === "stores" && !isValidStoresScopeIds(scope.ids)) {
+    throw new Error(`INVALID_PARAMS: 多店范围须为 2~${MAX_SCOPE_STORES} 家不重复的门店`);
+  }
   if (isAdminScope(session4))
     return;
   if (session4.roles.some((r) => r.scopeType === "总部"))
@@ -182050,12 +182121,12 @@ var REPORT_RANGE_PRESET_LABELS = {
 var DEFAULT_REPORT_RANGE_PRESET = "lastMonth";
 var MAX_CUSTOM_RANGE_DAYS = 366;
 var REPORT_MIN_MONTH = "2026-07";
-var DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
+var DATE_RE2 = /^(\d{4})-(\d{2})-(\d{2})$/;
 var MONTH_RE = /^(\d{4})-(\d{2})$/;
 var MIN_YEAR = 2000;
 var MAX_YEAR = 2099;
 function isValidCalendarDate(value) {
-  const match = value?.match(DATE_RE);
+  const match = value?.match(DATE_RE2);
   if (!match)
     return false;
   const [year2, month, day2] = [Number(match[1]), Number(match[2]), Number(match[3])];
@@ -182291,68 +182362,6 @@ function listMonthDays(month) {
       weekend: weekday === 0 || weekday === 6
     };
   });
-}
-
-// src/lib/data-center/params.ts
-var DATE_RE2 = /^\d{4}-\d{2}-\d{2}$/;
-function firstQueryValue(raw) {
-  return Array.isArray(raw) ? raw[0] : raw;
-}
-var MAX_SCOPE_STORES = 200;
-var STORE_ID_RE = /^[A-Za-z0-9_-]{1,80}$/;
-function parseStoreIdList(raw) {
-  if (!raw)
-    return null;
-  const parts = raw.split(",");
-  if (parts.some((id) => !STORE_ID_RE.test(id)))
-    return null;
-  const ids = Array.from(new Set(parts)).sort();
-  return ids.length > MAX_SCOPE_STORES ? null : ids;
-}
-function scopeFromStoreIds(storeIds) {
-  const ids = Array.from(new Set(storeIds)).sort();
-  if (ids.length === 0)
-    return null;
-  return ids.length === 1 ? { type: "store", id: ids[0] } : { type: "stores", ids };
-}
-function parseScope(raw) {
-  if (raw.scope === "authorized")
-    return { type: "authorized" };
-  if (raw.scope === "market" && raw.scopeId)
-    return { type: "market", id: raw.scopeId };
-  if (raw.scope === "store" && raw.scopeId)
-    return { type: "store", id: raw.scopeId };
-  if (raw.scope === "stores") {
-    const ids = parseStoreIdList(raw.scopeId);
-    if (ids)
-      return scopeFromStoreIds(ids) ?? { type: "all" };
-  }
-  return { type: "all" };
-}
-function scopeToParams(scope) {
-  if (scope.type === "all")
-    return {};
-  if (scope.type === "authorized")
-    return { scope: "authorized" };
-  if (scope.type === "stores")
-    return { scope: "stores", scopeId: [...scope.ids].sort().join(",") };
-  return { scope: scope.type, scopeId: scope.id };
-}
-function parseTimeRange(raw) {
-  const p = raw.preset;
-  if (p === "custom" && raw.start && raw.end && DATE_RE2.test(raw.start) && DATE_RE2.test(raw.end) && raw.start <= raw.end) {
-    return { preset: "custom", start: raw.start, end: raw.end };
-  }
-  if (p === "today" || p === "week" || p === "year")
-    return { preset: p };
-  return { preset: "month" };
-}
-function parseBoardParams(raw) {
-  return {
-    scope: parseScope(raw),
-    timeRange: parseTimeRange(raw),
-    withComparison: raw.cmp !== "0"
-  };
 }
 
 // src/lib/data-center/operating-master.ts
