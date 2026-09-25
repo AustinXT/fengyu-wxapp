@@ -22,6 +22,9 @@ function isGrantedEmptyMarket(market: DataCenterScopeOptions['markets'][number])
  * 非总部账号没有可见在营门店、但有直接授权的无门店市场（如只授权到品项公司）时落到第一个这样的市场（#399）：
  * 该市场的人效榜仍有锚定到它的无门店员工（orgAnchorScopeSql），其余板块按实为 0。
  * 两者都没有才返回 null，由页面展示空状态。
+ *
+ * ⚠️ staff 端有独立副本 `fengyu-staff/miniprogram/utils/mgmt-scope.ts` resolveDefaultMgmtScope（#424，staff 无 authorized），
+ * 改档位须同步，并跑 staff 小程序 `__tests__/pages/mgmt-no-store-market-scope.test.ts` 的跨端对照用例。
  */
 export function resolveDefaultDataCenterScope(
   scopeOptions: DataCenterScopeOptions,

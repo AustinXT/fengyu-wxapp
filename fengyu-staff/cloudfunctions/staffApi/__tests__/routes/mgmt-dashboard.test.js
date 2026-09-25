@@ -1266,6 +1266,65 @@ describe('mgmtDashboard.scopeOptions', () => {
     expect(ctx.result.markets[0].stores).toHaveLength(2)
   })
 
+  // #424（admin #399 的 staff 侧）：直接授权的无门店市场（如品项公司）要保留，picker 才能回填 / 选中它
+  const PX_ROWS = [
+    ...THREE_MARKETS_ROWS,
+    { market_id: 'mkt-px', market_name: '品项公司', store_id: null, store_name: null },
+  ]
+
+  test('只授权无门店市场（hr@品项公司）→ 返回该市场，stores 为空', async () => {
+    pg.query.mockReset().mockResolvedValueOnce(PX_ROWS).mockResolvedValueOnce([])
+    const ctx = createCtx({
+      auth: {
+        staffLevel: 'market',
+        loginLevel: 'management',
+        roleBindings: [{ role: 'hr', scopeId: 'mkt-px', scopeType: '市场' }],
+        scopeOrgNodeIds: ['mkt-px'],
+        scopeStoreIds: [],
+      },
+    })
+    await scopeOptions(ctx)
+    expect(ctx.result.allowedMarketIds).toEqual(['mkt-px'])
+    expect(ctx.result.markets).toEqual([{ id: 'mkt-px', name: '品项公司', stores: [] }])
+  })
+
+  test('店长 + hr@品项公司 → 门店所属市场（只含本店）+ 品项公司；祖先市场不进 allowedMarketIds', async () => {
+    pg.query.mockReset().mockResolvedValueOnce(PX_ROWS).mockResolvedValueOnce([])
+    const ctx = createCtx({
+      auth: {
+        staffLevel: 'store_manager',
+        loginLevel: 'management',
+        roleBindings: [
+          { role: 'manager', scopeId: 'org-A1', scopeType: '门店' },
+          { role: 'hr', scopeId: 'mkt-px', scopeType: '市场' },
+        ],
+        scopeOrgNodeIds: ['org-A1', 'mkt-px'],
+        scopeStoreIds: ['store-A1'],
+      },
+    })
+    await scopeOptions(ctx)
+    expect(ctx.result.allowedMarketIds).toEqual(['mkt-px'])
+    expect(ctx.result.markets).toEqual([
+      { id: 'mkt-A', name: '华东市场', stores: [{ storeId: 'store-A1', storeName: '上海A店' }] },
+      { id: 'mkt-px', name: '品项公司', stores: [] },
+    ])
+  })
+
+  test('门店级账号：未授权的无门店市场仍被筛掉（不因 #424 多出市场）', async () => {
+    pg.query.mockReset().mockResolvedValueOnce(PX_ROWS).mockResolvedValueOnce([])
+    const ctx = createCtx({
+      auth: {
+        staffLevel: 'store_manager',
+        loginLevel: 'management',
+        roleBindings: [{ role: 'manager', scopeId: 'org-A1', scopeType: '门店' }],
+        scopeOrgNodeIds: ['org-A1'],
+        scopeStoreIds: ['store-A1'],
+      },
+    })
+    await scopeOptions(ctx)
+    expect(ctx.result.markets.map((m) => m.id)).toEqual(['mkt-A'])
+  })
+
   // #400：权限内停用门店单独下发（不进下拉），供 scope-picker 识别落到停用门店的默认范围。
   function inactiveCall() {
     return pg.query.mock.calls.find((c) => /WHERE NOT COALESCE\(store_node\.is_active, FALSE\)/.test(c[0]))

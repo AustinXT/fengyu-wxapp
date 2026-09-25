@@ -85534,19 +85534,23 @@ async function expandRoleScope(roles3) {
   };
 }
 async function expandVisibleMarketIds(session4) {
+  return (await expandMarketVisibility(session4))?.visible ?? null;
+}
+async function expandMarketVisibility(session4) {
   if (session4.roles.some((r) => r.scopeType === "总部")) {
     return null;
   }
   const nodes = await db2.select({ id: orgNodes.id, parentId: orgNodes.parentId, type: orgNodes.type }).from(orgNodes);
   const scopeIds = session4.permissions.scopeOrgNodeIds ?? collectDescendantNodeIds(nodes, session4.roles.map((role) => role.scopeId));
   const scopeSet = new Set(scopeIds);
-  const marketIds = new Set(nodes.filter((node) => node.type === "市场" && scopeSet.has(node.id)).map((node) => node.id));
+  const granted = nodes.filter((node) => node.type === "市场" && scopeSet.has(node.id)).map((node) => node.id);
+  const marketIds = new Set(granted);
   for (const role of session4.roles) {
     const marketId = findAncestorNodeIdByType(nodes, role.scopeId, "市场");
     if (marketId)
       marketIds.add(marketId);
   }
-  return Array.from(marketIds);
+  return { visible: Array.from(marketIds), granted };
 }
 function canAccessAdmin(roles3) {
   return roles3.some((r) => r.canAccessAdmin ?? r.role !== "staff");
@@ -155443,7 +155447,7 @@ var require_excel = __commonJS((exports, module) => {
 
 // src/export-worker/index.ts
 init_db2();
-var import_drizzle_orm74 = __toESM(require_drizzle_orm(), 1);
+var import_drizzle_orm75 = __toESM(require_drizzle_orm(), 1);
 import { createReadStream } from "node:fs";
 import { mkdtemp, rm as rm2 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -176858,6 +176862,10 @@ function skuRow(row) {
   };
 }
 var AMOUNTLESS_DOC_TYPES = new Set(["品项公司发货"]);
+var SUPPLY_CHAIN_COST_DOC_TYPES = new Set(["供应链采购入库"]);
+function docTypePriceVisibility(docType, visibility) {
+  return SUPPLY_CHAIN_COST_DOC_TYPES.has(docType) && visibility === "market" ? "none" : visibility;
+}
 function docRow(row) {
   const doc = row.doc;
   const includeAmount = row.includePrice && !AMOUNTLESS_DOC_TYPES.has(doc.docType);
@@ -177537,7 +177545,7 @@ var listInventoryCoreDocs = withPermission("inventory:list", async (session4, fi
   return {
     data: rows.map((row) => docRow({
       ...row,
-      includePrice: inventoryPriceVisibilityForOrgNodes(priceTiers, [row.doc.sourceOrgNodeId, row.doc.targetOrgNodeId]) !== "none"
+      includePrice: docTypePriceVisibility(row.doc.docType, inventoryPriceVisibilityForOrgNodes(priceTiers, [row.doc.sourceOrgNodeId, row.doc.targetOrgNodeId])) !== "none"
     })),
     total: countRow?.count ?? 0,
     pageSize,
@@ -178139,33 +178147,51 @@ async function loadItemCompanyRequestFulfillmentProgress(docId, scoped) {
     }))
   };
 }
+function roundCentsHalfUp(value) {
+  const scaled = Number(value.toFixed(4)) * 100;
+  return Math.sign(scaled) * Math.round(Math.abs(scaled) + 0.000000001) / 100;
+}
 async function loadSupplyChainPurchaseReceiptProgress(docId, scoped) {
   const rows = await db2.execute(import_drizzle_orm58.sql`
     WITH visible_docs AS (${visibleInventoryDocsSql(scoped)}),
     purchase_items AS (
-      SELECT item.id AS item_id, item.quantity, purchase_doc.status AS purchase_status
+      SELECT item.id AS item_id, item.quantity, item.fulfilled_quantity,
+             -- 未入库部分按供应链采购价（下单价快照）计，与入库侧优惠的基准同源
+             COALESCE(item.supply_chain_unit_cost, item.actual_unit_price) AS order_unit_price,
+             purchase_doc.status AS purchase_status
         FROM inventory_doc_items item
         JOIN inventory_docs purchase_doc ON purchase_doc.id = item.doc_id
         JOIN visible_docs visible_purchase ON visible_purchase.id = purchase_doc.id
        WHERE item.doc_id = ${docId}
     ),
     receipt_totals AS (
+      -- 已入库金额取各入库明细的 amount（#346：入库时可填单价优惠，按实际进价计），不是按下单价推算
       SELECT
         doc_link.from_item_id AS purchase_item_id,
-        SUM(COALESCE(doc_link.quantity, 0)) AS received_quantity
+        SUM(COALESCE(doc_link.quantity, 0)) AS received_quantity,
+        SUM(COALESCE(receipt_item.amount, 0)) AS received_amount,
+        -- 入库明细金额为空的存量行：金额算不准，整行不给金额（别把 NULL 当 0 静默低估）
+        BOOL_OR(receipt_item.amount IS NULL) AS has_unpriced_receipt
         FROM inventory_doc_links doc_link
         JOIN purchase_items purchase_item ON purchase_item.item_id = doc_link.from_item_id
         JOIN inventory_docs receipt_doc ON receipt_doc.id = doc_link.to_doc_id
         JOIN visible_docs visible_receipt ON visible_receipt.id = receipt_doc.id
+        JOIN inventory_doc_items receipt_item ON receipt_item.id = doc_link.to_item_id
        WHERE doc_link.from_doc_id = ${docId}
          AND doc_link.relation_type = '采购订单供应链采购入库'
+         -- 「有效入库」口径：供应链采购入库只有「已完成」一种落库状态，与 business.ts linkedQuantity 的
+         -- status <> 已取消 当前等价；将来给入库单加草稿 / 作废态时两处必须一起改
          AND receipt_doc.status = '已完成'
        GROUP BY doc_link.from_item_id
     )
     SELECT
       purchase_item.item_id,
       purchase_item.quantity AS purchased_quantity,
+      purchase_item.order_unit_price,
+      purchase_item.fulfilled_quantity,
       COALESCE(receipt_total.received_quantity, 0) AS received_quantity,
+      COALESCE(receipt_total.received_amount, 0) AS received_amount,
+      COALESCE(receipt_total.has_unpriced_receipt, false) AS has_unpriced_receipt,
       purchase_item.purchase_status
       FROM purchase_items purchase_item
       LEFT JOIN receipt_totals receipt_total ON receipt_total.purchase_item_id = purchase_item.item_id
@@ -178178,11 +178204,19 @@ async function loadSupplyChainPurchaseReceiptProgress(docId, scoped) {
     items: rows.map((row) => {
       const purchasedQuantity = numberOrNull(row.purchased_quantity) ?? 0;
       const receivedQuantity = numberOrNull(row.received_quantity) ?? 0;
+      const outstandingQuantity = row.purchase_status === "待收货" ? Math.max(0, Number((purchasedQuantity - receivedQuantity).toFixed(4))) : 0;
+      const receivedAmount = numberOrNull(row.received_amount) ?? 0;
+      const orderUnitPrice = numberOrNull(row.order_unit_price);
+      const fulfilledQuantity = numberOrNull(row.fulfilled_quantity);
+      const legacy = row.purchase_status !== "待收货" && (fulfilledQuantity === null || fulfilledQuantity - receivedQuantity > 0.000001 || row.purchase_status === "已完成" && purchasedQuantity - receivedQuantity > 0.000001);
+      const unpriced = outstandingQuantity > 0 && orderUnitPrice === null || row.has_unpriced_receipt === true;
       return {
         itemId: Number(row.item_id),
         purchasedQuantity,
         receivedQuantity,
-        outstandingQuantity: row.purchase_status === "待收货" ? Math.max(0, purchasedQuantity - receivedQuantity) : 0
+        outstandingQuantity,
+        receivedAmount: row.has_unpriced_receipt === true ? undefined : receivedAmount,
+        actualAmount: legacy || unpriced ? undefined : Number((receivedAmount + roundCentsHalfUp(outstandingQuantity * (orderUnitPrice ?? 0))).toFixed(2))
       };
     })
   };
@@ -178284,7 +178318,7 @@ var getInventoryCoreDocById = withPermission("inventory:list", async (session4, 
   }).from(inventoryDocs).leftJoin(sourceLocation, import_drizzle_orm58.eq(sourceLocation.orgNodeId, inventoryDocs.sourceOrgNodeId)).leftJoin(targetLocation, import_drizzle_orm58.eq(targetLocation.orgNodeId, inventoryDocs.targetOrgNodeId)).where(import_drizzle_orm58.and(...conditions3)).limit(1);
   if (!headRow)
     return null;
-  const priceVisibility = inventoryPriceVisibilityForOrgNodes(priceTiers, [headRow.doc.sourceOrgNodeId, headRow.doc.targetOrgNodeId]);
+  const priceVisibility = docTypePriceVisibility(headRow.doc.docType, inventoryPriceVisibilityForOrgNodes(priceTiers, [headRow.doc.sourceOrgNodeId, headRow.doc.targetOrgNodeId]));
   const head = docRow({ ...headRow, includePrice: priceVisibility !== "none" });
   const itemPriceVisibility = AMOUNTLESS_DOC_TYPES.has(head.docType) ? "none" : priceVisibility;
   const includeItemAmount = itemPriceVisibility !== "none";
@@ -178334,7 +178368,10 @@ var getInventoryCoreDocById = withPermission("inventory:list", async (session4, 
       createdAt: item.createdAt.toISOString()
     })),
     lineage,
-    fulfillmentProgress
+    fulfillmentProgress: fulfillmentProgress?.kind === "供应链采购收货" && itemPriceVisibility !== "all" && itemPriceVisibility !== "supply_chain" ? {
+      ...fulfillmentProgress,
+      items: fulfillmentProgress.items.map(({ receivedAmount: _received, actualAmount: _actual, ...item }) => item)
+    } : fulfillmentProgress
   };
 });
 var createInventoryCoreDoc = withAnyPermission(["inventory:supply_chain_operate", "inventory:market_operate", "inventory:store_operate"], async (session4, input) => {
@@ -179199,7 +179236,7 @@ var listInventoryLotOptions2 = withPermission("inventory:stock_list", async (_se
 // src/actions/data-center/sales.ts
 init_db2();
 init_with_permission();
-var import_drizzle_orm63 = __toESM(require_drizzle_orm(), 1);
+var import_drizzle_orm64 = __toESM(require_drizzle_orm(), 1);
 
 // src/lib/data-center/context.ts
 init_db2();
@@ -179312,6 +179349,9 @@ async function prepareBoardContext(session4, params) {
 
 // src/lib/data-center/scope-sql.ts
 init_permissions();
+var import_drizzle_orm61 = __toESM(require_drizzle_orm(), 1);
+
+// src/lib/store-status.ts
 var import_drizzle_orm60 = __toESM(require_drizzle_orm(), 1);
 function activeStoreCondition(storeCol) {
   return import_drizzle_orm60.sql`
@@ -179324,45 +179364,56 @@ function activeStoreCondition(storeCol) {
     )
   `;
 }
+
+// src/lib/data-center/scope-sql.ts
 function scopeFilterSql(session4, scope, storeCol = "so.store_id") {
-  const col = import_drizzle_orm60.sql.raw(storeCol);
+  const col = import_drizzle_orm61.sql.raw(storeCol);
   const parts = [activeStoreCondition(col)];
   if (!isAdminScope(session4)) {
     const ids = session4.permissions.scopeStoreIds;
     if (ids.length === 0)
-      return import_drizzle_orm60.sql`FALSE`;
-    parts.push(import_drizzle_orm60.sql`${col} IN (${import_drizzle_orm60.sql.join(ids.map((i) => import_drizzle_orm60.sql`${i}`), import_drizzle_orm60.sql`, `)})`);
+      return import_drizzle_orm61.sql`FALSE`;
+    parts.push(import_drizzle_orm61.sql`${col} IN (${import_drizzle_orm61.sql.join(ids.map((i) => import_drizzle_orm61.sql`${i}`), import_drizzle_orm61.sql`, `)})`);
   }
   if (scope.type === "store") {
-    parts.push(import_drizzle_orm60.sql`${col} = ${scope.id}`);
+    parts.push(import_drizzle_orm61.sql`${col} = ${scope.id}`);
   } else if (scope.type === "market") {
-    parts.push(import_drizzle_orm60.sql`${col} IN ${orgNodeStoreIdsSubquery(scope.id)}`);
+    parts.push(import_drizzle_orm61.sql`${col} IN ${orgNodeStoreIdsSubquery(scope.id)}`);
   }
-  return import_drizzle_orm60.sql.join(parts, import_drizzle_orm60.sql` AND `);
+  return import_drizzle_orm61.sql.join(parts, import_drizzle_orm61.sql` AND `);
 }
 function orgAnchorScopeSql(session4, scope, anchorCol = "pb.anchor_market_id") {
-  const col = import_drizzle_orm60.sql.raw(anchorCol);
+  const col = import_drizzle_orm61.sql.raw(anchorCol);
   if (scope.type === "store")
-    return import_drizzle_orm60.sql`FALSE`;
-  if (scope.type === "market")
-    return import_drizzle_orm60.sql`${col} = ${scope.id}`;
+    return import_drizzle_orm61.sql`FALSE`;
+  if (scope.type === "market") {
+    if (isGrantedMarketScope(session4, scope.id))
+      return import_drizzle_orm61.sql`${col} = ${scope.id}`;
+    return import_drizzle_orm61.sql`${col} = ${scope.id} AND ${visibleActiveAnchorSql(session4, col)}`;
+  }
   if (isAdminScope(session4))
-    return import_drizzle_orm60.sql`TRUE`;
+    return import_drizzle_orm61.sql`TRUE`;
+  return visibleActiveAnchorSql(session4, col);
+}
+function isGrantedMarketScope(session4, marketId) {
+  return isAdminScope(session4) || (session4.permissions.scopeOrgNodeIds ?? []).includes(marketId);
+}
+function visibleActiveAnchorSql(session4, col) {
   const ids = session4.permissions.scopeStoreIds;
   if (ids.length === 0)
-    return import_drizzle_orm60.sql`FALSE`;
-  return import_drizzle_orm60.sql`EXISTS (
+    return import_drizzle_orm61.sql`FALSE`;
+  return import_drizzle_orm61.sql`EXISTS (
     SELECT 1
     FROM stores vs
     JOIN org_nodes vn ON vs.org_node_id = vn.id
     WHERE vn.type = '门店'
       AND vn.is_active = TRUE
       AND vn.parent_id = ${col}
-      AND vs.store_id IN (${import_drizzle_orm60.sql.join(ids.map((i) => import_drizzle_orm60.sql`${i}`), import_drizzle_orm60.sql`, `)})
+      AND vs.store_id IN (${import_drizzle_orm61.sql.join(ids.map((i) => import_drizzle_orm61.sql`${i}`), import_drizzle_orm61.sql`, `)})
   )`;
 }
 function scopeStoreSkeletonSql(session4, scope) {
-  return import_drizzle_orm60.sql`
+  return import_drizzle_orm61.sql`
     SELECT s.store_id, s.store_name, o_mkt.id AS market_id, o_mkt.name AS market_name
     FROM stores s
     JOIN org_nodes o_store ON s.org_node_id = o_store.id AND o_store.type = '门店'
@@ -179370,17 +179421,20 @@ function scopeStoreSkeletonSql(session4, scope) {
     WHERE ${scopeFilterSql(session4, scope, "s.store_id")}
   `;
 }
+function scopeHasStoreSql(session4, scope) {
+  return import_drizzle_orm61.sql`SELECT EXISTS (${scopeStoreSkeletonSql(session4, scope)}) AS has_store`;
+}
 
 // src/lib/data-center/consume-filter.ts
-var import_drizzle_orm61 = __toESM(require_drizzle_orm(), 1);
+var import_drizzle_orm62 = __toESM(require_drizzle_orm(), 1);
 function excludeDepositRefundSql(soAlias = "so") {
-  return import_drizzle_orm61.sql`${import_drizzle_orm61.sql.raw(soAlias)}.remark IS DISTINCT FROM ${DEPOSIT_REFUND_REMARK}`;
+  return import_drizzle_orm62.sql`${import_drizzle_orm62.sql.raw(soAlias)}.remark IS DISTINCT FROM ${DEPOSIT_REFUND_REMARK}`;
 }
 
 // src/lib/data-center/technician-sql.ts
-var import_drizzle_orm62 = __toESM(require_drizzle_orm(), 1);
+var import_drizzle_orm63 = __toESM(require_drizzle_orm(), 1);
 function technicianCteSql(session4, scope, endDate) {
-  return import_drizzle_orm62.sql`
+  return import_drizzle_orm63.sql`
       technician_base AS (
         SELECT sw.employee_id,
                COALESCE(sw.store_id, ds.store_id) AS store_id,
@@ -179407,15 +179461,15 @@ function technicianCteSql(session4, scope, endDate) {
     `;
 }
 function technicianCountSql(session4, scope, endDate) {
-  return import_drizzle_orm62.sql`
+  return import_drizzle_orm63.sql`
       WITH ${technicianCteSql(session4, scope, endDate)}
       SELECT COUNT(*)::int AS v FROM technician_scoped
     `;
 }
 function technicianPoolFilterSql(pool) {
   if (pool === "producer")
-    return import_drizzle_orm62.sql``;
-  return import_drizzle_orm62.sql`
+    return import_drizzle_orm63.sql``;
+  return import_drizzle_orm63.sql`
         AND EXISTS (
           SELECT 1 FROM staff_wechat_users bw
           WHERE bw.employee_id = ts.employee_id
@@ -179423,7 +179477,7 @@ function technicianPoolFilterSql(pool) {
         )`;
 }
 function technicianByStoreSql(session4, scope, endDate, pool = "producer") {
-  return import_drizzle_orm62.sql`
+  return import_drizzle_orm63.sql`
       WITH ${technicianCteSql(session4, scope, endDate)}
       SELECT store_id, COUNT(*)::int AS v
       FROM technician_scoped ts
@@ -179432,7 +179486,7 @@ function technicianByStoreSql(session4, scope, endDate, pool = "producer") {
     `;
 }
 function technicianDirectByMarketSql(session4, scope, endDate) {
-  return import_drizzle_orm62.sql`
+  return import_drizzle_orm63.sql`
       WITH ${technicianCteSql(session4, scope, endDate)}
       SELECT anchor_market_id AS market_id,
              MAX(anchor_market_name) AS market_name,
@@ -179461,7 +179515,7 @@ var getSalesBoard = withPermission("data_center:dashboard", async (session4, par
   const ctx = await prepareBoardContext(session4, params);
   const { scope } = ctx;
   const cur = ctx.comparison.current;
-  const runStoreRevenue = async (range) => scalar(await db2.execute(import_drizzle_orm63.sql`
+  const runStoreRevenue = async (range) => scalar(await db2.execute(import_drizzle_orm64.sql`
           SELECT COALESCE(SUM(spe.amount::numeric), 0) AS v
           FROM sale_order_performance_events spe
           WHERE ${scopeFilterSql(session4, scope, "spe.store_id")}
@@ -179471,7 +179525,7 @@ var getSalesBoard = withPermission("data_center:dashboard", async (session4, par
             AND spe.legacy_source IS DISTINCT FROM 'workfine'
             AND spe.performance_date BETWEEN ${range.start} AND ${range.end}
         `));
-  const runShengmeiRevenue = async (range) => scalar(await db2.execute(import_drizzle_orm63.sql`
+  const runShengmeiRevenue = async (range) => scalar(await db2.execute(import_drizzle_orm64.sql`
           SELECT COALESCE(SUM(sipe.amount::numeric), 0) AS v
           FROM sale_item_performance_events sipe
           JOIN sale_items si ON si.sale_item_id = sipe.sale_item_id
@@ -179482,7 +179536,7 @@ var getSalesBoard = withPermission("data_center:dashboard", async (session4, par
             AND si.is_shengmei = TRUE
             AND sipe.performance_date BETWEEN ${range.start} AND ${range.end}
         `));
-  const runStoreConsume = async (range) => scalar(await db2.execute(import_drizzle_orm63.sql`
+  const runStoreConsume = async (range) => scalar(await db2.execute(import_drizzle_orm64.sql`
           SELECT COALESCE(SUM(sit.unit_real_price::numeric * sit.session_used), 0) AS v
           FROM service_orders so
           JOIN service_items sit ON sit.service_order_id = so.service_order_id
@@ -179492,7 +179546,7 @@ var getSalesBoard = withPermission("data_center:dashboard", async (session4, par
             AND so.service_date BETWEEN ${range.start} AND ${range.end}
             AND ${excludeDepositRefundSql("so")}
         `));
-  const runShengmeiConsume = async (range) => scalar(await db2.execute(import_drizzle_orm63.sql`
+  const runShengmeiConsume = async (range) => scalar(await db2.execute(import_drizzle_orm64.sql`
           SELECT COALESCE(SUM(sit.unit_real_price::numeric * sit.session_used), 0) AS v
           FROM service_orders so
           JOIN service_items sit ON sit.service_order_id = so.service_order_id
@@ -179503,7 +179557,7 @@ var getSalesBoard = withPermission("data_center:dashboard", async (session4, par
             AND so.service_date BETWEEN ${range.start} AND ${range.end}
             AND ${excludeDepositRefundSql("so")}
         `));
-  const runNewCustomerRevenue = async (range) => scalar(await db2.execute(import_drizzle_orm63.sql`
+  const runNewCustomerRevenue = async (range) => scalar(await db2.execute(import_drizzle_orm64.sql`
           SELECT COALESCE(SUM(spe.amount::numeric), 0) AS v
           FROM sale_order_performance_events spe
           JOIN sale_orders so ON so.sale_order_id = spe.sale_order_id
@@ -179517,7 +179571,7 @@ var getSalesBoard = withPermission("data_center:dashboard", async (session4, par
             AND c.became_member_at::date >= ${range.start}
             AND spe.performance_date BETWEEN ${range.start} AND ${range.end}
         `));
-  const runTrafficCustomerRevenue = async (range) => scalar(await db2.execute(import_drizzle_orm63.sql`
+  const runTrafficCustomerRevenue = async (range) => scalar(await db2.execute(import_drizzle_orm64.sql`
           SELECT COALESCE(SUM(spe.amount::numeric), 0) AS v
           FROM sale_order_performance_events spe
           JOIN sale_orders so ON so.sale_order_id = spe.sale_order_id
@@ -179531,7 +179585,7 @@ var getSalesBoard = withPermission("data_center:dashboard", async (session4, par
             AND spe.performance_date BETWEEN ${range.start} AND ${range.end}
         `));
   const runStoreCount = async (range) => {
-    return scalar(await db2.execute(import_drizzle_orm63.sql`
+    return scalar(await db2.execute(import_drizzle_orm64.sql`
           SELECT COUNT(*)::int AS v
           FROM stores s
           JOIN org_nodes o ON s.org_node_id = o.id
@@ -179603,7 +179657,7 @@ var getSalesBoard = withPermission("data_center:dashboard", async (session4, par
     db2.execute(skeleton),
     db2.execute(technicianByStoreSql(session4, scope, cur.end)),
     db2.execute(technicianDirectByMarketSql(session4, scope, cur.end)),
-    db2.execute(import_drizzle_orm63.sql`
+    db2.execute(import_drizzle_orm64.sql`
         SELECT spe.store_id, COALESCE(SUM(spe.amount::numeric), 0) AS v
         FROM sale_order_performance_events spe
         WHERE ${scopeFilterSql(session4, scope, "spe.store_id")}
@@ -179614,7 +179668,7 @@ var getSalesBoard = withPermission("data_center:dashboard", async (session4, par
           AND spe.performance_date BETWEEN ${cur.start} AND ${cur.end}
         GROUP BY spe.store_id
       `),
-    db2.execute(import_drizzle_orm63.sql`
+    db2.execute(import_drizzle_orm64.sql`
         SELECT so.store_id, COALESCE(SUM(sipe.amount::numeric), 0) AS v
         FROM sale_item_performance_events sipe
         JOIN sale_items si ON si.sale_item_id = sipe.sale_item_id
@@ -179626,7 +179680,7 @@ var getSalesBoard = withPermission("data_center:dashboard", async (session4, par
           AND sipe.performance_date BETWEEN ${cur.start} AND ${cur.end}
         GROUP BY so.store_id
       `),
-    db2.execute(import_drizzle_orm63.sql`
+    db2.execute(import_drizzle_orm64.sql`
         SELECT so.store_id, COALESCE(SUM(spe.amount::numeric), 0) AS v
         FROM sale_order_performance_events spe
         JOIN sale_orders so ON so.sale_order_id = spe.sale_order_id
@@ -179641,7 +179695,7 @@ var getSalesBoard = withPermission("data_center:dashboard", async (session4, par
           AND spe.performance_date BETWEEN ${cur.start} AND ${cur.end}
         GROUP BY so.store_id
       `),
-    db2.execute(import_drizzle_orm63.sql`
+    db2.execute(import_drizzle_orm64.sql`
         SELECT so.store_id, COALESCE(SUM(spe.amount::numeric), 0) AS v
         FROM sale_order_performance_events spe
         JOIN sale_orders so ON so.sale_order_id = spe.sale_order_id
@@ -179655,7 +179709,7 @@ var getSalesBoard = withPermission("data_center:dashboard", async (session4, par
           AND spe.performance_date BETWEEN ${cur.start} AND ${cur.end}
         GROUP BY so.store_id
       `),
-    db2.execute(import_drizzle_orm63.sql`
+    db2.execute(import_drizzle_orm64.sql`
         SELECT so.store_id, COALESCE(SUM(sit.unit_real_price::numeric * sit.session_used), 0) AS v
         FROM service_orders so
         JOIN service_items sit ON sit.service_order_id = so.service_order_id
@@ -179666,7 +179720,7 @@ var getSalesBoard = withPermission("data_center:dashboard", async (session4, par
           AND ${excludeDepositRefundSql("so")}
         GROUP BY so.store_id
       `),
-    db2.execute(import_drizzle_orm63.sql`
+    db2.execute(import_drizzle_orm64.sql`
         SELECT so.store_id, COALESCE(SUM(sit.unit_real_price::numeric * sit.session_used), 0) AS v
         FROM service_orders so
         JOIN service_items sit ON sit.service_order_id = so.service_order_id
@@ -179790,22 +179844,22 @@ var getSalesBoard = withPermission("data_center:dashboard", async (session4, par
 // src/actions/data-center/customer.ts
 init_db2();
 init_with_permission();
-var import_drizzle_orm65 = __toESM(require_drizzle_orm(), 1);
+var import_drizzle_orm66 = __toESM(require_drizzle_orm(), 1);
 
 // src/lib/data-center/visit-days.ts
-var import_drizzle_orm64 = __toESM(require_drizzle_orm(), 1);
+var import_drizzle_orm65 = __toESM(require_drizzle_orm(), 1);
 var VISIT_DAY_AXIS_WITH_PAYMENT = {
   service_date: false,
   service_or_payment: true
 };
-var PAYMENT_VISIT_DAY = import_drizzle_orm64.sql.raw(`(sop.paid_at AT TIME ZONE 'Asia/Shanghai')::date`);
+var PAYMENT_VISIT_DAY = import_drizzle_orm65.sql.raw(`(sop.paid_at AT TIME ZONE 'Asia/Shanghai')::date`);
 function withPayment(axis) {
   if (!Object.hasOwn(VISIT_DAY_AXIS_WITH_PAYMENT, axis))
     throw new Error(`visitDaysSql: 未知日期轴 ${String(axis)}`);
   return VISIT_DAY_AXIS_WITH_PAYMENT[axis];
 }
 function paymentVisitSource(scope, range) {
-  return import_drizzle_orm64.sql`
+  return import_drizzle_orm65.sql`
     FROM sale_order_payments sop
     JOIN sale_orders so ON so.sale_order_id = sop.sale_order_id
     WHERE ${scope}
@@ -179818,8 +179872,8 @@ function paymentVisitSource(scope, range) {
 }
 function visitDaysSql(opts) {
   const payment = withPayment(opts.axis);
-  const col = import_drizzle_orm64.sql.raw("so.service_date");
-  const serviceDays = import_drizzle_orm64.sql`
+  const col = import_drizzle_orm65.sql.raw("so.service_date");
+  const serviceDays = import_drizzle_orm65.sql`
     SELECT DISTINCT so.client_user_id, ${col} AS visit_date
     FROM service_orders so
     WHERE ${opts.scope}
@@ -179829,7 +179883,7 @@ function visitDaysSql(opts) {
   `;
   if (!payment)
     return serviceDays;
-  return import_drizzle_orm64.sql`
+  return import_drizzle_orm65.sql`
     ${serviceDays}
     UNION
     SELECT so.client_user_id, ${PAYMENT_VISIT_DAY} AS visit_date
@@ -179838,7 +179892,7 @@ function visitDaysSql(opts) {
 }
 function visitDayStoresSql(opts) {
   const payment = withPayment(opts.axis);
-  const serviceStores = import_drizzle_orm64.sql`
+  const serviceStores = import_drizzle_orm65.sql`
     SELECT so.client_user_id, so.service_date AS visit_date, so.store_id
     FROM service_orders so
     WHERE ${opts.scope}
@@ -179847,8 +179901,8 @@ function visitDayStoresSql(opts) {
       AND so.service_date BETWEEN ${opts.range.start} AND ${opts.range.end}
   `;
   if (!payment)
-    return import_drizzle_orm64.sql`${serviceStores} GROUP BY 1, 2, 3`;
-  return import_drizzle_orm64.sql`
+    return import_drizzle_orm65.sql`${serviceStores} GROUP BY 1, 2, 3`;
+  return import_drizzle_orm65.sql`
     ${serviceStores}
     UNION
     SELECT so.client_user_id, ${PAYMENT_VISIT_DAY} AS visit_date, so.store_id
@@ -179875,7 +179929,7 @@ var first = (rows) => rows[0] ?? {};
 async function queryRegistration(session4, scope, range, customerType) {
   const sc = scopeFilterSql(session4, scope, "c.bound_store_id");
   if (customerType === "会员客") {
-    const rows2 = await db2.execute(import_drizzle_orm65.sql`
+    const rows2 = await db2.execute(import_drizzle_orm66.sql`
       SELECT COUNT(*) AS v
       FROM client_wechat_users c
       WHERE ${sc}
@@ -179884,8 +179938,8 @@ async function queryRegistration(session4, scope, range, customerType) {
     `);
     return num(first(rows2).v);
   }
-  const typeClause = customerType ? import_drizzle_orm65.sql` AND c.customer_type = ${customerType}` : import_drizzle_orm65.sql``;
-  const rows = await db2.execute(import_drizzle_orm65.sql`
+  const typeClause = customerType ? import_drizzle_orm66.sql` AND c.customer_type = ${customerType}` : import_drizzle_orm66.sql``;
+  const rows = await db2.execute(import_drizzle_orm66.sql`
     SELECT COUNT(*) AS v
     FROM client_wechat_users c
     WHERE ${sc}
@@ -179895,9 +179949,9 @@ async function queryRegistration(session4, scope, range, customerType) {
 }
 async function queryTrafficCount(session4, scope, range, customerType, metric) {
   const sc = scopeFilterSql(session4, scope, "so.store_id");
-  const typeClause = customerType ? import_drizzle_orm65.sql` AND c.customer_type = ${customerType}` : import_drizzle_orm65.sql``;
-  const expr = metric === "users" ? import_drizzle_orm65.sql`COUNT(DISTINCT so.client_user_id)` : import_drizzle_orm65.sql`COUNT(*)`;
-  const rows = await db2.execute(import_drizzle_orm65.sql`
+  const typeClause = customerType ? import_drizzle_orm66.sql` AND c.customer_type = ${customerType}` : import_drizzle_orm66.sql``;
+  const expr = metric === "users" ? import_drizzle_orm66.sql`COUNT(DISTINCT so.client_user_id)` : import_drizzle_orm66.sql`COUNT(*)`;
+  const rows = await db2.execute(import_drizzle_orm66.sql`
     SELECT ${expr} AS v
     FROM service_orders so
     JOIN client_wechat_users c ON c.user_id = so.client_user_id
@@ -179909,7 +179963,7 @@ async function queryTrafficCount(session4, scope, range, customerType, metric) {
 }
 async function queryProjectCount(session4, scope, range) {
   const sc = scopeFilterSql(session4, scope, "so.store_id");
-  const rows = await db2.execute(import_drizzle_orm65.sql`
+  const rows = await db2.execute(import_drizzle_orm66.sql`
     SELECT COALESCE(SUM(sit.session_used), 0) AS v
     FROM service_orders so
     JOIN service_items sit ON sit.service_order_id = so.service_order_id
@@ -179923,7 +179977,7 @@ async function queryProjectCount(session4, scope, range) {
 }
 async function queryServiceCount(session4, scope, range) {
   const sc = scopeFilterSql(session4, scope, "so.store_id");
-  const rows = await db2.execute(import_drizzle_orm65.sql`
+  const rows = await db2.execute(import_drizzle_orm66.sql`
     SELECT COUNT(*) AS v
     FROM service_orders so
     WHERE ${sc}
@@ -179934,7 +179988,7 @@ async function queryServiceCount(session4, scope, range) {
 }
 async function queryShengmeiConsume(session4, scope, range) {
   const sc = scopeFilterSql(session4, scope, "so.store_id");
-  const rows = await db2.execute(import_drizzle_orm65.sql`
+  const rows = await db2.execute(import_drizzle_orm66.sql`
     SELECT COALESCE(SUM(sit.unit_real_price::numeric * sit.session_used::numeric), 0) AS v
     FROM service_orders so
     JOIN service_items sit ON sit.service_order_id = so.service_order_id
@@ -179948,8 +180002,8 @@ async function queryShengmeiConsume(session4, scope, range) {
 }
 async function queryStatusCount(session4, scope, status) {
   const sc = scopeFilterSql(session4, scope, "c.bound_store_id");
-  const memberClause = status === "沉睡" ? import_drizzle_orm65.sql` AND c.customer_type = '会员客'` : import_drizzle_orm65.sql``;
-  const rows = await db2.execute(import_drizzle_orm65.sql`
+  const memberClause = status === "沉睡" ? import_drizzle_orm66.sql` AND c.customer_type = '会员客'` : import_drizzle_orm66.sql``;
+  const rows = await db2.execute(import_drizzle_orm66.sql`
     SELECT COUNT(*) AS v
     FROM client_wechat_users c
     WHERE ${sc}
@@ -179960,8 +180014,8 @@ async function queryStatusCount(session4, scope, status) {
 async function queryActive(session4, scope, range, mode) {
   const ssc = scopeFilterSql(session4, scope, "so.store_id");
   const csc = scopeFilterSql(session4, scope, "c.bound_store_id");
-  const daysClause = mode === "once" ? import_drizzle_orm65.sql`vc.days = 1` : import_drizzle_orm65.sql`vc.days >= 2`;
-  const rows = await db2.execute(import_drizzle_orm65.sql`
+  const daysClause = mode === "once" ? import_drizzle_orm66.sql`vc.days = 1` : import_drizzle_orm66.sql`vc.days >= 2`;
+  const rows = await db2.execute(import_drizzle_orm66.sql`
     WITH visit_days AS (${visitDaysSql({ axis: "service_date", scope: ssc, range })}),
     visit_count AS (
       SELECT vd.client_user_id, COUNT(DISTINCT vd.visit_date) AS days
@@ -179973,6 +180027,8 @@ async function queryActive(session4, scope, range, mode) {
     JOIN client_wechat_users c ON c.user_id = vc.client_user_id
     WHERE ${csc}
       AND c.customer_status IN ('保有会员-稳定', '保有会员-有效')
+      AND c.became_member_at IS NOT NULL
+      AND c.became_member_at::date <= ${range.end}
       AND ${daysClause}
   `);
   return num(first(rows).v);
@@ -179983,17 +180039,17 @@ async function queryReactivated(session4, scope, range, bucket) {
   const start = range.start;
   let lastDtClause;
   if (bucket === "warn") {
-    lastDtClause = import_drizzle_orm65.sql`a.last_dt IS NOT NULL
+    lastDtClause = import_drizzle_orm66.sql`a.last_dt IS NOT NULL
       AND a.last_dt >= (${start}::date - 1 - INTERVAL '6 months')::date`;
   } else if (bucket === "frozen") {
-    lastDtClause = import_drizzle_orm65.sql`a.last_dt IS NOT NULL
+    lastDtClause = import_drizzle_orm66.sql`a.last_dt IS NOT NULL
       AND a.last_dt < (${start}::date - 1 - INTERVAL '6 months')::date
       AND a.last_dt >= (${start}::date - 1 - INTERVAL '12 months')::date`;
   } else {
-    lastDtClause = import_drizzle_orm65.sql`(a.last_dt IS NULL
+    lastDtClause = import_drizzle_orm66.sql`(a.last_dt IS NULL
       OR a.last_dt < (${start}::date - 1 - INTERVAL '12 months')::date)`;
   }
-  const rows = await db2.execute(import_drizzle_orm65.sql`
+  const rows = await db2.execute(import_drizzle_orm66.sql`
     WITH visited_in_period AS (
       SELECT DISTINCT so.client_user_id
       FROM service_orders so
@@ -180031,7 +180087,7 @@ async function queryReactivated(session4, scope, range, bucket) {
 }
 async function queryOperatedMembers(session4, scope, range, threshold) {
   const sc = scopeFilterSql(session4, scope, "o.store_id");
-  const rows = await db2.execute(import_drizzle_orm65.sql`
+  const rows = await db2.execute(import_drizzle_orm66.sql`
     WITH member_spend AS (
       SELECT o.client_user_id,
              SUM(spe.amount::numeric) AS spend
@@ -180054,7 +180110,7 @@ async function queryOperatedMembers(session4, scope, range, threshold) {
 }
 async function queryMemberAvgTicket(session4, scope, range) {
   const sc = scopeFilterSql(session4, scope, "o.store_id");
-  const rows = await db2.execute(import_drizzle_orm65.sql`
+  const rows = await db2.execute(import_drizzle_orm66.sql`
     WITH member_spend AS (
       SELECT o.client_user_id,
              SUM(spe.amount::numeric) AS spend
@@ -180079,7 +180135,7 @@ async function queryMemberAvgTicket(session4, scope, range) {
 }
 async function queryNewMemberCount(session4, scope, range) {
   const sc = scopeFilterSql(session4, scope, "c.bound_store_id");
-  const rows = await db2.execute(import_drizzle_orm65.sql`
+  const rows = await db2.execute(import_drizzle_orm66.sql`
     SELECT COUNT(*) AS v
     FROM client_wechat_users c
     WHERE ${sc}
@@ -180090,7 +180146,7 @@ async function queryNewMemberCount(session4, scope, range) {
 }
 async function queryNewMemberSpend(session4, scope, range) {
   const sc = scopeFilterSql(session4, scope, "o.store_id");
-  const rows = await db2.execute(import_drizzle_orm65.sql`
+  const rows = await db2.execute(import_drizzle_orm66.sql`
     SELECT COALESCE(SUM(spe.amount::numeric), 0) AS v
     FROM sale_order_performance_events spe
     JOIN sale_orders o ON o.sale_order_id = spe.sale_order_id
@@ -180109,7 +180165,7 @@ async function queryNewMemberSpend(session4, scope, range) {
 async function queryTrialFootfall(session4, scope, range) {
   const scVisit = scopeFilterSql(session4, scope, "so.store_id");
   const scMember = scopeFilterSql(session4, scope, "c.bound_store_id");
-  const rows = await db2.execute(import_drizzle_orm65.sql`
+  const rows = await db2.execute(import_drizzle_orm66.sql`
     SELECT COUNT(DISTINCT t.uid) AS v
     FROM (
       -- ① 本期到店 且 期初未达会员（当前仍未达会员 OR 本期内才转化）
@@ -180137,7 +180193,7 @@ async function queryTrialFootfall(session4, scope, range) {
 }
 async function queryRetainedMembers(session4, scope, range) {
   const sc = scopeFilterSql(session4, scope, "c.bound_store_id");
-  const rows = await db2.execute(import_drizzle_orm65.sql`
+  const rows = await db2.execute(import_drizzle_orm66.sql`
     SELECT COUNT(DISTINCT so.client_user_id) AS v
     FROM service_orders so
     JOIN client_wechat_users c ON c.user_id = so.client_user_id
@@ -180152,12 +180208,12 @@ async function queryRetainedMembers(session4, scope, range) {
 }
 async function queryRegActiveBreakdown(session4, scope, range, group) {
   const skeleton = scopeStoreSkeletonSql(session4, scope);
-  const groupId = group === "market" ? import_drizzle_orm65.sql.raw("sk.market_id") : import_drizzle_orm65.sql.raw("sk.store_id");
+  const groupId = group === "market" ? import_drizzle_orm66.sql.raw("sk.market_id") : import_drizzle_orm66.sql.raw("sk.store_id");
   const start = range.start;
   const end = range.end;
   const serviceScope = scopeFilterSql(session4, scope, "so.store_id");
   const customerScope = scopeFilterSql(session4, scope, "c.bound_store_id");
-  const rows = await db2.execute(import_drizzle_orm65.sql`
+  const rows = await db2.execute(import_drizzle_orm66.sql`
     WITH skel AS (${skeleton}),
     -- 注册（会员客口径，became_member_at 截面）按 bound_store_id 归组
     reg AS (
@@ -180184,7 +180240,8 @@ async function queryRegActiveBreakdown(session4, scope, range, group) {
       GROUP BY c.bound_store_id
     ),
     -- 区间到店天数（按客户 + bound_store_id），区分一次/二次客活（仅保有会员）。
-    -- 到店日按 (顾客, service_date) 去重（#298），与 KPI queryActive 同一个 visitDaysSql
+    -- 到店日按 (顾客, service_date) 去重（#298），与 KPI queryActive 同一个 visitDaysSql。
+    -- 会员守卫与上面的 reg（达成率分母）逐字同源（#414），理由见 queryActive 的注释。
     visit_days AS (${visitDaysSql({ axis: "service_date", scope: serviceScope, range })}),
     visit_count AS (
       SELECT vd.client_user_id, c.bound_store_id AS store_id,
@@ -180194,6 +180251,8 @@ async function queryRegActiveBreakdown(session4, scope, range, group) {
       JOIN client_wechat_users c ON c.user_id = vd.client_user_id
       WHERE ${customerScope}
         AND c.bound_store_id IS NOT NULL
+        AND c.became_member_at IS NOT NULL
+        AND c.became_member_at::date <= ${end}
       GROUP BY vd.client_user_id, c.bound_store_id, c.customer_status
     ),
     active AS (
@@ -180266,7 +180325,7 @@ async function queryRegActiveBreakdown(session4, scope, range, group) {
     )
     SELECT
       ${groupId} AS group_id,
-      ${group === "market" ? import_drizzle_orm65.sql.raw("MAX(sk.market_name)") : import_drizzle_orm65.sql.raw("MAX(sk.store_name)")} AS group_name,
+      ${group === "market" ? import_drizzle_orm66.sql.raw("MAX(sk.market_name)") : import_drizzle_orm66.sql.raw("MAX(sk.store_name)")} AS group_name,
       MAX(sk.market_name) AS market_name,
       COALESCE(SUM(reg.registered), 0) AS registered,
       COALESCE(SUM(ret.retained), 0) AS retained,
@@ -180310,11 +180369,11 @@ async function queryRegActiveBreakdown(session4, scope, range, group) {
 async function queryOpsBreakdown(session4, scope, range, group, threshold) {
   const floors = SPEND_BUCKET_FLOORS;
   const skeleton = scopeStoreSkeletonSql(session4, scope);
-  const groupId = group === "market" ? import_drizzle_orm65.sql.raw("sk.market_id") : import_drizzle_orm65.sql.raw("sk.store_id");
-  const groupName = group === "market" ? import_drizzle_orm65.sql.raw("sk.market_name") : import_drizzle_orm65.sql.raw("sk.store_name");
+  const groupId = group === "market" ? import_drizzle_orm66.sql.raw("sk.market_id") : import_drizzle_orm66.sql.raw("sk.store_id");
+  const groupName = group === "market" ? import_drizzle_orm66.sql.raw("sk.market_name") : import_drizzle_orm66.sql.raw("sk.store_name");
   const start = range.start;
   const end = range.end;
-  const rows = await db2.execute(import_drizzle_orm65.sql`
+  const rows = await db2.execute(import_drizzle_orm66.sql`
     WITH skel AS (${skeleton}),
     group_skel AS (
       SELECT ${groupId} AS group_id,
@@ -180539,9 +180598,9 @@ function buildBreakdownRows(group, skeletonRows, regActive, ops) {
         registered: ra?.registered ?? 0,
         retained: ra?.retained ?? 0,
         visitOnce: ra?.visitOnce ?? 0,
-        visitOnceRate: ra ? safeDiv(ra.visitOnce, ra.retained) : null,
+        visitOnceRate: ra ? safeDiv(ra.visitOnce, ra.registered) : null,
         visitTwice: ra?.visitTwice ?? 0,
-        visitTwiceRate: ra ? safeDiv(ra.visitTwice, ra.retained) : null,
+        visitTwiceRate: ra ? safeDiv(ra.visitTwice, ra.registered) : null,
         dormant: ra?.dormant ?? 0,
         reactivatedDormant: ra?.reactivatedDormant ?? 0,
         frozen: ra?.frozen ?? 0,
@@ -180694,7 +180753,7 @@ var getCustomerBoard = withPermission("data_center:dashboard", async (session4, 
 // src/actions/data-center/product.ts
 init_db2();
 init_with_permission();
-var import_drizzle_orm66 = __toESM(require_drizzle_orm(), 1);
+var import_drizzle_orm67 = __toESM(require_drizzle_orm(), 1);
 "use server";
 var num2 = (v) => {
   const n = Number(v ?? 0);
@@ -180708,23 +180767,23 @@ function resolveGrouping(params) {
   const category = params.categoryName?.trim() || "";
   if (category) {
     return {
-      groupCol: import_drizzle_orm66.sql.raw("pc.category_name"),
-      filter: import_drizzle_orm66.sql`pc.product_kind = ${kind} AND pc.category_name = ${category}`
+      groupCol: import_drizzle_orm67.sql.raw("pc.category_name"),
+      filter: import_drizzle_orm67.sql`pc.product_kind = ${kind} AND pc.category_name = ${category}`
     };
   }
   if (kind) {
     return {
-      groupCol: import_drizzle_orm66.sql.raw("pc.product_kind"),
-      filter: import_drizzle_orm66.sql`pc.product_kind = ${kind}`
+      groupCol: import_drizzle_orm67.sql.raw("pc.product_kind"),
+      filter: import_drizzle_orm67.sql`pc.product_kind = ${kind}`
     };
   }
   return {
-    groupCol: import_drizzle_orm66.sql.raw("pc.product_kind"),
-    filter: import_drizzle_orm66.sql`pc.product_kind IS NOT NULL`
+    groupCol: import_drizzle_orm67.sql.raw("pc.product_kind"),
+    filter: import_drizzle_orm67.sql`pc.product_kind IS NOT NULL`
   };
 }
 async function queryFilterOptions() {
-  const rows = await db2.execute(import_drizzle_orm66.sql`
+  const rows = await db2.execute(import_drizzle_orm67.sql`
     SELECT DISTINCT pc.product_kind AS kind, pc.category_name AS category
     FROM product_categories pc
     WHERE pc.product_kind IS NOT NULL
@@ -180746,7 +180805,7 @@ async function queryFilterOptions() {
 }
 async function queryCardHolders(session4, scope, filter) {
   const sc = scopeFilterSql(session4, scope, "c.bound_store_id");
-  const rows = await db2.execute(import_drizzle_orm66.sql`
+  const rows = await db2.execute(import_drizzle_orm67.sql`
     SELECT COUNT(*) AS v
     FROM client_wechat_users c
     WHERE ${sc}
@@ -180768,7 +180827,7 @@ async function queryCardHolders(session4, scope, filter) {
 }
 async function queryMemberCount(session4, scope) {
   const sc = scopeFilterSql(session4, scope, "c.bound_store_id");
-  const rows = await db2.execute(import_drizzle_orm66.sql`
+  const rows = await db2.execute(import_drizzle_orm67.sql`
     SELECT COUNT(*) AS v
     FROM client_wechat_users c
     WHERE ${sc}
@@ -180778,7 +180837,7 @@ async function queryMemberCount(session4, scope) {
 }
 async function queryCycle(session4, scope, range, threshold, groupCol, filter, group, metric) {
   const sc = scopeFilterSql(session4, scope, "so.store_id");
-  const rows = await db2.execute(import_drizzle_orm66.sql`
+  const rows = await db2.execute(import_drizzle_orm67.sql`
     WITH daily_agg AS (
       SELECT so.client_user_id,
              so.store_id,
@@ -180847,7 +180906,7 @@ async function queryCycle(session4, scope, range, threshold, groupCol, filter, g
       )
     ),
     cohort AS (
-      ${group === "trial" ? import_drizzle_orm66.sql`SELECT client_user_id, grp FROM tiyan` : group === "new" ? import_drizzle_orm66.sql`SELECT client_user_id, grp FROM xinzeng` : import_drizzle_orm66.sql`SELECT client_user_id, grp FROM fugou`}
+      ${group === "trial" ? import_drizzle_orm67.sql`SELECT client_user_id, grp FROM tiyan` : group === "new" ? import_drizzle_orm67.sql`SELECT client_user_id, grp FROM xinzeng` : import_drizzle_orm67.sql`SELECT client_user_id, grp FROM fugou`}
     )
     SELECT
       COUNT(DISTINCT c.client_user_id) AS count,
@@ -180861,7 +180920,7 @@ async function queryCycle(session4, scope, range, threshold, groupCol, filter, g
 }
 async function queryCardHoldersByStore(session4, scope, filter) {
   const sc = scopeFilterSql(session4, scope, "c.bound_store_id");
-  const rows = await db2.execute(import_drizzle_orm66.sql`
+  const rows = await db2.execute(import_drizzle_orm67.sql`
     SELECT c.bound_store_id AS store_id, COUNT(*) AS v
     FROM client_wechat_users c
     WHERE ${sc}
@@ -180892,7 +180951,7 @@ async function queryCardHoldersByStore(session4, scope, filter) {
 }
 async function queryMemberCountByStore(session4, scope) {
   const sc = scopeFilterSql(session4, scope, "c.bound_store_id");
-  const rows = await db2.execute(import_drizzle_orm66.sql`
+  const rows = await db2.execute(import_drizzle_orm67.sql`
     SELECT c.bound_store_id AS store_id, COUNT(*) AS v
     FROM client_wechat_users c
     WHERE ${sc}
@@ -180911,7 +180970,7 @@ async function queryMemberCountByStore(session4, scope) {
 }
 async function queryCycleByStore(session4, scope, range, threshold, groupCol, filter) {
   const sc = scopeFilterSql(session4, scope, "so.store_id");
-  const rows = await db2.execute(import_drizzle_orm66.sql`
+  const rows = await db2.execute(import_drizzle_orm67.sql`
     WITH daily_agg AS (
       SELECT so.client_user_id,
              so.store_id,
@@ -181224,7 +181283,7 @@ var getProductBoard = withPermission("data_center:dashboard", async (session4, p
 // src/actions/data-center/efficiency.ts
 init_db2();
 init_with_permission();
-var import_drizzle_orm67 = __toESM(require_drizzle_orm(), 1);
+var import_drizzle_orm68 = __toESM(require_drizzle_orm(), 1);
 "use server";
 function scalar2(rows, key = "v") {
   const r = rows[0];
@@ -181239,8 +181298,8 @@ function ratio(num3, den) {
   return num3 / den;
 }
 function performanceEventDateBetween(eventAlias, start, end) {
-  return import_drizzle_orm67.sql`${import_drizzle_orm67.sql.raw(`${eventAlias}.status`)} = '已支付'
-    AND ${import_drizzle_orm67.sql.raw(`${eventAlias}.performance_date`)} BETWEEN ${start} AND ${end}`;
+  return import_drizzle_orm68.sql`${import_drizzle_orm68.sql.raw(`${eventAlias}.status`)} = '已支付'
+    AND ${import_drizzle_orm68.sql.raw(`${eventAlias}.performance_date`)} BETWEEN ${start} AND ${end}`;
 }
 function toMap(rows) {
   const m = new Map;
@@ -181266,7 +181325,7 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
   const ctx = await prepareBoardContext(session4, params);
   const { scope } = ctx;
   const cur = ctx.comparison.current;
-  const qRevenueTotal = db2.execute(import_drizzle_orm67.sql`
+  const qRevenueTotal = db2.execute(import_drizzle_orm68.sql`
       SELECT COALESCE(SUM(spe.amount::numeric), 0) AS v
       FROM sale_order_performance_events spe
       WHERE ${scopeFilterSql(session4, scope, "spe.store_id")}
@@ -181275,7 +181334,7 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
         AND spe.legacy_source IS DISTINCT FROM 'workfine'
         AND ${performanceEventDateBetween("spe", cur.start, cur.end)}
     `);
-  const qConsumeTotal = db2.execute(import_drizzle_orm67.sql`
+  const qConsumeTotal = db2.execute(import_drizzle_orm68.sql`
       SELECT COALESCE(SUM(sit.unit_real_price::numeric * sit.session_used), 0) AS v
       FROM service_items sit
       JOIN service_orders so ON so.service_order_id = sit.service_order_id
@@ -181284,7 +181343,7 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
         AND so.service_date BETWEEN ${cur.start} AND ${cur.end}
         AND ${excludeDepositRefundSql("so")}
     `);
-  const qSalesCommTotal = db2.execute(import_drizzle_orm67.sql`
+  const qSalesCommTotal = db2.execute(import_drizzle_orm68.sql`
       SELECT COALESCE(SUM(spia.commission_amount::numeric), 0) AS v
       FROM sale_payment_item_allocations spia
       JOIN sale_payment_item_receipts spir ON spir.id = spia.sale_payment_item_receipt_id
@@ -181296,7 +181355,7 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
         AND so.sale_order_type IN ('销售单', '转换单')
         AND ${performanceEventDateBetween("spe", cur.start, cur.end)}
     `);
-  const qServiceCommTotal = db2.execute(import_drizzle_orm67.sql`
+  const qServiceCommTotal = db2.execute(import_drizzle_orm68.sql`
       SELECT COALESCE(SUM(sc.commission_amount::numeric), 0) AS v
       FROM service_commissions sc
       JOIN service_items sit ON sit.service_item_id = sc.service_item_id
@@ -181306,7 +181365,7 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
         AND so.status = '已完成'
         AND so.service_date BETWEEN ${cur.start} AND ${cur.end}
     `);
-  const qFootfallTotal = db2.execute(import_drizzle_orm67.sql`
+  const qFootfallTotal = db2.execute(import_drizzle_orm68.sql`
       SELECT COUNT(DISTINCT so.client_user_id) AS v
       FROM service_orders so
       WHERE ${scopeFilterSql(session4, scope, "so.store_id")}
@@ -181314,7 +181373,7 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
         AND so.client_user_id IS NOT NULL
         AND so.service_date BETWEEN ${cur.start} AND ${cur.end}
     `);
-  const qProjectCountTotal = db2.execute(import_drizzle_orm67.sql`
+  const qProjectCountTotal = db2.execute(import_drizzle_orm68.sql`
       SELECT COALESCE(SUM(sit.session_used), 0) AS v
       FROM service_orders so
       JOIN service_items sit ON sit.service_order_id = so.service_order_id
@@ -181324,7 +181383,7 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
         AND so.service_date BETWEEN ${cur.start} AND ${cur.end}
         AND ${excludeDepositRefundSql("so")}
     `);
-  const qMemberCount = db2.execute(import_drizzle_orm67.sql`
+  const qMemberCount = db2.execute(import_drizzle_orm68.sql`
       SELECT COUNT(*) AS v
       FROM client_wechat_users c
       WHERE ${scopeFilterSql(session4, scope, "c.bound_store_id")}
@@ -181332,7 +181391,7 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
         AND c.became_member_at::date <= ${cur.end}
     `);
   const qTechnicianCount = db2.execute(technicianCountSql(session4, scope, cur.end));
-  const qManagerCount = db2.execute(import_drizzle_orm67.sql`
+  const qManagerCount = db2.execute(import_drizzle_orm68.sql`
       SELECT COUNT(*)::int AS v
       FROM stores s
       JOIN org_nodes o ON s.org_node_id = o.id AND o.type = '门店'
@@ -181343,7 +181402,7 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
     `);
   const skeleton = scopeStoreSkeletonSql(session4, scope);
   const qStoreSkeleton = db2.execute(skeleton);
-  const qManagerByStore = db2.execute(import_drizzle_orm67.sql`
+  const qManagerByStore = db2.execute(import_drizzle_orm68.sql`
       SELECT s.store_id, 1::int AS v
       FROM stores s
       JOIN org_nodes o ON s.org_node_id = o.id AND o.type = '门店'
@@ -181354,7 +181413,7 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
     `);
   const qTechByStore = db2.execute(technicianByStoreSql(session4, scope, cur.end));
   const qTechDirectByMarket = db2.execute(technicianDirectByMarketSql(session4, scope, cur.end));
-  const qRevenueByStore = db2.execute(import_drizzle_orm67.sql`
+  const qRevenueByStore = db2.execute(import_drizzle_orm68.sql`
       SELECT spe.store_id, COALESCE(SUM(spe.amount::numeric), 0) AS v
       FROM sale_order_performance_events spe
       WHERE ${scopeFilterSql(session4, scope, "spe.store_id")}
@@ -181364,7 +181423,7 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
         AND ${performanceEventDateBetween("spe", cur.start, cur.end)}
       GROUP BY spe.store_id
     `);
-  const qConsumeByStore = db2.execute(import_drizzle_orm67.sql`
+  const qConsumeByStore = db2.execute(import_drizzle_orm68.sql`
       SELECT so.store_id, COALESCE(SUM(sit.unit_real_price::numeric * sit.session_used), 0) AS v
       FROM service_items sit
       JOIN service_orders so ON so.service_order_id = sit.service_order_id
@@ -181374,7 +181433,7 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
         AND ${excludeDepositRefundSql("so")}
       GROUP BY so.store_id
     `);
-  const qShengmeiConsumeByStore = db2.execute(import_drizzle_orm67.sql`
+  const qShengmeiConsumeByStore = db2.execute(import_drizzle_orm68.sql`
       SELECT so.store_id, COALESCE(SUM(sit.unit_real_price::numeric * sit.session_used), 0) AS v
       FROM service_items sit
       JOIN service_orders so ON so.service_order_id = sit.service_order_id
@@ -181385,7 +181444,7 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
         AND ${excludeDepositRefundSql("so")}
       GROUP BY so.store_id
     `);
-  const qSalesCommByStore = db2.execute(import_drizzle_orm67.sql`
+  const qSalesCommByStore = db2.execute(import_drizzle_orm68.sql`
       SELECT so.store_id, COALESCE(SUM(spia.commission_amount::numeric), 0) AS v
       FROM sale_payment_item_allocations spia
       JOIN sale_payment_item_receipts spir ON spir.id = spia.sale_payment_item_receipt_id
@@ -181398,7 +181457,7 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
         AND ${performanceEventDateBetween("spe", cur.start, cur.end)}
       GROUP BY so.store_id
     `);
-  const qServiceCommByStore = db2.execute(import_drizzle_orm67.sql`
+  const qServiceCommByStore = db2.execute(import_drizzle_orm68.sql`
       SELECT so.store_id, COALESCE(SUM(sc.commission_amount::numeric), 0) AS v
       FROM service_commissions sc
       JOIN service_items sit ON sit.service_item_id = sc.service_item_id
@@ -181409,7 +181468,7 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
         AND so.service_date BETWEEN ${cur.start} AND ${cur.end}
       GROUP BY so.store_id
     `);
-  const qFootfallByMarket = db2.execute(import_drizzle_orm67.sql`
+  const qFootfallByMarket = db2.execute(import_drizzle_orm68.sql`
       WITH skel AS (${skeleton})
       SELECT sk.market_id, COUNT(DISTINCT so.client_user_id) AS v
       FROM service_orders so
@@ -181419,7 +181478,7 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
         AND so.service_date BETWEEN ${cur.start} AND ${cur.end}
       GROUP BY sk.market_id
     `);
-  const qProjectByStore = db2.execute(import_drizzle_orm67.sql`
+  const qProjectByStore = db2.execute(import_drizzle_orm68.sql`
       SELECT so.store_id, COALESCE(SUM(sit.session_used), 0) AS v
       FROM service_orders so
       JOIN service_items sit ON sit.service_order_id = so.service_order_id
@@ -181430,7 +181489,7 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
         AND ${excludeDepositRefundSql("so")}
       GROUP BY so.store_id
     `);
-  const qStoreRankRevenue = db2.execute(import_drizzle_orm67.sql`
+  const qStoreRankRevenue = db2.execute(import_drizzle_orm68.sql`
       SELECT s.store_id, s.store_name, o.name AS market_name,
         COALESCE(SUM(spe.amount::numeric), 0) AS value
       FROM stores s
@@ -181447,7 +181506,7 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
       GROUP BY s.store_id, s.store_name, o.name
       ORDER BY value DESC, s.store_name ASC
     `);
-  const qStoreRankConsume = db2.execute(import_drizzle_orm67.sql`
+  const qStoreRankConsume = db2.execute(import_drizzle_orm68.sql`
       SELECT s.store_id, s.store_name, o.name AS market_name,
         COALESCE(SUM(sit.unit_real_price::numeric * sit.session_used), 0) AS value
       FROM stores s
@@ -181463,7 +181522,7 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
       GROUP BY s.store_id, s.store_name, o.name
       ORDER BY value DESC, s.store_name ASC
     `);
-  const qStoreRankRetainedMember = db2.execute(import_drizzle_orm67.sql`
+  const qStoreRankRetainedMember = db2.execute(import_drizzle_orm68.sql`
       SELECT s.store_id, s.store_name, o.name AS market_name,
         COUNT(DISTINCT c.user_id) AS value
       FROM stores s
@@ -181483,7 +181542,7 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
       GROUP BY s.store_id, s.store_name, o.name
       ORDER BY value DESC, s.store_name ASC
     `);
-  const qStoreRankNewMember = db2.execute(import_drizzle_orm67.sql`
+  const qStoreRankNewMember = db2.execute(import_drizzle_orm68.sql`
       SELECT s.store_id, s.store_name, o.name AS market_name,
         COUNT(c.user_id) AS value
       FROM stores s
@@ -181497,7 +181556,7 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
       GROUP BY s.store_id, s.store_name, o.name
       ORDER BY value DESC, s.store_name ASC
     `);
-  const qStoreRankProjectCount = db2.execute(import_drizzle_orm67.sql`
+  const qStoreRankProjectCount = db2.execute(import_drizzle_orm68.sql`
       SELECT s.store_id, s.store_name, o.name AS market_name,
         COALESCE(SUM(sit.session_used), 0) AS value
       FROM stores s
@@ -181515,7 +181574,7 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
       GROUP BY s.store_id, s.store_name, o.name
       ORDER BY value DESC, s.store_name ASC
     `);
-  const producerCte = import_drizzle_orm67.sql`
+  const producerCte = import_drizzle_orm68.sql`
       WITH producer_base AS (
         SELECT sw.employee_id, sw.name AS employee_name,
                COALESCE(sw.store_id, ds.store_id) AS store_id,
@@ -181548,7 +181607,7 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
            OR (pb.store_id IS NULL AND ${orgAnchorScopeSql(session4, scope)})
       )
     `;
-  const qStaffRankRevenue = db2.execute(import_drizzle_orm67.sql`
+  const qStaffRankRevenue = db2.execute(import_drizzle_orm68.sql`
       ${producerCte},
       revenue_by_emp AS (
         SELECT spia.employee_id, COALESCE(SUM(spia.allocated_amount::numeric), 0) AS v
@@ -181569,7 +181628,7 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
       WHERE (pe.has_skills OR COALESCE(r.v, 0) <> 0)
       ORDER BY (COALESCE(r.v, 0) <> 0) DESC, COALESCE(r.v, 0) DESC, pe.employee_name ASC, pe.employee_id ASC
     `);
-  const qStaffRankConsume = db2.execute(import_drizzle_orm67.sql`
+  const qStaffRankConsume = db2.execute(import_drizzle_orm68.sql`
       ${producerCte},
       consume_by_emp AS (
         SELECT sc.employee_id,
@@ -181590,7 +181649,7 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
       WHERE (pe.has_skills OR COALESCE(c.v, 0) <> 0)
       ORDER BY (COALESCE(c.v, 0) <> 0) DESC, COALESCE(c.v, 0) DESC, pe.employee_name ASC, pe.employee_id ASC
     `);
-  const qStaffRankNewMember = db2.execute(import_drizzle_orm67.sql`
+  const qStaffRankNewMember = db2.execute(import_drizzle_orm68.sql`
       ${producerCte},
       new_member_by_emp AS (
         SELECT c.bound_employee_id AS employee_id, COUNT(*) AS v
@@ -181607,7 +181666,7 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
       WHERE (pe.has_skills OR COALESCE(n.v, 0) <> 0)
       ORDER BY (COALESCE(n.v, 0) <> 0) DESC, COALESCE(n.v, 0) DESC, pe.employee_name ASC, pe.employee_id ASC
     `);
-  const qStaffRankProjectCount = db2.execute(import_drizzle_orm67.sql`
+  const qStaffRankProjectCount = db2.execute(import_drizzle_orm68.sql`
       ${producerCte},
       project_by_emp AS (
         SELECT employee_id, COALESCE(SUM(session_used), 0) AS v
@@ -181631,7 +181690,7 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
       WHERE (pe.has_skills OR COALESCE(p.v, 0) <> 0)
       ORDER BY (COALESCE(p.v, 0) <> 0) DESC, COALESCE(p.v, 0) DESC, pe.employee_name ASC, pe.employee_id ASC
     `);
-  const qStaffRankIncome = db2.execute(import_drizzle_orm67.sql`
+  const qStaffRankIncome = db2.execute(import_drizzle_orm68.sql`
       ${producerCte},
       sales_comm AS (
         SELECT spia.employee_id, COALESCE(SUM(spia.commission_amount::numeric), 0) AS v
@@ -181663,7 +181722,7 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
       WHERE (pe.has_skills OR COALESCE(sc1.v, 0) + COALESCE(sc2.v, 0) <> 0)
       ORDER BY (COALESCE(sc1.v, 0) + COALESCE(sc2.v, 0) <> 0) DESC, COALESCE(sc1.v, 0) + COALESCE(sc2.v, 0) DESC, pe.employee_name ASC, pe.employee_id ASC
     `);
-  const qStaffDetail = db2.execute(import_drizzle_orm67.sql`
+  const qStaffDetail = db2.execute(import_drizzle_orm68.sql`
       ${producerCte},
       revenue_by_emp_cat AS (
         SELECT spia.employee_id,
@@ -181828,14 +181887,16 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
   const technicianCount = scalar2(technicianCountR);
   const managerCount = scalar2(managerCountR);
   const mk = (value, unit) => ({ value, unit });
+  const scopeHasStore = skelRows.length > 0;
+  const perTechnician = (num3) => scopeHasStore ? ratio(num3, technicianCount) : null;
   const kpis = {
     managerAvgMembers: mk(ratio(memberCount, managerCount), "count"),
     managerAvgEmployees: mk(ratio(technicianCount, managerCount), "count"),
-    empAvgRevenue: mk(ratio(revenueTotal, technicianCount), "amount"),
-    empAvgConsume: mk(ratio(consumeTotal, technicianCount), "amount"),
-    empAvgIncome: mk(ratio(incomeTotal, technicianCount), "amount"),
-    empAvgMembers: mk(ratio(footfallTotal, technicianCount), "count"),
-    empAvgProjects: mk(ratio(projectCountTotal, technicianCount), "count")
+    empAvgRevenue: mk(perTechnician(revenueTotal), "amount"),
+    empAvgConsume: mk(perTechnician(consumeTotal), "amount"),
+    empAvgIncome: mk(perTechnician(incomeTotal), "amount"),
+    empAvgMembers: mk(perTechnician(footfallTotal), "count"),
+    empAvgProjects: mk(perTechnician(projectCountTotal), "count")
   };
   const managerMap = toMap(managerByStoreR);
   const techMap = toMap(techByStoreR);
@@ -181853,6 +181914,7 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
       m = {
         marketId,
         marketName: marketName2,
+        storeCount: 0,
         managerCount: 0,
         technicianCount: 0,
         revenue: 0,
@@ -181868,6 +181930,7 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
   for (const r of skelRows) {
     const storeId = String(r.store_id);
     const m = marketRowOf(String(r.market_id ?? ""), String(r.market_name ?? ""));
+    m.storeCount += 1;
     m.managerCount += managerMap.get(storeId) ?? 0;
     m.technicianCount += techMap.get(storeId) ?? 0;
     m.revenue += revMap.get(storeId) ?? 0;
@@ -181882,21 +181945,25 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
     const m = marketRowOf(String(r.market_id), String(r.market_name ?? ""));
     m.technicianCount += Number(r.v ?? 0);
   }
-  const byMarket = Array.from(marketMap.values()).map((m) => ({
-    groupId: m.marketId,
-    groupName: m.marketName,
-    metrics: {
-      managerCount: m.managerCount,
-      managerAvgIncome: ratio(m.income, m.managerCount),
-      technicianCount: m.technicianCount,
-      techAvgRevenue: ratio(m.revenue, m.technicianCount),
-      techAvgConsume: ratio(m.consume, m.technicianCount),
-      techAvgShengmeiConsume: ratio(m.shengmeiConsume, m.technicianCount),
-      techAvgIncome: ratio(m.income, m.technicianCount),
-      techAvgMembers: ratio(footfallByMarketMap.get(m.marketId) ?? 0, m.technicianCount),
-      techAvgProjects: ratio(m.projectCount, m.technicianCount)
-    }
-  }));
+  const marketRows = Array.from(marketMap.values());
+  const byMarket = marketRows.map((m) => {
+    const perTech = (num3) => m.storeCount > 0 ? ratio(num3, m.technicianCount) : null;
+    return {
+      groupId: m.marketId,
+      groupName: m.marketName,
+      metrics: {
+        managerCount: m.managerCount,
+        managerAvgIncome: ratio(m.income, m.managerCount),
+        technicianCount: m.technicianCount,
+        techAvgRevenue: perTech(m.revenue),
+        techAvgConsume: perTech(m.consume),
+        techAvgShengmeiConsume: perTech(m.shengmeiConsume),
+        techAvgIncome: perTech(m.income),
+        techAvgMembers: perTech(footfallByMarketMap.get(m.marketId) ?? 0),
+        techAvgProjects: perTech(m.projectCount)
+      }
+    };
+  });
   const mapStoreRank = (rows) => assignRanks(rows.map((r) => ({
     id: String(r.store_id),
     name: String(r.store_name ?? ""),
@@ -181947,6 +182014,8 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
   return {
     ...ctx.meta,
     kpis,
+    noStoreScope: !scopeHasStore,
+    noStoreMarkets: marketRows.filter((m) => m.storeCount === 0).map((m) => m.marketName),
     byMarket,
     byStaff,
     storeRankings,
@@ -181957,7 +182026,7 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
 // src/actions/data-center/operating-master.ts
 init_db2();
 init_with_permission();
-var import_drizzle_orm68 = __toESM(require_drizzle_orm(), 1);
+var import_drizzle_orm69 = __toESM(require_drizzle_orm(), 1);
 
 // src/lib/data-center/report-period.ts
 init_time_range();
@@ -182473,7 +182542,7 @@ function operatingMasterExportGroup(column2) {
 // src/actions/data-center/operating-master.ts
 "use server";
 function revenueByStoreSql(session4, scope, range) {
-  return import_drizzle_orm68.sql`
+  return import_drizzle_orm69.sql`
         SELECT spe.store_id, COALESCE(SUM(spe.amount::numeric), 0) AS v
         FROM sale_order_performance_events spe
         WHERE ${scopeFilterSql(session4, scope, "spe.store_id")}
@@ -182486,7 +182555,7 @@ function revenueByStoreSql(session4, scope, range) {
       `;
 }
 function managedByStoreSql(session4, scope, ytd, month, threshold) {
-  return import_drizzle_orm68.sql`
+  return import_drizzle_orm69.sql`
         SELECT t.store_id,
                COUNT(*) FILTER (WHERE t.year_amount >= ${threshold}) AS year_v,
                COUNT(*) FILTER (WHERE t.month_amount >= ${threshold}) AS month_v
@@ -182533,7 +182602,7 @@ var getOperatingMaster = withPermission(DATA_CENTER_DASHBOARD_ACTION, async (ses
     footfallRows
   ] = await Promise.all([
     resolveScopeName(scope),
-    db2.execute(import_drizzle_orm68.sql`
+    db2.execute(import_drizzle_orm69.sql`
           SELECT sk.store_id, sk.store_name, sk.market_id, sk.market_name
           FROM (${scopeStoreSkeletonSql(session4, scope)}) sk
           JOIN org_nodes mkt ON mkt.id = sk.market_id
@@ -182543,7 +182612,7 @@ var getOperatingMaster = withPermission(DATA_CENTER_DASHBOARD_ACTION, async (ses
     db2.execute(technicianByStoreSql(session4, scope, cur.end, "beautician")),
     db2.execute(revenueByStoreSql(session4, scope, cur)),
     db2.execute(revenueByStoreSql(session4, scope, ytd)),
-    db2.execute(import_drizzle_orm68.sql`
+    db2.execute(import_drizzle_orm69.sql`
           SELECT so.store_id, COALESCE(SUM(sit.session_used), 0) AS v
           FROM service_orders so
           JOIN service_items sit ON sit.service_order_id = so.service_order_id
@@ -182555,7 +182624,7 @@ var getOperatingMaster = withPermission(DATA_CENTER_DASHBOARD_ACTION, async (ses
             AND ${excludeDepositRefundSql("so")}
           GROUP BY so.store_id
         `),
-    db2.execute(import_drizzle_orm68.sql`
+    db2.execute(import_drizzle_orm69.sql`
           SELECT so.store_id, COALESCE(SUM(sit.unit_real_price::numeric * sit.session_used), 0) AS v
           FROM service_orders so
           JOIN service_items sit ON sit.service_order_id = so.service_order_id
@@ -182566,7 +182635,7 @@ var getOperatingMaster = withPermission(DATA_CENTER_DASHBOARD_ACTION, async (ses
             AND ${excludeDepositRefundSql("so")}
           GROUP BY so.store_id
         `),
-    db2.execute(import_drizzle_orm68.sql`
+    db2.execute(import_drizzle_orm69.sql`
           SELECT so.store_id, COALESCE(SUM(sit.unit_real_price::numeric * sit.session_used), 0) AS v
           FROM service_orders so
           JOIN service_items sit ON sit.service_order_id = so.service_order_id
@@ -182578,7 +182647,7 @@ var getOperatingMaster = withPermission(DATA_CENTER_DASHBOARD_ACTION, async (ses
             AND ${excludeDepositRefundSql("so")}
           GROUP BY so.store_id
         `),
-    db2.execute(import_drizzle_orm68.sql`
+    db2.execute(import_drizzle_orm69.sql`
           WITH retained AS (
             SELECT DISTINCT c.bound_store_id AS store_id, so.client_user_id
             FROM service_orders so
@@ -182592,7 +182661,7 @@ var getOperatingMaster = withPermission(DATA_CENTER_DASHBOARD_ACTION, async (ses
           ),
           month_visits AS (
             SELECT vd.client_user_id, COUNT(*) AS days
-            FROM (${visitDaysSql({ axis: "service_date", scope: import_drizzle_orm68.sql`TRUE`, range: cur })}) vd
+            FROM (${visitDaysSql({ axis: "service_date", scope: import_drizzle_orm69.sql`TRUE`, range: cur })}) vd
             GROUP BY vd.client_user_id
           )
           SELECT r.store_id,
@@ -182604,7 +182673,7 @@ var getOperatingMaster = withPermission(DATA_CENTER_DASHBOARD_ACTION, async (ses
           GROUP BY r.store_id
         `),
     db2.execute(managedByStoreSql(session4, scope, ytd, cur, threshold)),
-    db2.execute(import_drizzle_orm68.sql`
+    db2.execute(import_drizzle_orm69.sql`
           WITH visit_days AS (
             SELECT so.store_id, so.client_user_id, so.service_date,
                    BOOL_OR(EXISTS (
@@ -182663,9 +182732,9 @@ init_db2();
 init_with_permission();
 
 // src/lib/data-center/daily-overview-sql.ts
-var import_drizzle_orm69 = __toESM(require_drizzle_orm(), 1);
+var import_drizzle_orm70 = __toESM(require_drizzle_orm(), 1);
 function performanceTotalSql(session4, scope, range) {
-  return import_drizzle_orm69.sql`
+  return import_drizzle_orm70.sql`
     SELECT COALESCE(SUM(spe.amount::numeric), 0) AS v
     FROM sale_order_performance_events spe
     WHERE ${scopeFilterSql(session4, scope, "spe.store_id")}
@@ -182677,7 +182746,7 @@ function performanceTotalSql(session4, scope, range) {
   `;
 }
 function serviceTotalSql(session4, scope, range) {
-  return import_drizzle_orm69.sql`
+  return import_drizzle_orm70.sql`
     SELECT COALESCE(SUM(sit.unit_real_price::numeric * sit.session_used), 0) AS v
     FROM service_orders so
     JOIN service_items sit ON sit.service_order_id = so.service_order_id
@@ -182691,11 +182760,11 @@ function serviceTotalSql(session4, scope, range) {
 function dailyOverviewQueries(session4, scope, range) {
   return {
     stores: scopeStoreSkeletonSql(session4, scope),
-    categories: import_drizzle_orm69.sql`
+    categories: import_drizzle_orm70.sql`
       SELECT category_id, category_name, product_kind, sort_order, is_valid
       FROM product_categories
     `,
-    performance: import_drizzle_orm69.sql`
+    performance: import_drizzle_orm70.sql`
       WITH pay AS (
         SELECT spe.sale_payment_id, spe.store_id, spe.amount::numeric AS amount
         FROM sale_order_performance_events spe
@@ -182733,7 +182802,7 @@ function dailyOverviewQueries(session4, scope, range) {
       )
       GROUP BY pay.store_id
     `,
-    recharge: import_drizzle_orm69.sql`
+    recharge: import_drizzle_orm70.sql`
       SELECT spe.store_id, SUM(spe.amount::numeric)::text AS amount
       FROM sale_order_performance_events spe
       WHERE ${scopeFilterSql(session4, scope, "spe.store_id")}
@@ -182744,7 +182813,7 @@ function dailyOverviewQueries(session4, scope, range) {
         AND spe.performance_date BETWEEN ${range.start} AND ${range.end}
       GROUP BY spe.store_id
     `,
-    service: import_drizzle_orm69.sql`
+    service: import_drizzle_orm70.sql`
       SELECT so.store_id, sit.sales_category::text AS sales_category,
              SUM(sit.unit_real_price::numeric * sit.session_used)::text AS amount
       FROM service_orders so
@@ -182792,13 +182861,13 @@ function parseBoardParams(raw) {
 
 // src/lib/data-center/data-start-query.ts
 init_db2();
-var import_drizzle_orm70 = __toESM(require_drizzle_orm(), 1);
+var import_drizzle_orm71 = __toESM(require_drizzle_orm(), 1);
 var CACHE_TTL_MS = 10 * 60 * 1000;
 var cache3 = null;
 var inflight = null;
 async function queryStoreDataStarts() {
   const [performanceRows, serviceRows] = await Promise.all([
-    db2.execute(import_drizzle_orm70.sql`
+    db2.execute(import_drizzle_orm71.sql`
       SELECT so.store_id, to_char(MIN(p.performance_attribution_date), 'YYYY-MM-DD') AS start
         FROM sale_order_payments p
         JOIN sale_orders so ON so.sale_order_id = p.sale_order_id
@@ -182808,7 +182877,7 @@ async function queryStoreDataStarts() {
          AND so.legacy_source IS DISTINCT FROM 'workfine'
        GROUP BY so.store_id
     `),
-    db2.execute(import_drizzle_orm70.sql`
+    db2.execute(import_drizzle_orm71.sql`
       SELECT store_id, to_char(MIN(service_date), 'YYYY-MM-DD') AS start
         FROM service_orders
        WHERE status = '已完成'
@@ -183286,9 +183355,9 @@ var customerRegistrationMetricColumns = [
   { key: "registered", label: "会员注册", unit: "count" },
   { key: "retained", label: "保有会员", unit: "count" },
   { key: "visitOnce", label: "回店1次", unit: "count" },
-  { key: "visitOnceRate", label: "1次达成率", unit: "percent" },
+  { key: "visitOnceRate", label: "1次达成率(÷会员注册)", unit: "percent" },
   { key: "visitTwice", label: "回店2次", unit: "count" },
-  { key: "visitTwiceRate", label: "2次达成率", unit: "percent" },
+  { key: "visitTwiceRate", label: "2次达成率(÷会员注册)", unit: "percent" },
   { key: "dormant", label: "沉睡(截面·仅会员客)", unit: "count" },
   { key: "reactivatedDormant", label: "激活沉睡", unit: "count" },
   { key: "frozen", label: "冰冻(截面)", unit: "count" },
@@ -183507,7 +183576,7 @@ init_with_permission();
 
 // src/lib/data-center/remaining-cards-query.ts
 init_db2();
-var import_drizzle_orm71 = __toESM(require_drizzle_orm(), 1);
+var import_drizzle_orm72 = __toESM(require_drizzle_orm(), 1);
 var num3 = (value) => {
   const parsed = Number(value ?? 0);
   return Number.isFinite(parsed) ? parsed : 0;
@@ -183531,16 +183600,16 @@ function toCell(raw) {
 }
 async function loadRemainingCardsSnapshot(session4, scope, today) {
   return db2.transaction(async (tx) => {
-    await tx.execute(import_drizzle_orm71.sql`SET LOCAL statement_timeout = '20s'`);
-    await tx.execute(import_drizzle_orm71.sql`SET LOCAL jit = off`);
-    await tx.execute(import_drizzle_orm71.sql`SET LOCAL enable_nestloop = off`);
+    await tx.execute(import_drizzle_orm72.sql`SET LOCAL statement_timeout = '20s'`);
+    await tx.execute(import_drizzle_orm72.sql`SET LOCAL jit = off`);
+    await tx.execute(import_drizzle_orm72.sql`SET LOCAL enable_nestloop = off`);
     const rows = await queryRemainingCardsRows(tx, session4, scope, today);
     const categories = await queryRemainingCardsCategories(tx);
     return { rows, categories };
   }, { isolationLevel: "repeatable read", accessMode: "read only" });
 }
 async function queryRemainingCardsRows(executor, session4, scope, today) {
-  const rows = await executor.execute(import_drizzle_orm71.sql`
+  const rows = await executor.execute(import_drizzle_orm72.sql`
     WITH card AS MATERIALIZED (
       SELECT sale_items.sale_item_id,
              sale_orders.client_user_id,
@@ -183558,7 +183627,7 @@ async function queryRemainingCardsRows(executor, session4, scope, today) {
       FROM sale_items
       JOIN sale_orders ON sale_orders.sale_order_id = sale_items.sale_order_id
       LEFT JOIN product_skus ps ON ps.sku_id = sale_items.sku_id
-      WHERE ${import_drizzle_orm71.and(...cardBaseConditions(), cardNotFullyRefundedCondition())}
+      WHERE ${import_drizzle_orm72.and(...cardBaseConditions(), cardNotFullyRefundedCondition())}
         AND (sale_orders.sale_order_type <> '寄存单' OR sale_orders.status = '已支付')
         AND sale_orders.legacy_source IS NULL
         AND sale_orders.client_user_id IS NOT NULL
@@ -183635,7 +183704,7 @@ async function queryRemainingCardsRows(executor, session4, scope, today) {
   });
 }
 async function queryRemainingCardsCategories(executor) {
-  const rows = await executor.execute(import_drizzle_orm71.sql`
+  const rows = await executor.execute(import_drizzle_orm72.sql`
     -- 一级名没有唯一约束：同名一级行有多条时取最小排序权重，保证每个二级只出一行、同一级排序一致
     SELECT c.category_id, c.category_name, c.product_kind, c.sort_order,
            MIN(kind_row.sort_order) AS kind_sort
@@ -183981,7 +184050,7 @@ init_with_permission();
 
 // src/lib/data-center/customer-frequency-query.ts
 init_db2();
-var import_drizzle_orm72 = __toESM(require_drizzle_orm(), 1);
+var import_drizzle_orm73 = __toESM(require_drizzle_orm(), 1);
 function text5(value) {
   return value == null ? null : String(value);
 }
@@ -183989,8 +184058,8 @@ function textArray(value) {
   return Array.isArray(value) ? value.filter((item) => typeof item === "string" && item !== "") : [];
 }
 async function loadCustomerFrequencySource(session4, scope, range) {
-  const inCust = import_drizzle_orm72.sql`so.client_user_id IN (SELECT user_id FROM cust)`;
-  const rows = await db2.execute(import_drizzle_orm72.sql`
+  const inCust = import_drizzle_orm73.sql`so.client_user_id IN (SELECT user_id FROM cust)`;
+  const rows = await db2.execute(import_drizzle_orm73.sql`
     WITH cust AS (
       SELECT c.user_id, c.name, c.phone,
              c.member_level::text AS member_level, c.customer_type::text AS customer_type,
@@ -184799,41 +184868,41 @@ function buildCommissionDetailColumns(input) {
 }
 
 // src/lib/data-center/commission-sql.ts
-var import_drizzle_orm73 = __toESM(require_drizzle_orm(), 1);
-var SALE_FROM = import_drizzle_orm73.sql`
+var import_drizzle_orm74 = __toESM(require_drizzle_orm(), 1);
+var SALE_FROM = import_drizzle_orm74.sql`
       FROM sale_payment_item_allocations spia
       JOIN sale_payment_item_receipts spir ON spir.id = spia.sale_payment_item_receipt_id
       JOIN sale_items si ON si.sale_item_id = spir.sale_item_id
       JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
       JOIN sale_order_performance_events spe ON spe.sale_payment_id = spir.sale_payment_id`;
 function saleWhere(session4, scope, filters) {
-  return import_drizzle_orm73.sql`
+  return import_drizzle_orm74.sql`
       WHERE ${scopeFilterSql(session4, scope, "so.store_id")}
         AND spia.is_void = FALSE
         AND so.sale_order_type IN ('销售单', '转换单')
         AND spe.status = '已支付'
         AND spe.performance_date BETWEEN ${filters.range.start} AND ${filters.range.end}
-        ${filters.employeeId ? import_drizzle_orm73.sql`AND spia.employee_id = ${filters.employeeId}` : import_drizzle_orm73.sql``}
-        ${filters.storeId ? import_drizzle_orm73.sql`AND so.store_id = ${filters.storeId}` : import_drizzle_orm73.sql``}`;
+        ${filters.employeeId ? import_drizzle_orm74.sql`AND spia.employee_id = ${filters.employeeId}` : import_drizzle_orm74.sql``}
+        ${filters.storeId ? import_drizzle_orm74.sql`AND so.store_id = ${filters.storeId}` : import_drizzle_orm74.sql``}`;
 }
-var SERVICE_FROM = import_drizzle_orm73.sql`
+var SERVICE_FROM = import_drizzle_orm74.sql`
       FROM service_commissions sc
       JOIN service_items sit ON sit.service_item_id = sc.service_item_id
       JOIN service_orders so ON so.service_order_id = sit.service_order_id`;
 function serviceWhere(session4, scope, filters) {
-  return import_drizzle_orm73.sql`
+  return import_drizzle_orm74.sql`
       WHERE ${scopeFilterSql(session4, scope, "so.store_id")}
         AND sc.is_void = FALSE
         AND so.status = '已完成'
         AND so.service_date BETWEEN ${filters.range.start} AND ${filters.range.end}
-        ${filters.employeeId ? import_drizzle_orm73.sql`AND sc.employee_id = ${filters.employeeId}` : import_drizzle_orm73.sql``}
-        ${filters.storeId ? import_drizzle_orm73.sql`AND so.store_id = ${filters.storeId}` : import_drizzle_orm73.sql``}`;
+        ${filters.employeeId ? import_drizzle_orm74.sql`AND sc.employee_id = ${filters.employeeId}` : import_drizzle_orm74.sql``}
+        ${filters.storeId ? import_drizzle_orm74.sql`AND so.store_id = ${filters.storeId}` : import_drizzle_orm74.sql``}`;
 }
 function sourceParts(source, sale, service) {
   return source === "sale" ? [sale] : source === "service" ? [service] : [sale, service];
 }
 function commissionLinesCteSql(session4, scope, filters) {
-  const sale = import_drizzle_orm73.sql`
+  const sale = import_drizzle_orm74.sql`
       SELECT 'sale'::text AS source, spia.id AS source_id, spia.employee_id, so.store_id,
              spe.performance_date AS biz_date,
              COALESCE(spia.commission_amount::numeric, 0) AS sale_commission,
@@ -184841,7 +184910,7 @@ function commissionLinesCteSql(session4, scope, filters) {
              'S:' || so.sale_order_id AS order_key
       ${SALE_FROM}
       ${saleWhere(session4, scope, filters)}`;
-  const service = import_drizzle_orm73.sql`
+  const service = import_drizzle_orm74.sql`
       SELECT 'service'::text AS source, sc.id AS source_id, sc.employee_id, so.store_id,
              so.service_date AS biz_date,
              0::numeric AS sale_commission,
@@ -184849,21 +184918,21 @@ function commissionLinesCteSql(session4, scope, filters) {
              'V:' || so.service_order_id AS order_key
       ${SERVICE_FROM}
       ${serviceWhere(session4, scope, filters)}`;
-  return import_drizzle_orm73.sql`commission_lines AS (${import_drizzle_orm73.sql.join(sourceParts(filters.source, sale, service), import_drizzle_orm73.sql` UNION ALL `)})`;
+  return import_drizzle_orm74.sql`commission_lines AS (${import_drizzle_orm74.sql.join(sourceParts(filters.source, sale, service), import_drizzle_orm74.sql` UNION ALL `)})`;
 }
 function escapeLike(text6) {
   return text6.replace(/[\\%_]/g, (ch) => `\\${ch}`);
 }
 function groupKeySql(grain) {
   if (grain === "position")
-    return import_drizzle_orm73.sql`COALESCE(NULLIF(TRIM(sw.position_name), ''), ${NO_POSITION_LABEL})`;
+    return import_drizzle_orm74.sql`COALESCE(NULLIF(TRIM(sw.position_name), ''), ${NO_POSITION_LABEL})`;
   if (grain === "employee")
-    return import_drizzle_orm73.sql`cl.employee_id`;
-  return import_drizzle_orm73.sql`cl.employee_id || '|' || cl.store_id`;
+    return import_drizzle_orm74.sql`cl.employee_id`;
+  return import_drizzle_orm74.sql`cl.employee_id || '|' || cl.store_id`;
 }
 function commissionMatrixSql(session4, scope, range, grain, options) {
   const pattern = options.search ? `%${escapeLike(options.search)}%` : null;
-  return import_drizzle_orm73.sql`
+  return import_drizzle_orm74.sql`
     WITH ${commissionLinesCteSql(session4, scope, { range })},
     tagged AS (
       SELECT cl.*, ${groupKeySql(grain)} AS gk,
@@ -184871,14 +184940,14 @@ function commissionMatrixSql(session4, scope, range, grain, options) {
       FROM commission_lines cl
       LEFT JOIN staff_wechat_users sw ON sw.employee_id = cl.employee_id
       LEFT JOIN stores st ON st.store_id = cl.store_id
-      ${pattern ? import_drizzle_orm73.sql`WHERE (sw.name ILIKE ${pattern} OR sw.position_name ILIKE ${pattern} OR st.store_name ILIKE ${pattern})` : import_drizzle_orm73.sql``}
+      ${pattern ? import_drizzle_orm74.sql`WHERE (sw.name ILIKE ${pattern} OR sw.position_name ILIKE ${pattern} OR st.store_name ILIKE ${pattern})` : import_drizzle_orm74.sql``}
     ),
     visible AS (
       SELECT * FROM tagged
-      ${options.hideZero ? import_drizzle_orm73.sql`WHERE gk IN (
+      ${options.hideZero ? import_drizzle_orm74.sql`WHERE gk IN (
             SELECT gk FROM tagged GROUP BY gk
             HAVING SUM(sale_commission + service_commission) <> 0
-          )` : import_drizzle_orm73.sql``}
+          )` : import_drizzle_orm74.sql``}
     )
     SELECT gk,
            biz_date::text AS d,
@@ -184899,7 +184968,7 @@ function commissionMatrixSql(session4, scope, range, grain, options) {
   `;
 }
 function commissionKpiSql(session4, scope, range) {
-  return import_drizzle_orm73.sql`
+  return import_drizzle_orm74.sql`
     WITH ${commissionLinesCteSql(session4, scope, { range })},
     per_employee AS (
       SELECT employee_id, SUM(sale_commission + service_commission) AS net
@@ -184915,7 +184984,7 @@ function commissionKpiSql(session4, scope, range) {
   `;
 }
 function pendingAllocationSql(session4, scope, range) {
-  return import_drizzle_orm73.sql`
+  return import_drizzle_orm74.sql`
     SELECT COUNT(*)::int AS count, COALESCE(SUM(sop.amount::numeric), 0) AS amount
     FROM sale_order_payments sop
     JOIN sale_orders so ON so.sale_order_id = sop.sale_order_id
@@ -184945,7 +185014,7 @@ function pendingAllocationSql(session4, scope, range) {
   `;
 }
 function commissionEmployeeOptionsSql(session4, scope, range) {
-  return import_drizzle_orm73.sql`
+  return import_drizzle_orm74.sql`
     WITH ${commissionLinesCteSql(session4, scope, { range })}
     SELECT e.employee_id, sw.name, sw.position_name,
            COALESCE(home.store_name, org.name) AS home_name
@@ -184965,7 +185034,7 @@ function detailLineFilters(filters, month) {
   };
 }
 function detailRowsCteSql(session4, scope, filters) {
-  const sale = import_drizzle_orm73.sql`
+  const sale = import_drizzle_orm74.sql`
       SELECT 'sale'::text AS source, spia.id AS source_id, spe.performance_date AS biz_date,
              so.store_id, COALESCE(st.store_name, so.store_name) AS store_name,
              spia.employee_id, sw.name AS employee_name, sw.position_name,
@@ -184985,7 +185054,7 @@ function detailRowsCteSql(session4, scope, filters) {
       LEFT JOIN product_skus ps ON ps.sku_id = si.sku_id
       LEFT JOIN product_categories pc ON pc.category_id = ps.category_id
       ${saleWhere(session4, scope, filters)}`;
-  const service = import_drizzle_orm73.sql`
+  const service = import_drizzle_orm74.sql`
       SELECT 'service'::text AS source, sc.id AS source_id, so.service_date AS biz_date,
              so.store_id, st.store_name,
              sc.employee_id, sw.name AS employee_name, sw.position_name,
@@ -185006,16 +185075,16 @@ function detailRowsCteSql(session4, scope, filters) {
       LEFT JOIN product_skus ps ON ps.sku_id = si.sku_id
       LEFT JOIN product_categories pc ON pc.category_id = ps.category_id
       ${serviceWhere(session4, scope, filters)}`;
-  return import_drizzle_orm73.sql`detail_rows AS (${import_drizzle_orm73.sql.join(sourceParts(filters.source, sale, service), import_drizzle_orm73.sql` UNION ALL `)})`;
+  return import_drizzle_orm74.sql`detail_rows AS (${import_drizzle_orm74.sql.join(sourceParts(filters.source, sale, service), import_drizzle_orm74.sql` UNION ALL `)})`;
 }
 function commissionDetailPageSql(session4, scope, filters, page) {
-  const seek = page.after ? import_drizzle_orm73.sql`WHERE (biz_date < ${page.after.d}::date
+  const seek = page.after ? import_drizzle_orm74.sql`WHERE (biz_date < ${page.after.d}::date
             OR (biz_date = ${page.after.d}::date AND source > ${page.after.t})
-            OR (biz_date = ${page.after.d}::date AND source = ${page.after.t} AND source_id < ${page.after.id}))` : page.before ? import_drizzle_orm73.sql`WHERE (biz_date > ${page.before.d}::date
+            OR (biz_date = ${page.after.d}::date AND source = ${page.after.t} AND source_id < ${page.after.id}))` : page.before ? import_drizzle_orm74.sql`WHERE (biz_date > ${page.before.d}::date
             OR (biz_date = ${page.before.d}::date AND source < ${page.before.t})
-            OR (biz_date = ${page.before.d}::date AND source = ${page.before.t} AND source_id > ${page.before.id}))` : import_drizzle_orm73.sql``;
-  const order = page.before && !page.after ? import_drizzle_orm73.sql`ORDER BY biz_date ASC, source DESC, source_id ASC` : import_drizzle_orm73.sql`ORDER BY biz_date DESC, source ASC, source_id DESC`;
-  return import_drizzle_orm73.sql`
+            OR (biz_date = ${page.before.d}::date AND source = ${page.before.t} AND source_id > ${page.before.id}))` : import_drizzle_orm74.sql``;
+  const order = page.before && !page.after ? import_drizzle_orm74.sql`ORDER BY biz_date ASC, source DESC, source_id ASC` : import_drizzle_orm74.sql`ORDER BY biz_date DESC, source ASC, source_id DESC`;
+  return import_drizzle_orm74.sql`
     WITH ${detailRowsCteSql(session4, scope, filters)}
     SELECT source, source_id, biz_date::text AS biz_date, store_id, store_name, employee_id, employee_name,
            position_name, order_id, payment_id, customer_name, order_kind, product_name, category_l1, category_l2,
@@ -185027,7 +185096,7 @@ function commissionDetailPageSql(session4, scope, filters, page) {
   `;
 }
 function commissionDetailSummarySql(session4, scope, filters) {
-  const sale = import_drizzle_orm73.sql`
+  const sale = import_drizzle_orm74.sql`
       SELECT 'sale'::text AS source, 'S:' || so.sale_order_id AS order_key,
              spir.id AS receipt_id,
              spir.amount::numeric AS received,
@@ -185035,7 +185104,7 @@ function commissionDetailSummarySql(session4, scope, filters) {
              COALESCE(spia.commission_amount::numeric, 0) AS commission
       ${SALE_FROM}
       ${saleWhere(session4, scope, filters)}`;
-  const service = import_drizzle_orm73.sql`
+  const service = import_drizzle_orm74.sql`
       SELECT 'service'::text AS source, 'V:' || so.service_order_id AS order_key,
              NULL::bigint AS receipt_id,
              0::numeric AS received,
@@ -185043,8 +185112,8 @@ function commissionDetailSummarySql(session4, scope, filters) {
              sc.commission_amount::numeric AS commission
       ${SERVICE_FROM}
       ${serviceWhere(session4, scope, filters)}`;
-  return import_drizzle_orm73.sql`
-    WITH summary_rows AS (${import_drizzle_orm73.sql.join(sourceParts(filters.source, sale, service), import_drizzle_orm73.sql` UNION ALL `)})
+  return import_drizzle_orm74.sql`
+    WITH summary_rows AS (${import_drizzle_orm74.sql.join(sourceParts(filters.source, sale, service), import_drizzle_orm74.sql` UNION ALL `)})
     SELECT COUNT(*)::int AS count,
            COUNT(DISTINCT order_key)::int AS orders,
            -- 一条 receipt 会分给多名员工 / 多个角色，实收按 receipt 去重后再合计，否则成倍放大
@@ -185091,10 +185160,11 @@ var getCommissionDaily = withAllPermissions(DATA_CENTER_STAFF_COMMISSION_ACTIONS
   const grain = grainOf(options, isAllScope);
   const range = period.current;
   const technicianEnd = range.end > today ? today : range.end;
-  const [matrixRows, kpiRows, technicianRows, pendingRows, scopeName] = await Promise.all([
+  const [matrixRows, kpiRows, technicianRows, hasStoreRows, pendingRows, scopeName] = await Promise.all([
     db2.execute(commissionMatrixSql(session4, scope, range, grain, options)),
     db2.execute(commissionKpiSql(session4, scope, range)),
     db2.execute(technicianCountSql(session4, scope, technicianEnd)),
+    db2.execute(scopeHasStoreSql(session4, scope)),
     db2.execute(pendingAllocationSql(session4, scope, range)),
     resolveScopeName(scope)
   ]);
@@ -185107,6 +185177,7 @@ var getCommissionDaily = withAllPermissions(DATA_CENTER_STAFF_COMMISSION_ACTIONS
   const total = sale + service;
   const orders = toNumber(kpi.orders);
   const technicianCount = toNumber(rowsOf(technicianRows)[0]?.v);
+  const noStoreScope = rowsOf(hasStoreRows)[0]?.has_store !== true;
   const pending = rowsOf(pendingRows)[0] ?? {};
   return {
     month: period.month,
@@ -185126,7 +185197,8 @@ var getCommissionDaily = withAllPermissions(DATA_CENTER_STAFF_COMMISSION_ACTIONS
       earningEmployees: toNumber(kpi.earning_employees),
       employees: toNumber(kpi.employees),
       technicianCount,
-      perTechnician: ratio3(total, technicianCount),
+      noStoreScope,
+      perTechnician: noStoreScope ? null : ratio3(total, technicianCount),
       orders,
       perOrder: ratio3(total, orders)
     },
@@ -186271,7 +186343,7 @@ function asClaimedId(rows) {
   return Number.isSafeInteger(id) && id > 0 ? id : null;
 }
 async function recoverExpiredLeases() {
-  await db2.execute(import_drizzle_orm74.sql`
+  await db2.execute(import_drizzle_orm75.sql`
     UPDATE admin_export_jobs
        SET status = CASE
              WHEN attempt_count >= ${MAX_ATTEMPTS} THEN 'failed'
@@ -186295,12 +186367,12 @@ async function recoverExpiredLeases() {
   `);
 }
 async function claimNextJob() {
-  const claimed = await db2.execute(import_drizzle_orm74.sql`
+  const claimed = await db2.execute(import_drizzle_orm75.sql`
     UPDATE admin_export_jobs
        SET status = 'running',
            attempt_count = attempt_count + 1,
            started_at = COALESCE(started_at, NOW()),
-           lease_expires_at = NOW() + ${import_drizzle_orm74.sql.raw(`interval '${LEASE_MINUTES} minutes'`)},
+           lease_expires_at = NOW() + ${import_drizzle_orm75.sql.raw(`interval '${LEASE_MINUTES} minutes'`)},
            error_code = NULL,
            error_message = NULL,
            updated_at = NOW()
@@ -186318,13 +186390,13 @@ async function claimNextJob() {
   const id = asClaimedId(claimed);
   if (!id)
     return null;
-  const [job] = await db2.select().from(adminExportJobs).where(import_drizzle_orm74.eq(adminExportJobs.id, id)).limit(1);
+  const [job] = await db2.select().from(adminExportJobs).where(import_drizzle_orm75.eq(adminExportJobs.id, id)).limit(1);
   return job ?? null;
 }
 async function renewLease(id) {
-  await db2.execute(import_drizzle_orm74.sql`
+  await db2.execute(import_drizzle_orm75.sql`
     UPDATE admin_export_jobs
-       SET lease_expires_at = NOW() + ${import_drizzle_orm74.sql.raw(`interval '${LEASE_MINUTES} minutes'`)},
+       SET lease_expires_at = NOW() + ${import_drizzle_orm75.sql.raw(`interval '${LEASE_MINUTES} minutes'`)},
            updated_at = NOW()
      WHERE id = ${id}
        AND status = 'running'
@@ -186347,7 +186419,7 @@ async function failJob(job, err) {
     completedAt: shouldRetry ? null : new Date,
     errorCode: failure.code,
     errorMessage: shouldRetry ? `${failure.message}（第 ${job.attemptCount} 次失败，正在重试）` : failure.message
-  }).where(import_drizzle_orm74.and(import_drizzle_orm74.eq(adminExportJobs.id, job.id), import_drizzle_orm74.eq(adminExportJobs.status, "running")));
+  }).where(import_drizzle_orm75.and(import_drizzle_orm75.eq(adminExportJobs.id, job.id), import_drizzle_orm75.eq(adminExportJobs.status, "running")));
   if (!shouldRetry) {
     const session4 = parseExportSession(job.scopeSnapshot);
     await logOperation(session4, "export_job.failed", "admin_export_jobs", String(job.id), {
@@ -186358,12 +186430,12 @@ async function failJob(job, err) {
   }
 }
 async function expireFinishedFiles() {
-  const expired = await db2.select({ id: adminExportJobs.id, fileCloudPath: adminExportJobs.fileCloudPath }).from(adminExportJobs).where(import_drizzle_orm74.and(import_drizzle_orm74.inArray(adminExportJobs.status, ["ready", "expired"]), import_drizzle_orm74.isNotNull(adminExportJobs.fileCloudPath), import_drizzle_orm74.lt(adminExportJobs.expiresAt, new Date))).limit(100);
+  const expired = await db2.select({ id: adminExportJobs.id, fileCloudPath: adminExportJobs.fileCloudPath }).from(adminExportJobs).where(import_drizzle_orm75.and(import_drizzle_orm75.inArray(adminExportJobs.status, ["ready", "expired"]), import_drizzle_orm75.isNotNull(adminExportJobs.fileCloudPath), import_drizzle_orm75.lt(adminExportJobs.expiresAt, new Date))).limit(100);
   for (const job of expired) {
     try {
       if (job.fileCloudPath)
         await deleteByCloudPaths([job.fileCloudPath]);
-      await db2.update(adminExportJobs).set({ status: "expired", fileCloudPath: null, updatedAt: new Date }).where(import_drizzle_orm74.and(import_drizzle_orm74.eq(adminExportJobs.id, job.id), import_drizzle_orm74.inArray(adminExportJobs.status, ["ready", "expired"])));
+      await db2.update(adminExportJobs).set({ status: "expired", fileCloudPath: null, updatedAt: new Date }).where(import_drizzle_orm75.and(import_drizzle_orm75.eq(adminExportJobs.id, job.id), import_drizzle_orm75.inArray(adminExportJobs.status, ["ready", "expired"])));
     } catch (err) {
       console.error(`[export-worker] cleanup failed for job ${job.id}:`, err);
     }
@@ -186417,7 +186489,7 @@ async function processJob(job) {
           if (rowCount - lastProgress < 1000)
             return;
           lastProgress = rowCount;
-          await db2.update(adminExportJobs).set({ progressRows: rowCount }).where(import_drizzle_orm74.and(import_drizzle_orm74.eq(adminExportJobs.id, job.id), import_drizzle_orm74.eq(adminExportJobs.status, "running")));
+          await db2.update(adminExportJobs).set({ progressRows: rowCount }).where(import_drizzle_orm75.and(import_drizzle_orm75.eq(adminExportJobs.id, job.id), import_drizzle_orm75.eq(adminExportJobs.status, "running")));
         }
       });
       return { content, fileName, filePath, writeResult };
@@ -186433,7 +186505,7 @@ async function processJob(job) {
         progressRows: 0,
         errorCode: null,
         errorMessage: null
-      }).where(import_drizzle_orm74.and(import_drizzle_orm74.eq(adminExportJobs.id, job.id), import_drizzle_orm74.eq(adminExportJobs.status, "running")));
+      }).where(import_drizzle_orm75.and(import_drizzle_orm75.eq(adminExportJobs.id, job.id), import_drizzle_orm75.eq(adminExportJobs.status, "running")));
       await logOperation(session4, "export_job.empty", "admin_export_jobs", String(job.id), {
         exportType
       }).catch((logError) => console.error("[export-worker] empty audit log error:", logError));
@@ -186458,7 +186530,7 @@ async function processJob(job) {
       fileName: output.fileName,
       errorCode: null,
       errorMessage: null
-    }).where(import_drizzle_orm74.and(import_drizzle_orm74.eq(adminExportJobs.id, job.id), import_drizzle_orm74.eq(adminExportJobs.status, "running")));
+    }).where(import_drizzle_orm75.and(import_drizzle_orm75.eq(adminExportJobs.id, job.id), import_drizzle_orm75.eq(adminExportJobs.status, "running")));
     await logOperation(session4, "export_job.ready", "admin_export_jobs", String(job.id), {
       exportType,
       rowCount: output.writeResult.rowCount,

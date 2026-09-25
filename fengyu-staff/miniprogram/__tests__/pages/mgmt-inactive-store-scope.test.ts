@@ -165,7 +165,7 @@ describe('hub · computeDefaultScope 跳过停用门店', () => {
     expect(instantiate('hub').computeDefaultScope().scopeId).toBe('store-lw')
   })
 
-  test('市场账号 → 默认范围带绑定上的市场名（市场下门店全停用被下拉剔除时，触发器不误显示「全部市场」）', () => {
+  test('市场账号 → 默认范围带绑定上的市场名（scopeOptions 加载失败回填不到时，触发器不误显示「全部市场」）', () => {
     setGlobalData({ roleBindings: [{ role: 'manager', scopeType: '市场', scopeId: 'org-mkt-zg', scopeName: '自贡凤御' }] })
     expect(instantiate('hub').computeDefaultScope()).toEqual({ scopeType: 'market', scopeId: 'org-mkt-zg', scopeName: '自贡凤御' })
   })

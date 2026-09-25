@@ -139,3 +139,17 @@ export function scopeStoreSkeletonSql(session: AuthSession, scope: DataCenterSco
     WHERE ${scopeFilterSql(session, scope, 's.store_id')}
   `
 }
+
+/**
+ * 范围内是否有在营门店（#423）。与 `scopeStoreSkeletonSql` 同一骨架，人效板直接用骨架行数判定，二者必须一致。
+ *
+ * 无门店范围（总部选品项公司市场、只授权品项公司的 hr 账号）下，人均类 KPI 的分子走门店口径恒为 0，
+ * 分母却经 `orgAnchorScopeSql` 收进直挂技师 → `0 / N` 显示 0.00，与员工榜的员工分配额对不上。
+ * 口径拍板（#423 方案 A）：这种范围下人均显示「--」并加说明，不改分子口径。
+ * 只要范围内还有门店，人均照常计算。
+ *
+ * 产出列：has_store（boolean）
+ */
+export function scopeHasStoreSql(session: AuthSession, scope: DataCenterScope): SQL {
+  return sql`SELECT EXISTS (${scopeStoreSkeletonSql(session, scope)}) AS has_store`
+}
