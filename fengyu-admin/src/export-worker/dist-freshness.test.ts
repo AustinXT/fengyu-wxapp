@@ -68,13 +68,17 @@ interface Probe {
    * 去重后的 includes 比对仍全绿，只有频次比对能发现。
    */
   exactCountsInModule?: boolean
+  /**
+   * 比 `exactCountsInModule` 更强：按 `pattern` 在源码与产物区段各自重新筛出整行，
+   * 要求两侧**多重集逐字相等**（可选）。
+   *
+   * ⚠ 只适用于**指纹落在 SQL 模板串里**的探针 —— `bun build` 原样保留模板串，但会重排 JS
+   * （`#375 平均提成点` 那条就是 JS 行，实测两侧不逐字相等，开了必误红）。
+   * 开着它，「往产物那一行尾部追加 ` OR TRUE`」这类既保子串又保频次的改动才会红（codex round-8 P2）。
+   */
+  exactLinesInModule?: boolean
 }
 
-/**
- * 产物中属于某源文件的所有模块区段（同一模块可能被拆成多段）。
- * 前提：模块头是 bun 写的行首 `// src/…` / `// node_modules/…` / `// ../…` 注释；被守护的源文件自己不要写这种行首注释
- * （会被误当模块头截断区段，表现为误红，方向是 fail-closed）。bun 升级改了注释格式时这里要跟着改。
- */
 /**
  * 去掉 SQL 注释再比对 —— 否则把产物里的某行注释掉，**子串与出现次数都不变**，
  * `exactCountsInModule` 与 `missing` 双双照绿，而那行 SQL 实际已失效
@@ -97,6 +101,11 @@ function uncomment(line: string): string {
   return line.slice(0, cut).trim()
 }
 
+/**
+ * 产物中属于某源文件的所有模块区段（同一模块可能被拆成多段）。
+ * 前提：模块头是 bun 写的行首 `// src/…` / `// node_modules/…` / `// ../…` 注释；被守护的源文件自己不要写这种行首注释
+ * （会被误当模块头截断区段，表现为误红，方向是 fail-closed）。bun 升级改了注释格式时这里要跟着改。
+ */
 function moduleSegments(dist: string, file: string): string[] {
   const lines = dist.split('\n')
   const out: string[] = []
@@ -154,6 +163,7 @@ const PROBES: Probe[] = [
     // 1 人 7 月前入会未到店 + 2 人 7 月各到店 1 天但 8-01 才入会 ⇒ 正确 0/1，缺守卫的产物给 2/1 = 200%。
     uniqueLines: 2,
     exactCountsInModule: true,
+    exactLinesInModule: true,
   },
   {
     label: '客量板 · 达成率分母 = registered（#414，两条比率都要钉）',
@@ -164,6 +174,7 @@ const PROBES: Probe[] = [
     minLines: 2,
     uniqueLines: 2,
     exactCountsInModule: true,
+    exactLinesInModule: true,
   },
   {
     // 只钉 `safeDiv(..., ra.registered)` 不够：`registered` 是怎么算出来的在 SQL 里，
@@ -175,6 +186,7 @@ const PROBES: Probe[] = [
     minLines: 2,
     uniqueLines: 2,
     exactCountsInModule: true,
+    exactLinesInModule: true,
   },
   {
     label: '客量板 · 到店日事件集 (顾客, service_date) 去重（#298，visitDaysSql）',
@@ -348,21 +360,44 @@ describe('dist/export-worker.mjs 新鲜度（改了 data-center SQL 口径必须
             blockComments.slice(0, 5).map((l) => `  · ${l}`).join('\n') +
             REBUILD_HINT,
         ).toEqual([])
-        const drift = [...new Set(lines)]
-          .map((line) => ({
-            line,
-            // 两侧同一计数口径（按「包含」）：一条指纹可能是另一行的前缀（如 SELECT COUNT(*)::int AS count,）
-            // 两侧都先剥 SQL 行注释：`-- <指纹>` 的子串与次数都不变，不剥就是恒绿
-            src: srcLines.filter((l) => uncomment(l).includes(uncomment(line))).length,
-            dist: segment.filter((l) => uncomment(l).includes(uncomment(line))).length,
-          }))
-          .filter((item) => item.src !== item.dist)
-        expect(
-          drift,
-          `${probe.label}：以下指纹在源码与产物模块区段中的出现次数不一致 —— 产物不是按当前源码构建的：\n` +
-            drift.map((d) => `  · 源码 ${d.src} 次 / 产物 ${d.dist} 次：${d.line}`).join('\n') +
-            REBUILD_HINT,
-        ).toEqual([])
+        /**
+         * 按 `probe.pattern` 在两侧各自筛出**整行**，比较**多重集等值**（排序后逐字相等）。
+         *
+         * ⚠ 这里**刻意不用 `includes` 子串匹配**（codex round-8 P2）：只要指纹仍是子串，
+         * 往产物那一行尾部追加 ` OR TRUE` 就能让谓词失效而次数不变、也不含 `/*` ⇒ 全绿。
+         * 本文件的 pattern 都是 `^…$` 锚定的整行正则，改成按 pattern 重新筛 + 逐字比对后，
+         * 任何对该行的**增删改**都会让两侧多重集不等 —— 这是闭集，不再是「逐条禁写法」。
+         * 实测三条 `exactCountsInModule` 探针两侧多重集完全相等（6/6、2/2、9/9）。
+         */
+        if (probe.exactLinesInModule) {
+          const byPattern = (ls: string[]): string[] =>
+            ls.map(uncomment).filter((l) => probe.pattern.test(l)).sort()
+          const srcMatches = byPattern(srcLines)
+          const distMatches = byPattern(segment)
+          expect(
+            distMatches,
+            `${probe.label}：产物模块区段里按 ${probe.pattern} 筛出的行与源码不一致 ——\n` +
+              `  源码 ${srcMatches.length} 行 / 产物 ${distMatches.length} 行。\n` +
+              '产物不是按当前源码构建的，或该行在产物里被改动过（追加谓词 / 注释掉 / 删除）。' +
+              REBUILD_HINT,
+          ).toEqual(srcMatches)
+        } else {
+          // 退化口径（JS 行会被 bun 重排，只能按「包含」计频次）：拦得住删除与注释，
+          // 拦不住「追加谓词」这类保子串的改动 —— 指纹在 SQL 模板里的探针一律开 exactLinesInModule
+          const drift = [...new Set(lines)]
+            .map((line) => ({
+              line,
+              src: srcLines.filter((l) => uncomment(l).includes(uncomment(line))).length,
+              dist: segment.filter((l) => uncomment(l).includes(uncomment(line))).length,
+            }))
+            .filter((item) => item.src !== item.dist)
+          expect(
+            drift,
+            `${probe.label}：以下指纹在源码与产物模块区段中的出现次数不一致 —— 产物不是按当前源码构建的：\n` +
+              drift.map((d) => `  · 源码 ${d.src} 次 / 产物 ${d.dist} 次：${d.line}`).join('\n') +
+              REBUILD_HINT,
+          ).toEqual([])
+        }
       }
 
       // 逐行比对（而不是对整份产物 `dist.includes`）：唯有按行才能剥掉 SQL 行注释，
