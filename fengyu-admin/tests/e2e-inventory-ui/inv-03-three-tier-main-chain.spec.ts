@@ -15,7 +15,7 @@
  *
  * 数量设计（刻意让各环节数量不同，才能验出履约口径）：
  *   门店报货 20 → 市场实际采购 30（≠汇总，验 §3.2 手填）→ 采购订单 30 → 供应链采购入库 30
- *   → 发货 25 + 赠送 5（从刚入库的批次发出；总量 30 > 报货 20，验 §5.2）→ 市场入库 30
+ *   → 发货 25 + 赠送 5（引用市场报货单，#336；从刚入库的批次发出；总量 30 > 门店报货 20，验 §5.2）→ 市场入库 30
  *   → 分院配货 20 + 赠送 2 → 门店收货 22
  *
  * #335 起采购订单的市场行也经供应链采购入库进总部库存，本 spec 不再用
@@ -58,9 +58,7 @@ const QTY = {
   storeReceive: 22,
 }
 
-// #336a：品项公司发货改为直接引用市场报货单，服务端入参已换，办理台发货表单暂为占位；
-// 第 4 步（选采购订单 → 填正常发货 / 赠送数量）走不通，整条主链先挂起，#336b 上线新表单时改写第 4 步并恢复。
-test.fixme('INV-03：三级正向主链 —— 报货→采购→发货→入库→配货→收货', async ({ browser }) => {
+test('INV-03：三级正向主链 —— 报货→采购→发货→入库→配货→收货', async ({ browser }) => {
   const verdicts: Verdict[] = []
   const inv01 = readCtx<{ supplySkuId: string; supplySkuName: string; supplierName: string }>('inv01')
   const inv02 = readCtx<{ batchNo: string }>('inv02')
@@ -274,12 +272,17 @@ test.fixme('INV-03：三级正向主链 —— 报货→采购→发货→入库
     )
 
     // ══ 4. 品项公司发货（§5.2 赠送 / §5.3 无金额）═════════════════
+    // #336：发货直接引用市场报货单（不再选采购订单）：先定收货市场与发货总部，再勾报货单，
+    // 每条报货明细默认一行正常发货（= 未发量），逐行选总部批次；赠送另加一行、单独选批次。
     console.log('[INV-03] 4/8 品项公司发货')
     const hqBefore = lotQty(TOPO.HQ, inv01.supplySkuId, hqBatch)
     await openOperation(page, 'supply-chain', '品项公司发货')
-    await pickCandidateDoc(page, '采购订单', poId)
-    await page.waitForTimeout(2000)
+    await selectByLabel(page, '收货市场', { contains: TOPO.MARKET_NAME })
     await selectByLabel(page, '发货总部', { label: '品牌总部' })
+    await pickCandidateDoc(page, '市场报货单', marketReqId)
+    const shipProgress = page.getByRole('status', { name: '未发进度' })
+    await expect(shipProgress).toContainText(`还有 ${QTY.marketPurchase} 件未发`, { timeout: 20_000 })
+    recordVerdict(verdicts, `#336 发货表单顶部显示「还有 ${QTY.marketPurchase} 件未发」`, true, await shipProgress.innerText())
 
     // §5.3：发货单业务页面不展示单价和货款
     const shipPriceFields = await page
@@ -295,6 +298,11 @@ test.fixme('INV-03：三级正向主链 —— 报货→采购→发货→入库
 
     await selectLotContaining(page, '发货批次', hqBatch)
     await fillByLabel(page, '正常发货', String(QTY.shipNormal))
+    await page.getByRole('button', { name: '加赠送' }).click()
+    // 赠送行是第二个「发货批次」：与正常行同一个总部批次出库，市场收货后落成独立的赠送批次
+    const giftLot = labelled(page, '发货批次').nth(1).locator('select')
+    await expect(giftLot).toBeEnabled({ timeout: 20_000 })
+    await selectContaining(giftLot, hqBatch)
     await fillByLabel(page, '赠送数量', String(QTY.shipGift))
     await fillByLabel(page, '物流公司', 'INVT-物流')
     await fillByLabel(page, '备注', R.shipment)
@@ -319,6 +327,20 @@ test.fixme('INV-03：三级正向主链 —— 报货→采购→发货→入库
         WHERE doc_id = ${sqlStr(shipId)} AND is_gift = true`,
     )
     recordVerdict(verdicts, '§10.2 赠品金额恒为 0', Number(giftAmount) === 0, giftAmount)
+    recordVerdict(
+      verdicts,
+      `link: 市场报货 → 品项公司发货 直连血缘（正常 ${QTY.shipNormal} / 赠送 ${QTY.shipGift}，#336）`,
+      psql(`SELECT string_agg(relation_type || '=' || quantity::int, ',' ORDER BY relation_type)
+              FROM inventory_doc_links
+             WHERE from_doc_id = ${sqlStr(marketReqId)} AND to_doc_id = ${sqlStr(shipId)}`)
+        === `市场报货发货=${QTY.shipNormal},市场报货赠送发货=${QTY.shipGift}`,
+      'link 存在',
+    )
+    // 验收：发货单详情能跳到原始报货单
+    await page.goto(`${BASE}/inventory/docs/${encodeURIComponent(shipId)}`)
+    const reportLink = page.getByRole('link', { name: marketReqId })
+    await expect(reportLink).toBeVisible({ timeout: 20_000 })
+    recordVerdict(verdicts, '#336 发货单详情血缘带出原始市场报货单并可跳转', true, marketReqId)
 
     // 发货即扣发货方库存（RECEIVE_REQUIRED 类型：source 出库）
     const hqAfter = lotQty(TOPO.HQ, inv01.supplySkuId, hqBatch)
