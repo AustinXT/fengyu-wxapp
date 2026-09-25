@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
   defaultReportMonth,
-  isValidCalendarDate,
   isValidMonth,
   monthRange,
   parseReportMonth,
@@ -65,6 +64,14 @@ describe('parseReportRange（区间型）', () => {
     const p = parseReportRange({ period: 'custom', ...range }, TODAY)
     expect(p.preset).toBe('lastMonth')
     expect(p.current).toEqual({ start: '2026-08-01', end: '2026-08-31' })
+  })
+
+  it('#308：日历校验单源后，1900–1999 年的自定义区间放行（与日期选择器可选年份一致），1899 年仍回落', () => {
+    expect(parseReportRange({ period: 'custom', start: '1999-12-01', end: '1999-12-31' }, TODAY)).toMatchObject({
+      preset: 'custom',
+      current: { start: '1999-12-01', end: '1999-12-31' },
+    })
+    expect(parseReportRange({ period: 'custom', start: '1899-12-01', end: '1899-12-31' }, TODAY).preset).toBe('lastMonth')
   })
 
   it('自定义恰好 366 天（含闰日的整年）可用', () => {
@@ -138,9 +145,7 @@ describe('reportMonthOptions', () => {
 })
 
 describe('校验与月份运算', () => {
-  it('isValidCalendarDate / isValidMonth', () => {
-    expect(isValidCalendarDate('2028-02-29')).toBe(true)
-    expect(isValidCalendarDate('2027-02-29')).toBe(false)
+  it('isValidMonth（日期的日历校验见 @/lib/calendar-date.test）', () => {
     expect(isValidMonth('2026-12')).toBe(true)
     expect(isValidMonth('1999-12')).toBe(false)
   })

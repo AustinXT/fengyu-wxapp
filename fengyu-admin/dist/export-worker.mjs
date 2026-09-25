@@ -159528,8 +159528,24 @@ var coerce = {
   date: (arg) => ZodDate.create({ ...arg, coerce: true })
 };
 var NEVER = INVALID;
+// src/lib/calendar-date.ts
+var CALENDAR_MIN_YEAR = 1900;
+var CALENDAR_MAX_YEAR = 2100;
+var DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
+function isValidCalendarDate(value) {
+  if (typeof value !== "string")
+    return false;
+  const match = value.match(DATE_RE);
+  if (!match)
+    return false;
+  const [year, month, day] = [Number(match[1]), Number(match[2]), Number(match[3])];
+  if (year < CALENDAR_MIN_YEAR || year > CALENDAR_MAX_YEAR)
+    return false;
+  const date5 = new Date(Date.UTC(year, month - 1, day));
+  return date5.getUTCFullYear() === year && date5.getUTCMonth() === month - 1 && date5.getUTCDate() === day;
+}
+
 // src/lib/data-center/params.ts
-var DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 function firstQueryValue(raw) {
   return Array.isArray(raw) ? raw[0] : raw;
 }
@@ -159577,10 +159593,22 @@ function scopeToParams(scope) {
     return { scope: "stores", scopeId: [...scope.ids].sort().join(",") };
   return { scope: scope.type, scopeId: scope.id };
 }
+var TIME_RANGE_PRESETS = { today: true, week: true, month: true, year: true, custom: true };
+function isValidCustomRange(start, end) {
+  return isValidCalendarDate(start) && isValidCalendarDate(end) && start <= end;
+}
+function isValidTimeRangeInput(tr) {
+  if (typeof tr !== "object" || tr === null)
+    return false;
+  const { preset, start, end } = tr;
+  if (typeof preset !== "string" || !Object.hasOwn(TIME_RANGE_PRESETS, preset))
+    return false;
+  return preset !== "custom" || isValidCustomRange(start, end);
+}
 function parseTimeRange(raw) {
-  const p = raw.preset;
-  if (p === "custom" && raw.start && raw.end && DATE_RE.test(raw.start) && DATE_RE.test(raw.end) && raw.start <= raw.end) {
-    return { preset: "custom", start: raw.start, end: raw.end };
+  const { preset: p, start, end } = raw;
+  if (p === "custom" && start && end && isValidCustomRange(start, end)) {
+    return { preset: "custom", start, end };
   }
   if (p === "today" || p === "week" || p === "year")
     return { preset: p };
@@ -180436,6 +180464,9 @@ function scopeIdOf(scope) {
 }
 async function prepareBoardContext(session4, params) {
   await validateScope(session4, params.scope);
+  if (!isValidTimeRangeInput(params.timeRange)) {
+    throw new Error("INVALID_PARAMS: 时间范围无效（须为合法日期且开始不晚于结束）");
+  }
   const tr = resolveTimeRange(params.timeRange);
   const scopeName = await resolveScopeName(params.scope);
   return {
@@ -183160,20 +183191,9 @@ var REPORT_RANGE_PRESET_LABELS = {
 var DEFAULT_REPORT_RANGE_PRESET = "lastMonth";
 var MAX_CUSTOM_RANGE_DAYS = 366;
 var REPORT_MIN_MONTH = "2026-07";
-var DATE_RE2 = /^(\d{4})-(\d{2})-(\d{2})$/;
 var MONTH_RE = /^(\d{4})-(\d{2})$/;
 var MIN_YEAR = 2000;
 var MAX_YEAR = 2099;
-function isValidCalendarDate(value) {
-  const match = value?.match(DATE_RE2);
-  if (!match)
-    return false;
-  const [year2, month, day2] = [Number(match[1]), Number(match[2]), Number(match[3])];
-  if (year2 < MIN_YEAR || year2 > MAX_YEAR)
-    return false;
-  const date5 = new Date(Date.UTC(year2, month - 1, day2));
-  return date5.getUTCFullYear() === year2 && date5.getUTCMonth() === month - 1 && date5.getUTCDate() === day2;
-}
 function isValidMonth(value) {
   const match = value?.match(MONTH_RE);
   if (!match)
@@ -186999,6 +187019,9 @@ async function queryDataCenter(payload) {
   const raw = payload.params;
   if (isDataCenterReportExportView(payload.view))
     return queryReport(payload.view, raw);
+  if (raw.preset === "custom" && !isValidCustomRange(raw.start, raw.end)) {
+    throw new Error("INVALID_PARAMS: 导出的时间范围无效（须为合法日期且开始不晚于结束）");
+  }
   const base = parseBoardParams(raw);
   const view3 = payload.view;
   if (view3.startsWith("sales-")) {

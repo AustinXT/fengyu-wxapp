@@ -2,9 +2,8 @@
  * 数据中心 URL 入参解析（纯函数，page.tsx 把 searchParams 解析成 BoardParams）
  * 容错：非法值一律回退默认（month / all / 开启对比），不抛错。
  */
-import type { BoardParams, DataCenterScope, TimeRangeInput } from './types'
-
-const DATE_RE = /^\d{4}-\d{2}-\d{2}$/
+import { isValidCalendarDate } from '@/lib/calendar-date'
+import type { BoardParams, DataCenterScope, TimeRangeInput, TimeRangePreset } from './types'
 
 export const DATA_CENTER_TABS = ['sales', 'customer', 'efficiency', 'product'] as const
 export type DataCenterTab = (typeof DATA_CENTER_TABS)[number]
@@ -151,17 +150,31 @@ export function scopeToParams(scope: DataCenterScope): { scope?: string; scopeId
   return { scope: scope.type, scopeId: scope.id }
 }
 
+/** 预设白名单：以 Record 穷举 TimeRangePreset，类型新增预设时 tsc 会逼着这里同步。 */
+const TIME_RANGE_PRESETS: Record<TimeRangePreset, true> = { today: true, week: true, month: true, year: true, custom: true }
+
+/** 自定义区间是否合法：起止都是合法日历日期（@/lib/calendar-date，1900–2100）且不倒挂（#308）。 */
+export function isValidCustomRange(start: unknown, end: unknown): boolean {
+  return isValidCalendarDate(start) && isValidCalendarDate(end) && start <= end
+}
+
+/**
+ * 时间参数对象的形状是否合法（服务端边界用）：预设在白名单内，custom 须带合法且不倒挂的起止日期。
+ * server action 直接收客户端传来的 timeRange 对象、不经过 parseTimeRange，必须在 prepareBoardContext 再校验一次——
+ * 否则 `2026-02-30` 会让 resolveTimeRange 算出 NaN 天数 / `NaN-NaN-NaN` 区间进 SQL（#308，做法同 #376 的多店复检）。
+ */
+export function isValidTimeRangeInput(tr: unknown): tr is TimeRangeInput {
+  if (typeof tr !== 'object' || tr === null) return false
+  const { preset, start, end } = tr as { preset?: unknown; start?: unknown; end?: unknown }
+  if (typeof preset !== 'string' || !Object.hasOwn(TIME_RANGE_PRESETS, preset)) return false
+  return preset !== 'custom' || isValidCustomRange(start, end)
+}
+
+/** URL 层解析：非法自定义区间（位数对但日历不对、年份越界、倒挂）回落本月，不抛错。 */
 export function parseTimeRange(raw: { preset?: string; start?: string; end?: string }): TimeRangeInput {
-  const p = raw.preset
-  if (
-    p === 'custom' &&
-    raw.start &&
-    raw.end &&
-    DATE_RE.test(raw.start) &&
-    DATE_RE.test(raw.end) &&
-    raw.start <= raw.end
-  ) {
-    return { preset: 'custom', start: raw.start, end: raw.end }
+  const { preset: p, start, end } = raw
+  if (p === 'custom' && start && end && isValidCustomRange(start, end)) {
+    return { preset: 'custom', start, end }
   }
   if (p === 'today' || p === 'week' || p === 'year') return { preset: p }
   return { preset: 'month' } // 默认本月

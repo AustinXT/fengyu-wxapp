@@ -1,4 +1,6 @@
 import { describe, it, expect } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import {
   DATA_CENTER_BOARD_LABELS,
   DATA_CENTER_TABS,
@@ -8,6 +10,7 @@ import {
   singleValueQuery,
   parseScope,
   parseTimeRange,
+  isValidTimeRangeInput,
   parseBoardParams,
   parseStoreIdList,
   scopeFromStoreIds,
@@ -110,6 +113,54 @@ describe('parseTimeRange', () => {
       preset: 'month',
     })
     expect(parseTimeRange({ preset: 'custom', start: '2026-01-01' })).toEqual({ preset: 'month' }) // 缺 end
+  })
+
+  it('#308：位数对但日历不对 / 年份越界 → 回退 month', () => {
+    for (const bad of ['2026-02-30', '2026-13-01', '2026-00-01', '2026-01-32', '0001-01-01', '0000-01-01', '1899-12-31', '2101-01-01']) {
+      expect(parseTimeRange({ preset: 'custom', start: bad, end: '2026-12-31' }), `start=${bad}`).toEqual({ preset: 'month' })
+      expect(parseTimeRange({ preset: 'custom', start: '1900-01-01', end: bad }), `end=${bad}`).toEqual({ preset: 'month' })
+    }
+  })
+
+  it('#308：年份上下界与日期选择器一致（1900–2100）', () => {
+    expect(parseTimeRange({ preset: 'custom', start: '1900-01-01', end: '2100-12-31' })).toEqual({
+      preset: 'custom',
+      start: '1900-01-01',
+      end: '2100-12-31',
+    })
+  })
+
+  it('#308：日历校验复用 @/lib/calendar-date，params.ts 不再自带日期正则', () => {
+    const src = readFileSync(resolve(__dirname, 'params.ts'), 'utf8')
+    expect(src).toContain("import { isValidCalendarDate } from '@/lib/calendar-date'")
+    expect(src).not.toContain('DATE_RE')
+    expect(src).not.toMatch(/\\d\{4\}-\\d\{2\}-\\d\{2\}/)
+  })
+})
+
+describe('isValidTimeRangeInput（#308 服务端复检）', () => {
+  it('预设白名单放行；custom 须合法且不倒挂', () => {
+    for (const p of ['today', 'week', 'month', 'year'] as const) expect(isValidTimeRangeInput({ preset: p })).toBe(true)
+    expect(isValidTimeRangeInput({ preset: 'custom', start: '2026-01-01', end: '2026-01-01' })).toBe(true)
+  })
+
+  it('非法形状一律拒绝', () => {
+    const bad: unknown[] = [
+      undefined,
+      null,
+      'month',
+      {},
+      { preset: 'decade' },
+      { preset: 'toString' }, // 原型链上的属性名不算预设
+      { preset: '__proto__' },
+      { preset: 'custom' },
+      { preset: 'custom', start: '2026-01-01' },
+      { preset: 'custom', start: '2026-02-30', end: '2026-03-01' },
+      { preset: 'custom', start: '0001-01-01', end: '0001-01-02' },
+      { preset: 'custom', start: '2026-02-01', end: '2026-01-01' },
+      { preset: 'custom', start: 20260101, end: 20260131 },
+    ]
+    for (const tr of bad) expect(isValidTimeRangeInput(tr), JSON.stringify(tr)).toBe(false)
   })
 })
 

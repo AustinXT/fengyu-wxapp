@@ -234,3 +234,23 @@ describe('resolveTimeRange', () => {
     expect(r.presetLabel).toBe('2026-03-01 ~ 2026-03-31')
   })
 })
+
+describe('custom · 通过 #308 校验的输入不产出 NaN / 倒挂 / 非 4 位年份', () => {
+  // A：月末 / 闰日；B：年份上下界（1900–2100，环比会往前推一个区间长度）；C：单日（最短区间）
+  it.each([
+    ['A 月末', '2026-01-31', '2026-02-28'],
+    ['A 闰日', '2028-02-29', '2028-02-29'],
+    ['B 下界', '1900-01-01', '1900-01-31'],
+    ['B 上界', '2100-12-31', '2100-12-31'],
+    ['B 全范围', '1900-01-01', '2100-12-31'],
+    ['C 单日', '2026-09-01', '2026-09-01'],
+  ])('%s', (_, start, end) => {
+    const r = resolveTimeRange({ preset: 'custom', start, end }, NOW)
+    for (const range of [r.current, r.previous!, r.lastYear!]) {
+      expect(range.start).toMatch(/^\d{4}-\d{2}-\d{2}$/)
+      expect(range.end).toMatch(/^\d{4}-\d{2}-\d{2}$/)
+      expect(range.start <= range.end).toBe(true)
+    }
+    expect(r.previous!.end < r.current.start).toBe(true)
+  })
+})
