@@ -230,6 +230,9 @@ describe('#341 exportPickupRecords keyset 分页', () => {
     const page = await exportPickupRecords({}, { limit: 2, cursor: 20 })
 
     expect(lt).toHaveBeenCalledWith('pickup_records.id', 20)
+    // 游标条件必须真的进了查询的 WHERE（只构造不传入时第二页会重复第一页）
+    const chain = (db.select as any).mock.results[0].value
+    expect(chain.where.mock.calls[0][0].args).toContainEqual({ type: 'lt', a: 'pickup_records.id', b: 20 })
     expect(page.hasMore).toBe(false)
     expect(page.nextCursor).toBeUndefined()
   })

@@ -45,6 +45,19 @@ test('0054 trigger 从 sale_items.unit_real_price 取冻结单价（不是 unit_
   assert.doesNotMatch(body, /\bunit_price\b/)
 })
 
+// 元守护（不连库）：历史行不回填（拍板 Q4=B）—— 0054 不得对 pickup_records 做 UPDATE / INSERT 回填
+test('0054 不回填存量提货记录（无 UPDATE / INSERT pickup_records）', () => {
+  const fs = require('node:fs')
+  const path = require('node:path')
+  const migration = fs.readFileSync(path.resolve(__dirname, '../../migrations/0054_pickup_frozen_amount.sql'), 'utf8')
+    .split('\n').filter((line) => !/^\s*--/.test(line)).join('\n')
+  assert.doesNotMatch(migration, /\bUPDATE\s+(?:ONLY\s+)?(?:"?public"?\s*\.\s*)?"?pickup_records"?/i)
+  assert.doesNotMatch(migration, /\bINSERT\s+INTO\s+(?:"?public"?\s*\.\s*)?"?pickup_records"?/i)
+  // trigger 只挂 INSERT：挂到 UPDATE 上会在任何改写（如顾客合并改 client_user_id）时补齐历史行
+  assert.match(migration, /BEFORE INSERT ON pickup_records\s*\n\s*FOR EACH ROW/)
+  assert.doesNotMatch(migration, /BEFORE\s+(?:INSERT\s+OR\s+)?UPDATE/i)
+})
+
 // 元守护（不连库，db:test 常跑）：本套件缺 env 会整套 skip，CI 必须真的带着 PICKUP_PG_TEST_URL 跑它，
 // 否则 DB 层语义在 CI 零覆盖（#341 评审 round-1）。
 test('CI workflow 带 PICKUP_PG_TEST_URL 执行本套件', () => {

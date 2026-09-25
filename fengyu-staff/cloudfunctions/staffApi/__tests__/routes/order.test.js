@@ -7317,6 +7317,9 @@ describe('order.createPickup', () => {
     test('按分计算，不带浮点尾差', () => {
       expect(pickupAmountSnapshot(19.99, 3)).toEqual({ unitPrice: '19.99', amount: '59.97' })
       expect(pickupAmountSnapshot(0.1, 3)).toEqual({ unitPrice: '0.10', amount: '0.30' })
+      // 0.07 * 100 = 7.000000000000001：舍入方向错成 ceil 会冻结 0.08 / 0.16（#341 评审 round-8）
+      expect(pickupAmountSnapshot(0.07, 2)).toEqual({ unitPrice: '0.07', amount: '0.14' })
+      expect(pickupAmountSnapshot('0.07', 2)).toEqual({ unitPrice: '0.07', amount: '0.14' })
     })
     test('0 元行冻结为 0，不是 NULL', () => {
       expect(pickupAmountSnapshot(0, 4)).toEqual({ unitPrice: '0.00', amount: '0.00' })

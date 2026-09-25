@@ -86,10 +86,16 @@ function mockSelect(rows: any[]) {
   ;(db.select as any).mockReturnValue(chain)
 }
 
+const deleteCalls: Array<{ table: unknown; where: unknown }> = []
 function setupTx(deleteCount: number, captureExecute?: (sqlArg: any) => void) {
   ;(db.transaction as any).mockImplementation(async (fn: any) => {
     const tx = {
-      delete: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({ count: deleteCount }) }),
+      delete: vi.fn((table: unknown) => ({
+        where: vi.fn(async (where: unknown) => {
+          deleteCalls.push({ table, where })
+          return { count: deleteCount }
+        }),
+      })),
       execute: vi.fn().mockImplementation(async (arg: any) => { captureExecute?.(arg); return undefined }),
     }
     return fn(tx)
@@ -117,6 +123,9 @@ describe('deletePickupRecord — 删除 + 回退已提数量', () => {
     }])
     setupTx(1, () => {})
     await deletePickupRecord(1)
+    // 删的是按主键 id（+ scope）命中的那一行：条件写错时记录不删，金额仍留在列表与导出里（#341 评审 round-8）
+    expect(deleteCalls.at(-1)?.table).toMatchObject({ id: 'id', pickupAmount: 'pickup_amount' })
+    expect((deleteCalls.at(-1)?.where as any).args[0]).toEqual({ type: 'eq', a: 'id', b: 1 })
     // 投影把两列绑到各自的 DB 列（互换即红，#341 评审 round-7）
     const projection = (db.select as any).mock.calls[0][0]
     expect(projection).toMatchObject({ pickupUnitPrice: 'pickup_unit_price', pickupAmount: 'pickup_amount' })
