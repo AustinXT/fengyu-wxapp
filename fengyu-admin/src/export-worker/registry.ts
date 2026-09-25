@@ -569,7 +569,7 @@ async function operatingMasterContent(raw: Record<string, string>): Promise<Expo
     return {
       ...column,
       group: group ? { key: group.key, header: group.header } : undefined,
-      // 占位列在合计行同样显示「—」（#374 拍板），不是空白
+      // 目标占位列在合计行同样显示「—」（#374 拍板），不是空白
       ...(spec.pending ? { total: '—' } : {}),
     }
   })
@@ -584,8 +584,9 @@ async function operatingMasterContent(raw: Record<string, string>): Promise<Expo
       period: `${result.range.start} ~ ${result.range.end}`,
       scope: operatingMasterScopeMeta(scope, result.scopeName),
       extra: [
-        { label: '年度累计区间', value: `${result.ytd.start} ~ ${result.ytd.end}（不含 WorkFine 历史单）` },
-        { label: '说明', value: '显示「—」的列口径待定或目标未设，本期不取数' },
+        { label: '统计时点', value: `${result.asOf}（保有会员截至这一天近 90 天到店）` },
+        { label: '年度累计区间', value: `${result.ytd.start} ~ ${result.ytd.end}（R、K 列；不含 WorkFine 历史单）` },
+        { label: '说明', value: '显示「—」的是目标列（J、N、O、Q），本期未设目标、不取数' },
       ],
     },
   }

@@ -563,16 +563,21 @@ describe('报表页 · 骨架渲染', () => {
 })
 
 describe('经营数据主表（#372）', () => {
-  it('所选月份完整时仍按业绩轴提示 R 列年度累计的数据起点（2026 年内必早于上线日）', async () => {
+  it('所选月份完整时仍提示：E 列近 90 天窗口按服务轴、R / K 列年度累计按业绩轴（2026 年内必早于上线日）', async () => {
     mockScope(singleStoreOptions)
     await renderPage('operatingMaster', { scope: 'store', scopeId: 'S1' })
 
-    const notice = screen.getByRole('note', { name: '数据起点提示' })
-    expect(notice).toHaveTextContent('年度累计（R 列）（2026-01-01 ~ 2026-08-31）早于部分门店的数据起点')
-    expect(notice).toHaveTextContent('业绩 · 南昌凤御 1 家（2026-07-08 起）')
-    // 所选月份本身完整：不出「所选月份」那条，服务轴也不出现在年度累计里
-    expect(notice).not.toHaveTextContent('所选月份')
-    expect(notice).not.toHaveTextContent('服务 ·')
+    const notices = screen.getByRole('note', { name: '数据起点提示' }).querySelectorAll(':scope > div > div')
+    const text = Array.from(notices, (item) => item.textContent ?? '')
+    const retained = text.find((line) => line.startsWith('保有会员近 90 天（E 列）'))
+    const ytd = text.find((line) => line.startsWith('年度累计（R、K 列）'))
+    expect(retained).toContain('（2026-06-02 ~ 2026-08-31）早于部分门店的数据起点')
+    expect(retained).toContain('服务 · 南昌凤御 1 家（2026-07-08 起）')
+    expect(retained).not.toContain('业绩 ·')
+    // 第二条起只给概述（DataStartNotice 约定：同一批门店不刷两遍）
+    expect(ytd).toContain('（2026-01-01 ~ 2026-08-31）同样早于数据起点（涉及 1 家门店）')
+    // 所选月份本身完整：不出「所选月份」那条
+    expect(text.some((line) => line.includes('所选月份'))).toBe(false)
   })
 
   it('1 月：年度累计区间即所选月份，不重复出年度累计那条提示', async () => {

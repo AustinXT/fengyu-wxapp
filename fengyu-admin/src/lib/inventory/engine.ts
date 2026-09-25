@@ -1462,19 +1462,37 @@ function lotRow(
  */
 export const listInventoryMarketTransferTargets = withAnyPermission(
   [...inventoryDelegatableOperateActions('market')],
-  async (): Promise<InventoryMarketTransferTarget[]> => {
-    await syncInventoryLocations()
-    const rows = await db
-      .select({ orgNodeId: inventoryLocations.orgNodeId, name: inventoryLocations.name })
-      .from(inventoryLocations)
-      .where(and(
-        eq(inventoryLocations.isActive, true),
-        eq(inventoryLocations.locationType, '市场'),
-        isNotNull(inventoryLocations.orgNodeId),
-      ))
-      .orderBy(asc(inventoryLocations.name))
-    return rows.flatMap((row) => (row.orgNodeId ? [{ orgNodeId: row.orgNodeId, name: row.name }] : []))
-  },
+  async (): Promise<InventoryMarketTransferTarget[]> => activeMarketTargets(),
+)
+
+/** 全部启用市场，只取名称与 orgNodeId（越过 scope 的两个候选源共用，见各自注释）。 */
+async function activeMarketTargets(): Promise<InventoryMarketTransferTarget[]> {
+  await syncInventoryLocations()
+  const rows = await db
+    .select({ orgNodeId: inventoryLocations.orgNodeId, name: inventoryLocations.name })
+    .from(inventoryLocations)
+    .where(and(
+      eq(inventoryLocations.isActive, true),
+      eq(inventoryLocations.locationType, '市场'),
+      isNotNull(inventoryLocations.orgNodeId),
+    ))
+    .orderBy(asc(inventoryLocations.name))
+  return rows.flatMap((row) => (row.orgNodeId ? [{ orgNodeId: row.orgNodeId, name: row.name }] : []))
+}
+
+/**
+ * 品项公司发货的「收货市场」候选（#336b）：全部启用的市场，**不按操作人 scope 过滤**。
+ *
+ * 总部库存 scope 不向下展开市场，供应链操作员按 `listInventoryLocations` 只拿得到总部 ——
+ * 发货表单第一步「选收货市场」就是空的。服务端 `createItemCompanyShipment` 对收货市场
+ * 同样不做 scope 鉴权（只断发货总部可写，市场由所引报货单的发起方钉死），两边口径一致。
+ *
+ * 权限与发货 action 同源：只认 `inventory:supply_chain_operate`。别放宽成 stock_list ——
+ * 否则发不了货的账号也能直调拿到本不在自己 scope 内的全部市场名单。字段同样收到最少。
+ */
+export const listInventoryShipmentMarketTargets = withPermission(
+  'inventory:supply_chain_operate',
+  async (): Promise<InventoryMarketTransferTarget[]> => activeMarketTargets(),
 )
 
 /**

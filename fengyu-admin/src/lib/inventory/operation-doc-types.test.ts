@@ -96,7 +96,7 @@ describe('业务 → 产出单据类型映射（#190）', () => {
   it('只有共用 docType 的转换业务需要 locationType，其余业务不画蛇添足', () => {
     // 多余的 locationType 会把本来该看到的单据筛掉（比如给「分院配货」加上
     // locationType=市场，source 是市场能过、但语义已经跑偏），属于静默丢数据。
-    // 两段一起扫：inbox 侧同样不该出现 locationType（7 条 inbox 的 docType 都不跨层级共用）。
+    // 两段一起扫：inbox 侧同样不该出现 locationType（8 条 inbox 的 docType 都不跨层级共用）。
     const withLocationType = Object.entries(INVENTORY_OPERATION_DOC_QUERY)
       .filter(([, query]) => query.produced.locationType !== undefined || query.inbox?.locationType !== undefined)
       .map(([operation]) => operation)
@@ -258,6 +258,7 @@ describe('业务 → 产出单据类型映射（#190）', () => {
 describe('待我处理段（#192）', () => {
   /** 有 inbox 的内置业务。多一个少一个都红，防止有人顺手给建单类业务加 inbox。 */
   const OPERATIONS_WITH_INBOX = [
+    'company-shipment',
     'market-receipt',
     'market-return-approval',
     'shipment-cancel-approval',
@@ -273,9 +274,10 @@ describe('待我处理段（#192）', () => {
   it('带 inbox 的业务集合被精确钉死', () => {
     /*
      * 不变量 3：inbox 只给「动作归属在本办理台、但单据由上游产出」的业务写。
-     * 建单类业务（purchase-order / company-shipment / store-allocation /
+     * 建单类业务（purchase-order / store-allocation /
      * market-report-summary / market-report）的来源单**不该**进来 ——
      * 它们在建单表单的候选单选择器（#338）里已可选，待办区对它们没有任何行内动作可做。
+     * 唯一例外 company-shipment（#336 验收要求「待发货」段，配「去发货」跳转动作）。
      */
     const withInbox = Object.entries(INVENTORY_OPERATION_DOC_QUERY)
       .filter(([, query]) => query.inbox !== undefined)
@@ -292,6 +294,11 @@ describe('待我处理段（#192）', () => {
       expect(inbox.statuses, operation).toBeDefined()
       expect(inbox.statuses!.length, operation).toBeGreaterThan(0)
       for (const status of inbox.statuses!) {
+        // 唯一例外（#336）：市场报货单「已完成」即可发货态，必须由 pendingItemScope 收窄到仍有未发量
+        if (operation === 'company-shipment' && status === '已完成') {
+          expect(inbox.pendingItemScope, '待发货段缺未发量收窄 = 已发完的报货单全部涌进待办').toBe('company-shipment')
+          continue
+        }
         expect(ACTIONABLE_STATUSES, `${operation} → ${status}`).toContain(status)
       }
     }
@@ -320,7 +327,7 @@ describe('待我处理段（#192）', () => {
     expect(overlapping.sort()).toEqual(['shipment-cancel-approval', 'supply-chain-purchase-cancel'])
   })
 
-  it('7 条 inbox 逐条钉死精确值', () => {
+  it('8 条 inbox 逐条钉死精确值', () => {
     // 上面几条是表驱动的自反断言（表改了断言跟着改），这里把**具体值**写死，
     // 防止映射与断言一起被改错还全绿。
     const expected: Record<(typeof OPERATIONS_WITH_INBOX)[number], unknown> = {
@@ -350,6 +357,13 @@ describe('待我处理段（#192）', () => {
       // 关闭作用于整单，刻意**不**加 pendingItemScope —— 排掉反而让操作员找不到那张单；
       // scopeRole 照加（cancelSupplyChainPurchaseOrder 断的是 order.targetOrgNodeId）
       'supply-chain-purchase-cancel': { docTypes: ['采购订单'], statuses: ['待收货'], scopeRole: 'target' },
+      // 待发货（#336）：已完成且仍有正常未发量的市场报货单；发货断的是报货单 target 端的总部
+      'company-shipment': {
+        docTypes: ['市场报货'],
+        statuses: ['已完成'],
+        scopeRole: 'target',
+        pendingItemScope: 'company-shipment',
+      },
     }
     for (const operation of OPERATIONS_WITH_INBOX) {
       expect(INVENTORY_OPERATION_DOC_QUERY[operation].inbox, operation).toEqual(expected[operation])
@@ -393,6 +407,7 @@ describe('待我处理段（#192）', () => {
       'store-receipt': 'target',
       'supply-chain-receipt': 'target',
       'supply-chain-purchase-cancel': 'target',
+      'company-shipment': 'target',
     }
     for (const operation of OPERATIONS_WITH_INBOX) {
       expect(INVENTORY_OPERATION_DOC_QUERY[operation].inbox!.scopeRole, operation)
@@ -418,6 +433,10 @@ describe('待我处理段（#192）', () => {
     // 采购订单的 source 恒为 NULL（归属全下沉到明细行），所以上面两条 target 收窄今天是空转；
     // 这句钉住「空转」的前提 —— 哪天单头重新挂上 source，这条会红并提醒去复核那两条 inbox。
     expect(exportedFnBody('createPurchaseOrder')).toContain('sourceOrgNodeId: null')
+    // 品项公司发货（#336）：断发货总部 source，且要求它就是报货单的 target —— 所以待发货段是 target
+    const createShipment = exportedFnBody('createItemCompanyShipment')
+    expect(createShipment).toContain('assertLocationWritable(session, source)')
+    expect(createShipment).toContain('report.targetOrgNodeId !== source.orgNodeId')
   })
 
   it('与 business.ts 的事务内状态断言对账 —— 服务端口径一漂移立刻红', () => {
@@ -444,6 +463,9 @@ describe('待我处理段（#192）', () => {
     expect(businessSource).toContain(`shipment.docType !== expectedDocType || shipment.status !== '待收货'`)
     expect(businessSource).toContain(`receivePhysicalShipment(session, input, '品项公司发货', '市场采购入库')`)
     expect(businessSource).toContain(`receivePhysicalShipment(session, input, '分院配货', '院入库')`)
+    // 品项公司发货（#336）：只认已完成的市场报货单 —— 待发货段的 statuses 就是它
+    expect(exportedFnBody('createItemCompanyShipment'))
+      .toContain(`report.docType !== '市场报货' || report.status !== '已完成'`)
   })
 
   it('pendingItemScope 在 engine 里落成「未入库明细」的 EXISTS，且不按 market_id 分流（#335）', () => {

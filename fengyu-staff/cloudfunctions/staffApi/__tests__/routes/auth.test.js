@@ -161,10 +161,12 @@ describe('auth.login', () => {
           ? [{ store_id: 'store-A' }, { store_id: 'store-B' }]
           : [{ store_id: 'store-A' }]
       }
-      if (/SELECT\s+store_id,\s+store_name\s+FROM\s+stores/.test(sql)) {
+      if (/SELECT\s+s\.store_id,\s+s\.store_name,[\s\S]*FROM\s+stores\s+s/.test(sql)) {
         return (params[0] || []).map((storeId) => ({
           store_id: storeId,
           store_name: storeId === 'store-A' ? 'A店' : 'B店',
+          // B 店组织节点已停用（#400）：仍在 scopedStores 里，只是 isActive=false
+          is_active: storeId === 'store-A',
         }))
       }
       return []
@@ -175,6 +177,14 @@ describe('auth.login', () => {
 
     // scopedStores = 全角色并集（A+B），管理层视图以它作为可见门店范围。
     expect(ctx.result.scopedStores.map((s) => s.storeId).sort()).toEqual(['store-A', 'store-B'])
+    // #400：停用门店不过滤（门店模式 currentStoreId / 门店切换依赖它），逐行带 isActive 供管理层默认范围跳过
+    expect(ctx.result.scopedStores).toEqual([
+      { storeId: 'store-A', storeName: 'A店', isActive: true },
+      { storeId: 'store-B', storeName: 'B店', isActive: false },
+    ])
+    const scopedSql = pg.query.mock.calls.map((c) => c[0]).find((s) => /FROM\s+stores\s+s/.test(s) && /store_node/.test(s))
+    expect(scopedSql).toContain('COALESCE(store_node.is_active, FALSE) AS is_active')
+    expect(scopedSql).not.toMatch(/is_closed|WHERE[\s\S]*is_active/)
     expect(ctx.result.availableLoginLevels).toEqual(['store', 'management'])
     // managerStores 仍仅 manager 绑定（A），仅供门店模式写授权使用。
     expect(ctx.result.managerStores.map((s) => s.storeId)).toEqual(['store-A'])

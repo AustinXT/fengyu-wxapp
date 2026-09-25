@@ -425,3 +425,64 @@ describe('库存单据详情页 · 关联销售单（#350）', () => {
     expect(label.nextElementSibling?.textContent).toBe('—')
   })
 })
+
+describe('市场报货单的整单发货 / 入库进度（#336b）', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockGetSession.mockResolvedValue({ employeeId: 'E1', permissions: { actions: [] } })
+  })
+
+  function marketReport(progress: Array<{ itemId: number; demand: number; shipped: number; received: number }>) {
+    return docFixture({
+      id: 'SBH-20260925-0001',
+      docType: '市场报货',
+      status: '已完成',
+      items: progress.map((row) => itemFixture({ id: row.itemId, skuId: `SKU-${row.itemId}`, quantity: row.demand })),
+      fulfillmentProgress: {
+        kind: '报货履约',
+        items: progress.map((row) => ({
+          itemId: row.itemId,
+          normalDemandQuantity: row.demand,
+          orderedQuantity: 0,
+          normalFulfilledQuantity: row.shipped,
+          giftFulfilledQuantity: 0,
+          normalReceivedQuantity: row.received,
+          giftReceivedQuantity: 0,
+        })),
+      },
+    } as Partial<InventoryDocDetail>)
+  }
+
+  it('报货 30 分两批发完、只收了第一批：已发 30 未发 0，未全部入库', async () => {
+    await renderPage(marketReport([{ itemId: 1, demand: 30, shipped: 30, received: 10 }]))
+    expect(screen.getByText('已发 30 / 报货 30（未发 0）')).toBeTruthy()
+    expect(screen.getByText('未全部入库（已收 10 / 报货 30）')).toBeTruthy()
+  })
+
+  it('每一行正常量都收齐才算全部入库', async () => {
+    await renderPage(marketReport([
+      { itemId: 1, demand: 5, shipped: 5, received: 5 },
+      { itemId: 2, demand: 3, shipped: 3, received: 3 },
+    ]))
+    expect(screen.getByText('已全部入库（已收 8）')).toBeTruthy()
+  })
+
+  it('合计已收等于报货、但有一行没收齐（另一行多收）：仍是未全部入库', async () => {
+    await renderPage(marketReport([
+      { itemId: 1, demand: 5, shipped: 5, received: 6 },
+      { itemId: 2, demand: 3, shipped: 3, received: 2 },
+    ]))
+    expect(screen.getByText('未全部入库（已收 8 / 报货 8）')).toBeTruthy()
+  })
+
+  it('报货单没有明细时不出进度字段（every() 空集为真，别显示成「已全部入库」）', async () => {
+    await renderPage(marketReport([]))
+    expect(screen.queryByText('入库进度')).toBeNull()
+  })
+
+  it('其它单据类型不出这两个字段', async () => {
+    await renderPage(docFixture())
+    expect(screen.queryByText('发货进度')).toBeNull()
+    expect(screen.queryByText('入库进度')).toBeNull()
+  })
+})
