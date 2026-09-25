@@ -1,5 +1,6 @@
 // components/mgmt-scope-picker — scope 驱动的市场/门店二级筛选器
 import { callStaffApi } from '../../utils/cloud'
+import { resolveDefaultMgmtScope } from '../../utils/mgmt-scope'
 
 type ScopeType = 'all' | 'market' | 'store'
 
@@ -43,6 +44,9 @@ Component({
     appliedInactive: { type: Boolean, value: false },
     // false = 当前范围是用户显式选的：落在停用门店时只标注、不自动换店
     autoCorrect: { type: Boolean, value: true },
+    // true = 当前范围仍是页面初判：拿到 scopeOptions 后按 resolveDefaultMgmtScope 纠正一次（#424），随后广播 defaultresolved。
+    // 与 autoCorrect 分开：autoCorrect 在 summary 首次成功后就关，而初判纠正与 summary 并发，不能因 summary 先回而跳过
+    resolveDefault: { type: Boolean, value: false },
   },
 
   data: {
@@ -86,6 +90,8 @@ Component({
         return
       }
       this.setData({ applied: def, current: def })
+      // 页面 initDashboard 在同一次 setData 里下发 defaultScope + resolveDefault（#424）：依赖框架「同批属性先全部提交、
+      // 再派发 observers」，此处读到的 resolveDefault 已是新值。若 optionsLoaded 此刻为 false，纠正在首次 loadOptions 里做
       if (this.data.optionsLoaded) this._normalizeApplied()
     },
     appliedInactive(inactive: boolean) {
@@ -138,13 +144,36 @@ Component({
       const storeListByMarket = this.data.storeListByMarket as Record<string, StoreMini[]>
       const allowedMarketIds = this.data.allowedMarketIds as string[]
 
-      // 若调用方传入的 defaultScope 是 market 维度但 scopeName / marketId 缺失（页面层占位），
-      // 按返回数据回填真实市场名，并广播一次 change 同步页面显示。
       const applied = this.data.applied as Scope
       let nextApplied = applied
-      if (applied.scopeType === 'market' && applied.scopeId && (!applied.scopeName || !applied.marketId)) {
-        const m = marketList.find(x => x.id === applied.scopeId)
-        if (m) nextApplied = { ...applied, marketId: m.id, scopeName: m.name }
+      // 默认范围规则对齐 admin（#424）：页面初判只凭登录缓存（不知道市场下有没有在营门店），
+      // 这里按 scopeOptions 纠正——如「店长 + hr@品项公司」初判落品项公司，纠正到门店。
+      // 落在已停用门店的交给下方 #400 逻辑：它要尊重 autoCorrect（数字展示过后门店被停用，重建时不换店）
+      const onKnownInactive = applied.scopeType === 'store'
+        && ((this.data.inactiveStoreIds as string[] | null) || []).includes(applied.scopeId || '')
+      // 弹窗开着时不纠正（首次加载失败、onOpen 重拉才首次拿到选项）：会覆盖弹窗里正在选的项
+      const resolving = this.properties.resolveDefault && !this.data.userPicked && !onKnownInactive && !this.data.showPopup
+      if (resolving) {
+        const resolved = resolveDefaultMgmtScope(
+          {
+            allowAll: this.data.allowAll,
+            allowedMarketIds,
+            markets: marketList.map((m) => ({ ...m, stores: storeListByMarket[m.id] || [] })),
+          },
+          applied,
+          getApp<IAppOption>().globalData.managerStoreIds || [],
+        )
+        if (resolved) nextApplied = resolved
+        // 初判纠正每个会话只做一次：页面据此关掉 resolveDefault。否则 wx:if 切 tab 重建 picker 时会再纠正一遍，
+        // 把会话中组织变动后、已展示过数字的范围换掉（违背 #400「展示过就不换店」）
+        this.triggerEvent('defaultresolved')
+      }
+      // 若调用方传入的 defaultScope 是 market 维度但 scopeName / marketId 缺失（页面层占位），
+      // 按返回数据回填真实市场名，并广播一次 change 同步页面显示。
+      if (nextApplied.scopeType === 'market' && nextApplied.scopeId && (!nextApplied.scopeName || !nextApplied.marketId)) {
+        const marketId = nextApplied.scopeId
+        const m = marketList.find(x => x.id === marketId)
+        if (m) nextApplied = { ...nextApplied, marketId: m.id, scopeName: m.name }
       }
       if (nextApplied.scopeType === 'store' && !nextApplied.marketId && nextApplied.scopeId) {
         const market = marketList.find((m) =>
@@ -219,6 +248,9 @@ Component({
         current: applied,
         currentAllowsMarket: this._allowsMarket(applied.marketId),
       })
+      // 首次选项是在弹窗开着时才拿到的（首次加载失败、onOpen 重拉）：当时跳过的默认纠正在关弹窗后补做（#424）。
+      // 纠正过后页面会关掉 resolveDefault，这里不会重复纠正（初判落在停用门店时不纠正、开关不关，重跑 normalize 幂等）
+      if (this.properties.resolveDefault && !this.data.userPicked && this.data.optionsLoaded) this._normalizeApplied()
     },
 
     onPickAll() {

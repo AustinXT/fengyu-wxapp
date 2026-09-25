@@ -166,6 +166,9 @@ beforeEach(() => {
 })
 
 describe('getEfficiencyBoard — KPI 人均派生装配', () => {
+  // 范围内有门店才算技师人均（#423）；空骨架 = 无门店范围，人均一律 null，见 no-store-per-capita.test.ts
+  const oneStore = [{ store_id: 'S1', store_name: '门店一', market_id: 'M1', market_name: '市场甲' }]
+
   it('kpis 含全部 7 个键且单位正确', async () => {
     setupQueue({})
     const res = await getEfficiencyBoard(baseParams)
@@ -194,7 +197,7 @@ describe('getEfficiencyBoard — KPI 人均派生装配', () => {
   it('人均派生 = 分子 / 分母（员工=技师数、店长=managerCount）', async () => {
     // scalars: revenue=2000 consume=1500 salesComm=300 serviceComm=200
     //          footfall=80 project=400 member=500 tech=10 manager=5
-    setupQueue({ scalars: [2000, 1500, 300, 200, 80, 400, 500, 10, 5] })
+    setupQueue({ scalars: [2000, 1500, 300, 200, 80, 400, 500, 10, 5], skeleton: oneStore })
     const res = await getEfficiencyBoard(baseParams)
     expect(res.kpis.empAvgRevenue.value).toBe(200) // 2000 / 10
     expect(res.kpis.empAvgConsume.value).toBe(150) // 1500 / 10
@@ -207,7 +210,7 @@ describe('getEfficiencyBoard — KPI 人均派生装配', () => {
 
   it('分母=0 → 人均派生为 null（前端 "--"）', async () => {
     // tech=0、manager=0
-    setupQueue({ scalars: [2000, 1500, 300, 200, 80, 400, 500, 0, 0] })
+    setupQueue({ scalars: [2000, 1500, 300, 200, 80, 400, 500, 0, 0], skeleton: oneStore })
     const res = await getEfficiencyBoard(baseParams)
     expect(res.kpis.empAvgRevenue.value).toBeNull()
     expect(res.kpis.empAvgProjects.value).toBeNull()
@@ -216,9 +219,27 @@ describe('getEfficiencyBoard — KPI 人均派生装配', () => {
   })
 
   it('收入 = 销售提成 + 服务提成', async () => {
-    setupQueue({ scalars: [0, 0, 700, 300, 0, 0, 0, 10, 0] })
+    setupQueue({ scalars: [0, 0, 700, 300, 0, 0, 0, 10, 0], skeleton: oneStore })
     const res = await getEfficiencyBoard(baseParams)
     expect(res.kpis.empAvgIncome.value).toBe(100) // (700+300)/10
+  })
+
+  it('#423 空骨架（无门店范围）：技师人均为 null 而非 0/N=0，noStoreScope=true；店长人均因店长数 0 同为 null', async () => {
+    // 门店口径分子恒 0、分母含直挂技师 10 人：修复前 empAvg* 全部是 0
+    setupQueue({ scalars: [0, 0, 0, 0, 0, 0, 0, 10, 0] })
+    const res = await getEfficiencyBoard(baseParams)
+    expect(res.noStoreScope).toBe(true)
+    for (const key of ['empAvgRevenue', 'empAvgConsume', 'empAvgIncome', 'empAvgMembers', 'empAvgProjects']) {
+      expect(res.kpis[key].value, key).toBeNull()
+    }
+    expect(res.kpis.managerAvgEmployees.value).toBeNull()
+  })
+
+  it('#423 有门店：分子为 0 时人均是 0 不是 null，noStoreScope=false', async () => {
+    setupQueue({ scalars: [0, 0, 0, 0, 0, 0, 0, 10, 0], skeleton: oneStore })
+    const res = await getEfficiencyBoard(baseParams)
+    expect(res.noStoreScope).toBe(false)
+    expect(res.kpis.empAvgRevenue.value).toBe(0)
   })
 })
 
@@ -377,7 +398,11 @@ describe('getEfficiencyBoard — byMarket 明细装配', () => {
     expect(m9, '无门店的市场应凭直挂技师出现在 byMarket').toBeDefined()
     expect(m9!.groupName).toBe('品项公司')
     expect(m9!.metrics.technicianCount).toBe(1)
-    expect(m9!.metrics.techAvgRevenue).toBe(0) // 0 业绩 / 1 技师
+    // #423：无门店市场的门店口径分子恒 0，技师人均不适用 → null（前端「--」），不再是 0 / 1 = 0
+    expect(m9!.metrics.techAvgRevenue).toBeNull()
+    expect(res.noStoreMarkets).toEqual(['品项公司'])
+    // 同页有门店的市场照常计算（M1 业绩 0 → 人均 0）
+    expect(res.byMarket.find((r) => r.groupId === 'M1')!.metrics.techAvgRevenue).toBe(0)
   })
 
   it('直挂行 market_id 为 null 时跳过，不产生空 groupId 的市场行', async () => {

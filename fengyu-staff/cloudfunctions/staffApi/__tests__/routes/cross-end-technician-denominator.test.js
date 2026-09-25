@@ -380,6 +380,24 @@ describe('产能技师分母跨端字面量守护（#320）', () => {
       /return sql`EXISTS \([\s\S]*vn\.type = '门店'[\s\S]*vn\.is_active = TRUE[\s\S]*vn\.parent_id = \$\{col\}/,
     )
     expect(adminAnchorFn, 'admin 侧 EXISTS 被取反了').not.toMatch(/NOT EXISTS/)
+    /**
+     * #376 起 EXISTS 本体挪进 `activeAnchorAmongSql(ids, col)`，汇总范围（visibleActiveAnchorSql）与多店范围共用。
+     * 上面的 EXISTS 正则只证明「文件里有这段」，证明不了汇总分支还在用它——把 visibleActiveAnchorSql
+     * 改成 `return sql\`TRUE\`` 时上面全绿。所以把委托关系逐字钉死。
+     */
+    expect(adminAnchorFn, 'admin 侧汇总分支没有委托到 EXISTS helper').toContain(
+      'function visibleActiveAnchorSql(session: AuthSession, col: SQL): SQL { return activeAnchorAmongSql(session.permissions.scopeStoreIds, col) }',
+    )
+    expect(adminAnchorFn, 'admin 侧 EXISTS helper 空集必须恒假').toContain(
+      "function activeAnchorAmongSql(ids: readonly string[], col: SQL): SQL { if (ids.length === 0) return sql`FALSE` return sql`EXISTS (",
+    )
+    /**
+     * 多店分支（#376）是 **admin 独有**的范围形态：staff 管理端无多店，两端无对应项，不构成分叉。
+     * 钉它的形态只为防它退化成汇总（改成 visibleActiveAnchorSql 会让所选子集外的锚定员工进来）。
+     */
+    expect(adminAnchorFn, 'admin 侧多店分支形态漂移').toContain(
+      "if (scope.type === 'stores') { const ids = isAdminScope(session) ? scope.ids : scope.ids.filter((id) => session.permissions.scopeStoreIds.includes(id)) return activeAnchorAmongSql(ids, col) }",
+    )
   })
 
   /**

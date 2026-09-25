@@ -611,3 +611,73 @@ describe('PR #113 进销存单据组织端点跨端守护（staff / admin / sche
     })
   })
 })
+
+/**
+ * SKU 归属口径（#352 后续）：staff 两个候选接口 + 建单闸 与 admin availableToMarketId / 建单闸同谓词
+ * ——「供应链 SKU，或归属本店所属市场」。#339→#352 期间 staff 候选曾写成 `owner_market_id IS NULL OR …`
+ * 与 admin 漂移（非供应链 + 归属 NULL 的 SKU 在 staff 能选、admin 选不到、下游汇总拒），这里钉住两端。
+ */
+describe('SKU 归属谓词 staff ↔ admin 同口径', () => {
+  const staffSrc = readFile(FILES.staffInventoryJs)
+  const adminEngine = readFile(FILES.adminEngineTs)
+
+  function functionBody(src, name) {
+    const m = src.match(new RegExp(`async function ${name}\\([\\s\\S]*?\\n\\}`))
+    if (!m) throw new Error(`未找到 ${name}`)
+    return m[0]
+  }
+
+  test.each(['reportableSkuOptions', 'stocktakeSkuOptions'])('staff %s 主查询与 count 都用「供应链 OR 归属本店市场」', (name) => {
+    const body = functionBody(staffSrc, name)
+    const hits = body.match(/\(sku\.source_type = '供应链' OR sku\.owner_market_id = \$\d\)/g) || []
+    // reportable 的主查询与 count 各一份条件列表；stocktake 共用一份
+    expect(hits.length).toBe(name === 'reportableSkuOptions' ? 2 : 1)
+    expect(body).not.toMatch(/owner_market_id IS NULL/)
+  })
+
+  test('staff 建单闸：非供应链必须归属本店所属市场', () => {
+    const body = functionBody(staffSrc, 'assertSkuAvailableAtLocation')
+    expect(body).toMatch(/if \(sourceType === '供应链'\) return/)
+    expect(body).toMatch(/if \(!marketId \|\| sku\.owner_market_id !== marketId\)/)
+  })
+
+  test('admin availableToMarketId 过滤同谓词', () => {
+    const block = adminEngine.match(/if \(availableToMarketId\) \{[\s\S]*?\n  \}/)
+    expect(block, '未找到 admin availableToMarketId 过滤块').toBeTruthy()
+    expect(block[0].replace(/\s+/g, ' ')).toContain(
+      "conditions.push(or( eq(inventorySkus.sourceType, '供应链'), eq(inventorySkus.ownerMarketId, availableToMarketId), )!)",
+    )
+  })
+
+  test('staff 门店报货建单同时要求 is_reportable（与 admin loadSku(reportable) 同口径）', () => {
+    expect(staffSrc).toMatch(/reportableOnly: docType === '门店报货'/)
+    expect(functionBody(staffSrc, 'inventorySkuSnapshot')).toMatch(/reportableOnly \? ' AND is_reportable = true' : ''/)
+  })
+
+  // 对端（admin）的两道建单闸 + 门店报货可报货闸：任一端放宽，这里都会红
+  const adminBusiness = readFile(FILES.adminBusinessTs)
+  function tsFunctionBody(src, name) {
+    const m = src.match(new RegExp(`(?:export )?(?:async )?function ${name}\\([\\s\\S]*?\\n\\}`))
+    if (!m) throw new Error(`未找到 admin ${name}`)
+    return m[0]
+  }
+
+  test('admin 建单闸 engine.assertSkuAvailableAtLocation：供应链放行，否则须归属主体所属市场', () => {
+    const body = tsFunctionBody(adminEngine, 'assertSkuAvailableAtLocation')
+    expect(body).toContain("if (sku.sourceType === '供应链') return")
+    expect(body).toContain('if (!marketId || sku.ownerMarketId !== marketId)')
+  })
+
+  test('admin 业务闸 business.assertSkuAvailableToMarket 同谓词', () => {
+    const body = tsFunctionBody(adminBusiness, 'assertSkuAvailableToMarket')
+    expect(body).toContain("if (sku.sourceType === '供应链') return")
+    expect(body).toContain('if (marketId && sku.ownerMarketId === marketId) return')
+  })
+
+  test('admin 门店报货：loadSku(reportable=true) 真的拼 is_reportable，且报货调用点带归属闸', () => {
+    expect(tsFunctionBody(adminBusiness, 'loadSku')).toContain('${reportable ? sql`AND is_reportable = true` : sql``}')
+    const report = tsFunctionBody(adminBusiness, 'createStoreReplenishmentRequest')
+    expect(report).toContain('const sku = await loadSku(tx, skuId, true)')
+    expect(report).toContain('assertSkuAvailableToMarket(sku, marketId)')
+  })
+})

@@ -22,7 +22,11 @@ function fmt(v: string | number | boolean | null | undefined) {
   return String(v)
 }
 
-/** 盘盈绿 / 盘亏红 / 相符灰，取 admin 状态色（成功 / 错误 / 完结）。 */
+/**
+ * 盘盈绿 / 盘亏红 / 相符灰，取 admin 状态色（成功 / 错误 / 完结）。
+ * ⚠️ 差异文本表达式与 staff 小程序 `utils/stocktake.ts` 的 stocktakeDiffDisplay 逐字相同，
+ * 由 fengyu-staff/miniprogram/__tests__/utils/stocktake-cross-end.test.ts 钉住，改一端必同步另一端。
+ */
 function StocktakeDiffCell({ diff }: { diff: number | null }) {
   if (diff === null) return <td className="px-3 py-2 text-right text-[#999999]">—</td>
   const tone = diff > 0 ? 'text-[#3D8A5A]' : diff < 0 ? 'text-[#D94040]' : 'text-[#888888]'

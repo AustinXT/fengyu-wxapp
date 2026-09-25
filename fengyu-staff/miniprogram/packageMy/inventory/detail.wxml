@@ -16,7 +16,8 @@
     <view class="field" wx:if="{{detail.sourceOrgNodeName || detail.sourceOrgNodeId}}"><text class="label">出库/发起主体</text><text class="value">{{detail.sourceOrgNodeName || detail.sourceOrgNodeId}}</text></view>
     <view class="field" wx:if="{{detail.targetOrgNodeName || detail.targetOrgNodeId}}"><text class="label">入库/接收主体</text><text class="value">{{detail.targetOrgNodeName || detail.targetOrgNodeId}}</text></view>
     <view class="field" wx:if="{{detail.customerName}}"><text class="label">顾客</text><text class="value">{{detail.customerName}}</text></view>
-    <view class="field"><text class="label">总数量</text><text class="value">{{detail.totalQuantity === undefined ? '—' : detail.totalQuantity}}</text></view>
+    <view class="field" wx:if="{{isStocktake}}"><text class="label">盘点结论</text><text class="value">{{stocktakeSummary}}</text></view>
+    <view class="field"><text class="label">{{isStocktake ? '实盘合计' : '总数量'}}</text><text class="value">{{detail.totalQuantity === undefined ? '—' : detail.totalQuantity}}</text></view>
     <view class="field" wx:if="{{detail.relatedSaleOrderId}}"><text class="label">销售单号</text><text class="value">{{detail.relatedSaleOrderId}}</text></view>
     <view class="field" wx:if="{{detail.employeeName}}"><text class="label">相关员工</text><text class="value">{{detail.employeeName}}</text></view>
     <view class="field" wx:if="{{detail.supplierName}}"><text class="label">供货方</text><text class="value">{{detail.supplierName}}</text></view>
@@ -39,7 +40,13 @@
     <view class="item-card" wx:for="{{detail.items}}" wx:key="id">
       <view class="item-head">
         <text class="item-name">{{item.skuName}}</text>
-        <text class="item-qty">×{{item.quantity}}</text>
+        <text wx:if="{{!isStocktake}}" class="item-qty">×{{item.quantity}}</text>
+      </view>
+      <!-- 盘点单（#352）：账面 / 实盘 / 差异三列，差异前端派生；历史单无账面显示「—」 -->
+      <view wx:if="{{isStocktake}}" class="stocktake-row">
+        <view class="stocktake-cell"><text class="stocktake-label">账面</text><text class="stocktake-value">{{item.stockSnapshot === null ? '—' : item.stockSnapshot}}</text></view>
+        <view class="stocktake-cell"><text class="stocktake-label">实盘</text><text class="stocktake-value">{{item.quantity}}</text></view>
+        <view class="stocktake-cell"><text class="stocktake-label">差异</text><text class="stocktake-value diff-{{item.diffKey}}">{{item.diffText}}</text></view>
       </view>
       <view class="item-meta">
         <text class="item-code">{{item.skuId}}</text>

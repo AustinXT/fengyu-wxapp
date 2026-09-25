@@ -14,7 +14,9 @@
           default-scope="{{ defaultScope }}"
           applied-inactive="{{ scope.inactive }}"
           auto-correct="{{ scopeAutoCorrect }}"
+          resolve-default="{{ scopeResolveDefault }}"
           bind:change="onScopeChange"
+          bind:defaultresolved="onScopeDefaultResolved"
         />
       </view>
 

@@ -27,6 +27,11 @@
  *   - customer_status 枚举 '沉睡'/'冰冻'/'休眠'（非 '预警沉睡'）
  *   - 一次/二次客活 = 区间内**到店天数** = 1 / >= 2（#298）：到店日由 visitDaysSql 按
  *     (client_user_id, service_date) 去重，同日多张服务单只算 1 天；与 cron monthly_activity 同轴
+ *   - 一次/二次**达成率**分母 = registered（会员注册截面），**不是** retained（#414，用户 2026-09-25 拍板）。
+ *     用 retained 时分子分母是同一批人 ⇒ 两率之和恒等 100%、指标无信息量。
+ *     分子必须带与 reg 逐字相同的会员守卫 `became_member_at IS NOT NULL AND ::date <= end` ——
+ *     `customer_status` 是 cron 重算的**当前**截面、不随 range.end 回溯，缺守卫则
+ *     「入会晚于区间终点」的人进分子不进分母，比率可 > 100%
  *   - 客户维度 scope 用 bound_store_id，服务/订单维度用 store_id
  *   - 本月激活 3 档：anchor=startDate-1 实时反推 customer_status（D-react-source=C），
  *     用 last_dt 区间判定（沉睡 last_dt>=anchor-6m / 冰冻 [anchor-12m,anchor-6m) / 休眠 <anchor-12m OR NULL）
@@ -200,6 +205,11 @@ async function queryStatusCount(
 /**
  * 一次客活 / 二次客活（区间内到店天数 = 1 或 >= 2，且 customer_status 为保有会员）。
  * 到店天数按 (顾客, service_date) 去重（#298），不是服务单行数。
+ *
+ * ★ 会员守卫 `became_member_at IS NOT NULL AND ::date <= range.end` 与 `registered`（达成率分母）
+ * 逐字同源（#414）。**没有它这里就不是「截至区间终点的会员」**：`customer_status` 是 cron 重算的
+ * **当前**截面、不随 `range.end` 回溯，于是「区间内到店过、现在是保有会员、但入会日期晚于区间终点」
+ * 的人会进分子却不在分母（2026-07-08~07-31 实测 36 人，把九江丽都店顶到 7/7 = 100.0%）。
  */
 async function queryActive(
   session: AuthSession,
@@ -222,6 +232,8 @@ async function queryActive(
     JOIN client_wechat_users c ON c.user_id = vc.client_user_id
     WHERE ${csc}
       AND c.customer_status IN ('保有会员-稳定', '保有会员-有效')
+      AND c.became_member_at IS NOT NULL
+      AND c.became_member_at::date <= ${range.end}
       AND ${daysClause}
   `)
   return num(first(rows).v)
@@ -519,6 +531,10 @@ interface OpsAgg {
  * 客户维度（registered/retained/dormant/...）按 bound_store_id 归组；
  * 服务维度（visitOnce/visitTwice）按 service_orders 归组（用 c.bound_store_id 与客户一致，避免跨店漂移）。
  * 本月激活 3 档按 anchor 反推 + bound_store_id 归组。
+ *
+ * ★ #414 不变量：**visit_count 的人群谓词 ⊇ reg 的人群谓词**（同一归组列 `c.bound_store_id`
+ * + 同一 scope 生产者 `customerScope` + 逐字相同的会员守卫），因此 visit_once/visit_twice ⊆ registered，
+ * 达成率结构性 ≤ 100%。分子额外多一层 `serviceScope`（`so.store_id`）只会让分子更小，不破坏包含关系。
  */
 async function queryRegActiveBreakdown(
   session: AuthSession,
@@ -560,7 +576,8 @@ async function queryRegActiveBreakdown(
       GROUP BY c.bound_store_id
     ),
     -- 区间到店天数（按客户 + bound_store_id），区分一次/二次客活（仅保有会员）。
-    -- 到店日按 (顾客, service_date) 去重（#298），与 KPI queryActive 同一个 visitDaysSql
+    -- 到店日按 (顾客, service_date) 去重（#298），与 KPI queryActive 同一个 visitDaysSql。
+    -- 会员守卫与上面的 reg（达成率分母）逐字同源（#414），理由见 queryActive 的注释。
     visit_days AS (${visitDaysSql({ axis: 'service_date', scope: serviceScope, range })}),
     visit_count AS (
       SELECT vd.client_user_id, c.bound_store_id AS store_id,
@@ -570,6 +587,8 @@ async function queryRegActiveBreakdown(
       JOIN client_wechat_users c ON c.user_id = vd.client_user_id
       WHERE ${customerScope}
         AND c.bound_store_id IS NOT NULL
+        AND c.became_member_at IS NOT NULL
+        AND c.became_member_at::date <= ${end}
       GROUP BY vd.client_user_id, c.bound_store_id, c.customer_status
     ),
     active AS (
@@ -941,9 +960,14 @@ function buildBreakdownRows(
         registered: ra?.registered ?? 0,
         retained: ra?.retained ?? 0,
         visitOnce: ra?.visitOnce ?? 0,
-        visitOnceRate: ra ? safeDiv(ra.visitOnce, ra.retained) : null,
+        // #414：达成率分母 = registered（会员注册截面），**不是** retained。
+        // 用户 2026-09-25 拍板。此前用 retained（末 90 天到店的保有会员），而分子就是
+        // 「区间内到店过的保有会员」—— 两者是同一批人，实测 36 家门店 1次率+2次率 精确恒等
+        // 100.0%（分子池=分母池=1889、双向差集 0），这两列不携带任何「达成」信息。
+        // 分子 ⊆ 分母由 visit_count 的会员守卫与 reg 逐字同源保证，consistency.customer.test.ts 钉死。
+        visitOnceRate: ra ? safeDiv(ra.visitOnce, ra.registered) : null,
         visitTwice: ra?.visitTwice ?? 0,
-        visitTwiceRate: ra ? safeDiv(ra.visitTwice, ra.retained) : null,
+        visitTwiceRate: ra ? safeDiv(ra.visitTwice, ra.registered) : null,
         dormant: ra?.dormant ?? 0,
         reactivatedDormant: ra?.reactivatedDormant ?? 0,
         frozen: ra?.frozen ?? 0,

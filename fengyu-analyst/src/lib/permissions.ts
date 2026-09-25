@@ -52,6 +52,10 @@ export async function computeActions(roles: Array<{ role: RoleType }>): Promise<
   return Array.from(actions)
 }
 
+/**
+ * 账号可见门店（含已停用门店节点，**不得**按在营过滤）：analyst `scopeRangeSql` 的「首次」基线
+ * 依赖它含停用门店的历史单，统计时再由 `scopeFilterSql` 叠在营条件（#421）。
+ */
 export async function expandScopeStoreIds(roles: AuthSession["roles"]): Promise<string[]> {
   const storeIds = new Set<string>()
 

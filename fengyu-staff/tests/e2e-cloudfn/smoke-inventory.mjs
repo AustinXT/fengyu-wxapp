@@ -5,11 +5,24 @@
  * 覆盖员工端实际使用的 v3 单据接口，而不是已保留的旧 inventory.list/detail 兼容路由。
  * 夹具构造一张已完成的“院入库”单，验证店长按库存主体可见、无效单据类型被拒绝，
  * 以及详情能够返回 v3 单据头和批次明细。
+ *
+ * #352 门店盘点：盘点 SKU 候选（不限可报货、不带账面数）→ 建盘点单（一个实盘=账面、一个实盘 0）
+ * → SQL 断言 stock_snapshot = 该店该 SKU 在手量汇总、不产流水、在手量不变 → 列表 / 详情可见；
+ * 同 SKU 两行、实盘留空被拒。
+ * ⚠️ 实盘 0 依赖迁移 0053（#351 放宽 quantity CHECK）；目标库没迁 0053 时这一步会被 CHECK 拒绝。
+ * 盘点身份是**只绑门店库存员、不是店长**的测试员工（默认门店库存员 can_access_admin=false，
+ * 只能在小程序盘点）。
+ * 账面非零：共享 dev 库上批次余额只能经 append-only 的 inventory_movements 入账、删不掉，
+ * 所以默认夹具账面恒 0（只能验证「无批次落 0」）。在**私有 docker 库**上设
+ * SMOKE_INVENTORY_SEED_STOCK=<私有库库名>，会绕过余额守护给两个 SKU 灌非零余额（SKU1 两个批次 5+3，
+ * SKU2 一个批次 4），验证账面 = 多批次汇总、实盘 0 记盘亏。
+ * 私有库判定不只看 localhost（SSH 端口转发的共享库也是 localhost）：还要求连上的 current_database()
+ * 与该变量值相同，且不是共享库名 fengyu_wxapp。
  */
 import './setup.mjs'
 import {
   NS, TEST_STORE_ID, TEST_STORE_ORG_ID, TEST_MANAGER_OPENID, TEST_MANAGER_EMP_ID,
-  pgQuery, closePool,
+  pgQuery, closePool, getPool, testPhone,
 } from './setup.mjs'
 import { invokeStaffApi } from './helpers/invoke.mjs'
 import {
@@ -18,6 +31,11 @@ import {
 
 const INV_DOC_ID = `${NS}_INV_PROC_1`
 const INV_SKU_ID = `${NS}_INV_SKU_1`
+// 盘点第二个 SKU：非可报货、本店没有任何批次（账面 0）
+const INV_SKU_ID_2 = `${NS}_INV_SKU_2`
+// 只绑门店库存员（不是店长）的盘点员工
+const INV_OPERATOR_EMP_ID = `${NS}_INVOP`
+const INV_OPERATOR_OPENID = `${NS}_INVOP_OPENID`
 
 let pass = false
 let exitCode = 1
@@ -61,6 +79,16 @@ async function createInventoryFixture() {
            is_active = true,
            updated_at = NOW()`,
     [INV_SKU_ID, `${NS}_PCODE_1`, `${NS}_采购商品`],
+  )
+  await pgQuery(
+    `INSERT INTO inventory_skus (
+       sku_id, product_code, product_name, spec_name, retail_price, is_active, is_reportable,
+       accounting_price, market_purchase_discount, market_purchase_price_mode
+     )
+     VALUES ($1, $2, $3, '默认规格', 100, true, false, 50, 0.8, '公式')
+     ON CONFLICT (sku_id) DO UPDATE
+       SET is_active = true, is_reportable = false, updated_at = NOW()`,
+    [INV_SKU_ID_2, `${NS}_PCODE_2`, `${NS}_盘点商品`],
   )
   const lots = await pgQuery(
     // 余额必须是 0 且不能在 DO UPDATE 里改：0009 的
@@ -180,6 +208,8 @@ async function main() {
     if (errors.length === 0) rec(`  ✓ inventory.docDetail 返回单据头 + ${(detail.items || []).length} 行 v3 明细`)
   }
 
+  await stocktakeFlow(errors)
+
   if (errors.length) {
     rec('  ✗ FAIL')
     for (const error of errors) rec(`    - ${error}`)
@@ -190,12 +220,201 @@ async function main() {
   rec('  ✅ PASS')
 }
 
+/**
+ * 仅私有库：绕过余额守护灌非零余额（见文件头）。共享 dev 库上 movements 删不掉，不能走正规入账。
+ * 返回是否已灌数。
+ */
+/** 本流程在私有库上补的期初状态行：结束时删掉，不留全局副作用 */
+let insertedCutover = false
+
+/** 共享库（dev / prod）的库名：灌数模式遇到一律拒绝 */
+const SHARED_DATABASE_NAMES = new Set(['fengyu_wxapp'])
+
+/**
+ * 灌数模式只允许显式点名的私有库：SMOKE_INVENTORY_SEED_STOCK 的值必须等于连上的库名，
+ * 且 host 为 localhost、库名不是共享库名。任一不满足直接抛错（不静默降级为普通跑法）。
+ */
+async function isPrivateSeedRun() {
+  const expected = process.env.SMOKE_INVENTORY_SEED_STOCK
+  if (!expected) return false
+  const host = new URL(process.env.PG_CONNECTION_STRING).hostname
+  const [{ db }] = await pgQuery('SELECT current_database() AS db')
+  if (!['localhost', '127.0.0.1'].includes(host) || db !== expected || SHARED_DATABASE_NAMES.has(db)) {
+    throw new Error(`SMOKE_INVENTORY_SEED_STOCK 只允许点名的私有库：host=${host} db=${db} 期望=${expected}`)
+  }
+  return true
+}
+
+async function seedStocktakeBook() {
+  if (!(await isPrivateSeedRun())) return false
+  const client = await getPool().connect()
+  try {
+    await client.query('BEGIN')
+    await client.query("SET LOCAL session_replication_role = 'replica'")
+    const lots = [
+      [INV_SKU_ID, 'INV', 5],
+      [INV_SKU_ID, 'INV2', 3],
+      [INV_SKU_ID_2, 'INV3', 4],
+    ]
+    for (const [skuId, batchNo, qty] of lots) {
+      await client.query(
+        `INSERT INTO inventory_stock_lots (
+           location_id, sku_id, lot_key, sku_name, spec_name, batch_no, expiry_date_key, is_gift, quantity_on_hand
+         )
+         VALUES ($1, $2, $2 || '|' || $3 || '||||100', $2, '默认规格', $3, '', false, $4)
+         ON CONFLICT (location_id, lot_key) DO UPDATE SET quantity_on_hand = EXCLUDED.quantity_on_hand`,
+        [TEST_STORE_ID, skuId, batchNo, qty],
+      )
+    }
+    await client.query('COMMIT')
+    return true
+  } catch (error) {
+    await client.query('ROLLBACK')
+    throw error
+  } finally {
+    client.release()
+  }
+}
+
+/** #352：门店库存员在小程序做门店盘点的整条后端链路 */
+async function stocktakeFlow(errors) {
+  const before = errors.length
+  await createTestStaff({
+    employeeId: INV_OPERATOR_EMP_ID,
+    openid: INV_OPERATOR_OPENID,
+    phone: testPhone(13),
+    name: `${NS}_库存员`,
+    isManager: false,
+    positionName: '门店库存员',
+    skills: [],
+  })
+  await createTestPermissionRole({
+    employeeId: INV_OPERATOR_EMP_ID,
+    role: 'inventory_store_operator',
+    scopeId: TEST_STORE_ORG_ID,
+  })
+  // createDoc 要求 WorkFine 期初已核验。这是全局业务闸门：共享库上**只读检查**，不满足就失败，
+  // 绝不替它补「已初始化」（缺行本身就表示期初没做，补了等于永久打开全库的库存写闸）。
+  // 只有私有 localhost 库（灌数模式）才临时补行，并在本流程结束时删掉自己补的那行。
+  const cutover = await pgQuery(`SELECT status FROM inventory_cutover_states WHERE cutover_key = 'workfine_inventory'`)
+  if (!cutover[0] && (await isPrivateSeedRun())) {
+    await pgQuery(`INSERT INTO inventory_cutover_states (cutover_key, status) VALUES ('workfine_inventory', '已初始化')`)
+    insertedCutover = true
+  } else if (cutover[0]?.status !== '已初始化') {
+    errors.push(`目标库 WorkFine 库存期初状态为「${cutover[0]?.status ?? '缺失'}」，盘点建单会被拒；请在已核验的库上跑`)
+    return
+  }
+  const seeded = await seedStocktakeBook()
+  const bookOf = async (skuId) => {
+    const rows = await pgQuery(
+      `SELECT COALESCE(SUM(quantity_on_hand), 0)::numeric AS q
+         FROM inventory_stock_lots WHERE location_id = $1 AND sku_id = $2`,
+      [TEST_STORE_ID, skuId],
+    )
+    return Number(rows[0].q)
+  }
+  const book1 = await bookOf(INV_SKU_ID)
+  const book2 = await bookOf(INV_SKU_ID_2)
+  if (seeded && (book1 !== 8 || book2 !== 4)) errors.push(`灌数后账面应为 8 / 4，实际 ${book1} / ${book2}`)
+  if (!seeded) rec('  · 未设 SMOKE_INVENTORY_SEED_STOCK=<私有库名>：夹具账面恒 0，只验证「无批次落 0」，多批次汇总由私有库跑法覆盖')
+
+  const rOpts = await invokeStaffApi('inventory.stocktakeSkuOptions', {
+    _testOpenid: INV_OPERATOR_OPENID,
+    locationId: TEST_STORE_ID,
+    keyword: NS,
+    pageSize: 20,
+  })
+  if (rOpts.code !== 0) {
+    errors.push(`stocktakeSkuOptions code=${rOpts.code} msg=${rOpts.message}`)
+    return
+  }
+  const optIds = (rOpts.data?.items || []).map((item) => item.skuId)
+  if (!optIds.includes(INV_SKU_ID_2)) errors.push(`盘点候选应含非可报货 SKU ${INV_SKU_ID_2}，实际 ${optIds.join(',')}`)
+  if (JSON.stringify(rOpts.data).match(/stockReference|price|amount|quantity/i)) {
+    errors.push('盘点候选不应下发账面数 / 金额字段')
+  }
+
+  const create = (items) => invokeStaffApi('inventory.createDoc', {
+    _testOpenid: INV_OPERATOR_OPENID,
+    _loginLevel: 'store',
+    _currentStoreId: TEST_STORE_ID,
+    docType: '分院库存盘点',
+    storeId: TEST_STORE_ID,
+    items,
+  })
+
+  const rDup = await create([{ skuId: INV_SKU_ID, quantity: 1 }, { skuId: INV_SKU_ID, quantity: 2 }])
+  if (rDup.code !== -400) errors.push(`同 SKU 两行应 -400，实际 code=${rDup.code} msg=${rDup.message}`)
+  const rBlank = await create([{ skuId: INV_SKU_ID, quantity: '' }])
+  if (rBlank.code !== -400) errors.push(`实盘留空应 -400，实际 code=${rBlank.code} msg=${rBlank.message}`)
+
+  const rCreate = await create([
+    { skuId: INV_SKU_ID, quantity: book1 },
+    { skuId: INV_SKU_ID_2, quantity: 0 },
+  ])
+  if (rCreate.code !== 0) {
+    errors.push(`盘点建单 code=${rCreate.code} msg=${rCreate.message}`)
+    return
+  }
+  const docId = rCreate.data?.id
+  const itemRows = await pgQuery(
+    `SELECT sku_id, quantity::numeric AS quantity, stock_snapshot::numeric AS stock_snapshot
+       FROM inventory_doc_items WHERE doc_id = $1 ORDER BY sku_id`,
+    [docId],
+  )
+  // 先严格判 NULL：Number(null) 是 0，账面 0 的夹具上「stock_snapshot 恒 NULL」的回归会被当成 0 放过
+  for (const row of itemRows) {
+    if (row.stock_snapshot === null) errors.push(`${row.sku_id} 的 stock_snapshot 是 NULL（账面没记）`)
+  }
+  const snapshotBySku = Object.fromEntries(itemRows.map((row) => [row.sku_id, row.stock_snapshot === null ? null : Number(row.stock_snapshot)]))
+  if (itemRows.length !== 2) errors.push(`盘点明细应 2 行，实际 ${itemRows.length}`)
+  if (snapshotBySku[INV_SKU_ID] !== book1) errors.push(`${INV_SKU_ID} 账面=${snapshotBySku[INV_SKU_ID]}，期望在手汇总 ${book1}`)
+  if (snapshotBySku[INV_SKU_ID_2] !== book2) errors.push(`${INV_SKU_ID_2} 账面=${snapshotBySku[INV_SKU_ID_2]}，期望在手汇总 ${book2}`)
+
+  const movements = await pgQuery('SELECT COUNT(*)::int AS cnt FROM inventory_movements WHERE doc_id = $1', [docId])
+  if (movements[0].cnt !== 0) errors.push(`盘点单不应产生流水，实际 ${movements[0].cnt} 条`)
+  if (await bookOf(INV_SKU_ID) !== book1 || await bookOf(INV_SKU_ID_2) !== book2) {
+    errors.push('盘点后门店在手量发生了变化')
+  }
+
+  const rList = await invokeStaffApi('inventory.docList', {
+    _testOpenid: INV_OPERATOR_OPENID,
+    docTypes: ['分院库存盘点'],
+    page: 1,
+    pageSize: 20,
+  })
+  if (!(rList.data?.items || []).some((item) => item.id === docId)) {
+    errors.push(`盘点分类列表应含 ${docId}（code=${rList.code} msg=${rList.message}）`)
+  }
+  const rDetail = await invokeStaffApi('inventory.docDetail', { _testOpenid: INV_OPERATOR_OPENID, id: docId })
+  const detailItems = rDetail.data?.items || []
+  const zeroRow = detailItems.find((item) => item.skuId === INV_SKU_ID_2)
+  if (rDetail.data?.docType !== '分院库存盘点' || !zeroRow || zeroRow.quantity !== 0 || zeroRow.stockSnapshot !== book2) {
+    errors.push(`盘点详情应返回实盘 0 / 账面 ${book2}：${JSON.stringify(zeroRow)}`)
+  }
+  if (errors.length === before) {
+    rec(`  ✓ 门店盘点 ${docId}（库存员身份，账面 ${book1}/${book2}${seeded ? '，多批次汇总' : ''}）：候选含非可报货 SKU、账面=在手汇总、无流水、列表/详情可见；重复 SKU / 留空被拒`)
+  }
+}
+
 try {
   await main()
 } catch (error) {
   console.error('EXCEPTION:', error.message)
 } finally {
   try { await cleanupTestData(NS) } catch {}
+  if (insertedCutover) {
+    // 清理失败不能报 PASS：残留的「已初始化」行会被后续跑法当成真实期初状态
+    try {
+      await pgQuery(`DELETE FROM inventory_cutover_states WHERE cutover_key = 'workfine_inventory' AND status = '已初始化'`)
+      const left = await pgQuery(`SELECT 1 FROM inventory_cutover_states WHERE cutover_key = 'workfine_inventory'`)
+      if (left.length > 0) throw new Error('删除后仍存在')
+    } catch (error) {
+      console.error(`清理临时期初状态失败：${error.message}`)
+      pass = false
+      exitCode = 1
+    }
+  }
   await closePool()
   console.log(`end | ${pass ? 'PASS' : 'FAIL'} | exit=${exitCode}`)
   process.exit(exitCode)

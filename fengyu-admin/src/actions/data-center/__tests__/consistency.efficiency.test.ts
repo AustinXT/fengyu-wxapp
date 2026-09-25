@@ -1552,7 +1552,8 @@ describe('数据中心人效板块两端口径一致性守护', () => {
       expect(adminBody).toMatch(/qFootfallByMarket/i)
       expect(adminBody).toMatch(/SELECT\s+sk\.market_id\s*,\s*COUNT\(DISTINCT\s+so\.client_user_id\)\s+AS\s+v/i)
       expect(adminBody).toMatch(/GROUP BY\s+sk\.market_id/i)
-      expect(adminBody).toMatch(/techAvgMembers:\s*ratio\(footfallByMarketMap\.get\(m\.marketId\)/i)
+      // #423：无门店市场行经 perTech 置 null，分子仍须是市场去重客流
+      expect(adminBody).toMatch(/techAvgMembers:\s*perTech\(footfallByMarketMap\.get\(m\.marketId\)/i)
       expect(adminBody).not.toMatch(/m\.footfall\s*\+=/i)
     })
   })

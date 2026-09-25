@@ -98,7 +98,20 @@ async function buildLevelPayload(employeeId) {
     ].includes(action))
   ))
   const inventoryStoreIds = inventoryBindings.length > 0 ? await expandScopeStoreIds(inventoryBindings, pg) : []
-  return { roles, roleBindings, staffLevel, availableLoginLevels, scopedStores, managerStores, managerStoreIds, inventoryStoreIds }
+  // #352：门店库存写操作（建单 / 收货）只认 inventory:store_operate，且动作与 scope 必须来自**同一绑定**
+  // （assertInventoryWriteStoreScope）。上面的 inventoryStoreIds 是三动作 scope 的并集，前端拿它判写权限
+  // 会把「A 店 store_operate + B 市场 market_approve」的员工在 B 店放进写表单。单独下发只由
+  // store_operate（及超管）绑定展开的门店集合，前端写入口据此判定。
+  const inventoryOperateBindings = roleBindings.filter((binding) => (
+    binding.isSuperAdmin || binding.actions.includes('inventory:store_operate')
+  ))
+  const inventoryOperateStoreIds = inventoryOperateBindings.length > 0
+    ? await expandScopeStoreIds(inventoryOperateBindings, pg)
+    : []
+  return {
+    roles, roleBindings, staffLevel, availableLoginLevels, scopedStores, managerStores, managerStoreIds,
+    inventoryStoreIds, inventoryOperateStoreIds,
+  }
 }
 
 /**
@@ -141,6 +154,7 @@ async function login(ctx) {
       managerStores: [],
       managerStoreIds: [],
       inventoryStoreIds: [],
+      inventoryOperateStoreIds: [],
       skills: [],
       avatarUrl: null,
       boundStoreName: null,
@@ -158,7 +172,7 @@ async function login(ctx) {
   const isActive = user.employee_id && !user.is_resigned
   const level = isActive
     ? await buildLevelPayload(user.employee_id)
-    : { roles: [], roleBindings: [], staffLevel: null, availableLoginLevels: [], scopedStores: [], managerStores: [], managerStoreIds: [], inventoryStoreIds: [] }
+    : { roles: [], roleBindings: [], staffLevel: null, availableLoginLevels: [], scopedStores: [], managerStores: [], managerStoreIds: [], inventoryStoreIds: [], inventoryOperateStoreIds: [] }
 
   ctx.result = {
     isNewUser: false,
@@ -174,6 +188,7 @@ async function login(ctx) {
     managerStores: level.managerStores,
     managerStoreIds: level.managerStoreIds,
     inventoryStoreIds: level.inventoryStoreIds,
+    inventoryOperateStoreIds: level.inventoryOperateStoreIds,
     skills: isActive && Array.isArray(user.skills) ? user.skills : [],
     avatarUrl: user.avatar_url || null,
     boundStoreName: isActive ? user.store_name : null,
@@ -297,6 +312,7 @@ async function bindPhone(ctx) {
       managerStores: level.managerStores,
       managerStoreIds: level.managerStoreIds,
       inventoryStoreIds: level.inventoryStoreIds,
+      inventoryOperateStoreIds: level.inventoryOperateStoreIds,
       skills: Array.isArray(emp.skills) ? emp.skills : [],
       avatarUrl: emp.avatar_url || null,
       boundStoreName: emp.store_name,

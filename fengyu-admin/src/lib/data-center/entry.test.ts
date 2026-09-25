@@ -175,3 +175,75 @@ describe('#399 ?scope=authorized 链接 + 零可见门店账号', () => {
       .toEqual({ kind: 'render', noViewableScope: false, inactiveStore: null, defaultScopeHref: null })
   })
 })
+
+describe('多店入口（#376）', () => {
+  const opts: DataCenterScopeOptions = {
+    topLevel: 'market',
+    inactiveStores: [{ storeId: 'X1', storeName: '自贡旭阳店', marketId: 'M2' }],
+    markets: [
+      { id: 'M1', name: '南昌', stores: [{ storeId: 'S1', storeName: '蓝莱店' }, { storeId: 'S2', storeName: '绿湖店' }], granted: true },
+      { id: 'M2', name: '自贡', stores: [{ storeId: 'S3', storeName: '自贡一店' }, { storeId: 'S4', storeName: '自贡二店' }], granted: true },
+    ],
+  }
+  const render = { kind: 'render', noViewableScope: false, inactiveStore: null, defaultScopeHref: null }
+
+  it('规范的多店 URL：直接渲染', () => {
+    expect(resolveDataCenterEntry('/p', { scope: 'stores', scopeId: 'S1,S3', preset: 'week' }, opts)).toEqual(render)
+  })
+
+  it('乱序 / 重复 id → 重定向到升序去重编码，保留其余参数', () => {
+    expect(resolveDataCenterEntry('/p', { scope: 'stores', scopeId: 'S3,S1,S3', preset: 'week' }, opts))
+      .toEqual({ kind: 'redirect', url: '/p?preset=week&scope=stores&scopeId=S1%2CS3' })
+  })
+
+  it('全选 → authorized；勾满单市场 → market；1 家 → store', () => {
+    expect(resolveDataCenterEntry('/p', { scope: 'stores', scopeId: 'S1,S2,S3,S4' }, opts)).toEqual({ kind: 'redirect', url: '/p?scope=authorized' })
+    expect(resolveDataCenterEntry('/p', { scope: 'stores', scopeId: 'S1,S2' }, opts)).toEqual({ kind: 'redirect', url: '/p?scope=market&scopeId=M1' })
+    expect(resolveDataCenterEntry('/p', { scope: 'stores', scopeId: 'S1' }, opts)).toEqual({ kind: 'redirect', url: '/p?scope=store&scopeId=S1' })
+  })
+
+  it('1 家的多店串恰是单店市场的全部门店 → market（与面板同一套折叠）', () => {
+    const withSingle = { ...opts, markets: [...opts.markets, { id: 'M3', name: '昭通', stores: [{ storeId: 'S5', storeName: '昭通店' }], granted: true }] }
+    expect(resolveDataCenterEntry('/p', { scope: 'stores', scopeId: 'S5' }, withSingle)).toEqual({ kind: 'redirect', url: '/p?scope=market&scopeId=M3' })
+  })
+
+  it('总部全选 → 去掉 scope（all）', () => {
+    expect(resolveDataCenterEntry('/p', { scope: 'stores', scopeId: 'S1,S2,S3,S4', preset: 'week' }, { ...opts, topLevel: 'all' }))
+      .toEqual({ kind: 'redirect', url: '/p?preset=week' })
+  })
+
+  it('非法串：非总部落默认范围，总部剥掉 scope 参数（不会停在一个认不出的 URL 上）', () => {
+    expect(resolveDataCenterEntry('/p', { scope: 'stores', scopeId: 'S1,,S2' }, opts)).toEqual({ kind: 'redirect', url: '/p?scope=authorized' })
+    expect(resolveDataCenterEntry('/p', { scope: 'stores', scopeId: 'S1,,S2' }, { ...opts, topLevel: 'all' })).toEqual({ kind: 'redirect', url: '/p' })
+  })
+
+  it('重复 key（?scopeId=a&scopeId=b）先压成首值，不当作多店', () => {
+    expect(resolveDataCenterEntry('/p', { scope: 'stores', scopeId: ['S1,S3', 'S2'] }, opts))
+      .toEqual({ kind: 'redirect', url: '/p?scope=stores&scopeId=S1%2CS3' })
+  })
+
+  it('规范化后再进入不再重定向（终止性）', () => {
+    const first = resolveDataCenterEntry('/p', { scope: 'stores', scopeId: 'S3,S1' }, opts)
+    expect(first.kind).toBe('redirect')
+    const qs = new URLSearchParams((first as { url: string }).url.split('?')[1])
+    expect(resolveDataCenterEntry('/p', Object.fromEntries(qs), opts)).toEqual(render)
+  })
+
+  it('所选全部停用 → 停用空态（带回默认范围链接）；部分停用 → 照常渲染', () => {
+    const entry = resolveDataCenterEntry('/p', { scope: 'stores', scopeId: 'X1,X2' }, { ...opts, inactiveStores: [...opts.inactiveStores, { storeId: 'X2', storeName: '停用二', marketId: 'M1' }] })
+    expect(entry).toMatchObject({ kind: 'render', inactiveStore: { storeId: 'X1,X2', storeName: '自贡旭阳店、停用二' }, defaultScopeHref: '/p?scope=authorized' })
+    expect(resolveDataCenterEntry('/p', { scope: 'stores', scopeId: 'S1,X1' }, opts)).toEqual(render)
+  })
+
+  it('报表页：数据源外门店 → 跳默认范围；部分停用 → 渲染、scope 保持多店', () => {
+    expect(resolveReportPage({ path: '/r', query: { scope: 'stores', scopeId: 'S1,Z9' }, scopeOptions: opts, periodKind: 'none' }))
+      .toEqual({ kind: 'redirect', url: '/r?scope=authorized' })
+    const page = resolveReportPage({ path: '/r', query: { scope: 'stores', scopeId: 'S1,X1' }, scopeOptions: opts, periodKind: 'none' })
+    expect(page).toMatchObject({ kind: 'render', context: { scope: { type: 'stores', ids: ['S1', 'X1'] }, inactiveStore: null } })
+  })
+
+  it('报表页：全部停用 → scope 置 null（不取数）', () => {
+    const page = resolveReportPage({ path: '/r', query: { scope: 'stores', scopeId: 'X1,X2' }, scopeOptions: { ...opts, inactiveStores: [...opts.inactiveStores, { storeId: 'X2', storeName: '停用二', marketId: 'M1' }] }, periodKind: 'none' })
+    expect(page).toMatchObject({ kind: 'render', context: { scope: null } })
+  })
+})

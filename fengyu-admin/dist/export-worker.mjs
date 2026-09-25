@@ -159528,6 +159528,72 @@ var coerce = {
   date: (arg) => ZodDate.create({ ...arg, coerce: true })
 };
 var NEVER = INVALID;
+// src/lib/data-center/params.ts
+var DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+function firstQueryValue(raw) {
+  return Array.isArray(raw) ? raw[0] : raw;
+}
+var MAX_SCOPE_STORES = 200;
+var MAX_STORE_ID_LENGTH = 40;
+var STORE_ID_RE = /^[A-Za-z0-9_-]{1,40}$/;
+function isValidStoresScopeIds(ids) {
+  return Array.isArray(ids) && ids.length >= 2 && ids.length <= MAX_SCOPE_STORES && ids.every((id) => typeof id === "string" && STORE_ID_RE.test(id)) && new Set(ids).size === ids.length;
+}
+function parseStoreIdList(raw) {
+  if (!raw)
+    return null;
+  const parts = raw.split(",");
+  if (parts.some((id) => !STORE_ID_RE.test(id)))
+    return null;
+  const ids = Array.from(new Set(parts)).sort();
+  return ids.length > MAX_SCOPE_STORES ? null : ids;
+}
+function scopeFromStoreIds(storeIds) {
+  const ids = Array.from(new Set(storeIds)).sort();
+  if (ids.length === 0)
+    return null;
+  return ids.length === 1 ? { type: "store", id: ids[0] } : { type: "stores", ids };
+}
+function parseScope(raw) {
+  if (raw.scope === "authorized")
+    return { type: "authorized" };
+  if (raw.scope === "market" && raw.scopeId)
+    return { type: "market", id: raw.scopeId };
+  if (raw.scope === "store" && raw.scopeId)
+    return { type: "store", id: raw.scopeId };
+  if (raw.scope === "stores") {
+    const ids = parseStoreIdList(raw.scopeId);
+    if (ids)
+      return scopeFromStoreIds(ids) ?? { type: "all" };
+  }
+  return { type: "all" };
+}
+function scopeToParams(scope) {
+  if (scope.type === "all")
+    return {};
+  if (scope.type === "authorized")
+    return { scope: "authorized" };
+  if (scope.type === "stores")
+    return { scope: "stores", scopeId: [...scope.ids].sort().join(",") };
+  return { scope: scope.type, scopeId: scope.id };
+}
+function parseTimeRange(raw) {
+  const p = raw.preset;
+  if (p === "custom" && raw.start && raw.end && DATE_RE.test(raw.start) && DATE_RE.test(raw.end) && raw.start <= raw.end) {
+    return { preset: "custom", start: raw.start, end: raw.end };
+  }
+  if (p === "today" || p === "week" || p === "year")
+    return { preset: p };
+  return { preset: "month" };
+}
+function parseBoardParams(raw) {
+  return {
+    scope: parseScope(raw),
+    timeRange: parseTimeRange(raw),
+    withComparison: raw.cmp !== "0"
+  };
+}
+
 // src/lib/data-center/reports.ts
 var DATA_CENTER_DASHBOARD_ACTION = "data_center:dashboard";
 var DATA_CENTER_CUSTOMER_DETAIL_ACTION = "data_center:customer_detail";
@@ -159721,9 +159787,11 @@ function exportJobLabel(exportType, payload) {
 
 // src/lib/export-job-schema.ts
 var queryPayloadSchema = exports_external.record(exports_external.string().max(240, "筛选条件过长")).refine((value) => Object.keys(value).length <= 40, "筛选条件过多");
+var DATA_CENTER_SCOPE_ID_MAX = MAX_SCOPE_STORES * (MAX_STORE_ID_LENGTH + 1);
+var dataCenterParamsSchema = exports_external.record(exports_external.string().max(DATA_CENTER_SCOPE_ID_MAX, "筛选条件过长")).refine((value) => Object.keys(value).length <= 40, "筛选条件过多").refine((value) => Object.entries(value).every(([key, v]) => key === "scopeId" || v.length <= 240), "筛选条件过长");
 var dataCenterPayloadSchema = exports_external.object({
   view: exports_external.enum(DATA_CENTER_EXPORT_VIEWS),
-  params: queryPayloadSchema,
+  params: dataCenterParamsSchema,
   metric: exports_external.string().min(1).max(80).optional()
 }).strict();
 var createExportJobSchema = exports_external.union([
@@ -180303,8 +180371,18 @@ async function withComparison(runner, ranges, unit, enabled = true) {
   };
 }
 
+// src/lib/data-center/scope-options.ts
+function multiStoreName(names) {
+  if (names.length <= 3)
+    return names.join("、");
+  return `${names.slice(0, 3).join("、")} 等 ${names.length} 家门店`;
+}
+
 // src/lib/data-center/context.ts
 async function validateScope(session4, scope) {
+  if (scope.type === "stores" && !isValidStoresScopeIds(scope.ids)) {
+    throw new Error(`INVALID_PARAMS: 多店范围须为 2~${MAX_SCOPE_STORES} 家不重复的门店`);
+  }
   if (isAdminScope(session4))
     return;
   if (session4.roles.some((r) => r.scopeType === "总部"))
@@ -180327,7 +180405,8 @@ async function validateScope(session4, scope) {
     }
     return;
   }
-  if (!session4.permissions.scopeStoreIds.includes(scope.id)) {
+  const ids = scope.type === "stores" ? scope.ids : [scope.id];
+  if (!ids.every((id) => session4.permissions.scopeStoreIds.includes(id))) {
     throw new PermissionError("PERMISSION_DENIED: 越权访问其他门店数据");
   }
 }
@@ -180340,8 +180419,20 @@ async function resolveScopeName(scope) {
     const [row2] = await db2.select({ name: orgNodes.name }).from(orgNodes).where(import_drizzle_orm60.eq(orgNodes.id, scope.id)).limit(1);
     return row2?.name ?? "未知市场";
   }
+  if (scope.type === "stores") {
+    const rows = await db2.select({ id: stores.storeId, name: stores.storeName }).from(stores).where(import_drizzle_orm60.inArray(stores.storeId, scope.ids)).limit(scope.ids.length);
+    const names = new Map(rows.map((r) => [r.id, r.name]));
+    return multiStoreName(scope.ids.map((id) => names.get(id) ?? "未知门店"));
+  }
   const [row] = await db2.select({ name: stores.storeName }).from(stores).where(import_drizzle_orm60.eq(stores.storeId, scope.id)).limit(1);
   return row?.name ?? "未知门店";
+}
+function scopeIdOf(scope) {
+  if (scope.type === "market" || scope.type === "store")
+    return scope.id;
+  if (scope.type === "stores")
+    return scope.ids.join(",");
+  return null;
 }
 async function prepareBoardContext(session4, params) {
   await validateScope(session4, params.scope);
@@ -180352,7 +180443,7 @@ async function prepareBoardContext(session4, params) {
     meta: {
       scope: {
         type: params.scope.type,
-        id: params.scope.type === "market" || params.scope.type === "store" ? params.scope.id : null,
+        id: scopeIdOf(params.scope),
         name: scopeName
       },
       timeRange: {
@@ -180400,6 +180491,8 @@ function scopeFilterSql(session4, scope, storeCol = "so.store_id") {
     parts.push(import_drizzle_orm62.sql`${col} = ${scope.id}`);
   } else if (scope.type === "market") {
     parts.push(import_drizzle_orm62.sql`${col} IN ${orgNodeStoreIdsSubquery(scope.id)}`);
+  } else if (scope.type === "stores") {
+    parts.push(import_drizzle_orm62.sql`${col} IN (${import_drizzle_orm62.sql.join(scope.ids.map((i) => import_drizzle_orm62.sql`${i}`), import_drizzle_orm62.sql`, `)})`);
   }
   return import_drizzle_orm62.sql.join(parts, import_drizzle_orm62.sql` AND `);
 }
@@ -180412,6 +180505,10 @@ function orgAnchorScopeSql(session4, scope, anchorCol = "pb.anchor_market_id") {
       return import_drizzle_orm62.sql`${col} = ${scope.id}`;
     return import_drizzle_orm62.sql`${col} = ${scope.id} AND ${visibleActiveAnchorSql(session4, col)}`;
   }
+  if (scope.type === "stores") {
+    const ids = isAdminScope(session4) ? scope.ids : scope.ids.filter((id) => session4.permissions.scopeStoreIds.includes(id));
+    return activeAnchorAmongSql(ids, col);
+  }
   if (isAdminScope(session4))
     return import_drizzle_orm62.sql`TRUE`;
   return visibleActiveAnchorSql(session4, col);
@@ -180420,7 +180517,9 @@ function isGrantedMarketScope(session4, marketId) {
   return isAdminScope(session4) || (session4.permissions.scopeOrgNodeIds ?? []).includes(marketId);
 }
 function visibleActiveAnchorSql(session4, col) {
-  const ids = session4.permissions.scopeStoreIds;
+  return activeAnchorAmongSql(session4.permissions.scopeStoreIds, col);
+}
+function activeAnchorAmongSql(ids, col) {
   if (ids.length === 0)
     return import_drizzle_orm62.sql`FALSE`;
   return import_drizzle_orm62.sql`EXISTS (
@@ -180441,6 +180540,9 @@ function scopeStoreSkeletonSql(session4, scope) {
     JOIN org_nodes o_mkt ON o_store.parent_id = o_mkt.id
     WHERE ${scopeFilterSql(session4, scope, "s.store_id")}
   `;
+}
+function scopeHasStoreSql(session4, scope) {
+  return import_drizzle_orm62.sql`SELECT EXISTS (${scopeStoreSkeletonSql(session4, scope)}) AS has_store`;
 }
 
 // src/lib/data-center/consume-filter.ts
@@ -181045,6 +181147,8 @@ async function queryActive(session4, scope, range, mode) {
     JOIN client_wechat_users c ON c.user_id = vc.client_user_id
     WHERE ${csc}
       AND c.customer_status IN ('保有会员-稳定', '保有会员-有效')
+      AND c.became_member_at IS NOT NULL
+      AND c.became_member_at::date <= ${range.end}
       AND ${daysClause}
   `);
   return num(first(rows).v);
@@ -181256,7 +181360,8 @@ async function queryRegActiveBreakdown(session4, scope, range, group) {
       GROUP BY c.bound_store_id
     ),
     -- 区间到店天数（按客户 + bound_store_id），区分一次/二次客活（仅保有会员）。
-    -- 到店日按 (顾客, service_date) 去重（#298），与 KPI queryActive 同一个 visitDaysSql
+    -- 到店日按 (顾客, service_date) 去重（#298），与 KPI queryActive 同一个 visitDaysSql。
+    -- 会员守卫与上面的 reg（达成率分母）逐字同源（#414），理由见 queryActive 的注释。
     visit_days AS (${visitDaysSql({ axis: "service_date", scope: serviceScope, range })}),
     visit_count AS (
       SELECT vd.client_user_id, c.bound_store_id AS store_id,
@@ -181266,6 +181371,8 @@ async function queryRegActiveBreakdown(session4, scope, range, group) {
       JOIN client_wechat_users c ON c.user_id = vd.client_user_id
       WHERE ${customerScope}
         AND c.bound_store_id IS NOT NULL
+        AND c.became_member_at IS NOT NULL
+        AND c.became_member_at::date <= ${end}
       GROUP BY vd.client_user_id, c.bound_store_id, c.customer_status
     ),
     active AS (
@@ -181611,9 +181718,9 @@ function buildBreakdownRows(group, skeletonRows, regActive, ops) {
         registered: ra?.registered ?? 0,
         retained: ra?.retained ?? 0,
         visitOnce: ra?.visitOnce ?? 0,
-        visitOnceRate: ra ? safeDiv(ra.visitOnce, ra.retained) : null,
+        visitOnceRate: ra ? safeDiv(ra.visitOnce, ra.registered) : null,
         visitTwice: ra?.visitTwice ?? 0,
-        visitTwiceRate: ra ? safeDiv(ra.visitTwice, ra.retained) : null,
+        visitTwiceRate: ra ? safeDiv(ra.visitTwice, ra.registered) : null,
         dormant: ra?.dormant ?? 0,
         reactivatedDormant: ra?.reactivatedDormant ?? 0,
         frozen: ra?.frozen ?? 0,
@@ -182900,14 +183007,16 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
   const technicianCount = scalar2(technicianCountR);
   const managerCount = scalar2(managerCountR);
   const mk = (value, unit) => ({ value, unit });
+  const scopeHasStore = skelRows.length > 0;
+  const perTechnician = (num3) => scopeHasStore ? ratio(num3, technicianCount) : null;
   const kpis = {
     managerAvgMembers: mk(ratio(memberCount, managerCount), "count"),
     managerAvgEmployees: mk(ratio(technicianCount, managerCount), "count"),
-    empAvgRevenue: mk(ratio(revenueTotal, technicianCount), "amount"),
-    empAvgConsume: mk(ratio(consumeTotal, technicianCount), "amount"),
-    empAvgIncome: mk(ratio(incomeTotal, technicianCount), "amount"),
-    empAvgMembers: mk(ratio(footfallTotal, technicianCount), "count"),
-    empAvgProjects: mk(ratio(projectCountTotal, technicianCount), "count")
+    empAvgRevenue: mk(perTechnician(revenueTotal), "amount"),
+    empAvgConsume: mk(perTechnician(consumeTotal), "amount"),
+    empAvgIncome: mk(perTechnician(incomeTotal), "amount"),
+    empAvgMembers: mk(perTechnician(footfallTotal), "count"),
+    empAvgProjects: mk(perTechnician(projectCountTotal), "count")
   };
   const managerMap = toMap(managerByStoreR);
   const techMap = toMap(techByStoreR);
@@ -182925,6 +183034,7 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
       m = {
         marketId,
         marketName: marketName2,
+        storeCount: 0,
         managerCount: 0,
         technicianCount: 0,
         revenue: 0,
@@ -182940,6 +183050,7 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
   for (const r of skelRows) {
     const storeId = String(r.store_id);
     const m = marketRowOf(String(r.market_id ?? ""), String(r.market_name ?? ""));
+    m.storeCount += 1;
     m.managerCount += managerMap.get(storeId) ?? 0;
     m.technicianCount += techMap.get(storeId) ?? 0;
     m.revenue += revMap.get(storeId) ?? 0;
@@ -182954,21 +183065,25 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
     const m = marketRowOf(String(r.market_id), String(r.market_name ?? ""));
     m.technicianCount += Number(r.v ?? 0);
   }
-  const byMarket = Array.from(marketMap.values()).map((m) => ({
-    groupId: m.marketId,
-    groupName: m.marketName,
-    metrics: {
-      managerCount: m.managerCount,
-      managerAvgIncome: ratio(m.income, m.managerCount),
-      technicianCount: m.technicianCount,
-      techAvgRevenue: ratio(m.revenue, m.technicianCount),
-      techAvgConsume: ratio(m.consume, m.technicianCount),
-      techAvgShengmeiConsume: ratio(m.shengmeiConsume, m.technicianCount),
-      techAvgIncome: ratio(m.income, m.technicianCount),
-      techAvgMembers: ratio(footfallByMarketMap.get(m.marketId) ?? 0, m.technicianCount),
-      techAvgProjects: ratio(m.projectCount, m.technicianCount)
-    }
-  }));
+  const marketRows = Array.from(marketMap.values());
+  const byMarket = marketRows.map((m) => {
+    const perTech = (num3) => m.storeCount > 0 ? ratio(num3, m.technicianCount) : null;
+    return {
+      groupId: m.marketId,
+      groupName: m.marketName,
+      metrics: {
+        managerCount: m.managerCount,
+        managerAvgIncome: ratio(m.income, m.managerCount),
+        technicianCount: m.technicianCount,
+        techAvgRevenue: perTech(m.revenue),
+        techAvgConsume: perTech(m.consume),
+        techAvgShengmeiConsume: perTech(m.shengmeiConsume),
+        techAvgIncome: perTech(m.income),
+        techAvgMembers: perTech(footfallByMarketMap.get(m.marketId) ?? 0),
+        techAvgProjects: perTech(m.projectCount)
+      }
+    };
+  });
   const mapStoreRank = (rows) => assignRanks(rows.map((r) => ({
     id: String(r.store_id),
     name: String(r.store_name ?? ""),
@@ -183019,6 +183134,8 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
   return {
     ...ctx.meta,
     kpis,
+    noStoreScope: !scopeHasStore,
+    noStoreMarkets: marketRows.filter((m) => m.storeCount === 0).map((m) => m.marketName),
     byMarket,
     byStaff,
     storeRankings,
@@ -183043,12 +183160,12 @@ var REPORT_RANGE_PRESET_LABELS = {
 var DEFAULT_REPORT_RANGE_PRESET = "lastMonth";
 var MAX_CUSTOM_RANGE_DAYS = 366;
 var REPORT_MIN_MONTH = "2026-07";
-var DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
+var DATE_RE2 = /^(\d{4})-(\d{2})-(\d{2})$/;
 var MONTH_RE = /^(\d{4})-(\d{2})$/;
 var MIN_YEAR = 2000;
 var MAX_YEAR = 2099;
 function isValidCalendarDate(value) {
-  const match = value?.match(DATE_RE);
+  const match = value?.match(DATE_RE2);
   if (!match)
     return false;
   const [year2, month, day2] = [Number(match[1]), Number(match[2]), Number(match[3])];
@@ -183529,12 +183646,17 @@ function parseOperatingMasterExportScope(raw) {
     return { type: "authorized" };
   if ((raw.scope === "market" || raw.scope === "store") && raw.scopeId)
     return { type: raw.scope, id: raw.scopeId };
+  if (raw.scope === "stores") {
+    const ids = parseStoreIdList(raw.scopeId);
+    if (ids && ids.length >= 2)
+      return { type: "stores", ids };
+  }
   throw new Error("INVALID_PARAMS: 导出范围参数不完整或无效");
 }
 function operatingMasterScopeMeta(scope, name) {
   if (scope.type === "market")
     return `市场 · ${name}`;
-  if (scope.type === "store")
+  if (scope.type === "store" || scope.type === "stores")
     return `门店 · ${name}`;
   return name;
 }
@@ -183828,37 +183950,6 @@ function dailyOverviewQueries(session4, scope, range) {
         AND ${excludeDepositRefundSql("so")}
       GROUP BY so.store_id, sit.sales_category
     `
-  };
-}
-
-// src/lib/data-center/params.ts
-var DATE_RE2 = /^\d{4}-\d{2}-\d{2}$/;
-function firstQueryValue(raw) {
-  return Array.isArray(raw) ? raw[0] : raw;
-}
-function parseScope(raw) {
-  if (raw.scope === "authorized")
-    return { type: "authorized" };
-  if (raw.scope === "market" && raw.scopeId)
-    return { type: "market", id: raw.scopeId };
-  if (raw.scope === "store" && raw.scopeId)
-    return { type: "store", id: raw.scopeId };
-  return { type: "all" };
-}
-function parseTimeRange(raw) {
-  const p = raw.preset;
-  if (p === "custom" && raw.start && raw.end && DATE_RE2.test(raw.start) && DATE_RE2.test(raw.end) && raw.start <= raw.end) {
-    return { preset: "custom", start: raw.start, end: raw.end };
-  }
-  if (p === "today" || p === "week" || p === "year")
-    return { preset: p };
-  return { preset: "month" };
-}
-function parseBoardParams(raw) {
-  return {
-    scope: parseScope(raw),
-    timeRange: parseTimeRange(raw),
-    withComparison: raw.cmp !== "0"
   };
 }
 
@@ -184358,9 +184449,9 @@ var customerRegistrationMetricColumns = [
   { key: "registered", label: "会员注册", unit: "count" },
   { key: "retained", label: "保有会员", unit: "count" },
   { key: "visitOnce", label: "回店1次", unit: "count" },
-  { key: "visitOnceRate", label: "1次达成率", unit: "percent" },
+  { key: "visitOnceRate", label: "1次达成率(÷会员注册)", unit: "percent" },
   { key: "visitTwice", label: "回店2次", unit: "count" },
-  { key: "visitTwiceRate", label: "2次达成率", unit: "percent" },
+  { key: "visitTwiceRate", label: "2次达成率(÷会员注册)", unit: "percent" },
   { key: "dormant", label: "沉睡(截面·仅会员客)", unit: "count" },
   { key: "reactivatedDormant", label: "激活沉睡", unit: "count" },
   { key: "frozen", label: "冰冻(截面)", unit: "count" },
@@ -185448,7 +185539,7 @@ async function scopeMetaLabel(scope) {
   const name = await resolveScopeName(scope);
   if (scope.type === "market")
     return `市场 · ${name}`;
-  if (scope.type === "store")
+  if (scope.type === "store" || scope.type === "stores")
     return `门店 · ${name}`;
   return name;
 }
@@ -186163,10 +186254,11 @@ var getCommissionDaily = withAllPermissions(DATA_CENTER_STAFF_COMMISSION_ACTIONS
   const grain = grainOf(options, isAllScope);
   const range = period.current;
   const technicianEnd = range.end > today ? today : range.end;
-  const [matrixRows, kpiRows, technicianRows, pendingRows, scopeName] = await Promise.all([
+  const [matrixRows, kpiRows, technicianRows, hasStoreRows, pendingRows, scopeName] = await Promise.all([
     db2.execute(commissionMatrixSql(session4, scope, range, grain, options)),
     db2.execute(commissionKpiSql(session4, scope, range)),
     db2.execute(technicianCountSql(session4, scope, technicianEnd)),
+    db2.execute(scopeHasStoreSql(session4, scope)),
     db2.execute(pendingAllocationSql(session4, scope, range)),
     resolveScopeName(scope)
   ]);
@@ -186179,6 +186271,7 @@ var getCommissionDaily = withAllPermissions(DATA_CENTER_STAFF_COMMISSION_ACTIONS
   const total = sale + service;
   const orders = toNumber(kpi.orders);
   const technicianCount = toNumber(rowsOf(technicianRows)[0]?.v);
+  const noStoreScope = rowsOf(hasStoreRows)[0]?.has_store !== true;
   const pending = rowsOf(pendingRows)[0] ?? {};
   return {
     month: period.month,
@@ -186198,7 +186291,8 @@ var getCommissionDaily = withAllPermissions(DATA_CENTER_STAFF_COMMISSION_ACTIONS
       earningEmployees: toNumber(kpi.earning_employees),
       employees: toNumber(kpi.employees),
       technicianCount,
-      perTechnician: ratio3(total, technicianCount),
+      noStoreScope,
+      perTechnician: noStoreScope ? null : ratio3(total, technicianCount),
       orders,
       perOrder: ratio3(total, orders)
     },
@@ -186209,7 +186303,7 @@ var getCommissionDaily = withAllPermissions(DATA_CENTER_STAFF_COMMISSION_ACTIONS
 function detailSignature(scope, month, filters) {
   return commissionFilterSignature({
     scope: scope.type,
-    scopeId: scope.type === "market" || scope.type === "store" ? scope.id : "",
+    scopeId: scopeToParams(scope).scopeId ?? "",
     month,
     employeeId: filters.employeeId,
     storeId: filters.storeId,
@@ -186860,7 +186954,7 @@ async function operatingMasterContent(raw) {
 function scopeMetaLabel2(scope) {
   if (scope.type === "market")
     return `市场 · ${scope.name}`;
-  if (scope.type === "store")
+  if (scope.type === "store" || scope.type === "stores")
     return `门店 · ${scope.name}`;
   return scope.name;
 }

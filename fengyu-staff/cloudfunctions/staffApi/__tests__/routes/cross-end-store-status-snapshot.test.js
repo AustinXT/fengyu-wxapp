@@ -3,9 +3,10 @@
  *
  * 口径拍板（2026-09-25）：数据中心的取数范围、筛选器下拉、#293 停用空态**只看门店组织节点
  * `org_nodes.is_active`**；`stores.is_closed` 是营业时间轴（配合 closed_at 做时点在营），
- * 不参与统计范围。单源 helper 两端各一份独立副本（禁止跨端共享代码目录）：
+ * 不参与统计范围。单源 helper 各端一份独立副本（禁止跨端共享代码目录）：
  *   - admin `fengyu-admin/src/lib/store-status.ts`
  *   - staff `utils/store-status.js`
+ *   - 经营分析站 `fengyu-analyst/src/lib/store-status.ts`（#421 跟随，全部源码纳入闭集与单源）
  *
  * `activeStoreCondition` 函数体的两端整段等值由 `cross-end-technician-denominator.test.js`
  * 要件 7 负责（那里已逐字钉死，本文件不重复）。本文件守三件事：
@@ -20,6 +21,8 @@ const path = require('node:path')
 
 const ADMIN_SRC = path.resolve(__dirname, '../../../../../fengyu-admin/src')
 const STAFF_ROOT = path.resolve(__dirname, '../..')
+// 经营分析站（#421 跟随 #401）：第三份副本。analyst 自己的 vitest 不进 CI（#382），闭集 / 单源在这里一并守
+const ANALYST_SRC = path.resolve(__dirname, '../../../../../fengyu-analyst/src')
 
 function readFile(filePath) {
   return fs.readFileSync(filePath, 'utf8')
@@ -59,6 +62,8 @@ const CONSUMER_FILES = [
   ...listSources(path.join(ADMIN_SRC, 'actions/data-center'), ['.ts', '.tsx']),
   ...listSources(path.join(ADMIN_SRC, 'app/(main)/(analytics)/data-center'), ['.ts', '.tsx']),
   ...STAFF_MGMT_STATS.map((name) => path.join(STAFF_ROOT, 'routes', name)),
+  // 经营分析站全部源码（#421）：范围下拉与三个板块取数都在这里
+  ...listSources(ANALYST_SRC, ['.ts', '.tsx']),
 ]
 
 const rel = (p) => path.relative(path.resolve(ADMIN_SRC, '../..'), p)
@@ -78,6 +83,9 @@ describe('#401 数据中心在营口径 · 闭集', () => {
       'fengyu-admin/src/actions/data-center/shared.ts',
       'fengyu-admin/src/actions/data-center/sales.ts',
       'fengyu-staff/cloudfunctions/staffApi/routes/mgmt-dashboard.js',
+      'fengyu-analyst/src/lib/analyst-scope.ts',
+      'fengyu-analyst/src/lib/store-status.ts',
+      'fengyu-analyst/src/lib/repurchase.ts',
     ]) {
       expect(names, `扫描集缺 ${known}`).toContain(known)
     }
@@ -96,7 +104,11 @@ describe('#401 数据中心在营口径 · 闭集', () => {
 
 describe('#401 数据中心在营口径 · helper 本体', () => {
   it('两端 store-status helper 的代码行不出现 is_closed / isClosed（注释可解释口径，代码不许用）', () => {
-    const helpers = [path.join(ADMIN_SRC, 'lib/store-status.ts'), path.join(STAFF_ROOT, 'utils/store-status.js')]
+    const helpers = [
+      path.join(ADMIN_SRC, 'lib/store-status.ts'),
+      path.join(STAFF_ROOT, 'utils/store-status.js'),
+      path.join(ANALYST_SRC, 'lib/store-status.ts'),
+    ]
     const offenders = []
     let codeLines = 0
     for (const file of helpers) {
@@ -159,6 +171,11 @@ describe('#401 数据中心在营口径 · 单源', () => {
     const files = listSources(STAFF_ROOT, ['.js']) // 整个 staffApi（listSources 已跳过 node_modules 与测试文件）
     const sites = definitionSites(files)
     expect(sites.map(rel)).toEqual(['fengyu-staff/cloudfunctions/staffApi/utils/store-status.js'])
+  })
+
+  it('analyst 全部源码只在 lib/store-status.ts 定义一次 activeStoreCondition（#421）', () => {
+    const sites = definitionSites(listSources(ANALYST_SRC, ['.ts', '.tsx']))
+    expect(sites.map(rel)).toEqual(['fengyu-analyst/src/lib/store-status.ts'])
   })
 
   it('admin TS 谓词整段等值：只看节点 isActive', () => {
