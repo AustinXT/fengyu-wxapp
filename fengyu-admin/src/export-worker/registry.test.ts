@@ -15,6 +15,9 @@ vi.mock('@/actions/data-center/efficiency', () => ({
 vi.mock('@/actions/data-center/operating-master', () => ({
   getOperatingMaster: vi.fn(),
 }))
+vi.mock('@/actions/data-center/daily-overview', () => ({
+  getDailyOverview: vi.fn(),
+}))
 vi.mock('@/actions/refunds', () => ({
   exportRefunds: vi.fn(),
 }))
@@ -37,6 +40,8 @@ import { getEfficiencyBoard } from '@/actions/data-center/efficiency'
 import { getOperatingMaster } from '@/actions/data-center/operating-master'
 import { exportRefunds } from '@/actions/refunds'
 import { exportRemainingCardsReport } from '@/actions/data-center/remaining-cards'
+import { getDailyOverview } from '@/actions/data-center/daily-overview'
+import { buildDailyOverview } from '@/lib/data-center/daily-overview'
 import {
   DATA_CENTER_VIEW_CONFIG,
   getDataCenterBreakdownConfig,
@@ -88,6 +93,7 @@ const rankingRow = {
 }
 
 beforeEach(() => {
+  vi.clearAllMocks()
   const sales = boardRow('sales-market')
   const customer = boardRow('customer-market-reg')
   const product = boardRow('product-market')
@@ -376,6 +382,13 @@ describe('数据中心导出 · 报表视图分发', () => {
       scopeName: '全部',
       ...buildOperatingMasterTable([], new Map()),
     } as never)
+    vi.mocked(getDailyOverview).mockResolvedValue({
+      data: buildDailyOverview({ stores: [], categories: [], performanceParts: [], performanceTotals: [], recharge: [], service: [] }),
+      kpis: {} as never,
+      storeCount: 0,
+      period: { label: '上月', current: { start: '2026-08-01', end: '2026-08-31' }, previous: { start: '2026-07-01', end: '2026-07-31' } },
+      scope: { type: 'all', name: '全部' },
+    })
     vi.mocked(getSalesBoard).mockClear()
     vi.mocked(getCustomerBoard).mockClear()
     vi.mocked(getProductBoard).mockClear()
@@ -519,5 +532,65 @@ describe('数据中心导出 · 顾客剩余卡项清单（#371）', () => {
     const rows: Record<string, unknown>[] = []
     for await (const row of content.rows) rows.push(row)
     expect(content.columns.map((column) => column.value(rows[0]))).toEqual(['蓝莱店', '张三 138****2222', '会员客', 3, 3])
+  })
+})
+
+describe('日常数据一览表导出（#369）', () => {
+  const data = buildDailyOverview({
+    stores: [
+      { storeId: 'S1', storeName: '蓝莱店', marketId: 'M1', marketName: '南昌凤御' },
+      { storeId: 'S2', storeName: '自贡一店', marketId: 'M2', marketName: '自贡凤御' },
+    ],
+    categories: [
+      { categoryId: 'P1', categoryName: '招牌', productKind: null, sortOrder: 1, isValid: true },
+      { categoryId: 'C1', categoryName: '绝对招牌', productKind: '招牌', sortOrder: 1, isValid: true },
+    ],
+    performanceTotals: [{ storeId: 'S1', amount: '100.00' }],
+    performanceParts: [{ storeId: 'S1', salesCategory: '自销自耗', categoryId: 'C1', amount: '100' }],
+    recharge: [{ storeId: 'S2', amount: '20.00' }],
+    service: [{ storeId: 'S1', salesCategory: '他销他耗', amount: '30.00' }],
+  })
+
+  beforeEach(() => {
+    vi.mocked(getDailyOverview).mockResolvedValue({
+      data,
+      kpis: {} as never,
+      storeCount: 2,
+      period: {
+        label: '上月（2026年8月）',
+        current: { start: '2026-08-01', end: '2026-08-31' },
+        previous: { start: '2026-07-01', end: '2026-07-31' },
+      },
+      scope: { type: 'market', name: '南昌凤御' },
+    })
+  })
+
+  it('派给一览表取数函数（不是板块），参数原样透传', async () => {
+    const params = { scope: 'market', scopeId: 'M1', period: 'lastMonth', tab: 'secondary' }
+    await createExportContent('data-center', { view: 'report-daily-overview', params })
+    expect(getDailyOverview).toHaveBeenCalledWith(params)
+    expect(getSalesBoard).not.toHaveBeenCalled()
+  })
+
+  it('☆ 只导当前页签：视角③带两行合并表头的分组，合计行取服务端 totals，元信息写明期间 / 范围 / 视角', async () => {
+    const content = await createExportContent('data-center', { view: 'report-daily-overview', params: { tab: 'secondary' } })
+    expect(content.sheetName).toBe('二级品项汇总')
+    expect(content.columns.map((column) => column.header)).toEqual(['门店', '所属市场', '绝对招牌', '充值', '品项业绩合计'])
+    expect(content.columns[2].group).toEqual({ key: 'P1', header: '招牌' })
+    expect(content.columns.map((column) => column.total)).toEqual([undefined, undefined, 100, 20, 120])
+    expect(content.frozenColumns).toBe(2)
+    expect(content.totalsLabel).toBe('合计')
+    expect(content.meta).toEqual({
+      period: '2026-08-01 ~ 2026-08-31',
+      scope: '市场 · 南昌凤御',
+      extra: [{ label: '视角', value: '二级品项汇总' }],
+    })
+  })
+
+  it('缺省 / 非法 tab 导出经营类型视角', async () => {
+    const content = await createExportContent('data-center', { view: 'report-daily-overview', params: { tab: 'bogus' } })
+    expect(content.sheetName).toBe('经营类型汇总')
+    expect(content.columns.map((column) => column.header)).toContain('业绩合计')
+    expect(content.columns.map((column) => column.header)).toContain('服务合计')
   })
 })

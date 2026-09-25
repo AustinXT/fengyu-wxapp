@@ -98,6 +98,7 @@ describe('Sidebar 二级菜单', () => {
     expect(screen.getByText('看板')).toBeInTheDocument()
     expect(screen.getByText('经营明细')).toBeInTheDocument()
     expect(screen.getByRole('link', { name: '经营数据主表' })).not.toHaveClass('text-[var(--primary)]')
+    expect(screen.getByRole('link', { name: '日常数据一览表' })).not.toHaveClass('text-[var(--primary)]')
   })
 
   it('访问经营数据主表时只高亮该报表入口', () => {
