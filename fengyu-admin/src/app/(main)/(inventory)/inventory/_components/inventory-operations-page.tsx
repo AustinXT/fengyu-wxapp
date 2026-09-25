@@ -474,6 +474,8 @@ function LotPicker({
 }) {
   const [lots, setLots] = useState<InventoryLotRow[]>([])
   const [loading, setLoading] = useState(false)
+  /** 只列赠送批次且确实取回了空列表（区别于未取 / 加载中 / 加载失败）：占位要指出出路 */
+  const [giftEmpty, setGiftEmpty] = useState(false)
   // 取数回调里读最新的已选值与回调，不把它们放进 effect 依赖（否则每次选择都重查）
   const valueRef = useRef(value)
   valueRef.current = value
@@ -495,6 +497,7 @@ function LotPicker({
 
   useEffect(() => {
     let cancelled = false
+    setGiftEmpty(false)
     if (!locationId || !skuId) {
       setLots([])
       return () => { cancelled = true }
@@ -505,8 +508,11 @@ function LotPicker({
         if (cancelled) return
         const visible = giftOnly ? rows.filter((lot) => lot.isGift) : rows
         setLots(visible)
+        setGiftEmpty(giftOnly && visible.length === 0)
+        // 只列赠送批次时掉出列表，可能是它不是赠送批次，也可能是被出完了 —— 清空前先判清是哪一种
+        const stillListed = rows.some((lot) => String(lot.id) === valueRef.current)
         if (!visible.some((lot) => String(lot.id) === valueRef.current) && dropStaleSelection()) {
-          toast.warning(giftOnly ? '所选批次不是赠送批次，请重新选择' : '所选批次已无可用库存，请重新选择')
+          toast.warning(giftOnly && stillListed ? '所选批次不是赠送批次，请重新选择' : '所选批次已无可用库存，请重新选择')
         }
       })
       .catch((error) => {
@@ -531,7 +537,7 @@ function LotPicker({
       }}
       disabled={!locationId || !skuId || loading}
     >
-      <option value="">{loading ? '正在加载批次' : giftOnly && !loading && locationId && skuId && lots.length === 0 ? '暂无赠送批次' : '选择库存批次'}</option>
+      <option value="">{loading ? '正在加载批次' : giftEmpty ? '暂无赠送批次，可勾选「从普通批次赠送」' : '选择库存批次'}</option>
       {lots.map((lot) => (
         <option key={lot.id} value={String(lot.id)}>
           批次 {lot.batchNo || '未填写'}{lot.isGift ? '（赠送）' : ''} · 可用 {lot.availableQuantity}{lot.expiryDate ? ` · 效期 ${lot.expiryDate}` : ''}
@@ -4063,7 +4069,7 @@ function StoreAllocationForm({
       return
     }
     if (items.some((line) => invalidLot(line.giftLotId))) {
-      toast.error('请为赠送数量选择赠送批次')
+      toast.error('请为赠送数量选择赠送批次（没有赠送批次时可勾选「从普通批次赠送」）')
       return
     }
     setSaving(true)

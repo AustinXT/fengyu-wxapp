@@ -3955,6 +3955,14 @@ describe('分院配货报货单可选：引用 / 自选 / 混合（#337）', () 
       expect(itemLotIds(giftOnly.writes.items)).toEqual([14])
       expect(giftOnly.writes.fulfilledUpdates).toHaveLength(0)
 
+      // 只配赠送、只传 lotId：赠送沿用 lotId
+      const giftViaLotId = mockAllocation()
+      await createStoreAllocation(SESSION, {
+        storeRequestId: 'DBH-1', sourceMarketId: 'M1',
+        items: [{ requestItemId: 1, lotId: 14, quantity: 0, giftQuantity: 1 }],
+      })
+      expect(itemLotIds(giftViaLotId.writes.items)).toEqual([14])
+
       const legacy = mockAllocation()
       await createStoreAllocation(SESSION, {
         storeRequestId: 'DBH-1', sourceMarketId: 'M1',
@@ -3992,6 +4000,12 @@ describe('分院配货报货单可选：引用 / 自选 / 混合（#337）', () 
         targetStoreId: 'S1', sourceMarketId: 'M1',
         items: [{ skuId: 'SKU-2', lotId: 12, quantity: 1, giftQuantity: 1, giftLotId: 14 }],
       })).rejects.toThrow('配货批次与所选商品不一致')
+      // 正常与赠送显式同批次：可用量按合计判（11 有 10 件，正常 8 + 赠送 3 超出）
+      mockAllocation()
+      await expect(createStoreAllocation(SESSION, {
+        storeRequestId: 'DBH-1', sourceMarketId: 'M1',
+        items: [{ requestItemId: 1, lotId: 11, quantity: 5, giftQuantity: 6, giftLotId: 11 }],
+      })).rejects.toThrow(/库存不足/)
       // 赠送批次 14 只有 2 件：赠送 3 件超出（可用量按各自批次累计，不与正常批次 11 的 10 件混算）
       mockAllocation()
       await expect(createStoreAllocation(SESSION, {

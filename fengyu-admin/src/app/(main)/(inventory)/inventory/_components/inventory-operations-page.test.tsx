@@ -2315,7 +2315,9 @@ describe('品项公司发货引用市场报货单（#336b）', () => {
   it('LotPicker 自动清空已选批次时两路一起清：lotId 与批次快照（转换表单的 onLotChange）', () => {
     // 转换表单同时保存 lotId 与整条批次快照（成本 / 赠送 / 可用量），只清 id 会让守恒预览按旧批次算
     const source = readFileSync(resolve(__dirname, 'inventory-operations-page.tsx'), 'utf8')
-    const picker = source.slice(source.indexOf('function LotPicker('), source.indexOf('function useLoadedDocument('))
+    // 截到紧随其后的 LotReferencePrice（#359）为止，别把后面的辅助函数一起截进来
+    const picker = source.slice(source.indexOf('function LotPicker('), source.indexOf('function LotReferencePrice('))
+    expect(picker.length).toBeGreaterThan(0)
     const drop = picker.slice(picker.indexOf('const dropStaleSelection = () => {'), picker.indexOf('useEffect('))
     expect(drop).toContain("onChangeRef.current('')")
     expect(drop).toContain('onLotChangeRef.current?.(null)')
@@ -2667,6 +2669,40 @@ describe('分院配货批次的赠送标记与参考进价（#359）', () => {
     })))
   })
 
+  it('取消「从普通批次赠送」：已选的普通批次被清空并说明原因（不是「已无可用库存」）', async () => {
+    vi.mocked(toast.warning).mockReset()
+    await openAllocation([NORMAL, GIFT])
+    await screen.findByRole('option', { name: /^批次 B100/ })
+    fireEvent.change(screen.getAllByRole('spinbutton')[1], { target: { value: '1' } })
+    const checkbox = await screen.findByRole('checkbox', { name: /^从普通批次赠送/ })
+    fireEvent.click(checkbox)
+    const giftSelect = (await screen.findByText('赠送批次')).closest('label, div')!.parentElement!.querySelector('select') as HTMLSelectElement
+    await waitFor(() => expect(giftSelect.querySelectorAll('option[value="11"]')).toHaveLength(1))
+    fireEvent.change(giftSelect, { target: { value: '11' } })
+    fireEvent.click(checkbox)
+    await waitFor(() => expect(toast.warning).toHaveBeenCalledWith('所选批次不是赠送批次，请重新选择'))
+    expect(giftSelect.value).toBe('')
+    expect(reference(/赠送批次参考进价/)).toBeNull()
+  })
+
+  it('市场没有赠送批次：占位指出「从普通批次赠送」出路；赠送数量改回 0 后残留的赠送批次不提交', async () => {
+    await openAllocation([NORMAL])
+    await screen.findByRole('option', { name: /^批次 B100/ })
+    fireEvent.change(normalLotSelect(), { target: { value: '11' } })
+    const giftQuantity = screen.getAllByRole('spinbutton')[1]
+    fireEvent.change(giftQuantity, { target: { value: '1' } })
+    expect(await screen.findByRole('option', { name: '暂无赠送批次，可勾选「从普通批次赠送」' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('checkbox', { name: /^从普通批次赠送/ }))
+    const giftSelect = screen.getByText('赠送批次').closest('label, div')!.parentElement!.querySelector('select') as HTMLSelectElement
+    await waitFor(() => expect(giftSelect.querySelectorAll('option[value="11"]')).toHaveLength(1))
+    fireEvent.change(giftSelect, { target: { value: '11' } })
+    fireEvent.change(giftQuantity, { target: { value: '0' } })
+    fireEvent.submit(screen.getByRole('button', { name: '创建分院配货单' }).closest('form')!)
+    await waitFor(() => expect(createStoreAllocation).toHaveBeenCalledWith(expect.objectContaining({
+      items: [expect.objectContaining({ lotId: 11, quantity: 4, giftQuantity: 0, giftLotId: null })],
+    })))
+  })
+
   it('赠送数量未选赠送批次不提交；只配赠送时不要求选正常批次', async () => {
     await openAllocation([NORMAL, GIFT])
     await screen.findByRole('option', { name: /^批次 B100/ })
@@ -2674,7 +2710,7 @@ describe('分院配货批次的赠送标记与参考进价（#359）', () => {
     fireEvent.change(normalQuantity, { target: { value: '0' } })
     fireEvent.change(giftQuantity, { target: { value: '1' } })
     fireEvent.submit(screen.getByRole('button', { name: '创建分院配货单' }).closest('form')!)
-    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('请为赠送数量选择赠送批次'))
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('请为赠送数量选择赠送批次（没有赠送批次时可勾选「从普通批次赠送」）'))
     expect(createStoreAllocation).not.toHaveBeenCalled()
 
     const giftSelect = (await screen.findByText('赠送批次')).closest('label, div')!.parentElement!.querySelector('select') as HTMLSelectElement

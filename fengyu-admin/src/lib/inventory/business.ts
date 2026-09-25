@@ -4326,7 +4326,10 @@ export async function createStoreAllocation(
         }
       }
       const discount = storeUnitDiscounts[lineIndex]
-      // 正常 / 赠送两侧各自锁批次、核 SKU、累计可用量；门店价按 SKU 定，两侧相同
+      // 正常 / 赠送两侧各自锁批次、核 SKU、累计可用量；门店价按 SKU 定，两侧相同（两侧已核同一 SKU，档案只查一次）。
+      // 锁序：批次按「行序、行内先正常后赠送」加锁，不按 id 排序 —— 与品项公司发货同为输入序，
+      // 今天靠 assertInventoryBusinessWritable 全局串行不成环；放宽那把锁前须改为按 lotId 升序预锁。
+      let lineSku: SkuSnapshot | null = null
       const outbound = async (lotId: number, lineQuantity: number): Promise<AllocationOutbound> => {
         let lot = lotsById.get(lotId)
         if (!lot) {
@@ -4345,7 +4348,8 @@ export async function createStoreAllocation(
         const demand = fixed((lotDemand.get(lot.id) ?? 0) + lineQuantity)
         lotDemand.set(lot.id, demand)
         await assertLotAvailable(tx, lot, demand)
-        const sku = await loadLotSkuForMarket(tx, lot, sourceMarketId)
+        const sku = lineSku ?? await loadLotSkuForMarket(tx, lot, sourceMarketId)
+        lineSku = sku
         if (sku.storePurchasePrice === null) {
           throw new ApiError('INVALID_STATE', `SKU ${sku.productName} 未设置门店进货价`)
         }

@@ -667,6 +667,8 @@ describe('市场间调货批次的赠送标记与参考进价（#359）', () => 
   it('无价格档（接口不下发 marketActualUnitPrice）不渲染参考进价', async () => {
     const { lotSelect } = await openTransfer('市场间调货出库', LOTS.map(({ marketActualUnitPrice: _price, ...lot }) => lot))
     fireEvent.change(lotSelect, { target: { value: '1' } })
+    // 先确认确实选中了，否则「不渲染」是恒真
+    expect((screen.getByRole('combobox', { name: '明细 1 来源批次' }) as HTMLSelectElement).value).toBe('1')
     expect(referenceNote()).toBeNull()
   })
 
@@ -674,6 +676,7 @@ describe('市场间调货批次的赠送标记与参考进价（#359）', () => 
     const { lotSelect } = await openTransfer('市场产品报损')
     expect(screen.getByRole('option', { name: /^G002（赠送） · 可用 3$/ })).toBeTruthy()
     fireEvent.change(lotSelect, { target: { value: '1' } })
+    expect((screen.getByRole('combobox', { name: '明细 1 来源批次' }) as HTMLSelectElement).value).toBe('1')
     expect(referenceNote()).toBeNull()
   })
 })

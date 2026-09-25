@@ -729,7 +729,7 @@ function DocLotSelect({
       {select}
       {selectedLot && selectedLot.marketActualUnitPrice !== undefined && (
         <div role="note" aria-label={`${label}参考进价`} className="rounded-md bg-[#FFF4C2] px-2 py-1 text-xs text-[#7B5E2B]">
-          参考进价 {selectedLot.marketActualUnitPrice === null ? '—' : selectedLot.marketActualUnitPrice.toFixed(2)}{selectedLot.isGift ? '（赠送批次）' : ''}
+          参考进价 {selectedLot.marketActualUnitPrice === null || !Number.isFinite(selectedLot.marketActualUnitPrice) ? '—' : selectedLot.marketActualUnitPrice.toFixed(2)}{selectedLot.isGift ? '（赠送批次）' : ''}
         </div>
       )}
     </div>

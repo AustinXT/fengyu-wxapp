@@ -399,8 +399,9 @@ test('INV-03：三级正向主链 —— 报货→采购→发货→入库→配
       .count()
     recordVerdict(verdicts, '§7.3 配货表单含「门店单价优惠」', hasDiscountField > 0, String(hasDiscountField))
 
-    const insufficientLots = await countInsufficientLots(page, '市场批次', QTY.allocNormal + QTY.allocGift)
-    await selectLotWithQty(page, '市场批次', QTY.allocNormal + QTY.allocGift)
+    // #359 起赠送数量单独选赠送批次：正常批次只需覆盖正常配货量
+    const insufficientLots = await countInsufficientLots(page, '市场批次', QTY.allocNormal)
+    await selectLotWithQty(page, '市场批次', QTY.allocNormal)
     recordVerdict(
       verdicts,
       'UX-LOT-01: 批次下拉未过滤/未警示可用量不足的批次（选错要到提交才报错）',
@@ -409,6 +410,8 @@ test('INV-03：三级正向主链 —— 报货→采购→发货→入库→配
     )
     await fillByLabel(page, '正常配货', String(QTY.allocNormal))
     await fillByLabel(page, '赠送数量', String(QTY.allocGift))
+    // 赠送批次默认只列赠送批次：市场收品项公司发货时入库的赠送批（shipGift=5）
+    await selectLotWithQty(page, '赠送批次', QTY.allocGift)
     await fillByLabel(page, '备注', R.allocation)
     await submitForm(page, '创建分院配货单', /分院配货单已创建/)
 
