@@ -653,4 +653,31 @@ describe('SKU 归属谓词 staff ↔ admin 同口径', () => {
     expect(staffSrc).toMatch(/reportableOnly: docType === '门店报货'/)
     expect(functionBody(staffSrc, 'inventorySkuSnapshot')).toMatch(/reportableOnly \? ' AND is_reportable = true' : ''/)
   })
+
+  // 对端（admin）的两道建单闸 + 门店报货可报货闸：任一端放宽，这里都会红
+  const adminBusiness = readFile(FILES.adminBusinessTs)
+  function tsFunctionBody(src, name) {
+    const m = src.match(new RegExp(`(?:export )?(?:async )?function ${name}\\([\\s\\S]*?\\n\\}`))
+    if (!m) throw new Error(`未找到 admin ${name}`)
+    return m[0]
+  }
+
+  test('admin 建单闸 engine.assertSkuAvailableAtLocation：供应链放行，否则须归属主体所属市场', () => {
+    const body = tsFunctionBody(adminEngine, 'assertSkuAvailableAtLocation')
+    expect(body).toContain("if (sku.sourceType === '供应链') return")
+    expect(body).toContain('if (!marketId || sku.ownerMarketId !== marketId)')
+  })
+
+  test('admin 业务闸 business.assertSkuAvailableToMarket 同谓词', () => {
+    const body = tsFunctionBody(adminBusiness, 'assertSkuAvailableToMarket')
+    expect(body).toContain("if (sku.sourceType === '供应链') return")
+    expect(body).toContain('if (marketId && sku.ownerMarketId === marketId) return')
+  })
+
+  test('admin 门店报货：loadSku(reportable=true) 真的拼 is_reportable，且报货调用点带归属闸', () => {
+    expect(tsFunctionBody(adminBusiness, 'loadSku')).toContain('${reportable ? sql`AND is_reportable = true` : sql``}')
+    const report = tsFunctionBody(adminBusiness, 'createStoreReplenishmentRequest')
+    expect(report).toContain('const sku = await loadSku(tx, skuId, true)')
+    expect(report).toContain('assertSkuAvailableToMarket(sku, marketId)')
+  })
 })

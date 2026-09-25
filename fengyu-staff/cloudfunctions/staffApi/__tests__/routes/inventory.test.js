@@ -748,6 +748,25 @@ describe('inventory.createDoc 权限与状态', () => {
     }
   })
 
+  test.each([
+    ['stockList', 'FROM inventory_stock_lots st'],
+    ['docList', 'FROM inventory_docs d'],
+  ])('%s 关键词里的 \\ % _ 都按字面匹配（列表与 count 同参）', async (action, fromSql) => {
+    const ctx = createCtx({ payload: { keyword: 'a\\b%_' } })
+    pg.query.mockImplementation(async (query) => {
+      const sql = String(query)
+      if (sql.includes('WITH RECURSIVE descendants')) return [{ store_id: 'store-001' }]
+      if (sql.includes('COUNT(')) return [{ cnt: 0, total: 0 }]
+      return []
+    })
+
+    await inventoryRoutes[action](ctx)
+
+    const calls = pg.query.mock.calls.filter(([sql]) => String(sql).includes(fromSql) && String(sql).includes('ILIKE'))
+    expect(calls.length).toBeGreaterThanOrEqual(2)
+    for (const [, params] of calls) expect(params).toContain('%a\\\\b\\%\\_%')
+  })
+
   test('reportableSkuOptions 关键词里的 \\ % _ 都按字面匹配', async () => {
     const ctx = createCtx({ payload: { locationId: 'store-001', keyword: 'a\\b%_' } })
     pg.query.mockImplementation(async (query) => {
