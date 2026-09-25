@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest'
+import { buildMatrixHeaderLayout } from './matrix'
 import { toWorkerExportColumns } from './matrix-export'
 import {
   buildRemainingCardsModel,
   columnKey,
+  displaySearchTerm,
   filterRemainingCardsRows,
   parseRemainingCardsParams,
   remainingCardsColumnSpecs,
@@ -238,5 +240,54 @@ describe('参数解析', () => {
     })
     expect(parseRemainingCardsParams({ scope: 'store', scopeId: 'S1', q: ' 张 ', show: 'remaining', dir: 'asc', page: '3', size: '100' }))
       .toEqual({ scope: { type: 'store', id: 'S1' }, q: '张', show: 'remaining', direction: 'asc', page: 3, pageSize: 100 })
+  })
+})
+
+describe('列分组的相邻性（评审 P2：分组被隔开会让表头与导出抛 INVALID_STATE）', () => {
+  it('一级分类恰好叫「未分类」且同时有无分类卡：未分类列独立分组，不抛错', () => {
+    const dict: RemainingCardsCategory[] = [
+      { categoryId: 'K1', categoryName: 'X', kind: '未分类', kindSort: 1, sort: 1 },
+      { categoryId: 'K2', categoryName: '招牌', kind: '招牌', kindSort: 2, sort: 1 },
+    ]
+    const built = buildRemainingCardsModel([
+      sqlRow({ clientUserId: 'U1', storeId: 'S1', cells: [cell('K1', { remaining: 1 }), cell('K2', { remaining: 1 }), cell(null, { remaining: 1 })] }),
+    ], dict)
+    const specs = remainingCardsColumnSpecs(built.columns)
+    expect(() => buildMatrixHeaderLayout(specs)).not.toThrow()
+    expect(built.columns.map((column) => column.categoryId)).toEqual(['K1', 'K2', UNCATEGORIZED_KEY])
+  })
+
+  it('同一级下各二级的排序权重不一致（同名一级行重复）时仍相邻', () => {
+    const dict: RemainingCardsCategory[] = [
+      { categoryId: 'A1', categoryName: 'a1', kind: '王牌', kindSort: 1, sort: 1 },
+      { categoryId: 'B1', categoryName: 'b1', kind: '明星', kindSort: 2, sort: 1 },
+      { categoryId: 'A2', categoryName: 'a2', kind: '王牌', kindSort: 3, sort: 2 },
+    ]
+    const built = buildRemainingCardsModel([
+      sqlRow({ clientUserId: 'U1', storeId: 'S1', cells: [cell('A1', { remaining: 1 }), cell('B1', { remaining: 1 }), cell('A2', { remaining: 1 })] }),
+    ], dict)
+    expect(built.columns.map((column) => column.categoryId)).toEqual(['A1', 'A2', 'B1'])
+    expect(() => buildMatrixHeaderLayout(remainingCardsColumnSpecs(built.columns))).not.toThrow()
+  })
+
+  it('字典里查不到的分类 id 与无分类卡并入同一个「未分类」格（次数相加，不出重名列）', () => {
+    const built = buildRemainingCardsModel([
+      sqlRow({ clientUserId: 'U1', storeId: 'S1', cells: [cell('GONE-1', { remaining: 2, deposit: true }), cell('GONE-2', { remaining: 3 }), cell(null, { unpaid: 1 })] }),
+    ], DICT)
+    expect(built.columns.map((column) => column.categoryId)).toEqual([UNCATEGORIZED_KEY])
+    expect(built.rows[0].cells[UNCATEGORIZED_KEY]).toMatchObject({ state: 'remaining', remaining: 5, unpaid: 1, deposit: true })
+    expect(built.rows[0].remaining).toBe(5)
+  })
+})
+
+describe('导出元信息的搜索词', () => {
+  it('完整手机号脱敏，其余原样', () => {
+    expect(displaySearchTerm(' 13811112222 ')).toBe('138****2222')
+    expect(displaySearchTerm('张三')).toBe('张三')
+  })
+
+  it('库里带空格的号码也能按完整号码搜到', () => {
+    const built = buildRemainingCardsModel([sqlRow({ clientUserId: 'U1', storeId: 'S1', phone: '138 1111 2222' })], DICT)
+    expect(filterRemainingCardsRows(built.rows, { q: '13811112222', show: 'all' })).toHaveLength(1)
   })
 })

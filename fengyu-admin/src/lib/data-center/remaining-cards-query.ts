@@ -52,13 +52,17 @@ export interface RemainingCardsSnapshot {
 }
 
 /**
- * 取一次快照：只读事务内依次查行与品项字典。
+ * 取一次快照：REPEATABLE READ 只读事务内依次查行与品项字典（两条语句共用事务快照；
+ * 默认 READ COMMITTED 下每条语句各取快照，字典与行可能错开）。只读 RR 事务不会有序列化失败。
  *
  * 规划器设置（仅本事务 SET LOCAL，不影响连接池里的其它查询）——prod 2026-09-25 实测全国范围：
  *   - 默认：3.3s，其中 JIT 编译 1.2s（「已退完」守卫的 hashed SubPlan 把代价估到 800 万，触发 JIT）；
  *     卡行 CTE 被低估成 3.4 万行，选了嵌套循环，对 sale_orders / product_skus 各探 11.7 万次
  *   - jit=off + enable_nestloop=off：0.62s（全部改走 hash join）
  * 不改写成别名表是因为卡行条件引用的是与 /cards 共用的 drizzle 列（lib/card-entitlement.ts）。
+ *
+ * 每次翻页 / 搜索都重算整张快照（筛选在内存里做）；statement_timeout 给单条语句一个硬上限，
+ * 计划劣化时也不会长时间占住连接池（max 5）。
  */
 export async function loadRemainingCardsSnapshot(
   session: AuthSession,
@@ -66,13 +70,13 @@ export async function loadRemainingCardsSnapshot(
   today: string,
 ): Promise<RemainingCardsSnapshot> {
   return db.transaction(async (tx) => {
-    await tx.execute(sql`SET TRANSACTION READ ONLY`)
+    await tx.execute(sql`SET LOCAL statement_timeout = '20s'`)
     await tx.execute(sql`SET LOCAL jit = off`)
     await tx.execute(sql`SET LOCAL enable_nestloop = off`)
     const rows = await queryRemainingCardsRows(tx, session, scope, today)
     const categories = await queryRemainingCardsCategories(tx)
     return { rows, categories }
-  })
+  }, { isolationLevel: 'repeatable read', accessMode: 'read only' })
 }
 
 async function queryRemainingCardsRows(
@@ -127,12 +131,13 @@ async function queryRemainingCardsRows(
     cells AS (
       SELECT s.client_user_id, s.store_id, s.category_id,
              COALESCE(SUM(s.paid_unused) FILTER (WHERE NOT s.expired), 0) AS remaining,
-             COALESCE(SUM(s.remaining_sessions - s.paid_unused) FILTER (WHERE NOT s.expired), 0) AS unpaid,
+             COALESCE(SUM(GREATEST(s.remaining_sessions - s.paid_unused, 0)) FILTER (WHERE NOT s.expired), 0) AS unpaid,
              COUNT(*) FILTER (WHERE NOT s.expired) AS active_rows,
              COUNT(*) FILTER (WHERE s.expired) AS expired_rows,
-             COALESCE(SUM(sv.served), 0) AS served,
-             COALESCE(SUM(cv.converted_out), 0) AS converted_out,
-             BOOL_OR(s.deposit) AS deposit,
+             -- 悬停说明只描述参与判态的未过期卡行（只剩过期卡的格显示「已过期」，不用这三项）
+             COALESCE(SUM(sv.served) FILTER (WHERE NOT s.expired), 0) AS served,
+             COALESCE(SUM(cv.converted_out) FILTER (WHERE NOT s.expired), 0) AS converted_out,
+             COALESCE(BOOL_OR(s.deposit) FILTER (WHERE NOT s.expired), FALSE) AS deposit,
              COALESCE(BOOL_OR(s.frozen) FILTER (WHERE NOT s.expired), FALSE) AS frozen
       FROM scoped s
       LEFT JOIN served sv ON sv.sale_item_id = s.sale_item_id
@@ -182,12 +187,14 @@ async function queryRemainingCardsRows(
  */
 async function queryRemainingCardsCategories(executor: Executor): Promise<RemainingCardsCategory[]> {
   const rows = await executor.execute(sql`
+    -- 一级名没有唯一约束：同名一级行有多条时取最小排序权重，保证每个二级只出一行、同一级排序一致
     SELECT c.category_id, c.category_name, c.product_kind, c.sort_order,
-           kind_row.sort_order AS kind_sort
+           MIN(kind_row.sort_order) AS kind_sort
     FROM product_categories c
     LEFT JOIN product_categories kind_row
       ON kind_row.product_kind IS NULL AND kind_row.category_name = c.product_kind
     WHERE c.product_kind IS NOT NULL
+    GROUP BY c.category_id, c.category_name, c.product_kind, c.sort_order
   `)
   return (rows as unknown as Record<string, unknown>[]).map((row) => ({
     categoryId: String(row.category_id),

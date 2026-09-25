@@ -179,19 +179,35 @@ export function buildRemainingCardsModel(
 ): RemainingCardsModel {
   const byId = new Map(dictionary.map((category) => [category.categoryId, category]))
   const used = new Map<string, RemainingCardsCategory>()
+  // 无分类卡与字典里查不到的分类（SKU 挂在已删除的分类或一级行上）一律并入同一个「未分类」列，不丢次数、不出重名列
+  const keyOf = (categoryId: string | null) => (categoryId && byId.has(categoryId) ? categoryId : UNCATEGORIZED_KEY)
 
   const rows = sqlRows.map((source): InternalRow => {
+    const merged = new Map<string, RemainingCellAggregate>()
+    for (const aggregate of source.cells) {
+      const key = keyOf(aggregate.categoryId)
+      const prev = merged.get(key)
+      merged.set(key, prev
+        ? {
+            categoryId: key,
+            remaining: prev.remaining + aggregate.remaining,
+            unpaid: prev.unpaid + aggregate.unpaid,
+            activeRows: prev.activeRows + aggregate.activeRows,
+            expiredRows: prev.expiredRows + aggregate.expiredRows,
+            served: prev.served + aggregate.served,
+            convertedOut: prev.convertedOut + aggregate.convertedOut,
+            deposit: prev.deposit || aggregate.deposit,
+            frozen: prev.frozen || aggregate.frozen,
+          }
+        : { ...aggregate, categoryId: key })
+    }
+
     const cells: Record<string, RemainingCell> = {}
     let remaining = 0
-    for (const aggregate of source.cells) {
+    for (const [key, aggregate] of merged) {
       const state = resolveCellState(aggregate)
       if (!state) continue
-      const key = categoryKey(aggregate.categoryId)
-      if (!used.has(key)) {
-        // 字典里查不到（SKU 挂了已删除的分类）与无分类卡一样归「未分类」列，不丢次数
-        const known = aggregate.categoryId ? byId.get(aggregate.categoryId) : undefined
-        used.set(key, known ?? { categoryId: key, ...UNCATEGORIZED })
-      }
+      if (!used.has(key)) used.set(key, byId.get(key) ?? { categoryId: key, ...UNCATEGORIZED })
       const cellRemaining = state === 'remaining' ? aggregate.remaining : 0
       remaining += cellRemaining
       cells[key] = {
@@ -216,21 +232,35 @@ export function buildRemainingCardsModel(
       level: memberLevel || customerType,
       remaining,
       cells,
-      rawPhone: source.phone ?? '',
+      rawPhone: normalizePhone(source.phone),
       memberLevel,
       customerType,
     }
   })
 
-  // 未分类列的 key 本身不在字典里，所以按 used 的值（而不是字典）排序
+  // 同一级的各列必须相邻（两行表头按相邻同组合并，被隔开会抛 INVALID_STATE）：
+  // 一级排序权重按一级名取最小值归一，未分类列恒排最后且用独立分组
+  const kindSort = new Map<string, number>()
+  for (const column of used.values()) {
+    if (column.categoryId === UNCATEGORIZED_KEY) continue
+    kindSort.set(column.kind, Math.min(kindSort.get(column.kind) ?? Number.MAX_SAFE_INTEGER, column.kindSort))
+  }
+  const rank = (column: RemainingCardsCategory) =>
+    column.categoryId === UNCATEGORIZED_KEY ? Number.POSITIVE_INFINITY : kindSort.get(column.kind)!
   const columns = [...used.values()].sort((a, b) =>
-    a.kindSort - b.kindSort
+    (rank(a) === rank(b) ? 0 : rank(a) < rank(b) ? -1 : 1)
     || a.kind.localeCompare(b.kind, 'zh-CN')
+    || compareText(a.kind, b.kind)
     || a.sort - b.sort
     || a.categoryName.localeCompare(b.categoryName, 'zh-CN')
-    || (a.categoryId < b.categoryId ? -1 : a.categoryId > b.categoryId ? 1 : 0))
+    || compareText(a.categoryId, b.categoryId))
 
   return { columns, rows }
+}
+
+/** 手机号比对前去掉空白（库里个别号码带空格） */
+function normalizePhone(phone: string | null): string {
+  return (phone ?? '').replace(/\s+/g, '')
 }
 
 // ─── 指标卡（范围全量，不受搜索 / 显示范围影响）─────────────────────────────
@@ -319,6 +349,12 @@ export function filterRemainingCardsRows<T extends InternalRow>(
     return [row.customerName, row.storeName, row.memberLevel, row.customerType]
       .some((text) => text.toLowerCase().includes(q))
   })
+}
+
+/** 导出元信息里回显的搜索词：完整手机号脱敏（导出件会被转发） */
+export function displaySearchTerm(q: string): string {
+  const trimmed = q.trim()
+  return FULL_PHONE.test(trimmed) ? formatPhoneSafe(trimmed) : trimmed
 }
 
 const NAME_COLLATOR = new Intl.Collator('zh-CN')
@@ -442,7 +478,10 @@ export function remainingCardsColumnSpecs(columns: readonly RemainingCardsCatego
     ...columns.map((column): MatrixExportColumnSpec<RemainingCardsRow> => ({
       key: columnKey(column),
       header: column.categoryName,
-      group: { key: `kind:${column.kind}`, header: column.kind },
+      group: {
+        key: column.categoryId === UNCATEGORIZED_KEY ? 'kind:__uncategorized__' : `kind:${column.kind}`,
+        header: column.kind,
+      },
       unit: 'count',
       aggregate: { kind: 'server' },
       value: (row) => (row.cells[column.categoryId]?.state === 'remaining' ? row.cells[column.categoryId].remaining : null),

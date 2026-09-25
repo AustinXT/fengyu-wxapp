@@ -2,7 +2,9 @@
  * 疗程卡「持卡权益」判定的单一真源（#371 从 actions/cards.ts 抽出）。
  *
  * 卡包列表 / 卡详情（/cards）、持卡折抵候选（getCustomerHeldCards）与数据中心「顾客剩余卡项清单」
- * 共用这里，保证「哪些行算一张卡」「哪些卡已退完」三处同口径。
+ * 共用基础集（「哪些行算一张卡」）；「已退完」守卫目前只有折抵候选与剩余卡项清单在用——/cards 列表
+ * 不剔除已退完的卡，但其可用次数经 paid_sessions 口径恒为 0，按顾客对账不受影响。
+ * 文本由 staffApi cross-end-sql-snapshot.test.js 锁住。
  *
  * 条件均引用 drizzle 列（渲染为 "sale_items"."col" / "sale_orders"."col"），
  * 原生 SQL 调用方须以**不带别名**的 `sale_items` / `sale_orders` 作为 FROM 表。

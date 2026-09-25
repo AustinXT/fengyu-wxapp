@@ -8,7 +8,7 @@
 import { exportRemainingCardsReport } from '@/actions/data-center/remaining-cards'
 import { resolveScopeName } from '@/lib/data-center/context'
 import { countLeftFrozen, toWorkerExportColumns } from '@/lib/data-center/matrix-export'
-import { remainingCardsColumnSpecs } from '@/lib/data-center/remaining-cards'
+import { displaySearchTerm, remainingCardsColumnSpecs } from '@/lib/data-center/remaining-cards'
 import type { DataCenterScope } from '@/lib/data-center/types'
 import {
   DATA_CENTER_REPORT_EXPORT_VIEWS,
@@ -53,7 +53,7 @@ async function remainingCardsContent(params: Record<string, string>): Promise<Ex
       extra: [
         { label: '快照日', value: report.asOf },
         { label: '显示范围', value: report.params.show === 'remaining' ? '只看有剩余' : '全部顾客' },
-        ...(report.params.q ? [{ label: '顾客搜索', value: report.params.q }] : []),
+        ...(report.params.q ? [{ label: '顾客搜索', value: displaySearchTerm(report.params.q) }] : []),
       ],
     },
   }

@@ -142,6 +142,7 @@ export function RemainingCardsView({ report }: { report: RemainingCardsReport })
         <Input
           className="w-72"
           aria-label="顾客搜索"
+          maxLength={50}
           placeholder="搜索姓名 / 门店 / 会员等级 / 完整手机号"
           value={searchInput}
           onChange={(event) => onSearchChange(event.target.value)}
