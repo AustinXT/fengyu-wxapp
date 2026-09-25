@@ -19,6 +19,7 @@ import {
   filterRemainingCardsRows,
   parseRemainingCardsParams,
   remainingCardsTotals,
+  resolveRemainingCardsPaging,
   sortRemainingCardsRows,
   summarizeRemainingCards,
   toPublicRow,
@@ -67,12 +68,12 @@ export const getRemainingCardsReport = withAllPermissions(
   async (session, raw: Record<string, string | undefined>): Promise<RemainingCardsReport> => {
     const params = parseRemainingCardsParams(raw)
     const { model, rows, asOf } = await loadFiltered(session, params)
+    // 页码越界（筛选变窄后停在旧页码）回到末页
     const pageCount = Math.max(1, Math.ceil(rows.length / params.pageSize))
-    const page = Math.min(params.page, pageCount)
-    const start = (page - 1) * params.pageSize
+    const { page, offset } = resolveRemainingCardsPaging(Math.min(params.page, pageCount), params.pageSize)
     return {
       columns: model.columns,
-      rows: rows.slice(start, start + params.pageSize).map(toPublicRow),
+      rows: rows.slice(offset, offset + params.pageSize).map(toPublicRow),
       total: rows.length,
       filteredCustomerCount: new Set(rows.map((row) => row.clientUserId)).size,
       filtered: params.q !== '' || params.show === 'remaining',

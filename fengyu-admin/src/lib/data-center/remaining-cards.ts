@@ -11,6 +11,7 @@
  *     只剩过期卡 → 已过期（四态合计里并入「未买过」）；没有卡行 → 未买过
  */
 import { formatPhoneSafe } from '@/lib/format'
+import { resolvePaging } from '@/lib/paging'
 import type { MatrixExportColumnSpec } from './matrix-export'
 import type { MatrixTotals } from './matrix'
 import { parseScope } from './params'
@@ -40,16 +41,26 @@ export interface RemainingCardsParams {
  * URL 键：scope / scopeId / q / show=remaining / dir=asc / page / size（导出时 page、size 被剔除）。
  */
 export function parseRemainingCardsParams(raw: Record<string, string | undefined>): RemainingCardsParams {
-  const page = Number.parseInt(raw.page ?? '', 10)
-  const size = Number.parseInt(raw.size ?? '', 10)
+  // 每页条数白名单严格按 number 匹配，URL 来的字符串先转数值
+  const { page, pageSize } = resolveRemainingCardsPaging(raw.page, Number(raw.size))
   return {
     scope: parseScope({ scope: raw.scope, scopeId: raw.scopeId }),
     q: (raw.q ?? '').trim().slice(0, 50),
     show: raw.show === 'remaining' ? 'remaining' : 'all',
     direction: raw.dir === 'asc' ? 'asc' : 'desc',
-    page: Number.isFinite(page) && page > 0 ? page : 1,
-    pageSize: (REMAINING_CARDS_PAGE_SIZES as readonly number[]).includes(size) ? size : REMAINING_CARDS_DEFAULT_PAGE_SIZE,
+    page,
+    pageSize,
   }
+}
+
+/** 页码 / 每页条数归一（#281 单源 resolvePaging；每页条数白名单与页面下拉一致） */
+export function resolveRemainingCardsPaging(page: unknown, pageSize: unknown) {
+  return resolvePaging({
+    page,
+    pageSize,
+    defaultPageSize: REMAINING_CARDS_DEFAULT_PAGE_SIZE,
+    allowedPageSizes: [...REMAINING_CARDS_PAGE_SIZES],
+  })
 }
 
 // ─── 取数结果（SQL 行）→ 行模型 ──────────────────────────────────────────────
