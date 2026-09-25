@@ -209,6 +209,10 @@ Page({
     summaryEmptyText: '',
     // 默认范围落在停用门店时允许 picker 自动换到在营门店；用户显式选过后关掉
     scopeAutoCorrect: true,
+    // 范围仍是初判：picker 拿到 scopeOptions 后按 admin 同规则纠正一次默认范围（#424），纠正过或用户选过后关。
+    // 初始 false、由 initDashboard 与初判同一次 setData 打开：scopeOptions 先于 initDashboard 返回时，
+    // 不能把这一次纠正耗在占位的「全部市场」上
+    scopeResolveDefault: false,
     summaryEmptyHint: '',
 
     // 门店排行榜
@@ -301,6 +305,7 @@ Page({
       defaultCalendarDate: maxDate,
       scope: defaultScope,
       defaultScope,
+      scopeResolveDefault: true,
     })
     this.loadSummary()
   },
@@ -310,10 +315,12 @@ Page({
     if ((roleBindings || []).some((binding) => binding.scopeType === '总部')) {
       return { scopeType: 'all', scopeId: null, scopeName: '全部市场' }
     }
+    // 这里只凭登录缓存做初判：不知道绑定的市场下有没有在营门店。mgmt-scope-picker 拿到 scopeOptions 后
+    // 按 utils/mgmt-scope resolveDefaultMgmtScope（对齐 admin #399）纠正，如「店长 + hr@品项公司」纠正到门店（#424）
     const marketBinding = (roleBindings || []).find((b: any) => b.scopeType === '市场')
     if (marketBinding) {
       // scopeName 先用绑定上的市场名；缺省时由 mgmt-scope-picker 加载 scopeOptions 后回填。
-      // 不能留空：市场下门店全停用时它会被下拉剔除、回填不到，触发器会误显示「全部市场」
+      // 不能留空：scopeOptions 加载失败时回填不到，触发器会误显示「全部市场」
       return {
         scopeType: 'market',
         scopeId: marketBinding.scopeId,
@@ -366,8 +373,17 @@ Page({
     const { userPicked, ...scope } = e.detail
     // defaultScope 同步成当前选择：picker 在 wx:if 切 tab 后会重建，重建时须回到当前 scope 而非初始默认值。
     // 用户显式选过范围后关掉自动纠正：重建的 picker 不能把用户选的（后来被停用的）门店换成别家
-    this.setData({ scope, defaultScope: scope, ...(userPicked ? { scopeAutoCorrect: false } : {}) })
+    this.setData({
+      scope,
+      defaultScope: scope,
+      ...(userPicked ? { scopeAutoCorrect: false, scopeResolveDefault: false } : {}),
+    })
     this.loadSummary()
+  },
+
+  /** picker 已按 scopeOptions 纠正过默认范围（#424）：之后重建的 picker 不再纠正 */
+  onScopeDefaultResolved() {
+    this.setData({ scopeResolveDefault: false })
   },
 
   async loadSummary() {

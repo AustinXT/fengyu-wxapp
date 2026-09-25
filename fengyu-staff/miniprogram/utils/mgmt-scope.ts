@@ -26,3 +26,75 @@ export function inactiveScopeHint(hasActiveAlternative: boolean | null | undefin
 export function isInactiveScopeQuery(query: Record<string, string | undefined> | undefined): boolean {
   return query?.[SCOPE_INACTIVE_QUERY_KEY] === '1'
 }
+
+// ---------------------------------------------------------------------------
+// 默认范围（#424，staff 侧副本，规则对齐 admin lib/data-center/scope-options.ts resolveDefaultDataCenterScope #399）
+// ---------------------------------------------------------------------------
+
+export interface MgmtScopeValue {
+  scopeType: 'all' | 'market' | 'store'
+  scopeId: string | null
+  scopeName: string
+  marketId?: string
+  inactive?: boolean
+}
+
+/** scopeOptions 回包中决定默认范围的部分：markets[].stores 只含在营门店 */
+export interface MgmtScopeOptionsLite {
+  allowAll: boolean
+  /** 直接授权（scopeOrgNodeIds 含）的市场 */
+  allowedMarketIds: string[]
+  markets: Array<{ id: string; name: string; stores: Array<{ storeId: string; storeName: string }> }>
+}
+
+/**
+ * 管理层看板默认范围，逐级取第一个有候选的档位：
+ *   1. 总部 → 全部市场
+ *   2. 有在营门店的直接授权市场 → 该市场（staff 无 admin 的「全部授权门店」，市场账号沿用市场范围）
+ *   3. 有在营门店 → 门店（店长管辖门店优先）
+ *   4. 直接授权的无门店市场（如只授权品项公司）→ 该市场
+ *   5. 都没有 → null，保留页面初判（全部停用时由 #400 停用逻辑处理）
+ * 与 admin 对齐的关键：有在营门店时绝不落到无门店市场（店长 + hr@品项公司 → 门店）。
+ *
+ * `current`（页面初判）已属于命中档位时原样保留，只在档位不对时才换——
+ * 页面按绑定 / scopedStores 顺序挑的市场、门店不因下拉排序被改掉；门店档不校验是否在在营列表里（交 #400）。
+ */
+export function resolveDefaultMgmtScope(
+  options: MgmtScopeOptionsLite,
+  current: MgmtScopeValue | null,
+  managerStoreIds: string[],
+): MgmtScopeValue | null {
+  if (options.allowAll) {
+    return current?.scopeType === 'all' ? current : { scopeType: 'all', scopeId: null, scopeName: '全部市场' }
+  }
+  const granted = new Set(options.allowedMarketIds || [])
+  const markets = options.markets || []
+  const pickMarket = (candidates: typeof markets): MgmtScopeValue | null => {
+    if (candidates.length === 0) return null
+    if (current?.scopeType === 'market' && candidates.some((m) => m.id === current.scopeId)) return current
+    const m = candidates[0]
+    return { scopeType: 'market', scopeId: m.id, scopeName: m.name, marketId: m.id }
+  }
+
+  const grantedWithStores = pickMarket(markets.filter((m) => granted.has(m.id) && m.stores.length > 0))
+  if (grantedWithStores) return grantedWithStores
+
+  const stores: Array<{ storeId: string; storeName: string; marketId: string; marketName: string }> = []
+  for (const m of markets) {
+    for (const s of m.stores) {
+      if (!stores.some((x) => x.storeId === s.storeId)) {
+        stores.push({ storeId: s.storeId, storeName: s.storeName, marketId: m.id, marketName: m.name })
+      }
+    }
+  }
+  if (stores.length > 0) {
+    // 页面初判的门店一律保留：它出自 scopedStores（权限内），启停由 #400 逻辑按 inactiveStores / autoCorrect 处理，
+    // 这里只纠正档位（市场 ↔ 门店）。否则 inactiveStores 未知（null）或「只关店、节点在营」的门店会被换掉
+    if (current?.scopeType === 'store') return current
+    const managerIds = new Set(managerStoreIds || [])
+    const s = stores.find((x) => managerIds.has(x.storeId)) || stores[0]
+    return { scopeType: 'store', scopeId: s.storeId, scopeName: `${s.marketName} · ${s.storeName}`, marketId: s.marketId }
+  }
+
+  return pickMarket(markets.filter((m) => granted.has(m.id) && m.stores.length === 0))
+}
