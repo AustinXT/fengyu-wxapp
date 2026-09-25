@@ -857,6 +857,8 @@ describe('品项板块两端口径一致性守护', () => {
       const kpiBody = normalize(functionBody(adminSrc, 'queryCycle').replace(/--[^\n]*/g, ' '))
       // 从 cohort 起整段钉到模板结尾：三选一的嵌套子模板也在其中（上面 templates() 的惰性切片会在
       // 第一个嵌套反引号处截断，看不到这一段 —— 闸门 2 round-1 GLM 指出的盲区）
+      // ⚠️ 截断点依赖「子模板闭反引号后不紧跟 `)`」这一排版事实；若改写成 `${(sql`…`)}` 会误红（fail-closed），
+      // 届时按新写法同步本快照即可
       expect((kpiBody.match(/\bcohort AS \(/g) ?? []).length, 'admin KPI 的 cohort 声明不唯一').toBe(1)
       const kpiTail = /\bcohort AS \(([\s\S]*?)\s*`\)/.exec(kpiBody)?.[1] ?? ''
       expect(kpiTail, 'admin KPI 的 cohort 三选一或出口 SELECT 变了').toBe(
