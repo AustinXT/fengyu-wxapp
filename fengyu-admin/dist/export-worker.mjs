@@ -181879,7 +181879,7 @@ var num2 = (v) => {
   const n = Number(v ?? 0);
   return Number.isFinite(n) ? n : 0;
 };
-var round24 = (v) => Math.round(num2(v) * 100) / 100;
+var round24 = (v) => Math.round(num2(v) * 100) / 100 || 0;
 var first2 = (rows) => rows[0] ?? {};
 var safeDiv2 = (a, b2) => b2 > 0 ? a / b2 : null;
 function resolveGrouping(params) {
