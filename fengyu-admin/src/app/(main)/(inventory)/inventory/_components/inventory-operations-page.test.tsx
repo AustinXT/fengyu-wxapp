@@ -1551,7 +1551,7 @@ describe('行内动作的在途态上报（#192 follow-up）', () => {
     expect(tab).toMatch(/const handleActionBusyChange = useCallback\(\(busy: boolean\) => \{/)
     expect(tab).toMatch(/onBusyChange=\{handleActionBusyChange\}/)
     // 本地那份仍然在，点击闸读的是它
-    expect(tab).toMatch(/if \(pendingInboxAction \|\| actionBusy\) return/)
+    expect(tab).toMatch(/if \(pendingInboxAction \|\| actionBusy \|\| formBusy\) return/)
   })
 })
 
@@ -2926,26 +2926,31 @@ describe('市场报货草稿（#348）', () => {
     await waitFor(() => expect(listInventoryOperationDocs).toHaveBeenCalledTimes(2))
   })
 
-  it('存草稿响应迟到、期间已切到另一张草稿：不把旧单号写回表单（防止 B 的内容提交进 A）', async () => {
+  it('存草稿在途：待办「继续编辑」不响应；在途期间换了市场，迟到的单号不写回表单', async () => {
     mockDocs({ inbox: segment([draftRow()]) })
     vi.mocked(summarizeStoreReplenishmentRequests).mockResolvedValue({ marketId: 'M1', items: [summaryLine('SKU-1', [11], 4)] })
     const slowSave = deferred<{ id: string }>()
     vi.mocked(saveMarketReplenishmentDraft).mockReturnValue(slowSave.promise)
     vi.mocked(getInventoryCoreDocById).mockResolvedValue(draftDetail([{ skuId: 'SKU-1', quantity: 3 }]))
-    renderPage({ level: 'market', operation: 'market-report', locations: [HQ, M1] })
+    renderPage({ level: 'market', operation: 'market-report', locations: [HQ, M1, M2] })
 
+    const marketSelect = (await screen.findByRole('option', { name: '南昌市场' })).closest('select') as HTMLSelectElement
+    fireEvent.change(marketSelect, { target: { value: 'M1' } })
     fireEvent.click(await screen.findByRole('button', { name: '汇总门店报货' }))
     await screen.findByRole('checkbox', { name: '选择 商品SKU-1 SKU-1' })
     await waitFor(() => expect(screen.getByText('100 - 0 = 100')).toBeInTheDocument())
     fireEvent.click(screen.getByRole('button', { name: '存草稿' }))
     await waitFor(() => expect(saveMarketReplenishmentDraft).toHaveBeenCalledTimes(1))
-    // 存草稿在途时，工作区被锁：待办的「继续编辑」仍可见，但我们直接走预选通道模拟另一张草稿的回填已开始
-    await openDocsTab()
-    fireEvent.click(screen.getByRole('button', { name: '继续编辑 MBH-D1' }))
-    expect(await screen.findByText('MBH-D1', { selector: 'span.font-mono' })).toBeInTheDocument()
+    // 表单提交在途：待办动作一律不响应（防止回填 / 删除与在途的保存抢同一张单）
+    fireEvent.click(screen.getByRole('tab', { name: /单据/ }))
+    fireEvent.click(await screen.findByRole('button', { name: '继续编辑 MBH-D1' }))
+    expect(getInventoryCoreDocById).not.toHaveBeenCalled()
+    // 在途期间换市场 = 新世代：迟到的保存结果不能把单号写回（否则下一次「提交」会落到那张单上）
+    fireEvent.click(screen.getByRole('tab', { name: '填报表单' }))
+    fireEvent.change(marketSelect, { target: { value: 'M2' } })
     await act(async () => { slowSave.resolve({ id: 'MBH-OLD' }) })
     expect(screen.queryByText('MBH-OLD', { selector: 'span.font-mono' })).not.toBeInTheDocument()
-    expect(screen.getByText('MBH-D1', { selector: 'span.font-mono' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '创建市场报货单' })).toBeInTheDocument()
   })
 
   it('无市场价格权限（canViewMarketPrice=false）：不取福利报价，存草稿不带福利选择', async () => {

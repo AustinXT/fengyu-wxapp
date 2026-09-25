@@ -66,7 +66,9 @@ export default async function Page({
   const discountPriceHeaders = doc.docType === '供应链采购入库'
     ? ['标准进价', '单价优惠', '实际进价', '金额']
     : ['门店标准单价', '单价优惠', '优惠后实际单价', '应付货款']
+  // 市场报货草稿 / 删除的草稿（#348）没有采购、发货语义，不渲染履约列
   const reportFulfillment = doc.fulfillmentProgress?.kind === '报货履约'
+    && !(doc.docType === '市场报货' && doc.status !== '已完成')
     ? doc.fulfillmentProgress
     : null
   const shipmentFulfillment = doc.fulfillmentProgress?.kind === '发货收货'
@@ -130,8 +132,7 @@ export default async function Page({
     stocktakeColumnCount
   // 市场报货单的整单履约（#336）：已发 / 已收都按「市场报货发货」直连血缘累计，只算正常量（赠送不占报货量），
   // 用来判断「是否已全部发出 / 全部入库」。
-  // 草稿 / 删除的草稿（#348）没有发货语义，不给「已发 / 入库」整单进度
-  const marketReportSummary = doc.docType === '市场报货' && doc.status === '已完成' && reportFulfillment && reportFulfillment.items.length > 0
+  const marketReportSummary = doc.docType === '市场报货' && reportFulfillment && reportFulfillment.items.length > 0
     ? ((items) => {
       const sum = (pick: (item: (typeof items)[number]) => number) =>
         Number(items.reduce((total, item) => total + pick(item), 0).toFixed(2))

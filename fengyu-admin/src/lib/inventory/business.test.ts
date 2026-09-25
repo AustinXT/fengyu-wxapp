@@ -4333,6 +4333,31 @@ describe('市场报货草稿（#348）', () => {
     expect(sqlParams(update)).toContain('删除草稿')
   })
 
+  it('改选福利须「办理权 + 市场价格权」同一条绑定覆盖本市场：A 市场办理 + B 市场价格权不能在 A 改选', async () => {
+    const MIXED = {
+      employeeId: 'E-MIX', name: '混合绑定', phone: '13800000011',
+      roles: [
+        { role: 'inventory_market_operator', scopeId: 'M1', scopeType: '市场', actions: ['inventory:market_operate'], scopeStoreIds: [], scopeOrgNodeIds: ['M1'] },
+        { role: 'inventory_market_finance', scopeId: 'M2', scopeType: '市场', actions: ['inventory:market_operate', 'inventory:market_price_view'], scopeStoreIds: [], scopeOrgNodeIds: ['M2'] },
+      ],
+      permissions: { actions: ['inventory:market_operate', 'inventory:market_price_view'], scopeStoreIds: [], scopeOrgNodeIds: ['M1', 'M2'] },
+    } as never
+    const input = {
+      marketId: 'M1', supplyChainLocationId: 'HQ', items: [{ skuId: 'SKU-1', purchaseQuantity: 1 }],
+      promotionSelections: [{ skuId: 'SKU-1', promotionPlanId: 'P1' }],
+    }
+    const save = mockDraftTx(null)
+    await expect(saveMarketReplenishmentDraft(MIXED, input)).rejects.toThrow('PERMISSION_DENIED: 无权切换市场报货福利方案')
+    expect(save.rendered().some((text) => text.includes('INSERT INTO inventory_docs'))).toBe(false)
+    mockDraftTx(null)
+    await expect(createMarketReplenishment(MIXED, {
+      ...input, items: [{ skuId: 'SKU-1', sourceRequestItemIds: [1], purchaseQuantity: 1 }],
+    })).rejects.toThrow('PERMISSION_DENIED: 无权切换市场报货福利方案')
+    // 不改选福利（系统推荐）时照常可存
+    mockDraftTx(null)
+    await expect(saveMarketReplenishmentDraft(MIXED, { ...input, promotionSelections: undefined })).resolves.toEqual({ id: expect.stringMatching(/^MBH-/) })
+  })
+
   it('入参守卫：空明细、重复商品、非正数量、无价格权限改选福利', async () => {
     await expect(saveMarketReplenishmentDraft(SESSION, {
       marketId: 'M1', supplyChainLocationId: 'HQ', items: [],

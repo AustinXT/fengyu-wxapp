@@ -1156,6 +1156,7 @@ function OperationWorkspace({
             canAct={canAct}
             onGotoForm={handleGotoForm}
             onInboxTotalChange={setInboxTotal}
+            formBusy={formBusy}
             /*
              * 行内动作的在途态：与建单那条口径对齐，在途时一并锁住卡片与「关闭」按钮。
              * `setActionBusy` 是 setState，稳定引用 —— 下游 DocActionDialog 要求。
@@ -1402,6 +1403,7 @@ export function OperationDocsTab({
   onGotoForm,
   onInboxTotalChange,
   onActionBusyChange,
+  formBusy = false,
 }: {
   /** 内置业务 id 或 `generic:<docType>`；查询条件由服务端按 id 解析（#190/#191）。 */
   operation: InventoryAnyOperationId
@@ -1432,6 +1434,11 @@ export function OperationDocsTab({
    * 内联箭头等于每次重渲都把在途态闪断一下。
    */
   onActionBusyChange: (busy: boolean) => void
+  /**
+   * 填报表单侧有提交在途（#348）：此时待办行内动作一律不响应 —— 例如存草稿 / 提交在途时点「继续编辑」
+   * 会回填一张正在被提交的单、点「删除草稿」会与提交抢同一张单。
+   */
+  formBusy?: boolean
 }) {
   /*
    * 候选重取版本号同时也是本 Tab 的重取信号：填报表单建单成功会 bump 它（工作区 handleSuccess）。
@@ -1635,7 +1642,7 @@ export function OperationDocsTab({
                * 「打开前的焦点」，关闭弹窗后焦点回不到这个按钮上（#134 的结论）。
                * 在途时点另一行也走这条 —— 直接不响应，不开第二个弹窗。
                */
-              if (pendingInboxAction || actionBusy) return
+              if (pendingInboxAction || actionBusy || formBusy) return
               // 跳转类动作没有 Server Action，只切 Tab + 预选单据，不进弹窗。
               if (isInboxGotoAction(kind)) {
                 onGotoForm(row.id)
@@ -2103,6 +2110,8 @@ function MarketReportForm({
   useEffect(() => {
     onBusyChange?.(saving || loadingSummary)
   }, [saving, loadingSummary, onBusyChange])
+  // 卸载兜底（同 CompanyShipmentForm）：在途时被卸载，别把工作区的 busy 卡在 true
+  useEffect(() => () => onBusyChange?.(false), [onBusyChange])
   /*
    * 草稿里人工改选过的福利方案（#348）：只给回填后的**第一次**自动取价用，用完即清。
    * 方案已失效（停用 / 数量不再命中）时服务端报 CONFLICT，退回系统推荐并提示 —— 草稿价格本来就只是预览。
@@ -2129,7 +2138,9 @@ function MarketReportForm({
     }
     setQuoting(true)
     const timer = setTimeout(() => {
-      const restored = restoredSelectionsRef.current
+      // 只带回仍在当前报价篮里的商品：回填后立刻取消勾选组合福利的某个组件时，服务端会按「无效商品」拒
+      const basketSkus = new Set(quoteItems.map((item) => item.skuId))
+      const restored = restoredSelectionsRef.current?.filter((selection) => basketSkus.has(selection.skuId)) ?? null
       restoredSelectionsRef.current = null
       const quote = (selections?: MarketPromotionSelectionInput[]) =>
         quoteMarketReplenishmentPrices({ marketId, docDate: optionalText(docDate), items: quoteItems, selections })
@@ -2193,9 +2204,9 @@ function MarketReportForm({
         : summaryLines)
       if (summary.items.length === 0) toast.info('当前没有待汇总的门店报货明细')
     } catch (error) {
-      toast.error(actionErrorMessage(error, '汇总门店报货失败'))
+      if (epoch === epochRef.current) toast.error(actionErrorMessage(error, '汇总门店报货失败'))
     } finally {
-      setLoadingSummary(false)
+      if (epoch === epochRef.current) setLoadingSummary(false)
     }
   }
 

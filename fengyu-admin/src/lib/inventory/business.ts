@@ -6,6 +6,7 @@ import { shanghaiToday, shanghaiYmd } from '@/lib/datetime'
 import { logOperation } from '@/lib/operation-log'
 import { hasPermission } from '@/lib/permissions'
 import { scopeSessionToAllActions } from '@/lib/action-scope'
+import { assertInventoryLocationInScope as assertLocationInPriceScope } from './access'
 import {
   assertInventoryLocationInScope,
   inventoryPriceScopeByTier,
@@ -2504,6 +2505,20 @@ function marketReportItemPriceFields(
 }
 
 /**
+ * 改选福利方案的授权（#348 闸门 2）：`market_price_view` 必须与 `market_operate` 落在**同一条**角色绑定上，
+ * 且该绑定覆盖本市场 —— 只按全局 `permissions.actions` 判，会让「A 市场办理 + B 市场价格权」的账号
+ * 在 A 市场改选福利、影响货款（与 #346 入库单价优惠同一处理）。
+ */
+function assertMarketPromotionSelectable(session: AuthSession, market: Location): void {
+  const bothGranted = scopeSessionToAllActions(session, ['inventory:market_operate', 'inventory:market_price_view'])
+  try {
+    assertLocationInPriceScope(bothGranted, market.locationId)
+  } catch {
+    throw new ApiError('PERMISSION_DENIED', '无权切换市场报货福利方案')
+  }
+}
+
+/**
  * 锁住并校验一张市场报货草稿（#348）。调用方须已按「市场 → 供应链」取过主体锁：
  * 草稿单排在主体之后，与新建市场报货的锁序一致（先主体、后单据）。
  * ⚠️ 与 createStoreAllocation「报货单 → 市场」的既有反序之所以不成环，靠的是事务开头
@@ -2556,6 +2571,7 @@ export async function createMarketReplenishment(
     assertType(market, '市场', '报货市场')
     assertType(supplyChain, '总部', '供应链库存主体')
     assertLocationWritable(session, market)
+    if ((input.promotionSelections?.length ?? 0) > 0) assertMarketPromotionSelectable(session, market)
     if (draftId) await lockMarketReplenishmentDraft(tx, draftId, market)
     const seenRequestItems = new Set<number>()
     const docDate = dateOrToday(input.docDate)
@@ -2756,6 +2772,7 @@ export async function saveMarketReplenishmentDraft(
     assertType(market, '市场', '报货市场')
     assertType(supplyChain, '总部', '供应链库存主体')
     assertLocationWritable(session, market)
+    if ((input.promotionSelections?.length ?? 0) > 0) assertMarketPromotionSelectable(session, market)
     if (draftId) await lockMarketReplenishmentDraft(tx, draftId, market)
     const docDate = dateOrToday(input.docDate)
     const skus = new Map<string, SkuSnapshot>()
