@@ -1,5 +1,5 @@
 {
-  "id": "aa49593d-d85a-4198-a21f-f9e614a391cc",
+  "id": "fe29f32c-4913-410f-8508-01265238029c",
   "prevId": "1d6e493d-15af-4821-abb2-79424b98bdf6",
   "version": "7",
   "dialect": "postgresql",
@@ -7159,7 +7159,7 @@
         },
         "chk_pickup_amount_frozen": {
           "name": "chk_pickup_amount_frozen",
-          "value": "(\"pickup_records\".\"pickup_unit_price\" IS NULL AND \"pickup_records\".\"pickup_amount\" IS NULL) OR (\"pickup_records\".\"pickup_unit_price\" IS NOT NULL AND \"pickup_records\".\"pickup_amount\" = ROUND(\"pickup_records\".\"pickup_unit_price\" * \"pickup_records\".\"pickup_quantity\", 2))"
+          "value": "(\"pickup_records\".\"pickup_unit_price\" IS NULL AND \"pickup_records\".\"pickup_amount\" IS NULL) OR (\"pickup_records\".\"pickup_unit_price\" IS NOT NULL AND \"pickup_records\".\"pickup_amount\" IS NOT NULL AND \"pickup_records\".\"pickup_amount\" = ROUND(\"pickup_records\".\"pickup_unit_price\" * \"pickup_records\".\"pickup_quantity\", 2))"
         }
       },
       "isRLSEnabled": false
