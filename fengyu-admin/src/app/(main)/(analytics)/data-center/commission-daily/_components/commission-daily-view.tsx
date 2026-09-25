@@ -150,6 +150,7 @@ export function CommissionDailyView({ data, today }: { data: CommissionDailyResu
     const params = new URLSearchParams({ tab: "sale", allocStatus: "待分配", from: range.start, to: range.end })
     if (scopeParam === "market" && scopeIdParam) params.set("market", scopeIdParam)
     if (scopeParam === "store" && scopeIdParam) params.set("store", scopeIdParam)
+    // 多店（#376）不带门店参数：/allocations 只支持单店筛选，落地页按账号权限范围展示
     return `/allocations?${params.toString()}`
   }, [data.month, scopeParam, scopeIdParam])
 

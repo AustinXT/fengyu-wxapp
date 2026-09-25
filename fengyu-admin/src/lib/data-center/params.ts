@@ -82,11 +82,73 @@ export function collapseQuery(
   return next
 }
 
+/** 多店范围最多可选的门店数（prod 在营门店 40 余家，留足余量；防超长 IN 列表） */
+export const MAX_SCOPE_STORES = 200
+
+/**
+ * 单个门店 id 的合法字符与长度（逗号是多店分隔符）。实测来源：sync-workfine 16 位十六进制、
+ * 后台新建 `store-<毫秒时间戳>`、e2e 夹具 `TE2L2_STORE` 等，均 ≤ 20 字符。
+ * 上限 40 与导出参数的 scopeId 长度上限（MAX_SCOPE_STORES × 41）联动。
+ * ⚠️ 不符合本正则的 store_id 无法进入任何多店编码（整串回落 all → 入口跳默认范围）。后台 createStore 目前不校验
+ *    id 格式（follow-up：复用本正则校验）；新增门店 id 生成规则时须同时满足这里。
+ */
+export const MAX_STORE_ID_LENGTH = 40
+const STORE_ID_RE = /^[A-Za-z0-9_-]{1,40}$/
+
+/**
+ * 多店 scope 对象的形状是否合法（服务端边界用）：数组、2 ≤ 长度 ≤ MAX_SCOPE_STORES、每个 id 合法且不重复。
+ * server action 直接收客户端传来的 scope 对象、不经过 parseScope，必须在 validateScope 再校验一次——
+ * 否则 `ids: []` 会拼出 `IN ()` 语法错误，超长列表会撞 PG 绑定参数上限（admin / 总部没有权限 IN 兜底）。
+ */
+export function isValidStoresScopeIds(ids: unknown): ids is string[] {
+  return (
+    Array.isArray(ids) &&
+    ids.length >= 2 &&
+    ids.length <= MAX_SCOPE_STORES &&
+    ids.every((id) => typeof id === 'string' && STORE_ID_RE.test(id)) &&
+    new Set(ids).size === ids.length
+  )
+}
+
+/**
+ * 解析多店的 `scopeId` 逗号串：去重升序。任一段为空 / 非法字符 / 超过上限 → null。
+ * 严格解析（导出）据 null 报 INVALID_PARAMS，宽松解析（页面）回落 'all' 走默认范围。
+ */
+export function parseStoreIdList(raw: string | undefined): string[] | null {
+  if (!raw) return null
+  const parts = raw.split(',')
+  if (parts.some((id) => !STORE_ID_RE.test(id))) return null
+  const ids = Array.from(new Set(parts)).sort()
+  return ids.length > MAX_SCOPE_STORES ? null : ids
+}
+
+/** 由门店 id 集合构造范围：1 家即单店，≥2 家为多店（ids 去重升序）。空集返回 null。 */
+export function scopeFromStoreIds(storeIds: readonly string[]): DataCenterScope | null {
+  const ids = Array.from(new Set(storeIds)).sort()
+  if (ids.length === 0) return null
+  return ids.length === 1 ? { type: 'store', id: ids[0] } : { type: 'stores', ids }
+}
+
 export function parseScope(raw: { scope?: string; scopeId?: string }): DataCenterScope {
   if (raw.scope === 'authorized') return { type: 'authorized' }
   if (raw.scope === 'market' && raw.scopeId) return { type: 'market', id: raw.scopeId }
   if (raw.scope === 'store' && raw.scopeId) return { type: 'store', id: raw.scopeId }
+  if (raw.scope === 'stores') {
+    const ids = parseStoreIdList(raw.scopeId)
+    if (ids) return scopeFromStoreIds(ids) ?? { type: 'all' }
+  }
   return { type: 'all' }
+}
+
+/**
+ * 范围 → URL 参数（`parseScope` 的逆）。'all' 为空对象（即不带 scope）。
+ * 页面链接、导出参数、游标签名一律经此编码，多店的 id 顺序固定为升序。
+ */
+export function scopeToParams(scope: DataCenterScope): { scope?: string; scopeId?: string } {
+  if (scope.type === 'all') return {}
+  if (scope.type === 'authorized') return { scope: 'authorized' }
+  if (scope.type === 'stores') return { scope: 'stores', scopeId: [...scope.ids].sort().join(',') }
+  return { scope: scope.type, scopeId: scope.id }
 }
 
 export function parseTimeRange(raw: { preset?: string; start?: string; end?: string }): TimeRangeInput {

@@ -11,12 +11,14 @@
  */
 import { db } from '@/db'
 import { orgNodes, stores } from '@db/org'
-import { eq } from 'drizzle-orm'
+import { eq, inArray } from 'drizzle-orm'
 import { isAdminScope, expandVisibleMarketIds, PermissionError } from '@/lib/permissions'
 import type { AuthSession } from '@/lib/types'
 import type { BoardMeta, BoardParams, DataCenterScope } from './types'
 import { resolveTimeRange } from './time-range'
 import { toComparisonRanges, type ComparisonRanges } from './comparison'
+import { multiStoreName } from './scope-options'
+import { isValidStoresScopeIds, MAX_SCOPE_STORES } from './params'
 
 /** 账号能选的最高 scope 层级（驱动筛选器禁用「全部」等） */
 export function getScopeTopLevel(session: AuthSession): 'all' | 'market' | 'store' {
@@ -43,6 +45,10 @@ export function getScopeTopLevel(session: AuthSession): 'all' | 'market' | 'stor
  * PermissionError 定一句面向用户的话，才能放开透传 —— 属文案决策，另开 issue。
  */
 export async function validateScope(session: AuthSession, scope: DataCenterScope): Promise<void> {
+  // 多店形状先于任何角色短路：admin / 总部同样不能带空列表或超长列表进 SQL（#376）
+  if (scope.type === 'stores' && !isValidStoresScopeIds(scope.ids)) {
+    throw new Error(`INVALID_PARAMS: 多店范围须为 2~${MAX_SCOPE_STORES} 家不重复的门店`)
+  }
   if (isAdminScope(session)) return
   if (session.roles.some((r) => r.scopeType === '总部')) return
 
@@ -63,8 +69,9 @@ export async function validateScope(session: AuthSession, scope: DataCenterScope
     }
     return
   }
-  // store
-  if (!session.permissions.scopeStoreIds.includes(scope.id)) {
+  // store / stores（#376：所选门店逐个须在授权门店内，任一越权整单拒绝）
+  const ids = scope.type === 'stores' ? scope.ids : [scope.id]
+  if (!ids.every((id) => session.permissions.scopeStoreIds.includes(id))) {
     throw new PermissionError('PERMISSION_DENIED: 越权访问其他门店数据')
   }
 }
@@ -81,12 +88,28 @@ export async function resolveScopeName(scope: DataCenterScope): Promise<string> 
       .limit(1)
     return row?.name ?? '未知市场'
   }
+  if (scope.type === 'stores') {
+    const rows = await db
+      .select({ id: stores.storeId, name: stores.storeName })
+      .from(stores)
+      .where(inArray(stores.storeId, scope.ids))
+      .limit(scope.ids.length)
+    const names = new Map(rows.map((r) => [r.id, r.name]))
+    return multiStoreName(scope.ids.map((id) => names.get(id) ?? '未知门店'))
+  }
   const [row] = await db
     .select({ name: stores.storeName })
     .from(stores)
     .where(eq(stores.storeId, scope.id))
     .limit(1)
   return row?.name ?? '未知门店'
+}
+
+/** meta 回显用的 scopeId：市场 / 单店为其 id，多店为逗号串（与 URL 同编码），all / authorized 为 null */
+function scopeIdOf(scope: DataCenterScope): string | null {
+  if (scope.type === 'market' || scope.type === 'store') return scope.id
+  if (scope.type === 'stores') return scope.ids.join(',')
+  return null
 }
 
 export interface BoardContext {
@@ -111,7 +134,7 @@ export async function prepareBoardContext(
     meta: {
       scope: {
         type: params.scope.type,
-        id: params.scope.type === 'market' || params.scope.type === 'store' ? params.scope.id : null,
+        id: scopeIdOf(params.scope),
         name: scopeName,
       },
       timeRange: {

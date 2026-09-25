@@ -181,6 +181,15 @@ const hqOptions: DataCenterScopeOptions = {
     { id: 'M2', name: '南昌易大师', stores: [{ storeId: 'S3', storeName: '易大师一店' }] },
   ],
 }
+/** 范围面板（#376 多选）：清空后只勾一个市场（勾满单市场折叠成 market） */
+async function pickMarket(user: ReturnType<typeof userEvent.setup>, marketName: string) {
+  await user.click(screen.getByTestId('scope-picker-trigger'))
+  const all = screen.getByRole('checkbox', { name: '全选（当前权限范围）' }) as HTMLInputElement
+  if (all.checked || all.indeterminate) await user.click(all)
+  if ((screen.getByRole('checkbox', { name: '全选（当前权限范围）' }) as HTMLInputElement).checked) await user.click(all)
+  await user.click(screen.getByRole('checkbox', { name: marketName }))
+  await user.click(screen.getByRole('button', { name: '确定' }))
+}
 const singleStoreOptions: DataCenterScopeOptions = {
   topLevel: 'store', inactiveStores: [],
   markets: [{ id: 'M1', name: '南昌凤御', stores: [{ storeId: 'S1', storeName: '蓝莱店' }] }],
@@ -526,7 +535,7 @@ describe('报表页 · 骨架渲染', () => {
     expect(screen.queryByText('报表建设中，暂无数据')).not.toBeInTheDocument()
     expect(screen.queryByTestId('report-info-bar')).not.toBeInTheDocument()
     expect(screen.queryByRole('note', { name: '数据起点提示' })).not.toBeInTheDocument()
-    expect(screen.getByRole('option', { name: '自贡旭阳店（已停用）' })).toBeDisabled()
+    expect(screen.getByTestId('scope-picker-trigger')).toHaveTextContent('自贡旭阳店（已停用）')
     expect(screen.queryByTestId('scope-store-count')).not.toBeInTheDocument()
     expect(screen.getByRole('link', { name: '回到默认范围' }))
       .toHaveAttribute('href', `${DATA_CENTER_REPORTS[key].path}?scope=authorized`)
@@ -555,9 +564,9 @@ describe('报表页 · 骨架渲染', () => {
 
     await user.selectOptions(screen.getByRole('combobox', { name: '月份' }), '2026-07')
     // nav.search 未变 = 服务端还没回来；第二次写入必须基于第一次写入后的参数
-    await user.selectOptions(screen.getAllByRole('combobox')[0], 'M2')
+    await pickMarket(user, '南昌凤御')
     expect(nav.replace).toHaveBeenLastCalledWith(
-      '/data-center/customer-frequency?month=2026-07&scope=market&scopeId=M2',
+      '/data-center/customer-frequency?month=2026-07&scope=market&scopeId=M1',
       { scroll: false },
     )
   })
@@ -568,7 +577,7 @@ describe('报表页 · 骨架渲染', () => {
     const user = userEvent.setup()
 
     await user.click(screen.getByRole('button', { name: '重置' }))
-    await user.selectOptions(screen.getAllByRole('combobox')[0], 'M1')
+    await pickMarket(user, '南昌凤御')
     expect(nav.replace).toHaveBeenLastCalledWith(
       '/data-center/customer-frequency?scope=market&scopeId=M1',
       { scroll: false },

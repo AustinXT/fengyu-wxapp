@@ -15,7 +15,7 @@ import { hasUiCapability } from '@/lib/permission-contract'
 import { maskName } from '@/lib/pii'
 import { resolveScopeName, validateScope } from '@/lib/data-center/context'
 import { DATA_CENTER_STAFF_COMMISSION_ACTIONS } from '@/lib/data-center/reports'
-import { firstQueryValue, parseScope } from '@/lib/data-center/params'
+import { firstQueryValue, parseScope, scopeToParams } from '@/lib/data-center/params'
 import { parseReportMonth } from '@/lib/data-center/report-period'
 import { shanghaiToday } from '@/lib/data-center/time-range'
 import { technicianCountSql } from '@/lib/data-center/technician-sql'
@@ -243,7 +243,7 @@ export interface CommissionDetailResult {
 function detailSignature(scope: DataCenterScope, month: string, filters: CommissionDetailFilters): string {
   return commissionFilterSignature({
     scope: scope.type,
-    scopeId: scope.type === 'market' || scope.type === 'store' ? scope.id : '',
+    scopeId: scopeToParams(scope).scopeId ?? '',
     month,
     employeeId: filters.employeeId,
     storeId: filters.storeId,

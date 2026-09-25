@@ -217,3 +217,57 @@ describe('orgAnchorScopeSql — 市场分支按「直接授权」收窄（#399�
     expect(market.params).toEqual(['mkt-A', ...authorized.params])
   })
 })
+
+describe('多店范围（#376）', () => {
+  const STORES: DataCenterScope = { type: 'stores', ids: ['S1', 'S3'] }
+  const norm = (t: string) => t.replace(/\s+/g, ' ').trim()
+
+  it('scopeFilterSql：在营过滤 AND 权限 IN AND 所选 IN（参数按序：权限门店、所选门店）', () => {
+    const session = makeSession([{ role: 'manager', scopeType: '市场' }], ['S1', 'S2', 'S3'])
+    const { raw, params } = render(scopeFilterSql(session, STORES, 'so.store_id'))
+    expect(norm(raw)).toMatch(/AND so\.store_id IN \(\$1, \$2, \$3\) AND so\.store_id IN \(\$4, \$5\)$/)
+    expect(params).toEqual(['S1', 'S2', 'S3', 'S1', 'S3'])
+  })
+
+  it('scopeFilterSql：admin 不带权限 IN，只有所选 IN', () => {
+    const session = makeSession([{ role: 'admin', scopeType: '总部' }], [])
+    const { raw, params } = render(scopeFilterSql(session, STORES, 'so.store_id'))
+    expect(norm(raw)).toMatch(/active_node\.is_active = TRUE \) AND so\.store_id IN \(\$1, \$2\)$/)
+    expect(params).toEqual(['S1', 'S3'])
+  })
+
+  it('orgAnchorScopeSql：= authorized 的可见性按所选子集收窄（同一段 EXISTS，只换门店集合）', () => {
+    const session = makeSession([{ role: 'manager', scopeType: '市场' }], ['S1', 'S2', 'S3'])
+    const multi = render(orgAnchorScopeSql(session, STORES))
+    const authorized = render(orgAnchorScopeSql(session, { type: 'authorized' }))
+    // 两段 SQL 除 IN 列表长度外逐字相同
+    const shape = (t: string) => norm(t).replace(/IN \([^)]*\)/, 'IN (…)')
+    expect(shape(multi.raw)).toBe(shape(authorized.raw))
+    expect(multi.params).toEqual(['S1', 'S3'])
+  })
+
+  it('orgAnchorScopeSql：非 admin 再与授权门店取交集（越权 id 不进 EXISTS）', () => {
+    const session = makeSession([{ role: 'manager', scopeType: '市场' }], ['S1'])
+    expect(render(orgAnchorScopeSql(session, { type: 'stores', ids: ['S1', 'S9'] })).params).toEqual(['S1'])
+  })
+
+  it('orgAnchorScopeSql：交集为空 → FALSE', () => {
+    const session = makeSession([{ role: 'manager', scopeType: '市场' }], ['S1'])
+    expect(render(orgAnchorScopeSql(session, { type: 'stores', ids: ['S8', 'S9'] })).raw.trim()).toBe('FALSE')
+  })
+
+  it('orgAnchorScopeSql：admin 不是 TRUE（不同于 all），而是按所选门店判锚定市场——品项公司等无门店市场不出现', () => {
+    const session = makeSession([{ role: 'admin', scopeType: '总部' }], [])
+    const { sql, params } = render(orgAnchorScopeSql(session, STORES))
+    expect(sql).toContain('exists (')
+    expect(sql).toContain('vn.parent_id = pb.anchor_market_id')
+    expect(params).toEqual(['S1', 'S3'])
+  })
+
+  it('「1 市场 + 1 门店」混合账号：所选跨两市场时，两边锚定市场都按所选门店判定', () => {
+    // 市场 A 角色展开 A1/A2，门店角色给 B1（B 是祖先市场）
+    const session = { ...makeSession([{ role: 'manager', scopeType: '市场' }, { role: 'manager', scopeType: '门店' }], ['A1', 'A2', 'B1']), permissions: { actions: [], scopeStoreIds: ['A1', 'A2', 'B1'], scopeOrgNodeIds: ['MA', 'node-A1', 'node-A2', 'node-B1'] } }
+    expect(render(orgAnchorScopeSql(session, { type: 'stores', ids: ['A1', 'B1'] })).params).toEqual(['A1', 'B1'])
+    expect(render(scopeFilterSql(session, { type: 'stores', ids: ['A1', 'B1'] })).params).toEqual(['A1', 'A2', 'B1', 'A1', 'B1'])
+  })
+})

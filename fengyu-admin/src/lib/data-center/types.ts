@@ -12,13 +12,19 @@ import type { DeltaDisplay } from '@/lib/delta-display'
 export type { DeltaDisplay }
 
 // ─────────────────────────────────────────────
-// scope（集团/授权汇总/市场/门店）
+// scope（集团/授权汇总/市场/门店/多店）
 // ─────────────────────────────────────────────
 export type DataCenterScope =
   | { type: 'all' }
   | { type: 'authorized' }
   | { type: 'market'; id: string }
   | { type: 'store'; id: string }
+  /**
+   * 多店（#376）：授权门店内任选的子集。`ids` 去重升序、至少 2 家（1 家编成 store）。
+   * URL 编码为 `scope=stores&scopeId=a,b`（单 key 逗号串，重复 key 会被 collapseQuery 压成首值）。
+   * 全选 / 恰好勾满一个市场时由 `canonicalizeScope` 折叠成 all|authorized / market。
+   */
+  | { type: 'stores'; ids: string[] }
 
 // ─────────────────────────────────────────────
 // 时间维度
@@ -188,6 +194,8 @@ export interface ScopeOptionMarket {
  * 判定与取数 SQL 的启用门店过滤同源（只看 org_nodes.is_active），这样「已停用」必然等于「取不到数」。
  */
 export interface ScopeOptionInactiveStore extends ScopeOptionStore {
+  // ⚠️ 多店全部停用时由 findInactiveScopeStore 合成一项：storeId 为逗号串、storeName 为合并店名（#376）。
+  //    消费方只用于展示空态文案，不得把 storeId 当单个门店 id 查找。
   /** 所属市场节点；筛选器据此回显市场下拉（市场不在数据源时回显落空，不影响空态） */
   marketId: string | null
 }
