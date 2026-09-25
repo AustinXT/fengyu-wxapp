@@ -423,6 +423,31 @@ describe('数据中心导出 · 经营数据主表', () => {
     ).rejects.toThrow('INVALID_PARAMS')
   })
 
+  it('范围参数 fail-closed：声明了市场 / 门店却缺 scopeId、未知 scope 都拒绝，不回落成全集团', async () => {
+    vi.mocked(getOperatingMaster).mockClear()
+    const cases: Record<string, string>[] = [
+      { month: '2026-08', scope: 'market' },
+      { month: '2026-08', scope: 'store', scopeId: '' },
+      { month: '2026-08', scope: 'everything' },
+      { month: '2026-08', scopeId: 'M1' },
+    ]
+    for (const params of cases) {
+      await expect(
+        createExportContent('data-center', { view: 'report-operating-master', params }),
+        JSON.stringify(params),
+      ).rejects.toThrow('INVALID_PARAMS')
+    }
+    expect(getOperatingMaster).not.toHaveBeenCalled()
+  })
+
+  it('元信息的范围带类型：市场 · 名称', async () => {
+    const content = await createExportContent('data-center', {
+      view: 'report-operating-master',
+      params: { scope: 'market', scopeId: 'M1', month: '2026-08' },
+    })
+    expect(content.meta?.scope).toBe('市场 · 全部')
+  })
+
   it('两行分组表头 + 冻结市场门店 + 小计加粗 + 总计行，占位列数据与合计都写「—」', async () => {
     const content = await createExportContent('data-center', {
       view: 'report-operating-master',
@@ -433,6 +458,9 @@ describe('数据中心导出 · 经营数据主表', () => {
 
     expect(content.columns).toHaveLength(24) // B~Y
     expect(content.columns[0]).toMatchObject({ header: '市场', group: { header: '' } })
+    // B–D 上方空白表头在导出里是同一个分组 → 合并成一整块（模板 B2:D2）；页面因冻结边界才拆开
+    expect(new Set(content.columns.slice(0, 3).map((column) => column.group?.key)).size).toBe(1)
+    expect(content.columns[3].group?.key).not.toBe(content.columns[0].group?.key)
     expect(content.columns[3].group?.header).toMatch(/^保有会员（售前不算）\n会员标准/)
     expect(content.frozenColumns).toBe(2)
     expect(content.totalsLabel).toBe('总计')

@@ -35,7 +35,8 @@ export async function prepareReport(input: {
   context: ReportPageContext
   notice: DataStartRangeResult[]
 }> {
-  const needsStarts = input.axes.length > 0 && input.report.periodKind !== "none"
+  // 主轴或额外窗口任一需要提示就查起点（只声明 extraNotices 的页面也要能出提示）
+  const needsStarts = (input.axes.length > 0 || !!input.extraNotices) && input.report.periodKind !== "none"
   const [scopeOptions, starts] = await Promise.all([
     input.loadScopeOptions(),
     // 数据起点只是辅助提示：取数失败时降级为不提示，不能把整张报表页变成错误页。

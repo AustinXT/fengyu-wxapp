@@ -27,6 +27,7 @@ import { scopeFilterSql, scopeStoreSkeletonSql } from '@/lib/data-center/scope-s
 import { excludeDepositRefundSql } from '@/lib/data-center/consume-filter'
 import { technicianByStoreSql } from '@/lib/data-center/technician-sql'
 import { isValidMonth, monthRange } from '@/lib/data-center/report-period'
+import { shanghaiToday } from '@/lib/data-center/time-range'
 import { DATA_CENTER_DASHBOARD_ACTION } from '@/lib/data-center/reports'
 import {
   buildOperatingMasterTable,
@@ -70,6 +71,8 @@ export const getOperatingMaster = withPermission(
   DATA_CENTER_DASHBOARD_ACTION,
   async (session: AuthSession, params: OperatingMasterParams): Promise<OperatingMasterResult> => {
     if (!isValidMonth(params.month)) throw new Error('INVALID_PARAMS: 月份格式应为 YYYY-MM')
+    // 与页面收口一致（parseReportMonth 把未来月份回落默认）：直调 action / 伪造导出参数也不查未来月
+    if (params.month > shanghaiToday().slice(0, 7)) throw new Error('INVALID_PARAMS: 不能查询未来月份')
     await validateScope(session, params.scope)
     const { scope, month } = params
     const cur = monthRange(month)

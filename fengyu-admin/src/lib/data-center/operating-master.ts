@@ -343,3 +343,34 @@ export function operatingMasterExportParams(scope: DataCenterScope, month: strin
   }
   return params
 }
+
+/**
+ * 导出参数里的 scope：**fail-closed** 解析（与 URL 容错的 parseScope 刻意不同）。
+ * 只有完全不带 scope 才解释为「全部」；声明了 market / store 却缺 scopeId、或未知 scope 值一律拒绝——
+ * 否则总部账号会静默导出全集团，范围比请求的大、元信息也对不上。
+ */
+export function parseOperatingMasterExportScope(raw: { scope?: string; scopeId?: string }): DataCenterScope {
+  if (!raw.scope) {
+    if (raw.scopeId) throw new Error('INVALID_PARAMS: 导出范围缺少类型')
+    return { type: 'all' }
+  }
+  if (raw.scope === 'authorized') return { type: 'authorized' }
+  if ((raw.scope === 'market' || raw.scope === 'store') && raw.scopeId) return { type: raw.scope, id: raw.scopeId }
+  throw new Error('INVALID_PARAMS: 导出范围参数不完整或无效')
+}
+
+/** 导出元信息的范围描述：带上范围类型（「市场 · 南昌凤御」「门店 · 汇东店」），同名时也能自证 */
+export function operatingMasterScopeMeta(scope: DataCenterScope, name: string): string {
+  if (scope.type === 'market') return `市场 · ${name}`
+  if (scope.type === 'store') return `门店 · ${name}`
+  return name
+}
+
+/**
+ * 导出列：页面上 B–D 上方的空白表头因冻结边界拆成两个分组（见 BLANK_FROZEN_GROUP），
+ * Excel 没有这个限制，按模板归一成一个分组 → 合并成一整块（模板 B2:D2）。
+ */
+export function operatingMasterExportGroup(column: OperatingMasterColumn): MatrixColumnGroup | undefined {
+  return column.group?.key === BLANK_GROUP.key ? BLANK_FROZEN_GROUP : column.group
+}
+

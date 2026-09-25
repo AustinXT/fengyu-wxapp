@@ -98,8 +98,13 @@ describe('getOperatingMaster', () => {
   it('D 美容师人数：technician-sql 单源、技能只含美容师、按所选月末历史化', async () => {
     await getOperatingMaster({ scope: { type: 'all' }, month: '2026-08' })
     const { sql, params } = compiled(Q.beautician)
-    expect(sql).toContain("sw.skills && ARRAY['美容师']::text[]")
+    // 钉住 technician_base 的完整 WHERE：只换技能数组，在职历史化条件不变，且不得多出岗位等人群条件
+    const where = sql.replace(/\s+/g, ' ').match(/FROM staff_wechat_users sw .*? WHERE (.*?) \),/)?.[1]
+    expect(where).toMatch(
+      /^sw\.skills && ARRAY\['美容师'\]::text\[\] AND sw\.hired_at IS NOT NULL AND sw\.hired_at::date <= \$\d+ AND \(sw\.resigned_at IS NULL OR sw\.resigned_at::date > \$\d+\)$/,
+    )
     expect(sql).not.toContain('养生师')
+    expect(sql).not.toMatch(/position/i)
     expect(sql).toContain('FROM technician_scoped')
     expect(params).toContain('2026-08-31')
   })
@@ -137,6 +142,7 @@ describe('getOperatingMaster', () => {
 
   it('月份非法直接 INVALID_PARAMS', async () => {
     await expect(getOperatingMaster({ scope: { type: 'all' }, month: '2026-8' })).rejects.toThrow('INVALID_PARAMS')
+    await expect(getOperatingMaster({ scope: { type: 'all' }, month: '2099-01' })).rejects.toThrow('未来月份')
     expect(mockExecute).not.toHaveBeenCalled()
   })
 })

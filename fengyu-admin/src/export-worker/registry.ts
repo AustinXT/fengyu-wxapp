@@ -30,12 +30,15 @@ import {
   getDataCenterRankingConfig,
   type DataCenterMetricColumn,
 } from '@/lib/data-center/columns'
-import { parseBoardParams, parseScope } from '@/lib/data-center/params'
+import { parseBoardParams } from '@/lib/data-center/params'
 import { countLeftFrozen, toWorkerExportColumns } from '@/lib/data-center/matrix-export'
 import {
   OPERATING_MASTER_COLUMNS,
   isOperatingMasterSubtotal,
+  operatingMasterExportGroup,
+  operatingMasterScopeMeta,
   operatingMasterTotalsLabel,
+  parseOperatingMasterExportScope,
   type OperatingMasterRow,
 } from '@/lib/data-center/operating-master'
 import { isValidMonth } from '@/lib/data-center/report-period'
@@ -549,14 +552,18 @@ function rankingContent(
 async function operatingMasterContent(raw: Record<string, string>): Promise<ExportContent> {
   // 导出参数来自页面生效值（非法 URL 已在页面回落），这里再拒一次：拿不到月份宁可失败，也不按某个默认月出数
   if (!isValidMonth(raw.month)) throw new Error('INVALID_PARAMS: 导出缺少统计月份')
-  const result = await getOperatingMaster({
-    scope: parseScope({ scope: raw.scope, scopeId: raw.scopeId }),
-    month: raw.month,
+  const scope = parseOperatingMasterExportScope({ scope: raw.scope, scopeId: raw.scopeId })
+  const result = await getOperatingMaster({ scope, month: raw.month })
+  const columns = toWorkerExportColumns(OPERATING_MASTER_COLUMNS, result.totals).map((column, index) => {
+    const spec = OPERATING_MASTER_COLUMNS[index]
+    const group = operatingMasterExportGroup(spec)
+    return {
+      ...column,
+      group: group ? { key: group.key, header: group.header } : undefined,
+      // 占位列在合计行同样显示「—」（#374 拍板），不是空白
+      ...(spec.pending ? { total: '—' } : {}),
+    }
   })
-  const columns = toWorkerExportColumns(OPERATING_MASTER_COLUMNS, result.totals).map((column, index) =>
-    // 占位列在合计行同样显示「—」（#374 拍板），不是空白
-    OPERATING_MASTER_COLUMNS[index].pending ? { ...column, total: '—' } : column,
-  )
   return {
     sheetName: '经营数据主表',
     columns: columns as unknown as WorkerExportColumn<Row>[],
@@ -566,7 +573,7 @@ async function operatingMasterContent(raw: Record<string, string>): Promise<Expo
     isEmphasisRow: (row) => isOperatingMasterSubtotal(row as unknown as OperatingMasterRow),
     meta: {
       period: `${result.range.start} ~ ${result.range.end}`,
-      scope: result.scopeName,
+      scope: operatingMasterScopeMeta(scope, result.scopeName),
       extra: [
         { label: '年度累计区间', value: `${result.ytd.start} ~ ${result.ytd.end}（不含 WorkFine 历史单）` },
         { label: '说明', value: '显示「—」的列口径待定或目标未设，本期不取数' },
