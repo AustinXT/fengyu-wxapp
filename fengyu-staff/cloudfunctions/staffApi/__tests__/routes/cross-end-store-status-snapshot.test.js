@@ -203,11 +203,15 @@ describe('#401 数据中心在营口径 · 接线', () => {
     expect(src).toMatch(/const inactiveStores = allStoreRows\s*\.filter\(\(s\) => !isDataCenterActiveStore\(s\)\)/)
   })
 
-  it('admin 系统概览门店数 = helper 统计范围 ∩ 当前未关店（时点计数）', () => {
+  it('admin 系统概览门店数 = helper 统计范围 ∩ 按今天历史化在营（与数据中心门店数同口径，#422）', () => {
     const src = readFile(path.join(ADMIN_SRC, 'actions/dashboard.ts'))
     expect(src).toContain("import { activeStoreCondition } from '@/lib/store-status'")
+    const today = "(NOW() AT TIME ZONE 'Asia/Shanghai')::date"
     expect(src.replace(/\s+/g, ' ')).toContain(
-      'FROM stores s WHERE ${activeStoreCondition(sql`s.store_id`)} AND s.is_closed = false) AS total_stores',
+      '(SELECT COUNT(*) FROM stores s WHERE ${activeStoreCondition(sql`s.store_id`)}' +
+        ' AND s.opening_date IS NOT NULL' +
+        ` AND s.opening_date::date <= ${today}` +
+        ` AND (s.closed_at IS NULL OR s.closed_at::date > ${today})) AS total_stores,`,
     )
   })
 

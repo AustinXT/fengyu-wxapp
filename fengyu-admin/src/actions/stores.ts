@@ -260,6 +260,8 @@ export const createStore = withPermission(
         openingDate: data.openingDate ?? null,
         bedCount: data.bedCount ?? null,
         isClosed: data.isClosed ?? false,
+        // is_closed ↔ closed_at 双写一致（#422）：建档即关店也要记闭店日期，与 updateStore / sync-workfine 同口径
+        closedAt: data.isClosed ? shanghaiToday() : null,
         coverImage: data.coverImage ?? null,
         images: data.images ?? null,
         district: data.district ?? null,
@@ -392,16 +394,38 @@ export const updateStore = withPermission(
   for (const key of EDITABLE) {
     if (data[key] !== undefined) storeFields[key] = data[key]
   }
-  // is_closed ↔ closed_at 双写一致：调用方仅传 isClosed 时由 action 自动推导 closedAt
-  // - isClosed=true 且未显式给 closedAt：写 today
-  // - isClosed=false：清空 closedAt（重新开业）
+  /**
+   * is_closed ↔ closed_at 双写一致：调用方仅传 isClosed 时由 action 自动推导 closedAt
+   * - isClosed=true 且未显式给 closedAt：原本无闭店日期 → 记今天；**已有闭店日期保留**（#422）
+   * - isClosed=false：清空 closedAt（重新开业）
+   *
+   * 「保留原日期」在 SET 里用 `COALESCE(closed_at, today)` 表达（PG 的 SET 读的是更新前的行），
+   * 与 `db/scripts/sync-workfine.js` 的 STORE_UPSERT_SQL 同一写法。不按事务外读到的 `before`
+   * 判：并发重新开业会让「before 已关店」过时，据此不写 closedAt 就留下 is_closed=true + closed_at=NULL。
+   */
+  let closedAtKept = false
   if (storeFields.isClosed !== undefined && storeFields.closedAt === undefined) {
-    storeFields.closedAt = storeFields.isClosed ? shanghaiToday() : null
+    if (storeFields.isClosed) {
+      storeFields.closedAt = sql`COALESCE(${stores.closedAt}, ${shanghaiToday()}::date)`
+      closedAtKept = true
+    } else {
+      storeFields.closedAt = null
+    }
   }
+  // 审计的 after：闭店日期是 SQL 表达式时换成落库后的真实值，别把表达式对象写进日志
+  let auditAfter: Record<string, unknown> = storeFields
   let result: any
   try {
     result = await db.transaction(async (tx) => {
       const r: any = await tx.update(stores).set(storeFields).where(whereConditions)
+      if (closedAtKept && r.count > 0) {
+        const [after] = await tx
+          .select({ closedAt: stores.closedAt })
+          .from(stores)
+          .where(eq(stores.storeId, storeId))
+          .limit(1)
+        auditAfter = { ...storeFields, closedAt: after?.closedAt ?? null }
+      }
       // 门店名以组织节点为权威：改名时同步 org_nodes.name，保持两者一致
       if (
         r.count > 0 &&
@@ -437,7 +461,7 @@ export const updateStore = withPermission(
   }
 
   // 审计的 after 用净化后的白名单对象，别把客户端多塞的键记进日志
-  await logUpdate(session, 'store.update', 'store', storeId, before as Record<string, unknown>, storeFields)
+  await logUpdate(session, 'store.update', 'store', storeId, before as Record<string, unknown>, auditAfter)
   revalidatePath('/stores')
   return { success: true, message: '门店信息已更新' }
   },
