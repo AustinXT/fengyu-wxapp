@@ -204,7 +204,7 @@ describe("页面：dashboard 把校验过的 scope 传给每一次取数（#436�
         await renderDashboard({ metric, ...params })
 
         expect(hoisted.validated).toEqual([scope])
-        expect(dataCalls().map((call) => call.fn).sort()).toEqual(expectedFns)
+        expect(dataCalls().map((call) => call.fn).sort()).toEqual([...expectedFns].sort())
         expectEveryDataCallScope(marketSession, scope)
       })
     }
@@ -340,6 +340,8 @@ describe("智能助手工具：scope 只来自工具入参里点名的可见门�
       ["点名停用门店", { store: "九江停用店", market: "九江市场" }, "NOT_FOUND: 未找到可查看的门店「九江停用店」", M1],
       ["点名无权限市场", { market: "南昌市场" }, null, "NOT_FOUND: 未找到可查看的市场「南昌市场」"],
       ["门店简称命中多家", { store: "九江" }, "NOT_FOUND: 「九江」匹配到多个可查看的门店（九江一店、九江二店）", null],
+      // 市场字段点名了不可见市场：门店字段已命中也要拒（否则按 schema 保留的字段落到市场）
+      ["可见门店 + 无权限市场", { store: "九江一店", market: "南昌市场" }, "NOT_FOUND: 未找到可查看的市场「南昌市场」", "NOT_FOUND: 未找到可查看的市场「南昌市场」"],
     ] as const) {
       it(`${name}｜${label}`, async () => {
         const expected = expectedScope(name, byStore, byMarket)
@@ -446,11 +448,18 @@ describe("闭集（#436）", () => {
     fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
       const full = path.join(dir, entry.name)
       if (entry.isDirectory()) return entry.name === "__tests__" ? [] : listSourceFiles(full)
-      return /\.tsx?$/.test(entry.name) && !/\.test\.tsx?$/.test(entry.name) ? [full] : []
+      // allowJs：.js / .jsx / .mjs / .cjs 同样可以成为取数调用方
+      return /\.[cm]?[jt]sx?$/.test(entry.name) && !/\.(test|spec)\.[cm]?[jt]sx?$/.test(entry.name) && !entry.name.endsWith(".d.ts") ? [full] : []
     })
 
   const parse = (file: string) =>
-    ts.createSourceFile(file, fs.readFileSync(file, "utf8"), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX)
+    ts.createSourceFile(
+      file,
+      fs.readFileSync(file, "utf8"),
+      ts.ScriptTarget.Latest,
+      true,
+      /\.[cm]?jsx?$/.test(file) ? ts.ScriptKind.JSX : ts.ScriptKind.TSX,
+    )
 
   /** 模块说明符 → 相对 src 的源文件路径（@/ 别名、baseUrl 下的 src/、相对路径）；解析不了返回 null */
   function resolveSpecifier(fromFile: string, spec: string): string | null {
@@ -539,6 +548,18 @@ describe("闭集（#436）", () => {
     }
     expect(violations).toEqual([])
     expect(pure.sort()).toEqual(PURE_QUERY_EXPORTS)
+  })
+
+  it("助手的门店 / 市场名单必须是全量（不看在营、不看权限），否则停用门店不再拒答、静默回落", () => {
+    // 行为测试把它 mock 掉了，这里钉住实现整段：加任何过滤条件（is_active / 权限 / scope）都会红
+    const source = parse(path.join(ANALYST_SRC, "lib/assistant-org-names.ts"))
+    const fn = source.statements.find(
+      (statement): statement is ts.FunctionDeclaration =>
+        ts.isFunctionDeclaration(statement) && statement.name?.text === "getAssistantOrgNameCatalog",
+    )
+    expect(fn?.body?.getText(source).replace(/\s+/g, " ")).toBe(
+      '{ const [storeRows, marketRows] = await Promise.all([ db.select({ name: stores.storeName }).from(stores), db.select({ name: orgNodes.name }).from(orgNodes).where(eq(orgNodes.type, "市场")), ]) return { storeNames: storeRows.map((row) => row.name), marketNames: marketRows.map((row) => row.name), } }',
+    )
   })
 
   it("会取数（值引用查询模块）的源码文件必须登记；新增调用方先补最后一跳守护再加进来", () => {

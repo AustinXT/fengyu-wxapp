@@ -48,7 +48,8 @@ function onlySqlTemplate(section) {
 }
 
 /**
- * 经营分析站决定「哪些门店计入」的 7 个文件的整份全文快照（见 test 5）。
+ * 经营分析站决定「哪些门店计入」的 7 个文件 + 助手全量门店名单（#436）的整份全文快照（见 test 5）。
+ * 名单文件的语义断言见 analyst `scope-last-hop.test.ts`。
  * 改动后按失败输出的 actual 更新——更新前先跑 analyst 本地守护（store-status-cross-end / analyst-scope 测试）。
  */
 const ANALYST_FILE_SHA = {
@@ -60,6 +61,8 @@ const ANALYST_FILE_SHA = {
   // 账号可见门店（须含停用门店，首次基线依赖）与 roles→全局判定的输入源（GLM round-2 P2）
   'lib/permissions.ts': '5a7a96011d83b241',
   'lib/auth.ts': 'd07c3178e77fbdc4',
+  // 助手识别「点名不可见门店 / 市场」的全量名单：须不看在营、不看权限，否则停用门店静默回落（#436 GLM round-1 P2）
+  'lib/assistant-org-names.ts': '0c28d2ce4dc66526',
 }
 
 describe('门店在营判定跨端字面量守护（#400）', () => {

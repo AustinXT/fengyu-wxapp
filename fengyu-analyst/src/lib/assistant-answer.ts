@@ -784,6 +784,12 @@ function scopeFromNames(
     return hits[0] ? { type: "market", id: hits[0].id } : null
   }
 
+  // 市场字段点名了就必须可见，即使门店字段已命中也不忽略它（点名不可见就告知，#436）
+  const marketScope = marketText ? resolveMarket(marketText) : null
+  if (marketText && !marketScope) {
+    throw new Error(`NOT_FOUND: ${unavailableOrgMessage([{ kind: "市场", name: marketText }])}`)
+  }
+
   if (storeText) {
     const hits = matchUnique(
       stores,
@@ -798,13 +804,7 @@ function scopeFromNames(
     throw new Error(`NOT_FOUND: ${unavailableOrgMessage([{ kind: "门店", name: storeText }])}`)
   }
 
-  if (marketText) {
-    const resolved = resolveMarket(marketText)
-    if (resolved) return resolved
-    throw new Error(`NOT_FOUND: ${unavailableOrgMessage([{ kind: "市场", name: marketText }])}`)
-  }
-
-  return { type: "all" }
+  return marketScope ?? { type: "all" }
 }
 
 /**
@@ -817,16 +817,13 @@ export function findUnavailableOrgMentions(
   options: AnalystScopeOptions,
   catalog: AssistantOrgNameCatalog,
 ): UnavailableOrgMention[] {
-  const visible = new Set(
-    [
-      ...options.markets.flatMap((market) => market.stores.map((store) => store.storeName)),
-      ...options.markets.map((market) => market.name),
-    ]
-      .map((name) => name.trim())
-      .filter(Boolean),
-  )
+  const visibleMentions: UnavailableOrgMention[] = [
+    ...options.markets.flatMap((market) => market.stores.map((store) => ({ kind: "门店" as const, name: store.storeName.trim() }))),
+    ...options.markets.map((market) => ({ kind: "市场" as const, name: market.name.trim() })),
+  ].filter((mention) => mention.name)
+  const visible = new Set(visibleMentions.map((mention) => mention.name))
   const candidates: Array<UnavailableOrgMention & { visible: boolean }> = [
-    ...[...visible].map((name) => ({ kind: "门店" as const, name, visible: true })),
+    ...visibleMentions.map((mention) => ({ ...mention, visible: true })),
     ...catalog.storeNames.map((name) => ({ kind: "门店" as const, name: name.trim(), visible: false })),
     ...catalog.marketNames.map((name) => ({ kind: "市场" as const, name: name.trim(), visible: false })),
   ]
