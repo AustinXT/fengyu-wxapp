@@ -227,7 +227,7 @@ export function CommissionDailyView({ data, today }: { data: CommissionDailyResu
             <ExportButton
               exportRequest={{
                 exportType: "data-center",
-                payload: { view: "report-commission-daily", params: commissionExportParams(searchParams.entries()) },
+                payload: { view: "report-commission-daily", params: { ...commissionExportParams(searchParams.entries()), month: data.month } },
               }}
             />
           </div>

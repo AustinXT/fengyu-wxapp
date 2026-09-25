@@ -307,7 +307,9 @@ function detailRowsCteSql(session: AuthSession, scope: DataCenterScope, filters:
 
 /**
  * 明细一页（keyset）。排序 = (biz_date DESC, source ASC, source_id DESC)：spia 与 service_commissions 的 id
- * 各自自增会撞号，唯一键必须是 (source, source_id)；业务日期不可变更的前提下翻页 / 导出不重复不漏行（#239 / #282）。
+ * 各自自增会撞号，唯一键必须是 (source, source_id)（#239 / #282）。
+ * ⚠️ 首键 biz_date **可变**：款项归属日期可调整、重新分配 = 作废旧 spia 插新 id。键唯一保证不会死循环、
+ * 静止数据下不重不漏；但翻页 / 分批导出期间恰好发生上述写入时，个别行可能重复或遗漏（导出是「开始时刻的近似」）。
  *
  * - `after`：取排在游标**之后**的行（下一页）；`before`：取排在游标**之前**的行（上一页，SQL 反向取、调用方再翻转）。
  * - 多取一行作探测行，调用方据此判断是否还有下一页。

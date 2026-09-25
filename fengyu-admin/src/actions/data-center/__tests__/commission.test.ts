@@ -125,6 +125,22 @@ describe('getCommissionDetail · 脱敏与链接权限', () => {
   })
 })
 
+describe('附加能力按每条角色授权判定（不拼接）', () => {
+  it('提成权限在角色 A、customer:list / allocation:list 只在角色 B：仍脱敏、订单号不可点', async () => {
+    const roleA = { role: 'manager', scopeId: 'HQ', scopeType: '总部' as const, actions: COMMISSION, scopeStoreIds: ['S1'], scopeOrgNodeIds: ['HQ'] }
+    const roleB = { role: 'customer_mgr', scopeId: 'M2', scopeType: '市场' as const, actions: ['customer:list', 'allocation:list'], scopeStoreIds: ['S9'], scopeOrgNodeIds: ['M2'] }
+    mockGetSession.mockResolvedValue({
+      employeeId: 'EMP-2', name: '双角色', phone: '', roles: [roleA, roleB],
+      permissions: { actions: [...COMMISSION, 'customer:list', 'allocation:list'], scopeStoreIds: ['S1', 'S9'] },
+    } satisfies AuthSession)
+    pageRows = [detailRow(1, '2026-08-02')]
+    const result = await getCommissionDetail({ month: '2026-08' })
+    expect(result.customerMasked).toBe(true)
+    expect(result.rows[0].customerName).toBe('王*明')
+    expect(result.canLinkOrders).toBe(false)
+  })
+})
+
 describe('getCommissionDetail · keyset 翻页', () => {
   const signature = commissionFilterSignature({
     scope: 'all', scopeId: '', month: '2026-08', employeeId: null, storeId: null, date: null, type: null,

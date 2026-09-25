@@ -185,7 +185,7 @@ export const getCommissionDaily = withAllPermissions(
         perOrder: ratio(total, orders),
       },
       pending: { count: toNumber(pending.count), amount: toNumber(pending.amount) },
-      canLinkAllocations: hasUiCapability(session.permissions.actions, 'allocation:list'),
+      canLinkAllocations: grantedOnAllRoles(session, 'allocation:list'),
     }
   },
 )
@@ -287,9 +287,20 @@ function keyOf(row: CommissionDetailRow): CommissionDetailKey {
   return { d: row.date, t: row.source as CommissionSource, id: row.sourceId }
 }
 
+/**
+ * 附加能力（customer:list / allocation:list）必须由**每一条**提供本页数据的角色授权都持有。
+ * session 已被 withAllPermissions 收窄到「同时持有 dashboard + staff_commission」的角色，但
+ * `permissions.actions` 仍是全部角色的并集——拿并集判定，另一条角色（别的门店）的 customer:list
+ * 会让本页范围内的顾客姓名也不脱敏，正是 #367 要堵的跨角色拼接。
+ */
+function grantedOnAllRoles(session: AuthSession, action: string): boolean {
+  if (session.roles.length === 0) return false
+  return session.roles.every((role) => hasUiCapability(role.actions ?? session.permissions.actions, action))
+}
+
 /** 顾客姓名脱敏判定：与页面 / 导出同一处，没有 customer:list 就脱敏 */
 function shouldMaskCustomer(session: AuthSession): boolean {
-  return !hasUiCapability(session.permissions.actions, 'customer:list')
+  return !grantedOnAllRoles(session, 'customer:list')
 }
 
 export const getCommissionDetail = withAllPermissions(
@@ -337,7 +348,7 @@ export const getCommissionDetail = withAllPermissions(
         const position = row.position_name ? String(row.position_name) : '无岗位'
         return { employeeId: String(row.employee_id), label: `${home} · ${name}（${position}）` }
       }),
-      canLinkOrders: hasUiCapability(session.permissions.actions, 'allocation:list'),
+      canLinkOrders: grantedOnAllRoles(session, 'allocation:list'),
       customerMasked: maskCustomer,
     }
   },
@@ -367,7 +378,8 @@ export const exportCommissionDetail = withAllPermissions(
       db.execute(commissionDetailPageSql(session, scope, lineFilters, { limit, after })),
       // 汇总只在第一批取一次，写进合计行
       after ? Promise.resolve(null) : db.execute(commissionDetailSummarySql(session, scope, lineFilters)),
-      resolveScopeName(scope),
+      // 范围名只用于导出说明（第一批），后续批次不再查
+      after ? Promise.resolve('') : resolveScopeName(scope),
     ])
     const maskCustomer = shouldMaskCustomer(session)
     const fetched = rowsOf(pageRows).map((row) => toDetailRow(row, maskCustomer))

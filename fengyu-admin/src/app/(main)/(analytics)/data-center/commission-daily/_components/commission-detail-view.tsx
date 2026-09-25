@@ -142,7 +142,7 @@ export function CommissionDetailView({
             <ExportButton
               exportRequest={{
                 exportType: "data-center",
-                payload: { view: "report-commission-detail", params: commissionExportParams(searchParams.entries()) },
+                payload: { view: "report-commission-detail", params: { ...commissionExportParams(searchParams.entries()), month: data.month } },
               }}
             />
           </div>
