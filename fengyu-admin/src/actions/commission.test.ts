@@ -438,6 +438,18 @@ describe('#379 updateRate — 单价阈值 + set 白名单', () => {
     expect(db.update).not.toHaveBeenCalled()
   })
 
+  it('不可配行（阈值本就 NULL）空更新 → 仍被空更新守卫拦下', async () => {
+    setup({ ...SELF, orderType: '销售单', priceThreshold: null })
+    expect(await updateRate(42, {})).toEqual({ success: false, message: '没有可更新的字段' })
+    expect(db.update).not.toHaveBeenCalled()
+  })
+
+  it('不可配行（阈值本就 NULL）只改比例 → .set() 不带 priceThreshold', async () => {
+    const set = setup({ ...SELF, salesCategory: '他销他耗', priceThreshold: null })
+    await updateRate(42, { commissionRate: '0.03', priceThreshold: null })
+    expect(set.mock.calls[0][0]).toEqual({ commissionRate: '0.03' })
+  })
+
   it('updateRate 传数字阈值 → 格式错误而非 TypeError', async () => {
     setup(SELF)
     const result = await updateRate(42, { priceThreshold: 100 } as any)

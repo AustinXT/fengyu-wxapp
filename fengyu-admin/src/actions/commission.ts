@@ -197,7 +197,9 @@ export const updateRate = withPermission(
     if (hasPriceThresholdValue(data.priceThreshold)) {
       return { success: false, message: THRESHOLD_INELIGIBLE_MESSAGE }
     }
-    priceThreshold = null
+    // 只在确有旧阈值需要清时才写 null（可配行改成不可配类目，否则撞 CHECK）；
+    // 原本就是 NULL 的不可配行不凭空加字段 —— 否则 {} 会绕过下方空更新守卫，白刷 updated_at + 审计
+    if (before.priceThreshold != null) priceThreshold = null
   }
 
   // 显式白名单：只写表单字段，不把调用方对象裸 spread 进 .set()
